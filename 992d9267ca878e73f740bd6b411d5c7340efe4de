@@ -1,0 +1,39 @@
+Phase 4 Checkpoint Verification Report
+=======================================
+Track: k8s_pod_resilience_20260202
+Date: 2026-02-03
+
+Test Results: 73/73 passing (0 failures)
+go vet: clean (including live build tag)
+
+Phase 1 - Failure State Detection:
+  - isPodFailedFast: ImagePullBackOff, ErrImagePull, CrashLoopBackOff,
+    InvalidImageName, CreateContainerConfigError
+  - isPodEvicted: pod.Status.Phase == Failed && Reason == "Evicted"
+  - isPodUnschedulable: PodScheduled condition == False, Reason == "Unschedulable"
+  - OOMKilled: detected via terminated state, exit code 137
+  - writePodDiagnostics: human-readable output to ProcessIO.Stderr
+
+Phase 2 - Startup Timeout:
+  - PodStartupTimeout config field (default 5m)
+  - time.After deadline in waitForRunning select loop
+  - CLI flag: --kubernetes-pod-startup-timeout
+
+Phase 3 - Transient Error Handling:
+  - Consecutive error counter in pollUntilDone and waitForRunning
+  - Exponential backoff (1s, 2s, 3s in pollUntilDone; 500ms, 1s, 1.5s in waitForRunning)
+  - maxConsecutiveAPIErrors = 3
+
+Phase 4 - Live Testing & Pipeline Coverage:
+  - live_resilience_test.go: TestLiveInvalidImageFailsFast, TestLivePodStartupTimeout
+  - integration_test.go: pipeline failure modes (ImagePullBackOff, eviction, CrashLoopBackOff)
+  - Bug fix: reordered checks in waitForRunning (specific failures before generic phase check)
+
+Files Modified:
+  - atc/worker/k8sruntime/process.go (core resilience logic)
+  - atc/worker/k8sruntime/config.go (PodStartupTimeout)
+  - atc/worker/k8sruntime/process_test.go (15 unit tests)
+  - atc/worker/k8sruntime/config_test.go (1 test)
+  - atc/worker/k8sruntime/integration_test.go (3 pipeline failure tests)
+  - atc/worker/k8sruntime/live_resilience_test.go (2 live tests, new file)
+  - atc/atccmd/command.go (CLI flag)
