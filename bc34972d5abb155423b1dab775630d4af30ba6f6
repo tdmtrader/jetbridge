@@ -1,0 +1,24 @@
+Phase 1 Verification Report — Universal Exec-Mode Execution
+============================================================
+Date: 2026-02-03
+Track: K8s Pod Lifecycle & Hijack Support
+
+Changes:
+- Container.Run() uses exec mode when executor is configured (all production paths)
+- execProcess.Wait() no longer deletes pods — deferred to GC reaper
+- waitForRunning() checks terminal failures before Running phase (fixes CrashLoopBackOff)
+
+Test Results:
+- 82/82 unit/integration specs pass
+- 3 new tests: pause pod without stdin, pod survives exit 0, pod survives non-zero exit
+- 12 integration tests updated for exec-mode-only behavior
+- 1 new live test: TestLiveWorkerPodSurvivesCompletion
+
+Files Changed:
+- atc/worker/k8sruntime/container.go (Run() branching)
+- atc/worker/k8sruntime/process.go (pod deletion removed, waitForRunning reordered)
+- atc/worker/k8sruntime/container_test.go (3 new tests)
+- atc/worker/k8sruntime/integration_test.go (12 tests updated)
+- atc/worker/k8sruntime/live_worker_test.go (comments + 1 new test)
+
+Approved by user: yes
