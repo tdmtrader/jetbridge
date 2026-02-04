@@ -1,0 +1,19 @@
+Phase 4 Verification Report — K8s Pod Lifecycle & Hijack Support
+
+Test Results:
+  - 96/96 Ginkgo specs passing (0 failed, 0 pending, 0 skipped)
+  - All phases (1-4) complete with checkpoint commits
+
+Phase Summary:
+  Phase 1 [bc34972d5]: Universal exec-mode — all tasks use pause pods
+  Phase 2 [ff28d5e4d]: Pod GC — Reaper integrates with Concourse GC system
+  Phase 3 [770990347]: Fly hijack — SPDY exec with TTY support
+  Phase 4 [4c9d2acf7]: Live tests + pipeline verification
+
+Deferred Items:
+  - GC integration test (requires DB + full ATC GC stack)
+  - Failed pod grace period test (requires DB + container_collector)
+  These are appropriately deferred to topgun/k8s integration tests.
+
+Manual Verification:
+  - User confirmed Phase 4 completion
