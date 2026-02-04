@@ -1,0 +1,1 @@
+Track: K8s Pod Lifecycle & Hijack Support - Phase 1.1 tasks 1-5: Switch all tasks to exec-mode, remove pod deletion from execProcess.Wait, fix CrashLoopBackOff detection ordering, update integration tests for exec-mode-only behavior
