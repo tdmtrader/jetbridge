@@ -24,6 +24,7 @@ type PodExecutor interface {
 		command []string,
 		stdin io.Reader,
 		stdout, stderr io.Writer,
+		tty bool,
 	) error
 }
 
@@ -41,6 +42,8 @@ func (e *ExecExitError) Error() string {
 // Data is streamed in/out by exec-ing tar inside the Pod container.
 type Volume struct {
 	dbVolume      db.CreatedVolume
+	handle        string
+	workerName    string
 	executor      PodExecutor
 	podName       string
 	namespace     string
@@ -64,12 +67,29 @@ func NewVolume(
 	}
 }
 
+// NewStubVolume creates a Volume that acts as a placeholder for resource
+// cache tracking. It does not require a db.CreatedVolume since K8s volumes
+// are ephemeral emptyDirs managed by the Pod lifecycle.
+func NewStubVolume(handle, workerName, mountPath string) *Volume {
+	return &Volume{
+		handle:     handle,
+		workerName: workerName,
+		mountPath:  mountPath,
+	}
+}
+
 func (v *Volume) Handle() string {
-	return v.dbVolume.Handle()
+	if v.dbVolume != nil {
+		return v.dbVolume.Handle()
+	}
+	return v.handle
 }
 
 func (v *Volume) Source() string {
-	return v.dbVolume.WorkerName()
+	if v.dbVolume != nil {
+		return v.dbVolume.WorkerName()
+	}
+	return v.workerName
 }
 
 func (v *Volume) DBVolume() db.CreatedVolume {
@@ -82,7 +102,7 @@ func (v *Volume) StreamIn(ctx context.Context, path string, _ compression.Compre
 
 	cmd := []string{"tar", "xf", "-", "-C", targetPath}
 
-	err := v.executor.ExecInPod(ctx, v.namespace, v.podName, v.containerName, cmd, reader, nil, nil)
+	err := v.executor.ExecInPod(ctx, v.namespace, v.podName, v.containerName, cmd, reader, nil, nil, false)
 	if err != nil {
 		return fmt.Errorf("stream in via exec: %w", err)
 	}
@@ -97,7 +117,7 @@ func (v *Volume) StreamOut(ctx context.Context, path string, _ compression.Compr
 	cmd := []string{"tar", "cf", "-", "-C", targetPath, "."}
 
 	var stdout bytes.Buffer
-	err := v.executor.ExecInPod(ctx, v.namespace, v.podName, v.containerName, cmd, nil, &stdout, nil)
+	err := v.executor.ExecInPod(ctx, v.namespace, v.podName, v.containerName, cmd, nil, &stdout, nil, false)
 	if err != nil {
 		return nil, fmt.Errorf("stream out via exec: %w", err)
 	}

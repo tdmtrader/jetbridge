@@ -18,6 +18,7 @@ import (
 
 // Integration tests exercise full workflows through the k8sruntime package,
 // simulating realistic pipeline step execution using the fake K8s clientset.
+// All task types now use exec-mode (pause pod + SPDY exec).
 var _ = Describe("Integration", func() {
 	var (
 		fakeDBWorker  *dbfakes.FakeWorker
@@ -67,26 +68,6 @@ var _ = Describe("Integration", func() {
 		return container
 	}
 
-	simulatePodSucceeded := func(podName string, exitCode int32) {
-		pod, err := fakeClientset.CoreV1().Pods("ci-namespace").Get(ctx, podName, metav1.GetOptions{})
-		Expect(err).ToNot(HaveOccurred())
-		phase := corev1.PodSucceeded
-		if exitCode != 0 {
-			phase = corev1.PodFailed
-		}
-		pod.Status.Phase = phase
-		pod.Status.ContainerStatuses = []corev1.ContainerStatus{
-			{
-				Name: "main",
-				State: corev1.ContainerState{
-					Terminated: &corev1.ContainerStateTerminated{ExitCode: exitCode},
-				},
-			},
-		}
-		_, err = fakeClientset.CoreV1().Pods("ci-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
-		Expect(err).ToNot(HaveOccurred())
-	}
-
 	simulatePodRunning := func(podName string) {
 		pod, err := fakeClientset.CoreV1().Pods("ci-namespace").Get(ctx, podName, metav1.GetOptions{})
 		Expect(err).ToNot(HaveOccurred())
@@ -116,21 +97,24 @@ var _ = Describe("Integration", func() {
 			Expect(err).ToNot(HaveOccurred())
 			Expect(process.ID()).To(Equal("task-abc123"))
 
-			By("verifying the Pod was created with the correct spec")
+			By("verifying the Pod was created as a pause pod")
 			pods, err := fakeClientset.CoreV1().Pods("ci-namespace").List(ctx, metav1.ListOptions{})
 			Expect(err).ToNot(HaveOccurred())
 			Expect(pods.Items).To(HaveLen(1))
 			pod := pods.Items[0]
-			Expect(pod.Spec.Containers[0].Image).To(Equal("docker:///ubuntu:22.04"))
-			Expect(pod.Spec.Containers[0].Command).To(Equal([]string{"/bin/sh"}))
-			Expect(pod.Spec.Containers[0].Args).To(Equal([]string{"-c", "echo hello world && exit 0"}))
+			Expect(pod.Spec.Containers[0].Image).To(Equal("ubuntu:22.04"))
+			Expect(pod.Spec.Containers[0].Command).To(Equal([]string{"sh", "-c", "trap 'exit 0' TERM; sleep 86400 & wait"}))
 			Expect(pod.Labels["concourse.ci/worker"]).To(Equal("k8s-worker-1"))
 
-			By("simulating Pod completion and waiting for result")
-			simulatePodSucceeded("task-abc123", 0)
+			By("simulating Pod reaching Running state and waiting for exec result")
+			simulatePodRunning("task-abc123")
 			result, err := process.Wait(ctx)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(result.ExitStatus).To(Equal(0))
+
+			By("verifying the real command was exec'd via the executor")
+			Expect(fakeExecutor.execCalls).To(HaveLen(1))
+			Expect(fakeExecutor.execCalls[0].command).To(Equal([]string{"/bin/sh", "-c", "echo hello world && exit 0"}))
 
 			By("verifying exit status is stored in container properties")
 			props, err := container.Properties()
@@ -139,6 +123,8 @@ var _ = Describe("Integration", func() {
 		})
 
 		It("handles task failure with non-zero exit code", func() {
+			fakeExecutor.execErr = &k8sruntime.ExecExitError{ExitCode: 2}
+
 			container := createContainer("task-fail", db.ContainerTypeTask, runtime.ContainerSpec{
 				TeamID:    1,
 				ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
@@ -150,7 +136,7 @@ var _ = Describe("Integration", func() {
 			}, runtime.ProcessIO{})
 			Expect(err).ToNot(HaveOccurred())
 
-			simulatePodSucceeded("task-fail", 2)
+			simulatePodRunning("task-fail")
 			result, err := process.Wait(ctx)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(result.ExitStatus).To(Equal(2))
@@ -243,7 +229,10 @@ var _ = Describe("Integration", func() {
 	})
 
 	Describe("build cancellation", func() {
-		It("cleans up the Pod when the context is cancelled during a direct-mode task", func() {
+		It("returns an error when the context is cancelled during exec-mode task", func() {
+			// Make the executor return context error to simulate cancellation during exec
+			fakeExecutor.execErr = context.Canceled
+
 			container := createContainer("cancel-task", db.ContainerTypeTask, runtime.ContainerSpec{
 				TeamID:    1,
 				ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
@@ -255,21 +244,21 @@ var _ = Describe("Integration", func() {
 			}, runtime.ProcessIO{})
 			Expect(err).ToNot(HaveOccurred())
 
-			By("cancelling the context before the Pod completes")
-			cancelCtx, cancel := context.WithCancel(ctx)
-			cancel()
+			By("simulating the Pod reaching Running state")
+			simulatePodRunning("cancel-task")
 
-			_, err = process.Wait(cancelCtx)
+			By("waiting for result — exec returns cancellation error")
+			_, err = process.Wait(ctx)
 			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("context canceled"))
+			Expect(err.Error()).To(ContainSubstring("canceled"))
 
-			By("verifying the Pod was deleted")
+			By("verifying the Pod still exists (GC handles cleanup, not the process)")
 			pods, err := fakeClientset.CoreV1().Pods("ci-namespace").List(ctx, metav1.ListOptions{})
 			Expect(err).ToNot(HaveOccurred())
-			Expect(pods.Items).To(BeEmpty(), "Pod should have been deleted on cancellation")
+			Expect(pods.Items).To(HaveLen(1), "pause Pod should remain for GC to clean up")
 		})
 
-		It("cleans up the Pod when the context is cancelled during an exec-mode resource step", func() {
+		It("returns an error when the context is cancelled during an exec-mode resource step", func() {
 			container := createContainer("cancel-resource", db.ContainerTypeGet, runtime.ContainerSpec{
 				TeamID:   1,
 				ImageSpec: runtime.ImageSpec{ResourceType: "git"},
@@ -293,14 +282,138 @@ var _ = Describe("Integration", func() {
 			By("simulating the Pod reaching Running state")
 			simulatePodRunning("cancel-resource")
 
-			By("waiting - the exec returns an error, and the Pod is cleaned up")
+			By("waiting - the exec returns an error")
 			_, err = process.Wait(ctx)
 			Expect(err).To(HaveOccurred())
 
-			By("verifying the pause Pod was deleted")
+			By("verifying the pause Pod still exists (GC handles cleanup)")
 			pods, err := fakeClientset.CoreV1().Pods("ci-namespace").List(ctx, metav1.ListOptions{})
 			Expect(err).ToNot(HaveOccurred())
-			Expect(pods.Items).To(BeEmpty(), "pause Pod should have been deleted after exec failure")
+			Expect(pods.Items).To(HaveLen(1), "pause Pod should remain for GC to clean up")
+		})
+	})
+
+	Describe("pipeline failure modes", func() {
+		It("detects ImagePullBackOff in a task step and returns a diagnostic error", func() {
+			container := createContainer("task-bad-image", db.ContainerTypeTask, runtime.ContainerSpec{
+				TeamID:    1,
+				ImageSpec: runtime.ImageSpec{ImageURL: "docker:///nonexistent-image:bad-tag"},
+			})
+
+			var stderr bytes.Buffer
+			process, err := container.Run(ctx, runtime.ProcessSpec{
+				Path: "/bin/sh",
+				Args: []string{"-c", "echo hello"},
+			}, runtime.ProcessIO{
+				Stderr: &stderr,
+			})
+			Expect(err).ToNot(HaveOccurred())
+
+			By("simulating ImagePullBackOff on the pod")
+			pod, err := fakeClientset.CoreV1().Pods("ci-namespace").Get(ctx, "task-bad-image", metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			pod.Status.Phase = corev1.PodPending
+			pod.Status.ContainerStatuses = []corev1.ContainerStatus{
+				{
+					Name: "main",
+					State: corev1.ContainerState{
+						Waiting: &corev1.ContainerStateWaiting{
+							Reason:  "ImagePullBackOff",
+							Message: `Back-off pulling image "nonexistent-image:bad-tag"`,
+						},
+					},
+				},
+			}
+			_, err = fakeClientset.CoreV1().Pods("ci-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			_, err = process.Wait(ctx)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("ImagePullBackOff"))
+
+			By("verifying diagnostics were written to stderr")
+			Expect(stderr.String()).To(ContainSubstring("Pod Failure Diagnostics"))
+			Expect(stderr.String()).To(ContainSubstring("ImagePullBackOff"))
+		})
+
+		It("detects pod eviction in a resource get step and returns a diagnostic error", func() {
+			container := createContainer("get-evicted", db.ContainerTypeGet, runtime.ContainerSpec{
+				TeamID:   1,
+				ImageSpec: runtime.ImageSpec{ResourceType: "git"},
+				Type:     db.ContainerTypeGet,
+			})
+
+			fakeExecutor.execStdout = []byte(`{}`)
+			var stderr bytes.Buffer
+			process, err := container.Run(ctx, runtime.ProcessSpec{
+				ID:   "resource",
+				Path: "/opt/resource/in",
+				Args: []string{"/tmp/build/get"},
+			}, runtime.ProcessIO{
+				Stdin:  bytes.NewBufferString(`{"source":{}}`),
+				Stdout: new(bytes.Buffer),
+				Stderr: &stderr,
+			})
+			Expect(err).ToNot(HaveOccurred())
+
+			By("simulating pod eviction before exec can run")
+			pod, err := fakeClientset.CoreV1().Pods("ci-namespace").Get(ctx, "get-evicted", metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			pod.Status.Phase = corev1.PodFailed
+			pod.Status.Reason = "Evicted"
+			pod.Status.Message = "The node was low on resource: memory."
+			_, err = fakeClientset.CoreV1().Pods("ci-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			_, err = process.Wait(ctx)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("Evicted"))
+
+			By("verifying diagnostics were written to stderr")
+			Expect(stderr.String()).To(ContainSubstring("Pod Failure Diagnostics"))
+			Expect(stderr.String()).To(ContainSubstring("Evicted"))
+		})
+
+		It("detects CrashLoopBackOff in a task step during waitForRunning", func() {
+			container := createContainer("task-crashloop", db.ContainerTypeTask, runtime.ContainerSpec{
+				TeamID:    1,
+				ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+			})
+
+			var stderr bytes.Buffer
+			process, err := container.Run(ctx, runtime.ProcessSpec{
+				Path: "/bin/sh",
+				Args: []string{"-c", "exit 1"},
+			}, runtime.ProcessIO{
+				Stderr: &stderr,
+			})
+			Expect(err).ToNot(HaveOccurred())
+
+			By("simulating CrashLoopBackOff")
+			pod, err := fakeClientset.CoreV1().Pods("ci-namespace").Get(ctx, "task-crashloop", metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			pod.Status.Phase = corev1.PodRunning
+			pod.Status.ContainerStatuses = []corev1.ContainerStatus{
+				{
+					Name: "main",
+					State: corev1.ContainerState{
+						Waiting: &corev1.ContainerStateWaiting{
+							Reason:  "CrashLoopBackOff",
+							Message: "back-off 5m0s restarting failed container",
+						},
+					},
+				},
+			}
+			_, err = fakeClientset.CoreV1().Pods("ci-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			_, err = process.Wait(ctx)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("CrashLoopBackOff"))
+
+			By("verifying diagnostics were written to stderr")
+			Expect(stderr.String()).To(ContainSubstring("Pod Failure Diagnostics"))
+			Expect(stderr.String()).To(ContainSubstring("CrashLoopBackOff"))
 		})
 	})
 
@@ -358,11 +471,15 @@ var _ = Describe("Integration", func() {
 				Expect(vol.EmptyDir).ToNot(BeNil())
 			}
 
-			By("simulating successful completion")
-			simulatePodSucceeded("task-with-io", 0)
+			By("simulating successful completion via exec")
+			simulatePodRunning("task-with-io")
 			result, err := process.Wait(ctx)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(result.ExitStatus).To(Equal(0))
+
+			By("verifying the command was exec'd with the correct working dir")
+			Expect(fakeExecutor.execCalls).To(HaveLen(1))
+			Expect(fakeExecutor.execCalls[0].command).To(Equal([]string{"/bin/sh", "-c", "go build -o /tmp/build/workdir/binary/app ./..."}))
 		})
 
 		It("passes inputs from a get step to a put step via volume mounts", func() {

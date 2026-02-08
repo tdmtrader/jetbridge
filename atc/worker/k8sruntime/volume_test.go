@@ -198,6 +198,7 @@ type execCall struct {
 	containerName string
 	command       []string
 	stdin         io.Reader
+	tty           bool
 }
 
 func (f *fakeExecExecutor) ExecInPod(
@@ -206,6 +207,7 @@ func (f *fakeExecExecutor) ExecInPod(
 	command []string,
 	stdin io.Reader,
 	stdout, stderr io.Writer,
+	tty bool,
 ) error {
 	f.execCalls = append(f.execCalls, execCall{
 		podName:       podName,
@@ -213,6 +215,7 @@ func (f *fakeExecExecutor) ExecInPod(
 		containerName: containerName,
 		command:       command,
 		stdin:         stdin,
+		tty:           tty,
 	})
 	if f.execErr != nil {
 		return f.execErr

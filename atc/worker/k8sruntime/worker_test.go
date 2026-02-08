@@ -151,6 +151,10 @@ var _ = Describe("Worker", func() {
 				}
 				_, err := fakeClientset.CoreV1().Pods("test-namespace").Create(ctx, pod, metav1.CreateOptions{})
 				Expect(err).ToNot(HaveOccurred())
+
+				fakeCreatedContainer := new(dbfakes.FakeCreatedContainer)
+				fakeCreatedContainer.HandleReturns("lookup-handle")
+				fakeDBWorker.FindContainerReturns(nil, fakeCreatedContainer, nil)
 			})
 
 			It("returns the container", func() {
@@ -158,6 +162,41 @@ var _ = Describe("Worker", func() {
 				Expect(err).ToNot(HaveOccurred())
 				Expect(found).To(BeTrue())
 				Expect(container).ToNot(BeNil())
+			})
+
+			It("returns a container with a valid DBContainer for hijack support", func() {
+				fakeCreatedContainer := new(dbfakes.FakeCreatedContainer)
+				fakeCreatedContainer.HandleReturns("lookup-handle")
+				fakeDBWorker.FindContainerReturns(nil, fakeCreatedContainer, nil)
+
+				container, found, err := worker.LookupContainer(ctx, "lookup-handle")
+				Expect(err).ToNot(HaveOccurred())
+				Expect(found).To(BeTrue())
+
+				By("having a non-nil DBContainer that the hijack handler can call UpdateLastHijack on")
+				Expect(container.DBContainer()).ToNot(BeNil())
+				Expect(container.DBContainer().Handle()).To(Equal("lookup-handle"))
+			})
+		})
+
+		Context("when the Pod exists but the DB container does not", func() {
+			BeforeEach(func() {
+				pod := &corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "orphan-pod",
+						Namespace: "test-namespace",
+					},
+				}
+				_, err := fakeClientset.CoreV1().Pods("test-namespace").Create(ctx, pod, metav1.CreateOptions{})
+				Expect(err).ToNot(HaveOccurred())
+
+				fakeDBWorker.FindContainerReturns(nil, nil, nil)
+			})
+
+			It("returns not found since the container is not tracked in the DB", func() {
+				_, found, err := worker.LookupContainer(ctx, "orphan-pod")
+				Expect(err).ToNot(HaveOccurred())
+				Expect(found).To(BeFalse())
 			})
 		})
 
