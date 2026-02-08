@@ -139,6 +139,116 @@ var _ = Describe("Reaper", func() {
 		})
 	})
 
+	Describe("reaper idempotency", func() {
+		It("is safe to run twice when first run already deleted the pod", func() {
+			createLabelledPod("pod-to-destroy")
+
+			fakeContainerRepository.FindDestroyingContainersReturns(
+				[]string{"pod-to-destroy"}, nil,
+			)
+
+			By("first reaper sweep deletes the pod")
+			err := reaper.Run(ctx)
+			Expect(err).ToNot(HaveOccurred())
+
+			pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(pods.Items).To(BeEmpty())
+
+			By("second reaper sweep succeeds even though pod is already gone")
+			fakeContainerRepository.FindDestroyingContainersReturns(
+				[]string{"pod-to-destroy"}, nil,
+			)
+			err = reaper.Run(ctx)
+			Expect(err).ToNot(HaveOccurred())
+		})
+
+		It("does not destroy a newly created pod that is not marked destroying", func() {
+			createLabelledPod("existing-pod")
+			createLabelledPod("brand-new-pod")
+
+			fakeContainerRepository.FindDestroyingContainersReturns(
+				[]string{"existing-pod"}, nil,
+			)
+
+			err := reaper.Run(ctx)
+			Expect(err).ToNot(HaveOccurred())
+
+			By("verifying only the destroying pod was deleted")
+			pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(pods.Items).To(HaveLen(1))
+			Expect(pods.Items[0].Name).To(Equal("brand-new-pod"))
+
+			By("verifying both pods were reported to the DB before deletion")
+			Expect(fakeContainerRepository.UpdateContainersMissingSinceCallCount()).To(Equal(1))
+			_, handles := fakeContainerRepository.UpdateContainersMissingSinceArgsForCall(0)
+			Expect(handles).To(ConsistOf("existing-pod", "brand-new-pod"))
+		})
+	})
+
+	Describe("readable pod names with handle labels", func() {
+		createPodWithHandle := func(podName, handle string) {
+			pod := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      podName,
+					Namespace: "test-namespace",
+					Labels: map[string]string{
+						"concourse.ci/worker": fmt.Sprintf("k8s-%s", cfg.Namespace),
+						"concourse.ci/handle": handle,
+					},
+				},
+				Status: corev1.PodStatus{Phase: corev1.PodRunning},
+			}
+			_, err := fakeClientset.CoreV1().Pods("test-namespace").Create(ctx, pod, metav1.CreateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+		}
+
+		It("reports DB handles (from labels) not pod names to UpdateContainersMissingSince", func() {
+			createPodWithHandle("my-pipeline-build-b1-task-abcdef12", "abcdef12-3456-7890-abcd-ef1234567890")
+			createPodWithHandle("ci-test-b7-get-11223344", "11223344-5566-7788-99aa-bbccddeeff00")
+
+			err := reaper.Run(ctx)
+			Expect(err).ToNot(HaveOccurred())
+
+			Expect(fakeContainerRepository.UpdateContainersMissingSinceCallCount()).To(Equal(1))
+			_, handles := fakeContainerRepository.UpdateContainersMissingSinceArgsForCall(0)
+			Expect(handles).To(ConsistOf(
+				"abcdef12-3456-7890-abcd-ef1234567890",
+				"11223344-5566-7788-99aa-bbccddeeff00",
+			))
+		})
+
+		It("deletes pods by pod name when DB returns handles for destruction", func() {
+			createPodWithHandle("my-pipeline-build-b1-task-abcdef12", "abcdef12-3456-7890-abcd-ef1234567890")
+			createPodWithHandle("ci-test-b7-get-11223344", "11223344-5566-7788-99aa-bbccddeeff00")
+
+			fakeContainerRepository.FindDestroyingContainersReturns(
+				[]string{"abcdef12-3456-7890-abcd-ef1234567890"}, nil,
+			)
+
+			err := reaper.Run(ctx)
+			Expect(err).ToNot(HaveOccurred())
+
+			By("deleting the pod with the readable name, not the UUID handle")
+			pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(pods.Items).To(HaveLen(1))
+			Expect(pods.Items[0].Name).To(Equal("ci-test-b7-get-11223344"))
+		})
+
+		It("falls back to pod name when handle label is missing (backward compat)", func() {
+			createLabelledPod("legacy-uuid-pod")
+
+			err := reaper.Run(ctx)
+			Expect(err).ToNot(HaveOccurred())
+
+			Expect(fakeContainerRepository.UpdateContainersMissingSinceCallCount()).To(Equal(1))
+			_, handles := fakeContainerRepository.UpdateContainersMissingSinceArgsForCall(0)
+			Expect(handles).To(ConsistOf("legacy-uuid-pod"))
+		})
+	})
+
 	Describe("cache volume cleanup", func() {
 		BeforeEach(func() {
 			cfg.CacheVolumeClaim = "my-cache-pvc"
@@ -221,6 +331,118 @@ var _ = Describe("Reaper", func() {
 
 			Expect(executor.execCalls).To(BeEmpty())
 			Expect(fakeVolumeRepository.RemoveDestroyingVolumesCallCount()).To(Equal(0))
+		})
+
+		It("isolates per-volume errors so successful cleanups proceed", func() {
+			createLabelledPod("active-pod")
+			fakeVolumeRepository.GetDestroyingVolumesReturns([]string{"vol-good", "vol-bad", "vol-also-good"}, nil)
+
+			// Use a per-call error executor: only the second call fails.
+			callCount := 0
+			perCallExecutor := &fakeExecExecutor{}
+			perCallExecutor.execFunc = func() error {
+				callCount++
+				if callCount == 2 {
+					return fmt.Errorf("connection refused")
+				}
+				return nil
+			}
+			reaper.SetExecutor(perCallExecutor)
+
+			err := reaper.Run(ctx)
+			Expect(err).ToNot(HaveOccurred())
+
+			By("attempting cleanup for all three volumes")
+			Expect(perCallExecutor.execCalls).To(HaveLen(3))
+
+			By("only reporting the failed volume handle")
+			Expect(fakeVolumeRepository.RemoveDestroyingVolumesCallCount()).To(Equal(1))
+			_, failedHandles := fakeVolumeRepository.RemoveDestroyingVolumesArgsForCall(0)
+			Expect(failedHandles).To(ConsistOf("vol-bad"))
+		})
+	})
+
+	Describe("artifact store cleanup", func() {
+		BeforeEach(func() {
+			cfg.ArtifactStoreClaim = "my-artifact-pvc"
+			testLogger := lagertest.NewTestLogger("reaper")
+			reaper = k8sruntime.NewReaper(testLogger, fakeClientset, cfg, fakeContainerRepository, fakeDestroyer)
+			reaper.SetExecutor(executor)
+		})
+
+		It("execs rm -f on artifact tars for destroying containers", func() {
+			createLabelledPod("active-pod")
+			fakeContainerRepository.FindDestroyingContainersReturns(
+				[]string{"handle-aaa", "handle-bbb"}, nil,
+			)
+
+			err := reaper.Run(ctx)
+			Expect(err).ToNot(HaveOccurred())
+
+			By("exec-ing rm -f for each destroying container's artifact")
+			// Filter exec calls to artifact-helper container
+			var artifactCalls []execCall
+			for _, call := range executor.execCalls {
+				if call.containerName == "artifact-helper" {
+					artifactCalls = append(artifactCalls, call)
+				}
+			}
+			Expect(artifactCalls).To(HaveLen(2))
+			Expect(artifactCalls[0].command).To(Equal([]string{"rm", "-f", "/artifacts/artifacts/handle-aaa.tar"}))
+			Expect(artifactCalls[1].command).To(Equal([]string{"rm", "-f", "/artifacts/artifacts/handle-bbb.tar"}))
+		})
+
+		It("does nothing when ArtifactStoreClaim is not configured", func() {
+			cfg.ArtifactStoreClaim = ""
+			testLogger := lagertest.NewTestLogger("reaper")
+			reaper = k8sruntime.NewReaper(testLogger, fakeClientset, cfg, fakeContainerRepository, fakeDestroyer)
+			reaper.SetExecutor(executor)
+
+			createLabelledPod("active-pod")
+			fakeContainerRepository.FindDestroyingContainersReturns(
+				[]string{"handle-xxx"}, nil,
+			)
+
+			err := reaper.Run(ctx)
+			Expect(err).ToNot(HaveOccurred())
+
+			// No artifact cleanup exec calls
+			var artifactCalls []execCall
+			for _, call := range executor.execCalls {
+				if call.containerName == "artifact-helper" {
+					artifactCalls = append(artifactCalls, call)
+				}
+			}
+			Expect(artifactCalls).To(BeEmpty())
+		})
+
+		It("skips cleanup when no containers are destroying", func() {
+			createLabelledPod("active-pod")
+			fakeContainerRepository.FindDestroyingContainersReturns([]string{}, nil)
+
+			err := reaper.Run(ctx)
+			Expect(err).ToNot(HaveOccurred())
+
+			Expect(executor.execCalls).To(BeEmpty())
+		})
+
+		It("skips handles with path traversal characters", func() {
+			createLabelledPod("active-pod")
+			fakeContainerRepository.FindDestroyingContainersReturns(
+				[]string{"../etc/passwd", "good-handle"}, nil,
+			)
+
+			err := reaper.Run(ctx)
+			Expect(err).ToNot(HaveOccurred())
+
+			var artifactCalls []execCall
+			for _, call := range executor.execCalls {
+				if call.containerName == "artifact-helper" {
+					artifactCalls = append(artifactCalls, call)
+				}
+			}
+			Expect(artifactCalls).To(HaveLen(1))
+			Expect(artifactCalls[0].command).To(Equal([]string{"rm", "-f", "/artifacts/artifacts/good-handle.tar"}))
 		})
 	})
 })

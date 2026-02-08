@@ -770,6 +770,98 @@ var _ = Describe("Container", func() {
 				Expect(pod.Spec.ServiceAccountName).To(BeEmpty())
 			})
 		})
+
+		Context("when ImageRegistry is configured with a SecretName", func() {
+			BeforeEach(func() {
+				setupFakeDBContainer(fakeDBWorker, "registry-handle")
+
+				cfgWithRegistry := k8sruntime.NewConfig("test-namespace", "")
+				cfgWithRegistry.ImagePullSecrets = []string{"existing-secret"}
+				cfgWithRegistry.ImageRegistry = &k8sruntime.ImageRegistryConfig{
+					Prefix:     "gcr.io/my-project/concourse",
+					SecretName: "gcr-auth",
+				}
+
+				registryWorker := k8sruntime.NewWorker(fakeDBWorker, fakeClientset, cfgWithRegistry)
+
+				var err error
+				container, _, err = registryWorker.FindOrCreateContainer(
+					ctx,
+					db.NewFixedHandleContainerOwner("registry-handle"),
+					db.ContainerMetadata{Type: db.ContainerTypeTask},
+					runtime.ContainerSpec{
+						TeamID:    1,
+						Dir:       "/workdir",
+						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+					},
+					delegate,
+				)
+				Expect(err).ToNot(HaveOccurred())
+			})
+
+			It("auto-includes the registry secret in imagePullSecrets", func() {
+				_, err := container.Run(ctx, runtime.ProcessSpec{
+					Path: "/bin/sh",
+					Args: []string{"-c", "echo hello"},
+				}, runtime.ProcessIO{})
+				Expect(err).ToNot(HaveOccurred())
+
+				pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
+				Expect(err).ToNot(HaveOccurred())
+				Expect(pods.Items).To(HaveLen(1))
+
+				pod := pods.Items[0]
+				Expect(pod.Spec.ImagePullSecrets).To(HaveLen(2))
+				Expect(pod.Spec.ImagePullSecrets).To(ContainElements(
+					corev1.LocalObjectReference{Name: "existing-secret"},
+					corev1.LocalObjectReference{Name: "gcr-auth"},
+				))
+			})
+		})
+
+		Context("when ImageRegistry SecretName duplicates an existing imagePullSecret", func() {
+			BeforeEach(func() {
+				setupFakeDBContainer(fakeDBWorker, "dedup-handle")
+
+				cfgDup := k8sruntime.NewConfig("test-namespace", "")
+				cfgDup.ImagePullSecrets = []string{"shared-secret"}
+				cfgDup.ImageRegistry = &k8sruntime.ImageRegistryConfig{
+					SecretName: "shared-secret",
+				}
+
+				dedupWorker := k8sruntime.NewWorker(fakeDBWorker, fakeClientset, cfgDup)
+
+				var err error
+				container, _, err = dedupWorker.FindOrCreateContainer(
+					ctx,
+					db.NewFixedHandleContainerOwner("dedup-handle"),
+					db.ContainerMetadata{Type: db.ContainerTypeTask},
+					runtime.ContainerSpec{
+						TeamID:    1,
+						Dir:       "/workdir",
+						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+					},
+					delegate,
+				)
+				Expect(err).ToNot(HaveOccurred())
+			})
+
+			It("deduplicates the secret name", func() {
+				_, err := container.Run(ctx, runtime.ProcessSpec{
+					Path: "/bin/sh",
+					Args: []string{"-c", "echo hello"},
+				}, runtime.ProcessIO{})
+				Expect(err).ToNot(HaveOccurred())
+
+				pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
+				Expect(err).ToNot(HaveOccurred())
+				Expect(pods.Items).To(HaveLen(1))
+
+				pod := pods.Items[0]
+				Expect(pod.Spec.ImagePullSecrets).To(HaveLen(1))
+				Expect(pod.Spec.ImagePullSecrets[0].Name).To(Equal("shared-secret"))
+			})
+		})
 	})
 
 	Describe("Run uses exec-mode for all tasks (universal pause pod)", func() {
@@ -1774,6 +1866,124 @@ var _ = Describe("Container", func() {
 			})
 		})
 	})
+
+	Describe("FindOrCreateContainer failure handling", func() {
+		It("calls Failed() on the creating container when Created() fails", func() {
+			fakeCreatingContainer := new(dbfakes.FakeCreatingContainer)
+			fakeCreatingContainer.HandleReturns("fail-create-handle")
+			fakeCreatingContainer.CreatedReturns(nil, fmt.Errorf("owner disappeared"))
+
+			fakeDBWorker.FindContainerReturns(nil, nil, nil)
+			fakeDBWorker.CreateContainerReturns(fakeCreatingContainer, nil)
+
+			_, _, err := worker.FindOrCreateContainer(
+				ctx,
+				db.NewFixedHandleContainerOwner("fail-create-handle"),
+				db.ContainerMetadata{Type: db.ContainerTypeTask},
+				runtime.ContainerSpec{
+					TeamID:   1,
+					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+				},
+				delegate,
+			)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("mark container as created"))
+
+			By("marking the container as failed in the DB")
+			Expect(fakeCreatingContainer.FailedCallCount()).To(Equal(1))
+		})
+
+		It("returns error when FindContainer fails", func() {
+			fakeDBWorker.FindContainerReturns(nil, nil, fmt.Errorf("db connection lost"))
+
+			_, _, err := worker.FindOrCreateContainer(
+				ctx,
+				db.NewFixedHandleContainerOwner("db-fail-handle"),
+				db.ContainerMetadata{Type: db.ContainerTypeTask},
+				runtime.ContainerSpec{
+					TeamID:   1,
+					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+				},
+				delegate,
+			)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("find container in db"))
+		})
+
+		It("returns error when CreateContainer fails", func() {
+			fakeDBWorker.FindContainerReturns(nil, nil, nil)
+			fakeDBWorker.CreateContainerReturns(nil, fmt.Errorf("duplicate key"))
+
+			_, _, err := worker.FindOrCreateContainer(
+				ctx,
+				db.NewFixedHandleContainerOwner("dup-handle"),
+				db.ContainerMetadata{Type: db.ContainerTypeTask},
+				runtime.ContainerSpec{
+					TeamID:   1,
+					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+				},
+				delegate,
+			)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("create container in db"))
+		})
+
+		It("recovers a stale creating container by transitioning to created", func() {
+			// Simulate a creating container left from a previous crash.
+			fakeCreatingContainer := new(dbfakes.FakeCreatingContainer)
+			fakeCreatingContainer.HandleReturns("stale-creating-handle")
+			fakeCreatedContainer := new(dbfakes.FakeCreatedContainer)
+			fakeCreatedContainer.HandleReturns("stale-creating-handle")
+			fakeCreatingContainer.CreatedReturns(fakeCreatedContainer, nil)
+
+			// FindContainer returns the stale creating container.
+			fakeDBWorker.FindContainerReturns(fakeCreatingContainer, nil, nil)
+
+			container, _, err := worker.FindOrCreateContainer(
+				ctx,
+				db.NewFixedHandleContainerOwner("stale-creating-handle"),
+				db.ContainerMetadata{Type: db.ContainerTypeTask},
+				runtime.ContainerSpec{
+					TeamID:   1,
+					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+				},
+				delegate,
+			)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(container).ToNot(BeNil())
+
+			By("transitioning the creating container to created state")
+			Expect(fakeCreatingContainer.CreatedCallCount()).To(Equal(1))
+
+			By("not calling CreateContainer since the container already exists")
+			Expect(fakeDBWorker.CreateContainerCallCount()).To(Equal(0))
+		})
+
+		It("marks stale creating container as failed when Created() fails on recovery", func() {
+			fakeCreatingContainer := new(dbfakes.FakeCreatingContainer)
+			fakeCreatingContainer.HandleReturns("stale-fail-handle")
+			fakeCreatingContainer.CreatedReturns(nil, fmt.Errorf("state conflict"))
+
+			// FindContainer returns the stale creating container.
+			fakeDBWorker.FindContainerReturns(fakeCreatingContainer, nil, nil)
+
+			_, _, err := worker.FindOrCreateContainer(
+				ctx,
+				db.NewFixedHandleContainerOwner("stale-fail-handle"),
+				db.ContainerMetadata{Type: db.ContainerTypeTask},
+				runtime.ContainerSpec{
+					TeamID:   1,
+					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+				},
+				delegate,
+			)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("mark container as created"))
+
+			By("marking the stale container as failed")
+			Expect(fakeCreatingContainer.FailedCallCount()).To(Equal(1))
+		})
+	})
 })
 
 // filterMountsByPaths returns volume mounts whose MountPath matches any of the given paths.
@@ -1805,3 +2015,624 @@ func (a *fakeArtifact) StreamOut(_ context.Context, _ string, _ compression.Comp
 
 func (a *fakeArtifact) Handle() string { return a.handle }
 func (a *fakeArtifact) Source() string { return a.source }
+
+var _ = Describe("Container with artifact store", func() {
+	var (
+		fakeDBWorker  *dbfakes.FakeWorker
+		fakeClientset *fake.Clientset
+		ctx           context.Context
+		delegate      runtime.BuildStepDelegate
+	)
+
+	BeforeEach(func() {
+		ctx = context.Background()
+		fakeDBWorker = new(dbfakes.FakeWorker)
+		fakeDBWorker.NameReturns("k8s-worker-1")
+		fakeClientset = fake.NewSimpleClientset()
+		delegate = &noopDelegate{}
+	})
+
+	Describe("Run with ArtifactStoreClaim configured", func() {
+		var (
+			worker    *k8sruntime.Worker
+			container runtime.Container
+		)
+
+		BeforeEach(func() {
+			cfg := k8sruntime.NewConfig("test-namespace", "")
+			cfg.ArtifactStoreClaim = "concourse-artifacts"
+			worker = k8sruntime.NewWorker(fakeDBWorker, fakeClientset, cfg)
+		})
+
+		Context("with no inputs (basic pod)", func() {
+			BeforeEach(func() {
+				setupFakeDBContainer(fakeDBWorker, "artifact-basic-handle")
+
+				var err error
+				container, _, err = worker.FindOrCreateContainer(
+					ctx,
+					db.NewFixedHandleContainerOwner("artifact-basic-handle"),
+					db.ContainerMetadata{Type: db.ContainerTypeTask},
+					runtime.ContainerSpec{
+						TeamID:   1,
+						Dir:      "/workdir",
+						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+					},
+					delegate,
+				)
+				Expect(err).ToNot(HaveOccurred())
+			})
+
+			It("includes the artifact PVC volume and sidecar but no init containers", func() {
+				_, err := container.Run(ctx, runtime.ProcessSpec{
+					Path: "/bin/sh",
+					Args: []string{"-c", "echo hello"},
+				}, runtime.ProcessIO{})
+				Expect(err).ToNot(HaveOccurred())
+
+				pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
+				Expect(err).ToNot(HaveOccurred())
+				Expect(pods.Items).To(HaveLen(1))
+				pod := pods.Items[0]
+
+				By("adding the artifact store PVC volume")
+				var artifactVol *corev1.Volume
+				for i := range pod.Spec.Volumes {
+					if pod.Spec.Volumes[i].PersistentVolumeClaim != nil &&
+						pod.Spec.Volumes[i].PersistentVolumeClaim.ClaimName == "concourse-artifacts" {
+						artifactVol = &pod.Spec.Volumes[i]
+						break
+					}
+				}
+				Expect(artifactVol).ToNot(BeNil(), "expected artifact store PVC volume")
+				Expect(artifactVol.Name).To(Equal("artifact-store"))
+
+				By("adding the artifact-helper sidecar")
+				Expect(pod.Spec.Containers).To(HaveLen(2))
+				sidecar := pod.Spec.Containers[1]
+				Expect(sidecar.Name).To(Equal("artifact-helper"))
+				Expect(sidecar.Image).To(Equal("alpine:latest"))
+
+				By("sidecar mounts the artifact PVC")
+				var hasPVCMount bool
+				for _, m := range sidecar.VolumeMounts {
+					if m.MountPath == k8sruntime.ArtifactMountPath {
+						hasPVCMount = true
+						break
+					}
+				}
+				Expect(hasPVCMount).To(BeTrue(), "sidecar should mount artifact PVC")
+
+				By("main container does NOT mount the artifact PVC")
+				mainContainer := pod.Spec.Containers[0]
+				for _, m := range mainContainer.VolumeMounts {
+					Expect(m.MountPath).ToNot(Equal(k8sruntime.ArtifactMountPath),
+						"main container should NOT mount artifact PVC")
+				}
+
+				By("no init containers when no artifact-store inputs")
+				Expect(pod.Spec.InitContainers).To(BeEmpty())
+			})
+		})
+
+		Context("with ArtifactStoreVolume inputs", func() {
+			BeforeEach(func() {
+				setupFakeDBContainer(fakeDBWorker, "artifact-init-handle")
+
+				asv := k8sruntime.NewArtifactStoreVolume(
+					"caches/123.tar", "cache-vol-123", "k8s-worker-1", nil,
+				)
+
+				var err error
+				container, _, err = worker.FindOrCreateContainer(
+					ctx,
+					db.NewFixedHandleContainerOwner("artifact-init-handle"),
+					db.ContainerMetadata{Type: db.ContainerTypeTask},
+					runtime.ContainerSpec{
+						TeamID:   1,
+						Dir:      "/tmp/build/workdir",
+						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+						Inputs: []runtime.Input{
+							{
+								Artifact:        asv,
+								DestinationPath: "/tmp/build/workdir/my-input",
+							},
+						},
+					},
+					delegate,
+				)
+				Expect(err).ToNot(HaveOccurred())
+			})
+
+			It("creates init containers to extract artifacts from the PVC", func() {
+				_, err := container.Run(ctx, runtime.ProcessSpec{
+					Path: "/bin/sh",
+					Args: []string{"-c", "ls /tmp/build/workdir/my-input"},
+				}, runtime.ProcessIO{})
+				Expect(err).ToNot(HaveOccurred())
+
+				pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
+				Expect(err).ToNot(HaveOccurred())
+				pod := pods.Items[0]
+
+				By("having an init container for the artifact-store input")
+				Expect(pod.Spec.InitContainers).To(HaveLen(1))
+				initC := pod.Spec.InitContainers[0]
+				Expect(initC.Name).To(Equal("fetch-input-0"))
+				Expect(initC.Image).To(Equal("alpine:latest"))
+
+				By("init container command extracts tar from PVC to emptyDir without || true")
+				Expect(initC.Command).To(Equal([]string{
+					"sh", "-c",
+					"tar xf /artifacts/artifacts/cache-vol-123.tar -C /tmp/build/workdir/my-input",
+				}))
+
+				By("init container mounts both artifact PVC and the input emptyDir")
+				Expect(initC.VolumeMounts).To(HaveLen(2))
+				var mountPaths []string
+				for _, m := range initC.VolumeMounts {
+					mountPaths = append(mountPaths, m.MountPath)
+				}
+				Expect(mountPaths).To(ConsistOf(
+					k8sruntime.ArtifactMountPath,
+					"/tmp/build/workdir/my-input",
+				))
+
+				By("init container has SecurityContext with AllowPrivilegeEscalation=false")
+				Expect(initC.SecurityContext).ToNot(BeNil())
+				Expect(initC.SecurityContext.AllowPrivilegeEscalation).ToNot(BeNil())
+				Expect(*initC.SecurityContext.AllowPrivilegeEscalation).To(BeFalse())
+
+				By("init container command does NOT contain || true")
+				Expect(initC.Command[2]).ToNot(ContainSubstring("|| true"))
+			})
+		})
+
+		Context("with mixed inputs (ArtifactStoreVolume and regular)", func() {
+			BeforeEach(func() {
+				setupFakeDBContainer(fakeDBWorker, "artifact-mixed-handle")
+
+				asv := k8sruntime.NewArtifactStoreVolume(
+					"caches/42.tar", "cache-vol-42", "k8s-worker-1", nil,
+				)
+				regular := &fakeArtifact{
+					handle:    "regular-art",
+					source:    "k8s-worker-1",
+					streamOut: []byte("regular-data"),
+				}
+
+				var err error
+				container, _, err = worker.FindOrCreateContainer(
+					ctx,
+					db.NewFixedHandleContainerOwner("artifact-mixed-handle"),
+					db.ContainerMetadata{Type: db.ContainerTypeTask},
+					runtime.ContainerSpec{
+						TeamID:   1,
+						Dir:      "/tmp/build/workdir",
+						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+						Inputs: []runtime.Input{
+							{
+								Artifact:        asv,
+								DestinationPath: "/tmp/build/workdir/cached-input",
+							},
+							{
+								Artifact:        regular,
+								DestinationPath: "/tmp/build/workdir/streamed-input",
+							},
+						},
+					},
+					delegate,
+				)
+				Expect(err).ToNot(HaveOccurred())
+			})
+
+			It("creates init containers for both artifact-store and regular inputs", func() {
+				_, err := container.Run(ctx, runtime.ProcessSpec{
+					Path: "/bin/sh",
+					Args: []string{"-c", "echo done"},
+				}, runtime.ProcessIO{})
+				Expect(err).ToNot(HaveOccurred())
+
+				pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
+				Expect(err).ToNot(HaveOccurred())
+				pod := pods.Items[0]
+
+				By("init containers for both inputs when artifact store is configured")
+				Expect(pod.Spec.InitContainers).To(HaveLen(2))
+				Expect(pod.Spec.InitContainers[0].Name).To(Equal("fetch-input-0"))
+				Expect(pod.Spec.InitContainers[0].Command[2]).To(ContainSubstring("cache-vol-42.tar"))
+				Expect(pod.Spec.InitContainers[1].Name).To(Equal("fetch-input-1"))
+				Expect(pod.Spec.InitContainers[1].Command[2]).To(ContainSubstring("regular-art.tar"))
+			})
+		})
+
+		Context("with custom ArtifactHelperImage", func() {
+			BeforeEach(func() {
+				cfg := k8sruntime.NewConfig("test-namespace", "")
+				cfg.ArtifactStoreClaim = "concourse-artifacts"
+				cfg.ArtifactHelperImage = "my-registry/helper:v1"
+				worker = k8sruntime.NewWorker(fakeDBWorker, fakeClientset, cfg)
+
+				setupFakeDBContainer(fakeDBWorker, "artifact-custom-img")
+
+				asv := k8sruntime.NewArtifactStoreVolume(
+					"caches/1.tar", "cv-1", "k8s-worker-1", nil,
+				)
+
+				var err error
+				container, _, err = worker.FindOrCreateContainer(
+					ctx,
+					db.NewFixedHandleContainerOwner("artifact-custom-img"),
+					db.ContainerMetadata{Type: db.ContainerTypeTask},
+					runtime.ContainerSpec{
+						TeamID:   1,
+						Dir:      "/workdir",
+						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+						Inputs: []runtime.Input{
+							{Artifact: asv, DestinationPath: "/workdir/input"},
+						},
+					},
+					delegate,
+				)
+				Expect(err).ToNot(HaveOccurred())
+			})
+
+			It("uses the custom image for init containers and sidecar", func() {
+				_, err := container.Run(ctx, runtime.ProcessSpec{
+					Path: "/bin/sh", Args: []string{"-c", "echo hello"},
+				}, runtime.ProcessIO{})
+				Expect(err).ToNot(HaveOccurred())
+
+				pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
+				Expect(err).ToNot(HaveOccurred())
+				pod := pods.Items[0]
+
+				Expect(pod.Spec.InitContainers).To(HaveLen(1))
+				Expect(pod.Spec.InitContainers[0].Image).To(Equal("my-registry/helper:v1"))
+
+				sidecar := pod.Spec.Containers[1]
+				Expect(sidecar.Image).To(Equal("my-registry/helper:v1"))
+			})
+		})
+	})
+
+	Describe("Run without ArtifactStoreClaim", func() {
+		It("does not include artifact PVC, init containers, or sidecar", func() {
+			cfg := k8sruntime.NewConfig("test-namespace", "")
+			worker := k8sruntime.NewWorker(fakeDBWorker, fakeClientset, cfg)
+
+			setupFakeDBContainer(fakeDBWorker, "no-artifact-handle")
+
+			container, _, err := worker.FindOrCreateContainer(
+				ctx,
+				db.NewFixedHandleContainerOwner("no-artifact-handle"),
+				db.ContainerMetadata{Type: db.ContainerTypeTask},
+				runtime.ContainerSpec{
+					TeamID:   1,
+					Dir:      "/workdir",
+					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+				},
+				delegate,
+			)
+			Expect(err).ToNot(HaveOccurred())
+
+			_, err = container.Run(ctx, runtime.ProcessSpec{
+				Path: "/bin/sh", Args: []string{"-c", "echo hello"},
+			}, runtime.ProcessIO{})
+			Expect(err).ToNot(HaveOccurred())
+
+			pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			pod := pods.Items[0]
+
+			By("no artifact PVC volume")
+			for _, vol := range pod.Spec.Volumes {
+				if vol.PersistentVolumeClaim != nil {
+					Expect(vol.PersistentVolumeClaim.ClaimName).ToNot(Equal("concourse-artifacts"))
+				}
+			}
+
+			By("only main container, no sidecar")
+			Expect(pod.Spec.Containers).To(HaveLen(1))
+			Expect(pod.Spec.Containers[0].Name).To(Equal("main"))
+
+			By("no init containers")
+			Expect(pod.Spec.InitContainers).To(BeEmpty())
+		})
+	})
+
+	Describe("streamInputs skips ALL inputs when artifact store configured", func() {
+		It("skips all inputs (both regular and artifact-store) when ArtifactStoreClaim is set", func() {
+			cfg := k8sruntime.NewConfig("test-namespace", "")
+			cfg.ArtifactStoreClaim = "concourse-artifacts"
+
+			fakeExecutor := &fakeExecExecutor{}
+			worker := k8sruntime.NewWorker(fakeDBWorker, fakeClientset, cfg)
+			worker.SetExecutor(fakeExecutor)
+
+			setupFakeDBContainer(fakeDBWorker, "skip-stream-handle")
+
+			asv := k8sruntime.NewArtifactStoreVolume(
+				"caches/99.tar", "cache-vol-99", "k8s-worker-1", nil,
+			)
+			regular := &fakeArtifact{
+				handle:    "regular-art",
+				source:    "k8s-worker-1",
+				streamOut: []byte("regular-data"),
+			}
+
+			container, _, err := worker.FindOrCreateContainer(
+				ctx,
+				db.NewFixedHandleContainerOwner("skip-stream-handle"),
+				db.ContainerMetadata{Type: db.ContainerTypeTask},
+				runtime.ContainerSpec{
+					TeamID:   1,
+					Dir:      "/tmp/build/workdir",
+					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+					Inputs: []runtime.Input{
+						{
+							Artifact:        asv,
+							DestinationPath: "/tmp/build/workdir/cached-input",
+						},
+						{
+							Artifact:        regular,
+							DestinationPath: "/tmp/build/workdir/streamed-input",
+						},
+					},
+				},
+				delegate,
+			)
+			Expect(err).ToNot(HaveOccurred())
+
+			process, err := container.Run(ctx, runtime.ProcessSpec{
+				Path: "/bin/sh",
+				Args: []string{"-c", "echo done"},
+			}, runtime.ProcessIO{})
+			Expect(err).ToNot(HaveOccurred())
+
+			// Simulate pod running
+			pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "skip-stream-handle", metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			pod.Status.Phase = corev1.PodRunning
+			_, err = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			result, err := process.Wait(ctx)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(result.ExitStatus).To(Equal(0))
+
+			By("no inputs are streamed via SPDY — ALL are handled by init containers")
+			var streamInCalls []execCall
+			for _, c := range fakeExecutor.execCalls {
+				if len(c.command) > 0 && c.command[0] == "tar" && len(c.command) > 1 && c.command[1] == "xf" {
+					streamInCalls = append(streamInCalls, c)
+				}
+			}
+			Expect(streamInCalls).To(BeEmpty(), "no inputs should be streamed when artifact store is configured")
+		})
+	})
+
+	Describe("uploadOutputsToArtifactStore", func() {
+		It("execs tar commands in the artifact-helper sidecar for each output volume", func() {
+			cfg := k8sruntime.NewConfig("test-namespace", "")
+			cfg.ArtifactStoreClaim = "concourse-artifacts"
+
+			fakeExecutor := &fakeExecExecutor{}
+			worker := k8sruntime.NewWorker(fakeDBWorker, fakeClientset, cfg)
+			worker.SetExecutor(fakeExecutor)
+
+			setupFakeDBContainer(fakeDBWorker, "upload-output-handle")
+
+			container, _, err := worker.FindOrCreateContainer(
+				ctx,
+				db.NewFixedHandleContainerOwner("upload-output-handle"),
+				db.ContainerMetadata{Type: db.ContainerTypeTask},
+				runtime.ContainerSpec{
+					TeamID:   1,
+					Dir:      "/tmp/build/workdir",
+					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+					Outputs: runtime.OutputPaths{
+						"result": "/tmp/build/workdir/result",
+					},
+				},
+				delegate,
+			)
+			Expect(err).ToNot(HaveOccurred())
+
+			process, err := container.Run(ctx, runtime.ProcessSpec{
+				Path: "/bin/sh",
+				Args: []string{"-c", "echo done"},
+			}, runtime.ProcessIO{})
+			Expect(err).ToNot(HaveOccurred())
+
+			// Simulate pod running
+			pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "upload-output-handle", metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			pod.Status.Phase = corev1.PodRunning
+			_, err = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			result, err := process.Wait(ctx)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(result.ExitStatus).To(Equal(0))
+
+			By("finding tar cf calls targeting the artifact-helper sidecar")
+			var uploadCalls []execCall
+			for _, c := range fakeExecutor.execCalls {
+				if c.containerName == "artifact-helper" {
+					uploadCalls = append(uploadCalls, c)
+				}
+			}
+			Expect(uploadCalls).ToNot(BeEmpty(), "should have upload calls to artifact-helper sidecar")
+
+			By("upload commands create tars on the artifact PVC")
+			for _, c := range uploadCalls {
+				Expect(c.command[2]).To(ContainSubstring("/artifacts/artifacts/"))
+				Expect(c.command[2]).To(ContainSubstring(".tar"))
+			}
+		})
+
+		It("fails the build when artifact upload fails", func() {
+			cfg := k8sruntime.NewConfig("test-namespace", "")
+			cfg.ArtifactStoreClaim = "concourse-artifacts"
+
+			fakeExecutor := &fakeExecExecutor{}
+			worker := k8sruntime.NewWorker(fakeDBWorker, fakeClientset, cfg)
+			worker.SetExecutor(fakeExecutor)
+
+			setupFakeDBContainer(fakeDBWorker, "upload-fail-handle")
+
+			container, _, err := worker.FindOrCreateContainer(
+				ctx,
+				db.NewFixedHandleContainerOwner("upload-fail-handle"),
+				db.ContainerMetadata{Type: db.ContainerTypeTask},
+				runtime.ContainerSpec{
+					TeamID:   1,
+					Dir:      "/tmp/build/workdir",
+					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+					Outputs: runtime.OutputPaths{
+						"result": "/tmp/build/workdir/result",
+					},
+				},
+				delegate,
+			)
+			Expect(err).ToNot(HaveOccurred())
+
+			// Make artifact upload fail
+			callCount := 0
+			fakeExecutor.execFunc = func() error {
+				callCount++
+				// First call is the command exec, subsequent calls are artifact uploads
+				if callCount > 1 {
+					return fmt.Errorf("disk full")
+				}
+				return nil
+			}
+
+			process, err := container.Run(ctx, runtime.ProcessSpec{
+				Path: "/bin/sh",
+				Args: []string{"-c", "echo done"},
+			}, runtime.ProcessIO{})
+			Expect(err).ToNot(HaveOccurred())
+
+			// Simulate pod running
+			pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "upload-fail-handle", metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			pod.Status.Phase = corev1.PodRunning
+			_, err = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			_, err = process.Wait(ctx)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("uploading artifacts"))
+		})
+	})
+
+	Describe("artifact-helper sidecar hardening", func() {
+		It("has resource limits and security context on the sidecar", func() {
+			cfg := k8sruntime.NewConfig("test-namespace", "")
+			cfg.ArtifactStoreClaim = "concourse-artifacts"
+			worker := k8sruntime.NewWorker(fakeDBWorker, fakeClientset, cfg)
+
+			setupFakeDBContainer(fakeDBWorker, "sidecar-hardening-handle")
+
+			container, _, err := worker.FindOrCreateContainer(
+				ctx,
+				db.NewFixedHandleContainerOwner("sidecar-hardening-handle"),
+				db.ContainerMetadata{Type: db.ContainerTypeTask},
+				runtime.ContainerSpec{
+					TeamID:   1,
+					Dir:      "/workdir",
+					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+				},
+				delegate,
+			)
+			Expect(err).ToNot(HaveOccurred())
+
+			_, err = container.Run(ctx, runtime.ProcessSpec{
+				Path: "/bin/sh",
+				Args: []string{"-c", "echo hello"},
+			}, runtime.ProcessIO{})
+			Expect(err).ToNot(HaveOccurred())
+
+			pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(pods.Items).To(HaveLen(1))
+			pod := pods.Items[0]
+
+			By("finding the artifact-helper sidecar")
+			Expect(pod.Spec.Containers).To(HaveLen(2))
+			sidecar := pod.Spec.Containers[1]
+			Expect(sidecar.Name).To(Equal("artifact-helper"))
+
+			By("sidecar has SecurityContext with AllowPrivilegeEscalation=false")
+			Expect(sidecar.SecurityContext).ToNot(BeNil())
+			Expect(sidecar.SecurityContext.AllowPrivilegeEscalation).ToNot(BeNil())
+			Expect(*sidecar.SecurityContext.AllowPrivilegeEscalation).To(BeFalse())
+
+			By("sidecar has resource requests")
+			Expect(sidecar.Resources.Requests).ToNot(BeNil())
+			Expect(sidecar.Resources.Requests.Cpu().Cmp(resource.MustParse("50m"))).To(Equal(0))
+			Expect(sidecar.Resources.Requests.Memory().Cmp(resource.MustParse("64Mi"))).To(Equal(0))
+
+			By("sidecar has resource limits")
+			Expect(sidecar.Resources.Limits).ToNot(BeNil())
+			Expect(sidecar.Resources.Limits.Cpu().Cmp(resource.MustParse("200m"))).To(Equal(0))
+			Expect(sidecar.Resources.Limits.Memory().Cmp(resource.MustParse("256Mi"))).To(Equal(0))
+		})
+	})
+
+	Describe("init containers for regular Volume inputs", func() {
+		It("creates init containers for regular artifact inputs when artifact store is configured", func() {
+			cfg := k8sruntime.NewConfig("test-namespace", "")
+			cfg.ArtifactStoreClaim = "concourse-artifacts"
+			worker := k8sruntime.NewWorker(fakeDBWorker, fakeClientset, cfg)
+
+			setupFakeDBContainer(fakeDBWorker, "regular-init-handle")
+
+			regular := &fakeArtifact{
+				handle:    "source-vol-abc",
+				source:    "k8s-worker-1",
+				streamOut: []byte("some-data"),
+			}
+
+			container, _, err := worker.FindOrCreateContainer(
+				ctx,
+				db.NewFixedHandleContainerOwner("regular-init-handle"),
+				db.ContainerMetadata{Type: db.ContainerTypeTask},
+				runtime.ContainerSpec{
+					TeamID:   1,
+					Dir:      "/tmp/build/workdir",
+					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+					Inputs: []runtime.Input{
+						{
+							Artifact:        regular,
+							DestinationPath: "/tmp/build/workdir/my-input",
+						},
+					},
+				},
+				delegate,
+			)
+			Expect(err).ToNot(HaveOccurred())
+
+			_, err = container.Run(ctx, runtime.ProcessSpec{
+				Path: "/bin/sh",
+				Args: []string{"-c", "echo done"},
+			}, runtime.ProcessIO{})
+			Expect(err).ToNot(HaveOccurred())
+
+			pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			pod := pods.Items[0]
+
+			By("creating an init container for the regular artifact input")
+			Expect(pod.Spec.InitContainers).To(HaveLen(1))
+			initC := pod.Spec.InitContainers[0]
+			Expect(initC.Name).To(Equal("fetch-input-0"))
+
+			By("using ArtifactKey derived from artifact Handle()")
+			Expect(initC.Command[2]).To(ContainSubstring("artifacts/source-vol-abc.tar"))
+			Expect(initC.Command[2]).ToNot(ContainSubstring("|| true"))
+		})
+	})
+})

@@ -1,7 +1,6 @@
 package k8sruntime
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -201,15 +200,18 @@ func (v *Volume) StreamOut(ctx context.Context, path string, _ compression.Compr
 
 	cmd := []string{"tar", "cf", "-", "-C", targetPath, "."}
 
-	var stdout bytes.Buffer
-	err := v.executor.ExecInPod(ctx, v.namespace, v.podName, v.containerName, cmd, nil, &stdout, nil, false)
-	if err != nil {
-		logger.Error("failed-to-stream-out", err)
-		spanErr = err
-		return nil, fmt.Errorf("stream out via exec: %w", err)
-	}
+	pr, pw := io.Pipe()
 
-	return io.NopCloser(&stdout), nil
+	go func() {
+		err := v.executor.ExecInPod(ctx, v.namespace, v.podName, v.containerName, cmd, nil, pw, nil, false)
+		if err != nil {
+			logger.Error("failed-to-stream-out", err)
+			spanErr = err
+		}
+		pw.CloseWithError(err)
+	}()
+
+	return pr, nil
 }
 
 func (v *Volume) resolvedPath(path string) string {

@@ -11,6 +11,7 @@ import (
 
 	"code.cloudfoundry.org/lager/v3"
 	"code.cloudfoundry.org/lager/v3/lagerctx"
+	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/worker/gardenruntime/transport"
 )
 
@@ -56,6 +57,14 @@ func (step RetryErrorStep) Run(ctx context.Context, state RunState) (bool, error
 }
 
 func (step RetryErrorStep) toRetry(logger lager.Logger, err error) bool {
+	// Check for runtime-agnostic retryable errors (e.g. transient K8s API failures).
+	var retryable runtime.RetryableError
+	if errors.As(err, &retryable) && retryable.IsRetryable() {
+		logger.Debug("retry-error",
+			lager.Data{"err_type": reflect.TypeOf(err).String(), "err": err.Error()})
+		return true
+	}
+
 	var urlError *url.Error
 	var netError net.Error
 	if errors.As(err, &transport.WorkerMissingError{}) || errors.As(err, &transport.WorkerUnreachableError{}) || errors.As(err, &urlError) {

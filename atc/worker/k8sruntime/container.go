@@ -2,10 +2,13 @@ package k8sruntime
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"code.cloudfoundry.org/lager/v3"
 	"code.cloudfoundry.org/lager/v3/lagerctx"
@@ -16,15 +19,25 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 )
 
 const (
-	exitStatusPropertyName   = "concourse:exit-status"
-	mainContainerName        = "main"
-	exitStatusAnnotationKey  = "concourse.ci/exit-status"
-	cachePVCVolumeName       = "cache-pvc"
+	exitStatusPropertyName      = "concourse:exit-status"
+	resourceResultPropertyName  = "concourse:resource-result"
+	mainContainerName           = "main"
+	exitStatusAnnotationKey     = "concourse.ci/exit-status"
+	resourceResultAnnotationKey = "concourse.ci/resource-result"
+	cachePVCVolumeName          = "cache-pvc"
 )
+
+// persistableAnnotations maps container property keys to pod annotation keys
+// for properties that should survive web restarts.
+var persistableAnnotations = map[string]string{
+	exitStatusPropertyName:     exitStatusAnnotationKey,
+	resourceResultPropertyName: resourceResultAnnotationKey,
+}
 
 // Compile-time check that Container satisfies runtime.Container.
 var _ runtime.Container = (*Container)(nil)
@@ -34,18 +47,23 @@ var _ runtime.Container = (*Container)(nil)
 // (ProcessSpec) isn't known at FindOrCreateContainer time.
 type Container struct {
 	handle        string
+	podName       string
+	metadata      db.ContainerMetadata
 	containerSpec runtime.ContainerSpec
 	dbContainer   db.CreatedContainer
 	clientset     kubernetes.Interface
 	config        Config
 	workerName    string
-	properties    map[string]string
+	mu              sync.RWMutex
+	properties      map[string]string
+	loadAnnotations sync.Once
 	executor      PodExecutor
 	volumes       []*Volume
 }
 
 func newContainer(
 	handle string,
+	metadata db.ContainerMetadata,
 	containerSpec runtime.ContainerSpec,
 	dbContainer db.CreatedContainer,
 	clientset kubernetes.Interface,
@@ -56,6 +74,8 @@ func newContainer(
 ) *Container {
 	return &Container{
 		handle:        handle,
+		podName:       GeneratePodName(metadata, handle),
+		metadata:      metadata,
 		containerSpec: containerSpec,
 		dbContainer:   dbContainer,
 		clientset:     clientset,
@@ -92,8 +112,8 @@ func (c *Container) Run(ctx context.Context, spec runtime.ProcessSpec, io runtim
 	// If the pod already exists (e.g. fly hijack into an existing container),
 	// reuse it. Otherwise create a new pause pod.
 	if execMode {
-		podName := c.handle
-		_, err = c.clientset.CoreV1().Pods(c.config.Namespace).Get(ctx, c.handle, metav1.GetOptions{})
+		podName := c.podName
+		_, err = c.clientset.CoreV1().Pods(c.config.Namespace).Get(ctx, c.podName, metav1.GetOptions{})
 		if err != nil {
 			// Pod doesn't exist — create a new pause pod.
 			var pod *corev1.Pod
@@ -101,7 +121,7 @@ func (c *Container) Run(ctx context.Context, spec runtime.ProcessSpec, io runtim
 			if err != nil {
 				logger.Error("failed-to-create-pause-pod", err)
 				metric.Metrics.FailedContainers.Inc()
-				return nil, fmt.Errorf("create pause pod: %w", err)
+				return nil, wrapIfTransient(fmt.Errorf("create pause pod: %w", err))
 			}
 			podName = pod.Name
 		}
@@ -117,7 +137,7 @@ func (c *Container) Run(ctx context.Context, spec runtime.ProcessSpec, io runtim
 	if err != nil {
 		logger.Error("failed-to-create-pod", err)
 		metric.Metrics.FailedContainers.Inc()
-		return nil, fmt.Errorf("create pod: %w", err)
+		return nil, wrapIfTransient(fmt.Errorf("create pod: %w", err))
 	}
 	metric.Metrics.ContainersCreated.Inc()
 	c.bindVolumesToPod(pod.Name)
@@ -158,7 +178,10 @@ func (c *Container) Attach(ctx context.Context, processID string, io runtime.Pro
 	defer func() { tracing.End(span, spanErr) }()
 
 	// Check if the process has already exited (stored in properties).
-	if statusStr, ok := c.properties[exitStatusPropertyName]; ok {
+	c.mu.RLock()
+	statusStr, hasExit := c.properties[exitStatusPropertyName]
+	c.mu.RUnlock()
+	if hasExit {
 		status, err := strconv.Atoi(statusStr)
 		if err == nil {
 			return &exitedProcess{id: processID, result: runtime.ProcessResult{ExitStatus: status}}, nil
@@ -168,11 +191,11 @@ func (c *Container) Attach(ctx context.Context, processID string, io runtime.Pro
 	// Check whether the Pod actually exists in K8s. If it does not, return
 	// an error so that attachOrRun falls through to Run() which creates
 	// the Pod.
-	pod, err := c.clientset.CoreV1().Pods(c.config.Namespace).Get(ctx, c.handle, metav1.GetOptions{})
+	pod, err := c.clientset.CoreV1().Pods(c.config.Namespace).Get(ctx, c.podName, metav1.GetOptions{})
 	if err != nil {
 		logger.Error("failed-to-get-pod", err)
 		spanErr = err
-		return nil, fmt.Errorf("attach: pod %q not found: %w", c.handle, err)
+		return nil, fmt.Errorf("attach: pod %q not found: %w", c.podName, err)
 	}
 
 	// For exec-mode containers (pause pods), in-memory properties are lost
@@ -187,20 +210,82 @@ func (c *Container) Attach(ctx context.Context, processID string, io runtime.Pro
 		// Exec hasn't completed yet (no annotation). Return an error so
 		// the engine falls through to Run(), which detects the existing
 		// pod and re-execs the command.
-		spanErr = fmt.Errorf("attach: exec-mode pod %q has no completion status", c.handle)
+		spanErr = fmt.Errorf("attach: exec-mode pod %q has no completion status", c.podName)
 		return nil, spanErr
 	}
 
-	return newProcess(processID, c.handle, c.clientset, c.config, c, io), nil
+	return newProcess(processID, c.podName, c.clientset, c.config, c, io), nil
 }
 
 func (c *Container) Properties() (map[string]string, error) {
-	return c.properties, nil
+	// On first call, load any persisted annotations from the pod. This
+	// recovers properties (like resource-result cache) after a web restart.
+	if c.podName != "" && c.clientset != nil {
+		c.loadAnnotations.Do(func() {
+			c.loadPersistedAnnotations()
+		})
+	}
+
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	copy := make(map[string]string, len(c.properties))
+	for k, v := range c.properties {
+		copy[k] = v
+	}
+	return copy, nil
 }
 
 func (c *Container) SetProperty(name string, value string) error {
+	c.mu.Lock()
 	c.properties[name] = value
+	c.mu.Unlock()
+
+	// Persist known properties as pod annotations for crash recovery.
+	if c.podName != "" && c.clientset != nil {
+		if annotationKey, ok := persistableAnnotations[name]; ok {
+			c.annotatePod(annotationKey, value)
+		}
+	}
 	return nil
+}
+
+// loadPersistedAnnotations fetches the pod and loads any persisted properties
+// from annotations into the in-memory map. Only properties not already in
+// the map are loaded (in-memory values take precedence).
+func (c *Container) loadPersistedAnnotations() {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	pod, err := c.clientset.CoreV1().Pods(c.config.Namespace).Get(ctx, c.podName, metav1.GetOptions{})
+	if err != nil {
+		return
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for propKey, annKey := range persistableAnnotations {
+		if value, ok := pod.Annotations[annKey]; ok {
+			if _, exists := c.properties[propKey]; !exists {
+				c.properties[propKey] = value
+			}
+		}
+	}
+}
+
+// annotatePod persists a value as a pod annotation. This is best-effort;
+// failures are non-fatal since the property is still in memory.
+func (c *Container) annotatePod(annotationKey, value string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	valueJSON, err := json.Marshal(value)
+	if err != nil {
+		return
+	}
+	patch := fmt.Sprintf(`{"metadata":{"annotations":{"%s":%s}}}`, annotationKey, string(valueJSON))
+	_, _ = c.clientset.CoreV1().Pods(c.config.Namespace).Patch(
+		ctx, c.podName, types.MergePatchType, []byte(patch), metav1.PatchOptions{},
+	)
 }
 
 func (c *Container) DBContainer() db.CreatedContainer {
@@ -242,37 +327,202 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 	resources := buildResourceRequirements(c.containerSpec.Limits)
 	privileged := c.containerSpec.ImageSpec.Privileged
 
+	// Add artifact store PVC volume if configured.
+	if artifactVol := c.buildArtifactStoreVolume(); artifactVol != nil {
+		volumes = append(volumes, *artifactVol)
+	}
+
+	initContainers := c.buildArtifactInitContainers(volumeMounts)
+
+	containers := []corev1.Container{
+		{
+			Name:            mainContainerName,
+			Image:           image,
+			Command:         command,
+			Args:            args,
+			WorkingDir:      dir,
+			Env:             env,
+			VolumeMounts:    volumeMounts,
+			Resources:       resources,
+			SecurityContext: buildContainerSecurityContext(privileged),
+			ImagePullPolicy: corev1.PullIfNotPresent,
+		},
+	}
+
+	if sidecar := c.buildArtifactHelperSidecar(volumeMounts); sidecar != nil {
+		containers = append(containers, *sidecar)
+	}
+
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      c.handle,
+			Name:      c.podName,
 			Namespace: c.config.Namespace,
-			Labels: map[string]string{
-				workerLabelKey: c.workerName,
-				typeLabelKey:   string(c.containerSpec.Type),
-			},
+			Labels:    c.buildPodLabels(),
 		},
 		Spec: corev1.PodSpec{
 			RestartPolicy:      corev1.RestartPolicyNever,
 			SecurityContext:    buildPodSecurityContext(privileged),
-			ImagePullSecrets:   buildImagePullSecrets(c.config.ImagePullSecrets),
+			ImagePullSecrets:   buildImagePullSecrets(c.config.ImagePullSecrets, c.config.ImageRegistry),
 			ServiceAccountName: c.config.ServiceAccount,
+			InitContainers:     initContainers,
 			Volumes:            volumes,
-			Containers: []corev1.Container{
-				{
-					Name:            mainContainerName,
-					Image:           image,
-					Command:         command,
-					Args:            args,
-					WorkingDir:      dir,
-					Env:             env,
-					VolumeMounts:    volumeMounts,
-					Resources:       resources,
-					SecurityContext: buildContainerSecurityContext(privileged),
-					ImagePullPolicy: corev1.PullIfNotPresent,
-				},
+			Containers:         containers,
+		},
+	}
+}
+
+// buildArtifactStoreVolume returns a PVC volume for the artifact store, or nil
+// if ArtifactStoreClaim is not configured.
+func (c *Container) buildArtifactStoreVolume() *corev1.Volume {
+	if c.config.ArtifactStoreClaim == "" {
+		return nil
+	}
+	return &corev1.Volume{
+		Name: artifactPVCVolumeName,
+		VolumeSource: corev1.VolumeSource{
+			PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+				ClaimName: c.config.ArtifactStoreClaim,
 			},
 		},
 	}
+}
+
+// buildArtifactInitContainers creates init containers for each input with a
+// non-nil artifact when ArtifactStoreClaim is configured. Each init container
+// extracts a tar file from the artifact PVC into the corresponding emptyDir
+// volume. The artifact key is derived from the artifact's Handle(), which
+// works for both *Volume (same-build) and *ArtifactStoreVolume (cross-build).
+func (c *Container) buildArtifactInitContainers(mainMounts []corev1.VolumeMount) []corev1.Container {
+	if c.config.ArtifactStoreClaim == "" {
+		return nil
+	}
+
+	helperImage := c.config.ArtifactHelperImage
+	if helperImage == "" {
+		helperImage = DefaultArtifactHelperImage
+	}
+
+	allowEscalation := false
+
+	var inits []corev1.Container
+	for i, input := range c.containerSpec.Inputs {
+		if input.Artifact == nil {
+			continue
+		}
+
+		// Find the volume name for this input's destination path from the
+		// main container's volume mounts.
+		volumeName := volumeNameForMountPath(mainMounts, input.DestinationPath)
+		if volumeName == "" {
+			continue
+		}
+
+		key := ArtifactKey(input.Artifact.Handle())
+
+		inits = append(inits, corev1.Container{
+			Name:  fmt.Sprintf("fetch-input-%d", i),
+			Image: helperImage,
+			Command: []string{"sh", "-c",
+				fmt.Sprintf("tar xf %s/%s -C %s",
+					ArtifactMountPath, key, input.DestinationPath),
+			},
+			VolumeMounts: []corev1.VolumeMount{
+				{Name: artifactPVCVolumeName, MountPath: ArtifactMountPath, ReadOnly: true},
+				{Name: volumeName, MountPath: input.DestinationPath},
+			},
+			ImagePullPolicy: corev1.PullIfNotPresent,
+			SecurityContext: &corev1.SecurityContext{
+				AllowPrivilegeEscalation: &allowEscalation,
+			},
+		})
+	}
+	return inits
+}
+
+// buildArtifactHelperSidecar creates the artifact-helper sidecar container
+// that shares output emptyDir volumes and the artifact PVC. It runs a pause
+// command; the ATC execs tar upload commands in it after step completion.
+// Returns nil if ArtifactStoreClaim is not configured.
+func (c *Container) buildArtifactHelperSidecar(mainMounts []corev1.VolumeMount) *corev1.Container {
+	if c.config.ArtifactStoreClaim == "" {
+		return nil
+	}
+
+	helperImage := c.config.ArtifactHelperImage
+	if helperImage == "" {
+		helperImage = DefaultArtifactHelperImage
+	}
+
+	// The sidecar mounts the same volumes as the main container plus the
+	// artifact PVC. This allows it to read output data from emptyDir and
+	// write tars to the PVC.
+	allMounts := make([]corev1.VolumeMount, len(mainMounts))
+	copy(allMounts, mainMounts)
+	allMounts = append(allMounts, corev1.VolumeMount{
+		Name:      artifactPVCVolumeName,
+		MountPath: ArtifactMountPath,
+	})
+
+	allowEscalation := false
+	return &corev1.Container{
+		Name:            artifactHelperContainerName,
+		Image:           helperImage,
+		Command:         []string{"sh", "-c", "trap 'exit 0' TERM; sleep 86400 & wait"},
+		VolumeMounts:    allMounts,
+		ImagePullPolicy: corev1.PullIfNotPresent,
+		SecurityContext: &corev1.SecurityContext{
+			AllowPrivilegeEscalation: &allowEscalation,
+		},
+		Resources: corev1.ResourceRequirements{
+			Requests: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("50m"),
+				corev1.ResourceMemory: resource.MustParse("64Mi"),
+			},
+			Limits: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("200m"),
+				corev1.ResourceMemory: resource.MustParse("256Mi"),
+			},
+		},
+	}
+}
+
+// volumeNameForMountPath finds the K8s volume name that is mounted at the
+// given path by scanning the container's volume mounts.
+func volumeNameForMountPath(mounts []corev1.VolumeMount, mountPath string) string {
+	for _, m := range mounts {
+		if m.MountPath == mountPath {
+			return m.Name
+		}
+	}
+	return ""
+}
+
+// buildPodLabels constructs the label map for the pod, including the
+// existing worker/type labels plus rich metadata labels for pipeline,
+// job, build, step, and handle. Empty metadata fields are omitted.
+// Values are truncated to 63 chars (K8s label value limit).
+func (c *Container) buildPodLabels() map[string]string {
+	labels := map[string]string{
+		workerLabelKey: c.workerName,
+		typeLabelKey:   string(c.containerSpec.Type),
+	}
+
+	addLabel := func(key, value string) {
+		if value != "" {
+			if len(value) > 63 {
+				value = value[:63]
+			}
+			labels[key] = value
+		}
+	}
+
+	addLabel("concourse.ci/pipeline", c.metadata.PipelineName)
+	addLabel("concourse.ci/job", c.metadata.JobName)
+	addLabel("concourse.ci/build", c.metadata.BuildName)
+	addLabel("concourse.ci/step", c.metadata.StepName)
+	addLabel(handleLabelKey, c.handle)
+
+	return labels
 }
 
 // resolveImage extracts a Kubernetes-compatible image reference from the
@@ -382,11 +632,19 @@ func buildContainerSecurityContext(privileged bool) *corev1.SecurityContext {
 }
 
 // buildImagePullSecrets converts a list of secret names into K8s
-// LocalObjectReference entries for the pod spec.
-func buildImagePullSecrets(secretNames []string) []corev1.LocalObjectReference {
+// LocalObjectReference entries for the pod spec. If an ImageRegistryConfig
+// is provided with a SecretName, it is automatically included (deduplicated).
+func buildImagePullSecrets(secretNames []string, registry *ImageRegistryConfig) []corev1.LocalObjectReference {
+	seen := make(map[string]bool, len(secretNames)+1)
 	var refs []corev1.LocalObjectReference
 	for _, name := range secretNames {
-		refs = append(refs, corev1.LocalObjectReference{Name: name})
+		if !seen[name] {
+			refs = append(refs, corev1.LocalObjectReference{Name: name})
+			seen[name] = true
+		}
+	}
+	if registry != nil && registry.SecretName != "" && !seen[registry.SecretName] {
+		refs = append(refs, corev1.LocalObjectReference{Name: registry.SecretName})
 	}
 	return refs
 }

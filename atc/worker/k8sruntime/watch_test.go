@@ -281,6 +281,129 @@ var _ = Describe("PodWatcher", func() {
 			Expect(receivedPod.Status.Phase).To(Equal(corev1.PodSucceeded))
 		})
 
+		It("passes lastResourceVersion when reconnecting to avoid missed events", func() {
+			pod := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:            "rv-track-pod",
+					Namespace:       "test-namespace",
+					ResourceVersion: "500",
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{Name: "main", Image: "busybox"}},
+				},
+				Status: corev1.PodStatus{Phase: corev1.PodPending},
+			}
+			_, err := fakeClientset.CoreV1().Pods("test-namespace").Create(ctx, pod, metav1.CreateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			var watchCallCount int32
+			var capturedResourceVersions []string
+			fakeWatcher1 := watch.NewRaceFreeFake()
+			fakeWatcher2 := watch.NewRaceFreeFake()
+			fakeClientset.PrependWatchReactor("pods", func(action k8stesting.Action) (bool, watch.Interface, error) {
+				watchAction := action.(k8stesting.WatchAction)
+				capturedResourceVersions = append(capturedResourceVersions, watchAction.GetWatchRestrictions().ResourceVersion)
+				n := atomic.AddInt32(&watchCallCount, 1)
+				if n == 1 {
+					return true, fakeWatcher1, nil
+				}
+				return true, fakeWatcher2, nil
+			})
+
+			pw := k8sruntime.NewPodWatcher(fakeClientset, "test-namespace", "rv-track-pod")
+			defer pw.Stop()
+
+			// First call: initial Get() returns RV "500".
+			_, err = pw.Next(ctx)
+			Expect(err).ToNot(HaveOccurred())
+
+			// Send event with RV "501".
+			pod.ResourceVersion = "501"
+			pod.Status.Phase = corev1.PodRunning
+			fakeWatcher1.Modify(pod)
+
+			receivedPod, err := pw.Next(ctx)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(receivedPod.Status.Phase).To(Equal(corev1.PodRunning))
+
+			// Close first watcher to trigger reconnection.
+			fakeWatcher1.Stop()
+
+			// Send event on second watcher.
+			pod.ResourceVersion = "502"
+			pod.Status.Phase = corev1.PodSucceeded
+			fakeWatcher2.Modify(pod)
+
+			receivedPod, err = pw.Next(ctx)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(receivedPod.Status.Phase).To(Equal(corev1.PodSucceeded))
+
+			By("verifying reconnection used the last observed resourceVersion")
+			Expect(capturedResourceVersions).To(HaveLen(2))
+			Expect(capturedResourceVersions[0]).To(Equal("500")) // from initial Get()
+			Expect(capturedResourceVersions[1]).To(Equal("501")) // from last event
+		})
+
+		It("delivers rapid pod updates without losing the final state", func() {
+			pod := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:            "rapid-pod",
+					Namespace:       "test-namespace",
+					ResourceVersion: "1",
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{Name: "main", Image: "busybox"}},
+				},
+				Status: corev1.PodStatus{Phase: corev1.PodPending},
+			}
+			_, err := fakeClientset.CoreV1().Pods("test-namespace").Create(ctx, pod, metav1.CreateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			fakeW := watch.NewRaceFreeFake()
+			fakeClientset.PrependWatchReactor("pods", func(action k8stesting.Action) (bool, watch.Interface, error) {
+				return true, fakeW, nil
+			})
+
+			pw := k8sruntime.NewPodWatcher(fakeClientset, "test-namespace", "rapid-pod")
+			defer pw.Stop()
+
+			// First call: initial Get().
+			_, err = pw.Next(ctx)
+			Expect(err).ToNot(HaveOccurred())
+
+			// Send three rapid updates using copies to avoid mutation.
+			pod2 := pod.DeepCopy()
+			pod2.ResourceVersion = "2"
+			pod2.Status.Phase = corev1.PodRunning
+			fakeW.Modify(pod2)
+
+			pod3 := pod.DeepCopy()
+			pod3.ResourceVersion = "3"
+			pod3.Status.Phase = corev1.PodRunning
+			pod3.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: "main", Ready: true}}
+			fakeW.Modify(pod3)
+
+			pod4 := pod.DeepCopy()
+			pod4.ResourceVersion = "4"
+			pod4.Status.Phase = corev1.PodSucceeded
+			fakeW.Modify(pod4)
+
+			// Each call to Next() returns one event in order.
+			p1, err := pw.Next(ctx)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(p1.ResourceVersion).To(Equal("2"))
+			Expect(p1.Status.Phase).To(Equal(corev1.PodRunning))
+
+			p2, err := pw.Next(ctx)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(p2.ResourceVersion).To(Equal("3"))
+
+			p3, err := pw.Next(ctx)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(p3.ResourceVersion).To(Equal("4"))
+			Expect(p3.Status.Phase).To(Equal(corev1.PodSucceeded))
+		})
+
 		It("returns error when context is cancelled", func() {
 			// Create the pod in the fake store.
 			pod := &corev1.Pod{
