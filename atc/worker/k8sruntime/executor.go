@@ -37,11 +37,18 @@ func (e *SPDYExecutor) ExecInPod(
 	command []string,
 	stdin io.Reader,
 	stdout, stderr io.Writer,
+	tty bool,
 ) error {
 	// K8s requires at least one of stdin/stdout/stderr to be enabled.
 	// If none are provided, enable stdout with a discard writer.
 	if stdin == nil && stdout == nil && stderr == nil {
 		stdout = io.Discard
+	}
+
+	// When TTY is enabled, K8s combines stdout and stderr into a single
+	// stream and allocates a pseudo-terminal for interactive sessions.
+	if tty {
+		stderr = nil
 	}
 
 	req := e.clientset.CoreV1().RESTClient().Post().
@@ -55,6 +62,7 @@ func (e *SPDYExecutor) ExecInPod(
 			Stdin:     stdin != nil,
 			Stdout:    stdout != nil,
 			Stderr:    stderr != nil,
+			TTY:       tty,
 		}, scheme.ParameterCodec)
 
 	exec, err := remotecommand.NewSPDYExecutor(e.restConfig, http.MethodPost, req.URL())
@@ -66,6 +74,7 @@ func (e *SPDYExecutor) ExecInPod(
 		Stdin:  stdin,
 		Stdout: stdout,
 		Stderr: stderr,
+		Tty:    tty,
 	})
 	if err != nil {
 		if exitErr, ok := err.(utilexec.ExitError); ok {

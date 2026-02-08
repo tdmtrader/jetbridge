@@ -3,6 +3,7 @@ package k8sruntime_test
 import (
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/concourse/concourse/atc/worker/k8sruntime"
 	. "github.com/onsi/ginkgo/v2"
@@ -24,6 +25,11 @@ var _ = Describe("Config", func() {
 		It("stores the kubeconfig path when provided", func() {
 			cfg := k8sruntime.NewConfig("my-namespace", "/path/to/kubeconfig")
 			Expect(cfg.KubeconfigPath).To(Equal("/path/to/kubeconfig"))
+		})
+
+		It("defaults PodStartupTimeout to 5 minutes", func() {
+			cfg := k8sruntime.NewConfig("my-namespace", "")
+			Expect(cfg.PodStartupTimeout).To(Equal(5 * time.Minute))
 		})
 	})
 

@@ -77,7 +77,9 @@ func (w *Worker) FindOrCreateContainer(
 	// If we already have a created container in the DB, return it directly.
 	// The Pod may or may not exist yet (it gets created in Container.Run).
 	if createdContainer != nil {
-		return newContainer(containerHandle, containerSpec, createdContainer, w.clientset, w.config, w.Name(), w.executor), nil, nil
+		container := newContainer(containerHandle, containerSpec, createdContainer, w.clientset, w.config, w.Name(), w.executor)
+		mounts := w.stubVolumeMounts(containerHandle, containerSpec)
+		return container, mounts, nil
 	}
 
 	// Transition the creating container to created state in the DB.
@@ -88,7 +90,39 @@ func (w *Worker) FindOrCreateContainer(
 		return nil, nil, fmt.Errorf("mark container as created: %w", err)
 	}
 
-	return newContainer(containerHandle, containerSpec, createdContainer, w.clientset, w.config, w.Name(), w.executor), nil, nil
+	container := newContainer(containerHandle, containerSpec, createdContainer, w.clientset, w.config, w.Name(), w.executor)
+	mounts := w.stubVolumeMounts(containerHandle, containerSpec)
+	return container, mounts, nil
+}
+
+// stubVolumeMounts creates runtime.VolumeMount entries for the container's Dir,
+// inputs, outputs, and caches. The get step requires a VolumeMount at the
+// resource directory path so it can call InitializeResourceCache on the volume.
+func (w *Worker) stubVolumeMounts(handle string, spec runtime.ContainerSpec) []runtime.VolumeMount {
+	var mounts []runtime.VolumeMount
+
+	if spec.Dir != "" {
+		mounts = append(mounts, runtime.VolumeMount{
+			Volume:    NewStubVolume(handle+"-dir", w.Name(), spec.Dir),
+			MountPath: spec.Dir,
+		})
+	}
+
+	for i, input := range spec.Inputs {
+		mounts = append(mounts, runtime.VolumeMount{
+			Volume:    NewStubVolume(fmt.Sprintf("%s-input-%d", handle, i), w.Name(), input.DestinationPath),
+			MountPath: input.DestinationPath,
+		})
+	}
+
+	for name, path := range spec.Outputs {
+		mounts = append(mounts, runtime.VolumeMount{
+			Volume:    NewStubVolume(fmt.Sprintf("%s-output-%s", handle, name), w.Name(), path),
+			MountPath: path,
+		})
+	}
+
+	return mounts
 }
 
 func (w *Worker) CreateVolumeForArtifact(ctx context.Context, teamID int) (runtime.Volume, db.WorkerArtifact, error) {
@@ -96,6 +130,7 @@ func (w *Worker) CreateVolumeForArtifact(ctx context.Context, teamID int) (runti
 }
 
 func (w *Worker) LookupContainer(ctx context.Context, handle string) (runtime.Container, bool, error) {
+	// Verify the pod exists in K8s.
 	_, err := w.clientset.CoreV1().Pods(w.config.Namespace).Get(ctx, handle, metav1.GetOptions{})
 	if err != nil {
 		if k8serrors.IsNotFound(err) {
@@ -103,7 +138,18 @@ func (w *Worker) LookupContainer(ctx context.Context, handle string) (runtime.Co
 		}
 		return nil, false, fmt.Errorf("lookup pod %q: %w", handle, err)
 	}
-	return newContainer(handle, runtime.ContainerSpec{}, nil, w.clientset, w.config, w.Name(), w.executor), true, nil
+
+	// Look up the DB container (required for hijack handler to call
+	// UpdateLastHijack and for GC to track the container).
+	_, dbContainer, err := w.dbWorker.FindContainer(db.NewFixedHandleContainerOwner(handle))
+	if err != nil {
+		return nil, false, fmt.Errorf("lookup db container %q: %w", handle, err)
+	}
+	if dbContainer == nil {
+		return nil, false, nil
+	}
+
+	return newContainer(handle, runtime.ContainerSpec{}, dbContainer, w.clientset, w.config, w.Name(), w.executor), true, nil
 }
 
 func (w *Worker) LookupVolume(ctx context.Context, handle string) (runtime.Volume, bool, error) {

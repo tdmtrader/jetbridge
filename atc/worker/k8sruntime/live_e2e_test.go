@@ -7,7 +7,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -21,25 +20,15 @@ import (
 func liveClientAndExecutor(t *testing.T) (kubernetes.Interface, *k8sruntime.Config, k8sruntime.PodExecutor) {
 	t.Helper()
 
-	kubeconfig := os.Getenv("KUBECONFIG")
-	if kubeconfig == "" {
-		home, _ := os.UserHomeDir()
-		kubeconfig = home + "/.kube/config"
-	}
+	clientset, cfg := kubeClient(t)
 
-	cfg := k8sruntime.NewConfig(liveTestNamespace, kubeconfig)
-	clientset, err := k8sruntime.NewClientset(cfg)
-	if err != nil {
-		t.Fatalf("creating clientset: %v", err)
-	}
-
-	restConfig, err := k8sruntime.RestConfig(cfg)
+	restConfig, err := k8sruntime.RestConfig(*cfg)
 	if err != nil {
 		t.Fatalf("creating rest config: %v", err)
 	}
 
 	executor := k8sruntime.NewSPDYExecutor(clientset, restConfig)
-	return clientset, &cfg, executor
+	return clientset, cfg, executor
 }
 
 // TestLiveResourceGetStepE2E simulates the full resource get step flow:
@@ -115,6 +104,7 @@ func TestLiveResourceGetStepE2E(t *testing.T) {
 		// Simulate a resource script that reads stdin JSON and outputs a modified version
 		[]string{"sh", "-c", `input=$(cat); echo "{\"version\":{\"ref\":\"abc123\"},\"metadata\":[{\"name\":\"commit\",\"value\":\"abc123\"}]}"`},
 		stdin, &stdout, &stderr,
+		false,
 	)
 	if err != nil {
 		t.Fatalf("resource get exec failed: %v (stderr: %s)", err, stderr.String())
@@ -145,6 +135,7 @@ func TestLiveResourceGetStepE2E(t *testing.T) {
 		err := executor.ExecInPod(ctx, cfg.Namespace, podName, "main",
 			[]string{"mkdir", "-p", "/tmp/test-volume"},
 			nil, nil, nil,
+			false,
 		)
 		if err != nil {
 			t.Fatalf("creating directory: %v", err)
@@ -154,6 +145,7 @@ func TestLiveResourceGetStepE2E(t *testing.T) {
 		err = executor.ExecInPod(ctx, cfg.Namespace, podName, "main",
 			[]string{"sh", "-c", "cat > /tmp/test-volume/data.txt"},
 			strings.NewReader(tarInput), nil, &tarStderr,
+			false,
 		)
 		if err != nil {
 			t.Fatalf("writing file: %v", err)
@@ -163,6 +155,7 @@ func TestLiveResourceGetStepE2E(t *testing.T) {
 		err = executor.ExecInPod(ctx, cfg.Namespace, podName, "main",
 			[]string{"cat", "/tmp/test-volume/data.txt"},
 			nil, &tarStdout, &tarStderr,
+			false,
 		)
 		if err != nil {
 			t.Fatalf("reading file: %v", err)
@@ -222,6 +215,7 @@ func TestLivePodCancellationCleanup(t *testing.T) {
 	err = executor.ExecInPod(cancelCtx, cfg.Namespace, podName, "main",
 		[]string{"sleep", "300"},
 		nil, nil, nil,
+		false,
 	)
 	if err == nil {
 		t.Fatal("expected error from cancelled exec")
@@ -234,11 +228,15 @@ func TestLivePodCancellationCleanup(t *testing.T) {
 		t.Fatalf("cleaning up pod: %v", err)
 	}
 
-	// Verify Pod is gone
-	time.Sleep(time.Second)
-	_, err = clientset.CoreV1().Pods(cfg.Namespace).Get(ctx, podName, metav1.GetOptions{})
-	if err == nil {
-		t.Fatal("pod should have been deleted")
+	// Verify Pod is gone (may take a few seconds for K8s to finalize deletion).
+	deadline = time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		_, err = clientset.CoreV1().Pods(cfg.Namespace).Get(ctx, podName, metav1.GetOptions{})
+		if err != nil {
+			t.Logf("pod %s successfully cleaned up after cancellation", podName)
+			return
+		}
+		time.Sleep(time.Second)
 	}
-	t.Logf("pod %s successfully cleaned up after cancellation", podName)
+	t.Fatal("pod should have been deleted within 30 seconds")
 }

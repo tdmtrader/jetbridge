@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
+	"strings"
 
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/runtime"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 )
@@ -62,24 +64,31 @@ func (c *Container) Run(ctx context.Context, spec runtime.ProcessSpec, io runtim
 		processID = spec.ID
 	}
 
-	// Exec mode: when stdin is provided and we have an executor, create a
-	// pause Pod and defer the actual command execution to Process.Wait.
-	// This gives us full stdin/stdout/stderr separation via the exec API.
-	if io.Stdin != nil && c.executor != nil {
-		pod, err := c.createPausePod(ctx, spec)
+	// Exec mode: use a pause Pod and exec the real command via SPDY.
+	// If the pod already exists (e.g. fly hijack into an existing container),
+	// reuse it. Otherwise create a new pause pod.
+	if c.executor != nil {
+		podName := c.handle
+		_, err := c.clientset.CoreV1().Pods(c.config.Namespace).Get(ctx, c.handle, metav1.GetOptions{})
 		if err != nil {
-			return nil, fmt.Errorf("create pause pod: %w", err)
+			// Pod doesn't exist — create a new pause pod.
+			pod, createErr := c.createPausePod(ctx, spec)
+			if createErr != nil {
+				return nil, fmt.Errorf("create pause pod: %w", createErr)
+			}
+			podName = pod.Name
 		}
-		return newExecProcess(processID, pod.Name, c.clientset, c.config, c, c.executor, spec, io), nil
+		return newExecProcess(processID, podName, c.clientset, c.config, c, c.executor, spec, io), nil
 	}
 
-	// Direct mode: bake command into Pod spec.
+	// Fallback direct mode: only used when no executor is configured
+	// (e.g. tests that don't set up SPDY). Bakes command into Pod spec.
 	pod, err := c.createPod(ctx, spec)
 	if err != nil {
 		return nil, fmt.Errorf("create pod: %w", err)
 	}
 
-	return newProcess(processID, pod.Name, c.clientset, c.config, c), nil
+	return newProcess(processID, pod.Name, c.clientset, c.config, c, io), nil
 }
 
 func (c *Container) Attach(ctx context.Context, processID string, io runtime.ProcessIO) (runtime.Process, error) {
@@ -91,7 +100,15 @@ func (c *Container) Attach(ctx context.Context, processID string, io runtime.Pro
 		}
 	}
 
-	return newProcess(processID, c.handle, c.clientset, c.config, c), nil
+	// Check whether the Pod actually exists in K8s. If it does not, return
+	// an error so that attachOrRun falls through to Run() which creates
+	// the Pod.
+	_, err := c.clientset.CoreV1().Pods(c.config.Namespace).Get(ctx, c.handle, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("attach: pod %q not found: %w", c.handle, err)
+	}
+
+	return newProcess(processID, c.handle, c.clientset, c.config, c, io), nil
 }
 
 func (c *Container) Properties() (map[string]string, error) {
@@ -108,10 +125,7 @@ func (c *Container) DBContainer() db.CreatedContainer {
 }
 
 func (c *Container) createPod(ctx context.Context, processSpec runtime.ProcessSpec) (*corev1.Pod, error) {
-	image := c.containerSpec.ImageSpec.ImageURL
-	if image == "" {
-		image = c.containerSpec.ImageSpec.ResourceType
-	}
+	image := resolveImage(c.containerSpec.ImageSpec, c.config.ResourceTypeImages)
 
 	dir := processSpec.Dir
 	if dir == "" {
@@ -122,6 +136,8 @@ func (c *Container) createPod(ctx context.Context, processSpec runtime.ProcessSp
 	env = append(env, envVars(processSpec.Env)...)
 
 	volumes, volumeMounts := c.buildVolumeMounts()
+	resources := buildResourceRequirements(c.containerSpec.Limits)
+	privileged := c.containerSpec.ImageSpec.Privileged
 
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
@@ -133,17 +149,23 @@ func (c *Container) createPod(ctx context.Context, processSpec runtime.ProcessSp
 			},
 		},
 		Spec: corev1.PodSpec{
-			RestartPolicy: corev1.RestartPolicyNever,
-			Volumes:       volumes,
+			RestartPolicy:      corev1.RestartPolicyNever,
+			SecurityContext:    buildPodSecurityContext(privileged),
+			ImagePullSecrets:   buildImagePullSecrets(c.config.ImagePullSecrets),
+			ServiceAccountName: c.config.ServiceAccount,
+			Volumes:            volumes,
 			Containers: []corev1.Container{
 				{
-					Name:         mainContainerName,
-					Image:        image,
-					Command:      []string{processSpec.Path},
-					Args:         processSpec.Args,
-					WorkingDir:   dir,
-					Env:          env,
-					VolumeMounts: volumeMounts,
+					Name:            mainContainerName,
+					Image:           image,
+					Command:         []string{processSpec.Path},
+					Args:            processSpec.Args,
+					WorkingDir:      dir,
+					Env:             env,
+					VolumeMounts:    volumeMounts,
+					Resources:       resources,
+					SecurityContext: buildContainerSecurityContext(privileged),
+					ImagePullPolicy: corev1.PullIfNotPresent,
 				},
 			},
 		},
@@ -156,10 +178,7 @@ func (c *Container) createPod(ctx context.Context, processSpec runtime.ProcessSp
 // Process.Wait can exec the real command via the PodExecutor with full
 // stdin/stdout/stderr support.
 func (c *Container) createPausePod(ctx context.Context, processSpec runtime.ProcessSpec) (*corev1.Pod, error) {
-	image := c.containerSpec.ImageSpec.ImageURL
-	if image == "" {
-		image = c.containerSpec.ImageSpec.ResourceType
-	}
+	image := resolveImage(c.containerSpec.ImageSpec, c.config.ResourceTypeImages)
 
 	dir := processSpec.Dir
 	if dir == "" {
@@ -170,6 +189,8 @@ func (c *Container) createPausePod(ctx context.Context, processSpec runtime.Proc
 	env = append(env, envVars(processSpec.Env)...)
 
 	volumes, volumeMounts := c.buildVolumeMounts()
+	resources := buildResourceRequirements(c.containerSpec.Limits)
+	privileged := c.containerSpec.ImageSpec.Privileged
 
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
@@ -181,22 +202,63 @@ func (c *Container) createPausePod(ctx context.Context, processSpec runtime.Proc
 			},
 		},
 		Spec: corev1.PodSpec{
-			RestartPolicy: corev1.RestartPolicyNever,
-			Volumes:       volumes,
+			RestartPolicy:      corev1.RestartPolicyNever,
+			SecurityContext:    buildPodSecurityContext(privileged),
+			ImagePullSecrets:   buildImagePullSecrets(c.config.ImagePullSecrets),
+			ServiceAccountName: c.config.ServiceAccount,
+			Volumes:            volumes,
 			Containers: []corev1.Container{
 				{
-					Name:         mainContainerName,
-					Image:        image,
-					Command:      []string{"sh", "-c", "trap 'exit 0' TERM; sleep 86400 & wait"},
-					WorkingDir:   dir,
-					Env:          env,
-					VolumeMounts: volumeMounts,
+					Name:            mainContainerName,
+					Image:           image,
+					Command:         []string{"sh", "-c", "trap 'exit 0' TERM; sleep 86400 & wait"},
+					WorkingDir:      dir,
+					Env:             env,
+					VolumeMounts:    volumeMounts,
+					Resources:       resources,
+					SecurityContext: buildContainerSecurityContext(privileged),
+					ImagePullPolicy: corev1.PullIfNotPresent,
 				},
 			},
 		},
 	}
 
 	return c.clientset.CoreV1().Pods(c.config.Namespace).Create(ctx, pod, metav1.CreateOptions{})
+}
+
+// resolveImage extracts a Kubernetes-compatible image reference from the
+// ContainerSpec's ImageSpec. Concourse uses prefixed URLs (docker:///, raw:///)
+// while Kubernetes needs bare image references.
+//
+// For base resource types (time, git, registry-image, etc.), the ImageSpec
+// only contains the type name (e.g. "time"). The resourceTypeImages mapping
+// translates these to Docker image references (e.g. "concourse/time-resource").
+func resolveImage(spec runtime.ImageSpec, resourceTypeImages map[string]string) string {
+	image := spec.ImageURL
+
+	// Strip common Concourse image URL prefixes.
+	for _, prefix := range []string{"docker:///", "docker://", "raw:///"} {
+		if strings.HasPrefix(image, prefix) {
+			image = strings.TrimPrefix(image, prefix)
+			break
+		}
+	}
+
+	if image == "" {
+		image = spec.ResourceType
+	}
+
+	// Map base resource type names to their Docker images.
+	// Fall back to DefaultResourceTypeImages if no custom mapping is provided.
+	mapping := resourceTypeImages
+	if mapping == nil {
+		mapping = DefaultResourceTypeImages
+	}
+	if mapped, ok := mapping[image]; ok {
+		image = mapped
+	}
+
+	return image
 }
 
 func envVars(env []string) []corev1.EnvVar {
@@ -220,6 +282,64 @@ func splitEnvVar(env string) []string {
 		}
 	}
 	return []string{env}
+}
+
+// buildResourceRequirements translates ContainerLimits into K8s resource
+// requirements. CPU is mapped to millicores, Memory to bytes. When limits
+// are specified, requests are set equal to limits to ensure Guaranteed QoS.
+// When no limits are specified, returns an empty ResourceRequirements
+// (BestEffort QoS).
+func buildResourceRequirements(limits runtime.ContainerLimits) corev1.ResourceRequirements {
+	reqs := corev1.ResourceRequirements{}
+	if limits.CPU == nil && limits.Memory == nil {
+		return reqs
+	}
+
+	res := corev1.ResourceList{}
+	if limits.CPU != nil {
+		res[corev1.ResourceCPU] = *resource.NewMilliQuantity(int64(*limits.CPU), resource.DecimalSI)
+	}
+	if limits.Memory != nil {
+		res[corev1.ResourceMemory] = *resource.NewQuantity(int64(*limits.Memory), resource.BinarySI)
+	}
+
+	reqs.Limits = res
+	reqs.Requests = res
+	return reqs
+}
+
+// buildPodSecurityContext returns the pod-level security context.
+// Non-privileged pods enforce RunAsNonRoot. Privileged pods allow root.
+func buildPodSecurityContext(privileged bool) *corev1.PodSecurityContext {
+	runAsNonRoot := !privileged
+	return &corev1.PodSecurityContext{
+		RunAsNonRoot: &runAsNonRoot,
+	}
+}
+
+// buildContainerSecurityContext returns the container-level security context.
+// Non-privileged containers disallow privilege escalation.
+// Privileged containers get full privileges.
+func buildContainerSecurityContext(privileged bool) *corev1.SecurityContext {
+	if privileged {
+		return &corev1.SecurityContext{
+			Privileged: &privileged,
+		}
+	}
+	allowEscalation := false
+	return &corev1.SecurityContext{
+		AllowPrivilegeEscalation: &allowEscalation,
+	}
+}
+
+// buildImagePullSecrets converts a list of secret names into K8s
+// LocalObjectReference entries for the pod spec.
+func buildImagePullSecrets(secretNames []string) []corev1.LocalObjectReference {
+	var refs []corev1.LocalObjectReference
+	for _, name := range secretNames {
+		refs = append(refs, corev1.LocalObjectReference{Name: name})
+	}
+	return refs
 }
 
 // buildVolumeMounts creates K8s Volume and VolumeMount entries for

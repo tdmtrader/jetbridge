@@ -2,11 +2,32 @@ package k8sruntime
 
 import (
 	"fmt"
+	"time"
 
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 )
+
+const (
+	// DefaultPodStartupTimeout is the default maximum time to wait for a
+	// pod to reach Running state before failing the task.
+	DefaultPodStartupTimeout = 5 * time.Minute
+)
+
+// DefaultResourceTypeImages maps base Concourse resource type names to their
+// Docker image references. These are the official Concourse resource type
+// images used when no custom resource type is defined in the pipeline.
+var DefaultResourceTypeImages = map[string]string{
+	"time":           "concourse/time-resource",
+	"registry-image": "concourse/registry-image-resource",
+	"git":            "concourse/git-resource",
+	"s3":             "concourse/s3-resource",
+	"docker-image":   "concourse/docker-image-resource",
+	"pool":           "concourse/pool-resource",
+	"semver":         "concourse/semver-resource",
+	"mock":           "concourse/mock-resource",
+}
 
 // Config holds the configuration for connecting to a Kubernetes cluster
 // and running Concourse tasks as K8s Jobs.
@@ -17,6 +38,25 @@ type Config struct {
 	// KubeconfigPath is the path to a kubeconfig file. If empty, in-cluster
 	// configuration is attempted.
 	KubeconfigPath string
+
+	// PodStartupTimeout is the maximum time to wait for a pod to reach
+	// Running state. If zero, DefaultPodStartupTimeout is used.
+	PodStartupTimeout time.Duration
+
+	// ResourceTypeImages maps base resource type names (e.g. "time", "git")
+	// to Docker image references. When the ATC requests a container for a
+	// base resource type, this mapping is used to resolve the image name
+	// for the K8s pod. If nil, DefaultResourceTypeImages is used.
+	ResourceTypeImages map[string]string
+
+	// ImagePullSecrets is a list of Kubernetes Secret names to use as
+	// imagePullSecrets on every created pod. These secrets must exist in
+	// the configured namespace.
+	ImagePullSecrets []string
+
+	// ServiceAccount is the Kubernetes ServiceAccount name to set on
+	// created pods. If empty, the namespace's default SA is used.
+	ServiceAccount string
 }
 
 // NewConfig creates a Config with the given namespace and kubeconfig path.
@@ -26,8 +66,9 @@ func NewConfig(namespace, kubeconfigPath string) Config {
 		namespace = "default"
 	}
 	return Config{
-		Namespace:      namespace,
-		KubeconfigPath: kubeconfigPath,
+		Namespace:         namespace,
+		KubeconfigPath:    kubeconfigPath,
+		PodStartupTimeout: DefaultPodStartupTimeout,
 	}
 }
 

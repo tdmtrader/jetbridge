@@ -176,8 +176,11 @@ type RunCommand struct {
 	GardenRequestTimeout time.Duration `long:"garden-request-timeout" default:"5m" description:"How long to wait for requests to Garden to complete. 0 means no timeout."`
 
 	Kubernetes struct {
-		Namespace  string `long:"kubernetes-namespace"  description:"Kubernetes namespace in which to run task Pods. When set, enables the K8s execution backend."`
-		Kubeconfig string `long:"kubernetes-kubeconfig" description:"Path to kubeconfig file for K8s backend. If empty, in-cluster configuration is used."`
+		Namespace         string        `long:"kubernetes-namespace"            description:"Kubernetes namespace in which to run task Pods. When set, enables the K8s execution backend."`
+		Kubeconfig        string        `long:"kubernetes-kubeconfig"           description:"Path to kubeconfig file for K8s backend. If empty, in-cluster configuration is used."`
+		PodStartupTimeout time.Duration `long:"kubernetes-pod-startup-timeout"  default:"5m" description:"Maximum time to wait for a pod to reach Running state before failing the task."`
+		ImagePullSecrets  []string      `long:"kubernetes-image-pull-secret"    description:"Kubernetes Secret name to use as imagePullSecrets on task Pods. Can be specified multiple times."`
+		ServiceAccount    string        `long:"kubernetes-service-account"      description:"Kubernetes ServiceAccount name to set on task Pods. Defaults to the namespace default SA."`
 	} `group:"Kubernetes Runtime"`
 
 	CLIArtifactsDir flag.Dir `long:"cli-artifacts-dir" description:"Directory containing downloadable CLI binaries."`
@@ -1267,6 +1270,9 @@ func (cmd *RunCommand) backendComponents(
 
 	if cmd.Kubernetes.Namespace != "" {
 		k8sCfg := k8sruntime.NewConfig(cmd.Kubernetes.Namespace, cmd.Kubernetes.Kubeconfig)
+		k8sCfg.PodStartupTimeout = cmd.Kubernetes.PodStartupTimeout
+		k8sCfg.ImagePullSecrets = cmd.Kubernetes.ImagePullSecrets
+		k8sCfg.ServiceAccount = cmd.Kubernetes.ServiceAccount
 		k8sClientset, err := k8sruntime.NewClientset(k8sCfg)
 		if err != nil {
 			return nil, fmt.Errorf("creating k8s clientset for registrar: %w", err)
@@ -1277,6 +1283,17 @@ func (cmd *RunCommand) backendComponents(
 				Interval: 15 * time.Second,
 			},
 			Runnable: k8sruntime.NewRegistrar(k8sClientset, k8sCfg, dbWorkerFactory),
+		})
+
+		k8sContainerRepo := db.NewContainerRepository(dbConn)
+		k8sVolumeRepo := db.NewVolumeRepository(dbConn)
+		k8sDestroyer := gc.NewDestroyer(logger, k8sContainerRepo, k8sVolumeRepo)
+		components = append(components, RunnableComponent{
+			Component: atc.Component{
+				Name:     atc.ComponentK8sWorkerReaper,
+				Interval: 30 * time.Second,
+			},
+			Runnable: k8sruntime.NewReaper(k8sClientset, k8sCfg, k8sContainerRepo, k8sDestroyer),
 		})
 	}
 
@@ -1358,6 +1375,9 @@ func (cmd *RunCommand) constructPool(dbConn db.DbConn, lockFactory lock.LockFact
 
 	if cmd.Kubernetes.Namespace != "" {
 		k8sCfg := k8sruntime.NewConfig(cmd.Kubernetes.Namespace, cmd.Kubernetes.Kubeconfig)
+		k8sCfg.PodStartupTimeout = cmd.Kubernetes.PodStartupTimeout
+		k8sCfg.ImagePullSecrets = cmd.Kubernetes.ImagePullSecrets
+		k8sCfg.ServiceAccount = cmd.Kubernetes.ServiceAccount
 		k8sClientset, err := k8sruntime.NewClientset(k8sCfg)
 		if err != nil {
 			return worker.Pool{}, fmt.Errorf("creating k8s clientset: %w", err)
