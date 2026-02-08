@@ -3,7 +3,6 @@ package worker
 import (
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/lock"
-	"github.com/concourse/concourse/atc/worker/gardenruntime"
 )
 
 func NewDB(
@@ -37,15 +36,4 @@ type DB struct {
 	ResourceCacheFactory          db.ResourceCacheFactory
 	WorkerBaseResourceTypeFactory db.WorkerBaseResourceTypeFactory
 	LockFactory                   lock.LockFactory
-}
-
-func (db DB) ToGardenRuntimeDB() gardenruntime.DB {
-	return gardenruntime.DB{
-		VolumeRepo:                    db.VolumeRepo,
-		TaskCacheFactory:              db.TaskCacheFactory,
-		WorkerTaskCacheFactory:        db.WorkerTaskCacheFactory,
-		ResourceCacheFactory:          db.ResourceCacheFactory,
-		WorkerBaseResourceTypeFactory: db.WorkerBaseResourceTypeFactory,
-		LockFactory:                   db.LockFactory,
-	}
 }

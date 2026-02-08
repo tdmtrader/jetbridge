@@ -18,9 +18,9 @@ import (
 	"github.com/concourse/concourse/atc/creds"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/exec/build"
+	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/tracing"
 	"github.com/concourse/concourse/vars"
-	"github.com/concourse/concourse/worker/baggageclaim"
 )
 
 // SetPipelineStep sets a pipeline to current team. This step takes pipeline
@@ -349,7 +349,7 @@ func (s setPipelineSource) retrieveFromArtifact(name, file string) (io.ReadClose
 
 	stream, err := s.streamer.StreamFile(lagerctx.NewContext(s.ctx, s.logger), art, file)
 	if err != nil {
-		if err == baggageclaim.ErrFileNotFound {
+		if err == runtime.ErrFileNotFound {
 			return nil, FileNotFoundError{
 				Name:     name,
 				FilePath: file,

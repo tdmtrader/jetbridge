@@ -16,7 +16,6 @@ import (
 	"github.com/concourse/concourse/atc/compression"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbfakes"
-	"github.com/concourse/concourse/worker/baggageclaim"
 )
 
 type VolumeContent fstest.MapFS
@@ -82,8 +81,8 @@ func (v Volume) DBVolume() db.CreatedVolume {
 	return v.DBVolume_
 }
 
-func (vc VolumeContent) StreamIn(ctx context.Context, path string, encoding baggageclaim.Encoding, _ float64, tarStream io.Reader) error {
-	if encoding != baggageclaim.GzipEncoding {
+func (vc VolumeContent) StreamIn(ctx context.Context, path string, encoding compression.Encoding, _ float64, tarStream io.Reader) error {
+	if encoding != compression.GzipEncoding {
 		return errors.New("only gzip is supported for runtimetest.VolumeContent")
 	}
 
@@ -119,8 +118,8 @@ func (vc VolumeContent) StreamIn(ctx context.Context, path string, encoding bagg
 	}
 }
 
-func (vc VolumeContent) StreamOut(ctx context.Context, path string, encoding baggageclaim.Encoding) (io.ReadCloser, error) {
-	if encoding != baggageclaim.GzipEncoding {
+func (vc VolumeContent) StreamOut(ctx context.Context, path string, encoding compression.Encoding) (io.ReadCloser, error) {
+	if encoding != compression.GzipEncoding {
 		return nil, errors.New("only gzip is supported for runtimetest.VolumeContent")
 	}
 

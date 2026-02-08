@@ -130,14 +130,11 @@ var _ = Describe("VolumeRepository", func() {
 				Expect(createdHandles2).To(Equal(team2handles))
 			})
 
-			Context("when worker is stalled", func() {
+			Context("when worker has expired", func() {
 				BeforeEach(func() {
 					var err error
 					defaultWorker, err = workerFactory.SaveWorker(defaultWorkerPayload, -10*time.Minute)
 					Expect(err).NotTo(HaveOccurred())
-					stalledWorkers, err := workerLifecycle.StallUnresponsiveWorkers()
-					Expect(err).NotTo(HaveOccurred())
-					Expect(stalledWorkers).To(ContainElement(defaultWorker.Name()))
 				})
 
 				It("returns volumes", func() {
@@ -306,44 +303,6 @@ var _ = Describe("VolumeRepository", func() {
 			Expect(createdHandles).To(ContainElement(childVolume.Handle()))
 		})
 
-		Context("when worker is stalled", func() {
-			BeforeEach(func() {
-				var err error
-				defaultWorker, err = workerFactory.SaveWorker(defaultWorkerPayload, -11*time.Minute)
-				Expect(err).NotTo(HaveOccurred())
-				stalledWorkers, err := workerLifecycle.StallUnresponsiveWorkers()
-				Expect(err).NotTo(HaveOccurred())
-				Expect(stalledWorkers).To(ContainElement(defaultWorker.Name()))
-			})
-
-			It("does not return volumes from stalled worker", func() {
-				createdVolumes, err := volumeRepository.GetOrphanedVolumes()
-				Expect(err).NotTo(HaveOccurred())
-
-				for _, v := range createdVolumes {
-					Expect(v.WorkerName()).ToNot(Equal(defaultWorker.Name()))
-				}
-			})
-		})
-
-		Context("when worker is landed", func() {
-			BeforeEach(func() {
-				err := defaultWorker.Land()
-				Expect(err).NotTo(HaveOccurred())
-				landedWorkers, err := workerLifecycle.LandFinishedLandingWorkers()
-				Expect(err).NotTo(HaveOccurred())
-				Expect(landedWorkers).To(ContainElement(defaultWorker.Name()))
-			})
-
-			It("does not return volumes for the worker", func() {
-				createdVolumes, err := volumeRepository.GetOrphanedVolumes()
-				Expect(err).NotTo(HaveOccurred())
-
-				for _, v := range createdVolumes {
-					Expect(v.WorkerName()).ToNot(Equal(defaultWorker.Name()))
-				}
-			})
-		})
 	})
 
 	Describe("DestroyFailedVolumes", func() {

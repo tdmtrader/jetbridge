@@ -23,9 +23,6 @@ type coreStepFactory struct {
 	resourceCacheFactory  db.ResourceCacheFactory
 	resourceConfigFactory db.ResourceConfigFactory
 	defaultLimits         atc.ContainerLimits
-	strategy              worker.PlacementStrategy
-	noInputStrategy       worker.PlacementStrategy
-	checkStrategy         worker.PlacementStrategy
 	defaultCheckTimeout   time.Duration
 	defaultGetTimeout     time.Duration
 	defaultPutTimeout     time.Duration
@@ -41,9 +38,6 @@ func NewCoreStepFactory(
 	resourceCacheFactory db.ResourceCacheFactory,
 	resourceConfigFactory db.ResourceConfigFactory,
 	defaultLimits atc.ContainerLimits,
-	strategy worker.PlacementStrategy,
-	noInputStrategy worker.PlacementStrategy,
-	checkStrategy worker.PlacementStrategy,
 	defaultCheckTimeout time.Duration,
 	defaultGetTimeout time.Duration,
 	defaultPutTimeout time.Duration,
@@ -58,9 +52,6 @@ func NewCoreStepFactory(
 		resourceCacheFactory:  resourceCacheFactory,
 		resourceConfigFactory: resourceConfigFactory,
 		defaultLimits:         defaultLimits,
-		strategy:              strategy,
-		noInputStrategy:       noInputStrategy,
-		checkStrategy:         checkStrategy,
 		defaultCheckTimeout:   defaultCheckTimeout,
 		defaultGetTimeout:     defaultGetTimeout,
 		defaultPutTimeout:     defaultPutTimeout,
@@ -83,7 +74,6 @@ func (factory *coreStepFactory) GetStep(
 		containerMetadata,
 		factory.lockFactory,
 		factory.resourceCacheFactory,
-		factory.noInputStrategy,
 		delegateFactory,
 		factory.pool,
 		factory.defaultGetTimeout,
@@ -109,7 +99,6 @@ func (factory *coreStepFactory) PutStep(
 		*plan.Put,
 		stepMetadata,
 		containerMetadata,
-		factory.strategy,
 		factory.pool,
 		delegateFactory,
 		factory.defaultPutTimeout,
@@ -129,15 +118,12 @@ func (factory *coreStepFactory) CheckStep(
 	delegateFactory DelegateFactory,
 ) exec.Step {
 	containerMetadata.WorkingDirectory = resource.ResourcesDir("check")
-	// TODO (runtime/#4957): Placement Strategy should be abstracted out from step factory or step level concern
 	checkStep := exec.NewCheckStep(
 		plan.ID,
 		*plan.Check,
 		stepMetadata,
 		factory.resourceConfigFactory,
 		containerMetadata,
-		factory.noInputStrategy,
-		factory.checkStrategy,
 		factory.pool,
 		delegateFactory,
 		factory.defaultCheckTimeout,
@@ -186,7 +172,6 @@ func (factory *coreStepFactory) TaskStep(
 		factory.defaultLimits,
 		stepMetadata,
 		containerMetadata,
-		factory.strategy,
 		factory.pool,
 		factory.streamer,
 		delegateFactory,

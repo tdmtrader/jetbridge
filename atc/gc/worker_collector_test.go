@@ -24,9 +24,6 @@ var _ = Describe("WorkerCollector", func() {
 		workerCollector = gc.NewWorkerCollector(fakeWorkerLifecycle)
 
 		fakeWorkerLifecycle.DeleteUnresponsiveEphemeralWorkersReturns(nil, nil)
-		fakeWorkerLifecycle.StallUnresponsiveWorkersReturns(nil, nil)
-		fakeWorkerLifecycle.DeleteFinishedRetiringWorkersReturns(nil, nil)
-		fakeWorkerLifecycle.LandFinishedLandingWorkersReturns(nil, nil)
 	})
 
 	Describe("Run", func() {
@@ -37,46 +34,9 @@ var _ = Describe("WorkerCollector", func() {
 			Expect(fakeWorkerLifecycle.DeleteUnresponsiveEphemeralWorkersCallCount()).To(Equal(1))
 		})
 
-		It("tells the worker factory to expired stalled workers", func() {
-			err := workerCollector.Run(context.TODO())
-			Expect(err).NotTo(HaveOccurred())
-
-			Expect(fakeWorkerLifecycle.StallUnresponsiveWorkersCallCount()).To(Equal(1))
-		})
-
-		It("tells the worker factory to delete finished retiring workers", func() {
-			err := workerCollector.Run(context.TODO())
-			Expect(err).NotTo(HaveOccurred())
-
-			Expect(fakeWorkerLifecycle.DeleteFinishedRetiringWorkersCallCount()).To(Equal(1))
-		})
-
-		It("tells the worker factory to land finished landing workers", func() {
-			err := workerCollector.Run(context.TODO())
-			Expect(err).NotTo(HaveOccurred())
-
-			Expect(fakeWorkerLifecycle.LandFinishedLandingWorkersCallCount()).To(Equal(1))
-		})
-
-		It("returns an error if stalling unresponsive workers fails", func() {
+		It("returns an error if deleting unresponsive ephemeral workers fails", func() {
 			returnedErr := errors.New("some-error")
-			fakeWorkerLifecycle.StallUnresponsiveWorkersReturns(nil, returnedErr)
-
-			err := workerCollector.Run(context.TODO())
-			Expect(err).To(MatchError(returnedErr))
-		})
-
-		It("returns an error if deleting finished retiring workers fails", func() {
-			returnedErr := errors.New("some-error")
-			fakeWorkerLifecycle.DeleteFinishedRetiringWorkersReturns(nil, returnedErr)
-
-			err := workerCollector.Run(context.TODO())
-			Expect(err).To(MatchError(returnedErr))
-		})
-
-		It("returns an error if landing finished landing workers fails", func() {
-			returnedErr := errors.New("some-error")
-			fakeWorkerLifecycle.LandFinishedLandingWorkersReturns(nil, returnedErr)
+			fakeWorkerLifecycle.DeleteUnresponsiveEphemeralWorkersReturns(nil, returnedErr)
 
 			err := workerCollector.Run(context.TODO())
 			Expect(err).To(MatchError(returnedErr))

@@ -21,11 +21,6 @@ var _ = Describe("WorkerFactory", func() {
 
 	BeforeEach(func() {
 		atcWorker = atc.Worker{
-			GardenAddr:       "some-garden-addr",
-			BaggageclaimURL:  "some-bc-url",
-			HTTPProxyURL:     "some-http-proxy-url",
-			HTTPSProxyURL:    "some-https-proxy-url",
-			NoProxy:          "some-no-proxy",
 			Ephemeral:        true,
 			ActiveContainers: 140,
 			ActiveVolumes:    550,
@@ -144,24 +139,6 @@ var _ = Describe("WorkerFactory", func() {
 				Expect(beforeIDs["other-resource-type"]).To(Equal(afterIDs["other-resource-type"]))
 			})
 
-			Context("when the worker is in stalled state", func() {
-				BeforeEach(func() {
-					_, err := workerFactory.SaveWorker(atcWorker, -5*time.Minute)
-					Expect(err).NotTo(HaveOccurred())
-
-					_, err = workerLifecycle.StallUnresponsiveWorkers()
-					Expect(err).NotTo(HaveOccurred())
-				})
-
-				It("repopulates the garden address", func() {
-					savedWorker, err := workerFactory.SaveWorker(atcWorker, 5*time.Minute)
-					Expect(err).NotTo(HaveOccurred())
-					Expect(savedWorker.Name()).To(Equal("some-name"))
-					Expect(*savedWorker.GardenAddr()).To(Equal("some-garden-addr"))
-					Expect(savedWorker.State()).To(Equal(db.WorkerStateRunning))
-				})
-			})
-
 			Context("when the worker has a new version", func() {
 				BeforeEach(func() {
 					atcWorker.Version = "1.0.0"
@@ -185,7 +162,6 @@ var _ = Describe("WorkerFactory", func() {
 				savedWorker, err := workerFactory.SaveWorker(atcWorker, 5*time.Minute)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(savedWorker.Name()).To(Equal("some-name"))
-				Expect(*savedWorker.GardenAddr()).To(Equal("some-garden-addr"))
 				Expect(savedWorker.State()).To(Equal(db.WorkerStateRunning))
 				Expect(*savedWorker.Version()).To(Equal("1.0.0"))
 			})
@@ -219,12 +195,7 @@ var _ = Describe("WorkerFactory", func() {
 				Expect(found).To(BeTrue())
 
 				Expect(foundWorker.Name()).To(Equal("some-name"))
-				Expect(*foundWorker.GardenAddr()).To(Equal("some-garden-addr"))
 				Expect(foundWorker.State()).To(Equal(db.WorkerStateRunning))
-				Expect(*foundWorker.BaggageclaimURL()).To(Equal("some-bc-url"))
-				Expect(foundWorker.HTTPProxyURL()).To(Equal("some-http-proxy-url"))
-				Expect(foundWorker.HTTPSProxyURL()).To(Equal("some-https-proxy-url"))
-				Expect(foundWorker.NoProxy()).To(Equal("some-no-proxy"))
 				Expect(foundWorker.Ephemeral()).To(Equal(true))
 				Expect(foundWorker.ActiveContainers()).To(Equal(140))
 				Expect(foundWorker.ActiveVolumes()).To(Equal(550))
@@ -247,15 +218,6 @@ var _ = Describe("WorkerFactory", func() {
 				Expect(foundWorker.State()).To(Equal(db.WorkerStateRunning))
 			})
 
-			Context("when worker is stalled", func() {
-				BeforeEach(func() {
-					_, err := workerFactory.SaveWorker(atcWorker, -1*time.Minute)
-					Expect(err).NotTo(HaveOccurred())
-					stalled, err := workerLifecycle.StallUnresponsiveWorkers()
-					Expect(err).NotTo(HaveOccurred())
-					Expect(stalled).To(ContainElement("some-name"))
-				})
-			})
 		})
 
 		Context("when the worker is not present", func() {
@@ -286,20 +248,14 @@ var _ = Describe("WorkerFactory", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				atcWorker.Name = "some-new-worker"
-				atcWorker.GardenAddr = "some-other-garden-addr"
-				atcWorker.BaggageclaimURL = "some-other-bc-url"
 				_, err = team1.SaveWorker(atcWorker, 0)
 				Expect(err).NotTo(HaveOccurred())
 
 				atcWorker.Name = "some-other-new-worker"
-				atcWorker.GardenAddr = "some-other-other-garden-addr"
-				atcWorker.BaggageclaimURL = "some-other-other-bc-url"
 				_, err = team2.SaveWorker(atcWorker, 0)
 				Expect(err).NotTo(HaveOccurred())
 
 				atcWorker.Name = "not-this-worker"
-				atcWorker.GardenAddr = "not-this-garden-addr"
-				atcWorker.BaggageclaimURL = "not-this-bc-url"
 				_, err = team3.SaveWorker(atcWorker, 0)
 				Expect(err).NotTo(HaveOccurred())
 			})
@@ -350,8 +306,6 @@ var _ = Describe("WorkerFactory", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				atcWorker.Name = "some-new-worker"
-				atcWorker.GardenAddr = "some-other-garden-addr"
-				atcWorker.BaggageclaimURL = "some-other-bc-url"
 				_, err = workerFactory.SaveWorker(atcWorker, 0)
 				Expect(err).NotTo(HaveOccurred())
 			})
@@ -361,21 +315,9 @@ var _ = Describe("WorkerFactory", func() {
 				Expect(err).NotTo(HaveOccurred())
 				Expect(len(workers)).To(Equal(2))
 
-				strptr := func(s string) *string {
-					return &s
-				}
-
 				Expect(workers).To(ConsistOf(
-					And(
-						WithTransform((db.Worker).Name, Equal("some-name")),
-						WithTransform((db.Worker).GardenAddr, Equal(strptr("some-garden-addr"))),
-						WithTransform((db.Worker).BaggageclaimURL, Equal(strptr("some-bc-url"))),
-					),
-					And(
-						WithTransform((db.Worker).Name, Equal("some-new-worker")),
-						WithTransform((db.Worker).GardenAddr, Equal(strptr("some-other-garden-addr"))),
-						WithTransform((db.Worker).BaggageclaimURL, Equal(strptr("some-other-bc-url"))),
-					),
+					WithTransform((db.Worker).Name, Equal("some-name")),
+					WithTransform((db.Worker).Name, Equal("some-new-worker")),
 				))
 			})
 		})
@@ -385,131 +327,6 @@ var _ = Describe("WorkerFactory", func() {
 				workers, err := workerFactory.Workers()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(workers).To(BeEmpty())
-			})
-		})
-	})
-
-	Describe("HeartbeatWorker", func() {
-		var (
-			ttl              time.Duration
-			epsilon          time.Duration
-			activeContainers int
-			activeVolumes    int
-		)
-
-		BeforeEach(func() {
-			ttl = 5 * time.Minute
-			epsilon = 30 * time.Second
-			activeContainers = 0
-			activeVolumes = 0
-
-			atcWorker.ActiveContainers = activeContainers
-			atcWorker.ActiveVolumes = activeVolumes
-		})
-
-		Context("when the worker is present", func() {
-			JustBeforeEach(func() {
-				_, err := workerFactory.SaveWorker(atcWorker, 1*time.Second)
-				Expect(err).NotTo(HaveOccurred())
-			})
-
-			It("updates the expires field, and the number of active containers and volumes", func() {
-				atcWorker.ActiveContainers = 1
-				atcWorker.ActiveVolumes = 3
-
-				now := time.Now()
-				By("current time")
-				By(now.String())
-				later := now.Add(ttl)
-				By("later time")
-				By(later.String())
-				By("found worker expiry")
-				foundWorker, err := workerFactory.HeartbeatWorker(atcWorker, ttl)
-				Expect(err).NotTo(HaveOccurred())
-				By(foundWorker.ExpiresAt().String())
-
-				Expect(foundWorker.Name()).To(Equal(atcWorker.Name))
-				Expect(foundWorker.ExpiresAt()).To(BeTemporally("~", later, epsilon))
-				Expect(foundWorker.ActiveContainers()).To(And(Not(Equal(activeContainers)), Equal(1)))
-				Expect(foundWorker.ActiveVolumes()).To(And(Not(Equal(activeVolumes)), Equal(3)))
-				Expect(*foundWorker.GardenAddr()).To(Equal("some-garden-addr"))
-				Expect(*foundWorker.BaggageclaimURL()).To(Equal("some-bc-url"))
-			})
-
-			Context("when the current state is landing", func() {
-				BeforeEach(func() {
-					atcWorker.State = string(db.WorkerStateLanding)
-				})
-
-				It("keeps the state as landing", func() {
-					foundWorker, err := workerFactory.HeartbeatWorker(atcWorker, ttl)
-					Expect(err).NotTo(HaveOccurred())
-
-					Expect(foundWorker.State()).To(Equal(db.WorkerStateLanding))
-				})
-			})
-
-			Context("when the current state is retiring", func() {
-				BeforeEach(func() {
-					atcWorker.State = string(db.WorkerStateRetiring)
-				})
-
-				It("keeps the state as retiring", func() {
-					foundWorker, err := workerFactory.HeartbeatWorker(atcWorker, ttl)
-					Expect(err).NotTo(HaveOccurred())
-
-					Expect(foundWorker.State()).To(Equal(db.WorkerStateRetiring))
-				})
-			})
-
-			Context("when the current state is running", func() {
-				BeforeEach(func() {
-					atcWorker.State = string(db.WorkerStateRunning)
-				})
-
-				It("keeps the state as running", func() {
-					foundWorker, err := workerFactory.HeartbeatWorker(atcWorker, ttl)
-					Expect(err).NotTo(HaveOccurred())
-
-					Expect(foundWorker.State()).To(Equal(db.WorkerStateRunning))
-				})
-			})
-
-			Context("when the current state is stalled", func() {
-				var (
-					unresponsiveWorker db.Worker
-					err                error
-				)
-
-				JustBeforeEach(func() {
-					unresponsiveWorker, err = workerFactory.SaveWorker(atcWorker, -5*time.Minute)
-					Expect(err).NotTo(HaveOccurred())
-
-					_, err = workerLifecycle.StallUnresponsiveWorkers()
-					Expect(err).NotTo(HaveOccurred())
-				})
-
-				It("sets the state as running", func() {
-					stalledWorker, found, err := workerFactory.GetWorker(unresponsiveWorker.Name())
-					Expect(err).NotTo(HaveOccurred())
-					Expect(found).To(BeTrue())
-
-					Expect(stalledWorker.State()).To(Equal(db.WorkerStateStalled))
-
-					foundWorker, err := workerFactory.HeartbeatWorker(atcWorker, ttl)
-					Expect(err).NotTo(HaveOccurred())
-
-					Expect(foundWorker.State()).To(Equal(db.WorkerStateRunning))
-				})
-			})
-		})
-
-		Context("when the worker is not present", func() {
-			It("returns an error", func() {
-				foundWorker, err := workerFactory.HeartbeatWorker(atcWorker, ttl)
-				Expect(err).To(HaveOccurred())
-				Expect(err).To(Equal(db.ErrWorkerNotPresent))
-				Expect(foundWorker).To(BeNil())
 			})
 		})
 	})
@@ -577,22 +394,16 @@ var _ = Describe("WorkerFactory", func() {
 						}),
 						builder.WithWorker(atc.Worker{
 							ResourceTypes:   []atc.WorkerResourceType{defaultWorkerResourceType},
-							GardenAddr:      "some-tagged-garden-addr",
-							BaggageclaimURL: "some-tagged-bc-url",
 							Name:            "some-tagged-name",
 							Tags:            []string{"some-tag"},
 						}),
 						builder.WithWorker(atc.Worker{
 							ResourceTypes:   []atc.WorkerResourceType{defaultWorkerResourceType},
-							GardenAddr:      "some-team-garden-addr",
-							BaggageclaimURL: "some-team-bc-url",
 							Name:            "some-team-name",
 							Team:            "default-team",
 						}),
 						builder.WithWorker(atc.Worker{
 							ResourceTypes:   []atc.WorkerResourceType{defaultWorkerResourceType},
-							GardenAddr:      "some-other-garden-addr",
-							BaggageclaimURL: "some-other-bc-url",
 							Name:            "some-other-name",
 						}),
 						builder.WithResourceVersions(

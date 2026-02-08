@@ -26,11 +26,9 @@ type Container struct {
 }
 
 type Worker struct {
-	Name            string `json:"name"`
-	State           string `json:"state"`
-	GardenAddress   string `json:"addr"`
-	BaggageclaimUrl string `json:"baggageclaim_url"`
-	Team            string `json:"team"`
+	Name  string `json:"name"`
+	State string `json:"state"`
+	Team  string `json:"team"`
 }
 
 type Pipeline struct {

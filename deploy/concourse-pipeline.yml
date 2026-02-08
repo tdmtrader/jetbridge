@@ -1,0 +1,286 @@
+resources:
+- name: trigger
+  type: time
+  source:
+    interval: 5m
+
+jobs:
+- name: build-and-vet
+  serial_groups: [pipeline]
+  plan:
+  - get: trigger
+    trigger: true
+  - task: build-and-vet
+    config:
+      platform: linux
+      rootfs_uri: docker:///concourse-test-runner:v4
+      run:
+        path: sh
+        args:
+        - -exc
+        - |
+          cd /src
+          echo "=== Verifying full build ==="
+          go build ./cmd/concourse/...
+          echo "=== Build successful ==="
+          echo ""
+          echo "=== Running go vet ==="
+          go vet ./atc/worker/jetbridge/... ./vars/... ./tracing/... \
+                 ./fly/commands/... ./fly/rc/... ./fly/eventstream/... \
+                 ./atc/engine/... ./atc/resource/... \
+                 ./atc/scheduler/... ./atc/metric/... ./atc/creds/... \
+                 ./skymarshal/token/... ./skymarshal/skyserver/...
+          echo "=== Vet passed ==="
+
+- name: unit-tests
+  serial_groups: [pipeline]
+  plan:
+  - get: trigger
+    trigger: true
+    passed: [build-and-vet]
+  - task: unit-tests
+    config:
+      platform: linux
+      rootfs_uri: docker:///concourse-test-runner:v4
+      run:
+        path: sh
+        args:
+        - -exc
+        - |
+          cd /src
+          echo "=== Running unit tests across the full codebase ==="
+          echo "Excluding packages that require external infrastructure"
+          echo ""
+          PACKAGES=$(go list ./... \
+            | grep -v /integration \
+            | grep -v /testflight \
+            | grep -v /topgun \
+            | grep -v /fly/integration \
+            | grep -v /atc/db \
+            | grep -v /atc/gc \
+            | grep -v /atc/postgresrunner \
+            | grep -v /atc/scheduler/algorithm \
+            | grep -v /atc/worker/gardenruntime \
+            | grep -v '/atc/worker$' \
+            | grep -v /skymarshal/dexserver \
+            | grep -v /worker/baggageclaim/volume/driver \
+            | grep -v /cmd)
+          echo "Testing packages:"
+          echo "$PACKAGES" | head -20
+          echo "... ($(echo "$PACKAGES" | wc -l | tr -d ' ') packages total)"
+          echo ""
+          go test -count=1 -timeout 10m $PACKAGES
+          echo "=== All unit tests passed ==="
+
+- name: k8s-runtime-tests
+  serial: true
+  serial_groups: [pipeline]
+  plan:
+  - get: trigger
+    trigger: true
+    passed: [unit-tests]
+  - task: k8s-runtime-integration-tests
+    config:
+      platform: linux
+      rootfs_uri: docker:///concourse-test-runner:v4
+      run:
+        path: sh
+        args:
+        - -exc
+        - |
+          cd /src
+          echo "=== Running jetbridge full test suite ==="
+          go test -v -count=1 -timeout 5m ./atc/worker/jetbridge/...
+          echo "=== All jetbridge tests passed ==="
+
+- name: k8s-live-tests
+  serial: true
+  serial_groups: [pipeline]
+  plan:
+  - get: trigger
+    trigger: true
+    passed: [k8s-runtime-tests]
+  - task: k8s-live-integration-tests
+    config:
+      platform: linux
+      rootfs_uri: docker:///concourse-test-runner:v4
+      run:
+        path: sh
+        args:
+        - -exc
+        - |
+          echo "=== Setting up kubeconfig for Go test client ==="
+          SA_DIR=/var/run/secrets/kubernetes.io/serviceaccount
+          SA_TOKEN=$(cat "$SA_DIR/token")
+          kubectl config set-cluster local --server="https://${KUBERNETES_SERVICE_HOST}:${KUBERNETES_SERVICE_PORT}" --certificate-authority="$SA_DIR/ca.crt" --embed-certs=true
+          kubectl config set-credentials local --token="$SA_TOKEN"
+          kubectl config set-context local --cluster=local --user=local --namespace=concourse
+          kubectl config use-context local
+          echo "Kubeconfig created, testing: $(kubectl get pods -n concourse --no-headers 2>&1 | wc -l) pods visible"
+
+          # Ensure tests run in the concourse namespace where RBAC allows access
+          export K8S_TEST_NAMESPACE=concourse
+          echo "K8S_TEST_NAMESPACE=$K8S_TEST_NAMESPACE"
+
+          echo "=== Cleaning up stale test pods from previous runs ==="
+          for NS in concourse concourse-test; do
+            kubectl get pods -n $NS --no-headers -o custom-columns=":metadata.name" 2>/dev/null \
+              | { grep -E '^(live-|e2e-)' || true; } \
+              | xargs -r kubectl delete pods -n $NS --grace-period=0 --force 2>/dev/null || true
+          done
+          echo ""
+
+          cd /src
+          echo "=== Running jetbridge live integration tests ==="
+          echo "These tests create real K8s pods against the live cluster."
+          echo ""
+          go test -tags live -v -count=1 -timeout 5m ./atc/worker/jetbridge/...
+          echo "=== Live integration tests passed ==="
+
+- name: build-image
+  serial_groups: [pipeline]
+  plan:
+  - get: trigger
+    trigger: true
+    passed: [k8s-live-tests]
+  - task: build-concourse-image
+    privileged: true
+    config:
+      platform: linux
+      rootfs_uri: docker:///concourse-test-runner:v4
+      run:
+        path: sh
+        args:
+        - -exc
+        - |
+          cd /src
+          echo "=== Building concourse binary ==="
+          GOOS=linux GOARCH=arm64 go build -o concourse-linux-arm64 ./cmd/concourse
+          ls -lh concourse-linux-arm64
+          echo "=== Binary built ==="
+          echo ""
+
+          echo "=== Creating builder pod with Docker socket ==="
+          BUILDER_POD="image-builder-$$"
+
+          # Ensure builder pod is cleaned up on exit (success or failure).
+          cleanup_builder() { kubectl delete pod -n concourse ${BUILDER_POD} --grace-period=0 --force 2>/dev/null || true; }
+          trap cleanup_builder EXIT
+
+          # Clean up any leftover builder pods from previous runs
+          kubectl delete pod -n concourse -l app=image-builder --grace-period=0 --force 2>/dev/null || true
+
+          cat <<PODEOF | kubectl apply -n concourse -f -
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: ${BUILDER_POD}
+            namespace: concourse
+            labels:
+              app: image-builder
+          spec:
+            containers:
+            - name: builder
+              image: concourse-test-runner:v4
+              imagePullPolicy: Never
+              command: ["sleep", "600"]
+              volumeMounts:
+              - name: docker-sock
+                mountPath: /var/run/docker.sock
+            volumes:
+            - name: docker-sock
+              hostPath:
+                path: /var/run/docker.sock
+                type: Socket
+          PODEOF
+
+          echo "Waiting for builder pod to be ready..."
+          kubectl wait --for=condition=ready pod/${BUILDER_POD} -n concourse --timeout=120s
+
+          echo "=== Copying binary to builder pod ==="
+          kubectl cp concourse-linux-arm64 concourse/${BUILDER_POD}:/tmp/concourse-linux-arm64
+
+          echo "=== Copying Dockerfile to builder pod ==="
+          cat <<'DOCKERFILE' > /tmp/Dockerfile
+          FROM ubuntu:22.04
+          RUN apt-get update && \
+              apt-get install -y ca-certificates dumb-init && \
+              rm -rf /var/lib/apt/lists/*
+          COPY concourse-linux-arm64 /usr/local/concourse/bin/concourse
+          RUN chmod +x /usr/local/concourse/bin/concourse
+          ENV PATH="/usr/local/concourse/bin:${PATH}"
+          ENTRYPOINT ["dumb-init", "concourse"]
+          DOCKERFILE
+          kubectl cp /tmp/Dockerfile concourse/${BUILDER_POD}:/tmp/Dockerfile
+
+          echo "=== Building Docker image inside builder pod ==="
+          kubectl exec -n concourse ${BUILDER_POD} -- \
+            docker build -t concourse-local:latest -f /tmp/Dockerfile /tmp/
+          echo "=== Docker image built successfully ==="
+
+          echo "=== Verifying image ==="
+          kubectl exec -n concourse ${BUILDER_POD} -- \
+            docker images concourse-local:latest
+          echo ""
+
+          echo "=== Image build complete (builder pod cleanup via trap) ==="
+
+- name: deploy
+  serial_groups: [pipeline]
+  plan:
+  - get: trigger
+    trigger: true
+    passed: [build-image]
+  - task: deploy
+    config:
+      platform: linux
+      rootfs_uri: docker:///concourse-test-runner:v4
+      run:
+        path: sh
+        args:
+        - -exc
+        - |
+          echo "=== Deploying new concourse-web image ==="
+          echo ""
+          echo "Current concourse-web pod:"
+          kubectl get pods -n concourse -l app=concourse-web
+          echo ""
+
+          echo "=== Creating restarter pod to handle rollout restart ==="
+          RESTARTER_POD="web-restarter-$$"
+
+          # Clean up any leftover restarter pods
+          kubectl delete pod -n concourse -l app=web-restarter --grace-period=0 --force 2>/dev/null || true
+
+          cat <<PODEOF | kubectl apply -n concourse -f -
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: ${RESTARTER_POD}
+            namespace: concourse
+            labels:
+              app: web-restarter
+          spec:
+            restartPolicy: Never
+            serviceAccountName: concourse-web
+            containers:
+            - name: restarter
+              image: concourse-test-runner:v4
+              imagePullPolicy: Never
+              command: ["sh", "-c"]
+              args:
+              - |
+                echo "Restarter pod starting, sleeping 10s to allow task to complete..."
+                sleep 10
+                echo "Performing rollout restart of concourse-web deployment..."
+                kubectl rollout restart deployment/concourse-web -n concourse
+                echo "Waiting for rollout to complete..."
+                kubectl rollout status deployment/concourse-web -n concourse --timeout=180s
+                echo "Rollout complete, cleaning up restarter pod..."
+                kubectl delete pod -n concourse -l app=web-restarter --grace-period=0 --force 2>/dev/null || true
+          PODEOF
+
+          echo "Restarter pod '${RESTARTER_POD}' created and running in background"
+          echo ""
+          echo "=== Deploy task complete (rollout continues in background) ==="
+

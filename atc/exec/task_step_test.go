@@ -18,7 +18,6 @@ import (
 	"github.com/concourse/concourse/atc/worker"
 	"github.com/concourse/concourse/tracing"
 	"github.com/concourse/concourse/vars"
-	"github.com/concourse/concourse/worker/baggageclaim"
 	"github.com/onsi/gomega/gbytes"
 	"go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
@@ -120,7 +119,6 @@ var _ = Describe("TaskStep", func() {
 			atc.ContainerLimits{},
 			stepMetadata,
 			containerMetadata,
-			nil,
 			fakePool,
 			fakeStreamer,
 			fakeDelegateFactory,
@@ -132,7 +130,7 @@ var _ = Describe("TaskStep", func() {
 
 	expectWorkerSpecResourceTypeUnset := func() {
 		Expect(fakePool.FindOrSelectWorkerCallCount()).To(Equal(1))
-		_, _, _, workerSpec, _, _ := fakePool.FindOrSelectWorkerArgsForCall(0)
+		_, _, _, workerSpec := fakePool.FindOrSelectWorkerArgsForCall(0)
 		Expect(workerSpec.ResourceType).To(Equal(""))
 	}
 
@@ -207,7 +205,7 @@ var _ = Describe("TaskStep", func() {
 
 			JustBeforeEach(func() {
 				Expect(fakePool.FindOrSelectWorkerCallCount()).To(Equal(1))
-				ctx, _, _, workerSpec, _, _ = fakePool.FindOrSelectWorkerArgsForCall(0)
+				ctx, _, _, workerSpec = fakePool.FindOrSelectWorkerArgsForCall(0)
 			})
 
 			It("doesn't enforce a timeout", func() {
@@ -782,7 +780,7 @@ var _ = Describe("TaskStep", func() {
 			Context("when the image's metadata.json is not present in the image artifact", func() {
 				BeforeEach(func() {
 					taskPlan.Config.Run.Path = ""
-					fakeStreamer.StreamFileReturns(nil, baggageclaim.ErrFileNotFound)
+					fakeStreamer.StreamFileReturns(nil, runtime.ErrFileNotFound)
 
 					taskPlan.ImageArtifactName = "some-image-artifact"
 					imageVolume := runtimetest.NewVolume("image-volume")

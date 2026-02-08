@@ -1,4 +1,0 @@
-services:
-  worker:
-    environment:
-      CONCOURSE_GARDEN_MAX_CONTAINERS: '100'

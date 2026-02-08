@@ -1,4 +1,0 @@
-services:
-  worker:
-    environment:
-      CONCOURSE_RUNTIME: guardian

@@ -3,7 +3,6 @@ package compression
 import (
 	"io"
 
-	"github.com/concourse/concourse/worker/baggageclaim"
 	"github.com/klauspost/compress/s2"
 )
 
@@ -18,8 +17,8 @@ func (c *s2Compression) NewReader(reader io.ReadCloser) (io.ReadCloser, error) {
 	return &s2Reader{reader: reader, decoder: d}, nil
 }
 
-func (c *s2Compression) Encoding() baggageclaim.Encoding {
-	return baggageclaim.S2Encoding
+func (c *s2Compression) Encoding() Encoding {
+	return S2Encoding
 }
 
 type s2Reader struct {

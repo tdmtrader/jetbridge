@@ -17,12 +17,8 @@ import (
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 
-	gclient "code.cloudfoundry.org/garden/client"
-	gconn "code.cloudfoundry.org/garden/client/connection"
-	"code.cloudfoundry.org/lager/v3"
 	"code.cloudfoundry.org/lager/v3/lagertest"
 	sq "github.com/Masterminds/squirrel"
-	bclient "github.com/concourse/concourse/worker/baggageclaim/client"
 	"golang.org/x/oauth2"
 
 	"github.com/concourse/concourse/go-concourse/concourse"
@@ -49,8 +45,6 @@ var (
 	AtcUsername    string
 	AtcPassword    string
 
-	WorkerGardenClient       gclient.Client
-	WorkerBaggageclaimClient bclient.Client
 
 	concourseReleaseVersion, bpmReleaseVersion, postgresReleaseVersion string
 	vaultReleaseVersion, credhubReleaseVersion, uaaReleaseVersion      string
@@ -237,16 +231,6 @@ func Deploy(manifest string, args ...string) {
 		Fly.Login(AtcUsername, AtcPassword, AtcExternalURL)
 
 		WaitForWorkersToBeRunning(len(JobInstances("worker")) + len(JobInstances("other_worker")))
-
-		workers := FlyTable("workers", "-d")
-		if len(workers) > 0 {
-			worker := workers[0]
-			WorkerGardenClient = gclient.New(gconn.New("tcp", worker["garden address"]))
-			WorkerBaggageclaimClient = bclient.NewWithHTTPClient(worker["baggageclaim url"], http.DefaultClient)
-		} else {
-			WorkerGardenClient = nil
-			WorkerBaggageclaimClient = nil
-		}
 	}
 
 	dbInstance = JobInstance("postgres")
@@ -347,30 +331,9 @@ func ConcourseClient() concourse.Client {
 }
 
 func DeleteAllContainers() {
-	client := ConcourseClient()
-	workers, err := client.ListWorkers()
-	Expect(err).NotTo(HaveOccurred())
-
-	mainTeam := client.Team("main")
-	containers, err := mainTeam.ListContainers(map[string]string{})
-	Expect(err).NotTo(HaveOccurred())
-
-	for _, worker := range workers {
-		if worker.GardenAddr == "" {
-			continue
-		}
-
-		connection := gconn.New("tcp", worker.GardenAddr)
-		gardenClient := gclient.New(connection)
-		for _, container := range containers {
-			if container.WorkerName == worker.Name {
-				err = gardenClient.Destroy(container.ID)
-				if err != nil {
-					Logger.Error("failed-to-delete-container", err, lager.Data{"handle": container.ID})
-				}
-			}
-		}
-	}
+	// In K8s-only mode, containers are ephemeral pods managed by the K8s runtime.
+	// There is no Garden client to destroy containers directly.
+	// Container cleanup happens via the GC components.
 }
 
 func WaitForLandedWorker() string {

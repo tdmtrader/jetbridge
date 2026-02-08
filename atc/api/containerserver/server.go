@@ -6,8 +6,6 @@ import (
 
 	"code.cloudfoundry.org/clock"
 	"code.cloudfoundry.org/lager/v3"
-	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/gc"
 	"github.com/concourse/concourse/atc/runtime"
 )
 
@@ -21,8 +19,6 @@ type Server struct {
 	workerPool              Pool
 	interceptTimeoutFactory InterceptTimeoutFactory
 	interceptUpdateInterval time.Duration
-	containerRepository     db.ContainerRepository
-	destroyer               gc.Destroyer
 	clock                   clock.Clock
 }
 
@@ -31,8 +27,6 @@ func NewServer(
 	workerPool Pool,
 	interceptTimeoutFactory InterceptTimeoutFactory,
 	interceptUpdateInterval time.Duration,
-	containerRepository db.ContainerRepository,
-	destroyer gc.Destroyer,
 	clock clock.Clock,
 ) *Server {
 	return &Server{
@@ -40,8 +34,6 @@ func NewServer(
 		workerPool:              workerPool,
 		interceptTimeoutFactory: interceptTimeoutFactory,
 		interceptUpdateInterval: interceptUpdateInterval,
-		containerRepository:     containerRepository,
-		destroyer:               destroyer,
 		clock:                   clock,
 	}
 }

@@ -12,7 +12,6 @@ import (
 	"code.cloudfoundry.org/lager/v3"
 	"code.cloudfoundry.org/lager/v3/lagerctx"
 	"github.com/concourse/concourse/atc/runtime"
-	"github.com/concourse/concourse/atc/worker/gardenruntime/transport"
 )
 
 type Retriable struct {
@@ -67,7 +66,7 @@ func (step RetryErrorStep) toRetry(logger lager.Logger, err error) bool {
 
 	var urlError *url.Error
 	var netError net.Error
-	if errors.As(err, &transport.WorkerMissingError{}) || errors.As(err, &transport.WorkerUnreachableError{}) || errors.As(err, &urlError) {
+	if errors.As(err, &urlError) {
 		logger.Debug("retry-error",
 			lager.Data{"err_type": reflect.TypeOf(err).String(), "err": err.Error()})
 		return true

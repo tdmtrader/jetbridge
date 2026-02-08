@@ -16,9 +16,7 @@ import (
 )
 
 var (
-	ErrWorkerNotPresent         = errors.New("worker not present in db")
-	ErrTooManyActiveTasks       = errors.New("worker has too many active tasks")
-	ErrCannotPruneRunningWorker = errors.New("worker not stalled for pruning")
+	ErrWorkerNotPresent = errors.New("worker not present in db")
 )
 
 type ContainerOwnerDisappearedError struct {
@@ -32,20 +30,14 @@ func (e ContainerOwnerDisappearedError) Error() string {
 type WorkerState string
 
 const (
-	WorkerStateRunning  = WorkerState("running")
-	WorkerStateStalled  = WorkerState("stalled")
-	WorkerStateLanding  = WorkerState("landing")
-	WorkerStateLanded   = WorkerState("landed")
-	WorkerStateRetiring = WorkerState("retiring")
+	WorkerStateRunning = WorkerState("running")
+	WorkerStateStalled = WorkerState("stalled")
 )
 
 func AllWorkerStates() []WorkerState {
 	return []WorkerState{
 		WorkerStateRunning,
 		WorkerStateStalled,
-		WorkerStateLanding,
-		WorkerStateLanded,
-		WorkerStateRetiring,
 	}
 }
 
@@ -54,13 +46,6 @@ type Worker interface {
 	Name() string
 	Version() *string
 	State() WorkerState
-	GardenAddr() *string
-	BaggageclaimURL() *string
-	CertsPath() *string
-	ResourceCerts() (*UsedWorkerResourceCerts, bool, error)
-	HTTPProxyURL() string
-	HTTPSProxyURL() string
-	NoProxy() string
 	ActiveContainers() int
 	ActiveVolumes() int
 	ResourceTypes() []atc.WorkerResourceType
@@ -74,14 +59,9 @@ type Worker interface {
 
 	Reload() (bool, error)
 
-	Land() error
-	Retire() error
-	Prune() error
 	Delete() error
 
 	ActiveTasks() (int, error)
-	IncreaseActiveTasks(int) (int, error)
-	DecreaseActiveTasks() (int, error)
 
 	FindContainer(owner ContainerOwner) (CreatingContainer, CreatedContainer, error)
 	CreateContainer(owner ContainerOwner, meta ContainerMetadata) (CreatingContainer, error)
@@ -93,11 +73,6 @@ type worker struct {
 	name             string
 	version          *string
 	state            WorkerState
-	gardenAddr       *string
-	baggageclaimURL  *string
-	httpProxyURL     string
-	httpsProxyURL    string
-	noProxy          string
 	activeContainers int
 	activeVolumes    int
 	activeTasks      int
@@ -108,21 +83,13 @@ type worker struct {
 	teamName         string
 	startTime        time.Time
 	expiresAt        time.Time
-	certsPath        *string
 	ephemeral        bool
 }
 
-func (worker *worker) Name() string             { return worker.name }
-func (worker *worker) Version() *string         { return worker.version }
-func (worker *worker) State() WorkerState       { return worker.state }
-func (worker *worker) GardenAddr() *string      { return worker.gardenAddr }
-func (worker *worker) CertsPath() *string       { return worker.certsPath }
-func (worker *worker) BaggageclaimURL() *string { return worker.baggageclaimURL }
-
-func (worker *worker) HTTPProxyURL() string                    { return worker.httpProxyURL }
-func (worker *worker) HTTPSProxyURL() string                   { return worker.httpsProxyURL }
-func (worker *worker) NoProxy() string                         { return worker.noProxy }
-func (worker *worker) ActiveContainers() int                   { return worker.activeContainers }
+func (worker *worker) Name() string         { return worker.name }
+func (worker *worker) Version() *string     { return worker.version }
+func (worker *worker) State() WorkerState   { return worker.state }
+func (worker *worker) ActiveContainers() int { return worker.activeContainers }
 func (worker *worker) ActiveVolumes() int                      { return worker.activeVolumes }
 func (worker *worker) ResourceTypes() []atc.WorkerResourceType { return worker.resourceTypes }
 func (worker *worker) Platform() string                        { return worker.platform }
@@ -150,109 +117,6 @@ func (worker *worker) Reload() (bool, error) {
 	return true, nil
 }
 
-func (worker *worker) Land() error {
-	cSQL, _, err := sq.Case("state").
-		When("'landed'::worker_state", "'landed'::worker_state").
-		Else("'landing'::worker_state").
-		ToSql()
-	if err != nil {
-		return err
-	}
-
-	result, err := psql.Update("workers").
-		Set("state", sq.Expr("("+cSQL+")")).
-		Where(sq.Eq{"name": worker.name}).
-		RunWith(worker.conn).
-		Exec()
-
-	if err != nil {
-		return err
-	}
-
-	count, err := result.RowsAffected()
-	if err != nil {
-		return err
-	}
-
-	if count == 0 {
-		return ErrWorkerNotPresent
-	}
-
-	return nil
-}
-
-func (worker *worker) Retire() error {
-	result, err := psql.Update("workers").
-		SetMap(map[string]any{
-			"state": string(WorkerStateRetiring),
-		}).
-		Where(sq.Eq{"name": worker.name}).
-		RunWith(worker.conn).
-		Exec()
-	if err != nil {
-		return err
-	}
-
-	count, err := result.RowsAffected()
-	if err != nil {
-		return err
-	}
-
-	if count == 0 {
-		return ErrWorkerNotPresent
-	}
-
-	return nil
-}
-
-func (worker *worker) Prune() error {
-	tx, err := worker.conn.Begin()
-	if err != nil {
-		return err
-	}
-
-	defer Rollback(tx)
-
-	rows, err := sq.Delete("workers").
-		Where(sq.Eq{
-			"name": worker.name,
-		}).
-		Where(sq.NotEq{
-			"state": string(WorkerStateRunning),
-		}).
-		PlaceholderFormat(sq.Dollar).
-		RunWith(tx).
-		Exec()
-
-	if err != nil {
-		return err
-	}
-
-	affected, err := rows.RowsAffected()
-	if err != nil {
-		return err
-	}
-
-	if affected == 0 {
-		//check whether the worker exists in the database at all
-		var one int
-		err := psql.Select("1").From("workers").Where(sq.Eq{"name": worker.name}).
-			RunWith(tx).
-			QueryRow().
-			Scan(&one)
-		if err != nil {
-			if err == sql.ErrNoRows {
-				return ErrWorkerNotPresent
-			}
-			return err
-		}
-
-		return ErrCannotPruneRunningWorker
-	}
-
-	return tx.Commit()
-}
-
 func (worker *worker) Delete() error {
 	_, err := sq.Delete("workers").
 		Where(sq.Eq{
@@ -263,19 +127,6 @@ func (worker *worker) Delete() error {
 		Exec()
 
 	return err
-}
-
-func (worker *worker) ResourceCerts() (*UsedWorkerResourceCerts, bool, error) {
-	if worker.certsPath != nil {
-		wrc := &WorkerResourceCerts{
-			WorkerName: worker.name,
-			CertsPath:  *worker.certsPath,
-		}
-
-		return wrc.Find(worker.conn)
-	}
-
-	return nil, false, nil
 }
 
 func (worker *worker) FindContainer(owner ContainerOwner) (CreatingContainer, CreatedContainer, error) {
@@ -385,36 +236,3 @@ func (worker *worker) ActiveTasks() (int, error) {
 	return worker.activeTasks, nil
 }
 
-func (worker *worker) IncreaseActiveTasks(maxTaskNum int) (int, error) {
-	err := psql.Update("workers").
-		Set("active_tasks", sq.Expr("active_tasks+1")).
-		Where(sq.Eq{"name": worker.name}).
-		Where(sq.Lt{"active_tasks": maxTaskNum}).
-		Suffix("RETURNING \"active_tasks\"").
-		RunWith(worker.conn).
-		QueryRow().
-		Scan(&worker.activeTasks)
-
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return 0, ErrTooManyActiveTasks
-		}
-		return 0, err
-	}
-
-	return worker.activeTasks, nil
-}
-
-func (worker *worker) DecreaseActiveTasks() (int, error) {
-	err := psql.Update("workers").
-		Set("active_tasks", sq.Expr("active_tasks-1")).
-		Where(sq.Eq{"name": worker.name}).
-		Suffix("RETURNING \"active_tasks\"").
-		RunWith(worker.conn).
-		QueryRow().
-		Scan(&worker.activeTasks)
-	if err != nil {
-		return 0, err
-	}
-	return worker.activeTasks, nil
-}

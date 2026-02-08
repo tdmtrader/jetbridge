@@ -92,11 +92,6 @@ var _ = Describe("Team", func() {
 			otherTeam, err = teamFactory.CreateTeam(atc.Team{Name: "some-other-team"})
 			Expect(err).ToNot(HaveOccurred())
 			atcWorker = atc.Worker{
-				GardenAddr:       "some-garden-addr",
-				BaggageclaimURL:  "some-bc-url",
-				HTTPProxyURL:     "some-http-proxy-url",
-				HTTPSProxyURL:    "some-https-proxy-url",
-				NoProxy:          "some-no-proxy",
 				ActiveContainers: 140,
 				ResourceTypes: []atc.WorkerResourceType{
 					{
@@ -125,11 +120,9 @@ var _ = Describe("Team", func() {
 						Expect(err).ToNot(HaveOccurred())
 					})
 					It("overwrites all the data", func() {
-						atcWorker.GardenAddr = "new-garden-addr"
 						savedWorker, err := team.SaveWorker(atcWorker, 5*time.Minute)
 						Expect(err).ToNot(HaveOccurred())
 						Expect(savedWorker.Name()).To(Equal("some-name"))
-						Expect(*savedWorker.GardenAddr()).To(Equal("new-garden-addr"))
 						Expect(savedWorker.State()).To(Equal(db.WorkerStateRunning))
 					})
 				})
@@ -163,11 +156,6 @@ var _ = Describe("Team", func() {
 			otherTeam, err = teamFactory.CreateTeam(atc.Team{Name: "some-other-team"})
 			Expect(err).ToNot(HaveOccurred())
 			atcWorker = atc.Worker{
-				GardenAddr:       "some-garden-addr",
-				BaggageclaimURL:  "some-bc-url",
-				HTTPProxyURL:     "some-http-proxy-url",
-				HTTPSProxyURL:    "some-https-proxy-url",
-				NoProxy:          "some-no-proxy",
 				ActiveContainers: 140,
 				ResourceTypes: []atc.WorkerResourceType{
 					{
@@ -194,8 +182,6 @@ var _ = Describe("Team", func() {
 				Expect(err).ToNot(HaveOccurred())
 
 				atcWorker.Name = "some-new-worker"
-				atcWorker.GardenAddr = "some-other-garden-addr"
-				atcWorker.BaggageclaimURL = "some-other-bc-url"
 				_, err = workerFactory.SaveWorker(atcWorker, 0)
 				Expect(err).ToNot(HaveOccurred())
 			})
@@ -206,20 +192,14 @@ var _ = Describe("Team", func() {
 				Expect(len(workers)).To(Equal(2))
 
 				Expect(workers[0].Name()).To(Equal("some-name"))
-				Expect(*workers[0].GardenAddr()).To(Equal("some-garden-addr"))
-				Expect(*workers[0].BaggageclaimURL()).To(Equal("some-bc-url"))
 
 				Expect(workers[1].Name()).To(Equal("some-new-worker"))
-				Expect(*workers[1].GardenAddr()).To(Equal("some-other-garden-addr"))
-				Expect(*workers[1].BaggageclaimURL()).To(Equal("some-other-bc-url"))
 			})
 		})
 
 		Context("when there are workers for another team", func() {
 			BeforeEach(func() {
 				atcWorker.Name = "some-other-team-worker"
-				atcWorker.GardenAddr = "some-other-garden-addr"
-				atcWorker.BaggageclaimURL = "some-other-bc-url"
 				_, err = otherTeam.SaveWorker(atcWorker, 5*time.Minute)
 				Expect(err).ToNot(HaveOccurred())
 			})
@@ -472,8 +452,6 @@ var _ = Describe("Team", func() {
 					builder.WithWorker(atc.Worker{
 						ResourceTypes:   []atc.WorkerResourceType{defaultWorkerResourceType},
 						Name:            "some-default-worker",
-						GardenAddr:      "3.4.5.6:7777",
-						BaggageclaimURL: "7.8.9.10:7878",
 					}),
 					builder.WithResourceVersions("some-resource"),
 					builder.WithResourceTypeVersions("some-type"),
@@ -540,8 +518,6 @@ var _ = Describe("Team", func() {
 						Name:            "default-team-worker",
 						Team:            "some-test-team",
 						ResourceTypes:   []atc.WorkerResourceType{defaultWorkerResourceType},
-						GardenAddr:      "3.4.5.6:7777",
-						BaggageclaimURL: "7.8.9.10:7878",
 					}),
 					builder.WithResourceVersions("some-resource"),
 				)
@@ -614,8 +590,6 @@ var _ = Describe("Team", func() {
 							Name:            "other-team-worker",
 							Team:            "other-team",
 							ResourceTypes:   []atc.WorkerResourceType{defaultWorkerResourceType},
-							GardenAddr:      "4.5.6.7:7777",
-							BaggageclaimURL: "8.9.10.11:7878",
 						}),
 						builder.WithResourceVersions("some-resource"),
 					)
@@ -797,11 +771,6 @@ var _ = Describe("Team", func() {
 
 	Describe("FindWorkersForResourceCache", func() {
 		var atcWorker = atc.Worker{
-			GardenAddr:       "some-garden-addr",
-			BaggageclaimURL:  "some-bc-url",
-			HTTPProxyURL:     "some-http-proxy-url",
-			HTTPSProxyURL:    "some-https-proxy-url",
-			NoProxy:          "some-no-proxy",
 			ActiveContainers: 140,
 			ResourceTypes: []atc.WorkerResourceType{
 				{
@@ -879,55 +848,8 @@ var _ = Describe("Team", func() {
 			})
 		})
 
-		Context("when the worker is retiring", func() {
-			BeforeEach(func() {
-				atcWorker.State = string(db.WorkerStateRetiring)
-				_, err := workerFactory.SaveWorker(atcWorker, 0)
-				Expect(err).ToNot(HaveOccurred())
-			})
-
-			It("should not find the worker", func() {
-				workers, err := defaultTeam.FindWorkersForResourceCache(urc.ID(), buildStartTime)
-				Expect(err).ToNot(HaveOccurred())
-				Expect(len(workers)).To(Equal(0))
-			})
-		})
-
-		Context("when the worker is landing", func() {
-			BeforeEach(func() {
-				atcWorker.State = string(db.WorkerStateLanding)
-				_, err := workerFactory.SaveWorker(atcWorker, 0)
-				Expect(err).ToNot(HaveOccurred())
-			})
-
-			It("should not find the worker", func() {
-				workers, err := defaultTeam.FindWorkersForResourceCache(urc.ID(), buildStartTime)
-				Expect(err).ToNot(HaveOccurred())
-				Expect(len(workers)).To(Equal(0))
-			})
-		})
-
-		Context("when the worker is landed", func() {
-			BeforeEach(func() {
-				atcWorker.State = string(db.WorkerStateLanded)
-				_, err := workerFactory.SaveWorker(atcWorker, 0)
-				Expect(err).ToNot(HaveOccurred())
-			})
-
-			It("should not find the worker", func() {
-				workers, err := defaultTeam.FindWorkersForResourceCache(urc.ID(), buildStartTime)
-				Expect(err).ToNot(HaveOccurred())
-				Expect(len(workers)).To(Equal(0))
-			})
-		})
-
 		Context("when there is a second worker", func() {
 			var atcWorker2 = atc.Worker{
-				GardenAddr:       "some-garden-addr-2",
-				BaggageclaimURL:  "some-bc-url-2",
-				HTTPProxyURL:     "some-http-proxy-url-2",
-				HTTPSProxyURL:    "some-https-proxy-url-2",
-				NoProxy:          "some-no-proxy-2",
 				ActiveContainers: 140,
 				ResourceTypes: []atc.WorkerResourceType{
 					{
@@ -979,14 +901,12 @@ var _ = Describe("Team", func() {
 					Expect(workers[1].Name()).To(Equal("some-worker-name-2"))
 				})
 
-				Context("when worker1 is pruned", func() {
+				Context("when worker1 is deleted", func() {
 					BeforeEach(func() {
 						worker, found, err := workerFactory.GetWorker("some-worker-name")
 						Expect(err).ToNot(HaveOccurred())
 						Expect(found).To(BeTrue())
-						err = worker.Land()
-						Expect(err).ToNot(HaveOccurred())
-						err = worker.Prune()
+						err = worker.Delete()
 						Expect(err).ToNot(HaveOccurred())
 					})
 
@@ -4080,8 +4000,6 @@ var _ = Describe("Team", func() {
 					builder.WithWorker(atc.Worker{
 						ResourceTypes:   []atc.WorkerResourceType{defaultWorkerResourceType},
 						Name:            "some-default-worker",
-						GardenAddr:      "3.4.5.6:7777",
-						BaggageclaimURL: "7.8.9.10:7878",
 					}),
 					builder.WithResourceVersions("some-resource"),
 				)
@@ -4180,8 +4098,6 @@ var _ = Describe("Team", func() {
 					builder.WithWorker(atc.Worker{
 						ResourceTypes:   []atc.WorkerResourceType{defaultWorkerResourceType},
 						Name:            "some-default-worker",
-						GardenAddr:      "3.4.5.6:7777",
-						BaggageclaimURL: "7.8.9.10:7878",
 					}),
 					builder.WithResourceVersions("some-resource"),
 				)

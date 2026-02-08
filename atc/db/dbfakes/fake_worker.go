@@ -42,26 +42,6 @@ type FakeWorker struct {
 	activeVolumesReturnsOnCall map[int]struct {
 		result1 int
 	}
-	BaggageclaimURLStub        func() *string
-	baggageclaimURLMutex       sync.RWMutex
-	baggageclaimURLArgsForCall []struct {
-	}
-	baggageclaimURLReturns struct {
-		result1 *string
-	}
-	baggageclaimURLReturnsOnCall map[int]struct {
-		result1 *string
-	}
-	CertsPathStub        func() *string
-	certsPathMutex       sync.RWMutex
-	certsPathArgsForCall []struct {
-	}
-	certsPathReturns struct {
-		result1 *string
-	}
-	certsPathReturnsOnCall map[int]struct {
-		result1 *string
-	}
 	CreateContainerStub        func(db.ContainerOwner, db.ContainerMetadata) (db.CreatingContainer, error)
 	createContainerMutex       sync.RWMutex
 	createContainerArgsForCall []struct {
@@ -74,18 +54,6 @@ type FakeWorker struct {
 	}
 	createContainerReturnsOnCall map[int]struct {
 		result1 db.CreatingContainer
-		result2 error
-	}
-	DecreaseActiveTasksStub        func() (int, error)
-	decreaseActiveTasksMutex       sync.RWMutex
-	decreaseActiveTasksArgsForCall []struct {
-	}
-	decreaseActiveTasksReturns struct {
-		result1 int
-		result2 error
-	}
-	decreaseActiveTasksReturnsOnCall map[int]struct {
-		result1 int
 		result2 error
 	}
 	DeleteStub        func() error
@@ -133,59 +101,6 @@ type FakeWorker struct {
 		result2 db.CreatedContainer
 		result3 error
 	}
-	GardenAddrStub        func() *string
-	gardenAddrMutex       sync.RWMutex
-	gardenAddrArgsForCall []struct {
-	}
-	gardenAddrReturns struct {
-		result1 *string
-	}
-	gardenAddrReturnsOnCall map[int]struct {
-		result1 *string
-	}
-	HTTPProxyURLStub        func() string
-	hTTPProxyURLMutex       sync.RWMutex
-	hTTPProxyURLArgsForCall []struct {
-	}
-	hTTPProxyURLReturns struct {
-		result1 string
-	}
-	hTTPProxyURLReturnsOnCall map[int]struct {
-		result1 string
-	}
-	HTTPSProxyURLStub        func() string
-	hTTPSProxyURLMutex       sync.RWMutex
-	hTTPSProxyURLArgsForCall []struct {
-	}
-	hTTPSProxyURLReturns struct {
-		result1 string
-	}
-	hTTPSProxyURLReturnsOnCall map[int]struct {
-		result1 string
-	}
-	IncreaseActiveTasksStub        func(int) (int, error)
-	increaseActiveTasksMutex       sync.RWMutex
-	increaseActiveTasksArgsForCall []struct {
-		arg1 int
-	}
-	increaseActiveTasksReturns struct {
-		result1 int
-		result2 error
-	}
-	increaseActiveTasksReturnsOnCall map[int]struct {
-		result1 int
-		result2 error
-	}
-	LandStub        func() error
-	landMutex       sync.RWMutex
-	landArgsForCall []struct {
-	}
-	landReturns struct {
-		result1 error
-	}
-	landReturnsOnCall map[int]struct {
-		result1 error
-	}
 	NameStub        func() string
 	nameMutex       sync.RWMutex
 	nameArgsForCall []struct {
@@ -194,16 +109,6 @@ type FakeWorker struct {
 		result1 string
 	}
 	nameReturnsOnCall map[int]struct {
-		result1 string
-	}
-	NoProxyStub        func() string
-	noProxyMutex       sync.RWMutex
-	noProxyArgsForCall []struct {
-	}
-	noProxyReturns struct {
-		result1 string
-	}
-	noProxyReturnsOnCall map[int]struct {
 		result1 string
 	}
 	PlatformStub        func() string
@@ -215,16 +120,6 @@ type FakeWorker struct {
 	}
 	platformReturnsOnCall map[int]struct {
 		result1 string
-	}
-	PruneStub        func() error
-	pruneMutex       sync.RWMutex
-	pruneArgsForCall []struct {
-	}
-	pruneReturns struct {
-		result1 error
-	}
-	pruneReturnsOnCall map[int]struct {
-		result1 error
 	}
 	ReloadStub        func() (bool, error)
 	reloadMutex       sync.RWMutex
@@ -238,20 +133,6 @@ type FakeWorker struct {
 		result1 bool
 		result2 error
 	}
-	ResourceCertsStub        func() (*db.UsedWorkerResourceCerts, bool, error)
-	resourceCertsMutex       sync.RWMutex
-	resourceCertsArgsForCall []struct {
-	}
-	resourceCertsReturns struct {
-		result1 *db.UsedWorkerResourceCerts
-		result2 bool
-		result3 error
-	}
-	resourceCertsReturnsOnCall map[int]struct {
-		result1 *db.UsedWorkerResourceCerts
-		result2 bool
-		result3 error
-	}
 	ResourceTypesStub        func() []atc.WorkerResourceType
 	resourceTypesMutex       sync.RWMutex
 	resourceTypesArgsForCall []struct {
@@ -261,16 +142,6 @@ type FakeWorker struct {
 	}
 	resourceTypesReturnsOnCall map[int]struct {
 		result1 []atc.WorkerResourceType
-	}
-	RetireStub        func() error
-	retireMutex       sync.RWMutex
-	retireArgsForCall []struct {
-	}
-	retireReturns struct {
-		result1 error
-	}
-	retireReturnsOnCall map[int]struct {
-		result1 error
 	}
 	StartTimeStub        func() time.Time
 	startTimeMutex       sync.RWMutex
@@ -498,112 +369,6 @@ func (fake *FakeWorker) ActiveVolumesReturnsOnCall(i int, result1 int) {
 	}{result1}
 }
 
-func (fake *FakeWorker) BaggageclaimURL() *string {
-	fake.baggageclaimURLMutex.Lock()
-	ret, specificReturn := fake.baggageclaimURLReturnsOnCall[len(fake.baggageclaimURLArgsForCall)]
-	fake.baggageclaimURLArgsForCall = append(fake.baggageclaimURLArgsForCall, struct {
-	}{})
-	stub := fake.BaggageclaimURLStub
-	fakeReturns := fake.baggageclaimURLReturns
-	fake.recordInvocation("BaggageclaimURL", []interface{}{})
-	fake.baggageclaimURLMutex.Unlock()
-	if stub != nil {
-		return stub()
-	}
-	if specificReturn {
-		return ret.result1
-	}
-	return fakeReturns.result1
-}
-
-func (fake *FakeWorker) BaggageclaimURLCallCount() int {
-	fake.baggageclaimURLMutex.RLock()
-	defer fake.baggageclaimURLMutex.RUnlock()
-	return len(fake.baggageclaimURLArgsForCall)
-}
-
-func (fake *FakeWorker) BaggageclaimURLCalls(stub func() *string) {
-	fake.baggageclaimURLMutex.Lock()
-	defer fake.baggageclaimURLMutex.Unlock()
-	fake.BaggageclaimURLStub = stub
-}
-
-func (fake *FakeWorker) BaggageclaimURLReturns(result1 *string) {
-	fake.baggageclaimURLMutex.Lock()
-	defer fake.baggageclaimURLMutex.Unlock()
-	fake.BaggageclaimURLStub = nil
-	fake.baggageclaimURLReturns = struct {
-		result1 *string
-	}{result1}
-}
-
-func (fake *FakeWorker) BaggageclaimURLReturnsOnCall(i int, result1 *string) {
-	fake.baggageclaimURLMutex.Lock()
-	defer fake.baggageclaimURLMutex.Unlock()
-	fake.BaggageclaimURLStub = nil
-	if fake.baggageclaimURLReturnsOnCall == nil {
-		fake.baggageclaimURLReturnsOnCall = make(map[int]struct {
-			result1 *string
-		})
-	}
-	fake.baggageclaimURLReturnsOnCall[i] = struct {
-		result1 *string
-	}{result1}
-}
-
-func (fake *FakeWorker) CertsPath() *string {
-	fake.certsPathMutex.Lock()
-	ret, specificReturn := fake.certsPathReturnsOnCall[len(fake.certsPathArgsForCall)]
-	fake.certsPathArgsForCall = append(fake.certsPathArgsForCall, struct {
-	}{})
-	stub := fake.CertsPathStub
-	fakeReturns := fake.certsPathReturns
-	fake.recordInvocation("CertsPath", []interface{}{})
-	fake.certsPathMutex.Unlock()
-	if stub != nil {
-		return stub()
-	}
-	if specificReturn {
-		return ret.result1
-	}
-	return fakeReturns.result1
-}
-
-func (fake *FakeWorker) CertsPathCallCount() int {
-	fake.certsPathMutex.RLock()
-	defer fake.certsPathMutex.RUnlock()
-	return len(fake.certsPathArgsForCall)
-}
-
-func (fake *FakeWorker) CertsPathCalls(stub func() *string) {
-	fake.certsPathMutex.Lock()
-	defer fake.certsPathMutex.Unlock()
-	fake.CertsPathStub = stub
-}
-
-func (fake *FakeWorker) CertsPathReturns(result1 *string) {
-	fake.certsPathMutex.Lock()
-	defer fake.certsPathMutex.Unlock()
-	fake.CertsPathStub = nil
-	fake.certsPathReturns = struct {
-		result1 *string
-	}{result1}
-}
-
-func (fake *FakeWorker) CertsPathReturnsOnCall(i int, result1 *string) {
-	fake.certsPathMutex.Lock()
-	defer fake.certsPathMutex.Unlock()
-	fake.CertsPathStub = nil
-	if fake.certsPathReturnsOnCall == nil {
-		fake.certsPathReturnsOnCall = make(map[int]struct {
-			result1 *string
-		})
-	}
-	fake.certsPathReturnsOnCall[i] = struct {
-		result1 *string
-	}{result1}
-}
-
 func (fake *FakeWorker) CreateContainer(arg1 db.ContainerOwner, arg2 db.ContainerMetadata) (db.CreatingContainer, error) {
 	fake.createContainerMutex.Lock()
 	ret, specificReturn := fake.createContainerReturnsOnCall[len(fake.createContainerArgsForCall)]
@@ -665,62 +430,6 @@ func (fake *FakeWorker) CreateContainerReturnsOnCall(i int, result1 db.CreatingC
 	}
 	fake.createContainerReturnsOnCall[i] = struct {
 		result1 db.CreatingContainer
-		result2 error
-	}{result1, result2}
-}
-
-func (fake *FakeWorker) DecreaseActiveTasks() (int, error) {
-	fake.decreaseActiveTasksMutex.Lock()
-	ret, specificReturn := fake.decreaseActiveTasksReturnsOnCall[len(fake.decreaseActiveTasksArgsForCall)]
-	fake.decreaseActiveTasksArgsForCall = append(fake.decreaseActiveTasksArgsForCall, struct {
-	}{})
-	stub := fake.DecreaseActiveTasksStub
-	fakeReturns := fake.decreaseActiveTasksReturns
-	fake.recordInvocation("DecreaseActiveTasks", []interface{}{})
-	fake.decreaseActiveTasksMutex.Unlock()
-	if stub != nil {
-		return stub()
-	}
-	if specificReturn {
-		return ret.result1, ret.result2
-	}
-	return fakeReturns.result1, fakeReturns.result2
-}
-
-func (fake *FakeWorker) DecreaseActiveTasksCallCount() int {
-	fake.decreaseActiveTasksMutex.RLock()
-	defer fake.decreaseActiveTasksMutex.RUnlock()
-	return len(fake.decreaseActiveTasksArgsForCall)
-}
-
-func (fake *FakeWorker) DecreaseActiveTasksCalls(stub func() (int, error)) {
-	fake.decreaseActiveTasksMutex.Lock()
-	defer fake.decreaseActiveTasksMutex.Unlock()
-	fake.DecreaseActiveTasksStub = stub
-}
-
-func (fake *FakeWorker) DecreaseActiveTasksReturns(result1 int, result2 error) {
-	fake.decreaseActiveTasksMutex.Lock()
-	defer fake.decreaseActiveTasksMutex.Unlock()
-	fake.DecreaseActiveTasksStub = nil
-	fake.decreaseActiveTasksReturns = struct {
-		result1 int
-		result2 error
-	}{result1, result2}
-}
-
-func (fake *FakeWorker) DecreaseActiveTasksReturnsOnCall(i int, result1 int, result2 error) {
-	fake.decreaseActiveTasksMutex.Lock()
-	defer fake.decreaseActiveTasksMutex.Unlock()
-	fake.DecreaseActiveTasksStub = nil
-	if fake.decreaseActiveTasksReturnsOnCall == nil {
-		fake.decreaseActiveTasksReturnsOnCall = make(map[int]struct {
-			result1 int
-			result2 error
-		})
-	}
-	fake.decreaseActiveTasksReturnsOnCall[i] = struct {
-		result1 int
 		result2 error
 	}{result1, result2}
 }
@@ -951,282 +660,6 @@ func (fake *FakeWorker) FindContainerReturnsOnCall(i int, result1 db.CreatingCon
 	}{result1, result2, result3}
 }
 
-func (fake *FakeWorker) GardenAddr() *string {
-	fake.gardenAddrMutex.Lock()
-	ret, specificReturn := fake.gardenAddrReturnsOnCall[len(fake.gardenAddrArgsForCall)]
-	fake.gardenAddrArgsForCall = append(fake.gardenAddrArgsForCall, struct {
-	}{})
-	stub := fake.GardenAddrStub
-	fakeReturns := fake.gardenAddrReturns
-	fake.recordInvocation("GardenAddr", []interface{}{})
-	fake.gardenAddrMutex.Unlock()
-	if stub != nil {
-		return stub()
-	}
-	if specificReturn {
-		return ret.result1
-	}
-	return fakeReturns.result1
-}
-
-func (fake *FakeWorker) GardenAddrCallCount() int {
-	fake.gardenAddrMutex.RLock()
-	defer fake.gardenAddrMutex.RUnlock()
-	return len(fake.gardenAddrArgsForCall)
-}
-
-func (fake *FakeWorker) GardenAddrCalls(stub func() *string) {
-	fake.gardenAddrMutex.Lock()
-	defer fake.gardenAddrMutex.Unlock()
-	fake.GardenAddrStub = stub
-}
-
-func (fake *FakeWorker) GardenAddrReturns(result1 *string) {
-	fake.gardenAddrMutex.Lock()
-	defer fake.gardenAddrMutex.Unlock()
-	fake.GardenAddrStub = nil
-	fake.gardenAddrReturns = struct {
-		result1 *string
-	}{result1}
-}
-
-func (fake *FakeWorker) GardenAddrReturnsOnCall(i int, result1 *string) {
-	fake.gardenAddrMutex.Lock()
-	defer fake.gardenAddrMutex.Unlock()
-	fake.GardenAddrStub = nil
-	if fake.gardenAddrReturnsOnCall == nil {
-		fake.gardenAddrReturnsOnCall = make(map[int]struct {
-			result1 *string
-		})
-	}
-	fake.gardenAddrReturnsOnCall[i] = struct {
-		result1 *string
-	}{result1}
-}
-
-func (fake *FakeWorker) HTTPProxyURL() string {
-	fake.hTTPProxyURLMutex.Lock()
-	ret, specificReturn := fake.hTTPProxyURLReturnsOnCall[len(fake.hTTPProxyURLArgsForCall)]
-	fake.hTTPProxyURLArgsForCall = append(fake.hTTPProxyURLArgsForCall, struct {
-	}{})
-	stub := fake.HTTPProxyURLStub
-	fakeReturns := fake.hTTPProxyURLReturns
-	fake.recordInvocation("HTTPProxyURL", []interface{}{})
-	fake.hTTPProxyURLMutex.Unlock()
-	if stub != nil {
-		return stub()
-	}
-	if specificReturn {
-		return ret.result1
-	}
-	return fakeReturns.result1
-}
-
-func (fake *FakeWorker) HTTPProxyURLCallCount() int {
-	fake.hTTPProxyURLMutex.RLock()
-	defer fake.hTTPProxyURLMutex.RUnlock()
-	return len(fake.hTTPProxyURLArgsForCall)
-}
-
-func (fake *FakeWorker) HTTPProxyURLCalls(stub func() string) {
-	fake.hTTPProxyURLMutex.Lock()
-	defer fake.hTTPProxyURLMutex.Unlock()
-	fake.HTTPProxyURLStub = stub
-}
-
-func (fake *FakeWorker) HTTPProxyURLReturns(result1 string) {
-	fake.hTTPProxyURLMutex.Lock()
-	defer fake.hTTPProxyURLMutex.Unlock()
-	fake.HTTPProxyURLStub = nil
-	fake.hTTPProxyURLReturns = struct {
-		result1 string
-	}{result1}
-}
-
-func (fake *FakeWorker) HTTPProxyURLReturnsOnCall(i int, result1 string) {
-	fake.hTTPProxyURLMutex.Lock()
-	defer fake.hTTPProxyURLMutex.Unlock()
-	fake.HTTPProxyURLStub = nil
-	if fake.hTTPProxyURLReturnsOnCall == nil {
-		fake.hTTPProxyURLReturnsOnCall = make(map[int]struct {
-			result1 string
-		})
-	}
-	fake.hTTPProxyURLReturnsOnCall[i] = struct {
-		result1 string
-	}{result1}
-}
-
-func (fake *FakeWorker) HTTPSProxyURL() string {
-	fake.hTTPSProxyURLMutex.Lock()
-	ret, specificReturn := fake.hTTPSProxyURLReturnsOnCall[len(fake.hTTPSProxyURLArgsForCall)]
-	fake.hTTPSProxyURLArgsForCall = append(fake.hTTPSProxyURLArgsForCall, struct {
-	}{})
-	stub := fake.HTTPSProxyURLStub
-	fakeReturns := fake.hTTPSProxyURLReturns
-	fake.recordInvocation("HTTPSProxyURL", []interface{}{})
-	fake.hTTPSProxyURLMutex.Unlock()
-	if stub != nil {
-		return stub()
-	}
-	if specificReturn {
-		return ret.result1
-	}
-	return fakeReturns.result1
-}
-
-func (fake *FakeWorker) HTTPSProxyURLCallCount() int {
-	fake.hTTPSProxyURLMutex.RLock()
-	defer fake.hTTPSProxyURLMutex.RUnlock()
-	return len(fake.hTTPSProxyURLArgsForCall)
-}
-
-func (fake *FakeWorker) HTTPSProxyURLCalls(stub func() string) {
-	fake.hTTPSProxyURLMutex.Lock()
-	defer fake.hTTPSProxyURLMutex.Unlock()
-	fake.HTTPSProxyURLStub = stub
-}
-
-func (fake *FakeWorker) HTTPSProxyURLReturns(result1 string) {
-	fake.hTTPSProxyURLMutex.Lock()
-	defer fake.hTTPSProxyURLMutex.Unlock()
-	fake.HTTPSProxyURLStub = nil
-	fake.hTTPSProxyURLReturns = struct {
-		result1 string
-	}{result1}
-}
-
-func (fake *FakeWorker) HTTPSProxyURLReturnsOnCall(i int, result1 string) {
-	fake.hTTPSProxyURLMutex.Lock()
-	defer fake.hTTPSProxyURLMutex.Unlock()
-	fake.HTTPSProxyURLStub = nil
-	if fake.hTTPSProxyURLReturnsOnCall == nil {
-		fake.hTTPSProxyURLReturnsOnCall = make(map[int]struct {
-			result1 string
-		})
-	}
-	fake.hTTPSProxyURLReturnsOnCall[i] = struct {
-		result1 string
-	}{result1}
-}
-
-func (fake *FakeWorker) IncreaseActiveTasks(arg1 int) (int, error) {
-	fake.increaseActiveTasksMutex.Lock()
-	ret, specificReturn := fake.increaseActiveTasksReturnsOnCall[len(fake.increaseActiveTasksArgsForCall)]
-	fake.increaseActiveTasksArgsForCall = append(fake.increaseActiveTasksArgsForCall, struct {
-		arg1 int
-	}{arg1})
-	stub := fake.IncreaseActiveTasksStub
-	fakeReturns := fake.increaseActiveTasksReturns
-	fake.recordInvocation("IncreaseActiveTasks", []interface{}{arg1})
-	fake.increaseActiveTasksMutex.Unlock()
-	if stub != nil {
-		return stub(arg1)
-	}
-	if specificReturn {
-		return ret.result1, ret.result2
-	}
-	return fakeReturns.result1, fakeReturns.result2
-}
-
-func (fake *FakeWorker) IncreaseActiveTasksCallCount() int {
-	fake.increaseActiveTasksMutex.RLock()
-	defer fake.increaseActiveTasksMutex.RUnlock()
-	return len(fake.increaseActiveTasksArgsForCall)
-}
-
-func (fake *FakeWorker) IncreaseActiveTasksCalls(stub func(int) (int, error)) {
-	fake.increaseActiveTasksMutex.Lock()
-	defer fake.increaseActiveTasksMutex.Unlock()
-	fake.IncreaseActiveTasksStub = stub
-}
-
-func (fake *FakeWorker) IncreaseActiveTasksArgsForCall(i int) int {
-	fake.increaseActiveTasksMutex.RLock()
-	defer fake.increaseActiveTasksMutex.RUnlock()
-	argsForCall := fake.increaseActiveTasksArgsForCall[i]
-	return argsForCall.arg1
-}
-
-func (fake *FakeWorker) IncreaseActiveTasksReturns(result1 int, result2 error) {
-	fake.increaseActiveTasksMutex.Lock()
-	defer fake.increaseActiveTasksMutex.Unlock()
-	fake.IncreaseActiveTasksStub = nil
-	fake.increaseActiveTasksReturns = struct {
-		result1 int
-		result2 error
-	}{result1, result2}
-}
-
-func (fake *FakeWorker) IncreaseActiveTasksReturnsOnCall(i int, result1 int, result2 error) {
-	fake.increaseActiveTasksMutex.Lock()
-	defer fake.increaseActiveTasksMutex.Unlock()
-	fake.IncreaseActiveTasksStub = nil
-	if fake.increaseActiveTasksReturnsOnCall == nil {
-		fake.increaseActiveTasksReturnsOnCall = make(map[int]struct {
-			result1 int
-			result2 error
-		})
-	}
-	fake.increaseActiveTasksReturnsOnCall[i] = struct {
-		result1 int
-		result2 error
-	}{result1, result2}
-}
-
-func (fake *FakeWorker) Land() error {
-	fake.landMutex.Lock()
-	ret, specificReturn := fake.landReturnsOnCall[len(fake.landArgsForCall)]
-	fake.landArgsForCall = append(fake.landArgsForCall, struct {
-	}{})
-	stub := fake.LandStub
-	fakeReturns := fake.landReturns
-	fake.recordInvocation("Land", []interface{}{})
-	fake.landMutex.Unlock()
-	if stub != nil {
-		return stub()
-	}
-	if specificReturn {
-		return ret.result1
-	}
-	return fakeReturns.result1
-}
-
-func (fake *FakeWorker) LandCallCount() int {
-	fake.landMutex.RLock()
-	defer fake.landMutex.RUnlock()
-	return len(fake.landArgsForCall)
-}
-
-func (fake *FakeWorker) LandCalls(stub func() error) {
-	fake.landMutex.Lock()
-	defer fake.landMutex.Unlock()
-	fake.LandStub = stub
-}
-
-func (fake *FakeWorker) LandReturns(result1 error) {
-	fake.landMutex.Lock()
-	defer fake.landMutex.Unlock()
-	fake.LandStub = nil
-	fake.landReturns = struct {
-		result1 error
-	}{result1}
-}
-
-func (fake *FakeWorker) LandReturnsOnCall(i int, result1 error) {
-	fake.landMutex.Lock()
-	defer fake.landMutex.Unlock()
-	fake.LandStub = nil
-	if fake.landReturnsOnCall == nil {
-		fake.landReturnsOnCall = make(map[int]struct {
-			result1 error
-		})
-	}
-	fake.landReturnsOnCall[i] = struct {
-		result1 error
-	}{result1}
-}
-
 func (fake *FakeWorker) Name() string {
 	fake.nameMutex.Lock()
 	ret, specificReturn := fake.nameReturnsOnCall[len(fake.nameArgsForCall)]
@@ -1276,59 +709,6 @@ func (fake *FakeWorker) NameReturnsOnCall(i int, result1 string) {
 		})
 	}
 	fake.nameReturnsOnCall[i] = struct {
-		result1 string
-	}{result1}
-}
-
-func (fake *FakeWorker) NoProxy() string {
-	fake.noProxyMutex.Lock()
-	ret, specificReturn := fake.noProxyReturnsOnCall[len(fake.noProxyArgsForCall)]
-	fake.noProxyArgsForCall = append(fake.noProxyArgsForCall, struct {
-	}{})
-	stub := fake.NoProxyStub
-	fakeReturns := fake.noProxyReturns
-	fake.recordInvocation("NoProxy", []interface{}{})
-	fake.noProxyMutex.Unlock()
-	if stub != nil {
-		return stub()
-	}
-	if specificReturn {
-		return ret.result1
-	}
-	return fakeReturns.result1
-}
-
-func (fake *FakeWorker) NoProxyCallCount() int {
-	fake.noProxyMutex.RLock()
-	defer fake.noProxyMutex.RUnlock()
-	return len(fake.noProxyArgsForCall)
-}
-
-func (fake *FakeWorker) NoProxyCalls(stub func() string) {
-	fake.noProxyMutex.Lock()
-	defer fake.noProxyMutex.Unlock()
-	fake.NoProxyStub = stub
-}
-
-func (fake *FakeWorker) NoProxyReturns(result1 string) {
-	fake.noProxyMutex.Lock()
-	defer fake.noProxyMutex.Unlock()
-	fake.NoProxyStub = nil
-	fake.noProxyReturns = struct {
-		result1 string
-	}{result1}
-}
-
-func (fake *FakeWorker) NoProxyReturnsOnCall(i int, result1 string) {
-	fake.noProxyMutex.Lock()
-	defer fake.noProxyMutex.Unlock()
-	fake.NoProxyStub = nil
-	if fake.noProxyReturnsOnCall == nil {
-		fake.noProxyReturnsOnCall = make(map[int]struct {
-			result1 string
-		})
-	}
-	fake.noProxyReturnsOnCall[i] = struct {
 		result1 string
 	}{result1}
 }
@@ -1383,59 +763,6 @@ func (fake *FakeWorker) PlatformReturnsOnCall(i int, result1 string) {
 	}
 	fake.platformReturnsOnCall[i] = struct {
 		result1 string
-	}{result1}
-}
-
-func (fake *FakeWorker) Prune() error {
-	fake.pruneMutex.Lock()
-	ret, specificReturn := fake.pruneReturnsOnCall[len(fake.pruneArgsForCall)]
-	fake.pruneArgsForCall = append(fake.pruneArgsForCall, struct {
-	}{})
-	stub := fake.PruneStub
-	fakeReturns := fake.pruneReturns
-	fake.recordInvocation("Prune", []interface{}{})
-	fake.pruneMutex.Unlock()
-	if stub != nil {
-		return stub()
-	}
-	if specificReturn {
-		return ret.result1
-	}
-	return fakeReturns.result1
-}
-
-func (fake *FakeWorker) PruneCallCount() int {
-	fake.pruneMutex.RLock()
-	defer fake.pruneMutex.RUnlock()
-	return len(fake.pruneArgsForCall)
-}
-
-func (fake *FakeWorker) PruneCalls(stub func() error) {
-	fake.pruneMutex.Lock()
-	defer fake.pruneMutex.Unlock()
-	fake.PruneStub = stub
-}
-
-func (fake *FakeWorker) PruneReturns(result1 error) {
-	fake.pruneMutex.Lock()
-	defer fake.pruneMutex.Unlock()
-	fake.PruneStub = nil
-	fake.pruneReturns = struct {
-		result1 error
-	}{result1}
-}
-
-func (fake *FakeWorker) PruneReturnsOnCall(i int, result1 error) {
-	fake.pruneMutex.Lock()
-	defer fake.pruneMutex.Unlock()
-	fake.PruneStub = nil
-	if fake.pruneReturnsOnCall == nil {
-		fake.pruneReturnsOnCall = make(map[int]struct {
-			result1 error
-		})
-	}
-	fake.pruneReturnsOnCall[i] = struct {
-		result1 error
 	}{result1}
 }
 
@@ -1495,65 +822,6 @@ func (fake *FakeWorker) ReloadReturnsOnCall(i int, result1 bool, result2 error) 
 	}{result1, result2}
 }
 
-func (fake *FakeWorker) ResourceCerts() (*db.UsedWorkerResourceCerts, bool, error) {
-	fake.resourceCertsMutex.Lock()
-	ret, specificReturn := fake.resourceCertsReturnsOnCall[len(fake.resourceCertsArgsForCall)]
-	fake.resourceCertsArgsForCall = append(fake.resourceCertsArgsForCall, struct {
-	}{})
-	stub := fake.ResourceCertsStub
-	fakeReturns := fake.resourceCertsReturns
-	fake.recordInvocation("ResourceCerts", []interface{}{})
-	fake.resourceCertsMutex.Unlock()
-	if stub != nil {
-		return stub()
-	}
-	if specificReturn {
-		return ret.result1, ret.result2, ret.result3
-	}
-	return fakeReturns.result1, fakeReturns.result2, fakeReturns.result3
-}
-
-func (fake *FakeWorker) ResourceCertsCallCount() int {
-	fake.resourceCertsMutex.RLock()
-	defer fake.resourceCertsMutex.RUnlock()
-	return len(fake.resourceCertsArgsForCall)
-}
-
-func (fake *FakeWorker) ResourceCertsCalls(stub func() (*db.UsedWorkerResourceCerts, bool, error)) {
-	fake.resourceCertsMutex.Lock()
-	defer fake.resourceCertsMutex.Unlock()
-	fake.ResourceCertsStub = stub
-}
-
-func (fake *FakeWorker) ResourceCertsReturns(result1 *db.UsedWorkerResourceCerts, result2 bool, result3 error) {
-	fake.resourceCertsMutex.Lock()
-	defer fake.resourceCertsMutex.Unlock()
-	fake.ResourceCertsStub = nil
-	fake.resourceCertsReturns = struct {
-		result1 *db.UsedWorkerResourceCerts
-		result2 bool
-		result3 error
-	}{result1, result2, result3}
-}
-
-func (fake *FakeWorker) ResourceCertsReturnsOnCall(i int, result1 *db.UsedWorkerResourceCerts, result2 bool, result3 error) {
-	fake.resourceCertsMutex.Lock()
-	defer fake.resourceCertsMutex.Unlock()
-	fake.ResourceCertsStub = nil
-	if fake.resourceCertsReturnsOnCall == nil {
-		fake.resourceCertsReturnsOnCall = make(map[int]struct {
-			result1 *db.UsedWorkerResourceCerts
-			result2 bool
-			result3 error
-		})
-	}
-	fake.resourceCertsReturnsOnCall[i] = struct {
-		result1 *db.UsedWorkerResourceCerts
-		result2 bool
-		result3 error
-	}{result1, result2, result3}
-}
-
 func (fake *FakeWorker) ResourceTypes() []atc.WorkerResourceType {
 	fake.resourceTypesMutex.Lock()
 	ret, specificReturn := fake.resourceTypesReturnsOnCall[len(fake.resourceTypesArgsForCall)]
@@ -1604,59 +872,6 @@ func (fake *FakeWorker) ResourceTypesReturnsOnCall(i int, result1 []atc.WorkerRe
 	}
 	fake.resourceTypesReturnsOnCall[i] = struct {
 		result1 []atc.WorkerResourceType
-	}{result1}
-}
-
-func (fake *FakeWorker) Retire() error {
-	fake.retireMutex.Lock()
-	ret, specificReturn := fake.retireReturnsOnCall[len(fake.retireArgsForCall)]
-	fake.retireArgsForCall = append(fake.retireArgsForCall, struct {
-	}{})
-	stub := fake.RetireStub
-	fakeReturns := fake.retireReturns
-	fake.recordInvocation("Retire", []interface{}{})
-	fake.retireMutex.Unlock()
-	if stub != nil {
-		return stub()
-	}
-	if specificReturn {
-		return ret.result1
-	}
-	return fakeReturns.result1
-}
-
-func (fake *FakeWorker) RetireCallCount() int {
-	fake.retireMutex.RLock()
-	defer fake.retireMutex.RUnlock()
-	return len(fake.retireArgsForCall)
-}
-
-func (fake *FakeWorker) RetireCalls(stub func() error) {
-	fake.retireMutex.Lock()
-	defer fake.retireMutex.Unlock()
-	fake.RetireStub = stub
-}
-
-func (fake *FakeWorker) RetireReturns(result1 error) {
-	fake.retireMutex.Lock()
-	defer fake.retireMutex.Unlock()
-	fake.RetireStub = nil
-	fake.retireReturns = struct {
-		result1 error
-	}{result1}
-}
-
-func (fake *FakeWorker) RetireReturnsOnCall(i int, result1 error) {
-	fake.retireMutex.Lock()
-	defer fake.retireMutex.Unlock()
-	fake.RetireStub = nil
-	if fake.retireReturnsOnCall == nil {
-		fake.retireReturnsOnCall = make(map[int]struct {
-			result1 error
-		})
-	}
-	fake.retireReturnsOnCall[i] = struct {
-		result1 error
 	}{result1}
 }
 

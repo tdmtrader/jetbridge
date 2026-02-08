@@ -2,7 +2,6 @@ package worker
 
 import (
 	"context"
-	"fmt"
 	"math/rand/v2"
 	"strconv"
 	"strings"
@@ -15,7 +14,6 @@ import (
 	"github.com/concourse/concourse/atc/metric"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/cppforlife/go-semi-semantic/version"
-	"github.com/hashicorp/go-multierror"
 )
 
 var PollingInterval = 5 * time.Second
@@ -24,8 +22,6 @@ type Pool struct {
 	factory       Factory
 	db            DB
 	workerVersion version.Version
-
-	waker chan struct{}
 }
 
 func NewPool(factory Factory, db DB, workerVersion version.Version) Pool {
@@ -33,13 +29,7 @@ func NewPool(factory Factory, db DB, workerVersion version.Version) Pool {
 		factory:       factory,
 		db:            db,
 		workerVersion: workerVersion,
-
-		waker: make(chan struct{}),
 	}
-}
-
-type PoolCallback interface {
-	WaitingForWorker(lager.Logger)
 }
 
 func (pool Pool) FindOrSelectWorker(
@@ -47,8 +37,6 @@ func (pool Pool) FindOrSelectWorker(
 	owner db.ContainerOwner,
 	containerSpec runtime.ContainerSpec,
 	workerSpec Spec,
-	strategy PlacementStrategy,
-	callback PoolCallback,
 ) (runtime.Worker, error) {
 	logger := lagerctx.FromContext(ctx)
 
@@ -64,7 +52,7 @@ func (pool Pool) FindOrSelectWorker(
 	var pollingTicker *time.Ticker
 	for {
 		var err error
-		worker, err = pool.findOrSelectWorker(logger, owner, containerSpec, workerSpec, strategy)
+		worker, err = pool.findOrSelectWorker(logger, owner, containerSpec, workerSpec)
 		if err != nil {
 			return nil, err
 		}
@@ -85,10 +73,6 @@ func (pool Pool) FindOrSelectWorker(
 
 			metric.Metrics.StepsWaiting[labels].Inc()
 			defer metric.Metrics.StepsWaiting[labels].Dec()
-
-			if callback != nil {
-				callback.WaitingForWorker(logger)
-			}
 		}
 
 		select {
@@ -96,7 +80,6 @@ func (pool Pool) FindOrSelectWorker(
 			logger.Info("aborted-waiting-for-worker")
 			return nil, ctx.Err()
 		case <-pollingTicker.C:
-		case <-pool.waker:
 		}
 	}
 
@@ -109,7 +92,7 @@ func (pool Pool) FindOrSelectWorker(
 	return pool.factory.NewWorker(logger, worker), nil
 }
 
-func (pool Pool) findOrSelectWorker(logger lager.Logger, owner db.ContainerOwner, containerSpec runtime.ContainerSpec, workerSpec Spec, strategy PlacementStrategy) (db.Worker, error) {
+func (pool Pool) findOrSelectWorker(logger lager.Logger, owner db.ContainerOwner, containerSpec runtime.ContainerSpec, workerSpec Spec) (db.Worker, error) {
 	worker, compatibleWorkers, found, err := pool.findWorkerForContainer(logger, owner, workerSpec)
 	if err != nil {
 		return nil, err
@@ -117,40 +100,10 @@ func (pool Pool) findOrSelectWorker(logger lager.Logger, owner db.ContainerOwner
 	if found {
 		return worker, nil
 	}
-	orderedWorkers, err := strategy.Order(logger, pool, compatibleWorkers, containerSpec)
-	if err != nil {
-		return nil, err
+	if len(compatibleWorkers) == 0 {
+		return nil, nil
 	}
-
-	var strategyError error
-	for _, candidate := range orderedWorkers {
-		err := strategy.Approve(logger, candidate, containerSpec)
-
-		if err == nil {
-			return candidate, nil
-		}
-
-		strategyError = multierror.Append(
-			strategyError,
-			fmt.Errorf("worker: %s, error: %v", candidate.Name(), err),
-		)
-	}
-
-	logger.Debug("all-candidate-workers-rejected-during-selection", lager.Data{"reason": strategyError.Error()})
-
-	return nil, nil
-}
-
-func (pool Pool) ReleaseWorker(logger lager.Logger, containerSpec runtime.ContainerSpec, worker runtime.Worker, strategy PlacementStrategy) {
-	strategy.Release(logger, worker.DBWorker(), containerSpec)
-
-	// Attempt to wake a random waiting step to see if it can be
-	// scheduled on the recently released worker.
-	select {
-	case pool.waker <- struct{}{}:
-		logger.Debug("attempted-to-wake-waiting-step")
-	default:
-	}
+	return compatibleWorkers[0], nil
 }
 
 func (pool Pool) FindResourceCacheVolume(ctx context.Context, teamID int, resourceCache db.ResourceCache, workerSpec Spec, shouldBeValidBefore time.Time) (runtime.Volume, bool, error) {
@@ -376,8 +329,6 @@ func (pool Pool) allCompatibleAndRunningWorkers(logger lager.Logger, spec Spec) 
 	}
 
 	if len(compatibleTeamWorkers) != 0 {
-		// XXX(aoldershaw): if there is a team worker that is compatible but is
-		// rejected by the strategy, shouldn't we fallback to general workers?
 		return compatibleTeamWorkers, nil
 	}
 

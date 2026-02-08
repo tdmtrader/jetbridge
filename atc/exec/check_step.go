@@ -25,8 +25,6 @@ type CheckStep struct {
 	metadata              StepMetadata
 	containerMetadata     db.ContainerMetadata
 	resourceConfigFactory db.ResourceConfigFactory
-	noInputStrategy       worker.PlacementStrategy
-	checkStrategy         worker.PlacementStrategy
 	delegateFactory       CheckDelegateFactory
 	workerPool            Pool
 	defaultCheckTimeout   time.Duration
@@ -56,8 +54,6 @@ func NewCheckStep(
 	metadata StepMetadata,
 	resourceConfigFactory db.ResourceConfigFactory,
 	containerMetadata db.ContainerMetadata,
-	noInputStrategy worker.PlacementStrategy,
-	checkStrategy worker.PlacementStrategy,
 	pool Pool,
 	delegateFactory CheckDelegateFactory,
 	defaultCheckTimeout time.Duration,
@@ -69,8 +65,6 @@ func NewCheckStep(
 		resourceConfigFactory: resourceConfigFactory,
 		containerMetadata:     containerMetadata,
 		workerPool:            pool,
-		noInputStrategy:       noInputStrategy,
-		checkStrategy:         checkStrategy,
 		delegateFactory:       delegateFactory,
 		defaultCheckTimeout:   defaultCheckTimeout,
 	}
@@ -276,25 +270,12 @@ func (step *CheckStep) runCheck(
 		return nil, runtime.ProcessResult{}, err
 	}
 
-	strategy := step.noInputStrategy
-	if step.plan.IsResourceCheck() {
-		strategy = step.checkStrategy
-	}
-	worker, err := step.workerPool.FindOrSelectWorker(ctx, containerOwner, containerSpec, workerSpec, strategy, delegate)
+	worker, err := step.workerPool.FindOrSelectWorker(ctx, containerOwner, containerSpec, workerSpec)
 	if err != nil {
 		return nil, runtime.ProcessResult{}, err
 	}
 
 	delegate.SelectedWorker(logger, worker.Name())
-
-	defer func() {
-		step.workerPool.ReleaseWorker(
-			logger,
-			containerSpec,
-			worker,
-			strategy,
-		)
-	}()
 
 	ctx, cancel, err := MaybeTimeout(ctx, step.plan.Timeout, step.defaultCheckTimeout)
 	if err != nil {

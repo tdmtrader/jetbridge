@@ -12,9 +12,7 @@ var _ = Describe("Worker", func() {
 		var worker atc.Worker
 
 		BeforeEach(func() {
-			worker = atc.Worker{
-				GardenAddr: "127.7.7.7",
-			}
+			worker = atc.Worker{}
 		})
 
 		Context("when version is empty", func() {
@@ -46,18 +44,6 @@ var _ = Describe("Worker", func() {
 				err := worker.Validate()
 				Expect(err).To(HaveOccurred())
 				Expect(err.Error()).To(ContainSubstring("invalid worker version, only numeric characters are allowed"))
-			})
-		})
-
-		Context("when garden address is missing", func() {
-			BeforeEach(func() {
-				worker.GardenAddr = ""
-			})
-
-			It("returns errors", func() {
-				err := worker.Validate()
-				Expect(err).To(HaveOccurred())
-				Expect(err.Error()).To(ContainSubstring("missing garden address"))
 			})
 		})
 	})

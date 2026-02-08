@@ -8,18 +8,6 @@ import (
 )
 
 type FakeWorkerLifecycle struct {
-	DeleteFinishedRetiringWorkersStub        func() ([]string, error)
-	deleteFinishedRetiringWorkersMutex       sync.RWMutex
-	deleteFinishedRetiringWorkersArgsForCall []struct {
-	}
-	deleteFinishedRetiringWorkersReturns struct {
-		result1 []string
-		result2 error
-	}
-	deleteFinishedRetiringWorkersReturnsOnCall map[int]struct {
-		result1 []string
-		result2 error
-	}
 	DeleteUnresponsiveEphemeralWorkersStub        func() ([]string, error)
 	deleteUnresponsiveEphemeralWorkersMutex       sync.RWMutex
 	deleteUnresponsiveEphemeralWorkersArgsForCall []struct {
@@ -44,88 +32,8 @@ type FakeWorkerLifecycle struct {
 		result1 map[string]db.WorkerState
 		result2 error
 	}
-	LandFinishedLandingWorkersStub        func() ([]string, error)
-	landFinishedLandingWorkersMutex       sync.RWMutex
-	landFinishedLandingWorkersArgsForCall []struct {
-	}
-	landFinishedLandingWorkersReturns struct {
-		result1 []string
-		result2 error
-	}
-	landFinishedLandingWorkersReturnsOnCall map[int]struct {
-		result1 []string
-		result2 error
-	}
-	StallUnresponsiveWorkersStub        func() ([]string, error)
-	stallUnresponsiveWorkersMutex       sync.RWMutex
-	stallUnresponsiveWorkersArgsForCall []struct {
-	}
-	stallUnresponsiveWorkersReturns struct {
-		result1 []string
-		result2 error
-	}
-	stallUnresponsiveWorkersReturnsOnCall map[int]struct {
-		result1 []string
-		result2 error
-	}
 	invocations      map[string][][]interface{}
 	invocationsMutex sync.RWMutex
-}
-
-func (fake *FakeWorkerLifecycle) DeleteFinishedRetiringWorkers() ([]string, error) {
-	fake.deleteFinishedRetiringWorkersMutex.Lock()
-	ret, specificReturn := fake.deleteFinishedRetiringWorkersReturnsOnCall[len(fake.deleteFinishedRetiringWorkersArgsForCall)]
-	fake.deleteFinishedRetiringWorkersArgsForCall = append(fake.deleteFinishedRetiringWorkersArgsForCall, struct {
-	}{})
-	stub := fake.DeleteFinishedRetiringWorkersStub
-	fakeReturns := fake.deleteFinishedRetiringWorkersReturns
-	fake.recordInvocation("DeleteFinishedRetiringWorkers", []interface{}{})
-	fake.deleteFinishedRetiringWorkersMutex.Unlock()
-	if stub != nil {
-		return stub()
-	}
-	if specificReturn {
-		return ret.result1, ret.result2
-	}
-	return fakeReturns.result1, fakeReturns.result2
-}
-
-func (fake *FakeWorkerLifecycle) DeleteFinishedRetiringWorkersCallCount() int {
-	fake.deleteFinishedRetiringWorkersMutex.RLock()
-	defer fake.deleteFinishedRetiringWorkersMutex.RUnlock()
-	return len(fake.deleteFinishedRetiringWorkersArgsForCall)
-}
-
-func (fake *FakeWorkerLifecycle) DeleteFinishedRetiringWorkersCalls(stub func() ([]string, error)) {
-	fake.deleteFinishedRetiringWorkersMutex.Lock()
-	defer fake.deleteFinishedRetiringWorkersMutex.Unlock()
-	fake.DeleteFinishedRetiringWorkersStub = stub
-}
-
-func (fake *FakeWorkerLifecycle) DeleteFinishedRetiringWorkersReturns(result1 []string, result2 error) {
-	fake.deleteFinishedRetiringWorkersMutex.Lock()
-	defer fake.deleteFinishedRetiringWorkersMutex.Unlock()
-	fake.DeleteFinishedRetiringWorkersStub = nil
-	fake.deleteFinishedRetiringWorkersReturns = struct {
-		result1 []string
-		result2 error
-	}{result1, result2}
-}
-
-func (fake *FakeWorkerLifecycle) DeleteFinishedRetiringWorkersReturnsOnCall(i int, result1 []string, result2 error) {
-	fake.deleteFinishedRetiringWorkersMutex.Lock()
-	defer fake.deleteFinishedRetiringWorkersMutex.Unlock()
-	fake.DeleteFinishedRetiringWorkersStub = nil
-	if fake.deleteFinishedRetiringWorkersReturnsOnCall == nil {
-		fake.deleteFinishedRetiringWorkersReturnsOnCall = make(map[int]struct {
-			result1 []string
-			result2 error
-		})
-	}
-	fake.deleteFinishedRetiringWorkersReturnsOnCall[i] = struct {
-		result1 []string
-		result2 error
-	}{result1, result2}
 }
 
 func (fake *FakeWorkerLifecycle) DeleteUnresponsiveEphemeralWorkers() ([]string, error) {
@@ -236,118 +144,6 @@ func (fake *FakeWorkerLifecycle) GetWorkerStateByNameReturnsOnCall(i int, result
 	}
 	fake.getWorkerStateByNameReturnsOnCall[i] = struct {
 		result1 map[string]db.WorkerState
-		result2 error
-	}{result1, result2}
-}
-
-func (fake *FakeWorkerLifecycle) LandFinishedLandingWorkers() ([]string, error) {
-	fake.landFinishedLandingWorkersMutex.Lock()
-	ret, specificReturn := fake.landFinishedLandingWorkersReturnsOnCall[len(fake.landFinishedLandingWorkersArgsForCall)]
-	fake.landFinishedLandingWorkersArgsForCall = append(fake.landFinishedLandingWorkersArgsForCall, struct {
-	}{})
-	stub := fake.LandFinishedLandingWorkersStub
-	fakeReturns := fake.landFinishedLandingWorkersReturns
-	fake.recordInvocation("LandFinishedLandingWorkers", []interface{}{})
-	fake.landFinishedLandingWorkersMutex.Unlock()
-	if stub != nil {
-		return stub()
-	}
-	if specificReturn {
-		return ret.result1, ret.result2
-	}
-	return fakeReturns.result1, fakeReturns.result2
-}
-
-func (fake *FakeWorkerLifecycle) LandFinishedLandingWorkersCallCount() int {
-	fake.landFinishedLandingWorkersMutex.RLock()
-	defer fake.landFinishedLandingWorkersMutex.RUnlock()
-	return len(fake.landFinishedLandingWorkersArgsForCall)
-}
-
-func (fake *FakeWorkerLifecycle) LandFinishedLandingWorkersCalls(stub func() ([]string, error)) {
-	fake.landFinishedLandingWorkersMutex.Lock()
-	defer fake.landFinishedLandingWorkersMutex.Unlock()
-	fake.LandFinishedLandingWorkersStub = stub
-}
-
-func (fake *FakeWorkerLifecycle) LandFinishedLandingWorkersReturns(result1 []string, result2 error) {
-	fake.landFinishedLandingWorkersMutex.Lock()
-	defer fake.landFinishedLandingWorkersMutex.Unlock()
-	fake.LandFinishedLandingWorkersStub = nil
-	fake.landFinishedLandingWorkersReturns = struct {
-		result1 []string
-		result2 error
-	}{result1, result2}
-}
-
-func (fake *FakeWorkerLifecycle) LandFinishedLandingWorkersReturnsOnCall(i int, result1 []string, result2 error) {
-	fake.landFinishedLandingWorkersMutex.Lock()
-	defer fake.landFinishedLandingWorkersMutex.Unlock()
-	fake.LandFinishedLandingWorkersStub = nil
-	if fake.landFinishedLandingWorkersReturnsOnCall == nil {
-		fake.landFinishedLandingWorkersReturnsOnCall = make(map[int]struct {
-			result1 []string
-			result2 error
-		})
-	}
-	fake.landFinishedLandingWorkersReturnsOnCall[i] = struct {
-		result1 []string
-		result2 error
-	}{result1, result2}
-}
-
-func (fake *FakeWorkerLifecycle) StallUnresponsiveWorkers() ([]string, error) {
-	fake.stallUnresponsiveWorkersMutex.Lock()
-	ret, specificReturn := fake.stallUnresponsiveWorkersReturnsOnCall[len(fake.stallUnresponsiveWorkersArgsForCall)]
-	fake.stallUnresponsiveWorkersArgsForCall = append(fake.stallUnresponsiveWorkersArgsForCall, struct {
-	}{})
-	stub := fake.StallUnresponsiveWorkersStub
-	fakeReturns := fake.stallUnresponsiveWorkersReturns
-	fake.recordInvocation("StallUnresponsiveWorkers", []interface{}{})
-	fake.stallUnresponsiveWorkersMutex.Unlock()
-	if stub != nil {
-		return stub()
-	}
-	if specificReturn {
-		return ret.result1, ret.result2
-	}
-	return fakeReturns.result1, fakeReturns.result2
-}
-
-func (fake *FakeWorkerLifecycle) StallUnresponsiveWorkersCallCount() int {
-	fake.stallUnresponsiveWorkersMutex.RLock()
-	defer fake.stallUnresponsiveWorkersMutex.RUnlock()
-	return len(fake.stallUnresponsiveWorkersArgsForCall)
-}
-
-func (fake *FakeWorkerLifecycle) StallUnresponsiveWorkersCalls(stub func() ([]string, error)) {
-	fake.stallUnresponsiveWorkersMutex.Lock()
-	defer fake.stallUnresponsiveWorkersMutex.Unlock()
-	fake.StallUnresponsiveWorkersStub = stub
-}
-
-func (fake *FakeWorkerLifecycle) StallUnresponsiveWorkersReturns(result1 []string, result2 error) {
-	fake.stallUnresponsiveWorkersMutex.Lock()
-	defer fake.stallUnresponsiveWorkersMutex.Unlock()
-	fake.StallUnresponsiveWorkersStub = nil
-	fake.stallUnresponsiveWorkersReturns = struct {
-		result1 []string
-		result2 error
-	}{result1, result2}
-}
-
-func (fake *FakeWorkerLifecycle) StallUnresponsiveWorkersReturnsOnCall(i int, result1 []string, result2 error) {
-	fake.stallUnresponsiveWorkersMutex.Lock()
-	defer fake.stallUnresponsiveWorkersMutex.Unlock()
-	fake.StallUnresponsiveWorkersStub = nil
-	if fake.stallUnresponsiveWorkersReturnsOnCall == nil {
-		fake.stallUnresponsiveWorkersReturnsOnCall = make(map[int]struct {
-			result1 []string
-			result2 error
-		})
-	}
-	fake.stallUnresponsiveWorkersReturnsOnCall[i] = struct {
-		result1 []string
 		result2 error
 	}{result1, result2}
 }

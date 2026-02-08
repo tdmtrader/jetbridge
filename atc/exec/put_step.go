@@ -54,7 +54,6 @@ type PutStep struct {
 	plan              atc.PutPlan
 	metadata          StepMetadata
 	containerMetadata db.ContainerMetadata
-	strategy          worker.PlacementStrategy
 	workerPool        Pool
 	delegateFactory   PutDelegateFactory
 	defaultPutTimeout time.Duration
@@ -65,7 +64,6 @@ func NewPutStep(
 	plan atc.PutPlan,
 	metadata StepMetadata,
 	containerMetadata db.ContainerMetadata,
-	strategy worker.PlacementStrategy,
 	workerPool Pool,
 	delegateFactory PutDelegateFactory,
 	defaultPutTimeout time.Duration,
@@ -76,7 +74,6 @@ func NewPutStep(
 		metadata:          metadata,
 		containerMetadata: containerMetadata,
 		workerPool:        workerPool,
-		strategy:          strategy,
 		delegateFactory:   delegateFactory,
 		defaultPutTimeout: defaultPutTimeout,
 	}
@@ -187,19 +184,10 @@ func (step *PutStep) run(ctx context.Context, state RunState, delegate PutDelega
 		return false, err
 	}
 
-	worker, err := step.workerPool.FindOrSelectWorker(ctx, owner, containerSpec, workerSpec, step.strategy, delegate)
+	worker, err := step.workerPool.FindOrSelectWorker(ctx, owner, containerSpec, workerSpec)
 	if err != nil {
 		return false, err
 	}
-
-	defer func() {
-		step.workerPool.ReleaseWorker(
-			logger,
-			containerSpec,
-			worker,
-			step.strategy,
-		)
-	}()
 
 	delegate.SelectedWorker(logger, worker.Name())
 

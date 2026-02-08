@@ -166,7 +166,6 @@ var _ = Describe("GetStep", func() {
 			containerMetadata,
 			fakeLockFactory,
 			fakeResourceCacheFactory,
-			nil,
 			fakeDelegateFactory,
 			fakePool,
 			defaultGetTimeout,
@@ -481,7 +480,7 @@ var _ = Describe("GetStep", func() {
 
 		JustBeforeEach(func() {
 			Expect(fakePool.FindOrSelectWorkerCallCount()).To(Equal(1))
-			ctx, _, _, workerSpec, _, _ = fakePool.FindOrSelectWorkerArgsForCall(0)
+			ctx, _, _, workerSpec = fakePool.FindOrSelectWorkerArgsForCall(0)
 		})
 
 		It("doesn't enforce a timeout", func() {
@@ -652,7 +651,7 @@ var _ = Describe("GetStep", func() {
 
 		It("sets the bottom-most type in the worker spec", func() {
 			Expect(fakePool.FindOrSelectWorkerCallCount()).To(Equal(1))
-			_, _, _, workerSpec, _, _ := fakePool.FindOrSelectWorkerArgsForCall(0)
+			_, _, _, workerSpec := fakePool.FindOrSelectWorkerArgsForCall(0)
 
 			Expect(workerSpec).To(Equal(
 				worker.Spec{

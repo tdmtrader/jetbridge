@@ -24,7 +24,7 @@ jobs:
           echo "=== Build successful ==="
           echo ""
           echo "=== Running go vet ==="
-          go vet ./atc/worker/k8sruntime/... ./vars/... ./tsa/... ./tracing/... \
+          go vet ./atc/worker/jetbridge/... ./vars/... ./tsa/... ./tracing/... \
                  ./fly/commands/... ./fly/rc/... ./fly/eventstream/... \
                  ./atc/engine/... ./atc/resource/... \
                  ./atc/scheduler/... ./atc/metric/... ./atc/creds/... \
@@ -86,9 +86,9 @@ jobs:
         - -exc
         - |
           cd /src
-          echo "=== Running k8sruntime full test suite ==="
-          go test -v -count=1 -timeout 5m ./atc/worker/k8sruntime/...
-          echo "=== All k8sruntime tests passed ==="
+          echo "=== Running jetbridge full test suite ==="
+          go test -v -count=1 -timeout 5m ./atc/worker/jetbridge/...
+          echo "=== All jetbridge tests passed ==="
 
 - name: k8s-live-tests
   serial: true
@@ -115,10 +115,10 @@ jobs:
           echo ""
 
           cd /src
-          echo "=== Running k8sruntime live integration tests ==="
+          echo "=== Running jetbridge live integration tests ==="
           echo "These tests create real K8s pods against the live cluster."
           echo ""
-          go test -tags live -v -count=1 -timeout 5m ./atc/worker/k8sruntime/...
+          go test -tags live -v -count=1 -timeout 5m ./atc/worker/jetbridge/...
           echo "=== Live integration tests passed ==="
 
 - name: build-image
@@ -216,12 +216,12 @@ jobs:
           echo ""
           echo "Running post-deploy live smoke tests..."
           cd /src
-          go test -tags live -v -count=1 -timeout 3m -run "TestLiveSecureDefaults|TestLiveResourceLimitsQoS" ./atc/worker/k8sruntime/...
+          go test -tags live -v -count=1 -timeout 3m -run "TestLiveSecureDefaults|TestLiveResourceLimitsQoS" ./atc/worker/jetbridge/...
           echo ""
           echo "Running lifecycle & hijack live tests..."
-          go test -tags live -v -count=1 -timeout 5m -run "TestLiveWorkerPodSurvivesCompletion|TestLiveWorkerHijackExistingPod" ./atc/worker/k8sruntime/...
+          go test -tags live -v -count=1 -timeout 5m -run "TestLiveWorkerPodSurvivesCompletion|TestLiveWorkerHijackExistingPod" ./atc/worker/jetbridge/...
           echo ""
           echo "Running volume passing live tests..."
-          go test -tags live -v -count=1 -timeout 5m -run "TestLiveVolumePassing" ./atc/worker/k8sruntime/...
+          go test -tags live -v -count=1 -timeout 5m -run "TestLiveVolumePassing" ./atc/worker/jetbridge/...
           echo ""
           echo "=== Post-deploy verification complete ==="

@@ -1,5 +1,0 @@
-services:
-  worker:
-    volumes:
-    - "../hack/keys:/concourse-keys"
-    - "/dev/null:/run/containerd/containerd.sock"

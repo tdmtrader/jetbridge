@@ -5,7 +5,6 @@ import (
 	"io"
 	"time"
 
-	"code.cloudfoundry.org/lager/v3"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/exec/build"
@@ -71,10 +70,9 @@ type OutputHandler func(io.Writer) error
 
 //counterfeiter:generate . Pool
 type Pool interface {
-	FindOrSelectWorker(context.Context, db.ContainerOwner, runtime.ContainerSpec, worker.Spec, worker.PlacementStrategy, worker.PoolCallback) (runtime.Worker, error)
+	FindOrSelectWorker(context.Context, db.ContainerOwner, runtime.ContainerSpec, worker.Spec) (runtime.Worker, error)
 	FindResourceCacheVolume(context.Context, int, db.ResourceCache, worker.Spec, time.Time) (runtime.Volume, bool, error)
 	FindResourceCacheVolumeOnWorker(context.Context, db.ResourceCache, worker.Spec, string, time.Time) (runtime.Volume, bool, error)
-	ReleaseWorker(lager.Logger, runtime.ContainerSpec, runtime.Worker, worker.PlacementStrategy)
 	LocateVolume(ctx context.Context, teamID int, handle string) (runtime.Volume, runtime.Worker, bool, error)
 }
 

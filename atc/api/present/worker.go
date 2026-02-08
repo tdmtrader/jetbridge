@@ -6,14 +6,6 @@ import (
 )
 
 func Worker(workerInfo db.Worker) atc.Worker {
-	gardenAddr := ""
-	if workerInfo.GardenAddr() != nil {
-		gardenAddr = *workerInfo.GardenAddr()
-	}
-	baggageclaimURL := ""
-	if workerInfo.BaggageclaimURL() != nil {
-		baggageclaimURL = *workerInfo.BaggageclaimURL()
-	}
 	version := ""
 	if workerInfo.Version() != nil {
 		version = *workerInfo.Version()
@@ -24,11 +16,6 @@ func Worker(workerInfo db.Worker) atc.Worker {
 	}
 
 	atcWorker := atc.Worker{
-		GardenAddr:       gardenAddr,
-		BaggageclaimURL:  baggageclaimURL,
-		HTTPProxyURL:     workerInfo.HTTPProxyURL(),
-		HTTPSProxyURL:    workerInfo.HTTPSProxyURL(),
-		NoProxy:          workerInfo.NoProxy(),
 		ActiveContainers: workerInfo.ActiveContainers(),
 		ActiveVolumes:    workerInfo.ActiveVolumes(),
 		ActiveTasks:      activeTasks,

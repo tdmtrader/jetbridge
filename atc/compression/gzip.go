@@ -3,7 +3,6 @@ package compression
 import (
 	"io"
 
-	"github.com/concourse/concourse/worker/baggageclaim"
 	"github.com/klauspost/compress/gzip"
 )
 
@@ -21,8 +20,8 @@ func (c *gzipCompression) NewReader(reader io.ReadCloser) (io.ReadCloser, error)
 	return &gzipReader{reader: r}, nil
 }
 
-func (c *gzipCompression) Encoding() baggageclaim.Encoding {
-	return baggageclaim.GzipEncoding
+func (c *gzipCompression) Encoding() Encoding {
+	return GzipEncoding
 }
 
 type gzipReader struct {

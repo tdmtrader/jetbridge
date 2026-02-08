@@ -499,9 +499,7 @@ var _ = Describe("ResourceCacheLifecycle", func() {
 				Expect(findErr).ToNot(HaveOccurred())
 				Expect(valid).To(BeTrue())
 
-				err = scenario.Workers[0].Land()
-				Expect(err).ToNot(HaveOccurred())
-				err = scenario.Workers[0].Prune()
+				err = scenario.Workers[0].Delete()
 				Expect(err).ToNot(HaveOccurred())
 			})
 
@@ -552,9 +550,7 @@ var _ = Describe("ResourceCacheLifecycle", func() {
 				_, err = build.Start(atc.Plan{})
 				Expect(err).ToNot(HaveOccurred())
 
-				err = scenario.Workers[0].Land()
-				Expect(err).ToNot(HaveOccurred())
-				err = scenario.Workers[0].Prune()
+				err = scenario.Workers[0].Delete()
 				Expect(err).ToNot(HaveOccurred())
 			})
 

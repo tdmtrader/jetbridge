@@ -19,7 +19,6 @@ import (
 	"github.com/concourse/concourse/atc/worker"
 	"github.com/concourse/concourse/tracing"
 	"github.com/concourse/concourse/vars"
-	"github.com/concourse/concourse/worker/baggageclaim"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -91,7 +90,6 @@ type TaskStep struct {
 	defaultLimits      atc.ContainerLimits
 	metadata           StepMetadata
 	containerMetadata  db.ContainerMetadata
-	strategy           worker.PlacementStrategy
 	workerPool         Pool
 	streamer           Streamer
 	delegateFactory    TaskDelegateFactory
@@ -104,7 +102,6 @@ func NewTaskStep(
 	defaultLimits atc.ContainerLimits,
 	metadata StepMetadata,
 	containerMetadata db.ContainerMetadata,
-	strategy worker.PlacementStrategy,
 	workerPool Pool,
 	streamer Streamer,
 	delegateFactory TaskDelegateFactory,
@@ -116,7 +113,6 @@ func NewTaskStep(
 		defaultLimits:      defaultLimits,
 		metadata:           metadata,
 		containerMetadata:  containerMetadata,
-		strategy:           strategy,
 		workerPool:         workerPool,
 		streamer:           streamer,
 		delegateFactory:    delegateFactory,
@@ -270,21 +266,10 @@ func (step *TaskStep) run(ctx context.Context, state RunState, delegate TaskDele
 		owner,
 		containerSpec,
 		step.workerSpec(config),
-		step.strategy,
-		delegate,
 	)
 	if err != nil {
 		return false, err
 	}
-
-	defer func() {
-		step.workerPool.ReleaseWorker(
-			logger,
-			containerSpec,
-			worker,
-			step.strategy,
-		)
-	}()
 
 	ctx, cancel, err := MaybeTimeout(ctx, step.plan.Timeout, step.defaultTaskTimeout)
 	if err != nil {
@@ -543,7 +528,7 @@ func (step *TaskStep) getOciEntrypoint(ctx context.Context, imageSpec runtime.Im
 
 	metadataStream, err := step.streamer.StreamFile(ctx, imageSpec.ImageArtifact, "metadata.json")
 	if err != nil {
-		if err == baggageclaim.ErrFileNotFound {
+		if err == runtime.ErrFileNotFound {
 			return path, args, FileNotFoundError{
 				Name:     imageSpec.ImageArtifact.Handle(),
 				FilePath: "metadata.json",

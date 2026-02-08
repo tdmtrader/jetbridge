@@ -2,8 +2,6 @@ package compression
 
 import (
 	"io"
-
-	"github.com/concourse/concourse/worker/baggageclaim"
 )
 
 type noCompression struct{}
@@ -16,8 +14,8 @@ func (c *noCompression) NewReader(reader io.ReadCloser) (io.ReadCloser, error) {
 	return &rawReader{reader: reader}, nil
 }
 
-func (c *noCompression) Encoding() baggageclaim.Encoding {
-	return baggageclaim.RawEncoding
+func (c *noCompression) Encoding() Encoding {
+	return RawEncoding
 }
 
 type rawReader struct {

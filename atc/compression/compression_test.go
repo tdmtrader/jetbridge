@@ -2,7 +2,6 @@ package compression_test
 
 import (
 	"github.com/concourse/concourse/atc/compression"
-	"github.com/concourse/concourse/worker/baggageclaim"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -19,7 +18,7 @@ var _ = Describe("Compression", func() {
 		})
 
 		It("returns gzip", func() {
-			Expect(comp.Encoding()).To(Equal(baggageclaim.GzipEncoding))
+			Expect(comp.Encoding()).To(Equal(compression.GzipEncoding))
 		})
 	})
 
@@ -29,7 +28,7 @@ var _ = Describe("Compression", func() {
 		})
 
 		It("returns zstd", func() {
-			Expect(comp.Encoding()).To(Equal(baggageclaim.ZstdEncoding))
+			Expect(comp.Encoding()).To(Equal(compression.ZstdEncoding))
 		})
 	})
 
@@ -39,7 +38,7 @@ var _ = Describe("Compression", func() {
 		})
 
 		It("returns s2", func() {
-			Expect(comp.Encoding()).To(Equal(baggageclaim.S2Encoding))
+			Expect(comp.Encoding()).To(Equal(compression.S2Encoding))
 		})
 	})
 })

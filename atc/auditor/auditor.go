@@ -74,9 +74,7 @@ func (a *auditor) ValidateAction(action string) bool {
 		return a.EnableBuildAuditLog
 	case atc.ListContainers,
 		atc.GetContainer,
-		atc.HijackContainer,
-		atc.ListDestroyingContainers,
-		atc.ReportWorkerContainers:
+		atc.HijackContainer:
 		return a.EnableContainerAuditLog
 	case atc.GetJob,
 		atc.CreateJobBuild,
@@ -155,18 +153,12 @@ func (a *auditor) ValidateAction(action string) bool {
 		atc.GetTeam:
 		return a.EnableTeamAuditLog
 	case atc.RegisterWorker,
-		atc.LandWorker,
-		atc.RetireWorker,
-		atc.PruneWorker,
-		atc.HeartbeatWorker,
 		atc.ListWorkers,
 		atc.DeleteWorker,
 		atc.GetOpenIDConfiguration,
 		atc.GetSigningKeys:
 		return a.EnableWorkerAuditLog
-	case atc.ListVolumes,
-		atc.ListDestroyingVolumes,
-		atc.ReportWorkerVolumes:
+	case atc.ListVolumes:
 		return a.EnableVolumeAuditLog
 	default:
 		panic(fmt.Sprintf("unhandled action: %s", action))
