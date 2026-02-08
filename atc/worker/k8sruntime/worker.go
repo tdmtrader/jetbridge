@@ -77,8 +77,8 @@ func (w *Worker) FindOrCreateContainer(
 	// If we already have a created container in the DB, return it directly.
 	// The Pod may or may not exist yet (it gets created in Container.Run).
 	if createdContainer != nil {
-		container := newContainer(containerHandle, containerSpec, createdContainer, w.clientset, w.config, w.Name(), w.executor)
-		mounts := w.stubVolumeMounts(containerHandle, containerSpec)
+		mounts, volumes := w.buildVolumeMountsForSpec(containerHandle, containerSpec)
+		container := newContainer(containerHandle, containerSpec, createdContainer, w.clientset, w.config, w.Name(), w.executor, volumes)
 		return container, mounts, nil
 	}
 
@@ -90,39 +90,56 @@ func (w *Worker) FindOrCreateContainer(
 		return nil, nil, fmt.Errorf("mark container as created: %w", err)
 	}
 
-	container := newContainer(containerHandle, containerSpec, createdContainer, w.clientset, w.config, w.Name(), w.executor)
-	mounts := w.stubVolumeMounts(containerHandle, containerSpec)
+	mounts, volumes := w.buildVolumeMountsForSpec(containerHandle, containerSpec)
+	container := newContainer(containerHandle, containerSpec, createdContainer, w.clientset, w.config, w.Name(), w.executor, volumes)
 	return container, mounts, nil
 }
 
-// stubVolumeMounts creates runtime.VolumeMount entries for the container's Dir,
-// inputs, outputs, and caches. The get step requires a VolumeMount at the
-// resource directory path so it can call InitializeResourceCache on the volume.
-func (w *Worker) stubVolumeMounts(handle string, spec runtime.ContainerSpec) []runtime.VolumeMount {
+// buildVolumeMountsForSpec creates runtime.VolumeMount entries for the
+// container's Dir, inputs, outputs, and caches. When the worker has an
+// executor configured, volumes are created as deferred volumes that support
+// StreamIn/StreamOut once the pod name is set. Otherwise, stub volumes are
+// used as placeholders for resource cache tracking.
+func (w *Worker) buildVolumeMountsForSpec(handle string, spec runtime.ContainerSpec) ([]runtime.VolumeMount, []*Volume) {
 	var mounts []runtime.VolumeMount
+	var volumes []*Volume
+
+	addMount := func(vol *Volume, mountPath string) {
+		volumes = append(volumes, vol)
+		mounts = append(mounts, runtime.VolumeMount{
+			Volume:    vol,
+			MountPath: mountPath,
+		})
+	}
 
 	if spec.Dir != "" {
-		mounts = append(mounts, runtime.VolumeMount{
-			Volume:    NewStubVolume(handle+"-dir", w.Name(), spec.Dir),
-			MountPath: spec.Dir,
-		})
+		addMount(w.newVolumeForMount(handle+"-dir", spec.Dir), spec.Dir)
 	}
 
 	for i, input := range spec.Inputs {
-		mounts = append(mounts, runtime.VolumeMount{
-			Volume:    NewStubVolume(fmt.Sprintf("%s-input-%d", handle, i), w.Name(), input.DestinationPath),
-			MountPath: input.DestinationPath,
-		})
+		addMount(w.newVolumeForMount(fmt.Sprintf("%s-input-%d", handle, i), input.DestinationPath), input.DestinationPath)
 	}
 
 	for name, path := range spec.Outputs {
-		mounts = append(mounts, runtime.VolumeMount{
-			Volume:    NewStubVolume(fmt.Sprintf("%s-output-%s", handle, name), w.Name(), path),
-			MountPath: path,
-		})
+		addMount(w.newVolumeForMount(fmt.Sprintf("%s-output-%s", handle, name), path), path)
 	}
 
-	return mounts
+	for i, cachePath := range spec.Caches {
+		addMount(w.newVolumeForMount(fmt.Sprintf("%s-cache-%d", handle, i), cachePath), cachePath)
+	}
+
+	return mounts, volumes
+}
+
+// newVolumeForMount creates a Volume for the given handle and mount path.
+// If the worker has an executor, it creates a deferred volume that will
+// support StreamIn/StreamOut once the pod name is set. Otherwise it creates
+// a stub volume for placeholder use.
+func (w *Worker) newVolumeForMount(handle, mountPath string) *Volume {
+	if w.executor != nil {
+		return NewDeferredVolume(handle, w.Name(), w.executor, w.config.Namespace, mainContainerName, mountPath)
+	}
+	return NewStubVolume(handle, w.Name(), mountPath)
 }
 
 func (w *Worker) CreateVolumeForArtifact(ctx context.Context, teamID int) (runtime.Volume, db.WorkerArtifact, error) {
@@ -149,7 +166,7 @@ func (w *Worker) LookupContainer(ctx context.Context, handle string) (runtime.Co
 		return nil, false, nil
 	}
 
-	return newContainer(handle, runtime.ContainerSpec{}, dbContainer, w.clientset, w.config, w.Name(), w.executor), true, nil
+	return newContainer(handle, runtime.ContainerSpec{}, dbContainer, w.clientset, w.config, w.Name(), w.executor, nil), true, nil
 }
 
 func (w *Worker) LookupVolume(ctx context.Context, handle string) (runtime.Volume, bool, error) {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	concourse "github.com/concourse/concourse"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -58,9 +59,11 @@ func (r *Registrar) Register(ctx context.Context) error {
 		Name:             r.WorkerName(),
 		Platform:         "linux",
 		State:            "running",
+		Version:          concourse.WorkerVersion,
 		GardenAddr:       "",
 		BaggageclaimURL:  fmt.Sprintf("kubernetes://%s", r.cfg.Namespace),
 		ActiveContainers: activeContainers,
+		ResourceTypes:    r.resourceTypes(),
 	}
 
 	_, err = r.workerFactory.SaveWorker(worker, heartbeatTTL)
@@ -80,6 +83,25 @@ func (r *Registrar) Run(ctx context.Context) error {
 // Heartbeat refreshes the worker's TTL in the database by re-saving it.
 func (r *Registrar) Heartbeat(ctx context.Context) error {
 	return r.Register(ctx)
+}
+
+// resourceTypes builds the list of base resource types that this K8s worker
+// supports. Each entry maps a Concourse resource type name to its Docker image.
+func (r *Registrar) resourceTypes() []atc.WorkerResourceType {
+	images := r.cfg.ResourceTypeImages
+	if images == nil {
+		images = DefaultResourceTypeImages
+	}
+
+	var types []atc.WorkerResourceType
+	for typeName, image := range images {
+		types = append(types, atc.WorkerResourceType{
+			Type:    typeName,
+			Image:   image,
+			Version: "1.0.0",
+		})
+	}
+	return types
 }
 
 // countActivePods returns the number of Pods in the namespace that are

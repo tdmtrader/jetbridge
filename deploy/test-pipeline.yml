@@ -2,13 +2,13 @@ resources:
 - name: trigger
   type: time
   source:
-    interval: 24h
+    interval: 5m
 
 jobs:
 - name: build-and-vet
   plan:
   - get: trigger
-    trigger: false
+    trigger: true
   - task: build-and-vet
     config:
       platform: linux
@@ -164,16 +164,17 @@ jobs:
         args:
         - -exc
         - |
-          echo "=== All tests passed — deploying latest Concourse ==="
+          echo "=== All tests passed — verifying deployment ==="
           echo ""
-          echo "Triggering rolling restart of concourse-web..."
-          kubectl rollout restart deployment/concourse-web -n concourse
+          echo "Checking concourse-web is running..."
+          kubectl wait --for=condition=ready pod -l app=concourse-web -n concourse --timeout=60s
           echo ""
-          echo "Waiting for rollout to complete..."
-          kubectl rollout status deployment/concourse-web -n concourse --timeout=120s
-          echo ""
-          echo "=== Deploy complete ==="
+          echo "Current concourse-web pod:"
           kubectl get pods -n concourse -l app=concourse-web
+          echo ""
+          echo "=== Deploy verification complete ==="
+          echo "Note: actual rollout restart is done out-of-band to avoid"
+          echo "killing the ATC that is running this build."
 
 - name: post-deploy-verify
   plan:
@@ -208,5 +209,8 @@ jobs:
           echo ""
           echo "Running lifecycle & hijack live tests..."
           go test -tags live -v -count=1 -timeout 5m -run "TestLiveWorkerPodSurvivesCompletion|TestLiveWorkerHijackExistingPod" ./atc/worker/k8sruntime/...
+          echo ""
+          echo "Running volume passing live tests..."
+          go test -tags live -v -count=1 -timeout 5m -run "TestLiveVolumePassing" ./atc/worker/k8sruntime/...
           echo ""
           echo "=== Post-deploy verification complete ==="

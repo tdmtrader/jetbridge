@@ -151,10 +151,8 @@ func TestLiveSecureDefaults(t *testing.T) {
 		t.Fatalf("FindOrCreateContainer: %v", err)
 	}
 
-	// Run a command to trigger pod creation. Note: with RunAsNonRoot=true
-	// and busybox (root user), the pod may fail to start — but we still
-	// verify the security context was applied to the pod spec.
-	_, err = container.Run(ctx, runtime.ProcessSpec{
+	// Run a command to trigger pod creation.
+	process, err := container.Run(ctx, runtime.ProcessSpec{
 		Path: "/bin/sh",
 		Args: []string{"-c", "whoami"},
 	}, runtime.ProcessIO{})
@@ -170,14 +168,15 @@ func TestLiveSecureDefaults(t *testing.T) {
 		t.Fatalf("getting pod: %v", err)
 	}
 
-	// Verify pod-level security context.
+	// Verify pod-level security context exists but does NOT set RunAsNonRoot
+	// (resource images like concourse/time-resource run as root).
 	if pod.Spec.SecurityContext == nil {
 		t.Fatal("pod SecurityContext is nil")
 	}
-	if pod.Spec.SecurityContext.RunAsNonRoot == nil || !*pod.Spec.SecurityContext.RunAsNonRoot {
-		t.Fatal("expected RunAsNonRoot=true on non-privileged pod")
+	if pod.Spec.SecurityContext.RunAsNonRoot != nil {
+		t.Fatalf("expected RunAsNonRoot to be nil (not enforced), got %t", *pod.Spec.SecurityContext.RunAsNonRoot)
 	}
-	t.Logf("pod RunAsNonRoot=%t", *pod.Spec.SecurityContext.RunAsNonRoot)
+	t.Log("pod RunAsNonRoot is nil (not enforced) — correct")
 
 	// Verify container-level security context.
 	mainContainer := pod.Spec.Containers[0]
@@ -189,7 +188,16 @@ func TestLiveSecureDefaults(t *testing.T) {
 	}
 	t.Logf("container AllowPrivilegeEscalation=%t", *mainContainer.SecurityContext.AllowPrivilegeEscalation)
 
-	// Clean up — pod may or may not have started depending on the image user.
+	// Wait for the command to finish (pod should start fine without RunAsNonRoot).
+	result, err := process.Wait(ctx)
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if result.ExitStatus != 0 {
+		t.Fatalf("expected exit 0, got %d", result.ExitStatus)
+	}
+
+	// Clean up.
 	_ = clientset.CoreV1().Pods(cfg.Namespace).Delete(context.Background(), handle, metav1.DeleteOptions{})
 	t.Logf("secure defaults verified on pod spec")
 }

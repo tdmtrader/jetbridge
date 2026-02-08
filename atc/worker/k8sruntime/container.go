@@ -16,8 +16,9 @@ import (
 )
 
 const (
-	exitStatusPropertyName = "concourse:exit-status"
-	mainContainerName      = "main"
+	exitStatusPropertyName   = "concourse:exit-status"
+	mainContainerName        = "main"
+	exitStatusAnnotationKey  = "concourse.ci/exit-status"
 )
 
 // Compile-time check that Container satisfies runtime.Container.
@@ -35,6 +36,7 @@ type Container struct {
 	workerName    string
 	properties    map[string]string
 	executor      PodExecutor
+	volumes       []*Volume
 }
 
 func newContainer(
@@ -45,6 +47,7 @@ func newContainer(
 	config Config,
 	workerName string,
 	executor PodExecutor,
+	volumes []*Volume,
 ) *Container {
 	return &Container{
 		handle:        handle,
@@ -55,6 +58,7 @@ func newContainer(
 		workerName:    workerName,
 		properties:    make(map[string]string),
 		executor:      executor,
+		volumes:       volumes,
 	}
 }
 
@@ -78,6 +82,7 @@ func (c *Container) Run(ctx context.Context, spec runtime.ProcessSpec, io runtim
 			}
 			podName = pod.Name
 		}
+		c.bindVolumesToPod(podName)
 		return newExecProcess(processID, podName, c.clientset, c.config, c, c.executor, spec, io), nil
 	}
 
@@ -87,8 +92,28 @@ func (c *Container) Run(ctx context.Context, spec runtime.ProcessSpec, io runtim
 	if err != nil {
 		return nil, fmt.Errorf("create pod: %w", err)
 	}
+	c.bindVolumesToPod(pod.Name)
 
 	return newProcess(processID, pod.Name, c.clientset, c.config, c, io), nil
+}
+
+// volumeForPath returns the Volume associated with the given mount path,
+// or nil if no matching volume is found.
+func (c *Container) volumeForPath(mountPath string) *Volume {
+	for _, v := range c.volumes {
+		if v.MountPath() == mountPath {
+			return v
+		}
+	}
+	return nil
+}
+
+// bindVolumesToPod sets the pod name on all deferred volumes so that
+// StreamIn/StreamOut can target the correct pod.
+func (c *Container) bindVolumesToPod(podName string) {
+	for _, v := range c.volumes {
+		v.SetPodName(podName)
+	}
 }
 
 func (c *Container) Attach(ctx context.Context, processID string, io runtime.ProcessIO) (runtime.Process, error) {
@@ -103,9 +128,24 @@ func (c *Container) Attach(ctx context.Context, processID string, io runtime.Pro
 	// Check whether the Pod actually exists in K8s. If it does not, return
 	// an error so that attachOrRun falls through to Run() which creates
 	// the Pod.
-	_, err := c.clientset.CoreV1().Pods(c.config.Namespace).Get(ctx, c.handle, metav1.GetOptions{})
+	pod, err := c.clientset.CoreV1().Pods(c.config.Namespace).Get(ctx, c.handle, metav1.GetOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("attach: pod %q not found: %w", c.handle, err)
+	}
+
+	// For exec-mode containers (pause pods), in-memory properties are lost
+	// on web restart. Check the pod annotation for a persisted exit status.
+	if c.executor != nil {
+		if statusStr, ok := pod.Annotations[exitStatusAnnotationKey]; ok {
+			status, err := strconv.Atoi(statusStr)
+			if err == nil {
+				return &exitedProcess{id: processID, result: runtime.ProcessResult{ExitStatus: status}}, nil
+			}
+		}
+		// Exec hasn't completed yet (no annotation). Return an error so
+		// the engine falls through to Run(), which detects the existing
+		// pod and re-execs the command.
+		return nil, fmt.Errorf("attach: exec-mode pod %q has no completion status", c.handle)
 	}
 
 	return newProcess(processID, c.handle, c.clientset, c.config, c, io), nil
@@ -309,12 +349,12 @@ func buildResourceRequirements(limits runtime.ContainerLimits) corev1.ResourceRe
 }
 
 // buildPodSecurityContext returns the pod-level security context.
-// Non-privileged pods enforce RunAsNonRoot. Privileged pods allow root.
+// We intentionally do NOT set RunAsNonRoot here because Concourse resource
+// type images (time, git, registry-image, etc.) run as root, and we cannot
+// know at pod-creation time whether an arbitrary image supports non-root.
+// Container-level AllowPrivilegeEscalation=false still provides hardening.
 func buildPodSecurityContext(privileged bool) *corev1.PodSecurityContext {
-	runAsNonRoot := !privileged
-	return &corev1.PodSecurityContext{
-		RunAsNonRoot: &runAsNonRoot,
-	}
+	return &corev1.PodSecurityContext{}
 }
 
 // buildContainerSecurityContext returns the container-level security context.

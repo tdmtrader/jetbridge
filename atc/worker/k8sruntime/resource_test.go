@@ -110,7 +110,7 @@ var _ = Describe("Resource Step Execution", func() {
 			Expect(err).ToNot(HaveOccurred())
 			Expect(pods.Items).To(HaveLen(1))
 			pod := pods.Items[0]
-			Expect(pod.Spec.Containers[0].Image).To(Equal("git"))
+			Expect(pod.Spec.Containers[0].Image).To(Equal("concourse/git-resource"))
 			// In exec mode, the Pod command should be a pause/sleep, not the resource script
 			Expect(pod.Spec.Containers[0].Command[0]).ToNot(Equal("/opt/resource/in"))
 

@@ -436,7 +436,7 @@ func (repo *repository) StreamIn(ctx context.Context, handle string, path string
 		return false, err
 	}
 
-	err = repo.namespacer(privileged).NamespacePath(logger, volume.DataPath())
+	err = repo.namespacer(privileged).NamespacePath(logger, destinationPath)
 	if err != nil {
 		logger.Error("failed-to-namespace-path", err)
 		return false, err
