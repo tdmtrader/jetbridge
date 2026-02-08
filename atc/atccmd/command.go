@@ -176,12 +176,16 @@ type RunCommand struct {
 	GardenRequestTimeout time.Duration `long:"garden-request-timeout" default:"5m" description:"How long to wait for requests to Garden to complete. 0 means no timeout."`
 
 	Kubernetes struct {
-		Namespace         string        `long:"kubernetes-namespace"            description:"Kubernetes namespace in which to run task Pods. When set, enables the K8s execution backend."`
-		Kubeconfig        string        `long:"kubernetes-kubeconfig"           description:"Path to kubeconfig file for K8s backend. If empty, in-cluster configuration is used."`
-		PodStartupTimeout time.Duration `long:"kubernetes-pod-startup-timeout"  default:"5m" description:"Maximum time to wait for a pod to reach Running state before failing the task."`
-		ImagePullSecrets  []string      `long:"kubernetes-image-pull-secret"    description:"Kubernetes Secret name to use as imagePullSecrets on task Pods. Can be specified multiple times."`
-		ServiceAccount    string        `long:"kubernetes-service-account"      description:"Kubernetes ServiceAccount name to set on task Pods. Defaults to the namespace default SA."`
-		CachePVC          string        `long:"kubernetes-cache-pvc"            description:"Name of a PersistentVolumeClaim to mount as a shared cache volume in task Pods. Enables node-local resource and task caching."`
+		Namespace          string        `long:"kubernetes-namespace"              description:"Kubernetes namespace in which to run task Pods. When set, enables the K8s execution backend."`
+		Kubeconfig         string        `long:"kubernetes-kubeconfig"             description:"Path to kubeconfig file for K8s backend. If empty, in-cluster configuration is used."`
+		PodStartupTimeout  time.Duration `long:"kubernetes-pod-startup-timeout"    default:"5m" description:"Maximum time to wait for a pod to reach Running state before failing the task."`
+		ImagePullSecrets   []string      `long:"kubernetes-image-pull-secret"      description:"Kubernetes Secret name to use as imagePullSecrets on task Pods. Can be specified multiple times."`
+		ServiceAccount     string        `long:"kubernetes-service-account"        description:"Kubernetes ServiceAccount name to set on task Pods. Defaults to the namespace default SA."`
+		CachePVC           string        `long:"kubernetes-cache-pvc"              description:"Name of a PersistentVolumeClaim to mount as a shared cache volume in task Pods. Enables node-local resource and task caching."`
+		ArtifactStoreClaim string        `long:"kubernetes-artifact-store-claim"   description:"Name of a PersistentVolumeClaim for durable artifact and resource cache storage. In production, back with GCS FUSE via StorageClass. Locally, uses default StorageClass."`
+		ArtifactHelperImage    string `long:"kubernetes-artifact-helper-image"     description:"Container image for artifact init containers and sidecar. Defaults to alpine:latest."`
+		ImageRegistryPrefix    string `long:"kubernetes-image-registry-prefix"     description:"Registry path prefix for custom resource type images (e.g. gcr.io/my-project/concourse). Images are resolved as <prefix>/<type-name>."`
+		ImageRegistrySecret    string `long:"kubernetes-image-registry-secret"     description:"Kubernetes Secret name (type kubernetes.io/dockerconfigjson) for registry auth. Auto-added to imagePullSecrets on every pod."`
 	} `group:"Kubernetes Runtime"`
 
 	CLIArtifactsDir flag.Dir `long:"cli-artifacts-dir" description:"Directory containing downloadable CLI binaries."`
@@ -1275,6 +1279,14 @@ func (cmd *RunCommand) backendComponents(
 		k8sCfg.ImagePullSecrets = cmd.Kubernetes.ImagePullSecrets
 		k8sCfg.ServiceAccount = cmd.Kubernetes.ServiceAccount
 		k8sCfg.CacheVolumeClaim = cmd.Kubernetes.CachePVC
+		k8sCfg.ArtifactStoreClaim = cmd.Kubernetes.ArtifactStoreClaim
+		k8sCfg.ArtifactHelperImage = cmd.Kubernetes.ArtifactHelperImage
+		if cmd.Kubernetes.ImageRegistryPrefix != "" || cmd.Kubernetes.ImageRegistrySecret != "" {
+			k8sCfg.ImageRegistry = &k8sruntime.ImageRegistryConfig{
+				Prefix:     cmd.Kubernetes.ImageRegistryPrefix,
+				SecretName: cmd.Kubernetes.ImageRegistrySecret,
+			}
+		}
 		k8sClientset, err := k8sruntime.NewClientset(k8sCfg)
 		if err != nil {
 			return nil, fmt.Errorf("creating k8s clientset for registrar: %w", err)
@@ -1389,6 +1401,14 @@ func (cmd *RunCommand) constructPool(dbConn db.DbConn, lockFactory lock.LockFact
 		k8sCfg.ImagePullSecrets = cmd.Kubernetes.ImagePullSecrets
 		k8sCfg.ServiceAccount = cmd.Kubernetes.ServiceAccount
 		k8sCfg.CacheVolumeClaim = cmd.Kubernetes.CachePVC
+		k8sCfg.ArtifactStoreClaim = cmd.Kubernetes.ArtifactStoreClaim
+		k8sCfg.ArtifactHelperImage = cmd.Kubernetes.ArtifactHelperImage
+		if cmd.Kubernetes.ImageRegistryPrefix != "" || cmd.Kubernetes.ImageRegistrySecret != "" {
+			k8sCfg.ImageRegistry = &k8sruntime.ImageRegistryConfig{
+				Prefix:     cmd.Kubernetes.ImageRegistryPrefix,
+				SecretName: cmd.Kubernetes.ImageRegistrySecret,
+			}
+		}
 		k8sClientset, err := k8sruntime.NewClientset(k8sCfg)
 		if err != nil {
 			return worker.Pool{}, fmt.Errorf("creating k8s clientset: %w", err)

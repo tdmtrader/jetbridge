@@ -1,0 +1,94 @@
+# K8s Runtime Validation Pipeline
+#
+# This pipeline validates that Concourse pipelines with real resource types
+# work correctly on the Kubernetes runtime. It exercises:
+#   1. Git resource (clone)
+#   2. Registry image resource (pull and use as task image)
+#   3. Task execution with inputs/outputs
+#   4. Volume passing between tasks
+#   5. Mock resource put/get (resource protocol round-trip)
+
+resources:
+- name: concourse-examples
+  type: git
+  source:
+    uri: https://github.com/concourse/examples.git
+    branch: master
+
+- name: alpine
+  type: registry-image
+  source:
+    repository: alpine
+    tag: "3.19"
+
+- name: test-output
+  type: mock
+  source:
+    mirror_self: true
+
+jobs:
+- name: validate-k8s-runtime
+  plan:
+  # Stage 1: Git clone
+  - get: concourse-examples
+    params:
+      depth: 1
+
+  # Stage 2: Pull container image
+  - get: alpine
+
+  # Stage 3: Task using git input, producing output, with pulled image
+  - task: process-source
+    image: alpine
+    config:
+      platform: linux
+      inputs:
+      - name: concourse-examples
+      outputs:
+      - name: results
+      run:
+        path: sh
+        args:
+        - -c
+        - |
+          set -ex
+          # Verify git clone worked
+          test -d concourse-examples/.git
+          test -f concourse-examples/README.md
+
+          # Report environment
+          echo "hostname: $(hostname)"
+          echo "git files: $(find concourse-examples -maxdepth 1 -type f | wc -l | tr -d ' ')"
+
+          # Create output for next stage
+          echo "processed at $(date -u +%Y-%m-%dT%H:%M:%SZ)" > results/timestamp.txt
+          cp concourse-examples/README.md results/
+          ls -la results/
+
+  # Stage 4: Task consuming previous task's output (volume passing)
+  - task: verify-output
+    image: alpine
+    config:
+      platform: linux
+      inputs:
+      - name: results
+      run:
+        path: sh
+        args:
+        - -c
+        - |
+          set -ex
+          # Verify volume passing worked
+          test -f results/timestamp.txt
+          test -f results/README.md
+          cat results/timestamp.txt
+          echo "volume-passing-verified"
+
+  # Stage 5: Put to mock resource (validates put step protocol)
+  - put: test-output
+    params:
+      version: k8s-validated
+
+  # Stage 6: Get the version we just put
+  - get: test-output
+    passed: [validate-k8s-runtime]

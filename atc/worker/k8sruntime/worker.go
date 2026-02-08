@@ -92,7 +92,7 @@ func (w *Worker) FindOrCreateContainer(
 	// The Pod may or may not exist yet (it gets created in Container.Run).
 	if createdContainer != nil {
 		mounts, volumes := w.buildVolumeMountsForSpec(containerHandle, containerSpec)
-		container := newContainer(containerHandle, containerSpec, createdContainer, w.clientset, w.config, w.Name(), w.executor, volumes)
+		container := newContainer(containerHandle, metadata, containerSpec, createdContainer, w.clientset, w.config, w.Name(), w.executor, volumes)
 		return container, mounts, nil
 	}
 
@@ -107,7 +107,7 @@ func (w *Worker) FindOrCreateContainer(
 	}
 
 	mounts, volumes := w.buildVolumeMountsForSpec(containerHandle, containerSpec)
-	container := newContainer(containerHandle, containerSpec, createdContainer, w.clientset, w.config, w.Name(), w.executor, volumes)
+	container := newContainer(containerHandle, metadata, containerSpec, createdContainer, w.clientset, w.config, w.Name(), w.executor, volumes)
 	return container, mounts, nil
 }
 
@@ -180,7 +180,7 @@ func (w *Worker) LookupContainer(ctx context.Context, handle string) (runtime.Co
 		return nil, false, nil
 	}
 
-	return newContainer(handle, runtime.ContainerSpec{}, dbContainer, w.clientset, w.config, w.Name(), w.executor, nil), true, nil
+	return newContainer(handle, db.ContainerMetadata{}, runtime.ContainerSpec{}, dbContainer, w.clientset, w.config, w.Name(), w.executor, nil), true, nil
 }
 
 func (w *Worker) LookupVolume(ctx context.Context, handle string) (runtime.Volume, bool, error) {
@@ -201,6 +201,13 @@ func (w *Worker) LookupVolume(ctx context.Context, handle string) (runtime.Volum
 
 	if !found {
 		return nil, false, nil
+	}
+
+	// When the artifact store is configured, return an ArtifactStoreVolume
+	// so that downstream steps use init containers instead of SPDY streaming.
+	if w.config.ArtifactStoreClaim != "" {
+		key := ArtifactKey(handle)
+		return NewArtifactStoreVolume(key, handle, w.Name(), dbVolume), true, nil
 	}
 
 	vol := NewCacheVolume(dbVolume, handle, w.Name(), w.executor, w.config.Namespace, mainContainerName)

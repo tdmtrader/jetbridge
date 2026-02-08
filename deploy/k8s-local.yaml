@@ -1,0 +1,228 @@
+---
+# ServiceAccount for Concourse web to manage K8s pods
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: concourse-web
+  namespace: concourse
+
+---
+# ClusterRole granting pod management permissions
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: concourse-pod-manager
+  namespace: concourse
+rules:
+- apiGroups: [""]
+  resources: ["pods", "pods/exec", "pods/log"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: ["apps"]
+  resources: ["deployments"]
+  verbs: ["get", "list", "watch", "patch", "update"]
+
+---
+# Bind the role to the service account
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: concourse-pod-manager-binding
+  namespace: concourse
+subjects:
+- kind: ServiceAccount
+  name: concourse-web
+  namespace: concourse
+roleRef:
+  kind: Role
+  name: concourse-pod-manager
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# Bind the same role to the default service account so that task pods
+# (rootfs_uri tasks inherit the default SA) can create/exec/delete pods
+# for live integration tests.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: concourse-default-pod-manager-binding
+  namespace: concourse
+subjects:
+- kind: ServiceAccount
+  name: default
+  namespace: concourse
+roleRef:
+  kind: Role
+  name: concourse-pod-manager
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# PostgreSQL deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: concourse-db
+  namespace: concourse
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: concourse-db
+  template:
+    metadata:
+      labels:
+        app: concourse-db
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:16
+        env:
+        - name: POSTGRES_DB
+          value: concourse
+        - name: POSTGRES_USER
+          value: concourse
+        - name: POSTGRES_PASSWORD
+          value: concourse
+        ports:
+        - containerPort: 5432
+        readinessProbe:
+          exec:
+            command: ["pg_isready", "-U", "concourse"]
+          initialDelaySeconds: 5
+          periodSeconds: 5
+
+---
+# PostgreSQL service
+apiVersion: v1
+kind: Service
+metadata:
+  name: concourse-db
+  namespace: concourse
+spec:
+  selector:
+    app: concourse-db
+  ports:
+  - port: 5432
+    targetPort: 5432
+
+---
+# PVC for task cache (node-local, survives pod restarts)
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: concourse-cache
+  namespace: concourse
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+
+---
+# PVC for artifact store (durable cross-pod artifact and resource cache storage).
+# Locally: backed by default StorageClass (hostPath on colima).
+# Production: back with GCS FUSE via StorageClass for cross-node access.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: concourse-artifacts
+  namespace: concourse
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+
+---
+# Concourse web deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: concourse-web
+  namespace: concourse
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: concourse-web
+  template:
+    metadata:
+      labels:
+        app: concourse-web
+    spec:
+      serviceAccountName: concourse-web
+      containers:
+      - name: concourse-web
+        image: concourse-local:latest
+        imagePullPolicy: Never
+        args:
+        - web
+        - --postgres-host=concourse-db
+        - --postgres-port=5432
+        - --postgres-user=concourse
+        - --postgres-password=concourse
+        - --postgres-database=concourse
+        - --external-url=http://localhost:8080
+        - --add-local-user=test:test
+        - --main-team-local-user=test
+        - --cluster-name=local-k8s
+        - --kubernetes-namespace=concourse
+        - --kubernetes-cache-pvc=concourse-cache
+        - --kubernetes-artifact-store-claim=concourse-artifacts
+        - --log-level=debug
+        env:
+        - name: CONCOURSE_SESSION_SIGNING_KEY
+          value: /keys/session_signing_key
+        - name: CONCOURSE_TSA_HOST_KEY
+          value: /keys/tsa_host_key
+        - name: CONCOURSE_TSA_AUTHORIZED_KEYS
+          value: /keys/authorized_worker_keys
+        ports:
+        - containerPort: 8080
+          name: http
+        - containerPort: 2222
+          name: tsa
+        volumeMounts:
+        - name: keys
+          mountPath: /keys
+          readOnly: true
+      initContainers:
+      - name: generate-keys
+        image: concourse-local:latest
+        imagePullPolicy: Never
+        command:
+        - sh
+        - -c
+        - |
+          concourse generate-key -t rsa -f /keys/session_signing_key
+          concourse generate-key -t ssh -f /keys/tsa_host_key
+          concourse generate-key -t ssh -f /keys/worker_key
+          cp /keys/worker_key.pub /keys/authorized_worker_keys
+        volumeMounts:
+        - name: keys
+          mountPath: /keys
+      volumes:
+      - name: keys
+        emptyDir: {}
+
+---
+# Concourse web service
+# Using LoadBalancer so k3s ServiceLB exposes ports on the node,
+# and Colima forwards them to localhost (no kubectl port-forward needed).
+apiVersion: v1
+kind: Service
+metadata:
+  name: concourse-web
+  namespace: concourse
+spec:
+  type: LoadBalancer
+  selector:
+    app: concourse-web
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+  - name: tsa
+    port: 2222
+    targetPort: 2222

@@ -1,0 +1,161 @@
+# Production GKE Deployment for Concourse with GCS FUSE Artifact Store
+#
+# Prerequisites:
+#   1. GCS bucket created for artifact storage:
+#      gsutil mb -l <REGION> gs://<BUCKET_NAME>
+#
+#   2. GKE cluster with Workload Identity enabled:
+#      gcloud container clusters update <CLUSTER> \
+#        --workload-pool=<PROJECT_ID>.svc.id.goog
+#
+#   3. GCP IAM service account with storage.objectAdmin on the bucket:
+#      gcloud iam service-accounts create concourse-artifacts
+#      gsutil iam ch serviceAccount:concourse-artifacts@<PROJECT>.iam.gserviceaccount.com:objectAdmin \
+#        gs://<BUCKET_NAME>
+#
+#   4. Workload Identity binding:
+#      gcloud iam service-accounts add-iam-policy-binding \
+#        concourse-artifacts@<PROJECT>.iam.gserviceaccount.com \
+#        --role roles/iam.workloadIdentityUser \
+#        --member "serviceAccount:<PROJECT>.svc.id.goog[concourse/concourse-worker]"
+#
+#   5. GKE CSI driver for Cloud Storage (GCS FUSE) enabled:
+#      gcloud container clusters update <CLUSTER> \
+#        --update-addons=GcsFuseCsiDriver=ENABLED
+#
+# Usage:
+#   Replace all <PLACEHOLDER> values, then:
+#   kubectl apply -f k8s-gke.yaml
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: concourse
+
+---
+# StorageClass backed by GCS FUSE for ReadWriteMany artifact storage.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: gcs-fuse
+provisioner: gcsfuse.csi.storage.gke.io
+parameters:
+  bucketName: "<GCS_BUCKET_NAME>"
+reclaimPolicy: Retain
+volumeBindingMode: Immediate
+allowVolumeExpansion: false
+
+---
+# Artifact store PVC — ReadWriteMany so all pods on all nodes can access it.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: concourse-artifact-store
+  namespace: concourse
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: gcs-fuse
+  resources:
+    requests:
+      # GCS FUSE does not enforce capacity; this is a placeholder.
+      storage: 100Gi
+
+---
+# ServiceAccount with Workload Identity annotation for GCS access.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: concourse-worker
+  namespace: concourse
+  annotations:
+    iam.gke.io/gcp-service-account: "concourse-artifacts@<GCP_PROJECT_ID>.iam.gserviceaccount.com"
+
+---
+# Concourse web deployment with Kubernetes worker and artifact store enabled.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: concourse-web
+  namespace: concourse
+  labels:
+    app: concourse-web
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: concourse-web
+  template:
+    metadata:
+      labels:
+        app: concourse-web
+    spec:
+      serviceAccountName: concourse-worker
+      containers:
+        - name: concourse-web
+          image: concourse/concourse:<CONCOURSE_VERSION>
+          args:
+            - web
+            # Kubernetes worker flags
+            - --kubernetes-namespace=concourse
+            - --kubernetes-service-account=concourse-worker
+            # Artifact store PVC — enables init-container-based volume passing
+            # instead of SPDY streaming. Required for multi-node production.
+            - --kubernetes-artifact-store-claim=concourse-artifact-store
+          env:
+            - name: CONCOURSE_CLUSTER_NAME
+              value: "production"
+            - name: CONCOURSE_EXTERNAL_URL
+              value: "https://<EXTERNAL_URL>"
+            - name: CONCOURSE_POSTGRES_HOST
+              value: "<POSTGRES_HOST>"
+            - name: CONCOURSE_POSTGRES_PORT
+              value: "5432"
+            - name: CONCOURSE_POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: concourse-db-credentials
+                  key: username
+            - name: CONCOURSE_POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: concourse-db-credentials
+                  key: password
+            - name: CONCOURSE_POSTGRES_DATABASE
+              value: "concourse"
+          ports:
+            - containerPort: 8080
+              name: http
+            - containerPort: 2222
+              name: tsa
+          resources:
+            requests:
+              cpu: 500m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+          readinessProbe:
+            httpGet:
+              path: /api/v1/info
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: concourse-web
+  namespace: concourse
+spec:
+  selector:
+    app: concourse-web
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+    - name: tsa
+      port: 2222
+      targetPort: 2222

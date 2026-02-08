@@ -91,10 +91,15 @@ func (p *Process) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 
 	select {
 	case <-ctx.Done():
-		// Attempt to clean up the Pod on cancellation.
-		_ = p.clientset.CoreV1().Pods(p.config.Namespace).Delete(
-			context.Background(), p.podName, metav1.DeleteOptions{},
-		)
+		// Attempt to clean up the Pod on cancellation with a bounded timeout
+		// so we don't block indefinitely if the API server is unreachable.
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		if err := p.clientset.CoreV1().Pods(p.config.Namespace).Delete(
+			cleanupCtx, p.podName, metav1.DeleteOptions{},
+		); err != nil {
+			logger.Error("failed-to-cleanup-pod-on-cancel", err)
+		}
 		spanErr = ctx.Err()
 		return runtime.ProcessResult{}, ctx.Err()
 
@@ -106,7 +111,7 @@ func (p *Process) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 		if r.err != nil {
 			logger.Error("failed-to-wait-for-pod", r.err)
 			spanErr = r.err
-			return runtime.ProcessResult{}, r.err
+			return runtime.ProcessResult{}, wrapIfTransient(r.err)
 		}
 		// Store exit status in container properties for reattachment.
 		if p.container != nil {
@@ -157,6 +162,10 @@ func (p *Process) pollUntilDone(ctx context.Context) (runtime.ProcessResult, err
 		if isPodEvicted(pod) {
 			writePodDiagnostics(pod, p.processIO.Stderr)
 			return runtime.ProcessResult{}, fmt.Errorf("pod failed: Evicted: %s", pod.Status.Message)
+		}
+		if message, unschedulable := isPodUnschedulable(pod); unschedulable {
+			writePodDiagnostics(pod, p.processIO.Stderr)
+			return runtime.ProcessResult{}, fmt.Errorf("pod failed: Unschedulable: %s", message)
 		}
 
 		exitCode, done := podExitCode(pod)
@@ -363,7 +372,7 @@ func (p *execProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 		tracing.End(waitSpan, err)
 		logger.Error("failed-to-wait-for-pod-running", err)
 		spanErr = err
-		return runtime.ProcessResult{}, fmt.Errorf("waiting for pod running: %w", err)
+		return runtime.ProcessResult{}, wrapIfTransient(fmt.Errorf("waiting for pod running: %w", err))
 	}
 	tracing.End(waitSpan, nil)
 
@@ -375,7 +384,7 @@ func (p *execProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 		tracing.End(streamSpan, err)
 		logger.Error("failed-to-stream-inputs", err)
 		spanErr = err
-		return runtime.ProcessResult{}, fmt.Errorf("streaming inputs: %w", err)
+		return runtime.ProcessResult{}, wrapIfTransient(fmt.Errorf("streaming inputs: %w", err))
 	}
 	tracing.End(streamSpan, nil)
 
@@ -406,6 +415,11 @@ func (p *execProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 		var exitErr *ExecExitError
 		if errors.As(err, &exitErr) {
 			exitCode := exitErr.ExitCode
+			// Upload outputs even on non-zero exit (some steps produce
+			// useful artifacts on failure).
+			if uploadErr := p.uploadOutputsToArtifactStore(ctx); uploadErr != nil {
+				return runtime.ProcessResult{}, fmt.Errorf("uploading artifacts: %w", uploadErr)
+			}
 			if p.container != nil {
 				p.container.SetProperty(exitStatusPropertyName, strconv.Itoa(exitCode))
 			}
@@ -415,7 +429,12 @@ func (p *execProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 		}
 		logger.Error("failed-to-exec-in-pod", err)
 		spanErr = err
-		return runtime.ProcessResult{}, fmt.Errorf("exec in pod: %w", err)
+		return runtime.ProcessResult{}, wrapIfTransient(fmt.Errorf("exec in pod: %w", err))
+	}
+
+	// Upload step outputs to the artifact store PVC for cross-node access.
+	if err := p.uploadOutputsToArtifactStore(ctx); err != nil {
+		return runtime.ProcessResult{}, fmt.Errorf("uploading artifacts: %w", err)
 	}
 
 	if p.container != nil {
@@ -429,8 +448,15 @@ func (p *execProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 // streamInputs streams each input artifact into the corresponding volume
 // on the running pause pod. This must happen after waitForRunning() and
 // before the command is exec'd, so the command sees the input data.
+//
+// When ArtifactStoreClaim is configured, ALL inputs are handled by init
+// containers that extract from the artifact PVC, so streaming is skipped.
 func (p *execProcess) streamInputs(ctx context.Context) error {
 	if p.container == nil {
+		return nil
+	}
+	// When artifact store is configured, ALL inputs are handled by init containers.
+	if p.container.config.ArtifactStoreClaim != "" {
 		return nil
 	}
 	for _, input := range p.container.containerSpec.Inputs {
@@ -456,14 +482,52 @@ func (p *execProcess) streamInputs(ctx context.Context) error {
 	return nil
 }
 
+// uploadOutputsToArtifactStore execs tar commands in the artifact-helper
+// sidecar to upload step outputs from emptyDir to the artifact PVC.
+// Upload failures are fatal — they propagate as build failures so that
+// downstream steps don't silently run with missing inputs.
+func (p *execProcess) uploadOutputsToArtifactStore(ctx context.Context) error {
+	if p.container == nil || p.container.config.ArtifactStoreClaim == "" {
+		return nil
+	}
+
+	for _, vol := range p.container.volumes {
+		if vol.MountPath() == "" {
+			continue
+		}
+		key := ArtifactKey(vol.Handle())
+		cmd := []string{"sh", "-c",
+			fmt.Sprintf("tar cf %s/%s -C %s .",
+				ArtifactMountPath, key, vol.MountPath()),
+		}
+
+		err := p.executor.ExecInPod(
+			ctx, p.config.Namespace, p.podName,
+			artifactHelperContainerName,
+			cmd, nil, nil, nil, false,
+		)
+		if err != nil {
+			return fmt.Errorf("upload artifact %s: %w", key, err)
+		}
+	}
+	return nil
+}
+
 // annotateExitStatus persists the exit status as a pod annotation so that
 // Attach() can recover the result after a web restart (when in-memory
 // container properties are lost).
 func (p *execProcess) annotateExitStatus(ctx context.Context, exitCode int) {
 	patch := fmt.Sprintf(`{"metadata":{"annotations":{"%s":"%d"}}}`, exitStatusAnnotationKey, exitCode)
-	_, _ = p.clientset.CoreV1().Pods(p.config.Namespace).Patch(
+	_, err := p.clientset.CoreV1().Pods(p.config.Namespace).Patch(
 		ctx, p.podName, types.MergePatchType, []byte(patch), metav1.PatchOptions{},
 	)
+	if err != nil {
+		logger := lagerctx.FromContext(ctx).Session("annotate-exit-status")
+		logger.Error("failed-to-annotate-exit-status", err, lager.Data{
+			"pod":       p.podName,
+			"exit-code": exitCode,
+		})
+	}
 }
 
 func (p *execProcess) SetTTY(_ runtime.TTYSpec) error {

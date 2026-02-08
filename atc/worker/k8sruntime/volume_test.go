@@ -127,6 +127,9 @@ var _ = Describe("Volume", func() {
 			Expect(err).ToNot(HaveOccurred())
 			defer readCloser.Close()
 
+			// Read all data to let the goroutine complete
+			_, _ = io.ReadAll(readCloser)
+
 			Expect(fakeExecutor.execCalls).To(HaveLen(1))
 			call := fakeExecutor.execCalls[0]
 			Expect(call.podName).To(Equal("test-pod"))
@@ -135,7 +138,7 @@ var _ = Describe("Volume", func() {
 			Expect(call.command).To(Equal([]string{"tar", "cf", "-", "-C", "/tmp/build/inputs", "."}))
 		})
 
-		It("returns the stdout as a ReadCloser", func() {
+		It("returns the stdout as a ReadCloser via streaming pipe", func() {
 			readCloser, err := volume.StreamOut(ctx, ".", nil)
 			Expect(err).ToNot(HaveOccurred())
 			defer readCloser.Close()
@@ -150,6 +153,9 @@ var _ = Describe("Volume", func() {
 			Expect(err).ToNot(HaveOccurred())
 			defer readCloser.Close()
 
+			// Read all data to let the goroutine complete
+			_, _ = io.ReadAll(readCloser)
+
 			call := fakeExecutor.execCalls[0]
 			Expect(call.command).To(Equal([]string{"tar", "cf", "-", "-C", "/tmp/build/inputs/sub/dir", "."}))
 		})
@@ -159,8 +165,12 @@ var _ = Describe("Volume", func() {
 				fakeExecutor.execErr = errors.New("exec failed: pod terminated")
 			})
 
-			It("returns the error", func() {
-				_, err := volume.StreamOut(ctx, ".", nil)
+			It("propagates the error through the pipe reader", func() {
+				readCloser, err := volume.StreamOut(ctx, ".", nil)
+				Expect(err).ToNot(HaveOccurred())
+				defer readCloser.Close()
+
+				_, err = io.ReadAll(readCloser)
 				Expect(err).To(MatchError(ContainSubstring("exec failed")))
 			})
 		})
@@ -378,6 +388,9 @@ var _ = Describe("NewCacheVolume", func() {
 		Expect(err).ToNot(HaveOccurred())
 		defer readCloser.Close()
 
+		// Read all data to let the goroutine complete
+		_, _ = io.ReadAll(readCloser)
+
 		Expect(fakeExecutor.execCalls).To(HaveLen(1))
 		call := fakeExecutor.execCalls[0]
 		Expect(call.command).To(Equal([]string{"tar", "cf", "-", "-C", k8sruntime.CacheBasePath + "/cache-vol-handle", "."}))
@@ -486,10 +499,12 @@ var _ = Describe("Volume-to-Volume Streaming (same worker)", func() {
 })
 
 // fakeExecExecutor is a test double for k8sruntime.PodExecutor.
+// It consumes stdin (like a real executor) to prevent io.Pipe deadlocks.
 type fakeExecExecutor struct {
 	execCalls  []execCall
 	execErr    error
 	execStdout []byte
+	execFunc   func() error // per-call error function; takes priority over execErr when set
 }
 
 type execCall struct {
@@ -509,14 +524,25 @@ func (f *fakeExecExecutor) ExecInPod(
 	stdout, stderr io.Writer,
 	tty bool,
 ) error {
+	// Consume stdin into a buffer (mimics real executor behavior and
+	// unblocks io.Pipe writers used by streaming StreamOut).
+	var stdinBuf io.Reader
+	if stdin != nil {
+		data, _ := io.ReadAll(stdin)
+		stdinBuf = bytes.NewReader(data)
+	}
+
 	f.execCalls = append(f.execCalls, execCall{
 		podName:       podName,
 		namespace:     namespace,
 		containerName: containerName,
 		command:       command,
-		stdin:         stdin,
+		stdin:         stdinBuf,
 		tty:           tty,
 	})
+	if f.execFunc != nil {
+		return f.execFunc()
+	}
 	if f.execErr != nil {
 		return f.execErr
 	}

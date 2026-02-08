@@ -3,6 +3,7 @@ package k8sruntime
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -27,6 +28,7 @@ func WatchPod(ctx context.Context, clientset kubernetes.Interface, namespace, po
 // automatic reconnection when the watch channel closes and fallback to
 // a single Get() call when watch re-establishment fails consecutively.
 type PodWatcher struct {
+	mu                  sync.Mutex
 	clientset           kubernetes.Interface
 	namespace           string
 	podName             string
@@ -48,6 +50,8 @@ func NewPodWatcher(clientset kubernetes.Interface, namespace, podName string) *P
 
 // Stop stops the underlying watch. After Stop(), Next() must not be called.
 func (pw *PodWatcher) Stop() {
+	pw.mu.Lock()
+	defer pw.mu.Unlock()
 	pw.stopped = true
 	if pw.watcher != nil {
 		pw.watcher.Stop()
@@ -65,9 +69,13 @@ func (pw *PodWatcher) Stop() {
 // and returns it immediately. This ensures we don't miss state changes that
 // occurred before the watch was established.
 func (pw *PodWatcher) Next(ctx context.Context) (*corev1.Pod, error) {
+	pw.mu.Lock()
+	needsInitialSync := pw.initialPod == nil && pw.watcher == nil && pw.lastResourceVersion == ""
+	pw.mu.Unlock()
+
 	// On first call, do a Get() to sync current state. This handles the case
 	// where the pod already completed before we started watching.
-	if pw.initialPod == nil && pw.watcher == nil && pw.lastResourceVersion == "" {
+	if needsInitialSync {
 		consecutiveErrors := 0
 		for {
 			select {
@@ -84,8 +92,10 @@ func (pw *PodWatcher) Next(ctx context.Context) (*corev1.Pod, error) {
 				}
 				continue
 			}
+			pw.mu.Lock()
 			pw.initialPod = pod
 			pw.lastResourceVersion = pod.ResourceVersion
+			pw.mu.Unlock()
 			return pod, nil
 		}
 	}
@@ -101,9 +111,11 @@ func (pw *PodWatcher) Next(ctx context.Context) (*corev1.Pod, error) {
 		}
 
 		// Establish watch if needed.
+		pw.mu.Lock()
 		if pw.watcher == nil {
 			w, err := WatchPod(ctx, pw.clientset, pw.namespace, pw.podName, pw.lastResourceVersion)
 			if err != nil {
+				pw.mu.Unlock()
 				consecutiveWatchErrors++
 				if consecutiveWatchErrors >= maxConsecutiveAPIErrors {
 					// Fall back to a single Get().
@@ -114,16 +126,20 @@ func (pw *PodWatcher) Next(ctx context.Context) (*corev1.Pod, error) {
 			pw.watcher = w
 			consecutiveWatchErrors = 0
 		}
+		ch := pw.watcher.ResultChan()
+		pw.mu.Unlock()
 
 		// Read from the watch channel.
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
 
-		case event, ok := <-pw.watcher.ResultChan():
+		case event, ok := <-ch:
 			if !ok {
 				// Channel closed — watch disconnected. Clean up and retry.
+				pw.mu.Lock()
 				pw.watcher = nil
+				pw.mu.Unlock()
 				continue
 			}
 
@@ -134,7 +150,9 @@ func (pw *PodWatcher) Next(ctx context.Context) (*corev1.Pod, error) {
 			}
 
 			// Track resourceVersion for reconnection.
+			pw.mu.Lock()
 			pw.lastResourceVersion = pod.ResourceVersion
+			pw.mu.Unlock()
 			return pod, nil
 		}
 	}
@@ -147,8 +165,10 @@ func (pw *PodWatcher) getPod(ctx context.Context) (*corev1.Pod, error) {
 	if err != nil {
 		return nil, fmt.Errorf("fallback Get() failed: %w", err)
 	}
+	pw.mu.Lock()
 	pw.lastResourceVersion = pod.ResourceVersion
 	// Reset watcher so the next call to Next() tries to re-establish.
 	pw.watcher = nil
+	pw.mu.Unlock()
 	return pod, nil
 }

@@ -121,12 +121,17 @@ var _ = Describe("Process", func() {
 		})
 
 		Context("when the context is cancelled", func() {
-			It("returns the context error and cleans up the Pod", func() {
+			It("returns the context error and deletes the Pod", func() {
 				process, err := container.Run(ctx, runtime.ProcessSpec{
 					Path: "/bin/sleep",
 					Args: []string{"3600"},
 				}, runtime.ProcessIO{})
 				Expect(err).ToNot(HaveOccurred())
+
+				By("verifying the pod exists before cancellation")
+				pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
+				Expect(err).ToNot(HaveOccurred())
+				Expect(pods.Items).To(HaveLen(1))
 
 				cancelCtx, cancel := context.WithCancel(ctx)
 				cancel() // Cancel immediately
@@ -134,6 +139,11 @@ var _ = Describe("Process", func() {
 				_, err = process.Wait(cancelCtx)
 				Expect(err).To(HaveOccurred())
 				Expect(err.Error()).To(ContainSubstring("context canceled"))
+
+				By("verifying the pod was deleted from K8s")
+				pods, err = fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
+				Expect(err).ToNot(HaveOccurred())
+				Expect(pods.Items).To(BeEmpty())
 			})
 		})
 
@@ -526,6 +536,80 @@ var _ = Describe("Process", func() {
 			_, err = process.Wait(ctx)
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("Unschedulable"))
+		})
+
+		It("detects pod eviction before reaching Running phase", func() {
+			stderrBuf := new(bytes.Buffer)
+			process, err := execContainer.Run(ctx, runtime.ProcessSpec{
+				Path: "/opt/resource/in",
+				Args: []string{"/tmp/build/get"},
+			}, runtime.ProcessIO{
+				Stdin:  bytes.NewBufferString(`{}`),
+				Stdout: new(bytes.Buffer),
+				Stderr: stderrBuf,
+			})
+			Expect(err).ToNot(HaveOccurred())
+
+			pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "exec-fail-handle", metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			pod.Status.Phase = corev1.PodFailed
+			pod.Status.Reason = "Evicted"
+			pod.Status.Message = "The node was low on resource: ephemeral-storage."
+			_, err = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			_, err = process.Wait(ctx)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("Evicted"))
+			Expect(stderrBuf.String()).To(ContainSubstring("ephemeral-storage"))
+		})
+
+		It("detects pod terminated before exec could run", func() {
+			process, err := execContainer.Run(ctx, runtime.ProcessSpec{
+				Path: "/opt/resource/in",
+				Args: []string{"/tmp/build/get"},
+			}, runtime.ProcessIO{
+				Stdin:  bytes.NewBufferString(`{}`),
+				Stdout: new(bytes.Buffer),
+				Stderr: new(bytes.Buffer),
+			})
+			Expect(err).ToNot(HaveOccurred())
+
+			pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "exec-fail-handle", metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			pod.Status.Phase = corev1.PodSucceeded
+			_, err = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			_, err = process.Wait(ctx)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("pod terminated before exec could run"))
+		})
+
+		It("preserves the pause pod when context is cancelled (for fly hijack)", func() {
+			process, err := execContainer.Run(ctx, runtime.ProcessSpec{
+				Path: "/opt/resource/in",
+				Args: []string{"/tmp/build/get"},
+			}, runtime.ProcessIO{
+				Stdin:  bytes.NewBufferString(`{}`),
+				Stdout: new(bytes.Buffer),
+				Stderr: new(bytes.Buffer),
+			})
+			Expect(err).ToNot(HaveOccurred())
+
+			cancelCtx, cancel := context.WithCancel(ctx)
+			cancel() // Cancel immediately — waitForRunning will return ctx error
+
+			_, err = process.Wait(cancelCtx)
+			Expect(err).To(HaveOccurred())
+
+			By("verifying the pause pod was NOT deleted (enables fly hijack)")
+			pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(pods.Items).To(HaveLen(1))
+			Expect(pods.Items[0].Name).To(Equal("exec-fail-handle"))
 		})
 	})
 

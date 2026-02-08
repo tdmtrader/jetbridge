@@ -22,10 +22,35 @@ const (
 	// type (task, get, put, etc.).
 	typeLabelKey = "concourse.ci/type"
 
+	// handleLabelKey is the Pod label that stores the DB container handle
+	// (UUID). With readable pod names, this label maps back to the DB row.
+	handleLabelKey = "concourse.ci/handle"
+
 	// CacheBasePath is the mount path inside pods where the cache PVC is
 	// attached. Cache entries live in subdirectories keyed by volume handle.
 	CacheBasePath = "/concourse/cache"
+
+	// DefaultArtifactHelperImage is the container image used for init
+	// containers and the artifact-helper sidecar. Only needs tar.
+	DefaultArtifactHelperImage = "alpine:latest"
+
+	// artifactHelperContainerName is the name of the sidecar container
+	// that handles uploading step outputs to the artifact store PVC.
+	artifactHelperContainerName = "artifact-helper"
+
+	// artifactPVCVolumeName is the pod volume name for the artifact store PVC.
+	artifactPVCVolumeName = "artifact-store"
+
+	// ArtifactMountPath is the mount path inside init containers and the
+	// artifact-helper sidecar where the artifact store PVC is attached.
+	ArtifactMountPath = "/artifacts"
 )
+
+// ArtifactKey returns the canonical relative path on the artifact PVC
+// for a given volume handle, e.g. "artifacts/<handle>.tar".
+func ArtifactKey(handle string) string {
+	return fmt.Sprintf("artifacts/%s.tar", handle)
+}
 
 // DefaultResourceTypeImages maps base Concourse resource type names to their
 // Docker image references. These are the official Concourse resource type
@@ -75,6 +100,36 @@ type Config struct {
 	// subdirectories keyed by volume handle. When empty, caching is
 	// disabled and all volumes use emptyDir (the default behavior).
 	CacheVolumeClaim string
+
+	// ArtifactStoreClaim is the name of a PersistentVolumeClaim for durable
+	// artifact and resource cache storage. In production, this PVC is backed
+	// by GCS FUSE (via StorageClass). In local dev, it's backed by local disk.
+	// When empty, artifact storage is disabled and existing SPDY streaming
+	// is used (the default).
+	ArtifactStoreClaim string
+
+	// ArtifactHelperImage overrides DefaultArtifactHelperImage for init
+	// containers and the artifact-helper sidecar.
+	ArtifactHelperImage string
+
+	// ImageRegistry configures a container image registry for custom resource
+	// type images. When set, its SecretName is auto-added to imagePullSecrets
+	// on every pod and its Prefix is used when resolving custom resource type
+	// images. Nil means disabled.
+	ImageRegistry *ImageRegistryConfig
+}
+
+// ImageRegistryConfig holds configuration for a container image registry
+// used for custom resource type images in production K8s environments.
+type ImageRegistryConfig struct {
+	// Prefix is the registry path prefix (e.g. "gcr.io/my-project/concourse").
+	// Custom resource type images are resolved as "<Prefix>/<type-name>".
+	Prefix string
+
+	// SecretName is the name of a K8s Secret (type kubernetes.io/dockerconfigjson)
+	// to use as an imagePullSecret on every created pod. Must exist in the
+	// configured namespace. Empty means no registry auth.
+	SecretName string
 }
 
 // NewConfig creates a Config with the given namespace and kubeconfig path.

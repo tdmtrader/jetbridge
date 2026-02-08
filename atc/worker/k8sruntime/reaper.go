@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strings"
 
 	"code.cloudfoundry.org/lager/v3"
 	"github.com/concourse/concourse/atc/db"
@@ -81,10 +82,20 @@ func (r *Reaper) Run(ctx context.Context) error {
 		return fmt.Errorf("listing pods: %w", err)
 	}
 
-	// Collect pod names as container handles.
+	// Collect container handles from pods. When pods have a
+	// concourse.ci/handle label (readable pod names), use that as the DB
+	// handle. Otherwise fall back to pod.Name for backward compatibility.
 	handles := make([]string, len(pods.Items))
+	handleToPodName := make(map[string]string, len(pods.Items))
+	activePodNames := make([]string, len(pods.Items))
 	for i, pod := range pods.Items {
-		handles[i] = pod.Name
+		handle := pod.Name
+		if h, ok := pod.Labels[handleLabelKey]; ok && h != "" {
+			handle = h
+		}
+		handles[i] = handle
+		handleToPodName[handle] = pod.Name
+		activePodNames[i] = pod.Name
 	}
 
 	// Report active containers to the DB. This marks containers not in
@@ -114,21 +125,31 @@ func (r *Reaper) Run(ctx context.Context) error {
 	}
 
 	for _, handle := range destroying {
-		err := r.clientset.CoreV1().Pods(r.cfg.Namespace).Delete(ctx, handle, metav1.DeleteOptions{})
+		// Look up the actual pod name from the handle→podName map.
+		// If the handle isn't in the map (pod already gone), try
+		// deleting by handle directly for backward compatibility.
+		podName := handle
+		if name, ok := handleToPodName[handle]; ok {
+			podName = name
+		}
+		err := r.clientset.CoreV1().Pods(r.cfg.Namespace).Delete(ctx, podName, metav1.DeleteOptions{})
 		if err != nil && !apierrors.IsNotFound(err) {
-			logger.Error("failed-to-delete-pod", err, lager.Data{"handle": handle})
+			logger.Error("failed-to-delete-pod", err, lager.Data{"handle": handle, "pod": podName})
 			spanErr = err
-			return fmt.Errorf("deleting pod %s: %w", handle, err)
+			return fmt.Errorf("deleting pod %s: %w", podName, err)
 		}
 	}
 
 	// Clean up PVC cache subdirectories for destroying volumes.
-	err = r.cleanupCacheVolumes(ctx, logger, workerName, handles)
+	err = r.cleanupCacheVolumes(ctx, logger, workerName, activePodNames)
 	if err != nil {
 		logger.Error("failed-to-cleanup-cache-volumes", err)
 		spanErr = err
 		return fmt.Errorf("cleaning up cache volumes: %w", err)
 	}
+
+	// Clean up artifact store entries for destroyed containers.
+	r.cleanupArtifactStoreEntries(ctx, logger, destroying, activePodNames)
 
 	return nil
 }
@@ -160,6 +181,12 @@ func (r *Reaper) cleanupCacheVolumes(ctx context.Context, logger lager.Logger, w
 	var failedHandles []string
 
 	for _, handle := range destroyingVolumes {
+		// Validate handle to prevent path traversal (e.g. "../../etc").
+		if strings.Contains(handle, "/") || strings.Contains(handle, "..") || handle == "" {
+			logger.Info("skipping-invalid-volume-handle", lager.Data{"handle": handle})
+			failedHandles = append(failedHandles, handle)
+			continue
+		}
 		cachePath := filepath.Join(CacheBasePath, handle)
 		cmd := []string{"rm", "-rf", cachePath}
 		err := r.executor.ExecInPod(ctx, r.cfg.Namespace, podName, mainContainerName, cmd, nil, nil, nil, false)
@@ -175,4 +202,30 @@ func (r *Reaper) cleanupCacheVolumes(ctx context.Context, logger lager.Logger, w
 	}
 
 	return nil
+}
+
+// cleanupArtifactStoreEntries removes artifact tar files from the artifact
+// store PVC for destroyed containers. Execs rm in the artifact-helper sidecar
+// of an active pod. Best-effort — failures are logged but don't block GC.
+func (r *Reaper) cleanupArtifactStoreEntries(ctx context.Context, logger lager.Logger, handles []string, activePods []string) {
+	if r.cfg.ArtifactStoreClaim == "" || r.executor == nil {
+		return
+	}
+	if len(handles) == 0 || len(activePods) == 0 {
+		return
+	}
+
+	podName := activePods[0]
+
+	for _, handle := range handles {
+		if strings.Contains(handle, "/") || strings.Contains(handle, "..") || handle == "" {
+			continue
+		}
+		artifactPath := filepath.Join(ArtifactMountPath, ArtifactKey(handle))
+		cmd := []string{"rm", "-f", artifactPath}
+		err := r.executor.ExecInPod(ctx, r.cfg.Namespace, podName, artifactHelperContainerName, cmd, nil, nil, nil, false)
+		if err != nil {
+			logger.Error("failed-to-cleanup-artifact", err, lager.Data{"handle": handle})
+		}
+	}
 }

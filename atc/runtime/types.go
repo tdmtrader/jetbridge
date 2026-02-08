@@ -12,6 +12,14 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 )
 
+// RetryableError is implemented by errors from runtime backends that represent
+// transient failures (e.g. API server unavailable, rate limiting). The exec
+// layer checks for this interface to decide whether to retry a step.
+type RetryableError interface {
+	error
+	IsRetryable() bool
+}
+
 // Worker represents an entity that aggregates Containers and Volumes, and
 // provides a way to construct new/lookup existing Containers and Volumes.
 // Depending on the runtime implementation, a Worker may be a single VM, or may
