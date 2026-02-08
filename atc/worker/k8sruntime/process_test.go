@@ -9,6 +9,7 @@ import (
 
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbfakes"
+	"github.com/concourse/concourse/atc/metric"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/worker/k8sruntime"
 	. "github.com/onsi/ginkgo/v2"
@@ -666,6 +667,127 @@ var _ = Describe("Process", func() {
 			result, err := process.Wait(ctx)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(result.ExitStatus).To(Equal(0))
+		})
+	})
+
+	Describe("K8s-specific metrics", func() {
+		Context("ImagePullFailures counter", func() {
+			var (
+				execContainer runtime.Container
+				execExecutor  *fakeExecExecutor
+				execWorker    *k8sruntime.Worker
+			)
+
+			BeforeEach(func() {
+				execExecutor = &fakeExecExecutor{}
+				execWorker = k8sruntime.NewWorker(fakeDBWorker, fakeClientset, cfg)
+				execWorker.SetExecutor(execExecutor)
+
+				setupFakeDBContainer(fakeDBWorker, "image-pull-fail-handle")
+
+				var err error
+				execContainer, _, err = execWorker.FindOrCreateContainer(
+					ctx,
+					db.NewFixedHandleContainerOwner("image-pull-fail-handle"),
+					db.ContainerMetadata{Type: db.ContainerTypeTask},
+					runtime.ContainerSpec{
+						TeamID:   1,
+						Dir:      "/workdir",
+						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+					},
+					delegate,
+				)
+				Expect(err).ToNot(HaveOccurred())
+
+				// Drain prior counter state.
+				metric.Metrics.K8sImagePullFailures.Delta()
+			})
+
+			It("increments K8sImagePullFailures when ImagePullBackOff is detected", func() {
+				process, err := execContainer.Run(ctx, runtime.ProcessSpec{
+					Path: "/bin/sh",
+					Args: []string{"-c", "echo hello"},
+				}, runtime.ProcessIO{})
+				Expect(err).ToNot(HaveOccurred())
+
+				// Simulate pod stuck in ImagePullBackOff.
+				pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "image-pull-fail-handle", metav1.GetOptions{})
+				Expect(err).ToNot(HaveOccurred())
+				pod.Status.ContainerStatuses = []corev1.ContainerStatus{
+					{
+						Name: "main",
+						State: corev1.ContainerState{
+							Waiting: &corev1.ContainerStateWaiting{
+								Reason:  "ImagePullBackOff",
+								Message: "Back-off pulling image",
+							},
+						},
+					},
+				}
+				_, err = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+				Expect(err).ToNot(HaveOccurred())
+
+				_, err = process.Wait(ctx)
+				Expect(err).To(HaveOccurred())
+
+				Expect(metric.Metrics.K8sImagePullFailures.Delta()).To(Equal(float64(1)))
+			})
+		})
+
+		Context("PodStartupDuration gauge", func() {
+			var (
+				execContainer runtime.Container
+				execExecutor  *fakeExecExecutor
+				execWorker    *k8sruntime.Worker
+			)
+
+			BeforeEach(func() {
+				execExecutor = &fakeExecExecutor{}
+				execWorker = k8sruntime.NewWorker(fakeDBWorker, fakeClientset, cfg)
+				execWorker.SetExecutor(execExecutor)
+
+				setupFakeDBContainer(fakeDBWorker, "startup-duration-handle")
+
+				var err error
+				execContainer, _, err = execWorker.FindOrCreateContainer(
+					ctx,
+					db.NewFixedHandleContainerOwner("startup-duration-handle"),
+					db.ContainerMetadata{Type: db.ContainerTypeTask},
+					runtime.ContainerSpec{
+						TeamID:   1,
+						Dir:      "/workdir",
+						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+					},
+					delegate,
+				)
+				Expect(err).ToNot(HaveOccurred())
+
+				// Drain prior gauge state.
+				metric.Metrics.K8sPodStartupDuration.Max()
+			})
+
+			It("records startup duration when pod reaches Running", func() {
+				process, err := execContainer.Run(ctx, runtime.ProcessSpec{
+					Path: "/bin/sh",
+					Args: []string{"-c", "echo hello"},
+				}, runtime.ProcessIO{})
+				Expect(err).ToNot(HaveOccurred())
+
+				// Simulate pod reaching Running state.
+				pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "startup-duration-handle", metav1.GetOptions{})
+				Expect(err).ToNot(HaveOccurred())
+				pod.Status.Phase = corev1.PodRunning
+				_, err = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+				Expect(err).ToNot(HaveOccurred())
+
+				result, err := process.Wait(ctx)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(result.ExitStatus).To(Equal(0))
+
+				// The gauge should have been set to a positive value (duration in ms).
+				duration := metric.Metrics.K8sPodStartupDuration.Max()
+				Expect(duration).To(BeNumerically(">=", 0))
+			})
 		})
 	})
 })

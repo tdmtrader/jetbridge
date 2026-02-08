@@ -181,6 +181,7 @@ type RunCommand struct {
 		PodStartupTimeout time.Duration `long:"kubernetes-pod-startup-timeout"  default:"5m" description:"Maximum time to wait for a pod to reach Running state before failing the task."`
 		ImagePullSecrets  []string      `long:"kubernetes-image-pull-secret"    description:"Kubernetes Secret name to use as imagePullSecrets on task Pods. Can be specified multiple times."`
 		ServiceAccount    string        `long:"kubernetes-service-account"      description:"Kubernetes ServiceAccount name to set on task Pods. Defaults to the namespace default SA."`
+		CachePVC          string        `long:"kubernetes-cache-pvc"            description:"Name of a PersistentVolumeClaim to mount as a shared cache volume in task Pods. Enables node-local resource and task caching."`
 	} `group:"Kubernetes Runtime"`
 
 	CLIArtifactsDir flag.Dir `long:"cli-artifacts-dir" description:"Directory containing downloadable CLI binaries."`
@@ -1273,6 +1274,7 @@ func (cmd *RunCommand) backendComponents(
 		k8sCfg.PodStartupTimeout = cmd.Kubernetes.PodStartupTimeout
 		k8sCfg.ImagePullSecrets = cmd.Kubernetes.ImagePullSecrets
 		k8sCfg.ServiceAccount = cmd.Kubernetes.ServiceAccount
+		k8sCfg.CacheVolumeClaim = cmd.Kubernetes.CachePVC
 		k8sClientset, err := k8sruntime.NewClientset(k8sCfg)
 		if err != nil {
 			return nil, fmt.Errorf("creating k8s clientset for registrar: %w", err)
@@ -1288,12 +1290,20 @@ func (cmd *RunCommand) backendComponents(
 		k8sContainerRepo := db.NewContainerRepository(dbConn)
 		k8sVolumeRepo := db.NewVolumeRepository(dbConn)
 		k8sDestroyer := gc.NewDestroyer(logger, k8sContainerRepo, k8sVolumeRepo)
+		k8sReaper := k8sruntime.NewReaper(logger.Session(atc.ComponentK8sWorkerReaper), k8sClientset, k8sCfg, k8sContainerRepo, k8sDestroyer)
+		if k8sCfg.CacheVolumeClaim != "" {
+			k8sRestConfig, err := k8sruntime.RestConfig(k8sCfg)
+			if err == nil {
+				k8sReaper.SetVolumeRepo(k8sVolumeRepo)
+				k8sReaper.SetExecutor(k8sruntime.NewSPDYExecutor(k8sClientset, k8sRestConfig))
+			}
+		}
 		components = append(components, RunnableComponent{
 			Component: atc.Component{
 				Name:     atc.ComponentK8sWorkerReaper,
 				Interval: 30 * time.Second,
 			},
-			Runnable: k8sruntime.NewReaper(logger.Session(atc.ComponentK8sWorkerReaper), k8sClientset, k8sCfg, k8sContainerRepo, k8sDestroyer),
+			Runnable: k8sReaper,
 		})
 	}
 
@@ -1378,6 +1388,7 @@ func (cmd *RunCommand) constructPool(dbConn db.DbConn, lockFactory lock.LockFact
 		k8sCfg.PodStartupTimeout = cmd.Kubernetes.PodStartupTimeout
 		k8sCfg.ImagePullSecrets = cmd.Kubernetes.ImagePullSecrets
 		k8sCfg.ServiceAccount = cmd.Kubernetes.ServiceAccount
+		k8sCfg.CacheVolumeClaim = cmd.Kubernetes.CachePVC
 		k8sClientset, err := k8sruntime.NewClientset(k8sCfg)
 		if err != nil {
 			return worker.Pool{}, fmt.Errorf("creating k8s clientset: %w", err)

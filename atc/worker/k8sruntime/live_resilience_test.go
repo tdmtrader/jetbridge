@@ -55,14 +55,7 @@ func TestLiveInvalidImageFailsFast(t *testing.T) {
 	handle := "live-bad-img-" + time.Now().Format("150405")
 	worker, delegate, clientset, cfg := setupLiveResilienceWorker(t, handle, 2*time.Minute)
 
-	// Clean up the pod regardless of outcome — waitForRunning failures
-	// don't auto-delete the pod.
-	defer func() {
-		t.Logf("cleaning up pod %s", handle)
-		_ = clientset.CoreV1().Pods(cfg.Namespace).Delete(
-			context.Background(), handle, metav1.DeleteOptions{},
-		)
-	}()
+	cleanupPod(t, clientset, cfg.Namespace, handle)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -124,12 +117,7 @@ func TestLivePodStartupTimeout(t *testing.T) {
 	// Use an impossibly short timeout — the pod can't start in 1ms.
 	worker, delegate, clientset, cfg := setupLiveResilienceWorker(t, handle, 1*time.Millisecond)
 
-	defer func() {
-		t.Logf("cleaning up pod %s", handle)
-		_ = clientset.CoreV1().Pods(cfg.Namespace).Delete(
-			context.Background(), handle, metav1.DeleteOptions{},
-		)
-	}()
+	cleanupPod(t, clientset, cfg.Namespace, handle)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

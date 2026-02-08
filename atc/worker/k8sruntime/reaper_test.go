@@ -21,8 +21,10 @@ var _ = Describe("Reaper", func() {
 		fakeClientset           *fake.Clientset
 		fakeContainerRepository *dbfakes.FakeContainerRepository
 		fakeDestroyer           *gcfakes.FakeDestroyer
+		fakeVolumeRepository    *dbfakes.FakeVolumeRepository
 		cfg                     k8sruntime.Config
 		reaper                  *k8sruntime.Reaper
+		executor                *fakeExecExecutor
 	)
 
 	BeforeEach(func() {
@@ -30,7 +32,9 @@ var _ = Describe("Reaper", func() {
 		fakeClientset = fake.NewSimpleClientset()
 		fakeContainerRepository = new(dbfakes.FakeContainerRepository)
 		fakeDestroyer = new(gcfakes.FakeDestroyer)
+		fakeVolumeRepository = new(dbfakes.FakeVolumeRepository)
 		cfg = k8sruntime.NewConfig("test-namespace", "")
+		executor = &fakeExecExecutor{}
 
 		testLogger := lagertest.NewTestLogger("reaper")
 		reaper = k8sruntime.NewReaper(testLogger, fakeClientset, cfg, fakeContainerRepository, fakeDestroyer)
@@ -132,6 +136,91 @@ var _ = Describe("Reaper", func() {
 			pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
 			Expect(err).ToNot(HaveOccurred())
 			Expect(pods.Items).To(HaveLen(1))
+		})
+	})
+
+	Describe("cache volume cleanup", func() {
+		BeforeEach(func() {
+			cfg.CacheVolumeClaim = "my-cache-pvc"
+			testLogger := lagertest.NewTestLogger("reaper")
+			reaper = k8sruntime.NewReaper(testLogger, fakeClientset, cfg, fakeContainerRepository, fakeDestroyer)
+			reaper.SetVolumeRepo(fakeVolumeRepository)
+			reaper.SetExecutor(executor)
+		})
+
+		It("execs rm -rf on PVC subdirectories for destroying volumes", func() {
+			createLabelledPod("active-pod")
+			fakeVolumeRepository.GetDestroyingVolumesReturns([]string{"vol-1", "vol-2"}, nil)
+
+			err := reaper.Run(ctx)
+			Expect(err).ToNot(HaveOccurred())
+
+			By("exec-ing rm -rf for each destroying volume")
+			Expect(executor.execCalls).To(HaveLen(2))
+			Expect(executor.execCalls[0].podName).To(Equal("active-pod"))
+			Expect(executor.execCalls[0].command).To(Equal([]string{"rm", "-rf", "/concourse/cache/vol-1"}))
+			Expect(executor.execCalls[1].command).To(Equal([]string{"rm", "-rf", "/concourse/cache/vol-2"}))
+
+			By("removing cleaned volumes from the DB")
+			Expect(fakeVolumeRepository.RemoveDestroyingVolumesCallCount()).To(Equal(1))
+			workerName, failedHandles := fakeVolumeRepository.RemoveDestroyingVolumesArgsForCall(0)
+			Expect(workerName).To(Equal("k8s-test-namespace"))
+			Expect(failedHandles).To(BeEmpty())
+		})
+
+		It("skips volume cleanup when no pods are running", func() {
+			fakeVolumeRepository.GetDestroyingVolumesReturns([]string{"vol-1"}, nil)
+
+			err := reaper.Run(ctx)
+			Expect(err).ToNot(HaveOccurred())
+
+			By("not executing any cleanup commands")
+			Expect(executor.execCalls).To(BeEmpty())
+			By("not removing volumes from the DB")
+			Expect(fakeVolumeRepository.RemoveDestroyingVolumesCallCount()).To(Equal(0))
+		})
+
+		It("skips volume cleanup when CacheVolumeClaim is not configured", func() {
+			cfg.CacheVolumeClaim = ""
+			testLogger := lagertest.NewTestLogger("reaper")
+			reaper = k8sruntime.NewReaper(testLogger, fakeClientset, cfg, fakeContainerRepository, fakeDestroyer)
+			reaper.SetVolumeRepo(fakeVolumeRepository)
+			reaper.SetExecutor(executor)
+
+			createLabelledPod("active-pod")
+
+			err := reaper.Run(ctx)
+			Expect(err).ToNot(HaveOccurred())
+
+			Expect(fakeVolumeRepository.GetDestroyingVolumesCallCount()).To(Equal(0))
+		})
+
+		It("keeps failed volumes in the DB when exec fails", func() {
+			createLabelledPod("active-pod")
+			fakeVolumeRepository.GetDestroyingVolumesReturns([]string{"vol-ok", "vol-fail"}, nil)
+			executor.execErr = fmt.Errorf("exec connection lost")
+
+			err := reaper.Run(ctx)
+			Expect(err).ToNot(HaveOccurred())
+
+			By("attempting cleanup for all volumes")
+			Expect(executor.execCalls).To(HaveLen(2))
+
+			By("passing all handles as failed since all execs errored")
+			Expect(fakeVolumeRepository.RemoveDestroyingVolumesCallCount()).To(Equal(1))
+			_, failedHandles := fakeVolumeRepository.RemoveDestroyingVolumesArgsForCall(0)
+			Expect(failedHandles).To(ConsistOf("vol-ok", "vol-fail"))
+		})
+
+		It("does nothing when no volumes are in destroying state", func() {
+			createLabelledPod("active-pod")
+			fakeVolumeRepository.GetDestroyingVolumesReturns([]string{}, nil)
+
+			err := reaper.Run(ctx)
+			Expect(err).ToNot(HaveOccurred())
+
+			Expect(executor.execCalls).To(BeEmpty())
+			Expect(fakeVolumeRepository.RemoveDestroyingVolumesCallCount()).To(Equal(0))
 		})
 	})
 })

@@ -99,6 +99,9 @@ type PrometheusEmitter struct {
 	destroyingVolumesToBeGarbageCollected    prometheus.Counter
 	failedVolumesToBeGarbageCollected        prometheus.Counter
 
+	k8sPodStartupDuration prometheus.Histogram
+	k8sImagePullFailures  prometheus.Counter
+
 	workerContainersLabels map[string]map[string]prometheus.Labels
 	workerVolumesLabels    map[string]map[string]prometheus.Labels
 	workerTasksLabels      map[string]map[string]prometheus.Labels
@@ -587,6 +590,29 @@ func (config *PrometheusConfig) NewEmitter(attributes map[string]string) (metric
 	)
 	prometheus.MustRegister(workerOrphanedVolumesToBeCollected)
 
+	k8sPodStartupDuration := prometheus.NewHistogram(
+		prometheus.HistogramOpts{
+			Namespace:   "concourse",
+			Subsystem:   "k8s",
+			Name:        "pod_startup_duration_milliseconds",
+			Help:        "Time from pod creation to Running state in milliseconds.",
+			Buckets:     []float64{500, 1000, 2000, 5000, 10000, 30000, 60000, 120000},
+			ConstLabels: attributes,
+		},
+	)
+	prometheus.MustRegister(k8sPodStartupDuration)
+
+	k8sImagePullFailures := prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Namespace:   "concourse",
+			Subsystem:   "k8s",
+			Name:        "image_pull_failures_total",
+			Help:        "Number of K8s image pull failures (ImagePullBackOff, ErrImagePull).",
+			ConstLabels: attributes,
+		},
+	)
+	prometheus.MustRegister(k8sImagePullFailures)
+
 	creatingContainersToBeGarbageCollected := prometheus.NewCounter(
 		prometheus.CounterOpts{
 			Namespace:   "concourse",
@@ -890,6 +916,9 @@ func (config *PrometheusConfig) NewEmitter(attributes map[string]string) (metric
 		workerUnknownVolumes:               workerUnknownVolumes,
 		workerOrphanedVolumesToBeCollected: workerOrphanedVolumesToBeCollected,
 
+		k8sPodStartupDuration: k8sPodStartupDuration,
+		k8sImagePullFailures:  k8sImagePullFailures,
+
 		volumesStreamed: volumesStreamed,
 
 		getStepCacheHits:       getStepCacheHits,
@@ -1023,6 +1052,10 @@ func (emitter *PrometheusEmitter) Emit(logger lager.Logger, event metric.Event) 
 		emitter.databaseMetrics(logger, event)
 	case "database connections":
 		emitter.databaseMetrics(logger, event)
+	case "k8s pod startup duration (ms)":
+		emitter.k8sPodStartupDuration.Observe(event.Value)
+	case "k8s image pull failures":
+		emitter.k8sImagePullFailures.Add(event.Value)
 	case "checks finished":
 		emitter.checksFinished.WithLabelValues(event.Attributes["status"]).Add(event.Value)
 	case "checks started":

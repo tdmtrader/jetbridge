@@ -88,6 +88,9 @@ type Monitor struct {
 
 	GetStepCacheHits       Counter
 	StreamedResourceCaches Counter
+
+	K8sPodStartupDuration Gauge
+	K8sImagePullFailures  Counter
 }
 
 var Metrics = NewMonitor()

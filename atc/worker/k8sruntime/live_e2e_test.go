@@ -41,6 +41,8 @@ func TestLiveResourceGetStepE2E(t *testing.T) {
 	ctx := context.Background()
 	podName := "e2e-resource-get-" + time.Now().Format("150405")
 
+	cleanupPod(t, clientset, cfg.Namespace, podName)
+
 	// Step 1: Create a pause Pod (mirrors createPausePod in container.go)
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
@@ -67,10 +69,6 @@ func TestLiveResourceGetStepE2E(t *testing.T) {
 	if err != nil {
 		t.Fatalf("creating pause pod: %v", err)
 	}
-	defer func() {
-		t.Logf("cleaning up pod %s", podName)
-		_ = clientset.CoreV1().Pods(cfg.Namespace).Delete(context.Background(), podName, metav1.DeleteOptions{})
-	}()
 
 	// Step 2: Wait for Running
 	t.Logf("waiting for pod to become Running...")
@@ -174,6 +172,9 @@ func TestLivePodCancellationCleanup(t *testing.T) {
 	clientset, cfg, executor := liveClientAndExecutor(t)
 	ctx := context.Background()
 	podName := "e2e-cancel-" + time.Now().Format("150405")
+
+	// Ensure cleanup even if the explicit delete in this test fails.
+	cleanupPod(t, clientset, cfg.Namespace, podName)
 
 	// Create a pause Pod
 	pod := &corev1.Pod{

@@ -411,6 +411,165 @@ var _ = Describe("Integration", func() {
 		})
 	})
 
+	Describe("cache volume lifecycle", func() {
+		var (
+			cacheWorker      *k8sruntime.Worker
+			cacheCfg         k8sruntime.Config
+			fakeVolumeRepo   *dbfakes.FakeVolumeRepository
+		)
+
+		BeforeEach(func() {
+			cacheCfg = k8sruntime.NewConfig("ci-namespace", "")
+			cacheCfg.CacheVolumeClaim = "my-cache-pvc"
+			fakeVolumeRepo = new(dbfakes.FakeVolumeRepository)
+
+			cacheWorker = k8sruntime.NewWorker(fakeDBWorker, fakeClientset, cacheCfg)
+			cacheWorker.SetExecutor(fakeExecutor)
+			cacheWorker.SetVolumeRepo(fakeVolumeRepo)
+		})
+
+		It("uses PVC subPath for task caches and LookupVolume finds them", func() {
+			By("creating a task container with caches")
+			setupFakeDBContainer(fakeDBWorker, "task-cached")
+			container, mounts, err := cacheWorker.FindOrCreateContainer(
+				ctx,
+				db.NewFixedHandleContainerOwner("task-cached"),
+				db.ContainerMetadata{Type: db.ContainerTypeTask},
+				runtime.ContainerSpec{
+					TeamID:   1,
+					TeamName: "main",
+					Dir:      "/tmp/build/workdir",
+					ImageSpec: runtime.ImageSpec{
+						ImageURL: "docker:///golang:1.25",
+					},
+					Caches: []string{"/root/.cache/go-build", "/root/.cache/go-mod"},
+				},
+				delegate,
+			)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(container).ToNot(BeNil())
+
+			By("verifying volume mounts include the cache paths")
+			mountPaths := make([]string, len(mounts))
+			for i, m := range mounts {
+				mountPaths[i] = m.MountPath
+			}
+			Expect(mountPaths).To(ContainElements(
+				"/root/.cache/go-build",
+				"/root/.cache/go-mod",
+			))
+
+			By("running the task to create the pod")
+			process, err := container.Run(ctx, runtime.ProcessSpec{
+				Path: "/bin/sh",
+				Args: []string{"-c", "go test ./..."},
+			}, runtime.ProcessIO{})
+			Expect(err).ToNot(HaveOccurred())
+
+			By("verifying the Pod has PVC volume with subPath mounts for caches")
+			pods, err := fakeClientset.CoreV1().Pods("ci-namespace").List(ctx, metav1.ListOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(pods.Items).To(HaveLen(1))
+
+			pod := pods.Items[0]
+			var hasPVC bool
+			for _, vol := range pod.Spec.Volumes {
+				if vol.PersistentVolumeClaim != nil && vol.PersistentVolumeClaim.ClaimName == "my-cache-pvc" {
+					hasPVC = true
+				}
+			}
+			Expect(hasPVC).To(BeTrue(), "Pod should have a PVC volume for cache")
+
+			var subPathMounts []string
+			for _, vm := range pod.Spec.Containers[0].VolumeMounts {
+				if vm.SubPath != "" {
+					subPathMounts = append(subPathMounts, vm.SubPath)
+				}
+			}
+			Expect(subPathMounts).To(HaveLen(2), "Should have 2 subPath mounts for caches")
+
+			By("looking up a cache volume via DB")
+			fakeDBVolume := new(dbfakes.FakeCreatedVolume)
+			fakeDBVolume.HandleReturns("vol-cache-1")
+			fakeDBVolume.WorkerNameReturns("k8s-worker-1")
+			fakeVolumeRepo.FindVolumeReturns(fakeDBVolume, true, nil)
+
+			vol, found, err := cacheWorker.LookupVolume(ctx, "vol-cache-1")
+			Expect(err).ToNot(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(vol.Handle()).To(Equal("vol-cache-1"))
+
+			By("completing the task")
+			simulatePodRunning("task-cached")
+			result, err := process.Wait(ctx)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(result.ExitStatus).To(Equal(0))
+		})
+
+		It("uses emptyDir for caches when CacheVolumeClaim is not configured", func() {
+			noCacheCfg := k8sruntime.NewConfig("ci-namespace", "")
+			noCacheWorker := k8sruntime.NewWorker(fakeDBWorker, fakeClientset, noCacheCfg)
+			noCacheWorker.SetExecutor(fakeExecutor)
+
+			setupFakeDBContainer(fakeDBWorker, "task-no-pvc")
+			container, _, err := noCacheWorker.FindOrCreateContainer(
+				ctx,
+				db.NewFixedHandleContainerOwner("task-no-pvc"),
+				db.ContainerMetadata{Type: db.ContainerTypeTask},
+				runtime.ContainerSpec{
+					TeamID:    1,
+					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+					Caches:    []string{"/cache/data"},
+				},
+				delegate,
+			)
+			Expect(err).ToNot(HaveOccurred())
+
+			process, err := container.Run(ctx, runtime.ProcessSpec{
+				Path: "/bin/sh",
+				Args: []string{"-c", "echo hello"},
+			}, runtime.ProcessIO{})
+			Expect(err).ToNot(HaveOccurred())
+
+			pods, err := fakeClientset.CoreV1().Pods("ci-namespace").List(ctx, metav1.ListOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			By("verifying all volumes are emptyDir (no PVC)")
+			for _, vol := range pods.Items[0].Spec.Volumes {
+				Expect(vol.PersistentVolumeClaim).To(BeNil())
+				Expect(vol.EmptyDir).ToNot(BeNil())
+			}
+
+			simulatePodRunning("task-no-pvc")
+			result, err := process.Wait(ctx)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(result.ExitStatus).To(Equal(0))
+		})
+
+		It("resource cache initialization delegates to DB volume", func() {
+			By("creating a cache-backed volume with a DB volume")
+			fakeDBVolume := new(dbfakes.FakeCreatedVolume)
+			fakeDBVolume.HandleReturns("resource-cache-vol")
+			fakeDBVolume.WorkerNameReturns("k8s-worker-1")
+
+			fakeUsedCache := &db.UsedWorkerResourceCache{ID: 42}
+			fakeDBVolume.InitializeResourceCacheReturns(fakeUsedCache, nil)
+
+			fakeVolumeRepo.FindVolumeReturns(fakeDBVolume, true, nil)
+
+			vol, found, err := cacheWorker.LookupVolume(ctx, "resource-cache-vol")
+			Expect(err).ToNot(HaveOccurred())
+			Expect(found).To(BeTrue())
+
+			By("calling InitializeResourceCache which delegates to DB")
+			usedCache, err := vol.InitializeResourceCache(ctx, nil)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(usedCache).ToNot(BeNil())
+			Expect(usedCache.ID).To(Equal(42))
+			Expect(fakeDBVolume.InitializeResourceCacheCallCount()).To(Equal(1))
+		})
+	})
+
 	Describe("input/output passing between steps", func() {
 		It("mounts input volumes from a get step and output volumes for a task", func() {
 			By("creating a task container with inputs from a previous get and outputs")

@@ -230,9 +230,71 @@ var _ = Describe("Worker", func() {
 	})
 
 	Describe("LookupVolume", func() {
-		Context("when the volume does not exist", func() {
+		var fakeVolumeRepo *dbfakes.FakeVolumeRepository
+
+		BeforeEach(func() {
+			fakeVolumeRepo = new(dbfakes.FakeVolumeRepository)
+			worker.SetVolumeRepo(fakeVolumeRepo)
+		})
+
+		Context("when the volume exists in the DB", func() {
+			var fakeCreatedVolume *dbfakes.FakeCreatedVolume
+
+			BeforeEach(func() {
+				fakeCreatedVolume = new(dbfakes.FakeCreatedVolume)
+				fakeCreatedVolume.HandleReturns("vol-handle-1")
+				fakeCreatedVolume.WorkerNameReturns("k8s-worker-1")
+				fakeVolumeRepo.FindVolumeReturns(fakeCreatedVolume, true, nil)
+			})
+
+			It("returns a cache-backed volume", func() {
+				vol, found, err := worker.LookupVolume(ctx, "vol-handle-1")
+				Expect(err).ToNot(HaveOccurred())
+				Expect(found).To(BeTrue())
+				Expect(vol).ToNot(BeNil())
+				Expect(vol.Handle()).To(Equal("vol-handle-1"))
+			})
+
+			It("calls FindVolume with the correct handle", func() {
+				_, _, err := worker.LookupVolume(ctx, "vol-handle-1")
+				Expect(err).ToNot(HaveOccurred())
+				Expect(fakeVolumeRepo.FindVolumeCallCount()).To(Equal(1))
+				Expect(fakeVolumeRepo.FindVolumeArgsForCall(0)).To(Equal("vol-handle-1"))
+			})
+		})
+
+		Context("when the volume does not exist in the DB", func() {
+			BeforeEach(func() {
+				fakeVolumeRepo.FindVolumeReturns(nil, false, nil)
+			})
+
 			It("returns not found", func() {
 				_, found, err := worker.LookupVolume(ctx, "nonexistent")
+				Expect(err).ToNot(HaveOccurred())
+				Expect(found).To(BeFalse())
+			})
+		})
+
+		Context("when the DB returns an error", func() {
+			BeforeEach(func() {
+				fakeVolumeRepo.FindVolumeReturns(nil, false, fmt.Errorf("db connection lost"))
+			})
+
+			It("returns the error", func() {
+				_, _, err := worker.LookupVolume(ctx, "vol-handle-1")
+				Expect(err).To(HaveOccurred())
+				Expect(err).To(MatchError(ContainSubstring("db connection lost")))
+			})
+		})
+
+		Context("when no volume repo is configured", func() {
+			BeforeEach(func() {
+				worker = k8sruntime.NewWorker(fakeDBWorker, fakeClientset, cfg)
+				// intentionally do NOT call SetVolumeRepo
+			})
+
+			It("returns not found", func() {
+				_, found, err := worker.LookupVolume(ctx, "vol-handle-1")
 				Expect(err).ToNot(HaveOccurred())
 				Expect(found).To(BeFalse())
 			})

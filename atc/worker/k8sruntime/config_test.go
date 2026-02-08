@@ -33,6 +33,25 @@ var _ = Describe("Config", func() {
 		})
 	})
 
+	Describe("CacheBasePath constant", func() {
+		It("equals /concourse/cache", func() {
+			Expect(k8sruntime.CacheBasePath).To(Equal("/concourse/cache"))
+		})
+	})
+
+	Describe("CacheVolumeClaim field", func() {
+		It("defaults to empty when not set", func() {
+			cfg := k8sruntime.NewConfig("my-namespace", "")
+			Expect(cfg.CacheVolumeClaim).To(BeEmpty())
+		})
+
+		It("can be set to a PVC name", func() {
+			cfg := k8sruntime.NewConfig("my-namespace", "")
+			cfg.CacheVolumeClaim = "concourse-cache"
+			Expect(cfg.CacheVolumeClaim).To(Equal("concourse-cache"))
+		})
+	})
+
 	Describe("NewClientset", func() {
 		Context("when a valid kubeconfig is provided", func() {
 			var kubeconfigPath string

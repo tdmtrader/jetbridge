@@ -10,7 +10,9 @@ import (
 	"code.cloudfoundry.org/lager/v3"
 	"code.cloudfoundry.org/lager/v3/lagerctx"
 	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/atc/metric"
 	"github.com/concourse/concourse/atc/runtime"
+	"github.com/concourse/concourse/tracing"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -21,6 +23,7 @@ const (
 	exitStatusPropertyName   = "concourse:exit-status"
 	mainContainerName        = "main"
 	exitStatusAnnotationKey  = "concourse.ci/exit-status"
+	cachePVCVolumeName       = "cache-pvc"
 )
 
 // Compile-time check that Container satisfies runtime.Container.
@@ -69,6 +72,17 @@ func (c *Container) Run(ctx context.Context, spec runtime.ProcessSpec, io runtim
 		"handle": c.handle,
 	})
 
+	execMode := c.executor != nil
+	ctx, span := tracing.StartSpan(ctx, "k8s.container.run", tracing.Attrs{
+		"handle":    c.handle,
+		"image":     resolveImage(c.containerSpec.ImageSpec, c.config.ResourceTypeImages),
+		"type":      string(c.containerSpec.Type),
+		"namespace": c.config.Namespace,
+		"exec-mode": fmt.Sprintf("%t", execMode),
+	})
+	var err error
+	defer func() { tracing.End(span, err) }()
+
 	processID := c.handle
 	if spec.ID != "" {
 		processID = spec.ID
@@ -77,29 +91,35 @@ func (c *Container) Run(ctx context.Context, spec runtime.ProcessSpec, io runtim
 	// Exec mode: use a pause Pod and exec the real command via SPDY.
 	// If the pod already exists (e.g. fly hijack into an existing container),
 	// reuse it. Otherwise create a new pause pod.
-	if c.executor != nil {
+	if execMode {
 		podName := c.handle
-		_, err := c.clientset.CoreV1().Pods(c.config.Namespace).Get(ctx, c.handle, metav1.GetOptions{})
+		_, err = c.clientset.CoreV1().Pods(c.config.Namespace).Get(ctx, c.handle, metav1.GetOptions{})
 		if err != nil {
 			// Pod doesn't exist — create a new pause pod.
-			pod, createErr := c.createPausePod(ctx, spec)
-			if createErr != nil {
-				logger.Error("failed-to-create-pause-pod", createErr)
-				return nil, fmt.Errorf("create pause pod: %w", createErr)
+			var pod *corev1.Pod
+			pod, err = c.createPausePod(ctx, spec)
+			if err != nil {
+				logger.Error("failed-to-create-pause-pod", err)
+				metric.Metrics.FailedContainers.Inc()
+				return nil, fmt.Errorf("create pause pod: %w", err)
 			}
 			podName = pod.Name
 		}
+		metric.Metrics.ContainersCreated.Inc()
 		c.bindVolumesToPod(podName)
 		return newExecProcess(processID, podName, c.clientset, c.config, c, c.executor, spec, io), nil
 	}
 
 	// Fallback direct mode: only used when no executor is configured
 	// (e.g. tests that don't set up SPDY). Bakes command into Pod spec.
-	pod, err := c.createPod(ctx, spec)
+	var pod *corev1.Pod
+	pod, err = c.createPod(ctx, spec)
 	if err != nil {
 		logger.Error("failed-to-create-pod", err)
+		metric.Metrics.FailedContainers.Inc()
 		return nil, fmt.Errorf("create pod: %w", err)
 	}
+	metric.Metrics.ContainersCreated.Inc()
 	c.bindVolumesToPod(pod.Name)
 
 	return newProcess(processID, pod.Name, c.clientset, c.config, c, io), nil
@@ -130,6 +150,13 @@ func (c *Container) Attach(ctx context.Context, processID string, io runtime.Pro
 		"process-id": processID,
 	})
 
+	ctx, span := tracing.StartSpan(ctx, "k8s.container.attach", tracing.Attrs{
+		"handle":     c.handle,
+		"process-id": processID,
+	})
+	var spanErr error
+	defer func() { tracing.End(span, spanErr) }()
+
 	// Check if the process has already exited (stored in properties).
 	if statusStr, ok := c.properties[exitStatusPropertyName]; ok {
 		status, err := strconv.Atoi(statusStr)
@@ -144,6 +171,7 @@ func (c *Container) Attach(ctx context.Context, processID string, io runtime.Pro
 	pod, err := c.clientset.CoreV1().Pods(c.config.Namespace).Get(ctx, c.handle, metav1.GetOptions{})
 	if err != nil {
 		logger.Error("failed-to-get-pod", err)
+		spanErr = err
 		return nil, fmt.Errorf("attach: pod %q not found: %w", c.handle, err)
 	}
 
@@ -159,7 +187,8 @@ func (c *Container) Attach(ctx context.Context, processID string, io runtime.Pro
 		// Exec hasn't completed yet (no annotation). Return an error so
 		// the engine falls through to Run(), which detects the existing
 		// pod and re-execs the command.
-		return nil, fmt.Errorf("attach: exec-mode pod %q has no completion status", c.handle)
+		spanErr = fmt.Errorf("attach: exec-mode pod %q has no completion status", c.handle)
+		return nil, spanErr
 	}
 
 	return newProcess(processID, c.handle, c.clientset, c.config, c, io), nil
@@ -408,18 +437,44 @@ func (c *Container) buildVolumeMounts() ([]corev1.Volume, []corev1.VolumeMount) 
 		})
 	}
 
-	for i, cachePath := range c.containerSpec.Caches {
-		name := fmt.Sprintf("cache-%d", i)
+	if c.config.CacheVolumeClaim != "" {
+		// When a cache PVC is configured, mount it into the pod and use
+		// subPath mounts for each cache entry so data survives pod restarts.
 		volumes = append(volumes, corev1.Volume{
-			Name: name,
+			Name: cachePVCVolumeName,
 			VolumeSource: corev1.VolumeSource{
-				EmptyDir: &corev1.EmptyDirVolumeSource{},
+				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+					ClaimName: c.config.CacheVolumeClaim,
+				},
 			},
 		})
 		mounts = append(mounts, corev1.VolumeMount{
-			Name:      name,
-			MountPath: cachePath,
+			Name:      cachePVCVolumeName,
+			MountPath: CacheBasePath,
 		})
+
+		for i, cachePath := range c.containerSpec.Caches {
+			cacheHandle := fmt.Sprintf("%s-cache-%d", c.handle, i)
+			mounts = append(mounts, corev1.VolumeMount{
+				Name:      cachePVCVolumeName,
+				MountPath: cachePath,
+				SubPath:   cacheHandle,
+			})
+		}
+	} else {
+		for i, cachePath := range c.containerSpec.Caches {
+			name := fmt.Sprintf("cache-%d", i)
+			volumes = append(volumes, corev1.Volume{
+				Name: name,
+				VolumeSource: corev1.VolumeSource{
+					EmptyDir: &corev1.EmptyDirVolumeSource{},
+				},
+			})
+			mounts = append(mounts, corev1.VolumeMount{
+				Name:      name,
+				MountPath: cachePath,
+			})
+		}
 	}
 
 	return volumes, mounts

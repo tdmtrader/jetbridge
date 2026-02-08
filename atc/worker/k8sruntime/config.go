@@ -21,6 +21,10 @@ const (
 	// typeLabelKey is the Pod label used to record the Concourse container
 	// type (task, get, put, etc.).
 	typeLabelKey = "concourse.ci/type"
+
+	// CacheBasePath is the mount path inside pods where the cache PVC is
+	// attached. Cache entries live in subdirectories keyed by volume handle.
+	CacheBasePath = "/concourse/cache"
 )
 
 // DefaultResourceTypeImages maps base Concourse resource type names to their
@@ -65,6 +69,12 @@ type Config struct {
 	// ServiceAccount is the Kubernetes ServiceAccount name to set on
 	// created pods. If empty, the namespace's default SA is used.
 	ServiceAccount string
+
+	// CacheVolumeClaim is the name of a PersistentVolumeClaim to mount
+	// into every pod at CacheBasePath. Cache entries are stored as
+	// subdirectories keyed by volume handle. When empty, caching is
+	// disabled and all volumes use emptyDir (the default behavior).
+	CacheVolumeClaim string
 }
 
 // NewConfig creates a Config with the given namespace and kubeconfig path.

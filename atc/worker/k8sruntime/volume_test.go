@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 
+	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbfakes"
 	"github.com/concourse/concourse/atc/worker/k8sruntime"
 	. "github.com/onsi/ginkgo/v2"
@@ -181,6 +182,225 @@ var _ = Describe("Volume", func() {
 			)
 
 			Expect(volume.Handle()).ToNot(Equal(volume2.Handle()))
+		})
+	})
+})
+
+var _ = Describe("Cache Initialization Methods", func() {
+	var (
+		ctx          context.Context
+		fakeDBVolume *dbfakes.FakeCreatedVolume
+		fakeExecutor *fakeExecExecutor
+	)
+
+	BeforeEach(func() {
+		ctx = context.Background()
+		fakeDBVolume = new(dbfakes.FakeCreatedVolume)
+		fakeDBVolume.HandleReturns("cache-init-handle")
+		fakeExecutor = &fakeExecExecutor{}
+	})
+
+	Describe("InitializeResourceCache", func() {
+		Context("when dbVolume is non-nil", func() {
+			var cacheVolume *k8sruntime.Volume
+
+			BeforeEach(func() {
+				cacheVolume = k8sruntime.NewCacheVolume(
+					fakeDBVolume, "cache-init-handle", "k8s-worker-1",
+					fakeExecutor, "test-namespace", "main",
+				)
+				expectedResult := &db.UsedWorkerResourceCache{ID: 42}
+				fakeDBVolume.InitializeResourceCacheReturns(expectedResult, nil)
+			})
+
+			It("delegates to dbVolume.InitializeResourceCache and returns the result", func() {
+				result, err := cacheVolume.InitializeResourceCache(ctx, nil)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(result).ToNot(BeNil())
+				Expect(result.ID).To(Equal(42))
+
+				Expect(fakeDBVolume.InitializeResourceCacheCallCount()).To(Equal(1))
+			})
+		})
+
+		Context("when dbVolume is nil (stub volume)", func() {
+			var stubVolume *k8sruntime.Volume
+
+			BeforeEach(func() {
+				stubVolume = k8sruntime.NewStubVolume("stub-handle", "k8s-worker-1", "/tmp/mount")
+			})
+
+			It("returns nil, nil for backward compatibility", func() {
+				result, err := stubVolume.InitializeResourceCache(ctx, nil)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(result).To(BeNil())
+			})
+		})
+	})
+
+	Describe("InitializeStreamedResourceCache", func() {
+		Context("when dbVolume is non-nil", func() {
+			var cacheVolume *k8sruntime.Volume
+
+			BeforeEach(func() {
+				cacheVolume = k8sruntime.NewCacheVolume(
+					fakeDBVolume, "cache-init-handle", "k8s-worker-1",
+					fakeExecutor, "test-namespace", "main",
+				)
+				expectedResult := &db.UsedWorkerResourceCache{ID: 99}
+				fakeDBVolume.InitializeStreamedResourceCacheReturns(expectedResult, nil)
+			})
+
+			It("delegates to dbVolume.InitializeStreamedResourceCache and returns the result", func() {
+				result, err := cacheVolume.InitializeStreamedResourceCache(ctx, nil, 55)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(result).ToNot(BeNil())
+				Expect(result.ID).To(Equal(99))
+
+				Expect(fakeDBVolume.InitializeStreamedResourceCacheCallCount()).To(Equal(1))
+				_, passedSourceID := fakeDBVolume.InitializeStreamedResourceCacheArgsForCall(0)
+				Expect(passedSourceID).To(Equal(55))
+			})
+		})
+
+		Context("when dbVolume is nil (stub volume)", func() {
+			var stubVolume *k8sruntime.Volume
+
+			BeforeEach(func() {
+				stubVolume = k8sruntime.NewStubVolume("stub-handle", "k8s-worker-1", "/tmp/mount")
+			})
+
+			It("returns nil, nil for backward compatibility", func() {
+				result, err := stubVolume.InitializeStreamedResourceCache(ctx, nil, 0)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(result).To(BeNil())
+			})
+		})
+	})
+
+	Describe("InitializeTaskCache", func() {
+		Context("when dbVolume is non-nil", func() {
+			var cacheVolume *k8sruntime.Volume
+
+			BeforeEach(func() {
+				cacheVolume = k8sruntime.NewCacheVolume(
+					fakeDBVolume, "cache-init-handle", "k8s-worker-1",
+					fakeExecutor, "test-namespace", "main",
+				)
+				fakeDBVolume.InitializeTaskCacheReturns(nil)
+			})
+
+			It("delegates to dbVolume.InitializeTaskCache", func() {
+				err := cacheVolume.InitializeTaskCache(ctx, 7, "build-step", "/cache/path", false)
+				Expect(err).ToNot(HaveOccurred())
+
+				Expect(fakeDBVolume.InitializeTaskCacheCallCount()).To(Equal(1))
+				passedJobID, passedStepName, passedPath := fakeDBVolume.InitializeTaskCacheArgsForCall(0)
+				Expect(passedJobID).To(Equal(7))
+				Expect(passedStepName).To(Equal("build-step"))
+				Expect(passedPath).To(Equal("/cache/path"))
+			})
+		})
+
+		Context("when dbVolume is nil (stub volume)", func() {
+			var stubVolume *k8sruntime.Volume
+
+			BeforeEach(func() {
+				stubVolume = k8sruntime.NewStubVolume("stub-handle", "k8s-worker-1", "/tmp/mount")
+			})
+
+			It("returns nil for backward compatibility", func() {
+				err := stubVolume.InitializeTaskCache(ctx, 0, "", "", false)
+				Expect(err).ToNot(HaveOccurred())
+			})
+		})
+	})
+})
+
+var _ = Describe("NewCacheVolume", func() {
+	var (
+		ctx          context.Context
+		fakeExecutor *fakeExecExecutor
+		fakeDBVolume *dbfakes.FakeCreatedVolume
+		cacheVolume  *k8sruntime.Volume
+	)
+
+	BeforeEach(func() {
+		ctx = context.Background()
+		fakeExecutor = &fakeExecExecutor{}
+		fakeDBVolume = new(dbfakes.FakeCreatedVolume)
+		fakeDBVolume.HandleReturns("cache-vol-handle")
+		fakeDBVolume.WorkerNameReturns("k8s-worker-1")
+
+		cacheVolume = k8sruntime.NewCacheVolume(
+			fakeDBVolume,
+			"cache-vol-handle",
+			"k8s-worker-1",
+			fakeExecutor,
+			"test-namespace",
+			"main",
+		)
+	})
+
+	It("has a mountPath at CacheBasePath/<handle>", func() {
+		Expect(cacheVolume.MountPath()).To(Equal(k8sruntime.CacheBasePath + "/cache-vol-handle"))
+	})
+
+	It("returns the handle", func() {
+		Expect(cacheVolume.Handle()).To(Equal("cache-vol-handle"))
+	})
+
+	It("returns the dbVolume", func() {
+		Expect(cacheVolume.DBVolume()).To(BeIdenticalTo(fakeDBVolume))
+	})
+
+	It("has an executor for StreamIn/StreamOut", func() {
+		Expect(cacheVolume.HasExecutor()).To(BeTrue())
+	})
+
+	It("supports StreamIn targeting the PVC subdirectory", func() {
+		cacheVolume.SetPodName("test-pod")
+
+		reader := bytes.NewReader([]byte("cache-data"))
+		err := cacheVolume.StreamIn(ctx, ".", nil, 0, reader)
+		Expect(err).ToNot(HaveOccurred())
+
+		Expect(fakeExecutor.execCalls).To(HaveLen(1))
+		call := fakeExecutor.execCalls[0]
+		Expect(call.command).To(Equal([]string{"tar", "xf", "-", "-C", k8sruntime.CacheBasePath + "/cache-vol-handle"}))
+	})
+
+	It("supports StreamOut targeting the PVC subdirectory", func() {
+		cacheVolume.SetPodName("test-pod")
+		fakeExecutor.execStdout = []byte("cache-tar-data")
+
+		readCloser, err := cacheVolume.StreamOut(ctx, ".", nil)
+		Expect(err).ToNot(HaveOccurred())
+		defer readCloser.Close()
+
+		Expect(fakeExecutor.execCalls).To(HaveLen(1))
+		call := fakeExecutor.execCalls[0]
+		Expect(call.command).To(Equal([]string{"tar", "cf", "-", "-C", k8sruntime.CacheBasePath + "/cache-vol-handle", "."}))
+	})
+
+	Context("when dbVolume is nil", func() {
+		BeforeEach(func() {
+			cacheVolume = k8sruntime.NewCacheVolume(
+				nil,
+				"stub-cache-handle",
+				"k8s-worker-1",
+				fakeExecutor,
+				"test-namespace",
+				"main",
+			)
+		})
+
+		It("uses the explicit handle", func() {
+			Expect(cacheVolume.Handle()).To(Equal("stub-cache-handle"))
+		})
+
+		It("returns nil dbVolume", func() {
+			Expect(cacheVolume.DBVolume()).To(BeNil())
 		})
 	})
 })

@@ -10,7 +10,10 @@ import (
 
 	"code.cloudfoundry.org/lager/v3"
 	"code.cloudfoundry.org/lager/v3/lagerctx"
+	"github.com/concourse/concourse/atc/metric"
 	"github.com/concourse/concourse/atc/runtime"
+	"github.com/concourse/concourse/tracing"
+	"go.opentelemetry.io/otel/attribute"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -58,6 +61,13 @@ func (p *Process) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 		"process-id": p.id,
 	})
 
+	ctx, span := tracing.StartSpan(ctx, "k8s.process.wait", tracing.Attrs{
+		"pod-name":   p.podName,
+		"process-id": p.id,
+	})
+	var spanErr error
+	defer func() { tracing.End(span, spanErr) }()
+
 	type result struct {
 		processResult runtime.ProcessResult
 		err           error
@@ -85,6 +95,7 @@ func (p *Process) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 		_ = p.clientset.CoreV1().Pods(p.config.Namespace).Delete(
 			context.Background(), p.podName, metav1.DeleteOptions{},
 		)
+		spanErr = ctx.Err()
 		return runtime.ProcessResult{}, ctx.Err()
 
 	case r := <-waitCh:
@@ -94,12 +105,14 @@ func (p *Process) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 
 		if r.err != nil {
 			logger.Error("failed-to-wait-for-pod", r.err)
+			spanErr = r.err
 			return runtime.ProcessResult{}, r.err
 		}
 		// Store exit status in container properties for reattachment.
 		if p.container != nil {
 			p.container.SetProperty(exitStatusPropertyName, strconv.Itoa(r.processResult.ExitStatus))
 		}
+		span.SetAttributes(attribute.String("exit-code", strconv.Itoa(r.processResult.ExitStatus)))
 		return r.processResult, nil
 	}
 }
@@ -111,26 +124,9 @@ func (p *Process) SetTTY(tty runtime.TTYSpec) error {
 
 const (
 	// maxConsecutiveAPIErrors is the number of consecutive K8s API errors
-	// tolerated before failing the task.
+	// tolerated before failing the task. Used by PodWatcher for both initial
+	// sync and watch fallback.
 	maxConsecutiveAPIErrors = 3
-
-	// podStatusPollInterval is the delay between successive Pod status
-	// checks in pollUntilDone.
-	podStatusPollInterval = time.Second
-
-	// podStatusBackoffUnit is the base unit for exponential backoff when
-	// the K8s API returns transient errors in pollUntilDone. The actual
-	// delay is consecutiveErrors * podStatusBackoffUnit.
-	podStatusBackoffUnit = time.Second
-
-	// execPollInterval is the delay between successive Pod status checks
-	// in waitForRunning (exec mode).
-	execPollInterval = 500 * time.Millisecond
-
-	// execBackoffUnit is the base unit for exponential backoff when the
-	// K8s API returns transient errors in waitForRunning. The actual
-	// delay is consecutiveErrors * execBackoffUnit.
-	execBackoffUnit = 500 * time.Millisecond
 
 	// logStreamRetryDelay is how long to wait before retrying log stream
 	// attachment when the container isn't ready yet.
@@ -141,26 +137,20 @@ const (
 // Transient API errors are retried with exponential backoff up to
 // maxConsecutiveAPIErrors consecutive failures.
 func (p *Process) pollUntilDone(ctx context.Context) (runtime.ProcessResult, error) {
-	consecutiveErrors := 0
+	watcher := NewPodWatcher(p.clientset, p.config.Namespace, p.podName)
+	defer watcher.Stop()
+
 	for {
-		pod, err := p.clientset.CoreV1().Pods(p.config.Namespace).Get(ctx, p.podName, metav1.GetOptions{})
+		pod, err := watcher.Next(ctx)
 		if err != nil {
-			consecutiveErrors++
-			if consecutiveErrors >= maxConsecutiveAPIErrors {
-				return runtime.ProcessResult{}, fmt.Errorf("%d consecutive API errors getting pod status: %w", consecutiveErrors, err)
-			}
-			backoff := time.Duration(consecutiveErrors) * podStatusBackoffUnit
-			select {
-			case <-ctx.Done():
-				return runtime.ProcessResult{}, ctx.Err()
-			case <-time.After(backoff):
-				continue
-			}
+			return runtime.ProcessResult{}, err
 		}
-		consecutiveErrors = 0
 
 		// Check for terminal failure states before checking exit code.
 		if reason, message, failed := isPodFailedFast(pod); failed {
+			if reason == "ImagePullBackOff" || reason == "ErrImagePull" {
+				metric.Metrics.K8sImagePullFailures.Inc()
+			}
 			writePodDiagnostics(pod, p.processIO.Stderr)
 			return runtime.ProcessResult{}, fmt.Errorf("pod failed: %s: %s", reason, message)
 		}
@@ -172,13 +162,6 @@ func (p *Process) pollUntilDone(ctx context.Context) (runtime.ProcessResult, err
 		exitCode, done := podExitCode(pod)
 		if done {
 			return runtime.ProcessResult{ExitStatus: exitCode}, nil
-		}
-
-		select {
-		case <-ctx.Done():
-			return runtime.ProcessResult{}, ctx.Err()
-		case <-time.After(podStatusPollInterval):
-			// Poll interval
 		}
 	}
 }
@@ -365,23 +348,45 @@ func (p *execProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 		"process-id": p.id,
 	})
 
+	ctx, span := tracing.StartSpan(ctx, "k8s.exec-process.wait", tracing.Attrs{
+		"pod-name":   p.podName,
+		"process-id": p.id,
+	})
+	var spanErr error
+	defer func() { tracing.End(span, spanErr) }()
+
 	// Wait for the Pod to be running before exec-ing.
-	if err := p.waitForRunning(ctx); err != nil {
+	waitCtx, waitSpan := tracing.StartSpan(ctx, "k8s.exec-process.wait-for-running", tracing.Attrs{
+		"pod-name": p.podName,
+	})
+	if err := p.waitForRunning(waitCtx); err != nil {
+		tracing.End(waitSpan, err)
 		logger.Error("failed-to-wait-for-pod-running", err)
+		spanErr = err
 		return runtime.ProcessResult{}, fmt.Errorf("waiting for pod running: %w", err)
 	}
+	tracing.End(waitSpan, nil)
 
 	// Stream input artifacts into the pod before executing the command.
-	if err := p.streamInputs(ctx); err != nil {
+	streamCtx, streamSpan := tracing.StartSpan(ctx, "k8s.exec-process.stream-inputs", tracing.Attrs{
+		"pod-name": p.podName,
+	})
+	if err := p.streamInputs(streamCtx); err != nil {
+		tracing.End(streamSpan, err)
 		logger.Error("failed-to-stream-inputs", err)
+		spanErr = err
 		return runtime.ProcessResult{}, fmt.Errorf("streaming inputs: %w", err)
 	}
+	tracing.End(streamSpan, nil)
 
 	// Build the command: [path, arg1, arg2, ...]
 	command := append([]string{p.processSpec.Path}, p.processSpec.Args...)
 
+	execCtx, execSpan := tracing.StartSpan(ctx, "k8s.exec-process.exec", tracing.Attrs{
+		"pod-name": p.podName,
+	})
 	err := p.executor.ExecInPod(
-		ctx,
+		execCtx,
 		p.config.Namespace,
 		p.podName,
 		mainContainerName,
@@ -391,6 +396,7 @@ func (p *execProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 		p.processIO.Stderr,
 		p.processSpec.TTY != nil,
 	)
+	tracing.End(execSpan, err)
 
 	// NOTE: The pause Pod is intentionally NOT deleted here.
 	// Pod cleanup is handled by the GC system (reaper), which enables
@@ -404,9 +410,11 @@ func (p *execProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 				p.container.SetProperty(exitStatusPropertyName, strconv.Itoa(exitCode))
 			}
 			p.annotateExitStatus(ctx, exitCode)
+			span.SetAttributes(attribute.String("exit-code", strconv.Itoa(exitCode)))
 			return runtime.ProcessResult{ExitStatus: exitCode}, nil
 		}
 		logger.Error("failed-to-exec-in-pod", err)
+		spanErr = err
 		return runtime.ProcessResult{}, fmt.Errorf("exec in pod: %w", err)
 	}
 
@@ -414,6 +422,7 @@ func (p *execProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 		p.container.SetProperty(exitStatusPropertyName, "0")
 	}
 	p.annotateExitStatus(ctx, 0)
+	span.SetAttributes(attribute.String("exit-code", "0"))
 	return runtime.ProcessResult{ExitStatus: 0}, nil
 }
 
@@ -461,41 +470,44 @@ func (p *execProcess) SetTTY(_ runtime.TTYSpec) error {
 	return nil
 }
 
-// waitForRunning polls the Pod until it reaches the Running phase.
-// It enforces a startup timeout from Config.PodStartupTimeout and
-// retries transient API errors up to maxConsecutiveAPIErrors.
+// waitForRunning uses the Watch API to wait for the Pod to reach the Running
+// phase. It enforces a startup timeout from Config.PodStartupTimeout.
 func (p *execProcess) waitForRunning(ctx context.Context) error {
 	timeout := p.config.PodStartupTimeout
 	if timeout == 0 {
 		timeout = DefaultPodStartupTimeout
 	}
-	deadline := time.After(timeout)
+	startTime := time.Now()
 
-	consecutiveErrors := 0
+	// Create a timeout context for the startup deadline.
+	timeoutCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	watcher := NewPodWatcher(p.clientset, p.config.Namespace, p.podName)
+	defer watcher.Stop()
+
 	var lastPod *corev1.Pod
 	for {
-		pod, err := p.clientset.CoreV1().Pods(p.config.Namespace).Get(ctx, p.podName, metav1.GetOptions{})
+		pod, err := watcher.Next(timeoutCtx)
 		if err != nil {
-			consecutiveErrors++
-			if consecutiveErrors >= maxConsecutiveAPIErrors {
-				return fmt.Errorf("%d consecutive API errors getting pod: %w", consecutiveErrors, err)
-			}
-			backoff := time.Duration(consecutiveErrors) * execBackoffUnit
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-deadline:
+			// Check if this was a timeout vs other error.
+			if timeoutCtx.Err() == context.DeadlineExceeded && ctx.Err() == nil {
+				if lastPod != nil {
+					writePodDiagnostics(lastPod, p.processIO.Stderr)
+					return fmt.Errorf("timed out waiting for pod to start (timeout: %s, phase: %s)", timeout, lastPod.Status.Phase)
+				}
 				return fmt.Errorf("timed out waiting for pod to start (timeout: %s)", timeout)
-			case <-time.After(backoff):
-				continue
 			}
+			return err
 		}
-		consecutiveErrors = 0
 		lastPod = pod
 
 		// Check for terminal failure states BEFORE checking Running phase,
 		// because CrashLoopBackOff can occur while the pod phase is Running.
 		if reason, message, failed := isPodFailedFast(pod); failed {
+			if reason == "ImagePullBackOff" || reason == "ErrImagePull" {
+				metric.Metrics.K8sImagePullFailures.Inc()
+			}
 			writePodDiagnostics(pod, p.processIO.Stderr)
 			return fmt.Errorf("pod failed: %s: %s", reason, message)
 		}
@@ -509,20 +521,12 @@ func (p *execProcess) waitForRunning(ctx context.Context) error {
 		}
 
 		if pod.Status.Phase == corev1.PodRunning {
+			metric.Metrics.K8sPodStartupDuration.Set(time.Since(startTime).Milliseconds())
 			return nil
 		}
 
 		if pod.Status.Phase == corev1.PodFailed || pod.Status.Phase == corev1.PodSucceeded {
 			return fmt.Errorf("pod terminated before exec could run (phase: %s)", pod.Status.Phase)
-		}
-
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-deadline:
-			writePodDiagnostics(lastPod, p.processIO.Stderr)
-			return fmt.Errorf("timed out waiting for pod to start (timeout: %s, phase: %s)", timeout, lastPod.Status.Phase)
-		case <-time.After(execPollInterval):
 		}
 	}
 }

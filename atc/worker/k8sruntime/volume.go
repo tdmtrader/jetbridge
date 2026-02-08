@@ -12,6 +12,7 @@ import (
 	"github.com/concourse/concourse/atc/compression"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/runtime"
+	"github.com/concourse/concourse/tracing"
 )
 
 // Compile-time check that Volume satisfies runtime.Volume.
@@ -95,6 +96,22 @@ func NewDeferredVolume(handle, workerName string, executor PodExecutor, namespac
 	}
 }
 
+// NewCacheVolume creates a Volume backed by a subdirectory on the cache PVC.
+// The mountPath is automatically set to CacheBasePath/<handle>, so StreamIn/
+// StreamOut target the PVC subdirectory. The dbVolume parameter may be nil
+// when the volume hasn't been registered in the DB yet.
+func NewCacheVolume(dbVolume db.CreatedVolume, handle, workerName string, executor PodExecutor, namespace, containerName string) *Volume {
+	return &Volume{
+		dbVolume:      dbVolume,
+		handle:        handle,
+		workerName:    workerName,
+		executor:      executor,
+		namespace:     namespace,
+		containerName: containerName,
+		mountPath:     filepath.Join(CacheBasePath, handle),
+	}
+}
+
 // SetPodName sets the pod name on a deferred volume. This is called when
 // the pod is created in Container.Run(), enabling StreamIn/StreamOut.
 func (v *Volume) SetPodName(podName string) {
@@ -144,6 +161,13 @@ func (v *Volume) StreamIn(ctx context.Context, path string, _ compression.Compre
 		"path":       path,
 	})
 
+	ctx, span := tracing.StartSpan(ctx, "k8s.volume.stream-in", tracing.Attrs{
+		"pod-name": v.podName,
+		"path":     v.resolvedPath(path),
+	})
+	var spanErr error
+	defer func() { tracing.End(span, spanErr) }()
+
 	targetPath := v.resolvedPath(path)
 
 	cmd := []string{"tar", "xf", "-", "-C", targetPath}
@@ -151,6 +175,7 @@ func (v *Volume) StreamIn(ctx context.Context, path string, _ compression.Compre
 	err := v.executor.ExecInPod(ctx, v.namespace, v.podName, v.containerName, cmd, reader, nil, nil, false)
 	if err != nil {
 		logger.Error("failed-to-stream-in", err)
+		spanErr = err
 		return fmt.Errorf("stream in via exec: %w", err)
 	}
 
@@ -165,6 +190,13 @@ func (v *Volume) StreamOut(ctx context.Context, path string, _ compression.Compr
 		"path":       path,
 	})
 
+	ctx, span := tracing.StartSpan(ctx, "k8s.volume.stream-out", tracing.Attrs{
+		"pod-name": v.podName,
+		"path":     v.resolvedPath(path),
+	})
+	var spanErr error
+	defer func() { tracing.End(span, spanErr) }()
+
 	targetPath := v.resolvedPath(path)
 
 	cmd := []string{"tar", "cf", "-", "-C", targetPath, "."}
@@ -173,6 +205,7 @@ func (v *Volume) StreamOut(ctx context.Context, path string, _ compression.Compr
 	err := v.executor.ExecInPod(ctx, v.namespace, v.podName, v.containerName, cmd, nil, &stdout, nil, false)
 	if err != nil {
 		logger.Error("failed-to-stream-out", err)
+		spanErr = err
 		return nil, fmt.Errorf("stream out via exec: %w", err)
 	}
 
@@ -186,14 +219,23 @@ func (v *Volume) resolvedPath(path string) string {
 	return filepath.Join(v.mountPath, path)
 }
 
-func (v *Volume) InitializeResourceCache(ctx context.Context, urc db.ResourceCache) (*db.UsedWorkerResourceCache, error) {
-	return nil, nil
+func (v *Volume) InitializeResourceCache(ctx context.Context, cache db.ResourceCache) (*db.UsedWorkerResourceCache, error) {
+	if v.dbVolume == nil {
+		return nil, nil
+	}
+	return v.dbVolume.InitializeResourceCache(cache)
 }
 
-func (v *Volume) InitializeStreamedResourceCache(ctx context.Context, urc db.ResourceCache, sourceWorkerResourceCacheID int) (*db.UsedWorkerResourceCache, error) {
-	return nil, nil
+func (v *Volume) InitializeStreamedResourceCache(ctx context.Context, cache db.ResourceCache, sourceWorkerResourceCacheID int) (*db.UsedWorkerResourceCache, error) {
+	if v.dbVolume == nil {
+		return nil, nil
+	}
+	return v.dbVolume.InitializeStreamedResourceCache(cache, sourceWorkerResourceCacheID)
 }
 
 func (v *Volume) InitializeTaskCache(ctx context.Context, jobID int, stepName string, path string, privileged bool) error {
-	return nil
+	if v.dbVolume == nil {
+		return nil
+	}
+	return v.dbVolume.InitializeTaskCache(jobID, stepName, path)
 }
