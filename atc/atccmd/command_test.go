@@ -45,6 +45,35 @@ func (s *CommandSuite) TestInvalidConcurrentRequestLimitAction() {
 	)
 }
 
+func (s *CommandSuite) TestKubernetesFlags() {
+	cmd := &atccmd.ATCCommand{}
+	parser := flags.NewParser(cmd, flags.Default)
+	parser.NamespaceDelimiter = "-"
+
+	runCmd := parser.Find("run")
+	s.NotNil(runCmd, "run subcommand should exist")
+
+	nsOpt := runCmd.FindOptionByLongName("kubernetes-namespace")
+	s.NotNil(nsOpt, "--kubernetes-namespace flag should exist")
+	s.Contains(nsOpt.Description, "Kubernetes namespace")
+
+	kubeconfigOpt := runCmd.FindOptionByLongName("kubernetes-kubeconfig")
+	s.NotNil(kubeconfigOpt, "--kubernetes-kubeconfig flag should exist")
+	s.Contains(kubeconfigOpt.Description, "kubeconfig")
+}
+
+func (s *CommandSuite) TestKubernetesFieldsExistOnRunCommand() {
+	cmd := &atccmd.RunCommand{}
+	s.Equal("", cmd.Kubernetes.Namespace, "namespace should default to empty string")
+	s.Equal("", cmd.Kubernetes.Kubeconfig, "kubeconfig should default to empty string")
+
+	cmd.Kubernetes.Namespace = "ci-workers"
+	cmd.Kubernetes.Kubeconfig = "/etc/k8s/config"
+
+	s.Equal("ci-workers", cmd.Kubernetes.Namespace)
+	s.Equal("/etc/k8s/config", cmd.Kubernetes.Kubeconfig)
+}
+
 func TestSuite(t *testing.T) {
 	suite.Run(t, &CommandSuite{
 		Assertions: require.New(t),
