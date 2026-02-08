@@ -63,6 +63,9 @@ func (f DefaultFactory) newK8sWorker(dbWorker db.Worker) *k8sruntime.Worker {
 	if f.K8sExecutor != nil {
 		w.SetExecutor(f.K8sExecutor)
 	}
+	if f.K8sConfig.CacheVolumeClaim != "" {
+		w.SetVolumeRepo(f.DB.VolumeRepo)
+	}
 	return w
 }
 

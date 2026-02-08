@@ -52,6 +52,8 @@ func TestLiveResourceLimitsQoS(t *testing.T) {
 	clientset, cfg := kubeClient(t)
 	ctx := context.Background()
 
+	cleanupPod(t, clientset, cfg.Namespace, handle)
+
 	cpu := uint64(100)     // 100m = 0.1 CPU
 	memory := uint64(64 * 1024 * 1024) // 64Mi
 
@@ -127,6 +129,8 @@ func TestLiveSecureDefaults(t *testing.T) {
 	clientset, cfg := kubeClient(t)
 	ctx := context.Background()
 
+	cleanupPod(t, clientset, cfg.Namespace, handle)
+
 	container, _, err := worker.FindOrCreateContainer(
 		ctx,
 		db.NewFixedHandleContainerOwner(handle),
@@ -190,8 +194,6 @@ func TestLiveSecureDefaults(t *testing.T) {
 		t.Fatalf("expected exit 0, got %d", result.ExitStatus)
 	}
 
-	// Clean up.
-	_ = clientset.CoreV1().Pods(cfg.Namespace).Delete(context.Background(), handle, metav1.DeleteOptions{})
 	t.Logf("secure defaults verified on pod spec")
 }
 
@@ -201,6 +203,8 @@ func TestLiveServiceAccount(t *testing.T) {
 	handle := "live-sa-" + time.Now().Format("150405")
 	clientset, cfg := kubeClient(t)
 	ctx := context.Background()
+
+	cleanupPod(t, clientset, cfg.Namespace, handle)
 
 	// Use the "default" service account since it always exists.
 	worker, delegate := setupLiveWorkerWithConfig(t, handle, func(c *k8sruntime.Config) {
@@ -240,7 +244,4 @@ func TestLiveServiceAccount(t *testing.T) {
 		t.Fatalf("expected serviceAccountName 'default', got %q", pod.Spec.ServiceAccountName)
 	}
 	t.Logf("serviceAccountName=%s confirmed on pod spec", pod.Spec.ServiceAccountName)
-
-	// Clean up.
-	_ = clientset.CoreV1().Pods(cfg.Namespace).Delete(context.Background(), handle, metav1.DeleteOptions{})
 }

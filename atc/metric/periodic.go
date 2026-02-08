@@ -100,6 +100,22 @@ func tick(logger lager.Logger, m *Monitor) {
 	)
 
 	m.emit(
+		logger.Session("k8s-pod-startup-duration"),
+		Event{
+			Name:  "k8s pod startup duration (ms)",
+			Value: m.K8sPodStartupDuration.Max(),
+		},
+	)
+
+	m.emit(
+		logger.Session("k8s-image-pull-failures"),
+		Event{
+			Name:  "k8s image pull failures",
+			Value: m.K8sImagePullFailures.Delta(),
+		},
+	)
+
+	m.emit(
 		logger.Session("containers-created"),
 		Event{
 			Name:  "containers created",

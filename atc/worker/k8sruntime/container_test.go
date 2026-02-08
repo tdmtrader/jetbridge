@@ -3,11 +3,13 @@ package k8sruntime_test
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 
 	"github.com/concourse/concourse/atc/compression"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbfakes"
+	"github.com/concourse/concourse/atc/metric"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/worker/k8sruntime"
 	. "github.com/onsi/ginkgo/v2"
@@ -15,7 +17,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	apiruntime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 )
 
 var _ = Describe("Container", func() {
@@ -265,6 +269,223 @@ var _ = Describe("Container", func() {
 			mainContainer := pod.Spec.Containers[0]
 			Expect(mainContainer.VolumeMounts).To(HaveLen(1))
 			Expect(mainContainer.VolumeMounts[0].MountPath).To(Equal("/tmp/build/workdir/.cache"))
+		})
+	})
+
+	Describe("Run with cache PVC configured", func() {
+		var container runtime.Container
+
+		Context("when CacheVolumeClaim is set (no caches in spec)", func() {
+			BeforeEach(func() {
+				setupFakeDBContainer(fakeDBWorker, "cache-pvc-handle")
+
+				cfgWithCachePVC := k8sruntime.NewConfig("test-namespace", "")
+				cfgWithCachePVC.CacheVolumeClaim = "concourse-cache"
+
+				cachePVCWorker := k8sruntime.NewWorker(fakeDBWorker, fakeClientset, cfgWithCachePVC)
+
+				var err error
+				container, _, err = cachePVCWorker.FindOrCreateContainer(
+					ctx,
+					db.NewFixedHandleContainerOwner("cache-pvc-handle"),
+					db.ContainerMetadata{Type: db.ContainerTypeTask},
+					runtime.ContainerSpec{
+						TeamID:   1,
+						Dir:      "/workdir",
+						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+					},
+					delegate,
+				)
+				Expect(err).ToNot(HaveOccurred())
+			})
+
+			It("includes a PVC volume and mount at CacheBasePath in the pod spec", func() {
+				_, err := container.Run(ctx, runtime.ProcessSpec{
+					Path: "/bin/sh",
+					Args: []string{"-c", "echo hello"},
+				}, runtime.ProcessIO{})
+				Expect(err).ToNot(HaveOccurred())
+
+				pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
+				Expect(err).ToNot(HaveOccurred())
+				Expect(pods.Items).To(HaveLen(1))
+
+				pod := pods.Items[0]
+
+				By("adding a PersistentVolumeClaim volume")
+				var pvcVol *corev1.Volume
+				for i := range pod.Spec.Volumes {
+					if pod.Spec.Volumes[i].PersistentVolumeClaim != nil {
+						pvcVol = &pod.Spec.Volumes[i]
+						break
+					}
+				}
+				Expect(pvcVol).ToNot(BeNil(), "expected a PVC volume in pod spec")
+				Expect(pvcVol.PersistentVolumeClaim.ClaimName).To(Equal("concourse-cache"))
+
+				By("mounting the PVC at CacheBasePath")
+				mainContainer := pod.Spec.Containers[0]
+				var cacheMount *corev1.VolumeMount
+				for i := range mainContainer.VolumeMounts {
+					if mainContainer.VolumeMounts[i].MountPath == k8sruntime.CacheBasePath {
+						cacheMount = &mainContainer.VolumeMounts[i]
+						break
+					}
+				}
+				Expect(cacheMount).ToNot(BeNil(), "expected a volume mount at CacheBasePath")
+				Expect(cacheMount.Name).To(Equal(pvcVol.Name))
+			})
+		})
+
+		Context("when CacheVolumeClaim is set with task caches", func() {
+			BeforeEach(func() {
+				setupFakeDBContainer(fakeDBWorker, "cache-subpath-handle")
+
+				cfgWithCachePVC := k8sruntime.NewConfig("test-namespace", "")
+				cfgWithCachePVC.CacheVolumeClaim = "concourse-cache"
+
+				cachePVCWorker := k8sruntime.NewWorker(fakeDBWorker, fakeClientset, cfgWithCachePVC)
+
+				var err error
+				container, _, err = cachePVCWorker.FindOrCreateContainer(
+					ctx,
+					db.NewFixedHandleContainerOwner("cache-subpath-handle"),
+					db.ContainerMetadata{Type: db.ContainerTypeTask},
+					runtime.ContainerSpec{
+						TeamID:   1,
+						Dir:      "/tmp/build/workdir",
+						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+						Caches:   []string{"/tmp/build/workdir/.cache", "/tmp/build/workdir/.npm"},
+					},
+					delegate,
+				)
+				Expect(err).ToNot(HaveOccurred())
+			})
+
+			It("mounts cache paths using PVC subPath instead of emptyDir", func() {
+				_, err := container.Run(ctx, runtime.ProcessSpec{
+					Path: "/bin/sh",
+					Args: []string{"-c", "echo hello"},
+				}, runtime.ProcessIO{})
+				Expect(err).ToNot(HaveOccurred())
+
+				pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
+				Expect(err).ToNot(HaveOccurred())
+				pod := pods.Items[0]
+
+				By("not creating emptyDir volumes for caches")
+				for _, vol := range pod.Spec.Volumes {
+					if vol.EmptyDir != nil {
+						Expect(vol.Name).ToNot(HavePrefix("cache-"), "cache volumes should not use emptyDir when PVC is configured")
+					}
+				}
+
+				By("mounting cache paths with subPath on the PVC")
+				mainContainer := pod.Spec.Containers[0]
+				var cacheMounts []corev1.VolumeMount
+				for _, m := range mainContainer.VolumeMounts {
+					if m.SubPath != "" {
+						cacheMounts = append(cacheMounts, m)
+					}
+				}
+				Expect(cacheMounts).To(HaveLen(2))
+
+				mountPaths := []string{cacheMounts[0].MountPath, cacheMounts[1].MountPath}
+				Expect(mountPaths).To(ConsistOf("/tmp/build/workdir/.cache", "/tmp/build/workdir/.npm"))
+
+				for _, m := range cacheMounts {
+					Expect(m.SubPath).ToNot(BeEmpty(), "subPath should be set for cache mounts")
+					Expect(m.Name).To(Equal("cache-pvc"), "cache mounts should reference the PVC volume")
+				}
+			})
+		})
+
+		Context("when CacheVolumeClaim is set with inputs and outputs", func() {
+			BeforeEach(func() {
+				setupFakeDBContainer(fakeDBWorker, "pvc-io-handle")
+
+				cfgWithCachePVC := k8sruntime.NewConfig("test-namespace", "")
+				cfgWithCachePVC.CacheVolumeClaim = "concourse-cache"
+
+				cachePVCWorker := k8sruntime.NewWorker(fakeDBWorker, fakeClientset, cfgWithCachePVC)
+
+				var err error
+				container, _, err = cachePVCWorker.FindOrCreateContainer(
+					ctx,
+					db.NewFixedHandleContainerOwner("pvc-io-handle"),
+					db.ContainerMetadata{Type: db.ContainerTypeTask},
+					runtime.ContainerSpec{
+						TeamID:   1,
+						Dir:      "/tmp/build/workdir",
+						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+						Inputs: []runtime.Input{
+							{DestinationPath: "/tmp/build/workdir/my-input"},
+						},
+						Outputs: runtime.OutputPaths{
+							"result": "/tmp/build/workdir/result",
+						},
+					},
+					delegate,
+				)
+				Expect(err).ToNot(HaveOccurred())
+			})
+
+			It("inputs and outputs remain emptyDir even when PVC is configured", func() {
+				_, err := container.Run(ctx, runtime.ProcessSpec{
+					Path: "/bin/sh",
+					Args: []string{"-c", "echo hello"},
+				}, runtime.ProcessIO{})
+				Expect(err).ToNot(HaveOccurred())
+
+				pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
+				Expect(err).ToNot(HaveOccurred())
+				pod := pods.Items[0]
+
+				emptyDirCount := 0
+				for _, vol := range pod.Spec.Volumes {
+					if vol.EmptyDir != nil {
+						emptyDirCount++
+					}
+				}
+				Expect(emptyDirCount).To(Equal(2), "inputs and outputs should still use emptyDir")
+			})
+		})
+
+		Context("when CacheVolumeClaim is not set", func() {
+			BeforeEach(func() {
+				setupFakeDBContainer(fakeDBWorker, "no-cache-pvc-handle")
+
+				var err error
+				container, _, err = worker.FindOrCreateContainer(
+					ctx,
+					db.NewFixedHandleContainerOwner("no-cache-pvc-handle"),
+					db.ContainerMetadata{Type: db.ContainerTypeTask},
+					runtime.ContainerSpec{
+						TeamID:   1,
+						Dir:      "/workdir",
+						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+					},
+					delegate,
+				)
+				Expect(err).ToNot(HaveOccurred())
+			})
+
+			It("does not include a PVC volume in the pod spec", func() {
+				_, err := container.Run(ctx, runtime.ProcessSpec{
+					Path: "/bin/sh",
+					Args: []string{"-c", "echo hello"},
+				}, runtime.ProcessIO{})
+				Expect(err).ToNot(HaveOccurred())
+
+				pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
+				Expect(err).ToNot(HaveOccurred())
+				Expect(pods.Items).To(HaveLen(1))
+
+				pod := pods.Items[0]
+				for _, vol := range pod.Spec.Volumes {
+					Expect(vol.PersistentVolumeClaim).To(BeNil(), "no PVC volumes expected when CacheVolumeClaim is empty")
+				}
+			})
 		})
 	})
 
@@ -1299,6 +1520,126 @@ var _ = Describe("Container", func() {
 			result, err := process.Wait(ctx)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(result.ExitStatus).To(Equal(130))
+		})
+	})
+
+	Describe("Run metrics", func() {
+		var container runtime.Container
+
+		Context("when pod creation succeeds (direct mode)", func() {
+			BeforeEach(func() {
+				setupFakeDBContainer(fakeDBWorker, "metric-success-handle")
+
+				var err error
+				container, _, err = worker.FindOrCreateContainer(
+					ctx,
+					db.NewFixedHandleContainerOwner("metric-success-handle"),
+					db.ContainerMetadata{Type: db.ContainerTypeTask},
+					runtime.ContainerSpec{
+						TeamID:   1,
+						Dir:      "/workdir",
+						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+					},
+					delegate,
+				)
+				Expect(err).ToNot(HaveOccurred())
+
+				// Drain any prior counter state.
+				metric.Metrics.ContainersCreated.Delta()
+				metric.Metrics.FailedContainers.Delta()
+			})
+
+			It("increments ContainersCreated", func() {
+				_, err := container.Run(ctx, runtime.ProcessSpec{
+					Path: "/bin/sh",
+					Args: []string{"-c", "echo hello"},
+				}, runtime.ProcessIO{})
+				Expect(err).ToNot(HaveOccurred())
+
+				Expect(metric.Metrics.ContainersCreated.Delta()).To(Equal(float64(1)))
+				Expect(metric.Metrics.FailedContainers.Delta()).To(Equal(float64(0)))
+			})
+		})
+
+		Context("when pod creation succeeds (exec mode)", func() {
+			var (
+				execContainer runtime.Container
+				execWorker    *k8sruntime.Worker
+			)
+
+			BeforeEach(func() {
+				execWorker = k8sruntime.NewWorker(fakeDBWorker, fakeClientset, cfg)
+				execWorker.SetExecutor(&fakeExecExecutor{})
+
+				setupFakeDBContainer(fakeDBWorker, "metric-exec-success")
+
+				var err error
+				execContainer, _, err = execWorker.FindOrCreateContainer(
+					ctx,
+					db.NewFixedHandleContainerOwner("metric-exec-success"),
+					db.ContainerMetadata{Type: db.ContainerTypeTask},
+					runtime.ContainerSpec{
+						TeamID:   1,
+						Dir:      "/workdir",
+						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+					},
+					delegate,
+				)
+				Expect(err).ToNot(HaveOccurred())
+
+				metric.Metrics.ContainersCreated.Delta()
+				metric.Metrics.FailedContainers.Delta()
+			})
+
+			It("increments ContainersCreated", func() {
+				_, err := execContainer.Run(ctx, runtime.ProcessSpec{
+					Path: "/bin/sh",
+					Args: []string{"-c", "echo hello"},
+				}, runtime.ProcessIO{})
+				Expect(err).ToNot(HaveOccurred())
+
+				Expect(metric.Metrics.ContainersCreated.Delta()).To(Equal(float64(1)))
+				Expect(metric.Metrics.FailedContainers.Delta()).To(Equal(float64(0)))
+			})
+		})
+
+		Context("when pod creation fails", func() {
+			BeforeEach(func() {
+				setupFakeDBContainer(fakeDBWorker, "metric-fail-handle")
+
+				var err error
+				container, _, err = worker.FindOrCreateContainer(
+					ctx,
+					db.NewFixedHandleContainerOwner("metric-fail-handle"),
+					db.ContainerMetadata{Type: db.ContainerTypeTask},
+					runtime.ContainerSpec{
+						TeamID:   1,
+						Dir:      "/workdir",
+						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+					},
+					delegate,
+				)
+				Expect(err).ToNot(HaveOccurred())
+
+				// Make pod creation fail by injecting a reactor.
+				fakeClientset.PrependReactor("create", "pods", func(action k8stesting.Action) (bool, apiruntime.Object, error) {
+					return true, nil, fmt.Errorf("simulated pod creation failure")
+				})
+
+				metric.Metrics.ContainersCreated.Delta()
+				metric.Metrics.FailedContainers.Delta()
+			})
+
+			It("increments FailedContainers", func() {
+				_, err := container.Run(ctx, runtime.ProcessSpec{
+					Path: "/bin/sh",
+					Args: []string{"-c", "echo hello"},
+				}, runtime.ProcessIO{})
+				Expect(err).To(HaveOccurred())
+
+				Expect(metric.Metrics.FailedContainers.Delta()).To(Equal(float64(1)))
+				Expect(metric.Metrics.ContainersCreated.Delta()).To(Equal(float64(0)))
+			})
 		})
 	})
 

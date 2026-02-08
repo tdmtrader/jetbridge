@@ -8,6 +8,7 @@ import (
 
 	"code.cloudfoundry.org/lager/v3"
 	"code.cloudfoundry.org/lager/v3/lagerctx"
+	"github.com/concourse/concourse/tracing"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
@@ -41,6 +42,15 @@ func (e *SPDYExecutor) ExecInPod(
 	stdout, stderr io.Writer,
 	tty bool,
 ) error {
+	ctx, span := tracing.StartSpan(ctx, "k8s.spdy.exec", tracing.Attrs{
+		"namespace":      namespace,
+		"pod-name":       podName,
+		"container-name": containerName,
+		"tty":            fmt.Sprintf("%t", tty),
+	})
+	var spanErr error
+	defer func() { tracing.End(span, spanErr) }()
+
 	// K8s requires at least one of stdin/stdout/stderr to be enabled.
 	// If none are provided, enable stdout with a discard writer.
 	if stdin == nil && stdout == nil && stderr == nil {
@@ -75,6 +85,7 @@ func (e *SPDYExecutor) ExecInPod(
 	exec, err := remotecommand.NewSPDYExecutor(e.restConfig, http.MethodPost, req.URL())
 	if err != nil {
 		logger.Error("failed-to-create-spdy-executor", err)
+		spanErr = err
 		return fmt.Errorf("create spdy executor: %w", err)
 	}
 
@@ -89,6 +100,7 @@ func (e *SPDYExecutor) ExecInPod(
 			return &ExecExitError{ExitCode: exitErr.ExitStatus()}
 		}
 		logger.Error("failed-to-exec-stream", err)
+		spanErr = err
 		return fmt.Errorf("exec stream: %w", err)
 	}
 

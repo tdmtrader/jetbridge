@@ -106,6 +106,7 @@ func TestLiveExecInPod(t *testing.T) {
 
 	// Create a dedicated pod for exec tests instead of requiring a pre-existing one.
 	podName := "live-exec-" + time.Now().Format("150405")
+	cleanupPod(t, clientset, ns, podName)
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      podName,
@@ -128,10 +129,6 @@ func TestLiveExecInPod(t *testing.T) {
 	if err != nil {
 		t.Fatalf("creating exec test pod: %v", err)
 	}
-	defer func() {
-		t.Logf("cleaning up pod %s", podName)
-		_ = clientset.CoreV1().Pods(ns).Delete(context.Background(), podName, metav1.DeleteOptions{})
-	}()
 
 	// Wait for Running
 	deadline := time.Now().Add(2 * time.Minute)

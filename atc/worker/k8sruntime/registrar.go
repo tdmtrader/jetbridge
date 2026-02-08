@@ -9,6 +9,7 @@ import (
 	concourse "github.com/concourse/concourse"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/tracing"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 )
@@ -51,9 +52,17 @@ func (r *Registrar) WorkerName() string {
 func (r *Registrar) Register(ctx context.Context) error {
 	logger := r.logger.Session("register")
 
+	ctx, span := tracing.StartSpan(ctx, "k8s.registrar.register", tracing.Attrs{
+		"worker-name": r.WorkerName(),
+		"namespace":   r.cfg.Namespace,
+	})
+	var spanErr error
+	defer func() { tracing.End(span, spanErr) }()
+
 	activeContainers, err := r.countActivePods(ctx)
 	if err != nil {
 		logger.Error("failed-to-count-active-pods", err)
+		spanErr = err
 		return fmt.Errorf("counting active pods: %w", err)
 	}
 
@@ -71,6 +80,7 @@ func (r *Registrar) Register(ctx context.Context) error {
 	_, err = r.workerFactory.SaveWorker(worker, heartbeatTTL)
 	if err != nil {
 		logger.Error("failed-to-save-worker", err)
+		spanErr = err
 		return fmt.Errorf("saving worker: %w", err)
 	}
 

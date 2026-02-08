@@ -17,10 +17,11 @@ var _ runtime.Worker = (*Worker)(nil)
 // Worker implements runtime.Worker using Kubernetes Pods as the execution
 // backend instead of Garden containers.
 type Worker struct {
-	dbWorker  db.Worker
-	clientset kubernetes.Interface
-	config    Config
-	executor  PodExecutor
+	dbWorker   db.Worker
+	clientset  kubernetes.Interface
+	config     Config
+	executor   PodExecutor
+	volumeRepo db.VolumeRepository
 }
 
 // NewWorker creates a new Worker backed by the given Kubernetes clientset.
@@ -38,6 +39,13 @@ func NewWorker(dbWorker db.Worker, clientset kubernetes.Interface, config Config
 // into the Pod spec.
 func (w *Worker) SetExecutor(executor PodExecutor) {
 	w.executor = executor
+}
+
+// SetVolumeRepo sets the VolumeRepository used by LookupVolume to find
+// cache-backed volumes in the database. This is set by the factory when
+// cache PVC is configured.
+func (w *Worker) SetVolumeRepo(repo db.VolumeRepository) {
+	w.volumeRepo = repo
 }
 
 func (w *Worker) Name() string {
@@ -176,7 +184,27 @@ func (w *Worker) LookupContainer(ctx context.Context, handle string) (runtime.Co
 }
 
 func (w *Worker) LookupVolume(ctx context.Context, handle string) (runtime.Volume, bool, error) {
-	return nil, false, nil
+	if w.volumeRepo == nil {
+		return nil, false, nil
+	}
+
+	logger := lagerctx.FromContext(ctx).Session("lookup-volume", lager.Data{
+		"handle": handle,
+		"worker": w.Name(),
+	})
+
+	dbVolume, found, err := w.volumeRepo.FindVolume(handle)
+	if err != nil {
+		logger.Error("failed-to-lookup-volume-in-db", err)
+		return nil, false, err
+	}
+
+	if !found {
+		return nil, false, nil
+	}
+
+	vol := NewCacheVolume(dbVolume, handle, w.Name(), w.executor, w.config.Namespace, mainContainerName)
+	return vol, true, nil
 }
 
 func markContainerAsFailed(logger lager.Logger, container db.CreatingContainer) {
