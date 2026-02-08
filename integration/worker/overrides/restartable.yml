@@ -1,6 +1,0 @@
-services:
-  worker:
-    entrypoint: /overrides/restartable-entrypoint.sh
-    volumes:
-    - ../hack/keys:/concourse-keys
-    - ./worker/overrides:/overrides

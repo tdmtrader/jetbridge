@@ -3,10 +3,7 @@ package worker
 import (
 	"archive/tar"
 	"context"
-	"fmt"
 	"io"
-	"net/url"
-	"time"
 
 	"code.cloudfoundry.org/lager/v3"
 	"code.cloudfoundry.org/lager/v3/lagerctx"
@@ -22,22 +19,15 @@ import (
 type Streamer struct {
 	compression compression.Compression
 	limitInMB   float64
-	p2p         P2PConfig
 
 	resourceCacheFactory db.ResourceCacheFactory
 }
 
-type P2PConfig struct {
-	Enabled bool
-	Timeout time.Duration
-}
-
-func NewStreamer(cacheFactory db.ResourceCacheFactory, compression compression.Compression, limitInMB float64, p2p P2PConfig) Streamer {
+func NewStreamer(cacheFactory db.ResourceCacheFactory, compression compression.Compression, limitInMB float64) Streamer {
 	return Streamer{
 		resourceCacheFactory: cacheFactory,
 		compression:          compression,
 		limitInMB:            limitInMB,
-		p2p:                  p2p,
 	}
 }
 
@@ -97,32 +87,7 @@ func (s Streamer) Stream(ctx context.Context, src runtime.Artifact, dst runtime.
 }
 
 func (s Streamer) stream(ctx context.Context, src runtime.Artifact, dst runtime.Volume) error {
-	logger := lagerctx.FromContext(ctx)
-
-	if !s.p2p.Enabled {
-		return s.streamThroughATC(ctx, src, dst)
-	}
-	p2pSrc, ok := src.(runtime.P2PVolume)
-	if !ok {
-		return s.streamThroughATC(ctx, src, dst)
-	}
-	p2pDst, ok := dst.(runtime.P2PVolume)
-	if !ok {
-		return s.streamThroughATC(ctx, src, dst)
-	}
-
-	err := s.p2pStream(ctx, p2pSrc, p2pDst)
-	if err != nil {
-		// P2P streaming failed - fallback to streaming through ATC (web node)
-		logger.Error("p2p-stream-failed-falling-back-to-atc", err, lager.Data{
-			"src-worker":  p2pSrc.DBVolume().WorkerName(),
-			"dest-worker": p2pDst.DBVolume().WorkerName(),
-		})
-
-		metric.Metrics.VolumesStreamedViaFallback.Inc()
-		return s.streamThroughATC(ctx, src, dst)
-	}
-	return nil
+	return s.streamThroughATC(ctx, src, dst)
 }
 
 func (s Streamer) streamThroughATC(ctx context.Context, src runtime.Artifact, dst runtime.Volume) error {
@@ -144,45 +109,6 @@ func (s Streamer) streamThroughATC(ctx context.Context, src runtime.Artifact, ds
 	return dst.StreamIn(ctx, ".", s.compression, s.limitInMB, out)
 }
 
-func (s Streamer) p2pStream(ctx context.Context, src runtime.P2PVolume, dst runtime.P2PVolume) error {
-	getCtx, getCancel := context.WithTimeout(ctx, 5*time.Second)
-	defer getCancel()
-
-	streamInUrl, err := dst.GetStreamInP2PURL(getCtx, ".")
-	if err != nil {
-		return err
-	}
-
-	// Verify stream-in url
-	rawUrl, err := url.Parse(streamInUrl)
-	if err != nil {
-		return fmt.Errorf("invalid stream-in-url: %w", err)
-	}
-	// If stream limit is set to greater than 1 byte, append the limit to stream-in url
-	if s.limitInMB > float64(1)/1024/1024 {
-		query := rawUrl.Query()
-		query.Add("limit", fmt.Sprintf("%f", s.limitInMB))
-		rawUrl.RawQuery = query.Encode()
-	}
-	streamInUrl = rawUrl.String()
-
-	_, outSpan := tracing.StartSpan(ctx, "volume.P2pStreamOut", tracing.Attrs{
-		"origin-volume": src.Handle(),
-		"origin-worker": src.DBVolume().WorkerName(),
-		"dest-worker":   dst.DBVolume().WorkerName(),
-		"stream-in-url": streamInUrl,
-	})
-	defer outSpan.End()
-
-	putCtx := ctx
-	if s.p2p.Timeout != 0 {
-		var putCancel context.CancelFunc
-		putCtx, putCancel = context.WithTimeout(putCtx, s.p2p.Timeout)
-		defer putCancel()
-	}
-
-	return src.StreamP2POut(putCtx, ".", streamInUrl, s.compression)
-}
 
 func (s Streamer) StreamFile(ctx context.Context, artifact runtime.Artifact, path string) (io.ReadCloser, error) {
 	out, err := artifact.StreamOut(ctx, path, s.compression)

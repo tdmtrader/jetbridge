@@ -10,8 +10,8 @@ import (
 	"code.cloudfoundry.org/lager/v3/lagerctx"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/exec/build"
+	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/vars"
-	"github.com/concourse/concourse/worker/baggageclaim"
 	"sigs.k8s.io/yaml"
 )
 
@@ -80,7 +80,7 @@ func (configSource FileConfigSource) FetchConfig(ctx context.Context, logger lag
 	}
 	stream, err := configSource.Streamer.StreamFile(lagerctx.NewContext(ctx, logger), artifact, filePath)
 	if err != nil {
-		if err == baggageclaim.ErrFileNotFound {
+		if err == runtime.ErrFileNotFound {
 			return atc.TaskConfig{}, fmt.Errorf("task config '%s/%s' not found", sourceName, filePath)
 		}
 		return atc.TaskConfig{}, err

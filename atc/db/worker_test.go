@@ -10,7 +10,6 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"github.com/onsi/gomega/types"
 )
 
 var _ = Describe("Worker", func() {
@@ -21,11 +20,6 @@ var _ = Describe("Worker", func() {
 
 	BeforeEach(func() {
 		atcWorker = atc.Worker{
-			GardenAddr:       "some-garden-addr",
-			BaggageclaimURL:  "some-bc-url",
-			HTTPProxyURL:     "some-http-proxy-url",
-			HTTPSProxyURL:    "some-https-proxy-url",
-			NoProxy:          "some-no-proxy",
 			Ephemeral:        true,
 			ActiveContainers: 140,
 			ResourceTypes: []atc.WorkerResourceType{
@@ -47,89 +41,6 @@ var _ = Describe("Worker", func() {
 		}
 	})
 
-	Describe("Land", func() {
-		BeforeEach(func() {
-			var err error
-			worker, err = workerFactory.SaveWorker(atcWorker, 5*time.Minute)
-			Expect(err).NotTo(HaveOccurred())
-		})
-
-		Context("when the worker is present", func() {
-			It("marks the worker as `landing`", func() {
-				err := worker.Land()
-				Expect(err).NotTo(HaveOccurred())
-
-				_, err = worker.Reload()
-				Expect(err).NotTo(HaveOccurred())
-				Expect(worker.Name()).To(Equal(atcWorker.Name))
-				Expect(worker.State()).To(Equal(WorkerStateLanding))
-			})
-
-			Context("when worker is already landed", func() {
-				BeforeEach(func() {
-					err := worker.Land()
-					Expect(err).NotTo(HaveOccurred())
-					_, err = workerLifecycle.LandFinishedLandingWorkers()
-					Expect(err).NotTo(HaveOccurred())
-				})
-
-				It("keeps worker state as landed", func() {
-					err := worker.Land()
-					Expect(err).NotTo(HaveOccurred())
-					_, err = worker.Reload()
-					Expect(err).NotTo(HaveOccurred())
-
-					Expect(worker.Name()).To(Equal(atcWorker.Name))
-					Expect(worker.State()).To(Equal(WorkerStateLanded))
-				})
-			})
-		})
-
-		Context("when the worker is not present", func() {
-			It("returns an error", func() {
-				err := worker.Delete()
-				Expect(err).NotTo(HaveOccurred())
-
-				err = worker.Land()
-				Expect(err).To(HaveOccurred())
-				Expect(err).To(Equal(ErrWorkerNotPresent))
-			})
-		})
-	})
-
-	Describe("Retire", func() {
-		BeforeEach(func() {
-			var err error
-			worker, err = workerFactory.SaveWorker(atcWorker, 5*time.Minute)
-			Expect(err).NotTo(HaveOccurred())
-		})
-
-		Context("when the worker is present", func() {
-			It("marks the worker as `retiring`", func() {
-				err := worker.Retire()
-				Expect(err).NotTo(HaveOccurred())
-
-				_, err = worker.Reload()
-				Expect(err).NotTo(HaveOccurred())
-				Expect(worker.Name()).To(Equal(atcWorker.Name))
-				Expect(worker.State()).To(Equal(WorkerStateRetiring))
-			})
-		})
-
-		Context("when the worker is not present", func() {
-			BeforeEach(func() {
-				err := worker.Delete()
-				Expect(err).NotTo(HaveOccurred())
-			})
-
-			It("returns an error", func() {
-				err := worker.Retire()
-				Expect(err).To(HaveOccurred())
-				Expect(err).To(Equal(ErrWorkerNotPresent))
-			})
-		})
-	})
-
 	Describe("Delete", func() {
 		BeforeEach(func() {
 			var err error
@@ -144,63 +55,6 @@ var _ = Describe("Worker", func() {
 			_, found, err := workerFactory.GetWorker(atcWorker.Name)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(found).To(BeFalse())
-		})
-	})
-
-	Describe("Prune", func() {
-		Context("when worker exists", func() {
-			DescribeTable("worker in state",
-				func(workerState string, errMatch types.GomegaMatcher) {
-					worker, err := workerFactory.SaveWorker(atc.Worker{
-						Name:       "worker-to-prune",
-						GardenAddr: "1.2.3.4",
-						State:      workerState,
-					}, 5*time.Minute)
-					Expect(err).NotTo(HaveOccurred())
-
-					err = worker.Prune()
-					Expect(err).To(errMatch)
-				},
-
-				Entry("running", "running", Equal(ErrCannotPruneRunningWorker)),
-				Entry("landing", "landing", BeNil()),
-				Entry("retiring", "retiring", BeNil()),
-			)
-
-			Context("when worker is stalled", func() {
-				var pruneErr error
-				BeforeEach(func() {
-					worker, err := workerFactory.SaveWorker(atc.Worker{
-						Name:       "worker-to-prune",
-						GardenAddr: "1.2.3.4",
-						State:      "running",
-					}, -5*time.Minute)
-					Expect(err).NotTo(HaveOccurred())
-
-					_, err = workerLifecycle.StallUnresponsiveWorkers()
-					Expect(err).NotTo(HaveOccurred())
-					pruneErr = worker.Prune()
-				})
-
-				It("does not return error", func() {
-					Expect(pruneErr).NotTo(HaveOccurred())
-				})
-			})
-		})
-
-		Context("when worker does not exist", func() {
-			BeforeEach(func() {
-				var err error
-				worker, err = workerFactory.SaveWorker(atcWorker, 5*time.Minute)
-				Expect(err).NotTo(HaveOccurred())
-				err = worker.Delete()
-				Expect(err).NotTo(HaveOccurred())
-			})
-
-			It("raises ErrWorkerNotPresent", func() {
-				err := worker.Prune()
-				Expect(err).To(Equal(ErrWorkerNotPresent))
-			})
 		})
 	})
 
@@ -230,7 +84,6 @@ var _ = Describe("Worker", func() {
 
 			atcWorker2 := atcWorker
 			atcWorker2.Name = "some-name2"
-			atcWorker2.GardenAddr = "some-garden-addr-other"
 			otherWorker, err = workerFactory.SaveWorker(atcWorker2, 5*time.Minute)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -409,69 +262,4 @@ var _ = Describe("Worker", func() {
 		})
 	})
 
-	Describe("Active tasks", func() {
-		BeforeEach(func() {
-			var err error
-			worker, err = workerFactory.SaveWorker(atcWorker, 5*time.Minute)
-			Expect(err).NotTo(HaveOccurred())
-		})
-
-		Context("when the worker registers", func() {
-			It("has no active tasks", func() {
-				at, err := worker.ActiveTasks()
-				Expect(err).ToNot(HaveOccurred())
-				Expect(at).To(Equal(0))
-			})
-		})
-
-		Context("when the active task is increased", func() {
-			BeforeEach(func() {
-				at, err := worker.IncreaseActiveTasks(1)
-				Expect(err).ToNot(HaveOccurred())
-				Expect(at).To(Equal(1))
-			})
-
-			It("increase the active tasks counter", func() {
-				at, err := worker.ActiveTasks()
-				Expect(err).ToNot(HaveOccurred())
-				Expect(at).To(Equal(1))
-			})
-
-			Context("when max active task reached", func() {
-				It("errors when increasing the active tasks counter", func() {
-					at, err := worker.IncreaseActiveTasks(1)
-					Expect(err).To(HaveOccurred())
-					Expect(err.Error()).To(ContainSubstring("worker has too many active tasks"))
-					Expect(at).To(Equal(0))
-
-					By("it does not increase worker active tasks count")
-					at, err = worker.ActiveTasks()
-					Expect(err).ToNot(HaveOccurred())
-					Expect(at).To(Equal(1))
-				})
-			})
-
-			Context("when the active task is decreased", func() {
-				BeforeEach(func() {
-					at, err := worker.DecreaseActiveTasks()
-					Expect(err).ToNot(HaveOccurred())
-					Expect(at).To(Equal(0))
-				})
-
-				It("reset the active tasks to 0", func() {
-					at, err := worker.ActiveTasks()
-					Expect(err).ToNot(HaveOccurred())
-					Expect(at).To(Equal(0))
-				})
-			})
-		})
-
-		Context("when the active task is decreased below 0", func() {
-			It("raise an error", func() {
-				at, err := worker.DecreaseActiveTasks()
-				Expect(err).To(HaveOccurred())
-				Expect(at).To(Equal(0))
-			})
-		})
-	})
 })

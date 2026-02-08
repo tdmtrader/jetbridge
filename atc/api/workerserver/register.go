@@ -56,11 +56,9 @@ func (s *Server) RegisterWorker(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if registration.Name == "" {
-		registration.Name = registration.GardenAddr
-	}
-
-	if registration.CertsPath != nil && *registration.CertsPath == "" {
-		registration.CertsPath = nil
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprint(w, "worker name is required")
+		return
 	}
 
 	metric.WorkerContainers{

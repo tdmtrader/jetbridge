@@ -1,0 +1,12 @@
+FROM ubuntu:22.04
+
+RUN apt-get update && \
+    apt-get install -y ca-certificates dumb-init && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY concourse-linux-arm64 /usr/local/concourse/bin/concourse
+RUN chmod +x /usr/local/concourse/bin/concourse
+
+ENV PATH="/usr/local/concourse/bin:${PATH}"
+
+ENTRYPOINT ["dumb-init", "concourse"]

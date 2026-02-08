@@ -66,9 +66,7 @@ var _ = Describe("ResourceConfigCollector", func() {
 								Version: "some-brt-version",
 							},
 						},
-						Name:            "default-worker",
-						GardenAddr:      "1.2.3.4:7777",
-						BaggageclaimURL: "5.6.7.8:7878",
+						Name: "default-worker",
 					}
 					worker, err := workerFactory.SaveWorker(defaultWorkerPayload, 0)
 					Expect(err).NotTo(HaveOccurred())

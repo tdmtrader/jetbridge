@@ -10,9 +10,9 @@ import (
 	. "github.com/concourse/concourse/atc/exec"
 	"github.com/concourse/concourse/atc/exec/build"
 	"github.com/concourse/concourse/atc/exec/execfakes"
+	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/runtime/runtimetest"
 	"github.com/concourse/concourse/vars"
-	"github.com/concourse/concourse/worker/baggageclaim"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/onsi/gomega/gbytes"
@@ -221,7 +221,7 @@ run: {path: a/file}
 
 			Context("when the file task is not found", func() {
 				BeforeEach(func() {
-					fakeStreamer.StreamFileReturns(nil, baggageclaim.ErrFileNotFound)
+					fakeStreamer.StreamFileReturns(nil, runtime.ErrFileNotFound)
 				})
 
 				It("returns the error", func() {

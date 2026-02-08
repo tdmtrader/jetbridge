@@ -28,7 +28,6 @@ import (
 	"github.com/concourse/concourse/atc/api/workerserver"
 	"github.com/concourse/concourse/atc/creds"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/gc"
 	"github.com/concourse/concourse/atc/mainredirect"
 	"github.com/concourse/concourse/atc/wrappa"
 	"github.com/tedsuo/rata"
@@ -58,8 +57,6 @@ func NewHandler(
 	dbWorkerFactory db.WorkerFactory,
 	workerTeamFactory db.TeamFactory,
 	volumeRepository db.VolumeRepository,
-	containerRepository db.ContainerRepository,
-	destroyer gc.Destroyer,
 	dbBuildFactory db.BuildFactory,
 	dbCheckFactory db.CheckFactory,
 	dbResourceConfigFactory db.ResourceConfigFactory,
@@ -106,8 +103,8 @@ func NewHandler(
 	workerServer := workerserver.NewServer(logger, workerTeamFactory, dbWorkerFactory)
 	logLevelServer := loglevelserver.NewServer(logger, sink)
 	cliServer := cliserver.NewServer(logger, absCLIDownloadsDir)
-	containerServer := containerserver.NewServer(logger, workerPool, interceptTimeoutFactory, interceptUpdateInterval, containerRepository, destroyer, clock)
-	volumesServer := volumeserver.NewServer(logger, volumeRepository, destroyer)
+	containerServer := containerserver.NewServer(logger, workerPool, interceptTimeoutFactory, interceptUpdateInterval, clock)
+	volumesServer := volumeserver.NewServer(logger, volumeRepository)
 	teamServer := teamserver.NewServer(logger, dbTeamFactory, externalURL)
 	infoServer := infoserver.NewServer(logger, version, workerVersion, externalURL, clusterName, credsManagers)
 	artifactServer := artifactserver.NewServer(logger, workerPool)
@@ -197,13 +194,9 @@ func NewHandler(
 		atc.GetDownstreamResourceCausality: pipelineHandlerFactory.HandlerFor(versionServer.GetDownstreamResourceCausality),
 		atc.GetUpstreamResourceCausality:   pipelineHandlerFactory.HandlerFor(versionServer.GetUpstreamResourceCausality),
 
-		atc.ListWorkers:     http.HandlerFunc(workerServer.ListWorkers),
-		atc.RegisterWorker:  http.HandlerFunc(workerServer.RegisterWorker),
-		atc.LandWorker:      http.HandlerFunc(workerServer.LandWorker),
-		atc.RetireWorker:    http.HandlerFunc(workerServer.RetireWorker),
-		atc.PruneWorker:     http.HandlerFunc(workerServer.PruneWorker),
-		atc.HeartbeatWorker: http.HandlerFunc(workerServer.HeartbeatWorker),
-		atc.DeleteWorker:    http.HandlerFunc(workerServer.DeleteWorker),
+		atc.ListWorkers:    http.HandlerFunc(workerServer.ListWorkers),
+		atc.RegisterWorker: http.HandlerFunc(workerServer.RegisterWorker),
+		atc.DeleteWorker:   http.HandlerFunc(workerServer.DeleteWorker),
 
 		atc.SetLogLevel: http.HandlerFunc(logLevelServer.SetMinLevel),
 		atc.GetLogLevel: http.HandlerFunc(logLevelServer.GetMinLevel),
@@ -215,15 +208,11 @@ func NewHandler(
 		atc.GetUser:              http.HandlerFunc(usersServer.GetUser),
 		atc.ListActiveUsersSince: http.HandlerFunc(usersServer.GetUsersSince),
 
-		atc.ListContainers:           teamHandlerFactory.HandlerFor(containerServer.ListContainers),
-		atc.GetContainer:             teamHandlerFactory.HandlerFor(containerServer.GetContainer),
-		atc.HijackContainer:          teamHandlerFactory.HandlerFor(containerServer.HijackContainer),
-		atc.ListDestroyingContainers: http.HandlerFunc(containerServer.ListDestroyingContainers),
-		atc.ReportWorkerContainers:   http.HandlerFunc(containerServer.ReportWorkerContainers),
+		atc.ListContainers:  teamHandlerFactory.HandlerFor(containerServer.ListContainers),
+		atc.GetContainer:    teamHandlerFactory.HandlerFor(containerServer.GetContainer),
+		atc.HijackContainer: teamHandlerFactory.HandlerFor(containerServer.HijackContainer),
 
-		atc.ListVolumes:           teamHandlerFactory.HandlerFor(volumesServer.ListVolumes),
-		atc.ListDestroyingVolumes: http.HandlerFunc(volumesServer.ListDestroyingVolumes),
-		atc.ReportWorkerVolumes:   http.HandlerFunc(volumesServer.ReportWorkerVolumes),
+		atc.ListVolumes: teamHandlerFactory.HandlerFor(volumesServer.ListVolumes),
 
 		atc.ListTeams:      http.HandlerFunc(teamServer.ListTeams),
 		atc.GetTeam:        teamHandlerFactory.HandlerFor(teamServer.GetTeam),

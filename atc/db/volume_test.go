@@ -465,10 +465,8 @@ var _ = Describe("Volume", func() {
 				Expect(err).ToNot(HaveOccurred())
 				Expect(len(workers)).To(Equal(2))
 
-				// Prune worker0, so that streamed worker resource caches should be invalidated.
-				err = scenario.Workers[0].Land()
-				Expect(err).ToNot(HaveOccurred())
-				err = scenario.Workers[0].Prune()
+				// Delete worker0, so that streamed worker resource caches should be invalidated.
+				err = scenario.Workers[0].Delete()
 				Expect(err).ToNot(HaveOccurred())
 
 				// After the old cached is invalidated, init a new cache.
@@ -787,8 +785,6 @@ var _ = Describe("Volume", func() {
 					Name:     "weird-worker",
 					Platform: "weird",
 
-					GardenAddr:      "weird-garden-addr",
-					BaggageclaimURL: "weird-baggageclaim-url",
 				}),
 			)
 

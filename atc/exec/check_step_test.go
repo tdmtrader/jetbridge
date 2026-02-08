@@ -55,8 +55,6 @@ var _ = Describe("CheckStep", func() {
 		checkPlan         atc.CheckPlan
 		containerMetadata db.ContainerMetadata
 
-		noInputStrategy, checkStrategy worker.PlacementStrategy
-
 		stepOk  bool
 		stepErr error
 
@@ -140,12 +138,6 @@ var _ = Describe("CheckStep", func() {
 			User: "test-user",
 		}
 
-		var err error
-		_, noInputStrategy, checkStrategy, err = worker.NewPlacementStrategy(worker.PlacementOptions{
-			NoInputStrategies: []string{},
-			CheckStrategies:   []string{},
-		})
-		Expect(err).ToNot(HaveOccurred())
 	})
 
 	AfterEach(func() {
@@ -159,8 +151,6 @@ var _ = Describe("CheckStep", func() {
 			stepMetadata,
 			fakeResourceConfigFactory,
 			containerMetadata,
-			noInputStrategy,
-			checkStrategy,
 			fakePool,
 			fakeDelegateFactory,
 			defaultTimeout,
@@ -267,7 +257,7 @@ var _ = Describe("CheckStep", func() {
 
 				JustBeforeEach(func() {
 					Expect(fakePool.FindOrSelectWorkerCallCount()).To(Equal(1))
-					ctx, _, _, workerSpec, _, _ = fakePool.FindOrSelectWorkerArgsForCall(0)
+					ctx, _, _, workerSpec = fakePool.FindOrSelectWorkerArgsForCall(0)
 				})
 
 				It("get container owner from delegate", func() {
@@ -452,11 +442,6 @@ var _ = Describe("CheckStep", func() {
 						fakePool.FindOrSelectWorkerReturns(chosenWorker, nil)
 					})
 
-					It("should use check strategy", func() {
-						_, _, _, _, expectedStrategy, _ := fakePool.FindOrSelectWorkerArgsForCall(0)
-						Expect(expectedStrategy).To(Equal(checkStrategy))
-					})
-
 					It("points the resource or resource type to the scope", func() {
 						Expect(fakeDelegate.PointToCheckedConfigCallCount()).To(Equal(1))
 						scope := fakeDelegate.PointToCheckedConfigArgsForCall(0)
@@ -500,11 +485,6 @@ var _ = Describe("CheckStep", func() {
 							)
 						chosenContainer = chosenWorker.Containers[0]
 						fakePool.FindOrSelectWorkerReturns(chosenWorker, nil)
-					})
-
-					It("should use specified strategy", func() {
-						_, _, _, _, expectedStrategy, _ := fakePool.FindOrSelectWorkerArgsForCall(0)
-						Expect(expectedStrategy).To(Equal(noInputStrategy))
 					})
 
 					It("points the resource or resource type to the scope", func() {

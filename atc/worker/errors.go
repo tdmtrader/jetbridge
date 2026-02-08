@@ -18,14 +18,6 @@ func (err NoCompatibleWorkersError) Error() string {
 	return fmt.Sprintf("no workers satisfying: %s, version: '%s'", err.Spec.Description(), err.WorkerVersion)
 }
 
-type NoWorkerFitContainerPlacementStrategyError struct {
-	Strategy string
-}
-
-func (err NoWorkerFitContainerPlacementStrategyError) Error() string {
-	return fmt.Sprintf("no worker fit container placement strategy: %s", err.Strategy)
-}
-
 type StreamingResourceCacheNotFoundError struct {
 	Handle          string
 	ResourceCacheID int

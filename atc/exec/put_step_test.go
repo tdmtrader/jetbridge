@@ -160,7 +160,6 @@ var _ = Describe("PutStep", func() {
 			*plan.Put,
 			stepMetadata,
 			containerMetadata,
-			nil,
 			fakePool,
 			fakeDelegateFactory,
 			defaultPutTimeout,
@@ -178,7 +177,7 @@ var _ = Describe("PutStep", func() {
 
 		JustBeforeEach(func() {
 			Expect(fakePool.FindOrSelectWorkerCallCount()).To(Equal(1))
-			ctx, _, _, workerSpec, _, _ = fakePool.FindOrSelectWorkerArgsForCall(0)
+			ctx, _, _, workerSpec = fakePool.FindOrSelectWorkerArgsForCall(0)
 		})
 
 		It("doesn't enforce a timeout", func() {
@@ -468,7 +467,7 @@ var _ = Describe("PutStep", func() {
 
 		It("sets the bottom-most type in the worker spec", func() {
 			Expect(fakePool.FindOrSelectWorkerCallCount()).To(Equal(1))
-			_, _, _, workerSpec, _, _ := fakePool.FindOrSelectWorkerArgsForCall(0)
+			_, _, _, workerSpec := fakePool.FindOrSelectWorkerArgsForCall(0)
 
 			Expect(workerSpec).To(Equal(worker.Spec{
 				TeamID:       stepMetadata.TeamID,

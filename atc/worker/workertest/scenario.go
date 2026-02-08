@@ -154,6 +154,6 @@ func (s *Scenario) ContainerVolume(workerName string, containerHandle string, mo
 	return creating, created
 }
 
-func (s *Scenario) Streamer(p2p worker.P2PConfig) worker.Streamer {
-	return worker.NewStreamer(s.Factory.DB.ResourceCacheFactory, compression.NewGzipCompression(), 0, p2p)
+func (s *Scenario) Streamer() worker.Streamer {
+	return worker.NewStreamer(s.Factory.DB.ResourceCacheFactory, compression.NewGzipCompression(), 0)
 }

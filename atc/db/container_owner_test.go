@@ -32,8 +32,6 @@ var _ = Describe("ContainerOwner", func() {
 			workerPayload := atc.Worker{
 				ResourceTypes:   []atc.WorkerResourceType{defaultWorkerResourceType},
 				Name:            "resource-config-check-session-worker",
-				GardenAddr:      "1.2.3.4:7778",
-				BaggageclaimURL: "5.6.7.8:7879",
 			}
 
 			var err error

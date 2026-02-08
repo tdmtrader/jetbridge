@@ -23,18 +23,12 @@ const BaseResourceTypeVersion = "some-global-type-version"
 const UniqueBaseResourceType = "unique-base-type"
 const UniqueBaseResourceTypeVersion = "some-unique-type-version"
 
-const CertsPath = "/path/to/certs"
-
 func BaseWorker(name string) atc.Worker {
-	certsPath := CertsPath
 	return atc.Worker{
 		Name: name,
 
 		Platform: "linux",
 		Version:  concourse.WorkerVersion,
-
-		GardenAddr:      unique("garden-addr"),
-		BaggageclaimURL: unique("baggageclaim-url"),
 
 		ResourceTypes: []atc.WorkerResourceType{
 			{
@@ -49,8 +43,6 @@ func BaseWorker(name string) atc.Worker {
 				UniqueVersionHistory: true,
 			},
 		},
-
-		CertsPath: &certsPath,
 	}
 }
 

@@ -77,13 +77,9 @@ const (
 	CreatePipelineBuild       = "CreatePipelineBuild"
 	PipelineBadge             = "PipelineBadge"
 
-	RegisterWorker  = "RegisterWorker"
-	LandWorker      = "LandWorker"
-	RetireWorker    = "RetireWorker"
-	PruneWorker     = "PruneWorker"
-	HeartbeatWorker = "HeartbeatWorker"
-	ListWorkers     = "ListWorkers"
-	DeleteWorker    = "DeleteWorker"
+	RegisterWorker = "RegisterWorker"
+	ListWorkers    = "ListWorkers"
+	DeleteWorker   = "DeleteWorker"
 
 	SetLogLevel = "SetLogLevel"
 	GetLogLevel = "GetLogLevel"
@@ -92,15 +88,11 @@ const (
 	GetInfo      = "GetInfo"
 	GetInfoCreds = "GetInfoCreds"
 
-	ListContainers           = "ListContainers"
-	GetContainer             = "GetContainer"
-	HijackContainer          = "HijackContainer"
-	ListDestroyingContainers = "ListDestroyingContainers"
-	ReportWorkerContainers   = "ReportWorkerContainers"
+	ListContainers  = "ListContainers"
+	GetContainer    = "GetContainer"
+	HijackContainer = "HijackContainer"
 
-	ListVolumes           = "ListVolumes"
-	ListDestroyingVolumes = "ListDestroyingVolumes"
-	ReportWorkerVolumes   = "ReportWorkerVolumes"
+	ListVolumes = "ListVolumes"
 
 	ListTeams      = "ListTeams"
 	GetTeam        = "GetTeam"
@@ -209,10 +201,6 @@ var Routes = rata.Routes([]rata.Route{
 
 	{Path: "/api/v1/workers", Method: "GET", Name: ListWorkers},
 	{Path: "/api/v1/workers", Method: "POST", Name: RegisterWorker},
-	{Path: "/api/v1/workers/:worker_name/land", Method: "PUT", Name: LandWorker},
-	{Path: "/api/v1/workers/:worker_name/retire", Method: "PUT", Name: RetireWorker},
-	{Path: "/api/v1/workers/:worker_name/prune", Method: "PUT", Name: PruneWorker},
-	{Path: "/api/v1/workers/:worker_name/heartbeat", Method: "PUT", Name: HeartbeatWorker},
 	{Path: "/api/v1/workers/:worker_name", Method: "DELETE", Name: DeleteWorker},
 
 	{Path: "/api/v1/log-level", Method: "GET", Name: GetLogLevel},
@@ -225,15 +213,11 @@ var Routes = rata.Routes([]rata.Route{
 	{Path: "/api/v1/user", Method: "GET", Name: GetUser},
 	{Path: "/api/v1/users", Method: "GET", Name: ListActiveUsersSince},
 
-	{Path: "/api/v1/containers/destroying", Method: "GET", Name: ListDestroyingContainers},
-	{Path: "/api/v1/containers/report", Method: "PUT", Name: ReportWorkerContainers},
 	{Path: "/api/v1/teams/:team_name/containers", Method: "GET", Name: ListContainers},
 	{Path: "/api/v1/teams/:team_name/containers/:id", Method: "GET", Name: GetContainer},
 	{Path: "/api/v1/teams/:team_name/containers/:id/hijack", Method: "GET", Name: HijackContainer},
 
 	{Path: "/api/v1/teams/:team_name/volumes", Method: "GET", Name: ListVolumes},
-	{Path: "/api/v1/volumes/destroying", Method: "GET", Name: ListDestroyingVolumes},
-	{Path: "/api/v1/volumes/report", Method: "PUT", Name: ReportWorkerVolumes},
 
 	{Path: "/api/v1/teams", Method: "GET", Name: ListTeams},
 	{Path: "/api/v1/teams/:team_name", Method: "GET", Name: GetTeam},

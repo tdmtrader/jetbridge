@@ -4,7 +4,6 @@ import (
 	"net/http"
 
 	"github.com/concourse/concourse/atc"
-	"github.com/concourse/concourse/go-concourse/concourse"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -71,93 +70,4 @@ var _ = Describe("ATC Handler Workers", func() {
 		})
 	})
 
-	Describe("PruneWorker", func() {
-		Context("when succeeds", func() {
-			BeforeEach(func() {
-				atcServer.AppendHandlers(
-					ghttp.CombineHandlers(
-						ghttp.VerifyRequest("PUT", "/api/v1/workers/some-worker/prune"),
-						ghttp.RespondWith(http.StatusOK, nil),
-					),
-				)
-			})
-
-			It("prunes the worker", func() {
-				err := client.PruneWorker("some-worker")
-				Expect(err).NotTo(HaveOccurred())
-			})
-		})
-
-		Context("failing to prune worker due to bad request", func() {
-			BeforeEach(func() {
-				atcResponse := atc.PruneWorkerResponseBody{
-					Stderr: "failure message",
-				}
-
-				atcServer.AppendHandlers(
-					ghttp.CombineHandlers(
-						ghttp.VerifyRequest("PUT", "/api/v1/workers/some-worker/prune"),
-						ghttp.RespondWithJSONEncoded(http.StatusBadRequest, atcResponse),
-					),
-				)
-			})
-
-			It("returns the PruneWorkerError", func() {
-				err := client.PruneWorker("some-worker")
-				cre, ok := err.(concourse.PruneWorkerError)
-				Expect(ok).To(BeTrue())
-				Expect(cre.Error()).To(Equal("failure message"))
-			})
-		})
-
-		Context("failing to prune worker", func() {
-			BeforeEach(func() {
-				atcServer.AppendHandlers(
-					ghttp.CombineHandlers(
-						ghttp.VerifyRequest("PUT", "/api/v1/workers/some-worker/prune"),
-						ghttp.RespondWith(http.StatusBadRequest, nil),
-					),
-				)
-			})
-
-			It("returns the error", func() {
-				err := client.PruneWorker("some-worker")
-				Expect(err).To(HaveOccurred())
-			})
-		})
-	})
-
-	Describe("LandWorker", func() {
-		Context("when succeeds", func() {
-			BeforeEach(func() {
-				atcServer.AppendHandlers(
-					ghttp.CombineHandlers(
-						ghttp.VerifyRequest("PUT", "/api/v1/workers/some-worker/land"),
-						ghttp.RespondWith(http.StatusOK, nil),
-					),
-				)
-			})
-
-			It("lands the worker", func() {
-				err := client.LandWorker("some-worker")
-				Expect(err).NotTo(HaveOccurred())
-			})
-		})
-
-		Context("failing to land worker", func() {
-			BeforeEach(func() {
-				atcServer.AppendHandlers(
-					ghttp.CombineHandlers(
-						ghttp.VerifyRequest("PUT", "/api/v1/workers/some-worker/land"),
-						ghttp.RespondWith(http.StatusInternalServerError, nil),
-					),
-				)
-			})
-
-			It("returns the error", func() {
-				err := client.LandWorker("some-worker")
-				Expect(err).To(HaveOccurred())
-			})
-		})
-	})
 })

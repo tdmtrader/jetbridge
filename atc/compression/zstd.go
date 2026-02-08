@@ -3,7 +3,6 @@ package compression
 import (
 	"io"
 
-	"github.com/concourse/concourse/worker/baggageclaim"
 	"github.com/klauspost/compress/zstd"
 )
 
@@ -21,8 +20,8 @@ func (c *zstdCompression) NewReader(reader io.ReadCloser) (io.ReadCloser, error)
 	return &zstdReader{decoder: d}, nil
 }
 
-func (c *zstdCompression) Encoding() baggageclaim.Encoding {
-	return baggageclaim.ZstdEncoding
+func (c *zstdCompression) Encoding() Encoding {
+	return ZstdEncoding
 }
 
 type zstdReader struct {

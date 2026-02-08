@@ -51,7 +51,7 @@ import (
 	"github.com/concourse/concourse/atc/syslog"
 	"github.com/concourse/concourse/atc/util"
 	"github.com/concourse/concourse/atc/worker"
-	"github.com/concourse/concourse/atc/worker/k8sruntime"
+	"github.com/concourse/concourse/atc/worker/jetbridge"
 	"github.com/concourse/concourse/atc/wrappa"
 	"github.com/concourse/concourse/skymarshal/dexserver"
 	"github.com/concourse/concourse/skymarshal/legacyserver"
@@ -167,13 +167,8 @@ type RunCommand struct {
 	PausePipelinesAfter                 int           `long:"pause-pipelines-after" default:"0" description:"The number of days after which a pipeline will be automatically paused if none of its jobs have run in more than the given number of days. A value of zero disables this component."`
 	PipelinePauserInterval              time.Duration `long:"pipeline-pauser-interval" default:"24h" hidden:"true" description:"The frequency on which the Pipeline Pauser component will be run to check if any pipelines need to be paused."`
 
-	ContainerPlacementStrategyOptions worker.PlacementOptions `group:"Container Placement Strategy"`
-
-	BaggageclaimResponseHeaderTimeout time.Duration `long:"baggageclaim-response-header-timeout" default:"1m" description:"How long to wait for Baggageclaim to send the response header."`
-	StreamingArtifactsCompression     string        `long:"streaming-artifacts-compression" default:"gzip" choice:"gzip" choice:"zstd" choice:"s2" choice:"raw" description:"Compression algorithm for internal streaming."`
-	StreamingSizeLimitationInMB       float64       `long:"streaming-size-limitation" default:"0.0" description:"Internal volume streaming size limitation in MB. In case of small limitation needed, float can be used like 0.01."`
-
-	GardenRequestTimeout time.Duration `long:"garden-request-timeout" default:"5m" description:"How long to wait for requests to Garden to complete. 0 means no timeout."`
+	StreamingArtifactsCompression string  `long:"streaming-artifacts-compression" default:"gzip" choice:"gzip" choice:"zstd" choice:"s2" choice:"raw" description:"Compression algorithm for internal streaming."`
+	StreamingSizeLimitationInMB   float64 `long:"streaming-size-limitation" default:"0.0" description:"Internal volume streaming size limitation in MB. In case of small limitation needed, float can be used like 0.01."`
 
 	Kubernetes struct {
 		Namespace          string        `long:"kubernetes-namespace"              description:"Kubernetes namespace in which to run task Pods. When set, enables the K8s execution backend."`
@@ -278,14 +273,11 @@ type RunCommand struct {
 		EnableBuildRerunWhenWorkerDisappears bool `long:"enable-rerun-when-worker-disappears" description:"Enable automatically build rerun when worker disappears or a network error occurs"`
 		EnableAcrossStep                     bool `long:"enable-across-step" description:"DEPRECATED: The across step is always enabled and this config has no effect."`
 		EnablePipelineInstances              bool `long:"enable-pipeline-instances" description:"DEPRECATED: Pipeline instances are always enabled and this config has no effect."`
-		EnableP2PVolumeStreaming             bool `long:"enable-p2p-volume-streaming" description:"Enable P2P volume streaming. NOTE: All workers must be on the same LAN network"`
 		EnableCacheStreamedVolumes           bool `long:"enable-cache-streamed-volumes" description:"When enabled, streamed resource volumes will be cached on the destination worker."`
 		EnableResourceCausality              bool `long:"enable-resource-causality" description:"Enable the resource causality page. Computing causality can be expensive for the database. "`
 	} `group:"Feature Flags"`
 
 	BaseResourceTypeDefaults flag.File `long:"base-resource-type-defaults" description:"Base resource type defaults"`
-
-	P2pVolumeStreamingTimeout time.Duration `long:"p2p-volume-streaming-timeout" description:"Timeout value of p2p volume streaming" default:"15m"`
 
 	DisplayUserIdPerConnector map[string]string `long:"display-user-id-per-connector" description:"Define how to display user ID for each authentication connector. Format is <connector>:<fieldname>. Valid field names are user_id, name, username and email, where name maps to claims field username, and username maps to claims field preferred username"`
 
@@ -1125,11 +1117,6 @@ func (cmd *RunCommand) backendComponents(
 		return nil, err
 	}
 
-	buildContainerStrategy, noInputBuildContainerStrategy, checkBuildContainerStrategy, err := cmd.chooseBuildContainerStrategy()
-	if err != nil {
-		return nil, err
-	}
-
 	rateLimiter := db.NewResourceCheckRateLimiter(
 		rate.Limit(cmd.MaxChecksPerSecond),
 		rate.Limit(1),
@@ -1148,9 +1135,6 @@ func (cmd *RunCommand) backendComponents(
 		dbResourceConfigFactory,
 		secretManager,
 		defaultLimits,
-		buildContainerStrategy,
-		noInputBuildContainerStrategy,
-		checkBuildContainerStrategy,
 		lockFactory,
 		rateLimiter,
 		policyChecker,
@@ -1274,7 +1258,7 @@ func (cmd *RunCommand) backendComponents(
 	})
 
 	if cmd.Kubernetes.Namespace != "" {
-		k8sCfg := k8sruntime.NewConfig(cmd.Kubernetes.Namespace, cmd.Kubernetes.Kubeconfig)
+		k8sCfg := jetbridge.NewConfig(cmd.Kubernetes.Namespace, cmd.Kubernetes.Kubeconfig)
 		k8sCfg.PodStartupTimeout = cmd.Kubernetes.PodStartupTimeout
 		k8sCfg.ImagePullSecrets = cmd.Kubernetes.ImagePullSecrets
 		k8sCfg.ServiceAccount = cmd.Kubernetes.ServiceAccount
@@ -1282,12 +1266,12 @@ func (cmd *RunCommand) backendComponents(
 		k8sCfg.ArtifactStoreClaim = cmd.Kubernetes.ArtifactStoreClaim
 		k8sCfg.ArtifactHelperImage = cmd.Kubernetes.ArtifactHelperImage
 		if cmd.Kubernetes.ImageRegistryPrefix != "" || cmd.Kubernetes.ImageRegistrySecret != "" {
-			k8sCfg.ImageRegistry = &k8sruntime.ImageRegistryConfig{
+			k8sCfg.ImageRegistry = &jetbridge.ImageRegistryConfig{
 				Prefix:     cmd.Kubernetes.ImageRegistryPrefix,
 				SecretName: cmd.Kubernetes.ImageRegistrySecret,
 			}
 		}
-		k8sClientset, err := k8sruntime.NewClientset(k8sCfg)
+		k8sClientset, err := jetbridge.NewClientset(k8sCfg)
 		if err != nil {
 			return nil, fmt.Errorf("creating k8s clientset for registrar: %w", err)
 		}
@@ -1296,18 +1280,18 @@ func (cmd *RunCommand) backendComponents(
 				Name:     atc.ComponentK8sWorkerRegistrar,
 				Interval: 15 * time.Second,
 			},
-			Runnable: k8sruntime.NewRegistrar(logger.Session(atc.ComponentK8sWorkerRegistrar), k8sClientset, k8sCfg, dbWorkerFactory),
+			Runnable: jetbridge.NewRegistrar(logger.Session(atc.ComponentK8sWorkerRegistrar), k8sClientset, k8sCfg, dbWorkerFactory),
 		})
 
 		k8sContainerRepo := db.NewContainerRepository(dbConn)
 		k8sVolumeRepo := db.NewVolumeRepository(dbConn)
 		k8sDestroyer := gc.NewDestroyer(logger, k8sContainerRepo, k8sVolumeRepo)
-		k8sReaper := k8sruntime.NewReaper(logger.Session(atc.ComponentK8sWorkerReaper), k8sClientset, k8sCfg, k8sContainerRepo, k8sDestroyer)
+		k8sReaper := jetbridge.NewReaper(logger.Session(atc.ComponentK8sWorkerReaper), k8sClientset, k8sCfg, k8sContainerRepo, k8sDestroyer)
 		if k8sCfg.CacheVolumeClaim != "" {
-			k8sRestConfig, err := k8sruntime.RestConfig(k8sCfg)
+			k8sRestConfig, err := jetbridge.RestConfig(k8sCfg)
 			if err == nil {
 				k8sReaper.SetVolumeRepo(k8sVolumeRepo)
-				k8sReaper.SetExecutor(k8sruntime.NewSPDYExecutor(k8sClientset, k8sRestConfig))
+				k8sReaper.SetExecutor(jetbridge.NewSPDYExecutor(k8sClientset, k8sRestConfig))
 			}
 		}
 		components = append(components, RunnableComponent{
@@ -1355,10 +1339,6 @@ func (cmd *RunCommand) streamer(cacheFactory db.ResourceCacheFactory) worker.Str
 	return worker.NewStreamer(cacheFactory,
 		cmd.compression(),
 		cmd.StreamingSizeLimitationInMB,
-		worker.P2PConfig{
-			Enabled: cmd.FeatureFlags.EnableP2PVolumeStreaming,
-			Timeout: cmd.P2pVolumeStreamingTimeout,
-		},
 	)
 }
 
@@ -1388,15 +1368,12 @@ func (cmd *RunCommand) constructPool(dbConn db.DbConn, lockFactory lock.LockFact
 	)
 
 	factory := worker.DefaultFactory{
-		DB:                                db,
-		GardenRequestTimeout:              cmd.GardenRequestTimeout,
-		BaggageclaimResponseHeaderTimeout: cmd.BaggageclaimResponseHeaderTimeout,
-		HTTPRetryTimeout:                  5 * time.Minute,
-		Streamer:                          cmd.streamer(dbResourceCacheFactory),
+		DB:       db,
+		Streamer: cmd.streamer(dbResourceCacheFactory),
 	}
 
 	if cmd.Kubernetes.Namespace != "" {
-		k8sCfg := k8sruntime.NewConfig(cmd.Kubernetes.Namespace, cmd.Kubernetes.Kubeconfig)
+		k8sCfg := jetbridge.NewConfig(cmd.Kubernetes.Namespace, cmd.Kubernetes.Kubeconfig)
 		k8sCfg.PodStartupTimeout = cmd.Kubernetes.PodStartupTimeout
 		k8sCfg.ImagePullSecrets = cmd.Kubernetes.ImagePullSecrets
 		k8sCfg.ServiceAccount = cmd.Kubernetes.ServiceAccount
@@ -1404,22 +1381,22 @@ func (cmd *RunCommand) constructPool(dbConn db.DbConn, lockFactory lock.LockFact
 		k8sCfg.ArtifactStoreClaim = cmd.Kubernetes.ArtifactStoreClaim
 		k8sCfg.ArtifactHelperImage = cmd.Kubernetes.ArtifactHelperImage
 		if cmd.Kubernetes.ImageRegistryPrefix != "" || cmd.Kubernetes.ImageRegistrySecret != "" {
-			k8sCfg.ImageRegistry = &k8sruntime.ImageRegistryConfig{
+			k8sCfg.ImageRegistry = &jetbridge.ImageRegistryConfig{
 				Prefix:     cmd.Kubernetes.ImageRegistryPrefix,
 				SecretName: cmd.Kubernetes.ImageRegistrySecret,
 			}
 		}
-		k8sClientset, err := k8sruntime.NewClientset(k8sCfg)
+		k8sClientset, err := jetbridge.NewClientset(k8sCfg)
 		if err != nil {
 			return worker.Pool{}, fmt.Errorf("creating k8s clientset: %w", err)
 		}
-		k8sRestConfig, err := k8sruntime.RestConfig(k8sCfg)
+		k8sRestConfig, err := jetbridge.RestConfig(k8sCfg)
 		if err != nil {
 			return worker.Pool{}, fmt.Errorf("creating k8s rest config: %w", err)
 		}
 		factory.K8sClientset = k8sClientset
 		factory.K8sConfig = &k8sCfg
-		factory.K8sExecutor = k8sruntime.NewSPDYExecutor(k8sClientset, k8sRestConfig)
+		factory.K8sExecutor = jetbridge.NewSPDYExecutor(k8sClientset, k8sRestConfig)
 	}
 
 	return worker.NewPool(
@@ -1884,10 +1861,6 @@ func constructLockConns(driverName, connectionString string) ([lock.FactoryCount
 	return conns, nil
 }
 
-func (cmd *RunCommand) chooseBuildContainerStrategy() (worker.PlacementStrategy, worker.PlacementStrategy, worker.PlacementStrategy, error) {
-	return worker.NewPlacementStrategy(cmd.ContainerPlacementStrategyOptions)
-}
-
 func (cmd *RunCommand) configureAuthForDefaultTeam(teamFactory db.TeamFactory) error {
 	team, found, err := teamFactory.FindTeam(atc.DefaultTeamName)
 	if err != nil {
@@ -1920,9 +1893,6 @@ func (cmd *RunCommand) constructEngine(
 	resourceConfigFactory db.ResourceConfigFactory,
 	secretManager creds.Secrets,
 	defaultLimits atc.ContainerLimits,
-	strategy worker.PlacementStrategy,
-	noInputStrategy worker.PlacementStrategy,
-	checkStrategy worker.PlacementStrategy,
 	lockFactory lock.LockFactory,
 	rateLimiter engine.RateLimiter,
 	policyChecker policy.Checker,
@@ -1938,9 +1908,6 @@ func (cmd *RunCommand) constructEngine(
 				resourceCacheFactory,
 				resourceConfigFactory,
 				defaultLimits,
-				strategy,
-				noInputStrategy,
-				checkStrategy,
 				cmd.GlobalResourceCheckTimeout,
 				cmd.DefaultGetTimeout,
 				cmd.DefaultPutTimeout,
@@ -2209,8 +2176,6 @@ func (cmd *RunCommand) constructAPIHandler(
 		dbWorkerFactory,
 		workerTeamFactory,
 		dbVolumeRepository,
-		dbContainerRepository,
-		gcContainerDestroyer,
 		dbBuildFactory,
 		dbCheckFactory,
 		resourceConfigFactory,

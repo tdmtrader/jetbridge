@@ -50,20 +50,6 @@ type FakeWorkerFactory struct {
 		result2 bool
 		result3 error
 	}
-	HeartbeatWorkerStub        func(atc.Worker, time.Duration) (db.Worker, error)
-	heartbeatWorkerMutex       sync.RWMutex
-	heartbeatWorkerArgsForCall []struct {
-		arg1 atc.Worker
-		arg2 time.Duration
-	}
-	heartbeatWorkerReturns struct {
-		result1 db.Worker
-		result2 error
-	}
-	heartbeatWorkerReturnsOnCall map[int]struct {
-		result1 db.Worker
-		result2 error
-	}
 	SaveWorkerStub        func(atc.Worker, time.Duration) (db.Worker, error)
 	saveWorkerMutex       sync.RWMutex
 	saveWorkerArgsForCall []struct {
@@ -292,71 +278,6 @@ func (fake *FakeWorkerFactory) GetWorkerReturnsOnCall(i int, result1 db.Worker, 
 		result2 bool
 		result3 error
 	}{result1, result2, result3}
-}
-
-func (fake *FakeWorkerFactory) HeartbeatWorker(arg1 atc.Worker, arg2 time.Duration) (db.Worker, error) {
-	fake.heartbeatWorkerMutex.Lock()
-	ret, specificReturn := fake.heartbeatWorkerReturnsOnCall[len(fake.heartbeatWorkerArgsForCall)]
-	fake.heartbeatWorkerArgsForCall = append(fake.heartbeatWorkerArgsForCall, struct {
-		arg1 atc.Worker
-		arg2 time.Duration
-	}{arg1, arg2})
-	stub := fake.HeartbeatWorkerStub
-	fakeReturns := fake.heartbeatWorkerReturns
-	fake.recordInvocation("HeartbeatWorker", []interface{}{arg1, arg2})
-	fake.heartbeatWorkerMutex.Unlock()
-	if stub != nil {
-		return stub(arg1, arg2)
-	}
-	if specificReturn {
-		return ret.result1, ret.result2
-	}
-	return fakeReturns.result1, fakeReturns.result2
-}
-
-func (fake *FakeWorkerFactory) HeartbeatWorkerCallCount() int {
-	fake.heartbeatWorkerMutex.RLock()
-	defer fake.heartbeatWorkerMutex.RUnlock()
-	return len(fake.heartbeatWorkerArgsForCall)
-}
-
-func (fake *FakeWorkerFactory) HeartbeatWorkerCalls(stub func(atc.Worker, time.Duration) (db.Worker, error)) {
-	fake.heartbeatWorkerMutex.Lock()
-	defer fake.heartbeatWorkerMutex.Unlock()
-	fake.HeartbeatWorkerStub = stub
-}
-
-func (fake *FakeWorkerFactory) HeartbeatWorkerArgsForCall(i int) (atc.Worker, time.Duration) {
-	fake.heartbeatWorkerMutex.RLock()
-	defer fake.heartbeatWorkerMutex.RUnlock()
-	argsForCall := fake.heartbeatWorkerArgsForCall[i]
-	return argsForCall.arg1, argsForCall.arg2
-}
-
-func (fake *FakeWorkerFactory) HeartbeatWorkerReturns(result1 db.Worker, result2 error) {
-	fake.heartbeatWorkerMutex.Lock()
-	defer fake.heartbeatWorkerMutex.Unlock()
-	fake.HeartbeatWorkerStub = nil
-	fake.heartbeatWorkerReturns = struct {
-		result1 db.Worker
-		result2 error
-	}{result1, result2}
-}
-
-func (fake *FakeWorkerFactory) HeartbeatWorkerReturnsOnCall(i int, result1 db.Worker, result2 error) {
-	fake.heartbeatWorkerMutex.Lock()
-	defer fake.heartbeatWorkerMutex.Unlock()
-	fake.HeartbeatWorkerStub = nil
-	if fake.heartbeatWorkerReturnsOnCall == nil {
-		fake.heartbeatWorkerReturnsOnCall = make(map[int]struct {
-			result1 db.Worker
-			result2 error
-		})
-	}
-	fake.heartbeatWorkerReturnsOnCall[i] = struct {
-		result1 db.Worker
-		result2 error
-	}{result1, result2}
 }
 
 func (fake *FakeWorkerFactory) SaveWorker(arg1 atc.Worker, arg2 time.Duration) (db.Worker, error) {

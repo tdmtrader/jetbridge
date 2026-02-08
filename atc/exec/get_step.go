@@ -89,7 +89,6 @@ type GetStep struct {
 	metadata             StepMetadata
 	containerMetadata    db.ContainerMetadata
 	resourceCacheFactory db.ResourceCacheFactory
-	strategy             worker.PlacementStrategy
 	workerPool           Pool
 	lockFactory          lock.LockFactory
 	delegateFactory      GetDelegateFactory
@@ -103,7 +102,6 @@ func NewGetStep(
 	containerMetadata db.ContainerMetadata,
 	lockFactory lock.LockFactory,
 	resourceCacheFactory db.ResourceCacheFactory,
-	strategy worker.PlacementStrategy,
 	delegateFactory GetDelegateFactory,
 	pool Pool,
 	defaultGetTimeout time.Duration,
@@ -114,7 +112,6 @@ func NewGetStep(
 		metadata:             metadata,
 		containerMetadata:    containerMetadata,
 		resourceCacheFactory: resourceCacheFactory,
-		strategy:             strategy,
 		lockFactory:          lockFactory,
 		delegateFactory:      delegateFactory,
 		workerPool:           pool,
@@ -295,7 +292,7 @@ func (step *GetStep) retrieveFromCacheOrPerformGet(
 			return nil, false, resource.VersionResult{}, runtime.ProcessResult{}, err
 		}
 
-		worker, err = step.workerPool.FindOrSelectWorker(ctx, containerOwner, containerSpec, workerSpec, step.strategy, delegate)
+		worker, err = step.workerPool.FindOrSelectWorker(ctx, containerOwner, containerSpec, workerSpec)
 		if err != nil {
 			logger.Error("failed-to-select-worker", err)
 			return nil, false, resource.VersionResult{}, runtime.ProcessResult{}, err
@@ -308,15 +305,6 @@ func (step *GetStep) retrieveFromCacheOrPerformGet(
 		lockName += "-" + worker.Name()
 
 		delegate.SelectedWorker(logger, worker.Name())
-
-		defer func() {
-			step.workerPool.ReleaseWorker(
-				logger,
-				containerSpec,
-				worker,
-				step.strategy,
-			)
-		}()
 	}
 
 	// attemptGet performs the following flow:
@@ -463,22 +451,13 @@ func (step *GetStep) performGetAndInitCache(
 			return nil, resource.VersionResult{}, runtime.ProcessResult{}, err
 		}
 
-		worker, err = step.workerPool.FindOrSelectWorker(ctx, containerOwner, containerSpec, workerSpec, step.strategy, delegate)
+		worker, err = step.workerPool.FindOrSelectWorker(ctx, containerOwner, containerSpec, workerSpec)
 		if err != nil {
 			logger.Error("failed-to-select-worker", err)
 			return nil, resource.VersionResult{}, runtime.ProcessResult{}, err
 		}
 
 		delegate.SelectedWorker(logger, worker.Name())
-
-		defer func() {
-			step.workerPool.ReleaseWorker(
-				logger,
-				containerSpec,
-				worker,
-				step.strategy,
-			)
-		}()
 	}
 
 	ctx, cancel, err := MaybeTimeout(ctx, step.plan.Timeout, step.defaultGetTimeout)

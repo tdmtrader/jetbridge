@@ -17,8 +17,8 @@ import (
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/creds"
 	"github.com/concourse/concourse/atc/exec/build"
+	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/tracing"
-	"github.com/concourse/concourse/worker/baggageclaim"
 )
 
 // LoadVarStep loads a value from a file and sets it as a build-local var.
@@ -137,7 +137,7 @@ func (step *LoadVarStep) fetchVars(
 
 	stream, err := step.streamer.StreamFile(lagerctx.NewContext(ctx, logger), art, filePath)
 	if err != nil {
-		if err == baggageclaim.ErrFileNotFound {
+		if err == runtime.ErrFileNotFound {
 			return nil, FileNotFoundError{
 				Name:     artifactName,
 				FilePath: filePath,

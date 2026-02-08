@@ -6,19 +6,18 @@ import (
 	"sync"
 
 	"github.com/concourse/concourse/atc/compression"
-	"github.com/concourse/concourse/worker/baggageclaim"
 )
 
 type FakeCompression struct {
-	EncodingStub        func() baggageclaim.Encoding
+	EncodingStub        func() compression.Encoding
 	encodingMutex       sync.RWMutex
 	encodingArgsForCall []struct {
 	}
 	encodingReturns struct {
-		result1 baggageclaim.Encoding
+		result1 compression.Encoding
 	}
 	encodingReturnsOnCall map[int]struct {
-		result1 baggageclaim.Encoding
+		result1 compression.Encoding
 	}
 	NewReaderStub        func(io.ReadCloser) (io.ReadCloser, error)
 	newReaderMutex       sync.RWMutex
@@ -37,7 +36,7 @@ type FakeCompression struct {
 	invocationsMutex sync.RWMutex
 }
 
-func (fake *FakeCompression) Encoding() baggageclaim.Encoding {
+func (fake *FakeCompression) Encoding() compression.Encoding {
 	fake.encodingMutex.Lock()
 	ret, specificReturn := fake.encodingReturnsOnCall[len(fake.encodingArgsForCall)]
 	fake.encodingArgsForCall = append(fake.encodingArgsForCall, struct {
@@ -61,32 +60,32 @@ func (fake *FakeCompression) EncodingCallCount() int {
 	return len(fake.encodingArgsForCall)
 }
 
-func (fake *FakeCompression) EncodingCalls(stub func() baggageclaim.Encoding) {
+func (fake *FakeCompression) EncodingCalls(stub func() compression.Encoding) {
 	fake.encodingMutex.Lock()
 	defer fake.encodingMutex.Unlock()
 	fake.EncodingStub = stub
 }
 
-func (fake *FakeCompression) EncodingReturns(result1 baggageclaim.Encoding) {
+func (fake *FakeCompression) EncodingReturns(result1 compression.Encoding) {
 	fake.encodingMutex.Lock()
 	defer fake.encodingMutex.Unlock()
 	fake.EncodingStub = nil
 	fake.encodingReturns = struct {
-		result1 baggageclaim.Encoding
+		result1 compression.Encoding
 	}{result1}
 }
 
-func (fake *FakeCompression) EncodingReturnsOnCall(i int, result1 baggageclaim.Encoding) {
+func (fake *FakeCompression) EncodingReturnsOnCall(i int, result1 compression.Encoding) {
 	fake.encodingMutex.Lock()
 	defer fake.encodingMutex.Unlock()
 	fake.EncodingStub = nil
 	if fake.encodingReturnsOnCall == nil {
 		fake.encodingReturnsOnCall = make(map[int]struct {
-			result1 baggageclaim.Encoding
+			result1 compression.Encoding
 		})
 	}
 	fake.encodingReturnsOnCall[i] = struct {
-		result1 baggageclaim.Encoding
+		result1 compression.Encoding
 	}{result1}
 }
 

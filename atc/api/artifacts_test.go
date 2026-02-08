@@ -12,7 +12,7 @@ import (
 	"github.com/concourse/concourse/atc/runtime/runtimetest"
 	. "github.com/concourse/concourse/atc/testhelpers"
 	"github.com/concourse/concourse/atc/worker"
-	"github.com/concourse/concourse/worker/baggageclaim"
+	"github.com/concourse/concourse/atc/compression"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
@@ -29,7 +29,7 @@ var _ = Describe("ArtifactRepository API", func() {
 		})
 
 		JustBeforeEach(func() {
-			body, err := tarContents.StreamOut(context.Background(), ".", baggageclaim.GzipEncoding)
+			body, err := tarContents.StreamOut(context.Background(), ".", compression.GzipEncoding)
 			Expect(err).NotTo(HaveOccurred())
 
 			request, err = http.NewRequest("POST", server.URL+"/api/v1/teams/some-team/artifacts", body)
@@ -253,7 +253,7 @@ var _ = Describe("ArtifactRepository API", func() {
 					It("streams out the contents of the volume from the root path", func() {
 						tarStream := runtimetest.VolumeContent{}
 
-						err := tarStream.StreamIn(context.Background(), ".", baggageclaim.GzipEncoding, 0, response.Body)
+						err := tarStream.StreamIn(context.Background(), ".", compression.GzipEncoding, 0, response.Body)
 						Expect(err).ToNot(HaveOccurred())
 
 						Expect(tarStream).To(Equal(volume.Content))

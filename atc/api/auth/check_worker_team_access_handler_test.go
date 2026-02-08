@@ -54,19 +54,19 @@ var _ = Describe("CheckWorkerTeamAccessHandler", func() {
 		fakeAccessor.CreateReturns(fakeaccess, nil)
 		routes := rata.Routes{}
 		for _, route := range atc.Routes {
-			if route.Name == atc.RetireWorker {
+			if route.Name == atc.DeleteWorker {
 				routes = append(routes, route)
 			}
 		}
 
 		router, err := rata.NewRouter(routes, map[string]http.Handler{
-			atc.RetireWorker: handler,
+			atc.DeleteWorker: handler,
 		})
 		Expect(err).NotTo(HaveOccurred())
 		server = httptest.NewServer(router)
 
 		requestGenerator := rata.NewRequestGenerator(server.URL, atc.Routes)
-		request, err := requestGenerator.CreateRequest(atc.RetireWorker, rata.Params{
+		request, err := requestGenerator.CreateRequest(atc.DeleteWorker, rata.Params{
 			"worker_name": "some-worker",
 			"team_name":   "some-team",
 		}, nil)

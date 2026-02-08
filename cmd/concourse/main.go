@@ -23,7 +23,6 @@ func main() {
 	cmd.LessenRequirements(parser)
 
 	cmd.Web.WireDynamicFlags(parser.Command.Find("web"))
-	cmd.Quickstart.WebCommand.WireDynamicFlags(parser.Command.Find("quickstart"))
 
 	twentythousandtonnesofcrudeoil.TheEnvironmentIsPerfectlySafe(parser, "CONCOURSE_")
 

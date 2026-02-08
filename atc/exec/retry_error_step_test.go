@@ -3,14 +3,12 @@ package exec_test
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net"
 	"net/url"
 
 	. "github.com/concourse/concourse/atc/exec"
 	"github.com/concourse/concourse/atc/exec/build"
 	"github.com/concourse/concourse/atc/exec/execfakes"
-	"github.com/concourse/concourse/atc/worker/gardenruntime/transport"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
@@ -79,33 +77,6 @@ var _ = Describe("RetryErrorStep", func() {
 
 			It("propagates the error", func() {
 				Expect(runErr).To(Equal(context.Canceled))
-			})
-		})
-
-		Context("when worker disappeared", func() {
-			cause := transport.WorkerMissingError{WorkerName: "some-worker"}
-			BeforeEach(func() {
-				fakeStep.RunReturns(false, cause)
-			})
-
-			It("should return retriable", func() {
-				Expect(runErr).To(Equal(Retriable{cause}))
-			})
-
-			It("logs 'timeout exceeded'", func() {
-				Expect(fakeDelegate.ErroredCallCount()).To(Equal(1))
-				_, message := fakeDelegate.ErroredArgsForCall(0)
-				Expect(message).To(Equal(fmt.Sprintf("%s, will retry ...", cause.Error())))
-			})
-
-			Context("when build aborted", func() {
-				BeforeEach(func() {
-					cancel()
-				})
-
-				It("should not retry", func() {
-					Expect(runErr).To(Equal(cause))
-				})
 			})
 		})
 

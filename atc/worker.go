@@ -7,16 +7,6 @@ import (
 )
 
 type Worker struct {
-	// not garden_addr, for backwards-compatibility
-	GardenAddr      string `json:"addr"`
-	BaggageclaimURL string `json:"baggageclaim_url"`
-
-	CertsPath *string `json:"certs_path,omitempty"`
-
-	HTTPProxyURL  string `json:"http_proxy_url,omitempty"`
-	HTTPSProxyURL string `json:"https_proxy_url,omitempty"`
-	NoProxy       string `json:"no_proxy,omitempty"`
-
 	ActiveContainers int `json:"active_containers"`
 	ActiveVolumes    int `json:"active_volumes"`
 	ActiveTasks      int `json:"active_tasks"`
@@ -58,16 +48,11 @@ func (t *Tags) UnmarshalJSON(data []byte) error {
 }
 
 var ErrInvalidWorkerVersion = errors.New("invalid worker version, only numeric characters are allowed")
-var ErrMissingWorkerGardenAddress = errors.New("missing garden address")
 var ErrNoWorkers = errors.New("no workers available for checking")
 
 func (w Worker) Validate() error {
 	if w.Version != "" && !regexp.MustCompile(`^[0-9\.]+$`).MatchString(w.Version) {
 		return ErrInvalidWorkerVersion
-	}
-
-	if len(w.GardenAddr) == 0 {
-		return ErrMissingWorkerGardenAddress
 	}
 
 	return nil
@@ -81,6 +66,3 @@ type WorkerResourceType struct {
 	UniqueVersionHistory bool   `json:"unique_version_history"`
 }
 
-type PruneWorkerResponseBody struct {
-	Stderr string `json:"stderr"`
-}

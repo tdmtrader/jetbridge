@@ -51,9 +51,7 @@ var _ = Describe("VolumeCollector", func() {
 			Expect(err).ToNot(HaveOccurred())
 
 			worker, err = workerFactory.SaveWorker(atc.Worker{
-				Name:            "some-worker",
-				GardenAddr:      "1.2.3.4:7777",
-				BaggageclaimURL: "1.2.3.4:7788",
+				Name: "some-worker",
 			}, 5*time.Minute)
 			Expect(err).ToNot(HaveOccurred())
 

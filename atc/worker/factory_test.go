@@ -6,7 +6,7 @@ import (
 	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/atc/db/dbfakes"
 	"github.com/concourse/concourse/atc/worker"
-	"github.com/concourse/concourse/atc/worker/k8sruntime"
+	"github.com/concourse/concourse/atc/worker/jetbridge"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"k8s.io/client-go/kubernetes/fake"
@@ -14,7 +14,7 @@ import (
 
 var _ = Describe("DefaultFactory", func() {
 	var (
-		logger     = lagertest.NewTestLogger("factory-test")
+		logger       = lagertest.NewTestLogger("factory-test")
 		fakeDBWorker *dbfakes.FakeWorker
 	)
 
@@ -23,12 +23,10 @@ var _ = Describe("DefaultFactory", func() {
 		fakeDBWorker.NameReturns("test-worker")
 	})
 
-	Context("when K8s config is set and the worker has no GardenAddr", func() {
+	Context("when K8s config is set", func() {
 		It("creates a K8s worker", func() {
-			fakeDBWorker.GardenAddrReturns(nil)
-
 			fakeClientset := fake.NewSimpleClientset()
-			cfg := k8sruntime.NewConfig("test-namespace", "")
+			cfg := jetbridge.NewConfig("test-namespace", "")
 
 			factory := worker.DefaultFactory{
 				K8sClientset: fakeClientset,
@@ -39,23 +37,9 @@ var _ = Describe("DefaultFactory", func() {
 			Expect(w).ToNot(BeNil())
 			Expect(w.Name()).To(Equal("test-worker"))
 
-			// Should be a k8sruntime.Worker
-			_, ok := w.(*k8sruntime.Worker)
+			// Should be a jetbridge.Worker
+			_, ok := w.(*jetbridge.Worker)
 			Expect(ok).To(BeTrue())
-		})
-	})
-
-	Context("when the worker has a GardenAddr", func() {
-		It("creates a Garden worker", func() {
-			gardenAddr := "10.0.0.1:7777"
-			fakeDBWorker.GardenAddrReturns(&gardenAddr)
-			baggageclaimURL := "http://10.0.0.1:7788"
-			fakeDBWorker.BaggageclaimURLReturns(&baggageclaimURL)
-
-			factory := worker.DefaultFactory{}
-
-			w := factory.NewWorker(logger, fakeDBWorker)
-			Expect(w).ToNot(BeNil())
 		})
 	})
 })

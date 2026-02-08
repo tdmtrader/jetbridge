@@ -158,11 +158,9 @@ var _ = Describe("WorkerResourceCaches", func() {
 					Expect(uwrcOnWorker1.WorkerBaseResourceTypeID).To(Equal(usedBaseResourceTypeOnWorker0.ID))
 				})
 
-				Context("Prune worker0", func() {
+				Context("Delete worker0", func() {
 					BeforeEach(func() {
-						err := scenario.Workers[0].Land()
-						Expect(err).ToNot(HaveOccurred())
-						err = scenario.Workers[0].Prune()
+						err := scenario.Workers[0].Delete()
 						Expect(err).ToNot(HaveOccurred())
 					})
 

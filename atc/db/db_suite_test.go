@@ -166,13 +166,8 @@ var _ = BeforeEach(func() {
 		UniqueVersionHistory: true,
 	}
 
-	certsPath := "/etc/ssl/certs"
-
 	defaultWorkerPayload = atc.Worker{
-		Name:            "default-worker",
-		GardenAddr:      "1.2.3.4:7777",
-		BaggageclaimURL: "5.6.7.8:7878",
-		CertsPath:       &certsPath,
+		Name: "default-worker",
 
 		ResourceTypes: []atc.WorkerResourceType{
 			defaultWorkerResourceType,
@@ -181,10 +176,7 @@ var _ = BeforeEach(func() {
 	}
 
 	otherWorkerPayload = atc.Worker{
-		Name:            "other-worker",
-		GardenAddr:      "2.3.4.5:7777",
-		BaggageclaimURL: "6.7.8.9:7878",
-		CertsPath:       &certsPath,
+		Name: "other-worker",
 
 		ResourceTypes: []atc.WorkerResourceType{
 			defaultWorkerResourceType,

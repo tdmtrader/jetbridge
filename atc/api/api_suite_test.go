@@ -24,7 +24,6 @@ import (
 	"github.com/concourse/concourse/atc/creds/credsfakes"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbfakes"
-	"github.com/concourse/concourse/atc/gc/gcfakes"
 	"github.com/concourse/concourse/atc/policy"
 	"github.com/concourse/concourse/atc/wrappa"
 
@@ -46,8 +45,6 @@ var (
 
 	fakeWorkerPool          *apifakes.FakePool
 	fakeVolumeRepository    *dbfakes.FakeVolumeRepository
-	fakeContainerRepository *dbfakes.FakeContainerRepository
-	fakeDestroyer           *gcfakes.FakeDestroyer
 	dbTeamFactory           *dbfakes.FakeTeamFactory
 	dbPipelineFactory       *dbfakes.FakePipelineFactory
 	dbJobFactory            *dbfakes.FakeJobFactory
@@ -140,9 +137,6 @@ var _ = BeforeEach(func() {
 	fakeWorkerPool = new(apifakes.FakePool)
 
 	fakeVolumeRepository = new(dbfakes.FakeVolumeRepository)
-	fakeContainerRepository = new(dbfakes.FakeContainerRepository)
-	fakeDestroyer = new(gcfakes.FakeDestroyer)
-
 	fakeSecretManager = new(credsfakes.FakeSecrets)
 	fakeVarSourcePool = new(credsfakes.FakeVarSourcePool)
 	credsManagers = make(creds.Managers)
@@ -200,8 +194,6 @@ var _ = BeforeEach(func() {
 		dbWorkerFactory,
 		dbWorkerTeamFactory,
 		fakeVolumeRepository,
-		fakeContainerRepository,
-		fakeDestroyer,
 		dbBuildFactory,
 		dbCheckFactory,
 		dbResourceConfigFactory,
