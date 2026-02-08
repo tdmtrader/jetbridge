@@ -78,6 +78,44 @@ func NewStubVolume(handle, workerName, mountPath string) *Volume {
 	}
 }
 
+// NewDeferredVolume creates a Volume with an executor but without a pod name.
+// The pod name is set later via SetPodName when the pod is created in
+// Container.Run(). This supports the pattern where FindOrCreateContainer
+// creates volumes before the pod exists.
+func NewDeferredVolume(handle, workerName string, executor PodExecutor, namespace, containerName, mountPath string) *Volume {
+	return &Volume{
+		handle:        handle,
+		workerName:    workerName,
+		executor:      executor,
+		namespace:     namespace,
+		containerName: containerName,
+		mountPath:     mountPath,
+	}
+}
+
+// SetPodName sets the pod name on a deferred volume. This is called when
+// the pod is created in Container.Run(), enabling StreamIn/StreamOut.
+func (v *Volume) SetPodName(podName string) {
+	v.podName = podName
+}
+
+// PodName returns the pod name this volume is bound to, or empty if not yet set.
+func (v *Volume) PodName() string {
+	return v.podName
+}
+
+// MountPath returns the path where this volume is mounted in the container.
+func (v *Volume) MountPath() string {
+	return v.mountPath
+}
+
+// HasExecutor reports whether this Volume has a PodExecutor configured,
+// meaning StreamIn/StreamOut can function. Stub volumes without an executor
+// cannot perform data streaming.
+func (v *Volume) HasExecutor() bool {
+	return v.executor != nil
+}
+
 func (v *Volume) Handle() string {
 	if v.dbVolume != nil {
 		return v.dbVolume.Handle()

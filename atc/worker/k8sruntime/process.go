@@ -11,6 +11,7 @@ import (
 	"github.com/concourse/concourse/atc/runtime"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 )
 
@@ -316,13 +317,18 @@ func (p *execProcess) ID() string {
 	return p.id
 }
 
-// Wait waits for the pause Pod to reach Running state, then exec-s the
-// actual command with ProcessIO piped through. After the exec completes,
-// the Pod is cleaned up.
+// Wait waits for the pause Pod to reach Running state, streams input
+// artifacts into the pod, then exec-s the actual command with ProcessIO
+// piped through.
 func (p *execProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 	// Wait for the Pod to be running before exec-ing.
 	if err := p.waitForRunning(ctx); err != nil {
 		return runtime.ProcessResult{}, fmt.Errorf("waiting for pod running: %w", err)
+	}
+
+	// Stream input artifacts into the pod before executing the command.
+	if err := p.streamInputs(ctx); err != nil {
+		return runtime.ProcessResult{}, fmt.Errorf("streaming inputs: %w", err)
 	}
 
 	// Build the command: [path, arg1, arg2, ...]
@@ -351,6 +357,7 @@ func (p *execProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 			if p.container != nil {
 				p.container.SetProperty(exitStatusPropertyName, strconv.Itoa(exitCode))
 			}
+			p.annotateExitStatus(ctx, exitCode)
 			return runtime.ProcessResult{ExitStatus: exitCode}, nil
 		}
 		return runtime.ProcessResult{}, fmt.Errorf("exec in pod: %w", err)
@@ -359,7 +366,48 @@ func (p *execProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 	if p.container != nil {
 		p.container.SetProperty(exitStatusPropertyName, "0")
 	}
+	p.annotateExitStatus(ctx, 0)
 	return runtime.ProcessResult{ExitStatus: 0}, nil
+}
+
+// streamInputs streams each input artifact into the corresponding volume
+// on the running pause pod. This must happen after waitForRunning() and
+// before the command is exec'd, so the command sees the input data.
+func (p *execProcess) streamInputs(ctx context.Context) error {
+	if p.container == nil {
+		return nil
+	}
+	for _, input := range p.container.containerSpec.Inputs {
+		if input.Artifact == nil {
+			continue
+		}
+		vol := p.container.volumeForPath(input.DestinationPath)
+		if vol == nil {
+			continue
+		}
+
+		out, err := input.Artifact.StreamOut(ctx, ".", nil)
+		if err != nil {
+			return fmt.Errorf("stream out artifact %q: %w", input.Artifact.Handle(), err)
+		}
+
+		err = vol.StreamIn(ctx, ".", nil, 0, out)
+		out.Close()
+		if err != nil {
+			return fmt.Errorf("stream in to %s: %w", input.DestinationPath, err)
+		}
+	}
+	return nil
+}
+
+// annotateExitStatus persists the exit status as a pod annotation so that
+// Attach() can recover the result after a web restart (when in-memory
+// container properties are lost).
+func (p *execProcess) annotateExitStatus(ctx context.Context, exitCode int) {
+	patch := fmt.Sprintf(`{"metadata":{"annotations":{"%s":"%d"}}}`, exitStatusAnnotationKey, exitCode)
+	_, _ = p.clientset.CoreV1().Pods(p.config.Namespace).Patch(
+		ctx, p.podName, types.MergePatchType, []byte(patch), metav1.PatchOptions{},
+	)
 }
 
 func (p *execProcess) SetTTY(_ runtime.TTYSpec) error {

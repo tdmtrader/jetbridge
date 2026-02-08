@@ -185,6 +185,86 @@ var _ = Describe("Volume", func() {
 	})
 })
 
+var _ = Describe("Volume-to-Volume Streaming (same worker)", func() {
+	var (
+		ctx          context.Context
+		fakeExecutor *fakeExecExecutor
+	)
+
+	BeforeEach(func() {
+		ctx = context.Background()
+		fakeExecutor = &fakeExecExecutor{}
+	})
+
+	It("streams data from source volume (pod A) to destination volume (pod B)", func() {
+		sourceVol := k8sruntime.NewVolume(
+			nil, fakeExecutor,
+			"source-pod", "test-namespace", "main",
+			"/tmp/build/workdir/output",
+		)
+
+		destVol := k8sruntime.NewVolume(
+			nil, fakeExecutor,
+			"dest-pod", "test-namespace", "main",
+			"/tmp/build/workdir/input",
+		)
+
+		By("StreamOut from source volume produces tar data")
+		fakeExecutor.execStdout = []byte("tar-payload-from-source")
+		tarStream, err := sourceVol.StreamOut(ctx, ".", nil)
+		Expect(err).ToNot(HaveOccurred())
+
+		By("StreamIn to destination volume consumes tar data")
+		err = destVol.StreamIn(ctx, ".", nil, 0, tarStream)
+		tarStream.Close()
+		Expect(err).ToNot(HaveOccurred())
+
+		By("verifying the exec calls target different pods")
+		Expect(fakeExecutor.execCalls).To(HaveLen(2))
+
+		streamOutCall := fakeExecutor.execCalls[0]
+		Expect(streamOutCall.podName).To(Equal("source-pod"))
+		Expect(streamOutCall.command).To(Equal([]string{"tar", "cf", "-", "-C", "/tmp/build/workdir/output", "."}))
+
+		streamInCall := fakeExecutor.execCalls[1]
+		Expect(streamInCall.podName).To(Equal("dest-pod"))
+		Expect(streamInCall.command).To(Equal([]string{"tar", "xf", "-", "-C", "/tmp/build/workdir/input"}))
+
+		By("the tar data piped from source to destination")
+		stdinData, err := io.ReadAll(streamInCall.stdin)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(stdinData).To(Equal([]byte("tar-payload-from-source")))
+	})
+
+	It("works with deferred volumes after pod name is set", func() {
+		sourceVol := k8sruntime.NewDeferredVolume(
+			"src-handle", "k8s-worker",
+			fakeExecutor, "test-namespace", "main",
+			"/tmp/build/workdir/output",
+		)
+		sourceVol.SetPodName("step-1-pod")
+
+		destVol := k8sruntime.NewDeferredVolume(
+			"dst-handle", "k8s-worker",
+			fakeExecutor, "test-namespace", "main",
+			"/tmp/build/workdir/input",
+		)
+		destVol.SetPodName("step-2-pod")
+
+		fakeExecutor.execStdout = []byte("deferred-tar-data")
+		tarStream, err := sourceVol.StreamOut(ctx, ".", nil)
+		Expect(err).ToNot(HaveOccurred())
+
+		err = destVol.StreamIn(ctx, ".", nil, 0, tarStream)
+		tarStream.Close()
+		Expect(err).ToNot(HaveOccurred())
+
+		Expect(fakeExecutor.execCalls).To(HaveLen(2))
+		Expect(fakeExecutor.execCalls[0].podName).To(Equal("step-1-pod"))
+		Expect(fakeExecutor.execCalls[1].podName).To(Equal("step-2-pod"))
+	})
+})
+
 // fakeExecExecutor is a test double for k8sruntime.PodExecutor.
 type fakeExecExecutor struct {
 	execCalls  []execCall
