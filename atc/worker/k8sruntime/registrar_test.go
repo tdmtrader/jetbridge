@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/atc/db/dbfakes"
 	"github.com/concourse/concourse/atc/worker/k8sruntime"
 	. "github.com/onsi/ginkgo/v2"
@@ -28,7 +29,8 @@ var _ = Describe("Registrar", func() {
 		fakeWorkerFactory = new(dbfakes.FakeWorkerFactory)
 		cfg = k8sruntime.NewConfig("test-namespace", "")
 
-		registrar = k8sruntime.NewRegistrar(fakeClientset, cfg, fakeWorkerFactory)
+		testLogger := lagertest.NewTestLogger("registrar")
+		registrar = k8sruntime.NewRegistrar(testLogger, fakeClientset, cfg, fakeWorkerFactory)
 	})
 
 	Describe("Register", func() {

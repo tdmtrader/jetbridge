@@ -13,6 +13,14 @@ const (
 	// DefaultPodStartupTimeout is the default maximum time to wait for a
 	// pod to reach Running state before failing the task.
 	DefaultPodStartupTimeout = 5 * time.Minute
+
+	// workerLabelKey is the Pod label used to identify Pods managed by a
+	// particular Concourse K8s worker.
+	workerLabelKey = "concourse.ci/worker"
+
+	// typeLabelKey is the Pod label used to record the Concourse container
+	// type (task, get, put, etc.).
+	typeLabelKey = "concourse.ci/type"
 )
 
 // DefaultResourceTypeImages maps base Concourse resource type names to their

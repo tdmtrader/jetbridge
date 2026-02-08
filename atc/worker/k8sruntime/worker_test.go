@@ -2,9 +2,8 @@ package k8sruntime_test
 
 import (
 	"context"
-	"time"
+	"fmt"
 
-	"code.cloudfoundry.org/lager/v3"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbfakes"
 	"github.com/concourse/concourse/atc/runtime"
@@ -120,6 +119,27 @@ var _ = Describe("Worker", func() {
 			})
 		})
 
+		Context("when transitioning to created state fails", func() {
+			var fakeCreatingContainer *dbfakes.FakeCreatingContainer
+
+			BeforeEach(func() {
+				fakeDBWorker.FindContainerReturns(nil, nil, nil)
+
+				fakeCreatingContainer = new(dbfakes.FakeCreatingContainer)
+				fakeCreatingContainer.HandleReturns("test-handle")
+				fakeDBWorker.CreateContainerReturns(fakeCreatingContainer, nil)
+
+				fakeCreatingContainer.CreatedReturns(nil, fmt.Errorf("db connection lost"))
+			})
+
+			It("marks the container as failed so the GC can clean it up", func() {
+				_, _, err := worker.FindOrCreateContainer(ctx, owner, metadata, spec, delegate)
+				Expect(err).To(HaveOccurred())
+
+				Expect(fakeCreatingContainer.FailedCallCount()).To(Equal(1))
+			})
+		})
+
 		Context("when a created container already exists in the DB", func() {
 			var fakeCreatedContainer *dbfakes.FakeCreatedContainer
 
@@ -220,8 +240,3 @@ var _ = Describe("Worker", func() {
 	})
 })
 
-type noopDelegate struct{}
-
-func (d *noopDelegate) StreamingVolume(_ lager.Logger, _, _, _ string) {}
-func (d *noopDelegate) WaitingForStreamedVolume(_ lager.Logger, _, _ string) {}
-func (d *noopDelegate) BuildStartTime() time.Time                           { return time.Time{} }

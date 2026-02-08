@@ -7,6 +7,8 @@ import (
 	"io"
 	"path/filepath"
 
+	"code.cloudfoundry.org/lager/v3"
+	"code.cloudfoundry.org/lager/v3/lagerctx"
 	"github.com/concourse/concourse/atc/compression"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/runtime"
@@ -136,12 +138,19 @@ func (v *Volume) DBVolume() db.CreatedVolume {
 
 // StreamIn copies data into the Pod by exec-ing `tar xf -` at the target path.
 func (v *Volume) StreamIn(ctx context.Context, path string, _ compression.Compression, limitInMB float64, reader io.Reader) error {
+	logger := lagerctx.FromContext(ctx).Session("volume-stream-in", lager.Data{
+		"pod":        v.podName,
+		"mount-path": v.mountPath,
+		"path":       path,
+	})
+
 	targetPath := v.resolvedPath(path)
 
 	cmd := []string{"tar", "xf", "-", "-C", targetPath}
 
 	err := v.executor.ExecInPod(ctx, v.namespace, v.podName, v.containerName, cmd, reader, nil, nil, false)
 	if err != nil {
+		logger.Error("failed-to-stream-in", err)
 		return fmt.Errorf("stream in via exec: %w", err)
 	}
 
@@ -150,6 +159,12 @@ func (v *Volume) StreamIn(ctx context.Context, path string, _ compression.Compre
 
 // StreamOut extracts data from the Pod by exec-ing `tar cf -` at the target path.
 func (v *Volume) StreamOut(ctx context.Context, path string, _ compression.Compression) (io.ReadCloser, error) {
+	logger := lagerctx.FromContext(ctx).Session("volume-stream-out", lager.Data{
+		"pod":        v.podName,
+		"mount-path": v.mountPath,
+		"path":       path,
+	})
+
 	targetPath := v.resolvedPath(path)
 
 	cmd := []string{"tar", "cf", "-", "-C", targetPath, "."}
@@ -157,6 +172,7 @@ func (v *Volume) StreamOut(ctx context.Context, path string, _ compression.Compr
 	var stdout bytes.Buffer
 	err := v.executor.ExecInPod(ctx, v.namespace, v.podName, v.containerName, cmd, nil, &stdout, nil, false)
 	if err != nil {
+		logger.Error("failed-to-stream-out", err)
 		return nil, fmt.Errorf("stream out via exec: %w", err)
 	}
 

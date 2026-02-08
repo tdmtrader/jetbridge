@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/atc/db/dbfakes"
 	"github.com/concourse/concourse/atc/gc/gcfakes"
 	"github.com/concourse/concourse/atc/worker/k8sruntime"
@@ -31,7 +32,8 @@ var _ = Describe("Reaper", func() {
 		fakeDestroyer = new(gcfakes.FakeDestroyer)
 		cfg = k8sruntime.NewConfig("test-namespace", "")
 
-		reaper = k8sruntime.NewReaper(fakeClientset, cfg, fakeContainerRepository, fakeDestroyer)
+		testLogger := lagertest.NewTestLogger("reaper")
+		reaper = k8sruntime.NewReaper(testLogger, fakeClientset, cfg, fakeContainerRepository, fakeDestroyer)
 	})
 
 	createLabelledPod := func(name string) {

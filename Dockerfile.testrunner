@@ -1,0 +1,20 @@
+FROM golang:1.25-bookworm
+
+# Install system tools needed by tests and deploy step
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends unzip && \
+    rm -rf /var/lib/apt/lists/* && \
+    curl -fsSL "https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release/stable.txt)/bin/linux/arm64/kubectl" \
+      -o /usr/local/bin/kubectl && \
+    chmod +x /usr/local/bin/kubectl
+
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+# Pre-compile test binaries to speed up pipeline runs
+RUN go test -c -o /dev/null ./atc/worker/k8sruntime/... 2>/dev/null || true
+RUN go test -c -o /dev/null ./topgun/k8s/integration/... 2>/dev/null || true
+RUN go build -o /dev/null ./cmd/concourse/... 2>/dev/null || true

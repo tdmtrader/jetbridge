@@ -10,20 +10,12 @@ import (
 	"testing"
 	"time"
 
-	"code.cloudfoundry.org/lager/v3"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbfakes"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/worker/k8sruntime"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
-
-// liveNoopDelegate satisfies runtime.BuildStepDelegate for live tests.
-type liveNoopDelegate struct{}
-
-func (d *liveNoopDelegate) StreamingVolume(_ lager.Logger, _, _, _ string)   {}
-func (d *liveNoopDelegate) WaitingForStreamedVolume(_ lager.Logger, _, _ string) {}
-func (d *liveNoopDelegate) BuildStartTime() time.Time                           { return time.Time{} }
 
 // setupLiveWorker creates a Worker backed by a real K8s clientset with
 // fake DB components (we only need the DB fakes to satisfy the interface;
@@ -43,20 +35,13 @@ func setupLiveWorker(t *testing.T, handle string) (*k8sruntime.Worker, runtime.B
 
 	// Wire up the fake DB so FindOrCreateContainer works:
 	// FindContainer returns nothing → CreateContainer is called → Created() succeeds.
-	fakeCreatingContainer := new(dbfakes.FakeCreatingContainer)
-	fakeCreatingContainer.HandleReturns(handle)
-	fakeCreatedContainer := new(dbfakes.FakeCreatedContainer)
-	fakeCreatedContainer.HandleReturns(handle)
-	fakeCreatingContainer.CreatedReturns(fakeCreatedContainer, nil)
-
-	fakeDBWorker.FindContainerReturns(nil, nil, nil)
-	fakeDBWorker.CreateContainerReturns(fakeCreatingContainer, nil)
+	setupFakeDBContainer(fakeDBWorker, handle)
 
 	worker := k8sruntime.NewWorker(fakeDBWorker, clientset, *cfg)
 	executor := k8sruntime.NewSPDYExecutor(clientset, restConfig)
 	worker.SetExecutor(executor)
 
-	return worker, &liveNoopDelegate{}
+	return worker, &noopDelegate{}
 }
 
 // TestLiveWorkerTaskExecution exercises the full Worker → Container → Process
@@ -64,7 +49,10 @@ func setupLiveWorker(t *testing.T, handle string) (*k8sruntime.Worker, runtime.B
 func TestLiveWorkerTaskExecution(t *testing.T) {
 	handle := "live-task-" + time.Now().Format("150405")
 	worker, delegate := setupLiveWorker(t, handle)
+	clientset, cfg := kubeClient(t)
 	ctx := context.Background()
+
+	cleanupPod(t, clientset, cfg.Namespace, handle)
 
 	// Create a container through the Worker interface.
 	container, _, err := worker.FindOrCreateContainer(
@@ -108,7 +96,10 @@ func TestLiveWorkerTaskExecution(t *testing.T) {
 func TestLiveWorkerNonZeroExit(t *testing.T) {
 	handle := "live-fail-" + time.Now().Format("150405")
 	worker, delegate := setupLiveWorker(t, handle)
+	clientset, cfg := kubeClient(t)
 	ctx := context.Background()
+
+	cleanupPod(t, clientset, cfg.Namespace, handle)
 
 	container, _, err := worker.FindOrCreateContainer(
 		ctx,
@@ -149,7 +140,10 @@ func TestLiveWorkerNonZeroExit(t *testing.T) {
 func TestLiveWorkerExecMode(t *testing.T) {
 	handle := "live-exec-" + time.Now().Format("150405")
 	worker, delegate := setupLiveWorker(t, handle)
+	clientset, cfg := kubeClient(t)
 	ctx := context.Background()
+
+	cleanupPod(t, clientset, cfg.Namespace, handle)
 
 	container, _, err := worker.FindOrCreateContainer(
 		ctx,
@@ -251,9 +245,7 @@ func TestLiveWorkerPodSurvivesCompletion(t *testing.T) {
 	}
 
 	// Clean up the pod manually since GC isn't wired yet.
-	t.Cleanup(func() {
-		_ = clientset.CoreV1().Pods(cfg.Namespace).Delete(context.Background(), handle, metav1.DeleteOptions{})
-	})
+	cleanupPod(t, clientset, cfg.Namespace, handle)
 }
 
 // TestLiveWorkerHijackExistingPod simulates the fly hijack flow:
@@ -330,7 +322,5 @@ func TestLiveWorkerHijackExistingPod(t *testing.T) {
 	t.Logf("hijack into existing pod successful: %s", output)
 
 	// Clean up.
-	t.Cleanup(func() {
-		_ = clientset.CoreV1().Pods(cfg.Namespace).Delete(context.Background(), handle, metav1.DeleteOptions{})
-	})
+	cleanupPod(t, clientset, cfg.Namespace, handle)
 }

@@ -4,10 +4,10 @@ import (
 	"context"
 	"fmt"
 
+	"code.cloudfoundry.org/lager/v3"
+	"code.cloudfoundry.org/lager/v3/lagerctx"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/runtime"
-	k8serrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 )
 
@@ -55,8 +55,13 @@ func (w *Worker) FindOrCreateContainer(
 	containerSpec runtime.ContainerSpec,
 	delegate runtime.BuildStepDelegate,
 ) (runtime.Container, []runtime.VolumeMount, error) {
+	logger := lagerctx.FromContext(ctx).Session("find-or-create-container", lager.Data{
+		"worker": w.Name(),
+	})
+
 	creatingContainer, createdContainer, err := w.dbWorker.FindContainer(owner)
 	if err != nil {
+		logger.Error("failed-to-find-container-in-db", err)
 		return nil, nil, fmt.Errorf("find container in db: %w", err)
 	}
 
@@ -69,6 +74,7 @@ func (w *Worker) FindOrCreateContainer(
 	} else {
 		creatingContainer, err = w.dbWorker.CreateContainer(owner, metadata)
 		if err != nil {
+			logger.Error("failed-to-create-container-in-db", err)
 			return nil, nil, fmt.Errorf("create container in db: %w", err)
 		}
 		containerHandle = creatingContainer.Handle()
@@ -87,6 +93,8 @@ func (w *Worker) FindOrCreateContainer(
 	// known until then.
 	createdContainer, err = creatingContainer.Created()
 	if err != nil {
+		logger.Error("failed-to-mark-container-as-created", err)
+		markContainerAsFailed(logger, creatingContainer)
 		return nil, nil, fmt.Errorf("mark container as created: %w", err)
 	}
 
@@ -147,19 +155,17 @@ func (w *Worker) CreateVolumeForArtifact(ctx context.Context, teamID int) (runti
 }
 
 func (w *Worker) LookupContainer(ctx context.Context, handle string) (runtime.Container, bool, error) {
-	// Verify the pod exists in K8s.
-	_, err := w.clientset.CoreV1().Pods(w.config.Namespace).Get(ctx, handle, metav1.GetOptions{})
-	if err != nil {
-		if k8serrors.IsNotFound(err) {
-			return nil, false, nil
-		}
-		return nil, false, fmt.Errorf("lookup pod %q: %w", handle, err)
-	}
+	logger := lagerctx.FromContext(ctx).Session("lookup-container", lager.Data{
+		"handle": handle,
+		"worker": w.Name(),
+	})
 
-	// Look up the DB container (required for hijack handler to call
-	// UpdateLastHijack and for GC to track the container).
+	// Look up the DB container. K8s pods are created lazily in Run(),
+	// so we don't require the pod to exist at lookup time. This allows
+	// fly intercept to find containers before or after their pods run.
 	_, dbContainer, err := w.dbWorker.FindContainer(db.NewFixedHandleContainerOwner(handle))
 	if err != nil {
+		logger.Error("failed-to-lookup-container-in-db", err)
 		return nil, false, fmt.Errorf("lookup db container %q: %w", handle, err)
 	}
 	if dbContainer == nil {
@@ -173,8 +179,11 @@ func (w *Worker) LookupVolume(ctx context.Context, handle string) (runtime.Volum
 	return nil, false, nil
 }
 
-func markContainerAsFailed(container db.CreatingContainer) {
+func markContainerAsFailed(logger lager.Logger, container db.CreatingContainer) {
 	if container != nil {
-		_, _ = container.Failed()
+		_, err := container.Failed()
+		if err != nil {
+			logger.Error("failed-to-mark-container-as-failed", err)
+		}
 	}
 }

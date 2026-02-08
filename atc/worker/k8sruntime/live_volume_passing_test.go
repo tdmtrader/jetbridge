@@ -12,7 +12,6 @@ import (
 
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/runtime"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // TestLiveVolumePassingGetToTask tests the full volume passing flow from a
@@ -42,9 +41,7 @@ func TestLiveVolumePassingGetToTask(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FindOrCreateContainer (get): %v", err)
 	}
-	t.Cleanup(func() {
-		_ = clientset.CoreV1().Pods(cfg.Namespace).Delete(context.Background(), getHandle, metav1.DeleteOptions{})
-	})
+	cleanupPod(t, clientset, cfg.Namespace, getHandle)
 
 	// Run the get step: write a file to the output volume.
 	getProcess, err := getContainer.Run(ctx, runtime.ProcessSpec{
@@ -102,9 +99,7 @@ func TestLiveVolumePassingGetToTask(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FindOrCreateContainer (task): %v", err)
 	}
-	t.Cleanup(func() {
-		_ = clientset.CoreV1().Pods(cfg.Namespace).Delete(context.Background(), taskHandle, metav1.DeleteOptions{})
-	})
+	cleanupPod(t, clientset, cfg.Namespace, taskHandle)
 
 	// Run the task step: read the file from the input volume.
 	taskProcess, err := taskContainer.Run(ctx, runtime.ProcessSpec{
@@ -159,9 +154,7 @@ func TestLiveVolumePassingTaskChain(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FindOrCreateContainer (task-1): %v", err)
 	}
-	t.Cleanup(func() {
-		_ = clientset.CoreV1().Pods(cfg.Namespace).Delete(context.Background(), t1Handle, metav1.DeleteOptions{})
-	})
+	cleanupPod(t, clientset, cfg.Namespace, t1Handle)
 
 	// Task 1 writes a result file.
 	t1Process, err := t1Container.Run(ctx, runtime.ProcessSpec{
@@ -219,9 +212,7 @@ func TestLiveVolumePassingTaskChain(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FindOrCreateContainer (task-2): %v", err)
 	}
-	t.Cleanup(func() {
-		_ = clientset.CoreV1().Pods(cfg.Namespace).Delete(context.Background(), t2Handle, metav1.DeleteOptions{})
-	})
+	cleanupPod(t, clientset, cfg.Namespace, t2Handle)
 
 	// Task 2 reads both files from the input volume.
 	t2Process, err := t2Container.Run(ctx, runtime.ProcessSpec{
@@ -286,9 +277,7 @@ func TestLiveVolumeDataIntegrity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FindOrCreateContainer (step-1): %v", err)
 	}
-	t.Cleanup(func() {
-		_ = clientset.CoreV1().Pods(cfg.Namespace).Delete(context.Background(), s1Handle, metav1.DeleteOptions{})
-	})
+	cleanupPod(t, clientset, cfg.Namespace, s1Handle)
 
 	// Write the test content to a file in the output volume.
 	// Using printf to preserve exact content without shell interpretation.
@@ -348,9 +337,7 @@ func TestLiveVolumeDataIntegrity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FindOrCreateContainer (step-2): %v", err)
 	}
-	t.Cleanup(func() {
-		_ = clientset.CoreV1().Pods(cfg.Namespace).Delete(context.Background(), s2Handle, metav1.DeleteOptions{})
-	})
+	cleanupPod(t, clientset, cfg.Namespace, s2Handle)
 
 	// Read the payload back.
 	s2Process, err := s2Container.Run(ctx, runtime.ProcessSpec{

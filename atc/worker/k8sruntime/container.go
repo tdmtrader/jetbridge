@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 
+	"code.cloudfoundry.org/lager/v3"
+	"code.cloudfoundry.org/lager/v3/lagerctx"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/runtime"
 	corev1 "k8s.io/api/core/v1"
@@ -63,6 +65,10 @@ func newContainer(
 }
 
 func (c *Container) Run(ctx context.Context, spec runtime.ProcessSpec, io runtime.ProcessIO) (runtime.Process, error) {
+	logger := lagerctx.FromContext(ctx).Session("container-run", lager.Data{
+		"handle": c.handle,
+	})
+
 	processID := c.handle
 	if spec.ID != "" {
 		processID = spec.ID
@@ -78,6 +84,7 @@ func (c *Container) Run(ctx context.Context, spec runtime.ProcessSpec, io runtim
 			// Pod doesn't exist — create a new pause pod.
 			pod, createErr := c.createPausePod(ctx, spec)
 			if createErr != nil {
+				logger.Error("failed-to-create-pause-pod", createErr)
 				return nil, fmt.Errorf("create pause pod: %w", createErr)
 			}
 			podName = pod.Name
@@ -90,6 +97,7 @@ func (c *Container) Run(ctx context.Context, spec runtime.ProcessSpec, io runtim
 	// (e.g. tests that don't set up SPDY). Bakes command into Pod spec.
 	pod, err := c.createPod(ctx, spec)
 	if err != nil {
+		logger.Error("failed-to-create-pod", err)
 		return nil, fmt.Errorf("create pod: %w", err)
 	}
 	c.bindVolumesToPod(pod.Name)
@@ -117,6 +125,11 @@ func (c *Container) bindVolumesToPod(podName string) {
 }
 
 func (c *Container) Attach(ctx context.Context, processID string, io runtime.ProcessIO) (runtime.Process, error) {
+	logger := lagerctx.FromContext(ctx).Session("container-attach", lager.Data{
+		"handle":     c.handle,
+		"process-id": processID,
+	})
+
 	// Check if the process has already exited (stored in properties).
 	if statusStr, ok := c.properties[exitStatusPropertyName]; ok {
 		status, err := strconv.Atoi(statusStr)
@@ -130,6 +143,7 @@ func (c *Container) Attach(ctx context.Context, processID string, io runtime.Pro
 	// the Pod.
 	pod, err := c.clientset.CoreV1().Pods(c.config.Namespace).Get(ctx, c.handle, metav1.GetOptions{})
 	if err != nil {
+		logger.Error("failed-to-get-pod", err)
 		return nil, fmt.Errorf("attach: pod %q not found: %w", c.handle, err)
 	}
 
@@ -165,59 +179,26 @@ func (c *Container) DBContainer() db.CreatedContainer {
 }
 
 func (c *Container) createPod(ctx context.Context, processSpec runtime.ProcessSpec) (*corev1.Pod, error) {
-	image := resolveImage(c.containerSpec.ImageSpec, c.config.ResourceTypeImages)
-
-	dir := processSpec.Dir
-	if dir == "" {
-		dir = c.containerSpec.Dir
-	}
-
-	env := envVars(c.containerSpec.Env)
-	env = append(env, envVars(processSpec.Env)...)
-
-	volumes, volumeMounts := c.buildVolumeMounts()
-	resources := buildResourceRequirements(c.containerSpec.Limits)
-	privileged := c.containerSpec.ImageSpec.Privileged
-
-	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      c.handle,
-			Namespace: c.config.Namespace,
-			Labels: map[string]string{
-				"concourse.ci/worker": c.workerName,
-				"concourse.ci/type":   string(c.containerSpec.Type),
-			},
-		},
-		Spec: corev1.PodSpec{
-			RestartPolicy:      corev1.RestartPolicyNever,
-			SecurityContext:    buildPodSecurityContext(privileged),
-			ImagePullSecrets:   buildImagePullSecrets(c.config.ImagePullSecrets),
-			ServiceAccountName: c.config.ServiceAccount,
-			Volumes:            volumes,
-			Containers: []corev1.Container{
-				{
-					Name:            mainContainerName,
-					Image:           image,
-					Command:         []string{processSpec.Path},
-					Args:            processSpec.Args,
-					WorkingDir:      dir,
-					Env:             env,
-					VolumeMounts:    volumeMounts,
-					Resources:       resources,
-					SecurityContext: buildContainerSecurityContext(privileged),
-					ImagePullPolicy: corev1.PullIfNotPresent,
-				},
-			},
-		},
-	}
-
+	pod := c.buildPod(processSpec, []string{processSpec.Path}, processSpec.Args)
 	return c.clientset.CoreV1().Pods(c.config.Namespace).Create(ctx, pod, metav1.CreateOptions{})
 }
+
+// pauseCommand is the shell command used by pause pods. It sleeps
+// indefinitely and exits cleanly on SIGTERM so the pod can be stopped.
+const pauseCommand = "trap 'exit 0' TERM; sleep 86400 & wait"
 
 // createPausePod creates a Pod that runs indefinitely (pause mode) so that
 // Process.Wait can exec the real command via the PodExecutor with full
 // stdin/stdout/stderr support.
 func (c *Container) createPausePod(ctx context.Context, processSpec runtime.ProcessSpec) (*corev1.Pod, error) {
+	pod := c.buildPod(processSpec, []string{"sh", "-c", pauseCommand}, nil)
+	return c.clientset.CoreV1().Pods(c.config.Namespace).Create(ctx, pod, metav1.CreateOptions{})
+}
+
+// buildPod constructs a Pod spec with the given command and args. All other
+// fields (image, env, volumes, security, etc.) are derived from the
+// Container's spec and config.
+func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, args []string) *corev1.Pod {
 	image := resolveImage(c.containerSpec.ImageSpec, c.config.ResourceTypeImages)
 
 	dir := processSpec.Dir
@@ -232,13 +213,13 @@ func (c *Container) createPausePod(ctx context.Context, processSpec runtime.Proc
 	resources := buildResourceRequirements(c.containerSpec.Limits)
 	privileged := c.containerSpec.ImageSpec.Privileged
 
-	pod := &corev1.Pod{
+	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      c.handle,
 			Namespace: c.config.Namespace,
 			Labels: map[string]string{
-				"concourse.ci/worker": c.workerName,
-				"concourse.ci/type":   string(c.containerSpec.Type),
+				workerLabelKey: c.workerName,
+				typeLabelKey:   string(c.containerSpec.Type),
 			},
 		},
 		Spec: corev1.PodSpec{
@@ -251,7 +232,8 @@ func (c *Container) createPausePod(ctx context.Context, processSpec runtime.Proc
 				{
 					Name:            mainContainerName,
 					Image:           image,
-					Command:         []string{"sh", "-c", "trap 'exit 0' TERM; sleep 86400 & wait"},
+					Command:         command,
+					Args:            args,
 					WorkingDir:      dir,
 					Env:             env,
 					VolumeMounts:    volumeMounts,
@@ -262,8 +244,6 @@ func (c *Container) createPausePod(ctx context.Context, processSpec runtime.Proc
 			},
 		},
 	}
-
-	return c.clientset.CoreV1().Pods(c.config.Namespace).Create(ctx, pod, metav1.CreateOptions{})
 }
 
 // resolveImage extracts a Kubernetes-compatible image reference from the

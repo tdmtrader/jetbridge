@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 
+	"code.cloudfoundry.org/lager/v3"
+	"code.cloudfoundry.org/lager/v3/lagerctx"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
@@ -65,8 +67,14 @@ func (e *SPDYExecutor) ExecInPod(
 			TTY:       tty,
 		}, scheme.ParameterCodec)
 
+	logger := lagerctx.FromContext(ctx).Session("exec-in-pod", lager.Data{
+		"pod":       podName,
+		"container": containerName,
+	})
+
 	exec, err := remotecommand.NewSPDYExecutor(e.restConfig, http.MethodPost, req.URL())
 	if err != nil {
+		logger.Error("failed-to-create-spdy-executor", err)
 		return fmt.Errorf("create spdy executor: %w", err)
 	}
 
@@ -80,6 +88,7 @@ func (e *SPDYExecutor) ExecInPod(
 		if exitErr, ok := err.(utilexec.ExitError); ok {
 			return &ExecExitError{ExitCode: exitErr.ExitStatus()}
 		}
+		logger.Error("failed-to-exec-stream", err)
 		return fmt.Errorf("exec stream: %w", err)
 	}
 

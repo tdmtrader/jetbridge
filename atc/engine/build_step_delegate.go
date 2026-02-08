@@ -292,10 +292,38 @@ func (delegate *buildStepDelegate) FetchImage(
 		return runtime.ImageSpec{}, nil, fmt.Errorf("fetched artifact not found")
 	}
 
+	imageURL := imageURLFromSource(getPlan.Get.Type, getPlan.Get.Source, result.ResourceCache.Version())
+
 	return runtime.ImageSpec{
 		ImageArtifact: artifact,
+		ImageURL:      imageURL,
 		Privileged:    privileged,
 	}, result.ResourceCache, nil
+}
+
+// imageURLFromSource constructs a Docker image URL from a resource type's
+// source config and fetched version. This is used by the K8s runtime which
+// needs an image reference string rather than an artifact volume. The Garden
+// runtime ignores ImageURL when ImageArtifact is set, so setting both is safe.
+func imageURLFromSource(resourceType string, source atc.Source, version atc.Version) string {
+	if resourceType != "registry-image" {
+		return ""
+	}
+
+	repo, ok := source["repository"].(string)
+	if !ok || repo == "" {
+		return ""
+	}
+
+	ref := repo
+
+	if digest, ok := version["digest"]; ok && digest != "" {
+		ref += "@" + digest
+	} else if tag, ok := source["tag"].(string); ok && tag != "" {
+		ref += ":" + tag
+	}
+
+	return "docker:///" + ref
 }
 
 func (delegate *buildStepDelegate) ConstructAcrossSubsteps(templateBytes []byte, acrossVars []atc.AcrossVar, valueCombinations [][]any) ([]atc.VarScopedPlan, error) {
