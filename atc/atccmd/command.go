@@ -51,6 +51,7 @@ import (
 	"github.com/concourse/concourse/atc/syslog"
 	"github.com/concourse/concourse/atc/util"
 	"github.com/concourse/concourse/atc/worker"
+	"github.com/concourse/concourse/atc/worker/k8sruntime"
 	"github.com/concourse/concourse/atc/wrappa"
 	"github.com/concourse/concourse/skymarshal/dexserver"
 	"github.com/concourse/concourse/skymarshal/legacyserver"
@@ -173,6 +174,11 @@ type RunCommand struct {
 	StreamingSizeLimitationInMB       float64       `long:"streaming-size-limitation" default:"0.0" description:"Internal volume streaming size limitation in MB. In case of small limitation needed, float can be used like 0.01."`
 
 	GardenRequestTimeout time.Duration `long:"garden-request-timeout" default:"5m" description:"How long to wait for requests to Garden to complete. 0 means no timeout."`
+
+	Kubernetes struct {
+		Namespace  string `long:"kubernetes-namespace"  description:"Kubernetes namespace in which to run task Pods. When set, enables the K8s execution backend."`
+		Kubeconfig string `long:"kubernetes-kubeconfig" description:"Path to kubeconfig file for K8s backend. If empty, in-cluster configuration is used."`
+	} `group:"Kubernetes Runtime"`
 
 	CLIArtifactsDir flag.Dir `long:"cli-artifacts-dir" description:"Directory containing downloadable CLI binaries."`
 	WebPublicDir    flag.Dir `long:"web-public-dir" description:"Web public/ directory to serve live for local development."`
@@ -1259,6 +1265,21 @@ func (cmd *RunCommand) backendComponents(
 		f.SetSigningKeyFactory(dbSigningKeyFactory)
 	})
 
+	if cmd.Kubernetes.Namespace != "" {
+		k8sCfg := k8sruntime.NewConfig(cmd.Kubernetes.Namespace, cmd.Kubernetes.Kubeconfig)
+		k8sClientset, err := k8sruntime.NewClientset(k8sCfg)
+		if err != nil {
+			return nil, fmt.Errorf("creating k8s clientset for registrar: %w", err)
+		}
+		components = append(components, RunnableComponent{
+			Component: atc.Component{
+				Name:     atc.ComponentK8sWorkerRegistrar,
+				Interval: 15 * time.Second,
+			},
+			Runnable: k8sruntime.NewRegistrar(k8sClientset, k8sCfg, dbWorkerFactory),
+		})
+	}
+
 	if syslogDrainConfigured {
 		components = append(components, RunnableComponent{
 			Component: atc.Component{
@@ -1327,14 +1348,31 @@ func (cmd *RunCommand) constructPool(dbConn db.DbConn, lockFactory lock.LockFact
 		lockFactory,
 	)
 
+	factory := worker.DefaultFactory{
+		DB:                                db,
+		GardenRequestTimeout:              cmd.GardenRequestTimeout,
+		BaggageclaimResponseHeaderTimeout: cmd.BaggageclaimResponseHeaderTimeout,
+		HTTPRetryTimeout:                  5 * time.Minute,
+		Streamer:                          cmd.streamer(dbResourceCacheFactory),
+	}
+
+	if cmd.Kubernetes.Namespace != "" {
+		k8sCfg := k8sruntime.NewConfig(cmd.Kubernetes.Namespace, cmd.Kubernetes.Kubeconfig)
+		k8sClientset, err := k8sruntime.NewClientset(k8sCfg)
+		if err != nil {
+			return worker.Pool{}, fmt.Errorf("creating k8s clientset: %w", err)
+		}
+		k8sRestConfig, err := k8sruntime.RestConfig(k8sCfg)
+		if err != nil {
+			return worker.Pool{}, fmt.Errorf("creating k8s rest config: %w", err)
+		}
+		factory.K8sClientset = k8sClientset
+		factory.K8sConfig = &k8sCfg
+		factory.K8sExecutor = k8sruntime.NewSPDYExecutor(k8sClientset, k8sRestConfig)
+	}
+
 	return worker.NewPool(
-		worker.DefaultFactory{
-			DB:                                db,
-			GardenRequestTimeout:              cmd.GardenRequestTimeout,
-			BaggageclaimResponseHeaderTimeout: cmd.BaggageclaimResponseHeaderTimeout,
-			HTTPRetryTimeout:                  5 * time.Minute,
-			Streamer:                          cmd.streamer(dbResourceCacheFactory),
-		},
+		factory,
 		db,
 		workerVersion,
 	), nil
