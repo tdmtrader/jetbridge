@@ -39,19 +39,13 @@ func setupLiveResilienceWorker(t *testing.T, handle string, podStartupTimeout ti
 	fakeDBWorker := new(dbfakes.FakeWorker)
 	fakeDBWorker.NameReturns("live-k8s-worker")
 
-	fakeCreatingContainer := new(dbfakes.FakeCreatingContainer)
-	fakeCreatingContainer.HandleReturns(handle)
-	fakeCreatedContainer := new(dbfakes.FakeCreatedContainer)
-	fakeCreatedContainer.HandleReturns(handle)
-	fakeCreatingContainer.CreatedReturns(fakeCreatedContainer, nil)
-	fakeDBWorker.FindContainerReturns(nil, nil, nil)
-	fakeDBWorker.CreateContainerReturns(fakeCreatingContainer, nil)
+	setupFakeDBContainer(fakeDBWorker, handle)
 
 	worker := k8sruntime.NewWorker(fakeDBWorker, clientset, *cfg)
 	executor := k8sruntime.NewSPDYExecutor(clientset, restConfig)
 	worker.SetExecutor(executor)
 
-	return worker, &liveNoopDelegate{}, clientset, cfg
+	return worker, &noopDelegate{}, clientset, cfg
 }
 
 // TestLiveInvalidImageFailsFast verifies that a pod with a nonexistent image

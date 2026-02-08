@@ -71,10 +71,11 @@ jobs:
           echo "=== All unit tests passed ==="
 
 - name: k8s-runtime-tests
+  serial: true
   plan:
   - get: trigger
     trigger: true
-    passed: [build-and-vet]
+    passed: [unit-tests]
   - task: k8s-runtime-integration-tests
     config:
       platform: linux
@@ -90,10 +91,11 @@ jobs:
           echo "=== All k8sruntime tests passed ==="
 
 - name: k8s-live-tests
+  serial: true
   plan:
   - get: trigger
     trigger: true
-    passed: [unit-tests, k8s-runtime-tests]
+    passed: [k8s-runtime-tests]
   - task: k8s-live-integration-tests
     config:
       platform: linux
@@ -103,6 +105,15 @@ jobs:
         args:
         - -exc
         - |
+          echo "=== Cleaning up stale test pods from previous runs ==="
+          # Delete all live-* test pods (leaked from prior test runs)
+          kubectl get pods -n concourse --no-headers -o custom-columns=":metadata.name" 2>/dev/null \
+            | { grep '^live-' || true; } \
+            | xargs -r kubectl delete pods -n concourse --grace-period=0 --force 2>/dev/null || true
+          echo "Worker pods after cleanup:"
+          kubectl get pods -n concourse -l concourse.ci/worker --no-headers 2>/dev/null | wc -l || true
+          echo ""
+
           cd /src
           echo "=== Running k8sruntime live integration tests ==="
           echo "These tests create real K8s pods against the live cluster."

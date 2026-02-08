@@ -41,13 +41,7 @@ var _ = Describe("Resource Step Execution", func() {
 	})
 
 	setupContainer := func(handle string, containerType db.ContainerType, spec runtime.ContainerSpec) runtime.Container {
-		fakeCreatingContainer := new(dbfakes.FakeCreatingContainer)
-		fakeCreatingContainer.HandleReturns(handle)
-		fakeCreatedContainer := new(dbfakes.FakeCreatedContainer)
-		fakeCreatedContainer.HandleReturns(handle)
-		fakeCreatingContainer.CreatedReturns(fakeCreatedContainer, nil)
-		fakeDBWorker.FindContainerReturns(nil, nil, nil)
-		fakeDBWorker.CreateContainerReturns(fakeCreatingContainer, nil)
+		setupFakeDBContainer(fakeDBWorker, handle)
 
 		container, _, err := worker.FindOrCreateContainer(
 			ctx,

@@ -178,12 +178,24 @@ func (strategy volumeLocalityStrategy) Order(logger lager.Logger, pool Pool, wor
 			"handle": volume.Handle(),
 			"path":   destinationPath,
 		})
-		srcWorker := volume.DBVolume().WorkerName()
+
+		dbVol := volume.DBVolume()
+		if dbVol == nil {
+			// K8s volumes may not have a DB volume backing them.
+			// Use Source() for worker name and skip resource cache lookup.
+			srcWorker := volume.Source()
+			if _, ok := counts[srcWorker]; ok {
+				counts[srcWorker]++
+			}
+			return nil
+		}
+
+		srcWorker := dbVol.WorkerName()
 		if _, ok := counts[srcWorker]; ok {
 			counts[srcWorker]++
 		}
 
-		resourceCacheID := volume.DBVolume().GetResourceCacheID()
+		resourceCacheID := dbVol.GetResourceCacheID()
 		if resourceCacheID == 0 {
 			logger.Debug("resource-not-cached")
 			return nil

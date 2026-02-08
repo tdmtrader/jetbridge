@@ -1282,7 +1282,7 @@ func (cmd *RunCommand) backendComponents(
 				Name:     atc.ComponentK8sWorkerRegistrar,
 				Interval: 15 * time.Second,
 			},
-			Runnable: k8sruntime.NewRegistrar(k8sClientset, k8sCfg, dbWorkerFactory),
+			Runnable: k8sruntime.NewRegistrar(logger.Session(atc.ComponentK8sWorkerRegistrar), k8sClientset, k8sCfg, dbWorkerFactory),
 		})
 
 		k8sContainerRepo := db.NewContainerRepository(dbConn)
@@ -1293,7 +1293,7 @@ func (cmd *RunCommand) backendComponents(
 				Name:     atc.ComponentK8sWorkerReaper,
 				Interval: 30 * time.Second,
 			},
-			Runnable: k8sruntime.NewReaper(k8sClientset, k8sCfg, k8sContainerRepo, k8sDestroyer),
+			Runnable: k8sruntime.NewReaper(logger.Session(atc.ComponentK8sWorkerReaper), k8sClientset, k8sCfg, k8sContainerRepo, k8sDestroyer),
 		})
 	}
 

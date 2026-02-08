@@ -43,15 +43,7 @@ var _ = Describe("Container", func() {
 		var container runtime.Container
 
 		BeforeEach(func() {
-			fakeCreatingContainer := new(dbfakes.FakeCreatingContainer)
-			fakeCreatingContainer.HandleReturns("run-test-handle")
-
-			fakeCreatedContainer := new(dbfakes.FakeCreatedContainer)
-			fakeCreatedContainer.HandleReturns("run-test-handle")
-			fakeCreatingContainer.CreatedReturns(fakeCreatedContainer, nil)
-
-			fakeDBWorker.FindContainerReturns(nil, nil, nil)
-			fakeDBWorker.CreateContainerReturns(fakeCreatingContainer, nil)
+			setupFakeDBContainer(fakeDBWorker, "run-test-handle")
 
 			var err error
 			container, _, err = worker.FindOrCreateContainer(
@@ -119,13 +111,7 @@ var _ = Describe("Container", func() {
 		var container runtime.Container
 
 		BeforeEach(func() {
-			fakeCreatingContainer := new(dbfakes.FakeCreatingContainer)
-			fakeCreatingContainer.HandleReturns("input-vol-handle")
-			fakeCreatedContainer := new(dbfakes.FakeCreatedContainer)
-			fakeCreatedContainer.HandleReturns("input-vol-handle")
-			fakeCreatingContainer.CreatedReturns(fakeCreatedContainer, nil)
-			fakeDBWorker.FindContainerReturns(nil, nil, nil)
-			fakeDBWorker.CreateContainerReturns(fakeCreatingContainer, nil)
+			setupFakeDBContainer(fakeDBWorker, "input-vol-handle")
 
 			var err error
 			container, _, err = worker.FindOrCreateContainer(
@@ -188,13 +174,7 @@ var _ = Describe("Container", func() {
 		var container runtime.Container
 
 		BeforeEach(func() {
-			fakeCreatingContainer := new(dbfakes.FakeCreatingContainer)
-			fakeCreatingContainer.HandleReturns("output-vol-handle")
-			fakeCreatedContainer := new(dbfakes.FakeCreatedContainer)
-			fakeCreatedContainer.HandleReturns("output-vol-handle")
-			fakeCreatingContainer.CreatedReturns(fakeCreatedContainer, nil)
-			fakeDBWorker.FindContainerReturns(nil, nil, nil)
-			fakeDBWorker.CreateContainerReturns(fakeCreatingContainer, nil)
+			setupFakeDBContainer(fakeDBWorker, "output-vol-handle")
 
 			var err error
 			container, _, err = worker.FindOrCreateContainer(
@@ -248,13 +228,7 @@ var _ = Describe("Container", func() {
 		var container runtime.Container
 
 		BeforeEach(func() {
-			fakeCreatingContainer := new(dbfakes.FakeCreatingContainer)
-			fakeCreatingContainer.HandleReturns("cache-vol-handle")
-			fakeCreatedContainer := new(dbfakes.FakeCreatedContainer)
-			fakeCreatedContainer.HandleReturns("cache-vol-handle")
-			fakeCreatingContainer.CreatedReturns(fakeCreatedContainer, nil)
-			fakeDBWorker.FindContainerReturns(nil, nil, nil)
-			fakeDBWorker.CreateContainerReturns(fakeCreatingContainer, nil)
+			setupFakeDBContainer(fakeDBWorker, "cache-vol-handle")
 
 			var err error
 			container, _, err = worker.FindOrCreateContainer(
@@ -299,13 +273,7 @@ var _ = Describe("Container", func() {
 
 		Context("when CPU and Memory limits are specified", func() {
 			BeforeEach(func() {
-				fakeCreatingContainer := new(dbfakes.FakeCreatingContainer)
-				fakeCreatingContainer.HandleReturns("limits-handle")
-				fakeCreatedContainer := new(dbfakes.FakeCreatedContainer)
-				fakeCreatedContainer.HandleReturns("limits-handle")
-				fakeCreatingContainer.CreatedReturns(fakeCreatedContainer, nil)
-				fakeDBWorker.FindContainerReturns(nil, nil, nil)
-				fakeDBWorker.CreateContainerReturns(fakeCreatingContainer, nil)
+				setupFakeDBContainer(fakeDBWorker, "limits-handle")
 
 				cpu := uint64(1024)
 				memory := uint64(1073741824)
@@ -360,13 +328,7 @@ var _ = Describe("Container", func() {
 
 		Context("when no limits are specified", func() {
 			BeforeEach(func() {
-				fakeCreatingContainer := new(dbfakes.FakeCreatingContainer)
-				fakeCreatingContainer.HandleReturns("no-limits-handle")
-				fakeCreatedContainer := new(dbfakes.FakeCreatedContainer)
-				fakeCreatedContainer.HandleReturns("no-limits-handle")
-				fakeCreatingContainer.CreatedReturns(fakeCreatedContainer, nil)
-				fakeDBWorker.FindContainerReturns(nil, nil, nil)
-				fakeDBWorker.CreateContainerReturns(fakeCreatingContainer, nil)
+				setupFakeDBContainer(fakeDBWorker, "no-limits-handle")
 
 				var err error
 				container, _, err = worker.FindOrCreateContainer(
@@ -406,13 +368,7 @@ var _ = Describe("Container", func() {
 
 		Context("when the container is not privileged", func() {
 			BeforeEach(func() {
-				fakeCreatingContainer := new(dbfakes.FakeCreatingContainer)
-				fakeCreatingContainer.HandleReturns("secure-handle")
-				fakeCreatedContainer := new(dbfakes.FakeCreatedContainer)
-				fakeCreatedContainer.HandleReturns("secure-handle")
-				fakeCreatingContainer.CreatedReturns(fakeCreatedContainer, nil)
-				fakeDBWorker.FindContainerReturns(nil, nil, nil)
-				fakeDBWorker.CreateContainerReturns(fakeCreatingContainer, nil)
+				setupFakeDBContainer(fakeDBWorker, "secure-handle")
 
 				var err error
 				container, _, err = worker.FindOrCreateContainer(
@@ -459,13 +415,7 @@ var _ = Describe("Container", func() {
 
 		Context("when the container is privileged", func() {
 			BeforeEach(func() {
-				fakeCreatingContainer := new(dbfakes.FakeCreatingContainer)
-				fakeCreatingContainer.HandleReturns("priv-handle")
-				fakeCreatedContainer := new(dbfakes.FakeCreatedContainer)
-				fakeCreatedContainer.HandleReturns("priv-handle")
-				fakeCreatingContainer.CreatedReturns(fakeCreatedContainer, nil)
-				fakeDBWorker.FindContainerReturns(nil, nil, nil)
-				fakeDBWorker.CreateContainerReturns(fakeCreatingContainer, nil)
+				setupFakeDBContainer(fakeDBWorker, "priv-handle")
 
 				var err error
 				container, _, err = worker.FindOrCreateContainer(
@@ -516,13 +466,7 @@ var _ = Describe("Container", func() {
 
 		Context("when image pull secrets and service account are configured", func() {
 			BeforeEach(func() {
-				fakeCreatingContainer := new(dbfakes.FakeCreatingContainer)
-				fakeCreatingContainer.HandleReturns("secrets-handle")
-				fakeCreatedContainer := new(dbfakes.FakeCreatedContainer)
-				fakeCreatedContainer.HandleReturns("secrets-handle")
-				fakeCreatingContainer.CreatedReturns(fakeCreatedContainer, nil)
-				fakeDBWorker.FindContainerReturns(nil, nil, nil)
-				fakeDBWorker.CreateContainerReturns(fakeCreatingContainer, nil)
+				setupFakeDBContainer(fakeDBWorker, "secrets-handle")
 
 				cfgWithSecrets := k8sruntime.NewConfig("test-namespace", "")
 				cfgWithSecrets.ImagePullSecrets = []string{"registry-creds", "gcr-key"}
@@ -572,13 +516,7 @@ var _ = Describe("Container", func() {
 
 		Context("when no image pull secrets or service account are configured", func() {
 			BeforeEach(func() {
-				fakeCreatingContainer := new(dbfakes.FakeCreatingContainer)
-				fakeCreatingContainer.HandleReturns("no-secrets-handle")
-				fakeCreatedContainer := new(dbfakes.FakeCreatedContainer)
-				fakeCreatedContainer.HandleReturns("no-secrets-handle")
-				fakeCreatingContainer.CreatedReturns(fakeCreatedContainer, nil)
-				fakeDBWorker.FindContainerReturns(nil, nil, nil)
-				fakeDBWorker.CreateContainerReturns(fakeCreatingContainer, nil)
+				setupFakeDBContainer(fakeDBWorker, "no-secrets-handle")
 
 				var err error
 				container, _, err = worker.FindOrCreateContainer(
@@ -625,13 +563,7 @@ var _ = Describe("Container", func() {
 			execWorker = k8sruntime.NewWorker(fakeDBWorker, fakeClientset, cfg)
 			execWorker.SetExecutor(execExecutor)
 
-			fakeCreatingContainer := new(dbfakes.FakeCreatingContainer)
-			fakeCreatingContainer.HandleReturns("exec-task-handle")
-			fakeCreatedContainer := new(dbfakes.FakeCreatedContainer)
-			fakeCreatedContainer.HandleReturns("exec-task-handle")
-			fakeCreatingContainer.CreatedReturns(fakeCreatedContainer, nil)
-			fakeDBWorker.FindContainerReturns(nil, nil, nil)
-			fakeDBWorker.CreateContainerReturns(fakeCreatingContainer, nil)
+			setupFakeDBContainer(fakeDBWorker, "exec-task-handle")
 
 			var err error
 			execContainer, _, err = execWorker.FindOrCreateContainer(
@@ -746,13 +678,7 @@ var _ = Describe("Container", func() {
 			var volumeMounts []runtime.VolumeMount
 
 			BeforeEach(func() {
-				fakeCreatingContainer := new(dbfakes.FakeCreatingContainer)
-				fakeCreatingContainer.HandleReturns("vm-input-handle")
-				fakeCreatedContainer := new(dbfakes.FakeCreatedContainer)
-				fakeCreatedContainer.HandleReturns("vm-input-handle")
-				fakeCreatingContainer.CreatedReturns(fakeCreatedContainer, nil)
-				fakeDBWorker.FindContainerReturns(nil, nil, nil)
-				fakeDBWorker.CreateContainerReturns(fakeCreatingContainer, nil)
+				setupFakeDBContainer(fakeDBWorker, "vm-input-handle")
 
 				var err error
 				_, volumeMounts, err = execWorker.FindOrCreateContainer(
@@ -804,13 +730,7 @@ var _ = Describe("Container", func() {
 			var volumeMounts []runtime.VolumeMount
 
 			BeforeEach(func() {
-				fakeCreatingContainer := new(dbfakes.FakeCreatingContainer)
-				fakeCreatingContainer.HandleReturns("vm-output-handle")
-				fakeCreatedContainer := new(dbfakes.FakeCreatedContainer)
-				fakeCreatedContainer.HandleReturns("vm-output-handle")
-				fakeCreatingContainer.CreatedReturns(fakeCreatedContainer, nil)
-				fakeDBWorker.FindContainerReturns(nil, nil, nil)
-				fakeDBWorker.CreateContainerReturns(fakeCreatingContainer, nil)
+				setupFakeDBContainer(fakeDBWorker, "vm-output-handle")
 
 				var err error
 				_, volumeMounts, err = execWorker.FindOrCreateContainer(
@@ -861,13 +781,7 @@ var _ = Describe("Container", func() {
 			var volumeMounts []runtime.VolumeMount
 
 			BeforeEach(func() {
-				fakeCreatingContainer := new(dbfakes.FakeCreatingContainer)
-				fakeCreatingContainer.HandleReturns("vm-cache-handle")
-				fakeCreatedContainer := new(dbfakes.FakeCreatedContainer)
-				fakeCreatedContainer.HandleReturns("vm-cache-handle")
-				fakeCreatingContainer.CreatedReturns(fakeCreatedContainer, nil)
-				fakeDBWorker.FindContainerReturns(nil, nil, nil)
-				fakeDBWorker.CreateContainerReturns(fakeCreatingContainer, nil)
+				setupFakeDBContainer(fakeDBWorker, "vm-cache-handle")
 
 				var err error
 				_, volumeMounts, err = execWorker.FindOrCreateContainer(
@@ -914,13 +828,7 @@ var _ = Describe("Container", func() {
 			)
 
 			BeforeEach(func() {
-				fakeCreatingContainer := new(dbfakes.FakeCreatingContainer)
-				fakeCreatingContainer.HandleReturns("deferred-pod-handle")
-				fakeCreatedContainer := new(dbfakes.FakeCreatedContainer)
-				fakeCreatedContainer.HandleReturns("deferred-pod-handle")
-				fakeCreatingContainer.CreatedReturns(fakeCreatedContainer, nil)
-				fakeDBWorker.FindContainerReturns(nil, nil, nil)
-				fakeDBWorker.CreateContainerReturns(fakeCreatingContainer, nil)
+				setupFakeDBContainer(fakeDBWorker, "deferred-pod-handle")
 
 				var err error
 				container, volumeMounts, err = execWorker.FindOrCreateContainer(
@@ -983,13 +891,7 @@ var _ = Describe("Container", func() {
 
 		Context("when inputs have artifacts", func() {
 			BeforeEach(func() {
-				fakeCreatingContainer := new(dbfakes.FakeCreatingContainer)
-				fakeCreatingContainer.HandleReturns("stream-input-handle")
-				fakeCreatedContainer := new(dbfakes.FakeCreatedContainer)
-				fakeCreatedContainer.HandleReturns("stream-input-handle")
-				fakeCreatingContainer.CreatedReturns(fakeCreatedContainer, nil)
-				fakeDBWorker.FindContainerReturns(nil, nil, nil)
-				fakeDBWorker.CreateContainerReturns(fakeCreatingContainer, nil)
+				setupFakeDBContainer(fakeDBWorker, "stream-input-handle")
 
 				artifact := &fakeArtifact{
 					handle:    "source-artifact",
@@ -1064,13 +966,7 @@ var _ = Describe("Container", func() {
 
 		Context("when an input has a nil artifact", func() {
 			BeforeEach(func() {
-				fakeCreatingContainer := new(dbfakes.FakeCreatingContainer)
-				fakeCreatingContainer.HandleReturns("nil-artifact-handle")
-				fakeCreatedContainer := new(dbfakes.FakeCreatedContainer)
-				fakeCreatedContainer.HandleReturns("nil-artifact-handle")
-				fakeCreatingContainer.CreatedReturns(fakeCreatedContainer, nil)
-				fakeDBWorker.FindContainerReturns(nil, nil, nil)
-				fakeDBWorker.CreateContainerReturns(fakeCreatingContainer, nil)
+				setupFakeDBContainer(fakeDBWorker, "nil-artifact-handle")
 
 				var err error
 				execContainer, _, err = execWorkerIS.FindOrCreateContainer(
@@ -1114,13 +1010,7 @@ var _ = Describe("Container", func() {
 
 		Context("when there are multiple inputs with artifacts", func() {
 			BeforeEach(func() {
-				fakeCreatingContainer := new(dbfakes.FakeCreatingContainer)
-				fakeCreatingContainer.HandleReturns("multi-input-handle")
-				fakeCreatedContainer := new(dbfakes.FakeCreatedContainer)
-				fakeCreatedContainer.HandleReturns("multi-input-handle")
-				fakeCreatingContainer.CreatedReturns(fakeCreatedContainer, nil)
-				fakeDBWorker.FindContainerReturns(nil, nil, nil)
-				fakeDBWorker.CreateContainerReturns(fakeCreatingContainer, nil)
+				setupFakeDBContainer(fakeDBWorker, "multi-input-handle")
 
 				var err error
 				execContainer, _, err = execWorkerIS.FindOrCreateContainer(
@@ -1192,13 +1082,7 @@ var _ = Describe("Container", func() {
 			execWorkerOE = k8sruntime.NewWorker(fakeDBWorker, fakeClientset, cfg)
 			execWorkerOE.SetExecutor(execExecutor)
 
-			fakeCreatingContainer := new(dbfakes.FakeCreatingContainer)
-			fakeCreatingContainer.HandleReturns("output-extract-handle")
-			fakeCreatedContainer := new(dbfakes.FakeCreatedContainer)
-			fakeCreatedContainer.HandleReturns("output-extract-handle")
-			fakeCreatingContainer.CreatedReturns(fakeCreatedContainer, nil)
-			fakeDBWorker.FindContainerReturns(nil, nil, nil)
-			fakeDBWorker.CreateContainerReturns(fakeCreatingContainer, nil)
+			setupFakeDBContainer(fakeDBWorker, "output-extract-handle")
 
 			var err error
 			execContainer, volumeMounts, err = execWorkerOE.FindOrCreateContainer(
@@ -1288,13 +1172,7 @@ var _ = Describe("Container", func() {
 		var container runtime.Container
 
 		BeforeEach(func() {
-			fakeCreatingContainer := new(dbfakes.FakeCreatingContainer)
-			fakeCreatingContainer.HandleReturns("props-handle")
-			fakeCreatedContainer := new(dbfakes.FakeCreatedContainer)
-			fakeCreatedContainer.HandleReturns("props-handle")
-			fakeCreatingContainer.CreatedReturns(fakeCreatedContainer, nil)
-			fakeDBWorker.FindContainerReturns(nil, nil, nil)
-			fakeDBWorker.CreateContainerReturns(fakeCreatingContainer, nil)
+			setupFakeDBContainer(fakeDBWorker, "props-handle")
 
 			var err error
 			container, _, err = worker.FindOrCreateContainer(
@@ -1428,13 +1306,7 @@ var _ = Describe("Container", func() {
 		var container runtime.Container
 
 		BeforeEach(func() {
-			fakeCreatingContainer := new(dbfakes.FakeCreatingContainer)
-			fakeCreatingContainer.HandleReturns("attach-handle")
-			fakeCreatedContainer := new(dbfakes.FakeCreatedContainer)
-			fakeCreatedContainer.HandleReturns("attach-handle")
-			fakeCreatingContainer.CreatedReturns(fakeCreatedContainer, nil)
-			fakeDBWorker.FindContainerReturns(nil, nil, nil)
-			fakeDBWorker.CreateContainerReturns(fakeCreatingContainer, nil)
+			setupFakeDBContainer(fakeDBWorker, "attach-handle")
 
 			var err error
 			container, _, err = worker.FindOrCreateContainer(
@@ -1473,13 +1345,7 @@ var _ = Describe("Container", func() {
 				execWorker := k8sruntime.NewWorker(fakeDBWorker, fakeClientset, cfg)
 				execWorker.SetExecutor(&fakeExecExecutor{})
 
-				fakeCreatingContainer := new(dbfakes.FakeCreatingContainer)
-				fakeCreatingContainer.HandleReturns("exec-attach-handle")
-				fakeCreatedContainer := new(dbfakes.FakeCreatedContainer)
-				fakeCreatedContainer.HandleReturns("exec-attach-handle")
-				fakeCreatingContainer.CreatedReturns(fakeCreatedContainer, nil)
-				fakeDBWorker.FindContainerReturns(nil, nil, nil)
-				fakeDBWorker.CreateContainerReturns(fakeCreatingContainer, nil)
+				setupFakeDBContainer(fakeDBWorker, "exec-attach-handle")
 
 				var err error
 				execContainer, _, err = execWorker.FindOrCreateContainer(
@@ -1530,13 +1396,7 @@ var _ = Describe("Container", func() {
 				execWorker := k8sruntime.NewWorker(fakeDBWorker, fakeClientset, cfg)
 				execWorker.SetExecutor(&fakeExecExecutor{})
 
-				fakeCreatingContainer := new(dbfakes.FakeCreatingContainer)
-				fakeCreatingContainer.HandleReturns("exec-noann-handle")
-				fakeCreatedContainer := new(dbfakes.FakeCreatedContainer)
-				fakeCreatedContainer.HandleReturns("exec-noann-handle")
-				fakeCreatingContainer.CreatedReturns(fakeCreatedContainer, nil)
-				fakeDBWorker.FindContainerReturns(nil, nil, nil)
-				fakeDBWorker.CreateContainerReturns(fakeCreatingContainer, nil)
+				setupFakeDBContainer(fakeDBWorker, "exec-noann-handle")
 
 				var err error
 				execContainer, _, err = execWorker.FindOrCreateContainer(

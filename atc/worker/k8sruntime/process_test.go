@@ -40,13 +40,7 @@ var _ = Describe("Process", func() {
 		delegate = &noopDelegate{}
 		worker = k8sruntime.NewWorker(fakeDBWorker, fakeClientset, cfg)
 
-		fakeCreatingContainer := new(dbfakes.FakeCreatingContainer)
-		fakeCreatingContainer.HandleReturns("process-test-handle")
-		fakeCreatedContainer := new(dbfakes.FakeCreatedContainer)
-		fakeCreatedContainer.HandleReturns("process-test-handle")
-		fakeCreatingContainer.CreatedReturns(fakeCreatedContainer, nil)
-		fakeDBWorker.FindContainerReturns(nil, nil, nil)
-		fakeDBWorker.CreateContainerReturns(fakeCreatingContainer, nil)
+		setupFakeDBContainer(fakeDBWorker, "process-test-handle")
 
 		var err error
 		container, _, err = worker.FindOrCreateContainer(
@@ -370,13 +364,7 @@ var _ = Describe("Process", func() {
 			timeoutWorker = k8sruntime.NewWorker(fakeDBWorker, fakeClientset, timeoutCfg)
 			timeoutWorker.SetExecutor(fakeExecutor)
 
-			fakeCreatingContainer := new(dbfakes.FakeCreatingContainer)
-			fakeCreatingContainer.HandleReturns("timeout-handle")
-			fakeCreatedContainer := new(dbfakes.FakeCreatedContainer)
-			fakeCreatedContainer.HandleReturns("timeout-handle")
-			fakeCreatingContainer.CreatedReturns(fakeCreatedContainer, nil)
-			fakeDBWorker.FindContainerReturns(nil, nil, nil)
-			fakeDBWorker.CreateContainerReturns(fakeCreatingContainer, nil)
+			setupFakeDBContainer(fakeDBWorker, "timeout-handle")
 
 			var err error
 			timeoutContainer, _, err = timeoutWorker.FindOrCreateContainer(
@@ -457,13 +445,7 @@ var _ = Describe("Process", func() {
 			execWorker = k8sruntime.NewWorker(fakeDBWorker, fakeClientset, cfg)
 			execWorker.SetExecutor(fakeExecutor)
 
-			fakeCreatingContainer := new(dbfakes.FakeCreatingContainer)
-			fakeCreatingContainer.HandleReturns("exec-fail-handle")
-			fakeCreatedContainer := new(dbfakes.FakeCreatedContainer)
-			fakeCreatedContainer.HandleReturns("exec-fail-handle")
-			fakeCreatingContainer.CreatedReturns(fakeCreatedContainer, nil)
-			fakeDBWorker.FindContainerReturns(nil, nil, nil)
-			fakeDBWorker.CreateContainerReturns(fakeCreatingContainer, nil)
+			setupFakeDBContainer(fakeDBWorker, "exec-fail-handle")
 
 			var err error
 			execContainer, _, err = execWorker.FindOrCreateContainer(
@@ -552,13 +534,7 @@ var _ = Describe("Process", func() {
 			errorCfg := k8sruntime.NewConfig("test-namespace", "")
 			errorWorker := k8sruntime.NewWorker(fakeDBWorker, errorClientset, errorCfg)
 
-			fakeCreatingContainer := new(dbfakes.FakeCreatingContainer)
-			fakeCreatingContainer.HandleReturns("transient-ok-handle")
-			fakeCreatedContainer := new(dbfakes.FakeCreatedContainer)
-			fakeCreatedContainer.HandleReturns("transient-ok-handle")
-			fakeCreatingContainer.CreatedReturns(fakeCreatedContainer, nil)
-			fakeDBWorker.FindContainerReturns(nil, nil, nil)
-			fakeDBWorker.CreateContainerReturns(fakeCreatingContainer, nil)
+			setupFakeDBContainer(fakeDBWorker, "transient-ok-handle")
 
 			transientContainer, _, err := errorWorker.FindOrCreateContainer(
 				ctx,
@@ -607,13 +583,7 @@ var _ = Describe("Process", func() {
 			errorCfg := k8sruntime.NewConfig("test-namespace", "")
 			errorWorker := k8sruntime.NewWorker(fakeDBWorker, errorClientset, errorCfg)
 
-			fakeCreatingContainer := new(dbfakes.FakeCreatingContainer)
-			fakeCreatingContainer.HandleReturns("transient-fail-handle")
-			fakeCreatedContainer := new(dbfakes.FakeCreatedContainer)
-			fakeCreatedContainer.HandleReturns("transient-fail-handle")
-			fakeCreatingContainer.CreatedReturns(fakeCreatedContainer, nil)
-			fakeDBWorker.FindContainerReturns(nil, nil, nil)
-			fakeDBWorker.CreateContainerReturns(fakeCreatingContainer, nil)
+			setupFakeDBContainer(fakeDBWorker, "transient-fail-handle")
 
 			transientContainer, _, err := errorWorker.FindOrCreateContainer(
 				ctx,
@@ -647,13 +617,7 @@ var _ = Describe("Process", func() {
 			errorCfg := k8sruntime.NewConfig("test-namespace", "")
 			errorWorker := k8sruntime.NewWorker(fakeDBWorker, errorClientset, errorCfg)
 
-			fakeCreatingContainer := new(dbfakes.FakeCreatingContainer)
-			fakeCreatingContainer.HandleReturns("transient-reset-handle")
-			fakeCreatedContainer := new(dbfakes.FakeCreatedContainer)
-			fakeCreatedContainer.HandleReturns("transient-reset-handle")
-			fakeCreatingContainer.CreatedReturns(fakeCreatedContainer, nil)
-			fakeDBWorker.FindContainerReturns(nil, nil, nil)
-			fakeDBWorker.CreateContainerReturns(fakeCreatingContainer, nil)
+			setupFakeDBContainer(fakeDBWorker, "transient-reset-handle")
 
 			transientContainer, _, err := errorWorker.FindOrCreateContainer(
 				ctx,

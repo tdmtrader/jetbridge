@@ -60,6 +60,15 @@ func kubeClient(t *testing.T) (kubernetes.Interface, *k8sruntime.Config) {
 	return clientset, &cfg
 }
 
+// cleanupPod registers a t.Cleanup that deletes the named pod. This is used
+// across live tests to ensure pods don't leak after test completion.
+func cleanupPod(t *testing.T, clientset kubernetes.Interface, namespace, podName string) {
+	t.Helper()
+	t.Cleanup(func() {
+		_ = clientset.CoreV1().Pods(namespace).Delete(context.Background(), podName, metav1.DeleteOptions{})
+	})
+}
+
 func TestLiveCountActivePods(t *testing.T) {
 	clientset, _ := kubeClient(t)
 	ctx := context.Background()

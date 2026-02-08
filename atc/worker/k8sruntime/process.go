@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"time"
 
+	"code.cloudfoundry.org/lager/v3"
+	"code.cloudfoundry.org/lager/v3/lagerctx"
 	"github.com/concourse/concourse/atc/runtime"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -51,6 +53,11 @@ func (p *Process) ID() string {
 // appear in the Concourse build log. If the context is cancelled, the Pod
 // is deleted and the context error is returned.
 func (p *Process) Wait(ctx context.Context) (runtime.ProcessResult, error) {
+	logger := lagerctx.FromContext(ctx).Session("process-wait", lager.Data{
+		"pod":        p.podName,
+		"process-id": p.id,
+	})
+
 	type result struct {
 		processResult runtime.ProcessResult
 		err           error
@@ -86,6 +93,7 @@ func (p *Process) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 		<-logDone
 
 		if r.err != nil {
+			logger.Error("failed-to-wait-for-pod", r.err)
 			return runtime.ProcessResult{}, r.err
 		}
 		// Store exit status in container properties for reattachment.
@@ -101,9 +109,33 @@ func (p *Process) SetTTY(tty runtime.TTYSpec) error {
 	return nil
 }
 
-// maxConsecutiveAPIErrors is the number of consecutive K8s API errors
-// tolerated before failing the task.
-const maxConsecutiveAPIErrors = 3
+const (
+	// maxConsecutiveAPIErrors is the number of consecutive K8s API errors
+	// tolerated before failing the task.
+	maxConsecutiveAPIErrors = 3
+
+	// podStatusPollInterval is the delay between successive Pod status
+	// checks in pollUntilDone.
+	podStatusPollInterval = time.Second
+
+	// podStatusBackoffUnit is the base unit for exponential backoff when
+	// the K8s API returns transient errors in pollUntilDone. The actual
+	// delay is consecutiveErrors * podStatusBackoffUnit.
+	podStatusBackoffUnit = time.Second
+
+	// execPollInterval is the delay between successive Pod status checks
+	// in waitForRunning (exec mode).
+	execPollInterval = 500 * time.Millisecond
+
+	// execBackoffUnit is the base unit for exponential backoff when the
+	// K8s API returns transient errors in waitForRunning. The actual
+	// delay is consecutiveErrors * execBackoffUnit.
+	execBackoffUnit = 500 * time.Millisecond
+
+	// logStreamRetryDelay is how long to wait before retrying log stream
+	// attachment when the container isn't ready yet.
+	logStreamRetryDelay = 500 * time.Millisecond
+)
 
 // pollUntilDone polls the Pod status until the main container terminates.
 // Transient API errors are retried with exponential backoff up to
@@ -117,7 +149,7 @@ func (p *Process) pollUntilDone(ctx context.Context) (runtime.ProcessResult, err
 			if consecutiveErrors >= maxConsecutiveAPIErrors {
 				return runtime.ProcessResult{}, fmt.Errorf("%d consecutive API errors getting pod status: %w", consecutiveErrors, err)
 			}
-			backoff := time.Duration(consecutiveErrors) * time.Second
+			backoff := time.Duration(consecutiveErrors) * podStatusBackoffUnit
 			select {
 			case <-ctx.Done():
 				return runtime.ProcessResult{}, ctx.Err()
@@ -145,7 +177,7 @@ func (p *Process) pollUntilDone(ctx context.Context) (runtime.ProcessResult, err
 		select {
 		case <-ctx.Done():
 			return runtime.ProcessResult{}, ctx.Err()
-		case <-time.After(time.Second):
+		case <-time.After(podStatusPollInterval):
 			// Poll interval
 		}
 	}
@@ -169,7 +201,14 @@ func (p *Process) streamLogs(ctx context.Context) {
 
 		stream, err := req.Stream(ctx)
 		if err == nil {
-			io.Copy(p.processIO.Stdout, stream)
+			if _, copyErr := io.Copy(p.processIO.Stdout, stream); copyErr != nil {
+				// Log stream copy failures are non-fatal (the build result
+				// comes from pollUntilDone). Write the error to stderr so it
+				// appears in the build log for debugging.
+				if p.processIO.Stderr != nil && ctx.Err() == nil {
+					fmt.Fprintf(p.processIO.Stderr, "\nwarning: log stream interrupted: %v\n", copyErr)
+				}
+			}
 			stream.Close()
 			return
 		}
@@ -178,7 +217,7 @@ func (p *Process) streamLogs(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(500 * time.Millisecond):
+		case <-time.After(logStreamRetryDelay):
 			// Retry after a short delay.
 		}
 	}
@@ -321,13 +360,20 @@ func (p *execProcess) ID() string {
 // artifacts into the pod, then exec-s the actual command with ProcessIO
 // piped through.
 func (p *execProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
+	logger := lagerctx.FromContext(ctx).Session("exec-process-wait", lager.Data{
+		"pod":        p.podName,
+		"process-id": p.id,
+	})
+
 	// Wait for the Pod to be running before exec-ing.
 	if err := p.waitForRunning(ctx); err != nil {
+		logger.Error("failed-to-wait-for-pod-running", err)
 		return runtime.ProcessResult{}, fmt.Errorf("waiting for pod running: %w", err)
 	}
 
 	// Stream input artifacts into the pod before executing the command.
 	if err := p.streamInputs(ctx); err != nil {
+		logger.Error("failed-to-stream-inputs", err)
 		return runtime.ProcessResult{}, fmt.Errorf("streaming inputs: %w", err)
 	}
 
@@ -360,6 +406,7 @@ func (p *execProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 			p.annotateExitStatus(ctx, exitCode)
 			return runtime.ProcessResult{ExitStatus: exitCode}, nil
 		}
+		logger.Error("failed-to-exec-in-pod", err)
 		return runtime.ProcessResult{}, fmt.Errorf("exec in pod: %w", err)
 	}
 
@@ -433,7 +480,7 @@ func (p *execProcess) waitForRunning(ctx context.Context) error {
 			if consecutiveErrors >= maxConsecutiveAPIErrors {
 				return fmt.Errorf("%d consecutive API errors getting pod: %w", consecutiveErrors, err)
 			}
-			backoff := time.Duration(consecutiveErrors) * 500 * time.Millisecond
+			backoff := time.Duration(consecutiveErrors) * execBackoffUnit
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
@@ -475,7 +522,7 @@ func (p *execProcess) waitForRunning(ctx context.Context) error {
 		case <-deadline:
 			writePodDiagnostics(lastPod, p.processIO.Stderr)
 			return fmt.Errorf("timed out waiting for pod to start (timeout: %s, phase: %s)", timeout, lastPod.Status.Phase)
-		case <-time.After(500 * time.Millisecond):
+		case <-time.After(execPollInterval):
 		}
 	}
 }
