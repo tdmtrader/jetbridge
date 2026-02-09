@@ -52,29 +52,36 @@
 - [x] Write values.yaml inline documentation (every parameter commented)
 - [x] Create chart README with quickstart for k3s/ArgoCD deployment `1469ae0bd`
 
-## Phase 3: Production Validation
+## Phase 3: Production Validation (Skipped — gap tests added to unit suite)
 
-### Task 3.1: Load Testing
-- [ ] Write load test harness
-  - Script to generate and trigger N concurrent pipelines
-  - Metrics collection during load test (pod count, latency, errors)
-- [ ] Run load tests
-  - 50+ concurrent builds on multi-node cluster
-  - Document results and identify bottlenecks
+### Gap-Filling Tests (added to container_test.go)
+- [x] StreamOut failure during streamInputs (non-artifact-store mode)
+  - failingArtifact type that returns errors on StreamOut
+  - Build fails with "streaming inputs" / "stream out artifact" error
+  - Main command exec never runs when input streaming fails
+- [x] StreamIn failure during streamInputs (tar extract fails)
+  - fakeExecutor returns error during tar extract
+  - Build fails with "streaming inputs" / "stream in to" error
+- [x] Multiple inputs — first broken input fails the build
+  - Good input followed by broken input
+  - Error identifies the broken artifact by handle
+- [x] Concurrent SetProperty/Properties without races
+  - 20 goroutines writing + 20 goroutines reading simultaneously
+  - Race detector passes
+- [x] Concurrent container creation on shared clientset
+  - 5 goroutines creating containers simultaneously
+  - All succeed independently
+- [x] Concurrent Run and pod creation on shared clientset
+  - 5 goroutines running containers in parallel
+  - All pods created successfully
+- [x] Fixed pre-existing data race in Volume.StreamOut
+  - spanErr shared between goroutines without synchronization
+  - Moved tracing.End into goroutine that owns the span
 
-### Task 3.2: Failure Scenario Testing
-- [ ] Write failure scenario tests
-  - Node drain during active builds
-  - Pod eviction under memory pressure
-  - API server restart during pod creation
-  - PVC full during volume write
-- [ ] Run failure scenarios and document recovery behavior
-
-### Task 3.3: Soak Testing
-- [ ] Design soak test pipeline (continuous trigger, varied step types)
-- [ ] Run 24-hour soak test
-  - Monitor memory, CPU, pod count, PVC usage
-  - Check for resource leaks (orphaned pods, uncleaned volumes)
+### Skipped operational tasks (require live cluster)
+- Task 3.1: Load Testing (50+ concurrent builds)
+- Task 3.2: Failure Scenario Testing (node drain, eviction, PVC full)
+- Task 3.3: Soak Testing (24-hour continuous run)
 
 ## Phase 4: Documentation
 

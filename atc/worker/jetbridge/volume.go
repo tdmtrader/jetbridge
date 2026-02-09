@@ -193,8 +193,6 @@ func (v *Volume) StreamOut(ctx context.Context, path string, _ compression.Compr
 		"pod-name": v.podName,
 		"path":     v.resolvedPath(path),
 	})
-	var spanErr error
-	defer func() { tracing.End(span, spanErr) }()
 
 	targetPath := v.resolvedPath(path)
 
@@ -206,8 +204,10 @@ func (v *Volume) StreamOut(ctx context.Context, path string, _ compression.Compr
 		err := v.executor.ExecInPod(ctx, v.namespace, v.podName, v.containerName, cmd, nil, pw, nil, false)
 		if err != nil {
 			logger.Error("failed-to-stream-out", err)
-			spanErr = err
 		}
+		// End the span in the goroutine that owns it to avoid a data race
+		// with the caller's deferred span cleanup.
+		tracing.End(span, err)
 		pw.CloseWithError(err)
 	}()
 
