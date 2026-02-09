@@ -198,6 +198,7 @@ jobs:
           echo "=== Building image with Dockerfile.build ==="
           docker build \
             -f Dockerfile.build \
+            --network host \
             --build-arg CONCOURSE_VERSION=0.0.0-dev \
             -t "${IMAGE}:latest" \
             -t "${IMAGE}:0.0.0-dev" \
@@ -226,7 +227,7 @@ jobs:
   - task: deploy
     config:
       platform: linux
-      rootfs_uri: docker:///bitnami/kubectl:latest
+      rootfs_uri: docker:///golang:1.25-bookworm
       inputs:
       - name: repo
       run:
@@ -234,6 +235,11 @@ jobs:
         args:
         - -exc
         - |
+          echo "=== Installing kubectl ==="
+          curl -sLO "https://dl.k8s.io/release/$(curl -sL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          install kubectl /usr/local/bin/kubectl
+          rm kubectl
+
           echo "=== Setting up kubeconfig ==="
           SA_DIR=/var/run/secrets/kubernetes.io/serviceaccount
           SA_TOKEN=$(cat "$SA_DIR/token")
