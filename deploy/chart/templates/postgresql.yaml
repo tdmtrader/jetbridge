@@ -1,0 +1,94 @@
+{{- if .Values.postgresql.enabled }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "concourse.fullname" . }}-db
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "concourse.labels" . | nindent 4 }}
+    app.kubernetes.io/component: database
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "concourse.name" . }}
+      app.kubernetes.io/component: database
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "concourse.name" . }}
+        app.kubernetes.io/component: database
+    spec:
+      containers:
+        - name: postgres
+          image: {{ .Values.postgresql.image }}
+          env:
+            - name: POSTGRES_DB
+              value: {{ .Values.postgresql.database }}
+            - name: POSTGRES_USER
+              value: {{ .Values.postgresql.user }}
+            - name: POSTGRES_PASSWORD
+              value: {{ .Values.postgresql.password }}
+          ports:
+            - containerPort: 5432
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", {{ .Values.postgresql.user | quote }}]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          {{- with .Values.postgresql.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- if .Values.postgresql.persistence.enabled }}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+              subPath: pgdata
+          {{- end }}
+      {{- if .Values.postgresql.persistence.enabled }}
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "concourse.fullname" . }}-db
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "concourse.fullname" . }}-db
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "concourse.labels" . | nindent 4 }}
+    app.kubernetes.io/component: database
+spec:
+  selector:
+    app.kubernetes.io/name: {{ include "concourse.name" . }}
+    app.kubernetes.io/component: database
+  ports:
+    - port: 5432
+      targetPort: 5432
+{{- if .Values.postgresql.persistence.enabled }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "concourse.fullname" . }}-db
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "concourse.labels" . | nindent 4 }}
+    app.kubernetes.io/component: database
+spec:
+  accessModes:
+    - ReadWriteOnce
+  {{- if .Values.postgresql.persistence.storageClass }}
+  storageClassName: {{ .Values.postgresql.persistence.storageClass }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.postgresql.persistence.size }}
+{{- end }}
+{{- end }}

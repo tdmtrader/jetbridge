@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "concourse.fullname" . }}-web
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "concourse.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}
+  selector:
+    {{- include "concourse.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.service.httpPort }}
+      targetPort: 8080
+    - name: tsa
+      port: {{ .Values.service.tsaPort }}
+      targetPort: 2222

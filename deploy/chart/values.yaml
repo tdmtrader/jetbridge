@@ -1,0 +1,199 @@
+## Concourse JetBridge Helm Chart — values.yaml
+## All configurable parameters for deploying Concourse with the K8s-native runtime.
+
+# -- Container image configuration
+image:
+  # -- Docker image repository
+  repository: concourse-local
+  # -- Image tag (defaults to appVersion from Chart.yaml)
+  tag: ""
+  # -- Image pull policy. Use "Never" for locally built images on k3s/kind.
+  pullPolicy: IfNotPresent
+  # -- Image pull secrets for private registries
+  pullSecrets: []
+
+# -- Concourse web node configuration
+web:
+  # -- Number of web node replicas
+  replicas: 1
+
+  # -- Concourse external URL (how users reach the UI)
+  externalUrl: http://localhost:8080
+
+  # -- Cluster name displayed in the UI
+  clusterName: jetbridge
+
+  # -- Log level: debug, info, error
+  logLevel: info
+
+  # -- Local user credentials (user:password pairs)
+  localUsers: "test:test"
+
+  # -- Main team local user (granted admin on the main team)
+  mainTeamLocalUser: test
+
+  # -- Resource requests and limits for the web pod
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "2"
+      memory: 2Gi
+
+  # -- Additional environment variables for the web container
+  env: []
+
+  # -- Additional CLI args for the web command
+  extraArgs: []
+
+  # -- Liveness probe configuration
+  livenessProbe:
+    httpGet:
+      path: /api/v1/info
+      port: 8080
+    initialDelaySeconds: 15
+    periodSeconds: 15
+    timeoutSeconds: 3
+    failureThreshold: 5
+
+  # -- Readiness probe configuration
+  readinessProbe:
+    httpGet:
+      path: /api/v1/info
+      port: 8080
+    initialDelaySeconds: 10
+    periodSeconds: 10
+
+  # -- Node selector for the web pod
+  nodeSelector: {}
+  # -- Tolerations for the web pod
+  tolerations: []
+  # -- Affinity rules for the web pod
+  affinity: {}
+
+# -- Kubernetes runtime (JetBridge) configuration
+kubernetes:
+  # -- Namespace where task/check pods are created.
+  # Defaults to the release namespace.
+  namespace: ""
+
+  # -- ServiceAccount for task pods (uses web SA if empty)
+  serviceAccount: ""
+
+  # -- Pod startup timeout
+  podStartupTimeout: 5m
+
+  # -- Image pull secrets for task pods
+  imagePullSecrets: []
+
+  # -- Artifact helper image (needs tar; used by init containers and sidecar)
+  artifactHelperImage: "alpine:latest"
+
+  # -- Image registry prefix for custom resource type images
+  imageRegistryPrefix: ""
+  # -- Image registry pull secret name
+  imageRegistrySecret: ""
+
+# -- Cache PVC configuration (speeds up resource gets and task caches)
+cachePvc:
+  # -- Enable the cache PVC
+  enabled: true
+  # -- PVC name
+  name: concourse-cache
+  # -- Storage size
+  size: 5Gi
+  # -- Storage class (empty = cluster default)
+  storageClass: ""
+  # -- Access modes
+  accessModes:
+    - ReadWriteOnce
+
+# -- Artifact store PVC (cross-pod volume passing via init containers)
+artifactStorePvc:
+  # -- Enable the artifact store PVC
+  enabled: true
+  # -- PVC name
+  name: concourse-artifacts
+  # -- Storage size
+  size: 10Gi
+  # -- Storage class (empty = cluster default; use "gcs-fuse" for GKE)
+  storageClass: ""
+  # -- Access modes (use ReadWriteMany for multi-node)
+  accessModes:
+    - ReadWriteOnce
+
+# -- PostgreSQL configuration
+postgresql:
+  # -- Deploy a PostgreSQL pod as part of this chart.
+  # Set to false to use an external database.
+  enabled: true
+
+  # -- PostgreSQL image
+  image: postgres:16
+
+  # -- Database name
+  database: concourse
+  # -- Database user
+  user: concourse
+  # -- Database password (use a secret in production)
+  password: concourse
+
+  # -- Resource requests and limits
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+  # -- Persistence for database data
+  persistence:
+    enabled: true
+    size: 8Gi
+    storageClass: ""
+
+  ## External database settings (when postgresql.enabled=false)
+  # host: ""
+  # port: 5432
+
+# -- Service configuration
+service:
+  # -- Service type: ClusterIP, LoadBalancer, NodePort
+  type: LoadBalancer
+  # -- HTTP port
+  httpPort: 8080
+  # -- TSA port (for fly CLI worker registration — unused in JetBridge but kept for compatibility)
+  tsaPort: 2222
+
+# -- Ingress configuration
+ingress:
+  # -- Enable ingress
+  enabled: false
+  # -- Ingress class name
+  className: ""
+  # -- Ingress annotations
+  annotations: {}
+  # -- Ingress hostname
+  host: ""
+  # -- TLS configuration
+  tls: []
+
+# -- RBAC configuration
+rbac:
+  # -- Create RBAC resources (Role, RoleBinding) for the web pod
+  create: true
+
+# -- ServiceAccount configuration
+serviceAccount:
+  # -- Create a ServiceAccount for the web pod
+  create: true
+  # -- Annotations to add to the ServiceAccount
+  annotations: {}
+
+# -- Secrets configuration
+secrets:
+  # -- Auto-generate signing keys on install.
+  # Set to false if providing pre-existing secrets.
+  create: true

@@ -24,23 +24,32 @@
   - Run artifact integration tests on GKE
   - Verify Workload Identity authentication works
 
-## Phase 2: Helm Chart
+## Phase 2: Docker Build & Helm Chart
+
+### Task 2.0: Multi-stage Dockerfile with frontend assets
+- [x] Create `Dockerfile.build` — production multi-stage Dockerfile
+  - Stage 1 (node): Install yarn 4, build Elm + LESS + webpack assets into web/public/
+  - Stage 2 (go): Copy built assets, `go build` embeds them via `//go:embed public`
+  - Stage 3 (runtime): Minimal ubuntu:22.04 with ca-certificates + dumb-init
+  - Target: single `concourse` binary with embedded frontend, no `CONCOURSE_WEB_PUBLIC_DIR` needed
+- [x] Add `build.sh` helper script for local image builds
+  - Build image tagged `concourse-local:latest`
+  - Optionally push to a registry
 
 ### Task 2.1: Create Helm Chart Structure
-- [ ] Write tests for Helm chart (helm lint, template validation)
-- [ ] Implement Helm chart
-  - Chart.yaml with metadata
-  - values.yaml with all configurable parameters
-  - Templates: Deployment, Service, RBAC, ConfigMap, PVC, ServiceAccount
-  - Support for local dev (kind/minikube) and GKE production profiles
-  - Include artifact store PVC and cache PVC templates
+- [x] Implement Helm chart in `deploy/chart/`
+  - Chart.yaml with metadata (based on official concourse-chart pattern)
+  - values.yaml: image, postgres, web config, K8s backend flags, RBAC, secrets, PVCs
+  - templates/: web-deployment, service, serviceaccount, role, rolebinding,
+    secrets (key placeholder), PVCs (cache + artifact-store), ingress (optional)
+  - No worker StatefulSet (JetBridge runs tasks as pods directly)
+  - PostgreSQL as bundled deployment (toggleable for external DB)
+  - Init container for key generation (session signing, TSA host key)
+- [x] Validate: `helm lint` passes, `helm template` renders 351 lines (9 resources)
 
 ### Task 2.2: Helm Chart Documentation
-- [ ] Write values.yaml inline documentation
-- [ ] Create chart README with quickstart guides
-  - Local development with kind
-  - GKE production deployment
-  - Configuration reference
+- [x] Write values.yaml inline documentation (every parameter commented)
+- [ ] Create chart README with quickstart for k3s/ArgoCD deployment
 
 ## Phase 3: Production Validation
 
