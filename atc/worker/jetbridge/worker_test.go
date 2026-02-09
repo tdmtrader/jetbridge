@@ -223,6 +223,165 @@ var _ = Describe("Worker", func() {
 		})
 	})
 
+	Describe("CreateVolumeForArtifact", func() {
+		var fakeVolumeRepo *dbfakes.FakeVolumeRepository
+
+		Context("when the volume repo is configured", func() {
+			var (
+				fakeCreatingVolume *dbfakes.FakeCreatingVolume
+				fakeCreatedVolume  *dbfakes.FakeCreatedVolume
+				fakeArtifact       *dbfakes.FakeWorkerArtifact
+			)
+
+			BeforeEach(func() {
+				fakeVolumeRepo = new(dbfakes.FakeVolumeRepository)
+				worker.SetVolumeRepo(fakeVolumeRepo)
+
+				fakeCreatingVolume = new(dbfakes.FakeCreatingVolume)
+				fakeCreatingVolume.HandleReturns("artifact-volume-handle")
+				fakeCreatingVolume.IDReturns(42)
+
+				fakeCreatedVolume = new(dbfakes.FakeCreatedVolume)
+				fakeCreatedVolume.HandleReturns("artifact-volume-handle")
+
+				fakeArtifact = new(dbfakes.FakeWorkerArtifact)
+				fakeArtifact.IDReturns(7)
+
+				fakeVolumeRepo.CreateVolumeReturns(fakeCreatingVolume, nil)
+				fakeCreatingVolume.CreatedReturns(fakeCreatedVolume, nil)
+				fakeCreatedVolume.InitializeArtifactReturns(fakeArtifact, nil)
+			})
+
+			It("creates an artifact volume and returns it with the artifact", func() {
+				vol, artifact, err := worker.CreateVolumeForArtifact(ctx, 1)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(vol).ToNot(BeNil())
+				Expect(artifact).ToNot(BeNil())
+
+				By("creating a volume with the correct team ID, worker name, and type")
+				Expect(fakeVolumeRepo.CreateVolumeCallCount()).To(Equal(1))
+				teamID, workerName, volType := fakeVolumeRepo.CreateVolumeArgsForCall(0)
+				Expect(teamID).To(Equal(1))
+				Expect(workerName).To(Equal("k8s-worker-1"))
+				Expect(volType).To(Equal(db.VolumeTypeArtifact))
+
+				By("transitioning the volume to created state")
+				Expect(fakeCreatingVolume.CreatedCallCount()).To(Equal(1))
+
+				By("initializing the artifact on the created volume")
+				Expect(fakeCreatedVolume.InitializeArtifactCallCount()).To(Equal(1))
+				name, buildID := fakeCreatedVolume.InitializeArtifactArgsForCall(0)
+				Expect(name).To(Equal(""))
+				Expect(buildID).To(Equal(0))
+
+				By("returning the artifact from the DB")
+				Expect(artifact.ID()).To(Equal(7))
+			})
+
+			It("returns a volume with the correct handle", func() {
+				vol, _, err := worker.CreateVolumeForArtifact(ctx, 1)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(vol.Handle()).To(Equal("artifact-volume-handle"))
+			})
+
+			Context("when the artifact store is configured", func() {
+				BeforeEach(func() {
+					cfg.ArtifactStoreClaim = "my-artifact-pvc"
+					worker = jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
+					worker.SetVolumeRepo(fakeVolumeRepo)
+				})
+
+				It("returns an ArtifactStoreVolume", func() {
+					vol, _, err := worker.CreateVolumeForArtifact(ctx, 1)
+					Expect(err).ToNot(HaveOccurred())
+					Expect(vol).ToNot(BeNil())
+
+					asVol, ok := vol.(*jetbridge.ArtifactStoreVolume)
+					Expect(ok).To(BeTrue(), "expected ArtifactStoreVolume, got %T", vol)
+					Expect(asVol.Key()).To(Equal("artifacts/artifact-volume-handle.tar"))
+					Expect(asVol.Handle()).To(Equal("artifact-volume-handle"))
+				})
+			})
+
+			Context("when the artifact store is NOT configured", func() {
+				It("returns a DeferredVolume (regular Volume)", func() {
+					vol, _, err := worker.CreateVolumeForArtifact(ctx, 1)
+					Expect(err).ToNot(HaveOccurred())
+					Expect(vol).ToNot(BeNil())
+
+					_, isArtifactStore := vol.(*jetbridge.ArtifactStoreVolume)
+					Expect(isArtifactStore).To(BeFalse(), "expected regular Volume, not ArtifactStoreVolume")
+				})
+			})
+		})
+
+		Context("when the volume repo is NOT configured", func() {
+			It("returns an error", func() {
+				// Create a fresh worker without SetVolumeRepo
+				freshWorker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
+				_, _, err := freshWorker.CreateVolumeForArtifact(ctx, 1)
+				Expect(err).To(HaveOccurred())
+				Expect(err).To(MatchError(ContainSubstring("volume repository not configured")))
+			})
+		})
+
+		Context("when CreateVolume fails", func() {
+			BeforeEach(func() {
+				fakeVolumeRepo = new(dbfakes.FakeVolumeRepository)
+				worker.SetVolumeRepo(fakeVolumeRepo)
+				fakeVolumeRepo.CreateVolumeReturns(nil, fmt.Errorf("db connection lost"))
+			})
+
+			It("returns the error", func() {
+				_, _, err := worker.CreateVolumeForArtifact(ctx, 1)
+				Expect(err).To(HaveOccurred())
+				Expect(err).To(MatchError(ContainSubstring("db connection lost")))
+			})
+		})
+
+		Context("when transitioning to created state fails", func() {
+			BeforeEach(func() {
+				fakeVolumeRepo = new(dbfakes.FakeVolumeRepository)
+				worker.SetVolumeRepo(fakeVolumeRepo)
+
+				fakeCreatingVolume := new(dbfakes.FakeCreatingVolume)
+				fakeCreatingVolume.HandleReturns("artifact-volume-handle")
+				fakeVolumeRepo.CreateVolumeReturns(fakeCreatingVolume, nil)
+
+				fakeCreatingVolume.CreatedReturns(nil, fmt.Errorf("transition error"))
+			})
+
+			It("returns the error", func() {
+				_, _, err := worker.CreateVolumeForArtifact(ctx, 1)
+				Expect(err).To(HaveOccurred())
+				Expect(err).To(MatchError(ContainSubstring("transition error")))
+			})
+		})
+
+		Context("when InitializeArtifact fails", func() {
+			BeforeEach(func() {
+				fakeVolumeRepo = new(dbfakes.FakeVolumeRepository)
+				worker.SetVolumeRepo(fakeVolumeRepo)
+
+				fakeCreatingVolume := new(dbfakes.FakeCreatingVolume)
+				fakeCreatingVolume.HandleReturns("artifact-volume-handle")
+				fakeVolumeRepo.CreateVolumeReturns(fakeCreatingVolume, nil)
+
+				fakeCreatedVolume := new(dbfakes.FakeCreatedVolume)
+				fakeCreatedVolume.HandleReturns("artifact-volume-handle")
+				fakeCreatingVolume.CreatedReturns(fakeCreatedVolume, nil)
+
+				fakeCreatedVolume.InitializeArtifactReturns(nil, fmt.Errorf("artifact init error"))
+			})
+
+			It("returns the error", func() {
+				_, _, err := worker.CreateVolumeForArtifact(ctx, 1)
+				Expect(err).To(HaveOccurred())
+				Expect(err).To(MatchError(ContainSubstring("artifact init error")))
+			})
+		})
+	})
+
 	Describe("LookupVolume", func() {
 		var fakeVolumeRepo *dbfakes.FakeVolumeRepository
 
