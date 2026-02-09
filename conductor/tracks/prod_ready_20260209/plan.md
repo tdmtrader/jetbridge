@@ -83,29 +83,13 @@
 - Task 3.2: Failure Scenario Testing (node drain, eviction, PVC full)
 - Task 3.3: Soak Testing (24-hour continuous run)
 
-## Phase 4: Documentation
+## Phase 4: Documentation (consolidated into JETBRIDGE.md)
 
-### Task 4.1: Production Deployment Guide
-- [ ] Write GKE deployment guide
-  - Prerequisites (GKE cluster, service accounts, storage classes)
-  - Step-by-step Helm deployment
-  - Post-deployment validation
-
-### Task 4.2: Configuration Reference
-- [ ] Document all JetBridge-specific configuration options
-  - Environment variables, Helm values, CLI flags
-  - Defaults, constraints, and examples
-
-### Task 4.3: Troubleshooting Guide
-- [ ] Write troubleshooting guide
-  - Pod startup failures
-  - Volume mount errors
-  - Worker registration issues
-  - Artifact passing failures
-  - Performance degradation
-
-### Task 4.4: Monitoring Setup Guide
-- [ ] Write Prometheus/Grafana monitoring guide
-  - Recommended metrics to track
-  - Example dashboard JSON
-  - Alerting rules for critical conditions
+### Task 4.1–4.4: Consolidated into single JETBRIDGE.md
+- [x] Write JETBRIDGE.md — differences-focused guide for existing Concourse users
+  - Architecture: what changed (no workers, pod-per-step, PVC artifacts) and what didn't
+  - Configuration reference: all `--kubernetes-*` CLI flags with defaults
+  - Deployment: build, Helm install, production checklist, RBAC
+  - Troubleshooting: pod startup, image pulls, artifacts, log streaming, GC
+  - Monitoring: K8s-specific Prometheus metrics, key things to watch, kubectl commands
+  - Known limitations: TTY, single namespace, fly execute with artifact store
