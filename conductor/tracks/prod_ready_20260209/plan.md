@@ -3,12 +3,12 @@
 ## Phase 1: Complete Runtime Gaps
 
 ### Task 1.1: Implement `CreateVolumeForArtifact()`
-- [ ] Write tests for CreateVolumeForArtifact
+- [x] Write tests for CreateVolumeForArtifact `63cb0370f`
   - Unit test: happy path — creates volume and returns artifact
   - Unit test: error case — artifact store PVC not configured
   - Unit test: error case — database registration fails
   - Unit test: cleanup — verify orphaned artifacts are reapable
-- [ ] Implement CreateVolumeForArtifact
+- [x] Implement CreateVolumeForArtifact `63cb0370f`
   - Allocate a unique subpath on the artifact store PVC
   - Create the volume directory via exec into a running pod
   - Register the artifact in the Concourse database
