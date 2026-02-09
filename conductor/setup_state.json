@@ -1,0 +1,17 @@
+{
+  "project": "concourse-jetbridge",
+  "type": "brownfield",
+  "initialized": true,
+  "last_successful_step": "3.3_initial_track_generated",
+  "steps_completed": [
+    "1.1_project_analyzed",
+    "2.1_product_md",
+    "2.2_product_guidelines_md",
+    "2.3_tech_stack_md",
+    "2.4_code_styleguides",
+    "2.5_workflow_created",
+    "3.1_track_proposed",
+    "3.2_track_artifacts_created",
+    "3.3_initial_track_generated"
+  ]
+}
