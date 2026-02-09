@@ -50,7 +50,7 @@
 
 ### Task 2.2: Helm Chart Documentation
 - [x] Write values.yaml inline documentation (every parameter commented)
-- [ ] Create chart README with quickstart for k3s/ArgoCD deployment
+- [x] Create chart README with quickstart for k3s/ArgoCD deployment `1469ae0bd`
 
 ## Phase 3: Production Validation
 
