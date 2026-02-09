@@ -15,6 +15,7 @@ import (
 	"github.com/concourse/concourse/atc/db/dbfakes"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // artifactStoreClaim returns the PVC name for artifact store testing.
@@ -25,6 +26,21 @@ func artifactStoreClaim() string {
 		return pvc
 	}
 	return "artifact-store"
+}
+
+// requireArtifactStorePVC skips the test if the artifact-store PVC does not
+// exist in the test namespace. This allows the live test suite to pass in
+// clusters that don't have the PVC provisioned.
+func requireArtifactStorePVC(t *testing.T) {
+	t.Helper()
+	clientset, cfg := kubeClient(t)
+	pvc := artifactStoreClaim()
+	_, err := clientset.CoreV1().PersistentVolumeClaims(cfg.Namespace).Get(
+		context.Background(), pvc, metav1.GetOptions{},
+	)
+	if err != nil {
+		t.Skipf("artifact-store PVC %q not found in namespace %q, skipping: %v", pvc, cfg.Namespace, err)
+	}
 }
 
 // setupLiveArtifactWorker creates a live Worker with the artifact store PVC
@@ -55,6 +71,7 @@ func setupLiveArtifactWorker(t *testing.T, handle string) (*jetbridge.Worker, ru
 //   - The PVC must support ReadWriteMany (or ReadWriteOnce if all pods land
 //     on the same node)
 func TestLiveArtifactStoreTaskChain(t *testing.T) {
+	requireArtifactStorePVC(t)
 	ctx := context.Background()
 	clientset, cfg := kubeClient(t)
 	ts := time.Now().Format("150405")
@@ -171,6 +188,7 @@ func TestLiveArtifactStoreTaskChain(t *testing.T) {
 // and data flows through the artifact store PVC via init containers and
 // artifact-helper sidecar.
 func TestLiveArtifactStoreGetTaskPut(t *testing.T) {
+	requireArtifactStorePVC(t)
 	ctx := context.Background()
 	clientset, cfg := kubeClient(t)
 	ts := time.Now().Format("150405")
@@ -345,6 +363,7 @@ func TestLiveArtifactStoreGetTaskPut(t *testing.T) {
 // data survives the tar/extract cycle through the artifact store PVC without
 // corruption, truncation, or encoding issues.
 func TestLiveArtifactStoreDataIntegrity(t *testing.T) {
+	requireArtifactStorePVC(t)
 	ctx := context.Background()
 	clientset, cfg := kubeClient(t)
 	ts := time.Now().Format("150405")
@@ -461,6 +480,7 @@ func TestLiveArtifactStoreDataIntegrity(t *testing.T) {
 // can be cleaned up after use. This creates an artifact, verifies it exists,
 // then removes it and verifies it's gone.
 func TestLiveArtifactStoreCleanup(t *testing.T) {
+	requireArtifactStorePVC(t)
 	ctx := context.Background()
 	clientset, cfg := kubeClient(t)
 	ts := time.Now().Format("150405")
