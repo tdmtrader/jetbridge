@@ -3,8 +3,10 @@ package jetbridge_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"sync"
 
 	"github.com/concourse/concourse/atc/compression"
 	"github.com/concourse/concourse/atc/db"
@@ -2634,5 +2636,383 @@ var _ = Describe("Container with artifact store", func() {
 			Expect(initC.Command[2]).To(ContainSubstring("artifacts/source-vol-abc.tar"))
 			Expect(initC.Command[2]).ToNot(ContainSubstring("|| true"))
 		})
+	})
+})
+
+// failingArtifact is a test double for runtime.Artifact that returns an
+// error on StreamOut, simulating a broken upstream artifact.
+type failingArtifact struct {
+	handle    string
+	source    string
+	streamErr error
+}
+
+func (a *failingArtifact) StreamOut(_ context.Context, _ string, _ compression.Compression) (io.ReadCloser, error) {
+	return nil, a.streamErr
+}
+func (a *failingArtifact) Handle() string { return a.handle }
+func (a *failingArtifact) Source() string { return a.source }
+
+var _ = Describe("streamInputs failure paths (non-artifact-store)", func() {
+	var (
+		fakeDBWorker  *dbfakes.FakeWorker
+		fakeClientset *fake.Clientset
+		ctx           context.Context
+		delegate      runtime.BuildStepDelegate
+	)
+
+	BeforeEach(func() {
+		ctx = context.Background()
+		fakeDBWorker = new(dbfakes.FakeWorker)
+		fakeDBWorker.NameReturns("k8s-worker-1")
+		fakeClientset = fake.NewSimpleClientset()
+		delegate = &noopDelegate{}
+	})
+
+	It("fails the build when StreamOut returns an error on an input artifact", func() {
+		cfg := jetbridge.NewConfig("test-namespace", "")
+		// No ArtifactStoreClaim — uses SPDY streaming path
+
+		fakeExecutor := &fakeExecExecutor{}
+		worker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
+		worker.SetExecutor(fakeExecutor)
+
+		setupFakeDBContainer(fakeDBWorker, "streamout-fail-handle")
+
+		brokenArtifact := &failingArtifact{
+			handle:    "broken-vol",
+			source:    "k8s-worker-1",
+			streamErr: errors.New("upstream pod terminated"),
+		}
+
+		container, _, err := worker.FindOrCreateContainer(
+			ctx,
+			db.NewFixedHandleContainerOwner("streamout-fail-handle"),
+			db.ContainerMetadata{Type: db.ContainerTypeTask},
+			runtime.ContainerSpec{
+				TeamID:   1,
+				Dir:      "/tmp/build/workdir",
+				ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+				Inputs: []runtime.Input{
+					{
+						Artifact:        brokenArtifact,
+						DestinationPath: "/tmp/build/workdir/my-input",
+					},
+				},
+			},
+			delegate,
+		)
+		Expect(err).ToNot(HaveOccurred())
+
+		process, err := container.Run(ctx, runtime.ProcessSpec{
+			Path: "/bin/sh",
+			Args: []string{"-c", "echo should-not-run"},
+		}, runtime.ProcessIO{})
+		Expect(err).ToNot(HaveOccurred())
+
+		// Simulate pod running so waitForRunning succeeds
+		pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "streamout-fail-handle", metav1.GetOptions{})
+		Expect(err).ToNot(HaveOccurred())
+		pod.Status.Phase = corev1.PodRunning
+		_, err = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+		Expect(err).ToNot(HaveOccurred())
+
+		_, err = process.Wait(ctx)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("streaming inputs"))
+		Expect(err.Error()).To(ContainSubstring("stream out artifact"))
+		Expect(err.Error()).To(ContainSubstring("upstream pod terminated"))
+
+		By("the main command exec should NOT have been called")
+		for _, c := range fakeExecutor.execCalls {
+			Expect(c.containerName).ToNot(Equal("main"),
+				"main command should not exec when input streaming fails")
+		}
+	})
+
+	It("fails the build when StreamIn (tar extract) returns an error", func() {
+		cfg := jetbridge.NewConfig("test-namespace", "")
+		// No ArtifactStoreClaim — uses SPDY streaming path
+
+		fakeExecutor := &fakeExecExecutor{
+			execErr: errors.New("container not running: tar extract failed"),
+		}
+		worker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
+		worker.SetExecutor(fakeExecutor)
+
+		setupFakeDBContainer(fakeDBWorker, "streamin-fail-handle")
+
+		goodArtifact := &fakeArtifact{
+			handle:    "good-vol",
+			source:    "k8s-worker-1",
+			streamOut: []byte("valid-tar-data"),
+		}
+
+		container, _, err := worker.FindOrCreateContainer(
+			ctx,
+			db.NewFixedHandleContainerOwner("streamin-fail-handle"),
+			db.ContainerMetadata{Type: db.ContainerTypeTask},
+			runtime.ContainerSpec{
+				TeamID:   1,
+				Dir:      "/tmp/build/workdir",
+				ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+				Inputs: []runtime.Input{
+					{
+						Artifact:        goodArtifact,
+						DestinationPath: "/tmp/build/workdir/my-input",
+					},
+				},
+			},
+			delegate,
+		)
+		Expect(err).ToNot(HaveOccurred())
+
+		process, err := container.Run(ctx, runtime.ProcessSpec{
+			Path: "/bin/sh",
+			Args: []string{"-c", "echo should-not-run"},
+		}, runtime.ProcessIO{})
+		Expect(err).ToNot(HaveOccurred())
+
+		// Simulate pod running
+		pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "streamin-fail-handle", metav1.GetOptions{})
+		Expect(err).ToNot(HaveOccurred())
+		pod.Status.Phase = corev1.PodRunning
+		_, err = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+		Expect(err).ToNot(HaveOccurred())
+
+		_, err = process.Wait(ctx)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("streaming inputs"))
+		Expect(err.Error()).To(ContainSubstring("stream in to"))
+		Expect(err.Error()).To(ContainSubstring("tar extract failed"))
+	})
+
+	It("processes multiple inputs and fails on the first broken one", func() {
+		cfg := jetbridge.NewConfig("test-namespace", "")
+
+		fakeExecutor := &fakeExecExecutor{}
+		worker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
+		worker.SetExecutor(fakeExecutor)
+
+		setupFakeDBContainer(fakeDBWorker, "multi-input-fail-handle")
+
+		goodArtifact := &fakeArtifact{
+			handle:    "good-vol-1",
+			source:    "k8s-worker-1",
+			streamOut: []byte("good-data"),
+		}
+		brokenArtifact := &failingArtifact{
+			handle:    "broken-vol-2",
+			source:    "k8s-worker-1",
+			streamErr: errors.New("connection reset"),
+		}
+
+		container, _, err := worker.FindOrCreateContainer(
+			ctx,
+			db.NewFixedHandleContainerOwner("multi-input-fail-handle"),
+			db.ContainerMetadata{Type: db.ContainerTypeTask},
+			runtime.ContainerSpec{
+				TeamID:   1,
+				Dir:      "/tmp/build/workdir",
+				ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+				Inputs: []runtime.Input{
+					{
+						Artifact:        goodArtifact,
+						DestinationPath: "/tmp/build/workdir/input-a",
+					},
+					{
+						Artifact:        brokenArtifact,
+						DestinationPath: "/tmp/build/workdir/input-b",
+					},
+				},
+			},
+			delegate,
+		)
+		Expect(err).ToNot(HaveOccurred())
+
+		process, err := container.Run(ctx, runtime.ProcessSpec{
+			Path: "/bin/sh",
+			Args: []string{"-c", "echo done"},
+		}, runtime.ProcessIO{})
+		Expect(err).ToNot(HaveOccurred())
+
+		// Simulate pod running
+		pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "multi-input-fail-handle", metav1.GetOptions{})
+		Expect(err).ToNot(HaveOccurred())
+		pod.Status.Phase = corev1.PodRunning
+		_, err = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+		Expect(err).ToNot(HaveOccurred())
+
+		_, err = process.Wait(ctx)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("broken-vol-2"))
+		Expect(err.Error()).To(ContainSubstring("connection reset"))
+	})
+})
+
+var _ = Describe("Concurrent container operations", func() {
+	var (
+		fakeDBWorker  *dbfakes.FakeWorker
+		fakeClientset *fake.Clientset
+		ctx           context.Context
+		delegate      runtime.BuildStepDelegate
+	)
+
+	BeforeEach(func() {
+		ctx = context.Background()
+		fakeDBWorker = new(dbfakes.FakeWorker)
+		fakeDBWorker.NameReturns("k8s-worker-1")
+		fakeClientset = fake.NewSimpleClientset()
+		delegate = &noopDelegate{}
+	})
+
+	It("handles concurrent SetProperty and Properties without races", func() {
+		cfg := jetbridge.NewConfig("test-namespace", "")
+		worker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
+
+		setupFakeDBContainer(fakeDBWorker, "concurrent-props-handle")
+
+		container, _, err := worker.FindOrCreateContainer(
+			ctx,
+			db.NewFixedHandleContainerOwner("concurrent-props-handle"),
+			db.ContainerMetadata{Type: db.ContainerTypeTask},
+			runtime.ContainerSpec{
+				TeamID:   1,
+				Dir:      "/workdir",
+				ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+			},
+			delegate,
+		)
+		Expect(err).ToNot(HaveOccurred())
+
+		const goroutines = 20
+		var wg sync.WaitGroup
+		wg.Add(goroutines * 2)
+
+		// Half goroutines set properties
+		for i := 0; i < goroutines; i++ {
+			go func(n int) {
+				defer wg.Done()
+				key := fmt.Sprintf("key-%d", n)
+				_ = container.SetProperty(key, fmt.Sprintf("value-%d", n))
+			}(i)
+		}
+
+		// Half goroutines read properties
+		for i := 0; i < goroutines; i++ {
+			go func() {
+				defer wg.Done()
+				props, err := container.Properties()
+				Expect(err).ToNot(HaveOccurred())
+				// Properties returns a copy, so iterating it is safe
+				for range props {
+					// just iterate
+				}
+			}()
+		}
+
+		wg.Wait()
+
+		// All properties should have been set
+		props, err := container.Properties()
+		Expect(err).ToNot(HaveOccurred())
+		Expect(len(props)).To(BeNumerically(">=", goroutines))
+	})
+
+	It("creates independent containers concurrently without interference", func() {
+		cfg := jetbridge.NewConfig("test-namespace", "")
+
+		const goroutines = 5
+		var wg sync.WaitGroup
+		wg.Add(goroutines)
+
+		containers := make([]runtime.Container, goroutines)
+		errs := make([]error, goroutines)
+
+		for i := 0; i < goroutines; i++ {
+			go func(n int) {
+				defer wg.Done()
+
+				// Each goroutine needs its own FakeWorker to avoid shared state
+				localFakeDBWorker := new(dbfakes.FakeWorker)
+				localFakeDBWorker.NameReturns("k8s-worker-1")
+				setupFakeDBContainer(localFakeDBWorker, fmt.Sprintf("concurrent-handle-%d", n))
+
+				localWorker := jetbridge.NewWorker(localFakeDBWorker, fakeClientset, cfg)
+
+				containers[n], _, errs[n] = localWorker.FindOrCreateContainer(
+					ctx,
+					db.NewFixedHandleContainerOwner(fmt.Sprintf("concurrent-handle-%d", n)),
+					db.ContainerMetadata{Type: db.ContainerTypeTask},
+					runtime.ContainerSpec{
+						TeamID:   1,
+						Dir:      "/workdir",
+						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+					},
+					delegate,
+				)
+			}(i)
+		}
+
+		wg.Wait()
+
+		for i := 0; i < goroutines; i++ {
+			Expect(errs[i]).ToNot(HaveOccurred(), "goroutine %d should succeed", i)
+			Expect(containers[i]).ToNot(BeNil(), "goroutine %d should produce a container", i)
+		}
+	})
+
+	It("handles concurrent Run and pod creation on the fake clientset", func() {
+		cfg := jetbridge.NewConfig("test-namespace", "")
+
+		const goroutines = 5
+		var wg sync.WaitGroup
+		wg.Add(goroutines)
+
+		runErrs := make([]error, goroutines)
+
+		for i := 0; i < goroutines; i++ {
+			go func(n int) {
+				defer wg.Done()
+
+				localFakeDBWorker := new(dbfakes.FakeWorker)
+				localFakeDBWorker.NameReturns("k8s-worker-1")
+				handle := fmt.Sprintf("concurrent-run-%d", n)
+				setupFakeDBContainer(localFakeDBWorker, handle)
+
+				localWorker := jetbridge.NewWorker(localFakeDBWorker, fakeClientset, cfg)
+				container, _, err := localWorker.FindOrCreateContainer(
+					ctx,
+					db.NewFixedHandleContainerOwner(handle),
+					db.ContainerMetadata{Type: db.ContainerTypeTask},
+					runtime.ContainerSpec{
+						TeamID:   1,
+						Dir:      "/workdir",
+						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+					},
+					delegate,
+				)
+				if err != nil {
+					runErrs[n] = err
+					return
+				}
+
+				_, runErrs[n] = container.Run(ctx, runtime.ProcessSpec{
+					Path: "/bin/sh",
+					Args: []string{"-c", fmt.Sprintf("echo %d", n)},
+				}, runtime.ProcessIO{})
+			}(i)
+		}
+
+		wg.Wait()
+
+		for i := 0; i < goroutines; i++ {
+			Expect(runErrs[i]).ToNot(HaveOccurred(), "goroutine %d Run should succeed", i)
+		}
+
+		// Verify all pods were created
+		pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
+		Expect(err).ToNot(HaveOccurred())
+		Expect(pods.Items).To(HaveLen(goroutines))
 	})
 })
