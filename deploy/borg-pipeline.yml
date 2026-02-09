@@ -1,0 +1,285 @@
+resources:
+- name: repo
+  type: git
+  source:
+    uri: https://github.com/tdmtrader/jetbridge.git
+    branch: jetbridge
+    username: x-access-token
+    password: ((github_pat))
+
+jobs:
+- name: build-and-vet
+  serial_groups: [pipeline]
+  plan:
+  - get: repo
+    trigger: true
+  - task: build-and-vet
+    config:
+      platform: linux
+      rootfs_uri: docker:///golang:1.25-bookworm
+      inputs:
+      - name: repo
+      run:
+        path: sh
+        args:
+        - -exc
+        - |
+          cd repo
+
+          echo "=== Verifying full build ==="
+          go build ./cmd/concourse/...
+          echo "=== Build successful ==="
+          echo ""
+          echo "=== Running go vet ==="
+          go vet ./atc/worker/jetbridge/... ./vars/... ./tracing/... \
+                 ./fly/commands/... ./fly/rc/... ./fly/eventstream/... \
+                 ./atc/engine/... ./atc/resource/... \
+                 ./atc/scheduler/... ./atc/metric/... ./atc/creds/... \
+                 ./skymarshal/token/... ./skymarshal/skyserver/...
+          echo "=== Vet passed ==="
+
+- name: unit-tests
+  serial_groups: [pipeline]
+  plan:
+  - get: repo
+    trigger: true
+    passed: [build-and-vet]
+  - task: unit-tests
+    config:
+      platform: linux
+      rootfs_uri: docker:///golang:1.25-bookworm
+      inputs:
+      - name: repo
+      run:
+        path: sh
+        args:
+        - -exc
+        - |
+          cd repo
+
+          echo "=== Running unit tests across the full codebase ==="
+          echo "Excluding packages that require external infrastructure"
+          echo ""
+          PACKAGES=$(go list ./... \
+            | grep -v /integration \
+            | grep -v /testflight \
+            | grep -v /topgun \
+            | grep -v /fly/integration \
+            | grep -v /atc/db \
+            | grep -v /atc/gc \
+            | grep -v /atc/postgresrunner \
+            | grep -v /atc/scheduler/algorithm \
+            | grep -v /atc/worker/gardenruntime \
+            | grep -v '/atc/worker$' \
+            | grep -v /skymarshal/dexserver \
+            | grep -v /worker/baggageclaim/volume/driver \
+            | grep -v /cmd)
+          echo "Testing packages:"
+          echo "$PACKAGES" | head -20
+          echo "... ($(echo "$PACKAGES" | wc -l | tr -d ' ') packages total)"
+          echo ""
+          go test -count=1 -timeout 10m $PACKAGES
+          echo "=== All unit tests passed ==="
+
+- name: k8s-runtime-tests
+  serial: true
+  serial_groups: [pipeline]
+  plan:
+  - get: repo
+    trigger: true
+    passed: [unit-tests]
+  - task: k8s-runtime-integration-tests
+    config:
+      platform: linux
+      rootfs_uri: docker:///golang:1.25-bookworm
+      inputs:
+      - name: repo
+      run:
+        path: sh
+        args:
+        - -exc
+        - |
+          cd repo
+
+          echo "=== Running jetbridge full test suite ==="
+          go test -v -count=1 -timeout 5m ./atc/worker/jetbridge/...
+          echo "=== All jetbridge tests passed ==="
+
+- name: k8s-live-tests
+  serial: true
+  serial_groups: [pipeline]
+  plan:
+  - get: repo
+    trigger: true
+    passed: [k8s-runtime-tests]
+  - task: k8s-live-integration-tests
+    config:
+      platform: linux
+      rootfs_uri: docker:///golang:1.25-bookworm
+      inputs:
+      - name: repo
+      run:
+        path: sh
+        args:
+        - -exc
+        - |
+          echo "=== Installing kubectl ==="
+          curl -sLO "https://dl.k8s.io/release/$(curl -sL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          install kubectl /usr/local/bin/kubectl
+          rm kubectl
+
+          echo "=== Setting up kubeconfig for Go test client ==="
+          SA_DIR=/var/run/secrets/kubernetes.io/serviceaccount
+          SA_TOKEN=$(cat "$SA_DIR/token")
+          kubectl config set-cluster local --server="https://${KUBERNETES_SERVICE_HOST}:${KUBERNETES_SERVICE_PORT}" --certificate-authority="$SA_DIR/ca.crt" --embed-certs=true
+          kubectl config set-credentials local --token="$SA_TOKEN"
+          kubectl config set-context local --cluster=local --user=local --namespace=cicd
+          kubectl config use-context local
+          echo "Kubeconfig created, testing: $(kubectl get pods -n cicd --no-headers 2>&1 | wc -l) pods visible"
+
+          export K8S_TEST_NAMESPACE=cicd
+          echo "K8S_TEST_NAMESPACE=$K8S_TEST_NAMESPACE"
+
+          echo "=== Cleaning up stale test pods from previous runs ==="
+          for NS in cicd concourse-test; do
+            kubectl get pods -n $NS --no-headers -o custom-columns=":metadata.name" 2>/dev/null \
+              | { grep -E '^(live-|e2e-)' || true; } \
+              | xargs -r kubectl delete pods -n $NS --grace-period=0 --force 2>/dev/null || true
+          done
+          echo ""
+
+          cd repo
+
+          echo "=== Running jetbridge live integration tests ==="
+          echo "These tests create real K8s pods against the live cluster."
+          echo ""
+          go test -tags live -v -count=1 -timeout 5m ./atc/worker/jetbridge/...
+          echo "=== Live integration tests passed ==="
+
+- name: build-image
+  serial_groups: [pipeline]
+  plan:
+  - get: repo
+    trigger: true
+    passed: [k8s-live-tests]
+  - task: build-concourse-image
+    privileged: true
+    config:
+      platform: linux
+      rootfs_uri: docker:///docker:27-dind
+      inputs:
+      - name: repo
+      run:
+        path: sh
+        args:
+        - -exc
+        - |
+          REGISTRY="registry-docker-registry.cicd.svc.cluster.local:5000"
+          IMAGE="${REGISTRY}/jetbridge"
+
+          echo "=== Starting Docker daemon ==="
+          dockerd --insecure-registry="${REGISTRY}" &
+          DOCKERD_PID=$!
+          echo "Waiting for Docker daemon..."
+          TRIES=0
+          while ! docker info >/dev/null 2>&1; do
+            TRIES=$((TRIES + 1))
+            if [ $TRIES -gt 30 ]; then
+              echo "Docker daemon failed to start"
+              exit 1
+            fi
+            sleep 1
+          done
+          echo "Docker daemon ready"
+
+          cd repo
+
+          echo "=== Building image with Dockerfile.build ==="
+          docker build \
+            -f Dockerfile.build \
+            --build-arg CONCOURSE_VERSION=0.0.0-dev \
+            -t "${IMAGE}:latest" \
+            -t "${IMAGE}:0.0.0-dev" \
+            .
+
+          echo "=== Pushing image to registry ==="
+          docker push "${IMAGE}:latest"
+          docker push "${IMAGE}:0.0.0-dev"
+
+          echo "=== Verifying ==="
+          docker images "${IMAGE}"
+          echo ""
+          echo "=== Image build and push complete ==="
+          echo "  ${IMAGE}:latest"
+          echo "  ${IMAGE}:0.0.0-dev"
+
+          # Clean shutdown
+          kill $DOCKERD_PID 2>/dev/null || true
+
+- name: deploy
+  serial_groups: [pipeline]
+  plan:
+  - get: repo
+    trigger: true
+    passed: [build-image]
+  - task: deploy
+    config:
+      platform: linux
+      rootfs_uri: docker:///bitnami/kubectl:latest
+      inputs:
+      - name: repo
+      run:
+        path: sh
+        args:
+        - -exc
+        - |
+          echo "=== Setting up kubeconfig ==="
+          SA_DIR=/var/run/secrets/kubernetes.io/serviceaccount
+          SA_TOKEN=$(cat "$SA_DIR/token")
+          kubectl config set-cluster local --server="https://${KUBERNETES_SERVICE_HOST}:${KUBERNETES_SERVICE_PORT}" --certificate-authority="$SA_DIR/ca.crt" --embed-certs=true
+          kubectl config set-credentials local --token="$SA_TOKEN"
+          kubectl config set-context local --cluster=local --user=local --namespace=cicd
+          kubectl config use-context local
+
+          echo "=== Deploying new concourse-web image ==="
+          echo ""
+          echo "Current concourse-web pod:"
+          kubectl get pods -n cicd -l app=concourse-web
+          echo ""
+
+          echo "=== Creating restarter pod to handle rollout restart ==="
+          RESTARTER_POD="web-restarter-$$"
+
+          # Clean up any leftover restarter pods
+          kubectl delete pod -n cicd -l app=web-restarter --grace-period=0 --force 2>/dev/null || true
+
+          cat <<PODEOF | kubectl apply -n cicd -f -
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: ${RESTARTER_POD}
+            namespace: cicd
+            labels:
+              app: web-restarter
+          spec:
+            restartPolicy: Never
+            serviceAccountName: concourse-web
+            containers:
+            - name: restarter
+              image: bitnami/kubectl:latest
+              command: ["sh", "-c"]
+              args:
+              - |
+                echo "Restarter pod starting, sleeping 15s to allow task to complete..."
+                sleep 15
+                echo "Performing rollout restart of concourse-web deployment..."
+                kubectl rollout restart deployment/concourse-web -n cicd
+                echo "Waiting for rollout to complete..."
+                kubectl rollout status deployment/concourse-web -n cicd --timeout=180s
+                echo "Rollout complete, cleaning up restarter pod..."
+                kubectl delete pod -n cicd -l app=web-restarter --grace-period=0 --force 2>/dev/null || true
+          PODEOF
+
+          echo "Restarter pod '${RESTARTER_POD}' created and running in background"
+          echo ""
+          echo "=== Deploy task complete (rollout continues in background) ==="
