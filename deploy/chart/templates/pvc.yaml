@@ -1,0 +1,38 @@
+{{- if .Values.cachePvc.enabled }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Values.cachePvc.name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "concourse.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    {{- toYaml .Values.cachePvc.accessModes | nindent 4 }}
+  {{- if .Values.cachePvc.storageClass }}
+  storageClassName: {{ .Values.cachePvc.storageClass }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.cachePvc.size }}
+{{- end }}
+{{- if .Values.artifactStorePvc.enabled }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Values.artifactStorePvc.name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "concourse.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    {{- toYaml .Values.artifactStorePvc.accessModes | nindent 4 }}
+  {{- if .Values.artifactStorePvc.storageClass }}
+  storageClassName: {{ .Values.artifactStorePvc.storageClass }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.artifactStorePvc.size }}
+{{- end }}

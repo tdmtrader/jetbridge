@@ -1,0 +1,143 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "concourse.fullname" . }}-web
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "concourse.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.web.replicas }}
+  selector:
+    matchLabels:
+      {{- include "concourse.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "concourse.selectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "concourse.serviceAccountName" . }}
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- range . }}
+        - name: {{ . }}
+        {{- end }}
+      {{- end }}
+      initContainers:
+        - name: generate-keys
+          image: {{ include "concourse.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - sh
+            - -c
+            - |
+              # Only generate keys if they don't already exist
+              if [ ! -f /keys/session_signing_key ]; then
+                concourse generate-key -t rsa -f /keys/session_signing_key
+              fi
+              if [ ! -f /keys/tsa_host_key ]; then
+                concourse generate-key -t ssh -f /keys/tsa_host_key
+              fi
+              if [ ! -f /keys/worker_key ]; then
+                concourse generate-key -t ssh -f /keys/worker_key
+                cp /keys/worker_key.pub /keys/authorized_worker_keys
+              fi
+          volumeMounts:
+            - name: keys
+              mountPath: /keys
+      containers:
+        - name: concourse-web
+          image: {{ include "concourse.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - web
+            # PostgreSQL
+            - --postgres-host={{ include "concourse.postgresHost" . }}
+            - --postgres-port={{ include "concourse.postgresPort" . }}
+            - --postgres-user={{ .Values.postgresql.user }}
+            - --postgres-password={{ .Values.postgresql.password }}
+            - --postgres-database={{ .Values.postgresql.database }}
+            # Web
+            - --external-url={{ .Values.web.externalUrl }}
+            - --cluster-name={{ .Values.web.clusterName }}
+            - --log-level={{ .Values.web.logLevel }}
+            # Auth
+            - --add-local-user={{ .Values.web.localUsers }}
+            - --main-team-local-user={{ .Values.web.mainTeamLocalUser }}
+            # Kubernetes runtime
+            - --kubernetes-namespace={{ include "concourse.kubernetesNamespace" . }}
+            {{- if .Values.kubernetes.serviceAccount }}
+            - --kubernetes-service-account={{ .Values.kubernetes.serviceAccount }}
+            {{- end }}
+            {{- if .Values.kubernetes.podStartupTimeout }}
+            - --kubernetes-pod-startup-timeout={{ .Values.kubernetes.podStartupTimeout }}
+            {{- end }}
+            {{- if .Values.kubernetes.artifactHelperImage }}
+            - --kubernetes-artifact-helper-image={{ .Values.kubernetes.artifactHelperImage }}
+            {{- end }}
+            {{- if .Values.kubernetes.imageRegistryPrefix }}
+            - --kubernetes-image-registry-prefix={{ .Values.kubernetes.imageRegistryPrefix }}
+            {{- end }}
+            {{- if .Values.kubernetes.imageRegistrySecret }}
+            - --kubernetes-image-registry-secret={{ .Values.kubernetes.imageRegistrySecret }}
+            {{- end }}
+            {{- range .Values.kubernetes.imagePullSecrets }}
+            - --kubernetes-image-pull-secret={{ . }}
+            {{- end }}
+            # PVCs
+            {{- if .Values.cachePvc.enabled }}
+            - --kubernetes-cache-pvc={{ .Values.cachePvc.name }}
+            {{- end }}
+            {{- if .Values.artifactStorePvc.enabled }}
+            - --kubernetes-artifact-store-claim={{ .Values.artifactStorePvc.name }}
+            {{- end }}
+            # Extra args
+            {{- range .Values.web.extraArgs }}
+            - {{ . }}
+            {{- end }}
+          env:
+            - name: CONCOURSE_SESSION_SIGNING_KEY
+              value: /keys/session_signing_key
+            - name: CONCOURSE_TSA_HOST_KEY
+              value: /keys/tsa_host_key
+            - name: CONCOURSE_TSA_AUTHORIZED_KEYS
+              value: /keys/authorized_worker_keys
+            {{- range .Values.web.env }}
+            - name: {{ .name }}
+              value: {{ .value | quote }}
+            {{- end }}
+          ports:
+            - containerPort: 8080
+              name: http
+            - containerPort: 2222
+              name: tsa
+          {{- with .Values.web.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.web.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.web.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: keys
+              mountPath: /keys
+              readOnly: true
+      volumes:
+        - name: keys
+          emptyDir: {}
+      {{- with .Values.web.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.web.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.web.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
