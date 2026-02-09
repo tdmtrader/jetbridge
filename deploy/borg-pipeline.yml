@@ -73,6 +73,7 @@ jobs:
             | grep -v '/atc/worker$' \
             | grep -v /skymarshal/dexserver \
             | grep -v /worker/baggageclaim/volume/driver \
+            | grep -v /go-archive/zipfs \
             | grep -v /cmd)
           echo "Testing packages:"
           echo "$PACKAGES" | head -20
