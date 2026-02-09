@@ -155,7 +155,42 @@ func (w *Worker) newVolumeForMount(handle, mountPath string) *Volume {
 }
 
 func (w *Worker) CreateVolumeForArtifact(ctx context.Context, teamID int) (runtime.Volume, db.WorkerArtifact, error) {
-	return nil, nil, fmt.Errorf("jetbridge: CreateVolumeForArtifact not yet implemented")
+	if w.volumeRepo == nil {
+		return nil, nil, fmt.Errorf("create artifact volume: volume repository not configured")
+	}
+
+	logger := lagerctx.FromContext(ctx).Session("create-volume-for-artifact", lager.Data{
+		"worker": w.Name(),
+		"team":   teamID,
+	})
+
+	creatingVolume, err := w.volumeRepo.CreateVolume(teamID, w.Name(), db.VolumeTypeArtifact)
+	if err != nil {
+		logger.Error("failed-to-create-volume", err)
+		return nil, nil, fmt.Errorf("create artifact volume: %w", err)
+	}
+
+	createdVolume, err := creatingVolume.Created()
+	if err != nil {
+		logger.Error("failed-to-transition-volume", err)
+		return nil, nil, fmt.Errorf("transition artifact volume to created: %w", err)
+	}
+
+	artifact, err := createdVolume.InitializeArtifact("", 0)
+	if err != nil {
+		logger.Error("failed-to-initialize-artifact", err)
+		return nil, nil, fmt.Errorf("initialize artifact: %w", err)
+	}
+
+	handle := createdVolume.Handle()
+
+	if w.config.ArtifactStoreClaim != "" {
+		key := ArtifactKey(handle)
+		return NewArtifactStoreVolume(key, handle, w.Name(), createdVolume), artifact, nil
+	}
+
+	vol := NewDeferredVolume(handle, w.Name(), w.executor, w.config.Namespace, mainContainerName, "/tmp/artifact/"+handle)
+	return vol, artifact, nil
 }
 
 func (w *Worker) LookupContainer(ctx context.Context, handle string) (runtime.Container, bool, error) {
