@@ -4,13 +4,13 @@
 
 ### Task 1: Bootstrap standalone Go module
 
-- [ ] Initialize `ci-agent/go.mod` as independent module
-- [ ] Verify module builds and tests run independently of parent repo
-- [ ] Add `.gitignore` and basic package structure
+- [x] fd0782c04 Initialize `ci-agent/go.mod` as independent module
+- [x] fd0782c04 Verify module builds and tests run independently of parent repo
+- [x] fd0782c04 Add `.gitignore` and basic package structure
 
 ### Task 2: Define review output schema types
 
-- [ ] Write tests for review schema
+- [x] f4dab860e Write tests for review schema
   - `ReviewOutput` round-trips JSON marshal/unmarshal
   - `ProvenIssue` requires id, severity, title, file, line, test_file, test_name
   - `Observation` requires id, title, file, line, category
@@ -21,7 +21,7 @@
   - Severity enum validates: critical, high, medium, low
   - Category enum validates: security, correctness, performance, maintainability, testing
   - Invalid severity/category returns error
-- [ ] Implement review schema types
+- [x] aa1de73cf Implement review schema types
   - New package: `ci-agent/schema/`
   - Types: `ReviewOutput`, `Metadata`, `Score`, `ScoreDeduction`, `ProvenIssue`, `Observation`, `TestSummary`
   - `Severity` and `Category` types with constants + `Validate()`
@@ -29,14 +29,14 @@
 
 ### Task 3: Define review config types and profiles
 
-- [ ] Write tests for review config
+- [x] e7cacb611 Write tests for review config
   - Parse valid `review.yml` with severity weights, categories, include/exclude
   - Missing weights use defaults
   - Empty config returns default profile
   - Built-in profiles `default`, `security`, `strict` load correctly
   - File include/exclude patterns match correctly (glob)
   - Unknown fields rejected (strict parsing)
-- [ ] Implement review config types
+- [x] ca4ba6965 Implement review config types
   - New package: `ci-agent/config/`
   - Types: `ReviewConfig`, `SeverityWeights`, `CategoryConfig`
   - `LoadConfig(yamlBytes []byte) (*ReviewConfig, error)`
@@ -44,7 +44,7 @@
   - `DefaultConfig() *ReviewConfig`
   - `ReviewConfig.ShouldReview(filePath string) bool` — include/exclude logic
 
-- [ ] Phase 1 Checkpoint — module builds independently, schema + config tested
+- [~] Phase 1 Checkpoint — module builds independently, schema + config tested
 
 ---
 
