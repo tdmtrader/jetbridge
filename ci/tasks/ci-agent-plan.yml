@@ -1,0 +1,47 @@
+---
+platform: linux
+
+rootfs_uri: docker:///golang:1.25-bookworm
+
+inputs:
+- name: story
+
+outputs:
+- name: plan-output
+
+params:
+  AGENT_CLI: claude
+  AGENT_MODEL: ""
+  CONFIDENCE_THRESHOLD: "0.6"
+  CONFIDENCE_WEIGHTS: ""
+  TIMEOUT: "5m"
+
+run:
+  path: sh
+  args:
+  - -exc
+  - |
+    echo "=== CI Agent Plan ==="
+
+    # Build the plan binary from source.
+    cd story
+    if [ -d ci-agent ]; then
+      cd ci-agent
+      go build -o /usr/local/bin/ci-agent-plan ./cmd/ci-agent-plan/
+      cd ../..
+    fi
+
+    # Set up paths.
+    export INPUT_DIR="$(pwd)/story"
+    export OUTPUT_DIR="$(pwd)/plan-output"
+
+    echo "Input: $INPUT_DIR"
+    echo "Output: $OUTPUT_DIR"
+    echo "Threshold: $CONFIDENCE_THRESHOLD"
+    echo ""
+
+    ci-agent-plan
+
+    echo "=== Planning complete ==="
+    echo "Results:"
+    cat "$OUTPUT_DIR/results.json" 2>/dev/null || echo "No results"

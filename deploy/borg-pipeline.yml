@@ -116,6 +116,40 @@ jobs:
           echo "=== Fix Report ==="
           cat fix-report/fix-report.json 2>/dev/null || echo "No fix report"
 
+- name: agent-plan
+  plan:
+  - get: repo
+    trigger: true
+    passed: [build-and-vet]
+  - task: ci-agent-plan
+    config:
+      platform: linux
+      rootfs_uri: docker:///golang:1.25-bookworm
+      inputs:
+      - name: repo
+      outputs:
+      - name: plan-output
+      params:
+        AGENT_CLI: claude
+        CONFIDENCE_THRESHOLD: "0.6"
+        TIMEOUT: "5m"
+      run:
+        path: sh
+        args:
+        - -exc
+        - |
+          cd repo/ci-agent
+          go build -o /usr/local/bin/ci-agent-plan ./cmd/ci-agent-plan/
+          cd ../..
+
+          export INPUT_DIR="$(pwd)/repo"
+          export OUTPUT_DIR="$(pwd)/plan-output"
+
+          ci-agent-plan || true
+
+          echo "=== Plan Output ==="
+          cat plan-output/results.json 2>/dev/null || echo "No plan results"
+
 - name: unit-tests
   serial_groups: [pipeline]
   plan:

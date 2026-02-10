@@ -1,0 +1,42 @@
+---
+platform: linux
+
+rootfs_uri: docker:///golang:1.25-bookworm
+
+inputs:
+- name: plan-output
+
+params:
+  CONFIDENCE_THRESHOLD: "0.6"
+
+run:
+  path: sh
+  args:
+  - -exc
+  - |
+    echo "=== Plan Gate ==="
+
+    RESULTS="plan-output/results.json"
+
+    if [ ! -f "$RESULTS" ]; then
+      echo "ERROR: results.json not found"
+      exit 1
+    fi
+
+    STATUS=$(jq -r '.status' "$RESULTS")
+    CONFIDENCE=$(jq -r '.confidence' "$RESULTS")
+
+    echo "Status: $STATUS"
+    echo "Confidence: $CONFIDENCE"
+    echo "Threshold: $CONFIDENCE_THRESHOLD"
+
+    if [ "$STATUS" = "pass" ]; then
+      echo "GATE: PASS"
+      exit 0
+    elif [ "$STATUS" = "abstain" ]; then
+      echo "GATE: ABSTAIN (manual review needed)"
+      exit 0
+    else
+      echo "GATE: FAIL"
+      exit 1
+    fi
