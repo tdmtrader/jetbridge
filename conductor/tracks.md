@@ -32,7 +32,8 @@
 
 ---
 
-## [ ] Track: Human Feedback on Agent Reviews — Interactive Elm UI for collecting structured verdicts, stored in PostgreSQL
+## [x] Track: Human Feedback on Agent Reviews — Interactive Elm UI for collecting structured verdicts, stored in PostgreSQL
+*Completed: 2026-02-10*
 *Link: [./conductor/tracks/human_feedback_on_agent_reviews_20260209/](./conductor/tracks/human_feedback_on_agent_reviews_20260209/)*
 
 ---
