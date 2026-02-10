@@ -8,6 +8,7 @@ import (
 	"io"
 	"sync"
 
+	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/compression"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbfakes"
@@ -3014,5 +3015,253 @@ var _ = Describe("Concurrent container operations", func() {
 		pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
 		Expect(err).ToNot(HaveOccurred())
 		Expect(pods.Items).To(HaveLen(goroutines))
+	})
+
+})
+
+var _ = Describe("Run with sidecar containers", func() {
+	var (
+		fakeDBWorker  *dbfakes.FakeWorker
+		fakeClientset *fake.Clientset
+		worker        *jetbridge.Worker
+		ctx           context.Context
+		cfg           jetbridge.Config
+		delegate      runtime.BuildStepDelegate
+		container     runtime.Container
+	)
+
+	BeforeEach(func() {
+		ctx = context.Background()
+		fakeDBWorker = new(dbfakes.FakeWorker)
+		fakeDBWorker.NameReturns("k8s-worker-1")
+		fakeClientset = fake.NewSimpleClientset()
+		cfg = jetbridge.NewConfig("test-namespace", "")
+		delegate = &noopDelegate{}
+		worker = jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
+	})
+
+	Context("when no sidecars are configured", func() {
+		BeforeEach(func() {
+			setupFakeDBContainer(fakeDBWorker, "no-sidecar-handle")
+
+			var err error
+			container, _, err = worker.FindOrCreateContainer(
+				ctx,
+				db.NewFixedHandleContainerOwner("no-sidecar-handle"),
+				db.ContainerMetadata{Type: db.ContainerTypeTask},
+				runtime.ContainerSpec{
+					TeamID:   1,
+					Dir:      "/workdir",
+					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+				},
+				delegate,
+			)
+			Expect(err).ToNot(HaveOccurred())
+		})
+
+		It("creates a pod with only the main container", func() {
+			_, err := container.Run(ctx, runtime.ProcessSpec{
+				Path: "/bin/sh",
+				Args: []string{"-c", "echo hello"},
+			}, runtime.ProcessIO{})
+			Expect(err).ToNot(HaveOccurred())
+
+			pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(pods.Items).To(HaveLen(1))
+
+			pod := pods.Items[0]
+			Expect(pod.Spec.Containers).To(HaveLen(1))
+			Expect(pod.Spec.Containers[0].Name).To(Equal("main"))
+		})
+	})
+
+	Context("when one sidecar is configured", func() {
+		BeforeEach(func() {
+			setupFakeDBContainer(fakeDBWorker, "one-sidecar-handle")
+
+			var err error
+			container, _, err = worker.FindOrCreateContainer(
+				ctx,
+				db.NewFixedHandleContainerOwner("one-sidecar-handle"),
+				db.ContainerMetadata{Type: db.ContainerTypeTask},
+				runtime.ContainerSpec{
+					TeamID:   1,
+					Dir:      "/tmp/build/workdir",
+					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+					Inputs: []runtime.Input{
+						{DestinationPath: "/tmp/build/workdir/my-repo"},
+					},
+					Sidecars: []atc.SidecarConfig{
+						{
+							Name:  "postgres",
+							Image: "postgres:15",
+							Env: []atc.SidecarEnvVar{
+								{Name: "POSTGRES_PASSWORD", Value: "test"},
+							},
+							Ports: []atc.SidecarPort{
+								{ContainerPort: 5432},
+							},
+						},
+					},
+				},
+				delegate,
+			)
+			Expect(err).ToNot(HaveOccurred())
+		})
+
+		It("creates a pod with the main container and the sidecar", func() {
+			_, err := container.Run(ctx, runtime.ProcessSpec{
+				Path: "/bin/sh",
+				Args: []string{"-c", "echo hello"},
+			}, runtime.ProcessIO{})
+			Expect(err).ToNot(HaveOccurred())
+
+			pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(pods.Items).To(HaveLen(1))
+
+			pod := pods.Items[0]
+			Expect(pod.Spec.Containers).To(HaveLen(2))
+
+			By("placing the main container first")
+			Expect(pod.Spec.Containers[0].Name).To(Equal("main"))
+
+			By("adding the sidecar container")
+			sidecar := pod.Spec.Containers[1]
+			Expect(sidecar.Name).To(Equal("postgres"))
+			Expect(sidecar.Image).To(Equal("postgres:15"))
+
+			By("mapping sidecar env vars")
+			Expect(sidecar.Env).To(ContainElement(corev1.EnvVar{Name: "POSTGRES_PASSWORD", Value: "test"}))
+
+			By("mapping sidecar ports")
+			Expect(sidecar.Ports).To(ContainElement(corev1.ContainerPort{ContainerPort: 5432, Protocol: corev1.ProtocolTCP}))
+
+			By("applying non-privileged security context to the sidecar")
+			Expect(sidecar.SecurityContext).ToNot(BeNil())
+			Expect(sidecar.SecurityContext.AllowPrivilegeEscalation).ToNot(BeNil())
+			Expect(*sidecar.SecurityContext.AllowPrivilegeEscalation).To(BeFalse())
+
+			By("setting ImagePullPolicy to IfNotPresent")
+			Expect(sidecar.ImagePullPolicy).To(Equal(corev1.PullIfNotPresent))
+
+			By("giving the sidecar the same volume mounts as the main container")
+			mainMounts := pod.Spec.Containers[0].VolumeMounts
+			Expect(sidecar.VolumeMounts).To(Equal(mainMounts))
+		})
+	})
+
+	Context("when multiple sidecars are configured", func() {
+		BeforeEach(func() {
+			setupFakeDBContainer(fakeDBWorker, "multi-sidecar-handle")
+
+			var err error
+			container, _, err = worker.FindOrCreateContainer(
+				ctx,
+				db.NewFixedHandleContainerOwner("multi-sidecar-handle"),
+				db.ContainerMetadata{Type: db.ContainerTypeTask},
+				runtime.ContainerSpec{
+					TeamID:   1,
+					Dir:      "/tmp/build/workdir",
+					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+					Sidecars: []atc.SidecarConfig{
+						{
+							Name:  "redis",
+							Image: "redis:7",
+							Ports: []atc.SidecarPort{{ContainerPort: 6379}},
+						},
+						{
+							Name:    "nginx",
+							Image:   "nginx:latest",
+							Command: []string{"nginx", "-g", "daemon off;"},
+							Ports:   []atc.SidecarPort{{ContainerPort: 80}},
+						},
+					},
+				},
+				delegate,
+			)
+			Expect(err).ToNot(HaveOccurred())
+		})
+
+		It("creates a pod with the main container and all sidecars", func() {
+			_, err := container.Run(ctx, runtime.ProcessSpec{
+				Path: "/bin/sh",
+				Args: []string{"-c", "echo hello"},
+			}, runtime.ProcessIO{})
+			Expect(err).ToNot(HaveOccurred())
+
+			pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			pod := pods.Items[0]
+
+			Expect(pod.Spec.Containers).To(HaveLen(3))
+			Expect(pod.Spec.Containers[0].Name).To(Equal("main"))
+			Expect(pod.Spec.Containers[1].Name).To(Equal("redis"))
+			Expect(pod.Spec.Containers[2].Name).To(Equal("nginx"))
+		})
+	})
+
+	Context("when a sidecar has resources, command, args, and workingDir", func() {
+		BeforeEach(func() {
+			setupFakeDBContainer(fakeDBWorker, "sidecar-full-handle")
+
+			var err error
+			container, _, err = worker.FindOrCreateContainer(
+				ctx,
+				db.NewFixedHandleContainerOwner("sidecar-full-handle"),
+				db.ContainerMetadata{Type: db.ContainerTypeTask},
+				runtime.ContainerSpec{
+					TeamID:   1,
+					Dir:      "/workdir",
+					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+					Sidecars: []atc.SidecarConfig{
+						{
+							Name:       "app",
+							Image:      "myapp:latest",
+							Command:    []string{"/usr/bin/app"},
+							Args:       []string{"--port", "8080"},
+							WorkingDir: "/app",
+							Resources: &atc.SidecarResources{
+								Requests: atc.SidecarResourceList{CPU: "100m", Memory: "128Mi"},
+								Limits:   atc.SidecarResourceList{CPU: "500m", Memory: "512Mi"},
+							},
+						},
+					},
+				},
+				delegate,
+			)
+			Expect(err).ToNot(HaveOccurred())
+		})
+
+		It("maps all sidecar fields to the K8s container spec", func() {
+			_, err := container.Run(ctx, runtime.ProcessSpec{
+				Path: "/bin/sh",
+				Args: []string{"-c", "echo hello"},
+			}, runtime.ProcessIO{})
+			Expect(err).ToNot(HaveOccurred())
+
+			pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			pod := pods.Items[0]
+
+			Expect(pod.Spec.Containers).To(HaveLen(2))
+			sidecar := pod.Spec.Containers[1]
+
+			By("mapping command and args")
+			Expect(sidecar.Command).To(Equal([]string{"/usr/bin/app"}))
+			Expect(sidecar.Args).To(Equal([]string{"--port", "8080"}))
+
+			By("mapping workingDir")
+			Expect(sidecar.WorkingDir).To(Equal("/app"))
+
+			By("mapping resource requests")
+			Expect(sidecar.Resources.Requests.Cpu().String()).To(Equal("100m"))
+			Expect(sidecar.Resources.Requests.Memory().String()).To(Equal("128Mi"))
+
+			By("mapping resource limits")
+			Expect(sidecar.Resources.Limits.Cpu().String()).To(Equal("500m"))
+			Expect(sidecar.Resources.Limits.Memory().String()).To(Equal("512Mi"))
+		})
 	})
 })
