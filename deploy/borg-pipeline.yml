@@ -150,6 +150,42 @@ jobs:
           echo "=== Plan Output ==="
           cat plan-output/results.json 2>/dev/null || echo "No plan results"
 
+- name: agent-qa
+  plan:
+  - get: repo
+    trigger: true
+    passed: [build-and-vet]
+  - task: ci-agent-qa
+    config:
+      platform: linux
+      rootfs_uri: docker:///golang:1.25-bookworm
+      inputs:
+      - name: repo
+      outputs:
+      - name: qa
+      params:
+        AGENT_CLI: claude
+        SCORE_THRESHOLD: "7.0"
+        GENERATE_TESTS: "false"
+        BROWSER_PLAN: "true"
+      run:
+        path: sh
+        args:
+        - -exc
+        - |
+          cd repo/ci-agent
+          go build -o /usr/local/bin/ci-agent-qa ./cmd/ci-agent-qa/
+          cd ../..
+
+          export REPO_DIR="$(pwd)/repo"
+          export SPEC_FILE="$(pwd)/repo/conductor/tracks/agent_step_output_schema_20260209/spec.md"
+          export OUTPUT_DIR="$(pwd)/qa"
+
+          ci-agent-qa || true
+
+          echo "=== QA Output ==="
+          cat qa/qa.json 2>/dev/null || echo "No QA output"
+
 - name: unit-tests
   serial_groups: [pipeline]
   plan:

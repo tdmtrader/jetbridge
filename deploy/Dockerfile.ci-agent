@@ -1,4 +1,4 @@
-# Multi-stage build for ci-agent binaries (review + fix + plan)
+# Multi-stage build for ci-agent binaries (review + fix + plan + qa)
 # Stage 1: Build binaries
 FROM golang:1.25-bookworm AS builder
 
@@ -6,7 +6,8 @@ WORKDIR /src
 COPY ci-agent/ .
 RUN go build -o /ci-agent-review ./cmd/ci-agent-review/ && \
     go build -o /ci-agent-fix ./cmd/ci-agent-fix/ && \
-    go build -o /ci-agent-plan ./cmd/ci-agent-plan/
+    go build -o /ci-agent-plan ./cmd/ci-agent-plan/ && \
+    go build -o /ci-agent-qa ./cmd/ci-agent-qa/
 
 # Stage 2: Runtime image
 FROM golang:1.25-bookworm
@@ -27,6 +28,7 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
 COPY --from=builder /ci-agent-review /usr/local/bin/ci-agent-review
 COPY --from=builder /ci-agent-fix /usr/local/bin/ci-agent-fix
 COPY --from=builder /ci-agent-plan /usr/local/bin/ci-agent-plan
+COPY --from=builder /ci-agent-qa /usr/local/bin/ci-agent-qa
 
 # Claude Code CLI should be mounted or installed at runtime.
 # Default: assume 'claude' is available on PATH.
