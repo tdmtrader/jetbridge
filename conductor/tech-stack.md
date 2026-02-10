@@ -58,6 +58,11 @@
 - **CI:** Concourse pipelines (self-hosted)
 - **Deployment:** Docker images, Kubernetes Helm, BOSH releases
 
+### Agent / LLM Integration (Planned)
+- **MCP (Model Context Protocol)** — Agent-to-tool communication protocol
+- **LLM Providers** — Anthropic Claude, OpenAI, and compatible APIs via standard HTTP clients
+- **Agent Runtime** — Long-lived K8s pods with tool access, context injection, and structured output
+
 ## Repository Structure (Key Directories)
 
 ```

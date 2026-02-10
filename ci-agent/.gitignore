@@ -3,6 +3,7 @@
 /ci-agent-fix
 /ci-agent-plan
 /ci-agent-qa
+/ci-agent-implement
 
 # Test artifacts
 *.test
