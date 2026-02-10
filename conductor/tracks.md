@@ -50,8 +50,8 @@
 
 ---
 
-### [ ] Track: Agent can iterate on a story given a spec
-
-_Link: [./tracks/agent_can_iterate_on_a_story_given_a_spec_20260209/](./tracks/agent_can_iterate_on_a_story_given_a_spec_20260209/)_
+## [x] Track: Agent can iterate on a story given a spec — TDD-driven implementation agent
+*Completed: 2026-02-10*
+*Link: [./conductor/tracks/agent_can_iterate_on_a_story_given_a_spec_20260209/](./conductor/tracks/agent_can_iterate_on_a_story_given_a_spec_20260209/)*
 
 ---
