@@ -21,12 +21,12 @@ This package is a **standalone extension** — a self-contained library with zer
 - [x] 8b6f5788f Task: Implement EventWriter
 - [x] fb2423b4d Task: Write tests for NDJSON EventReader — line-by-line parse from io.Reader, validate each event
 - [x] 3015f9704 Task: Implement EventReader
-- [~] Task: Phase 2 Manual Verification — confirm package builds with zero Concourse imports (`go vet`, import check)
+- [x] e09a508ad Task: Phase 2 Manual Verification — confirm package builds with zero Concourse imports (`go vet`, import check) [checkpoint: e09a508ad]
 
 ## Phase 3: Documentation
 
-- [ ] Task: Write schema reference doc (`atc/agent/schema/SCHEMA.md`) with field descriptions, examples, and extensibility conventions
-- [ ] Task: Verify no regressions — run existing Concourse test suite to confirm zero impact
+- [x] 3bcd79220 Task: Write schema reference doc (`atc/agent/schema/SCHEMA.md`) with field descriptions, examples, and extensibility conventions
+- [~] Task: Verify no regressions — run existing Concourse test suite to confirm zero impact
 - [ ] Task: Phase 3 Manual Verification
 
 ---
