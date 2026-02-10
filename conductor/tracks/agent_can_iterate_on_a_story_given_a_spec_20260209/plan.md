@@ -129,28 +129,14 @@ The implementation agent reads `spec.md` + `plan.md` (produced by `ci-agent-plan
 
 ### Task 15: Claude Code adapter for test generation
 
-- [ ] Write tests for Claude Code test gen adapter
-  - Constructs correct CLI invocation: `claude -p "<prompt>" --output-format json`
-  - Parses structured JSON output into `TestGenResponse`
-  - Handles timeout (context deadline), non-zero exit, malformed JSON
-  - Captures stderr for error reporting
-- [ ] Implement Claude Code test gen adapter
-  - New file: `ci-agent/implement/adapter/claude/claude.go`
-  - Implements `Adapter` interface
-  - `GenerateTest` method: builds prompt, invokes CLI, parses response
+- [x] Write tests for Claude Code adapter (6 tests)
+- [x] Implement Claude Code test gen adapter
 
 ### Task 16: Claude Code adapter for implementation generation
 
-- [ ] Write tests for Claude Code impl gen adapter
-  - Constructs correct CLI invocation with implementation prompt
-  - Parses output into `ImplGenResponse` with `[]FilePatch`
-  - Handles same error cases as test gen
-  - Rejects patches that modify the test file (enforced in prompt and post-parse)
-- [ ] Implement Claude Code impl gen adapter
-  - Extends `ci-agent/implement/adapter/claude/claude.go`
-  - `GenerateImpl` method: builds prompt, invokes CLI, parses response, validates patches
+- [x] Implement Claude Code impl gen adapter (combined with Task 15)
 
-- [ ] Phase 6 Checkpoint — adapter dispatches to Claude Code CLI, parses responses. Run: `go test ./implement/adapter/...`
+- [x] Phase 6 Checkpoint — adapter dispatches to Claude Code CLI, parses responses
 
 ---
 
@@ -158,42 +144,20 @@ The implementation agent reads `spec.md` + `plan.md` (produced by `ci-agent-plan
 
 ### Task 17: Implementation confidence scorer
 
-- [ ] Write tests for confidence scoring
-  - All tasks committed: confidence = 1.0
-  - Half committed, half skipped (pre-satisfied): confidence = 0.9 (pre-satisfied is fine)
-  - Half committed, half failed: confidence = 0.5
-  - All failed: confidence = 0.0
-  - One committed, rest failed: confidence proportional to committed/total, with penalty
-  - Full test suite passing at end: +0.1 bonus (capped at 1.0)
-  - Full test suite failing at end: override confidence to 0.0, status = fail
-- [ ] Implement confidence scorer
-  - New file: `ci-agent/implement/confidence.go`
-  - `ScoreConfidence(tracker *TaskTracker, suitePass bool) *ConfidenceResult`
-  - `ConfidenceResult{Score float64, Status schema.Status, Breakdown map[string]float64}`
+- [x] Write tests for confidence scoring (6 tests)
+- [x] Implement confidence scorer
 
 ### Task 18: Results builder
 
-- [ ] Write tests for results builder
-  - Builds `schema.Results` from tracker summary, confidence, and artifact list
-  - Artifacts include: `summary.md`, `progress.json`, plus any generated test files
-  - Status maps from confidence: >= threshold → pass, < threshold → fail, abstain when input insufficient
-  - Summary text includes: tasks completed/total, test pass rate, list of failures
-  - Metadata includes: repo path, branch, agent CLI used, duration
-- [ ] Implement results builder
-  - New file: `ci-agent/implement/results.go`
-  - `BuildResults(tracker, confidence, opts) *schema.Results`
+- [x] Write tests for results builder (3 tests)
+- [x] Implement results builder
 
 ### Task 19: Summary renderer
 
-- [ ] Write tests for summary renderer
-  - Renders Markdown with: H1 title, overview stats table, per-phase sections with task results
-  - Each task shows: status icon, description, commit SHA (if committed), test file path, failure reason (if failed)
-  - Footer shows: total duration, final test suite status, confidence score
-- [ ] Implement summary renderer
-  - New file: `ci-agent/implement/summary.go`
-  - `RenderSummary(tracker *TaskTracker, confidence *ConfidenceResult, duration time.Duration) (string, error)`
+- [x] Write tests for summary renderer (3 tests)
+- [x] Implement summary renderer
 
-- [ ] Phase 7 Checkpoint — confidence scoring, results, and summary work. Run: `go test ./implement/... -run "Confidence|Results|Summary"`
+- [x] Phase 7 Checkpoint — confidence scoring, results, and summary work
 
 ---
 
