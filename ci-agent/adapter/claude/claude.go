@@ -1,11 +1,15 @@
 package claude
 
 import (
+	"bytes"
+	"context"
 	"fmt"
 	"os/exec"
 	"strings"
 
+	"github.com/concourse/ci-agent/adapter"
 	"github.com/concourse/ci-agent/config"
+	"github.com/concourse/ci-agent/runner"
 )
 
 // Adapter implements the adapter.Adapter interface using Claude Code CLI.
@@ -30,6 +34,28 @@ func (a *Adapter) BuildCommand(repoDir, prompt string) *exec.Cmd {
 	cmd.Dir = repoDir
 	return cmd
 }
+
+// Review implements the adapter.Adapter interface.
+func (a *Adapter) Review(ctx context.Context, repoDir string, cfg *config.ReviewConfig) ([]runner.AgentFinding, error) {
+	prompt, err := BuildReviewPrompt(repoDir, cfg, false, "")
+	if err != nil {
+		return nil, fmt.Errorf("building prompt: %w", err)
+	}
+
+	cmd := a.BuildCommand(repoDir, prompt)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("claude CLI: %w: %s", err, stderr.String())
+	}
+
+	return adapter.ParseFindings(stdout.Bytes())
+}
+
+// Ensure Adapter satisfies the interface at compile time.
+var _ adapter.Adapter = (*Adapter)(nil)
 
 // BuildReviewPrompt constructs the review prompt from config and options.
 func BuildReviewPrompt(repoDir string, cfg *config.ReviewConfig, diffOnly bool, baseRef string) (string, error) {
