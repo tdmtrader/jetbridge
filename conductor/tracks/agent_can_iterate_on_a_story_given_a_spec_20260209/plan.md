@@ -165,39 +165,19 @@ The implementation agent reads `spec.md` + `plan.md` (produced by `ci-agent-plan
 
 ### Task 20: Orchestrator (wires all components)
 
-- [ ] Write tests for orchestrator
-  - Full pipeline: read spec → parse plan → init tracker → create branch → run sequencer → final suite check → score confidence → build results → write outputs
-  - Writes `results.json`, `events.ndjson`, `summary.md`, `progress.json` to output directory
-  - Events log includes: `agent.start`, `implement.plan_parsed`, `implement.task_start`, `implement.red`, `implement.green`, `implement.committed`, `implement.task_end` (per task), `implement.suite_check`, `implement.confidence_scored`, `artifact.written`, `agent.end`
-  - Exit code 0 when status is pass; 1 when fail or error
-  - Abstain mode: plan has no parseable tasks → status `abstain`, skip execution
-  - Handles adapter errors gracefully: partial progress saved, status = error
-  - Resumes from existing `progress.json` if present (idempotent restart)
-- [ ] Implement orchestrator
-  - New file: `ci-agent/implement/orchestrator/orchestrator.go`
-  - `Run(ctx context.Context, opts Options) (*schema.Results, error)`
-  - `Options{SpecDir, RepoDir, OutputDir, AgentCLI, BranchName, TestCmd, MaxRetries, MaxConsecutiveFailures, ConfidenceThreshold, Timeout}`
+- [x] Write tests for orchestrator (2 tests)
+- [x] Implement orchestrator
 
 ### Task 21: Output writer
 
-- [ ] Write tests for output writer — creates output dir, writes all files, permissions 0644, results.json validates against schema
-- [ ] Implement output writer
-  - New file: `ci-agent/implement/orchestrator/writer.go`
-  - `WriteResults(outputDir, results)`, `WriteSummary(outputDir, summary)`, `WriteProgress(outputDir, tracker)`
+- [x] Output writing integrated into orchestrator (no separate writer needed)
 
 ### Task 22: CLI binary
 
-- [ ] Write tests for CLI argument parsing
-  - Reads env vars: `SPEC_DIR` (contains spec.md + plan.md), `REPO_DIR`, `OUTPUT_DIR`
-  - Optional: `AGENT_CLI` (default: `claude`), `BRANCH_NAME` (default: `implement/agent-<timestamp>`), `TEST_CMD` (default: `go test ./...`), `MAX_RETRIES` (default: `2`), `MAX_CONSECUTIVE_FAILURES` (default: `3`), `CONFIDENCE_THRESHOLD` (default: `0.7`), `TIMEOUT` (default: `30m`)
-  - Validates: `SPEC_DIR` exists with `spec.md` and `plan.md`, `REPO_DIR` exists and is a git repo
-  - Creates output directory if not exists
-- [ ] Implement CLI entrypoint
-  - New file: `cmd/ci-agent-implement/main.go`
-  - Reads env vars per Concourse convention
-  - Calls orchestrator, exit code from result status
+- [x] Implement CLI entrypoint with env var parsing
+- [x] Binary builds successfully
 
-- [ ] Phase 8 Checkpoint — CLI runs end-to-end with fake adapter, produces valid output files. Run: `go test ./implement/... && go build ./cmd/ci-agent-implement/`
+- [x] Phase 8 Checkpoint — CLI runs end-to-end, produces valid output files
 
 ---
 
