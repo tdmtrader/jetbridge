@@ -1,0 +1,38 @@
+platform: linux
+
+inputs:
+- name: repo
+- name: plan-output
+
+outputs:
+- name: implemented-repo
+- name: implement-output
+
+params:
+  AGENT_CLI: claude
+  BRANCH_NAME: ""
+  TEST_CMD: "go test ./..."
+  MAX_RETRIES: "2"
+  MAX_CONSECUTIVE_FAILURES: "3"
+  CONFIDENCE_THRESHOLD: "0.7"
+  TIMEOUT: "30m"
+
+run:
+  path: sh
+  args:
+  - -exc
+  - |
+    cd repo/ci-agent
+    go build -o /usr/local/bin/ci-agent-implement ./cmd/ci-agent-implement/
+    cd ../..
+
+    cp -a repo/. implemented-repo/
+
+    export SPEC_DIR="$(pwd)/plan-output"
+    export REPO_DIR="$(pwd)/implemented-repo"
+    export OUTPUT_DIR="$(pwd)/implement-output"
+
+    ci-agent-implement || true
+
+    echo "=== Implementation Output ==="
+    cat implement-output/results.json 2>/dev/null || echo "No results output"
