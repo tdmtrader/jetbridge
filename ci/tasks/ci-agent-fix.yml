@@ -1,0 +1,50 @@
+---
+platform: linux
+
+rootfs_uri: docker:///golang:1.25-bookworm
+
+inputs:
+- name: repo
+- name: review
+
+outputs:
+- name: fixed-repo
+- name: fix-report
+
+params:
+  AGENT_CLI: claude
+  FIX_BRANCH: ""
+  MAX_RETRIES: "2"
+  TEST_COMMAND: "go test ./..."
+
+run:
+  path: sh
+  args:
+  - -exc
+  - |
+    echo "=== CI Agent Fix ==="
+
+    # Build the fix binary from source.
+    cd repo/ci-agent
+    go build -o /usr/local/bin/ci-agent-fix ./cmd/ci-agent-fix/
+    cd ../..
+
+    # Copy repo to fixed-repo output (fix operates on this copy).
+    cp -a repo/. fixed-repo/
+
+    # Set up paths.
+    export REPO_DIR="$(pwd)/fixed-repo"
+    export REVIEW_DIR="$(pwd)/review"
+    export OUTPUT_DIR="$(pwd)/fix-report"
+
+    echo "Repo: $REPO_DIR"
+    echo "Review: $REVIEW_DIR"
+    echo "Output: $OUTPUT_DIR"
+    echo "Max retries: $MAX_RETRIES"
+    echo ""
+
+    ci-agent-fix || true
+
+    echo "=== Fix complete ==="
+    echo "Fix report:"
+    cat "$OUTPUT_DIR/fix-report.json" 2>/dev/null || echo "No fix report"
