@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"code.cloudfoundry.org/lager/v3"
+	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/compression"
 	"github.com/concourse/concourse/atc/db"
 	"go.opentelemetry.io/otel/propagation"
@@ -136,6 +137,9 @@ type ContainerSpec struct {
 
 	// Hermetic indicates whether or not the container has external network access.
 	Hermetic bool
+
+	// Sidecars defines service containers to run alongside the main container.
+	Sidecars []atc.SidecarConfig
 }
 
 type BuildStepDelegate interface {
