@@ -252,6 +252,12 @@ func (step *TaskStep) run(ctx context.Context, state RunState, delegate TaskDele
 	if err != nil {
 		return false, err
 	}
+
+	containerSpec.Sidecars, err = step.loadSidecars(ctx, logger, state.ArtifactRepository())
+	if err != nil {
+		return false, err
+	}
+
 	tracing.Inject(ctx, &containerSpec)
 
 	owner := db.NewBuildStepContainerOwner(step.metadata.BuildID, step.planID, step.metadata.TeamID)
@@ -452,6 +458,60 @@ func (step *TaskStep) containerSpec(logger lager.Logger, state RunState, imageSp
 	}
 
 	return containerSpec, nil
+}
+
+// loadSidecars reads sidecar definition files from the build's artifacts
+// and returns the parsed SidecarConfig entries. Each path follows the same
+// "SOURCE/FILE" convention as the task config file.
+func (step *TaskStep) loadSidecars(ctx context.Context, logger lager.Logger, repo *build.Repository) ([]atc.SidecarConfig, error) {
+	if len(step.plan.Sidecars) == 0 {
+		return nil, nil
+	}
+
+	var all []atc.SidecarConfig
+	seen := make(map[string]bool)
+
+	for _, sidecarPath := range step.plan.Sidecars {
+		segs := strings.SplitN(sidecarPath, "/", 2)
+		if len(segs) != 2 {
+			return nil, fmt.Errorf("sidecar path '%s' must be in the format SOURCE/FILE", sidecarPath)
+		}
+
+		sourceName := build.ArtifactName(segs[0])
+		filePath := segs[1]
+
+		artifact, _, found := repo.ArtifactFor(sourceName)
+		if !found {
+			return nil, fmt.Errorf("sidecar file '%s': unknown artifact source '%s'", sidecarPath, sourceName)
+		}
+
+		stream, err := step.streamer.StreamFile(lagerctx.NewContext(ctx, logger), artifact, filePath)
+		if err != nil {
+			return nil, fmt.Errorf("sidecar file '%s': %w", sidecarPath, err)
+		}
+		defer stream.Close()
+
+		data, err := io.ReadAll(stream)
+		if err != nil {
+			return nil, fmt.Errorf("sidecar file '%s': %w", sidecarPath, err)
+		}
+
+		configs, err := atc.ParseSidecarConfigs(data)
+		if err != nil {
+			return nil, fmt.Errorf("sidecar file '%s': %w", sidecarPath, err)
+		}
+
+		for _, sc := range configs {
+			if seen[sc.Name] {
+				return nil, fmt.Errorf("sidecar file '%s': duplicate sidecar name %q", sidecarPath, sc.Name)
+			}
+			seen[sc.Name] = true
+		}
+
+		all = append(all, configs...)
+	}
+
+	return all, nil
 }
 
 func (step *TaskStep) workerSpec(config atc.TaskConfig) worker.Spec {

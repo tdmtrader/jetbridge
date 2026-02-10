@@ -1086,5 +1086,56 @@ var _ = Describe("TaskStep", func() {
 				Expect(repo.AsMap()).To(BeEmpty())
 			})
 		})
+
+		Context("when sidecars are configured", func() {
+			BeforeEach(func() {
+				sidecarYAML := `
+- name: postgres
+  image: postgres:15
+  env:
+  - name: POSTGRES_PASSWORD
+    value: test
+  ports:
+  - containerPort: 5432
+`
+				fakeStreamer.StreamFileReturnsOnCall(0,
+					io.NopCloser(strings.NewReader(sidecarYAML)), nil,
+				)
+
+				sidecarVolume := runtimetest.NewVolume("sidecar-source")
+				repo.RegisterArtifact("my-repo", sidecarVolume, false)
+
+				taskPlan.Sidecars = []string{"my-repo/ci/sidecars/postgres.yml"}
+			})
+
+			It("loads sidecars into the container spec", func() {
+				Expect(stepErr).ToNot(HaveOccurred())
+				Expect(chosenContainer.Spec.Sidecars).To(HaveLen(1))
+				Expect(chosenContainer.Spec.Sidecars[0].Name).To(Equal("postgres"))
+				Expect(chosenContainer.Spec.Sidecars[0].Image).To(Equal("postgres:15"))
+			})
+		})
+
+		Context("when a sidecar file references an unknown source", func() {
+			BeforeEach(func() {
+				taskPlan.Sidecars = []string{"nonexistent/sidecars/db.yml"}
+			})
+
+			It("returns an error", func() {
+				Expect(stepErr).To(HaveOccurred())
+				Expect(stepErr.Error()).To(ContainSubstring("unknown artifact source"))
+			})
+		})
+
+		Context("when a sidecar file path is malformed", func() {
+			BeforeEach(func() {
+				taskPlan.Sidecars = []string{"no-slash"}
+			})
+
+			It("returns an error", func() {
+				Expect(stepErr).To(HaveOccurred())
+				Expect(stepErr.Error()).To(ContainSubstring("must be in the format SOURCE/FILE"))
+			})
+		})
 	})
 })
