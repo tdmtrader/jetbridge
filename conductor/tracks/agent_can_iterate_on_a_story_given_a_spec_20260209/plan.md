@@ -71,40 +71,20 @@ The implementation agent reads `spec.md` + `plan.md` (produced by `ci-agent-plan
 
 ### Task 7: Implementation prompt builder
 
-- [ ] Write tests for impl prompt
-  - Prompt includes: task description, spec context, failing test code, test output (error message)
-  - Prompt instructs agent to write the minimum code to make the test pass
-  - Prompt specifies output format: JSON with `[]FilePatch` (path + full file content)
-  - Prompt explicitly forbids modifying the test file
-  - Prompt includes existing file content for files being modified
-- [ ] Implement implementation prompt builder
-  - New file: `ci-agent/implement/adapter/prompt_impl_gen.go`
-  - `BuildImplPrompt(req CodeGenRequest, testCode string, testOutput string) (string, error)`
+- [x] Write tests for impl prompt (5 tests)
+- [x] Implement implementation prompt builder
 
 ### Task 8: Patch applier
 
-- [ ] Write tests for patch applier
-  - Applies `[]FilePatch` to repo: writes each file at specified path
-  - Creates new files (NEW) and overwrites existing (MODIFY)
-  - Creates parent directories as needed
-  - Rejects patches that write outside repo root (path traversal guard)
-  - Returns list of files modified for git staging
-- [ ] Implement patch applier
-  - New file: `ci-agent/implement/tdd/patch.go`
-  - `ApplyPatches(repoDir string, patches []adapter.FilePatch) ([]string, error)`
+- [x] Write tests for patch applier (5 tests)
+- [x] Implement patch applier
 
 ### Task 9: Green-phase verifier
 
-- [ ] Write tests for green-phase verifier
-  - Runs the target test after implementation patches applied
-  - Test passes → returns `GreenResult{Confirmed: true}`
-  - Test still fails → returns `GreenResult{Confirmed: false, Output: "..."}` (implementation insufficient)
-  - Compile error → returns `GreenResult{Confirmed: false, Output: "..."}` (implementation broke something)
-- [ ] Implement green verifier
-  - New file: `ci-agent/implement/tdd/green.go`
-  - `VerifyGreen(ctx context.Context, repoDir string, testFilePath string) (*GreenResult, error)`
+- [x] Write tests for green-phase verifier (3 tests)
+- [x] Implement green verifier
 
-- [ ] Phase 3 Checkpoint — green phase applies patches and verifies tests pass. Run: `go test ./implement/... -run "Impl|Patch|Green"`
+- [x] Phase 3 Checkpoint — green phase applies patches and verifies tests pass (28 tests passing)
 
 ---
 
