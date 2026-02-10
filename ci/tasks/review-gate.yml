@@ -1,0 +1,57 @@
+---
+platform: linux
+
+rootfs_uri: docker:///alpine:3.21
+
+inputs:
+- name: review
+
+params:
+  SCORE_THRESHOLD: "7.0"
+  FAIL_ON_CRITICAL: "true"
+
+run:
+  path: sh
+  args:
+  - -exc
+  - |
+    echo "=== Review Gate ==="
+
+    apk add --no-cache jq
+
+    REVIEW_FILE="review/review.json"
+    if [ ! -f "$REVIEW_FILE" ]; then
+      echo "ERROR: review.json not found"
+      exit 1
+    fi
+
+    SCORE=$(jq -r '.score.value' "$REVIEW_FILE")
+    PASS=$(jq -r '.score.pass' "$REVIEW_FILE")
+    PROVEN=$(jq -r '.proven_issues | length' "$REVIEW_FILE")
+    OBSERVATIONS=$(jq -r '.observations | length' "$REVIEW_FILE")
+    SUMMARY=$(jq -r '.summary' "$REVIEW_FILE")
+
+    echo "Score: $SCORE"
+    echo "Pass: $PASS"
+    echo "Proven issues: $PROVEN"
+    echo "Observations: $OBSERVATIONS"
+    echo "Summary: $SUMMARY"
+    echo ""
+
+    # Check for critical issues if fail_on_critical is enabled.
+    if [ "$FAIL_ON_CRITICAL" = "true" ]; then
+      CRITICAL=$(jq '[.proven_issues[] | select(.severity == "critical")] | length' "$REVIEW_FILE")
+      if [ "$CRITICAL" -gt 0 ]; then
+        echo "GATE FAILED: $CRITICAL critical issues found"
+        exit 1
+      fi
+    fi
+
+    # Check score threshold.
+    PASSES=$(echo "$SCORE >= $SCORE_THRESHOLD" | bc -l 2>/dev/null || echo "0")
+    if [ "$PASSES" != "1" ]; then
+      echo "GATE FAILED: score $SCORE below threshold $SCORE_THRESHOLD"
+      exit 1
+    fi
+
+    echo "=== Review gate passed ==="

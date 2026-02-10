@@ -38,6 +38,42 @@ jobs:
                  ./skymarshal/token/... ./skymarshal/skyserver/...
           echo "=== Vet passed ==="
 
+- name: ci-agent-review
+  plan:
+  - get: repo
+    trigger: true
+    passed: [build-and-vet]
+  - task: ci-agent-review
+    config:
+      platform: linux
+      rootfs_uri: docker:///golang:1.25-bookworm
+      inputs:
+      - name: repo
+      outputs:
+      - name: review
+      params:
+        AGENT_CLI: claude
+        SCORE_THRESHOLD: "7.0"
+        FAIL_ON_CRITICAL: "false"
+        REVIEW_DIFF_ONLY: "true"
+        BASE_REF: "main"
+      run:
+        path: sh
+        args:
+        - -exc
+        - |
+          cd repo/ci-agent
+          go build -o /usr/local/bin/ci-agent-review ./cmd/ci-agent-review/
+          cd ../..
+
+          export REPO_DIR="$(pwd)/repo"
+          export OUTPUT_DIR="$(pwd)/review"
+
+          ci-agent-review || true
+
+          echo "=== Review Output ==="
+          cat review/review.json 2>/dev/null || echo "No review output"
+
 - name: unit-tests
   serial_groups: [pipeline]
   plan:

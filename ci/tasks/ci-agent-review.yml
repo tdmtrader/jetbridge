@@ -1,0 +1,54 @@
+---
+platform: linux
+
+rootfs_uri: docker:///golang:1.25-bookworm
+
+inputs:
+- name: repo
+- name: review-config
+  optional: true
+
+outputs:
+- name: review
+
+params:
+  AGENT_CLI: claude
+  AGENT_MODEL: ""
+  REVIEW_CONFIG: ""
+  SCORE_THRESHOLD: "7.0"
+  FAIL_ON_CRITICAL: "false"
+  REVIEW_DIFF_ONLY: "false"
+  BASE_REF: "main"
+
+run:
+  path: sh
+  args:
+  - -exc
+  - |
+    echo "=== CI Agent Review ==="
+
+    # Build the review binary from source.
+    cd repo/ci-agent
+    go build -o /usr/local/bin/ci-agent-review ./cmd/ci-agent-review/
+    cd ../..
+
+    # Set up paths.
+    export REPO_DIR="$(pwd)/repo"
+    export OUTPUT_DIR="$(pwd)/review"
+
+    # Use review config if provided.
+    if [ -f review-config/review.yml ]; then
+      export REVIEW_CONFIG="$(pwd)/review-config/review.yml"
+    fi
+
+    echo "Repo: $REPO_DIR"
+    echo "Output: $OUTPUT_DIR"
+    echo "Threshold: $SCORE_THRESHOLD"
+    echo "Fail on critical: $FAIL_ON_CRITICAL"
+    echo ""
+
+    ci-agent-review
+
+    echo "=== Review complete ==="
+    echo "Review output:"
+    cat "$OUTPUT_DIR/review.json" | head -50
