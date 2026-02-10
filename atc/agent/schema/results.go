@@ -44,7 +44,29 @@ type Artifact struct {
 // Validate checks that all required fields are present and values are within
 // acceptable ranges. It returns nil if the Results is valid.
 func (r *Results) Validate() error {
-	// Stub — implementation is a separate task (Task 4).
+	if r.SchemaVersion == "" {
+		return fmt.Errorf("schema_version is required")
+	}
+	if r.Status == "" {
+		return fmt.Errorf("status is required")
+	}
+	if !validStatuses[r.Status] {
+		return fmt.Errorf("invalid status %q: must be one of pass, fail, error, abstain", r.Status)
+	}
+	if r.Summary == "" {
+		return fmt.Errorf("summary is required")
+	}
+	if r.Confidence < 0.0 || r.Confidence > 1.0 {
+		return fmt.Errorf("confidence must be between 0.0 and 1.0, got %f", r.Confidence)
+	}
+	if r.Artifacts == nil {
+		return fmt.Errorf("artifacts is required (use empty array for no artifacts)")
+	}
+	for i, a := range r.Artifacts {
+		if err := a.Validate(); err != nil {
+			return fmt.Errorf("artifact[%d]: %w", i, err)
+		}
+	}
 	return nil
 }
 
