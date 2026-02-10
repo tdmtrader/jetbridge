@@ -501,13 +501,18 @@ func buildSidecarContainers(sidecars []atc.SidecarConfig, mainMounts []corev1.Vo
 	var containers []corev1.Container
 
 	for _, sc := range sidecars {
+		var mounts []corev1.VolumeMount
+		if len(mainMounts) > 0 {
+			mounts = append([]corev1.VolumeMount{}, mainMounts...)
+		}
+
 		c := corev1.Container{
 			Name:            sc.Name,
 			Image:           sc.Image,
 			Command:         sc.Command,
 			Args:            sc.Args,
 			WorkingDir:      sc.WorkingDir,
-			VolumeMounts:    append([]corev1.VolumeMount{}, mainMounts...),
+			VolumeMounts:    mounts,
 			ImagePullPolicy: corev1.PullIfNotPresent,
 			SecurityContext: &corev1.SecurityContext{
 				AllowPrivilegeEscalation: &allowEscalation,
