@@ -73,11 +73,15 @@ func parseOptions() (orchestrator.QAOptions, error) {
 
 	targetURL := envOrDefault("TARGET_URL", "http://localhost")
 
+	agentCLI := envOrDefault("AGENT_CLI", "claude")
+	agentModel := os.Getenv("AGENT_MODEL")
+
 	return orchestrator.QAOptions{
 		RepoDir:   repoDir,
 		SpecFile:  specFile,
 		OutputDir: outputDir,
 		Config:    cfg,
+		Agent:     orchestrator.NewClaudeAgentRunner(agentCLI, agentModel),
 		TargetURL: targetURL,
 	}, nil
 }

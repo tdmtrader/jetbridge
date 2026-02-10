@@ -25,7 +25,7 @@ func New(cliPath, model string) *Adapter {
 
 // BuildCommand constructs the CLI command for a review invocation.
 func (a *Adapter) BuildCommand(repoDir, prompt string) *exec.Cmd {
-	args := []string{"--print", "-p", prompt}
+	args := []string{"-p", prompt, "--output-format", "json"}
 	if a.model != "" {
 		args = append(args, "--model", a.model)
 	}

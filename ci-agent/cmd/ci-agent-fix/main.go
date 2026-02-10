@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/concourse/ci-agent/fix"
+	fixclaude "github.com/concourse/ci-agent/fix/adapter/claude"
 )
 
 func main() {
@@ -62,13 +63,14 @@ func parseOptions() (fix.FixOptions, error) {
 		}
 	}
 
-	// Adapter will be wired when Claude adapter is implemented.
-	// For now, return nil adapter — the orchestrator will fail if issues exist.
+	agentCLI := envOrDefault("AGENT_CLI", "claude")
+	agentModel := os.Getenv("AGENT_MODEL")
+
 	return fix.FixOptions{
 		RepoDir:     repoDir,
 		ReviewDir:   reviewDir,
 		OutputDir:   outputDir,
-		Adapter:     nil,
+		Adapter:     fixclaude.New(agentCLI, agentModel),
 		FixBranch:   fixBranch,
 		MaxRetries:  maxRetries,
 		TestCommand: testCommand,

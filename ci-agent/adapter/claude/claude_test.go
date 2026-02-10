@@ -14,7 +14,8 @@ var _ = Describe("ClaudeAdapter", func() {
 			a := claude.New("claude", "")
 			cmd := a.BuildCommand("/tmp/repo", "review this code")
 			Expect(cmd.Path).To(ContainSubstring("claude"))
-			Expect(cmd.Args).To(ContainElement("--print"))
+			Expect(cmd.Args).To(ContainElement("--output-format"))
+			Expect(cmd.Args).To(ContainElement("json"))
 			Expect(cmd.Dir).To(Equal("/tmp/repo"))
 		})
 
