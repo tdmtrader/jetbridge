@@ -18,6 +18,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     jq \
     && rm -rf /var/lib/apt/lists/*
 
+# Install Node.js 20 LTS (required for Claude Code CLI).
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+    apt-get install -y --no-install-recommends nodejs && \
+    rm -rf /var/lib/apt/lists/*
+
+# Install Claude Code CLI.
+RUN npm install -g @anthropic-ai/claude-code
+
 # Install GitHub CLI for PR creation.
 RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
     | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg && \
@@ -32,8 +40,6 @@ COPY --from=builder /ci-agent-plan /usr/local/bin/ci-agent-plan
 COPY --from=builder /ci-agent-qa /usr/local/bin/ci-agent-qa
 COPY --from=builder /ci-agent-implement /usr/local/bin/ci-agent-implement
 
-# Claude Code CLI should be mounted or installed at runtime.
-# Default: assume 'claude' is available on PATH.
 ENV AGENT_CLI=claude
 ENV SCORE_THRESHOLD=7.0
 ENV FAIL_ON_CRITICAL=false

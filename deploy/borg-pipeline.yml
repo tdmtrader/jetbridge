@@ -38,20 +38,72 @@ jobs:
                  ./skymarshal/token/... ./skymarshal/skyserver/...
           echo "=== Vet passed ==="
 
-- name: ci-agent-review
+- name: build-ci-agent
   plan:
   - get: repo
     trigger: true
     passed: [build-and-vet]
+  - task: build-ci-agent-image
+    privileged: true
+    config:
+      platform: linux
+      rootfs_uri: docker:///docker:27-dind
+      inputs:
+      - name: repo
+      run:
+        path: sh
+        args:
+        - -exc
+        - |
+          REGISTRY="registry-docker-registry.cicd.svc.cluster.local:5000"
+          IMAGE="${REGISTRY}/ci-agent"
+
+          echo "=== Starting Docker daemon ==="
+          dockerd --insecure-registry="${REGISTRY}" &
+          DOCKERD_PID=$!
+          TRIES=0
+          while ! docker info >/dev/null 2>&1; do
+            TRIES=$((TRIES + 1))
+            if [ $TRIES -gt 30 ]; then
+              echo "Docker daemon failed to start"
+              exit 1
+            fi
+            sleep 1
+          done
+          echo "Docker daemon ready"
+
+          cd repo
+
+          echo "=== Building ci-agent image ==="
+          docker build \
+            -f deploy/Dockerfile.ci-agent \
+            --network host \
+            -t "${IMAGE}:latest" \
+            .
+
+          echo "=== Pushing to registry ==="
+          docker push "${IMAGE}:latest"
+
+          echo "=== ci-agent image built and pushed ==="
+          docker images "${IMAGE}"
+
+          kill $DOCKERD_PID 2>/dev/null || true
+
+- name: ci-agent-review
+  plan:
+  - get: repo
+    trigger: true
+    passed: [build-ci-agent]
   - task: ci-agent-review
     config:
       platform: linux
-      rootfs_uri: docker:///golang:1.25-bookworm
+      rootfs_uri: docker:///registry-docker-registry.cicd.svc.cluster.local:5000/ci-agent:latest
       inputs:
       - name: repo
       outputs:
       - name: review
       params:
+        ANTHROPIC_API_KEY: ((anthropic_api_key))
         AGENT_CLI: claude
         SCORE_THRESHOLD: "7.0"
         FAIL_ON_CRITICAL: "false"
@@ -62,10 +114,6 @@ jobs:
         args:
         - -exc
         - |
-          cd repo/ci-agent
-          go build -o /usr/local/bin/ci-agent-review ./cmd/ci-agent-review/
-          cd ../..
-
           export REPO_DIR="$(pwd)/repo"
           export OUTPUT_DIR="$(pwd)/review"
 
@@ -85,7 +133,7 @@ jobs:
   - task: ci-agent-fix
     config:
       platform: linux
-      rootfs_uri: docker:///golang:1.25-bookworm
+      rootfs_uri: docker:///registry-docker-registry.cicd.svc.cluster.local:5000/ci-agent:latest
       inputs:
       - name: repo
       - name: review
@@ -93,6 +141,7 @@ jobs:
       - name: fixed-repo
       - name: fix-report
       params:
+        ANTHROPIC_API_KEY: ((anthropic_api_key))
         AGENT_CLI: claude
         MAX_RETRIES: "2"
         TEST_COMMAND: "go test ./..."
@@ -101,10 +150,6 @@ jobs:
         args:
         - -exc
         - |
-          cd repo/ci-agent
-          go build -o /usr/local/bin/ci-agent-fix ./cmd/ci-agent-fix/
-          cd ../..
-
           cp -a repo/. fixed-repo/
 
           export REPO_DIR="$(pwd)/fixed-repo"
@@ -120,16 +165,17 @@ jobs:
   plan:
   - get: repo
     trigger: true
-    passed: [build-and-vet]
+    passed: [build-ci-agent]
   - task: ci-agent-plan
     config:
       platform: linux
-      rootfs_uri: docker:///golang:1.25-bookworm
+      rootfs_uri: docker:///registry-docker-registry.cicd.svc.cluster.local:5000/ci-agent:latest
       inputs:
       - name: repo
       outputs:
       - name: plan-output
       params:
+        ANTHROPIC_API_KEY: ((anthropic_api_key))
         AGENT_CLI: claude
         CONFIDENCE_THRESHOLD: "0.6"
         TIMEOUT: "5m"
@@ -138,10 +184,6 @@ jobs:
         args:
         - -exc
         - |
-          cd repo/ci-agent
-          go build -o /usr/local/bin/ci-agent-plan ./cmd/ci-agent-plan/
-          cd ../..
-
           export INPUT_DIR="$(pwd)/repo"
           export OUTPUT_DIR="$(pwd)/plan-output"
 
@@ -154,16 +196,17 @@ jobs:
   plan:
   - get: repo
     trigger: true
-    passed: [build-and-vet]
+    passed: [build-ci-agent]
   - task: ci-agent-qa
     config:
       platform: linux
-      rootfs_uri: docker:///golang:1.25-bookworm
+      rootfs_uri: docker:///registry-docker-registry.cicd.svc.cluster.local:5000/ci-agent:latest
       inputs:
       - name: repo
       outputs:
       - name: qa
       params:
+        ANTHROPIC_API_KEY: ((anthropic_api_key))
         AGENT_CLI: claude
         SCORE_THRESHOLD: "7.0"
         GENERATE_TESTS: "false"
@@ -173,10 +216,6 @@ jobs:
         args:
         - -exc
         - |
-          cd repo/ci-agent
-          go build -o /usr/local/bin/ci-agent-qa ./cmd/ci-agent-qa/
-          cd ../..
-
           export REPO_DIR="$(pwd)/repo"
           export SPEC_FILE="$(pwd)/repo/conductor/tracks/agent_step_output_schema_20260209/spec.md"
           export OUTPUT_DIR="$(pwd)/qa"
@@ -194,13 +233,14 @@ jobs:
   - task: ci-agent-implement
     config:
       platform: linux
-      rootfs_uri: docker:///golang:1.25-bookworm
+      rootfs_uri: docker:///registry-docker-registry.cicd.svc.cluster.local:5000/ci-agent:latest
       inputs:
       - name: repo
       outputs:
       - name: implemented-repo
       - name: implement-output
       params:
+        ANTHROPIC_API_KEY: ((anthropic_api_key))
         AGENT_CLI: claude
         TEST_CMD: "go test ./..."
         MAX_RETRIES: "2"
@@ -212,10 +252,6 @@ jobs:
         args:
         - -exc
         - |
-          cd repo/ci-agent
-          go build -o /usr/local/bin/ci-agent-implement ./cmd/ci-agent-implement/
-          cd ../..
-
           cp -a repo/. implemented-repo/
 
           export SPEC_DIR="$(pwd)/repo"
