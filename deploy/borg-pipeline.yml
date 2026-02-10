@@ -74,6 +74,48 @@ jobs:
           echo "=== Review Output ==="
           cat review/review.json 2>/dev/null || echo "No review output"
 
+- name: agent-fix
+  plan:
+  - get: repo
+    trigger: true
+    passed: [ci-agent-review]
+  - get: review
+    resource: repo
+    passed: [ci-agent-review]
+  - task: ci-agent-fix
+    config:
+      platform: linux
+      rootfs_uri: docker:///golang:1.25-bookworm
+      inputs:
+      - name: repo
+      - name: review
+      outputs:
+      - name: fixed-repo
+      - name: fix-report
+      params:
+        AGENT_CLI: claude
+        MAX_RETRIES: "2"
+        TEST_COMMAND: "go test ./..."
+      run:
+        path: sh
+        args:
+        - -exc
+        - |
+          cd repo/ci-agent
+          go build -o /usr/local/bin/ci-agent-fix ./cmd/ci-agent-fix/
+          cd ../..
+
+          cp -a repo/. fixed-repo/
+
+          export REPO_DIR="$(pwd)/fixed-repo"
+          export REVIEW_DIR="$(pwd)/review"
+          export OUTPUT_DIR="$(pwd)/fix-report"
+
+          ci-agent-fix || true
+
+          echo "=== Fix Report ==="
+          cat fix-report/fix-report.json 2>/dev/null || echo "No fix report"
+
 - name: unit-tests
   serial_groups: [pipeline]
   plan:
