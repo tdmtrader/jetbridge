@@ -117,6 +117,19 @@ func (p *Process) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 		if p.container != nil {
 			p.container.SetProperty(exitStatusPropertyName, strconv.Itoa(r.processResult.ExitStatus))
 		}
+
+		// When sidecars are present, the pod stays Running after main exits.
+		// Delete the pod to terminate sidecars and release resources.
+		if p.container != nil && len(p.container.containerSpec.Sidecars) > 0 {
+			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cleanupCancel()
+			if delErr := p.clientset.CoreV1().Pods(p.config.Namespace).Delete(
+				cleanupCtx, p.podName, metav1.DeleteOptions{},
+			); delErr != nil {
+				logger.Error("failed-to-cleanup-sidecar-pod", delErr)
+			}
+		}
+
 		span.SetAttributes(attribute.String("exit-code", strconv.Itoa(r.processResult.ExitStatus)))
 		return r.processResult, nil
 	}
@@ -289,8 +302,11 @@ func isPodUnschedulable(pod *corev1.Pod) (message string, unschedulable bool) {
 	return "", false
 }
 
-// podExitCode extracts the exit code from the Pod's container status.
-// Returns the exit code and whether the Pod has terminated.
+// podExitCode extracts the exit code from the Pod's main container status.
+// Returns the exit code and whether the main container has terminated.
+// When sidecars are present, the pod phase may still be Running even after
+// the main container exits, so we also check for main container termination
+// in that phase.
 func podExitCode(pod *corev1.Pod) (int, bool) {
 	switch pod.Status.Phase {
 	case corev1.PodSucceeded, corev1.PodFailed:
@@ -305,6 +321,15 @@ func podExitCode(pod *corev1.Pod) (int, bool) {
 			return 0, true
 		}
 		return 1, true
+
+	case corev1.PodRunning:
+		// When sidecars are present, the pod stays Running after main exits.
+		// Check if the main container has terminated.
+		for _, cs := range pod.Status.ContainerStatuses {
+			if cs.Name == mainContainerName && cs.State.Terminated != nil {
+				return int(cs.State.Terminated.ExitCode), true
+			}
+		}
 	}
 	return 0, false
 }

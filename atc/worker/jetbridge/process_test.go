@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbfakes"
 	"github.com/concourse/concourse/atc/metric"
@@ -872,6 +873,143 @@ var _ = Describe("Process", func() {
 				duration := metric.Metrics.K8sPodStartupDuration.Max()
 				Expect(duration).To(BeNumerically(">=", 0))
 			})
+		})
+	})
+})
+
+var _ = Describe("Process sidecar lifecycle", func() {
+	var (
+		fakeDBWorker  *dbfakes.FakeWorker
+		fakeClientset *fake.Clientset
+		worker        *jetbridge.Worker
+		ctx           context.Context
+		cfg           jetbridge.Config
+		delegate      runtime.BuildStepDelegate
+	)
+
+	BeforeEach(func() {
+		ctx = context.Background()
+		fakeDBWorker = new(dbfakes.FakeWorker)
+		fakeDBWorker.NameReturns("k8s-worker-1")
+		fakeClientset = fake.NewSimpleClientset()
+		cfg = jetbridge.NewConfig("test-namespace", "")
+		delegate = &noopDelegate{}
+		worker = jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
+	})
+
+	Context("when main container exits while sidecars are still running (direct mode)", func() {
+		It("returns the main container's exit code and cleans up the pod", func() {
+			setupFakeDBContainer(fakeDBWorker, "sidecar-lifecycle-handle")
+
+			container, _, err := worker.FindOrCreateContainer(
+				ctx,
+				db.NewFixedHandleContainerOwner("sidecar-lifecycle-handle"),
+				db.ContainerMetadata{Type: db.ContainerTypeTask},
+				runtime.ContainerSpec{
+					TeamID:   1,
+					Dir:      "/workdir",
+					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+					Sidecars: []atc.SidecarConfig{
+						{
+							Name:  "postgres",
+							Image: "postgres:15",
+						},
+					},
+				},
+				delegate,
+			)
+			Expect(err).ToNot(HaveOccurred())
+
+			process, err := container.Run(ctx, runtime.ProcessSpec{
+				Path: "/bin/sh",
+				Args: []string{"-c", "echo hello"},
+			}, runtime.ProcessIO{})
+			Expect(err).ToNot(HaveOccurred())
+
+			By("simulating main container terminated but sidecar still running")
+			pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "sidecar-lifecycle-handle", metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			pod.Status.Phase = corev1.PodRunning
+			pod.Status.ContainerStatuses = []corev1.ContainerStatus{
+				{
+					Name: "main",
+					State: corev1.ContainerState{
+						Terminated: &corev1.ContainerStateTerminated{
+							ExitCode: 0,
+						},
+					},
+				},
+				{
+					Name: "postgres",
+					State: corev1.ContainerState{
+						Running: &corev1.ContainerStateRunning{},
+					},
+				},
+			}
+			_, err = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			result, err := process.Wait(ctx)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(result.ExitStatus).To(Equal(0))
+
+			By("verifying the pod was deleted to clean up sidecars")
+			pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(pods.Items).To(BeEmpty())
+		})
+
+		It("returns non-zero exit code from main and cleans up", func() {
+			setupFakeDBContainer(fakeDBWorker, "sidecar-fail-handle")
+
+			container, _, err := worker.FindOrCreateContainer(
+				ctx,
+				db.NewFixedHandleContainerOwner("sidecar-fail-handle"),
+				db.ContainerMetadata{Type: db.ContainerTypeTask},
+				runtime.ContainerSpec{
+					TeamID:   1,
+					Dir:      "/workdir",
+					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+					Sidecars: []atc.SidecarConfig{
+						{Name: "redis", Image: "redis:7"},
+					},
+				},
+				delegate,
+			)
+			Expect(err).ToNot(HaveOccurred())
+
+			process, err := container.Run(ctx, runtime.ProcessSpec{
+				Path: "/bin/false",
+			}, runtime.ProcessIO{})
+			Expect(err).ToNot(HaveOccurred())
+
+			pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "sidecar-fail-handle", metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			pod.Status.Phase = corev1.PodRunning
+			pod.Status.ContainerStatuses = []corev1.ContainerStatus{
+				{
+					Name: "main",
+					State: corev1.ContainerState{
+						Terminated: &corev1.ContainerStateTerminated{
+							ExitCode: 42,
+						},
+					},
+				},
+				{
+					Name: "redis",
+					State: corev1.ContainerState{
+						Running: &corev1.ContainerStateRunning{},
+					},
+				},
+			}
+			_, err = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			result, err := process.Wait(ctx)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(result.ExitStatus).To(Equal(42))
 		})
 	})
 })
