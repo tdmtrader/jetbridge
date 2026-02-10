@@ -1,10 +1,11 @@
-# Multi-stage build for ci-agent-review
-# Stage 1: Build the binary
+# Multi-stage build for ci-agent binaries (review + fix)
+# Stage 1: Build binaries
 FROM golang:1.25-bookworm AS builder
 
 WORKDIR /src
 COPY ci-agent/ .
-RUN go build -o /ci-agent-review ./cmd/ci-agent-review/
+RUN go build -o /ci-agent-review ./cmd/ci-agent-review/ && \
+    go build -o /ci-agent-fix ./cmd/ci-agent-fix/
 
 # Stage 2: Runtime image
 FROM golang:1.25-bookworm
@@ -14,12 +15,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     jq \
     && rm -rf /var/lib/apt/lists/*
 
+# Install GitHub CLI for PR creation.
+RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+    | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg && \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+    | tee /etc/apt/sources.list.d/github-cli.list > /dev/null && \
+    apt-get update && apt-get install -y --no-install-recommends gh && \
+    rm -rf /var/lib/apt/lists/*
+
 COPY --from=builder /ci-agent-review /usr/local/bin/ci-agent-review
+COPY --from=builder /ci-agent-fix /usr/local/bin/ci-agent-fix
 
 # Claude Code CLI should be mounted or installed at runtime.
 # Default: assume 'claude' is available on PATH.
 ENV AGENT_CLI=claude
 ENV SCORE_THRESHOLD=7.0
 ENV FAIL_ON_CRITICAL=false
-
-ENTRYPOINT ["/usr/local/bin/ci-agent-review"]
+ENV MAX_RETRIES=2
