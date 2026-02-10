@@ -1395,6 +1395,40 @@ var factoryTests = []PlannerTest{
 		}`,
 	},
 	{
+		Title: "task step with sidecars",
+
+		Config: &atc.TaskStep{
+			Name: "some-task",
+			Config: &atc.TaskConfig{
+				Platform: "linux",
+				Run:      atc.TaskRunConfig{Path: "hello"},
+			},
+			Sidecars: []string{"my-repo/ci/sidecars/postgres.yml", "my-repo/ci/sidecars/redis.yml"},
+		},
+
+		PlanJSON: `{
+			"id": "(unique)",
+			"task": {
+				"name": "some-task",
+				"privileged": false,
+				"hermetic": false,
+				"config": {
+					"platform": "linux",
+					"run": {"path": "hello"}
+				},
+				"sidecars": ["my-repo/ci/sidecars/postgres.yml", "my-repo/ci/sidecars/redis.yml"],
+				"resource_types": [
+					{
+						"name": "some-resource-type",
+						"type": "some-base-resource-type",
+						"source": {"some": "type-source"},
+						"defaults": {"default-key":"default-value"}
+					}
+				]
+			}
+		}`,
+	},
+	{
 		Title: "run step",
 
 		Config: &atc.RunStep{
