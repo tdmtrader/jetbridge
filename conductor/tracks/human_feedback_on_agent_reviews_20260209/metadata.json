@@ -1,0 +1,8 @@
+{
+  "track_id": "human_feedback_on_agent_reviews_20260209",
+  "type": "feature",
+  "status": "planned",
+  "created_at": "2026-02-10T05:30:00.000Z",
+  "updated_at": "2026-02-10T05:30:00.000Z",
+  "description": "Human feedback on agent reviews — interactive Elm UI for collecting structured verdicts on agent findings, stored in PostgreSQL for future tuning"
+}

@@ -1,0 +1,8 @@
+{
+  "track_id": "agent_can_resolve_simple_fixes_from_the_agent_review_step_20260209",
+  "type": "feature",
+  "status": "planned",
+  "created_at": "2026-02-10T04:33:35.846Z",
+  "updated_at": "2026-02-10T05:00:00.000Z",
+  "description": "Agent fix step — resolve proven issues from agent-review output, commit fixes, output repo for PR creation"
+}

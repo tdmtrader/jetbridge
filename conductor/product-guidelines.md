@@ -17,12 +17,16 @@
 - **JetBridge** — The name for the Kubernetes runtime layer within this fork.
 - **K8s runtime** — Acceptable shorthand in technical docs.
 - **Legacy runtime** — Refers to Garden + Baggageclaim + TSA (now removed).
+- **Agent step** — The pipeline primitive for AI agent execution. Always "agent step", not "AI step" or "LLM step".
+- **Agent-first workflow** — A pipeline that uses agent steps as primary actors. The DAG still governs structure; agents have autonomy within their step boundaries.
+- **Tool** — A capability an agent can invoke (shell, API, MCP server). Distinct from Concourse "resources".
+- **MCP (Model Context Protocol)** — The protocol agents use to connect to external tool servers.
 - Use Kubernetes API resource names precisely (Pod, PersistentVolumeClaim, ServiceAccount, etc.).
 
 ### Commit Messages
 - Follow conventional commits: `type(scope): description`
 - Types: `feat`, `fix`, `refactor`, `test`, `chore`, `docs`
-- Scopes: `k8s-worker`, `k8s-volume`, `k8s-registrar`, `k8s-exec`, `tracing`, `metrics`, `e2e`, `integration`
+- Scopes: `k8s-worker`, `k8s-volume`, `k8s-registrar`, `k8s-exec`, `agent`, `agent-step`, `agent-tools`, `mcp`, `tracing`, `metrics`, `e2e`, `integration`
 - Example: `feat(k8s-worker): add pod eviction retry with exponential backoff`
 
 ### Code Comments
