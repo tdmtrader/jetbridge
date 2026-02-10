@@ -1,0 +1,41 @@
+---
+platform: linux
+
+rootfs_uri: docker:///golang:1.25-bookworm
+
+inputs:
+- name: qa
+
+params:
+  SCORE_THRESHOLD: "7.0"
+
+run:
+  path: sh
+  args:
+  - -exc
+  - |
+    echo "=== QA Gate ==="
+
+    RESULTS="qa/qa.json"
+
+    if [ ! -f "$RESULTS" ]; then
+      echo "ERROR: qa.json not found"
+      exit 1
+    fi
+
+    SCORE=$(jq -r '.score.value' "$RESULTS")
+    PASS=$(jq -r '.score.pass' "$RESULTS")
+    TOTAL=$(jq -r '.metadata.requirements_total' "$RESULTS")
+    COVERED=$(jq -r '.metadata.requirements_covered' "$RESULTS")
+
+    echo "Score: $SCORE / 10.0"
+    echo "Requirements: $COVERED / $TOTAL covered"
+    echo "Threshold: $SCORE_THRESHOLD"
+
+    if [ "$PASS" = "true" ]; then
+      echo "GATE: PASS"
+      exit 0
+    else
+      echo "GATE: FAIL"
+      exit 1
+    fi
