@@ -1012,4 +1012,63 @@ var _ = Describe("Process sidecar lifecycle", func() {
 			Expect(result.ExitStatus).To(Equal(42))
 		})
 	})
+
+	Context("when a sidecar has ImagePullBackOff but main succeeds", func() {
+		It("does not fail the task due to sidecar image failure", func() {
+			setupFakeDBContainer(fakeDBWorker, "sidecar-imgfail-handle")
+
+			container, _, err := worker.FindOrCreateContainer(
+				ctx,
+				db.NewFixedHandleContainerOwner("sidecar-imgfail-handle"),
+				db.ContainerMetadata{Type: db.ContainerTypeTask},
+				runtime.ContainerSpec{
+					TeamID:   1,
+					Dir:      "/workdir",
+					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+					Sidecars: []atc.SidecarConfig{
+						{Name: "bad-image", Image: "nonexistent:latest"},
+					},
+				},
+				delegate,
+			)
+			Expect(err).ToNot(HaveOccurred())
+
+			process, err := container.Run(ctx, runtime.ProcessSpec{
+				Path: "/bin/sh",
+				Args: []string{"-c", "echo hello"},
+			}, runtime.ProcessIO{})
+			Expect(err).ToNot(HaveOccurred())
+
+			By("simulating sidecar ImagePullBackOff but main running then completing")
+			pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "sidecar-imgfail-handle", metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			pod.Status.Phase = corev1.PodRunning
+			pod.Status.ContainerStatuses = []corev1.ContainerStatus{
+				{
+					Name: "main",
+					State: corev1.ContainerState{
+						Terminated: &corev1.ContainerStateTerminated{
+							ExitCode: 0,
+						},
+					},
+				},
+				{
+					Name: "bad-image",
+					State: corev1.ContainerState{
+						Waiting: &corev1.ContainerStateWaiting{
+							Reason:  "ImagePullBackOff",
+							Message: "Back-off pulling image \"nonexistent:latest\"",
+						},
+					},
+				},
+			}
+			_, err = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			result, err := process.Wait(ctx)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(result.ExitStatus).To(Equal(0))
+		})
+	})
 })

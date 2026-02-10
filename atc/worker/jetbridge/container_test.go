@@ -3264,4 +3264,126 @@ var _ = Describe("Run with sidecar containers", func() {
 			Expect(sidecar.Resources.Limits.Memory().String()).To(Equal("512Mi"))
 		})
 	})
+
+	Context("when sidecars are configured alongside the artifact store", func() {
+		var (
+			artifactWorker *jetbridge.Worker
+		)
+
+		BeforeEach(func() {
+			setupFakeDBContainer(fakeDBWorker, "sidecar-artifact-handle")
+
+			cfgWithArtifact := jetbridge.NewConfig("test-namespace", "")
+			cfgWithArtifact.ArtifactStoreClaim = "concourse-artifacts"
+			artifactWorker = jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfgWithArtifact)
+
+			var err error
+			container, _, err = artifactWorker.FindOrCreateContainer(
+				ctx,
+				db.NewFixedHandleContainerOwner("sidecar-artifact-handle"),
+				db.ContainerMetadata{Type: db.ContainerTypeTask},
+				runtime.ContainerSpec{
+					TeamID:   1,
+					Dir:      "/tmp/build/workdir",
+					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+					Inputs: []runtime.Input{
+						{DestinationPath: "/tmp/build/workdir/my-input"},
+					},
+					Sidecars: []atc.SidecarConfig{
+						{
+							Name:  "redis",
+							Image: "redis:7",
+							Ports: []atc.SidecarPort{{ContainerPort: 6379}},
+						},
+					},
+				},
+				delegate,
+			)
+			Expect(err).ToNot(HaveOccurred())
+		})
+
+		It("includes main, artifact-helper, and user sidecar containers", func() {
+			_, err := container.Run(ctx, runtime.ProcessSpec{
+				Path: "/bin/sh",
+				Args: []string{"-c", "echo hello"},
+			}, runtime.ProcessIO{})
+			Expect(err).ToNot(HaveOccurred())
+
+			pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			pod := pods.Items[0]
+
+			containerNames := []string{}
+			for _, c := range pod.Spec.Containers {
+				containerNames = append(containerNames, c.Name)
+			}
+			Expect(containerNames).To(Equal([]string{"main", "artifact-helper", "redis"}))
+
+			By("user sidecar gets the same volume mounts as main (not the artifact PVC)")
+			mainMounts := pod.Spec.Containers[0].VolumeMounts
+			redisMounts := pod.Spec.Containers[2].VolumeMounts
+			Expect(redisMounts).To(Equal(mainMounts))
+		})
+	})
+
+	Context("when sidecars are configured in exec-mode (pause pod)", func() {
+		var (
+			execWorker   *jetbridge.Worker
+			fakeExecutor *fakeExecExecutor
+		)
+
+		BeforeEach(func() {
+			setupFakeDBContainer(fakeDBWorker, "sidecar-exec-handle")
+
+			fakeExecutor = &fakeExecExecutor{}
+			execWorker = jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
+			execWorker.SetExecutor(fakeExecutor)
+
+			var err error
+			container, _, err = execWorker.FindOrCreateContainer(
+				ctx,
+				db.NewFixedHandleContainerOwner("sidecar-exec-handle"),
+				db.ContainerMetadata{Type: db.ContainerTypeTask},
+				runtime.ContainerSpec{
+					TeamID:   1,
+					Dir:      "/workdir",
+					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+					Sidecars: []atc.SidecarConfig{
+						{
+							Name:  "postgres",
+							Image: "postgres:15",
+							Ports: []atc.SidecarPort{{ContainerPort: 5432}},
+						},
+					},
+				},
+				delegate,
+			)
+			Expect(err).ToNot(HaveOccurred())
+		})
+
+		It("creates a pause pod with sidecar containers", func() {
+			process, err := container.Run(ctx, runtime.ProcessSpec{
+				Path: "/bin/sh",
+				Args: []string{"-c", "npm test"},
+			}, runtime.ProcessIO{})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(process).ToNot(BeNil())
+
+			pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			pod := pods.Items[0]
+
+			By("the main container runs the pause command (not the real command)")
+			Expect(pod.Spec.Containers[0].Name).To(Equal("main"))
+			Expect(pod.Spec.Containers[0].Command).To(Equal([]string{"sh", "-c", "trap 'exit 0' TERM; sleep 86400 & wait"}))
+
+			By("the sidecar is present in the pod")
+			Expect(pod.Spec.Containers).To(HaveLen(2))
+			Expect(pod.Spec.Containers[1].Name).To(Equal("postgres"))
+			Expect(pod.Spec.Containers[1].Image).To(Equal("postgres:15"))
+
+			By("the sidecar shares volume mounts with main")
+			Expect(pod.Spec.Containers[1].VolumeMounts).To(Equal(pod.Spec.Containers[0].VolumeMounts))
+		})
+	})
 })
