@@ -49,48 +49,21 @@ The implementation agent reads `spec.md` + `plan.md` (produced by `ci-agent-plan
 
 ### Task 4: Agent adapter interface for code generation
 
-- [ ] Write tests for adapter types
-  - `CodeGenRequest` contains: task description, spec context, repo path, target files, prior context (previous task outputs)
-  - `TestGenResponse` contains: test file path, test file content, package name
-  - `ImplGenResponse` contains: file patches `[]FilePatch{Path, Content}`
-  - All types round-trip JSON
-- [ ] Define adapter interface
-  - New file: `ci-agent/implement/adapter/adapter.go`
-  - Interface: `Adapter { GenerateTest(ctx, CodeGenRequest) (*TestGenResponse, error); GenerateImpl(ctx, CodeGenRequest, testCode string) (*ImplGenResponse, error) }`
-  - `//go:generate counterfeiter` for `Adapter`
-  - Types: `CodeGenRequest`, `TestGenResponse`, `ImplGenResponse`, `FilePatch`
+- [x] Write tests for adapter types (4 tests)
+- [x] Define adapter interface
 
 ### Task 5: Test prompt builder
 
-- [ ] Write tests for test prompt
-  - Prompt includes: task description, spec context, repo language (Go), target file paths
-  - Prompt instructs agent to write a Ginkgo test file that fails against the current codebase
-  - Prompt specifies output format: JSON with `test_file_path` and `test_content`
-  - Prompt includes relevant existing code context (file contents around target)
-  - Prompt omits spec context when empty
-- [ ] Implement test prompt builder
-  - New file: `ci-agent/implement/adapter/prompt_test_gen.go`
-  - `BuildTestPrompt(req CodeGenRequest) (string, error)`
+- [x] Write tests for test prompt (5 tests)
+- [x] Implement test prompt builder
 
 ### Task 6: Test writer and Red-phase verifier
 
-- [ ] Write tests for test writer
-  - Writes test file content to the correct path in the repo
-  - Creates parent directories if needed
-  - Overwrites existing file on retry
-- [ ] Write tests for red-phase verifier
-  - Runs the generated test via `go test`
-  - Test fails → returns `RedResult{Confirmed: true}` (correct TDD red)
-  - Test passes → returns `RedResult{Confirmed: false, Reason: "test already passes"}` (task may be pre-satisfied)
-  - Test compile error → returns `RedResult{Confirmed: false, Reason: "compilation error: ..."}` (bad test)
-  - Timeout → returns error
-- [ ] Implement test writer and red verifier
-  - New file: `ci-agent/implement/tdd/red.go`
-  - `WriteTestFile(repoDir string, resp *adapter.TestGenResponse) error`
-  - `VerifyRed(ctx context.Context, repoDir string, testFilePath string) (*RedResult, error)`
-  - Reuses `ci-agent/runner.RunTest` for test execution
+- [x] Write tests for test writer (3 tests)
+- [x] Write tests for red-phase verifier (3 tests)
+- [x] Implement test writer and red verifier
 
-- [ ] Phase 2 Checkpoint — adapter interface defined, red phase writes and verifies failing tests. Run: `go test ./implement/... -run "Adapter|Prompt|Red"`
+- [x] Phase 2 Checkpoint — adapter interface defined, red phase writes and verifies failing tests (15 tests passing)
 
 ---
 
