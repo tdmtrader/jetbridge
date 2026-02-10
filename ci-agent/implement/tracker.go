@@ -117,6 +117,16 @@ func (t *TaskTracker) Skip(taskID, reason string) {
 	t.ConsecutiveFailures = 0
 }
 
+// SetCommitInfo records the commit SHA and test file for a task.
+func (t *TaskTracker) SetCommitInfo(taskID, sha, testFile string) {
+	tp := t.find(taskID)
+	if tp == nil {
+		return
+	}
+	tp.CommitSHA = sha
+	tp.TestFile = testFile
+}
+
 // Fail marks a task as failed with a reason.
 func (t *TaskTracker) Fail(taskID, reason string) {
 	tp := t.find(taskID)

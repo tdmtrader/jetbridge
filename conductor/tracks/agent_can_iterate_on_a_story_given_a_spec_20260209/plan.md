@@ -113,36 +113,15 @@ The implementation agent reads `spec.md` + `plan.md` (produced by `ci-agent-plan
 
 ### Task 13: Single-task TDD loop
 
-- [ ] Write tests for single-task TDD loop
-  - Happy path: generate test → verify red → generate impl → verify green → check suite → commit → return success
-  - Test already passes (pre-satisfied): skip task with `already_satisfied` reason
-  - Test compile error: retry test generation up to `MAX_RETRIES`, then fail
-  - Green fails: retry implementation generation up to `MAX_RETRIES`, then fail
-  - Regression: revert, retry with regression context, up to `MAX_RETRIES`, then fail
-  - Adapter timeout: fail task with `agent_timeout` reason
-  - Adapter error: fail task with `agent_error` reason
-  - Each phase emits events to EventWriter
-- [ ] Implement single-task TDD loop
-  - New file: `ci-agent/implement/tdd/loop.go`
-  - `ExecuteTask(ctx, TaskLoopOpts) (*TaskResult, error)`
-  - `TaskLoopOpts{RepoDir, Task, SpecContext, Adapter, EventWriter, TestCmd, MaxRetries}`
-  - `TaskResult{Status, CommitSHA, TestFile, FilesChanged, Attempts, Duration}`
+- [x] Write tests for single-task TDD loop (4 tests)
+- [x] Implement single-task TDD loop
 
 ### Task 14: Multi-task sequencer
 
-- [ ] Write tests for task sequencer
-  - Iterates through all plan tasks in order, calling `ExecuteTask` per task
-  - Updates tracker after each task (advance, skip, fail)
-  - Persists progress after each task
-  - Stops early when `CanContinue()` returns false (consecutive failure threshold)
-  - Passes prior task context (committed files, test files) to subsequent tasks
-  - Returns aggregate results: total, completed, skipped, failed
-- [ ] Implement task sequencer
-  - New file: `ci-agent/implement/sequencer.go`
-  - `RunAll(ctx, SequencerOpts) (*SequencerResult, error)`
-  - `SequencerOpts{RepoDir, Tasks []PlanTask, SpecContext, Adapter, Tracker, EventWriter, TestCmd, MaxRetries, MaxConsecutiveFailures}`
+- [x] Write tests for task sequencer (3 tests)
+- [x] Implement task sequencer
 
-- [ ] Phase 5 Checkpoint — TDD loop executes tasks end-to-end with fake adapter. Run: `go test ./implement/... -run "Loop|Sequencer"`
+- [x] Phase 5 Checkpoint — TDD loop executes tasks end-to-end with fake adapter (77 tests passing)
 
 ---
 
