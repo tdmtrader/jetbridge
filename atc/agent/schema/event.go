@@ -1,6 +1,10 @@
 package schema
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"fmt"
+	"time"
+)
 
 // EventType identifies the kind of event in an NDJSON event log.
 type EventType string
@@ -25,8 +29,19 @@ type Event struct {
 }
 
 // Validate checks that all required fields are present and valid.
-// Implementation is a separate task (Task 6).
 func (e *Event) Validate() error {
+	if e.Timestamp == "" {
+		return fmt.Errorf("ts is required")
+	}
+	if _, err := time.Parse(time.RFC3339Nano, e.Timestamp); err != nil {
+		return fmt.Errorf("ts must be a valid RFC3339 timestamp: %w", err)
+	}
+	if e.Type == "" {
+		return fmt.Errorf("event type is required")
+	}
+	if e.Data == nil {
+		return fmt.Errorf("data is required")
+	}
 	return nil
 }
 
