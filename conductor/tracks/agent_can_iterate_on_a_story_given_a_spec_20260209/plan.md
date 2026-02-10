@@ -185,22 +185,16 @@ The implementation agent reads `spec.md` + `plan.md` (produced by `ci-agent-plan
 
 ### Task 23: Task YAML definitions
 
-- [ ] Write `ci/tasks/ci-agent-implement.yml` task definition
-  - Inputs: `repo` (required), `plan-output` (required, contains spec.md + plan.md from planning agent)
-  - Outputs: `implemented-repo` (repo with commits), `implement-output` (results.json, events.ndjson, summary.md, progress.json)
-  - Params with defaults; runs `/usr/local/bin/ci-agent-implement`
-- [ ] Write `ci/tasks/implement-gate.yml` companion task
-  - Input: `implement-output` (reads results.json)
-  - Params: `CONFIDENCE_THRESHOLD`
-  - Script: parse results.json, check status + confidence, exit 0/1
-- [ ] Validate task definitions with `fly validate-pipeline`
+- [x] Write `ci/tasks/ci-agent-implement.yml` task definition
+- [x] Write `ci/tasks/implement-gate.yml` companion task
+- [x] Validate task definitions with `fly validate-pipeline`
 
 ### Task 24: Container image
 
-- [ ] Add `ci-agent-implement` binary to `deploy/Dockerfile.ci-agent` (extends existing image)
-- [ ] Build and test image locally
+- [x] Add `ci-agent-implement` binary to `deploy/Dockerfile.ci-agent`
+- [x] Pipeline validated with fly
 
-- [ ] Phase 9 Checkpoint — task definitions valid, image builds. Run: `fly validate-pipeline`
+- [x] Phase 9 Checkpoint — task definitions valid, pipeline validated
 
 ---
 

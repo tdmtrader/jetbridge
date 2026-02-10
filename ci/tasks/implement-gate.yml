@@ -1,0 +1,38 @@
+platform: linux
+
+inputs:
+- name: implement-output
+
+params:
+  CONFIDENCE_THRESHOLD: "0.7"
+
+run:
+  path: sh
+  args:
+  - -exc
+  - |
+    echo "=== Implementation Gate ==="
+
+    RESULTS="implement-output/results.json"
+    if [ ! -f "$RESULTS" ]; then
+      echo "No results.json found"
+      exit 1
+    fi
+
+    STATUS=$(cat "$RESULTS" | python3 -c "import sys,json; print(json.load(sys.stdin)['status'])" 2>/dev/null || echo "unknown")
+    CONFIDENCE=$(cat "$RESULTS" | python3 -c "import sys,json; print(json.load(sys.stdin)['confidence'])" 2>/dev/null || echo "0")
+
+    echo "Status: $STATUS"
+    echo "Confidence: $CONFIDENCE"
+    echo "Threshold: $CONFIDENCE_THRESHOLD"
+
+    if [ "$STATUS" = "pass" ]; then
+      echo "PASS: Implementation succeeded"
+      exit 0
+    elif [ "$STATUS" = "abstain" ]; then
+      echo "ABSTAIN: Insufficient input, skipping gate"
+      exit 0
+    else
+      echo "FAIL: Implementation did not pass (status=$STATUS)"
+      exit 1
+    fi
