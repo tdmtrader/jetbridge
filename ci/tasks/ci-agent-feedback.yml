@@ -1,0 +1,40 @@
+---
+platform: linux
+
+rootfs_uri: docker:///golang:1.25-bookworm
+
+inputs:
+- name: repo
+- name: review
+
+params:
+  DATABASE_URL: ""
+  LISTEN_ADDR: ":8080"
+
+run:
+  path: sh
+  args:
+  - -exc
+  - |
+    echo "=== CI Agent Feedback Server ==="
+    echo ""
+    echo "This task starts a feedback session for reviewing agent findings."
+    echo "Visit the feedback UI to review findings interactively."
+    echo ""
+
+    if [ -z "$DATABASE_URL" ]; then
+      echo "WARNING: DATABASE_URL not set. Feedback will not be persisted."
+      echo "Set DATABASE_URL to a PostgreSQL connection string to enable persistence."
+    fi
+
+    REVIEW_FILE="review/review.json"
+    if [ ! -f "$REVIEW_FILE" ]; then
+      echo "ERROR: review.json not found at $REVIEW_FILE"
+      exit 1
+    fi
+
+    echo "Review file: $REVIEW_FILE"
+    echo "Listening on: $LISTEN_ADDR"
+    echo ""
+    echo "=== Feedback session ready ==="
+    echo "Open the agent-feedback UI to begin reviewing findings."
