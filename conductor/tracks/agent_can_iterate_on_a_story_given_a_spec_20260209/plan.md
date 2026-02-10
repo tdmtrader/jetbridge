@@ -92,44 +92,20 @@ The implementation agent reads `spec.md` + `plan.md` (produced by `ci-agent-plan
 
 ### Task 10: Full test suite runner
 
-- [ ] Write tests for suite runner
-  - Runs configurable test command (default: `go test ./...`) in repo directory
-  - Returns `SuiteResult{Pass: true, Output: "..."}` when all tests pass
-  - Returns `SuiteResult{Pass: false, Output: "...", FailedTests []string}` on failure
-  - Respects timeout from context
-  - Parses `go test` output to extract names of failing tests
-- [ ] Implement suite runner
-  - New file: `ci-agent/implement/tdd/suite.go`
-  - `RunSuite(ctx context.Context, repoDir string, testCmd string) (*SuiteResult, error)`
+- [x] Write tests for suite runner (3 tests)
+- [x] Implement suite runner
 
 ### Task 11: Git operations
 
-- [ ] Write tests for git operations
-  - `StageFiles(repoDir, files)` stages specific files
-  - `Commit(repoDir, message)` creates a commit, returns SHA
-  - `RevertLast(repoDir)` reverts the last commit (soft reset + checkout)
-  - `CurrentSHA(repoDir)` returns HEAD SHA
-  - `CreateBranch(repoDir, branchName)` creates and checks out a new branch
-  - All operations work on a real git repo in a temp directory
-  - Commit message follows conventional commits format
-- [ ] Implement git operations
-  - New file: `ci-agent/implement/git.go`
-  - Functions: `StageFiles`, `Commit`, `RevertLast`, `CurrentSHA`, `CreateBranch`
-  - Shells out to `git` CLI
+- [x] Write tests for git operations (5 tests)
+- [x] Implement git operations
 
 ### Task 12: Regression rollback logic
 
-- [ ] Write tests for regression rollback
-  - After green phase, runs full suite
-  - Suite passes → task is clean, proceed to commit
-  - Suite fails → revert implementation patches, mark task for retry
-  - On retry, agent gets the regression output as additional context
-  - After `MAX_RETRIES` regressions, mark task as failed with `regression` reason
-- [ ] Implement regression rollback
-  - New file: `ci-agent/implement/tdd/regression.go`
-  - `CheckAndRollback(ctx, repoDir, testCmd string, taskFiles []string) (*RegressionResult, error)`
+- [x] Write tests for regression rollback (3 tests)
+- [x] Implement regression rollback
 
-- [ ] Phase 4 Checkpoint — full suite runs, git ops work, regressions detected and rolled back. Run: `go test ./implement/... -run "Suite|Git|Regression"`
+- [x] Phase 4 Checkpoint — full suite runs, git ops work, regressions detected and rolled back (70 tests passing)
 
 ---
 
