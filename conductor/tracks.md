@@ -20,12 +20,14 @@
 
 ---
 
-## [ ] Track: CI Agent Review Task — TDD-driven autonomous code review
+## [x] Track: CI Agent Review Task — TDD-driven autonomous code review
+*Completed: 2026-02-10*
 *Link: [./conductor/tracks/ci_agent_review_20260209/](./conductor/tracks/ci_agent_review_20260209/)*
 
 ---
 
-## [ ] Track: Agent Fix Step — Resolve proven issues from agent-review, commit fixes, output repo for PR
+## [x] Track: Agent Fix Step — Resolve proven issues from agent-review, commit fixes, output repo for PR
+*Completed: 2026-02-10*
 *Link: [./conductor/tracks/agent_can_resolve_simple_fixes_from_the_agent_review_step_20260209/](./conductor/tracks/agent_can_resolve_simple_fixes_from_the_agent_review_step_20260209/)*
 
 ---
