@@ -44,7 +44,8 @@
 
 ---
 
-## [ ] Track: CI Agent QA — Spec-driven functional QA with coverage analysis and browser QA plan
+## [x] Track: CI Agent QA — Spec-driven functional QA with coverage analysis and browser QA plan
+*Completed: 2026-02-10*
 *Link: [./conductor/tracks/agent_can_qa_a_story_given_a_spec_20260209/](./conductor/tracks/agent_can_qa_a_story_given_a_spec_20260209/)*
 
 ---
