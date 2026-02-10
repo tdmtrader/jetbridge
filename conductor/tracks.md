@@ -38,9 +38,9 @@
 
 ---
 
-### [ ] Track: Agent can produce a clear, documented plan from a prompt/Jira story
-
-_Link: [./tracks/agent_can_produce_a_clear_documented_plan_from_a_promptjira_story_20260209/](./tracks/agent_can_produce_a_clear_documented_plan_from_a_promptjira_story_20260209/)_
+## [x] Track: Agent can produce a clear, documented plan from a prompt/Jira story
+*Completed: 2026-02-10*
+*Link: [./conductor/tracks/agent_can_produce_a_clear_documented_plan_from_a_promptjira_story_20260209/](./conductor/tracks/agent_can_produce_a_clear_documented_plan_from_a_promptjira_story_20260209/)*
 
 ---
 
