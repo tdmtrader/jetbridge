@@ -16,6 +16,27 @@ import (
 )
 
 func main() {
+	// Check for missing input before attempting to parse options.
+	inputDir := envOrDefault("INPUT_DIR", "story")
+	inputPath := filepath.Join(inputDir, "input.json")
+	if _, err := os.Stat(inputPath); os.IsNotExist(err) {
+		outputDir := envOrDefault("OUTPUT_DIR", "plan-output")
+		os.MkdirAll(outputDir, 0755)
+		results := &schema.Results{
+			SchemaVersion: "1.0",
+			Status:        schema.StatusAbstain,
+			Confidence:    0.0,
+			Summary:       "No input.json found; nothing to plan",
+			Artifacts:     []schema.Artifact{{Name: "results", Path: "results.json", MediaType: "application/json"}},
+		}
+		if err := orchestrator.WriteResults(outputDir, results); err != nil {
+			fmt.Fprintf(os.Stderr, "error writing abstain result: %v\n", err)
+			os.Exit(2)
+		}
+		fmt.Println("Planning abstain (confidence: 0.00)")
+		os.Exit(0)
+	}
+
 	opts, err := parseOptions()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
@@ -45,9 +66,6 @@ func main() {
 func parseOptions() (orchestrator.Options, error) {
 	inputDir := envOrDefault("INPUT_DIR", "story")
 	inputPath := filepath.Join(inputDir, "input.json")
-	if _, err := os.Stat(inputPath); os.IsNotExist(err) {
-		return orchestrator.Options{}, fmt.Errorf("input file %q does not exist", inputPath)
-	}
 
 	outputDir := envOrDefault("OUTPUT_DIR", "plan-output")
 	os.MkdirAll(outputDir, 0755)
