@@ -105,6 +105,7 @@ jobs:
       params:
         ANTHROPIC_API_KEY: ((anthropic_api_key))
         AGENT_CLI: claude
+        AGENT_MODEL: ((agent_model))
         SCORE_THRESHOLD: "7.0"
         FAIL_ON_CRITICAL: "false"
         REVIEW_DIFF_ONLY: "true"
@@ -143,6 +144,7 @@ jobs:
       params:
         ANTHROPIC_API_KEY: ((anthropic_api_key))
         AGENT_CLI: claude
+        AGENT_MODEL: ((agent_model))
         MAX_RETRIES: "2"
         TEST_COMMAND: "go test ./..."
       run:
@@ -177,6 +179,7 @@ jobs:
       params:
         ANTHROPIC_API_KEY: ((anthropic_api_key))
         AGENT_CLI: claude
+        AGENT_MODEL: ((agent_model))
         CONFIDENCE_THRESHOLD: "0.6"
         TIMEOUT: "5m"
       run:
@@ -208,6 +211,7 @@ jobs:
       params:
         ANTHROPIC_API_KEY: ((anthropic_api_key))
         AGENT_CLI: claude
+        AGENT_MODEL: ((agent_model))
         SCORE_THRESHOLD: "7.0"
         GENERATE_TESTS: "false"
         BROWSER_PLAN: "true"
@@ -242,6 +246,7 @@ jobs:
       params:
         ANTHROPIC_API_KEY: ((anthropic_api_key))
         AGENT_CLI: claude
+        AGENT_MODEL: ((agent_model))
         TEST_CMD: "go test ./..."
         MAX_RETRIES: "2"
         MAX_CONSECUTIVE_FAILURES: "3"

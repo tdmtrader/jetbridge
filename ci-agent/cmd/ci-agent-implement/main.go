@@ -17,6 +17,7 @@ func main() {
 	repoDir := os.Getenv("REPO_DIR")
 	outputDir := os.Getenv("OUTPUT_DIR")
 	agentCLI := envOrDefault("AGENT_CLI", "claude")
+	agentModel := os.Getenv("AGENT_MODEL")
 	branchName := os.Getenv("BRANCH_NAME")
 	testCmd := envOrDefault("TEST_CMD", "go test ./...")
 	maxRetries := envIntOrDefault("MAX_RETRIES", 2)
@@ -32,7 +33,7 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	adapter := claude.New(agentCLI)
+	adapter := claude.New(agentCLI, agentModel)
 
 	opts := orchestrator.Options{
 		SpecDir:                specDir,
