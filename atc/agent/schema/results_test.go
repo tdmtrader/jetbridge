@@ -1,6 +1,8 @@
 package schema_test
 
 import (
+	"encoding/json"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -155,6 +157,160 @@ var _ = Describe("Results", func() {
 				"issues_found":   3,
 			}
 			Expect(r.Validate()).To(Succeed())
+		})
+	})
+
+	Describe("JSON round-trip", func() {
+		It("marshals and unmarshals a full Results", func() {
+			original := schema.Results{
+				SchemaVersion: "1.0",
+				Status:        schema.StatusPass,
+				Confidence:    0.85,
+				Summary:       "Review complete",
+				Artifacts: []schema.Artifact{
+					{
+						Name:      "review-comments",
+						Path:      "artifacts/comments.json",
+						MediaType: "application/json",
+						Metadata: map[string]interface{}{
+							"count": float64(5),
+						},
+					},
+				},
+				Metadata: map[string]interface{}{
+					"files_reviewed": float64(10),
+				},
+			}
+
+			data, err := json.Marshal(original)
+			Expect(err).NotTo(HaveOccurred())
+
+			var decoded schema.Results
+			err = json.Unmarshal(data, &decoded)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(decoded.SchemaVersion).To(Equal(original.SchemaVersion))
+			Expect(decoded.Status).To(Equal(original.Status))
+			Expect(decoded.Confidence).To(Equal(original.Confidence))
+			Expect(decoded.Summary).To(Equal(original.Summary))
+			Expect(decoded.Artifacts).To(HaveLen(1))
+			Expect(decoded.Artifacts[0].Name).To(Equal("review-comments"))
+			Expect(decoded.Artifacts[0].Path).To(Equal("artifacts/comments.json"))
+			Expect(decoded.Artifacts[0].MediaType).To(Equal("application/json"))
+			Expect(decoded.Metadata).To(HaveKeyWithValue("files_reviewed", float64(10)))
+		})
+
+		It("uses correct JSON field names", func() {
+			r := schema.Results{
+				SchemaVersion: "1.0",
+				Status:        schema.StatusFail,
+				Confidence:    0.3,
+				Summary:       "Issues found",
+				Artifacts: []schema.Artifact{
+					{
+						Name:      "report",
+						Path:      "out/report.md",
+						MediaType: "text/markdown",
+					},
+				},
+			}
+
+			data, err := json.Marshal(r)
+			Expect(err).NotTo(HaveOccurred())
+
+			var raw map[string]interface{}
+			err = json.Unmarshal(data, &raw)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(raw).To(HaveKey("schema_version"))
+			Expect(raw).To(HaveKey("status"))
+			Expect(raw).To(HaveKey("confidence"))
+			Expect(raw).To(HaveKey("summary"))
+			Expect(raw).To(HaveKey("artifacts"))
+		})
+
+		It("serializes nil artifacts as empty array", func() {
+			r := schema.Results{
+				SchemaVersion: "1.0",
+				Status:        schema.StatusPass,
+				Confidence:    1.0,
+				Summary:       "ok",
+			}
+
+			data, err := json.Marshal(r)
+			Expect(err).NotTo(HaveOccurred())
+
+			var raw map[string]interface{}
+			err = json.Unmarshal(data, &raw)
+			Expect(err).NotTo(HaveOccurred())
+
+			artifacts, ok := raw["artifacts"].([]interface{})
+			Expect(ok).To(BeTrue(), "artifacts should be an array")
+			Expect(artifacts).To(BeEmpty())
+		})
+
+		It("omits metadata when nil", func() {
+			r := schema.Results{
+				SchemaVersion: "1.0",
+				Status:        schema.StatusPass,
+				Confidence:    1.0,
+				Summary:       "ok",
+				Artifacts:     []schema.Artifact{},
+			}
+
+			data, err := json.Marshal(r)
+			Expect(err).NotTo(HaveOccurred())
+
+			var raw map[string]interface{}
+			err = json.Unmarshal(data, &raw)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(raw).NotTo(HaveKey("metadata"))
+		})
+
+		It("includes metadata when present", func() {
+			r := schema.Results{
+				SchemaVersion: "1.0",
+				Status:        schema.StatusPass,
+				Confidence:    1.0,
+				Summary:       "ok",
+				Artifacts:     []schema.Artifact{},
+				Metadata: map[string]interface{}{
+					"custom_key": "custom_value",
+				},
+			}
+
+			data, err := json.Marshal(r)
+			Expect(err).NotTo(HaveOccurred())
+
+			var raw map[string]interface{}
+			err = json.Unmarshal(data, &raw)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(raw).To(HaveKey("metadata"))
+		})
+
+		It("round-trips artifact metadata", func() {
+			original := schema.Artifact{
+				Name:      "test",
+				Path:      "out/test.json",
+				MediaType: "application/json",
+				Metadata: map[string]interface{}{
+					"size_bytes": float64(1024),
+				},
+			}
+
+			data, err := json.Marshal(original)
+			Expect(err).NotTo(HaveOccurred())
+
+			var decoded schema.Artifact
+			err = json.Unmarshal(data, &decoded)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(decoded.Name).To(Equal(original.Name))
+			Expect(decoded.Path).To(Equal(original.Path))
+			Expect(decoded.MediaType).To(Equal(original.MediaType))
+			Expect(decoded.Metadata).To(HaveKeyWithValue("size_bytes", float64(1024)))
 		})
 	})
 })
