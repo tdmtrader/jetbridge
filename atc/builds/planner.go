@@ -70,6 +70,7 @@ func (visitor *planVisitor) VisitTask(step *atc.TaskStep) error {
 		OutputMapping:     step.OutputMapping,
 		ImageArtifactName: step.ImageArtifactName,
 		Timeout:           step.Timeout,
+		Sidecars:          step.Sidecars,
 
 		ResourceTypes:     visitor.resourceTypes,
 		CheckSkipInterval: visitor.manuallyTriggered,
