@@ -144,6 +144,23 @@ var factoryTests = []StepTest{
 		},
 	},
 	{
+		Title: "task step with sidecars",
+
+		ConfigYAML: `
+			task: some-task
+			file: some-task-file
+			sidecars:
+			- my-repo/ci/sidecars/postgres.yml
+			- my-repo/ci/sidecars/redis.yml
+		`,
+
+		StepConfig: &atc.TaskStep{
+			Name:       "some-task",
+			ConfigPath: "some-task-file",
+			Sidecars:   []string{"my-repo/ci/sidecars/postgres.yml", "my-repo/ci/sidecars/redis.yml"},
+		},
+	},
+	{
 		Title: "task step with non-string params",
 
 		ConfigYAML: `

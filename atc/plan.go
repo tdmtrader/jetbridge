@@ -353,6 +353,10 @@ type TaskPlan struct {
 	// If set, the check plan for the image will be forced to run and not respect
 	// the checking interval
 	CheckSkipInterval bool `json:"check_skip_interval,omitempty"`
+
+	// Sidecars is a list of file paths pointing to sidecar container
+	// definition files within the build's artifacts.
+	Sidecars []string `json:"sidecars,omitempty"`
 }
 
 type RunPlan struct {

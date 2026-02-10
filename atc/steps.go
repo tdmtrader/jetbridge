@@ -352,6 +352,7 @@ type TaskStep struct {
 	OutputMapping     map[string]string `json:"output_mapping,omitempty"`
 	ImageArtifactName string            `json:"image,omitempty"`
 	Timeout           string            `json:"timeout,omitempty"`
+	Sidecars          []string          `json:"sidecars,omitempty"`
 }
 
 func (step *TaskStep) Visit(v StepVisitor) error {
