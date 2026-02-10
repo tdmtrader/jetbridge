@@ -12,6 +12,7 @@ import (
 
 	"code.cloudfoundry.org/lager/v3"
 	"code.cloudfoundry.org/lager/v3/lagerctx"
+	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/metric"
 	"github.com/concourse/concourse/atc/runtime"
@@ -353,6 +354,8 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 		containers = append(containers, *sidecar)
 	}
 
+	containers = append(containers, buildSidecarContainers(c.containerSpec.Sidecars, volumeMounts)...)
+
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      c.podName,
@@ -484,6 +487,84 @@ func (c *Container) buildArtifactHelperSidecar(mainMounts []corev1.VolumeMount) 
 			},
 		},
 	}
+}
+
+// buildSidecarContainers converts SidecarConfig entries into K8s container
+// specs. Each sidecar receives the same volume mounts as the main container
+// so it can access inputs, outputs, and caches.
+func buildSidecarContainers(sidecars []atc.SidecarConfig, mainMounts []corev1.VolumeMount) []corev1.Container {
+	if len(sidecars) == 0 {
+		return nil
+	}
+
+	allowEscalation := false
+	var containers []corev1.Container
+
+	for _, sc := range sidecars {
+		c := corev1.Container{
+			Name:            sc.Name,
+			Image:           sc.Image,
+			Command:         sc.Command,
+			Args:            sc.Args,
+			WorkingDir:      sc.WorkingDir,
+			VolumeMounts:    append([]corev1.VolumeMount{}, mainMounts...),
+			ImagePullPolicy: corev1.PullIfNotPresent,
+			SecurityContext: &corev1.SecurityContext{
+				AllowPrivilegeEscalation: &allowEscalation,
+			},
+		}
+
+		for _, e := range sc.Env {
+			c.Env = append(c.Env, corev1.EnvVar{Name: e.Name, Value: e.Value})
+		}
+
+		for _, p := range sc.Ports {
+			protocol := corev1.ProtocolTCP
+			if p.Protocol != "" {
+				protocol = corev1.Protocol(p.Protocol)
+			}
+			c.Ports = append(c.Ports, corev1.ContainerPort{
+				ContainerPort: int32(p.ContainerPort),
+				Protocol:      protocol,
+			})
+		}
+
+		if sc.Resources != nil {
+			c.Resources = buildSidecarResourceRequirements(*sc.Resources)
+		}
+
+		containers = append(containers, c)
+	}
+
+	return containers
+}
+
+// buildSidecarResourceRequirements converts SidecarResources to K8s
+// ResourceRequirements using Kubernetes quantity strings.
+func buildSidecarResourceRequirements(res atc.SidecarResources) corev1.ResourceRequirements {
+	reqs := corev1.ResourceRequirements{}
+
+	if res.Requests.CPU != "" || res.Requests.Memory != "" {
+		reqs.Requests = corev1.ResourceList{}
+		if res.Requests.CPU != "" {
+			reqs.Requests[corev1.ResourceCPU] = resource.MustParse(res.Requests.CPU)
+		}
+		if res.Requests.Memory != "" {
+			reqs.Requests[corev1.ResourceMemory] = resource.MustParse(res.Requests.Memory)
+		}
+	}
+
+	if res.Limits.CPU != "" || res.Limits.Memory != "" {
+		reqs.Limits = corev1.ResourceList{}
+		if res.Limits.CPU != "" {
+			reqs.Limits[corev1.ResourceCPU] = resource.MustParse(res.Limits.CPU)
+		}
+		if res.Limits.Memory != "" {
+			reqs.Limits[corev1.ResourceMemory] = resource.MustParse(res.Limits.Memory)
+		}
+	}
+
+	return reqs
 }
 
 // volumeNameForMountPath finds the K8s volume name that is mounted at the
