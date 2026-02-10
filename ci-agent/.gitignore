@@ -1,0 +1,13 @@
+# Binaries
+ci-agent-review
+ci-agent-fix
+ci-agent-plan
+ci-agent-qa
+
+# Test artifacts
+*.test
+coverage.out
+
+# IDE
+.idea/
+.vscode/
