@@ -1,6 +1,8 @@
 package schema_test
 
 import (
+	"encoding/json"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -100,6 +102,86 @@ var _ = Describe("Event", func() {
 			e := validEvent()
 			e.Type = "review.file_analyzed"
 			Expect(e.Validate()).To(Succeed())
+		})
+	})
+
+	Describe("JSON round-trip", func() {
+		It("marshals and unmarshals an Event", func() {
+			original := schema.Event{
+				Timestamp: "2026-02-09T21:30:00Z",
+				Type:      schema.EventToolCall,
+				Data: map[string]interface{}{
+					"tool":        "grep",
+					"duration_ms": float64(42),
+				},
+			}
+
+			data, err := json.Marshal(original)
+			Expect(err).NotTo(HaveOccurred())
+
+			var decoded schema.Event
+			err = json.Unmarshal(data, &decoded)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(decoded.Timestamp).To(Equal(original.Timestamp))
+			Expect(decoded.Type).To(Equal(original.Type))
+			Expect(decoded.Data).To(HaveKeyWithValue("tool", "grep"))
+			Expect(decoded.Data).To(HaveKeyWithValue("duration_ms", float64(42)))
+		})
+
+		It("uses correct JSON field names (ts, event, data)", func() {
+			e := schema.Event{
+				Timestamp: "2026-02-09T21:30:00Z",
+				Type:      schema.EventAgentStart,
+				Data:      map[string]interface{}{"step": "review"},
+			}
+
+			data, err := json.Marshal(e)
+			Expect(err).NotTo(HaveOccurred())
+
+			var raw map[string]interface{}
+			err = json.Unmarshal(data, &raw)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(raw).To(HaveKey("ts"))
+			Expect(raw).To(HaveKey("event"))
+			Expect(raw).To(HaveKey("data"))
+			Expect(raw).NotTo(HaveKey("timestamp"))
+			Expect(raw).NotTo(HaveKey("type"))
+		})
+
+		It("serializes nil data as empty object", func() {
+			e := schema.Event{
+				Timestamp: "2026-02-09T21:30:00Z",
+				Type:      schema.EventDecision,
+			}
+
+			data, err := json.Marshal(e)
+			Expect(err).NotTo(HaveOccurred())
+
+			var raw map[string]interface{}
+			err = json.Unmarshal(data, &raw)
+			Expect(err).NotTo(HaveOccurred())
+
+			dataField, ok := raw["data"].(map[string]interface{})
+			Expect(ok).To(BeTrue(), "data should be an object")
+			Expect(dataField).To(BeEmpty())
+		})
+
+		It("produces a single JSON line (no embedded newlines)", func() {
+			e := schema.Event{
+				Timestamp: "2026-02-09T21:30:00Z",
+				Type:      schema.EventAgentEnd,
+				Data: map[string]interface{}{
+					"status":      "pass",
+					"confidence":  0.92,
+					"duration_ms": float64(18500),
+				},
+			}
+
+			data, err := json.Marshal(e)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(string(data)).NotTo(ContainSubstring("\n"))
 		})
 	})
 })
