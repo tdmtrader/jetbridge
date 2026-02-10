@@ -13,12 +13,17 @@ import (
 
 // Adapter implements the adapter.Adapter interface using Claude Code CLI.
 type Adapter struct {
-	CLI string
+	CLI   string
+	Model string
 }
 
 // New creates a new Claude Code adapter.
-func New(cli string) *Adapter {
-	return &Adapter{CLI: cli}
+func New(cli string, model ...string) *Adapter {
+	a := &Adapter{CLI: cli}
+	if len(model) > 0 {
+		a.Model = model[0]
+	}
+	return a
 }
 
 // GenerateTest invokes the agent to produce a failing test.
@@ -56,7 +61,11 @@ func (a *Adapter) BuildImplGenPrompt(req adapter.CodeGenRequest, testCode string
 }
 
 func (a *Adapter) run(ctx context.Context, prompt string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, a.CLI, "-p", prompt, "--output-format", "json")
+	args := []string{"-p", prompt, "--output-format", "json"}
+	if a.Model != "" {
+		args = append(args, "--model", a.Model)
+	}
+	cmd := exec.CommandContext(ctx, a.CLI, args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
