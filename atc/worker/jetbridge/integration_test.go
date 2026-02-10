@@ -5,6 +5,7 @@ import (
 	"context"
 	"io"
 
+	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbfakes"
 	"github.com/concourse/concourse/atc/runtime"
@@ -687,6 +688,130 @@ var _ = Describe("Integration", func() {
 			Expect(err).ToNot(HaveOccurred())
 			Expect(result.ExitStatus).To(Equal(0))
 			Expect(stdout.String()).To(Equal(putStdout))
+		})
+	})
+
+	Describe("task with sidecar containers", func() {
+		It("creates a pod with sidecars that share volume mounts and runs the task via exec", func() {
+			By("creating a container with a sidecar")
+			container := createContainer("task-sidecar", db.ContainerTypeTask, runtime.ContainerSpec{
+				TeamID:   1,
+				TeamName: "main",
+				Dir:      "/tmp/build/workdir",
+				ImageSpec: runtime.ImageSpec{
+					ImageURL: "docker:///node:18",
+				},
+				Inputs: []runtime.Input{
+					{DestinationPath: "/tmp/build/workdir/my-app"},
+				},
+				Sidecars: []atc.SidecarConfig{
+					{
+						Name:  "postgres",
+						Image: "postgres:15",
+						Env: []atc.SidecarEnvVar{
+							{Name: "POSTGRES_PASSWORD", Value: "test"},
+							{Name: "POSTGRES_DB", Value: "testdb"},
+						},
+						Ports: []atc.SidecarPort{
+							{ContainerPort: 5432},
+						},
+					},
+				},
+			})
+
+			By("running the task")
+			stdout := new(bytes.Buffer)
+			process, err := container.Run(ctx, runtime.ProcessSpec{
+				Path: "/bin/sh",
+				Args: []string{"-c", "npm test"},
+				Dir:  "/tmp/build/workdir/my-app",
+			}, runtime.ProcessIO{
+				Stdout: stdout,
+			})
+			Expect(err).ToNot(HaveOccurred())
+
+			By("verifying the pod has both main and sidecar containers")
+			pods, err := fakeClientset.CoreV1().Pods("ci-namespace").List(ctx, metav1.ListOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(pods.Items).To(HaveLen(1))
+
+			pod := pods.Items[0]
+			containerNames := []string{}
+			for _, c := range pod.Spec.Containers {
+				containerNames = append(containerNames, c.Name)
+			}
+			Expect(containerNames).To(ContainElements("main", "postgres"))
+
+			By("verifying the sidecar has correct env, ports, and shared volume mounts")
+			var sidecar corev1.Container
+			for _, c := range pod.Spec.Containers {
+				if c.Name == "postgres" {
+					sidecar = c
+					break
+				}
+			}
+			Expect(sidecar.Image).To(Equal("postgres:15"))
+			Expect(sidecar.Env).To(ContainElements(
+				corev1.EnvVar{Name: "POSTGRES_PASSWORD", Value: "test"},
+				corev1.EnvVar{Name: "POSTGRES_DB", Value: "testdb"},
+			))
+			Expect(sidecar.Ports).To(ContainElement(
+				corev1.ContainerPort{ContainerPort: 5432, Protocol: corev1.ProtocolTCP},
+			))
+
+			mainMounts := pod.Spec.Containers[0].VolumeMounts
+			Expect(sidecar.VolumeMounts).To(Equal(mainMounts))
+
+			By("simulating Pod running and waiting for exec result")
+			simulatePodRunning("task-sidecar")
+			result, err := process.Wait(ctx)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(result.ExitStatus).To(Equal(0))
+
+			By("verifying the real command was exec'd in the main container")
+			Expect(fakeExecutor.execCalls).To(HaveLen(1))
+			Expect(fakeExecutor.execCalls[0].command).To(Equal([]string{"/bin/sh", "-c", "npm test"}))
+			Expect(fakeExecutor.execCalls[0].containerName).To(Equal("main"))
+		})
+
+		It("runs a task with multiple sidecars", func() {
+			container := createContainer("task-multi-sidecar", db.ContainerTypeTask, runtime.ContainerSpec{
+				TeamID:   1,
+				Dir:      "/tmp/build/workdir",
+				ImageSpec: runtime.ImageSpec{ImageURL: "docker:///python:3.12"},
+				Sidecars: []atc.SidecarConfig{
+					{
+						Name:  "postgres",
+						Image: "postgres:15",
+						Ports: []atc.SidecarPort{{ContainerPort: 5432}},
+					},
+					{
+						Name:  "redis",
+						Image: "redis:7",
+						Ports: []atc.SidecarPort{{ContainerPort: 6379}},
+					},
+				},
+			})
+
+			process, err := container.Run(ctx, runtime.ProcessSpec{
+				Path: "pytest",
+			}, runtime.ProcessIO{})
+			Expect(err).ToNot(HaveOccurred())
+
+			pods, err := fakeClientset.CoreV1().Pods("ci-namespace").List(ctx, metav1.ListOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			pod := pods.Items[0]
+
+			containerNames := []string{}
+			for _, c := range pod.Spec.Containers {
+				containerNames = append(containerNames, c.Name)
+			}
+			Expect(containerNames).To(ContainElements("main", "postgres", "redis"))
+
+			simulatePodRunning("task-multi-sidecar")
+			result, err := process.Wait(ctx)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(result.ExitStatus).To(Equal(0))
 		})
 	})
 })
