@@ -2,6 +2,7 @@ package gapgen_test
 
 import (
 	"context"
+	"fmt"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -19,6 +20,20 @@ type fakeAgent struct {
 
 func (f *fakeAgent) Run(_ context.Context, _ string) (string, error) {
 	return f.output, f.err
+}
+
+type countingAgent struct {
+	responses []string
+	callCount *int
+}
+
+func (c *countingAgent) Run(_ context.Context, _ string) (string, error) {
+	idx := *c.callCount
+	*c.callCount++
+	if idx < len(c.responses) {
+		return c.responses[idx], nil
+	}
+	return "", fmt.Errorf("no more responses")
 }
 
 var _ = Describe("GenerateGapTests", func() {
@@ -72,6 +87,51 @@ var _ = Describe("GenerateGapTests", func() {
 		tests, err := gapgen.GenerateGapTests(context.Background(), nil, "/tmp/repo", gaps)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(tests).To(BeEmpty())
+	})
+})
+
+var _ = Describe("GenerateGapTests error handling", func() {
+	It("skips when agent returns invalid JSON", func() {
+		agent := &fakeAgent{output: "not json at all"}
+		gaps := []mapper.RequirementMapping{
+			{SpecItem: specparser.SpecItem{ID: "R1", Text: "uncovered req"}, Status: "uncovered"},
+		}
+		tests, err := gapgen.GenerateGapTests(context.Background(), agent, "/tmp/repo", gaps)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(tests).To(BeEmpty())
+	})
+
+	It("skips when agent returns error", func() {
+		agent := &fakeAgent{err: fmt.Errorf("agent down")}
+		gaps := []mapper.RequirementMapping{
+			{SpecItem: specparser.SpecItem{ID: "R1", Text: "req"}, Status: "uncovered"},
+		}
+		tests, err := gapgen.GenerateGapTests(context.Background(), agent, "/tmp/repo", gaps)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(tests).To(BeEmpty())
+	})
+
+	It("processes multiple gaps independently", func() {
+		callCount := 0
+		agent := &countingAgent{
+			responses: []string{
+				`{"test_name": "TestA", "test_code": "package t\nfunc TestA(t *testing.T) {}"}`,
+				"bad json",
+				`{"test_name": "TestC", "test_code": "package t\nfunc TestC(t *testing.T) {}"}`,
+			},
+			callCount: &callCount,
+		}
+		gaps := []mapper.RequirementMapping{
+			{SpecItem: specparser.SpecItem{ID: "R1", Text: "first"}, Status: "uncovered"},
+			{SpecItem: specparser.SpecItem{ID: "R2", Text: "second"}, Status: "uncovered"},
+			{SpecItem: specparser.SpecItem{ID: "R3", Text: "third"}, Status: "uncovered"},
+		}
+		tests, err := gapgen.GenerateGapTests(context.Background(), agent, "/tmp/repo", gaps)
+		Expect(err).NotTo(HaveOccurred())
+		// R1 succeeds, R2 fails (bad json), R3 succeeds
+		Expect(tests).To(HaveLen(2))
+		Expect(tests[0].RequirementID).To(Equal("R1"))
+		Expect(tests[1].RequirementID).To(Equal("R3"))
 	})
 })
 
