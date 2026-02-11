@@ -153,7 +153,11 @@ func (wrappa *APIAuthWrappa) Wrap(handlers rata.Handlers) rata.Handlers {
 			atc.ClearResourceCache,
 			atc.CreateArtifact,
 			atc.ScheduleJob,
-			atc.GetArtifact:
+			atc.GetArtifact,
+			atc.SubmitAgentFeedback,
+			atc.GetAgentFeedback,
+			atc.GetAgentFeedbackSummary,
+			atc.ClassifyAgentVerdict:
 			newHandler = auth.CheckAuthorizationHandler(handler, rejector)
 
 		// think about it!

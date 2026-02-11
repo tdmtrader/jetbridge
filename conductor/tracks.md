@@ -66,3 +66,8 @@
 *Link: [./conductor/tracks/legacy-cleanup-20260210/](./conductor/tracks/legacy-cleanup-20260210/)*
 
 ---
+
+## [ ] Track: Helm Chart Parity — Restore service annotations, loadBalancerIP, TLS, and extra volume mounts
+*Link: [./conductor/tracks/helm-chart-parity/](./conductor/tracks/helm-chart-parity/)*
+
+---

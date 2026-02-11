@@ -122,7 +122,11 @@ func (rw *RejectArchivedWrappa) Wrap(handlers rata.Handlers) rata.Handlers {
 			atc.ClearResourceVersions,
 			atc.ClearResourceTypeVersions,
 			atc.GetOpenIDConfiguration,
-			atc.GetSigningKeys:
+			atc.GetSigningKeys,
+			atc.SubmitAgentFeedback,
+			atc.GetAgentFeedback,
+			atc.GetAgentFeedbackSummary,
+			atc.ClassifyAgentVerdict:
 
 		default:
 			panic("how do archived pipelines affect your endpoint?")

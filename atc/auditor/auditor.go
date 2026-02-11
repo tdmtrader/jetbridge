@@ -143,7 +143,11 @@ func (a *auditor) ValidateAction(action string) bool {
 		atc.GetUser,
 		atc.GetWall,
 		atc.SetWall,
-		atc.ClearWall:
+		atc.ClearWall,
+		atc.SubmitAgentFeedback,
+		atc.GetAgentFeedback,
+		atc.GetAgentFeedbackSummary,
+		atc.ClassifyAgentVerdict:
 		return a.EnableSystemAuditLog
 	case atc.ListTeams,
 		atc.SetTeam,

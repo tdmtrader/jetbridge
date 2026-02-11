@@ -63,6 +63,12 @@ spec:
             # Auth
             - --add-local-user={{ .Values.web.localUsers }}
             - --main-team-local-user={{ .Values.web.mainTeamLocalUser }}
+            {{- if .Values.web.tls.enabled }}
+            # TLS
+            - --tls-bind-port={{ .Values.web.tls.bindPort }}
+            - --tls-cert={{ .Values.web.tls.mountPath }}/{{ .Values.web.tls.certFilename }}
+            - --tls-key={{ .Values.web.tls.mountPath }}/{{ .Values.web.tls.keyFilename }}
+            {{- end }}
             # Kubernetes runtime
             - --kubernetes-namespace={{ include "concourse.kubernetesNamespace" . }}
             {{- if .Values.kubernetes.serviceAccount }}
@@ -108,6 +114,10 @@ spec:
           ports:
             - containerPort: 8080
               name: http
+            {{- if .Values.web.tls.enabled }}
+            - containerPort: {{ .Values.web.tls.bindPort }}
+              name: https
+            {{- end }}
             - containerPort: 2222
               name: tsa
           {{- with .Values.web.livenessProbe }}
@@ -126,9 +136,25 @@ spec:
             - name: keys
               mountPath: /keys
               readOnly: true
+            {{- if .Values.web.tls.enabled }}
+            - name: web-tls
+              mountPath: {{ .Values.web.tls.mountPath }}
+              readOnly: true
+            {{- end }}
+            {{- with .Values.web.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
       volumes:
         - name: keys
           emptyDir: {}
+        {{- if .Values.web.tls.enabled }}
+        - name: web-tls
+          secret:
+            secretName: {{ .Values.web.tls.secretName }}
+        {{- end }}
+        {{- with .Values.web.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
       {{- with .Values.web.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
