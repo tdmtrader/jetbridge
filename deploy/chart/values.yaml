@@ -150,17 +150,43 @@ postgresql:
   # Set to false to use an external database.
   enabled: true
 
-  # -- PostgreSQL image
+  # -- PostgreSQL image (only used when postgresql.enabled=true)
   image: postgres:16
 
   # -- Database name
   database: concourse
   # -- Database user
   user: concourse
-  # -- Database password (use a secret in production)
+  # -- Database password (plaintext; use existingSecret for production)
   password: concourse
 
-  # -- Resource requests and limits
+  # -- Use an existing K8s Secret for the database password.
+  # The Secret must contain a key matching passwordSecretKey.
+  # When set, postgresql.password is ignored.
+  existingSecret: ""
+  # -- Key within the existing Secret that contains the password
+  passwordSecretKey: postgresql-password
+
+  # -- External database host (required when postgresql.enabled=false)
+  host: ""
+  # -- External database port
+  port: 5432
+  # -- Path to UNIX domain socket (alternative to host/port)
+  socket: ""
+
+  # -- SSL mode: disable, require, verify-ca, verify-full
+  sslmode: disable
+  # -- CA certificate for SSL connections.
+  # Provide as a file path inside the pod (mount via web.extraVolumes).
+  caCert: ""
+  # -- Client certificate for mTLS connections
+  clientCert: ""
+  # -- Client key for mTLS connections
+  clientKey: ""
+  # -- Connection timeout (Go duration, e.g. "5m"). Empty = binary default (5m).
+  connectTimeout: ""
+
+  # -- Resource requests and limits (only used when postgresql.enabled=true)
   resources:
     requests:
       cpu: 250m
@@ -169,15 +195,11 @@ postgresql:
       cpu: 500m
       memory: 512Mi
 
-  # -- Persistence for database data
+  # -- Persistence for database data (only used when postgresql.enabled=true)
   persistence:
     enabled: true
     size: 8Gi
     storageClass: ""
-
-  ## External database settings (when postgresql.enabled=false)
-  # host: ""
-  # port: 5432
 
 # -- Service configuration
 service:
