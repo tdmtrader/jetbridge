@@ -171,45 +171,48 @@ jobs:
           echo "=== Binary built ==="
           echo ""
 
-          echo "=== Creating builder pod with Docker socket ==="
+          REGISTRY="registry-docker-registry.cicd.svc.cluster.local:5000"
           BUILDER_POD="image-builder-$$"
 
-          # Ensure builder pod is cleaned up on exit (success or failure).
-          cleanup_builder() { kubectl delete pod -n concourse ${BUILDER_POD} --grace-period=0 --force 2>/dev/null || true; }
+          cleanup_builder() { kubectl delete pod -n cicd ${BUILDER_POD} --grace-period=0 --force 2>/dev/null || true; }
           trap cleanup_builder EXIT
+          kubectl delete pod -n cicd -l app=image-builder --grace-period=0 --force 2>/dev/null || true
 
-          # Clean up any leftover builder pods from previous runs
-          kubectl delete pod -n concourse -l app=image-builder --grace-period=0 --force 2>/dev/null || true
-
-          cat <<PODEOF | kubectl apply -n concourse -f -
+          echo "=== Creating DinD builder pod ==="
+          cat <<PODEOF | kubectl apply -n cicd -f -
           apiVersion: v1
           kind: Pod
           metadata:
             name: ${BUILDER_POD}
-            namespace: concourse
+            namespace: cicd
             labels:
               app: image-builder
           spec:
             containers:
-            - name: builder
-              image: registry.home/concourse-test-runner:v5
-              imagePullPolicy: IfNotPresent
-              command: ["sleep", "600"]
-              volumeMounts:
-              - name: docker-sock
-                mountPath: /var/run/docker.sock
-            volumes:
-            - name: docker-sock
-              hostPath:
-                path: /var/run/docker.sock
-                type: Socket
+            - name: dind
+              image: docker:dind
+              securityContext:
+                privileged: true
+              env:
+              - name: DOCKER_TLS_CERTDIR
+                value: ""
+              command: ["dockerd", "--host=unix:///var/run/docker.sock", "--insecure-registry=${REGISTRY}", "--insecure-registry=registry.home"]
           PODEOF
 
           echo "Waiting for builder pod to be ready..."
-          kubectl wait --for=condition=ready pod/${BUILDER_POD} -n concourse --timeout=120s
+          kubectl wait --for=condition=ready pod/${BUILDER_POD} -n cicd --timeout=120s
+
+          echo "Waiting for Docker daemon..."
+          for i in $(seq 1 30); do
+            if kubectl exec -n cicd ${BUILDER_POD} -- docker info >/dev/null 2>&1; then
+              echo "Docker daemon ready"
+              break
+            fi
+            sleep 2
+          done
 
           echo "=== Copying binary to builder pod ==="
-          kubectl cp concourse-linux-amd64 concourse/${BUILDER_POD}:/tmp/concourse-linux-amd64
+          kubectl cp concourse-linux-amd64 cicd/${BUILDER_POD}:/tmp/concourse-linux-amd64
 
           echo "=== Copying Dockerfile to builder pod ==="
           cat <<'DOCKERFILE' > /tmp/Dockerfile
@@ -222,19 +225,20 @@ jobs:
           ENV PATH="/usr/local/concourse/bin:${PATH}"
           ENTRYPOINT ["dumb-init", "concourse"]
           DOCKERFILE
-          kubectl cp /tmp/Dockerfile concourse/${BUILDER_POD}:/tmp/Dockerfile
+          kubectl cp /tmp/Dockerfile cicd/${BUILDER_POD}:/tmp/Dockerfile
 
-          echo "=== Building Docker image inside builder pod ==="
-          kubectl exec -n concourse ${BUILDER_POD} -- \
-            docker build -t concourse-local:latest -f /tmp/Dockerfile /tmp/
-          echo "=== Docker image built successfully ==="
+          echo "=== Building Docker image ==="
+          kubectl exec -n cicd ${BUILDER_POD} -- \
+            docker build -t registry.home/jetbridge:latest -t ${REGISTRY}/jetbridge:latest -f /tmp/Dockerfile /tmp/
 
-          echo "=== Verifying image ==="
-          kubectl exec -n concourse ${BUILDER_POD} -- \
-            docker images concourse-local:latest
+          echo "=== Pushing to registries ==="
+          kubectl exec -n cicd ${BUILDER_POD} -- docker push registry.home/jetbridge:latest
+          kubectl exec -n cicd ${BUILDER_POD} -- docker push ${REGISTRY}/jetbridge:latest
+
+          echo "=== Verifying ==="
+          kubectl exec -n cicd ${BUILDER_POD} -- docker images registry.home/jetbridge
           echo ""
-
-          echo "=== Image build complete (builder pod cleanup via trap) ==="
+          echo "=== Image build and push complete ==="
 
 - name: deploy
   serial_groups: [pipeline]
@@ -254,21 +258,20 @@ jobs:
           echo "=== Deploying new concourse-web image ==="
           echo ""
           echo "Current concourse-web pod:"
-          kubectl get pods -n concourse -l app=concourse-web
+          kubectl get pods -n cicd -l app=concourse-web
           echo ""
 
-          echo "=== Creating restarter pod to handle rollout restart ==="
+          echo "=== Creating restarter pod ==="
           RESTARTER_POD="web-restarter-$$"
 
-          # Clean up any leftover restarter pods
-          kubectl delete pod -n concourse -l app=web-restarter --grace-period=0 --force 2>/dev/null || true
+          kubectl delete pod -n cicd -l app=web-restarter --grace-period=0 --force 2>/dev/null || true
 
-          cat <<PODEOF | kubectl apply -n concourse -f -
+          cat <<PODEOF | kubectl apply -n cicd -f -
           apiVersion: v1
           kind: Pod
           metadata:
             name: ${RESTARTER_POD}
-            namespace: concourse
+            namespace: cicd
             labels:
               app: web-restarter
           spec:
@@ -281,14 +284,17 @@ jobs:
               command: ["sh", "-c"]
               args:
               - |
-                echo "Restarter pod starting, sleeping 10s to allow task to complete..."
-                sleep 10
-                echo "Performing rollout restart of concourse-web deployment..."
-                kubectl rollout restart deployment/concourse-web -n concourse
+                echo "Patching imagePullPolicy to Always..."
+                kubectl patch deployment concourse-web -n cicd -p '{"spec":{"template":{"spec":{"containers":[{"name":"concourse-web","imagePullPolicy":"Always"}]}}}}'
+                echo "Performing rollout restart..."
+                kubectl rollout restart deployment/concourse-web -n cicd
                 echo "Waiting for rollout to complete..."
-                kubectl rollout status deployment/concourse-web -n concourse --timeout=180s
-                echo "Rollout complete, cleaning up restarter pod..."
-                kubectl delete pod -n concourse -l app=web-restarter --grace-period=0 --force 2>/dev/null || true
+                kubectl rollout status deployment/concourse-web -n cicd --timeout=180s
+                echo "Restoring imagePullPolicy to IfNotPresent..."
+                kubectl patch deployment concourse-web -n cicd -p '{"spec":{"template":{"spec":{"containers":[{"name":"concourse-web","imagePullPolicy":"IfNotPresent"}]}}}}'
+                kubectl rollout status deployment/concourse-web -n cicd --timeout=180s
+                echo "Rollout complete, cleaning up..."
+                kubectl delete pod -n cicd -l app=web-restarter --grace-period=0 --force 2>/dev/null || true
           PODEOF
 
           echo "Restarter pod '${RESTARTER_POD}' created and running in background"
