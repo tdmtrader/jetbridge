@@ -48,7 +48,7 @@ The check step stores versions in the DB resource config scope. Extract the reso
   - Short-circuit path retrieves check result from `fetchState.Result(checkPlan.ID, &version)`
   - Priority: check result digest > static get plan version > source tag
   - Fallback: if no digest available, use source tag (`repo:tag`) or default to `repo:latest`
-- [~] Task: Phase 4 Manual Verification — 207/207 engine specs pass
+- [x] Task: Phase 4 Manual Verification — 207/207 engine specs pass
 
 ---
 
