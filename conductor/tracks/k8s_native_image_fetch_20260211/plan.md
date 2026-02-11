@@ -63,6 +63,6 @@ End-to-end validation that custom resource types work correctly on the K8s runti
 - [x] Verify no regression for base resource types
   - Non-registry-image types fall back to full fetch (existing test)
   - Base types resolved via DefaultResourceTypeImages at JetBridge layer, never hit FetchImage
-- [~] Task: Phase 5 Manual Verification — 209/209 engine specs pass
+- [x] Task: Phase 5 Manual Verification — 209/209 engine specs pass
 
 ---
