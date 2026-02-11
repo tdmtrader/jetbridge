@@ -93,14 +93,30 @@ type Store interface {
 	GetAll() ([]StoredFeedback, error)
 }
 
+// ClassifyFunc is a function that classifies natural language text into a verdict.
+type ClassifyFunc func(text string) (verdict string, confidence float64)
+
+// HandlerOption configures optional Handler behavior.
+type HandlerOption func(*Handler)
+
+// WithClassifier sets a custom classification function.
+func WithClassifier(fn ClassifyFunc) HandlerOption {
+	return func(h *Handler) { h.classifier = fn }
+}
+
 // Handler serves the agent feedback API.
 type Handler struct {
-	store Store
+	store      Store
+	classifier ClassifyFunc
 }
 
 // NewHandler creates a new feedback API handler.
-func NewHandler(store Store) *Handler {
-	return &Handler{store: store}
+func NewHandler(store Store, opts ...HandlerOption) *Handler {
+	h := &Handler{store: store, classifier: defaultClassifyText}
+	for _, opt := range opts {
+		opt(h)
+	}
+	return h
 }
 
 // SubmitFeedback handles POST /api/v1/agent/feedback.
@@ -200,7 +216,7 @@ func (h *Handler) ClassifyVerdict(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	verdict, confidence := classifyText(req.Text)
+	verdict, confidence := h.classifier(req.Text)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(ClassifyResponse{
@@ -209,36 +225,53 @@ func (h *Handler) ClassifyVerdict(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// classifyText is a simplified keyword-based classifier (mirrors ci-agent/feedback/classifier.go).
-func classifyText(text string) (string, float64) {
+// negationPrefixes are phrases that invert a "false positive" match.
+var negationPrefixes = []string{"not a ", "not ", "isn't a ", "isn't ", "no "}
+
+type classifierPattern struct {
+	keywords   []string
+	verdict    string
+	confidence float64
+}
+
+// classifierPatterns mirrors ci-agent/feedback/classifier.go patterns exactly.
+var classifierPatterns = []classifierPattern{
+	{keywords: []string{"good catch", "real bug", "real issue", "correct", "accurate", "valid finding", "agree"}, verdict: "accurate", confidence: 0.85},
+	{keywords: []string{"false positive", "not a bug", "not an issue", "doesn't apply", "expected behavior", "by design", "intended"}, verdict: "false_positive", confidence: 0.85},
+	{keywords: []string{"noisy", "not important", "too minor", "trivial", "low priority", "don't care", "not worth"}, verdict: "noisy", confidence: 0.80},
+	{keywords: []string{"style issue", "preference", "opinionated", "subjective", "nitpick", "too strict", "overly strict"}, verdict: "overly_strict", confidence: 0.80},
+	{keywords: []string{"partially right", "partially correct", "right area", "wrong diagnosis", "close but", "half right"}, verdict: "partially_correct", confidence: 0.75},
+	{keywords: []string{"missing context", "lacks context", "needs more context", "doesn't know", "not aware", "can't tell"}, verdict: "missed_context", confidence: 0.75},
+}
+
+// defaultClassifyText is the keyword-based classifier matching ci-agent/feedback/classifier.go.
+func defaultClassifyText(text string) (string, float64) {
 	lower := strings.ToLower(text)
 
-	// Negation check.
-	if strings.Contains(lower, "not a false positive") || strings.Contains(lower, "not false positive") {
-		return "accurate", 0.80
+	// Check for negation patterns that flip the verdict.
+	for _, prefix := range negationPrefixes {
+		if strings.Contains(lower, prefix+"false positive") {
+			return "accurate", 0.80
+		}
 	}
 
-	type kw struct {
-		words   []string
-		verdict string
-		conf    float64
-	}
+	// Match against patterns using best-confidence-wins strategy.
+	var bestVerdict string
+	var bestConfidence float64
 
-	keywords := []kw{
-		{[]string{"good catch", "real bug", "real issue", "correct", "accurate"}, "accurate", 0.85},
-		{[]string{"false positive", "not a bug", "not an issue", "expected behavior"}, "false_positive", 0.85},
-		{[]string{"noisy", "not important", "trivial", "low priority"}, "noisy", 0.80},
-		{[]string{"style issue", "preference", "nitpick", "too strict"}, "overly_strict", 0.80},
-		{[]string{"partially right", "partially correct", "wrong diagnosis"}, "partially_correct", 0.75},
-		{[]string{"missing context", "lacks context", "needs more context"}, "missed_context", 0.75},
-	}
-
-	for _, k := range keywords {
-		for _, w := range k.words {
-			if strings.Contains(lower, w) {
-				return k.verdict, k.conf
+	for _, p := range classifierPatterns {
+		for _, kw := range p.keywords {
+			if strings.Contains(lower, kw) {
+				if p.confidence > bestConfidence {
+					bestVerdict = p.verdict
+					bestConfidence = p.confidence
+				}
 			}
 		}
+	}
+
+	if bestVerdict != "" {
+		return bestVerdict, bestConfidence
 	}
 
 	return "accurate", 0.3
