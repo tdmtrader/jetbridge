@@ -15,6 +15,7 @@ import (
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/exec/build"
+	"github.com/concourse/concourse/atc/metric"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/worker"
 	"github.com/concourse/concourse/tracing"
@@ -137,6 +138,7 @@ func NewTaskStep(
 // task's entire working directory is registered as an StreamableArtifactSource under the
 // name of the task.
 func (step *TaskStep) Run(ctx context.Context, state RunState) (bool, error) {
+	start := time.Now()
 	delegate := step.delegateFactory.TaskDelegate(state)
 	ctx, span := delegate.StartSpan(ctx, "task", tracing.Attrs{
 		"name": step.plan.Name,
@@ -144,6 +146,7 @@ func (step *TaskStep) Run(ctx context.Context, state RunState) (bool, error) {
 
 	ok, err := step.run(ctx, state, delegate)
 	tracing.End(span, err)
+	metric.RecordStepDuration(ctx, "task", step.plan.Name, time.Since(start))
 
 	return ok, err
 }
