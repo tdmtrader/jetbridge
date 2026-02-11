@@ -44,6 +44,51 @@ spec:
           volumeMounts:
             - name: keys
               mountPath: /keys
+        - name: migrate-db
+          image: {{ include "concourse.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - migrate
+            - --migrate-to-latest-version
+            - --postgres-host={{ include "concourse.postgresHost" . }}
+            - --postgres-port={{ include "concourse.postgresPort" . }}
+            {{- if .Values.postgresql.socket }}
+            - --postgres-socket={{ .Values.postgresql.socket }}
+            {{- end }}
+            - --postgres-user={{ .Values.postgresql.user }}
+            {{- if not .Values.postgresql.existingSecret }}
+            - --postgres-password={{ .Values.postgresql.password }}
+            {{- end }}
+            - --postgres-database={{ .Values.postgresql.database }}
+            {{- if ne .Values.postgresql.sslmode "disable" }}
+            - --postgres-sslmode={{ .Values.postgresql.sslmode }}
+            {{- end }}
+            {{- if .Values.postgresql.caCert }}
+            - --postgres-ca-cert={{ .Values.postgresql.caCert }}
+            {{- end }}
+            {{- if .Values.postgresql.clientCert }}
+            - --postgres-client-cert={{ .Values.postgresql.clientCert }}
+            {{- end }}
+            {{- if .Values.postgresql.clientKey }}
+            - --postgres-client-key={{ .Values.postgresql.clientKey }}
+            {{- end }}
+            {{- if .Values.postgresql.connectTimeout }}
+            - --postgres-connect-timeout={{ .Values.postgresql.connectTimeout }}
+            {{- end }}
+          {{- if .Values.postgresql.existingSecret }}
+          env:
+            - name: CONCOURSE_POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.postgresql.existingSecret }}
+                  key: {{ .Values.postgresql.passwordSecretKey }}
+          {{- end }}
+          {{- if or .Values.web.tls.enabled .Values.web.extraVolumeMounts }}
+          volumeMounts:
+            {{- with .Values.web.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- end }}
       containers:
         - name: concourse-web
           image: {{ include "concourse.image" . }}
