@@ -48,6 +48,6 @@ Limit the number of retained failed check containers per resource to 2, exemptin
   - Added `capExcessCheckContainers` method called from `containerCollector.Run()`
   - Uses `hijackContainerGracePeriod` and `maxCheckContainersPerResource = 2`
 
-- [~] Task 2.4: Phase 2 Manual Verification
+- [x] Task 2.4: Phase 2 Manual Verification
 
 ---
