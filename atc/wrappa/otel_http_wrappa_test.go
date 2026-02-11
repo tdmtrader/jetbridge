@@ -1,17 +1,20 @@
 package wrappa_test
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/wrappa"
 	"github.com/concourse/concourse/tracing"
+	"go.opentelemetry.io/otel/propagation"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
 	"github.com/tedsuo/rata"
 
+	"go.opentelemetry.io/otel"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
@@ -112,6 +115,56 @@ var _ = Describe("OTelHTTPWrappa", func() {
 			It("still creates a span", func() {
 				spans := spanRecorder.Started()
 				Expect(spans).To(HaveLen(1))
+			})
+		})
+	})
+
+	Describe("W3C Trace Context extraction", func() {
+		var (
+			rw      *httptest.ResponseRecorder
+			request *http.Request
+		)
+
+		BeforeEach(func() {
+			otel.SetTextMapPropagator(propagation.TraceContext{})
+			rw = httptest.NewRecorder()
+			request = httptest.NewRequest("GET", "/api/v1/info", nil)
+		})
+
+		Context("when a traceparent header is present", func() {
+			var parentTraceID string
+
+			BeforeEach(func() {
+				parentTraceID = "0af7651916cd43dd8448eb211c80319c"
+				traceparent := fmt.Sprintf("00-%s-b7ad6b7169203331-01", parentTraceID)
+				request.Header.Set("traceparent", traceparent)
+			})
+
+			It("creates a child span under the incoming trace", func() {
+				wrappedHandlers[atc.GetInfo].ServeHTTP(rw, request)
+
+				spans := spanRecorder.Started()
+				Expect(spans).To(HaveLen(1))
+				Expect(spans[0].SpanContext().TraceID().String()).To(Equal(parentTraceID))
+			})
+
+			It("uses the incoming trace's parent span ID", func() {
+				wrappedHandlers[atc.GetInfo].ServeHTTP(rw, request)
+
+				spans := spanRecorder.Started()
+				Expect(spans).To(HaveLen(1))
+				Expect(spans[0].Parent().SpanID().String()).To(Equal("b7ad6b7169203331"))
+			})
+		})
+
+		Context("when no traceparent header is present", func() {
+			It("creates a root span with a new trace ID", func() {
+				wrappedHandlers[atc.GetInfo].ServeHTTP(rw, request)
+
+				spans := spanRecorder.Started()
+				Expect(spans).To(HaveLen(1))
+				Expect(spans[0].SpanContext().TraceID().IsValid()).To(BeTrue())
+				Expect(spans[0].Parent().IsValid()).To(BeFalse())
 			})
 		})
 	})
