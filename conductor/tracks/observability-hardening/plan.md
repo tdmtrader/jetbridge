@@ -57,10 +57,10 @@
 
 **Goal:** Visibility into data-layer and credential operations.
 
-- [ ] Write tests for database operation spans
+- [~] Write tests for database operation spans
 - [ ] Add spans around key DB operations (build creation, resource version checks, lock acquisition) in `atc/db/`
-- [ ] Write tests for secret/credential lookup spans
-- [ ] Instrument Vault, SSM, Secrets Manager, CredHub lookups in `atc/creds/` with path, duration, cache hit/miss attributes
+- [x] Write tests for secret/credential lookup spans `94b5c959d`
+- [x] Instrument Vault, SSM, Secrets Manager, CredHub lookups in `atc/creds/` with path, duration, cache hit/miss attributes `94b5c959d`
 
 **Checkpoint:** `go test ./atc/db/...` and `go test ./atc/creds/...` pass; credential lookups appear as spans in traces.
 
