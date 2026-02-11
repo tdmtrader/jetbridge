@@ -54,6 +54,6 @@
 
 ## Phase 10: Add promote-to-main job to CI pipeline
 - `[x]` Add `promote-to-main` job to `deploy/borg-pipeline.yml` — runs after `deploy` and `ci-agent-review` pass, pushes jetbridge HEAD to main
-- `[~]` Commit and push to jetbridge
+- `[x]` Commit and push to jetbridge — `07329424b`
 - `[ ]` CI pipeline on concourse.home runs: full test suite, self-deploy, agent reviews
 - `[ ]` On green: CI promote-to-main job pushes `jetbridge` -> `main`
