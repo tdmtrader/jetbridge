@@ -29,6 +29,7 @@ type Config struct {
 	Jaeger      Jaeger
 	Stackdriver Stackdriver
 	OTLP        OTLP
+	Sampling    SamplingConfig `group:"Sampling" namespace:"sampling"`
 }
 
 func (c Config) Prepare() error {
@@ -65,6 +66,7 @@ func (c Config) traceProvider(exporter func() (sdktrace.SpanExporter, []sdktrace
 	options := append([]sdktrace.TracerProviderOption{
 		sdktrace.WithBatcher(exp),
 		sdktrace.WithResource(c.resource()),
+		sdktrace.WithSampler(c.Sampler()),
 	}, exporterOptions...)
 
 	provider := sdktrace.NewTracerProvider(options...)
@@ -224,5 +226,6 @@ func End(span trace.Span, err error) {
 //
 func ConfigureTraceProvider(tp trace.TracerProvider) {
 	otel.SetTracerProvider(tp)
+	otel.SetTextMapPropagator(propagation.TraceContext{})
 	Configured = true
 }
