@@ -1,15 +1,18 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"code.cloudfoundry.org/lager/v3"
 	sq "github.com/Masterminds/squirrel"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db/lock"
+	"github.com/concourse/concourse/tracing"
 )
 
 type LastCheck struct {
@@ -89,7 +92,13 @@ func (r *resourceConfigScope) SaveVersions(spanContext SpanContext, versions []a
 	return saveVersions(r.conn, r.ID(), versions, spanContext)
 }
 
-func saveVersions(conn DbConn, rcsID int, versions []atc.Version, spanContext SpanContext) error {
+func saveVersions(conn DbConn, rcsID int, versions []atc.Version, spanContext SpanContext) (err error) {
+	ctx := tracing.Extract(context.Background(), spanContext)
+	_, span := tracing.StartSpan(ctx, "db.versions.save", tracing.Attrs{
+		"db.version_count": fmt.Sprintf("%d", len(versions)),
+	})
+	defer func() { tracing.End(span, err) }()
+
 	tx, err := conn.Begin()
 	if err != nil {
 		return err

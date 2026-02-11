@@ -822,7 +822,12 @@ func (j *job) GetPendingBuilds() ([]Build, error) {
 	return builds, nil
 }
 
-func (j *job) CreateBuild(createdBy string) (Build, error) {
+func (j *job) CreateBuild(createdBy string) (_ Build, err error) {
+	_, span := tracing.StartSpan(context.Background(), "db.build.create", tracing.Attrs{
+		"db.job_name": j.name,
+	})
+	defer func() { tracing.End(span, err) }()
+
 	tx, err := j.conn.Begin()
 	if err != nil {
 		return nil, err

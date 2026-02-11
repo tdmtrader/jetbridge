@@ -12,9 +12,12 @@ import (
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/lock"
 	"github.com/concourse/concourse/atc/db/lock/lockfakes"
+	"github.com/concourse/concourse/tracing"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
 var _ = Describe("Locks", func() {
@@ -246,6 +249,46 @@ var _ = Describe("Locks", func() {
 					Expect(lock2Acquired).To(BeTrue())
 				})
 			})
+		})
+	})
+
+	Describe("Database operation spans", func() {
+		var spanRecorder *tracetest.SpanRecorder
+
+		BeforeEach(func() {
+			spanRecorder = new(tracetest.SpanRecorder)
+			tp := sdktrace.NewTracerProvider(
+				sdktrace.WithSpanProcessor(spanRecorder),
+				sdktrace.WithSyncer(tracetest.NewInMemoryExporter()),
+			)
+			tracing.ConfigureTraceProvider(tp)
+		})
+
+		AfterEach(func() {
+			tracing.Configured = false
+		})
+
+		It("emits a db.lock.acquire span when acquiring a lock", func() {
+			l, acquired, err := lockFactory.Acquire(logger, lock.LockID{99})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(acquired).To(BeTrue())
+			defer l.Release()
+
+			ended := spanRecorder.Ended()
+			var acquireSpan sdktrace.ReadOnlySpan
+			for _, s := range ended {
+				if s.Name() == "db.lock.acquire" {
+					acquireSpan = s
+					break
+				}
+			}
+			Expect(acquireSpan).ToNot(BeNil(), "expected db.lock.acquire span")
+
+			attrMap := make(map[string]string)
+			for _, a := range acquireSpan.Attributes() {
+				attrMap[string(a.Key)] = a.Value.AsString()
+			}
+			Expect(attrMap["db.lock_acquired"]).To(Equal("true"))
 		})
 	})
 

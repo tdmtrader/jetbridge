@@ -2702,6 +2702,44 @@ var _ = Describe("Job", func() {
 		})
 	})
 
+	Describe("Database operation spans", func() {
+		var spanRecorder *tracetest.SpanRecorder
+
+		BeforeEach(func() {
+			spanRecorder = new(tracetest.SpanRecorder)
+			tp := trace.NewTracerProvider(
+				trace.WithSpanProcessor(spanRecorder),
+				trace.WithSyncer(tracetest.NewInMemoryExporter()),
+			)
+			tracing.ConfigureTraceProvider(tp)
+		})
+
+		AfterEach(func() {
+			tracing.Configured = false
+		})
+
+		It("emits a db.build.create span when creating a build", func() {
+			_, err := job.CreateBuild(defaultBuildCreatedBy)
+			Expect(err).NotTo(HaveOccurred())
+
+			ended := spanRecorder.Ended()
+			var createSpan trace.ReadOnlySpan
+			for _, s := range ended {
+				if s.Name() == "db.build.create" {
+					createSpan = s
+					break
+				}
+			}
+			Expect(createSpan).ToNot(BeNil(), "expected db.build.create span")
+
+			attrMap := make(map[string]string)
+			for _, a := range createSpan.Attributes() {
+				attrMap[string(a.Key)] = a.Value.AsString()
+			}
+			Expect(attrMap["db.job_name"]).To(Equal("some-job"))
+		})
+	})
+
 	Describe("Outputs", func() {
 		var outputsJob db.Job
 

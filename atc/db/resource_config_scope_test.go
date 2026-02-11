@@ -8,8 +8,11 @@ import (
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbtest"
 	"github.com/concourse/concourse/atc/db/lock"
+	"github.com/concourse/concourse/tracing"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
 var _ = Describe("Resource Config Scope", func() {
@@ -64,6 +67,44 @@ var _ = Describe("Resource Config Scope", func() {
 
 		resourceScope, err = rc.FindOrCreateScope(intptr(scenario.Resource("some-resource").ID()))
 		Expect(err).ToNot(HaveOccurred())
+	})
+
+	Describe("Database operation spans", func() {
+		var spanRecorder *tracetest.SpanRecorder
+
+		BeforeEach(func() {
+			spanRecorder = new(tracetest.SpanRecorder)
+			tp := sdktrace.NewTracerProvider(
+				sdktrace.WithSpanProcessor(spanRecorder),
+				sdktrace.WithSyncer(tracetest.NewInMemoryExporter()),
+			)
+			tracing.ConfigureTraceProvider(tp)
+		})
+
+		AfterEach(func() {
+			tracing.Configured = false
+		})
+
+		It("emits a db.versions.save span when saving versions", func() {
+			err := resourceScope.SaveVersions(nil, []atc.Version{{"ref": "v1"}, {"ref": "v2"}})
+			Expect(err).ToNot(HaveOccurred())
+
+			ended := spanRecorder.Ended()
+			var saveSpan sdktrace.ReadOnlySpan
+			for _, s := range ended {
+				if s.Name() == "db.versions.save" {
+					saveSpan = s
+					break
+				}
+			}
+			Expect(saveSpan).ToNot(BeNil(), "expected db.versions.save span")
+
+			attrMap := make(map[string]string)
+			for _, a := range saveSpan.Attributes() {
+				attrMap[string(a.Key)] = a.Value.AsString()
+			}
+			Expect(attrMap["db.version_count"]).To(Equal("2"))
+		})
 	})
 
 	Describe("SaveVersions", func() {
