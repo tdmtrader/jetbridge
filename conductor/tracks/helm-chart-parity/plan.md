@@ -31,5 +31,5 @@
 
 ## Phase 5: Commit and push
 
-- `[~]` Commit all changes to `jetbridge` branch
-- `[ ]` Push to `jetbridge` remote
+- `[x]` Commit all changes to `jetbridge` branch — `dbf279a65`
+- `[x]` Push to `jetbridge` remote
