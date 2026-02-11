@@ -87,7 +87,7 @@ func RunQA(ctx context.Context, opts QAOptions) (*schema.QAOutput, error) {
 	// 7. Browser plan (if enabled)
 	var browserPlanText string
 	if opts.Config.BrowserPlan {
-		browserPlanText, _ = browserplan.GenerateBrowserPlan(ctx, nil, spec, results, opts.TargetURL)
+		browserPlanText, _ = browserplan.GenerateBrowserPlan(ctx, opts.Agent, spec, results, opts.TargetURL)
 	}
 
 	// 8. Build output
