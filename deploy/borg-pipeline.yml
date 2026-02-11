@@ -4,9 +4,8 @@ resources:
   source:
     uri: https://github.com/tdmtrader/jetbridge.git
     branch: jetbridge
-    depth: 25
     username: x-access-token
-    password: ((github_pat))
+    password: ((github-pat))
   check_every: 30s
 
 jobs:
@@ -14,6 +13,7 @@ jobs:
   plan:
   - get: repo
     trigger: true
+    params: {depth: 25}
   - task: build-and-vet
     config:
       platform: linux
@@ -49,6 +49,7 @@ jobs:
   - get: repo
     trigger: true
     passed: [build-and-vet]
+    params: {depth: 25}
   - task: ci-agent-review
     config:
       platform: linux
@@ -61,9 +62,9 @@ jobs:
       - path: gopath/pkg/mod
       - path: gocache
       params:
-        ANTHROPIC_API_KEY: ((anthropic_api_key))
+        ANTHROPIC_API_KEY: ((anthropic-api-key))
         AGENT_CLI: claude
-        AGENT_MODEL: ((agent_model))
+        AGENT_MODEL: ((agent-model))
         SCORE_THRESHOLD: "7.0"
         FAIL_ON_CRITICAL: "false"
         REVIEW_DIFF_ONLY: "true"
@@ -100,9 +101,11 @@ jobs:
   - get: repo
     trigger: true
     passed: [ci-agent-review]
+    params: {depth: 25}
   - get: review
     resource: repo
     passed: [ci-agent-review]
+    params: {depth: 25}
   - task: ci-agent-fix
     config:
       platform: linux
@@ -117,9 +120,9 @@ jobs:
       - path: gopath/pkg/mod
       - path: gocache
       params:
-        ANTHROPIC_API_KEY: ((anthropic_api_key))
+        ANTHROPIC_API_KEY: ((anthropic-api-key))
         AGENT_CLI: claude
-        AGENT_MODEL: ((agent_model))
+        AGENT_MODEL: ((agent-model))
         MAX_RETRIES: "2"
         TEST_COMMAND: "go test ./..."
       run:
@@ -157,6 +160,7 @@ jobs:
   - get: repo
     trigger: true
     passed: [build-and-vet]
+    params: {depth: 25}
   - task: ci-agent-plan
     config:
       platform: linux
@@ -169,9 +173,9 @@ jobs:
       - path: gopath/pkg/mod
       - path: gocache
       params:
-        ANTHROPIC_API_KEY: ((anthropic_api_key))
+        ANTHROPIC_API_KEY: ((anthropic-api-key))
         AGENT_CLI: claude
-        AGENT_MODEL: ((agent_model))
+        AGENT_MODEL: ((agent-model))
         CONFIDENCE_THRESHOLD: "0.6"
         TIMEOUT: "5m"
       run:
@@ -206,6 +210,7 @@ jobs:
   - get: repo
     trigger: true
     passed: [build-and-vet]
+    params: {depth: 25}
   - task: ci-agent-qa
     config:
       platform: linux
@@ -218,9 +223,9 @@ jobs:
       - path: gopath/pkg/mod
       - path: gocache
       params:
-        ANTHROPIC_API_KEY: ((anthropic_api_key))
+        ANTHROPIC_API_KEY: ((anthropic-api-key))
         AGENT_CLI: claude
-        AGENT_MODEL: ((agent_model))
+        AGENT_MODEL: ((agent-model))
         SCORE_THRESHOLD: "7.0"
         GENERATE_TESTS: "false"
         BROWSER_PLAN: "true"
@@ -257,6 +262,7 @@ jobs:
   - get: repo
     trigger: true
     passed: [agent-plan]
+    params: {depth: 25}
   - task: ci-agent-implement
     config:
       platform: linux
@@ -270,9 +276,9 @@ jobs:
       - path: gopath/pkg/mod
       - path: gocache
       params:
-        ANTHROPIC_API_KEY: ((anthropic_api_key))
+        ANTHROPIC_API_KEY: ((anthropic-api-key))
         AGENT_CLI: claude
-        AGENT_MODEL: ((agent_model))
+        AGENT_MODEL: ((agent-model))
         TEST_CMD: "go test ./..."
         MAX_RETRIES: "2"
         MAX_CONSECUTIVE_FAILURES: "3"
@@ -313,6 +319,7 @@ jobs:
   - get: repo
     trigger: true
     passed: [build-and-vet]
+    params: {depth: 25}
   - task: unit-tests
     config:
       platform: linux
@@ -360,6 +367,7 @@ jobs:
   - get: repo
     trigger: true
     passed: [unit-tests]
+    params: {depth: 25}
   - task: k8s-runtime-integration-tests
     config:
       platform: linux
@@ -388,6 +396,7 @@ jobs:
   - get: repo
     trigger: true
     passed: [k8s-runtime-tests]
+    params: {depth: 25}
   - task: k8s-live-integration-tests
     config:
       platform: linux
@@ -443,6 +452,7 @@ jobs:
   - get: repo
     trigger: true
     passed: [k8s-live-tests]
+    params: {depth: 25}
   - task: build-concourse-image
     privileged: true
     config:
@@ -503,6 +513,7 @@ jobs:
   - get: repo
     trigger: true
     passed: [build-image]
+    params: {depth: 25}
   - task: deploy
     config:
       platform: linux
@@ -575,6 +586,7 @@ jobs:
   - get: repo
     trigger: true
     passed: [deploy, ci-agent-review]
+    params: {depth: 25}
   - task: push-to-main
     config:
       platform: linux
@@ -582,7 +594,7 @@ jobs:
       inputs:
       - name: repo
       params:
-        GITHUB_TOKEN: ((github_pat))
+        GITHUB_TOKEN: ((github-pat))
       run:
         path: sh
         args:
