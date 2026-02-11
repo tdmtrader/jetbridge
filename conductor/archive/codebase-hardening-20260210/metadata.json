@@ -1,0 +1,13 @@
+{
+  "id": "codebase-hardening-20260210",
+  "title": "Codebase Hardening — Wire feedback API, fill test gaps, remove deprecated code",
+  "type": "refactor",
+  "status": "pending",
+  "created": "2026-02-10",
+  "branch": "jetbridge",
+  "trackId": "codebase-hardening-20260210",
+  "description": "Codebase Hardening — Wire feedback API, fill test gaps, remove deprecated code",
+  "createdAt": "2026-02-11T00:50:51.079Z",
+  "updatedAt": "2026-02-11T00:50:51.079Z",
+  "isArchived": false
+}
