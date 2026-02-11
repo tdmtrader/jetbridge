@@ -310,5 +310,83 @@ var _ = Describe("TaskDelegate", func() {
 				}))
 			})
 		})
+
+		Context("when nativeImageFetch is enabled", func() {
+			BeforeEach(func() {
+				imageResource = atc.ImageResource{
+					Type:   "registry-image",
+					Source: atc.Source{"repository": "my-repo", "tag": "latest"},
+					Tags:   atc.Tags{"some", "tags"},
+				}
+
+				types = atc.ResourceTypes{}
+
+				expectedCheckPlan = atc.Plan{
+					ID: planID + "/image-check",
+					Check: &atc.CheckPlan{
+						Name:   "image",
+						Type:   "registry-image",
+						Source: atc.Source{"repository": "my-repo", "tag": "latest"},
+						TypeImage: atc.TypeImage{
+							BaseType: "registry-image",
+						},
+						Tags: atc.Tags{"some", "tags"},
+						Interval: atc.CheckEvery{
+							Interval: 1 * time.Minute,
+						},
+					},
+				}
+
+				expectedGetPlan = atc.Plan{
+					ID: planID + "/image-get",
+					Get: &atc.GetPlan{
+						Name:   "image",
+						Type:   "registry-image",
+						Source: atc.Source{"repository": "my-repo", "tag": "latest"},
+						TypeImage: atc.TypeImage{
+							BaseType: "registry-image",
+						},
+						VersionFrom: &expectedCheckPlan.ID,
+						Tags:        atc.Tags{"some", "tags"},
+					},
+				}
+
+				runState := exec.NewRunState(stepper, nil)
+				delegate = NewTaskDelegate(fakeBuild, planID, runState, fakeClock, fakePolicyChecker, fakeWorkerFactory, fakeLockFactory, true)
+			})
+
+			It("succeeds", func() {
+				Expect(fetchErr).ToNot(HaveOccurred())
+			})
+
+			It("returns an ImageSpec with ImageURL and no ImageArtifact", func() {
+				Expect(imageSpec.ImageURL).To(Equal("docker:///my-repo:latest"))
+				Expect(imageSpec.ImageArtifact).To(BeNil())
+			})
+
+			It("still saves ImageCheck event for build log continuity", func() {
+				Expect(fakeBuild.SaveEventCallCount()).To(BeNumerically(">=", 1))
+				e := fakeBuild.SaveEventArgsForCall(0)
+				Expect(e).To(Equal(event.ImageCheck{
+					Time: 675927000,
+					Origin: event.Origin{
+						ID: event.OriginID(planID),
+					},
+					PublicPlan: expectedCheckPlan.Public(),
+				}))
+			})
+
+			It("still saves ImageGet event for build log continuity", func() {
+				Expect(fakeBuild.SaveEventCallCount()).To(BeNumerically(">=", 2))
+				e := fakeBuild.SaveEventArgsForCall(1)
+				Expect(e).To(Equal(event.ImageGet{
+					Time: 675927000,
+					Origin: event.Origin{
+						ID: event.OriginID(planID),
+					},
+					PublicPlan: expectedGetPlan.Public(),
+				}))
+			})
+		})
 	})
 })

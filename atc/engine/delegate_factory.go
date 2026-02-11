@@ -29,7 +29,7 @@ func (delegate DelegateFactory) PutDelegate(state exec.RunState) exec.PutDelegat
 }
 
 func (delegate DelegateFactory) TaskDelegate(state exec.RunState) exec.TaskDelegate {
-	return NewTaskDelegate(delegate.build, delegate.plan.ID, state, clock.NewClock(), delegate.policyChecker, delegate.dbWorkerFactory, delegate.lockFactory)
+	return NewTaskDelegate(delegate.build, delegate.plan.ID, state, clock.NewClock(), delegate.policyChecker, delegate.dbWorkerFactory, delegate.lockFactory, delegate.nativeImageFetch)
 }
 
 func (delegate DelegateFactory) RunDelegate(state exec.RunState) exec.RunDelegate {

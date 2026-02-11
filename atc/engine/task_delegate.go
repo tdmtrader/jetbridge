@@ -23,9 +23,11 @@ func NewTaskDelegate(
 	policyChecker policy.Checker,
 	dbWorkerFactory db.WorkerFactory,
 	lockFactory lock.LockFactory,
+	nativeImageFetch ...bool,
 ) exec.TaskDelegate {
+	nativeFetch := len(nativeImageFetch) > 0 && nativeImageFetch[0]
 	return &taskDelegate{
-		BuildStepDelegate: NewBuildStepDelegate(build, planID, state, clock, policyChecker, atc.DisableRedactSecrets, false),
+		BuildStepDelegate: NewBuildStepDelegate(build, planID, state, clock, policyChecker, atc.DisableRedactSecrets, nativeFetch),
 
 		eventOrigin: event.Origin{ID: event.OriginID(planID)},
 		planID:      planID,
