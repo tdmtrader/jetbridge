@@ -210,6 +210,8 @@ var _ = BeforeEach(func() {
 		cliDownloadsDir,
 		"1.2.3",
 		"4.5.6",
+		"0.1.0-test",
+		"8.0.1-test",
 		fakeSecretManager,
 		fakeVarSourcePool,
 		credsManagers,

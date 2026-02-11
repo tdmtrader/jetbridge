@@ -936,6 +936,8 @@ defaultFeatureFlags =
 type alias ClusterInfo =
     { version : String
     , clusterName : String
+    , jetbridgeVersion : String
+    , concourseVersion : String
     }
 
 
@@ -944,6 +946,8 @@ decodeInfo =
     Json.Decode.succeed ClusterInfo
         |> andMap (Json.Decode.field "version" Json.Decode.string)
         |> andMap (defaultTo "" <| Json.Decode.field "cluster_name" Json.Decode.string)
+        |> andMap (defaultTo "" <| Json.Decode.field "jetbridge_version" Json.Decode.string)
+        |> andMap (defaultTo "" <| Json.Decode.field "concourse_version" Json.Decode.string)
 
 
 

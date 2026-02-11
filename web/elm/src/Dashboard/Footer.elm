@@ -76,6 +76,8 @@ view :
         | hovered : HoverState.HoverState
         , screenSize : ScreenSize.ScreenSize
         , version : String
+        , jetbridgeVersion : String
+        , concourseVersion : String
     }
     -> FooterModel r
     -> Html Message
@@ -125,6 +127,8 @@ infoBar :
         | hovered : HoverState.HoverState
         , screenSize : ScreenSize.ScreenSize
         , version : String
+        , jetbridgeVersion : String
+        , concourseVersion : String
     }
     -> FooterModel r
     -> Html Message
@@ -183,9 +187,9 @@ legend session model =
 
 
 concourseInfo :
-    { a | hovered : HoverState.HoverState, version : String }
+    { a | hovered : HoverState.HoverState, version : String, jetbridgeVersion : String, concourseVersion : String }
     -> Html Message
-concourseInfo { version } =
+concourseInfo { version, jetbridgeVersion, concourseVersion } =
     Html.div (id "concourse-info" :: Styles.info)
         [ Html.div
             Styles.footerLink
@@ -212,7 +216,13 @@ concourseInfo { version } =
             ]
         , Html.div
             [ id "version-info" ]
-            [ Html.text <| "Version: v" ++ version ]
+            [ Html.text <|
+                if jetbridgeVersion /= "" then
+                    "JetBridge " ++ jetbridgeVersion ++ " (Concourse " ++ concourseVersion ++ ")"
+
+                else
+                    "Version: v" ++ version
+            ]
         ]
 
 

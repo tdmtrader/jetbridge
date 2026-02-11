@@ -4,6 +4,14 @@ package concourse
 // time in the pipeline using ldflags.
 var Version = "0.0.0-dev"
 
+// JetBridgeVersion is the version of the JetBridge edition.
+var JetBridgeVersion = "0.1.0"
+
+// ConcourseVersion is the upstream Concourse version this fork is based on.
+var ConcourseVersion = "8.0.1"
+
+func init() { Version = JetBridgeVersion }
+
 // WorkerVersion identifies compatibility between Concourse and a worker.
 //
 // Backwards-incompatible changes to the worker API should result in a major

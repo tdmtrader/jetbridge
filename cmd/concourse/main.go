@@ -13,7 +13,7 @@ func main() {
 	var cmd ConcourseCommand
 
 	cmd.Version = func() {
-		fmt.Println(concourse.Version)
+		fmt.Printf("JetBridge %s (Concourse %s)\n", concourse.JetBridgeVersion, concourse.ConcourseVersion)
 		os.Exit(0)
 	}
 
