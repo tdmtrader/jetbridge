@@ -18,6 +18,53 @@ spec:
       storage: {{ .Values.cachePvc.size }}
 {{- end }}
 {{- if .Values.artifactStorePvc.enabled }}
+{{- if .Values.artifactStorePvc.gcsFuse.enabled }}
+{{- /* GCS Fuse: static provisioning with PV + PVC */}}
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: {{ .Values.artifactStorePvc.name }}-pv
+  labels:
+    {{- include "concourse.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    {{- toYaml .Values.artifactStorePvc.accessModes | nindent 4 }}
+  capacity:
+    storage: {{ .Values.artifactStorePvc.size }}
+  storageClassName: {{ .Values.artifactStorePvc.storageClass | default (printf "%s-gcs-fuse" (include "concourse.fullname" .)) }}
+  {{- if or .Values.artifactStorePvc.gcsFuse.mountOptions .Values.artifactStorePvc.gcsFuse.onlyDir }}
+  mountOptions:
+    {{- range .Values.artifactStorePvc.gcsFuse.mountOptions }}
+    - {{ . }}
+    {{- end }}
+    {{- if .Values.artifactStorePvc.gcsFuse.onlyDir }}
+    - only-dir={{ .Values.artifactStorePvc.gcsFuse.onlyDir }}
+    {{- end }}
+  {{- end }}
+  csi:
+    driver: gcsfuse.csi.storage.gke.io
+    volumeHandle: {{ .Values.artifactStorePvc.gcsFuse.bucketName }}
+  claimRef:
+    name: {{ .Values.artifactStorePvc.name }}
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Values.artifactStorePvc.name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "concourse.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    {{- toYaml .Values.artifactStorePvc.accessModes | nindent 4 }}
+  storageClassName: {{ .Values.artifactStorePvc.storageClass | default (printf "%s-gcs-fuse" (include "concourse.fullname" .)) }}
+  resources:
+    requests:
+      storage: {{ .Values.artifactStorePvc.size }}
+{{- else }}
+{{- /* Standard PVC (block storage, NFS, etc.) */}}
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -35,4 +82,5 @@ spec:
   resources:
     requests:
       storage: {{ .Values.artifactStorePvc.size }}
+{{- end }}
 {{- end }}
