@@ -606,14 +606,15 @@ var _ = Describe("Integration", func() {
 
 			mainContainer := pods.Items[0].Spec.Containers[0]
 
-			// 2 inputs + 2 outputs = 4 volume mounts
-			Expect(mainContainer.VolumeMounts).To(HaveLen(4))
+			// 1 dir + 2 inputs + 2 outputs = 5 volume mounts
+			Expect(mainContainer.VolumeMounts).To(HaveLen(5))
 
 			mountPaths := make([]string, len(mainContainer.VolumeMounts))
 			for i, vm := range mainContainer.VolumeMounts {
 				mountPaths[i] = vm.MountPath
 			}
 			Expect(mountPaths).To(ContainElements(
+				"/tmp/build/workdir",
 				"/tmp/build/workdir/source-code",
 				"/tmp/build/workdir/ci",
 				"/tmp/build/workdir/binary",

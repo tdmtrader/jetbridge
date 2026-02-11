@@ -753,12 +753,27 @@ func buildImagePullSecrets(secretNames []string, registry *ImageRegistryConfig) 
 }
 
 // buildVolumeMounts creates K8s Volume and VolumeMount entries for
-// the container's inputs, outputs, and caches.
+// the container's Dir, inputs, outputs, and caches.
 func (c *Container) buildVolumeMounts() ([]corev1.Volume, []corev1.VolumeMount) {
 	var volumes []corev1.Volume
 	var mounts []corev1.VolumeMount
 
 	idx := 0
+
+	if c.containerSpec.Dir != "" {
+		name := fmt.Sprintf("dir-%d", idx)
+		idx++
+		volumes = append(volumes, corev1.Volume{
+			Name: name,
+			VolumeSource: corev1.VolumeSource{
+				EmptyDir: &corev1.EmptyDirVolumeSource{},
+			},
+		})
+		mounts = append(mounts, corev1.VolumeMount{
+			Name:      name,
+			MountPath: c.containerSpec.Dir,
+		})
+	}
 
 	for _, input := range c.containerSpec.Inputs {
 		name := fmt.Sprintf("input-%d", idx)

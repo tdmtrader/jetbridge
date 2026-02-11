@@ -91,7 +91,19 @@
 
 ---
 
-## [ ] Track: Too Many Check Pods — Deduplicate in-flight checks and cap failed containers
-*Link: [./conductor/tracks/too_many_check_pods_20260211/](./conductor/tracks/too_many_check_pods_20260211/)*
+## [x] Track: Too Many Check Pods — Deduplicate in-flight checks and cap failed containers
+*Completed: 2026-02-11*
+*Archive: [./conductor/archive/too_many_check_pods_20260211/](./conductor/archive/too_many_check_pods_20260211/)*
+
+---
+
+## [ ] Track: Dir Volume Bug — Fix missing K8s emptyDir for spec.Dir in buildVolumeMounts
+*Link: [./conductor/tracks/dir_volume_bug_20260211/](./conductor/tracks/dir_volume_bug_20260211/)*
+
+---
+
+### [ ] Track: k8s native image fetch
+
+_Link: [./tracks/k8s_native_image_fetch_20260211/](./tracks/k8s_native_image_fetch_20260211/)_
 
 ---
