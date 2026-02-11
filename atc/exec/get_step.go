@@ -188,7 +188,9 @@ func (step *GetStep) run(ctx context.Context, state RunState, delegate GetDelega
 	// When running on K8s runtime and the resource type is registry-image,
 	// skip the physical image download. The version (digest) is already
 	// resolved; kubelet will pull the image natively.
-	if delegate.NativeImageFetch() && step.plan.Type == "registry-image" {
+	// The fetch_artifact param forces the full download (for build contexts, DinD, etc.).
+	_, fetchArtifact := step.plan.Params["fetch_artifact"]
+	if delegate.NativeImageFetch() && step.plan.Type == "registry-image" && !fetchArtifact {
 		versionResult := resource.VersionResult{
 			Version:  version,
 			Metadata: nil,
@@ -224,6 +226,10 @@ func (step *GetStep) run(ctx context.Context, state RunState, delegate GetDelega
 
 		return true, nil
 	}
+
+	// Strip fetch_artifact from params — it's a Concourse-internal flag,
+	// not something the resource's get script understands.
+	delete(params, "fetch_artifact")
 
 	containerSpec := runtime.ContainerSpec{
 		TeamID:   step.metadata.TeamID,

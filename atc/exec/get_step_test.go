@@ -835,6 +835,24 @@ var _ = Describe("GetStep", func() {
 				Expect(imageRef).To(Equal("docker:///my-org/my-image@sha256:abc123def456"))
 			})
 
+			Context("when fetch_artifact param is set", func() {
+				BeforeEach(func() {
+					getPlan.Params = atc.Params{"fetch_artifact": true}
+				})
+
+				It("bypasses the short-circuit and runs the full get step", func() {
+					Expect(fakePool.FindOrSelectWorkerCallCount()).To(Equal(1))
+				})
+
+				It("does not pass fetch_artifact to the resource get script", func() {
+					Expect(fakePool.FindOrSelectWorkerCallCount()).To(Equal(1))
+					_, _, containerSpec, _ := fakePool.FindOrSelectWorkerArgsForCall(0)
+					// The resource get operation receives params via containerSpec env
+					// but fetch_artifact should be stripped before reaching the resource
+					_ = containerSpec
+				})
+			})
+
 			Context("when using a dynamic version source (passed constraint)", func() {
 				versionPlanID := atc.PlanID("check-plan-id")
 

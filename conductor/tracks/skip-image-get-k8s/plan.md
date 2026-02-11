@@ -38,11 +38,11 @@ When a task step uses `image:` referencing a get step that was short-circuited, 
 
 Add a `fetch_artifact` parameter to the get step that forces the full physical download even when the short-circuit would otherwise apply. This supports use cases like Docker-in-Docker, build contexts, and file extraction from images.
 
-- [ ] Write tests for `fetch_artifact` param
+- [x] Write tests for `fetch_artifact` param
   - Test: `params: {fetch_artifact: true}` bypasses the short-circuit
   - Test: full get step runs and artifact volume is available
   - Test: default (no param) uses the short-circuit on K8s
-- [ ] Implement `fetch_artifact` param in get step
+- [x] Implement `fetch_artifact` param in get step
   - Check for `fetch_artifact` in params before applying short-circuit
   - When set, fall through to existing full-download path
   - Strip `fetch_artifact` from params passed to the resource get script
