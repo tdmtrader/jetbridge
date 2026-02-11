@@ -1068,4 +1068,236 @@ var _ = Describe("ContainerRepository", func() {
 			})
 		})
 	})
+
+	Describe("DestroyExcessCheckContainers", func() {
+		var (
+			destroyedCount int
+			destroyErr     error
+			gracePeriod    time.Duration
+			resourceConfig db.ResourceConfig
+		)
+
+		expiries := db.ContainerOwnerExpiries{
+			Min: 5 * time.Minute,
+			Max: 1 * time.Hour,
+		}
+
+		BeforeEach(func() {
+			gracePeriod = 5 * time.Minute
+
+			var err error
+			resourceConfig, err = resourceConfigFactory.FindOrCreateResourceConfig(
+				"some-base-resource-type",
+				atc.Source{"some": "source"},
+				nil,
+			)
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		JustBeforeEach(func() {
+			destroyedCount, destroyErr = containerRepository.DestroyExcessCheckContainers(2, gracePeriod)
+		})
+
+		Context("when there are 4 check containers for the same resource config", func() {
+			var handles []string
+
+			BeforeEach(func() {
+				handles = nil
+				for i := 0; i < 4; i++ {
+					owner := db.NewResourceConfigCheckSessionContainerOwner(
+						resourceConfig.ID(),
+						resourceConfig.OriginBaseResourceType().ID,
+						expiries,
+					)
+					cc, err := defaultWorker.CreateContainer(owner,
+						db.ContainerMetadata{Type: db.ContainerTypeCheck},
+					)
+					Expect(err).NotTo(HaveOccurred())
+					_, err = cc.Created()
+					Expect(err).NotTo(HaveOccurred())
+					handles = append(handles, cc.Handle())
+				}
+			})
+
+			It("marks the oldest containers as destroying, keeping only 2", func() {
+				Expect(destroyErr).NotTo(HaveOccurred())
+				Expect(destroyedCount).To(Equal(2))
+
+				// Verify newest 2 are still created
+				for _, h := range handles[2:] {
+					var state string
+					err := psql.Select("state").From("containers").
+						Where(sq.Eq{"handle": h}).RunWith(dbConn).QueryRow().Scan(&state)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(state).To(Equal(atc.ContainerStateCreated))
+				}
+
+				// Verify oldest 2 are destroying
+				for _, h := range handles[:2] {
+					var state string
+					err := psql.Select("state").From("containers").
+						Where(sq.Eq{"handle": h}).RunWith(dbConn).QueryRow().Scan(&state)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(state).To(Equal(atc.ContainerStateDestroying))
+				}
+			})
+		})
+
+		Context("when the oldest container is recently hijacked", func() {
+			var handles []string
+
+			BeforeEach(func() {
+				handles = nil
+				for i := 0; i < 4; i++ {
+					owner := db.NewResourceConfigCheckSessionContainerOwner(
+						resourceConfig.ID(),
+						resourceConfig.OriginBaseResourceType().ID,
+						expiries,
+					)
+					cc, err := defaultWorker.CreateContainer(owner,
+						db.ContainerMetadata{Type: db.ContainerTypeCheck},
+					)
+					Expect(err).NotTo(HaveOccurred())
+					created, err := cc.Created()
+					Expect(err).NotTo(HaveOccurred())
+					handles = append(handles, cc.Handle())
+
+					// Mark the oldest (first) container as recently hijacked
+					if i == 0 {
+						err = created.UpdateLastHijack()
+						Expect(err).NotTo(HaveOccurred())
+					}
+				}
+			})
+
+			It("exempts the hijacked container from destruction", func() {
+				Expect(destroyErr).NotTo(HaveOccurred())
+				Expect(destroyedCount).To(Equal(1))
+
+				// Oldest (hijacked) is still created
+				var state string
+				err := psql.Select("state").From("containers").
+					Where(sq.Eq{"handle": handles[0]}).RunWith(dbConn).QueryRow().Scan(&state)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(state).To(Equal(atc.ContainerStateCreated))
+
+				// Second oldest is destroying (not hijacked, excess)
+				err = psql.Select("state").From("containers").
+					Where(sq.Eq{"handle": handles[1]}).RunWith(dbConn).QueryRow().Scan(&state)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(state).To(Equal(atc.ContainerStateDestroying))
+
+				// Newest 2 are still created
+				for _, h := range handles[2:] {
+					err = psql.Select("state").From("containers").
+						Where(sq.Eq{"handle": h}).RunWith(dbConn).QueryRow().Scan(&state)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(state).To(Equal(atc.ContainerStateCreated))
+				}
+			})
+		})
+
+		Context("when containers belong to different resource configs", func() {
+			var handlesA, handlesB []string
+
+			BeforeEach(func() {
+				handlesA = nil
+				handlesB = nil
+
+				resourceConfig2, err := resourceConfigFactory.FindOrCreateResourceConfig(
+					"some-base-resource-type",
+					atc.Source{"some": "other-source"},
+					nil,
+				)
+				Expect(err).NotTo(HaveOccurred())
+
+				// Create 3 containers for resource config A
+				for i := 0; i < 3; i++ {
+					owner := db.NewResourceConfigCheckSessionContainerOwner(
+						resourceConfig.ID(),
+						resourceConfig.OriginBaseResourceType().ID,
+						expiries,
+					)
+					cc, err := defaultWorker.CreateContainer(owner,
+						db.ContainerMetadata{Type: db.ContainerTypeCheck},
+					)
+					Expect(err).NotTo(HaveOccurred())
+					_, err = cc.Created()
+					Expect(err).NotTo(HaveOccurred())
+					handlesA = append(handlesA, cc.Handle())
+				}
+
+				// Create 3 containers for resource config B
+				for i := 0; i < 3; i++ {
+					owner := db.NewResourceConfigCheckSessionContainerOwner(
+						resourceConfig2.ID(),
+						resourceConfig2.OriginBaseResourceType().ID,
+						expiries,
+					)
+					cc, err := defaultWorker.CreateContainer(owner,
+						db.ContainerMetadata{Type: db.ContainerTypeCheck},
+					)
+					Expect(err).NotTo(HaveOccurred())
+					_, err = cc.Created()
+					Expect(err).NotTo(HaveOccurred())
+					handlesB = append(handlesB, cc.Handle())
+				}
+			})
+
+			It("caps independently per resource config", func() {
+				Expect(destroyErr).NotTo(HaveOccurred())
+				Expect(destroyedCount).To(Equal(2)) // 1 from each
+
+				// Resource A: oldest destroyed, newest 2 kept
+				var state string
+				err := psql.Select("state").From("containers").
+					Where(sq.Eq{"handle": handlesA[0]}).RunWith(dbConn).QueryRow().Scan(&state)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(state).To(Equal(atc.ContainerStateDestroying))
+
+				for _, h := range handlesA[1:] {
+					err = psql.Select("state").From("containers").
+						Where(sq.Eq{"handle": h}).RunWith(dbConn).QueryRow().Scan(&state)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(state).To(Equal(atc.ContainerStateCreated))
+				}
+
+				// Resource B: oldest destroyed, newest 2 kept
+				err = psql.Select("state").From("containers").
+					Where(sq.Eq{"handle": handlesB[0]}).RunWith(dbConn).QueryRow().Scan(&state)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(state).To(Equal(atc.ContainerStateDestroying))
+
+				for _, h := range handlesB[1:] {
+					err = psql.Select("state").From("containers").
+						Where(sq.Eq{"handle": h}).RunWith(dbConn).QueryRow().Scan(&state)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(state).To(Equal(atc.ContainerStateCreated))
+				}
+			})
+		})
+
+		Context("when there are 2 or fewer check containers", func() {
+			BeforeEach(func() {
+				for i := 0; i < 2; i++ {
+					owner := db.NewResourceConfigCheckSessionContainerOwner(
+						resourceConfig.ID(),
+						resourceConfig.OriginBaseResourceType().ID,
+						expiries,
+					)
+					cc, err := defaultWorker.CreateContainer(owner,
+						db.ContainerMetadata{Type: db.ContainerTypeCheck},
+					)
+					Expect(err).NotTo(HaveOccurred())
+					_, err = cc.Created()
+					Expect(err).NotTo(HaveOccurred())
+				}
+			})
+
+			It("does not destroy any containers", func() {
+				Expect(destroyErr).NotTo(HaveOccurred())
+				Expect(destroyedCount).To(Equal(0))
+			})
+		})
+	})
 })

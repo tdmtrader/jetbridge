@@ -83,6 +83,28 @@ var _ = Describe("ContainerCollector", func() {
 			})
 		})
 
+		Describe("Excess Check Containers", func() {
+			It("calls DestroyExcessCheckContainers", func() {
+				Expect(fakeContainerRepository.DestroyExcessCheckContainersCallCount()).To(Equal(1))
+				maxPerResource, gracePeriod := fakeContainerRepository.DestroyExcessCheckContainersArgsForCall(0)
+				Expect(maxPerResource).To(Equal(2))
+				Expect(gracePeriod).To(Equal(hijackContainerGracePeriod))
+			})
+
+			Context("when DestroyExcessCheckContainers fails", func() {
+				BeforeEach(func() {
+					fakeContainerRepository.DestroyExcessCheckContainersReturns(
+						0, errors.New("excess check container error"),
+					)
+				})
+
+				It("still tries to clean up other containers", func() {
+					Expect(fakeContainerRepository.FindOrphanedContainersCallCount()).To(Equal(1))
+					Expect(fakeContainerRepository.DestroyFailedContainersCallCount()).To(Equal(1))
+				})
+			})
+		})
+
 		Describe("Orphaned Containers", func() {
 
 			var (

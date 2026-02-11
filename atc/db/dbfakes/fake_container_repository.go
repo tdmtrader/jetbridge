@@ -21,6 +21,20 @@ type FakeContainerRepository struct {
 		result1 int
 		result2 error
 	}
+	DestroyExcessCheckContainersStub        func(int, time.Duration) (int, error)
+	destroyExcessCheckContainersMutex       sync.RWMutex
+	destroyExcessCheckContainersArgsForCall []struct {
+		arg1 int
+		arg2 time.Duration
+	}
+	destroyExcessCheckContainersReturns struct {
+		result1 int
+		result2 error
+	}
+	destroyExcessCheckContainersReturnsOnCall map[int]struct {
+		result1 int
+		result2 error
+	}
 	DestroyFailedContainersStub        func() (int, error)
 	destroyFailedContainersMutex       sync.RWMutex
 	destroyFailedContainersArgsForCall []struct {
@@ -170,6 +184,71 @@ func (fake *FakeContainerRepository) DestroyDirtyInMemoryBuildContainersReturnsO
 		})
 	}
 	fake.destroyDirtyInMemoryBuildContainersReturnsOnCall[i] = struct {
+		result1 int
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeContainerRepository) DestroyExcessCheckContainers(arg1 int, arg2 time.Duration) (int, error) {
+	fake.destroyExcessCheckContainersMutex.Lock()
+	ret, specificReturn := fake.destroyExcessCheckContainersReturnsOnCall[len(fake.destroyExcessCheckContainersArgsForCall)]
+	fake.destroyExcessCheckContainersArgsForCall = append(fake.destroyExcessCheckContainersArgsForCall, struct {
+		arg1 int
+		arg2 time.Duration
+	}{arg1, arg2})
+	stub := fake.DestroyExcessCheckContainersStub
+	fakeReturns := fake.destroyExcessCheckContainersReturns
+	fake.recordInvocation("DestroyExcessCheckContainers", []interface{}{arg1, arg2})
+	fake.destroyExcessCheckContainersMutex.Unlock()
+	if stub != nil {
+		return stub(arg1, arg2)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2
+	}
+	return fakeReturns.result1, fakeReturns.result2
+}
+
+func (fake *FakeContainerRepository) DestroyExcessCheckContainersCallCount() int {
+	fake.destroyExcessCheckContainersMutex.RLock()
+	defer fake.destroyExcessCheckContainersMutex.RUnlock()
+	return len(fake.destroyExcessCheckContainersArgsForCall)
+}
+
+func (fake *FakeContainerRepository) DestroyExcessCheckContainersCalls(stub func(int, time.Duration) (int, error)) {
+	fake.destroyExcessCheckContainersMutex.Lock()
+	defer fake.destroyExcessCheckContainersMutex.Unlock()
+	fake.DestroyExcessCheckContainersStub = stub
+}
+
+func (fake *FakeContainerRepository) DestroyExcessCheckContainersArgsForCall(i int) (int, time.Duration) {
+	fake.destroyExcessCheckContainersMutex.RLock()
+	defer fake.destroyExcessCheckContainersMutex.RUnlock()
+	argsForCall := fake.destroyExcessCheckContainersArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2
+}
+
+func (fake *FakeContainerRepository) DestroyExcessCheckContainersReturns(result1 int, result2 error) {
+	fake.destroyExcessCheckContainersMutex.Lock()
+	defer fake.destroyExcessCheckContainersMutex.Unlock()
+	fake.DestroyExcessCheckContainersStub = nil
+	fake.destroyExcessCheckContainersReturns = struct {
+		result1 int
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeContainerRepository) DestroyExcessCheckContainersReturnsOnCall(i int, result1 int, result2 error) {
+	fake.destroyExcessCheckContainersMutex.Lock()
+	defer fake.destroyExcessCheckContainersMutex.Unlock()
+	fake.DestroyExcessCheckContainersStub = nil
+	if fake.destroyExcessCheckContainersReturnsOnCall == nil {
+		fake.destroyExcessCheckContainersReturnsOnCall = make(map[int]struct {
+			result1 int
+			result2 error
+		})
+	}
+	fake.destroyExcessCheckContainersReturnsOnCall[i] = struct {
 		result1 int
 		result2 error
 	}{result1, result2}
