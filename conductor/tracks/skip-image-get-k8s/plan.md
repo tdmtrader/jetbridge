@@ -15,6 +15,8 @@ Thread the `nativeImageFetch` flag into the get step and short-circuit the physi
   - When enabled and `plan.Type == "registry-image"`: resolve version, construct ImageURL, store result, emit events — skip container/worker entirely
   - Register a lightweight artifact that carries the ImageURL (no volume)
 
+[checkpoint: pending]
+
 ---
 
 ## Phase 2: Task Image Resolution from Short-Circuited Get
