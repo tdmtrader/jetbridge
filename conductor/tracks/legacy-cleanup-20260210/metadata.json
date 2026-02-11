@@ -1,0 +1,13 @@
+{
+  "id": "legacy-cleanup-20260210",
+  "type": "refactor",
+  "title": "Legacy Cleanup — Remove dead Garden/containerd/TSA/BOSH code",
+  "created": "2026-02-10",
+  "status": "pending",
+  "branch": "jetbridge",
+  "trackId": "legacy-cleanup-20260210",
+  "description": "Legacy Cleanup — Remove dead Garden/containerd/TSA/BOSH code",
+  "createdAt": "2026-02-11T03:49:22.510Z",
+  "updatedAt": "2026-02-11T03:49:22.510Z",
+  "isArchived": false
+}

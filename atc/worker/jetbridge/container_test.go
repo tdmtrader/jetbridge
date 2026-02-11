@@ -1759,7 +1759,7 @@ var _ = Describe("Container", func() {
 
 		Context("when the process has already exited", func() {
 			BeforeEach(func() {
-				// Store exit status in properties (as gardenruntime does)
+				// Store exit status in properties
 				err := container.SetProperty("concourse:exit-status", "0")
 				Expect(err).ToNot(HaveOccurred())
 			})

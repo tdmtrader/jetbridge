@@ -1135,7 +1135,7 @@ var _ = Describe("ValidateConfig", func() {
 
 				It("returns a warning", func() {
 					Expect(warnings).To(HaveLen(1))
-					Expect(warnings[0].Message).To(ContainSubstring("specifies `hermetic:` only works against worker containerd runtime"))
+					Expect(warnings[0].Message).To(ContainSubstring("specifies `hermetic:` only works with Kubernetes runtime"))
 				})
 			})
 

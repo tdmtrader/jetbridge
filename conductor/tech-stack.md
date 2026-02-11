@@ -52,11 +52,11 @@
 
 ## Infrastructure
 
-- **Container Runtime:** Kubernetes (JetBridge), containerd (legacy/upstream)
+- **Container Runtime:** Kubernetes (JetBridge)
 - **Database:** PostgreSQL 13+
 - **Local Dev:** Docker Compose
 - **CI:** Concourse pipelines (self-hosted)
-- **Deployment:** Docker images, Kubernetes Helm, BOSH releases
+- **Deployment:** Docker images, Kubernetes Helm
 
 ### Agent / LLM Integration (Planned)
 - **MCP (Model Context Protocol)** — Agent-to-tool communication protocol
@@ -66,19 +66,21 @@
 ## Repository Structure (Key Directories)
 
 ```
-atc/           — Air Traffic Control: API server, scheduler, engine, DB layer
-cmd/           — Binary entry points (concourse, concourse-mcp, init)
-fly/           — CLI tool source
-worker/        — Worker process and runtime backends
-  worker/kubernetes/  — JetBridge K8s runtime implementation
-skymarshal/    — Authentication & authorization
-web/           — Web UI (Elm frontend)
-vars/          — Variable/secret resolution
-tracing/       — Distributed tracing utilities
-go-concourse/  — Go client library
-testflight/    — Integration test suite
-topgun/        — E2E test suite
-integration/   — Additional integration tests
+atc/                       — Air Traffic Control: API server, scheduler, engine, DB layer
+atc/worker/jetbridge/      — JetBridge K8s runtime implementation
+atc/api/agentfeedback/     — Agent feedback API
+ci-agent/                  — CI agent binaries (independent Go module)
+cmd/                       — Binary entry points (concourse)
+fly/                       — CLI tool source
+skymarshal/                — Authentication & authorization
+web/                       — Web UI (Elm frontend)
+vars/                      — Variable/secret resolution
+tracing/                   — Distributed tracing utilities
+go-concourse/              — Go client library
+deploy/chart/              — Helm chart
+testflight/                — Integration test suite
+topgun/k8s/                — K8s E2E test suite
+integration/               — Additional integration tests
 ```
 
 ## Build & Run
@@ -94,7 +96,7 @@ cd web && npm install && npm run build
 docker-compose up
 
 # Tests
-go test ./...                    # All Go tests
-ginkgo -r ./worker/kubernetes/   # K8s runtime tests
+go test ./...                              # All Go tests
+go test ./atc/worker/jetbridge/...         # K8s runtime tests
 cd web/elm && elm-test           # Frontend tests
 ```
