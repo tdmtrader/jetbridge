@@ -25,7 +25,7 @@ jobs:
   - task: build-and-vet
     config:
       platform: linux
-      rootfs_uri: docker:///concourse-test-runner:v3
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v4
       run:
         path: sh
         args:
@@ -52,7 +52,7 @@ jobs:
   - task: unit-tests
     config:
       platform: linux
-      rootfs_uri: docker:///concourse-test-runner:v3
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v4
       run:
         path: sh
         args:
@@ -90,7 +90,7 @@ jobs:
   - task: k8s-runtime-integration-tests
     config:
       platform: linux
-      rootfs_uri: docker:///concourse-test-runner:v3
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v4
       run:
         path: sh
         args:
@@ -110,7 +110,7 @@ jobs:
   - task: k8s-live-integration-tests
     config:
       platform: linux
-      rootfs_uri: docker:///concourse-test-runner:v3
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v4
       run:
         path: sh
         args:
@@ -141,7 +141,7 @@ jobs:
     privileged: true
     config:
       platform: linux
-      rootfs_uri: docker:///concourse-test-runner:v3
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v4
       run:
         path: sh
         args:
@@ -149,8 +149,8 @@ jobs:
         - |
           cd /src
           echo "=== Building concourse binary ==="
-          GOOS=linux GOARCH=arm64 go build -o concourse-linux-arm64 ./cmd/concourse
-          ls -lh concourse-linux-arm64
+          GOOS=linux GOARCH=amd64 go build -o concourse-linux-amd64 ./cmd/concourse
+          ls -lh concourse-linux-amd64
           echo "=== Binary built ==="
           echo ""
           echo "=== Building Docker image ==="
@@ -162,7 +162,7 @@ jobs:
           RUN apt-get update && \
               apt-get install -y ca-certificates dumb-init && \
               rm -rf /var/lib/apt/lists/*
-          COPY concourse-linux-arm64 /usr/local/concourse/bin/concourse
+          COPY concourse-linux-amd64 /usr/local/concourse/bin/concourse
           RUN chmod +x /usr/local/concourse/bin/concourse
           ENV PATH="/usr/local/concourse/bin:${PATH}"
           ENTRYPOINT ["dumb-init", "concourse"]
@@ -180,7 +180,7 @@ jobs:
   - task: deploy
     config:
       platform: linux
-      rootfs_uri: docker:///concourse-test-runner:v3
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v4
       run:
         path: sh
         args:
@@ -206,7 +206,7 @@ jobs:
   - task: verify-deployment
     config:
       platform: linux
-      rootfs_uri: docker:///concourse-test-runner:v3
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v4
       run:
         path: sh
         args:
