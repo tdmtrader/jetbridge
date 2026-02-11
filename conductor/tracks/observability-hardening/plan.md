@@ -68,10 +68,10 @@
 
 **Goal:** Key existing metrics emitted as OTel instruments; Prometheus exemplars for trace correlation.
 
-- [ ] Write tests for OTel instrument emission of core metrics
-- [ ] Emit build duration, HTTP response time, K8s pod startup, container/volume counts as OTel instruments in `atc/metric/`
-- [ ] Write tests for Prometheus exemplar attachment
-- [ ] Attach trace ID exemplars to Prometheus histograms where spans exist
-- [ ] Verify backward compatibility: existing `--prometheus-bind-port` still works unchanged
+- [x] Write tests for OTel instrument emission of core metrics `3490baf08`
+- [x] Emit build duration, HTTP response time, K8s pod startup, container/volume counts as OTel instruments in `atc/metric/` `3490baf08`
+- [x] Write tests for Prometheus exemplar attachment
+- [x] Attach trace ID exemplars to Prometheus histograms where spans exist
+- [x] Verify backward compatibility: existing `--prometheus-bind-port` still works unchanged
 
 **Checkpoint:** OTel metrics visible in OTLP collector; Prometheus `/metrics` endpoint includes exemplars with trace IDs; all existing metric tests pass.

@@ -20,6 +20,7 @@ type Event struct {
 	Attributes map[string]string
 	Host       string
 	Time       time.Time
+	TraceID    string // optional trace ID for exemplar attachment
 }
 
 //counterfeiter:generate . Emitter

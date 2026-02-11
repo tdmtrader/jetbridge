@@ -1,0 +1,7 @@
+{
+  "id": "observability-hardening",
+  "type": "feature",
+  "status": "pending",
+  "created": "2026-02-10",
+  "description": "Unify and extend OTel-native observability (traces, metrics) with Grafana and GCP compatibility"
+}

@@ -837,7 +837,10 @@ func (config *PrometheusConfig) NewEmitter(attributes map[string]string) (metric
 		return nil, err
 	}
 
-	go http.Serve(listener, promhttp.Handler())
+	go http.Serve(listener, promhttp.HandlerFor(
+		prometheus.DefaultGatherer,
+		promhttp.HandlerOpts{EnableOpenMetrics: true},
+	))
 
 	emitter := &PrometheusEmitter{
 		jobsScheduled:          jobsScheduled,
@@ -1144,7 +1147,16 @@ func (emitter *PrometheusEmitter) buildFinishedMetrics(logger lager.Logger, even
 
 	// seconds are the standard prometheus base unit for time
 	duration := event.Value / 1000
-	emitter.buildDurationsVec.WithLabelValues(team, pipeline, job).Observe(duration)
+	observer := emitter.buildDurationsVec.WithLabelValues(team, pipeline, job)
+	if event.TraceID != "" {
+		if eo, ok := observer.(prometheus.ExemplarObserver); ok {
+			eo.ObserveWithExemplar(duration, prometheus.Labels{"trace_id": event.TraceID})
+		} else {
+			observer.Observe(duration)
+		}
+	} else {
+		observer.Observe(duration)
+	}
 }
 
 func (emitter *PrometheusEmitter) checkBuildFinishedMetrics(logger lager.Logger, event metric.Event) {
@@ -1329,7 +1341,17 @@ func (emitter *PrometheusEmitter) httpResponseTimeMetrics(logger lager.Logger, e
 		return
 	}
 
-	emitter.httpRequestsDuration.WithLabelValues(method, route, status).Observe(event.Value / 1000)
+	duration := event.Value / 1000
+	observer := emitter.httpRequestsDuration.WithLabelValues(method, route, status)
+	if event.TraceID != "" {
+		if eo, ok := observer.(prometheus.ExemplarObserver); ok {
+			eo.ObserveWithExemplar(duration, prometheus.Labels{"trace_id": event.TraceID})
+		} else {
+			observer.Observe(duration)
+		}
+	} else {
+		observer.Observe(duration)
+	}
 }
 
 func (emitter *PrometheusEmitter) databaseMetrics(logger lager.Logger, event metric.Event) {

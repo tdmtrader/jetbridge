@@ -5,6 +5,7 @@ import (
 
 	"code.cloudfoundry.org/lager/v3"
 	"github.com/felixge/httpsnoop"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type MetricsHandler struct {
@@ -31,11 +32,17 @@ func WrapHandler(
 func (handler MetricsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	metrics := httpsnoop.CaptureMetrics(handler.Handler, w, r)
 
+	var traceID string
+	if sc := trace.SpanFromContext(r.Context()).SpanContext(); sc.HasTraceID() {
+		traceID = sc.TraceID().String()
+	}
+
 	HTTPResponseTime{
 		Route:      handler.Route,
 		Path:       r.URL.Path,
 		Method:     r.Method,
 		StatusCode: metrics.Code,
 		Duration:   metrics.Duration,
+		TraceID:    traceID,
 	}.Emit(handler.Logger, handler.Monitor)
 }
