@@ -201,6 +201,36 @@ var _ = Describe("GeneratePodName", func() {
 		})
 	})
 
+	Describe("resource type operation containers", func() {
+		It("uses rt-<step-name>-<type>-<suffix> for get steps with no job context", func() {
+			name := jetbridge.GeneratePodName(db.ContainerMetadata{
+				Type:         db.ContainerTypeGet,
+				StepName:     "custom-time",
+				PipelineName: "jetbridge",
+			}, "10ddb92a-077e-4efd-8fd6-1c4f777fd309")
+
+			Expect(name).To(MatchRegexp(`^rt-custom-time-get-[a-f0-9]{8}$`))
+		})
+
+		It("uses rt- format when only StepName is available (no pipeline)", func() {
+			name := jetbridge.GeneratePodName(db.ContainerMetadata{
+				Type:     db.ContainerTypeGet,
+				StepName: "registry-image",
+			}, "aabbccdd-1122-3344-5566-778899aabbcc")
+
+			Expect(name).To(MatchRegexp(`^rt-registry-image-get-[a-f0-9]{8}$`))
+		})
+
+		It("falls back to UUID when StepName is empty and no job context", func() {
+			handle := "550e8400-e29b-41d4-a716-446655440000"
+			name := jetbridge.GeneratePodName(db.ContainerMetadata{
+				Type: db.ContainerTypeGet,
+			}, handle)
+
+			Expect(name).To(Equal(handle))
+		})
+	})
+
 	Describe("handle suffix extraction", func() {
 		It("strips hyphens from UUID to extract hex suffix", func() {
 			name := jetbridge.GeneratePodName(db.ContainerMetadata{

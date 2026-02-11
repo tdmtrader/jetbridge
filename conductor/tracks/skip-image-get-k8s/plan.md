@@ -63,7 +63,7 @@ Allow custom resource types to declare that they produce registry-compatible ima
   - Thread through DB resource type storage
   - Get step checks resource type's `Produces` alongside `plan.Type` for short-circuit eligibility
 
-[checkpoint: pending]
+[checkpoint: e95d3073e]
 
 ---
 

@@ -21,9 +21,10 @@ var multiHyphen = regexp.MustCompile(`-{2,}`)
 // container metadata and the database handle. The name encodes
 // pipeline/job/build/step context for easy identification via kubectl.
 //
-// Format for build steps: <pipeline>-<job>-b<build>-<type>-<suffix>
-// Format for checks:      chk-<step-name>-<suffix>
-// Fallback:               the raw handle (UUID) when metadata is insufficient
+// Format for build steps:      <pipeline>-<job>-b<build>-<type>-<suffix>
+// Format for checks:           chk-<step-name>-<suffix>
+// Format for resource type ops: rt-<step-name>-<type>-<suffix>
+// Fallback:                     the raw handle (UUID) when metadata is insufficient
 //
 // The suffix is the first 8 hex characters of the handle (hyphens stripped).
 // The total name is capped at 63 characters (DNS label safe).
@@ -42,6 +43,20 @@ func GeneratePodName(metadata db.ContainerMetadata, handle string) string {
 			return handle
 		}
 		return fmt.Sprintf("chk-%s-%s", resource, suffix)
+	}
+
+	// Resource type image get/put steps: have StepName but no job context.
+	// These are get/put steps from in-memory check builds that fetch resource
+	// type images. Format: rt-<step-name>-<type>-<suffix>
+	if (metadata.PipelineName == "" || metadata.JobName == "") && metadata.StepName != "" &&
+		(metadata.Type == db.ContainerTypeGet || metadata.Type == db.ContainerTypePut) {
+		stepType := string(metadata.Type)
+		// "rt-" (3) + "-" + stepType + "-" + suffix(8) = 13 + len(stepType)
+		maxStep := maxPodNameLen - 13 - len(stepType)
+		step := sanitizeSegment(metadata.StepName, maxStep)
+		if step != "" {
+			return fmt.Sprintf("rt-%s-%s-%s", step, stepType, suffix)
+		}
 	}
 
 	// Build step containers need pipeline + job to be meaningful.
