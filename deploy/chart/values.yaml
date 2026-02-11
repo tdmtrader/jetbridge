@@ -41,11 +41,32 @@ web:
       cpu: "2"
       memory: 2Gi
 
+  # -- TLS configuration for native HTTPS on the web container.
+  # When enabled, the web binary serves HTTPS via --tls-bind-port, --tls-cert, --tls-key.
+  tls:
+    # -- Enable TLS on the web container
+    enabled: false
+    # -- HTTPS listen port inside the container
+    bindPort: 443
+    # -- Name of the Kubernetes Secret containing TLS cert and key
+    secretName: concourse-web-tls
+    # -- Mount path for the TLS secret inside the container
+    mountPath: /concourse-tls
+    # -- Key in the Secret for the TLS certificate
+    certFilename: tls.crt
+    # -- Key in the Secret for the TLS private key
+    keyFilename: tls.key
+
   # -- Additional environment variables for the web container
   env: []
 
   # -- Additional CLI args for the web command
   extraArgs: []
+
+  # -- Extra volume mounts for the web container (e.g. custom CA bundles, credential files)
+  extraVolumeMounts: []
+  # -- Extra volumes for the web pod
+  extraVolumes: []
 
   # -- Liveness probe configuration
   livenessProbe:
@@ -166,6 +187,14 @@ service:
   httpPort: 8080
   # -- TSA port (for fly CLI worker registration — unused in JetBridge but kept for compatibility)
   tsaPort: 2222
+  # -- Annotations to add to the service (e.g. cloud provider LB annotations)
+  annotations: {}
+  # -- Extra labels to add to the service
+  labels: {}
+  # -- Static IP for LoadBalancer-type services
+  loadBalancerIP: ""
+  # -- Restrict LoadBalancer traffic to these CIDRs
+  loadBalancerSourceRanges: []
 
 # -- Ingress configuration
 ingress:

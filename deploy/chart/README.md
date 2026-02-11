@@ -110,6 +110,42 @@ All parameters are documented in [`values.yaml`](values.yaml). Key sections:
 | `web.localUsers` | `test:test` | Local user credentials |
 | `web.resources` | 100m/256Mi req, 2/2Gi limit | CPU/memory resources |
 
+### Service
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `service.type` | `LoadBalancer` | Service type: `ClusterIP`, `LoadBalancer`, `NodePort` |
+| `service.httpPort` | `8080` | HTTP service port |
+| `service.tsaPort` | `2222` | TSA port (unused in JetBridge, kept for compatibility) |
+| `service.annotations` | `{}` | Annotations for the service (e.g. AWS LB cert ARNs) |
+| `service.labels` | `{}` | Extra labels for the service |
+| `service.loadBalancerIP` | `""` | Static IP for LoadBalancer-type services |
+| `service.loadBalancerSourceRanges` | `[]` | Restrict LoadBalancer traffic to these CIDRs |
+
+### TLS
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `web.tls.enabled` | `false` | Enable native HTTPS on the web container |
+| `web.tls.bindPort` | `443` | HTTPS listen port |
+| `web.tls.secretName` | `concourse-web-tls` | K8s Secret containing TLS cert and key |
+| `web.tls.mountPath` | `/concourse-tls` | Mount path for the TLS secret |
+| `web.tls.certFilename` | `tls.crt` | Key in the Secret for the certificate |
+| `web.tls.keyFilename` | `tls.key` | Key in the Secret for the private key |
+
+When TLS is enabled, the web binary is started with `--tls-bind-port`, `--tls-cert`,
+and `--tls-key`. An HTTPS port is added to both the container and the service. The
+TLS Secret is mounted read-only into the web pod.
+
+### Extra Volumes
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `web.extraVolumeMounts` | `[]` | Additional volume mounts for the web container |
+| `web.extraVolumes` | `[]` | Additional volumes for the web pod |
+
+Use these for custom CA bundles, credential files, or any other operator-specific mounts.
+
 ### Kubernetes Runtime
 
 | Parameter | Default | Description |
@@ -178,5 +214,6 @@ NFS, GCS FUSE, EBS, etc. Multi-node clusters need `ReadWriteMany` access.
 - **Secrets:** Replace `web.localUsers` with OIDC/OAuth via `web.extraArgs`. Generate signing keys externally and set `secrets.create=false`.
 - **Database:** Use an external managed database (Cloud SQL, RDS) with `postgresql.enabled=false`.
 - **Multi-node:** Set `artifactStorePvc.accessModes: [ReadWriteMany]` and use a storage class that supports it.
+- **TLS:** For native HTTPS, set `web.tls.enabled=true` and create a K8s Secret with your cert/key. Alternatively, terminate TLS at the ingress layer with `ingress.enabled=true`.
 - **Ingress:** Enable `ingress.enabled=true` with your ingress controller and TLS.
 - **Resources:** Tune `web.resources` based on pipeline count. The web node is the control plane and doesn't run builds.

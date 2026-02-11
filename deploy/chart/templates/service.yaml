@@ -5,14 +5,33 @@ metadata:
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "concourse.labels" . | nindent 4 }}
+    {{- with .Values.service.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with .Values.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
 spec:
   type: {{ .Values.service.type }}
+  {{- if and (eq .Values.service.type "LoadBalancer") .Values.service.loadBalancerIP }}
+  loadBalancerIP: {{ .Values.service.loadBalancerIP }}
+  {{- end }}
+  {{- if and (eq .Values.service.type "LoadBalancer") .Values.service.loadBalancerSourceRanges }}
+  loadBalancerSourceRanges:
+    {{- toYaml .Values.service.loadBalancerSourceRanges | nindent 4 }}
+  {{- end }}
   selector:
     {{- include "concourse.selectorLabels" . | nindent 4 }}
   ports:
     - name: http
       port: {{ .Values.service.httpPort }}
       targetPort: 8080
+    {{- if .Values.web.tls.enabled }}
+    - name: https
+      port: {{ .Values.web.tls.bindPort }}
+      targetPort: {{ .Values.web.tls.bindPort }}
+    {{- end }}
     - name: tsa
       port: {{ .Values.service.tsaPort }}
       targetPort: 2222
