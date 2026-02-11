@@ -62,23 +62,36 @@
 
 ---
 
-## [ ] Track: Legacy Cleanup — Remove dead Garden/containerd/TSA/BOSH code
-*Link: [./conductor/tracks/legacy-cleanup-20260210/](./conductor/tracks/legacy-cleanup-20260210/)*
+## [x] Track: Legacy Cleanup — Remove dead Garden/containerd/TSA/BOSH code
+*Completed: 2026-02-11*
+*Archive: [./conductor/archive/legacy-cleanup-20260210/](./conductor/archive/legacy-cleanup-20260210/)*
 
 ---
 
-## [ ] Track: Helm Chart Parity — Restore service annotations, loadBalancerIP, TLS, and extra volume mounts
-*Link: [./conductor/tracks/helm-chart-parity/](./conductor/tracks/helm-chart-parity/)*
+## [x] Track: Helm Chart Parity — Restore service annotations, loadBalancerIP, TLS, and extra volume mounts
+*Completed: 2026-02-11*
+*Archive: [./conductor/archive/helm-chart-parity/](./conductor/archive/helm-chart-parity/)*
 
 ---
 
-## [ ] Track: Pipeline Split — Separate Agent Testing
-*Link: [./conductor/tracks/pipeline-split-agent-testing/](./conductor/tracks/pipeline-split-agent-testing/)*
+## [x] Track: Pipeline Split — Separate Agent Testing
+*Completed: 2026-02-11*
+*Archive: [./conductor/archive/pipeline-split-agent-testing/](./conductor/archive/pipeline-split-agent-testing/)*
 
 ---
 
 ## [x] Track: GCS Fuse Pod Annotation — Add gke-gcsfuse/volumes annotation to artifact store pods
 *Completed: 2026-02-10*
 *Link: [./conductor/tracks/gcs-fuse-pod-annotation/](./conductor/tracks/gcs-fuse-pod-annotation/)*
+
+---
+
+## [ ] Track: Observability Hardening — OTel-native traces, metrics, and spans with Grafana/GCP compatibility
+*Link: [./conductor/tracks/observability-hardening/](./conductor/tracks/observability-hardening/)*
+
+---
+
+## [ ] Track: Too Many Check Pods — Deduplicate in-flight checks and cap failed containers
+*Link: [./conductor/tracks/too_many_check_pods_20260211/](./conductor/tracks/too_many_check_pods_20260211/)*
 
 ---

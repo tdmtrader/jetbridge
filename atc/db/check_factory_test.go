@@ -161,6 +161,78 @@ var _ = Describe("CheckFactory", func() {
 							Expect(build).To(BeNil())
 						})
 					})
+
+					Context("when an in-memory check is already in-flight for the same scope", func() {
+						BeforeEach(func() {
+							fakeResource.ResourceConfigScopeIDReturns(42)
+							// First call: creates the in-memory build and tracks it as in-flight
+							firstBuild, firstCreated, firstErr := checkFactory.TryCreateCheck(
+								context.TODO(), fakeResource, fakeResourceTypes, fromVersion, false, false, false)
+							Expect(firstErr).NotTo(HaveOccurred())
+							Expect(firstCreated).To(BeTrue())
+							Expect(firstBuild).NotTo(BeNil())
+						})
+
+						It("skips creation for the second call", func() {
+							// build, created, err are set by JustBeforeEach (the second call)
+							Expect(err).NotTo(HaveOccurred())
+							Expect(created).To(BeFalse())
+							Expect(build).To(BeNil())
+						})
+
+						It("does not create a second in-memory build", func() {
+							// Only the first call (BeforeEach) should have created a build
+							Expect(fakeResource.CreateInMemoryBuildCallCount()).To(Equal(1))
+						})
+
+						Context("but the check is manually triggered", func() {
+							BeforeEach(func() {
+								manuallyTriggered = true
+							})
+
+							It("creates the build anyway", func() {
+								Expect(err).NotTo(HaveOccurred())
+								Expect(created).To(BeTrue())
+								Expect(build).To(Equal(fakeBuild))
+							})
+						})
+
+						Context("when the in-flight build finishes successfully", func() {
+							BeforeEach(func() {
+								// Drain the first build from the channel and simulate completion
+								select {
+								case b := <-checkBuildChan:
+									b.Finish(db.BuildStatusSucceeded)
+								default:
+									Fail("expected a build on the channel")
+								}
+							})
+
+							It("allows a new check to be created", func() {
+								Expect(err).NotTo(HaveOccurred())
+								Expect(created).To(BeTrue())
+								Expect(build).NotTo(BeNil())
+							})
+						})
+
+						Context("when the in-flight build errors", func() {
+							BeforeEach(func() {
+								// Drain the first build from the channel and simulate error
+								select {
+								case b := <-checkBuildChan:
+									b.Finish(db.BuildStatusErrored)
+								default:
+									Fail("expected a build on the channel")
+								}
+							})
+
+							It("allows a new check to be created", func() {
+								Expect(err).NotTo(HaveOccurred())
+								Expect(created).To(BeTrue())
+								Expect(build).NotTo(BeNil())
+							})
+						})
+					})
 				})
 
 				Context("when the interval has not elapsed", func() {

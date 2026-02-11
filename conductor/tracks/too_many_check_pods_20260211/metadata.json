@@ -1,0 +1,8 @@
+{
+  "track_id": "too_many_check_pods_20260211",
+  "type": "bugfix",
+  "status": "planned",
+  "created_at": "2026-02-11T14:07:16.463Z",
+  "updated_at": "2026-02-11T14:07:16.463Z",
+  "description": "Too many check pods — deduplicate in-flight checks and cap failed containers"
+}
