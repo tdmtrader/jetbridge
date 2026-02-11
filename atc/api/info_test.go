@@ -51,7 +51,9 @@ var _ = Describe("Pipelines API", func() {
 				"worker_version": "4.5.6",
 				"feature_flags": %v,
 				"external_url": "https://example.com",
-				"cluster_name": "Test Cluster"
+				"cluster_name": "Test Cluster",
+				"jetbridge_version": "0.1.0-test",
+				"concourse_version": "8.0.1-test"
 			}`, featureFlagsJson)))
 		})
 	})

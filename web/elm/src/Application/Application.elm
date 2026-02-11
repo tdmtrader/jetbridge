@@ -75,6 +75,8 @@ init flags url =
             , hovered = HoverState.NoHover
             , clusterName = ""
             , version = ""
+            , jetbridgeVersion = ""
+            , concourseVersion = ""
             , featureFlags = flags.featureFlags
             , turbulenceImgSrc = flags.turbulenceImgSrc
             , notFoundImgSrc = flags.notFoundImgSrc
@@ -210,13 +212,13 @@ handleCallback callback model =
             in
             subpageHandleCallback callback ( { model | session = newSession }, [] )
 
-        ClusterInfoFetched (Ok { clusterName, version }) ->
+        ClusterInfoFetched (Ok { clusterName, version, jetbridgeVersion, concourseVersion }) ->
             let
                 session =
                     model.session
 
                 newSession =
-                    { session | clusterName = clusterName, version = version }
+                    { session | clusterName = clusterName, version = version, jetbridgeVersion = jetbridgeVersion, concourseVersion = concourseVersion }
             in
             subpageHandleCallback callback ( { model | session = newSession }, [] )
 

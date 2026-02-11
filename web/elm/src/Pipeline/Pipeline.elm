@@ -573,7 +573,7 @@ backgroundImage pipeline =
 
 
 viewSubPage :
-    { a | hovered : HoverState.HoverState, version : String }
+    { a | hovered : HoverState.HoverState, version : String, jetbridgeVersion : String, concourseVersion : String }
     -> Model
     -> Html Message
 viewSubPage session model =
@@ -668,12 +668,22 @@ viewSubPage session model =
                     ]
                 , Html.tr []
                     [ Html.td [ class "label" ]
-                        [ Html.text "version: "
-                        , Html.text "v"
-                        , Html.span
-                            [ class "number" ]
-                            [ Html.text session.version ]
-                        ]
+                        (if session.jetbridgeVersion /= "" then
+                            [ Html.text "JetBridge "
+                            , Html.span
+                                [ class "number" ]
+                                [ Html.text session.jetbridgeVersion ]
+                            , Html.text (" (Concourse " ++ session.concourseVersion ++ ")")
+                            ]
+
+                         else
+                            [ Html.text "version: "
+                            , Html.text "v"
+                            , Html.span
+                                [ class "number" ]
+                                [ Html.text session.version ]
+                            ]
+                        )
                     ]
                 ]
             ]

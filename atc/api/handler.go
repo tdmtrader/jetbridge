@@ -74,6 +74,8 @@ func NewHandler(
 	cliDownloadsDir string,
 	version string,
 	workerVersion string,
+	jetBridgeVersion string,
+	concourseVersion string,
 	secretManager creds.Secrets,
 	varSourcePool creds.VarSourcePool,
 	credsManagers creds.Managers,
@@ -107,7 +109,7 @@ func NewHandler(
 	containerServer := containerserver.NewServer(logger, workerPool, interceptTimeoutFactory, interceptUpdateInterval, clock)
 	volumesServer := volumeserver.NewServer(logger, volumeRepository)
 	teamServer := teamserver.NewServer(logger, dbTeamFactory, externalURL)
-	infoServer := infoserver.NewServer(logger, version, workerVersion, externalURL, clusterName, credsManagers)
+	infoServer := infoserver.NewServer(logger, version, workerVersion, externalURL, clusterName, credsManagers, jetBridgeVersion, concourseVersion)
 	artifactServer := artifactserver.NewServer(logger, workerPool)
 	usersServer := usersserver.NewServer(logger, dbUserFactory)
 	wallServer := wallserver.NewServer(dbWall, logger)

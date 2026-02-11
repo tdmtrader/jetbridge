@@ -2171,6 +2171,8 @@ func (cmd *RunCommand) constructAPIHandler(
 		cmd.CLIArtifactsDir.Path(),
 		concourse.Version,
 		concourse.WorkerVersion,
+		concourse.JetBridgeVersion,
+		concourse.ConcourseVersion,
 		secretManager,
 		cmd.varSourcePool,
 		credsManagers,

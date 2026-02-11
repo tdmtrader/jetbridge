@@ -6,12 +6,14 @@ import (
 )
 
 type Server struct {
-	logger        lager.Logger
-	version       string
-	workerVersion string
-	externalURL   string
-	clusterName   string
-	credsManagers creds.Managers
+	logger           lager.Logger
+	version          string
+	workerVersion    string
+	externalURL      string
+	clusterName      string
+	credsManagers    creds.Managers
+	jetBridgeVersion string
+	concourseVersion string
 }
 
 func NewServer(
@@ -21,13 +23,17 @@ func NewServer(
 	externalURL string,
 	clusterName string,
 	credsManagers creds.Managers,
+	jetBridgeVersion string,
+	concourseVersion string,
 ) *Server {
 	return &Server{
-		logger:        logger,
-		version:       version,
-		workerVersion: workerVersion,
-		externalURL:   externalURL,
-		clusterName:   clusterName,
-		credsManagers: credsManagers,
+		logger:           logger,
+		version:          version,
+		workerVersion:    workerVersion,
+		externalURL:      externalURL,
+		clusterName:      clusterName,
+		credsManagers:    credsManagers,
+		jetBridgeVersion: jetBridgeVersion,
+		concourseVersion: concourseVersion,
 	}
 }
