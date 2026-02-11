@@ -1915,6 +1915,7 @@ func (cmd *RunCommand) constructEngine(
 			policyChecker,
 			workerFactory,
 			lockFactory,
+			cmd.Kubernetes.Namespace != "",
 		),
 		secretManager,
 		cmd.varSourcePool,

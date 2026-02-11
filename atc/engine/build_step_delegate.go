@@ -33,6 +33,7 @@ type buildStepDelegate struct {
 	stdout               io.Writer
 	policyChecker        policy.Checker
 	disableRedactSecrets bool
+	nativeImageFetch     bool
 }
 
 func NewBuildStepDelegate(
@@ -42,6 +43,7 @@ func NewBuildStepDelegate(
 	clock clock.Clock,
 	policyChecker policy.Checker,
 	disableRedactSecrets bool,
+	nativeImageFetch bool,
 ) *buildStepDelegate {
 	return &buildStepDelegate{
 		build:                build,
@@ -52,6 +54,7 @@ func NewBuildStepDelegate(
 		stderr:               nil,
 		policyChecker:        policyChecker,
 		disableRedactSecrets: disableRedactSecrets,
+		nativeImageFetch:     nativeImageFetch,
 	}
 }
 
@@ -266,6 +269,21 @@ func (delegate *buildStepDelegate) FetchImage(
 		if !ok {
 			return runtime.ImageSpec{}, nil, fmt.Errorf("image check failed")
 		}
+	}
+
+	// When running on the K8s runtime, skip the physical image download for
+	// registry-image types. Kubelet handles the pull natively — we only need
+	// the image reference URL.
+	if delegate.nativeImageFetch && getPlan.Get.Type == "registry-image" {
+		version := atc.Version{}
+		if getPlan.Get.Version != nil {
+			version = *getPlan.Get.Version
+		}
+		imageURL := imageURLFromSource(getPlan.Get.Type, getPlan.Get.Source, version)
+		return runtime.ImageSpec{
+			ImageURL:   imageURL,
+			Privileged: privileged,
+		}, nil, nil
 	}
 
 	ok, err := fetchState.Run(ctx, getPlan)
