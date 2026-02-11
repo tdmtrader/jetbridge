@@ -4,7 +4,7 @@ resources:
   source:
     uri: https://github.com/tdmtrader/jetbridge.git
     branch: jetbridge
-    depth: 1
+    depth: 25
     username: x-access-token
     password: ((github_pat))
 
