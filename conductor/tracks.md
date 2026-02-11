@@ -97,7 +97,8 @@
 
 ---
 
-## [ ] Track: Dir Volume Bug — Fix missing K8s emptyDir for spec.Dir in buildVolumeMounts
+## [x] Track: Dir Volume Bug — Fix missing K8s emptyDir for spec.Dir in buildVolumeMounts
+*Completed: 2026-02-11*
 *Link: [./conductor/tracks/dir_volume_bug_20260211/](./conductor/tracks/dir_volume_bug_20260211/)*
 
 ---
