@@ -17,6 +17,7 @@ import (
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/worker"
 	"github.com/concourse/concourse/tracing"
+	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
 type CheckStep struct {
@@ -98,6 +99,7 @@ func (step *CheckStep) run(ctx context.Context, state RunState, delegate CheckDe
 		"step-name": step.plan.Name,
 	})
 
+	oteltrace.SpanFromContext(ctx).AddEvent("step.initializing")
 	delegate.Initializing(logger)
 
 	source, err := creds.NewSource(state, step.plan.Source).Evaluate()
@@ -189,11 +191,13 @@ func (step *CheckStep) run(ctx context.Context, state RunState, delegate CheckDe
 			}
 
 			if errors.Is(runErr, context.DeadlineExceeded) {
+				oteltrace.SpanFromContext(ctx).AddEvent("step.errored")
 				delegate.Errored(logger, TimeoutLogMessage)
 				return false, nil
 			}
 
 			if processResult.ExitStatus != 0 {
+				oteltrace.SpanFromContext(ctx).AddEvent("step.finished")
 				delegate.Finished(logger, false)
 				return false, nil
 			}
@@ -227,6 +231,7 @@ func (step *CheckStep) run(ctx context.Context, state RunState, delegate CheckDe
 		}
 	}
 
+	oteltrace.SpanFromContext(ctx).AddEvent("step.finished")
 	delegate.Finished(logger, true)
 
 	return true, nil
@@ -289,6 +294,7 @@ func (step *CheckStep) runCheck(
 		return nil, runtime.ProcessResult{}, err
 	}
 
+	oteltrace.SpanFromContext(ctx).AddEvent("step.starting")
 	delegate.Starting(logger)
 	return resource.Resource{
 		Source:  source,

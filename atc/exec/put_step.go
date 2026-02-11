@@ -107,6 +107,7 @@ func (step *PutStep) run(ctx context.Context, state RunState, delegate PutDelega
 		"job-id":    step.metadata.JobID,
 	})
 
+	trace.SpanFromContext(ctx).AddEvent("step.initializing")
 	delegate.Initializing(logger)
 
 	source, err := creds.NewSource(state, step.plan.Source).Evaluate()
@@ -204,6 +205,7 @@ func (step *PutStep) run(ctx context.Context, state RunState, delegate PutDelega
 		return false, err
 	}
 
+	trace.SpanFromContext(ctx).AddEvent("step.starting")
 	delegate.Starting(logger)
 	versionResult, processResult, err := resource.Resource{
 		Source: source,
@@ -211,6 +213,7 @@ func (step *PutStep) run(ctx context.Context, state RunState, delegate PutDelega
 	}.Put(ctx, container, delegate.Stderr())
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
+			trace.SpanFromContext(ctx).AddEvent("step.errored")
 			delegate.Errored(logger, TimeoutLogMessage)
 			return false, nil
 		}
@@ -219,6 +222,7 @@ func (step *PutStep) run(ctx context.Context, state RunState, delegate PutDelega
 	}
 
 	if processResult.ExitStatus != 0 {
+		trace.SpanFromContext(ctx).AddEvent("step.finished")
 		delegate.Finished(logger, ExitStatus(processResult.ExitStatus), resource.VersionResult{})
 		return false, nil
 	}
@@ -231,6 +235,7 @@ func (step *PutStep) run(ctx context.Context, state RunState, delegate PutDelega
 
 	state.StoreResult(step.planID, versionResult.Version)
 
+	trace.SpanFromContext(ctx).AddEvent("step.finished")
 	delegate.Finished(logger, 0, versionResult)
 
 	return true, nil
