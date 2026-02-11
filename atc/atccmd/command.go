@@ -177,8 +177,9 @@ type RunCommand struct {
 		ImagePullSecrets   []string      `long:"kubernetes-image-pull-secret"      description:"Kubernetes Secret name to use as imagePullSecrets on task Pods. Can be specified multiple times."`
 		ServiceAccount     string        `long:"kubernetes-service-account"        description:"Kubernetes ServiceAccount name to set on task Pods. Defaults to the namespace default SA."`
 		CachePVC           string        `long:"kubernetes-cache-pvc"              description:"Name of a PersistentVolumeClaim to mount as a shared cache volume in task Pods. Enables node-local resource and task caching."`
-		ArtifactStoreClaim string        `long:"kubernetes-artifact-store-claim"   description:"Name of a PersistentVolumeClaim for durable artifact and resource cache storage. In production, back with GCS FUSE via StorageClass. Locally, uses default StorageClass."`
-		ArtifactHelperImage    string `long:"kubernetes-artifact-helper-image"     description:"Container image for artifact init containers and sidecar. Defaults to alpine:latest."`
+		ArtifactStoreClaim    string `long:"kubernetes-artifact-store-claim"      description:"Name of a PersistentVolumeClaim for durable artifact and resource cache storage. In production, back with GCS FUSE via StorageClass. Locally, uses default StorageClass."`
+		ArtifactStoreGCSFuse  bool   `long:"kubernetes-artifact-store-gcs-fuse"  description:"Artifact store PVC is backed by GCS Fuse on GKE. Adds gke-gcsfuse/volumes annotation to task pods."`
+		ArtifactHelperImage   string `long:"kubernetes-artifact-helper-image"     description:"Container image for artifact init containers and sidecar. Defaults to alpine:latest."`
 		ImageRegistryPrefix    string `long:"kubernetes-image-registry-prefix"     description:"Registry path prefix for custom resource type images (e.g. gcr.io/my-project/concourse). Images are resolved as <prefix>/<type-name>."`
 		ImageRegistrySecret    string `long:"kubernetes-image-registry-secret"     description:"Kubernetes Secret name (type kubernetes.io/dockerconfigjson) for registry auth. Auto-added to imagePullSecrets on every pod."`
 	} `group:"Kubernetes Runtime"`
@@ -1243,6 +1244,7 @@ func (cmd *RunCommand) backendComponents(
 		k8sCfg.ServiceAccount = cmd.Kubernetes.ServiceAccount
 		k8sCfg.CacheVolumeClaim = cmd.Kubernetes.CachePVC
 		k8sCfg.ArtifactStoreClaim = cmd.Kubernetes.ArtifactStoreClaim
+		k8sCfg.ArtifactStoreGCSFuse = cmd.Kubernetes.ArtifactStoreGCSFuse
 		k8sCfg.ArtifactHelperImage = cmd.Kubernetes.ArtifactHelperImage
 		if cmd.Kubernetes.ImageRegistryPrefix != "" || cmd.Kubernetes.ImageRegistrySecret != "" {
 			k8sCfg.ImageRegistry = &jetbridge.ImageRegistryConfig{
@@ -1358,6 +1360,7 @@ func (cmd *RunCommand) constructPool(dbConn db.DbConn, lockFactory lock.LockFact
 		k8sCfg.ServiceAccount = cmd.Kubernetes.ServiceAccount
 		k8sCfg.CacheVolumeClaim = cmd.Kubernetes.CachePVC
 		k8sCfg.ArtifactStoreClaim = cmd.Kubernetes.ArtifactStoreClaim
+		k8sCfg.ArtifactStoreGCSFuse = cmd.Kubernetes.ArtifactStoreGCSFuse
 		k8sCfg.ArtifactHelperImage = cmd.Kubernetes.ArtifactHelperImage
 		if cmd.Kubernetes.ImageRegistryPrefix != "" || cmd.Kubernetes.ImageRegistrySecret != "" {
 			k8sCfg.ImageRegistry = &jetbridge.ImageRegistryConfig{

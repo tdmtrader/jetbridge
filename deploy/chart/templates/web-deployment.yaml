@@ -160,6 +160,9 @@ spec:
             {{- end }}
             {{- if .Values.artifactStorePvc.enabled }}
             - --kubernetes-artifact-store-claim={{ .Values.artifactStorePvc.name }}
+            {{- if .Values.artifactStorePvc.gcsFuse.enabled }}
+            - --kubernetes-artifact-store-gcs-fuse
+            {{- end }}
             {{- end }}
             # Extra args
             {{- range .Values.web.extraArgs }}

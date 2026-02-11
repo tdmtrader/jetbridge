@@ -108,6 +108,12 @@ type Config struct {
 	// is used (the default).
 	ArtifactStoreClaim string
 
+	// ArtifactStoreGCSFuse indicates the artifact store PVC is backed by
+	// the GCS Fuse CSI driver on GKE. When true, pods that mount the
+	// artifact PVC get the "gke-gcsfuse/volumes": "true" annotation
+	// required by the GKE sidecar injector webhook.
+	ArtifactStoreGCSFuse bool
+
 	// ArtifactHelperImage overrides DefaultArtifactHelperImage for init
 	// containers and the artifact-helper sidecar.
 	ArtifactHelperImage string
