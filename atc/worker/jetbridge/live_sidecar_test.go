@@ -179,7 +179,10 @@ func TestLiveSidecarViaWorkerAPI(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
-	result := process.Wait(ctx)
+	result, err := process.Wait(ctx)
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
 	if result.ExitStatus != 0 {
 		t.Fatalf("expected exit 0, got %d", result.ExitStatus)
 	}
