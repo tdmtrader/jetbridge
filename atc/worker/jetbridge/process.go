@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"strconv"
+	"strings"
 	"time"
 
 	"code.cloudfoundry.org/lager/v3"
@@ -14,6 +15,7 @@ import (
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/tracing"
 	"go.opentelemetry.io/otel/attribute"
+	oteltrace "go.opentelemetry.io/otel/trace"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -158,10 +160,19 @@ func (p *Process) pollUntilDone(ctx context.Context) (runtime.ProcessResult, err
 	watcher := NewPodWatcher(p.clientset, p.config.Namespace, p.podName)
 	defer watcher.Stop()
 
+	var lastPhase corev1.PodPhase
 	for {
 		pod, err := watcher.Next(ctx)
 		if err != nil {
 			return runtime.ProcessResult{}, err
+		}
+
+		if pod.Status.Phase != lastPhase {
+			lastPhase = pod.Status.Phase
+			oteltrace.SpanFromContext(ctx).AddEvent(
+				"pod.phase."+strings.ToLower(string(pod.Status.Phase)),
+				oteltrace.WithAttributes(attribute.String("pod.phase", string(pod.Status.Phase))),
+			)
 		}
 
 		// Check for terminal failure states before checking exit code.
@@ -576,6 +587,7 @@ func (p *execProcess) waitForRunning(ctx context.Context) error {
 	defer watcher.Stop()
 
 	var lastPod *corev1.Pod
+	var lastPhase corev1.PodPhase
 	for {
 		pod, err := watcher.Next(timeoutCtx)
 		if err != nil {
@@ -590,6 +602,14 @@ func (p *execProcess) waitForRunning(ctx context.Context) error {
 			return err
 		}
 		lastPod = pod
+
+		if pod.Status.Phase != lastPhase {
+			lastPhase = pod.Status.Phase
+			oteltrace.SpanFromContext(ctx).AddEvent(
+				"pod.phase."+strings.ToLower(string(pod.Status.Phase)),
+				oteltrace.WithAttributes(attribute.String("pod.phase", string(pod.Status.Phase))),
+			)
+		}
 
 		// Check for terminal failure states BEFORE checking Running phase,
 		// because CrashLoopBackOff can occur while the pod phase is Running.

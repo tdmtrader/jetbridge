@@ -13,8 +13,11 @@ import (
 	"github.com/concourse/concourse/atc/metric"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
+	"github.com/concourse/concourse/tracing"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	apiruntime "k8s.io/apimachinery/pkg/runtime"
@@ -1069,6 +1072,216 @@ var _ = Describe("Process sidecar lifecycle", func() {
 			result, err := process.Wait(ctx)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(result.ExitStatus).To(Equal(0))
+		})
+	})
+})
+
+var _ = Describe("Pod phase transition spans", func() {
+	var (
+		fakeDBWorker  *dbfakes.FakeWorker
+		fakeClientset *fake.Clientset
+		ctx           context.Context
+		cfg           jetbridge.Config
+		delegate      runtime.BuildStepDelegate
+		spanRecorder  *tracetest.SpanRecorder
+	)
+
+	BeforeEach(func() {
+		spanRecorder = new(tracetest.SpanRecorder)
+		tp := sdktrace.NewTracerProvider(
+			sdktrace.WithSpanProcessor(spanRecorder),
+			sdktrace.WithSyncer(tracetest.NewInMemoryExporter()),
+		)
+		tracing.ConfigureTraceProvider(tp)
+
+		ctx = context.Background()
+		fakeDBWorker = new(dbfakes.FakeWorker)
+		fakeDBWorker.NameReturns("k8s-worker-1")
+		fakeClientset = fake.NewSimpleClientset()
+		cfg = jetbridge.NewConfig("test-namespace", "")
+		delegate = &noopDelegate{}
+	})
+
+	AfterEach(func() {
+		tracing.Configured = false
+	})
+
+	Context("direct mode (pollUntilDone)", func() {
+		var (
+			worker    *jetbridge.Worker
+			container runtime.Container
+		)
+
+		BeforeEach(func() {
+			worker = jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
+			setupFakeDBContainer(fakeDBWorker, "phase-span-handle")
+
+			var err error
+			container, _, err = worker.FindOrCreateContainer(
+				ctx,
+				db.NewFixedHandleContainerOwner("phase-span-handle"),
+				db.ContainerMetadata{Type: db.ContainerTypeTask},
+				runtime.ContainerSpec{
+					TeamID:   1,
+					Dir:      "/workdir",
+					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+				},
+				delegate,
+			)
+			Expect(err).ToNot(HaveOccurred())
+		})
+
+		It("emits pod.phase span events when pod transitions to Succeeded", func() {
+			process, err := container.Run(ctx, runtime.ProcessSpec{
+				Path: "/bin/true",
+			}, runtime.ProcessIO{})
+			Expect(err).ToNot(HaveOccurred())
+
+			pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "phase-span-handle", metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			pod.Status.Phase = corev1.PodSucceeded
+			pod.Status.ContainerStatuses = []corev1.ContainerStatus{
+				{
+					Name: "main",
+					State: corev1.ContainerState{
+						Terminated: &corev1.ContainerStateTerminated{ExitCode: 0},
+					},
+				},
+			}
+			_, err = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			result, err := process.Wait(ctx)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(result.ExitStatus).To(Equal(0))
+
+			ended := spanRecorder.Ended()
+			var waitSpan sdktrace.ReadOnlySpan
+			for _, s := range ended {
+				if s.Name() == "k8s.process.wait" {
+					waitSpan = s
+					break
+				}
+			}
+			Expect(waitSpan).ToNot(BeNil(), "expected k8s.process.wait span")
+
+			eventNames := []string{}
+			for _, e := range waitSpan.Events() {
+				eventNames = append(eventNames, e.Name)
+			}
+			Expect(eventNames).To(ContainElement("pod.phase.succeeded"))
+		})
+
+		It("emits pod.phase.failed span event when pod fails", func() {
+			process, err := container.Run(ctx, runtime.ProcessSpec{
+				Path: "/bin/false",
+			}, runtime.ProcessIO{})
+			Expect(err).ToNot(HaveOccurred())
+
+			pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "phase-span-handle", metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			pod.Status.Phase = corev1.PodFailed
+			pod.Status.ContainerStatuses = []corev1.ContainerStatus{
+				{
+					Name: "main",
+					State: corev1.ContainerState{
+						Terminated: &corev1.ContainerStateTerminated{ExitCode: 1},
+					},
+				},
+			}
+			_, err = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			result, err := process.Wait(ctx)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(result.ExitStatus).To(Equal(1))
+
+			ended := spanRecorder.Ended()
+			var waitSpan sdktrace.ReadOnlySpan
+			for _, s := range ended {
+				if s.Name() == "k8s.process.wait" {
+					waitSpan = s
+					break
+				}
+			}
+			Expect(waitSpan).ToNot(BeNil(), "expected k8s.process.wait span")
+
+			eventNames := []string{}
+			for _, e := range waitSpan.Events() {
+				eventNames = append(eventNames, e.Name)
+			}
+			Expect(eventNames).To(ContainElement("pod.phase.failed"))
+		})
+	})
+
+	Context("exec mode (waitForRunning)", func() {
+		var (
+			execWorker    *jetbridge.Worker
+			execContainer runtime.Container
+			fakeExecutor  *fakeExecExecutor
+		)
+
+		BeforeEach(func() {
+			fakeExecutor = &fakeExecExecutor{}
+			execWorker = jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
+			execWorker.SetExecutor(fakeExecutor)
+
+			setupFakeDBContainer(fakeDBWorker, "exec-phase-handle")
+
+			var err error
+			execContainer, _, err = execWorker.FindOrCreateContainer(
+				ctx,
+				db.NewFixedHandleContainerOwner("exec-phase-handle"),
+				db.ContainerMetadata{Type: db.ContainerTypeGet},
+				runtime.ContainerSpec{
+					TeamID:   1,
+					ImageSpec: runtime.ImageSpec{ResourceType: "git"},
+					Type:     db.ContainerTypeGet,
+				},
+				delegate,
+			)
+			Expect(err).ToNot(HaveOccurred())
+		})
+
+		It("emits pod.phase.running span event when pod reaches Running", func() {
+			process, err := execContainer.Run(ctx, runtime.ProcessSpec{
+				Path: "/opt/resource/in",
+				Args: []string{"/tmp/build/get"},
+			}, runtime.ProcessIO{
+				Stdin:  bytes.NewBufferString(`{}`),
+				Stdout: new(bytes.Buffer),
+				Stderr: new(bytes.Buffer),
+			})
+			Expect(err).ToNot(HaveOccurred())
+
+			pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "exec-phase-handle", metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			pod.Status.Phase = corev1.PodRunning
+			_, err = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			result, err := process.Wait(ctx)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(result.ExitStatus).To(Equal(0))
+
+			ended := spanRecorder.Ended()
+			var waitForRunningSpan sdktrace.ReadOnlySpan
+			for _, s := range ended {
+				if s.Name() == "k8s.exec-process.wait-for-running" {
+					waitForRunningSpan = s
+					break
+				}
+			}
+			Expect(waitForRunningSpan).ToNot(BeNil(), "expected k8s.exec-process.wait-for-running span")
+
+			eventNames := []string{}
+			for _, e := range waitForRunningSpan.Events() {
+				eventNames = append(eventNames, e.Name)
+			}
+			Expect(eventNames).To(ContainElement("pod.phase.running"))
 		})
 	})
 })
