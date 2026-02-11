@@ -161,8 +161,7 @@ func (p *Process) pollUntilDone(ctx context.Context) (runtime.ProcessResult, err
 	defer watcher.Stop()
 
 	var lastPhase corev1.PodPhase
-	completedInits := make(map[string]bool)
-	startedSidecars := make(map[string]bool)
+	tracker := newPodEventTracker()
 	for {
 		pod, err := watcher.Next(ctx)
 		if err != nil {
@@ -177,7 +176,7 @@ func (p *Process) pollUntilDone(ctx context.Context) (runtime.ProcessResult, err
 			)
 		}
 
-		emitInitAndSidecarEvents(ctx, pod, completedInits, startedSidecars)
+		tracker.emitPodLifecycleEvents(ctx, pod)
 
 		// Check for terminal failure states before checking exit code.
 		if reason, message, failed := isPodFailedFast(pod); failed {
@@ -349,15 +348,53 @@ func podExitCode(pod *corev1.Pod) (int, bool) {
 	return 0, false
 }
 
-// emitInitAndSidecarEvents emits span events for init container completion
-// and sidecar container startup. It uses the provided maps to track which
-// containers have already been reported to avoid duplicate events.
-func emitInitAndSidecarEvents(ctx context.Context, pod *corev1.Pod, completedInits, startedSidecars map[string]bool) {
+// podEventTracker tracks which pod lifecycle events have been emitted to
+// avoid duplicate span events across poll iterations.
+type podEventTracker struct {
+	completedInits  map[string]bool
+	startedSidecars map[string]bool
+	scheduled       bool
+	pullingImages   map[string]bool
+}
+
+func newPodEventTracker() *podEventTracker {
+	return &podEventTracker{
+		completedInits:  make(map[string]bool),
+		startedSidecars: make(map[string]bool),
+		pullingImages:   make(map[string]bool),
+	}
+}
+
+// emitPodLifecycleEvents emits span events for init container completion,
+// sidecar startup, pod scheduling, and image pull states.
+func (t *podEventTracker) emitPodLifecycleEvents(ctx context.Context, pod *corev1.Pod) {
 	span := oteltrace.SpanFromContext(ctx)
 
+	// Emit pod.scheduled when PodScheduled condition becomes True.
+	if !t.scheduled {
+		for _, cond := range pod.Status.Conditions {
+			if cond.Type == corev1.PodScheduled && cond.Status == corev1.ConditionTrue {
+				t.scheduled = true
+				span.AddEvent("pod.scheduled")
+				break
+			}
+		}
+	}
+
+	// Emit image.pulling when a container enters ContainerCreating.
+	for _, cs := range pod.Status.ContainerStatuses {
+		if cs.State.Waiting != nil && cs.State.Waiting.Reason == "ContainerCreating" && !t.pullingImages[cs.Name] {
+			t.pullingImages[cs.Name] = true
+			span.AddEvent("image.pulling",
+				oteltrace.WithAttributes(attribute.String("container.name", cs.Name)),
+			)
+		}
+	}
+
+	// Emit init container completion/failure events.
 	for _, cs := range pod.Status.InitContainerStatuses {
-		if cs.State.Terminated != nil && !completedInits[cs.Name] {
-			completedInits[cs.Name] = true
+		if cs.State.Terminated != nil && !t.completedInits[cs.Name] {
+			t.completedInits[cs.Name] = true
 			if cs.State.Terminated.ExitCode == 0 {
 				span.AddEvent("init.container.completed",
 					oteltrace.WithAttributes(attribute.String("container.name", cs.Name)),
@@ -374,12 +411,13 @@ func emitInitAndSidecarEvents(ctx context.Context, pod *corev1.Pod, completedIni
 		}
 	}
 
+	// Emit sidecar.started for non-main containers that reach Running.
 	for _, cs := range pod.Status.ContainerStatuses {
 		if cs.Name == mainContainerName {
 			continue
 		}
-		if cs.State.Running != nil && !startedSidecars[cs.Name] {
-			startedSidecars[cs.Name] = true
+		if cs.State.Running != nil && !t.startedSidecars[cs.Name] {
+			t.startedSidecars[cs.Name] = true
 			span.AddEvent("sidecar.started",
 				oteltrace.WithAttributes(attribute.String("container.name", cs.Name)),
 			)
@@ -630,8 +668,7 @@ func (p *execProcess) waitForRunning(ctx context.Context) error {
 
 	var lastPod *corev1.Pod
 	var lastPhase corev1.PodPhase
-	completedInits := make(map[string]bool)
-	startedSidecars := make(map[string]bool)
+	tracker := newPodEventTracker()
 	for {
 		pod, err := watcher.Next(timeoutCtx)
 		if err != nil {
@@ -655,7 +692,7 @@ func (p *execProcess) waitForRunning(ctx context.Context) error {
 			)
 		}
 
-		emitInitAndSidecarEvents(ctx, pod, completedInits, startedSidecars)
+		tracker.emitPodLifecycleEvents(ctx, pod)
 
 		// Check for terminal failure states BEFORE checking Running phase,
 		// because CrashLoopBackOff can occur while the pod phase is Running.
