@@ -874,6 +874,55 @@ var _ = Describe("GetStep", func() {
 			})
 		})
 
+		Context("and the resource type is a custom type with produces: registry-image", func() {
+			BeforeEach(func() {
+				getPlan.Type = "s3-image"
+				getPlan.Produces = "registry-image"
+				getPlan.Source = atc.Source{
+					"repository": "my-org/custom-image",
+				}
+				getPlan.Version = &atc.Version{
+					"digest": "sha256:custom123",
+				}
+				getPlan.Params = atc.Params{}
+				getPlan.TypeImage = atc.TypeImage{
+					BaseType: "registry-image",
+				}
+			})
+
+			It("short-circuits the get step", func() {
+				Expect(stepErr).ToNot(HaveOccurred())
+				Expect(stepOk).To(BeTrue())
+				Expect(fakePool.FindOrSelectWorkerCallCount()).To(Equal(0))
+			})
+
+			It("registers the image ref URL", func() {
+				imageRef, found := artifactRepository.ImageRefFor(build.ArtifactName("some-name"))
+				Expect(found).To(BeTrue())
+				Expect(imageRef).To(Equal("docker:///my-org/custom-image@sha256:custom123"))
+			})
+		})
+
+		Context("and the resource type is a custom type without produces", func() {
+			BeforeEach(func() {
+				getPlan.Type = "s3-image"
+				getPlan.Source = atc.Source{
+					"bucket": "my-bucket",
+				}
+				getPlan.Version = &atc.Version{
+					"version": "1.0",
+				}
+				getPlan.Params = atc.Params{}
+				getPlan.TypeImage = atc.TypeImage{
+					BaseType: "registry-image",
+				}
+			})
+
+			It("still runs the full get step", func() {
+				Expect(fakePool.FindOrSelectWorkerCallCount()).To(Equal(1))
+			})
+		})
+
 		Context("and the resource type is NOT registry-image", func() {
 			BeforeEach(func() {
 				getPlan.Type = "git"

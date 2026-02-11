@@ -53,11 +53,11 @@ Add a `fetch_artifact` parameter to the get step that forces the full physical d
 
 Allow custom resource types to declare that they produce registry-compatible images via a `produces: registry-image` field. When set, resources of that type are eligible for the get step short-circuit.
 
-- [ ] Write tests for custom type `produces` declaration
+- [x] Write tests for custom type `produces` declaration
   - Test: custom type with `produces: registry-image` enables short-circuit for its resources
   - Test: custom type without `produces` runs the full get
   - Test: `produces` field is parsed from pipeline config and stored in DB
-- [ ] Implement `produces` field on ResourceType
+- [x] Implement `produces` field on ResourceType
   - Add `Produces` field to `atc.ResourceType`
   - Parse from pipeline YAML config
   - Thread through DB resource type storage

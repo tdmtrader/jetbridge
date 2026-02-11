@@ -199,6 +199,7 @@ type ResourceType struct {
 	CheckEvery *CheckEvery `json:"check_every,omitempty"`
 	Tags       Tags        `json:"tags,omitempty"`
 	Params     Params      `json:"params,omitempty"`
+	Produces   string      `json:"produces,omitempty"`
 }
 
 type Prototype struct {
