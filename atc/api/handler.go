@@ -8,6 +8,7 @@ import (
 	"code.cloudfoundry.org/clock"
 	"code.cloudfoundry.org/lager/v3"
 	"github.com/concourse/concourse/atc"
+	"github.com/concourse/concourse/atc/api/agentfeedback"
 	"github.com/concourse/concourse/atc/api/artifactserver"
 	"github.com/concourse/concourse/atc/api/buildserver"
 	"github.com/concourse/concourse/atc/api/ccserver"
@@ -110,6 +111,7 @@ func NewHandler(
 	artifactServer := artifactserver.NewServer(logger, workerPool)
 	usersServer := usersserver.NewServer(logger, dbUserFactory)
 	wallServer := wallserver.NewServer(dbWall, logger)
+	feedbackServer := agentfeedback.NewHandler(agentfeedback.NewMemoryStore())
 	if oidcIssuer == "" {
 		oidcIssuer = externalURL
 	}
@@ -230,6 +232,11 @@ func NewHandler(
 
 		atc.GetOpenIDConfiguration: http.HandlerFunc(idTokenServer.OpenIDConfiguration),
 		atc.GetSigningKeys:         http.HandlerFunc(idTokenServer.SigningKeys),
+
+		atc.SubmitAgentFeedback:     http.HandlerFunc(feedbackServer.SubmitFeedback),
+		atc.GetAgentFeedback:        http.HandlerFunc(feedbackServer.GetFeedback),
+		atc.GetAgentFeedbackSummary: http.HandlerFunc(feedbackServer.GetSummary),
+		atc.ClassifyAgentVerdict:    http.HandlerFunc(feedbackServer.ClassifyVerdict),
 	}
 
 	return rata.NewRouter(atc.Routes, wrapper.Wrap(handlers))
