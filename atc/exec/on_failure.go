@@ -2,6 +2,8 @@ package exec
 
 import (
 	"context"
+
+	"github.com/concourse/concourse/tracing"
 )
 
 // OnFailureStep will run one step, and then a second step if the first step
@@ -32,7 +34,9 @@ func (o OnFailureStep) Run(ctx context.Context, state RunState) (bool, error) {
 	}
 
 	if !ok {
-		_, err := o.hook.Run(ctx, state)
+		hookCtx, span := tracing.StartSpan(ctx, "hook.on_failure", nil)
+		_, err := o.hook.Run(hookCtx, state)
+		tracing.End(span, err)
 		if err != nil {
 			return false, err
 		}

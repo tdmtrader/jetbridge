@@ -7,6 +7,9 @@ import (
 	"github.com/concourse/concourse/atc/exec"
 	"github.com/concourse/concourse/atc/exec/build"
 	"github.com/concourse/concourse/atc/exec/execfakes"
+	"github.com/concourse/concourse/tracing"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
@@ -142,6 +145,29 @@ var _ = Describe("On Failure Step", func() {
 
 		It("succeeds", func() {
 			Expect(stepOk).To(BeTrue())
+		})
+	})
+
+	Context("when tracing is enabled", func() {
+		var spanRecorder *tracetest.SpanRecorder
+
+		BeforeEach(func() {
+			spanRecorder = new(tracetest.SpanRecorder)
+			tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spanRecorder))
+			tracing.ConfigureTraceProvider(tp)
+
+			step.RunReturns(false, nil)
+			hook.RunReturns(true, nil)
+		})
+
+		AfterEach(func() {
+			tracing.Configured = false
+		})
+
+		It("creates a span for the on_failure hook", func() {
+			ended := spanRecorder.Ended()
+			Expect(ended).To(HaveLen(1))
+			Expect(ended[0].Name()).To(Equal("hook.on_failure"))
 		})
 	})
 })

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/concourse/concourse/tracing"
 	"github.com/hashicorp/go-multierror"
 )
 
@@ -39,7 +40,9 @@ func (o OnErrorStep) Run(ctx context.Context, state RunState) (bool, error) {
 
 	// for all errors that aren't caused by an Abort or the retry_error's Retriable step, run the hook
 	if !(errors.Is(stepRunErr, context.Canceled) || errors.Is(stepRunErr, Retriable{})) {
-		_, err := o.hook.Run(context.Background(), state)
+		hookCtx, span := tracing.StartSpan(context.Background(), "hook.on_error", nil)
+		_, err := o.hook.Run(hookCtx, state)
+		tracing.End(span, err)
 		if err != nil {
 			// This causes to return both the errors as expected.
 			errs = multierror.Append(errs, err)
