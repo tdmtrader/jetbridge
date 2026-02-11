@@ -1,0 +1,19 @@
+Phase 1 Verification Report: Get Step Short-Circuit for registry-image
+
+Tests: 7/7 passing
+- registry-image get step skips container creation
+- stores GetResult in run state
+- emits Initializing and Finished events
+- registers artifact in repository (nil volume)
+- dynamic version source (passed constraint) works correctly
+- non-registry-image types still run full get
+- nativeImageFetch=false still runs full get
+
+Files changed:
+- atc/exec/get_step.go (short-circuit logic)
+- atc/exec/get_step_test.go (7 specs)
+- atc/engine/get_delegate.go (NativeImageFetch method)
+- atc/engine/delegate_factory.go (flag threading)
+- atc/exec/execfakes/fake_get_delegate.go (regenerated)
+
+Approved: 2026-02-11
