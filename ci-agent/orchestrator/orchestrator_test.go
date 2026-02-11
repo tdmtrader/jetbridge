@@ -217,4 +217,115 @@ func TestSafe(t *testing.T) {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(result.Summary).To(ContainSubstring("error"))
 	})
+
+	It("deducts for duplicate findings on same file/line", func() {
+		adapter := &fakeAdapter{
+			findings: []runner.AgentFinding{
+				{
+					Title: "duplicate issue A", File: "dup.go", Line: 5,
+					SeverityHint: schema.SeverityHigh, Category: schema.CategoryCorrectness,
+					TestCode: `package testrepo
+
+import "testing"
+
+func TestDupA(t *testing.T) { t.Fatal("proven A") }
+`,
+					TestFile: "dup_a_test.go", TestName: "TestDupA",
+				},
+				{
+					Title: "duplicate issue B", File: "dup.go", Line: 5,
+					SeverityHint: schema.SeverityHigh, Category: schema.CategoryCorrectness,
+					TestCode: `package testrepo
+
+import "testing"
+
+func TestDupB(t *testing.T) { t.Fatal("proven B") }
+`,
+					TestFile: "dup_b_test.go", TestName: "TestDupB",
+				},
+			},
+		}
+
+		result, err := orchestrator.Run(ctx, orchestrator.Options{
+			RepoDir:   repoDir,
+			OutputDir: outputDir,
+			Adapter:   adapter,
+			Threshold: 7.0,
+		})
+		Expect(err).NotTo(HaveOccurred())
+		// Both findings are separate tests, both proven, both deducted.
+		Expect(result.ProvenIssues).To(HaveLen(2))
+		Expect(result.Score.Value).To(Equal(7.0)) // 10 - 1.5 - 1.5
+		Expect(result.Score.Deductions).To(HaveLen(2))
+	})
+
+	It("skips finding with missing TestCode", func() {
+		adapter := &fakeAdapter{
+			findings: []runner.AgentFinding{
+				{
+					Title:        "no test code",
+					File:         "missing.go",
+					Line:         1,
+					SeverityHint: schema.SeverityMedium,
+					Category:     schema.CategoryCorrectness,
+					TestCode:     "",     // empty TestCode
+					TestFile:     "",     // empty TestFile
+					TestName:     "",
+				},
+				{
+					Title: "has test code", File: "ok.go", Line: 1,
+					SeverityHint: schema.SeverityMedium, Category: schema.CategoryCorrectness,
+					TestCode: `package testrepo
+
+import "testing"
+
+func TestOK(t *testing.T) { t.Fatal("proven") }
+`,
+					TestFile: "ok_test.go", TestName: "TestOK",
+				},
+			},
+		}
+
+		result, err := orchestrator.Run(ctx, orchestrator.Options{
+			RepoDir:   repoDir,
+			OutputDir: outputDir,
+			Adapter:   adapter,
+			Threshold: 7.0,
+		})
+		Expect(err).NotTo(HaveOccurred())
+		// Finding without TestCode becomes an observation, not a proven issue.
+		Expect(result.ProvenIssues).To(HaveLen(1))
+		Expect(result.Observations).To(HaveLen(1))
+		Expect(result.Observations[0].Title).To(Equal("no test code"))
+	})
+
+	It("handles finding for non-existent source file", func() {
+		// The orchestrator trusts the adapter; the test determines truth.
+		adapter := &fakeAdapter{
+			findings: []runner.AgentFinding{
+				{
+					Title: "issue in ghost file", File: "ghost.go", Line: 10,
+					SeverityHint: schema.SeverityMedium, Category: schema.CategoryCorrectness,
+					TestCode: `package testrepo
+
+import "testing"
+
+func TestGhost(t *testing.T) { t.Fatal("proven even without source") }
+`,
+					TestFile: "ghost_test.go", TestName: "TestGhost",
+				},
+			},
+		}
+
+		result, err := orchestrator.Run(ctx, orchestrator.Options{
+			RepoDir:   repoDir,
+			OutputDir: outputDir,
+			Adapter:   adapter,
+			Threshold: 7.0,
+		})
+		Expect(err).NotTo(HaveOccurred())
+		// The test is written and executed; test result determines the outcome.
+		// Since the test calls t.Fatal, it should fail → proven issue.
+		Expect(result.ProvenIssues).To(HaveLen(1))
+	})
 })
