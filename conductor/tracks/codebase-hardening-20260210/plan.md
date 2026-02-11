@@ -91,20 +91,20 @@
 
 > Cross-system integration scenarios have no test coverage.
 
-- [ ] **Task 13: Write QA mode end-to-end integration test**
-  - Create `ci-agent/integration/qa_test.go`
-  - Test full pipeline: spec parse -> requirement mapping -> gap generation -> browser plan -> QA scoring
-  - Use in-memory fakes for agent adapter
+- [x] c7f24bf **Task 13: Write QA mode end-to-end integration test**
+  - Created `ci-agent/integration/qa_test.go`
+  - Tests full pipeline: spec parse → mapping → gap gen → browser plan → scoring
+  - 3 test cases: partial coverage, gap generation, full coverage
 
-- [ ] **Task 14: Write Review -> Fix -> QA three-stage integration test**
-  - Create `ci-agent/integration/review_fix_qa_test.go`
-  - Test: review produces findings -> fix resolves issues -> QA validates fixes
-  - Verify output artifacts chain correctly between stages
+- [x] c7f24bf **Task 14: Write Review → Fix → QA three-stage integration test**
+  - Created `ci-agent/integration/review_fix_qa_test.go`
+  - Tests: review finds divide-by-zero → fix resolves it → QA validates the fix
+  - Verifies three-stage artifact chain (review.json → fix-report.json → qa.json)
 
-- [ ] **Task 15: Write ci-agent output -> Feedback API integration test**
-  - Create `ci-agent/integration/feedback_api_test.go`
-  - Test: orchestrator writes results.json -> parse results -> submit to feedback handler -> verify storage
-  - Validate the feedback loop data flow
+- [x] c7f24bf **Task 15: Write ci-agent output → Feedback API integration test**
+  - Created `atc/api/agentfeedback/feedback_pipeline_test.go`
+  - Tests: simulate review output → submit feedback → verify storage and summary
+  - Validates the full feedback loop data flow including classify endpoint
 
 ## Phase 8: Remove Stale and Deprecated Code
 
