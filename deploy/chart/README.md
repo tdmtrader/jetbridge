@@ -186,27 +186,27 @@ Use these for custom CA bundles, credential files, or any other operator-specifi
 | `postgresql.socket` | `""` | UNIX domain socket path (alternative to host/port) |
 | `postgresql.persistence.size` | `8Gi` | Database storage size (bundled mode only) |
 
-#### External PostgreSQL Example
+#### External PostgreSQL Example (Cloud SQL)
 
 ```yaml
 postgresql:
   enabled: false
-  host: mydb.rds.amazonaws.com
+  host: 10.0.0.3            # Cloud SQL private IP or proxy address
   database: concourse
   user: concourse
   existingSecret: concourse-db-credentials
   passwordSecretKey: password
-  sslmode: verify-full
-  caCert: /etc/ssl/rds/rds-ca.pem
+  sslmode: verify-ca
+  caCert: /etc/ssl/cloudsql/server-ca.pem
 
 web:
   extraVolumes:
-    - name: rds-ca
+    - name: cloudsql-certs
       secret:
-        secretName: rds-ca-cert
+        secretName: cloudsql-instance-credentials
   extraVolumeMounts:
-    - name: rds-ca
-      mountPath: /etc/ssl/rds
+    - name: cloudsql-certs
+      mountPath: /etc/ssl/cloudsql
       readOnly: true
 ```
 
