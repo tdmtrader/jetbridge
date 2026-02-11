@@ -79,6 +79,10 @@ type GetDelegate interface {
 
 	ResourceCacheUser() db.ResourceCacheUser
 	ContainerOwner(planId atc.PlanID) db.ContainerOwner
+
+	// NativeImageFetch returns true when the K8s runtime is active and
+	// image-type resources can skip physical download in favour of kubelet pull.
+	NativeImageFetch() bool
 }
 
 // GetStep will fetch a version of a resource on a worker that supports the
@@ -179,6 +183,37 @@ func (step *GetStep) run(ctx context.Context, state RunState, delegate GetDelega
 	version, err := NewVersionSourceFromPlan(&step.plan).Version(state)
 	if err != nil {
 		return false, err
+	}
+
+	// When running on K8s runtime and the resource type is registry-image,
+	// skip the physical image download. The version (digest) is already
+	// resolved; kubelet will pull the image natively.
+	if delegate.NativeImageFetch() && step.plan.Type == "registry-image" {
+		versionResult := resource.VersionResult{
+			Version:  version,
+			Metadata: nil,
+		}
+
+		state.StoreResult(step.planID, GetResult{
+			Name: step.plan.Name,
+		})
+
+		state.ArtifactRepository().RegisterArtifact(
+			build.ArtifactName(step.plan.Name),
+			nil,
+			false,
+		)
+
+		if step.plan.Resource != "" {
+			delegate.UpdateResourceVersion(logger, step.plan.Resource, versionResult)
+		}
+
+		state.AddLocalVar(step.plan.Name, versionResult.Metadata.AsMap(), false)
+
+		trace.SpanFromContext(ctx).AddEvent("step.finished")
+		delegate.Finished(logger, ExitStatus(0), versionResult)
+
+		return true, nil
 	}
 
 	containerSpec := runtime.ContainerSpec{

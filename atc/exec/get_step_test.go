@@ -781,6 +781,109 @@ var _ = Describe("GetStep", func() {
 			Expect(fakeDelegate.UpdateResourceVersionCallCount()).To(Equal(0))
 		})
 	})
+
+	Context("when nativeImageFetch is enabled", func() {
+		BeforeEach(func() {
+			fakeDelegate.NativeImageFetchReturns(true)
+		})
+
+		Context("and the resource type is registry-image", func() {
+			BeforeEach(func() {
+				getPlan.Type = "registry-image"
+				getPlan.Source = atc.Source{
+					"repository": "my-org/my-image",
+					"tag":        "latest",
+				}
+				getPlan.Version = &atc.Version{
+					"digest": "sha256:abc123def456",
+				}
+				getPlan.Params = atc.Params{}
+				getPlan.TypeImage = atc.TypeImage{
+					BaseType: "registry-image",
+				}
+			})
+
+			It("does not select a worker or create a container", func() {
+				Expect(stepErr).ToNot(HaveOccurred())
+				Expect(stepOk).To(BeTrue())
+				Expect(fakePool.FindOrSelectWorkerCallCount()).To(Equal(0))
+			})
+
+			It("stores a GetResult in the run state", func() {
+				var result exec.GetResult
+				found := runState.Result(planID, &result)
+				Expect(found).To(BeTrue())
+				Expect(result.Name).To(Equal("some-name"))
+			})
+
+			It("emits Initializing and Finished events", func() {
+				Expect(fakeDelegate.InitializingCallCount()).To(Equal(1))
+				Expect(fakeDelegate.FinishedCallCount()).To(Equal(1))
+				_, exitStatus, versionResult := fakeDelegate.FinishedArgsForCall(0)
+				Expect(exitStatus).To(Equal(exec.ExitStatus(0)))
+				Expect(versionResult.Version).To(Equal(atc.Version{"digest": "sha256:abc123def456"}))
+			})
+
+			It("registers an artifact in the repository", func() {
+				_, _, found := artifactRepository.ArtifactFor(build.ArtifactName("some-name"))
+				Expect(found).To(BeTrue())
+			})
+
+			Context("when using a dynamic version source (passed constraint)", func() {
+				versionPlanID := atc.PlanID("check-plan-id")
+
+				BeforeEach(func() {
+					getPlan.Version = nil
+					getPlan.VersionFrom = &versionPlanID
+					runState.StoreResult(versionPlanID, atc.Version{
+						"digest": "sha256:resolved-from-check",
+					})
+				})
+
+				It("uses the dynamically resolved version", func() {
+					Expect(stepErr).ToNot(HaveOccurred())
+					Expect(stepOk).To(BeTrue())
+
+					_, _, versionResult := fakeDelegate.FinishedArgsForCall(0)
+					Expect(versionResult.Version).To(Equal(atc.Version{"digest": "sha256:resolved-from-check"}))
+				})
+			})
+		})
+
+		Context("and the resource type is NOT registry-image", func() {
+			BeforeEach(func() {
+				getPlan.Type = "git"
+				getPlan.TypeImage = atc.TypeImage{
+					BaseType: "git",
+				}
+			})
+
+			It("still runs the full get step", func() {
+				Expect(fakePool.FindOrSelectWorkerCallCount()).To(Equal(1))
+			})
+		})
+	})
+
+	Context("when nativeImageFetch is disabled", func() {
+		BeforeEach(func() {
+			fakeDelegate.NativeImageFetchReturns(false)
+			getPlan.Type = "registry-image"
+			getPlan.Source = atc.Source{
+				"repository": "my-org/my-image",
+			}
+			getPlan.Version = &atc.Version{
+				"digest": "sha256:abc123def456",
+			}
+			getPlan.Params = atc.Params{}
+			getPlan.TypeImage = atc.TypeImage{
+				BaseType: "registry-image",
+			}
+		})
+
+		It("still runs the full get step", func() {
+			Expect(fakePool.FindOrSelectWorkerCallCount()).To(Equal(1))
+		})
+	})
 })
 
 func lockOnAttempt(attemptNumber int) *lockfakes.FakeLockFactory {

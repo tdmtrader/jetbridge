@@ -109,3 +109,8 @@
 *Archive: [./conductor/archive/k8s_native_image_fetch_20260211/](./conductor/archive/k8s_native_image_fetch_20260211/)*
 
 ---
+
+## [ ] Track: Skip Image Resource Download on K8s — Skip get step for image resources on K8s, pass only digest/SHA
+*Link: [./conductor/tracks/skip-image-get-k8s/](./conductor/tracks/skip-image-get-k8s/)*
+
+---
