@@ -1422,4 +1422,157 @@ var _ = Describe("Pod phase transition spans", func() {
 			Expect(eventNames).To(ContainElement("sidecar.started"))
 		})
 	})
+
+	Context("PVC bind and image pull events", func() {
+		var (
+			execWorker    *jetbridge.Worker
+			execContainer runtime.Container
+			fakeExecutor  *fakeExecExecutor
+		)
+
+		BeforeEach(func() {
+			fakeExecutor = &fakeExecExecutor{}
+			execWorker = jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
+			execWorker.SetExecutor(fakeExecutor)
+
+			setupFakeDBContainer(fakeDBWorker, "pvc-image-handle")
+
+			var err error
+			execContainer, _, err = execWorker.FindOrCreateContainer(
+				ctx,
+				db.NewFixedHandleContainerOwner("pvc-image-handle"),
+				db.ContainerMetadata{Type: db.ContainerTypeTask},
+				runtime.ContainerSpec{
+					TeamID:   1,
+					Dir:      "/workdir",
+					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+					Type:     db.ContainerTypeTask,
+				},
+				delegate,
+			)
+			Expect(err).ToNot(HaveOccurred())
+		})
+
+		It("emits pod.scheduled span event when PodScheduled condition becomes True", func() {
+			process, err := execContainer.Run(ctx, runtime.ProcessSpec{
+				Path: "/bin/sh",
+				Args: []string{"-c", "echo hello"},
+			}, runtime.ProcessIO{
+				Stdin:  bytes.NewBufferString(`{}`),
+				Stdout: new(bytes.Buffer),
+				Stderr: new(bytes.Buffer),
+			})
+			Expect(err).ToNot(HaveOccurred())
+
+			pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "pvc-image-handle", metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			// Simulate pod being scheduled (PVC bound, node assigned).
+			pod.Status.Phase = corev1.PodPending
+			pod.Status.Conditions = []corev1.PodCondition{
+				{
+					Type:   corev1.PodScheduled,
+					Status: corev1.ConditionTrue,
+					Reason: "Scheduled",
+				},
+			}
+			_, err = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			// Now transition to Running.
+			pod.Status.Phase = corev1.PodRunning
+			_, err = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			result, err := process.Wait(ctx)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(result.ExitStatus).To(Equal(0))
+
+			ended := spanRecorder.Ended()
+			var waitSpan sdktrace.ReadOnlySpan
+			for _, s := range ended {
+				if s.Name() == "k8s.exec-process.wait-for-running" {
+					waitSpan = s
+					break
+				}
+			}
+			Expect(waitSpan).ToNot(BeNil(), "expected k8s.exec-process.wait-for-running span")
+
+			eventNames := []string{}
+			for _, e := range waitSpan.Events() {
+				eventNames = append(eventNames, e.Name)
+			}
+			Expect(eventNames).To(ContainElement("pod.scheduled"))
+		})
+
+		It("emits image.pulling span event when container is in ContainerCreating", func() {
+			process, err := execContainer.Run(ctx, runtime.ProcessSpec{
+				Path: "/bin/sh",
+				Args: []string{"-c", "echo hello"},
+			}, runtime.ProcessIO{
+				Stdin:  bytes.NewBufferString(`{}`),
+				Stdout: new(bytes.Buffer),
+				Stderr: new(bytes.Buffer),
+			})
+			Expect(err).ToNot(HaveOccurred())
+
+			pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "pvc-image-handle", metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			// Set pod to Pending with ContainerCreating BEFORE Wait is called.
+			// The PodWatcher's initial Get() will see this state.
+			pod.Status.Phase = corev1.PodPending
+			pod.Status.ContainerStatuses = []corev1.ContainerStatus{
+				{
+					Name: "main",
+					State: corev1.ContainerState{
+						Waiting: &corev1.ContainerStateWaiting{
+							Reason:  "ContainerCreating",
+							Message: "pulling image \"busybox\"",
+						},
+					},
+				},
+			}
+			_, err = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			// Transition to Running after a short delay so the PodWatcher
+			// observes the ContainerCreating state first via its initial Get().
+			go func() {
+				defer GinkgoRecover()
+				time.Sleep(50 * time.Millisecond)
+				pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "pvc-image-handle", metav1.GetOptions{})
+				Expect(err).ToNot(HaveOccurred())
+				pod.Status.Phase = corev1.PodRunning
+				pod.Status.ContainerStatuses = []corev1.ContainerStatus{
+					{
+						Name:  "main",
+						State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}},
+					},
+				}
+				_, err = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+				Expect(err).ToNot(HaveOccurred())
+			}()
+
+			result, err := process.Wait(ctx)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(result.ExitStatus).To(Equal(0))
+
+			ended := spanRecorder.Ended()
+			var waitSpan sdktrace.ReadOnlySpan
+			for _, s := range ended {
+				if s.Name() == "k8s.exec-process.wait-for-running" {
+					waitSpan = s
+					break
+				}
+			}
+			Expect(waitSpan).ToNot(BeNil(), "expected k8s.exec-process.wait-for-running span")
+
+			eventNames := []string{}
+			for _, e := range waitSpan.Events() {
+				eventNames = append(eventNames, e.Name)
+			}
+			Expect(eventNames).To(ContainElement("image.pulling"))
+		})
+	})
 })
