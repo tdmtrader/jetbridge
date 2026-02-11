@@ -8,7 +8,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"runtime"
 	"time"
 
 	conc "github.com/concourse/concourse"
@@ -526,18 +525,9 @@ func loadCACertPool(caCert string) (cert *x509.CertPool, err error) {
 		return nil, nil
 	}
 
-	// TODO: remove else block once we switch to go 1.8
-	// x509.SystemCertPool is not supported in go 1.7 on Windows
-	// see: https://github.com/golang/go/issues/16736
-	var pool *x509.CertPool
-	if runtime.GOOS != "windows" {
-		var err error
-		pool, err = x509.SystemCertPool()
-		if err != nil {
-			return nil, err
-		}
-	} else {
-		pool = x509.NewCertPool()
+	pool, err := x509.SystemCertPool()
+	if err != nil {
+		return nil, err
 	}
 
 	ok := pool.AppendCertsFromPEM([]byte(caCert))

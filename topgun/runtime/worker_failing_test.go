@@ -26,7 +26,7 @@ var _ = Describe("Worker failing", func() {
 			By("running the build on the doomed worker")
 			Fly.Run("trigger-job", "-w", "-j", "worker-failing-test/use-doomed-worker")
 
-			By("making baggageclaim become unresponsive on the doomed worker")
+			By("making the worker process unresponsive on the doomed worker")
 			Bosh("ssh", "other_worker/0", "-c", "sudo pkill -F /var/vcap/sys/run/worker/worker.pid -STOP")
 
 			By("discovering a new version to force the existing volume to be no longer desired")

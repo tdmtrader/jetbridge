@@ -444,8 +444,6 @@ func validateVarSources(c atc.Config) ([]atc.ConfigWarning, error) {
 		}
 
 		if factory, exists := creds.ManagerFactories()[varSource.Type]; exists {
-			// TODO: this check should eventually be removed once all credential managers
-			// are supported in pipeline. - @evanchaoli
 			switch varSource.Type {
 			case "vault", "dummy", "ssm", "secretsmanager", "idtoken":
 			default:
