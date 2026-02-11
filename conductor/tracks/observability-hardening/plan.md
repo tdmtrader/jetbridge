@@ -31,12 +31,12 @@
 
 **Goal:** Full trace tree from build → steps → hooks.
 
-- [ ] Write tests for per-step child spans (task, get, put, check)
-- [ ] Enrich existing step spans in `atc/exec/{task,get,put,check}_step.go` with state-transition span events
-- [ ] Write tests for hook execution spans
-- [ ] Add spans for on_success, on_failure, on_error, ensure hooks in `atc/exec/`
-- [ ] Write tests for step duration OTel histogram instrument
-- [ ] Emit step duration as OTel histogram alongside existing metric events
+- [x] Write tests for per-step child spans (task, get, put, check) `3c9c972a2`
+- [x] Enrich existing step spans in `atc/exec/{task,get,put,check}_step.go` with state-transition span events `495792850`
+- [x] Write tests for hook execution spans `bc2ae2258`
+- [x] Add spans for on_success, on_failure, on_error, ensure hooks in `atc/exec/` `bc2ae2258`
+- [x] Write tests for step duration OTel histogram instrument `5db2cc8f8`
+- [x] Emit step duration as OTel histogram alongside existing metric events `6728c5964`
 
 **Checkpoint:** A pipeline build produces a trace tree: build → get → task → put with hook spans; step duration histogram appears in OTLP metrics.
 
