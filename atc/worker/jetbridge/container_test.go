@@ -114,6 +114,78 @@ var _ = Describe("Container", func() {
 		})
 	})
 
+	Describe("Run with Dir volume", func() {
+		It("creates a Pod with an emptyDir volume for spec.Dir when Dir is set", func() {
+			setupFakeDBContainer(fakeDBWorker, "dir-vol-handle")
+
+			container, _, err := worker.FindOrCreateContainer(
+				ctx,
+				db.NewFixedHandleContainerOwner("dir-vol-handle"),
+				db.ContainerMetadata{Type: db.ContainerTypeTask},
+				runtime.ContainerSpec{
+					TeamID:    1,
+					Dir:       "/tmp/build/workdir",
+					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+				},
+				delegate,
+			)
+			Expect(err).ToNot(HaveOccurred())
+
+			_, err = container.Run(ctx, runtime.ProcessSpec{
+				Path: "/bin/sh",
+				Args: []string{"-c", "echo hello"},
+			}, runtime.ProcessIO{})
+			Expect(err).ToNot(HaveOccurred())
+
+			pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(pods.Items).To(HaveLen(1))
+
+			pod := pods.Items[0]
+
+			By("adding an emptyDir volume for the Dir path")
+			Expect(pod.Spec.Volumes).To(HaveLen(1))
+			Expect(pod.Spec.Volumes[0].EmptyDir).ToNot(BeNil())
+
+			By("mounting the Dir volume at the correct path")
+			mainContainer := pod.Spec.Containers[0]
+			Expect(mainContainer.VolumeMounts).To(HaveLen(1))
+			Expect(mainContainer.VolumeMounts[0].MountPath).To(Equal("/tmp/build/workdir"))
+		})
+
+		It("does not create a Dir volume when spec.Dir is empty", func() {
+			setupFakeDBContainer(fakeDBWorker, "no-dir-handle")
+
+			container, _, err := worker.FindOrCreateContainer(
+				ctx,
+				db.NewFixedHandleContainerOwner("no-dir-handle"),
+				db.ContainerMetadata{Type: db.ContainerTypeTask},
+				runtime.ContainerSpec{
+					TeamID:    1,
+					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+				},
+				delegate,
+			)
+			Expect(err).ToNot(HaveOccurred())
+
+			_, err = container.Run(ctx, runtime.ProcessSpec{
+				Path: "/bin/sh",
+				Args: []string{"-c", "echo hello"},
+			}, runtime.ProcessIO{})
+			Expect(err).ToNot(HaveOccurred())
+
+			pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(pods.Items).To(HaveLen(1))
+
+			pod := pods.Items[0]
+			Expect(pod.Spec.Volumes).To(BeEmpty())
+
+			mainContainer := pod.Spec.Containers[0]
+			Expect(mainContainer.VolumeMounts).To(BeEmpty())
+		})
+	})
+
 	Describe("Run with input volumes", func() {
 		var container runtime.Container
 
@@ -156,21 +228,22 @@ var _ = Describe("Container", func() {
 
 			pod := pods.Items[0]
 
-			By("adding emptyDir volumes for each input")
-			Expect(pod.Spec.Volumes).To(HaveLen(2))
+			By("adding emptyDir volumes for Dir and each input")
+			Expect(pod.Spec.Volumes).To(HaveLen(3))
 			for _, vol := range pod.Spec.Volumes {
 				Expect(vol.EmptyDir).ToNot(BeNil())
 			}
 
 			By("mounting volumes at the correct paths in the container")
 			mainContainer := pod.Spec.Containers[0]
-			Expect(mainContainer.VolumeMounts).To(HaveLen(2))
+			Expect(mainContainer.VolumeMounts).To(HaveLen(3))
 
 			mountPaths := []string{}
 			for _, vm := range mainContainer.VolumeMounts {
 				mountPaths = append(mountPaths, vm.MountPath)
 			}
 			Expect(mountPaths).To(ContainElements(
+				"/tmp/build/workdir",
 				"/tmp/build/workdir/input-a",
 				"/tmp/build/workdir/input-b",
 			))
@@ -213,18 +286,19 @@ var _ = Describe("Container", func() {
 			Expect(err).ToNot(HaveOccurred())
 			pod := pods.Items[0]
 
-			By("adding emptyDir volumes for each output")
-			Expect(pod.Spec.Volumes).To(HaveLen(2))
+			By("adding emptyDir volumes for Dir and each output")
+			Expect(pod.Spec.Volumes).To(HaveLen(3))
 
 			By("mounting volumes at the correct paths in the container")
 			mainContainer := pod.Spec.Containers[0]
-			Expect(mainContainer.VolumeMounts).To(HaveLen(2))
+			Expect(mainContainer.VolumeMounts).To(HaveLen(3))
 
 			mountPaths := []string{}
 			for _, vm := range mainContainer.VolumeMounts {
 				mountPaths = append(mountPaths, vm.MountPath)
 			}
 			Expect(mountPaths).To(ContainElements(
+				"/tmp/build/workdir",
 				"/tmp/build/workdir/result",
 				"/tmp/build/workdir/metadata",
 			))
@@ -264,14 +338,23 @@ var _ = Describe("Container", func() {
 			Expect(err).ToNot(HaveOccurred())
 			pod := pods.Items[0]
 
-			By("adding an emptyDir volume for the cache")
-			Expect(pod.Spec.Volumes).To(HaveLen(1))
-			Expect(pod.Spec.Volumes[0].EmptyDir).ToNot(BeNil())
+			By("adding emptyDir volumes for Dir and the cache")
+			Expect(pod.Spec.Volumes).To(HaveLen(2))
+			for _, vol := range pod.Spec.Volumes {
+				Expect(vol.EmptyDir).ToNot(BeNil())
+			}
 
-			By("mounting at the cache path")
+			By("mounting at the Dir and cache paths")
 			mainContainer := pod.Spec.Containers[0]
-			Expect(mainContainer.VolumeMounts).To(HaveLen(1))
-			Expect(mainContainer.VolumeMounts[0].MountPath).To(Equal("/tmp/build/workdir/.cache"))
+			Expect(mainContainer.VolumeMounts).To(HaveLen(2))
+			mountPaths := []string{}
+			for _, vm := range mainContainer.VolumeMounts {
+				mountPaths = append(mountPaths, vm.MountPath)
+			}
+			Expect(mountPaths).To(ContainElements(
+				"/tmp/build/workdir",
+				"/tmp/build/workdir/.cache",
+			))
 		})
 	})
 
@@ -450,7 +533,7 @@ var _ = Describe("Container", func() {
 						emptyDirCount++
 					}
 				}
-				Expect(emptyDirCount).To(Equal(2), "inputs and outputs should still use emptyDir")
+				Expect(emptyDirCount).To(Equal(3), "dir, inputs, and outputs should still use emptyDir")
 			})
 		})
 

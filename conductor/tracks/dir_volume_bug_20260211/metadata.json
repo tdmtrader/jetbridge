@@ -1,0 +1,8 @@
+{
+  "track_id": "dir_volume_bug_20260211",
+  "type": "bugfix",
+  "status": "planned",
+  "created_at": "2026-02-11T15:12:27.680Z",
+  "updated_at": "2026-02-11T15:12:27.680Z",
+  "description": "Fix missing K8s emptyDir volume for spec.Dir in buildVolumeMounts"
+}
