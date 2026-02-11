@@ -388,5 +388,102 @@ var _ = Describe("TaskDelegate", func() {
 				}))
 			})
 		})
+
+		Context("integration: end-to-end custom resource type on K8s", func() {
+			It("resolves a custom registry-image resource type with digest via FetchImagePlan", func() {
+				// Simulate the real pipeline flow:
+				// 1. FetchImagePlan generates check+get plans (no static version)
+				// 2. Check runs and stores resolved version with digest
+				// 3. Short-circuit returns ImageURL with digest, no physical get
+
+				customImage := atc.ImageResource{
+					Name:   "image",
+					Type:   "registry-image",
+					Source: atc.Source{"repository": "my-org/custom-resource", "tag": "2.0"},
+				}
+
+				// FetchImagePlan is what the real pipeline planner uses
+				getPlan, checkPlan := atc.FetchImagePlan(planID, customImage, atc.ResourceTypes{}, atc.Tags{"k8s"}, false, nil)
+				Expect(checkPlan).ToNot(BeNil(), "check plan should be generated when no version is specified")
+				Expect(getPlan.Get.Version).To(BeNil(), "get plan should not have a static version")
+				Expect(getPlan.Get.VersionFrom).To(Equal(&checkPlan.ID), "get plan should reference check plan for version")
+
+				// Set up a stepper where the check step stores a resolved version with digest
+				var integrationRunPlans []atc.Plan
+				integrationStepper := func(p atc.Plan) exec.Step {
+					integrationRunPlans = append(integrationRunPlans, p)
+					step := new(execfakes.FakeStep)
+					step.RunStub = func(_ context.Context, state exec.RunState) (bool, error) {
+						if p.Check != nil {
+							state.StoreResult(p.ID, atc.Version{"digest": "sha256:e2d4a1f5c8b9"})
+						}
+						return true, nil
+					}
+					return step
+				}
+
+				integrationState := exec.NewRunState(integrationStepper, nil)
+				nativeDelegate := NewTaskDelegate(fakeBuild, planID, integrationState, fakeClock, fakePolicyChecker, fakeWorkerFactory, fakeLockFactory, true)
+
+				imgSpec, fetchErr := nativeDelegate.FetchImage(
+					context.TODO(), customImage, atc.ResourceTypes{}, false, atc.Tags{"k8s"}, false,
+				)
+				Expect(fetchErr).ToNot(HaveOccurred())
+
+				By("running only the check plan, skipping the get")
+				Expect(integrationRunPlans).To(HaveLen(1))
+				Expect(integrationRunPlans[0].Check).ToNot(BeNil())
+
+				By("returning an ImageURL pinned to the checked digest")
+				Expect(imgSpec.ImageURL).To(Equal("docker:///my-org/custom-resource@sha256:e2d4a1f5c8b9"))
+				Expect(imgSpec.ImageArtifact).To(BeNil())
+
+				By("saving both ImageCheck and ImageGet events for build log continuity")
+				Expect(fakeBuild.SaveEventCallCount()).To(BeNumerically(">=", 2))
+				checkEvent := fakeBuild.SaveEventArgsForCall(fakeBuild.SaveEventCallCount() - 2)
+				Expect(checkEvent.EventType()).To(Equal(atc.EventType("image-check")))
+				getEvent := fakeBuild.SaveEventArgsForCall(fakeBuild.SaveEventCallCount() - 1)
+				Expect(getEvent.EventType()).To(Equal(atc.EventType("image-get")))
+			})
+
+			It("resolves a custom resource type with pinned version (no check plan)", func() {
+				// When a version is pinned, FetchImagePlan generates no check plan
+				pinnedImage := atc.ImageResource{
+					Name:    "image",
+					Type:    "registry-image",
+					Source:  atc.Source{"repository": "my-org/pinned-resource"},
+					Version: atc.Version{"digest": "sha256:pinned999"},
+				}
+
+				getPlan, checkPlan := atc.FetchImagePlan(planID, pinnedImage, atc.ResourceTypes{}, nil, false, nil)
+				Expect(checkPlan).To(BeNil(), "no check plan when version is pinned")
+				Expect(getPlan.Get.Version).ToNot(BeNil())
+
+				var integrationRunPlans []atc.Plan
+				integrationStepper := func(p atc.Plan) exec.Step {
+					integrationRunPlans = append(integrationRunPlans, p)
+					step := new(execfakes.FakeStep)
+					step.RunStub = func(_ context.Context, state exec.RunState) (bool, error) {
+						return true, nil
+					}
+					return step
+				}
+
+				integrationState := exec.NewRunState(integrationStepper, nil)
+				nativeDelegate := NewTaskDelegate(fakeBuild, planID, integrationState, fakeClock, fakePolicyChecker, fakeWorkerFactory, fakeLockFactory, true)
+
+				imgSpec, fetchErr := nativeDelegate.FetchImage(
+					context.TODO(), pinnedImage, atc.ResourceTypes{}, false, nil, false,
+				)
+				Expect(fetchErr).ToNot(HaveOccurred())
+
+				By("not running any plans (no check, no get)")
+				Expect(integrationRunPlans).To(BeEmpty())
+
+				By("returning an ImageURL with the pinned digest")
+				Expect(imgSpec.ImageURL).To(Equal("docker:///my-org/pinned-resource@sha256:pinned999"))
+				Expect(imgSpec.ImageArtifact).To(BeNil())
+			})
+		})
 	})
 })

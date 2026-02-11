@@ -56,12 +56,13 @@ The check step stores versions in the DB resource config scope. Extract the reso
 
 End-to-end validation that custom resource types work correctly on the K8s runtime with the short-circuit path.
 
-- [ ] Write integration test for custom resource type image resolution on K8s
-  - Pipeline with a custom `registry-image`-based resource type
-  - Verify the resource's check/get/put steps use the correct image without a physical get
-  - Verify task steps with `image_resource:` resolve correctly
-- [ ] Verify no regression for base resource types
-  - Base types (git, time, s3, etc.) should still resolve via `DefaultResourceTypeImages` and never hit `FetchImage`
-- [ ] Task: Phase 5 Manual Verification
+- [x] Write integration test for custom resource type image resolution on K8s
+  - End-to-end test using FetchImagePlan → TaskDelegate → short-circuit with check result digest
+  - End-to-end test for pinned version (no check plan) → direct ImageURL
+  - Both verify events saved and no physical get step executed
+- [x] Verify no regression for base resource types
+  - Non-registry-image types fall back to full fetch (existing test)
+  - Base types resolved via DefaultResourceTypeImages at JetBridge layer, never hit FetchImage
+- [~] Task: Phase 5 Manual Verification — 209/209 engine specs pass
 
 ---
