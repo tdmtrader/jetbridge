@@ -144,13 +144,29 @@ artifactStorePvc:
   enabled: true
   # -- PVC name
   name: concourse-artifacts
-  # -- Storage size
+  # -- Storage size (nominal for GCS Fuse; actual for block storage)
   size: 10Gi
-  # -- Storage class (empty = cluster default; use "gcs-fuse" for GKE)
+  # -- Storage class (empty = cluster default)
   storageClass: ""
-  # -- Access modes (use ReadWriteMany for multi-node)
+  # -- Access modes (use ReadWriteMany for multi-node or GCS Fuse)
   accessModes:
     - ReadWriteOnce
+
+  # -- GCS Fuse CSI driver configuration (GKE only).
+  # When enabled, the chart creates a PV + PVC backed by a GCS bucket
+  # using the gcsfuse.csi.storage.gke.io CSI driver (DaemonSet pattern).
+  gcsFuse:
+    # -- Enable GCS Fuse-backed artifact store
+    enabled: false
+    # -- GCS bucket name
+    bucketName: ""
+    # -- Restrict mount to a subdirectory within the bucket.
+    # Example: "concourse/artifacts" mounts only that prefix.
+    onlyDir: ""
+    # -- Additional mount options passed to the GCS Fuse driver.
+    # "implicit-dirs" is recommended for Concourse's tar-based artifact layout.
+    mountOptions:
+      - implicit-dirs
 
 # -- PostgreSQL configuration
 postgresql:
