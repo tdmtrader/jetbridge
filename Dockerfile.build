@@ -43,6 +43,8 @@ RUN yarn run build
 # ---------------------------------------------------------------------------
 FROM golang:1.25-bookworm AS backend
 
+RUN apt-get update && apt-get install -y --no-install-recommends zip && rm -rf /var/lib/apt/lists/*
+
 ARG CONCOURSE_VERSION=0.0.0-dev
 ARG TARGETARCH
 
@@ -67,6 +69,25 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} \
       -o /concourse \
       ./cmd/concourse
 
+# Cross-compile the fly CLI for common platforms. The web server serves
+# these archives at /api/v1/cli so users can download fly directly.
+RUN mkdir -p /fly-assets && \
+    for pair in linux-amd64 linux-arm64 darwin-amd64 darwin-arm64 windows-amd64; do \
+      os="${pair%%-*}"; arch="${pair##*-}"; \
+      echo "=== Building fly for ${os}/${arch} ==="; \
+      ext=""; if [ "$os" = "windows" ]; then ext=".exe"; fi; \
+      CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
+        go build \
+          -ldflags "-s -w -X github.com/concourse/concourse.Version=${CONCOURSE_VERSION}" \
+          -o "/tmp/fly${ext}" \
+          ./fly; \
+      if [ "$os" = "windows" ]; then \
+        cd /tmp && zip "/fly-assets/fly-${os}-${arch}.zip" "fly${ext}" && rm "fly${ext}" && cd /src; \
+      else \
+        tar -C /tmp -czf "/fly-assets/fly-${os}-${arch}.tgz" "fly${ext}" && rm "/tmp/fly${ext}"; \
+      fi; \
+    done
+
 # ---------------------------------------------------------------------------
 # Stage 3: Minimal runtime image
 # ---------------------------------------------------------------------------
@@ -79,6 +100,7 @@ RUN apt-get update && \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=backend /concourse /usr/local/concourse/bin/concourse
+COPY --from=backend /fly-assets/ /usr/local/concourse/fly-assets/
 
 ENV PATH="/usr/local/concourse/bin:${PATH}"
 
