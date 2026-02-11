@@ -44,12 +44,12 @@
 
 **Goal:** Detailed instrumentation of pod execution in JetBridge runtime.
 
-- [ ] Write tests for pod phase transition spans
-- [ ] Add spans in `atc/worker/jetbridge/` for pod phase transitions (Pending → Running → Succeeded/Failed)
-- [ ] Write tests for init container and sidecar lifecycle spans
-- [ ] Instrument init container completion and sidecar startup in container/process handling
-- [ ] Write tests for PVC bind and image pull spans
-- [ ] Add spans for PVC binding status and image pull events with duration attributes
+- [x] Write tests for pod phase transition spans `1d9d4ab25`
+- [x] Add spans in `atc/worker/jetbridge/` for pod phase transitions (Pending → Running → Succeeded/Failed) `1d9d4ab25`
+- [x] Write tests for init container and sidecar lifecycle spans `b4b48397a`
+- [x] Instrument init container completion and sidecar startup in container/process handling `b4b48397a`
+- [x] Write tests for PVC bind and image pull spans `023ee8505`
+- [x] Add spans for PVC binding status and image pull events with duration attributes `023ee8505`
 
 **Checkpoint:** `go test ./atc/worker/jetbridge/...` passes; pod lifecycle trace visible as child spans under container.run.
 
