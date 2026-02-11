@@ -1,0 +1,20 @@
+Phases 2-4 Verification Report
+
+Phase 2: Task Image Resolution from Short-Circuited Get
+- RegisterImageRef/ImageRefFor added to artifact repository (4 tests)
+- Get step stores docker:///repo@sha256:digest URL
+- Task step reads ImageURL when artifact is nil
+- Backward compat: volume-backed artifacts still use ImageArtifact
+
+Phase 3: Forced Download via fetch_artifact Param
+- fetch_artifact: true bypasses short-circuit (2 tests)
+- Param stripped before reaching resource get script
+
+Phase 4: Custom Resource Type produces Declaration
+- Produces field on atc.ResourceType (auto-persisted in DB)
+- Threaded to GetPlan during plan construction
+- Get step checks Type or Produces for registry-image (4 tests)
+
+All suites passing: exec (507), build (16), engine, builds
+
+Approved: 2026-02-11
