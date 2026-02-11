@@ -284,14 +284,9 @@ jobs:
               command: ["sh", "-c"]
               args:
               - |
-                echo "Patching imagePullPolicy to Always..."
+                echo "Setting imagePullPolicy=Always and restarting..."
                 kubectl patch deployment concourse-web -n cicd -p '{"spec":{"template":{"spec":{"containers":[{"name":"concourse-web","imagePullPolicy":"Always"}]}}}}'
-                echo "Performing rollout restart..."
-                kubectl rollout restart deployment/concourse-web -n cicd
                 echo "Waiting for rollout to complete..."
-                kubectl rollout status deployment/concourse-web -n cicd --timeout=180s
-                echo "Restoring imagePullPolicy to IfNotPresent..."
-                kubectl patch deployment concourse-web -n cicd -p '{"spec":{"template":{"spec":{"containers":[{"name":"concourse-web","imagePullPolicy":"IfNotPresent"}]}}}}'
                 kubectl rollout status deployment/concourse-web -n cicd --timeout=180s
                 echo "Rollout complete, cleaning up..."
                 kubectl delete pod -n cicd -l app=web-restarter --grace-period=0 --force 2>/dev/null || true
