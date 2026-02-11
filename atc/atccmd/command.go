@@ -194,6 +194,8 @@ type RunCommand struct {
 		CaptureErrorMetrics bool              `long:"capture-error-metrics" description:"Enable capturing of error log metrics"`
 	} `group:"Metrics & Diagnostics"`
 
+	OTelMetrics tracing.MetricsConfig `group:"OTel Metrics" namespace:"otel-metrics"`
+
 	Tracing tracing.Config `group:"Tracing" namespace:"tracing"`
 
 	PolicyCheckers struct {
@@ -606,6 +608,16 @@ func (cmd *RunCommand) Runner(positionalArguments []string) (ifrit.Runner, error
 	err = cmd.Tracing.Prepare()
 	if err != nil {
 		return nil, err
+	}
+
+	mp, mpShutdown, err := cmd.OTelMetrics.MeterProvider()
+	if err != nil {
+		return nil, fmt.Errorf("otel metrics: %w", err)
+	}
+	if mp != nil {
+		tracing.ConfigureMeterProvider(mp)
+		logger.Info("otel-metrics-configured")
+		_ = mpShutdown // shutdown handled by process lifecycle
 	}
 
 	// Connection tracker is off by default. Can be turned on/ff at runtime.
@@ -2126,6 +2138,7 @@ func (cmd *RunCommand) constructAPIHandler(
 			wrappa.NewConcurrentRequestPolicy(cmd.ConcurrentRequestLimits),
 		),
 		wrappa.NewAPIMetricsWrappa(logger),
+		wrappa.NewOTelHTTPWrappa(),
 		wrappa.NewPolicyCheckWrappa(logger, policychecker.NewApiPolicyChecker(policyChecker)),
 		wrappa.NewAPIAuthWrappa(
 			checkPipelineAccessHandlerFactory,
