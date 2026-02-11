@@ -359,9 +359,9 @@ var _ = Describe("TaskDelegate", func() {
 				Expect(fetchErr).ToNot(HaveOccurred())
 			})
 
-			It("returns an ImageSpec with ImageURL and no ImageArtifact", func() {
-				Expect(imageSpec.ImageURL).To(Equal("docker:///my-repo:latest"))
-				Expect(imageSpec.ImageArtifact).To(BeNil())
+			It("runs both plans and returns ImageSpec with artifact and URL", func() {
+				Expect(imageSpec.ImageArtifact).ToNot(BeNil())
+				Expect(imageSpec.ImageURL).ToNot(BeEmpty())
 			})
 
 			It("still saves ImageCheck event for build log continuity", func() {
@@ -394,7 +394,8 @@ var _ = Describe("TaskDelegate", func() {
 				// Simulate the real pipeline flow:
 				// 1. FetchImagePlan generates check+get plans (no static version)
 				// 2. Check runs and stores resolved version with digest
-				// 3. Short-circuit returns ImageURL with digest, no physical get
+				// 3. Get step runs (in production, short-circuits in get_step.go)
+				// 4. FetchImage returns ImageSpec with ResourceCache for config chain
 
 				customImage := atc.ImageResource{
 					Name:   "image",
@@ -408,7 +409,10 @@ var _ = Describe("TaskDelegate", func() {
 				Expect(getPlan.Get.Version).To(BeNil(), "get plan should not have a static version")
 				Expect(getPlan.Get.VersionFrom).To(Equal(&checkPlan.ID), "get plan should reference check plan for version")
 
-				// Set up a stepper where the check step stores a resolved version with digest
+				// Set up a stepper that simulates check storing version AND
+				// get step storing a GetResult with ResourceCache (as the real
+				// get_step short-circuit does on K8s).
+				fakeCache := new(dbfakes.FakeResourceCache)
 				var integrationRunPlans []atc.Plan
 				integrationStepper := func(p atc.Plan) exec.Step {
 					integrationRunPlans = append(integrationRunPlans, p)
@@ -416,6 +420,14 @@ var _ = Describe("TaskDelegate", func() {
 					step.RunStub = func(_ context.Context, state exec.RunState) (bool, error) {
 						if p.Check != nil {
 							state.StoreResult(p.ID, atc.Version{"digest": "sha256:e2d4a1f5c8b9"})
+						}
+						if p.Get != nil {
+							fakeCache.VersionReturns(atc.Version{"digest": "sha256:e2d4a1f5c8b9"})
+							state.ArtifactRepository().RegisterArtifact("image", nil, false)
+							state.StoreResult(p.ID, exec.GetResult{
+								Name:          "image",
+								ResourceCache: fakeCache,
+							})
 						}
 						return true, nil
 					}
@@ -430,13 +442,13 @@ var _ = Describe("TaskDelegate", func() {
 				)
 				Expect(fetchErr).ToNot(HaveOccurred())
 
-				By("running only the check plan, skipping the get")
-				Expect(integrationRunPlans).To(HaveLen(1))
+				By("running both check and get plans")
+				Expect(integrationRunPlans).To(HaveLen(2))
 				Expect(integrationRunPlans[0].Check).ToNot(BeNil())
+				Expect(integrationRunPlans[1].Get).ToNot(BeNil())
 
 				By("returning an ImageURL pinned to the checked digest")
 				Expect(imgSpec.ImageURL).To(Equal("docker:///my-org/custom-resource@sha256:e2d4a1f5c8b9"))
-				Expect(imgSpec.ImageArtifact).To(BeNil())
 
 				By("saving both ImageCheck and ImageGet events for build log continuity")
 				Expect(fakeBuild.SaveEventCallCount()).To(BeNumerically(">=", 2))
@@ -447,7 +459,8 @@ var _ = Describe("TaskDelegate", func() {
 			})
 
 			It("resolves a custom resource type with pinned version (no check plan)", func() {
-				// When a version is pinned, FetchImagePlan generates no check plan
+				// When a version is pinned, FetchImagePlan generates no check plan.
+				// The get step still runs (and short-circuits in production).
 				pinnedImage := atc.ImageResource{
 					Name:    "image",
 					Type:    "registry-image",
@@ -459,11 +472,20 @@ var _ = Describe("TaskDelegate", func() {
 				Expect(checkPlan).To(BeNil(), "no check plan when version is pinned")
 				Expect(getPlan.Get.Version).ToNot(BeNil())
 
+				fakeCache := new(dbfakes.FakeResourceCache)
 				var integrationRunPlans []atc.Plan
 				integrationStepper := func(p atc.Plan) exec.Step {
 					integrationRunPlans = append(integrationRunPlans, p)
 					step := new(execfakes.FakeStep)
 					step.RunStub = func(_ context.Context, state exec.RunState) (bool, error) {
+						if p.Get != nil {
+							fakeCache.VersionReturns(atc.Version{"digest": "sha256:pinned999"})
+							state.ArtifactRepository().RegisterArtifact("image", nil, false)
+							state.StoreResult(p.ID, exec.GetResult{
+								Name:          "image",
+								ResourceCache: fakeCache,
+							})
+						}
 						return true, nil
 					}
 					return step
@@ -477,12 +499,12 @@ var _ = Describe("TaskDelegate", func() {
 				)
 				Expect(fetchErr).ToNot(HaveOccurred())
 
-				By("not running any plans (no check, no get)")
-				Expect(integrationRunPlans).To(BeEmpty())
+				By("running the get plan (no check needed)")
+				Expect(integrationRunPlans).To(HaveLen(1))
+				Expect(integrationRunPlans[0].Get).ToNot(BeNil())
 
 				By("returning an ImageURL with the pinned digest")
 				Expect(imgSpec.ImageURL).To(Equal("docker:///my-org/pinned-resource@sha256:pinned999"))
-				Expect(imgSpec.ImageArtifact).To(BeNil())
 			})
 		})
 	})

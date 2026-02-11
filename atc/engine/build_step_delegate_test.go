@@ -404,159 +404,17 @@ var _ = Describe("BuildStepDelegate", func() {
 		})
 
 		Context("when nativeImageFetch is enabled", func() {
-			var registryGetPlan *atc.Plan
-			var registryCheckPlan *atc.Plan
-
-			BeforeEach(func() {
-				registryCheckPlan = &atc.Plan{
-					ID: planID + "/image-check",
-					Check: &atc.CheckPlan{
-						Name:   "image",
-						Type:   "registry-image",
-						Source: atc.Source{"repository": "my-org/my-resource", "tag": "latest"},
-						Tags:   atc.Tags{"some", "tags"},
-					},
-				}
-
-				registryGetPlan = &atc.Plan{
-					ID: planID + "/image-get",
-					Get: &atc.GetPlan{
-						Name:    "image",
-						Type:    "registry-image",
-						Source:  atc.Source{"repository": "my-org/my-resource", "tag": "latest"},
-						Version: &atc.Version{"digest": "sha256:abc123"},
-						Params:  atc.Params{"format": "rootfs"},
-						Tags:    atc.Tags{"some", "tags"},
-					},
-				}
-			})
-
-			It("skips the get step and returns only an ImageURL for registry-image type", func() {
+			It("still runs both check and get plans (short-circuit happens in get_step)", func() {
 				runPlans = nil
 				nativeDelegate := engine.NewBuildStepDelegate(fakeBuild, planID, parentRunState, fakeClock, fakePolicyChecker, false, true)
-				imgSpec, resCache, err := nativeDelegate.FetchImage(context.TODO(), *registryGetPlan, registryCheckPlan, false)
-				Expect(err).ToNot(HaveOccurred())
-
-				By("only running the check plan, not the get plan")
-				Expect(runPlans).To(Equal([]atc.Plan{*registryCheckPlan}))
-
-				By("returning an ImageURL without an artifact")
-				Expect(imgSpec.ImageArtifact).To(BeNil())
-				Expect(imgSpec.ImageURL).To(Equal("docker:///my-org/my-resource@sha256:abc123"))
-				Expect(imgSpec.Privileged).To(BeFalse())
-
-				By("returning nil resource cache since no get was performed")
-				Expect(resCache).To(BeNil())
-			})
-
-			It("uses source tag when no digest is available in version", func() {
-				runPlans = nil
-				registryGetPlan.Get.Version = &atc.Version{}
-				nativeDelegate := engine.NewBuildStepDelegate(fakeBuild, planID, parentRunState, fakeClock, fakePolicyChecker, false, true)
-				imgSpec, _, err := nativeDelegate.FetchImage(context.TODO(), *registryGetPlan, registryCheckPlan, false)
-				Expect(err).ToNot(HaveOccurred())
-				Expect(imgSpec.ImageURL).To(Equal("docker:///my-org/my-resource:latest"))
-			})
-
-			It("falls back to full fetch for non-registry-image types", func() {
-				runPlans = nil
-				nativeDelegate := engine.NewBuildStepDelegate(fakeBuild, planID, parentRunState, fakeClock, fakePolicyChecker, false, true)
-				imgSpec, _, err := nativeDelegate.FetchImage(context.TODO(), *expectedGetPlan, expectedCheckPlan, false)
+				_, resCache, err := nativeDelegate.FetchImage(context.TODO(), *expectedGetPlan, expectedCheckPlan, false)
 				Expect(err).ToNot(HaveOccurred())
 
 				By("running both check and get plans")
 				Expect(runPlans).To(Equal([]atc.Plan{*expectedCheckPlan, *expectedGetPlan}))
 
-				By("returning an artifact (full fetch path)")
-				Expect(imgSpec.ImageArtifact).ToNot(BeNil())
-			})
-
-			It("preserves privileged flag", func() {
-				runPlans = nil
-				nativeDelegate := engine.NewBuildStepDelegate(fakeBuild, planID, parentRunState, fakeClock, fakePolicyChecker, false, true)
-				imgSpec, _, err := nativeDelegate.FetchImage(context.TODO(), *registryGetPlan, registryCheckPlan, true)
-				Expect(err).ToNot(HaveOccurred())
-				Expect(imgSpec.Privileged).To(BeTrue())
-			})
-
-			It("still runs check plan when present", func() {
-				runPlans = nil
-				nativeDelegate := engine.NewBuildStepDelegate(fakeBuild, planID, parentRunState, fakeClock, fakePolicyChecker, false, true)
-				_, _, err := nativeDelegate.FetchImage(context.TODO(), *registryGetPlan, registryCheckPlan, false)
-				Expect(err).ToNot(HaveOccurred())
-				Expect(runPlans).To(HaveLen(1))
-				Expect(runPlans[0]).To(Equal(*registryCheckPlan))
-			})
-
-			It("works without a check plan", func() {
-				runPlans = nil
-				nativeDelegate := engine.NewBuildStepDelegate(fakeBuild, planID, parentRunState, fakeClock, fakePolicyChecker, false, true)
-				imgSpec, _, err := nativeDelegate.FetchImage(context.TODO(), *registryGetPlan, nil, false)
-				Expect(err).ToNot(HaveOccurred())
-				Expect(runPlans).To(BeEmpty())
-				Expect(imgSpec.ImageURL).To(Equal("docker:///my-org/my-resource@sha256:abc123"))
-			})
-
-			It("uses the check result digest when VersionFrom is set (no static version)", func() {
-				runPlans = nil
-
-				// Simulate real flow: no static version, VersionFrom points to check plan
-				registryGetPlan.Get.Version = nil
-				registryGetPlan.Get.VersionFrom = &registryCheckPlan.ID
-
-				// Create a stepper where the check step stores a resolved version with digest
-				checkStepper := func(p atc.Plan) exec.Step {
-					runPlans = append(runPlans, p)
-					step := new(execfakes.FakeStep)
-					step.RunStub = func(_ context.Context, state exec.RunState) (bool, error) {
-						if p.Check != nil {
-							state.StoreResult(p.ID, atc.Version{"digest": "sha256:resolved-from-check"})
-						}
-						return true, nil
-					}
-					return step
-				}
-
-				checkRunState := exec.NewRunState(checkStepper, nil)
-				nativeDelegate := engine.NewBuildStepDelegate(fakeBuild, planID, checkRunState, fakeClock, fakePolicyChecker, false, true)
-				imgSpec, _, err := nativeDelegate.FetchImage(context.TODO(), *registryGetPlan, registryCheckPlan, false)
-				Expect(err).ToNot(HaveOccurred())
-
-				By("only running the check plan, not the get plan")
-				Expect(runPlans).To(HaveLen(1))
-				Expect(runPlans[0]).To(Equal(*registryCheckPlan))
-
-				By("using the digest from the check result")
-				Expect(imgSpec.ImageURL).To(Equal("docker:///my-org/my-resource@sha256:resolved-from-check"))
-			})
-
-			It("falls back to source tag when check result has no digest", func() {
-				runPlans = nil
-
-				// Simulate real flow: no static version, VersionFrom points to check plan
-				registryGetPlan.Get.Version = nil
-				registryGetPlan.Get.VersionFrom = &registryCheckPlan.ID
-
-				// Create a stepper where the check step stores a version without digest
-				checkStepper := func(p atc.Plan) exec.Step {
-					runPlans = append(runPlans, p)
-					step := new(execfakes.FakeStep)
-					step.RunStub = func(_ context.Context, state exec.RunState) (bool, error) {
-						if p.Check != nil {
-							state.StoreResult(p.ID, atc.Version{"ref": "some-ref"})
-						}
-						return true, nil
-					}
-					return step
-				}
-
-				checkRunState := exec.NewRunState(checkStepper, nil)
-				nativeDelegate := engine.NewBuildStepDelegate(fakeBuild, planID, checkRunState, fakeClock, fakePolicyChecker, false, true)
-				imgSpec, _, err := nativeDelegate.FetchImage(context.TODO(), *registryGetPlan, registryCheckPlan, false)
-				Expect(err).ToNot(HaveOccurred())
-
-				By("falling back to the source tag")
-				Expect(imgSpec.ImageURL).To(Equal("docker:///my-org/my-resource:latest"))
+				By("returning a resource cache from the get step")
+				Expect(resCache).ToNot(BeNil())
 			})
 		})
 	})
