@@ -430,7 +430,7 @@ func (repository *containerRepository) DestroyDirtyInMemoryBuildContainers() (in
 		Set("state", atc.ContainerStateDestroying).
 		Set("in_memory_build_id", nil).
 		Set("in_memory_build_create_time", nil).
-		Where(sq.Expr("((now() - in_memory_build_create_time) > '24 HOURS'::INTERVAL)")).
+		Where(sq.Expr("((now() - in_memory_build_create_time) > '5 MINUTES'::INTERVAL)")).
 		RunWith(repository.conn).
 		Exec()
 
