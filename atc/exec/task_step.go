@@ -18,6 +18,7 @@ import (
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/worker"
 	"github.com/concourse/concourse/tracing"
+	oteltrace "go.opentelemetry.io/otel/trace"
 	"github.com/concourse/concourse/vars"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -223,6 +224,7 @@ func (step *TaskStep) run(ctx context.Context, state RunState, delegate TaskDele
 		config.Limits.Memory = step.defaultLimits.Memory
 	}
 
+	oteltrace.SpanFromContext(ctx).AddEvent("step.initializing")
 	delegate.Initializing(logger)
 
 	imageSpec, err := step.imageSpec(ctx, logger, state, delegate, config)
@@ -292,6 +294,7 @@ func (step *TaskStep) run(ctx context.Context, state RunState, delegate TaskDele
 		return false, err
 	}
 
+	oteltrace.SpanFromContext(ctx).AddEvent("step.starting")
 	delegate.Starting(logger)
 	process, err := attachOrRun(
 		ctx,
@@ -333,6 +336,7 @@ func (step *TaskStep) run(ctx context.Context, state RunState, delegate TaskDele
 
 	if runErr != nil {
 		if errors.Is(runErr, context.DeadlineExceeded) {
+			oteltrace.SpanFromContext(ctx).AddEvent("step.errored")
 			delegate.Errored(logger, TimeoutLogMessage)
 			return false, nil
 		}
@@ -340,6 +344,7 @@ func (step *TaskStep) run(ctx context.Context, state RunState, delegate TaskDele
 		return false, runErr
 	}
 
+	oteltrace.SpanFromContext(ctx).AddEvent("step.finished")
 	delegate.Finished(logger, ExitStatus(result.ExitStatus))
 	return result.ExitStatus == 0, nil
 }

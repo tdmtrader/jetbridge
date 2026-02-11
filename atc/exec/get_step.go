@@ -138,6 +138,7 @@ func (step *GetStep) run(ctx context.Context, state RunState, delegate GetDelega
 		"step-name": step.plan.Name,
 	})
 
+	trace.SpanFromContext(ctx).AddEvent("step.initializing")
 	delegate.Initializing(logger)
 
 	source, err := creds.NewSource(state, step.plan.Source).Evaluate()
@@ -209,6 +210,7 @@ func (step *GetStep) run(ctx context.Context, state RunState, delegate GetDelega
 
 	containerOwner := delegate.ContainerOwner(step.planID)
 
+	trace.SpanFromContext(ctx).AddEvent("step.starting")
 	delegate.Starting(logger)
 	volume, fromCache, versionResult, processResult, err := step.retrieveFromCacheOrPerformGet(
 		ctx,
@@ -226,6 +228,7 @@ func (step *GetStep) run(ctx context.Context, state RunState, delegate GetDelega
 	)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
+			trace.SpanFromContext(ctx).AddEvent("step.errored")
 			delegate.Errored(logger, TimeoutLogMessage)
 			return false, nil
 		}
@@ -255,6 +258,7 @@ func (step *GetStep) run(ctx context.Context, state RunState, delegate GetDelega
 		succeeded = true
 	}
 
+	trace.SpanFromContext(ctx).AddEvent("step.finished")
 	delegate.Finished(
 		logger,
 		ExitStatus(processResult.ExitStatus),
