@@ -135,8 +135,7 @@ spec:
                   key: {{ .Values.postgresql.passwordSecretKey }}
             {{- end }}
             {{- range .Values.web.env }}
-            - name: {{ .name }}
-              value: {{ .value | quote }}
+            - {{- toYaml . | nindent 14 }}
             {{- end }}
           ports:
             - containerPort: 8080
