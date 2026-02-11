@@ -366,10 +366,12 @@ var _ = Describe("TaskStep", func() {
 		})
 
 		Context("when tracing is enabled", func() {
+			var spanRecorder *tracetest.SpanRecorder
+
 			BeforeEach(func() {
 				defaultTaskTimeout = 0
-				exporter := tracetest.NewInMemoryExporter()
-				tp := trace.NewTracerProvider(trace.WithSyncer(exporter))
+				spanRecorder = new(tracetest.SpanRecorder)
+				tp := trace.NewTracerProvider(trace.WithSpanProcessor(spanRecorder), trace.WithSyncer(tracetest.NewInMemoryExporter()))
 				tracing.ConfigureTraceProvider(tp)
 
 				spanCtx, buildSpan := tracing.StartSpan(ctx, "build", nil)
@@ -389,6 +391,18 @@ var _ = Describe("TaskStep", func() {
 
 			It("populates the TRACEPARENT env var", func() {
 				Expect(chosenContainer.Spec.Env).To(ContainElement(MatchRegexp(`TRACEPARENT=.+`)))
+			})
+
+			It("adds state-transition span events", func() {
+				ended := spanRecorder.Ended()
+				Expect(ended).To(HaveLen(1))
+				eventNames := []string{}
+				for _, e := range ended[0].Events() {
+					eventNames = append(eventNames, e.Name)
+				}
+				Expect(eventNames).To(ContainElement("step.initializing"))
+				Expect(eventNames).To(ContainElement("step.starting"))
+				Expect(eventNames).To(ContainElement("step.finished"))
 			})
 		})
 
