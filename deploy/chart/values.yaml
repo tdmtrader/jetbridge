@@ -57,7 +57,15 @@ web:
     # -- Key in the Secret for the TLS private key
     keyFilename: tls.key
 
-  # -- Additional environment variables for the web container
+  # -- Additional environment variables for the web container.
+  # Supports both literal values and valueFrom (secretKeyRef, configMapKeyRef):
+  #   - name: CONCOURSE_GITHUB_CLIENT_ID
+  #     value: "my-client-id"
+  #   - name: CONCOURSE_GITHUB_CLIENT_SECRET
+  #     valueFrom:
+  #       secretKeyRef:
+  #         name: github-oauth
+  #         key: client-secret
   env: []
 
   # -- Additional CLI args for the web command
