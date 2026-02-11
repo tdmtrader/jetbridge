@@ -620,6 +620,8 @@ func (cmd *RunCommand) Runner(positionalArguments []string) (ifrit.Runner, error
 		_ = mpShutdown // shutdown handled by process lifecycle
 	}
 
+	metric.InitOTelStepDuration()
+
 	// Connection tracker is off by default. Can be turned on/ff at runtime.
 	http.HandleFunc("/debug/connections", func(w http.ResponseWriter, r *http.Request) {
 		for _, stack := range db.GlobalConnectionTracker.Current() {
