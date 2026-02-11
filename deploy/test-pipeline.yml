@@ -58,10 +58,8 @@ jobs:
             | grep -v /atc/gc \
             | grep -v /atc/postgresrunner \
             | grep -v /atc/scheduler/algorithm \
-            | grep -v /atc/worker/gardenruntime \
             | grep -v '/atc/worker$' \
             | grep -v /skymarshal/dexserver \
-            | grep -v /worker/baggageclaim/volume/driver \
             | grep -v /cmd)
           echo "Testing packages:"
           echo "$PACKAGES" | head -20

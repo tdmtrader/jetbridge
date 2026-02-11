@@ -56,9 +56,8 @@ type Worker interface {
 }
 
 // Container represents an entity that can execute Processes. It need not
-// represent a "true" container - e.g. a Container may represent a Garden
-// Container, or it may represent a Kubernetes Pod, or a Nomad Job (or Task?),
-// etc.
+// represent a "true" container - e.g. a Container may represent a Kubernetes
+// Pod, or a Nomad Job (or Task?), etc.
 type Container interface {
 	// Run starts a Process on the Container. If the executable (defined in
 	// ProcessSpec) does not exist, an ExecutableNotFound error must be

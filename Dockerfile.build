@@ -82,6 +82,6 @@ COPY --from=backend /concourse /usr/local/concourse/bin/concourse
 
 ENV PATH="/usr/local/concourse/bin:${PATH}"
 
-EXPOSE 8080 2222
+EXPOSE 8080
 
 ENTRYPOINT ["dumb-init", "concourse"]

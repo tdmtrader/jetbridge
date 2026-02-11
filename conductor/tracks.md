@@ -61,3 +61,8 @@
 *Archive: [./conductor/archive/codebase-hardening-20260210/](./conductor/archive/codebase-hardening-20260210/)*
 
 ---
+
+## [ ] Track: Legacy Cleanup — Remove dead Garden/containerd/TSA/BOSH code
+*Link: [./conductor/tracks/legacy-cleanup-20260210/](./conductor/tracks/legacy-cleanup-20260210/)*
+
+---

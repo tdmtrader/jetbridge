@@ -91,7 +91,7 @@ func (validator *StepValidator) VisitTask(plan *TaskStep) error {
 	if plan.Hermetic {
 		validator.recordWarning(ConfigWarning{
 			Type:    "pipeline",
-			Message: validator.annotate("specifies `hermetic:` only works against worker containerd runtime"),
+			Message: validator.annotate("specifies `hermetic:` only works with Kubernetes runtime"),
 		})
 	}
 

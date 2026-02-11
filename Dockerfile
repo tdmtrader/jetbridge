@@ -14,11 +14,7 @@ COPY go.sum .
 # don't do go mod download if there's a replace directive pointing to local filepath (./, ../)
 RUN grep ' => (\.\/|\.\.\/)' go.mod || go mod download
 
-# build the init executable for containerd
-COPY ./cmd/init/init.c /tmp/init.c
-RUN gcc -O2 -static -o /usr/local/concourse/bin/init /tmp/init.c && rm /tmp/init.c
-
-# copy the rest separately so we don't constantly rebuild init
+# copy source
 COPY . .
 
 # build 'concourse' binary
