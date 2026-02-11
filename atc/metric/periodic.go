@@ -1,6 +1,7 @@
 package metric
 
 import (
+	"context"
 	"os"
 	"runtime"
 	"time"
@@ -91,13 +92,17 @@ func tick(logger lager.Logger, m *Monitor) {
 		},
 	)
 
+	podStartupMs := m.K8sPodStartupDuration.Max()
 	m.emit(
 		logger.Session("k8s-pod-startup-duration"),
 		Event{
 			Name:  "k8s pod startup duration (ms)",
-			Value: m.K8sPodStartupDuration.Max(),
+			Value: podStartupMs,
 		},
 	)
+	if podStartupMs > 0 {
+		RecordK8sPodStartupDuration(context.Background(), time.Duration(podStartupMs)*time.Millisecond)
+	}
 
 	m.emit(
 		logger.Session("k8s-image-pull-failures"),
@@ -107,21 +112,29 @@ func tick(logger lager.Logger, m *Monitor) {
 		},
 	)
 
+	containersCreated := m.ContainersCreated.Delta()
 	m.emit(
 		logger.Session("containers-created"),
 		Event{
 			Name:  "containers created",
-			Value: m.ContainersCreated.Delta(),
+			Value: containersCreated,
 		},
 	)
+	if containersCreated > 0 {
+		RecordContainersCreated(context.Background(), containersCreated)
+	}
 
+	volumesCreated := m.VolumesCreated.Delta()
 	m.emit(
 		logger.Session("volumes-created"),
 		Event{
 			Name:  "volumes created",
-			Value: m.VolumesCreated.Delta(),
+			Value: volumesCreated,
 		},
 	)
+	if volumesCreated > 0 {
+		RecordVolumesCreated(context.Background(), volumesCreated)
+	}
 
 	m.emit(
 		logger.Session("failed-containers"),
