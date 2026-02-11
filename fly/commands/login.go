@@ -113,12 +113,11 @@ func (command *LoginCommand) Execute(args []string) error {
 		return err
 	}
 
-	devSemver, err := semisemanticversion.NewVersionFromString("0.0.0-dev")
-	if err != nil {
-		return err
-	}
+	// Legacy auth only applies to real Concourse releases 1.x–3.14.1.
+	// Versions with major 0 are dev/pre-release builds that use modern auth.
+	isLegacy := semver.Compare(legacySemver) <= 0 && !strings.HasPrefix(version, "0.")
 
-	if semver.Compare(legacySemver) <= 0 && semver.Compare(devSemver) != 0 {
+	if isLegacy {
 		// Legacy Auth Support
 		tokenType, tokenValue, err = command.legacyAuth(target)
 	} else {
