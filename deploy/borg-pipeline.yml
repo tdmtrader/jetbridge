@@ -11,7 +11,6 @@ resources:
 
 jobs:
 - name: build-and-vet
-  max_in_flight: 10
   plan:
   - get: repo
     trigger: true
@@ -46,7 +45,6 @@ jobs:
           echo "=== Vet passed ==="
 
 - name: ci-agent-review
-  max_in_flight: 10
   plan:
   - get: repo
     trigger: true
@@ -98,7 +96,6 @@ jobs:
           cat review/review.json 2>/dev/null || echo "No review output"
 
 - name: agent-fix
-  max_in_flight: 10
   plan:
   - get: repo
     trigger: true
@@ -156,7 +153,6 @@ jobs:
           cat fix-report/fix-report.json 2>/dev/null || echo "No fix report"
 
 - name: agent-plan
-  max_in_flight: 10
   plan:
   - get: repo
     trigger: true
@@ -206,7 +202,6 @@ jobs:
           cat plan-output/results.json 2>/dev/null || echo "No plan results"
 
 - name: agent-qa
-  max_in_flight: 10
   plan:
   - get: repo
     trigger: true
@@ -258,7 +253,6 @@ jobs:
           cat qa/qa.json 2>/dev/null || echo "No QA output"
 
 - name: agent-implement
-  max_in_flight: 10
   plan:
   - get: repo
     trigger: true
@@ -315,7 +309,6 @@ jobs:
           cat implement-output/results.json 2>/dev/null || echo "No implement output"
 
 - name: unit-tests
-  max_in_flight: 10
   plan:
   - get: repo
     trigger: true
@@ -363,7 +356,6 @@ jobs:
 
 - name: k8s-runtime-tests
   serial: true
-  max_in_flight: 10
   plan:
   - get: repo
     trigger: true
@@ -392,7 +384,6 @@ jobs:
 
 - name: k8s-live-tests
   serial: true
-  max_in_flight: 10
   plan:
   - get: repo
     trigger: true
@@ -448,7 +439,6 @@ jobs:
           echo "=== Live integration tests passed ==="
 
 - name: build-image
-  max_in_flight: 10
   plan:
   - get: repo
     trigger: true
@@ -509,7 +499,6 @@ jobs:
           kill $DOCKERD_PID 2>/dev/null || true
 
 - name: deploy
-  max_in_flight: 10
   plan:
   - get: repo
     trigger: true
@@ -582,7 +571,6 @@ jobs:
           echo "=== Deploy task complete (rollout continues in background) ==="
 
 - name: promote-to-main
-  max_in_flight: 10
   plan:
   - get: repo
     trigger: true
