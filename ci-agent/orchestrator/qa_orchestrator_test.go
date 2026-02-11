@@ -194,6 +194,36 @@ func TestLoginPageDisplaysFields(t *testing.T) {}
 		Expect(output.Gaps).NotTo(BeEmpty())
 	})
 
+	It("uses agent for browser plan when agent is provided", func() {
+		specPath := writeSpec(`## Acceptance Criteria
+
+- [ ] Login page loads correctly
+`)
+		outputDir := filepath.Join(tmpDir, "output")
+
+		agentPlan := "# Agent-Generated Browser QA Plan\n\nCustom plan from agent."
+		agent := &fakeQAAgent{response: agentPlan}
+
+		output, err := orchestrator.RunQA(context.Background(), orchestrator.QAOptions{
+			RepoDir:   tmpDir,
+			SpecFile:  specPath,
+			OutputDir: outputDir,
+			Config:    &config.QAConfig{Threshold: 5.0, BrowserPlan: true},
+			TargetURL: "http://localhost",
+			Agent:     agent,
+		})
+
+		Expect(err).NotTo(HaveOccurred())
+		// The browser plan should come from the agent, not the static generator
+		Expect(output.BrowserPlan).To(Equal(agentPlan))
+		Expect(agent.runCalled).To(BeTrue(), "agent.Run should have been called for browser plan")
+
+		// Verify the file was written with agent content
+		planData, err := os.ReadFile(filepath.Join(outputDir, "browser-qa-plan.md"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(string(planData)).To(Equal(agentPlan))
+	})
+
 	It("generates gap tests that fail and leaves requirement uncovered", func() {
 		specPath := writeSpec(`# Spec
 
@@ -235,9 +265,11 @@ func TestLoginPageDisplaysFields(t *testing.T) {}
 
 // fakeQAAgent implements the QAAgentRunner interface for testing.
 type fakeQAAgent struct {
-	response string
+	response  string
+	runCalled bool
 }
 
 func (f *fakeQAAgent) Run(_ context.Context, _ string) (string, error) {
+	f.runCalled = true
 	return f.response, nil
 }
