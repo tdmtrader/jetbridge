@@ -31,6 +31,11 @@ const (
 	exitStatusAnnotationKey     = "concourse.ci/exit-status"
 	resourceResultAnnotationKey = "concourse.ci/resource-result"
 	cachePVCVolumeName          = "cache-pvc"
+
+	// gcsFuseAnnotationKey is the pod annotation required by the GKE
+	// GCS Fuse sidecar injector webhook. When set to "true", the webhook
+	// injects the FUSE mount helper into the pod.
+	gcsFuseAnnotationKey = "gke-gcsfuse/volumes"
 )
 
 // persistableAnnotations maps container property keys to pod annotation keys
@@ -358,9 +363,10 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      c.podName,
-			Namespace: c.config.Namespace,
-			Labels:    c.buildPodLabels(),
+			Name:        c.podName,
+			Namespace:   c.config.Namespace,
+			Labels:      c.buildPodLabels(),
+			Annotations: c.buildPodAnnotations(),
 		},
 		Spec: corev1.PodSpec{
 			RestartPolicy:      corev1.RestartPolicyNever,
@@ -609,6 +615,17 @@ func (c *Container) buildPodLabels() map[string]string {
 	addLabel(handleLabelKey, c.handle)
 
 	return labels
+}
+
+// buildPodAnnotations returns annotations for the pod. When the artifact
+// store PVC is backed by GCS Fuse, includes the annotation required by
+// the GKE sidecar injector webhook.
+func (c *Container) buildPodAnnotations() map[string]string {
+	annotations := map[string]string{}
+	if c.config.ArtifactStoreGCSFuse && c.config.ArtifactStoreClaim != "" {
+		annotations[gcsFuseAnnotationKey] = "true"
+	}
+	return annotations
 }
 
 // resolveImage extracts a Kubernetes-compatible image reference from the

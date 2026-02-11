@@ -76,3 +76,9 @@
 *Link: [./conductor/tracks/pipeline-split-agent-testing/](./conductor/tracks/pipeline-split-agent-testing/)*
 
 ---
+
+## [x] Track: GCS Fuse Pod Annotation — Add gke-gcsfuse/volumes annotation to artifact store pods
+*Completed: 2026-02-10*
+*Link: [./conductor/tracks/gcs-fuse-pod-annotation/](./conductor/tracks/gcs-fuse-pod-annotation/)*
+
+---

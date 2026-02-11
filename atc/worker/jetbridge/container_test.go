@@ -2299,6 +2299,106 @@ var _ = Describe("Container with artifact store", func() {
 		})
 	})
 
+	Describe("GCS Fuse pod annotation", func() {
+		It("adds gke-gcsfuse/volumes annotation when ArtifactStoreGCSFuse is true", func() {
+			cfg := jetbridge.NewConfig("test-namespace", "")
+			cfg.ArtifactStoreClaim = "concourse-artifacts"
+			cfg.ArtifactStoreGCSFuse = true
+			worker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
+
+			setupFakeDBContainer(fakeDBWorker, "gcsfuse-handle")
+
+			container, _, err := worker.FindOrCreateContainer(
+				ctx,
+				db.NewFixedHandleContainerOwner("gcsfuse-handle"),
+				db.ContainerMetadata{Type: db.ContainerTypeTask},
+				runtime.ContainerSpec{
+					TeamID:    1,
+					Dir:       "/workdir",
+					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+				},
+				delegate,
+			)
+			Expect(err).ToNot(HaveOccurred())
+
+			_, err = container.Run(ctx, runtime.ProcessSpec{
+				Path: "/bin/sh", Args: []string{"-c", "echo hello"},
+			}, runtime.ProcessIO{})
+			Expect(err).ToNot(HaveOccurred())
+
+			pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			pod := pods.Items[0]
+
+			Expect(pod.Annotations).To(HaveKeyWithValue("gke-gcsfuse/volumes", "true"))
+		})
+
+		It("does not add gke-gcsfuse/volumes annotation when ArtifactStoreGCSFuse is false", func() {
+			cfg := jetbridge.NewConfig("test-namespace", "")
+			cfg.ArtifactStoreClaim = "concourse-artifacts"
+			cfg.ArtifactStoreGCSFuse = false
+			worker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
+
+			setupFakeDBContainer(fakeDBWorker, "no-gcsfuse-handle")
+
+			container, _, err := worker.FindOrCreateContainer(
+				ctx,
+				db.NewFixedHandleContainerOwner("no-gcsfuse-handle"),
+				db.ContainerMetadata{Type: db.ContainerTypeTask},
+				runtime.ContainerSpec{
+					TeamID:    1,
+					Dir:       "/workdir",
+					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+				},
+				delegate,
+			)
+			Expect(err).ToNot(HaveOccurred())
+
+			_, err = container.Run(ctx, runtime.ProcessSpec{
+				Path: "/bin/sh", Args: []string{"-c", "echo hello"},
+			}, runtime.ProcessIO{})
+			Expect(err).ToNot(HaveOccurred())
+
+			pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			pod := pods.Items[0]
+
+			Expect(pod.Annotations).ToNot(HaveKey("gke-gcsfuse/volumes"))
+		})
+
+		It("does not add gke-gcsfuse/volumes annotation when no artifact store claim", func() {
+			cfg := jetbridge.NewConfig("test-namespace", "")
+			cfg.ArtifactStoreGCSFuse = true // flag set but no claim
+			worker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
+
+			setupFakeDBContainer(fakeDBWorker, "no-claim-gcsfuse-handle")
+
+			container, _, err := worker.FindOrCreateContainer(
+				ctx,
+				db.NewFixedHandleContainerOwner("no-claim-gcsfuse-handle"),
+				db.ContainerMetadata{Type: db.ContainerTypeTask},
+				runtime.ContainerSpec{
+					TeamID:    1,
+					Dir:       "/workdir",
+					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+				},
+				delegate,
+			)
+			Expect(err).ToNot(HaveOccurred())
+
+			_, err = container.Run(ctx, runtime.ProcessSpec{
+				Path: "/bin/sh", Args: []string{"-c", "echo hello"},
+			}, runtime.ProcessIO{})
+			Expect(err).ToNot(HaveOccurred())
+
+			pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			pod := pods.Items[0]
+
+			Expect(pod.Annotations).ToNot(HaveKey("gke-gcsfuse/volumes"))
+		})
+	})
+
 	Describe("Run without ArtifactStoreClaim", func() {
 		It("does not include artifact PVC, init containers, or sidecar", func() {
 			cfg := jetbridge.NewConfig("test-namespace", "")
