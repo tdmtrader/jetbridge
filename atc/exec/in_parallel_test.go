@@ -219,7 +219,7 @@ var _ = Describe("Parallel", func() {
 
 		Context("with context canceled error", func() {
 			// error might be wrapped. For example we pass context from in_parallel step
-			// -> task step -> ... -> baggageclaim StreamOut() -> http request. When context
+			// -> task step -> ... -> HTTP request (e.g. K8s API). When context
 			// got canceled in in_parallel step, the http client sending the request will
 			// wrap the context.Canceled error into Url.Error
 			disasterB := fmt.Errorf("some thing failed by %w", context.Canceled)

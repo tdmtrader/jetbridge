@@ -19,10 +19,9 @@ import (
 )
 
 type ValidatePipelineCommand struct {
-	Config           atc.PathFlag `short:"c" long:"config" required:"true"  description:"Pipeline configuration file"`
-	Strict           bool         `short:"s" long:"strict"                  description:"Fail on warnings"`
-	Output           bool         `short:"o" long:"output"                  description:"Output templated pipeline to stdout"`
-	EnableAcrossStep bool         `long:"enable-across-step"                description:"DEPRECATED: The across step is always enabled. This flag has no effect."`
+	Config atc.PathFlag `short:"c" long:"config" required:"true"  description:"Pipeline configuration file"`
+	Strict bool         `short:"s" long:"strict"                  description:"Fail on warnings"`
+	Output bool         `short:"o" long:"output"                  description:"Output templated pipeline to stdout"`
 
 	Var     []flaghelpers.VariablePairFlag     `short:"v"  long:"var"       unquote:"false"  value-name:"[NAME=STRING]"  description:"Specify a string value to set for a variable in the pipeline"`
 	YAMLVar []flaghelpers.YAMLVariablePairFlag `short:"y"  long:"yaml-var"  unquote:"false"  value-name:"[NAME=YAML]"    description:"Specify a YAML value to set for a variable in the pipeline"`
