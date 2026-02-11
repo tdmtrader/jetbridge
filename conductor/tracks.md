@@ -104,7 +104,8 @@
 
 ---
 
-## [ ] Track: K8s Native Image Fetch — Skip physical image download for K8s runtime, let kubelet pull
-*Link: [./conductor/tracks/k8s_native_image_fetch_20260211/](./conductor/tracks/k8s_native_image_fetch_20260211/)*
+## [x] Track: K8s Native Image Fetch — Skip physical image download for K8s runtime, let kubelet pull
+*Completed: 2026-02-11*
+*Archive: [./conductor/archive/k8s_native_image_fetch_20260211/](./conductor/archive/k8s_native_image_fetch_20260211/)*
 
 ---
