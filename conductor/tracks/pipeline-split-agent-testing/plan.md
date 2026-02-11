@@ -10,7 +10,7 @@
 
 - [x] 2.1 Write tests for `validate-output` — covers review.json, fix-report.json, results.json, qa.json validation (valid files pass, missing fields fail, malformed JSON fails)
 - [x] 2.2 Implement `ci-agent/cmd/validate-output/main.go` — reads `--output-dir` and `--type` flag (review|fix|plan|qa), deserializes JSON, calls `.Validate()`, exits 0/1
-- [x] 2.3 Verify tests pass: `go test ./ci-agent/cmd/validate-output/...`
+- [x] 2.3 Verify tests pass: `go test ./ci-agent/cmd/validate-output/...` — 15/15 pass
 
 ## Phase 3: Create agent pipeline
 
@@ -25,7 +25,7 @@
 
 ## Phase 4: Deploy both pipelines
 
-- [~] 4.1 Set primary pipeline: `fly -t home set-pipeline -p jetbridge -c deploy/borg-pipeline.yml`
-- [ ] 4.2 Set agent pipeline: `fly -t home set-pipeline -p jetbridge-agents -c deploy/agent-pipeline.yml`
-- [ ] 4.3 Unpause agent pipeline and verify resource check succeeds
-- [ ] 4.4 Commit all changes and push
+- [x] 4.1 Set primary pipeline: `fly -t home set-pipeline -p jetbridge -c deploy/borg-pipeline.yml`
+- [x] 4.2 Set agent pipeline: `fly -t home set-pipeline -p jetbridge-agents -c deploy/agent-pipeline.yml`
+- [x] 4.3 Unpause agent pipeline and verify resource check succeeds
+- [x] 4.4 Commit all changes and push — `0caa9fda4`

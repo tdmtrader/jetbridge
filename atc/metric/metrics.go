@@ -494,12 +494,19 @@ func (event BuildFinished) Emit(logger lager.Logger) {
 	attrs["build_status"] = event.Build.Status().String()
 
 	duration := event.Build.EndTime().Sub(event.Build.StartTime())
+
+	var traceID string
+	if sc := event.Build.SpanContext(); sc != nil {
+		traceID = extractTraceID(sc.Get("traceparent"))
+	}
+
 	Metrics.emit(
 		logger.Session("build-finished"),
 		Event{
 			Name:       "build finished",
 			Value:      ms(duration),
 			Attributes: attrs,
+			TraceID:    traceID,
 		},
 	)
 
@@ -511,6 +518,16 @@ func (event BuildFinished) Emit(logger lager.Logger) {
 		attrs["job"],
 		event.Build.Status().String(),
 	)
+}
+
+// extractTraceID parses the trace ID from a W3C traceparent header.
+// Format: 00-<traceID>-<spanID>-<flags>
+func extractTraceID(traceparent string) string {
+	parts := strings.Split(traceparent, "-")
+	if len(parts) >= 3 {
+		return parts[1]
+	}
+	return ""
 }
 
 func ms(duration time.Duration) float64 {
@@ -541,6 +558,7 @@ type HTTPResponseTime struct {
 	Method     string
 	StatusCode int
 	Duration   time.Duration
+	TraceID    string
 }
 
 func (event HTTPResponseTime) Emit(logger lager.Logger, m *Monitor) {
@@ -555,6 +573,7 @@ func (event HTTPResponseTime) Emit(logger lager.Logger, m *Monitor) {
 				"method": event.Method,
 				"status": strconv.Itoa(event.StatusCode),
 			},
+			TraceID: event.TraceID,
 		},
 	)
 

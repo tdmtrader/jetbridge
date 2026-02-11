@@ -166,23 +166,20 @@ var _ = Describe("PrometheusEmitter garbage collector", func() {
 	})
 })
 
-var _ = Describe("PrometheusEmitter", func() {
+var _ = Describe("PrometheusEmitter", Ordered, func() {
 	var (
 		prometheusConfig  *emitter.PrometheusConfig
 		prometheusEmitter metric.Emitter
 		logger            *lagertest.TestLogger
-		err               error
 	)
 
-	BeforeEach(func() {
+	BeforeAll(func() {
 		logger = lagertest.NewTestLogger("test")
 		prometheusConfig = &emitter.PrometheusConfig{
 			BindIP:   "localhost",
-			BindPort: "9090",
+			BindPort: "19091",
 		}
-	})
-
-	JustBeforeEach(func() {
+		var err error
 		prometheusEmitter, err = prometheusConfig.NewEmitter(map[string]string{
 			// Ensure invalid labels are sanitized.
 			"invalid-label":     "foo",
@@ -190,6 +187,53 @@ var _ = Describe("PrometheusEmitter", func() {
 			"_prefix_testtwo__": "baz",
 		})
 		Expect(err).To(BeNil())
+	})
+
+	It("attaches trace ID exemplar to build duration histogram", func() {
+		prometheusEmitter.Emit(logger, metric.Event{
+			Name:  "build finished",
+			Value: 5000, // 5000ms = 5s
+			Attributes: map[string]string{
+				"team_name":    "my-team",
+				"pipeline":     "my-pipeline",
+				"job":          "my-job",
+				"build_status": "succeeded",
+			},
+			TraceID: "4bf92f3577b34da6a3ce929d0e0e4736",
+		})
+
+		getOpenMetrics := func() string {
+			req, _ := http.NewRequest("GET", fmt.Sprintf("http://%s:%s/metrics", prometheusConfig.BindIP, prometheusConfig.BindPort), nil)
+			req.Header.Set("Accept", "application/openmetrics-text;version=1.0.0,application/openmetrics-text;version=0.0.1;q=0.75,text/plain;version=0.0.4;q=0.5")
+			res, _ := http.DefaultClient.Do(req)
+			body, _ := io.ReadAll(res.Body)
+			defer res.Body.Close()
+			return string(body)
+		}
+		Eventually(getOpenMetrics).Should(ContainSubstring("trace_id=\"4bf92f3577b34da6a3ce929d0e0e4736\""))
+	})
+
+	It("attaches trace ID exemplar to HTTP response time histogram", func() {
+		prometheusEmitter.Emit(logger, metric.Event{
+			Name:  "http response time",
+			Value: 250, // 250ms
+			Attributes: map[string]string{
+				"route":  "ListBuilds",
+				"method": "GET",
+				"status": "200",
+			},
+			TraceID: "abcdef1234567890abcdef1234567890",
+		})
+
+		getOpenMetrics := func() string {
+			req, _ := http.NewRequest("GET", fmt.Sprintf("http://%s:%s/metrics", prometheusConfig.BindIP, prometheusConfig.BindPort), nil)
+			req.Header.Set("Accept", "application/openmetrics-text;version=1.0.0,application/openmetrics-text;version=0.0.1;q=0.75,text/plain;version=0.0.4;q=0.5")
+			res, _ := http.DefaultClient.Do(req)
+			body, _ := io.ReadAll(res.Body)
+			defer res.Body.Close()
+			return string(body)
+		}
+		Eventually(getOpenMetrics).Should(ContainSubstring("trace_id=\"abcdef1234567890abcdef1234567890\""))
 	})
 
 	It("emits metric", func() {
