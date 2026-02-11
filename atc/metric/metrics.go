@@ -1,6 +1,7 @@
 package metric
 
 import (
+	"context"
 	"strconv"
 	"strings"
 	"time"
@@ -492,13 +493,23 @@ func (event BuildFinished) Emit(logger lager.Logger) {
 	attrs := event.Build.TracingAttrs()
 	attrs["build_status"] = event.Build.Status().String()
 
+	duration := event.Build.EndTime().Sub(event.Build.StartTime())
 	Metrics.emit(
 		logger.Session("build-finished"),
 		Event{
 			Name:       "build finished",
-			Value:      ms(event.Build.EndTime().Sub(event.Build.StartTime())),
+			Value:      ms(duration),
 			Attributes: attrs,
 		},
+	)
+
+	RecordBuildDuration(
+		context.Background(),
+		duration,
+		attrs["team_name"],
+		attrs["pipeline"],
+		attrs["job"],
+		event.Build.Status().String(),
 	)
 }
 
@@ -546,6 +557,8 @@ func (event HTTPResponseTime) Emit(logger lager.Logger, m *Monitor) {
 			},
 		},
 	)
+
+	RecordHTTPResponseTime(context.Background(), event.Duration, event.Method, event.Route, event.StatusCode)
 }
 
 var lockTypeNames = map[int]string{
