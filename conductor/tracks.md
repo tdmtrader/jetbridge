@@ -71,3 +71,8 @@
 *Link: [./conductor/tracks/helm-chart-parity/](./conductor/tracks/helm-chart-parity/)*
 
 ---
+
+## [ ] Track: Pipeline Split — Separate Agent Testing
+*Link: [./conductor/tracks/pipeline-split-agent-testing/](./conductor/tracks/pipeline-split-agent-testing/)*
+
+---
