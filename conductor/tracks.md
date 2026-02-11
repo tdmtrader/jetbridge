@@ -86,8 +86,9 @@
 
 ---
 
-## [ ] Track: Observability Hardening — OTel-native traces, metrics, and spans with Grafana/GCP compatibility
-*Link: [./conductor/tracks/observability-hardening/](./conductor/tracks/observability-hardening/)*
+## [x] Track: Observability Hardening — OTel-native traces, metrics, and spans with Grafana/GCP compatibility
+*Completed: 2026-02-11*
+*Archive: [./conductor/archive/observability-hardening/](./conductor/archive/observability-hardening/)*
 
 ---
 
