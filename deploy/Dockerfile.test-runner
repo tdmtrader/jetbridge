@@ -1,11 +1,12 @@
 # Build environment for Concourse CI pipeline tasks.
-# Contains Go toolchain, kubectl, docker CLI, and source code at /src.
+# Contains Go toolchain, kubectl, docker CLI, unzip, and source code at /src.
 FROM golang:1.25-bookworm
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     git \
     jq \
+    unzip \
     && rm -rf /var/lib/apt/lists/*
 
 # Install kubectl
