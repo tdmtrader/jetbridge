@@ -26,7 +26,7 @@ jobs:
   - task: build-and-vet
     config:
       platform: linux
-      rootfs_uri: docker:///concourse-test-runner:v4
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v4
       run:
         path: sh
         args:
@@ -54,7 +54,7 @@ jobs:
   - task: unit-tests
     config:
       platform: linux
-      rootfs_uri: docker:///concourse-test-runner:v4
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v4
       run:
         path: sh
         args:
@@ -93,7 +93,7 @@ jobs:
   - task: k8s-runtime-integration-tests
     config:
       platform: linux
-      rootfs_uri: docker:///concourse-test-runner:v4
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v4
       run:
         path: sh
         args:
@@ -114,7 +114,7 @@ jobs:
   - task: k8s-live-integration-tests
     config:
       platform: linux
-      rootfs_uri: docker:///concourse-test-runner:v4
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v4
       run:
         path: sh
         args:
@@ -158,7 +158,7 @@ jobs:
     privileged: true
     config:
       platform: linux
-      rootfs_uri: docker:///concourse-test-runner:v4
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v4
       run:
         path: sh
         args:
@@ -166,8 +166,8 @@ jobs:
         - |
           cd /src
           echo "=== Building concourse binary ==="
-          GOOS=linux GOARCH=arm64 go build -o concourse-linux-arm64 ./cmd/concourse
-          ls -lh concourse-linux-arm64
+          GOOS=linux GOARCH=amd64 go build -o concourse-linux-amd64 ./cmd/concourse
+          ls -lh concourse-linux-amd64
           echo "=== Binary built ==="
           echo ""
 
@@ -192,8 +192,8 @@ jobs:
           spec:
             containers:
             - name: builder
-              image: concourse-test-runner:v4
-              imagePullPolicy: Never
+              image: registry.home/concourse-test-runner:v4
+              imagePullPolicy: IfNotPresent
               command: ["sleep", "600"]
               volumeMounts:
               - name: docker-sock
@@ -209,7 +209,7 @@ jobs:
           kubectl wait --for=condition=ready pod/${BUILDER_POD} -n concourse --timeout=120s
 
           echo "=== Copying binary to builder pod ==="
-          kubectl cp concourse-linux-arm64 concourse/${BUILDER_POD}:/tmp/concourse-linux-arm64
+          kubectl cp concourse-linux-amd64 concourse/${BUILDER_POD}:/tmp/concourse-linux-amd64
 
           echo "=== Copying Dockerfile to builder pod ==="
           cat <<'DOCKERFILE' > /tmp/Dockerfile
@@ -217,7 +217,7 @@ jobs:
           RUN apt-get update && \
               apt-get install -y ca-certificates dumb-init && \
               rm -rf /var/lib/apt/lists/*
-          COPY concourse-linux-arm64 /usr/local/concourse/bin/concourse
+          COPY concourse-linux-amd64 /usr/local/concourse/bin/concourse
           RUN chmod +x /usr/local/concourse/bin/concourse
           ENV PATH="/usr/local/concourse/bin:${PATH}"
           ENTRYPOINT ["dumb-init", "concourse"]
@@ -245,7 +245,7 @@ jobs:
   - task: deploy
     config:
       platform: linux
-      rootfs_uri: docker:///concourse-test-runner:v4
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v4
       run:
         path: sh
         args:
@@ -276,8 +276,8 @@ jobs:
             serviceAccountName: concourse-web
             containers:
             - name: restarter
-              image: concourse-test-runner:v4
-              imagePullPolicy: Never
+              image: registry.home/concourse-test-runner:v4
+              imagePullPolicy: IfNotPresent
               command: ["sh", "-c"]
               args:
               - |
