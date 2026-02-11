@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"code.cloudfoundry.org/lager/v3/lagerctx"
@@ -55,6 +56,11 @@ type checkFactory struct {
 
 	checkBuildChan    chan<- Build
 	sequenceGenerator util.SequenceGenerator
+
+	// inFlightChecks tracks in-flight in-memory check builds by
+	// ResourceConfigScopeID. Prevents duplicate check pods for the same
+	// resource when a check takes longer than the scanner interval.
+	inFlightChecks sync.Map
 }
 
 func NewCheckFactory(
@@ -131,15 +137,38 @@ func (c *checkFactory) TryCreateCheck(ctx context.Context, checkable Checkable, 
 
 		return build, true, nil
 	} else {
+		scopeID := checkable.ResourceConfigScopeID()
+		tracked := false
+		if !manuallyTriggered && scopeID != 0 {
+			if _, loaded := c.inFlightChecks.LoadOrStore(scopeID, struct{}{}); loaded {
+				logger.Debug("skipped-in-memory-check-already-in-flight")
+				return nil, false, nil
+			}
+			tracked = true
+		}
+
 		build, err := checkable.CreateInMemoryBuild(ctx, plan, c.sequenceGenerator)
 		if err != nil {
+			if tracked {
+				c.inFlightChecks.Delete(scopeID)
+			}
 			return nil, false, err
 		}
 
 		logger.Debug("created-in-memory-check-build", build.LagerData())
-		c.checkBuildChan <- build
 
-		return build, true, nil
+		var toSend Build = build
+		if tracked {
+			toSend = &onFinishBuild{
+				Build: build,
+				onFinish: func() {
+					c.inFlightChecks.Delete(scopeID)
+				},
+			}
+		}
+		c.checkBuildChan <- toSend
+
+		return toSend, true, nil
 	}
 }
 
@@ -221,4 +250,17 @@ func (c *checkFactory) ResourceTypesByPipeline() (map[int]ResourceTypes, error) 
 
 func (c *checkFactory) Drain() {
 	close(c.checkBuildChan)
+}
+
+// onFinishBuild wraps a Build to call a cleanup function when Finish is
+// invoked. Used to clear in-flight tracking when an in-memory check build
+// completes.
+type onFinishBuild struct {
+	Build
+	onFinish func()
+}
+
+func (b *onFinishBuild) Finish(status BuildStatus) error {
+	defer b.onFinish()
+	return b.Build.Finish(status)
 }
