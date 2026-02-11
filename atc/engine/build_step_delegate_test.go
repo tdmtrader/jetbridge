@@ -66,7 +66,7 @@ var _ = Describe("BuildStepDelegate", func() {
 
 		fakePolicyChecker = new(policyfakes.FakeChecker)
 
-		delegate = engine.NewBuildStepDelegate(fakeBuild, planID, runState, fakeClock, fakePolicyChecker, false)
+		delegate = engine.NewBuildStepDelegate(fakeBuild, planID, runState, fakeClock, fakePolicyChecker, false, false)
 	})
 
 	Describe("Initializing", func() {
@@ -169,7 +169,7 @@ var _ = Describe("BuildStepDelegate", func() {
 		})
 
 		JustBeforeEach(func() {
-			delegate = engine.NewBuildStepDelegate(fakeBuild, planID, parentRunState, fakeClock, fakePolicyChecker, false)
+			delegate = engine.NewBuildStepDelegate(fakeBuild, planID, parentRunState, fakeClock, fakePolicyChecker, false, false)
 			imageSpec, resourceCache, fetchErr = delegate.FetchImage(context.TODO(), *expectedGetPlan, expectedCheckPlan, privileged)
 		})
 
@@ -400,6 +400,101 @@ var _ = Describe("BuildStepDelegate", func() {
 				Expect(runPlans).To(Equal([]atc.Plan{
 					*expectedGetPlan,
 				}))
+			})
+		})
+
+		Context("when nativeImageFetch is enabled", func() {
+			var registryGetPlan *atc.Plan
+			var registryCheckPlan *atc.Plan
+
+			BeforeEach(func() {
+				registryCheckPlan = &atc.Plan{
+					ID: planID + "/image-check",
+					Check: &atc.CheckPlan{
+						Name:   "image",
+						Type:   "registry-image",
+						Source: atc.Source{"repository": "my-org/my-resource", "tag": "latest"},
+						Tags:   atc.Tags{"some", "tags"},
+					},
+				}
+
+				registryGetPlan = &atc.Plan{
+					ID: planID + "/image-get",
+					Get: &atc.GetPlan{
+						Name:    "image",
+						Type:    "registry-image",
+						Source:  atc.Source{"repository": "my-org/my-resource", "tag": "latest"},
+						Version: &atc.Version{"digest": "sha256:abc123"},
+						Params:  atc.Params{"format": "rootfs"},
+						Tags:    atc.Tags{"some", "tags"},
+					},
+				}
+			})
+
+			It("skips the get step and returns only an ImageURL for registry-image type", func() {
+				runPlans = nil
+				nativeDelegate := engine.NewBuildStepDelegate(fakeBuild, planID, parentRunState, fakeClock, fakePolicyChecker, false, true)
+				imgSpec, resCache, err := nativeDelegate.FetchImage(context.TODO(), *registryGetPlan, registryCheckPlan, false)
+				Expect(err).ToNot(HaveOccurred())
+
+				By("only running the check plan, not the get plan")
+				Expect(runPlans).To(Equal([]atc.Plan{*registryCheckPlan}))
+
+				By("returning an ImageURL without an artifact")
+				Expect(imgSpec.ImageArtifact).To(BeNil())
+				Expect(imgSpec.ImageURL).To(Equal("docker:///my-org/my-resource@sha256:abc123"))
+				Expect(imgSpec.Privileged).To(BeFalse())
+
+				By("returning nil resource cache since no get was performed")
+				Expect(resCache).To(BeNil())
+			})
+
+			It("uses source tag when no digest is available in version", func() {
+				runPlans = nil
+				registryGetPlan.Get.Version = &atc.Version{}
+				nativeDelegate := engine.NewBuildStepDelegate(fakeBuild, planID, parentRunState, fakeClock, fakePolicyChecker, false, true)
+				imgSpec, _, err := nativeDelegate.FetchImage(context.TODO(), *registryGetPlan, registryCheckPlan, false)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(imgSpec.ImageURL).To(Equal("docker:///my-org/my-resource:latest"))
+			})
+
+			It("falls back to full fetch for non-registry-image types", func() {
+				runPlans = nil
+				nativeDelegate := engine.NewBuildStepDelegate(fakeBuild, planID, parentRunState, fakeClock, fakePolicyChecker, false, true)
+				imgSpec, _, err := nativeDelegate.FetchImage(context.TODO(), *expectedGetPlan, expectedCheckPlan, false)
+				Expect(err).ToNot(HaveOccurred())
+
+				By("running both check and get plans")
+				Expect(runPlans).To(Equal([]atc.Plan{*expectedCheckPlan, *expectedGetPlan}))
+
+				By("returning an artifact (full fetch path)")
+				Expect(imgSpec.ImageArtifact).ToNot(BeNil())
+			})
+
+			It("preserves privileged flag", func() {
+				runPlans = nil
+				nativeDelegate := engine.NewBuildStepDelegate(fakeBuild, planID, parentRunState, fakeClock, fakePolicyChecker, false, true)
+				imgSpec, _, err := nativeDelegate.FetchImage(context.TODO(), *registryGetPlan, registryCheckPlan, true)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(imgSpec.Privileged).To(BeTrue())
+			})
+
+			It("still runs check plan when present", func() {
+				runPlans = nil
+				nativeDelegate := engine.NewBuildStepDelegate(fakeBuild, planID, parentRunState, fakeClock, fakePolicyChecker, false, true)
+				_, _, err := nativeDelegate.FetchImage(context.TODO(), *registryGetPlan, registryCheckPlan, false)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(runPlans).To(HaveLen(1))
+				Expect(runPlans[0]).To(Equal(*registryCheckPlan))
+			})
+
+			It("works without a check plan", func() {
+				runPlans = nil
+				nativeDelegate := engine.NewBuildStepDelegate(fakeBuild, planID, parentRunState, fakeClock, fakePolicyChecker, false, true)
+				imgSpec, _, err := nativeDelegate.FetchImage(context.TODO(), *registryGetPlan, nil, false)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(runPlans).To(BeEmpty())
+				Expect(imgSpec.ImageURL).To(Equal("docker:///my-org/my-resource@sha256:abc123"))
 			})
 		})
 	})
@@ -915,7 +1010,7 @@ var _ = Describe("BuildStepDelegate", func() {
 
 		BeforeEach(func() {
 			runState = exec.NewRunState(noopStepper, credVars)
-			delegate = engine.NewBuildStepDelegate(fakeBuild, "some-plan-id", runState, fakeClock, fakePolicyChecker, false)
+			delegate = engine.NewBuildStepDelegate(fakeBuild, "some-plan-id", runState, fakeClock, fakePolicyChecker, false, false)
 
 			runState.Get(vars.Reference{Path: "source-param"})
 			runState.Get(vars.Reference{Path: "git-key"})
@@ -1000,7 +1095,7 @@ var _ = Describe("BuildStepDelegate", func() {
 
 			Context("is disabled", func() {
 				BeforeEach(func() {
-					delegate = engine.NewBuildStepDelegate(fakeBuild, "some-plan-id", runState, fakeClock, fakePolicyChecker, true)
+					delegate = engine.NewBuildStepDelegate(fakeBuild, "some-plan-id", runState, fakeClock, fakePolicyChecker, true, false)
 				})
 
 				It("does not redact secrets", func() {
@@ -1101,7 +1196,7 @@ var _ = Describe("BuildStepDelegate", func() {
 
 			Context("is disabled", func() {
 				BeforeEach(func() {
-					delegate = engine.NewBuildStepDelegate(fakeBuild, "some-plan-id", runState, fakeClock, fakePolicyChecker, true)
+					delegate = engine.NewBuildStepDelegate(fakeBuild, "some-plan-id", runState, fakeClock, fakePolicyChecker, true, false)
 				})
 
 				It("does not redact secrets", func() {

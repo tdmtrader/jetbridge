@@ -11,12 +11,13 @@ import (
 )
 
 type DelegateFactory struct {
-	build           db.Build
-	plan            atc.Plan
-	rateLimiter     RateLimiter
-	policyChecker   policy.Checker
-	dbWorkerFactory db.WorkerFactory
-	lockFactory     lock.LockFactory
+	build              db.Build
+	plan               atc.Plan
+	rateLimiter        RateLimiter
+	policyChecker      policy.Checker
+	dbWorkerFactory    db.WorkerFactory
+	lockFactory        lock.LockFactory
+	nativeImageFetch   bool
 }
 
 func (delegate DelegateFactory) GetDelegate(state exec.RunState) exec.GetDelegate {
@@ -32,7 +33,7 @@ func (delegate DelegateFactory) TaskDelegate(state exec.RunState) exec.TaskDeleg
 }
 
 func (delegate DelegateFactory) RunDelegate(state exec.RunState) exec.RunDelegate {
-	return NewBuildStepDelegate(delegate.build, delegate.plan.ID, state, clock.NewClock(), delegate.policyChecker, atc.DisableRedactSecrets)
+	return NewBuildStepDelegate(delegate.build, delegate.plan.ID, state, clock.NewClock(), delegate.policyChecker, atc.DisableRedactSecrets, delegate.nativeImageFetch)
 }
 
 func (delegate DelegateFactory) CheckDelegate(state exec.RunState) exec.CheckDelegate {
@@ -40,7 +41,7 @@ func (delegate DelegateFactory) CheckDelegate(state exec.RunState) exec.CheckDel
 }
 
 func (delegate DelegateFactory) BuildStepDelegate(state exec.RunState) exec.BuildStepDelegate {
-	return NewBuildStepDelegate(delegate.build, delegate.plan.ID, state, clock.NewClock(), delegate.policyChecker, atc.DisableRedactSecrets)
+	return NewBuildStepDelegate(delegate.build, delegate.plan.ID, state, clock.NewClock(), delegate.policyChecker, atc.DisableRedactSecrets, delegate.nativeImageFetch)
 }
 
 func (delegate DelegateFactory) SetPipelineStepDelegate(state exec.RunState) exec.SetPipelineStepDelegate {
