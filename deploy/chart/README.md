@@ -169,13 +169,46 @@ Use these for custom CA bundles, credential files, or any other operator-specifi
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `postgresql.enabled` | `true` | Deploy bundled PostgreSQL |
-| `postgresql.image` | `postgres:16` | PostgreSQL image |
-| `postgresql.password` | `concourse` | DB password (use a Secret in production) |
-| `postgresql.persistence.size` | `8Gi` | Database storage size |
+| `postgresql.enabled` | `true` | Deploy bundled PostgreSQL (set `false` for external DB) |
+| `postgresql.image` | `postgres:16` | PostgreSQL image (bundled mode only) |
+| `postgresql.host` | `""` | External database host (required when `enabled=false`) |
+| `postgresql.port` | `5432` | External database port |
+| `postgresql.database` | `concourse` | Database name |
+| `postgresql.user` | `concourse` | Database user |
+| `postgresql.password` | `concourse` | Database password (plaintext) |
+| `postgresql.existingSecret` | `""` | K8s Secret name for password (overrides `password`) |
+| `postgresql.passwordSecretKey` | `postgresql-password` | Key in the Secret containing the password |
+| `postgresql.sslmode` | `disable` | SSL mode: `disable`, `require`, `verify-ca`, `verify-full` |
+| `postgresql.caCert` | `""` | Path to CA cert file (mount via `web.extraVolumes`) |
+| `postgresql.clientCert` | `""` | Path to client cert file (for mTLS) |
+| `postgresql.clientKey` | `""` | Path to client key file (for mTLS) |
+| `postgresql.connectTimeout` | `""` | Connection timeout (e.g. `5m`); empty = binary default |
+| `postgresql.socket` | `""` | UNIX domain socket path (alternative to host/port) |
+| `postgresql.persistence.size` | `8Gi` | Database storage size (bundled mode only) |
 
-Set `postgresql.enabled=false` and provide `postgresql.host` / `postgresql.port`
-to use an external database.
+#### External PostgreSQL Example
+
+```yaml
+postgresql:
+  enabled: false
+  host: mydb.rds.amazonaws.com
+  database: concourse
+  user: concourse
+  existingSecret: concourse-db-credentials
+  passwordSecretKey: password
+  sslmode: verify-full
+  caCert: /etc/ssl/rds/rds-ca.pem
+
+web:
+  extraVolumes:
+    - name: rds-ca
+      secret:
+        secretName: rds-ca-cert
+  extraVolumeMounts:
+    - name: rds-ca
+      mountPath: /etc/ssl/rds
+      readOnly: true
+```
 
 ## Architecture
 

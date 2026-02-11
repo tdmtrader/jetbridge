@@ -53,9 +53,29 @@ spec:
             # PostgreSQL
             - --postgres-host={{ include "concourse.postgresHost" . }}
             - --postgres-port={{ include "concourse.postgresPort" . }}
+            {{- if .Values.postgresql.socket }}
+            - --postgres-socket={{ .Values.postgresql.socket }}
+            {{- end }}
             - --postgres-user={{ .Values.postgresql.user }}
+            {{- if not .Values.postgresql.existingSecret }}
             - --postgres-password={{ .Values.postgresql.password }}
+            {{- end }}
             - --postgres-database={{ .Values.postgresql.database }}
+            {{- if ne .Values.postgresql.sslmode "disable" }}
+            - --postgres-sslmode={{ .Values.postgresql.sslmode }}
+            {{- end }}
+            {{- if .Values.postgresql.caCert }}
+            - --postgres-ca-cert={{ .Values.postgresql.caCert }}
+            {{- end }}
+            {{- if .Values.postgresql.clientCert }}
+            - --postgres-client-cert={{ .Values.postgresql.clientCert }}
+            {{- end }}
+            {{- if .Values.postgresql.clientKey }}
+            - --postgres-client-key={{ .Values.postgresql.clientKey }}
+            {{- end }}
+            {{- if .Values.postgresql.connectTimeout }}
+            - --postgres-connect-timeout={{ .Values.postgresql.connectTimeout }}
+            {{- end }}
             # Web
             - --external-url={{ .Values.web.externalUrl }}
             - --cluster-name={{ .Values.web.clusterName }}
@@ -107,6 +127,13 @@ spec:
               value: /keys/tsa_host_key
             - name: CONCOURSE_TSA_AUTHORIZED_KEYS
               value: /keys/authorized_worker_keys
+            {{- if .Values.postgresql.existingSecret }}
+            - name: CONCOURSE_POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.postgresql.existingSecret }}
+                  key: {{ .Values.postgresql.passwordSecretKey }}
+            {{- end }}
             {{- range .Values.web.env }}
             - name: {{ .name }}
               value: {{ .value | quote }}
