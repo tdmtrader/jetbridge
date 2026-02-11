@@ -26,8 +26,9 @@ type ArtifactEntry struct {
 // There is only one ArtifactRepository for the duration of a build plan's
 // execution.
 type Repository struct {
-	repo   sync.Map
-	parent *Repository
+	repo      sync.Map
+	imageRefs sync.Map
+	parent    *Repository
 }
 
 // NewRepository constructs a new repository.
@@ -43,6 +44,26 @@ func (repo *Repository) RegisterArtifact(name ArtifactName, artifact runtime.Art
 		Artifact:  artifact,
 		FromCache: fromCache,
 	})
+}
+
+// RegisterImageRef stores an image reference URL for the given artifact name.
+// This is used by the get step short-circuit on K8s to pass the image URL
+// (e.g. "docker:///repo@sha256:...") through to the task step without
+// requiring a physical volume.
+func (repo *Repository) RegisterImageRef(name ArtifactName, imageURL string) {
+	repo.imageRefs.Store(name, imageURL)
+}
+
+// ImageRefFor looks up the image reference URL for a given ArtifactName.
+func (repo *Repository) ImageRefFor(name ArtifactName) (string, bool) {
+	val, found := repo.imageRefs.Load(name)
+	if !found && repo.parent != nil {
+		return repo.parent.ImageRefFor(name)
+	}
+	if !found {
+		return "", false
+	}
+	return val.(string), true
 }
 
 // ArtifactFor looks up the Artifact for a given ArtifactName. Consumers of

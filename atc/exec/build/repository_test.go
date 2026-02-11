@@ -151,6 +151,39 @@ var _ = Describe("ArtifactRepository", func() {
 			})
 		})
 
+		Describe("RegisterImageRef / ImageRefFor", func() {
+			It("stores and retrieves an image ref by name", func() {
+				repo.RegisterImageRef("my-image", "docker:///myrepo/myimage@sha256:abc123")
+				imageRef, found := repo.ImageRefFor("my-image")
+				Expect(found).To(BeTrue())
+				Expect(imageRef).To(Equal("docker:///myrepo/myimage@sha256:abc123"))
+			})
+
+			It("returns not found for unregistered names", func() {
+				_, found := repo.ImageRefFor("no-such-image")
+				Expect(found).To(BeFalse())
+			})
+
+			Context("with local scopes", func() {
+				It("looks up parent image refs from child scope", func() {
+					repo.RegisterImageRef("parent-image", "docker:///parent@sha256:111")
+					child := repo.NewLocalScope()
+					imageRef, found := child.ImageRefFor("parent-image")
+					Expect(found).To(BeTrue())
+					Expect(imageRef).To(Equal("docker:///parent@sha256:111"))
+				})
+
+				It("allows child to override parent image ref", func() {
+					repo.RegisterImageRef("img", "docker:///old@sha256:000")
+					child := repo.NewLocalScope()
+					child.RegisterImageRef("img", "docker:///new@sha256:999")
+					imageRef, found := child.ImageRefFor("img")
+					Expect(found).To(BeTrue())
+					Expect(imageRef).To(Equal("docker:///new@sha256:999"))
+				})
+			})
+		})
+
 		Context("when a second artifact is registered", func() {
 			BeforeEach(func() {
 				repo.RegisterArtifact("second-artifact", Artifact("second"), false)

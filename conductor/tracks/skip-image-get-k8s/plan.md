@@ -15,7 +15,7 @@ Thread the `nativeImageFetch` flag into the get step and short-circuit the physi
   - When enabled and `plan.Type == "registry-image"`: resolve version, construct ImageURL, store result, emit events — skip container/worker entirely
   - Register a lightweight artifact that carries the ImageURL (no volume)
 
-[checkpoint: pending]
+[checkpoint: dd89bc966]
 
 ---
 
@@ -23,11 +23,11 @@ Thread the `nativeImageFetch` flag into the get step and short-circuit the physi
 
 When a task step uses `image:` referencing a get step that was short-circuited, the task must resolve to an `ImageSpec` with `ImageURL` (no `ImageArtifact`). This may require changes to how the task step reads its image artifact or a new artifact type that carries an image reference.
 
-- [ ] Write tests for task step resolving image from short-circuited get
+- [x] Write tests for task step resolving image from short-circuited get
   - Test: task with `image:` from a short-circuited registry-image get produces correct ImageSpec
   - Test: ImageURL contains repository@digest from the get step's resolved version
   - Test: task still works when get step ran the full download (backward compat)
-- [ ] Implement image reference passthrough from get to task
+- [x] Implement image reference passthrough from get to task
   - Artifact registered by short-circuited get carries ImageURL metadata
   - Task step's image resolution reads ImageURL from artifact when no volume exists
   - JetBridge uses ImageURL to set pod container image (existing path)

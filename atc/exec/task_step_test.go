@@ -958,6 +958,46 @@ var _ = Describe("TaskStep", func() {
 			})
 		})
 
+		Context("when image artifact is from a short-circuited get step (nil artifact with image ref)", func() {
+			BeforeEach(func() {
+				taskPlan.ImageArtifactName = "some-image-artifact"
+
+				// Simulate what the get step short-circuit does:
+				// register nil artifact + image ref URL
+				repo.RegisterArtifact("some-image-artifact", nil, false)
+				repo.RegisterImageRef("some-image-artifact", "docker:///myrepo/myimage@sha256:abc123")
+			})
+
+			It("uses the image ref URL as ImageURL in the containerSpec", func() {
+				Expect(stepErr).ToNot(HaveOccurred())
+				Expect(stepOk).To(BeTrue())
+				Expect(chosenContainer.Spec.ImageSpec).To(Equal(runtime.ImageSpec{
+					ImageURL: "docker:///myrepo/myimage@sha256:abc123",
+				}))
+			})
+
+			It("does not try to stream metadata.json from the artifact", func() {
+				Expect(fakeStreamer.StreamFileCallCount()).To(Equal(0))
+			})
+		})
+
+		Context("when image artifact has a volume (full get step, backward compat)", func() {
+			var imageVolume *runtimetest.Volume
+
+			BeforeEach(func() {
+				taskPlan.ImageArtifactName = "some-image-artifact"
+				imageVolume = runtimetest.NewVolume("image-volume")
+				repo.RegisterArtifact("some-image-artifact", imageVolume, false)
+				// No image ref registered — full download was done
+			})
+
+			It("still uses the ImageArtifact (not ImageURL)", func() {
+				Expect(chosenContainer.Spec.ImageSpec).To(Equal(runtime.ImageSpec{
+					ImageArtifact: imageVolume,
+				}))
+			})
+		})
+
 		Context("when the image_resource is specified (even if rootfs_uri is configured)", func() {
 			var fetchedImageSpec runtime.ImageSpec
 
