@@ -11,6 +11,8 @@ import (
 	"github.com/hashicorp/go-multierror"
 )
 
+const maxCheckContainersPerResource = 2
+
 type containerCollector struct {
 	containerRepository         db.ContainerRepository
 	missingContainerGracePeriod time.Duration
@@ -60,6 +62,12 @@ func (c *containerCollector) Run(ctx context.Context) error {
 	if err != nil {
 		errs = multierror.Append(errs, err)
 		logger.Error("failed-to-clean-up-missing-containers", err)
+	}
+
+	err = c.capExcessCheckContainers(logger.Session("excess-check-containers"))
+	if err != nil {
+		errs = multierror.Append(errs, err)
+		logger.Error("failed-to-cap-excess-check-containers", err)
 	}
 
 	return errs
@@ -128,6 +136,22 @@ func (c *containerCollector) cleanupOrphanedContainers(logger lager.Logger) erro
 				continue
 			}
 		}
+	}
+
+	return nil
+}
+
+func (c *containerCollector) capExcessCheckContainers(logger lager.Logger) error {
+	numDestroyed, err := c.containerRepository.DestroyExcessCheckContainers(maxCheckContainersPerResource, c.hijackContainerGracePeriod)
+	if err != nil {
+		logger.Error("failed-to-destroy-excess-check-containers", err)
+		return err
+	}
+
+	if numDestroyed > 0 {
+		logger.Debug("destroyed-excess-check-containers", lager.Data{
+			"number": numDestroyed,
+		})
 	}
 
 	return nil

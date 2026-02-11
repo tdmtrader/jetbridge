@@ -19,6 +19,7 @@ type ContainerRepository interface {
 	RemoveMissingContainers(time.Duration) (int, error)
 	DestroyUnknownContainers(workerName string, reportedHandles []string) (int, error)
 	DestroyDirtyInMemoryBuildContainers() (int, error)
+	DestroyExcessCheckContainers(maxPerResource int, hijackGracePeriod time.Duration) (int, error)
 }
 
 type containerRepository struct {
@@ -433,6 +434,41 @@ func (repository *containerRepository) DestroyDirtyInMemoryBuildContainers() (in
 		RunWith(repository.conn).
 		Exec()
 
+	if err != nil {
+		return 0, err
+	}
+
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+
+	return int(affected), nil
+}
+
+func (repository *containerRepository) DestroyExcessCheckContainers(maxPerResource int, hijackGracePeriod time.Duration) (int, error) {
+	query := fmt.Sprintf(`
+		WITH ranked AS (
+			SELECT id,
+				ROW_NUMBER() OVER (
+					PARTITION BY resource_config_check_session_id
+					ORDER BY id DESC
+				) AS rn
+			FROM containers
+			WHERE state = '%s'
+			AND meta_type = '%s'
+			AND resource_config_check_session_id IS NOT NULL
+		)
+		UPDATE containers c
+		SET state = '%s'
+		FROM ranked
+		WHERE c.id = ranked.id
+		AND ranked.rn > $1
+		AND (c.last_hijack IS NULL OR NOW() - c.last_hijack > $2)
+	`, atc.ContainerStateCreated, ContainerTypeCheck, atc.ContainerStateDestroying)
+
+	gracePeriodStr := fmt.Sprintf("%.0f seconds", hijackGracePeriod.Seconds())
+	result, err := repository.conn.Exec(query, maxPerResource, gracePeriodStr)
 	if err != nil {
 		return 0, err
 	}

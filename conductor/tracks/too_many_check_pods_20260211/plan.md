@@ -23,7 +23,7 @@ Prevent the scanner from creating duplicate in-memory check builds for the same 
   - Ensure the in-memory build execution path calls back into the check factory to remove the in-flight entry when the build completes or errors
   - Investigate `checkBuildChan` consumer to find the right hook point
 
-- [ ] Task 1.4: Phase 1 Manual Verification
+- [x] Task 1.4: Phase 1 Manual Verification
 
 ---
 
@@ -33,19 +33,21 @@ Limit the number of retained failed check containers per resource to 2, exemptin
 
 **Key files:** `atc/gc/container_collector.go`, `atc/gc/container_collector_test.go`, `atc/db/container_repository.go`
 
-- [ ] Task 2.1: Write tests for failed container cap
+- [x] Task 2.1: Write tests for failed container cap
   - Add test cases:
     - (a) 3+ failed containers for same resource → oldest marked destroying
     - (b) only 2 retained
     - (c) hijacked container is exempt even if oldest
     - (d) failed containers from different resources are independent
 
-- [ ] Task 2.2: Implement failed container cap query
-  - Add a method to `ContainerRepository` (e.g. `DestroyExcessFailedCheckContainers(maxPerResource int)`) that finds failed check containers grouped by resource, ordered by creation time desc, and marks all beyond the Nth as destroying — excluding any with a recent `last_hijack`
+- [x] Task 2.2: Implement failed container cap query
+  - Added `DestroyExcessCheckContainers(maxPerResource int, hijackGracePeriod time.Duration) (int, error)` to `ContainerRepository`
+  - Uses window function to rank check containers by `resource_config_check_session_id`, keeping N newest, marking excess as destroying, exempting recently hijacked
 
-- [ ] Task 2.3: Wire into container collector
-  - Call the new method from `containerCollector.Run()`, using the existing `hijackContainerGracePeriod` for the hijack exemption window
+- [x] Task 2.3: Wire into container collector
+  - Added `capExcessCheckContainers` method called from `containerCollector.Run()`
+  - Uses `hijackContainerGracePeriod` and `maxCheckContainersPerResource = 2`
 
-- [ ] Task 2.4: Phase 2 Manual Verification
+- [~] Task 2.4: Phase 2 Manual Verification
 
 ---
