@@ -496,6 +496,68 @@ var _ = Describe("BuildStepDelegate", func() {
 				Expect(runPlans).To(BeEmpty())
 				Expect(imgSpec.ImageURL).To(Equal("docker:///my-org/my-resource@sha256:abc123"))
 			})
+
+			It("uses the check result digest when VersionFrom is set (no static version)", func() {
+				runPlans = nil
+
+				// Simulate real flow: no static version, VersionFrom points to check plan
+				registryGetPlan.Get.Version = nil
+				registryGetPlan.Get.VersionFrom = &registryCheckPlan.ID
+
+				// Create a stepper where the check step stores a resolved version with digest
+				checkStepper := func(p atc.Plan) exec.Step {
+					runPlans = append(runPlans, p)
+					step := new(execfakes.FakeStep)
+					step.RunStub = func(_ context.Context, state exec.RunState) (bool, error) {
+						if p.Check != nil {
+							state.StoreResult(p.ID, atc.Version{"digest": "sha256:resolved-from-check"})
+						}
+						return true, nil
+					}
+					return step
+				}
+
+				checkRunState := exec.NewRunState(checkStepper, nil)
+				nativeDelegate := engine.NewBuildStepDelegate(fakeBuild, planID, checkRunState, fakeClock, fakePolicyChecker, false, true)
+				imgSpec, _, err := nativeDelegate.FetchImage(context.TODO(), *registryGetPlan, registryCheckPlan, false)
+				Expect(err).ToNot(HaveOccurred())
+
+				By("only running the check plan, not the get plan")
+				Expect(runPlans).To(HaveLen(1))
+				Expect(runPlans[0]).To(Equal(*registryCheckPlan))
+
+				By("using the digest from the check result")
+				Expect(imgSpec.ImageURL).To(Equal("docker:///my-org/my-resource@sha256:resolved-from-check"))
+			})
+
+			It("falls back to source tag when check result has no digest", func() {
+				runPlans = nil
+
+				// Simulate real flow: no static version, VersionFrom points to check plan
+				registryGetPlan.Get.Version = nil
+				registryGetPlan.Get.VersionFrom = &registryCheckPlan.ID
+
+				// Create a stepper where the check step stores a version without digest
+				checkStepper := func(p atc.Plan) exec.Step {
+					runPlans = append(runPlans, p)
+					step := new(execfakes.FakeStep)
+					step.RunStub = func(_ context.Context, state exec.RunState) (bool, error) {
+						if p.Check != nil {
+							state.StoreResult(p.ID, atc.Version{"ref": "some-ref"})
+						}
+						return true, nil
+					}
+					return step
+				}
+
+				checkRunState := exec.NewRunState(checkStepper, nil)
+				nativeDelegate := engine.NewBuildStepDelegate(fakeBuild, planID, checkRunState, fakeClock, fakePolicyChecker, false, true)
+				imgSpec, _, err := nativeDelegate.FetchImage(context.TODO(), *registryGetPlan, registryCheckPlan, false)
+				Expect(err).ToNot(HaveOccurred())
+
+				By("falling back to the source tag")
+				Expect(imgSpec.ImageURL).To(Equal("docker:///my-org/my-resource:latest"))
+			})
 		})
 	})
 

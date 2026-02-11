@@ -276,9 +276,21 @@ func (delegate *buildStepDelegate) FetchImage(
 	// the image reference URL.
 	if delegate.nativeImageFetch && getPlan.Get.Type == "registry-image" {
 		version := atc.Version{}
-		if getPlan.Get.Version != nil {
+
+		// Prefer the dynamically resolved version from the check result
+		if checkPlan != nil {
+			var checkVersion atc.Version
+			fetchState.Result(checkPlan.ID, &checkVersion)
+			if len(checkVersion) > 0 {
+				version = checkVersion
+			}
+		}
+
+		// Fall back to the static version on the get plan
+		if len(version) == 0 && getPlan.Get.Version != nil {
 			version = *getPlan.Get.Version
 		}
+
 		imageURL := imageURLFromSource(getPlan.Get.Type, getPlan.Get.Source, version)
 		return runtime.ImageSpec{
 			ImageURL:   imageURL,
