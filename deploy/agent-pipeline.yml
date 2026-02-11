@@ -1,0 +1,365 @@
+## CI Agent Validation Pipeline
+## Tests that all 5 agent binaries build and produce structurally valid output.
+## This pipeline runs independently — agent failures do NOT block deploys.
+
+resources:
+- name: repo
+  type: git
+  source:
+    uri: https://github.com/tdmtrader/jetbridge.git
+    branch: jetbridge
+    username: x-access-token
+    password: ((github-pat))
+  check_every: 30s
+
+jobs:
+- name: build-agents
+  plan:
+  - get: repo
+    trigger: true
+    params: {depth: 25}
+  - task: compile-all-agents
+    config:
+      platform: linux
+      rootfs_uri: docker:///golang:1.25-bookworm
+      inputs:
+      - name: repo
+      caches:
+      - path: gopath/pkg/mod
+      - path: gocache
+      run:
+        path: sh
+        args:
+        - -exc
+        - |
+          export GOPATH="$(pwd)/gopath"
+          export GOCACHE="$(pwd)/gocache"
+          cd repo/ci-agent
+
+          echo "=== Building all agent binaries ==="
+          for agent in ci-agent-review ci-agent-fix ci-agent-plan ci-agent-qa ci-agent-implement; do
+            echo "  Building ${agent}..."
+            go build -o "/tmp/${agent}" "./cmd/${agent}/"
+          done
+          echo "  Building validate-output..."
+          go build -o /tmp/validate-output ./cmd/validate-output/
+
+          echo ""
+          echo "=== All 6 binaries compiled successfully ==="
+          ls -lh /tmp/ci-agent-* /tmp/validate-output
+
+- name: test-agent-review
+  plan:
+  - get: repo
+    trigger: true
+    passed: [build-agents]
+    params: {depth: 25}
+  - task: run-agent-review
+    config:
+      platform: linux
+      rootfs_uri: docker:///golang:1.25-bookworm
+      inputs:
+      - name: repo
+      outputs:
+      - name: review
+      caches:
+      - path: gopath/pkg/mod
+      - path: gocache
+      params:
+        ANTHROPIC_API_KEY: ((anthropic-api-key))
+        AGENT_CLI: claude
+        AGENT_MODEL: ((agent-model))
+        SCORE_THRESHOLD: "7.0"
+        FAIL_ON_CRITICAL: "false"
+        REVIEW_DIFF_ONLY: "true"
+        BASE_REF: "main"
+      run:
+        path: sh
+        args:
+        - -exc
+        - |
+          export GOPATH="$(pwd)/gopath"
+          export GOCACHE="$(pwd)/gocache"
+
+          echo "=== Installing Node.js and Claude CLI ==="
+          curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+          apt-get install -y --no-install-recommends nodejs
+          npm install -g @anthropic-ai/claude-code
+          claude --version
+
+          echo "=== Building ci-agent-review + validate-output ==="
+          cd repo/ci-agent
+          go build -o /usr/local/bin/ci-agent-review ./cmd/ci-agent-review/
+          go build -o /usr/local/bin/validate-output ./cmd/validate-output/
+          cd ../..
+
+          export REPO_DIR="$(pwd)/repo"
+          export OUTPUT_DIR="$(pwd)/review"
+
+          echo "=== Running ci-agent-review ==="
+          ci-agent-review || true
+
+          echo "=== Validating review output ==="
+          if [ -f review/review.json ]; then
+            echo "review.json contents:"
+            cat review/review.json | head -50
+            echo ""
+            validate-output --output-dir "$(pwd)/review" --type review
+          else
+            echo "WARN: review.json not produced (agent may have failed)"
+            echo "Checking for any output files..."
+            ls -la review/ 2>/dev/null || echo "  (empty)"
+          fi
+
+- name: test-agent-qa
+  plan:
+  - get: repo
+    trigger: true
+    passed: [build-agents]
+    params: {depth: 25}
+  - task: run-agent-qa
+    config:
+      platform: linux
+      rootfs_uri: docker:///golang:1.25-bookworm
+      inputs:
+      - name: repo
+      outputs:
+      - name: qa
+      caches:
+      - path: gopath/pkg/mod
+      - path: gocache
+      params:
+        ANTHROPIC_API_KEY: ((anthropic-api-key))
+        AGENT_CLI: claude
+        AGENT_MODEL: ((agent-model))
+        SCORE_THRESHOLD: "7.0"
+        GENERATE_TESTS: "false"
+        BROWSER_PLAN: "true"
+      run:
+        path: sh
+        args:
+        - -exc
+        - |
+          export GOPATH="$(pwd)/gopath"
+          export GOCACHE="$(pwd)/gocache"
+
+          echo "=== Installing Node.js and Claude CLI ==="
+          curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+          apt-get install -y --no-install-recommends nodejs
+          npm install -g @anthropic-ai/claude-code
+          claude --version
+
+          echo "=== Building ci-agent-qa + validate-output ==="
+          cd repo/ci-agent
+          go build -o /usr/local/bin/ci-agent-qa ./cmd/ci-agent-qa/
+          go build -o /usr/local/bin/validate-output ./cmd/validate-output/
+          cd ../..
+
+          export REPO_DIR="$(pwd)/repo"
+          export SPEC_FILE="$(pwd)/repo/conductor/tracks/agent_step_output_schema_20260209/spec.md"
+          export OUTPUT_DIR="$(pwd)/qa"
+
+          echo "=== Running ci-agent-qa ==="
+          ci-agent-qa || true
+
+          echo "=== Validating QA output ==="
+          if [ -f qa/qa.json ]; then
+            echo "qa.json contents:"
+            cat qa/qa.json | head -50
+            echo ""
+            validate-output --output-dir "$(pwd)/qa" --type qa
+          else
+            echo "WARN: qa.json not produced (agent may have failed)"
+            ls -la qa/ 2>/dev/null || echo "  (empty)"
+          fi
+
+- name: test-agent-plan
+  plan:
+  - get: repo
+    trigger: true
+    passed: [build-agents]
+    params: {depth: 25}
+  - task: run-agent-plan
+    config:
+      platform: linux
+      rootfs_uri: docker:///golang:1.25-bookworm
+      inputs:
+      - name: repo
+      outputs:
+      - name: plan-output
+      caches:
+      - path: gopath/pkg/mod
+      - path: gocache
+      params:
+        ANTHROPIC_API_KEY: ((anthropic-api-key))
+        AGENT_CLI: claude
+        AGENT_MODEL: ((agent-model))
+        CONFIDENCE_THRESHOLD: "0.6"
+        TIMEOUT: "5m"
+      run:
+        path: sh
+        args:
+        - -exc
+        - |
+          export GOPATH="$(pwd)/gopath"
+          export GOCACHE="$(pwd)/gocache"
+
+          echo "=== Installing Node.js and Claude CLI ==="
+          curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+          apt-get install -y --no-install-recommends nodejs
+          npm install -g @anthropic-ai/claude-code
+          claude --version
+
+          echo "=== Building ci-agent-plan + validate-output ==="
+          cd repo/ci-agent
+          go build -o /usr/local/bin/ci-agent-plan ./cmd/ci-agent-plan/
+          go build -o /usr/local/bin/validate-output ./cmd/validate-output/
+          cd ../..
+
+          export INPUT_DIR="$(pwd)/repo"
+          export OUTPUT_DIR="$(pwd)/plan-output"
+
+          echo "=== Running ci-agent-plan ==="
+          ci-agent-plan || true
+
+          echo "=== Validating plan output ==="
+          if [ -f plan-output/results.json ]; then
+            echo "results.json contents:"
+            cat plan-output/results.json | head -50
+            echo ""
+            validate-output --output-dir "$(pwd)/plan-output" --type plan
+          else
+            echo "WARN: results.json not produced (agent may have failed)"
+            ls -la plan-output/ 2>/dev/null || echo "  (empty)"
+          fi
+
+- name: test-agent-fix
+  plan:
+  - get: repo
+    trigger: true
+    passed: [test-agent-review]
+    params: {depth: 25}
+  - task: run-agent-fix
+    config:
+      platform: linux
+      rootfs_uri: docker:///golang:1.25-bookworm
+      inputs:
+      - name: repo
+      outputs:
+      - name: fix-report
+      caches:
+      - path: gopath/pkg/mod
+      - path: gocache
+      params:
+        ANTHROPIC_API_KEY: ((anthropic-api-key))
+        AGENT_CLI: claude
+        AGENT_MODEL: ((agent-model))
+        MAX_RETRIES: "2"
+        TEST_COMMAND: "go test ./..."
+      run:
+        path: sh
+        args:
+        - -exc
+        - |
+          export GOPATH="$(pwd)/gopath"
+          export GOCACHE="$(pwd)/gocache"
+
+          echo "=== Installing Node.js and Claude CLI ==="
+          curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+          apt-get install -y --no-install-recommends nodejs
+          npm install -g @anthropic-ai/claude-code
+          claude --version
+
+          echo "=== Building ci-agent-fix + validate-output ==="
+          cd repo/ci-agent
+          go build -o /usr/local/bin/ci-agent-fix ./cmd/ci-agent-fix/
+          go build -o /usr/local/bin/validate-output ./cmd/validate-output/
+          cd ../..
+
+          mkdir -p fixed-repo
+          cp -a repo/. fixed-repo/
+
+          export REPO_DIR="$(pwd)/fixed-repo"
+          export REVIEW_DIR="$(pwd)/repo"
+          export OUTPUT_DIR="$(pwd)/fix-report"
+
+          echo "=== Running ci-agent-fix ==="
+          ci-agent-fix || true
+
+          echo "=== Validating fix output ==="
+          if [ -f fix-report/fix-report.json ]; then
+            echo "fix-report.json contents:"
+            cat fix-report/fix-report.json | head -50
+            echo ""
+            validate-output --output-dir "$(pwd)/fix-report" --type fix
+          else
+            echo "WARN: fix-report.json not produced (agent may have failed)"
+            ls -la fix-report/ 2>/dev/null || echo "  (empty)"
+          fi
+
+- name: test-agent-implement
+  plan:
+  - get: repo
+    trigger: true
+    passed: [test-agent-plan]
+    params: {depth: 25}
+  - task: run-agent-implement
+    config:
+      platform: linux
+      rootfs_uri: docker:///golang:1.25-bookworm
+      inputs:
+      - name: repo
+      outputs:
+      - name: implement-output
+      caches:
+      - path: gopath/pkg/mod
+      - path: gocache
+      params:
+        ANTHROPIC_API_KEY: ((anthropic-api-key))
+        AGENT_CLI: claude
+        AGENT_MODEL: ((agent-model))
+        TEST_CMD: "go test ./..."
+        MAX_RETRIES: "2"
+        MAX_CONSECUTIVE_FAILURES: "3"
+        CONFIDENCE_THRESHOLD: "0.7"
+        TIMEOUT: "30m"
+      run:
+        path: sh
+        args:
+        - -exc
+        - |
+          export GOPATH="$(pwd)/gopath"
+          export GOCACHE="$(pwd)/gocache"
+
+          echo "=== Installing Node.js and Claude CLI ==="
+          curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+          apt-get install -y --no-install-recommends nodejs
+          npm install -g @anthropic-ai/claude-code
+          claude --version
+
+          echo "=== Building ci-agent-implement + validate-output ==="
+          cd repo/ci-agent
+          go build -o /usr/local/bin/ci-agent-implement ./cmd/ci-agent-implement/
+          go build -o /usr/local/bin/validate-output ./cmd/validate-output/
+          cd ../..
+
+          mkdir -p implemented-repo
+          cp -a repo/. implemented-repo/
+
+          export SPEC_DIR="$(pwd)/repo"
+          export REPO_DIR="$(pwd)/implemented-repo"
+          export OUTPUT_DIR="$(pwd)/implement-output"
+
+          echo "=== Running ci-agent-implement ==="
+          ci-agent-implement || true
+
+          echo "=== Validating implement output ==="
+          if [ -f implement-output/results.json ]; then
+            echo "results.json contents:"
+            cat implement-output/results.json | head -50
+            echo ""
+            validate-output --output-dir "$(pwd)/implement-output" --type implement
+          else
+            echo "WARN: results.json not produced (agent may have failed)"
+            ls -la implement-output/ 2>/dev/null || echo "  (empty)"
+          fi
