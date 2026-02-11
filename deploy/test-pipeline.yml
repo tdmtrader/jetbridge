@@ -1,14 +1,27 @@
+resource_types:
+- name: custom-time
+  type: registry-image
+  source:
+    repository: concourse/time-resource
+
 resources:
 - name: trigger
   type: time
   source:
     interval: 5m
 
+- name: custom-trigger
+  type: custom-time
+  source:
+    interval: 10m
+
 jobs:
 - name: build-and-vet
   plan:
-  - get: trigger
-    trigger: true
+  - in_parallel:
+    - get: trigger
+      trigger: true
+    - get: custom-trigger
   - task: build-and-vet
     config:
       platform: linux
