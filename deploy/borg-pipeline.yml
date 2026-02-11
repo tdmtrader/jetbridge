@@ -522,3 +522,34 @@ jobs:
           echo "Restarter pod '${RESTARTER_POD}' created and running in background"
           echo ""
           echo "=== Deploy task complete (rollout continues in background) ==="
+
+- name: promote-to-main
+  serial_groups: [pipeline]
+  plan:
+  - get: repo
+    trigger: true
+    passed: [deploy, ci-agent-review]
+  - task: push-to-main
+    config:
+      platform: linux
+      rootfs_uri: docker:///alpine/git:latest
+      inputs:
+      - name: repo
+      params:
+        GITHUB_TOKEN: ((github_pat))
+      run:
+        path: sh
+        args:
+        - -exc
+        - |
+          cd repo
+
+          echo "=== Promoting jetbridge -> main ==="
+          COMMIT=$(git rev-parse HEAD)
+          echo "Commit: ${COMMIT}"
+          echo ""
+
+          git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/tdmtrader/jetbridge.git"
+          git push origin HEAD:main
+          echo ""
+          echo "=== Promoted ${COMMIT} to main ==="

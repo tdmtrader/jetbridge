@@ -49,7 +49,11 @@
 - `[x]` Verify `topgun/k8s/` is intact
 
 ## Phase 9: Commit and push to jetbridge
-- `[~]` Commit all changes to `jetbridge` branch
-- `[ ]` Push to `jetbridge` remote
+- `[x]` Commit all changes to `jetbridge` branch — `223c3feb1`
+- `[x]` Push to `jetbridge` remote
+
+## Phase 10: Add promote-to-main job to CI pipeline
+- `[x]` Add `promote-to-main` job to `deploy/borg-pipeline.yml` — runs after `deploy` and `ci-agent-review` pass, pushes jetbridge HEAD to main
+- `[~]` Commit and push to jetbridge
 - `[ ]` CI pipeline on concourse.home runs: full test suite, self-deploy, agent reviews
-- `[ ]` On green: CI git step promotes `jetbridge` -> `main`
+- `[ ]` On green: CI promote-to-main job pushes `jetbridge` -> `main`
