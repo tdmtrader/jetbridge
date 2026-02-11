@@ -229,6 +229,10 @@ type GetPlan struct {
 	// A timeout to enforce on the resource `get` process. Note that fetching the
 	// resource's image does not count towards the timeout.
 	Timeout string `json:"timeout,omitempty"`
+
+	// Produces declares what the resource type produces (e.g. "registry-image").
+	// Set from the resource type's produces field during plan construction.
+	Produces string `json:"produces,omitempty"`
 }
 
 type PutPlan struct {

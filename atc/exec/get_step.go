@@ -185,12 +185,14 @@ func (step *GetStep) run(ctx context.Context, state RunState, delegate GetDelega
 		return false, err
 	}
 
-	// When running on K8s runtime and the resource type is registry-image,
-	// skip the physical image download. The version (digest) is already
-	// resolved; kubelet will pull the image natively.
+	// When running on K8s runtime and the resource type is registry-image
+	// (or a custom type that produces registry-image), skip the physical
+	// image download. The version (digest) is already resolved; kubelet
+	// handles the pull natively.
 	// The fetch_artifact param forces the full download (for build contexts, DinD, etc.).
 	_, fetchArtifact := step.plan.Params["fetch_artifact"]
-	if delegate.NativeImageFetch() && step.plan.Type == "registry-image" && !fetchArtifact {
+	isRegistryImage := step.plan.Type == "registry-image" || step.plan.Produces == "registry-image"
+	if delegate.NativeImageFetch() && isRegistryImage && !fetchArtifact {
 		versionResult := resource.VersionResult{
 			Version:  version,
 			Metadata: nil,
@@ -567,7 +569,7 @@ func (step *GetStep) resourceMountVolume(mounts []runtime.VolumeMount) runtime.V
 // imageURLFromGetPlan constructs a Docker image reference URL from a
 // registry-image get plan's source and resolved version.
 func imageURLFromGetPlan(plan atc.GetPlan, version atc.Version) string {
-	if plan.Type != "registry-image" {
+	if plan.Type != "registry-image" && plan.Produces != "registry-image" {
 		return ""
 	}
 
