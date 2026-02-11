@@ -1,9 +1,13 @@
 package creds
 
 import (
+	"context"
+	"fmt"
 	"time"
 
+	"github.com/concourse/concourse/tracing"
 	"github.com/patrickmn/go-cache"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 type SecretCacheConfig struct {
@@ -44,21 +48,33 @@ func (cs *CachedSecrets) NewSecretLookupPaths(teamName string, pipelineName stri
 	return cs.NewSecretLookupPathsWithParams(SecretLookupParams{Team: teamName, Pipeline: pipelineName}, allowRootPath)
 }
 
-func (cs *CachedSecrets) GetWithParams(secretPath string, context SecretLookupParams) (any, *time.Time, bool, error) {
+func (cs *CachedSecrets) GetWithParams(secretPath string, lookupCtx SecretLookupParams) (any, *time.Time, bool, error) {
+	ctx, span := tracing.StartSpan(context.Background(), "creds.lookup", tracing.Attrs{
+		"secret.path": secretPath,
+	})
+	_ = ctx
+
 	// if there is a corresponding entry in the cache, return it
 	entry, found := cs.cache.Get(secretPath)
 	if found {
 		result := entry.(CacheEntry)
+		span.SetAttributes(attribute.String("cache.hit", "true"))
+		tracing.End(span, nil)
 		return result.value, result.expiration, result.found, nil
 	}
 
+	span.SetAttributes(attribute.String("cache.hit", "false"))
+
 	// otherwise, let's make a request to the underlying secret manager
-	value, expiration, found, err := GetWithParams(cs.secrets, secretPath, context)
+	value, expiration, found, err := GetWithParams(cs.secrets, secretPath, lookupCtx)
 
 	// we don't want to cache errors, let the errors be retried the next time around
 	if err != nil {
+		tracing.End(span, err)
 		return nil, nil, false, err
 	}
+
+	span.SetAttributes(attribute.String("secret.found", fmt.Sprintf("%t", found)))
 
 	// here we want to cache secret value, expiration, and found flag too
 	// meaning that "secret not found" responses will be cached too!
@@ -80,6 +96,7 @@ func (cs *CachedSecrets) GetWithParams(secretPath string, context SecretLookupPa
 		cs.cache.Set(secretPath, entry, cs.cacheConfig.DurationNotFound)
 	}
 
+	tracing.End(span, nil)
 	return value, expiration, found, nil
 }
 

@@ -6,6 +6,9 @@ import (
 
 	"github.com/concourse/concourse/atc/creds"
 	"github.com/concourse/concourse/atc/creds/credsfakes"
+	"github.com/concourse/concourse/tracing"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -189,6 +192,80 @@ var _ = Describe("Caching of secrets", func() {
 		_, _, _, _ = cachedSecretManager.Get("baz")
 		Expect(underlyingReads).To(BeIdenticalTo(2))
 		Expect(underlyingMisses).To(BeIdenticalTo(4))
+	})
+
+	Context("when tracing is enabled", func() {
+		var spanRecorder *tracetest.SpanRecorder
+
+		BeforeEach(func() {
+			spanRecorder = new(tracetest.SpanRecorder)
+			tp := sdktrace.NewTracerProvider(
+				sdktrace.WithSpanProcessor(spanRecorder),
+				sdktrace.WithSyncer(tracetest.NewInMemoryExporter()),
+			)
+			tracing.ConfigureTraceProvider(tp)
+		})
+
+		AfterEach(func() {
+			tracing.Configured = false
+		})
+
+		It("emits a creds.lookup span on cache hit", func() {
+			secretManager.GetStub = makeGetStub("foo", "value", nil, true, nil, &underlyingReads, &underlyingMisses)
+
+			// First call: cache miss (populates cache)
+			_, _, _, _ = cachedSecretManager.Get("foo")
+
+			// Second call: cache hit
+			_, _, _, _ = cachedSecretManager.Get("foo")
+
+			ended := spanRecorder.Ended()
+			Expect(len(ended)).To(BeNumerically(">=", 2))
+
+			// Find the second span (cache hit)
+			var cacheHitSpan sdktrace.ReadOnlySpan
+			hitCount := 0
+			for _, s := range ended {
+				if s.Name() == "creds.lookup" {
+					hitCount++
+					if hitCount == 2 {
+						cacheHitSpan = s
+					}
+				}
+			}
+			Expect(cacheHitSpan).ToNot(BeNil(), "expected second creds.lookup span")
+
+			attrMap := make(map[string]string)
+			for _, a := range cacheHitSpan.Attributes() {
+				attrMap[string(a.Key)] = a.Value.AsString()
+			}
+			Expect(attrMap["secret.path"]).To(Equal("foo"))
+			Expect(attrMap["cache.hit"]).To(Equal("true"))
+		})
+
+		It("emits a creds.lookup span on cache miss", func() {
+			secretManager.GetStub = makeGetStub("bar", "value", nil, true, nil, &underlyingReads, &underlyingMisses)
+
+			_, _, _, _ = cachedSecretManager.Get("bar")
+
+			ended := spanRecorder.Ended()
+			var lookupSpan sdktrace.ReadOnlySpan
+			for _, s := range ended {
+				if s.Name() == "creds.lookup" {
+					lookupSpan = s
+					break
+				}
+			}
+			Expect(lookupSpan).ToNot(BeNil(), "expected creds.lookup span")
+
+			attrMap := make(map[string]string)
+			for _, a := range lookupSpan.Attributes() {
+				attrMap[string(a.Key)] = a.Value.AsString()
+			}
+			Expect(attrMap["secret.path"]).To(Equal("bar"))
+			Expect(attrMap["cache.hit"]).To(Equal("false"))
+			Expect(attrMap["secret.found"]).To(Equal("true"))
+		})
 	})
 
 })
