@@ -86,6 +86,16 @@ type FakeGetDelegate struct {
 	initializingArgsForCall []struct {
 		arg1 lager.Logger
 	}
+	NativeImageFetchStub        func() bool
+	nativeImageFetchMutex       sync.RWMutex
+	nativeImageFetchArgsForCall []struct {
+	}
+	nativeImageFetchReturns struct {
+		result1 bool
+	}
+	nativeImageFetchReturnsOnCall map[int]struct {
+		result1 bool
+	}
 	ResourceCacheUserStub        func() db.ResourceCacheUser
 	resourceCacheUserMutex       sync.RWMutex
 	resourceCacheUserArgsForCall []struct {
@@ -515,6 +525,59 @@ func (fake *FakeGetDelegate) InitializingArgsForCall(i int) lager.Logger {
 	defer fake.initializingMutex.RUnlock()
 	argsForCall := fake.initializingArgsForCall[i]
 	return argsForCall.arg1
+}
+
+func (fake *FakeGetDelegate) NativeImageFetch() bool {
+	fake.nativeImageFetchMutex.Lock()
+	ret, specificReturn := fake.nativeImageFetchReturnsOnCall[len(fake.nativeImageFetchArgsForCall)]
+	fake.nativeImageFetchArgsForCall = append(fake.nativeImageFetchArgsForCall, struct {
+	}{})
+	stub := fake.NativeImageFetchStub
+	fakeReturns := fake.nativeImageFetchReturns
+	fake.recordInvocation("NativeImageFetch", []interface{}{})
+	fake.nativeImageFetchMutex.Unlock()
+	if stub != nil {
+		return stub()
+	}
+	if specificReturn {
+		return ret.result1
+	}
+	return fakeReturns.result1
+}
+
+func (fake *FakeGetDelegate) NativeImageFetchCallCount() int {
+	fake.nativeImageFetchMutex.RLock()
+	defer fake.nativeImageFetchMutex.RUnlock()
+	return len(fake.nativeImageFetchArgsForCall)
+}
+
+func (fake *FakeGetDelegate) NativeImageFetchCalls(stub func() bool) {
+	fake.nativeImageFetchMutex.Lock()
+	defer fake.nativeImageFetchMutex.Unlock()
+	fake.NativeImageFetchStub = stub
+}
+
+func (fake *FakeGetDelegate) NativeImageFetchReturns(result1 bool) {
+	fake.nativeImageFetchMutex.Lock()
+	defer fake.nativeImageFetchMutex.Unlock()
+	fake.NativeImageFetchStub = nil
+	fake.nativeImageFetchReturns = struct {
+		result1 bool
+	}{result1}
+}
+
+func (fake *FakeGetDelegate) NativeImageFetchReturnsOnCall(i int, result1 bool) {
+	fake.nativeImageFetchMutex.Lock()
+	defer fake.nativeImageFetchMutex.Unlock()
+	fake.NativeImageFetchStub = nil
+	if fake.nativeImageFetchReturnsOnCall == nil {
+		fake.nativeImageFetchReturnsOnCall = make(map[int]struct {
+			result1 bool
+		})
+	}
+	fake.nativeImageFetchReturnsOnCall[i] = struct {
+		result1 bool
+	}{result1}
 }
 
 func (fake *FakeGetDelegate) ResourceCacheUser() db.ResourceCacheUser {

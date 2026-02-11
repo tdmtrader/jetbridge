@@ -21,7 +21,7 @@ type DelegateFactory struct {
 }
 
 func (delegate DelegateFactory) GetDelegate(state exec.RunState) exec.GetDelegate {
-	return NewGetDelegate(delegate.build, delegate.plan.ID, state, clock.NewClock(), delegate.policyChecker)
+	return NewGetDelegate(delegate.build, delegate.plan.ID, state, clock.NewClock(), delegate.policyChecker, delegate.nativeImageFetch)
 }
 
 func (delegate DelegateFactory) PutDelegate(state exec.RunState) exec.PutDelegate {
