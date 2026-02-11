@@ -161,6 +161,8 @@ func (p *Process) pollUntilDone(ctx context.Context) (runtime.ProcessResult, err
 	defer watcher.Stop()
 
 	var lastPhase corev1.PodPhase
+	completedInits := make(map[string]bool)
+	startedSidecars := make(map[string]bool)
 	for {
 		pod, err := watcher.Next(ctx)
 		if err != nil {
@@ -174,6 +176,8 @@ func (p *Process) pollUntilDone(ctx context.Context) (runtime.ProcessResult, err
 				oteltrace.WithAttributes(attribute.String("pod.phase", string(pod.Status.Phase))),
 			)
 		}
+
+		emitInitAndSidecarEvents(ctx, pod, completedInits, startedSidecars)
 
 		// Check for terminal failure states before checking exit code.
 		if reason, message, failed := isPodFailedFast(pod); failed {
@@ -343,6 +347,44 @@ func podExitCode(pod *corev1.Pod) (int, bool) {
 		}
 	}
 	return 0, false
+}
+
+// emitInitAndSidecarEvents emits span events for init container completion
+// and sidecar container startup. It uses the provided maps to track which
+// containers have already been reported to avoid duplicate events.
+func emitInitAndSidecarEvents(ctx context.Context, pod *corev1.Pod, completedInits, startedSidecars map[string]bool) {
+	span := oteltrace.SpanFromContext(ctx)
+
+	for _, cs := range pod.Status.InitContainerStatuses {
+		if cs.State.Terminated != nil && !completedInits[cs.Name] {
+			completedInits[cs.Name] = true
+			if cs.State.Terminated.ExitCode == 0 {
+				span.AddEvent("init.container.completed",
+					oteltrace.WithAttributes(attribute.String("container.name", cs.Name)),
+				)
+			} else {
+				span.AddEvent("init.container.failed",
+					oteltrace.WithAttributes(
+						attribute.String("container.name", cs.Name),
+						attribute.String("reason", cs.State.Terminated.Reason),
+						attribute.Int64("exit.code", int64(cs.State.Terminated.ExitCode)),
+					),
+				)
+			}
+		}
+	}
+
+	for _, cs := range pod.Status.ContainerStatuses {
+		if cs.Name == mainContainerName {
+			continue
+		}
+		if cs.State.Running != nil && !startedSidecars[cs.Name] {
+			startedSidecars[cs.Name] = true
+			span.AddEvent("sidecar.started",
+				oteltrace.WithAttributes(attribute.String("container.name", cs.Name)),
+			)
+		}
+	}
 }
 
 // execProcess implements runtime.Process using the exec API. Instead of
@@ -588,6 +630,8 @@ func (p *execProcess) waitForRunning(ctx context.Context) error {
 
 	var lastPod *corev1.Pod
 	var lastPhase corev1.PodPhase
+	completedInits := make(map[string]bool)
+	startedSidecars := make(map[string]bool)
 	for {
 		pod, err := watcher.Next(timeoutCtx)
 		if err != nil {
@@ -610,6 +654,8 @@ func (p *execProcess) waitForRunning(ctx context.Context) error {
 				oteltrace.WithAttributes(attribute.String("pod.phase", string(pod.Status.Phase))),
 			)
 		}
+
+		emitInitAndSidecarEvents(ctx, pod, completedInits, startedSidecars)
 
 		// Check for terminal failure states BEFORE checking Running phase,
 		// because CrashLoopBackOff can occur while the pod phase is Running.

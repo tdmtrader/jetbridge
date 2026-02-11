@@ -1284,4 +1284,142 @@ var _ = Describe("Pod phase transition spans", func() {
 			Expect(eventNames).To(ContainElement("pod.phase.running"))
 		})
 	})
+
+	Context("init container and sidecar lifecycle events", func() {
+		var (
+			execWorker    *jetbridge.Worker
+			execContainer runtime.Container
+			fakeExecutor  *fakeExecExecutor
+		)
+
+		BeforeEach(func() {
+			fakeExecutor = &fakeExecExecutor{}
+			execWorker = jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
+			execWorker.SetExecutor(fakeExecutor)
+
+			setupFakeDBContainer(fakeDBWorker, "init-sidecar-handle")
+
+			var err error
+			execContainer, _, err = execWorker.FindOrCreateContainer(
+				ctx,
+				db.NewFixedHandleContainerOwner("init-sidecar-handle"),
+				db.ContainerMetadata{Type: db.ContainerTypeTask},
+				runtime.ContainerSpec{
+					TeamID:   1,
+					Dir:      "/workdir",
+					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+					Type:     db.ContainerTypeTask,
+					Sidecars: []atc.SidecarConfig{
+						{Name: "postgres", Image: "postgres:15"},
+					},
+				},
+				delegate,
+			)
+			Expect(err).ToNot(HaveOccurred())
+		})
+
+		It("emits init.container.completed span event when init container terminates", func() {
+			process, err := execContainer.Run(ctx, runtime.ProcessSpec{
+				Path: "/bin/sh",
+				Args: []string{"-c", "echo hello"},
+			}, runtime.ProcessIO{
+				Stdin:  bytes.NewBufferString(`{}`),
+				Stdout: new(bytes.Buffer),
+				Stderr: new(bytes.Buffer),
+			})
+			Expect(err).ToNot(HaveOccurred())
+
+			pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "init-sidecar-handle", metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			// Simulate init container completing, then pod reaching Running.
+			pod.Status.Phase = corev1.PodPending
+			pod.Status.InitContainerStatuses = []corev1.ContainerStatus{
+				{
+					Name: "fetch-input-0",
+					State: corev1.ContainerState{
+						Terminated: &corev1.ContainerStateTerminated{
+							ExitCode: 0,
+							Reason:   "Completed",
+						},
+					},
+				},
+			}
+			_, err = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			// Now transition to Running.
+			pod.Status.Phase = corev1.PodRunning
+			pod.Status.ContainerStatuses = []corev1.ContainerStatus{
+				{Name: "main", State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}},
+				{Name: "postgres", State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}},
+			}
+			_, err = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			result, err := process.Wait(ctx)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(result.ExitStatus).To(Equal(0))
+
+			ended := spanRecorder.Ended()
+			var waitSpan sdktrace.ReadOnlySpan
+			for _, s := range ended {
+				if s.Name() == "k8s.exec-process.wait-for-running" {
+					waitSpan = s
+					break
+				}
+			}
+			Expect(waitSpan).ToNot(BeNil(), "expected k8s.exec-process.wait-for-running span")
+
+			eventNames := []string{}
+			for _, e := range waitSpan.Events() {
+				eventNames = append(eventNames, e.Name)
+			}
+			Expect(eventNames).To(ContainElement("init.container.completed"))
+		})
+
+		It("emits sidecar.started span event when sidecar container reaches Running", func() {
+			process, err := execContainer.Run(ctx, runtime.ProcessSpec{
+				Path: "/bin/sh",
+				Args: []string{"-c", "echo hello"},
+			}, runtime.ProcessIO{
+				Stdin:  bytes.NewBufferString(`{}`),
+				Stdout: new(bytes.Buffer),
+				Stderr: new(bytes.Buffer),
+			})
+			Expect(err).ToNot(HaveOccurred())
+
+			pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "init-sidecar-handle", metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			// Simulate pod reaching Running with sidecar started.
+			pod.Status.Phase = corev1.PodRunning
+			pod.Status.ContainerStatuses = []corev1.ContainerStatus{
+				{Name: "main", State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}},
+				{Name: "postgres", State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}},
+			}
+			_, err = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			result, err := process.Wait(ctx)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(result.ExitStatus).To(Equal(0))
+
+			ended := spanRecorder.Ended()
+			var waitSpan sdktrace.ReadOnlySpan
+			for _, s := range ended {
+				if s.Name() == "k8s.exec-process.wait-for-running" {
+					waitSpan = s
+					break
+				}
+			}
+			Expect(waitSpan).ToNot(BeNil(), "expected k8s.exec-process.wait-for-running span")
+
+			eventNames := []string{}
+			for _, e := range waitSpan.Events() {
+				eventNames = append(eventNames, e.Name)
+			}
+			Expect(eventNames).To(ContainElement("sidecar.started"))
+		})
+	})
 })
