@@ -372,7 +372,12 @@ func (step *TaskStep) imageSpec(ctx context.Context, logger lager.Logger, state 
 		if !found {
 			return runtime.ImageSpec{}, MissingTaskImageSourceError{step.plan.ImageArtifactName}
 		}
-		imageSpec.ImageArtifact = artifact
+		if artifact != nil {
+			imageSpec.ImageArtifact = artifact
+		} else if imageRef, ok := state.ArtifactRepository().ImageRefFor(build.ArtifactName(step.plan.ImageArtifactName)); ok {
+			// Short-circuited get step on K8s — no volume, just an image URL
+			imageSpec.ImageURL = imageRef
+		}
 
 		//an image_resource
 	} else if config.ImageResource != nil {

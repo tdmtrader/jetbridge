@@ -829,6 +829,12 @@ var _ = Describe("GetStep", func() {
 				Expect(found).To(BeTrue())
 			})
 
+			It("registers the image ref URL for downstream task steps", func() {
+				imageRef, found := artifactRepository.ImageRefFor(build.ArtifactName("some-name"))
+				Expect(found).To(BeTrue())
+				Expect(imageRef).To(Equal("docker:///my-org/my-image@sha256:abc123def456"))
+			})
+
 			Context("when using a dynamic version source (passed constraint)", func() {
 				versionPlanID := atc.PlanID("check-plan-id")
 
