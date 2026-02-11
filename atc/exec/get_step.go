@@ -198,8 +198,24 @@ func (step *GetStep) run(ctx context.Context, state RunState, delegate GetDelega
 			Metadata: nil,
 		}
 
+		// Create the ResourceCache even though we skip the physical get.
+		// Callers like check_step.FetchImage need the cache to build the
+		// resource config chain for custom resource types.
+		resourceCache, err := step.resourceCacheFactory.FindOrCreateResourceCache(
+			delegate.ResourceCacheUser(),
+			step.plan.Type,
+			version,
+			source,
+			params,
+			imageResourceCache,
+		)
+		if err != nil {
+			return false, fmt.Errorf("create resource cache: %w", err)
+		}
+
 		state.StoreResult(step.planID, GetResult{
-			Name: step.plan.Name,
+			Name:          step.plan.Name,
+			ResourceCache: resourceCache,
 		})
 
 		state.ArtifactRepository().RegisterArtifact(
