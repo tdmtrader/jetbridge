@@ -26,7 +26,7 @@ jobs:
   - task: build-and-vet
     config:
       platform: linux
-      rootfs_uri: docker:///registry.home/concourse-test-runner:v4
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v5
       run:
         path: sh
         args:
@@ -54,7 +54,7 @@ jobs:
   - task: unit-tests
     config:
       platform: linux
-      rootfs_uri: docker:///registry.home/concourse-test-runner:v4
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v5
       run:
         path: sh
         args:
@@ -93,7 +93,7 @@ jobs:
   - task: k8s-runtime-integration-tests
     config:
       platform: linux
-      rootfs_uri: docker:///registry.home/concourse-test-runner:v4
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v5
       run:
         path: sh
         args:
@@ -114,7 +114,7 @@ jobs:
   - task: k8s-live-integration-tests
     config:
       platform: linux
-      rootfs_uri: docker:///registry.home/concourse-test-runner:v4
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v5
       run:
         path: sh
         args:
@@ -158,7 +158,7 @@ jobs:
     privileged: true
     config:
       platform: linux
-      rootfs_uri: docker:///registry.home/concourse-test-runner:v4
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v5
       run:
         path: sh
         args:
@@ -192,7 +192,7 @@ jobs:
           spec:
             containers:
             - name: builder
-              image: registry.home/concourse-test-runner:v4
+              image: registry.home/concourse-test-runner:v5
               imagePullPolicy: IfNotPresent
               command: ["sleep", "600"]
               volumeMounts:
@@ -245,7 +245,7 @@ jobs:
   - task: deploy
     config:
       platform: linux
-      rootfs_uri: docker:///registry.home/concourse-test-runner:v4
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v5
       run:
         path: sh
         args:
@@ -276,7 +276,7 @@ jobs:
             serviceAccountName: concourse-web
             containers:
             - name: restarter
-              image: registry.home/concourse-test-runner:v4
+              image: registry.home/concourse-test-runner:v5
               imagePullPolicy: IfNotPresent
               command: ["sh", "-c"]
               args:
