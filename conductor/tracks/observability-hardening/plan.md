@@ -62,7 +62,7 @@
 - [x] Write tests for secret/credential lookup spans `94b5c959d`
 - [x] Instrument Vault, SSM, Secrets Manager, CredHub lookups in `atc/creds/` with path, duration, cache hit/miss attributes `94b5c959d`
 
-**Checkpoint:** `go test ./atc/db/...` and `go test ./atc/creds/...` pass; credential lookups appear as spans in traces.
+**Checkpoint:** `go test ./atc/db/...` and `go test ./atc/creds/...` pass; credential lookups appear as spans in traces. [checkpoint: 42b27fe78]
 
 ## Phase 6: OTel Metrics Bridge & Exemplars
 
