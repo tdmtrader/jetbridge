@@ -180,8 +180,9 @@ type RunCommand struct {
 		ArtifactStoreClaim    string `long:"kubernetes-artifact-store-claim"      description:"Name of a PersistentVolumeClaim for durable artifact and resource cache storage. In production, back with GCS FUSE via StorageClass. Locally, uses default StorageClass."`
 		ArtifactStoreGCSFuse  bool   `long:"kubernetes-artifact-store-gcs-fuse"  description:"Artifact store PVC is backed by GCS Fuse on GKE. Adds gke-gcsfuse/volumes annotation to task pods."`
 		ArtifactHelperImage   string `long:"kubernetes-artifact-helper-image"     description:"Container image for artifact init containers and sidecar. Defaults to alpine:latest."`
-		ImageRegistryPrefix    string `long:"kubernetes-image-registry-prefix"     description:"Registry path prefix for custom resource type images (e.g. gcr.io/my-project/concourse). Images are resolved as <prefix>/<type-name>."`
-		ImageRegistrySecret    string `long:"kubernetes-image-registry-secret"     description:"Kubernetes Secret name (type kubernetes.io/dockerconfigjson) for registry auth. Auto-added to imagePullSecrets on every pod."`
+		ImageRegistryPrefix    string   `long:"kubernetes-image-registry-prefix"     description:"Registry path prefix for custom resource type images (e.g. gcr.io/my-project/concourse). Images are resolved as <prefix>/<type-name>."`
+		ImageRegistrySecret    string   `long:"kubernetes-image-registry-secret"     description:"Kubernetes Secret name (type kubernetes.io/dockerconfigjson) for registry auth. Auto-added to imagePullSecrets on every pod."`
+		BaseResourceTypes      []string `long:"kubernetes-base-resource-type"        description:"Override or add a base resource type image. Format: name=image (e.g. git=my-registry/git-resource:v2). Can be specified multiple times. Merges with built-in defaults." value-name:"NAME=IMAGE"`
 	} `group:"Kubernetes Runtime"`
 
 	CLIArtifactsDir flag.Dir `long:"cli-artifacts-dir" description:"Directory containing downloadable CLI binaries."`
@@ -1267,6 +1268,9 @@ func (cmd *RunCommand) backendComponents(
 				SecretName: cmd.Kubernetes.ImageRegistrySecret,
 			}
 		}
+		if len(cmd.Kubernetes.BaseResourceTypes) > 0 {
+			k8sCfg.ResourceTypeImages = jetbridge.MergeResourceTypeImages(cmd.Kubernetes.BaseResourceTypes)
+		}
 		k8sClientset, err := jetbridge.NewClientset(k8sCfg)
 		if err != nil {
 			return nil, fmt.Errorf("creating k8s clientset for registrar: %w", err)
@@ -1382,6 +1386,9 @@ func (cmd *RunCommand) constructPool(dbConn db.DbConn, lockFactory lock.LockFact
 				Prefix:     cmd.Kubernetes.ImageRegistryPrefix,
 				SecretName: cmd.Kubernetes.ImageRegistrySecret,
 			}
+		}
+		if len(cmd.Kubernetes.BaseResourceTypes) > 0 {
+			k8sCfg.ResourceTypeImages = jetbridge.MergeResourceTypeImages(cmd.Kubernetes.BaseResourceTypes)
 		}
 		k8sClientset, err := jetbridge.NewClientset(k8sCfg)
 		if err != nil {
@@ -1916,6 +1923,8 @@ func (cmd *RunCommand) constructEngine(
 			workerFactory,
 			lockFactory,
 			cmd.Kubernetes.Namespace != "",
+			resourceConfigFactory,
+			resourceCacheFactory,
 		),
 		secretManager,
 		cmd.varSourcePool,

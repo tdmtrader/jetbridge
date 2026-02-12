@@ -404,7 +404,7 @@ var _ = Describe("BuildStepDelegate", func() {
 		})
 
 		Context("when nativeImageFetch is enabled", func() {
-			It("still runs both check and get plans (short-circuit happens in get_step)", func() {
+			It("still runs both check and get plans when no factories are set", func() {
 				runPlans = nil
 				nativeDelegate := engine.NewBuildStepDelegate(fakeBuild, planID, parentRunState, fakeClock, fakePolicyChecker, false, true)
 				_, resCache, err := nativeDelegate.FetchImage(context.TODO(), *expectedGetPlan, expectedCheckPlan, false)
@@ -415,6 +415,165 @@ var _ = Describe("BuildStepDelegate", func() {
 
 				By("returning a resource cache from the get step")
 				Expect(resCache).ToNot(BeNil())
+			})
+		})
+
+	})
+
+	Describe("Metadata-only FetchImage on K8s", func() {
+		var (
+			nativeDelegate            exec.BuildStepDelegate
+			fakeResourceConfigFactory *dbfakes.FakeResourceConfigFactory
+			fakeResourceCacheFactory  *dbfakes.FakeResourceCacheFactory
+			fakeResourceConfig        *dbfakes.FakeResourceConfig
+			fakeScope                 *dbfakes.FakeResourceConfigScope
+			fakeVersion               *dbfakes.FakeResourceConfigVersion
+			fakeMetadataCache         *dbfakes.FakeResourceCache
+			registryGetPlan           *atc.Plan
+			registryCheckPlan         *atc.Plan
+			runPlans                  []atc.Plan
+		)
+
+		BeforeEach(func() {
+			fakeResourceConfigFactory = new(dbfakes.FakeResourceConfigFactory)
+			fakeResourceCacheFactory = new(dbfakes.FakeResourceCacheFactory)
+			fakeResourceConfig = new(dbfakes.FakeResourceConfig)
+			fakeScope = new(dbfakes.FakeResourceConfigScope)
+			fakeVersion = new(dbfakes.FakeResourceConfigVersion)
+			fakeMetadataCache = new(dbfakes.FakeResourceCache)
+
+			// Wire the DB chain: factory → config → scope → version
+			fakeResourceConfigFactory.FindOrCreateResourceConfigReturns(fakeResourceConfig, nil)
+			fakeResourceConfig.FindOrCreateScopeReturns(fakeScope, nil)
+			fakeScope.LatestVersionReturns(fakeVersion, true, nil)
+			fakeVersion.VersionReturns(db.Version{"digest": "sha256:abc123"})
+
+			fakeResourceCacheFactory.FindOrCreateResourceCacheReturns(fakeMetadataCache, nil)
+			fakeMetadataCache.IDReturns(456)
+
+			fakeBuild.IDReturns(42)
+
+			registryCheckPlan = &atc.Plan{
+				ID: planID + "/image-check",
+				Check: &atc.CheckPlan{
+					Name:   "image",
+					Type:   "registry-image",
+					Source: atc.Source{"repository": "my-registry/my-image", "tag": "latest"},
+				},
+			}
+			registryGetPlan = &atc.Plan{
+				ID: planID + "/image-get",
+				Get: &atc.GetPlan{
+					Name:   "image",
+					Type:   "registry-image",
+					Source: atc.Source{"repository": "my-registry/my-image", "tag": "latest"},
+					Params: atc.Params{},
+				},
+			}
+
+			runPlans = nil
+
+			stepper := func(p atc.Plan) exec.Step {
+				runPlans = append(runPlans, p)
+
+				rCache := new(dbfakes.FakeResourceCache)
+				rCache.IDReturns(789)
+				vol := runtimetest.NewVolume("fallback-image-handle")
+
+				step := new(execfakes.FakeStep)
+				step.RunStub = func(_ context.Context, state exec.RunState) (bool, error) {
+					state.ArtifactRepository().RegisterArtifact("image", vol, false)
+					state.StoreResult(registryGetPlan.ID, exec.GetResult{
+						Name:          "image",
+						ResourceCache: rCache,
+					})
+					return true, nil
+				}
+				return step
+			}
+
+			parentRunState := exec.NewRunState(stepper, nil)
+			nativeDelegate = engine.NewBuildStepDelegateWithFactories(
+				fakeBuild, planID, parentRunState, fakeClock, fakePolicyChecker, false, true,
+				fakeResourceConfigFactory, fakeResourceCacheFactory,
+			)
+		})
+
+		It("resolves the image from DB without running any plans", func() {
+			spec, cache, err := nativeDelegate.FetchImage(context.TODO(), *registryGetPlan, registryCheckPlan, false)
+			Expect(err).ToNot(HaveOccurred())
+
+			By("not executing any plans")
+			Expect(runPlans).To(BeEmpty())
+
+			By("returning an ImageSpec with the correct ImageURL")
+			Expect(spec.ImageURL).To(Equal("docker:///my-registry/my-image@sha256:abc123"))
+			Expect(spec.ImageArtifact).To(BeNil())
+			Expect(spec.Privileged).To(BeFalse())
+
+			By("returning the metadata resource cache")
+			Expect(cache.ID()).To(Equal(456))
+		})
+
+		It("saves the image resource version for build tracking", func() {
+			_, _, err := nativeDelegate.FetchImage(context.TODO(), *registryGetPlan, registryCheckPlan, false)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(fakeBuild.SaveImageResourceVersionCallCount()).To(Equal(1))
+			Expect(fakeBuild.SaveImageResourceVersionArgsForCall(0)).To(Equal(fakeMetadataCache))
+		})
+
+		It("creates the resource cache with the correct arguments", func() {
+			_, _, err := nativeDelegate.FetchImage(context.TODO(), *registryGetPlan, registryCheckPlan, false)
+			Expect(err).ToNot(HaveOccurred())
+
+			Expect(fakeResourceCacheFactory.FindOrCreateResourceCacheCallCount()).To(Equal(1))
+			user, typeName, version, source, params, parentCache := fakeResourceCacheFactory.FindOrCreateResourceCacheArgsForCall(0)
+			Expect(user).ToNot(BeNil())
+			Expect(typeName).To(Equal("registry-image"))
+			Expect(version).To(Equal(atc.Version{"digest": "sha256:abc123"}))
+			Expect(source).To(Equal(atc.Source{"repository": "my-registry/my-image", "tag": "latest"}))
+			Expect(params).To(BeEmpty())
+			Expect(parentCache).To(BeNil())
+		})
+
+		It("passes privileged through to the ImageSpec", func() {
+			spec, _, err := nativeDelegate.FetchImage(context.TODO(), *registryGetPlan, registryCheckPlan, true)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(spec.Privileged).To(BeTrue())
+		})
+
+		Context("when no cached version exists in DB", func() {
+			BeforeEach(func() {
+				fakeScope.LatestVersionReturns(nil, false, nil)
+			})
+
+			It("falls back to running check+get plans", func() {
+				spec, cache, err := nativeDelegate.FetchImage(context.TODO(), *registryGetPlan, registryCheckPlan, false)
+				Expect(err).ToNot(HaveOccurred())
+
+				By("running check and get plans as fallback")
+				Expect(runPlans).To(HaveLen(2))
+
+				By("returning an ImageSpec with an artifact from the fallback get")
+				Expect(spec.ImageArtifact).ToNot(BeNil())
+
+				By("returning the resource cache from the fallback get")
+				Expect(cache.ID()).To(Equal(789))
+			})
+		})
+
+		Context("when the resource type is not registry-image", func() {
+			BeforeEach(func() {
+				registryGetPlan.Get.Type = "custom-type"
+			})
+
+			It("falls back to running check+get plans", func() {
+				_, cache, err := nativeDelegate.FetchImage(context.TODO(), *registryGetPlan, registryCheckPlan, false)
+				Expect(err).ToNot(HaveOccurred())
+
+				By("running plans because non-registry-image type falls back")
+				Expect(runPlans).To(HaveLen(2))
+				Expect(cache.ID()).To(Equal(789))
 			})
 		})
 	})
