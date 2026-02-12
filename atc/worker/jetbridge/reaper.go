@@ -116,6 +116,17 @@ func (r *Reaper) Run(ctx context.Context) error {
 		return fmt.Errorf("destroying containers: %w", err)
 	}
 
+	// Insert "destroying" records for pods that exist in K8s but have no
+	// matching DB container record (orphaned pods). This happens when
+	// in-memory check builds finish and their container records are
+	// transitioned before the Reaper runs.
+	_, err = r.containerRepository.DestroyUnknownContainers(workerName, handles)
+	if err != nil {
+		logger.Error("failed-to-destroy-unknown-containers", err)
+		spanErr = err
+		return fmt.Errorf("destroying unknown containers: %w", err)
+	}
+
 	// Find containers the DB has marked for destruction and delete their pods.
 	destroying, err := r.containerRepository.FindDestroyingContainers(workerName)
 	if err != nil {

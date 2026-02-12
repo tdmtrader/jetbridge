@@ -1,0 +1,7 @@
+{
+  "id": "pod-leak-investigation",
+  "type": "bugfix",
+  "status": "new",
+  "created": "2026-02-11",
+  "description": "Fix K8s pod leak caused by in-memory check build Finish() deleting container DB records instead of transitioning to destroying state"
+}

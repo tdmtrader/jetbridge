@@ -114,3 +114,8 @@
 *Link: [./conductor/tracks/skip-image-get-k8s/](./conductor/tracks/skip-image-get-k8s/)*
 
 ---
+
+## [ ] Track: Pod Leak Investigation — Fix K8s pod leak from in-memory check build Finish() orphaning pods
+*Link: [./conductor/tracks/pod-leak-investigation/](./conductor/tracks/pod-leak-investigation/)*
+
+---

@@ -89,6 +89,19 @@ var _ = Describe("Reaper", func() {
 			_, handles := fakeContainerRepository.UpdateContainersMissingSinceArgsForCall(0)
 			Expect(handles).To(BeEmpty())
 		})
+
+		It("calls DestroyUnknownContainers with active pod handles to catch orphans", func() {
+			createLabelledPod("orphan-pod")
+			createLabelledPod("known-pod")
+
+			err := reaper.Run(ctx)
+			Expect(err).ToNot(HaveOccurred())
+
+			Expect(fakeContainerRepository.DestroyUnknownContainersCallCount()).To(Equal(1))
+			workerName, handles := fakeContainerRepository.DestroyUnknownContainersArgsForCall(0)
+			Expect(workerName).To(Equal("k8s-test-namespace"))
+			Expect(handles).To(ConsistOf("orphan-pod", "known-pod"))
+		})
 	})
 
 	Describe("pod reaping", func() {
