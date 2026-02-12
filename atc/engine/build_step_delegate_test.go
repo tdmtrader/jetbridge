@@ -66,7 +66,7 @@ var _ = Describe("BuildStepDelegate", func() {
 
 		fakePolicyChecker = new(policyfakes.FakeChecker)
 
-		delegate = engine.NewBuildStepDelegate(fakeBuild, planID, runState, fakeClock, fakePolicyChecker, false, false)
+		delegate = engine.NewBuildStepDelegate(fakeBuild, planID, runState, fakeClock, fakePolicyChecker, false)
 	})
 
 	Describe("Initializing", func() {
@@ -169,7 +169,7 @@ var _ = Describe("BuildStepDelegate", func() {
 		})
 
 		JustBeforeEach(func() {
-			delegate = engine.NewBuildStepDelegate(fakeBuild, planID, parentRunState, fakeClock, fakePolicyChecker, false, false)
+			delegate = engine.NewBuildStepDelegate(fakeBuild, planID, parentRunState, fakeClock, fakePolicyChecker, false)
 			imageSpec, resourceCache, fetchErr = delegate.FetchImage(context.TODO(), *expectedGetPlan, expectedCheckPlan, privileged)
 		})
 
@@ -403,10 +403,10 @@ var _ = Describe("BuildStepDelegate", func() {
 			})
 		})
 
-		Context("when nativeImageFetch is enabled", func() {
-			It("still runs both check and get plans when no factories are set", func() {
+		Context("when no resource factories are set", func() {
+			It("runs both check and get plans (no metadata-only shortcut)", func() {
 				runPlans = nil
-				nativeDelegate := engine.NewBuildStepDelegate(fakeBuild, planID, parentRunState, fakeClock, fakePolicyChecker, false, true)
+				nativeDelegate := engine.NewBuildStepDelegate(fakeBuild, planID, parentRunState, fakeClock, fakePolicyChecker, false)
 				_, resCache, err := nativeDelegate.FetchImage(context.TODO(), *expectedGetPlan, expectedCheckPlan, false)
 				Expect(err).ToNot(HaveOccurred())
 
@@ -420,7 +420,7 @@ var _ = Describe("BuildStepDelegate", func() {
 
 	})
 
-	Describe("Metadata-only FetchImage on K8s", func() {
+	Describe("Metadata-only FetchImage", func() {
 		var (
 			nativeDelegate            exec.BuildStepDelegate
 			fakeResourceConfigFactory *dbfakes.FakeResourceConfigFactory
@@ -494,7 +494,7 @@ var _ = Describe("BuildStepDelegate", func() {
 
 			parentRunState := exec.NewRunState(stepper, nil)
 			nativeDelegate = engine.NewBuildStepDelegateWithFactories(
-				fakeBuild, planID, parentRunState, fakeClock, fakePolicyChecker, false, true,
+				fakeBuild, planID, parentRunState, fakeClock, fakePolicyChecker, false,
 				fakeResourceConfigFactory, fakeResourceCacheFactory,
 			)
 		})
@@ -1127,7 +1127,7 @@ var _ = Describe("BuildStepDelegate", func() {
 
 		BeforeEach(func() {
 			runState = exec.NewRunState(noopStepper, credVars)
-			delegate = engine.NewBuildStepDelegate(fakeBuild, "some-plan-id", runState, fakeClock, fakePolicyChecker, false, false)
+			delegate = engine.NewBuildStepDelegate(fakeBuild, "some-plan-id", runState, fakeClock, fakePolicyChecker, false)
 
 			runState.Get(vars.Reference{Path: "source-param"})
 			runState.Get(vars.Reference{Path: "git-key"})
@@ -1212,7 +1212,7 @@ var _ = Describe("BuildStepDelegate", func() {
 
 			Context("is disabled", func() {
 				BeforeEach(func() {
-					delegate = engine.NewBuildStepDelegate(fakeBuild, "some-plan-id", runState, fakeClock, fakePolicyChecker, true, false)
+					delegate = engine.NewBuildStepDelegate(fakeBuild, "some-plan-id", runState, fakeClock, fakePolicyChecker, true)
 				})
 
 				It("does not redact secrets", func() {
@@ -1313,7 +1313,7 @@ var _ = Describe("BuildStepDelegate", func() {
 
 			Context("is disabled", func() {
 				BeforeEach(func() {
-					delegate = engine.NewBuildStepDelegate(fakeBuild, "some-plan-id", runState, fakeClock, fakePolicyChecker, true, false)
+					delegate = engine.NewBuildStepDelegate(fakeBuild, "some-plan-id", runState, fakeClock, fakePolicyChecker, true)
 				})
 
 				It("does not redact secrets", func() {

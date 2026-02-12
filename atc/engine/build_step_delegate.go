@@ -34,11 +34,10 @@ type buildStepDelegate struct {
 	stdout               io.Writer
 	policyChecker        policy.Checker
 	disableRedactSecrets bool
-	nativeImageFetch     bool
 
-	// Optional factories for metadata-only FetchImage on K8s.
-	// When set and nativeImageFetch is true, FetchImage resolves custom type
-	// images from cached DB versions instead of spawning check+get pods.
+	// Optional factories for metadata-only FetchImage.
+	// When set, FetchImage resolves custom type images from cached DB
+	// versions instead of spawning check+get pods.
 	resourceConfigFactory db.ResourceConfigFactory
 	resourceCacheFactory  db.ResourceCacheFactory
 }
@@ -50,7 +49,6 @@ func NewBuildStepDelegate(
 	clock clock.Clock,
 	policyChecker policy.Checker,
 	disableRedactSecrets bool,
-	nativeImageFetch bool,
 ) *buildStepDelegate {
 	return &buildStepDelegate{
 		build:                build,
@@ -61,12 +59,11 @@ func NewBuildStepDelegate(
 		stderr:               nil,
 		policyChecker:        policyChecker,
 		disableRedactSecrets: disableRedactSecrets,
-		nativeImageFetch:     nativeImageFetch,
 	}
 }
 
 // NewBuildStepDelegateWithFactories creates a BuildStepDelegate with resource
-// factories configured for metadata-only FetchImage on K8s.
+// factories configured for metadata-only FetchImage.
 func NewBuildStepDelegateWithFactories(
 	build db.Build,
 	planID atc.PlanID,
@@ -74,11 +71,10 @@ func NewBuildStepDelegateWithFactories(
 	clock clock.Clock,
 	policyChecker policy.Checker,
 	disableRedactSecrets bool,
-	nativeImageFetch bool,
 	resourceConfigFactory db.ResourceConfigFactory,
 	resourceCacheFactory db.ResourceCacheFactory,
 ) exec.BuildStepDelegate {
-	d := NewBuildStepDelegate(build, planID, state, clock, policyChecker, disableRedactSecrets, nativeImageFetch)
+	d := NewBuildStepDelegate(build, planID, state, clock, policyChecker, disableRedactSecrets)
 	d.resourceConfigFactory = resourceConfigFactory
 	d.resourceCacheFactory = resourceCacheFactory
 	return d
@@ -284,10 +280,10 @@ func (delegate *buildStepDelegate) FetchImage(
 		return runtime.ImageSpec{}, nil, err
 	}
 
-	// Try metadata-only path when on K8s with resource factories available.
+	// Try metadata-only path when resource factories are available.
 	// This resolves type images from cached DB versions (populated by lidar)
 	// instead of spawning check+get pods.
-	if delegate.nativeImageFetch && delegate.resourceConfigFactory != nil && delegate.resourceCacheFactory != nil {
+	if delegate.resourceConfigFactory != nil && delegate.resourceCacheFactory != nil {
 		spec, cache, err := delegate.metadataFetchImage(ctx, getPlan, privileged)
 		if err == nil {
 			return spec, cache, nil
@@ -348,9 +344,8 @@ func (delegate *buildStepDelegate) FetchImage(
 }
 
 // imageURLFromSource constructs a Docker image URL from a resource type's
-// source config and fetched version. This is used by the K8s runtime which
-// needs an image reference string rather than an artifact volume. The Garden
-// runtime ignores ImageURL when ImageArtifact is set, so setting both is safe.
+// source config and fetched version. Kubelet uses this URL to pull the image
+// natively instead of downloading it into an artifact volume.
 //
 // The produces parameter allows custom types that produce registry-compatible
 // images to also get a URL constructed (e.g. a type with produces: registry-image).

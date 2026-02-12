@@ -42,7 +42,6 @@ var _ = Describe("Builder", func() {
 				fakePolicyChecker,
 				fakeWorkerFactory,
 				fakeLockFactory,
-				false,
 				nil,
 				nil,
 			)

@@ -782,12 +782,8 @@ var _ = Describe("GetStep", func() {
 		})
 	})
 
-	Context("when nativeImageFetch is enabled", func() {
-		BeforeEach(func() {
-			fakeDelegate.NativeImageFetchReturns(true)
-		})
-
-		Context("and the resource type is registry-image", func() {
+	Context("registry-image get step short-circuit", func() {
+		Context("when the resource type is registry-image", func() {
 			BeforeEach(func() {
 				getPlan.Type = "registry-image"
 				getPlan.Source = atc.Source{
@@ -874,7 +870,7 @@ var _ = Describe("GetStep", func() {
 			})
 		})
 
-		Context("and the resource type is a custom type with produces: registry-image", func() {
+		Context("when the resource type is a custom type with produces: registry-image", func() {
 			BeforeEach(func() {
 				getPlan.Type = "s3-image"
 				getPlan.Produces = "registry-image"
@@ -903,7 +899,7 @@ var _ = Describe("GetStep", func() {
 			})
 		})
 
-		Context("and the resource type is a custom type without produces", func() {
+		Context("when the resource type is a custom type without produces", func() {
 			BeforeEach(func() {
 				getPlan.Type = "s3-image"
 				getPlan.Source = atc.Source{
@@ -923,7 +919,7 @@ var _ = Describe("GetStep", func() {
 			})
 		})
 
-		Context("and the resource type is NOT registry-image", func() {
+		Context("when the resource type is NOT registry-image", func() {
 			BeforeEach(func() {
 				getPlan.Type = "git"
 				getPlan.TypeImage = atc.TypeImage{
@@ -934,27 +930,6 @@ var _ = Describe("GetStep", func() {
 			It("still runs the full get step", func() {
 				Expect(fakePool.FindOrSelectWorkerCallCount()).To(Equal(1))
 			})
-		})
-	})
-
-	Context("when nativeImageFetch is disabled", func() {
-		BeforeEach(func() {
-			fakeDelegate.NativeImageFetchReturns(false)
-			getPlan.Type = "registry-image"
-			getPlan.Source = atc.Source{
-				"repository": "my-org/my-image",
-			}
-			getPlan.Version = &atc.Version{
-				"digest": "sha256:abc123def456",
-			}
-			getPlan.Params = atc.Params{}
-			getPlan.TypeImage = atc.TypeImage{
-				BaseType: "registry-image",
-			}
-		})
-
-		It("still runs the full get step", func() {
-			Expect(fakePool.FindOrSelectWorkerCallCount()).To(Equal(1))
 		})
 	})
 })

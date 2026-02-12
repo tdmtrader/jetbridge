@@ -11,21 +11,20 @@ import (
 )
 
 type DelegateFactory struct {
-	build              db.Build
-	plan               atc.Plan
-	rateLimiter        RateLimiter
-	policyChecker      policy.Checker
-	dbWorkerFactory    db.WorkerFactory
-	lockFactory        lock.LockFactory
-	nativeImageFetch   bool
+	build           db.Build
+	plan            atc.Plan
+	rateLimiter     RateLimiter
+	policyChecker   policy.Checker
+	dbWorkerFactory db.WorkerFactory
+	lockFactory     lock.LockFactory
 
 	resourceConfigFactory db.ResourceConfigFactory
 	resourceCacheFactory  db.ResourceCacheFactory
 }
 
-// configureDelegate injects resource factories and nativeImageFetch into the
-// underlying buildStepDelegate of any delegate created by this factory. This
-// enables the metadata-only FetchImage path on K8s for all delegate types.
+// configureDelegate injects resource factories into the underlying
+// buildStepDelegate of any delegate created by this factory. This enables
+// the metadata-only FetchImage path for all delegate types.
 func (df DelegateFactory) configureDelegate(d any) {
 	var bsd *buildStepDelegate
 	switch v := d.(type) {
@@ -43,14 +42,13 @@ func (df DelegateFactory) configureDelegate(d any) {
 		bsd = &v.buildStepDelegate
 	}
 	if bsd != nil {
-		bsd.nativeImageFetch = df.nativeImageFetch
 		bsd.resourceConfigFactory = df.resourceConfigFactory
 		bsd.resourceCacheFactory = df.resourceCacheFactory
 	}
 }
 
 func (delegate DelegateFactory) GetDelegate(state exec.RunState) exec.GetDelegate {
-	d := NewGetDelegate(delegate.build, delegate.plan.ID, state, clock.NewClock(), delegate.policyChecker, delegate.nativeImageFetch)
+	d := NewGetDelegate(delegate.build, delegate.plan.ID, state, clock.NewClock(), delegate.policyChecker)
 	delegate.configureDelegate(d)
 	return d
 }
@@ -62,13 +60,13 @@ func (delegate DelegateFactory) PutDelegate(state exec.RunState) exec.PutDelegat
 }
 
 func (delegate DelegateFactory) TaskDelegate(state exec.RunState) exec.TaskDelegate {
-	d := NewTaskDelegate(delegate.build, delegate.plan.ID, state, clock.NewClock(), delegate.policyChecker, delegate.dbWorkerFactory, delegate.lockFactory, delegate.nativeImageFetch)
+	d := NewTaskDelegate(delegate.build, delegate.plan.ID, state, clock.NewClock(), delegate.policyChecker, delegate.dbWorkerFactory, delegate.lockFactory)
 	delegate.configureDelegate(d)
 	return d
 }
 
 func (delegate DelegateFactory) RunDelegate(state exec.RunState) exec.RunDelegate {
-	d := NewBuildStepDelegate(delegate.build, delegate.plan.ID, state, clock.NewClock(), delegate.policyChecker, atc.DisableRedactSecrets, delegate.nativeImageFetch)
+	d := NewBuildStepDelegate(delegate.build, delegate.plan.ID, state, clock.NewClock(), delegate.policyChecker, atc.DisableRedactSecrets)
 	delegate.configureDelegate(d)
 	return d
 }
@@ -80,7 +78,7 @@ func (delegate DelegateFactory) CheckDelegate(state exec.RunState) exec.CheckDel
 }
 
 func (delegate DelegateFactory) BuildStepDelegate(state exec.RunState) exec.BuildStepDelegate {
-	d := NewBuildStepDelegate(delegate.build, delegate.plan.ID, state, clock.NewClock(), delegate.policyChecker, atc.DisableRedactSecrets, delegate.nativeImageFetch)
+	d := NewBuildStepDelegate(delegate.build, delegate.plan.ID, state, clock.NewClock(), delegate.policyChecker, atc.DisableRedactSecrets)
 	delegate.configureDelegate(d)
 	return d
 }

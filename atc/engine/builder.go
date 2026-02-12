@@ -40,7 +40,6 @@ func NewStepperFactory(
 	policyChecker policy.Checker,
 	dbWorkerFactory db.WorkerFactory,
 	lockFactory lock.LockFactory,
-	nativeImageFetch bool,
 	resourceConfigFactory db.ResourceConfigFactory,
 	resourceCacheFactory db.ResourceCacheFactory,
 ) StepperFactory {
@@ -51,7 +50,6 @@ func NewStepperFactory(
 		policyChecker:         policyChecker,
 		dbWorkerFactory:       dbWorkerFactory,
 		lockFactory:           lockFactory,
-		nativeImageFetch:      nativeImageFetch,
 		resourceConfigFactory: resourceConfigFactory,
 		resourceCacheFactory:  resourceCacheFactory,
 	}
@@ -64,7 +62,6 @@ type stepperFactory struct {
 	policyChecker         policy.Checker
 	dbWorkerFactory       db.WorkerFactory
 	lockFactory           lock.LockFactory
-	nativeImageFetch      bool
 	resourceConfigFactory db.ResourceConfigFactory
 	resourceCacheFactory  db.ResourceCacheFactory
 }
@@ -87,7 +84,6 @@ func (factory *stepperFactory) buildDelegateFactory(build db.Build, plan atc.Pla
 		policyChecker:         factory.policyChecker,
 		dbWorkerFactory:       factory.dbWorkerFactory,
 		lockFactory:           factory.lockFactory,
-		nativeImageFetch:      factory.nativeImageFetch,
 		resourceConfigFactory: factory.resourceConfigFactory,
 		resourceCacheFactory:  factory.resourceCacheFactory,
 	}
