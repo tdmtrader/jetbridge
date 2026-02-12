@@ -1,0 +1,7 @@
+{
+  "id": "configurable-base-resource-types",
+  "type": "feature",
+  "created": "2026-02-11",
+  "status": "completed",
+  "description": "Allow operators to specify base resource types at install time and make FetchImage a metadata-only operation on K8s"
+}

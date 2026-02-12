@@ -115,7 +115,14 @@
 
 ---
 
-## [ ] Track: Pod Leak Investigation — Fix K8s pod leak from in-memory check build Finish() orphaning pods
+## [x] Track: Pod Leak Investigation — Fix K8s pod leak from in-memory check build Finish() orphaning pods
+*Completed: 2026-02-11*
 *Link: [./conductor/tracks/pod-leak-investigation/](./conductor/tracks/pod-leak-investigation/)*
+
+---
+
+## [x] Track: Configurable Base Resource Types — Operator-defined base types + metadata-only FetchImage on K8s
+*Completed: 2026-02-12*
+*Link: [./conductor/tracks/configurable-base-resource-types/](./conductor/tracks/configurable-base-resource-types/)*
 
 ---
