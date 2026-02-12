@@ -110,8 +110,9 @@
 
 ---
 
-## [ ] Track: Skip Image Resource Download on K8s — Skip get step for image resources on K8s, pass only digest/SHA
-*Link: [./conductor/tracks/skip-image-get-k8s/](./conductor/tracks/skip-image-get-k8s/)*
+## [x] Track: Skip Image Resource Download on K8s — Skip get step for image resources on K8s, pass only digest/SHA
+*Completed: 2026-02-12*
+*Archive: [./conductor/archive/skip-image-get-k8s/](./conductor/archive/skip-image-get-k8s/)*
 
 ---
 
