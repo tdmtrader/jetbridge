@@ -126,3 +126,8 @@
 *Link: [./conductor/tracks/configurable-base-resource-types/](./conductor/tracks/configurable-base-resource-types/)*
 
 ---
+
+## [ ] Track: Slim Check Pods — Remove unnecessary artifact-helper sidecar and GCS FUSE from check pods
+*Link: [./conductor/tracks/slim-check-pods/](./conductor/tracks/slim-check-pods/)*
+
+---
