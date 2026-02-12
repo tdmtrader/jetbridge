@@ -127,7 +127,8 @@
 
 ---
 
-## [ ] Track: Slim Check Pods — Remove unnecessary artifact-helper sidecar and GCS FUSE from check pods
+## [x] Track: Slim Check Pods — Remove unnecessary artifact-helper sidecar and GCS FUSE from check pods
+*Completed: 2026-02-12*
 *Link: [./conductor/tracks/slim-check-pods/](./conductor/tracks/slim-check-pods/)*
 
 ---
