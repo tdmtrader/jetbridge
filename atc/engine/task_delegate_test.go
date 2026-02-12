@@ -11,6 +11,7 @@ import (
 	"code.cloudfoundry.org/clock/fakeclock"
 	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/atc"
+	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbfakes"
 	"github.com/concourse/concourse/atc/db/lock/lockfakes"
 	"github.com/concourse/concourse/atc/event"
@@ -505,6 +506,205 @@ var _ = Describe("TaskDelegate", func() {
 
 				By("returning an ImageURL with the pinned digest")
 				Expect(imgSpec.ImageURL).To(Equal("docker:///my-org/pinned-resource@sha256:pinned999"))
+			})
+		})
+
+		Context("integration: metadata-only FetchImage on K8s", func() {
+			var (
+				fakeResourceConfigFactory *dbfakes.FakeResourceConfigFactory
+				fakeResourceCacheFactory  *dbfakes.FakeResourceCacheFactory
+				fakeResourceConfig        *dbfakes.FakeResourceConfig
+				fakeScope                 *dbfakes.FakeResourceConfigScope
+				fakeVersion               *dbfakes.FakeResourceConfigVersion
+				fakeMetadataCache         *dbfakes.FakeResourceCache
+			)
+
+			BeforeEach(func() {
+				fakeResourceConfigFactory = new(dbfakes.FakeResourceConfigFactory)
+				fakeResourceCacheFactory = new(dbfakes.FakeResourceCacheFactory)
+				fakeResourceConfig = new(dbfakes.FakeResourceConfig)
+				fakeScope = new(dbfakes.FakeResourceConfigScope)
+				fakeVersion = new(dbfakes.FakeResourceConfigVersion)
+				fakeMetadataCache = new(dbfakes.FakeResourceCache)
+
+				// Wire the DB chain: factory → config → scope → version
+				fakeResourceConfigFactory.FindOrCreateResourceConfigReturns(fakeResourceConfig, nil)
+				fakeResourceConfig.FindOrCreateScopeReturns(fakeScope, nil)
+				fakeScope.LatestVersionReturns(fakeVersion, true, nil)
+				fakeVersion.VersionReturns(db.Version{"digest": "sha256:metadata42"})
+
+				fakeResourceCacheFactory.FindOrCreateResourceCacheReturns(fakeMetadataCache, nil)
+				fakeMetadataCache.IDReturns(999)
+
+				fakeBuild.IDReturns(42)
+			})
+
+			It("resolves a custom resource type check via metadata-only path (no plans executed)", func() {
+				customImage := atc.ImageResource{
+					Name:   "image",
+					Type:   "registry-image",
+					Source: atc.Source{"repository": "my-org/custom-check-image"},
+				}
+
+				var integrationRunPlans []atc.Plan
+				integrationStepper := func(p atc.Plan) exec.Step {
+					integrationRunPlans = append(integrationRunPlans, p)
+					step := new(execfakes.FakeStep)
+					step.RunStub = func(_ context.Context, state exec.RunState) (bool, error) {
+						return true, nil
+					}
+					return step
+				}
+
+				integrationState := exec.NewRunState(integrationStepper, nil)
+				nativeDelegate := NewTaskDelegate(fakeBuild, planID, integrationState, fakeClock, fakePolicyChecker, fakeWorkerFactory, fakeLockFactory, true)
+
+				// Inject resource factories for metadata-only path
+				bsd := nativeDelegate.(*taskDelegate).BuildStepDelegate.(*buildStepDelegate)
+				bsd.resourceConfigFactory = fakeResourceConfigFactory
+				bsd.resourceCacheFactory = fakeResourceCacheFactory
+
+				imgSpec, fetchErr := nativeDelegate.FetchImage(
+					context.TODO(), customImage, atc.ResourceTypes{}, false, nil, false,
+				)
+				Expect(fetchErr).ToNot(HaveOccurred())
+
+				By("not executing any check+get plans (metadata-only path)")
+				Expect(integrationRunPlans).To(BeEmpty())
+
+				By("returning an ImageURL from the cached DB version")
+				Expect(imgSpec.ImageURL).To(Equal("docker:///my-org/custom-check-image@sha256:metadata42"))
+				Expect(imgSpec.ImageArtifact).To(BeNil())
+			})
+
+			It("resolves a task image_resource with custom type via metadata-only path", func() {
+				// Custom type that produces registry-image
+				customType := atc.ResourceType{
+					Name:     "s3-image",
+					Type:     "registry-image",
+					Source:   atc.Source{"repository": "my-org/s3-image-resource"},
+					Produces: "registry-image",
+				}
+
+				taskImage := atc.ImageResource{
+					Name:   "image",
+					Type:   "s3-image",
+					Source: atc.Source{"repository": "my-org/task-image", "tag": "v3"},
+				}
+
+				var integrationRunPlans []atc.Plan
+				integrationStepper := func(p atc.Plan) exec.Step {
+					integrationRunPlans = append(integrationRunPlans, p)
+					step := new(execfakes.FakeStep)
+					step.RunStub = func(_ context.Context, state exec.RunState) (bool, error) {
+						return true, nil
+					}
+					return step
+				}
+
+				integrationState := exec.NewRunState(integrationStepper, nil)
+				nativeDelegate := NewTaskDelegate(fakeBuild, planID, integrationState, fakeClock, fakePolicyChecker, fakeWorkerFactory, fakeLockFactory, true)
+
+				// Inject resource factories for metadata-only path
+				bsd := nativeDelegate.(*taskDelegate).BuildStepDelegate.(*buildStepDelegate)
+				bsd.resourceConfigFactory = fakeResourceConfigFactory
+				bsd.resourceCacheFactory = fakeResourceCacheFactory
+
+				imgSpec, fetchErr := nativeDelegate.FetchImage(
+					context.TODO(), taskImage, atc.ResourceTypes{customType}, false, nil, false,
+				)
+				Expect(fetchErr).ToNot(HaveOccurred())
+
+				By("verifying the FetchImagePlan wired Produces on the image get plan")
+				// The task delegate calls FetchImagePlan which looks up s3-image type,
+				// finds produces: registry-image, and sets it on the get plan.
+				// The metadata-only path then accepts it because isRegistryImage is true.
+				Expect(integrationRunPlans).To(BeEmpty(), "metadata-only path should not run plans")
+
+				By("returning an ImageURL from the cached DB version")
+				Expect(imgSpec.ImageURL).To(Equal("docker:///my-org/task-image@sha256:metadata42"))
+			})
+
+			It("falls back to plan-based fetch on first run (empty cache) then succeeds on next", func() {
+				customImage := atc.ImageResource{
+					Name:   "image",
+					Type:   "registry-image",
+					Source: atc.Source{"repository": "my-org/first-run-image"},
+				}
+
+				// First run: no cached version
+				fakeScope.LatestVersionReturns(nil, false, nil)
+
+				fallbackCache := new(dbfakes.FakeResourceCache)
+				fallbackCache.IDReturns(111)
+				fallbackCache.VersionReturns(atc.Version{"digest": "sha256:firstrun"})
+
+				var firstRunPlans []atc.Plan
+				firstRunStepper := func(p atc.Plan) exec.Step {
+					firstRunPlans = append(firstRunPlans, p)
+					step := new(execfakes.FakeStep)
+					step.RunStub = func(_ context.Context, state exec.RunState) (bool, error) {
+						if p.Check != nil {
+							state.StoreResult(p.ID, atc.Version{"digest": "sha256:firstrun"})
+						}
+						if p.Get != nil {
+							vol := runtimetest.NewVolume("fallback-vol")
+							state.ArtifactRepository().RegisterArtifact("image", vol, false)
+							state.StoreResult(p.ID, exec.GetResult{
+								Name:          "image",
+								ResourceCache: fallbackCache,
+							})
+						}
+						return true, nil
+					}
+					return step
+				}
+
+				firstRunState := exec.NewRunState(firstRunStepper, nil)
+				firstRunDelegate := NewTaskDelegate(fakeBuild, planID, firstRunState, fakeClock, fakePolicyChecker, fakeWorkerFactory, fakeLockFactory, true)
+				bsd := firstRunDelegate.(*taskDelegate).BuildStepDelegate.(*buildStepDelegate)
+				bsd.resourceConfigFactory = fakeResourceConfigFactory
+				bsd.resourceCacheFactory = fakeResourceCacheFactory
+
+				imgSpec, fetchErr := firstRunDelegate.FetchImage(
+					context.TODO(), customImage, atc.ResourceTypes{}, false, nil, false,
+				)
+				Expect(fetchErr).ToNot(HaveOccurred())
+
+				By("falling back to check+get plans on first run")
+				Expect(firstRunPlans).To(HaveLen(2))
+				Expect(imgSpec.ImageArtifact).ToNot(BeNil())
+				Expect(imgSpec.ImageURL).To(Equal("docker:///my-org/first-run-image@sha256:firstrun"))
+
+				// Second run: cached version now available (simulating lidar has populated it)
+				fakeScope.LatestVersionReturns(fakeVersion, true, nil)
+				fakeVersion.VersionReturns(db.Version{"digest": "sha256:metadata42"})
+
+				var secondRunPlans []atc.Plan
+				secondRunStepper := func(p atc.Plan) exec.Step {
+					secondRunPlans = append(secondRunPlans, p)
+					step := new(execfakes.FakeStep)
+					step.RunStub = func(_ context.Context, state exec.RunState) (bool, error) {
+						return true, nil
+					}
+					return step
+				}
+
+				secondRunState := exec.NewRunState(secondRunStepper, nil)
+				secondRunDelegate := NewTaskDelegate(fakeBuild, planID, secondRunState, fakeClock, fakePolicyChecker, fakeWorkerFactory, fakeLockFactory, true)
+				bsd2 := secondRunDelegate.(*taskDelegate).BuildStepDelegate.(*buildStepDelegate)
+				bsd2.resourceConfigFactory = fakeResourceConfigFactory
+				bsd2.resourceCacheFactory = fakeResourceCacheFactory
+
+				imgSpec2, fetchErr2 := secondRunDelegate.FetchImage(
+					context.TODO(), customImage, atc.ResourceTypes{}, false, nil, false,
+				)
+				Expect(fetchErr2).ToNot(HaveOccurred())
+
+				By("using metadata-only path on second run (no plans executed)")
+				Expect(secondRunPlans).To(BeEmpty())
+				Expect(imgSpec2.ImageArtifact).To(BeNil())
+				Expect(imgSpec2.ImageURL).To(Equal("docker:///my-org/first-run-image@sha256:metadata42"))
 			})
 		})
 	})
