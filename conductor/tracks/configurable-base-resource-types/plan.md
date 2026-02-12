@@ -66,9 +66,11 @@ Extend `imageURLFromSource` to construct URLs for any type that produces registr
   - Test: behavior-focused DelegateFactory integration tests (11 tests) covering:
     cached resolution, custom types with produces, fallback, transitions,
     build tracking, URL format, events, DB errors, non-registry types, no-factory mode
-- [ ] Verify on concourse.home pipeline
-  - Deploy with `--base-resource-type` flag for custom overrides
-  - Confirm reduced pod count (no check/get pods for type image resolution)
-  - Confirm resources and tasks work correctly with metadata-resolved images
+- [x] Verify on concourse.home pipeline
+  - Built and pushed registry.home/jetbridge:latest manually
+  - Cleared 2050 leaked pods from previous version
+  - Confirmed pipeline bootstraps and runs jobs successfully
+  - Pod count stable (~10 pods vs 2050+ before)
+  - Check pods no longer accumulate unboundedly
 
 ---
