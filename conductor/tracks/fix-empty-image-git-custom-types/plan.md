@@ -16,12 +16,12 @@ Thread the custom resource type name through the `FetchImage` path so that `reso
 
 Add validation in JetBridge to catch empty images before creating pods.
 
-- [ ] Write tests for empty image detection
+- [x] Write tests for empty image detection
   - Test: `resolveImage` returning empty causes `buildPod` to return an error
-  - Test: error message names the resource type and suggests `--resource-type-image`
-- [ ] Implement empty image validation
-  - In `resolveImage` or `buildPod`: if the resolved image is empty, return an error with diagnostic guidance
-  - Ensure the error propagates cleanly to the build log
+  - Test: error message suggests `--resource-type-image`
+- [x] Implement empty image validation
+  - In `buildPod`: if resolved image is empty, return error with diagnostic guidance
+  - Error propagates cleanly through `createPod`/`createPausePod` to `Run`
 
 ## Phase 3: Verification
 

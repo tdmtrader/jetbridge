@@ -299,7 +299,10 @@ func (c *Container) DBContainer() db.CreatedContainer {
 }
 
 func (c *Container) createPod(ctx context.Context, processSpec runtime.ProcessSpec) (*corev1.Pod, error) {
-	pod := c.buildPod(processSpec, []string{processSpec.Path}, processSpec.Args)
+	pod, err := c.buildPod(processSpec, []string{processSpec.Path}, processSpec.Args)
+	if err != nil {
+		return nil, err
+	}
 	return c.clientset.CoreV1().Pods(c.config.Namespace).Create(ctx, pod, metav1.CreateOptions{})
 }
 
@@ -311,15 +314,28 @@ const pauseCommand = "trap 'exit 0' TERM; sleep 86400 & wait"
 // Process.Wait can exec the real command via the PodExecutor with full
 // stdin/stdout/stderr support.
 func (c *Container) createPausePod(ctx context.Context, processSpec runtime.ProcessSpec) (*corev1.Pod, error) {
-	pod := c.buildPod(processSpec, []string{"sh", "-c", pauseCommand}, nil)
+	pod, err := c.buildPod(processSpec, []string{"sh", "-c", pauseCommand}, nil)
+	if err != nil {
+		return nil, err
+	}
 	return c.clientset.CoreV1().Pods(c.config.Namespace).Create(ctx, pod, metav1.CreateOptions{})
 }
 
 // buildPod constructs a Pod spec with the given command and args. All other
 // fields (image, env, volumes, security, etc.) are derived from the
 // Container's spec and config.
-func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, args []string) *corev1.Pod {
+func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, args []string) (*corev1.Pod, error) {
 	image := resolveImage(c.containerSpec.ImageSpec, c.config.ResourceTypeImages)
+	if image == "" {
+		typeName := c.containerSpec.ImageSpec.ResourceType
+		if typeName == "" {
+			typeName = "(unknown)"
+		}
+		return nil, fmt.Errorf(
+			"empty image for resource type %q: configure --resource-type-image %s=<image>",
+			typeName, typeName,
+		)
+	}
 
 	dir := processSpec.Dir
 	if dir == "" {
@@ -377,7 +393,7 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 			Volumes:            volumes,
 			Containers:         containers,
 		},
-	}
+	}, nil
 }
 
 // buildArtifactStoreVolume returns a PVC volume for the artifact store, or nil
