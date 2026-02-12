@@ -508,204 +508,284 @@ var _ = Describe("TaskDelegate", func() {
 				Expect(imgSpec.ImageURL).To(Equal("docker:///my-org/pinned-resource@sha256:pinned999"))
 			})
 		})
+	})
 
-		Context("integration: metadata-only FetchImage on K8s", func() {
-			var (
-				fakeResourceConfigFactory *dbfakes.FakeResourceConfigFactory
-				fakeResourceCacheFactory  *dbfakes.FakeResourceCacheFactory
-				fakeResourceConfig        *dbfakes.FakeResourceConfig
-				fakeScope                 *dbfakes.FakeResourceConfigScope
-				fakeVersion               *dbfakes.FakeResourceConfigVersion
-				fakeMetadataCache         *dbfakes.FakeResourceCache
+	Describe("integration: FetchImage via DelegateFactory", func() {
+		// These tests exercise the full production code path:
+		// DelegateFactory.TaskDelegate() → configureDelegate() → FetchImage()
+		// No internal type assertions or direct struct manipulation.
+
+		var (
+			fakeResourceConfigFactory *dbfakes.FakeResourceConfigFactory
+			fakeResourceCacheFactory  *dbfakes.FakeResourceCacheFactory
+			fakeResourceConfig        *dbfakes.FakeResourceConfig
+			fakeScope                 *dbfakes.FakeResourceConfigScope
+			fakeVersion               *dbfakes.FakeResourceConfigVersion
+			fakeMetadataCache         *dbfakes.FakeResourceCache
+
+			delegateFactory DelegateFactory
+		)
+
+		// Helper: build a DelegateFactory and return a TaskDelegate.
+		// The stepper records which plans are executed so we can observe
+		// whether pods would be spawned.
+		buildTaskDelegate := func(stepper exec.Stepper) (exec.TaskDelegate, *[]atc.Plan) {
+			var executedPlans []atc.Plan
+			wrappedStepper := func(p atc.Plan) exec.Step {
+				executedPlans = append(executedPlans, p)
+				return stepper(p)
+			}
+
+			state := exec.NewRunState(wrappedStepper, nil)
+			plan := atc.Plan{ID: planID}
+
+			delegateFactory = DelegateFactory{
+				build:                 fakeBuild,
+				plan:                  plan,
+				policyChecker:         fakePolicyChecker,
+				dbWorkerFactory:       fakeWorkerFactory,
+				lockFactory:           fakeLockFactory,
+				resourceConfigFactory: fakeResourceConfigFactory,
+				resourceCacheFactory:  fakeResourceCacheFactory,
+			}
+
+			td := delegateFactory.TaskDelegate(state)
+			return td, &executedPlans
+		}
+
+		BeforeEach(func() {
+			fakeResourceConfigFactory = new(dbfakes.FakeResourceConfigFactory)
+			fakeResourceCacheFactory = new(dbfakes.FakeResourceCacheFactory)
+			fakeResourceConfig = new(dbfakes.FakeResourceConfig)
+			fakeScope = new(dbfakes.FakeResourceConfigScope)
+			fakeVersion = new(dbfakes.FakeResourceConfigVersion)
+			fakeMetadataCache = new(dbfakes.FakeResourceCache)
+
+			fakeResourceConfigFactory.FindOrCreateResourceConfigReturns(fakeResourceConfig, nil)
+			fakeResourceConfig.FindOrCreateScopeReturns(fakeScope, nil)
+			fakeScope.LatestVersionReturns(fakeVersion, true, nil)
+			fakeVersion.VersionReturns(db.Version{"digest": "sha256:metadata42"})
+
+			fakeResourceCacheFactory.FindOrCreateResourceCacheReturns(fakeMetadataCache, nil)
+			fakeMetadataCache.IDReturns(999)
+
+			fakeBuild.IDReturns(42)
+		})
+
+		It("resolves a registry-image type without spawning extra pods when the version is cached", func() {
+			noopStepper := func(p atc.Plan) exec.Step {
+				step := new(execfakes.FakeStep)
+				step.RunStub = func(_ context.Context, s exec.RunState) (bool, error) {
+					return true, nil
+				}
+				return step
+			}
+
+			td, executedPlans := buildTaskDelegate(noopStepper)
+
+			imgSpec, err := td.FetchImage(
+				context.TODO(),
+				atc.ImageResource{Name: "image", Type: "registry-image", Source: atc.Source{"repository": "my-org/my-image"}},
+				atc.ResourceTypes{},
+				false, nil, false,
 			)
+			Expect(err).ToNot(HaveOccurred())
 
-			BeforeEach(func() {
-				fakeResourceConfigFactory = new(dbfakes.FakeResourceConfigFactory)
-				fakeResourceCacheFactory = new(dbfakes.FakeResourceCacheFactory)
-				fakeResourceConfig = new(dbfakes.FakeResourceConfig)
-				fakeScope = new(dbfakes.FakeResourceConfigScope)
-				fakeVersion = new(dbfakes.FakeResourceConfigVersion)
-				fakeMetadataCache = new(dbfakes.FakeResourceCache)
+			Expect(*executedPlans).To(BeEmpty(), "no check+get pods should be spawned")
+			Expect(imgSpec.ImageURL).To(Equal("docker:///my-org/my-image@sha256:metadata42"))
+			Expect(imgSpec.ImageArtifact).To(BeNil(), "no volume artifact expected")
+		})
 
-				// Wire the DB chain: factory → config → scope → version
-				fakeResourceConfigFactory.FindOrCreateResourceConfigReturns(fakeResourceConfig, nil)
-				fakeResourceConfig.FindOrCreateScopeReturns(fakeScope, nil)
-				fakeScope.LatestVersionReturns(fakeVersion, true, nil)
-				fakeVersion.VersionReturns(db.Version{"digest": "sha256:metadata42"})
-
-				fakeResourceCacheFactory.FindOrCreateResourceCacheReturns(fakeMetadataCache, nil)
-				fakeMetadataCache.IDReturns(999)
-
-				fakeBuild.IDReturns(42)
-			})
-
-			It("resolves a custom resource type check via metadata-only path (no plans executed)", func() {
-				customImage := atc.ImageResource{
-					Name:   "image",
-					Type:   "registry-image",
-					Source: atc.Source{"repository": "my-org/custom-check-image"},
+		It("resolves a custom type with produces: registry-image without spawning extra pods", func() {
+			noopStepper := func(p atc.Plan) exec.Step {
+				step := new(execfakes.FakeStep)
+				step.RunStub = func(_ context.Context, s exec.RunState) (bool, error) {
+					return true, nil
 				}
+				return step
+			}
 
-				var integrationRunPlans []atc.Plan
-				integrationStepper := func(p atc.Plan) exec.Step {
-					integrationRunPlans = append(integrationRunPlans, p)
-					step := new(execfakes.FakeStep)
-					step.RunStub = func(_ context.Context, state exec.RunState) (bool, error) {
-						return true, nil
+			td, executedPlans := buildTaskDelegate(noopStepper)
+
+			customType := atc.ResourceType{
+				Name: "oci-fetcher", Type: "registry-image",
+				Source: atc.Source{"repository": "my-org/oci-fetcher"},
+				Produces: "registry-image",
+			}
+
+			imgSpec, err := td.FetchImage(
+				context.TODO(),
+				atc.ImageResource{Name: "image", Type: "oci-fetcher", Source: atc.Source{"repository": "my-org/task-image", "tag": "v3"}},
+				atc.ResourceTypes{customType},
+				false, nil, false,
+			)
+			Expect(err).ToNot(HaveOccurred())
+
+			Expect(*executedPlans).To(BeEmpty(), "produces: registry-image should skip pods")
+			Expect(imgSpec.ImageURL).To(Equal("docker:///my-org/task-image@sha256:metadata42"))
+		})
+
+		It("falls back to check+get plans when no cached version exists", func() {
+			fakeScope.LatestVersionReturns(nil, false, nil)
+
+			fallbackCache := new(dbfakes.FakeResourceCache)
+			fallbackCache.IDReturns(111)
+			fallbackCache.VersionReturns(atc.Version{"digest": "sha256:fallback123"})
+
+			fallbackStepper := func(p atc.Plan) exec.Step {
+				step := new(execfakes.FakeStep)
+				step.RunStub = func(_ context.Context, s exec.RunState) (bool, error) {
+					if p.Check != nil {
+						s.StoreResult(p.ID, atc.Version{"digest": "sha256:fallback123"})
 					}
-					return step
-				}
-
-				integrationState := exec.NewRunState(integrationStepper, nil)
-				nativeDelegate := NewTaskDelegate(fakeBuild, planID, integrationState, fakeClock, fakePolicyChecker, fakeWorkerFactory, fakeLockFactory)
-
-				// Inject resource factories for metadata-only path
-				bsd := nativeDelegate.(*taskDelegate).BuildStepDelegate.(*buildStepDelegate)
-				bsd.resourceConfigFactory = fakeResourceConfigFactory
-				bsd.resourceCacheFactory = fakeResourceCacheFactory
-
-				imgSpec, fetchErr := nativeDelegate.FetchImage(
-					context.TODO(), customImage, atc.ResourceTypes{}, false, nil, false,
-				)
-				Expect(fetchErr).ToNot(HaveOccurred())
-
-				By("not executing any check+get plans (metadata-only path)")
-				Expect(integrationRunPlans).To(BeEmpty())
-
-				By("returning an ImageURL from the cached DB version")
-				Expect(imgSpec.ImageURL).To(Equal("docker:///my-org/custom-check-image@sha256:metadata42"))
-				Expect(imgSpec.ImageArtifact).To(BeNil())
-			})
-
-			It("resolves a task image_resource with custom type via metadata-only path", func() {
-				// Custom type that produces registry-image
-				customType := atc.ResourceType{
-					Name:     "s3-image",
-					Type:     "registry-image",
-					Source:   atc.Source{"repository": "my-org/s3-image-resource"},
-					Produces: "registry-image",
-				}
-
-				taskImage := atc.ImageResource{
-					Name:   "image",
-					Type:   "s3-image",
-					Source: atc.Source{"repository": "my-org/task-image", "tag": "v3"},
-				}
-
-				var integrationRunPlans []atc.Plan
-				integrationStepper := func(p atc.Plan) exec.Step {
-					integrationRunPlans = append(integrationRunPlans, p)
-					step := new(execfakes.FakeStep)
-					step.RunStub = func(_ context.Context, state exec.RunState) (bool, error) {
-						return true, nil
+					if p.Get != nil {
+						vol := runtimetest.NewVolume("fallback-vol")
+						s.ArtifactRepository().RegisterArtifact("image", vol, false)
+						s.StoreResult(p.ID, exec.GetResult{
+							Name:          "image",
+							ResourceCache: fallbackCache,
+						})
 					}
-					return step
+					return true, nil
 				}
+				return step
+			}
 
-				integrationState := exec.NewRunState(integrationStepper, nil)
-				nativeDelegate := NewTaskDelegate(fakeBuild, planID, integrationState, fakeClock, fakePolicyChecker, fakeWorkerFactory, fakeLockFactory)
+			td, executedPlans := buildTaskDelegate(fallbackStepper)
 
-				// Inject resource factories for metadata-only path
-				bsd := nativeDelegate.(*taskDelegate).BuildStepDelegate.(*buildStepDelegate)
-				bsd.resourceConfigFactory = fakeResourceConfigFactory
-				bsd.resourceCacheFactory = fakeResourceCacheFactory
+			imgSpec, err := td.FetchImage(
+				context.TODO(),
+				atc.ImageResource{Name: "image", Type: "registry-image", Source: atc.Source{"repository": "my-org/uncached"}},
+				atc.ResourceTypes{},
+				false, nil, false,
+			)
+			Expect(err).ToNot(HaveOccurred())
 
-				imgSpec, fetchErr := nativeDelegate.FetchImage(
-					context.TODO(), taskImage, atc.ResourceTypes{customType}, false, nil, false,
-				)
-				Expect(fetchErr).ToNot(HaveOccurred())
+			Expect(*executedPlans).To(HaveLen(2), "should spawn check+get plans as fallback")
+			Expect(imgSpec.ImageURL).To(Equal("docker:///my-org/uncached@sha256:fallback123"))
+			Expect(imgSpec.ImageArtifact).ToNot(BeNil(), "fallback should produce an artifact")
+		})
 
-				By("verifying the FetchImagePlan wired Produces on the image get plan")
-				// The task delegate calls FetchImagePlan which looks up s3-image type,
-				// finds produces: registry-image, and sets it on the get plan.
-				// The metadata-only path then accepts it because isRegistryImage is true.
-				Expect(integrationRunPlans).To(BeEmpty(), "metadata-only path should not run plans")
+		It("transitions from fallback to cached resolution across runs", func() {
+			// First run: empty cache
+			fakeScope.LatestVersionReturns(nil, false, nil)
 
-				By("returning an ImageURL from the cached DB version")
-				Expect(imgSpec.ImageURL).To(Equal("docker:///my-org/task-image@sha256:metadata42"))
-			})
+			fallbackCache := new(dbfakes.FakeResourceCache)
+			fallbackCache.IDReturns(111)
+			fallbackCache.VersionReturns(atc.Version{"digest": "sha256:v1"})
 
-			It("falls back to plan-based fetch on first run (empty cache) then succeeds on next", func() {
-				customImage := atc.ImageResource{
-					Name:   "image",
-					Type:   "registry-image",
-					Source: atc.Source{"repository": "my-org/first-run-image"},
-				}
-
-				// First run: no cached version
-				fakeScope.LatestVersionReturns(nil, false, nil)
-
-				fallbackCache := new(dbfakes.FakeResourceCache)
-				fallbackCache.IDReturns(111)
-				fallbackCache.VersionReturns(atc.Version{"digest": "sha256:firstrun"})
-
-				var firstRunPlans []atc.Plan
-				firstRunStepper := func(p atc.Plan) exec.Step {
-					firstRunPlans = append(firstRunPlans, p)
-					step := new(execfakes.FakeStep)
-					step.RunStub = func(_ context.Context, state exec.RunState) (bool, error) {
-						if p.Check != nil {
-							state.StoreResult(p.ID, atc.Version{"digest": "sha256:firstrun"})
-						}
-						if p.Get != nil {
-							vol := runtimetest.NewVolume("fallback-vol")
-							state.ArtifactRepository().RegisterArtifact("image", vol, false)
-							state.StoreResult(p.ID, exec.GetResult{
-								Name:          "image",
-								ResourceCache: fallbackCache,
-							})
-						}
-						return true, nil
+			fallbackStepper := func(p atc.Plan) exec.Step {
+				step := new(execfakes.FakeStep)
+				step.RunStub = func(_ context.Context, s exec.RunState) (bool, error) {
+					if p.Check != nil {
+						s.StoreResult(p.ID, atc.Version{"digest": "sha256:v1"})
 					}
-					return step
-				}
-
-				firstRunState := exec.NewRunState(firstRunStepper, nil)
-				firstRunDelegate := NewTaskDelegate(fakeBuild, planID, firstRunState, fakeClock, fakePolicyChecker, fakeWorkerFactory, fakeLockFactory)
-				bsd := firstRunDelegate.(*taskDelegate).BuildStepDelegate.(*buildStepDelegate)
-				bsd.resourceConfigFactory = fakeResourceConfigFactory
-				bsd.resourceCacheFactory = fakeResourceCacheFactory
-
-				imgSpec, fetchErr := firstRunDelegate.FetchImage(
-					context.TODO(), customImage, atc.ResourceTypes{}, false, nil, false,
-				)
-				Expect(fetchErr).ToNot(HaveOccurred())
-
-				By("falling back to check+get plans on first run")
-				Expect(firstRunPlans).To(HaveLen(2))
-				Expect(imgSpec.ImageArtifact).ToNot(BeNil())
-				Expect(imgSpec.ImageURL).To(Equal("docker:///my-org/first-run-image@sha256:firstrun"))
-
-				// Second run: cached version now available (simulating lidar has populated it)
-				fakeScope.LatestVersionReturns(fakeVersion, true, nil)
-				fakeVersion.VersionReturns(db.Version{"digest": "sha256:metadata42"})
-
-				var secondRunPlans []atc.Plan
-				secondRunStepper := func(p atc.Plan) exec.Step {
-					secondRunPlans = append(secondRunPlans, p)
-					step := new(execfakes.FakeStep)
-					step.RunStub = func(_ context.Context, state exec.RunState) (bool, error) {
-						return true, nil
+					if p.Get != nil {
+						vol := runtimetest.NewVolume("v1-vol")
+						s.ArtifactRepository().RegisterArtifact("image", vol, false)
+						s.StoreResult(p.ID, exec.GetResult{Name: "image", ResourceCache: fallbackCache})
 					}
-					return step
+					return true, nil
 				}
+				return step
+			}
 
-				secondRunState := exec.NewRunState(secondRunStepper, nil)
-				secondRunDelegate := NewTaskDelegate(fakeBuild, planID, secondRunState, fakeClock, fakePolicyChecker, fakeWorkerFactory, fakeLockFactory)
-				bsd2 := secondRunDelegate.(*taskDelegate).BuildStepDelegate.(*buildStepDelegate)
-				bsd2.resourceConfigFactory = fakeResourceConfigFactory
-				bsd2.resourceCacheFactory = fakeResourceCacheFactory
+			td1, plans1 := buildTaskDelegate(fallbackStepper)
+			spec1, err := td1.FetchImage(
+				context.TODO(),
+				atc.ImageResource{Name: "image", Type: "registry-image", Source: atc.Source{"repository": "my-org/evolving"}},
+				atc.ResourceTypes{}, false, nil, false,
+			)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(*plans1).To(HaveLen(2), "first run falls back to plans")
+			Expect(spec1.ImageURL).To(Equal("docker:///my-org/evolving@sha256:v1"))
 
-				imgSpec2, fetchErr2 := secondRunDelegate.FetchImage(
-					context.TODO(), customImage, atc.ResourceTypes{}, false, nil, false,
-				)
-				Expect(fetchErr2).ToNot(HaveOccurred())
+			// Second run: lidar has now cached a newer version
+			fakeScope.LatestVersionReturns(fakeVersion, true, nil)
+			fakeVersion.VersionReturns(db.Version{"digest": "sha256:v2-cached"})
 
-				By("using metadata-only path on second run (no plans executed)")
-				Expect(secondRunPlans).To(BeEmpty())
-				Expect(imgSpec2.ImageArtifact).To(BeNil())
-				Expect(imgSpec2.ImageURL).To(Equal("docker:///my-org/first-run-image@sha256:metadata42"))
-			})
+			noopStepper := func(p atc.Plan) exec.Step {
+				step := new(execfakes.FakeStep)
+				step.RunStub = func(_ context.Context, s exec.RunState) (bool, error) { return true, nil }
+				return step
+			}
+
+			td2, plans2 := buildTaskDelegate(noopStepper)
+			spec2, err := td2.FetchImage(
+				context.TODO(),
+				atc.ImageResource{Name: "image", Type: "registry-image", Source: atc.Source{"repository": "my-org/evolving"}},
+				atc.ResourceTypes{}, false, nil, false,
+			)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(*plans2).To(BeEmpty(), "second run uses cached version, no pods")
+			Expect(spec2.ImageURL).To(Equal("docker:///my-org/evolving@sha256:v2-cached"))
+		})
+
+		It("saves image resource version for build tracking", func() {
+			noopStepper := func(p atc.Plan) exec.Step {
+				step := new(execfakes.FakeStep)
+				step.RunStub = func(_ context.Context, s exec.RunState) (bool, error) { return true, nil }
+				return step
+			}
+
+			td, _ := buildTaskDelegate(noopStepper)
+
+			_, err := td.FetchImage(
+				context.TODO(),
+				atc.ImageResource{Name: "image", Type: "registry-image", Source: atc.Source{"repository": "my-org/tracked"}},
+				atc.ResourceTypes{}, false, nil, false,
+			)
+			Expect(err).ToNot(HaveOccurred())
+
+			Expect(fakeBuild.SaveImageResourceVersionCallCount()).To(Equal(1))
+			savedCache := fakeBuild.SaveImageResourceVersionArgsForCall(0)
+			Expect(savedCache.ID()).To(Equal(999))
+		})
+
+		It("produces a valid docker:// URL with digest for all registry-image resolutions", func() {
+			noopStepper := func(p atc.Plan) exec.Step {
+				step := new(execfakes.FakeStep)
+				step.RunStub = func(_ context.Context, s exec.RunState) (bool, error) { return true, nil }
+				return step
+			}
+
+			td, _ := buildTaskDelegate(noopStepper)
+
+			imgSpec, err := td.FetchImage(
+				context.TODO(),
+				atc.ImageResource{Name: "image", Type: "registry-image", Source: atc.Source{"repository": "gcr.io/my-project/worker-image"}},
+				atc.ResourceTypes{}, false, nil, false,
+			)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(imgSpec.ImageURL).To(HavePrefix("docker:///"))
+			Expect(imgSpec.ImageURL).To(ContainSubstring("@sha256:"))
+			Expect(imgSpec.ImageURL).To(ContainSubstring("gcr.io/my-project/worker-image"))
+		})
+
+		It("emits ImageCheck and ImageGet events even when using cached resolution", func() {
+			noopStepper := func(p atc.Plan) exec.Step {
+				step := new(execfakes.FakeStep)
+				step.RunStub = func(_ context.Context, s exec.RunState) (bool, error) { return true, nil }
+				return step
+			}
+
+			td, _ := buildTaskDelegate(noopStepper)
+
+			_, err := td.FetchImage(
+				context.TODO(),
+				atc.ImageResource{Name: "image", Type: "registry-image", Source: atc.Source{"repository": "my-org/events-test"}},
+				atc.ResourceTypes{}, false, nil, false,
+			)
+			Expect(err).ToNot(HaveOccurred())
+
+			// TaskDelegate.FetchImage always saves ImageCheck and ImageGet events
+			// for build log continuity, regardless of whether plans actually run.
+			Expect(fakeBuild.SaveEventCallCount()).To(BeNumerically(">=", 1))
+			var eventTypes []atc.EventType
+			for i := 0; i < fakeBuild.SaveEventCallCount(); i++ {
+				eventTypes = append(eventTypes, fakeBuild.SaveEventArgsForCall(i).EventType())
+			}
+			Expect(eventTypes).To(ContainElement(atc.EventType("image-get")))
 		})
 	})
 })
