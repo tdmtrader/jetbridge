@@ -4170,6 +4170,50 @@ var _ = Describe("Pipeline integration scenarios", func() {
 			})
 		})
 
+		Describe("empty image validation", func() {
+			It("returns an error when resolved image is empty", func() {
+				setupFakeDBContainer(fakeDBWorker, "chk-empty-image-011")
+				container, _, err := pipelineWorker.FindOrCreateContainer(
+					ctx,
+					db.NewFixedHandleContainerOwner("chk-empty-image-011"),
+					db.ContainerMetadata{Type: db.ContainerTypeCheck, StepName: "unknown-type"},
+					runtime.ContainerSpec{
+						TeamID: 1,
+						ImageSpec: runtime.ImageSpec{
+							// Neither ImageURL nor ResourceType is set,
+							// and there's no matching ResourceTypeImages entry
+						},
+					},
+					delegate,
+				)
+				Expect(err).ToNot(HaveOccurred())
+
+				_, err = container.Run(ctx, runtime.ProcessSpec{Path: "/opt/resource/check"}, runtime.ProcessIO{})
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("empty image"))
+			})
+
+			It("includes guidance about --resource-type-image in the error message", func() {
+				setupFakeDBContainer(fakeDBWorker, "chk-empty-image-012")
+				container, _, err := pipelineWorker.FindOrCreateContainer(
+					ctx,
+					db.NewFixedHandleContainerOwner("chk-empty-image-012"),
+					db.ContainerMetadata{Type: db.ContainerTypeCheck, StepName: "unknown-type"},
+					runtime.ContainerSpec{
+						TeamID:    1,
+						ImageSpec: runtime.ImageSpec{},
+					},
+					delegate,
+				)
+				Expect(err).ToNot(HaveOccurred())
+
+				_, err = container.Run(ctx, runtime.ProcessSpec{Path: "/opt/resource/check"}, runtime.ProcessIO{})
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("--resource-type-image"))
+				Expect(err.Error()).To(ContainSubstring("empty image"))
+			})
+		})
+
 		Describe("artifact store init containers for input volumes", func() {
 			It("creates init containers to extract artifacts from PVC for get→task flow", func() {
 				// Simulate a task step that receives an artifact from a
