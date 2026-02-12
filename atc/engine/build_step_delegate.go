@@ -338,7 +338,7 @@ func (delegate *buildStepDelegate) FetchImage(
 	if result.ResourceCache != nil {
 		version = result.ResourceCache.Version()
 	}
-	imageURL := imageURLFromSource(getPlan.Get.Type, getPlan.Get.Source, version)
+	imageURL := imageURLFromSource(getPlan.Get.Type, getPlan.Get.Produces, getPlan.Get.Source, version)
 
 	return runtime.ImageSpec{
 		ImageArtifact: artifact,
@@ -351,8 +351,11 @@ func (delegate *buildStepDelegate) FetchImage(
 // source config and fetched version. This is used by the K8s runtime which
 // needs an image reference string rather than an artifact volume. The Garden
 // runtime ignores ImageURL when ImageArtifact is set, so setting both is safe.
-func imageURLFromSource(resourceType string, source atc.Source, version atc.Version) string {
-	if resourceType != "registry-image" {
+//
+// The produces parameter allows custom types that produce registry-compatible
+// images to also get a URL constructed (e.g. a type with produces: registry-image).
+func imageURLFromSource(resourceType string, produces string, source atc.Source, version atc.Version) string {
+	if resourceType != "registry-image" && produces != "registry-image" {
 		return ""
 	}
 
@@ -385,10 +388,10 @@ func (delegate *buildStepDelegate) metadataFetchImage(
 	getPlan atc.Plan,
 	privileged bool,
 ) (runtime.ImageSpec, db.ResourceCache, error) {
-	// Only registry-image base type supports metadata-only resolution.
-	// Custom types that depend on other custom types need the recursive
-	// plan-based FetchImage to resolve the chain.
-	if getPlan.Get.Type != "registry-image" {
+	// Only types that are or produce registry-image support metadata-only
+	// resolution. The source must follow registry-image conventions (repository field).
+	isRegistryImage := getPlan.Get.Type == "registry-image" || getPlan.Get.Produces == "registry-image"
+	if !isRegistryImage {
 		return runtime.ImageSpec{}, nil, fmt.Errorf("metadata-only fetch not supported for type %q", getPlan.Get.Type)
 	}
 
@@ -426,7 +429,7 @@ func (delegate *buildStepDelegate) metadataFetchImage(
 	version := atc.Version(latestVersion.Version())
 
 	// Construct image URL (e.g. docker:///repo@sha256:abc123)
-	imageURL := imageURLFromSource(getPlan.Get.Type, source, version)
+	imageURL := imageURLFromSource(getPlan.Get.Type, getPlan.Get.Produces, source, version)
 	if imageURL == "" {
 		return runtime.ImageSpec{}, nil, fmt.Errorf("cannot construct image URL for type %q", getPlan.Get.Type)
 	}
