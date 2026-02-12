@@ -347,13 +347,14 @@ var _ = Describe("ContainerRepository", func() {
 					Expect(err).NotTo(HaveOccurred())
 				})
 
-				It("finds container for deletion", func() {
+				It("transitions container to destroying state for Reaper cleanup", func() {
 					creatingContainers, createdContainers, destroyingContainers, err := containerRepository.FindOrphanedContainers()
 					Expect(err).NotTo(HaveOccurred())
 
 					Expect(creatingContainers).To(BeEmpty())
 					Expect(createdContainers).To(BeEmpty())
-					Expect(destroyingContainers).To(BeEmpty())
+					By("container is now in destroying state (orphaned with nil in_memory_build_id)")
+					Expect(destroyingContainers).To(HaveLen(1))
 				})
 			})
 		})

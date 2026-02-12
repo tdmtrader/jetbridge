@@ -452,8 +452,13 @@ func (b *inMemoryCheckBuild) Finish(status BuildStatus) error {
 		}
 	}
 
-	// Release the containers using in this build, so that they can be GC-ed.
-	_, err = psql.Delete("containers").
+	// Transition containers to "destroying" so the Reaper will delete their
+	// K8s pods. Previously this was a DELETE, which orphaned pods because the
+	// Reaper only cleans up containers it can find in "destroying" state.
+	_, err = psql.Update("containers").
+		Set("state", atc.ContainerStateDestroying).
+		Set("in_memory_build_id", nil).
+		Set("in_memory_build_create_time", nil).
 		Where(sq.Eq{"in_memory_build_id": b.preId}).
 		Where(sq.Eq{"in_memory_build_create_time": b.createTime}).
 		RunWith(tx).
