@@ -180,6 +180,7 @@ var _ = Describe("BuildStepDelegate", func() {
 		It("returns an image spec containing the artifact", func() {
 			Expect(imageSpec).To(Equal(runtime.ImageSpec{
 				ImageArtifact: volume,
+				ResourceType:  "image",
 				Privileged:    false,
 			}))
 		})
@@ -208,6 +209,7 @@ var _ = Describe("BuildStepDelegate", func() {
 			It("returns a privileged image spec", func() {
 				Expect(imageSpec).To(Equal(runtime.ImageSpec{
 					ImageArtifact: volume,
+					ResourceType:  "image",
 					Privileged:    true,
 				}))
 			})
@@ -415,6 +417,97 @@ var _ = Describe("BuildStepDelegate", func() {
 
 				By("returning a resource cache from the get step")
 				Expect(resCache).ToNot(BeNil())
+			})
+		})
+
+		Context("when the custom type is not registry-image (e.g. git-backed)", func() {
+			BeforeEach(func() {
+				expectedGetPlan = &atc.Plan{
+					ID: planID + "/image-get",
+					Get: &atc.GetPlan{
+						Name:   "git-with-ado",
+						Type:   "git",
+						Source: atc.Source{"uri": "https://dev.azure.com/org/repo"},
+					},
+				}
+				expectedCheckPlan = &atc.Plan{
+					ID: planID + "/image-check",
+					Check: &atc.CheckPlan{
+						Name:   "git-with-ado",
+						Type:   "git",
+						Source: atc.Source{"uri": "https://dev.azure.com/org/repo"},
+					},
+				}
+			})
+
+			It("sets ImageSpec.ResourceType to the custom type name from the get plan", func() {
+				Expect(fetchErr).ToNot(HaveOccurred())
+
+				By("ResourceType is set to the custom type name so resolveImage can map it")
+				Expect(imageSpec.ResourceType).To(Equal("git-with-ado"))
+			})
+
+			It("still includes the artifact", func() {
+				Expect(fetchErr).ToNot(HaveOccurred())
+				Expect(imageSpec.ImageArtifact).ToNot(BeNil())
+			})
+
+			It("has an empty ImageURL since git types don't produce Docker URLs", func() {
+				Expect(fetchErr).ToNot(HaveOccurred())
+				Expect(imageSpec.ImageURL).To(BeEmpty())
+			})
+		})
+
+		Context("when the custom type is registry-image", func() {
+			BeforeEach(func() {
+				fakeResourceCache = new(dbfakes.FakeResourceCache)
+				fakeResourceCache.IDReturns(999)
+				fakeResourceCache.VersionReturns(atc.Version{"digest": "sha256:abc123"})
+
+				expectedGetPlan = &atc.Plan{
+					ID: planID + "/image-get",
+					Get: &atc.GetPlan{
+						Name:   "my-custom-registry-type",
+						Type:   "registry-image",
+						Source: atc.Source{"repository": "my-org/custom-image"},
+					},
+				}
+				expectedCheckPlan = &atc.Plan{
+					ID: planID + "/image-check",
+					Check: &atc.CheckPlan{
+						Name:   "my-custom-registry-type",
+						Type:   "registry-image",
+						Source: atc.Source{"repository": "my-org/custom-image"},
+					},
+				}
+
+				stepper = func(p atc.Plan) exec.Step {
+					runPlans = append(runPlans, p)
+
+					vol := runtimetest.NewVolume("registry-image-handle")
+					step := new(execfakes.FakeStep)
+					step.RunStub = func(_ context.Context, state exec.RunState) (bool, error) {
+						state.ArtifactRepository().RegisterArtifact("image", vol, false)
+						state.StoreResult(expectedGetPlan.ID, exec.GetResult{
+							Name:          "image",
+							ResourceCache: fakeResourceCache,
+						})
+						return true, nil
+					}
+					return step
+				}
+
+				parentRunState = exec.NewRunState(stepper, nil)
+			})
+
+			It("uses ImageURL from the registry source (no ResourceType needed)", func() {
+				Expect(fetchErr).ToNot(HaveOccurred())
+				Expect(imageSpec.ImageURL).To(Equal("docker:///my-org/custom-image@sha256:abc123"))
+			})
+
+			It("does not set ResourceType since ImageURL is sufficient", func() {
+				Expect(fetchErr).ToNot(HaveOccurred())
+				Expect(imageSpec.ResourceType).To(BeEmpty())
 			})
 		})
 

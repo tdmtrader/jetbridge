@@ -336,11 +336,20 @@ func (delegate *buildStepDelegate) FetchImage(
 	}
 	imageURL := imageURLFromSource(getPlan.Get.Type, getPlan.Get.Produces, getPlan.Get.Source, version)
 
-	return runtime.ImageSpec{
+	spec := runtime.ImageSpec{
 		ImageArtifact: artifact,
 		ImageURL:      imageURL,
 		Privileged:    privileged,
-	}, result.ResourceCache, nil
+	}
+
+	// When imageURL is empty (non-registry-image custom types like git-backed),
+	// set ResourceType to the custom type name so JetBridge's resolveImage can
+	// look it up in the operator-provided ResourceTypeImages mapping.
+	if imageURL == "" {
+		spec.ResourceType = getPlan.Get.Name
+	}
+
+	return spec, result.ResourceCache, nil
 }
 
 // imageURLFromSource constructs a Docker image URL from a resource type's

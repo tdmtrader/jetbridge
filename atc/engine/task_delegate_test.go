@@ -262,6 +262,7 @@ var _ = Describe("TaskDelegate", func() {
 		It("returns an image spec containing the artifact", func() {
 			Expect(imageSpec).To(Equal(runtime.ImageSpec{
 				ImageArtifact: volume,
+				ResourceType:  "image",
 				Privileged:    false,
 			}))
 		})
