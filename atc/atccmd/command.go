@@ -1922,7 +1922,6 @@ func (cmd *RunCommand) constructEngine(
 			policyChecker,
 			workerFactory,
 			lockFactory,
-			cmd.Kubernetes.Namespace != "",
 			resourceConfigFactory,
 			resourceCacheFactory,
 		),

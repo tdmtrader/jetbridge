@@ -20,30 +20,22 @@ func NewGetDelegate(
 	state exec.RunState,
 	clock clock.Clock,
 	policyChecker policy.Checker,
-	nativeImageFetch ...bool,
 ) exec.GetDelegate {
-	nativeFetch := len(nativeImageFetch) > 0 && nativeImageFetch[0]
 	return &getDelegate{
-		BuildStepDelegate: NewBuildStepDelegate(build, planID, state, clock, policyChecker, atc.DisableRedactSecrets, nativeFetch),
+		BuildStepDelegate: NewBuildStepDelegate(build, planID, state, clock, policyChecker, atc.DisableRedactSecrets),
 
-		eventOrigin:      event.Origin{ID: event.OriginID(planID)},
-		build:            build,
-		clock:            clock,
-		nativeImageFetch: nativeFetch,
+		eventOrigin: event.Origin{ID: event.OriginID(planID)},
+		build:       build,
+		clock:       clock,
 	}
 }
 
 type getDelegate struct {
 	exec.BuildStepDelegate
 
-	build            db.Build
-	eventOrigin      event.Origin
-	clock            clock.Clock
-	nativeImageFetch bool
-}
-
-func (d *getDelegate) NativeImageFetch() bool {
-	return d.nativeImageFetch
+	build       db.Build
+	eventOrigin event.Origin
+	clock       clock.Clock
 }
 
 func (d *getDelegate) Initializing(logger lager.Logger) {

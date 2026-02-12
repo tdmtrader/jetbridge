@@ -312,7 +312,7 @@ var _ = Describe("TaskDelegate", func() {
 			})
 		})
 
-		Context("when nativeImageFetch is enabled", func() {
+		Context("FetchImage event emission", func() {
 			BeforeEach(func() {
 				imageResource = atc.ImageResource{
 					Type:   "registry-image",
@@ -353,7 +353,7 @@ var _ = Describe("TaskDelegate", func() {
 				}
 
 				runState := exec.NewRunState(stepper, nil)
-				delegate = NewTaskDelegate(fakeBuild, planID, runState, fakeClock, fakePolicyChecker, fakeWorkerFactory, fakeLockFactory, true)
+				delegate = NewTaskDelegate(fakeBuild, planID, runState, fakeClock, fakePolicyChecker, fakeWorkerFactory, fakeLockFactory)
 			})
 
 			It("succeeds", func() {
@@ -436,7 +436,7 @@ var _ = Describe("TaskDelegate", func() {
 				}
 
 				integrationState := exec.NewRunState(integrationStepper, nil)
-				nativeDelegate := NewTaskDelegate(fakeBuild, planID, integrationState, fakeClock, fakePolicyChecker, fakeWorkerFactory, fakeLockFactory, true)
+				nativeDelegate := NewTaskDelegate(fakeBuild, planID, integrationState, fakeClock, fakePolicyChecker, fakeWorkerFactory, fakeLockFactory)
 
 				imgSpec, fetchErr := nativeDelegate.FetchImage(
 					context.TODO(), customImage, atc.ResourceTypes{}, false, atc.Tags{"k8s"}, false,
@@ -493,7 +493,7 @@ var _ = Describe("TaskDelegate", func() {
 				}
 
 				integrationState := exec.NewRunState(integrationStepper, nil)
-				nativeDelegate := NewTaskDelegate(fakeBuild, planID, integrationState, fakeClock, fakePolicyChecker, fakeWorkerFactory, fakeLockFactory, true)
+				nativeDelegate := NewTaskDelegate(fakeBuild, planID, integrationState, fakeClock, fakePolicyChecker, fakeWorkerFactory, fakeLockFactory)
 
 				imgSpec, fetchErr := nativeDelegate.FetchImage(
 					context.TODO(), pinnedImage, atc.ResourceTypes{}, false, nil, false,
@@ -557,7 +557,7 @@ var _ = Describe("TaskDelegate", func() {
 				}
 
 				integrationState := exec.NewRunState(integrationStepper, nil)
-				nativeDelegate := NewTaskDelegate(fakeBuild, planID, integrationState, fakeClock, fakePolicyChecker, fakeWorkerFactory, fakeLockFactory, true)
+				nativeDelegate := NewTaskDelegate(fakeBuild, planID, integrationState, fakeClock, fakePolicyChecker, fakeWorkerFactory, fakeLockFactory)
 
 				// Inject resource factories for metadata-only path
 				bsd := nativeDelegate.(*taskDelegate).BuildStepDelegate.(*buildStepDelegate)
@@ -603,7 +603,7 @@ var _ = Describe("TaskDelegate", func() {
 				}
 
 				integrationState := exec.NewRunState(integrationStepper, nil)
-				nativeDelegate := NewTaskDelegate(fakeBuild, planID, integrationState, fakeClock, fakePolicyChecker, fakeWorkerFactory, fakeLockFactory, true)
+				nativeDelegate := NewTaskDelegate(fakeBuild, planID, integrationState, fakeClock, fakePolicyChecker, fakeWorkerFactory, fakeLockFactory)
 
 				// Inject resource factories for metadata-only path
 				bsd := nativeDelegate.(*taskDelegate).BuildStepDelegate.(*buildStepDelegate)
@@ -661,7 +661,7 @@ var _ = Describe("TaskDelegate", func() {
 				}
 
 				firstRunState := exec.NewRunState(firstRunStepper, nil)
-				firstRunDelegate := NewTaskDelegate(fakeBuild, planID, firstRunState, fakeClock, fakePolicyChecker, fakeWorkerFactory, fakeLockFactory, true)
+				firstRunDelegate := NewTaskDelegate(fakeBuild, planID, firstRunState, fakeClock, fakePolicyChecker, fakeWorkerFactory, fakeLockFactory)
 				bsd := firstRunDelegate.(*taskDelegate).BuildStepDelegate.(*buildStepDelegate)
 				bsd.resourceConfigFactory = fakeResourceConfigFactory
 				bsd.resourceCacheFactory = fakeResourceCacheFactory
@@ -691,7 +691,7 @@ var _ = Describe("TaskDelegate", func() {
 				}
 
 				secondRunState := exec.NewRunState(secondRunStepper, nil)
-				secondRunDelegate := NewTaskDelegate(fakeBuild, planID, secondRunState, fakeClock, fakePolicyChecker, fakeWorkerFactory, fakeLockFactory, true)
+				secondRunDelegate := NewTaskDelegate(fakeBuild, planID, secondRunState, fakeClock, fakePolicyChecker, fakeWorkerFactory, fakeLockFactory)
 				bsd2 := secondRunDelegate.(*taskDelegate).BuildStepDelegate.(*buildStepDelegate)
 				bsd2.resourceConfigFactory = fakeResourceConfigFactory
 				bsd2.resourceCacheFactory = fakeResourceCacheFactory
