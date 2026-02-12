@@ -25,7 +25,8 @@ Add validation in JetBridge to catch empty images before creating pods.
 
 ## Phase 3: Verification
 
-- [ ] Verify on concourse.home
-  - Configure `--resource-type-image git-with-ado=<image>` on the worker
-  - Confirm custom type check pods use the mapped image
-  - Confirm error message when mapping is missing
+- [x] Verify on concourse.home
+  - Configured `--kubernetes-base-resource-type git-with-ado=concourse/git-resource`
+  - Without mapping: check pod created with image `git-with-ado` → `ImagePullBackOff` (type name propagated correctly)
+  - With mapping: check pod created with image `concourse/git-resource` → `Running` → check succeeded
+  - Verified end-to-end: git clone from github.com/concourse/concourse succeeded via custom type
