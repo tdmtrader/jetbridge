@@ -2,7 +2,7 @@
 
 ## Phase 1: Skip artifact-helper sidecar for check steps
 
-- [ ] Write tests for skipping artifact-helper on check pods
+- [~] Write tests for skipping artifact-helper on check pods
   - Test: container with check step metadata does NOT get artifact-helper sidecar
   - Test: container with task step metadata still gets artifact-helper sidecar
   - Test: container with get step metadata still gets artifact-helper sidecar

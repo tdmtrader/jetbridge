@@ -386,6 +386,9 @@ func (c *Container) buildArtifactStoreVolume() *corev1.Volume {
 	if c.config.ArtifactStoreClaim == "" {
 		return nil
 	}
+	if c.metadata.Type == db.ContainerTypeCheck {
+		return nil
+	}
 	return &corev1.Volume{
 		Name: artifactPVCVolumeName,
 		VolumeSource: corev1.VolumeSource{
@@ -454,6 +457,11 @@ func (c *Container) buildArtifactInitContainers(mainMounts []corev1.VolumeMount)
 // Returns nil if ArtifactStoreClaim is not configured.
 func (c *Container) buildArtifactHelperSidecar(mainMounts []corev1.VolumeMount) *corev1.Container {
 	if c.config.ArtifactStoreClaim == "" {
+		return nil
+	}
+	// Check steps never produce artifacts — skip the sidecar to reduce
+	// per-check resource overhead and avoid triggering GCS FUSE injection.
+	if c.metadata.Type == db.ContainerTypeCheck {
 		return nil
 	}
 
@@ -622,7 +630,7 @@ func (c *Container) buildPodLabels() map[string]string {
 // the GKE sidecar injector webhook.
 func (c *Container) buildPodAnnotations() map[string]string {
 	annotations := map[string]string{}
-	if c.config.ArtifactStoreGCSFuse && c.config.ArtifactStoreClaim != "" {
+	if c.config.ArtifactStoreGCSFuse && c.config.ArtifactStoreClaim != "" && c.metadata.Type != db.ContainerTypeCheck {
 		annotations[gcsFuseAnnotationKey] = "true"
 	}
 	return annotations
