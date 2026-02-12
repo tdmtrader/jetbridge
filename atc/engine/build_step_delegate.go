@@ -12,6 +12,7 @@ import (
 	"code.cloudfoundry.org/clock"
 	"code.cloudfoundry.org/lager/v3"
 	"github.com/concourse/concourse/atc"
+	"github.com/concourse/concourse/atc/creds"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/event"
 	"github.com/concourse/concourse/atc/exec"
@@ -34,6 +35,12 @@ type buildStepDelegate struct {
 	policyChecker        policy.Checker
 	disableRedactSecrets bool
 	nativeImageFetch     bool
+
+	// Optional factories for metadata-only FetchImage on K8s.
+	// When set and nativeImageFetch is true, FetchImage resolves custom type
+	// images from cached DB versions instead of spawning check+get pods.
+	resourceConfigFactory db.ResourceConfigFactory
+	resourceCacheFactory  db.ResourceCacheFactory
 }
 
 func NewBuildStepDelegate(
@@ -56,6 +63,25 @@ func NewBuildStepDelegate(
 		disableRedactSecrets: disableRedactSecrets,
 		nativeImageFetch:     nativeImageFetch,
 	}
+}
+
+// NewBuildStepDelegateWithFactories creates a BuildStepDelegate with resource
+// factories configured for metadata-only FetchImage on K8s.
+func NewBuildStepDelegateWithFactories(
+	build db.Build,
+	planID atc.PlanID,
+	state exec.RunState,
+	clock clock.Clock,
+	policyChecker policy.Checker,
+	disableRedactSecrets bool,
+	nativeImageFetch bool,
+	resourceConfigFactory db.ResourceConfigFactory,
+	resourceCacheFactory db.ResourceCacheFactory,
+) exec.BuildStepDelegate {
+	d := NewBuildStepDelegate(build, planID, state, clock, policyChecker, disableRedactSecrets, nativeImageFetch)
+	d.resourceConfigFactory = resourceConfigFactory
+	d.resourceCacheFactory = resourceCacheFactory
+	return d
 }
 
 func (delegate *buildStepDelegate) StartSpan(
@@ -258,6 +284,17 @@ func (delegate *buildStepDelegate) FetchImage(
 		return runtime.ImageSpec{}, nil, err
 	}
 
+	// Try metadata-only path when on K8s with resource factories available.
+	// This resolves type images from cached DB versions (populated by lidar)
+	// instead of spawning check+get pods.
+	if delegate.nativeImageFetch && delegate.resourceConfigFactory != nil && delegate.resourceCacheFactory != nil {
+		spec, cache, err := delegate.metadataFetchImage(ctx, getPlan, privileged)
+		if err == nil {
+			return spec, cache, nil
+		}
+		// Fall through to plan-based fetch on any error (no cached version, etc.)
+	}
+
 	fetchState := delegate.state.NewLocalScope()
 
 	if checkPlan != nil {
@@ -333,6 +370,98 @@ func imageURLFromSource(resourceType string, source atc.Source, version atc.Vers
 	}
 
 	return "docker:///" + ref
+}
+
+// metadataFetchImage resolves a type image from cached DB versions without
+// running check+get plans. This is used on K8s where kubelet handles image
+// pulls natively and we only need the image reference URL.
+//
+// It looks up the latest version for the image's resource config (populated
+// by lidar's periodic checks) and constructs an ImageURL + ResourceCache.
+// Returns an error if the metadata path can't be used (no cached version,
+// unsupported type, etc.), signaling the caller to fall back to plan-based fetch.
+func (delegate *buildStepDelegate) metadataFetchImage(
+	ctx context.Context,
+	getPlan atc.Plan,
+	privileged bool,
+) (runtime.ImageSpec, db.ResourceCache, error) {
+	// Only registry-image base type supports metadata-only resolution.
+	// Custom types that depend on other custom types need the recursive
+	// plan-based FetchImage to resolve the chain.
+	if getPlan.Get.Type != "registry-image" {
+		return runtime.ImageSpec{}, nil, fmt.Errorf("metadata-only fetch not supported for type %q", getPlan.Get.Type)
+	}
+
+	// Evaluate source credentials
+	source, err := creds.NewSource(delegate.state, getPlan.Get.Source).Evaluate()
+	if err != nil {
+		return runtime.ImageSpec{}, nil, fmt.Errorf("evaluate source: %w", err)
+	}
+
+	// Find the resource config for this type+source (same config lidar uses)
+	resourceConfig, err := delegate.resourceConfigFactory.FindOrCreateResourceConfig(
+		getPlan.Get.Type,
+		source,
+		nil, // base type, no parent cache
+	)
+	if err != nil {
+		return runtime.ImageSpec{}, nil, fmt.Errorf("find resource config: %w", err)
+	}
+
+	// Find scope (nil resource ID - type images aren't scoped to a pipeline resource)
+	scope, err := resourceConfig.FindOrCreateScope(nil)
+	if err != nil {
+		return runtime.ImageSpec{}, nil, fmt.Errorf("find scope: %w", err)
+	}
+
+	// Get latest version from DB (populated by lidar's periodic checks)
+	latestVersion, found, err := scope.LatestVersion()
+	if err != nil {
+		return runtime.ImageSpec{}, nil, fmt.Errorf("get latest version: %w", err)
+	}
+	if !found {
+		return runtime.ImageSpec{}, nil, fmt.Errorf("no cached version for type %q", getPlan.Get.Type)
+	}
+
+	version := atc.Version(latestVersion.Version())
+
+	// Construct image URL (e.g. docker:///repo@sha256:abc123)
+	imageURL := imageURLFromSource(getPlan.Get.Type, source, version)
+	if imageURL == "" {
+		return runtime.ImageSpec{}, nil, fmt.Errorf("cannot construct image URL for type %q", getPlan.Get.Type)
+	}
+
+	// Evaluate params for resource cache key
+	params, err := creds.NewParams(delegate.state, getPlan.Get.Params).Evaluate()
+	if err != nil {
+		return runtime.ImageSpec{}, nil, fmt.Errorf("evaluate params: %w", err)
+	}
+
+	// Create/find resource cache for the type image version.
+	// This cache is needed by calling steps (check_step, get_step, etc.)
+	// to build the resource config chain for custom resource types.
+	resourceCache, err := delegate.resourceCacheFactory.FindOrCreateResourceCache(
+		db.ForBuild(delegate.build.ID()),
+		getPlan.Get.Type,
+		version,
+		source,
+		params,
+		nil, // base type
+	)
+	if err != nil {
+		return runtime.ImageSpec{}, nil, fmt.Errorf("create resource cache: %w", err)
+	}
+
+	// Save image resource version for build tracking
+	err = delegate.build.SaveImageResourceVersion(resourceCache)
+	if err != nil {
+		return runtime.ImageSpec{}, nil, fmt.Errorf("save image version: %w", err)
+	}
+
+	return runtime.ImageSpec{
+		ImageURL:   imageURL,
+		Privileged: privileged,
+	}, resourceCache, nil
 }
 
 func (delegate *buildStepDelegate) ConstructAcrossSubsteps(templateBytes []byte, acrossVars []atc.AcrossVar, valueCombinations [][]any) ([]atc.VarScopedPlan, error) {

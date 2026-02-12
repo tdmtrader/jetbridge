@@ -41,26 +41,32 @@ func NewStepperFactory(
 	dbWorkerFactory db.WorkerFactory,
 	lockFactory lock.LockFactory,
 	nativeImageFetch bool,
+	resourceConfigFactory db.ResourceConfigFactory,
+	resourceCacheFactory db.ResourceCacheFactory,
 ) StepperFactory {
 	return &stepperFactory{
-		coreFactory:      coreFactory,
-		externalURL:      externalURL,
-		rateLimiter:      rateLimiter,
-		policyChecker:    policyChecker,
-		dbWorkerFactory:  dbWorkerFactory,
-		lockFactory:      lockFactory,
-		nativeImageFetch: nativeImageFetch,
+		coreFactory:           coreFactory,
+		externalURL:           externalURL,
+		rateLimiter:           rateLimiter,
+		policyChecker:         policyChecker,
+		dbWorkerFactory:       dbWorkerFactory,
+		lockFactory:           lockFactory,
+		nativeImageFetch:      nativeImageFetch,
+		resourceConfigFactory: resourceConfigFactory,
+		resourceCacheFactory:  resourceCacheFactory,
 	}
 }
 
 type stepperFactory struct {
-	coreFactory      CoreStepFactory
-	externalURL      string
-	rateLimiter      RateLimiter
-	policyChecker    policy.Checker
-	dbWorkerFactory  db.WorkerFactory
-	lockFactory      lock.LockFactory
-	nativeImageFetch bool
+	coreFactory           CoreStepFactory
+	externalURL           string
+	rateLimiter           RateLimiter
+	policyChecker         policy.Checker
+	dbWorkerFactory       db.WorkerFactory
+	lockFactory           lock.LockFactory
+	nativeImageFetch      bool
+	resourceConfigFactory db.ResourceConfigFactory
+	resourceCacheFactory  db.ResourceCacheFactory
 }
 
 func (factory *stepperFactory) StepperForBuild(build db.Build) (exec.Stepper, error) {
@@ -75,13 +81,15 @@ func (factory *stepperFactory) StepperForBuild(build db.Build) (exec.Stepper, er
 
 func (factory *stepperFactory) buildDelegateFactory(build db.Build, plan atc.Plan) DelegateFactory {
 	return DelegateFactory{
-		build:            build,
-		plan:             plan,
-		rateLimiter:      factory.rateLimiter,
-		policyChecker:    factory.policyChecker,
-		dbWorkerFactory:  factory.dbWorkerFactory,
-		lockFactory:      factory.lockFactory,
-		nativeImageFetch: factory.nativeImageFetch,
+		build:                 build,
+		plan:                  plan,
+		rateLimiter:           factory.rateLimiter,
+		policyChecker:         factory.policyChecker,
+		dbWorkerFactory:       factory.dbWorkerFactory,
+		lockFactory:           factory.lockFactory,
+		nativeImageFetch:      factory.nativeImageFetch,
+		resourceConfigFactory: factory.resourceConfigFactory,
+		resourceCacheFactory:  factory.resourceCacheFactory,
 	}
 }
 

@@ -43,6 +43,8 @@ var _ = Describe("Builder", func() {
 				fakeWorkerFactory,
 				fakeLockFactory,
 				false,
+				nil,
+				nil,
 			)
 
 			planFactory = atc.NewPlanFactory(123)
