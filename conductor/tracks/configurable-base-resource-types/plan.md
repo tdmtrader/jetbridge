@@ -45,11 +45,11 @@ Replace the pod-spawning FetchImage chain with a pure metadata operation. When a
 
 Extend `imageURLFromSource` to construct URLs for any type that produces registry-compatible images, not just literal `registry-image` type.
 
-- [ ] Write tests for extended imageURLFromSource
+- [x] Write tests for extended imageURLFromSource
   - Test: type with `produces: registry-image` gets a docker:/// URL
   - Test: nested custom type resolving to registry-image gets correct URL
   - Test: type that does NOT produce registry-image returns empty string (uses ResourceType fallback)
-- [ ] Implement extended imageURLFromSource
+- [x] Implement extended imageURLFromSource
   - Accept `produces` field alongside `resourceType` parameter
   - Construct URL for any type whose output is registry-compatible
   - Wire `produces` metadata through the FetchImage call chain

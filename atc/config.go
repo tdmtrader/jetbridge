@@ -363,6 +363,13 @@ func FetchImagePlan(planID PlanID, image ImageResource, resourceTypes ResourceTy
 		},
 	}
 
+	// Wire produces field from the type used to fetch the image.
+	// This enables imageURLFromSource to construct URLs for custom types
+	// that produce registry-compatible images.
+	if rt, found := resourceTypes.Lookup(image.Type); found && rt.Produces != "" {
+		imageGetPlan.Get.Produces = rt.Produces
+	}
+
 	var maybeCheckPlan *Plan
 	if image.Version == nil {
 		checkPlanID := planID + "/image-check"

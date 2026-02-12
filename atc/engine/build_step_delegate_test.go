@@ -576,6 +576,44 @@ var _ = Describe("BuildStepDelegate", func() {
 				Expect(cache.ID()).To(Equal(789))
 			})
 		})
+
+		Context("when the type produces registry-image", func() {
+			BeforeEach(func() {
+				registryGetPlan.Get.Type = "custom-oci-fetcher"
+				registryGetPlan.Get.Produces = "registry-image"
+			})
+
+			It("resolves the image from DB via metadata-only path", func() {
+				spec, cache, err := nativeDelegate.FetchImage(context.TODO(), *registryGetPlan, registryCheckPlan, false)
+				Expect(err).ToNot(HaveOccurred())
+
+				By("not executing any plans")
+				Expect(runPlans).To(BeEmpty())
+
+				By("returning an ImageSpec with the correct ImageURL")
+				Expect(spec.ImageURL).To(Equal("docker:///my-registry/my-image@sha256:abc123"))
+				Expect(spec.ImageArtifact).To(BeNil())
+
+				By("returning the metadata resource cache")
+				Expect(cache.ID()).To(Equal(456))
+			})
+		})
+
+		Context("when the type is not registry-image and does NOT produce registry-image", func() {
+			BeforeEach(func() {
+				registryGetPlan.Get.Type = "custom-type"
+				registryGetPlan.Get.Produces = ""
+			})
+
+			It("falls back to running check+get plans", func() {
+				_, cache, err := nativeDelegate.FetchImage(context.TODO(), *registryGetPlan, registryCheckPlan, false)
+				Expect(err).ToNot(HaveOccurred())
+
+				By("running plans because type doesn't produce registry-image")
+				Expect(runPlans).To(HaveLen(2))
+				Expect(cache.ID()).To(Equal(789))
+			})
+		})
 	})
 
 	Describe("ConstructAcrossSubsteps", func() {
