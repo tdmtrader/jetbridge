@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -786,6 +787,148 @@ var _ = Describe("TaskDelegate", func() {
 				eventTypes = append(eventTypes, fakeBuild.SaveEventArgsForCall(i).EventType())
 			}
 			Expect(eventTypes).To(ContainElement(atc.EventType("image-get")))
+		})
+
+		It("falls back to plans for a non-registry-image type without produces", func() {
+			fallbackCache := new(dbfakes.FakeResourceCache)
+			fallbackCache.IDReturns(222)
+			fallbackCache.VersionReturns(atc.Version{"digest": "sha256:custom123"})
+
+			fallbackStepper := func(p atc.Plan) exec.Step {
+				step := new(execfakes.FakeStep)
+				step.RunStub = func(_ context.Context, s exec.RunState) (bool, error) {
+					if p.Check != nil {
+						s.StoreResult(p.ID, atc.Version{"digest": "sha256:custom123"})
+					}
+					if p.Get != nil {
+						vol := runtimetest.NewVolume("custom-vol")
+						s.ArtifactRepository().RegisterArtifact("image", vol, false)
+						s.StoreResult(p.ID, exec.GetResult{
+							Name:          "image",
+							ResourceCache: fallbackCache,
+						})
+					}
+					return true, nil
+				}
+				return step
+			}
+
+			td, executedPlans := buildTaskDelegate(fallbackStepper)
+
+			imgSpec, err := td.FetchImage(
+				context.TODO(),
+				atc.ImageResource{Name: "image", Type: "s3-resource", Source: atc.Source{"bucket": "my-bucket"}},
+				atc.ResourceTypes{},
+				false, nil, false,
+			)
+			Expect(err).ToNot(HaveOccurred())
+
+			Expect(*executedPlans).To(HaveLen(2), "non-registry type must spawn check+get pods")
+			Expect(imgSpec.ImageArtifact).ToNot(BeNil(), "plan-based path returns artifact")
+		})
+
+		It("falls back gracefully when DB metadata lookup fails", func() {
+			fakeResourceConfigFactory.FindOrCreateResourceConfigReturns(nil, fmt.Errorf("db connection lost"))
+
+			fallbackCache := new(dbfakes.FakeResourceCache)
+			fallbackCache.IDReturns(333)
+			fallbackCache.VersionReturns(atc.Version{"digest": "sha256:dbfail"})
+
+			fallbackStepper := func(p atc.Plan) exec.Step {
+				step := new(execfakes.FakeStep)
+				step.RunStub = func(_ context.Context, s exec.RunState) (bool, error) {
+					if p.Check != nil {
+						s.StoreResult(p.ID, atc.Version{"digest": "sha256:dbfail"})
+					}
+					if p.Get != nil {
+						vol := runtimetest.NewVolume("dbfail-vol")
+						s.ArtifactRepository().RegisterArtifact("image", vol, false)
+						s.StoreResult(p.ID, exec.GetResult{
+							Name:          "image",
+							ResourceCache: fallbackCache,
+						})
+					}
+					return true, nil
+				}
+				return step
+			}
+
+			td, executedPlans := buildTaskDelegate(fallbackStepper)
+
+			imgSpec, err := td.FetchImage(
+				context.TODO(),
+				atc.ImageResource{Name: "image", Type: "registry-image", Source: atc.Source{"repository": "my-org/db-fail-test"}},
+				atc.ResourceTypes{}, false, nil, false,
+			)
+			Expect(err).ToNot(HaveOccurred())
+
+			Expect(*executedPlans).To(HaveLen(2), "DB failure should trigger plan-based fallback")
+			Expect(imgSpec.ImageURL).To(Equal("docker:///my-org/db-fail-test@sha256:dbfail"))
+			Expect(imgSpec.ImageArtifact).ToNot(BeNil())
+		})
+
+		It("does not spawn any pods when resource factories are injected and cache is warm", func() {
+			// This is the key optimization: with warm cache, zero pods for type images.
+			noopStepper := func(p atc.Plan) exec.Step {
+				Fail("no steps should be created when cache is warm")
+				return nil
+			}
+
+			td, _ := buildTaskDelegate(noopStepper)
+
+			imgSpec, err := td.FetchImage(
+				context.TODO(),
+				atc.ImageResource{Name: "image", Type: "registry-image", Source: atc.Source{"repository": "my-org/warm-cache"}},
+				atc.ResourceTypes{}, false, nil, false,
+			)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(imgSpec.ImageURL).To(Equal("docker:///my-org/warm-cache@sha256:metadata42"))
+		})
+
+		It("works without resource factories (fallback-only mode)", func() {
+			// Simulate pre-injection state where factories are nil
+			fallbackCache := new(dbfakes.FakeResourceCache)
+			fallbackCache.IDReturns(444)
+			fallbackCache.VersionReturns(atc.Version{"digest": "sha256:nofactory"})
+
+			fallbackStepper := func(p atc.Plan) exec.Step {
+				step := new(execfakes.FakeStep)
+				step.RunStub = func(_ context.Context, s exec.RunState) (bool, error) {
+					if p.Check != nil {
+						s.StoreResult(p.ID, atc.Version{"digest": "sha256:nofactory"})
+					}
+					if p.Get != nil {
+						vol := runtimetest.NewVolume("nofactory-vol")
+						s.ArtifactRepository().RegisterArtifact("image", vol, false)
+						s.StoreResult(p.ID, exec.GetResult{
+							Name:          "image",
+							ResourceCache: fallbackCache,
+						})
+					}
+					return true, nil
+				}
+				return step
+			}
+
+			state := exec.NewRunState(fallbackStepper, nil)
+			plan := atc.Plan{ID: planID}
+
+			// Create factory WITHOUT resource factories
+			df := DelegateFactory{
+				build:         fakeBuild,
+				plan:          plan,
+				policyChecker: fakePolicyChecker,
+			}
+			td := df.TaskDelegate(state)
+
+			imgSpec, err := td.FetchImage(
+				context.TODO(),
+				atc.ImageResource{Name: "image", Type: "registry-image", Source: atc.Source{"repository": "my-org/no-factory"}},
+				atc.ResourceTypes{}, false, nil, false,
+			)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(imgSpec.ImageURL).To(Equal("docker:///my-org/no-factory@sha256:nofactory"))
+			Expect(imgSpec.ImageArtifact).ToNot(BeNil(), "without factories, always uses plan-based path")
 		})
 	})
 })
