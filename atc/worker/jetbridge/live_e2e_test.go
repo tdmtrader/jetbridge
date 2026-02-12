@@ -139,9 +139,10 @@ func TestLiveResourceGetStepE2E(t *testing.T) {
 			t.Fatalf("creating directory: %v", err)
 		}
 
-		// Write a file
+		// Write a file — use tee to avoid SPDY stdin race where cat >
+		// file can close before data is flushed to disk.
 		err = executor.ExecInPod(ctx, cfg.Namespace, podName, "main",
-			[]string{"sh", "-c", "cat > /tmp/test-volume/data.txt"},
+			[]string{"sh", "-c", "tee /tmp/test-volume/data.txt > /dev/null && sync"},
 			strings.NewReader(tarInput), nil, &tarStderr,
 			false,
 		)
