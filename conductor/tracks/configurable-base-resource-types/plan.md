@@ -58,11 +58,14 @@ Extend `imageURLFromSource` to construct URLs for any type that produces registr
 
 ## Phase 4: Integration and pipeline verification
 
-- [~] Write integration tests
+- [x] Write integration tests e57d736, ac901d1, 5086cd5
   - Test: custom resource type check resolves image via metadata-only path (no image check/get pods)
   - Test: task step with `image_resource:` using custom type resolves via metadata-only path
   - Test: pipeline with nested custom types works correctly
   - Test: first-run scenario (empty cache) falls back to pod-based FetchImage then switches to metadata on next run
+  - Test: behavior-focused DelegateFactory integration tests (11 tests) covering:
+    cached resolution, custom types with produces, fallback, transitions,
+    build tracking, URL format, events, DB errors, non-registry types, no-factory mode
 - [ ] Verify on concourse.home pipeline
   - Deploy with `--base-resource-type` flag for custom overrides
   - Confirm reduced pod count (no check/get pods for type image resolution)
