@@ -285,9 +285,11 @@ func (delegate *buildStepDelegate) FetchImage(
 		return runtime.ImageSpec{}, nil, fmt.Errorf("get did not return a result")
 	}
 
-	err = delegate.build.SaveImageResourceVersion(result.ResourceCache)
-	if err != nil {
-		return runtime.ImageSpec{}, nil, fmt.Errorf("save image version: %w", err)
+	if result.ResourceCache != nil {
+		err = delegate.build.SaveImageResourceVersion(result.ResourceCache)
+		if err != nil {
+			return runtime.ImageSpec{}, nil, fmt.Errorf("save image version: %w", err)
+		}
 	}
 
 	artifact, _, found := fetchState.ArtifactRepository().ArtifactFor(build.ArtifactName(result.Name))
@@ -295,7 +297,11 @@ func (delegate *buildStepDelegate) FetchImage(
 		return runtime.ImageSpec{}, nil, fmt.Errorf("fetched artifact not found")
 	}
 
-	imageURL := imageURLFromSource(getPlan.Get.Type, getPlan.Get.Source, result.ResourceCache.Version())
+	var version atc.Version
+	if result.ResourceCache != nil {
+		version = result.ResourceCache.Version()
+	}
+	imageURL := imageURLFromSource(getPlan.Get.Type, getPlan.Get.Source, version)
 
 	return runtime.ImageSpec{
 		ImageArtifact: artifact,
