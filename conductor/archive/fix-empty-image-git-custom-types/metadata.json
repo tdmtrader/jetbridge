@@ -1,0 +1,11 @@
+{
+  "id": "fix-empty-image-git-custom-types",
+  "type": "bugfix",
+  "status": "pending",
+  "created": "2026-02-12",
+  "trackId": "fix-empty-image-git-custom-types",
+  "description": "Fix Empty Image for Git-Backed Custom Resource Types on K8s — Resolve custom type images via ResourceTypeImages config when ImageArtifact path is unsupported",
+  "createdAt": "2026-02-12T19:44:29.383Z",
+  "updatedAt": "2026-02-12T19:44:29.383Z",
+  "isArchived": false
+}

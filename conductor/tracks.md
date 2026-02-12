@@ -133,3 +133,9 @@
 *Link: [./conductor/tracks/slim-check-pods/](./conductor/tracks/slim-check-pods/)*
 
 ---
+
+## [x] Track: Fix Empty Image for Git-Backed Custom Resource Types on K8s — Resolve custom type images via ResourceTypeImages config when ImageArtifact path is unsupported
+*Completed: 2026-02-12*
+*Archive: [./conductor/archive/fix-empty-image-git-custom-types/](./conductor/archive/fix-empty-image-git-custom-types/)*
+
+---
