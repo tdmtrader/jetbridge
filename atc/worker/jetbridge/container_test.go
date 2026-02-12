@@ -4110,6 +4110,45 @@ var _ = Describe("Pipeline integration scenarios", func() {
 				Expect(gitPod.Spec.Containers[0].Image).To(Equal("my-registry.io/custom-git:v3"))
 			})
 
+			It("resolves custom pipeline type name via ResourceTypeImages mapping", func() {
+				customCfg := jetbridge.NewConfig("pipeline-ns", "")
+				customCfg.ArtifactStoreClaim = "concourse-artifacts"
+				customCfg.ResourceTypeImages = map[string]string{
+					"git":          "concourse/git-resource",
+					"git-with-ado": "registry.home/git-with-ado-resource:latest",
+				}
+				customWorker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, customCfg)
+
+				setupFakeDBContainer(fakeDBWorker, "chk-custom-pipeline-type-010")
+				container, _, err := customWorker.FindOrCreateContainer(
+					ctx,
+					db.NewFixedHandleContainerOwner("chk-custom-pipeline-type-010"),
+					db.ContainerMetadata{Type: db.ContainerTypeCheck, StepName: "git-with-ado"},
+					runtime.ContainerSpec{
+						TeamID: 1,
+						ImageSpec: runtime.ImageSpec{
+							ResourceType: "git-with-ado",
+						},
+					},
+					delegate,
+				)
+				Expect(err).ToNot(HaveOccurred())
+				_, err = container.Run(ctx, runtime.ProcessSpec{Path: "/opt/resource/check"}, runtime.ProcessIO{})
+				Expect(err).ToNot(HaveOccurred())
+
+				pods, err := fakeClientset.CoreV1().Pods("pipeline-ns").List(ctx, metav1.ListOptions{})
+				Expect(err).ToNot(HaveOccurred())
+
+				var customPod *corev1.Pod
+				for i := range pods.Items {
+					if pods.Items[i].Labels["concourse.ci/handle"] == "chk-custom-pipeline-type-010" {
+						customPod = &pods.Items[i]
+					}
+				}
+				Expect(customPod).ToNot(BeNil(), "expected pod with handle chk-custom-pipeline-type-010")
+				Expect(customPod.Spec.Containers[0].Image).To(Equal("registry.home/git-with-ado-resource:latest"))
+			})
+
 			It("resolves docker:// prefixed URLs for custom type images", func() {
 				pod := runPod(
 					"get-custom-type-008",
