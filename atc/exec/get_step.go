@@ -167,7 +167,10 @@ func (step *GetStep) run(ctx context.Context, state RunState, delegate GetDelega
 		imageSpec          runtime.ImageSpec
 		imageResourceCache db.ResourceCache
 	)
-	if step.plan.TypeImage.GetPlan != nil {
+	if step.plan.TypeImage.ImageRef != "" {
+		imageSpec.ImageURL = step.plan.TypeImage.ImageRef
+		imageSpec.Privileged = step.plan.TypeImage.Privileged
+	} else if step.plan.TypeImage.GetPlan != nil {
 		var err error
 		imageSpec, imageResourceCache, err = delegate.FetchImage(ctx, *step.plan.TypeImage.GetPlan, step.plan.TypeImage.CheckPlan, step.plan.TypeImage.Privileged)
 		if err != nil {
