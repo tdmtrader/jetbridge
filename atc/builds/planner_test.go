@@ -1429,6 +1429,43 @@ var factoryTests = []PlannerTest{
 		}`,
 	},
 	{
+		Title: "task step with inline sidecars",
+
+		Config: &atc.TaskStep{
+			Name: "some-task",
+			Config: &atc.TaskConfig{
+				Platform: "linux",
+				Run:      atc.TaskRunConfig{Path: "hello"},
+			},
+			Sidecars: []atc.SidecarSource{
+				{File: "my-repo/ci/sidecars/custom.yml"},
+				{Config: &atc.SidecarConfig{Name: "redis", Image: "redis:7"}},
+			},
+		},
+
+		PlanJSON: `{
+			"id": "(unique)",
+			"task": {
+				"name": "some-task",
+				"privileged": false,
+				"hermetic": false,
+				"config": {
+					"platform": "linux",
+					"run": {"path": "hello"}
+				},
+				"sidecars": ["my-repo/ci/sidecars/custom.yml", {"name":"redis","image":"redis:7"}],
+				"resource_types": [
+					{
+						"name": "some-resource-type",
+						"type": "some-base-resource-type",
+						"source": {"some": "type-source"},
+						"defaults": {"default-key":"default-value"}
+					}
+				]
+			}
+		}`,
+	},
+	{
 		Title: "run step",
 
 		Config: &atc.RunStep{
