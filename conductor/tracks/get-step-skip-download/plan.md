@@ -42,8 +42,9 @@
 
 ## Phase 4: Live Verification
 
-- [ ] Deploy and verify with real pipeline
+- [x] Deploy and verify with real pipeline
   - Pipeline with `get: my-image, skip_download: true` + `task: build, image: my-image`
-  - Verify task runs with the resolved image version
-  - Verify checks still run and version tracking works
-  - Verify `fly get-pipeline` round-trips correctly
+  - Verify task runs with the resolved image version ✓ (go1.22.12 linux/amd64)
+  - Verify checks still run and version tracking works ✓
+  - Verify `fly get-pipeline` round-trips correctly ✓
+  - Verify validation rejects skip_download on non-image types ✓
