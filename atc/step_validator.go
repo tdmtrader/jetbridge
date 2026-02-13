@@ -111,6 +111,20 @@ func (validator *StepValidator) VisitTask(plan *TaskStep) error {
 		validator.popContext()
 	}
 
+	for i, src := range plan.Sidecars {
+		if src.Config == nil {
+			continue // file references are validated at runtime
+		}
+		validator.pushContextf(".sidecars[%d]", i)
+		if err := src.Config.Validate(); err != nil {
+			validator.recordError(err.Error())
+		}
+		if IsReservedContainerName(src.Config.Name) {
+			validator.recordErrorf("reserved container name %q", src.Config.Name)
+		}
+		validator.popContext()
+	}
+
 	return nil
 }
 
