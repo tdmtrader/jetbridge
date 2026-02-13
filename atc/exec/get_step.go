@@ -185,13 +185,13 @@ func (step *GetStep) run(ctx context.Context, state RunState, delegate GetDelega
 		return false, err
 	}
 
-	// For registry-image types (or custom types that produce registry-image),
-	// skip the physical image download. The version (digest) is already
-	// resolved; kubelet handles the pull natively.
+	// Skip the physical image download when:
+	// - skip_download is explicitly set in the pipeline config, OR
+	// - the type is registry-image (implicit optimization for backwards compat)
 	// The fetch_artifact param forces the full download (for build contexts, DinD, etc.).
 	_, fetchArtifact := step.plan.Params["fetch_artifact"]
 	isRegistryImage := step.plan.Type == "registry-image" || step.plan.Produces == "registry-image"
-	if isRegistryImage && !fetchArtifact {
+	if (step.plan.SkipDownload || isRegistryImage) && !fetchArtifact {
 		versionResult := resource.VersionResult{
 			Version:  version,
 			Metadata: nil,
