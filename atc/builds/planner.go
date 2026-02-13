@@ -135,6 +135,8 @@ func (visitor *planVisitor) VisitGet(step *atc.GetStep) error {
 		Version:  &version,
 		Tags:     step.Tags,
 		Timeout:  step.Timeout,
+
+		SkipDownload: step.SkipDownload,
 	})
 
 	plan.Get.TypeImage = visitor.resourceTypes.ImageForType(plan.ID, resource.Type, step.Tags, false)
