@@ -91,6 +91,12 @@ var reservedContainerNames = map[string]bool{
 	"artifact-helper": true,
 }
 
+// IsReservedContainerName returns true if the given name is reserved by the
+// runtime and cannot be used for sidecar containers.
+func IsReservedContainerName(name string) bool {
+	return reservedContainerNames[name]
+}
+
 // Validate checks that the sidecar config has all required fields.
 func (sc SidecarConfig) Validate() error {
 	var errors []string
