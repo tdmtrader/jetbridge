@@ -133,6 +133,16 @@ type FakeResourceType struct {
 	iDReturnsOnCall map[int]struct {
 		result1 int
 	}
+	ImageStub        func() string
+	imageMutex       sync.RWMutex
+	imageArgsForCall []struct {
+	}
+	imageReturns struct {
+		result1 string
+	}
+	imageReturnsOnCall map[int]struct {
+		result1 string
+	}
 	LastCheckEndTimeStub        func() time.Time
 	lastCheckEndTimeMutex       sync.RWMutex
 	lastCheckEndTimeArgsForCall []struct {
@@ -919,6 +929,59 @@ func (fake *FakeResourceType) IDReturnsOnCall(i int, result1 int) {
 	}
 	fake.iDReturnsOnCall[i] = struct {
 		result1 int
+	}{result1}
+}
+
+func (fake *FakeResourceType) Image() string {
+	fake.imageMutex.Lock()
+	ret, specificReturn := fake.imageReturnsOnCall[len(fake.imageArgsForCall)]
+	fake.imageArgsForCall = append(fake.imageArgsForCall, struct {
+	}{})
+	stub := fake.ImageStub
+	fakeReturns := fake.imageReturns
+	fake.recordInvocation("Image", []interface{}{})
+	fake.imageMutex.Unlock()
+	if stub != nil {
+		return stub()
+	}
+	if specificReturn {
+		return ret.result1
+	}
+	return fakeReturns.result1
+}
+
+func (fake *FakeResourceType) ImageCallCount() int {
+	fake.imageMutex.RLock()
+	defer fake.imageMutex.RUnlock()
+	return len(fake.imageArgsForCall)
+}
+
+func (fake *FakeResourceType) ImageCalls(stub func() string) {
+	fake.imageMutex.Lock()
+	defer fake.imageMutex.Unlock()
+	fake.ImageStub = stub
+}
+
+func (fake *FakeResourceType) ImageReturns(result1 string) {
+	fake.imageMutex.Lock()
+	defer fake.imageMutex.Unlock()
+	fake.ImageStub = nil
+	fake.imageReturns = struct {
+		result1 string
+	}{result1}
+}
+
+func (fake *FakeResourceType) ImageReturnsOnCall(i int, result1 string) {
+	fake.imageMutex.Lock()
+	defer fake.imageMutex.Unlock()
+	fake.ImageStub = nil
+	if fake.imageReturnsOnCall == nil {
+		fake.imageReturnsOnCall = make(map[int]struct {
+			result1 string
+		})
+	}
+	fake.imageReturnsOnCall[i] = struct {
+		result1 string
 	}{result1}
 }
 

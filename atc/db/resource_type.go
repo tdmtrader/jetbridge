@@ -32,6 +32,7 @@ type ResourceType interface {
 	TeamName() string
 	Name() string
 	Type() string
+	Image() string
 	Privileged() bool
 	Source() atc.Source
 	Defaults() atc.Source
@@ -105,6 +106,7 @@ func (resourceTypes ResourceTypes) Deserialize() atc.ResourceTypes {
 		atcResourceTypes = append(atcResourceTypes, atc.ResourceType{
 			Name:       t.Name(),
 			Type:       t.Type(),
+			Image:      t.Image(),
 			Source:     source,
 			Defaults:   t.Defaults(),
 			Privileged: t.Privileged(),
@@ -124,6 +126,7 @@ func (resourceTypes ResourceTypes) Configs() atc.ResourceTypes {
 		configs = append(configs, atc.ResourceType{
 			Name:       r.Name(),
 			Type:       r.Type(),
+			Image:      r.Image(),
 			Source:     r.Source(),
 			Defaults:   r.Defaults(),
 			Privileged: r.Privileged(),
@@ -180,6 +183,7 @@ type resourceType struct {
 	teamName              string
 	name                  string
 	type_                 string
+	image                 string
 	privileged            bool
 	source                atc.Source
 	defaults              atc.Source
@@ -195,6 +199,7 @@ func (t *resourceType) TeamID() int                       { return t.teamID }
 func (t *resourceType) TeamName() string                  { return t.teamName }
 func (t *resourceType) Name() string                      { return t.name }
 func (t *resourceType) Type() string                      { return t.type_ }
+func (t *resourceType) Image() string                     { return t.image }
 func (t *resourceType) Privileged() bool                  { return t.privileged }
 func (t *resourceType) CheckEvery() *atc.CheckEvery       { return t.checkEvery }
 func (t *resourceType) CheckTimeout() string              { return "" }
@@ -393,6 +398,7 @@ func scanResourceType(t *resourceType, row scannable) error {
 		config = atc.ResourceType{}
 	}
 
+	t.image = config.Image
 	t.source = config.Source
 	t.defaults = config.Defaults
 	t.params = config.Params

@@ -313,9 +313,11 @@ func (types ResourceTypes) ImageForType(planID PlanID, resourceType string, step
 
 	// Direct image reference — no check/get plans needed.
 	// The image ref is passed straight to the container runtime.
+	// BaseType is left empty: the worker pool uses it to filter workers by
+	// supported resource type, and custom type names aren't registered on
+	// workers. An empty BaseType skips that filter.
 	if parent.Image != "" {
 		return TypeImage{
-			BaseType:   resourceType,
 			ImageRef:   parent.Image,
 			Privileged: parent.Privileged,
 		}

@@ -83,7 +83,6 @@ func findOrCreateResourceConfig(
 	var (
 		parentID         int
 		parentColumnName string
-		err              error
 		found            bool
 	)
 
@@ -93,14 +92,16 @@ func findOrCreateResourceConfig(
 		parentID = rc.createdByResourceCache.ID()
 	} else {
 		parentColumnName = "base_resource_type_id"
-		rc.createdByBaseResourceType, found, err = BaseResourceType{Name: resourceType}.Find(tx)
+
+		// Use FindOrCreate so that pipeline-level resource types with a direct
+		// image: reference (no check/get chain) are automatically registered
+		// as base resource types. Known base types (git, registry-image, etc.)
+		// already exist and are returned unchanged.
+		ubrt, err := BaseResourceType{Name: resourceType}.FindOrCreate(tx, false)
 		if err != nil {
 			return err
 		}
-
-		if !found {
-			return BaseResourceTypeNotFoundError{Name: resourceType}
-		}
+		rc.createdByBaseResourceType = ubrt
 
 		parentID = rc.CreatedByBaseResourceType().ID
 	}
