@@ -1168,6 +1168,89 @@ var _ = Describe("ValidateConfig", func() {
 				})
 			})
 
+			Context("when an inline sidecar is missing name", func() {
+				BeforeEach(func() {
+					job.PlanSequence = append(job.PlanSequence, atc.Step{
+						Config: &atc.TaskStep{
+							Name:       "sidecar-task",
+							ConfigPath: "task.yml",
+							Sidecars: []atc.SidecarSource{
+								{Config: &atc.SidecarConfig{Image: "redis:7"}},
+							},
+						},
+					})
+
+					config.Jobs = append(config.Jobs, job)
+				})
+
+				It("returns an error", func() {
+					Expect(errorMessages).To(HaveLen(1))
+					Expect(errorMessages[0]).To(ContainSubstring("missing 'name'"))
+				})
+			})
+
+			Context("when an inline sidecar is missing image", func() {
+				BeforeEach(func() {
+					job.PlanSequence = append(job.PlanSequence, atc.Step{
+						Config: &atc.TaskStep{
+							Name:       "sidecar-task",
+							ConfigPath: "task.yml",
+							Sidecars: []atc.SidecarSource{
+								{Config: &atc.SidecarConfig{Name: "redis"}},
+							},
+						},
+					})
+
+					config.Jobs = append(config.Jobs, job)
+				})
+
+				It("returns an error", func() {
+					Expect(errorMessages).To(HaveLen(1))
+					Expect(errorMessages[0]).To(ContainSubstring("missing 'image'"))
+				})
+			})
+
+			Context("when an inline sidecar uses a reserved name", func() {
+				BeforeEach(func() {
+					job.PlanSequence = append(job.PlanSequence, atc.Step{
+						Config: &atc.TaskStep{
+							Name:       "sidecar-task",
+							ConfigPath: "task.yml",
+							Sidecars: []atc.SidecarSource{
+								{Config: &atc.SidecarConfig{Name: "main", Image: "redis:7"}},
+							},
+						},
+					})
+
+					config.Jobs = append(config.Jobs, job)
+				})
+
+				It("returns an error", func() {
+					Expect(errorMessages).To(HaveLen(1))
+					Expect(errorMessages[0]).To(ContainSubstring("reserved container name"))
+				})
+			})
+
+			Context("when an inline sidecar is valid", func() {
+				BeforeEach(func() {
+					job.PlanSequence = append(job.PlanSequence, atc.Step{
+						Config: &atc.TaskStep{
+							Name:       "sidecar-task",
+							ConfigPath: "task.yml",
+							Sidecars: []atc.SidecarSource{
+								{Config: &atc.SidecarConfig{Name: "redis", Image: "redis:7"}},
+							},
+						},
+					})
+
+					config.Jobs = append(config.Jobs, job)
+				})
+
+				It("does not return an error", func() {
+					Expect(errorMessages).To(HaveLen(0))
+				})
+			})
+
 			Context("when a put plan has refers to a resource that does exist", func() {
 				BeforeEach(func() {
 					job.PlanSequence = append(job.PlanSequence, atc.Step{
