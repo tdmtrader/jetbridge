@@ -932,6 +932,55 @@ var _ = Describe("GetStep", func() {
 			})
 		})
 	})
+
+	Context("skip_download", func() {
+		BeforeEach(func() {
+			getPlan.Type = "registry-image"
+			getPlan.SkipDownload = true
+			getPlan.Source = atc.Source{
+				"repository": "my-org/my-image",
+				"tag":        "latest",
+			}
+			getPlan.Version = &atc.Version{
+				"digest": "sha256:abc123def456",
+			}
+			getPlan.Params = atc.Params{}
+			getPlan.TypeImage = atc.TypeImage{
+				BaseType: "registry-image",
+			}
+		})
+
+		It("does not select a worker or create a container", func() {
+			Expect(stepErr).ToNot(HaveOccurred())
+			Expect(stepOk).To(BeTrue())
+			Expect(fakePool.FindOrSelectWorkerCallCount()).To(Equal(0))
+		})
+
+		It("registers a nil artifact", func() {
+			artifact, _, found := artifactRepository.ArtifactFor(build.ArtifactName("some-name"))
+			Expect(found).To(BeTrue())
+			Expect(artifact).To(BeNil())
+		})
+
+		It("registers the image ref URL", func() {
+			imageRef, found := artifactRepository.ImageRefFor(build.ArtifactName("some-name"))
+			Expect(found).To(BeTrue())
+			Expect(imageRef).To(Equal("docker:///my-org/my-image@sha256:abc123def456"))
+		})
+
+		It("updates resource version metadata", func() {
+			Expect(fakeDelegate.UpdateResourceVersionCallCount()).To(Equal(1))
+			_, resourceName, versionResult := fakeDelegate.UpdateResourceVersionArgsForCall(0)
+			Expect(resourceName).To(Equal("some-resource"))
+			Expect(versionResult.Version).To(Equal(atc.Version{"digest": "sha256:abc123def456"}))
+		})
+
+		It("emits Finished with exit status 0", func() {
+			Expect(fakeDelegate.FinishedCallCount()).To(Equal(1))
+			_, exitStatus, _ := fakeDelegate.FinishedArgsForCall(0)
+			Expect(exitStatus).To(Equal(exec.ExitStatus(0)))
+		})
+	})
 })
 
 func lockOnAttempt(attemptNumber int) *lockfakes.FakeLockFactory {
