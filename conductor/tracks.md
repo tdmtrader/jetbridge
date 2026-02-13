@@ -140,12 +140,14 @@
 
 ---
 
-## [ ] Track: Direct Image References for Resource Types — Add `image:` field to resource types, bypassing check/get for static image refs
+## [x] Track: Direct Image References for Resource Types — Add `image:` field to resource types, bypassing check/get for static image refs
+*Completed: 2026-02-12*
 *Link: [./conductor/tracks/resource-type-image-refs/](./conductor/tracks/resource-type-image-refs/)*
 
 ---
 
-## [ ] Track: Fix Input/Output Volume Shadowing — Share single volume when task input and output target the same path
+## [x] Track: Fix Input/Output Volume Shadowing — Share single volume when task input and output target the same path
+*Completed: 2026-02-12*
 *Link: [./conductor/tracks/input-output-volume-shadowing/](./conductor/tracks/input-output-volume-shadowing/)*
 
 ---
