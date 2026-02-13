@@ -139,3 +139,13 @@
 *Archive: [./conductor/archive/fix-empty-image-git-custom-types/](./conductor/archive/fix-empty-image-git-custom-types/)*
 
 ---
+
+## [ ] Track: Direct Image References for Resource Types — Add `image:` field to resource types, bypassing check/get for static image refs
+*Link: [./conductor/tracks/resource-type-image-refs/](./conductor/tracks/resource-type-image-refs/)*
+
+---
+
+## [ ] Track: Fix Input/Output Volume Shadowing — Share single volume when task input and output target the same path
+*Link: [./conductor/tracks/input-output-volume-shadowing/](./conductor/tracks/input-output-volume-shadowing/)*
+
+---
