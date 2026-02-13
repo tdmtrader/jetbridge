@@ -1170,7 +1170,118 @@ var _ = Describe("TaskStep", func() {
 			})
 		})
 
-		Context("when a sidecar file references an unknown source", func() {
+		Context("when sidecars are defined inline", func() {
+		BeforeEach(func() {
+			taskPlan.Sidecars = []atc.SidecarSource{
+				{Config: &atc.SidecarConfig{
+					Name:  "redis",
+					Image: "redis:7",
+					Ports: []atc.SidecarPort{{ContainerPort: 6379}},
+				}},
+			}
+		})
+
+		It("includes inline sidecars in the container spec without file streaming", func() {
+			Expect(stepErr).ToNot(HaveOccurred())
+			Expect(chosenContainer.Spec.Sidecars).To(HaveLen(1))
+			Expect(chosenContainer.Spec.Sidecars[0].Name).To(Equal("redis"))
+			Expect(chosenContainer.Spec.Sidecars[0].Image).To(Equal("redis:7"))
+			Expect(fakeStreamer.StreamFileCallCount()).To(Equal(0))
+		})
+	})
+
+	Context("when sidecars are a mix of file and inline", func() {
+		BeforeEach(func() {
+			sidecarYAML := `
+- name: postgres
+  image: postgres:15
+  ports:
+  - containerPort: 5432
+`
+			fakeStreamer.StreamFileReturnsOnCall(0,
+				io.NopCloser(strings.NewReader(sidecarYAML)), nil,
+			)
+
+			sidecarVolume := runtimetest.NewVolume("sidecar-source")
+			repo.RegisterArtifact("my-repo", sidecarVolume, false)
+
+			taskPlan.Sidecars = []atc.SidecarSource{
+				{File: "my-repo/ci/sidecars/postgres.yml"},
+				{Config: &atc.SidecarConfig{
+					Name:  "redis",
+					Image: "redis:7",
+				}},
+			}
+		})
+
+		It("loads both file and inline sidecars", func() {
+			Expect(stepErr).ToNot(HaveOccurred())
+			Expect(chosenContainer.Spec.Sidecars).To(HaveLen(2))
+			Expect(chosenContainer.Spec.Sidecars[0].Name).To(Equal("postgres"))
+			Expect(chosenContainer.Spec.Sidecars[1].Name).To(Equal("redis"))
+		})
+	})
+
+	Context("when inline sidecar has a duplicate name with a file sidecar", func() {
+		BeforeEach(func() {
+			sidecarYAML := `
+- name: postgres
+  image: postgres:15
+`
+			fakeStreamer.StreamFileReturnsOnCall(0,
+				io.NopCloser(strings.NewReader(sidecarYAML)), nil,
+			)
+
+			sidecarVolume := runtimetest.NewVolume("sidecar-source")
+			repo.RegisterArtifact("my-repo", sidecarVolume, false)
+
+			taskPlan.Sidecars = []atc.SidecarSource{
+				{File: "my-repo/ci/sidecars/postgres.yml"},
+				{Config: &atc.SidecarConfig{
+					Name:  "postgres",
+					Image: "postgres:16",
+				}},
+			}
+		})
+
+		It("returns a duplicate name error", func() {
+			Expect(stepErr).To(HaveOccurred())
+			Expect(stepErr.Error()).To(ContainSubstring("duplicate sidecar name"))
+		})
+	})
+
+	Context("when inline sidecar uses a reserved name", func() {
+		BeforeEach(func() {
+			taskPlan.Sidecars = []atc.SidecarSource{
+				{Config: &atc.SidecarConfig{
+					Name:  "main",
+					Image: "redis:7",
+				}},
+			}
+		})
+
+		It("returns a reserved name error", func() {
+			Expect(stepErr).To(HaveOccurred())
+			Expect(stepErr.Error()).To(ContainSubstring("reserved container name"))
+		})
+	})
+
+	Context("when inline sidecar is missing required fields", func() {
+		BeforeEach(func() {
+			taskPlan.Sidecars = []atc.SidecarSource{
+				{Config: &atc.SidecarConfig{
+					Name: "redis",
+				}},
+			}
+		})
+
+		It("returns a validation error", func() {
+			Expect(stepErr).To(HaveOccurred())
+			Expect(stepErr.Error()).To(ContainSubstring("missing 'image'"))
+		})
+	})
+
+	Context("when a sidecar file references an unknown source", func() {
 			BeforeEach(func() {
 				taskPlan.Sidecars = []atc.SidecarSource{{File: "nonexistent/sidecars/db.yml"}}
 			})

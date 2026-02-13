@@ -485,11 +485,24 @@ func (step *TaskStep) loadSidecars(ctx context.Context, logger lager.Logger, rep
 	seen := make(map[string]bool)
 
 	for _, src := range step.plan.Sidecars {
-		sidecarPath := src.File
-		if sidecarPath == "" {
-			continue // inline configs will be handled in a future update
+		if src.Config != nil {
+			// Inline sidecar config — validate and add directly
+			sc := *src.Config
+			if err := sc.Validate(); err != nil {
+				return nil, fmt.Errorf("inline sidecar: %w", err)
+			}
+			if atc.IsReservedContainerName(sc.Name) {
+				return nil, fmt.Errorf("inline sidecar: reserved container name %q", sc.Name)
+			}
+			if seen[sc.Name] {
+				return nil, fmt.Errorf("inline sidecar: duplicate sidecar name %q", sc.Name)
+			}
+			seen[sc.Name] = true
+			all = append(all, sc)
+			continue
 		}
 
+		sidecarPath := src.File
 		segs := strings.SplitN(sidecarPath, "/", 2)
 		if len(segs) != 2 {
 			return nil, fmt.Errorf("sidecar path '%s' must be in the format SOURCE/FILE", sidecarPath)
