@@ -151,3 +151,9 @@
 *Link: [./conductor/tracks/input-output-volume-shadowing/](./conductor/tracks/input-output-volume-shadowing/)*
 
 ---
+
+## [x] Track: Inline Sidecar Config — Allow defining sidecars directly in pipeline YAML instead of requiring a separate file reference
+*Completed: 2026-02-13*
+*Archive: [./conductor/archive/inline-sidecar-config/](./conductor/archive/inline-sidecar-config/)*
+
+---
