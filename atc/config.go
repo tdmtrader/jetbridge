@@ -192,8 +192,9 @@ type ResourceConfig struct {
 
 type ResourceType struct {
 	Name       string      `json:"name"`
-	Type       string      `json:"type"`
-	Source     Source      `json:"source"`
+	Type       string      `json:"type,omitempty"`
+	Image      string      `json:"image,omitempty"`
+	Source     Source      `json:"source,omitempty"`
 	Defaults   Source      `json:"defaults,omitempty"`
 	Privileged bool        `json:"privileged,omitempty"`
 	CheckEvery *CheckEvery `json:"check_every,omitempty"`
@@ -307,6 +308,16 @@ func (types ResourceTypes) ImageForType(planID PlanID, resourceType string, step
 		// If it is not a custom type, return back the image as a base type
 		return TypeImage{
 			BaseType: resourceType,
+		}
+	}
+
+	// Direct image reference — no check/get plans needed.
+	// The image ref is passed straight to the container runtime.
+	if parent.Image != "" {
+		return TypeImage{
+			BaseType:   resourceType,
+			ImageRef:   parent.Image,
+			Privileged: parent.Privileged,
 		}
 	}
 

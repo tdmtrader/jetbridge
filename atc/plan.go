@@ -118,6 +118,11 @@ type TypeImage struct {
 	// The bottom-most resource type that this get step relies on.
 	BaseType string `json:"base_type,omitempty"`
 
+	// ImageRef is a direct container image reference (e.g. "repo:tag" or
+	// "repo@sha256:digest"). When set, the image is passed directly to the
+	// container runtime without any check/get plans.
+	ImageRef string `json:"image_ref,omitempty"`
+
 	// Privileged indicates whether the parent resource type is privileged.
 	Privileged bool `json:"privileged,omitempty"`
 }

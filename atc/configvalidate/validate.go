@@ -243,7 +243,9 @@ func validateResourceTypes(c atc.Config, seenTypes map[string]location) ([]atc.C
 			errorMessages = append(errorMessages, identifier+" has no name")
 		}
 
-		if resourceType.Type == "" {
+		if resourceType.Image != "" && resourceType.Type != "" {
+			errorMessages = append(errorMessages, identifier+" cannot specify both 'image' and 'type'")
+		} else if resourceType.Image == "" && resourceType.Type == "" {
 			errorMessages = append(errorMessages, identifier+" has no type")
 		}
 	}

@@ -10,6 +10,64 @@ import (
 )
 
 var _ = Describe("Config", func() {
+	Describe("ResourceTypes.ImageForType", func() {
+		var types ResourceTypes
+
+		Context("when the resource type has a direct image reference", func() {
+			BeforeEach(func() {
+				types = ResourceTypes{
+					{
+						Name:       "custom-git",
+						Image:      "my-registry/custom-git:latest",
+						Privileged: true,
+					},
+				}
+			})
+
+			It("returns a TypeImage with ImageRef and no GetPlan/CheckPlan", func() {
+				typeImage := types.ImageForType("some-plan", "custom-git", nil, false)
+				Expect(typeImage.ImageRef).To(Equal("my-registry/custom-git:latest"))
+				Expect(typeImage.BaseType).To(Equal("custom-git"))
+				Expect(typeImage.Privileged).To(BeTrue())
+				Expect(typeImage.GetPlan).To(BeNil())
+				Expect(typeImage.CheckPlan).To(BeNil())
+			})
+		})
+
+		Context("when the resource type has type+source (no image)", func() {
+			BeforeEach(func() {
+				types = ResourceTypes{
+					{
+						Name:   "custom-git",
+						Type:   "registry-image",
+						Source: Source{"repository": "my-registry/custom-git"},
+					},
+				}
+			})
+
+			It("returns a TypeImage with GetPlan and CheckPlan (existing behavior)", func() {
+				typeImage := types.ImageForType("some-plan", "custom-git", nil, false)
+				Expect(typeImage.ImageRef).To(BeEmpty())
+				Expect(typeImage.GetPlan).ToNot(BeNil())
+				Expect(typeImage.CheckPlan).ToNot(BeNil())
+			})
+		})
+
+		Context("when the resource type is not found (base type)", func() {
+			BeforeEach(func() {
+				types = ResourceTypes{}
+			})
+
+			It("returns a TypeImage with just BaseType", func() {
+				typeImage := types.ImageForType("some-plan", "git", nil, false)
+				Expect(typeImage.ImageRef).To(BeEmpty())
+				Expect(typeImage.BaseType).To(Equal("git"))
+				Expect(typeImage.GetPlan).To(BeNil())
+				Expect(typeImage.CheckPlan).To(BeNil())
+			})
+		})
+	})
+
 	Describe("VersionConfig", func() {
 		Context("when unmarshaling a pinned version from JSON", func() {
 			Context("when the version is all string", func() {

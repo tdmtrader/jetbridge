@@ -844,6 +844,35 @@ var _ = Describe("ValidateConfig", func() {
 			})
 		})
 
+		Context("when a resource type has image instead of type", func() {
+			BeforeEach(func() {
+				config.ResourceTypes = append(config.ResourceTypes, atc.ResourceType{
+					Name:  "image-ref-type",
+					Image: "my-registry/custom-resource:latest",
+				})
+			})
+
+			It("does not return an error", func() {
+				Expect(errorMessages).To(HaveLen(0))
+			})
+		})
+
+		Context("when a resource type has both image and type", func() {
+			BeforeEach(func() {
+				config.ResourceTypes = append(config.ResourceTypes, atc.ResourceType{
+					Name:  "conflicting-type",
+					Type:  "registry-image",
+					Image: "my-registry/custom-resource:latest",
+				})
+			})
+
+			It("returns an error", func() {
+				Expect(errorMessages).To(HaveLen(1))
+				Expect(errorMessages[0]).To(ContainSubstring("invalid resource types:"))
+				Expect(errorMessages[0]).To(ContainSubstring("resource_types.conflicting-type cannot specify both 'image' and 'type'"))
+			})
+		})
+
 		Context("when two resource types have the same name", func() {
 			BeforeEach(func() {
 				config.ResourceTypes = append(config.ResourceTypes, config.ResourceTypes...)
