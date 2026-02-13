@@ -4,6 +4,14 @@ JetBridge replaces Concourse's Garden/containerd worker architecture with
 direct Kubernetes pod execution. If you're familiar with standard Concourse,
 this document explains what changed, what didn't, and how to operate it.
 
+## Origin and Goal of this project
+I've always been interested in devops, and I use concourse and kubernetes extensively at my day job. I've long wished that concourse supported a kubernetes-native backend for processing, as tasks seemed to map cleanly into jobs. As we've entereed this agentic era of coding, I wanted to see how far I could push some new tools I was testing, and rewriting the backend of concourse to be kubernetes native seemed like a good domain- one I knew enough about to make major architectural and product decisions, but not enough about to have a preconceived idea of the best way to solve the problem.
+
+To be clear, all of the modifications to the base concourse are 100% vibe coded. This should be taken as an adventure into agent-first codign (where I focused on specifying the outcomes, not the implementation), and a proof of concept for how a k8s runtime for concourse might work- I was surprised at just how much I was able to do away with in favor of having the web node talk directly to the k8s api server, although it did require some compromises on the purity of the concourse architecture.
+
+Adjacent to the k8s runtime work, this also includes agent-first workflows for concourse. I think concourse's DAG model has tremendous potential as a platform for agentic CI operations. At its core, I've always viewed concourse tasks as functions that take an immput and produce an output. The composability of these functions is what gives concourse its power and flexibility, and also why I think it has great potential as an agent platform. The ability to tightly, consistently, and repeatably define exactly what gets fed to an agent and exactly what it produces allow the volatility of the AI Agents themselves to be more tightly bounded for repeatable workflows. The _results_ themselves may differ (unlike a traditional concourse task where ideally a set of inputs produces exactly the same outputs), but the _process_ of producing those results becomes versioned, repeatable, composable, _and_ transparent. 
+
+
 ## What Changed
 
 ### No Workers
