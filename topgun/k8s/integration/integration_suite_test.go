@@ -1,3 +1,35 @@
+// K8s Integration Test Suite
+//
+// Run against a deployed Concourse instance:
+//
+//   ATC_URL=https://concourse.home \
+//   ATC_USERNAME=admin \
+//   ATC_PASSWORD=<password> \
+//   K8S_NAMESPACE=cicd \
+//   KUBECONFIG=~/.kube/config \
+//   FLY_PATH=/tmp/fly \
+//     ginkgo -v ./topgun/k8s/integration/
+//
+// Focus on a specific Describe block:
+//
+//   ginkgo -v ./topgun/k8s/integration/ --focus="Pod Cleanup"
+//   ginkgo -v ./topgun/k8s/integration/ --focus="Load Var"
+//   ginkgo -v ./topgun/k8s/integration/ --focus="Step Combinations"
+//   ginkgo -v ./topgun/k8s/integration/ --focus="Set Pipeline"
+//   ginkgo -v ./topgun/k8s/integration/ --focus="Edge Cases"
+//
+// One-shot CI execution with KIND:
+//
+//   ./hack/kind-integration.sh
+//
+// Environment variables:
+//   ATC_URL        — Concourse URL (default: http://localhost:8080)
+//   ATC_USERNAME   — login user (default: test)
+//   ATC_PASSWORD   — login password (default: test)
+//   K8S_NAMESPACE  — Kubernetes namespace (default: concourse)
+//   KUBECONFIG     — path to kubeconfig (default: ~/.kube/config)
+//   FLY_PATH       — path to fly binary (builds from source if unset)
+
 package integration_test
 
 import (

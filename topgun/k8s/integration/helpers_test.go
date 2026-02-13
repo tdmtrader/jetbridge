@@ -123,3 +123,46 @@ func cleanupPodsWithLabel(labelSelector string) {
 	)
 	Expect(err).ToNot(HaveOccurred())
 }
+
+// ---------------------------------------------------------------------
+// Pod cleanup assertion helpers
+// ---------------------------------------------------------------------
+
+// countWorkloadPods returns the number of active (non-Succeeded/Failed)
+// workload pods created by Concourse.
+func countWorkloadPods() int {
+	pods := findConcoursePodsForWorker()
+	count := 0
+	for _, p := range pods {
+		if p.Status.Phase != corev1.PodSucceeded && p.Status.Phase != corev1.PodFailed {
+			count++
+		}
+	}
+	return count
+}
+
+// waitForPodCleanupByPipeline waits until no active workload pods exist
+// that were created for the current pipeline. This is stricter than
+// waitForNoConcourseWorkloadPods because it filters by pipeline label.
+func waitForPodCleanupByPipeline() {
+	GinkgoHelper()
+	Eventually(func() int {
+		selector := fmt.Sprintf("concourse.ci/worker,concourse.ci/pipeline=%s", pipelineName)
+		pods, err := kubeClient.CoreV1().Pods(config.Namespace).List(
+			context.Background(),
+			metav1.ListOptions{LabelSelector: selector},
+		)
+		if err != nil {
+			return -1
+		}
+		count := 0
+		for _, p := range pods.Items {
+			if p.Status.Phase != corev1.PodSucceeded && p.Status.Phase != corev1.PodFailed {
+				count++
+			}
+		}
+		return count
+	}, 3*time.Minute, 2*time.Second).Should(Equal(0),
+		fmt.Sprintf("expected all workload pods for pipeline %q to be cleaned up", pipelineName),
+	)
+}
