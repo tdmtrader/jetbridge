@@ -238,6 +238,11 @@ type GetPlan struct {
 	// Produces declares what the resource type produces (e.g. "registry-image").
 	// Set from the resource type's produces field during plan construction.
 	Produces string `json:"produces,omitempty"`
+
+	// SkipDownload, when true, resolves the resource version without downloading
+	// artifacts. The version metadata and image ref URL are registered in the
+	// artifact repository, but no container is created.
+	SkipDownload bool `json:"skip_download,omitempty"`
 }
 
 type PutPlan struct {

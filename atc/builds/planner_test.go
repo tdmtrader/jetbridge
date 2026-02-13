@@ -578,6 +578,34 @@ var factoryTests = []PlannerTest{
 		}`,
 	},
 	{
+		Title: "get step with skip_download",
+		Config: &atc.GetStep{
+			Name:         "some-name",
+			Resource:     "some-base-resource",
+			SkipDownload: true,
+		},
+		Inputs: []db.BuildInput{
+			{
+				Name:    "some-name",
+				Version: atc.Version{"some": "version"},
+			},
+		},
+		PlanJSON: `{
+			"id": "(unique)",
+			"get": {
+				"name": "some-name",
+				"type": "some-base-resource-type",
+				"resource": "some-base-resource",
+				"source": {"some":"source","default-key":"default-value"},
+				"version": {"some":"version"},
+				"skip_download": true,
+				"image": {
+					"base_type": "some-base-resource-type"
+				}
+			}
+		}`,
+	},
+	{
 		Title: "get step with unknown resource",
 		Config: &atc.GetStep{
 			Name:     "some-name",

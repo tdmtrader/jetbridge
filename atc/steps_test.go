@@ -46,6 +46,17 @@ var factoryTests = []StepTest{
 		},
 	},
 	{
+		Title: "get step with skip_download",
+		ConfigYAML: `
+			get: my-image
+			skip_download: true
+		`,
+		StepConfig: &atc.GetStep{
+			Name:         "my-image",
+			SkipDownload: true,
+		},
+	},
+	{
 		Title: "put step",
 
 		ConfigYAML: `
