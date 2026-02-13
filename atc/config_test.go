@@ -27,7 +27,7 @@ var _ = Describe("Config", func() {
 			It("returns a TypeImage with ImageRef and no GetPlan/CheckPlan", func() {
 				typeImage := types.ImageForType("some-plan", "custom-git", nil, false)
 				Expect(typeImage.ImageRef).To(Equal("my-registry/custom-git:latest"))
-				Expect(typeImage.BaseType).To(Equal("custom-git"))
+				Expect(typeImage.BaseType).To(BeEmpty())
 				Expect(typeImage.Privileged).To(BeTrue())
 				Expect(typeImage.GetPlan).To(BeNil())
 				Expect(typeImage.CheckPlan).To(BeNil())
