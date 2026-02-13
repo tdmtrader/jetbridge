@@ -1251,6 +1251,97 @@ var _ = Describe("ValidateConfig", func() {
 				})
 			})
 
+			Context("when skip_download is set on a registry-image resource", func() {
+				BeforeEach(func() {
+					config.Resources = append(config.Resources, atc.ResourceConfig{
+						Name:   "my-image",
+						Type:   "registry-image",
+						Source: atc.Source{"repository": "golang"},
+					})
+					job.PlanSequence = append(job.PlanSequence, atc.Step{
+						Config: &atc.GetStep{
+							Name:         "my-image",
+							SkipDownload: true,
+						},
+					})
+					config.Jobs = append(config.Jobs, job)
+				})
+
+				It("does not return an error", func() {
+					Expect(errorMessages).To(HaveLen(0))
+				})
+			})
+
+			Context("when skip_download is set on a type with produces: registry-image", func() {
+				BeforeEach(func() {
+					config.ResourceTypes = append(config.ResourceTypes, atc.ResourceType{
+						Name:     "s3-image",
+						Type:     "registry-image",
+						Produces: "registry-image",
+						Source:   atc.Source{"bucket": "images"},
+					})
+					config.Resources = append(config.Resources, atc.ResourceConfig{
+						Name:   "custom-image",
+						Type:   "s3-image",
+						Source: atc.Source{"key": "my-image"},
+					})
+					job.PlanSequence = append(job.PlanSequence, atc.Step{
+						Config: &atc.GetStep{
+							Name:         "custom-image",
+							SkipDownload: true,
+						},
+					})
+					config.Jobs = append(config.Jobs, job)
+				})
+
+				It("does not return an error", func() {
+					Expect(errorMessages).To(HaveLen(0))
+				})
+			})
+
+			Context("when skip_download is set on a non-image resource", func() {
+				BeforeEach(func() {
+					config.Resources = append(config.Resources, atc.ResourceConfig{
+						Name:   "my-repo",
+						Type:   "git",
+						Source: atc.Source{"uri": "https://example.com/repo.git"},
+					})
+					job.PlanSequence = append(job.PlanSequence, atc.Step{
+						Config: &atc.GetStep{
+							Name:         "my-repo",
+							SkipDownload: true,
+						},
+					})
+					config.Jobs = append(config.Jobs, job)
+				})
+
+				It("returns an error", func() {
+					Expect(errorMessages).To(HaveLen(1))
+					Expect(errorMessages[0]).To(ContainSubstring("skip_download"))
+					Expect(errorMessages[0]).To(ContainSubstring("registry-image"))
+				})
+			})
+
+			Context("when skip_download is false on any resource type", func() {
+				BeforeEach(func() {
+					config.Resources = append(config.Resources, atc.ResourceConfig{
+						Name:   "my-repo",
+						Type:   "git",
+						Source: atc.Source{"uri": "https://example.com/repo.git"},
+					})
+					job.PlanSequence = append(job.PlanSequence, atc.Step{
+						Config: &atc.GetStep{
+							Name: "my-repo",
+						},
+					})
+					config.Jobs = append(config.Jobs, job)
+				})
+
+				It("does not return an error", func() {
+					Expect(errorMessages).To(HaveLen(0))
+				})
+			})
+
 			Context("when a put plan has refers to a resource that does exist", func() {
 				BeforeEach(func() {
 					job.PlanSequence = append(job.PlanSequence, atc.Step{

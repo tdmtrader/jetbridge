@@ -148,9 +148,21 @@ func (validator *StepValidator) VisitGet(step *GetStep) error {
 
 	resourceName := step.ResourceName()
 
-	_, found := validator.config.Resources.Lookup(resourceName)
+	resource, found := validator.config.Resources.Lookup(resourceName)
 	if !found {
 		validator.recordErrorf("unknown resource '%s'", resourceName)
+	}
+
+	if step.SkipDownload && found {
+		isImage := resource.Type == "registry-image"
+		if !isImage {
+			if rt, rtFound := validator.config.ResourceTypes.Lookup(resource.Type); rtFound {
+				isImage = rt.Produces == "registry-image"
+			}
+		}
+		if !isImage {
+			validator.recordErrorf("skip_download is only valid for resources of type 'registry-image' or types that produce 'registry-image'")
+		}
 	}
 
 	validator.pushContext(".passed")
