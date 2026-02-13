@@ -22,7 +22,7 @@
 
 ## Phase 3: Live Verification
 
-- [ ] Deploy and verify with real pipeline
-  - Create test pipeline with same-name input/output task
-  - Verify input data is present, task can modify it, output is captured
-  - Verify non-overlapping tasks still work
+- [x] Deploy and verify with real pipeline `ca7b9dbdd`
+  - Deployed to concourse.home, verified task steps with same-name input/output
+    produce single volume mount
+  - Verified non-overlapping inputs and outputs still work correctly
