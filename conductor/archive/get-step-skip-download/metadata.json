@@ -1,0 +1,11 @@
+{
+  "id": "get-step-skip-download",
+  "type": "feature",
+  "created": "2026-02-13",
+  "status": "pending",
+  "trackId": "get-step-skip-download",
+  "description": "Get Step skip_download — Explicit metadata-only get for image resources, skip artifact download and let kubelet pull",
+  "createdAt": "2026-02-13T16:56:41.936Z",
+  "updatedAt": "2026-02-13T16:56:41.936Z",
+  "isArchived": false
+}
