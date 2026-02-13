@@ -158,7 +158,8 @@
 
 ---
 
-## [ ] Track: Get Step skip_download — Explicit metadata-only get for image resources, skip artifact download and let kubelet pull
-*Link: [./conductor/tracks/get-step-skip-download/](./conductor/tracks/get-step-skip-download/)*
+## [x] Track: Get Step skip_download — Explicit metadata-only get for image resources, skip artifact download and let kubelet pull
+*Completed: 2026-02-13*
+*Archive: [./conductor/archive/get-step-skip-download/](./conductor/archive/get-step-skip-download/)*
 
 ---
