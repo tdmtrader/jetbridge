@@ -2,6 +2,7 @@ package jetbridge
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"k8s.io/client-go/kubernetes"
@@ -64,6 +65,25 @@ var DefaultResourceTypeImages = map[string]string{
 	"pool":           "concourse/pool-resource",
 	"semver":         "concourse/semver-resource",
 	"mock":           "concourse/mock-resource",
+}
+
+// MergeResourceTypeImages returns a new map that starts with a copy of
+// DefaultResourceTypeImages and applies operator overrides on top. Each
+// override entry is "name=image" (e.g. "git=my-registry/git-resource:v2").
+// Entries without an "=" separator are silently skipped.
+func MergeResourceTypeImages(overrides []string) map[string]string {
+	merged := make(map[string]string, len(DefaultResourceTypeImages))
+	for k, v := range DefaultResourceTypeImages {
+		merged[k] = v
+	}
+	for _, entry := range overrides {
+		name, image, ok := strings.Cut(entry, "=")
+		if !ok || name == "" || image == "" {
+			continue
+		}
+		merged[name] = image
+	}
+	return merged
 }
 
 // Config holds the configuration for connecting to a Kubernetes cluster

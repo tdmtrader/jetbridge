@@ -52,6 +52,82 @@ var _ = Describe("Config", func() {
 		})
 	})
 
+	Describe("MergeResourceTypeImages", func() {
+		It("returns defaults when no overrides are provided", func() {
+			result := jetbridge.MergeResourceTypeImages(nil)
+			Expect(result).To(HaveKeyWithValue("git", "concourse/git-resource"))
+			Expect(result).To(HaveKeyWithValue("registry-image", "concourse/registry-image-resource"))
+			Expect(result).To(HaveLen(len(jetbridge.DefaultResourceTypeImages)))
+		})
+
+		It("overrides a default type image", func() {
+			overrides := []string{"git=my-registry/custom-git-resource"}
+			result := jetbridge.MergeResourceTypeImages(overrides)
+			Expect(result).To(HaveKeyWithValue("git", "my-registry/custom-git-resource"))
+			By("other defaults remain unchanged")
+			Expect(result).To(HaveKeyWithValue("registry-image", "concourse/registry-image-resource"))
+		})
+
+		It("adds a new base type not in defaults", func() {
+			overrides := []string{"custom-type=my-registry/custom-resource"}
+			result := jetbridge.MergeResourceTypeImages(overrides)
+			Expect(result).To(HaveKeyWithValue("custom-type", "my-registry/custom-resource"))
+			By("defaults are still present")
+			Expect(result).To(HaveKeyWithValue("git", "concourse/git-resource"))
+		})
+
+		It("merges multiple overrides correctly", func() {
+			overrides := []string{
+				"git=my-registry/git",
+				"s3=my-registry/s3",
+				"new-type=my-registry/new",
+			}
+			result := jetbridge.MergeResourceTypeImages(overrides)
+			Expect(result).To(HaveKeyWithValue("git", "my-registry/git"))
+			Expect(result).To(HaveKeyWithValue("s3", "my-registry/s3"))
+			Expect(result).To(HaveKeyWithValue("new-type", "my-registry/new"))
+			Expect(result).To(HaveKeyWithValue("time", "concourse/time-resource"))
+		})
+
+		It("last-wins for duplicate overrides", func() {
+			overrides := []string{
+				"git=first-image",
+				"git=second-image",
+			}
+			result := jetbridge.MergeResourceTypeImages(overrides)
+			Expect(result).To(HaveKeyWithValue("git", "second-image"))
+		})
+
+		It("handles images with colons (tags)", func() {
+			overrides := []string{"git=my-registry/git-resource:v2.0"}
+			result := jetbridge.MergeResourceTypeImages(overrides)
+			Expect(result).To(HaveKeyWithValue("git", "my-registry/git-resource:v2.0"))
+		})
+
+		It("handles images with digest references", func() {
+			overrides := []string{"git=my-registry/git-resource@sha256:abc123"}
+			result := jetbridge.MergeResourceTypeImages(overrides)
+			Expect(result).To(HaveKeyWithValue("git", "my-registry/git-resource@sha256:abc123"))
+		})
+
+		It("skips malformed entries without equals sign", func() {
+			overrides := []string{"malformed-no-equals", "git=valid-image"}
+			result := jetbridge.MergeResourceTypeImages(overrides)
+			Expect(result).To(HaveKeyWithValue("git", "valid-image"))
+			Expect(result).ToNot(HaveKey("malformed-no-equals"))
+		})
+
+		It("does not modify the DefaultResourceTypeImages map", func() {
+			original := make(map[string]string)
+			for k, v := range jetbridge.DefaultResourceTypeImages {
+				original[k] = v
+			}
+			overrides := []string{"git=my-registry/custom"}
+			jetbridge.MergeResourceTypeImages(overrides)
+			Expect(jetbridge.DefaultResourceTypeImages).To(Equal(original))
+		})
+	})
+
 	Describe("NewClientset", func() {
 		Context("when a valid kubeconfig is provided", func() {
 			var kubeconfigPath string
