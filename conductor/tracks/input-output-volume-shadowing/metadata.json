@@ -1,0 +1,7 @@
+{
+  "id": "input-output-volume-shadowing",
+  "type": "bugfix",
+  "description": "Fix Input/Output Volume Shadowing When Names Match",
+  "created": "2026-02-12",
+  "status": "new"
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -799,6 +800,11 @@ func (c *Container) buildVolumeMounts() ([]corev1.Volume, []corev1.VolumeMount) 
 		})
 	}
 
+	// Track input mount paths so overlapping outputs can share the same volume.
+	// This handles the common Concourse pattern of same-name input+output,
+	// where the task reads input data and writes modifications as output.
+	inputMountPaths := make(map[string]bool, len(c.containerSpec.Inputs))
+
 	for _, input := range c.containerSpec.Inputs {
 		name := fmt.Sprintf("input-%d", idx)
 		idx++
@@ -812,6 +818,7 @@ func (c *Container) buildVolumeMounts() ([]corev1.Volume, []corev1.VolumeMount) 
 			Name:      name,
 			MountPath: input.DestinationPath,
 		})
+		inputMountPaths[filepath.Clean(input.DestinationPath)] = true
 	}
 
 	// Sort output names for deterministic ordering.
@@ -823,6 +830,15 @@ func (c *Container) buildVolumeMounts() ([]corev1.Volume, []corev1.VolumeMount) 
 
 	for _, outputName := range outputNames {
 		path := c.containerSpec.Outputs[outputName]
+
+		// When an output targets the same path as an input, reuse the
+		// input's volume instead of creating a second mount that would
+		// shadow it. The trailing slash on output paths is stripped for
+		// comparison via filepath.Clean.
+		if inputMountPaths[filepath.Clean(path)] {
+			continue
+		}
+
 		name := fmt.Sprintf("output-%d", idx)
 		idx++
 		volumes = append(volumes, corev1.Volume{
