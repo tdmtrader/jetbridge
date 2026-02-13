@@ -305,6 +305,133 @@ var _ = Describe("Container", func() {
 		})
 	})
 
+	Describe("Run with same-name input and output", func() {
+		var container runtime.Container
+
+		BeforeEach(func() {
+			setupFakeDBContainer(fakeDBWorker, "shared-io-handle")
+
+			var err error
+			container, _, err = worker.FindOrCreateContainer(
+				ctx,
+				db.NewFixedHandleContainerOwner("shared-io-handle"),
+				db.ContainerMetadata{Type: db.ContainerTypeTask},
+				runtime.ContainerSpec{
+					TeamID:   1,
+					Dir:      "/tmp/build/workdir",
+					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+					Inputs: []runtime.Input{
+						{DestinationPath: "/tmp/build/workdir/repo"},
+					},
+					Outputs: runtime.OutputPaths{
+						"repo": "/tmp/build/workdir/repo/",
+					},
+				},
+				delegate,
+			)
+			Expect(err).ToNot(HaveOccurred())
+		})
+
+		It("shares a single volume when input and output paths overlap", func() {
+			_, err := container.Run(ctx, runtime.ProcessSpec{
+				Path: "/bin/sh",
+				Args: []string{"-c", "ls /tmp/build/workdir/repo"},
+			}, runtime.ProcessIO{})
+			Expect(err).ToNot(HaveOccurred())
+
+			pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(pods.Items).To(HaveLen(1))
+
+			pod := pods.Items[0]
+
+			By("creating only 2 volumes (dir + shared input/output), not 3")
+			Expect(pod.Spec.Volumes).To(HaveLen(2))
+
+			By("creating only 2 mounts, not 3")
+			mainContainer := pod.Spec.Containers[0]
+			Expect(mainContainer.VolumeMounts).To(HaveLen(2))
+
+			By("having no duplicate mount paths")
+			mountPaths := map[string]int{}
+			for _, vm := range mainContainer.VolumeMounts {
+				mountPaths[vm.MountPath]++
+			}
+			for path, count := range mountPaths {
+				Expect(count).To(Equal(1), "mount path %s should appear only once", path)
+			}
+		})
+
+		It("uses the input volume for the shared mount (not a new output volume)", func() {
+			_, err := container.Run(ctx, runtime.ProcessSpec{
+				Path: "/bin/sh",
+				Args: []string{"-c", "echo ok"},
+			}, runtime.ProcessIO{})
+			Expect(err).ToNot(HaveOccurred())
+
+			pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			pod := pods.Items[0]
+			mainContainer := pod.Spec.Containers[0]
+
+			By("the shared mount being named input-*, not output-*")
+			for _, vm := range mainContainer.VolumeMounts {
+				if vm.MountPath == "/tmp/build/workdir/repo" || vm.MountPath == "/tmp/build/workdir/repo/" {
+					Expect(vm.Name).To(HavePrefix("input-"))
+				}
+			}
+		})
+	})
+
+	Describe("Run with non-overlapping inputs and outputs", func() {
+		var container runtime.Container
+
+		BeforeEach(func() {
+			setupFakeDBContainer(fakeDBWorker, "nonoverlap-io-handle")
+
+			var err error
+			container, _, err = worker.FindOrCreateContainer(
+				ctx,
+				db.NewFixedHandleContainerOwner("nonoverlap-io-handle"),
+				db.ContainerMetadata{Type: db.ContainerTypeTask},
+				runtime.ContainerSpec{
+					TeamID:   1,
+					Dir:      "/tmp/build/workdir",
+					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+					Inputs: []runtime.Input{
+						{DestinationPath: "/tmp/build/workdir/source"},
+					},
+					Outputs: runtime.OutputPaths{
+						"binary": "/tmp/build/workdir/binary/",
+					},
+				},
+				delegate,
+			)
+			Expect(err).ToNot(HaveOccurred())
+		})
+
+		It("creates separate volumes for non-overlapping input and output", func() {
+			_, err := container.Run(ctx, runtime.ProcessSpec{
+				Path: "/bin/sh",
+				Args: []string{"-c", "echo ok"},
+			}, runtime.ProcessIO{})
+			Expect(err).ToNot(HaveOccurred())
+
+			pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			pod := pods.Items[0]
+
+			By("creating 3 volumes (dir + input + output)")
+			Expect(pod.Spec.Volumes).To(HaveLen(3))
+
+			By("creating 3 mounts")
+			mainContainer := pod.Spec.Containers[0]
+			Expect(mainContainer.VolumeMounts).To(HaveLen(3))
+		})
+	})
+
 	Describe("Run with cache volumes", func() {
 		var container runtime.Container
 
