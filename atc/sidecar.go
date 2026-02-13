@@ -1,6 +1,7 @@
 package atc
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -44,6 +45,43 @@ type SidecarResources struct {
 type SidecarResourceList struct {
 	CPU    string `json:"cpu,omitempty"`
 	Memory string `json:"memory,omitempty"`
+}
+
+// SidecarSource is a union type: either a file path (string) referencing a
+// sidecar definition in a build artifact, or an inline SidecarConfig object.
+// In JSON/YAML, a string value becomes a file reference and an object value
+// becomes an inline config.
+type SidecarSource struct {
+	File   string         `json:"-"`
+	Config *SidecarConfig `json:"-"`
+}
+
+func (s SidecarSource) MarshalJSON() ([]byte, error) {
+	if s.File != "" {
+		return json.Marshal(s.File)
+	}
+	if s.Config != nil {
+		return json.Marshal(*s.Config)
+	}
+	return json.Marshal(nil)
+}
+
+func (s *SidecarSource) UnmarshalJSON(data []byte) error {
+	// Try string first (file reference)
+	var str string
+	if err := json.Unmarshal(data, &str); err == nil {
+		s.File = str
+		return nil
+	}
+
+	// Try object (inline config)
+	var cfg SidecarConfig
+	if err := json.Unmarshal(data, &cfg); err == nil {
+		s.Config = &cfg
+		return nil
+	}
+
+	return fmt.Errorf("sidecar entry must be a string (file path) or object (inline config)")
 }
 
 // reservedContainerNames are names used internally by the jetbridge runtime

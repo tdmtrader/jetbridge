@@ -484,7 +484,12 @@ func (step *TaskStep) loadSidecars(ctx context.Context, logger lager.Logger, rep
 	var all []atc.SidecarConfig
 	seen := make(map[string]bool)
 
-	for _, sidecarPath := range step.plan.Sidecars {
+	for _, src := range step.plan.Sidecars {
+		sidecarPath := src.File
+		if sidecarPath == "" {
+			continue // inline configs will be handled in a future update
+		}
+
 		segs := strings.SplitN(sidecarPath, "/", 2)
 		if len(segs) != 2 {
 			return nil, fmt.Errorf("sidecar path '%s' must be in the format SOURCE/FILE", sidecarPath)

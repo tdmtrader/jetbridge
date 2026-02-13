@@ -1403,7 +1403,7 @@ var factoryTests = []PlannerTest{
 				Platform: "linux",
 				Run:      atc.TaskRunConfig{Path: "hello"},
 			},
-			Sidecars: []string{"my-repo/ci/sidecars/postgres.yml", "my-repo/ci/sidecars/redis.yml"},
+			Sidecars: []atc.SidecarSource{{File: "my-repo/ci/sidecars/postgres.yml"}, {File: "my-repo/ci/sidecars/redis.yml"}},
 		},
 
 		PlanJSON: `{
