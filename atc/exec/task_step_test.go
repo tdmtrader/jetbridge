@@ -1159,7 +1159,7 @@ var _ = Describe("TaskStep", func() {
 				sidecarVolume := runtimetest.NewVolume("sidecar-source")
 				repo.RegisterArtifact("my-repo", sidecarVolume, false)
 
-				taskPlan.Sidecars = []string{"my-repo/ci/sidecars/postgres.yml"}
+				taskPlan.Sidecars = []atc.SidecarSource{{File: "my-repo/ci/sidecars/postgres.yml"}}
 			})
 
 			It("loads sidecars into the container spec", func() {
@@ -1172,7 +1172,7 @@ var _ = Describe("TaskStep", func() {
 
 		Context("when a sidecar file references an unknown source", func() {
 			BeforeEach(func() {
-				taskPlan.Sidecars = []string{"nonexistent/sidecars/db.yml"}
+				taskPlan.Sidecars = []atc.SidecarSource{{File: "nonexistent/sidecars/db.yml"}}
 			})
 
 			It("returns an error", func() {
@@ -1183,7 +1183,7 @@ var _ = Describe("TaskStep", func() {
 
 		Context("when a sidecar file path is malformed", func() {
 			BeforeEach(func() {
-				taskPlan.Sidecars = []string{"no-slash"}
+				taskPlan.Sidecars = []atc.SidecarSource{{File: "no-slash"}}
 			})
 
 			It("returns an error", func() {

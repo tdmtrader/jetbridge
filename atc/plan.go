@@ -363,9 +363,10 @@ type TaskPlan struct {
 	// the checking interval
 	CheckSkipInterval bool `json:"check_skip_interval,omitempty"`
 
-	// Sidecars is a list of file paths pointing to sidecar container
-	// definition files within the build's artifacts.
-	Sidecars []string `json:"sidecars,omitempty"`
+	// Sidecars is a list of sidecar sources: either file paths pointing to
+	// sidecar container definition files within the build's artifacts, or
+	// inline sidecar configurations.
+	Sidecars []SidecarSource `json:"sidecars,omitempty"`
 }
 
 type RunPlan struct {

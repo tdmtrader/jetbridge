@@ -157,7 +157,7 @@ var factoryTests = []StepTest{
 		StepConfig: &atc.TaskStep{
 			Name:       "some-task",
 			ConfigPath: "some-task-file",
-			Sidecars:   []string{"my-repo/ci/sidecars/postgres.yml", "my-repo/ci/sidecars/redis.yml"},
+			Sidecars:   []atc.SidecarSource{{File: "my-repo/ci/sidecars/postgres.yml"}, {File: "my-repo/ci/sidecars/redis.yml"}},
 		},
 	},
 	{
