@@ -153,6 +153,47 @@ var _ = Describe("Registrar", func() {
 		})
 	})
 
+	Describe("ResourceTypes registration", func() {
+		It("registers default resource types when no overrides are set", func() {
+			err := registrar.Register(ctx)
+			Expect(err).ToNot(HaveOccurred())
+
+			savedWorker, _ := fakeWorkerFactory.SaveWorkerArgsForCall(0)
+			typeNames := make([]string, len(savedWorker.ResourceTypes))
+			for i, rt := range savedWorker.ResourceTypes {
+				typeNames[i] = rt.Type
+			}
+			Expect(typeNames).To(ContainElements("git", "registry-image", "time", "s3"))
+		})
+
+		It("registers custom resource types when overrides are set", func() {
+			cfg.ResourceTypeImages = jetbridge.MergeResourceTypeImages([]string{
+				"git=my-registry/custom-git",
+				"custom-type=my-registry/custom",
+			})
+			testLogger := lagertest.NewTestLogger("registrar")
+			registrar = jetbridge.NewRegistrar(testLogger, fakeClientset, cfg, fakeWorkerFactory)
+
+			err := registrar.Register(ctx)
+			Expect(err).ToNot(HaveOccurred())
+
+			savedWorker, _ := fakeWorkerFactory.SaveWorkerArgsForCall(0)
+			typeMap := make(map[string]string)
+			for _, rt := range savedWorker.ResourceTypes {
+				typeMap[rt.Type] = rt.Image
+			}
+
+			By("overridden type uses custom image")
+			Expect(typeMap).To(HaveKeyWithValue("git", "my-registry/custom-git"))
+
+			By("new type is added")
+			Expect(typeMap).To(HaveKeyWithValue("custom-type", "my-registry/custom"))
+
+			By("other defaults still present")
+			Expect(typeMap).To(HaveKeyWithValue("registry-image", "concourse/registry-image-resource"))
+		})
+	})
+
 	Describe("WorkerName", func() {
 		It("returns a deterministic name based on the namespace", func() {
 			name := registrar.WorkerName()
