@@ -2,5 +2,10 @@
   "id": "gcs-fuse-pod-annotation",
   "type": "feature",
   "created": "2026-02-10",
-  "status": "complete"
+  "status": "complete",
+  "trackId": "gcs-fuse-pod-annotation",
+  "description": "GCS Fuse Pod Annotation — Add gke-gcsfuse/volumes annotation to artifact store pods",
+  "createdAt": "2026-02-15T14:03:49.121Z",
+  "updatedAt": "2026-02-15T14:03:49.121Z",
+  "isArchived": false
 }

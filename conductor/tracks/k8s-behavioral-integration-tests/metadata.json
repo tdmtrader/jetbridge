@@ -1,0 +1,7 @@
+{
+  "id": "k8s-behavioral-integration-tests",
+  "type": "feature",
+  "status": "planned",
+  "created": "2026-02-13",
+  "description": "Comprehensive mock-free behavioral integration test suite for the K8s-native runtime"
+}

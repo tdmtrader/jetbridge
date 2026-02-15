@@ -163,3 +163,13 @@
 *Archive: [./conductor/archive/get-step-skip-download/](./conductor/archive/get-step-skip-download/)*
 
 ---
+
+## [~] Track: K8s Behavioral Integration Test Suite — Comprehensive mock-free behavioral tests for the K8s-native runtime
+*Link: [./conductor/tracks/k8s-behavioral-integration-tests/](./conductor/tracks/k8s-behavioral-integration-tests/)*
+
+---
+
+## [ ] Track: K8s Behavioral Test Failures — Fix 65 failing integration tests grouped by root cause
+*Link: [./conductor/tracks/k8s-behavioral-test-failures/](./conductor/tracks/k8s-behavioral-test-failures/)*
+
+---
