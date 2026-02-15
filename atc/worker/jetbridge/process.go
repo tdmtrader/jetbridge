@@ -165,6 +165,12 @@ func (p *Process) pollUntilDone(ctx context.Context) (runtime.ProcessResult, err
 	for {
 		pod, err := watcher.Next(ctx)
 		if err != nil {
+			if errors.Is(err, ErrPodDeleted) && pod != nil {
+				// Pod was deleted externally (eviction, node failure,
+				// etc.). Write diagnostics and return a clear error.
+				writePodDiagnostics(pod, p.processIO.Stderr)
+				return runtime.ProcessResult{}, fmt.Errorf("pod deleted externally: %s", pod.Status.Phase)
+			}
 			return runtime.ProcessResult{}, err
 		}
 
@@ -613,8 +619,8 @@ func (p *execProcess) uploadOutputsToArtifactStore(ctx context.Context) error {
 		}
 		key := ArtifactKey(vol.Handle())
 		cmd := []string{"sh", "-c",
-			fmt.Sprintf("tar cf %s/%s -C %s .",
-				ArtifactMountPath, key, vol.MountPath()),
+			fmt.Sprintf("mkdir -p $(dirname %s/%s) && tar cf %s/%s -C %s .",
+				ArtifactMountPath, key, ArtifactMountPath, key, vol.MountPath()),
 		}
 
 		err := p.executor.ExecInPod(
@@ -672,6 +678,10 @@ func (p *execProcess) waitForRunning(ctx context.Context) error {
 	for {
 		pod, err := watcher.Next(timeoutCtx)
 		if err != nil {
+			if errors.Is(err, ErrPodDeleted) && pod != nil {
+				writePodDiagnostics(pod, p.processIO.Stderr)
+				return fmt.Errorf("pod deleted externally before reaching Running: %s", pod.Status.Phase)
+			}
 			// Check if this was a timeout vs other error.
 			if timeoutCtx.Err() == context.DeadlineExceeded && ctx.Err() == nil {
 				if lastPod != nil {

@@ -12,6 +12,9 @@ import (
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/tracing"
+	"github.com/klauspost/compress/gzip"
+	"github.com/klauspost/compress/s2"
+	"github.com/klauspost/compress/zstd"
 )
 
 // Compile-time check that Volume satisfies runtime.Volume.
@@ -153,7 +156,9 @@ func (v *Volume) DBVolume() db.CreatedVolume {
 }
 
 // StreamIn copies data into the Pod by exec-ing `tar xf -` at the target path.
-func (v *Volume) StreamIn(ctx context.Context, path string, _ compression.Compression, limitInMB float64, reader io.Reader) error {
+// When compression is non-nil and not raw, the incoming stream is decompressed
+// before being piped to tar.
+func (v *Volume) StreamIn(ctx context.Context, path string, enc compression.Compression, limitInMB float64, reader io.Reader) error {
 	logger := lagerctx.FromContext(ctx).Session("volume-stream-in", lager.Data{
 		"pod":        v.podName,
 		"mount-path": v.mountPath,
@@ -169,9 +174,27 @@ func (v *Volume) StreamIn(ctx context.Context, path string, _ compression.Compre
 
 	targetPath := v.resolvedPath(path)
 
+	// If the caller passed a compression encoding, decompress the stream
+	// before feeding it to tar. The Streamer sends compressed tar streams
+	// and expects StreamIn to decompress them.
+	actualReader := reader
+	if enc != nil && enc.Encoding() != compression.RawEncoding {
+		rc, ok := reader.(io.ReadCloser)
+		if !ok {
+			rc = io.NopCloser(reader)
+		}
+		decompressed, err := enc.NewReader(rc)
+		if err != nil {
+			spanErr = err
+			return fmt.Errorf("stream in: create decompressor: %w", err)
+		}
+		defer decompressed.Close()
+		actualReader = decompressed
+	}
+
 	cmd := []string{"tar", "xf", "-", "-C", targetPath}
 
-	err := v.executor.ExecInPod(ctx, v.namespace, v.podName, v.containerName, cmd, reader, nil, nil, false)
+	err := v.executor.ExecInPod(ctx, v.namespace, v.podName, v.containerName, cmd, actualReader, nil, nil, false)
 	if err != nil {
 		logger.Error("failed-to-stream-in", err)
 		spanErr = err
@@ -182,7 +205,10 @@ func (v *Volume) StreamIn(ctx context.Context, path string, _ compression.Compre
 }
 
 // StreamOut extracts data from the Pod by exec-ing `tar cf -` at the target path.
-func (v *Volume) StreamOut(ctx context.Context, path string, _ compression.Compression) (io.ReadCloser, error) {
+// When compression is non-nil and not raw, the tar stream is compressed before
+// being returned to the caller. This satisfies the runtime.Artifact contract
+// which requires StreamOut to return a compressed tar stream.
+func (v *Volume) StreamOut(ctx context.Context, path string, enc compression.Compression) (io.ReadCloser, error) {
 	logger := lagerctx.FromContext(ctx).Session("volume-stream-out", lager.Data{
 		"pod":        v.podName,
 		"mount-path": v.mountPath,
@@ -200,11 +226,30 @@ func (v *Volume) StreamOut(ctx context.Context, path string, _ compression.Compr
 
 	pr, pw := io.Pipe()
 
+	needsCompression := enc != nil && enc.Encoding() != compression.RawEncoding
+
 	go func() {
-		err := v.executor.ExecInPod(ctx, v.namespace, v.podName, v.containerName, cmd, nil, pw, nil, false)
+		var tarDest io.Writer = pw
+		var compressor io.WriteCloser
+
+		if needsCompression {
+			compressor = newCompressWriter(pw, enc.Encoding())
+			tarDest = compressor
+		}
+
+		err := v.executor.ExecInPod(ctx, v.namespace, v.podName, v.containerName, cmd, nil, tarDest, nil, false)
 		if err != nil {
 			logger.Error("failed-to-stream-out", err)
 		}
+
+		// Close the compressor first to flush any buffered data and write
+		// the compression footer, then close the pipe.
+		if compressor != nil {
+			if closeErr := compressor.Close(); closeErr != nil && err == nil {
+				err = closeErr
+			}
+		}
+
 		// End the span in the goroutine that owns it to avoid a data race
 		// with the caller's deferred span cleanup.
 		tracing.End(span, err)
@@ -212,6 +257,24 @@ func (v *Volume) StreamOut(ctx context.Context, path string, _ compression.Compr
 	}()
 
 	return pr, nil
+}
+
+// newCompressWriter creates a compressing io.WriteCloser for the given encoding.
+func newCompressWriter(w io.Writer, encoding compression.Encoding) io.WriteCloser {
+	switch encoding {
+	case compression.ZstdEncoding:
+		enc, err := zstd.NewWriter(w)
+		if err != nil {
+			// zstd.NewWriter only errors on invalid options; safe to panic.
+			panic(fmt.Sprintf("zstd.NewWriter: %v", err))
+		}
+		return enc
+	case compression.S2Encoding:
+		return s2.NewWriter(w)
+	default:
+		// Default to gzip for GzipEncoding and any unknown encoding.
+		return gzip.NewWriter(w)
+	}
 }
 
 func (v *Volume) resolvedPath(path string) string {

@@ -404,6 +404,43 @@ var _ = Describe("PodWatcher", func() {
 			Expect(p3.Status.Phase).To(Equal(corev1.PodSucceeded))
 		})
 
+		It("returns ErrPodDeleted when a Deleted event is received", func() {
+			pod := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:            "deleted-pod",
+					Namespace:       "test-namespace",
+					ResourceVersion: "1",
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{Name: "main", Image: "busybox"}},
+				},
+				Status: corev1.PodStatus{Phase: corev1.PodRunning},
+			}
+			_, err := fakeClientset.CoreV1().Pods("test-namespace").Create(ctx, pod, metav1.CreateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			fakeW := watch.NewRaceFreeFake()
+			fakeClientset.PrependWatchReactor("pods", func(action k8stesting.Action) (bool, watch.Interface, error) {
+				return true, fakeW, nil
+			})
+
+			pw := jetbridge.NewPodWatcher(fakeClientset, "test-namespace", "deleted-pod")
+			defer pw.Stop()
+
+			// First call: initial Get().
+			_, err = pw.Next(ctx)
+			Expect(err).ToNot(HaveOccurred())
+
+			// Send a Deleted event (simulating external pod deletion).
+			pod.ResourceVersion = "2"
+			fakeW.Delete(pod)
+
+			receivedPod, err := pw.Next(ctx)
+			Expect(err).To(MatchError(jetbridge.ErrPodDeleted))
+			Expect(receivedPod).ToNot(BeNil())
+			Expect(receivedPod.Name).To(Equal("deleted-pod"))
+		})
+
 		It("returns error when context is cancelled", func() {
 			// Create the pod in the fake store.
 			pod := &corev1.Pod{

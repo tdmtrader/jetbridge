@@ -501,7 +501,7 @@ func (c *Container) buildArtifactHelperSidecar(mainMounts []corev1.VolumeMount) 
 	return &corev1.Container{
 		Name:            artifactHelperContainerName,
 		Image:           helperImage,
-		Command:         []string{"sh", "-c", "trap 'exit 0' TERM; sleep 86400 & wait"},
+		Command:         []string{"sh", "-c", "mkdir -p /artifacts/artifacts /artifacts/caches; trap 'exit 0' TERM; sleep 86400 & wait"},
 		VolumeMounts:    allMounts,
 		ImagePullPolicy: corev1.PullIfNotPresent,
 		SecurityContext: &corev1.SecurityContext{
@@ -637,6 +637,9 @@ func (c *Container) buildPodLabels() map[string]string {
 	addLabel("concourse.ci/job", c.metadata.JobName)
 	addLabel("concourse.ci/build", c.metadata.BuildName)
 	addLabel("concourse.ci/step", c.metadata.StepName)
+	if c.metadata.BuildID != 0 {
+		addLabel("concourse.ci/build-id", strconv.Itoa(c.metadata.BuildID))
+	}
 	addLabel(handleLabelKey, c.handle)
 
 	return labels

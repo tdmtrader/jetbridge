@@ -259,6 +259,37 @@ var _ = Describe("Process", func() {
 				Expect(err.Error()).To(ContainSubstring("Evicted"))
 			})
 
+			It("detects external pod deletion as a terminal failure", func() {
+				process, err := container.Run(ctx, runtime.ProcessSpec{
+					Path: "/bin/true",
+				}, runtime.ProcessIO{})
+				Expect(err).ToNot(HaveOccurred())
+
+				// Start Wait in a goroutine so the PodWatcher can establish
+				// itself while the pod is still alive, then delete the pod.
+				type waitResult struct {
+					result runtime.ProcessResult
+					err    error
+				}
+				ch := make(chan waitResult, 1)
+				go func() {
+					r, e := process.Wait(ctx)
+					ch <- waitResult{result: r, err: e}
+				}()
+
+				// Give the watcher time to do its initial Get() and establish the watch.
+				time.Sleep(50 * time.Millisecond)
+
+				// Delete the pod to simulate external deletion (node failure, eviction).
+				err = fakeClientset.CoreV1().Pods("test-namespace").Delete(ctx, "process-test-handle", metav1.DeleteOptions{})
+				Expect(err).ToNot(HaveOccurred())
+
+				var res waitResult
+				Eventually(ch, 5*time.Second).Should(Receive(&res))
+				Expect(res.err).To(HaveOccurred())
+				Expect(res.err.Error()).To(ContainSubstring("pod deleted externally"))
+			})
+
 			It("detects CrashLoopBackOff as a terminal failure", func() {
 				process, err := container.Run(ctx, runtime.ProcessSpec{
 					Path: "/bin/true",

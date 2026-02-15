@@ -2,6 +2,7 @@ package jetbridge
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 
@@ -10,6 +11,11 @@ import (
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes"
 )
+
+// ErrPodDeleted is returned by PodWatcher.Next() when a watch.Deleted event
+// is received, indicating the pod was removed externally (eviction, node
+// failure, manual deletion, etc.).
+var ErrPodDeleted = errors.New("pod was deleted")
 
 // WatchPod starts a Kubernetes Watch on a specific pod identified by name
 // within the given namespace. The watch uses a field selector
@@ -153,6 +159,14 @@ func (pw *PodWatcher) Next(ctx context.Context) (*corev1.Pod, error) {
 			pw.mu.Lock()
 			pw.lastResourceVersion = pod.ResourceVersion
 			pw.mu.Unlock()
+
+			// A Deleted event means the pod was removed externally
+			// (eviction, node failure, manual deletion). Signal this
+			// to the caller so it can fail the build gracefully.
+			if event.Type == watch.Deleted {
+				return pod, ErrPodDeleted
+			}
+
 			return pod, nil
 		}
 	}
