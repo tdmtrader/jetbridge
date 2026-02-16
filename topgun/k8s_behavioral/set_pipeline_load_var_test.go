@@ -361,6 +361,7 @@ jobs:
         args: ["-c", "echo -n hello-load-var > vals/val.txt"]
   - load_var: my-str
     file: vals/val.txt
+    reveal: true
   - task: consume
     config:
       platform: linux
@@ -397,6 +398,7 @@ jobs:
   - load_var: cfg
     file: vals/config.json
     format: json
+    reveal: true
   - task: consume
     config:
       platform: linux
@@ -431,10 +433,11 @@ jobs:
         args:
         - -c
         - |
-          printf '%%s\n' 'env: production' 'replicas: 3' > vals/config.yml
+          printf '%s\n' 'env: production' 'replicas: 3' > vals/config.yml
   - load_var: yml-cfg
     file: vals/config.yml
     format: yaml
+    reveal: true
   - task: consume
     config:
       platform: linux
@@ -469,6 +472,7 @@ jobs:
   - load_var: raw-val
     file: vals/raw.txt
     format: raw
+    reveal: true
   - task: consume
     config:
       platform: linux
@@ -477,7 +481,7 @@ jobs:
         RAW: ((.:raw-val))
       run:
         path: sh
-        args: ["-c", "echo start[${RAW}]end"]
+        args: ["-c", "echo \"start[${RAW}]end\""]
 `)
 			setAndUnpausePipeline(pipelineFile)
 			triggerJob("lv-raw-job")
@@ -534,6 +538,7 @@ jobs:
         args: ["-c", "echo -n param-value-99 > vals/p.txt"]
   - load_var: my-param
     file: vals/p.txt
+    reveal: true
   - task: consume
     config:
       platform: linux
@@ -604,10 +609,13 @@ jobs:
           echo -n charlie > vals/c.txt
   - load_var: var-a
     file: vals/a.txt
+    reveal: true
   - load_var: var-b
     file: vals/b.txt
+    reveal: true
   - load_var: var-c
     file: vals/c.txt
+    reveal: true
   - task: use-all
     config:
       platform: linux
