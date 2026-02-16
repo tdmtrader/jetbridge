@@ -150,7 +150,9 @@ jobs:
         args:
         - -c
         - |
-          printf '%%s\n' 'jobs:' '- name: greet-job' '  plan:' '  - task: greet' '    config:' '      platform: linux' '      image_resource: {type: registry-image, source: {repository: busybox}}' '      params:' '        MSG: ((msg))' '      run:' '        path: sh' '        args: ["-c", "echo greeting=${MSG}"]' > pipeline-config/pipeline.yml
+          OP='(('
+          CL='))'
+          printf '%%s\n' 'jobs:' '- name: greet-job' '  plan:' '  - task: greet' '    config:' '      platform: linux' '      image_resource: {type: registry-image, source: {repository: busybox}}' '      params:' "        MSG: ${OP}msg${CL}" '      run:' '        path: sh' '        args: ["-c", "echo greeting=${MSG}"]' > pipeline-config/pipeline.yml
           echo "sp-vars-generated"
   - set_pipeline: %s
     file: pipeline-config/pipeline.yml
@@ -200,8 +202,10 @@ jobs:
         args:
         - -c
         - |
+          OP='(('
+          CL='))'
           printf '%%s\n' 'greeting: hello-from-var-file' > vars/vars.yml
-          printf '%%s\n' 'jobs:' '- name: vf-job' '  plan:' '  - task: vf-task' '    config:' '      platform: linux' '      image_resource: {type: registry-image, source: {repository: busybox}}' '      params:' '        GREET: ((greeting))' '      run:' '        path: sh' '        args: ["-c", "echo vf-greeting=${GREET}"]' > pipeline-config/pipeline.yml
+          printf '%%s\n' 'jobs:' '- name: vf-job' '  plan:' '  - task: vf-task' '    config:' '      platform: linux' '      image_resource: {type: registry-image, source: {repository: busybox}}' '      params:' "        GREET: ${OP}greeting${CL}" '      run:' '        path: sh' '        args: ["-c", "echo vf-greeting=${GREET}"]' > pipeline-config/pipeline.yml
           echo "sp-var-files-generated"
   - set_pipeline: %s
     file: pipeline-config/pipeline.yml
@@ -314,7 +318,7 @@ jobs:
         args:
         - -c
         - |
-          printf '%%s\n' 'jobs:' '- name: sp-self-job' '  plan:' '  - task: generate' '    config:' '      platform: linux' '      image_resource: {type: registry-image, source: {repository: busybox}}' '      outputs: [{name: pipeline-config}]' '      run:' '        path: echo' '        args: ["self-updated"]' '  - set_pipeline: self' '    file: pipeline-config/pipeline.yml' '- name: new-job-from-self' '  plan:' '  - task: new-task' '    config:' '      platform: linux' '      image_resource: {type: registry-image, source: {repository: busybox}}' '      run:' '        path: echo' '        args: ["new-job-exists"]' > pipeline-config/pipeline.yml
+          printf '%s\n' 'jobs:' '- name: sp-self-job' '  plan:' '  - task: generate' '    config:' '      platform: linux' '      image_resource: {type: registry-image, source: {repository: busybox}}' '      outputs: [{name: pipeline-config}]' '      run:' '        path: echo' '        args: ["self-updated"]' '  - set_pipeline: self' '    file: pipeline-config/pipeline.yml' '- name: new-job-from-self' '  plan:' '  - task: new-task' '    config:' '      platform: linux' '      image_resource: {type: registry-image, source: {repository: busybox}}' '      run:' '        path: echo' '        args: ["new-job-exists"]' > pipeline-config/pipeline.yml
           echo "sp-self-generated"
   - set_pipeline: self
     file: pipeline-config/pipeline.yml
