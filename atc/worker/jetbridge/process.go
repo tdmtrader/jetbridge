@@ -120,15 +120,16 @@ func (p *Process) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 			p.container.SetProperty(exitStatusPropertyName, strconv.Itoa(r.processResult.ExitStatus))
 		}
 
-		// When sidecars are present, the pod stays Running after main exits.
-		// Delete the pod to terminate sidecars and release resources.
-		if p.container != nil && len(p.container.containerSpec.Sidecars) > 0 {
+		// Delete the pod after the process exits to release resources.
+		// This handles both sidecar pods (which stay Running after main exits)
+		// and single-container pods to ensure prompt cleanup.
+		{
 			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cleanupCancel()
 			if delErr := p.clientset.CoreV1().Pods(p.config.Namespace).Delete(
 				cleanupCtx, p.podName, metav1.DeleteOptions{},
 			); delErr != nil {
-				logger.Error("failed-to-cleanup-sidecar-pod", delErr)
+				logger.Error("failed-to-cleanup-pod", delErr)
 			}
 		}
 
@@ -486,6 +487,21 @@ func (p *execProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 	var spanErr error
 	defer func() { tracing.End(span, spanErr) }()
 
+	// On context cancellation (build abort), delete the pod immediately.
+	// This deferred cleanup fires regardless of where in the exec flow
+	// the cancellation occurs (waitForRunning, ExecInPod, etc.).
+	defer func() {
+		if ctx.Err() != nil {
+			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cleanupCancel()
+			if delErr := p.clientset.CoreV1().Pods(p.config.Namespace).Delete(
+				cleanupCtx, p.podName, metav1.DeleteOptions{},
+			); delErr != nil {
+				logger.Error("failed-to-cleanup-pod-on-cancel", delErr)
+			}
+		}
+	}()
+
 	// Wait for the Pod to be running before exec-ing.
 	waitCtx, waitSpan := tracing.StartSpan(ctx, "k8s.exec-process.wait-for-running", tracing.Attrs{
 		"pod-name": p.podName,
@@ -529,9 +545,11 @@ func (p *execProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 	)
 	tracing.End(execSpan, err)
 
-	// NOTE: The pause Pod is intentionally NOT deleted here.
+	// NOTE: The pause Pod is intentionally NOT deleted on normal completion.
 	// Pod cleanup is handled by the GC system (reaper), which enables
 	// fly hijack to exec into the still-running pod for debugging.
+	// However, on context cancellation (abort), the pod is deleted immediately
+	// since the build is being abandoned.
 
 	if err != nil {
 		var exitErr *ExecExitError

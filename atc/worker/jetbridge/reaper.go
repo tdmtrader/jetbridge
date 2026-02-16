@@ -82,20 +82,37 @@ func (r *Reaper) Run(ctx context.Context) error {
 		return fmt.Errorf("listing pods: %w", err)
 	}
 
-	// Collect container handles from pods. When pods have a
-	// concourse.ci/handle label (readable pod names), use that as the DB
-	// handle. Otherwise fall back to pod.Name for backward compatibility.
-	handles := make([]string, len(pods.Items))
-	handleToPodName := make(map[string]string, len(pods.Items))
-	activePodNames := make([]string, len(pods.Items))
-	for i, pod := range pods.Items {
-		handle := pod.Name
-		if h, ok := pod.Labels[handleLabelKey]; ok && h != "" {
+	// Proactively delete completed pods (those with exit-status annotation).
+	// This provides fast cleanup without waiting for the full DB GC cycle,
+	// ensuring check pods and completed build pods are reaped promptly.
+	var remainingPods []metav1.ObjectMeta
+	for _, pod := range pods.Items {
+		if _, hasExitStatus := pod.Annotations[exitStatusAnnotationKey]; hasExitStatus {
+			if err := r.clientset.CoreV1().Pods(r.cfg.Namespace).Delete(ctx, pod.Name, metav1.DeleteOptions{}); err != nil {
+				if !apierrors.IsNotFound(err) {
+					logger.Error("failed-to-cleanup-completed-pod", err, lager.Data{"pod": pod.Name})
+				}
+			}
+			continue
+		}
+		remainingPods = append(remainingPods, pod.ObjectMeta)
+	}
+
+	// Collect container handles from remaining (non-completed) pods.
+	// When pods have a concourse.ci/handle label (readable pod names),
+	// use that as the DB handle. Otherwise fall back to pod.Name for
+	// backward compatibility.
+	handles := make([]string, len(remainingPods))
+	handleToPodName := make(map[string]string, len(remainingPods))
+	activePodNames := make([]string, len(remainingPods))
+	for i, podMeta := range remainingPods {
+		handle := podMeta.Name
+		if h, ok := podMeta.Labels[handleLabelKey]; ok && h != "" {
 			handle = h
 		}
 		handles[i] = handle
-		handleToPodName[handle] = pod.Name
-		activePodNames[i] = pod.Name
+		handleToPodName[handle] = podMeta.Name
+		activePodNames[i] = podMeta.Name
 	}
 
 	// Report active containers to the DB. This marks containers not in
