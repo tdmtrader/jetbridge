@@ -38,11 +38,38 @@ func SpawnInteractive(stdin io.Reader, env []string, command string, argv ...str
 	Expect(err).ToNot(HaveOccurred())
 	cmd.Dir = filepath.Join(cwd, "..")
 	cmd.Stdin = stdin
-	cmd.Env = env
+	// Inherit the parent process environment, then apply overrides.
+	cmd.Env = mergeEnv(os.Environ(), env)
 
 	session, err := gexec.Start(cmd, GinkgoWriter, GinkgoWriter)
 	Expect(err).ToNot(HaveOccurred())
 	return session
+}
+
+// mergeEnv takes a base environment and a set of overrides, returning
+// a new environment slice with overrides applied. If an override key
+// already exists in base, it is replaced; otherwise it is appended.
+func mergeEnv(base, overrides []string) []string {
+	result := make([]string, len(base))
+	copy(result, base)
+	for _, override := range overrides {
+		key := override
+		if idx := strings.IndexByte(override, '='); idx >= 0 {
+			key = override[:idx]
+		}
+		found := false
+		for i, existing := range result {
+			if strings.HasPrefix(existing, key+"=") {
+				result[i] = override
+				found = true
+				break
+			}
+		}
+		if !found {
+			result = append(result, override)
+		}
+	}
+	return result
 }
 
 func TimestampedBy(msg string) {
