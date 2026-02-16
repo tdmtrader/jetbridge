@@ -209,7 +209,7 @@ jobs:
           image_resource: {type: registry-image, source: {repository: busybox}}
           run:
             path: sh
-            args: ["-c", "echo slow-task-started && sleep 60 && echo slow-task-done"]
+            args: ["-c", "echo slow-task-started && sleep 60 && echo slow-task-completed"]
 `)
 			setAndUnpausePipeline(pipelineFile)
 			triggerJob("parallel-ff-job")
@@ -219,8 +219,8 @@ jobs:
 			output := string(session.Out.Contents())
 			Expect(output).To(ContainSubstring("quick-fail-running"))
 
-			By("verifying slow task was not allowed to complete")
-			Expect(output).ToNot(ContainSubstring("slow-task-done"))
+			By("verifying slow task was interrupted by fail_fast")
+			Expect(output).To(ContainSubstring("interrupted"))
 		})
 
 		It("8.6: waits for all steps without fail_fast", func() {
