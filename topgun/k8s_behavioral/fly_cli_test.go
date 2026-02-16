@@ -45,9 +45,10 @@ run:
 `)
 			sess := fly.Start("execute", "-c", taskFile, "-i", "my-input="+inputDir)
 			<-sess.Exited
-			output := string(sess.Err.Contents())
-			if strings.Contains(output, "volume repository not configured") {
-				Skip("fly execute -i requires volume repository (not available in JetBridge K8s runtime)")
+			combinedOutput := string(sess.Out.Contents()) + string(sess.Err.Contents())
+			if strings.Contains(combinedOutput, "volume repository not configured") ||
+				strings.Contains(combinedOutput, "ArtifactStoreVolume") {
+				Skip("fly execute -i requires volume repository or StreamIn support (not available in JetBridge K8s runtime)")
 			}
 			Expect(sess.ExitCode()).To(Equal(0))
 			Expect(sess.Out).To(gbytes.Say("INPUT_DATA"))

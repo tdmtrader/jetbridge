@@ -233,7 +233,7 @@ jobs:
 resources:
 - name: gp-resource
   type: mock
-  source: {create_files: {data.txt: "get-params-data"}}
+  source: {}
   check_every: never
 
 jobs:
@@ -241,22 +241,24 @@ jobs:
   plan:
   - put: gp-resource
     params: {version: "gp-v1"}
-    get_params: {mirror_self: true}
+    get_params:
+      create_files_via_params:
+        gp-marker.txt: "from-get-params"
   - task: verify
     config:
       platform: linux
       image_resource: {type: registry-image, source: {repository: busybox}}
       inputs: [{name: gp-resource}]
       run:
-        path: echo
-        args: ["get-params-verified"]
+        path: cat
+        args: ["gp-resource/gp-marker.txt"]
 `)
 		setAndUnpausePipeline(pipelineFile)
 		triggerJob("put-get-params-job")
 
 		session := waitForBuildAndWatch("put-get-params-job")
 		Expect(session).To(gexec.Exit(0))
-		Expect(session.Out).To(gbytes.Say("get-params-verified"))
+		Expect(session.Out).To(gbytes.Say("from-get-params"))
 	})
 
 	It("7.9: put with timeout", func() {

@@ -2,7 +2,6 @@ package behavioral_test
 
 import (
 	"fmt"
-	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -505,50 +504,37 @@ jobs:
 	})
 
 	// 4.12 — Get with skip_download: true fetches metadata only
+	// skip_download is only valid for registry-image resources
 	It("skips artifact download with skip_download: true", func() {
 		pipelineFile := writePipelineFile("get-skip-download.yml", `
 resources:
-- name: skip-res
-  type: mock
-  check_every: never
-  source:
-    create_files:
-      data.txt: "skip-data"
+- name: skip-img
+  type: registry-image
+  source: {repository: busybox, tag: latest}
 
 jobs:
 - name: skip-download-job
   plan:
-  - get: skip-res
+  - get: skip-img
     trigger: false
     skip_download: true
   - task: verify-metadata
     config:
       platform: linux
       image_resource: {type: registry-image, source: {repository: busybox}}
-      inputs:
-      - name: skip-res
       run:
         path: sh
         args:
         - -c
-        - |
-          echo "skip-download-step-completed"
-          # With skip_download, the artifact directory should exist
-          # but may not contain the full resource files
-          ls -la skip-res/ || true
-          echo "skip-download-done"
+        - echo "skip-download-done"
 `)
 		setAndUnpausePipeline(pipelineFile)
-		newMockVersion("skip-res", "v1")
+
+		// Trigger a resource check so there's a version available
+		fly.Run("check-resource", "-r", inPipeline("skip-img"))
 		triggerJob("skip-download-job")
 
 		session := waitForBuildAndWatch("skip-download-job")
-		if session.ExitCode() != 0 {
-			output := string(session.Out.Contents()) + string(session.Err.Contents())
-			if strings.Contains(output, "skip_download") || strings.Contains(output, "unknown field") {
-				Skip("skip_download param passed to resource instead of being handled by get step (CODE ISSUE)")
-			}
-		}
 		Expect(session).To(gexec.Exit(0))
 		Expect(session.Out).To(gbytes.Say("skip-download-done"))
 	})
