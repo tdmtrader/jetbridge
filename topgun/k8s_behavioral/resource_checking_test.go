@@ -759,7 +759,7 @@ jobs:
 			Expect(len(fly.GetVersions(pipelineName, "clear-res"))).To(BeNumerically(">", 0))
 
 			By("clearing all versions")
-			sess := fly.Start("clear-versions", "-r", inPipeline("clear-res"))
+			sess := fly.Start("clear-versions", "-n", "--resource", inPipeline("clear-res"))
 			<-sess.Exited
 			Expect(sess.ExitCode()).To(Equal(0))
 
