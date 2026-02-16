@@ -157,7 +157,18 @@ var _ = Describe("Volume", func() {
 			_, _ = io.ReadAll(readCloser)
 
 			call := fakeExecutor.execCalls[0]
-			Expect(call.command).To(Equal([]string{"tar", "cf", "-", "-C", "/tmp/build/inputs/sub/dir", "."}))
+			Expect(call.command).To(Equal([]string{"tar", "cf", "-", "-C", "/tmp/build/inputs", "sub/dir"}))
+		})
+
+		It("handles a file path by tarring from the mount root", func() {
+			readCloser, err := volume.StreamOut(ctx, "pipeline.yml", nil)
+			Expect(err).ToNot(HaveOccurred())
+			defer readCloser.Close()
+
+			_, _ = io.ReadAll(readCloser)
+
+			call := fakeExecutor.execCalls[0]
+			Expect(call.command).To(Equal([]string{"tar", "cf", "-", "-C", "/tmp/build/inputs", "pipeline.yml"}))
 		})
 
 		Context("when the exec returns an error", func() {

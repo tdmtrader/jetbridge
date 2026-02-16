@@ -149,7 +149,16 @@ func (w *Worker) buildVolumeMountsForSpec(handle string, spec runtime.ContainerS
 // a stub volume for placeholder use.
 func (w *Worker) newVolumeForMount(handle, mountPath string) *Volume {
 	if w.executor != nil {
-		return NewDeferredVolume(handle, w.Name(), w.executor, w.config.Namespace, mainContainerName, mountPath)
+		// When the artifact store is configured, output volumes are streamed
+		// via the artifact-helper sidecar instead of the main container.
+		// The sidecar mounts the same emptyDir volumes and stays alive after
+		// the main container exits, enabling set_pipeline, load_var, and
+		// file: directives to read files from build outputs.
+		containerName := mainContainerName
+		if w.config.ArtifactStoreClaim != "" {
+			containerName = artifactHelperContainerName
+		}
+		return NewDeferredVolume(handle, w.Name(), w.executor, w.config.Namespace, containerName, mountPath)
 	}
 	return NewStubVolume(handle, w.Name(), mountPath)
 }

@@ -220,9 +220,15 @@ func (v *Volume) StreamOut(ctx context.Context, path string, enc compression.Com
 		"path":     v.resolvedPath(path),
 	})
 
-	targetPath := v.resolvedPath(path)
-
-	cmd := []string{"tar", "cf", "-", "-C", targetPath, "."}
+	// For root path ("."/empty), tar the entire mount directory.
+	// For sub-paths, tar relative to the mount root so that both files
+	// and directories work correctly (tar cf - -C /mount file.yml).
+	var cmd []string
+	if path == "." || path == "" {
+		cmd = []string{"tar", "cf", "-", "-C", v.mountPath, "."}
+	} else {
+		cmd = []string{"tar", "cf", "-", "-C", v.mountPath, path}
+	}
 
 	pr, pw := io.Pipe()
 

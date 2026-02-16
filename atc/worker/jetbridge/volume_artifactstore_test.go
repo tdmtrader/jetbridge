@@ -2,6 +2,8 @@ package jetbridge_test
 
 import (
 	"context"
+	"fmt"
+	"io"
 
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbfakes"
@@ -9,6 +11,8 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
+
+var _ = fmt.Sprintf // ensure fmt is used
 
 var _ = Describe("ArtifactStoreVolume", func() {
 	var (
@@ -37,13 +41,106 @@ var _ = Describe("ArtifactStoreVolume", func() {
 	})
 
 	Describe("StreamOut", func() {
-		It("returns an error directing callers to use init containers", func() {
-			asv := jetbridge.NewArtifactStoreVolume(
-				"caches/1.tar", "handle", "worker", nil,
+		Context("without executor", func() {
+			It("returns an error indicating no executor is configured", func() {
+				asv := jetbridge.NewArtifactStoreVolume(
+					"caches/1.tar", "handle", "worker", nil,
+				)
+				_, err := asv.StreamOut(ctx, ".", nil)
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("no executor"))
+			})
+		})
+
+		Context("with executor", func() {
+			var (
+				fakeExecutor *fakeExecExecutor
+				asv          *jetbridge.ArtifactStoreVolume
 			)
-			_, err := asv.StreamOut(ctx, ".", nil)
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("init containers"))
+
+			BeforeEach(func() {
+				fakeExecutor = &fakeExecExecutor{}
+				fakeExecutor.execStdout = []byte("tar-output-from-pvc")
+
+				asv = jetbridge.NewArtifactStoreVolume(
+					"artifacts/vol-123.tar", "vol-123", "k8s-worker-1", fakeDBVolume,
+				)
+				asv.SetExecutor(fakeExecutor, "build-pod-abc", "concourse")
+			})
+
+			It("execs a tar command in the artifact-helper sidecar", func() {
+				readCloser, err := asv.StreamOut(ctx, ".", nil)
+				Expect(err).ToNot(HaveOccurred())
+				defer readCloser.Close()
+
+				_, _ = io.ReadAll(readCloser)
+
+				Expect(fakeExecutor.execCalls).To(HaveLen(1))
+				call := fakeExecutor.execCalls[0]
+				Expect(call.podName).To(Equal("build-pod-abc"))
+				Expect(call.namespace).To(Equal("concourse"))
+				Expect(call.containerName).To(Equal("artifact-helper"))
+			})
+
+			It("returns tar stream data from the executor", func() {
+				readCloser, err := asv.StreamOut(ctx, ".", nil)
+				Expect(err).ToNot(HaveOccurred())
+				defer readCloser.Close()
+
+				data, err := io.ReadAll(readCloser)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(data).To(Equal([]byte("tar-output-from-pvc")))
+			})
+
+			It("extracts from the PVC tar and re-tars the root path", func() {
+				readCloser, err := asv.StreamOut(ctx, ".", nil)
+				Expect(err).ToNot(HaveOccurred())
+				defer readCloser.Close()
+				_, _ = io.ReadAll(readCloser)
+
+				call := fakeExecutor.execCalls[0]
+				// The command should extract the PVC tar to a tmpdir, then tar from there
+				Expect(call.command[0]).To(Equal("sh"))
+				Expect(call.command[1]).To(Equal("-c"))
+				Expect(call.command[2]).To(ContainSubstring("/artifacts/artifacts/vol-123.tar"))
+				Expect(call.command[2]).To(ContainSubstring("tar xf"))
+				Expect(call.command[2]).To(ContainSubstring("tar cf"))
+			})
+
+			It("handles a specific file path", func() {
+				readCloser, err := asv.StreamOut(ctx, "pipeline.yml", nil)
+				Expect(err).ToNot(HaveOccurred())
+				defer readCloser.Close()
+				_, _ = io.ReadAll(readCloser)
+
+				call := fakeExecutor.execCalls[0]
+				Expect(call.command[2]).To(ContainSubstring("pipeline.yml"))
+			})
+
+			It("handles a nested file path", func() {
+				readCloser, err := asv.StreamOut(ctx, "ci/pipeline.yml", nil)
+				Expect(err).ToNot(HaveOccurred())
+				defer readCloser.Close()
+				_, _ = io.ReadAll(readCloser)
+
+				call := fakeExecutor.execCalls[0]
+				Expect(call.command[2]).To(ContainSubstring("ci/pipeline.yml"))
+			})
+
+			Context("when the exec returns an error", func() {
+				BeforeEach(func() {
+					fakeExecutor.execErr = fmt.Errorf("pod not found")
+				})
+
+				It("propagates the error through the pipe reader", func() {
+					readCloser, err := asv.StreamOut(ctx, ".", nil)
+					Expect(err).ToNot(HaveOccurred())
+					defer readCloser.Close()
+
+					_, err = io.ReadAll(readCloser)
+					Expect(err).To(MatchError(ContainSubstring("pod not found")))
+				})
+			})
 		})
 	})
 
