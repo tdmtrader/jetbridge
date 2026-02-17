@@ -1,32 +1,17 @@
 // K8s Behavioral Integration Test Suite
 //
-// Self-sufficient run (creates a KinD cluster automatically):
+// This suite is fully self-contained: it creates an ephemeral KinD cluster,
+// deploys Concourse via Helm, runs tests, and tears down automatically.
+// No external cluster connectivity is supported — tests always run in
+// isolation to prevent accidental impact on production clusters.
+//
+// Basic run (creates a KinD cluster automatically):
 //
 //   go test ./topgun/k8s_behavioral/ -count=1 -v -timeout 30m
 //
-// Run against a deployed Concourse instance (skips cluster management):
-//
-//   ATC_URL=https://concourse.home \
-//   ATC_USERNAME=admin \
-//   ATC_PASSWORD=<password> \
-//   K8S_NAMESPACE=cicd \
-//   KUBECONFIG=~/.kube/config \
-//   FLY_PATH=/tmp/fly \
-//     ginkgo -v ./topgun/k8s_behavioral/
-//
-// Parallel execution (requires external Concourse):
-//
-//   ATC_URL=https://concourse.home \
-//   ATC_USERNAME=admin \
-//   ATC_PASSWORD=<password> \
-//   K8S_NAMESPACE=cicd \
-//   KUBECONFIG=~/.kube/config \
-//   FLY_PATH=/tmp/fly \
-//     ginkgo -p --procs=4 ./topgun/k8s_behavioral/
-//
 // Focus on a specific Describe block:
 //
-//   ginkgo -v ./topgun/k8s_behavioral/ --focus="Pipeline Lifecycle"
+//   go test ./topgun/k8s_behavioral/ -count=1 -v -timeout 30m -run TestBehavioral/Pipeline
 //
 // Iterative development (keep cluster between runs):
 //
@@ -37,23 +22,11 @@
 //   kind delete cluster --name concourse-behavioral
 //
 // Environment variables:
-//   ATC_URL            - If set, use external Concourse (skip cluster management)
-//   ATC_USERNAME       - login user (default: test)
-//   ATC_PASSWORD       - login password (default: test)
-//   K8S_NAMESPACE      - Kubernetes namespace (default: concourse)
-//   KUBECONFIG         - path to kubeconfig (default: ~/.kube/config)
 //   FLY_PATH           - path to fly binary (builds from source if unset)
 //   CONCOURSE_IMAGE    - Docker image to load into KinD (default: concourse-local:latest)
 //   KIND_CLUSTER_NAME  - KinD cluster name (default: concourse-behavioral)
 //   SKIP_TEARDOWN      - Set to "1" to keep cluster after tests
 //   EVENTUALLY_TIMEOUT - Go duration for Eventually timeout (default: 5m)
-//
-// Notes on parallelism:
-//   Ginkgo parallel mode (--procs / -p) requires an external Concourse
-//   (ATC_URL must be set). Self-sufficient mode creates a KinD cluster in
-//   TestMain which does not propagate across parallel processes.
-//   Each parallel process builds its own K8s client and fly login; pipeline
-//   names are UUID-based so there are no cross-process conflicts.
 
 package behavioral_test
 
@@ -86,22 +59,17 @@ import (
 )
 
 // TestMain manages the KinD cluster lifecycle outside of Ginkgo.
-// When ATC_URL is not set, it creates a KinD cluster, loads images,
-// deploys Concourse, and starts a port-forward. The resulting config
-// is passed to the Ginkgo suite via environment variables.
+// It always creates an ephemeral KinD cluster, loads images, deploys
+// Concourse, and starts a port-forward. The resulting config is passed
+// to the Ginkgo suite via environment variables.
 func TestMain(m *testing.M) {
-	if os.Getenv("ATC_URL") != "" {
-		// External cluster mode — nothing to manage.
-		os.Exit(m.Run())
-	}
-
-	// Self-sufficient mode — manage a KinD cluster.
+	// Self-contained mode only — no external cluster connectivity.
 	// Not compatible with Ginkgo parallelism: each parallel process runs
 	// TestMain independently, so env vars set here don't propagate.
 	if proc := os.Getenv("GINKGO_PARALLEL_PROCESS"); proc != "" && proc != "1" {
 		log.Fatalf(
-			"self-sufficient mode (no ATC_URL) does not support Ginkgo parallelism\n" +
-				"  Set ATC_URL, KUBECONFIG, and K8S_NAMESPACE to use --procs / -p",
+			"this suite does not support Ginkgo parallelism (--procs / -p)\n" +
+				"  Each test process creates its own KinD cluster via TestMain",
 		)
 	}
 	if err := verifyPrerequisites(); err != nil {
@@ -189,17 +157,19 @@ var _ = SynchronizedBeforeSuite(
 		return []byte(BuildBinary())
 	},
 	// All processes: initialize config, K8s client, and per-process fly login.
+	// All env vars (ATC_URL, KUBECONFIG, K8S_NAMESPACE) are set by TestMain
+	// from the ephemeral KinD cluster — no external cluster connectivity.
 	func(flyBinData []byte) {
 		config = suiteConfig{
 			FlyBin:      string(flyBinData),
 			ATCURL:      os.Getenv("ATC_URL"),
-			ATCUsername: envOr("ATC_USERNAME", "test"),
-			ATCPassword: envOr("ATC_PASSWORD", "test"),
+			ATCUsername: "test",
+			ATCPassword: "test",
 			Namespace:   envOr("K8S_NAMESPACE", "concourse"),
 			Kubeconfig:  defaultKubeconfig(),
 		}
 
-		Expect(config.ATCURL).ToNot(BeEmpty(), "ATC_URL must be set (TestMain sets it for managed clusters)")
+		Expect(config.ATCURL).ToNot(BeEmpty(), "ATC_URL must be set (TestMain sets it for the managed KinD cluster)")
 
 		// Gomega defaults (suite-wide, derived from env vars that never change)
 		eventuallyTimeout := 5 * time.Minute
@@ -221,11 +191,7 @@ var _ = SynchronizedBeforeSuite(
 		suiteFlyHome, err = os.MkdirTemp("", "k8s-behavioral-fly-suite")
 		Expect(err).ToNot(HaveOccurred())
 		suiteFly := FlyCli{Bin: config.FlyBin, Target: flyTarget, Home: suiteFlyHome}
-		loginArgs := []string{}
-		if envOr("FLY_INSECURE", "") != "" || strings.HasPrefix(config.ATCURL, "https://") {
-			loginArgs = append(loginArgs, "-k")
-		}
-		suiteFly.Login(config.ATCUsername, config.ATCPassword, config.ATCURL, loginArgs...)
+		suiteFly.Login(config.ATCUsername, config.ATCPassword, config.ATCURL)
 	},
 )
 
@@ -359,6 +325,9 @@ func loadImagesIntoKind(concourseImage, clusterName string) {
 		"docker.io/library/postgres:16",
 		"docker.io/concourse/mock-resource:latest",
 		"docker.io/library/busybox:latest",
+		"docker.io/concourse/registry-image-resource:latest",
+		"docker.io/library/nginx:alpine",
+		"docker.io/library/alpine:3.19",
 	}
 	for _, img := range registryImages {
 		// Check if image is already present in the node before pulling.
@@ -556,14 +525,9 @@ func envOr(key, defaultVal string) string {
 }
 
 func defaultKubeconfig() string {
-	if v := os.Getenv("KUBECONFIG"); v != "" {
-		return v
-	}
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		home = os.Getenv("HOME")
-	}
-	return filepath.Join(home, ".kube", "config")
+	v := os.Getenv("KUBECONFIG")
+	Expect(v).ToNot(BeEmpty(), "KUBECONFIG must be set (TestMain sets it for the managed KinD cluster)")
+	return v
 }
 
 // ---------------------------------------------------------------------
@@ -571,16 +535,10 @@ func defaultKubeconfig() string {
 // ---------------------------------------------------------------------
 
 func newKubeClient(kubeconfig string) (kubernetes.Interface, *rest.Config) {
-	var rc *rest.Config
-	var err error
+	Expect(kubeconfig).ToNot(BeEmpty(), "kubeconfig path must not be empty")
 
-	if kubeconfig != "" {
-		rc, err = clientcmd.BuildConfigFromFlags("", kubeconfig)
-		Expect(err).ToNot(HaveOccurred(), "failed to load kubeconfig from %s", kubeconfig)
-	} else {
-		rc, err = rest.InClusterConfig()
-		Expect(err).ToNot(HaveOccurred(), "failed to load in-cluster config (no KUBECONFIG set)")
-	}
+	rc, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
+	Expect(err).ToNot(HaveOccurred(), "failed to load kubeconfig from %s", kubeconfig)
 
 	client, err := kubernetes.NewForConfig(rc)
 	Expect(err).ToNot(HaveOccurred())
