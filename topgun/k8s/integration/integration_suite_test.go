@@ -1,34 +1,32 @@
 // K8s Integration Test Suite
 //
-// Run against a deployed Concourse instance:
+// This suite is fully self-contained: it creates an ephemeral KinD cluster,
+// deploys Concourse via Helm, runs tests, and tears down automatically.
+// No external cluster connectivity is supported — tests always run in
+// isolation to prevent accidental impact on production clusters.
 //
-//   ATC_URL=https://concourse.home \
-//   ATC_USERNAME=admin \
-//   ATC_PASSWORD=<password> \
-//   K8S_NAMESPACE=cicd \
-//   KUBECONFIG=~/.kube/config \
-//   FLY_PATH=/tmp/fly \
-//     ginkgo -v ./topgun/k8s/integration/
+// Basic run (creates a KinD cluster automatically):
+//
+//   go test ./topgun/k8s/integration/ -count=1 -v -timeout 30m
 //
 // Focus on a specific Describe block:
 //
-//   ginkgo -v ./topgun/k8s/integration/ --focus="Pod Cleanup"
-//   ginkgo -v ./topgun/k8s/integration/ --focus="Load Var"
-//   ginkgo -v ./topgun/k8s/integration/ --focus="Step Combinations"
-//   ginkgo -v ./topgun/k8s/integration/ --focus="Set Pipeline"
-//   ginkgo -v ./topgun/k8s/integration/ --focus="Edge Cases"
+//   go test ./topgun/k8s/integration/ -count=1 -v -timeout 30m -run TestIntegration/Pod.Cleanup
 //
-// One-shot CI execution with KIND:
+// Iterative development (keep cluster between runs):
 //
-//   ./hack/kind-integration.sh
+//   SKIP_TEARDOWN=1 go test ./topgun/k8s/integration/ -count=1 -v -timeout 30m
+//   # Re-run after changes (cluster is reused):
+//   SKIP_TEARDOWN=1 go test ./topgun/k8s/integration/ -count=1 -v -timeout 30m
+//   # Manual cleanup when done:
+//   kind delete cluster --name concourse-integration
 //
 // Environment variables:
-//   ATC_URL        — Concourse URL (default: http://localhost:8080)
-//   ATC_USERNAME   — login user (default: test)
-//   ATC_PASSWORD   — login password (default: test)
-//   K8S_NAMESPACE  — Kubernetes namespace (default: concourse)
-//   KUBECONFIG     — path to kubeconfig (default: ~/.kube/config)
-//   FLY_PATH       — path to fly binary (builds from source if unset)
+//   FLY_PATH           — path to fly binary (builds from source if unset)
+//   CONCOURSE_IMAGE    — Docker image to load into KinD (default: concourse-local:latest)
+//   KIND_CLUSTER_NAME  — KinD cluster name (default: concourse-integration)
+//   SKIP_TEARDOWN      — Set to "1" to keep cluster after tests
+//   EVENTUALLY_TIMEOUT — Go duration for Eventually timeout (default: 5m)
 
 package integration_test
 
@@ -36,7 +34,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -57,6 +57,55 @@ import (
 
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 )
+
+// TestMain manages the KinD cluster lifecycle outside of Ginkgo.
+// It always creates an ephemeral KinD cluster, loads images, deploys
+// Concourse, and starts a port-forward. The resulting config is passed
+// to the Ginkgo suite via environment variables.
+func TestMain(m *testing.M) {
+	// Self-contained mode only — no external cluster connectivity.
+	if err := verifyPrerequisites(); err != nil {
+		log.Fatalf("prerequisites check failed: %v", err)
+	}
+
+	clusterName := envOr("KIND_CLUSTER_NAME", "concourse-integration")
+	namespace := envOr("K8S_NAMESPACE", "concourse")
+	image := envOr("CONCOURSE_IMAGE", "concourse-local:latest")
+
+	kubeconfig, created := ensureKindCluster(clusterName)
+	log.Printf("KinD cluster %q ready (kubeconfig: %s, created: %v)", clusterName, kubeconfig, created)
+
+	loadImagesIntoKind(image, clusterName)
+
+	chartPath := filepath.Join(mustRepoRoot(), "deploy", "chart")
+	helmDeployConcourse(kubeconfig, namespace, chartPath, image)
+
+	atcURL, pfCmd := startPortForward(kubeconfig, namespace)
+	log.Printf("Concourse API available at %s", atcURL)
+
+	waitForAPI(atcURL, 3*time.Minute)
+
+	// Export config for the Ginkgo suite via environment variables.
+	os.Setenv("ATC_URL", atcURL)
+	os.Setenv("KUBECONFIG", kubeconfig)
+	os.Setenv("K8S_NAMESPACE", namespace)
+
+	code := m.Run()
+
+	// Cleanup.
+	if pfCmd != nil && pfCmd.Process != nil {
+		pfCmd.Process.Kill()
+		pfCmd.Wait()
+	}
+	if os.Getenv("SKIP_TEARDOWN") != "1" {
+		log.Printf("Tearing down KinD cluster %q...", clusterName)
+		exec.Command("kind", "delete", "cluster", "--name", clusterName).Run()
+	} else {
+		log.Printf("SKIP_TEARDOWN=1: keeping KinD cluster %q", clusterName)
+	}
+
+	os.Exit(code)
+}
 
 func TestIntegration(t *testing.T) {
 	RegisterFailHandler(Fail)
@@ -89,13 +138,18 @@ var (
 )
 
 var _ = SynchronizedBeforeSuite(func() []byte {
+	// All env vars (ATC_URL, KUBECONFIG, K8S_NAMESPACE) are set by TestMain
+	// from the ephemeral KinD cluster — no external cluster connectivity.
 	cfg := suiteConfig{
-		ATCURL:      envOr("ATC_URL", "http://localhost:8080"),
-		ATCUsername:  envOr("ATC_USERNAME", "test"),
-		ATCPassword: envOr("ATC_PASSWORD", "test"),
+		ATCURL:      os.Getenv("ATC_URL"),
+		ATCUsername: "test",
+		ATCPassword: "test",
 		Namespace:   envOr("K8S_NAMESPACE", "concourse"),
-		Kubeconfig:  envOr("KUBECONFIG", filepath.Join(os.Getenv("HOME"), ".kube", "config")),
+		Kubeconfig:  os.Getenv("KUBECONFIG"),
 	}
+
+	Expect(cfg.ATCURL).ToNot(BeEmpty(), "ATC_URL must be set (TestMain sets it for the managed KinD cluster)")
+	Expect(cfg.Kubeconfig).ToNot(BeEmpty(), "KUBECONFIG must be set (TestMain sets it for the managed KinD cluster)")
 
 	if flyPath := os.Getenv("FLY_PATH"); flyPath != "" {
 		cfg.FlyBin = flyPath
@@ -166,18 +220,10 @@ func envOr(key, defaultVal string) string {
 // ---------------------------------------------------------------------
 
 func newKubeClient(kubeconfig string) (kubernetes.Interface, *rest.Config) {
-	var rc *rest.Config
-	var err error
+	Expect(kubeconfig).ToNot(BeEmpty(), "kubeconfig path must not be empty")
 
-	// Try the explicit kubeconfig first; fall back to in-cluster config
-	// (used when running as a Concourse task pod inside K8s).
-	if kubeconfig != "" {
-		rc, err = clientcmd.BuildConfigFromFlags("", kubeconfig)
-	}
-	if rc == nil || err != nil {
-		rc, err = rest.InClusterConfig()
-	}
-	Expect(err).ToNot(HaveOccurred())
+	rc, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
+	Expect(err).ToNot(HaveOccurred(), "failed to load kubeconfig from %s", kubeconfig)
 
 	client, err := kubernetes.NewForConfig(rc)
 	Expect(err).ToNot(HaveOccurred())
