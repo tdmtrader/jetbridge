@@ -121,7 +121,7 @@ jobs:
 	Context("container targeting and image selection", func() {
 		// These tests require Docker Hub access for registry-image checks.
 		// Run with: ginkgo --label-filter="e2e" --focus="container targeting"
-		PIt("5.3: image_resource pulls specific image; kubectl confirms", Label("e2e"), func() {
+		It("5.3: image_resource pulls specific image; kubectl confirms", Label("e2e"), func() {
 			By("setting a pipeline with a specific alpine image_resource")
 			pipelineFile := writePipelineFile("task-image-resource.yml", `
 jobs:
@@ -192,7 +192,7 @@ jobs:
 			By("waiting for registry-image check to find versions")
 			Eventually(func() int {
 				return len(flyTable("resource-versions", "-r", inPipeline("my-image")))
-			}, 3*time.Minute, 5*time.Second).Should(BeNumerically(">", 0))
+			}, 3*time.Minute, time.Second).Should(BeNumerically(">", 0))
 
 			By("triggering and watching")
 			triggerJob("image-get-job")
@@ -383,7 +383,7 @@ jobs:
 
 			Eventually(func() int {
 				return len(flyTable("resource-versions", "-r", inPipeline("alpine-img")))
-			}, 3*time.Minute, 5*time.Second).Should(BeNumerically(">", 0))
+			}, 3*time.Minute, time.Second).Should(BeNumerically(">", 0))
 
 			triggerJob("mixed-image-job")
 			session := waitForBuildAndWatch("mixed-image-job")
@@ -712,7 +712,7 @@ jobs:
 					}
 				}
 				return false
-			}, 2*time.Minute, 2*time.Second).Should(BeTrue(),
+			}, 2*time.Minute, time.Second).Should(BeTrue(),
 				"expected a task pod with CPU limits",
 			)
 
@@ -991,7 +991,7 @@ jobs:
 					}
 				}
 				return false
-			}, 2*time.Minute, 2*time.Second).Should(BeTrue())
+			}, 2*time.Minute, time.Second).Should(BeTrue())
 
 			By("verifying both CPU and memory limits are set")
 			pod := getPodByName(podName)

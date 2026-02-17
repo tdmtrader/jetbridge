@@ -101,7 +101,7 @@ jobs:
 				return ""
 			}
 			return builds[0]["status"]
-		}, 2*time.Minute, 2*time.Second).Should(Equal("started"))
+		}, 2*time.Minute, time.Second).Should(Equal("started"))
 
 		By("aborting the build")
 		fly.Run("abort-build", "-j", inPipeline("hook-abort-job"), "-b", "1")
@@ -113,7 +113,7 @@ jobs:
 				return ""
 			}
 			return builds[0]["status"]
-		}, 1*time.Minute, 2*time.Second).Should(Equal("aborted"))
+		}, 1*time.Minute, time.Second).Should(Equal("aborted"))
 	})
 
 	It("9.4: on_error fires on infrastructure error", func() {

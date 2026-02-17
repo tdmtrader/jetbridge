@@ -84,9 +84,11 @@ func podServiceAccount(pod *corev1.Pod) string {
 // ---------------------------------------------------------------------
 
 // findConcoursePodsForWorker returns pods labeled with the concourse
-// worker label. These are pods created by the k8s runtime for builds.
+// worker label for the current pipeline. Scoped by pipeline to avoid
+// listing pods from other tests running in the same namespace.
 func findConcoursePodsForWorker() []corev1.Pod {
-	return getPods("concourse.ci/worker")
+	selector := fmt.Sprintf("concourse.ci/worker,concourse.ci/pipeline=%s", pipelineName)
+	return getPods(selector)
 }
 
 // waitForConcoursePodsAtLeast waits until at least n pods exist for
@@ -106,13 +108,13 @@ func waitForConcoursePodsAtLeast(n int) []corev1.Pod {
 }
 
 // waitForNoConcourseWorkloadPods waits until no pods with the concourse
-// worker label exist (GC has cleaned them up).
+// worker label exist for the current pipeline (GC has cleaned them up).
 func waitForNoConcourseWorkloadPods() {
 	GinkgoHelper()
 	Eventually(func() int {
 		return len(findConcoursePodsForWorker())
-	}, 3*time.Minute, 2*time.Second).Should(Equal(0),
-		"expected all concourse workload pods to be cleaned up",
+	}, 3*time.Minute, time.Second).Should(Equal(0),
+		fmt.Sprintf("expected all concourse workload pods for pipeline %q to be cleaned up", pipelineName),
 	)
 }
 
@@ -131,7 +133,7 @@ func cleanupPodsWithLabel(labelSelector string) {
 // ---------------------------------------------------------------------
 
 // countWorkloadPods returns the number of active (non-Succeeded/Failed)
-// workload pods created by Concourse.
+// workload pods created by Concourse for the current pipeline.
 func countWorkloadPods() int {
 	pods := findConcoursePodsForWorker()
 	count := 0
@@ -164,7 +166,7 @@ func waitForPodCleanupByPipeline() {
 			}
 		}
 		return count
-	}, 3*time.Minute, 2*time.Second).Should(Equal(0),
+	}, 3*time.Minute, time.Second).Should(Equal(0),
 		fmt.Sprintf("expected all workload pods for pipeline %q to be cleaned up (excludes check pods)", pipelineName),
 	)
 }
@@ -254,14 +256,13 @@ func assertNoResourceLimits(pod *corev1.Pod) {
 }
 
 // assertPodCleanup is a standard post-build assertion that waits for
-// all active concourse workload pods to reach 0.
+// all active concourse workload pods for the current pipeline to reach 0.
 func assertPodCleanup() {
 	GinkgoHelper()
-	waitForNoConcourseWorkloadPods()
+	waitForPodCleanupByPipeline()
 }
 
-// assertPodCleanupForPipeline is the same as assertPodCleanup but
-// filtered by the current pipelineName.
+// assertPodCleanupForPipeline is an alias for assertPodCleanup.
 func assertPodCleanupForPipeline() {
 	GinkgoHelper()
 	waitForPodCleanupByPipeline()

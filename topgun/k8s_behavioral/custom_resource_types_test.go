@@ -617,7 +617,7 @@ jobs:
 
 			Eventually(func() int {
 				return len(flyTable("resource-versions", "-r", inPipeline("task-image")))
-			}, 3*time.Minute, 5*time.Second).Should(BeNumerically(">", 0))
+			}, 3*time.Minute, time.Second).Should(BeNumerically(">", 0))
 
 			triggerJob("image-pass-job")
 			session := waitForBuildAndWatch("image-pass-job")
@@ -981,7 +981,7 @@ jobs:
 					return ""
 				}
 				return builds[0]["status"]
-			}, 3*time.Minute, 5*time.Second).Should(SatisfyAny(
+			}, 3*time.Minute, time.Second).Should(SatisfyAny(
 				Equal("succeeded"),
 				Equal("started"),
 			))

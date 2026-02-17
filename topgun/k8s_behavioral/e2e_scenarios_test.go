@@ -398,7 +398,7 @@ jobs:
 		Eventually(func() int {
 			rows := flyTable("builds", "-j", inPipeline("periodic-job"))
 			return len(rows)
-		}, 2*time.Minute, 5*time.Second).Should(BeNumerically(">=", 1))
+		}, 2*time.Minute, time.Second).Should(BeNumerically(">=", 1))
 
 		sess := waitForBuildAndWatch("periodic-job")
 		Expect(sess.ExitCode()).To(Equal(0))

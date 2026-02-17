@@ -44,12 +44,9 @@ jobs:
 	})
 
 	// TODO: OOM detection works at the runtime level (process_test.go covers
-	// OOMKilled with exit code 137), but reliably triggering OOM in a
-	// busybox container is environment-dependent on overcommit settings.
-	// The `head -c | tail` pipeline forces physical page consumption
-	// by reading data through a pipe. Re-enable when sidecar/container
-	// limit support is verified in the K8s runtime.
-	PIt("detects OOM-killed containers", func() {
+	// Triggers OOM by feeding 128MB through sort (which buffers all input
+	// in memory) inside a container limited to 64MB.
+	It("detects OOM-killed containers", func() {
 		cfg := writePipelineFile("oom.yml", `
 jobs:
 - name: oom-job
@@ -61,7 +58,7 @@ jobs:
       container_limits: {memory: 64MB}
       run:
         path: sh
-        args: ["-c", "head -c 128M /dev/zero | tail -c 1; echo should-not-reach"]
+        args: ["-c", "head -c 134217728 /dev/zero | sort > /dev/null; echo should-not-reach"]
 `)
 		setAndUnpausePipeline(cfg)
 		triggerJob("oom-job")

@@ -70,7 +70,7 @@ jobs:
 				return ""
 			}
 			return rows[0]["status"]
-		}, time.Minute, 2*time.Second).Should(SatisfyAny(
+		}, time.Minute, time.Second).Should(SatisfyAny(
 			Equal("pending"),
 			Equal("started"),
 			Equal("errored"),
@@ -167,7 +167,7 @@ jobs:
 				return ""
 			}
 			return rows[0]["status"]
-		}, time.Minute, 2*time.Second).Should(SatisfyAny(
+		}, time.Minute, time.Second).Should(SatisfyAny(
 			Equal("pending"),
 			Equal("started"),
 			Equal("errored"),

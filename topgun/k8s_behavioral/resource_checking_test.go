@@ -43,7 +43,7 @@ jobs:
 			By("waiting for resource versions to appear from auto-check")
 			Eventually(func() int {
 				return len(fly.GetVersions(pipelineName, "auto-check-res"))
-			}, 3*time.Minute, 5*time.Second).Should(BeNumerically(">", 0),
+			}, 3*time.Minute, time.Second).Should(BeNumerically(">", 0),
 				"expected auto-check to discover versions",
 			)
 		})
@@ -76,7 +76,7 @@ jobs:
 			By("waiting for initial version to appear")
 			Eventually(func() int {
 				return len(fly.GetVersions(pipelineName, "freq-res"))
-			}, 3*time.Minute, 5*time.Second).Should(BeNumerically(">", 0),
+			}, 3*time.Minute, time.Second).Should(BeNumerically(">", 0),
 				"expected resource to be checked with check_every: 10s",
 			)
 		})
@@ -109,7 +109,7 @@ jobs:
 			By("waiting a short period and verifying no versions appear automatically")
 			Consistently(func() int {
 				return len(fly.GetVersions(pipelineName, "never-res"))
-			}, 30*time.Second, 5*time.Second).Should(Equal(0),
+			}, 30*time.Second, time.Second).Should(Equal(0),
 				"expected no versions with check_every: never",
 			)
 
@@ -153,7 +153,7 @@ jobs:
 			By("verifying versions appear after on-demand check")
 			Eventually(func() int {
 				return len(fly.GetVersions(pipelineName, "ondemand-res"))
-			}, 2*time.Minute, 5*time.Second).Should(BeNumerically(">", 0),
+			}, 2*time.Minute, time.Second).Should(BeNumerically(">", 0),
 				"expected versions after on-demand check",
 			)
 		})
@@ -250,7 +250,7 @@ jobs:
 			By("verifying versions appear")
 			Eventually(func() int {
 				return len(fly.GetVersions(pipelineName, "webhook-res"))
-			}, 2*time.Minute, 5*time.Second).Should(BeNumerically(">", 0))
+			}, 2*time.Minute, time.Second).Should(BeNumerically(">", 0))
 		})
 
 		// 3.7 — fly check-resource-type re-checks a custom resource type
@@ -323,14 +323,14 @@ jobs:
 			By("waiting for versions to appear (check completed)")
 			Eventually(func() int {
 				return len(fly.GetVersions(pipelineName, "cleanup-res"))
-			}, 2*time.Minute, 5*time.Second).Should(BeNumerically(">", 0))
+			}, 2*time.Minute, time.Second).Should(BeNumerically(">", 0))
 
 			By("verifying check pods are cleaned up")
 			Eventually(func() int {
 				selector := fmt.Sprintf("concourse.ci/type=check,concourse.ci/pipeline=%s", pipelineName)
 				pods := getPods(selector)
 				return len(pods)
-			}, 3*time.Minute, 5*time.Second).Should(Equal(0),
+			}, 3*time.Minute, time.Second).Should(Equal(0),
 				"expected check pods to be cleaned up after completion",
 			)
 		})
@@ -373,7 +373,7 @@ jobs:
 					}
 				}
 				return ""
-			}, 2*time.Minute, 5*time.Second).Should(SatisfyAny(
+			}, 2*time.Minute, time.Second).Should(SatisfyAny(
 				ContainSubstring("check"),
 				ContainSubstring("error"),
 				ContainSubstring("fail"),

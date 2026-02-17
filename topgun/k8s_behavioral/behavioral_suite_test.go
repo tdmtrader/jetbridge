@@ -14,6 +14,16 @@
 //   FLY_PATH=/tmp/fly \
 //     ginkgo -v ./topgun/k8s_behavioral/
 //
+// Parallel execution (requires external Concourse):
+//
+//   ATC_URL=https://concourse.home \
+//   ATC_USERNAME=admin \
+//   ATC_PASSWORD=<password> \
+//   K8S_NAMESPACE=cicd \
+//   KUBECONFIG=~/.kube/config \
+//   FLY_PATH=/tmp/fly \
+//     ginkgo -p --procs=4 ./topgun/k8s_behavioral/
+//
 // Focus on a specific Describe block:
 //
 //   ginkgo -v ./topgun/k8s_behavioral/ --focus="Pipeline Lifecycle"
@@ -37,6 +47,13 @@
 //   KIND_CLUSTER_NAME  - KinD cluster name (default: concourse-behavioral)
 //   SKIP_TEARDOWN      - Set to "1" to keep cluster after tests
 //   EVENTUALLY_TIMEOUT - Go duration for Eventually timeout (default: 5m)
+//
+// Notes on parallelism:
+//   Ginkgo parallel mode (--procs / -p) requires an external Concourse
+//   (ATC_URL must be set). Self-sufficient mode creates a KinD cluster in
+//   TestMain which does not propagate across parallel processes.
+//   Each parallel process builds its own K8s client and fly login; pipeline
+//   names are UUID-based so there are no cross-process conflicts.
 
 package behavioral_test
 
@@ -79,6 +96,14 @@ func TestMain(m *testing.M) {
 	}
 
 	// Self-sufficient mode — manage a KinD cluster.
+	// Not compatible with Ginkgo parallelism: each parallel process runs
+	// TestMain independently, so env vars set here don't propagate.
+	if proc := os.Getenv("GINKGO_PARALLEL_PROCESS"); proc != "" && proc != "1" {
+		log.Fatalf(
+			"self-sufficient mode (no ATC_URL) does not support Ginkgo parallelism\n" +
+				"  Set ATC_URL, KUBECONFIG, and K8S_NAMESPACE to use --procs / -p",
+		)
+	}
 	if err := verifyPrerequisites(); err != nil {
 		log.Fatalf("prerequisites check failed: %v", err)
 	}
@@ -151,71 +176,99 @@ var (
 	restConfig   *rest.Config
 	pipelineName string
 	tmp          string
+	suiteFlyHome string
 )
 
-var _ = BeforeSuite(func() {
-	config = suiteConfig{
-		ATCURL:      os.Getenv("ATC_URL"),
-		ATCUsername: envOr("ATC_USERNAME", "test"),
-		ATCPassword: envOr("ATC_PASSWORD", "test"),
-		Namespace:   envOr("K8S_NAMESPACE", "concourse"),
-		Kubeconfig:  defaultKubeconfig(),
-	}
+var _ = SynchronizedBeforeSuite(
+	// Process 1 only: build the fly binary (expensive, do once).
+	// Other processes receive the binary path via the []byte return value.
+	func() []byte {
+		if flyPath := os.Getenv("FLY_PATH"); flyPath != "" {
+			return []byte(flyPath)
+		}
+		return []byte(BuildBinary())
+	},
+	// All processes: initialize config, K8s client, and per-process fly login.
+	func(flyBinData []byte) {
+		config = suiteConfig{
+			FlyBin:      string(flyBinData),
+			ATCURL:      os.Getenv("ATC_URL"),
+			ATCUsername: envOr("ATC_USERNAME", "test"),
+			ATCPassword: envOr("ATC_PASSWORD", "test"),
+			Namespace:   envOr("K8S_NAMESPACE", "concourse"),
+			Kubeconfig:  defaultKubeconfig(),
+		}
 
-	Expect(config.ATCURL).ToNot(BeEmpty(), "ATC_URL must be set (TestMain sets it for managed clusters)")
+		Expect(config.ATCURL).ToNot(BeEmpty(), "ATC_URL must be set (TestMain sets it for managed clusters)")
 
-	if flyPath := os.Getenv("FLY_PATH"); flyPath != "" {
-		config.FlyBin = flyPath
-	} else {
-		config.FlyBin = BuildBinary()
-	}
-})
+		// Gomega defaults (suite-wide, derived from env vars that never change)
+		eventuallyTimeout := 5 * time.Minute
+		if v := os.Getenv("EVENTUALLY_TIMEOUT"); v != "" {
+			if d, err := time.ParseDuration(v); err == nil {
+				eventuallyTimeout = d
+			}
+		}
+		SetDefaultEventuallyTimeout(eventuallyTimeout)
+		SetDefaultEventuallyPollingInterval(500 * time.Millisecond)
+		SetDefaultConsistentlyDuration(time.Minute)
+		SetDefaultConsistentlyPollingInterval(time.Second)
 
-var _ = AfterSuite(func() {
-	if os.Getenv("FLY_PATH") == "" {
-		gexec.CleanupBuildArtifacts()
-	}
-})
+		// K8s client (goroutine-safe, kubeconfig never changes)
+		kubeClient, restConfig = newKubeClient(config.Kubeconfig)
+
+		// Per-process fly login (login once per process, copy .flyrc per test)
+		var err error
+		suiteFlyHome, err = os.MkdirTemp("", "k8s-behavioral-fly-suite")
+		Expect(err).ToNot(HaveOccurred())
+		suiteFly := FlyCli{Bin: config.FlyBin, Target: flyTarget, Home: suiteFlyHome}
+		loginArgs := []string{}
+		if envOr("FLY_INSECURE", "") != "" || strings.HasPrefix(config.ATCURL, "https://") {
+			loginArgs = append(loginArgs, "-k")
+		}
+		suiteFly.Login(config.ATCUsername, config.ATCPassword, config.ATCURL, loginArgs...)
+	},
+)
+
+var _ = SynchronizedAfterSuite(
+	// All processes: clean up per-process resources.
+	func() {
+		if suiteFlyHome != "" {
+			os.RemoveAll(suiteFlyHome)
+		}
+	},
+	// Process 1 only: clean up the compiled fly binary.
+	func() {
+		if os.Getenv("FLY_PATH") == "" {
+			gexec.CleanupBuildArtifacts()
+		}
+	},
+)
 
 var _ = BeforeEach(func() {
-	eventuallyTimeout := 5 * time.Minute
-	if v := os.Getenv("EVENTUALLY_TIMEOUT"); v != "" {
-		if d, err := time.ParseDuration(v); err == nil {
-			eventuallyTimeout = d
-		}
-	}
-	SetDefaultEventuallyTimeout(eventuallyTimeout)
-	SetDefaultEventuallyPollingInterval(time.Second)
-	SetDefaultConsistentlyDuration(time.Minute)
-	SetDefaultConsistentlyPollingInterval(time.Second)
-
 	var err error
 	tmp, err = os.MkdirTemp("", "k8s-behavioral-tmp")
 	Expect(err).ToNot(HaveOccurred())
 
-	fly = FlyCli{
-		Bin:    config.FlyBin,
-		Target: flyTarget,
-		Home:   filepath.Join(tmp, "fly-home"),
-	}
+	flyHome := filepath.Join(tmp, "fly-home")
+	Expect(os.Mkdir(flyHome, 0755)).To(Succeed())
 
-	err = os.Mkdir(fly.Home, 0755)
+	// Copy pre-authenticated .flyrc instead of logging in (~1us vs 1-2s)
+	src := filepath.Join(suiteFlyHome, ".flyrc")
+	data, err := os.ReadFile(src)
 	Expect(err).ToNot(HaveOccurred())
+	Expect(os.WriteFile(filepath.Join(flyHome, ".flyrc"), data, 0600)).To(Succeed())
 
-	loginArgs := []string{}
-	if envOr("FLY_INSECURE", "") != "" || strings.HasPrefix(config.ATCURL, "https://") {
-		loginArgs = append(loginArgs, "-k")
-	}
-	fly.Login(config.ATCUsername, config.ATCPassword, config.ATCURL, loginArgs...)
-
+	fly = FlyCli{Bin: config.FlyBin, Target: flyTarget, Home: flyHome}
 	pipelineName = randomPipelineName()
-
-	kubeClient, restConfig = newKubeClient(config.Kubeconfig)
 })
 
 var _ = AfterEach(func() {
 	destroyPipeline()
-	cleanupOrphanedPods()
+	if pipelineName != "" {
+		cleanupPodsWithLabel(fmt.Sprintf(
+			"concourse.ci/worker,concourse.ci/pipeline=%s", pipelineName,
+		))
+	}
 	Expect(os.RemoveAll(tmp)).To(Succeed())
 })
 
@@ -596,7 +649,7 @@ func waitForBuildAndWatch(jobName string, buildName ...string) *gexec.Session {
 				if time.Now().After(deadline) {
 					Fail(fmt.Sprintf("timed out waiting for build: %s (args: %v)", output, args))
 				}
-				time.Sleep(time.Second)
+				time.Sleep(500 * time.Millisecond)
 				continue
 			}
 		}
@@ -745,23 +798,3 @@ func cleanupPod(name string) {
 	)
 }
 
-// cleanupOrphanedPods deletes Completed and Failed pods left behind after
-// a pipeline is destroyed. This prevents pod accumulation across test runs.
-func cleanupOrphanedPods() {
-	pods, err := kubeClient.CoreV1().Pods(config.Namespace).List(
-		context.Background(),
-		metav1.ListOptions{LabelSelector: "concourse.ci/worker"},
-	)
-	if err != nil {
-		return
-	}
-	for _, p := range pods.Items {
-		if p.Status.Phase == corev1.PodSucceeded || p.Status.Phase == corev1.PodFailed {
-			_ = kubeClient.CoreV1().Pods(config.Namespace).Delete(
-				context.Background(),
-				p.Name,
-				metav1.DeleteOptions{},
-			)
-		}
-	}
-}

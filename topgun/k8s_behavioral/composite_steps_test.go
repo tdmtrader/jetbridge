@@ -557,7 +557,7 @@ jobs:
 					return ""
 				}
 				return builds[0]["status"]
-			}, 1*time.Minute, 2*time.Second).Should(Equal("aborted"))
+			}, 1*time.Minute, time.Second).Should(Equal("aborted"))
 		})
 
 		It("8.15: all pods cleaned up after composite build", func() {

@@ -51,7 +51,7 @@ jobs:
 					}
 				}
 				return false
-			}, 1*time.Minute, 2*time.Second).Should(BeTrue(),
+			}, 1*time.Minute, time.Second).Should(BeTrue(),
 				fmt.Sprintf("expected pipeline %q to exist", childPipeline),
 			)
 
@@ -114,7 +114,7 @@ jobs:
 					}
 				}
 				return false
-			}, 1*time.Minute, 2*time.Second).Should(BeTrue(),
+			}, 1*time.Minute, time.Second).Should(BeTrue(),
 				"expected added-job to exist in updated pipeline",
 			)
 
@@ -176,7 +176,7 @@ jobs:
 					}
 				}
 				return false
-			}, 1*time.Minute, 2*time.Second).Should(BeTrue())
+			}, 1*time.Minute, time.Second).Should(BeTrue())
 
 			By("cleaning up the child pipeline")
 			sess := fly.Start("destroy-pipeline", "-n", "-p", childPipeline)
@@ -339,7 +339,7 @@ jobs:
 					}
 				}
 				return false
-			}, 1*time.Minute, 2*time.Second).Should(BeTrue(),
+			}, 1*time.Minute, time.Second).Should(BeTrue(),
 				"expected new-job-from-self to exist after self-update",
 			)
 		})

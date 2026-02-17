@@ -129,7 +129,7 @@ jobs:
 		Eventually(func() int {
 			versions := fly.GetVersions(pipelineName, "check-res")
 			return len(versions)
-		}, 3*time.Minute, 5*time.Second).Should(BeNumerically(">", 0),
+		}, 3*time.Minute, time.Second).Should(BeNumerically(">", 0),
 			"expected resource versions to appear after unpausing",
 		)
 	})
@@ -161,7 +161,7 @@ jobs:
 		By("waiting for initial check to produce versions")
 		Eventually(func() int {
 			return len(fly.GetVersions(pipelineName, "pause-res"))
-		}, 3*time.Minute, 5*time.Second).Should(BeNumerically(">", 0))
+		}, 3*time.Minute, time.Second).Should(BeNumerically(">", 0))
 
 		By("pausing the pipeline")
 		fly.Run("pause-pipeline", "-p", pipelineName)

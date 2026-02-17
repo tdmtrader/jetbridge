@@ -384,7 +384,7 @@ jobs:
 		Eventually(func() int {
 			versions := getResourceVersions(pipelineName, "versioned-out")
 			return len(versions)
-		}, 1*time.Minute, 2*time.Second).Should(BeNumerically(">=", 1),
+		}, 1*time.Minute, time.Second).Should(BeNumerically(">=", 1),
 			"expected at least one version for versioned-out after put",
 		)
 	})

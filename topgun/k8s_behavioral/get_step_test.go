@@ -100,7 +100,7 @@ jobs:
 				return ""
 			}
 			return builds[0]["status"]
-		}, 3*time.Minute, 5*time.Second).Should(SatisfyAny(
+		}, 3*time.Minute, time.Second).Should(SatisfyAny(
 			Equal("succeeded"),
 			Equal("started"),
 		))
@@ -143,7 +143,7 @@ jobs:
 		Consistently(func() int {
 			builds := flyTable("builds", "-j", inPipeline("no-trigger-job"))
 			return len(builds)
-		}, 30*time.Second, 5*time.Second).Should(Equal(0),
+		}, 30*time.Second, time.Second).Should(Equal(0),
 			"no build should be triggered without trigger: true",
 		)
 	})
@@ -645,7 +645,7 @@ jobs:
 				}
 			}
 			return active
-		}, 3*time.Minute, 5*time.Second).Should(Equal(0),
+		}, 3*time.Minute, time.Second).Should(Equal(0),
 			"expected get pods to be cleaned up after build completion",
 		)
 	})
