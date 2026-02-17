@@ -39,12 +39,11 @@ jobs:
 				return ""
 			}
 			return builds[0]["status"]
-		}, 1*time.Minute, 2*time.Second).Should(Equal("aborted"))
+		}, 1*time.Minute, time.Second).Should(Equal("aborted"))
 	}
 
 	Context("Pod Count Verification", func() {
-		PIt("11.1: single task creates exactly 1 pod", func() {
-			// Pending: pod count assertions require live K8s cluster with Concourse worker
+		It("11.1: single task creates exactly 1 pod", func() {
 			pipelineFile := sleepPipeline("single-pod-job", 30)
 			setAndUnpausePipeline(pipelineFile)
 			triggerJob("single-pod-job")
@@ -385,7 +384,7 @@ jobs:
 					}
 				}
 				return false
-			}, 2*time.Minute, 2*time.Second).Should(BeTrue(), "expected a task pod with CPU limits")
+			}, 2*time.Minute, time.Second).Should(BeTrue(), "expected a task pod with CPU limits")
 
 			pod := getPodByName(podName)
 			cpuLimit := podCPULimit(pod)
@@ -428,7 +427,7 @@ jobs:
 					}
 				}
 				return false
-			}, 2*time.Minute, 2*time.Second).Should(BeTrue(), "expected a task pod with memory limits")
+			}, 2*time.Minute, time.Second).Should(BeTrue(), "expected a task pod with memory limits")
 
 			pod := getPodByName(podName)
 			memLimit := podMemoryLimit(pod)
@@ -437,8 +436,7 @@ jobs:
 			abortAndWait("mem-limits-job")
 		})
 
-		PIt("11.15: tasks without container_limits have no resource limits", func() {
-			// Pending: resource limit assertions require live K8s cluster for pod inspection
+		It("11.15: tasks without container_limits have no resource limits", func() {
 			pipelineFile := sleepPipeline("no-limits-job", 30)
 			setAndUnpausePipeline(pipelineFile)
 			triggerJob("no-limits-job")
@@ -490,7 +488,7 @@ jobs:
 					}
 				}
 				return false
-			}, 2*time.Minute, 2*time.Second).Should(BeTrue(), "expected a task pod with both limits")
+			}, 2*time.Minute, time.Second).Should(BeTrue(), "expected a task pod with both limits")
 
 			pod := getPodByName(podName)
 			Expect(podCPULimit(pod)).ToNot(BeNil())
@@ -523,8 +521,7 @@ jobs:
 			waitForPodCleanupByPipeline()
 		})
 
-		PIt("11.18: pods are cleaned up after failed build", func() {
-			// Pending: pod cleanup after failed build requires live K8s cluster with Reaper integration
+		It("11.18: pods are cleaned up after failed build", func() {
 			pipelineFile := writePipelineFile("k8s-cleanup-fail.yml", `
 jobs:
 - name: cleanup-fail-job
@@ -557,7 +554,7 @@ jobs:
 					return ""
 				}
 				return builds[0]["status"]
-			}, 2*time.Minute, 2*time.Second).Should(Equal("started"))
+			}, 2*time.Minute, time.Second).Should(Equal("started"))
 
 			fly.Run("abort-build", "-j", inPipeline("cleanup-abort-job"), "-b", "1")
 
@@ -567,7 +564,7 @@ jobs:
 					return ""
 				}
 				return builds[0]["status"]
-			}, 1*time.Minute, 2*time.Second).Should(Equal("aborted"))
+			}, 1*time.Minute, time.Second).Should(Equal("aborted"))
 
 			waitForPodCleanupByPipeline()
 		})
@@ -609,8 +606,7 @@ jobs:
 			waitForPodCleanupByPipeline()
 		})
 
-		PIt("11.21: hook pods are cleaned up after build", func() {
-			// Pending: hook pod cleanup requires live K8s cluster with Reaper integration
+		It("11.21: hook pods are cleaned up after build", func() {
 			pipelineFile := writePipelineFile("k8s-cleanup-hooks.yml", `
 jobs:
 - name: cleanup-hooks-job
@@ -737,8 +733,7 @@ jobs:
 			abortAndWait("label-job-job")
 		})
 
-		PIt("11.27: pod has concourse.ci/build-id label", func() {
-			// Pending: build-id label was added to production code; needs live K8s cluster for E2E validation
+		It("11.27: pod has concourse.ci/build-id label", func() {
 			pipelineFile := sleepPipeline("label-build-job", 30)
 			setAndUnpausePipeline(pipelineFile)
 			triggerJob("label-build-job")
@@ -757,8 +752,7 @@ jobs:
 			abortAndWait("label-build-job")
 		})
 
-		PIt("11.28: task pod has type=task label", func() {
-			// Pending: type=task label assertion requires live K8s cluster for pod inspection
+		It("11.28: task pod has type=task label", func() {
 			pipelineFile := sleepPipeline("label-task-type-job", 30)
 			setAndUnpausePipeline(pipelineFile)
 			triggerJob("label-task-type-job")
