@@ -1,11 +1,13 @@
 // K8s Behavioral Integration Test Suite
 //
-// This suite is fully self-contained: it creates an ephemeral KinD cluster,
-// deploys Concourse via Helm, runs tests, and tears down automatically.
-// No external cluster connectivity is supported — tests always run in
-// isolation to prevent accidental impact on production clusters.
+// This suite is fully self-contained: it creates an ephemeral k3s cluster
+// via testcontainers-go, deploys Concourse via Helm, runs tests, and tears
+// down automatically. No external cluster connectivity is supported — tests
+// always run in isolation to prevent accidental impact on production clusters.
 //
-// Basic run (creates a KinD cluster automatically):
+// Prerequisites: docker, helm, kubectl
+//
+// Basic run (creates a k3s cluster automatically):
 //
 //   go test ./topgun/k8s_behavioral/ -count=1 -v -timeout 30m
 //
@@ -13,19 +15,10 @@
 //
 //   go test ./topgun/k8s_behavioral/ -count=1 -v -timeout 30m -run TestBehavioral/Pipeline
 //
-// Iterative development (keep cluster between runs):
-//
-//   SKIP_TEARDOWN=1 go test ./topgun/k8s_behavioral/ -count=1 -v -run TestBehavioral/Task
-//   # Re-run after changes (cluster is reused):
-//   SKIP_TEARDOWN=1 go test ./topgun/k8s_behavioral/ -count=1 -v -run TestBehavioral/Task
-//   # Manual cleanup when done:
-//   kind delete cluster --name concourse-behavioral
-//
 // Environment variables:
 //   FLY_PATH           - path to fly binary (builds from source if unset)
-//   CONCOURSE_IMAGE    - Docker image to load into KinD (default: concourse-local:latest)
-//   KIND_CLUSTER_NAME  - KinD cluster name (default: concourse-behavioral)
-//   SKIP_TEARDOWN      - Set to "1" to keep cluster after tests
+//   CONCOURSE_IMAGE    - Docker image to load into k3s (default: concourse-local:latest)
+//   SKIP_TEARDOWN      - Set to "1" to keep k3s container after tests
 //   EVENTUALLY_TIMEOUT - Go duration for Eventually timeout (default: 5m)
 
 package behavioral_test
@@ -34,9 +27,7 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -58,10 +49,10 @@ import (
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 )
 
-// TestMain manages the KinD cluster lifecycle outside of Ginkgo.
-// It always creates an ephemeral KinD cluster, loads images, deploys
-// Concourse, and starts a port-forward. The resulting config is passed
-// to the Ginkgo suite via environment variables.
+// TestMain manages the k3s cluster lifecycle outside of Ginkgo.
+// It creates an ephemeral k3s cluster via testcontainers-go, loads images,
+// deploys Concourse via Helm, and starts a port-forward. The resulting
+// config is passed to the Ginkgo suite via environment variables.
 func TestMain(m *testing.M) {
 	// Self-contained mode only — no external cluster connectivity.
 	// Not compatible with Ginkgo parallelism: each parallel process runs
@@ -69,26 +60,26 @@ func TestMain(m *testing.M) {
 	if proc := os.Getenv("GINKGO_PARALLEL_PROCESS"); proc != "" && proc != "1" {
 		log.Fatalf(
 			"this suite does not support Ginkgo parallelism (--procs / -p)\n" +
-				"  Each test process creates its own KinD cluster via TestMain",
+				"  Each test process creates its own k3s cluster via TestMain",
 		)
 	}
 	if err := verifyPrerequisites(); err != nil {
 		log.Fatalf("prerequisites check failed: %v", err)
 	}
 
-	clusterName := envOr("KIND_CLUSTER_NAME", "concourse-behavioral")
+	ctx := context.Background()
 	namespace := envOr("K8S_NAMESPACE", "concourse")
 	image := envOr("CONCOURSE_IMAGE", "concourse-local:latest")
 
-	kubeconfig, created := ensureKindCluster(clusterName)
-	log.Printf("KinD cluster %q ready (kubeconfig: %s, created: %v)", clusterName, kubeconfig, created)
+	ensureConcourseImage(image)
 
-	loadImagesIntoKind(image, clusterName)
+	k3sContainer, kubeconfig := createK3sCluster(ctx)
+	loadImagesIntoK3s(ctx, k3sContainer, image)
 
 	chartPath := filepath.Join(mustRepoRoot(), "deploy", "chart")
 	helmDeployConcourse(kubeconfig, namespace, chartPath, image)
 
-	atcURL, pfCmd := startPortForwardStdlib(kubeconfig, namespace)
+	atcURL, pfCmd := startPortForward(kubeconfig, namespace)
 	log.Printf("Concourse API available at %s", atcURL)
 
 	waitForAPI(atcURL, 3*time.Minute)
@@ -97,8 +88,6 @@ func TestMain(m *testing.M) {
 	os.Setenv("ATC_URL", atcURL)
 	os.Setenv("KUBECONFIG", kubeconfig)
 	os.Setenv("K8S_NAMESPACE", namespace)
-	os.Setenv("_MANAGED_CLUSTER", "1")
-	os.Setenv("_KIND_CLUSTER", clusterName)
 
 	code := m.Run()
 
@@ -107,12 +96,7 @@ func TestMain(m *testing.M) {
 		pfCmd.Process.Kill()
 		pfCmd.Wait()
 	}
-	if os.Getenv("SKIP_TEARDOWN") != "1" {
-		log.Printf("Tearing down KinD cluster %q...", clusterName)
-		exec.Command("kind", "delete", "cluster", "--name", clusterName).Run()
-	} else {
-		log.Printf("SKIP_TEARDOWN=1: keeping KinD cluster %q", clusterName)
-	}
+	terminateK3sCluster(k3sContainer)
 
 	os.Exit(code)
 }
@@ -158,7 +142,7 @@ var _ = SynchronizedBeforeSuite(
 	},
 	// All processes: initialize config, K8s client, and per-process fly login.
 	// All env vars (ATC_URL, KUBECONFIG, K8S_NAMESPACE) are set by TestMain
-	// from the ephemeral KinD cluster — no external cluster connectivity.
+	// from the ephemeral k3s cluster — no external cluster connectivity.
 	func(flyBinData []byte) {
 		config = suiteConfig{
 			FlyBin:      string(flyBinData),
@@ -169,7 +153,7 @@ var _ = SynchronizedBeforeSuite(
 			Kubeconfig:  defaultKubeconfig(),
 		}
 
-		Expect(config.ATCURL).ToNot(BeEmpty(), "ATC_URL must be set (TestMain sets it for the managed KinD cluster)")
+		Expect(config.ATCURL).ToNot(BeEmpty(), "ATC_URL must be set (TestMain sets it for the managed k3s cluster)")
 
 		// Gomega defaults (suite-wide, derived from env vars that never change)
 		eventuallyTimeout := 5 * time.Minute
@@ -238,280 +222,7 @@ var _ = AfterEach(func() {
 	Expect(os.RemoveAll(tmp)).To(Succeed())
 })
 
-// ---------------------------------------------------------------------
-// TestMain helpers (run outside Ginkgo — use log, not GinkgoWriter)
-// ---------------------------------------------------------------------
-
-// verifyPrerequisites checks that required CLIs are on PATH.
-func verifyPrerequisites() error {
-	var missing []string
-	for _, bin := range []string{"docker", "kind", "helm", "kubectl"} {
-		if _, err := exec.LookPath(bin); err != nil {
-			missing = append(missing, bin)
-		}
-	}
-	if len(missing) > 0 {
-		return fmt.Errorf("missing required CLIs on PATH: %s", strings.Join(missing, ", "))
-	}
-	return nil
-}
-
-// ensureKindCluster creates a KinD cluster if it doesn't already exist.
-// Returns the kubeconfig path and whether a new cluster was created.
-func ensureKindCluster(name string) (string, bool) {
-	out, err := exec.Command("kind", "get", "clusters").Output()
-	if err == nil {
-		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-			if line == name {
-				log.Printf("KinD cluster %q already exists, reusing", name)
-				return writeKindKubeconfigStdlib(name), false
-			}
-		}
-	}
-
-	log.Printf("Creating KinD cluster %q...", name)
-	cmd := exec.Command("kind", "create", "cluster", "--name", name, "--wait", "120s")
-	cmd.Stdout = os.Stderr
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		log.Fatalf("failed to create KinD cluster: %v", err)
-	}
-
-	return writeKindKubeconfigStdlib(name), true
-}
-
-// writeKindKubeconfigStdlib writes the kubeconfig for the given cluster to a temp file.
-func writeKindKubeconfigStdlib(name string) string {
-	out, err := exec.Command("kind", "get", "kubeconfig", "--name", name).Output()
-	if err != nil {
-		log.Fatalf("failed to get kubeconfig for KinD cluster: %v", err)
-	}
-
-	path := filepath.Join(os.TempDir(), fmt.Sprintf("kind-kubeconfig-%s", name))
-	if err := os.WriteFile(path, out, 0600); err != nil {
-		log.Fatalf("failed to write kubeconfig: %v", err)
-	}
-
-	return path
-}
-
-// loadImagesIntoKind ensures all required Docker images are available
-// inside the KinD cluster. For the Concourse image (which is built
-// locally), it uses `kind load docker-image`. For registry images
-// (postgres, mock-resource, busybox), it pre-pulls them directly
-// inside the KinD node via crictl, which is more reliable than
-// `kind load` with Docker Desktop's containerd image store.
-func loadImagesIntoKind(concourseImage, clusterName string) {
-	nodeName := clusterName + "-control-plane"
-
-	// Load the locally-built Concourse image into KinD.
-	if err := exec.Command("docker", "image", "inspect", concourseImage).Run(); err != nil {
-		log.Printf("Concourse image %q not found locally, building from source...", concourseImage)
-		root := mustRepoRoot()
-		cmd := exec.Command("docker", "build", "-f", "Dockerfile.build", "-t", concourseImage, root)
-		cmd.Dir = root
-		cmd.Stdout = os.Stderr
-		cmd.Stderr = os.Stderr
-		if err := cmd.Run(); err != nil {
-			log.Fatalf("failed to build Concourse image: %v", err)
-		}
-	}
-	kindLoadImage(concourseImage, clusterName)
-
-	// Pre-pull registry images directly inside the KinD node.
-	// This avoids `kind load` compatibility issues with Docker Desktop's
-	// containerd image store and is faster for standard registry images.
-	registryImages := []string{
-		"docker.io/library/postgres:16",
-		"docker.io/concourse/mock-resource:latest",
-		"docker.io/library/busybox:latest",
-		"docker.io/concourse/registry-image-resource:latest",
-		"docker.io/library/nginx:alpine",
-		"docker.io/library/alpine:3.19",
-	}
-	for _, img := range registryImages {
-		// Check if image is already present in the node before pulling.
-		if exec.Command("docker", "exec", nodeName, "crictl", "inspecti", "-q", img).Run() == nil {
-			log.Printf("Image %q already present in KinD node %q, skipping pull", img, nodeName)
-			continue
-		}
-		log.Printf("Pre-pulling %q inside KinD node %q...", img, nodeName)
-		cmd := exec.Command("docker", "exec", nodeName, "crictl", "pull", img)
-		cmd.Stdout = os.Stderr
-		cmd.Stderr = os.Stderr
-		if err := cmd.Run(); err != nil {
-			log.Fatalf("failed to pre-pull %s in KinD node: %v", img, err)
-		}
-	}
-}
-
-// kindLoadImage loads a locally-built Docker image into a KinD cluster.
-// Tries `kind load docker-image` first, falls back to image-archive if
-// the direct method fails (e.g., Docker Desktop containerd store issues).
-func kindLoadImage(img, clusterName string) {
-	log.Printf("Loading %q into KinD cluster %q...", img, clusterName)
-	cmd := exec.Command("kind", "load", "docker-image", img, "--name", clusterName)
-	cmd.Stdout = os.Stderr
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err == nil {
-		return
-	}
-
-	// Fallback: docker save → temp file → kind load image-archive.
-	log.Printf("Direct load failed, falling back to image-archive for %q...", img)
-	archive, err := os.CreateTemp("", "kind-image-*.tar")
-	if err != nil {
-		log.Fatalf("failed to create temp archive: %v", err)
-	}
-	defer os.Remove(archive.Name())
-	archive.Close()
-
-	saveCmd := exec.Command("docker", "save", "-o", archive.Name(), img)
-	saveCmd.Stdout = os.Stderr
-	saveCmd.Stderr = os.Stderr
-	if err := saveCmd.Run(); err != nil {
-		log.Fatalf("docker save %s failed: %v", img, err)
-	}
-
-	loadCmd := exec.Command("kind", "load", "image-archive", archive.Name(), "--name", clusterName)
-	loadCmd.Stdout = os.Stderr
-	loadCmd.Stderr = os.Stderr
-	if err := loadCmd.Run(); err != nil {
-		log.Fatalf("kind load image-archive %s failed: %v", img, err)
-	}
-}
-
-// helmDeployConcourse deploys Concourse via the local Helm chart.
-// Does not use `helm --wait` because PVCs with WaitForFirstConsumer
-// binding mode won't bind until a build pod mounts them. Instead,
-// waits explicitly for the web pod to become ready.
-func helmDeployConcourse(kubeconfig, namespace, chartPath, image string) {
-	repo, tag := splitImageRef(image)
-
-	// Create namespace (ignore if exists).
-	exec.Command("kubectl", "--kubeconfig", kubeconfig,
-		"create", "namespace", namespace).Run()
-
-	log.Printf("Deploying Concourse chart from %s into namespace %s...", chartPath, namespace)
-	helmArgs := []string{
-		"upgrade", "--install", "concourse", chartPath,
-		"--namespace", namespace,
-		"--kubeconfig", kubeconfig,
-		"--set", fmt.Sprintf("image.repository=%s", repo),
-		"--set", fmt.Sprintf("image.tag=%s", tag),
-		"--set", "image.pullPolicy=IfNotPresent",
-		"--timeout", "5m",
-	}
-	cmd := exec.Command("helm", helmArgs...)
-	cmd.Stdout = os.Stderr
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		log.Fatalf("helm upgrade --install failed: %v", err)
-	}
-
-	log.Println("Waiting for concourse-web pod to be ready...")
-	waitCmd := exec.Command("kubectl",
-		"--kubeconfig", kubeconfig,
-		"-n", namespace,
-		"wait", "--for=condition=ready", "pod",
-		"-l", "app.kubernetes.io/component=web",
-		"--timeout=180s",
-	)
-	waitCmd.Stdout = os.Stderr
-	waitCmd.Stderr = os.Stderr
-	if err := waitCmd.Run(); err != nil {
-		log.Fatalf("timed out waiting for concourse-web pod: %v", err)
-	}
-}
-
-// startPortForwardStdlib starts a kubectl port-forward to the Concourse
-// web service on a random available port. Discovers the service name
-// dynamically using the app.kubernetes.io/component=web label.
-func startPortForwardStdlib(kubeconfig, namespace string) (string, *exec.Cmd) {
-	port := mustFindFreePort()
-
-	// Discover the web service name via label selector.
-	svcName := discoverWebService(kubeconfig, namespace)
-
-	log.Printf("Starting port-forward on localhost:%d -> svc/%s:8080", port, svcName)
-	cmd := exec.Command("kubectl",
-		"--kubeconfig", kubeconfig,
-		"-n", namespace,
-		"port-forward", "svc/"+svcName,
-		fmt.Sprintf("%d:8080", port),
-	)
-	cmd.Stdout = os.Stderr
-	cmd.Stderr = os.Stderr
-	if err := cmd.Start(); err != nil {
-		log.Fatalf("failed to start port-forward: %v", err)
-	}
-
-	// Give port-forward a moment to establish.
-	time.Sleep(2 * time.Second)
-
-	return fmt.Sprintf("http://localhost:%d", port), cmd
-}
-
-// discoverWebService finds the Concourse web service name in the namespace.
-func discoverWebService(kubeconfig, namespace string) string {
-	out, err := exec.Command("kubectl",
-		"--kubeconfig", kubeconfig,
-		"-n", namespace,
-		"get", "svc",
-		"-l", "app.kubernetes.io/component=web",
-		"-o", "jsonpath={.items[0].metadata.name}",
-	).Output()
-	if err == nil && len(out) > 0 {
-		return strings.TrimSpace(string(out))
-	}
-	// Fallback to well-known names.
-	for _, name := range []string{"concourse-web", "concourse-concourse-jetbridge-web"} {
-		if exec.Command("kubectl", "--kubeconfig", kubeconfig, "-n", namespace, "get", "svc", name).Run() == nil {
-			return name
-		}
-	}
-	log.Fatalf("could not find Concourse web service in namespace %s", namespace)
-	return ""
-}
-
-// waitForAPI polls the Concourse /api/v1/info endpoint until it responds
-// with 200 OK or the timeout expires. Uses a plain http.Client since
-// TestMain always connects via http://localhost (no TLS).
-func waitForAPI(url string, timeout time.Duration) {
-	client := &http.Client{Timeout: 5 * time.Second}
-	log.Printf("Waiting for Concourse API at %s...", url)
-	deadline := time.Now().Add(timeout)
-	for {
-		if time.Now().After(deadline) {
-			log.Fatalf("timed out waiting for Concourse API at %s after %s", url, timeout)
-		}
-		resp, err := client.Get(url + "/api/v1/info")
-		if err == nil {
-			resp.Body.Close()
-			if resp.StatusCode == 200 {
-				log.Println("Concourse API is ready.")
-				return
-			}
-		}
-		time.Sleep(2 * time.Second)
-	}
-}
-
-func mustRepoRoot() string {
-	out, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
-	if err != nil {
-		log.Fatalf("failed to find repo root: %v", err)
-	}
-	return strings.TrimSpace(string(out))
-}
-
-func mustFindFreePort() int {
-	l, err := findFreeListener()
-	if err != nil {
-		log.Fatalf("failed to find free port: %v", err)
-	}
-	return l
-}
+// TestMain helpers are defined in cluster_lifecycle_test.go.
 
 // ---------------------------------------------------------------------
 // Config helpers
@@ -526,7 +237,7 @@ func envOr(key, defaultVal string) string {
 
 func defaultKubeconfig() string {
 	v := os.Getenv("KUBECONFIG")
-	Expect(v).ToNot(BeEmpty(), "KUBECONFIG must be set (TestMain sets it for the managed KinD cluster)")
+	Expect(v).ToNot(BeEmpty(), "KUBECONFIG must be set (TestMain sets it for the managed k3s cluster)")
 	return v
 }
 

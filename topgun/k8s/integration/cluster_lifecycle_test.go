@@ -1,6 +1,7 @@
 package integration_test
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net"
@@ -10,7 +11,12 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/testcontainers/testcontainers-go"
+	"github.com/testcontainers/testcontainers-go/modules/k3s"
 )
+
+const k3sImage = "rancher/k3s:v1.27.1-k3s1"
 
 // splitImageRef splits "repo:tag" into its parts. If no tag is present,
 // "latest" is returned as the default tag.
@@ -34,9 +40,11 @@ func findFreePort() int {
 }
 
 // verifyPrerequisites checks that required CLIs are on PATH.
+// Docker is required by testcontainers. Helm and kubectl are used for
+// deploying Concourse and port-forwarding.
 func verifyPrerequisites() error {
 	var missing []string
-	for _, bin := range []string{"docker", "kind", "helm", "kubectl"} {
+	for _, bin := range []string{"docker", "helm", "kubectl"} {
 		if _, err := exec.LookPath(bin); err != nil {
 			missing = append(missing, bin)
 		}
@@ -47,55 +55,36 @@ func verifyPrerequisites() error {
 	return nil
 }
 
-// ensureKindCluster creates a KinD cluster if it doesn't already exist.
-// Returns the kubeconfig path and whether a new cluster was created.
-func ensureKindCluster(name string) (string, bool) {
-	out, err := exec.Command("kind", "get", "clusters").Output()
-	if err == nil {
-		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-			if line == name {
-				log.Printf("KinD cluster %q already exists, reusing", name)
-				return writeKindKubeconfig(name), false
-			}
-		}
-	}
-
-	log.Printf("Creating KinD cluster %q...", name)
-	cmd := exec.Command("kind", "create", "cluster", "--name", name, "--wait", "120s")
-	cmd.Stdout = os.Stderr
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		log.Fatalf("failed to create KinD cluster: %v", err)
-	}
-
-	return writeKindKubeconfig(name), true
-}
-
-// writeKindKubeconfig writes the kubeconfig for the given cluster to a temp file.
-func writeKindKubeconfig(name string) string {
-	out, err := exec.Command("kind", "get", "kubeconfig", "--name", name).Output()
+// createK3sCluster creates an ephemeral k3s cluster via testcontainers
+// and returns the container and a path to the kubeconfig file.
+func createK3sCluster(ctx context.Context) (*k3s.K3sContainer, string) {
+	log.Printf("Creating k3s cluster via testcontainers (image: %s)...", k3sImage)
+	k3sContainer, err := k3s.Run(ctx, k3sImage)
 	if err != nil {
-		log.Fatalf("failed to get kubeconfig for KinD cluster: %v", err)
+		log.Fatalf("failed to start k3s container: %v", err)
 	}
 
-	path := filepath.Join(os.TempDir(), fmt.Sprintf("kind-kubeconfig-%s", name))
-	if err := os.WriteFile(path, out, 0600); err != nil {
+	kubeConfigYaml, err := k3sContainer.GetKubeConfig(ctx)
+	if err != nil {
+		log.Fatalf("failed to get kubeconfig from k3s container: %v", err)
+	}
+
+	kubeconfigPath := filepath.Join(os.TempDir(), "k3s-kubeconfig-integration")
+	if err := os.WriteFile(kubeconfigPath, kubeConfigYaml, 0600); err != nil {
 		log.Fatalf("failed to write kubeconfig: %v", err)
 	}
 
-	return path
+	log.Printf("k3s cluster ready (kubeconfig: %s)", kubeconfigPath)
+	return k3sContainer, kubeconfigPath
 }
 
-// loadImagesIntoKind ensures all required Docker images are available
-// inside the KinD cluster.
-func loadImagesIntoKind(concourseImage, clusterName string) {
-	nodeName := clusterName + "-control-plane"
-
-	// Load the locally-built Concourse image into KinD.
-	if err := exec.Command("docker", "image", "inspect", concourseImage).Run(); err != nil {
-		log.Printf("Concourse image %q not found locally, building from source...", concourseImage)
+// ensureConcourseImage checks if the Concourse Docker image exists locally
+// and builds it from source if not found.
+func ensureConcourseImage(image string) {
+	if err := exec.Command("docker", "image", "inspect", image).Run(); err != nil {
+		log.Printf("Concourse image %q not found locally, building from source...", image)
 		root := mustRepoRoot()
-		cmd := exec.Command("docker", "build", "-f", "Dockerfile.build", "-t", concourseImage, root)
+		cmd := exec.Command("docker", "build", "-f", "Dockerfile.build", "-t", image, root)
 		cmd.Dir = root
 		cmd.Stdout = os.Stderr
 		cmd.Stderr = os.Stderr
@@ -103,10 +92,12 @@ func loadImagesIntoKind(concourseImage, clusterName string) {
 			log.Fatalf("failed to build Concourse image: %v", err)
 		}
 	}
-	kindLoadImage(concourseImage, clusterName)
+}
 
-	// Pre-pull registry images directly inside the KinD node.
-	registryImages := []string{
+// loadImagesIntoK3s loads all required Docker images into the k3s container.
+func loadImagesIntoK3s(ctx context.Context, container *k3s.K3sContainer, concourseImage string) {
+	allImages := []string{
+		concourseImage,
 		"docker.io/library/postgres:16",
 		"docker.io/concourse/mock-resource:latest",
 		"docker.io/library/busybox:latest",
@@ -114,53 +105,12 @@ func loadImagesIntoKind(concourseImage, clusterName string) {
 		"docker.io/library/nginx:alpine",
 		"docker.io/library/alpine:3.19",
 	}
-	for _, img := range registryImages {
-		if exec.Command("docker", "exec", nodeName, "crictl", "inspecti", "-q", img).Run() == nil {
-			log.Printf("Image %q already present in KinD node %q, skipping pull", img, nodeName)
-			continue
-		}
-		log.Printf("Pre-pulling %q inside KinD node %q...", img, nodeName)
-		cmd := exec.Command("docker", "exec", nodeName, "crictl", "pull", img)
-		cmd.Stdout = os.Stderr
-		cmd.Stderr = os.Stderr
-		if err := cmd.Run(); err != nil {
-			log.Fatalf("failed to pre-pull %s in KinD node: %v", img, err)
-		}
-	}
-}
 
-// kindLoadImage loads a locally-built Docker image into a KinD cluster.
-func kindLoadImage(img, clusterName string) {
-	log.Printf("Loading %q into KinD cluster %q...", img, clusterName)
-	cmd := exec.Command("kind", "load", "docker-image", img, "--name", clusterName)
-	cmd.Stdout = os.Stderr
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err == nil {
-		return
+	log.Printf("Loading %d images into k3s cluster...", len(allImages))
+	if err := container.LoadImages(ctx, allImages...); err != nil {
+		log.Fatalf("failed to load images into k3s: %v", err)
 	}
-
-	// Fallback: docker save → temp file → kind load image-archive.
-	log.Printf("Direct load failed, falling back to image-archive for %q...", img)
-	archive, err := os.CreateTemp("", "kind-image-*.tar")
-	if err != nil {
-		log.Fatalf("failed to create temp archive: %v", err)
-	}
-	defer os.Remove(archive.Name())
-	archive.Close()
-
-	saveCmd := exec.Command("docker", "save", "-o", archive.Name(), img)
-	saveCmd.Stdout = os.Stderr
-	saveCmd.Stderr = os.Stderr
-	if err := saveCmd.Run(); err != nil {
-		log.Fatalf("docker save %s failed: %v", img, err)
-	}
-
-	loadCmd := exec.Command("kind", "load", "image-archive", archive.Name(), "--name", clusterName)
-	loadCmd.Stdout = os.Stderr
-	loadCmd.Stderr = os.Stderr
-	if err := loadCmd.Run(); err != nil {
-		log.Fatalf("kind load image-archive %s failed: %v", img, err)
-	}
+	log.Println("All images loaded into k3s cluster.")
 }
 
 // helmDeployConcourse deploys Concourse via the local Helm chart.
@@ -276,4 +226,16 @@ func mustRepoRoot() string {
 		log.Fatalf("failed to find repo root: %v", err)
 	}
 	return strings.TrimSpace(string(out))
+}
+
+// terminateK3sCluster terminates the k3s container unless SKIP_TEARDOWN is set.
+func terminateK3sCluster(container *k3s.K3sContainer) {
+	if os.Getenv("SKIP_TEARDOWN") == "1" {
+		log.Println("SKIP_TEARDOWN=1: keeping k3s container running")
+		return
+	}
+	log.Println("Terminating k3s container...")
+	if err := testcontainers.TerminateContainer(container); err != nil {
+		log.Printf("warning: failed to terminate k3s container: %v", err)
+	}
 }

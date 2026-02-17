@@ -1,11 +1,13 @@
 // K8s Integration Test Suite
 //
-// This suite is fully self-contained: it creates an ephemeral KinD cluster,
-// deploys Concourse via Helm, runs tests, and tears down automatically.
-// No external cluster connectivity is supported — tests always run in
-// isolation to prevent accidental impact on production clusters.
+// This suite is fully self-contained: it creates an ephemeral k3s cluster
+// via testcontainers-go, deploys Concourse via Helm, runs tests, and tears
+// down automatically. No external cluster connectivity is supported — tests
+// always run in isolation to prevent accidental impact on production clusters.
 //
-// Basic run (creates a KinD cluster automatically):
+// Prerequisites: docker, helm, kubectl
+//
+// Basic run (creates a k3s cluster automatically):
 //
 //   go test ./topgun/k8s/integration/ -count=1 -v -timeout 30m
 //
@@ -13,19 +15,10 @@
 //
 //   go test ./topgun/k8s/integration/ -count=1 -v -timeout 30m -run TestIntegration/Pod.Cleanup
 //
-// Iterative development (keep cluster between runs):
-//
-//   SKIP_TEARDOWN=1 go test ./topgun/k8s/integration/ -count=1 -v -timeout 30m
-//   # Re-run after changes (cluster is reused):
-//   SKIP_TEARDOWN=1 go test ./topgun/k8s/integration/ -count=1 -v -timeout 30m
-//   # Manual cleanup when done:
-//   kind delete cluster --name concourse-integration
-//
 // Environment variables:
 //   FLY_PATH           — path to fly binary (builds from source if unset)
-//   CONCOURSE_IMAGE    — Docker image to load into KinD (default: concourse-local:latest)
-//   KIND_CLUSTER_NAME  — KinD cluster name (default: concourse-integration)
-//   SKIP_TEARDOWN      — Set to "1" to keep cluster after tests
+//   CONCOURSE_IMAGE    — Docker image to load into k3s (default: concourse-local:latest)
+//   SKIP_TEARDOWN      — Set to "1" to keep k3s container after tests
 //   EVENTUALLY_TIMEOUT — Go duration for Eventually timeout (default: 5m)
 
 package integration_test
@@ -36,7 +29,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -58,24 +50,24 @@ import (
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 )
 
-// TestMain manages the KinD cluster lifecycle outside of Ginkgo.
-// It always creates an ephemeral KinD cluster, loads images, deploys
-// Concourse, and starts a port-forward. The resulting config is passed
-// to the Ginkgo suite via environment variables.
+// TestMain manages the k3s cluster lifecycle outside of Ginkgo.
+// It creates an ephemeral k3s cluster via testcontainers-go, loads images,
+// deploys Concourse via Helm, and starts a port-forward. The resulting
+// config is passed to the Ginkgo suite via environment variables.
 func TestMain(m *testing.M) {
 	// Self-contained mode only — no external cluster connectivity.
 	if err := verifyPrerequisites(); err != nil {
 		log.Fatalf("prerequisites check failed: %v", err)
 	}
 
-	clusterName := envOr("KIND_CLUSTER_NAME", "concourse-integration")
+	ctx := context.Background()
 	namespace := envOr("K8S_NAMESPACE", "concourse")
 	image := envOr("CONCOURSE_IMAGE", "concourse-local:latest")
 
-	kubeconfig, created := ensureKindCluster(clusterName)
-	log.Printf("KinD cluster %q ready (kubeconfig: %s, created: %v)", clusterName, kubeconfig, created)
+	ensureConcourseImage(image)
 
-	loadImagesIntoKind(image, clusterName)
+	k3sContainer, kubeconfig := createK3sCluster(ctx)
+	loadImagesIntoK3s(ctx, k3sContainer, image)
 
 	chartPath := filepath.Join(mustRepoRoot(), "deploy", "chart")
 	helmDeployConcourse(kubeconfig, namespace, chartPath, image)
@@ -97,12 +89,7 @@ func TestMain(m *testing.M) {
 		pfCmd.Process.Kill()
 		pfCmd.Wait()
 	}
-	if os.Getenv("SKIP_TEARDOWN") != "1" {
-		log.Printf("Tearing down KinD cluster %q...", clusterName)
-		exec.Command("kind", "delete", "cluster", "--name", clusterName).Run()
-	} else {
-		log.Printf("SKIP_TEARDOWN=1: keeping KinD cluster %q", clusterName)
-	}
+	terminateK3sCluster(k3sContainer)
 
 	os.Exit(code)
 }
@@ -139,7 +126,7 @@ var (
 
 var _ = SynchronizedBeforeSuite(func() []byte {
 	// All env vars (ATC_URL, KUBECONFIG, K8S_NAMESPACE) are set by TestMain
-	// from the ephemeral KinD cluster — no external cluster connectivity.
+	// from the ephemeral k3s cluster — no external cluster connectivity.
 	cfg := suiteConfig{
 		ATCURL:      os.Getenv("ATC_URL"),
 		ATCUsername: "test",
@@ -148,8 +135,8 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 		Kubeconfig:  os.Getenv("KUBECONFIG"),
 	}
 
-	Expect(cfg.ATCURL).ToNot(BeEmpty(), "ATC_URL must be set (TestMain sets it for the managed KinD cluster)")
-	Expect(cfg.Kubeconfig).ToNot(BeEmpty(), "KUBECONFIG must be set (TestMain sets it for the managed KinD cluster)")
+	Expect(cfg.ATCURL).ToNot(BeEmpty(), "ATC_URL must be set (TestMain sets it for the managed k3s cluster)")
+	Expect(cfg.Kubeconfig).ToNot(BeEmpty(), "KUBECONFIG must be set (TestMain sets it for the managed k3s cluster)")
 
 	if flyPath := os.Getenv("FLY_PATH"); flyPath != "" {
 		cfg.FlyBin = flyPath

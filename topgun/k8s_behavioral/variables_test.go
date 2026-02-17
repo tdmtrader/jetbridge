@@ -182,7 +182,7 @@ jobs:
 	It("runs a basic task without external credential sources", func() {
 		// Validates that a pipeline without var_sources runs correctly.
 		// var_sources integration requires deployment-specific configuration
-		// (Vault, CredHub, etc.) and is not testable in a generic KinD cluster.
+		// (Vault, CredHub, etc.) and is not testable in a generic k3s cluster.
 		cfg := writePipelineFile("no-var-source.yml", `
 jobs:
 - name: no-varsource-job
