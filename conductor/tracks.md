@@ -169,7 +169,8 @@
 
 ---
 
-## [ ] Track: K8s Behavioral Test Failures — Fix 26 failing integration tests (artifact streaming, pod lifecycle, behavioral gaps)
+## [x] Track: K8s Behavioral Test Failures — Fix 26 failing integration tests (artifact streaming, pod lifecycle, behavioral gaps)
+*Completed: 2026-02-16*
 *Link: [./conductor/tracks/k8s-behavioral-test-failures/](./conductor/tracks/k8s-behavioral-test-failures/)*
 
 ---
