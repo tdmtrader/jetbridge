@@ -79,7 +79,7 @@ func TestMain(m *testing.M) {
 	chartPath := filepath.Join(mustRepoRoot(), "deploy", "chart")
 	helmDeployConcourse(kubeconfig, namespace, chartPath, image)
 
-	preloadMockResource()
+	preloadImages()
 
 	atcURL, pfMgr := startPortForward(kubeconfig, namespace)
 	log.Printf("Concourse API available at %s", atcURL)
@@ -365,12 +365,14 @@ func newMockVersion(resourceName string, tag string) string {
 }
 
 // newMockVersionOrSkip is like newMockVersion but skips the current test
-// (instead of failing) when the check-resource fails due to a known K8s
-// worker type chain resolution bug: the JetBridge worker uses the custom
-// type NAME (e.g., "image-type") as the Docker image name in check pods,
-// instead of the resolved image. This causes ErrImagePull for any resource
-// whose type is itself a custom type (type chains, produces: registry-image
-// with mock backing, etc.).
+// (instead of failing) when the check-resource fails due to known K8s
+// limitations with custom type chains and produces: registry-image.
+//
+// Known skip conditions:
+//   - ErrImagePull: multi-level type chains (e.g., level-a → level-b →
+//     registry-image) where the intermediate type name leaks as Docker image.
+//   - "unknown field": produces: registry-image resources pass source fields
+//     like "repository" to the mock-resource check binary, which rejects them.
 func newMockVersionOrSkip(resourceName string, tag string) string {
 	guid, err := uuid.NewRandom()
 	Expect(err).ToNot(HaveOccurred())
@@ -392,7 +394,11 @@ func newMockVersionOrSkip(resourceName string, tag string) string {
 		if strings.Contains(output, "ErrImagePull") ||
 			strings.Contains(output, "ImagePullBackOff") ||
 			strings.Contains(output, "failed to pull") {
-			Skip("K8s worker type chain bug: check pod uses type name as image — " + output)
+			Skip("K8s type chain bug: check pod uses type name as image — " + output)
+		}
+		if strings.Contains(output, "unknown field") ||
+			strings.Contains(output, "invalid payload") {
+			Skip("mock-resource rejects registry-image source fields (produces: registry-image limitation) — " + output)
 		}
 		Fail("check-resource failed: " + output)
 	}

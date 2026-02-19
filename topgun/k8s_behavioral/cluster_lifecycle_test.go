@@ -300,27 +300,35 @@ func mustRepoRoot() string {
 	return strings.TrimSpace(string(out))
 }
 
-// preloadMockResource ensures concourse/mock-resource is available to
-// kubelet inside the KinD cluster. This is the key fix for tests that
-// skip due to "ErrImagePull" — kubelet couldn't pull the image from
-// Docker Hub (rate limits / multi-platform containerd issues).
+// preloadImages pulls commonly-used images directly into the KinD node
+// via `crictl pull`. This avoids Docker Hub rate limits and TLS timeout
+// failures that occur when kubelet tries to pull images at test time.
 //
 // We use `crictl pull` inside the KinD node rather than `kind load
 // docker-image` because the latter fails for multi-platform registry
 // images when Docker Desktop uses a containerd image store (the
 // same issue documented in loadImagesIntoKind).
-func preloadMockResource() {
-	const image = "docker.io/concourse/mock-resource:latest"
+func preloadImages() {
+	images := []string{
+		"docker.io/concourse/mock-resource:latest",
+		"docker.io/library/busybox:latest",
+		"docker.io/library/alpine:3.19",
+		"docker.io/library/alpine:latest",
+		"docker.io/library/nginx:alpine",
+	}
 	node := kindClusterName + "-control-plane"
 
-	log.Printf("Pulling %s directly into KinD node via crictl...", image)
-	cmd := exec.Command("docker", "exec", node, "crictl", "pull", image)
-	cmd.Stdout = os.Stderr
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		log.Fatalf("failed to pull %s into KinD node: %v", image, err)
+	for _, image := range images {
+		log.Printf("Pulling %s directly into KinD node via crictl...", image)
+		cmd := exec.Command("docker", "exec", node, "crictl", "pull", image)
+		cmd.Stdout = os.Stderr
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			// Non-fatal: some images may not be needed by all tests.
+			log.Printf("warning: failed to pull %s into KinD node: %v", image, err)
+		}
 	}
-	log.Printf("Mock resource image preloaded into KinD node.")
+	log.Printf("Image preloading complete.")
 }
 
 // deleteKindCluster deletes the KinD cluster unless SKIP_TEARDOWN is set.

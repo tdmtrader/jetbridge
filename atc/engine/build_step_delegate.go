@@ -342,11 +342,13 @@ func (delegate *buildStepDelegate) FetchImage(
 		Privileged:    privileged,
 	}
 
-	// When imageURL is empty (non-registry-image custom types like git-backed),
-	// set ResourceType to the custom type name so JetBridge's resolveImage can
-	// look it up in the operator-provided ResourceTypeImages mapping.
+	// When imageURL is empty (non-registry-image custom types like mock-backed),
+	// set ResourceType to the backing type (e.g., "mock") rather than the custom
+	// type name (e.g., "image-type"). The JetBridge K8s worker resolves ResourceType
+	// via DefaultResourceTypeImages, which only contains base type names.
+	// Using the custom type name would cause ErrImagePull in K8s.
 	if imageURL == "" {
-		spec.ResourceType = getPlan.Get.Name
+		spec.ResourceType = getPlan.Get.Type
 	}
 
 	return spec, result.ResourceCache, nil
