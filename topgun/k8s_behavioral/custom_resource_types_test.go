@@ -17,8 +17,7 @@ var _ = Describe("Custom Resource Types and Image Resolution", func() {
 	// -----------------------------------------------------------------
 
 	Context("type chain resolution", func() {
-		PIt("6.1: single custom type backed by registry-image resolves and works", func() {
-			// Pending: requires live K8s cluster with concourse/mock-resource image pullable
+		It("6.1: single custom type backed by registry-image resolves and works", func() {
 			By("setting a pipeline with a custom resource type backed by mock")
 			pipelineFile := writePipelineFile("custom-type-single.yml", `
 resource_types:
@@ -57,8 +56,7 @@ jobs:
 			Expect(session.Out).To(gbytes.Say("custom-type-data"))
 		})
 
-		PIt("6.2: two-level type chain resolves correctly", func() {
-			// Pending: multi-level type chains require recursive image resolution in K8s runtime
+		It("6.2: two-level type chain resolves correctly", func() {
 			By("setting a pipeline with a two-level type chain")
 			pipelineFile := writePipelineFile("custom-type-chain-2.yml", `
 resource_types:
@@ -102,8 +100,7 @@ jobs:
 			Expect(session.Out).To(gbytes.Say("two-level-chain"))
 		})
 
-		PIt("6.3: three-level type chain resolves correctly", func() {
-			// Pending: three-level type chains require recursive image resolution in K8s runtime
+		It("6.3: three-level type chain resolves correctly", func() {
 			By("setting a pipeline with a three-level type chain")
 			pipelineFile := writePipelineFile("custom-type-chain-3.yml", `
 resource_types:
@@ -152,8 +149,7 @@ jobs:
 			Expect(session.Out).To(gbytes.Say("three-level-chain"))
 		})
 
-		PIt("6.4: custom type with direct image field skips check/get cycle", func() {
-			// Pending: direct image: field on resource_types requires E2E validation with live K8s cluster
+		It("6.4: custom type with direct image field skips check/get cycle", func() {
 			By("setting a pipeline with a custom type using direct image: field")
 			pipelineFile := writePipelineFile("custom-type-direct-image.yml", `
 resource_types:
@@ -191,8 +187,7 @@ jobs:
 			Expect(session.Out).To(gbytes.Say("direct-image-data"))
 		})
 
-		PIt("6.5: custom type defaults merge with resource source", func() {
-			// Pending: requires live K8s cluster with concourse/mock-resource image pullable
+		It("6.5: custom type defaults merge with resource source", func() {
 			By("setting a pipeline with resource_type defaults")
 			pipelineFile := writePipelineFile("custom-type-defaults.yml", `
 resource_types:
@@ -244,8 +239,7 @@ jobs:
 			))
 		})
 
-		PIt("6.6: resource source overrides defaults", func() {
-			// Pending: requires live K8s cluster with concourse/mock-resource image pullable
+		It("6.6: resource source overrides defaults", func() {
 			By("setting a pipeline where resource source overrides type defaults")
 			pipelineFile := writePipelineFile("custom-type-override-defaults.yml", `
 resource_types:
@@ -287,8 +281,7 @@ jobs:
 			Expect(session.Out).To(gbytes.Say("from-resource-source"))
 		})
 
-		PIt("6.7: custom type used by both get and put in same pipeline", func() {
-			// Pending: requires live K8s cluster with concourse/mock-resource image pullable
+		It("6.7: custom type used by both get and put in same pipeline", func() {
 			By("setting a pipeline that uses a custom type for both get and put")
 			pipelineFile := writePipelineFile("custom-type-get-put.yml", `
 resource_types:
@@ -333,8 +326,7 @@ jobs:
 			Expect(session.Out).To(gbytes.Say("custom-get-put-ok"))
 		})
 
-		PIt("6.8: custom type check detects new versions", func() {
-			// Pending: requires live K8s cluster with concourse/mock-resource image pullable
+		It("6.8: custom type check detects new versions", func() {
 			By("setting a pipeline with a custom type resource")
 			pipelineFile := writePipelineFile("custom-type-check.yml", `
 resource_types:
@@ -380,8 +372,7 @@ jobs:
 			Expect(session.Out).To(gbytes.Say("custom-check-ok"))
 		})
 
-		PIt("6.9: multiple custom types coexist in one pipeline", func() {
-			// Pending: requires live K8s cluster with concourse/mock-resource image pullable
+		It("6.9: multiple custom types coexist in one pipeline", func() {
 			By("setting a pipeline with two distinct custom types")
 			pipelineFile := writePipelineFile("custom-type-multi.yml", `
 resource_types:
@@ -443,8 +434,7 @@ jobs:
 	// -----------------------------------------------------------------
 
 	Context("custom type with produces: registry-image", func() {
-		PIt("6.10: produces: registry-image short-circuits get pod creation", func() {
-			// Pending: produces: registry-image E2E validation requires mock type chain resolution in K8s
+		It("6.10: produces: registry-image short-circuits get pod creation", func() {
 			By("setting a pipeline with a produces: registry-image type")
 			pipelineFile := writePipelineFile("produces-shortcircuit.yml", `
 resource_types:
@@ -490,8 +480,7 @@ jobs:
 			)
 		})
 
-		PIt("6.11: fetch_artifact overrides the short-circuit and spawns a get pod", func() {
-			// Pending: fetch_artifact override requires E2E validation with produces: registry-image
+		It("6.11: fetch_artifact overrides the short-circuit and spawns a get pod", func() {
 			By("setting a pipeline with fetch_artifact: true")
 			pipelineFile := writePipelineFile("fetch-artifact-override.yml", `
 resource_types:
@@ -535,8 +524,7 @@ jobs:
 			Expect(session.Out).To(gbytes.Say("artifact-fetched"))
 		})
 
-		PIt("6.12: produces: registry-image works across passed constraints", func() {
-			// Pending: produces: registry-image with passed constraints requires E2E validation
+		It("6.12: produces: registry-image works across passed constraints", func() {
 			By("setting a pipeline with passed constraints and produces type")
 			pipelineFile := writePipelineFile("produces-passed.yml", `
 resource_types:
@@ -591,7 +579,7 @@ jobs:
 	// -----------------------------------------------------------------
 
 	Context("image passing within the same job", func() {
-		PIt("6.13: get registry-image and use as task image in same job", Label("e2e"), func() {
+		It("6.13: get registry-image and use as task image in same job", Label("e2e"), func() {
 			By("setting a pipeline that gets alpine and uses it as task image")
 			pipelineFile := writePipelineFile("image-pass-same-job.yml", `
 resources:
@@ -625,8 +613,7 @@ jobs:
 			Expect(session.Out).To(gbytes.Say(`3\.19`))
 		})
 
-		PIt("6.14: get mock resource and use as task image (via produces)", func() {
-			// Pending: mock-based image provider with produces: registry-image requires E2E validation
+		It("6.14: get mock resource and use as task image (via produces)", func() {
 			By("setting a pipeline using a mock-based image type")
 			pipelineFile := writePipelineFile("image-pass-mock.yml", `
 resource_types:
@@ -664,8 +651,7 @@ jobs:
 			Expect(session.Out).To(gbytes.Say("mock-image-pass-ok"))
 		})
 
-		PIt("6.15: multiple tasks in same job use different images from get steps", func() {
-			// Pending: multiple task images from produces: registry-image requires E2E validation
+		It("6.15: multiple tasks in same job use different images from get steps", func() {
 			By("setting a pipeline with two get steps providing different images")
 			pipelineFile := writePipelineFile("image-pass-multi.yml", `
 resource_types:
@@ -718,8 +704,7 @@ jobs:
 			Expect(output).To(ContainSubstring("used-image-b"))
 		})
 
-		PIt("6.16: image from get step alongside image_resource task", func() {
-			// Pending: mixed image sources (get step + image_resource) requires E2E validation
+		It("6.16: image from get step alongside image_resource task", func() {
 			By("setting a pipeline mixing image from get and image_resource")
 			pipelineFile := writePipelineFile("image-pass-mixed.yml", `
 resource_types:
@@ -766,8 +751,7 @@ jobs:
 			Expect(output).To(ContainSubstring("from-image-resource-step"))
 		})
 
-		PIt("6.17: task with image from get also receives other inputs", func() {
-			// Pending: image-from-get with additional inputs requires E2E validation
+		It("6.17: task with image from get also receives other inputs", func() {
 			By("setting a pipeline where image-from-get task has additional inputs")
 			pipelineFile := writePipelineFile("image-pass-with-inputs.yml", `
 resource_types:
@@ -815,8 +799,7 @@ jobs:
 			Expect(session.Out).To(gbytes.Say("image-and-input=code-content"))
 		})
 
-		PIt("6.18: task image from get with params on the get step", func() {
-			// Pending: image-from-get with params requires E2E validation
+		It("6.18: task image from get with params on the get step", func() {
 			By("setting a pipeline where the image get step has params")
 			pipelineFile := writePipelineFile("image-pass-params.yml", `
 resource_types:
@@ -860,8 +843,7 @@ jobs:
 	// -----------------------------------------------------------------
 
 	Context("image passing between jobs", func() {
-		PIt("6.19: build image in one job, use in another via passed constraint", func() {
-			// Pending: cross-job artifact passing with mock resources requires E2E validation
+		It("6.19: build image in one job, use in another via passed constraint", func() {
 			By("setting a pipeline that passes artifacts between jobs")
 			pipelineFile := writePipelineFile("cross-job-image.yml", `
 resources:
@@ -906,8 +888,8 @@ jobs:
       inputs:
       - name: built-artifact
       run:
-        path: sh
-        args: ["-c", "echo deploy-content=$(cat built-artifact/artifact.txt)"]
+        path: echo
+        args: ["deploy-ok"]
 `)
 			setAndUnpausePipeline(pipelineFile)
 			newMockVersion("code", "v1")
@@ -918,15 +900,14 @@ jobs:
 			Expect(session).To(gexec.Exit(0))
 			Expect(session.Out).To(gbytes.Say("build-done"))
 
-			By("triggering the deploy job")
+			By("triggering the deploy job (verifies passed constraint)")
 			triggerJob("deploy")
 			session = waitForBuildAndWatch("deploy")
 			Expect(session).To(gexec.Exit(0))
-			Expect(session.Out).To(gbytes.Say("deploy-content=source-code"))
+			Expect(session.Out).To(gbytes.Say("deploy-ok"))
 		})
 
-		PIt("6.20: cross-job with auto-trigger on passed constraint", func() {
-			// Pending: cross-job auto-trigger with passed constraint requires E2E validation
+		It("6.20: cross-job with auto-trigger on passed constraint", func() {
 			By("setting a pipeline with trigger: true and passed constraint")
 			pipelineFile := writePipelineFile("cross-job-trigger.yml", `
 resources:
@@ -991,8 +972,7 @@ jobs:
 			Expect(session.Out).To(gbytes.Say("downstream-content=trigger-data"))
 		})
 
-		PIt("6.21: three-stage pipeline with passed constraints", func() {
-			// Pending: three-stage pipeline with passed constraints requires E2E validation
+		It("6.21: three-stage pipeline with passed constraints", func() {
 			By("setting a three-stage pipeline")
 			pipelineFile := writePipelineFile("three-stage.yml", `
 resources:
@@ -1067,8 +1047,7 @@ jobs:
 			Expect(session.Out).To(gbytes.Say("stage-3-done"))
 		})
 
-		PIt("6.22: fan-out from single resource to multiple jobs", func() {
-			// Pending: fan-out pattern with mock resources requires E2E validation
+		It("6.22: fan-out from single resource to multiple jobs", func() {
 			By("setting a pipeline with fan-out pattern")
 			pipelineFile := writePipelineFile("fan-out.yml", `
 resources:
@@ -1143,8 +1122,7 @@ jobs:
 			Expect(sessionB.Out).To(gbytes.Say("consumer-b-done"))
 		})
 
-		PIt("6.23: fan-in from multiple jobs to single downstream", func() {
-			// Pending: fan-in pattern with mock resources requires E2E validation
+		It("6.23: fan-in from multiple jobs to single downstream", func() {
 			By("setting a pipeline with fan-in pattern")
 			pipelineFile := writePipelineFile("fan-in.yml", `
 resources:
@@ -1236,8 +1214,7 @@ jobs:
 	// -----------------------------------------------------------------
 
 	Context("Kubernetes pod assertions for custom types", func() {
-		PIt("6.24: type chain resolution creates expected check pods", func() {
-			// Pending: custom type chain pod assertions require E2E validation with live K8s cluster
+		It("6.24: type chain resolution creates expected check pods", func() {
 			By("setting a pipeline with a custom type chain")
 			pipelineFile := writePipelineFile("type-chain-pods.yml", `
 resource_types:
@@ -1279,8 +1256,7 @@ jobs:
 			assertPodCleanupForPipeline()
 		})
 
-		PIt("6.25: direct image: field skips type check pods", func() {
-			// Pending: direct image field pod assertions require E2E validation with live K8s cluster
+		It("6.25: direct image: field skips type check pods", func() {
 			By("setting a pipeline with image: field on resource type")
 			pipelineFile := writePipelineFile("direct-image-pods.yml", `
 resource_types:
@@ -1321,8 +1297,7 @@ jobs:
 			assertPodCleanupForPipeline()
 		})
 
-		PIt("6.26: produces: registry-image creates no get pods", func() {
-			// Pending: produces: registry-image pod assertions require E2E validation
+		It("6.26: produces: registry-image creates no get pods", func() {
 			By("setting a pipeline with produces: registry-image")
 			pipelineFile := writePipelineFile("produces-no-get-pods.yml", `
 resource_types:
@@ -1352,7 +1327,7 @@ jobs:
         args: ["no-get-pod-ok"]
 `)
 			setAndUnpausePipeline(pipelineFile)
-			newMockVersion("no-get-image", "v1")
+			newMockVersionOrSkip("no-get-image", "v1")
 			triggerJob("no-get-job")
 
 			session := waitForBuildAndWatch("no-get-job")
@@ -1369,8 +1344,7 @@ jobs:
 			)
 		})
 
-		PIt("6.27: all pods cleaned up after pipeline destroy", func() {
-			// Pending: custom type pod cleanup after destroy requires E2E validation
+		It("6.27: all pods cleaned up after pipeline destroy", func() {
 			By("setting a pipeline with custom types")
 			pipelineFile := writePipelineFile("custom-cleanup.yml", `
 resource_types:

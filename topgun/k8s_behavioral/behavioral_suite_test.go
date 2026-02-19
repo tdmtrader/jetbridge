@@ -1,13 +1,13 @@
 // K8s Behavioral Integration Test Suite
 //
-// This suite is fully self-contained: it creates an ephemeral k3s cluster
-// via testcontainers-go, deploys Concourse via Helm, runs tests, and tears
-// down automatically. No external cluster connectivity is supported — tests
-// always run in isolation to prevent accidental impact on production clusters.
+// This suite is fully self-contained: it creates an ephemeral KinD cluster,
+// deploys Concourse via Helm, runs tests, and tears down automatically.
+// No external cluster connectivity is supported — tests always run in
+// isolation to prevent accidental impact on production clusters.
 //
-// Prerequisites: docker, helm, kubectl
+// Prerequisites: docker, kind, helm, kubectl
 //
-// Basic run (creates a k3s cluster automatically):
+// Basic run (creates a KinD cluster automatically):
 //
 //   go test ./topgun/k8s_behavioral/ -count=1 -v -timeout 30m
 //
@@ -17,8 +17,8 @@
 //
 // Environment variables:
 //   FLY_PATH           - path to fly binary (builds from source if unset)
-//   CONCOURSE_IMAGE    - Docker image to load into k3s (default: concourse-local:latest)
-//   SKIP_TEARDOWN      - Set to "1" to keep k3s container after tests
+//   CONCOURSE_IMAGE    - Docker image to load into KinD (default: concourse-local:latest)
+//   SKIP_TEARDOWN      - Set to "1" to keep KinD cluster after tests
 //   EVENTUALLY_TIMEOUT - Go duration for Eventually timeout (default: 5m)
 
 package behavioral_test
@@ -27,6 +27,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -49,10 +50,10 @@ import (
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 )
 
-// TestMain manages the k3s cluster lifecycle outside of Ginkgo.
-// It creates an ephemeral k3s cluster via testcontainers-go, loads images,
-// deploys Concourse via Helm, and starts a port-forward. The resulting
-// config is passed to the Ginkgo suite via environment variables.
+// TestMain manages the KinD cluster lifecycle outside of Ginkgo.
+// It creates an ephemeral KinD cluster, loads images, deploys Concourse
+// via Helm, and starts a port-forward. The resulting config is passed to
+// the Ginkgo suite via environment variables.
 func TestMain(m *testing.M) {
 	// Self-contained mode only — no external cluster connectivity.
 	// Not compatible with Ginkgo parallelism: each parallel process runs
@@ -60,29 +61,30 @@ func TestMain(m *testing.M) {
 	if proc := os.Getenv("GINKGO_PARALLEL_PROCESS"); proc != "" && proc != "1" {
 		log.Fatalf(
 			"this suite does not support Ginkgo parallelism (--procs / -p)\n" +
-				"  Each test process creates its own k3s cluster via TestMain",
+				"  Each test process creates its own KinD cluster via TestMain",
 		)
 	}
 	if err := verifyPrerequisites(); err != nil {
 		log.Fatalf("prerequisites check failed: %v", err)
 	}
 
-	ctx := context.Background()
 	namespace := envOr("K8S_NAMESPACE", "concourse")
 	image := envOr("CONCOURSE_IMAGE", "concourse-local:latest")
 
 	ensureConcourseImage(image)
 
-	k3sContainer, kubeconfig := createK3sCluster(ctx)
-	loadImagesIntoK3s(ctx, k3sContainer, image)
+	kubeconfig := createKindCluster()
+	loadImagesIntoKind(image)
 
 	chartPath := filepath.Join(mustRepoRoot(), "deploy", "chart")
 	helmDeployConcourse(kubeconfig, namespace, chartPath, image)
 
-	atcURL, pfCmd := startPortForward(kubeconfig, namespace)
+	preloadMockResource()
+
+	atcURL, pfMgr := startPortForward(kubeconfig, namespace)
 	log.Printf("Concourse API available at %s", atcURL)
 
-	waitForAPI(atcURL, 3*time.Minute)
+	waitForAPI(atcURL, 5*time.Minute)
 
 	// Export config for the Ginkgo suite via environment variables.
 	os.Setenv("ATC_URL", atcURL)
@@ -92,18 +94,19 @@ func TestMain(m *testing.M) {
 	code := m.Run()
 
 	// Cleanup.
-	if pfCmd != nil && pfCmd.Process != nil {
-		pfCmd.Process.Kill()
-		pfCmd.Wait()
+	if pfMgr != nil {
+		pfMgr.Stop()
 	}
-	terminateK3sCluster(k3sContainer)
+	deleteKindCluster()
 
 	os.Exit(code)
 }
 
 func TestBehavioral(t *testing.T) {
 	RegisterFailHandler(Fail)
-	RunSpecs(t, "K8s Behavioral Suite")
+	suiteConf, reporterConf := GinkgoConfiguration()
+	suiteConf.Timeout = 3 * time.Hour
+	RunSpecs(t, "K8s Behavioral Suite", suiteConf, reporterConf)
 }
 
 // suiteConfig holds configuration for the Ginkgo suite.
@@ -195,6 +198,11 @@ var _ = SynchronizedAfterSuite(
 )
 
 var _ = BeforeEach(func() {
+	// Wait for the Concourse API to be reachable before each test.
+	// This handles the case where kubectl port-forward died between tests
+	// and the watchdog is still restarting it.
+	waitForAPIReachable(config.ATCURL, 30*time.Second)
+
 	var err error
 	tmp, err = os.MkdirTemp("", "k8s-behavioral-tmp")
 	Expect(err).ToNot(HaveOccurred())
@@ -332,30 +340,63 @@ func newMockVersion(resourceName string, tag string) string {
 	Expect(err).ToNot(HaveOccurred())
 
 	version := guid.String() + "-" + tag
-	fly.Run("check-resource", "-r", inPipeline(resourceName), "-f", "version:"+version)
 
+	// Retry on transient pod race conditions. These happen when the mock
+	// resource check pod completes so fast that the K8s worker cannot exec
+	// into it in time. Known error variants:
+	//   - "pod terminated before exec could run"
+	//   - "unable to upgrade connection: container not found"
+	for attempt := 0; attempt < 3; attempt++ {
+		sess := fly.Start("check-resource", "-r", inPipeline(resourceName), "-f", "version:"+version)
+		<-sess.Exited
+		if sess.ExitCode() == 0 {
+			return version
+		}
+		output := string(sess.Out.Contents()) + string(sess.Err.Contents())
+		if strings.Contains(output, "pod terminated before exec could run") ||
+			strings.Contains(output, "container not found") {
+			time.Sleep(2 * time.Second)
+			continue
+		}
+		Fail("check-resource failed: " + output)
+	}
+	Fail("check-resource failed after 3 retries due to pod race condition")
 	return version
 }
 
-// newMockVersionOrSkip is like newMockVersion but skips the test instead of
-// failing when the check-resource fails due to image resolution issues
-// (e.g., mock-backed custom type chains in K8s runtime).
+// newMockVersionOrSkip is like newMockVersion but skips the current test
+// (instead of failing) when the check-resource fails due to a known K8s
+// worker type chain resolution bug: the JetBridge worker uses the custom
+// type NAME (e.g., "image-type") as the Docker image name in check pods,
+// instead of the resolved image. This causes ErrImagePull for any resource
+// whose type is itself a custom type (type chains, produces: registry-image
+// with mock backing, etc.).
 func newMockVersionOrSkip(resourceName string, tag string) string {
 	guid, err := uuid.NewRandom()
 	Expect(err).ToNot(HaveOccurred())
 
 	version := guid.String() + "-" + tag
-	sess := fly.Start("check-resource", "-r", inPipeline(resourceName), "-f", "version:"+version)
-	<-sess.Exited
-	if sess.ExitCode() != 0 {
+
+	for attempt := 0; attempt < 3; attempt++ {
+		sess := fly.Start("check-resource", "-r", inPipeline(resourceName), "-f", "version:"+version)
+		<-sess.Exited
+		if sess.ExitCode() == 0 {
+			return version
+		}
 		output := string(sess.Out.Contents()) + string(sess.Err.Contents())
+		if strings.Contains(output, "pod terminated before exec could run") ||
+			strings.Contains(output, "container not found") {
+			time.Sleep(2 * time.Second)
+			continue
+		}
 		if strings.Contains(output, "ErrImagePull") ||
-			strings.Contains(output, "failed to pull") ||
-			strings.Contains(output, "pod failed") {
-			Skip("K8s runtime cannot resolve mock-backed custom type chain images (CODE ISSUE)")
+			strings.Contains(output, "ImagePullBackOff") ||
+			strings.Contains(output, "failed to pull") {
+			Skip("K8s worker type chain bug: check pod uses type name as image — " + output)
 		}
 		Fail("check-resource failed: " + output)
 	}
+	Fail("check-resource failed after 3 retries due to pod race condition")
 	return version
 }
 
@@ -411,6 +452,35 @@ func writePipelineFile(name, content string) string {
 
 func writeTaskFile(name, content string) string {
 	return writePipelineFile(name, content) // same operation, different name for clarity
+}
+
+// ---------------------------------------------------------------------
+// Connectivity helpers
+// ---------------------------------------------------------------------
+
+// waitForAPIReachable polls the Concourse /api/v1/info endpoint until it
+// responds with HTTP 200. This is called in BeforeEach to handle the case
+// where kubectl port-forward died and the watchdog is restarting it.
+func waitForAPIReachable(atcURL string, timeout time.Duration) {
+	if atcURL == "" {
+		return
+	}
+	client := &http.Client{Timeout: 2 * time.Second}
+	deadline := time.Now().Add(timeout)
+	for {
+		resp, err := client.Get(atcURL + "/api/v1/info")
+		if err == nil {
+			resp.Body.Close()
+			if resp.StatusCode == 200 {
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			log.Printf("warning: API not reachable after %s, proceeding anyway", timeout)
+			return
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
 }
 
 // ---------------------------------------------------------------------

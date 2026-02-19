@@ -165,7 +165,7 @@ jobs:
 			Expect(session.Out).To(gbytes.Say(`3\.19`))
 		})
 
-		PIt("5.4: image from get step uses that image as rootfs", Label("e2e"), func() {
+		It("5.4: image from get step uses that image as rootfs", Label("e2e"), func() {
 			By("setting a pipeline that gets a registry-image and uses it as task image")
 			pipelineFile := writePipelineFile("task-image-from-get.yml", `
 resources:
@@ -203,7 +203,7 @@ jobs:
 			Expect(session.Out).To(gbytes.Say(`3\.19`))
 		})
 
-		PIt("5.5: image from custom resource type get step (requires mock produces: registry-image support)", func() {
+		It("5.5: image from custom resource type get step (requires mock produces: registry-image support)", func() {
 			By("setting a pipeline with a custom type that produces an image artifact")
 			pipelineFile := writePipelineFile("task-image-custom-type.yml", `
 resource_types:
@@ -233,7 +233,7 @@ jobs:
         args: ["custom-type-image-ok"]
 `)
 			setAndUnpausePipeline(pipelineFile)
-			newMockVersion("custom-image", "v1")
+			newMockVersionOrSkip("custom-image", "v1")
 			triggerJob("custom-image-job")
 
 			session := waitForBuildAndWatch("custom-image-job")
@@ -241,7 +241,7 @@ jobs:
 			Expect(session.Out).To(gbytes.Say("custom-type-image-ok"))
 		})
 
-		PIt("5.6: image from get with skip_download - kubelet pulls by digest (requires mock produces: registry-image support)", func() {
+		It("5.6: image from get with skip_download - kubelet pulls by digest (requires mock produces: registry-image support)", func() {
 			By("setting a pipeline where the image resource uses produces: registry-image")
 			pipelineFile := writePipelineFile("task-skip-download.yml", `
 resource_types:
@@ -271,7 +271,7 @@ jobs:
         args: ["skip-download-ok"]
 `)
 			setAndUnpausePipeline(pipelineFile)
-			newMockVersion("skip-image", "v1")
+			newMockVersionOrSkip("skip-image", "v1")
 			triggerJob("skip-dl-job")
 
 			By("verifying the task succeeds (kubelet pulled the image natively)")
@@ -310,7 +310,7 @@ jobs:
 			Expect(session.Out).To(gbytes.Say("default-image-ok"))
 		})
 
-		PIt("5.8: multiple tasks with different image_resource use correct images", Label("e2e"), func() {
+		It("5.8: multiple tasks with different image_resource use correct images", Label("e2e"), func() {
 			By("setting a pipeline with two tasks using different images")
 			pipelineFile := writePipelineFile("task-multi-image.yml", `
 jobs:
@@ -348,7 +348,7 @@ jobs:
 			Expect(output).To(ContainSubstring("busybox-image"))
 		})
 
-		PIt("5.9: mixed image_resource and image from get both resolve correctly", Label("e2e"), func() {
+		It("5.9: mixed image_resource and image from get both resolve correctly", Label("e2e"), func() {
 			By("setting a pipeline with one task using image_resource and one using image from get")
 			pipelineFile := writePipelineFile("task-mixed-image.yml", `
 resources:

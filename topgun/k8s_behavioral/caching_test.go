@@ -8,8 +8,7 @@ import (
 
 var _ = Describe("Caching and Volume Management", func() {
 
-	PIt("persists caches across builds of the same job", func() {
-		// Pending: cache persistence across builds requires PVC-backed caching (CacheVolumeClaim config)
+	It("persists caches across builds of the same job", func() {
 		cfg := writePipelineFile("cache.yml", `
 jobs:
 - name: cached-job
@@ -39,8 +38,7 @@ jobs:
 		Expect(sess.Out).To(gbytes.Say("CACHE HIT"))
 	})
 
-	PIt("scopes caches to the task within the job", func() {
-		// Pending: cache scoping requires PVC-backed caching to verify isolation
+	It("scopes caches to the task within the job", func() {
 		cfg := writePipelineFile("cache-scope.yml", `
 jobs:
 - name: scope-a
@@ -85,8 +83,7 @@ jobs:
 		))
 	})
 
-	PIt("clears task cache via fly clear-task-cache", func() {
-		// Pending: clear-task-cache requires PVC-backed caching and Reaper volume cleanup integration
+	It("clears task cache via fly clear-task-cache", func() {
 		cfg := writePipelineFile("clear-cache.yml", `
 jobs:
 - name: clear-job
@@ -110,7 +107,9 @@ jobs:
 		Expect(sess.Out).To(gbytes.Say("CACHE MISS"))
 
 		By("clearing the task cache")
-		fly.Run("clear-task-cache", "-j", inPipeline("clear-job"), "-s", "cached-task")
+		// -n skips interactive confirmation (stdin is /dev/null in test context,
+		// so without -n the command silently exits without clearing).
+		fly.Run("clear-task-cache", "-n", "-j", inPipeline("clear-job"), "-s", "cached-task")
 
 		By("second build: cache should be cleared")
 		triggerJob("clear-job")
@@ -119,10 +118,7 @@ jobs:
 		Expect(sess.Out).To(gbytes.Say("CACHE MISS"))
 	})
 
-	PIt("supports PVC-backed caches in K8s", func() {
-		// Pending: PVC-backed caching requires CacheVolumeClaim configured on the K8s worker
-		// PVC-backed caching depends on K8s runtime configuration.
-		// The test verifies that builds with caches succeed on K8s.
+	It("supports PVC-backed caches in K8s", func() {
 		cfg := writePipelineFile("pvc-cache.yml", `
 jobs:
 - name: pvc-job
@@ -145,8 +141,7 @@ jobs:
 		Expect(sess.Out).To(gbytes.Say("file"))
 	})
 
-	PIt("verifies K8s volume mounts for cached paths", func() {
-		// Pending: K8s volume mount verification requires live K8s cluster for pod inspection
+	It("verifies K8s volume mounts for cached paths", func() {
 		cfg := writePipelineFile("cache-k8s.yml", `
 jobs:
 - name: cache-vol-job

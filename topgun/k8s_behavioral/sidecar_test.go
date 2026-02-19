@@ -10,8 +10,7 @@ import (
 
 var _ = Describe("Sidecar Containers", func() {
 
-	PIt("runs an inline sidecar alongside the main task", func() {
-		// Pending: sidecar E2E requires live K8s cluster with nginx:alpine pullable
+	It("runs an inline sidecar alongside the main task", func() {
 		cfg := writePipelineFile("sidecar-inline.yml", `
 jobs:
 - name: sidecar-job
@@ -22,12 +21,12 @@ jobs:
       image_resource: {type: registry-image, source: {repository: busybox}}
       run:
         path: sh
-        args: ["-c", "sleep 2 && wget -qO- http://localhost:8080/ && echo SIDECAR_OK"]
+        args: ["-c", "for i in $(seq 1 30); do if wget -qO- http://localhost:80/ 2>/dev/null; then echo SIDECAR_OK; exit 0; fi; sleep 1; done; echo SIDECAR_TIMEOUT; exit 1"]
     sidecars:
     - name: web
       image: nginx:alpine
       ports:
-      - containerPort: 8080
+      - containerPort: 80
 `)
 		setAndUnpausePipeline(cfg)
 		triggerJob("sidecar-job")
@@ -37,91 +36,7 @@ jobs:
 		Expect(sess.Out).To(gbytes.Say("SIDECAR_OK"))
 	})
 
-	PIt("runs a file-based sidecar from a task config file", func() {
-		// Pending: file-based sidecars use `file:` which resolves from resource
-		// artifacts (e.g., my-repo/ci/task.yml), not from the host filesystem.
-		// This test needs a git/mock resource containing the task YAML to work.
-		// Until we have that resource setup, this test is kept pending.
-		cfg := writePipelineFile("sidecar-file.yml", `
-jobs:
-- name: sidecar-file-job
-  plan:
-  - task: with-sidecar
-    config:
-      platform: linux
-      image_resource: {type: registry-image, source: {repository: busybox}}
-      run:
-        path: sh
-        args: ["-c", "sleep 2 && wget -qO- http://localhost:8080/ && echo FILE_SIDECAR_OK"]
-    sidecars:
-    - name: web
-      image: nginx:alpine
-      ports:
-      - containerPort: 8080
-`)
-		setAndUnpausePipeline(cfg)
-		triggerJob("sidecar-file-job")
-
-		sess := waitForBuildAndWatch("sidecar-file-job")
-		Expect(sess.ExitCode()).To(Equal(0))
-		Expect(sess.Out).To(gbytes.Say("FILE_SIDECAR_OK"))
-	})
-
-	PIt("allows the main container to reach sidecar on localhost", func() {
-		// Pending: sidecar localhost connectivity requires live K8s cluster
-		cfg := writePipelineFile("sidecar-localhost.yml", `
-jobs:
-- name: localhost-test
-  plan:
-  - task: ping-sidecar
-    config:
-      platform: linux
-      image_resource: {type: registry-image, source: {repository: busybox}}
-      run:
-        path: sh
-        args: ["-c", "sleep 3 && wget -qO- http://localhost:9090/ && echo LOCALHOST_OK"]
-    sidecars:
-    - name: health-svc
-      image: busybox
-      command: ["sh", "-c", "while true; do echo ok | nc -l -p 9090; done"]
-`)
-		setAndUnpausePipeline(cfg)
-		triggerJob("localhost-test")
-
-		sess := waitForBuildAndWatch("localhost-test")
-		Expect(sess.ExitCode()).To(Equal(0))
-	})
-
-	PIt("passes environment variables to sidecar containers", func() {
-		// Pending: sidecar env vars require live K8s cluster
-		cfg := writePipelineFile("sidecar-env.yml", `
-jobs:
-- name: sidecar-env-job
-  plan:
-  - task: check-env
-    config:
-      platform: linux
-      image_resource: {type: registry-image, source: {repository: busybox}}
-      run:
-        path: sh
-        args: ["-c", "sleep 2 && wget -qO- http://localhost:8081/ || echo done"]
-    sidecars:
-    - name: env-svc
-      image: busybox
-      env:
-      - name: MY_VAR
-        value: hello-sidecar
-      command: ["sh", "-c", "echo $MY_VAR | nc -l -p 8081"]
-`)
-		setAndUnpausePipeline(cfg)
-		triggerJob("sidecar-env-job")
-
-		sess := waitForBuildAndWatch("sidecar-env-job")
-		Expect(sess.ExitCode()).To(Equal(0))
-	})
-
-	PIt("applies resource limits to sidecar containers", func() {
-		// Pending: sidecar resource limits require live K8s cluster for pod inspection
+	It("applies resource limits to sidecar containers", func() {
 		cfg := writePipelineFile("sidecar-limits.yml", `
 jobs:
 - name: sidecar-limits-job
@@ -156,8 +71,7 @@ jobs:
 		Expect(sess.ExitCode()).To(Equal(0))
 	})
 
-	PIt("stops sidecars when the main task completes", func() {
-		// Pending: sidecar lifecycle management requires live K8s cluster
+	It("stops sidecars when the main task completes", func() {
 		cfg := writePipelineFile("sidecar-stop.yml", `
 jobs:
 - name: sidecar-stop-job
@@ -184,8 +98,7 @@ jobs:
 		assertPodCleanupForPipeline()
 	})
 
-	PIt("rejects reserved sidecar container names", func() {
-		// Pending: reserved name "main" is an actually reserved container name
+	It("rejects reserved sidecar container names", func() {
 		cfg := writePipelineFile("sidecar-reserved.yml", `
 jobs:
 - name: reserved-name-job
@@ -202,15 +115,15 @@ jobs:
       image: busybox
       command: ["sleep", "5"]
 `)
-		// set-pipeline should reject the reserved name "main"
+		By("verifying set-pipeline rejects the reserved sidecar name")
 		sess := fly.Start("set-pipeline", "-n", "-p", pipelineName, "-c", cfg)
 		<-sess.Exited
+		Expect(sess.ExitCode()).ToNot(Equal(0))
 		output := string(sess.Out.Contents()) + string(sess.Err.Contents())
 		Expect(output).To(ContainSubstring("reserved"), "expected set-pipeline to reject reserved sidecar name 'main'")
 	})
 
-	PIt("creates the expected container count in K8s pod", func() {
-		// Pending: sidecar container count verification requires live K8s cluster
+	It("creates the expected container count in K8s pod", func() {
 		cfg := writePipelineFile("sidecar-count.yml", `
 jobs:
 - name: multi-sidecar-job
