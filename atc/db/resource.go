@@ -1151,7 +1151,8 @@ func requestScheduleForJobsUsingResource(tx Tx, resourceID int) error {
 	}
 
 	if len(jobs) > 0 {
-		_, err = tx.Exec("NOTIFY scheduler")
+		payload := intsToCSV(jobs)
+		_, err = tx.Exec(fmt.Sprintf("NOTIFY scheduler, '%s'", payload))
 		if err != nil {
 			return err
 		}

@@ -1312,7 +1312,8 @@ func requestScheduleForJobsInPipeline(tx Tx, pipelineID int) error {
 	}
 
 	if len(jobIDs) > 0 {
-		_, err = tx.Exec("NOTIFY scheduler")
+		payload := intsToCSV(jobIDs)
+		_, err = tx.Exec(fmt.Sprintf("NOTIFY scheduler, '%s'", payload))
 		if err != nil {
 			return err
 		}

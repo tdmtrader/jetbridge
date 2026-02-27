@@ -1487,9 +1487,10 @@ func requestSchedule(tx Tx, jobID int) error {
 		return NonOneRowAffectedError{rowsAffected}
 	}
 
-	// Wake the scheduler immediately. Postgres defers NOTIFY until the
-	// enclosing transaction commits, so there is no race with readers.
-	_, err = tx.Exec("NOTIFY scheduler")
+	// Wake the scheduler immediately with the job ID as payload.
+	// Postgres defers NOTIFY until the enclosing transaction commits,
+	// so there is no race with readers.
+	_, err = tx.Exec(fmt.Sprintf("NOTIFY scheduler, '%d'", jobID))
 	if err != nil {
 		return err
 	}
@@ -1539,11 +1540,22 @@ func requestScheduleOnDownstreamJobs(tx Tx, jobID int) error {
 	}
 
 	if len(jobIDs) > 0 {
-		_, err = tx.Exec("NOTIFY scheduler")
+		payload := intsToCSV(jobIDs)
+		_, err = tx.Exec(fmt.Sprintf("NOTIFY scheduler, '%s'", payload))
 		if err != nil {
 			return err
 		}
 	}
 
 	return nil
+}
+
+// intsToCSV converts a slice of ints to a comma-separated string,
+// e.g. []int{1, 2, 3} → "1,2,3". Used for NOTIFY payloads.
+func intsToCSV(ids []int) string {
+	s := make([]string, len(ids))
+	for i, id := range ids {
+		s[i] = strconv.Itoa(id)
+	}
+	return strings.Join(s, ",")
 }
