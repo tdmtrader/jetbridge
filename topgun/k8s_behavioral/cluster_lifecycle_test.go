@@ -131,6 +131,9 @@ func helmDeployConcourse(kubeconfig, namespace, chartPath, image string) {
 		"--set", fmt.Sprintf("image.repository=%s", repo),
 		"--set", fmt.Sprintf("image.tag=%s", tag),
 		"--set", "image.pullPolicy=IfNotPresent", // only the Concourse image is pre-loaded
+		// Reduce ATC polling intervals from 10s defaults to speed up
+		// build scheduling in integration tests.
+		"--set", "web.extraArgs={--component-runner-interval=2s,--build-tracker-interval=2s,--gc-interval=2s}",
 		"--timeout", "5m",
 	}
 	cmd := exec.Command("helm", helmArgs...)
@@ -329,6 +332,48 @@ func preloadImages() {
 		}
 	}
 	log.Printf("Image preloading complete.")
+}
+
+// tuneSchedulerInterval reduces the ATC scheduler component interval in the
+// database. The scheduler's interval is hard-coded at 10s in the ATC source
+// and not exposed as a CLI flag. For integration tests, this delay dominates
+// per-test runtime since every build must wait for the scheduler to poll.
+func tuneSchedulerInterval(kubeconfig, namespace, interval string) {
+	log.Printf("Tuning scheduler interval to %s...", interval)
+	cmd := exec.Command("kubectl",
+		"--kubeconfig", kubeconfig,
+		"-n", namespace,
+		"exec", "deploy/concourse-concourse-jetbridge-db", "--",
+		"psql", "-U", "concourse", "-c",
+		fmt.Sprintf("UPDATE components SET interval = '%s' WHERE name = 'scheduler';", interval),
+	)
+	cmd.Stdout = os.Stderr
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		log.Printf("warning: failed to tune scheduler interval: %v", err)
+	}
+}
+
+// tuneReaperInterval reduces the K8s Worker Reaper component interval in the
+// database. The reaper runs on a 30s interval by default and is the component
+// that detects "destroying" containers and actually deletes K8s pods. After a
+// build completes, exec-mode pods are deliberately left running (for fly hijack)
+// and cleaned up by the reaper. This 30s interval dominates pod-cleanup time
+// in tests that assert pods are gone after pipeline teardown.
+func tuneReaperInterval(kubeconfig, namespace, interval string) {
+	log.Printf("Tuning k8s_worker_reaper interval to %s...", interval)
+	cmd := exec.Command("kubectl",
+		"--kubeconfig", kubeconfig,
+		"-n", namespace,
+		"exec", "deploy/concourse-concourse-jetbridge-db", "--",
+		"psql", "-U", "concourse", "-c",
+		fmt.Sprintf("UPDATE components SET interval = '%s' WHERE name = 'k8s_worker_reaper';", interval),
+	)
+	cmd.Stdout = os.Stderr
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		log.Printf("warning: failed to tune reaper interval: %v", err)
+	}
 }
 
 // deleteKindCluster deletes the KinD cluster unless SKIP_TEARDOWN is set.

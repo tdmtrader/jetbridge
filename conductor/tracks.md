@@ -185,7 +185,7 @@
 
 ---
 
-### [ ] Track: Restore service annotations, loadBalancerIP, TLS support, and extra volume mounts to the Helm chart
+### [x] Track: Restore service annotations, loadBalancerIP, TLS support, and extra volume mounts to the Helm chart
 
 _Link: [./tracks/helm-chart-parity/](./tracks/helm-chart-parity/)_
 
@@ -260,5 +260,16 @@ _Link: [./archive/prod_ready_20260209/](./archive/prod_ready_20260209/)_
 ### [x] Track: Skip Image Resource Download on K8s — Skip get step for image resources on K8s, pass only digest/SHA
 
 _Link: [./archive/skip-image-get-k8s/](./archive/skip-image-get-k8s/)_
+
+---
+
+## [x] Track: Integration Test Performance — Sample, understand, and fix low-hanging fruit in K8s behavioral integration tests
+*Completed: 2026-02-27*
+*Archive: [./conductor/tracks/integration_test_performance_20260226/](./conductor/tracks/integration_test_performance_20260226/)*
+
+---
+
+### [ ] Track: scheduler-notify-on-build-request
+_Link: [./tracks/scheduler_notify_on_build_request_20260226/](./tracks/scheduler_notify_on_build_request_20260226/)_
 
 ---

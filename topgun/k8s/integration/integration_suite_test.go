@@ -76,6 +76,9 @@ func TestMain(m *testing.M) {
 
 	waitForAPI(atcURL, 5*time.Minute)
 
+	tuneSchedulerInterval(kubeconfig, namespace, "2s")
+	tuneReaperInterval(kubeconfig, namespace, "2s")
+
 	// Export config for the Ginkgo suite via environment variables.
 	os.Setenv("ATC_URL", atcURL)
 	os.Setenv("KUBECONFIG", kubeconfig)
@@ -159,9 +162,11 @@ var _ = SynchronizedAfterSuite(func() {}, func() {
 })
 
 var _ = BeforeEach(func() {
-	SetDefaultEventuallyTimeout(5 * time.Minute)
+	// 2 minutes is plenty for any single operation; the 5-minute default
+	// just hides real failures behind long waits.
+	SetDefaultEventuallyTimeout(2 * time.Minute)
 	SetDefaultEventuallyPollingInterval(time.Second)
-	SetDefaultConsistentlyDuration(time.Minute)
+	SetDefaultConsistentlyDuration(30 * time.Second)
 	SetDefaultConsistentlyPollingInterval(time.Second)
 
 	var err error
@@ -254,6 +259,10 @@ func triggerJob(jobName string) {
 // waitForBuildAndWatch polls until the build for the given job exists,
 // then watches it and returns the completed session. The caller can
 // inspect session.ExitCode() and session.Out.Contents().
+//
+// The overall deadline covers both the polling phase (waiting for the
+// build to appear) and the streaming phase (fly watch running). This
+// prevents tests from hanging indefinitely when a build is stuck.
 func waitForBuildAndWatch(jobName string, buildName ...string) *gexec.Session {
 	args := []string{"watch", "-j", inPipeline(jobName)}
 	if len(buildName) > 0 {
@@ -264,13 +273,33 @@ func waitForBuildAndWatch(jobName string, buildName ...string) *gexec.Session {
 		"job has no builds|build not found|failed to get build",
 	)
 
+	deadline := time.Now().Add(3 * time.Minute)
 	for {
 		session := fly.Start(args...)
-		<-session.Exited
+
+		// Wait for fly watch to exit, but enforce the overall deadline.
+		// Without this, fly watch can hang forever on a stuck build.
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			session.Kill()
+			Eventually(session).Should(gexec.Exit())
+			Fail(fmt.Sprintf("timed out waiting for build to complete (args: %v)", args))
+		}
+		select {
+		case <-session.Exited:
+			// normal exit
+		case <-time.After(remaining):
+			session.Kill()
+			Eventually(session).Should(gexec.Exit())
+			Fail(fmt.Sprintf("timed out waiting for build to complete (args: %v)", args))
+		}
 
 		if session.ExitCode() == 1 {
 			output := strings.TrimSpace(string(session.Err.Contents()))
 			if keepPollingCheck.MatchString(output) {
+				if time.Now().After(deadline) {
+					Fail(fmt.Sprintf("timed out waiting for build: %s (args: %v)", output, args))
+				}
 				time.Sleep(time.Second)
 				continue
 			}

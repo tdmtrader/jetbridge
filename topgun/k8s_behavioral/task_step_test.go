@@ -137,7 +137,7 @@ jobs:
           tag: "3.19"
       run:
         path: sh
-        args: ["-c", "cat /etc/alpine-release && sleep 30"]
+        args: ["-c", "cat /etc/alpine-release && sleep 5"]
 `)
 			setAndUnpausePipeline(pipelineFile)
 			triggerJob("image-res-job")
@@ -926,7 +926,7 @@ jobs:
       image_resource: {type: registry-image, source: {repository: busybox}}
       run:
         path: sh
-        args: ["-c", "echo pod-containers-test && sleep 30"]
+        args: ["-c", "echo pod-containers-test && sleep 5"]
 `)
 			setAndUnpausePipeline(pipelineFile)
 			triggerJob("pod-job")
@@ -971,7 +971,7 @@ jobs:
         memory: 256000000
       run:
         path: sh
-        args: ["-c", "echo k8s-limits-test && sleep 30"]
+        args: ["-c", "echo k8s-limits-test && sleep 5"]
 `)
 			setAndUnpausePipeline(pipelineFile)
 			triggerJob("k8s-limits-job")
@@ -1016,7 +1016,7 @@ jobs:
       image_resource: {type: registry-image, source: {repository: busybox}}
       run:
         path: sh
-        args: ["-c", "echo no-limits-test && sleep 30"]
+        args: ["-c", "echo no-limits-test && sleep 5"]
 `)
 			setAndUnpausePipeline(pipelineFile)
 			triggerJob("no-limits-job")

@@ -132,7 +132,7 @@ jobs:
       image_resource: {type: registry-image, source: {repository: busybox}}
       run:
         path: sh
-        args: ["-c", "sleep 60"]
+        args: ["-c", "sleep 10"]
 `)
 		setAndUnpausePipeline(cfg)
 

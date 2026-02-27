@@ -143,7 +143,7 @@ jobs:
 		Consistently(func() int {
 			builds := flyTable("builds", "-j", inPipeline("no-trigger-job"))
 			return len(builds)
-		}, 30*time.Second, time.Second).Should(Equal(0),
+		}, 10*time.Second, time.Second).Should(Equal(0),
 			"no build should be triggered without trigger: true",
 		)
 	})

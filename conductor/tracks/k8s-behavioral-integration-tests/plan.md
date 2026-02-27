@@ -426,7 +426,7 @@
 - [x] 26.1 — Refactor cluster lifecycle into TestMain: move KinD create/deploy/teardown out of SynchronizedBeforeSuite into TestMain(m *testing.M)
 - [x] 26.2 — Pre-pull required images (mock-resource, busybox, postgres) into KinD during cluster setup
 - [x] 26.3 — Pass cluster config to Ginkgo suite via environment variables set in TestMain
-- [~] 26.4 — Verify self-sufficient run: `go test ./topgun/k8s_behavioral/ -count=1 -v -timeout 30m` creates cluster, runs tests, tears down
+- [x] 26.4 — Verify self-sufficient run: `go test ./topgun/k8s_behavioral/ -count=1 -v -timeout 30m` creates cluster, runs tests, tears down 476851234
 
 ## Phase 27: Test Quality Fixes (from FAILURES.md)
 
