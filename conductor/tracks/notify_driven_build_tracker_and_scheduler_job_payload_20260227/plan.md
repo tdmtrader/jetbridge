@@ -8,7 +8,7 @@
 - [x] Task: Run existing build tracker and component tests for regressions 895aed4f0
 - [x] Task: Phase 1 Manual Verification a1ef0f365
 
-## Phase 2: Scheduler NOTIFY Payload
+## Phase 2: Scheduler NOTIFY Payload [checkpoint: dc1622374]
 
 - [x] Task: Add job ID payload to `NOTIFY scheduler` in `requestSchedule()` and comma-separated IDs in bulk variants bd325261f
 - [x] Task: Add unit test verifying NOTIFY payload contains correct job IDs ef9ed1615
@@ -16,6 +16,6 @@
 - [x] Task: Update scheduler runner to parse job IDs from context and query specific jobs; fall back to full scan when empty 5533140da
 - [x] Task: Add test for targeted job query path and fallback path c31607087
 - [x] Task: Run full scheduler and DB test suites for regressions c31607087
-- [~] Task: Phase 2 Manual Verification
+- [x] Task: Phase 2 Manual Verification dc1622374
 
 ---
