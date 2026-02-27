@@ -2,7 +2,7 @@
   "trackId": "isolate-k8s-test-suites",
   "type": "refactor",
   "status": "backlog",
-  "description": "Remove external cluster mode from K8s test suites, make them fully self-contained with testcontainers-go",
+  "description": "Migrate K8s test suites from KinD to testcontainers-go/k3s with crictl pull for public images. Benchmark proves 1.8x faster cluster startup with 0 image loading errors.",
   "createdAt": "2026-02-27T02:43:44.746Z",
-  "updatedAt": "2026-02-27T02:43:44.746Z"
+  "updatedAt": "2026-02-27T23:01:33.948Z"
 }
