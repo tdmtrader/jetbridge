@@ -33,6 +33,19 @@ type FakeJobFactory struct {
 		result1 db.SchedulerJobs
 		result2 error
 	}
+	JobsToScheduleByIDsStub        func([]int) (db.SchedulerJobs, error)
+	jobsToScheduleByIDsMutex       sync.RWMutex
+	jobsToScheduleByIDsArgsForCall []struct {
+		arg1 []int
+	}
+	jobsToScheduleByIDsReturns struct {
+		result1 db.SchedulerJobs
+		result2 error
+	}
+	jobsToScheduleByIDsReturnsOnCall map[int]struct {
+		result1 db.SchedulerJobs
+		result2 error
+	}
 	VisibleJobsStub        func([]string) ([]atc.JobSummary, error)
 	visibleJobsMutex       sync.RWMutex
 	visibleJobsArgsForCall []struct {
@@ -157,6 +170,75 @@ func (fake *FakeJobFactory) JobsToScheduleReturnsOnCall(i int, result1 db.Schedu
 		})
 	}
 	fake.jobsToScheduleReturnsOnCall[i] = struct {
+		result1 db.SchedulerJobs
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeJobFactory) JobsToScheduleByIDs(arg1 []int) (db.SchedulerJobs, error) {
+	var arg1Copy []int
+	if arg1 != nil {
+		arg1Copy = make([]int, len(arg1))
+		copy(arg1Copy, arg1)
+	}
+	fake.jobsToScheduleByIDsMutex.Lock()
+	ret, specificReturn := fake.jobsToScheduleByIDsReturnsOnCall[len(fake.jobsToScheduleByIDsArgsForCall)]
+	fake.jobsToScheduleByIDsArgsForCall = append(fake.jobsToScheduleByIDsArgsForCall, struct {
+		arg1 []int
+	}{arg1Copy})
+	stub := fake.JobsToScheduleByIDsStub
+	fakeReturns := fake.jobsToScheduleByIDsReturns
+	fake.recordInvocation("JobsToScheduleByIDs", []interface{}{arg1Copy})
+	fake.jobsToScheduleByIDsMutex.Unlock()
+	if stub != nil {
+		return stub(arg1)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2
+	}
+	return fakeReturns.result1, fakeReturns.result2
+}
+
+func (fake *FakeJobFactory) JobsToScheduleByIDsCallCount() int {
+	fake.jobsToScheduleByIDsMutex.RLock()
+	defer fake.jobsToScheduleByIDsMutex.RUnlock()
+	return len(fake.jobsToScheduleByIDsArgsForCall)
+}
+
+func (fake *FakeJobFactory) JobsToScheduleByIDsCalls(stub func([]int) (db.SchedulerJobs, error)) {
+	fake.jobsToScheduleByIDsMutex.Lock()
+	defer fake.jobsToScheduleByIDsMutex.Unlock()
+	fake.JobsToScheduleByIDsStub = stub
+}
+
+func (fake *FakeJobFactory) JobsToScheduleByIDsArgsForCall(i int) []int {
+	fake.jobsToScheduleByIDsMutex.RLock()
+	defer fake.jobsToScheduleByIDsMutex.RUnlock()
+	argsForCall := fake.jobsToScheduleByIDsArgsForCall[i]
+	return argsForCall.arg1
+}
+
+func (fake *FakeJobFactory) JobsToScheduleByIDsReturns(result1 db.SchedulerJobs, result2 error) {
+	fake.jobsToScheduleByIDsMutex.Lock()
+	defer fake.jobsToScheduleByIDsMutex.Unlock()
+	fake.JobsToScheduleByIDsStub = nil
+	fake.jobsToScheduleByIDsReturns = struct {
+		result1 db.SchedulerJobs
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeJobFactory) JobsToScheduleByIDsReturnsOnCall(i int, result1 db.SchedulerJobs, result2 error) {
+	fake.jobsToScheduleByIDsMutex.Lock()
+	defer fake.jobsToScheduleByIDsMutex.Unlock()
+	fake.JobsToScheduleByIDsStub = nil
+	if fake.jobsToScheduleByIDsReturnsOnCall == nil {
+		fake.jobsToScheduleByIDsReturnsOnCall = make(map[int]struct {
+			result1 db.SchedulerJobs
+			result2 error
+		})
+	}
+	fake.jobsToScheduleByIDsReturnsOnCall[i] = struct {
 		result1 db.SchedulerJobs
 		result2 error
 	}{result1, result2}

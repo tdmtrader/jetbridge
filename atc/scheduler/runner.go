@@ -3,10 +3,13 @@ package scheduler
 import (
 	"context"
 	"fmt"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"code.cloudfoundry.org/lager/v3"
+	"github.com/concourse/concourse/atc/component"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/metric"
 	"github.com/concourse/concourse/atc/util"
@@ -51,7 +54,7 @@ func (s *Runner) Run(ctx context.Context) error {
 	spanCtx, span := tracing.StartSpan(ctx, "scheduler.Run", nil)
 	defer span.End()
 
-	jobs, err := s.jobFactory.JobsToSchedule()
+	jobs, err := s.jobsToSchedule(ctx)
 	if err != nil {
 		return fmt.Errorf("find jobs to schedule: %w", err)
 	}
@@ -99,6 +102,36 @@ func (s *Runner) Run(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// jobsToSchedule returns the jobs that need scheduling. When the context
+// carries a NOTIFY payload with job IDs, only those specific jobs are
+// queried. Otherwise falls back to a full scan of all pending jobs.
+func (s *Runner) jobsToSchedule(ctx context.Context) (db.SchedulerJobs, error) {
+	if payload, ok := component.NotifyPayload(ctx); ok {
+		if ids, err := parseJobIDs(payload); err == nil && len(ids) > 0 {
+			return s.jobFactory.JobsToScheduleByIDs(ids)
+		}
+	}
+	return s.jobFactory.JobsToSchedule()
+}
+
+// parseJobIDs splits a comma-separated string of integers into a slice.
+func parseJobIDs(payload string) ([]int, error) {
+	parts := strings.Split(payload, ",")
+	ids := make([]int, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		id, err := strconv.Atoi(p)
+		if err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, nil
 }
 
 func (s *Runner) scheduleJob(ctx context.Context, logger lager.Logger, job db.SchedulerJob) error {

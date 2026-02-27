@@ -21,6 +21,7 @@ type JobFactory interface {
 	VisibleJobs([]string) ([]atc.JobSummary, error)
 	AllActiveJobs() ([]atc.JobSummary, error)
 	JobsToSchedule() (SchedulerJobs, error)
+	JobsToScheduleByIDs(jobIDs []int) (SchedulerJobs, error)
 }
 
 type jobFactory struct {
@@ -76,6 +77,14 @@ func (resources SchedulerResources) Lookup(name string) (*SchedulerResource, boo
 }
 
 func (j *jobFactory) JobsToSchedule() (SchedulerJobs, error) {
+	return j.jobsToSchedule(nil)
+}
+
+func (j *jobFactory) JobsToScheduleByIDs(jobIDs []int) (SchedulerJobs, error) {
+	return j.jobsToSchedule(jobIDs)
+}
+
+func (j *jobFactory) jobsToSchedule(jobIDs []int) (SchedulerJobs, error) {
 	tx, err := j.conn.Begin()
 	if err != nil {
 		return nil, err
@@ -83,13 +92,18 @@ func (j *jobFactory) JobsToSchedule() (SchedulerJobs, error) {
 
 	defer tx.Rollback()
 
-	rows, err := jobsQuery.
+	query := jobsQuery.
 		Where(sq.Expr("j.schedule_requested > j.last_scheduled")).
 		Where(sq.Eq{
 			"j.active": true,
 			"j.paused": false,
 			"p.paused": false,
-		}).
+		})
+	if len(jobIDs) > 0 {
+		query = query.Where(sq.Eq{"j.id": jobIDs})
+	}
+
+	rows, err := query.
 		RunWith(tx).
 		Query()
 	if err != nil {
