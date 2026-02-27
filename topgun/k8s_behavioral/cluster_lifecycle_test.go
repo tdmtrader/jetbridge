@@ -133,7 +133,7 @@ func helmDeployConcourse(kubeconfig, namespace, chartPath, image string) {
 		"--set", "image.pullPolicy=IfNotPresent", // only the Concourse image is pre-loaded
 		// Reduce ATC polling intervals from 10s defaults to speed up
 		// build scheduling in integration tests.
-		"--set", "web.extraArgs={--component-runner-interval=2s,--build-tracker-interval=2s,--gc-interval=2s}",
+		"--set", "web.extraArgs={--component-runner-interval=2s,--gc-interval=2s}",
 		"--timeout", "5m",
 	}
 	cmd := exec.Command("helm", helmArgs...)

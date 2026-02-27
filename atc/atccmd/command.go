@@ -226,8 +226,6 @@ type RunCommand struct {
 		VarSourceRecyclePeriod time.Duration `long:"var-source-recycle-period" default:"5m" description:"Period after which to reap var_sources that are not used."`
 	} `group:"Garbage Collection" namespace:"gc"`
 
-	BuildTrackerInterval time.Duration `long:"build-tracker-interval" default:"10s" description:"Interval on which to run build tracking."`
-
 	TelemetryOptIn bool `long:"telemetry-opt-in" hidden:"true" description:"Enable anonymous concourse version reporting."`
 
 	DefaultBuildLogsToRetain uint64 `long:"default-build-logs-to-retain" description:"Default build logs to retain, 0 means all"`
@@ -1210,10 +1208,10 @@ func (cmd *RunCommand) backendComponents(
 		},
 		{
 			Component: atc.Component{
-				Name:     atc.ComponentBuildTracker,
-				Interval: cmd.BuildTrackerInterval,
+				Name: atc.ComponentBuildTracker,
 			},
-			Runnable: builds.NewTracker(logger, dbBuildFactory, engine, checkBuildsChan),
+			NotifyOnly: true,
+			Runnable:   builds.NewTracker(logger, dbBuildFactory, engine, checkBuildsChan),
 		},
 		{
 			Component: atc.Component{
