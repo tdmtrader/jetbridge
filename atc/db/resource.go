@@ -1150,6 +1150,13 @@ func requestScheduleForJobsUsingResource(tx Tx, resourceID int) error {
 		}
 	}
 
+	if len(jobs) > 0 {
+		_, err = tx.Exec("NOTIFY scheduler")
+		if err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
