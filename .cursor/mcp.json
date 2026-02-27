@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "conductor": {
+      "type": "sse",
+      "url": "http://localhost:5280/mcp/sse"
+    }
+  }
+}

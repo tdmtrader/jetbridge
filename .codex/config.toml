@@ -1,0 +1,2 @@
+[mcp_servers.conductor]
+url = "http://localhost:5280/mcp/sse"

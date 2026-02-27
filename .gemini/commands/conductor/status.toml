@@ -1,0 +1,79 @@
+description = "Display current project and track progress from Conductor artifacts; use before starting, resuming, or handing off work."
+prompt = """
+# Conductor Status
+
+Show current project and track status.
+
+## Data Sources (in priority order)
+
+### 1. MCP Tools (Preferred)
+Use these MCP tools to get canonical track data:
+- `conductor_list_tracks` — returns all tracks with status, type, and metadata
+- `conductor_get_status` — returns detailed status of a specific track (pass `{ trackId }`)
+
+### 2. REST API (Fallback)
+- GET `/api/projects/:projectId/tracks/list` — list all tracks
+- GET `/api/projects/:projectId/tracks/:trackId` — get track detail
+
+### 3. Direct File Read (Last Resort)
+Read these files:
+- conductor/product.md
+- conductor/tracks.md
+- All conductor/tracks/*/metadata.json
+- All conductor/tracks/*/plan.md
+
+Also check for recent manual changes:
+- Read conductor/notes/.changelog.json if it exists
+- Shows recent file edits made through the Notepad UI
+- Display as "Recent Manual Changes" section if present
+
+---
+
+## After Reading Context
+
+### Calculate Metrics
+
+For each track, count:
+- Pending tasks: `[ ]`
+- In-progress tasks: `[~]`
+- Completed tasks: `[x]`
+
+### Display Format
+
+```
+📊 Conductor Status
+
+Project: <project-name>
+Tracks: <total> | Tasks: <completed>/<total>
+
+━━━ In Progress ━━━
+🔵 <track-id> (<type>)
+   ████████░░░░░░░░ 50% (4/8 tasks)
+   Current: <current-task-name>
+
+━━━ Planned ━━━
+⚪ <track-id> (<type>)
+   0% (0/6 tasks)
+
+━━━ Completed ━━━
+✅ <track-id> (<type>)
+   Completed: <date>
+
+━━━ Next Actions ━━━
+→ Continue: /project:conductor:implement
+→ New track: /project:conductor:newTrack "description"
+```
+
+### Edge Cases
+
+- No tracks: Suggest creating one
+- Not initialized: Suggest running setup
+
+---
+
+## Critical Rules
+
+1. **Prefer MCP tools** (`conductor_list_tracks`, `conductor_get_status`) for reading track data — returns canonical format
+2. Follow workflow.md EXACTLY as written
+3. Get user approval before making changes
+"""
