@@ -856,6 +856,16 @@ func (c *Container) buildVolumeMounts() ([]corev1.Volume, []corev1.VolumeMount) 
 		})
 	}
 
+	// Resolve relative cache paths to absolute using the container's working
+	// directory. Kubernetes requires absolute paths for volume MountPath.
+	resolvedCaches := make([]string, len(c.containerSpec.Caches))
+	for i, cachePath := range c.containerSpec.Caches {
+		if !filepath.IsAbs(cachePath) && c.containerSpec.Dir != "" {
+			cachePath = filepath.Join(c.containerSpec.Dir, cachePath)
+		}
+		resolvedCaches[i] = cachePath
+	}
+
 	if c.config.CacheVolumeClaim != "" {
 		// When a cache PVC is configured, mount it into the pod and use
 		// subPath mounts for each cache entry so data survives pod restarts.
@@ -872,7 +882,7 @@ func (c *Container) buildVolumeMounts() ([]corev1.Volume, []corev1.VolumeMount) 
 			MountPath: CacheBasePath,
 		})
 
-		for i, cachePath := range c.containerSpec.Caches {
+		for i, cachePath := range resolvedCaches {
 			cacheHandle := fmt.Sprintf("%s-cache-%d", c.handle, i)
 			mounts = append(mounts, corev1.VolumeMount{
 				Name:      cachePVCVolumeName,
@@ -881,7 +891,7 @@ func (c *Container) buildVolumeMounts() ([]corev1.Volume, []corev1.VolumeMount) 
 			})
 		}
 	} else {
-		for i, cachePath := range c.containerSpec.Caches {
+		for i, cachePath := range resolvedCaches {
 			name := fmt.Sprintf("cache-%d", i)
 			volumes = append(volumes, corev1.Volume{
 				Name: name,

@@ -3,6 +3,7 @@ package jetbridge
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 
 	"code.cloudfoundry.org/lager/v3"
 	"code.cloudfoundry.org/lager/v3/lagerctx"
@@ -137,7 +138,11 @@ func (w *Worker) buildVolumeMountsForSpec(handle string, spec runtime.ContainerS
 	}
 
 	for i, cachePath := range spec.Caches {
-		addMount(w.newVolumeForMount(fmt.Sprintf("%s-cache-%d", handle, i), cachePath), cachePath)
+		resolvedPath := cachePath
+		if !filepath.IsAbs(cachePath) && spec.Dir != "" {
+			resolvedPath = filepath.Join(spec.Dir, cachePath)
+		}
+		addMount(w.newVolumeForMount(fmt.Sprintf("%s-cache-%d", handle, i), resolvedPath), resolvedPath)
 	}
 
 	return mounts, volumes
