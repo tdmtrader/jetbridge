@@ -92,9 +92,19 @@ func ensureConcourseImage(image string) {
 	}
 }
 
-// loadImagesIntoKind loads the locally-built Concourse image into the
-// KinD cluster. Public images (postgres, busybox, etc.) are NOT
-// pre-loaded — they are pulled by the kubelet at runtime.
+// testDependencyImages are public images used by integration tests that
+// should be pre-pulled into the KinD node to avoid per-test pulls from
+// Docker Hub. These are pulled via crictl inside the KinD node because
+// `kind load docker-image` cannot import multi-arch OCI images with
+// attestation manifests from Docker Desktop.
+var testDependencyImages = []string{
+	"docker.io/library/busybox:latest",
+	"docker.io/library/alpine:latest",
+	"docker.io/concourse/mock-resource:latest",
+}
+
+// loadImagesIntoKind loads the locally-built Concourse image and
+// commonly-used test dependency images into the KinD cluster.
 func loadImagesIntoKind(concourseImage string) {
 	log.Printf("Loading local image %s into KinD cluster...", concourseImage)
 	cmd := exec.Command("kind", "load", "docker-image", concourseImage, "--name", kindClusterName)
@@ -104,6 +114,19 @@ func loadImagesIntoKind(concourseImage string) {
 		log.Fatalf("failed to load image %s into KinD: %v", concourseImage, err)
 	}
 	log.Println("Local image loaded into KinD cluster.")
+
+	// Pre-pull test dependency images directly into the KinD node's
+	// containerd so kubelet doesn't pull them during test execution.
+	nodeName := kindClusterName + "-control-plane"
+	for _, img := range testDependencyImages {
+		log.Printf("Pre-pulling %s into KinD node...", img)
+		cmd := exec.Command("docker", "exec", nodeName, "crictl", "pull", img)
+		cmd.Stdout = os.Stderr
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			log.Printf("warning: failed to pre-pull %s (tests will pull at runtime): %v", img, err)
+		}
+	}
 }
 
 // helmDeployConcourse deploys Concourse via the local Helm chart.
