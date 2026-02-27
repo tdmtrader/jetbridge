@@ -1487,6 +1487,13 @@ func requestSchedule(tx Tx, jobID int) error {
 		return NonOneRowAffectedError{rowsAffected}
 	}
 
+	// Wake the scheduler immediately. Postgres defers NOTIFY until the
+	// enclosing transaction commits, so there is no race with readers.
+	_, err = tx.Exec("NOTIFY scheduler")
+	if err != nil {
+		return err
+	}
+
 	return nil
 }
 

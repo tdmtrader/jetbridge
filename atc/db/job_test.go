@@ -9,6 +9,7 @@ import (
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbtest"
 	"github.com/concourse/concourse/tracing"
+	"github.com/jackc/pgx/v5/pgxpool"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"go.opentelemetry.io/otel/sdk/trace"
@@ -1366,6 +1367,26 @@ var _ = Describe("Job", func() {
 					Expect(reloadFound).To(BeTrue())
 				})
 			})
+		})
+	})
+
+	Describe("RequestSchedule", func() {
+		It("sends a NOTIFY on the scheduler channel", func(ctx context.Context) {
+			pool, err := pgxpool.New(ctx, postgresRunner.DataSourceName())
+			Expect(err).ToNot(HaveOccurred())
+			defer pool.Close()
+
+			listener := db.NewPgxListener(pool)
+			defer listener.Close()
+
+			err = listener.Listen("scheduler")
+			Expect(err).ToNot(HaveOccurred())
+
+			err = job.RequestSchedule()
+			Expect(err).ToNot(HaveOccurred())
+
+			notifyChan := listener.NotificationChannel()
+			Eventually(ctx, notifyChan).WithTimeout(2 * time.Second).Should(Receive())
 		})
 	})
 
