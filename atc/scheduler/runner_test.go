@@ -40,12 +40,14 @@ var _ = Describe("Runner", func() {
 
 		schedulerRunner component.Runnable
 		schedulerErr    error
+		runCtx          context.Context
 	)
 
 	BeforeEach(func() {
 		fakeScheduler = new(schedulerfakes.FakeBuildScheduler)
 		fakeJobFactory = new(dbfakes.FakeJobFactory)
 		maxInFlight = 1
+		runCtx = context.TODO()
 
 		lock = new(lockfakes.FakeLock)
 	})
@@ -58,7 +60,7 @@ var _ = Describe("Runner", func() {
 			maxInFlight,
 		)
 
-		schedulerErr = schedulerRunner.Run(context.TODO())
+		schedulerErr = schedulerRunner.Run(runCtx)
 	})
 
 	It("loads up all the jobs to schedule", func() {
@@ -547,6 +549,25 @@ var _ = Describe("Runner", func() {
 
 		It("returns an error", func() {
 			Expect(schedulerErr).To(Equal(fmt.Errorf("find jobs to schedule: %w", errors.New("disaster"))))
+		})
+	})
+
+	Context("when context carries a NOTIFY payload with job IDs", func() {
+		BeforeEach(func() {
+			runCtx = component.WithNotifyPayload(context.Background(), "10,20")
+		})
+
+		It("queries only the targeted job IDs", func() {
+			Expect(fakeJobFactory.JobsToScheduleCallCount()).To(Equal(0))
+			Expect(fakeJobFactory.JobsToScheduleByIDsCallCount()).To(Equal(1))
+			Expect(fakeJobFactory.JobsToScheduleByIDsArgsForCall(0)).To(Equal([]int{10, 20}))
+		})
+	})
+
+	Context("when context has no NOTIFY payload", func() {
+		It("falls back to full job scan", func() {
+			Expect(fakeJobFactory.JobsToScheduleCallCount()).To(Equal(1))
+			Expect(fakeJobFactory.JobsToScheduleByIDsCallCount()).To(Equal(0))
 		})
 	})
 })

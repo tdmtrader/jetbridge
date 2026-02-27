@@ -24,6 +24,11 @@ func NotifyPayload(ctx context.Context) (string, bool) {
 	return v, ok && v != ""
 }
 
+// WithNotifyPayload returns a new context carrying the given NOTIFY payload.
+func WithNotifyPayload(ctx context.Context, payload string) context.Context {
+	return context.WithValue(ctx, notifyPayloadKey, payload)
+}
+
 type NotificationsBus interface {
 	Listen(string, int) (chan db.Notification, error)
 	Unlisten(string, chan db.Notification) error
