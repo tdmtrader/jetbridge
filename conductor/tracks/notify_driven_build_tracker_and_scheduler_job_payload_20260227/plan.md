@@ -2,11 +2,11 @@
 
 ## Phase 1: BuildTracker Notification-Only
 
-- [ ] Task: Verify all build start paths fire NOTIFY build_tracker (audit `build.go`)
-- [ ] Task: Set `NotifyOnly: true` on BuildTracker component in `command.go`
-- [ ] Task: Add test verifying BuildTracker operates in notification-only mode
-- [ ] Task: Run existing build tracker and component tests for regressions
-- [ ] Task: Phase 1 Manual Verification
+- [x] Task: Verify all build start paths fire NOTIFY build_tracker (audit `build.go`) 4b74cc2
+- [x] Task: Set `NotifyOnly: true` on BuildTracker component in `command.go` 14321b86a
+- [x] Task: Add test verifying BuildTracker operates in notification-only mode 895aed4f0
+- [x] Task: Run existing build tracker and component tests for regressions 895aed4f0
+- [~] Task: Phase 1 Manual Verification
 
 ## Phase 2: Scheduler NOTIFY Payload
 

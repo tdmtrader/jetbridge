@@ -185,7 +185,7 @@
 
 ---
 
-### [x] Track: Restore service annotations, loadBalancerIP, TLS support, and extra volume mounts to the Helm chart
+### [~] Track: Restore service annotations, loadBalancerIP, TLS support, and extra volume mounts to the Helm chart
 
 _Link: [./tracks/helm-chart-parity/](./tracks/helm-chart-parity/)_
 
@@ -271,5 +271,10 @@ _Link: [./archive/skip-image-get-k8s/](./archive/skip-image-get-k8s/)_
 
 ### [ ] Track: scheduler-notify-on-build-request
 _Link: [./tracks/scheduler_notify_on_build_request_20260226/](./tracks/scheduler_notify_on_build_request_20260226/)_
+
+---
+
+### [ ] Track: notify-driven-build-tracker-and-scheduler-job-payload
+_Link: [./tracks/notify_driven_build_tracker_and_scheduler_job_payload_20260227/](./tracks/notify_driven_build_tracker_and_scheduler_job_payload_20260227/)_
 
 ---
