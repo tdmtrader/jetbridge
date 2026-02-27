@@ -76,7 +76,6 @@ func TestMain(m *testing.M) {
 
 	waitForAPI(atcURL, 5*time.Minute)
 
-	tuneSchedulerInterval(kubeconfig, namespace, "2s")
 	tuneReaperInterval(kubeconfig, namespace, "2s")
 
 	// Export config for the Ginkgo suite via environment variables.

@@ -247,26 +247,6 @@ func mustRepoRoot() string {
 	return strings.TrimSpace(string(out))
 }
 
-// tuneSchedulerInterval reduces the ATC scheduler component interval in the
-// database. The scheduler's interval is hard-coded at 10s in the ATC source
-// and not exposed as a CLI flag. For integration tests, this delay dominates
-// per-test runtime since every build must wait for the scheduler to poll.
-func tuneSchedulerInterval(kubeconfig, namespace, interval string) {
-	log.Printf("Tuning scheduler interval to %s...", interval)
-	cmd := exec.Command("kubectl",
-		"--kubeconfig", kubeconfig,
-		"-n", namespace,
-		"exec", "deploy/concourse-concourse-jetbridge-db", "--",
-		"psql", "-U", "concourse", "-c",
-		fmt.Sprintf("UPDATE components SET interval = '%s' WHERE name = 'scheduler';", interval),
-	)
-	cmd.Stdout = os.Stderr
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		log.Printf("warning: failed to tune scheduler interval: %v", err)
-	}
-}
-
 // tuneReaperInterval reduces the K8s Worker Reaper component interval in the
 // database. The reaper runs on a 30s interval by default and is the component
 // that detects "destroying" containers and actually deletes K8s pods.
