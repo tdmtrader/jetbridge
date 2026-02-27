@@ -62,6 +62,18 @@ func (s *CommandSuite) TestKubernetesFlags() {
 	s.Contains(kubeconfigOpt.Description, "kubeconfig")
 }
 
+func (s *CommandSuite) TestBuildTrackerIntervalFlagRemoved() {
+	cmd := &atccmd.ATCCommand{}
+	parser := flags.NewParser(cmd, flags.Default)
+	parser.NamespaceDelimiter = "-"
+
+	runCmd := parser.Find("run")
+	s.NotNil(runCmd, "run subcommand should exist")
+
+	opt := runCmd.FindOptionByLongName("build-tracker-interval")
+	s.Nil(opt, "--build-tracker-interval should not exist; build tracker is notification-only")
+}
+
 func (s *CommandSuite) TestKubernetesFieldsExistOnRunCommand() {
 	cmd := &atccmd.RunCommand{}
 	s.Equal("", cmd.Kubernetes.Namespace, "namespace should default to empty string")
