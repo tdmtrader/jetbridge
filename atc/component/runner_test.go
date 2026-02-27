@@ -199,6 +199,21 @@ func (s *RunnerSuite) TestNotifyOnly() {
 		<-ranImmediately
 	})
 
+	s.Run("passes notification payload through context", func() {
+		notifications <- db.Notification{Healthy: true, Payload: "42,43"}
+		ctx := <-ranImmediately
+		payload, ok := component.NotifyPayload(ctx)
+		s.True(ok)
+		s.Equal("42,43", payload)
+	})
+
+	s.Run("omits payload from context when empty", func() {
+		notifications <- db.Notification{Healthy: true}
+		ctx := <-ranImmediately
+		_, ok := component.NotifyPayload(ctx)
+		s.False(ok)
+	})
+
 	s.Run("never polls even after waiting", func() {
 		// no timer watchers should exist in notify-only mode
 		s.Empty(ranImmediately)

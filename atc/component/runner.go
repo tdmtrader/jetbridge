@@ -13,6 +13,17 @@ import (
 
 var Clock = clock.NewClock()
 
+type contextKey string
+
+const notifyPayloadKey contextKey = "notify-payload"
+
+// NotifyPayload extracts the NOTIFY payload from the context, if present.
+// Returns the payload string and true, or "" and false when absent.
+func NotifyPayload(ctx context.Context) (string, bool) {
+	v, ok := ctx.Value(notifyPayloadKey).(string)
+	return v, ok && v != ""
+}
+
 type NotificationsBus interface {
 	Listen(string, int) (chan db.Notification, error)
 	Unlisten(string, chan db.Notification) error
@@ -67,8 +78,11 @@ func (scheduler *Runner) Run(signals <-chan os.Signal, ready chan<- struct{}) er
 func (scheduler *Runner) runNotifyOnly(ctx context.Context, notifier chan db.Notification) error {
 	for {
 		select {
-		case <-notifier:
+		case n := <-notifier:
 			runCtx := lagerctx.NewContext(ctx, scheduler.Logger.Session("notify"))
+			if n.Payload != "" {
+				runCtx = context.WithValue(runCtx, notifyPayloadKey, n.Payload)
+			}
 			scheduler.Schedulable.RunImmediately(runCtx)
 
 		case <-ctx.Done():
@@ -82,9 +96,12 @@ func (scheduler *Runner) runWithPolling(ctx context.Context, notifier chan db.No
 		timer := Clock.NewTimer(scheduler.Interval)
 
 		select {
-		case <-notifier:
+		case n := <-notifier:
 			timer.Stop()
 			runCtx := lagerctx.NewContext(ctx, scheduler.Logger.Session("notify"))
+			if n.Payload != "" {
+				runCtx = context.WithValue(runCtx, notifyPayloadKey, n.Payload)
+			}
 			scheduler.Schedulable.RunImmediately(runCtx)
 
 		case <-timer.C():
