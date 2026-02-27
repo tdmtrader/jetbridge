@@ -26,7 +26,9 @@ type Schedulable interface {
 }
 
 // Runner runs a workload periodically, or immediately upon receiving a
-// notification.
+// notification. When Interval is zero the Runner operates in
+// notification-only mode — it never polls and relies entirely on NOTIFY
+// to trigger execution.
 type Runner struct {
 	Logger lager.Logger
 
@@ -56,6 +58,26 @@ func (scheduler *Runner) Run(signals <-chan os.Signal, ready chan<- struct{}) er
 
 	close(ready)
 
+	if scheduler.Interval == 0 {
+		return scheduler.runNotifyOnly(ctx, notifier)
+	}
+	return scheduler.runWithPolling(ctx, notifier)
+}
+
+func (scheduler *Runner) runNotifyOnly(ctx context.Context, notifier chan db.Notification) error {
+	for {
+		select {
+		case <-notifier:
+			runCtx := lagerctx.NewContext(ctx, scheduler.Logger.Session("notify"))
+			scheduler.Schedulable.RunImmediately(runCtx)
+
+		case <-ctx.Done():
+			return nil
+		}
+	}
+}
+
+func (scheduler *Runner) runWithPolling(ctx context.Context, notifier chan db.Notification) error {
 	for {
 		timer := Clock.NewTimer(scheduler.Interval)
 

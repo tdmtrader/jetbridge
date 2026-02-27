@@ -145,6 +145,74 @@ func (s *RunnerSuite) TestEndToEnd() {
 	})
 }
 
+func (s *RunnerSuite) TestNotifyOnly() {
+	componentName := "notify-only-component"
+
+	mockComponent := new(cmocks.Component)
+	mockComponent.On("Name").Return(componentName)
+
+	mockBus := new(cmocks.NotificationsBus)
+
+	ranImmediately := make(chan context.Context)
+
+	mockSchedulable := schedulable{
+		runPeriodically: func(ctx context.Context) {
+			s.Fail("RunPeriodically should never be called in notify-only mode")
+		},
+		runImmediately: func(ctx context.Context) {
+			ranImmediately <- ctx
+		},
+	}
+
+	runner := &component.Runner{
+		Logger:      lagertest.NewTestLogger("test"),
+		Interval:    0, // notification-only
+		Component:   mockComponent,
+		Bus:         mockBus,
+		Schedulable: mockSchedulable,
+	}
+
+	notifications := make(chan db.Notification, 1)
+
+	var process ifrit.Process
+	s.Run("starts and listens", func() {
+		mockBus.On("Listen", componentName, 1).Return(notifications, nil)
+
+		process = ifrit.Background(runner)
+		select {
+		case <-process.Ready():
+		case err := <-process.Wait():
+			s.Failf("process exited early", "error: %s", err)
+		}
+	})
+
+	defer func() {
+		process.Signal(os.Interrupt)
+		<-process.Wait()
+	}()
+
+	s.Run("runs immediately on notification", func() {
+		notifications <- db.Notification{Healthy: true}
+		<-ranImmediately
+
+		notifications <- db.Notification{Healthy: true}
+		<-ranImmediately
+	})
+
+	s.Run("never polls even after waiting", func() {
+		// no timer watchers should exist in notify-only mode
+		s.Empty(ranImmediately)
+	})
+
+	s.Run("unlistens on exit", func() {
+		mockBus.On("Unlisten", componentName, notifications).Return(nil)
+		process.Signal(os.Interrupt)
+
+		s.NoError(<-process.Wait())
+		mockBus.AssertCalled(s.T(), "Unlisten", componentName, notifications)
+	})
+}
+
 type schedulable struct {
 	runPeriodically func(context.Context)
 	runImmediately  func(context.Context)

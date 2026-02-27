@@ -806,11 +806,16 @@ func (cmd *RunCommand) constructMembers(
 
 		componentLogger := logger.Session(c.Component.Name)
 
+		runnerInterval := cmd.ComponentRunnerInterval
+		if c.NotifyOnly {
+			runnerInterval = 0
+		}
+
 		members = append(members, grouper.Member{
 			Name: c.Component.Name,
 			Runner: &component.Runner{
 				Logger:    componentLogger,
-				Interval:  cmd.ComponentRunnerInterval,
+				Interval:  runnerInterval,
 				Component: dbComponent,
 				Bus:       bus,
 				Schedulable: &component.Coordinator{
@@ -1191,6 +1196,7 @@ func (cmd *RunCommand) backendComponents(
 				Name:     atc.ComponentScheduler,
 				Interval: 10 * time.Second,
 			},
+			NotifyOnly: true,
 			Runnable: scheduler.NewRunner(
 				logger.Session("scheduler"),
 				dbJobFactory,
@@ -2252,6 +2258,7 @@ func (runner drainRunner) Run(signals <-chan os.Signal, ready chan<- struct{}) e
 type RunnableComponent struct {
 	atc.Component
 	component.Runnable
+	NotifyOnly bool // when true, Runner uses Interval=0 (notification-only, no polling)
 }
 
 func (cmd *RunCommand) isMTLSEnabled() bool {
