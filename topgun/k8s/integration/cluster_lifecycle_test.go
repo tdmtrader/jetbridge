@@ -1,7 +1,6 @@
 package integration_test
 
 import (
-	"context"
 	"fmt"
 	"log"
 	"net"
@@ -11,12 +10,11 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-
-	"github.com/testcontainers/testcontainers-go"
-	"github.com/testcontainers/testcontainers-go/modules/k3s"
 )
 
-const k3sImage = "rancher/k3s:v1.27.1-k3s1"
+// kindClusterName is the KinD cluster used by this suite. A unique name
+// avoids collisions with the user's other clusters.
+const kindClusterName = "concourse-integration"
 
 // splitImageRef splits "repo:tag" into its parts. If no tag is present,
 // "latest" is returned as the default tag.
@@ -40,11 +38,9 @@ func findFreePort() int {
 }
 
 // verifyPrerequisites checks that required CLIs are on PATH.
-// Docker is required by testcontainers. Helm and kubectl are used for
-// deploying Concourse and port-forwarding.
 func verifyPrerequisites() error {
 	var missing []string
-	for _, bin := range []string{"docker", "helm", "kubectl"} {
+	for _, bin := range []string{"docker", "kind", "helm", "kubectl"} {
 		if _, err := exec.LookPath(bin); err != nil {
 			missing = append(missing, bin)
 		}
@@ -55,27 +51,29 @@ func verifyPrerequisites() error {
 	return nil
 }
 
-// createK3sCluster creates an ephemeral k3s cluster via testcontainers
-// and returns the container and a path to the kubeconfig file.
-func createK3sCluster(ctx context.Context) (*k3s.K3sContainer, string) {
-	log.Printf("Creating k3s cluster via testcontainers (image: %s)...", k3sImage)
-	k3sContainer, err := k3s.Run(ctx, k3sImage)
-	if err != nil {
-		log.Fatalf("failed to start k3s container: %v", err)
+// createKindCluster creates an ephemeral KinD cluster and returns the
+// path to the generated kubeconfig file. Any pre-existing cluster with
+// the same name is deleted first to avoid conflicts.
+func createKindCluster() string {
+	kubeconfigPath := filepath.Join(os.TempDir(), "kind-kubeconfig-integration")
+
+	// Delete any leftover cluster from a previous interrupted run.
+	exec.Command("kind", "delete", "cluster", "--name", kindClusterName).Run()
+
+	log.Printf("Creating KinD cluster %q...", kindClusterName)
+	cmd := exec.Command("kind", "create", "cluster",
+		"--name", kindClusterName,
+		"--kubeconfig", kubeconfigPath,
+		"--wait", "120s",
+	)
+	cmd.Stdout = os.Stderr
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		log.Fatalf("failed to create KinD cluster: %v", err)
 	}
 
-	kubeConfigYaml, err := k3sContainer.GetKubeConfig(ctx)
-	if err != nil {
-		log.Fatalf("failed to get kubeconfig from k3s container: %v", err)
-	}
-
-	kubeconfigPath := filepath.Join(os.TempDir(), "k3s-kubeconfig-integration")
-	if err := os.WriteFile(kubeconfigPath, kubeConfigYaml, 0600); err != nil {
-		log.Fatalf("failed to write kubeconfig: %v", err)
-	}
-
-	log.Printf("k3s cluster ready (kubeconfig: %s)", kubeconfigPath)
-	return k3sContainer, kubeconfigPath
+	log.Printf("KinD cluster ready (kubeconfig: %s)", kubeconfigPath)
+	return kubeconfigPath
 }
 
 // ensureConcourseImage checks if the Concourse Docker image exists locally
@@ -94,23 +92,18 @@ func ensureConcourseImage(image string) {
 	}
 }
 
-// loadImagesIntoK3s loads all required Docker images into the k3s container.
-func loadImagesIntoK3s(ctx context.Context, container *k3s.K3sContainer, concourseImage string) {
-	allImages := []string{
-		concourseImage,
-		"docker.io/library/postgres:16",
-		"docker.io/concourse/mock-resource:latest",
-		"docker.io/library/busybox:latest",
-		"docker.io/concourse/registry-image-resource:latest",
-		"docker.io/library/nginx:alpine",
-		"docker.io/library/alpine:3.19",
+// loadImagesIntoKind loads the locally-built Concourse image into the
+// KinD cluster. Public images (postgres, busybox, etc.) are NOT
+// pre-loaded — they are pulled by the kubelet at runtime.
+func loadImagesIntoKind(concourseImage string) {
+	log.Printf("Loading local image %s into KinD cluster...", concourseImage)
+	cmd := exec.Command("kind", "load", "docker-image", concourseImage, "--name", kindClusterName)
+	cmd.Stdout = os.Stderr
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		log.Fatalf("failed to load image %s into KinD: %v", concourseImage, err)
 	}
-
-	log.Printf("Loading %d images into k3s cluster...", len(allImages))
-	if err := container.LoadImages(ctx, allImages...); err != nil {
-		log.Fatalf("failed to load images into k3s: %v", err)
-	}
-	log.Println("All images loaded into k3s cluster.")
+	log.Println("Local image loaded into KinD cluster.")
 }
 
 // helmDeployConcourse deploys Concourse via the local Helm chart.
@@ -144,7 +137,7 @@ func helmDeployConcourse(kubeconfig, namespace, chartPath, image string) {
 		"-n", namespace,
 		"wait", "--for=condition=ready", "pod",
 		"-l", "app.kubernetes.io/component=web",
-		"--timeout=180s",
+		"--timeout=300s",
 	)
 	waitCmd.Stdout = os.Stderr
 	waitCmd.Stderr = os.Stderr
@@ -228,14 +221,17 @@ func mustRepoRoot() string {
 	return strings.TrimSpace(string(out))
 }
 
-// terminateK3sCluster terminates the k3s container unless SKIP_TEARDOWN is set.
-func terminateK3sCluster(container *k3s.K3sContainer) {
+// deleteKindCluster deletes the KinD cluster unless SKIP_TEARDOWN is set.
+func deleteKindCluster() {
 	if os.Getenv("SKIP_TEARDOWN") == "1" {
-		log.Println("SKIP_TEARDOWN=1: keeping k3s container running")
+		log.Printf("SKIP_TEARDOWN=1: keeping KinD cluster %q running", kindClusterName)
 		return
 	}
-	log.Println("Terminating k3s container...")
-	if err := testcontainers.TerminateContainer(container); err != nil {
-		log.Printf("warning: failed to terminate k3s container: %v", err)
+	log.Printf("Deleting KinD cluster %q...", kindClusterName)
+	cmd := exec.Command("kind", "delete", "cluster", "--name", kindClusterName)
+	cmd.Stdout = os.Stderr
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		log.Printf("warning: failed to delete KinD cluster: %v", err)
 	}
 }

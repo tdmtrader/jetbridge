@@ -1,13 +1,13 @@
 // K8s Integration Test Suite
 //
-// This suite is fully self-contained: it creates an ephemeral k3s cluster
-// via testcontainers-go, deploys Concourse via Helm, runs tests, and tears
-// down automatically. No external cluster connectivity is supported — tests
-// always run in isolation to prevent accidental impact on production clusters.
+// This suite is fully self-contained: it creates an ephemeral KinD cluster,
+// deploys Concourse via Helm, runs tests, and tears down automatically.
+// No external cluster connectivity is supported — tests always run in
+// isolation to prevent accidental impact on production clusters.
 //
-// Prerequisites: docker, helm, kubectl
+// Prerequisites: docker, kind, helm, kubectl
 //
-// Basic run (creates a k3s cluster automatically):
+// Basic run (creates a KinD cluster automatically):
 //
 //   go test ./topgun/k8s/integration/ -count=1 -v -timeout 30m
 //
@@ -17,8 +17,8 @@
 //
 // Environment variables:
 //   FLY_PATH           — path to fly binary (builds from source if unset)
-//   CONCOURSE_IMAGE    — Docker image to load into k3s (default: concourse-local:latest)
-//   SKIP_TEARDOWN      — Set to "1" to keep k3s container after tests
+//   CONCOURSE_IMAGE    — Docker image to load into KinD (default: concourse-local:latest)
+//   SKIP_TEARDOWN      — Set to "1" to keep KinD cluster after tests
 //   EVENTUALLY_TIMEOUT — Go duration for Eventually timeout (default: 5m)
 
 package integration_test
@@ -50,24 +50,23 @@ import (
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 )
 
-// TestMain manages the k3s cluster lifecycle outside of Ginkgo.
-// It creates an ephemeral k3s cluster via testcontainers-go, loads images,
-// deploys Concourse via Helm, and starts a port-forward. The resulting
-// config is passed to the Ginkgo suite via environment variables.
+// TestMain manages the KinD cluster lifecycle outside of Ginkgo.
+// It creates an ephemeral KinD cluster, loads images, deploys Concourse
+// via Helm, and starts a port-forward. The resulting config is passed to
+// the Ginkgo suite via environment variables.
 func TestMain(m *testing.M) {
 	// Self-contained mode only — no external cluster connectivity.
 	if err := verifyPrerequisites(); err != nil {
 		log.Fatalf("prerequisites check failed: %v", err)
 	}
 
-	ctx := context.Background()
 	namespace := envOr("K8S_NAMESPACE", "concourse")
 	image := envOr("CONCOURSE_IMAGE", "concourse-local:latest")
 
 	ensureConcourseImage(image)
 
-	k3sContainer, kubeconfig := createK3sCluster(ctx)
-	loadImagesIntoK3s(ctx, k3sContainer, image)
+	kubeconfig := createKindCluster()
+	loadImagesIntoKind(image)
 
 	chartPath := filepath.Join(mustRepoRoot(), "deploy", "chart")
 	helmDeployConcourse(kubeconfig, namespace, chartPath, image)
@@ -75,7 +74,7 @@ func TestMain(m *testing.M) {
 	atcURL, pfCmd := startPortForward(kubeconfig, namespace)
 	log.Printf("Concourse API available at %s", atcURL)
 
-	waitForAPI(atcURL, 3*time.Minute)
+	waitForAPI(atcURL, 5*time.Minute)
 
 	// Export config for the Ginkgo suite via environment variables.
 	os.Setenv("ATC_URL", atcURL)
@@ -89,7 +88,7 @@ func TestMain(m *testing.M) {
 		pfCmd.Process.Kill()
 		pfCmd.Wait()
 	}
-	terminateK3sCluster(k3sContainer)
+	deleteKindCluster()
 
 	os.Exit(code)
 }
