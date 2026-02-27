@@ -1193,8 +1193,7 @@ func (cmd *RunCommand) backendComponents(
 		},
 		{
 			Component: atc.Component{
-				Name:     atc.ComponentScheduler,
-				Interval: 10 * time.Second,
+				Name: atc.ComponentScheduler,
 			},
 			NotifyOnly: true,
 			Runnable: scheduler.NewRunner(
