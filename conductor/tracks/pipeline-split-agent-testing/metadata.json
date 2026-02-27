@@ -1,8 +1,8 @@
 {
   "trackId": "pipeline-split-agent-testing",
   "type": "feature",
-  "status": "backlog",
+  "status": "archived",
   "description": "Pipeline Split — Separate Agent Testing",
   "createdAt": "2026-02-11T06:20:55.970Z",
-  "updatedAt": "2026-02-11T06:20:55.970Z"
+  "updatedAt": "2026-02-27T22:44:01.077Z"
 }

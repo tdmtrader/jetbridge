@@ -1,8 +1,8 @@
 {
   "trackId": "legacy-cleanup-20260210",
   "type": "refactor",
-  "status": "backlog",
+  "status": "archived",
   "description": "Legacy Cleanup — Remove dead Garden/containerd/TSA/BOSH code",
   "createdAt": "2026-02-11T03:49:22.510Z",
-  "updatedAt": "2026-02-11T03:49:22.510Z"
+  "updatedAt": "2026-02-27T22:44:01.539Z"
 }
