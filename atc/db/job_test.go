@@ -9,6 +9,7 @@ import (
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbtest"
 	"github.com/concourse/concourse/tracing"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -1371,7 +1372,7 @@ var _ = Describe("Job", func() {
 	})
 
 	Describe("RequestSchedule", func() {
-		It("sends a NOTIFY on the scheduler channel", func(ctx context.Context) {
+		It("sends a NOTIFY on the scheduler channel with the job ID as payload", func(ctx context.Context) {
 			pool, err := pgxpool.New(ctx, postgresRunner.DataSourceName())
 			Expect(err).ToNot(HaveOccurred())
 			defer pool.Close()
@@ -1386,7 +1387,9 @@ var _ = Describe("Job", func() {
 			Expect(err).ToNot(HaveOccurred())
 
 			notifyChan := listener.NotificationChannel()
-			Eventually(ctx, notifyChan).WithTimeout(2 * time.Second).Should(Receive())
+			var notification *pgconn.Notification
+			Eventually(ctx, notifyChan).WithTimeout(2 * time.Second).Should(Receive(&notification))
+			Expect(notification.Payload).To(Equal(fmt.Sprintf("%d", job.ID())))
 		})
 	})
 
