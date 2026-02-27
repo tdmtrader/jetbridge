@@ -1,0 +1,8 @@
+{
+  "trackId": "deprecate-produces-registry-image",
+  "type": "refactor",
+  "status": "backlog",
+  "description": "Deprecate produces: registry-image syntax on resource types, replace with image: field",
+  "createdAt": "2026-02-27T02:43:44.743Z",
+  "updatedAt": "2026-02-27T02:43:44.743Z"
+}

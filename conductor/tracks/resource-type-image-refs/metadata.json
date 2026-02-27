@@ -1,7 +1,8 @@
 {
-  "id": "resource-type-image-refs",
+  "trackId": "resource-type-image-refs",
   "type": "feature",
+  "status": "completed",
   "description": "Direct Image References for Resource Types",
-  "created": "2026-02-12",
-  "status": "new"
+  "createdAt": "2026-02-27T02:43:44.749Z",
+  "updatedAt": "2026-02-27T02:43:44.757Z"
 }

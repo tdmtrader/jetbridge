@@ -1,7 +1,8 @@
 {
-  "id": "inline-sidecar-config",
+  "trackId": "inline-sidecar-config",
   "type": "feature",
+  "status": "archived",
   "description": "Allow defining sidecars inline in pipeline YAML instead of requiring a separate file reference",
-  "created": "2026-02-13",
-  "status": "new"
+  "createdAt": "2026-02-27T02:43:44.752Z",
+  "updatedAt": "2026-02-27T02:43:44.752Z"
 }

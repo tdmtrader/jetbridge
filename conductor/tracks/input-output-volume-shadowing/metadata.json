@@ -1,7 +1,8 @@
 {
-  "id": "input-output-volume-shadowing",
+  "trackId": "input-output-volume-shadowing",
   "type": "bugfix",
+  "status": "completed",
   "description": "Fix Input/Output Volume Shadowing When Names Match",
-  "created": "2026-02-12",
-  "status": "new"
+  "createdAt": "2026-02-27T02:43:44.746Z",
+  "updatedAt": "2026-02-27T02:43:44.756Z"
 }

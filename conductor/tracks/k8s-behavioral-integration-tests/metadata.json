@@ -1,7 +1,17 @@
 {
-  "id": "k8s-behavioral-integration-tests",
+  "trackId": "k8s-behavioral-integration-tests",
   "type": "feature",
-  "status": "planned",
-  "created": "2026-02-13",
-  "description": "Comprehensive mock-free behavioral integration test suite for the K8s-native runtime"
+  "status": "in_progress",
+  "description": "Comprehensive mock-free behavioral integration test suite for the K8s-native runtime",
+  "createdAt": "2026-02-27T02:43:44.746Z",
+  "updatedAt": "2026-02-27T02:52:05.002Z",
+  "sessions": [
+    {
+      "slotIndex": 0,
+      "engineType": "claude",
+      "aiSessionId": "36485222-4dbb-41a6-994e-8698c23407a3",
+      "accountId": "system-claude",
+      "updatedAt": "2026-02-27T02:52:05.002Z"
+    }
+  ]
 }

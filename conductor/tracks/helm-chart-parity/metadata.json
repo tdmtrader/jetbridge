@@ -1,7 +1,8 @@
 {
-  "id": "helm-chart-parity",
+  "trackId": "helm-chart-parity",
   "type": "feature",
-  "status": "new",
-  "created": "2026-02-10",
-  "description": "Restore service annotations, loadBalancerIP, TLS support, and extra volume mounts to the Helm chart"
+  "status": "backlog",
+  "description": "Restore service annotations, loadBalancerIP, TLS support, and extra volume mounts to the Helm chart",
+  "createdAt": "2026-02-27T02:43:44.745Z",
+  "updatedAt": "2026-02-27T02:43:44.745Z"
 }

@@ -1,0 +1,8 @@
+{
+  "trackId": "isolate-k8s-test-suites",
+  "type": "refactor",
+  "status": "backlog",
+  "description": "Remove external cluster mode from K8s test suites, make them fully self-contained with testcontainers-go",
+  "createdAt": "2026-02-27T02:43:44.746Z",
+  "updatedAt": "2026-02-27T02:43:44.746Z"
+}

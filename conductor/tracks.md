@@ -174,3 +174,91 @@
 *Link: [./conductor/tracks/k8s-behavioral-test-failures/](./conductor/tracks/k8s-behavioral-test-failures/)*
 
 ---
+
+## [ ] Track: Isolate K8s Test Suites — Remove external cluster mode, make tests self-contained with testcontainers-go
+*Link: [./conductor/tracks/isolate-k8s-test-suites/](./conductor/tracks/isolate-k8s-test-suites/)*
+
+---
+
+## [ ] Track: Deprecate produces: registry-image syntax
+*Link: [./conductor/tracks/deprecate-produces-registry-image/](./conductor/tracks/deprecate-produces-registry-image/)*
+
+---
+
+### [ ] Track: Restore service annotations, loadBalancerIP, TLS support, and extra volume mounts to the Helm chart
+
+_Link: [./tracks/helm-chart-parity/](./tracks/helm-chart-parity/)_
+
+---
+
+### [ ] Track: Legacy Cleanup — Remove dead Garden/containerd/TSA/BOSH code
+
+_Link: [./tracks/legacy-cleanup-20260210/](./tracks/legacy-cleanup-20260210/)_
+
+---
+
+### [ ] Track: Pipeline Split — Separate Agent Testing
+
+_Link: [./tracks/pipeline-split-agent-testing/](./tracks/pipeline-split-agent-testing/)_
+
+---
+
+### [ ] Track: Too many check pods — deduplicate in-flight checks and cap failed containers
+
+_Link: [./tracks/too_many_check_pods_20260211/](./tracks/too_many_check_pods_20260211/)_
+
+---
+
+### [x] Track: Codebase Hardening — Wire feedback API, fill test gaps, remove deprecated code
+
+_Link: [./archive/codebase-hardening-20260210/](./archive/codebase-hardening-20260210/)_
+
+---
+
+### [x] Track: Fix Empty Image for Git-Backed Custom Resource Types on K8s — Resolve custom type images via ResourceTypeImages config when ImageArtifact path is unsupported
+
+_Link: [./archive/fix-empty-image-git-custom-types/](./archive/fix-empty-image-git-custom-types/)_
+
+---
+
+### [x] Track: Get Step skip_download — Explicit metadata-only get for image resources, skip artifact download and let kubelet pull
+
+_Link: [./archive/get-step-skip-download/](./archive/get-step-skip-download/)_
+
+---
+
+### [x] Track: Allow defining sidecars inline in pipeline YAML instead of requiring a separate file reference
+
+_Link: [./archive/inline-sidecar-config/](./archive/inline-sidecar-config/)_
+
+---
+
+### [x] Track: K8s Native Image Fetch — Skip physical image download for K8s runtime, let kubelet pull
+
+_Link: [./archive/k8s_native_image_fetch_20260211/](./archive/k8s_native_image_fetch_20260211/)_
+
+---
+
+### [x] Track: Kubernetes Spec and Sidecar
+
+_Link: [./archive/kubernetes_spec_and_sidecar_20260209/](./archive/kubernetes_spec_and_sidecar_20260209/)_
+
+---
+
+### [x] Track: Unify and extend OTel-native observability (traces, metrics) with Grafana and GCP compatibility
+
+_Link: [./archive/observability-hardening/](./archive/observability-hardening/)_
+
+---
+
+### [x] Track: Production Readiness — Complete remaining runtime gaps, add Helm chart, and validate for production deployment
+
+_Link: [./archive/prod_ready_20260209/](./archive/prod_ready_20260209/)_
+
+---
+
+### [x] Track: Skip Image Resource Download on K8s — Skip get step for image resources on K8s, pass only digest/SHA
+
+_Link: [./archive/skip-image-get-k8s/](./archive/skip-image-get-k8s/)_
+
+---

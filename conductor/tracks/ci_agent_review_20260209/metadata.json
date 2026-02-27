@@ -1,7 +1,8 @@
 {
-  "track_id": "ci_agent_review_20260209",
+  "trackId": "ci_agent_review_20260209",
   "type": "feature",
-  "created": "2026-02-09",
   "status": "completed",
-  "description": "CI Agent Review Task — TDD-driven autonomous code review for Concourse pipelines"
+  "description": "CI Agent Review Task — TDD-driven autonomous code review for Concourse pipelines",
+  "createdAt": "2026-02-27T02:43:44.742Z",
+  "updatedAt": "2026-02-27T02:43:44.742Z"
 }
