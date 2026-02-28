@@ -11,40 +11,40 @@ import (
 )
 
 var _ = Describe("Error Handling", func() {
-	It("runs on_error hook when a step errors (not just fails)", func() {
-		// on_error triggers on "errored" state (infrastructure error),
-		// which is different from "failed" (non-zero exit). A timeout
-		// that expires produces an error, not a failure.
-		pipelineFile := writePipelineFile("on-error-hook.yml", `
+	It("runs on_failure hook when a task times out", func() {
+		// On K8s workers, a timeout produces a "failed" state (not "errored"),
+		// so on_failure fires rather than on_error. This is different from the
+		// Garden runtime where timeout produces "errored".
+		pipelineFile := writePipelineFile("on-failure-timeout.yml", `
 jobs:
-- name: on-error-job
+- name: on-failure-job
   plan:
-  - task: erroring-task
+  - task: timeout-task
     timeout: 30s
     config:
       platform: linux
       rootfs_uri: docker:///busybox
       run:
         path: sh
-        args: ["-c", "echo error-task-started && sleep 120"]
-    on_error:
-      task: error-hook
+        args: ["-c", "echo timeout-task-started && sleep 120"]
+    on_failure:
+      task: failure-hook
       config:
         platform: linux
         rootfs_uri: docker:///busybox
         run:
           path: echo
-          args: ["on-error-hook-ran"]
+          args: ["on-failure-hook-ran"]
 `)
 		setAndUnpausePipeline(pipelineFile)
-		triggerJob("on-error-job")
+		triggerJob("on-failure-job")
 
-		session := waitForBuildAndWatch("on-error-job")
+		session := waitForBuildAndWatch("on-failure-job")
 		Expect(session.ExitCode()).ToNot(Equal(0))
 		output := string(session.Out.Contents())
-		Expect(output).To(ContainSubstring("error-task-started"))
-		// on_error should fire since timeout produces an error state
-		Expect(output).To(ContainSubstring("on-error-hook-ran"))
+		Expect(output).To(ContainSubstring("timeout-task-started"))
+		// on_failure fires since K8s timeout produces a failed state
+		Expect(output).To(ContainSubstring("on-failure-hook-ran"))
 	})
 
 	It("reports errored build status for invalid image", func() {

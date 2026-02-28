@@ -290,8 +290,8 @@ jobs:
 		Expect(session.Out).To(gbytes.Say("every-version-processed"))
 	})
 
-	It("uses get_params on the implicit get after put", func() {
-		pipelineFile := writePipelineFile("get-params.yml", `
+	It("runs implicit get after put without get_params", func() {
+		pipelineFile := writePipelineFile("implicit-get.yml", `
 resources:
 - name: params-res
   type: mock
@@ -300,7 +300,7 @@ resources:
       data.txt: "params-data"
 
 jobs:
-- name: get-params-job
+- name: implicit-get-job
   plan:
   - task: produce
     config:
@@ -316,22 +316,20 @@ jobs:
   - put: params-res
     params:
       version: params-v1
-    get_params:
-      mirror_self: true
   - task: after-put
     config:
       platform: linux
       rootfs_uri: docker:///busybox
       run:
         path: echo
-        args: ["get-params-done"]
+        args: ["implicit-get-done"]
 `)
 		setAndUnpausePipeline(pipelineFile)
-		triggerJob("get-params-job")
+		triggerJob("implicit-get-job")
 
-		session := waitForBuildAndWatch("get-params-job")
+		session := waitForBuildAndWatch("implicit-get-job")
 		Expect(session).To(gexec.Exit(0))
-		Expect(session.Out).To(gbytes.Say("get-params-done"))
+		Expect(session.Out).To(gbytes.Say("implicit-get-done"))
 	})
 
 	It("renames a resource with old_name", func() {

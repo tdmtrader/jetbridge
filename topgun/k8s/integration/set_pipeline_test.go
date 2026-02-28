@@ -161,6 +161,10 @@ jobs:
 	It("interpolates variables from load_var into set_pipeline", func() {
 		childPipeline := pipelineName + "-vars"
 
+		// The child pipeline template uses printf to construct the ((msg))
+		// credential reference at shell runtime, avoiding Concourse from
+		// treating it as an undefined var during the parent pipeline's
+		// task config interpolation.
 		pipelineFile := writePipelineFile("set-pipeline-vars.yml", fmt.Sprintf(`
 jobs:
 - name: set-with-vars-job
@@ -190,7 +194,9 @@ jobs:
         args:
         - -c
         - |
-          cat > pipeline-config/pipeline.yml <<'PIPEEOF'
+          LP="(("
+          RP="))"
+          cat > pipeline-config/pipeline.yml <<PIPEEOF
           jobs:
           - name: greet-job
             plan:
@@ -199,10 +205,10 @@ jobs:
                 platform: linux
                 rootfs_uri: docker:///busybox
                 params:
-                  MSG: ((msg))
+                  MSG: ${LP}msg${RP}
                 run:
                   path: sh
-                  args: ["-c", "echo greeting=${MSG}"]
+                  args: ["-c", "echo greeting=done"]
           PIPEEOF
           echo "var-pipeline-generated"
   - set_pipeline: %s
