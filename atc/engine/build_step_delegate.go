@@ -11,7 +11,6 @@ import (
 
 	"code.cloudfoundry.org/clock"
 	"code.cloudfoundry.org/lager/v3"
-	"code.cloudfoundry.org/lager/v3/lagerctx"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/creds"
 	"github.com/concourse/concourse/atc/db"
@@ -335,7 +334,7 @@ func (delegate *buildStepDelegate) FetchImage(
 	if result.ResourceCache != nil {
 		version = result.ResourceCache.Version()
 	}
-	imageURL := imageURLFromSource(getPlan.Get.Type, getPlan.Get.Produces, getPlan.Get.Source, version)
+	imageURL := imageURLFromSource(getPlan.Get.Type, getPlan.Get.Source, version)
 
 	spec := runtime.ImageSpec{
 		ImageArtifact: artifact,
@@ -358,12 +357,8 @@ func (delegate *buildStepDelegate) FetchImage(
 // imageURLFromSource constructs a Docker image URL from a resource type's
 // source config and fetched version. Kubelet uses this URL to pull the image
 // natively instead of downloading it into an artifact volume.
-//
-// Deprecated: The produces parameter is deprecated. Custom types should use the
-// 'image' field on resource types instead of 'produces: registry-image'.
-// The produces check will be removed in a future version.
-func imageURLFromSource(resourceType string, produces string, source atc.Source, version atc.Version) string {
-	if resourceType != "registry-image" && produces != "registry-image" {
+func imageURLFromSource(resourceType string, source atc.Source, version atc.Version) string {
+	if resourceType != "registry-image" {
 		return ""
 	}
 
@@ -396,22 +391,9 @@ func (delegate *buildStepDelegate) metadataFetchImage(
 	getPlan atc.Plan,
 	privileged bool,
 ) (runtime.ImageSpec, db.ResourceCache, error) {
-	// Only types that are or produce registry-image support metadata-only
-	// resolution. The source must follow registry-image conventions (repository field).
-	isRegistryImage := getPlan.Get.Type == "registry-image" || getPlan.Get.Produces == "registry-image"
-
-	// Deprecated: log when produces is used for registry-image detection.
-	// Use the 'image' field on resource types instead.
-	if getPlan.Get.Produces == "registry-image" {
-		logger := lagerctx.FromContext(ctx)
-		logger.Info("deprecated-produces-field", lager.Data{
-			"type":     getPlan.Get.Type,
-			"produces": getPlan.Get.Produces,
-			"message":  "the 'produces' field is deprecated; use 'image:' on resource types instead",
-		})
-	}
-
-	if !isRegistryImage {
+	// Only registry-image types support metadata-only resolution.
+	// The source must follow registry-image conventions (repository field).
+	if getPlan.Get.Type != "registry-image" {
 		return runtime.ImageSpec{}, nil, fmt.Errorf("metadata-only fetch not supported for type %q", getPlan.Get.Type)
 	}
 
@@ -449,7 +431,7 @@ func (delegate *buildStepDelegate) metadataFetchImage(
 	version := atc.Version(latestVersion.Version())
 
 	// Construct image URL (e.g. docker:///repo@sha256:abc123)
-	imageURL := imageURLFromSource(getPlan.Get.Type, getPlan.Get.Produces, source, version)
+	imageURL := imageURLFromSource(getPlan.Get.Type, source, version)
 	if imageURL == "" {
 		return runtime.ImageSpec{}, nil, fmt.Errorf("cannot construct image URL for type %q", getPlan.Get.Type)
 	}

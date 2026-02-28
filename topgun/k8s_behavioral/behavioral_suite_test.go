@@ -383,13 +383,11 @@ func newMockVersion(resourceName string, tag string) string {
 
 // newMockVersionOrSkip is like newMockVersion but skips the current test
 // (instead of failing) when the check-resource fails due to known K8s
-// limitations with custom type chains and produces: registry-image.
+// limitations with custom type chains.
 //
 // Known skip conditions:
 //   - ErrImagePull: multi-level type chains (e.g., level-a → level-b →
 //     registry-image) where the intermediate type name leaks as Docker image.
-//   - "unknown field": produces: registry-image resources pass source fields
-//     like "repository" to the mock-resource check binary, which rejects them.
 func newMockVersionOrSkip(resourceName string, tag string) string {
 	guid, err := uuid.NewRandom()
 	Expect(err).ToNot(HaveOccurred())
@@ -412,10 +410,6 @@ func newMockVersionOrSkip(resourceName string, tag string) string {
 			strings.Contains(output, "ImagePullBackOff") ||
 			strings.Contains(output, "failed to pull") {
 			Skip("K8s type chain bug: check pod uses type name as image — " + output)
-		}
-		if strings.Contains(output, "unknown field") ||
-			strings.Contains(output, "invalid payload") {
-			Skip("mock-resource rejects registry-image source fields (produces: registry-image limitation) — " + output)
 		}
 		Fail("check-resource failed: " + output)
 	}

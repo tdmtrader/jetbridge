@@ -598,35 +598,6 @@ var _ = Describe("TaskDelegate", func() {
 			Expect(imgSpec.ImageArtifact).To(BeNil(), "no volume artifact expected")
 		})
 
-		It("backward-compat: resolves a custom type with deprecated produces field without spawning extra pods", func() {
-			noopStepper := func(p atc.Plan) exec.Step {
-				step := new(execfakes.FakeStep)
-				step.RunStub = func(_ context.Context, s exec.RunState) (bool, error) {
-					return true, nil
-				}
-				return step
-			}
-
-			td, executedPlans := buildTaskDelegate(noopStepper)
-
-			customType := atc.ResourceType{
-				Name: "oci-fetcher", Type: "registry-image",
-				Source: atc.Source{"repository": "my-org/oci-fetcher"},
-				Produces: "registry-image",
-			}
-
-			imgSpec, err := td.FetchImage(
-				context.TODO(),
-				atc.ImageResource{Name: "image", Type: "oci-fetcher", Source: atc.Source{"repository": "my-org/task-image", "tag": "v3"}},
-				atc.ResourceTypes{customType},
-				false, nil, false,
-			)
-			Expect(err).ToNot(HaveOccurred())
-
-			Expect(*executedPlans).To(BeEmpty(), "produces: registry-image should skip pods")
-			Expect(imgSpec.ImageURL).To(Equal("docker:///my-org/task-image@sha256:metadata42"))
-		})
-
 		It("falls back to check+get plans when no cached version exists", func() {
 			fakeScope.LatestVersionReturns(nil, false, nil)
 
@@ -790,7 +761,7 @@ var _ = Describe("TaskDelegate", func() {
 			Expect(eventTypes).To(ContainElement(atc.EventType("image-get")))
 		})
 
-		It("falls back to plans for a non-registry-image type without produces or image: field", func() {
+		It("falls back to plans for a non-registry-image type without image: field", func() {
 			fallbackCache := new(dbfakes.FakeResourceCache)
 			fallbackCache.IDReturns(222)
 			fallbackCache.VersionReturns(atc.Version{"digest": "sha256:custom123"})

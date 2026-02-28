@@ -200,11 +200,6 @@ type ResourceType struct {
 	CheckEvery *CheckEvery `json:"check_every,omitempty"`
 	Tags       Tags        `json:"tags,omitempty"`
 	Params Params `json:"params,omitempty"`
-
-	// Deprecated: Use Image field instead. Produces will be removed in a future version.
-	// The Image field provides a cleaner mechanism: specify the container image
-	// reference directly (e.g. image: concourse/git-resource:latest).
-	Produces string `json:"produces,omitempty"`
 }
 
 type Prototype struct {
@@ -378,13 +373,6 @@ func FetchImagePlan(planID PlanID, image ImageResource, resourceTypes ResourceTy
 
 			Tags: tags,
 		},
-	}
-
-	// Deprecated: Wire produces field from the type used to fetch the image.
-	// The 'produces' field is deprecated in favor of the 'image' field on
-	// resource types. This code path will be removed in a future version.
-	if rt, found := resourceTypes.Lookup(image.Type); found && rt.Produces != "" {
-		imageGetPlan.Get.Produces = rt.Produces
 	}
 
 	var maybeCheckPlan *Plan

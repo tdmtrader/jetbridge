@@ -157,9 +157,7 @@ func (validator *StepValidator) VisitGet(step *GetStep) error {
 		isImage := resource.Type == "registry-image"
 		if !isImage {
 			if rt, rtFound := validator.config.ResourceTypes.Lookup(resource.Type); rtFound {
-				// Deprecated: The Produces check is deprecated. Use the 'image'
-				// field on resource types instead of 'produces: registry-image'.
-				isImage = rt.Produces == "registry-image" || rt.Image != ""
+				isImage = rt.Image != ""
 			}
 		}
 		if !isImage {

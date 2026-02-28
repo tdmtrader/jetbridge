@@ -191,10 +191,8 @@ func (step *GetStep) run(ctx context.Context, state RunState, delegate GetDelega
 	// - the type is registry-image (implicit optimization for backwards compat)
 	// The fetch_artifact param forces the full download (for build contexts, DinD, etc.).
 	//
-	// Deprecated: The Produces check is deprecated. Use the 'image' field on
-	// resource types instead. The Produces branch will be removed in a future version.
 	_, fetchArtifact := step.plan.Params["fetch_artifact"]
-	isRegistryImage := step.plan.Type == "registry-image" || step.plan.Produces == "registry-image"
+	isRegistryImage := step.plan.Type == "registry-image"
 	if (step.plan.SkipDownload || isRegistryImage) && !fetchArtifact {
 		versionResult := resource.VersionResult{
 			Version:  version,
@@ -587,11 +585,8 @@ func (step *GetStep) resourceMountVolume(mounts []runtime.VolumeMount) runtime.V
 
 // imageURLFromGetPlan constructs a Docker image reference URL from a
 // registry-image get plan's source and resolved version.
-//
-// Deprecated: The Produces check is deprecated. Use the 'image' field on
-// resource types instead. The Produces branch will be removed in a future version.
 func imageURLFromGetPlan(plan atc.GetPlan, version atc.Version) string {
-	if plan.Type != "registry-image" && plan.Produces != "registry-image" {
+	if plan.Type != "registry-image" {
 		return ""
 	}
 

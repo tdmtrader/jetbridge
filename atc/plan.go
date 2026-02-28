@@ -235,12 +235,6 @@ type GetPlan struct {
 	// resource's image does not count towards the timeout.
 	Timeout string `json:"timeout,omitempty"`
 
-	// Deprecated: Produces declares what the resource type produces (e.g. "registry-image").
-	// Set from the resource type's produces field during plan construction.
-	// Use the 'image' field on resource types instead. This field will be removed
-	// in a future version.
-	Produces string `json:"produces,omitempty"`
-
 	// SkipDownload, when true, resolves the resource version without downloading
 	// artifacts. The version metadata and image ref URL are registered in the
 	// artifact repository, but no container is created.

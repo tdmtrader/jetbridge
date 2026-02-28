@@ -885,41 +885,6 @@ var _ = Describe("ValidateConfig", func() {
 			})
 		})
 
-		Context("when a resource type uses the deprecated produces field", func() {
-			BeforeEach(func() {
-				config.ResourceTypes = append(config.ResourceTypes, atc.ResourceType{
-					Name:     "s3-image",
-					Type:     "registry-image",
-					Produces: "registry-image",
-					Source:   atc.Source{"bucket": "images"},
-				})
-			})
-
-			It("returns a deprecation warning", func() {
-				Expect(errorMessages).To(HaveLen(0))
-				Expect(warnings).To(HaveLen(1))
-				Expect(warnings[0].Type).To(Equal("deprecation"))
-				Expect(warnings[0].Message).To(ContainSubstring("s3-image"))
-				Expect(warnings[0].Message).To(ContainSubstring("produces"))
-				Expect(warnings[0].Message).To(ContainSubstring("image:"))
-			})
-		})
-
-		Context("when a resource type uses produces alongside an invalid identifier", func() {
-			BeforeEach(func() {
-				config.ResourceTypes = append(config.ResourceTypes, atc.ResourceType{
-					Name:     "_bad-name",
-					Type:     "registry-image",
-					Produces: "registry-image",
-					Source:   atc.Source{"bucket": "images"},
-				})
-			})
-
-			It("returns both warnings", func() {
-				Expect(errorMessages).To(HaveLen(0))
-				Expect(warnings).To(HaveLen(2))
-			})
-		})
 	})
 
 	Describe("invalid prototypes", func() {
@@ -1297,33 +1262,6 @@ var _ = Describe("ValidateConfig", func() {
 					job.PlanSequence = append(job.PlanSequence, atc.Step{
 						Config: &atc.GetStep{
 							Name:         "my-image",
-							SkipDownload: true,
-						},
-					})
-					config.Jobs = append(config.Jobs, job)
-				})
-
-				It("does not return an error", func() {
-					Expect(errorMessages).To(HaveLen(0))
-				})
-			})
-
-			Context("backward-compat: when skip_download is set on a type with deprecated produces field", func() {
-				BeforeEach(func() {
-					config.ResourceTypes = append(config.ResourceTypes, atc.ResourceType{
-						Name:     "s3-image",
-						Type:     "registry-image",
-						Produces: "registry-image",
-						Source:   atc.Source{"bucket": "images"},
-					})
-					config.Resources = append(config.Resources, atc.ResourceConfig{
-						Name:   "custom-image",
-						Type:   "s3-image",
-						Source: atc.Source{"key": "my-image"},
-					})
-					job.PlanSequence = append(job.PlanSequence, atc.Step{
-						Config: &atc.GetStep{
-							Name:         "custom-image",
 							SkipDownload: true,
 						},
 					})
