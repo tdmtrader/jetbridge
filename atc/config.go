@@ -199,8 +199,12 @@ type ResourceType struct {
 	Privileged bool        `json:"privileged,omitempty"`
 	CheckEvery *CheckEvery `json:"check_every,omitempty"`
 	Tags       Tags        `json:"tags,omitempty"`
-	Params     Params      `json:"params,omitempty"`
-	Produces   string      `json:"produces,omitempty"`
+	Params Params `json:"params,omitempty"`
+
+	// Deprecated: Use Image field instead. Produces will be removed in a future version.
+	// The Image field provides a cleaner mechanism: specify the container image
+	// reference directly (e.g. image: concourse/git-resource:latest).
+	Produces string `json:"produces,omitempty"`
 }
 
 type Prototype struct {
