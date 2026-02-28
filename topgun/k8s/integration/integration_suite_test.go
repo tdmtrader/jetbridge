@@ -5,7 +5,7 @@
 // No external cluster connectivity is supported — tests always run in
 // isolation to prevent accidental impact on production clusters.
 //
-// Prerequisites: docker, kind, helm, kubectl
+// Prerequisites: docker, helm, kubectl
 //
 // Basic run (creates a KinD cluster automatically):
 //
@@ -71,7 +71,7 @@ func TestMain(m *testing.M) {
 	chartPath := filepath.Join(mustRepoRoot(), "deploy", "chart")
 	helmDeployConcourse(kubeconfig, namespace, chartPath, image)
 
-	atcURL, pfCmd := startPortForward(kubeconfig, namespace)
+	atcURL, pfMgr := startPortForward(kubeconfig, namespace)
 	log.Printf("Concourse API available at %s", atcURL)
 
 	waitForAPI(atcURL, 5*time.Minute)
@@ -86,9 +86,8 @@ func TestMain(m *testing.M) {
 	code := m.Run()
 
 	// Cleanup.
-	if pfCmd != nil && pfCmd.Process != nil {
-		pfCmd.Process.Kill()
-		pfCmd.Wait()
+	if pfMgr != nil {
+		pfMgr.Stop()
 	}
 	deleteKindCluster()
 
