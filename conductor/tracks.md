@@ -185,7 +185,7 @@
 
 ---
 
-### [~] Track: Restore service annotations, loadBalancerIP, TLS support, and extra volume mounts to the Helm chart
+### [x] Track: Restore service annotations, loadBalancerIP, TLS support, and extra volume mounts to the Helm chart
 
 _Link: [./tracks/helm-chart-parity/](./tracks/helm-chart-parity/)_
 

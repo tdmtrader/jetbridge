@@ -1,10 +1,10 @@
 {
   "trackId": "isolate-k8s-test-suites",
   "type": "refactor",
-  "status": "in_progress",
+  "status": "archived",
   "description": "Replace KinD CLI with Go library (sigs.k8s.io/kind/pkg/cluster) for self-contained K8s tests. k3s proven not viable (containerd sandbox instability). KinD Go library achieves same self-containment goal without runtime regressions.",
   "createdAt": "2026-02-27T02:43:44.746Z",
-  "updatedAt": "2026-02-28T18:23:06.678Z",
+  "updatedAt": "2026-02-28T21:20:06.414Z",
   "sessions": [
     {
       "slotIndex": 0,

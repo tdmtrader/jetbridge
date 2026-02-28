@@ -56,7 +56,7 @@
 - [x] Delete topgun/k8s_cluster_bench/ (served its purpose) bae83c83e
 - [x] Run go mod tidy to remove any orphaned dependencies bae83c83e
 
-## Phase 6: Fix Pre-existing Integration Test Failures
+## Phase 6: Fix Pre-existing Integration Test Failures [checkpoint: 143eaae02]
 
 > 105/120 passed, 15 failed, 6 pending. All failures are pre-existing
 > test bugs unrelated to the KinD Go library migration.
@@ -84,6 +84,6 @@
 - [x] Fix error_handling_test.go:47 — on_error hook test times out (task runs `sleep 120`) 7980c3599
 
 ### 6.8 Verify clean run
-- [~] Run full integration suite — all non-pending specs pass
+- [x] Run full integration suite — all non-pending specs pass 143eaae02
 
 ---
