@@ -1,8 +1,17 @@
 {
   "trackId": "isolate-k8s-test-suites",
   "type": "refactor",
-  "status": "backlog",
-  "description": "Migrate K8s test suites from KinD to testcontainers-go/k3s with crictl pull for public images. Benchmark proves 1.8x faster cluster startup with 0 image loading errors.",
+  "status": "in_progress",
+  "description": "Replace KinD CLI with Go library (sigs.k8s.io/kind/pkg/cluster) for self-contained K8s tests. k3s proven not viable (containerd sandbox instability). KinD Go library achieves same self-containment goal without runtime regressions.",
   "createdAt": "2026-02-27T02:43:44.746Z",
-  "updatedAt": "2026-02-27T23:01:33.948Z"
+  "updatedAt": "2026-02-28T18:23:06.678Z",
+  "sessions": [
+    {
+      "slotIndex": 0,
+      "engineType": "claude",
+      "aiSessionId": "cfed3a10-facc-4060-8dde-65acd7806196",
+      "accountId": "system-claude",
+      "updatedAt": "2026-02-28T18:23:06.678Z"
+    }
+  ]
 }

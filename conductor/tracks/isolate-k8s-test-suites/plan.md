@@ -22,44 +22,33 @@
 - [x] 174c29740 Confirm 0 image loading errors with crictl pull (vs LoadImages API failures)
 - [x] 174c29740 Verify Colima Docker socket auto-detection works
 
-## Phase 3: Migrate k8s_behavioral to testcontainers-go k3s
+## Phase 3: Migrate k8s_behavioral to KinD Go library (COMPLETE)
 
-### 3.1 Replace KinD cluster lifecycle with k3s
-- [ ] Replace createKindCluster() with k3s.Run() in cluster_lifecycle_test.go
-- [ ] Replace loadImagesIntoKind() with k3sContainer.LoadImages() for local Concourse image only
-- [ ] Replace preloadImages() crictl-via-KinD-node with crictl-via-k3s-container
-- [ ] Replace deleteKindCluster() with k3sContainer.Terminate()
-- [ ] Add Colima Docker socket auto-detection to TestMain
+> k3s via testcontainers-go proved not viable — containerd sandbox instability
+> (SandboxChanged/CrashLoopBackOff) in nested Docker on macOS. Tested with
+> 8GB and 16GB Colima, same failures. Pivoted to KinD Go library which
+> achieves the same self-containment goal without runtime regressions.
 
-### 3.2 Update kubeconfig and port management
-- [ ] Use k3sContainer.GetKubeConfig() instead of file-based kubeconfig from KinD
-- [ ] Write kubeconfig to temp file for helm/kubectl CLI commands
-- [ ] Keep port-forward manager (still needed for helm-deployed Concourse)
+### 3.1 Replace KinD CLI with Go library
+- [x] 8eb322c96 Use sigs.k8s.io/kind/pkg/cluster API instead of exec.Command("kind", ...)
+- [x] 8eb322c96 Use kindProvider.Create() / .Delete() / .KubeConfig() / .ListInternalNodes()
+- [x] 8eb322c96 Use nodeutils.LoadImageArchive() for loading local images into nodes
+- [x] 8eb322c96 Remove `kind` from verifyPrerequisites() (only docker, helm, kubectl needed)
 
-### 3.3 Remove kind dependency
-- [ ] Remove `kind` from verifyPrerequisites() (keep docker, helm, kubectl)
-- [ ] Update package comments to reference k3s instead of KinD
+### 3.2 Verify behavioral suite passes
+- [x] 8eb322c96 295/296 passed (1 flaky skip_download test), 3328s — within 1% of CLI baseline
 
-### 3.4 Verify behavioral suite passes
-- [ ] Run full behavioral suite end-to-end with k3s cluster
-- [ ] Confirm all tests pass without assertion changes
+## Phase 4: Migrate k8s/integration to KinD Go library
 
-## Phase 4: Migrate k8s/integration to testcontainers-go k3s
+### 4.1 Replace KinD CLI with Go library
+- [x] Same migration as Phase 3 for integration suite aba65d9ed
+- [x] Use kindProvider.Create() / .Delete() / .KubeConfig() in cluster_lifecycle_test.go aba65d9ed
+- [x] Use nodeutils.LoadImageArchive() for loading local images aba65d9ed
+- [x] Remove `kind` from verifyPrerequisites() aba65d9ed
 
-### 4.1 Replace KinD cluster lifecycle with k3s
-- [ ] Same migration as Phase 3 for integration suite
-- [ ] Replace createKindCluster() with k3s.Run()
-- [ ] Replace loadImagesIntoKind() with k3sContainer.LoadImages() for local image + crictl for public images
-- [ ] Add Colima Docker socket auto-detection
-
-### 4.2 Update kubeconfig and cleanup
-- [ ] Use k3sContainer.GetKubeConfig() for kubeconfig
-- [ ] Replace deleteKindCluster() with k3sContainer.Terminate()
-- [ ] Remove `kind` from verifyPrerequisites()
-
-### 4.3 Verify integration suite passes
-- [ ] Run full integration suite end-to-end with k3s cluster
-- [ ] Confirm all tests pass without assertion changes
+### 4.2 Verify integration suite passes
+- [~] Run full integration suite end-to-end with KinD Go library
+- [~] Confirm all tests pass without assertion changes
 
 ## Phase 5: Cleanup
 

@@ -278,3 +278,8 @@ _Link: [./tracks/scheduler_notify_on_build_request_20260226/](./tracks/scheduler
 _Link: [./tracks/notify_driven_build_tracker_and_scheduler_job_payload_20260227/](./tracks/notify_driven_build_tracker_and_scheduler_job_payload_20260227/)_
 
 ---
+
+### [ ] Track: open telemetry
+_Link: [./tracks/open_telemetry_20260228/](./tracks/open_telemetry_20260228/)_
+
+---
