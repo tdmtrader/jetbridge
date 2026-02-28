@@ -1335,6 +1335,31 @@ var _ = Describe("ValidateConfig", func() {
 				})
 			})
 
+			Context("when skip_download is set on a type with image: field", func() {
+				BeforeEach(func() {
+					config.ResourceTypes = append(config.ResourceTypes, atc.ResourceType{
+						Name:  "custom-image",
+						Image: "my-org/custom-image-resource:latest",
+					})
+					config.Resources = append(config.Resources, atc.ResourceConfig{
+						Name:   "app-image",
+						Type:   "custom-image",
+						Source: atc.Source{"repository": "my-org/app"},
+					})
+					job.PlanSequence = append(job.PlanSequence, atc.Step{
+						Config: &atc.GetStep{
+							Name:         "app-image",
+							SkipDownload: true,
+						},
+					})
+					config.Jobs = append(config.Jobs, job)
+				})
+
+				It("does not return an error", func() {
+					Expect(errorMessages).To(HaveLen(0))
+				})
+			})
+
 			Context("when skip_download is set on a non-image resource", func() {
 				BeforeEach(func() {
 					config.Resources = append(config.Resources, atc.ResourceConfig{

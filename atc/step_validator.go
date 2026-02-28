@@ -157,11 +157,13 @@ func (validator *StepValidator) VisitGet(step *GetStep) error {
 		isImage := resource.Type == "registry-image"
 		if !isImage {
 			if rt, rtFound := validator.config.ResourceTypes.Lookup(resource.Type); rtFound {
-				isImage = rt.Produces == "registry-image"
+				// Deprecated: The Produces check is deprecated. Use the 'image'
+				// field on resource types instead of 'produces: registry-image'.
+				isImage = rt.Produces == "registry-image" || rt.Image != ""
 			}
 		}
 		if !isImage {
-			validator.recordErrorf("skip_download is only valid for resources of type 'registry-image' or types that produce 'registry-image'")
+			validator.recordErrorf("skip_download is only valid for resources of type 'registry-image' or types with 'image:' field")
 		}
 	}
 

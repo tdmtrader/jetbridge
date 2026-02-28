@@ -359,8 +359,9 @@ func (delegate *buildStepDelegate) FetchImage(
 // source config and fetched version. Kubelet uses this URL to pull the image
 // natively instead of downloading it into an artifact volume.
 //
-// The produces parameter allows custom types that produce registry-compatible
-// images to also get a URL constructed (e.g. a type with produces: registry-image).
+// Deprecated: The produces parameter is deprecated. Custom types should use the
+// 'image' field on resource types instead of 'produces: registry-image'.
+// The produces check will be removed in a future version.
 func imageURLFromSource(resourceType string, produces string, source atc.Source, version atc.Version) string {
 	if resourceType != "registry-image" && produces != "registry-image" {
 		return ""
