@@ -11,6 +11,7 @@ import (
 
 	"code.cloudfoundry.org/clock"
 	"code.cloudfoundry.org/lager/v3"
+	"code.cloudfoundry.org/lager/v3/lagerctx"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/creds"
 	"github.com/concourse/concourse/atc/db"
@@ -397,6 +398,18 @@ func (delegate *buildStepDelegate) metadataFetchImage(
 	// Only types that are or produce registry-image support metadata-only
 	// resolution. The source must follow registry-image conventions (repository field).
 	isRegistryImage := getPlan.Get.Type == "registry-image" || getPlan.Get.Produces == "registry-image"
+
+	// Deprecated: log when produces is used for registry-image detection.
+	// Use the 'image' field on resource types instead.
+	if getPlan.Get.Produces == "registry-image" {
+		logger := lagerctx.FromContext(ctx)
+		logger.Info("deprecated-produces-field", lager.Data{
+			"type":     getPlan.Get.Type,
+			"produces": getPlan.Get.Produces,
+			"message":  "the 'produces' field is deprecated; use 'image:' on resource types instead",
+		})
+	}
+
 	if !isRegistryImage {
 		return runtime.ImageSpec{}, nil, fmt.Errorf("metadata-only fetch not supported for type %q", getPlan.Get.Type)
 	}

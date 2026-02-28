@@ -141,6 +141,8 @@ func (visitor *planVisitor) VisitGet(step *atc.GetStep) error {
 
 	plan.Get.TypeImage = visitor.resourceTypes.ImageForType(plan.ID, resource.Type, step.Tags, false)
 
+	// Deprecated: The 'produces' field is deprecated in favor of the 'image'
+	// field on resource types. This code path will be removed in a future version.
 	if rt, found := visitor.resourceTypes.Lookup(resource.Type); found && rt.Produces != "" {
 		plan.Get.Produces = rt.Produces
 	}

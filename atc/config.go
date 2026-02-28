@@ -376,9 +376,9 @@ func FetchImagePlan(planID PlanID, image ImageResource, resourceTypes ResourceTy
 		},
 	}
 
-	// Wire produces field from the type used to fetch the image.
-	// This enables imageURLFromSource to construct URLs for custom types
-	// that produce registry-compatible images.
+	// Deprecated: Wire produces field from the type used to fetch the image.
+	// The 'produces' field is deprecated in favor of the 'image' field on
+	// resource types. This code path will be removed in a future version.
 	if rt, found := resourceTypes.Lookup(image.Type); found && rt.Produces != "" {
 		imageGetPlan.Get.Produces = rt.Produces
 	}
