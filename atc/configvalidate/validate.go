@@ -248,6 +248,13 @@ func validateResourceTypes(c atc.Config, seenTypes map[string]location) ([]atc.C
 		} else if resourceType.Image == "" && resourceType.Type == "" {
 			errorMessages = append(errorMessages, identifier+" has no type")
 		}
+
+		if resourceType.Produces != "" {
+			warnings = append(warnings, atc.ConfigWarning{
+				Type:    "deprecation",
+				Message: fmt.Sprintf("%s uses deprecated 'produces' field; use 'image:' instead", identifier),
+			})
+		}
 	}
 
 	return warnings, compositeErr(errorMessages)

@@ -884,6 +884,42 @@ var _ = Describe("ValidateConfig", func() {
 				Expect(errorMessages[0]).To(ContainSubstring("resource_types[0] and resource_types[1] have the same name ('some-resource-type')"))
 			})
 		})
+
+		Context("when a resource type uses the deprecated produces field", func() {
+			BeforeEach(func() {
+				config.ResourceTypes = append(config.ResourceTypes, atc.ResourceType{
+					Name:     "s3-image",
+					Type:     "registry-image",
+					Produces: "registry-image",
+					Source:   atc.Source{"bucket": "images"},
+				})
+			})
+
+			It("returns a deprecation warning", func() {
+				Expect(errorMessages).To(HaveLen(0))
+				Expect(warnings).To(HaveLen(1))
+				Expect(warnings[0].Type).To(Equal("deprecation"))
+				Expect(warnings[0].Message).To(ContainSubstring("s3-image"))
+				Expect(warnings[0].Message).To(ContainSubstring("produces"))
+				Expect(warnings[0].Message).To(ContainSubstring("image:"))
+			})
+		})
+
+		Context("when a resource type uses produces alongside an invalid identifier", func() {
+			BeforeEach(func() {
+				config.ResourceTypes = append(config.ResourceTypes, atc.ResourceType{
+					Name:     "_bad-name",
+					Type:     "registry-image",
+					Produces: "registry-image",
+					Source:   atc.Source{"bucket": "images"},
+				})
+			})
+
+			It("returns both warnings", func() {
+				Expect(errorMessages).To(HaveLen(0))
+				Expect(warnings).To(HaveLen(2))
+			})
+		})
 	})
 
 	Describe("invalid prototypes", func() {
