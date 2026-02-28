@@ -88,6 +88,6 @@
 
 ### 4.2 Update pipeline config documentation
 - [x] If pipeline configuration docs exist in-repo, add deprecation notice for `produces` 4e97e7cdf
-- [ ] Task: Full removal of produces field from structs, runtime code, unit tests, and integration tests
+cea998b3cb82fc8d3b62557e2f2967df2
   - Recommend `image:` as the replacement
   - Provide before/after migration example
