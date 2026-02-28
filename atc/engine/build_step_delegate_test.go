@@ -670,7 +670,7 @@ var _ = Describe("BuildStepDelegate", func() {
 			})
 		})
 
-		Context("when the type produces registry-image", func() {
+		Context("backward-compat: when the type uses deprecated produces field", func() {
 			BeforeEach(func() {
 				registryGetPlan.Get.Type = "custom-oci-fetcher"
 				registryGetPlan.Get.Produces = "registry-image"

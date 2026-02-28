@@ -598,7 +598,7 @@ var _ = Describe("TaskDelegate", func() {
 			Expect(imgSpec.ImageArtifact).To(BeNil(), "no volume artifact expected")
 		})
 
-		It("resolves a custom type with produces: registry-image without spawning extra pods", func() {
+		It("backward-compat: resolves a custom type with deprecated produces field without spawning extra pods", func() {
 			noopStepper := func(p atc.Plan) exec.Step {
 				step := new(execfakes.FakeStep)
 				step.RunStub = func(_ context.Context, s exec.RunState) (bool, error) {
@@ -790,7 +790,7 @@ var _ = Describe("TaskDelegate", func() {
 			Expect(eventTypes).To(ContainElement(atc.EventType("image-get")))
 		})
 
-		It("falls back to plans for a non-registry-image type without produces", func() {
+		It("falls back to plans for a non-registry-image type without produces or image: field", func() {
 			fallbackCache := new(dbfakes.FakeResourceCache)
 			fallbackCache.IDReturns(222)
 			fallbackCache.VersionReturns(atc.Version{"digest": "sha256:custom123"})

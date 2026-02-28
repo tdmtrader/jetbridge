@@ -1308,7 +1308,7 @@ var _ = Describe("ValidateConfig", func() {
 				})
 			})
 
-			Context("when skip_download is set on a type with produces: registry-image", func() {
+			Context("backward-compat: when skip_download is set on a type with deprecated produces field", func() {
 				BeforeEach(func() {
 					config.ResourceTypes = append(config.ResourceTypes, atc.ResourceType{
 						Name:     "s3-image",

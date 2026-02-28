@@ -870,7 +870,7 @@ var _ = Describe("GetStep", func() {
 			})
 		})
 
-		Context("when the resource type is a custom type with produces: registry-image", func() {
+		Context("backward-compat: when the resource type uses deprecated produces field", func() {
 			BeforeEach(func() {
 				getPlan.Type = "s3-image"
 				getPlan.Produces = "registry-image"
@@ -899,7 +899,7 @@ var _ = Describe("GetStep", func() {
 			})
 		})
 
-		Context("when the resource type is a custom type without produces", func() {
+		Context("when the resource type is a custom type without produces or image: field", func() {
 			BeforeEach(func() {
 				getPlan.Type = "s3-image"
 				getPlan.Source = atc.Source{
