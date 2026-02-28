@@ -5,11 +5,15 @@
 // No external cluster connectivity is supported — tests always run in
 // isolation to prevent accidental impact on production clusters.
 //
-// Prerequisites: docker, kind, helm, kubectl
+// Prerequisites: docker, helm, kubectl
 //
 // Basic run (creates a KinD cluster automatically):
 //
-//   go test ./topgun/k8s_behavioral/ -count=1 -v -timeout 30m
+//   go test ./topgun/k8s_behavioral/ -count=1 -v -timeout 60m
+//
+// Parallel run (4 KinD clusters, specs split across 4 processes):
+//
+//   ginkgo --procs=4 -v --timeout=60m ./topgun/k8s_behavioral/
 //
 // Focus on a specific Describe block:
 //
@@ -25,6 +29,7 @@ package behavioral_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -50,58 +55,14 @@ import (
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 )
 
-// TestMain manages the KinD cluster lifecycle outside of Ginkgo.
-// It creates an ephemeral KinD cluster, loads images, deploys Concourse
-// via Helm, and starts a port-forward. The resulting config is passed to
-// the Ginkgo suite via environment variables.
+// TestMain verifies prerequisites before Ginkgo runs. Cluster lifecycle
+// is managed by SynchronizedBeforeSuite/AfterSuite — each Ginkgo process
+// creates its own KinD cluster so specs run in parallel without interference.
 func TestMain(m *testing.M) {
-	// Self-contained mode only — no external cluster connectivity.
-	// Not compatible with Ginkgo parallelism: each parallel process runs
-	// TestMain independently, so env vars set here don't propagate.
-	if proc := os.Getenv("GINKGO_PARALLEL_PROCESS"); proc != "" && proc != "1" {
-		log.Fatalf(
-			"this suite does not support Ginkgo parallelism (--procs / -p)\n" +
-				"  Each test process creates its own KinD cluster via TestMain",
-		)
-	}
 	if err := verifyPrerequisites(); err != nil {
 		log.Fatalf("prerequisites check failed: %v", err)
 	}
-
-	namespace := envOr("K8S_NAMESPACE", "concourse")
-	image := envOr("CONCOURSE_IMAGE", "concourse-local:latest")
-
-	ensureConcourseImage(image)
-
-	kubeconfig := createKindCluster()
-	loadImagesIntoKind(image)
-
-	chartPath := filepath.Join(mustRepoRoot(), "deploy", "chart")
-	helmDeployConcourse(kubeconfig, namespace, chartPath, image)
-
-	preloadImages()
-
-	atcURL, pfMgr := startPortForward(kubeconfig, namespace)
-	log.Printf("Concourse API available at %s", atcURL)
-
-	waitForAPI(atcURL, 5*time.Minute)
-
-	tuneReaperInterval(kubeconfig, namespace, "2s")
-
-	// Export config for the Ginkgo suite via environment variables.
-	os.Setenv("ATC_URL", atcURL)
-	os.Setenv("KUBECONFIG", kubeconfig)
-	os.Setenv("K8S_NAMESPACE", namespace)
-
-	code := m.Run()
-
-	// Cleanup.
-	if pfMgr != nil {
-		pfMgr.Stop()
-	}
-	deleteKindCluster()
-
-	os.Exit(code)
+	os.Exit(m.Run())
 }
 
 func TestBehavioral(t *testing.T) {
@@ -113,12 +74,12 @@ func TestBehavioral(t *testing.T) {
 
 // suiteConfig holds configuration for the Ginkgo suite.
 type suiteConfig struct {
-	FlyBin      string
-	ATCURL      string
-	ATCUsername string
-	ATCPassword string
-	Namespace   string
-	Kubeconfig  string
+	FlyBin      string `json:"fly_bin"`
+	ATCURL      string `json:"atc_url"`
+	ATCUsername string `json:"atc_username"`
+	ATCPassword string `json:"atc_password"`
+	Namespace   string `json:"namespace"`
+	Kubeconfig  string `json:"kubeconfig"`
 }
 
 const (
@@ -134,31 +95,68 @@ var (
 	pipelineName string
 	tmp          string
 	suiteFlyHome string
+	pfMgr        *portForwardManager
 )
 
 var _ = SynchronizedBeforeSuite(
-	// Process 1 only: build the fly binary (expensive, do once).
-	// Other processes receive the binary path via the []byte return value.
+	// Process 1 only: build shared artifacts (fly binary, Docker image).
+	// These are expensive one-time operations shared across all processes.
 	func() []byte {
-		if flyPath := os.Getenv("FLY_PATH"); flyPath != "" {
-			return []byte(flyPath)
-		}
-		return []byte(BuildBinary())
-	},
-	// All processes: initialize config, K8s client, and per-process fly login.
-	// All env vars (ATC_URL, KUBECONFIG, K8S_NAMESPACE) are set by TestMain
-	// from the ephemeral k3s cluster — no external cluster connectivity.
-	func(flyBinData []byte) {
-		config = suiteConfig{
-			FlyBin:      string(flyBinData),
-			ATCURL:      os.Getenv("ATC_URL"),
-			ATCUsername: "test",
-			ATCPassword: "test",
-			Namespace:   envOr("K8S_NAMESPACE", "concourse"),
-			Kubeconfig:  defaultKubeconfig(),
+		image := envOr("CONCOURSE_IMAGE", "concourse-local:latest")
+		ensureConcourseImage(image)
+
+		flyBin := os.Getenv("FLY_PATH")
+		if flyBin == "" {
+			flyBin = BuildBinary()
 		}
 
-		Expect(config.ATCURL).ToNot(BeEmpty(), "ATC_URL must be set (TestMain sets it for the managed k3s cluster)")
+		type sharedData struct {
+			FlyBin string `json:"fly_bin"`
+		}
+		data, err := json.Marshal(sharedData{FlyBin: flyBin})
+		Expect(err).ToNot(HaveOccurred())
+		return data
+	},
+	// All processes: create a per-process KinD cluster, deploy Concourse,
+	// and start a port-forward. Each Ginkgo process gets its own isolated
+	// cluster so specs run in parallel without interference.
+	func(data []byte) {
+		var shared struct {
+			FlyBin string `json:"fly_bin"`
+		}
+		Expect(json.Unmarshal(data, &shared)).To(Succeed())
+
+		// Each process gets a unique cluster name based on its Ginkgo process
+		// index. GinkgoParallelProcess() returns 1 in single-process mode.
+		kindClusterName = fmt.Sprintf("concourse-behavioral-%d", GinkgoParallelProcess())
+
+		namespace := envOr("K8S_NAMESPACE", "concourse")
+		image := envOr("CONCOURSE_IMAGE", "concourse-local:latest")
+
+		kubeconfig := createKindCluster()
+		loadImagesIntoKind(image)
+
+		chartPath := filepath.Join(mustRepoRoot(), "deploy", "chart")
+		helmDeployConcourse(kubeconfig, namespace, chartPath, image)
+
+		preloadImages()
+
+		atcURL, mgr := startPortForward(kubeconfig, namespace)
+		pfMgr = mgr
+		log.Printf("Concourse API available at %s", atcURL)
+
+		waitForAPI(atcURL, 5*time.Minute)
+
+		tuneReaperInterval(kubeconfig, namespace, "2s")
+
+		config = suiteConfig{
+			FlyBin:      shared.FlyBin,
+			ATCURL:      atcURL,
+			ATCUsername: "test",
+			ATCPassword: "test",
+			Namespace:   namespace,
+			Kubeconfig:  kubeconfig,
+		}
 
 		// Gomega defaults — 2 minutes is plenty for any single operation;
 		// the 5-minute default just hides real failures behind long waits.
@@ -186,13 +184,17 @@ var _ = SynchronizedBeforeSuite(
 )
 
 var _ = SynchronizedAfterSuite(
-	// All processes: clean up per-process resources.
+	// All processes: stop port-forward, delete per-process KinD cluster.
 	func() {
 		if suiteFlyHome != "" {
 			os.RemoveAll(suiteFlyHome)
 		}
+		if pfMgr != nil {
+			pfMgr.Stop()
+		}
+		deleteKindCluster()
 	},
-	// Process 1 only: clean up the compiled fly binary.
+	// Process 1 only: clean up shared fly binary build artifacts.
 	func() {
 		if os.Getenv("FLY_PATH") == "" {
 			gexec.CleanupBuildArtifacts()
@@ -233,8 +235,6 @@ var _ = AfterEach(func() {
 	Expect(os.RemoveAll(tmp)).To(Succeed())
 })
 
-// TestMain helpers are defined in cluster_lifecycle_test.go.
-
 // ---------------------------------------------------------------------
 // Config helpers
 // ---------------------------------------------------------------------
@@ -244,12 +244,6 @@ func envOr(key, defaultVal string) string {
 		return v
 	}
 	return defaultVal
-}
-
-func defaultKubeconfig() string {
-	v := os.Getenv("KUBECONFIG")
-	Expect(v).ToNot(BeEmpty(), "KUBECONFIG must be set (TestMain sets it for the managed k3s cluster)")
-	return v
 }
 
 // ---------------------------------------------------------------------
@@ -489,7 +483,7 @@ func writeTaskFile(name, content string) string {
 
 // waitForAPIReachable polls the Concourse /api/v1/info endpoint until it
 // responds with HTTP 200. This is called in BeforeEach to handle the case
-// where kubectl port-forward died and the watchdog is restarting it.
+// where the port-forward tunnel reconnected between tests.
 func waitForAPIReachable(atcURL string, timeout time.Duration) {
 	if atcURL == "" {
 		return

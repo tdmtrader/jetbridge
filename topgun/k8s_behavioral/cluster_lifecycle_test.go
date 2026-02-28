@@ -1,6 +1,7 @@
 package behavioral_test
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net"
@@ -11,13 +12,21 @@ import (
 	"strings"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/client-go/tools/portforward"
+	"k8s.io/client-go/transport/spdy"
 	"sigs.k8s.io/kind/pkg/cluster"
 	"sigs.k8s.io/kind/pkg/cluster/nodeutils"
 )
 
-// kindClusterName is the KinD cluster used by this suite. A unique name
-// avoids collisions with the user's other clusters.
-const kindClusterName = "concourse-behavioral"
+// kindClusterName is the KinD cluster used by this Ginkgo process.
+// In parallel mode (--procs=N), each process sets a unique name in
+// SynchronizedBeforeSuite (e.g., "concourse-behavioral-2").
+var kindClusterName = "concourse-behavioral"
 
 // kindProvider is the Go-native KinD provider. Using the library API
 // instead of shelling out to the `kind` CLI makes the tests fully
@@ -70,7 +79,7 @@ func verifyPrerequisites() error {
 // and returns the path to a kubeconfig file written to disk.
 // Any pre-existing cluster with the same name is deleted first.
 func createKindCluster() string {
-	kubeconfigPath := filepath.Join(os.TempDir(), "kind-kubeconfig-behavioral")
+	kubeconfigPath := filepath.Join(os.TempDir(), "kind-kubeconfig-"+kindClusterName)
 
 	// Delete any leftover cluster from a previous interrupted run.
 	kindProvider.Delete(kindClusterName, "")
@@ -179,6 +188,10 @@ func helmDeployConcourse(kubeconfig, namespace, chartPath, image string) {
 		// Reduce ATC polling intervals from 10s defaults to speed up
 		// build scheduling in integration tests.
 		"--set", "web.extraArgs={--component-runner-interval=2s,--gc-interval=2s}",
+		// Use emptyDir for PostgreSQL — ephemeral KinD clusters don't need
+		// persistent storage, and KinD's local-path-provisioner struggles
+		// under resource contention when multiple clusters run in parallel.
+		"--set", "postgresql.persistence.enabled=false",
 		"--timeout", "5m",
 	}
 	cmd := exec.Command("helm", helmArgs...)
@@ -203,120 +216,175 @@ func helmDeployConcourse(kubeconfig, namespace, chartPath, image string) {
 	}
 }
 
-// portForwardManager manages a kubectl port-forward process that
-// automatically restarts when the connection drops. This is necessary
-// because kubectl port-forward is unreliable over long-running test suites.
+// portForwardManager manages an in-process port-forward tunnel to a
+// Kubernetes pod using the client-go SPDY transport. Unlike shelling out
+// to kubectl, this runs entirely in-process — no subprocess management,
+// no watchdog. If the connection drops, it automatically reconnects.
 type portForwardManager struct {
-	kubeconfig string
+	restConfig *rest.Config
+	client     kubernetes.Interface
 	namespace  string
-	svcName    string
 	port       int
 	done       chan struct{}
-	cmd        *exec.Cmd
 }
 
-// startPortForward starts a kubectl port-forward to the Concourse
-// web service on a random available port. The returned manager auto-restarts
-// the port-forward if it dies.
+// startPortForward creates an in-process port-forward tunnel to the
+// Concourse web pod on a random available port. The tunnel auto-reconnects
+// if the underlying SPDY connection drops.
 func startPortForward(kubeconfig, namespace string) (string, *portForwardManager) {
 	port := findFreePort()
-	svcName := discoverWebService(kubeconfig, namespace)
+
+	rc, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
+	if err != nil {
+		log.Fatalf("failed to build rest config for port-forward: %v", err)
+	}
+
+	client, err := kubernetes.NewForConfig(rc)
+	if err != nil {
+		log.Fatalf("failed to create K8s client for port-forward: %v", err)
+	}
 
 	mgr := &portForwardManager{
-		kubeconfig: kubeconfig,
+		restConfig: rc,
+		client:     client,
 		namespace:  namespace,
-		svcName:    svcName,
 		port:       port,
 		done:       make(chan struct{}),
 	}
 
-	mgr.start()
+	// Start tunnel in background with auto-reconnect; block until ready.
+	initialReady := make(chan struct{})
+	go mgr.run(initialReady)
 
-	// Start watchdog that restarts port-forward on crash.
-	go mgr.watchdog()
+	select {
+	case <-initialReady:
+		// Tunnel is accepting connections.
+	case <-time.After(30 * time.Second):
+		log.Printf("warning: port-forward readiness timed out after 30s")
+	}
 
 	return fmt.Sprintf("http://localhost:%d", port), mgr
 }
 
-func (m *portForwardManager) start() {
-	log.Printf("Starting port-forward on localhost:%d -> svc/%s:8080", m.port, m.svcName)
-	m.cmd = exec.Command("kubectl",
-		"--kubeconfig", m.kubeconfig,
-		"-n", m.namespace,
-		"port-forward", "svc/"+m.svcName,
-		fmt.Sprintf("%d:8080", m.port),
-	)
-	m.cmd.Stdout = os.Stderr
-	m.cmd.Stderr = os.Stderr
-	if err := m.cmd.Start(); err != nil {
-		log.Fatalf("failed to start port-forward: %v", err)
-	}
-	// Wait until the port-forward is actually accepting connections
-	// rather than using a fixed sleep. This prevents tests from hitting
-	// "connection refused" during port-forward restarts.
-	m.waitForReady()
-}
-
-// waitForReady polls the local port until it accepts TCP connections,
-// confirming the port-forward is actually ready to proxy traffic.
-func (m *portForwardManager) waitForReady() {
-	addr := fmt.Sprintf("127.0.0.1:%d", m.port)
-	deadline := time.Now().Add(30 * time.Second)
-	for time.Now().Before(deadline) {
-		conn, err := net.DialTimeout("tcp", addr, 500*time.Millisecond)
-		if err == nil {
-			conn.Close()
-			log.Printf("Port-forward on localhost:%d is ready", m.port)
-			return
-		}
-		time.Sleep(250 * time.Millisecond)
-	}
-	log.Printf("warning: port-forward readiness check timed out after 30s")
-}
-
-func (m *portForwardManager) watchdog() {
+// run maintains the port-forward tunnel, reconnecting if it drops.
+// Closes initialReady on the first successful connection.
+func (m *portForwardManager) run(initialReady chan<- struct{}) {
+	first := true
 	for {
-		if m.cmd != nil && m.cmd.Process != nil {
-			m.cmd.Wait()
-		}
 		select {
 		case <-m.done:
 			return
 		default:
-			log.Printf("Port-forward died, restarting...")
-			time.Sleep(1 * time.Second)
-			m.start()
+		}
+
+		var readySig chan<- struct{}
+		if first {
+			readySig = initialReady
+		}
+
+		err := m.forward(readySig)
+		first = false
+
+		select {
+		case <-m.done:
+			return
+		default:
+			log.Printf("Port-forward died (%v), restarting...", err)
+			time.Sleep(time.Second)
 		}
 	}
+}
+
+// forward establishes a single port-forward tunnel and blocks until it
+// exits. If readySig is non-nil, it is closed when the tunnel is ready.
+func (m *portForwardManager) forward(readySig chan<- struct{}) error {
+	podName, err := m.findWebPod()
+	if err != nil {
+		return fmt.Errorf("find web pod: %w", err)
+	}
+
+	// Build SPDY dialer targeting the pod's portforward subresource.
+	reqURL := m.client.CoreV1().RESTClient().Post().
+		Resource("pods").
+		Namespace(m.namespace).
+		Name(podName).
+		SubResource("portforward").
+		URL()
+
+	transport, upgrader, err := spdy.RoundTripperFor(m.restConfig)
+	if err != nil {
+		return fmt.Errorf("create SPDY transport: %w", err)
+	}
+	dialer := spdy.NewDialer(upgrader, &http.Client{Transport: transport}, "POST", reqURL)
+
+	stopChan := make(chan struct{})
+	readyChan := make(chan struct{})
+
+	// Bridge m.done → stopChan so Stop() terminates this tunnel.
+	forwarding := make(chan struct{})
+	go func() {
+		select {
+		case <-m.done:
+			close(stopChan)
+		case <-forwarding:
+		}
+	}()
+
+	fw, err := portforward.New(
+		dialer,
+		[]string{fmt.Sprintf("%d:8080", m.port)},
+		stopChan,
+		readyChan,
+		os.Stderr, // informational output (e.g. "Forwarding from ...")
+		os.Stderr, // error output
+	)
+	if err != nil {
+		close(forwarding)
+		return fmt.Errorf("create port forwarder: %w", err)
+	}
+
+	errChan := make(chan error, 1)
+	go func() {
+		errChan <- fw.ForwardPorts()
+		close(forwarding)
+	}()
+
+	// Wait for the tunnel to be ready or fail.
+	select {
+	case <-readyChan:
+		log.Printf("Port-forward ready on localhost:%d -> %s:8080", m.port, podName)
+		if readySig != nil {
+			close(readySig)
+		}
+	case err := <-errChan:
+		return fmt.Errorf("port-forward failed before ready: %w", err)
+	}
+
+	// Block until the tunnel exits.
+	return <-errChan
+}
+
+// findWebPod returns the name of a Ready pod with the Concourse web label.
+func (m *portForwardManager) findWebPod() (string, error) {
+	pods, err := m.client.CoreV1().Pods(m.namespace).List(
+		context.Background(),
+		metav1.ListOptions{LabelSelector: "app.kubernetes.io/component=web"},
+	)
+	if err != nil {
+		return "", err
+	}
+	for _, pod := range pods.Items {
+		for _, cond := range pod.Status.Conditions {
+			if cond.Type == corev1.PodReady && cond.Status == corev1.ConditionTrue {
+				return pod.Name, nil
+			}
+		}
+	}
+	return "", fmt.Errorf("no ready pod with label app.kubernetes.io/component=web in namespace %q", m.namespace)
 }
 
 func (m *portForwardManager) Stop() {
 	close(m.done)
-	if m.cmd != nil && m.cmd.Process != nil {
-		m.cmd.Process.Kill()
-		m.cmd.Wait()
-	}
-}
-
-// discoverWebService finds the Concourse web service name in the namespace.
-func discoverWebService(kubeconfig, namespace string) string {
-	out, err := exec.Command("kubectl",
-		"--kubeconfig", kubeconfig,
-		"-n", namespace,
-		"get", "svc",
-		"-l", "app.kubernetes.io/component=web",
-		"-o", "jsonpath={.items[0].metadata.name}",
-	).Output()
-	if err == nil && len(out) > 0 {
-		return strings.TrimSpace(string(out))
-	}
-	for _, name := range []string{"concourse-web", "concourse-concourse-jetbridge-web"} {
-		if exec.Command("kubectl", "--kubeconfig", kubeconfig, "-n", namespace, "get", "svc", name).Run() == nil {
-			return name
-		}
-	}
-	log.Fatalf("could not find Concourse web service in namespace %s", namespace)
-	return ""
 }
 
 // waitForAPI polls the Concourse /api/v1/info endpoint until it responds.
