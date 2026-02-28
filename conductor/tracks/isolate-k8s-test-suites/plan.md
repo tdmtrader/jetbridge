@@ -53,7 +53,7 @@
 ## Phase 5: Cleanup
 
 ### 5.1 Remove benchmark test
-- [ ] Delete topgun/k8s_cluster_bench/ (served its purpose)
-- [ ] Run go mod tidy to remove any orphaned dependencies
+- [x] Delete topgun/k8s_cluster_bench/ (served its purpose) bae83c83e
+- [x] Run go mod tidy to remove any orphaned dependencies bae83c83e
 
 ---
