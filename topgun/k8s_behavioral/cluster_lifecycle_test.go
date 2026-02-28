@@ -10,11 +10,25 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"sigs.k8s.io/kind/pkg/cluster"
+	"sigs.k8s.io/kind/pkg/cluster/nodeutils"
 )
 
 // kindClusterName is the KinD cluster used by this suite. A unique name
 // avoids collisions with the user's other clusters.
 const kindClusterName = "concourse-behavioral"
+
+// kindProvider is the Go-native KinD provider. Using the library API
+// instead of shelling out to the `kind` CLI makes the tests fully
+// self-contained — only docker, helm, and kubectl are needed on PATH.
+var kindProvider *cluster.Provider
+
+func init() {
+	kindProvider = cluster.NewProvider(
+		cluster.ProviderWithDocker(),
+	)
+}
 
 // splitImageRef splits "repo:tag" into its parts. If no tag is present,
 // "latest" is returned as the default tag.
@@ -38,9 +52,10 @@ func findFreePort() int {
 }
 
 // verifyPrerequisites checks that required CLIs are on PATH.
+// Note: kind is NOT required — cluster lifecycle is managed via the Go library.
 func verifyPrerequisites() error {
 	var missing []string
-	for _, bin := range []string{"docker", "kind", "helm", "kubectl"} {
+	for _, bin := range []string{"docker", "helm", "kubectl"} {
 		if _, err := exec.LookPath(bin); err != nil {
 			missing = append(missing, bin)
 		}
@@ -51,25 +66,32 @@ func verifyPrerequisites() error {
 	return nil
 }
 
-// createKindCluster creates an ephemeral KinD cluster and returns the
-// path to the generated kubeconfig file. Any pre-existing cluster with
-// the same name is deleted first to avoid conflicts.
+// createKindCluster creates an ephemeral KinD cluster via the Go library
+// and returns the path to a kubeconfig file written to disk.
+// Any pre-existing cluster with the same name is deleted first.
 func createKindCluster() string {
 	kubeconfigPath := filepath.Join(os.TempDir(), "kind-kubeconfig-behavioral")
 
 	// Delete any leftover cluster from a previous interrupted run.
-	exec.Command("kind", "delete", "cluster", "--name", kindClusterName).Run()
+	kindProvider.Delete(kindClusterName, "")
 
 	log.Printf("Creating KinD cluster %q...", kindClusterName)
-	cmd := exec.Command("kind", "create", "cluster",
-		"--name", kindClusterName,
-		"--kubeconfig", kubeconfigPath,
-		"--wait", "120s",
+	err := kindProvider.Create(kindClusterName,
+		cluster.CreateWithWaitForReady(120*time.Second),
+		cluster.CreateWithDisplayUsage(false),
+		cluster.CreateWithDisplaySalutation(false),
 	)
-	cmd.Stdout = os.Stderr
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
+	if err != nil {
 		log.Fatalf("failed to create KinD cluster: %v", err)
+	}
+
+	// Export kubeconfig to a file for helm/kubectl CLI commands.
+	kubeconfig, err := kindProvider.KubeConfig(kindClusterName, false)
+	if err != nil {
+		log.Fatalf("failed to get kubeconfig from KinD: %v", err)
+	}
+	if err := os.WriteFile(kubeconfigPath, []byte(kubeconfig), 0600); err != nil {
+		log.Fatalf("failed to write kubeconfig: %v", err)
 	}
 
 	log.Printf("KinD cluster ready (kubeconfig: %s)", kubeconfigPath)
@@ -93,21 +115,44 @@ func ensureConcourseImage(image string) {
 }
 
 // loadImagesIntoKind loads the locally-built Concourse image into the
-// KinD cluster. Public images (postgres, busybox, etc.) are NOT
-// pre-loaded — they are pulled by the kubelet at runtime.  Only the
-// locally-built image needs pre-loading because it is not available on
-// any registry.
-//
-// Note: Docker with containerd image store can cause `ctr images import`
-// failures for multi-platform registry images. Limiting pre-loading to
-// the local image avoids this issue entirely.
+// KinD cluster via the Go library. The image is exported from the local
+// Docker daemon as a tar archive and imported into each KinD node's
+// containerd. Only the locally-built image needs pre-loading because
+// it is not available on any registry.
 func loadImagesIntoKind(concourseImage string) {
 	log.Printf("Loading local image %s into KinD cluster...", concourseImage)
-	cmd := exec.Command("kind", "load", "docker-image", concourseImage, "--name", kindClusterName)
+
+	nodeList, err := kindProvider.ListInternalNodes(kindClusterName)
+	if err != nil {
+		log.Fatalf("failed to list KinD nodes: %v", err)
+	}
+
+	// Save docker image to a temp tar archive.
+	tmpFile, err := os.CreateTemp("", "kind-image-*.tar")
+	if err != nil {
+		log.Fatalf("failed to create temp file for image archive: %v", err)
+	}
+	defer os.Remove(tmpFile.Name())
+	tmpFile.Close()
+
+	cmd := exec.Command("docker", "save", "-o", tmpFile.Name(), concourseImage)
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
-		log.Fatalf("failed to load image %s into KinD: %v", concourseImage, err)
+		log.Fatalf("docker save failed for %s: %v", concourseImage, err)
+	}
+
+	// Load the tar archive onto each KinD node.
+	for _, node := range nodeList {
+		f, err := os.Open(tmpFile.Name())
+		if err != nil {
+			log.Fatalf("failed to open image archive: %v", err)
+		}
+		if err := nodeutils.LoadImageArchive(node, f); err != nil {
+			f.Close()
+			log.Fatalf("failed to load image onto node %s: %v", node.String(), err)
+		}
+		f.Close()
 	}
 	log.Println("Local image loaded into KinD cluster.")
 }
@@ -356,17 +401,15 @@ func tuneReaperInterval(kubeconfig, namespace, interval string) {
 	}
 }
 
-// deleteKindCluster deletes the KinD cluster unless SKIP_TEARDOWN is set.
+// deleteKindCluster deletes the KinD cluster via the Go library
+// unless SKIP_TEARDOWN is set.
 func deleteKindCluster() {
 	if os.Getenv("SKIP_TEARDOWN") == "1" {
 		log.Printf("SKIP_TEARDOWN=1: keeping KinD cluster %q running", kindClusterName)
 		return
 	}
 	log.Printf("Deleting KinD cluster %q...", kindClusterName)
-	cmd := exec.Command("kind", "delete", "cluster", "--name", kindClusterName)
-	cmd.Stdout = os.Stderr
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
+	if err := kindProvider.Delete(kindClusterName, ""); err != nil {
 		log.Printf("warning: failed to delete KinD cluster: %v", err)
 	}
 }
