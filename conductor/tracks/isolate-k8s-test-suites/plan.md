@@ -62,28 +62,28 @@
 > test bugs unrelated to the KinD Go library migration.
 
 ### 6.1 Fix load_var credential redaction (7 tests)
-- [ ] Fix load_var_test.go — loaded values appear as `((redacted))` in fly watch output, causing assertion mismatches (lines 46, 86, 129, 168, 206, 244, 291)
-- [ ] Fix load_var_test.go:362 — "fails gracefully when file does not exist" assertion error
+- [x] Fix load_var_test.go — loaded values appear as `((redacted))` in fly watch output, causing assertion mismatches (lines 46, 86, 129, 168, 206, 244, 291) 7980c3599
+- [x] Fix load_var_test.go:362 — "fails gracefully when file does not exist" assertion error 7980c3599
 
 ### 6.2 Fix produces: registry-image custom type tests (2 tests)
-- [ ] Fix skip_image_get_test.go — mock resource rejects `repository` field with `json: unknown field "repository"` (lines 22, 80)
+- [x] Fix skip_image_get_test.go — mock resource rejects `repository` field with `json: unknown field "repository"` (lines 22, 80) 7980c3599
 
 ### 6.3 Fix pipeline E2E test fixture (1 test)
-- [ ] Fix k8s_pipeline_e2e_test.go:135 — multi-stage pipeline fixture has a cycle (`get: output-data passed: [multi-stage-job]` creates self-reference)
+- [x] Fix k8s_pipeline_e2e_test.go:135 — multi-stage pipeline fixture has a cycle (`get: output-data passed: [multi-stage-job]` creates self-reference) 7980c3599
 
 ### 6.4 Fix set_pipeline variable interpolation (1 test)
-- [ ] Fix set_pipeline_test.go:161 — load_var value redacted in interpolated pipeline config
+- [x] Fix set_pipeline_test.go:161 — load_var value redacted in interpolated pipeline config 7980c3599
 
 ### 6.5 Fix hijack test (1 test)
-- [ ] Fix hijack_test.go:48 — intercept of running task fails (timing/flakiness)
+- [x] Fix hijack_test.go:48 — intercept of running task fails (timing/flakiness) 7980c3599
 
 ### 6.6 Fix resource advanced test (1 test)
-- [ ] Fix resource_advanced_test.go:333 — get_params on implicit get after put
+- [x] Fix resource_advanced_test.go:333 — get_params on implicit get after put 7980c3599
 
 ### 6.7 Fix error handling test (1 test)
-- [ ] Fix error_handling_test.go:47 — on_error hook test times out (task runs `sleep 120`)
+- [x] Fix error_handling_test.go:47 — on_error hook test times out (task runs `sleep 120`) 7980c3599
 
 ### 6.8 Verify clean run
-- [ ] Run full integration suite — all non-pending specs pass
+- [~] Run full integration suite — all non-pending specs pass
 
 ---
