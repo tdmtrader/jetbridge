@@ -317,7 +317,7 @@ jobs:
     params:
       version: params-v1
     get_params:
-      skip_download: true
+      mirror_self: true
   - task: after-put
     config:
       platform: linux

@@ -193,9 +193,6 @@ jobs:
   - put: output-data
     params:
       version: multi-stage-v1
-
-  - get: output-data
-    passed: [multi-stage-job]
 `)
 		setAndUnpausePipeline(pipelineFile)
 

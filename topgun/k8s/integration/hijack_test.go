@@ -1,12 +1,14 @@
 package integration_test
 
 import (
+	"fmt"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/onsi/gomega/gbytes"
 	"github.com/onsi/gomega/gexec"
+	corev1 "k8s.io/api/core/v1"
 )
 
 var _ = Describe("Hijack", func() {
@@ -26,16 +28,13 @@ jobs:
 		setAndUnpausePipeline(pipelineFile)
 		triggerJob("hijack-job")
 
-		By("waiting for the task to start running")
-		Eventually(func() string {
-			builds := flyTable("builds", "-j", inPipeline("hijack-job"))
-			if len(builds) == 0 {
-				return ""
-			}
-			return builds[0]["status"]
-		}, 2*time.Minute, 2*time.Second).Should(Equal("started"))
+		By("waiting for the task pod to be running")
+		waitForPodWithLabel(
+			fmt.Sprintf("concourse.ci/pipeline=%s,concourse.ci/type=task", pipelineName),
+			corev1.PodRunning,
+		)
 
-		// Give the pod a moment to be fully ready for exec
+		// Give the container a moment to be fully ready for exec
 		time.Sleep(5 * time.Second)
 
 		By("intercepting into the running task")

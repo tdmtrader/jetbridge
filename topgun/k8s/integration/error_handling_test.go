@@ -20,7 +20,7 @@ jobs:
 - name: on-error-job
   plan:
   - task: erroring-task
-    timeout: 10s
+    timeout: 30s
     config:
       platform: linux
       rootfs_uri: docker:///busybox

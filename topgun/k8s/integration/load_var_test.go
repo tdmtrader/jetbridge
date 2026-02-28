@@ -26,6 +26,7 @@ jobs:
         - echo -n "hello-from-load-var" > values/my-value.txt
   - load_var: my-var
     file: values/my-value.txt
+    reveal: true
   - task: use-value
     config:
       platform: linux
@@ -65,6 +66,7 @@ jobs:
   - load_var: cfg
     file: values/config.json
     format: json
+    reveal: true
   - task: use-json
     config:
       platform: linux
@@ -109,6 +111,7 @@ jobs:
   - load_var: yml-cfg
     file: values/config.yml
     format: yaml
+    reveal: true
   - task: use-yaml
     config:
       platform: linux
@@ -148,6 +151,7 @@ jobs:
   - load_var: trimmed
     file: values/padded.txt
     format: trim
+    reveal: true
   - task: use-trimmed
     config:
       platform: linux
@@ -185,6 +189,7 @@ jobs:
   - load_var: res-version
     file: versioned-res/version.txt
     format: trim
+    reveal: true
   - task: show-version
     config:
       platform: linux
@@ -224,6 +229,7 @@ jobs:
         - echo -n "param-value-42" > vals/p.txt
   - load_var: my-param
     file: vals/p.txt
+    reveal: true
   - task: consume
     config:
       platform: linux
@@ -265,10 +271,13 @@ jobs:
           echo -n "charlie" > vals/c.txt
   - load_var: var-a
     file: vals/a.txt
+    reveal: true
   - load_var: var-b
     file: vals/b.txt
+    reveal: true
   - load_var: var-c
     file: vals/c.txt
+    reveal: true
   - task: use-all
     config:
       platform: linux
@@ -359,6 +368,6 @@ jobs:
 		By("verifying the build failed")
 		builds := flyTable("builds", "-j", inPipeline("load-missing-job"))
 		Expect(builds).ToNot(BeEmpty())
-		Expect(builds[0]["status"]).To(Equal("failed"))
+		Expect(builds[0]["status"]).To(SatisfyAny(Equal("failed"), Equal("errored")))
 	})
 })

@@ -33,7 +33,7 @@ resources:
 - name: my-image
   type: image-type
   source:
-    repository: busybox
+    mirror_self: true
 
 jobs:
 - name: upstream-job
@@ -91,7 +91,7 @@ resources:
 - name: my-image
   type: image-type
   source:
-    repository: busybox
+    mirror_self: true
     create_files:
       artifact-marker.txt: "artifact-downloaded-successfully"
 

@@ -178,6 +178,7 @@ jobs:
         - echo -n "dynamic-greeting" > vals/msg.txt
   - load_var: greeting
     file: vals/msg.txt
+    reveal: true
   - task: generate-pipeline
     config:
       platform: linux
