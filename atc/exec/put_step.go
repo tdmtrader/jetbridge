@@ -105,6 +105,7 @@ func (step *PutStep) Run(ctx context.Context, state RunState) (bool, error) {
 
 func (step *PutStep) run(ctx context.Context, state RunState, delegate PutDelegate) (bool, error) {
 	logger := lagerctx.FromContext(ctx)
+	logger = tracing.LoggerWithSpan(ctx, logger)
 	logger = logger.Session("put-step", lager.Data{
 		"step-name": step.plan.Name,
 		"job-id":    step.metadata.JobID,

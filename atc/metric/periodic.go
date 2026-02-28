@@ -29,13 +29,17 @@ func PeriodicallyEmit(logger lager.Logger, m *Monitor, interval time.Duration) i
 }
 
 func tick(logger lager.Logger, m *Monitor) {
+	dbQueries := m.DatabaseQueries.Delta()
 	m.emit(
 		logger.Session("database-queries"),
 		Event{
 			Name:  "database queries",
-			Value: m.DatabaseQueries.Delta(),
+			Value: dbQueries,
 		},
 	)
+	if dbQueries > 0 {
+		RecordDBQueries(context.Background(), dbQueries)
+	}
 
 	if len(m.Databases) > 0 {
 		for _, database := range m.Databases {
@@ -49,6 +53,7 @@ func tick(logger lager.Logger, m *Monitor) {
 					},
 				},
 			)
+			RecordDBConnections(context.Background(), float64(database.Stats().OpenConnections), database.Name())
 		}
 	}
 
@@ -152,53 +157,71 @@ func tick(logger lager.Logger, m *Monitor) {
 		},
 	)
 
+	jobsScheduled := m.JobsScheduled.Delta()
 	m.emit(
 		logger.Session("jobs-scheduled"),
 		Event{
 			Name:  "jobs scheduled",
-			Value: m.JobsScheduled.Delta(),
+			Value: jobsScheduled,
 		},
 	)
+	if jobsScheduled > 0 {
+		RecordJobsScheduled(context.Background(), jobsScheduled)
+	}
 
+	jobsScheduling := m.JobsScheduling.Max()
 	m.emit(
 		logger.Session("jobs-scheduling"),
 		Event{
 			Name:  "jobs scheduling",
-			Value: m.JobsScheduling.Max(),
+			Value: jobsScheduling,
 		},
 	)
+	RecordJobsScheduling(context.Background(), jobsScheduling)
 
+	buildsStarted := m.BuildsStarted.Delta()
 	m.emit(
 		logger.Session("builds-started"),
 		Event{
 			Name:  "builds started",
-			Value: m.BuildsStarted.Delta(),
+			Value: buildsStarted,
 		},
 	)
+	if buildsStarted > 0 {
+		RecordBuildsStarted(context.Background(), buildsStarted)
+	}
 
+	buildsRunning := m.BuildsRunning.Max()
 	m.emit(
 		logger.Session("builds-running"),
 		Event{
 			Name:  "builds running",
-			Value: m.BuildsRunning.Max(),
+			Value: buildsRunning,
 		},
 	)
+	RecordBuildsRunning(context.Background(), buildsRunning)
 
+	checkBuildsStarted := m.CheckBuildsStarted.Delta()
 	m.emit(
 		logger.Session("check-builds-started"),
 		Event{
 			Name:  "check builds started",
-			Value: m.CheckBuildsStarted.Delta(),
+			Value: checkBuildsStarted,
 		},
 	)
+	if checkBuildsStarted > 0 {
+		RecordCheckBuildsStarted(context.Background(), checkBuildsStarted)
+	}
 
+	checkBuildsRunning := m.CheckBuildsRunning.Max()
 	m.emit(
 		logger.Session("check-builds-running"),
 		Event{
 			Name:  "check builds running",
-			Value: m.CheckBuildsRunning.Max(),
+			Value: checkBuildsRunning,
 		},
 	)
+	RecordCheckBuildsRunning(context.Background(), checkBuildsRunning)
 
 	for action, gauge := range m.ConcurrentRequests {
 		m.emit(
@@ -227,11 +250,12 @@ func tick(logger lager.Logger, m *Monitor) {
 	}
 
 	for labels, gauge := range m.StepsWaiting {
+		stepsWaiting := gauge.Max()
 		m.emit(
 			logger.Session("steps-waiting"),
 			Event{
 				Name:  "steps waiting",
-				Value: gauge.Max(),
+				Value: stepsWaiting,
 				Attributes: map[string]string{
 					"platform":   labels.Platform,
 					"teamId":     labels.TeamId,
@@ -241,45 +265,62 @@ func tick(logger lager.Logger, m *Monitor) {
 				},
 			},
 		)
+		RecordStepsWaiting(context.Background(), stepsWaiting, labels.Platform, labels.TeamName, labels.Type, labels.WorkerTags)
 	}
 
+	checksFinishedWithError := m.ChecksFinishedWithError.Delta()
 	m.emit(
 		logger.Session("checks-finished-with-error"),
 		Event{
 			Name:  "checks finished",
-			Value: m.ChecksFinishedWithError.Delta(),
+			Value: checksFinishedWithError,
 			Attributes: map[string]string{
 				"status": "error",
 			},
 		},
 	)
+	if checksFinishedWithError > 0 {
+		RecordChecksFinished(context.Background(), checksFinishedWithError, "error")
+	}
 
+	checksFinishedWithSuccess := m.ChecksFinishedWithSuccess.Delta()
 	m.emit(
 		logger.Session("checks-finished-with-success"),
 		Event{
 			Name:  "checks finished",
-			Value: m.ChecksFinishedWithSuccess.Delta(),
+			Value: checksFinishedWithSuccess,
 			Attributes: map[string]string{
 				"status": "success",
 			},
 		},
 	)
+	if checksFinishedWithSuccess > 0 {
+		RecordChecksFinished(context.Background(), checksFinishedWithSuccess, "success")
+	}
 
+	checksStarted := m.ChecksStarted.Delta()
 	m.emit(
 		logger.Session("checks-started"),
 		Event{
 			Name:  "checks started",
-			Value: m.ChecksStarted.Delta(),
+			Value: checksStarted,
 		},
 	)
+	if checksStarted > 0 {
+		RecordChecksStarted(context.Background(), checksStarted)
+	}
 
+	checksEnqueued := m.ChecksEnqueued.Delta()
 	m.emit(
 		logger.Session("checks-enqueued"),
 		Event{
 			Name:  "checks enqueued",
-			Value: m.ChecksEnqueued.Delta(),
+			Value: checksEnqueued,
 		},
 	)
+	if checksEnqueued > 0 {
+		RecordChecksEnqueued(context.Background(), checksEnqueued)
+	}
 
 	var memStats runtime.MemStats
 	runtime.ReadMemStats(&memStats)

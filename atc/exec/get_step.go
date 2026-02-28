@@ -137,6 +137,7 @@ func (step *GetStep) Run(ctx context.Context, state RunState) (bool, error) {
 
 func (step *GetStep) run(ctx context.Context, state RunState, delegate GetDelegate) (bool, error) {
 	logger := lagerctx.FromContext(ctx)
+	logger = tracing.LoggerWithSpan(ctx, logger)
 	logger = logger.Session("get-step", lager.Data{
 		"step-name": step.plan.Name,
 	})

@@ -4,14 +4,14 @@
   "status": "archived",
   "description": "scheduler-notify-on-build-request",
   "createdAt": "2026-02-27T04:30:10.114Z",
-  "updatedAt": "2026-02-27T22:35:39.078Z",
+  "updatedAt": "2026-02-28T16:50:21.544Z",
   "sessions": [
     {
       "slotIndex": 0,
       "engineType": "claude",
       "aiSessionId": "e978fa9b-d275-4b99-ad68-3f4ae7b8fb30",
       "accountId": "system-claude",
-      "updatedAt": "2026-02-27T21:25:52.075Z"
+      "updatedAt": "2026-02-28T16:50:21.536Z"
     }
   ]
 }

@@ -46,6 +46,8 @@ func (event StepsWaitingDuration) Emit(logger lager.Logger) {
 			},
 		},
 	)
+
+	RecordStepsWaitDuration(context.Background(), event.Duration.Seconds(), event.Labels.Platform, event.Labels.TeamName, event.Labels.Type, event.Labels.WorkerTags)
 }
 
 type BuildCollectorDuration struct {
@@ -60,6 +62,7 @@ func (event BuildCollectorDuration) Emit(logger lager.Logger) {
 			Value: ms(event.Duration),
 		},
 	)
+	RecordGCCollectorDuration(context.Background(), "build", ms(event.Duration))
 }
 
 type WorkerCollectorDuration struct {
@@ -74,6 +77,7 @@ func (event WorkerCollectorDuration) Emit(logger lager.Logger) {
 			Value: ms(event.Duration),
 		},
 	)
+	RecordGCCollectorDuration(context.Background(), "worker", ms(event.Duration))
 }
 
 type ResourceCacheUseCollectorDuration struct {
@@ -88,6 +92,7 @@ func (event ResourceCacheUseCollectorDuration) Emit(logger lager.Logger) {
 			Value: ms(event.Duration),
 		},
 	)
+	RecordGCCollectorDuration(context.Background(), "resource-cache-use", ms(event.Duration))
 }
 
 type ResourceConfigCollectorDuration struct {
@@ -102,6 +107,7 @@ func (event ResourceConfigCollectorDuration) Emit(logger lager.Logger) {
 			Value: ms(event.Duration),
 		},
 	)
+	RecordGCCollectorDuration(context.Background(), "resource-config", ms(event.Duration))
 }
 
 type ResourceCacheCollectorDuration struct {
@@ -116,6 +122,7 @@ func (event ResourceCacheCollectorDuration) Emit(logger lager.Logger) {
 			Value: ms(event.Duration),
 		},
 	)
+	RecordGCCollectorDuration(context.Background(), "resource-cache", ms(event.Duration))
 }
 
 type TaskCacheCollectorDuration struct {
@@ -130,6 +137,7 @@ func (event TaskCacheCollectorDuration) Emit(logger lager.Logger) {
 			Value: ms(event.Duration),
 		},
 	)
+	RecordGCCollectorDuration(context.Background(), "task-cache", ms(event.Duration))
 }
 
 type ResourceConfigCheckSessionCollectorDuration struct {
@@ -144,6 +152,7 @@ func (event ResourceConfigCheckSessionCollectorDuration) Emit(logger lager.Logge
 			Value: ms(event.Duration),
 		},
 	)
+	RecordGCCollectorDuration(context.Background(), "resource-config-check-session", ms(event.Duration))
 }
 
 type ArtifactCollectorDuration struct {
@@ -158,6 +167,7 @@ func (event ArtifactCollectorDuration) Emit(logger lager.Logger) {
 			Value: ms(event.Duration),
 		},
 	)
+	RecordGCCollectorDuration(context.Background(), "artifact", ms(event.Duration))
 }
 
 type ContainerCollectorDuration struct {
@@ -172,6 +182,7 @@ func (event ContainerCollectorDuration) Emit(logger lager.Logger) {
 			Value: ms(event.Duration),
 		},
 	)
+	RecordGCCollectorDuration(context.Background(), "container", ms(event.Duration))
 }
 
 type VolumeCollectorDuration struct {
@@ -186,6 +197,7 @@ func (event VolumeCollectorDuration) Emit(logger lager.Logger) {
 			Value: ms(event.Duration),
 		},
 	)
+	RecordGCCollectorDuration(context.Background(), "volume", ms(event.Duration))
 }
 
 type SchedulingJobDuration struct {
@@ -208,6 +220,8 @@ func (event SchedulingJobDuration) Emit(logger lager.Logger) {
 			},
 		},
 	)
+
+	RecordSchedulingJobDuration(context.Background(), event.Duration.Seconds(), event.PipelineName, event.JobName)
 }
 
 type WorkerContainers struct {
@@ -518,6 +532,8 @@ func (event BuildFinished) Emit(logger lager.Logger) {
 		attrs["job"],
 		event.Build.Status().String(),
 	)
+
+	RecordBuildFinished(context.Background(), event.Build.Status().String())
 }
 
 // extractTraceID parses the trace ID from a W3C traceparent header.

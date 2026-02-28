@@ -212,7 +212,7 @@ func (b *engineBuild) Run(ctx context.Context) {
 				runErr = err
 			}
 		}()
-		succeeded, runErr = state.Run(lagerctx.NewContext(ctx, logger), b.build.PrivatePlan())
+		succeeded, runErr = state.Run(lagerctx.NewContext(ctx, tracing.LoggerWithSpan(ctx, logger)), b.build.PrivatePlan())
 	}()
 
 	select {

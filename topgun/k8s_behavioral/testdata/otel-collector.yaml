@@ -1,0 +1,74 @@
+# Minimal OpenTelemetry Collector for integration test metrics collection.
+# Deploy into the Concourse namespace when COLLECT_OTEL=1 is set.
+#
+# Receives OTLP on port 4317 (gRPC) and exports to a file at
+# /var/otel/metrics.json for easy retrieval via kubectl exec.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector-config
+data:
+  config.yaml: |
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: "0.0.0.0:4317"
+    exporters:
+      file:
+        path: /var/otel/metrics.json
+    service:
+      pipelines:
+        traces:
+          receivers: [otlp]
+          exporters: [file]
+        metrics:
+          receivers: [otlp]
+          exporters: [file]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-collector
+  labels:
+    app: otel-collector
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: otel-collector
+  template:
+    metadata:
+      labels:
+        app: otel-collector
+    spec:
+      containers:
+      - name: collector
+        image: otel/opentelemetry-collector:latest
+        args: ["--config=/etc/otel/config.yaml"]
+        ports:
+        - containerPort: 4317
+          name: otlp-grpc
+        volumeMounts:
+        - name: config
+          mountPath: /etc/otel
+        - name: data
+          mountPath: /var/otel
+      volumes:
+      - name: config
+        configMap:
+          name: otel-collector-config
+      - name: data
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-collector
+spec:
+  selector:
+    app: otel-collector
+  ports:
+  - port: 4317
+    targetPort: 4317
+    name: otlp-grpc

@@ -178,6 +178,18 @@ func helmDeployConcourse(kubeconfig, namespace, chartPath, image string) {
 		"create", "namespace", namespace).Run()
 
 	log.Printf("Deploying Concourse chart from %s into namespace %s...", chartPath, namespace)
+	// Base extra args for Concourse web.
+	extraArgs := "--component-runner-interval=2s,--gc-interval=2s"
+
+	// When COLLECT_OTEL is set, inject OTel exporter addresses so Concourse
+	// sends metrics and traces to the in-cluster OTel collector.
+	if os.Getenv("COLLECT_OTEL") == "1" {
+		otelAddr := fmt.Sprintf("otel-collector.%s.svc.cluster.local:4317", namespace)
+		extraArgs += ",--tracing-otlp-address=" + otelAddr
+		extraArgs += ",--otel-metrics-otlp-address=" + otelAddr
+		log.Printf("OTel collection enabled, exporting to %s", otelAddr)
+	}
+
 	helmArgs := []string{
 		"upgrade", "--install", "concourse", chartPath,
 		"--namespace", namespace,
@@ -187,7 +199,7 @@ func helmDeployConcourse(kubeconfig, namespace, chartPath, image string) {
 		"--set", "image.pullPolicy=IfNotPresent", // only the Concourse image is pre-loaded
 		// Reduce ATC polling intervals from 10s defaults to speed up
 		// build scheduling in integration tests.
-		"--set", "web.extraArgs={--component-runner-interval=2s,--gc-interval=2s}",
+		"--set", fmt.Sprintf("web.extraArgs={%s}", extraArgs),
 		// Use emptyDir for PostgreSQL — ephemeral KinD clusters don't need
 		// persistent storage, and KinD's local-path-provisioner struggles
 		// under resource contention when multiple clusters run in parallel.

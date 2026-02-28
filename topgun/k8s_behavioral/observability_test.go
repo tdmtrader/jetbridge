@@ -1,7 +1,9 @@
 package behavioral_test
 
 import (
+	"fmt"
 	"net/http"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -160,5 +162,52 @@ jobs:
 		Expect(sess.ExitCode()).To(Equal(0))
 		output := string(sess.Out.Contents())
 		Expect(output).To(ContainSubstring("PLAIN_LOG"))
+	})
+
+	It("collects OTel metrics during builds", func() {
+		if !collectOTelEnabled() {
+			Skip("COLLECT_OTEL=1 not set, skipping OTel metrics collection test")
+		}
+
+		By("deploying the OTel collector")
+		deployOTelCollector()
+		defer cleanupOTelCollector()
+
+		By("running a multi-step pipeline to generate metrics")
+		cfg := writePipelineFile("otel-perf.yml", `
+jobs:
+- name: perf-job
+  plan:
+  - task: step-a
+    config:
+      platform: linux
+      image_resource: {type: registry-image, source: {repository: busybox}}
+      run:
+        path: sh
+        args: ["-c", "echo STEP_A && sleep 1"]
+  - task: step-b
+    config:
+      platform: linux
+      image_resource: {type: registry-image, source: {repository: busybox}}
+      run:
+        path: sh
+        args: ["-c", "echo STEP_B && sleep 2"]
+`)
+		setAndUnpausePipeline(cfg)
+		triggerJob("perf-job")
+
+		sess := waitForBuildAndWatch("perf-job")
+		Expect(sess.ExitCode()).To(Equal(0))
+
+		By("waiting for OTel metrics to be exported")
+		metrics := waitForOTelMetrics(30 * time.Second)
+
+		By("verifying metrics were collected")
+		fmt.Fprintf(GinkgoWriter, "Collected %d metric entries from OTel collector\n", len(metrics))
+		Expect(len(metrics)).To(BeNumerically(">", 0),
+			"expected at least one metric entry from the OTel collector")
+
+		By("printing step performance report")
+		printStepPerformanceReport(metrics)
 	})
 })
