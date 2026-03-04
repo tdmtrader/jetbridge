@@ -205,6 +205,42 @@ var _ = Describe("Component Notifications", func() {
 		})
 	})
 
+	Describe("Build completion notifications", func() {
+		var build db.Build
+
+		BeforeEach(func() {
+			var err error
+			build, err = defaultTeam.CreateOneOffBuild()
+			Expect(err).NotTo(HaveOccurred())
+
+			started, err := build.Start(atc.Plan{})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(started).To(BeTrue())
+		})
+
+		Describe("build.Finish notifies SyslogDrainer", func() {
+			It("notifies the drainer", func() {
+				received := listenFor(atc.ComponentSyslogDrainer)
+
+				err := build.Finish(db.BuildStatusSucceeded)
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(received()).To(BeTrue(), "expected drainer notification after build.Finish")
+			})
+		})
+
+		Describe("build.Finish notifies BuildReaper", func() {
+			It("notifies the reaper", func() {
+				received := listenFor(atc.ComponentBuildReaper)
+
+				err := build.Finish(db.BuildStatusSucceeded)
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(received()).To(BeTrue(), "expected reaper notification after build.Finish")
+			})
+		})
+	})
+
 	Describe("ResourceType scanner notifications", func() {
 		It("notifies the scanner on SetResourceConfigScope", func() {
 			scenario := dbtest.Setup(

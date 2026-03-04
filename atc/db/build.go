@@ -810,6 +810,9 @@ WITH RECURSIVE pipelines_to_archive AS (
 		return err
 	}
 
+	b.conn.Bus().Notify(atc.ComponentBuildReaper)
+	b.conn.Bus().Notify(atc.ComponentSyslogDrainer)
+
 	return nil
 }
 

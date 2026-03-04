@@ -1220,9 +1220,9 @@ func (cmd *RunCommand) backendComponents(
 		},
 		{
 			Component: atc.Component{
-				Name:     atc.ComponentBuildReaper,
-				Interval: 30 * time.Second,
+				Name: atc.ComponentBuildReaper,
 			},
+			NotifyOnly: true,
 			Runnable: gc.NewBuildLogCollector(
 				dbPipelineFactory,
 				dbPipelineLifecycle,
@@ -1314,9 +1314,9 @@ func (cmd *RunCommand) backendComponents(
 	if syslogDrainConfigured {
 		components = append(components, RunnableComponent{
 			Component: atc.Component{
-				Name:     atc.ComponentSyslogDrainer,
-				Interval: cmd.Syslog.DrainInterval,
+				Name: atc.ComponentSyslogDrainer,
 			},
+			NotifyOnly: true,
 			Runnable: syslog.NewDrainer(
 				cmd.Syslog.Transport,
 				cmd.Syslog.Address,
