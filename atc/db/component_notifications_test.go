@@ -239,6 +239,39 @@ var _ = Describe("Component Notifications", func() {
 				Expect(received()).To(BeTrue(), "expected reaper notification after build.Finish")
 			})
 		})
+
+		Describe("build.Finish notifies CollectorBuilds", func() {
+			It("notifies the build collector", func() {
+				received := listenFor(atc.ComponentCollectorBuilds)
+
+				err := build.Finish(db.BuildStatusSucceeded)
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(received()).To(BeTrue(), "expected build collector notification after build.Finish")
+			})
+		})
+
+		Describe("build.Finish notifies CollectorResourceCacheUses", func() {
+			It("notifies the resource cache use collector", func() {
+				received := listenFor(atc.ComponentCollectorResourceCacheUses)
+
+				err := build.Finish(db.BuildStatusSucceeded)
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(received()).To(BeTrue(), "expected resource cache use collector notification after build.Finish")
+			})
+		})
+
+		Describe("build.Finish notifies CollectorChecks", func() {
+			It("notifies the checks collector", func() {
+				received := listenFor(atc.ComponentCollectorChecks)
+
+				err := build.Finish(db.BuildStatusSucceeded)
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(received()).To(BeTrue(), "expected checks collector notification after build.Finish")
+			})
+		})
 	})
 
 	Describe("ResourceType scanner notifications", func() {

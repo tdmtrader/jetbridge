@@ -1462,15 +1462,27 @@ func (cmd *RunCommand) gcComponents(
 		atc.ComponentCollectorChecks:            gc.NewChecksCollector(dbCheckLifecycle),
 	}
 
+	notifyOnlyCollectors := map[string]bool{
+		atc.ComponentCollectorBuilds:            true,
+		atc.ComponentCollectorResourceCacheUses: true,
+		atc.ComponentCollectorChecks:            true,
+	}
+
 	var components []RunnableComponent
 	for collectorName, collector := range collectors {
-		components = append(components, RunnableComponent{
-			Component: atc.Component{
+		rc := RunnableComponent{
+			Runnable: collector,
+		}
+		if notifyOnlyCollectors[collectorName] {
+			rc.Component = atc.Component{Name: collectorName}
+			rc.NotifyOnly = true
+		} else {
+			rc.Component = atc.Component{
 				Name:     collectorName,
 				Interval: cmd.GC.Interval,
-			},
-			Runnable: collector,
-		})
+			}
+		}
+		components = append(components, rc)
 	}
 
 	return components, nil
