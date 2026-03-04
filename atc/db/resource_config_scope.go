@@ -89,7 +89,14 @@ func (r *resourceConfigScope) LastCheck() (LastCheck, error) {
 // that already exist in the DB will be re-ordered using
 // incrementCheckOrder to input the correct check order
 func (r *resourceConfigScope) SaveVersions(spanContext SpanContext, versions []atc.Version) error {
-	return saveVersions(r.conn, r.ID(), versions, spanContext)
+	err := saveVersions(r.conn, r.ID(), versions, spanContext)
+	if err != nil {
+		return err
+	}
+
+	r.conn.Bus().Notify(atc.ComponentLidarScanner)
+
+	return nil
 }
 
 func saveVersions(conn DbConn, rcsID int, versions []atc.Version, spanContext SpanContext) (err error) {
@@ -264,6 +271,8 @@ func (r *resourceConfigScope) UpdateLastCheckEndTime(succeeded bool) (bool, erro
 	if err != nil {
 		return false, err
 	}
+
+	r.conn.Bus().Notify(atc.ComponentLidarScanner)
 
 	return true, nil
 }

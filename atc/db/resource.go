@@ -273,6 +273,8 @@ func (r *resource) SetResourceConfigScope(scope ResourceConfigScope) error {
 		return err
 	}
 
+	r.conn.Bus().Notify(atc.ComponentLidarScanner)
+
 	return nil
 }
 
@@ -729,6 +731,8 @@ func (r *resource) PinVersion(rcvID int) (bool, error) {
 		return false, err
 	}
 
+	r.conn.Bus().Notify(atc.ComponentLidarScanner)
+
 	return true, nil
 }
 
@@ -766,6 +770,8 @@ func (r *resource) UnpinVersion() error {
 	if err != nil {
 		return err
 	}
+
+	r.conn.Bus().Notify(atc.ComponentLidarScanner)
 
 	return nil
 }
@@ -811,7 +817,14 @@ func (r *resource) toggleVersion(rcvID int, enable bool) error {
 		return err
 	}
 
-	return tx.Commit()
+	err = tx.Commit()
+	if err != nil {
+		return err
+	}
+
+	r.conn.Bus().Notify(atc.ComponentLidarScanner)
+
+	return nil
 }
 
 func (r *resource) NotifyScan() error {

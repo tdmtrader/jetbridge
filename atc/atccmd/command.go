@@ -1175,9 +1175,9 @@ func (cmd *RunCommand) backendComponents(
 	components := []RunnableComponent{
 		{
 			Component: atc.Component{
-				Name:     atc.ComponentLidarScanner,
-				Interval: cmd.LidarScannerInterval,
+				Name: atc.ComponentLidarScanner,
 			},
+			NotifyOnly: true,
 			Runnable: lidar.NewScanner(
 				dbCheckFactory,
 				atc.NewPlanFactory(time.Now().Unix()),

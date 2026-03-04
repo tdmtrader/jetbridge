@@ -233,7 +233,14 @@ func (t *resourceType) Reload() (bool, error) {
 }
 
 func (r *resourceType) SetResourceConfigScope(scope ResourceConfigScope) error {
-	return setResourceConfigScopeForResourceType(r.conn, scope, sq.Eq{"id": r.id})
+	err := setResourceConfigScopeForResourceType(r.conn, scope, sq.Eq{"id": r.id})
+	if err != nil {
+		return err
+	}
+
+	r.conn.Bus().Notify(atc.ComponentLidarScanner)
+
+	return nil
 }
 
 func setResourceConfigScopeForResourceType(conn sq.Runner, scope ResourceConfigScope, pred any, args ...any) error {
