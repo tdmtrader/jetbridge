@@ -665,10 +665,11 @@ func (p *pipeline) Pause(pausedBy string) error {
 		Where(sq.Eq{"id": p.id, "paused": false}).
 		RunWith(p.conn).
 		Exec()
-
 	if err != nil {
 		return err
 	}
+
+	p.conn.Bus().Notify(atc.ComponentCollectorTaskCaches)
 
 	return nil
 }
@@ -713,7 +714,15 @@ func (p *pipeline) Archive() error {
 		return err
 	}
 
-	return tx.Commit()
+	err = tx.Commit()
+	if err != nil {
+		return err
+	}
+
+	p.conn.Bus().Notify(atc.ComponentCollectorPipelines)
+	p.conn.Bus().Notify(atc.ComponentCollectorTaskCaches)
+
+	return nil
 }
 
 func (p *pipeline) archive(tx Tx) error {
@@ -773,8 +782,13 @@ func (p *pipeline) Destroy() error {
 		}).
 		RunWith(p.conn).
 		Exec()
+	if err != nil {
+		return err
+	}
 
-	return err
+	p.conn.Bus().Notify(atc.ComponentCollectorPipelines)
+
+	return nil
 }
 
 func (p *pipeline) LoadDebugVersionsDB() (*atc.DebugVersionsDB, error) {

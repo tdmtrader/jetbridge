@@ -814,6 +814,7 @@ WITH RECURSIVE pipelines_to_archive AS (
 	b.conn.Bus().Notify(atc.ComponentSyslogDrainer)
 	b.conn.Bus().Notify(atc.ComponentCollectorBuilds)
 	b.conn.Bus().Notify(atc.ComponentCollectorResourceCacheUses)
+	b.conn.Bus().Notify(atc.ComponentCollectorResourceCaches)
 	b.conn.Bus().Notify(atc.ComponentCollectorChecks)
 
 	return nil

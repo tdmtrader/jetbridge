@@ -1465,7 +1465,10 @@ func (cmd *RunCommand) gcComponents(
 	notifyOnlyCollectors := map[string]bool{
 		atc.ComponentCollectorBuilds:            true,
 		atc.ComponentCollectorResourceCacheUses: true,
+		atc.ComponentCollectorResourceCaches:    true,
 		atc.ComponentCollectorChecks:            true,
+		atc.ComponentCollectorPipelines:         true,
+		atc.ComponentCollectorTaskCaches:        true,
 	}
 
 	var components []RunnableComponent

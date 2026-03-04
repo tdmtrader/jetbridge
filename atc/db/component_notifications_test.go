@@ -274,6 +274,93 @@ var _ = Describe("Component Notifications", func() {
 		})
 	})
 
+	Describe("Pipeline lifecycle notifications", func() {
+		var pipeline db.Pipeline
+
+		BeforeEach(func() {
+			scenario := dbtest.Setup(
+				builder.WithPipeline(atc.Config{
+					Jobs: atc.JobConfigs{
+						{
+							Name: "some-job",
+							PlanSequence: []atc.Step{
+								{
+									Config: &atc.TaskStep{
+										Name:       "some-task",
+										ConfigPath: "some-path",
+									},
+								},
+							},
+						},
+					},
+				}),
+			)
+			pipeline = scenario.Pipeline
+		})
+
+		Describe("pipeline.Archive notifies CollectorPipelines", func() {
+			It("notifies the pipeline collector", func() {
+				received := listenFor(atc.ComponentCollectorPipelines)
+
+				err := pipeline.Archive()
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(received()).To(BeTrue(), "expected pipeline collector notification after Archive")
+			})
+		})
+
+		Describe("pipeline.Archive notifies CollectorTaskCaches", func() {
+			It("notifies the task cache collector", func() {
+				received := listenFor(atc.ComponentCollectorTaskCaches)
+
+				err := pipeline.Archive()
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(received()).To(BeTrue(), "expected task cache collector notification after Archive")
+			})
+		})
+
+		Describe("pipeline.Destroy notifies CollectorPipelines", func() {
+			It("notifies the pipeline collector", func() {
+				received := listenFor(atc.ComponentCollectorPipelines)
+
+				err := pipeline.Destroy()
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(received()).To(BeTrue(), "expected pipeline collector notification after Destroy")
+			})
+		})
+
+		Describe("pipeline.Pause notifies CollectorTaskCaches", func() {
+			It("notifies the task cache collector", func() {
+				received := listenFor(atc.ComponentCollectorTaskCaches)
+
+				err := pipeline.Pause("test")
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(received()).To(BeTrue(), "expected task cache collector notification after Pause")
+			})
+		})
+
+		Describe("build.Finish notifies CollectorResourceCaches", func() {
+			It("notifies the resource cache collector", func() {
+				build, err := defaultTeam.CreateOneOffBuild()
+				Expect(err).NotTo(HaveOccurred())
+
+				started, err := build.Start(atc.Plan{})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(started).To(BeTrue())
+
+				received := listenFor(atc.ComponentCollectorResourceCaches)
+
+				err = build.Finish(db.BuildStatusSucceeded)
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(received()).To(BeTrue(), "expected resource cache collector notification after build.Finish")
+			})
+		})
+	})
+
 	Describe("ResourceType scanner notifications", func() {
 		It("notifies the scanner on SetResourceConfigScope", func() {
 			scenario := dbtest.Setup(
