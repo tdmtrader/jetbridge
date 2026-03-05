@@ -164,6 +164,29 @@ spec:
             - --kubernetes-artifact-store-gcs-fuse
             {{- end }}
             {{- end }}
+            # Tracing
+            {{- if .Values.tracing.otlpAddress }}
+            - --tracing-otlp-address={{ .Values.tracing.otlpAddress }}
+            {{- end }}
+            {{- if .Values.tracing.otlpUseTLS }}
+            - --tracing-otlp-use-tls
+            {{- end }}
+            {{- if .Values.tracing.serviceName }}
+            - --tracing-service-name={{ .Values.tracing.serviceName }}
+            {{- end }}
+            {{- range $key, $val := .Values.tracing.otlpHeaders }}
+            - --tracing-otlp-header={{ $key }}:{{ $val }}
+            {{- end }}
+            # OTel Metrics
+            {{- if .Values.otelMetrics.otlpAddress }}
+            - --otel-metrics-otlp-address={{ .Values.otelMetrics.otlpAddress }}
+            {{- end }}
+            {{- if .Values.otelMetrics.otlpUseTLS }}
+            - --otel-metrics-otlp-use-tls
+            {{- end }}
+            {{- range $key, $val := .Values.otelMetrics.otlpHeaders }}
+            - --otel-metrics-otlp-header={{ $key }}:{{ $val }}
+            {{- end }}
             # Extra args
             {{- range .Values.web.extraArgs }}
             - {{ . }}

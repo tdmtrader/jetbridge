@@ -39,6 +39,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	testotel "github.com/concourse/concourse/testhelpers/otel"
 	"github.com/google/uuid"
 	"github.com/onsi/gomega/gexec"
 	corev1 "k8s.io/api/core/v1"
@@ -144,6 +145,10 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 		cfg.FlyBin = BuildBinary()
 	}
 
+	// Initialize test tracing (opt-in via OTEL_EXPORTER_OTLP_ENDPOINT or
+	// OTLP_HTTP_ENDPOINT). When enabled, each test emits a "test.run" span.
+	testotel.InitTestTracing("k8s-integration")
+
 	payload, err := json.Marshal(cfg)
 	Expect(err).ToNot(HaveOccurred())
 
@@ -154,10 +159,17 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 })
 
 var _ = SynchronizedAfterSuite(func() {}, func() {
+	testotel.Shutdown()
 	if os.Getenv("FLY_PATH") == "" {
 		gexec.CleanupBuildArtifacts()
 	}
 })
+
+// Emit a test span for each completed test, including the pipeline name
+// for correlation with server-side traces in Tempo.
+var _ = ReportAfterEach(testotel.ReportTestSpanWithPipeline(func() string {
+	return pipelineName
+}))
 
 var _ = BeforeEach(func() {
 	// 2 minutes is plenty for any single operation; the 5-minute default

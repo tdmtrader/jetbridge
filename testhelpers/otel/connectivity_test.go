@@ -22,7 +22,7 @@
 //	LOKI_URL=http://loki.home \
 //	go test ./testhelpers/otel/ -run TestConnectivity -v -count=1
 //
-// Default endpoints assume port-forwards are running.
+// Default endpoints use theborg DNS names (tempo-otlp.home, tempo.home, loki.home).
 package otel_test
 
 import (
@@ -53,8 +53,8 @@ func envOr(key, defaultVal string) string {
 
 func TestConnectivityTraces(t *testing.T) {
 	// OTLP HTTP endpoint (Tempo's receiver on port 4318).
-	otlpEndpoint := envOr("OTLP_HTTP_ENDPOINT", "http://localhost:4318")
-	tempoURL := envOr("TEMPO_QUERY_URL", "http://localhost:3200")
+	otlpEndpoint := envOr("OTLP_HTTP_ENDPOINT", "http://tempo-otlp.home")
+	tempoURL := envOr("TEMPO_QUERY_URL", "http://tempo.home")
 
 	ctx := context.Background()
 
@@ -118,7 +118,7 @@ func TestConnectivityTraces(t *testing.T) {
 }
 
 func TestConnectivityLogs(t *testing.T) {
-	lokiURL := envOr("LOKI_URL", "http://localhost:3100")
+	lokiURL := envOr("LOKI_URL", "http://loki.home")
 
 	marker := fmt.Sprintf("connectivity-log-%d", time.Now().UnixNano())
 

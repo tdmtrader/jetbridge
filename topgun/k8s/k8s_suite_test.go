@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	testotel "github.com/concourse/concourse/testhelpers/otel"
 	"github.com/caarlos0/env/v11"
 	"github.com/onsi/gomega/gbytes"
 	"github.com/onsi/gomega/gexec"
@@ -54,7 +55,11 @@ var (
 	deployedReleases       map[string]string // map[releaseName] = namespace
 )
 
+var _ = ReportAfterEach(testotel.ReportTestSpan)
+
 var _ = SynchronizedBeforeSuite(func() []byte {
+	testotel.InitTestTracing("topgun-k8s")
+
 	var parsedEnv environment
 
 	err := env.Parse(&parsedEnv)
@@ -118,6 +123,7 @@ var _ = BeforeEach(func() {
 // In case one of the tests exited before entering the It block, make sure to cleanup
 // any releases that might've already been deployed
 var _ = AfterSuite(func() {
+	testotel.Shutdown()
 	cleanupReleases()
 })
 

@@ -17,6 +17,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	testotel "github.com/concourse/concourse/testhelpers/otel"
 	"github.com/concourse/concourse/go-concourse/concourse"
 	"github.com/google/uuid"
 	"github.com/onsi/gomega/gexec"
@@ -63,7 +64,15 @@ func TestTestflight(t *testing.T) {
 	RunSpecs(t, "TestFlight Suite")
 }
 
+// Emit a test span for each completed test, including the pipeline name
+// for correlation with server-side traces in Tempo.
+var _ = ReportAfterEach(testotel.ReportTestSpanWithPipeline(func() string {
+	return pipelineName
+}))
+
 var _ = SynchronizedBeforeSuite(func() []byte {
+	testotel.InitTestTracing("testflight")
+
 	atcURL := os.Getenv("ATC_URL")
 	if atcURL != "" {
 		config.ATCURL = atcURL
@@ -139,6 +148,7 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 
 var _ = SynchronizedAfterSuite(func() {
 }, func() {
+	testotel.Shutdown()
 	os.Remove(config.FlyBin)
 })
 

@@ -267,6 +267,29 @@ serviceAccount:
   # -- Annotations to add to the ServiceAccount
   annotations: {}
 
+# -- OpenTelemetry tracing configuration.
+# When enabled, the web node emits traces and metrics via OTLP.
+# Example for Grafana Tempo: otlpAddress: "tempo.monitoring.svc:4317"
+tracing:
+  # -- OTLP gRPC endpoint for traces (e.g., "tempo.monitoring.svc:4317")
+  otlpAddress: ""
+  # -- Additional OTLP headers (map of key:value)
+  otlpHeaders: {}
+  # -- Use TLS for the OTLP connection
+  otlpUseTLS: false
+  # -- Service name reported in traces (default: concourse-web)
+  serviceName: ""
+
+# -- OpenTelemetry metrics configuration.
+# When enabled, the web node exports metrics via OTLP gRPC.
+otelMetrics:
+  # -- OTLP gRPC endpoint for metrics (e.g., "tempo.monitoring.svc:4317")
+  otlpAddress: ""
+  # -- Additional OTLP headers for metrics
+  otlpHeaders: {}
+  # -- Use TLS for the metrics OTLP connection
+  otlpUseTLS: false
+
 # -- Secrets configuration
 secrets:
   # -- Auto-generate signing keys on install.

@@ -198,6 +198,30 @@ func helmDeployConcourse(kubeconfig, namespace, chartPath, image string) {
 		"create", "namespace", namespace).Run()
 
 	log.Printf("Deploying Concourse chart from %s into namespace %s...", chartPath, namespace)
+
+	// Build the list of extra args for the web node.
+	extraArgs := []string{
+		"--component-runner-interval=2s",
+		"--gc-interval=2s",
+	}
+
+	// When OTEL_EXPORTER_OTLP_ENDPOINT is set, enable server-side tracing.
+	// The endpoint must be reachable from inside the KinD cluster (e.g.,
+	// host.docker.internal:<port> for macOS Docker Desktop, or an in-cluster
+	// collector address).
+	if otlpEndpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"); otlpEndpoint != "" {
+		log.Printf("Enabling OTel tracing: --tracing-otlp-address=%s", otlpEndpoint)
+		extraArgs = append(extraArgs,
+			"--tracing-otlp-address="+otlpEndpoint,
+			"--tracing-service-name=concourse-integration-test",
+		)
+	}
+	if otlpMetrics := os.Getenv("OTEL_METRICS_OTLP_ENDPOINT"); otlpMetrics != "" {
+		log.Printf("Enabling OTel metrics: --otel-metrics-otlp-address=%s", otlpMetrics)
+		extraArgs = append(extraArgs, "--otel-metrics-otlp-address="+otlpMetrics)
+	}
+
+	// Helm --set for arrays: web.extraArgs[0]=...,web.extraArgs[1]=...
 	helmArgs := []string{
 		"upgrade", "--install", "concourse", chartPath,
 		"--namespace", namespace,
@@ -205,10 +229,10 @@ func helmDeployConcourse(kubeconfig, namespace, chartPath, image string) {
 		"--set", fmt.Sprintf("image.repository=%s", repo),
 		"--set", fmt.Sprintf("image.tag=%s", tag),
 		"--set", "image.pullPolicy=IfNotPresent",
-		// Reduce ATC polling intervals from 10s defaults to speed up
-		// build scheduling in integration tests.
-		"--set", "web.extraArgs={--component-runner-interval=2s,--gc-interval=2s}",
 		"--timeout", "5m",
+	}
+	for i, arg := range extraArgs {
+		helmArgs = append(helmArgs, "--set", fmt.Sprintf("web.extraArgs[%d]=%s", i, arg))
 	}
 	cmd := exec.Command("helm", helmArgs...)
 	cmd.Stdout = os.Stderr
