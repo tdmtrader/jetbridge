@@ -1,0 +1,17 @@
+{
+  "trackId": "finish_setup_20260303",
+  "type": "feature",
+  "status": "archived",
+  "description": "finish-setup",
+  "createdAt": "2026-03-04T02:22:59.633Z",
+  "updatedAt": "2026-03-04T02:36:01.157Z",
+  "sessions": [
+    {
+      "slotIndex": 0,
+      "engineType": "claude",
+      "aiSessionId": "605d86b5-5c48-4758-a746-7220c63c0e2c",
+      "accountId": "system-claude",
+      "updatedAt": "2026-03-04T02:23:15.588Z"
+    }
+  ]
+}

@@ -1,0 +1,17 @@
+{
+  "trackId": "integration_test_performance_20260226",
+  "type": "refactor",
+  "status": "archived",
+  "description": "Integration test performance — sample, understand, and fix low-hanging fruit in K8s behavioral integration tests",
+  "createdAt": "2026-02-27T02:56:19.132Z",
+  "updatedAt": "2026-02-27T21:20:57.214Z",
+  "sessions": [
+    {
+      "slotIndex": 0,
+      "engineType": "claude",
+      "aiSessionId": "a1361e81-39ed-40ac-9666-c65fa19491fd",
+      "accountId": "system-claude",
+      "updatedAt": "2026-02-27T02:56:32.497Z"
+    }
+  ]
+}

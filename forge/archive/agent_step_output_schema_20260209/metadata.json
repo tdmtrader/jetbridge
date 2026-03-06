@@ -1,0 +1,8 @@
+{
+  "trackId": "agent_step_output_schema_20260209",
+  "type": "feature",
+  "status": "completed",
+  "description": "Agent step output schema — define results.json and events.ndjson conventions for agent steps",
+  "createdAt": "2026-02-10T04:30:00.000Z",
+  "updatedAt": "2026-02-10T05:30:00.000Z"
+}

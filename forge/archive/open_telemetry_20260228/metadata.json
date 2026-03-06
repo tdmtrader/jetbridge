@@ -1,0 +1,17 @@
+{
+  "trackId": "open_telemetry_20260228",
+  "type": "feature",
+  "status": "completed",
+  "description": "open telemetry",
+  "createdAt": "2026-02-28T15:58:54.413Z",
+  "updatedAt": "2026-02-28T19:23:52.890Z",
+  "sessions": [
+    {
+      "slotIndex": 0,
+      "engineType": "claude",
+      "aiSessionId": "ec4977a3-d92f-45c9-b003-cf721d7a4fa0",
+      "accountId": "system-claude",
+      "updatedAt": "2026-02-28T18:25:30.992Z"
+    }
+  ]
+}
