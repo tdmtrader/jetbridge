@@ -1404,32 +1404,4 @@ var _ = Describe("BuildStepDelegate", func() {
 		})
 	})
 
-	Describe("StreamingVolume", func() {
-		JustBeforeEach(func() {
-			delegate.StreamingVolume(logger, "some-volume", "src-worker", "dest-worker")
-		})
-
-		It("saves an event", func() {
-			Expect(fakeBuild.SaveEventCallCount()).To(Equal(1))
-			e := fakeBuild.SaveEventArgsForCall(0)
-			Expect(e.EventType()).To(Equal(atc.EventType("streaming-volume")))
-			Expect(e.(event.StreamingVolume).Volume).To(Equal("some-volume"))
-			Expect(e.(event.StreamingVolume).SourceWorker).To(Equal("src-worker"))
-			Expect(e.(event.StreamingVolume).DestWorker).To(Equal("dest-worker"))
-		})
-	})
-
-	Describe("WaitingForStreamedVolume", func() {
-		JustBeforeEach(func() {
-			delegate.WaitingForStreamedVolume(logger, "some-volume", "dest-worker")
-		})
-
-		It("saves an event", func() {
-			Expect(fakeBuild.SaveEventCallCount()).To(Equal(1))
-			e := fakeBuild.SaveEventArgsForCall(0)
-			Expect(e.EventType()).To(Equal(atc.EventType("waiting-for-streamed-volume")))
-			Expect(e.(event.WaitingForStreamedVolume).Volume).To(Equal("some-volume"))
-			Expect(e.(event.WaitingForStreamedVolume).DestWorker).To(Equal("dest-worker"))
-		})
-	})
 })

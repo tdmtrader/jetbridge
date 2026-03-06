@@ -29,25 +29,6 @@ type FakePool struct {
 		result1 runtime.Worker
 		result2 error
 	}
-	FindResourceCacheVolumeStub        func(context.Context, int, db.ResourceCache, worker.Spec, time.Time) (runtime.Volume, bool, error)
-	findResourceCacheVolumeMutex       sync.RWMutex
-	findResourceCacheVolumeArgsForCall []struct {
-		arg1 context.Context
-		arg2 int
-		arg3 db.ResourceCache
-		arg4 worker.Spec
-		arg5 time.Time
-	}
-	findResourceCacheVolumeReturns struct {
-		result1 runtime.Volume
-		result2 bool
-		result3 error
-	}
-	findResourceCacheVolumeReturnsOnCall map[int]struct {
-		result1 runtime.Volume
-		result2 bool
-		result3 error
-	}
 	FindResourceCacheVolumeOnWorkerStub        func(context.Context, db.ResourceCache, worker.Spec, string, time.Time) (runtime.Volume, bool, error)
 	findResourceCacheVolumeOnWorkerMutex       sync.RWMutex
 	findResourceCacheVolumeOnWorkerArgsForCall []struct {
@@ -155,77 +136,6 @@ func (fake *FakePool) FindOrSelectWorkerReturnsOnCall(i int, result1 runtime.Wor
 		result1 runtime.Worker
 		result2 error
 	}{result1, result2}
-}
-
-func (fake *FakePool) FindResourceCacheVolume(arg1 context.Context, arg2 int, arg3 db.ResourceCache, arg4 worker.Spec, arg5 time.Time) (runtime.Volume, bool, error) {
-	fake.findResourceCacheVolumeMutex.Lock()
-	ret, specificReturn := fake.findResourceCacheVolumeReturnsOnCall[len(fake.findResourceCacheVolumeArgsForCall)]
-	fake.findResourceCacheVolumeArgsForCall = append(fake.findResourceCacheVolumeArgsForCall, struct {
-		arg1 context.Context
-		arg2 int
-		arg3 db.ResourceCache
-		arg4 worker.Spec
-		arg5 time.Time
-	}{arg1, arg2, arg3, arg4, arg5})
-	stub := fake.FindResourceCacheVolumeStub
-	fakeReturns := fake.findResourceCacheVolumeReturns
-	fake.recordInvocation("FindResourceCacheVolume", []interface{}{arg1, arg2, arg3, arg4, arg5})
-	fake.findResourceCacheVolumeMutex.Unlock()
-	if stub != nil {
-		return stub(arg1, arg2, arg3, arg4, arg5)
-	}
-	if specificReturn {
-		return ret.result1, ret.result2, ret.result3
-	}
-	return fakeReturns.result1, fakeReturns.result2, fakeReturns.result3
-}
-
-func (fake *FakePool) FindResourceCacheVolumeCallCount() int {
-	fake.findResourceCacheVolumeMutex.RLock()
-	defer fake.findResourceCacheVolumeMutex.RUnlock()
-	return len(fake.findResourceCacheVolumeArgsForCall)
-}
-
-func (fake *FakePool) FindResourceCacheVolumeCalls(stub func(context.Context, int, db.ResourceCache, worker.Spec, time.Time) (runtime.Volume, bool, error)) {
-	fake.findResourceCacheVolumeMutex.Lock()
-	defer fake.findResourceCacheVolumeMutex.Unlock()
-	fake.FindResourceCacheVolumeStub = stub
-}
-
-func (fake *FakePool) FindResourceCacheVolumeArgsForCall(i int) (context.Context, int, db.ResourceCache, worker.Spec, time.Time) {
-	fake.findResourceCacheVolumeMutex.RLock()
-	defer fake.findResourceCacheVolumeMutex.RUnlock()
-	argsForCall := fake.findResourceCacheVolumeArgsForCall[i]
-	return argsForCall.arg1, argsForCall.arg2, argsForCall.arg3, argsForCall.arg4, argsForCall.arg5
-}
-
-func (fake *FakePool) FindResourceCacheVolumeReturns(result1 runtime.Volume, result2 bool, result3 error) {
-	fake.findResourceCacheVolumeMutex.Lock()
-	defer fake.findResourceCacheVolumeMutex.Unlock()
-	fake.FindResourceCacheVolumeStub = nil
-	fake.findResourceCacheVolumeReturns = struct {
-		result1 runtime.Volume
-		result2 bool
-		result3 error
-	}{result1, result2, result3}
-}
-
-func (fake *FakePool) FindResourceCacheVolumeReturnsOnCall(i int, result1 runtime.Volume, result2 bool, result3 error) {
-	fake.findResourceCacheVolumeMutex.Lock()
-	defer fake.findResourceCacheVolumeMutex.Unlock()
-	fake.FindResourceCacheVolumeStub = nil
-	if fake.findResourceCacheVolumeReturnsOnCall == nil {
-		fake.findResourceCacheVolumeReturnsOnCall = make(map[int]struct {
-			result1 runtime.Volume
-			result2 bool
-			result3 error
-		})
-	}
-	fake.findResourceCacheVolumeReturnsOnCall[i] = struct {
-		result1 runtime.Volume
-		result2 bool
-		result3 error
-	}{result1, result2, result3}
 }
 
 func (fake *FakePool) FindResourceCacheVolumeOnWorker(arg1 context.Context, arg2 db.ResourceCache, arg3 worker.Spec, arg4 string, arg5 time.Time) (runtime.Volume, bool, error) {

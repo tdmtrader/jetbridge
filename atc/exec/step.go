@@ -71,7 +71,6 @@ type OutputHandler func(io.Writer) error
 //counterfeiter:generate . Pool
 type Pool interface {
 	FindOrSelectWorker(context.Context, db.ContainerOwner, runtime.ContainerSpec, worker.Spec) (runtime.Worker, error)
-	FindResourceCacheVolume(context.Context, int, db.ResourceCache, worker.Spec, time.Time) (runtime.Volume, bool, error)
 	FindResourceCacheVolumeOnWorker(context.Context, db.ResourceCache, worker.Spec, string, time.Time) (runtime.Volume, bool, error)
 	LocateVolume(ctx context.Context, teamID int, handle string) (runtime.Volume, runtime.Worker, bool, error)
 }

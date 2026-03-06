@@ -48,8 +48,6 @@ func init() {
 	RegisterEvent(Status{})
 	RegisterEvent(WaitingForWorker{})
 	RegisterEvent(SelectedWorker{})
-	RegisterEvent(StreamingVolume{})
-	RegisterEvent(WaitingForStreamedVolume{})
 	RegisterEvent(Log{})
 	RegisterEvent(Error{})
 	RegisterEvent(ImageCheck{})

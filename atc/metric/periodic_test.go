@@ -142,11 +142,9 @@ var _ = Describe("Periodic emission of metrics", func() {
 
 	Context("waiting steps metrics", func() {
 		labels := metric.StepsWaitingLabels{
-			Platform:   "darwin",
-			TeamId:     "42",
-			TeamName:   "teamdev",
-			Type:       "task",
-			WorkerTags: "tester",
+			TeamId:   "42",
+			TeamName: "teamdev",
+			Type:     "task",
 		}
 
 		BeforeEach(func() {
@@ -162,11 +160,9 @@ var _ = Describe("Periodic emission of metrics", func() {
 						"Name":  Equal("steps waiting"),
 						"Value": Equal(float64(123)),
 						"Attributes": Equal(map[string]string{
-							"platform":   labels.Platform,
-							"teamId":     labels.TeamId,
-							"teamName":   labels.TeamName,
-							"type":       labels.Type,
-							"workerTags": labels.WorkerTags,
+							"teamId":   labels.TeamId,
+							"teamName": labels.TeamName,
+							"type":     labels.Type,
 						}),
 					}),
 				),

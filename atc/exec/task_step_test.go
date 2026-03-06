@@ -15,7 +15,6 @@ import (
 	"github.com/concourse/concourse/atc/exec/execfakes"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/runtime/runtimetest"
-	"github.com/concourse/concourse/atc/worker"
 	"github.com/concourse/concourse/tracing"
 	"github.com/concourse/concourse/vars"
 	"github.com/onsi/gomega/gbytes"
@@ -128,10 +127,10 @@ var _ = Describe("TaskStep", func() {
 		stepOk, stepErr = taskStep.Run(ctx, state)
 	})
 
-	expectWorkerSpecResourceTypeUnset := func() {
+	expectWorkerSpecTeamIDSet := func() {
 		Expect(fakePool.FindOrSelectWorkerCallCount()).To(Equal(1))
 		_, _, _, workerSpec := fakePool.FindOrSelectWorkerArgsForCall(0)
-		Expect(workerSpec.ResourceType).To(Equal(""))
+		Expect(workerSpec.TeamID).To(Equal(stepMetadata.TeamID))
 	}
 
 	Context("when the plan has a config", func() {
@@ -201,11 +200,10 @@ var _ = Describe("TaskStep", func() {
 
 		Describe("worker selection", func() {
 			var ctx context.Context
-			var workerSpec worker.Spec
 
 			JustBeforeEach(func() {
 				Expect(fakePool.FindOrSelectWorkerCallCount()).To(Equal(1))
-				ctx, _, _, workerSpec = fakePool.FindOrSelectWorkerArgsForCall(0)
+				ctx, _, _, _ = fakePool.FindOrSelectWorkerArgsForCall(0)
 			})
 
 			It("doesn't enforce a timeout", func() {
@@ -223,16 +221,7 @@ var _ = Describe("TaskStep", func() {
 				Expect(workerName).To(Equal("worker"))
 			})
 
-			Context("when tags are configured", func() {
-				BeforeEach(func() {
-					taskPlan.Tags = atc.Tags{"plan", "tags"}
-				})
-
-				It("creates a worker spec with the tags", func() {
-					Expect(workerSpec.Tags).To(Equal([]string{"plan", "tags"}))
-				})
-			})
-
+	
 			Context("when selecting a worker fails", func() {
 				BeforeEach(func() {
 					fakePool.FindOrSelectWorkerReturns(nil, errors.New("nope"))
@@ -904,7 +893,7 @@ var _ = Describe("TaskStep", func() {
 						ImageArtifact: imageVolume,
 					}))
 
-					expectWorkerSpecResourceTypeUnset()
+					expectWorkerSpecTeamIDSet()
 				})
 
 				Describe("when task config specifies image and/or image resource as well as image artifact", func() {
@@ -922,7 +911,7 @@ var _ = Describe("TaskStep", func() {
 								Expect(chosenContainer.Spec.ImageSpec).To(Equal(runtime.ImageSpec{
 									ImageArtifact: imageVolume,
 								}))
-								expectWorkerSpecResourceTypeUnset()
+								expectWorkerSpecTeamIDSet()
 							})
 						})
 
@@ -940,7 +929,7 @@ var _ = Describe("TaskStep", func() {
 								Expect(chosenContainer.Spec.ImageSpec).To(Equal(runtime.ImageSpec{
 									ImageArtifact: imageVolume,
 								}))
-								expectWorkerSpecResourceTypeUnset()
+								expectWorkerSpecTeamIDSet()
 							})
 						})
 					})

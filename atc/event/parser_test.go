@@ -69,7 +69,6 @@ var _ = Describe("ParseEvent", func() {
 		Entry("Status", event.Status{}),
 		Entry("WaitingForWorker", event.WaitingForWorker{}),
 		Entry("SelectedWorker", event.SelectedWorker{}),
-		Entry("StreamingVolume", event.StreamingVolume{}),
 		Entry("Log", event.Log{}),
 		Entry("Error", event.Error{}),
 		Entry("ImageCheck", event.ImageCheck{}),

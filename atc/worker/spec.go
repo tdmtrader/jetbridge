@@ -1,31 +1,9 @@
 package worker
 
-import (
-	"fmt"
-	"strings"
-)
-
+// Spec identifies which worker should run a step. In K8s-only deployments
+// (JetBridge), the only meaningful field is TeamID — platform, tags, and
+// resource type filtering have been removed since there is one worker per
+// namespace and it supports all types.
 type Spec struct {
-	Platform     string
-	ResourceType string
-	Tags         []string
-	TeamID       int
-}
-
-func (spec Spec) Description() string {
-	var attrs []string
-
-	if spec.ResourceType != "" {
-		attrs = append(attrs, fmt.Sprintf("resource type '%s'", spec.ResourceType))
-	}
-
-	if spec.Platform != "" {
-		attrs = append(attrs, fmt.Sprintf("platform '%s'", spec.Platform))
-	}
-
-	for _, tag := range spec.Tags {
-		attrs = append(attrs, fmt.Sprintf("tag '%s'", tag))
-	}
-
-	return strings.Join(attrs, ", ")
+	TeamID int
 }

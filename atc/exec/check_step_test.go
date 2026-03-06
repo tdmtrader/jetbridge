@@ -269,24 +269,8 @@ var _ = Describe("CheckStep", func() {
 					Expect(ok).To(BeFalse())
 				})
 
-				Describe("calls SelectWorker with the correct WorkerSpec", func() {
-					It("with resource type", func() {
-						Expect(workerSpec.ResourceType).To(Equal("some-base-type"))
-					})
-
-					It("with teamid", func() {
-						Expect(workerSpec.TeamID).To(Equal(345))
-					})
-
-					Context("when the plan specifies tags", func() {
-						BeforeEach(func() {
-							checkPlan.Tags = atc.Tags{"some", "tags"}
-						})
-
-						It("sets them in the WorkerSpec", func() {
-							Expect(workerSpec.Tags).To(Equal([]string{"some", "tags"}))
-						})
-					})
+				It("calls SelectWorker with the correct WorkerSpec", func() {
+					Expect(workerSpec.TeamID).To(Equal(345))
 				})
 
 				It("emits a BeforeSelectWorker event", func() {

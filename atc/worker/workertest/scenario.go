@@ -4,7 +4,6 @@ import (
 	"context"
 
 	"code.cloudfoundry.org/lager/v3/lagertest"
-	"github.com/concourse/concourse"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/compression"
 	"github.com/concourse/concourse/atc/db"
@@ -12,7 +11,6 @@ import (
 	"github.com/concourse/concourse/atc/db/lock"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/worker"
-	"github.com/cppforlife/go-semi-semantic/version"
 	. "github.com/onsi/gomega"
 )
 
@@ -48,7 +46,6 @@ func Setup(dbConn db.DbConn, lockFactory lock.LockFactory, setup ...SetupFunc) *
 	pool := worker.NewPool(
 		factory,
 		db,
-		version.MustNewVersionFromString(concourse.WorkerVersion),
 	)
 	builder := dbtest.NewBuilder(dbConn, lockFactory)
 	return setupWithPool(pool, factory, builder, setup...)
@@ -155,5 +152,5 @@ func (s *Scenario) ContainerVolume(workerName string, containerHandle string, mo
 }
 
 func (s *Scenario) Streamer() worker.Streamer {
-	return worker.NewStreamer(s.Factory.DB.ResourceCacheFactory, compression.NewGzipCompression(), 0)
+	return worker.NewStreamer(compression.NewGzipCompression())
 }

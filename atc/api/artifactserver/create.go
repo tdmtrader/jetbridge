@@ -23,9 +23,7 @@ func (s *Server) CreateArtifact(team db.Team) http.Handler {
 		// that way we don't have to create another volume.
 
 		workerSpec := worker.Spec{
-			TeamID:   team.ID(),
-			Platform: r.FormValue("platform"),
-			Tags:     r.Form["tags"],
+			TeamID: team.ID(),
 		}
 
 		volume, artifact, err := s.workerPool.CreateVolumeForArtifact(ctx, workerSpec)

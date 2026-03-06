@@ -79,8 +79,6 @@ type TaskDelegate interface {
 	BeforeSelectWorker(lager.Logger) error
 	WaitingForWorker(lager.Logger)
 	SelectedWorker(lager.Logger, string)
-	StreamingVolume(lager.Logger, string, string, string)
-	WaitingForStreamedVolume(lager.Logger, string, string)
 	BuildStartTime() time.Time
 }
 
@@ -548,9 +546,7 @@ func (step *TaskStep) loadSidecars(ctx context.Context, logger lager.Logger, rep
 
 func (step *TaskStep) workerSpec(config atc.TaskConfig) worker.Spec {
 	return worker.Spec{
-		Platform: config.Platform,
-		Tags:     step.plan.Tags,
-		TeamID:   step.metadata.TeamID,
+		TeamID: step.metadata.TeamID,
 	}
 }
 

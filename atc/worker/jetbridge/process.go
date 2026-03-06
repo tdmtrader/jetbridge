@@ -487,20 +487,9 @@ func (p *execProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 	var spanErr error
 	defer func() { tracing.End(span, spanErr) }()
 
-	// On context cancellation (build abort), delete the pod immediately.
-	// This deferred cleanup fires regardless of where in the exec flow
-	// the cancellation occurs (waitForRunning, ExecInPod, etc.).
-	defer func() {
-		if ctx.Err() != nil {
-			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cleanupCancel()
-			if delErr := p.clientset.CoreV1().Pods(p.config.Namespace).Delete(
-				cleanupCtx, p.podName, metav1.DeleteOptions{},
-			); delErr != nil {
-				logger.Error("failed-to-cleanup-pod-on-cancel", delErr)
-			}
-		}
-	}()
+	// NOTE: The pause Pod is intentionally NOT deleted on context cancellation.
+	// Pod cleanup is handled by the GC system (reaper), which enables
+	// fly hijack to exec into the still-running pod for debugging.
 
 	// Wait for the Pod to be running before exec-ing.
 	waitCtx, waitSpan := tracing.StartSpan(ctx, "k8s.exec-process.wait-for-running", tracing.Attrs{

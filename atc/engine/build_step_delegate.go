@@ -223,39 +223,6 @@ func (delegate *buildStepDelegate) SelectedWorker(logger lager.Logger, worker st
 	}
 }
 
-func (delegate *buildStepDelegate) StreamingVolume(logger lager.Logger, volume string, sourceWorker string, destWorker string) {
-	err := delegate.build.SaveEvent(event.StreamingVolume{
-		Time: time.Now().Unix(),
-		Origin: event.Origin{
-			ID: event.OriginID(delegate.planID),
-		},
-		Volume:       volume,
-		SourceWorker: sourceWorker,
-		DestWorker:   destWorker,
-	})
-
-	if err != nil {
-		logger.Error("failed-to-save-streaming-volume-event", err)
-		return
-	}
-}
-
-func (delegate *buildStepDelegate) WaitingForStreamedVolume(logger lager.Logger, volume string, destWorker string) {
-	err := delegate.build.SaveEvent(event.WaitingForStreamedVolume{
-		Time: time.Now().Unix(),
-		Origin: event.Origin{
-			ID: event.OriginID(delegate.planID),
-		},
-		Volume:     volume,
-		DestWorker: destWorker,
-	})
-
-	if err != nil {
-		logger.Error("failed-to-save-waiting-for-streamed-volume-event", err)
-		return
-	}
-}
-
 func (delegate *buildStepDelegate) Errored(logger lager.Logger, message string) {
 	err := delegate.build.SaveEvent(event.Error{
 		Message: message,
@@ -341,14 +308,8 @@ func (delegate *buildStepDelegate) FetchImage(
 		ImageURL:      imageURL,
 		Privileged:    privileged,
 	}
-
-	// When imageURL is empty (non-registry-image custom types like mock-backed),
-	// set ResourceType to the backing type (e.g., "mock") rather than the custom
-	// type name (e.g., "image-type"). The JetBridge K8s worker resolves ResourceType
-	// via DefaultResourceTypeImages, which only contains base type names.
-	// Using the custom type name would cause ErrImagePull in K8s.
 	if imageURL == "" {
-		spec.ResourceType = getPlan.Get.Type
+		spec.ResourceType = getPlan.Get.Name
 	}
 
 	return spec, result.ResourceCache, nil

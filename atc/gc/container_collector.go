@@ -11,7 +11,7 @@ import (
 	"github.com/hashicorp/go-multierror"
 )
 
-const maxCheckContainersPerResource = 2
+const maxCheckContainersPerResource = 1
 
 type containerCollector struct {
 	containerRepository         db.ContainerRepository

@@ -74,26 +74,10 @@ func tick(logger lager.Logger, m *Monitor) {
 	)
 
 	m.emit(
-		logger.Session("volumes-streamed"),
-		Event{
-			Name:  "volumes streamed",
-			Value: m.VolumesStreamed.Delta(),
-		},
-	)
-
-	m.emit(
 		logger.Session("get-step-cache-hits"),
 		Event{
 			Name:  "get step cache hits",
 			Value: m.GetStepCacheHits.Delta(),
-		},
-	)
-
-	m.emit(
-		logger.Session("streamed-resource-caches"),
-		Event{
-			Name:  "streamed resource caches",
-			Value: m.StreamedResourceCaches.Delta(),
 		},
 	)
 
@@ -257,15 +241,13 @@ func tick(logger lager.Logger, m *Monitor) {
 				Name:  "steps waiting",
 				Value: stepsWaiting,
 				Attributes: map[string]string{
-					"platform":   labels.Platform,
-					"teamId":     labels.TeamId,
-					"teamName":   labels.TeamName,
-					"type":       labels.Type,
-					"workerTags": labels.WorkerTags,
+					"teamId":   labels.TeamId,
+					"teamName": labels.TeamName,
+					"type":     labels.Type,
 				},
 			},
 		)
-		RecordStepsWaiting(context.Background(), stepsWaiting, labels.Platform, labels.TeamName, labels.Type, labels.WorkerTags)
+		RecordStepsWaiting(context.Background(), stepsWaiting, labels.TeamName, labels.Type)
 	}
 
 	checksFinishedWithError := m.ChecksFinishedWithError.Delta()

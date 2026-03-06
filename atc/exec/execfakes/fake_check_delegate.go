@@ -170,14 +170,6 @@ type FakeCheckDelegate struct {
 	stdoutReturnsOnCall map[int]struct {
 		result1 io.Writer
 	}
-	StreamingVolumeStub        func(lager.Logger, string, string, string)
-	streamingVolumeMutex       sync.RWMutex
-	streamingVolumeArgsForCall []struct {
-		arg1 lager.Logger
-		arg2 string
-		arg3 string
-		arg4 string
-	}
 	UpdateScopeLastCheckEndTimeStub        func(db.ResourceConfigScope, bool) (bool, error)
 	updateScopeLastCheckEndTimeMutex       sync.RWMutex
 	updateScopeLastCheckEndTimeArgsForCall []struct {
@@ -223,13 +215,6 @@ type FakeCheckDelegate struct {
 		result1 lock.Lock
 		result2 bool
 		result3 error
-	}
-	WaitingForStreamedVolumeStub        func(lager.Logger, string, string)
-	waitingForStreamedVolumeMutex       sync.RWMutex
-	waitingForStreamedVolumeArgsForCall []struct {
-		arg1 lager.Logger
-		arg2 string
-		arg3 string
 	}
 	WaitingForWorkerStub        func(lager.Logger)
 	waitingForWorkerMutex       sync.RWMutex
@@ -1026,41 +1011,6 @@ func (fake *FakeCheckDelegate) StdoutReturnsOnCall(i int, result1 io.Writer) {
 	}{result1}
 }
 
-func (fake *FakeCheckDelegate) StreamingVolume(arg1 lager.Logger, arg2 string, arg3 string, arg4 string) {
-	fake.streamingVolumeMutex.Lock()
-	fake.streamingVolumeArgsForCall = append(fake.streamingVolumeArgsForCall, struct {
-		arg1 lager.Logger
-		arg2 string
-		arg3 string
-		arg4 string
-	}{arg1, arg2, arg3, arg4})
-	stub := fake.StreamingVolumeStub
-	fake.recordInvocation("StreamingVolume", []interface{}{arg1, arg2, arg3, arg4})
-	fake.streamingVolumeMutex.Unlock()
-	if stub != nil {
-		fake.StreamingVolumeStub(arg1, arg2, arg3, arg4)
-	}
-}
-
-func (fake *FakeCheckDelegate) StreamingVolumeCallCount() int {
-	fake.streamingVolumeMutex.RLock()
-	defer fake.streamingVolumeMutex.RUnlock()
-	return len(fake.streamingVolumeArgsForCall)
-}
-
-func (fake *FakeCheckDelegate) StreamingVolumeCalls(stub func(lager.Logger, string, string, string)) {
-	fake.streamingVolumeMutex.Lock()
-	defer fake.streamingVolumeMutex.Unlock()
-	fake.StreamingVolumeStub = stub
-}
-
-func (fake *FakeCheckDelegate) StreamingVolumeArgsForCall(i int) (lager.Logger, string, string, string) {
-	fake.streamingVolumeMutex.RLock()
-	defer fake.streamingVolumeMutex.RUnlock()
-	argsForCall := fake.streamingVolumeArgsForCall[i]
-	return argsForCall.arg1, argsForCall.arg2, argsForCall.arg3, argsForCall.arg4
-}
-
 func (fake *FakeCheckDelegate) UpdateScopeLastCheckEndTime(arg1 db.ResourceConfigScope, arg2 bool) (bool, error) {
 	fake.updateScopeLastCheckEndTimeMutex.Lock()
 	ret, specificReturn := fake.updateScopeLastCheckEndTimeReturnsOnCall[len(fake.updateScopeLastCheckEndTimeArgsForCall)]
@@ -1260,40 +1210,6 @@ func (fake *FakeCheckDelegate) WaitToRunReturnsOnCall(i int, result1 lock.Lock, 
 		result2 bool
 		result3 error
 	}{result1, result2, result3}
-}
-
-func (fake *FakeCheckDelegate) WaitingForStreamedVolume(arg1 lager.Logger, arg2 string, arg3 string) {
-	fake.waitingForStreamedVolumeMutex.Lock()
-	fake.waitingForStreamedVolumeArgsForCall = append(fake.waitingForStreamedVolumeArgsForCall, struct {
-		arg1 lager.Logger
-		arg2 string
-		arg3 string
-	}{arg1, arg2, arg3})
-	stub := fake.WaitingForStreamedVolumeStub
-	fake.recordInvocation("WaitingForStreamedVolume", []interface{}{arg1, arg2, arg3})
-	fake.waitingForStreamedVolumeMutex.Unlock()
-	if stub != nil {
-		fake.WaitingForStreamedVolumeStub(arg1, arg2, arg3)
-	}
-}
-
-func (fake *FakeCheckDelegate) WaitingForStreamedVolumeCallCount() int {
-	fake.waitingForStreamedVolumeMutex.RLock()
-	defer fake.waitingForStreamedVolumeMutex.RUnlock()
-	return len(fake.waitingForStreamedVolumeArgsForCall)
-}
-
-func (fake *FakeCheckDelegate) WaitingForStreamedVolumeCalls(stub func(lager.Logger, string, string)) {
-	fake.waitingForStreamedVolumeMutex.Lock()
-	defer fake.waitingForStreamedVolumeMutex.Unlock()
-	fake.WaitingForStreamedVolumeStub = stub
-}
-
-func (fake *FakeCheckDelegate) WaitingForStreamedVolumeArgsForCall(i int) (lager.Logger, string, string) {
-	fake.waitingForStreamedVolumeMutex.RLock()
-	defer fake.waitingForStreamedVolumeMutex.RUnlock()
-	argsForCall := fake.waitingForStreamedVolumeArgsForCall[i]
-	return argsForCall.arg1, argsForCall.arg2, argsForCall.arg3
 }
 
 func (fake *FakeCheckDelegate) WaitingForWorker(arg1 lager.Logger) {

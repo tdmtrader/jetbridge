@@ -19,11 +19,9 @@ type JobStatusLabels struct {
 }
 
 type StepsWaitingLabels struct {
-	Platform   string
-	TeamId     string
-	TeamName   string
-	Type       string
-	WorkerTags string
+	TeamId   string
+	TeamName string
+	Type     string
 }
 
 type StepsWaitingDuration struct {
@@ -38,16 +36,14 @@ func (event StepsWaitingDuration) Emit(logger lager.Logger) {
 			Name:  "steps waiting duration",
 			Value: event.Duration.Seconds(),
 			Attributes: map[string]string{
-				"platform":   event.Labels.Platform,
-				"teamId":     event.Labels.TeamId,
-				"teamName":   event.Labels.TeamName,
-				"type":       event.Labels.Type,
-				"workerTags": event.Labels.WorkerTags,
+				"teamId":   event.Labels.TeamId,
+				"teamName": event.Labels.TeamName,
+				"type":     event.Labels.Type,
 			},
 		},
 	)
 
-	RecordStepsWaitDuration(context.Background(), event.Duration.Seconds(), event.Labels.Platform, event.Labels.TeamName, event.Labels.Type, event.Labels.WorkerTags)
+	RecordStepsWaitDuration(context.Background(), event.Duration.Seconds(), event.Labels.TeamName, event.Labels.Type)
 }
 
 type BuildCollectorDuration struct {

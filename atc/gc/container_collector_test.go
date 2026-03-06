@@ -87,7 +87,7 @@ var _ = Describe("ContainerCollector", func() {
 			It("calls DestroyExcessCheckContainers", func() {
 				Expect(fakeContainerRepository.DestroyExcessCheckContainersCallCount()).To(Equal(1))
 				maxPerResource, gracePeriod := fakeContainerRepository.DestroyExcessCheckContainersArgsForCall(0)
-				Expect(maxPerResource).To(Equal(2))
+				Expect(maxPerResource).To(Equal(1))
 				Expect(gracePeriod).To(Equal(hijackContainerGracePeriod))
 			})
 

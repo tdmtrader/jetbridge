@@ -4,7 +4,6 @@ import (
 	"testing"
 	"time"
 
-	"code.cloudfoundry.org/lager/v3"
 	"github.com/concourse/concourse/atc/db/dbfakes"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -19,9 +18,7 @@ func TestJetbridge(t *testing.T) {
 // need volume streaming or build timing.
 type noopDelegate struct{}
 
-func (d *noopDelegate) StreamingVolume(_ lager.Logger, _, _, _ string)       {}
-func (d *noopDelegate) WaitingForStreamedVolume(_ lager.Logger, _, _ string) {}
-func (d *noopDelegate) BuildStartTime() time.Time                           { return time.Time{} }
+func (d *noopDelegate) BuildStartTime() time.Time { return time.Time{} }
 
 // setupFakeDBContainer wires up a FakeWorker so that FindOrCreateContainer
 // creates a container with the given handle. This pattern is repeated in

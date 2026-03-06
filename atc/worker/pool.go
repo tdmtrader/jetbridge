@@ -4,31 +4,24 @@ import (
 	"context"
 	"math/rand/v2"
 	"strconv"
-	"strings"
 	"time"
 
 	"code.cloudfoundry.org/lager/v3"
 	"code.cloudfoundry.org/lager/v3/lagerctx"
-	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/metric"
 	"github.com/concourse/concourse/atc/runtime"
-	"github.com/cppforlife/go-semi-semantic/version"
 )
 
-var PollingInterval = 5 * time.Second
-
 type Pool struct {
-	factory       Factory
-	db            DB
-	workerVersion version.Version
+	factory Factory
+	db      DB
 }
 
-func NewPool(factory Factory, db DB, workerVersion version.Version) Pool {
+func NewPool(factory Factory, db DB) Pool {
 	return Pool{
-		factory:       factory,
-		db:            db,
-		workerVersion: workerVersion,
+		factory: factory,
+		db:      db,
 	}
 }
 
@@ -42,45 +35,17 @@ func (pool Pool) FindOrSelectWorker(
 
 	started := time.Now()
 	labels := metric.StepsWaitingLabels{
-		Platform:   workerSpec.Platform,
-		TeamId:     strconv.Itoa(workerSpec.TeamID),
-		TeamName:   containerSpec.TeamName,
-		Type:       string(containerSpec.Type),
-		WorkerTags: strings.Join(workerSpec.Tags, "_"),
+		TeamId:   strconv.Itoa(workerSpec.TeamID),
+		TeamName: containerSpec.TeamName,
+		Type:     string(containerSpec.Type),
 	}
-	var worker db.Worker
-	var pollingTicker *time.Ticker
-	for {
-		var err error
-		worker, err = pool.findOrSelectWorker(logger, owner, containerSpec, workerSpec)
-		if err != nil {
-			return nil, err
-		}
-		if worker != nil {
-			break
-		}
 
-		if pollingTicker == nil {
-			pollingTicker = time.NewTicker(PollingInterval)
-			defer pollingTicker.Stop()
-
-			logger.Debug("waiting-for-available-worker")
-
-			_, ok := metric.Metrics.StepsWaiting[labels]
-			if !ok {
-				metric.Metrics.StepsWaiting[labels] = &metric.Gauge{}
-			}
-
-			metric.Metrics.StepsWaiting[labels].Inc()
-			defer metric.Metrics.StepsWaiting[labels].Dec()
-		}
-
-		select {
-		case <-ctx.Done():
-			logger.Info("aborted-waiting-for-worker")
-			return nil, ctx.Err()
-		case <-pollingTicker.C:
-		}
+	worker, err := pool.findOrSelectWorker(logger, owner, workerSpec)
+	if err != nil {
+		return nil, err
+	}
+	if worker == nil {
+		return nil, ErrNoWorkers
 	}
 
 	elapsed := time.Since(started)
@@ -92,7 +57,7 @@ func (pool Pool) FindOrSelectWorker(
 	return pool.factory.NewWorker(logger, worker), nil
 }
 
-func (pool Pool) findOrSelectWorker(logger lager.Logger, owner db.ContainerOwner, containerSpec runtime.ContainerSpec, workerSpec Spec) (db.Worker, error) {
+func (pool Pool) findOrSelectWorker(logger lager.Logger, owner db.ContainerOwner, workerSpec Spec) (db.Worker, error) {
 	worker, compatibleWorkers, found, err := pool.findWorkerForContainer(logger, owner, workerSpec)
 	if err != nil {
 		return nil, err
@@ -106,42 +71,6 @@ func (pool Pool) findOrSelectWorker(logger lager.Logger, owner db.ContainerOwner
 	return compatibleWorkers[0], nil
 }
 
-func (pool Pool) FindResourceCacheVolume(ctx context.Context, teamID int, resourceCache db.ResourceCache, workerSpec Spec, shouldBeValidBefore time.Time) (runtime.Volume, bool, error) {
-	logger := lagerctx.FromContext(ctx)
-	team := pool.db.TeamFactory.GetByID(teamID)
-	workersWithCache, err := team.FindWorkersForResourceCache(resourceCache.ID(), shouldBeValidBefore)
-	if err != nil {
-		return nil, false, err
-	}
-
-	// randomize the order of workers so that the same worker isn't used all
-	// the time for streaming
-	rand.Shuffle(len(workersWithCache), func(i, j int) {
-		workersWithCache[i], workersWithCache[j] = workersWithCache[j], workersWithCache[i]
-	})
-
-	for _, worker := range workersWithCache {
-		if pool.isWorkerCompatibleAndRunning(logger, worker, workerSpec) {
-			volume, found, err := pool.findResourceCacheVolumeOnWorker(ctx, worker, resourceCache, shouldBeValidBefore)
-			if err != nil {
-				logger.Debug("ignore-find-volume-for-resource-cache-error",
-					lager.Data{
-						"error":             err,
-						"worker":            worker.Name(),
-						"resource-cache-id": resourceCache.ID(),
-					})
-				continue
-			}
-			if !found {
-				continue
-			}
-			return volume, true, nil
-		}
-	}
-
-	return nil, false, nil
-}
-
 func (pool Pool) FindResourceCacheVolumeOnWorker(ctx context.Context, resourceCache db.ResourceCache, workerSpec Spec, workerName string, shouldBeValidBefore time.Time) (runtime.Volume, bool, error) {
 	worker, found, err := pool.db.WorkerFactory.GetWorker(workerName)
 	if err != nil {
@@ -150,7 +79,7 @@ func (pool Pool) FindResourceCacheVolumeOnWorker(ctx context.Context, resourceCa
 	if !found {
 		return nil, false, nil
 	}
-	if !pool.isWorkerCompatibleAndRunning(lagerctx.FromContext(ctx), worker, workerSpec) {
+	if !pool.isWorkerRunning(worker) {
 		return nil, false, nil
 	}
 	return pool.findResourceCacheVolumeOnWorker(ctx, worker, resourceCache, shouldBeValidBefore)
@@ -185,30 +114,17 @@ func (pool Pool) findWorkerForContainer(logger lager.Logger, owner db.ContainerO
 		return nil, nil, false, err
 	}
 
-	// When global-resources is enabled, a check-container may run on any worker
-	// as long as the scope is the same, which enables this optimization. Details
-	// refer to PR#8184.
-	if atc.EnableGlobalResources {
-		for _, w := range workersWithContainer {
-			if pool.isWorkerCompatibleAndRunning(logger, w, workerSpec) {
-				return w, nil, true, nil
-			}
+	// In K8s, global resources is always the effective behavior — a check
+	// container may run on any compatible worker for the same scope.
+	for _, w := range workersWithContainer {
+		if pool.isWorkerRunning(w) {
+			return w, nil, true, nil
 		}
 	}
 
-	compatibleWorkers, err := pool.allCompatibleAndRunningWorkers(logger, workerSpec)
+	compatibleWorkers, err := pool.allRunningWorkers(logger, workerSpec)
 	if err != nil {
 		return nil, nil, false, err
-	}
-
-	if !atc.EnableGlobalResources {
-		for _, w := range workersWithContainer {
-			for _, c := range compatibleWorkers {
-				if w.Name() == c.Name() {
-					return w, compatibleWorkers, true, nil
-				}
-			}
-		}
 	}
 
 	return nil, compatibleWorkers, false, nil
@@ -239,7 +155,7 @@ func (pool Pool) LocateVolume(ctx context.Context, teamID int, handle string) (r
 	if !found {
 		return nil, nil, false, nil
 	}
-	if !pool.isWorkerVersionCompatible(logger, dbWorker) {
+	if !pool.isWorkerRunning(dbWorker) {
 		return nil, nil, false, nil
 	}
 
@@ -273,12 +189,12 @@ func (pool Pool) LocateContainer(ctx context.Context, teamID int, handle string)
 	if !found {
 		return nil, nil, false, nil
 	}
-	if !pool.isWorkerVersionCompatible(logger, dbWorker) {
+	if !pool.isWorkerRunning(dbWorker) {
 		return nil, nil, false, nil
 	}
 
 	logger = logger.WithData(lager.Data{"worker": dbWorker.Name()})
-	logger.Debug("found-volume-on-worker")
+	logger.Debug("found-container-on-worker")
 
 	worker := pool.factory.NewWorker(logger, dbWorker)
 
@@ -297,16 +213,18 @@ func (pool Pool) LocateContainer(ctx context.Context, teamID int, handle string)
 
 func (pool Pool) CreateVolumeForArtifact(ctx context.Context, spec Spec) (runtime.Volume, db.WorkerArtifact, error) {
 	logger := lagerctx.FromContext(ctx)
-	compatibleWorkers, err := pool.allCompatibleAndRunningWorkers(logger, spec)
+	runningWorkers, err := pool.allRunningWorkers(logger, spec)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	worker := pool.factory.NewWorker(logger, compatibleWorkers[rand.IntN(len(compatibleWorkers))])
+	worker := pool.factory.NewWorker(logger, runningWorkers[rand.IntN(len(runningWorkers))])
 	return worker.CreateVolumeForArtifact(ctx, spec.TeamID)
 }
 
-func (pool Pool) allCompatibleAndRunningWorkers(logger lager.Logger, spec Spec) ([]db.Worker, error) {
+// allRunningWorkers returns all running workers, preferring team-scoped
+// workers over general workers when both exist.
+func (pool Pool) allRunningWorkers(logger lager.Logger, spec Spec) ([]db.Worker, error) {
 	workers, err := pool.db.WorkerFactory.Workers()
 	if err != nil {
 		return nil, err
@@ -316,124 +234,33 @@ func (pool Pool) allCompatibleAndRunningWorkers(logger lager.Logger, spec Spec) 
 		return nil, ErrNoWorkers
 	}
 
-	var compatibleTeamWorkers []db.Worker
-	var compatibleGeneralWorkers []db.Worker
+	var teamWorkers []db.Worker
+	var generalWorkers []db.Worker
 	for _, worker := range workers {
-		if pool.isWorkerCompatibleAndRunning(logger, worker, spec) {
-			if worker.TeamID() != 0 {
-				compatibleTeamWorkers = append(compatibleTeamWorkers, worker)
-			} else {
-				compatibleGeneralWorkers = append(compatibleGeneralWorkers, worker)
+		if !pool.isWorkerRunning(worker) {
+			continue
+		}
+		if worker.TeamID() != 0 {
+			if spec.TeamID == worker.TeamID() {
+				teamWorkers = append(teamWorkers, worker)
 			}
+		} else {
+			generalWorkers = append(generalWorkers, worker)
 		}
 	}
 
-	if len(compatibleTeamWorkers) != 0 {
-		return compatibleTeamWorkers, nil
+	if len(teamWorkers) != 0 {
+		return teamWorkers, nil
 	}
 
-	if len(compatibleGeneralWorkers) != 0 {
-		return compatibleGeneralWorkers, nil
+	if len(generalWorkers) != 0 {
+		return generalWorkers, nil
 	}
 
-	return nil, NoCompatibleWorkersError{
-		Spec:          spec,
-		WorkerVersion: pool.workerVersion,
-	}
+	return nil, ErrNoWorkers
 }
 
-func (pool Pool) isWorkerVersionCompatible(logger lager.Logger, dbWorker db.Worker) bool {
-	workerVersion := dbWorker.Version()
-	logger = logger.Session("check-version", lager.Data{
-		"want-worker-version": pool.workerVersion.String(),
-		"have-worker-version": workerVersion,
-	})
-
-	if workerVersion == nil {
-		logger.Info("empty-worker-version")
-		return false
-	}
-
-	v, err := version.NewVersionFromString(*workerVersion)
-	if err != nil {
-		logger.Error("failed-to-parse-version", err)
-		return false
-	}
-
-	switch v.Release.Compare(pool.workerVersion.Release) {
-	case 0:
-		return true
-	case -1:
-		return false
-	default:
-		if v.Release.Components[0].Compare(pool.workerVersion.Release.Components[0]) == 0 {
-			return true
-		}
-
-		return false
-	}
-}
-
-func (pool Pool) isWorkerCompatibleAndRunning(logger lager.Logger, worker db.Worker, spec Spec) bool {
-	if worker.State() != db.WorkerStateRunning {
-		return false
-	}
-
-	if !pool.isWorkerVersionCompatible(logger, worker) {
-		return false
-	}
-
-	if worker.TeamID() != 0 {
-		if spec.TeamID != worker.TeamID() {
-			return false
-		}
-	}
-
-	if spec.ResourceType != "" {
-		matchedType := false
-		for _, t := range worker.ResourceTypes() {
-			if t.Type == spec.ResourceType {
-				matchedType = true
-				break
-			}
-		}
-
-		if !matchedType {
-			return false
-		}
-	}
-
-	if spec.Platform != "" {
-		if spec.Platform != worker.Platform() {
-			return false
-		}
-	}
-
-	if !tagsMatch(worker, spec.Tags) {
-		return false
-	}
-
-	return true
-}
-
-func tagsMatch(worker db.Worker, tags []string) bool {
-	if len(worker.Tags()) > 0 && len(tags) == 0 {
-		return false
-	}
-
-	hasTag := func(tag string) bool {
-		for _, wtag := range worker.Tags() {
-			if wtag == tag {
-				return true
-			}
-		}
-		return false
-	}
-
-	for _, tag := range tags {
-		if !hasTag(tag) {
-			return false
-		}
-	}
-	return true
+// isWorkerRunning checks that a worker is in the running state.
+func (pool Pool) isWorkerRunning(worker db.Worker) bool {
+	return worker.State() == db.WorkerStateRunning
 }

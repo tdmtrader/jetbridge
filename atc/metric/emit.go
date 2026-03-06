@@ -84,10 +84,7 @@ type Monitor struct {
 	ConcurrentRequests         map[string]*Gauge
 	ConcurrentRequestsLimitHit map[string]*Counter
 
-	VolumesStreamed Counter
-
-	GetStepCacheHits       Counter
-	StreamedResourceCaches Counter
+	GetStepCacheHits Counter
 
 	K8sPodStartupDuration Gauge
 	K8sImagePullFailures  Counter

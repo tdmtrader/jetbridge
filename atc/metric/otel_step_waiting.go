@@ -36,31 +36,27 @@ func InitOTelStepWaiting() {
 }
 
 // RecordStepsWaiting records the number of steps currently waiting.
-func RecordStepsWaiting(ctx context.Context, count float64, platform, teamName, stepType, workerTags string) {
+func RecordStepsWaiting(ctx context.Context, count float64, teamName, stepType string) {
 	if stepsWaitingUpDownCounter == nil {
 		return
 	}
 	stepsWaitingUpDownCounter.Add(ctx, count,
 		otelmetric.WithAttributes(
-			attribute.String("platform", platform),
 			attribute.String("team.name", teamName),
 			attribute.String("step.type", stepType),
-			attribute.String("worker.tags", workerTags),
 		),
 	)
 }
 
 // RecordStepsWaitDuration records the duration a step spent waiting.
-func RecordStepsWaitDuration(ctx context.Context, durationSeconds float64, platform, teamName, stepType, workerTags string) {
+func RecordStepsWaitDuration(ctx context.Context, durationSeconds float64, teamName, stepType string) {
 	if stepsWaitDurationHistogram == nil {
 		return
 	}
 	stepsWaitDurationHistogram.Record(ctx, durationSeconds,
 		otelmetric.WithAttributes(
-			attribute.String("platform", platform),
 			attribute.String("team.name", teamName),
 			attribute.String("step.type", stepType),
-			attribute.String("worker.tags", workerTags),
 		),
 	)
 }

@@ -41,8 +41,6 @@ type PutDelegate interface {
 	BeforeSelectWorker(lager.Logger) error
 	WaitingForWorker(lager.Logger)
 	SelectedWorker(lager.Logger, string)
-	StreamingVolume(lager.Logger, string, string, string)
-	WaitingForStreamedVolume(lager.Logger, string, string)
 	BuildStartTime() time.Time
 
 	SaveOutput(lager.Logger, atc.PutPlan, atc.Source, db.ResourceCache, resource.VersionResult)
@@ -145,12 +143,7 @@ func (step *PutStep) run(ctx context.Context, state RunState, delegate PutDelega
 	}
 
 	workerSpec := worker.Spec{
-		Tags:   step.plan.Tags,
 		TeamID: step.metadata.TeamID,
-
-		// Used to filter out non-Linux workers, simply because they don't support
-		// base resource types
-		ResourceType: step.plan.TypeImage.BaseType,
 	}
 
 	var imageSpec runtime.ImageSpec

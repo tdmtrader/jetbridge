@@ -45,8 +45,6 @@ type CheckDelegate interface {
 	PointToCheckedConfig(db.ResourceConfigScope) error
 	UpdateScopeLastCheckStartTime(db.ResourceConfigScope, bool) (bool, int, error)
 	UpdateScopeLastCheckEndTime(db.ResourceConfigScope, bool) (bool, error)
-
-	StreamingVolume(lager.Logger, string, string, string)
 }
 
 func NewCheckStep(
@@ -253,12 +251,7 @@ func (step *CheckStep) runCheck(
 	fromVersion atc.Version,
 ) ([]atc.Version, runtime.ProcessResult, error) {
 	workerSpec := worker.Spec{
-		Tags:   step.plan.Tags,
 		TeamID: step.metadata.TeamID,
-
-		// Used to filter out non-Linux workers, simply because they don't support
-		// base resource types
-		ResourceType: step.plan.TypeImage.BaseType,
 	}
 
 	containerSpec := runtime.ContainerSpec{

@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"code.cloudfoundry.org/lager/v3"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/compression"
 	"github.com/concourse/concourse/atc/db"
@@ -142,8 +141,6 @@ type ContainerSpec struct {
 }
 
 type BuildStepDelegate interface {
-	StreamingVolume(lager.Logger, string, string, string)
-	WaitingForStreamedVolume(lager.Logger, string, string)
 	BuildStartTime() time.Time
 }
 

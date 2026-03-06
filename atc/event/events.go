@@ -109,27 +109,6 @@ type SelectedWorker struct {
 func (SelectedWorker) EventType() atc.EventType  { return EventTypeSelectedWorker }
 func (SelectedWorker) Version() atc.EventVersion { return "1.0" }
 
-type StreamingVolume struct {
-	Time         int64  `json:"time"`
-	Origin       Origin `json:"origin"`
-	Volume       string `json:"volume"`
-	SourceWorker string `json:"source_worker"`
-	DestWorker   string `json:"dest_worker"`
-}
-
-func (StreamingVolume) EventType() atc.EventType  { return EventTypeStreamingVolume }
-func (StreamingVolume) Version() atc.EventVersion { return "1.0" }
-
-type WaitingForStreamedVolume struct {
-	Time       int64  `json:"time"`
-	Origin     Origin `json:"origin"`
-	Volume     string `json:"volume"`
-	DestWorker string `json:"dest_worker"`
-}
-
-func (WaitingForStreamedVolume) EventType() atc.EventType  { return EventTypeWaitingForStreamedVolume }
-func (WaitingForStreamedVolume) Version() atc.EventVersion { return "1.0" }
-
 type Log struct {
 	Time    int64  `json:"time"`
 	Origin  Origin `json:"origin"`

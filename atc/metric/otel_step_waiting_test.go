@@ -26,7 +26,7 @@ var _ = Describe("OTel Step Waiting", func() {
 	})
 
 	It("records steps waiting", func() {
-		metric.RecordStepsWaiting(context.Background(), 4, "linux", "main", "task", "")
+		metric.RecordStepsWaiting(context.Background(), 4, "main", "task")
 
 		var rm metricdata.ResourceMetrics
 		err := reader.Collect(context.Background(), &rm)
@@ -44,10 +44,6 @@ var _ = Describe("OTel Step Waiting", func() {
 					Expect(sum.DataPoints[0].Value).To(BeNumerically("==", 4))
 
 					attrSet := sum.DataPoints[0].Attributes
-					platform, ok := attrSet.Value("platform")
-					Expect(ok).To(BeTrue())
-					Expect(platform.AsString()).To(Equal("linux"))
-
 					teamName, ok := attrSet.Value("team.name")
 					Expect(ok).To(BeTrue())
 					Expect(teamName.AsString()).To(Equal("main"))
@@ -58,7 +54,7 @@ var _ = Describe("OTel Step Waiting", func() {
 	})
 
 	It("records steps wait duration", func() {
-		metric.RecordStepsWaitDuration(context.Background(), 2.5, "linux", "main", "get", "fast")
+		metric.RecordStepsWaitDuration(context.Background(), 2.5, "main", "get")
 
 		var rm metricdata.ResourceMetrics
 		err := reader.Collect(context.Background(), &rm)
@@ -76,9 +72,9 @@ var _ = Describe("OTel Step Waiting", func() {
 					Expect(hist.DataPoints[0].Sum).To(BeNumerically(">=", 2.5))
 
 					attrSet := hist.DataPoints[0].Attributes
-					workerTags, ok := attrSet.Value("worker.tags")
+					stepType, ok := attrSet.Value("step.type")
 					Expect(ok).To(BeTrue())
-					Expect(workerTags.AsString()).To(Equal("fast"))
+					Expect(stepType.AsString()).To(Equal("get"))
 				}
 			}
 		}

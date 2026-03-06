@@ -192,8 +192,7 @@ var _ = Describe("PutStep", func() {
 		It("calls SelectWorker with the correct WorkerSpec", func() {
 			Expect(workerSpec).To(Equal(
 				worker.Spec{
-					ResourceType: "some-resource-type",
-					TeamID:       stepMetadata.TeamID,
+					TeamID: stepMetadata.TeamID,
 				},
 			))
 		})
@@ -202,16 +201,6 @@ var _ = Describe("PutStep", func() {
 			Expect(fakeDelegate.SelectedWorkerCallCount()).To(Equal(1))
 			_, workerName := fakeDelegate.SelectedWorkerArgsForCall(0)
 			Expect(workerName).To(Equal("worker"))
-		})
-
-		Context("when the plan specifies tags", func() {
-			BeforeEach(func() {
-				putPlan.Tags = atc.Tags{"some", "tags"}
-			})
-
-			It("sets them in the WorkerSpec", func() {
-				Expect(workerSpec.Tags).To(Equal([]string{"some", "tags"}))
-			})
 		})
 
 		Context("when selecting a worker fails", func() {
@@ -465,13 +454,12 @@ var _ = Describe("PutStep", func() {
 			Expect(privileged).To(BeFalse())
 		})
 
-		It("sets the bottom-most type in the worker spec", func() {
+		It("sets the worker spec with teamID", func() {
 			Expect(fakePool.FindOrSelectWorkerCallCount()).To(Equal(1))
 			_, _, _, workerSpec := fakePool.FindOrSelectWorkerArgsForCall(0)
 
 			Expect(workerSpec).To(Equal(worker.Spec{
-				TeamID:       stepMetadata.TeamID,
-				ResourceType: "registry-image",
+				TeamID: stepMetadata.TeamID,
 			}))
 		})
 

@@ -1,28 +1,5 @@
 package worker
 
-import (
-	"errors"
-	"fmt"
-
-	"github.com/cppforlife/go-semi-semantic/version"
-)
+import "errors"
 
 var ErrNoWorkers = errors.New("no workers")
-
-type NoCompatibleWorkersError struct {
-	Spec          Spec
-	WorkerVersion version.Version
-}
-
-func (err NoCompatibleWorkersError) Error() string {
-	return fmt.Sprintf("no workers satisfying: %s, version: '%s'", err.Spec.Description(), err.WorkerVersion)
-}
-
-type StreamingResourceCacheNotFoundError struct {
-	Handle          string
-	ResourceCacheID int
-}
-
-func (e StreamingResourceCacheNotFoundError) Error() string {
-	return fmt.Sprintf("resource cache not found (id %d, volume handle %s)", e.ResourceCacheID, e.Handle)
-}

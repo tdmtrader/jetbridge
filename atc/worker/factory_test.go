@@ -1,8 +1,6 @@
 package worker_test
 
 import (
-	"testing"
-
 	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/atc/db/dbfakes"
 	"github.com/concourse/concourse/atc/worker"
@@ -43,8 +41,3 @@ var _ = Describe("DefaultFactory", func() {
 		})
 	})
 })
-
-func TestFactory(t *testing.T) {
-	RegisterFailHandler(Fail)
-	RunSpecs(t, "Worker Factory Suite")
-}

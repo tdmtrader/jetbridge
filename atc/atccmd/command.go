@@ -62,7 +62,6 @@ import (
 	"github.com/concourse/concourse/tracing"
 	"github.com/concourse/concourse/web"
 	"github.com/concourse/flag/v2"
-	"github.com/cppforlife/go-semi-semantic/version"
 	"github.com/go-jose/go-jose/v4/jwt"
 	"github.com/hashicorp/go-multierror"
 	"github.com/jessevdk/go-flags"
@@ -157,7 +156,6 @@ type RunCommand struct {
 
 	ComponentRunnerInterval time.Duration `long:"component-runner-interval" default:"10s" description:"Interval on which runners are kicked off for builds, locks, scans, and checks"`
 
-	LidarScannerInterval time.Duration `long:"lidar-scanner-interval" default:"10s" description:"DEPRECATED: no longer used. The scanner is now notification-driven."`
 
 	GlobalResourceCheckTimeout          time.Duration `long:"global-resource-check-timeout" default:"1h" description:"Time limit on checking for new versions of resources."`
 	ResourceCheckingInterval            time.Duration `long:"resource-checking-interval" default:"1m" description:"Interval on which to check for new versions of resources."`
@@ -167,8 +165,7 @@ type RunCommand struct {
 	PausePipelinesAfter                 int           `long:"pause-pipelines-after" default:"0" description:"The number of days after which a pipeline will be automatically paused if none of its jobs have run in more than the given number of days. A value of zero disables this component."`
 	PipelinePauserInterval              time.Duration `long:"pipeline-pauser-interval" default:"24h" hidden:"true" description:"The frequency on which the Pipeline Pauser component will be run to check if any pipelines need to be paused."`
 
-	StreamingArtifactsCompression string  `long:"streaming-artifacts-compression" default:"gzip" choice:"gzip" choice:"zstd" choice:"s2" choice:"raw" description:"Compression algorithm for internal streaming."`
-	StreamingSizeLimitationInMB   float64 `long:"streaming-size-limitation" default:"0.0" description:"Internal volume streaming size limitation in MB. In case of small limitation needed, float can be used like 0.01."`
+	StreamingArtifactsCompression string `long:"streaming-artifacts-compression" default:"gzip" choice:"gzip" choice:"zstd" choice:"s2" choice:"raw" description:"Compression algorithm for internal streaming."`
 
 	Kubernetes struct {
 		Namespace          string        `long:"kubernetes-namespace"              description:"Kubernetes namespace in which to run task Pods. When set, enables the K8s execution backend."`
@@ -255,7 +252,6 @@ type RunCommand struct {
 		Hostname      string        `long:"syslog-hostname" description:"Client hostname with which the build logs will be sent to the syslog server." default:"atc-syslog-drainer"`
 		Address       string        `long:"syslog-address" description:"Remote syslog server address with port (Example: 0.0.0.0:514)."`
 		Transport     string        `long:"syslog-transport" description:"Transport protocol for syslog messages (Currently supporting tcp, udp & tls)."`
-		DrainInterval time.Duration `long:"syslog-drain-interval" description:"DEPRECATED: no longer used. The syslog drainer is now notification-driven." default:"30s"`
 		CACerts       []string      `long:"syslog-ca-cert"              description:"Paths to PEM-encoded CA cert files to use to verify the Syslog server SSL cert."`
 	} ` group:"Syslog Drainer Configuration"`
 
@@ -272,8 +268,7 @@ type RunCommand struct {
 	FeatureFlags struct {
 		EnableGlobalResources                bool `long:"enable-global-resources" description:"Enable equivalent resources across pipelines and teams to share a single version history."`
 		EnableBuildRerunWhenWorkerDisappears bool `long:"enable-rerun-when-worker-disappears" description:"Enable automatically build rerun when worker disappears or a network error occurs"`
-		EnableCacheStreamedVolumes           bool `long:"enable-cache-streamed-volumes" description:"When enabled, streamed resource volumes will be cached on the destination worker."`
-		EnableResourceCausality              bool `long:"enable-resource-causality" description:"Enable the resource causality page. Computing causality can be expensive for the database. "`
+		EnableResourceCausality bool `long:"enable-resource-causality" description:"Enable the resource causality page. Computing causality can be expensive for the database. "`
 	} `group:"Feature Flags"`
 
 	BaseResourceTypeDefaults flag.File `long:"base-resource-type-defaults" description:"Base resource type defaults"`
@@ -562,7 +557,6 @@ func (cmd *RunCommand) Runner(positionalArguments []string) (ifrit.Runner, error
 
 	atc.EnableGlobalResources = cmd.FeatureFlags.EnableGlobalResources
 	atc.EnableBuildRerunWhenWorkerDisappears = cmd.FeatureFlags.EnableBuildRerunWhenWorkerDisappears
-	atc.EnableCacheStreamedVolumes = cmd.FeatureFlags.EnableCacheStreamedVolumes
 	atc.EnableResourceCausality = cmd.FeatureFlags.EnableResourceCausality
 	atc.DefaultCheckInterval = cmd.ResourceCheckingInterval
 	atc.DefaultWebhookInterval = cmd.ResourceWithWebhookCheckingInterval
@@ -1343,11 +1337,8 @@ func (cmd *RunCommand) compression() compression.Compression {
 	}
 }
 
-func (cmd *RunCommand) streamer(cacheFactory db.ResourceCacheFactory) worker.Streamer {
-	return worker.NewStreamer(cacheFactory,
-		cmd.compression(),
-		cmd.StreamingSizeLimitationInMB,
-	)
+func (cmd *RunCommand) streamer() worker.Streamer {
+	return worker.NewStreamer(cmd.compression())
 }
 
 func (cmd *RunCommand) constructPool(dbConn db.DbConn, lockFactory lock.LockFactory, workerCache *db.WorkerCache) (worker.Pool, error) {
@@ -1358,11 +1349,6 @@ func (cmd *RunCommand) constructPool(dbConn db.DbConn, lockFactory lock.LockFact
 	dbVolumeRepository := db.NewVolumeRepository(dbConn)
 	dbWorkerFactory := db.NewWorkerFactory(dbConn, workerCache)
 	dbTeamFactory := db.NewTeamFactory(dbConn, lockFactory)
-
-	workerVersion, err := workerVersion()
-	if err != nil {
-		return worker.Pool{}, err
-	}
 
 	db := worker.NewDB(
 		dbWorkerFactory,
@@ -1377,7 +1363,7 @@ func (cmd *RunCommand) constructPool(dbConn db.DbConn, lockFactory lock.LockFact
 
 	factory := worker.DefaultFactory{
 		DB:       db,
-		Streamer: cmd.streamer(dbResourceCacheFactory),
+		Streamer: cmd.streamer(),
 	}
 
 	if cmd.Kubernetes.Namespace != "" {
@@ -1414,7 +1400,6 @@ func (cmd *RunCommand) constructPool(dbConn db.DbConn, lockFactory lock.LockFact
 	return worker.NewPool(
 		factory,
 		db,
-		workerVersion,
 	), nil
 }
 
@@ -1552,10 +1537,6 @@ func (cmd *RunCommand) parseCustomRoles() (map[string]string, error) {
 	}
 
 	return mapping, nil
-}
-
-func workerVersion() (version.Version, error) {
-	return version.NewVersionFromString(concourse.WorkerVersion)
 }
 
 func (cmd *RunCommand) secretManager(logger lager.Logger) (creds.Secrets, error) {
@@ -1928,7 +1909,7 @@ func (cmd *RunCommand) constructEngine(
 		engine.NewStepperFactory(
 			engine.NewCoreStepFactory(
 				workerPool,
-				cmd.streamer(resourceCacheFactory),
+				cmd.streamer(),
 				lockFactory,
 				teamFactory,
 				buildFactory,

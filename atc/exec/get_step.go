@@ -72,8 +72,6 @@ type GetDelegate interface {
 	BeforeSelectWorker(lager.Logger) error
 	WaitingForWorker(lager.Logger)
 	SelectedWorker(lager.Logger, string)
-	StreamingVolume(lager.Logger, string, string, string)
-	WaitingForStreamedVolume(lager.Logger, string, string)
 
 	UpdateResourceVersion(lager.Logger, string, resource.VersionResult)
 
@@ -156,12 +154,7 @@ func (step *GetStep) run(ctx context.Context, state RunState, delegate GetDelega
 	}
 
 	workerSpec := worker.Spec{
-		Tags:   step.plan.Tags,
 		TeamID: step.metadata.TeamID,
-
-		// Used to filter out non-Linux workers, simply because they don't support
-		// base resource types
-		ResourceType: step.plan.TypeImage.BaseType,
 	}
 
 	var (
@@ -349,46 +342,27 @@ func (step *GetStep) retrieveFromCacheOrPerformGet(
 	containerSpec runtime.ContainerSpec,
 	containerOwner db.ContainerOwner,
 ) (runtime.Volume, bool, resource.VersionResult, runtime.ProcessResult, error) {
-	var worker runtime.Worker
-
-	lockName := strconv.Itoa(resourceCache.ID())
-
-	// If caching streamed volumes is enabled, we may be able to use a cached
-	// result from another worker, so don't bother selecting a worker just yet.
-	// Note that if it's disabled, we don't use cached volumes from other
-	// workers so that we can hydrate the cache throughout the cluster -
-	// otherwise, the few workers with the resource cache may need to perform a
-	// ton of streaming out.
-	if !atc.EnableCacheStreamedVolumes {
-		var err error
-
-		err = delegate.BeforeSelectWorker(logger)
-		if err != nil {
-			return nil, false, resource.VersionResult{}, runtime.ProcessResult{}, err
-		}
-
-		worker, err = step.workerPool.FindOrSelectWorker(ctx, containerOwner, containerSpec, workerSpec)
-		if err != nil {
-			logger.Error("failed-to-select-worker", err)
-			return nil, false, resource.VersionResult{}, runtime.ProcessResult{}, err
-		}
-
-		// The lock is unique only to the current worker when not caching
-		// streamed volumes since we only consider the current worker's local
-		// resource cache in this case. When caching streamed volumes is
-		// enabled, we consider resource caches from any (compatible) worker.
-		lockName += "-" + worker.Name()
-
-		delegate.SelectedWorker(logger, worker.Name())
+	err := delegate.BeforeSelectWorker(logger)
+	if err != nil {
+		return nil, false, resource.VersionResult{}, runtime.ProcessResult{}, err
 	}
+
+	worker, err := step.workerPool.FindOrSelectWorker(ctx, containerOwner, containerSpec, workerSpec)
+	if err != nil {
+		logger.Error("failed-to-select-worker", err)
+		return nil, false, resource.VersionResult{}, runtime.ProcessResult{}, err
+	}
+
+	delegate.SelectedWorker(logger, worker.Name())
+
+	lockName := strconv.Itoa(resourceCache.ID()) + "-" + worker.Name()
 
 	// attemptGet performs the following flow:
 	//
 	// * Check if resource is cached
 	//     * If yes, then use the cache and exit
 	//     * If no, then proceed to next step
-	// * Attempt to acquire a lock that's unique to the resource (and possibly
-	//   also the worker, if EnableCacheStreamedVolumes is disabled)
+	// * Attempt to acquire a lock unique to the resource and worker
 	//     * If lock acquisition failed, give up (and try again after
 	//       GetResourceLockInterval)
 	//     * If lock acquisition succeeded, then run the get script and
@@ -467,19 +441,10 @@ func (step *GetStep) retrieveFromCache(
 	ctx context.Context,
 	resourceCache db.ResourceCache,
 	workerSpec worker.Spec,
-	worker runtime.Worker, // may be nil, in which case all compatible workers are possible candidates
+	worker runtime.Worker,
 	delegate GetDelegate,
 ) (runtime.Volume, resource.VersionResult, bool, error) {
-	var (
-		volume runtime.Volume
-		found  bool
-		err    error
-	)
-	if worker == nil {
-		volume, found, err = step.workerPool.FindResourceCacheVolume(ctx, step.metadata.TeamID, resourceCache, workerSpec, delegate.BuildStartTime())
-	} else {
-		volume, found, err = step.workerPool.FindResourceCacheVolumeOnWorker(ctx, resourceCache, workerSpec, worker.Name(), delegate.BuildStartTime())
-	}
+	volume, found, err := step.workerPool.FindResourceCacheVolumeOnWorker(ctx, resourceCache, workerSpec, worker.Name(), delegate.BuildStartTime())
 	if err != nil {
 		return nil, resource.VersionResult{}, false, err
 	}
@@ -498,9 +463,7 @@ func (step *GetStep) retrieveFromCache(
 	return volume, result, true, nil
 }
 
-// Must be called under a global database lock unique to the resource cache
-// signature, or unique to the resource cache and the worker if caching
-// streamed volumes is disabled.
+// Must be called under a database lock unique to the resource cache and worker.
 func (step *GetStep) performGetAndInitCache(
 	ctx context.Context,
 	logger lager.Logger,
@@ -510,30 +473,10 @@ func (step *GetStep) performGetAndInitCache(
 	workerSpec worker.Spec,
 	containerSpec runtime.ContainerSpec,
 	containerOwner db.ContainerOwner,
-	worker runtime.Worker, // may be nil, in which case we must select a worker
+	worker runtime.Worker,
 ) (runtime.Volume, resource.VersionResult, runtime.ProcessResult, error) {
 	logger = logger.Session("perform-get")
 	ctx = lagerctx.NewContext(ctx, logger)
-
-	// We haven't yet selected a worker. This will be the case if
-	// EnableCacheStreamedVolumes is true, since we don't need a worker up
-	// front.
-	if worker == nil {
-		var err error
-
-		err = delegate.BeforeSelectWorker(logger)
-		if err != nil {
-			return nil, resource.VersionResult{}, runtime.ProcessResult{}, err
-		}
-
-		worker, err = step.workerPool.FindOrSelectWorker(ctx, containerOwner, containerSpec, workerSpec)
-		if err != nil {
-			logger.Error("failed-to-select-worker", err)
-			return nil, resource.VersionResult{}, runtime.ProcessResult{}, err
-		}
-
-		delegate.SelectedWorker(logger, worker.Name())
-	}
 
 	ctx, cancel, err := MaybeTimeout(ctx, step.plan.Timeout, step.defaultGetTimeout)
 	if err != nil {
