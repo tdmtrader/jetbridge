@@ -15,6 +15,7 @@ import (
 	"github.com/concourse/concourse/atc/event"
 	"github.com/concourse/concourse/atc/exec"
 	"github.com/concourse/concourse/atc/policy"
+	"github.com/concourse/concourse/tracing"
 )
 
 //counterfeiter:generate . RateLimiter
@@ -106,6 +107,11 @@ func (d *checkDelegate) FindOrCreateScope(config db.ResourceConfig) (db.Resource
 func (d *checkDelegate) WaitToRun(ctx context.Context, scope db.ResourceConfigScope) (lock.Lock, bool, error) {
 	logger := lagerctx.FromContext(ctx)
 
+	_, waitSpan := tracing.StartSpan(ctx, "check.wait-to-run", tracing.Attrs{
+		"resource": d.plan.Name,
+	})
+	defer waitSpan.End()
+
 	if !d.plan.SkipInterval {
 		if d.plan.Interval.Never {
 			// exit early if user specified to never run periodic checks
@@ -115,7 +121,9 @@ func (d *checkDelegate) WaitToRun(ctx context.Context, scope db.ResourceConfigSc
 			// external services) isn't too spiky. note that we don't rate limit
 			// resource type or prototype checks, because they are created every time a
 			// resource is used (rather than periodically).
+			_, rateLimitSpan := tracing.StartSpan(ctx, "check.wait-for-rate-limit", nil)
 			err := d.limiter.Wait(ctx)
+			rateLimitSpan.End()
 			if err != nil {
 				return nil, false, fmt.Errorf("rate limit: %w", err)
 			}
@@ -126,21 +134,26 @@ func (d *checkDelegate) WaitToRun(ctx context.Context, scope db.ResourceConfigSc
 
 	var lock lock.Lock = lock.NoopLock{}
 	if d.plan.IsResourceCheck() {
+		_, lockSpan := tracing.StartSpan(ctx, "check.wait-for-lock", nil)
 		for {
 			run, err := d.shouldPeriodicCheckRun(scope, interval)
 			if err != nil {
+				lockSpan.End()
 				return nil, false, err
 			}
 			if !run {
+				lockSpan.End()
 				return nil, false, nil
 			}
 
 			var acquired bool
 			lock, acquired, err = scope.AcquireResourceCheckingLock(logger)
 			if err != nil {
+				lockSpan.End()
 				return nil, false, fmt.Errorf("acquire lock: %w", err)
 			}
 			if acquired {
+				lockSpan.End()
 				// After acquired the lock, see if needs to run again. Because for global
 				// resources, a previous check will result in current check no longer need
 				// to run.
@@ -163,6 +176,7 @@ func (d *checkDelegate) WaitToRun(ctx context.Context, scope db.ResourceConfigSc
 			}
 			select {
 			case <-ctx.Done():
+				lockSpan.End()
 				return nil, false, ctx.Err()
 			case <-d.clock.After(time.Second):
 			}
