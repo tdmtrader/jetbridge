@@ -24,7 +24,7 @@ func (j Jaeger) IsConfigured() bool {
 
 // Exporter returns a SpanExporter to sync spans to Jaeger
 func (j Jaeger) Exporter() (sdktrace.SpanExporter, []sdktrace.TracerProviderOption, error) {
-	attributes := append([]attribute.KeyValue{semconv.ServiceNameKey.String(j.Service)}, keyValueSlice(j.Tags)...)
+	attributes := append([]attribute.KeyValue{semconv.ServiceNameKey.String(j.Service)}, KeyValueSlice(j.Tags)...)
 	exporter, err := jaeger.New(
 		jaeger.WithCollectorEndpoint(jaeger.WithEndpoint(j.Endpoint)),
 	)

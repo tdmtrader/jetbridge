@@ -1,15 +1,16 @@
 package jobserver
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
+	"strconv"
 
 	"code.cloudfoundry.org/lager/v3/lagerctx"
 
 	"github.com/concourse/concourse/atc/api/accessor"
 	"github.com/concourse/concourse/atc/api/present"
 	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/tracing"
 )
 
 func (s *Server) CreateJobBuild(pipeline db.Pipeline) http.Handler {
@@ -18,6 +19,13 @@ func (s *Server) CreateJobBuild(pipeline db.Pipeline) http.Handler {
 		logger := s.logger.Session("create-job-build")
 
 		jobName := r.FormValue(":job_name")
+
+		ctx, span := tracing.StartSpan(r.Context(), "api.create-job-build", tracing.Attrs{
+			"team":     pipeline.TeamName(),
+			"pipeline": pipeline.Name(),
+			"job":      jobName,
+		})
+		defer span.End()
 
 		job, found, err := pipeline.Job(jobName)
 		if err != nil {
@@ -43,6 +51,11 @@ func (s *Server) CreateJobBuild(pipeline db.Pipeline) http.Handler {
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
+
+		span.SetAttributes(tracing.KeyValueSlice(tracing.Attrs{
+			"build_id": strconv.Itoa(build.ID()),
+			"build":    build.Name(),
+		})...)
 
 		resources, err := pipeline.Resources()
 		if err != nil {
@@ -70,7 +83,7 @@ func (s *Server) CreateJobBuild(pipeline db.Pipeline) http.Handler {
 			if found {
 				version := resource.CurrentPinnedVersion()
 				_, _, err := s.checkFactory.TryCreateCheck(
-					lagerctx.NewContext(context.Background(), logger),
+					lagerctx.NewContext(ctx, logger),
 					resource,
 					resourceTypes,
 					version,

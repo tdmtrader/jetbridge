@@ -6,9 +6,9 @@ import (
 
 type Attrs map[string]string
 
-// keyValueSlice converts our internal representation of kv pairs to the tracing
+// KeyValueSlice converts our internal representation of kv pairs to the tracing
 // SDK's kv representation.
-func keyValueSlice(attrs Attrs) []attribute.KeyValue {
+func KeyValueSlice(attrs Attrs) []attribute.KeyValue {
 	var (
 		res = make([]attribute.KeyValue, len(attrs))
 		idx = 0

@@ -198,7 +198,7 @@ func startSpan(
 	)
 
 	if len(attrs) != 0 {
-		span.SetAttributes(keyValueSlice(attrs)...)
+		span.SetAttributes(KeyValueSlice(attrs)...)
 	}
 
 	return ctx, span

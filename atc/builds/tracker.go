@@ -11,6 +11,7 @@ import (
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/metric"
 	"github.com/concourse/concourse/atc/util"
+	"github.com/concourse/concourse/tracing"
 )
 
 //go:generate go run github.com/maxbrunsfeld/counterfeiter/v6 -generate
@@ -108,9 +109,13 @@ func (bt *Tracker) trackBuild(logger lager.Logger, b db.Build) {
 			defer metric.Metrics.BuildsRunning.Dec()
 		}
 
+		ctx := context.Background()
+		ctx, span := tracing.StartSpanFollowing(ctx, build, "build-tracker.track", build.TracingAttrs())
+		defer span.End()
+
 		bt.engine.NewBuild(build).Run(
 			lagerctx.NewContext(
-				context.Background(),
+				ctx,
 				logger.Session("run", loggerData),
 			),
 		)
