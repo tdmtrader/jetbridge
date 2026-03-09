@@ -378,6 +378,12 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 
 	containers = append(containers, buildSidecarContainers(c.containerSpec.Sidecars, volumeMounts)...)
 
+	disableServiceLinks := false
+	disableAutomount := false
+	// Pause pods trap SIGTERM and exit immediately; 10s is more than
+	// enough grace and avoids the default 30s delay during pod teardown.
+	var terminationGrace int64 = 10
+
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        c.podName,
@@ -393,6 +399,15 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 			InitContainers:     initContainers,
 			Volumes:            volumes,
 			Containers:         containers,
+
+			// CI pods do not need Kubernetes service discovery or API
+			// access. Disabling these avoids injecting service env vars
+			// (which scales with the number of services in the namespace)
+			// and mounting the service-account token volume.
+			EnableServiceLinks:           &disableServiceLinks,
+			AutomountServiceAccountToken: &disableAutomount,
+
+			TerminationGracePeriodSeconds: &terminationGrace,
 		},
 	}, nil
 }
