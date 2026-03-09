@@ -3,13 +3,10 @@ package scheduler
 import (
 	"context"
 	"fmt"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
 
 	"code.cloudfoundry.org/lager/v3"
-	"github.com/concourse/concourse/atc/component"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/metric"
 	"github.com/concourse/concourse/atc/util"
@@ -104,34 +101,13 @@ func (s *Runner) Run(ctx context.Context) error {
 	return nil
 }
 
-// jobsToSchedule returns the jobs that need scheduling. When the context
-// carries a NOTIFY payload with job IDs, only those specific jobs are
-// queried. Otherwise falls back to a full scan of all pending jobs.
+// jobsToSchedule returns all jobs that need scheduling. We always perform a
+// full scan rather than targeting specific job IDs from the NOTIFY payload
+// because the notification channel can overflow (non-blocking send with
+// capacity 1), causing dropped notifications. A full scan ensures that any
+// notification—even for a different job—will pick up all pending work.
 func (s *Runner) jobsToSchedule(ctx context.Context) (db.SchedulerJobs, error) {
-	if payload, ok := component.NotifyPayload(ctx); ok {
-		if ids, err := parseJobIDs(payload); err == nil && len(ids) > 0 {
-			return s.jobFactory.JobsToScheduleByIDs(ids)
-		}
-	}
 	return s.jobFactory.JobsToSchedule()
-}
-
-// parseJobIDs splits a comma-separated string of integers into a slice.
-func parseJobIDs(payload string) ([]int, error) {
-	parts := strings.Split(payload, ",")
-	ids := make([]int, 0, len(parts))
-	for _, p := range parts {
-		p = strings.TrimSpace(p)
-		if p == "" {
-			continue
-		}
-		id, err := strconv.Atoi(p)
-		if err != nil {
-			return nil, err
-		}
-		ids = append(ids, id)
-	}
-	return ids, nil
 }
 
 func (s *Runner) scheduleJob(ctx context.Context, logger lager.Logger, job db.SchedulerJob) error {

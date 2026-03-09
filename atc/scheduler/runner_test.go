@@ -552,20 +552,12 @@ var _ = Describe("Runner", func() {
 		})
 	})
 
-	Context("when context carries a NOTIFY payload with job IDs", func() {
+	Context("always performs full job scan regardless of NOTIFY payload", func() {
 		BeforeEach(func() {
 			runCtx = component.WithNotifyPayload(context.Background(), "10,20")
 		})
 
-		It("queries only the targeted job IDs", func() {
-			Expect(fakeJobFactory.JobsToScheduleCallCount()).To(Equal(0))
-			Expect(fakeJobFactory.JobsToScheduleByIDsCallCount()).To(Equal(1))
-			Expect(fakeJobFactory.JobsToScheduleByIDsArgsForCall(0)).To(Equal([]int{10, 20}))
-		})
-	})
-
-	Context("when context has no NOTIFY payload", func() {
-		It("falls back to full job scan", func() {
+		It("calls JobsToSchedule (not JobsToScheduleByIDs) to avoid missed jobs from dropped notifications", func() {
 			Expect(fakeJobFactory.JobsToScheduleCallCount()).To(Equal(1))
 			Expect(fakeJobFactory.JobsToScheduleByIDsCallCount()).To(Equal(0))
 		})

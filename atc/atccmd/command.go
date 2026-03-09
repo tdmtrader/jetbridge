@@ -1169,9 +1169,9 @@ func (cmd *RunCommand) backendComponents(
 	components := []RunnableComponent{
 		{
 			Component: atc.Component{
-				Name: atc.ComponentLidarScanner,
+				Name:     atc.ComponentLidarScanner,
+				Interval: 10 * time.Second,
 			},
-			NotifyOnly: true,
 			Runnable: lidar.NewScanner(
 				dbCheckFactory,
 				atc.NewPlanFactory(time.Now().Unix()),
@@ -1190,9 +1190,9 @@ func (cmd *RunCommand) backendComponents(
 		},
 		{
 			Component: atc.Component{
-				Name: atc.ComponentScheduler,
+				Name:     atc.ComponentScheduler,
+				Interval: 10 * time.Second,
 			},
-			NotifyOnly: true,
 			Runnable: scheduler.NewRunner(
 				logger.Session("scheduler"),
 				dbJobFactory,
@@ -1207,16 +1207,16 @@ func (cmd *RunCommand) backendComponents(
 		},
 		{
 			Component: atc.Component{
-				Name: atc.ComponentBuildTracker,
+				Name:     atc.ComponentBuildTracker,
+				Interval: 10 * time.Second,
 			},
-			NotifyOnly: true,
-			Runnable:   builds.NewTracker(logger, dbBuildFactory, engine, checkBuildsChan),
+			Runnable: builds.NewTracker(logger, dbBuildFactory, engine, checkBuildsChan),
 		},
 		{
 			Component: atc.Component{
-				Name: atc.ComponentBuildReaper,
+				Name:     atc.ComponentBuildReaper,
+				Interval: 30 * time.Second,
 			},
-			NotifyOnly: true,
 			Runnable: gc.NewBuildLogCollector(
 				dbPipelineFactory,
 				dbPipelineLifecycle,
@@ -1308,9 +1308,9 @@ func (cmd *RunCommand) backendComponents(
 	if syslogDrainConfigured {
 		components = append(components, RunnableComponent{
 			Component: atc.Component{
-				Name: atc.ComponentSyslogDrainer,
+				Name:     atc.ComponentSyslogDrainer,
+				Interval: 30 * time.Second,
 			},
-			NotifyOnly: true,
 			Runnable: syslog.NewDrainer(
 				cmd.Syslog.Transport,
 				cmd.Syslog.Address,
@@ -1462,8 +1462,7 @@ func (cmd *RunCommand) gcComponents(
 			Runnable: collector,
 		}
 		if notifyOnlyCollectors[collectorName] {
-			rc.Component = atc.Component{Name: collectorName}
-			rc.NotifyOnly = true
+			rc.Component = atc.Component{Name: collectorName, Interval: 30 * time.Second}
 		} else {
 			rc.Component = atc.Component{
 				Name:     collectorName,
