@@ -1,6 +1,7 @@
 package scheduler_test
 
 import (
+	"context"
 	"errors"
 	"fmt"
 
@@ -322,7 +323,7 @@ func (example Example) Run() {
 		},
 	}
 
-	needsRetry, err := buildStarter.TryStartPendingBuildsForJob(lager.NewLogger("job-scheduling-tests"), db.SchedulerJob{
+	needsRetry, err := buildStarter.TryStartPendingBuildsForJob(context.Background(), lager.NewLogger("job-scheduling-tests"), db.SchedulerJob{
 		Job: fakeJob,
 		Resources: db.SchedulerResources{
 			{

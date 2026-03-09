@@ -1,6 +1,7 @@
 package scheduler_test
 
 import (
+	"context"
 	"errors"
 	"fmt"
 
@@ -118,6 +119,7 @@ var _ = Describe("BuildStarter", func() {
 
 				JustBeforeEach(func() {
 					needsReschedule, tryStartErr = buildStarter.TryStartPendingBuildsForJob(
+						context.Background(),
 						lagertest.NewTestLogger("test"),
 						db.SchedulerJob{
 							Job:           job,
@@ -184,6 +186,7 @@ var _ = Describe("BuildStarter", func() {
 
 				JustBeforeEach(func() {
 					needsReschedule, tryStartErr = buildStarter.TryStartPendingBuildsForJob(
+						context.Background(),
 						lagertest.NewTestLogger("test"),
 						db.SchedulerJob{
 							Job:       job,
@@ -448,6 +451,7 @@ var _ = Describe("BuildStarter", func() {
 
 				JustBeforeEach(func() {
 					needsReschedule, tryStartErr = buildStarter.TryStartPendingBuildsForJob(
+						context.Background(),
 						lagertest.NewTestLogger("test"),
 						db.SchedulerJob{
 							Job:       job,

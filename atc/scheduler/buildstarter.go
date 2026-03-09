@@ -3,16 +3,19 @@ package scheduler
 import (
 	"context"
 	"fmt"
+	"strconv"
 
 	"code.cloudfoundry.org/lager/v3"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/metric"
+	"github.com/concourse/concourse/tracing"
 )
 
 //counterfeiter:generate . BuildStarter
 type BuildStarter interface {
 	TryStartPendingBuildsForJob(
+		ctx context.Context,
 		logger lager.Logger,
 		job db.SchedulerJob,
 		inputs db.InputConfigs,
@@ -47,6 +50,7 @@ type buildStarter struct {
 }
 
 func (s *buildStarter) TryStartPendingBuildsForJob(
+	ctx context.Context,
 	logger lager.Logger,
 	job db.SchedulerJob,
 	jobInputs db.InputConfigs,
@@ -60,7 +64,7 @@ func (s *buildStarter) TryStartPendingBuildsForJob(
 
 	var needsRetry bool
 	for _, nextSchedulableBuild := range buildsToSchedule {
-		results, err := s.tryStartNextPendingBuild(logger, nextSchedulableBuild, job)
+		results, err := s.tryStartNextPendingBuild(ctx, logger, nextSchedulableBuild, job)
 		if err != nil {
 			return false, err
 		}
@@ -128,6 +132,7 @@ type startResults struct {
 }
 
 func (s *buildStarter) tryStartNextPendingBuild(
+	ctx context.Context,
 	logger lager.Logger,
 	nextPendingBuild Build,
 	job db.SchedulerJob,
@@ -136,6 +141,15 @@ func (s *buildStarter) tryStartNextPendingBuild(
 		"build-id":   nextPendingBuild.ID(),
 		"build-name": nextPendingBuild.Name(),
 	})
+
+	ctx, span := tracing.StartSpan(ctx, "scheduler.try-start-pending-build", tracing.Attrs{
+		"team":     job.TeamName(),
+		"pipeline": job.PipelineName(),
+		"job":      job.Name(),
+		"build_id": strconv.Itoa(nextPendingBuild.ID()),
+		"build":    nextPendingBuild.Name(),
+	})
+	defer span.End()
 
 	if nextPendingBuild.IsAborted() {
 		logger.Debug("cancel-aborted-pending-build")
@@ -150,7 +164,9 @@ func (s *buildStarter) tryStartNextPendingBuild(
 		}, nil
 	}
 
+	_, scheduleSpan := tracing.StartSpan(ctx, "build.schedule", nil)
 	scheduled, err := job.ScheduleBuild(nextPendingBuild)
+	scheduleSpan.End()
 	if err != nil {
 		return startResults{}, fmt.Errorf("schedule build: %w", err)
 	}
@@ -174,7 +190,9 @@ func (s *buildStarter) tryStartNextPendingBuild(
 		}, nil
 	}
 
-	buildInputs, inputsDetermined, err := nextPendingBuild.BuildInputs(context.TODO())
+	_, inputsSpan := tracing.StartSpan(ctx, "build.determine-inputs", nil)
+	buildInputs, inputsDetermined, err := nextPendingBuild.BuildInputs(ctx)
+	inputsSpan.End()
 	if err != nil {
 		return startResults{}, fmt.Errorf("get build inputs: %w", err)
 	}
@@ -191,12 +209,15 @@ func (s *buildStarter) tryStartNextPendingBuild(
 		}, nil
 	}
 
+	_, planSpan := tracing.StartSpan(ctx, "build.create-plan", nil)
 	config, err := job.Config()
 	if err != nil {
+		planSpan.End()
 		return startResults{}, fmt.Errorf("config: %w", err)
 	}
 
 	plan, err := s.planner.Create(config.StepConfig(), job.Resources, job.ResourceTypes, job.Prototypes, buildInputs, nextPendingBuild.IsManuallyTriggered())
+	planSpan.End()
 	if err != nil {
 		logger.Error("failed-to-create-build-plan", err)
 
@@ -211,7 +232,9 @@ func (s *buildStarter) tryStartNextPendingBuild(
 		}, nil
 	}
 
+	_, startSpan := tracing.StartSpan(ctx, "build.start", nil)
 	started, err := nextPendingBuild.Start(plan)
+	startSpan.End()
 	if err != nil {
 		logger.Error("failed-to-mark-build-as-started", err)
 		return startResults{}, fmt.Errorf("start build: %w", err)

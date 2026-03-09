@@ -58,7 +58,7 @@ func (s *Scheduler) Schedule(
 		return false, err
 	}
 
-	return s.BuildStarter.TryStartPendingBuildsForJob(logger, job, jobInputs)
+	return s.BuildStarter.TryStartPendingBuildsForJob(ctx, logger, job, jobInputs)
 }
 
 func (s *Scheduler) ensurePendingBuildExists(
