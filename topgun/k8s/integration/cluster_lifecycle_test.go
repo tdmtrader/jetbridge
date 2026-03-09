@@ -206,10 +206,12 @@ func helmDeployConcourse(kubeconfig, namespace, chartPath, image string) {
 	}
 
 	// When OTEL_EXPORTER_OTLP_ENDPOINT is set, enable server-side tracing.
-	// The endpoint must be reachable from inside the KinD cluster (e.g.,
-	// host.docker.internal:<port> for macOS Docker Desktop, or an in-cluster
-	// collector address).
+	// The endpoint must be reachable from inside the KinD cluster. We resolve
+	// hostnames to IPs because KinD nodes may not have host DNS entries
+	// (e.g., host.docker.internal). For macOS, port-forward Tempo gRPC to
+	// localhost and set OTEL_EXPORTER_OTLP_ENDPOINT=host.docker.internal:4317.
 	if otlpEndpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"); otlpEndpoint != "" {
+		otlpEndpoint = resolveEndpoint(otlpEndpoint)
 		log.Printf("Enabling OTel tracing: --tracing-otlp-address=%s", otlpEndpoint)
 		extraArgs = append(extraArgs,
 			"--tracing-otlp-address="+otlpEndpoint,
@@ -454,6 +456,28 @@ func mustRepoRoot() string {
 		log.Fatalf("failed to find repo root: %v", err)
 	}
 	return strings.TrimSpace(string(out))
+}
+
+// resolveEndpoint resolves hostnames in a host:port endpoint to IP addresses.
+// This is needed because KinD nodes don't have the host machine's DNS
+// entries (e.g., host.docker.internal won't resolve inside a KinD pod).
+func resolveEndpoint(endpoint string) string {
+	host, port, err := net.SplitHostPort(endpoint)
+	if err != nil {
+		return endpoint // not host:port, return as-is
+	}
+	// If it's already an IP, nothing to do.
+	if ip := net.ParseIP(host); ip != nil {
+		return endpoint
+	}
+	addrs, err := net.LookupHost(host)
+	if err != nil || len(addrs) == 0 {
+		log.Printf("warning: cannot resolve %q, using as-is: %v", host, err)
+		return endpoint
+	}
+	resolved := addrs[0] + ":" + port
+	log.Printf("Resolved OTLP endpoint %s -> %s", endpoint, resolved)
+	return resolved
 }
 
 // tuneReaperInterval reduces the K8s Worker Reaper component interval in the

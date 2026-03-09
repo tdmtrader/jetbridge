@@ -55,7 +55,13 @@ var (
 	deployedReleases       map[string]string // map[releaseName] = namespace
 )
 
-var _ = ReportAfterEach(testotel.ReportTestSpan)
+// Start a live parent span before each test so child spans nest under it.
+var _ = BeforeEach(func() {
+	testotel.StartTestSpan()
+})
+
+// Finalize the parent span with test results.
+var _ = ReportAfterEach(testotel.FinalizeTestSpan)
 
 var _ = SynchronizedBeforeSuite(func() []byte {
 	testotel.InitTestTracing("topgun-k8s")

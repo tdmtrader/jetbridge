@@ -21,6 +21,7 @@ import (
 	"github.com/concourse/concourse/go-concourse/concourse"
 	"github.com/google/uuid"
 	"github.com/onsi/gomega/gexec"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 const testflightFlyTarget = "tf"
@@ -64,9 +65,13 @@ func TestTestflight(t *testing.T) {
 	RunSpecs(t, "TestFlight Suite")
 }
 
-// Emit a test span for each completed test, including the pipeline name
-// for correlation with server-side traces in Tempo.
-var _ = ReportAfterEach(testotel.ReportTestSpanWithPipeline(func() string {
+// Start a live parent span before each test so child spans nest under it.
+var _ = BeforeEach(func() {
+	testotel.StartTestSpan()
+})
+
+// Finalize the parent span with test results and pipeline name.
+var _ = ReportAfterEach(testotel.FinalizeTestSpanWithPipeline(func() string {
 	return pipelineName
 }))
 
@@ -336,6 +341,8 @@ func flyTable(argv ...string) []map[string]string {
 }
 
 func setAndUnpausePipeline(config string, args ...string) {
+	end := testotel.StartSpan("setAndUnpausePipeline", attribute.String("pipeline", pipelineName))
+	defer end()
 	setPipeline(config, args...)
 	fly("unpause-pipeline", "-p", pipelineName)
 }
@@ -350,6 +357,9 @@ func inPipeline(thing string) string {
 }
 
 func newMockVersion(resourceName string, tag string) string {
+	end := testotel.StartSpan("newMockVersion", attribute.String("resource", resourceName), attribute.String("tag", tag))
+	defer end()
+
 	guid, err := uuid.NewRandom()
 	Expect(err).ToNot(HaveOccurred())
 
@@ -361,6 +371,9 @@ func newMockVersion(resourceName string, tag string) string {
 }
 
 func waitForBuildAndWatch(jobName string, buildName ...string) *gexec.Session {
+	end := testotel.StartSpan("waitForBuildAndWatch", attribute.String("job", jobName))
+	defer end()
+
 	args := []string{"watch", "-j", inPipeline(jobName)}
 
 	if len(buildName) > 0 {

@@ -42,6 +42,7 @@ import (
 	testotel "github.com/concourse/concourse/testhelpers/otel"
 	"github.com/google/uuid"
 	"github.com/onsi/gomega/gexec"
+	"go.opentelemetry.io/otel/attribute"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -165,9 +166,13 @@ var _ = SynchronizedAfterSuite(func() {}, func() {
 	}
 })
 
-// Emit a test span for each completed test, including the pipeline name
-// for correlation with server-side traces in Tempo.
-var _ = ReportAfterEach(testotel.ReportTestSpanWithPipeline(func() string {
+// Start a live parent span before each test so child spans nest under it.
+var _ = BeforeEach(func() {
+	testotel.StartTestSpan()
+})
+
+// Finalize the parent span with test results and pipeline name.
+var _ = ReportAfterEach(testotel.FinalizeTestSpanWithPipeline(func() string {
 	return pipelineName
 }))
 
@@ -243,6 +248,8 @@ func randomPipelineName() string {
 }
 
 func setAndUnpausePipeline(configFile string, args ...string) {
+	end := testotel.StartSpan("setAndUnpausePipeline", attribute.String("pipeline", pipelineName))
+	defer end()
 	setPipeline(configFile, args...)
 	fly.Run("unpause-pipeline", "-p", pipelineName)
 }
@@ -253,6 +260,8 @@ func setPipeline(configFile string, args ...string) {
 }
 
 func destroyPipeline() {
+	end := testotel.StartSpan("destroyPipeline", attribute.String("pipeline", pipelineName))
+	defer end()
 	sess := fly.Start("destroy-pipeline", "-n", "-p", pipelineName)
 	<-sess.Exited
 	// Don't assert success — pipeline may not exist if test failed early.
@@ -263,6 +272,8 @@ func inPipeline(thing string) string {
 }
 
 func triggerJob(jobName string) {
+	end := testotel.StartSpan("triggerJob", attribute.String("job", jobName))
+	defer end()
 	fly.Run("trigger-job", "-j", inPipeline(jobName))
 }
 
@@ -274,6 +285,9 @@ func triggerJob(jobName string) {
 // build to appear) and the streaming phase (fly watch running). This
 // prevents tests from hanging indefinitely when a build is stuck.
 func waitForBuildAndWatch(jobName string, buildName ...string) *gexec.Session {
+	end := testotel.StartSpan("waitForBuildAndWatch", attribute.String("job", jobName))
+	defer end()
+
 	args := []string{"watch", "-j", inPipeline(jobName)}
 	if len(buildName) > 0 {
 		args = append(args, "-b", buildName[0])
@@ -320,6 +334,9 @@ func waitForBuildAndWatch(jobName string, buildName ...string) *gexec.Session {
 }
 
 func newMockVersion(resourceName string, tag string) string {
+	end := testotel.StartSpan("newMockVersion", attribute.String("resource", resourceName), attribute.String("tag", tag))
+	defer end()
+
 	guid, err := uuid.NewRandom()
 	Expect(err).ToNot(HaveOccurred())
 

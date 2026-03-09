@@ -5,9 +5,12 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
+	testotel "github.com/concourse/concourse/testhelpers/otel"
 	"github.com/onsi/gomega/gexec"
+	"go.opentelemetry.io/otel/attribute"
 	"golang.org/x/oauth2"
 
 	. "github.com/onsi/gomega"
@@ -62,6 +65,12 @@ func (f *FlyCli) Login(user, password, endpoint string, loginArgs ...string) {
 }
 
 func (f *FlyCli) Run(argv ...string) {
+	cmd := "fly"
+	if len(argv) > 0 {
+		cmd = "fly." + argv[0]
+	}
+	end := testotel.StartSpan(cmd, attribute.String("fly.args", strings.Join(argv, " ")))
+	defer end()
 	Wait(f.Start(argv...))
 }
 
