@@ -28,16 +28,6 @@ type FakeComponent struct {
 	nameReturnsOnCall map[int]struct {
 		result1 string
 	}
-	PausedStub        func() bool
-	pausedMutex       sync.RWMutex
-	pausedArgsForCall []struct {
-	}
-	pausedReturns struct {
-		result1 bool
-	}
-	pausedReturnsOnCall map[int]struct {
-		result1 bool
-	}
 	ReloadStub        func() (bool, error)
 	reloadMutex       sync.RWMutex
 	reloadArgsForCall []struct {
@@ -157,59 +147,6 @@ func (fake *FakeComponent) NameReturnsOnCall(i int, result1 string) {
 	}
 	fake.nameReturnsOnCall[i] = struct {
 		result1 string
-	}{result1}
-}
-
-func (fake *FakeComponent) Paused() bool {
-	fake.pausedMutex.Lock()
-	ret, specificReturn := fake.pausedReturnsOnCall[len(fake.pausedArgsForCall)]
-	fake.pausedArgsForCall = append(fake.pausedArgsForCall, struct {
-	}{})
-	stub := fake.PausedStub
-	fakeReturns := fake.pausedReturns
-	fake.recordInvocation("Paused", []interface{}{})
-	fake.pausedMutex.Unlock()
-	if stub != nil {
-		return stub()
-	}
-	if specificReturn {
-		return ret.result1
-	}
-	return fakeReturns.result1
-}
-
-func (fake *FakeComponent) PausedCallCount() int {
-	fake.pausedMutex.RLock()
-	defer fake.pausedMutex.RUnlock()
-	return len(fake.pausedArgsForCall)
-}
-
-func (fake *FakeComponent) PausedCalls(stub func() bool) {
-	fake.pausedMutex.Lock()
-	defer fake.pausedMutex.Unlock()
-	fake.PausedStub = stub
-}
-
-func (fake *FakeComponent) PausedReturns(result1 bool) {
-	fake.pausedMutex.Lock()
-	defer fake.pausedMutex.Unlock()
-	fake.PausedStub = nil
-	fake.pausedReturns = struct {
-		result1 bool
-	}{result1}
-}
-
-func (fake *FakeComponent) PausedReturnsOnCall(i int, result1 bool) {
-	fake.pausedMutex.Lock()
-	defer fake.pausedMutex.Unlock()
-	fake.PausedStub = nil
-	if fake.pausedReturnsOnCall == nil {
-		fake.pausedReturnsOnCall = make(map[int]struct {
-			result1 bool
-		})
-	}
-	fake.pausedReturnsOnCall[i] = struct {
-		result1 bool
 	}{result1}
 }
 

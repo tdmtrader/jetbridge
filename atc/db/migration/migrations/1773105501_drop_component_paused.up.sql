@@ -1,0 +1,1 @@
+ALTER TABLE components DROP COLUMN IF EXISTS paused;

@@ -29,7 +29,6 @@ var _ = Describe("ComponentFactory", func() {
 
 		It("returns the db component", func() {
 			Expect(component.Name()).To(Equal(expectedName))
-			Expect(component.Paused()).To(Equal(false))
 		})
 	})
 

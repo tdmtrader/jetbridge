@@ -9,24 +9,6 @@ type Component struct {
 	mock.Mock
 }
 
-// IntervalElapsed provides a mock function with no fields
-func (_m *Component) IntervalElapsed() bool {
-	ret := _m.Called()
-
-	if len(ret) == 0 {
-		panic("no return value specified for IntervalElapsed")
-	}
-
-	var r0 bool
-	if rf, ok := ret.Get(0).(func() bool); ok {
-		r0 = rf()
-	} else {
-		r0 = ret.Get(0).(bool)
-	}
-
-	return r0
-}
-
 // Name provides a mock function with no fields
 func (_m *Component) Name() string {
 	ret := _m.Called()
@@ -40,24 +22,6 @@ func (_m *Component) Name() string {
 		r0 = rf()
 	} else {
 		r0 = ret.Get(0).(string)
-	}
-
-	return r0
-}
-
-// Paused provides a mock function with no fields
-func (_m *Component) Paused() bool {
-	ret := _m.Called()
-
-	if len(ret) == 0 {
-		panic("no return value specified for Paused")
-	}
-
-	var r0 bool
-	if rf, ok := ret.Get(0).(func() bool); ok {
-		r0 = rf()
-	} else {
-		r0 = ret.Get(0).(bool)
 	}
 
 	return r0
@@ -89,24 +53,6 @@ func (_m *Component) Reload() (bool, error) {
 	}
 
 	return r0, r1
-}
-
-// UpdateLastRan provides a mock function with no fields
-func (_m *Component) UpdateLastRan() error {
-	ret := _m.Called()
-
-	if len(ret) == 0 {
-		panic("no return value specified for UpdateLastRan")
-	}
-
-	var r0 error
-	if rf, ok := ret.Get(0).(func() error); ok {
-		r0 = rf()
-	} else {
-		r0 = ret.Error(0)
-	}
-
-	return r0
 }
 
 // NewComponent creates a new instance of Component. It also registers a testing interface on the mock and a cleanup function to assert the mocks expectations.

@@ -14,15 +14,7 @@ type Coordinator struct {
 	Runnable  Runnable
 }
 
-func (coordinator *Coordinator) RunPeriodically(ctx context.Context) {
-	coordinator.run(ctx, false)
-}
-
 func (coordinator *Coordinator) RunImmediately(ctx context.Context) {
-	coordinator.run(ctx, true)
-}
-
-func (coordinator *Coordinator) run(ctx context.Context, immediate bool) {
 	logger := lagerctx.FromContext(ctx)
 
 	lockID := lock.NewTaskLockID(coordinator.Component.Name())
@@ -51,23 +43,7 @@ func (coordinator *Coordinator) run(ctx context.Context, immediate bool) {
 		return
 	}
 
-	if coordinator.Component.Paused() {
-		logger.Debug("component-paused")
-		return
-	}
-
-	if !immediate && !coordinator.Component.IntervalElapsed() {
-		logger.Debug("interval-not-elapsed")
-		return
-	}
-
 	if err := coordinator.Runnable.Run(ctx); err != nil {
 		logger.Error("component-failed", err)
-		return
-	}
-
-	if err := coordinator.Component.UpdateLastRan(); err != nil {
-		logger.Error("failed-to-update-last-ran", err)
-		return
 	}
 }
