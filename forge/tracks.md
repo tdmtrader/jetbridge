@@ -193,7 +193,7 @@ _Link: [./tracks/add_safeguards_against_redudant_checks_20260303/](./tracks/add_
 
 ---
 
-### [ ] Track: Other pg notify opportunities
+### [x] Track: Other pg notify opportunities
 _Link: [./tracks/other_pg_notify_opportunities_20260303/](./tracks/other_pg_notify_opportunities_20260303/)_
 
 ---
@@ -205,5 +205,25 @@ _Link: [./tracks/otel_observability_pipeline_for_grafana_and_test_suites_2026030
 
 ### [ ] Track: Deprecate old code paths
 _Link: [./tracks/deprecate_old_code_paths_20260305/](./tracks/deprecate_old_code_paths_20260305/)_
+
+---
+
+### [ ] Track: K8s Sidecars
+_Link: [./tracks/k8s_sidecars_20260305/](./tracks/k8s_sidecars_20260305/)_
+
+---
+
+### [ ] Track: Nested test spans for integration suite tracing
+_Link: [./tracks/nested_test_spans_for_integration_suite_tracing_20260308/](./tracks/nested_test_spans_for_integration_suite_tracing_20260308/)_
+
+---
+
+### [ ] Track: evaluate-tempo-traces
+_Link: [./tracks/evaluate_tempo_traces_20260309/](./tracks/evaluate_tempo_traces_20260309/)_
+
+---
+
+### [ ] Track: dead-code-cleanup
+_Link: [./tracks/dead_code_cleanup_20260310/](./tracks/dead_code_cleanup_20260310/)_
 
 ---

@@ -1,0 +1,17 @@
+{
+  "trackId": "dead_code_cleanup_20260310",
+  "type": "refactor",
+  "status": "completed",
+  "description": "dead-code-cleanup",
+  "createdAt": "2026-03-10T13:21:07.700Z",
+  "updatedAt": "2026-03-10T13:40:40.277Z",
+  "sessions": [
+    {
+      "slotIndex": 0,
+      "engineType": "claude",
+      "aiSessionId": "d6012be4-3207-4c0a-9b61-4f7ae7bc95ec",
+      "accountId": "system-claude",
+      "updatedAt": "2026-03-10T13:21:14.062Z"
+    }
+  ]
+}
