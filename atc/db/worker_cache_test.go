@@ -21,7 +21,7 @@ var _ = Describe("WorkerCache", func() {
 		_, err := dbConn.Exec("DELETE FROM workers")
 		Expect(err).ToNot(HaveOccurred())
 
-		workerCache, err = db.NewWorkerCache(logger, dbConn, 5*time.Second)
+		workerCache, err = db.NewWorkerCache(logger, dbConn, 500*time.Millisecond)
 		Expect(err).ToNot(HaveOccurred())
 
 		scenario = dbtest.Setup()
@@ -71,15 +71,14 @@ var _ = Describe("WorkerCache", func() {
 		scenario.Run(builder.WithWorker(atcWorker))
 
 		By("ensuring the cache eventually adds the new worker")
-		Eventually(getWorkerNames).Should(ConsistOf("some-worker"))
-		Eventually(getContainerCounts).Should(Equal(map[string]int{
-			"some-worker": 0,
-		}))
+		Eventually(getWorkerNames, 10*time.Second).Should(ConsistOf("some-worker"))
+		// Workers with no build containers don't appear in the GROUP BY query
+		Eventually(getContainerCounts, 10*time.Second).Should(BeEmpty())
 
 		By("updating the worker")
 		atcWorker.ActiveVolumes = 50
 		scenario.Run(builder.WithWorker(atcWorker))
-		Eventually(getWorkerActiveVolumes).Should(ConsistOf(50))
+		Eventually(getWorkerActiveVolumes, 10*time.Second).Should(ConsistOf(50))
 
 		By("adding a build container")
 		var build db.Build
@@ -102,7 +101,7 @@ var _ = Describe("WorkerCache", func() {
 		)
 		_, err := scenario.Workers[0].CreateContainer(db.NewBuildStepContainerOwner(build.ID(), "123", scenario.Team.ID()), db.ContainerMetadata{})
 		Expect(err).ToNot(HaveOccurred())
-		Eventually(getContainerCounts).Should(Equal(map[string]int{
+		Eventually(getContainerCounts, 10*time.Second).Should(Equal(map[string]int{
 			"some-worker": 1,
 		}))
 
@@ -112,22 +111,20 @@ var _ = Describe("WorkerCache", func() {
 			builder.WithCheckContainer("some-resource", "some-worker"),
 		)
 		// Only counts build containers
-		Consistently(getContainerCounts).Should(Equal(map[string]int{
+		Consistently(getContainerCounts, 2*time.Second).Should(Equal(map[string]int{
 			"some-worker": 1,
 		}))
 
 		By("removing the container")
 		_, err = dbConn.Exec("DELETE FROM containers")
 		Expect(err).ToNot(HaveOccurred())
-		Eventually(getContainerCounts).Should(Equal(map[string]int{
-			"some-worker": 0,
-		}))
+		Eventually(getContainerCounts, 10*time.Second).Should(BeEmpty())
 
 		By("removing the worker")
 		_, err = dbConn.Exec("DELETE FROM workers")
 		Expect(err).ToNot(HaveOccurred())
 
-		Eventually(getWorkers).Should(BeEmpty())
-		Eventually(getContainerCounts).Should(BeEmpty())
+		Eventually(getWorkers, 10*time.Second).Should(BeEmpty())
+		Eventually(getContainerCounts, 10*time.Second).Should(BeEmpty())
 	})
 })

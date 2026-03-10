@@ -42,12 +42,27 @@ func (matcher *PlanMatcher) Match(actual any) (bool, error) {
 	expectedStripped, _ := stripIDs(matcher.ExpectedPlan)
 	actualStripped, actualIDs := stripIDs(actualPlan)
 
-	planMatcher := gomega.Equal(expectedStripped)
-
 	if !idsAreUnique(actualIDs) {
 		return false, fmt.Errorf("expected %#v to contain unique elements", actualIDs)
 	}
 
+	// Compare via JSON serialization to avoid reflect.DeepEqual issues with
+	// pointer aliasing in nested TypeImage plans.
+	actualJSON, err := json.Marshal(actualStripped)
+	if err != nil {
+		return false, fmt.Errorf("failed to marshal actual plan: %w", err)
+	}
+	expectedJSON, err := json.Marshal(expectedStripped)
+	if err != nil {
+		return false, fmt.Errorf("failed to marshal expected plan: %w", err)
+	}
+
+	if string(actualJSON) == string(expectedJSON) {
+		return true, nil
+	}
+
+	// Fall through to gomega.Equal for readable diff output
+	planMatcher := gomega.Equal(expectedStripped)
 	matched, err := planMatcher.Match(actualStripped)
 	if err != nil {
 		return false, err

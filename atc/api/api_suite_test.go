@@ -38,7 +38,6 @@ var (
 	clusterName      = "Test Cluster"
 	featureFlagsJson = ` {
 	"build_rerun": false,
-	"cache_streamed_volumes": false,
 	"global_resources": false,
 	"resource_causality": false
 }`

@@ -1,0 +1,17 @@
+{
+  "trackId": "test_running_20260310",
+  "type": "feature",
+  "status": "archived",
+  "description": "Test running",
+  "createdAt": "2026-03-10T13:48:18.902Z",
+  "updatedAt": "2026-03-10T19:53:45.084Z",
+  "sessions": [
+    {
+      "slotIndex": 0,
+      "engineType": "claude",
+      "aiSessionId": "39ff288a-246d-4d50-9b7c-02e123c45d76",
+      "accountId": "system-claude",
+      "updatedAt": "2026-03-10T13:48:26.940Z"
+    }
+  ]
+}

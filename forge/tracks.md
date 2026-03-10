@@ -227,3 +227,8 @@ _Link: [./tracks/evaluate_tempo_traces_20260309/](./tracks/evaluate_tempo_traces
 _Link: [./tracks/dead_code_cleanup_20260310/](./tracks/dead_code_cleanup_20260310/)_
 
 ---
+
+### [x] Track: Test running
+_Link: [./tracks/test_running_20260310/](./tracks/test_running_20260310/)_
+
+---

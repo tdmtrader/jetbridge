@@ -262,7 +262,6 @@ run:
 				Name:         "resource-type",
 				ResourceType: "resource-type",
 				Type:         "s3",
-				Source:       atc.Source{},
 				TypeImage:    atc.TypeImage{BaseType: "s3"},
 				Interval: atc.CheckEvery{
 					Interval: 0,
@@ -271,7 +270,6 @@ run:
 			expectedGetPlan := planFactory.NewPlan(atc.GetPlan{
 				Name:        "resource-type",
 				Type:        "s3",
-				Source:      atc.Source{},
 				TypeImage:   atc.TypeImage{BaseType: "s3"},
 				VersionFrom: &expectedCheckPlan.ID,
 			})

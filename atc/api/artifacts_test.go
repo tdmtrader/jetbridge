@@ -90,8 +90,7 @@ var _ = Describe("ArtifactRepository API", func() {
 
 				_, workerSpec := fakeWorkerPool.CreateVolumeForArtifactArgsForCall(0)
 				Expect(workerSpec).To(Equal(worker.Spec{
-					TeamID:   734,
-					Platform: "some-platform",
+					TeamID: 734,
 				}))
 			})
 

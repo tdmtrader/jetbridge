@@ -92,15 +92,15 @@ func (plan *Plan) Each(f func(*Plan)) {
 	}
 
 	if plan.Get != nil {
-		plan.Get.TypeImage.EachPlan(f)
+		(&plan.Get.TypeImage).EachPlan(f)
 	}
 
 	if plan.Put != nil {
-		plan.Put.TypeImage.EachPlan(f)
+		(&plan.Put.TypeImage).EachPlan(f)
 	}
 
 	if plan.Check != nil {
-		plan.Check.TypeImage.EachPlan(f)
+		(&plan.Check.TypeImage).EachPlan(f)
 	}
 }
 
@@ -127,7 +127,7 @@ type TypeImage struct {
 	Privileged bool `json:"privileged,omitempty"`
 }
 
-func (t TypeImage) EachPlan(f func(*Plan)) {
+func (t *TypeImage) EachPlan(f func(*Plan)) {
 	if t.CheckPlan != nil {
 		t.CheckPlan.Each(f)
 	}

@@ -163,8 +163,8 @@ var _ = Describe("ResourceCacheFactory", func() {
 			))
 		})
 
-		It("returns an error if base resource type does not exist", func() {
-			_, err := resourceCacheFactory.FindOrCreateResourceCache(
+		It("auto-creates base resource type if it does not exist", func() {
+			cache, err := resourceCacheFactory.FindOrCreateResourceCache(
 				db.ForBuild(build.ID()),
 				"some-bogus-base-type",
 				atc.Version{"some": "version"},
@@ -174,8 +174,8 @@ var _ = Describe("ResourceCacheFactory", func() {
 				atc.Params{"some": "params"},
 				nil,
 			)
-			Expect(err).To(HaveOccurred())
-			Expect(err).To(Equal(db.BaseResourceTypeNotFoundError{Name: "some-bogus-base-type"}))
+			Expect(err).ToNot(HaveOccurred())
+			Expect(cache).ToNot(BeNil())
 		})
 
 		Context("when there is a custom type overriding a base type", func() {

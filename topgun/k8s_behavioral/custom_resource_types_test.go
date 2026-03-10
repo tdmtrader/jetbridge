@@ -1,7 +1,6 @@
 package behavioral_test
 
 import (
-	"fmt"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
