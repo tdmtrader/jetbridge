@@ -459,28 +459,6 @@ func preloadImages() {
 	log.Printf("Image preloading complete.")
 }
 
-// tuneReaperInterval reduces the K8s Worker Reaper component interval in the
-// database. The reaper runs on a 30s interval by default and is the component
-// that detects "destroying" containers and actually deletes K8s pods. After a
-// build completes, exec-mode pods are deliberately left running (for fly hijack)
-// and cleaned up by the reaper. This 30s interval dominates pod-cleanup time
-// in tests that assert pods are gone after pipeline teardown.
-func tuneReaperInterval(kubeconfig, namespace, interval string) {
-	log.Printf("Tuning k8s_worker_reaper interval to %s...", interval)
-	cmd := exec.Command("kubectl",
-		"--kubeconfig", kubeconfig,
-		"-n", namespace,
-		"exec", "deploy/concourse-concourse-jetbridge-db", "--",
-		"psql", "-U", "concourse", "-c",
-		fmt.Sprintf("UPDATE components SET interval = '%s' WHERE name = 'k8s_worker_reaper';", interval),
-	)
-	cmd.Stdout = os.Stderr
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		log.Printf("warning: failed to tune reaper interval: %v", err)
-	}
-}
-
 // deleteKindCluster deletes the KinD cluster via the Go library
 // unless SKIP_TEARDOWN is set.
 func deleteKindCluster() {

@@ -3,7 +3,6 @@ package db
 import (
 	"database/sql"
 
-	"code.cloudfoundry.org/clock"
 	sq "github.com/Masterminds/squirrel"
 	"github.com/concourse/concourse/atc"
 )
@@ -15,30 +14,18 @@ type ComponentFactory interface {
 }
 
 type componentFactory struct {
-	conn                  DbConn
-	numGoroutineThreshold int
-	rander                ComponentRand
-	clock                 clock.Clock
-	goRoutineCounter      GoroutineCounter
+	conn DbConn
 }
 
-func NewComponentFactory(conn DbConn, numGoroutineThreshold int, rander ComponentRand, clock clock.Clock, goRoutineCounter GoroutineCounter) ComponentFactory {
+func NewComponentFactory(conn DbConn) ComponentFactory {
 	return &componentFactory{
-		conn:                  conn,
-		numGoroutineThreshold: numGoroutineThreshold,
-		rander:                rander,
-		clock:                 clock,
-		goRoutineCounter:      goRoutineCounter,
+		conn: conn,
 	}
 }
 
 func (f *componentFactory) Find(componentName string) (Component, bool, error) {
-	component := &component{
-		conn:                  f.conn,
-		numGoroutineThreshold: f.numGoroutineThreshold,
-		rander:                f.rander,
-		clock:                 f.clock,
-		goRoutineCounter:      f.goRoutineCounter,
+	c := &component{
+		conn: f.conn,
 	}
 
 	row := componentsQuery.
@@ -46,7 +33,7 @@ func (f *componentFactory) Find(componentName string) (Component, bool, error) {
 		RunWith(f.conn).
 		QueryRow()
 
-	err := scanComponent(component, row)
+	err := scanComponent(c, row)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, false, nil
@@ -54,7 +41,7 @@ func (f *componentFactory) Find(componentName string) (Component, bool, error) {
 		return nil, false, err
 	}
 
-	return component, true, nil
+	return c, true, nil
 }
 
 func (f *componentFactory) CreateOrUpdate(c atc.Component) (Component, error) {
@@ -66,19 +53,15 @@ func (f *componentFactory) CreateOrUpdate(c atc.Component) (Component, error) {
 	defer Rollback(tx)
 
 	obj := &component{
-		conn:                  f.conn,
-		numGoroutineThreshold: f.numGoroutineThreshold,
-		rander:                f.rander,
-		clock:                 f.clock,
-		goRoutineCounter:      f.goRoutineCounter,
+		conn: f.conn,
 	}
 
 	row := psql.Insert("components").
-		Columns("name", "interval").
-		Values(c.Name, c.Interval.String()).
+		Columns("name").
+		Values(c.Name).
 		Suffix(`
-			ON CONFLICT (name) DO UPDATE SET interval=EXCLUDED.interval
-			RETURNING id, name, interval, last_ran, paused
+			ON CONFLICT (name) DO UPDATE SET name=EXCLUDED.name
+			RETURNING id, name, paused
 		`).
 		RunWith(tx).
 		QueryRow()

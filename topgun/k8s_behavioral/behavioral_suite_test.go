@@ -147,8 +147,6 @@ var _ = SynchronizedBeforeSuite(
 
 		waitForAPI(atcURL, 5*time.Minute)
 
-		tuneReaperInterval(kubeconfig, namespace, "2s")
-
 		config = suiteConfig{
 			FlyBin:      shared.FlyBin,
 			ATCURL:      atcURL,
