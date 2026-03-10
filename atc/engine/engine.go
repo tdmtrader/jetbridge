@@ -174,14 +174,14 @@ func (b *engineBuild) Run(ctx context.Context) {
 	}
 	defer b.clearRunState()
 
-	notifier, err := b.build.AbortNotifier()
+	abortSignal, unlisten, err := b.build.AbortSignal()
 	if err != nil {
 		logger.Error("failed-to-listen-for-aborts", err)
 		return
 	}
 
-	if notifier != nil {
-		defer notifier.Close()
+	if abortSignal != nil {
+		defer unlisten()
 
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithCancel(ctx)
@@ -192,9 +192,11 @@ func (b *engineBuild) Run(ctx context.Context) {
 		go func() {
 			select {
 			case <-noleak:
-			case <-notifier.Notify():
-				logger.Info("aborting")
-				cancel()
+			case <-abortSignal.C():
+				if b.build.IsAborted() {
+					logger.Info("aborting")
+					cancel()
+				}
 			}
 		}()
 	}

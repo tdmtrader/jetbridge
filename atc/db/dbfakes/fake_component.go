@@ -3,7 +3,6 @@ package dbfakes
 
 import (
 	"sync"
-	"time"
 
 	"github.com/concourse/concourse/atc/db"
 )
@@ -18,36 +17,6 @@ type FakeComponent struct {
 	}
 	iDReturnsOnCall map[int]struct {
 		result1 int
-	}
-	IntervalStub        func() time.Duration
-	intervalMutex       sync.RWMutex
-	intervalArgsForCall []struct {
-	}
-	intervalReturns struct {
-		result1 time.Duration
-	}
-	intervalReturnsOnCall map[int]struct {
-		result1 time.Duration
-	}
-	IntervalElapsedStub        func() bool
-	intervalElapsedMutex       sync.RWMutex
-	intervalElapsedArgsForCall []struct {
-	}
-	intervalElapsedReturns struct {
-		result1 bool
-	}
-	intervalElapsedReturnsOnCall map[int]struct {
-		result1 bool
-	}
-	LastRanStub        func() time.Time
-	lastRanMutex       sync.RWMutex
-	lastRanArgsForCall []struct {
-	}
-	lastRanReturns struct {
-		result1 time.Time
-	}
-	lastRanReturnsOnCall map[int]struct {
-		result1 time.Time
 	}
 	NameStub        func() string
 	nameMutex       sync.RWMutex
@@ -80,16 +49,6 @@ type FakeComponent struct {
 	reloadReturnsOnCall map[int]struct {
 		result1 bool
 		result2 error
-	}
-	UpdateLastRanStub        func() error
-	updateLastRanMutex       sync.RWMutex
-	updateLastRanArgsForCall []struct {
-	}
-	updateLastRanReturns struct {
-		result1 error
-	}
-	updateLastRanReturnsOnCall map[int]struct {
-		result1 error
 	}
 	invocations      map[string][][]interface{}
 	invocationsMutex sync.RWMutex
@@ -145,165 +104,6 @@ func (fake *FakeComponent) IDReturnsOnCall(i int, result1 int) {
 	}
 	fake.iDReturnsOnCall[i] = struct {
 		result1 int
-	}{result1}
-}
-
-func (fake *FakeComponent) Interval() time.Duration {
-	fake.intervalMutex.Lock()
-	ret, specificReturn := fake.intervalReturnsOnCall[len(fake.intervalArgsForCall)]
-	fake.intervalArgsForCall = append(fake.intervalArgsForCall, struct {
-	}{})
-	stub := fake.IntervalStub
-	fakeReturns := fake.intervalReturns
-	fake.recordInvocation("Interval", []interface{}{})
-	fake.intervalMutex.Unlock()
-	if stub != nil {
-		return stub()
-	}
-	if specificReturn {
-		return ret.result1
-	}
-	return fakeReturns.result1
-}
-
-func (fake *FakeComponent) IntervalCallCount() int {
-	fake.intervalMutex.RLock()
-	defer fake.intervalMutex.RUnlock()
-	return len(fake.intervalArgsForCall)
-}
-
-func (fake *FakeComponent) IntervalCalls(stub func() time.Duration) {
-	fake.intervalMutex.Lock()
-	defer fake.intervalMutex.Unlock()
-	fake.IntervalStub = stub
-}
-
-func (fake *FakeComponent) IntervalReturns(result1 time.Duration) {
-	fake.intervalMutex.Lock()
-	defer fake.intervalMutex.Unlock()
-	fake.IntervalStub = nil
-	fake.intervalReturns = struct {
-		result1 time.Duration
-	}{result1}
-}
-
-func (fake *FakeComponent) IntervalReturnsOnCall(i int, result1 time.Duration) {
-	fake.intervalMutex.Lock()
-	defer fake.intervalMutex.Unlock()
-	fake.IntervalStub = nil
-	if fake.intervalReturnsOnCall == nil {
-		fake.intervalReturnsOnCall = make(map[int]struct {
-			result1 time.Duration
-		})
-	}
-	fake.intervalReturnsOnCall[i] = struct {
-		result1 time.Duration
-	}{result1}
-}
-
-func (fake *FakeComponent) IntervalElapsed() bool {
-	fake.intervalElapsedMutex.Lock()
-	ret, specificReturn := fake.intervalElapsedReturnsOnCall[len(fake.intervalElapsedArgsForCall)]
-	fake.intervalElapsedArgsForCall = append(fake.intervalElapsedArgsForCall, struct {
-	}{})
-	stub := fake.IntervalElapsedStub
-	fakeReturns := fake.intervalElapsedReturns
-	fake.recordInvocation("IntervalElapsed", []interface{}{})
-	fake.intervalElapsedMutex.Unlock()
-	if stub != nil {
-		return stub()
-	}
-	if specificReturn {
-		return ret.result1
-	}
-	return fakeReturns.result1
-}
-
-func (fake *FakeComponent) IntervalElapsedCallCount() int {
-	fake.intervalElapsedMutex.RLock()
-	defer fake.intervalElapsedMutex.RUnlock()
-	return len(fake.intervalElapsedArgsForCall)
-}
-
-func (fake *FakeComponent) IntervalElapsedCalls(stub func() bool) {
-	fake.intervalElapsedMutex.Lock()
-	defer fake.intervalElapsedMutex.Unlock()
-	fake.IntervalElapsedStub = stub
-}
-
-func (fake *FakeComponent) IntervalElapsedReturns(result1 bool) {
-	fake.intervalElapsedMutex.Lock()
-	defer fake.intervalElapsedMutex.Unlock()
-	fake.IntervalElapsedStub = nil
-	fake.intervalElapsedReturns = struct {
-		result1 bool
-	}{result1}
-}
-
-func (fake *FakeComponent) IntervalElapsedReturnsOnCall(i int, result1 bool) {
-	fake.intervalElapsedMutex.Lock()
-	defer fake.intervalElapsedMutex.Unlock()
-	fake.IntervalElapsedStub = nil
-	if fake.intervalElapsedReturnsOnCall == nil {
-		fake.intervalElapsedReturnsOnCall = make(map[int]struct {
-			result1 bool
-		})
-	}
-	fake.intervalElapsedReturnsOnCall[i] = struct {
-		result1 bool
-	}{result1}
-}
-
-func (fake *FakeComponent) LastRan() time.Time {
-	fake.lastRanMutex.Lock()
-	ret, specificReturn := fake.lastRanReturnsOnCall[len(fake.lastRanArgsForCall)]
-	fake.lastRanArgsForCall = append(fake.lastRanArgsForCall, struct {
-	}{})
-	stub := fake.LastRanStub
-	fakeReturns := fake.lastRanReturns
-	fake.recordInvocation("LastRan", []interface{}{})
-	fake.lastRanMutex.Unlock()
-	if stub != nil {
-		return stub()
-	}
-	if specificReturn {
-		return ret.result1
-	}
-	return fakeReturns.result1
-}
-
-func (fake *FakeComponent) LastRanCallCount() int {
-	fake.lastRanMutex.RLock()
-	defer fake.lastRanMutex.RUnlock()
-	return len(fake.lastRanArgsForCall)
-}
-
-func (fake *FakeComponent) LastRanCalls(stub func() time.Time) {
-	fake.lastRanMutex.Lock()
-	defer fake.lastRanMutex.Unlock()
-	fake.LastRanStub = stub
-}
-
-func (fake *FakeComponent) LastRanReturns(result1 time.Time) {
-	fake.lastRanMutex.Lock()
-	defer fake.lastRanMutex.Unlock()
-	fake.LastRanStub = nil
-	fake.lastRanReturns = struct {
-		result1 time.Time
-	}{result1}
-}
-
-func (fake *FakeComponent) LastRanReturnsOnCall(i int, result1 time.Time) {
-	fake.lastRanMutex.Lock()
-	defer fake.lastRanMutex.Unlock()
-	fake.LastRanStub = nil
-	if fake.lastRanReturnsOnCall == nil {
-		fake.lastRanReturnsOnCall = make(map[int]struct {
-			result1 time.Time
-		})
-	}
-	fake.lastRanReturnsOnCall[i] = struct {
-		result1 time.Time
 	}{result1}
 }
 
@@ -467,59 +267,6 @@ func (fake *FakeComponent) ReloadReturnsOnCall(i int, result1 bool, result2 erro
 		result1 bool
 		result2 error
 	}{result1, result2}
-}
-
-func (fake *FakeComponent) UpdateLastRan() error {
-	fake.updateLastRanMutex.Lock()
-	ret, specificReturn := fake.updateLastRanReturnsOnCall[len(fake.updateLastRanArgsForCall)]
-	fake.updateLastRanArgsForCall = append(fake.updateLastRanArgsForCall, struct {
-	}{})
-	stub := fake.UpdateLastRanStub
-	fakeReturns := fake.updateLastRanReturns
-	fake.recordInvocation("UpdateLastRan", []interface{}{})
-	fake.updateLastRanMutex.Unlock()
-	if stub != nil {
-		return stub()
-	}
-	if specificReturn {
-		return ret.result1
-	}
-	return fakeReturns.result1
-}
-
-func (fake *FakeComponent) UpdateLastRanCallCount() int {
-	fake.updateLastRanMutex.RLock()
-	defer fake.updateLastRanMutex.RUnlock()
-	return len(fake.updateLastRanArgsForCall)
-}
-
-func (fake *FakeComponent) UpdateLastRanCalls(stub func() error) {
-	fake.updateLastRanMutex.Lock()
-	defer fake.updateLastRanMutex.Unlock()
-	fake.UpdateLastRanStub = stub
-}
-
-func (fake *FakeComponent) UpdateLastRanReturns(result1 error) {
-	fake.updateLastRanMutex.Lock()
-	defer fake.updateLastRanMutex.Unlock()
-	fake.UpdateLastRanStub = nil
-	fake.updateLastRanReturns = struct {
-		result1 error
-	}{result1}
-}
-
-func (fake *FakeComponent) UpdateLastRanReturnsOnCall(i int, result1 error) {
-	fake.updateLastRanMutex.Lock()
-	defer fake.updateLastRanMutex.Unlock()
-	fake.UpdateLastRanStub = nil
-	if fake.updateLastRanReturnsOnCall == nil {
-		fake.updateLastRanReturnsOnCall = make(map[int]struct {
-			result1 error
-		})
-	}
-	fake.updateLastRanReturnsOnCall[i] = struct {
-		result1 error
-	}{result1}
 }
 
 func (fake *FakeComponent) Invocations() map[string][][]interface{} {

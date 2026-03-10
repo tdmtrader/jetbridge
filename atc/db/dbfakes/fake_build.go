@@ -18,17 +18,19 @@ import (
 )
 
 type FakeBuild struct {
-	AbortNotifierStub        func() (db.Notifier, error)
-	abortNotifierMutex       sync.RWMutex
-	abortNotifierArgsForCall []struct {
+	AbortSignalStub        func() (*db.NotifySignal, func(), error)
+	abortSignalMutex       sync.RWMutex
+	abortSignalArgsForCall []struct {
 	}
-	abortNotifierReturns struct {
-		result1 db.Notifier
-		result2 error
+	abortSignalReturns struct {
+		result1 *db.NotifySignal
+		result2 func()
+		result3 error
 	}
-	abortNotifierReturnsOnCall map[int]struct {
-		result1 db.Notifier
-		result2 error
+	abortSignalReturnsOnCall map[int]struct {
+		result1 *db.NotifySignal
+		result2 func()
+		result3 error
 	}
 	AcquireTrackingLockStub        func(lager.Logger, time.Duration) (lock.Lock, bool, error)
 	acquireTrackingLockMutex       sync.RWMutex
@@ -792,60 +794,63 @@ type FakeBuild struct {
 	invocationsMutex sync.RWMutex
 }
 
-func (fake *FakeBuild) AbortNotifier() (db.Notifier, error) {
-	fake.abortNotifierMutex.Lock()
-	ret, specificReturn := fake.abortNotifierReturnsOnCall[len(fake.abortNotifierArgsForCall)]
-	fake.abortNotifierArgsForCall = append(fake.abortNotifierArgsForCall, struct {
+func (fake *FakeBuild) AbortSignal() (*db.NotifySignal, func(), error) {
+	fake.abortSignalMutex.Lock()
+	ret, specificReturn := fake.abortSignalReturnsOnCall[len(fake.abortSignalArgsForCall)]
+	fake.abortSignalArgsForCall = append(fake.abortSignalArgsForCall, struct {
 	}{})
-	stub := fake.AbortNotifierStub
-	fakeReturns := fake.abortNotifierReturns
-	fake.recordInvocation("AbortNotifier", []interface{}{})
-	fake.abortNotifierMutex.Unlock()
+	stub := fake.AbortSignalStub
+	fakeReturns := fake.abortSignalReturns
+	fake.recordInvocation("AbortSignal", []interface{}{})
+	fake.abortSignalMutex.Unlock()
 	if stub != nil {
 		return stub()
 	}
 	if specificReturn {
-		return ret.result1, ret.result2
+		return ret.result1, ret.result2, ret.result3
 	}
-	return fakeReturns.result1, fakeReturns.result2
+	return fakeReturns.result1, fakeReturns.result2, fakeReturns.result3
 }
 
-func (fake *FakeBuild) AbortNotifierCallCount() int {
-	fake.abortNotifierMutex.RLock()
-	defer fake.abortNotifierMutex.RUnlock()
-	return len(fake.abortNotifierArgsForCall)
+func (fake *FakeBuild) AbortSignalCallCount() int {
+	fake.abortSignalMutex.RLock()
+	defer fake.abortSignalMutex.RUnlock()
+	return len(fake.abortSignalArgsForCall)
 }
 
-func (fake *FakeBuild) AbortNotifierCalls(stub func() (db.Notifier, error)) {
-	fake.abortNotifierMutex.Lock()
-	defer fake.abortNotifierMutex.Unlock()
-	fake.AbortNotifierStub = stub
+func (fake *FakeBuild) AbortSignalCalls(stub func() (*db.NotifySignal, func(), error)) {
+	fake.abortSignalMutex.Lock()
+	defer fake.abortSignalMutex.Unlock()
+	fake.AbortSignalStub = stub
 }
 
-func (fake *FakeBuild) AbortNotifierReturns(result1 db.Notifier, result2 error) {
-	fake.abortNotifierMutex.Lock()
-	defer fake.abortNotifierMutex.Unlock()
-	fake.AbortNotifierStub = nil
-	fake.abortNotifierReturns = struct {
-		result1 db.Notifier
-		result2 error
-	}{result1, result2}
+func (fake *FakeBuild) AbortSignalReturns(result1 *db.NotifySignal, result2 func(), result3 error) {
+	fake.abortSignalMutex.Lock()
+	defer fake.abortSignalMutex.Unlock()
+	fake.AbortSignalStub = nil
+	fake.abortSignalReturns = struct {
+		result1 *db.NotifySignal
+		result2 func()
+		result3 error
+	}{result1, result2, result3}
 }
 
-func (fake *FakeBuild) AbortNotifierReturnsOnCall(i int, result1 db.Notifier, result2 error) {
-	fake.abortNotifierMutex.Lock()
-	defer fake.abortNotifierMutex.Unlock()
-	fake.AbortNotifierStub = nil
-	if fake.abortNotifierReturnsOnCall == nil {
-		fake.abortNotifierReturnsOnCall = make(map[int]struct {
-			result1 db.Notifier
-			result2 error
+func (fake *FakeBuild) AbortSignalReturnsOnCall(i int, result1 *db.NotifySignal, result2 func(), result3 error) {
+	fake.abortSignalMutex.Lock()
+	defer fake.abortSignalMutex.Unlock()
+	fake.AbortSignalStub = nil
+	if fake.abortSignalReturnsOnCall == nil {
+		fake.abortSignalReturnsOnCall = make(map[int]struct {
+			result1 *db.NotifySignal
+			result2 func()
+			result3 error
 		})
 	}
-	fake.abortNotifierReturnsOnCall[i] = struct {
-		result1 db.Notifier
-		result2 error
-	}{result1, result2}
+	fake.abortSignalReturnsOnCall[i] = struct {
+		result1 *db.NotifySignal
+		result2 func()
+		result3 error
+	}{result1, result2, result3}
 }
 
 func (fake *FakeBuild) AcquireTrackingLock(arg1 lager.Logger, arg2 time.Duration) (lock.Lock, bool, error) {

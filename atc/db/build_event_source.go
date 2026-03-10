@@ -61,20 +61,13 @@ func newBuildEventSource(
 	}
 
 	if !completed {
-		notifier, err := newConditionNotifier(conn.Bus(), buildEventsChannel(buildID), func() (bool, error) {
-			return true, nil
-		})
+		signal, err := conn.Bus().ListenSignal(buildEventsChannel(buildID))
 		if err != nil {
 			return nil, err
 		}
 
-		err = MarkBuildAsBeingWatched(conn, buildEventsChannel(buildID))
-		if err != nil {
-			notifier.Close()
-			return nil, err
-		}
-
-		source.notifier = notifier
+		source.signal = signal
+		source.signalChannel = buildEventsChannel(buildID)
 	}
 
 	wg.Add(1)
@@ -87,8 +80,9 @@ type buildEventSource struct {
 	buildID int
 	table   string
 
-	conn     DbConn
-	notifier Notifier
+	conn          DbConn
+	signal        *NotifySignal
+	signalChannel string
 
 	events chan event.Envelope
 	stop   chan struct{}
@@ -118,8 +112,8 @@ func (source *buildEventSource) Close() error {
 
 	source.wg.Wait()
 
-	if source.notifier != nil {
-		return source.notifier.Close()
+	if source.signal != nil {
+		return source.conn.Bus().UnlistenSignal(source.signalChannel, source.signal)
 	}
 	return nil
 }
@@ -235,7 +229,7 @@ func (source *buildEventSource) collectEvents(from uint, completed bool) {
 		}
 
 		select {
-		case <-source.notifier.Notify():
+		case <-source.signal.C():
 		case <-source.stop:
 			source.err = ErrBuildEventStreamClosed
 			close(source.events)

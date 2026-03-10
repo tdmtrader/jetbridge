@@ -548,15 +548,11 @@ func (b *inMemoryCheckBuild) SaveEvent(ev atc.Event) error {
 	return b.conn.Bus().Notify(buildEventsChannel(b.id))
 }
 
-// AbortNotifier returns nil because there is no way to abort a in-memory
-// check build. Say a in-memory build may run on ATC-a, but abort-build API call
-// might be received by ATC-b, there is not a channel for ATC-b to tell ATC-a to
-// mark the in-memory build as aborted. If we really want to abort a in-memory
-// check build in future, it might need to add a new table "aborted-in-memory-builds"
-// and API insert in-memory build id to the table, and AbortNotifier watches the
-// table to see if current build should be aborted.
-func (b *inMemoryCheckBuild) AbortNotifier() (Notifier, error) {
-	return nil, nil
+// AbortSignal returns nil because there is no way to abort an in-memory
+// check build. In-memory builds may run on a different ATC than the one
+// receiving the abort API call, so there is no cross-ATC abort channel.
+func (b *inMemoryCheckBuild) AbortSignal() (*NotifySignal, func(), error) {
+	return nil, nil, nil
 }
 
 // ResourceCacheUser will use in-memory build's preId as key in order to avoid unnecessary

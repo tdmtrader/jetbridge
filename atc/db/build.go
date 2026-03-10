@@ -200,7 +200,7 @@ type Build interface {
 	Delete() (bool, error)
 	MarkAsAborted() error
 	IsAborted() bool
-	AbortNotifier() (Notifier, error)
+	AbortSignal() (signal *NotifySignal, unlisten func(), err error)
 
 	IsDrained() bool
 	SetDrained(bool) error
@@ -882,12 +882,10 @@ func (b *build) Delete() (bool, error) {
 	return true, nil
 }
 
-// MarkAsAborted will send the abort notification to all build abort
-// channel listeners. It will set the status to aborted that will make
-// AbortNotifier send notification in case if tracking ATC misses the first
-// notification on abort channel.
-// Setting status as aborted will also make Start() return false in case where
-// build was aborted before it was started.
+// MarkAsAborted sets the build's aborted flag and sends a notification on the
+// build abort channel. The aborted flag ensures that AbortSignal listeners
+// detect the abort even if they miss the initial notification.
+// Setting aborted also makes Start() return false if the build hasn't started yet.
 func (b *build) MarkAsAborted() error {
 	tx, err := b.conn.Begin()
 	if err != nil {
@@ -920,21 +918,20 @@ func (b *build) MarkAsAborted() error {
 	return b.conn.Bus().Notify(buildAbortChannel(b.id))
 }
 
-// AbortNotifier returns a Notifier that can be watched for when the build
-// is marked as aborted. Once the build is marked as aborted it will send a
-// notification to finish the build to ATC that is tracking this build.
-func (b *build) AbortNotifier() (Notifier, error) {
-	return newConditionNotifier(b.conn.Bus(), buildAbortChannel(b.id), func() (bool, error) {
-		var aborted bool
-		err := psql.Select("aborted = true").
-			From("builds").
-			Where(sq.Eq{"id": b.id}).
-			RunWith(b.conn).
-			QueryRow().
-			Scan(&aborted)
-
-		return aborted, err
-	})
+// AbortSignal returns a NotifySignal that fires when the build is marked as
+// aborted. The caller should check IsAborted() after each signal to confirm
+// the abort, since signals may be spurious. The returned unlisten function
+// must be called when done to clean up the listener.
+func (b *build) AbortSignal() (*NotifySignal, func(), error) {
+	channel := buildAbortChannel(b.id)
+	signal, err := b.conn.Bus().ListenSignal(channel)
+	if err != nil {
+		return nil, nil, err
+	}
+	unlisten := func() {
+		_ = b.conn.Bus().UnlistenSignal(channel, signal)
+	}
+	return signal, unlisten, nil
 }
 
 func (b *build) SaveImageResourceVersion(rc ResourceCache) error {

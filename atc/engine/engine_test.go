@@ -120,16 +120,14 @@ var _ = Describe("Engine", func() {
 					})
 
 					Context("when listening for aborts succeeds", func() {
-						var abort chan struct{}
-						var fakeNotifier *dbfakes.FakeNotifier
+						var abortSignal *db.NotifySignal
+						var unlistenCalled bool
 
 						BeforeEach(func() {
-							abort = make(chan struct{})
+							abortSignal = db.NewNotifySignal()
+							unlistenCalled = false
 
-							fakeNotifier = new(dbfakes.FakeNotifier)
-							fakeNotifier.NotifyReturns(abort)
-
-							fakeBuild.AbortNotifierReturns(fakeNotifier, nil)
+							fakeBuild.AbortSignalReturns(abortSignal, func() { unlistenCalled = true }, nil)
 						})
 
 						Context("when converting the plan to a step succeeds", func() {
@@ -158,9 +156,9 @@ var _ = Describe("Engine", func() {
 								Expect(fakeLock.ReleaseCallCount()).To(Equal(1))
 							})
 
-							It("closes the notifier", func() {
+							It("unlistens the abort signal", func() {
 								waitGroup.Wait()
-								Expect(fakeNotifier.CloseCallCount()).To(Equal(1))
+								Expect(unlistenCalled).To(BeTrue())
 							})
 
 							It("constructs a step from the build's plan", func() {
@@ -215,11 +213,12 @@ var _ = Describe("Engine", func() {
 
 								Context("when the build is aborted", func() {
 									BeforeEach(func() {
+										fakeBuild.IsAbortedReturns(true)
 										readyToAbort := make(chan bool)
 
 										go func() {
 											<-readyToAbort
-											abort <- struct{}{}
+											abortSignal.Signal()
 										}()
 
 										fakeStep.RunStub = func(context.Context, exec.RunState) (bool, error) {
@@ -376,7 +375,7 @@ var _ = Describe("Engine", func() {
 
 					Context("when listening for aborts fails", func() {
 						BeforeEach(func() {
-							fakeBuild.AbortNotifierReturns(nil, errors.New("nope"))
+							fakeBuild.AbortSignalReturns(nil, nil, errors.New("nope"))
 						})
 
 						It("releases the lock", func() {
