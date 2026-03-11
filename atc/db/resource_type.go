@@ -55,6 +55,8 @@ type ResourceType interface {
 	CreateBuild(context.Context, bool, atc.Plan) (Build, bool, error)
 	CreateInMemoryBuild(context.Context, atc.Plan, util.SequenceGenerator) (Build, error)
 
+	ResolvedImage() string
+
 	ClearVersions() (int64, error)
 
 	Reload() (bool, error)
@@ -103,10 +105,19 @@ func (resourceTypes ResourceTypes) Deserialize() atc.ResourceTypes {
 			}
 		}
 
+		// Use the resolved image ref (repo@sha256:digest) if available.
+		// This allows ImageForType to short-circuit and avoid building
+		// nested check/get plans for resource types that have been
+		// resolved via the native registry resolver.
+		image := t.Image()
+		if image == "" {
+			image = t.ResolvedImage()
+		}
+
 		atcResourceTypes = append(atcResourceTypes, atc.ResourceType{
 			Name:       t.Name(),
 			Type:       t.Type(),
-			Image:      t.Image(),
+			Image:      image,
 			Source:     source,
 			Defaults:   t.Defaults(),
 			Privileged: t.Privileged(),
@@ -213,6 +224,51 @@ func (t *resourceType) ResourceConfigID() int             { return t.resourceCon
 func (t *resourceType) ResourceConfigScopeID() int        { return t.resourceConfigScopeID }
 func (t *resourceType) CurrentPinnedVersion() atc.Version { return nil }
 func (t *resourceType) HasWebhook() bool                  { return false }
+
+// ResolvedImage returns the fully-qualified image ref (repo@sha256:digest)
+// if a digest version has been resolved for this resource type via the native
+// registry resolver. Returns empty string if no resolved version exists.
+func (t *resourceType) ResolvedImage() string {
+	if t.image != "" {
+		// Already has a direct image ref.
+		return t.image
+	}
+	if t.resourceConfigScopeID == 0 {
+		return ""
+	}
+
+	repo, _ := t.source["repository"].(string)
+	if repo == "" {
+		return ""
+	}
+
+	// Look up latest version from the scope.
+	var versionJSON sql.NullString
+	err := psql.Select("v.version").
+		From("resource_config_versions v").
+		Join("resource_config_scopes s ON s.id = v.resource_config_scope_id").
+		Where(sq.Eq{"s.id": t.resourceConfigScopeID}).
+		OrderBy("v.check_order DESC").
+		Limit(1).
+		RunWith(t.conn).
+		QueryRow().
+		Scan(&versionJSON)
+	if err != nil || !versionJSON.Valid {
+		return ""
+	}
+
+	var version atc.Version
+	if err := json.Unmarshal([]byte(versionJSON.String), &version); err != nil {
+		return ""
+	}
+
+	digest, ok := version["digest"]
+	if !ok || digest == "" {
+		return ""
+	}
+
+	return repo + "@" + digest
+}
 
 func newEmptyResourceType(conn DbConn, lockFactory lock.LockFactory) *resourceType {
 	return &resourceType{pipelineRef: pipelineRef{conn: conn, lockFactory: lockFactory}}

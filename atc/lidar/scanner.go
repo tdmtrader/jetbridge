@@ -4,28 +4,40 @@ import (
 	"context"
 	"strconv"
 	"sync"
+	"time"
 
 	"code.cloudfoundry.org/lager/v3"
 	"code.cloudfoundry.org/lager/v3/lagerctx"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/atc/imageresolver"
 	"github.com/concourse/concourse/atc/metric"
 	"github.com/concourse/concourse/atc/util"
 	"github.com/concourse/concourse/tracing"
 )
 
-func NewScanner(checkFactory db.CheckFactory, planFactory atc.PlanFactory, maxConcurrency int) *scanner {
+func NewScanner(
+	checkFactory db.CheckFactory,
+	planFactory atc.PlanFactory,
+	maxConcurrency int,
+	resolver imageresolver.Resolver,
+	resourceConfigFactory db.ResourceConfigFactory,
+) *scanner {
 	return &scanner{
-		checkFactory:   checkFactory,
-		planFactory:    planFactory,
-		maxConcurrency: maxConcurrency,
+		checkFactory:          checkFactory,
+		planFactory:           planFactory,
+		maxConcurrency:        maxConcurrency,
+		resolver:              resolver,
+		resourceConfigFactory: resourceConfigFactory,
 	}
 }
 
 type scanner struct {
-	checkFactory   db.CheckFactory
-	planFactory    atc.PlanFactory
-	maxConcurrency int
+	checkFactory          db.CheckFactory
+	planFactory           atc.PlanFactory
+	maxConcurrency        int
+	resolver              imageresolver.Resolver
+	resourceConfigFactory db.ResourceConfigFactory
 }
 
 func (s *scanner) Run(ctx context.Context) error {
@@ -49,9 +61,193 @@ func (s *scanner) Run(ctx context.Context) error {
 		return err
 	}
 
+	// Resolve resource type images natively via registry API.
+	if s.resolver != nil {
+		s.scanResourceTypes(spanCtx, resourceTypes)
+	}
+
 	s.scanResources(spanCtx, resources, resourceTypes)
 
 	return nil
+}
+
+func (s *scanner) scanResourceTypes(ctx context.Context, resourceTypesMap map[int]db.ResourceTypes) {
+	logger := lagerctx.FromContext(ctx)
+
+	// Collect all resource types across pipelines.
+	var allTypes []db.ResourceType
+	for _, types := range resourceTypesMap {
+		allTypes = append(allTypes, types...)
+	}
+
+	if len(allTypes) == 0 {
+		return
+	}
+
+	maxConcurrency := min(s.maxConcurrency, len(allTypes))
+	typesChan := make(chan db.ResourceType, len(allTypes))
+	waitGroup := sync.WaitGroup{}
+
+	go func() {
+		defer close(typesChan)
+		for _, rt := range allTypes {
+			select {
+			case typesChan <- rt:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	for range maxConcurrency {
+		waitGroup.Add(1)
+		go func() {
+			defer waitGroup.Done()
+			for {
+				select {
+				case rt, open := <-typesChan:
+					if !open {
+						return
+					}
+
+					func() {
+						defer func() {
+							err := util.DumpPanic(recover(), "scanning resource type %d", rt.ID())
+							if err != nil {
+								logger.Error("panic-in-resource-type-scan", err)
+							}
+						}()
+						s.resolveResourceType(ctx, rt)
+					}()
+
+				case <-ctx.Done():
+					return
+				}
+			}
+		}()
+	}
+
+	done := make(chan struct{})
+	go func() {
+		waitGroup.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-ctx.Done():
+		logger.Debug("resource-type-scan-cancelled")
+	}
+}
+
+func (s *scanner) resolveResourceType(ctx context.Context, rt db.ResourceType) {
+	logger := lagerctx.FromContext(ctx)
+	logger = logger.Session("resolve-resource-type", lager.Data{
+		"name":     rt.Name(),
+		"pipeline": rt.PipelineName(),
+		"team":     rt.TeamName(),
+	})
+
+	_, span := tracing.StartSpan(ctx, "scanner.resolveResourceType", tracing.Attrs{
+		"team":          rt.TeamName(),
+		"pipeline":      rt.PipelineName(),
+		"resource_type": rt.Name(),
+	})
+	defer span.End()
+
+	// Skip resource types with direct image references — already pinned.
+	if rt.Image() != "" {
+		logger.Debug("skip-direct-image-ref")
+		return
+	}
+
+	// Skip if check_every is set to never.
+	if rt.CheckEvery() != nil && rt.CheckEvery().Never {
+		logger.Debug("skip-check-every-never")
+		return
+	}
+
+	// Respect check interval.
+	interval := atc.DefaultResourceTypeInterval
+	if rt.CheckEvery() != nil {
+		interval = rt.CheckEvery().Interval
+	}
+	if !rt.LastCheckEndTime().IsZero() && time.Now().Before(rt.LastCheckEndTime().Add(interval)) {
+		logger.Debug("skip-interval-not-elapsed")
+		return
+	}
+
+	// Extract repository and tag from source config.
+	source := rt.Source()
+	repository, _ := source["repository"].(string)
+	if repository == "" {
+		logger.Error("missing-repository-in-source", nil)
+		return
+	}
+	tag, _ := source["tag"].(string)
+
+	// Extract basic auth if present.
+	var auth *imageresolver.BasicAuth
+	if username, ok := source["username"].(string); ok && username != "" {
+		password, _ := source["password"].(string)
+		auth = &imageresolver.BasicAuth{
+			Username: username,
+			Password: password,
+		}
+	}
+
+	// Resolve the digest via registry API.
+	digest, err := s.resolver.Resolve(ctx, repository, tag, auth)
+	if err != nil {
+		logger.Error("failed-to-resolve-digest", err)
+		return
+	}
+
+	logger.Debug("resolved-digest", lager.Data{"digest": digest})
+
+	// Find or create resource config for this resource type.
+	// The resource type is backed by "registry-image" at its core.
+	resourceConfig, err := s.resourceConfigFactory.FindOrCreateResourceConfig(
+		"registry-image",
+		source,
+		nil, // no parent resource cache — native resolution
+	)
+	if err != nil {
+		logger.Error("failed-to-find-or-create-resource-config", err)
+		return
+	}
+
+	// Get or create a scope for this resource type.
+	scope, err := resourceConfig.FindOrCreateScope(nil)
+	if err != nil {
+		logger.Error("failed-to-find-or-create-scope", err)
+		return
+	}
+
+	// Point the resource type to this config scope.
+	err = rt.SetResourceConfigScope(scope)
+	if err != nil {
+		logger.Error("failed-to-set-resource-config-scope", err)
+		return
+	}
+
+	// Save the resolved version.
+	version := atc.Version{"digest": digest}
+	err = scope.SaveVersions(db.SpanContext{}, []atc.Version{version})
+	if err != nil {
+		logger.Error("failed-to-save-versions", err)
+		return
+	}
+
+	// Update check end time for interval tracking.
+	_, err = scope.UpdateLastCheckEndTime(true)
+	if err != nil {
+		logger.Error("failed-to-update-last-check-end-time", err)
+		return
+	}
+
+	metric.Metrics.ChecksEnqueued.Inc()
+	logger.Info("resolved-resource-type", lager.Data{"digest": digest})
 }
 
 func (s *scanner) scanResources(ctx context.Context, resources []db.Resource, resourceTypesMap map[int]db.ResourceTypes) {

@@ -259,6 +259,16 @@ type FakeResourceType struct {
 		result1 bool
 		result2 error
 	}
+	ResolvedImageStub        func() string
+	resolvedImageMutex       sync.RWMutex
+	resolvedImageArgsForCall []struct {
+	}
+	resolvedImageReturns struct {
+		result1 string
+	}
+	resolvedImageReturnsOnCall map[int]struct {
+		result1 string
+	}
 	ResourceConfigIDStub        func() int
 	resourceConfigIDMutex       sync.RWMutex
 	resourceConfigIDArgsForCall []struct {
@@ -1575,6 +1585,59 @@ func (fake *FakeResourceType) ReloadReturnsOnCall(i int, result1 bool, result2 e
 		result1 bool
 		result2 error
 	}{result1, result2}
+}
+
+func (fake *FakeResourceType) ResolvedImage() string {
+	fake.resolvedImageMutex.Lock()
+	ret, specificReturn := fake.resolvedImageReturnsOnCall[len(fake.resolvedImageArgsForCall)]
+	fake.resolvedImageArgsForCall = append(fake.resolvedImageArgsForCall, struct {
+	}{})
+	stub := fake.ResolvedImageStub
+	fakeReturns := fake.resolvedImageReturns
+	fake.recordInvocation("ResolvedImage", []interface{}{})
+	fake.resolvedImageMutex.Unlock()
+	if stub != nil {
+		return stub()
+	}
+	if specificReturn {
+		return ret.result1
+	}
+	return fakeReturns.result1
+}
+
+func (fake *FakeResourceType) ResolvedImageCallCount() int {
+	fake.resolvedImageMutex.RLock()
+	defer fake.resolvedImageMutex.RUnlock()
+	return len(fake.resolvedImageArgsForCall)
+}
+
+func (fake *FakeResourceType) ResolvedImageCalls(stub func() string) {
+	fake.resolvedImageMutex.Lock()
+	defer fake.resolvedImageMutex.Unlock()
+	fake.ResolvedImageStub = stub
+}
+
+func (fake *FakeResourceType) ResolvedImageReturns(result1 string) {
+	fake.resolvedImageMutex.Lock()
+	defer fake.resolvedImageMutex.Unlock()
+	fake.ResolvedImageStub = nil
+	fake.resolvedImageReturns = struct {
+		result1 string
+	}{result1}
+}
+
+func (fake *FakeResourceType) ResolvedImageReturnsOnCall(i int, result1 string) {
+	fake.resolvedImageMutex.Lock()
+	defer fake.resolvedImageMutex.Unlock()
+	fake.ResolvedImageStub = nil
+	if fake.resolvedImageReturnsOnCall == nil {
+		fake.resolvedImageReturnsOnCall = make(map[int]struct {
+			result1 string
+		})
+	}
+	fake.resolvedImageReturnsOnCall[i] = struct {
+		result1 string
+	}{result1}
 }
 
 func (fake *FakeResourceType) ResourceConfigID() int {

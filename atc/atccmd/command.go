@@ -9,7 +9,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"math/rand/v2"
 	"net"
 	"net/http"
 	_ "net/http/pprof"
@@ -42,6 +41,7 @@ import (
 	"github.com/concourse/concourse/atc/db/migration"
 	"github.com/concourse/concourse/atc/engine"
 	"github.com/concourse/concourse/atc/gc"
+	"github.com/concourse/concourse/atc/imageresolver"
 	"github.com/concourse/concourse/atc/lidar"
 	"github.com/concourse/concourse/atc/metric"
 	"github.com/concourse/concourse/atc/pauser"
@@ -154,16 +154,12 @@ type RunCommand struct {
 
 	InterceptIdleTimeout time.Duration `long:"intercept-idle-timeout" default:"0m" description:"Length of time for a intercepted session to be idle before terminating."`
 
-	ComponentRunnerInterval time.Duration `long:"component-runner-interval" default:"10s" description:"Interval on which runners are kicked off for builds, locks, scans, and checks"`
-
-
 	GlobalResourceCheckTimeout          time.Duration `long:"global-resource-check-timeout" default:"1h" description:"Time limit on checking for new versions of resources."`
 	ResourceCheckingInterval            time.Duration `long:"resource-checking-interval" default:"1m" description:"Interval on which to check for new versions of resources."`
 	ResourceTypeCheckingInterval        time.Duration `long:"resource-type-checking-interval" default:"1m" description:"Interval on which to check for new versions of resource types."`
 	ResourceWithWebhookCheckingInterval time.Duration `long:"resource-with-webhook-checking-interval" default:"1m" description:"Interval on which to check for new versions of resources that has webhook defined."`
 	MaxChecksPerSecond                  int           `long:"max-checks-per-second" description:"Maximum number of checks that can be started per second. If not specified, this will be calculated as (# of resources)/(resource checking interval). -1 value will remove this maximum limit of checks per second."`
-	PausePipelinesAfter                 int           `long:"pause-pipelines-after" default:"0" description:"The number of days after which a pipeline will be automatically paused if none of its jobs have run in more than the given number of days. A value of zero disables this component."`
-	PipelinePauserInterval              time.Duration `long:"pipeline-pauser-interval" default:"24h" hidden:"true" description:"The frequency on which the Pipeline Pauser component will be run to check if any pipelines need to be paused."`
+	PausePipelinesAfter int `long:"pause-pipelines-after" default:"0" description:"The number of days after which a pipeline will be automatically paused if none of its jobs have run in more than the given number of days. A value of zero disables this component."`
 
 	StreamingArtifactsCompression string `long:"streaming-artifacts-compression" default:"gzip" choice:"gzip" choice:"zstd" choice:"s2" choice:"raw" description:"Compression algorithm for internal streaming."`
 
@@ -278,10 +274,6 @@ type RunCommand struct {
 	DefaultGetTimeout  time.Duration `long:"default-get-timeout" description:"Default timeout of get steps"`
 	DefaultPutTimeout  time.Duration `long:"default-put-timeout" description:"Default timeout of put steps"`
 	DefaultTaskTimeout time.Duration `long:"default-task-timeout" description:"Default timeout of task steps"`
-
-	NumGoroutineThreshold int `long:"num-goroutine-threshold" description:"When number of goroutines reaches to this threshold, then slow down current ATC. This helps distribute workloads across ATCs evenly."`
-
-	DBNotificationBusQueueSize int `long:"db-notification-bus-queue-size" default:"10000" description:"DB notification bus queue size, default is 10000. If UI often misses loading running build logs, then consider to increase the queue size."`
 
 	DisableRedactSecrets bool `long:"disable-redact-secrets" description:"Disables secret redaction in build logs."`
 }
@@ -578,11 +570,6 @@ func (cmd *RunCommand) Runner(positionalArguments []string) (ifrit.Runner, error
 		atc.LoadBaseResourceTypeDefaults(defaults)
 	}
 
-	err = db.SetNotificationBusQueueSize(cmd.DBNotificationBusQueueSize)
-	if err != nil {
-		return nil, err
-	}
-
 	db.SetupConnectionRetryingDriver(
 		defaultDriverName,
 		cmd.Postgres.ConnectionString(),
@@ -785,12 +772,7 @@ func (cmd *RunCommand) constructMembers(
 
 	// use backendConn so that the Component objects created by the factory uses
 	// the backend connection pool when reloading.
-	componentFactory := db.NewComponentFactory(
-		backendConn,
-		cmd.NumGoroutineThreshold,
-		rander{},
-		clock.NewClock(),
-		db.RealGoroutineCounter{})
+	componentFactory := db.NewComponentFactory(backendConn)
 	bus := backendConn.Bus()
 
 	members := apiMembers
@@ -803,16 +785,10 @@ func (cmd *RunCommand) constructMembers(
 
 		componentLogger := logger.Session(c.Component.Name)
 
-		runnerInterval := cmd.ComponentRunnerInterval
-		if c.NotifyOnly {
-			runnerInterval = 0
-		}
-
 		members = append(members, grouper.Member{
 			Name: c.Component.Name,
 			Runner: &component.Runner{
 				Logger:    componentLogger,
-				Interval:  runnerInterval,
 				Component: dbComponent,
 				Bus:       bus,
 				Schedulable: &component.Coordinator{
@@ -1138,11 +1114,6 @@ func (cmd *RunCommand) backendComponents(
 		policyChecker,
 	)
 
-	buildEventWatcher, err := db.NewBuildBeingWatchedMarker(logger, dbConn, db.DefaultBuildBeingWatchedMarkDuration, clock.NewClock())
-	if err != nil {
-		return nil, err
-	}
-
 	// In case that a user configures resource-checking-interval, but forgets to
 	// configure resource-with-webhook-checking-interval, keep both checking-
 	// intervals consistent. Even if both intervals are configured, there is no
@@ -1169,19 +1140,19 @@ func (cmd *RunCommand) backendComponents(
 	components := []RunnableComponent{
 		{
 			Component: atc.Component{
-				Name:     atc.ComponentLidarScanner,
-				Interval: 10 * time.Second,
+				Name: atc.ComponentLidarScanner,
 			},
 			Runnable: lidar.NewScanner(
 				dbCheckFactory,
 				atc.NewPlanFactory(time.Now().Unix()),
 				1000,
+				imageresolver.NewResolver(nil),
+				dbResourceConfigFactory,
 			),
 		},
 		{
 			Component: atc.Component{
-				Name:     atc.ComponentPipelinePauser,
-				Interval: cmd.PipelinePauserInterval,
+				Name: atc.ComponentPipelinePauser,
 			},
 			Runnable: pauser.NewPipelinePauser(
 				dbPipelinePauser,
@@ -1190,8 +1161,7 @@ func (cmd *RunCommand) backendComponents(
 		},
 		{
 			Component: atc.Component{
-				Name:     atc.ComponentScheduler,
-				Interval: 10 * time.Second,
+				Name: atc.ComponentScheduler,
 			},
 			Runnable: scheduler.NewRunner(
 				logger.Session("scheduler"),
@@ -1207,15 +1177,13 @@ func (cmd *RunCommand) backendComponents(
 		},
 		{
 			Component: atc.Component{
-				Name:     atc.ComponentBuildTracker,
-				Interval: 10 * time.Second,
+				Name: atc.ComponentBuildTracker,
 			},
 			Runnable: builds.NewTracker(logger, dbBuildFactory, engine, checkBuildsChan),
 		},
 		{
 			Component: atc.Component{
-				Name:     atc.ComponentBuildReaper,
-				Interval: 30 * time.Second,
+				Name: atc.ComponentBuildReaper,
 			},
 			Runnable: gc.NewBuildLogCollector(
 				dbPipelineFactory,
@@ -1232,15 +1200,7 @@ func (cmd *RunCommand) backendComponents(
 		},
 		{
 			Component: atc.Component{
-				Name:     atc.ComponentBeingWatchedBuildMarker,
-				Interval: 10 * time.Minute,
-			},
-			Runnable: buildEventWatcher,
-		},
-		{
-			Component: atc.Component{
-				Name:     atc.ComponentSigningKeyLifecycler,
-				Interval: cmd.SigningKey.CheckInterval,
+				Name: atc.ComponentSigningKeyLifecycler,
 			},
 			Runnable: &idtoken.SigningKeyLifecycler{
 				Logger:              logger.Session(atc.ComponentSigningKeyLifecycler),
@@ -1279,8 +1239,7 @@ func (cmd *RunCommand) backendComponents(
 		}
 		components = append(components, RunnableComponent{
 			Component: atc.Component{
-				Name:     atc.ComponentK8sWorkerRegistrar,
-				Interval: 15 * time.Second,
+				Name: atc.ComponentK8sWorkerRegistrar,
 			},
 			Runnable: jetbridge.NewRegistrar(logger.Session(atc.ComponentK8sWorkerRegistrar), k8sClientset, k8sCfg, dbWorkerFactory),
 		})
@@ -1298,8 +1257,7 @@ func (cmd *RunCommand) backendComponents(
 		}
 		components = append(components, RunnableComponent{
 			Component: atc.Component{
-				Name:     atc.ComponentK8sWorkerReaper,
-				Interval: 30 * time.Second,
+				Name: atc.ComponentK8sWorkerReaper,
 			},
 			Runnable: k8sReaper,
 		})
@@ -1308,8 +1266,7 @@ func (cmd *RunCommand) backendComponents(
 	if syslogDrainConfigured {
 		components = append(components, RunnableComponent{
 			Component: atc.Component{
-				Name:     atc.ComponentSyslogDrainer,
-				Interval: 30 * time.Second,
+				Name: atc.ComponentSyslogDrainer,
 			},
 			Runnable: syslog.NewDrainer(
 				cmd.Syslog.Transport,
@@ -1447,29 +1404,14 @@ func (cmd *RunCommand) gcComponents(
 		atc.ComponentCollectorChecks:            gc.NewChecksCollector(dbCheckLifecycle),
 	}
 
-	notifyOnlyCollectors := map[string]bool{
-		atc.ComponentCollectorBuilds:            true,
-		atc.ComponentCollectorResourceCacheUses: true,
-		atc.ComponentCollectorResourceCaches:    true,
-		atc.ComponentCollectorChecks:            true,
-		atc.ComponentCollectorPipelines:         true,
-		atc.ComponentCollectorTaskCaches:        true,
-	}
-
 	var components []RunnableComponent
 	for collectorName, collector := range collectors {
-		rc := RunnableComponent{
+		components = append(components, RunnableComponent{
+			Component: atc.Component{
+				Name: collectorName,
+			},
 			Runnable: collector,
-		}
-		if notifyOnlyCollectors[collectorName] {
-			rc.Component = atc.Component{Name: collectorName, Interval: 30 * time.Second}
-		} else {
-			rc.Component = atc.Component{
-				Name:     collectorName,
-				Interval: cmd.GC.Interval,
-			}
-		}
-		components = append(components, rc)
+		})
 	}
 
 	return components, nil
@@ -2255,16 +2197,9 @@ func (runner drainRunner) Run(signals <-chan os.Signal, ready chan<- struct{}) e
 type RunnableComponent struct {
 	atc.Component
 	component.Runnable
-	NotifyOnly bool // when true, Runner uses Interval=0 (notification-only, no polling)
 }
 
 func (cmd *RunCommand) isMTLSEnabled() bool {
 	return string(cmd.TLSCaCert) != ""
 }
 
-type rander struct{}
-
-func (r rander) Int() int {
-	// math/rand/v2 uses per-goroutine generators, avoiding lock contention
-	return rand.Int()
-}

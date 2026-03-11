@@ -53,6 +53,28 @@ var _ = Describe("Config", func() {
 			})
 		})
 
+		Context("when the resource type has a resolved digest (from native registry resolution)", func() {
+			BeforeEach(func() {
+				types = ResourceTypes{
+					{
+						Name:   "custom-git",
+						Type:   "registry-image",
+						Source: Source{"repository": "my-registry/custom-git"},
+						// Image is set by Deserialize() from the resolved digest.
+						Image: "my-registry/custom-git@sha256:abc123",
+					},
+				}
+			})
+
+			It("returns a TypeImage with ImageRef and no GetPlan/CheckPlan", func() {
+				typeImage := types.ImageForType("some-plan", "custom-git", nil, false)
+				Expect(typeImage.ImageRef).To(Equal("my-registry/custom-git@sha256:abc123"))
+				Expect(typeImage.BaseType).To(BeEmpty())
+				Expect(typeImage.GetPlan).To(BeNil())
+				Expect(typeImage.CheckPlan).To(BeNil())
+			})
+		})
+
 		Context("when the resource type is not found (base type)", func() {
 			BeforeEach(func() {
 				types = ResourceTypes{}

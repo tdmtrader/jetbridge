@@ -8,7 +8,7 @@ _None_
 
 ## Completed / Archived Tracks
 
-### [x] Track: Finish Setup (Conductor Migration)
+### [~] Track: Finish Setup (Conductor Migration)
 _Link: [./archive/finish_setup_20260303/](./archive/finish_setup_20260303/)_
 
 ---
@@ -188,7 +188,7 @@ _Link: [./archive/too_many_check_pods_20260211/](./archive/too_many_check_pods_2
 
 ---
 
-### [ ] Track: Add safeguards against redudant checks
+### [x] Track: Add safeguards against redudant checks
 _Link: [./tracks/add_safeguards_against_redudant_checks_20260303/](./tracks/add_safeguards_against_redudant_checks_20260303/)_
 
 ---
@@ -198,12 +198,12 @@ _Link: [./tracks/other_pg_notify_opportunities_20260303/](./tracks/other_pg_noti
 
 ---
 
-### [ ] Track: OTel observability pipeline for Grafana and test suites
+### [x] Track: OTel observability pipeline for Grafana and test suites
 _Link: [./tracks/otel_observability_pipeline_for_grafana_and_test_suites_20260305/](./tracks/otel_observability_pipeline_for_grafana_and_test_suites_20260305/)_
 
 ---
 
-### [ ] Track: Deprecate old code paths
+### [x] Track: Deprecate old code paths
 _Link: [./tracks/deprecate_old_code_paths_20260305/](./tracks/deprecate_old_code_paths_20260305/)_
 
 ---
@@ -213,22 +213,37 @@ _Link: [./tracks/k8s_sidecars_20260305/](./tracks/k8s_sidecars_20260305/)_
 
 ---
 
-### [ ] Track: Nested test spans for integration suite tracing
+### [x] Track: Nested test spans for integration suite tracing
 _Link: [./tracks/nested_test_spans_for_integration_suite_tracing_20260308/](./tracks/nested_test_spans_for_integration_suite_tracing_20260308/)_
 
 ---
 
-### [ ] Track: evaluate-tempo-traces
+### [x] Track: evaluate-tempo-traces
 _Link: [./tracks/evaluate_tempo_traces_20260309/](./tracks/evaluate_tempo_traces_20260309/)_
 
 ---
 
-### [ ] Track: dead-code-cleanup
+### [x] Track: dead-code-cleanup
 _Link: [./tracks/dead_code_cleanup_20260310/](./tracks/dead_code_cleanup_20260310/)_
 
 ---
 
 ### [x] Track: Test running
 _Link: [./tracks/test_running_20260310/](./tracks/test_running_20260310/)_
+
+---
+
+### [ ] Track: AI feature segregation
+_Link: [./tracks/ai_feature_segregation_20260311/](./tracks/ai_feature_segregation_20260311/)_
+
+---
+
+### [ ] Track: Image Ref Hardening
+_Link: [./tracks/image_ref_hardening_20260311/](./tracks/image_ref_hardening_20260311/)_
+
+---
+
+### [ ] Track: Image Ref Hardening
+_Link: [./tracks/image_ref_hardening_20260311/](./tracks/image_ref_hardening_20260311/)_
 
 ---
