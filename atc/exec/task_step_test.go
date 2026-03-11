@@ -1270,6 +1270,74 @@ var _ = Describe("TaskStep", func() {
 		})
 	})
 
+	Context("when a sidecar uses image_artifact reference", func() {
+		BeforeEach(func() {
+			// Register an image ref in the artifact repository (simulates a prior build step)
+			repo.RegisterImageRef("my-db-image", "docker:///myrepo/mydb@sha256:abc123def456")
+
+			taskPlan.Sidecars = []atc.SidecarSource{
+				{Config: &atc.SidecarConfig{
+					Name:          "postgres",
+					ImageArtifact: "my-db-image",
+					Ports:         []atc.SidecarPort{{ContainerPort: 5432}},
+				}},
+			}
+		})
+
+		It("resolves the artifact ref and uses it as the sidecar image", func() {
+			Expect(stepErr).ToNot(HaveOccurred())
+			Expect(chosenContainer.Spec.Sidecars).To(HaveLen(1))
+			Expect(chosenContainer.Spec.Sidecars[0].Name).To(Equal("postgres"))
+			Expect(chosenContainer.Spec.Sidecars[0].Image).To(Equal("docker:///myrepo/mydb@sha256:abc123def456"))
+			Expect(chosenContainer.Spec.Sidecars[0].ImageArtifact).To(Equal(""))
+		})
+	})
+
+	Context("when a sidecar uses image_artifact that does not exist", func() {
+		BeforeEach(func() {
+			taskPlan.Sidecars = []atc.SidecarSource{
+				{Config: &atc.SidecarConfig{
+					Name:          "postgres",
+					ImageArtifact: "nonexistent-image",
+					Ports:         []atc.SidecarPort{{ContainerPort: 5432}},
+				}},
+			}
+		})
+
+		It("returns an error", func() {
+			Expect(stepErr).To(HaveOccurred())
+			Expect(stepErr.Error()).To(ContainSubstring(`image_artifact "nonexistent-image" not found`))
+		})
+	})
+
+	Context("when a sidecar uses image_artifact mixed with regular sidecars", func() {
+		BeforeEach(func() {
+			repo.RegisterImageRef("my-db-image", "docker:///myrepo/mydb@sha256:abc123def456")
+
+			taskPlan.Sidecars = []atc.SidecarSource{
+				{Config: &atc.SidecarConfig{
+					Name:          "postgres",
+					ImageArtifact: "my-db-image",
+					Ports:         []atc.SidecarPort{{ContainerPort: 5432}},
+				}},
+				{Config: &atc.SidecarConfig{
+					Name:  "redis",
+					Image: "redis:7",
+					Ports: []atc.SidecarPort{{ContainerPort: 6379}},
+				}},
+			}
+		})
+
+		It("resolves the artifact ref and keeps the regular sidecar unchanged", func() {
+			Expect(stepErr).ToNot(HaveOccurred())
+			Expect(chosenContainer.Spec.Sidecars).To(HaveLen(2))
+			Expect(chosenContainer.Spec.Sidecars[0].Name).To(Equal("postgres"))
+			Expect(chosenContainer.Spec.Sidecars[0].Image).To(Equal("docker:///myrepo/mydb@sha256:abc123def456"))
+			Expect(chosenContainer.Spec.Sidecars[1].Name).To(Equal("redis"))
+			Expect(chosenContainer.Spec.Sidecars[1].Image).To(Equal("redis:7"))
+		})
+	})
+
 	Context("when a sidecar file references an unknown source", func() {
 			BeforeEach(func() {
 				taskPlan.Sidecars = []atc.SidecarSource{{File: "nonexistent/sidecars/db.yml"}}

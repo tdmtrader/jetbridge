@@ -12,13 +12,19 @@ import (
 // The format intentionally mirrors a subset of the Kubernetes container spec.
 type SidecarConfig struct {
 	Name       string            `json:"name"`
-	Image      string            `json:"image"`
+	Image      string            `json:"image,omitempty"`
 	Command    []string          `json:"command,omitempty"`
 	Args       []string          `json:"args,omitempty"`
 	Env        []SidecarEnvVar   `json:"env,omitempty"`
 	Ports      []SidecarPort     `json:"ports,omitempty"`
 	Resources  *SidecarResources `json:"resources,omitempty"`
 	WorkingDir string            `json:"workingDir,omitempty"`
+
+	// ImageArtifact references a build artifact name from a prior step.
+	// When set, the image ref is resolved from the artifact repository
+	// (e.g., an image built in step 1 can be used as a sidecar in step 2).
+	// Either Image or ImageArtifact must be set, not both.
+	ImageArtifact string `json:"image_artifact,omitempty"`
 }
 
 // SidecarEnvVar is a name/value pair for environment variables,
@@ -103,8 +109,11 @@ func (sc SidecarConfig) Validate() error {
 	if sc.Name == "" {
 		errors = append(errors, "missing 'name'")
 	}
-	if sc.Image == "" {
-		errors = append(errors, "missing 'image'")
+	if sc.Image == "" && sc.ImageArtifact == "" {
+		errors = append(errors, "missing 'image' or 'image_artifact'")
+	}
+	if sc.Image != "" && sc.ImageArtifact != "" {
+		errors = append(errors, "cannot specify both 'image' and 'image_artifact'")
 	}
 	if len(errors) > 0 {
 		return fmt.Errorf("invalid sidecar configuration: %s", strings.Join(errors, ", "))
