@@ -18,6 +18,7 @@ import (
 	"github.com/concourse/concourse/atc/event"
 	"github.com/concourse/concourse/atc/exec"
 	"github.com/concourse/concourse/atc/exec/execfakes"
+	"github.com/concourse/concourse/atc/imageresolver/imageresolvertesting"
 	"github.com/concourse/concourse/atc/policy/policyfakes"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/runtime/runtimetest"
@@ -855,6 +856,88 @@ var _ = Describe("TaskDelegate", func() {
 			)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(imgSpec.ImageURL).To(Equal("docker:///my-org/warm-cache@sha256:metadata42"))
+		})
+
+		It("resolves on-demand via resolver when no cached version exists", func() {
+			fakeScope.LatestVersionReturns(nil, false, nil)
+
+			fakeResolver := new(imageresolvertesting.FakeResolver)
+			fakeResolver.ResolveReturns("sha256:ondemand456", nil)
+
+			noopStepper := func(p atc.Plan) exec.Step {
+				Fail("no steps should be created when resolver handles resolution")
+				return nil
+			}
+
+			state := exec.NewRunState(noopStepper, nil)
+			plan := atc.Plan{ID: planID}
+
+			df := DelegateFactory{
+				build:                 fakeBuild,
+				plan:                  plan,
+				policyChecker:         fakePolicyChecker,
+				dbWorkerFactory:       fakeWorkerFactory,
+				lockFactory:           fakeLockFactory,
+				resourceConfigFactory: fakeResourceConfigFactory,
+				resourceCacheFactory:  fakeResourceCacheFactory,
+				imageResolver:         fakeResolver,
+			}
+			td := df.TaskDelegate(state)
+
+			imgSpec, err := td.FetchImage(
+				context.TODO(),
+				atc.ImageResource{Name: "image", Type: "registry-image", Source: atc.Source{"repository": "my-org/on-demand"}},
+				atc.ResourceTypes{}, false, nil, false,
+			)
+			Expect(err).ToNot(HaveOccurred())
+
+			By("resolving via the resolver")
+			Expect(fakeResolver.ResolveCallCount()).To(Equal(1))
+			_, repo, _, _ := fakeResolver.ResolveArgsForCall(0)
+			Expect(repo).To(Equal("my-org/on-demand"))
+
+			By("saving the resolved version to DB")
+			Expect(fakeScope.SaveVersionsCallCount()).To(Equal(1))
+
+			By("returning the correct image URL")
+			Expect(imgSpec.ImageURL).To(Equal("docker:///my-org/on-demand@sha256:ondemand456"))
+			Expect(imgSpec.ImageArtifact).To(BeNil())
+		})
+
+		It("returns error when resolver fails (no fallback to pods)", func() {
+			fakeScope.LatestVersionReturns(nil, false, nil)
+
+			fakeResolver := new(imageresolvertesting.FakeResolver)
+			fakeResolver.ResolveReturns("", fmt.Errorf("registry timeout"))
+
+			noopStepper := func(p atc.Plan) exec.Step {
+				Fail("no steps should be created when resolver is configured")
+				return nil
+			}
+
+			state := exec.NewRunState(noopStepper, nil)
+			plan := atc.Plan{ID: planID}
+
+			df := DelegateFactory{
+				build:                 fakeBuild,
+				plan:                  plan,
+				policyChecker:         fakePolicyChecker,
+				dbWorkerFactory:       fakeWorkerFactory,
+				lockFactory:           fakeLockFactory,
+				resourceConfigFactory: fakeResourceConfigFactory,
+				resourceCacheFactory:  fakeResourceCacheFactory,
+				imageResolver:         fakeResolver,
+			}
+			td := df.TaskDelegate(state)
+
+			_, err := td.FetchImage(
+				context.TODO(),
+				atc.ImageResource{Name: "image", Type: "registry-image", Source: atc.Source{"repository": "my-org/fail-test"}},
+				atc.ResourceTypes{}, false, nil, false,
+			)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("on-demand image resolve"))
+			Expect(err.Error()).To(ContainSubstring("registry timeout"))
 		})
 
 		It("works without resource factories (fallback-only mode)", func() {
