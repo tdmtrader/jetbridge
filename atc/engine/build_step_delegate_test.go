@@ -684,6 +684,73 @@ var _ = Describe("BuildStepDelegate", func() {
 			})
 		})
 
+		Context("when on-demand resolve with basic auth credentials", func() {
+			var fakeResolver *imageresolvertesting.FakeResolver
+
+			BeforeEach(func() {
+				fakeScope.LatestVersionReturns(nil, false, nil)
+
+				fakeResolver = new(imageresolvertesting.FakeResolver)
+				fakeResolver.ResolveReturns("sha256:authed123", nil)
+
+				registryGetPlan.Get.Source = atc.Source{
+					"repository": "private-registry.com/my-image",
+					"tag":        "v2",
+					"username":   "myuser",
+					"password":   "mypass",
+				}
+
+				nativeDelegate = engine.NewBuildStepDelegateWithFactories(
+					fakeBuild, planID, exec.NewRunState(func(p atc.Plan) exec.Step {
+						return new(execfakes.FakeStep)
+					}, nil), fakeClock, fakePolicyChecker, false,
+					fakeResourceConfigFactory, fakeResourceCacheFactory,
+					fakeResolver,
+				)
+			})
+
+			It("passes basic auth credentials to the resolver", func() {
+				spec, _, err := nativeDelegate.FetchImage(context.TODO(), *registryGetPlan, registryCheckPlan, false)
+				Expect(err).ToNot(HaveOccurred())
+
+				Expect(fakeResolver.ResolveCallCount()).To(Equal(1))
+				_, repo, tag, auth := fakeResolver.ResolveArgsForCall(0)
+				Expect(repo).To(Equal("private-registry.com/my-image"))
+				Expect(tag).To(Equal("v2"))
+				Expect(auth).ToNot(BeNil())
+				Expect(auth.Username).To(Equal("myuser"))
+				Expect(auth.Password).To(Equal("mypass"))
+
+				Expect(spec.ImageURL).To(Equal("docker:///private-registry.com/my-image@sha256:authed123"))
+			})
+		})
+
+		Context("when on-demand resolve fails", func() {
+			var fakeResolver *imageresolvertesting.FakeResolver
+
+			BeforeEach(func() {
+				fakeScope.LatestVersionReturns(nil, false, nil)
+
+				fakeResolver = new(imageresolvertesting.FakeResolver)
+				fakeResolver.ResolveReturns("", fmt.Errorf("registry unreachable"))
+
+				nativeDelegate = engine.NewBuildStepDelegateWithFactories(
+					fakeBuild, planID, exec.NewRunState(func(p atc.Plan) exec.Step {
+						return new(execfakes.FakeStep)
+					}, nil), fakeClock, fakePolicyChecker, false,
+					fakeResourceConfigFactory, fakeResourceCacheFactory,
+					fakeResolver,
+				)
+			})
+
+			It("returns an error instead of falling back to pods", func() {
+				_, _, err := nativeDelegate.FetchImage(context.TODO(), *registryGetPlan, registryCheckPlan, false)
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("on-demand image resolve"))
+				Expect(err.Error()).To(ContainSubstring("registry unreachable"))
+			})
+		})
+
 		Context("when no cached version exists and no resolver is available", func() {
 			BeforeEach(func() {
 				fakeScope.LatestVersionReturns(nil, false, nil)

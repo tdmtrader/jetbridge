@@ -263,7 +263,13 @@ func (delegate *buildStepDelegate) FetchImage(
 		if err == nil {
 			return spec, cache, nil
 		}
-		// Fall through to plan-based fetch on any error (no cached version, etc.)
+		// When a resolver is available, on-demand resolution errors are fatal
+		// — do not fall back to spawning check+get pods.
+		if delegate.imageResolver != nil {
+			return runtime.ImageSpec{}, nil, err
+		}
+		// Fall through to plan-based fetch when no resolver is configured
+		// (no cached version, unsupported type, etc.)
 	}
 
 	fetchState := delegate.state.NewLocalScope()
