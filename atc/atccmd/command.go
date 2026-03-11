@@ -775,6 +775,12 @@ func (cmd *RunCommand) constructMembers(
 	componentFactory := db.NewComponentFactory(backendConn)
 	bus := backendConn.Bus()
 
+	// Default polling interval for components that don't specify one.
+	// Components with NOTIFY triggers will wake immediately on signals;
+	// this interval is a safety net so that components without triggers
+	// (scheduler, GC collectors, k8s reaper, etc.) still run periodically.
+	const defaultComponentInterval = 10 * time.Second
+
 	members := apiMembers
 	components := append(backendComponents, gcComponents...)
 	for _, c := range components {
@@ -785,10 +791,16 @@ func (cmd *RunCommand) constructMembers(
 
 		componentLogger := logger.Session(c.Component.Name)
 
+		interval := c.Interval
+		if interval == 0 {
+			interval = defaultComponentInterval
+		}
+
 		members = append(members, grouper.Member{
 			Name: c.Component.Name,
 			Runner: &component.Runner{
 				Logger:    componentLogger,
+				Interval:  interval,
 				Component: dbComponent,
 				Bus:       bus,
 				Schedulable: &component.Coordinator{
@@ -1100,6 +1112,8 @@ func (cmd *RunCommand) backendComponents(
 		clock.NewClock(),
 	)
 
+	imgResolver := imageresolver.NewResolver(nil)
+
 	engine := cmd.constructEngine(
 		pool,
 		dbWorkerFactory,
@@ -1112,6 +1126,7 @@ func (cmd *RunCommand) backendComponents(
 		lockFactory,
 		rateLimiter,
 		policyChecker,
+		imgResolver,
 	)
 
 	// In case that a user configures resource-checking-interval, but forgets to
@@ -1146,7 +1161,7 @@ func (cmd *RunCommand) backendComponents(
 				dbCheckFactory,
 				atc.NewPlanFactory(time.Now().Unix()),
 				1000,
-				imageresolver.NewResolver(nil),
+				imgResolver,
 				dbResourceConfigFactory,
 			),
 		},
@@ -1242,6 +1257,7 @@ func (cmd *RunCommand) backendComponents(
 				Name: atc.ComponentK8sWorkerRegistrar,
 			},
 			Runnable: jetbridge.NewRegistrar(logger.Session(atc.ComponentK8sWorkerRegistrar), k8sClientset, k8sCfg, dbWorkerFactory),
+			Interval: 15 * time.Second, // heartbeat TTL is 30s, so re-register every 15s
 		})
 
 		k8sContainerRepo := db.NewContainerRepository(dbConn)
@@ -1845,6 +1861,7 @@ func (cmd *RunCommand) constructEngine(
 	lockFactory lock.LockFactory,
 	rateLimiter engine.RateLimiter,
 	policyChecker policy.Checker,
+	resolver imageresolver.Resolver,
 ) engine.Engine {
 	return engine.NewEngine(
 		engine.NewStepperFactory(
@@ -1869,6 +1886,7 @@ func (cmd *RunCommand) constructEngine(
 			lockFactory,
 			resourceConfigFactory,
 			resourceCacheFactory,
+			resolver,
 		),
 		secretManager,
 		cmd.varSourcePool,
@@ -2197,6 +2215,7 @@ func (runner drainRunner) Run(signals <-chan os.Signal, ready chan<- struct{}) e
 type RunnableComponent struct {
 	atc.Component
 	component.Runnable
+	Interval time.Duration
 }
 
 func (cmd *RunCommand) isMTLSEnabled() bool {

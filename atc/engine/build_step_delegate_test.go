@@ -27,6 +27,7 @@ import (
 	"github.com/concourse/concourse/atc/exec/execfakes"
 	"github.com/concourse/concourse/atc/policy"
 	"github.com/concourse/concourse/atc/policy/policyfakes"
+	"github.com/concourse/concourse/atc/imageresolver/imageresolvertesting"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/runtime/runtimetest"
 	"github.com/concourse/concourse/vars"
@@ -589,6 +590,7 @@ var _ = Describe("BuildStepDelegate", func() {
 			nativeDelegate = engine.NewBuildStepDelegateWithFactories(
 				fakeBuild, planID, parentRunState, fakeClock, fakePolicyChecker, false,
 				fakeResourceConfigFactory, fakeResourceCacheFactory,
+				nil, // no resolver — tests fallback behavior
 			)
 		})
 
@@ -635,7 +637,54 @@ var _ = Describe("BuildStepDelegate", func() {
 			Expect(spec.Privileged).To(BeTrue())
 		})
 
-		Context("when no cached version exists in DB", func() {
+		Context("when no cached version exists in DB but resolver is available", func() {
+			var fakeResolver *imageresolvertesting.FakeResolver
+
+			BeforeEach(func() {
+				fakeScope.LatestVersionReturns(nil, false, nil)
+
+				fakeResolver = new(imageresolvertesting.FakeResolver)
+				fakeResolver.ResolveReturns("sha256:resolved999", nil)
+
+				nativeDelegate = engine.NewBuildStepDelegateWithFactories(
+					fakeBuild, planID, exec.NewRunState(func(p atc.Plan) exec.Step {
+						runPlans = append(runPlans, p)
+						return new(execfakes.FakeStep)
+					}, nil), fakeClock, fakePolicyChecker, false,
+					fakeResourceConfigFactory, fakeResourceCacheFactory,
+					fakeResolver,
+				)
+			})
+
+			It("resolves on-demand via the resolver without running plans", func() {
+				spec, cache, err := nativeDelegate.FetchImage(context.TODO(), *registryGetPlan, registryCheckPlan, false)
+				Expect(err).ToNot(HaveOccurred())
+
+				By("not executing any plans")
+				Expect(runPlans).To(BeEmpty())
+
+				By("calling the resolver with correct args")
+				Expect(fakeResolver.ResolveCallCount()).To(Equal(1))
+				_, repo, tag, auth := fakeResolver.ResolveArgsForCall(0)
+				Expect(repo).To(Equal("my-registry/my-image"))
+				Expect(tag).To(Equal("latest"))
+				Expect(auth).To(BeNil())
+
+				By("saving the resolved version to DB")
+				Expect(fakeScope.SaveVersionsCallCount()).To(Equal(1))
+				_, versions := fakeScope.SaveVersionsArgsForCall(0)
+				Expect(versions).To(Equal([]atc.Version{{"digest": "sha256:resolved999"}}))
+
+				By("returning an ImageSpec with the resolved image URL")
+				Expect(spec.ImageURL).To(Equal("docker:///my-registry/my-image@sha256:resolved999"))
+				Expect(spec.ImageArtifact).To(BeNil())
+
+				By("returning the metadata resource cache")
+				Expect(cache.ID()).To(Equal(456))
+			})
+		})
+
+		Context("when no cached version exists and no resolver is available", func() {
 			BeforeEach(func() {
 				fakeScope.LatestVersionReturns(nil, false, nil)
 			})

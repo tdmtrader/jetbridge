@@ -15,6 +15,7 @@ import (
 	"github.com/concourse/concourse/atc/creds"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/event"
+	"github.com/concourse/concourse/atc/imageresolver"
 	"github.com/concourse/concourse/atc/exec"
 	"github.com/concourse/concourse/atc/exec/build"
 	"github.com/concourse/concourse/atc/policy"
@@ -40,6 +41,11 @@ type buildStepDelegate struct {
 	// versions instead of spawning check+get pods.
 	resourceConfigFactory db.ResourceConfigFactory
 	resourceCacheFactory  db.ResourceCacheFactory
+
+	// Optional resolver for on-demand image digest resolution.
+	// When set and no cached version exists, resolves digests via
+	// native OCI registry API calls instead of falling back to pods.
+	imageResolver imageresolver.Resolver
 }
 
 func NewBuildStepDelegate(
@@ -73,10 +79,12 @@ func NewBuildStepDelegateWithFactories(
 	disableRedactSecrets bool,
 	resourceConfigFactory db.ResourceConfigFactory,
 	resourceCacheFactory db.ResourceCacheFactory,
+	resolver imageresolver.Resolver,
 ) exec.BuildStepDelegate {
 	d := NewBuildStepDelegate(build, planID, state, clock, policyChecker, disableRedactSecrets)
 	d.resourceConfigFactory = resourceConfigFactory
 	d.resourceCacheFactory = resourceCacheFactory
+	d.imageResolver = resolver
 	return d
 }
 
@@ -385,11 +393,36 @@ func (delegate *buildStepDelegate) metadataFetchImage(
 	if err != nil {
 		return runtime.ImageSpec{}, nil, fmt.Errorf("get latest version: %w", err)
 	}
-	if !found {
+
+	var version atc.Version
+	if found {
+		version = atc.Version(latestVersion.Version())
+	} else if delegate.imageResolver != nil {
+		// On-demand resolution: resolve digest via native OCI registry API
+		// call instead of falling back to check+get pods.
+		repo, _ := source["repository"].(string)
+		tag, _ := source["tag"].(string)
+
+		var auth *imageresolver.BasicAuth
+		if username, ok := source["username"].(string); ok && username != "" {
+			password, _ := source["password"].(string)
+			auth = &imageresolver.BasicAuth{Username: username, Password: password}
+		}
+
+		digest, resolveErr := delegate.imageResolver.Resolve(ctx, repo, tag, auth)
+		if resolveErr != nil {
+			return runtime.ImageSpec{}, nil, fmt.Errorf("on-demand image resolve for %q: %w", repo, resolveErr)
+		}
+
+		version = atc.Version{"digest": digest}
+
+		// Save the resolved version to DB so subsequent builds can use cached path
+		if saveErr := scope.SaveVersions(db.SpanContext{}, []atc.Version{version}); saveErr != nil {
+			return runtime.ImageSpec{}, nil, fmt.Errorf("save resolved version: %w", saveErr)
+		}
+	} else {
 		return runtime.ImageSpec{}, nil, fmt.Errorf("no cached version for type %q", getPlan.Get.Type)
 	}
-
-	version := atc.Version(latestVersion.Version())
 
 	// Construct image URL (e.g. docker:///repo@sha256:abc123)
 	imageURL := imageURLFromSource(getPlan.Get.Type, source, version)

@@ -7,6 +7,7 @@ import (
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/lock"
 	"github.com/concourse/concourse/atc/exec"
+	"github.com/concourse/concourse/atc/imageresolver"
 	"github.com/concourse/concourse/atc/policy"
 )
 
@@ -20,6 +21,7 @@ type DelegateFactory struct {
 
 	resourceConfigFactory db.ResourceConfigFactory
 	resourceCacheFactory  db.ResourceCacheFactory
+	imageResolver         imageresolver.Resolver
 }
 
 // configureDelegate injects resource factories into the underlying
@@ -44,6 +46,7 @@ func (df DelegateFactory) configureDelegate(d any) {
 	if bsd != nil {
 		bsd.resourceConfigFactory = df.resourceConfigFactory
 		bsd.resourceCacheFactory = df.resourceCacheFactory
+		bsd.imageResolver = df.imageResolver
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/lock"
 	"github.com/concourse/concourse/atc/exec"
+	"github.com/concourse/concourse/atc/imageresolver"
 	"github.com/concourse/concourse/atc/policy"
 )
 
@@ -42,6 +43,7 @@ func NewStepperFactory(
 	lockFactory lock.LockFactory,
 	resourceConfigFactory db.ResourceConfigFactory,
 	resourceCacheFactory db.ResourceCacheFactory,
+	resolver imageresolver.Resolver,
 ) StepperFactory {
 	return &stepperFactory{
 		coreFactory:           coreFactory,
@@ -52,6 +54,7 @@ func NewStepperFactory(
 		lockFactory:           lockFactory,
 		resourceConfigFactory: resourceConfigFactory,
 		resourceCacheFactory:  resourceCacheFactory,
+		imageResolver:         resolver,
 	}
 }
 
@@ -64,6 +67,7 @@ type stepperFactory struct {
 	lockFactory           lock.LockFactory
 	resourceConfigFactory db.ResourceConfigFactory
 	resourceCacheFactory  db.ResourceCacheFactory
+	imageResolver         imageresolver.Resolver
 }
 
 func (factory *stepperFactory) StepperForBuild(build db.Build) (exec.Stepper, error) {
@@ -86,6 +90,7 @@ func (factory *stepperFactory) buildDelegateFactory(build db.Build, plan atc.Pla
 		lockFactory:           factory.lockFactory,
 		resourceConfigFactory: factory.resourceConfigFactory,
 		resourceCacheFactory:  factory.resourceCacheFactory,
+		imageResolver:         factory.imageResolver,
 	}
 }
 
