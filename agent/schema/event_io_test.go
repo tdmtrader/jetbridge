@@ -8,7 +8,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/concourse/concourse/atc/agent/schema"
+	"github.com/concourse/concourse/agent/schema"
 )
 
 var _ = Describe("EventWriter", func() {

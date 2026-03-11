@@ -1,4 +1,4 @@
-package agentfeedback
+package feedback
 
 import (
 	"encoding/json"

@@ -117,7 +117,7 @@ Both `results.json` (top-level `metadata`) and individual artifacts (`metadata`)
 
 ## Go Package
 
-The `atc/agent/schema` package provides Go types for these schemas:
+The `agent/schema` package provides Go types for these schemas:
 
 - `Results`, `Artifact`, `Status` — types for `results.json`
 - `Event`, `EventType` — types for `events.ndjson` lines

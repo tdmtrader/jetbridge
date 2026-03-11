@@ -1,4 +1,4 @@
-package agentfeedback_test
+package feedback_test
 
 import (
 	"bytes"
@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/concourse/concourse/atc/api/agentfeedback"
+	"github.com/concourse/concourse/agent/api/feedback"
 )
 
 // TestFeedbackPipelineFromReviewOutput simulates the full data flow:
@@ -59,9 +59,9 @@ func TestFeedbackPipelineFromReviewOutput(t *testing.T) {
 	// Step 2: Submit each proven issue as feedback to the API.
 	// This simulates the feedback loop where a human reviewer or automated
 	// system classifies each proven issue.
-	feedbackEntries := []agentfeedback.FeedbackRequest{
+	feedbackEntries := []feedback.FeedbackRequest{
 		{
-			ReviewRef:       agentfeedback.ReviewRef{Repo: "github.com/org/repo", Commit: "abc123"},
+			ReviewRef:       feedback.ReviewRef{Repo: "github.com/org/repo", Commit: "abc123"},
 			FindingID:       "ISS-001",
 			FindingType:     "proven_issue",
 			FindingSnapshot: json.RawMessage(`{"severity":"high","category":"correctness"}`),
@@ -72,7 +72,7 @@ func TestFeedbackPipelineFromReviewOutput(t *testing.T) {
 			Source:          "interactive",
 		},
 		{
-			ReviewRef:       agentfeedback.ReviewRef{Repo: "github.com/org/repo", Commit: "abc123"},
+			ReviewRef:       feedback.ReviewRef{Repo: "github.com/org/repo", Commit: "abc123"},
 			FindingID:       "ISS-002",
 			FindingType:     "proven_issue",
 			FindingSnapshot: json.RawMessage(`{"severity":"critical","category":"security"}`),
@@ -83,7 +83,7 @@ func TestFeedbackPipelineFromReviewOutput(t *testing.T) {
 			Source:          "interactive",
 		},
 		{
-			ReviewRef:       agentfeedback.ReviewRef{Repo: "github.com/org/repo", Commit: "abc123"},
+			ReviewRef:       feedback.ReviewRef{Repo: "github.com/org/repo", Commit: "abc123"},
 			FindingID:       "ISS-003",
 			FindingType:     "proven_issue",
 			FindingSnapshot: json.RawMessage(`{"severity":"low","category":"maintainability"}`),
@@ -110,7 +110,7 @@ func TestFeedbackPipelineFromReviewOutput(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	var stored []agentfeedback.StoredFeedback
+	var stored []feedback.StoredFeedback
 	if err := json.NewDecoder(resp.Body).Decode(&stored); err != nil {
 		t.Fatalf("decode stored feedback: %v", err)
 	}
@@ -140,7 +140,7 @@ func TestFeedbackPipelineFromReviewOutput(t *testing.T) {
 	}
 	defer resp2.Body.Close()
 
-	var summary agentfeedback.SummaryResponse
+	var summary feedback.SummaryResponse
 	if err := json.NewDecoder(resp2.Body).Decode(&summary); err != nil {
 		t.Fatalf("decode summary: %v", err)
 	}
@@ -160,7 +160,7 @@ func TestFeedbackPipelineFromReviewOutput(t *testing.T) {
 	}
 
 	// Step 5: Verify classify endpoint works for the feedback text.
-	classifyBody := agentfeedback.ClassifyRequest{Text: "this is a real bug, good catch"}
+	classifyBody := feedback.ClassifyRequest{Text: "this is a real bug, good catch"}
 	classifyData, _ := json.Marshal(classifyBody)
 	resp3, err := http.Post(server.URL+"/api/v1/agent/feedback/classify", "application/json", bytes.NewReader(classifyData))
 	if err != nil {
@@ -168,7 +168,7 @@ func TestFeedbackPipelineFromReviewOutput(t *testing.T) {
 	}
 	defer resp3.Body.Close()
 
-	var classifyResp agentfeedback.ClassifyResponse
+	var classifyResp feedback.ClassifyResponse
 	if err := json.NewDecoder(resp3.Body).Decode(&classifyResp); err != nil {
 		t.Fatalf("decode classify: %v", err)
 	}

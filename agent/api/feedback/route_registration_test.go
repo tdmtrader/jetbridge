@@ -1,4 +1,4 @@
-package agentfeedback_test
+package feedback_test
 
 import (
 	"testing"

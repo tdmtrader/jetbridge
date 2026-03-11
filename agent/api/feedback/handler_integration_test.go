@@ -1,4 +1,4 @@
-package agentfeedback_test
+package feedback_test
 
 import (
 	"bytes"
@@ -7,15 +7,15 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/concourse/concourse/atc/api/agentfeedback"
+	"github.com/concourse/concourse/agent/api/feedback"
 )
 
 // setupServer creates an httptest.Server with a real ServeMux wiring all
 // feedback endpoints. This validates the full HTTP round-trip (routing,
 // serialization, status codes) rather than testing handler methods directly.
-func setupServer() (*httptest.Server, *agentfeedback.MemoryStore) {
-	store := agentfeedback.NewMemoryStore()
-	handler := agentfeedback.NewHandler(store)
+func setupServer() (*httptest.Server, *feedback.MemoryStore) {
+	store := feedback.NewMemoryStore()
+	handler := feedback.NewHandler(store)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/v1/agent/feedback", handler.SubmitFeedback)
@@ -26,7 +26,7 @@ func setupServer() (*httptest.Server, *agentfeedback.MemoryStore) {
 	return httptest.NewServer(mux), store
 }
 
-func submitFeedback(t *testing.T, serverURL string, req agentfeedback.FeedbackRequest) *http.Response {
+func submitFeedback(t *testing.T, serverURL string, req feedback.FeedbackRequest) *http.Response {
 	t.Helper()
 	data, err := json.Marshal(req)
 	if err != nil {
@@ -44,17 +44,17 @@ func TestRoundTripSubmitGetSummary(t *testing.T) {
 	defer server.Close()
 
 	// Submit 3 feedback records.
-	records := []agentfeedback.FeedbackRequest{
+	records := []feedback.FeedbackRequest{
 		{
-			ReviewRef: agentfeedback.ReviewRef{Repo: "repo-a", Commit: "abc"},
+			ReviewRef: feedback.ReviewRef{Repo: "repo-a", Commit: "abc"},
 			FindingID: "ISS-001", Verdict: "accurate", Reviewer: "alice",
 		},
 		{
-			ReviewRef: agentfeedback.ReviewRef{Repo: "repo-a", Commit: "abc"},
+			ReviewRef: feedback.ReviewRef{Repo: "repo-a", Commit: "abc"},
 			FindingID: "ISS-002", Verdict: "false_positive", Reviewer: "alice",
 		},
 		{
-			ReviewRef: agentfeedback.ReviewRef{Repo: "repo-a", Commit: "abc"},
+			ReviewRef: feedback.ReviewRef{Repo: "repo-a", Commit: "abc"},
 			FindingID: "ISS-003", Verdict: "accurate", Reviewer: "bob",
 		},
 	}
@@ -78,7 +78,7 @@ func TestRoundTripSubmitGetSummary(t *testing.T) {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
 
-	var results []agentfeedback.StoredFeedback
+	var results []feedback.StoredFeedback
 	if err := json.NewDecoder(resp.Body).Decode(&results); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -97,7 +97,7 @@ func TestRoundTripSubmitGetSummary(t *testing.T) {
 		t.Fatalf("expected 200, got %d", resp2.StatusCode)
 	}
 
-	var summary agentfeedback.SummaryResponse
+	var summary feedback.SummaryResponse
 	if err := json.NewDecoder(resp2.Body).Decode(&summary); err != nil {
 		t.Fatalf("decode summary: %v", err)
 	}
@@ -121,8 +121,8 @@ func TestRoundTripUpsertBehavior(t *testing.T) {
 	defer server.Close()
 
 	// Submit same reviewer+finding twice with different verdicts.
-	first := agentfeedback.FeedbackRequest{
-		ReviewRef: agentfeedback.ReviewRef{Repo: "repo-b", Commit: "def"},
+	first := feedback.FeedbackRequest{
+		ReviewRef: feedback.ReviewRef{Repo: "repo-b", Commit: "def"},
 		FindingID: "ISS-010", Verdict: "false_positive", Reviewer: "alice",
 	}
 	resp := submitFeedback(t, server.URL, first)
@@ -132,8 +132,8 @@ func TestRoundTripUpsertBehavior(t *testing.T) {
 	}
 
 	// Update verdict.
-	second := agentfeedback.FeedbackRequest{
-		ReviewRef: agentfeedback.ReviewRef{Repo: "repo-b", Commit: "def"},
+	second := feedback.FeedbackRequest{
+		ReviewRef: feedback.ReviewRef{Repo: "repo-b", Commit: "def"},
 		FindingID: "ISS-010", Verdict: "accurate", Reviewer: "alice",
 	}
 	resp = submitFeedback(t, server.URL, second)
@@ -149,7 +149,7 @@ func TestRoundTripUpsertBehavior(t *testing.T) {
 	}
 	defer resp2.Body.Close()
 
-	var results []agentfeedback.StoredFeedback
+	var results []feedback.StoredFeedback
 	if err := json.NewDecoder(resp2.Body).Decode(&results); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -166,19 +166,19 @@ func TestRoundTripRepoFilterOnSummary(t *testing.T) {
 	defer server.Close()
 
 	// Submit records for two different repos.
-	repoARecords := []agentfeedback.FeedbackRequest{
+	repoARecords := []feedback.FeedbackRequest{
 		{
-			ReviewRef: agentfeedback.ReviewRef{Repo: "repo-alpha", Commit: "a1"},
+			ReviewRef: feedback.ReviewRef{Repo: "repo-alpha", Commit: "a1"},
 			FindingID: "ISS-001", Verdict: "accurate", Reviewer: "alice",
 		},
 		{
-			ReviewRef: agentfeedback.ReviewRef{Repo: "repo-alpha", Commit: "a1"},
+			ReviewRef: feedback.ReviewRef{Repo: "repo-alpha", Commit: "a1"},
 			FindingID: "ISS-002", Verdict: "accurate", Reviewer: "alice",
 		},
 	}
-	repoBRecords := []agentfeedback.FeedbackRequest{
+	repoBRecords := []feedback.FeedbackRequest{
 		{
-			ReviewRef: agentfeedback.ReviewRef{Repo: "repo-beta", Commit: "b1"},
+			ReviewRef: feedback.ReviewRef{Repo: "repo-beta", Commit: "b1"},
 			FindingID: "ISS-001", Verdict: "false_positive", Reviewer: "bob",
 		},
 	}
@@ -195,7 +195,7 @@ func TestRoundTripRepoFilterOnSummary(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	var summary agentfeedback.SummaryResponse
+	var summary feedback.SummaryResponse
 	if err := json.NewDecoder(resp.Body).Decode(&summary); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -213,7 +213,7 @@ func TestRoundTripRepoFilterOnSummary(t *testing.T) {
 	}
 	defer resp2.Body.Close()
 
-	var summaryB agentfeedback.SummaryResponse
+	var summaryB feedback.SummaryResponse
 	if err := json.NewDecoder(resp2.Body).Decode(&summaryB); err != nil {
 		t.Fatalf("decode: %v", err)
 	}

@@ -1,4 +1,4 @@
-package agentfeedback_test
+package feedback_test
 
 import (
 	"bytes"
@@ -7,15 +7,15 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/concourse/concourse/atc/api/agentfeedback"
+	"github.com/concourse/concourse/agent/api/feedback"
 )
 
 func TestSubmitFeedback(t *testing.T) {
-	store := agentfeedback.NewMemoryStore()
-	handler := agentfeedback.NewHandler(store)
+	store := feedback.NewMemoryStore()
+	handler := feedback.NewHandler(store)
 
-	body := agentfeedback.FeedbackRequest{
-		ReviewRef: agentfeedback.ReviewRef{
+	body := feedback.FeedbackRequest{
+		ReviewRef: feedback.ReviewRef{
 			Repo:   "https://github.com/org/repo.git",
 			Commit: "abc123",
 		},
@@ -42,11 +42,11 @@ func TestSubmitFeedback(t *testing.T) {
 }
 
 func TestSubmitFeedbackInvalidVerdict(t *testing.T) {
-	store := agentfeedback.NewMemoryStore()
-	handler := agentfeedback.NewHandler(store)
+	store := feedback.NewMemoryStore()
+	handler := feedback.NewHandler(store)
 
-	body := agentfeedback.FeedbackRequest{
-		ReviewRef: agentfeedback.ReviewRef{
+	body := feedback.FeedbackRequest{
+		ReviewRef: feedback.ReviewRef{
 			Repo:   "https://github.com/org/repo.git",
 			Commit: "abc123",
 		},
@@ -71,10 +71,10 @@ func TestSubmitFeedbackInvalidVerdict(t *testing.T) {
 }
 
 func TestSubmitFeedbackMissingFields(t *testing.T) {
-	store := agentfeedback.NewMemoryStore()
-	handler := agentfeedback.NewHandler(store)
+	store := feedback.NewMemoryStore()
+	handler := feedback.NewHandler(store)
 
-	body := agentfeedback.FeedbackRequest{
+	body := feedback.FeedbackRequest{
 		Verdict: "accurate",
 	}
 
@@ -91,12 +91,12 @@ func TestSubmitFeedbackMissingFields(t *testing.T) {
 }
 
 func TestGetFeedback(t *testing.T) {
-	store := agentfeedback.NewMemoryStore()
-	handler := agentfeedback.NewHandler(store)
+	store := feedback.NewMemoryStore()
+	handler := feedback.NewHandler(store)
 
 	// Submit a record first.
-	rec := &agentfeedback.StoredFeedback{
-		ReviewRef: agentfeedback.ReviewRef{
+	rec := &feedback.StoredFeedback{
+		ReviewRef: feedback.ReviewRef{
 			Repo:   "https://github.com/org/repo.git",
 			Commit: "abc123",
 		},
@@ -119,7 +119,7 @@ func TestGetFeedback(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 
-	var results []agentfeedback.StoredFeedback
+	var results []feedback.StoredFeedback
 	if err := json.Unmarshal(w.Body.Bytes(), &results); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
 	}
@@ -132,8 +132,8 @@ func TestGetFeedback(t *testing.T) {
 }
 
 func TestGetFeedbackEmpty(t *testing.T) {
-	store := agentfeedback.NewMemoryStore()
-	handler := agentfeedback.NewHandler(store)
+	store := feedback.NewMemoryStore()
+	handler := feedback.NewHandler(store)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/agent/feedback?repo=none&commit=none", nil)
 	w := httptest.NewRecorder()
@@ -144,7 +144,7 @@ func TestGetFeedbackEmpty(t *testing.T) {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
 
-	var results []agentfeedback.StoredFeedback
+	var results []feedback.StoredFeedback
 	json.Unmarshal(w.Body.Bytes(), &results)
 	if len(results) != 0 {
 		t.Fatalf("expected empty, got %d results", len(results))
@@ -152,13 +152,13 @@ func TestGetFeedbackEmpty(t *testing.T) {
 }
 
 func TestGetSummary(t *testing.T) {
-	store := agentfeedback.NewMemoryStore()
-	handler := agentfeedback.NewHandler(store)
+	store := feedback.NewMemoryStore()
+	handler := feedback.NewHandler(store)
 
-	records := []*agentfeedback.StoredFeedback{
-		{ReviewRef: agentfeedback.ReviewRef{Repo: "r", Commit: "c"}, FindingID: "1", Verdict: "accurate", Reviewer: "a"},
-		{ReviewRef: agentfeedback.ReviewRef{Repo: "r", Commit: "c"}, FindingID: "2", Verdict: "accurate", Reviewer: "a"},
-		{ReviewRef: agentfeedback.ReviewRef{Repo: "r", Commit: "c"}, FindingID: "3", Verdict: "false_positive", Reviewer: "a"},
+	records := []*feedback.StoredFeedback{
+		{ReviewRef: feedback.ReviewRef{Repo: "r", Commit: "c"}, FindingID: "1", Verdict: "accurate", Reviewer: "a"},
+		{ReviewRef: feedback.ReviewRef{Repo: "r", Commit: "c"}, FindingID: "2", Verdict: "accurate", Reviewer: "a"},
+		{ReviewRef: feedback.ReviewRef{Repo: "r", Commit: "c"}, FindingID: "3", Verdict: "false_positive", Reviewer: "a"},
 	}
 	for _, r := range records {
 		store.Save(r)
@@ -173,7 +173,7 @@ func TestGetSummary(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 
-	var summary agentfeedback.SummaryResponse
+	var summary feedback.SummaryResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &summary); err != nil {
 		t.Fatalf("failed to decode: %v", err)
 	}
@@ -186,10 +186,10 @@ func TestGetSummary(t *testing.T) {
 }
 
 func TestClassifyEndpoint(t *testing.T) {
-	store := agentfeedback.NewMemoryStore()
-	handler := agentfeedback.NewHandler(store)
+	store := feedback.NewMemoryStore()
+	handler := feedback.NewHandler(store)
 
-	body := agentfeedback.ClassifyRequest{Text: "good catch, real bug"}
+	body := feedback.ClassifyRequest{Text: "good catch, real bug"}
 	data, _ := json.Marshal(body)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/agent/feedback/classify", bytes.NewReader(data))
 	req.Header.Set("Content-Type", "application/json")
@@ -201,7 +201,7 @@ func TestClassifyEndpoint(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 
-	var resp agentfeedback.ClassifyResponse
+	var resp feedback.ClassifyResponse
 	json.Unmarshal(w.Body.Bytes(), &resp)
 	if resp.Verdict != "accurate" {
 		t.Fatalf("expected accurate, got %s", resp.Verdict)
@@ -212,12 +212,12 @@ func TestClassifyEndpoint(t *testing.T) {
 }
 
 func TestClassifyEndpointWithCustomClassifier(t *testing.T) {
-	store := agentfeedback.NewMemoryStore()
-	handler := agentfeedback.NewHandler(store, agentfeedback.WithClassifier(func(text string) (string, float64) {
+	store := feedback.NewMemoryStore()
+	handler := feedback.NewHandler(store, feedback.WithClassifier(func(text string) (string, float64) {
 		return "noisy", 0.99
 	}))
 
-	body := agentfeedback.ClassifyRequest{Text: "anything"}
+	body := feedback.ClassifyRequest{Text: "anything"}
 	data, _ := json.Marshal(body)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/agent/feedback/classify", bytes.NewReader(data))
 	req.Header.Set("Content-Type", "application/json")
@@ -229,7 +229,7 @@ func TestClassifyEndpointWithCustomClassifier(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 
-	var resp agentfeedback.ClassifyResponse
+	var resp feedback.ClassifyResponse
 	json.Unmarshal(w.Body.Bytes(), &resp)
 	if resp.Verdict != "noisy" {
 		t.Fatalf("expected noisy from custom classifier, got %s", resp.Verdict)
@@ -242,8 +242,8 @@ func TestClassifyEndpointWithCustomClassifier(t *testing.T) {
 // TestClassifyAllVerdictTypes verifies the default classifier handles all
 // verdict types with the comprehensive keyword set matching ci-agent/feedback/classifier.go.
 func TestClassifyAllVerdictTypes(t *testing.T) {
-	store := agentfeedback.NewMemoryStore()
-	handler := agentfeedback.NewHandler(store)
+	store := feedback.NewMemoryStore()
+	handler := feedback.NewHandler(store)
 
 	tests := []struct {
 		input           string
@@ -309,7 +309,7 @@ func TestClassifyAllVerdictTypes(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		body := agentfeedback.ClassifyRequest{Text: tc.input}
+		body := feedback.ClassifyRequest{Text: tc.input}
 		data, _ := json.Marshal(body)
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/agent/feedback/classify", bytes.NewReader(data))
 		req.Header.Set("Content-Type", "application/json")
@@ -321,7 +321,7 @@ func TestClassifyAllVerdictTypes(t *testing.T) {
 			t.Fatalf("input %q: expected 200, got %d", tc.input, w.Code)
 		}
 
-		var resp agentfeedback.ClassifyResponse
+		var resp feedback.ClassifyResponse
 		json.Unmarshal(w.Body.Bytes(), &resp)
 		if resp.Verdict != tc.expectedVerdict {
 			t.Errorf("input %q: expected verdict %q, got %q", tc.input, tc.expectedVerdict, resp.Verdict)

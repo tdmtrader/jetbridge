@@ -1,0 +1,17 @@
+{
+  "trackId": "ai_feature_segregation_20260311",
+  "type": "feature",
+  "status": "in_progress",
+  "description": "AI feature segregation",
+  "createdAt": "2026-03-11T11:19:32.949Z",
+  "updatedAt": "2026-03-11T11:47:51.679Z",
+  "sessions": [
+    {
+      "slotIndex": 0,
+      "engineType": "claude",
+      "aiSessionId": "950d2f22-a552-468c-8483-329f8bf2561d",
+      "accountId": "system-claude",
+      "updatedAt": "2026-03-11T11:19:46.583Z"
+    }
+  ]
+}

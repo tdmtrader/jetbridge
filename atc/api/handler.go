@@ -8,7 +8,7 @@ import (
 	"code.cloudfoundry.org/clock"
 	"code.cloudfoundry.org/lager/v3"
 	"github.com/concourse/concourse/atc"
-	"github.com/concourse/concourse/atc/api/agentfeedback"
+	"github.com/concourse/concourse/agent/api/feedback"
 	"github.com/concourse/concourse/atc/api/artifactserver"
 	"github.com/concourse/concourse/atc/api/buildserver"
 	"github.com/concourse/concourse/atc/api/ccserver"
@@ -113,7 +113,7 @@ func NewHandler(
 	artifactServer := artifactserver.NewServer(logger, workerPool)
 	usersServer := usersserver.NewServer(logger, dbUserFactory)
 	wallServer := wallserver.NewServer(dbWall, logger)
-	feedbackServer := agentfeedback.NewHandler(agentfeedback.NewMemoryStore())
+	feedbackServer := feedback.NewHandler(feedback.NewMemoryStore())
 	if oidcIssuer == "" {
 		oidcIssuer = externalURL
 	}
