@@ -213,6 +213,7 @@ var _ = Describe("Engine", func() {
 
 								Context("when the build is aborted", func() {
 									BeforeEach(func() {
+										fakeBuild.ReloadReturns(true, nil)
 										fakeBuild.IsAbortedReturns(true)
 										readyToAbort := make(chan bool)
 

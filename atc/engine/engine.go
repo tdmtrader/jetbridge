@@ -193,7 +193,10 @@ func (b *engineBuild) Run(ctx context.Context) {
 			select {
 			case <-noleak:
 			case <-abortSignal.C():
-				if b.build.IsAborted() {
+				// Reload from DB to get the current aborted flag,
+				// since the in-memory value is stale from when the
+				// build was first loaded.
+				if ok, err := b.build.Reload(); err == nil && ok && b.build.IsAborted() {
 					logger.Info("aborting")
 					cancel()
 				}
