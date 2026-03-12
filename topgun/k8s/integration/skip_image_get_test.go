@@ -78,5 +78,94 @@ jobs:
 				"expected no get pods — registry-image type should short-circuit",
 			)
 		})
+
+		PIt("resolves task image_resource without check/get pods", Label("e2e"), func() {
+			pipelineFile := writePipelineFile("image-resource-resolve.yml", `
+jobs:
+- name: resolve-job
+  plan:
+  - task: inline-image
+    config:
+      platform: linux
+      image_resource:
+        type: registry-image
+        source:
+          repository: alpine
+          tag: "3.19"
+      run:
+        path: sh
+        args:
+        - -c
+        - |
+          cat /etc/alpine-release
+          echo "image-resource-resolved-inline"
+`)
+			setAndUnpausePipeline(pipelineFile)
+
+			By("triggering job with image_resource")
+			triggerJob("resolve-job")
+			session := waitForBuildAndWatch("resolve-job")
+			Expect(session).To(gexec.Exit(0))
+			Expect(session.Out).To(gbytes.Say("image-resource-resolved-inline"))
+
+			By("verifying only the task pod was created (no check/get pods)")
+			checkPods := getPods(fmt.Sprintf(
+				"concourse.ci/type=check,concourse.ci/pipeline=%s", pipelineName,
+			))
+			getPods := getPods(fmt.Sprintf(
+				"concourse.ci/type=get,concourse.ci/pipeline=%s", pipelineName,
+			))
+			Expect(checkPods).To(BeEmpty(), "expected no check pods for image_resource")
+			Expect(getPods).To(BeEmpty(), "expected no get pods for image_resource")
+		})
+
+		PIt("sidecar with bare string image gets digest-pinned", Label("e2e"), func() {
+			pipelineFile := writePipelineFile("sidecar-digest-pin.yml", `
+jobs:
+- name: sidecar-job
+  plan:
+  - task: with-sidecar
+    config:
+      platform: linux
+      image_resource:
+        type: registry-image
+        source:
+          repository: alpine
+          tag: "3.19"
+      run:
+        path: sh
+        args:
+        - -c
+        - |
+          echo "sidecar-task-completed"
+    sidecars:
+    - name: redis
+      image: redis:7-alpine
+      ports:
+      - containerPort: 6379
+`)
+			setAndUnpausePipeline(pipelineFile)
+
+			By("triggering job with sidecar")
+			triggerJob("sidecar-job")
+			session := waitForBuildAndWatch("sidecar-job")
+			Expect(session).To(gexec.Exit(0))
+			Expect(session.Out).To(gbytes.Say("sidecar-task-completed"))
+
+			By("verifying the sidecar container image is digest-pinned")
+			taskPods := getPods(fmt.Sprintf(
+				"concourse.ci/type=task,concourse.ci/pipeline=%s", pipelineName,
+			))
+			Expect(taskPods).To(HaveLen(1))
+			sidecarFound := false
+			for _, c := range taskPods[0].Spec.Containers {
+				if c.Name == "redis" {
+					sidecarFound = true
+					Expect(c.Image).To(ContainSubstring("@sha256:"),
+						"sidecar image should be digest-pinned")
+				}
+			}
+			Expect(sidecarFound).To(BeTrue(), "redis sidecar container not found")
+		})
 	})
 })
