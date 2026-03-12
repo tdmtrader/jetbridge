@@ -10,6 +10,7 @@ import (
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/lock"
 	"github.com/concourse/concourse/atc/exec"
+	"github.com/concourse/concourse/atc/imageresolver"
 	"github.com/concourse/concourse/atc/resource"
 	"github.com/concourse/concourse/atc/worker"
 )
@@ -27,6 +28,17 @@ type coreStepFactory struct {
 	defaultGetTimeout     time.Duration
 	defaultPutTimeout     time.Duration
 	defaultTaskTimeout    time.Duration
+	imageResolver         imageresolver.Resolver
+}
+
+// CoreStepFactoryOption configures optional fields on coreStepFactory.
+type CoreStepFactoryOption func(*coreStepFactory)
+
+// WithCoreImageResolver sets the image resolver for sidecar digest pinning.
+func WithCoreImageResolver(r imageresolver.Resolver) CoreStepFactoryOption {
+	return func(f *coreStepFactory) {
+		f.imageResolver = r
+	}
 }
 
 func NewCoreStepFactory(
@@ -42,8 +54,9 @@ func NewCoreStepFactory(
 	defaultGetTimeout time.Duration,
 	defaultPutTimeout time.Duration,
 	defaultTaskTimeout time.Duration,
+	opts ...CoreStepFactoryOption,
 ) CoreStepFactory {
-	return &coreStepFactory{
+	f := &coreStepFactory{
 		pool:                  pool,
 		streamer:              streamer,
 		lockFactory:           lockFactory,
@@ -57,6 +70,10 @@ func NewCoreStepFactory(
 		defaultPutTimeout:     defaultPutTimeout,
 		defaultTaskTimeout:    defaultTaskTimeout,
 	}
+	for _, opt := range opts {
+		opt(f)
+	}
+	return f
 }
 
 func (factory *coreStepFactory) GetStep(
@@ -166,6 +183,11 @@ func (factory *coreStepFactory) TaskStep(
 	sum := sha256.Sum256([]byte(plan.Task.Name))
 	containerMetadata.WorkingDirectory = filepath.Join("/tmp", "build", fmt.Sprintf("%x", sum[:4]))
 
+	var taskOpts []exec.TaskStepOption
+	if factory.imageResolver != nil {
+		taskOpts = append(taskOpts, exec.WithImageResolver(factory.imageResolver))
+	}
+
 	taskStep := exec.NewTaskStep(
 		plan.ID,
 		*plan.Task,
@@ -176,6 +198,7 @@ func (factory *coreStepFactory) TaskStep(
 		factory.streamer,
 		delegateFactory,
 		factory.defaultTaskTimeout,
+		taskOpts...,
 	)
 
 	taskStep = exec.LogError(taskStep, delegateFactory)

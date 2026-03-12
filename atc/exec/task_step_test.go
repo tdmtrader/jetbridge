@@ -13,6 +13,8 @@ import (
 	"github.com/concourse/concourse/atc/exec"
 	"github.com/concourse/concourse/atc/exec/build"
 	"github.com/concourse/concourse/atc/exec/execfakes"
+	"github.com/concourse/concourse/atc/imageresolver"
+	"github.com/concourse/concourse/atc/imageresolver/imageresolvertesting"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/runtime/runtimetest"
 	"github.com/concourse/concourse/tracing"
@@ -45,9 +47,10 @@ var _ = Describe("TaskStep", func() {
 		state exec.RunState
 		repo  *build.Repository
 
-		taskStep exec.Step
-		stepOk   bool
-		stepErr  error
+		taskStep         exec.Step
+		taskStepOptions  []exec.TaskStepOption
+		stepOk           bool
+		stepErr          error
 
 		cpuLimit          = atc.CPULimit(1024)
 		memoryLimit       = atc.MemoryLimit(1024)
@@ -88,6 +91,8 @@ var _ = Describe("TaskStep", func() {
 		fakeDelegateFactory = new(execfakes.FakeTaskDelegateFactory)
 		fakeDelegateFactory.TaskDelegateReturns(fakeDelegate)
 
+		taskStepOptions = nil
+
 		state = exec.NewRunState(noopStepper, vars.StaticVariables{"source-param": "super-secret-source"})
 		repo = state.ArtifactRepository()
 
@@ -122,6 +127,7 @@ var _ = Describe("TaskStep", func() {
 			fakeStreamer,
 			fakeDelegateFactory,
 			defaultTaskTimeout,
+			taskStepOptions...,
 		)
 
 		stepOk, stepErr = taskStep.Run(ctx, state)
@@ -1335,6 +1341,82 @@ var _ = Describe("TaskStep", func() {
 			Expect(chosenContainer.Spec.Sidecars[0].Image).To(Equal("docker:///myrepo/mydb@sha256:abc123def456"))
 			Expect(chosenContainer.Spec.Sidecars[1].Name).To(Equal("redis"))
 			Expect(chosenContainer.Spec.Sidecars[1].Image).To(Equal("redis:7"))
+		})
+	})
+
+	Context("when sidecar images are resolved to pinned digests", func() {
+		var fakeResolver *imageresolvertesting.FakeResolver
+
+		BeforeEach(func() {
+			fakeResolver = &imageresolvertesting.FakeResolver{}
+			fakeResolver.ResolveStub(func(ctx context.Context, repo string, tag string, auth *imageresolver.BasicAuth) (string, error) {
+				return "sha256:resolved" + repo + tag, nil
+			})
+
+			taskStepOptions = []exec.TaskStepOption{exec.WithImageResolver(fakeResolver)}
+
+			taskPlan.Sidecars = []atc.SidecarSource{
+				{Config: &atc.SidecarConfig{
+					Name:  "redis",
+					Image: "redis:7",
+					Ports: []atc.SidecarPort{{ContainerPort: 6379}},
+				}},
+			}
+		})
+
+		It("resolves bare image tags to pinned digests", func() {
+			Expect(stepErr).ToNot(HaveOccurred())
+			Expect(chosenContainer.Spec.Sidecars).To(HaveLen(1))
+			Expect(chosenContainer.Spec.Sidecars[0].Image).To(Equal("redis@sha256:resolvedredis7"))
+		})
+	})
+
+	Context("when sidecar image is already digest-pinned", func() {
+		var fakeResolver *imageresolvertesting.FakeResolver
+
+		BeforeEach(func() {
+			fakeResolver = &imageresolvertesting.FakeResolver{}
+			fakeResolver.ResolveReturns("sha256:shouldnotbecalled", nil)
+
+			taskStepOptions = []exec.TaskStepOption{exec.WithImageResolver(fakeResolver)}
+
+			taskPlan.Sidecars = []atc.SidecarSource{
+				{Config: &atc.SidecarConfig{
+					Name:  "redis",
+					Image: "redis@sha256:abc123",
+					Ports: []atc.SidecarPort{{ContainerPort: 6379}},
+				}},
+			}
+		})
+
+		It("skips resolution for already-pinned digests", func() {
+			Expect(stepErr).ToNot(HaveOccurred())
+			Expect(chosenContainer.Spec.Sidecars).To(HaveLen(1))
+			Expect(chosenContainer.Spec.Sidecars[0].Image).To(Equal("redis@sha256:abc123"))
+			Expect(fakeResolver.ResolveCallCount()).To(Equal(0))
+		})
+	})
+
+	Context("when sidecar image resolution fails", func() {
+		BeforeEach(func() {
+			fakeResolver := &imageresolvertesting.FakeResolver{}
+			fakeResolver.ResolveReturns("", fmt.Errorf("registry unreachable"))
+
+			taskStepOptions = []exec.TaskStepOption{exec.WithImageResolver(fakeResolver)}
+
+			taskPlan.Sidecars = []atc.SidecarSource{
+				{Config: &atc.SidecarConfig{
+					Name:  "redis",
+					Image: "redis:7",
+					Ports: []atc.SidecarPort{{ContainerPort: 6379}},
+				}},
+			}
+		})
+
+		It("returns an error", func() {
+			Expect(stepErr).To(HaveOccurred())
+			Expect(stepErr.Error()).To(ContainSubstring("sidecar \"redis\": resolve image"))
+			Expect(stepErr.Error()).To(ContainSubstring("registry unreachable"))
 		})
 	})
 

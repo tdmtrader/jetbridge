@@ -1878,6 +1878,7 @@ func (cmd *RunCommand) constructEngine(
 				cmd.DefaultGetTimeout,
 				cmd.DefaultPutTimeout,
 				cmd.DefaultTaskTimeout,
+				engine.WithCoreImageResolver(resolver),
 			),
 			cmd.ExternalURL.String(),
 			rateLimiter,

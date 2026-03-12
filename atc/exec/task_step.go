@@ -15,6 +15,7 @@ import (
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/exec/build"
+	"github.com/concourse/concourse/atc/imageresolver"
 	"github.com/concourse/concourse/atc/metric"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/worker"
@@ -82,6 +83,16 @@ type TaskDelegate interface {
 	BuildStartTime() time.Time
 }
 
+// TaskStepOption configures optional fields on a TaskStep.
+type TaskStepOption func(*TaskStep)
+
+// WithImageResolver sets an image resolver for sidecar digest pinning.
+func WithImageResolver(r imageresolver.Resolver) TaskStepOption {
+	return func(s *TaskStep) {
+		s.imageResolver = r
+	}
+}
+
 // TaskStep executes a TaskConfig, whose inputs will be fetched from the
 // artifact.Repository and outputs will be added to the artifact.Repository.
 type TaskStep struct {
@@ -94,6 +105,7 @@ type TaskStep struct {
 	streamer           Streamer
 	delegateFactory    TaskDelegateFactory
 	defaultTaskTimeout time.Duration
+	imageResolver      imageresolver.Resolver
 }
 
 func NewTaskStep(
@@ -106,8 +118,9 @@ func NewTaskStep(
 	streamer Streamer,
 	delegateFactory TaskDelegateFactory,
 	defaultTaskTimeout time.Duration,
+	opts ...TaskStepOption,
 ) Step {
-	return &TaskStep{
+	s := &TaskStep{
 		planID:             planID,
 		plan:               plan,
 		defaultLimits:      defaultLimits,
@@ -118,6 +131,10 @@ func NewTaskStep(
 		delegateFactory:    delegateFactory,
 		defaultTaskTimeout: defaultTaskTimeout,
 	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 // Run will first select the worker based on the TaskConfig's platform and the
@@ -271,6 +288,24 @@ func (step *TaskStep) run(ctx context.Context, state RunState, delegate TaskDele
 			}
 			containerSpec.Sidecars[i].Image = imageRef
 			containerSpec.Sidecars[i].ImageArtifact = "" // resolved
+		}
+	}
+
+	// Pin sidecar images to digests via OCI registry resolution
+	if step.imageResolver != nil {
+		for i, sc := range containerSpec.Sidecars {
+			if sc.Image == "" || sc.ImageArtifact != "" {
+				continue // skip artifact refs (already resolved) or empty
+			}
+			if strings.Contains(sc.Image, "@sha256:") {
+				continue // already pinned
+			}
+			repo, tag := parseImageRef(sc.Image)
+			digest, err := step.imageResolver.Resolve(ctx, repo, tag, nil)
+			if err != nil {
+				return false, fmt.Errorf("sidecar %q: resolve image %q: %w", sc.Name, sc.Image, err)
+			}
+			containerSpec.Sidecars[i].Image = repo + "@" + digest
 		}
 	}
 
@@ -692,4 +727,17 @@ func ensureTrailingSlash(path string) string {
 		return path
 	}
 	return path + "/"
+}
+
+// parseImageRef splits an image reference like "redis:7" or "myrepo/myimage"
+// into repository and tag components. If no tag is specified, defaults to "latest".
+func parseImageRef(image string) (string, string) {
+	// Handle images with ports in registry (e.g. "registry:5000/repo:tag")
+	lastColon := strings.LastIndex(image, ":")
+	lastSlash := strings.LastIndex(image, "/")
+
+	if lastColon > lastSlash && lastColon > 0 {
+		return image[:lastColon], image[lastColon+1:]
+	}
+	return image, "latest"
 }
