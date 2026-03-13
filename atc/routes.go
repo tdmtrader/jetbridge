@@ -87,6 +87,7 @@ const (
 	DownloadCLI  = "DownloadCLI"
 	GetInfo      = "GetInfo"
 	GetInfoCreds = "GetInfoCreds"
+	GetHealth    = "GetHealth"
 
 	ListContainers  = "ListContainers"
 	GetContainer    = "GetContainer"
@@ -214,6 +215,7 @@ var Routes = rata.Routes([]rata.Route{
 	{Path: "/api/v1/cli", Method: "GET", Name: DownloadCLI},
 	{Path: "/api/v1/info", Method: "GET", Name: GetInfo},
 	{Path: "/api/v1/info/creds", Method: "GET", Name: GetInfoCreds},
+	{Path: "/api/v1/health", Method: "GET", Name: GetHealth},
 
 	{Path: "/api/v1/user", Method: "GET", Name: GetUser},
 	{Path: "/api/v1/users", Method: "GET", Name: ListActiveUsersSince},

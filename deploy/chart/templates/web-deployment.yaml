@@ -22,7 +22,12 @@ spec:
         - name: {{ . }}
         {{- end }}
       {{- end }}
+      {{- with .Values.web.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       initContainers:
+        {{- if .Values.secrets.create }}
         - name: generate-keys
           image: {{ include "concourse.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
@@ -44,6 +49,7 @@ spec:
           volumeMounts:
             - name: keys
               mountPath: /keys
+        {{- end }}
         - name: migrate-db
           image: {{ include "concourse.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
@@ -187,6 +193,13 @@ spec:
             {{- range $key, $val := .Values.otelMetrics.otlpHeaders }}
             - --otel-metrics-otlp-header={{ $key }}:{{ $val }}
             {{- end }}
+            # Connection pool sizing
+            {{- if .Values.web.apiMaxConns }}
+            - --api-max-conns={{ .Values.web.apiMaxConns }}
+            {{- end }}
+            {{- if .Values.web.backendMaxConns }}
+            - --backend-max-conns={{ .Values.web.backendMaxConns }}
+            {{- end }}
             # Extra args
             {{- range .Values.web.extraArgs }}
             - {{ . }}
@@ -225,6 +238,14 @@ spec:
           readinessProbe:
             {{- toYaml . | nindent 12 }}
           {{- end }}
+          {{- with .Values.web.startupProbe }}
+          startupProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.web.containerSecurityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           {{- with .Values.web.resources }}
           resources:
             {{- toYaml . | nindent 12 }}
@@ -238,12 +259,25 @@ spec:
               mountPath: {{ .Values.web.tls.mountPath }}
               readOnly: true
             {{- end }}
+            - name: tmp
+              mountPath: /tmp
             {{- with .Values.web.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
+      terminationGracePeriodSeconds: {{ .Values.web.terminationGracePeriodSeconds | default 120 }}
       volumes:
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 64Mi
+        {{- if and (not .Values.secrets.create) .Values.secrets.signingKeySecret }}
+        - name: keys
+          secret:
+            secretName: {{ .Values.secrets.signingKeySecret }}
+        {{- else }}
         - name: keys
           emptyDir: {}
+        {{- end }}
         {{- if .Values.web.tls.enabled }}
         - name: web-tls
           secret:

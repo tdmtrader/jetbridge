@@ -219,6 +219,7 @@ var _ = BeforeEach(func() {
 		dbWall,
 		fakeClock,
 		dbSigningKeyFactory,
+		nil,
 	)
 
 	Expect(err).NotTo(HaveOccurred())

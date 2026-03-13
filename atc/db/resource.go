@@ -428,7 +428,8 @@ func (r *resource) UpdateMetadata(version atc.Version, metadata ResourceConfigMe
 	return true, nil
 }
 
-// XXX: Deprecated, only used in tests
+// FindVersion looks up a specific version of this resource's config scope.
+// Used by scheduler algorithm resolvers (group_resolver, pinned_resolver).
 func (r *resource) FindVersion(v atc.Version) (ResourceConfigVersion, bool, error) {
 	if r.resourceConfigScopeID == 0 {
 		return nil, false, nil

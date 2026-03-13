@@ -8,9 +8,23 @@ metadata:
   labels:
     {{- include "concourse.labels" . | nindent 4 }}
 rules:
+  # Task and check pod lifecycle management.
+  # Concourse creates pods with label concourse.ci/* — future RBAC tightening
+  # can use resourceNames or admission webhooks to restrict to labeled pods only.
   - apiGroups: [""]
-    resources: ["pods", "pods/exec", "pods/log"]
+    resources: ["pods"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  # PVC access for cache and artifact volumes
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "list"]
+  # Deployment self-update (used by registrar for worker state)
   - apiGroups: ["apps"]
     resources: ["deployments"]
     verbs: ["get", "list", "watch", "patch", "update"]

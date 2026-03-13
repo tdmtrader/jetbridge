@@ -932,6 +932,7 @@ func (cmd *RunCommand) constructAPIMembers(
 		dbWall,
 		policyChecker,
 		dbSigningKeyFactory,
+		dbConn,
 	)
 	if err != nil {
 		return nil, err
@@ -2081,6 +2082,7 @@ func (cmd *RunCommand) constructAPIHandler(
 	dbWall db.Wall,
 	policyChecker policy.Checker,
 	dbSigningKeyFactory db.SigningKeyFactory,
+	dbConn db.DbConn,
 ) (http.Handler, error) {
 
 	checkPipelineAccessHandlerFactory := auth.NewCheckPipelineAccessHandlerFactory(teamFactory)
@@ -2173,6 +2175,7 @@ func (cmd *RunCommand) constructAPIHandler(
 		dbWall,
 		clock.NewClock(),
 		dbSigningKeyFactory,
+		dbConn,
 	)
 }
 

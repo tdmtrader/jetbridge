@@ -833,7 +833,8 @@ func (t *team) OrderPipelinesWithinGroup(groupName string, instanceVars []atc.In
 	return nil
 }
 
-// XXX: This is only begin used by tests, replace all tests to CreateBuild on a job
+// CreateOneOffBuild creates a build not associated with any job (one-off builds).
+// Used by tests and the fly execute command.
 func (t *team) CreateOneOffBuild() (Build, error) {
 	tx, err := t.conn.Begin()
 	if err != nil {

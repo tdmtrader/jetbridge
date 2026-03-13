@@ -82,6 +82,7 @@ var DefaultRoles = map[string]string{
 	atc.DownloadCLI:                    ViewerRole,
 	atc.GetInfo:                        ViewerRole,
 	atc.GetInfoCreds:                   ViewerRole,
+	atc.GetHealth:                      ViewerRole,
 	atc.ListContainers:                 ViewerRole,
 	atc.GetContainer:                   ViewerRole,
 	atc.HijackContainer:                MemberRole,

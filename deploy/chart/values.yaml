@@ -32,6 +32,40 @@ web:
   # -- Main team local user (granted admin on the main team)
   mainTeamLocalUser: test
 
+  # -- Pod-level security context (applied to the pod spec)
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 65534
+    runAsGroup: 65534
+    fsGroup: 65534
+
+  # -- Container-level security context for the web container
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: ["ALL"]
+
+  # -- API connection pool max connections (per replica).
+  # For N replicas, ensure PostgreSQL max_connections >= N * (apiMaxConns + backendMaxConns + 7).
+  apiMaxConns: 10
+
+  # -- Backend connection pool max connections (per replica).
+  # Backend pool is used by scheduler, build tracker, and other internal components.
+  backendMaxConns: 50
+
+  # -- Startup probe configuration. Allows extra time for DB migration on first boot.
+  startupProbe:
+    httpGet:
+      path: /api/v1/info
+      port: 8080
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    failureThreshold: 30
+
+  # -- Termination grace period (seconds). Set high enough for in-flight builds to drain.
+  terminationGracePeriodSeconds: 120
+
   # -- Resource requests and limits for the web pod
   resources:
     requests:
@@ -86,10 +120,11 @@ web:
     timeoutSeconds: 3
     failureThreshold: 5
 
-  # -- Readiness probe configuration
+  # -- Readiness probe configuration.
+  # Uses /api/v1/health which checks DB connectivity and worker availability.
   readinessProbe:
     httpGet:
-      path: /api/v1/info
+      path: /api/v1/health
       port: 8080
     initialDelaySeconds: 10
     periodSeconds: 10
@@ -113,15 +148,26 @@ kubernetes:
   # -- Pod startup timeout
   podStartupTimeout: 5m
 
-  # -- Image pull secrets for task pods
+  # -- Image pull secrets for task pods.
+  # In JetBridge's K8s-native runtime, these secrets are attached directly to
+  # task pods, replacing the need for custom registry-image resources that
+  # handled GCR/ECR/ACR authentication in the Garden runtime.
+  # Example:
+  #   imagePullSecrets:
+  #     - name: gcr-json-key       # GCR: kubectl create secret docker-registry gcr-json-key ...
+  #     - name: ecr-cred-secret    # ECR: managed by ecr-credential-helper or external-secrets
   imagePullSecrets: []
 
   # -- Artifact helper image (needs tar; used by init containers and sidecar)
   artifactHelperImage: "alpine:latest"
 
-  # -- Image registry prefix for custom resource type images
+  # -- Image registry prefix for custom resource type images.
+  # Applied as a prefix to resource type image references, e.g. "myregistry.io/"
+  # combined with imagePullSecrets enables pulling custom resource type images
+  # from private registries without a custom registry-image resource type.
   imageRegistryPrefix: ""
-  # -- Image registry pull secret name
+  # -- Image registry pull secret name for resource type image pulls.
+  # When set, this secret is added to pods that pull resource type images.
   imageRegistrySecret: ""
 
 # -- Cache PVC configuration (speeds up resource gets and task caches)
@@ -148,7 +194,13 @@ artifactStorePvc:
   size: 10Gi
   # -- Storage class (empty = cluster default)
   storageClass: ""
-  # -- Access modes (use ReadWriteMany for multi-node or GCS Fuse)
+  # -- Access modes.
+  # WARNING: ReadWriteOnce (default) only allows ONE pod to mount at a time.
+  # For multi-replica web deployments or concurrent builds, use ReadWriteMany (RWX).
+  # Options:
+  #   - ReadWriteOnce: Single-replica only. Concurrent builds will queue.
+  #   - ReadWriteMany: Requires NFS, EFS, or similar RWX-capable storage class.
+  #   - GCS Fuse (GKE): Enable gcsFuse below for GCS-backed RWX storage.
   accessModes:
     - ReadWriteOnce
 
@@ -209,6 +261,18 @@ postgresql:
   clientKey: ""
   # -- Connection timeout (Go duration, e.g. "5m"). Empty = binary default (5m).
   connectTimeout: ""
+
+  # -- Pod-level security context for the PostgreSQL pod
+  podSecurityContext:
+    runAsUser: 999
+    runAsGroup: 999
+    fsGroup: 999
+
+  # -- Container-level security context for the PostgreSQL container
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop: ["ALL"]
 
   # -- Resource requests and limits (only used when postgresql.enabled=true)
   resources:
@@ -293,5 +357,58 @@ otelMetrics:
 # -- Secrets configuration
 secrets:
   # -- Auto-generate signing keys on install.
-  # Set to false if providing pre-existing secrets.
+  # Set to false and provide signingKeySecret for multi-replica deployments.
+  # Each replica MUST share the same signing keys — otherwise sessions will
+  # fail when requests hit a different replica.
   create: true
+
+  # -- Name of a pre-existing Secret containing signing keys.
+  # Required when secrets.create is false. The Secret must contain:
+  #   session_signing_key, tsa_host_key, worker_key, authorized_worker_keys
+  signingKeySecret: ""
+
+# -- Network policy configuration
+networkPolicy:
+  # -- Enable NetworkPolicy resources
+  enabled: false
+
+  # -- Allow ingress from these pod selectors to the web pod.
+  # Default allows all ingress when empty (only port restriction applies).
+  ingressFrom: []
+  # Example: restrict to ingress controller only:
+  #   - podSelector:
+  #       matchLabels:
+  #         app.kubernetes.io/name: ingress-nginx
+
+  # -- Additional egress rules for task pods.
+  # By default, task pods can reach any destination.
+  # Set to restrict outbound traffic from CI task pods.
+  taskEgressTo: []
+  # Example: allow only internal network:
+  #   - ipBlock:
+  #       cidr: 10.0.0.0/8
+
+# -- Pod Disruption Budget configuration
+pdb:
+  # -- Enable PDB (only useful when web.replicas > 1)
+  enabled: false
+  # -- Minimum number of web pods that must be available during disruption
+  minAvailable: 1
+
+# -- Prometheus ServiceMonitor configuration (requires prometheus-operator CRDs)
+serviceMonitor:
+  # -- Enable ServiceMonitor creation
+  enabled: false
+  # -- Scrape interval
+  interval: 30s
+  # -- Additional labels for ServiceMonitor (e.g. for Prometheus discovery)
+  labels: {}
+  # -- Namespace for the ServiceMonitor (defaults to release namespace)
+  namespace: ""
+
+# -- Prometheus alerting rules (requires prometheus-operator CRDs)
+alertingRules:
+  # -- Enable PrometheusRule creation
+  enabled: false
+  # -- Additional labels for PrometheusRule
+  labels: {}

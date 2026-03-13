@@ -12,11 +12,8 @@ import (
 
 //counterfeiter:generate . Destroyer
 
-// TODO : consider making this just a struct with methods on it,
-// we don't ever use the FakeDestroyer, so we don't even need the
-// interface boundaries for testing
-
-// Destroyer allows removal of containers and volumes from the database
+// Destroyer allows removal of containers and volumes from the database.
+// Used as a dependency in jetbridge/reaper for GC of K8s resources.
 type Destroyer interface {
 	FindDestroyingVolumesForGc(workerName string) ([]string, error)
 	DestroyContainers(workerName string, handles []string) error
@@ -86,8 +83,7 @@ func (d *destroyer) DestroyVolumes(workerName string, currentHandles []string) e
 	return nil
 }
 
-// TODO : Remove this and call GetDestroyingVolumes directly on the volumeRepository
-// feels odd to have a "Find*" on an interface named "Destroyer"
+// FindDestroyingVolumesForGc returns volume handles marked for destruction on the given worker.
 func (d *destroyer) FindDestroyingVolumesForGc(workerName string) ([]string, error) {
 	destroyingVolumesHandles, err := d.volumeRepository.GetDestroyingVolumes(workerName)
 	if err != nil {

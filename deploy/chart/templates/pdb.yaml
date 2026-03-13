@@ -1,0 +1,14 @@
+{{- if .Values.pdb.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "concourse.fullname" . }}-web
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "concourse.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.pdb.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "concourse.selectorLabels" . | nindent 6 }}
+{{- end }}

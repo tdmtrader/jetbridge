@@ -22,6 +22,10 @@ spec:
         app.kubernetes.io/name: {{ include "concourse.name" . }}
         app.kubernetes.io/component: database
     spec:
+      {{- with .Values.postgresql.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: postgres
           image: {{ .Values.postgresql.image }}
@@ -39,6 +43,10 @@ spec:
               command: ["pg_isready", "-U", {{ .Values.postgresql.user | quote }}]
             initialDelaySeconds: 5
             periodSeconds: 5
+          {{- with .Values.postgresql.containerSecurityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           {{- with .Values.postgresql.resources }}
           resources:
             {{- toYaml . | nindent 12 }}

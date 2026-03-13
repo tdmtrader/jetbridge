@@ -1,0 +1,17 @@
+{
+  "trackId": "production_readiness_20260313",
+  "type": "feature",
+  "status": "in_progress",
+  "description": "production readiness",
+  "createdAt": "2026-03-13T13:14:49.121Z",
+  "updatedAt": "2026-03-13T13:36:30.921Z",
+  "sessions": [
+    {
+      "slotIndex": 0,
+      "engineType": "claude",
+      "aiSessionId": "ea4e6881-3d08-4c71-8669-6f5d827b602e",
+      "accountId": "system-claude",
+      "updatedAt": "2026-03-13T13:15:02.367Z"
+    }
+  ]
+}

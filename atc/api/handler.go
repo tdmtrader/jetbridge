@@ -84,6 +84,7 @@ func NewHandler(
 	dbWall db.Wall,
 	clock clock.Clock,
 	dbSigningKeyFactory db.SigningKeyFactory,
+	dbPinger infoserver.DBPinger,
 ) (http.Handler, error) {
 
 	absCLIDownloadsDir, err := filepath.Abs(cliDownloadsDir)
@@ -109,7 +110,7 @@ func NewHandler(
 	containerServer := containerserver.NewServer(logger, workerPool, interceptTimeoutFactory, interceptUpdateInterval, clock)
 	volumesServer := volumeserver.NewServer(logger, volumeRepository)
 	teamServer := teamserver.NewServer(logger, dbTeamFactory, externalURL)
-	infoServer := infoserver.NewServer(logger, version, workerVersion, externalURL, clusterName, credsManagers, jetBridgeVersion, concourseVersion)
+	infoServer := infoserver.NewServer(logger, version, workerVersion, externalURL, clusterName, credsManagers, jetBridgeVersion, concourseVersion, dbPinger, dbWorkerFactory)
 	artifactServer := artifactserver.NewServer(logger, workerPool)
 	usersServer := usersserver.NewServer(logger, dbUserFactory)
 	wallServer := wallserver.NewServer(dbWall, logger)
@@ -208,6 +209,7 @@ func NewHandler(
 		atc.DownloadCLI:  http.HandlerFunc(cliServer.Download),
 		atc.GetInfo:      http.HandlerFunc(infoServer.Info),
 		atc.GetInfoCreds: http.HandlerFunc(infoServer.Creds),
+		atc.GetHealth:    http.HandlerFunc(infoServer.Health),
 
 		atc.GetUser:              http.HandlerFunc(usersServer.GetUser),
 		atc.ListActiveUsersSince: http.HandlerFunc(usersServer.GetUsersSince),

@@ -15,6 +15,9 @@ var (
 	k8sPodStartupHistogram      otelmetric.Float64Histogram
 	containersCreatedCounter    otelmetric.Float64Counter
 	volumesCreatedCounter       otelmetric.Float64Counter
+	k8sPodFailuresCounter       otelmetric.Int64Counter
+	resourceCheckDurationHist   otelmetric.Float64Histogram
+	workerHeartbeatAgeGauge     otelmetric.Float64Gauge
 )
 
 // InitOTelMetrics creates OTel instruments for core Concourse metrics.
@@ -62,6 +65,32 @@ func InitOTelMetrics() {
 	)
 	if err == nil {
 		volumesCreatedCounter = c
+	}
+
+	ic, err := meter.Int64Counter(
+		"concourse.k8s.pod_failures",
+		otelmetric.WithDescription("Number of K8s pod failures by reason"),
+	)
+	if err == nil {
+		k8sPodFailuresCounter = ic
+	}
+
+	h, err = meter.Float64Histogram(
+		"concourse.resource.check_duration",
+		otelmetric.WithDescription("Duration of resource check execution in seconds"),
+		otelmetric.WithUnit("s"),
+	)
+	if err == nil {
+		resourceCheckDurationHist = h
+	}
+
+	g, err := meter.Float64Gauge(
+		"concourse.worker.heartbeat_age",
+		otelmetric.WithDescription("Seconds since last successful worker heartbeat"),
+		otelmetric.WithUnit("s"),
+	)
+	if err == nil {
+		workerHeartbeatAgeGauge = g
 	}
 }
 
@@ -116,4 +145,41 @@ func RecordVolumesCreated(ctx context.Context, count float64) {
 		return
 	}
 	volumesCreatedCounter.Add(ctx, count)
+}
+
+// RecordK8sPodFailure records a K8s pod failure with the reason (OOMKilled, Evicted, Error).
+func RecordK8sPodFailure(ctx context.Context, reason string) {
+	if k8sPodFailuresCounter == nil {
+		return
+	}
+	k8sPodFailuresCounter.Add(ctx, 1,
+		otelmetric.WithAttributes(
+			attribute.String("reason", reason),
+		),
+	)
+}
+
+// RecordResourceCheckDuration records the duration of a resource check.
+func RecordResourceCheckDuration(ctx context.Context, duration time.Duration, resourceType, pipeline string) {
+	if resourceCheckDurationHist == nil {
+		return
+	}
+	resourceCheckDurationHist.Record(ctx, duration.Seconds(),
+		otelmetric.WithAttributes(
+			attribute.String("resource_type", resourceType),
+			attribute.String("pipeline", pipeline),
+		),
+	)
+}
+
+// RecordWorkerHeartbeatAge records how long since the last successful worker heartbeat.
+func RecordWorkerHeartbeatAge(ctx context.Context, age time.Duration, workerName string) {
+	if workerHeartbeatAgeGauge == nil {
+		return
+	}
+	workerHeartbeatAgeGauge.Record(ctx, age.Seconds(),
+		otelmetric.WithAttributes(
+			attribute.String("worker", workerName),
+		),
+	)
 }

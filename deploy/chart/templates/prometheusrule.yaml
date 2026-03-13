@@ -1,0 +1,40 @@
+{{- if .Values.alertingRules.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "concourse.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "concourse.labels" . | nindent 4 }}
+    {{- with .Values.alertingRules.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    - name: concourse.rules
+      rules:
+        - alert: ConcourseImagePullFailureRateHigh
+          expr: increase(concourse_k8s_image_pull_failures_total[5m]) > 5
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: "High image pull failure rate"
+            description: "More than 5 image pull failures in the last 5 minutes."
+        - alert: ConcoursePodStartupSlow
+          expr: histogram_quantile(0.95, rate(concourse_k8s_pod_startup_duration_bucket[5m])) > 60000
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Slow pod startup (p95 > 60s)"
+            description: "95th percentile pod startup duration exceeds 60 seconds."
+        - alert: ConcourseDBConnectionPoolExhausted
+          expr: concourse_db_connections_open >= concourse_db_connections_max
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Database connection pool exhausted"
+            description: "Active DB connections have reached the maximum pool size."
+{{- end }}

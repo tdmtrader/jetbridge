@@ -190,10 +190,12 @@ func (p *Process) pollUntilDone(ctx context.Context) (runtime.ProcessResult, err
 			if reason == "ImagePullBackOff" || reason == "ErrImagePull" {
 				metric.Metrics.K8sImagePullFailures.Inc()
 			}
+			metric.RecordK8sPodFailure(ctx, reason)
 			writePodDiagnostics(pod, p.processIO.Stderr)
 			return runtime.ProcessResult{}, fmt.Errorf("pod failed: %s: %s", reason, message)
 		}
 		if isPodEvicted(pod) {
+			metric.RecordK8sPodFailure(ctx, "Evicted")
 			writePodDiagnostics(pod, p.processIO.Stderr)
 			return runtime.ProcessResult{}, fmt.Errorf("pod failed: Evicted: %s", pod.Status.Message)
 		}
@@ -779,10 +781,12 @@ func (p *execProcess) waitForRunning(ctx context.Context) error {
 			if reason == "ImagePullBackOff" || reason == "ErrImagePull" {
 				metric.Metrics.K8sImagePullFailures.Inc()
 			}
+			metric.RecordK8sPodFailure(ctx, reason)
 			writePodDiagnostics(pod, p.processIO.Stderr)
 			return fmt.Errorf("pod failed: %s: %s", reason, message)
 		}
 		if isPodEvicted(pod) {
+			metric.RecordK8sPodFailure(ctx, "Evicted")
 			writePodDiagnostics(pod, p.processIO.Stderr)
 			return fmt.Errorf("pod failed: Evicted: %s", pod.Status.Message)
 		}

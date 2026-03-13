@@ -106,6 +106,8 @@ func (c *Container) Run(ctx context.Context, spec runtime.ProcessSpec, io runtim
 		"type":      string(c.containerSpec.Type),
 		"namespace": c.config.Namespace,
 		"exec-mode": fmt.Sprintf("%t", execMode),
+		"build_id":  strconv.Itoa(c.metadata.BuildID),
+		"pod_name":  c.handle,
 	})
 	var err error
 	defer func() { tracing.End(span, err) }()
