@@ -1,0 +1,17 @@
+{
+  "trackId": "image_ref_hardening_for_tasks_etc_20260311",
+  "type": "feature",
+  "status": "completed",
+  "description": "Image Ref Hardening for tasks, etc",
+  "createdAt": "2026-03-11T22:30:12.820Z",
+  "updatedAt": "2026-03-12T12:09:39.380Z",
+  "sessions": [
+    {
+      "slotIndex": 0,
+      "engineType": "claude",
+      "aiSessionId": "73a8736d-9652-44a0-8628-f6be1e3f6124",
+      "accountId": "system-claude",
+      "updatedAt": "2026-03-11T22:30:22.070Z"
+    }
+  ]
+}
