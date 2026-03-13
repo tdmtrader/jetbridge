@@ -64,9 +64,9 @@ var _ = Describe("BuildFactory", func() {
 					Expect(i).To(matcher)
 				},
 				Entry("succeeded is interceptible", db.BuildStatusSucceeded, BeTrue()),
-				Entry("aborted is interceptible", db.BuildStatusAborted, BeTrue()),
-				Entry("errored is interceptible", db.BuildStatusErrored, BeTrue()),
-				Entry("failed is interceptible", db.BuildStatusFailed, BeTrue()),
+				Entry("aborted is non-interceptible (Finish sets it)", db.BuildStatusAborted, BeFalse()),
+				Entry("errored is non-interceptible (Finish sets it)", db.BuildStatusErrored, BeFalse()),
+				Entry("failed is non-interceptible (Finish sets it)", db.BuildStatusFailed, BeFalse()),
 			)
 			DescribeTable("completed and past the grace period",
 				func(status db.BuildStatus, matcher types.GomegaMatcher) {
@@ -107,16 +107,19 @@ var _ = Describe("BuildFactory", func() {
 
 		Context("pipeline builds", func() {
 
-			It("[#139963615] marks builds that aren't the latest as non-interceptible, ", func() {
+			It("[#139963615] marks non-succeeded builds as non-interceptible via Finish()", func() {
+				// All non-succeeded statuses are marked non-interceptible by
+				// Finish() immediately, so both latest and non-latest failed
+				// builds should be non-interceptible.
 				build1, err := defaultJob.CreateBuild(defaultBuildCreatedBy)
 				Expect(err).NotTo(HaveOccurred())
 
 				build2, err := defaultJob.CreateBuild(defaultBuildCreatedBy)
 				Expect(err).NotTo(HaveOccurred())
 
-				err = build1.Finish(db.BuildStatusErrored)
+				err = build1.Finish(db.BuildStatusFailed)
 				Expect(err).NotTo(HaveOccurred())
-				err = build2.Finish(db.BuildStatusErrored)
+				err = build2.Finish(db.BuildStatusFailed)
 				Expect(err).NotTo(HaveOccurred())
 
 				p, _, err := defaultTeam.SavePipeline(atc.PipelineRef{Name: "other-pipeline"}, atc.Config{
@@ -138,9 +141,9 @@ var _ = Describe("BuildFactory", func() {
 				pb2, err := j.CreateBuild(defaultBuildCreatedBy)
 				Expect(err).NotTo(HaveOccurred())
 
-				err = pb1.Finish(db.BuildStatusErrored)
+				err = pb1.Finish(db.BuildStatusFailed)
 				Expect(err).NotTo(HaveOccurred())
-				err = pb2.Finish(db.BuildStatusErrored)
+				err = pb2.Finish(db.BuildStatusFailed)
 				Expect(err).NotTo(HaveOccurred())
 
 				err = buildFactory.MarkNonInterceptibleBuilds()
@@ -153,7 +156,7 @@ var _ = Describe("BuildFactory", func() {
 
 				i, err = build2.Interceptible()
 				Expect(err).NotTo(HaveOccurred())
-				Expect(i).To(BeTrue())
+				Expect(i).To(BeFalse())
 
 				i, err = pb1.Interceptible()
 				Expect(err).NotTo(HaveOccurred())
@@ -161,7 +164,7 @@ var _ = Describe("BuildFactory", func() {
 
 				i, err = pb2.Interceptible()
 				Expect(err).NotTo(HaveOccurred())
-				Expect(i).To(BeTrue())
+				Expect(i).To(BeFalse())
 
 			})
 
@@ -182,9 +185,9 @@ var _ = Describe("BuildFactory", func() {
 					Expect(i).To(matcher)
 				},
 				Entry("succeeded is non-interceptible", db.BuildStatusSucceeded, BeFalse()),
-				Entry("aborted is interceptible", db.BuildStatusAborted, BeTrue()),
-				Entry("errored is interceptible", db.BuildStatusErrored, BeTrue()),
-				Entry("failed is interceptible", db.BuildStatusFailed, BeTrue()),
+				Entry("aborted is non-interceptible (Finish sets it)", db.BuildStatusAborted, BeFalse()),
+				Entry("errored is non-interceptible (Finish sets it)", db.BuildStatusErrored, BeFalse()),
+				Entry("failed is non-interceptible (Finish sets it)", db.BuildStatusFailed, BeFalse()),
 			)
 
 			It("does not mark non-completed builds", func() {
@@ -213,27 +216,16 @@ var _ = Describe("BuildFactory", func() {
 			})
 		})
 		Context("GC failed builds", func() {
-			It("marks failed builds non-interceptible after failed-grace-period", func() {
-				buildFactory = db.NewBuildFactory(dbConn, lockFactory, 0, 2*time.Second) // 1 second could create a flaky test
+			It("marks failed builds non-interceptible immediately via Finish()", func() {
+				// Finish() now sets interceptible=false for all non-succeeded
+				// statuses, so the grace period is no longer needed.
 				build, err := defaultJob.CreateBuild(defaultBuildCreatedBy)
 				Expect(err).NotTo(HaveOccurred())
 
 				err = build.Finish(db.BuildStatusFailed)
 				Expect(err).NotTo(HaveOccurred())
 
-				err = buildFactory.MarkNonInterceptibleBuilds()
-				Expect(err).NotTo(HaveOccurred())
-
 				var i bool
-				i, err = build.Interceptible()
-				Expect(err).NotTo(HaveOccurred())
-				Expect(i).To(BeTrue())
-
-				time.Sleep(3 * time.Second) // Wait is too long, only second granularity, better method?
-
-				err = buildFactory.MarkNonInterceptibleBuilds()
-				Expect(err).NotTo(HaveOccurred())
-
 				i, err = build.Interceptible()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(i).To(BeFalse())

@@ -616,15 +616,25 @@ func (b *build) Finish(status BuildStatus) error {
 
 	var endTime time.Time
 
-	err = psql.Update("builds").
+	updateBuilder := psql.Update("builds").
 		Set("status", status).
 		Set("end_time", sq.Expr("now()")).
 		Set("completed", true).
 		Set("private_plan", nil).
 		Set("nonce", nil).
 		Where(sq.Eq{"id": b.id}).
-		Suffix("RETURNING end_time").
-		RunWith(tx).
+		Suffix("RETURNING end_time")
+
+	// Non-succeeded completed builds have no useful container state to
+	// hijack into (especially on K8s where pods terminate), so mark them
+	// non-interceptible immediately so the container collector can GC
+	// their pods without waiting for the build collector's grace-period
+	// logic.
+	if status != BuildStatusSucceeded {
+		updateBuilder = updateBuilder.Set("interceptible", false)
+	}
+
+	err = updateBuilder.RunWith(tx).
 		QueryRow().
 		Scan(&endTime)
 	if err != nil {
@@ -816,6 +826,8 @@ WITH RECURSIVE pipelines_to_archive AS (
 	b.conn.Bus().Notify(atc.ComponentCollectorResourceCacheUses)
 	b.conn.Bus().Notify(atc.ComponentCollectorResourceCaches)
 	b.conn.Bus().Notify(atc.ComponentCollectorChecks)
+	b.conn.Bus().Notify(atc.ComponentCollectorContainers)
+	b.conn.Bus().Notify(atc.ComponentK8sWorkerReaper)
 
 	return nil
 }

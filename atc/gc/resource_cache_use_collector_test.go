@@ -147,12 +147,12 @@ var _ = Describe("ResourceCacheUseCollector", func() {
 				})
 
 				Context("when it is the latest failed build", func() {
-					It("preserves the uses", func() {
+					It("cleans up the uses since Finish marks failed builds non-interceptible", func() {
 						Expect(countResourceCacheUses()).NotTo(BeZero())
 						Expect(jobBuild.Finish(db.BuildStatusFailed)).To(Succeed())
 						Expect(buildCollector.Run(context.TODO())).To(Succeed())
 						Expect(collector.Run(context.TODO())).To(Succeed())
-						Expect(countResourceCacheUses()).NotTo(BeZero())
+						Expect(countResourceCacheUses()).To(BeZero())
 					})
 				})
 

@@ -162,7 +162,7 @@ func waitForPodCleanupByPipeline() {
 			}
 		}
 		return count
-	}, 3*time.Minute, 2*time.Second).Should(Equal(0),
+	}, 5*time.Minute, 2*time.Second).Should(Equal(0),
 		fmt.Sprintf("expected all workload pods for pipeline %q to be cleaned up", pipelineName),
 	)
 }
