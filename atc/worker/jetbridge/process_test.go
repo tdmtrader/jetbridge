@@ -365,6 +365,95 @@ var _ = Describe("Process", func() {
 			Expect(stderrOutput).To(ContainSubstring("nonexistent:latest"))
 		})
 
+		It("includes sidecar container status in diagnostics", func() {
+			stderrBuf := new(bytes.Buffer)
+			process, err := container.Run(ctx, runtime.ProcessSpec{
+				Path: "/bin/true",
+			}, runtime.ProcessIO{
+				Stderr: stderrBuf,
+			})
+			Expect(err).ToNot(HaveOccurred())
+
+			pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "process-test-handle", metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			pod.Status.Phase = corev1.PodPending
+			pod.Status.ContainerStatuses = []corev1.ContainerStatus{
+				{
+					Name: "main",
+					State: corev1.ContainerState{
+						Waiting: &corev1.ContainerStateWaiting{
+							Reason: "ContainerCreating",
+						},
+					},
+				},
+				{
+					Name: "my-sidecar",
+					State: corev1.ContainerState{
+						Waiting: &corev1.ContainerStateWaiting{
+							Reason:  "ImagePullBackOff",
+							Message: "Back-off pulling image \"bad-sidecar:latest\"",
+						},
+					},
+				},
+			}
+			_, err = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			_, err = process.Wait(ctx)
+			Expect(err).To(HaveOccurred())
+
+			stderrOutput := stderrBuf.String()
+			Expect(stderrOutput).To(ContainSubstring("my-sidecar"))
+			Expect(stderrOutput).To(ContainSubstring("ImagePullBackOff"))
+			Expect(stderrOutput).To(ContainSubstring("bad-sidecar:latest"))
+		})
+
+		It("includes sidecar container status in diagnostics", func() {
+			stderrBuf := new(bytes.Buffer)
+			process, err := container.Run(ctx, runtime.ProcessSpec{
+				Path: "/bin/true",
+			}, runtime.ProcessIO{
+				Stderr: stderrBuf,
+			})
+			Expect(err).ToNot(HaveOccurred())
+
+			pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "process-test-handle", metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			pod.Status.Phase = corev1.PodPending
+			pod.Status.ContainerStatuses = []corev1.ContainerStatus{
+				{
+					Name: "main",
+					State: corev1.ContainerState{
+						Waiting: &corev1.ContainerStateWaiting{
+							Reason:  "ContainerCreating",
+							Message: "waiting for container",
+						},
+					},
+				},
+				{
+					Name: "redis-sidecar",
+					State: corev1.ContainerState{
+						Waiting: &corev1.ContainerStateWaiting{
+							Reason:  "ImagePullBackOff",
+							Message: "Back-off pulling image \"redis:bad-tag\"",
+						},
+					},
+				},
+			}
+			_, err = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			_, err = process.Wait(ctx)
+			Expect(err).To(HaveOccurred())
+
+			stderrOutput := stderrBuf.String()
+			Expect(stderrOutput).To(ContainSubstring("redis-sidecar"))
+			Expect(stderrOutput).To(ContainSubstring("ImagePullBackOff"))
+			Expect(stderrOutput).To(ContainSubstring("redis:bad-tag"))
+		})
+
 		It("writes eviction reason to stderr", func() {
 			stderrBuf := new(bytes.Buffer)
 			process, err := container.Run(ctx, runtime.ProcessSpec{
@@ -1047,8 +1136,65 @@ var _ = Describe("Process sidecar lifecycle", func() {
 		})
 	})
 
-	Context("when a sidecar has ImagePullBackOff but main succeeds", func() {
-		It("does not fail the task due to sidecar image failure", func() {
+	Context("sidecar failure detection", func() {
+		It("fails fast when sidecar has ImagePullBackOff and main hasn't terminated", func() {
+			setupFakeDBContainer(fakeDBWorker, "sidecar-fail-handle")
+
+			container, _, err := worker.FindOrCreateContainer(
+				ctx,
+				db.NewFixedHandleContainerOwner("sidecar-fail-handle"),
+				db.ContainerMetadata{Type: db.ContainerTypeTask},
+				runtime.ContainerSpec{
+					TeamID:   1,
+					Dir:      "/workdir",
+					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+					Sidecars: []atc.SidecarConfig{
+						{Name: "bad-image", Image: "nonexistent:latest"},
+					},
+				},
+				delegate,
+			)
+			Expect(err).ToNot(HaveOccurred())
+
+			process, err := container.Run(ctx, runtime.ProcessSpec{
+				Path: "/bin/sh",
+				Args: []string{"-c", "echo hello"},
+			}, runtime.ProcessIO{})
+			Expect(err).ToNot(HaveOccurred())
+
+			By("simulating sidecar ImagePullBackOff while main is still waiting")
+			pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "sidecar-fail-handle", metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			pod.Status.Phase = corev1.PodPending
+			pod.Status.ContainerStatuses = []corev1.ContainerStatus{
+				{
+					Name: "main",
+					State: corev1.ContainerState{
+						Waiting: &corev1.ContainerStateWaiting{
+							Reason: "ContainerCreating",
+						},
+					},
+				},
+				{
+					Name: "bad-image",
+					State: corev1.ContainerState{
+						Waiting: &corev1.ContainerStateWaiting{
+							Reason:  "ImagePullBackOff",
+							Message: "Back-off pulling image \"nonexistent:latest\"",
+						},
+					},
+				},
+			}
+			_, err = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			_, err = process.Wait(ctx)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("ImagePullBackOff"))
+		})
+
+		It("does not fail the task when sidecar fails but main has already terminated", func() {
 			setupFakeDBContainer(fakeDBWorker, "sidecar-imgfail-handle")
 
 			container, _, err := worker.FindOrCreateContainer(
@@ -1073,7 +1219,7 @@ var _ = Describe("Process sidecar lifecycle", func() {
 			}, runtime.ProcessIO{})
 			Expect(err).ToNot(HaveOccurred())
 
-			By("simulating sidecar ImagePullBackOff but main running then completing")
+			By("simulating sidecar ImagePullBackOff but main already terminated")
 			pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "sidecar-imgfail-handle", metav1.GetOptions{})
 			Expect(err).ToNot(HaveOccurred())
 

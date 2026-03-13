@@ -345,5 +345,25 @@ var _ = Describe("SidecarConfig", func() {
 			sc := SidecarConfig{Name: "db"}
 			Expect(sc.Validate()).To(MatchError(ContainSubstring("missing 'image'")))
 		})
+
+		It("accepts valid port protocols", func() {
+			for _, proto := range []string{"", "TCP", "UDP", "SCTP"} {
+				sc := SidecarConfig{
+					Name:  "db",
+					Image: "postgres:15",
+					Ports: []SidecarPort{{ContainerPort: 5432, Protocol: proto}},
+				}
+				Expect(sc.Validate()).ToNot(HaveOccurred(), "protocol %q should be valid", proto)
+			}
+		})
+
+		It("rejects invalid port protocols", func() {
+			sc := SidecarConfig{
+				Name:  "db",
+				Image: "postgres:15",
+				Ports: []SidecarPort{{ContainerPort: 5432, Protocol: "HTTP"}},
+			}
+			Expect(sc.Validate()).To(MatchError(ContainSubstring("invalid port protocol")))
+		})
 	})
 })

@@ -209,28 +209,64 @@ func (p *Process) pollUntilDone(ctx context.Context) (runtime.ProcessResult, err
 	}
 }
 
-// streamLogs streams the Pod's container logs to ProcessIO.Stdout. It retries
-// until the container is ready, then follows the log stream until the
+// streamLogs streams the Pod's container logs to ProcessIO.Stdout. It streams
+// the main container directly and launches background goroutines for each
+// sidecar container, prefixing sidecar output with the container name. It
+// retries until the container is ready, then follows the log stream until the
 // container terminates. If no Stdout writer is configured, this is a no-op.
 func (p *Process) streamLogs(ctx context.Context) {
 	if p.processIO.Stdout == nil {
 		return
 	}
 
-	// Retry log streaming until the container is ready or the context is done.
-	// GetLogs can fail if the container hasn't started yet.
+	// Stream sidecar containers in background goroutines with prefixed output.
+	if p.container != nil {
+		for _, sc := range p.container.containerSpec.Sidecars {
+			go p.streamContainerLogs(ctx, sc.Name)
+		}
+	}
+
+	// Stream main container logs directly (no prefix).
+	p.streamContainerLogsDirect(ctx, mainContainerName)
+}
+
+// streamContainerLogs streams logs from a named container, prefixing each line
+// with [containerName]. Used for sidecar containers.
+func (p *Process) streamContainerLogs(ctx context.Context, containerName string) {
+	prefix := fmt.Sprintf("[%s] ", containerName)
 	for {
 		req := p.clientset.CoreV1().Pods(p.config.Namespace).GetLogs(p.podName, &corev1.PodLogOptions{
 			Follow:    true,
-			Container: mainContainerName,
+			Container: containerName,
+		})
+
+		stream, err := req.Stream(ctx)
+		if err == nil {
+			p.copyWithPrefix(stream, prefix)
+			stream.Close()
+			return
+		}
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(logStreamRetryDelay):
+		}
+	}
+}
+
+// streamContainerLogsDirect streams logs from a named container directly to
+// stdout without any prefix. Used for the main container.
+func (p *Process) streamContainerLogsDirect(ctx context.Context, containerName string) {
+	for {
+		req := p.clientset.CoreV1().Pods(p.config.Namespace).GetLogs(p.podName, &corev1.PodLogOptions{
+			Follow:    true,
+			Container: containerName,
 		})
 
 		stream, err := req.Stream(ctx)
 		if err == nil {
 			if _, copyErr := io.Copy(p.processIO.Stdout, stream); copyErr != nil {
-				// Log stream copy failures are non-fatal (the build result
-				// comes from pollUntilDone). Write the error to stderr so it
-				// appears in the build log for debugging.
 				if p.processIO.Stderr != nil && ctx.Err() == nil {
 					fmt.Fprintf(p.processIO.Stderr, "\nwarning: log stream interrupted: %v\n", copyErr)
 				}
@@ -239,12 +275,32 @@ func (p *Process) streamLogs(ctx context.Context) {
 			return
 		}
 
-		// If the context is done, stop retrying.
 		select {
 		case <-ctx.Done():
 			return
 		case <-time.After(logStreamRetryDelay):
-			// Retry after a short delay.
+		}
+	}
+}
+
+// copyWithPrefix reads lines from r and writes them to stdout with a prefix.
+func (p *Process) copyWithPrefix(r io.Reader, prefix string) {
+	buf := make([]byte, 32*1024)
+	for {
+		n, err := r.Read(buf)
+		if n > 0 {
+			// Split into lines and prefix each one.
+			lines := strings.Split(string(buf[:n]), "\n")
+			for i, line := range lines {
+				if i == len(lines)-1 && line == "" {
+					// Trailing empty string from split — don't prefix.
+					continue
+				}
+				fmt.Fprintf(p.processIO.Stdout, "%s%s\n", prefix, line)
+			}
+		}
+		if err != nil {
+			return
 		}
 	}
 }
@@ -261,12 +317,18 @@ var terminalWaitingReasons = map[string]bool{
 
 // isPodFailedFast checks if any container in the pod is stuck in a terminal
 // waiting state (e.g. ImagePullBackOff, CrashLoopBackOff). Returns the
-// reason and message if a terminal state is found.
+// reason and message if a terminal state is found. If the main container has
+// already terminated, sidecar failures are ignored — the exit code path
+// handles the result instead.
 func isPodFailedFast(pod *corev1.Pod) (reason, message string, failed bool) {
+	// If the main container has already terminated, don't fail on sidecar
+	// issues — the exit code path will handle the result.
 	for _, cs := range pod.Status.ContainerStatuses {
-		if cs.Name != mainContainerName {
-			continue
+		if cs.Name == mainContainerName && cs.State.Terminated != nil {
+			return "", "", false
 		}
+	}
+	for _, cs := range pod.Status.ContainerStatuses {
 		if cs.State.Waiting != nil && terminalWaitingReasons[cs.State.Waiting.Reason] {
 			return cs.State.Waiting.Reason, cs.State.Waiting.Message, true
 		}

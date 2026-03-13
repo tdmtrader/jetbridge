@@ -103,6 +103,14 @@ func IsReservedContainerName(name string) bool {
 	return reservedContainerNames[name]
 }
 
+// validSidecarProtocols is the set of valid Kubernetes container port protocols.
+var validSidecarProtocols = map[string]bool{
+	"":     true, // defaults to TCP
+	"TCP":  true,
+	"UDP":  true,
+	"SCTP": true,
+}
+
 // Validate checks that the sidecar config has all required fields.
 func (sc SidecarConfig) Validate() error {
 	var errors []string
@@ -114,6 +122,11 @@ func (sc SidecarConfig) Validate() error {
 	}
 	if sc.Image != "" && sc.ImageArtifact != "" {
 		errors = append(errors, "cannot specify both 'image' and 'image_artifact'")
+	}
+	for _, port := range sc.Ports {
+		if !validSidecarProtocols[port.Protocol] {
+			errors = append(errors, fmt.Sprintf("invalid port protocol %q (must be TCP, UDP, or SCTP)", port.Protocol))
+		}
 	}
 	if len(errors) > 0 {
 		return fmt.Errorf("invalid sidecar configuration: %s", strings.Join(errors, ", "))
