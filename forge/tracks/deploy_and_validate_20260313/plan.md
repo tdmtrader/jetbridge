@@ -25,6 +25,6 @@
 - [x] Task: Verify deployed concourse-web image matches latest jetbridge commit (JetBridge 0.1.0 / Concourse 8.0.1)
 - [x] Task: Monitor for 10+ minutes — confirm no check pod accumulation (steady at 2 check pods over 10 min)
 - [x] Task: Verify fly CLI can connect and list pipelines/workers (2 pipelines, k8s-cicd worker running)
-- [ ] Task: Phase 3 Manual Verification
+- [x] Task: Phase 3 Manual Verification (smoke test: 9/9 tests passed — basic tasks, parallel tasks, artifacts, resources, job deps, k8s access, stress test)
 
 ---

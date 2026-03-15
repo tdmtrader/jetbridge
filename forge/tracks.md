@@ -253,7 +253,7 @@ _Link: [./tracks/image_ref_hardening_for_tasks_etc_20260311/](./tracks/image_ref
 
 ---
 
-### [ ] Track: deploy-and-validate
+### [x] Track: deploy-and-validate
 _Link: [./tracks/deploy_and_validate_20260313/](./tracks/deploy_and_validate_20260313/)_
 
 ---

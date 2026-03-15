@@ -1,10 +1,10 @@
 {
   "trackId": "deploy_and_validate_20260313",
   "type": "feature",
-  "status": "backlog",
+  "status": "completed",
   "description": "deploy-and-validate",
   "createdAt": "2026-03-13T12:00:13.569Z",
-  "updatedAt": "2026-03-13T12:00:27.499Z",
+  "updatedAt": "2026-03-15T15:54:53.847Z",
   "sessions": [
     {
       "slotIndex": 0,
