@@ -15,13 +15,13 @@ var _ = Describe("Component Notifications", func() {
 	// waits for a notification. The returned function unlistens when done and
 	// returns true if a notification arrived within the timeout.
 	listenFor := func(channel string) func() bool {
-		ch, err := dbConn.Bus().Listen(channel, 10)
+		signal, err := dbConn.Bus().ListenSignal(channel)
 		Expect(err).NotTo(HaveOccurred())
 
 		return func() bool {
-			defer dbConn.Bus().Unlisten(channel, ch)
+			defer dbConn.Bus().UnlistenSignal(channel, signal)
 			select {
-			case <-ch:
+			case <-signal.C():
 				return true
 			case <-time.After(2 * time.Second):
 				return false

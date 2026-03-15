@@ -9,8 +9,6 @@ import (
 	"strconv"
 	"time"
 
-	"code.cloudfoundry.org/clock/fakeclock"
-
 	"code.cloudfoundry.org/clock"
 	"code.cloudfoundry.org/lager/v3"
 	sq "github.com/Masterminds/squirrel"
@@ -1019,17 +1017,6 @@ var _ = Describe("Build", func() {
 	})
 
 	Describe("Events", func() {
-		var marker *db.BuildBeingWatchedMarker
-		BeforeEach(func() {
-			var err error
-			marker, err = db.NewBuildBeingWatchedMarker(logger, dbConn, db.DefaultBuildBeingWatchedMarkDuration, fakeclock.NewFakeClock(time.Now()))
-			Expect(err).NotTo(HaveOccurred())
-		})
-
-		AfterEach(func() {
-			marker.Drain(context.Background())
-		})
-
 		It("saves and emits status events", func() {
 			By("allowing you to subscribe when no events have yet occurred")
 			events, err := build.Events(0)
@@ -1093,17 +1080,6 @@ var _ = Describe("Build", func() {
 	})
 
 	Describe("SaveEvent", func() {
-		var marker *db.BuildBeingWatchedMarker
-		BeforeEach(func() {
-			var err error
-			marker, err = db.NewBuildBeingWatchedMarker(logger, dbConn, db.DefaultBuildBeingWatchedMarkDuration, fakeclock.NewFakeClock(time.Now()))
-			Expect(err).NotTo(HaveOccurred())
-		})
-
-		AfterEach(func() {
-			marker.Drain(context.Background())
-		})
-
 		It("saves and propagates events correctly", func() {
 			By("allowing you to subscribe when no events have yet occurred")
 			events, err := build.Events(0)

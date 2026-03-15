@@ -123,21 +123,20 @@ func ensureConcourseImage(image string) {
 }
 
 // testDependencyImages are public images used by integration tests that
-// should be pre-pulled into the KinD node to avoid per-test pulls from
-// Docker Hub. These are pulled via crictl inside the KinD node because
-// `kind load docker-image` cannot import multi-arch OCI images with
-// attestation manifests from Docker Desktop.
+// should be pre-loaded into the KinD node. These are pulled by the host
+// Docker daemon and loaded via tar archive into KinD nodes, which avoids
+// requiring the KinD node to have outbound internet access (e.g. when
+// running inside Colima with restricted networking).
 var testDependencyImages = []string{
 	"docker.io/library/busybox:latest",
 	"docker.io/library/alpine:latest",
 	"docker.io/concourse/mock-resource:latest",
 }
 
-// loadImagesIntoKind loads the locally-built Concourse image into the
-// KinD cluster via the Go library. The image is exported from the local
-// Docker daemon as a tar archive and imported into each KinD node's
-// containerd. Only the locally-built image needs pre-loading because
-// it is not available on any registry.
+// loadImagesIntoKind loads the locally-built Concourse image and test
+// dependency images into the KinD cluster. Images are exported from the
+// host Docker daemon as tar archives and imported into each KinD node's
+// containerd via the Go library.
 func loadImagesIntoKind(concourseImage string) {
 	log.Printf("Loading local image %s into KinD cluster...", concourseImage)
 
@@ -146,7 +145,10 @@ func loadImagesIntoKind(concourseImage string) {
 		log.Fatalf("failed to list KinD nodes: %v", err)
 	}
 
-	// Save docker image to a temp tar archive.
+	// Save the locally-built concourse image to a temp tar archive and
+	// import into each KinD node. We use the Go library for this because
+	// the local image is single-arch and doesn't have the multi-arch
+	// issues that affect registry images.
 	tmpFile, err := os.CreateTemp("", "kind-image-*.tar")
 	if err != nil {
 		log.Fatalf("failed to create temp file for image archive: %v", err)
@@ -161,7 +163,6 @@ func loadImagesIntoKind(concourseImage string) {
 		log.Fatalf("docker save failed for %s: %v", concourseImage, err)
 	}
 
-	// Load the tar archive onto each KinD node.
 	for _, node := range nodeList {
 		f, err := os.Open(tmpFile.Name())
 		if err != nil {
@@ -175,19 +176,53 @@ func loadImagesIntoKind(concourseImage string) {
 	}
 	log.Println("Local image loaded into KinD cluster.")
 
-	// Pre-pull test dependency images directly into the KinD node's
-	// containerd so kubelet doesn't pull them during test execution.
-	nodeName := kindClusterName + "-control-plane"
+	// Pre-load test dependency images into the KinD cluster.
+	// Pull on host first, then docker save (produces single-arch tar) and
+	// load via nodeutils.LoadImageArchive. This avoids the multi-arch
+	// "content digest not found" bug with `kind load docker-image` on
+	// containerd image stores (Docker Desktop / Colima).
 	for _, img := range testDependencyImages {
-		log.Printf("Pre-pulling %s into KinD node...", img)
-		cmd := exec.Command("docker", "exec", nodeName, "crictl", "pull", img)
-		cmd.Stdout = os.Stderr
-		cmd.Stderr = os.Stderr
-		if err := cmd.Run(); err != nil {
-			log.Printf("warning: failed to pre-pull %s (tests will pull at runtime): %v", img, err)
+		log.Printf("Pre-pulling %s on host...", img)
+		pullCmd := exec.Command("docker", "pull", "--quiet", img)
+		pullCmd.Stdout = os.Stderr
+		pullCmd.Stderr = os.Stderr
+		if err := pullCmd.Run(); err != nil {
+			log.Printf("warning: failed to pull %s on host: %v", img, err)
+			continue
 		}
+
+		imgTar, err := os.CreateTemp("", "kind-dep-*.tar")
+		if err != nil {
+			log.Printf("warning: failed to create temp file for %s: %v", img, err)
+			continue
+		}
+		imgTar.Close()
+
+		saveCmd := exec.Command("docker", "save", "-o", imgTar.Name(), img)
+		saveCmd.Stdout = os.Stderr
+		saveCmd.Stderr = os.Stderr
+		if err := saveCmd.Run(); err != nil {
+			log.Printf("warning: docker save failed for %s: %v", img, err)
+			os.Remove(imgTar.Name())
+			continue
+		}
+
+		log.Printf("Loading %s into KinD nodes...", img)
+		for _, node := range nodeList {
+			f, err := os.Open(imgTar.Name())
+			if err != nil {
+				log.Printf("warning: failed to open archive for %s: %v", img, err)
+				continue
+			}
+			if err := nodeutils.LoadImageArchive(node, f); err != nil {
+				log.Printf("warning: failed to load %s onto node %s: %v", img, node.String(), err)
+			}
+			f.Close()
+		}
+		os.Remove(imgTar.Name())
 	}
 }
+
 
 // helmDeployConcourse deploys Concourse via the local Helm chart.
 func helmDeployConcourse(kubeconfig, namespace, chartPath, image string) {
@@ -200,10 +235,7 @@ func helmDeployConcourse(kubeconfig, namespace, chartPath, image string) {
 	log.Printf("Deploying Concourse chart from %s into namespace %s...", chartPath, namespace)
 
 	// Build the list of extra args for the web node.
-	extraArgs := []string{
-		"--component-runner-interval=2s",
-		"--gc-interval=2s",
-	}
+	extraArgs := []string{}
 
 	// When OTEL_EXPORTER_OTLP_ENDPOINT is set, enable server-side tracing.
 	// The endpoint must be reachable from inside the KinD cluster. We resolve

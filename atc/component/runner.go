@@ -5,49 +5,30 @@ import (
 	"os"
 	"time"
 
-	"code.cloudfoundry.org/clock"
 	"code.cloudfoundry.org/lager/v3"
 	"code.cloudfoundry.org/lager/v3/lagerctx"
 	"github.com/concourse/concourse/atc/db"
 )
 
-var Clock = clock.NewClock()
-
-type contextKey string
-
-const notifyPayloadKey contextKey = "notify-payload"
-
-// NotifyPayload extracts the NOTIFY payload from the context, if present.
-// Returns the payload string and true, or "" and false when absent.
-func NotifyPayload(ctx context.Context) (string, bool) {
-	v, ok := ctx.Value(notifyPayloadKey).(string)
-	return v, ok && v != ""
-}
-
-// WithNotifyPayload returns a new context carrying the given NOTIFY payload.
-func WithNotifyPayload(ctx context.Context, payload string) context.Context {
-	return context.WithValue(ctx, notifyPayloadKey, payload)
-}
-
 type NotificationsBus interface {
-	Listen(string, int) (chan db.Notification, error)
-	Unlisten(string, chan db.Notification) error
+	ListenSignal(string) (*db.NotifySignal, error)
+	UnlistenSignal(string, *db.NotifySignal) error
 }
 
-// Schedulable represents a workload that is executed normally on a periodic
-// schedule, but can also be run immediately.
+// Schedulable represents a workload that can be run on demand.
 type Schedulable interface {
-	RunPeriodically(context.Context)
 	RunImmediately(context.Context)
 }
 
-// Runner runs a workload periodically, or immediately upon receiving a
-// notification. When Interval is zero the Runner operates in
-// notification-only mode — it never polls and relies entirely on NOTIFY
-// to trigger execution.
+// Runner runs a workload immediately upon receiving a notification signal.
+// It also fires once on startup so components that need an initial run (e.g.
+// worker registration) don't have to wait for an external notification.
+//
+// When Interval is set (> 0), the Runner also fires periodically as a
+// fallback. This is required for components like the K8s worker registrar
+// that must heartbeat on a schedule to maintain a TTL.
 type Runner struct {
-	Logger lager.Logger
-
+	Logger    lager.Logger
 	Interval  time.Duration
 	Component Component
 	Bus       NotificationsBus
@@ -55,16 +36,16 @@ type Runner struct {
 	Schedulable Schedulable
 }
 
-func (scheduler *Runner) Run(signals <-chan os.Signal, ready chan<- struct{}) error {
-	scheduler.Logger.Debug("start")
-	defer scheduler.Logger.Debug("done")
+func (r *Runner) Run(signals <-chan os.Signal, ready chan<- struct{}) error {
+	r.Logger.Debug("start")
+	defer r.Logger.Debug("done")
 
-	notifier, err := scheduler.Bus.Listen(scheduler.Component.Name(), 1)
+	signal, err := r.Bus.ListenSignal(r.Component.Name())
 	if err != nil {
 		return err
 	}
 
-	defer scheduler.Bus.Unlisten(scheduler.Component.Name(), notifier)
+	defer r.Bus.UnlistenSignal(r.Component.Name(), signal)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
@@ -74,47 +55,29 @@ func (scheduler *Runner) Run(signals <-chan os.Signal, ready chan<- struct{}) er
 
 	close(ready)
 
-	if scheduler.Interval == 0 {
-		return scheduler.runNotifyOnly(ctx, notifier)
-	}
-	return scheduler.runWithPolling(ctx, notifier)
-}
+	// Fire once on startup so the component runs immediately.
+	runCtx := lagerctx.NewContext(ctx, r.Logger.Session("startup"))
+	r.Schedulable.RunImmediately(runCtx)
 
-func (scheduler *Runner) runNotifyOnly(ctx context.Context, notifier chan db.Notification) error {
+	var ticker *time.Ticker
+	var tickCh <-chan time.Time
+	if r.Interval > 0 {
+		ticker = time.NewTicker(r.Interval)
+		tickCh = ticker.C
+		defer ticker.Stop()
+	}
+
 	for {
 		select {
-		case n := <-notifier:
-			runCtx := lagerctx.NewContext(ctx, scheduler.Logger.Session("notify"))
-			if n.Payload != "" {
-				runCtx = context.WithValue(runCtx, notifyPayloadKey, n.Payload)
-			}
-			scheduler.Schedulable.RunImmediately(runCtx)
+		case <-signal.C():
+			runCtx := lagerctx.NewContext(ctx, r.Logger.Session("notify"))
+			r.Schedulable.RunImmediately(runCtx)
+
+		case <-tickCh:
+			runCtx := lagerctx.NewContext(ctx, r.Logger.Session("tick"))
+			r.Schedulable.RunImmediately(runCtx)
 
 		case <-ctx.Done():
-			return nil
-		}
-	}
-}
-
-func (scheduler *Runner) runWithPolling(ctx context.Context, notifier chan db.Notification) error {
-	for {
-		timer := Clock.NewTimer(scheduler.Interval)
-
-		select {
-		case n := <-notifier:
-			timer.Stop()
-			runCtx := lagerctx.NewContext(ctx, scheduler.Logger.Session("notify"))
-			if n.Payload != "" {
-				runCtx = context.WithValue(runCtx, notifyPayloadKey, n.Payload)
-			}
-			scheduler.Schedulable.RunImmediately(runCtx)
-
-		case <-timer.C():
-			runCtx := lagerctx.NewContext(ctx, scheduler.Logger.Session("tick"))
-			scheduler.Schedulable.RunPeriodically(runCtx)
-
-		case <-ctx.Done():
-			timer.Stop()
 			return nil
 		}
 	}

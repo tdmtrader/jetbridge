@@ -1,32 +1,22 @@
 package db
 
 import (
-	"encoding/json"
 	"maps"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"code.cloudfoundry.org/lager/v3"
-	sq "github.com/Masterminds/squirrel"
 )
 
 // WorkerCache provides a thread-safe, in-memory cache of worker information
-// from the database. It tracks both worker metadata and container counts,
-// refreshing periodically and in response to notification events.
+// from the database. It refreshes on notification signals and on a periodic
+// interval as a fallback.
 //
-// The implementation handles three key challenges:
-// 1. Race conditions between database events and cached state
-// 2. Concurrent access from multiple goroutines
-// 3. Efficient updates without excessive locking
-//
-// Cache consistency is maintained by:
-// - Responding to worker and container table events via notification channels
-// - Periodically refreshing the entire dataset to recover from missed events
-// - Using appropriate locking to prevent concurrent state corruption
-//
-// The refreshing strategy uses atomic operations and separate locks to
-// minimize contention while ensuring safe, consistent state updates.
+// All notification consumers use coalescing signals (NotifySignal). This means
+// notifications are treated as "something changed" hints, not messages. On each
+// signal, the cache does a full refresh from the database. Dropped notifications
+// are harmless because the next signal that arrives triggers a complete rescan.
 type WorkerCache struct {
 	conn   DbConn
 	logger lager.Logger
@@ -34,7 +24,7 @@ type WorkerCache struct {
 	// dataMut protects access to the cached data
 	dataMut sync.RWMutex
 
-	// refreshMut protects the refresh operation itself
+	// refreshMut serializes refresh operations
 	refreshMut sync.Mutex
 
 	// Use atomic for refresh state to avoid locking
@@ -47,32 +37,26 @@ type WorkerCache struct {
 	workerContainerCounts map[string]int
 }
 
-type TriggerEvent struct {
-	Operation string             `json:"operation"`
-	Data      map[string]*string `json:"data"`
-}
-
 func NewWorkerCache(logger lager.Logger, conn DbConn, refreshInterval time.Duration) (*WorkerCache, error) {
 	cache := NewStaticWorkerCache(logger, conn, refreshInterval)
 
-	workerNotifs, err := conn.Bus().Listen("worker_events_channel", 128)
+	workerSignal, err := conn.Bus().ListenSignal("worker_events_channel")
 	if err != nil {
 		return nil, err
 	}
 
-	containerNotifs, err := conn.Bus().Listen("container_events_channel", 512)
+	containerSignal, err := conn.Bus().ListenSignal("container_events_channel")
 	if err != nil {
 		return nil, err
 	}
 
-	go cache.listenWorkers(workerNotifs)
-	go cache.listenContainers(containerNotifs)
+	go cache.listenForChanges(workerSignal, containerSignal)
 
 	return cache, nil
 }
 
 // NewStaticWorkerCache returns a WorkerCache that doesn't subscribe to changes
-// to the workers/containers table, so it's data is likely to be stale until
+// to the workers/containers table, so its data is likely to be stale until
 // the next refresh.
 func NewStaticWorkerCache(logger lager.Logger, conn DbConn, refreshInterval time.Duration) *WorkerCache {
 	cache := &WorkerCache{
@@ -83,13 +67,11 @@ func NewStaticWorkerCache(logger lager.Logger, conn DbConn, refreshInterval time
 		workerContainerCounts: make(map[string]int),
 	}
 
-	// Set initial refresh time to zero
 	cache.lastRefresh.Store(0)
 
 	return cache
 }
 
-// Copy maps safely for returning to caller
 func (cache *WorkerCache) copyWorkers() []Worker {
 	cache.dataMut.RLock()
 	defer cache.dataMut.RUnlock()
@@ -132,91 +114,35 @@ func (cache *WorkerCache) WorkerContainerCounts() (map[string]int, error) {
 	return cache.copyWorkerContainerCounts(), nil
 }
 
-func (cache *WorkerCache) listenWorkers(notifications <-chan Notification) {
-	logger := cache.logger.Session("listen-workers")
-
-	for notification := range notifications {
-		if !notification.Healthy {
-			logger.Info("notification-unhealthy-will-refresh")
-			cache.ensureRefresh()
-			continue
+// listenForChanges waits for either worker or container change signals and
+// triggers a full cache refresh. Both signals coalesce — multiple rapid
+// changes produce a single refresh.
+func (cache *WorkerCache) listenForChanges(workerSignal, containerSignal *NotifySignal) {
+	for {
+		select {
+		case <-workerSignal.C():
+		case <-containerSignal.C():
 		}
 
-		var event TriggerEvent
-		if err := json.Unmarshal([]byte(notification.Payload), &event); err != nil {
-			logger.Error("invalid-payload", err)
-			continue
-		}
+		cache.ensureRefresh()
 
-		workerName := event.Data["name"]
-		if workerName == nil {
-			logger.Info("missing-name")
-			continue
-		}
-
-		if event.Operation == "UPDATE" || event.Operation == "INSERT" {
-			if err := cache.upsertWorker(*workerName); err != nil {
-				logger.Error("failed-to-upsert-worker", err)
-				continue
-			}
-		} else if event.Operation == "DELETE" {
-			cache.removeWorker(*workerName)
-		} else {
-			logger.Info("unexpected-operation", lager.Data{"operation": event.Operation})
-		}
-	}
-}
-
-func (cache *WorkerCache) listenContainers(notifications <-chan Notification) {
-	logger := cache.logger.Session("listen-containers")
-
-	for notification := range notifications {
-		if !notification.Healthy {
-			logger.Info("notification-unhealthy-will-refresh")
-			cache.ensureRefresh()
-			continue
-		}
-
-		var event TriggerEvent
-		if err := json.Unmarshal([]byte(notification.Payload), &event); err != nil {
-			logger.Error("invalid-payload", err)
-			continue
-		}
-
-		workerName := event.Data["worker_name"]
-		if workerName == nil {
-			logger.Info("missing-name")
-			continue
-		}
-
-		if event.Data["build_id"] == nil {
-			// Skip over non-build containers.
-			continue
-		}
-
-		if event.Operation == "INSERT" {
-			cache.addWorkerContainerCount(*workerName, 1)
-		} else if event.Operation == "DELETE" {
-			cache.addWorkerContainerCount(*workerName, -1)
-		} else {
-			logger.Info("unexpected-operation", lager.Data{"operation": event.Operation})
+		// Eagerly refresh so the data is ready for the next reader,
+		// rather than waiting for a Workers()/WorkerContainerCounts() call.
+		if err := cache.refreshWorkerData(); err != nil {
+			cache.logger.Error("failed-to-refresh-on-signal", err)
 		}
 	}
 }
 
 func (cache *WorkerCache) refreshWorkerData() error {
-	// Use a mutex to ensure only one refresh happens at a time
 	cache.refreshMut.Lock()
 	defer cache.refreshMut.Unlock()
 
-	// Double-check if refresh is still needed after acquiring lock
 	if !cache.needsRefresh() {
 		return nil
 	}
 
-	// Set refreshing flag
 	if !cache.startRefresh() {
-		// Another goroutine is already refreshing
 		return nil
 	}
 
@@ -224,7 +150,6 @@ func (cache *WorkerCache) refreshWorkerData() error {
 
 	cache.logger.Debug("refreshing")
 
-	// Perform DB queries outside of the data mutex
 	workers, err := getWorkers(cache.conn, workersQuery)
 	if err != nil {
 		return err
@@ -241,7 +166,6 @@ func (cache *WorkerCache) refreshWorkerData() error {
 	}
 	defer Close(rows)
 
-	// Prepare new maps
 	newWorkers := make(map[string]Worker, len(workers))
 	for _, worker := range workers {
 		newWorkers[worker.Name()] = worker
@@ -285,44 +209,4 @@ func (cache *WorkerCache) endRefresh() {
 
 func (cache *WorkerCache) ensureRefresh() {
 	cache.lastRefresh.Store(0)
-}
-
-func (cache *WorkerCache) removeWorker(name string) {
-	cache.dataMut.Lock()
-	defer cache.dataMut.Unlock()
-
-	delete(cache.workers, name)
-	delete(cache.workerContainerCounts, name)
-}
-
-func (cache *WorkerCache) upsertWorker(name string) error {
-	worker, found, err := getWorker(cache.conn, workersQuery.Where(sq.Eq{"w.name": name}))
-	if err != nil {
-		return err
-	}
-
-	if !found {
-		cache.removeWorker(name)
-		return nil
-	}
-
-	cache.dataMut.Lock()
-	defer cache.dataMut.Unlock()
-
-	cache.workers[name] = worker
-	// Only initialize container count if not present
-	if _, ok := cache.workerContainerCounts[name]; !ok {
-		cache.workerContainerCounts[name] = 0
-	}
-	return nil
-}
-
-func (cache *WorkerCache) addWorkerContainerCount(workerName string, delta int) {
-	cache.dataMut.Lock()
-	defer cache.dataMut.Unlock()
-
-	// Only update count if worker exists in cache
-	if _, exists := cache.workers[workerName]; exists {
-		cache.workerContainerCounts[workerName] += delta
-	}
 }

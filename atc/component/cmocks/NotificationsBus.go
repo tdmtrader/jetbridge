@@ -12,29 +12,29 @@ type NotificationsBus struct {
 	mock.Mock
 }
 
-// Listen provides a mock function with given fields: _a0, _a1
-func (_m *NotificationsBus) Listen(_a0 string, _a1 int) (chan db.Notification, error) {
-	ret := _m.Called(_a0, _a1)
+// ListenSignal provides a mock function with given fields: _a0
+func (_m *NotificationsBus) ListenSignal(_a0 string) (*db.NotifySignal, error) {
+	ret := _m.Called(_a0)
 
 	if len(ret) == 0 {
-		panic("no return value specified for Listen")
+		panic("no return value specified for ListenSignal")
 	}
 
-	var r0 chan db.Notification
+	var r0 *db.NotifySignal
 	var r1 error
-	if rf, ok := ret.Get(0).(func(string, int) (chan db.Notification, error)); ok {
-		return rf(_a0, _a1)
+	if rf, ok := ret.Get(0).(func(string) (*db.NotifySignal, error)); ok {
+		return rf(_a0)
 	}
-	if rf, ok := ret.Get(0).(func(string, int) chan db.Notification); ok {
-		r0 = rf(_a0, _a1)
+	if rf, ok := ret.Get(0).(func(string) *db.NotifySignal); ok {
+		r0 = rf(_a0)
 	} else {
 		if ret.Get(0) != nil {
-			r0 = ret.Get(0).(chan db.Notification)
+			r0 = ret.Get(0).(*db.NotifySignal)
 		}
 	}
 
-	if rf, ok := ret.Get(1).(func(string, int) error); ok {
-		r1 = rf(_a0, _a1)
+	if rf, ok := ret.Get(1).(func(string) error); ok {
+		r1 = rf(_a0)
 	} else {
 		r1 = ret.Error(1)
 	}
@@ -42,16 +42,16 @@ func (_m *NotificationsBus) Listen(_a0 string, _a1 int) (chan db.Notification, e
 	return r0, r1
 }
 
-// Unlisten provides a mock function with given fields: _a0, _a1
-func (_m *NotificationsBus) Unlisten(_a0 string, _a1 chan db.Notification) error {
+// UnlistenSignal provides a mock function with given fields: _a0, _a1
+func (_m *NotificationsBus) UnlistenSignal(_a0 string, _a1 *db.NotifySignal) error {
 	ret := _m.Called(_a0, _a1)
 
 	if len(ret) == 0 {
-		panic("no return value specified for Unlisten")
+		panic("no return value specified for UnlistenSignal")
 	}
 
 	var r0 error
-	if rf, ok := ret.Get(0).(func(string, chan db.Notification) error); ok {
+	if rf, ok := ret.Get(0).(func(string, *db.NotifySignal) error); ok {
 		r0 = rf(_a0, _a1)
 	} else {
 		r0 = ret.Error(0)

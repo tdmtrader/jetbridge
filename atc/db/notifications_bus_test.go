@@ -68,13 +68,13 @@ var _ = Describe("NotificationBus", func() {
 		})
 	})
 
-	Context("Listen", func() {
+	Context("ListenSignal", func() {
 		var (
 			err error
 		)
 
 		JustBeforeEach(func() {
-			_, err = bus.Listen("some-channel", 1)
+			_, err = bus.ListenSignal("some-channel")
 		})
 
 		Context("when not already listening on channel", func() {
@@ -107,7 +107,7 @@ var _ = Describe("NotificationBus", func() {
 
 		Context("when already listening on the channel", func() {
 			BeforeEach(func() {
-				_, err := bus.Listen("some-channel", 1)
+				_, err := bus.ListenSignal("some-channel")
 				Expect(err).NotTo(HaveOccurred())
 			})
 
@@ -117,19 +117,19 @@ var _ = Describe("NotificationBus", func() {
 		})
 	})
 
-	Context("Unlisten", func() {
+	Context("UnlistenSignal", func() {
 		var (
-			err error
-			c   chan db.Notification
+			err    error
+			signal *db.NotifySignal
 		)
 
 		JustBeforeEach(func() {
-			err = bus.Unlisten("some-channel", c)
+			err = bus.UnlistenSignal("some-channel", signal)
 		})
 
 		Context("when there's only one listener", func() {
 			BeforeEach(func() {
-				c, err = bus.Listen("some-channel", 1)
+				signal, err = bus.ListenSignal("some-channel")
 				Expect(err).NotTo(HaveOccurred())
 			})
 
@@ -162,10 +162,10 @@ var _ = Describe("NotificationBus", func() {
 
 		Context("when there's multiple listeners", func() {
 			BeforeEach(func() {
-				c, err = bus.Listen("some-channel", 1)
+				signal, err = bus.ListenSignal("some-channel")
 				Expect(err).NotTo(HaveOccurred())
 
-				_, err = bus.Listen("some-channel", 1)
+				_, err = bus.ListenSignal("some-channel")
 				Expect(err).NotTo(HaveOccurred())
 			})
 
@@ -179,108 +179,94 @@ var _ = Describe("NotificationBus", func() {
 		})
 	})
 
-	Describe("Receiving Notifications", func() {
-		var (
-			err error
-			a   chan db.Notification
-			b   chan db.Notification
-		)
-
+	Describe("Receiving Signals", func() {
 		Context("when there are multiple listeners for the same channel", func() {
+			var a, b *db.NotifySignal
+
 			BeforeEach(func() {
-				a, err = bus.Listen("some-channel", 1)
+				var err error
+				a, err = bus.ListenSignal("some-channel")
 				Expect(err).NotTo(HaveOccurred())
 
-				b, err = bus.Listen("some-channel", 1)
+				b, err = bus.ListenSignal("some-channel")
 				Expect(err).NotTo(HaveOccurred())
 			})
 
 			Context("when it receives an upstream notification", func() {
-
 				BeforeEach(func() {
 					c <- &pgconn.Notification{Channel: "some-channel"}
 				})
 
-				It("delivers the notification to all listeners", func() {
-					Eventually(a).Should(Receive(Equal(db.Notification{Healthy: true})))
-					Eventually(b).Should(Receive(Equal(db.Notification{Healthy: true})))
+				It("delivers the signal to all listeners", func() {
+					Eventually(a.C()).Should(Receive())
+					Eventually(b.C()).Should(Receive())
 				})
 			})
 
 			Context("when it receives an upstream disconnect notice", func() {
-
 				BeforeEach(func() {
 					c <- nil
 				})
 
-				It("delivers the notification to all listeners", func() {
-					Eventually(a).Should(Receive(Equal(db.Notification{Healthy: false})))
-					Eventually(b).Should(Receive(Equal(db.Notification{Healthy: false})))
+				It("delivers the signal to all listeners", func() {
+					Eventually(a.C()).Should(Receive())
+					Eventually(b.C()).Should(Receive())
 				})
 			})
 
 			Context("when one of the listeners unlistens", func() {
 				BeforeEach(func() {
-					bus.Unlisten("some-channel", a)
+					bus.UnlistenSignal("some-channel", a)
 				})
 
-				It("should still send notifications to the other listeners", func() {
+				It("should still send signals to the other listeners", func() {
 					c <- &pgconn.Notification{Channel: "some-channel"}
-					Eventually(b).Should(Receive(Equal(db.Notification{Healthy: true})))
+					Eventually(b.C()).Should(Receive())
 				})
 			})
 		})
 
 		Context("when there are multiple listeners on different channels", func() {
+			var a, b *db.NotifySignal
+
 			BeforeEach(func() {
-				a, err = bus.Listen("some-channel", 1)
+				var err error
+				a, err = bus.ListenSignal("some-channel")
 				Expect(err).NotTo(HaveOccurred())
 
-				b, err = bus.Listen("some-other-channel", 1)
+				b, err = bus.ListenSignal("some-other-channel")
 				Expect(err).NotTo(HaveOccurred())
 			})
 
 			Context("when it receives an upstream notification", func() {
-
 				BeforeEach(func() {
 					c <- &pgconn.Notification{Channel: "some-channel"}
 				})
 
-				It("delivers the notification to only specific listeners", func() {
-					Eventually(a).Should(Receive(Equal(db.Notification{Healthy: true})))
-					Consistently(b).ShouldNot(Receive())
+				It("delivers the signal to only specific listeners", func() {
+					Eventually(a.C()).Should(Receive())
+					Consistently(b.C()).ShouldNot(Receive())
 				})
 			})
 
 			Context("when it receives an upstream disconnect notice", func() {
-
 				BeforeEach(func() {
 					c <- nil
 				})
 
-				It("delivers the notification to all listeners", func() {
-					Eventually(a).Should(Receive(Equal(db.Notification{Healthy: false})))
-					Eventually(b).Should(Receive(Equal(db.Notification{Healthy: false})))
+				It("delivers the signal to all listeners", func() {
+					Eventually(a.C()).Should(Receive())
+					Eventually(b.C()).Should(Receive())
 				})
 			})
 		})
 
-		Context("when the upstream notification has a payload", func() {
+		Context("when the signal coalesces", func() {
+			var a *db.NotifySignal
+
 			BeforeEach(func() {
-				a, err = bus.Listen("some-channel", 1)
-				Expect(err).NotTo(HaveOccurred())
-
-				c <- &pgconn.Notification{Channel: "some-channel", Payload: "hello!"}
-			})
-
-			It("sends a notification with the payload", func() {
-				Eventually(a).Should(Receive(Equal(db.Notification{Healthy: true, Payload: "hello!"})))
-			})
-		})
-
-		Context("when the listener does not queue notifications", func() {
-			BeforeEach(func() {
-				a, err = bus.Listen("some-channel", 1)
+				var err error
+				a, err = bus.ListenSignal("some-channel")
 				Expect(err).NotTo(HaveOccurred())
 			})
 
@@ -290,67 +276,20 @@ var _ = Describe("NotificationBus", func() {
 						c <- &pgconn.Notification{Channel: "some-channel"}
 					}
 					Eventually(c).Should(BeEmpty())
-					// TODO: this is awful, but we need to guarantee the last event has been processed
+					// allow time for the last event to be processed
 					time.Sleep(1 * time.Second)
 				})
 
-				It("only sends one message to the Go channel", func() {
-					Eventually(a).Should(Receive())
-					Consistently(a).ShouldNot(Receive())
+				It("only sends one signal to the Go channel", func() {
+					Eventually(a.C()).Should(Receive())
+					Consistently(a.C()).ShouldNot(Receive())
 				})
 
-				It("should send messages again after the channel is drained", func() {
-					<-a
+				It("should send signals again after the channel is drained", func() {
+					<-a.C()
 
 					c <- &pgconn.Notification{Channel: "some-channel"}
-					Eventually(a).Should(Receive())
-				})
-			})
-		})
-
-		Context("when the listener queues multiple notifications", func() {
-			BeforeEach(func() {
-				a, err = bus.Listen("some-channel", 100)
-				Expect(err).NotTo(HaveOccurred())
-			})
-
-			Context("when it receives many upstream notifications", func() {
-				BeforeEach(func() {
-					for i := 0; i < 100; i++ {
-						c <- &pgconn.Notification{Channel: "some-channel"}
-					}
-				})
-
-				It("sends a message to the Go channel for every notification", func() {
-					for i := 0; i < 100; i++ {
-						Eventually(a).Should(Receive())
-					}
-				})
-
-				It("should still work after the channel is drained", func() {
-					for i := 0; i < 100; i++ {
-						<-a
-					}
-
-					c <- &pgconn.Notification{Channel: "some-channel"}
-					Eventually(a).Should(Receive())
-				})
-			})
-
-			Context("when it receives more upstream notifications than fit in the queue", func() {
-				BeforeEach(func() {
-					for i := 0; i < 200; i++ {
-						c <- &pgconn.Notification{Channel: "some-channel"}
-					}
-					// TODO: this is awful, but we need to guarantee the last event has been processed
-					time.Sleep(1 * time.Second)
-				})
-
-				It("ignores the overflowing notifications", func() {
-					for i := 0; i < 100; i++ {
-						<-a
-					}
-					Consistently(a).ShouldNot(Receive())
+					Eventually(a.C()).Should(Receive())
 				})
 			})
 		})
@@ -365,19 +304,20 @@ var _ = Describe("NotificationBus", func() {
 				})
 			})
 
-			It("should still be able to listen for notifications", func() {
-				_, err := bus.Listen("some-channel", 1)
+			It("should still be able to listen for signals", func() {
+				_, err := bus.ListenSignal("some-channel")
 				Expect(err).NotTo(HaveOccurred())
 
-				_, err = bus.Listen("some-other-channel", 1)
+				_, err = bus.ListenSignal("some-other-channel")
 				Expect(err).NotTo(HaveOccurred())
 
-				_, err = bus.Listen("some-new-channel", 1)
+				_, err = bus.ListenSignal("some-new-channel")
 				Expect(err).NotTo(HaveOccurred())
 			})
 		})
 
 		Context("when the notification channel fills up while unlistening", func() {
+			var a *db.NotifySignal
 
 			BeforeEach(func() {
 				fakeListener.UnlistenCalls(func(_ string) error {
@@ -386,14 +326,14 @@ var _ = Describe("NotificationBus", func() {
 					c <- &pgconn.Notification{Channel: "some-channel"}
 					return nil
 				})
+
+				var err error
+				a, err = bus.ListenSignal("some-channel")
+				Expect(err).NotTo(HaveOccurred())
 			})
 
-			It("should still be able to unlisten for notifications", func() {
-
-				err := bus.Unlisten("some-channel", a)
-				Expect(err).NotTo(HaveOccurred())
-
-				err = bus.Unlisten("some-other-channel", b)
+			It("should still be able to unlisten for signals", func() {
+				err := bus.UnlistenSignal("some-channel", a)
 				Expect(err).NotTo(HaveOccurred())
 			})
 		})

@@ -6,7 +6,6 @@ import (
 	"code.cloudfoundry.org/lager/v3"
 	"github.com/concourse/concourse/atc/api/accessor"
 	"github.com/concourse/concourse/atc/api/accessor/accessorfakes"
-
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbfakes"
 	. "github.com/onsi/ginkgo/v2"
@@ -21,7 +20,7 @@ var _ = Describe("TeamsCacher", func() {
 		fakeTeam          *dbfakes.FakeTeam
 
 		teamFetcher accessor.TeamFetcher
-		notifier    chan db.Notification
+		signal      *db.NotifySignal
 		teams       []db.Team
 		err         error
 	)
@@ -30,9 +29,9 @@ var _ = Describe("TeamsCacher", func() {
 		fakeTeam = new(dbfakes.FakeTeam)
 		teams = []db.Team{fakeTeam}
 
-		notifier = make(chan db.Notification, 1)
+		signal = db.NewNotifySignal()
 		fakeNotifications = new(accessorfakes.FakeNotifications)
-		fakeNotifications.ListenReturns(notifier, nil)
+		fakeNotifications.ListenSignalReturns(signal, nil)
 		fakeTeamFactory = new(dbfakes.FakeTeamFactory)
 		fakeTeamFactory.GetTeamsReturns(teams, nil)
 	})
@@ -64,7 +63,7 @@ var _ = Describe("TeamsCacher", func() {
 
 	Context("when it receives a notification", func() {
 		JustBeforeEach(func() {
-			notifier <- db.Notification{Healthy: true}
+			signal.Signal()
 			time.Sleep(time.Second)
 		})
 

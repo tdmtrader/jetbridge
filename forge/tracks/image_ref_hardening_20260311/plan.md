@@ -1,6 +1,6 @@
 # Implementation Plan: Image Ref Hardening
 
-## Phase 1: Registry Resolver Package
+## Phase 1: Registry Resolver Package [checkpoint: 4aea88637]
 
 - [x] Add `github.com/google/go-containerregistry` to go.mod and verify GCP default keychain works with existing transitive deps pending
 - [x] Write tests for Resolver interface: tag-to-digest resolution, auth variants (anonymous, basic auth, GCP keychain), error cases (network failure, auth failure, image not found) pending
@@ -10,7 +10,7 @@
 
 ---
 
-## Phase 2: Lidar Native Resource Type Scanning
+## Phase 2: Lidar Native Resource Type Scanning [checkpoint: 4aea88637]
 
 - [x] Write tests for scanner resource type scanning: concurrent resolution, interval respect, error handling, skip `image:` field types pending
 - [x] Implement `scanResourceTypes()` in scanner.go: iterate resource types, call resolver, store versions via `SaveVersions()` pending
@@ -23,7 +23,7 @@
 
 ---
 
-## Phase 3: Remove Pod-Based Resource Type Checks
+## Phase 3: Remove Pod-Based Resource Type Checks [checkpoint: 6f3666ce4]
 
 - [x] Write tests confirming resource types no longer produce check builds pending
 - [x] Modify `TryCreateCheck` or `scanner.check()` to skip resource types (now handled by native scan pass) pending
@@ -38,7 +38,7 @@
 
 ---
 
-## Phase 4: Integration Testing
+## Phase 4: Integration Testing [checkpoint: c6bd56e95]
 
 - [x] Verify all existing unit tests pass (`make test-unit`) pending
 - [x] Add scanner integration test: end-to-end resource type resolution with fake registry pending

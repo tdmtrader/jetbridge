@@ -1,0 +1,2 @@
+ALTER TABLE components DROP COLUMN IF EXISTS interval;
+ALTER TABLE components DROP COLUMN IF EXISTS last_ran;

@@ -1,0 +1,17 @@
+{
+  "trackId": "evaluate_tempo_traces_20260309",
+  "type": "feature",
+  "status": "archived",
+  "description": "evaluate-tempo-traces",
+  "createdAt": "2026-03-09T16:12:07.154Z",
+  "updatedAt": "2026-03-10T20:18:49.792Z",
+  "sessions": [
+    {
+      "slotIndex": 0,
+      "engineType": "claude",
+      "aiSessionId": "a43492e1-a801-4955-8ae8-82ce8be57354",
+      "accountId": "system-claude",
+      "updatedAt": "2026-03-09T16:12:19.813Z"
+    }
+  ]
+}

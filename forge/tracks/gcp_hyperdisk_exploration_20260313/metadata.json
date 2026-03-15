@@ -1,0 +1,17 @@
+{
+  "trackId": "gcp_hyperdisk_exploration_20260313",
+  "type": "feature",
+  "status": "archived",
+  "description": "GCP Hyperdisk Exploration",
+  "createdAt": "2026-03-13T14:02:14.273Z",
+  "updatedAt": "2026-03-13T15:26:53.387Z",
+  "sessions": [
+    {
+      "slotIndex": 0,
+      "engineType": "claude",
+      "aiSessionId": "7922a551-4170-4b2d-bbc0-bb82a6d29f3b",
+      "accountId": "system-claude",
+      "updatedAt": "2026-03-13T14:02:27.877Z"
+    }
+  ]
+}

@@ -1,7 +1,5 @@
 package atc
 
-import "time"
-
 const (
 	ComponentScheduler                  = "scheduler"
 	ComponentBuildTracker               = "tracker"
@@ -24,11 +22,9 @@ const (
 	ComponentK8sWorkerRegistrar         = "k8s_worker_registrar"
 	ComponentK8sWorkerReaper            = "k8s_worker_reaper"
 	ComponentPipelinePauser             = "pipeline_pauser"
-	ComponentBeingWatchedBuildMarker    = "being_watched_build_marker"
 	ComponentSigningKeyLifecycler       = "signing_key_lifecycler"
 )
 
 type Component struct {
-	Name     string
-	Interval time.Duration
+	Name string
 }

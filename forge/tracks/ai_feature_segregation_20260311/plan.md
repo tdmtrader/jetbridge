@@ -2,17 +2,17 @@
 
 ## Phase 1: Move Agent Schema Package
 
-- [ ] Task: Move `atc/agent/schema/` to `agent/schema/` and update package imports
+- [x] Task: Move `atc/agent/schema/` to `agent/schema/` and update package imports faa2abb84
   - Move all files from `atc/agent/schema/` → `agent/schema/`
   - Update import paths in all moved files (`github.com/concourse/concourse/agent/schema`)
   - Verify no `atc/` imports exist in the moved package
   - Run `go test ./agent/schema/...` — all tests pass
-- [ ] Task: Remove empty `atc/agent/` directory tree
-- [ ] Task: Phase 1 Manual Verification
+- [x] Task: Remove empty `atc/agent/` directory tree faa2abb84
+- [x] Task: Phase 1 Manual Verification faa2abb84
 
 ## Phase 2: Move Agent Feedback API
 
-- [ ] Task: Move `atc/api/agentfeedback/` to `agent/api/feedback/` and update package imports
+- [x] Task: Move `atc/api/agentfeedback/` to `agent/api/feedback/` and update package imports faa2abb84
   - Move all files from `atc/api/agentfeedback/` → `agent/api/feedback/`
   - Update import paths in all moved files
   - Rename package from `agentfeedback` to `feedback`
@@ -20,19 +20,19 @@
   - Update handler.go references: `agentfeedback.NewHandler` → `feedback.NewHandler`, etc.
   - Verify no `atc/` imports exist in the moved package
   - Run `go test ./agent/api/feedback/...` — all tests pass
-- [ ] Task: Run full build and vet checks
+- [x] Task: Run full build and vet checks faa2abb84
   - `go build ./cmd/concourse`
   - `go vet ./agent/...`
   - `go vet ./atc/...`
-- [ ] Task: Phase 2 Manual Verification
+- [x] Task: Phase 2 Manual Verification faa2abb84
 
 ## Phase 3: Verify Clean Boundary
 
-- [ ] Task: Verify `agent/` has zero imports of `atc/` packages
+- [x] Task: Verify `agent/` has zero imports of `atc/` packages faa2abb84
   - `grep -r "concourse/concourse/atc" agent/` returns no results
-- [ ] Task: Run unit test suites
+- [x] Task: Run unit test suites faa2abb84
   - `go test ./agent/...`
   - `go test ./atc/api/...`
-- [ ] Task: Phase 3 Manual Verification
+- [x] Task: Phase 3 Manual Verification faa2abb84
 
 ---

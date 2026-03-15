@@ -4,14 +4,14 @@
   "status": "archived",
   "description": "Remove vestigial Garden-era abstractions and simplify core for K8s-only runtime",
   "createdAt": "2026-03-06T03:07:53.008Z",
-  "updatedAt": "2026-03-06T04:54:03.125Z",
+  "updatedAt": "2026-03-09T04:36:27.605Z",
   "sessions": [
     {
       "slotIndex": 0,
       "engineType": "claude",
       "aiSessionId": "43758668-ad56-4f77-8c6f-ce68f5e5eabe",
       "accountId": "system-claude",
-      "updatedAt": "2026-03-06T03:07:59.914Z"
+      "updatedAt": "2026-03-09T04:36:27.603Z"
     }
   ]
 }

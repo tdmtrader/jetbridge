@@ -1,0 +1,17 @@
+{
+  "trackId": "k8s_sidecars_20260305",
+  "type": "feature",
+  "status": "completed",
+  "description": "K8s Sidecars",
+  "createdAt": "2026-03-06T04:55:17.431Z",
+  "updatedAt": "2026-03-13T11:57:27.240Z",
+  "sessions": [
+    {
+      "slotIndex": 0,
+      "engineType": "claude",
+      "aiSessionId": "73a8736d-9652-44a0-8628-f6be1e3f6124",
+      "accountId": "system-claude",
+      "updatedAt": "2026-03-13T10:14:01.201Z"
+    }
+  ]
+}

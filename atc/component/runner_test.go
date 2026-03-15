@@ -6,8 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"code.cloudfoundry.org/clock"
-	"code.cloudfoundry.org/clock/fakeclock"
 	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/atc/component"
 	"github.com/concourse/concourse/atc/component/cmocks"
@@ -26,139 +24,19 @@ func TestRunner(t *testing.T) {
 type RunnerSuite struct {
 	suite.Suite
 	*require.Assertions
-
-	clock *fakeclock.FakeClock
 }
 
-func (s *RunnerSuite) SetupTest() {
-	s.clock = fakeclock.NewFakeClock(time.Now())
-	component.Clock = s.clock
-}
-
-func (s *RunnerSuite) TearDownTest() {
-	component.Clock = clock.NewClock()
-}
-
-func (s *RunnerSuite) TestEndToEnd() {
-	interval := 30 * time.Second
+func (s *RunnerSuite) TestNotifyDriven() {
 	componentName := "some-component"
 
 	mockComponent := new(cmocks.Component)
 	mockComponent.On("Name").Return(componentName)
-	mockComponent.On("Interval").Return(interval)
 
 	mockBus := new(cmocks.NotificationsBus)
 
-	ranPeriodically := make(chan context.Context)
-	ranImmediately := make(chan context.Context)
+	ranImmediately := make(chan context.Context, 10)
 
 	mockSchedulable := schedulable{
-		runPeriodically: func(ctx context.Context) {
-			ranPeriodically <- ctx
-		},
-		runImmediately: func(ctx context.Context) {
-			ranImmediately <- ctx
-		},
-	}
-
-	scheduler := &component.Runner{
-		Logger:      lagertest.NewTestLogger("test"),
-		Interval:    interval,
-		Component:   mockComponent,
-		Bus:         mockBus,
-		Schedulable: mockSchedulable,
-	}
-
-	notifications := make(chan db.Notification, 1)
-
-	var process ifrit.Process
-	s.Run("listens for component notifications on start", func() {
-		mockBus.On("Listen", componentName, 1).Return(notifications, nil)
-
-		process = ifrit.Background(scheduler)
-		select {
-		case <-process.Ready():
-		case err := <-process.Wait():
-			s.Failf("process exited early", "error: %s", err)
-		}
-
-		mockBus.AssertCalled(s.T(), "Listen", componentName, 1)
-	})
-
-	defer func() {
-		process.Signal(os.Interrupt)
-		<-process.Wait()
-	}()
-
-	s.Run("runs periodically on component interval", func() {
-		s.clock.WaitForWatcherAndIncrement(interval)
-		<-ranPeriodically
-		s.Empty(ranImmediately)
-
-		s.clock.WaitForWatcherAndIncrement(interval)
-		<-ranPeriodically
-		s.Empty(ranImmediately)
-	})
-
-	s.Run("runs immediately on notification bus events", func() {
-		notifications <- db.Notification{Healthy: true}
-		s.Empty(ranPeriodically)
-		<-ranImmediately
-
-		notifications <- db.Notification{Healthy: true}
-		s.Empty(ranPeriodically)
-		<-ranImmediately
-	})
-
-	s.Run("notifications reset the timer to prevent doing extra work", func() {
-		// increment timer to just under the interval
-		s.clock.WaitForWatcherAndIncrement(interval - 1)
-
-		// send a notification instead
-		notifications <- db.Notification{Healthy: true}
-		s.Empty(ranPeriodically)
-		<-ranImmediately
-
-		// pass the remaining time
-		s.clock.WaitForWatcherAndIncrement(1)
-
-		// send few notifications to ensure a chance to fire the periodic timer
-		notifications <- db.Notification{Healthy: true}
-		s.Empty(ranPeriodically)
-		<-ranImmediately
-		notifications <- db.Notification{Healthy: true}
-		s.Empty(ranPeriodically)
-		<-ranImmediately
-
-		// increment the timer the full amount
-		s.clock.WaitForWatcherAndIncrement(interval)
-		<-ranPeriodically
-		s.Empty(ranImmediately)
-	})
-
-	s.Run("unlistens on exit", func() {
-		mockBus.On("Unlisten", componentName, notifications).Return(nil)
-		process.Signal(os.Interrupt)
-
-		s.NoError(<-process.Wait())
-		mockBus.AssertCalled(s.T(), "Unlisten", componentName, notifications)
-	})
-}
-
-func (s *RunnerSuite) TestNotifyOnly() {
-	componentName := "notify-only-component"
-
-	mockComponent := new(cmocks.Component)
-	mockComponent.On("Name").Return(componentName)
-
-	mockBus := new(cmocks.NotificationsBus)
-
-	ranImmediately := make(chan context.Context)
-
-	mockSchedulable := schedulable{
-		runPeriodically: func(ctx context.Context) {
-			s.Fail("RunPeriodically should never be called in notify-only mode")
-		},
 		runImmediately: func(ctx context.Context) {
 			ranImmediately <- ctx
 		},
@@ -166,17 +44,16 @@ func (s *RunnerSuite) TestNotifyOnly() {
 
 	runner := &component.Runner{
 		Logger:      lagertest.NewTestLogger("test"),
-		Interval:    0, // notification-only
 		Component:   mockComponent,
 		Bus:         mockBus,
 		Schedulable: mockSchedulable,
 	}
 
-	notifications := make(chan db.Notification, 1)
+	signal := db.NewNotifySignal()
 
 	var process ifrit.Process
-	s.Run("starts and listens", func() {
-		mockBus.On("Listen", componentName, 1).Return(notifications, nil)
+	s.Run("listens for component signals on start and fires initial run", func() {
+		mockBus.On("ListenSignal", componentName).Return(signal, nil)
 
 		process = ifrit.Background(runner)
 		select {
@@ -184,57 +61,72 @@ func (s *RunnerSuite) TestNotifyOnly() {
 		case err := <-process.Wait():
 			s.Failf("process exited early", "error: %s", err)
 		}
+
+		mockBus.AssertCalled(s.T(), "ListenSignal", componentName)
+
+		// Runner fires once on startup
+		select {
+		case <-ranImmediately:
+		case <-time.After(time.Second):
+			s.Fail("timed out waiting for startup RunImmediately")
+		}
 	})
 
-	defer func() {
-		process.Signal(os.Interrupt)
-		<-process.Wait()
-	}()
+	s.Run("runs immediately on signal", func() {
+		signal.Signal()
+		select {
+		case <-ranImmediately:
+		case <-time.After(time.Second):
+			s.Fail("timed out waiting for RunImmediately")
+		}
 
-	s.Run("runs immediately on notification", func() {
-		notifications <- db.Notification{Healthy: true}
-		<-ranImmediately
-
-		notifications <- db.Notification{Healthy: true}
-		<-ranImmediately
+		signal.Signal()
+		select {
+		case <-ranImmediately:
+		case <-time.After(time.Second):
+			s.Fail("timed out waiting for RunImmediately")
+		}
 	})
 
-	s.Run("passes notification payload through context", func() {
-		notifications <- db.Notification{Healthy: true, Payload: "42,43"}
-		ctx := <-ranImmediately
-		payload, ok := component.NotifyPayload(ctx)
-		s.True(ok)
-		s.Equal("42,43", payload)
-	})
+	s.Run("coalesces signals", func() {
+		// Drain any leftover from prior subtests
+		time.Sleep(10 * time.Millisecond)
+		for len(ranImmediately) > 0 {
+			<-ranImmediately
+		}
 
-	s.Run("omits payload from context when empty", func() {
-		notifications <- db.Notification{Healthy: true}
-		ctx := <-ranImmediately
-		_, ok := component.NotifyPayload(ctx)
-		s.False(ok)
-	})
+		// Send many signals — they should coalesce significantly
+		for i := 0; i < 100; i++ {
+			signal.Signal()
+		}
 
-	s.Run("never polls even after waiting", func() {
-		// no timer watchers should exist in notify-only mode
-		s.Empty(ranImmediately)
+		// Wait for at least one wake-up
+		select {
+		case <-ranImmediately:
+		case <-time.After(time.Second):
+			s.Fail("timed out waiting for RunImmediately")
+		}
+
+		// Give the runner time to process any additional coalesced signals
+		time.Sleep(50 * time.Millisecond)
+
+		// 100 signals should produce far fewer than 100 RunImmediately calls.
+		// The exact count depends on scheduling, but it should be small.
+		wakeups := 1 + len(ranImmediately)
+		s.Less(wakeups, 10, "100 signals should coalesce to far fewer than 10 wake-ups, got %d", wakeups)
 	})
 
 	s.Run("unlistens on exit", func() {
-		mockBus.On("Unlisten", componentName, notifications).Return(nil)
+		mockBus.On("UnlistenSignal", componentName, signal).Return(nil)
 		process.Signal(os.Interrupt)
 
 		s.NoError(<-process.Wait())
-		mockBus.AssertCalled(s.T(), "Unlisten", componentName, notifications)
+		mockBus.AssertCalled(s.T(), "UnlistenSignal", componentName, signal)
 	})
 }
 
 type schedulable struct {
-	runPeriodically func(context.Context)
-	runImmediately  func(context.Context)
-}
-
-func (s schedulable) RunPeriodically(ctx context.Context) {
-	s.runPeriodically(ctx)
+	runImmediately func(context.Context)
 }
 
 func (s schedulable) RunImmediately(ctx context.Context) {

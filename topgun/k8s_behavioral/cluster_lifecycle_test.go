@@ -179,14 +179,13 @@ func helmDeployConcourse(kubeconfig, namespace, chartPath, image string) {
 
 	log.Printf("Deploying Concourse chart from %s into namespace %s...", chartPath, namespace)
 	// Base extra args for Concourse web.
-	extraArgs := "--component-runner-interval=2s,--gc-interval=2s"
+	extraArgs := ""
 
 	// When COLLECT_OTEL is set, inject OTel exporter addresses so Concourse
 	// sends metrics and traces to the in-cluster OTel collector.
 	if os.Getenv("COLLECT_OTEL") == "1" {
 		otelAddr := fmt.Sprintf("otel-collector.%s.svc.cluster.local:4317", namespace)
-		extraArgs += ",--tracing-otlp-address=" + otelAddr
-		extraArgs += ",--otel-metrics-otlp-address=" + otelAddr
+		extraArgs = "--tracing-otlp-address=" + otelAddr + ",--otel-metrics-otlp-address=" + otelAddr
 		log.Printf("OTel collection enabled, exporting to %s", otelAddr)
 	}
 
@@ -197,14 +196,15 @@ func helmDeployConcourse(kubeconfig, namespace, chartPath, image string) {
 		"--set", fmt.Sprintf("image.repository=%s", repo),
 		"--set", fmt.Sprintf("image.tag=%s", tag),
 		"--set", "image.pullPolicy=IfNotPresent", // only the Concourse image is pre-loaded
-		// Reduce ATC polling intervals from 10s defaults to speed up
-		// build scheduling in integration tests.
-		"--set", fmt.Sprintf("web.extraArgs={%s}", extraArgs),
 		// Use emptyDir for PostgreSQL — ephemeral KinD clusters don't need
 		// persistent storage, and KinD's local-path-provisioner struggles
 		// under resource contention when multiple clusters run in parallel.
 		"--set", "postgresql.persistence.enabled=false",
 		"--timeout", "5m",
+	}
+
+	if extraArgs != "" {
+		helmArgs = append(helmArgs, "--set", fmt.Sprintf("web.extraArgs={%s}", extraArgs))
 	}
 	cmd := exec.Command("helm", helmArgs...)
 	cmd.Stdout = os.Stderr
@@ -428,14 +428,11 @@ func mustRepoRoot() string {
 	return strings.TrimSpace(string(out))
 }
 
-// preloadImages pulls commonly-used images directly into the KinD node
-// via `crictl pull`. This avoids Docker Hub rate limits and TLS timeout
-// failures that occur when kubelet tries to pull images at test time.
-//
-// We use `crictl pull` inside the KinD node rather than `kind load
-// docker-image` because the latter fails for multi-platform registry
-// images when Docker Desktop uses a containerd image store (the
-// same issue documented in loadImagesIntoKind).
+// preloadImages pulls commonly-used images on the host Docker daemon
+// and loads them into the KinD node via tar archive. This avoids
+// requiring the KinD node's containerd to have outbound internet
+// access (e.g. when running inside Colima with restricted networking)
+// and also avoids Docker Hub rate limits.
 func preloadImages() {
 	images := []string{
 		"docker.io/concourse/mock-resource:latest",
@@ -444,17 +441,52 @@ func preloadImages() {
 		"docker.io/library/alpine:latest",
 		"docker.io/library/nginx:alpine",
 	}
-	node := kindClusterName + "-control-plane"
+
+	nodeList, err := kindProvider.ListInternalNodes(kindClusterName)
+	if err != nil {
+		log.Printf("warning: failed to list KinD nodes for image preload: %v", err)
+		return
+	}
 
 	for _, image := range images {
-		log.Printf("Pulling %s directly into KinD node via crictl...", image)
-		cmd := exec.Command("docker", "exec", node, "crictl", "pull", image)
-		cmd.Stdout = os.Stderr
-		cmd.Stderr = os.Stderr
-		if err := cmd.Run(); err != nil {
-			// Non-fatal: some images may not be needed by all tests.
-			log.Printf("warning: failed to pull %s into KinD node: %v", image, err)
+		log.Printf("Pre-pulling %s on host...", image)
+		pullCmd := exec.Command("docker", "pull", "--quiet", image)
+		pullCmd.Stdout = os.Stderr
+		pullCmd.Stderr = os.Stderr
+		if err := pullCmd.Run(); err != nil {
+			log.Printf("warning: failed to pull %s on host: %v", image, err)
+			continue
 		}
+
+		imgTar, err := os.CreateTemp("", "kind-dep-*.tar")
+		if err != nil {
+			log.Printf("warning: failed to create temp file for %s: %v", image, err)
+			continue
+		}
+		imgTar.Close()
+
+		saveCmd := exec.Command("docker", "save", "-o", imgTar.Name(), image)
+		saveCmd.Stdout = os.Stderr
+		saveCmd.Stderr = os.Stderr
+		if err := saveCmd.Run(); err != nil {
+			log.Printf("warning: docker save failed for %s: %v", image, err)
+			os.Remove(imgTar.Name())
+			continue
+		}
+
+		log.Printf("Loading %s into KinD nodes...", image)
+		for _, node := range nodeList {
+			f, err := os.Open(imgTar.Name())
+			if err != nil {
+				log.Printf("warning: failed to open archive for %s: %v", image, err)
+				continue
+			}
+			if err := nodeutils.LoadImageArchive(node, f); err != nil {
+				log.Printf("warning: failed to load %s onto node %s: %v", image, node.String(), err)
+			}
+			f.Close()
+		}
+		os.Remove(imgTar.Name())
 	}
 	log.Printf("Image preloading complete.")
 }

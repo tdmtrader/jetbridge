@@ -8,7 +8,7 @@ _None_
 
 ## Completed / Archived Tracks
 
-### [~] Track: Finish Setup (Conductor Migration)
+### [x] Track: Finish Setup (Conductor Migration)
 _Link: [./archive/finish_setup_20260303/](./archive/finish_setup_20260303/)_
 
 ---
@@ -245,5 +245,25 @@ _Link: [./tracks/image_ref_hardening_20260311/](./tracks/image_ref_hardening_202
 
 ### [ ] Track: Image Ref Hardening
 _Link: [./tracks/image_ref_hardening_20260311/](./tracks/image_ref_hardening_20260311/)_
+
+---
+
+### [ ] Track: Image Ref Hardening for tasks, etc
+_Link: [./tracks/image_ref_hardening_for_tasks_etc_20260311/](./tracks/image_ref_hardening_for_tasks_etc_20260311/)_
+
+---
+
+### [ ] Track: deploy-and-validate
+_Link: [./tracks/deploy_and_validate_20260313/](./tracks/deploy_and_validate_20260313/)_
+
+---
+
+### [ ] Track: production readiness
+_Link: [./tracks/production_readiness_20260313/](./tracks/production_readiness_20260313/)_
+
+---
+
+### [ ] Track: GCP Hyperdisk Exploration
+_Link: [./tracks/gcp_hyperdisk_exploration_20260313/](./tracks/gcp_hyperdisk_exploration_20260313/)_
 
 ---

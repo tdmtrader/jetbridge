@@ -9,49 +9,47 @@ import (
 )
 
 type FakeNotifications struct {
-	ListenStub        func(string, int) (chan db.Notification, error)
-	listenMutex       sync.RWMutex
-	listenArgsForCall []struct {
+	ListenSignalStub        func(string) (*db.NotifySignal, error)
+	listenSignalMutex       sync.RWMutex
+	listenSignalArgsForCall []struct {
 		arg1 string
-		arg2 int
 	}
-	listenReturns struct {
-		result1 chan db.Notification
+	listenSignalReturns struct {
+		result1 *db.NotifySignal
 		result2 error
 	}
-	listenReturnsOnCall map[int]struct {
-		result1 chan db.Notification
+	listenSignalReturnsOnCall map[int]struct {
+		result1 *db.NotifySignal
 		result2 error
 	}
-	UnlistenStub        func(string, chan db.Notification) error
-	unlistenMutex       sync.RWMutex
-	unlistenArgsForCall []struct {
+	UnlistenSignalStub        func(string, *db.NotifySignal) error
+	unlistenSignalMutex       sync.RWMutex
+	unlistenSignalArgsForCall []struct {
 		arg1 string
-		arg2 chan db.Notification
+		arg2 *db.NotifySignal
 	}
-	unlistenReturns struct {
+	unlistenSignalReturns struct {
 		result1 error
 	}
-	unlistenReturnsOnCall map[int]struct {
+	unlistenSignalReturnsOnCall map[int]struct {
 		result1 error
 	}
 	invocations      map[string][][]interface{}
 	invocationsMutex sync.RWMutex
 }
 
-func (fake *FakeNotifications) Listen(arg1 string, arg2 int) (chan db.Notification, error) {
-	fake.listenMutex.Lock()
-	ret, specificReturn := fake.listenReturnsOnCall[len(fake.listenArgsForCall)]
-	fake.listenArgsForCall = append(fake.listenArgsForCall, struct {
+func (fake *FakeNotifications) ListenSignal(arg1 string) (*db.NotifySignal, error) {
+	fake.listenSignalMutex.Lock()
+	ret, specificReturn := fake.listenSignalReturnsOnCall[len(fake.listenSignalArgsForCall)]
+	fake.listenSignalArgsForCall = append(fake.listenSignalArgsForCall, struct {
 		arg1 string
-		arg2 int
-	}{arg1, arg2})
-	stub := fake.ListenStub
-	fakeReturns := fake.listenReturns
-	fake.recordInvocation("Listen", []interface{}{arg1, arg2})
-	fake.listenMutex.Unlock()
+	}{arg1})
+	stub := fake.ListenSignalStub
+	fakeReturns := fake.listenSignalReturns
+	fake.recordInvocation("ListenSignal", []interface{}{arg1})
+	fake.listenSignalMutex.Unlock()
 	if stub != nil {
-		return stub(arg1, arg2)
+		return stub(arg1)
 	}
 	if specificReturn {
 		return ret.result1, ret.result2
@@ -59,62 +57,62 @@ func (fake *FakeNotifications) Listen(arg1 string, arg2 int) (chan db.Notificati
 	return fakeReturns.result1, fakeReturns.result2
 }
 
-func (fake *FakeNotifications) ListenCallCount() int {
-	fake.listenMutex.RLock()
-	defer fake.listenMutex.RUnlock()
-	return len(fake.listenArgsForCall)
+func (fake *FakeNotifications) ListenSignalCallCount() int {
+	fake.listenSignalMutex.RLock()
+	defer fake.listenSignalMutex.RUnlock()
+	return len(fake.listenSignalArgsForCall)
 }
 
-func (fake *FakeNotifications) ListenCalls(stub func(string, int) (chan db.Notification, error)) {
-	fake.listenMutex.Lock()
-	defer fake.listenMutex.Unlock()
-	fake.ListenStub = stub
+func (fake *FakeNotifications) ListenSignalCalls(stub func(string) (*db.NotifySignal, error)) {
+	fake.listenSignalMutex.Lock()
+	defer fake.listenSignalMutex.Unlock()
+	fake.ListenSignalStub = stub
 }
 
-func (fake *FakeNotifications) ListenArgsForCall(i int) (string, int) {
-	fake.listenMutex.RLock()
-	defer fake.listenMutex.RUnlock()
-	argsForCall := fake.listenArgsForCall[i]
-	return argsForCall.arg1, argsForCall.arg2
+func (fake *FakeNotifications) ListenSignalArgsForCall(i int) string {
+	fake.listenSignalMutex.RLock()
+	defer fake.listenSignalMutex.RUnlock()
+	argsForCall := fake.listenSignalArgsForCall[i]
+	return argsForCall.arg1
 }
 
-func (fake *FakeNotifications) ListenReturns(result1 chan db.Notification, result2 error) {
-	fake.listenMutex.Lock()
-	defer fake.listenMutex.Unlock()
-	fake.ListenStub = nil
-	fake.listenReturns = struct {
-		result1 chan db.Notification
+func (fake *FakeNotifications) ListenSignalReturns(result1 *db.NotifySignal, result2 error) {
+	fake.listenSignalMutex.Lock()
+	defer fake.listenSignalMutex.Unlock()
+	fake.ListenSignalStub = nil
+	fake.listenSignalReturns = struct {
+		result1 *db.NotifySignal
 		result2 error
 	}{result1, result2}
 }
 
-func (fake *FakeNotifications) ListenReturnsOnCall(i int, result1 chan db.Notification, result2 error) {
-	fake.listenMutex.Lock()
-	defer fake.listenMutex.Unlock()
-	fake.ListenStub = nil
-	if fake.listenReturnsOnCall == nil {
-		fake.listenReturnsOnCall = make(map[int]struct {
-			result1 chan db.Notification
+func (fake *FakeNotifications) ListenSignalReturnsOnCall(i int, result1 *db.NotifySignal, result2 error) {
+	fake.listenSignalMutex.Lock()
+	defer fake.listenSignalMutex.Unlock()
+	fake.ListenSignalStub = nil
+	if fake.listenSignalReturnsOnCall == nil {
+		fake.listenSignalReturnsOnCall = make(map[int]struct {
+			result1 *db.NotifySignal
 			result2 error
 		})
 	}
-	fake.listenReturnsOnCall[i] = struct {
-		result1 chan db.Notification
+	fake.listenSignalReturnsOnCall[i] = struct {
+		result1 *db.NotifySignal
 		result2 error
 	}{result1, result2}
 }
 
-func (fake *FakeNotifications) Unlisten(arg1 string, arg2 chan db.Notification) error {
-	fake.unlistenMutex.Lock()
-	ret, specificReturn := fake.unlistenReturnsOnCall[len(fake.unlistenArgsForCall)]
-	fake.unlistenArgsForCall = append(fake.unlistenArgsForCall, struct {
+func (fake *FakeNotifications) UnlistenSignal(arg1 string, arg2 *db.NotifySignal) error {
+	fake.unlistenSignalMutex.Lock()
+	ret, specificReturn := fake.unlistenSignalReturnsOnCall[len(fake.unlistenSignalArgsForCall)]
+	fake.unlistenSignalArgsForCall = append(fake.unlistenSignalArgsForCall, struct {
 		arg1 string
-		arg2 chan db.Notification
+		arg2 *db.NotifySignal
 	}{arg1, arg2})
-	stub := fake.UnlistenStub
-	fakeReturns := fake.unlistenReturns
-	fake.recordInvocation("Unlisten", []interface{}{arg1, arg2})
-	fake.unlistenMutex.Unlock()
+	stub := fake.UnlistenSignalStub
+	fakeReturns := fake.unlistenSignalReturns
+	fake.recordInvocation("UnlistenSignal", []interface{}{arg1, arg2})
+	fake.unlistenSignalMutex.Unlock()
 	if stub != nil {
 		return stub(arg1, arg2)
 	}
@@ -124,44 +122,44 @@ func (fake *FakeNotifications) Unlisten(arg1 string, arg2 chan db.Notification) 
 	return fakeReturns.result1
 }
 
-func (fake *FakeNotifications) UnlistenCallCount() int {
-	fake.unlistenMutex.RLock()
-	defer fake.unlistenMutex.RUnlock()
-	return len(fake.unlistenArgsForCall)
+func (fake *FakeNotifications) UnlistenSignalCallCount() int {
+	fake.unlistenSignalMutex.RLock()
+	defer fake.unlistenSignalMutex.RUnlock()
+	return len(fake.unlistenSignalArgsForCall)
 }
 
-func (fake *FakeNotifications) UnlistenCalls(stub func(string, chan db.Notification) error) {
-	fake.unlistenMutex.Lock()
-	defer fake.unlistenMutex.Unlock()
-	fake.UnlistenStub = stub
+func (fake *FakeNotifications) UnlistenSignalCalls(stub func(string, *db.NotifySignal) error) {
+	fake.unlistenSignalMutex.Lock()
+	defer fake.unlistenSignalMutex.Unlock()
+	fake.UnlistenSignalStub = stub
 }
 
-func (fake *FakeNotifications) UnlistenArgsForCall(i int) (string, chan db.Notification) {
-	fake.unlistenMutex.RLock()
-	defer fake.unlistenMutex.RUnlock()
-	argsForCall := fake.unlistenArgsForCall[i]
+func (fake *FakeNotifications) UnlistenSignalArgsForCall(i int) (string, *db.NotifySignal) {
+	fake.unlistenSignalMutex.RLock()
+	defer fake.unlistenSignalMutex.RUnlock()
+	argsForCall := fake.unlistenSignalArgsForCall[i]
 	return argsForCall.arg1, argsForCall.arg2
 }
 
-func (fake *FakeNotifications) UnlistenReturns(result1 error) {
-	fake.unlistenMutex.Lock()
-	defer fake.unlistenMutex.Unlock()
-	fake.UnlistenStub = nil
-	fake.unlistenReturns = struct {
+func (fake *FakeNotifications) UnlistenSignalReturns(result1 error) {
+	fake.unlistenSignalMutex.Lock()
+	defer fake.unlistenSignalMutex.Unlock()
+	fake.UnlistenSignalStub = nil
+	fake.unlistenSignalReturns = struct {
 		result1 error
 	}{result1}
 }
 
-func (fake *FakeNotifications) UnlistenReturnsOnCall(i int, result1 error) {
-	fake.unlistenMutex.Lock()
-	defer fake.unlistenMutex.Unlock()
-	fake.UnlistenStub = nil
-	if fake.unlistenReturnsOnCall == nil {
-		fake.unlistenReturnsOnCall = make(map[int]struct {
+func (fake *FakeNotifications) UnlistenSignalReturnsOnCall(i int, result1 error) {
+	fake.unlistenSignalMutex.Lock()
+	defer fake.unlistenSignalMutex.Unlock()
+	fake.UnlistenSignalStub = nil
+	if fake.unlistenSignalReturnsOnCall == nil {
+		fake.unlistenSignalReturnsOnCall = make(map[int]struct {
 			result1 error
 		})
 	}
-	fake.unlistenReturnsOnCall[i] = struct {
+	fake.unlistenSignalReturnsOnCall[i] = struct {
 		result1 error
 	}{result1}
 }
@@ -169,10 +167,6 @@ func (fake *FakeNotifications) UnlistenReturnsOnCall(i int, result1 error) {
 func (fake *FakeNotifications) Invocations() map[string][][]interface{} {
 	fake.invocationsMutex.RLock()
 	defer fake.invocationsMutex.RUnlock()
-	fake.listenMutex.RLock()
-	defer fake.listenMutex.RUnlock()
-	fake.unlistenMutex.RLock()
-	defer fake.unlistenMutex.RUnlock()
 	copiedInvocations := map[string][][]interface{}{}
 	for key, value := range fake.invocations {
 		copiedInvocations[key] = value

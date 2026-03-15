@@ -2,18 +2,10 @@ package db
 
 import (
 	"database/sql"
-	"fmt"
-	"strings"
 	"sync"
-	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
 )
-
-type Notification struct {
-	Payload string
-	Healthy bool
-}
 
 //counterfeiter:generate . Listener
 
@@ -31,8 +23,8 @@ type Executor interface {
 
 type NotificationsBus interface {
 	Notify(channel string) error
-	Listen(channel string, queueSize int) (chan Notification, error)
-	Unlisten(channel string, notify chan Notification) error
+	ListenSignal(channel string) (*NotifySignal, error)
+	UnlistenSignal(channel string, signal *NotifySignal) error
 	Close() error
 }
 
@@ -42,40 +34,16 @@ type notificationsBus struct {
 	listener Listener
 	executor Executor
 
-	notifications *notificationsMap
-
-	notifyChan      chan string
-	notifyCache     map[string]struct{}
-	notifyCacheLock sync.Mutex
-	notifyDoneChan  chan struct{}
-	watchedMap      *beingWatchedBuildEventChannelMap
+	signals *signalsMap
 
 	wg *sync.WaitGroup
 }
 
-var notificationBusQueueSize = 10000
-
-func SetNotificationBusQueueSize(size int) error {
-	if size <= 0 {
-		return nil
-	}
-	if size < 1000 || size > 1000000 {
-		return fmt.Errorf("db notification bus size out of range of [1000, 1000000]")
-	}
-	notificationBusQueueSize = size
-	return nil
-}
-
 func NewNotificationsBus(listener Listener, executor Executor) *notificationsBus {
 	bus := &notificationsBus{
-		listener:      listener,
-		executor:      executor,
-		notifications: newNotificationsMap(),
-
-		notifyChan:     make(chan string, notificationBusQueueSize),
-		notifyDoneChan: make(chan struct{}, 1),
-		notifyCache:    map[string]struct{}{},
-		watchedMap:     NewBeingWatchedBuildEventChannelMap(),
+		listener: listener,
+		executor: executor,
+		signals:  newSignalsMap(),
 
 		wg: new(sync.WaitGroup),
 	}
@@ -83,70 +51,16 @@ func NewNotificationsBus(listener Listener, executor Executor) *notificationsBus
 	// DO NOT use bus.wg to wait for bus.wait().
 	go bus.wait()
 
-	bus.wg.Add(1)
-	go bus.cacheNotify()
-
-	bus.asyncNotify()
-
 	return bus
 }
 
 func (bus *notificationsBus) Close() error {
-	close(bus.notifyChan)
-	close(bus.notifyDoneChan)
-
-	bus.wg.Wait()
-	bus.notifyChan = nil
-	bus.notifyDoneChan = nil
-
 	return bus.listener.Close()
 }
 
 func (bus *notificationsBus) Notify(channel string) error {
-	if !strings.HasPrefix(channel, buildEventChannelPrefix) {
-		return bus.notify(channel)
-	}
-
-	// non-blocking push
-	select {
-	case bus.notifyChan <- channel:
-	default:
-	}
-	return nil
-}
-
-func (bus *notificationsBus) notify(channel string) error {
 	_, err := bus.executor.Exec("NOTIFY " + channel)
 	return err
-}
-
-func (bus *notificationsBus) Listen(channel string, queueSize int) (chan Notification, error) {
-	bus.Lock()
-	defer bus.Unlock()
-
-	if bus.notifications.empty(channel) {
-		err := bus.listener.Listen(channel)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	notify := make(chan Notification, queueSize)
-	bus.notifications.register(channel, notify)
-	return notify, nil
-}
-
-func (bus *notificationsBus) Unlisten(channel string, notify chan Notification) error {
-	bus.Lock()
-	defer bus.Unlock()
-
-	bus.notifications.unregister(channel, notify)
-
-	if bus.notifications.empty(channel) {
-		return bus.listener.Unlisten(channel)
-	}
-
-	return nil
 }
 
 func (bus *notificationsBus) wait() {
@@ -164,153 +78,113 @@ func (bus *notificationsBus) wait() {
 	}
 }
 
-func (bus *notificationsBus) cacheNotify() {
-	defer bus.wg.Done()
+func (bus *notificationsBus) ListenSignal(channel string) (*NotifySignal, error) {
+	bus.Lock()
+	defer bus.Unlock()
 
-	for {
-		channel, ok := <-bus.notifyChan
-		if !ok {
-			return
+	if bus.signals.empty(channel) {
+		err := bus.listener.Listen(channel)
+		if err != nil {
+			return nil, err
 		}
-
-		bus.notifyCacheLock.Lock()
-		if _, ok := bus.notifyCache[channel]; ok {
-			bus.notifyCacheLock.Unlock()
-			continue
-		}
-		bus.notifyCache[channel] = struct{}{}
-		bus.notifyCacheLock.Unlock()
 	}
+
+	signal := NewNotifySignal()
+	bus.signals.register(channel, signal)
+	return signal, nil
 }
 
-func (bus *notificationsBus) asyncNotify() {
-	ticker := time.NewTicker(500 * time.Millisecond)
-	bus.wg.Add(1)
+func (bus *notificationsBus) UnlistenSignal(channel string, signal *NotifySignal) error {
+	bus.Lock()
+	defer bus.Unlock()
 
-	go func() {
-		defer bus.wg.Done()
+	bus.signals.unregister(channel, signal)
 
-		for {
-			select {
-			case <-ticker.C:
-				channelsToNotify := make([]string, 0)
+	if bus.signals.empty(channel) {
+		return bus.listener.Unlisten(channel)
+	}
 
-				// Under lock, get a snapshot of channels to notify and clear the cache
-				bus.notifyCacheLock.Lock()
-				for channel := range bus.notifyCache {
-					channelsToNotify = append(channelsToNotify, channel)
-				}
-				bus.notifyCache = map[string]struct{}{}
-				bus.notifyCacheLock.Unlock()
-
-				// Process notifications outside the lock
-				for _, channel := range channelsToNotify {
-					if bus.watchedMap.BeingWatched(channel) {
-						bus.notify(channel)
-					}
-				}
-
-			case <-bus.notifyDoneChan:
-				ticker.Stop()
-				return
-			}
-		}
-	}()
+	return nil
 }
 
 func (bus *notificationsBus) handleNotification(notification *pgconn.Notification) {
-	// alert any relevant listeners of notification being received
-	// (nonblocking)
-	bus.notifications.eachForChannel(notification.Channel, func(sink chan Notification) {
-		n := Notification{Healthy: true, Payload: notification.Payload}
-		select {
-		case sink <- n:
-			// notified of message being received (or queued up)
-		default:
-			// queue overflowed - just ignore
-		}
+	// wake any signal listeners (coalescing)
+	bus.signals.eachForChannel(notification.Channel, func(signal *NotifySignal) {
+		signal.Signal()
 	})
 }
 
 func (bus *notificationsBus) handleReconnect() {
-	// alert all listeners of connection break so they can check for things
-	// they may have missed
-	bus.notifications.each(func(sink chan Notification) {
-		n := Notification{Healthy: false}
-		select {
-		case sink <- n:
-			// notify that connection was lost, so listener can check for
-			// things that may have changed while connection was lost
-		default:
-			// queue overflowed - just ignore
-		}
+	// wake all signal listeners — they'll do a full scan and discover
+	// anything missed during the reconnect
+	bus.signals.each(func(signal *NotifySignal) {
+		signal.Signal()
 	})
 }
 
-func newNotificationsMap() *notificationsMap {
-	return &notificationsMap{
-		notifications: make(map[string]map[chan Notification]struct{}),
+func newSignalsMap() *signalsMap {
+	return &signalsMap{
+		signals: make(map[string]map[*NotifySignal]struct{}),
 	}
 }
 
-type notificationsMap struct {
+type signalsMap struct {
 	sync.RWMutex
 
-	notifications map[string]map[chan Notification]struct{}
+	signals map[string]map[*NotifySignal]struct{}
 }
 
-func (m *notificationsMap) empty(channel string) bool {
+func (m *signalsMap) empty(channel string) bool {
 	m.RLock()
 	defer m.RUnlock()
 
-	return len(m.notifications[channel]) == 0
+	return len(m.signals[channel]) == 0
 }
 
-func (m *notificationsMap) register(channel string, notify chan Notification) {
+func (m *signalsMap) register(channel string, signal *NotifySignal) {
 	m.Lock()
 	defer m.Unlock()
 
-	sinks, found := m.notifications[channel]
+	sinks, found := m.signals[channel]
 	if !found {
-		sinks = make(map[chan Notification]struct{})
-		m.notifications[channel] = sinks
+		sinks = make(map[*NotifySignal]struct{})
+		m.signals[channel] = sinks
 	}
 
-	sinks[notify] = struct{}{}
+	sinks[signal] = struct{}{}
 }
 
-func (m *notificationsMap) unregister(channel string, notify chan Notification) {
+func (m *signalsMap) unregister(channel string, signal *NotifySignal) {
 	m.Lock()
 	defer m.Unlock()
 
-	_, ok := m.notifications[channel]
+	_, ok := m.signals[channel]
 	if !ok {
 		return
 	}
-	delete(m.notifications[channel], notify)
+	delete(m.signals[channel], signal)
 
-	// Note: we don't call empty since we already acquired the lock.
-	if len(m.notifications[channel]) == 0 {
-		delete(m.notifications, channel)
+	if len(m.signals[channel]) == 0 {
+		delete(m.signals, channel)
 	}
 }
 
-func (m *notificationsMap) each(f func(chan Notification)) {
+func (m *signalsMap) each(f func(*NotifySignal)) {
 	m.RLock()
 	defer m.RUnlock()
 
-	for _, sinks := range m.notifications {
-		for sink := range sinks {
-			f(sink)
+	for _, sinks := range m.signals {
+		for signal := range sinks {
+			f(signal)
 		}
 	}
 }
 
-func (m *notificationsMap) eachForChannel(channel string, f func(chan Notification)) {
+func (m *signalsMap) eachForChannel(channel string, f func(*NotifySignal)) {
 	m.RLock()
 	defer m.RUnlock()
 
-	for sink := range m.notifications[channel] {
-		f(sink)
+	for signal := range m.signals[channel] {
+		f(signal)
 	}
 }

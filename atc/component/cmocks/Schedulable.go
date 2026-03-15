@@ -18,11 +18,6 @@ func (_m *Schedulable) RunImmediately(_a0 context.Context) {
 	_m.Called(_a0)
 }
 
-// RunPeriodically provides a mock function with given fields: _a0
-func (_m *Schedulable) RunPeriodically(_a0 context.Context) {
-	_m.Called(_a0)
-}
-
 // NewSchedulable creates a new instance of Schedulable. It also registers a testing interface on the mock and a cleanup function to assert the mocks expectations.
 // The first argument is typically a *testing.T value.
 func NewSchedulable(t interface {

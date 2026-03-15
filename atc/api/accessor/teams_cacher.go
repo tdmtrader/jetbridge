@@ -11,8 +11,8 @@ import (
 
 //counterfeiter:generate . Notifications
 type Notifications interface {
-	Listen(string, int) (chan db.Notification, error)
-	Unlisten(string, chan db.Notification) error
+	ListenSignal(string) (*db.NotifySignal, error)
+	UnlistenSignal(string, *db.NotifySignal) error
 }
 
 type teamsCacher struct {
@@ -57,16 +57,16 @@ func (c *teamsCacher) GetTeams() ([]db.Team, error) {
 }
 
 func (c *teamsCacher) waitForNotifications() {
-	notifier, err := c.notifications.Listen(atc.TeamCacheChannel, 1)
+	signal, err := c.notifications.ListenSignal(atc.TeamCacheChannel)
 	if err != nil {
 		c.logger.Error("failed-to-listen-for-team-cache", err)
 		return
 	}
 
-	defer c.notifications.Unlisten(atc.TeamCacheChannel, notifier)
+	defer c.notifications.UnlistenSignal(atc.TeamCacheChannel, signal)
 
 	for {
-		<-notifier
+		<-signal.C()
 		c.cache.Delete(atc.TeamCacheName)
 	}
 }
