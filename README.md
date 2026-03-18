@@ -8,6 +8,11 @@ Kubernetes-native fork of [Concourse CI](https://github.com/concourse/concourse)
 - **CI Agent System** — five standalone AI agent binaries for automated code review, planning, QA, fixing, and implementation
 - **Agent Feedback API** — HTTP endpoints for collecting and summarizing human verdicts on agent findings
 - **Task Sidecars** — service containers (databases, caches, etc.) that run alongside task steps in a shared pod network
+- **`skip_download`** — get steps can resolve version metadata without downloading artifacts
+- **Configurable base resource types** — override default resource type images via `--kubernetes-base-resource-type name=image`
+- **GCS Fuse artifact store** — artifact PVC backed by Google Cloud Storage on GKE
+- **Health endpoint** — `GET /api/v1/health` with DB + worker checks (used for K8s readiness probes)
+- **OpenTelemetry** — distributed tracing (OTLP, Jaeger, Honeycomb, Stackdriver) and metrics export
 
 Pipeline YAML, `fly` CLI, web UI, resource types, auth, and the REST API are all unchanged from upstream.
 
@@ -144,13 +149,16 @@ Sidecars are service containers (databases, caches, mock servers) that run along
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `name` | string | yes | Container name (cannot be `main` or `artifact-helper`) |
-| `image` | string | yes | Docker image |
+| `image` | string | yes* | Docker image. Mutually exclusive with `image_artifact`. |
+| `image_artifact` | string | yes* | Build artifact name from prior step. Mutually exclusive with `image`. |
 | `command` | []string | no | Entrypoint override |
 | `args` | []string | no | Arguments to the entrypoint |
 | `env` | []EnvVar | no | Environment variables (`name`/`value` pairs) |
-| `ports` | []Port | no | Exposed ports (`containerPort`, optional `protocol`) |
+| `ports` | []Port | no | Exposed ports (`containerPort`, optional `protocol`: TCP/UDP/SCTP) |
 | `resources` | object | no | K8s resource requests/limits (`cpu`, `memory`) |
 | `workingDir` | string | no | Working directory inside the container |
+
+Sidecars can also be specified as a file reference (string path to a YAML list in a build artifact).
 
 ### Example: Postgres sidecar
 
@@ -294,7 +302,7 @@ curl -X POST https://concourse.example.com/api/v1/agent/feedback \
 ### Unchanged
 
 - `fly` CLI (all commands work identically)
-- Pipeline YAML syntax
+- Pipeline YAML core syntax
 - Resource types (git, time, registry-image, s3, etc.)
 - Web UI
 - PostgreSQL schema and migrations
@@ -304,7 +312,13 @@ curl -X POST https://concourse.example.com/api/v1/agent/feedback \
 ### Added
 
 - JetBridge Kubernetes runtime (pod-per-step)
-- Task step sidecars
+- Task step sidecars (inline, file reference, or `image_artifact`)
+- `skip_download` on get steps (resolve version without downloading)
+- Configurable base resource types (`--kubernetes-base-resource-type name=image`)
+- Direct image references for resource types (`image_ref` field)
+- GCS Fuse artifact store support (GKE)
+- Health endpoint (`GET /api/v1/health`) for K8s probes
+- OpenTelemetry tracing (OTLP, Jaeger, Honeycomb, Stackdriver) and metrics
 - CI agent system (review, fix, plan, QA, implement)
 - Agent feedback API
 - Deterministic pod naming
@@ -367,10 +381,13 @@ go test ./atc/api/agentfeedback/...
 
 See [`JETBRIDGE.md`](JETBRIDGE.md) for the full deployment guide, including:
 
-- Production checklist (external DB, auth, secrets, multi-node PVC)
+- Complete configuration reference (all `--kubernetes-*`, `--tracing-*`, `--otel-metrics-*`, `--gc-*` flags)
+- New pipeline features (`skip_download`, sidecars, configurable base resource types, GCS Fuse)
+- Health endpoint (`GET /api/v1/health`) response schema
+- Production checklist (external DB, auth, secrets, multi-node PVC, connection pool sizing)
 - RBAC requirements
 - Troubleshooting (pod startup, image pulls, artifact passing, GC)
-- Monitoring and Prometheus metrics
+- Monitoring: Prometheus metrics, OpenTelemetry tracing/metrics, ServiceMonitor
 - Useful `kubectl` commands
 
 ### RBAC summary
