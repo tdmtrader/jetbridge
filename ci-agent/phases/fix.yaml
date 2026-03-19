@@ -1,0 +1,30 @@
+name: fix
+env:
+  repo_dir:
+    var: REPO_DIR
+    default: repo
+  review_dir:
+    var: REVIEW_DIR
+    default: review
+  output_dir:
+    var: OUTPUT_DIR
+    default: fix-report
+  test_command:
+    var: TEST_COMMAND
+    default: "go test ./..."
+  fix_branch:
+    var: FIX_BRANCH
+    default: ""
+mcp:
+  - git
+  - test
+  - filesystem
+steps:
+  - name: fix-issues
+    template: prompts/fix/apply.md
+    output_schema: schemas/fix_output.json
+    verify_cmd: "${TEST_COMMAND:-go test ./...}"
+    artifacts:
+      - name: fix-report
+        path: fix-report.json
+        media_type: application/json

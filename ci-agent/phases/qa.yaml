@@ -1,0 +1,36 @@
+name: qa
+env:
+  repo_dir:
+    var: REPO_DIR
+    default: repo
+  spec_file:
+    var: SPEC_FILE
+    default: spec/spec.md
+  output_dir:
+    var: OUTPUT_DIR
+    default: qa
+  score_threshold:
+    var: SCORE_THRESHOLD
+    default: "0.8"
+  target_url:
+    var: TARGET_URL
+    default: "http://localhost"
+  generate_tests:
+    var: GENERATE_TESTS
+    default: "true"
+  browser_plan:
+    var: BROWSER_PLAN
+    default: "true"
+mcp:
+  - test
+  - filesystem
+steps:
+  - name: qa-coverage
+    template: prompts/qa/coverage.md
+    output_schema: schemas/qa_output.json
+    artifacts:
+      - name: qa
+        path: qa.json
+        media_type: application/json
+scoring:
+  threshold: 0.8

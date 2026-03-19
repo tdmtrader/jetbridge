@@ -1,0 +1,5 @@
+#!/bin/sh
+# Backward-compatible wrapper: ci-agent-plan → ci-agent --phase phases/plan.yaml
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PHASES_DIR="${SCRIPT_DIR}/../phases"
+exec ci-agent --phase "${PHASES_DIR}/plan.yaml" "$@"

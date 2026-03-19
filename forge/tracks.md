@@ -272,3 +272,13 @@ _Link: [./tracks/gcp_hyperdisk_exploration_20260313/](./tracks/gcp_hyperdisk_exp
 _Link: [./tracks/documentation_20260316/](./tracks/documentation_20260316/)_
 
 ---
+
+### [ ] Track: AI Communication and Documentation Standards
+_Link: [./tracks/ai_communication_and_documentation_standards_20260319/](./tracks/ai_communication_and_documentation_standards_20260319/)_
+
+---
+
+### [ ] Track: CI Agent OTel GenAI Tracing
+_Link: [./tracks/ci_agent_otel_genai_tracing_20260319/](./tracks/ci_agent_otel_genai_tracing_20260319/)_
+
+---

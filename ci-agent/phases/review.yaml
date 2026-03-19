@@ -1,0 +1,31 @@
+name: review
+env:
+  repo_dir:
+    var: REPO_DIR
+    default: repo
+  output_dir:
+    var: OUTPUT_DIR
+    default: review
+  score_threshold:
+    var: SCORE_THRESHOLD
+    default: "7.0"
+  diff_only:
+    var: REVIEW_DIFF_ONLY
+    default: "false"
+  base_ref:
+    var: BASE_REF
+    default: main
+mcp:
+  - test
+  - filesystem
+steps:
+  - name: review-code
+    template: prompts/review/findings.md
+    output_schema: schemas/review_output.json
+    verify_cmd: "go vet ./..."
+    artifacts:
+      - name: review
+        path: review.json
+        media_type: application/json
+scoring:
+  threshold: 7.0

@@ -1,0 +1,30 @@
+name: implement
+env:
+  spec_dir:
+    var: SPEC_DIR
+    required: true
+  repo_dir:
+    var: REPO_DIR
+    required: true
+  output_dir:
+    var: OUTPUT_DIR
+    required: true
+  test_cmd:
+    var: TEST_CMD
+    default: "go test ./..."
+  branch_name:
+    var: BRANCH_NAME
+    default: ""
+mcp:
+  - git
+  - test
+  - filesystem
+steps:
+  - name: implement-tasks
+    template: prompts/implement/tasks.md
+    output_schema: schemas/impl_output.json
+    verify_cmd: "${TEST_CMD:-go test ./...}"
+    artifacts:
+      - name: summary
+        path: summary.md
+        media_type: text/markdown

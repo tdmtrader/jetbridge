@@ -1,0 +1,17 @@
+{
+  "trackId": "ai_communication_and_documentation_standards_20260319",
+  "type": "refactor",
+  "status": "backlog",
+  "description": "CI Agent Binary Consolidation",
+  "createdAt": "2026-03-19T12:03:56.203Z",
+  "updatedAt": "2026-03-19T13:03:24.451Z",
+  "sessions": [
+    {
+      "slotIndex": 0,
+      "engineType": "claude",
+      "aiSessionId": "96ba21cb-c2a7-4599-8eaa-758ae0f86888",
+      "accountId": "system-claude",
+      "updatedAt": "2026-03-19T12:04:09.535Z"
+    }
+  ]
+}

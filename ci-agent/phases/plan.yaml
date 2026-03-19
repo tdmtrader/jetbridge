@@ -1,0 +1,30 @@
+name: plan
+env:
+  input_dir:
+    var: INPUT_DIR
+    default: story
+  output_dir:
+    var: OUTPUT_DIR
+    default: plan-output
+steps:
+  - name: generate-spec
+    template: prompts/plan/spec.md
+    output_schema: schemas/spec_output.json
+    artifacts:
+      - name: spec
+        path: spec.md
+        media_type: text/markdown
+  - name: generate-plan
+    template: prompts/plan/plan.md
+    input_from: [generate-spec]
+    output_schema: schemas/plan_output.json
+    artifacts:
+      - name: plan
+        path: plan.md
+        media_type: text/markdown
+scoring:
+  threshold: 0.6
+  weights:
+    completeness: 0.3
+    coverage: 0.4
+    actionability: 0.3
