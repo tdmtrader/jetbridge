@@ -1,0 +1,17 @@
+{
+  "trackId": "documentation_20260316",
+  "type": "docs",
+  "status": "archived",
+  "description": "Update JETBRIDGE.md, deploy/chart/README.md, and README.md to reflect current JetBridge features, optimized for LLM context consumption",
+  "createdAt": "2026-03-16T12:22:53.962Z",
+  "updatedAt": "2026-03-19T12:02:50.112Z",
+  "sessions": [
+    {
+      "slotIndex": 0,
+      "engineType": "claude",
+      "aiSessionId": "df01b8e9-7b56-4fa8-b8ac-c4d77995ac9e",
+      "accountId": "system-claude",
+      "updatedAt": "2026-03-16T12:23:00.087Z"
+    }
+  ]
+}

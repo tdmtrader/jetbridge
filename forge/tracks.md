@@ -267,3 +267,8 @@ _Link: [./tracks/production_readiness_20260313/](./tracks/production_readiness_2
 _Link: [./tracks/gcp_hyperdisk_exploration_20260313/](./tracks/gcp_hyperdisk_exploration_20260313/)_
 
 ---
+
+### [ ] Track: documentation
+_Link: [./tracks/documentation_20260316/](./tracks/documentation_20260316/)_
+
+---
