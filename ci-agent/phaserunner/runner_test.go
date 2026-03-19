@@ -28,14 +28,14 @@ type fakeLLMClient struct {
 	prompts   []string
 }
 
-func (f *fakeLLMClient) Call(_ context.Context, prompt string, _ llm.CallOpts) (json.RawMessage, error) {
+func (f *fakeLLMClient) Call(_ context.Context, prompt string, _ llm.CallOpts) (llm.CallResult, error) {
 	f.prompts = append(f.prompts, prompt)
 	if f.callIdx < len(f.responses) {
 		resp := f.responses[f.callIdx]
 		f.callIdx++
-		return resp, nil
+		return llm.CallResult{Result: resp}, nil
 	}
-	return json.RawMessage(`{}`), nil
+	return llm.CallResult{Result: json.RawMessage(`{}`)}, nil
 }
 
 var _ = Describe("Run", func() {

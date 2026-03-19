@@ -13,9 +13,15 @@ import (
 	"github.com/concourse/ci-agent/plan/confidence"
 	"github.com/concourse/ci-agent/plan/orchestrator"
 	"github.com/concourse/ci-agent/schema"
+	"github.com/concourse/ci-agent/tracing"
 )
 
 func main() {
+	if err := tracing.Init(context.Background()); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: tracing init: %v\n", err)
+	}
+	defer tracing.Shutdown(context.Background())
+
 	// Check for missing input before attempting to parse options.
 	inputDir := envOrDefault("INPUT_DIR", "story")
 	inputPath := filepath.Join(inputDir, "input.json")

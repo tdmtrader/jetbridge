@@ -10,9 +10,15 @@ import (
 	"github.com/concourse/ci-agent/implement/adapter/claude"
 	"github.com/concourse/ci-agent/implement/orchestrator"
 	"github.com/concourse/ci-agent/schema"
+	"github.com/concourse/ci-agent/tracing"
 )
 
 func main() {
+	if err := tracing.Init(context.Background()); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: tracing init: %v\n", err)
+	}
+	defer tracing.Shutdown(context.Background())
+
 	specDir := os.Getenv("SPEC_DIR")
 	repoDir := os.Getenv("REPO_DIR")
 	outputDir := os.Getenv("OUTPUT_DIR")

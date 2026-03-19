@@ -12,10 +12,14 @@ import (
 	"text/template"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+
 	"github.com/concourse/ci-agent/llm"
 	"github.com/concourse/ci-agent/phaseconfig"
 	"github.com/concourse/ci-agent/provenance"
 	"github.com/concourse/ci-agent/schema"
+	citracing "github.com/concourse/ci-agent/tracing"
 )
 
 // Options configures a phase run.
@@ -39,6 +43,14 @@ type StepResult struct {
 
 // Run executes a phase: for each step, render prompt, call LLM, write artifacts, optionally verify.
 func Run(ctx context.Context, opts Options) (*schema.Results, error) {
+	ctx, phaseSpan := citracing.Tracer().Start(ctx, "phase.run",
+	)
+	defer phaseSpan.End()
+	phaseSpan.SetAttributes(attribute.String("phase.name", opts.Config.Name))
+	if opts.Model != "" {
+		phaseSpan.SetAttributes(attribute.String("phase.model", opts.Model))
+	}
+
 	if err := os.MkdirAll(opts.OutputDir, 0755); err != nil {
 		return nil, fmt.Errorf("create output dir: %w", err)
 	}
@@ -67,6 +79,10 @@ func Run(ctx context.Context, opts Options) (*schema.Results, error) {
 	allPassed := true
 
 	for _, step := range opts.Config.Steps {
+		stepCtx, stepSpan := citracing.Tracer().Start(ctx, "phase.step",
+		)
+		stepSpan.SetAttributes(attribute.String("step.name", step.Name))
+
 		emitEvent(ew, "step.start", map[string]string{"step": step.Name})
 
 		// Render prompt template
@@ -75,6 +91,9 @@ func Run(ctx context.Context, opts Options) (*schema.Results, error) {
 			StepOutputs: stepOutputsStr,
 		})
 		if err != nil {
+			stepSpan.RecordError(err)
+			stepSpan.SetStatus(codes.Error, err.Error())
+			stepSpan.End()
 			emitEvent(ew, schema.EventError, map[string]string{"step": step.Name, "error": err.Error()})
 			stepResults = append(stepResults, StepResult{Name: step.Name, Error: err.Error()})
 			allPassed = false
@@ -82,17 +101,21 @@ func Run(ctx context.Context, opts Options) (*schema.Results, error) {
 		}
 
 		// Call LLM
-		output, err := opts.Client.Call(ctx, prompt, llm.CallOpts{
+		cr, err := opts.Client.Call(stepCtx, prompt, llm.CallOpts{
 			Model: opts.Model,
 			Dir:   env["repo_dir"],
 		})
 		if err != nil {
+			stepSpan.RecordError(err)
+			stepSpan.SetStatus(codes.Error, err.Error())
+			stepSpan.End()
 			emitEvent(ew, schema.EventError, map[string]string{"step": step.Name, "error": err.Error()})
 			stepResults = append(stepResults, StepResult{Name: step.Name, Error: err.Error()})
 			allPassed = false
 			continue
 		}
 
+		output := cr.Result
 		stepOutputsRaw[step.Name] = output
 		stepOutputsStr[step.Name] = string(output)
 
@@ -109,15 +132,19 @@ func Run(ctx context.Context, opts Options) (*schema.Results, error) {
 		// Verify
 		sr := StepResult{Name: step.Name, Output: output}
 		if step.VerifyCmd != "" {
-			passed := runVerify(ctx, step.VerifyCmd, env)
+			passed := runVerify(stepCtx, step.VerifyCmd, env)
 			sr.Verified = &passed
 			if !passed {
 				allPassed = false
+				stepSpan.SetAttributes(attribute.Bool("step.verified", false))
+			} else {
+				stepSpan.SetAttributes(attribute.Bool("step.verified", true))
 			}
 		}
 
 		stepResults = append(stepResults, sr)
 		emitEvent(ew, "step.end", map[string]string{"step": step.Name})
+		stepSpan.End()
 	}
 
 	// Build provenance
@@ -172,6 +199,11 @@ func Run(ctx context.Context, opts Options) (*schema.Results, error) {
 	os.WriteFile(filepath.Join(opts.OutputDir, "step-results.json"), stepData, 0644)
 
 	emitEvent(ew, schema.EventAgentEnd, map[string]string{"status": string(status)})
+
+	phaseSpan.SetAttributes(
+		attribute.String("phase.status", string(status)),
+		attribute.Int("phase.steps", len(opts.Config.Steps)),
+	)
 
 	return results, nil
 }

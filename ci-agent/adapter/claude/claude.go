@@ -7,9 +7,15 @@ import (
 	"os/exec"
 	"strings"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/concourse/ci-agent/adapter"
 	"github.com/concourse/ci-agent/config"
+	"github.com/concourse/ci-agent/llm"
 	"github.com/concourse/ci-agent/runner"
+	citracing "github.com/concourse/ci-agent/tracing"
 )
 
 // Adapter implements the adapter.Adapter interface using Claude Code CLI.
@@ -37,8 +43,20 @@ func (a *Adapter) BuildCommand(repoDir, prompt string) *exec.Cmd {
 
 // Review implements the adapter.Adapter interface.
 func (a *Adapter) Review(ctx context.Context, repoDir string, cfg *config.ReviewConfig) ([]runner.AgentFinding, error) {
+	ctx, span := citracing.Tracer().Start(ctx, "gen_ai.invoke",
+		trace.WithSpanKind(trace.SpanKindClient),
+	)
+	defer span.End()
+
+	span.SetAttributes(attribute.String(llm.AttrGenAISystem, "anthropic"))
+	if a.model != "" {
+		span.SetAttributes(attribute.String(llm.AttrGenAIRequestModel, a.model))
+	}
+
 	prompt, err := BuildReviewPrompt(repoDir, cfg, false, "")
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("building prompt: %w", err)
 	}
 
@@ -48,10 +66,24 @@ func (a *Adapter) Review(ctx context.Context, repoDir string, cfg *config.Review
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("claude CLI: %w: %s", err, stderr.String())
 	}
 
-	return adapter.ParseFindings(stdout.Bytes())
+	cr := llm.ParseCLIEnvelope(stdout.Bytes())
+	if cr.Model != "" {
+		span.SetAttributes(attribute.String(llm.AttrGenAIRequestModel, cr.Model))
+	}
+	span.SetAttributes(
+		attribute.Int(llm.AttrGenAIUsageInputTokens, cr.Usage.InputTokens),
+		attribute.Int(llm.AttrGenAIUsageOutputTokens, cr.Usage.OutputTokens),
+	)
+	if cr.CostUSD > 0 {
+		span.SetAttributes(attribute.Float64(llm.AttrGenAICostUSD, cr.CostUSD))
+	}
+
+	return adapter.ParseFindings([]byte(cr.Result))
 }
 
 // Ensure Adapter satisfies the interface at compile time.

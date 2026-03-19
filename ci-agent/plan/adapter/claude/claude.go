@@ -7,8 +7,14 @@ import (
 	"fmt"
 	"os/exec"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+
+	"github.com/concourse/ci-agent/llm"
 	"github.com/concourse/ci-agent/plan/adapter"
 	"github.com/concourse/ci-agent/schema"
+	citracing "github.com/concourse/ci-agent/tracing"
 )
 
 // Adapter implements the adapter.Adapter interface using Claude Code CLI.
@@ -59,6 +65,16 @@ func (a *Adapter) GeneratePlan(ctx context.Context, input *schema.PlanningInput,
 }
 
 func (a *Adapter) invoke(ctx context.Context, prompt string, model string) ([]byte, error) {
+	ctx, span := citracing.Tracer().Start(ctx, "gen_ai.invoke",
+		trace.WithSpanKind(trace.SpanKindClient),
+	)
+	defer span.End()
+
+	span.SetAttributes(attribute.String(llm.AttrGenAISystem, "anthropic"))
+	if model != "" {
+		span.SetAttributes(attribute.String(llm.AttrGenAIRequestModel, model))
+	}
+
 	args := []string{"-p", prompt, "--output-format", "json"}
 	if model != "" {
 		args = append(args, "--model", model)
@@ -70,10 +86,25 @@ func (a *Adapter) invoke(ctx context.Context, prompt string, model string) ([]by
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		if ctx.Err() != nil {
 			return nil, fmt.Errorf("timeout: %w", ctx.Err())
 		}
 		return nil, fmt.Errorf("cli error (exit %v): %s", err, stderr.String())
 	}
-	return stdout.Bytes(), nil
+
+	cr := llm.ParseCLIEnvelope(stdout.Bytes())
+	if cr.Model != "" {
+		span.SetAttributes(attribute.String(llm.AttrGenAIRequestModel, cr.Model))
+	}
+	span.SetAttributes(
+		attribute.Int(llm.AttrGenAIUsageInputTokens, cr.Usage.InputTokens),
+		attribute.Int(llm.AttrGenAIUsageOutputTokens, cr.Usage.OutputTokens),
+	)
+	if cr.CostUSD > 0 {
+		span.SetAttributes(attribute.Float64(llm.AttrGenAICostUSD, cr.CostUSD))
+	}
+
+	return []byte(cr.Result), nil
 }

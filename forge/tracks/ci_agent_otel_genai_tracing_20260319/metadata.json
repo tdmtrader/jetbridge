@@ -1,10 +1,10 @@
 {
   "trackId": "ci_agent_otel_genai_tracing_20260319",
   "type": "feature",
-  "status": "backlog",
+  "status": "in_progress",
   "description": "CI Agent OTel GenAI Tracing",
   "createdAt": "2026-03-19T13:03:24.576Z",
-  "updatedAt": "2026-03-19T16:28:04.639Z",
+  "updatedAt": "2026-03-19T16:31:07.488Z",
   "sessions": [
     {
       "slotIndex": 0,

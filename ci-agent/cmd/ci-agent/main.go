@@ -12,9 +12,15 @@ import (
 	"github.com/concourse/ci-agent/phaseconfig"
 	"github.com/concourse/ci-agent/phaserunner"
 	"github.com/concourse/ci-agent/schema"
+	"github.com/concourse/ci-agent/tracing"
 )
 
 func main() {
+	if err := tracing.Init(context.Background()); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: tracing init: %v\n", err)
+	}
+	defer tracing.Shutdown(context.Background())
+
 	phasePath := ""
 	for i, arg := range os.Args[1:] {
 		if arg == "--phase" && i+1 < len(os.Args[1:])-1+1 {

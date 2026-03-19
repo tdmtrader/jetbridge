@@ -11,7 +11,7 @@ import (
 
 // Client is the interface for invoking an LLM.
 type Client interface {
-	Call(ctx context.Context, prompt string, opts CallOpts) (json.RawMessage, error)
+	Call(ctx context.Context, prompt string, opts CallOpts) (CallResult, error)
 }
 
 // CallOpts configures a single LLM call.
@@ -33,8 +33,9 @@ func NewClaudeClient(cli string) *ClaudeClient {
 	return &ClaudeClient{CLI: cli}
 }
 
-// Call invokes the Claude CLI with the given prompt and returns the raw JSON response.
-func (c *ClaudeClient) Call(ctx context.Context, prompt string, opts CallOpts) (json.RawMessage, error) {
+// Call invokes the Claude CLI with the given prompt and returns a CallResult
+// with both the extracted content and usage metadata.
+func (c *ClaudeClient) Call(ctx context.Context, prompt string, opts CallOpts) (CallResult, error) {
 	args := []string{"-p", prompt, "--output-format", "json"}
 	if opts.Model != "" {
 		args = append(args, "--model", opts.Model)
@@ -50,12 +51,12 @@ func (c *ClaudeClient) Call(ctx context.Context, prompt string, opts CallOpts) (
 
 	if err := cmd.Run(); err != nil {
 		if ctx.Err() != nil {
-			return nil, fmt.Errorf("timeout: %w", ctx.Err())
+			return CallResult{}, fmt.Errorf("timeout: %w", ctx.Err())
 		}
-		return nil, fmt.Errorf("cli error (exit %v): %s", err, stderr.String())
+		return CallResult{}, fmt.Errorf("cli error (exit %v): %s", err, stderr.String())
 	}
 
-	return ExtractJSON(stdout.Bytes()), nil
+	return ParseCLIEnvelope(stdout.Bytes()), nil
 }
 
 var jsonBlockRe = regexp.MustCompile("(?s)```json\\s*\\n(.+?)\\n```")

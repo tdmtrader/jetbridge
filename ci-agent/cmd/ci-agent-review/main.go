@@ -9,9 +9,15 @@ import (
 
 	"github.com/concourse/ci-agent/adapter/claude"
 	"github.com/concourse/ci-agent/orchestrator"
+	"github.com/concourse/ci-agent/tracing"
 )
 
 func main() {
+	if err := tracing.Init(context.Background()); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: tracing init: %v\n", err)
+	}
+	defer tracing.Shutdown(context.Background())
+
 	opts, err := parseOptions()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
