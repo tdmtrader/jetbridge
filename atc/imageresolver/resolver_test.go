@@ -182,6 +182,25 @@ func TestResolver_CancelledContext(t *testing.T) {
 	}
 }
 
+func TestResolver_NilKeychainUsesGCPMultiKeychain(t *testing.T) {
+	// When keychain is nil, NewResolver should use a multi-keychain that
+	// includes google.Keychain + authn.DefaultKeychain. This test verifies
+	// that the nil-keychain path works correctly against a plain registry
+	// (the multi-keychain falls through to anonymous when no GCP creds exist).
+	host := startRegistry(t)
+	expectedDigest := pushImage(t, host, "myrepo/gcptest", "v1.0")
+
+	resolver := imageresolver.NewResolver(nil) // nil → GCP multi-keychain
+	digest, err := resolver.Resolve(context.Background(), host+"/myrepo/gcptest", "v1.0", nil)
+	if err != nil {
+		t.Fatalf("unexpected error with nil keychain: %v", err)
+	}
+
+	if digest != expectedDigest {
+		t.Errorf("got digest %q, want %q", digest, expectedDigest)
+	}
+}
+
 func TestResolver_MultipleTags(t *testing.T) {
 	host := startRegistry(t)
 	digestV1 := pushImage(t, host, "myrepo/app", "v1")

@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
+	"github.com/google/go-containerregistry/pkg/v1/google"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 )
 
@@ -31,11 +32,12 @@ type registryResolver struct {
 }
 
 // NewResolver creates a Resolver that queries OCI registries directly.
-// The provided keychain is used for authentication (e.g., GCP default
-// credentials). If nil, authn.DefaultKeychain is used.
+// The provided keychain is used for authentication. If nil, a multi-keychain
+// is used that tries GCP credentials (Workload Identity, Application Default
+// Credentials) first, then falls back to the Docker config file.
 func NewResolver(keychain authn.Keychain, options ...remote.Option) Resolver {
 	if keychain == nil {
-		keychain = authn.DefaultKeychain
+		keychain = authn.NewMultiKeychain(google.Keychain, authn.DefaultKeychain)
 	}
 	return &registryResolver{
 		keychain: keychain,
