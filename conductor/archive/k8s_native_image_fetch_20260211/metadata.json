@@ -1,8 +1,0 @@
-{
-  "trackId": "k8s_native_image_fetch_20260211",
-  "type": "feature",
-  "status": "archived",
-  "description": "K8s Native Image Fetch — Skip physical image download for K8s runtime, let kubelet pull",
-  "createdAt": "2026-02-11T15:28:09.144Z",
-  "updatedAt": "2026-02-11T16:00:00.000Z"
-}

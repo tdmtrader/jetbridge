@@ -1,8 +1,0 @@
-{
-  "trackId": "k8s-behavioral-test-failures",
-  "type": "bugfix",
-  "status": "completed",
-  "description": "Fix 26 failing K8s behavioral integration tests — artifact streaming, pod lifecycle, behavioral differences",
-  "createdAt": "2026-02-27T02:43:44.747Z",
-  "updatedAt": "2026-02-27T02:43:44.756Z"
-}

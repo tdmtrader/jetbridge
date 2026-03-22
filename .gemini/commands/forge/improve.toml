@@ -1,0 +1,252 @@
+description = "Analyze session history and CGX notes to propose workflow improvements; use after implementation sessions to capture recurring friction."
+prompt = """
+# Forge Improve
+
+Analyze a conversation session and generate improvements to skills, commands, or agents.
+
+**FIRST: Read all context files before doing anything else.**
+
+Read these files NOW:
+- forge/workflow.md
+- forge/tracks.md
+- Active track's cgx.md (if in a track context)
+
+---
+
+## Input: Session ID or Aggregate Mode
+
+This command can operate in two modes:
+
+### Single Session Mode (default)
+- Provided as an argument: `/forge:improve <session-id>`
+- Auto-detected from the current terminal session
+- Found in the track's cgx.md observations
+
+If no session ID is provided, ask the user for one or list recent sessions.
+
+### Aggregate Mode (cross-session learning)
+Use `/forge:improve --aggregate` to analyze multiple recent sessions:
+- `--aggregate` - Analyze last 5 sessions
+- `--aggregate --last 10` - Analyze last N sessions
+- `--aggregate --days 7` - Analyze sessions from the last N days
+
+Aggregate mode identifies **recurring friction patterns** across sessions and suggests high-impact improvements that would benefit multiple workflows.
+
+---
+
+## Step 1: Load Extension Inventory
+
+Before proposing new extensions, understand what already exists:
+
+1. Load all global extensions from:
+   - `~/.claude/commands/`, `~/.claude/skills/`, `~/.claude/agents/`
+   - `~/.gemini/commands/`, `~/.gemini/skills/`
+   - `~/.forge/extensions/`
+
+2. Load all project extensions from:
+   - `.claude/commands/`, `.claude/skills/`
+   - `forge/extensions/`
+
+3. Summarize the inventory:
+   - List existing skills by scope (global/project)
+   - List existing commands by scope
+   - List existing agents by scope
+
+---
+
+## Step 2: Read Conversation History
+
+Read the raw conversation from the TUI's log files:
+
+- **Claude**: `~/.claude/projects/<hash>/<session-id>.jsonl`
+- **Gemini**: `~/.gemini/tmp/<hash>/chats/session-*.json`
+- **Codex**: `~/.codex/sessions/<session-id>.jsonl`
+
+Parse all messages including:
+- User messages and assistant responses
+- Tool calls and their results
+- Error messages and retries
+
+---
+
+## Step 3: Analyze for Friction Patterns
+
+Look for these friction indicators in the conversation:
+
+### Corrections
+- "no, I meant", "that's not what I", "actually,"
+- "let me rephrase", "not quite", "incorrect"
+
+### Frustration
+- "this is frustrating", "it's not working"
+- "still not", "that didn't work", "again?"
+
+### Confusion
+- "I don't understand", "what do you mean"
+- "can you explain", "that's unclear"
+
+### Repeated Attempts
+- Same action attempted multiple times
+- "try again", "one more time", "retry"
+
+### Workarounds
+- "workaround", "manually", "by hand"
+- "alternative", "different approach"
+
+For each pattern found, note:
+- The specific conversation excerpt
+- Severity (low/medium/high/critical)
+- Potential improvement opportunity
+
+---
+
+## Step 3b: Aggregate Analysis (--aggregate mode only)
+
+When running in aggregate mode, perform cross-session pattern analysis:
+
+### Collect Patterns Across Sessions
+For each session analyzed:
+1. Track which friction patterns occurred
+2. Note the session ID and timestamp
+3. Record the context (project, track if any)
+
+### Identify Recurring Friction
+Patterns that appear in multiple sessions are **high-impact candidates**:
+- **Critical (3+ sessions)**: Strong signal - create improvement proposal
+- **High (2 sessions)**: Moderate signal - likely worth addressing
+- **Low (1 session)**: May be situational, consider deferring
+
+### Calculate Impact Score
+For each potential improvement, calculate:
+```
+Impact Score = (session_count × 10) + (severity_avg × 5) + recency_bonus
+```
+- session_count: Number of sessions where friction occurred
+- severity_avg: Average severity (low=1, medium=2, high=3, critical=4)
+- recency_bonus: +5 if occurred in last 3 sessions
+
+### Prioritize by Impact
+Sort improvement proposals by Impact Score (descending).
+Present the highest-impact improvements first.
+
+### Show Aggregate Summary
+Before presenting proposals, show:
+```
+## Cross-Session Analysis Summary
+
+Sessions Analyzed: N
+Date Range: [start] to [end]
+
+### Most Frequent Friction Patterns
+1. [pattern] - occurred in X sessions (Y%)
+2. [pattern] - occurred in X sessions (Y%)
+...
+
+### Unaddressed Recurring Friction
+(Patterns that appeared in previous sessions and still recur)
+- [pattern] - first seen [date], still occurring
+```
+
+---
+
+## Step 4: Classify Scope
+
+For each potential improvement, determine if it should be:
+
+### Project Scope (local to this project)
+Indicators:
+- References to project-specific paths or files
+- Uses project-specific conventions or APIs
+- Only relevant to this codebase
+- Contains project-specific domain knowledge
+
+### Global Scope (available everywhere)
+Indicators:
+- General best practices
+- Common tools (git, npm, docker, etc.)
+- Language/framework patterns
+- Would help in any project
+
+Default to **project scope** when uncertain - it's easier to promote later.
+
+---
+
+## Step 5: Generate Improvement Proposals
+
+For each identified improvement opportunity, create a proposal:
+
+```
+### Proposal: [Name]
+
+**Type:** skill | command | agent
+**Scope:** project | global
+**Confidence:** [0-100]%
+
+**Rationale:**
+[Why this improvement would help, with specific references to the friction observed]
+
+**Source References:**
+- Session: <session-id>
+- Excerpt: "<relevant conversation excerpt>"
+
+**Proposed Content:**
+```markdown
+[The actual markdown content for the skill/command/agent]
+```
+
+**Similar Existing Extensions:**
+- [List any existing extensions that overlap, if any]
+```
+
+---
+
+## Step 6: User Approval Workflow
+
+Present each proposal to the user and ask:
+
+1. **Accept** - Create the extension as proposed
+2. **Modify Scope** - Change from project to global or vice versa
+3. **Edit** - Let user modify the content before creating
+4. **Reject** - Skip this proposal
+5. **Defer** - Save for later consideration
+
+For accepted proposals:
+- Create the extension in the appropriate location
+- Sync to all TUI engine directories
+- Log the improvement to forge/growth/
+
+---
+
+## Step 7: Log Improvements
+
+For each applied improvement, record in `forge/growth/improvements.md`:
+
+```markdown
+## [Date] - [Extension Name]
+
+**Type:** skill | command | agent
+**Scope:** project | global
+**Source Session:** <session-id>
+**Track:** <track-id if applicable>
+
+**Rationale:**
+[Why this was created]
+
+**Friction Addressed:**
+[What friction patterns this solves]
+```
+
+---
+
+## Critical Rules
+
+1. Always load extension inventory FIRST to avoid duplicates
+2. Always show existing similar extensions before creating new ones
+3. Default to project scope when uncertain
+4. Get explicit user approval before creating any extension
+5. Sync to all TUI engines after creation
+6. Log all improvements for audit trail
+7. In aggregate mode, prioritize recurring friction over one-time issues
+8. Track which friction patterns have been addressed vs still recurring
+9. Consider effectiveness: if same friction recurs after an improvement, flag for review
+"""

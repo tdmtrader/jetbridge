@@ -8,7 +8,7 @@ _None_
 
 ## Completed / Archived Tracks
 
-### [x] Track: Finish Setup (Conductor Migration)
+### [~] Track: Finish Setup (Conductor Migration)
 _Link: [./archive/finish_setup_20260303/](./archive/finish_setup_20260303/)_
 
 ---
@@ -280,5 +280,20 @@ _Link: [./tracks/ai_communication_and_documentation_standards_20260319/](./track
 
 ### [ ] Track: CI Agent OTel GenAI Tracing
 _Link: [./tracks/ci_agent_otel_genai_tracing_20260319/](./tracks/ci_agent_otel_genai_tracing_20260319/)_
+
+---
+
+### [ ] Track: GHCR Docker Image Publishing
+_Link: [./tracks/ghcr_docker_image_publishing_20260319/](./tracks/ghcr_docker_image_publishing_20260319/)_
+
+---
+
+### [ ] Track: GCP Artifact Auth 
+_Link: [./tracks/gcp_artifact_auth_20260319/](./tracks/gcp_artifact_auth_20260319/)_
+
+---
+
+### [ ] Track: Burstable QoS for task containers
+_Link: [./tracks/burstable_qos_for_task_containers_20260321/](./tracks/burstable_qos_for_task_containers_20260321/)_
 
 ---

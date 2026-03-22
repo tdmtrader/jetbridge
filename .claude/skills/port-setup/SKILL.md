@@ -1,15 +1,15 @@
 ---
 name: port-setup
-description: Analyzes a project's codebase to detect services and their ports, then generates a .conductor/ports.json config file so Conductor can allocate non-conflicting ports across worktrees.
+description: Analyzes a project's codebase to detect services and their ports, then generates a .forge/ports.json config file so Forge can allocate non-conflicting ports across worktrees.
 ---
 
 # Port Setup
 
-Analyze this project to identify all services that bind to network ports, detect their port configuration, and generate a `.conductor/ports.json` file.
+Analyze this project to identify all services that bind to network ports, detect their port configuration, and generate a `.forge/ports.json` file.
 
 ## When to use this skill
 
-When a project needs port configuration for Conductor worktree isolation. This is required before tracks can be isolated into separate worktrees with their own dev servers.
+When a project needs port configuration for Forge worktree isolation. This is required before tracks can be isolated into separate worktrees with their own dev servers.
 
 ## Steps
 
@@ -49,9 +49,9 @@ For each hardcoded port found, note:
 - Which service it belongs to
 - The env var that should replace it
 
-### Step 4: Generate `.conductor/ports.json`
+### Step 4: Generate `.forge/ports.json`
 
-Create the file at `.conductor/ports.json` with this schema:
+Create the file at `.forge/ports.json` with this schema:
 
 ```json
 {
@@ -95,7 +95,7 @@ Verify that the project's dev/start command will pick up the environment variabl
 
 1. Check if the main dev command reads the env vars you identified
 2. If not, recommend how to modify the dev command
-3. Test by running: `cat .conductor/ports.json` to confirm the file was created correctly
+3. Test by running: `cat .forge/ports.json` to confirm the file was created correctly
 
 ## Output Format
 
@@ -103,14 +103,14 @@ Present your findings as:
 
 1. **Discovered Services** — table of service name, default port, env vars
 2. **Hardcoded Ports Found** — list of file:line with hardcoded values and recommended fixes
-3. **Generated `.conductor/ports.json`** — the file contents
+3. **Generated `.forge/ports.json`** — the file contents
 4. **Recommended Changes** — specific code changes to parameterize hardcoded ports
 5. **Verification** — confirmation that the config file is valid
 
 ## Important Notes
 
 - Do NOT modify any source code automatically — only recommend changes
-- The `.conductor/ports.json` file is the only file you should create/modify
+- The `.forge/ports.json` file is the only file you should create/modify
 - If a service doesn't have an env var for its port, create a reasonable name (e.g., `MY_SERVICE_PORT`)
 - Use `portSpacing: 10` as the default unless the project has more than 10 services
 - Each service must have unique `name` and `defaultPort` values

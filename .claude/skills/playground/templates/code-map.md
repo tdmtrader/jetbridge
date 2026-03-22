@@ -72,7 +72,7 @@ Define 3-5 connection types with distinct visual styles:
 | `data-flow` | Blue (#3b82f6) | Solid line | Request/response, data passing |
 | `tool-call` | Green (#10b981) | Dashed (6,3) | Function calls, API invocations |
 | `event` | Red (#ef4444) | Short dash (4,4) | Async events, pub/sub |
-| `skill-invoke` | Orange (#f97316) | Long dash (8,4) | Plugin/skill activation |
+| `skill-invoke` | Purple (#8b5cf6) | Long dash (8,4) | Plugin/skill activation |
 | `dependency` | Gray (#6b7280) | Dotted | Import/require relationships |
 
 Use SVG markers for arrowheads:

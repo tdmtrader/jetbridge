@@ -1,8 +1,0 @@
-{
-  "trackId": "prod_ready_20260209",
-  "type": "feature",
-  "status": "archived",
-  "description": "Production Readiness — Complete remaining runtime gaps, add Helm chart, and validate for production deployment",
-  "createdAt": "2026-02-09T00:00:00Z",
-  "updatedAt": "2026-02-09T00:00:00Z"
-}

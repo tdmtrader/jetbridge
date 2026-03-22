@@ -1,0 +1,26 @@
+{
+  "shortcuts": [
+    {
+      "commandId": "forge:implement",
+      "label": "Implement",
+      "icon": "Play",
+      "sortOrder": 0
+    },
+    {
+      "commandId": "forge:status",
+      "label": "Status",
+      "icon": "BarChart3",
+      "sortOrder": 1
+    },
+    {
+      "commandId": "conductor/complete",
+      "label": "Conductor Complete",
+      "sortOrder": 2
+    },
+    {
+      "commandId": "conductor/implement",
+      "label": "Conductor Implement",
+      "sortOrder": 3
+    }
+  ]
+}

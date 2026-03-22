@@ -22,14 +22,12 @@ When the user asks for an interactive playground, explorer, or visual tool for a
    - `templates/diff-review.md` — Code review (git diffs, commits, PRs with line-by-line commenting)
    - `templates/code-map.md` — Codebase architecture (component relationships, data flow, layer diagrams)
 3. **Follow the template** to build the playground. If the topic doesn't fit any template cleanly, use the one closest and adapt.
-4. **Save to conductor/playground/.** Always save playground files to `conductor/playground/<name>.html` (create directory if needed).
-5. **Open in ViewerCard.** After writing the HTML file, use the viewer API to open it in the Conductor Studio ViewerCard:
-   ```bash
-   curl -X POST ${CONDUCTOR_API_URL:-http://localhost:5280}/api/viewer/open \
-     -H "Content-Type: application/json" \
-     -d '{"path": "'$(pwd)'/conductor/playground/<name>.html"}'
+4. **Save to forge/playground/.** Always save playground files to `forge/playground/<name>.html` (create directory if needed).
+5. **Open in ViewerCard.** After writing the HTML file, use the `forge_viewer_open` MCP tool to open it in the Forge Studio ViewerCard:
    ```
-   **Note:** The `CONDUCTOR_API_URL` environment variable is set automatically by Conductor. If not set, it defaults to the desktop app port (5280).
+   forge_viewer_open({ "path": "forge/playground/<name>.html" })
+   ```
+   **Note:** If the Forge MCP server is not available, fall back to: `curl -X POST ${FORGE_API_URL:-http://localhost:5280}/api/viewer/open -H "Content-Type: application/json" -d '{"path": "forge/playground/<name>.html"}'`
 
 ## Core requirements (every playground)
 
@@ -84,15 +82,15 @@ function updatePrompt() {
 
 ---
 
-## Conductor Integration APIs
+## Forge Integration APIs
 
-Playgrounds run inside Conductor's ViewerCard and can call Conductor's APIs directly from JavaScript. This turns playgrounds into **generative app frontends** where TUI agents (Claude, Gemini, Codex, Cursor) running in Conductor terminals serve as the AI backend.
+Playgrounds run inside Forge's ViewerCard and can call Forge's APIs directly from JavaScript. This turns playgrounds into **generative app frontends** where TUI agents (Claude, Gemini, Codex, Cursor) running in Forge terminals serve as the AI backend.
 
 ### Architecture: Playground as Generative App
 
 ```
 +---------------------------+       +---------------------------+
-|    Playground (HTML)      |       |    Conductor Terminal     |
+|    Playground (HTML)      |       |    Forge Terminal         |
 |    ==================     |       |    ===================   |
 |    UI controls, forms,    | POST  |    TUI Agent (Claude,    |
 |    live preview, results  |------>|    Gemini, Codex, or     |
@@ -100,15 +98,15 @@ Playgrounds run inside Conductor's ViewerCard and can call Conductor's APIs dire
 |    Shows status/feedback  |prompt |    the prompt and acts   |
 +---------------------------+       +---------------------------+
          ^                                     |
-         |          Conductor Studio           |
+         |          Forge Studio               |
          +--------- (ViewerCard host) ---------+
 ```
 
-The playground is the **interactive frontend**. The TUI agent is the **AI backend**. Conductor's API is the bridge. Users interact with controls in the playground, and those interactions send prompts to a running AI agent that does the heavy lifting (generates code, analyzes data, creates files, etc.).
+The playground is the **interactive frontend**. The TUI agent is the **AI backend**. Forge's API is the bridge. Users interact with controls in the playground, and those interactions send prompts to a running AI agent that does the heavy lifting (generates code, analyzes data, creates files, etc.).
 
 ### API Helper (include in every interactive playground)
 
-Since playgrounds are served by Conductor inside the ViewerCard, use `window.location.origin` as the base URL. The token is fetched once from an unauthenticated endpoint and cached.
+Since playgrounds are served by Forge inside the ViewerCard, use `window.location.origin` as the base URL. The token is fetched once from an unauthenticated endpoint and cached.
 
 ```javascript
 const conductor = {
@@ -148,7 +146,7 @@ const conductor = {
     return res.json();
   },
 
-  // Open a file in Conductor's ViewerCard
+  // Open a file in Forge's ViewerCard
   async openFile(filePath, trackId) {
     const headers = await this.authHeaders();
     const body = { path: filePath };
@@ -182,7 +180,7 @@ This is the core of the generative app pattern. The playground sends a prompt to
 | `sessionId` | string | For `session` | Target session ID |
 | `provider` | string | For `new` | `claude`, `gemini`, `codex`, or `cursor` |
 | `trackId` | string | No | Route to a specific track dashboard |
-| `focus` | boolean | No | Bring Conductor window to front |
+| `focus` | boolean | No | Bring Forge window to front |
 
 **Example: Button that asks the agent to generate something:**
 ```javascript
@@ -199,9 +197,9 @@ document.getElementById('generate-btn').addEventListener('click', async () => {
 });
 ```
 
-### API: Open a File in Conductor (`POST /api/viewer/open`)
+### API: Open a File in Forge (`POST /api/viewer/open`)
 
-Opens any file in the Conductor Studio ViewerCard.
+Opens any file in the Forge Studio ViewerCard.
 
 ```javascript
 // Open a file the agent just created
@@ -234,19 +232,19 @@ const PROJECT_ID = 'PROJECT_ID_HERE'; // Set by the agent when creating the play
 
 ---
 
-## Conductor Viewer API (General Use)
+## Forge Viewer API (General Use)
 
-The viewer API can open **any file** in the Conductor Studio ViewerCard, not just playgrounds. Use it whenever you want to show the user a file you've created or are discussing:
+The viewer API can open **any file** in the Forge Studio ViewerCard, not just playgrounds. Use it whenever you want to show the user a file you've created or are discussing:
 
 - **HTML files** — Playgrounds, visualizations, reports
 - **Markdown files** — Documentation, notes, plans
 - **Images** — Diagrams, screenshots, generated images
 - **Code files** — Source code with syntax highlighting
 
-```bash
-curl -X POST ${CONDUCTOR_API_URL:-http://localhost:5280}/api/viewer/open \
-  -H "Content-Type: application/json" \
-  -d '{"path": "relative/path/to/any-file.html"}'
+```
+forge_viewer_open({ "path": "relative/path/to/any-file.html" })
 ```
 
 The path must be relative to the project root. The ViewerCard will open automatically and the user will see a toast notification.
+
+**Fallback (if MCP not available):** `curl -X POST ${FORGE_API_URL:-http://localhost:5280}/api/viewer/open -H "Content-Type: application/json" -d '{"path": "relative/path/to/any-file.html"}'`

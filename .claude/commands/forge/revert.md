@@ -1,0 +1,58 @@
+---
+name: Forge Revert
+description: Roll back changes at task, phase, or track scope with git-aware safety; use when work needs controlled undo.
+---
+
+# Forge Revert
+
+Undo work from a track, phase, or specific task.
+
+**FIRST: Check git status - working directory must be clean.**
+
+Read these files NOW:
+- forge/tracks.md
+- All forge/tracks/*/plan.md
+
+---
+
+## After Reading Context
+
+### Interactive Selection
+
+1. List available revert targets:
+   - Tracks with completed work
+   - Phases with checkpoints
+   - Individual completed tasks
+
+2. User selects target to revert
+
+### Preview Changes
+
+1. Identify commits to revert (from plan.md SHAs)
+2. Show commit list with summaries
+3. Warn about dependencies (later work that depends on this)
+
+### Execute Revert
+
+1. Git revert commits (--no-commit to combine)
+2. Update plan.md:
+   - Change `[x] <sha>` back to `[ ]`
+   - Remove checkpoint markers
+3. Commit the revert with clear message
+
+### Handle Conflicts
+
+If merge conflicts occur:
+1. List conflicting files
+2. Guide user through resolution
+3. Continue after resolution
+
+---
+
+## Critical Rules
+
+1. Always read forge/ context files FIRST
+2. Follow workflow.md EXACTLY as written
+3. Get user approval before making changes
+4. Working directory MUST be clean before revert
+5. Always preview changes before executing

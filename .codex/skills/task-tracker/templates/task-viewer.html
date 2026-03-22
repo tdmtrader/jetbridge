@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Task Tracker</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #0d1117;
+      color: #c9d1d9;
+      padding: 24px;
+    }
+    h1 { color: #f0f6fc; margin-bottom: 8px; font-size: 24px; }
+    .subtitle { color: #8b949e; margin-bottom: 24px; font-size: 14px; }
+    .stats {
+      display: flex; gap: 16px; margin-bottom: 24px;
+    }
+    .stat {
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      padding: 12px 16px;
+      flex: 1;
+      text-align: center;
+    }
+    .stat-value { font-size: 28px; font-weight: 700; color: #f0f6fc; }
+    .stat-label { font-size: 12px; color: #8b949e; text-transform: uppercase; letter-spacing: 1px; }
+    .stat.todo .stat-value { color: #79c0ff; }
+    .stat.progress .stat-value { color: #d29922; }
+    .stat.done .stat-value { color: #3fb950; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    th {
+      text-align: left; padding: 12px 16px;
+      background: #21262d; color: #8b949e;
+      font-size: 12px; text-transform: uppercase; letter-spacing: 1px;
+      border-bottom: 1px solid #30363d;
+    }
+    td {
+      padding: 10px 16px; border-bottom: 1px solid #21262d;
+      font-size: 14px;
+    }
+    tr:last-child td { border-bottom: none; }
+    .priority-high { color: #f85149; font-weight: 600; }
+    .priority-medium { color: #d29922; }
+    .priority-low { color: #8b949e; }
+    .status-todo { color: #79c0ff; }
+    .status-in_progress { color: #d29922; }
+    .status-done { color: #3fb950; text-decoration: line-through; opacity: 0.7; }
+    .tag {
+      display: inline-block; background: #30363d; color: #c9d1d9;
+      padding: 2px 8px; border-radius: 12px; font-size: 11px; margin-right: 4px;
+    }
+    .section-title {
+      color: #8b949e; font-size: 14px; margin: 32px 0 12px;
+      text-transform: uppercase; letter-spacing: 1px;
+    }
+    .empty { color: #484f58; text-align: center; padding: 32px; font-style: italic; }
+  </style>
+</head>
+<body>
+  <h1>Task Tracker</h1>
+  <p class="subtitle">Personal task management — zero dependencies</p>
+  <div id="app"></div>
+  <script>
+    const data = __TASKS_JSON__;
+    const app = document.getElementById('app');
+
+    const tasks = data.tasks || [];
+    const archived = data.archived || [];
+
+    const todo = tasks.filter(t => t.status === 'todo');
+    const inProgress = tasks.filter(t => t.status === 'in_progress');
+    const done = tasks.filter(t => t.status === 'done');
+
+    // Stats
+    app.innerHTML = `
+      <div class="stats">
+        <div class="stat todo">
+          <div class="stat-value">${todo.length}</div>
+          <div class="stat-label">To Do</div>
+        </div>
+        <div class="stat progress">
+          <div class="stat-value">${inProgress.length}</div>
+          <div class="stat-label">In Progress</div>
+        </div>
+        <div class="stat done">
+          <div class="stat-value">${done.length}</div>
+          <div class="stat-label">Done</div>
+        </div>
+      </div>
+    `;
+
+    function renderTable(items, title) {
+      if (items.length === 0) return '';
+      const priorityOrder = { high: 0, medium: 1, low: 2 };
+      const sorted = [...items].sort((a, b) =>
+        (priorityOrder[a.priority] || 1) - (priorityOrder[b.priority] || 1) || a.id - b.id
+      );
+      const rows = sorted.map(t => `
+        <tr>
+          <td>${t.id}</td>
+          <td class="priority-${t.priority}">${t.priority}</td>
+          <td class="status-${t.status}">${t.status.replace('_', ' ')}</td>
+          <td class="${t.status === 'done' ? 'status-done' : ''}">${t.title}</td>
+          <td>${(t.tags || []).map(tag => '<span class="tag">' + tag + '</span>').join('')}</td>
+          <td>${t.created ? new Date(t.created).toLocaleDateString() : ''}</td>
+        </tr>
+      `).join('');
+      return `
+        <p class="section-title">${title}</p>
+        <table>
+          <thead><tr><th>ID</th><th>Priority</th><th>Status</th><th>Title</th><th>Tags</th><th>Created</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      `;
+    }
+
+    if (tasks.length === 0 && archived.length === 0) {
+      app.innerHTML += '<div class="empty">No tasks yet. Use /task-tracker add to create one.</div>';
+    } else {
+      app.innerHTML += renderTable(inProgress, 'In Progress');
+      app.innerHTML += renderTable(todo, 'To Do');
+      app.innerHTML += renderTable(done, 'Completed');
+      if (archived.length > 0) {
+        app.innerHTML += renderTable(archived, 'Archived (' + archived.length + ')');
+      }
+    }
+  </script>
+</body>
+</html>

@@ -154,13 +154,13 @@ git notes add -m "## Version Release
 
 ### Affected Packages
 - conductor-studio (root)
-- @gemini-conductor/client
-- @gemini-conductor/cloud
-- @gemini-conductor/desktop
-- @gemini-conductor/server
-- @gemini-conductor/shared
-- @gemini-conductor/terminal-service-rs
-- @gemini-conductor/conductor-cli-wrapper"
+- @forge/client
+- @forge/cloud
+- @forge/desktop
+- @forge/server
+- @forge/shared
+- @forge/terminal-service-rs
+- @forge/cli-wrapper"
 ```
 
 ### Step 5: Push with Tags
@@ -176,7 +176,6 @@ git push origin $(git branch --show-current) --follow-tags
 These packages have independent versions:
 
 - `packages/chatops` (0.0.1) - Standalone ChatOps bot
-- `packages/video` (0.0.1) - Remotion video generation
 
 ---
 

@@ -1,0 +1,17 @@
+{
+  "trackId": "burstable_qos_for_task_containers_20260321",
+  "type": "feature",
+  "status": "in_progress",
+  "description": "Burstable QoS for task containers",
+  "createdAt": "2026-03-21T20:34:30.403Z",
+  "updatedAt": "2026-03-22T11:44:52.216Z",
+  "sessions": [
+    {
+      "slotIndex": 0,
+      "engineType": "claude",
+      "aiSessionId": "f4ff53ec-9b4d-47c8-8e70-8bf541124d6b",
+      "accountId": "system-claude",
+      "updatedAt": "2026-03-22T11:43:02.773Z"
+    }
+  ]
+}

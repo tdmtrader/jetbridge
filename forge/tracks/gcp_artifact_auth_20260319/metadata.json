@@ -1,0 +1,17 @@
+{
+  "trackId": "gcp_artifact_auth_20260319",
+  "type": "feature",
+  "status": "backlog",
+  "description": "GCP Artifact Auth ",
+  "createdAt": "2026-03-20T04:30:32.927Z",
+  "updatedAt": "2026-03-20T04:30:46.386Z",
+  "sessions": [
+    {
+      "slotIndex": 0,
+      "engineType": "claude",
+      "aiSessionId": "9ad05635-8b2f-488b-9d6e-0b0cfce1752f",
+      "accountId": "system-claude",
+      "updatedAt": "2026-03-20T04:30:46.385Z"
+    }
+  ]
+}

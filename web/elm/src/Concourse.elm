@@ -919,7 +919,6 @@ type alias FeatureFlags =
     -- If a field is deleted on the Go side, it must also be deleted here.
     { global_resources : Bool
     , build_rerun : Bool
-    , cache_streamed_volumes : Bool
     , resource_causality : Bool
     }
 
@@ -928,7 +927,6 @@ defaultFeatureFlags : FeatureFlags
 defaultFeatureFlags =
     { global_resources = False
     , build_rerun = False
-    , cache_streamed_volumes = False
     , resource_causality = False
     }
 

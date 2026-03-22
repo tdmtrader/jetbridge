@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Himalaya Email Setup</title>
+  <style>
+    :root {
+      --bg: #0d1117;
+      --card: #161b22;
+      --card-hover: #1c2129;
+      --border: #30363d;
+      --text: #c9d1d9;
+      --muted: #8b949e;
+      --accent: #58a6ff;
+      --accent-dim: rgba(88, 166, 255, 0.15);
+      --success: #3fb950;
+      --success-dim: rgba(63, 185, 80, 0.15);
+      --warning: #d29922;
+      --warning-dim: rgba(210, 153, 34, 0.15);
+      --error: #f85149;
+      --error-dim: rgba(248, 81, 73, 0.15);
+      --radius: 8px;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+      padding: 24px;
+      max-width: 640px;
+      margin: 0 auto;
+    }
+
+    h1 { font-size: 1.5rem; font-weight: 600; margin-bottom: 4px; }
+    .subtitle { color: var(--muted); font-size: 0.875rem; margin-bottom: 24px; }
+
+    .steps {
+      display: flex; gap: 4px; margin-bottom: 24px;
+    }
+    .step {
+      flex: 1; padding: 8px 12px; border-radius: var(--radius);
+      background: var(--card); border: 1px solid var(--border);
+      font-size: 0.75rem; text-align: center; transition: all 0.2s;
+    }
+    .step-label { font-weight: 600; }
+    .step-status { font-size: 0.7rem; color: var(--muted); margin-top: 2px; }
+    .step.active { border-color: var(--accent); background: var(--accent-dim); }
+    .step.success { border-color: var(--success); background: var(--success-dim); }
+    .step.success .step-status { color: var(--success); }
+    .step.error { border-color: var(--error); background: var(--error-dim); }
+    .step.error .step-status { color: var(--error); }
+
+    .panel {
+      background: var(--card); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 20px; margin-bottom: 16px;
+    }
+    .panel-title { font-size: 0.875rem; font-weight: 600; margin-bottom: 12px; }
+
+    .field { margin-bottom: 16px; }
+    .field:last-child { margin-bottom: 0; }
+    .field label {
+      display: block; font-size: 0.8125rem; font-weight: 500; margin-bottom: 4px;
+    }
+    .field label .required { color: var(--error); margin-left: 2px; }
+    .field input, .field select {
+      width: 100%; padding: 8px 12px; background: var(--bg);
+      border: 1px solid var(--border); border-radius: 6px;
+      color: var(--text); font-size: 0.875rem; font-family: inherit;
+      outline: none; transition: border-color 0.2s;
+    }
+    .field input:focus, .field select:focus { border-color: var(--accent); }
+    .field .help { font-size: 0.75rem; color: var(--muted); margin-top: 4px; }
+    .field .env-tag {
+      display: inline-block; font-family: 'SF Mono', Monaco, monospace;
+      font-size: 0.7rem; background: var(--accent-dim); color: var(--accent);
+      padding: 1px 6px; border-radius: 4px; margin-left: 8px;
+    }
+
+    .server-info {
+      background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+      padding: 12px; margin-top: 12px; font-size: 0.75rem;
+      font-family: 'SF Mono', Monaco, monospace; color: var(--muted);
+    }
+    .server-info .row { display: flex; justify-content: space-between; margin-bottom: 4px; }
+    .server-info .row:last-child { margin-bottom: 0; }
+    .server-info .label { color: var(--muted); }
+    .server-info .value { color: var(--text); }
+
+    .actions { display: flex; gap: 8px; margin-top: 20px; flex-wrap: wrap; }
+    button {
+      padding: 8px 16px; border-radius: 6px; font-size: 0.8125rem;
+      font-weight: 500; cursor: pointer; border: 1px solid var(--border);
+      background: var(--card); color: var(--text); font-family: inherit;
+      transition: all 0.15s;
+    }
+    button:hover:not(:disabled) { background: var(--card-hover); }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+    button.primary:hover:not(:disabled) { opacity: 0.9; }
+
+    .log { margin-top: 16px; }
+    .log-entry {
+      padding: 10px 12px; border-radius: 6px; margin-bottom: 8px;
+      font-size: 0.8125rem; border: 1px solid var(--border);
+    }
+    .log-entry.ok { background: var(--success-dim); border-color: var(--success); }
+    .log-entry.fail { background: var(--error-dim); border-color: var(--error); }
+    .log-entry .msg { font-weight: 500; }
+    .log-entry .details {
+      margin-top: 6px; font-size: 0.75rem; color: var(--muted);
+      font-family: 'SF Mono', Monaco, monospace;
+    }
+    .log-entry .details li { margin-left: 16px; margin-top: 2px; }
+
+    .spinner {
+      display: inline-block; width: 14px; height: 14px;
+      border: 2px solid var(--border); border-top-color: var(--accent);
+      border-radius: 50%; animation: spin 0.6s linear infinite;
+      margin-right: 6px; vertical-align: middle;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+  <h1>Himalaya Email Setup</h1>
+  <div class="subtitle">Configure himalaya CLI for email access (~15 min)</div>
+
+  <div class="steps">
+    <div class="step" data-step="check">
+      <div class="step-label">Check</div>
+      <div class="step-status">Pending</div>
+    </div>
+    <div class="step" data-step="install">
+      <div class="step-label">Install</div>
+      <div class="step-status">Pending</div>
+    </div>
+    <div class="step" data-step="configure">
+      <div class="step-label">Configure</div>
+      <div class="step-status">Pending</div>
+    </div>
+    <div class="step" data-step="verify">
+      <div class="step-label">Verify</div>
+      <div class="step-status">Pending</div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-title">Email Provider</div>
+    <div class="field">
+      <label>Provider</label>
+      <select id="provider" onchange="onProviderChange()">
+        <option value="gmail" selected>Gmail</option>
+        <option value="outlook">Outlook / Microsoft 365</option>
+        <option value="custom">Custom IMAP/SMTP</option>
+      </select>
+    </div>
+
+    <div id="server-info" class="server-info">
+      <div class="row"><span class="label">IMAP:</span> <span class="value" id="imap-host">imap.gmail.com:993 (TLS)</span></div>
+      <div class="row"><span class="label">SMTP:</span> <span class="value" id="smtp-host">smtp.gmail.com:465 (TLS)</span></div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-title">Account Details</div>
+    <div class="field">
+      <label>Email Address <span class="required">*</span></label>
+      <input type="text" id="email" placeholder="you@example.com" required>
+    </div>
+    <div class="field">
+      <label>Display Name</label>
+      <input type="text" id="display-name" placeholder="Your Name">
+    </div>
+    <div class="field">
+      <label>App Password <span class="required">*</span> <span class="env-tag">HIMALAYA_WORK_PASSWORD</span></label>
+      <input type="password" id="app-password" placeholder="Enter your app password" required>
+      <div class="help" id="password-help">
+        For Gmail: generate at https://myaccount.google.com/apppasswords
+      </div>
+    </div>
+  </div>
+
+  <div id="custom-server-panel" class="panel hidden">
+    <div class="panel-title">Custom Server Settings</div>
+    <div class="field">
+      <label>IMAP Host <span class="required">*</span></label>
+      <input type="text" id="custom-imap-host" placeholder="imap.example.com">
+    </div>
+    <div class="field">
+      <label>IMAP Port</label>
+      <input type="text" id="custom-imap-port" placeholder="993" value="993">
+    </div>
+    <div class="field">
+      <label>SMTP Host <span class="required">*</span></label>
+      <input type="text" id="custom-smtp-host" placeholder="smtp.example.com">
+    </div>
+    <div class="field">
+      <label>SMTP Port</label>
+      <input type="text" id="custom-smtp-port" placeholder="465" value="465">
+    </div>
+  </div>
+
+  <div class="actions">
+    <button id="btn-check" onclick="runStep('check')">Check Prerequisites</button>
+    <button id="btn-install" onclick="runStep('install')" disabled>Install Himalaya</button>
+    <button id="btn-configure" onclick="runStep('configure')" disabled>Save Config</button>
+    <button id="btn-verify" onclick="runStep('verify')" disabled>Test Connection</button>
+    <button id="btn-run-all" class="primary" onclick="runAll()">Run All Steps</button>
+  </div>
+
+  <div class="log" id="log"></div>
+
+  <script>
+    var API_BASE = window.__FORGE_API_BASE || window.location.origin;
+    var SKILL_ID = 'himalaya';
+    var authToken = null;
+
+    var PROVIDERS = {
+      gmail: {
+        imapHost: 'imap.gmail.com', imapPort: 993,
+        smtpHost: 'smtp.gmail.com', smtpPort: 465,
+        passwordHelp: 'For Gmail: generate at https://myaccount.google.com/apppasswords',
+      },
+      outlook: {
+        imapHost: 'outlook.office365.com', imapPort: 993,
+        smtpHost: 'smtp.office365.com', smtpPort: 587,
+        passwordHelp: 'For Outlook: generate an App Password in Microsoft account security settings',
+      },
+      custom: {
+        imapHost: '', imapPort: 993,
+        smtpHost: '', smtpPort: 465,
+        passwordHelp: 'Enter the password for your IMAP/SMTP account',
+      },
+    };
+
+    var STEP_NAMES = ['check', 'install', 'configure', 'verify'];
+
+    function onProviderChange() {
+      var provider = document.getElementById('provider').value;
+      var info = PROVIDERS[provider];
+
+      document.getElementById('imap-host').textContent = info.imapHost
+        ? info.imapHost + ':' + info.imapPort + ' (TLS)'
+        : 'Custom';
+      document.getElementById('smtp-host').textContent = info.smtpHost
+        ? info.smtpHost + ':' + info.smtpPort + ' (TLS)'
+        : 'Custom';
+      document.getElementById('password-help').textContent = info.passwordHelp;
+
+      var customPanel = document.getElementById('custom-server-panel');
+      if (provider === 'custom') {
+        customPanel.classList.remove('hidden');
+      } else {
+        customPanel.classList.add('hidden');
+      }
+    }
+
+    async function getToken() {
+      if (authToken) return authToken;
+      try {
+        var res = await fetch(API_BASE + '/api/developer/token');
+        if (res.ok) { var data = await res.json(); authToken = data.token; return authToken; }
+      } catch (_) {}
+      return null;
+    }
+
+    async function apiHeaders() {
+      var token = await getToken();
+      var headers = { 'Content-Type': 'application/json' };
+      if (token) headers['Authorization'] = 'Bearer ' + token;
+      return headers;
+    }
+
+    async function apiPost(path, body) {
+      var headers = await apiHeaders();
+      var res = await fetch(API_BASE + path, {
+        method: 'POST', headers: headers,
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      return { status: res.status, data: await res.json() };
+    }
+
+    function setStepState(step, state, statusText) {
+      var el = document.querySelector('[data-step="' + step + '"]');
+      if (!el) return;
+      el.className = 'step ' + state;
+      el.querySelector('.step-status').textContent = statusText || state;
+    }
+
+    function escapeHtml(str) {
+      var div = document.createElement('div'); div.textContent = str; return div.innerHTML;
+    }
+
+    function addLog(ok, message, details) {
+      var log = document.getElementById('log');
+      var entry = document.createElement('div');
+      entry.className = 'log-entry ' + (ok ? 'ok' : 'fail');
+      var html = '<div class="msg">' + (ok ? '\u2713 ' : '\u2717 ') + escapeHtml(message) + '</div>';
+      if (details && details.length > 0) {
+        html += '<ul class="details">';
+        details.forEach(function(d) { html += '<li>' + escapeHtml(d) + '</li>'; });
+        html += '</ul>';
+      }
+      entry.innerHTML = html;
+      log.appendChild(entry);
+      entry.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+
+    async function runStep(step) {
+      var btnId = 'btn-' + step;
+      document.getElementById(btnId).disabled = true;
+      setStepState(step, 'active', 'Running...');
+
+      try {
+        var res = await apiPost('/api/skills/setup/' + SKILL_ID + '/' + step);
+
+        if (res.status >= 400) {
+          setStepState(step, 'error', 'Error');
+          addLog(false, res.data.error || 'Request failed', []);
+          return false;
+        }
+
+        var result = res.data.result;
+        if (result.ok) {
+          setStepState(step, 'success', 'Done');
+          addLog(true, result.message, result.details);
+          var idx = STEP_NAMES.indexOf(step);
+          if (idx < STEP_NAMES.length - 1) {
+            document.getElementById('btn-' + STEP_NAMES[idx + 1]).disabled = false;
+          }
+          return true;
+        } else {
+          setStepState(step, 'error', 'Failed');
+          addLog(false, result.message, result.details);
+          return false;
+        }
+      } catch (err) {
+        setStepState(step, 'error', 'Error');
+        addLog(false, 'Network error: ' + err.message, []);
+        return false;
+      } finally {
+        document.getElementById(btnId).disabled = false;
+      }
+    }
+
+    async function notifyTerminal(message) {
+      try {
+        var headers = await apiHeaders();
+        await fetch(API_BASE + '/api/prompt', {
+          method: 'POST', headers: headers,
+          body: JSON.stringify({ prompt: message, target: 'focused' }),
+        });
+      } catch (_) {}
+    }
+
+    async function runAll() {
+      document.getElementById('btn-run-all').disabled = true;
+      document.getElementById('log').innerHTML = '';
+      for (var i = 0; i < STEP_NAMES.length; i++) {
+        var ok = await runStep(STEP_NAMES[i]);
+        if (!ok) { document.getElementById('btn-run-all').disabled = false; return; }
+      }
+      addLog(true, 'Himalaya email setup complete!', []);
+      await notifyTerminal('Setup wizard for himalaya completed successfully. Email is configured and verified.');
+      document.getElementById('btn-run-all').disabled = false;
+    }
+  </script>
+</body>
+</html>
