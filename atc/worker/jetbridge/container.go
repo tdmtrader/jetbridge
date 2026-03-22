@@ -723,26 +723,50 @@ func splitEnvVar(env string) []string {
 }
 
 // buildResourceRequirements translates ContainerLimits into K8s resource
-// requirements. CPU is mapped to millicores, Memory to bytes. When limits
-// are specified, requests are set equal to limits to ensure Guaranteed QoS.
-// When no limits are specified, returns an empty ResourceRequirements
-// (BestEffort QoS).
+// requirements. CPU is mapped to millicores, Memory to bytes.
+//
+// QoS behavior:
+//   - Guaranteed: limits set, no independent requests → requests = limits
+//   - Burstable:  both limits and requests set → each mapped independently
+//   - Burstable (no cap): only requests set → requests only, no limits
+//   - BestEffort: neither set → empty ResourceRequirements
 func buildResourceRequirements(limits runtime.ContainerLimits) corev1.ResourceRequirements {
 	reqs := corev1.ResourceRequirements{}
-	if limits.CPU == nil && limits.Memory == nil {
+
+	hasLimits := limits.CPU != nil || limits.Memory != nil
+	hasRequests := limits.CPURequest != nil || limits.MemoryRequest != nil
+
+	if !hasLimits && !hasRequests {
 		return reqs
 	}
 
-	res := corev1.ResourceList{}
-	if limits.CPU != nil {
-		res[corev1.ResourceCPU] = *resource.NewMilliQuantity(int64(*limits.CPU), resource.DecimalSI)
-	}
-	if limits.Memory != nil {
-		res[corev1.ResourceMemory] = *resource.NewQuantity(int64(*limits.Memory), resource.BinarySI)
+	if hasLimits {
+		res := corev1.ResourceList{}
+		if limits.CPU != nil {
+			res[corev1.ResourceCPU] = *resource.NewMilliQuantity(int64(*limits.CPU), resource.DecimalSI)
+		}
+		if limits.Memory != nil {
+			res[corev1.ResourceMemory] = *resource.NewQuantity(int64(*limits.Memory), resource.BinarySI)
+		}
+		reqs.Limits = res
+
+		if !hasRequests {
+			// No independent requests → Guaranteed QoS (requests = limits)
+			reqs.Requests = res
+			return reqs
+		}
 	}
 
-	reqs.Limits = res
-	reqs.Requests = res
+	// Independent requests specified → Burstable QoS
+	reqRes := corev1.ResourceList{}
+	if limits.CPURequest != nil {
+		reqRes[corev1.ResourceCPU] = *resource.NewMilliQuantity(int64(*limits.CPURequest), resource.DecimalSI)
+	}
+	if limits.MemoryRequest != nil {
+		reqRes[corev1.ResourceMemory] = *resource.NewQuantity(int64(*limits.MemoryRequest), resource.BinarySI)
+	}
+	reqs.Requests = reqRes
+
 	return reqs
 }
 
