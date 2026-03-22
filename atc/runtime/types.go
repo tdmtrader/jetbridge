@@ -296,6 +296,13 @@ type ContainerLimits struct {
 	// Memory defines the memory limit for all Processes run in the Container,
 	// measured in bytes. Unset means no limit.
 	Memory *uint64
+
+	// CPURequest defines the CPU request (in shares), independent from limits.
+	// When set alongside CPU (limit), enables Burstable QoS.
+	CPURequest *uint64
+	// MemoryRequest defines the memory request (in bytes), independent from limits.
+	// When set alongside Memory (limit), enables Burstable QoS.
+	MemoryRequest *uint64
 }
 
 // Artifact represents an output from a step that can be used as an input to
