@@ -385,6 +385,93 @@ run: {path: a/file}
 			})
 		})
 
+		Context("when container requests are specified", func() {
+			Context("when both cpu and memory requests are set", func() {
+				It("successfully parses the requests", func() {
+					data := []byte(`
+platform: beos
+container_requests: { cpu: 512, memory: 1GB }
+
+run: {path: a/file}
+`)
+					task, err := NewTaskConfig(data)
+					Expect(err).ToNot(HaveOccurred())
+					cpu := CPULimit(512)
+					memory := MemoryLimit(1 << 30)
+					Expect(task.Requests).To(Equal(&ContainerLimits{
+						CPU:    &cpu,
+						Memory: &memory,
+					}))
+				})
+			})
+
+			Context("when only memory request is set", func() {
+				It("parses the provided memory request", func() {
+					data := []byte(`
+platform: beos
+container_requests: { memory: 256MB }
+
+run: {path: a/file}
+`)
+					task, err := NewTaskConfig(data)
+					Expect(err).ToNot(HaveOccurred())
+					memory := MemoryLimit(256 * (1 << 20))
+					Expect(task.Requests).To(Equal(&ContainerLimits{
+						Memory: &memory,
+					}))
+				})
+			})
+
+			Context("when both limits and requests are set", func() {
+				It("parses both independently", func() {
+					data := []byte(`
+platform: beos
+container_limits: { cpu: 2048, memory: 4GB }
+container_requests: { cpu: 512, memory: 1GB }
+
+run: {path: a/file}
+`)
+					task, err := NewTaskConfig(data)
+					Expect(err).ToNot(HaveOccurred())
+
+					limitCPU := CPULimit(2048)
+					limitMem := MemoryLimit(4 * (1 << 30))
+					Expect(task.Limits).To(Equal(&ContainerLimits{
+						CPU:    &limitCPU,
+						Memory: &limitMem,
+					}))
+
+					reqCPU := CPULimit(512)
+					reqMem := MemoryLimit(1 << 30)
+					Expect(task.Requests).To(Equal(&ContainerLimits{
+						CPU:    &reqCPU,
+						Memory: &reqMem,
+					}))
+				})
+			})
+
+			Context("when requests are set but limits are not", func() {
+				It("parses requests with nil limits", func() {
+					data := []byte(`
+platform: beos
+container_requests: { cpu: 256, memory: 512MB }
+
+run: {path: a/file}
+`)
+					task, err := NewTaskConfig(data)
+					Expect(err).ToNot(HaveOccurred())
+					Expect(task.Limits).To(BeNil())
+
+					reqCPU := CPULimit(256)
+					reqMem := MemoryLimit(512 * (1 << 20))
+					Expect(task.Requests).To(Equal(&ContainerLimits{
+						CPU:    &reqCPU,
+						Memory: &reqMem,
+					}))
+				})
+			})
+		})
+
 		Context("when run is missing", func() {
 			BeforeEach(func() {
 				invalidConfig.Run.Path = ""

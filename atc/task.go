@@ -22,6 +22,9 @@ type TaskConfig struct {
 	// Limits to set on the Task Container
 	Limits *ContainerLimits `json:"container_limits,omitempty"`
 
+	// Requests to set on the Task Container (independent from limits for Burstable QoS)
+	Requests *ContainerLimits `json:"container_requests,omitempty"`
+
 	// Parameters to pass to the task via environment variables.
 	Params TaskEnv `json:"params,omitempty"`
 
