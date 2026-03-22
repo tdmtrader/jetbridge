@@ -155,6 +155,38 @@ var factoryTests = []StepTest{
 		},
 	},
 	{
+		Title: "task step with container requests",
+
+		ConfigYAML: `
+			task: some-task
+			file: some-task-file
+			container_requests: {cpu: 512, memory: 1073741824}
+		`,
+
+		StepConfig: &atc.TaskStep{
+			Name:       "some-task",
+			ConfigPath: "some-task-file",
+			Requests:   &atc.ContainerLimits{CPU: newCPULimit(512), Memory: newMemoryLimit(1073741824)},
+		},
+	},
+	{
+		Title: "task step with both limits and requests",
+
+		ConfigYAML: `
+			task: some-task
+			file: some-task-file
+			container_limits: {cpu: 2048, memory: 4294967296}
+			container_requests: {cpu: 512, memory: 1073741824}
+		`,
+
+		StepConfig: &atc.TaskStep{
+			Name:       "some-task",
+			ConfigPath: "some-task-file",
+			Limits:     &atc.ContainerLimits{CPU: newCPULimit(2048), Memory: newMemoryLimit(4294967296)},
+			Requests:   &atc.ContainerLimits{CPU: newCPULimit(512), Memory: newMemoryLimit(1073741824)},
+		},
+	},
+	{
 		Title: "task step with sidecars",
 
 		ConfigYAML: `
@@ -223,6 +255,23 @@ var factoryTests = []StepTest{
 			Tags:    []string{"tag-1", "tag-2"},
 			Limits:  &atc.ContainerLimits{CPU: newCPULimit(10), Memory: newMemoryLimit(1024)},
 			Timeout: "1h",
+		},
+	},
+	{
+		Title: "run step with container requests",
+
+		ConfigYAML: `
+			run: some-message
+			type: some-prototype
+			container_limits: {cpu: 2048, memory: 4294967296}
+			container_requests: {cpu: 512, memory: 1073741824}
+		`,
+
+		StepConfig: &atc.RunStep{
+			Message:  "some-message",
+			Type:     "some-prototype",
+			Limits:   &atc.ContainerLimits{CPU: newCPULimit(2048), Memory: newMemoryLimit(4294967296)},
+			Requests: &atc.ContainerLimits{CPU: newCPULimit(512), Memory: newMemoryLimit(1073741824)},
 		},
 	},
 	{
