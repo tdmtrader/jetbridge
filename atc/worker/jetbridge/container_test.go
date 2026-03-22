@@ -795,6 +795,107 @@ var _ = Describe("Container", func() {
 				Expect(mainContainer.Resources.Requests).To(BeNil())
 			})
 		})
+
+		Context("when both limits and independent requests are specified (Burstable QoS)", func() {
+			BeforeEach(func() {
+				setupFakeDBContainer(fakeDBWorker, "burstable-handle")
+
+				cpuLimit := uint64(2048)
+				memLimit := uint64(4294967296) // 4GB
+				cpuReq := uint64(512)
+				memReq := uint64(1073741824) // 1GB
+
+				var err error
+				container, _, err = worker.FindOrCreateContainer(
+					ctx,
+					db.NewFixedHandleContainerOwner("burstable-handle"),
+					db.ContainerMetadata{Type: db.ContainerTypeTask},
+					runtime.ContainerSpec{
+						TeamID: 1,
+						Dir:    "/workdir",
+						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+						Limits: runtime.ContainerLimits{
+							CPU:           &cpuLimit,
+							Memory:        &memLimit,
+							CPURequest:    &cpuReq,
+							MemoryRequest: &memReq,
+						},
+					},
+					delegate,
+				)
+				Expect(err).ToNot(HaveOccurred())
+			})
+
+			It("sets limits and requests independently", func() {
+				_, err := container.Run(ctx, runtime.ProcessSpec{
+					Path: "/bin/sh",
+					Args: []string{"-c", "echo hello"},
+				}, runtime.ProcessIO{})
+				Expect(err).ToNot(HaveOccurred())
+
+				pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
+				Expect(err).ToNot(HaveOccurred())
+				Expect(pods.Items).To(HaveLen(1))
+
+				mainContainer := pods.Items[0].Spec.Containers[0]
+
+				By("setting CPU/memory limits")
+				Expect(mainContainer.Resources.Limits.Cpu().Cmp(*resource.NewMilliQuantity(2048, resource.DecimalSI))).To(Equal(0))
+				Expect(mainContainer.Resources.Limits.Memory().Cmp(*resource.NewQuantity(4294967296, resource.BinarySI))).To(Equal(0))
+
+				By("setting CPU/memory requests independently from limits")
+				Expect(mainContainer.Resources.Requests.Cpu().Cmp(*resource.NewMilliQuantity(512, resource.DecimalSI))).To(Equal(0))
+				Expect(mainContainer.Resources.Requests.Memory().Cmp(*resource.NewQuantity(1073741824, resource.BinarySI))).To(Equal(0))
+			})
+		})
+
+		Context("when only requests are specified with no limits (Burstable no-cap QoS)", func() {
+			BeforeEach(func() {
+				setupFakeDBContainer(fakeDBWorker, "requests-only-handle")
+
+				cpuReq := uint64(256)
+				memReq := uint64(536870912) // 512MB
+
+				var err error
+				container, _, err = worker.FindOrCreateContainer(
+					ctx,
+					db.NewFixedHandleContainerOwner("requests-only-handle"),
+					db.ContainerMetadata{Type: db.ContainerTypeTask},
+					runtime.ContainerSpec{
+						TeamID: 1,
+						Dir:    "/workdir",
+						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+						Limits: runtime.ContainerLimits{
+							CPURequest:    &cpuReq,
+							MemoryRequest: &memReq,
+						},
+					},
+					delegate,
+				)
+				Expect(err).ToNot(HaveOccurred())
+			})
+
+			It("sets requests with no limits", func() {
+				_, err := container.Run(ctx, runtime.ProcessSpec{
+					Path: "/bin/sh",
+					Args: []string{"-c", "echo hello"},
+				}, runtime.ProcessIO{})
+				Expect(err).ToNot(HaveOccurred())
+
+				pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
+				Expect(err).ToNot(HaveOccurred())
+				Expect(pods.Items).To(HaveLen(1))
+
+				mainContainer := pods.Items[0].Spec.Containers[0]
+
+				By("not setting any limits")
+				Expect(mainContainer.Resources.Limits).To(BeNil())
+
+				By("setting only requests")
+				Expect(mainContainer.Resources.Requests.Cpu().Cmp(*resource.NewMilliQuantity(256, resource.DecimalSI))).To(Equal(0))
+				Expect(mainContainer.Resources.Requests.Memory().Cmp(*resource.NewQuantity(536870912, resource.BinarySI))).To(Equal(0))
+			})
+		})
 	})
 
 	Describe("Run with security context", func() {
