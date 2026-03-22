@@ -422,6 +422,93 @@ run: {path: a/file}
 				}))
 			})
 		})
+		Context("when override container requests are specified", func() {
+			var overrideRequests atc.ContainerLimits
+
+			BeforeEach(func() {
+				overrideRequests = atc.ContainerLimits{CPU: newCPULimit(512), Memory: newMemoryLimit(1073741824)}
+				configSource = &OverrideContainerLimitsSource{
+					ConfigSource: StaticConfigSource{Config: &config},
+					Requests:     &overrideRequests,
+				}
+			})
+
+			JustBeforeEach(func() {
+				fetchedConfig, fetchErr = configSource.FetchConfig(context.TODO(), logger, repo)
+			})
+
+			It("succeeds", func() {
+				Expect(fetchErr).NotTo(HaveOccurred())
+			})
+
+			It("sets requests without affecting limits", func() {
+				Expect(*fetchedConfig.Limits).To(Equal(atc.ContainerLimits{
+					CPU:    newCPULimit(1024),
+					Memory: newMemoryLimit(209715200),
+				}))
+				Expect(*fetchedConfig.Requests).To(Equal(atc.ContainerLimits{
+					CPU:    newCPULimit(512),
+					Memory: newMemoryLimit(1073741824),
+				}))
+			})
+		})
+
+		Context("when both override limits and requests are specified", func() {
+			var overrideRequests atc.ContainerLimits
+
+			BeforeEach(func() {
+				overrideRequests = atc.ContainerLimits{CPU: newCPULimit(256)}
+				configSource = &OverrideContainerLimitsSource{
+					ConfigSource: StaticConfigSource{Config: &config},
+					Limits:       &overrideLimits,
+					Requests:     &overrideRequests,
+				}
+			})
+
+			JustBeforeEach(func() {
+				fetchedConfig, fetchErr = configSource.FetchConfig(context.TODO(), logger, repo)
+			})
+
+			It("succeeds", func() {
+				Expect(fetchErr).NotTo(HaveOccurred())
+			})
+
+			It("overrides both independently", func() {
+				Expect(*fetchedConfig.Limits).To(Equal(atc.ContainerLimits{
+					CPU:    newCPULimit(2048),
+					Memory: newMemoryLimit(209715200),
+				}))
+				Expect(fetchedConfig.Requests.CPU).To(Equal(newCPULimit(256)))
+				Expect(fetchedConfig.Requests.Memory).To(BeNil())
+			})
+		})
+
+		Context("when override requests are specified but task has no existing requests", func() {
+			var overrideRequests atc.ContainerLimits
+
+			BeforeEach(func() {
+				overrideRequests = atc.ContainerLimits{Memory: newMemoryLimit(536870912)}
+				configSource = &OverrideContainerLimitsSource{
+					ConfigSource: StaticConfigSource{Config: &noLimitsConfig},
+					Requests:     &overrideRequests,
+				}
+			})
+
+			JustBeforeEach(func() {
+				fetchedConfig, fetchErr = configSource.FetchConfig(context.TODO(), logger, repo)
+			})
+
+			It("succeeds", func() {
+				Expect(fetchErr).NotTo(HaveOccurred())
+			})
+
+			It("creates requests from scratch", func() {
+				Expect(fetchedConfig.Limits).To(BeNil())
+				Expect(fetchedConfig.Requests).ToNot(BeNil())
+				Expect(fetchedConfig.Requests.CPU).To(BeNil())
+				Expect(fetchedConfig.Requests.Memory).To(Equal(newMemoryLimit(536870912)))
+			})
+		})
 	})
 
 	Describe("ValidatingConfigSource", func() {
