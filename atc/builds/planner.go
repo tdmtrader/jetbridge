@@ -61,6 +61,7 @@ func (visitor *planVisitor) VisitTask(step *atc.TaskStep) error {
 		Privileged:        step.Privileged,
 		Hermetic:          step.Hermetic,
 		Limits:            step.Limits,
+		Requests:          step.Requests,
 		Config:            step.Config,
 		ConfigPath:        step.ConfigPath,
 		Vars:              step.Vars,
@@ -94,6 +95,7 @@ func (visitor *planVisitor) VisitRun(step *atc.RunStep) error {
 		Privileged: step.Privileged,
 		Tags:       step.Tags,
 		Limits:     step.Limits,
+		Requests:   step.Requests,
 		Timeout:    step.Timeout,
 	})
 
