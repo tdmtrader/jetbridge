@@ -338,6 +338,9 @@ type TaskPlan struct {
 	// Limits to set on the Task Container
 	Limits *ContainerLimits `json:"container_limits,omitempty"`
 
+	// Requests to set on the Task Container (independent from limits for Burstable QoS)
+	Requests *ContainerLimits `json:"container_requests,omitempty"`
+
 	// An artifact in the build plan to use as the task's image. Overrides any
 	// image set in the task's config.
 	ImageArtifactName string `json:"image,omitempty"`
@@ -390,6 +393,9 @@ type RunPlan struct {
 
 	// Limits to set on the Container
 	Limits *ContainerLimits `json:"container_limits,omitempty"`
+
+	// Requests to set on the Container (independent from limits for Burstable QoS)
+	Requests *ContainerLimits `json:"container_requests,omitempty"`
 
 	// A timeout to enforce on the run step's process. Note that fetching the
 	// prototype's image does not count towards the timeout.

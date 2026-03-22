@@ -345,6 +345,7 @@ type TaskStep struct {
 	Hermetic          bool              `json:"hermetic,omitempty"`
 	ConfigPath        string            `json:"file,omitempty"`
 	Limits            *ContainerLimits  `json:"container_limits,omitempty"`
+	Requests          *ContainerLimits  `json:"container_requests,omitempty"`
 	Config            *TaskConfig       `json:"config,omitempty"`
 	Params            TaskEnv           `json:"params,omitempty"`
 	Vars              Params            `json:"vars,omitempty"`
@@ -367,6 +368,7 @@ type RunStep struct {
 	Privileged bool             `json:"privileged,omitempty"`
 	Tags       Tags             `json:"tags,omitempty"`
 	Limits     *ContainerLimits `json:"container_limits,omitempty"`
+	Requests   *ContainerLimits `json:"container_requests,omitempty"`
 	Timeout    string           `json:"timeout,omitempty"`
 
 	// XXX(prototypes): inputs, outputs, input_mapping, output_mapping?
