@@ -129,30 +129,39 @@ func (configSource BaseResourceTypeDefaultsApplySource) Warnings() []string {
 type OverrideContainerLimitsSource struct {
 	ConfigSource TaskConfigSource
 	Limits       *atc.ContainerLimits
+	Requests     *atc.ContainerLimits
 }
 
-// FetchConfig overrides container limits, allowing the user to set container limits required by a task loaded
-// from a file by providing them in static configuration.
+// FetchConfig overrides container limits and requests, allowing the user to set
+// them in pipeline configuration to override values from a task config file.
 func (configSource *OverrideContainerLimitsSource) FetchConfig(ctx context.Context, logger lager.Logger, source *build.Repository) (atc.TaskConfig, error) {
 	taskConfig, err := configSource.ConfigSource.FetchConfig(ctx, logger, source)
 	if err != nil {
 		return atc.TaskConfig{}, err
 	}
 
-	if configSource.Limits == nil {
-		return taskConfig, nil
+	if configSource.Limits != nil {
+		if taskConfig.Limits == nil {
+			taskConfig.Limits = &atc.ContainerLimits{}
+		}
+		if configSource.Limits.CPU != nil {
+			taskConfig.Limits.CPU = configSource.Limits.CPU
+		}
+		if configSource.Limits.Memory != nil {
+			taskConfig.Limits.Memory = configSource.Limits.Memory
+		}
 	}
 
-	if taskConfig.Limits == nil {
-		taskConfig.Limits = &atc.ContainerLimits{}
-	}
-
-	if configSource.Limits.CPU != nil {
-		taskConfig.Limits.CPU = configSource.Limits.CPU
-	}
-
-	if configSource.Limits.Memory != nil {
-		taskConfig.Limits.Memory = configSource.Limits.Memory
+	if configSource.Requests != nil {
+		if taskConfig.Requests == nil {
+			taskConfig.Requests = &atc.ContainerLimits{}
+		}
+		if configSource.Requests.CPU != nil {
+			taskConfig.Requests.CPU = configSource.Requests.CPU
+		}
+		if configSource.Requests.Memory != nil {
+			taskConfig.Requests.Memory = configSource.Requests.Memory
+		}
 	}
 
 	return taskConfig, nil
