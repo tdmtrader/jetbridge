@@ -121,6 +121,7 @@ var _ = Describe("TaskStep", func() {
 			plan.ID,
 			*plan.Task,
 			atc.ContainerLimits{},
+			atc.ContainerLimits{},
 			stepMetadata,
 			containerMetadata,
 			fakePool,

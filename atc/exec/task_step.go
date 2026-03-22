@@ -99,6 +99,7 @@ type TaskStep struct {
 	planID             atc.PlanID
 	plan               atc.TaskPlan
 	defaultLimits      atc.ContainerLimits
+	defaultRequests    atc.ContainerLimits
 	metadata           StepMetadata
 	containerMetadata  db.ContainerMetadata
 	workerPool         Pool
@@ -112,6 +113,7 @@ func NewTaskStep(
 	planID atc.PlanID,
 	plan atc.TaskPlan,
 	defaultLimits atc.ContainerLimits,
+	defaultRequests atc.ContainerLimits,
 	metadata StepMetadata,
 	containerMetadata db.ContainerMetadata,
 	workerPool Pool,
@@ -124,6 +126,7 @@ func NewTaskStep(
 		planID:             planID,
 		plan:               plan,
 		defaultLimits:      defaultLimits,
+		defaultRequests:    defaultRequests,
 		metadata:           metadata,
 		containerMetadata:  containerMetadata,
 		workerPool:         workerPool,
@@ -205,8 +208,8 @@ func (step *TaskStep) run(ctx context.Context, state RunState, delegate TaskDele
 		ResourceTypes: step.plan.ResourceTypes,
 	}
 
-	// override limits
-	taskConfigSource = &OverrideContainerLimitsSource{ConfigSource: taskConfigSource, Limits: step.plan.Limits}
+	// override limits and requests
+	taskConfigSource = &OverrideContainerLimitsSource{ConfigSource: taskConfigSource, Limits: step.plan.Limits, Requests: step.plan.Requests}
 
 	// override params
 	taskConfigSource = &OverrideParamsConfigSource{ConfigSource: taskConfigSource, Params: step.plan.Params}
@@ -241,6 +244,18 @@ func (step *TaskStep) run(ctx context.Context, state RunState, delegate TaskDele
 	}
 	if config.Limits.Memory == nil {
 		config.Limits.Memory = step.defaultLimits.Memory
+	}
+
+	if step.defaultRequests.CPU != nil || step.defaultRequests.Memory != nil {
+		if config.Requests == nil {
+			config.Requests = &atc.ContainerLimits{}
+		}
+		if config.Requests.CPU == nil {
+			config.Requests.CPU = step.defaultRequests.CPU
+		}
+		if config.Requests.Memory == nil {
+			config.Requests.Memory = step.defaultRequests.Memory
+		}
 	}
 
 	oteltrace.SpanFromContext(ctx).AddEvent("step.initializing")
@@ -514,6 +529,10 @@ func (step *TaskStep) containerSpec(logger lager.Logger, state RunState, imageSp
 	if config.Limits != nil {
 		containerSpec.Limits.CPU = (*uint64)(config.Limits.CPU)
 		containerSpec.Limits.Memory = (*uint64)(config.Limits.Memory)
+	}
+	if config.Requests != nil {
+		containerSpec.Limits.CPURequest = (*uint64)(config.Requests.CPU)
+		containerSpec.Limits.MemoryRequest = (*uint64)(config.Requests.Memory)
 	}
 
 	return containerSpec, nil

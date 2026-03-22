@@ -24,6 +24,7 @@ type coreStepFactory struct {
 	resourceCacheFactory  db.ResourceCacheFactory
 	resourceConfigFactory db.ResourceConfigFactory
 	defaultLimits         atc.ContainerLimits
+	defaultRequests       atc.ContainerLimits
 	defaultCheckTimeout   time.Duration
 	defaultGetTimeout     time.Duration
 	defaultPutTimeout     time.Duration
@@ -50,6 +51,7 @@ func NewCoreStepFactory(
 	resourceCacheFactory db.ResourceCacheFactory,
 	resourceConfigFactory db.ResourceConfigFactory,
 	defaultLimits atc.ContainerLimits,
+	defaultRequests atc.ContainerLimits,
 	defaultCheckTimeout time.Duration,
 	defaultGetTimeout time.Duration,
 	defaultPutTimeout time.Duration,
@@ -65,6 +67,7 @@ func NewCoreStepFactory(
 		resourceCacheFactory:  resourceCacheFactory,
 		resourceConfigFactory: resourceConfigFactory,
 		defaultLimits:         defaultLimits,
+		defaultRequests:       defaultRequests,
 		defaultCheckTimeout:   defaultCheckTimeout,
 		defaultGetTimeout:     defaultGetTimeout,
 		defaultPutTimeout:     defaultPutTimeout,
@@ -192,6 +195,7 @@ func (factory *coreStepFactory) TaskStep(
 		plan.ID,
 		*plan.Task,
 		factory.defaultLimits,
+		factory.defaultRequests,
 		stepMetadata,
 		containerMetadata,
 		factory.pool,
