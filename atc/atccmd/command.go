@@ -232,6 +232,9 @@ type RunCommand struct {
 	DefaultCpuLimit    *int    `long:"default-task-cpu-limit" description:"Default max number of cpu shares per task, 0 means unlimited"`
 	DefaultMemoryLimit *string `long:"default-task-memory-limit" description:"Default maximum memory per task, 0 means unlimited"`
 
+	DefaultCpuRequest    *int    `long:"default-task-cpu-request" description:"Default CPU request (shares) per task for Burstable QoS"`
+	DefaultMemoryRequest *string `long:"default-task-memory-request" description:"Default memory request per task for Burstable QoS"`
+
 	Auditor struct {
 		EnableBuildAuditLog     bool `long:"enable-build-auditing" description:"Enable auditing for all api requests connected to builds."`
 		EnableContainerAuditLog bool `long:"enable-container-auditing" description:"Enable auditing for all api requests connected to containers."`
@@ -1104,6 +1107,11 @@ func (cmd *RunCommand) backendComponents(
 		return nil, err
 	}
 
+	defaultRequests, err := cmd.parseDefaultRequests()
+	if err != nil {
+		return nil, err
+	}
+
 	rateLimiter := db.NewResourceCheckRateLimiter(
 		rate.Limit(cmd.MaxChecksPerSecond),
 		rate.Limit(1),
@@ -1124,7 +1132,7 @@ func (cmd *RunCommand) backendComponents(
 		dbResourceConfigFactory,
 		secretManager,
 		defaultLimits,
-		atc.ContainerLimits{},
+		defaultRequests,
 		lockFactory,
 		rateLimiter,
 		policyChecker,
@@ -1675,6 +1683,22 @@ func (cmd *RunCommand) parseDefaultLimits() (atc.ContainerLimits, error) {
 		limits.Memory = &memory
 	}
 	return limits, nil
+}
+
+func (cmd *RunCommand) parseDefaultRequests() (atc.ContainerLimits, error) {
+	requests := atc.ContainerLimits{}
+	if cmd.DefaultCpuRequest != nil {
+		cpu := atc.CPULimit(*cmd.DefaultCpuRequest)
+		requests.CPU = &cpu
+	}
+	if cmd.DefaultMemoryRequest != nil {
+		memory, err := atc.ParseMemoryLimit(*cmd.DefaultMemoryRequest)
+		if err != nil {
+			return atc.ContainerLimits{}, err
+		}
+		requests.Memory = &memory
+	}
+	return requests, nil
 }
 
 func (cmd *RunCommand) defaultBindIP() net.IP {
