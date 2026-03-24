@@ -429,3 +429,240 @@ var _ = Describe("Scanner Resource Type Resolution", func() {
 		})
 	})
 })
+
+var _ = Describe("Scanner Native Resource Resolution", func() {
+	var (
+		err error
+
+		fakeCheckFactory          *dbfakes.FakeCheckFactory
+		fakeResourceConfigFactory *dbfakes.FakeResourceConfigFactory
+		fakeResolver              *imageresolvertesting.FakeResolver
+		planFactory               atc.PlanFactory
+
+		scanner Scanner
+
+		ctx    context.Context
+		cancel context.CancelFunc
+	)
+
+	BeforeEach(func() {
+		planFactory = atc.NewPlanFactory(0)
+		fakeCheckFactory = new(dbfakes.FakeCheckFactory)
+		fakeResourceConfigFactory = new(dbfakes.FakeResourceConfigFactory)
+		fakeResolver = new(imageresolvertesting.FakeResolver)
+
+		scanner = lidar.NewScanner(fakeCheckFactory, planFactory, 10, fakeResolver, fakeResourceConfigFactory)
+		ctx, cancel = context.WithCancel(context.Background())
+
+		// No resource types in these tests.
+		fakeCheckFactory.ResourceTypesByPipelineReturns(map[int]db.ResourceTypes{}, nil)
+	})
+
+	AfterEach(func() {
+		cancel()
+	})
+
+	JustBeforeEach(func() {
+		err = scanner.Run(ctx)
+	})
+
+	Context("when a registry-image resource exists", func() {
+		var (
+			fakeResource            *dbfakes.FakeResource
+			fakeResourceConfig      *dbfakes.FakeResourceConfig
+			fakeResourceConfigScope *dbfakes.FakeResourceConfigScope
+		)
+
+		BeforeEach(func() {
+			fakeResource = new(dbfakes.FakeResource)
+			fakeResource.IDReturns(10)
+			fakeResource.NameReturns("my-image")
+			fakeResource.TypeReturns("registry-image")
+			fakeResource.TeamNameReturns("main")
+			fakeResource.PipelineNameReturns("my-pipeline")
+			fakeResource.PipelineIDReturns(1)
+			fakeResource.SourceReturns(atc.Source{
+				"repository": "us-docker.pkg.dev/my-project/repo/app",
+				"tag":        "latest",
+			})
+
+			fakeResourceConfig = new(dbfakes.FakeResourceConfig)
+			fakeResourceConfig.IDReturns(42)
+			fakeResourceConfigFactory.FindOrCreateResourceConfigReturns(fakeResourceConfig, nil)
+
+			fakeResourceConfigScope = new(dbfakes.FakeResourceConfigScope)
+			fakeResourceConfigScope.IDReturns(99)
+			fakeResourceConfig.FindOrCreateScopeReturns(fakeResourceConfigScope, nil)
+
+			fakeResolver.ResolveReturns("sha256:nativeresource123", nil)
+
+			fakeCheckFactory.ResourcesReturns([]db.Resource{fakeResource}, nil)
+		})
+
+		It("resolves the digest natively and does not create a check pod", func() {
+			Expect(err).ToNot(HaveOccurred())
+
+			// Verify resolver was called with correct args.
+			Expect(fakeResolver.ResolveCallCount()).To(Equal(1))
+			_, repo, tag, auth := fakeResolver.ResolveArgsForCall(0)
+			Expect(repo).To(Equal("us-docker.pkg.dev/my-project/repo/app"))
+			Expect(tag).To(Equal("latest"))
+			Expect(auth).To(BeNil())
+
+			// Verify resource config was created.
+			Expect(fakeResourceConfigFactory.FindOrCreateResourceConfigCallCount()).To(Equal(1))
+			resourceType, source, cache := fakeResourceConfigFactory.FindOrCreateResourceConfigArgsForCall(0)
+			Expect(resourceType).To(Equal("registry-image"))
+			Expect(source).To(Equal(atc.Source{
+				"repository": "us-docker.pkg.dev/my-project/repo/app",
+				"tag":        "latest",
+			}))
+			Expect(cache).To(BeNil())
+
+			// Verify scope was created and pointed to.
+			Expect(fakeResourceConfig.FindOrCreateScopeCallCount()).To(Equal(1))
+			Expect(fakeResource.SetResourceConfigScopeCallCount()).To(Equal(1))
+
+			// Verify version was saved.
+			Expect(fakeResourceConfigScope.SaveVersionsCallCount()).To(Equal(1))
+			_, versions := fakeResourceConfigScope.SaveVersionsArgsForCall(0)
+			Expect(versions).To(Equal([]atc.Version{{"digest": "sha256:nativeresource123"}}))
+
+			// Verify check end time was updated.
+			Expect(fakeResourceConfigScope.UpdateLastCheckEndTimeCallCount()).To(Equal(1))
+
+			// Verify no check pod was created.
+			Expect(fakeCheckFactory.TryCreateCheckCallCount()).To(Equal(0))
+		})
+
+		Context("with basic auth credentials in source", func() {
+			BeforeEach(func() {
+				fakeResource.SourceReturns(atc.Source{
+					"repository": "private-registry/app",
+					"tag":        "v2",
+					"username":   "myuser",
+					"password":   "mypass",
+				})
+			})
+
+			It("passes credentials to the resolver", func() {
+				Expect(err).ToNot(HaveOccurred())
+				Expect(fakeResolver.ResolveCallCount()).To(Equal(1))
+				_, _, _, auth := fakeResolver.ResolveArgsForCall(0)
+				Expect(auth).ToNot(BeNil())
+				Expect(auth.Username).To(Equal("myuser"))
+				Expect(auth.Password).To(Equal("mypass"))
+			})
+		})
+
+		Context("when check_every is never", func() {
+			BeforeEach(func() {
+				fakeResource.CheckEveryReturns(&atc.CheckEvery{Never: true})
+			})
+
+			It("skips native resolution and does not create a check pod", func() {
+				Expect(err).ToNot(HaveOccurred())
+				Expect(fakeResolver.ResolveCallCount()).To(Equal(0))
+				Expect(fakeCheckFactory.TryCreateCheckCallCount()).To(Equal(0))
+			})
+		})
+
+		Context("when check interval has not elapsed", func() {
+			BeforeEach(func() {
+				fakeResource.CheckEveryReturns(&atc.CheckEvery{Interval: 1 * time.Hour})
+				fakeResource.LastCheckEndTimeReturns(time.Now())
+			})
+
+			It("skips resolution", func() {
+				Expect(err).ToNot(HaveOccurred())
+				Expect(fakeResolver.ResolveCallCount()).To(Equal(0))
+			})
+		})
+
+		Context("when the resolver fails", func() {
+			BeforeEach(func() {
+				fakeResolver.ResolveReturns("", errors.New("registry down"))
+			})
+
+			It("does not error the whole scan", func() {
+				Expect(err).ToNot(HaveOccurred())
+			})
+
+			It("does not save any versions", func() {
+				Expect(fakeResourceConfigScope.SaveVersionsCallCount()).To(Equal(0))
+			})
+		})
+
+		Context("when source has no repository", func() {
+			BeforeEach(func() {
+				fakeResource.SourceReturns(atc.Source{"tag": "latest"})
+			})
+
+			It("does not call the resolver", func() {
+				Expect(err).ToNot(HaveOccurred())
+				Expect(fakeResolver.ResolveCallCount()).To(Equal(0))
+			})
+		})
+	})
+
+	Context("when a non-registry-image resource exists", func() {
+		var fakeResource *dbfakes.FakeResource
+
+		BeforeEach(func() {
+			fakeResource = new(dbfakes.FakeResource)
+			fakeResource.IDReturns(20)
+			fakeResource.NameReturns("my-repo")
+			fakeResource.TypeReturns("git")
+			fakeResource.PipelineIDReturns(1)
+			fakeResource.SourceReturns(atc.Source{"uri": "https://github.com/foo/bar"})
+
+			fakeCheckFactory.ResourcesReturns([]db.Resource{fakeResource}, nil)
+		})
+
+		It("falls through to the normal check path", func() {
+			Expect(err).ToNot(HaveOccurred())
+			Expect(fakeResolver.ResolveCallCount()).To(Equal(0))
+			Expect(fakeCheckFactory.TryCreateCheckCallCount()).To(Equal(1))
+		})
+	})
+
+	Context("when there is a mix of registry-image and other resources", func() {
+		BeforeEach(func() {
+			fakeRegistryResource := new(dbfakes.FakeResource)
+			fakeRegistryResource.IDReturns(10)
+			fakeRegistryResource.NameReturns("my-image")
+			fakeRegistryResource.TypeReturns("registry-image")
+			fakeRegistryResource.TeamNameReturns("main")
+			fakeRegistryResource.PipelineNameReturns("my-pipeline")
+			fakeRegistryResource.PipelineIDReturns(1)
+			fakeRegistryResource.SourceReturns(atc.Source{
+				"repository": "my-org/my-image",
+			})
+
+			fakeGitResource := new(dbfakes.FakeResource)
+			fakeGitResource.IDReturns(20)
+			fakeGitResource.NameReturns("my-repo")
+			fakeGitResource.TypeReturns("git")
+			fakeGitResource.PipelineIDReturns(1)
+			fakeGitResource.SourceReturns(atc.Source{"uri": "https://github.com/foo/bar"})
+
+			fakeResourceConfig := new(dbfakes.FakeResourceConfig)
+			fakeResourceConfig.IDReturns(42)
+			fakeResourceConfigFactory.FindOrCreateResourceConfigReturns(fakeResourceConfig, nil)
+
+			fakeResourceConfigScope := new(dbfakes.FakeResourceConfigScope)
+			fakeResourceConfigScope.IDReturns(99)
+			fakeResourceConfig.FindOrCreateScopeReturns(fakeResourceConfigScope, nil)
+
+			fakeResolver.ResolveReturns("sha256:mixed123", nil)
+
+			fakeCheckFactory.ResourcesReturns([]db.Resource{fakeRegistryResource, fakeGitResource}, nil)
+		})
+
+		It("resolves registry-image natively and checks git normally", func() {
+			Expect(err).ToNot(HaveOccurred())
+			Expect(fakeResolver.ResolveCallCount()).To(Equal(1))
+			Expect(fakeCheckFactory.TryCreateCheckCallCount()).To(Equal(1))
+		})
+	})
+})

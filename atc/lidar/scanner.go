@@ -293,6 +293,14 @@ func (s *scanner) scanResources(ctx context.Context, resources []db.Resource, re
 								logger.Error("panic-in-scanner-run", err)
 							}
 						}()
+
+						// Resolve registry-image resources natively when
+						// the resolver is available — no check pod needed.
+						if s.resolver != nil && rs.Type() == "registry-image" {
+							s.resolveResource(ctx, rs)
+							return
+						}
+
 						s.check(ctx, rs, resourceTypes)
 					}()
 
@@ -317,6 +325,109 @@ func (s *scanner) scanResources(ctx context.Context, resources []db.Resource, re
 		logger.Debug("lidar-scanner-cancelled", lager.Data{"error": ctx.Err().Error()})
 		return
 	}
+}
+
+func (s *scanner) resolveResource(ctx context.Context, rs db.Resource) {
+	logger := lagerctx.FromContext(ctx)
+	logger = logger.Session("resolve-resource", lager.Data{
+		"name":     rs.Name(),
+		"pipeline": rs.PipelineName(),
+		"team":     rs.TeamName(),
+	})
+
+	_, span := tracing.StartSpan(ctx, "scanner.resolveResource", tracing.Attrs{
+		"team":     rs.TeamName(),
+		"pipeline": rs.PipelineName(),
+		"resource": rs.Name(),
+	})
+	defer span.End()
+
+	// Skip if check_every is set to never.
+	if rs.CheckEvery() != nil && rs.CheckEvery().Never {
+		logger.Debug("skip-check-every-never")
+		return
+	}
+
+	// Respect check interval.
+	interval := atc.DefaultCheckInterval
+	if rs.CheckEvery() != nil && rs.CheckEvery().Interval > 0 {
+		interval = rs.CheckEvery().Interval
+	}
+	if interval > 0 && !rs.LastCheckEndTime().IsZero() && time.Now().Before(rs.LastCheckEndTime().Add(interval)) {
+		logger.Debug("skip-interval-not-elapsed")
+		return
+	}
+
+	// Extract repository and tag from source config.
+	source := rs.Source()
+	repository, _ := source["repository"].(string)
+	if repository == "" {
+		logger.Error("missing-repository-in-source", nil)
+		return
+	}
+	tag, _ := source["tag"].(string)
+
+	// Extract basic auth if present.
+	var auth *imageresolver.BasicAuth
+	if username, ok := source["username"].(string); ok && username != "" {
+		password, _ := source["password"].(string)
+		auth = &imageresolver.BasicAuth{
+			Username: username,
+			Password: password,
+		}
+	}
+
+	// Resolve the digest via registry API.
+	digest, err := s.resolver.Resolve(ctx, repository, tag, auth)
+	if err != nil {
+		logger.Error("failed-to-resolve-digest", err)
+		return
+	}
+
+	logger.Debug("resolved-digest", lager.Data{"digest": digest})
+
+	// Find or create resource config.
+	resourceConfig, err := s.resourceConfigFactory.FindOrCreateResourceConfig(
+		"registry-image",
+		source,
+		nil, // no parent resource cache — native resolution
+	)
+	if err != nil {
+		logger.Error("failed-to-find-or-create-resource-config", err)
+		return
+	}
+
+	// Get or create a scope for this resource.
+	scope, err := resourceConfig.FindOrCreateScope(nil)
+	if err != nil {
+		logger.Error("failed-to-find-or-create-scope", err)
+		return
+	}
+
+	// Point the resource to this config scope.
+	err = rs.SetResourceConfigScope(scope)
+	if err != nil {
+		logger.Error("failed-to-set-resource-config-scope", err)
+		return
+	}
+
+	// Save the resolved version.
+	version := atc.Version{"digest": digest}
+	err = scope.SaveVersions(db.SpanContext{}, []atc.Version{version})
+	if err != nil {
+		logger.Error("failed-to-save-versions", err)
+		return
+	}
+
+	// Update check end time for interval tracking.
+	_, err = scope.UpdateLastCheckEndTime(true)
+	if err != nil {
+		logger.Error("failed-to-update-last-check-end-time", err)
+		return
+	}
+
+	metric.Metrics.ChecksEnqueued.Inc()
+	logger.Info("resolved-resource", lager.Data{"digest": digest})
 }
 
 func (s *scanner) check(ctx context.Context, checkable db.Checkable, resourceTypes db.ResourceTypes) {
