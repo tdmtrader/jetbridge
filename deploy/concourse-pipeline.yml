@@ -19,6 +19,7 @@ jobs:
       trigger: true
     - get: repo
       trigger: true
+      params: {depth: 1}
   - task: build-and-vet
     config:
       platform: linux
@@ -52,6 +53,7 @@ jobs:
       passed: [build-and-vet]
     - get: repo
       trigger: true
+      params: {depth: 1}
       passed: [build-and-vet]
   - task: unit-tests
     config:
@@ -97,6 +99,7 @@ jobs:
       passed: [unit-tests]
     - get: repo
       trigger: true
+      params: {depth: 1}
       passed: [unit-tests]
   - task: k8s-runtime-integration-tests
     config:
@@ -124,6 +127,7 @@ jobs:
       passed: [k8s-runtime-tests]
     - get: repo
       trigger: true
+      params: {depth: 1}
       passed: [k8s-runtime-tests]
   - task: k8s-live-integration-tests
     config:
@@ -172,6 +176,7 @@ jobs:
       passed: [k8s-live-tests]
     - get: repo
       trigger: true
+      params: {depth: 1}
       passed: [k8s-live-tests]
   - task: push-jetbridge-to-main
     config:
@@ -206,6 +211,7 @@ jobs:
       passed: [push-to-main]
     - get: repo
       trigger: true
+      params: {depth: 1}
       passed: [push-to-main]
   - task: build-and-push-concourse-image
     privileged: true
