@@ -8,7 +8,7 @@ _None_
 
 ## Completed / Archived Tracks
 
-### [~] Track: Finish Setup (Conductor Migration)
+### [x] Track: Finish Setup (Conductor Migration)
 _Link: [./archive/finish_setup_20260303/](./archive/finish_setup_20260303/)_
 
 ---
