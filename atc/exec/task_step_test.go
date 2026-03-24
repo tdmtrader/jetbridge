@@ -1414,10 +1414,10 @@ var _ = Describe("TaskStep", func() {
 			}
 		})
 
-		It("returns an error", func() {
-			Expect(stepErr).To(HaveOccurred())
-			Expect(stepErr.Error()).To(ContainSubstring("sidecar \"redis\": resolve image"))
-			Expect(stepErr.Error()).To(ContainSubstring("registry unreachable"))
+		It("falls through to the original tag-based image (best-effort)", func() {
+			Expect(stepErr).ToNot(HaveOccurred())
+			Expect(chosenContainer.Spec.Sidecars).To(HaveLen(1))
+			Expect(chosenContainer.Spec.Sidecars[0].Image).To(Equal("redis:7"))
 		})
 	})
 

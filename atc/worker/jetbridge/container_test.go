@@ -3966,6 +3966,75 @@ var _ = Describe("Run with sidecar containers", func() {
 			Expect(pod.Spec.Containers[1].VolumeMounts).To(Equal(pod.Spec.Containers[0].VolumeMounts))
 		})
 	})
+
+	Context("when a sidecar image has a docker:/// prefix (image_artifact handoff)", func() {
+		BeforeEach(func() {
+			setupFakeDBContainer(fakeDBWorker, "sidecar-prefix-handle")
+
+			var err error
+			container, _, err = worker.FindOrCreateContainer(
+				ctx,
+				db.NewFixedHandleContainerOwner("sidecar-prefix-handle"),
+				db.ContainerMetadata{Type: db.ContainerTypeTask},
+				runtime.ContainerSpec{
+					TeamID:   1,
+					Dir:      "/workdir",
+					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+					Sidecars: []atc.SidecarConfig{
+						{
+							Name:  "from-artifact",
+							Image: "docker:///us-docker.pkg.dev/myproject/repo/myimage@sha256:abc123",
+						},
+						{
+							Name:  "from-artifact-no-slash",
+							Image: "docker://us-docker.pkg.dev/myproject/repo/other@sha256:def456",
+						},
+						{
+							Name:  "raw-prefix",
+							Image: "raw:///some-image:latest",
+						},
+						{
+							Name:  "plain-ref",
+							Image: "redis:7",
+						},
+					},
+				},
+				delegate,
+			)
+			Expect(err).ToNot(HaveOccurred())
+		})
+
+		It("strips Concourse URL prefixes from sidecar images in the pod spec", func() {
+			_, err := container.Run(ctx, runtime.ProcessSpec{
+				Path: "/bin/sh",
+				Args: []string{"-c", "echo hello"},
+			}, runtime.ProcessIO{})
+			Expect(err).ToNot(HaveOccurred())
+
+			pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			pod := pods.Items[0]
+
+			// main + 4 sidecars
+			Expect(pod.Spec.Containers).To(HaveLen(5))
+
+			By("stripping docker:/// prefix")
+			Expect(pod.Spec.Containers[1].Name).To(Equal("from-artifact"))
+			Expect(pod.Spec.Containers[1].Image).To(Equal("us-docker.pkg.dev/myproject/repo/myimage@sha256:abc123"))
+
+			By("stripping docker:// prefix (two slashes)")
+			Expect(pod.Spec.Containers[2].Name).To(Equal("from-artifact-no-slash"))
+			Expect(pod.Spec.Containers[2].Image).To(Equal("us-docker.pkg.dev/myproject/repo/other@sha256:def456"))
+
+			By("stripping raw:/// prefix")
+			Expect(pod.Spec.Containers[3].Name).To(Equal("raw-prefix"))
+			Expect(pod.Spec.Containers[3].Image).To(Equal("some-image:latest"))
+
+			By("leaving plain image references unchanged")
+			Expect(pod.Spec.Containers[4].Name).To(Equal("plain-ref"))
+			Expect(pod.Spec.Containers[4].Image).To(Equal("redis:7"))
+		})
+	})
 })
 
 // ---------------------------------------------------------------

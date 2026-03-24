@@ -1,0 +1,17 @@
+{
+  "trackId": "sidecar_image_handoff_20260323",
+  "type": "bugfix",
+  "status": "in_progress",
+  "description": "Fix sidecar image_artifact docker:/// prefix not stripped and auth not forwarded for tag-based resolution",
+  "createdAt": "2026-03-24T01:04:42.769Z",
+  "updatedAt": "2026-03-24T01:31:23.708Z",
+  "sessions": [
+    {
+      "slotIndex": 0,
+      "engineType": "claude",
+      "aiSessionId": "a0bf01d8-8cba-477b-8303-a790bc328065",
+      "accountId": "system-claude",
+      "updatedAt": "2026-03-24T01:04:56.964Z"
+    }
+  ]
+}

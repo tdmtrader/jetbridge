@@ -8,7 +8,7 @@ _None_
 
 ## Completed / Archived Tracks
 
-### [x] Track: Finish Setup (Conductor Migration)
+### [~] Track: Finish Setup (Conductor Migration)
 _Link: [./archive/finish_setup_20260303/](./archive/finish_setup_20260303/)_
 
 ---
@@ -295,5 +295,20 @@ _Link: [./tracks/gcp_artifact_auth_20260319/](./tracks/gcp_artifact_auth_2026031
 
 ### [ ] Track: Burstable QoS for task containers
 _Link: [./tracks/burstable_qos_for_task_containers_20260321/](./tracks/burstable_qos_for_task_containers_20260321/)_
+
+---
+
+### [ ] Track: Test and Deploy Pipeline
+_Link: [./tracks/test_and_deploy_pipeline_20260322/](./tracks/test_and_deploy_pipeline_20260322/)_
+
+---
+
+### [ ] Track: Sidecar image handoff
+_Link: [./tracks/sidecar_image_handoff_20260323/](./tracks/sidecar_image_handoff_20260323/)_
+
+---
+
+### [ ] Track: Load var
+_Link: [./tracks/load_var_20260323/](./tracks/load_var_20260323/)_
 
 ---

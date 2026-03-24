@@ -306,7 +306,10 @@ func (step *TaskStep) run(ctx context.Context, state RunState, delegate TaskDele
 		}
 	}
 
-	// Pin sidecar images to digests via OCI registry resolution
+	// Pin sidecar images to digests via OCI registry resolution (best-effort).
+	// If resolution fails (e.g. auth not available for private registries),
+	// fall through to the original tag-based reference and let the kubelet
+	// pull it using pod-level imagePullSecrets.
 	if step.imageResolver != nil {
 		for i, sc := range containerSpec.Sidecars {
 			if sc.Image == "" || sc.ImageArtifact != "" {
@@ -318,7 +321,12 @@ func (step *TaskStep) run(ctx context.Context, state RunState, delegate TaskDele
 			repo, tag := parseImageRef(sc.Image)
 			digest, err := step.imageResolver.Resolve(ctx, repo, tag, nil)
 			if err != nil {
-				return false, fmt.Errorf("sidecar %q: resolve image %q: %w", sc.Name, sc.Image, err)
+				logger.Info("sidecar-image-resolve-skipped", lager.Data{
+					"sidecar": sc.Name,
+					"image":   sc.Image,
+					"reason":  err.Error(),
+				})
+				continue
 			}
 			containerSpec.Sidecars[i].Image = repo + "@" + digest
 		}
