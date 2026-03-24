@@ -313,6 +313,15 @@ func (step *GetStep) run(ctx context.Context, state RunState, delegate GetDelega
 			fromCache,
 		)
 
+		// Store the image reference URL so that downstream task steps
+		// (including sidecars using image_artifact) can resolve the image.
+		if imageURL := imageURLFromGetPlan(step.plan, version); imageURL != "" {
+			state.ArtifactRepository().RegisterImageRef(
+				build.ArtifactName(step.plan.Name),
+				imageURL,
+			)
+		}
+
 		if step.plan.Resource != "" {
 			delegate.UpdateResourceVersion(logger, step.plan.Resource, versionResult)
 		}
@@ -526,13 +535,12 @@ func (step *GetStep) resourceMountVolume(mounts []runtime.VolumeMount) runtime.V
 	return nil
 }
 
-// imageURLFromGetPlan constructs a Docker image reference URL from a
-// registry-image get plan's source and resolved version.
+// imageURLFromGetPlan constructs a Docker image reference URL from a get
+// plan's source and resolved version. It works for any resource type whose
+// source contains a "repository" field and whose version contains a "digest"
+// or whose source contains a "tag" — i.e. any registry-image-compatible
+// resource type (including custom wrappers with GAR/ECR auth).
 func imageURLFromGetPlan(plan atc.GetPlan, version atc.Version) string {
-	if plan.Type != "registry-image" {
-		return ""
-	}
-
 	repo, ok := plan.Source["repository"].(string)
 	if !ok || repo == "" {
 		return ""

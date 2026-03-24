@@ -1421,6 +1421,124 @@ var _ = Describe("TaskStep", func() {
 		})
 	})
 
+	Context("when sidecar image has a docker:/// prefix", func() {
+		var fakeResolver *imageresolvertesting.FakeResolver
+
+		BeforeEach(func() {
+			fakeResolver = &imageresolvertesting.FakeResolver{}
+			fakeResolver.ResolveStub(func(ctx context.Context, repo string, tag string, auth *imageresolver.BasicAuth) (string, error) {
+				return "sha256:stripped" + repo + tag, nil
+			})
+
+			taskStepOptions = []exec.TaskStepOption{exec.WithImageResolver(fakeResolver)}
+
+			taskPlan.Sidecars = []atc.SidecarSource{
+				{Config: &atc.SidecarConfig{
+					Name:  "redis",
+					Image: "docker:///redis:7",
+					Ports: []atc.SidecarPort{{ContainerPort: 6379}},
+				}},
+			}
+		})
+
+		It("strips the prefix before resolving the digest", func() {
+			Expect(stepErr).ToNot(HaveOccurred())
+			Expect(fakeResolver.ResolveCallCount()).To(Equal(1))
+			_, resolvedRepo, resolvedTag, _ := fakeResolver.ResolveArgsForCall(0)
+			Expect(resolvedRepo).To(Equal("redis"))
+			Expect(resolvedTag).To(Equal("7"))
+		})
+
+		It("sets the resolved digest on the sidecar", func() {
+			Expect(chosenContainer.Spec.Sidecars).To(HaveLen(1))
+			Expect(chosenContainer.Spec.Sidecars[0].Image).To(Equal("redis@sha256:strippedredis7"))
+		})
+	})
+
+	Context("when sidecar image has a docker:// prefix (double-slash)", func() {
+		var fakeResolver *imageresolvertesting.FakeResolver
+
+		BeforeEach(func() {
+			fakeResolver = &imageresolvertesting.FakeResolver{}
+			fakeResolver.ResolveStub(func(ctx context.Context, repo string, tag string, auth *imageresolver.BasicAuth) (string, error) {
+				return "sha256:stripped" + repo + tag, nil
+			})
+
+			taskStepOptions = []exec.TaskStepOption{exec.WithImageResolver(fakeResolver)}
+
+			taskPlan.Sidecars = []atc.SidecarSource{
+				{Config: &atc.SidecarConfig{
+					Name:  "mydb",
+					Image: "docker://myregistry.example.com/mydb:v3",
+					Ports: []atc.SidecarPort{{ContainerPort: 5432}},
+				}},
+			}
+		})
+
+		It("strips the prefix and resolves correctly", func() {
+			Expect(stepErr).ToNot(HaveOccurred())
+			Expect(fakeResolver.ResolveCallCount()).To(Equal(1))
+			_, resolvedRepo, resolvedTag, _ := fakeResolver.ResolveArgsForCall(0)
+			Expect(resolvedRepo).To(Equal("myregistry.example.com/mydb"))
+			Expect(resolvedTag).To(Equal("v3"))
+		})
+	})
+
+	Context("when sidecar image has a raw:/// prefix", func() {
+		var fakeResolver *imageresolvertesting.FakeResolver
+
+		BeforeEach(func() {
+			fakeResolver = &imageresolvertesting.FakeResolver{}
+			fakeResolver.ResolveStub(func(ctx context.Context, repo string, tag string, auth *imageresolver.BasicAuth) (string, error) {
+				return "sha256:stripped" + repo + tag, nil
+			})
+
+			taskStepOptions = []exec.TaskStepOption{exec.WithImageResolver(fakeResolver)}
+
+			taskPlan.Sidecars = []atc.SidecarSource{
+				{Config: &atc.SidecarConfig{
+					Name:  "nginx",
+					Image: "raw:///nginx:alpine",
+					Ports: []atc.SidecarPort{{ContainerPort: 80}},
+				}},
+			}
+		})
+
+		It("strips the prefix and resolves correctly", func() {
+			Expect(stepErr).ToNot(HaveOccurred())
+			Expect(fakeResolver.ResolveCallCount()).To(Equal(1))
+			_, resolvedRepo, resolvedTag, _ := fakeResolver.ResolveArgsForCall(0)
+			Expect(resolvedRepo).To(Equal("nginx"))
+			Expect(resolvedTag).To(Equal("alpine"))
+		})
+	})
+
+	Context("when sidecar image has a docker:/// prefix and is already digest-pinned", func() {
+		var fakeResolver *imageresolvertesting.FakeResolver
+
+		BeforeEach(func() {
+			fakeResolver = &imageresolvertesting.FakeResolver{}
+			fakeResolver.ResolveReturns("sha256:shouldnotbecalled", nil)
+
+			taskStepOptions = []exec.TaskStepOption{exec.WithImageResolver(fakeResolver)}
+
+			taskPlan.Sidecars = []atc.SidecarSource{
+				{Config: &atc.SidecarConfig{
+					Name:  "redis",
+					Image: "docker:///redis@sha256:alreadypinned",
+					Ports: []atc.SidecarPort{{ContainerPort: 6379}},
+				}},
+			}
+		})
+
+		It("skips resolution for already-pinned digests", func() {
+			Expect(stepErr).ToNot(HaveOccurred())
+			Expect(chosenContainer.Spec.Sidecars).To(HaveLen(1))
+			Expect(chosenContainer.Spec.Sidecars[0].Image).To(Equal("docker:///redis@sha256:alreadypinned"))
+			Expect(fakeResolver.ResolveCallCount()).To(Equal(0))
+		})
+	})
+
 	Context("when a sidecar file references an unknown source", func() {
 			BeforeEach(func() {
 				taskPlan.Sidecars = []atc.SidecarSource{{File: "nonexistent/sidecars/db.yml"}}

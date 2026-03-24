@@ -318,7 +318,10 @@ func (step *TaskStep) run(ctx context.Context, state RunState, delegate TaskDele
 			if strings.Contains(sc.Image, "@sha256:") {
 				continue // already pinned
 			}
-			repo, tag := parseImageRef(sc.Image)
+			// Strip Concourse-internal prefixes before parsing so that
+			// parseImageRef sees a bare image reference.
+			bare := stripDockerPrefix(sc.Image)
+			repo, tag := parseImageRef(bare)
 			digest, err := step.imageResolver.Resolve(ctx, repo, tag, nil)
 			if err != nil {
 				logger.Info("sidecar-image-resolve-skipped", lager.Data{
@@ -754,6 +757,17 @@ func ensureTrailingSlash(path string) string {
 		return path
 	}
 	return path + "/"
+}
+
+// stripDockerPrefix removes Concourse-internal URL prefixes from an image
+// reference so it can be parsed as a bare Docker image ref.
+func stripDockerPrefix(image string) string {
+	for _, prefix := range []string{"docker:///", "docker://", "raw:///"} {
+		if strings.HasPrefix(image, prefix) {
+			return strings.TrimPrefix(image, prefix)
+		}
+	}
+	return image
 }
 
 // parseImageRef splits an image reference like "redis:7" or "myrepo/myimage"

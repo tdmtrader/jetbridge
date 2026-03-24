@@ -606,6 +606,54 @@ var _ = Describe("GetStep", func() {
 		It("does not return an err", func() {
 			Expect(stepErr).ToNot(HaveOccurred())
 		})
+
+		Context("when the source has a repository and version has a digest", func() {
+			BeforeEach(func() {
+				getPlan.Source = atc.Source{
+					"repository": "my-org/my-app",
+				}
+				getPlan.Version = &atc.Version{
+					"digest": "sha256:normalpath123",
+				}
+				chosenContainer.ProcessDefs[0].Stub.Output = resource.VersionResult{
+					Version: atc.Version{"digest": "sha256:normalpath123"},
+				}
+			})
+
+			It("registers the image ref URL in the artifact repository", func() {
+				imageRef, found := artifactRepository.ImageRefFor(build.ArtifactName("some-name"))
+				Expect(found).To(BeTrue())
+				Expect(imageRef).To(Equal("docker:///my-org/my-app@sha256:normalpath123"))
+			})
+		})
+
+		Context("when the source has a repository and tag but no digest", func() {
+			BeforeEach(func() {
+				getPlan.Source = atc.Source{
+					"repository": "my-org/my-app",
+					"tag":        "v2",
+				}
+				getPlan.Version = &atc.Version{
+					"ref": "abc123",
+				}
+				chosenContainer.ProcessDefs[0].Stub.Output = resource.VersionResult{
+					Version: atc.Version{"ref": "abc123"},
+				}
+			})
+
+			It("registers the image ref URL with the tag", func() {
+				imageRef, found := artifactRepository.ImageRefFor(build.ArtifactName("some-name"))
+				Expect(found).To(BeTrue())
+				Expect(imageRef).To(Equal("docker:///my-org/my-app:v2"))
+			})
+		})
+
+		Context("when the source has no repository field", func() {
+			It("does not register an image ref", func() {
+				_, found := artifactRepository.ImageRefFor(build.ArtifactName("some-name"))
+				Expect(found).To(BeFalse())
+			})
+		})
 	})
 
 	Context("when get script fails", func() {
@@ -739,6 +787,11 @@ var _ = Describe("GetStep", func() {
 			It("still runs the full get step", func() {
 				Expect(fakePool.FindOrSelectWorkerCallCount()).To(Equal(1))
 			})
+
+			It("does not register an image ref (no repository in source)", func() {
+				_, found := artifactRepository.ImageRefFor(build.ArtifactName("some-name"))
+				Expect(found).To(BeFalse())
+			})
 		})
 
 		Context("when the resource type is NOT registry-image", func() {
@@ -751,6 +804,28 @@ var _ = Describe("GetStep", func() {
 
 			It("still runs the full get step", func() {
 				Expect(fakePool.FindOrSelectWorkerCallCount()).To(Equal(1))
+			})
+		})
+
+		Context("when a custom resource type has a repository and digest in source", func() {
+			BeforeEach(func() {
+				getPlan.Type = "gar-image"
+				getPlan.Source = atc.Source{
+					"repository": "us-docker.pkg.dev/my-project/repo/my-image",
+				}
+				getPlan.Version = &atc.Version{
+					"digest": "sha256:customdigest999",
+				}
+				getPlan.Params = atc.Params{}
+				getPlan.TypeImage = atc.TypeImage{
+					BaseType: "registry-image",
+				}
+			})
+
+			It("registers the image ref URL even though type is not registry-image", func() {
+				imageRef, found := artifactRepository.ImageRefFor(build.ArtifactName("some-name"))
+				Expect(found).To(BeTrue())
+				Expect(imageRef).To(Equal("docker:///us-docker.pkg.dev/my-project/repo/my-image@sha256:customdigest999"))
 			})
 		})
 	})
