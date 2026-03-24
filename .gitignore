@@ -6,11 +6,11 @@ node_modules
 .yarn
 *-packr.go
 tags
-web/public/elm.js
-web/public/elm.min.js
-web/public/bundle.js
-web/public/*.bundle.js
-web/public/main.css
+# Frontend build outputs - committed to git so the Go binary embeds them
+# via //go:embed without requiring Node.js at build time.
+# Rebuild with: yarn install && yarn run build
+# web/public/elm.js        # unminified, not committed (1.3MB)
+web/public/main.out.css
 docker-compose.override.yml
 *.coverprofile
 *.coverprofile.*

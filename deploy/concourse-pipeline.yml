@@ -226,9 +226,14 @@ jobs:
         - -exc
         - |
           echo "=== Cloning repo (shallow) for build ==="
-          git clone --depth 1 --branch jetbridge https://github.com/tdmtrader/jetbridge.git repo
+          git clone --depth 1 --branch main https://github.com/tdmtrader/jetbridge.git repo
           cd repo
           SHORT_SHA=$(git rev-parse --short HEAD)
+
+          echo "=== Building concourse binary (frontend assets embedded from git) ==="
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o concourse-linux-amd64 ./cmd/concourse
+          ls -lh concourse-linux-amd64
+          echo "=== Binary built ==="
 
           REGISTRY="registry-docker-registry.cicd.svc.cluster.local:5000"
           GHCR="ghcr.io/tdmtrader/concourse"
@@ -274,18 +279,30 @@ jobs:
           echo "=== Logging into GHCR ==="
           echo "${GITHUB_TOKEN}" | kubectl exec -i -n cicd ${BUILDER_POD} -- docker login ghcr.io -u tdmtrader --password-stdin
 
-          echo "=== Copying repo to builder pod ==="
-          tar cf - . | kubectl exec -i -n cicd ${BUILDER_POD} -- tar xf - -C /tmp/
+          echo "=== Copying binary to builder pod ==="
+          kubectl cp concourse-linux-amd64 cicd/${BUILDER_POD}:/tmp/concourse-linux-amd64
 
-          echo "=== Building Docker image (multi-stage: frontend + backend) ==="
+          echo "=== Copying Dockerfile to builder pod ==="
+          cat <<'DOCKERFILE' > /tmp/Dockerfile
+          FROM ubuntu:22.04
+          RUN apt-get update && \
+              apt-get install -y ca-certificates dumb-init && \
+              rm -rf /var/lib/apt/lists/*
+          COPY concourse-linux-amd64 /usr/local/concourse/bin/concourse
+          RUN chmod +x /usr/local/concourse/bin/concourse
+          ENV PATH="/usr/local/concourse/bin:${PATH}"
+          ENTRYPOINT ["dumb-init", "concourse"]
+          DOCKERFILE
+          kubectl cp /tmp/Dockerfile cicd/${BUILDER_POD}:/tmp/Dockerfile
+
+          echo "=== Building Docker image ==="
           kubectl exec -n cicd ${BUILDER_POD} -- \
             docker build \
-              --platform linux/amd64 \
               -t registry.home/jetbridge:latest \
               -t ${REGISTRY}/jetbridge:latest \
               -t ${GHCR}:${SHORT_SHA} \
               -t ${GHCR}:latest \
-              -f /tmp/Dockerfile.build /tmp/
+              -f /tmp/Dockerfile /tmp/
 
           echo "=== Pushing to local registries ==="
           kubectl exec -n cicd ${BUILDER_POD} -- docker push registry.home/jetbridge:latest
