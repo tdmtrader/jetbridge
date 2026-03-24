@@ -313,9 +313,7 @@ jobs:
 
           echo "=== Restarting concourse-web deployment ==="
           kubectl rollout restart deployment/concourse-web -n cicd
-          echo "Waiting for rollout to complete..."
-          kubectl rollout status deployment/concourse-web -n cicd --timeout=180s
           echo ""
-          echo "=== Self-upgrade complete ==="
-          echo "New pod:"
-          kubectl get pods -n cicd -l app=concourse-web
+          echo "=== Self-upgrade initiated ==="
+          echo "Note: not waiting for rollout — the restart kills the web pod"
+          echo "that is tracking this build, which would leave it stuck forever."
