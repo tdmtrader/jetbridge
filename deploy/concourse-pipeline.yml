@@ -185,7 +185,7 @@ jobs:
       inputs:
       - name: repo
       params:
-        GITHUB_TOKEN: ((github_token))
+        GITHUB_TOKEN: ((github-token))
       run:
         path: sh
         args:
@@ -219,7 +219,7 @@ jobs:
       platform: linux
       rootfs_uri: docker:///registry.home/concourse-test-runner:v5
       params:
-        GITHUB_TOKEN: ((github_token))
+        GITHUB_TOKEN: ((github-token))
       run:
         path: sh
         args:
