@@ -5,21 +5,13 @@ resources:
     uri: https://github.com/tdmtrader/jetbridge.git
     branch: jetbridge
 
-- name: trigger
-  type: time
-  source:
-    interval: 5m
-
 jobs:
 - name: build-and-vet
   serial_groups: [pipeline]
   plan:
-  - in_parallel:
-    - get: trigger
-      trigger: true
-    - get: repo
-      trigger: true
-      params: {depth: 1}
+  - get: repo
+    trigger: true
+    params: {depth: 1}
   - task: build-and-vet
     config:
       platform: linux
@@ -47,14 +39,10 @@ jobs:
 - name: unit-tests
   serial_groups: [pipeline]
   plan:
-  - in_parallel:
-    - get: trigger
-      trigger: true
-      passed: [build-and-vet]
-    - get: repo
-      trigger: true
-      params: {depth: 1}
-      passed: [build-and-vet]
+  - get: repo
+    trigger: true
+    params: {depth: 1}
+    passed: [build-and-vet]
   - task: unit-tests
     config:
       platform: linux
@@ -93,14 +81,10 @@ jobs:
   serial: true
   serial_groups: [pipeline]
   plan:
-  - in_parallel:
-    - get: trigger
-      trigger: true
-      passed: [unit-tests]
-    - get: repo
-      trigger: true
-      params: {depth: 1}
-      passed: [unit-tests]
+  - get: repo
+    trigger: true
+    params: {depth: 1}
+    passed: [unit-tests]
   - task: k8s-runtime-integration-tests
     config:
       platform: linux
@@ -121,14 +105,10 @@ jobs:
   serial: true
   serial_groups: [pipeline]
   plan:
-  - in_parallel:
-    - get: trigger
-      trigger: true
-      passed: [k8s-runtime-tests]
-    - get: repo
-      trigger: true
-      params: {depth: 1}
-      passed: [k8s-runtime-tests]
+  - get: repo
+    trigger: true
+    params: {depth: 1}
+    passed: [k8s-runtime-tests]
   - task: k8s-live-integration-tests
     config:
       platform: linux
@@ -170,14 +150,10 @@ jobs:
 - name: push-to-main
   serial_groups: [pipeline]
   plan:
-  - in_parallel:
-    - get: trigger
-      trigger: true
-      passed: [k8s-live-tests]
-    - get: repo
-      trigger: true
-      params: {depth: 1}
-      passed: [k8s-live-tests]
+  - get: repo
+    trigger: true
+    params: {depth: 1}
+    passed: [k8s-live-tests]
   - task: push-jetbridge-to-main
     config:
       platform: linux
@@ -205,14 +181,10 @@ jobs:
 - name: build-and-push-image
   serial_groups: [pipeline]
   plan:
-  - in_parallel:
-    - get: trigger
-      trigger: true
-      passed: [push-to-main]
-    - get: repo
-      trigger: true
-      params: {depth: 1}
-      passed: [push-to-main]
+  - get: repo
+    trigger: true
+    params: {depth: 1}
+    passed: [push-to-main]
   - task: build-and-push-concourse-image
     privileged: true
     config:
@@ -320,8 +292,9 @@ jobs:
 - name: self-upgrade
   serial_groups: [pipeline]
   plan:
-  - get: trigger
+  - get: repo
     trigger: true
+    params: {depth: 1}
     passed: [build-and-push-image]
   - task: self-upgrade
     config:
