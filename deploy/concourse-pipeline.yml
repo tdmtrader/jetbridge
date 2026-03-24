@@ -236,7 +236,7 @@ jobs:
           echo "=== Binary built ==="
 
           REGISTRY="registry-docker-registry.cicd.svc.cluster.local:5000"
-          GHCR="ghcr.io/tdmtrader/concourse"
+          GHCR="ghcr.io/tdmtrader/jetbridge"
           BUILDER_POD="image-builder-$$"
 
           cleanup_builder() { kubectl delete pod -n cicd ${BUILDER_POD} --grace-period=0 --force 2>/dev/null || true; }
