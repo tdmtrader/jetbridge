@@ -1,19 +1,14 @@
-resource_types:
-- name: custom-time
-  type: registry-image
-  source:
-    repository: concourse/time-resource
-
 resources:
+- name: repo
+  type: git
+  source:
+    uri: https://github.com/tdmtrader/jetbridge.git
+    branch: jetbridge
+
 - name: trigger
   type: time
   source:
     interval: 5m
-
-- name: custom-trigger
-  type: custom-time
-  source:
-    interval: 10m
 
 jobs:
 - name: build-and-vet
@@ -22,17 +17,20 @@ jobs:
   - in_parallel:
     - get: trigger
       trigger: true
-    - get: custom-trigger
+    - get: repo
+      trigger: true
   - task: build-and-vet
     config:
       platform: linux
       rootfs_uri: docker:///registry.home/concourse-test-runner:v5
+      inputs:
+      - name: repo
       run:
         path: sh
         args:
         - -exc
         - |
-          cd /src
+          cd repo
           echo "=== Verifying full build ==="
           go build ./cmd/concourse/...
           echo "=== Build successful ==="
@@ -48,19 +46,25 @@ jobs:
 - name: unit-tests
   serial_groups: [pipeline]
   plan:
-  - get: trigger
-    trigger: true
-    passed: [build-and-vet]
+  - in_parallel:
+    - get: trigger
+      trigger: true
+      passed: [build-and-vet]
+    - get: repo
+      trigger: true
+      passed: [build-and-vet]
   - task: unit-tests
     config:
       platform: linux
       rootfs_uri: docker:///registry.home/concourse-test-runner:v5
+      inputs:
+      - name: repo
       run:
         path: sh
         args:
         - -exc
         - |
-          cd /src
+          cd repo
           echo "=== Running unit tests across the full codebase ==="
           echo "Excluding packages that require external infrastructure"
           echo ""
@@ -87,19 +91,25 @@ jobs:
   serial: true
   serial_groups: [pipeline]
   plan:
-  - get: trigger
-    trigger: true
-    passed: [unit-tests]
+  - in_parallel:
+    - get: trigger
+      trigger: true
+      passed: [unit-tests]
+    - get: repo
+      trigger: true
+      passed: [unit-tests]
   - task: k8s-runtime-integration-tests
     config:
       platform: linux
       rootfs_uri: docker:///registry.home/concourse-test-runner:v5
+      inputs:
+      - name: repo
       run:
         path: sh
         args:
         - -exc
         - |
-          cd /src
+          cd repo
           echo "=== Running jetbridge full test suite ==="
           go test -v -count=1 -timeout 5m ./atc/worker/jetbridge/...
           echo "=== All jetbridge tests passed ==="
@@ -108,13 +118,19 @@ jobs:
   serial: true
   serial_groups: [pipeline]
   plan:
-  - get: trigger
-    trigger: true
-    passed: [k8s-runtime-tests]
+  - in_parallel:
+    - get: trigger
+      trigger: true
+      passed: [k8s-runtime-tests]
+    - get: repo
+      trigger: true
+      passed: [k8s-runtime-tests]
   - task: k8s-live-integration-tests
     config:
       platform: linux
       rootfs_uri: docker:///registry.home/concourse-test-runner:v5
+      inputs:
+      - name: repo
       run:
         path: sh
         args:
@@ -129,7 +145,6 @@ jobs:
           kubectl config use-context local
           echo "Kubeconfig created, testing: $(kubectl get pods -n concourse --no-headers 2>&1 | wc -l) pods visible"
 
-          # Ensure tests run in the concourse namespace where RBAC allows access
           export K8S_TEST_NAMESPACE=concourse
           echo "K8S_TEST_NAMESPACE=$K8S_TEST_NAMESPACE"
 
@@ -141,37 +156,76 @@ jobs:
           done
           echo ""
 
-          cd /src
+          cd repo
           echo "=== Running jetbridge live integration tests ==="
           echo "These tests create real K8s pods against the live cluster."
           echo ""
           go test -tags live -v -count=1 -timeout 5m ./atc/worker/jetbridge/...
           echo "=== Live integration tests passed ==="
 
-- name: build-image
+- name: push-to-main
   serial_groups: [pipeline]
   plan:
-  - get: trigger
-    trigger: true
-    passed: [k8s-live-tests]
-  - task: build-concourse-image
-    privileged: true
+  - in_parallel:
+    - get: trigger
+      trigger: true
+      passed: [k8s-live-tests]
+    - get: repo
+      trigger: true
+      passed: [k8s-live-tests]
+  - task: push-jetbridge-to-main
     config:
       platform: linux
       rootfs_uri: docker:///registry.home/concourse-test-runner:v5
+      inputs:
+      - name: repo
+      params:
+        GITHUB_TOKEN: ((github_token))
       run:
         path: sh
         args:
         - -exc
         - |
-          cd /src
-          echo "=== Building concourse binary ==="
-          GOOS=linux GOARCH=amd64 go build -o concourse-linux-amd64 ./cmd/concourse
-          ls -lh concourse-linux-amd64
-          echo "=== Binary built ==="
+          cd repo
+          COMMIT=$(git rev-parse HEAD)
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          echo "=== Pushing jetbridge to main ==="
+          echo "Commit: ${COMMIT} (${SHORT_SHA})"
           echo ""
 
+          git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/tdmtrader/jetbridge.git"
+          git push --force origin HEAD:refs/heads/main
+          echo "=== Successfully pushed ${SHORT_SHA} to main ==="
+
+- name: build-and-push-image
+  serial_groups: [pipeline]
+  plan:
+  - in_parallel:
+    - get: trigger
+      trigger: true
+      passed: [push-to-main]
+    - get: repo
+      trigger: true
+      passed: [push-to-main]
+  - task: build-and-push-concourse-image
+    privileged: true
+    config:
+      platform: linux
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v5
+      params:
+        GITHUB_TOKEN: ((github_token))
+      run:
+        path: sh
+        args:
+        - -exc
+        - |
+          echo "=== Cloning repo (shallow) for build ==="
+          git clone --depth 1 --branch jetbridge https://github.com/tdmtrader/jetbridge.git repo
+          cd repo
+          SHORT_SHA=$(git rev-parse --short HEAD)
+
           REGISTRY="registry-docker-registry.cicd.svc.cluster.local:5000"
+          GHCR="ghcr.io/tdmtrader/concourse"
           BUILDER_POD="image-builder-$$"
 
           cleanup_builder() { kubectl delete pod -n cicd ${BUILDER_POD} --grace-period=0 --force 2>/dev/null || true; }
@@ -211,42 +265,42 @@ jobs:
             sleep 2
           done
 
-          echo "=== Copying binary to builder pod ==="
-          kubectl cp concourse-linux-amd64 cicd/${BUILDER_POD}:/tmp/concourse-linux-amd64
+          echo "=== Logging into GHCR ==="
+          echo "${GITHUB_TOKEN}" | kubectl exec -i -n cicd ${BUILDER_POD} -- docker login ghcr.io -u tdmtrader --password-stdin
 
-          echo "=== Copying Dockerfile to builder pod ==="
-          cat <<'DOCKERFILE' > /tmp/Dockerfile
-          FROM ubuntu:22.04
-          RUN apt-get update && \
-              apt-get install -y ca-certificates dumb-init && \
-              rm -rf /var/lib/apt/lists/*
-          COPY concourse-linux-amd64 /usr/local/concourse/bin/concourse
-          RUN chmod +x /usr/local/concourse/bin/concourse
-          ENV PATH="/usr/local/concourse/bin:${PATH}"
-          ENTRYPOINT ["dumb-init", "concourse"]
-          DOCKERFILE
-          kubectl cp /tmp/Dockerfile cicd/${BUILDER_POD}:/tmp/Dockerfile
+          echo "=== Copying repo to builder pod ==="
+          tar cf - . | kubectl exec -i -n cicd ${BUILDER_POD} -- tar xf - -C /tmp/
 
-          echo "=== Building Docker image ==="
+          echo "=== Building Docker image (multi-stage: frontend + backend) ==="
           kubectl exec -n cicd ${BUILDER_POD} -- \
-            docker build -t registry.home/jetbridge:latest -t ${REGISTRY}/jetbridge:latest -f /tmp/Dockerfile /tmp/
+            docker build \
+              --platform linux/amd64 \
+              -t registry.home/jetbridge:latest \
+              -t ${REGISTRY}/jetbridge:latest \
+              -t ${GHCR}:${SHORT_SHA} \
+              -t ${GHCR}:latest \
+              -f /tmp/Dockerfile.build /tmp/
 
-          echo "=== Pushing to registries ==="
+          echo "=== Pushing to local registries ==="
           kubectl exec -n cicd ${BUILDER_POD} -- docker push registry.home/jetbridge:latest
           kubectl exec -n cicd ${BUILDER_POD} -- docker push ${REGISTRY}/jetbridge:latest
 
-          echo "=== Verifying ==="
-          kubectl exec -n cicd ${BUILDER_POD} -- docker images registry.home/jetbridge
-          echo ""
-          echo "=== Image build and push complete ==="
+          echo "=== Pushing to GHCR ==="
+          kubectl exec -n cicd ${BUILDER_POD} -- docker push ${GHCR}:${SHORT_SHA}
+          kubectl exec -n cicd ${BUILDER_POD} -- docker push ${GHCR}:latest
 
-- name: deploy
+          echo "=== Verifying ==="
+          kubectl exec -n cicd ${BUILDER_POD} -- docker images ${GHCR}
+          echo ""
+          echo "=== Image build and push complete: ${GHCR}:${SHORT_SHA} ==="
+
+- name: self-upgrade
   serial_groups: [pipeline]
   plan:
   - get: trigger
     trigger: true
-    passed: [build-image]
-  - task: deploy
+    passed: [build-and-push-image]
+  - task: self-upgrade
     config:
       platform: linux
       rootfs_uri: docker:///registry.home/concourse-test-runner:v5
@@ -261,38 +315,11 @@ jobs:
           kubectl get pods -n cicd -l app=concourse-web
           echo ""
 
-          echo "=== Creating restarter pod ==="
-          RESTARTER_POD="web-restarter-$$"
-
-          kubectl delete pod -n cicd -l app=web-restarter --grace-period=0 --force 2>/dev/null || true
-
-          cat <<PODEOF | kubectl apply -n cicd -f -
-          apiVersion: v1
-          kind: Pod
-          metadata:
-            name: ${RESTARTER_POD}
-            namespace: cicd
-            labels:
-              app: web-restarter
-          spec:
-            restartPolicy: Never
-            serviceAccountName: concourse-web
-            containers:
-            - name: restarter
-              image: registry.home/concourse-test-runner:v5
-              imagePullPolicy: IfNotPresent
-              command: ["sh", "-c"]
-              args:
-              - |
-                echo "Setting imagePullPolicy=Always and restarting..."
-                kubectl patch deployment concourse-web -n cicd -p '{"spec":{"template":{"spec":{"containers":[{"name":"concourse-web","imagePullPolicy":"Always"}]}}}}'
-                echo "Waiting for rollout to complete..."
-                kubectl rollout status deployment/concourse-web -n cicd --timeout=180s
-                echo "Rollout complete, cleaning up..."
-                kubectl delete pod -n cicd -l app=web-restarter --grace-period=0 --force 2>/dev/null || true
-          PODEOF
-
-          echo "Restarter pod '${RESTARTER_POD}' created and running in background"
+          echo "=== Restarting concourse-web deployment ==="
+          kubectl rollout restart deployment/concourse-web -n cicd
+          echo "Waiting for rollout to complete..."
+          kubectl rollout status deployment/concourse-web -n cicd --timeout=180s
           echo ""
-          echo "=== Deploy task complete (rollout continues in background) ==="
-
+          echo "=== Self-upgrade complete ==="
+          echo "New pod:"
+          kubectl get pods -n cicd -l app=concourse-web
