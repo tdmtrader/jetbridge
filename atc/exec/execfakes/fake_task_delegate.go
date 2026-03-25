@@ -37,6 +37,12 @@ type FakeTaskDelegate struct {
 	buildStartTimeReturnsOnCall map[int]struct {
 		result1 time.Time
 	}
+	EmitSidecarPlansStub        func(lager.Logger, []atc.SidecarConfig)
+	emitSidecarPlansMutex       sync.RWMutex
+	emitSidecarPlansArgsForCall []struct {
+		arg1 lager.Logger
+		arg2 []atc.SidecarConfig
+	}
 	ErroredStub        func(lager.Logger, string)
 	erroredMutex       sync.RWMutex
 	erroredArgsForCall []struct {
@@ -244,6 +250,44 @@ func (fake *FakeTaskDelegate) BuildStartTimeReturnsOnCall(i int, result1 time.Ti
 	fake.buildStartTimeReturnsOnCall[i] = struct {
 		result1 time.Time
 	}{result1}
+}
+
+func (fake *FakeTaskDelegate) EmitSidecarPlans(arg1 lager.Logger, arg2 []atc.SidecarConfig) {
+	var arg2Copy []atc.SidecarConfig
+	if arg2 != nil {
+		arg2Copy = make([]atc.SidecarConfig, len(arg2))
+		copy(arg2Copy, arg2)
+	}
+	fake.emitSidecarPlansMutex.Lock()
+	fake.emitSidecarPlansArgsForCall = append(fake.emitSidecarPlansArgsForCall, struct {
+		arg1 lager.Logger
+		arg2 []atc.SidecarConfig
+	}{arg1, arg2Copy})
+	stub := fake.EmitSidecarPlansStub
+	fake.recordInvocation("EmitSidecarPlans", []interface{}{arg1, arg2Copy})
+	fake.emitSidecarPlansMutex.Unlock()
+	if stub != nil {
+		fake.EmitSidecarPlansStub(arg1, arg2)
+	}
+}
+
+func (fake *FakeTaskDelegate) EmitSidecarPlansCallCount() int {
+	fake.emitSidecarPlansMutex.RLock()
+	defer fake.emitSidecarPlansMutex.RUnlock()
+	return len(fake.emitSidecarPlansArgsForCall)
+}
+
+func (fake *FakeTaskDelegate) EmitSidecarPlansCalls(stub func(lager.Logger, []atc.SidecarConfig)) {
+	fake.emitSidecarPlansMutex.Lock()
+	defer fake.emitSidecarPlansMutex.Unlock()
+	fake.EmitSidecarPlansStub = stub
+}
+
+func (fake *FakeTaskDelegate) EmitSidecarPlansArgsForCall(i int) (lager.Logger, []atc.SidecarConfig) {
+	fake.emitSidecarPlansMutex.RLock()
+	defer fake.emitSidecarPlansMutex.RUnlock()
+	argsForCall := fake.emitSidecarPlansArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2
 }
 
 func (fake *FakeTaskDelegate) Errored(arg1 lager.Logger, arg2 string) {

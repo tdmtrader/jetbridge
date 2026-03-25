@@ -149,6 +149,71 @@ var _ = Describe("TaskDelegate", func() {
 		})
 	})
 
+	Describe("EmitSidecarPlans", func() {
+		var sidecars []atc.SidecarConfig
+
+		BeforeEach(func() {
+			sidecars = []atc.SidecarConfig{
+				{Name: "postgres", Image: "postgres:16"},
+				{Name: "redis", Image: "redis:7"},
+			}
+		})
+
+		JustBeforeEach(func() {
+			delegate.EmitSidecarPlans(logger, sidecars)
+		})
+
+		It("saves a sidecar event per sidecar", func() {
+			Expect(fakeBuild.SaveEventCallCount()).To(Equal(2))
+
+			ev0 := fakeBuild.SaveEventArgsForCall(0)
+			Expect(ev0.EventType()).To(Equal(atc.EventType("sidecar")))
+
+			ev1 := fakeBuild.SaveEventArgsForCall(1)
+			Expect(ev1.EventType()).To(Equal(atc.EventType("sidecar")))
+		})
+
+		It("emits events with the parent plan ID as origin", func() {
+			Expect(fakeBuild.SaveEventCallCount()).To(Equal(2))
+
+			ev0 := fakeBuild.SaveEventArgsForCall(0)
+			Expect(json.Marshal(ev0)).To(MatchJSON(`{
+				"time": 675927000,
+				"origin": {"id": "some-plan-id"},
+				"plan": {
+					"id": "some-plan-id/sidecar/postgres",
+					"sidecar": {
+						"name": "postgres",
+						"image": "postgres:16"
+					}
+				}
+			}`))
+
+			ev1 := fakeBuild.SaveEventArgsForCall(1)
+			Expect(json.Marshal(ev1)).To(MatchJSON(`{
+				"time": 675927000,
+				"origin": {"id": "some-plan-id"},
+				"plan": {
+					"id": "some-plan-id/sidecar/redis",
+					"sidecar": {
+						"name": "redis",
+						"image": "redis:7"
+					}
+				}
+			}`))
+		})
+
+		Context("with no sidecars", func() {
+			BeforeEach(func() {
+				sidecars = nil
+			})
+
+			It("does not save any events", func() {
+				Expect(fakeBuild.SaveEventCallCount()).To(Equal(0))
+			})
+		})
+	})
+
 	Describe("FetchImage", func() {
 		var delegate exec.TaskDelegate
 

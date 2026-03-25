@@ -71,6 +71,7 @@ type TaskDelegate interface {
 	Stderr() io.Writer
 
 	SetTaskConfig(config atc.TaskConfig)
+	EmitSidecarPlans(lager.Logger, []atc.SidecarConfig)
 
 	Initializing(lager.Logger)
 	Starting(lager.Logger)
@@ -333,6 +334,11 @@ func (step *TaskStep) run(ctx context.Context, state RunState, delegate TaskDele
 			}
 			containerSpec.Sidecars[i].Image = repo + "@" + digest
 		}
+	}
+
+	// Emit sidecar plan events so the UI can render nested sidecar steps.
+	if len(containerSpec.Sidecars) > 0 {
+		delegate.EmitSidecarPlans(logger, containerSpec.Sidecars)
 	}
 
 	tracing.Inject(ctx, &containerSpec)

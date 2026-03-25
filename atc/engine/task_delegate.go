@@ -54,6 +54,23 @@ func (d *taskDelegate) SetTaskConfig(config atc.TaskConfig) {
 	d.config = config
 }
 
+func (d *taskDelegate) EmitSidecarPlans(logger lager.Logger, sidecars []atc.SidecarConfig) {
+	for _, sc := range sidecars {
+		sidecarPlan := atc.NewSidecarPlan(d.planID, sc)
+		err := d.build.SaveEvent(event.Sidecar{
+			Time: d.clock.Now().Unix(),
+			Origin: event.Origin{
+				ID: event.OriginID(d.planID),
+			},
+			PublicPlan: sidecarPlan.Public(),
+		})
+		if err != nil {
+			logger.Error("failed-to-save-sidecar-event", err)
+			return
+		}
+	}
+}
+
 func (d *taskDelegate) Initializing(logger lager.Logger) {
 	err := d.build.SaveEvent(event.InitializeTask{
 		Origin:     d.eventOrigin,
