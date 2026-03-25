@@ -53,6 +53,14 @@ func ArtifactKey(handle string) string {
 	return fmt.Sprintf("artifacts/%s.tar", handle)
 }
 
+// TaskCacheKey returns the canonical relative path on the artifact PVC
+// for a task cache, e.g. "caches/job-42-build-step-abc123def456.tar".
+// Uses the same stable key as PVC SubPath caches so the identity is
+// consistent regardless of storage backend.
+func TaskCacheKey(jobID int, stepName string, cachePath string) string {
+	return fmt.Sprintf("caches/%s.tar", stableCacheKey(jobID, stepName, cachePath))
+}
+
 // DefaultResourceTypeImages maps base Concourse resource type names to their
 // Docker image references. These are the official Concourse resource type
 // images used when no custom resource type is defined in the pipeline.

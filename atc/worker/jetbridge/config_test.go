@@ -128,6 +128,43 @@ var _ = Describe("Config", func() {
 		})
 	})
 
+	Describe("TaskCacheKey", func() {
+		It("returns a path under caches/ with .tar extension", func() {
+			key := jetbridge.TaskCacheKey(42, "build-step", "/tmp/cache")
+			Expect(key).To(HavePrefix("caches/"))
+			Expect(key).To(HaveSuffix(".tar"))
+		})
+
+		It("produces the same key for the same inputs", func() {
+			key1 := jetbridge.TaskCacheKey(42, "build-step", "/tmp/cache")
+			key2 := jetbridge.TaskCacheKey(42, "build-step", "/tmp/cache")
+			Expect(key1).To(Equal(key2))
+		})
+
+		It("produces different keys for different jobs", func() {
+			key1 := jetbridge.TaskCacheKey(42, "build-step", "/tmp/cache")
+			key2 := jetbridge.TaskCacheKey(99, "build-step", "/tmp/cache")
+			Expect(key1).ToNot(Equal(key2))
+		})
+
+		It("produces different keys for different step names", func() {
+			key1 := jetbridge.TaskCacheKey(42, "step-a", "/tmp/cache")
+			key2 := jetbridge.TaskCacheKey(42, "step-b", "/tmp/cache")
+			Expect(key1).ToNot(Equal(key2))
+		})
+
+		It("produces different keys for different cache paths", func() {
+			key1 := jetbridge.TaskCacheKey(42, "build-step", "/cache/a")
+			key2 := jetbridge.TaskCacheKey(42, "build-step", "/cache/b")
+			Expect(key1).ToNot(Equal(key2))
+		})
+
+		It("wraps the stable cache key format", func() {
+			key := jetbridge.TaskCacheKey(42, "build-step", "/tmp/cache")
+			Expect(key).To(MatchRegexp(`^caches/job-42-build-step-[a-f0-9]{12}\.tar$`))
+		})
+	})
+
 	Describe("NewClientset", func() {
 		Context("when a valid kubeconfig is provided", func() {
 			var kubeconfigPath string
