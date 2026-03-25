@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 
 	"github.com/concourse/concourse/atc"
@@ -3411,6 +3412,74 @@ var _ = Describe("Container with artifact store", func() {
 			_, err = process.Wait(ctx)
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("uploading artifacts"))
+		})
+	})
+
+	Describe("uploadCachesToArtifactStore", func() {
+		It("execs tar commands in the artifact-helper sidecar for each cache", func() {
+			cfg := jetbridge.NewConfig("test-namespace", "")
+			cfg.ArtifactStoreClaim = "concourse-artifacts"
+
+			fakeExecutor := &fakeExecExecutor{}
+			cacheWorker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
+			cacheWorker.SetExecutor(fakeExecutor)
+
+			setupFakeDBContainer(fakeDBWorker, "upload-cache-handle")
+
+			container, _, err := cacheWorker.FindOrCreateContainer(
+				ctx,
+				db.NewFixedHandleContainerOwner("upload-cache-handle"),
+				db.ContainerMetadata{
+					Type:     db.ContainerTypeTask,
+					JobID:    42,
+					StepName: "build-step",
+				},
+				runtime.ContainerSpec{
+					TeamID:    1,
+					Dir:       "/tmp/build/workdir",
+					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+					Caches:    []string{"/tmp/build/workdir/.cache", "/tmp/build/workdir/.npm"},
+				},
+				delegate,
+			)
+			Expect(err).ToNot(HaveOccurred())
+
+			process, err := container.Run(ctx, runtime.ProcessSpec{
+				Path: "/bin/sh",
+				Args: []string{"-c", "echo done"},
+			}, runtime.ProcessIO{})
+			Expect(err).ToNot(HaveOccurred())
+
+			// Simulate pod running
+			pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "upload-cache-handle", metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			pod.Status.Phase = corev1.PodRunning
+			_, err = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			result, err := process.Wait(ctx)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(result.ExitStatus).To(Equal(0))
+
+			By("finding cache upload calls targeting the artifact-helper sidecar")
+			var cacheUploadCalls []execCall
+			for _, c := range fakeExecutor.execCalls {
+				if c.containerName == "artifact-helper" && len(c.command) > 2 {
+					cmd := c.command[2]
+					if strings.Contains(cmd, "/artifacts/caches/") {
+						cacheUploadCalls = append(cacheUploadCalls, c)
+					}
+				}
+			}
+			Expect(cacheUploadCalls).To(HaveLen(2), "should have upload calls for each cache")
+
+			By("upload commands create tars on the artifact PVC under caches/")
+			for _, c := range cacheUploadCalls {
+				cmd := c.command[2]
+				Expect(cmd).To(ContainSubstring("tar cf"))
+				Expect(cmd).To(ContainSubstring("/artifacts/caches/"))
+				Expect(cmd).To(ContainSubstring(".tar"))
+			}
 		})
 	})
 

@@ -613,6 +613,7 @@ func (p *execProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 			if uploadErr := p.uploadOutputsToArtifactStore(ctx); uploadErr != nil {
 				return runtime.ProcessResult{}, fmt.Errorf("uploading artifacts: %w", uploadErr)
 			}
+			p.uploadCachesToArtifactStore(ctx)
 			if p.container != nil {
 				p.container.SetProperty(exitStatusPropertyName, strconv.Itoa(exitCode))
 			}
@@ -629,6 +630,7 @@ func (p *execProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 	if err := p.uploadOutputsToArtifactStore(ctx); err != nil {
 		return runtime.ProcessResult{}, fmt.Errorf("uploading artifacts: %w", err)
 	}
+	p.uploadCachesToArtifactStore(ctx)
 
 	if p.container != nil {
 		p.container.SetProperty(exitStatusPropertyName, "0")
@@ -704,6 +706,39 @@ func (p *execProcess) uploadOutputsToArtifactStore(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// uploadCachesToArtifactStore execs tar commands in the artifact-helper
+// sidecar to save task cache directories to the artifact PVC as tar files.
+// This enables cross-node cache sharing when the PVC is backed by GCS Fuse.
+// Cache upload failures are non-fatal — they are logged but do not fail the
+// build, since a missing cache only causes a cold start on the next build.
+func (p *execProcess) uploadCachesToArtifactStore(ctx context.Context) {
+	if p.container == nil || len(p.container.cacheEntries) == 0 {
+		return
+	}
+
+	logger := lagerctx.FromContext(ctx).Session("upload-caches")
+
+	for _, entry := range p.container.cacheEntries {
+		cmd := []string{"sh", "-c",
+			fmt.Sprintf("mkdir -p $(dirname %s/%s) && tar cf %s/%s -C %s .",
+				ArtifactMountPath, entry.artifactKey,
+				ArtifactMountPath, entry.artifactKey, entry.mountPath),
+		}
+
+		err := p.executor.ExecInPod(
+			ctx, p.config.Namespace, p.podName,
+			artifactHelperContainerName,
+			cmd, nil, nil, nil, false,
+		)
+		if err != nil {
+			logger.Error("failed-to-upload-cache", err, lager.Data{
+				"cache-key":  entry.artifactKey,
+				"mount-path": entry.mountPath,
+			})
+		}
+	}
 }
 
 // annotateExitStatus persists the exit status as a pod annotation so that
