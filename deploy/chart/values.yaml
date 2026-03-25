@@ -188,7 +188,7 @@ cachePvc:
 # -- Host path for node-local task cache persistence.
 # Used when cachePvc is disabled. Caches survive pod restarts on the same node.
 # Set to "" to disable (falls back to ephemeral emptyDir).
-cacheHostPath: /var/concourse/cache
+cacheHostPath: ""
 
 # -- Artifact store PVC (cross-pod volume passing via init containers)
 artifactStorePvc:

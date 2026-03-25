@@ -170,7 +170,7 @@ type RunCommand struct {
 		ImagePullSecrets   []string      `long:"kubernetes-image-pull-secret"      description:"Kubernetes Secret name to use as imagePullSecrets on task Pods. Can be specified multiple times."`
 		ServiceAccount     string        `long:"kubernetes-service-account"        description:"Kubernetes ServiceAccount name to set on task Pods. Defaults to the namespace default SA."`
 		CachePVC           string        `long:"kubernetes-cache-pvc"              description:"Name of a PersistentVolumeClaim to mount as a shared cache volume in task Pods. Enables node-local resource and task caching."`
-		CacheHostPath      string        `long:"kubernetes-cache-host-path"        description:"Base directory on host node for persistent task caches. Used when no cache PVC is configured. Caches are node-local and survive pod restarts." default:"/var/concourse/cache"`
+		CacheHostPath      string        `long:"kubernetes-cache-host-path"        description:"Base directory on host node for persistent task caches. Used when no cache PVC is configured. Caches are node-local and survive pod restarts."`
 		ArtifactStoreClaim    string `long:"kubernetes-artifact-store-claim"      description:"Name of a PersistentVolumeClaim for durable artifact and resource cache storage. In production, back with GCS FUSE via StorageClass. Locally, uses default StorageClass."`
 		ArtifactStoreGCSFuse  bool   `long:"kubernetes-artifact-store-gcs-fuse"  description:"Artifact store PVC is backed by GCS Fuse on GKE. Adds gke-gcsfuse/volumes annotation to task pods."`
 		ArtifactHelperImage   string `long:"kubernetes-artifact-helper-image"     description:"Container image for artifact init containers and sidecar. Defaults to alpine:latest."`
