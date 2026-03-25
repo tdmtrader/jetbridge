@@ -54,6 +54,15 @@ var _ runtime.Container = (*Container)(nil)
 // Container implements runtime.Container backed by a Kubernetes Pod.
 // The Pod is created lazily when Run() is called, since the command
 // (ProcessSpec) isn't known at FindOrCreateContainer time.
+// cacheEntry tracks an emptyDir cache volume created for artifact-store-backed
+// caching. Init containers use this to restore tars, and the sidecar uses it
+// to upload updated caches after task completion.
+type cacheEntry struct {
+	volumeName  string // K8s volume name (e.g. "cache-0")
+	mountPath   string // absolute mount path in the container
+	artifactKey string // path on artifact PVC (e.g. "caches/job-42-build-step-abc123.tar")
+}
+
 type Container struct {
 	handle        string
 	podName       string
@@ -68,6 +77,7 @@ type Container struct {
 	loadAnnotations sync.Once
 	executor      PodExecutor
 	volumes       []*Volume
+	cacheEntries  []cacheEntry
 }
 
 func newContainer(
@@ -924,7 +934,30 @@ func (c *Container) buildVolumeMounts() ([]corev1.Volume, []corev1.VolumeMount) 
 		resolvedCaches[i] = cachePath
 	}
 
-	if c.config.CacheVolumeClaim != "" {
+	if c.config.ArtifactStoreClaim != "" && len(resolvedCaches) > 0 {
+		// When the artifact store is configured, use emptyDir volumes for
+		// caches. Init containers will restore cached data from tar files
+		// on the artifact PVC before the task starts, and the sidecar will
+		// upload updated caches after the task completes.
+		for i, cachePath := range resolvedCaches {
+			name := fmt.Sprintf("cache-%d", i)
+			volumes = append(volumes, corev1.Volume{
+				Name: name,
+				VolumeSource: corev1.VolumeSource{
+					EmptyDir: &corev1.EmptyDirVolumeSource{},
+				},
+			})
+			mounts = append(mounts, corev1.VolumeMount{
+				Name:      name,
+				MountPath: cachePath,
+			})
+			c.cacheEntries = append(c.cacheEntries, cacheEntry{
+				volumeName: name,
+				mountPath:  cachePath,
+				artifactKey: TaskCacheKey(c.metadata.JobID, c.metadata.StepName, cachePath),
+			})
+		}
+	} else if c.config.CacheVolumeClaim != "" {
 		// When a cache PVC is configured, mount it into the pod and use
 		// subPath mounts for each cache entry so data survives pod restarts.
 		volumes = append(volumes, corev1.Volume{
