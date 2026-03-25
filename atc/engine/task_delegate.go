@@ -54,6 +54,20 @@ func (d *taskDelegate) SetTaskConfig(config atc.TaskConfig) {
 	d.config = config
 }
 
+func (d *taskDelegate) SidecarWriter(sidecarName string) io.Writer {
+	sidecarPlanID := atc.SidecarPlanID(d.planID, sidecarName)
+	return newDBEventWriter(
+		d.build,
+		event.Origin{
+			Source: event.OriginSourceStdout,
+			ID:     event.OriginID(sidecarPlanID),
+		},
+		d.clock,
+		nil,   // no build output filter for sidecar logs
+		false, // sidecar logs don't need secret redaction
+	)
+}
+
 func (d *taskDelegate) EmitSidecarPlans(logger lager.Logger, sidecars []atc.SidecarConfig) {
 	for _, sc := range sidecars {
 		sidecarPlan := atc.NewSidecarPlan(d.planID, sc)

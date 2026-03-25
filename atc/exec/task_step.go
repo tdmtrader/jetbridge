@@ -72,6 +72,7 @@ type TaskDelegate interface {
 
 	SetTaskConfig(config atc.TaskConfig)
 	EmitSidecarPlans(lager.Logger, []atc.SidecarConfig)
+	SidecarWriter(sidecarName string) io.Writer
 
 	Initializing(lager.Logger)
 	Starting(lager.Logger)
@@ -395,10 +396,7 @@ func (step *TaskStep) run(ctx context.Context, state RunState, delegate TaskDele
 				},
 			},
 		},
-		runtime.ProcessIO{
-			Stdout: delegate.Stdout(),
-			Stderr: delegate.Stderr(),
-		},
+		step.buildProcessIO(delegate, containerSpec.Sidecars),
 	)
 	if err != nil {
 		return false, err
@@ -553,6 +551,23 @@ func (step *TaskStep) containerSpec(logger lager.Logger, state RunState, imageSp
 	}
 
 	return containerSpec, nil
+}
+
+// buildProcessIO constructs a ProcessIO with per-sidecar writers when sidecars
+// are present. Sidecar writers emit Log events with the sidecar's own plan ID
+// as origin, enabling the UI to show per-sidecar log streams.
+func (step *TaskStep) buildProcessIO(delegate TaskDelegate, sidecars []atc.SidecarConfig) runtime.ProcessIO {
+	pio := runtime.ProcessIO{
+		Stdout: delegate.Stdout(),
+		Stderr: delegate.Stderr(),
+	}
+	if len(sidecars) > 0 {
+		pio.SidecarWriters = make(map[string]io.Writer, len(sidecars))
+		for _, sc := range sidecars {
+			pio.SidecarWriters[sc.Name] = delegate.SidecarWriter(sc.Name)
+		}
+	}
+	return pio
 }
 
 // loadSidecars reads sidecar definition files from the build's artifacts

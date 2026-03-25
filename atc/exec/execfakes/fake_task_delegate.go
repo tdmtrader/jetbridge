@@ -89,6 +89,17 @@ type FakeTaskDelegate struct {
 	setTaskConfigArgsForCall []struct {
 		arg1 atc.TaskConfig
 	}
+	SidecarWriterStub        func(string) io.Writer
+	sidecarWriterMutex       sync.RWMutex
+	sidecarWriterArgsForCall []struct {
+		arg1 string
+	}
+	sidecarWriterReturns struct {
+		result1 io.Writer
+	}
+	sidecarWriterReturnsOnCall map[int]struct {
+		result1 io.Writer
+	}
 	StartSpanStub        func(context.Context, string, tracing.Attrs) (context.Context, trace.Span)
 	startSpanMutex       sync.RWMutex
 	startSpanArgsForCall []struct {
@@ -520,6 +531,67 @@ func (fake *FakeTaskDelegate) SetTaskConfigArgsForCall(i int) atc.TaskConfig {
 	defer fake.setTaskConfigMutex.RUnlock()
 	argsForCall := fake.setTaskConfigArgsForCall[i]
 	return argsForCall.arg1
+}
+
+func (fake *FakeTaskDelegate) SidecarWriter(arg1 string) io.Writer {
+	fake.sidecarWriterMutex.Lock()
+	ret, specificReturn := fake.sidecarWriterReturnsOnCall[len(fake.sidecarWriterArgsForCall)]
+	fake.sidecarWriterArgsForCall = append(fake.sidecarWriterArgsForCall, struct {
+		arg1 string
+	}{arg1})
+	stub := fake.SidecarWriterStub
+	fakeReturns := fake.sidecarWriterReturns
+	fake.recordInvocation("SidecarWriter", []interface{}{arg1})
+	fake.sidecarWriterMutex.Unlock()
+	if stub != nil {
+		return stub(arg1)
+	}
+	if specificReturn {
+		return ret.result1
+	}
+	return fakeReturns.result1
+}
+
+func (fake *FakeTaskDelegate) SidecarWriterCallCount() int {
+	fake.sidecarWriterMutex.RLock()
+	defer fake.sidecarWriterMutex.RUnlock()
+	return len(fake.sidecarWriterArgsForCall)
+}
+
+func (fake *FakeTaskDelegate) SidecarWriterCalls(stub func(string) io.Writer) {
+	fake.sidecarWriterMutex.Lock()
+	defer fake.sidecarWriterMutex.Unlock()
+	fake.SidecarWriterStub = stub
+}
+
+func (fake *FakeTaskDelegate) SidecarWriterArgsForCall(i int) string {
+	fake.sidecarWriterMutex.RLock()
+	defer fake.sidecarWriterMutex.RUnlock()
+	argsForCall := fake.sidecarWriterArgsForCall[i]
+	return argsForCall.arg1
+}
+
+func (fake *FakeTaskDelegate) SidecarWriterReturns(result1 io.Writer) {
+	fake.sidecarWriterMutex.Lock()
+	defer fake.sidecarWriterMutex.Unlock()
+	fake.SidecarWriterStub = nil
+	fake.sidecarWriterReturns = struct {
+		result1 io.Writer
+	}{result1}
+}
+
+func (fake *FakeTaskDelegate) SidecarWriterReturnsOnCall(i int, result1 io.Writer) {
+	fake.sidecarWriterMutex.Lock()
+	defer fake.sidecarWriterMutex.Unlock()
+	fake.SidecarWriterStub = nil
+	if fake.sidecarWriterReturnsOnCall == nil {
+		fake.sidecarWriterReturnsOnCall = make(map[int]struct {
+			result1 io.Writer
+		})
+	}
+	fake.sidecarWriterReturnsOnCall[i] = struct {
+		result1 io.Writer
+	}{result1}
 }
 
 func (fake *FakeTaskDelegate) StartSpan(arg1 context.Context, arg2 string, arg3 tracing.Attrs) (context.Context, trace.Span) {

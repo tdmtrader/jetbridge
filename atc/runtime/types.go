@@ -228,6 +228,11 @@ type ProcessIO struct {
 	Stdin  io.Reader
 	Stdout io.Writer
 	Stderr io.Writer
+
+	// SidecarWriters maps sidecar container names to their dedicated log
+	// writers. When present, sidecar logs are streamed to the per-sidecar
+	// writer instead of being prefixed and merged into Stdout.
+	SidecarWriters map[string]io.Writer
 }
 
 // Process represents a running process in a Container. Containers may have

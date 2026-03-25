@@ -211,30 +211,38 @@ func (p *Process) pollUntilDone(ctx context.Context) (runtime.ProcessResult, err
 	}
 }
 
-// streamLogs streams the Pod's container logs to ProcessIO.Stdout. It streams
-// the main container directly and launches background goroutines for each
-// sidecar container, prefixing sidecar output with the container name. It
-// retries until the container is ready, then follows the log stream until the
-// container terminates. If no Stdout writer is configured, this is a no-op.
+// streamLogs streams the Pod's container logs. The main container logs go to
+// ProcessIO.Stdout directly. Sidecar container logs are sent to their
+// dedicated writer in ProcessIO.SidecarWriters (one per sidecar), which emits
+// Log events with the sidecar's own plan ID as origin. If no dedicated writer
+// exists, sidecar logs fall back to the legacy [name]-prefixed output on
+// Stdout. If no Stdout writer is configured, this is a no-op.
 func (p *Process) streamLogs(ctx context.Context) {
 	if p.processIO.Stdout == nil {
 		return
 	}
 
-	// Stream sidecar containers in background goroutines with prefixed output.
+	// Stream sidecar containers in background goroutines.
 	if p.container != nil {
 		for _, sc := range p.container.containerSpec.Sidecars {
-			go p.streamContainerLogs(ctx, sc.Name)
+			if w, ok := p.processIO.SidecarWriters[sc.Name]; ok {
+				// Dedicated writer: stream directly to the per-sidecar event writer.
+				go p.streamContainerLogsDirect(ctx, sc.Name, w)
+			} else {
+				// Fallback: prefix sidecar output into shared stdout.
+				go p.streamContainerLogsPrefixed(ctx, sc.Name)
+			}
 		}
 	}
 
 	// Stream main container logs directly (no prefix).
-	p.streamContainerLogsDirect(ctx, mainContainerName)
+	p.streamContainerLogsMain(ctx, mainContainerName)
 }
 
-// streamContainerLogs streams logs from a named container, prefixing each line
-// with [containerName]. Used for sidecar containers.
-func (p *Process) streamContainerLogs(ctx context.Context, containerName string) {
+// streamContainerLogsPrefixed streams logs from a named container, prefixing
+// each line with [containerName]. Legacy fallback for sidecar containers when
+// no dedicated writer is available.
+func (p *Process) streamContainerLogsPrefixed(ctx context.Context, containerName string) {
 	prefix := fmt.Sprintf("[%s] ", containerName)
 	for {
 		req := p.clientset.CoreV1().Pods(p.config.Namespace).GetLogs(p.podName, &corev1.PodLogOptions{
@@ -258,8 +266,9 @@ func (p *Process) streamContainerLogs(ctx context.Context, containerName string)
 }
 
 // streamContainerLogsDirect streams logs from a named container directly to
-// stdout without any prefix. Used for the main container.
-func (p *Process) streamContainerLogsDirect(ctx context.Context, containerName string) {
+// the given writer without any prefix. Used for sidecar containers with
+// dedicated per-sidecar event writers.
+func (p *Process) streamContainerLogsDirect(ctx context.Context, containerName string, w io.Writer) {
 	for {
 		req := p.clientset.CoreV1().Pods(p.config.Namespace).GetLogs(p.podName, &corev1.PodLogOptions{
 			Follow:    true,
@@ -268,9 +277,9 @@ func (p *Process) streamContainerLogsDirect(ctx context.Context, containerName s
 
 		stream, err := req.Stream(ctx)
 		if err == nil {
-			if _, copyErr := io.Copy(p.processIO.Stdout, stream); copyErr != nil {
+			if _, copyErr := io.Copy(w, stream); copyErr != nil {
 				if p.processIO.Stderr != nil && ctx.Err() == nil {
-					fmt.Fprintf(p.processIO.Stderr, "\nwarning: log stream interrupted: %v\n", copyErr)
+					fmt.Fprintf(p.processIO.Stderr, "\nwarning: log stream interrupted for %s: %v\n", containerName, copyErr)
 				}
 			}
 			stream.Close()
@@ -283,6 +292,12 @@ func (p *Process) streamContainerLogsDirect(ctx context.Context, containerName s
 		case <-time.After(logStreamRetryDelay):
 		}
 	}
+}
+
+// streamContainerLogsMain streams logs from the main container directly to
+// ProcessIO.Stdout without any prefix.
+func (p *Process) streamContainerLogsMain(ctx context.Context, containerName string) {
+	p.streamContainerLogsDirect(ctx, containerName, p.processIO.Stdout)
 }
 
 // copyWithPrefix reads lines from r and writes them to stdout with a prefix.
