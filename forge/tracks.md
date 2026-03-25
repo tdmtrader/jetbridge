@@ -327,3 +327,8 @@ _Link: [./tracks/native_registry_image_check_resolution_20260324/](./tracks/nati
 _Link: [./tracks/caching_behavior_and_pvc_20260324/](./tracks/caching_behavior_and_pvc_20260324/)_
 
 ---
+
+### [ ] Track: Cache backed by GCS Fuse
+_Link: [./tracks/cache_backed_by_gcs_fuse_20260324/](./tracks/cache_backed_by_gcs_fuse_20260324/)_
+
+---

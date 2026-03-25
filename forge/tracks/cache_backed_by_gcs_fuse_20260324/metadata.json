@@ -1,0 +1,17 @@
+{
+  "trackId": "cache_backed_by_gcs_fuse_20260324",
+  "type": "feature",
+  "status": "in_progress",
+  "description": "Consolidate task caches into artifact store tar/streaming pipeline for cross-node sharing via GCS Fuse",
+  "createdAt": "2026-03-25T01:18:33.845Z",
+  "updatedAt": "2026-03-25T01:27:46.073Z",
+  "sessions": [
+    {
+      "slotIndex": 0,
+      "engineType": "claude",
+      "aiSessionId": "895197f4-65f9-410d-a4ef-ae92f5063023",
+      "accountId": "system-claude",
+      "updatedAt": "2026-03-25T01:18:47.904Z"
+    }
+  ]
+}
