@@ -63,8 +63,8 @@ func (d *taskDelegate) SidecarWriter(sidecarName string) io.Writer {
 			ID:     event.OriginID(sidecarPlanID),
 		},
 		d.clock,
-		nil,   // no build output filter for sidecar logs
-		false, // sidecar logs don't need secret redaction
+		nil,  // no build output filter for sidecar logs
+		true, // skip secret redaction (avoids nil filter call)
 	)
 }
 

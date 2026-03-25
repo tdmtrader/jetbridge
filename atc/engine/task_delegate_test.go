@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -146,6 +147,29 @@ var _ = Describe("TaskDelegate", func() {
 			Expect(fakeBuild.SaveEventCallCount()).To(Equal(1))
 			event := fakeBuild.SaveEventArgsForCall(0)
 			Expect(event.EventType()).To(Equal(atc.EventType("finish-task")))
+		})
+	})
+
+	Describe("SidecarWriter", func() {
+		It("returns a non-nil writer", func() {
+			w := delegate.SidecarWriter("postgres")
+			Expect(w).ToNot(BeNil())
+		})
+
+		It("writes produce Log events with the sidecar plan ID as origin", func() {
+			w := delegate.SidecarWriter("postgres")
+			_, writeErr := w.Write([]byte("starting postgres"))
+			Expect(writeErr).ToNot(HaveOccurred())
+
+			// Close the writer to flush
+			w.(io.Closer).Close()
+
+			Expect(fakeBuild.SaveEventCallCount()).To(BeNumerically(">=", 1))
+			ev := fakeBuild.SaveEventArgsForCall(0)
+			Expect(ev.EventType()).To(Equal(atc.EventType("log")))
+
+			evJSON, _ := json.Marshal(ev)
+			Expect(evJSON).To(ContainSubstring("some-plan-id/sidecar/postgres"))
 		})
 	})
 
