@@ -886,6 +886,63 @@ var _ = Describe("Container", func() {
 				}
 				Expect(cacheMountPaths).To(ConsistOf("/tmp/build/workdir/.cache", "/tmp/build/workdir/.npm"))
 			})
+
+			It("creates init containers to restore caches from artifact PVC", func() {
+				_, err := container.Run(ctx, runtime.ProcessSpec{
+					Path: "/bin/sh",
+					Args: []string{"-c", "echo hello"},
+				}, runtime.ProcessIO{})
+				Expect(err).ToNot(HaveOccurred())
+
+				pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
+				Expect(err).ToNot(HaveOccurred())
+				pod := pods.Items[0]
+
+				By("having init containers for each cache")
+				Expect(pod.Spec.InitContainers).To(HaveLen(2))
+
+				for i, initC := range pod.Spec.InitContainers {
+					By(fmt.Sprintf("init container %d restores cache from tar", i))
+					Expect(initC.Name).To(HavePrefix("restore-cache-"))
+					Expect(initC.Image).To(Equal("alpine:latest"))
+
+					By("using graceful cache miss with || true")
+					cmd := initC.Command[2]
+					Expect(cmd).To(ContainSubstring("test -f"))
+					Expect(cmd).To(ContainSubstring("tar xf"))
+					Expect(cmd).To(ContainSubstring("|| true"))
+					Expect(cmd).To(ContainSubstring("/artifacts/caches/"))
+
+					By("mounting artifact PVC readonly and cache emptyDir writable")
+					Expect(initC.VolumeMounts).To(HaveLen(2))
+					var pvcMount, cacheMount *corev1.VolumeMount
+					for j := range initC.VolumeMounts {
+						if initC.VolumeMounts[j].Name == "artifact-store" {
+							pvcMount = &initC.VolumeMounts[j]
+						} else {
+							cacheMount = &initC.VolumeMounts[j]
+						}
+					}
+					Expect(pvcMount).ToNot(BeNil())
+					Expect(pvcMount.ReadOnly).To(BeTrue())
+					Expect(cacheMount).ToNot(BeNil())
+				}
+
+				By("targeting different cache paths")
+				paths := []string{
+					pod.Spec.InitContainers[0].VolumeMounts[1].MountPath,
+					pod.Spec.InitContainers[1].VolumeMounts[1].MountPath,
+				}
+				// The non-PVC mount is the cache mount
+				for i, initC := range pod.Spec.InitContainers {
+					for _, m := range initC.VolumeMounts {
+						if m.Name != "artifact-store" {
+							paths[i] = m.MountPath
+						}
+					}
+				}
+				Expect(paths).To(ConsistOf("/tmp/build/workdir/.cache", "/tmp/build/workdir/.npm"))
+			})
 		})
 
 		Context("when both ArtifactStoreClaim and CacheVolumeClaim are set", func() {

@@ -485,6 +485,30 @@ func (c *Container) buildArtifactInitContainers(mainMounts []corev1.VolumeMount)
 			},
 		})
 	}
+
+	// Add cache restore init containers. Each one extracts a previously-saved
+	// cache tar from the artifact PVC into the cache emptyDir volume. Cache
+	// misses (first build) are handled gracefully via || true.
+	for i, entry := range c.cacheEntries {
+		inits = append(inits, corev1.Container{
+			Name:  fmt.Sprintf("restore-cache-%d", i),
+			Image: helperImage,
+			Command: []string{"sh", "-c",
+				fmt.Sprintf("test -f %s/%s && tar xf %s/%s -C %s || true",
+					ArtifactMountPath, entry.artifactKey,
+					ArtifactMountPath, entry.artifactKey, entry.mountPath),
+			},
+			VolumeMounts: []corev1.VolumeMount{
+				{Name: artifactPVCVolumeName, MountPath: ArtifactMountPath, ReadOnly: true},
+				{Name: entry.volumeName, MountPath: entry.mountPath},
+			},
+			ImagePullPolicy: corev1.PullIfNotPresent,
+			SecurityContext: &corev1.SecurityContext{
+				AllowPrivilegeEscalation: &allowEscalation,
+			},
+		})
+	}
+
 	return inits
 }
 
