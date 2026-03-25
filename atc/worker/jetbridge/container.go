@@ -958,11 +958,27 @@ func (c *Container) buildVolumeMounts() ([]corev1.Volume, []corev1.VolumeMount) 
 		resolvedCaches[i] = cachePath
 	}
 
-	if c.config.ArtifactStoreClaim != "" && len(resolvedCaches) > 0 {
-		// When the artifact store is configured, use emptyDir volumes for
-		// caches. Init containers will restore cached data from tar files
-		// on the artifact PVC before the task starts, and the sidecar will
-		// upload updated caches after the task completes.
+	// Resolve cache store mode. When CacheStore is set explicitly, use it.
+	// Otherwise auto-detect from config fields.
+	cacheMode := c.config.CacheStore
+	if cacheMode == "" {
+		switch {
+		case c.config.ArtifactStoreClaim != "" && len(resolvedCaches) > 0:
+			cacheMode = CacheStoreArtifact
+		case c.config.CacheVolumeClaim != "":
+			cacheMode = CacheStorePVC
+		case c.config.CacheHostPath != "" && c.metadata.JobID != 0:
+			cacheMode = CacheStoreHostPath
+		default:
+			cacheMode = CacheStoreEmptyDir
+		}
+	}
+
+	switch cacheMode {
+	case CacheStoreArtifact:
+		// Store caches as tar files on the artifact PVC. Init containers
+		// restore cached data before the task starts, and the sidecar
+		// uploads updated caches after the task completes.
 		for i, cachePath := range resolvedCaches {
 			name := fmt.Sprintf("cache-%d", i)
 			volumes = append(volumes, corev1.Volume{
@@ -976,14 +992,15 @@ func (c *Container) buildVolumeMounts() ([]corev1.Volume, []corev1.VolumeMount) 
 				MountPath: cachePath,
 			})
 			c.cacheEntries = append(c.cacheEntries, cacheEntry{
-				volumeName: name,
-				mountPath:  cachePath,
+				volumeName:  name,
+				mountPath:   cachePath,
 				artifactKey: TaskCacheKey(c.metadata.JobID, c.metadata.StepName, cachePath),
 			})
 		}
-	} else if c.config.CacheVolumeClaim != "" {
-		// When a cache PVC is configured, mount it into the pod and use
-		// subPath mounts for each cache entry so data survives pod restarts.
+
+	case CacheStorePVC:
+		// Mount a dedicated cache PVC and use subPath mounts for each
+		// cache entry so data survives pod restarts.
 		volumes = append(volumes, corev1.Volume{
 			Name: cachePVCVolumeName,
 			VolumeSource: corev1.VolumeSource{
@@ -996,7 +1013,6 @@ func (c *Container) buildVolumeMounts() ([]corev1.Volume, []corev1.VolumeMount) 
 			Name:      cachePVCVolumeName,
 			MountPath: CacheBasePath,
 		})
-
 		for _, cachePath := range resolvedCaches {
 			key := stableCacheKey(c.metadata.JobID, c.metadata.StepName, cachePath)
 			mounts = append(mounts, corev1.VolumeMount{
@@ -1005,10 +1021,10 @@ func (c *Container) buildVolumeMounts() ([]corev1.Volume, []corev1.VolumeMount) 
 				SubPath:   key,
 			})
 		}
-	} else if c.config.CacheHostPath != "" && c.metadata.JobID != 0 {
-		// When a host path is configured and we have a job context, use
-		// hostPath volumes with stable keys so caches persist across builds
-		// on the same node.
+
+	case CacheStoreHostPath:
+		// Use hostPath volumes with stable keys so caches persist across
+		// builds on the same node.
 		dirType := corev1.HostPathDirectoryOrCreate
 		for i, cachePath := range resolvedCaches {
 			key := stableCacheKey(c.metadata.JobID, c.metadata.StepName, cachePath)
@@ -1027,10 +1043,9 @@ func (c *Container) buildVolumeMounts() ([]corev1.Volume, []corev1.VolumeMount) 
 				MountPath: cachePath,
 			})
 		}
-	} else {
-		// Fallback: emptyDir volumes. Caches are ephemeral and lost on
-		// pod termination. This is the default when no PVC or hostPath
-		// is configured.
+
+	default: // CacheStoreEmptyDir or unknown
+		// Ephemeral emptyDir volumes. Caches are lost on pod termination.
 		for i, cachePath := range resolvedCaches {
 			name := fmt.Sprintf("cache-%d", i)
 			volumes = append(volumes, corev1.Volume{

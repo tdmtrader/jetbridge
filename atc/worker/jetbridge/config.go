@@ -94,6 +94,34 @@ func MergeResourceTypeImages(overrides []string) map[string]string {
 	return merged
 }
 
+// CacheStore values for --kubernetes-cache-store. Controls which backend
+// is used for task caches.
+const (
+	// CacheStoreArtifact stores caches as tar files on the artifact PVC,
+	// enabling cross-node sharing (e.g. via GCS Fuse).
+	CacheStoreArtifact = "artifact"
+
+	// CacheStorePVC stores caches as subdirectories on a dedicated cache PVC
+	// using SubPath mounts with stable keys.
+	CacheStorePVC = "pvc"
+
+	// CacheStoreHostPath stores caches as directories on the node filesystem,
+	// surviving pod restarts on the same node.
+	CacheStoreHostPath = "hostpath"
+
+	// CacheStoreEmptyDir uses ephemeral emptyDir volumes. Caches are lost
+	// on pod termination.
+	CacheStoreEmptyDir = "emptydir"
+)
+
+// ValidCacheStores is the set of valid --kubernetes-cache-store values.
+var ValidCacheStores = map[string]bool{
+	CacheStoreArtifact: true,
+	CacheStorePVC:      true,
+	CacheStoreHostPath: true,
+	CacheStoreEmptyDir: true,
+}
+
 // Config holds the configuration for connecting to a Kubernetes cluster
 // and running Concourse tasks as K8s Jobs.
 type Config struct {
@@ -122,6 +150,13 @@ type Config struct {
 	// ServiceAccount is the Kubernetes ServiceAccount name to set on
 	// created pods. If empty, the namespace's default SA is used.
 	ServiceAccount string
+
+	// CacheStore selects the task cache backend explicitly. Valid values:
+	// "artifact" (tar on artifact PVC), "pvc" (dedicated cache PVC SubPath),
+	// "hostpath" (node-local directories), "emptydir" (ephemeral).
+	// When empty, the backend is auto-selected based on which config
+	// fields are set (artifact store > cache PVC > hostpath > emptydir).
+	CacheStore string
 
 	// CacheVolumeClaim is the name of a PersistentVolumeClaim to mount
 	// into every pod at CacheBasePath. Cache entries are stored as

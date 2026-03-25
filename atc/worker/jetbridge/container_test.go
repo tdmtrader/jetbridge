@@ -1006,6 +1006,178 @@ var _ = Describe("Container", func() {
 		})
 	})
 
+	Describe("Run with explicit CacheStore selector", func() {
+		var container runtime.Container
+
+		Context("when CacheStore=hostpath overrides artifact store", func() {
+			BeforeEach(func() {
+				setupFakeDBContainer(fakeDBWorker, "explicit-hostpath-handle")
+
+				cfgExplicit := jetbridge.NewConfig("test-namespace", "")
+				cfgExplicit.ArtifactStoreClaim = "artifact-store-pvc"
+				cfgExplicit.CacheHostPath = "/var/concourse/cache"
+				cfgExplicit.CacheStore = jetbridge.CacheStoreHostPath
+
+				explicitWorker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfgExplicit)
+
+				var err error
+				container, _, err = explicitWorker.FindOrCreateContainer(
+					ctx,
+					db.NewFixedHandleContainerOwner("explicit-hostpath-handle"),
+					db.ContainerMetadata{
+						Type:     db.ContainerTypeTask,
+						JobID:    7,
+						StepName: "compile",
+					},
+					runtime.ContainerSpec{
+						TeamID:    1,
+						Dir:       "/tmp/build/workdir",
+						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+						Caches:    []string{"/tmp/build/workdir/.cache"},
+					},
+					delegate,
+				)
+				Expect(err).ToNot(HaveOccurred())
+			})
+
+			It("uses hostPath even though artifact store is configured", func() {
+				_, err := container.Run(ctx, runtime.ProcessSpec{
+					Path: "/bin/sh",
+					Args: []string{"-c", "echo hello"},
+				}, runtime.ProcessIO{})
+				Expect(err).ToNot(HaveOccurred())
+
+				pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
+				Expect(err).ToNot(HaveOccurred())
+				pod := pods.Items[0]
+
+				By("creating hostPath volumes for caches")
+				var hostPathVol *corev1.Volume
+				for i := range pod.Spec.Volumes {
+					if pod.Spec.Volumes[i].HostPath != nil {
+						hostPathVol = &pod.Spec.Volumes[i]
+						break
+					}
+				}
+				Expect(hostPathVol).ToNot(BeNil(), "expected a hostPath volume for cache")
+				Expect(hostPathVol.HostPath.Path).To(HavePrefix("/var/concourse/cache/job-7-compile-"))
+			})
+		})
+
+		Context("when CacheStore=emptydir overrides artifact store", func() {
+			BeforeEach(func() {
+				setupFakeDBContainer(fakeDBWorker, "explicit-emptydir-handle")
+
+				cfgExplicit := jetbridge.NewConfig("test-namespace", "")
+				cfgExplicit.ArtifactStoreClaim = "artifact-store-pvc"
+				cfgExplicit.CacheStore = jetbridge.CacheStoreEmptyDir
+
+				explicitWorker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfgExplicit)
+
+				var err error
+				container, _, err = explicitWorker.FindOrCreateContainer(
+					ctx,
+					db.NewFixedHandleContainerOwner("explicit-emptydir-handle"),
+					db.ContainerMetadata{
+						Type:     db.ContainerTypeTask,
+						JobID:    42,
+						StepName: "test",
+					},
+					runtime.ContainerSpec{
+						TeamID:    1,
+						Dir:       "/tmp/build/workdir",
+						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+						Caches:    []string{"/tmp/build/workdir/.cache"},
+					},
+					delegate,
+				)
+				Expect(err).ToNot(HaveOccurred())
+			})
+
+			It("uses emptyDir without init containers or cache uploads", func() {
+				_, err := container.Run(ctx, runtime.ProcessSpec{
+					Path: "/bin/sh",
+					Args: []string{"-c", "echo hello"},
+				}, runtime.ProcessIO{})
+				Expect(err).ToNot(HaveOccurred())
+
+				pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
+				Expect(err).ToNot(HaveOccurred())
+				pod := pods.Items[0]
+
+				By("using emptyDir volumes")
+				var cacheVols []corev1.Volume
+				for _, vol := range pod.Spec.Volumes {
+					if vol.EmptyDir != nil && len(vol.Name) >= 5 && vol.Name[:5] == "cache" {
+						cacheVols = append(cacheVols, vol)
+					}
+				}
+				Expect(cacheVols).To(HaveLen(1))
+
+				By("not creating cache restore init containers")
+				for _, initC := range pod.Spec.InitContainers {
+					Expect(initC.Name).ToNot(HavePrefix("restore-cache-"),
+						"emptydir mode should not have cache restore init containers")
+				}
+			})
+		})
+
+		Context("when CacheStore=pvc with artifact store configured", func() {
+			BeforeEach(func() {
+				setupFakeDBContainer(fakeDBWorker, "explicit-pvc-handle")
+
+				cfgExplicit := jetbridge.NewConfig("test-namespace", "")
+				cfgExplicit.ArtifactStoreClaim = "artifact-store-pvc"
+				cfgExplicit.CacheVolumeClaim = "concourse-cache"
+				cfgExplicit.CacheStore = jetbridge.CacheStorePVC
+
+				explicitWorker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfgExplicit)
+
+				var err error
+				container, _, err = explicitWorker.FindOrCreateContainer(
+					ctx,
+					db.NewFixedHandleContainerOwner("explicit-pvc-handle"),
+					db.ContainerMetadata{
+						Type:     db.ContainerTypeTask,
+						JobID:    42,
+						StepName: "build-step",
+					},
+					runtime.ContainerSpec{
+						TeamID:    1,
+						Dir:       "/tmp/build/workdir",
+						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+						Caches:    []string{"/tmp/build/workdir/.cache"},
+					},
+					delegate,
+				)
+				Expect(err).ToNot(HaveOccurred())
+			})
+
+			It("uses PVC subPath even though artifact store is configured", func() {
+				_, err := container.Run(ctx, runtime.ProcessSpec{
+					Path: "/bin/sh",
+					Args: []string{"-c", "echo hello"},
+				}, runtime.ProcessIO{})
+				Expect(err).ToNot(HaveOccurred())
+
+				pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
+				Expect(err).ToNot(HaveOccurred())
+				pod := pods.Items[0]
+
+				By("mounting the cache PVC with subPath")
+				mainContainer := pod.Spec.Containers[0]
+				var cacheMounts []corev1.VolumeMount
+				for _, m := range mainContainer.VolumeMounts {
+					if m.SubPath != "" {
+						cacheMounts = append(cacheMounts, m)
+					}
+				}
+				Expect(cacheMounts).To(HaveLen(1))
+				Expect(cacheMounts[0].SubPath).To(HavePrefix("job-42-build-step-"))
+			})
+		})
+	})
+
 	Describe("Run with resource limits", func() {
 		var container runtime.Container
 
