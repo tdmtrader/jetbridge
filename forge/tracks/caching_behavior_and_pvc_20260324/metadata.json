@@ -1,0 +1,17 @@
+{
+  "trackId": "caching_behavior_and_pvc_20260324",
+  "type": "bug",
+  "status": "in_progress",
+  "description": "Fix broken task cache persistence: cache key uses per-container UUID (never reused), and fallback uses emptyDir (wiped on pod termination)",
+  "createdAt": "2026-03-25T00:28:02.641Z",
+  "updatedAt": "2026-03-25T00:35:37.486Z",
+  "sessions": [
+    {
+      "slotIndex": 0,
+      "engineType": "claude",
+      "aiSessionId": "9c4bfe68-e709-4aca-a21a-87bb8e991d4c",
+      "accountId": "system-claude",
+      "updatedAt": "2026-03-25T00:28:15.714Z"
+    }
+  ]
+}

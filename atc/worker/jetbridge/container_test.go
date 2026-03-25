@@ -563,7 +563,11 @@ var _ = Describe("Container", func() {
 				container, _, err = cachePVCWorker.FindOrCreateContainer(
 					ctx,
 					db.NewFixedHandleContainerOwner("cache-subpath-handle"),
-					db.ContainerMetadata{Type: db.ContainerTypeTask},
+					db.ContainerMetadata{
+						Type:     db.ContainerTypeTask,
+						JobID:    42,
+						StepName: "build-step",
+					},
 					runtime.ContainerSpec{
 						TeamID:   1,
 						Dir:      "/tmp/build/workdir",
@@ -575,7 +579,7 @@ var _ = Describe("Container", func() {
 				Expect(err).ToNot(HaveOccurred())
 			})
 
-			It("mounts cache paths using PVC subPath instead of emptyDir", func() {
+			It("mounts cache paths using PVC subPath with stable job-scoped keys", func() {
 				_, err := container.Run(ctx, runtime.ProcessSpec{
 					Path: "/bin/sh",
 					Args: []string{"-c", "echo hello"},
@@ -607,9 +611,14 @@ var _ = Describe("Container", func() {
 				Expect(mountPaths).To(ConsistOf("/tmp/build/workdir/.cache", "/tmp/build/workdir/.npm"))
 
 				for _, m := range cacheMounts {
-					Expect(m.SubPath).ToNot(BeEmpty(), "subPath should be set for cache mounts")
+					By("using stable job-scoped keys, not container handle UUIDs")
+					Expect(m.SubPath).To(HavePrefix("job-42-build-step-"), "subPath should use stable job-scoped key")
+					Expect(m.SubPath).ToNot(ContainSubstring("cache-subpath-handle"), "subPath should NOT contain container handle")
 					Expect(m.Name).To(Equal("cache-pvc"), "cache mounts should reference the PVC volume")
 				}
+
+				By("producing different keys for different cache paths")
+				Expect(cacheMounts[0].SubPath).ToNot(Equal(cacheMounts[1].SubPath))
 			})
 		})
 
@@ -697,6 +706,118 @@ var _ = Describe("Container", func() {
 				pod := pods.Items[0]
 				for _, vol := range pod.Spec.Volumes {
 					Expect(vol.PersistentVolumeClaim).To(BeNil(), "no PVC volumes expected when CacheVolumeClaim is empty")
+				}
+			})
+		})
+
+		Context("when CacheHostPath is set (no PVC)", func() {
+			BeforeEach(func() {
+				setupFakeDBContainer(fakeDBWorker, "cache-hostpath-handle")
+
+				cfgWithHostPath := jetbridge.NewConfig("test-namespace", "")
+				cfgWithHostPath.CacheHostPath = "/var/concourse/cache"
+
+				hostPathWorker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfgWithHostPath)
+
+				var err error
+				container, _, err = hostPathWorker.FindOrCreateContainer(
+					ctx,
+					db.NewFixedHandleContainerOwner("cache-hostpath-handle"),
+					db.ContainerMetadata{
+						Type:     db.ContainerTypeTask,
+						JobID:    7,
+						StepName: "compile",
+					},
+					runtime.ContainerSpec{
+						TeamID:   1,
+						Dir:      "/tmp/build/workdir",
+						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+						Caches:   []string{"/tmp/build/workdir/.cache"},
+					},
+					delegate,
+				)
+				Expect(err).ToNot(HaveOccurred())
+			})
+
+			It("uses hostPath volumes with stable keys for caches", func() {
+				_, err := container.Run(ctx, runtime.ProcessSpec{
+					Path: "/bin/sh",
+					Args: []string{"-c", "echo hello"},
+				}, runtime.ProcessIO{})
+				Expect(err).ToNot(HaveOccurred())
+
+				pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
+				Expect(err).ToNot(HaveOccurred())
+				pod := pods.Items[0]
+
+				By("creating hostPath volumes for caches")
+				var hostPathVol *corev1.Volume
+				for i := range pod.Spec.Volumes {
+					if pod.Spec.Volumes[i].HostPath != nil {
+						hostPathVol = &pod.Spec.Volumes[i]
+						break
+					}
+				}
+				Expect(hostPathVol).ToNot(BeNil(), "expected a hostPath volume for cache")
+				Expect(hostPathVol.HostPath.Path).To(HavePrefix("/var/concourse/cache/job-7-compile-"))
+				dirType := corev1.HostPathDirectoryOrCreate
+				Expect(*hostPathVol.HostPath.Type).To(Equal(dirType))
+
+				By("mounting at the cache path")
+				mainContainer := pod.Spec.Containers[0]
+				var cacheMount *corev1.VolumeMount
+				for i := range mainContainer.VolumeMounts {
+					if mainContainer.VolumeMounts[i].MountPath == "/tmp/build/workdir/.cache" {
+						cacheMount = &mainContainer.VolumeMounts[i]
+						break
+					}
+				}
+				Expect(cacheMount).ToNot(BeNil())
+				Expect(cacheMount.Name).To(Equal(hostPathVol.Name))
+			})
+		})
+
+		Context("when CacheHostPath is set but JobID is 0 (one-off build)", func() {
+			BeforeEach(func() {
+				setupFakeDBContainer(fakeDBWorker, "cache-oneoff-handle")
+
+				cfgWithHostPath := jetbridge.NewConfig("test-namespace", "")
+				cfgWithHostPath.CacheHostPath = "/var/concourse/cache"
+
+				hostPathWorker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfgWithHostPath)
+
+				var err error
+				container, _, err = hostPathWorker.FindOrCreateContainer(
+					ctx,
+					db.NewFixedHandleContainerOwner("cache-oneoff-handle"),
+					db.ContainerMetadata{
+						Type:  db.ContainerTypeTask,
+						JobID: 0,
+					},
+					runtime.ContainerSpec{
+						TeamID:   1,
+						Dir:      "/tmp/build/workdir",
+						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+						Caches:   []string{"/tmp/build/workdir/.cache"},
+					},
+					delegate,
+				)
+				Expect(err).ToNot(HaveOccurred())
+			})
+
+			It("falls back to emptyDir for one-off builds", func() {
+				_, err := container.Run(ctx, runtime.ProcessSpec{
+					Path: "/bin/sh",
+					Args: []string{"-c", "echo hello"},
+				}, runtime.ProcessIO{})
+				Expect(err).ToNot(HaveOccurred())
+
+				pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
+				Expect(err).ToNot(HaveOccurred())
+				pod := pods.Items[0]
+
+				for _, vol := range pod.Spec.Volumes {
+					Expect(vol.HostPath).To(BeNil(), "one-off builds should not use hostPath")
 				}
 			})
 		})

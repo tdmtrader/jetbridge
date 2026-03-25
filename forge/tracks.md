@@ -8,7 +8,7 @@ _None_
 
 ## Completed / Archived Tracks
 
-### [x] Track: Finish Setup (Conductor Migration)
+### [~] Track: Finish Setup (Conductor Migration)
 _Link: [./archive/finish_setup_20260303/](./archive/finish_setup_20260303/)_
 
 ---
@@ -310,5 +310,20 @@ _Link: [./tracks/sidecar_image_handoff_20260323/](./tracks/sidecar_image_handoff
 
 ### [ ] Track: Load var
 _Link: [./tracks/load_var_20260323/](./tracks/load_var_20260323/)_
+
+---
+
+### [ ] Track: image artifact failrue
+_Link: [./tracks/image_artifact_failrue_20260324/](./tracks/image_artifact_failrue_20260324/)_
+
+---
+
+### [ ] Track: Native registry-image check resolution
+_Link: [./tracks/native_registry_image_check_resolution_20260324/](./tracks/native_registry_image_check_resolution_20260324/)_
+
+---
+
+### [ ] Track: Caching behavior and PVC
+_Link: [./tracks/caching_behavior_and_pvc_20260324/](./tracks/caching_behavior_and_pvc_20260324/)_
 
 ---

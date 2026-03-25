@@ -117,9 +117,16 @@ type Config struct {
 
 	// CacheVolumeClaim is the name of a PersistentVolumeClaim to mount
 	// into every pod at CacheBasePath. Cache entries are stored as
-	// subdirectories keyed by volume handle. When empty, caching is
-	// disabled and all volumes use emptyDir (the default behavior).
+	// subdirectories keyed by (jobID, stepName, path). When empty,
+	// falls back to CacheHostPath or emptyDir.
 	CacheVolumeClaim string
+
+	// CacheHostPath is the base directory on the node filesystem for
+	// persistent task caches. Each cache gets a subdirectory keyed by
+	// (jobID, stepName, path). Data survives pod restarts on the same
+	// node. Only used when CacheVolumeClaim is empty. When both are
+	// empty, caches fall back to emptyDir (ephemeral).
+	CacheHostPath string
 
 	// ArtifactStoreClaim is the name of a PersistentVolumeClaim for durable
 	// artifact and resource cache storage. In production, this PVC is backed

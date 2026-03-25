@@ -2,6 +2,8 @@ package jetbridge
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
@@ -816,6 +818,26 @@ func buildImagePullSecrets(secretNames []string, registry *ImageRegistryConfig) 
 	return refs
 }
 
+// stableCacheKey returns a deterministic, filesystem-safe key for a task cache
+// scoped to a specific job and step. The same job+step+path always produces
+// the same key, enabling cache reuse across builds.
+func stableCacheKey(jobID int, stepName string, cachePath string) string {
+	h := sha256.New()
+	fmt.Fprintf(h, "%d\x00%s\x00%s", jobID, stepName, cachePath)
+	hash := hex.EncodeToString(h.Sum(nil))[:12]
+	// Sanitize stepName for filesystem safety (replace non-alphanumeric with -)
+	safe := strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+			return r
+		}
+		return '-'
+	}, stepName)
+	if len(safe) > 40 {
+		safe = safe[:40]
+	}
+	return fmt.Sprintf("job-%d-%s-%s", jobID, safe, hash)
+}
+
 // buildVolumeMounts creates K8s Volume and VolumeMount entries for
 // the container's Dir, inputs, outputs, and caches.
 func (c *Container) buildVolumeMounts() ([]corev1.Volume, []corev1.VolumeMount) {
@@ -918,15 +940,40 @@ func (c *Container) buildVolumeMounts() ([]corev1.Volume, []corev1.VolumeMount) 
 			MountPath: CacheBasePath,
 		})
 
-		for i, cachePath := range resolvedCaches {
-			cacheHandle := fmt.Sprintf("%s-cache-%d", c.handle, i)
+		for _, cachePath := range resolvedCaches {
+			key := stableCacheKey(c.metadata.JobID, c.metadata.StepName, cachePath)
 			mounts = append(mounts, corev1.VolumeMount{
 				Name:      cachePVCVolumeName,
 				MountPath: cachePath,
-				SubPath:   cacheHandle,
+				SubPath:   key,
+			})
+		}
+	} else if c.config.CacheHostPath != "" && c.metadata.JobID != 0 {
+		// When a host path is configured and we have a job context, use
+		// hostPath volumes with stable keys so caches persist across builds
+		// on the same node.
+		dirType := corev1.HostPathDirectoryOrCreate
+		for i, cachePath := range resolvedCaches {
+			key := stableCacheKey(c.metadata.JobID, c.metadata.StepName, cachePath)
+			name := fmt.Sprintf("cache-%d", i)
+			volumes = append(volumes, corev1.Volume{
+				Name: name,
+				VolumeSource: corev1.VolumeSource{
+					HostPath: &corev1.HostPathVolumeSource{
+						Path: filepath.Join(c.config.CacheHostPath, key),
+						Type: &dirType,
+					},
+				},
+			})
+			mounts = append(mounts, corev1.VolumeMount{
+				Name:      name,
+				MountPath: cachePath,
 			})
 		}
 	} else {
+		// Fallback: emptyDir volumes. Caches are ephemeral and lost on
+		// pod termination. This is the default when no PVC or hostPath
+		// is configured.
 		for i, cachePath := range resolvedCaches {
 			name := fmt.Sprintf("cache-%d", i)
 			volumes = append(volumes, corev1.Volume{

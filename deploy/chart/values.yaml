@@ -171,6 +171,7 @@ kubernetes:
   imageRegistrySecret: ""
 
 # -- Cache PVC configuration (speeds up resource gets and task caches)
+# When enabled, takes precedence over cacheHostPath.
 cachePvc:
   # -- Enable the cache PVC
   enabled: true
@@ -183,6 +184,11 @@ cachePvc:
   # -- Access modes
   accessModes:
     - ReadWriteOnce
+
+# -- Host path for node-local task cache persistence.
+# Used when cachePvc is disabled. Caches survive pod restarts on the same node.
+# Set to "" to disable (falls back to ephemeral emptyDir).
+cacheHostPath: /var/concourse/cache
 
 # -- Artifact store PVC (cross-pod volume passing via init containers)
 artifactStorePvc:

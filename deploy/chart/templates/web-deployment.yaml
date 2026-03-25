@@ -163,6 +163,8 @@ spec:
             # PVCs
             {{- if .Values.cachePvc.enabled }}
             - --kubernetes-cache-pvc={{ .Values.cachePvc.name }}
+            {{- else if .Values.cacheHostPath }}
+            - --kubernetes-cache-host-path={{ .Values.cacheHostPath }}
             {{- end }}
             {{- if .Values.artifactStorePvc.enabled }}
             - --kubernetes-artifact-store-claim={{ .Values.artifactStorePvc.name }}
