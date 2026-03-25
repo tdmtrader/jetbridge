@@ -258,3 +258,12 @@ type AcrossSubsteps struct {
 
 func (AcrossSubsteps) EventType() atc.EventType  { return EventTypeAcrossSubsteps }
 func (AcrossSubsteps) Version() atc.EventVersion { return "1.0" }
+
+type Sidecar struct {
+	Time       int64            `json:"time"`
+	Origin     Origin           `json:"origin"`
+	PublicPlan *json.RawMessage `json:"plan"`
+}
+
+func (Sidecar) EventType() atc.EventType  { return EventTypeSidecar }
+func (Sidecar) Version() atc.EventVersion { return "1.0" }

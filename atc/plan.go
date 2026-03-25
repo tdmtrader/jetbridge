@@ -30,6 +30,9 @@ type Plan struct {
 	ArtifactInput  *ArtifactInputPlan  `json:"artifact_input,omitempty"`
 	ArtifactOutput *ArtifactOutputPlan `json:"artifact_output,omitempty"`
 
+	// sidecar container (emitted dynamically via Sidecar events, similar to ImageCheck/ImageGet)
+	Sidecar *SidecarPlan `json:"sidecar,omitempty"`
+
 	// deprecated, kept for backwards compatibility to be able to show old builds
 	DependentGet *DependentGetPlan `json:"dependent_get,omitempty"`
 }
@@ -424,4 +427,31 @@ type DependentGetPlan struct {
 	Type     string `json:"type"`
 	Name     string `json:"name,omitempty"`
 	Resource string `json:"resource"`
+}
+
+// SidecarPlanID returns the plan ID for a sidecar container associated with
+// a parent task step. The format mirrors image plan IDs (e.g. "parent/image-get").
+func SidecarPlanID(parentPlanID PlanID, sidecarName string) PlanID {
+	return parentPlanID + "/sidecar/" + PlanID(sidecarName)
+}
+
+// SidecarPlan is a lightweight plan representing a sidecar container in the
+// build plan. It uses its own plan type so the UI can render it as a
+// step with its own logs, status, and expand/collapse.
+type SidecarPlan struct {
+	Name  string `json:"name"`
+	Image string `json:"image,omitempty"`
+}
+
+// NewSidecarPlan constructs a Plan for a sidecar container that can be
+// serialized and emitted as a Sidecar event. The UI uses this to create
+// a nested step tree entry under the parent task step.
+func NewSidecarPlan(parentPlanID PlanID, config SidecarConfig) Plan {
+	return Plan{
+		ID: SidecarPlanID(parentPlanID, config.Name),
+		Sidecar: &SidecarPlan{
+			Name:  config.Name,
+			Image: config.Image,
+		},
+	}
 }

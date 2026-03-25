@@ -65,6 +65,8 @@ func (factory PlanFactory) NewPlan(step PlanConfig) Plan {
 		plan.ArtifactInput = &t
 	case ArtifactOutputPlan:
 		plan.ArtifactOutput = &t
+	case SidecarPlan:
+		plan.Sidecar = &t
 	default:
 		panic(fmt.Sprintf("don't know how to construct plan from %T", step))
 	}

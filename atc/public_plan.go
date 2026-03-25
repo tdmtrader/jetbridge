@@ -31,6 +31,7 @@ func (plan *Plan) Public() *json.RawMessage {
 		Retry          *json.RawMessage `json:"retry,omitempty"`
 		ArtifactInput  *json.RawMessage `json:"artifact_input,omitempty"`
 		ArtifactOutput *json.RawMessage `json:"artifact_output,omitempty"`
+		Sidecar        *json.RawMessage `json:"sidecar,omitempty"`
 	}
 
 	public.ID = plan.ID
@@ -113,6 +114,10 @@ func (plan *Plan) Public() *json.RawMessage {
 
 	if plan.ArtifactOutput != nil {
 		public.ArtifactOutput = plan.ArtifactOutput.Public()
+	}
+
+	if plan.Sidecar != nil {
+		public.Sidecar = plan.Sidecar.Public()
 	}
 
 	if plan.DependentGet != nil {
@@ -359,6 +364,16 @@ func (plan ArtifactInputPlan) Public() *json.RawMessage {
 
 func (plan ArtifactOutputPlan) Public() *json.RawMessage {
 	return enc(plan)
+}
+
+func (plan SidecarPlan) Public() *json.RawMessage {
+	return enc(struct {
+		Name  string `json:"name"`
+		Image string `json:"image,omitempty"`
+	}{
+		Name:  plan.Name,
+		Image: plan.Image,
+	})
 }
 
 func (plan VarScopedPlan) Public() *json.RawMessage {

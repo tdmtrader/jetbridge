@@ -8,6 +8,65 @@ import (
 )
 
 var _ = Describe("Plan", func() {
+	Describe("SidecarPlanID", func() {
+		It("derives a plan ID from the parent and sidecar name", func() {
+			id := atc.SidecarPlanID("42", "cloud-sql-proxy")
+			Expect(id).To(Equal(atc.PlanID("42/sidecar/cloud-sql-proxy")))
+		})
+	})
+
+	Describe("NewSidecarPlan", func() {
+		It("constructs a plan with a sidecar and derived ID", func() {
+			config := atc.SidecarConfig{
+				Name:  "redis",
+				Image: "redis:7",
+			}
+			plan := atc.NewSidecarPlan("10", config)
+			Expect(plan.ID).To(Equal(atc.PlanID("10/sidecar/redis")))
+			Expect(plan.Sidecar).ToNot(BeNil())
+			Expect(plan.Sidecar.Name).To(Equal("redis"))
+			Expect(plan.Sidecar.Image).To(Equal("redis:7"))
+		})
+	})
+
+	Describe("SidecarPlan Public", func() {
+		It("serializes name and image", func() {
+			plan := atc.Plan{
+				ID: "5/sidecar/postgres",
+				Sidecar: &atc.SidecarPlan{
+					Name:  "postgres",
+					Image: "postgres:16",
+				},
+			}
+			json := plan.Public()
+			Expect(json).ToNot(BeNil())
+			Expect([]byte(*json)).To(MatchJSON(`{
+				"id": "5/sidecar/postgres",
+				"sidecar": {
+					"name": "postgres",
+					"image": "postgres:16"
+				}
+			}`))
+		})
+
+		It("omits image when empty", func() {
+			plan := atc.Plan{
+				ID: "5/sidecar/helper",
+				Sidecar: &atc.SidecarPlan{
+					Name: "helper",
+				},
+			}
+			json := plan.Public()
+			Expect(json).ToNot(BeNil())
+			Expect([]byte(*json)).To(MatchJSON(`{
+				"id": "5/sidecar/helper",
+				"sidecar": {
+					"name": "helper"
+				}
+			}`))
+		})
+	})
+
 	Describe("Public", func() {
 		It("returns a sanitized form of the plan", func() {
 			plan := atc.Plan{

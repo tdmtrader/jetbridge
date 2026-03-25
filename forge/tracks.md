@@ -332,3 +332,13 @@ _Link: [./tracks/caching_behavior_and_pvc_20260324/](./tracks/caching_behavior_a
 _Link: [./tracks/cache_backed_by_gcs_fuse_20260324/](./tracks/cache_backed_by_gcs_fuse_20260324/)_
 
 ---
+
+### [ ] Track: OCI Build Task Cache Testing
+_Link: [./tracks/oci_build_task_cache_testing_20260324/](./tracks/oci_build_task_cache_testing_20260324/)_
+
+---
+
+### [ ] Track: Sidecar Details
+_Link: [./tracks/sidecar_details_20260325/](./tracks/sidecar_details_20260325/)_
+
+---

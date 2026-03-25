@@ -67,4 +67,7 @@ const (
 
 	// across step substeps (sent dynamically as of Concourse 7.4)
 	EventTypeAcrossSubsteps atc.EventType = "across-substeps"
+
+	// sidecar container sub-plan (sent dynamically when task has sidecars)
+	EventTypeSidecar atc.EventType = "sidecar"
 )
