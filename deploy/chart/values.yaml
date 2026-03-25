@@ -170,6 +170,14 @@ kubernetes:
   # When set, this secret is added to pods that pull resource type images.
   imageRegistrySecret: ""
 
+# -- Explicit task cache backend selector.
+# Valid values: artifact, pvc, hostpath, emptydir.
+# When empty (default), auto-detects based on which config is set:
+#   artifact store > cache PVC > hostpath > emptydir.
+# Set explicitly to override auto-detection (e.g. "hostpath" when you
+# prefer node-local caches even though the artifact store is configured).
+cacheStore: ""
+
 # -- Cache PVC configuration (speeds up resource gets and task caches)
 # When enabled, takes precedence over cacheHostPath.
 cachePvc:

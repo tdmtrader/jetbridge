@@ -160,10 +160,14 @@ spec:
             {{- range .Values.kubernetes.imagePullSecrets }}
             - --kubernetes-image-pull-secret={{ . }}
             {{- end }}
-            # PVCs
+            # Cache configuration
+            {{- if .Values.cacheStore }}
+            - --kubernetes-cache-store={{ .Values.cacheStore }}
+            {{- end }}
             {{- if .Values.cachePvc.enabled }}
             - --kubernetes-cache-pvc={{ .Values.cachePvc.name }}
-            {{- else if .Values.cacheHostPath }}
+            {{- end }}
+            {{- if .Values.cacheHostPath }}
             - --kubernetes-cache-host-path={{ .Values.cacheHostPath }}
             {{- end }}
             {{- if .Values.artifactStorePvc.enabled }}

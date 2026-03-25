@@ -169,6 +169,7 @@ type RunCommand struct {
 		PodStartupTimeout  time.Duration `long:"kubernetes-pod-startup-timeout"    default:"5m" description:"Maximum time to wait for a pod to reach Running state before failing the task."`
 		ImagePullSecrets   []string      `long:"kubernetes-image-pull-secret"      description:"Kubernetes Secret name to use as imagePullSecrets on task Pods. Can be specified multiple times."`
 		ServiceAccount     string        `long:"kubernetes-service-account"        description:"Kubernetes ServiceAccount name to set on task Pods. Defaults to the namespace default SA."`
+		CacheStore         string        `long:"kubernetes-cache-store"            description:"Task cache backend: artifact (tar on artifact PVC, cross-node), pvc (dedicated cache PVC), hostpath (node-local dirs), emptydir (ephemeral). Empty = auto-detect."`
 		CachePVC           string        `long:"kubernetes-cache-pvc"              description:"Name of a PersistentVolumeClaim to mount as a shared cache volume in task Pods. Enables node-local resource and task caching."`
 		CacheHostPath      string        `long:"kubernetes-cache-host-path"        description:"Base directory on host node for persistent task caches. Used when no cache PVC is configured. Caches are node-local and survive pod restarts."`
 		ArtifactStoreClaim    string `long:"kubernetes-artifact-store-claim"      description:"Name of a PersistentVolumeClaim for durable artifact and resource cache storage. In production, back with GCS FUSE via StorageClass. Locally, uses default StorageClass."`
@@ -1246,11 +1247,15 @@ func (cmd *RunCommand) backendComponents(
 		k8sCfg.PodStartupTimeout = cmd.Kubernetes.PodStartupTimeout
 		k8sCfg.ImagePullSecrets = cmd.Kubernetes.ImagePullSecrets
 		k8sCfg.ServiceAccount = cmd.Kubernetes.ServiceAccount
+		k8sCfg.CacheStore = cmd.Kubernetes.CacheStore
 		k8sCfg.CacheVolumeClaim = cmd.Kubernetes.CachePVC
 		k8sCfg.CacheHostPath = cmd.Kubernetes.CacheHostPath
 		k8sCfg.ArtifactStoreClaim = cmd.Kubernetes.ArtifactStoreClaim
 		k8sCfg.ArtifactStoreGCSFuse = cmd.Kubernetes.ArtifactStoreGCSFuse
 		k8sCfg.ArtifactHelperImage = cmd.Kubernetes.ArtifactHelperImage
+		if cmd.Kubernetes.CacheStore != "" && !jetbridge.ValidCacheStores[cmd.Kubernetes.CacheStore] {
+			return nil, fmt.Errorf("invalid --kubernetes-cache-store value %q (valid: artifact, pvc, hostpath, emptydir)", cmd.Kubernetes.CacheStore)
+		}
 		if cmd.Kubernetes.ImageRegistryPrefix != "" || cmd.Kubernetes.ImageRegistrySecret != "" {
 			k8sCfg.ImageRegistry = &jetbridge.ImageRegistryConfig{
 				Prefix:     cmd.Kubernetes.ImageRegistryPrefix,
@@ -1356,6 +1361,7 @@ func (cmd *RunCommand) constructPool(dbConn db.DbConn, lockFactory lock.LockFact
 		k8sCfg.PodStartupTimeout = cmd.Kubernetes.PodStartupTimeout
 		k8sCfg.ImagePullSecrets = cmd.Kubernetes.ImagePullSecrets
 		k8sCfg.ServiceAccount = cmd.Kubernetes.ServiceAccount
+		k8sCfg.CacheStore = cmd.Kubernetes.CacheStore
 		k8sCfg.CacheVolumeClaim = cmd.Kubernetes.CachePVC
 		k8sCfg.CacheHostPath = cmd.Kubernetes.CacheHostPath
 		k8sCfg.ArtifactStoreClaim = cmd.Kubernetes.ArtifactStoreClaim
