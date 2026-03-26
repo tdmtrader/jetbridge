@@ -280,6 +280,11 @@ handleEvent event ( model, effects ) =
             , effects
             )
 
+        SidecarPlan { id } plan ->
+            ( { model | steps = Maybe.map (Build.StepTree.StepTree.setSidecar model.buildId id plan) model.steps }
+            , effects
+            )
+
         AcrossSubsteps { id } substeps ->
             ( { model | steps = Maybe.map (Build.StepTree.StepTree.setAcrossSubsteps model.buildId id substeps) model.steps }
             , effects

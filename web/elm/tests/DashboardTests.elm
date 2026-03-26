@@ -2015,6 +2015,8 @@ givenClusterInfo version clusterName =
             Ok
                 { version = version
                 , clusterName = clusterName
+                , jetbridgeVersion = ""
+                , concourseVersion = ""
                 }
         )
 

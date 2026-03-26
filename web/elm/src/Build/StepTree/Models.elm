@@ -66,6 +66,7 @@ type StepTree
     | Ensure HookedStep
     | Try StepTree
     | Timeout StepTree
+    | Sidecar StepID
 
 
 type alias HookedStep =
@@ -97,6 +98,7 @@ type alias Step =
     , initializationExpanded : Bool
     , imageCheck : Maybe StepTree
     , imageGet : Maybe StepTree
+    , sidecars : List StepTree
     }
 
 
@@ -217,6 +219,7 @@ type BuildEvent
     | Error Origin String Time.Posix
     | ImageCheck Origin Concourse.BuildPlan
     | ImageGet Origin Concourse.BuildPlan
+    | SidecarPlan Origin Concourse.BuildPlan
     | AcrossSubsteps Origin (List Concourse.AcrossSubstep)
     | End
     | Opened
@@ -286,6 +289,9 @@ activeStepIds model tree =
             [ stepId ]
 
         LoadVar stepId ->
+            [ stepId ]
+
+        Sidecar stepId ->
             [ stepId ]
 
         Aggregate trees ->
@@ -366,6 +372,9 @@ updateTreeNodeAt id fn tree =
             updateSelf stepId
 
         LoadVar stepId ->
+            updateSelf stepId
+
+        Sidecar stepId ->
             updateSelf stepId
 
         Aggregate trees ->

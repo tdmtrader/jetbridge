@@ -47,6 +47,8 @@ all =
         , initEnsure
         , initTry
         , initTimeout
+        , initSidecar
+        , setSidecarTest
         ]
 
 
@@ -75,6 +77,7 @@ someVersionedStep version id buildStep state =
     , initializationExpanded = False
     , imageCheck = Nothing
     , imageGet = Nothing
+    , sidecars = []
     }
 
 
@@ -787,6 +790,93 @@ initTimeout =
         , test "the steps" <|
             \_ ->
                 assertSteps [ someStep "task-a-id" (task "a") Models.StepStatePending ] steps
+        ]
+
+
+initSidecar : Test
+initSidecar =
+    let
+        { tree, steps } =
+            StepTree.init Nothing
+                Routes.HighlightNothing
+                emptyResources
+                { id = "sidecar-id"
+                , step = BuildStepSidecar "postgres"
+                }
+    in
+    describe "init with Sidecar"
+        [ test "the tree" <|
+            \_ ->
+                Expect.equal (Models.Sidecar "sidecar-id") tree
+        , test "the step" <|
+            \_ ->
+                assertSteps
+                    [ someStep "sidecar-id" (BuildStepSidecar "postgres") Models.StepStatePending ]
+                    steps
+        ]
+
+
+setSidecarTest : Test
+setSidecarTest =
+    let
+        taskModel =
+            StepTree.init Nothing
+                Routes.HighlightNothing
+                emptyResources
+                { id = "task-id"
+                , step = task "build"
+                }
+
+        sidecarPlan =
+            { id = "task-id/sidecar/redis"
+            , step = BuildStepSidecar "redis"
+            }
+
+        updatedModel =
+            StepTree.setSidecar Nothing "task-id" sidecarPlan taskModel
+    in
+    describe "setSidecar"
+        [ test "adds the sidecar tree to the parent step's sidecars list" <|
+            \_ ->
+                case Dict.get "task-id" updatedModel.steps of
+                    Just parentStep ->
+                        Expect.equal 1 (List.length parentStep.sidecars)
+
+                    Nothing ->
+                        Expect.fail "parent step not found"
+        , test "registers the sidecar step in the steps dict" <|
+            \_ ->
+                case Dict.get "task-id/sidecar/redis" updatedModel.steps of
+                    Just sidecarStep ->
+                        Expect.equal (BuildStepSidecar "redis") sidecarStep.buildStep
+
+                    Nothing ->
+                        Expect.fail "sidecar step not found in steps dict"
+        , test "sidecar step starts in pending state" <|
+            \_ ->
+                case Dict.get "task-id/sidecar/redis" updatedModel.steps of
+                    Just sidecarStep ->
+                        Expect.equal Models.StepStatePending sidecarStep.state
+
+                    Nothing ->
+                        Expect.fail "sidecar step not found"
+        , test "adding multiple sidecars appends to the list" <|
+            \_ ->
+                let
+                    secondSidecarPlan =
+                        { id = "task-id/sidecar/postgres"
+                        , step = BuildStepSidecar "postgres"
+                        }
+
+                    twoSidecars =
+                        StepTree.setSidecar Nothing "task-id" secondSidecarPlan updatedModel
+                in
+                case Dict.get "task-id" twoSidecars.steps of
+                    Just parentStep ->
+                        Expect.equal 2 (List.length parentStep.sidecars)
+
+                    Nothing ->
+                        Expect.fail "parent step not found"
         ]
 
 

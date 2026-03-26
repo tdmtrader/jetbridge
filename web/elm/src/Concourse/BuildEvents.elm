@@ -244,6 +244,13 @@ decodeBuildEvent =
                                 (Json.Decode.field "plan" Concourse.decodeBuildPlan)
                             )
 
+                    "sidecar" ->
+                        Json.Decode.field "data"
+                            (Json.Decode.map2 SidecarPlan
+                                (Json.Decode.field "origin" decodeOrigin)
+                                (Json.Decode.field "plan" Concourse.decodeBuildPlan)
+                            )
+
                     "across-substeps" ->
                         Json.Decode.field "data"
                             (Json.Decode.map2 AcrossSubsteps

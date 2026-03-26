@@ -470,6 +470,9 @@ mapBuildPlan fn plan =
 
                 BuildStepTimeout step ->
                     mapBuildPlan fn step
+
+                BuildStepSidecar _ ->
+                    []
            )
 
 
@@ -509,6 +512,7 @@ type BuildStep
     | BuildStepTry BuildPlan
     | BuildStepRetry (Array BuildPlan)
     | BuildStepTimeout BuildPlan
+    | BuildStepSidecar StepName
 
 
 type alias HookedPlan =
@@ -710,6 +714,8 @@ decodeBuildPlan =
                     lazy (\_ -> decodeBuildStepLoadVar)
                 , Json.Decode.field "across" <|
                     lazy (\_ -> decodeBuildStepAcross)
+                , Json.Decode.field "sidecar" <|
+                    lazy (\_ -> decodeBuildStepSidecar)
                 ]
             )
 
@@ -717,6 +723,12 @@ decodeBuildPlan =
 decodeBuildStepTask : Json.Decode.Decoder BuildStep
 decodeBuildStepTask =
     Json.Decode.succeed BuildStepTask
+        |> andMap (Json.Decode.field "name" Json.Decode.string)
+
+
+decodeBuildStepSidecar : Json.Decode.Decoder BuildStep
+decodeBuildStepSidecar =
+    Json.Decode.succeed BuildStepSidecar
         |> andMap (Json.Decode.field "name" Json.Decode.string)
 
 

@@ -6,6 +6,7 @@ module Build.StepTree.StepTree exposing
     , setHighlight
     , setImageCheck
     , setImageGet
+    , setSidecar
     , switchTab
     , toggleStep
     , toggleStepInitialization
@@ -178,6 +179,9 @@ init buildId hl resources plan =
         Concourse.BuildStepTimeout subPlan ->
             initWrappedStep buildId hl resources Timeout subPlan
 
+        Concourse.BuildStepSidecar _ ->
+            step |> initBottom buildId hl resources plan Sidecar
+
 
 setImagePlans : Maybe Concourse.JobBuildIdentifier -> StepID -> Maybe Concourse.ImageBuildPlans -> StepTreeModel -> StepTreeModel
 setImagePlans buildId stepId imagePlans model =
@@ -214,6 +218,19 @@ setImageGet buildId stepId subPlan model =
         | steps =
             Dict.union sub.steps model.steps
                 |> Dict.update stepId (Maybe.map (\step -> { step | imageGet = Just sub.tree }))
+    }
+
+
+setSidecar : Maybe Concourse.JobBuildIdentifier -> StepID -> Concourse.BuildPlan -> StepTreeModel -> StepTreeModel
+setSidecar buildId stepId subPlan model =
+    let
+        sub =
+            init buildId model.highlight model.resources subPlan
+    in
+    { model
+        | steps =
+            Dict.union sub.steps model.steps
+                |> Dict.update stepId (Maybe.map (\step -> { step | sidecars = step.sidecars ++ [ sub.tree ] }))
     }
 
 
@@ -371,6 +388,7 @@ constructStep { id, step } =
     , initializationExpanded = False
     , imageCheck = Nothing
     , imageGet = Nothing
+    , sidecars = []
     }
 
 
@@ -595,6 +613,9 @@ viewTree session model tree depth =
             viewStep model session depth stepId
 
         LoadVar stepId ->
+            viewStep model session depth stepId
+
+        Sidecar stepId ->
             viewStep model session depth stepId
 
         Try subTree ->
@@ -911,6 +932,19 @@ viewStepWithBody model session depth step body =
                         Html.span [ class "error" ] [ Html.pre [] [ Html.text msg ] ]
                  ]
                     ++ body
+                )
+
+          else
+            Html.text ""
+        , if step.expanded && not (List.isEmpty step.sidecars) then
+            Html.div (class "sub-steps" :: Styles.imageSteps)
+                (List.map
+                    (\subTree ->
+                        Html.div [ class "seq" ]
+                            [ viewTree session model subTree (depth + 1)
+                            ]
+                    )
+                    step.sidecars
                 )
 
           else
@@ -1324,6 +1358,9 @@ viewStepHeader step =
         Concourse.BuildStepTimeout _ ->
             Html.text ""
 
+        Concourse.BuildStepSidecar name ->
+            simpleHeader "sidecar:" Nothing name
+
 
 stepName : Concourse.BuildStep -> Maybe String
 stepName header =
@@ -1390,6 +1427,9 @@ stepName header =
 
         Concourse.BuildStepTimeout _ ->
             Nothing
+
+        Concourse.BuildStepSidecar name ->
+            Just name
 
 
 resourceName : Concourse.BuildStep -> Maybe String
