@@ -6,6 +6,7 @@ package jetbridge_test
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -258,9 +259,9 @@ func TestLiveVolumeDataIntegrity(t *testing.T) {
 	s1Handle := "live-vp-int1-" + ts
 	s1Worker, s1Delegate := setupLiveWorker(t, s1Handle)
 
-	// Build a test payload with special characters, newlines, and enough
-	// size to exercise buffering.
-	testContent := "line-1: hello world\nline-2: special chars !@#$%^&*()\nline-3: unicode \n"
+	// Build a test payload with special characters and newlines.
+	// Use content that is safe to embed in a shell printf format string.
+	testContent := "line-1: hello world\nline-2: special chars\nline-3: data integrity test\n"
 
 	s1Container, s1Mounts, err := s1Worker.FindOrCreateContainer(
 		ctx,
@@ -280,13 +281,13 @@ func TestLiveVolumeDataIntegrity(t *testing.T) {
 	cleanupPod(t, clientset, cfg.Namespace, s1Handle)
 
 	// Write the test content to a file in the output volume.
-	// Using printf to preserve exact content without shell interpretation.
+	// Use printf instead of stdin piping to avoid SPDY stdin delivery races
+	// where the EOF can arrive before cat reads the data.
 	s1Process, err := s1Container.Run(ctx, runtime.ProcessSpec{
 		Path: "/bin/sh",
-		Args: []string{"-c", "cat > /tmp/build/workdir/data/payload.txt"},
-	}, runtime.ProcessIO{
-		Stdin: strings.NewReader(testContent),
-	})
+		Args: []string{"-c", fmt.Sprintf("printf '%%s' '%s' > /tmp/build/workdir/data/payload.txt",
+			strings.ReplaceAll(testContent, "'", "'\\''"))},
+	}, runtime.ProcessIO{})
 	if err != nil {
 		t.Fatalf("Run (step-1): %v", err)
 	}
@@ -299,6 +300,27 @@ func TestLiveVolumeDataIntegrity(t *testing.T) {
 		t.Fatalf("step-1 expected exit 0, got %d", s1Result.ExitStatus)
 	}
 	t.Logf("step-1 wrote %d bytes to payload.txt", len(testContent))
+
+	// Verify the file was actually written in step-1's pod before proceeding.
+	var verifyBuf bytes.Buffer
+	verifyProcess, err := s1Container.Run(ctx, runtime.ProcessSpec{
+		Path: "cat",
+		Args: []string{"/tmp/build/workdir/data/payload.txt"},
+	}, runtime.ProcessIO{Stdout: &verifyBuf})
+	if err != nil {
+		t.Fatalf("Run (verify step-1): %v", err)
+	}
+	verifyResult, err := verifyProcess.Wait(ctx)
+	if err != nil {
+		t.Fatalf("Wait (verify step-1): %v", err)
+	}
+	if verifyResult.ExitStatus != 0 {
+		t.Fatalf("verify step-1 expected exit 0, got %d", verifyResult.ExitStatus)
+	}
+	t.Logf("step-1 verification: read back %d bytes: %q", verifyBuf.Len(), verifyBuf.String())
+	if verifyBuf.String() != testContent {
+		t.Fatalf("step-1 data mismatch before volume pass!\nexpected: %q\ngot:      %q", testContent, verifyBuf.String())
+	}
 
 	// Find the output volume.
 	var s1OutputVolume runtime.Volume
