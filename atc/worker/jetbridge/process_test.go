@@ -1014,6 +1014,119 @@ var _ = Describe("Process", func() {
 		})
 	})
 
+	Describe("exec-mode pod failure diagnostics", func() {
+		var (
+			fakeExecutor  *fakeExecExecutor
+			execWorker    *jetbridge.Worker
+			execContainer runtime.Container
+		)
+
+		BeforeEach(func() {
+			fakeExecutor = &fakeExecExecutor{}
+			execWorker = jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
+			execWorker.SetExecutor(fakeExecutor)
+
+			setupFakeDBContainer(fakeDBWorker, "exec-diag-handle")
+
+			var err error
+			execContainer, _, err = execWorker.FindOrCreateContainer(
+				ctx,
+				db.NewFixedHandleContainerOwner("exec-diag-handle"),
+				db.ContainerMetadata{Type: db.ContainerTypeGet},
+				runtime.ContainerSpec{
+					TeamID:   1,
+					ImageSpec: runtime.ImageSpec{ResourceType: "git"},
+					Type:     db.ContainerTypeGet,
+				},
+				delegate,
+			)
+			Expect(err).ToNot(HaveOccurred())
+		})
+
+		It("writes pod failure diagnostics when exec fails due to pod death", func() {
+			// The execFunc simulates OOM kill: updates pod status to
+			// Failed/OOMKilled and returns an error. fetchPodFailureContext
+			// then re-Gets the pod and finds the OOM state.
+			fakeExecutor.execFunc = func() error {
+				p, _ := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "exec-diag-handle", metav1.GetOptions{})
+				p.Spec.NodeName = "gke-spot-node-1"
+				p.Status.Phase = corev1.PodFailed
+				p.Status.ContainerStatuses = []corev1.ContainerStatus{
+					{
+						Name: "main",
+						State: corev1.ContainerState{
+							Terminated: &corev1.ContainerStateTerminated{
+								ExitCode: 137,
+								Reason:   "OOMKilled",
+							},
+						},
+					},
+				}
+				fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, p, metav1.UpdateOptions{})
+				return errors.New("exec stream: unable to upgrade connection: container not found")
+			}
+
+			stderrBuf := new(bytes.Buffer)
+			process, err := execContainer.Run(ctx, runtime.ProcessSpec{
+				Path: "/opt/resource/in",
+				Args: []string{"/tmp/build/get"},
+			}, runtime.ProcessIO{
+				Stdin:  bytes.NewBufferString("{}"),
+				Stdout: new(bytes.Buffer),
+				Stderr: stderrBuf,
+			})
+			Expect(err).ToNot(HaveOccurred())
+
+			// Set pod to Running so waitForRunning succeeds.
+			pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "exec-diag-handle", metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			pod.Status.Phase = corev1.PodRunning
+			_, err = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			_, err = process.Wait(ctx)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("exec in pod"))
+
+			stderrOutput := stderrBuf.String()
+			Expect(stderrOutput).To(ContainSubstring("Pod Failure Diagnostics"))
+			Expect(stderrOutput).To(ContainSubstring("OOMKilled"))
+			Expect(stderrOutput).To(ContainSubstring("Node: gke-spot-node-1"))
+		})
+
+		It("writes diagnostics when pod is already gone (not found)", func() {
+			// Make exec fail, and delete the pod so fetchPodFailureContext can't find it.
+			fakeExecutor.execFunc = func() error {
+				fakeClientset.CoreV1().Pods("test-namespace").Delete(ctx, "exec-diag-handle", metav1.DeleteOptions{})
+				return errors.New("exec stream: connection refused")
+			}
+
+			stderrBuf := new(bytes.Buffer)
+			process, err := execContainer.Run(ctx, runtime.ProcessSpec{
+				Path: "/opt/resource/in",
+				Args: []string{"/tmp/build/get"},
+			}, runtime.ProcessIO{
+				Stdin:  bytes.NewBufferString("{}"),
+				Stdout: new(bytes.Buffer),
+				Stderr: stderrBuf,
+			})
+			Expect(err).ToNot(HaveOccurred())
+
+			// Set pod to Running so waitForRunning succeeds.
+			pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "exec-diag-handle", metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			pod.Status.Phase = corev1.PodRunning
+			_, err = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			_, err = process.Wait(ctx)
+			Expect(err).To(HaveOccurred())
+
+			stderrOutput := stderrBuf.String()
+			Expect(stderrOutput).To(ContainSubstring("pod no longer exists"))
+		})
+	})
+
 	Describe("transient API error handling", func() {
 		It("tolerates a single API error during pollUntilDone", func() {
 			errorClientset := fake.NewSimpleClientset()
