@@ -186,6 +186,13 @@ func (p *Process) pollUntilDone(ctx context.Context) (runtime.ProcessResult, err
 		tracker.emitPodLifecycleEvents(ctx, pod)
 
 		// Check for terminal failure states before checking exit code.
+		// OOM check runs first — "OOMKilled" is more actionable than the
+		// generic "CrashLoopBackOff" that often wraps it.
+		if containerName, oom := isPodOOMKilled(pod); oom {
+			metric.RecordK8sPodFailure(ctx, "OOMKilled")
+			writePodDiagnostics(pod, p.processIO.Stderr)
+			return runtime.ProcessResult{}, fmt.Errorf("pod failed: OOMKilled: container %q exceeded memory limit", containerName)
+		}
 		if reason, message, failed := isPodFailedFast(pod); failed {
 			if reason == "ImagePullBackOff" || reason == "ErrImagePull" {
 				metric.Metrics.K8sImagePullFailures.Inc()
@@ -197,6 +204,7 @@ func (p *Process) pollUntilDone(ctx context.Context) (runtime.ProcessResult, err
 		if isPodEvicted(pod) {
 			metric.RecordK8sPodFailure(ctx, "Evicted")
 			writePodDiagnostics(pod, p.processIO.Stderr)
+			writeNodeDiagnostics(ctx, p.clientset, pod, p.processIO.Stderr)
 			return runtime.ProcessResult{}, fmt.Errorf("pod failed: Evicted: %s", pod.Status.Message)
 		}
 		if message, unschedulable := isPodUnschedulable(pod); unschedulable {
@@ -358,15 +366,33 @@ func isPodEvicted(pod *corev1.Pod) bool {
 	return pod.Status.Phase == corev1.PodFailed && pod.Status.Reason == "Evicted"
 }
 
+// isPodOOMKilled checks whether any container in the pod was terminated due
+// to an OOM kill. Returns the container name if found, empty string otherwise.
+func isPodOOMKilled(pod *corev1.Pod) (containerName string, oomKilled bool) {
+	for _, cs := range pod.Status.ContainerStatuses {
+		if cs.State.Terminated != nil && cs.State.Terminated.Reason == "OOMKilled" {
+			return cs.Name, true
+		}
+		if cs.LastTerminationState.Terminated != nil && cs.LastTerminationState.Terminated.Reason == "OOMKilled" {
+			return cs.Name, true
+		}
+	}
+	return "", false
+}
+
 // writePodDiagnostics writes human-readable pod failure diagnostics to the
-// given writer. This includes pod phase, reason, conditions, and container
-// waiting reasons so they appear in the Concourse build log.
+// given writer. This includes pod phase, reason, conditions, container
+// states (including OOM kills and restart history), and node information
+// so they appear in the Concourse build log.
 func writePodDiagnostics(pod *corev1.Pod, w io.Writer) {
 	if w == nil {
 		return
 	}
 	fmt.Fprintf(w, "\n--- Pod Failure Diagnostics ---\n")
 	fmt.Fprintf(w, "Pod: %s/%s\n", pod.Namespace, pod.Name)
+	if pod.Spec.NodeName != "" {
+		fmt.Fprintf(w, "Node: %s\n", pod.Spec.NodeName)
+	}
 	fmt.Fprintf(w, "Phase: %s\n", pod.Status.Phase)
 	if pod.Status.Reason != "" {
 		fmt.Fprintf(w, "Reason: %s\n", pod.Status.Reason)
@@ -388,7 +414,71 @@ func writePodDiagnostics(pod *corev1.Pod, w io.Writer) {
 		if cs.State.Terminated != nil {
 			fmt.Fprintf(w, "Container %q: Terminated: %s (exit code %d)\n",
 				cs.Name, cs.State.Terminated.Reason, cs.State.Terminated.ExitCode)
+			if cs.State.Terminated.Message != "" {
+				fmt.Fprintf(w, "  Message: %s\n", cs.State.Terminated.Message)
+			}
 		}
+		if cs.RestartCount > 0 {
+			fmt.Fprintf(w, "Container %q: RestartCount: %d\n", cs.Name, cs.RestartCount)
+			if cs.LastTerminationState.Terminated != nil {
+				last := cs.LastTerminationState.Terminated
+				fmt.Fprintf(w, "  Last termination: %s (exit code %d)\n", last.Reason, last.ExitCode)
+				if last.Message != "" {
+					fmt.Fprintf(w, "  Last termination message: %s\n", last.Message)
+				}
+			}
+		}
+	}
+}
+
+// writeNodeDiagnostics fetches and writes node-level diagnostics (pressure
+// conditions, preemption) to help diagnose why a pod was evicted or deleted.
+func writeNodeDiagnostics(ctx context.Context, clientset kubernetes.Interface, pod *corev1.Pod, w io.Writer) {
+	if w == nil || pod.Spec.NodeName == "" {
+		return
+	}
+	// Use a short timeout — this is best-effort diagnostics and must not
+	// block the build for long if the node is already gone.
+	fetchCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+
+	node, err := clientset.CoreV1().Nodes().Get(fetchCtx, pod.Spec.NodeName, metav1.GetOptions{})
+	if err != nil {
+		fmt.Fprintf(w, "Node %s: unable to fetch details: %v\n", pod.Spec.NodeName, err)
+		return
+	}
+
+	// Surface node pressure conditions (MemoryPressure, DiskPressure, PIDPressure).
+	for _, cond := range node.Status.Conditions {
+		switch cond.Type {
+		case corev1.NodeMemoryPressure, corev1.NodeDiskPressure, corev1.NodePIDPressure:
+			if cond.Status == corev1.ConditionTrue {
+				fmt.Fprintf(w, "Node %s: %s=True: %s\n", pod.Spec.NodeName, cond.Type, cond.Message)
+			}
+		case corev1.NodeReady:
+			if cond.Status != corev1.ConditionTrue {
+				fmt.Fprintf(w, "Node %s: NotReady: %s: %s\n", pod.Spec.NodeName, cond.Reason, cond.Message)
+			}
+		}
+	}
+
+	// Check for spot/preemptible node labels (GKE and generic K8s).
+	if v, ok := node.Labels["cloud.google.com/gke-spot"]; ok && v == "true" {
+		fmt.Fprintf(w, "Node %s: spot/preemptible instance (cloud.google.com/gke-spot=true)\n", pod.Spec.NodeName)
+	}
+	if v, ok := node.Labels["cloud.google.com/gke-preemptible"]; ok && v == "true" {
+		fmt.Fprintf(w, "Node %s: preemptible instance (cloud.google.com/gke-preemptible=true)\n", pod.Spec.NodeName)
+	}
+	if _, ok := node.Labels["kubernetes.azure.com/scalesetpriority"]; ok {
+		fmt.Fprintf(w, "Node %s: spot instance (kubernetes.azure.com/scalesetpriority=%s)\n", pod.Spec.NodeName, node.Labels["kubernetes.azure.com/scalesetpriority"])
+	}
+	if v, ok := node.Labels["eks.amazonaws.com/capacityType"]; ok && v == "SPOT" {
+		fmt.Fprintf(w, "Node %s: spot instance (eks.amazonaws.com/capacityType=SPOT)\n", pod.Spec.NodeName)
+	}
+
+	// Check if node is being drained / cordoned (unschedulable).
+	if node.Spec.Unschedulable {
+		fmt.Fprintf(w, "Node %s: cordoned (unschedulable) — node may be draining\n", pod.Spec.NodeName)
 	}
 }
 

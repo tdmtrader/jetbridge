@@ -210,10 +210,13 @@ var _ = Describe("Process", func() {
 				Expect(err.Error()).To(ContainSubstring("ErrImagePull"))
 			})
 
-			It("detects OOMKilled with exit code 137", func() {
+			It("detects OOMKilled as a terminal failure", func() {
+				stderrBuf := new(bytes.Buffer)
 				process, err := container.Run(ctx, runtime.ProcessSpec{
 					Path: "/bin/true",
-				}, runtime.ProcessIO{})
+				}, runtime.ProcessIO{
+					Stderr: stderrBuf,
+				})
 				Expect(err).ToNot(HaveOccurred())
 
 				pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "process-test-handle", metav1.GetOptions{})
@@ -234,9 +237,81 @@ var _ = Describe("Process", func() {
 				_, err = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
 				Expect(err).ToNot(HaveOccurred())
 
+				_, err = process.Wait(ctx)
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("OOMKilled"))
+				Expect(err.Error()).To(ContainSubstring(`container "main"`))
+
+				stderrOutput := stderrBuf.String()
+				Expect(stderrOutput).To(ContainSubstring("Pod Failure Diagnostics"))
+				Expect(stderrOutput).To(ContainSubstring("OOMKilled"))
+			})
+
+			It("detects OOMKilled from last termination state (restarted container)", func() {
+				stderrBuf := new(bytes.Buffer)
+				process, err := container.Run(ctx, runtime.ProcessSpec{
+					Path: "/bin/true",
+				}, runtime.ProcessIO{
+					Stderr: stderrBuf,
+				})
+				Expect(err).ToNot(HaveOccurred())
+
+				pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "process-test-handle", metav1.GetOptions{})
+				Expect(err).ToNot(HaveOccurred())
+
+				pod.Status.Phase = corev1.PodRunning
+				pod.Status.ContainerStatuses = []corev1.ContainerStatus{
+					{
+						Name:         "main",
+						RestartCount: 1,
+						State: corev1.ContainerState{
+							Waiting: &corev1.ContainerStateWaiting{
+								Reason: "CrashLoopBackOff",
+							},
+						},
+						LastTerminationState: corev1.ContainerState{
+							Terminated: &corev1.ContainerStateTerminated{
+								ExitCode: 137,
+								Reason:   "OOMKilled",
+							},
+						},
+					},
+				}
+				_, err = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+				Expect(err).ToNot(HaveOccurred())
+
+				_, err = process.Wait(ctx)
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("OOMKilled"))
+			})
+
+			It("does not detect OOMKilled when termination reason is different", func() {
+				process, err := container.Run(ctx, runtime.ProcessSpec{
+					Path: "/bin/true",
+				}, runtime.ProcessIO{})
+				Expect(err).ToNot(HaveOccurred())
+
+				pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "process-test-handle", metav1.GetOptions{})
+				Expect(err).ToNot(HaveOccurred())
+
+				pod.Status.Phase = corev1.PodFailed
+				pod.Status.ContainerStatuses = []corev1.ContainerStatus{
+					{
+						Name: "main",
+						State: corev1.ContainerState{
+							Terminated: &corev1.ContainerStateTerminated{
+								ExitCode: 1,
+								Reason:   "Error",
+							},
+						},
+					},
+				}
+				_, err = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+				Expect(err).ToNot(HaveOccurred())
+
 				result, err := process.Wait(ctx)
 				Expect(err).ToNot(HaveOccurred())
-				Expect(result.ExitStatus).To(Equal(137))
+				Expect(result.ExitStatus).To(Equal(1))
 			})
 
 			It("detects pod eviction as a terminal failure", func() {
@@ -478,6 +553,208 @@ var _ = Describe("Process", func() {
 			stderrOutput := stderrBuf.String()
 			Expect(stderrOutput).To(ContainSubstring("Evicted"))
 			Expect(stderrOutput).To(ContainSubstring("low on resource: memory"))
+		})
+
+		It("includes node name in diagnostics when available", func() {
+			stderrBuf := new(bytes.Buffer)
+			process, err := container.Run(ctx, runtime.ProcessSpec{
+				Path: "/bin/true",
+			}, runtime.ProcessIO{
+				Stderr: stderrBuf,
+			})
+			Expect(err).ToNot(HaveOccurred())
+
+			pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "process-test-handle", metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			pod.Spec.NodeName = "gke-pool-spot-a1b2c3"
+			pod.Status.Phase = corev1.PodFailed
+			pod.Status.Reason = "Evicted"
+			pod.Status.Message = "The node was low on resource: ephemeral-storage."
+			_, err = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			_, err = process.Wait(ctx)
+			Expect(err).To(HaveOccurred())
+
+			stderrOutput := stderrBuf.String()
+			Expect(stderrOutput).To(ContainSubstring("Node: gke-pool-spot-a1b2c3"))
+			Expect(stderrOutput).To(ContainSubstring("Evicted"))
+		})
+
+		It("includes container termination message and restart history in diagnostics", func() {
+			stderrBuf := new(bytes.Buffer)
+			process, err := container.Run(ctx, runtime.ProcessSpec{
+				Path: "/bin/true",
+			}, runtime.ProcessIO{
+				Stderr: stderrBuf,
+			})
+			Expect(err).ToNot(HaveOccurred())
+
+			pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "process-test-handle", metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			pod.Spec.NodeName = "node-1"
+			pod.Status.Phase = corev1.PodFailed
+			pod.Status.ContainerStatuses = []corev1.ContainerStatus{
+				{
+					Name:         "main",
+					RestartCount: 2,
+					State: corev1.ContainerState{
+						Terminated: &corev1.ContainerStateTerminated{
+							ExitCode: 137,
+							Reason:   "OOMKilled",
+							Message:  "container exceeded 512Mi memory limit",
+						},
+					},
+					LastTerminationState: corev1.ContainerState{
+						Terminated: &corev1.ContainerStateTerminated{
+							ExitCode: 137,
+							Reason:   "OOMKilled",
+						},
+					},
+				},
+			}
+			_, err = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			_, err = process.Wait(ctx)
+			Expect(err).To(HaveOccurred())
+
+			stderrOutput := stderrBuf.String()
+			Expect(stderrOutput).To(ContainSubstring("Node: node-1"))
+			Expect(stderrOutput).To(ContainSubstring("OOMKilled (exit code 137)"))
+			Expect(stderrOutput).To(ContainSubstring("container exceeded 512Mi memory limit"))
+			Expect(stderrOutput).To(ContainSubstring("RestartCount: 2"))
+			Expect(stderrOutput).To(ContainSubstring("Last termination: OOMKilled"))
+		})
+
+		It("writes node diagnostics on eviction showing pressure conditions", func() {
+			// Create a node with DiskPressure and spot label.
+			node := &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "gke-spot-node-1",
+					Labels: map[string]string{
+						"cloud.google.com/gke-spot": "true",
+					},
+				},
+				Status: corev1.NodeStatus{
+					Conditions: []corev1.NodeCondition{
+						{
+							Type:    corev1.NodeDiskPressure,
+							Status:  corev1.ConditionTrue,
+							Message: "disk usage exceeds threshold",
+						},
+						{
+							Type:   corev1.NodeReady,
+							Status: corev1.ConditionTrue,
+						},
+					},
+				},
+			}
+			_, err := fakeClientset.CoreV1().Nodes().Create(ctx, node, metav1.CreateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			stderrBuf := new(bytes.Buffer)
+			process, err := container.Run(ctx, runtime.ProcessSpec{
+				Path: "/bin/true",
+			}, runtime.ProcessIO{
+				Stderr: stderrBuf,
+			})
+			Expect(err).ToNot(HaveOccurred())
+
+			pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "process-test-handle", metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			pod.Spec.NodeName = "gke-spot-node-1"
+			pod.Status.Phase = corev1.PodFailed
+			pod.Status.Reason = "Evicted"
+			pod.Status.Message = "The node was low on resource: ephemeral-storage."
+			_, err = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			_, err = process.Wait(ctx)
+			Expect(err).To(HaveOccurred())
+
+			stderrOutput := stderrBuf.String()
+			Expect(stderrOutput).To(ContainSubstring("DiskPressure=True"))
+			Expect(stderrOutput).To(ContainSubstring("disk usage exceeds threshold"))
+			Expect(stderrOutput).To(ContainSubstring("spot/preemptible instance"))
+			Expect(stderrOutput).To(ContainSubstring("cloud.google.com/gke-spot=true"))
+		})
+
+		It("writes node diagnostics showing cordoned status", func() {
+			// Create a cordoned node.
+			node := &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "draining-node-1",
+				},
+				Spec: corev1.NodeSpec{
+					Unschedulable: true,
+				},
+				Status: corev1.NodeStatus{
+					Conditions: []corev1.NodeCondition{
+						{
+							Type:   corev1.NodeReady,
+							Status: corev1.ConditionTrue,
+						},
+					},
+				},
+			}
+			_, err := fakeClientset.CoreV1().Nodes().Create(ctx, node, metav1.CreateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			stderrBuf := new(bytes.Buffer)
+			process, err := container.Run(ctx, runtime.ProcessSpec{
+				Path: "/bin/true",
+			}, runtime.ProcessIO{
+				Stderr: stderrBuf,
+			})
+			Expect(err).ToNot(HaveOccurred())
+
+			pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "process-test-handle", metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			pod.Spec.NodeName = "draining-node-1"
+			pod.Status.Phase = corev1.PodFailed
+			pod.Status.Reason = "Evicted"
+			pod.Status.Message = "The node was low on resource: memory."
+			_, err = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			_, err = process.Wait(ctx)
+			Expect(err).To(HaveOccurred())
+
+			stderrOutput := stderrBuf.String()
+			Expect(stderrOutput).To(ContainSubstring("cordoned (unschedulable)"))
+			Expect(stderrOutput).To(ContainSubstring("node may be draining"))
+		})
+
+		It("handles node not found gracefully in diagnostics", func() {
+			stderrBuf := new(bytes.Buffer)
+			process, err := container.Run(ctx, runtime.ProcessSpec{
+				Path: "/bin/true",
+			}, runtime.ProcessIO{
+				Stderr: stderrBuf,
+			})
+			Expect(err).ToNot(HaveOccurred())
+
+			pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "process-test-handle", metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			pod.Spec.NodeName = "nonexistent-node"
+			pod.Status.Phase = corev1.PodFailed
+			pod.Status.Reason = "Evicted"
+			pod.Status.Message = "The node was low on resource: memory."
+			_, err = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			_, err = process.Wait(ctx)
+			Expect(err).To(HaveOccurred())
+
+			stderrOutput := stderrBuf.String()
+			Expect(stderrOutput).To(ContainSubstring("nonexistent-node"))
+			Expect(stderrOutput).To(ContainSubstring("unable to fetch details"))
 		})
 	})
 
