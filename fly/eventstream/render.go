@@ -1,10 +1,12 @@
 package eventstream
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"strings"
 
+	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/event"
 	"github.com/concourse/concourse/fly/ui"
 	"github.com/concourse/concourse/go-concourse/concourse/eventstream"
@@ -16,10 +18,18 @@ type RenderOptions struct {
 	IgnoreEventParsingErrors bool
 }
 
+// sidecarColor is used for sidecar prefixes and headers — dim cyan to be
+// visible but not overwhelming alongside main container output.
+var sidecarColor = color.New(color.FgCyan)
+
 func Render(dst io.Writer, src eventstream.EventStream, options RenderOptions) int {
 	dstImpl := NewTimestampedWriter(dst, options.ShowTimestamp)
 
 	exitStatus := 0
+
+	// Track sidecar origin ID prefixes → sidecar names so we can prefix
+	// their log lines. The origin ID format is "<parent>/sidecar/<name>".
+	sidecarNames := map[string]string{}
 
 	for {
 		ev, err := src.NextEvent()
@@ -38,7 +48,12 @@ func Render(dst io.Writer, src eventstream.EventStream, options RenderOptions) i
 		switch e := ev.(type) {
 		case event.Log:
 			dstImpl.SetTimestamp(e.Time)
-			fmt.Fprintf(dstImpl, "%s", e.Payload)
+			if name, ok := sidecarNames[string(e.Origin.ID)]; ok {
+				prefix := sidecarColor.Sprintf("[%s] ", name)
+				fmt.Fprintf(dstImpl, "%s%s", prefix, e.Payload)
+			} else {
+				fmt.Fprintf(dstImpl, "%s", e.Payload)
+			}
 
 		case event.WaitingForWorker:
 			dstImpl.SetTimestamp(e.Time)
@@ -62,6 +77,19 @@ func Render(dst io.Writer, src eventstream.EventStream, options RenderOptions) i
 			argv := strings.Join(append([]string{buildConfig.Run.Path}, buildConfig.Run.Args...), " ")
 			dstImpl.SetTimestamp(e.Time)
 			fmt.Fprintf(dstImpl, "\x1b[1mrunning %s\x1b[0m\n", argv)
+
+		case event.Sidecar:
+			dstImpl.SetTimestamp(e.Time)
+			if e.PublicPlan != nil {
+				var plan atc.Plan
+				if err := json.Unmarshal(*e.PublicPlan, &plan); err == nil && plan.Sidecar != nil {
+					name := plan.Sidecar.Name
+					if plan.ID != "" {
+						sidecarNames[string(plan.ID)] = name
+					}
+					fmt.Fprintf(dstImpl, "\x1b[1msidecar '%s' attached\x1b[0m\n", name)
+				}
+			}
 
 		case event.FinishTask:
 			exitStatus = e.ExitStatus
@@ -119,3 +147,4 @@ func isEventParseError(err error) bool {
 	}
 	return false
 }
+

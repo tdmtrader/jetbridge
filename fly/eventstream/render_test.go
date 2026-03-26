@@ -1,6 +1,7 @@
 package eventstream_test
 
 import (
+	"encoding/json"
 	"io"
 	"time"
 
@@ -337,6 +338,63 @@ var _ = Describe("V1.0 Renderer", func() {
 
 			It("timestamp is prefixed", func() {
 				Expect(out).To(gbytes.Say(`\d{2}\:\d{2}\:\d{2}\s{2}\w*`))
+			})
+		})
+	})
+
+	Context("when a Sidecar event is received", func() {
+		var sidecarPlan json.RawMessage
+
+		BeforeEach(func() {
+			plan := atc.Plan{
+				ID: "abc123/sidecar/log-emitter",
+				Sidecar: &atc.SidecarPlan{
+					Name:  "log-emitter",
+					Image: "alpine:latest",
+				},
+			}
+			planBytes, err := json.Marshal(plan)
+			Expect(err).ToNot(HaveOccurred())
+			sidecarPlan = json.RawMessage(planBytes)
+
+			receivedEvents <- event.Sidecar{
+				Time:       time.Now().Unix(),
+				Origin:     event.Origin{ID: "abc123"},
+				PublicPlan: &sidecarPlan,
+			}
+		})
+
+		It("prints a sidecar attached header", func() {
+			Expect(out.Contents()).To(ContainSubstring("sidecar 'log-emitter' attached"))
+		})
+
+		Context("and a Log event is received from the sidecar", func() {
+			BeforeEach(func() {
+				receivedEvents <- event.Log{
+					Time:    time.Now().Unix(),
+					Origin:  event.Origin{ID: "abc123/sidecar/log-emitter"},
+					Payload: "hello from sidecar\n",
+				}
+			})
+
+			It("prefixes the log line with the sidecar name", func() {
+				Expect(out.Contents()).To(ContainSubstring("[log-emitter]"))
+				Expect(out.Contents()).To(ContainSubstring("hello from sidecar"))
+			})
+		})
+
+		Context("and a Log event is received from the main container", func() {
+			BeforeEach(func() {
+				receivedEvents <- event.Log{
+					Time:    time.Now().Unix(),
+					Origin:  event.Origin{ID: "abc123"},
+					Payload: "hello from main\n",
+				}
+			})
+
+			It("does not prefix the log line with a sidecar name", func() {
+				Expect(out.Contents()).To(ContainSubstring("hello from main"))
+				Expect(out.Contents()).ToNot(ContainSubstring("[log-emitter]"))
 			})
 		})
 	})
