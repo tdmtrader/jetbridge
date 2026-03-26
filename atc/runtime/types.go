@@ -308,6 +308,8 @@ type ContainerLimits struct {
 	// Memory defines the memory limit for all Processes run in the Container,
 	// measured in bytes. Unset means no limit.
 	Memory *uint64
+	// EphemeralStorage defines the ephemeral-storage limit in bytes.
+	EphemeralStorage *uint64
 
 	// CPURequest defines the CPU request (in shares), independent from limits.
 	// When set alongside CPU (limit), enables Burstable QoS.
@@ -315,6 +317,8 @@ type ContainerLimits struct {
 	// MemoryRequest defines the memory request (in bytes), independent from limits.
 	// When set alongside Memory (limit), enables Burstable QoS.
 	MemoryRequest *uint64
+	// EphemeralStorageRequest defines the ephemeral-storage request in bytes.
+	EphemeralStorageRequest *uint64
 }
 
 // Artifact represents an output from a step that can be used as an input to

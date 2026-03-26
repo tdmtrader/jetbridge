@@ -549,10 +549,12 @@ func (step *TaskStep) containerSpec(logger lager.Logger, state RunState, imageSp
 	if config.Limits != nil {
 		containerSpec.Limits.CPU = (*uint64)(config.Limits.CPU)
 		containerSpec.Limits.Memory = (*uint64)(config.Limits.Memory)
+		containerSpec.Limits.EphemeralStorage = (*uint64)(config.Limits.EphemeralStorage)
 	}
 	if config.Requests != nil {
 		containerSpec.Limits.CPURequest = (*uint64)(config.Requests.CPU)
 		containerSpec.Limits.MemoryRequest = (*uint64)(config.Requests.Memory)
+		containerSpec.Limits.EphemeralStorageRequest = (*uint64)(config.Requests.EphemeralStorage)
 	}
 
 	return containerSpec, nil

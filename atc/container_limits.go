@@ -11,8 +11,29 @@ import (
 var memoryRegex = regexp.MustCompile(`(?i)^([0-9]+)(([KMG])(i)?B?)?$`)
 
 type ContainerLimits struct {
-	CPU    *CPULimit    `json:"cpu,omitempty"`
-	Memory *MemoryLimit `json:"memory,omitempty"`
+	CPU              *CPULimit              `json:"cpu,omitempty"`
+	Memory           *MemoryLimit           `json:"memory,omitempty"`
+	EphemeralStorage *EphemeralStorageLimit  `json:"ephemeral_storage,omitempty"`
+}
+
+type EphemeralStorageLimit uint64
+
+func (e *EphemeralStorageLimit) UnmarshalJSON(data []byte) error {
+	var dst any
+	if err := json.Unmarshal(data, &dst); err != nil {
+		return err
+	}
+	switch v := dst.(type) {
+	case float64:
+		*e = EphemeralStorageLimit(v)
+	case string:
+		parsed, err := ParseMemoryLimit(v)
+		if err != nil {
+			return err
+		}
+		*e = EphemeralStorageLimit(parsed)
+	}
+	return nil
 }
 
 type CPULimit uint64

@@ -773,8 +773,8 @@ func splitEnvVar(env string) []string {
 func buildResourceRequirements(limits runtime.ContainerLimits) corev1.ResourceRequirements {
 	reqs := corev1.ResourceRequirements{}
 
-	hasLimits := limits.CPU != nil || limits.Memory != nil
-	hasRequests := limits.CPURequest != nil || limits.MemoryRequest != nil
+	hasLimits := limits.CPU != nil || limits.Memory != nil || limits.EphemeralStorage != nil
+	hasRequests := limits.CPURequest != nil || limits.MemoryRequest != nil || limits.EphemeralStorageRequest != nil
 
 	if !hasLimits && !hasRequests {
 		return reqs
@@ -787,6 +787,9 @@ func buildResourceRequirements(limits runtime.ContainerLimits) corev1.ResourceRe
 		}
 		if limits.Memory != nil {
 			res[corev1.ResourceMemory] = *resource.NewQuantity(int64(*limits.Memory), resource.BinarySI)
+		}
+		if limits.EphemeralStorage != nil {
+			res[corev1.ResourceEphemeralStorage] = *resource.NewQuantity(int64(*limits.EphemeralStorage), resource.BinarySI)
 		}
 		reqs.Limits = res
 
@@ -804,6 +807,9 @@ func buildResourceRequirements(limits runtime.ContainerLimits) corev1.ResourceRe
 	}
 	if limits.MemoryRequest != nil {
 		reqRes[corev1.ResourceMemory] = *resource.NewQuantity(int64(*limits.MemoryRequest), resource.BinarySI)
+	}
+	if limits.EphemeralStorageRequest != nil {
+		reqRes[corev1.ResourceEphemeralStorage] = *resource.NewQuantity(int64(*limits.EphemeralStorageRequest), resource.BinarySI)
 	}
 	reqs.Requests = reqRes
 

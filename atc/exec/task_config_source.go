@@ -150,6 +150,9 @@ func (configSource *OverrideContainerLimitsSource) FetchConfig(ctx context.Conte
 		if configSource.Limits.Memory != nil {
 			taskConfig.Limits.Memory = configSource.Limits.Memory
 		}
+		if configSource.Limits.EphemeralStorage != nil {
+			taskConfig.Limits.EphemeralStorage = configSource.Limits.EphemeralStorage
+		}
 	}
 
 	if configSource.Requests != nil {
@@ -161,6 +164,9 @@ func (configSource *OverrideContainerLimitsSource) FetchConfig(ctx context.Conte
 		}
 		if configSource.Requests.Memory != nil {
 			taskConfig.Requests.Memory = configSource.Requests.Memory
+		}
+		if configSource.Requests.EphemeralStorage != nil {
+			taskConfig.Requests.EphemeralStorage = configSource.Requests.EphemeralStorage
 		}
 	}
 

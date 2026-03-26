@@ -1,6 +1,8 @@
 package atc_test
 
 import (
+	"encoding/json"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -88,6 +90,39 @@ var _ = Describe("ContainerLimits", func() {
 			gLimit, err := atc.ParseMemoryLimit("1G")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(gLimit).To(Equal(atc.MemoryLimit(1073741824)))
+		})
+	})
+
+	Describe("EphemeralStorageLimit", func() {
+		It("unmarshals a numeric value as bytes", func() {
+			var limits atc.ContainerLimits
+			err := json.Unmarshal([]byte(`{"ephemeral_storage": 1073741824}`), &limits)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(limits.EphemeralStorage).ToNot(BeNil())
+			Expect(*limits.EphemeralStorage).To(Equal(atc.EphemeralStorageLimit(1073741824)))
+		})
+
+		It("unmarshals a string value with units", func() {
+			var limits atc.ContainerLimits
+			err := json.Unmarshal([]byte(`{"ephemeral_storage": "5G"}`), &limits)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(limits.EphemeralStorage).ToNot(BeNil())
+			Expect(*limits.EphemeralStorage).To(Equal(atc.EphemeralStorageLimit(5 * 1024 * 1024 * 1024)))
+		})
+
+		It("unmarshals GiB string", func() {
+			var limits atc.ContainerLimits
+			err := json.Unmarshal([]byte(`{"ephemeral_storage": "2GiB"}`), &limits)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(limits.EphemeralStorage).ToNot(BeNil())
+			Expect(*limits.EphemeralStorage).To(Equal(atc.EphemeralStorageLimit(2 * 1024 * 1024 * 1024)))
+		})
+
+		It("is omitted when nil", func() {
+			limits := atc.ContainerLimits{}
+			data, err := json.Marshal(limits)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(string(data)).To(Equal("{}"))
 		})
 	})
 })

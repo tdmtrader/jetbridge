@@ -1535,6 +1535,61 @@ var _ = Describe("Container", func() {
 				Expect(mainContainer.Resources.Requests.Memory().Cmp(*resource.NewQuantity(536870912, resource.BinarySI))).To(Equal(0))
 			})
 		})
+
+		Context("when ephemeral-storage limits and requests are specified", func() {
+			BeforeEach(func() {
+				setupFakeDBContainer(fakeDBWorker, "ephemeral-handle")
+
+				cpuLimit := uint64(1024)
+				memLimit := uint64(1073741824) // 1GB
+				ephLimit := uint64(5368709120) // 5GB
+				ephReq := uint64(2147483648)   // 2GB
+
+				var err error
+				container, _, err = worker.FindOrCreateContainer(
+					ctx,
+					db.NewFixedHandleContainerOwner("ephemeral-handle"),
+					db.ContainerMetadata{Type: db.ContainerTypeTask},
+					runtime.ContainerSpec{
+						TeamID: 1,
+						Dir:    "/workdir",
+						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+						Limits: runtime.ContainerLimits{
+							CPU:                     &cpuLimit,
+							Memory:                  &memLimit,
+							EphemeralStorage:        &ephLimit,
+							EphemeralStorageRequest: &ephReq,
+						},
+					},
+					delegate,
+				)
+				Expect(err).ToNot(HaveOccurred())
+			})
+
+			It("sets ephemeral-storage in K8s resource requirements", func() {
+				_, err := container.Run(ctx, runtime.ProcessSpec{
+					Path: "/bin/sh",
+					Args: []string{"-c", "echo hello"},
+				}, runtime.ProcessIO{})
+				Expect(err).ToNot(HaveOccurred())
+
+				pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
+				Expect(err).ToNot(HaveOccurred())
+				Expect(pods.Items).To(HaveLen(1))
+
+				mainContainer := pods.Items[0].Spec.Containers[0]
+
+				By("setting ephemeral-storage limit")
+				ephLimitQty := mainContainer.Resources.Limits[corev1.ResourceEphemeralStorage]
+				Expect(ephLimitQty.Cmp(*resource.NewQuantity(5368709120, resource.BinarySI))).To(Equal(0),
+					"expected ephemeral-storage limit of 5Gi, got %s", ephLimitQty.String())
+
+				By("setting ephemeral-storage request")
+				ephReqQty := mainContainer.Resources.Requests[corev1.ResourceEphemeralStorage]
+				Expect(ephReqQty.Cmp(*resource.NewQuantity(2147483648, resource.BinarySI))).To(Equal(0),
+					"expected ephemeral-storage request of 2Gi, got %s", ephReqQty.String())
+			})
+		})
 	})
 
 	Describe("Run with security context", func() {
