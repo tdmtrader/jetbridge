@@ -168,8 +168,10 @@ func (p *Process) pollUntilDone(ctx context.Context) (runtime.ProcessResult, err
 		if err != nil {
 			if errors.Is(err, ErrPodDeleted) && pod != nil {
 				// Pod was deleted externally (eviction, node failure,
-				// etc.). Write diagnostics and return a clear error.
+				// spot preemption, etc.). Write pod and node diagnostics
+				// to surface the root cause.
 				writePodDiagnostics(pod, p.processIO.Stderr)
+				writeNodeDiagnostics(ctx, p.clientset, pod, p.processIO.Stderr)
 				return runtime.ProcessResult{}, fmt.Errorf("pod deleted externally: %s", pod.Status.Phase)
 			}
 			return runtime.ProcessResult{}, err
@@ -916,6 +918,7 @@ func (p *execProcess) waitForRunning(ctx context.Context) error {
 		if err != nil {
 			if errors.Is(err, ErrPodDeleted) && pod != nil {
 				writePodDiagnostics(pod, p.processIO.Stderr)
+				writeNodeDiagnostics(ctx, p.clientset, pod, p.processIO.Stderr)
 				return fmt.Errorf("pod deleted externally before reaching Running: %s", pod.Status.Phase)
 			}
 			// Check if this was a timeout vs other error.
@@ -942,6 +945,12 @@ func (p *execProcess) waitForRunning(ctx context.Context) error {
 
 		// Check for terminal failure states BEFORE checking Running phase,
 		// because CrashLoopBackOff can occur while the pod phase is Running.
+		// OOM check first — more actionable than generic CrashLoopBackOff.
+		if containerName, oom := isPodOOMKilled(pod); oom {
+			metric.RecordK8sPodFailure(ctx, "OOMKilled")
+			writePodDiagnostics(pod, p.processIO.Stderr)
+			return fmt.Errorf("pod failed: OOMKilled: container %q exceeded memory limit", containerName)
+		}
 		if reason, message, failed := isPodFailedFast(pod); failed {
 			if reason == "ImagePullBackOff" || reason == "ErrImagePull" {
 				metric.Metrics.K8sImagePullFailures.Inc()
@@ -953,6 +962,7 @@ func (p *execProcess) waitForRunning(ctx context.Context) error {
 		if isPodEvicted(pod) {
 			metric.RecordK8sPodFailure(ctx, "Evicted")
 			writePodDiagnostics(pod, p.processIO.Stderr)
+			writeNodeDiagnostics(ctx, p.clientset, pod, p.processIO.Stderr)
 			return fmt.Errorf("pod failed: Evicted: %s", pod.Status.Message)
 		}
 		if message, unschedulable := isPodUnschedulable(pod); unschedulable {
