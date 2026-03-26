@@ -472,6 +472,50 @@ run: {path: a/file}
 			})
 		})
 
+		Context("when scratch_paths are specified", func() {
+			It("parses scratch_paths from YAML", func() {
+				data := []byte(`
+platform: linux
+scratch_paths:
+  - path: /scratch/buildkit
+  - path: /tmp/workspace
+run: {path: /bin/sh}
+`)
+				task, err := NewTaskConfig(data)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(task.ScratchPaths).To(Equal([]TaskScratchConfig{
+					{Path: "/scratch/buildkit"},
+					{Path: "/tmp/workspace"},
+				}))
+			})
+
+			It("parses an empty scratch_paths list", func() {
+				data := []byte(`
+platform: linux
+scratch_paths: []
+run: {path: /bin/sh}
+`)
+				task, err := NewTaskConfig(data)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(task.ScratchPaths).To(BeEmpty())
+			})
+
+			It("coexists with caches", func() {
+				data := []byte(`
+platform: linux
+caches:
+  - path: /tmp/cache
+scratch_paths:
+  - path: /scratch/work
+run: {path: /bin/sh}
+`)
+				task, err := NewTaskConfig(data)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(task.Caches).To(Equal([]TaskCacheConfig{{Path: "/tmp/cache"}}))
+				Expect(task.ScratchPaths).To(Equal([]TaskScratchConfig{{Path: "/scratch/work"}}))
+			})
+		})
+
 		Context("when run is missing", func() {
 			BeforeEach(func() {
 				invalidConfig.Run.Path = ""

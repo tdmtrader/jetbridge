@@ -1061,5 +1061,23 @@ func (c *Container) buildVolumeMounts() ([]corev1.Volume, []corev1.VolumeMount) 
 		}
 	}
 
+	// Scratch paths — plain emptyDir volumes with no cache semantics.
+	for i, scratchPath := range c.containerSpec.ScratchPaths {
+		if !filepath.IsAbs(scratchPath) && c.containerSpec.Dir != "" {
+			scratchPath = filepath.Join(c.containerSpec.Dir, scratchPath)
+		}
+		name := fmt.Sprintf("scratch-%d", i)
+		volumes = append(volumes, corev1.Volume{
+			Name: name,
+			VolumeSource: corev1.VolumeSource{
+				EmptyDir: &corev1.EmptyDirVolumeSource{},
+			},
+		})
+		mounts = append(mounts, corev1.VolumeMount{
+			Name:      name,
+			MountPath: scratchPath,
+		})
+	}
+
 	return volumes, mounts
 }

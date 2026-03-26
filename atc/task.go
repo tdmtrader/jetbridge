@@ -39,6 +39,9 @@ type TaskConfig struct {
 
 	// Path to cached directory that will be shared between builds for the same task.
 	Caches []TaskCacheConfig `json:"caches,omitempty"`
+
+	// Ephemeral scratch volumes — mounted as emptyDir, never cached or preserved.
+	ScratchPaths []TaskScratchConfig `json:"scratch_paths,omitempty"`
 }
 
 type ImageResource struct {
@@ -153,6 +156,10 @@ type TaskOutputConfig struct {
 }
 
 type TaskCacheConfig struct {
+	Path string `json:"path,omitempty"`
+}
+
+type TaskScratchConfig struct {
 	Path string `json:"path,omitempty"`
 }
 

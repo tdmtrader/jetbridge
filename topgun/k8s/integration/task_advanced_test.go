@@ -383,4 +383,45 @@ jobs:
 		Expect(session).To(gexec.Exit(0))
 		Expect(session.Out).To(gbytes.Say("empty-output-files="))
 	})
+
+	It("provides ephemeral scratch path volumes that are not preserved across builds", func() {
+		pipelineFile := writePipelineFile("scratch-paths.yml", `
+jobs:
+- name: scratch-job
+  plan:
+  - task: scratch-task
+    config:
+      platform: linux
+      rootfs_uri: docker:///busybox
+      scratch_paths:
+      - path: /scratch/work
+      run:
+        path: sh
+        args:
+        - -c
+        - |
+          if [ -f /scratch/work/marker ]; then
+            echo "scratch-persisted"
+          else
+            echo "scratch-ephemeral"
+          fi
+          echo "data" > /scratch/work/marker
+          echo "scratch-done"
+`)
+		setAndUnpausePipeline(pipelineFile)
+
+		By("first build: scratch is empty")
+		triggerJob("scratch-job")
+		session := waitForBuildAndWatch("scratch-job")
+		Expect(session).To(gexec.Exit(0))
+		Expect(session.Out).To(gbytes.Say("scratch-ephemeral"))
+		Expect(session.Out).To(gbytes.Say("scratch-done"))
+
+		By("second build: scratch is still empty (not cached)")
+		triggerJob("scratch-job")
+		session = waitForBuildAndWatch("scratch-job", "2")
+		Expect(session).To(gexec.Exit(0))
+		Expect(session.Out).To(gbytes.Say("scratch-ephemeral"))
+		Expect(session.Out).To(gbytes.Say("scratch-done"))
+	})
 })

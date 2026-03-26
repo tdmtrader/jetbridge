@@ -1,0 +1,80 @@
+---
+resources:
+- name: some-resource
+  type: mock
+  source:
+    create_files:
+      script.sh: |
+        echo writing-to-scratch > scratch-area/marker
+        echo "scratch-writable"
+
+      verify-script.sh: |
+        if [ -f scratch-area/marker ]; then
+          echo "scratch-persisted"
+        else
+          echo "scratch-ephemeral"
+        fi
+
+jobs:
+- name: scratch-write
+  plan:
+  - get: some-resource
+  - task: write-to-scratch
+    config:
+      platform: linux
+
+      image_resource:
+        type: mock
+        source: {mirror_self: true}
+
+      inputs:
+      - name: some-resource
+
+      scratch_paths:
+      - path: scratch-area
+
+      run:
+        path: sh
+        args:
+        - some-resource/script.sh
+
+- name: scratch-ephemeral
+  plan:
+  - get: some-resource
+  - task: first-build
+    config:
+      platform: linux
+
+      image_resource:
+        type: mock
+        source: {mirror_self: true}
+
+      inputs:
+      - name: some-resource
+
+      scratch_paths:
+      - path: scratch-area
+
+      run:
+        path: sh
+        args:
+        - some-resource/script.sh
+
+  - task: second-build
+    config:
+      platform: linux
+
+      image_resource:
+        type: mock
+        source: {mirror_self: true}
+
+      inputs:
+      - name: some-resource
+
+      scratch_paths:
+      - path: scratch-area
+
+      run:
+        path: sh
+        args:
+        - some-resource/verify-script.sh

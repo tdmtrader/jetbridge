@@ -122,6 +122,13 @@ type ContainerSpec struct {
 	// Paths may be relative (to Dir) or absolute.
 	Caches []string
 
+	// ScratchPaths is a list of container paths that receive ephemeral
+	// emptyDir volumes. Unlike Caches, scratch paths are never saved,
+	// restored, or exported — they exist only for the lifetime of the pod.
+	//
+	// Paths may be relative (to Dir) or absolute.
+	ScratchPaths []string
+
 	// Outputs defines a mapping of output names to paths within the container
 	// for which volumes should be created and mounted.
 	Outputs OutputPaths

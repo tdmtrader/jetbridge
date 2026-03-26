@@ -536,6 +536,11 @@ func (step *TaskStep) containerSpec(logger lager.Logger, state RunState, imageSp
 		containerSpec.Caches[i] = cache.Path
 	}
 
+	containerSpec.ScratchPaths = make([]string, len(config.ScratchPaths))
+	for i, scratch := range config.ScratchPaths {
+		containerSpec.ScratchPaths[i] = scratch.Path
+	}
+
 	containerSpec.Outputs = make(runtime.OutputPaths, len(config.Outputs))
 	for _, output := range config.Outputs {
 		containerSpec.Outputs[output.Name] = ensureTrailingSlash(artifactPath(metadata.WorkingDirectory, output.Name, output.Path))

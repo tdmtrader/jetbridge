@@ -486,6 +486,169 @@ var _ = Describe("Container", func() {
 		})
 	})
 
+	Describe("Run with scratch path volumes", func() {
+		var container runtime.Container
+
+		BeforeEach(func() {
+			setupFakeDBContainer(fakeDBWorker, "scratch-vol-handle")
+
+			var err error
+			container, _, err = worker.FindOrCreateContainer(
+				ctx,
+				db.NewFixedHandleContainerOwner("scratch-vol-handle"),
+				db.ContainerMetadata{Type: db.ContainerTypeTask},
+				runtime.ContainerSpec{
+					TeamID:       1,
+					Dir:          "/tmp/build/workdir",
+					ImageSpec:    runtime.ImageSpec{ImageURL: "docker:///busybox"},
+					ScratchPaths: []string{"/scratch/buildkit"},
+				},
+				delegate,
+			)
+			Expect(err).ToNot(HaveOccurred())
+		})
+
+		It("creates a Pod with emptyDir volumes for scratch paths", func() {
+			_, err := container.Run(ctx, runtime.ProcessSpec{
+				Path: "/bin/sh",
+				Args: []string{"-c", "echo done"},
+			}, runtime.ProcessIO{})
+			Expect(err).ToNot(HaveOccurred())
+
+			pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			pod := pods.Items[0]
+
+			By("adding emptyDir volumes for Dir and the scratch path")
+			Expect(pod.Spec.Volumes).To(HaveLen(2))
+			for _, vol := range pod.Spec.Volumes {
+				Expect(vol.EmptyDir).ToNot(BeNil())
+			}
+
+			By("mounting at the Dir and scratch paths")
+			mainContainer := pod.Spec.Containers[0]
+			Expect(mainContainer.VolumeMounts).To(HaveLen(2))
+			mountPaths := []string{}
+			for _, vm := range mainContainer.VolumeMounts {
+				mountPaths = append(mountPaths, vm.MountPath)
+			}
+			Expect(mountPaths).To(ContainElements(
+				"/tmp/build/workdir",
+				"/scratch/buildkit",
+			))
+		})
+
+		It("does not create cache entries for scratch paths", func() {
+			_, err := container.Run(ctx, runtime.ProcessSpec{
+				Path: "/bin/sh",
+				Args: []string{"-c", "echo done"},
+			}, runtime.ProcessIO{})
+			Expect(err).ToNot(HaveOccurred())
+
+			pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			pod := pods.Items[0]
+
+			By("having no init containers for scratch restore")
+			Expect(pod.Spec.InitContainers).To(BeEmpty())
+		})
+	})
+
+	Describe("Run with scratch paths and caches together", func() {
+		var container runtime.Container
+
+		BeforeEach(func() {
+			setupFakeDBContainer(fakeDBWorker, "scratch-cache-handle")
+
+			var err error
+			container, _, err = worker.FindOrCreateContainer(
+				ctx,
+				db.NewFixedHandleContainerOwner("scratch-cache-handle"),
+				db.ContainerMetadata{Type: db.ContainerTypeTask},
+				runtime.ContainerSpec{
+					TeamID:       1,
+					Dir:          "/tmp/build/workdir",
+					ImageSpec:    runtime.ImageSpec{ImageURL: "docker:///busybox"},
+					Caches:       []string{"/tmp/build/workdir/.cache"},
+					ScratchPaths: []string{"/scratch/work"},
+				},
+				delegate,
+			)
+			Expect(err).ToNot(HaveOccurred())
+		})
+
+		It("creates separate volumes for caches and scratch paths", func() {
+			_, err := container.Run(ctx, runtime.ProcessSpec{
+				Path: "/bin/sh",
+				Args: []string{"-c", "echo done"},
+			}, runtime.ProcessIO{})
+			Expect(err).ToNot(HaveOccurred())
+
+			pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			pod := pods.Items[0]
+
+			By("adding emptyDir volumes for Dir, cache, and scratch")
+			Expect(pod.Spec.Volumes).To(HaveLen(3))
+			for _, vol := range pod.Spec.Volumes {
+				Expect(vol.EmptyDir).ToNot(BeNil())
+			}
+
+			mainContainer := pod.Spec.Containers[0]
+			mountPaths := []string{}
+			for _, vm := range mainContainer.VolumeMounts {
+				mountPaths = append(mountPaths, vm.MountPath)
+			}
+			Expect(mountPaths).To(ContainElements(
+				"/tmp/build/workdir",
+				"/tmp/build/workdir/.cache",
+				"/scratch/work",
+			))
+		})
+	})
+
+	Describe("Run with relative scratch paths", func() {
+		var container runtime.Container
+
+		BeforeEach(func() {
+			setupFakeDBContainer(fakeDBWorker, "scratch-rel-handle")
+
+			var err error
+			container, _, err = worker.FindOrCreateContainer(
+				ctx,
+				db.NewFixedHandleContainerOwner("scratch-rel-handle"),
+				db.ContainerMetadata{Type: db.ContainerTypeTask},
+				runtime.ContainerSpec{
+					TeamID:       1,
+					Dir:          "/tmp/build/workdir",
+					ImageSpec:    runtime.ImageSpec{ImageURL: "docker:///busybox"},
+					ScratchPaths: []string{"scratch"},
+				},
+				delegate,
+			)
+			Expect(err).ToNot(HaveOccurred())
+		})
+
+		It("resolves relative scratch paths against the working directory", func() {
+			_, err := container.Run(ctx, runtime.ProcessSpec{
+				Path: "/bin/sh",
+				Args: []string{"-c", "echo done"},
+			}, runtime.ProcessIO{})
+			Expect(err).ToNot(HaveOccurred())
+
+			pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			pod := pods.Items[0]
+
+			mainContainer := pod.Spec.Containers[0]
+			mountPaths := []string{}
+			for _, vm := range mainContainer.VolumeMounts {
+				mountPaths = append(mountPaths, vm.MountPath)
+			}
+			Expect(mountPaths).To(ContainElement("/tmp/build/workdir/scratch"))
+		})
+	})
+
 	Describe("Run with cache PVC configured", func() {
 		var container runtime.Container
 

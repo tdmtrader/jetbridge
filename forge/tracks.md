@@ -8,7 +8,7 @@ _None_
 
 ## Completed / Archived Tracks
 
-### [~] Track: Finish Setup (Conductor Migration)
+### [x] Track: Finish Setup (Conductor Migration)
 _Link: [./archive/finish_setup_20260303/](./archive/finish_setup_20260303/)_
 
 ---
@@ -340,5 +340,15 @@ _Link: [./tracks/oci_build_task_cache_testing_20260324/](./tracks/oci_build_task
 
 ### [ ] Track: Sidecar Details
 _Link: [./tracks/sidecar_details_20260325/](./tracks/sidecar_details_20260325/)_
+
+---
+
+### [ ] Track: Scratch Mount & Cache strategies
+_Link: [./tracks/scratch_mount_cache_strategies_20260325/](./tracks/scratch_mount_cache_strategies_20260325/)_
+
+---
+
+### [ ] Track: Scratch path volumes for task containers
+_Link: [./tracks/scratch_path_volumes_for_task_containers_20260325/](./tracks/scratch_path_volumes_for_task_containers_20260325/)_
 
 ---
