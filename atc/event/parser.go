@@ -53,6 +53,7 @@ func init() {
 	RegisterEvent(ImageCheck{})
 	RegisterEvent(ImageGet{})
 	RegisterEvent(AcrossSubsteps{})
+	RegisterEvent(Sidecar{})
 
 	// deprecated:
 	RegisterEvent(InitializeV10{})

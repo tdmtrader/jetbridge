@@ -123,6 +123,38 @@ jobs:
 		Expect(output).To(ContainSubstring("reserved"), "expected set-pipeline to reject reserved sidecar name 'main'")
 	})
 
+	It("streams sidecar logs through dedicated event origins", func() {
+		cfg := writePipelineFile("sidecar-events.yml", `
+jobs:
+- name: sidecar-events-job
+  plan:
+  - task: with-logging-sidecar
+    config:
+      platform: linux
+      image_resource: {type: registry-image, source: {repository: busybox}}
+      run:
+        path: sh
+        args: ["-c", "sleep 5 && echo MAIN_OUTPUT"]
+    sidecars:
+    - name: log-svc
+      image: busybox
+      command: ["sh", "-c", "echo SIDECAR_LOG_LINE && sleep 30"]
+`)
+		setAndUnpausePipeline(cfg)
+		triggerJob("sidecar-events-job")
+
+		sess := waitForBuildAndWatch("sidecar-events-job")
+		Expect(sess.ExitCode()).To(Equal(0))
+
+		output := string(sess.Out.Contents())
+
+		By("verifying main container output appears")
+		Expect(output).To(ContainSubstring("MAIN_OUTPUT"))
+
+		By("verifying sidecar log appears (without [name] prefix since it has its own origin)")
+		Expect(output).To(ContainSubstring("SIDECAR_LOG_LINE"))
+	})
+
 	It("creates the expected container count in K8s pod", func() {
 		cfg := writePipelineFile("sidecar-count.yml", `
 jobs:
