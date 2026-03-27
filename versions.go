@@ -1,16 +1,19 @@
 package concourse
 
-// Version is the version of Concourse. This variable is overridden at build
-// time in the pipeline using ldflags.
+// Version is the version of Concourse. Overridden at build time via:
+//
+//	-ldflags "-X github.com/concourse/concourse.Version=<version>"
+//
+// The source of truth is the VERSION file at the repo root.
+// Local dev builds default to "0.0.0-dev".
 var Version = "0.0.0-dev"
 
 // JetBridgeVersion is the version of the JetBridge edition.
-var JetBridgeVersion = "0.1.0"
+// Kept in sync with the VERSION file by the CI bump step.
+var JetBridgeVersion = "0.2.0"
 
 // ConcourseVersion is the upstream Concourse version this fork is based on.
 var ConcourseVersion = "8.0.1"
-
-func init() { Version = JetBridgeVersion }
 
 // WorkerVersion identifies compatibility between Concourse and a worker.
 //
