@@ -25,8 +25,8 @@ jobs:
         - |
           cd repo
           echo "=== Verifying full build ==="
-          go build ./cmd/concourse/...
-          go build ./cmd/artifact-daemon/...
+          go build ./cmd/concourse
+          go build ./cmd/artifact-daemon
           echo "=== Build successful ==="
           echo ""
           echo "=== Running go vet ==="
