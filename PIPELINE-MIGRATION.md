@@ -352,6 +352,10 @@ Where `my-repo/ci/sidecars/postgres.yml` contains:
       image_artifact: custom-sidecar-image
 ```
 
+**Important:** `sidecars` is defined at the **step level** (sibling to `config`),
+not inside the `config` block. This is because sidecars are a runtime concern,
+not part of the task configuration file format.
+
 **Sidecar field reference:**
 
 | Field | Type | Required | Description |
