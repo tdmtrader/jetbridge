@@ -628,11 +628,12 @@ func (c *Container) daemonSetFetchCommand(sourceHostDir, destPath string) []stri
 		port = 8080
 	}
 
-	// Derive the URL path for remote fetch by stripping the hostPath prefix.
-	hostPath := c.config.ArtifactDaemonHostPath
-	relPath := strings.TrimPrefix(sourceHostDir, hostPath+"/")
+	// Derive the URL path for remote fetch by stripping the mount path prefix.
+	// sourceHostDir is container-relative (e.g., "/artifacts/steps/abc/dir"),
+	// and the daemon serves from the root of its storage path.
+	relPath := strings.TrimPrefix(sourceHostDir, ArtifactMountPath+"/")
 	if relPath == sourceHostDir {
-		relPath = strings.TrimPrefix(sourceHostDir, hostPath)
+		relPath = strings.TrimPrefix(sourceHostDir, ArtifactMountPath)
 	}
 
 	// Fetch strategy:

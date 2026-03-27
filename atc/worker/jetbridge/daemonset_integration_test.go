@@ -172,7 +172,7 @@ func TestDaemonSetMode_InitContainerFetchCommand(t *testing.T) {
 	}
 
 	locator := NewArtifactLocator()
-	locator.Record(ArtifactKey("vol-1"), "node-a", "/var/concourse/artifacts/steps/test-handle/result")
+	locator.Record(ArtifactKey("vol-1"), "node-a", "/artifacts/steps/test-handle/result")
 
 	c := &Container{
 		handle:   "test-handle",
@@ -437,8 +437,8 @@ func TestDaemonSetMode_RecordOutputLocationsWithEmptyNodeName(t *testing.T) {
 	if !found {
 		t.Fatalf("expected locator to have key %s even with empty nodeName, but not found", key)
 	}
-	if loc.HostDir != "/var/concourse/artifacts/steps/test-handle/out" {
-		t.Errorf("expected hostDir /var/concourse/artifacts/steps/test-handle/out, got %s", loc.HostDir)
+	if loc.HostDir != "/artifacts/steps/test-handle/out" {
+		t.Errorf("expected hostDir /artifacts/steps/test-handle/out, got %s", loc.HostDir)
 	}
 	if loc.NodeName != "" {
 		t.Errorf("expected empty node name, got %s", loc.NodeName)
@@ -639,7 +639,7 @@ func TestDaemonSetMode_CachesAreDirectHostPath(t *testing.T) {
 func TestDaemonSetMode_InitContainerUsesCpA(t *testing.T) {
 	cfg := daemonSetConfig()
 	locator := NewArtifactLocator()
-	locator.Record(ArtifactKey("src-vol"), "this-node", "/var/concourse/artifacts/steps/source-handle/src")
+	locator.Record(ArtifactKey("src-vol"), "this-node", "/artifacts/steps/source-handle/src")
 
 	c := &Container{
 		handle:   "build-60",
@@ -738,7 +738,7 @@ func TestDaemonSetMode_RecordAndLocateRoundTrip(t *testing.T) {
 
 	// Simulate the producing step recording its output location.
 	artifactHandle := "producer-handle-output-result"
-	locator.Record(ArtifactKey(artifactHandle), "node-a", "/var/concourse/artifacts/steps/producer-handle/result")
+	locator.Record(ArtifactKey(artifactHandle), "node-a", "/artifacts/steps/producer-handle/result")
 
 	c := &Container{
 		handle:   "consumer-handle",
@@ -769,9 +769,9 @@ func TestDaemonSetMode_RecordAndLocateRoundTrip(t *testing.T) {
 	}
 
 	cmd := strings.Join(inits[0].Command, " ")
-	// Should contain cp -a with the correct source hostDir
-	if !strings.Contains(cmd, "/var/concourse/artifacts/steps/producer-handle/result") {
-		t.Errorf("expected source hostDir in command, got: %s", cmd)
+	// Should contain cp -a with the container-relative source path
+	if !strings.Contains(cmd, "/artifacts/steps/producer-handle/result") {
+		t.Errorf("expected container-relative source path in command, got: %s", cmd)
 	}
 	if !strings.Contains(cmd, "cp -a") {
 		t.Errorf("expected cp -a in command, got: %s", cmd)

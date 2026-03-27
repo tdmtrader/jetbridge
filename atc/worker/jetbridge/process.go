@@ -1162,7 +1162,6 @@ func (p *execProcess) recordOutputLocations(nodeName string) {
 	}
 
 	outputPaths := p.container.outputPaths()
-	hostPath := p.container.config.ArtifactDaemonHostPath
 
 	// Build reverse map: mount path → output name (used as hostPath subdir).
 	mountToOutputName := make(map[string]string)
@@ -1184,8 +1183,11 @@ func (p *execProcess) recordOutputLocations(nodeName string) {
 		if subdir == "" {
 			subdir = "unknown"
 		}
-		hostDir := filepath.Join(hostPath, "steps", p.container.handle, subdir)
-		p.container.artifactLocator.Record(key, nodeName, hostDir)
+		// Record the container-relative path (under ArtifactMountPath), not
+		// the host path. The init container mounts the hostPath volume at
+		// ArtifactMountPath ("/artifacts"), so scripts must reference that.
+		containerDir := filepath.Join(ArtifactMountPath, "steps", p.container.handle, subdir)
+		p.container.artifactLocator.Record(key, nodeName, containerDir)
 		recorded++
 	}
 	if recorded == 0 && len(p.container.volumes) > 0 {
