@@ -874,6 +874,12 @@ func (cmd *RunCommand) constructAPIMembers(
 
 	dbResourceConfigFactory := db.NewResourceConfigFactory(dbConn, lockFactory)
 
+	// Create shared ArtifactLocator for DaemonSet mode BEFORE constructPool,
+	// so the pool's worker factory receives the locator.
+	if cmd.k8sArtifactLocator == nil && cmd.Kubernetes.ArtifactBackend == jetbridge.ArtifactBackendDaemonSet {
+		cmd.k8sArtifactLocator = jetbridge.NewArtifactLocator()
+	}
+
 	pool, err := cmd.constructPool(dbConn, lockFactory, workerCache)
 	if err != nil {
 		return nil, err
@@ -1107,6 +1113,13 @@ func (cmd *RunCommand) backendComponents(
 	dbWorkerFactory := db.NewWorkerFactory(dbConn, workerCache)
 
 	alg := algorithm.New(db.NewVersionsDB(dbConn, algorithmLimitRows, schedulerCache))
+
+	// Create shared ArtifactLocator for DaemonSet mode BEFORE constructPool,
+	// so the pool's worker factory receives the locator. Without this, workers
+	// have a nil locator and recordOutputLocations silently skips.
+	if cmd.k8sArtifactLocator == nil && cmd.Kubernetes.ArtifactBackend == jetbridge.ArtifactBackendDaemonSet {
+		cmd.k8sArtifactLocator = jetbridge.NewArtifactLocator()
+	}
 
 	pool, err := cmd.constructPool(dbConn, lockFactory, workerCache)
 	if err != nil {
