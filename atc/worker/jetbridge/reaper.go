@@ -236,7 +236,7 @@ func (r *Reaper) cleanupCacheVolumes(ctx context.Context, logger lager.Logger, w
 // store PVC for destroyed containers. Execs rm in the artifact-helper sidecar
 // of an active pod. Best-effort — failures are logged but don't block GC.
 func (r *Reaper) cleanupArtifactStoreEntries(ctx context.Context, logger lager.Logger, handles []string, activePods []string) {
-	if r.cfg.ArtifactStoreClaim == "" || r.executor == nil {
+	if (r.cfg.ArtifactStoreClaim == "" && !r.cfg.IsDaemonSetBackend()) || r.executor == nil {
 		return
 	}
 	if len(handles) == 0 || len(activePods) == 0 {

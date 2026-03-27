@@ -442,13 +442,32 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 	}, nil
 }
 
+// artifactDaemonHostPathVolumeName is the pod volume name for the DaemonSet
+// hostPath artifact store.
+const artifactDaemonHostPathVolumeName = "artifact-daemon-hostpath"
+
 // buildArtifactStoreVolume returns a PVC volume for the artifact store, or nil
-// if ArtifactStoreClaim is not configured.
+// if ArtifactStoreClaim is not configured. In DaemonSet mode, returns a
+// hostPath volume instead.
 func (c *Container) buildArtifactStoreVolume() *corev1.Volume {
-	if c.config.ArtifactStoreClaim == "" {
+	if c.metadata.Type == db.ContainerTypeCheck {
 		return nil
 	}
-	if c.metadata.Type == db.ContainerTypeCheck {
+
+	if c.config.IsDaemonSetBackend() {
+		hostPathType := corev1.HostPathDirectoryOrCreate
+		return &corev1.Volume{
+			Name: artifactDaemonHostPathVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				HostPath: &corev1.HostPathVolumeSource{
+					Path: c.config.ArtifactDaemonHostPath,
+					Type: &hostPathType,
+				},
+			},
+		}
+	}
+
+	if c.config.ArtifactStoreClaim == "" {
 		return nil
 	}
 	return &corev1.Volume{
@@ -461,13 +480,27 @@ func (c *Container) buildArtifactStoreVolume() *corev1.Volume {
 	}
 }
 
+// artifactVolumeName returns the appropriate volume name for the current
+// artifact backend mode.
+func (c *Container) artifactVolumeName() string {
+	if c.config.IsDaemonSetBackend() {
+		return artifactDaemonHostPathVolumeName
+	}
+	return artifactPVCVolumeName
+}
+
 // buildArtifactInitContainers creates init containers for each input with a
 // non-nil artifact when ArtifactStoreClaim is configured. Each init container
 // extracts a tar file from the artifact PVC into the corresponding emptyDir
 // volume. The artifact key is derived from the artifact's Handle(), which
 // works for both *Volume (same-build) and *ArtifactStoreVolume (cross-build).
+// hasArtifactStore returns true when any artifact store backend is configured.
+func (c *Container) hasArtifactStore() bool {
+	return c.config.ArtifactStoreClaim != "" || c.config.IsDaemonSetBackend()
+}
+
 func (c *Container) buildArtifactInitContainers(mainMounts []corev1.VolumeMount) []corev1.Container {
-	if c.config.ArtifactStoreClaim == "" {
+	if !c.hasArtifactStore() {
 		return nil
 	}
 
@@ -501,7 +534,7 @@ func (c *Container) buildArtifactInitContainers(mainMounts []corev1.VolumeMount)
 					ArtifactMountPath, key, input.DestinationPath),
 			},
 			VolumeMounts: []corev1.VolumeMount{
-				{Name: artifactPVCVolumeName, MountPath: ArtifactMountPath, ReadOnly: true},
+				{Name: c.artifactVolumeName(), MountPath: ArtifactMountPath, ReadOnly: true},
 				{Name: volumeName, MountPath: input.DestinationPath},
 			},
 			ImagePullPolicy: corev1.PullIfNotPresent,
@@ -524,7 +557,7 @@ func (c *Container) buildArtifactInitContainers(mainMounts []corev1.VolumeMount)
 					ArtifactMountPath, entry.artifactKey, entry.mountPath),
 			},
 			VolumeMounts: []corev1.VolumeMount{
-				{Name: artifactPVCVolumeName, MountPath: ArtifactMountPath, ReadOnly: true},
+				{Name: c.artifactVolumeName(), MountPath: ArtifactMountPath, ReadOnly: true},
 				{Name: entry.volumeName, MountPath: entry.mountPath},
 			},
 			ImagePullPolicy: corev1.PullIfNotPresent,
@@ -542,7 +575,7 @@ func (c *Container) buildArtifactInitContainers(mainMounts []corev1.VolumeMount)
 // command; the ATC execs tar upload commands in it after step completion.
 // Returns nil if ArtifactStoreClaim is not configured.
 func (c *Container) buildArtifactHelperSidecar(mainMounts []corev1.VolumeMount) *corev1.Container {
-	if c.config.ArtifactStoreClaim == "" {
+	if !c.hasArtifactStore() {
 		return nil
 	}
 	// Check steps never produce artifacts — skip the sidecar to reduce
@@ -562,7 +595,7 @@ func (c *Container) buildArtifactHelperSidecar(mainMounts []corev1.VolumeMount) 
 	allMounts := make([]corev1.VolumeMount, len(mainMounts))
 	copy(allMounts, mainMounts)
 	allMounts = append(allMounts, corev1.VolumeMount{
-		Name:      artifactPVCVolumeName,
+		Name:      c.artifactVolumeName(),
 		MountPath: ArtifactMountPath,
 	})
 
@@ -719,7 +752,7 @@ func (c *Container) buildPodLabels() map[string]string {
 // the GKE sidecar injector webhook.
 func (c *Container) buildPodAnnotations() map[string]string {
 	annotations := map[string]string{}
-	if c.config.ArtifactStoreGCSFuse && c.config.ArtifactStoreClaim != "" && c.metadata.Type != db.ContainerTypeCheck {
+	if c.config.ArtifactStoreGCSFuse && c.config.ArtifactStoreClaim != "" && !c.config.IsDaemonSetBackend() && c.metadata.Type != db.ContainerTypeCheck {
 		annotations[gcsFuseAnnotationKey] = "true"
 	}
 	return annotations
@@ -994,7 +1027,7 @@ func (c *Container) buildVolumeMounts() ([]corev1.Volume, []corev1.VolumeMount) 
 	cacheMode := c.config.CacheStore
 	if cacheMode == "" {
 		switch {
-		case c.config.ArtifactStoreClaim != "" && len(resolvedCaches) > 0:
+		case (c.config.ArtifactStoreClaim != "" || c.config.IsDaemonSetBackend()) && len(resolvedCaches) > 0:
 			cacheMode = CacheStoreArtifact
 		case c.config.CacheVolumeClaim != "":
 			cacheMode = CacheStorePVC

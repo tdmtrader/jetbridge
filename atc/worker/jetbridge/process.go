@@ -786,7 +786,7 @@ func (p *execProcess) streamInputs(ctx context.Context) error {
 		return nil
 	}
 	// When artifact store is configured, ALL inputs are handled by init containers.
-	if p.container.config.ArtifactStoreClaim != "" {
+	if p.container.hasArtifactStore() {
 		return nil
 	}
 	for _, input := range p.container.containerSpec.Inputs {
@@ -821,7 +821,7 @@ func (p *execProcess) streamInputs(ctx context.Context) error {
 // propagate as build failures so downstream steps don't silently run with
 // missing inputs.
 func (p *execProcess) uploadOutputsToArtifactStore(ctx context.Context) error {
-	if p.container == nil || p.container.config.ArtifactStoreClaim == "" {
+	if p.container == nil || !p.container.hasArtifactStore() {
 		return nil
 	}
 

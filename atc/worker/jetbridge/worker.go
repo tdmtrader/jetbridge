@@ -160,7 +160,7 @@ func (w *Worker) newVolumeForMount(handle, mountPath string) *Volume {
 		// the main container exits, enabling set_pipeline, load_var, and
 		// file: directives to read files from build outputs.
 		containerName := mainContainerName
-		if w.config.ArtifactStoreClaim != "" {
+		if w.config.ArtifactStoreClaim != "" || w.config.IsDaemonSetBackend() {
 			containerName = artifactHelperContainerName
 		}
 		return NewDeferredVolume(handle, w.Name(), w.executor, w.config.Namespace, containerName, mountPath)
@@ -198,7 +198,7 @@ func (w *Worker) CreateVolumeForArtifact(ctx context.Context, teamID int) (runti
 
 	handle := createdVolume.Handle()
 
-	if w.config.ArtifactStoreClaim != "" {
+	if w.config.ArtifactStoreClaim != "" || w.config.IsDaemonSetBackend() {
 		key := ArtifactKey(handle)
 		return NewArtifactStoreVolume(key, handle, w.Name(), createdVolume), artifact, nil
 	}
@@ -250,7 +250,7 @@ func (w *Worker) LookupVolume(ctx context.Context, handle string) (runtime.Volum
 
 	// When the artifact store is configured, return an ArtifactStoreVolume
 	// so that downstream steps use init containers instead of SPDY streaming.
-	if w.config.ArtifactStoreClaim != "" {
+	if w.config.ArtifactStoreClaim != "" || w.config.IsDaemonSetBackend() {
 		key := ArtifactKey(handle)
 		return NewArtifactStoreVolume(key, handle, w.Name(), dbVolume), true, nil
 	}
