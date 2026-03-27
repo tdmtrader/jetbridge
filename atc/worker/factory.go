@@ -26,6 +26,10 @@ type DefaultFactory struct {
 	// K8sExecutor is the PodExecutor used for exec-mode I/O (resource
 	// get/put/check steps). If nil, exec-mode I/O is disabled.
 	K8sExecutor jetbridge.PodExecutor
+
+	// K8sArtifactLocator tracks artifact → node mapping for DaemonSet mode
+	// scheduling affinity. Shared across all workers and the reaper.
+	K8sArtifactLocator *jetbridge.ArtifactLocator
 }
 
 func (f DefaultFactory) NewWorker(logger lager.Logger, dbWorker db.Worker) runtime.Worker {
@@ -39,6 +43,9 @@ func (f DefaultFactory) newK8sWorker(dbWorker db.Worker) *jetbridge.Worker {
 	}
 	if f.K8sConfig.CacheVolumeClaim != "" || f.K8sConfig.ArtifactStoreClaim != "" {
 		w.SetVolumeRepo(f.DB.VolumeRepo)
+	}
+	if f.K8sArtifactLocator != nil {
+		w.SetArtifactLocator(f.K8sArtifactLocator)
 	}
 	return w
 }

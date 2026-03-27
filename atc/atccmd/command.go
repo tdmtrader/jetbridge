@@ -115,6 +115,10 @@ type RunCommand struct {
 
 	varSourcePool creds.VarSourcePool
 
+	// k8sArtifactLocator is shared between the Reaper and Worker factory
+	// for DaemonSet mode. Created in backendComponents, used in constructPool.
+	k8sArtifactLocator *jetbridge.ArtifactLocator
+
 	BindIP   flag.IP `long:"bind-ip"   default:"0.0.0.0" description:"IP address on which to listen for web traffic."`
 	BindPort uint16  `long:"bind-port" default:"8080"    description:"Port on which to listen for HTTP traffic."`
 
@@ -1247,6 +1251,12 @@ func (cmd *RunCommand) backendComponents(
 		f.SetSigningKeyFactory(dbSigningKeyFactory)
 	})
 
+	// Create shared ArtifactLocator for DaemonSet mode — used by both
+	// Reaper (here) and Worker factory (constructPool).
+	if cmd.Kubernetes.ArtifactBackend == jetbridge.ArtifactBackendDaemonSet {
+		cmd.k8sArtifactLocator = jetbridge.NewArtifactLocator()
+	}
+
 	if cmd.Kubernetes.Namespace != "" {
 		k8sCfg := jetbridge.NewConfig(cmd.Kubernetes.Namespace, cmd.Kubernetes.Kubeconfig)
 		k8sCfg.PodStartupTimeout = cmd.Kubernetes.PodStartupTimeout
@@ -1296,6 +1306,9 @@ func (cmd *RunCommand) backendComponents(
 				k8sReaper.SetVolumeRepo(k8sVolumeRepo)
 				k8sReaper.SetExecutor(jetbridge.NewSPDYExecutor(k8sClientset, k8sRestConfig))
 			}
+		}
+		if cmd.k8sArtifactLocator != nil {
+			k8sReaper.SetArtifactLocator(cmd.k8sArtifactLocator)
 		}
 		components = append(components, RunnableComponent{
 			Component: atc.Component{
@@ -1400,6 +1413,7 @@ func (cmd *RunCommand) constructPool(dbConn db.DbConn, lockFactory lock.LockFact
 		factory.K8sClientset = k8sClientset
 		factory.K8sConfig = &k8sCfg
 		factory.K8sExecutor = jetbridge.NewSPDYExecutor(k8sClientset, k8sRestConfig)
+		factory.K8sArtifactLocator = cmd.k8sArtifactLocator
 	}
 
 	return worker.NewPool(
