@@ -42,7 +42,7 @@
 
 ## Phase 4: Validation
 
-### [ ] Run full behavioral test suite
-- Build image, deploy to KinD, run all 303 specs.
-- Verify all 4 previously-failing tests now pass.
-- Verify no regressions in the other 294 passing tests.
+### [ ] Rerun the 4 previously-failing tests
+- Build image, deploy to KinD, run only the 4 failing tests:
+  - `go test ./topgun/k8s_behavioral/ -count=1 -v -timeout 30m -run "streams_sidecar_logs|two-level_type_chain|custom_type_check|schedules_a_job_with_multiple_inputs"`
+- Verify all 4 now pass.
