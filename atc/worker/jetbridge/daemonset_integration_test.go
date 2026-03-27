@@ -391,6 +391,60 @@ func TestDaemonSetMode_LocatorRecordCalledAfterUpload(t *testing.T) {
 	}
 }
 
+// TestDaemonSetMode_RecordOutputLocationsWithEmptyNodeName verifies that
+// recordOutputLocations still records the HostDir even when the node name
+// is empty (e.g. pod not found). This prevents downstream steps from failing
+// with "artifact location unknown" when the only issue is unknown node name.
+func TestDaemonSetMode_RecordOutputLocationsWithEmptyNodeName(t *testing.T) {
+	locator := NewArtifactLocator()
+
+	cfg := Config{
+		Namespace:              "test-ns",
+		ArtifactBackend:        ArtifactBackendDaemonSet,
+		ArtifactDaemonHostPath: "/var/concourse/artifacts",
+	}
+
+	vol := NewStubVolume("output-vol", "test-worker", "/tmp/build/out")
+
+	c := &Container{
+		handle:  "test-handle",
+		podName: "test-pod",
+		metadata: db.ContainerMetadata{Type: db.ContainerTypeTask},
+		containerSpec: runtime.ContainerSpec{
+			Dir:     "/tmp/build",
+			Type:    db.ContainerTypeTask,
+			Outputs: runtime.OutputPaths{"out": "/tmp/build/out"},
+		},
+		config:          cfg,
+		properties:      make(map[string]string),
+		volumes:         []*Volume{vol},
+		artifactLocator: locator,
+	}
+
+	p := &execProcess{
+		id:        "test",
+		podName:   "test-pod",
+		config:    cfg,
+		container: c,
+	}
+
+	// Record with empty node name (simulates fetchPodNodeName failure).
+	p.recordOutputLocations("")
+
+	// Should still record the hostDir so downstream steps can locate it.
+	key := ArtifactKey(vol.Handle())
+	loc, found := locator.Locate(key)
+	if !found {
+		t.Fatalf("expected locator to have key %s even with empty nodeName, but not found", key)
+	}
+	if loc.HostDir != "/var/concourse/artifacts/steps/test-handle/out" {
+		t.Errorf("expected hostDir /var/concourse/artifacts/steps/test-handle/out, got %s", loc.HostDir)
+	}
+	if loc.NodeName != "" {
+		t.Errorf("expected empty node name, got %s", loc.NodeName)
+	}
+}
+
 // =======================================================================
 // Phase 2: HostPath output and dir volumes
 // =======================================================================

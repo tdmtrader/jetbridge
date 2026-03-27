@@ -1139,9 +1139,15 @@ func (p *execProcess) SetTTY(_ runtime.TTYSpec) error {
 }
 
 // recordOutputLocations records each output volume's artifact key → node name
-// in the ArtifactLocator. This enables scheduling affinity for downstream steps.
+// in the ArtifactLocator. This enables scheduling affinity and local/remote
+// fetch decisions for downstream steps in DaemonSet mode.
+//
+// When nodeName is empty (pod not found or API error), recordings still
+// happen with an empty node — the consuming step's init container will fall
+// through to the local cp -a branch (SOURCE_NODE unset), which works when
+// the scheduler places the consumer on the same node via affinity.
 func (p *execProcess) recordOutputLocations(nodeName string) {
-	if p.container == nil || p.container.artifactLocator == nil || nodeName == "" {
+	if p.container == nil || p.container.artifactLocator == nil {
 		return
 	}
 
