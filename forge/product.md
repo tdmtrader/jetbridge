@@ -73,8 +73,7 @@ Concourse is an open-source, general-purpose CI/CD automation system ("the conti
 | Human-in-the-loop checkpoints | Planned |
 | Agent step DAG integration | Planned |
 | **CI Agent Pipeline** | |
-| Agent code review (ci-agent-review) | Planned |
-| Agent fix step (ci-agent-fix) | Planned |
+| Unified ci-agent binary with phase configs (review, fix, plan, implement, qa) | Done |
 | Review → Fix → PUT → PR pipeline | Planned |
 | Human feedback on agent reviews (Elm UI + PostgreSQL) | Planned |
 

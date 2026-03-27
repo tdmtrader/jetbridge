@@ -197,17 +197,23 @@ config:
 
 ## CI Agent System
 
-Five standalone binaries for AI-powered CI automation. The agent system is an independent Go module (`ci-agent/go.mod`) with zero imports from the main Concourse codebase.
+A unified binary for AI-powered CI automation. The agent system is an independent Go module (`ci-agent/go.mod`) with zero imports from the main Concourse codebase.
 
-### Agents
+### Agent
 
 | Binary | Entry point | Purpose | Key env vars |
 |--------|------------|---------|-------------|
-| `ci-agent-review` | [`ci-agent/cmd/ci-agent-review/main.go`](ci-agent/cmd/ci-agent-review/main.go) | Automated code review | `ANTHROPIC_API_KEY`, `GITHUB_TOKEN` |
-| `ci-agent-fix` | [`ci-agent/cmd/ci-agent-fix/main.go`](ci-agent/cmd/ci-agent-fix/main.go) | Auto-fix review findings | `ANTHROPIC_API_KEY`, `GITHUB_TOKEN` |
-| `ci-agent-plan` | [`ci-agent/cmd/ci-agent-plan/main.go`](ci-agent/cmd/ci-agent-plan/main.go) | Implementation planning | `ANTHROPIC_API_KEY` |
-| `ci-agent-qa` | [`ci-agent/cmd/ci-agent-qa/main.go`](ci-agent/cmd/ci-agent-qa/main.go) | QA validation of fixes | `ANTHROPIC_API_KEY` |
-| `ci-agent-implement` | [`ci-agent/cmd/ci-agent-implement/main.go`](ci-agent/cmd/ci-agent-implement/main.go) | Code implementation from plans | `ANTHROPIC_API_KEY`, `GITHUB_TOKEN` |
+| `ci-agent` | [`ci-agent/cmd/ci-agent/main.go`](ci-agent/cmd/ci-agent/main.go) | Unified phase runner | `ANTHROPIC_API_KEY`, `AGENT_CLI`, `AGENT_MODEL` |
+
+The `ci-agent` binary is invoked with `--phase <path-to-phase.yaml>`. Available phases:
+
+| Phase | Config | Purpose |
+|-------|--------|---------|
+| review | [`phases/review.yaml`](ci-agent/phases/review.yaml) | Automated code review |
+| fix | [`phases/fix.yaml`](ci-agent/phases/fix.yaml) | Auto-fix review findings |
+| plan | [`phases/plan.yaml`](ci-agent/phases/plan.yaml) | Implementation planning |
+| implement | [`phases/implement.yaml`](ci-agent/phases/implement.yaml) | Code implementation from plans |
+| qa | [`phases/qa.yaml`](ci-agent/phases/qa.yaml) | QA validation of fixes |
 
 ### Output schemas
 
