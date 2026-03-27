@@ -397,7 +397,10 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 		volumes = append(volumes, *artifactVol)
 	}
 
-	initContainers := c.buildArtifactInitContainers(volumeMounts)
+	initContainers, err := c.buildArtifactInitContainers(volumeMounts)
+	if err != nil {
+		return nil, fmt.Errorf("build artifact init containers: %w", err)
+	}
 
 	containers := []corev1.Container{
 		{
@@ -505,9 +508,9 @@ func (c *Container) hasArtifactStore() bool {
 	return c.config.ArtifactStoreClaim != "" || c.config.IsDaemonSetBackend()
 }
 
-func (c *Container) buildArtifactInitContainers(mainMounts []corev1.VolumeMount) []corev1.Container {
+func (c *Container) buildArtifactInitContainers(mainMounts []corev1.VolumeMount) ([]corev1.Container, error) {
 	if !c.hasArtifactStore() {
-		return nil
+		return nil, nil
 	}
 
 	helperImage := c.config.ArtifactHelperImage
@@ -547,18 +550,17 @@ func (c *Container) buildArtifactInitContainers(mainMounts []corev1.VolumeMount)
 
 		if c.config.IsDaemonSetBackend() {
 			loc, hasLoc := c.artifactLocate(key)
-			sourceHostDir := ""
-			if hasLoc {
-				sourceHostDir = loc.HostDir
+			if !hasLoc {
+				return nil, fmt.Errorf("artifact location unknown for key %s (input %q): producing step may not have recorded its output", key, input.DestinationPath)
 			}
-			initContainer.Command = c.daemonSetFetchCommand(sourceHostDir, input.DestinationPath)
+			initContainer.Command = c.daemonSetFetchCommand(loc.HostDir, input.DestinationPath)
 			initContainer.Env = append(initContainer.Env, corev1.EnvVar{
 				Name: "MY_NODE_NAME",
 				ValueFrom: &corev1.EnvVarSource{
 					FieldRef: &corev1.ObjectFieldSelector{FieldPath: "spec.nodeName"},
 				},
 			})
-			if hasLoc && loc.NodeName != "" {
+			if loc.NodeName != "" {
 				initContainer.Env = append(initContainer.Env, corev1.EnvVar{
 					Name:  "SOURCE_NODE",
 					Value: loc.NodeName,
@@ -597,7 +599,7 @@ func (c *Container) buildArtifactInitContainers(mainMounts []corev1.VolumeMount)
 		})
 	}
 
-	return inits
+	return inits, nil
 }
 
 // daemonSetFetchCommand returns a shell command that fetches an artifact
@@ -609,6 +611,13 @@ func (c *Container) buildArtifactInitContainers(mainMounts []corev1.VolumeMount)
 // the source step's hostPath directory. sourceHostDir is the full hostPath
 // of the source artifact. Local: cp -a. Remote: HTTP GET + tar.
 func (c *Container) daemonSetFetchCommand(sourceHostDir, destPath string) []string {
+	// Fail fast if the source directory is unknown — this means the producing
+	// step's artifact location was not recorded in the ArtifactLocator.
+	if sourceHostDir == "" {
+		script := `echo "ERROR: artifact source directory is empty — producing step did not record its output location" >&2; exit 1`
+		return []string{"sh", "-c", script}
+	}
+
 	svcName := c.config.ArtifactDaemonService
 	if svcName == "" {
 		svcName = "artifact-daemon"

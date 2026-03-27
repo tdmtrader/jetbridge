@@ -172,7 +172,7 @@ func TestDaemonSetMode_InitContainerFetchCommand(t *testing.T) {
 	}
 
 	locator := NewArtifactLocator()
-	locator.Record(ArtifactKey("vol-1"), "node-a", "")
+	locator.Record(ArtifactKey("vol-1"), "node-a", "/var/concourse/artifacts/steps/test-handle/result")
 
 	c := &Container{
 		handle:   "test-handle",
@@ -197,7 +197,10 @@ func TestDaemonSetMode_InitContainerFetchCommand(t *testing.T) {
 	volumes, mounts := c.buildVolumeMounts()
 	_ = volumes
 
-	inits := c.buildArtifactInitContainers(mounts)
+	inits, err := c.buildArtifactInitContainers(mounts)
+	if err != nil {
+		t.Fatalf("buildArtifactInitContainers: %v", err)
+	}
 	if len(inits) == 0 {
 		t.Fatal("expected at least one init container")
 	}
@@ -604,7 +607,10 @@ func TestDaemonSetMode_InitContainerUsesCpA(t *testing.T) {
 	}
 
 	_, mounts := c.buildVolumeMounts()
-	inits := c.buildArtifactInitContainers(mounts)
+	inits, err := c.buildArtifactInitContainers(mounts)
+	if err != nil {
+		t.Fatalf("buildArtifactInitContainers: %v", err)
+	}
 
 	if len(inits) == 0 {
 		t.Fatal("expected at least one init container")
@@ -613,6 +619,119 @@ func TestDaemonSetMode_InitContainerUsesCpA(t *testing.T) {
 	cmd := strings.Join(inits[0].Command, " ")
 	if !strings.Contains(cmd, "cp -a") {
 		t.Errorf("local DaemonSet init container should use 'cp -a', got command: %s", cmd)
+	}
+}
+
+// --- Phase: Fail-fast tests ---
+
+// TestDaemonSetMode_MissingArtifactLocationReturnsError verifies that
+// buildArtifactInitContainers returns an error when the artifact locator
+// does not have the key for a DaemonSet input.
+func TestDaemonSetMode_MissingArtifactLocationReturnsError(t *testing.T) {
+	cfg := daemonSetConfig()
+	locator := NewArtifactLocator() // empty — nothing recorded
+
+	c := &Container{
+		handle:   "build-99",
+		podName:  "test-pod",
+		metadata: db.ContainerMetadata{Type: db.ContainerTypeTask},
+		containerSpec: runtime.ContainerSpec{
+			Dir:  "/tmp/build",
+			Type: db.ContainerTypeTask,
+			Inputs: []runtime.Input{
+				{
+					Artifact:        &stubArtifact{handle: "missing-vol"},
+					DestinationPath: "/tmp/build/input",
+				},
+			},
+		},
+		config:          cfg,
+		properties:      make(map[string]string),
+		artifactLocator: locator,
+	}
+
+	_, mounts := c.buildVolumeMounts()
+	_, err := c.buildArtifactInitContainers(mounts)
+	if err == nil {
+		t.Fatal("expected error for missing artifact location, got nil")
+	}
+	if !strings.Contains(err.Error(), "artifact location unknown") {
+		t.Errorf("expected error about unknown artifact location, got: %s", err)
+	}
+}
+
+// TestDaemonSetMode_EmptySourceHostDirFailsFast verifies that
+// daemonSetFetchCommand generates an exit-1 script when sourceHostDir is empty.
+func TestDaemonSetMode_EmptySourceHostDirFailsFast(t *testing.T) {
+	cfg := daemonSetConfig()
+	c := &Container{config: cfg}
+
+	cmd := c.daemonSetFetchCommand("", "/tmp/build/input")
+	script := strings.Join(cmd, " ")
+	if !strings.Contains(script, "exit 1") {
+		t.Errorf("expected exit 1 for empty sourceHostDir, got: %s", script)
+	}
+	if strings.Contains(script, "cp -a") {
+		t.Errorf("empty sourceHostDir should NOT generate cp -a command, got: %s", script)
+	}
+}
+
+// TestDaemonSetMode_RecordAndLocateRoundTrip verifies that recording
+// an artifact location and looking it up produces correct init containers.
+func TestDaemonSetMode_RecordAndLocateRoundTrip(t *testing.T) {
+	cfg := daemonSetConfig()
+	locator := NewArtifactLocator()
+
+	// Simulate the producing step recording its output location.
+	artifactHandle := "producer-handle-output-result"
+	locator.Record(ArtifactKey(artifactHandle), "node-a", "/var/concourse/artifacts/steps/producer-handle/result")
+
+	c := &Container{
+		handle:   "consumer-handle",
+		podName:  "test-pod",
+		metadata: db.ContainerMetadata{Type: db.ContainerTypeTask},
+		containerSpec: runtime.ContainerSpec{
+			Dir:  "/tmp/build",
+			Type: db.ContainerTypeTask,
+			Inputs: []runtime.Input{
+				{
+					Artifact:        &stubArtifact{handle: artifactHandle},
+					DestinationPath: "/tmp/build/input",
+				},
+			},
+		},
+		config:          cfg,
+		properties:      make(map[string]string),
+		artifactLocator: locator,
+	}
+
+	_, mounts := c.buildVolumeMounts()
+	inits, err := c.buildArtifactInitContainers(mounts)
+	if err != nil {
+		t.Fatalf("buildArtifactInitContainers: %v", err)
+	}
+	if len(inits) == 0 {
+		t.Fatal("expected at least one init container")
+	}
+
+	cmd := strings.Join(inits[0].Command, " ")
+	// Should contain cp -a with the correct source hostDir
+	if !strings.Contains(cmd, "/var/concourse/artifacts/steps/producer-handle/result") {
+		t.Errorf("expected source hostDir in command, got: %s", cmd)
+	}
+	if !strings.Contains(cmd, "cp -a") {
+		t.Errorf("expected cp -a in command, got: %s", cmd)
+	}
+
+	// Should have SOURCE_NODE env var
+	hasSourceNode := false
+	for _, env := range inits[0].Env {
+		if env.Name == "SOURCE_NODE" && env.Value == "node-a" {
+			hasSourceNode = true
+		}
+	}
+	if !hasSourceNode {
+		t.Error("expected SOURCE_NODE=node-a env var")
 	}
 }
 
