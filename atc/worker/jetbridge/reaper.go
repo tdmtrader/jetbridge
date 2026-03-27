@@ -3,8 +3,10 @@ package jetbridge
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"code.cloudfoundry.org/lager/v3"
 	"github.com/concourse/concourse/atc/db"
@@ -26,6 +28,8 @@ type Reaper struct {
 	destroyer           gc.Destroyer
 	volumeRepository    db.VolumeRepository
 	executor            PodExecutor
+	artifactLocator     *ArtifactLocator
+	httpClient          *http.Client
 }
 
 // NewReaper creates a Reaper that will manage pod lifecycle using the given
@@ -54,6 +58,12 @@ func (r *Reaper) SetVolumeRepo(repo db.VolumeRepository) {
 // SetExecutor sets the PodExecutor used for cache directory cleanup.
 func (r *Reaper) SetExecutor(executor PodExecutor) {
 	r.executor = executor
+}
+
+// SetArtifactLocator sets the ArtifactLocator for DaemonSet cleanup.
+func (r *Reaper) SetArtifactLocator(locator *ArtifactLocator) {
+	r.artifactLocator = locator
+	r.httpClient = &http.Client{Timeout: 10 * time.Second}
 }
 
 // Run implements component.Runnable. It reports active pods to the DB,
@@ -236,7 +246,12 @@ func (r *Reaper) cleanupCacheVolumes(ctx context.Context, logger lager.Logger, w
 // store PVC for destroyed containers. Execs rm in the artifact-helper sidecar
 // of an active pod. Best-effort — failures are logged but don't block GC.
 func (r *Reaper) cleanupArtifactStoreEntries(ctx context.Context, logger lager.Logger, handles []string, activePods []string) {
-	if (r.cfg.ArtifactStoreClaim == "" && !r.cfg.IsDaemonSetBackend()) || r.executor == nil {
+	if r.cfg.IsDaemonSetBackend() {
+		r.cleanupDaemonSetArtifacts(ctx, logger, handles)
+		return
+	}
+
+	if r.cfg.ArtifactStoreClaim == "" || r.executor == nil {
 		return
 	}
 	if len(handles) == 0 || len(activePods) == 0 {
@@ -255,5 +270,52 @@ func (r *Reaper) cleanupArtifactStoreEntries(ctx context.Context, logger lager.L
 		if err != nil {
 			logger.Error("failed-to-cleanup-artifact", err, lager.Data{"handle": handle})
 		}
+	}
+}
+
+// cleanupDaemonSetArtifacts sends HTTP DELETE requests to DaemonSet pods
+// for destroyed container artifacts. Best-effort — failures are logged
+// but don't block GC.
+func (r *Reaper) cleanupDaemonSetArtifacts(ctx context.Context, logger lager.Logger, handles []string) {
+	if len(handles) == 0 || r.artifactLocator == nil || r.httpClient == nil {
+		return
+	}
+
+	svcName := r.cfg.ArtifactDaemonService
+	if svcName == "" {
+		svcName = "artifact-daemon"
+	}
+	port := r.cfg.ArtifactDaemonPort
+	if port == 0 {
+		port = 8080
+	}
+
+	for _, handle := range handles {
+		if strings.Contains(handle, "/") || strings.Contains(handle, "..") || handle == "" {
+			continue
+		}
+		key := ArtifactKey(handle)
+		sourceNode, found := r.artifactLocator.Locate(key)
+		if !found {
+			continue
+		}
+
+		url := fmt.Sprintf("http://%s.%s.%s.svc.cluster.local:%d/artifacts/%s",
+			sourceNode, svcName, r.cfg.Namespace, port, key)
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodDelete, url, nil)
+		if err != nil {
+			logger.Error("failed-to-create-delete-request", err, lager.Data{"handle": handle})
+			continue
+		}
+
+		resp, err := r.httpClient.Do(req)
+		if err != nil {
+			logger.Error("failed-to-delete-artifact", err, lager.Data{"handle": handle, "node": sourceNode})
+		} else {
+			resp.Body.Close()
+		}
+
+		r.artifactLocator.Remove(key)
 	}
 }
