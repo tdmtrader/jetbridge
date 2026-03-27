@@ -26,6 +26,7 @@ jobs:
           cd repo
           echo "=== Verifying full build ==="
           go build ./cmd/concourse/...
+          go build ./cmd/artifact-daemon/...
           echo "=== Build successful ==="
           echo ""
           echo "=== Running go vet ==="
@@ -205,7 +206,10 @@ jobs:
           echo "=== Building concourse binary (frontend assets embedded from git) ==="
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o concourse-linux-amd64 ./cmd/concourse
           ls -lh concourse-linux-amd64
-          echo "=== Binary built ==="
+          echo "=== Building artifact-daemon binary ==="
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o artifact-daemon-linux-amd64 ./cmd/artifact-daemon
+          ls -lh artifact-daemon-linux-amd64
+          echo "=== Binaries built ==="
 
           REGISTRY="registry-docker-registry.cicd.svc.cluster.local:5000"
           GHCR="ghcr.io/tdmtrader/jetbridge"
@@ -251,8 +255,9 @@ jobs:
           echo "=== Logging into GHCR ==="
           echo "${GITHUB_TOKEN}" | kubectl exec -i -n cicd ${BUILDER_POD} -- docker login ghcr.io -u tdmtrader --password-stdin
 
-          echo "=== Copying binary to builder pod ==="
+          echo "=== Copying binaries to builder pod ==="
           kubectl cp concourse-linux-amd64 cicd/${BUILDER_POD}:/tmp/concourse-linux-amd64
+          kubectl cp artifact-daemon-linux-amd64 cicd/${BUILDER_POD}:/tmp/artifact-daemon-linux-amd64
 
           echo "=== Copying Dockerfile to builder pod ==="
           cat <<'DOCKERFILE' > /tmp/Dockerfile
@@ -261,7 +266,8 @@ jobs:
               apt-get install -y ca-certificates dumb-init && \
               rm -rf /var/lib/apt/lists/*
           COPY concourse-linux-amd64 /usr/local/concourse/bin/concourse
-          RUN chmod +x /usr/local/concourse/bin/concourse
+          COPY artifact-daemon-linux-amd64 /usr/local/concourse/bin/artifact-daemon
+          RUN chmod +x /usr/local/concourse/bin/concourse /usr/local/concourse/bin/artifact-daemon
           ENV PATH="/usr/local/concourse/bin:${PATH}"
           ENTRYPOINT ["dumb-init", "concourse"]
           DOCKERFILE
