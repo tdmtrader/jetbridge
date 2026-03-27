@@ -202,9 +202,13 @@ jobs:
           git clone --depth 1 --branch main https://github.com/tdmtrader/jetbridge.git repo
           cd repo
           SHORT_SHA=$(git rev-parse --short HEAD)
+          VERSION=$(cat VERSION)
+          echo "Version: ${VERSION} (${SHORT_SHA})"
+
+          LDFLAGS="-s -w -X github.com/concourse/concourse.Version=${VERSION}"
 
           echo "=== Building concourse binary (frontend assets embedded from git) ==="
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o concourse-linux-amd64 ./cmd/concourse
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "${LDFLAGS}" -o concourse-linux-amd64 ./cmd/concourse
           ls -lh concourse-linux-amd64
           echo "=== Building artifact-daemon binary ==="
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o artifact-daemon-linux-amd64 ./cmd/artifact-daemon
@@ -277,23 +281,29 @@ jobs:
           kubectl exec -n cicd ${BUILDER_POD} -- \
             docker build \
               -t registry.home/jetbridge:latest \
+              -t registry.home/jetbridge:v${VERSION} \
               -t ${REGISTRY}/jetbridge:latest \
+              -t ${REGISTRY}/jetbridge:v${VERSION} \
               -t ${GHCR}:${SHORT_SHA} \
+              -t ${GHCR}:v${VERSION} \
               -t ${GHCR}:latest \
               -f /tmp/Dockerfile /tmp/
 
           echo "=== Pushing to local registries ==="
           kubectl exec -n cicd ${BUILDER_POD} -- docker push registry.home/jetbridge:latest
+          kubectl exec -n cicd ${BUILDER_POD} -- docker push registry.home/jetbridge:v${VERSION}
           kubectl exec -n cicd ${BUILDER_POD} -- docker push ${REGISTRY}/jetbridge:latest
+          kubectl exec -n cicd ${BUILDER_POD} -- docker push ${REGISTRY}/jetbridge:v${VERSION}
 
           echo "=== Pushing to GHCR ==="
           kubectl exec -n cicd ${BUILDER_POD} -- docker push ${GHCR}:${SHORT_SHA}
+          kubectl exec -n cicd ${BUILDER_POD} -- docker push ${GHCR}:v${VERSION}
           kubectl exec -n cicd ${BUILDER_POD} -- docker push ${GHCR}:latest
 
           echo "=== Verifying ==="
           kubectl exec -n cicd ${BUILDER_POD} -- docker images ${GHCR}
           echo ""
-          echo "=== Image build and push complete: ${GHCR}:${SHORT_SHA} ==="
+          echo "=== Image build and push complete: ${GHCR}:v${VERSION} (${SHORT_SHA}) ==="
 
 - name: self-upgrade
   serial_groups: [pipeline]
