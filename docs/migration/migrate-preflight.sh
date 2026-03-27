@@ -12,20 +12,18 @@ set -euo pipefail
 
 # --- Configuration -----------------------------------------------------------
 
-# Known Concourse release versions mapped to their last migration number
-declare -A KNOWN_VERSIONS=(
-  # v6.x
-  ["v6.8.0"]=1601993582
-  # v7.x
-  ["v7.0.0"]=1612565824
-  ["v7.1.0"]=1612565824
-  ["v7.10.0"]=1653924132
-  ["v7.11.0"]=1653924132
-  ["v7.14.3"]=1746768931
-  # v8.x
-  ["v8.0.0"]=1765921815
-  ["v8.0.1"]=1765921815
-)
+# Known Concourse release versions mapped to their last migration number.
+# Format: "release_name:migration_number" (one per line)
+KNOWN_VERSIONS="
+v6.8.0:1601993582
+v7.0.0:1612565824
+v7.1.0:1612565824
+v7.10.0:1653924132
+v7.11.0:1653924132
+v7.14.3:1746768931
+v8.0.0:1765921815
+v8.0.1:1765921815
+"
 
 # JetBridge target version
 JETBRIDGE_VERSION=1773105501
@@ -66,13 +64,27 @@ PASS=0
 WARN=0
 FAIL=0
 
-pass() { echo "  [PASS] $1"; ((PASS++)); }
-warn() { echo "  [WARN] $1"; ((WARN++)); }
-fail() { echo "  [FAIL] $1"; ((FAIL++)); }
+pass() { echo "  [PASS] $1"; PASS=$((PASS + 1)); }
+warn() { echo "  [WARN] $1"; WARN=$((WARN + 1)); }
+fail() { echo "  [FAIL] $1"; FAIL=$((FAIL + 1)); }
 info() { echo "  [INFO] $1"; }
 
 run_sql() {
   psql -At -c "$1" 2>/dev/null
+}
+
+# Look up a release name from a migration version number.
+# Returns the release name or "unknown".
+detect_release() {
+  local version="$1"
+  echo "$KNOWN_VERSIONS" | while IFS=: read -r release migration; do
+    release=$(echo "$release" | tr -d ' ')
+    migration=$(echo "$migration" | tr -d ' ')
+    if [[ -n "$migration" ]] && [[ "$migration" -eq "$version" ]]; then
+      echo "$release"
+      return
+    fi
+  done
 }
 
 # --- Pre-flight Checks -------------------------------------------------------
@@ -152,13 +164,8 @@ info "Current migration version: ${CURRENT_VERSION}"
 info "JetBridge target version:  ${JETBRIDGE_VERSION}"
 
 # Map version to release
-DETECTED_RELEASE="unknown"
-for release in "${!KNOWN_VERSIONS[@]}"; do
-  if [[ "${KNOWN_VERSIONS[$release]}" -eq "$CURRENT_VERSION" ]]; then
-    DETECTED_RELEASE="$release"
-    break
-  fi
-done
+DETECTED_RELEASE=$(detect_release "$CURRENT_VERSION")
+DETECTED_RELEASE=${DETECTED_RELEASE:-unknown}
 info "Detected Concourse release: ${DETECTED_RELEASE}"
 
 # 3. Version Path Validation

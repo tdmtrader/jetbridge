@@ -5,6 +5,10 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 
@@ -18,12 +22,16 @@ import (
 )
 
 // These tests validate the database migration path from legacy Concourse
-// versions (v7.13) to JetBridge HEAD, ensuring that all pipeline data
-// (teams, pipelines, jobs, builds, resources, resource versions) survives
-// the migration intact.
+// versions (v7.13, v8.0.1) to JetBridge HEAD, ensuring that all pipeline
+// data survives the migration intact. They also validate the migration
+// runbook's pre-flight script, garden-era data cleanup, idempotency, and
+// rollback procedures.
 
 // v7.13.x ends at this migration version
 const v713LastMigration = 1666754000
+
+// v8.0.1 last migration
+const v801LastMigration = 1765921815
 
 // JetBridge HEAD (last migration)
 const jetbridgeHeadMigration = 1773105501
@@ -103,9 +111,6 @@ var _ = Describe("Legacy Database Upgrade", func() {
 	})
 
 	Describe("Upgrading from v8.0.1 to JetBridge HEAD", func() {
-		// v8.0.1 last migration
-		const v801LastMigration = 1765921815
-
 		BeforeEach(func() {
 			By("Migrating up to v8.0.1 (migration " + fmt.Sprint(v801LastMigration) + ")")
 			err := migrator.Migrate(nil, nil, v801LastMigration)
@@ -141,6 +146,277 @@ var _ = Describe("Legacy Database Upgrade", func() {
 
 			By("Verifying JetBridge schema changes applied")
 			verifyJetBridgeSchemaChanges(db)
+		})
+	})
+
+	Describe("Garden-era data cleanup", func() {
+		BeforeEach(func() {
+			By("Migrating v7.13 data to JetBridge HEAD")
+			err := migrator.Migrate(nil, nil, v713LastMigration)
+			Expect(err).NotTo(HaveOccurred())
+
+			insertV713FixtureData(db)
+
+			err = migrator.Up(nil, nil)
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("removes stale worker cache tables without affecting core data", func() {
+			By("Verifying stale data exists before cleanup")
+			expectRowCount(db, "worker_base_resource_types", 1)
+			expectRowCount(db, "workers", 2)
+			expectRowCount(db, "containers", 2)
+			expectRowCount(db, "volumes", 2)
+
+			By("Truncating stale worker cache tables")
+			mustExec(db, `TRUNCATE worker_task_caches CASCADE`)
+			mustExec(db, `TRUNCATE worker_resource_caches CASCADE`)
+			mustExec(db, `TRUNCATE worker_base_resource_types CASCADE`)
+
+			By("Verifying cache tables are empty")
+			expectRowCount(db, "worker_base_resource_types", 0)
+			expectRowCount(db, "worker_task_caches", 0)
+			expectRowCount(db, "worker_resource_caches", 0)
+
+			By("Verifying core pipeline data is intact")
+			expectRowCount(db, "teams", 2)
+			expectRowCount(db, "pipelines", 3)
+			expectRowCount(db, "jobs", 5)
+			expectRowCount(db, "builds", 10)
+			expectRowCount(db, "resources", 2)
+			expectRowCount(db, "resource_config_versions", 5)
+		})
+
+		It("removes stale Garden workers and orphaned containers/volumes", func() {
+			By("Deleting all Garden workers")
+			mustExec(db, `DELETE FROM workers`)
+			expectRowCount(db, "workers", 0)
+
+			By("Cleaning up orphaned containers referencing deleted workers")
+			mustExec(db, `DELETE FROM containers WHERE worker_name NOT IN (SELECT name FROM workers)`)
+			expectRowCount(db, "containers", 0)
+
+			By("Cleaning up orphaned volumes referencing deleted workers")
+			mustExec(db, `DELETE FROM volumes WHERE worker_name NOT IN (SELECT name FROM workers)`)
+			expectRowCount(db, "volumes", 0)
+
+			By("Verifying core pipeline data is still intact after cleanup")
+			expectRowCount(db, "teams", 2)
+			expectRowCount(db, "pipelines", 3)
+			expectRowCount(db, "jobs", 5)
+			expectRowCount(db, "builds", 10)
+			expectRowCount(db, "resources", 2)
+			expectRowCount(db, "resource_config_versions", 5)
+
+			By("Verifying build history is fully preserved with correct statuses")
+			verifyBuildStatuses(db, map[string]int{
+				"succeeded": 7,
+				"failed":    2,
+				"errored":   1,
+			})
+		})
+
+		It("allows inserting new K8s workers after cleanup", func() {
+			By("Deleting Garden workers")
+			mustExec(db, `DELETE FROM containers`)
+			mustExec(db, `DELETE FROM volumes`)
+			mustExec(db, `DELETE FROM workers`)
+
+			By("Inserting a K8s-style worker")
+			mustExec(db, `INSERT INTO workers(name, addr, state, platform, version) VALUES('k8s-concourse', '', 'running', 'linux', '2.5')`)
+			expectRowCount(db, "workers", 1)
+
+			var workerName string
+			err := db.QueryRow("SELECT name FROM workers").Scan(&workerName)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(workerName).To(Equal("k8s-concourse"))
+		})
+	})
+
+	Describe("Migration idempotency", func() {
+		It("is safe to call Up() when already at HEAD", func() {
+			By("Migrating to JetBridge HEAD")
+			err := migrator.Up(nil, nil)
+			Expect(err).NotTo(HaveOccurred())
+			ExpectDatabaseMigrationVersionToEqual(migrator, jetbridgeHeadMigration)
+
+			By("Inserting data at HEAD")
+			mustExec(db, `INSERT INTO teams(id, name) VALUES(1, 'main')`)
+			mustExec(db, `INSERT INTO pipelines(id, name, team_id, secondary_ordering) VALUES(1, 'ci', 1, 1)`)
+
+			By("Calling Up() again — should be a no-op")
+			err = migrator.Up(nil, nil)
+			Expect(err).NotTo(HaveOccurred())
+			ExpectDatabaseMigrationVersionToEqual(migrator, jetbridgeHeadMigration)
+
+			By("Verifying data is still intact")
+			expectRowCount(db, "teams", 1)
+			expectRowCount(db, "pipelines", 1)
+		})
+
+		It("is safe to Migrate() to the current version", func() {
+			By("Migrating to JetBridge HEAD")
+			err := migrator.Migrate(nil, nil, jetbridgeHeadMigration)
+			Expect(err).NotTo(HaveOccurred())
+
+			mustExec(db, `INSERT INTO teams(id, name) VALUES(1, 'main')`)
+
+			By("Migrating to the same version again")
+			err = migrator.Migrate(nil, nil, jetbridgeHeadMigration)
+			Expect(err).NotTo(HaveOccurred())
+
+			expectRowCount(db, "teams", 1)
+		})
+	})
+
+	Describe("Migration rollback", func() {
+		It("can migrate down from JetBridge HEAD to v8.0.1", func() {
+			By("Migrating to JetBridge HEAD")
+			err := migrator.Migrate(nil, nil, jetbridgeHeadMigration)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Inserting data at HEAD")
+			mustExec(db, `INSERT INTO teams(id, name) VALUES(1, 'main')`)
+			mustExec(db, `INSERT INTO components(id, name) VALUES(1, 'scheduler')`)
+
+			By("Rolling back to v8.0.1")
+			err = migrator.Migrate(nil, nil, v801LastMigration)
+			Expect(err).NotTo(HaveOccurred())
+			ExpectDatabaseMigrationVersionToEqual(migrator, v801LastMigration)
+
+			By("Verifying teams survived rollback")
+			expectRowCount(db, "teams", 1)
+
+			By("Verifying component columns were restored")
+			for _, col := range []string{"interval", "paused"} {
+				var exists bool
+				err = db.QueryRow(
+					"SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_name = 'components' AND column_name = $1)",
+					col,
+				).Scan(&exists)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(exists).To(BeTrue(), "column components.%s should be restored after rollback", col)
+			}
+
+			By("Verifying components survived rollback")
+			expectRowCount(db, "components", 1)
+		})
+
+		It("can migrate back up after a rollback", func() {
+			By("Migrating to HEAD, rolling back, then migrating up again")
+			err := migrator.Migrate(nil, nil, jetbridgeHeadMigration)
+			Expect(err).NotTo(HaveOccurred())
+
+			mustExec(db, `INSERT INTO teams(id, name) VALUES(1, 'main')`)
+
+			err = migrator.Migrate(nil, nil, v801LastMigration)
+			Expect(err).NotTo(HaveOccurred())
+
+			err = migrator.Up(nil, nil)
+			Expect(err).NotTo(HaveOccurred())
+			ExpectDatabaseMigrationVersionToEqual(migrator, jetbridgeHeadMigration)
+
+			By("Verifying data survived the round-trip")
+			expectRowCount(db, "teams", 1)
+			verifyJetBridgeSchemaChanges(db)
+		})
+	})
+
+	Describe("Pre-flight validation script", func() {
+		It("passes against a v7.13 database", func() {
+			err := migrator.Migrate(nil, nil, v713LastMigration)
+			Expect(err).NotTo(HaveOccurred())
+
+			insertV713FixtureData(db)
+
+			runPreflightAndExpectPass(postgresRunner.DataSourceName())
+		})
+
+		It("passes against a v8.0.1 database", func() {
+			err := migrator.Migrate(nil, nil, v801LastMigration)
+			Expect(err).NotTo(HaveOccurred())
+
+			insertV801FixtureData(db)
+
+			runPreflightAndExpectPass(postgresRunner.DataSourceName())
+		})
+
+		It("passes against a database already at JetBridge HEAD", func() {
+			err := migrator.Up(nil, nil)
+			Expect(err).NotTo(HaveOccurred())
+
+			runPreflightAndExpectPass(postgresRunner.DataSourceName())
+		})
+	})
+
+	Describe("Component data preservation", func() {
+		It("preserves component names after column drops", func() {
+			By("Setting up v8.0.1 with components")
+			err := migrator.Migrate(nil, nil, v801LastMigration)
+			Expect(err).NotTo(HaveOccurred())
+
+			mustExec(db, `INSERT INTO components(id, name, interval, paused) VALUES(1, 'scheduler', '10s', false)`)
+			mustExec(db, `INSERT INTO components(id, name, interval, paused) VALUES(2, 'scanner', '10s', false)`)
+			mustExec(db, `INSERT INTO components(id, name, interval, paused) VALUES(3, 'build_tracker', '10s', true)`)
+
+			By("Migrating to JetBridge HEAD")
+			err = migrator.Up(nil, nil)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying component names survived")
+			expectRowCount(db, "components", 3)
+
+			var names []string
+			rows, err := db.Query("SELECT name FROM components ORDER BY name")
+			Expect(err).NotTo(HaveOccurred())
+			defer rows.Close()
+			for rows.Next() {
+				var name string
+				Expect(rows.Scan(&name)).To(Succeed())
+				names = append(names, name)
+			}
+			Expect(rows.Err()).NotTo(HaveOccurred())
+			Expect(names).To(Equal([]string{"build_tracker", "scanner", "scheduler"}))
+
+			By("Verifying dropped columns are gone")
+			for _, col := range []string{"interval", "last_ran", "paused"} {
+				var exists bool
+				err = db.QueryRow(
+					"SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_name = 'components' AND column_name = $1)",
+					col,
+				).Scan(&exists)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(exists).To(BeFalse(), "column components.%s should have been dropped", col)
+			}
+		})
+	})
+
+	Describe("Notify triggers after migration", func() {
+		BeforeEach(func() {
+			err := migrator.Up(nil, nil)
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("fires worker notifications on worker insert/update/delete", func() {
+			By("Setting up a LISTEN on worker_events")
+			listenerDB, err := sql.Open("pgx", postgresRunner.DataSourceName())
+			Expect(err).NotTo(HaveOccurred())
+			defer listenerDB.Close()
+
+			// Verify the trigger functions exist
+			var fnExists bool
+			err = db.QueryRow(`SELECT EXISTS(SELECT 1 FROM pg_proc WHERE proname = 'notify_worker_event')`).Scan(&fnExists)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(fnExists).To(BeTrue(), "notify_worker_event function should exist")
+
+			err = db.QueryRow(`SELECT EXISTS(SELECT 1 FROM pg_proc WHERE proname = 'notify_container_event')`).Scan(&fnExists)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(fnExists).To(BeTrue(), "notify_container_event function should exist")
+
+			By("Verifying old trigger functions are gone")
+			err = db.QueryRow(`SELECT EXISTS(SELECT 1 FROM pg_proc WHERE proname = 'notify_trigger')`).Scan(&fnExists)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(fnExists).To(BeFalse(), "old notify_trigger function should have been dropped")
 		})
 	})
 })
@@ -464,4 +740,55 @@ func expectRowCount(db *sql.DB, table string, expected int) {
 func mustExec(db *sql.DB, query string) {
 	_, err := db.Exec(query)
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "failed to execute: %s", query)
+}
+
+// runPreflightAndExpectPass runs the migrate-preflight.sh script against the
+// test database and asserts that it exits 0 (pass or pass-with-warnings).
+func runPreflightAndExpectPass(dsn string) {
+	// Resolve script path relative to this source file so it works
+	// regardless of the working directory ginkgo uses.
+	_, thisFile, _, _ := runtime.Caller(0)
+	repoRoot := filepath.Join(filepath.Dir(thisFile), "..", "..", "..")
+	scriptPath := filepath.Join(repoRoot, "docs", "migration", "migrate-preflight.sh")
+
+	// Check the script exists
+	_, err := os.Stat(scriptPath)
+	if os.IsNotExist(err) {
+		Skip("migrate-preflight.sh not found at " + scriptPath)
+	}
+	Expect(err).NotTo(HaveOccurred())
+
+	// Parse DSN fields: "host=/tmp user=postgres dbname=testdb sslmode=disable port=5432"
+	dsnFields := parseDSN(dsn)
+
+	// The test postgres runner uses Unix sockets (host=/tmp). The preflight
+	// script uses psql via PGHOST/PGPORT/etc env vars. For Unix sockets,
+	// we pass the socket directory as PGHOST.
+	cmd := exec.Command("bash", scriptPath,
+		"--host", dsnFields["host"],
+		"--port", dsnFields["port"],
+		"--dbname", dsnFields["dbname"],
+		"--user", dsnFields["user"],
+	)
+	// Set PGPASSWORD empty for trust auth, and ensure sslmode is off
+	cmd.Env = append(os.Environ(), "PGPASSWORD=", "PGSSLMODE=disable")
+
+	output, err := cmd.CombinedOutput()
+	GinkgoWriter.Printf("Pre-flight output:\n%s\n", string(output))
+
+	// Exit 0 = PASSED (possibly with warnings)
+	Expect(err).NotTo(HaveOccurred(), "pre-flight script failed with exit code != 0:\n%s", string(output))
+	Expect(string(output)).To(ContainSubstring("RESULT: Pre-flight PASSED"))
+}
+
+// parseDSN parses a space-separated key=value DSN string into a map.
+func parseDSN(dsn string) map[string]string {
+	fields := make(map[string]string)
+	for _, part := range strings.Fields(dsn) {
+		kv := strings.SplitN(part, "=", 2)
+		if len(kv) == 2 {
+			fields[kv[0]] = kv[1]
+		}
+	}
+	return fields
 }
