@@ -1,10 +1,10 @@
 {
   "trackId": "database_migration_runbook_20260327",
   "type": "docs",
-  "status": "in_progress",
+  "status": "archived",
   "description": "database_migration_runbook",
   "createdAt": "2026-03-27T14:13:05.445Z",
-  "updatedAt": "2026-03-27T14:20:49.316Z",
+  "updatedAt": "2026-03-27T14:49:44.599Z",
   "sessions": [
     {
       "slotIndex": 0,
