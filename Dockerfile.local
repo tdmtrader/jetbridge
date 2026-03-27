@@ -5,7 +5,8 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 COPY concourse-linux-arm64 /usr/local/concourse/bin/concourse
-RUN chmod +x /usr/local/concourse/bin/concourse
+COPY artifact-daemon-linux-arm64 /usr/local/concourse/bin/artifact-daemon
+RUN chmod +x /usr/local/concourse/bin/concourse /usr/local/concourse/bin/artifact-daemon
 
 ENV PATH="/usr/local/concourse/bin:${PATH}"
 
