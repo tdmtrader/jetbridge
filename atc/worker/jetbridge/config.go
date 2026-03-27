@@ -94,6 +94,15 @@ func MergeResourceTypeImages(overrides []string) map[string]string {
 	return merged
 }
 
+// ArtifactBackend values for --kubernetes-artifact-backend.
+const (
+	// ArtifactBackendPVC uses the existing PVC-based artifact store (default).
+	ArtifactBackendPVC = "pvc"
+
+	// ArtifactBackendDaemonSet uses node-local hostPath with a DaemonSet HTTP server.
+	ArtifactBackendDaemonSet = "daemonset"
+)
+
 // CacheStore values for --kubernetes-cache-store. Controls which backend
 // is used for task caches.
 const (
@@ -193,6 +202,22 @@ type Config struct {
 	// on every pod and its Prefix is used when resolving custom resource type
 	// images. Nil means disabled.
 	ImageRegistry *ImageRegistryConfig
+
+	// ArtifactBackend selects the artifact storage backend.
+	// "pvc" (default) uses the existing PVC-based artifact store.
+	// "daemonset" uses node-local hostPath with a DaemonSet HTTP server.
+	ArtifactBackend string
+
+	// ArtifactDaemonPort is the HTTP port for the DaemonSet artifact server.
+	ArtifactDaemonPort int
+
+	// ArtifactDaemonHostPath is the hostPath directory for artifact storage
+	// on each node when using the DaemonSet backend.
+	ArtifactDaemonHostPath string
+
+	// ArtifactDaemonService is the headless Service name for per-pod DNS
+	// resolution of the DaemonSet pods.
+	ArtifactDaemonService string
 }
 
 // ImageRegistryConfig holds configuration for a container image registry
@@ -219,6 +244,11 @@ func NewConfig(namespace, kubeconfigPath string) Config {
 		KubeconfigPath:    kubeconfigPath,
 		PodStartupTimeout: DefaultPodStartupTimeout,
 	}
+}
+
+// IsDaemonSetBackend returns true when the DaemonSet artifact backend is active.
+func (c Config) IsDaemonSetBackend() bool {
+	return c.ArtifactBackend == ArtifactBackendDaemonSet
 }
 
 // NewClientset creates a Kubernetes clientset from the Config. If

@@ -175,6 +175,10 @@ type RunCommand struct {
 		ArtifactStoreClaim    string `long:"kubernetes-artifact-store-claim"      description:"Name of a PersistentVolumeClaim for durable artifact and resource cache storage. In production, back with GCS FUSE via StorageClass. Locally, uses default StorageClass."`
 		ArtifactStoreGCSFuse  bool   `long:"kubernetes-artifact-store-gcs-fuse"  description:"Artifact store PVC is backed by GCS Fuse on GKE. Adds gke-gcsfuse/volumes annotation to task pods."`
 		ArtifactHelperImage   string `long:"kubernetes-artifact-helper-image"     description:"Container image for artifact init containers and sidecar. Defaults to alpine:latest."`
+		ArtifactBackend       string `long:"kubernetes-artifact-backend"          description:"Artifact storage backend: pvc (default, PVC-based) or daemonset (node-local hostPath with DaemonSet HTTP server)."`
+		ArtifactDaemonPort    int    `long:"kubernetes-artifact-daemon-port"      default:"8080" description:"HTTP port for the DaemonSet artifact server."`
+		ArtifactDaemonHostPath string `long:"kubernetes-artifact-daemon-host-path" default:"/var/concourse/artifacts" description:"Host path for artifact storage when using DaemonSet backend."`
+		ArtifactDaemonService  string `long:"kubernetes-artifact-daemon-service"   default:"artifact-daemon" description:"Headless Service name for DaemonSet per-pod DNS."`
 		ImageRegistryPrefix    string   `long:"kubernetes-image-registry-prefix"     description:"Registry path prefix for custom resource type images (e.g. gcr.io/my-project/concourse). Images are resolved as <prefix>/<type-name>."`
 		ImageRegistrySecret    string   `long:"kubernetes-image-registry-secret"     description:"Kubernetes Secret name (type kubernetes.io/dockerconfigjson) for registry auth. Auto-added to imagePullSecrets on every pod."`
 		BaseResourceTypes      []string `long:"kubernetes-base-resource-type"        description:"Override or add a base resource type image. Format: name=image (e.g. git=my-registry/git-resource:v2). Can be specified multiple times. Merges with built-in defaults." value-name:"NAME=IMAGE"`
@@ -1254,6 +1258,10 @@ func (cmd *RunCommand) backendComponents(
 		k8sCfg.ArtifactStoreClaim = cmd.Kubernetes.ArtifactStoreClaim
 		k8sCfg.ArtifactStoreGCSFuse = cmd.Kubernetes.ArtifactStoreGCSFuse
 		k8sCfg.ArtifactHelperImage = cmd.Kubernetes.ArtifactHelperImage
+		k8sCfg.ArtifactBackend = cmd.Kubernetes.ArtifactBackend
+		k8sCfg.ArtifactDaemonPort = cmd.Kubernetes.ArtifactDaemonPort
+		k8sCfg.ArtifactDaemonHostPath = cmd.Kubernetes.ArtifactDaemonHostPath
+		k8sCfg.ArtifactDaemonService = cmd.Kubernetes.ArtifactDaemonService
 		if cmd.Kubernetes.CacheStore != "" && !jetbridge.ValidCacheStores[cmd.Kubernetes.CacheStore] {
 			return nil, fmt.Errorf("invalid --kubernetes-cache-store value %q (valid: artifact, pvc, hostpath, emptydir)", cmd.Kubernetes.CacheStore)
 		}
@@ -1368,6 +1376,10 @@ func (cmd *RunCommand) constructPool(dbConn db.DbConn, lockFactory lock.LockFact
 		k8sCfg.ArtifactStoreClaim = cmd.Kubernetes.ArtifactStoreClaim
 		k8sCfg.ArtifactStoreGCSFuse = cmd.Kubernetes.ArtifactStoreGCSFuse
 		k8sCfg.ArtifactHelperImage = cmd.Kubernetes.ArtifactHelperImage
+		k8sCfg.ArtifactBackend = cmd.Kubernetes.ArtifactBackend
+		k8sCfg.ArtifactDaemonPort = cmd.Kubernetes.ArtifactDaemonPort
+		k8sCfg.ArtifactDaemonHostPath = cmd.Kubernetes.ArtifactDaemonHostPath
+		k8sCfg.ArtifactDaemonService = cmd.Kubernetes.ArtifactDaemonService
 		if cmd.Kubernetes.ImageRegistryPrefix != "" || cmd.Kubernetes.ImageRegistrySecret != "" {
 			k8sCfg.ImageRegistry = &jetbridge.ImageRegistryConfig{
 				Prefix:     cmd.Kubernetes.ImageRegistryPrefix,
