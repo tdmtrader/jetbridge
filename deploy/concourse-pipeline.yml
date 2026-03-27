@@ -305,13 +305,68 @@ jobs:
           echo ""
           echo "=== Image build and push complete: ${GHCR}:v${VERSION} (${SHORT_SHA}) ==="
 
-- name: self-upgrade
+- name: tag-and-bump-version
   serial_groups: [pipeline]
   plan:
   - get: repo
     trigger: true
     params: {depth: 1}
     passed: [build-and-push-image]
+  - task: tag-and-bump
+    config:
+      platform: linux
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v5
+      params:
+        GITHUB_TOKEN: ((github-token))
+      run:
+        path: sh
+        args:
+        - -exc
+        - |
+          git config --global user.email "ci@concourse.home"
+          git config --global user.name "Concourse CI"
+
+          echo "=== Cloning repo for tagging ==="
+          git clone --branch main https://github.com/tdmtrader/jetbridge.git repo
+          cd repo
+          VERSION=$(cat VERSION)
+          echo "Version: ${VERSION}"
+
+          git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/tdmtrader/jetbridge.git"
+
+          echo "=== Tagging v${VERSION} on main ==="
+          git tag -a "v${VERSION}" -m "Release v${VERSION}"
+          git push origin "v${VERSION}"
+          echo "=== Tagged v${VERSION} ==="
+
+          echo "=== Bumping patch version on jetbridge branch ==="
+          git fetch origin jetbridge
+          git checkout jetbridge
+
+          # Increment patch version: 0.2.0 -> 0.2.1
+          MAJOR=$(echo "$VERSION" | cut -d. -f1)
+          MINOR=$(echo "$VERSION" | cut -d. -f2)
+          PATCH=$(echo "$VERSION" | cut -d. -f3)
+          NEXT_PATCH=$((PATCH + 1))
+          NEXT_VERSION="${MAJOR}.${MINOR}.${NEXT_PATCH}"
+          echo "Bumping: ${VERSION} -> ${NEXT_VERSION}"
+
+          echo "${NEXT_VERSION}" > VERSION
+          sed -i "s/JetBridgeVersion = \"${VERSION}\"/JetBridgeVersion = \"${NEXT_VERSION}\"/" versions.go
+          sed -i "s/appVersion: \"${VERSION}\"/appVersion: \"${NEXT_VERSION}\"/" deploy/chart/Chart.yaml
+
+          git add VERSION versions.go deploy/chart/Chart.yaml
+          git commit -m "chore: bump version to ${NEXT_VERSION} [skip ci]"
+          git push origin jetbridge
+          echo "=== Bumped to ${NEXT_VERSION} on jetbridge ==="
+
+- name: self-upgrade
+  serial_groups: [pipeline]
+  plan:
+  - get: repo
+    trigger: true
+    params: {depth: 1}
+    passed: [tag-and-bump-version]
   - task: self-upgrade
     config:
       platform: linux
