@@ -103,7 +103,7 @@ func TestLiveSidecarSharesVolumes(t *testing.T) {
 	var stdout bytes.Buffer
 	err = executor.ExecInPod(ctx, ns, podName, "main",
 		[]string{"cat", "/shared/data.txt"},
-		nil, &stdout, nil, false)
+		nil, &stdout, nil, false, jetbridge.ExecAttrs{})
 	if err != nil {
 		t.Fatalf("exec cat: %v", err)
 	}

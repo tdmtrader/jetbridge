@@ -17,6 +17,7 @@ import (
 	"github.com/concourse/concourse/tracing"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"go.opentelemetry.io/otel/attribute"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	corev1 "k8s.io/api/core/v1"
@@ -2680,6 +2681,572 @@ var _ = Describe("Pod phase transition spans", func() {
 			}
 			Expect(eventNames).To(ContainElement("artifact.tar.completed"))
 			Expect(eventNames).To(ContainElement("artifact.transfer.completed"))
+		})
+	})
+
+	Context("podEventTracker enrichment", func() {
+		var (
+			execWorker    *jetbridge.Worker
+			execContainer runtime.Container
+			fakeExecutor  *fakeExecExecutor
+		)
+
+		// findWaitSpan locates the wait-for-running span from the recorder.
+		findWaitSpan := func() sdktrace.ReadOnlySpan {
+			for _, s := range spanRecorder.Ended() {
+				if s.Name() == "k8s.exec-process.wait-for-running" {
+					return s
+				}
+			}
+			return nil
+		}
+
+		// findEventAttr returns the string value of a named attribute on a span event.
+		findEventAttr := func(span sdktrace.ReadOnlySpan, eventName, attrKey string) (string, bool) {
+			for _, e := range span.Events() {
+				if e.Name == eventName {
+					for _, a := range e.Attributes {
+						if string(a.Key) == attrKey {
+							return a.Value.AsString(), true
+						}
+					}
+				}
+			}
+			return "", false
+		}
+
+		// findSpanAttr returns the value of a named attribute on the span itself.
+		findSpanAttr := func(span sdktrace.ReadOnlySpan, attrKey string) (attribute.Value, bool) {
+			for _, a := range span.Attributes() {
+				if string(a.Key) == attrKey {
+					return a.Value, true
+				}
+			}
+			return attribute.Value{}, false
+		}
+
+		Context("with sidecars and init containers", func() {
+			BeforeEach(func() {
+				fakeExecutor = &fakeExecExecutor{}
+				execWorker = jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
+				execWorker.SetExecutor(fakeExecutor)
+
+				setupFakeDBContainer(fakeDBWorker, "enrich-handle")
+
+				var err error
+				execContainer, _, err = execWorker.FindOrCreateContainer(
+					ctx,
+					db.NewFixedHandleContainerOwner("enrich-handle"),
+					db.ContainerMetadata{Type: db.ContainerTypeTask},
+					runtime.ContainerSpec{
+						TeamID:   1,
+						Dir:      "/workdir",
+						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+						Type:     db.ContainerTypeTask,
+						Sidecars: []atc.SidecarConfig{
+							{Name: "postgres", Image: "postgres:15"},
+						},
+					},
+					delegate,
+				)
+				Expect(err).ToNot(HaveOccurred())
+			})
+
+			It("includes node.name attribute on pod.scheduled event", func() {
+				process, err := execContainer.Run(ctx, runtime.ProcessSpec{
+					Path: "/bin/sh",
+					Args: []string{"-c", "echo hello"},
+				}, runtime.ProcessIO{
+					Stdin:  bytes.NewBufferString(`{}`),
+					Stdout: new(bytes.Buffer),
+					Stderr: new(bytes.Buffer),
+				})
+				Expect(err).ToNot(HaveOccurred())
+
+				pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "enrich-handle", metav1.GetOptions{})
+				Expect(err).ToNot(HaveOccurred())
+
+				// Schedule pod with node name.
+				pod.Spec.NodeName = "node-abc-123"
+				pod.Status.Phase = corev1.PodPending
+				pod.Status.Conditions = []corev1.PodCondition{
+					{Type: corev1.PodScheduled, Status: corev1.ConditionTrue},
+				}
+				_, err = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+				Expect(err).ToNot(HaveOccurred())
+
+				// Transition to Running.
+				pod.Status.Phase = corev1.PodRunning
+				pod.Status.ContainerStatuses = []corev1.ContainerStatus{
+					{Name: "main", State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}},
+					{Name: "postgres", State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}},
+				}
+				_, err = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+				Expect(err).ToNot(HaveOccurred())
+
+				result, err := process.Wait(ctx)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(result.ExitStatus).To(Equal(0))
+
+				waitSpan := findWaitSpan()
+				Expect(waitSpan).ToNot(BeNil(), "expected k8s.exec-process.wait-for-running span")
+
+				nodeName, found := findEventAttr(waitSpan, "pod.scheduled", "node.name")
+				Expect(found).To(BeTrue(), "expected node.name attribute on pod.scheduled event")
+				Expect(nodeName).To(Equal("node-abc-123"))
+			})
+
+			It("includes container.image attribute on image.pulling event", func() {
+				process, err := execContainer.Run(ctx, runtime.ProcessSpec{
+					Path: "/bin/sh",
+					Args: []string{"-c", "echo hello"},
+				}, runtime.ProcessIO{
+					Stdin:  bytes.NewBufferString(`{}`),
+					Stdout: new(bytes.Buffer),
+					Stderr: new(bytes.Buffer),
+				})
+				Expect(err).ToNot(HaveOccurred())
+
+				pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "enrich-handle", metav1.GetOptions{})
+				Expect(err).ToNot(HaveOccurred())
+
+				// Container in ContainerCreating with image info.
+				pod.Status.Phase = corev1.PodPending
+				pod.Status.ContainerStatuses = []corev1.ContainerStatus{
+					{
+						Name:  "main",
+						Image: "docker.io/library/busybox:latest",
+						State: corev1.ContainerState{
+							Waiting: &corev1.ContainerStateWaiting{
+								Reason:  "ContainerCreating",
+								Message: "pulling image",
+							},
+						},
+					},
+				}
+				_, err = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+				Expect(err).ToNot(HaveOccurred())
+
+				// Transition to Running after delay.
+				go func() {
+					defer GinkgoRecover()
+					time.Sleep(50 * time.Millisecond)
+					pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "enrich-handle", metav1.GetOptions{})
+					Expect(err).ToNot(HaveOccurred())
+					pod.Status.Phase = corev1.PodRunning
+					pod.Status.ContainerStatuses = []corev1.ContainerStatus{
+						{Name: "main", Image: "docker.io/library/busybox:latest", State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}},
+						{Name: "postgres", State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}},
+					}
+					_, err = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+					Expect(err).ToNot(HaveOccurred())
+				}()
+
+				result, err := process.Wait(ctx)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(result.ExitStatus).To(Equal(0))
+
+				waitSpan := findWaitSpan()
+				Expect(waitSpan).ToNot(BeNil(), "expected k8s.exec-process.wait-for-running span")
+
+				containerImage, found := findEventAttr(waitSpan, "image.pulling", "container.image")
+				Expect(found).To(BeTrue(), "expected container.image attribute on image.pulling event")
+				Expect(containerImage).To(Equal("docker.io/library/busybox:latest"))
+			})
+
+			It("emits image.pulled event when container transitions out of ContainerCreating", func() {
+				process, err := execContainer.Run(ctx, runtime.ProcessSpec{
+					Path: "/bin/sh",
+					Args: []string{"-c", "echo hello"},
+				}, runtime.ProcessIO{
+					Stdin:  bytes.NewBufferString(`{}`),
+					Stdout: new(bytes.Buffer),
+					Stderr: new(bytes.Buffer),
+				})
+				Expect(err).ToNot(HaveOccurred())
+
+				pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "enrich-handle", metav1.GetOptions{})
+				Expect(err).ToNot(HaveOccurred())
+
+				// First: container in ContainerCreating.
+				pod.Status.Phase = corev1.PodPending
+				pod.Status.ContainerStatuses = []corev1.ContainerStatus{
+					{
+						Name:  "main",
+						Image: "docker.io/library/busybox:latest",
+						State: corev1.ContainerState{
+							Waiting: &corev1.ContainerStateWaiting{
+								Reason: "ContainerCreating",
+							},
+						},
+					},
+				}
+				_, err = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+				Expect(err).ToNot(HaveOccurred())
+
+				// Then: container transitions to Running (image pulled).
+				go func() {
+					defer GinkgoRecover()
+					time.Sleep(50 * time.Millisecond)
+					pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "enrich-handle", metav1.GetOptions{})
+					Expect(err).ToNot(HaveOccurred())
+					pod.Status.Phase = corev1.PodRunning
+					pod.Status.ContainerStatuses = []corev1.ContainerStatus{
+						{Name: "main", Image: "docker.io/library/busybox:latest", State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}},
+						{Name: "postgres", State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}},
+					}
+					_, err = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+					Expect(err).ToNot(HaveOccurred())
+				}()
+
+				result, err := process.Wait(ctx)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(result.ExitStatus).To(Equal(0))
+
+				waitSpan := findWaitSpan()
+				Expect(waitSpan).ToNot(BeNil(), "expected k8s.exec-process.wait-for-running span")
+
+				eventNames := []string{}
+				for _, e := range waitSpan.Events() {
+					eventNames = append(eventNames, e.Name)
+				}
+				Expect(eventNames).To(ContainElement("image.pulled"), "expected image.pulled event")
+
+				containerName, found := findEventAttr(waitSpan, "image.pulled", "container.name")
+				Expect(found).To(BeTrue(), "expected container.name attribute on image.pulled event")
+				Expect(containerName).To(Equal("main"))
+
+				containerImage, found := findEventAttr(waitSpan, "image.pulled", "container.image")
+				Expect(found).To(BeTrue(), "expected container.image attribute on image.pulled event")
+				Expect(containerImage).To(Equal("docker.io/library/busybox:latest"))
+			})
+
+			It("emits pod.initialized event when Initialized condition becomes True", func() {
+				process, err := execContainer.Run(ctx, runtime.ProcessSpec{
+					Path: "/bin/sh",
+					Args: []string{"-c", "echo hello"},
+				}, runtime.ProcessIO{
+					Stdin:  bytes.NewBufferString(`{}`),
+					Stdout: new(bytes.Buffer),
+					Stderr: new(bytes.Buffer),
+				})
+				Expect(err).ToNot(HaveOccurred())
+
+				pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "enrich-handle", metav1.GetOptions{})
+				Expect(err).ToNot(HaveOccurred())
+
+				// Init container completes, Initialized condition becomes True.
+				pod.Status.Phase = corev1.PodPending
+				pod.Status.Conditions = []corev1.PodCondition{
+					{Type: corev1.PodScheduled, Status: corev1.ConditionTrue},
+					{Type: corev1.PodInitialized, Status: corev1.ConditionTrue},
+				}
+				pod.Status.InitContainerStatuses = []corev1.ContainerStatus{
+					{
+						Name:  "fetch-input-0",
+						State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 0, Reason: "Completed"}},
+					},
+				}
+				_, err = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+				Expect(err).ToNot(HaveOccurred())
+
+				// Transition to Running.
+				pod.Status.Phase = corev1.PodRunning
+				pod.Status.ContainerStatuses = []corev1.ContainerStatus{
+					{Name: "main", State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}},
+					{Name: "postgres", State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}},
+				}
+				_, err = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+				Expect(err).ToNot(HaveOccurred())
+
+				result, err := process.Wait(ctx)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(result.ExitStatus).To(Equal(0))
+
+				waitSpan := findWaitSpan()
+				Expect(waitSpan).ToNot(BeNil(), "expected k8s.exec-process.wait-for-running span")
+
+				eventNames := []string{}
+				for _, e := range waitSpan.Events() {
+					eventNames = append(eventNames, e.Name)
+				}
+				Expect(eventNames).To(ContainElement("pod.initialized"), "expected pod.initialized event")
+			})
+
+			It("includes container.image attribute on init.container.completed event", func() {
+				process, err := execContainer.Run(ctx, runtime.ProcessSpec{
+					Path: "/bin/sh",
+					Args: []string{"-c", "echo hello"},
+				}, runtime.ProcessIO{
+					Stdin:  bytes.NewBufferString(`{}`),
+					Stdout: new(bytes.Buffer),
+					Stderr: new(bytes.Buffer),
+				})
+				Expect(err).ToNot(HaveOccurred())
+
+				pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "enrich-handle", metav1.GetOptions{})
+				Expect(err).ToNot(HaveOccurred())
+
+				// Init container completes with image info.
+				pod.Status.Phase = corev1.PodPending
+				pod.Status.InitContainerStatuses = []corev1.ContainerStatus{
+					{
+						Name:  "fetch-input-0",
+						Image: "concourse/artifact-fetcher:latest",
+						State: corev1.ContainerState{
+							Terminated: &corev1.ContainerStateTerminated{ExitCode: 0, Reason: "Completed"},
+						},
+					},
+				}
+				_, err = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+				Expect(err).ToNot(HaveOccurred())
+
+				// Transition to Running.
+				pod.Status.Phase = corev1.PodRunning
+				pod.Status.ContainerStatuses = []corev1.ContainerStatus{
+					{Name: "main", State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}},
+					{Name: "postgres", State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}},
+				}
+				_, err = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+				Expect(err).ToNot(HaveOccurred())
+
+				result, err := process.Wait(ctx)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(result.ExitStatus).To(Equal(0))
+
+				waitSpan := findWaitSpan()
+				Expect(waitSpan).ToNot(BeNil(), "expected k8s.exec-process.wait-for-running span")
+
+				containerImage, found := findEventAttr(waitSpan, "init.container.completed", "container.image")
+				Expect(found).To(BeTrue(), "expected container.image attribute on init.container.completed event")
+				Expect(containerImage).To(Equal("concourse/artifact-fetcher:latest"))
+			})
+
+			It("sets init.container.count and container.count span attributes on wait-for-running span", func() {
+				process, err := execContainer.Run(ctx, runtime.ProcessSpec{
+					Path: "/bin/sh",
+					Args: []string{"-c", "echo hello"},
+				}, runtime.ProcessIO{
+					Stdin:  bytes.NewBufferString(`{}`),
+					Stdout: new(bytes.Buffer),
+					Stderr: new(bytes.Buffer),
+				})
+				Expect(err).ToNot(HaveOccurred())
+
+				pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "enrich-handle", metav1.GetOptions{})
+				Expect(err).ToNot(HaveOccurred())
+
+				// Transition to Running.
+				pod.Status.Phase = corev1.PodRunning
+				pod.Status.ContainerStatuses = []corev1.ContainerStatus{
+					{Name: "main", State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}},
+					{Name: "postgres", State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}},
+				}
+				_, err = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+				Expect(err).ToNot(HaveOccurred())
+
+				result, err := process.Wait(ctx)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(result.ExitStatus).To(Equal(0))
+
+				waitSpan := findWaitSpan()
+				Expect(waitSpan).ToNot(BeNil(), "expected k8s.exec-process.wait-for-running span")
+
+				initCount, found := findSpanAttr(waitSpan, "init.container.count")
+				Expect(found).To(BeTrue(), "expected init.container.count span attribute")
+				Expect(initCount.AsInt64()).To(BeNumerically(">=", 0))
+
+				containerCount, found := findSpanAttr(waitSpan, "container.count")
+				Expect(found).To(BeTrue(), "expected container.count span attribute")
+				Expect(containerCount.AsInt64()).To(BeNumerically(">=", 2)) // main + postgres sidecar
+			})
+		})
+	})
+
+	Context("ExecInPod purpose attribution", func() {
+		var (
+			execWorker    *jetbridge.Worker
+			execContainer runtime.Container
+			fakeExecutor  *fakeExecExecutor
+		)
+
+		BeforeEach(func() {
+			fakeExecutor = &fakeExecExecutor{}
+			execWorker = jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
+			execWorker.SetExecutor(fakeExecutor)
+
+			setupFakeDBContainer(fakeDBWorker, "purpose-handle")
+
+			var err error
+			execContainer, _, err = execWorker.FindOrCreateContainer(
+				ctx,
+				db.NewFixedHandleContainerOwner("purpose-handle"),
+				db.ContainerMetadata{Type: db.ContainerTypeTask},
+				runtime.ContainerSpec{
+					TeamID:   1,
+					Dir:      "/workdir",
+					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+					Type:     db.ContainerTypeTask,
+				},
+				delegate,
+			)
+			Expect(err).ToNot(HaveOccurred())
+		})
+
+		It("passes step-command purpose when executing the step command", func() {
+			process, err := execContainer.Run(ctx, runtime.ProcessSpec{
+				Path: "/bin/sh",
+				Args: []string{"-c", "echo hello"},
+			}, runtime.ProcessIO{
+				Stdin:  bytes.NewBufferString(`{}`),
+				Stdout: new(bytes.Buffer),
+				Stderr: new(bytes.Buffer),
+			})
+			Expect(err).ToNot(HaveOccurred())
+
+			pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "purpose-handle", metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			pod.Status.Phase = corev1.PodRunning
+			pod.Status.ContainerStatuses = []corev1.ContainerStatus{
+				{Name: "main", State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}},
+			}
+			_, err = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			result, err := process.Wait(ctx)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(result.ExitStatus).To(Equal(0))
+
+			// The fakeExecutor should have received exactly one ExecInPod call
+			// with purpose "step-command".
+			Expect(fakeExecutor.execCalls).To(HaveLen(1))
+			Expect(fakeExecutor.execCalls[0].attrs.Purpose).To(Equal("step-command"))
+		})
+	})
+
+	Context("artifact upload parent spans", func() {
+		var (
+			execWorker    *jetbridge.Worker
+			execContainer runtime.Container
+			fakeExecutor  *fakeExecExecutor
+		)
+
+		BeforeEach(func() {
+			artifactCfg := jetbridge.NewConfig("test-namespace", "")
+			artifactCfg.ArtifactStoreClaim = "concourse-artifacts"
+
+			fakeExecutor = &fakeExecExecutor{}
+			execWorker = jetbridge.NewWorker(fakeDBWorker, fakeClientset, artifactCfg)
+			execWorker.SetExecutor(fakeExecutor)
+
+			setupFakeDBContainer(fakeDBWorker, "upload-span-handle")
+
+			var err error
+			execContainer, _, err = execWorker.FindOrCreateContainer(
+				ctx,
+				db.NewFixedHandleContainerOwner("upload-span-handle"),
+				db.ContainerMetadata{Type: db.ContainerTypeTask},
+				runtime.ContainerSpec{
+					TeamID:   1,
+					Dir:      "/tmp/build/workdir",
+					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+					Type:     db.ContainerTypeTask,
+					Outputs: runtime.OutputPaths{
+						"result": "/tmp/build/workdir/result",
+					},
+					Caches: []string{"/tmp/build/workdir/.cache"},
+				},
+				delegate,
+			)
+			Expect(err).ToNot(HaveOccurred())
+		})
+
+		It("creates a k8s.artifact.upload-outputs parent span wrapping output uploads", func() {
+			process, err := execContainer.Run(ctx, runtime.ProcessSpec{
+				Path: "/bin/sh",
+				Args: []string{"-c", "echo done"},
+			}, runtime.ProcessIO{
+				Stdin:  bytes.NewBufferString(`{}`),
+				Stdout: new(bytes.Buffer),
+				Stderr: new(bytes.Buffer),
+			})
+			Expect(err).ToNot(HaveOccurred())
+
+			pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "upload-span-handle", metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			pod.Status.Phase = corev1.PodRunning
+			pod.Status.ContainerStatuses = []corev1.ContainerStatus{
+				{Name: "main", State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}},
+			}
+			_, err = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			result, err := process.Wait(ctx)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(result.ExitStatus).To(Equal(0))
+
+			ended := spanRecorder.Ended()
+			var uploadSpan sdktrace.ReadOnlySpan
+			for _, s := range ended {
+				if s.Name() == "k8s.artifact.upload-outputs" {
+					uploadSpan = s
+					break
+				}
+			}
+			Expect(uploadSpan).ToNot(BeNil(), "expected k8s.artifact.upload-outputs span")
+
+			// Verify volume.count attribute.
+			var volumeCount int64
+			for _, a := range uploadSpan.Attributes() {
+				if string(a.Key) == "volume.count" {
+					volumeCount = a.Value.AsInt64()
+				}
+			}
+			Expect(volumeCount).To(BeNumerically(">=", 1))
+		})
+
+		It("creates a k8s.artifact.upload-caches parent span wrapping cache uploads", func() {
+			process, err := execContainer.Run(ctx, runtime.ProcessSpec{
+				Path: "/bin/sh",
+				Args: []string{"-c", "echo done"},
+			}, runtime.ProcessIO{
+				Stdin:  bytes.NewBufferString(`{}`),
+				Stdout: new(bytes.Buffer),
+				Stderr: new(bytes.Buffer),
+			})
+			Expect(err).ToNot(HaveOccurred())
+
+			pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "upload-span-handle", metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			pod.Status.Phase = corev1.PodRunning
+			pod.Status.ContainerStatuses = []corev1.ContainerStatus{
+				{Name: "main", State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}},
+			}
+			_, err = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			result, err := process.Wait(ctx)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(result.ExitStatus).To(Equal(0))
+
+			ended := spanRecorder.Ended()
+			var cacheSpan sdktrace.ReadOnlySpan
+			for _, s := range ended {
+				if s.Name() == "k8s.artifact.upload-caches" {
+					cacheSpan = s
+					break
+				}
+			}
+			Expect(cacheSpan).ToNot(BeNil(), "expected k8s.artifact.upload-caches span")
+
+			// Verify cache.count attribute.
+			var cacheCount int64
+			for _, a := range cacheSpan.Attributes() {
+				if string(a.Key) == "cache.count" {
+					cacheCount = a.Value.AsInt64()
+				}
+			}
+			Expect(cacheCount).To(BeNumerically(">=", 1))
 		})
 	})
 })

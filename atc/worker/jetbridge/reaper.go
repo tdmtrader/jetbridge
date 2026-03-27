@@ -227,7 +227,8 @@ func (r *Reaper) cleanupCacheVolumes(ctx context.Context, logger lager.Logger, w
 		}
 		cachePath := filepath.Join(CacheBasePath, handle)
 		cmd := []string{"rm", "-rf", cachePath}
-		err := r.executor.ExecInPod(ctx, r.cfg.Namespace, podName, mainContainerName, cmd, nil, nil, nil, false)
+		err := r.executor.ExecInPod(ctx, r.cfg.Namespace, podName, mainContainerName, cmd, nil, nil, nil, false,
+			ExecAttrs{Purpose: "gc-cleanup"})
 		if err != nil {
 			logger.Error("failed-to-cleanup-cache-volume", err, lager.Data{"handle": handle})
 			failedHandles = append(failedHandles, handle)
@@ -266,7 +267,8 @@ func (r *Reaper) cleanupArtifactStoreEntries(ctx context.Context, logger lager.L
 		}
 		artifactPath := filepath.Join(ArtifactMountPath, ArtifactKey(handle))
 		cmd := []string{"rm", "-f", artifactPath}
-		err := r.executor.ExecInPod(ctx, r.cfg.Namespace, podName, artifactHelperContainerName, cmd, nil, nil, nil, false)
+		err := r.executor.ExecInPod(ctx, r.cfg.Namespace, podName, artifactHelperContainerName, cmd, nil, nil, nil, false,
+			ExecAttrs{Purpose: "gc-cleanup"})
 		if err != nil {
 			logger.Error("failed-to-cleanup-artifact", err, lager.Data{"handle": handle})
 		}

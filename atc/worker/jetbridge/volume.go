@@ -22,6 +22,14 @@ var _ runtime.Volume = (*Volume)(nil)
 
 // PodExecutor abstracts exec-ing commands inside a Kubernetes Pod container.
 // This allows unit tests to inject a fake without needing a real K8s API server.
+// ExecAttrs carries semantic context about an ExecInPod invocation for
+// recording as span attributes on the k8s.spdy.exec trace span.
+type ExecAttrs struct {
+	Purpose        string // e.g. "step-command", "artifact-upload", "cache-upload", "stream-in", "stream-out", "gc-cleanup"
+	ArtifactKey    string // artifact store key, when applicable
+	VolumeMountPath string // volume mount path, when applicable
+}
+
 type PodExecutor interface {
 	ExecInPod(
 		ctx context.Context,
@@ -30,6 +38,7 @@ type PodExecutor interface {
 		stdin io.Reader,
 		stdout, stderr io.Writer,
 		tty bool,
+		attrs ExecAttrs,
 	) error
 }
 
@@ -194,7 +203,8 @@ func (v *Volume) StreamIn(ctx context.Context, path string, enc compression.Comp
 
 	cmd := []string{"tar", "xf", "-", "-C", targetPath}
 
-	err := v.executor.ExecInPod(ctx, v.namespace, v.podName, v.containerName, cmd, actualReader, nil, nil, false)
+	err := v.executor.ExecInPod(ctx, v.namespace, v.podName, v.containerName, cmd, actualReader, nil, nil, false,
+		ExecAttrs{Purpose: "stream-in", VolumeMountPath: v.mountPath})
 	if err != nil {
 		logger.Error("failed-to-stream-in", err)
 		spanErr = err
@@ -243,7 +253,8 @@ func (v *Volume) StreamOut(ctx context.Context, path string, enc compression.Com
 			tarDest = compressor
 		}
 
-		err := v.executor.ExecInPod(ctx, v.namespace, v.podName, v.containerName, cmd, nil, tarDest, nil, false)
+		err := v.executor.ExecInPod(ctx, v.namespace, v.podName, v.containerName, cmd, nil, tarDest, nil, false,
+			ExecAttrs{Purpose: "stream-out", VolumeMountPath: v.mountPath})
 		if err != nil {
 			logger.Error("failed-to-stream-out", err)
 		}

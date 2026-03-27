@@ -116,7 +116,8 @@ func (v *ArtifactStoreVolume) StreamOut(ctx context.Context, path string, enc co
 		}
 
 		err := v.executor.ExecInPod(ctx, v.namespace, v.podName,
-			artifactHelperContainerName, cmd, nil, tarDest, nil, false)
+			artifactHelperContainerName, cmd, nil, tarDest, nil, false,
+			ExecAttrs{Purpose: "stream-out", ArtifactKey: ArtifactKey(v.handle)})
 
 		if compressor != nil {
 			if closeErr := compressor.Close(); closeErr != nil && err == nil {

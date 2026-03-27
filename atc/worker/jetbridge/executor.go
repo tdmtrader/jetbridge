@@ -41,13 +41,31 @@ func (e *SPDYExecutor) ExecInPod(
 	stdin io.Reader,
 	stdout, stderr io.Writer,
 	tty bool,
+	attrs ExecAttrs,
 ) error {
-	ctx, span := tracing.StartSpan(ctx, "k8s.spdy.exec", tracing.Attrs{
+	spanAttrs := tracing.Attrs{
 		"namespace":      namespace,
 		"pod-name":       podName,
 		"container-name": containerName,
 		"tty":            fmt.Sprintf("%t", tty),
-	})
+	}
+	if len(command) > 0 {
+		if len(command) <= 5 {
+			spanAttrs["exec.command"] = fmt.Sprintf("%v", command)
+		} else {
+			spanAttrs["exec.command"] = command[0]
+		}
+	}
+	if attrs.Purpose != "" {
+		spanAttrs["exec.purpose"] = attrs.Purpose
+	}
+	if attrs.ArtifactKey != "" {
+		spanAttrs["artifact.key"] = attrs.ArtifactKey
+	}
+	if attrs.VolumeMountPath != "" {
+		spanAttrs["volume.mount_path"] = attrs.VolumeMountPath
+	}
+	ctx, span := tracing.StartSpan(ctx, "k8s.spdy.exec", spanAttrs)
 	var spanErr error
 	defer func() { tracing.End(span, spanErr) }()
 

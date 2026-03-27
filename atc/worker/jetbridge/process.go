@@ -556,6 +556,7 @@ type podEventTracker struct {
 	completedInits  map[string]bool
 	startedSidecars map[string]bool
 	scheduled       bool
+	initialized     bool
 	pullingImages   map[string]bool
 }
 
@@ -577,7 +578,20 @@ func (t *podEventTracker) emitPodLifecycleEvents(ctx context.Context, pod *corev
 		for _, cond := range pod.Status.Conditions {
 			if cond.Type == corev1.PodScheduled && cond.Status == corev1.ConditionTrue {
 				t.scheduled = true
-				span.AddEvent("pod.scheduled")
+				span.AddEvent("pod.scheduled",
+					oteltrace.WithAttributes(attribute.String("node.name", pod.Spec.NodeName)),
+				)
+				break
+			}
+		}
+	}
+
+	// Emit pod.initialized when Initialized condition becomes True.
+	if !t.initialized {
+		for _, cond := range pod.Status.Conditions {
+			if cond.Type == corev1.PodInitialized && cond.Status == corev1.ConditionTrue {
+				t.initialized = true
+				span.AddEvent("pod.initialized")
 				break
 			}
 		}
@@ -588,7 +602,23 @@ func (t *podEventTracker) emitPodLifecycleEvents(ctx context.Context, pod *corev
 		if cs.State.Waiting != nil && cs.State.Waiting.Reason == "ContainerCreating" && !t.pullingImages[cs.Name] {
 			t.pullingImages[cs.Name] = true
 			span.AddEvent("image.pulling",
-				oteltrace.WithAttributes(attribute.String("container.name", cs.Name)),
+				oteltrace.WithAttributes(
+					attribute.String("container.name", cs.Name),
+					attribute.String("container.image", cs.Image),
+				),
+			)
+		}
+	}
+
+	// Emit image.pulled when a container transitions out of ContainerCreating.
+	for _, cs := range pod.Status.ContainerStatuses {
+		if t.pullingImages[cs.Name] && (cs.State.Running != nil || cs.State.Terminated != nil) {
+			delete(t.pullingImages, cs.Name)
+			span.AddEvent("image.pulled",
+				oteltrace.WithAttributes(
+					attribute.String("container.name", cs.Name),
+					attribute.String("container.image", cs.Image),
+				),
 			)
 		}
 	}
@@ -599,12 +629,16 @@ func (t *podEventTracker) emitPodLifecycleEvents(ctx context.Context, pod *corev
 			t.completedInits[cs.Name] = true
 			if cs.State.Terminated.ExitCode == 0 {
 				span.AddEvent("init.container.completed",
-					oteltrace.WithAttributes(attribute.String("container.name", cs.Name)),
+					oteltrace.WithAttributes(
+						attribute.String("container.name", cs.Name),
+						attribute.String("container.image", cs.Image),
+					),
 				)
 			} else {
 				span.AddEvent("init.container.failed",
 					oteltrace.WithAttributes(
 						attribute.String("container.name", cs.Name),
+						attribute.String("container.image", cs.Image),
 						attribute.String("reason", cs.State.Terminated.Reason),
 						attribute.Int64("exit.code", int64(cs.State.Terminated.ExitCode)),
 					),
@@ -744,6 +778,7 @@ func (p *execProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 		p.processIO.Stdout,
 		p.processIO.Stderr,
 		p.processSpec.TTY != nil,
+		ExecAttrs{Purpose: "step-command"},
 	)
 	tracing.End(execSpan, err)
 
@@ -859,6 +894,22 @@ func (p *execProcess) uploadOutputsToArtifactStore(ctx context.Context) error {
 		return nil
 	}
 
+	// Count volumes with mount paths for the span attribute.
+	var volumeCount int64
+	for _, vol := range p.container.volumes {
+		if vol.MountPath() != "" {
+			volumeCount++
+		}
+	}
+
+	ctx, span := tracing.StartSpan(ctx, "k8s.artifact.upload-outputs", tracing.Attrs{
+		"pod-name":     p.podName,
+		"volume.count": fmt.Sprintf("%d", volumeCount),
+	})
+	span.SetAttributes(attribute.Int64("volume.count", volumeCount))
+	var spanErr error
+	defer func() { tracing.End(span, spanErr) }()
+
 	g, gctx := errgroup.WithContext(ctx)
 
 	for _, vol := range p.container.volumes {
@@ -879,7 +930,8 @@ func (p *execProcess) uploadOutputsToArtifactStore(ctx context.Context) error {
 			return nil
 		})
 	}
-	return g.Wait()
+	spanErr = g.Wait()
+	return spanErr
 }
 
 // uploadCachesToArtifactStore execs tar commands in the artifact-helper
@@ -896,6 +948,15 @@ func (p *execProcess) uploadCachesToArtifactStore(ctx context.Context) {
 		return
 	}
 
+	cacheCount := int64(len(p.container.cacheEntries))
+	ctx, span := tracing.StartSpan(ctx, "k8s.artifact.upload-caches", tracing.Attrs{
+		"pod-name":    p.podName,
+		"cache.count": fmt.Sprintf("%d", cacheCount),
+	})
+	span.SetAttributes(attribute.Int64("cache.count", cacheCount))
+	var spanErr error
+	defer func() { tracing.End(span, spanErr) }()
+
 	logger := lagerctx.FromContext(ctx).Session("upload-caches")
 
 	var wg sync.WaitGroup
@@ -905,6 +966,7 @@ func (p *execProcess) uploadCachesToArtifactStore(ctx context.Context) {
 		go func() {
 			defer wg.Done()
 			if err := p.uploadArtifact(ctx, entry.artifactKey, entry.mountPath, "cache"); err != nil {
+				spanErr = err
 				logger.Error("failed-to-upload-cache", err, lager.Data{
 					"cache-key":  entry.artifactKey,
 					"mount-path": entry.mountPath,
@@ -998,10 +1060,15 @@ echo "FILES=$fc TAR_MS=$((t1-t0)) SIZE=$sz TRANSFER_MS=$((t2-t1))"
 	var stdout bytes.Buffer
 	cmd := []string{"sh", "-c", shellScript}
 
+	purpose := "artifact-upload"
+	if artifactType == "cache" {
+		purpose = "cache-upload"
+	}
 	spanErr = p.executor.ExecInPod(
 		ctx, p.config.Namespace, p.podName,
 		artifactHelperContainerName,
 		cmd, nil, &stdout, nil, false,
+		ExecAttrs{Purpose: purpose, ArtifactKey: key, VolumeMountPath: mountPath},
 	)
 	if spanErr != nil {
 		return spanErr
@@ -1101,6 +1168,7 @@ func (p *execProcess) waitForRunning(ctx context.Context) error {
 
 	var lastPod *corev1.Pod
 	var lastPhase corev1.PodPhase
+	countsSet := false
 	tracker := newPodEventTracker()
 	for {
 		pod, err := watcher.Next(timeoutCtx)
@@ -1121,6 +1189,16 @@ func (p *execProcess) waitForRunning(ctx context.Context) error {
 			return err
 		}
 		lastPod = pod
+
+		// Set container count span attributes from pod spec on first event.
+		if !countsSet {
+			span := oteltrace.SpanFromContext(ctx)
+			span.SetAttributes(
+				attribute.Int64("init.container.count", int64(len(pod.Spec.InitContainers))),
+				attribute.Int64("container.count", int64(len(pod.Spec.Containers))),
+			)
+			countsSet = true
+		}
 
 		if pod.Status.Phase != lastPhase {
 			lastPhase = pod.Status.Phase

@@ -152,7 +152,7 @@ func TestLiveExecInPod(t *testing.T) {
 		err := executor.ExecInPod(ctx, ns, podName, "main",
 			[]string{"echo", "hello from k8s"},
 			nil, &stdout, &stderr,
-		false)
+		false, jetbridge.ExecAttrs{})
 		if err != nil {
 			t.Fatalf("exec failed: %v", err)
 		}
@@ -173,7 +173,7 @@ func TestLiveExecInPod(t *testing.T) {
 		err := executor.ExecInPod(ctx, ns, podName, "main",
 			[]string{"cat"},
 			stdin, &stdout, nil,
-		false)
+		false, jetbridge.ExecAttrs{})
 		if err != nil {
 			t.Fatalf("exec with stdin failed: %v", err)
 		}
@@ -190,7 +190,7 @@ func TestLiveExecInPod(t *testing.T) {
 		err := executor.ExecInPod(ctx, ns, podName, "main",
 			[]string{"sh", "-c", "exit 42"},
 			nil, nil, nil,
-		false)
+		false, jetbridge.ExecAttrs{})
 		if err == nil {
 			t.Fatal("expected error for non-zero exit code")
 		}
@@ -214,7 +214,7 @@ func TestLiveExecInPod(t *testing.T) {
 		err := executor.ExecInPod(ctx, ns, podName, "main",
 			[]string{"cat"},
 			stdin, &stdout, nil,
-		false)
+		false, jetbridge.ExecAttrs{})
 		if err != nil {
 			t.Fatalf("JSON round-trip failed: %v", err)
 		}
@@ -233,7 +233,7 @@ func TestLiveExecInPod(t *testing.T) {
 		err := executor.ExecInPod(ctx, ns, podName, "main",
 			[]string{"sh", "-c", "echo out-data; echo err-data >&2"},
 			nil, &stdout, &stderr,
-		false)
+		false, jetbridge.ExecAttrs{})
 		if err != nil {
 			t.Fatalf("exec failed: %v", err)
 		}
@@ -258,7 +258,7 @@ func TestLiveExecInPod(t *testing.T) {
 		err := executor.ExecInPod(cancelCtx, ns, podName, "main",
 			[]string{"sleep", "300"},
 			nil, nil, nil,
-		false)
+		false, jetbridge.ExecAttrs{})
 		if err == nil {
 			t.Fatal("expected error on context cancellation")
 		}

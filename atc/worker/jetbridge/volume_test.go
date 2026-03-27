@@ -105,6 +105,16 @@ var _ = Describe("Volume", func() {
 			Expect(call.command).To(Equal([]string{"tar", "xf", "-", "-C", "/tmp/build/inputs/sub/dir"}))
 		})
 
+		It("passes stream-in purpose and volume mount path in ExecAttrs", func() {
+			reader := bytes.NewReader([]byte("tar-data"))
+			err := volume.StreamIn(ctx, ".", nil, 0, reader)
+			Expect(err).ToNot(HaveOccurred())
+
+			call := fakeExecutor.execCalls[0]
+			Expect(call.attrs.Purpose).To(Equal("stream-in"))
+			Expect(call.attrs.VolumeMountPath).To(Equal("/tmp/build/inputs"))
+		})
+
 		Context("when the exec returns an error", func() {
 			BeforeEach(func() {
 				fakeExecutor.execErr = errors.New("exec failed: container not running")
@@ -137,6 +147,18 @@ var _ = Describe("Volume", func() {
 			Expect(call.namespace).To(Equal("test-namespace"))
 			Expect(call.containerName).To(Equal("main"))
 			Expect(call.command).To(Equal([]string{"tar", "cf", "-", "-C", "/tmp/build/inputs", "."}))
+		})
+
+		It("passes stream-out purpose and volume mount path in ExecAttrs", func() {
+			readCloser, err := volume.StreamOut(ctx, ".", nil)
+			Expect(err).ToNot(HaveOccurred())
+			defer readCloser.Close()
+			_, _ = io.ReadAll(readCloser)
+
+			Expect(fakeExecutor.execCalls).To(HaveLen(1))
+			call := fakeExecutor.execCalls[0]
+			Expect(call.attrs.Purpose).To(Equal("stream-out"))
+			Expect(call.attrs.VolumeMountPath).To(Equal("/tmp/build/inputs"))
 		})
 
 		It("returns the stdout as a ReadCloser via streaming pipe", func() {
@@ -527,6 +549,7 @@ type execCall struct {
 	command       []string
 	stdin         io.Reader
 	tty           bool
+	attrs         jetbridge.ExecAttrs
 }
 
 func (f *fakeExecExecutor) ExecInPod(
@@ -536,6 +559,7 @@ func (f *fakeExecExecutor) ExecInPod(
 	stdin io.Reader,
 	stdout, stderr io.Writer,
 	tty bool,
+	attrs jetbridge.ExecAttrs,
 ) error {
 	// Consume stdin into a buffer (mimics real executor behavior and
 	// unblocks io.Pipe writers used by streaming StreamOut).
@@ -553,6 +577,7 @@ func (f *fakeExecExecutor) ExecInPod(
 		command:       command,
 		stdin:         stdinBuf,
 		tty:           tty,
+		attrs:         attrs,
 	})
 	execFunc := f.execFunc
 	execErr := f.execErr

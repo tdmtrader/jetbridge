@@ -103,6 +103,7 @@ func TestLiveResourceGetStepE2E(t *testing.T) {
 		[]string{"sh", "-c", `input=$(cat); echo "{\"version\":{\"ref\":\"abc123\"},\"metadata\":[{\"name\":\"commit\",\"value\":\"abc123\"}]}"`},
 		stdin, &stdout, &stderr,
 		false,
+		jetbridge.ExecAttrs{},
 	)
 	if err != nil {
 		t.Fatalf("resource get exec failed: %v (stderr: %s)", err, stderr.String())
@@ -134,6 +135,7 @@ func TestLiveResourceGetStepE2E(t *testing.T) {
 			[]string{"mkdir", "-p", "/tmp/test-volume"},
 			nil, nil, nil,
 			false,
+			jetbridge.ExecAttrs{},
 		)
 		if err != nil {
 			t.Fatalf("creating directory: %v", err)
@@ -145,6 +147,7 @@ func TestLiveResourceGetStepE2E(t *testing.T) {
 			[]string{"sh", "-c", "tee /tmp/test-volume/data.txt > /dev/null && sync"},
 			strings.NewReader(tarInput), nil, &tarStderr,
 			false,
+			jetbridge.ExecAttrs{},
 		)
 		if err != nil {
 			t.Fatalf("writing file: %v", err)
@@ -155,6 +158,7 @@ func TestLiveResourceGetStepE2E(t *testing.T) {
 			[]string{"cat", "/tmp/test-volume/data.txt"},
 			nil, &tarStdout, &tarStderr,
 			false,
+			jetbridge.ExecAttrs{},
 		)
 		if err != nil {
 			t.Fatalf("reading file: %v", err)
@@ -218,6 +222,7 @@ func TestLivePodCancellationCleanup(t *testing.T) {
 		[]string{"sleep", "300"},
 		nil, nil, nil,
 		false,
+		jetbridge.ExecAttrs{},
 	)
 	if err == nil {
 		t.Fatal("expected error from cancelled exec")
