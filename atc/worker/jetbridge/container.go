@@ -75,9 +75,10 @@ type Container struct {
 	mu              sync.RWMutex
 	properties      map[string]string
 	loadAnnotations sync.Once
-	executor      PodExecutor
-	volumes       []*Volume
-	cacheEntries  []cacheEntry
+	executor        PodExecutor
+	volumes         []*Volume
+	cacheEntries    []cacheEntry
+	artifactLocator *ArtifactLocator
 }
 
 func newContainer(
@@ -90,19 +91,21 @@ func newContainer(
 	workerName string,
 	executor PodExecutor,
 	volumes []*Volume,
+	artifactLocator *ArtifactLocator,
 ) *Container {
 	return &Container{
-		handle:        handle,
-		podName:       GeneratePodName(metadata, handle),
-		metadata:      metadata,
-		containerSpec: containerSpec,
-		dbContainer:   dbContainer,
-		clientset:     clientset,
-		config:        config,
-		workerName:    workerName,
-		properties:    make(map[string]string),
-		executor:      executor,
-		volumes:       volumes,
+		handle:          handle,
+		podName:         GeneratePodName(metadata, handle),
+		metadata:        metadata,
+		containerSpec:   containerSpec,
+		dbContainer:     dbContainer,
+		clientset:       clientset,
+		config:          config,
+		workerName:      workerName,
+		properties:      make(map[string]string),
+		executor:        executor,
+		volumes:         volumes,
+		artifactLocator: artifactLocator,
 	}
 }
 
@@ -421,6 +424,8 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 	// enough grace and avoids the default 30s delay during pod teardown.
 	var terminationGrace int64 = 10
 
+	affinity := c.buildAffinity()
+
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        c.podName,
@@ -436,6 +441,7 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 			InitContainers:     initContainers,
 			Volumes:            volumes,
 			Containers:         containers,
+			Affinity:           affinity,
 
 			TerminationGracePeriodSeconds: &terminationGrace,
 		},
@@ -714,6 +720,88 @@ func volumeNameForMountPath(mounts []corev1.VolumeMount, mountPath string) strin
 		}
 	}
 	return ""
+}
+
+// buildAffinity constructs pod affinity rules for DaemonSet mode. Returns nil
+// for PVC mode or non-task step types.
+//
+// In DaemonSet mode:
+// - Hard affinity: pods MUST land on nodes with concourse.dev/artifact-cache=ready
+// - Soft affinity: prefer the node that holds the most input artifacts
+func (c *Container) buildAffinity() *corev1.Affinity {
+	if !c.config.IsDaemonSetBackend() {
+		return nil
+	}
+
+	affinity := &corev1.Affinity{
+		NodeAffinity: &corev1.NodeAffinity{
+			RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
+				NodeSelectorTerms: []corev1.NodeSelectorTerm{
+					{
+						MatchExpressions: []corev1.NodeSelectorRequirement{
+							{
+								Key:      "concourse.dev/artifact-cache",
+								Operator: corev1.NodeSelectorOpIn,
+								Values:   []string{"ready"},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	// Add soft affinity for the node holding the most input artifacts.
+	if c.artifactLocator != nil {
+		preferredNode := c.preferredInputNode()
+		if preferredNode != "" {
+			affinity.NodeAffinity.PreferredDuringSchedulingIgnoredDuringExecution = []corev1.PreferredSchedulingTerm{
+				{
+					Weight: 100,
+					Preference: corev1.NodeSelectorTerm{
+						MatchExpressions: []corev1.NodeSelectorRequirement{
+							{
+								Key:      "kubernetes.io/hostname",
+								Operator: corev1.NodeSelectorOpIn,
+								Values:   []string{preferredNode},
+							},
+						},
+					},
+				},
+			}
+		}
+	}
+
+	return affinity
+}
+
+// preferredInputNode returns the node name that holds the most input
+// artifacts, or empty string if no inputs have known locations.
+func (c *Container) preferredInputNode() string {
+	if c.artifactLocator == nil {
+		return ""
+	}
+
+	counts := make(map[string]int)
+	for _, input := range c.containerSpec.Inputs {
+		if input.Artifact == nil {
+			continue
+		}
+		key := ArtifactKey(input.Artifact.Handle())
+		if node, ok := c.artifactLocator.Locate(key); ok {
+			counts[node]++
+		}
+	}
+
+	var best string
+	var bestCount int
+	for node, count := range counts {
+		if count > bestCount {
+			best = node
+			bestCount = count
+		}
+	}
+	return best
 }
 
 // buildPodLabels constructs the label map for the pod, including the

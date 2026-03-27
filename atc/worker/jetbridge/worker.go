@@ -18,11 +18,12 @@ var _ runtime.Worker = (*Worker)(nil)
 // Worker implements runtime.Worker using Kubernetes Pods as the execution
 // backend instead of Garden containers.
 type Worker struct {
-	dbWorker   db.Worker
-	clientset  kubernetes.Interface
-	config     Config
-	executor   PodExecutor
-	volumeRepo db.VolumeRepository
+	dbWorker        db.Worker
+	clientset       kubernetes.Interface
+	config          Config
+	executor        PodExecutor
+	volumeRepo      db.VolumeRepository
+	artifactLocator *ArtifactLocator
 }
 
 // NewWorker creates a new Worker backed by the given Kubernetes clientset.
@@ -47,6 +48,12 @@ func (w *Worker) SetExecutor(executor PodExecutor) {
 // cache PVC is configured.
 func (w *Worker) SetVolumeRepo(repo db.VolumeRepository) {
 	w.volumeRepo = repo
+}
+
+// SetArtifactLocator sets the ArtifactLocator used for tracking artifact
+// locations in DaemonSet mode.
+func (w *Worker) SetArtifactLocator(locator *ArtifactLocator) {
+	w.artifactLocator = locator
 }
 
 func (w *Worker) Name() string {
@@ -89,7 +96,7 @@ func (w *Worker) FindOrCreateContainer(
 	// The Pod may or may not exist yet (it gets created in Container.Run).
 	if createdContainer != nil {
 		mounts, volumes := w.buildVolumeMountsForSpec(containerHandle, containerSpec)
-		container := newContainer(containerHandle, metadata, containerSpec, createdContainer, w.clientset, w.config, w.Name(), w.executor, volumes)
+		container := newContainer(containerHandle, metadata, containerSpec, createdContainer, w.clientset, w.config, w.Name(), w.executor, volumes, w.artifactLocator)
 		return container, mounts, nil
 	}
 
@@ -104,7 +111,7 @@ func (w *Worker) FindOrCreateContainer(
 	}
 
 	mounts, volumes := w.buildVolumeMountsForSpec(containerHandle, containerSpec)
-	container := newContainer(containerHandle, metadata, containerSpec, createdContainer, w.clientset, w.config, w.Name(), w.executor, volumes)
+	container := newContainer(containerHandle, metadata, containerSpec, createdContainer, w.clientset, w.config, w.Name(), w.executor, volumes, w.artifactLocator)
 	return container, mounts, nil
 }
 
@@ -225,7 +232,7 @@ func (w *Worker) LookupContainer(ctx context.Context, handle string) (runtime.Co
 		return nil, false, nil
 	}
 
-	return newContainer(handle, db.ContainerMetadata{}, runtime.ContainerSpec{}, dbContainer, w.clientset, w.config, w.Name(), w.executor, nil), true, nil
+	return newContainer(handle, db.ContainerMetadata{}, runtime.ContainerSpec{}, dbContainer, w.clientset, w.config, w.Name(), w.executor, nil, w.artifactLocator), true, nil
 }
 
 func (w *Worker) LookupVolume(ctx context.Context, handle string) (runtime.Volume, bool, error) {
