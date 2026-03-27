@@ -1,6 +1,7 @@
 package main_test
 
 import (
+	"archive/tar"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -231,5 +232,97 @@ func TestPutStoresAtCorrectPath(t *testing.T) {
 	}
 	if string(data) != content {
 		t.Errorf("file content: expected %q, got %q", content, string(data))
+	}
+}
+
+// Phase 5: Directory serving tests
+
+func TestGetDirectoryTarsOnTheFly(t *testing.T) {
+	ts, storagePath := setupServer(t)
+
+	// Create a directory with files (simulating step output)
+	stepDir := filepath.Join(storagePath, "artifacts", "steps", "build-42", "result")
+	if err := os.MkdirAll(stepDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(stepDir, "file1.txt"), []byte("hello"), 0644)
+	os.WriteFile(filepath.Join(stepDir, "file2.txt"), []byte("world"), 0644)
+
+	resp, err := http.Get(ts.URL + "/artifacts/steps/build-42/result")
+	if err != nil {
+		t.Fatalf("GET directory: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	// Verify response is a valid tar stream containing the files
+	tr := tar.NewReader(resp.Body)
+	files := map[string]string{}
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("reading tar: %v", err)
+		}
+		if hdr.Typeflag == tar.TypeReg {
+			data, _ := io.ReadAll(tr)
+			files[hdr.Name] = string(data)
+		}
+	}
+
+	if files["file1.txt"] != "hello" {
+		t.Errorf("expected file1.txt='hello', got %q", files["file1.txt"])
+	}
+	if files["file2.txt"] != "world" {
+		t.Errorf("expected file2.txt='world', got %q", files["file2.txt"])
+	}
+}
+
+func TestDeleteDirectoryRemovesTree(t *testing.T) {
+	ts, storagePath := setupServer(t)
+
+	// Create a directory tree
+	stepDir := filepath.Join(storagePath, "artifacts", "steps", "build-99", "out")
+	os.MkdirAll(stepDir, 0755)
+	os.WriteFile(filepath.Join(stepDir, "data.bin"), []byte("x"), 0644)
+
+	// DELETE the step directory (parent of output)
+	req, _ := http.NewRequest(http.MethodDelete, ts.URL+"/artifacts/steps/build-99", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("DELETE: %v", err)
+	}
+	resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNoContent {
+		t.Errorf("expected 204, got %d", resp.StatusCode)
+	}
+
+	// Verify the entire tree is gone
+	if _, err := os.Stat(filepath.Join(storagePath, "artifacts", "steps", "build-99")); !os.IsNotExist(err) {
+		t.Error("expected directory tree to be removed")
+	}
+}
+
+func TestHeadDirectoryReturns200(t *testing.T) {
+	ts, storagePath := setupServer(t)
+
+	stepDir := filepath.Join(storagePath, "artifacts", "steps", "build-50", "src")
+	os.MkdirAll(stepDir, 0755)
+
+	req, _ := http.NewRequest(http.MethodHead, ts.URL+"/artifacts/steps/build-50/src", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("HEAD: %v", err)
+	}
+	resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200 for existing directory, got %d", resp.StatusCode)
 	}
 }

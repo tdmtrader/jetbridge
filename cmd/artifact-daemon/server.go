@@ -1,6 +1,7 @@
 package main
 
 import (
+	"archive/tar"
 	"io"
 	"net/http"
 	"os"
@@ -48,12 +49,27 @@ func (s *Server) artifactPath(r *http.Request) string {
 func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 	path := s.artifactPath(r)
 
-	f, err := os.Open(path)
+	info, err := os.Stat(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			http.NotFound(w, r)
 			return
 		}
+		s.logger.Error("failed-to-stat-artifact", err, lager.Data{"path": path})
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	// Directory: tar on-the-fly and stream.
+	if info.IsDir() {
+		w.Header().Set("Content-Type", "application/x-tar")
+		s.tarDirectory(w, path)
+		return
+	}
+
+	// File: serve as-is (backward compat for legacy tar files).
+	f, err := os.Open(path)
+	if err != nil {
 		s.logger.Error("failed-to-open-artifact", err, lager.Data{"path": path})
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
@@ -62,6 +78,42 @@ func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/octet-stream")
 	io.Copy(w, f)
+}
+
+// tarDirectory writes a tar archive of the directory to w.
+func (s *Server) tarDirectory(w http.ResponseWriter, dir string) {
+	tw := tar.NewWriter(w)
+	defer tw.Close()
+
+	filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return err
+		}
+		rel, _ := filepath.Rel(dir, path)
+		hdr := &tar.Header{
+			Name:    rel,
+			Size:    info.Size(),
+			Mode:    int64(info.Mode()),
+			ModTime: info.ModTime(),
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			link, _ := os.Readlink(path)
+			hdr.Typeflag = tar.TypeSymlink
+			hdr.Linkname = link
+			hdr.Size = 0
+			return tw.WriteHeader(hdr)
+		}
+		if err := tw.WriteHeader(hdr); err != nil {
+			return err
+		}
+		f, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		_, err = io.Copy(tw, f)
+		return err
+	})
 }
 
 func (s *Server) handlePutArtifact(w http.ResponseWriter, r *http.Request) {
@@ -93,8 +145,8 @@ func (s *Server) handlePutArtifact(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDeleteArtifact(w http.ResponseWriter, r *http.Request) {
 	path := s.artifactPath(r)
 
-	err := os.Remove(path)
-	if err != nil && !os.IsNotExist(err) {
+	err := os.RemoveAll(path)
+	if err != nil {
 		s.logger.Error("failed-to-delete-artifact", err, lager.Data{"path": path})
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return

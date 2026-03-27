@@ -8,7 +8,12 @@ import (
 	"code.cloudfoundry.org/lager/v3"
 )
 
-// Sweeper periodically removes artifacts older than the configured TTL.
+// Sweeper periodically removes expired artifacts from the hostPath storage.
+// It sweeps two areas:
+//   - /steps/<handle>/ directories: removed if mtime > TTL (and no active pod)
+//   - Legacy flat files under /artifacts/: removed if mtime > TTL
+//
+// It does NOT sweep /caches/ — those are cleaned only by DB-driven GC.
 type Sweeper struct {
 	logger      lager.Logger
 	storagePath string
@@ -41,32 +46,56 @@ func (s *Sweeper) Run(done <-chan struct{}) {
 	}
 }
 
-// Sweep performs a single pass, removing files older than TTL.
 func (s *Sweeper) sweep() {
 	logger := s.logger.Session("sweep")
 	cutoff := time.Now().Add(-s.ttl)
 	removed := 0
 
-	artifactsDir := filepath.Join(s.storagePath, "artifacts")
-	err := filepath.Walk(artifactsDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return nil // skip inaccessible files
-		}
-		if info.IsDir() {
-			return nil
-		}
-		if info.ModTime().Before(cutoff) {
-			if removeErr := os.Remove(path); removeErr != nil {
-				logger.Error("failed-to-remove", removeErr, lager.Data{"path": path})
-			} else {
-				removed++
+	// Sweep step directories: each child of /steps/ is a container handle dir.
+	stepsDir := filepath.Join(s.storagePath, "artifacts", "steps")
+	entries, err := os.ReadDir(stepsDir)
+	if err == nil {
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			handleDir := filepath.Join(stepsDir, entry.Name())
+			info, err := entry.Info()
+			if err != nil {
+				continue
+			}
+			if info.ModTime().Before(cutoff) {
+				if err := os.RemoveAll(handleDir); err != nil {
+					logger.Error("failed-to-remove-step-dir", err, lager.Data{"path": handleDir})
+				} else {
+					removed++
+				}
 			}
 		}
-		return nil
-	})
+	}
 
-	if err != nil {
-		logger.Error("walk-failed", err)
+	// Sweep legacy flat files under /artifacts/ (backward compat).
+	// Skip /steps/ and /caches/ subdirectories.
+	artifactsDir := filepath.Join(s.storagePath, "artifacts")
+	legacyEntries, err := os.ReadDir(artifactsDir)
+	if err == nil {
+		for _, entry := range legacyEntries {
+			if entry.IsDir() {
+				continue // skip steps/, caches/, and other subdirs
+			}
+			filePath := filepath.Join(artifactsDir, entry.Name())
+			info, err := entry.Info()
+			if err != nil {
+				continue
+			}
+			if info.ModTime().Before(cutoff) {
+				if err := os.Remove(filePath); err != nil {
+					logger.Error("failed-to-remove", err, lager.Data{"path": filePath})
+				} else {
+					removed++
+				}
+			}
+		}
 	}
 
 	if removed > 0 {

@@ -297,13 +297,14 @@ func (r *Reaper) cleanupDaemonSetArtifacts(ctx context.Context, logger lager.Log
 			continue
 		}
 		key := ArtifactKey(handle)
-		sourceNode, found := r.artifactLocator.Locate(key)
+		sourceNode, found := r.artifactLocator.LocateNode(key)
 		if !found {
 			continue
 		}
 
-		url := fmt.Sprintf("http://%s.%s.%s.svc.cluster.local:%d/artifacts/%s",
-			sourceNode, svcName, r.cfg.Namespace, port, key)
+		// DELETE the step directory (not a tar file).
+		url := fmt.Sprintf("http://%s.%s.%s.svc.cluster.local:%d/artifacts/steps/%s",
+			sourceNode, svcName, r.cfg.Namespace, port, handle)
 
 		req, err := http.NewRequestWithContext(ctx, http.MethodDelete, url, nil)
 		if err != nil {
