@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -2140,6 +2141,484 @@ var _ = Describe("Pod phase transition spans", func() {
 				eventNames = append(eventNames, e.Name)
 			}
 			Expect(eventNames).To(ContainElement("image.pulling"))
+		})
+	})
+
+	Describe("artifact upload filtering", func() {
+		var (
+			fakeExecutor  *fakeExecExecutor
+			execWorker    *jetbridge.Worker
+			execContainer runtime.Container
+		)
+
+		Context("with inputs, outputs, and working directory", func() {
+			BeforeEach(func() {
+				fakeExecutor = &fakeExecExecutor{}
+				artifactCfg := jetbridge.NewConfig("test-namespace", "")
+				artifactCfg.ArtifactStoreClaim = "concourse-artifacts"
+
+				execWorker = jetbridge.NewWorker(fakeDBWorker, fakeClientset, artifactCfg)
+				execWorker.SetExecutor(fakeExecutor)
+
+				setupFakeDBContainer(fakeDBWorker, "artifact-filter-handle")
+
+				inputArtifact := jetbridge.NewArtifactStoreVolume(
+					"artifacts/input-vol.tar", "input-vol", "k8s-worker-1", nil,
+				)
+
+				var err error
+				execContainer, _, err = execWorker.FindOrCreateContainer(
+					ctx,
+					db.NewFixedHandleContainerOwner("artifact-filter-handle"),
+					db.ContainerMetadata{Type: db.ContainerTypeTask},
+					runtime.ContainerSpec{
+						TeamID:   1,
+						Dir:      "/tmp/build/workdir",
+						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+						Inputs: []runtime.Input{
+							{
+								Artifact:        inputArtifact,
+								DestinationPath: "/tmp/build/workdir/my-input",
+							},
+						},
+						Outputs: runtime.OutputPaths{
+							"my-output": "/tmp/build/workdir/my-output",
+						},
+					},
+					delegate,
+				)
+				Expect(err).ToNot(HaveOccurred())
+			})
+
+			It("only uploads output volumes, not inputs or working directory", func() {
+				process, err := execContainer.Run(ctx, runtime.ProcessSpec{
+					Path: "/bin/sh",
+					Args: []string{"-c", "echo hello"},
+				}, runtime.ProcessIO{
+					Stdin:  bytes.NewBufferString(""),
+					Stdout: new(bytes.Buffer),
+					Stderr: new(bytes.Buffer),
+				})
+				Expect(err).ToNot(HaveOccurred())
+
+				pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "artifact-filter-handle", metav1.GetOptions{})
+				Expect(err).ToNot(HaveOccurred())
+				pod.Status.Phase = corev1.PodRunning
+				_, err = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+				Expect(err).ToNot(HaveOccurred())
+
+				result, err := process.Wait(ctx)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(result.ExitStatus).To(Equal(0))
+
+				By("inspecting exec calls to the artifact-helper sidecar")
+				var artifactUploads []execCall
+				for _, call := range fakeExecutor.execCalls {
+					if call.containerName == "artifact-helper" {
+						artifactUploads = append(artifactUploads, call)
+					}
+				}
+
+				By("expecting exactly one artifact upload (the output)")
+				Expect(artifactUploads).To(HaveLen(1), "should upload only the output volume, not inputs or workdir")
+
+				By("verifying the upload is for the output path")
+				uploadCmd := strings.Join(artifactUploads[0].command, " ")
+				Expect(uploadCmd).To(ContainSubstring("/tmp/build/workdir/my-output"))
+				Expect(uploadCmd).ToNot(ContainSubstring("/tmp/build/workdir/my-input"))
+			})
+		})
+
+		Context("with overlapping input and output paths", func() {
+			BeforeEach(func() {
+				fakeExecutor = &fakeExecExecutor{}
+				artifactCfg := jetbridge.NewConfig("test-namespace", "")
+				artifactCfg.ArtifactStoreClaim = "concourse-artifacts"
+
+				execWorker = jetbridge.NewWorker(fakeDBWorker, fakeClientset, artifactCfg)
+				execWorker.SetExecutor(fakeExecutor)
+
+				setupFakeDBContainer(fakeDBWorker, "artifact-overlap-handle")
+
+				inputArtifact := jetbridge.NewArtifactStoreVolume(
+					"artifacts/shared-vol.tar", "shared-vol", "k8s-worker-1", nil,
+				)
+
+				var err error
+				execContainer, _, err = execWorker.FindOrCreateContainer(
+					ctx,
+					db.NewFixedHandleContainerOwner("artifact-overlap-handle"),
+					db.ContainerMetadata{Type: db.ContainerTypeTask},
+					runtime.ContainerSpec{
+						TeamID:   1,
+						Dir:      "/tmp/build/workdir",
+						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+						Inputs: []runtime.Input{
+							{
+								Artifact:        inputArtifact,
+								DestinationPath: "/tmp/build/workdir/shared",
+							},
+						},
+						Outputs: runtime.OutputPaths{
+							"shared": "/tmp/build/workdir/shared",
+						},
+					},
+					delegate,
+				)
+				Expect(err).ToNot(HaveOccurred())
+			})
+
+			It("uploads the overlapping path because the output may have modified the input", func() {
+				process, err := execContainer.Run(ctx, runtime.ProcessSpec{
+					Path: "/bin/sh",
+					Args: []string{"-c", "echo hello"},
+				}, runtime.ProcessIO{
+					Stdin:  bytes.NewBufferString(""),
+					Stdout: new(bytes.Buffer),
+					Stderr: new(bytes.Buffer),
+				})
+				Expect(err).ToNot(HaveOccurred())
+
+				pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "artifact-overlap-handle", metav1.GetOptions{})
+				Expect(err).ToNot(HaveOccurred())
+				pod.Status.Phase = corev1.PodRunning
+				_, err = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+				Expect(err).ToNot(HaveOccurred())
+
+				result, err := process.Wait(ctx)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(result.ExitStatus).To(Equal(0))
+
+				var artifactUploads []execCall
+				for _, call := range fakeExecutor.execCalls {
+					if call.containerName == "artifact-helper" {
+						artifactUploads = append(artifactUploads, call)
+					}
+				}
+
+				// Both the input volume and the output volume share the same
+				// mount path. Both match the output filter, so both are uploaded.
+				// This is correct — the data at the overlapping path may have
+				// been modified by the step, and deduplication by path is a
+				// separate optimization.
+				Expect(len(artifactUploads)).To(BeNumerically(">=", 1), "overlapping input/output path should be uploaded")
+				for _, call := range artifactUploads {
+					uploadCmd := strings.Join(call.command, " ")
+					Expect(uploadCmd).To(ContainSubstring("/tmp/build/workdir/shared"))
+				}
+			})
+		})
+
+		Context("with no outputs", func() {
+			BeforeEach(func() {
+				fakeExecutor = &fakeExecExecutor{}
+				artifactCfg := jetbridge.NewConfig("test-namespace", "")
+				artifactCfg.ArtifactStoreClaim = "concourse-artifacts"
+
+				execWorker = jetbridge.NewWorker(fakeDBWorker, fakeClientset, artifactCfg)
+				execWorker.SetExecutor(fakeExecutor)
+
+				setupFakeDBContainer(fakeDBWorker, "artifact-noout-handle")
+
+				var err error
+				execContainer, _, err = execWorker.FindOrCreateContainer(
+					ctx,
+					db.NewFixedHandleContainerOwner("artifact-noout-handle"),
+					db.ContainerMetadata{Type: db.ContainerTypeTask},
+					runtime.ContainerSpec{
+						TeamID:   1,
+						Dir:      "/tmp/build/workdir",
+						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+					},
+					delegate,
+				)
+				Expect(err).ToNot(HaveOccurred())
+			})
+
+			It("does not upload any artifacts", func() {
+				process, err := execContainer.Run(ctx, runtime.ProcessSpec{
+					Path: "/bin/sh",
+					Args: []string{"-c", "echo hello"},
+				}, runtime.ProcessIO{
+					Stdin:  bytes.NewBufferString(""),
+					Stdout: new(bytes.Buffer),
+					Stderr: new(bytes.Buffer),
+				})
+				Expect(err).ToNot(HaveOccurred())
+
+				pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "artifact-noout-handle", metav1.GetOptions{})
+				Expect(err).ToNot(HaveOccurred())
+				pod.Status.Phase = corev1.PodRunning
+				_, err = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+				Expect(err).ToNot(HaveOccurred())
+
+				result, err := process.Wait(ctx)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(result.ExitStatus).To(Equal(0))
+
+				var artifactUploads []execCall
+				for _, call := range fakeExecutor.execCalls {
+					if call.containerName == "artifact-helper" {
+						artifactUploads = append(artifactUploads, call)
+					}
+				}
+
+				Expect(artifactUploads).To(BeEmpty(), "no outputs means no artifact uploads")
+			})
+		})
+
+		Context("cache upload behavior per cache mode", func() {
+			It("uploads caches in artifact mode", func() {
+				fakeExecutor = &fakeExecExecutor{}
+				artifactCfg := jetbridge.NewConfig("test-namespace", "")
+				artifactCfg.ArtifactStoreClaim = "concourse-artifacts"
+
+				execWorker = jetbridge.NewWorker(fakeDBWorker, fakeClientset, artifactCfg)
+				execWorker.SetExecutor(fakeExecutor)
+
+				setupFakeDBContainer(fakeDBWorker, "cache-artifact-handle")
+
+				var err error
+				execContainer, _, err = execWorker.FindOrCreateContainer(
+					ctx,
+					db.NewFixedHandleContainerOwner("cache-artifact-handle"),
+					db.ContainerMetadata{
+						Type:     db.ContainerTypeTask,
+						JobID:    42,
+						StepName: "build",
+					},
+					runtime.ContainerSpec{
+						TeamID:   1,
+						Dir:      "/tmp/build/workdir",
+						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+						Caches:   []string{"/cache/go"},
+						Outputs: runtime.OutputPaths{
+							"result": "/tmp/build/workdir/result",
+						},
+					},
+					delegate,
+				)
+				Expect(err).ToNot(HaveOccurred())
+
+				process, err := execContainer.Run(ctx, runtime.ProcessSpec{
+					Path: "/bin/sh",
+					Args: []string{"-c", "echo hello"},
+				}, runtime.ProcessIO{
+					Stdin:  bytes.NewBufferString(""),
+					Stdout: new(bytes.Buffer),
+					Stderr: new(bytes.Buffer),
+				})
+				Expect(err).ToNot(HaveOccurred())
+
+				pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "cache-artifact-handle", metav1.GetOptions{})
+				Expect(err).ToNot(HaveOccurred())
+				pod.Status.Phase = corev1.PodRunning
+				_, err = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+				Expect(err).ToNot(HaveOccurred())
+
+				result, err := process.Wait(ctx)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(result.ExitStatus).To(Equal(0))
+
+				var artifactHelperCalls []execCall
+				for _, call := range fakeExecutor.execCalls {
+					if call.containerName == "artifact-helper" {
+						artifactHelperCalls = append(artifactHelperCalls, call)
+					}
+				}
+
+				By("expecting output upload + cache upload")
+				Expect(len(artifactHelperCalls)).To(BeNumerically(">=", 2),
+					"should have at least one output upload and one cache upload")
+
+				var hasCacheUpload bool
+				for _, call := range artifactHelperCalls {
+					cmd := strings.Join(call.command, " ")
+					if strings.Contains(cmd, "/cache/go") {
+						hasCacheUpload = true
+					}
+				}
+				Expect(hasCacheUpload).To(BeTrue(), "cache should be uploaded in artifact mode")
+			})
+
+			It("does not upload caches in hostpath mode", func() {
+				fakeExecutor = &fakeExecExecutor{}
+				hostpathCfg := jetbridge.NewConfig("test-namespace", "")
+				hostpathCfg.ArtifactStoreClaim = "concourse-artifacts"
+				hostpathCfg.CacheHostPath = "/var/cache/concourse"
+				hostpathCfg.CacheStore = jetbridge.CacheStoreHostPath
+
+				execWorker = jetbridge.NewWorker(fakeDBWorker, fakeClientset, hostpathCfg)
+				execWorker.SetExecutor(fakeExecutor)
+
+				setupFakeDBContainer(fakeDBWorker, "cache-hostpath-handle")
+
+				var err error
+				execContainer, _, err = execWorker.FindOrCreateContainer(
+					ctx,
+					db.NewFixedHandleContainerOwner("cache-hostpath-handle"),
+					db.ContainerMetadata{
+						Type:     db.ContainerTypeTask,
+						JobID:    42,
+						StepName: "build",
+					},
+					runtime.ContainerSpec{
+						TeamID:   1,
+						Dir:      "/tmp/build/workdir",
+						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+						Caches:   []string{"/cache/go"},
+						Outputs: runtime.OutputPaths{
+							"result": "/tmp/build/workdir/result",
+						},
+					},
+					delegate,
+				)
+				Expect(err).ToNot(HaveOccurred())
+
+				process, err := execContainer.Run(ctx, runtime.ProcessSpec{
+					Path: "/bin/sh",
+					Args: []string{"-c", "echo hello"},
+				}, runtime.ProcessIO{
+					Stdin:  bytes.NewBufferString(""),
+					Stdout: new(bytes.Buffer),
+					Stderr: new(bytes.Buffer),
+				})
+				Expect(err).ToNot(HaveOccurred())
+
+				pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "cache-hostpath-handle", metav1.GetOptions{})
+				Expect(err).ToNot(HaveOccurred())
+				pod.Status.Phase = corev1.PodRunning
+				_, err = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+				Expect(err).ToNot(HaveOccurred())
+
+				result, err := process.Wait(ctx)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(result.ExitStatus).To(Equal(0))
+
+				var artifactHelperCalls []execCall
+				for _, call := range fakeExecutor.execCalls {
+					if call.containerName == "artifact-helper" {
+						artifactHelperCalls = append(artifactHelperCalls, call)
+					}
+				}
+
+				for _, call := range artifactHelperCalls {
+					cmd := strings.Join(call.command, " ")
+					Expect(cmd).ToNot(ContainSubstring("/cache/go"),
+						"hostpath caches should not be uploaded to artifact PVC")
+				}
+			})
+		})
+	})
+
+	Describe("artifact upload telemetry", func() {
+		It("parses structured output from upload script", func() {
+			stats := jetbridge.ParseArtifactUploadStats("FILES=42 TAR_NS=1000000000 SIZE=524288 TRANSFER_NS=2000000000")
+			Expect(stats.FileCount).To(Equal(int64(42)))
+			Expect(stats.TarNanos).To(Equal(int64(1000000000)))
+			Expect(stats.SizeBytes).To(Equal(int64(524288)))
+			Expect(stats.TransferNanos).To(Equal(int64(2000000000)))
+		})
+
+		It("handles empty or malformed output gracefully", func() {
+			stats := jetbridge.ParseArtifactUploadStats("")
+			Expect(stats.FileCount).To(Equal(int64(0)))
+			Expect(stats.SizeBytes).To(Equal(int64(0)))
+
+			stats = jetbridge.ParseArtifactUploadStats("GARBAGE=abc notafield")
+			Expect(stats.FileCount).To(Equal(int64(0)))
+		})
+
+		It("creates upload spans with telemetry attributes", func() {
+			spanRecorder := new(tracetest.SpanRecorder)
+			tp := sdktrace.NewTracerProvider(
+				sdktrace.WithSpanProcessor(spanRecorder),
+			)
+			tracing.ConfigureTraceProvider(tp)
+			defer func() { tracing.Configured = false }()
+
+			fakeExec := &fakeExecExecutor{
+				execStdout: []byte("FILES=10 TAR_NS=500000000 SIZE=1048576 TRANSFER_NS=1500000000"),
+			}
+			artifactCfg := jetbridge.NewConfig("test-namespace", "")
+			artifactCfg.ArtifactStoreClaim = "concourse-artifacts"
+
+			execWorker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, artifactCfg)
+			execWorker.SetExecutor(fakeExec)
+
+			setupFakeDBContainer(fakeDBWorker, "artifact-telemetry-handle")
+
+			telemetryContainer, _, err := execWorker.FindOrCreateContainer(
+				ctx,
+				db.NewFixedHandleContainerOwner("artifact-telemetry-handle"),
+				db.ContainerMetadata{Type: db.ContainerTypeTask},
+				runtime.ContainerSpec{
+					TeamID:   1,
+					Dir:      "/tmp/build/workdir",
+					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+					Outputs: runtime.OutputPaths{
+						"result": "/tmp/build/workdir/result",
+					},
+				},
+				delegate,
+			)
+			Expect(err).ToNot(HaveOccurred())
+
+			process, err := telemetryContainer.Run(ctx, runtime.ProcessSpec{
+				Path: "/bin/sh",
+				Args: []string{"-c", "echo hello"},
+			}, runtime.ProcessIO{
+				Stdin:  bytes.NewBufferString(""),
+				Stdout: new(bytes.Buffer),
+				Stderr: new(bytes.Buffer),
+			})
+			Expect(err).ToNot(HaveOccurred())
+
+			pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "artifact-telemetry-handle", metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			pod.Status.Phase = corev1.PodRunning
+			_, err = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			result, err := process.Wait(ctx)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(result.ExitStatus).To(Equal(0))
+
+			ended := spanRecorder.Ended()
+
+			var uploadSpan sdktrace.ReadOnlySpan
+			for _, s := range ended {
+				if s.Name() == "k8s.artifact.upload" {
+					uploadSpan = s
+					break
+				}
+			}
+			Expect(uploadSpan).ToNot(BeNil(), "expected k8s.artifact.upload span")
+
+			By("verifying span attributes include telemetry data")
+			attrMap := make(map[string]interface{})
+			for _, a := range uploadSpan.Attributes() {
+				attrMap[string(a.Key)] = a.Value.AsInterface()
+			}
+			Expect(attrMap).To(HaveKey("artifact.key"))
+			Expect(attrMap).To(HaveKey("artifact.type"))
+			Expect(attrMap["artifact.type"]).To(Equal("output"))
+			Expect(attrMap).To(HaveKey("artifact.file_count"))
+			Expect(attrMap["artifact.file_count"]).To(Equal(int64(10)))
+			Expect(attrMap).To(HaveKey("artifact.size_bytes"))
+			Expect(attrMap["artifact.size_bytes"]).To(Equal(int64(1048576)))
+			Expect(attrMap).To(HaveKey("artifact.tar_duration_ns"))
+			Expect(attrMap["artifact.tar_duration_ns"]).To(Equal(int64(500000000)))
+			Expect(attrMap).To(HaveKey("artifact.transfer_duration_ns"))
+			Expect(attrMap["artifact.transfer_duration_ns"]).To(Equal(int64(1500000000)))
+
+			By("verifying span events for phase completion")
+			eventNames := []string{}
+			for _, e := range uploadSpan.Events() {
+				eventNames = append(eventNames, e.Name)
+			}
+			Expect(eventNames).To(ContainElement("artifact.tar.completed"))
+			Expect(eventNames).To(ContainElement("artifact.transfer.completed"))
 		})
 	})
 })

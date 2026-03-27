@@ -166,6 +166,17 @@ func (c *Container) Run(ctx context.Context, spec runtime.ProcessSpec, io runtim
 	return newProcess(processID, pod.Name, c.clientset, c.config, c, io), nil
 }
 
+// outputPaths returns the set of mount paths that correspond to declared
+// step outputs. When an output overlaps an input path, it is included
+// because the step may have modified the input data.
+func (c *Container) outputPaths() map[string]bool {
+	paths := make(map[string]bool, len(c.containerSpec.Outputs))
+	for _, path := range c.containerSpec.Outputs {
+		paths[path] = true
+	}
+	return paths
+}
+
 // volumeForPath returns the Volume associated with the given mount path,
 // or nil if no matching volume is found.
 func (c *Container) volumeForPath(mountPath string) *Volume {

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"sync"
 
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbfakes"
@@ -512,6 +513,7 @@ var _ = Describe("Volume-to-Volume Streaming (same worker)", func() {
 // fakeExecExecutor is a test double for jetbridge.PodExecutor.
 // It consumes stdin (like a real executor) to prevent io.Pipe deadlocks.
 type fakeExecExecutor struct {
+	mu         sync.Mutex
 	execCalls  []execCall
 	execErr    error
 	execStdout []byte
@@ -543,6 +545,7 @@ func (f *fakeExecExecutor) ExecInPod(
 		stdinBuf = bytes.NewReader(data)
 	}
 
+	f.mu.Lock()
 	f.execCalls = append(f.execCalls, execCall{
 		podName:       podName,
 		namespace:     namespace,
@@ -551,14 +554,19 @@ func (f *fakeExecExecutor) ExecInPod(
 		stdin:         stdinBuf,
 		tty:           tty,
 	})
-	if f.execFunc != nil {
-		return f.execFunc()
+	execFunc := f.execFunc
+	execErr := f.execErr
+	execStdout := f.execStdout
+	f.mu.Unlock()
+
+	if execFunc != nil {
+		return execFunc()
 	}
-	if f.execErr != nil {
-		return f.execErr
+	if execErr != nil {
+		return execErr
 	}
-	if stdout != nil && f.execStdout != nil {
-		_, _ = stdout.Write(f.execStdout)
+	if stdout != nil && execStdout != nil {
+		_, _ = stdout.Write(execStdout)
 	}
 	return nil
 }

@@ -612,6 +612,7 @@ func (cmd *RunCommand) Runner(positionalArguments []string) (ifrit.Runner, error
 	metric.InitOTelScheduling()
 	metric.InitOTelGC()
 	metric.InitOTelDBChecks()
+	metric.InitOTelArtifactUpload()
 
 	// Connection tracker is off by default. Can be turned on/ff at runtime.
 	http.HandleFunc("/debug/connections", func(w http.ResponseWriter, r *http.Request) {

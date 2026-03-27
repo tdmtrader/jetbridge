@@ -1,15 +1,18 @@
 package jetbridge
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"code.cloudfoundry.org/lager/v3"
+	"golang.org/x/sync/errgroup"
 	"code.cloudfoundry.org/lager/v3/lagerctx"
 	"github.com/concourse/concourse/atc/metric"
 	"github.com/concourse/concourse/atc/runtime"
@@ -811,40 +814,54 @@ func (p *execProcess) streamInputs(ctx context.Context) error {
 
 // uploadOutputsToArtifactStore execs tar commands in the artifact-helper
 // sidecar to upload step outputs from emptyDir to the artifact PVC.
-// Upload failures are fatal — they propagate as build failures so that
-// downstream steps don't silently run with missing inputs.
+// Only volumes corresponding to declared outputs are uploaded — inputs
+// (already on the PVC from init containers) and the working directory
+// are skipped. Cache volumes are handled separately by uploadCachesToArtifactStore.
+// Uploads run concurrently via errgroup. Upload failures are fatal — they
+// propagate as build failures so downstream steps don't silently run with
+// missing inputs.
 func (p *execProcess) uploadOutputsToArtifactStore(ctx context.Context) error {
 	if p.container == nil || p.container.config.ArtifactStoreClaim == "" {
 		return nil
 	}
 
+	outputPaths := p.container.outputPaths()
+	if len(outputPaths) == 0 {
+		return nil
+	}
+
+	g, gctx := errgroup.WithContext(ctx)
+
 	for _, vol := range p.container.volumes {
 		if vol.MountPath() == "" {
 			continue
 		}
-		key := ArtifactKey(vol.Handle())
-		cmd := []string{"sh", "-c",
-			fmt.Sprintf("mkdir -p $(dirname %s/%s) && tar cf %s/%s -C %s .",
-				ArtifactMountPath, key, ArtifactMountPath, key, vol.MountPath()),
+		if !outputPaths[vol.MountPath()] {
+			continue
 		}
 
-		err := p.executor.ExecInPod(
-			ctx, p.config.Namespace, p.podName,
-			artifactHelperContainerName,
-			cmd, nil, nil, nil, false,
-		)
-		if err != nil {
-			return fmt.Errorf("upload artifact %s: %w", key, err)
-		}
+		key := ArtifactKey(vol.Handle())
+		mountPath := vol.MountPath()
+
+		g.Go(func() error {
+			if err := p.uploadArtifact(gctx, key, mountPath, "output"); err != nil {
+				return fmt.Errorf("upload artifact %s: %w", key, err)
+			}
+			return nil
+		})
 	}
-	return nil
+	return g.Wait()
 }
 
 // uploadCachesToArtifactStore execs tar commands in the artifact-helper
 // sidecar to save task cache directories to the artifact PVC as tar files.
-// This enables cross-node cache sharing when the PVC is backed by GCS Fuse.
-// Cache upload failures are non-fatal — they are logged but do not fail the
-// build, since a missing cache only causes a cold start on the next build.
+// This only runs for CacheStoreArtifact mode — cacheEntries is only populated
+// when caches are backed by the artifact PVC (see buildVolumeMounts in
+// container.go). For CacheStoreHostPath, CacheStorePVC, and CacheStoreEmptyDir,
+// cacheEntries is empty and this function is a no-op.
+// Uploads run concurrently. Cache upload failures are non-fatal — they are
+// logged but do not fail the build, since a missing cache only causes a cold
+// start on the next build.
 func (p *execProcess) uploadCachesToArtifactStore(ctx context.Context) {
 	if p.container == nil || len(p.container.cacheEntries) == 0 {
 		return
@@ -852,25 +869,139 @@ func (p *execProcess) uploadCachesToArtifactStore(ctx context.Context) {
 
 	logger := lagerctx.FromContext(ctx).Session("upload-caches")
 
+	var wg sync.WaitGroup
 	for _, entry := range p.container.cacheEntries {
-		cmd := []string{"sh", "-c",
-			fmt.Sprintf("mkdir -p $(dirname %s/%s) && tar cf %s/%s -C %s .",
-				ArtifactMountPath, entry.artifactKey,
-				ArtifactMountPath, entry.artifactKey, entry.mountPath),
-		}
+		entry := entry
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := p.uploadArtifact(ctx, entry.artifactKey, entry.mountPath, "cache"); err != nil {
+				logger.Error("failed-to-upload-cache", err, lager.Data{
+					"cache-key":  entry.artifactKey,
+					"mount-path": entry.mountPath,
+				})
+			}
+		}()
+	}
+	wg.Wait()
+}
 
-		err := p.executor.ExecInPod(
-			ctx, p.config.Namespace, p.podName,
-			artifactHelperContainerName,
-			cmd, nil, nil, nil, false,
-		)
+// ArtifactUploadStats holds telemetry data parsed from the two-phase upload
+// command's stdout output.
+type ArtifactUploadStats struct {
+	FileCount     int64
+	SizeBytes     int64
+	TarNanos      int64
+	TransferNanos int64
+}
+
+// ParseArtifactUploadStats parses the structured output from the upload shell
+// script. Expected format: "FILES=<n> TAR_NS=<n> SIZE=<n> TRANSFER_NS=<n>"
+func ParseArtifactUploadStats(output string) ArtifactUploadStats {
+	var stats ArtifactUploadStats
+	for _, field := range strings.Fields(output) {
+		parts := strings.SplitN(field, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		val, err := strconv.ParseInt(parts[1], 10, 64)
 		if err != nil {
-			logger.Error("failed-to-upload-cache", err, lager.Data{
-				"cache-key":  entry.artifactKey,
-				"mount-path": entry.mountPath,
-			})
+			continue
+		}
+		switch parts[0] {
+		case "FILES":
+			stats.FileCount = val
+		case "TAR_NS":
+			stats.TarNanos = val
+		case "SIZE":
+			stats.SizeBytes = val
+		case "TRANSFER_NS":
+			stats.TransferNanos = val
 		}
 	}
+	return stats
+}
+
+// uploadArtifact performs a two-phase artifact upload in the artifact-helper
+// sidecar: (1) tar to a temp file (measuring tar duration), (2) move to the
+// PVC (measuring transfer duration). File count, tar size, and phase timings
+// are captured as span attributes for observability.
+func (p *execProcess) uploadArtifact(ctx context.Context, key, mountPath, artifactType string) error {
+	ctx, span := tracing.StartSpan(ctx, "k8s.artifact.upload", tracing.Attrs{
+		"artifact.key":        key,
+		"artifact.type":       artifactType,
+		"volume.mount_path":   mountPath,
+	})
+	var spanErr error
+	defer func() { tracing.End(span, spanErr) }()
+
+	dest := fmt.Sprintf("%s/%s", ArtifactMountPath, key)
+	tmpFile := fmt.Sprintf("/tmp/%s", strings.ReplaceAll(key, "/", "_"))
+
+	// Two-phase upload:
+	//   Phase 1: count files, tar to /tmp (local I/O)
+	//   Phase 2: mv from /tmp to PVC (storage I/O)
+	// Timings are reported via stdout for span attribute capture.
+	shellScript := fmt.Sprintf(`
+fc=$(find %s -type f 2>/dev/null | wc -l)
+mkdir -p $(dirname %s)
+t0=$(date +%%s%%N)
+tar cf %s -C %s .
+t1=$(date +%%s%%N)
+sz=$(stat -c %%s %s 2>/dev/null || stat -f %%z %s 2>/dev/null || echo 0)
+mkdir -p $(dirname %s)
+mv %s %s
+t2=$(date +%%s%%N)
+echo "FILES=$fc TAR_NS=$((t1-t0)) SIZE=$sz TRANSFER_NS=$((t2-t1))"
+`,
+		mountPath,
+		tmpFile,
+		tmpFile, mountPath,
+		tmpFile, tmpFile,
+		dest,
+		tmpFile, dest,
+	)
+
+	var stdout bytes.Buffer
+	cmd := []string{"sh", "-c", shellScript}
+
+	spanErr = p.executor.ExecInPod(
+		ctx, p.config.Namespace, p.podName,
+		artifactHelperContainerName,
+		cmd, nil, &stdout, nil, false,
+	)
+	if spanErr != nil {
+		return spanErr
+	}
+
+	stats := ParseArtifactUploadStats(stdout.String())
+
+	span.SetAttributes(
+		attribute.Int64("artifact.file_count", stats.FileCount),
+		attribute.Int64("artifact.size_bytes", stats.SizeBytes),
+		attribute.Int64("artifact.tar_duration_ns", stats.TarNanos),
+		attribute.Int64("artifact.transfer_duration_ns", stats.TransferNanos),
+	)
+
+	if stats.TarNanos > 0 {
+		span.AddEvent("artifact.tar.completed", oteltrace.WithAttributes(
+			attribute.Int64("duration_ns", stats.TarNanos),
+			attribute.Int64("size_bytes", stats.SizeBytes),
+		))
+	}
+	if stats.TransferNanos > 0 {
+		span.AddEvent("artifact.transfer.completed", oteltrace.WithAttributes(
+			attribute.Int64("duration_ns", stats.TransferNanos),
+		))
+	}
+
+	// Record OTel metrics for dashboards and alerting.
+	tarDuration := time.Duration(stats.TarNanos) * time.Nanosecond
+	transferDuration := time.Duration(stats.TransferNanos) * time.Nanosecond
+	totalDuration := tarDuration + transferDuration
+	metric.RecordArtifactUpload(ctx, artifactType, totalDuration, stats.SizeBytes, stats.FileCount, tarDuration, transferDuration)
+
+	return nil
 }
 
 // annotateExitStatus persists the exit status as a pod annotation so that
