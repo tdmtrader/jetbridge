@@ -377,16 +377,27 @@ func (step *GetStep) retrieveFromCacheOrPerformGet(
 	//     * If lock acquisition succeeded, then run the get script and
 	//       initialize the volume as a resource cache.
 	attemptGet := func() (runtime.Volume, bool, resource.VersionResult, runtime.ProcessResult, bool, error) {
-		volume, versionResult, found, err := step.retrieveFromCache(ctx, resourceCache, workerSpec, worker, delegate)
-		if err != nil {
-			return nil, false, resource.VersionResult{}, runtime.ProcessResult{}, false, err
+		// DaemonSet mode: skip resource cache lookup. Cached volumes
+		// reference DB handles that have no corresponding hostPath
+		// directory, so the consuming step's init container cannot
+		// locate the artifact. Always perform a fresh get so that
+		// recordOutputLocations populates the ArtifactLocator.
+		skipCache := false
+		if sc, ok := worker.(interface{ SkipResourceCache() bool }); ok {
+			skipCache = sc.SkipResourceCache()
 		}
-		if found {
-			metric.Metrics.GetStepCacheHits.Inc()
-			fmt.Fprintln(delegate.Stderr(), "\x1b[1;36mINFO: found existing resource cache\x1b[0m")
-			fmt.Fprintln(delegate.Stderr(), "")
+		if !skipCache {
+			volume, versionResult, found, err := step.retrieveFromCache(ctx, resourceCache, workerSpec, worker, delegate)
+			if err != nil {
+				return nil, false, resource.VersionResult{}, runtime.ProcessResult{}, false, err
+			}
+			if found {
+				metric.Metrics.GetStepCacheHits.Inc()
+				fmt.Fprintln(delegate.Stderr(), "\x1b[1;36mINFO: found existing resource cache\x1b[0m")
+				fmt.Fprintln(delegate.Stderr(), "")
 
-			return volume, true, versionResult, runtime.ProcessResult{ExitStatus: 0}, true, nil
+				return volume, true, versionResult, runtime.ProcessResult{ExitStatus: 0}, true, nil
+			}
 		}
 
 		lockLogger := logger.Session("lock", lager.Data{"lock-name": lockName})

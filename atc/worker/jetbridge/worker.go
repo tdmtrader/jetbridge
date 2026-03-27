@@ -60,6 +60,15 @@ func (w *Worker) Name() string {
 	return w.dbWorker.Name()
 }
 
+// SkipResourceCache returns true when the DaemonSet artifact backend is
+// active. Cached volumes reference DB handles with no corresponding
+// hostPath directory, so consuming steps cannot locate them via the
+// ArtifactLocator. Skipping the cache forces a fresh get, which writes
+// outputs to hostPath and records the location in the locator.
+func (w *Worker) SkipResourceCache() bool {
+	return w.config.IsDaemonSetBackend()
+}
+
 func (w *Worker) FindOrCreateContainer(
 	ctx context.Context,
 	owner db.ContainerOwner,
