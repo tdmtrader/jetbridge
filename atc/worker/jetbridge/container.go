@@ -635,11 +635,22 @@ func (c *Container) daemonSetFetchCommand(sourceHostDir, destPath string) []stri
 		relPath = strings.TrimPrefix(sourceHostDir, hostPath)
 	}
 
-	// Local: cp -a from source hostPath to dest.
+	// Local: cp -a from source hostPath to dest, with retries for race
+	// conditions where the source dir isn't visible yet (e.g., kernel
+	// buffer cache sync, kubelet cleanup timing).
 	// Remote: HTTP GET from the DaemonSet on the source node.
 	script := fmt.Sprintf(`
 if [ -z "$SOURCE_NODE" ] || [ "$SOURCE_NODE" = "$MY_NODE_NAME" ]; then
-  cp -a %s/. %s/
+  for attempt in 1 2 3 4 5; do
+    if [ -d "%s" ]; then
+      cp -a %s/. %s/
+      exit 0
+    fi
+    echo "waiting for source dir %s (attempt $attempt/5)..." >&2
+    sleep 2
+  done
+  echo "failed to copy local artifact: source dir %s does not exist after 5 attempts" >&2
+  exit 1
 else
   for attempt in 1 2 3; do
     if wget -qO- "http://${SOURCE_NODE}.%s.%s.svc.cluster.local:%d/artifacts/%s" | tar xf - -C %s; then
@@ -650,7 +661,7 @@ else
   echo "failed to fetch artifact from $SOURCE_NODE after 3 attempts" >&2
   exit 1
 fi
-`, sourceHostDir, destPath,
+`, sourceHostDir, sourceHostDir, destPath, sourceHostDir, sourceHostDir,
 		svcName, ns, port, relPath, destPath)
 
 	return []string{"sh", "-c", script}
