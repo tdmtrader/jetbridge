@@ -1,0 +1,19 @@
+{{- if .Values.artifactDaemon.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "concourse.fullname" . }}-artifact-daemon
+  labels:
+    {{- include "concourse.labels" . | nindent 4 }}
+    app.kubernetes.io/component: artifact-daemon
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: {{ include "concourse.name" . }}
+    app.kubernetes.io/component: artifact-daemon
+  ports:
+    - name: http
+      port: {{ .Values.artifactDaemon.port | default 8080 }}
+      targetPort: http
+      protocol: TCP
+{{- end }}

@@ -1,0 +1,68 @@
+{{- if .Values.artifactDaemon.enabled }}
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "concourse.fullname" . }}-artifact-daemon
+  labels:
+    {{- include "concourse.labels" . | nindent 4 }}
+    app.kubernetes.io/component: artifact-daemon
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "concourse.name" . }}
+      app.kubernetes.io/component: artifact-daemon
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "concourse.name" . }}
+        app.kubernetes.io/component: artifact-daemon
+    spec:
+      serviceAccountName: {{ include "concourse.fullname" . }}-artifact-daemon
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: artifact-daemon
+          image: {{ include "concourse.image" . }}
+          command:
+            - /usr/local/concourse/bin/artifact-daemon
+            - --port={{ .Values.artifactDaemon.port | default 8080 }}
+            - --storage-path={{ .Values.artifactDaemon.hostPath | default "/var/concourse/artifacts" }}
+            - --ttl={{ .Values.artifactDaemon.ttl | default "2h" }}
+            - --node-name=$(NODE_NAME)
+            - --namespace={{ include "concourse.kubernetesNamespace" . }}
+            - --label-key=concourse.dev/artifact-cache
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          ports:
+            - name: http
+              containerPort: {{ .Values.artifactDaemon.port | default 8080 }}
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          resources:
+            {{- toYaml .Values.artifactDaemon.resources | nindent 12 }}
+          volumeMounts:
+            - name: artifact-storage
+              mountPath: {{ .Values.artifactDaemon.hostPath | default "/var/concourse/artifacts" }}
+      volumes:
+        - name: artifact-storage
+          hostPath:
+            path: {{ .Values.artifactDaemon.hostPath | default "/var/concourse/artifacts" }}
+            type: DirectoryOrCreate
+      {{- with .Values.artifactDaemon.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

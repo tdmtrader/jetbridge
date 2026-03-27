@@ -426,3 +426,29 @@ alertingRules:
   enabled: false
   # -- Additional labels for PrometheusRule
   labels: {}
+
+# -- DaemonSet artifact cache configuration.
+# When enabled, deploys a DaemonSet on each node with a local HTTP file server
+# for artifact storage. Provides sub-second local reads and fast cross-node
+# transfers, replacing the PVC-based artifact store for improved performance.
+artifactDaemon:
+  # -- Enable the DaemonSet artifact cache
+  enabled: false
+  # -- HTTP server port
+  port: 8080
+  # -- Host path for artifact storage on each node
+  hostPath: /var/concourse/artifacts
+  # -- TTL for automatic artifact cleanup (Go duration)
+  ttl: "2h"
+  # -- Headless service name for per-pod DNS resolution
+  serviceName: artifact-daemon
+  # -- Resource requests and limits for the DaemonSet pods
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+  # -- Tolerations for scheduling on all nodes (including spot, GPU, etc.)
+  tolerations: []
