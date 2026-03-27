@@ -352,3 +352,28 @@ _Link: [./tracks/scratch_mount_cache_strategies_20260325/](./tracks/scratch_moun
 _Link: [./tracks/scratch_path_volumes_for_task_containers_20260325/](./tracks/scratch_path_volumes_for_task_containers_20260325/)_
 
 ---
+
+### [ ] Track: Version bumps
+_Link: [./tracks/version_bumps_20260327/](./tracks/version_bumps_20260327/)_
+
+---
+
+### [ ] Track: database_migration_runbook
+_Link: [./tracks/database_migration_runbook_20260327/](./tracks/database_migration_runbook_20260327/)_
+
+---
+
+### [ ] Track: pipeline_migration_guide
+_Link: [./tracks/pipeline_migration_guide_20260327/](./tracks/pipeline_migration_guide_20260327/)_
+
+---
+
+### [ ] Track: Release versioning for fly and JetBridge image
+_Link: [./tracks/release_versioning_for_fly_and_jetbridge_image_20260327/](./tracks/release_versioning_for_fly_and_jetbridge_image_20260327/)_
+
+---
+
+### [ ] Track: deprecate old agent paths and update tests
+_Link: [./tracks/deprecate_old_agent_paths_and_update_tests_20260327/](./tracks/deprecate_old_agent_paths_and_update_tests_20260327/)_
+
+---

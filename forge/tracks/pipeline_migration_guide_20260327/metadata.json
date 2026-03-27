@@ -1,0 +1,24 @@
+{
+  "trackId": "pipeline_migration_guide_20260327",
+  "type": "docs",
+  "status": "completed",
+  "description": "pipeline_migration_guide",
+  "createdAt": "2026-03-27T14:13:05.818Z",
+  "updatedAt": "2026-03-27T14:33:47.650Z",
+  "sessions": [
+    {
+      "slotIndex": 0,
+      "engineType": "claude",
+      "aiSessionId": "8255c278-5621-458a-af2d-cd66ef79aec9",
+      "updatedAt": "2026-03-27T14:19:36.339Z"
+    }
+  ],
+  "sessionHistory": [
+    {
+      "slotIndex": 0,
+      "engineType": "claude",
+      "aiSessionId": "8255c278-5621-458a-af2d-cd66ef79aec9",
+      "updatedAt": "2026-03-27T14:19:36.339Z"
+    }
+  ]
+}
