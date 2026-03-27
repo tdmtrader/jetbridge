@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -893,7 +894,16 @@ func (p *execProcess) uploadOutputsToArtifactStore(ctx context.Context) error {
 	// DaemonSet mode: outputs are already on hostPath — no upload needed.
 	// Record artifact locations for scheduling affinity.
 	if p.container.config.IsDaemonSetBackend() {
-		p.recordOutputLocations(p.fetchPodNodeName(ctx))
+		nodeName := p.fetchPodNodeName(ctx)
+		logger := lagerctx.FromContext(ctx).Session("record-output-locations", lager.Data{
+			"handle":    p.container.handle,
+			"pod":       p.podName,
+			"node":      nodeName,
+			"volumes":   len(p.container.volumes),
+			"type":      string(p.container.containerSpec.Type),
+		})
+		logger.Info("recording-daemonset-artifacts")
+		p.recordOutputLocations(nodeName)
 		return nil
 	}
 
@@ -1164,6 +1174,7 @@ func (p *execProcess) recordOutputLocations(nodeName string) {
 		mountToOutputName[p.container.containerSpec.Dir] = "dir"
 	}
 
+	recorded := 0
 	for _, vol := range p.container.volumes {
 		if vol.MountPath() == "" || !outputPaths[vol.MountPath()] {
 			continue
@@ -1175,6 +1186,13 @@ func (p *execProcess) recordOutputLocations(nodeName string) {
 		}
 		hostDir := filepath.Join(hostPath, "steps", p.container.handle, subdir)
 		p.container.artifactLocator.Record(key, nodeName, hostDir)
+		recorded++
+	}
+	if recorded == 0 && len(p.container.volumes) > 0 {
+		// Log when we have volumes but none matched output paths — helps
+		// diagnose locator-miss issues in DaemonSet mode.
+		fmt.Fprintf(os.Stderr, "WARNING: recordOutputLocations: %d volumes but 0 matched outputPaths %v (handle=%s type=%s)\n",
+			len(p.container.volumes), outputPaths, p.container.handle, p.container.containerSpec.Type)
 	}
 }
 
