@@ -257,7 +257,15 @@ func (w *Worker) LookupVolume(ctx context.Context, handle string) (runtime.Volum
 
 	// When the artifact store is configured, return an ArtifactStoreVolume
 	// so that downstream steps use init containers instead of SPDY streaming.
-	if w.config.ArtifactStoreClaim != "" || w.config.IsDaemonSetBackend() {
+	if w.config.IsDaemonSetBackend() {
+		key := ArtifactKey(handle)
+		var sourceNode string
+		if w.artifactLocator != nil {
+			sourceNode, _ = w.artifactLocator.Locate(key)
+		}
+		return NewDaemonSetVolume(key, handle, w.Name(), dbVolume, sourceNode, w.config), true, nil
+	}
+	if w.config.ArtifactStoreClaim != "" {
 		key := ArtifactKey(handle)
 		return NewArtifactStoreVolume(key, handle, w.Name(), dbVolume), true, nil
 	}
