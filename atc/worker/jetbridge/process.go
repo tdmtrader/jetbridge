@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -1145,12 +1146,29 @@ func (p *execProcess) recordOutputLocations(nodeName string) {
 	}
 
 	outputPaths := p.container.outputPaths()
+	hostPath := p.container.config.ArtifactDaemonHostPath
+
+	// Build reverse map: mount path → output name (used as hostPath subdir).
+	mountToOutputName := make(map[string]string)
+	for name, path := range p.container.containerSpec.Outputs {
+		mountToOutputName[path] = name
+	}
+	// Dir volume gets subdir "dir".
+	if p.container.containerSpec.Dir != "" {
+		mountToOutputName[p.container.containerSpec.Dir] = "dir"
+	}
+
 	for _, vol := range p.container.volumes {
 		if vol.MountPath() == "" || !outputPaths[vol.MountPath()] {
 			continue
 		}
 		key := ArtifactKey(vol.Handle())
-		p.container.artifactLocator.Record(key, nodeName)
+		subdir := mountToOutputName[vol.MountPath()]
+		if subdir == "" {
+			subdir = "unknown"
+		}
+		hostDir := filepath.Join(hostPath, "steps", p.container.handle, subdir)
+		p.container.artifactLocator.Record(key, nodeName, hostDir)
 	}
 }
 

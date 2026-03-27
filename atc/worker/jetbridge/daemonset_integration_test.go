@@ -3,6 +3,8 @@ package jetbridge
 import (
 	"context"
 	"io"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/concourse/concourse/atc/compression"
@@ -94,7 +96,7 @@ func TestDaemonSetMode_SoftAffinity(t *testing.T) {
 	}
 
 	locator := NewArtifactLocator()
-	locator.Record(ArtifactKey("input-vol-1"), "node-42")
+	locator.Record(ArtifactKey("input-vol-1"), "node-42", "")
 
 	c := &Container{
 		handle:   "test-handle",
@@ -170,7 +172,7 @@ func TestDaemonSetMode_InitContainerFetchCommand(t *testing.T) {
 	}
 
 	locator := NewArtifactLocator()
-	locator.Record(ArtifactKey("vol-1"), "node-a")
+	locator.Record(ArtifactKey("vol-1"), "node-a", "")
 
 	c := &Container{
 		handle:   "test-handle",
@@ -224,25 +226,25 @@ func TestDaemonSetMode_InitContainerFetchCommand(t *testing.T) {
 func TestDaemonSetMode_LocatorRecordLookupCleanup(t *testing.T) {
 	locator := NewArtifactLocator()
 
-	locator.Record("artifacts/build-1.tar", "node-a")
-	locator.Record("artifacts/build-2.tar", "node-b")
-	locator.Record("artifacts/build-3.tar", "node-a")
+	locator.Record("artifacts/build-1.tar", "node-a", "")
+	locator.Record("artifacts/build-2.tar", "node-b", "")
+	locator.Record("artifacts/build-3.tar", "node-a", "")
 
 	// Verify lookup
-	node, ok := locator.Locate("artifacts/build-1.tar")
+	node, ok := locator.LocateNode("artifacts/build-1.tar")
 	if !ok || node != "node-a" {
 		t.Errorf("expected node-a, got %s", node)
 	}
 
 	// Simulate GC cleanup
 	locator.Remove("artifacts/build-1.tar")
-	_, ok = locator.Locate("artifacts/build-1.tar")
+	_, ok = locator.LocateNode("artifacts/build-1.tar")
 	if ok {
 		t.Error("expected not found after Remove")
 	}
 
 	// Other entries unaffected
-	node, ok = locator.Locate("artifacts/build-2.tar")
+	node, ok = locator.LocateNode("artifacts/build-2.tar")
 	if !ok || node != "node-b" {
 		t.Errorf("expected node-b, got %s", node)
 	}
@@ -377,12 +379,240 @@ func TestDaemonSetMode_LocatorRecordCalledAfterUpload(t *testing.T) {
 
 	// Verify the locator was populated for the output volume.
 	key := ArtifactKey(vol.Handle())
-	node, found := locator.Locate(key)
+	node, found := locator.LocateNode(key)
 	if !found {
 		t.Fatalf("expected locator to have key %s, but not found", key)
 	}
 	if node != "test-node-1" {
 		t.Errorf("expected node test-node-1, got %s", node)
+	}
+}
+
+// =======================================================================
+// Phase 2: HostPath output and dir volumes
+// =======================================================================
+
+func daemonSetConfig() Config {
+	return Config{
+		Namespace:              "test-ns",
+		ArtifactBackend:        ArtifactBackendDaemonSet,
+		ArtifactDaemonHostPath: "/var/concourse/artifacts",
+		ArtifactDaemonPort:     8080,
+		ArtifactDaemonService:  "artifact-daemon",
+		ArtifactHelperImage:    "alpine:latest",
+	}
+}
+
+func TestDaemonSetMode_OutputVolumesAreHostPath(t *testing.T) {
+	cfg := daemonSetConfig()
+	c := &Container{
+		handle:   "build-42",
+		podName:  "test-pod",
+		metadata: db.ContainerMetadata{Type: db.ContainerTypeTask},
+		containerSpec: runtime.ContainerSpec{
+			Dir:     "/tmp/build",
+			Type:    db.ContainerTypeTask,
+			Outputs: runtime.OutputPaths{"result": "/tmp/build/result"},
+		},
+		config:     cfg,
+		properties: make(map[string]string),
+	}
+
+	volumes, _ := c.buildVolumeMounts()
+
+	// Find the output volume
+	for _, vol := range volumes {
+		if strings.HasPrefix(vol.Name, "output-") {
+			if vol.HostPath == nil {
+				t.Fatal("output volume should be hostPath in DaemonSet mode, got emptyDir")
+			}
+			expectedPath := filepath.Join(cfg.ArtifactDaemonHostPath, "steps", "build-42", "result")
+			if vol.HostPath.Path != expectedPath {
+				t.Errorf("expected hostPath %s, got %s", expectedPath, vol.HostPath.Path)
+			}
+			return
+		}
+	}
+	t.Fatal("no output volume found")
+}
+
+func TestDaemonSetMode_DirVolumeIsHostPath(t *testing.T) {
+	cfg := daemonSetConfig()
+	c := &Container{
+		handle:   "build-42",
+		podName:  "test-pod",
+		metadata: db.ContainerMetadata{Type: db.ContainerTypeTask},
+		containerSpec: runtime.ContainerSpec{
+			Dir:  "/tmp/build",
+			Type: db.ContainerTypeTask,
+		},
+		config:     cfg,
+		properties: make(map[string]string),
+	}
+
+	volumes, _ := c.buildVolumeMounts()
+
+	for _, vol := range volumes {
+		if strings.HasPrefix(vol.Name, "dir-") {
+			if vol.HostPath == nil {
+				t.Fatal("dir volume should be hostPath in DaemonSet mode, got emptyDir")
+			}
+			expectedPath := filepath.Join(cfg.ArtifactDaemonHostPath, "steps", "build-42", "dir")
+			if vol.HostPath.Path != expectedPath {
+				t.Errorf("expected hostPath %s, got %s", expectedPath, vol.HostPath.Path)
+			}
+			return
+		}
+	}
+	t.Fatal("no dir volume found")
+}
+
+func TestDaemonSetMode_InputVolumesAreHostPath(t *testing.T) {
+	cfg := daemonSetConfig()
+	c := &Container{
+		handle:   "build-43",
+		podName:  "test-pod",
+		metadata: db.ContainerMetadata{Type: db.ContainerTypeTask},
+		containerSpec: runtime.ContainerSpec{
+			Dir:  "/tmp/build",
+			Type: db.ContainerTypeTask,
+			Inputs: []runtime.Input{
+				{
+					Artifact:        &stubArtifact{handle: "src-vol"},
+					DestinationPath: "/tmp/build/src",
+				},
+			},
+		},
+		config:     cfg,
+		properties: make(map[string]string),
+	}
+
+	volumes, _ := c.buildVolumeMounts()
+
+	for _, vol := range volumes {
+		if strings.HasPrefix(vol.Name, "input-") {
+			if vol.HostPath == nil {
+				t.Fatal("input volume should be hostPath in DaemonSet mode, got emptyDir")
+			}
+			expectedPath := filepath.Join(cfg.ArtifactDaemonHostPath, "steps", "build-43", "input-1")
+			if vol.HostPath.Path != expectedPath {
+				t.Errorf("expected hostPath %s, got %s", expectedPath, vol.HostPath.Path)
+			}
+			return
+		}
+	}
+	t.Fatal("no input volume found")
+}
+
+func TestPVCMode_VolumesStillEmptyDir(t *testing.T) {
+	cfg := Config{
+		Namespace:          "test-ns",
+		ArtifactStoreClaim: "artifacts-pvc",
+		ArtifactHelperImage: "alpine:latest",
+	}
+	c := &Container{
+		handle:   "build-99",
+		podName:  "test-pod",
+		metadata: db.ContainerMetadata{Type: db.ContainerTypeTask},
+		containerSpec: runtime.ContainerSpec{
+			Dir:     "/tmp/build",
+			Type:    db.ContainerTypeTask,
+			Outputs: runtime.OutputPaths{"out": "/tmp/build/out"},
+		},
+		config:     cfg,
+		properties: make(map[string]string),
+	}
+
+	volumes, _ := c.buildVolumeMounts()
+
+	for _, vol := range volumes {
+		if vol.HostPath != nil {
+			t.Errorf("PVC mode should not use hostPath volumes, but %s does", vol.Name)
+		}
+	}
+}
+
+// =======================================================================
+// Phase 4: Direct cache hostPath mounts
+// =======================================================================
+
+func TestDaemonSetMode_CachesAreDirectHostPath(t *testing.T) {
+	cfg := daemonSetConfig()
+	c := &Container{
+		handle:   "build-50",
+		podName:  "test-pod",
+		metadata: db.ContainerMetadata{Type: db.ContainerTypeTask, JobID: 7, StepName: "build"},
+		containerSpec: runtime.ContainerSpec{
+			Dir:    "/tmp/build",
+			Type:   db.ContainerTypeTask,
+			Caches: []string{"/tmp/build/.cache"},
+		},
+		config:     cfg,
+		properties: make(map[string]string),
+	}
+
+	volumes, _ := c.buildVolumeMounts()
+
+	foundCache := false
+	for _, vol := range volumes {
+		if strings.HasPrefix(vol.Name, "cache-") {
+			foundCache = true
+			if vol.HostPath == nil {
+				t.Fatal("cache volume should be hostPath in DaemonSet mode")
+			}
+			if !strings.HasPrefix(vol.HostPath.Path, filepath.Join(cfg.ArtifactDaemonHostPath, "caches")) {
+				t.Errorf("cache hostPath should be under <hostPath>/caches/, got %s", vol.HostPath.Path)
+			}
+		}
+	}
+	if !foundCache {
+		t.Fatal("no cache volume found")
+	}
+
+	// No cacheEntries should be created (no tar save/restore needed)
+	if len(c.cacheEntries) != 0 {
+		t.Errorf("expected 0 cacheEntries in DaemonSet mode, got %d", len(c.cacheEntries))
+	}
+}
+
+// =======================================================================
+// Phase 3: cp -a init containers
+// =======================================================================
+
+func TestDaemonSetMode_InitContainerUsesCpA(t *testing.T) {
+	cfg := daemonSetConfig()
+	locator := NewArtifactLocator()
+	locator.Record(ArtifactKey("src-vol"), "this-node", "/var/concourse/artifacts/steps/source-handle/src")
+
+	c := &Container{
+		handle:   "build-60",
+		podName:  "test-pod",
+		metadata: db.ContainerMetadata{Type: db.ContainerTypeTask},
+		containerSpec: runtime.ContainerSpec{
+			Dir:  "/tmp/build",
+			Type: db.ContainerTypeTask,
+			Inputs: []runtime.Input{
+				{
+					Artifact:        &stubArtifact{handle: "src-vol"},
+					DestinationPath: "/tmp/build/src",
+				},
+			},
+		},
+		config:          cfg,
+		properties:      make(map[string]string),
+		artifactLocator: locator,
+	}
+
+	_, mounts := c.buildVolumeMounts()
+	inits := c.buildArtifactInitContainers(mounts)
+
+	if len(inits) == 0 {
+		t.Fatal("expected at least one init container")
+	}
+
+	cmd := strings.Join(inits[0].Command, " ")
+	if !strings.Contains(cmd, "cp -a") {
+		t.Errorf("local DaemonSet init container should use 'cp -a', got command: %s", cmd)
 	}
 }
 

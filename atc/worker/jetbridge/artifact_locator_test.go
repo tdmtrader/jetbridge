@@ -8,17 +8,50 @@ import (
 func TestArtifactLocator_RecordAndLocate(t *testing.T) {
 	locator := NewArtifactLocator()
 
-	locator.Record("artifacts/abc.tar", "node-1")
-	locator.Record("artifacts/def.tar", "node-2")
+	locator.Record("artifacts/abc.tar", "node-1", "")
+	locator.Record("artifacts/def.tar", "node-2", "")
 
-	node, ok := locator.Locate("artifacts/abc.tar")
+	loc, ok := locator.Locate("artifacts/abc.tar")
+	if !ok || loc.NodeName != "node-1" {
+		t.Errorf("expected node-1, got %q (found=%v)", loc.NodeName, ok)
+	}
+
+	loc, ok = locator.Locate("artifacts/def.tar")
+	if !ok || loc.NodeName != "node-2" {
+		t.Errorf("expected node-2, got %q (found=%v)", loc.NodeName, ok)
+	}
+}
+
+func TestArtifactLocator_LocateNode(t *testing.T) {
+	locator := NewArtifactLocator()
+
+	locator.Record("artifacts/abc.tar", "node-1", "/var/artifacts/steps/abc")
+
+	node, ok := locator.LocateNode("artifacts/abc.tar")
 	if !ok || node != "node-1" {
 		t.Errorf("expected node-1, got %q (found=%v)", node, ok)
 	}
 
-	node, ok = locator.Locate("artifacts/def.tar")
-	if !ok || node != "node-2" {
-		t.Errorf("expected node-2, got %q (found=%v)", node, ok)
+	_, ok = locator.LocateNode("nonexistent")
+	if ok {
+		t.Error("expected not found for nonexistent key")
+	}
+}
+
+func TestArtifactLocator_LocateWithHostDir(t *testing.T) {
+	locator := NewArtifactLocator()
+
+	locator.Record("artifacts/abc.tar", "node-1", "/var/artifacts/steps/abc/output")
+
+	loc, ok := locator.Locate("artifacts/abc.tar")
+	if !ok {
+		t.Fatal("expected found")
+	}
+	if loc.NodeName != "node-1" {
+		t.Errorf("expected node-1, got %q", loc.NodeName)
+	}
+	if loc.HostDir != "/var/artifacts/steps/abc/output" {
+		t.Errorf("expected /var/artifacts/steps/abc/output, got %q", loc.HostDir)
 	}
 }
 
@@ -34,7 +67,7 @@ func TestArtifactLocator_LocateMissing(t *testing.T) {
 func TestArtifactLocator_Remove(t *testing.T) {
 	locator := NewArtifactLocator()
 
-	locator.Record("artifacts/abc.tar", "node-1")
+	locator.Record("artifacts/abc.tar", "node-1", "")
 	locator.Remove("artifacts/abc.tar")
 
 	_, ok := locator.Locate("artifacts/abc.tar")
@@ -52,7 +85,7 @@ func TestArtifactLocator_ConcurrentAccess(t *testing.T) {
 		key := "key-" + string(rune('a'+i%26))
 		go func() {
 			defer wg.Done()
-			locator.Record(key, "node-x")
+			locator.Record(key, "node-x", "")
 		}()
 		go func() {
 			defer wg.Done()

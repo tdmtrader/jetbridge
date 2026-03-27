@@ -546,17 +546,22 @@ func (c *Container) buildArtifactInitContainers(mainMounts []corev1.VolumeMount)
 		}
 
 		if c.config.IsDaemonSetBackend() {
-			initContainer.Command = c.daemonSetFetchCommand(key, input.DestinationPath)
+			loc, hasLoc := c.artifactLocate(key)
+			sourceHostDir := ""
+			if hasLoc {
+				sourceHostDir = loc.HostDir
+			}
+			initContainer.Command = c.daemonSetFetchCommand(sourceHostDir, input.DestinationPath)
 			initContainer.Env = append(initContainer.Env, corev1.EnvVar{
 				Name: "MY_NODE_NAME",
 				ValueFrom: &corev1.EnvVarSource{
 					FieldRef: &corev1.ObjectFieldSelector{FieldPath: "spec.nodeName"},
 				},
 			})
-			if sourceNode := c.artifactSourceNode(key); sourceNode != "" {
+			if hasLoc && loc.NodeName != "" {
 				initContainer.Env = append(initContainer.Env, corev1.EnvVar{
 					Name:  "SOURCE_NODE",
-					Value: sourceNode,
+					Value: loc.NodeName,
 				})
 			}
 		} else {
@@ -598,7 +603,12 @@ func (c *Container) buildArtifactInitContainers(mainMounts []corev1.VolumeMount)
 // daemonSetFetchCommand returns a shell command that fetches an artifact
 // from either local hostPath (same node) or the DaemonSet HTTP server
 // (different node). Uses MY_NODE_NAME and SOURCE_NODE env vars to decide.
-func (c *Container) daemonSetFetchCommand(key, destPath string) []string {
+// daemonSetFetchCommand returns a shell command that copies an artifact from
+// the source step's hostPath directory. Local: cp -a. Remote: HTTP GET + tar.
+// daemonSetFetchCommand returns a shell command that copies an artifact from
+// the source step's hostPath directory. sourceHostDir is the full hostPath
+// of the source artifact. Local: cp -a. Remote: HTTP GET + tar.
+func (c *Container) daemonSetFetchCommand(sourceHostDir, destPath string) []string {
 	svcName := c.config.ArtifactDaemonService
 	if svcName == "" {
 		svcName = "artifact-daemon"
@@ -609,12 +619,18 @@ func (c *Container) daemonSetFetchCommand(key, destPath string) []string {
 		port = 8080
 	}
 
-	// If SOURCE_NODE is empty (no locator info), try local first.
-	// Local path: artifact is on hostPath mounted at ArtifactMountPath.
-	// Remote path: HTTP GET from the DaemonSet pod on the source node.
+	// Derive the URL path for remote fetch by stripping the hostPath prefix.
+	hostPath := c.config.ArtifactDaemonHostPath
+	relPath := strings.TrimPrefix(sourceHostDir, hostPath+"/")
+	if relPath == sourceHostDir {
+		relPath = strings.TrimPrefix(sourceHostDir, hostPath)
+	}
+
+	// Local: cp -a from source hostPath to dest.
+	// Remote: HTTP GET from the DaemonSet on the source node.
 	script := fmt.Sprintf(`
 if [ -z "$SOURCE_NODE" ] || [ "$SOURCE_NODE" = "$MY_NODE_NAME" ]; then
-  tar xf %s/%s -C %s
+  cp -a %s/. %s/
 else
   for attempt in 1 2 3; do
     if wget -qO- "http://${SOURCE_NODE}.%s.%s.svc.cluster.local:%d/artifacts/%s" | tar xf - -C %s; then
@@ -625,10 +641,18 @@ else
   echo "failed to fetch artifact from $SOURCE_NODE after 3 attempts" >&2
   exit 1
 fi
-`, ArtifactMountPath, key, destPath,
-		svcName, ns, port, key, destPath)
+`, sourceHostDir, destPath,
+		svcName, ns, port, relPath, destPath)
 
 	return []string{"sh", "-c", script}
+}
+
+// artifactLocate returns the full ArtifactLocation for a key.
+func (c *Container) artifactLocate(key string) (ArtifactLocation, bool) {
+	if c.artifactLocator == nil {
+		return ArtifactLocation{}, false
+	}
+	return c.artifactLocator.Locate(key)
 }
 
 // artifactSourceNode returns the node name for an artifact key from the
@@ -637,7 +661,7 @@ func (c *Container) artifactSourceNode(key string) string {
 	if c.artifactLocator == nil {
 		return ""
 	}
-	node, _ := c.artifactLocator.Locate(key)
+	node, _ := c.artifactLocator.LocateNode(key)
 	return node
 }
 
@@ -858,7 +882,7 @@ func (c *Container) preferredInputNode() string {
 			continue
 		}
 		key := ArtifactKey(input.Artifact.Handle())
-		if node, ok := c.artifactLocator.Locate(key); ok {
+		if node, ok := c.artifactLocator.LocateNode(key); ok {
 			counts[node]++
 		}
 	}
@@ -1096,6 +1120,29 @@ func stableCacheKey(jobID int, stepName string, cachePath string) string {
 
 // buildVolumeMounts creates K8s Volume and VolumeMount entries for
 // the container's Dir, inputs, outputs, and caches.
+// stepVolume creates a volume for a step. In DaemonSet mode, it creates a
+// hostPath volume under <hostPath>/steps/<handle>/<subdir>/. Otherwise emptyDir.
+func (c *Container) stepVolume(name, subdir string) corev1.Volume {
+	if c.config.IsDaemonSetBackend() {
+		dirType := corev1.HostPathDirectoryOrCreate
+		return corev1.Volume{
+			Name: name,
+			VolumeSource: corev1.VolumeSource{
+				HostPath: &corev1.HostPathVolumeSource{
+					Path: filepath.Join(c.config.ArtifactDaemonHostPath, "steps", c.handle, subdir),
+					Type: &dirType,
+				},
+			},
+		}
+	}
+	return corev1.Volume{
+		Name: name,
+		VolumeSource: corev1.VolumeSource{
+			EmptyDir: &corev1.EmptyDirVolumeSource{},
+		},
+	}
+}
+
 func (c *Container) buildVolumeMounts() ([]corev1.Volume, []corev1.VolumeMount) {
 	var volumes []corev1.Volume
 	var mounts []corev1.VolumeMount
@@ -1105,12 +1152,7 @@ func (c *Container) buildVolumeMounts() ([]corev1.Volume, []corev1.VolumeMount) 
 	if c.containerSpec.Dir != "" {
 		name := fmt.Sprintf("dir-%d", idx)
 		idx++
-		volumes = append(volumes, corev1.Volume{
-			Name: name,
-			VolumeSource: corev1.VolumeSource{
-				EmptyDir: &corev1.EmptyDirVolumeSource{},
-			},
-		})
+		volumes = append(volumes, c.stepVolume(name, "dir"))
 		mounts = append(mounts, corev1.VolumeMount{
 			Name:      name,
 			MountPath: c.containerSpec.Dir,
@@ -1125,12 +1167,7 @@ func (c *Container) buildVolumeMounts() ([]corev1.Volume, []corev1.VolumeMount) 
 	for _, input := range c.containerSpec.Inputs {
 		name := fmt.Sprintf("input-%d", idx)
 		idx++
-		volumes = append(volumes, corev1.Volume{
-			Name: name,
-			VolumeSource: corev1.VolumeSource{
-				EmptyDir: &corev1.EmptyDirVolumeSource{},
-			},
-		})
+		volumes = append(volumes, c.stepVolume(name, name))
 		mounts = append(mounts, corev1.VolumeMount{
 			Name:      name,
 			MountPath: input.DestinationPath,
@@ -1158,12 +1195,7 @@ func (c *Container) buildVolumeMounts() ([]corev1.Volume, []corev1.VolumeMount) 
 
 		name := fmt.Sprintf("output-%d", idx)
 		idx++
-		volumes = append(volumes, corev1.Volume{
-			Name: name,
-			VolumeSource: corev1.VolumeSource{
-				EmptyDir: &corev1.EmptyDirVolumeSource{},
-			},
-		})
+		volumes = append(volumes, c.stepVolume(name, outputName))
 		mounts = append(mounts, corev1.VolumeMount{
 			Name:      name,
 			MountPath: path,
@@ -1198,9 +1230,34 @@ func (c *Container) buildVolumeMounts() ([]corev1.Volume, []corev1.VolumeMount) 
 
 	switch cacheMode {
 	case CacheStoreArtifact:
-		// Store caches as tar files on the artifact PVC. Init containers
-		// restore cached data before the task starts, and the sidecar
-		// uploads updated caches after the task completes.
+		// DaemonSet mode: mount caches as direct hostPath directories.
+		// No tar save/restore — warm on same node, cold on different node.
+		if c.config.IsDaemonSetBackend() {
+			dirType := corev1.HostPathDirectoryOrCreate
+			for i, cachePath := range resolvedCaches {
+				key := stableCacheKey(c.metadata.JobID, c.metadata.StepName, cachePath)
+				name := fmt.Sprintf("cache-%d", i)
+				volumes = append(volumes, corev1.Volume{
+					Name: name,
+					VolumeSource: corev1.VolumeSource{
+						HostPath: &corev1.HostPathVolumeSource{
+							Path: filepath.Join(c.config.ArtifactDaemonHostPath, "caches", key),
+							Type: &dirType,
+						},
+					},
+				})
+				mounts = append(mounts, corev1.VolumeMount{
+					Name:      name,
+					MountPath: cachePath,
+				})
+				// No cacheEntries — no tar save/restore needed.
+			}
+			break
+		}
+
+		// PVC mode: store caches as tar files on the artifact PVC. Init
+		// containers restore cached data before the task starts, and the
+		// sidecar uploads updated caches after the task completes.
 		for i, cachePath := range resolvedCaches {
 			name := fmt.Sprintf("cache-%d", i)
 			volumes = append(volumes, corev1.Volume{

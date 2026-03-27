@@ -261,7 +261,7 @@ func (w *Worker) LookupVolume(ctx context.Context, handle string) (runtime.Volum
 		key := ArtifactKey(handle)
 		var sourceNode string
 		if w.artifactLocator != nil {
-			sourceNode, _ = w.artifactLocator.Locate(key)
+			sourceNode, _ = w.artifactLocator.LocateNode(key)
 		}
 		return NewDaemonSetVolume(key, handle, w.Name(), dbVolume, sourceNode, w.config), true, nil
 	}
