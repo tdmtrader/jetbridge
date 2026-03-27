@@ -205,7 +205,7 @@ jobs:
           VERSION=$(cat VERSION)
           echo "Version: ${VERSION} (${SHORT_SHA})"
 
-          LDFLAGS="-s -w -X github.com/concourse/concourse.Version=${VERSION}"
+          LDFLAGS="-s -w -X github.com/concourse/concourse.Version=${VERSION} -X github.com/concourse/concourse.JetBridgeVersion=${VERSION}"
 
           echo "=== Building concourse binary (frontend assets embedded from git) ==="
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "${LDFLAGS}" -o concourse-linux-amd64 ./cmd/concourse
@@ -214,6 +214,15 @@ jobs:
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o artifact-daemon-linux-amd64 ./cmd/artifact-daemon
           ls -lh artifact-daemon-linux-amd64
           echo "=== Binaries built ==="
+
+          echo "=== Verifying binary version ==="
+          BINARY_VERSION=$(./concourse-linux-amd64 --version 2>&1 || true)
+          echo "Binary reports: ${BINARY_VERSION}"
+          if ! echo "${BINARY_VERSION}" | grep -q "${VERSION}"; then
+            echo "FATAL: Binary version mismatch! Expected '${VERSION}' in output but got: ${BINARY_VERSION}"
+            exit 1
+          fi
+          echo "=== Version verified: ${VERSION} ==="
 
           REGISTRY="registry-docker-registry.cicd.svc.cluster.local:5000"
           GHCR="ghcr.io/tdmtrader/jetbridge"
@@ -371,20 +380,28 @@ jobs:
     config:
       platform: linux
       rootfs_uri: docker:///registry.home/concourse-test-runner:v5
+      inputs:
+      - name: repo
       run:
         path: sh
         args:
         - -exc
         - |
-          echo "=== Deploying new concourse-web image ==="
+          cd repo
+          VERSION=$(cat VERSION)
+          IMAGE="registry.home/jetbridge:v${VERSION}"
+          echo "=== Deploying concourse-web image: ${IMAGE} ==="
           echo ""
           echo "Current concourse-web pod:"
           kubectl get pods -n cicd -l app=concourse-web
           echo ""
 
+          echo "=== Setting image to ${IMAGE} ==="
+          kubectl set image deployment/concourse-web concourse-web=${IMAGE} -n cicd
+
           echo "=== Restarting concourse-web deployment ==="
           kubectl rollout restart deployment/concourse-web -n cicd
           echo ""
-          echo "=== Self-upgrade initiated ==="
+          echo "=== Self-upgrade initiated: ${IMAGE} ==="
           echo "Note: not waiting for rollout — the restart kills the web pod"
           echo "that is tracking this build, which would leave it stuck forever."
