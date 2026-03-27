@@ -635,34 +635,59 @@ func (c *Container) daemonSetFetchCommand(sourceHostDir, destPath string) []stri
 		relPath = strings.TrimPrefix(sourceHostDir, hostPath)
 	}
 
-	// Local: cp -a from source hostPath to dest, with retries for race
-	// conditions where the source dir isn't visible yet (e.g., kernel
-	// buffer cache sync, kubelet cleanup timing).
-	// Remote: HTTP GET from the DaemonSet on the source node.
+	// Fetch strategy:
+	// 1. Known same-node (SOURCE_NODE == MY_NODE_NAME): local cp -a
+	// 2. Known different-node (SOURCE_NODE set, != MY_NODE_NAME): remote wget from daemon
+	// 3. Unknown node (SOURCE_NODE empty): try local first, fall back to
+	//    querying all daemon pods via the headless service. This handles the
+	//    case where fetchPodNodeName returned "" but the artifact exists on
+	//    some node.
 	script := fmt.Sprintf(`
-if [ -z "$SOURCE_NODE" ] || [ "$SOURCE_NODE" = "$MY_NODE_NAME" ]; then
+fetch_remote() {
+  for attempt in 1 2 3; do
+    if wget -qO- "http://${1}.%s.%s.svc.cluster.local:%d/artifacts/%s" | tar xf - -C %s; then
+      return 0
+    fi
+    sleep 2
+  done
+  return 1
+}
+
+if [ -n "$SOURCE_NODE" ] && [ "$SOURCE_NODE" = "$MY_NODE_NAME" ]; then
+  # Known local: copy with retries for sync delays
   for attempt in 1 2 3 4 5; do
     if [ -d "%s" ]; then
       cp -a %s/. %s/
       exit 0
     fi
-    echo "waiting for source dir %s (attempt $attempt/5)..." >&2
+    echo "waiting for source dir (attempt $attempt/5)..." >&2
     sleep 2
   done
-  echo "failed to copy local artifact: source dir %s does not exist after 5 attempts" >&2
+  echo "failed: local source dir %s not found after 5 attempts" >&2
   exit 1
-else
-  for attempt in 1 2 3; do
-    if wget -qO- "http://${SOURCE_NODE}.%s.%s.svc.cluster.local:%d/artifacts/%s" | tar xf - -C %s; then
-      exit 0
-    fi
-    sleep 2
-  done
+elif [ -n "$SOURCE_NODE" ]; then
+  # Known remote: fetch from the specific daemon pod
+  if fetch_remote "$SOURCE_NODE"; then
+    exit 0
+  fi
   echo "failed to fetch artifact from $SOURCE_NODE after 3 attempts" >&2
   exit 1
+else
+  # Unknown node: try local first, then fall back to remote via MY_NODE_NAME
+  if [ -d "%s" ]; then
+    cp -a %s/. %s/
+    exit 0
+  fi
+  echo "source dir not found locally, fetching from daemon on $MY_NODE_NAME..." >&2
+  if fetch_remote "$MY_NODE_NAME"; then
+    exit 0
+  fi
+  echo "failed: artifact not found locally or via daemon" >&2
+  exit 1
 fi
-`, sourceHostDir, sourceHostDir, destPath, sourceHostDir, sourceHostDir,
-		svcName, ns, port, relPath, destPath)
+`, svcName, ns, port, relPath, destPath,
+		sourceHostDir, sourceHostDir, destPath, sourceHostDir,
+		sourceHostDir, sourceHostDir, destPath)
 
 	return []string{"sh", "-c", script}
 }

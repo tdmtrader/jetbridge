@@ -1203,6 +1203,8 @@ func (p *execProcess) fetchPodNodeName(ctx context.Context) string {
 	}
 	pod, err := p.clientset.CoreV1().Pods(p.config.Namespace).Get(ctx, p.podName, metav1.GetOptions{})
 	if err != nil {
+		logger := lagerctx.FromContext(ctx).Session("fetch-pod-node-name")
+		logger.Error("failed-to-get-pod", err, lager.Data{"pod": p.podName, "namespace": p.config.Namespace})
 		return ""
 	}
 	return pod.Spec.NodeName
