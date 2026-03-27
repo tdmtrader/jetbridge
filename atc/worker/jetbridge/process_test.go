@@ -2367,6 +2367,67 @@ var _ = Describe("Pod phase transition spans", func() {
 			})
 		})
 
+		Context("get/put steps with Dir but no explicit Outputs", func() {
+			BeforeEach(func() {
+				fakeExecutor = &fakeExecExecutor{}
+				artifactCfg := jetbridge.NewConfig("test-namespace", "")
+				artifactCfg.ArtifactStoreClaim = "concourse-artifacts"
+
+				execWorker = jetbridge.NewWorker(fakeDBWorker, fakeClientset, artifactCfg)
+				execWorker.SetExecutor(fakeExecutor)
+
+				setupFakeDBContainer(fakeDBWorker, "artifact-get-handle")
+
+				var err error
+				execContainer, _, err = execWorker.FindOrCreateContainer(
+					ctx,
+					db.NewFixedHandleContainerOwner("artifact-get-handle"),
+					db.ContainerMetadata{Type: db.ContainerTypeGet},
+					runtime.ContainerSpec{
+						TeamID:   1,
+						Dir:      "/tmp/build/get",
+						ImageSpec: runtime.ImageSpec{ResourceType: "git"},
+						Type:     db.ContainerTypeGet,
+					},
+					delegate,
+				)
+				Expect(err).ToNot(HaveOccurred())
+			})
+
+			It("uploads the working directory as the implicit output", func() {
+				process, err := execContainer.Run(ctx, runtime.ProcessSpec{
+					Path: "/opt/resource/in",
+					Args: []string{"/tmp/build/get"},
+				}, runtime.ProcessIO{
+					Stdin:  bytes.NewBufferString("{}"),
+					Stdout: new(bytes.Buffer),
+					Stderr: new(bytes.Buffer),
+				})
+				Expect(err).ToNot(HaveOccurred())
+
+				pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "artifact-get-handle", metav1.GetOptions{})
+				Expect(err).ToNot(HaveOccurred())
+				pod.Status.Phase = corev1.PodRunning
+				_, err = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+				Expect(err).ToNot(HaveOccurred())
+
+				result, err := process.Wait(ctx)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(result.ExitStatus).To(Equal(0))
+
+				var artifactUploads []execCall
+				for _, call := range fakeExecutor.execCalls {
+					if call.containerName == "artifact-helper" {
+						artifactUploads = append(artifactUploads, call)
+					}
+				}
+
+				Expect(artifactUploads).To(HaveLen(1), "get step should upload the Dir volume as implicit output")
+				uploadCmd := strings.Join(artifactUploads[0].command, " ")
+				Expect(uploadCmd).To(ContainSubstring("/tmp/build/get"))
+			})
+		})
+
 		Context("cache upload behavior per cache mode", func() {
 			It("uploads caches in artifact mode", func() {
 				fakeExecutor = &fakeExecExecutor{}

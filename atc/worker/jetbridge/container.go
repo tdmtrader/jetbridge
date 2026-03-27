@@ -166,15 +166,29 @@ func (c *Container) Run(ctx context.Context, spec runtime.ProcessSpec, io runtim
 	return newProcess(processID, pod.Name, c.clientset, c.config, c, io), nil
 }
 
-// outputPaths returns the set of mount paths that correspond to declared
-// step outputs. When an output overlaps an input path, it is included
-// because the step may have modified the input data.
+// outputPaths returns the set of mount paths that should be uploaded to the
+// artifact store after step completion. For task steps with explicit Outputs,
+// only those paths are returned. For get/put steps (no explicit Outputs),
+// the working directory is the implicit output and is included instead.
+// When an output overlaps an input path, it is included because the step
+// may have modified the input data.
 func (c *Container) outputPaths() map[string]bool {
-	paths := make(map[string]bool, len(c.containerSpec.Outputs))
-	for _, path := range c.containerSpec.Outputs {
-		paths[path] = true
+	if len(c.containerSpec.Outputs) > 0 {
+		paths := make(map[string]bool, len(c.containerSpec.Outputs))
+		for _, path := range c.containerSpec.Outputs {
+			paths[path] = true
+		}
+		return paths
 	}
-	return paths
+	// No explicit outputs — for get/put steps the working directory is the
+	// implicit output. Task and check steps with no outputs don't produce
+	// artifacts for downstream consumption.
+	if c.containerSpec.Dir != "" &&
+		c.metadata.Type != db.ContainerTypeTask &&
+		c.metadata.Type != db.ContainerTypeCheck {
+		return map[string]bool{c.containerSpec.Dir: true}
+	}
+	return nil
 }
 
 // volumeForPath returns the Volume associated with the given mount path,
