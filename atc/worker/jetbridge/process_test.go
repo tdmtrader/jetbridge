@@ -2574,11 +2574,11 @@ var _ = Describe("Pod phase transition spans", func() {
 
 	Describe("artifact upload telemetry", func() {
 		It("parses structured output from upload script", func() {
-			stats := jetbridge.ParseArtifactUploadStats("FILES=42 TAR_NS=1000000000 SIZE=524288 TRANSFER_NS=2000000000")
+			stats := jetbridge.ParseArtifactUploadStats("FILES=42 TAR_MS=1200 SIZE=524288 TRANSFER_MS=3400")
 			Expect(stats.FileCount).To(Equal(int64(42)))
-			Expect(stats.TarNanos).To(Equal(int64(1000000000)))
+			Expect(stats.TarMillis).To(Equal(int64(1200)))
 			Expect(stats.SizeBytes).To(Equal(int64(524288)))
-			Expect(stats.TransferNanos).To(Equal(int64(2000000000)))
+			Expect(stats.TransferMillis).To(Equal(int64(3400)))
 		})
 
 		It("handles empty or malformed output gracefully", func() {
@@ -2599,7 +2599,7 @@ var _ = Describe("Pod phase transition spans", func() {
 			defer func() { tracing.Configured = false }()
 
 			fakeExec := &fakeExecExecutor{
-				execStdout: []byte("FILES=10 TAR_NS=500000000 SIZE=1048576 TRANSFER_NS=1500000000"),
+				execStdout: []byte("FILES=10 TAR_MS=500 SIZE=1048576 TRANSFER_MS=1500"),
 			}
 			artifactCfg := jetbridge.NewConfig("test-namespace", "")
 			artifactCfg.ArtifactStoreClaim = "concourse-artifacts"
@@ -2668,10 +2668,10 @@ var _ = Describe("Pod phase transition spans", func() {
 			Expect(attrMap["artifact.file_count"]).To(Equal(int64(10)))
 			Expect(attrMap).To(HaveKey("artifact.size_bytes"))
 			Expect(attrMap["artifact.size_bytes"]).To(Equal(int64(1048576)))
-			Expect(attrMap).To(HaveKey("artifact.tar_duration_ns"))
-			Expect(attrMap["artifact.tar_duration_ns"]).To(Equal(int64(500000000)))
-			Expect(attrMap).To(HaveKey("artifact.transfer_duration_ns"))
-			Expect(attrMap["artifact.transfer_duration_ns"]).To(Equal(int64(1500000000)))
+			Expect(attrMap).To(HaveKey("artifact.tar_duration_ms"))
+			Expect(attrMap["artifact.tar_duration_ms"]).To(Equal(int64(500)))
+			Expect(attrMap).To(HaveKey("artifact.transfer_duration_ms"))
+			Expect(attrMap["artifact.transfer_duration_ms"]).To(Equal(int64(1500)))
 
 			By("verifying span events for phase completion")
 			eventNames := []string{}

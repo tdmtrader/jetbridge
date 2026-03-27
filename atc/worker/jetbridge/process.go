@@ -891,12 +891,12 @@ func (p *execProcess) uploadCachesToArtifactStore(ctx context.Context) {
 type ArtifactUploadStats struct {
 	FileCount     int64
 	SizeBytes     int64
-	TarNanos      int64
-	TransferNanos int64
+	TarMillis     int64
+	TransferMillis int64
 }
 
 // ParseArtifactUploadStats parses the structured output from the upload shell
-// script. Expected format: "FILES=<n> TAR_NS=<n> SIZE=<n> TRANSFER_NS=<n>"
+// script. Expected format: "FILES=<n> TAR_MS=<n> SIZE=<n> TRANSFER_MS=<n>"
 func ParseArtifactUploadStats(output string) ArtifactUploadStats {
 	var stats ArtifactUploadStats
 	for _, field := range strings.Fields(output) {
@@ -911,12 +911,12 @@ func ParseArtifactUploadStats(output string) ArtifactUploadStats {
 		switch parts[0] {
 		case "FILES":
 			stats.FileCount = val
-		case "TAR_NS":
-			stats.TarNanos = val
+		case "TAR_MS":
+			stats.TarMillis = val
 		case "SIZE":
 			stats.SizeBytes = val
-		case "TRANSFER_NS":
-			stats.TransferNanos = val
+		case "TRANSFER_MS":
+			stats.TransferMillis = val
 		}
 	}
 	return stats
@@ -942,17 +942,21 @@ func (p *execProcess) uploadArtifact(ctx context.Context, key, mountPath, artifa
 	//   Phase 1: count files, tar to /tmp (local I/O)
 	//   Phase 2: mv from /tmp to PVC (storage I/O)
 	// Timings are reported via stdout for span attribute capture.
+	// Uses /proc/uptime for millisecond-precision timing because Alpine's
+	// BusyBox date does not support %%N (nanoseconds). /proc/uptime gives
+	// centisecond precision (~10ms granularity), which is sufficient.
 	shellScript := fmt.Sprintf(`
+now_ms() { read up _ < /proc/uptime; echo "${up%%%%.*}${up#*.}0"; }
 fc=$(find %s -type f 2>/dev/null | wc -l)
 mkdir -p $(dirname %s)
-t0=$(date +%%s%%N)
+t0=$(now_ms)
 tar cf %s -C %s .
-t1=$(date +%%s%%N)
+t1=$(now_ms)
 sz=$(stat -c %%s %s 2>/dev/null || stat -f %%z %s 2>/dev/null || echo 0)
 mkdir -p $(dirname %s)
 mv %s %s
-t2=$(date +%%s%%N)
-echo "FILES=$fc TAR_NS=$((t1-t0)) SIZE=$sz TRANSFER_NS=$((t2-t1))"
+t2=$(now_ms)
+echo "FILES=$fc TAR_MS=$((t1-t0)) SIZE=$sz TRANSFER_MS=$((t2-t1))"
 `,
 		mountPath,
 		tmpFile,
@@ -979,25 +983,25 @@ echo "FILES=$fc TAR_NS=$((t1-t0)) SIZE=$sz TRANSFER_NS=$((t2-t1))"
 	span.SetAttributes(
 		attribute.Int64("artifact.file_count", stats.FileCount),
 		attribute.Int64("artifact.size_bytes", stats.SizeBytes),
-		attribute.Int64("artifact.tar_duration_ns", stats.TarNanos),
-		attribute.Int64("artifact.transfer_duration_ns", stats.TransferNanos),
+		attribute.Int64("artifact.tar_duration_ms", stats.TarMillis),
+		attribute.Int64("artifact.transfer_duration_ms", stats.TransferMillis),
 	)
 
-	if stats.TarNanos > 0 {
+	if stats.TarMillis > 0 {
 		span.AddEvent("artifact.tar.completed", oteltrace.WithAttributes(
-			attribute.Int64("duration_ns", stats.TarNanos),
+			attribute.Int64("duration_ms", stats.TarMillis),
 			attribute.Int64("size_bytes", stats.SizeBytes),
 		))
 	}
-	if stats.TransferNanos > 0 {
+	if stats.TransferMillis > 0 {
 		span.AddEvent("artifact.transfer.completed", oteltrace.WithAttributes(
-			attribute.Int64("duration_ns", stats.TransferNanos),
+			attribute.Int64("duration_ms", stats.TransferMillis),
 		))
 	}
 
 	// Record OTel metrics for dashboards and alerting.
-	tarDuration := time.Duration(stats.TarNanos) * time.Nanosecond
-	transferDuration := time.Duration(stats.TransferNanos) * time.Nanosecond
+	tarDuration := time.Duration(stats.TarMillis) * time.Millisecond
+	transferDuration := time.Duration(stats.TransferMillis) * time.Millisecond
 	totalDuration := tarDuration + transferDuration
 	metric.RecordArtifactUpload(ctx, artifactType, totalDuration, stats.SizeBytes, stats.FileCount, tarDuration, transferDuration)
 
