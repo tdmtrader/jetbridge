@@ -216,20 +216,16 @@ jobs:
 
           echo "=== Building fly CLI for all platforms ==="
           FLY_LDFLAGS="-s -w -X github.com/concourse/concourse.Version=${VERSION}"
-          mkdir -p fly-assets
-          for pair in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64; do
+          mkdir -p fly-assets fly-bin
+          for pair in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
             OS="${pair%%/*}"
             ARCH="${pair##*/}"
-            EXT=""; [ "$OS" = "windows" ] && EXT=".exe"
-            echo "  fly-${OS}-${ARCH}${EXT}"
-            CGO_ENABLED=0 GOOS=${OS} GOARCH=${ARCH} go build -ldflags "${FLY_LDFLAGS}" -o fly${EXT} ./fly
-            if [ "$OS" = "windows" ]; then
-              zip fly-assets/fly-${OS}-${ARCH}.zip fly${EXT}
-            else
-              tar czf fly-assets/fly-${OS}-${ARCH}.tgz fly${EXT}
-            fi
-            rm -f fly${EXT}
+            echo "  fly-${OS}-${ARCH}"
+            CGO_ENABLED=0 GOOS=${OS} GOARCH=${ARCH} go build -ldflags "${FLY_LDFLAGS}" -o fly-bin/fly ./fly
+            tar czf fly-assets/fly-${OS}-${ARCH}.tgz -C fly-bin fly
+            rm -f fly-bin/fly
           done
+          rm -rf fly-bin
           ls -lh fly-assets/
           echo "=== Binaries built ==="
 
