@@ -532,13 +532,9 @@ func (c *Container) buildArtifactInitContainers(mainMounts []corev1.VolumeMount)
 
 		key := ArtifactKey(input.Artifact.Handle())
 
-		inits = append(inits, corev1.Container{
+		initContainer := corev1.Container{
 			Name:  fmt.Sprintf("fetch-input-%d", i),
 			Image: helperImage,
-			Command: []string{"sh", "-c",
-				fmt.Sprintf("tar xf %s/%s -C %s",
-					ArtifactMountPath, key, input.DestinationPath),
-			},
 			VolumeMounts: []corev1.VolumeMount{
 				{Name: c.artifactVolumeName(), MountPath: ArtifactMountPath, ReadOnly: true},
 				{Name: volumeName, MountPath: input.DestinationPath},
@@ -547,7 +543,30 @@ func (c *Container) buildArtifactInitContainers(mainMounts []corev1.VolumeMount)
 			SecurityContext: &corev1.SecurityContext{
 				AllowPrivilegeEscalation: &allowEscalation,
 			},
-		})
+		}
+
+		if c.config.IsDaemonSetBackend() {
+			initContainer.Command = c.daemonSetFetchCommand(key, input.DestinationPath)
+			initContainer.Env = append(initContainer.Env, corev1.EnvVar{
+				Name: "MY_NODE_NAME",
+				ValueFrom: &corev1.EnvVarSource{
+					FieldRef: &corev1.ObjectFieldSelector{FieldPath: "spec.nodeName"},
+				},
+			})
+			if sourceNode := c.artifactSourceNode(key); sourceNode != "" {
+				initContainer.Env = append(initContainer.Env, corev1.EnvVar{
+					Name:  "SOURCE_NODE",
+					Value: sourceNode,
+				})
+			}
+		} else {
+			initContainer.Command = []string{"sh", "-c",
+				fmt.Sprintf("tar xf %s/%s -C %s",
+					ArtifactMountPath, key, input.DestinationPath),
+			}
+		}
+
+		inits = append(inits, initContainer)
 	}
 
 	// Add cache restore init containers. Each one extracts a previously-saved
@@ -574,6 +593,52 @@ func (c *Container) buildArtifactInitContainers(mainMounts []corev1.VolumeMount)
 	}
 
 	return inits
+}
+
+// daemonSetFetchCommand returns a shell command that fetches an artifact
+// from either local hostPath (same node) or the DaemonSet HTTP server
+// (different node). Uses MY_NODE_NAME and SOURCE_NODE env vars to decide.
+func (c *Container) daemonSetFetchCommand(key, destPath string) []string {
+	svcName := c.config.ArtifactDaemonService
+	if svcName == "" {
+		svcName = "artifact-daemon"
+	}
+	ns := c.config.Namespace
+	port := c.config.ArtifactDaemonPort
+	if port == 0 {
+		port = 8080
+	}
+
+	// If SOURCE_NODE is empty (no locator info), try local first.
+	// Local path: artifact is on hostPath mounted at ArtifactMountPath.
+	// Remote path: HTTP GET from the DaemonSet pod on the source node.
+	script := fmt.Sprintf(`
+if [ -z "$SOURCE_NODE" ] || [ "$SOURCE_NODE" = "$MY_NODE_NAME" ]; then
+  tar xf %s/%s -C %s
+else
+  for attempt in 1 2 3; do
+    if wget -qO- "http://${SOURCE_NODE}.%s.%s.svc.cluster.local:%d/artifacts/%s" | tar xf - -C %s; then
+      exit 0
+    fi
+    sleep 2
+  done
+  echo "failed to fetch artifact from $SOURCE_NODE after 3 attempts" >&2
+  exit 1
+fi
+`, ArtifactMountPath, key, destPath,
+		svcName, ns, port, key, destPath)
+
+	return []string{"sh", "-c", script}
+}
+
+// artifactSourceNode returns the node name for an artifact key from the
+// locator, or empty string if unknown.
+func (c *Container) artifactSourceNode(key string) string {
+	if c.artifactLocator == nil {
+		return ""
+	}
+	node, _ := c.artifactLocator.Locate(key)
+	return node
 }
 
 // buildArtifactHelperSidecar creates the artifact-helper sidecar container
