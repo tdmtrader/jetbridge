@@ -61,6 +61,14 @@ spec:
           hostPath:
             path: {{ .Values.artifactDaemon.hostPath | default "/var/concourse/artifacts" }}
             type: DirectoryOrCreate
+      {{- with .Values.artifactDaemon.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.artifactDaemon.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       {{- with .Values.artifactDaemon.tolerations }}
       tolerations:
         {{- toYaml . | nindent 8 }}

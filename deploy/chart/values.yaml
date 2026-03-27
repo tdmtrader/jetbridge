@@ -450,5 +450,10 @@ artifactDaemon:
     limits:
       cpu: 200m
       memory: 256Mi
-  # -- Tolerations for scheduling on all nodes (including spot, GPU, etc.)
+  # -- Node selector to restrict DaemonSet to specific node pools.
+  # Example for GKE: {cloud.google.com/gke-nodepool: "ci-workers"}
+  nodeSelector: {}
+  # -- Affinity rules for DaemonSet scheduling
+  affinity: {}
+  # -- Tolerations for scheduling on tainted nodes (spot, GPU, etc.)
   tolerations: []
