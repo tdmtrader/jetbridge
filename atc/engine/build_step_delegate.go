@@ -263,13 +263,15 @@ func (delegate *buildStepDelegate) FetchImage(
 		if err == nil {
 			return spec, cache, nil
 		}
-		// When a resolver is available, on-demand resolution errors are fatal
-		// — do not fall back to spawning check+get pods.
-		if delegate.imageResolver != nil {
+		// When a resolver is available and the type is registry-image,
+		// metadata-fetch errors are fatal (a real failure like no cached
+		// version). For custom resource types (non-registry-image), fall
+		// through to plan-based fetch which handles type chain resolution.
+		if delegate.imageResolver != nil && getPlan.Get.Type == "registry-image" {
 			return runtime.ImageSpec{}, nil, err
 		}
-		// Fall through to plan-based fetch when no resolver is configured
-		// (no cached version, unsupported type, etc.)
+		// Fall through to plan-based fetch for custom types or when no
+		// resolver is configured.
 	}
 
 	fetchState := delegate.state.NewLocalScope()

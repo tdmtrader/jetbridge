@@ -711,6 +711,23 @@ func (p *execProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 	}
 	tracing.End(streamSpan, nil)
 
+	// Stream sidecar container logs in parallel with the exec command.
+	// Sidecar logs are written to dedicated per-sidecar event writers so
+	// fly watch can render them. The WaitGroup ensures all sidecar log
+	// streams finish before we return (preventing log loss).
+	var sidecarWg sync.WaitGroup
+	if p.container != nil && len(p.processIO.SidecarWriters) > 0 {
+		for _, sc := range p.container.containerSpec.Sidecars {
+			if w, ok := p.processIO.SidecarWriters[sc.Name]; ok {
+				sidecarWg.Add(1)
+				go func(name string, writer io.Writer) {
+					defer sidecarWg.Done()
+					p.streamSidecarLogs(ctx, name, writer)
+				}(sc.Name, w)
+			}
+		}
+	}
+
 	// Build the command: [path, arg1, arg2, ...]
 	command := append([]string{p.processSpec.Path}, p.processSpec.Args...)
 
@@ -729,6 +746,18 @@ func (p *execProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 		p.processSpec.TTY != nil,
 	)
 	tracing.End(execSpan, err)
+
+	// Wait for sidecar log streams to finish (bounded to 5s to avoid
+	// blocking indefinitely if a sidecar hangs).
+	sidecarDone := make(chan struct{})
+	go func() {
+		sidecarWg.Wait()
+		close(sidecarDone)
+	}()
+	select {
+	case <-sidecarDone:
+	case <-time.After(5 * time.Second):
+	}
 
 	// NOTE: The pause Pod is intentionally NOT deleted on normal completion.
 	// Pod cleanup is handled by the GC system (reaper), which enables
@@ -1027,6 +1056,31 @@ func (p *execProcess) annotateExitStatus(ctx context.Context, exitCode int) {
 
 func (p *execProcess) SetTTY(_ runtime.TTYSpec) error {
 	return nil
+}
+
+// streamSidecarLogs streams logs from a sidecar container to the given writer
+// using the K8s log API. Retries until the container is ready or the context
+// is cancelled.
+func (p *execProcess) streamSidecarLogs(ctx context.Context, containerName string, w io.Writer) {
+	for {
+		req := p.clientset.CoreV1().Pods(p.config.Namespace).GetLogs(p.podName, &corev1.PodLogOptions{
+			Follow:    true,
+			Container: containerName,
+		})
+
+		stream, err := req.Stream(ctx)
+		if err == nil {
+			io.Copy(w, stream)
+			stream.Close()
+			return
+		}
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
 }
 
 // waitForRunning uses the Watch API to wait for the Pod to reach the Running
