@@ -6,6 +6,7 @@ RUN apt-get update && \
 
 COPY concourse-linux-arm64 /usr/local/concourse/bin/concourse
 COPY artifact-daemon-linux-arm64 /usr/local/concourse/bin/artifact-daemon
+COPY fly-assets /usr/local/concourse/fly-assets
 RUN chmod +x /usr/local/concourse/bin/concourse /usr/local/concourse/bin/artifact-daemon
 
 ENV PATH="/usr/local/concourse/bin:${PATH}"

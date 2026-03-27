@@ -213,6 +213,24 @@ jobs:
           echo "=== Building artifact-daemon binary ==="
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o artifact-daemon-linux-amd64 ./cmd/artifact-daemon
           ls -lh artifact-daemon-linux-amd64
+
+          echo "=== Building fly CLI for all platforms ==="
+          FLY_LDFLAGS="-s -w -X github.com/concourse/concourse.Version=${VERSION}"
+          mkdir -p fly-assets
+          for pair in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64; do
+            OS="${pair%%/*}"
+            ARCH="${pair##*/}"
+            EXT=""; [ "$OS" = "windows" ] && EXT=".exe"
+            echo "  fly-${OS}-${ARCH}${EXT}"
+            CGO_ENABLED=0 GOOS=${OS} GOARCH=${ARCH} go build -ldflags "${FLY_LDFLAGS}" -o fly${EXT} ./fly
+            if [ "$OS" = "windows" ]; then
+              zip fly-assets/fly-${OS}-${ARCH}.zip fly${EXT}
+            else
+              tar czf fly-assets/fly-${OS}-${ARCH}.tgz fly${EXT}
+            fi
+            rm -f fly${EXT}
+          done
+          ls -lh fly-assets/
           echo "=== Binaries built ==="
 
           echo "=== Verifying binary version ==="
@@ -271,6 +289,7 @@ jobs:
           echo "=== Copying binaries to builder pod ==="
           kubectl cp concourse-linux-amd64 cicd/${BUILDER_POD}:/tmp/concourse-linux-amd64
           kubectl cp artifact-daemon-linux-amd64 cicd/${BUILDER_POD}:/tmp/artifact-daemon-linux-amd64
+          kubectl cp fly-assets cicd/${BUILDER_POD}:/tmp/fly-assets
 
           echo "=== Copying Dockerfile to builder pod ==="
           cat <<'DOCKERFILE' > /tmp/Dockerfile
@@ -280,6 +299,7 @@ jobs:
               rm -rf /var/lib/apt/lists/*
           COPY concourse-linux-amd64 /usr/local/concourse/bin/concourse
           COPY artifact-daemon-linux-amd64 /usr/local/concourse/bin/artifact-daemon
+          COPY fly-assets /usr/local/concourse/fly-assets
           RUN chmod +x /usr/local/concourse/bin/concourse /usr/local/concourse/bin/artifact-daemon
           ENV PATH="/usr/local/concourse/bin:${PATH}"
           ENTRYPOINT ["dumb-init", "concourse"]
