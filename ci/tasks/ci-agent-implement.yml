@@ -23,7 +23,8 @@ run:
   - -exc
   - |
     cd repo/ci-agent
-    go build -o /usr/local/bin/ci-agent-implement ./cmd/ci-agent-implement/
+    go build -o /usr/local/bin/ci-agent ./cmd/ci-agent/
+    PHASES_DIR="$(pwd)/phases"
     cd ../..
 
     cp -a repo/. implemented-repo/
@@ -32,7 +33,7 @@ run:
     export REPO_DIR="$(pwd)/implemented-repo"
     export OUTPUT_DIR="$(pwd)/implement-output"
 
-    ci-agent-implement || true
+    ci-agent --phase "${PHASES_DIR}/implement.yaml" || true
 
     echo "=== Implementation Output ==="
     cat implement-output/results.json 2>/dev/null || echo "No results output"

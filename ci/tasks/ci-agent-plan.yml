@@ -23,11 +23,12 @@ run:
   - |
     echo "=== CI Agent Plan ==="
 
-    # Build the plan binary from source.
+    # Build the unified ci-agent binary from source.
     cd story
     if [ -d ci-agent ]; then
       cd ci-agent
-      go build -o /usr/local/bin/ci-agent-plan ./cmd/ci-agent-plan/
+      go build -o /usr/local/bin/ci-agent ./cmd/ci-agent/
+      PHASES_DIR="$(pwd)/phases"
       cd ../..
     fi
 
@@ -40,7 +41,7 @@ run:
     echo "Threshold: $CONFIDENCE_THRESHOLD"
     echo ""
 
-    ci-agent-plan
+    ci-agent --phase "${PHASES_DIR}/plan.yaml"
 
     echo "=== Planning complete ==="
     echo "Results:"

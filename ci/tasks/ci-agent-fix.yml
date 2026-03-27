@@ -24,9 +24,9 @@ run:
   - |
     echo "=== CI Agent Fix ==="
 
-    # Build the fix binary from source.
+    # Build the unified ci-agent binary from source.
     cd repo/ci-agent
-    go build -o /usr/local/bin/ci-agent-fix ./cmd/ci-agent-fix/
+    go build -o /usr/local/bin/ci-agent ./cmd/ci-agent/
     cd ../..
 
     # Copy repo to fixed-repo output (fix operates on this copy).
@@ -43,7 +43,7 @@ run:
     echo "Max retries: $MAX_RETRIES"
     echo ""
 
-    ci-agent-fix || true
+    ci-agent --phase "$(pwd)/repo/ci-agent/phases/fix.yaml" || true
 
     echo "=== Fix complete ==="
     echo "Fix report:"

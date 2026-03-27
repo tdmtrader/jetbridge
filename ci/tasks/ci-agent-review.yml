@@ -27,9 +27,9 @@ run:
   - |
     echo "=== CI Agent Review ==="
 
-    # Build the review binary from source.
+    # Build the unified ci-agent binary from source.
     cd repo/ci-agent
-    go build -o /usr/local/bin/ci-agent-review ./cmd/ci-agent-review/
+    go build -o /usr/local/bin/ci-agent ./cmd/ci-agent/
     cd ../..
 
     # Set up paths.
@@ -47,7 +47,7 @@ run:
     echo "Fail on critical: $FAIL_ON_CRITICAL"
     echo ""
 
-    ci-agent-review
+    ci-agent --phase "$(pwd)/repo/ci-agent/phases/review.yaml"
 
     echo "=== Review complete ==="
     echo "Review output:"

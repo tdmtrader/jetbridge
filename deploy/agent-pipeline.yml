@@ -1,5 +1,6 @@
 ## CI Agent Validation Pipeline
-## Tests that all 5 agent binaries build and produce structurally valid output.
+## Tests that the unified ci-agent binary builds and produces structurally valid output
+## for each phase (review, fix, plan, qa, implement).
 ## This pipeline runs independently — agent failures do NOT block deploys.
 
 resources:
@@ -13,12 +14,12 @@ resources:
   check_every: 30s
 
 jobs:
-- name: build-agents
+- name: build-agent
   plan:
   - get: repo
     trigger: true
     params: {depth: 25}
-  - task: compile-all-agents
+  - task: compile-ci-agent
     config:
       platform: linux
       rootfs_uri: docker:///golang:1.25-bookworm
@@ -36,23 +37,21 @@ jobs:
           export GOCACHE="$(pwd)/gocache"
           cd repo/ci-agent
 
-          echo "=== Building all agent binaries ==="
-          for agent in ci-agent-review ci-agent-fix ci-agent-plan ci-agent-qa ci-agent-implement; do
-            echo "  Building ${agent}..."
-            go build -o "/tmp/${agent}" "./cmd/${agent}/"
-          done
+          echo "=== Building unified ci-agent binary ==="
+          go build -o /tmp/ci-agent ./cmd/ci-agent/
+
           echo "  Building validate-output..."
           go build -o /tmp/validate-output ./cmd/validate-output/
 
           echo ""
-          echo "=== All 6 binaries compiled successfully ==="
-          ls -lh /tmp/ci-agent-* /tmp/validate-output
+          echo "=== Binaries compiled successfully ==="
+          ls -lh /tmp/ci-agent /tmp/validate-output
 
 - name: test-agent-review
   plan:
   - get: repo
     trigger: true
-    passed: [build-agents]
+    passed: [build-agent]
     params: {depth: 25}
   - task: run-agent-review
     config:
@@ -87,17 +86,18 @@ jobs:
           npm install -g @anthropic-ai/claude-code
           claude --version
 
-          echo "=== Building ci-agent-review + validate-output ==="
+          echo "=== Building ci-agent + validate-output ==="
           cd repo/ci-agent
-          go build -o /usr/local/bin/ci-agent-review ./cmd/ci-agent-review/
+          go build -o /usr/local/bin/ci-agent ./cmd/ci-agent/
           go build -o /usr/local/bin/validate-output ./cmd/validate-output/
+          PHASES_DIR="$(pwd)/phases"
           cd ../..
 
           export REPO_DIR="$(pwd)/repo"
           export OUTPUT_DIR="$(pwd)/review"
 
-          echo "=== Running ci-agent-review ==="
-          ci-agent-review || true
+          echo "=== Running ci-agent review phase ==="
+          ci-agent --phase "${PHASES_DIR}/review.yaml" || true
 
           echo "=== Validating review output ==="
           if [ -f review/review.json ]; then
@@ -115,7 +115,7 @@ jobs:
   plan:
   - get: repo
     trigger: true
-    passed: [build-agents]
+    passed: [build-agent]
     params: {depth: 25}
   - task: run-agent-qa
     config:
@@ -149,18 +149,19 @@ jobs:
           npm install -g @anthropic-ai/claude-code
           claude --version
 
-          echo "=== Building ci-agent-qa + validate-output ==="
+          echo "=== Building ci-agent + validate-output ==="
           cd repo/ci-agent
-          go build -o /usr/local/bin/ci-agent-qa ./cmd/ci-agent-qa/
+          go build -o /usr/local/bin/ci-agent ./cmd/ci-agent/
           go build -o /usr/local/bin/validate-output ./cmd/validate-output/
+          PHASES_DIR="$(pwd)/phases"
           cd ../..
 
           export REPO_DIR="$(pwd)/repo"
           export SPEC_FILE="$(pwd)/repo/conductor/tracks/agent_step_output_schema_20260209/spec.md"
           export OUTPUT_DIR="$(pwd)/qa"
 
-          echo "=== Running ci-agent-qa ==="
-          ci-agent-qa || true
+          echo "=== Running ci-agent QA phase ==="
+          ci-agent --phase "${PHASES_DIR}/qa.yaml" || true
 
           echo "=== Validating QA output ==="
           if [ -f qa/qa.json ]; then
@@ -177,7 +178,7 @@ jobs:
   plan:
   - get: repo
     trigger: true
-    passed: [build-agents]
+    passed: [build-agent]
     params: {depth: 25}
   - task: run-agent-plan
     config:
@@ -210,17 +211,18 @@ jobs:
           npm install -g @anthropic-ai/claude-code
           claude --version
 
-          echo "=== Building ci-agent-plan + validate-output ==="
+          echo "=== Building ci-agent + validate-output ==="
           cd repo/ci-agent
-          go build -o /usr/local/bin/ci-agent-plan ./cmd/ci-agent-plan/
+          go build -o /usr/local/bin/ci-agent ./cmd/ci-agent/
           go build -o /usr/local/bin/validate-output ./cmd/validate-output/
+          PHASES_DIR="$(pwd)/phases"
           cd ../..
 
           export INPUT_DIR="$(pwd)/repo"
           export OUTPUT_DIR="$(pwd)/plan-output"
 
-          echo "=== Running ci-agent-plan ==="
-          ci-agent-plan || true
+          echo "=== Running ci-agent plan phase ==="
+          ci-agent --phase "${PHASES_DIR}/plan.yaml" || true
 
           echo "=== Validating plan output ==="
           if [ -f plan-output/results.json ]; then
@@ -270,10 +272,11 @@ jobs:
           npm install -g @anthropic-ai/claude-code
           claude --version
 
-          echo "=== Building ci-agent-fix + validate-output ==="
+          echo "=== Building ci-agent + validate-output ==="
           cd repo/ci-agent
-          go build -o /usr/local/bin/ci-agent-fix ./cmd/ci-agent-fix/
+          go build -o /usr/local/bin/ci-agent ./cmd/ci-agent/
           go build -o /usr/local/bin/validate-output ./cmd/validate-output/
+          PHASES_DIR="$(pwd)/phases"
           cd ../..
 
           mkdir -p fixed-repo
@@ -283,8 +286,8 @@ jobs:
           export REVIEW_DIR="$(pwd)/repo"
           export OUTPUT_DIR="$(pwd)/fix-report"
 
-          echo "=== Running ci-agent-fix ==="
-          ci-agent-fix || true
+          echo "=== Running ci-agent fix phase ==="
+          ci-agent --phase "${PHASES_DIR}/fix.yaml" || true
 
           echo "=== Validating fix output ==="
           if [ -f fix-report/fix-report.json ]; then
@@ -337,10 +340,11 @@ jobs:
           npm install -g @anthropic-ai/claude-code
           claude --version
 
-          echo "=== Building ci-agent-implement + validate-output ==="
+          echo "=== Building ci-agent + validate-output ==="
           cd repo/ci-agent
-          go build -o /usr/local/bin/ci-agent-implement ./cmd/ci-agent-implement/
+          go build -o /usr/local/bin/ci-agent ./cmd/ci-agent/
           go build -o /usr/local/bin/validate-output ./cmd/validate-output/
+          PHASES_DIR="$(pwd)/phases"
           cd ../..
 
           mkdir -p implemented-repo
@@ -350,8 +354,8 @@ jobs:
           export REPO_DIR="$(pwd)/implemented-repo"
           export OUTPUT_DIR="$(pwd)/implement-output"
 
-          echo "=== Running ci-agent-implement ==="
-          ci-agent-implement || true
+          echo "=== Running ci-agent implement phase ==="
+          ci-agent --phase "${PHASES_DIR}/implement.yaml" || true
 
           echo "=== Validating implement output ==="
           if [ -f implement-output/results.json ]; then

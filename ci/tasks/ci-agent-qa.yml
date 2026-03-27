@@ -24,9 +24,10 @@ run:
   - |
     echo "=== CI Agent QA ==="
 
-    # Build the QA binary from source.
+    # Build the unified ci-agent binary from source.
     cd repo/ci-agent
-    go build -o /usr/local/bin/ci-agent-qa ./cmd/ci-agent-qa/
+    go build -o /usr/local/bin/ci-agent ./cmd/ci-agent/
+    PHASES_DIR="$(pwd)/phases"
     cd ../..
 
     # Set up paths.
@@ -40,7 +41,7 @@ run:
     echo "Threshold: $SCORE_THRESHOLD"
     echo ""
 
-    ci-agent-qa || true
+    ci-agent --phase "${PHASES_DIR}/qa.yaml" || true
 
     echo "=== QA complete ==="
     echo "QA output:"
