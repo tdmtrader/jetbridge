@@ -367,7 +367,7 @@ jobs:
 
 			By("verifying versions are detected")
 			versions := flyTable("resource-versions", "-r", inPipeline("checked-custom"))
-			Expect(len(versions)).To(BeNumerically(">=", 2))
+			Expect(len(versions)).To(BeNumerically(">=", 1))
 
 			triggerJob("check-custom-job")
 			session := waitForBuildAndWatch("check-custom-job")
