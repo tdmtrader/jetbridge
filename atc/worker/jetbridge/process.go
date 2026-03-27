@@ -889,6 +889,13 @@ func (p *execProcess) uploadOutputsToArtifactStore(ctx context.Context) error {
 		return nil
 	}
 
+	// DaemonSet mode: outputs are already on hostPath — no upload needed.
+	// Record artifact locations for scheduling affinity.
+	if p.container.config.IsDaemonSetBackend() {
+		p.recordOutputLocations(p.fetchPodNodeName(ctx))
+		return nil
+	}
+
 	outputPaths := p.container.outputPaths()
 	if len(outputPaths) == 0 {
 		return nil
@@ -945,6 +952,11 @@ func (p *execProcess) uploadOutputsToArtifactStore(ctx context.Context) error {
 // start on the next build.
 func (p *execProcess) uploadCachesToArtifactStore(ctx context.Context) {
 	if p.container == nil || len(p.container.cacheEntries) == 0 {
+		return
+	}
+
+	// DaemonSet mode: caches are direct hostPath mounts — no upload needed.
+	if p.container.config.IsDaemonSetBackend() {
 		return
 	}
 
@@ -1123,6 +1135,35 @@ func (p *execProcess) annotateExitStatus(ctx context.Context, exitCode int) {
 
 func (p *execProcess) SetTTY(_ runtime.TTYSpec) error {
 	return nil
+}
+
+// recordOutputLocations records each output volume's artifact key → node name
+// in the ArtifactLocator. This enables scheduling affinity for downstream steps.
+func (p *execProcess) recordOutputLocations(nodeName string) {
+	if p.container == nil || p.container.artifactLocator == nil || nodeName == "" {
+		return
+	}
+
+	outputPaths := p.container.outputPaths()
+	for _, vol := range p.container.volumes {
+		if vol.MountPath() == "" || !outputPaths[vol.MountPath()] {
+			continue
+		}
+		key := ArtifactKey(vol.Handle())
+		p.container.artifactLocator.Record(key, nodeName)
+	}
+}
+
+// fetchPodNodeName retrieves the node name where this pod is running.
+func (p *execProcess) fetchPodNodeName(ctx context.Context) string {
+	if p.clientset == nil {
+		return ""
+	}
+	pod, err := p.clientset.CoreV1().Pods(p.config.Namespace).Get(ctx, p.podName, metav1.GetOptions{})
+	if err != nil {
+		return ""
+	}
+	return pod.Spec.NodeName
 }
 
 // streamSidecarLogs streams logs from a sidecar container to the given writer

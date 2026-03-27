@@ -649,6 +649,11 @@ func (c *Container) buildArtifactHelperSidecar(mainMounts []corev1.VolumeMount) 
 	if !c.hasArtifactStore() {
 		return nil
 	}
+	// DaemonSet mode: no sidecar needed — outputs are on hostPath, uploads
+	// are eliminated, and StreamOut goes through the DaemonSet HTTP server.
+	if c.config.IsDaemonSetBackend() {
+		return nil
+	}
 	// Check steps never produce artifacts — skip the sidecar to reduce
 	// per-check resource overhead and avoid triggering GCS FUSE injection.
 	if c.metadata.Type == db.ContainerTypeCheck {

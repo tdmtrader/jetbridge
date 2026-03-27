@@ -248,6 +248,144 @@ func TestDaemonSetMode_LocatorRecordLookupCleanup(t *testing.T) {
 	}
 }
 
+// --- Gap #4: Sidecar must NOT be created in DaemonSet mode ---
+
+func TestDaemonSetMode_NoSidecarCreated(t *testing.T) {
+	cfg := Config{
+		Namespace:              "test-ns",
+		ArtifactBackend:        ArtifactBackendDaemonSet,
+		ArtifactDaemonHostPath: "/var/concourse/artifacts",
+		ArtifactHelperImage:    "alpine:latest",
+	}
+
+	c := &Container{
+		handle:        "test-handle",
+		podName:       "test-pod",
+		metadata:      db.ContainerMetadata{Type: db.ContainerTypeTask},
+		containerSpec: runtime.ContainerSpec{Dir: "/tmp/build", Type: db.ContainerTypeTask},
+		config:        cfg,
+		properties:    make(map[string]string),
+	}
+
+	_, mounts := c.buildVolumeMounts()
+	sidecar := c.buildArtifactHelperSidecar(mounts)
+	if sidecar != nil {
+		t.Error("expected no sidecar in DaemonSet mode, but one was created")
+	}
+}
+
+// --- Gap #4 corollary: Sidecar IS created in PVC mode ---
+
+func TestPVCMode_SidecarCreated(t *testing.T) {
+	cfg := Config{
+		Namespace:          "test-ns",
+		ArtifactStoreClaim: "artifacts-pvc",
+		ArtifactHelperImage: "alpine:latest",
+	}
+
+	c := &Container{
+		handle:        "test-handle",
+		podName:       "test-pod",
+		metadata:      db.ContainerMetadata{Type: db.ContainerTypeTask},
+		containerSpec: runtime.ContainerSpec{Dir: "/tmp/build", Type: db.ContainerTypeTask},
+		config:        cfg,
+		properties:    make(map[string]string),
+	}
+
+	_, mounts := c.buildVolumeMounts()
+	sidecar := c.buildArtifactHelperSidecar(mounts)
+	if sidecar == nil {
+		t.Error("expected sidecar in PVC mode, but got nil")
+	}
+}
+
+// --- Gap #8: Uploads must be skipped in DaemonSet mode ---
+
+func TestDaemonSetMode_UploadOutputsIsNoop(t *testing.T) {
+	cfg := Config{
+		Namespace:              "test-ns",
+		ArtifactBackend:        ArtifactBackendDaemonSet,
+		ArtifactDaemonHostPath: "/var/concourse/artifacts",
+	}
+
+	c := &Container{
+		handle:        "test-handle",
+		podName:       "test-pod",
+		metadata:      db.ContainerMetadata{Type: db.ContainerTypeTask},
+		containerSpec: runtime.ContainerSpec{
+			Dir:     "/tmp/build",
+			Type:    db.ContainerTypeTask,
+			Outputs: runtime.OutputPaths{"out": "/tmp/build/out"},
+		},
+		config:     cfg,
+		properties: make(map[string]string),
+	}
+
+	p := &execProcess{
+		id:        "test",
+		podName:   "test-pod",
+		config:    cfg,
+		container: c,
+	}
+
+	// uploadOutputsToArtifactStore should return nil (no-op) in DaemonSet mode.
+	// If it tries to exec in a sidecar, it will panic since executor is nil.
+	err := p.uploadOutputsToArtifactStore(context.Background())
+	if err != nil {
+		t.Errorf("expected no-op upload in DaemonSet mode, got error: %v", err)
+	}
+}
+
+// --- Gap #2 & #3: Locator.Record must be called with node name after step ---
+
+func TestDaemonSetMode_LocatorRecordCalledAfterUpload(t *testing.T) {
+	locator := NewArtifactLocator()
+
+	cfg := Config{
+		Namespace:              "test-ns",
+		ArtifactBackend:        ArtifactBackendDaemonSet,
+		ArtifactDaemonHostPath: "/var/concourse/artifacts",
+	}
+
+	vol := NewStubVolume("output-vol", "test-worker", "/tmp/build/out")
+
+	c := &Container{
+		handle:        "test-handle",
+		podName:       "test-pod",
+		metadata:      db.ContainerMetadata{Type: db.ContainerTypeTask},
+		containerSpec: runtime.ContainerSpec{
+			Dir:     "/tmp/build",
+			Type:    db.ContainerTypeTask,
+			Outputs: runtime.OutputPaths{"out": "/tmp/build/out"},
+		},
+		config:          cfg,
+		properties:      make(map[string]string),
+		volumes:         []*Volume{vol},
+		artifactLocator: locator,
+	}
+
+	p := &execProcess{
+		id:        "test",
+		podName:   "test-pod",
+		config:    cfg,
+		container: c,
+	}
+
+	// recordOutputLocations should exist and record each output volume's
+	// artifact key → node name in the locator.
+	p.recordOutputLocations("test-node-1")
+
+	// Verify the locator was populated for the output volume.
+	key := ArtifactKey(vol.Handle())
+	node, found := locator.Locate(key)
+	if !found {
+		t.Fatalf("expected locator to have key %s, but not found", key)
+	}
+	if node != "test-node-1" {
+		t.Errorf("expected node test-node-1, got %s", node)
+	}
+}
+
 // stubArtifact is a minimal runtime.Artifact for testing.
 type stubArtifact struct {
 	handle string
