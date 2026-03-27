@@ -40,7 +40,7 @@ Core pipeline data tables are structurally identical and fully preserved:
 
 ## Cleanup SQL
 
-See [cleanup-garden-data.sql](../migration/cleanup-garden-data.sql) in the pre-flight script directory for executable cleanup queries.
+See the [Database Migration Runbook](DATABASE-MIGRATION-RUNBOOK.md), Step 6, for executable cleanup queries.
 
 ## What Happens If You Don't Clean Up
 
