@@ -1,0 +1,214 @@
+# K8s E2E Pipeline — KinD-based integration and behavioral tests
+#
+# These tests create ephemeral KinD clusters inside the task pod,
+# deploy Concourse via Helm, and run the full topgun test suites.
+# Requires privileged tasks for Docker-in-Docker.
+
+resources:
+- name: trigger
+  type: time
+  source:
+    interval: 24h
+
+jobs:
+- name: build-kind-runner
+  serial: true
+  plan:
+  - get: trigger
+    trigger: true
+  - task: build-kind-runner-image
+    privileged: true
+    config:
+      platform: linux
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v4
+      run:
+        path: sh
+        args:
+        - -exc
+        - |
+          REGISTRY="registry-docker-registry.cicd.svc.cluster.local:5000"
+          IMAGE="${REGISTRY}/concourse-kind-runner:v2"
+          BUILDER_POD="kind-runner-builder-$$"
+
+          cleanup_builder() { kubectl delete pod -n cicd ${BUILDER_POD} --grace-period=0 --force 2>/dev/null || true; }
+          trap cleanup_builder EXIT
+          kubectl delete pod -n cicd -l app=kind-runner-builder --grace-period=0 --force 2>/dev/null || true
+
+          echo "=== Creating DinD builder pod ==="
+          cat <<PODEOF | kubectl apply -n cicd -f -
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: ${BUILDER_POD}
+            namespace: cicd
+            labels:
+              app: kind-runner-builder
+          spec:
+            containers:
+            - name: dind
+              image: docker:dind
+              securityContext:
+                privileged: true
+              env:
+              - name: DOCKER_TLS_CERTDIR
+                value: ""
+              command: ["dockerd", "--host=unix:///var/run/docker.sock", "--insecure-registry=${REGISTRY}"]
+              resources:
+                requests:
+                  memory: "4Gi"
+                  cpu: "2"
+          PODEOF
+
+          echo "Waiting for builder pod..."
+          kubectl wait --for=condition=ready pod/${BUILDER_POD} -n cicd --timeout=180s
+
+          echo "Waiting for Docker daemon..."
+          for i in $(seq 1 30); do
+            if kubectl exec -n cicd ${BUILDER_POD} -- docker info >/dev/null 2>&1; then
+              echo "Docker daemon ready"
+              break
+            fi
+            sleep 2
+          done
+
+          echo "=== Cloning fresh source ==="
+          git clone --depth 1 --branch jetbridge https://github.com/tdmtrader/jetbridge.git /tmp/fresh-src
+
+          echo "=== Copying source + Dockerfile to builder ==="
+          kubectl exec -n cicd ${BUILDER_POD} -- mkdir -p /build
+          cd /tmp/fresh-src
+          cp deploy/Dockerfile.kind-runner Dockerfile
+          tar cf - --exclude=.git . | kubectl exec -i -n cicd ${BUILDER_POD} -- sh -c 'tar xf - -C /build'
+
+          echo "=== Building kind-runner image (no cache) ==="
+          kubectl exec -n cicd ${BUILDER_POD} -- docker build --no-cache -t ${IMAGE} -f /build/Dockerfile /build
+
+          echo "=== Pushing to registry ==="
+          kubectl exec -n cicd ${BUILDER_POD} -- docker push ${IMAGE}
+
+          echo "=== kind-runner image built and pushed ==="
+
+- name: k8s-integration-tests
+  serial: true
+  plan:
+  - get: trigger
+    trigger: true
+    passed: [build-kind-runner]
+  - task: k8s-integration
+    privileged: true
+    timeout: 45m
+    config:
+      platform: linux
+      rootfs_uri: docker:///registry.home/concourse-kind-runner:v2
+      run:
+        path: sh
+        args:
+        - -exc
+        - |
+          echo "=== Debug: checking available binaries ==="
+          ls -la /usr/local/bin/docker* || echo "no docker binaries in /usr/local/bin"
+          which dockerd || echo "dockerd not in PATH"
+          echo "PATH=$PATH"
+
+          echo "=== Starting Docker daemon (DinD) ==="
+          /usr/local/bin/dockerd --host=unix:///var/run/docker.sock \
+                  --storage-driver=vfs \
+                  --log-level=warn &
+          DOCKERD_PID=$!
+
+          echo "Waiting for Docker daemon..."
+          for i in $(seq 1 30); do
+            if docker info >/dev/null 2>&1; then
+              echo "Docker daemon ready"
+              break
+            fi
+            sleep 2
+          done
+
+          cd /src
+
+          echo "=== Building concourse image for KinD ==="
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o concourse-linux-amd64 ./cmd/concourse
+
+          cat <<'DOCKERFILE' > /tmp/Dockerfile.kind
+          FROM ubuntu:22.04
+          RUN apt-get update && apt-get install -y ca-certificates dumb-init && rm -rf /var/lib/apt/lists/*
+          COPY concourse-linux-amd64 /usr/local/concourse/bin/concourse
+          RUN chmod +x /usr/local/concourse/bin/concourse
+          ENV PATH="/usr/local/concourse/bin:${PATH}"
+          ENTRYPOINT ["dumb-init", "concourse"]
+          DOCKERFILE
+          docker build -f /tmp/Dockerfile.kind -t concourse-local:latest .
+          echo "=== Image built ==="
+
+          echo ""
+          echo "=== Verifying module deps ==="
+          go mod download
+          go list ./topgun/...
+
+          echo ""
+          echo "=== Running K8s integration tests (KinD cluster) ==="
+          echo "This creates an ephemeral KinD cluster, deploys Concourse"
+          echo "via Helm, and runs the topgun integration suite."
+          echo ""
+          go test ./topgun/k8s/integration/ -count=1 -v -timeout 30m
+          echo "=== K8s integration tests passed ==="
+
+          kill $DOCKERD_PID 2>/dev/null || true
+
+- name: k8s-behavioral-tests
+  serial: true
+  plan:
+  - get: trigger
+    trigger: true
+    passed: [build-kind-runner]
+  - task: k8s-behavioral
+    privileged: true
+    timeout: 4h
+    config:
+      platform: linux
+      rootfs_uri: docker:///registry.home/concourse-kind-runner:v2
+      run:
+        path: sh
+        args:
+        - -exc
+        - |
+          echo "=== Starting Docker daemon (DinD) ==="
+          /usr/local/bin/dockerd --host=unix:///var/run/docker.sock \
+                  --storage-driver=vfs \
+                  --log-level=warn &
+          DOCKERD_PID=$!
+
+          echo "Waiting for Docker daemon..."
+          for i in $(seq 1 30); do
+            if docker info >/dev/null 2>&1; then
+              echo "Docker daemon ready"
+              break
+            fi
+            sleep 2
+          done
+
+          cd /src
+
+          echo "=== Building concourse image for KinD ==="
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o concourse-linux-amd64 ./cmd/concourse
+
+          cat <<'DOCKERFILE' > /tmp/Dockerfile.kind
+          FROM ubuntu:22.04
+          RUN apt-get update && apt-get install -y ca-certificates dumb-init && rm -rf /var/lib/apt/lists/*
+          COPY concourse-linux-amd64 /usr/local/concourse/bin/concourse
+          RUN chmod +x /usr/local/concourse/bin/concourse
+          ENV PATH="/usr/local/concourse/bin:${PATH}"
+          ENTRYPOINT ["dumb-init", "concourse"]
+          DOCKERFILE
+          docker build -f /tmp/Dockerfile.kind -t concourse-local:latest .
+          echo "=== Image built ==="
+
+          echo ""
+          echo "=== Running K8s behavioral tests (2 parallel KinD clusters) ==="
+          echo "This will take 2-3 hours."
+          echo ""
+          ginkgo --procs=${K8S_PROCS:-2} -v --timeout=3h ./topgun/k8s_behavioral/
+          echo "=== K8s behavioral tests passed ==="
+
+          kill $DOCKERD_PID 2>/dev/null || true
