@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -888,6 +890,11 @@ func (p *execProcess) SetTTY(_ runtime.TTYSpec) error {
 // in the ArtifactLocator. This enables scheduling affinity and local/remote
 // fetch decisions for downstream steps in DaemonSet mode.
 //
+// After recording in the locator, it also registers volume handle aliases in
+// the artifact-daemon via POST /register. This allows cached resource volumes
+// (identified by volume handle, not container handle) to be resolved by the
+// daemon when SkipResourceCache is false.
+//
 // When nodeName is empty (pod not found or API error), recordings still
 // happen with an empty node — the consuming step's init container will fall
 // through to the local cp -a branch (SOURCE_NODE unset), which works when
@@ -925,6 +932,16 @@ func (p *execProcess) recordOutputLocations(nodeName string) {
 		// /resolve endpoint by the init container.
 		daemonKey := p.container.handle + "/" + subdir
 		p.container.artifactLocator.Record(key, nodeName, daemonKey)
+
+		// Register the volume handle as an alias in the daemon so that
+		// cache hits (which use volume handle, not container handle) can
+		// be resolved. Best-effort: failures are logged but don't fail
+		// the build since the daemon's filesystem fallback still works.
+		if nodeName != "" && p.container.config.ArtifactDaemonHostPath != "" {
+			diskPath := filepath.Join(p.container.config.ArtifactDaemonHostPath, "steps", p.container.handle, subdir)
+			p.registerDaemonAlias(nodeName, key, diskPath)
+		}
+
 		recorded++
 	}
 	if recorded == 0 && len(p.container.volumes) > 0 {
@@ -932,6 +949,46 @@ func (p *execProcess) recordOutputLocations(nodeName string) {
 		// diagnose locator-miss issues in DaemonSet mode.
 		fmt.Fprintf(os.Stderr, "WARNING: recordOutputLocations: %d volumes but 0 matched outputPaths %v (handle=%s type=%s)\n",
 			len(p.container.volumes), outputPaths, p.container.handle, p.container.containerSpec.Type)
+	}
+}
+
+// registerDaemonAlias registers a volume handle alias in the artifact-daemon
+// so that cache hits can resolve the volume handle to a disk path.
+// This is best-effort: failures are logged but don't fail the build.
+func (p *execProcess) registerDaemonAlias(nodeName, volumeKey, diskPath string) {
+	svcName := p.config.ArtifactDaemonService
+	if svcName == "" {
+		svcName = "artifact-daemon"
+	}
+	port := p.config.ArtifactDaemonPort
+	if port == 0 {
+		port = 7780
+	}
+
+	url := fmt.Sprintf("http://%s.%s.%s.svc.cluster.local:%d/register",
+		nodeName, svcName, p.config.Namespace, port)
+
+	body := fmt.Sprintf(`{"key":%q,"local_path":%q}`, volumeKey, diskPath)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(body))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "WARNING: registerDaemonAlias: create request: %v\n", err)
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "WARNING: registerDaemonAlias: %s → %v (key=%s)\n", url, err, volumeKey)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated {
+		fmt.Fprintf(os.Stderr, "WARNING: registerDaemonAlias: %s → status %d (key=%s)\n", url, resp.StatusCode, volumeKey)
 	}
 }
 
