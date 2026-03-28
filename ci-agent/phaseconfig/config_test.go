@@ -110,6 +110,131 @@ steps:
 		})
 	})
 
+	Describe("Validate input_from", func() {
+		It("rejects input_from referencing a nonexistent step", func() {
+			yaml := []byte(`
+name: test
+steps:
+  - name: step1
+    template: t.md
+  - name: step2
+    template: t.md
+    input_from: [nonexistent]
+`)
+			_, err := phaseconfig.Parse(yaml)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("nonexistent"))
+		})
+
+		It("accepts valid input_from referencing an earlier step", func() {
+			yaml := []byte(`
+name: test
+steps:
+  - name: step1
+    template: t.md
+  - name: step2
+    template: t.md
+    input_from: [step1]
+`)
+			cfg, err := phaseconfig.Parse(yaml)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cfg.Steps[1].InputFrom).To(Equal([]string{"step1"}))
+		})
+
+		It("rejects self-referential input_from", func() {
+			yaml := []byte(`
+name: test
+steps:
+  - name: step1
+    template: t.md
+    input_from: [step1]
+`)
+			_, err := phaseconfig.Parse(yaml)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("step1"))
+		})
+
+		It("rejects input_from referencing a later step", func() {
+			yaml := []byte(`
+name: test
+steps:
+  - name: step1
+    template: t.md
+    input_from: [step2]
+  - name: step2
+    template: t.md
+`)
+			_, err := phaseconfig.Parse(yaml)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("step2"))
+		})
+
+		It("accepts empty input_from", func() {
+			yaml := []byte(`
+name: test
+steps:
+  - name: step1
+    template: t.md
+    input_from: []
+`)
+			_, err := phaseconfig.Parse(yaml)
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+
+	Describe("ValidateSuite", func() {
+		It("returns no warnings when required var is provided by another phase", func() {
+			// Both phases declare "repo_dir" — plan provides it with a default,
+			// implement requires it. The suite validator sees the matching key.
+			plan := &phaseconfig.Config{
+				Name: "plan",
+				Env: map[string]phaseconfig.EnvVar{
+					"repo_dir": {Var: "REPO_DIR", Default: "repo"},
+				},
+				Steps: []phaseconfig.Step{{Name: "s", Template: "t.md"}},
+			}
+			impl := &phaseconfig.Config{
+				Name: "implement",
+				Env: map[string]phaseconfig.EnvVar{
+					"repo_dir": {Var: "REPO_DIR", Required: true},
+				},
+				Steps: []phaseconfig.Step{{Name: "s", Template: "t.md"}},
+			}
+			warnings := phaseconfig.ValidateSuite([]*phaseconfig.Config{plan, impl})
+			Expect(warnings).To(BeEmpty())
+		})
+
+		It("warns when required env var has no upstream provider", func() {
+			impl := &phaseconfig.Config{
+				Name: "implement",
+				Env: map[string]phaseconfig.EnvVar{
+					"spec_dir": {Var: "SPEC_DIR", Required: true},
+				},
+				Steps: []phaseconfig.Step{{Name: "s", Template: "t.md"}},
+			}
+			warnings := phaseconfig.ValidateSuite([]*phaseconfig.Config{impl})
+			Expect(warnings).To(HaveLen(1))
+			Expect(warnings[0].Message).To(ContainSubstring("spec_dir"))
+		})
+
+		It("returns no warnings for single config without required vars", func() {
+			cfg := &phaseconfig.Config{
+				Name: "review",
+				Env: map[string]phaseconfig.EnvVar{
+					"repo_dir": {Var: "REPO_DIR", Default: "repo"},
+				},
+				Steps: []phaseconfig.Step{{Name: "s", Template: "t.md"}},
+			}
+			warnings := phaseconfig.ValidateSuite([]*phaseconfig.Config{cfg})
+			Expect(warnings).To(BeEmpty())
+		})
+
+		It("returns no warnings for empty input", func() {
+			warnings := phaseconfig.ValidateSuite(nil)
+			Expect(warnings).To(BeEmpty())
+		})
+	})
+
 	Describe("ResolveEnv", func() {
 		const testKey = "CI_AGENT_PHASE_TEST"
 

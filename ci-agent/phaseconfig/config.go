@@ -68,7 +68,7 @@ func Parse(data []byte) (*Config, error) {
 	return &cfg, nil
 }
 
-// Validate checks that all required fields are present.
+// Validate checks that all required fields are present and input_from references are valid.
 func (c *Config) Validate() error {
 	if c.Name == "" {
 		return fmt.Errorf("phase config: name is required")
@@ -76,6 +76,8 @@ func (c *Config) Validate() error {
 	if len(c.Steps) == 0 {
 		return fmt.Errorf("phase config: at least one step is required")
 	}
+
+	stepIndex := make(map[string]int, len(c.Steps))
 	for i, s := range c.Steps {
 		if s.Name == "" {
 			return fmt.Errorf("phase config: step %d: name is required", i)
@@ -83,8 +85,80 @@ func (c *Config) Validate() error {
 		if s.Template == "" {
 			return fmt.Errorf("phase config: step %q: template is required", s.Name)
 		}
+		stepIndex[s.Name] = i
 	}
+
+	for i, s := range c.Steps {
+		for _, ref := range s.InputFrom {
+			refIdx, exists := stepIndex[ref]
+			if !exists {
+				return fmt.Errorf("phase config: step %q: input_from references unknown step %q", s.Name, ref)
+			}
+			if refIdx >= i {
+				return fmt.Errorf("phase config: step %q: input_from references step %q which is not defined earlier", s.Name, ref)
+			}
+		}
+	}
+
 	return nil
+}
+
+// Warning represents a non-fatal validation issue found during suite validation.
+type Warning struct {
+	Phase   string
+	Message string
+}
+
+// ValidateSuite checks cross-phase env var wiring. It returns warnings (not errors)
+// because phases can be run independently with explicit env vars.
+func ValidateSuite(configs []*Config) []Warning {
+	if len(configs) == 0 {
+		return nil
+	}
+
+	// Collect all env config keys provided across all phases.
+	provided := make(map[string]bool)
+	for _, cfg := range configs {
+		for key := range cfg.Env {
+			provided[key] = true
+		}
+	}
+
+	// Check that required env vars have some provider across the suite.
+	var warnings []Warning
+	for _, cfg := range configs {
+		for key, ev := range cfg.Env {
+			if !ev.Required {
+				continue
+			}
+			// A required var is satisfied if any other phase provides a config key
+			// that could supply it. We check by key name: if no other phase has
+			// a key that could map to this one, warn.
+			hasProvider := false
+			for _, other := range configs {
+				if other.Name == cfg.Name {
+					continue
+				}
+				for otherKey := range other.Env {
+					if otherKey == key {
+						hasProvider = true
+						break
+					}
+				}
+				if hasProvider {
+					break
+				}
+			}
+			if !hasProvider {
+				warnings = append(warnings, Warning{
+					Phase:   cfg.Name,
+					Message: fmt.Sprintf("required env var %q has no matching provider in other phases", key),
+				})
+			}
+		}
+	}
+
+	return warnings
 }
 
 // ResolveEnv resolves environment variables declared in the config.
