@@ -520,9 +520,11 @@ func (c *Container) buildArtifactInitContainers(mainMounts []corev1.VolumeMount)
 			daemonKey = loc.HostDir
 		}
 
-		// The daemon key maps to steps/<key> on the daemon's filesystem. The dest is the
-		// host path of this init container's input volume.
-		hostDestPath := filepath.Join(c.config.ArtifactDaemonHostPath, "steps", c.handle, fmt.Sprintf("input-%d", i))
+		// The daemon key maps to steps/<key> on the daemon's filesystem. The dest
+		// is the host path of this init container's input volume. Use the actual
+		// volume name (from buildVolumeMounts) as the subdir — NOT the input loop
+		// index, since buildVolumeMounts uses a global counter that includes dir.
+		hostDestPath := filepath.Join(c.config.ArtifactDaemonHostPath, "steps", c.handle, volumeName)
 
 		initContainer := corev1.Container{
 			Name:    fmt.Sprintf("fetch-input-%d", i),
