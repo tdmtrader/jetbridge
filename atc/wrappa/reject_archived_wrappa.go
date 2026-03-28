@@ -127,7 +127,8 @@ func (rw *RejectArchivedWrappa) Wrap(handlers rata.Handlers) rata.Handlers {
 			atc.SubmitAgentFeedback,
 			atc.GetAgentFeedback,
 			atc.GetAgentFeedbackSummary,
-			atc.ClassifyAgentVerdict:
+			atc.ClassifyAgentVerdict,
+			atc.GetAgentReviewFindings:
 
 		default:
 			panic("how do archived pipelines affect your endpoint?")
