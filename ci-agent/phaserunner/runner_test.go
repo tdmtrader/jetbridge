@@ -327,14 +327,15 @@ var _ = Describe("Run", func() {
 		cfg := &phaseconfig.Config{
 			Name: "env-export-test",
 			Env: map[string]phaseconfig.EnvVar{
-				"repo_dir": {Var: "REPO_DIR_UNUSED", Default: "/expected/path"},
+				// Use a key other than repo_dir to avoid triggering cmd.Dir logic
+				"test_cmd": {Var: "TEST_CMD_UNUSED", Default: "my-test-command"},
 			},
 			Steps: []phaseconfig.Step{
 				{
 					Name:     "implement",
 					Template: "prompts/impl.md",
 					// Verify the env map value is accessible as a shell env var
-					VerifyCmd: `test "$repo_dir" = "/expected/path"`,
+					VerifyCmd: `test "$test_cmd" = "my-test-command"`,
 				},
 			},
 		}

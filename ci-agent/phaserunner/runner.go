@@ -266,15 +266,15 @@ func writeArtifact(path string, output json.RawMessage, art phaseconfig.Artifact
 }
 
 func runVerify(ctx context.Context, cmdStr string, env map[string]string) bool {
-	// Expand env vars in the command
-	expanded := os.Expand(cmdStr, func(key string) string {
-		if v, ok := env[key]; ok {
-			return v
-		}
-		return os.Getenv(key)
-	})
+	cmd := exec.CommandContext(ctx, "sh", "-c", cmdStr)
 
-	cmd := exec.CommandContext(ctx, "sh", "-c", expanded)
+	// Export system env vars plus resolved phase env vars to the child shell.
+	// The shell handles parameter expansion (e.g., ${VAR:-default}) natively.
+	cmd.Env = os.Environ()
+	for k, v := range env {
+		cmd.Env = append(cmd.Env, k+"="+v)
+	}
+
 	if dir, ok := env["repo_dir"]; ok && dir != "" {
 		cmd.Dir = dir
 	}
