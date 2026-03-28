@@ -60,13 +60,14 @@ func (w *Worker) Name() string {
 	return w.dbWorker.Name()
 }
 
-// SkipResourceCache returns true. Resource cache hits reuse hostPath
-// directories from previous builds, but the resource script (e.g., git clone)
-// expects an empty directory. Until the resource scripts support incremental
-// updates (e.g., git fetch instead of git clone), cache hits cause
-// "destination path already exists" failures.
+// SkipResourceCache returns false, enabling resource cache hits in DaemonSet
+// mode. Cache hits skip the get step entirely and serve cached data via the
+// artifact-daemon. The "destination path already exists" bug is fixed by the
+// cleanup-stale init container (added in buildCleanupInitContainer), and
+// volume handle → disk path mapping is handled by daemon alias registration
+// (added in registerDaemonAlias).
 func (w *Worker) SkipResourceCache() bool {
-	return true
+	return false
 }
 
 func (w *Worker) FindOrCreateContainer(

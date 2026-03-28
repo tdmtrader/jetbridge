@@ -42,6 +42,12 @@ var _ = Describe("Worker", func() {
 		})
 	})
 
+	Describe("SkipResourceCache", func() {
+		It("returns false to enable resource caching", func() {
+			Expect(worker.SkipResourceCache()).To(BeFalse())
+		})
+	})
+
 	Describe("FindOrCreateContainer", func() {
 		var (
 			owner    db.ContainerOwner
