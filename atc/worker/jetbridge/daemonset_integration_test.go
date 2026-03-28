@@ -800,6 +800,184 @@ func TestDaemonSetMode_InitContainerUsesResolveCommand(t *testing.T) {
 	}
 }
 
+// =======================================================================
+// Phase: hostPath cleanup on container reuse
+// =======================================================================
+
+// TestDaemonSetMode_CleanupInitContainerOnReuse verifies that when a container
+// handle is reused (crash recovery), a cleanup-stale init container is added
+// to the pod spec that removes stale hostPath data.
+func TestDaemonSetMode_CleanupInitContainerOnReuse(t *testing.T) {
+	cfg := daemonSetConfig()
+	c := &Container{
+		handle:   "reused-handle",
+		podName:  "test-pod",
+		metadata: db.ContainerMetadata{Type: db.ContainerTypeGet},
+		containerSpec: runtime.ContainerSpec{
+			Dir:  "/tmp/build/get",
+			Type: db.ContainerTypeGet,
+		},
+		config:     cfg,
+		properties: make(map[string]string),
+		reused:     true,
+	}
+
+	cleanup := c.buildCleanupInitContainer()
+	if cleanup == nil {
+		t.Fatal("expected cleanup init container for reused container, got nil")
+	}
+	if cleanup.Name != "cleanup-stale" {
+		t.Errorf("expected name cleanup-stale, got %s", cleanup.Name)
+	}
+	if cleanup.Image != cfg.ArtifactHelperImage {
+		t.Errorf("expected image %s, got %s", cfg.ArtifactHelperImage, cleanup.Image)
+	}
+
+	// Command should remove the stale steps directory.
+	cmd := strings.Join(cleanup.Command, " ")
+	if !strings.Contains(cmd, "rm -rf") {
+		t.Errorf("expected rm -rf in cleanup command, got: %s", cmd)
+	}
+	if !strings.Contains(cmd, "reused-handle") {
+		t.Errorf("expected container handle in cleanup path, got: %s", cmd)
+	}
+
+	// Should mount the artifact hostPath volume (writable, not read-only).
+	if len(cleanup.VolumeMounts) == 0 {
+		t.Fatal("expected volume mounts on cleanup container")
+	}
+	found := false
+	for _, m := range cleanup.VolumeMounts {
+		if m.Name == artifactDaemonHostPathVolumeName {
+			found = true
+			if m.ReadOnly {
+				t.Error("cleanup init container should mount artifact hostPath writable")
+			}
+		}
+	}
+	if !found {
+		t.Errorf("expected artifact hostPath volume mount, got: %v", cleanup.VolumeMounts)
+	}
+}
+
+// TestDaemonSetMode_NoCleanupOnFreshContainer verifies that fresh containers
+// (not reused) do NOT get a cleanup init container.
+func TestDaemonSetMode_NoCleanupOnFreshContainer(t *testing.T) {
+	cfg := daemonSetConfig()
+	c := &Container{
+		handle:   "fresh-handle",
+		podName:  "test-pod",
+		metadata: db.ContainerMetadata{Type: db.ContainerTypeGet},
+		containerSpec: runtime.ContainerSpec{
+			Dir:  "/tmp/build/get",
+			Type: db.ContainerTypeGet,
+		},
+		config:     cfg,
+		properties: make(map[string]string),
+		reused:     false,
+	}
+
+	cleanup := c.buildCleanupInitContainer()
+	if cleanup != nil {
+		t.Errorf("expected no cleanup init container for fresh container, got: %+v", cleanup)
+	}
+}
+
+// TestDaemonSetMode_NoCleanupInPVCMode verifies that reused containers in PVC
+// mode (no ArtifactDaemonHostPath) don't get a cleanup init container.
+func TestDaemonSetMode_NoCleanupInPVCMode(t *testing.T) {
+	cfg := Config{Namespace: "test-ns"}
+	c := &Container{
+		handle:   "reused-handle",
+		podName:  "test-pod",
+		metadata: db.ContainerMetadata{Type: db.ContainerTypeGet},
+		containerSpec: runtime.ContainerSpec{
+			Dir:  "/tmp/build/get",
+			Type: db.ContainerTypeGet,
+		},
+		config:     cfg,
+		properties: make(map[string]string),
+		reused:     true,
+	}
+
+	cleanup := c.buildCleanupInitContainer()
+	if cleanup != nil {
+		t.Errorf("expected no cleanup in PVC mode, got: %+v", cleanup)
+	}
+}
+
+// TestDaemonSetMode_NoCleanupForCheckContainers verifies that check containers
+// don't get cleanup init containers (they don't use the artifact hostPath).
+func TestDaemonSetMode_NoCleanupForCheckContainers(t *testing.T) {
+	cfg := daemonSetConfig()
+	c := &Container{
+		handle:   "check-handle",
+		podName:  "test-pod",
+		metadata: db.ContainerMetadata{Type: db.ContainerTypeCheck},
+		containerSpec: runtime.ContainerSpec{
+			Type: db.ContainerTypeCheck,
+		},
+		config:     cfg,
+		properties: make(map[string]string),
+		reused:     true,
+	}
+
+	cleanup := c.buildCleanupInitContainer()
+	if cleanup != nil {
+		t.Errorf("expected no cleanup for check containers, got: %+v", cleanup)
+	}
+}
+
+// TestDaemonSetMode_CleanupPrecedesArtifactInits verifies that the cleanup
+// init container runs BEFORE any artifact fetch init containers.
+func TestDaemonSetMode_CleanupPrecedesArtifactInits(t *testing.T) {
+	cfg := daemonSetConfig()
+	locator := NewArtifactLocator()
+	locator.Record(ArtifactKey("src-vol"), "node-a", "source/dir")
+
+	c := &Container{
+		handle:   "reused-task",
+		podName:  "test-pod",
+		metadata: db.ContainerMetadata{Type: db.ContainerTypeTask},
+		containerSpec: runtime.ContainerSpec{
+			Dir:  "/tmp/build",
+			Type: db.ContainerTypeTask,
+			ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+			Inputs: []runtime.Input{
+				{
+					Artifact:        &stubArtifact{handle: "src-vol"},
+					DestinationPath: "/tmp/build/src",
+				},
+			},
+		},
+		config:          cfg,
+		properties:      make(map[string]string),
+		artifactLocator: locator,
+		reused:          true,
+	}
+
+	spec := runtime.ProcessSpec{
+		Path: "/bin/sh",
+		Args: []string{"-c", "echo test"},
+		Dir:  "/tmp/build",
+	}
+
+	pod, err := c.buildPod(spec, []string{"sh", "-c", "sleep 86400"}, nil)
+	if err != nil {
+		t.Fatalf("buildPod: %v", err)
+	}
+
+	if len(pod.Spec.InitContainers) < 2 {
+		t.Fatalf("expected at least 2 init containers (cleanup + fetch), got %d", len(pod.Spec.InitContainers))
+	}
+	if pod.Spec.InitContainers[0].Name != "cleanup-stale" {
+		t.Errorf("expected first init container to be cleanup-stale, got %s", pod.Spec.InitContainers[0].Name)
+	}
+	if !strings.HasPrefix(pod.Spec.InitContainers[1].Name, "fetch-input-") {
+		t.Errorf("expected second init container to be fetch-input-*, got %s", pod.Spec.InitContainers[1].Name)
+	}
+}
+
 // stubArtifact is a minimal runtime.Artifact for testing.
 type stubArtifact struct {
 	handle string

@@ -103,9 +103,10 @@ func (w *Worker) FindOrCreateContainer(
 
 	// If we already have a created container in the DB, return it directly.
 	// The Pod may or may not exist yet (it gets created in Container.Run).
+	// Mark it as reused so Run() can clean up stale hostPath data.
 	if createdContainer != nil {
 		mounts, volumes := w.buildVolumeMountsForSpec(containerHandle, containerSpec)
-		container := newContainer(containerHandle, metadata, containerSpec, createdContainer, w.clientset, w.config, w.Name(), w.executor, volumes, w.artifactLocator)
+		container := newContainer(containerHandle, metadata, containerSpec, createdContainer, w.clientset, w.config, w.Name(), w.executor, volumes, w.artifactLocator, true)
 		return container, mounts, nil
 	}
 
@@ -120,7 +121,7 @@ func (w *Worker) FindOrCreateContainer(
 	}
 
 	mounts, volumes := w.buildVolumeMountsForSpec(containerHandle, containerSpec)
-	container := newContainer(containerHandle, metadata, containerSpec, createdContainer, w.clientset, w.config, w.Name(), w.executor, volumes, w.artifactLocator)
+	container := newContainer(containerHandle, metadata, containerSpec, createdContainer, w.clientset, w.config, w.Name(), w.executor, volumes, w.artifactLocator, false)
 	return container, mounts, nil
 }
 
@@ -226,7 +227,7 @@ func (w *Worker) LookupContainer(ctx context.Context, handle string) (runtime.Co
 		return nil, false, nil
 	}
 
-	return newContainer(handle, db.ContainerMetadata{}, runtime.ContainerSpec{}, dbContainer, w.clientset, w.config, w.Name(), w.executor, nil, w.artifactLocator), true, nil
+	return newContainer(handle, db.ContainerMetadata{}, runtime.ContainerSpec{}, dbContainer, w.clientset, w.config, w.Name(), w.executor, nil, w.artifactLocator, false), true, nil
 }
 
 func (w *Worker) LookupVolume(ctx context.Context, handle string) (runtime.Volume, bool, error) {

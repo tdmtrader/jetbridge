@@ -63,6 +63,10 @@ type Container struct {
 	executor        PodExecutor
 	volumes         []*Volume
 	artifactLocator *ArtifactLocator
+	// reused is true when FindOrCreateContainer found an existing container
+	// in the DB (crash-recovery path). In DaemonSet mode this means the
+	// hostPath directory may contain stale data and needs cleanup.
+	reused bool
 }
 
 func newContainer(
@@ -76,6 +80,7 @@ func newContainer(
 	executor PodExecutor,
 	volumes []*Volume,
 	artifactLocator *ArtifactLocator,
+	reused bool,
 ) *Container {
 	return &Container{
 		handle:          handle,
@@ -90,6 +95,7 @@ func newContainer(
 		executor:        executor,
 		volumes:         volumes,
 		artifactLocator: artifactLocator,
+		reused:          reused,
 	}
 }
 
@@ -381,10 +387,19 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 		volumes = append(volumes, *artifactVol)
 	}
 
-	initContainers, err := c.buildArtifactInitContainers(volumeMounts)
+	var initContainers []corev1.Container
+
+	// If this container handle was reused (crash recovery), prepend a cleanup
+	// init container to remove stale hostPath data before anything else runs.
+	if cleanup := c.buildCleanupInitContainer(); cleanup != nil {
+		initContainers = append(initContainers, *cleanup)
+	}
+
+	artifactInits, err := c.buildArtifactInitContainers(volumeMounts)
 	if err != nil {
 		return nil, fmt.Errorf("build artifact init containers: %w", err)
 	}
+	initContainers = append(initContainers, artifactInits...)
 
 	containers := []corev1.Container{
 		{
@@ -535,6 +550,49 @@ func (c *Container) buildArtifactInitContainers(mainMounts []corev1.VolumeMount)
 	}
 
 	return inits, nil
+}
+
+// buildCleanupInitContainer creates an init container that removes stale data
+// from the hostPath steps directory for this container handle. This is needed
+// when FindOrCreateContainer reuses an existing container handle (crash
+// recovery): the previous pod's data is still on disk and resource scripts
+// (e.g. git clone) fail with "destination path already exists".
+//
+// Returns nil when cleanup is not needed (fresh container, non-DaemonSet mode,
+// or check containers which don't use the artifact hostPath).
+func (c *Container) buildCleanupInitContainer() *corev1.Container {
+	if !c.reused {
+		return nil
+	}
+	if c.config.ArtifactDaemonHostPath == "" {
+		return nil
+	}
+	if c.metadata.Type == db.ContainerTypeCheck {
+		return nil
+	}
+
+	helperImage := c.config.ArtifactHelperImage
+	if helperImage == "" {
+		helperImage = DefaultArtifactHelperImage
+	}
+
+	// Clean the steps/<handle>/ directory so the new pod starts fresh.
+	cleanupPath := filepath.Join(ArtifactMountPath, "steps", c.handle)
+	script := fmt.Sprintf(`echo "[cleanup-stale] removing stale hostPath data: %s" >&2; rm -rf %s; mkdir -p %s`, cleanupPath, cleanupPath, cleanupPath)
+
+	allowEscalation := false
+	return &corev1.Container{
+		Name:    "cleanup-stale",
+		Image:   helperImage,
+		Command: []string{"sh", "-c", script},
+		VolumeMounts: []corev1.VolumeMount{
+			{Name: c.artifactVolumeName(), MountPath: ArtifactMountPath},
+		},
+		ImagePullPolicy: corev1.PullIfNotPresent,
+		SecurityContext: &corev1.SecurityContext{
+			AllowPrivilegeEscalation: &allowEscalation,
+		},
+	}
 }
 
 // daemonResolveCommand returns a shell command that resolves an artifact via
