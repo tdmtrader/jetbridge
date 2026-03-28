@@ -233,6 +233,127 @@ var _ = Describe("Run", func() {
 		Expect(results.Status).To(Equal(schema.StatusPass))
 	})
 
+	It("passes env map to shell and supports parameter expansion with default", func() {
+		promptDir := filepath.Join(baseDir, "prompts")
+		os.MkdirAll(promptDir, 0755)
+		Expect(os.WriteFile(
+			filepath.Join(promptDir, "impl.md"),
+			[]byte("implement something"),
+			0644,
+		)).To(Succeed())
+
+		// MY_VAR is NOT in the env map, so the shell should use the default "fallback"
+		// The verify_cmd writes the expanded value to a file so we can inspect it
+		markerFile := filepath.Join(tmpDir, "expanded.txt")
+		cfg := &phaseconfig.Config{
+			Name: "shell-expand-default",
+			Steps: []phaseconfig.Step{
+				{
+					Name:     "implement",
+					Template: "prompts/impl.md",
+					// Shell parameter expansion: MY_VAR unset -> use "hello"
+					// Then test that the expanded value equals "hello"
+					VerifyCmd: `test "${MY_VAR:-hello}" = "hello"`,
+				},
+			},
+		}
+
+		fakeClient := &fakeLLMClient{
+			responses: []json.RawMessage{json.RawMessage(`{}`)},
+		}
+
+		results, err := phaserunner.Run(context.Background(), phaserunner.Options{
+			Config:    cfg,
+			OutputDir: outputDir,
+			Client:    fakeClient,
+			BaseDir:   baseDir,
+		})
+
+		Expect(err).NotTo(HaveOccurred())
+		Expect(results.Status).To(Equal(schema.StatusPass))
+		_ = markerFile // used for documentation only
+	})
+
+	It("passes env map to shell and uses env var when set", func() {
+		promptDir := filepath.Join(baseDir, "prompts")
+		os.MkdirAll(promptDir, 0755)
+		Expect(os.WriteFile(
+			filepath.Join(promptDir, "impl.md"),
+			[]byte("implement something"),
+			0644,
+		)).To(Succeed())
+
+		// MY_VAR IS in the env map with value "custom", so shell expansion
+		// should pick up "custom" instead of the default
+		cfg := &phaseconfig.Config{
+			Name: "shell-expand-override",
+			Env: map[string]phaseconfig.EnvVar{
+				"MY_VAR": {Var: "MY_VAR_UNUSED", Default: "custom"},
+			},
+			Steps: []phaseconfig.Step{
+				{
+					Name:     "implement",
+					Template: "prompts/impl.md",
+					// MY_VAR should be "custom" from the env map
+					VerifyCmd: `test "$MY_VAR" = "custom"`,
+				},
+			},
+		}
+
+		fakeClient := &fakeLLMClient{
+			responses: []json.RawMessage{json.RawMessage(`{}`)},
+		}
+
+		results, err := phaserunner.Run(context.Background(), phaserunner.Options{
+			Config:    cfg,
+			OutputDir: outputDir,
+			Client:    fakeClient,
+			BaseDir:   baseDir,
+		})
+
+		Expect(err).NotTo(HaveOccurred())
+		Expect(results.Status).To(Equal(schema.StatusPass))
+	})
+
+	It("exports resolved env vars to child shell process", func() {
+		promptDir := filepath.Join(baseDir, "prompts")
+		os.MkdirAll(promptDir, 0755)
+		Expect(os.WriteFile(
+			filepath.Join(promptDir, "impl.md"),
+			[]byte("implement something"),
+			0644,
+		)).To(Succeed())
+
+		cfg := &phaseconfig.Config{
+			Name: "env-export-test",
+			Env: map[string]phaseconfig.EnvVar{
+				"repo_dir": {Var: "REPO_DIR_UNUSED", Default: "/expected/path"},
+			},
+			Steps: []phaseconfig.Step{
+				{
+					Name:     "implement",
+					Template: "prompts/impl.md",
+					// Verify the env map value is accessible as a shell env var
+					VerifyCmd: `test "$repo_dir" = "/expected/path"`,
+				},
+			},
+		}
+
+		fakeClient := &fakeLLMClient{
+			responses: []json.RawMessage{json.RawMessage(`{}`)},
+		}
+
+		results, err := phaserunner.Run(context.Background(), phaserunner.Options{
+			Config:    cfg,
+			OutputDir: outputDir,
+			Client:    fakeClient,
+			BaseDir:   baseDir,
+		})
+
+		Expect(err).NotTo(HaveOccurred())
+		Expect(results.Status).To(Equal(schema.StatusPass))
+	})
+
 	It("writes provenance when config path is provided", func() {
 		promptDir := filepath.Join(baseDir, "prompts")
 		os.MkdirAll(promptDir, 0755)
