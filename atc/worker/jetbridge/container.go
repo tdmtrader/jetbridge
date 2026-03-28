@@ -21,7 +21,6 @@ import (
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/tracing"
 	corev1 "k8s.io/api/core/v1"
-	discoveryv1 "k8s.io/api/discovery/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -467,7 +466,8 @@ func (c *Container) artifactVolumeName() string {
 
 // buildArtifactInitContainers creates init containers for each input with a
 // non-nil artifact when ArtifactDaemonHostPath is configured. Each init container
-// fetches an artifact from the DaemonSet hostPath into the corresponding volume.
+// sends a resolve request to the local artifact-daemon's /resolve endpoint,
+// which copies the artifact data into the input volume's hostPath directory.
 func (c *Container) buildArtifactInitContainers(mainMounts []corev1.VolumeMount) ([]corev1.Container, error) {
 	if c.config.ArtifactDaemonHostPath == "" {
 		return nil, nil
@@ -495,9 +495,20 @@ func (c *Container) buildArtifactInitContainers(mainMounts []corev1.VolumeMount)
 
 		key := ArtifactKey(input.Artifact.Handle())
 
+		loc, hasLoc := c.artifactLocate(key)
+		if !hasLoc {
+			return nil, fmt.Errorf("artifact location unknown for key %s (input %q): producing step may not have recorded its output", key, input.DestinationPath)
+		}
+
+		// The daemon key (loc.HostDir) is "<container-handle>/<subdir>" which
+		// maps to steps/<key> on the daemon's filesystem. The dest is the
+		// host path of this init container's input volume.
+		hostDestPath := filepath.Join(c.config.ArtifactDaemonHostPath, "steps", c.handle, fmt.Sprintf("input-%d", i))
+
 		initContainer := corev1.Container{
-			Name:  fmt.Sprintf("fetch-input-%d", i),
-			Image: helperImage,
+			Name:    fmt.Sprintf("fetch-input-%d", i),
+			Image:   helperImage,
+			Command: c.daemonResolveCommand(loc.HostDir, hostDestPath),
 			VolumeMounts: []corev1.VolumeMount{
 				{Name: c.artifactVolumeName(), MountPath: ArtifactMountPath, ReadOnly: true},
 				{Name: volumeName, MountPath: input.DestinationPath},
@@ -508,51 +519,22 @@ func (c *Container) buildArtifactInitContainers(mainMounts []corev1.VolumeMount)
 			},
 		}
 
-		loc, hasLoc := c.artifactLocate(key)
-		if !hasLoc {
-			return nil, fmt.Errorf("artifact location unknown for key %s (input %q): producing step may not have recorded its output", key, input.DestinationPath)
-		}
-		initContainer.Command = c.daemonSetFetchCommand(loc.HostDir, input.DestinationPath)
-		initContainer.Env = append(initContainer.Env, corev1.EnvVar{
-			Name: "MY_NODE_NAME",
-			ValueFrom: &corev1.EnvVarSource{
-				FieldRef: &corev1.ObjectFieldSelector{FieldPath: "spec.nodeName"},
-			},
-		})
-		if loc.NodeName != "" {
-			initContainer.Env = append(initContainer.Env, corev1.EnvVar{
-				Name:  "SOURCE_NODE",
-				Value: loc.NodeName,
-			})
-			// Resolve the daemon pod IP on the source node via EndpointSlice
-			// so the fetch script can reach it directly by IP.
-			if daemonIP := c.resolveDaemonPodIP(loc.NodeName); daemonIP != "" {
-				initContainer.Env = append(initContainer.Env, corev1.EnvVar{
-					Name:  "SOURCE_DAEMON_IP",
-					Value: daemonIP,
-				})
-			}
-		}
-
 		inits = append(inits, initContainer)
 	}
 
 	return inits, nil
 }
 
-// daemonSetFetchCommand returns a shell command that fetches an artifact
-// from either local hostPath (same node) or the DaemonSet HTTP server
-// (different node). Uses MY_NODE_NAME and SOURCE_NODE env vars to decide.
-// daemonSetFetchCommand returns a shell command that copies an artifact from
-// the source step's hostPath directory. Local: cp -a. Remote: HTTP GET + tar.
-// daemonSetFetchCommand returns a shell command that copies an artifact from
-// the source step's hostPath directory. sourceHostDir is the full hostPath
-// of the source artifact. Local: cp -a. Remote: HTTP GET + tar.
-func (c *Container) daemonSetFetchCommand(sourceHostDir, destPath string) []string {
-	// Fail fast if the source directory is unknown — this means the producing
-	// step's artifact location was not recorded in the ArtifactLocator.
-	if sourceHostDir == "" {
-		script := `echo "ERROR: artifact source directory is empty — producing step did not record its output location" >&2; exit 1`
+// daemonResolveCommand returns a shell command that resolves an artifact via
+// the local artifact-daemon's /resolve endpoint. The daemon copies from the
+// source path (identified by key) to the destination hostPath directory.
+//
+// key is the daemon-compatible artifact key (e.g. "producer-handle/result")
+// which maps to steps/<key> on the daemon's filesystem.
+// hostDest is the host filesystem path where the daemon should write the data.
+func (c *Container) daemonResolveCommand(key, hostDest string) []string {
+	if key == "" {
+		script := `echo "ERROR: artifact key is empty — producing step did not record its output location" >&2; exit 1`
 		return []string{"sh", "-c", script}
 	}
 
@@ -561,83 +543,18 @@ func (c *Container) daemonSetFetchCommand(sourceHostDir, destPath string) []stri
 		port = 8080
 	}
 
-	// Derive the URL path for remote fetch by stripping the mount path prefix.
-	// sourceHostDir is container-relative (e.g., "/artifacts/steps/abc/dir"),
-	// and the daemon serves from the root of its storage path.
-	relPath := strings.TrimPrefix(sourceHostDir, ArtifactMountPath+"/")
-	if relPath == sourceHostDir {
-		relPath = strings.TrimPrefix(sourceHostDir, ArtifactMountPath)
-	}
-
-	// Fetch strategy:
-	// 1. Known same-node (SOURCE_NODE == MY_NODE_NAME): local cp -a
-	// 2. Known different-node (SOURCE_NODE set, != MY_NODE_NAME): remote wget from daemon
-	// 3. Unknown node (SOURCE_NODE empty): try local first, fall back to
-	//    querying all daemon pods via the headless service. This handles the
-	//    case where fetchPodNodeName returned "" but the artifact exists on
-	//    some node.
 	script := fmt.Sprintf(`
 set -e
-SRC="%s"
+KEY="%s"
 DST="%s"
 PORT=%d
-REL_PATH="%s"
-
-echo "[artifact-fetch] SOURCE_NODE=${SOURCE_NODE:-<empty>} MY_NODE_NAME=${MY_NODE_NAME:-<empty>} SOURCE_DAEMON_IP=${SOURCE_DAEMON_IP:-<empty>} src=$SRC dst=$DST" >&2
-
-fetch_remote() {
-  IP="$1"
-  URL="http://${IP}:${PORT}/artifacts/${REL_PATH}"
-  echo "[artifact-fetch] remote: fetching from $URL" >&2
-  for attempt in 1 2 3; do
-    if wget -qO- "$URL" | tar xf - -C "$DST"; then
-      echo "[artifact-fetch] remote: success (attempt $attempt)" >&2
-      return 0
-    fi
-    echo "[artifact-fetch] remote: attempt $attempt/3 failed" >&2
-    sleep 2
-  done
-  echo "[artifact-fetch] remote: all 3 attempts failed" >&2
-  return 1
+echo "[artifact-fetch] resolving key=${KEY} dest=${DST}" >&2
+RESP=$(wget -qO- --post-data='{"key":"'"${KEY}"'","dest":"'"${DST}"'"}' "http://localhost:${PORT}/resolve" 2>&1) || {
+  echo "[artifact-fetch] FAILED: ${RESP}" >&2
+  exit 1
 }
-
-copy_local() {
-  echo "[artifact-fetch] local: cp -a $SRC/. $DST/" >&2
-  cp -a "$SRC/." "$DST/"
-}
-
-if [ -n "$SOURCE_NODE" ] && [ "$SOURCE_NODE" = "$MY_NODE_NAME" ]; then
-  echo "[artifact-fetch] path=KNOWN_LOCAL (source and consumer on same node: $MY_NODE_NAME)" >&2
-  for attempt in 1 2 3 4 5; do
-    if [ -d "$SRC" ]; then
-      copy_local
-      exit 0
-    fi
-    echo "[artifact-fetch] local: waiting for $SRC (attempt $attempt/5)..." >&2
-    sleep 2
-  done
-  echo "[artifact-fetch] FAILED: local source dir $SRC not found after 5 attempts" >&2
-  exit 1
-
-elif [ -n "$SOURCE_DAEMON_IP" ]; then
-  echo "[artifact-fetch] path=KNOWN_REMOTE (daemon=$SOURCE_DAEMON_IP, source_node=$SOURCE_NODE, consumer=$MY_NODE_NAME)" >&2
-  if fetch_remote "$SOURCE_DAEMON_IP"; then
-    exit 0
-  fi
-  echo "[artifact-fetch] FAILED: could not fetch from daemon at $SOURCE_DAEMON_IP" >&2
-  exit 1
-
-else
-  echo "[artifact-fetch] path=UNKNOWN_NODE (SOURCE_DAEMON_IP is empty, trying local then fallback)" >&2
-  if [ -d "$SRC" ]; then
-    echo "[artifact-fetch] found source dir locally" >&2
-    copy_local
-    exit 0
-  fi
-  echo "[artifact-fetch] FAILED: artifact not found locally and no daemon IP available" >&2
-  exit 1
-fi
-`, sourceHostDir, destPath, port, relPath)
+echo "[artifact-fetch] resolved: ${RESP}" >&2
+`, key, hostDest, port)
 
 	return []string{"sh", "-c", script}
 }
@@ -648,36 +565,6 @@ func (c *Container) artifactLocate(key string) (ArtifactLocation, bool) {
 		return ArtifactLocation{}, false
 	}
 	return c.artifactLocator.Locate(key)
-}
-
-// resolveDaemonPodIP looks up the artifact-daemon pod IP on the given node
-// by querying EndpointSlices for the artifact-daemon headless service.
-// Returns empty string if not found or on error.
-func (c *Container) resolveDaemonPodIP(nodeName string) string {
-	if c.clientset == nil || nodeName == "" {
-		return ""
-	}
-	svcName := c.config.ArtifactDaemonService
-	if svcName == "" {
-		svcName = "artifact-daemon"
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	slices, err := c.clientset.DiscoveryV1().EndpointSlices(c.config.Namespace).List(ctx, metav1.ListOptions{
-		LabelSelector: discoveryv1.LabelServiceName + "=" + svcName,
-	})
-	if err != nil {
-		return ""
-	}
-	for _, slice := range slices.Items {
-		for _, ep := range slice.Endpoints {
-			if ep.NodeName != nil && *ep.NodeName == nodeName && len(ep.Addresses) > 0 {
-				return ep.Addresses[0]
-			}
-		}
-	}
-	return ""
 }
 
 // artifactSourceNode returns the node name for an artifact key from the

@@ -89,7 +89,7 @@ var _ = Describe("Artifact Integration", func() {
 			By("verifying the volume is an DaemonSetVolume with correct key")
 			asVol, ok := vol.(*jetbridge.DaemonSetVolume)
 			Expect(ok).To(BeTrue(), "expected DaemonSetVolume, got %T", vol)
-			Expect(asVol.Key()).To(Equal("artifacts/artifact-vol-1.tar"))
+			Expect(asVol.Key()).To(Equal("artifact-vol-1"))
 			Expect(asVol.Handle()).To(Equal("artifact-vol-1"))
 
 			By("step 2: looking up the artifact volume for the next step")
@@ -101,7 +101,7 @@ var _ = Describe("Artifact Integration", func() {
 
 			lookedUpASV, ok := lookedUpVol.(*jetbridge.DaemonSetVolume)
 			Expect(ok).To(BeTrue(), "LookupVolume should return DaemonSetVolume when artifact store is configured")
-			Expect(lookedUpASV.Key()).To(Equal("artifacts/artifact-vol-1.tar"))
+			Expect(lookedUpASV.Key()).To(Equal("artifact-vol-1"))
 
 			By("step 3: creating a task container that receives the artifact as input")
 			setupFakeDBContainer(fakeDBWorker, "task-consume-artifact")
@@ -298,7 +298,7 @@ var _ = Describe("Artifact Integration", func() {
 			vol, _, err := worker.CreateVolumeForArtifact(ctx, 1)
 			Expect(err).ToNot(HaveOccurred())
 			originalKey := vol.(*jetbridge.DaemonSetVolume).Key()
-			Expect(originalKey).To(Equal("artifacts/persistent-artifact.tar"))
+			Expect(originalKey).To(Equal("persistent-artifact"))
 
 			By("looking up the volume (simulating a new step after pod restart)")
 			fakeVolumeRepo.FindVolumeReturns(fakeCreatedVolume, true, nil)

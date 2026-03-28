@@ -8,15 +8,15 @@ import (
 func TestArtifactLocator_RecordAndLocate(t *testing.T) {
 	locator := NewArtifactLocator()
 
-	locator.Record("artifacts/abc.tar", "node-1", "")
-	locator.Record("artifacts/def.tar", "node-2", "")
+	locator.Record("abc", "node-1", "")
+	locator.Record("def", "node-2", "")
 
-	loc, ok := locator.Locate("artifacts/abc.tar")
+	loc, ok := locator.Locate("abc")
 	if !ok || loc.NodeName != "node-1" {
 		t.Errorf("expected node-1, got %q (found=%v)", loc.NodeName, ok)
 	}
 
-	loc, ok = locator.Locate("artifacts/def.tar")
+	loc, ok = locator.Locate("def")
 	if !ok || loc.NodeName != "node-2" {
 		t.Errorf("expected node-2, got %q (found=%v)", loc.NodeName, ok)
 	}
@@ -25,9 +25,9 @@ func TestArtifactLocator_RecordAndLocate(t *testing.T) {
 func TestArtifactLocator_LocateNode(t *testing.T) {
 	locator := NewArtifactLocator()
 
-	locator.Record("artifacts/abc.tar", "node-1", "/var/artifacts/steps/abc")
+	locator.Record("abc", "node-1", "container-abc/output")
 
-	node, ok := locator.LocateNode("artifacts/abc.tar")
+	node, ok := locator.LocateNode("abc")
 	if !ok || node != "node-1" {
 		t.Errorf("expected node-1, got %q (found=%v)", node, ok)
 	}
@@ -41,17 +41,17 @@ func TestArtifactLocator_LocateNode(t *testing.T) {
 func TestArtifactLocator_LocateWithHostDir(t *testing.T) {
 	locator := NewArtifactLocator()
 
-	locator.Record("artifacts/abc.tar", "node-1", "/var/artifacts/steps/abc/output")
+	locator.Record("abc", "node-1", "container-abc/output")
 
-	loc, ok := locator.Locate("artifacts/abc.tar")
+	loc, ok := locator.Locate("abc")
 	if !ok {
 		t.Fatal("expected found")
 	}
 	if loc.NodeName != "node-1" {
 		t.Errorf("expected node-1, got %q", loc.NodeName)
 	}
-	if loc.HostDir != "/var/artifacts/steps/abc/output" {
-		t.Errorf("expected /var/artifacts/steps/abc/output, got %q", loc.HostDir)
+	if loc.HostDir != "container-abc/output" {
+		t.Errorf("expected container-abc/output, got %q", loc.HostDir)
 	}
 }
 
@@ -67,10 +67,10 @@ func TestArtifactLocator_LocateMissing(t *testing.T) {
 func TestArtifactLocator_Remove(t *testing.T) {
 	locator := NewArtifactLocator()
 
-	locator.Record("artifacts/abc.tar", "node-1", "")
-	locator.Remove("artifacts/abc.tar")
+	locator.Record("abc", "node-1", "")
+	locator.Remove("abc")
 
-	_, ok := locator.Locate("artifacts/abc.tar")
+	_, ok := locator.Locate("abc")
 	if ok {
 		t.Error("expected not found after Remove")
 	}

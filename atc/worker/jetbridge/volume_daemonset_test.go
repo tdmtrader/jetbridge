@@ -17,7 +17,7 @@ func TestDaemonSetVolume_StreamOut_Success(t *testing.T) {
 	defer srv.Close()
 
 	vol := &DaemonSetVolume{
-		key:        "artifacts/abc.tar",
+		key:        "abc",
 		handle:     "abc",
 		workerName: "w1",
 		sourceNode: "node-1",
@@ -46,7 +46,7 @@ func TestDaemonSetVolume_StreamOut_NotFound(t *testing.T) {
 	defer srv.Close()
 
 	vol := &DaemonSetVolume{
-		key:        "artifacts/missing.tar",
+		key:        "missing",
 		handle:     "missing",
 		workerName: "w1",
 		sourceNode: "node-1",
@@ -66,7 +66,7 @@ func TestDaemonSetVolume_StreamOut_NotFound(t *testing.T) {
 
 func TestDaemonSetVolume_StreamOut_NoSourceNode(t *testing.T) {
 	vol := &DaemonSetVolume{
-		key:    "artifacts/abc.tar",
+		key:    "abc",
 		handle: "abc",
 	}
 

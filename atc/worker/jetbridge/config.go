@@ -40,10 +40,12 @@ const (
 	ArtifactMountPath = "/artifacts"
 )
 
-// ArtifactKey returns the canonical relative path on the artifact PVC
-// for a given volume handle, e.g. "artifacts/<handle>.tar".
+// ArtifactKey returns the artifact key for a given volume handle. The key
+// is the handle itself (identity function). Kept for readability and
+// greppability — callers use ArtifactKey(h) instead of bare h so artifact
+// key construction sites are easy to find.
 func ArtifactKey(handle string) string {
-	return fmt.Sprintf("artifacts/%s.tar", handle)
+	return handle
 }
 
 // DefaultResourceTypeImages maps base Concourse resource type names to their

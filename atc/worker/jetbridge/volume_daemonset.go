@@ -18,7 +18,7 @@ var _ runtime.Volume = (*DaemonSetVolume)(nil)
 // DaemonSetVolume represents an artifact stored on a DaemonSet node.
 // StreamOut fetches via HTTP from the DaemonSet pod on the source node.
 type DaemonSetVolume struct {
-	key        string // e.g. "artifacts/<handle>.tar"
+	key        string // artifact key (the volume handle)
 	handle     string
 	workerName string
 	dbVolume   db.CreatedVolume
@@ -44,7 +44,7 @@ func (v *DaemonSetVolume) Handle() string {
 	return v.handle
 }
 
-// Key returns the artifact key (e.g. "artifacts/<handle>.tar").
+// Key returns the artifact key (the volume handle).
 func (v *DaemonSetVolume) Key() string {
 	return v.key
 }

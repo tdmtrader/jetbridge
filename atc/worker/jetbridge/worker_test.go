@@ -297,7 +297,7 @@ var _ = Describe("Worker", func() {
 
 					asVol, ok := vol.(*jetbridge.DaemonSetVolume)
 					Expect(ok).To(BeTrue(), "expected DaemonSetVolume, got %T", vol)
-					Expect(asVol.Key()).To(Equal("artifacts/artifact-volume-handle.tar"))
+					Expect(asVol.Key()).To(Equal("artifact-volume-handle"))
 					Expect(asVol.Handle()).To(Equal("artifact-volume-handle"))
 				})
 			})

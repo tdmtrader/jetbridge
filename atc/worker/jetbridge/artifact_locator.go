@@ -2,10 +2,10 @@ package jetbridge
 
 import "sync"
 
-// ArtifactLocation holds the node name and hostPath directory for an artifact.
+// ArtifactLocation holds the node name and daemon key for an artifact.
 type ArtifactLocation struct {
 	NodeName string
-	HostDir  string // e.g. "/var/concourse/artifacts/steps/build-42/result"
+	HostDir  string // daemon key, e.g. "build-42/result" (maps to steps/<key> on daemon)
 }
 
 // ArtifactLocator tracks which K8s node holds each artifact key and the

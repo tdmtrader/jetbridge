@@ -11,9 +11,6 @@ import (
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/runtime"
 	corev1 "k8s.io/api/core/v1"
-	discoveryv1 "k8s.io/api/discovery/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/kubernetes/fake"
 )
 
 // TestDaemonSetMode_PodHasHostPathVolume verifies that in DaemonSet mode,
@@ -161,8 +158,8 @@ func TestDaemonSetMode_NoAffinityForPVC(t *testing.T) {
 	}
 }
 
-// TestDaemonSetMode_InitContainerFetchCommand verifies the branching fetch command.
-func TestDaemonSetMode_InitContainerFetchCommand(t *testing.T) {
+// TestDaemonSetMode_InitContainerResolveCommand verifies the daemon resolve command.
+func TestDaemonSetMode_InitContainerResolveCommand(t *testing.T) {
 	cfg := Config{
 		Namespace:              "test-ns",
 		ArtifactDaemonHostPath: "/var/concourse/artifacts",
@@ -172,7 +169,7 @@ func TestDaemonSetMode_InitContainerFetchCommand(t *testing.T) {
 	}
 
 	locator := NewArtifactLocator()
-	locator.Record(ArtifactKey("vol-1"), "node-a", "/artifacts/steps/test-handle/result")
+	locator.Record(ArtifactKey("vol-1"), "node-a", "test-handle/result")
 
 	c := &Container{
 		handle:   "test-handle",
@@ -206,22 +203,20 @@ func TestDaemonSetMode_InitContainerFetchCommand(t *testing.T) {
 	}
 
 	init := inits[0]
-	// Check that it has MY_NODE_NAME env var (downward API)
-	hasNodeName := false
-	hasSourceNode := false
+	// Should NOT have MY_NODE_NAME or SOURCE_NODE env vars (removed in daemon resolve mode)
 	for _, env := range init.Env {
-		if env.Name == "MY_NODE_NAME" && env.ValueFrom != nil && env.ValueFrom.FieldRef != nil {
-			hasNodeName = true
-		}
-		if env.Name == "SOURCE_NODE" && env.Value == "node-a" {
-			hasSourceNode = true
+		if env.Name == "MY_NODE_NAME" || env.Name == "SOURCE_NODE" || env.Name == "SOURCE_DAEMON_IP" {
+			t.Errorf("unexpected env var %s — these were removed in daemon resolve mode", env.Name)
 		}
 	}
-	if !hasNodeName {
-		t.Error("expected MY_NODE_NAME env from downward API")
+
+	// Command should use wget to /resolve endpoint
+	cmd := strings.Join(init.Command, " ")
+	if !strings.Contains(cmd, "/resolve") {
+		t.Errorf("expected /resolve endpoint in command, got: %s", cmd)
 	}
-	if !hasSourceNode {
-		t.Error("expected SOURCE_NODE=node-a env var")
+	if !strings.Contains(cmd, "test-handle/result") {
+		t.Errorf("expected daemon key in command, got: %s", cmd)
 	}
 }
 
@@ -229,25 +224,25 @@ func TestDaemonSetMode_InitContainerFetchCommand(t *testing.T) {
 func TestDaemonSetMode_LocatorRecordLookupCleanup(t *testing.T) {
 	locator := NewArtifactLocator()
 
-	locator.Record("artifacts/build-1.tar", "node-a", "")
-	locator.Record("artifacts/build-2.tar", "node-b", "")
-	locator.Record("artifacts/build-3.tar", "node-a", "")
+	locator.Record("build-1", "node-a", "")
+	locator.Record("build-2", "node-b", "")
+	locator.Record("build-3", "node-a", "")
 
 	// Verify lookup
-	node, ok := locator.LocateNode("artifacts/build-1.tar")
+	node, ok := locator.LocateNode("build-1")
 	if !ok || node != "node-a" {
 		t.Errorf("expected node-a, got %s", node)
 	}
 
 	// Simulate GC cleanup
-	locator.Remove("artifacts/build-1.tar")
-	_, ok = locator.LocateNode("artifacts/build-1.tar")
+	locator.Remove("build-1")
+	_, ok = locator.LocateNode("build-1")
 	if ok {
 		t.Error("expected not found after Remove")
 	}
 
 	// Other entries unaffected
-	node, ok = locator.LocateNode("artifacts/build-2.tar")
+	node, ok = locator.LocateNode("build-2")
 	if !ok || node != "node-b" {
 		t.Errorf("expected node-b, got %s", node)
 	}
@@ -384,8 +379,8 @@ func TestDaemonSetMode_RecordOutputLocationsWithEmptyNodeName(t *testing.T) {
 	if !found {
 		t.Fatalf("expected locator to have key %s even with empty nodeName, but not found", key)
 	}
-	if loc.HostDir != "/artifacts/steps/test-handle/out" {
-		t.Errorf("expected hostDir /artifacts/steps/test-handle/out, got %s", loc.HostDir)
+	if loc.HostDir != "test-handle/out" {
+		t.Errorf("expected hostDir test-handle/out, got %s", loc.HostDir)
 	}
 	if loc.NodeName != "" {
 		t.Errorf("expected empty node name, got %s", loc.NodeName)
@@ -577,10 +572,10 @@ func TestDaemonSetMode_CachesAreDirectHostPath(t *testing.T) {
 // Phase 3: cp -a init containers
 // =======================================================================
 
-func TestDaemonSetMode_InitContainerUsesCpA(t *testing.T) {
+func TestDaemonSetMode_InitContainerUsesDaemonResolve(t *testing.T) {
 	cfg := daemonSetConfig()
 	locator := NewArtifactLocator()
-	locator.Record(ArtifactKey("src-vol"), "this-node", "/artifacts/steps/source-handle/src")
+	locator.Record(ArtifactKey("src-vol"), "this-node", "source-handle/src")
 
 	c := &Container{
 		handle:   "build-60",
@@ -612,8 +607,11 @@ func TestDaemonSetMode_InitContainerUsesCpA(t *testing.T) {
 	}
 
 	cmd := strings.Join(inits[0].Command, " ")
-	if !strings.Contains(cmd, "cp -a") {
-		t.Errorf("local DaemonSet init container should use 'cp -a', got command: %s", cmd)
+	if !strings.Contains(cmd, "/resolve") {
+		t.Errorf("init container should use daemon /resolve endpoint, got command: %s", cmd)
+	}
+	if !strings.Contains(cmd, "source-handle/src") {
+		t.Errorf("init container should reference daemon key, got command: %s", cmd)
 	}
 }
 
@@ -655,19 +653,19 @@ func TestDaemonSetMode_MissingArtifactLocationReturnsError(t *testing.T) {
 	}
 }
 
-// TestDaemonSetMode_EmptySourceHostDirFailsFast verifies that
-// daemonSetFetchCommand generates an exit-1 script when sourceHostDir is empty.
-func TestDaemonSetMode_EmptySourceHostDirFailsFast(t *testing.T) {
+// TestDaemonSetMode_EmptyKeyFailsFast verifies that
+// daemonResolveCommand generates an exit-1 script when the key is empty.
+func TestDaemonSetMode_EmptyKeyFailsFast(t *testing.T) {
 	cfg := daemonSetConfig()
 	c := &Container{config: cfg}
 
-	cmd := c.daemonSetFetchCommand("", "/tmp/build/input")
+	cmd := c.daemonResolveCommand("", "/tmp/build/input")
 	script := strings.Join(cmd, " ")
 	if !strings.Contains(script, "exit 1") {
-		t.Errorf("expected exit 1 for empty sourceHostDir, got: %s", script)
+		t.Errorf("expected exit 1 for empty key, got: %s", script)
 	}
-	if strings.Contains(script, "cp -a") {
-		t.Errorf("empty sourceHostDir should NOT generate cp -a command, got: %s", script)
+	if strings.Contains(script, "wget") {
+		t.Errorf("empty key should NOT generate wget command, got: %s", script)
 	}
 }
 
@@ -679,7 +677,7 @@ func TestDaemonSetMode_RecordAndLocateRoundTrip(t *testing.T) {
 
 	// Simulate the producing step recording its output location.
 	artifactHandle := "producer-handle-output-result"
-	locator.Record(ArtifactKey(artifactHandle), "node-a", "/artifacts/steps/producer-handle/result")
+	locator.Record(ArtifactKey(artifactHandle), "node-a", "producer-handle/result")
 
 	c := &Container{
 		handle:   "consumer-handle",
@@ -710,103 +708,49 @@ func TestDaemonSetMode_RecordAndLocateRoundTrip(t *testing.T) {
 	}
 
 	cmd := strings.Join(inits[0].Command, " ")
-	// Should contain cp -a with the container-relative source path
-	if !strings.Contains(cmd, "/artifacts/steps/producer-handle/result") {
-		t.Errorf("expected container-relative source path in command, got: %s", cmd)
+	// Should contain the daemon key in the /resolve call
+	if !strings.Contains(cmd, "producer-handle/result") {
+		t.Errorf("expected daemon key in command, got: %s", cmd)
 	}
-	if !strings.Contains(cmd, "cp -a") {
-		t.Errorf("expected cp -a in command, got: %s", cmd)
-	}
-
-	// Should have SOURCE_NODE env var
-	hasSourceNode := false
-	for _, env := range inits[0].Env {
-		if env.Name == "SOURCE_NODE" && env.Value == "node-a" {
-			hasSourceNode = true
-		}
-	}
-	if !hasSourceNode {
-		t.Error("expected SOURCE_NODE=node-a env var")
+	if !strings.Contains(cmd, "/resolve") {
+		t.Errorf("expected /resolve endpoint in command, got: %s", cmd)
 	}
 }
 
-// --- EndpointSlice-based daemon IP resolution tests ---
+// --- Daemon resolve command tests ---
 
-// TestDaemonSetMode_ResolveDaemonPodIP verifies that resolveDaemonPodIP
-// looks up the artifact-daemon pod IP for a given node from EndpointSlices.
-func TestDaemonSetMode_ResolveDaemonPodIP(t *testing.T) {
+// TestDaemonSetMode_DaemonResolveCommand verifies that daemonResolveCommand
+// generates a wget-based script that calls the local daemon's /resolve endpoint.
+func TestDaemonSetMode_DaemonResolveCommand(t *testing.T) {
 	cfg := daemonSetConfig()
+	c := &Container{config: cfg}
 
-	// Create a fake clientset with an EndpointSlice for the artifact-daemon service.
-	endpointSlice := &discoveryv1.EndpointSlice{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "artifact-daemon-abc",
-			Namespace: "test-ns",
-			Labels: map[string]string{
-				discoveryv1.LabelServiceName: "artifact-daemon",
-			},
-		},
-		Endpoints: []discoveryv1.Endpoint{
-			{
-				Addresses: []string{"10.0.1.5"},
-				NodeName:  strPtr("node-a"),
-			},
-			{
-				Addresses: []string{"10.0.2.8"},
-				NodeName:  strPtr("node-b"),
-			},
-		},
+	cmd := c.daemonResolveCommand("producer-handle/result", "/var/concourse/artifacts/steps/consumer/input-0")
+	script := strings.Join(cmd, " ")
+
+	if !strings.Contains(script, "wget") {
+		t.Errorf("expected wget in resolve command, got: %s", script)
 	}
-
-	clientset := fake.NewSimpleClientset(endpointSlice)
-
-	c := &Container{
-		handle:    "test",
-		config:    cfg,
-		clientset: clientset,
+	if !strings.Contains(script, "localhost") {
+		t.Errorf("expected localhost in resolve command, got: %s", script)
 	}
-
-	ip := c.resolveDaemonPodIP("node-a")
-	if ip != "10.0.1.5" {
-		t.Errorf("expected 10.0.1.5 for node-a, got %q", ip)
+	if !strings.Contains(script, "/resolve") {
+		t.Errorf("expected /resolve endpoint in command, got: %s", script)
 	}
-
-	ip = c.resolveDaemonPodIP("node-b")
-	if ip != "10.0.2.8" {
-		t.Errorf("expected 10.0.2.8 for node-b, got %q", ip)
+	if !strings.Contains(script, "producer-handle/result") {
+		t.Errorf("expected daemon key in command, got: %s", script)
 	}
-
-	ip = c.resolveDaemonPodIP("node-c")
-	if ip != "" {
-		t.Errorf("expected empty for unknown node-c, got %q", ip)
+	if strings.Contains(script, ".svc.cluster.local") {
+		t.Errorf("resolve command should NOT use headless service DNS, got: %s", script)
 	}
 }
 
-// TestDaemonSetMode_RemoteFetchUsesDaemonIP verifies that when the source
-// is on a different node, the init container gets SOURCE_DAEMON_IP and the
-// fetch script uses it instead of headless service DNS.
-func TestDaemonSetMode_RemoteFetchUsesDaemonIP(t *testing.T) {
+// TestDaemonSetMode_InitContainerUsesResolveCommand verifies that init containers
+// use the daemon /resolve endpoint instead of cp -a or remote wget.
+func TestDaemonSetMode_InitContainerUsesResolveCommand(t *testing.T) {
 	cfg := daemonSetConfig()
 	locator := NewArtifactLocator()
-	locator.Record(ArtifactKey("remote-vol"), "node-b", "/artifacts/steps/source-handle/out")
-
-	endpointSlice := &discoveryv1.EndpointSlice{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "artifact-daemon-abc",
-			Namespace: "test-ns",
-			Labels: map[string]string{
-				discoveryv1.LabelServiceName: "artifact-daemon",
-			},
-		},
-		Endpoints: []discoveryv1.Endpoint{
-			{
-				Addresses: []string{"10.0.2.8"},
-				NodeName:  strPtr("node-b"),
-			},
-		},
-	}
-
-	clientset := fake.NewSimpleClientset(endpointSlice)
+	locator.Record(ArtifactKey("remote-vol"), "node-b", "source-handle/out")
 
 	c := &Container{
 		handle:   "consumer",
@@ -825,7 +769,6 @@ func TestDaemonSetMode_RemoteFetchUsesDaemonIP(t *testing.T) {
 		config:          cfg,
 		properties:      make(map[string]string),
 		artifactLocator: locator,
-		clientset:       clientset,
 	}
 
 	_, mounts := c.buildVolumeMounts()
@@ -837,28 +780,22 @@ func TestDaemonSetMode_RemoteFetchUsesDaemonIP(t *testing.T) {
 		t.Fatal("expected at least one init container")
 	}
 
-	// Check for SOURCE_DAEMON_IP env var
-	hasDaemonIP := false
+	// Init container should NOT have MY_NODE_NAME, SOURCE_NODE, or SOURCE_DAEMON_IP env vars
 	for _, env := range inits[0].Env {
-		if env.Name == "SOURCE_DAEMON_IP" && env.Value == "10.0.2.8" {
-			hasDaemonIP = true
+		if env.Name == "MY_NODE_NAME" || env.Name == "SOURCE_NODE" || env.Name == "SOURCE_DAEMON_IP" {
+			t.Errorf("unexpected env var %s — these were removed in daemon resolve mode", env.Name)
 		}
 	}
-	if !hasDaemonIP {
-		t.Error("expected SOURCE_DAEMON_IP=10.0.2.8 env var")
-	}
 
-	// Fetch script should use SOURCE_DAEMON_IP, not headless service DNS
+	// Command should use wget to localhost /resolve, not cp -a
 	cmd := strings.Join(inits[0].Command, " ")
-	if !strings.Contains(cmd, "SOURCE_DAEMON_IP") {
-		t.Errorf("expected fetch script to reference SOURCE_DAEMON_IP, got: %s", cmd)
+	if !strings.Contains(cmd, "/resolve") {
+		t.Errorf("expected /resolve endpoint in command, got: %s", cmd)
 	}
-	if strings.Contains(cmd, ".svc.cluster.local") {
-		t.Errorf("fetch script should NOT use headless service DNS, got: %s", cmd)
+	if strings.Contains(cmd, "cp -a") {
+		t.Errorf("should NOT use cp -a in daemon resolve mode, got: %s", cmd)
 	}
 }
-
-func strPtr(s string) *string { return &s }
 
 // stubArtifact is a minimal runtime.Artifact for testing.
 type stubArtifact struct {

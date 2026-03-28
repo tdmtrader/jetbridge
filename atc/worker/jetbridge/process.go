@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -920,11 +919,12 @@ func (p *execProcess) recordOutputLocations(nodeName string) {
 		if subdir == "" {
 			subdir = "unknown"
 		}
-		// Record the container-relative path (under ArtifactMountPath), not
-		// the host path. The init container mounts the hostPath volume at
-		// ArtifactMountPath ("/artifacts"), so scripts must reference that.
-		containerDir := filepath.Join(ArtifactMountPath, "steps", p.container.handle, subdir)
-		p.container.artifactLocator.Record(key, nodeName, containerDir)
+		// Record the daemon-compatible key: <container-handle>/<subdir>.
+		// This maps directly to the daemon's filesystem layout
+		// steps/<container-handle>/<subdir>/ and is passed to the daemon's
+		// /resolve endpoint by the init container.
+		daemonKey := p.container.handle + "/" + subdir
+		p.container.artifactLocator.Record(key, nodeName, daemonKey)
 		recorded++
 	}
 	if recorded == 0 && len(p.container.volumes) > 0 {
