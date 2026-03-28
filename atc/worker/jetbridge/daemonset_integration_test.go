@@ -1151,6 +1151,150 @@ func TestDaemonSetMode_NoAliasRegistrationWithoutNodeName(t *testing.T) {
 	}
 }
 
+// =======================================================================
+// Phase 3: Resource caching flow tests
+// =======================================================================
+
+// TestDaemonSetMode_CacheHitFlow verifies that when a resource cache hit
+// occurs (locator has no entry for the volume handle), the downstream task's
+// init container uses the volume handle as the daemon key. The daemon resolves
+// it via the registered alias from Phase 2.
+func TestDaemonSetMode_CacheHitFlow(t *testing.T) {
+	cfg := daemonSetConfig()
+	// Empty locator simulates a cache hit: the original get step's locator
+	// entry was recorded in a different ATC instance or has been lost.
+	locator := NewArtifactLocator()
+
+	// The cached volume handle — this is what the DB returns on cache hit.
+	cachedVolHandle := "cached-resource-vol-abc123"
+
+	c := &Container{
+		handle:   "task-consumer",
+		podName:  "consumer-pod",
+		metadata: db.ContainerMetadata{Type: db.ContainerTypeTask},
+		containerSpec: runtime.ContainerSpec{
+			Dir:  "/tmp/build",
+			Type: db.ContainerTypeTask,
+			ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+			Inputs: []runtime.Input{
+				{
+					Artifact:        &stubArtifact{handle: cachedVolHandle},
+					DestinationPath: "/tmp/build/resource",
+				},
+			},
+		},
+		config:          cfg,
+		properties:      make(map[string]string),
+		artifactLocator: locator,
+	}
+
+	_, mounts := c.buildVolumeMounts()
+	inits, err := c.buildArtifactInitContainers(mounts)
+	if err != nil {
+		t.Fatalf("buildArtifactInitContainers: %v", err)
+	}
+	if len(inits) == 0 {
+		t.Fatal("expected init container for cached input")
+	}
+
+	// The init container should use the volume handle as the daemon key
+	// (since locator has no entry for this cache hit).
+	cmd := strings.Join(inits[0].Command, " ")
+	if !strings.Contains(cmd, cachedVolHandle) {
+		t.Errorf("expected volume handle %q in daemon resolve command, got: %s", cachedVolHandle, cmd)
+	}
+	if !strings.Contains(cmd, "/resolve") {
+		t.Errorf("expected /resolve endpoint in command, got: %s", cmd)
+	}
+}
+
+// TestDaemonSetMode_CacheMissFlow verifies the normal (non-cache) flow:
+// the producing get step records output, and the consuming task uses the
+// daemon key from the locator.
+func TestDaemonSetMode_CacheMissFlow(t *testing.T) {
+	cfg := daemonSetConfig()
+	locator := NewArtifactLocator()
+
+	// Step 1: Simulate the producing get step recording its output.
+	producerVol := NewStubVolume("get-vol-handle", "test-worker", "/tmp/build/get")
+	producer := &Container{
+		handle:  "get-container",
+		podName: "get-pod",
+		metadata: db.ContainerMetadata{Type: db.ContainerTypeGet},
+		containerSpec: runtime.ContainerSpec{
+			Dir:  "/tmp/build/get",
+			Type: db.ContainerTypeGet,
+		},
+		config:          cfg,
+		properties:      make(map[string]string),
+		volumes:         []*Volume{producerVol},
+		artifactLocator: locator,
+	}
+	producerProcess := &execProcess{
+		id:        "get",
+		podName:   "get-pod",
+		config:    cfg,
+		container: producer,
+	}
+	producerProcess.recordOutputLocations("node-a")
+
+	// Verify the locator was populated.
+	key := ArtifactKey(producerVol.Handle())
+	loc, found := locator.Locate(key)
+	if !found {
+		t.Fatalf("expected locator entry for %s", key)
+	}
+	if loc.HostDir != "get-container/dir" {
+		t.Errorf("expected hostDir get-container/dir, got %s", loc.HostDir)
+	}
+
+	// Step 2: Build the consuming task's init containers.
+	consumer := &Container{
+		handle:   "task-container",
+		podName:  "task-pod",
+		metadata: db.ContainerMetadata{Type: db.ContainerTypeTask},
+		containerSpec: runtime.ContainerSpec{
+			Dir:  "/tmp/build",
+			Type: db.ContainerTypeTask,
+			Inputs: []runtime.Input{
+				{
+					Artifact:        &stubArtifact{handle: producerVol.Handle()},
+					DestinationPath: "/tmp/build/input",
+				},
+			},
+		},
+		config:          cfg,
+		properties:      make(map[string]string),
+		artifactLocator: locator,
+	}
+
+	_, mounts := consumer.buildVolumeMounts()
+	inits, err := consumer.buildArtifactInitContainers(mounts)
+	if err != nil {
+		t.Fatalf("buildArtifactInitContainers: %v", err)
+	}
+	if len(inits) == 0 {
+		t.Fatal("expected init container for input")
+	}
+
+	// The init container should use the daemon key from the locator
+	// (not the volume handle fallback).
+	cmd := strings.Join(inits[0].Command, " ")
+	if !strings.Contains(cmd, "get-container/dir") {
+		t.Errorf("expected daemon key get-container/dir in command, got: %s", cmd)
+	}
+}
+
+// TestDaemonSetMode_SkipResourceCacheReturnsFalse verifies the worker
+// enables resource caching.
+func TestDaemonSetMode_SkipResourceCacheReturnsFalse(t *testing.T) {
+	cfg := daemonSetConfig()
+	w := &Worker{config: cfg}
+	if w.SkipResourceCache() {
+		t.Error("expected SkipResourceCache to return false")
+	}
+}
+
 // stubArtifact is a minimal runtime.Artifact for testing.
 type stubArtifact struct {
 	handle string
