@@ -286,32 +286,29 @@ var _ = Describe("Worker", func() {
 
 			Context("when the artifact store is configured", func() {
 				BeforeEach(func() {
-					cfg.ArtifactStoreClaim = "my-artifact-pvc"
 					worker = jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
 					worker.SetVolumeRepo(fakeVolumeRepo)
 				})
 
-				It("returns an ArtifactStoreVolume", func() {
+				It("returns an DaemonSetVolume", func() {
 					vol, _, err := worker.CreateVolumeForArtifact(ctx, 1)
 					Expect(err).ToNot(HaveOccurred())
 					Expect(vol).ToNot(BeNil())
 
-					asVol, ok := vol.(*jetbridge.ArtifactStoreVolume)
-					Expect(ok).To(BeTrue(), "expected ArtifactStoreVolume, got %T", vol)
+					asVol, ok := vol.(*jetbridge.DaemonSetVolume)
+					Expect(ok).To(BeTrue(), "expected DaemonSetVolume, got %T", vol)
 					Expect(asVol.Key()).To(Equal("artifacts/artifact-volume-handle.tar"))
 					Expect(asVol.Handle()).To(Equal("artifact-volume-handle"))
 				})
 			})
 
-			Context("when the artifact store is NOT configured", func() {
-				It("returns a DeferredVolume (regular Volume)", func() {
-					vol, _, err := worker.CreateVolumeForArtifact(ctx, 1)
-					Expect(err).ToNot(HaveOccurred())
-					Expect(vol).ToNot(BeNil())
+			It("always returns a DaemonSetVolume", func() {
+				vol, _, err := worker.CreateVolumeForArtifact(ctx, 1)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(vol).ToNot(BeNil())
 
-					_, isArtifactStore := vol.(*jetbridge.ArtifactStoreVolume)
-					Expect(isArtifactStore).To(BeFalse(), "expected regular Volume, not ArtifactStoreVolume")
-				})
+				_, isDaemonSet := vol.(*jetbridge.DaemonSetVolume)
+				Expect(isDaemonSet).To(BeTrue(), "expected DaemonSetVolume, got %T", vol)
 			})
 		})
 

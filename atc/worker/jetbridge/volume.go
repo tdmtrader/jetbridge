@@ -107,22 +107,6 @@ func NewDeferredVolume(handle, workerName string, executor PodExecutor, namespac
 	}
 }
 
-// NewCacheVolume creates a Volume backed by a subdirectory on the cache PVC.
-// The mountPath is automatically set to CacheBasePath/<handle>, so StreamIn/
-// StreamOut target the PVC subdirectory. The dbVolume parameter may be nil
-// when the volume hasn't been registered in the DB yet.
-func NewCacheVolume(dbVolume db.CreatedVolume, handle, workerName string, executor PodExecutor, namespace, containerName string) *Volume {
-	return &Volume{
-		dbVolume:      dbVolume,
-		handle:        handle,
-		workerName:    workerName,
-		executor:      executor,
-		namespace:     namespace,
-		containerName: containerName,
-		mountPath:     filepath.Join(CacheBasePath, handle),
-	}
-}
-
 // SetPodName sets the pod name on a deferred volume. This is called when
 // the pod is created in Container.Run(), enabling StreamIn/StreamOut.
 func (v *Volume) SetPodName(podName string) {

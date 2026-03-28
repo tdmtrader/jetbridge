@@ -3,10 +3,8 @@ package jetbridge_test
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"io"
-	"strings"
 	"sync"
 
 	"github.com/concourse/concourse/atc"
@@ -649,524 +647,120 @@ var _ = Describe("Container", func() {
 		})
 	})
 
-	Describe("Run with cache PVC configured", func() {
+	Describe("Run with cache hostPath configured", func() {
 		var container runtime.Container
 
-		Context("when CacheVolumeClaim is set (no caches in spec)", func() {
-			BeforeEach(func() {
-				setupFakeDBContainer(fakeDBWorker, "cache-pvc-handle")
-
-				cfgWithCachePVC := jetbridge.NewConfig("test-namespace", "")
-				cfgWithCachePVC.CacheVolumeClaim = "concourse-cache"
-
-				cachePVCWorker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfgWithCachePVC)
-
-				var err error
-				container, _, err = cachePVCWorker.FindOrCreateContainer(
-					ctx,
-					db.NewFixedHandleContainerOwner("cache-pvc-handle"),
-					db.ContainerMetadata{Type: db.ContainerTypeTask},
-					runtime.ContainerSpec{
-						TeamID:   1,
-						Dir:      "/workdir",
-						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
-					},
-					delegate,
-				)
-				Expect(err).ToNot(HaveOccurred())
-			})
-
-			It("includes a PVC volume and mount at CacheBasePath in the pod spec", func() {
-				_, err := container.Run(ctx, runtime.ProcessSpec{
-					Path: "/bin/sh",
-					Args: []string{"-c", "echo hello"},
-				}, runtime.ProcessIO{})
-				Expect(err).ToNot(HaveOccurred())
-
-				pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
-				Expect(err).ToNot(HaveOccurred())
-				Expect(pods.Items).To(HaveLen(1))
-
-				pod := pods.Items[0]
-
-				By("adding a PersistentVolumeClaim volume")
-				var pvcVol *corev1.Volume
-				for i := range pod.Spec.Volumes {
-					if pod.Spec.Volumes[i].PersistentVolumeClaim != nil {
-						pvcVol = &pod.Spec.Volumes[i]
-						break
-					}
-				}
-				Expect(pvcVol).ToNot(BeNil(), "expected a PVC volume in pod spec")
-				Expect(pvcVol.PersistentVolumeClaim.ClaimName).To(Equal("concourse-cache"))
-
-				By("mounting the PVC at CacheBasePath")
-				mainContainer := pod.Spec.Containers[0]
-				var cacheMount *corev1.VolumeMount
-				for i := range mainContainer.VolumeMounts {
-					if mainContainer.VolumeMounts[i].MountPath == jetbridge.CacheBasePath {
-						cacheMount = &mainContainer.VolumeMounts[i]
-						break
-					}
-				}
-				Expect(cacheMount).ToNot(BeNil(), "expected a volume mount at CacheBasePath")
-				Expect(cacheMount.Name).To(Equal(pvcVol.Name))
-			})
-		})
-
-		Context("when CacheVolumeClaim is set with task caches", func() {
-			BeforeEach(func() {
-				setupFakeDBContainer(fakeDBWorker, "cache-subpath-handle")
-
-				cfgWithCachePVC := jetbridge.NewConfig("test-namespace", "")
-				cfgWithCachePVC.CacheVolumeClaim = "concourse-cache"
-
-				cachePVCWorker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfgWithCachePVC)
-
-				var err error
-				container, _, err = cachePVCWorker.FindOrCreateContainer(
-					ctx,
-					db.NewFixedHandleContainerOwner("cache-subpath-handle"),
-					db.ContainerMetadata{
-						Type:     db.ContainerTypeTask,
-						JobID:    42,
-						StepName: "build-step",
-					},
-					runtime.ContainerSpec{
-						TeamID:   1,
-						Dir:      "/tmp/build/workdir",
-						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
-						Caches:   []string{"/tmp/build/workdir/.cache", "/tmp/build/workdir/.npm"},
-					},
-					delegate,
-				)
-				Expect(err).ToNot(HaveOccurred())
-			})
-
-			It("mounts cache paths using PVC subPath with stable job-scoped keys", func() {
-				_, err := container.Run(ctx, runtime.ProcessSpec{
-					Path: "/bin/sh",
-					Args: []string{"-c", "echo hello"},
-				}, runtime.ProcessIO{})
-				Expect(err).ToNot(HaveOccurred())
-
-				pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
-				Expect(err).ToNot(HaveOccurred())
-				pod := pods.Items[0]
-
-				By("not creating emptyDir volumes for caches")
-				for _, vol := range pod.Spec.Volumes {
-					if vol.EmptyDir != nil {
-						Expect(vol.Name).ToNot(HavePrefix("cache-"), "cache volumes should not use emptyDir when PVC is configured")
-					}
-				}
-
-				By("mounting cache paths with subPath on the PVC")
-				mainContainer := pod.Spec.Containers[0]
-				var cacheMounts []corev1.VolumeMount
-				for _, m := range mainContainer.VolumeMounts {
-					if m.SubPath != "" {
-						cacheMounts = append(cacheMounts, m)
-					}
-				}
-				Expect(cacheMounts).To(HaveLen(2))
-
-				mountPaths := []string{cacheMounts[0].MountPath, cacheMounts[1].MountPath}
-				Expect(mountPaths).To(ConsistOf("/tmp/build/workdir/.cache", "/tmp/build/workdir/.npm"))
-
-				for _, m := range cacheMounts {
-					By("using stable job-scoped keys, not container handle UUIDs")
-					Expect(m.SubPath).To(HavePrefix("job-42-build-step-"), "subPath should use stable job-scoped key")
-					Expect(m.SubPath).ToNot(ContainSubstring("cache-subpath-handle"), "subPath should NOT contain container handle")
-					Expect(m.Name).To(Equal("cache-pvc"), "cache mounts should reference the PVC volume")
-				}
-
-				By("producing different keys for different cache paths")
-				Expect(cacheMounts[0].SubPath).ToNot(Equal(cacheMounts[1].SubPath))
-			})
-		})
-
-		Context("when CacheVolumeClaim is set with inputs and outputs", func() {
-			BeforeEach(func() {
-				setupFakeDBContainer(fakeDBWorker, "pvc-io-handle")
-
-				cfgWithCachePVC := jetbridge.NewConfig("test-namespace", "")
-				cfgWithCachePVC.CacheVolumeClaim = "concourse-cache"
-
-				cachePVCWorker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfgWithCachePVC)
-
-				var err error
-				container, _, err = cachePVCWorker.FindOrCreateContainer(
-					ctx,
-					db.NewFixedHandleContainerOwner("pvc-io-handle"),
-					db.ContainerMetadata{Type: db.ContainerTypeTask},
-					runtime.ContainerSpec{
-						TeamID:   1,
-						Dir:      "/tmp/build/workdir",
-						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
-						Inputs: []runtime.Input{
-							{DestinationPath: "/tmp/build/workdir/my-input"},
-						},
-						Outputs: runtime.OutputPaths{
-							"result": "/tmp/build/workdir/result",
-						},
-					},
-					delegate,
-				)
-				Expect(err).ToNot(HaveOccurred())
-			})
-
-			It("inputs and outputs remain emptyDir even when PVC is configured", func() {
-				_, err := container.Run(ctx, runtime.ProcessSpec{
-					Path: "/bin/sh",
-					Args: []string{"-c", "echo hello"},
-				}, runtime.ProcessIO{})
-				Expect(err).ToNot(HaveOccurred())
-
-				pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
-				Expect(err).ToNot(HaveOccurred())
-				pod := pods.Items[0]
-
-				emptyDirCount := 0
-				for _, vol := range pod.Spec.Volumes {
-					if vol.EmptyDir != nil {
-						emptyDirCount++
-					}
-				}
-				Expect(emptyDirCount).To(Equal(3), "dir, inputs, and outputs should still use emptyDir")
-			})
-		})
-
-		Context("when CacheVolumeClaim is not set", func() {
-			BeforeEach(func() {
-				setupFakeDBContainer(fakeDBWorker, "no-cache-pvc-handle")
-
-				var err error
-				container, _, err = worker.FindOrCreateContainer(
-					ctx,
-					db.NewFixedHandleContainerOwner("no-cache-pvc-handle"),
-					db.ContainerMetadata{Type: db.ContainerTypeTask},
-					runtime.ContainerSpec{
-						TeamID:   1,
-						Dir:      "/workdir",
-						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
-					},
-					delegate,
-				)
-				Expect(err).ToNot(HaveOccurred())
-			})
-
-			It("does not include a PVC volume in the pod spec", func() {
-				_, err := container.Run(ctx, runtime.ProcessSpec{
-					Path: "/bin/sh",
-					Args: []string{"-c", "echo hello"},
-				}, runtime.ProcessIO{})
-				Expect(err).ToNot(HaveOccurred())
-
-				pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
-				Expect(err).ToNot(HaveOccurred())
-				Expect(pods.Items).To(HaveLen(1))
-
-				pod := pods.Items[0]
-				for _, vol := range pod.Spec.Volumes {
-					Expect(vol.PersistentVolumeClaim).To(BeNil(), "no PVC volumes expected when CacheVolumeClaim is empty")
-				}
-			})
-		})
-
-		Context("when CacheHostPath is set (no PVC)", func() {
+		Context("when CacheHostPath is set", func() {
 			BeforeEach(func() {
 				setupFakeDBContainer(fakeDBWorker, "cache-hostpath-handle")
 
-				cfgWithHostPath := jetbridge.NewConfig("test-namespace", "")
-				cfgWithHostPath.CacheHostPath = "/var/concourse/cache"
+			cfgWithHostPath := jetbridge.NewConfig("test-namespace", "")
+			cfgWithHostPath.CacheHostPath = "/var/concourse/cache"
 
-				hostPathWorker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfgWithHostPath)
+			hostPathWorker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfgWithHostPath)
 
-				var err error
-				container, _, err = hostPathWorker.FindOrCreateContainer(
-					ctx,
-					db.NewFixedHandleContainerOwner("cache-hostpath-handle"),
-					db.ContainerMetadata{
-						Type:     db.ContainerTypeTask,
-						JobID:    7,
-						StepName: "compile",
-					},
-					runtime.ContainerSpec{
-						TeamID:   1,
-						Dir:      "/tmp/build/workdir",
-						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
-						Caches:   []string{"/tmp/build/workdir/.cache"},
-					},
-					delegate,
-				)
-				Expect(err).ToNot(HaveOccurred())
-			})
-
-			It("uses hostPath volumes with stable keys for caches", func() {
-				_, err := container.Run(ctx, runtime.ProcessSpec{
-					Path: "/bin/sh",
-					Args: []string{"-c", "echo hello"},
-				}, runtime.ProcessIO{})
-				Expect(err).ToNot(HaveOccurred())
-
-				pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
-				Expect(err).ToNot(HaveOccurred())
-				pod := pods.Items[0]
-
-				By("creating hostPath volumes for caches")
-				var hostPathVol *corev1.Volume
-				for i := range pod.Spec.Volumes {
-					if pod.Spec.Volumes[i].HostPath != nil {
-						hostPathVol = &pod.Spec.Volumes[i]
-						break
-					}
-				}
-				Expect(hostPathVol).ToNot(BeNil(), "expected a hostPath volume for cache")
-				Expect(hostPathVol.HostPath.Path).To(HavePrefix("/var/concourse/cache/job-7-compile-"))
-				dirType := corev1.HostPathDirectoryOrCreate
-				Expect(*hostPathVol.HostPath.Type).To(Equal(dirType))
-
-				By("mounting at the cache path")
-				mainContainer := pod.Spec.Containers[0]
-				var cacheMount *corev1.VolumeMount
-				for i := range mainContainer.VolumeMounts {
-					if mainContainer.VolumeMounts[i].MountPath == "/tmp/build/workdir/.cache" {
-						cacheMount = &mainContainer.VolumeMounts[i]
-						break
-					}
-				}
-				Expect(cacheMount).ToNot(BeNil())
-				Expect(cacheMount.Name).To(Equal(hostPathVol.Name))
-			})
+			var err error
+			container, _, err = hostPathWorker.FindOrCreateContainer(
+				ctx,
+				db.NewFixedHandleContainerOwner("cache-hostpath-handle"),
+				db.ContainerMetadata{
+					Type:     db.ContainerTypeTask,
+					JobID:    7,
+					StepName: "compile",
+				},
+				runtime.ContainerSpec{
+					TeamID:   1,
+					Dir:      "/tmp/build/workdir",
+					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+					Caches:   []string{"/tmp/build/workdir/.cache"},
+				},
+				delegate,
+			)
+			Expect(err).ToNot(HaveOccurred())
 		})
 
-		Context("when CacheHostPath is set but JobID is 0 (one-off build)", func() {
-			BeforeEach(func() {
-				setupFakeDBContainer(fakeDBWorker, "cache-oneoff-handle")
+		It("uses hostPath volumes with stable keys for caches", func() {
+			_, err := container.Run(ctx, runtime.ProcessSpec{
+				Path: "/bin/sh",
+				Args: []string{"-c", "echo hello"},
+			}, runtime.ProcessIO{})
+			Expect(err).ToNot(HaveOccurred())
 
-				cfgWithHostPath := jetbridge.NewConfig("test-namespace", "")
-				cfgWithHostPath.CacheHostPath = "/var/concourse/cache"
+			pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			pod := pods.Items[0]
 
-				hostPathWorker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfgWithHostPath)
-
-				var err error
-				container, _, err = hostPathWorker.FindOrCreateContainer(
-					ctx,
-					db.NewFixedHandleContainerOwner("cache-oneoff-handle"),
-					db.ContainerMetadata{
-						Type:  db.ContainerTypeTask,
-						JobID: 0,
-					},
-					runtime.ContainerSpec{
-						TeamID:   1,
-						Dir:      "/tmp/build/workdir",
-						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
-						Caches:   []string{"/tmp/build/workdir/.cache"},
-					},
-					delegate,
-				)
-				Expect(err).ToNot(HaveOccurred())
-			})
-
-			It("falls back to emptyDir for one-off builds", func() {
-				_, err := container.Run(ctx, runtime.ProcessSpec{
-					Path: "/bin/sh",
-					Args: []string{"-c", "echo hello"},
-				}, runtime.ProcessIO{})
-				Expect(err).ToNot(HaveOccurred())
-
-				pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
-				Expect(err).ToNot(HaveOccurred())
-				pod := pods.Items[0]
-
-				for _, vol := range pod.Spec.Volumes {
-					Expect(vol.HostPath).To(BeNil(), "one-off builds should not use hostPath")
+			By("creating hostPath volumes for caches")
+			var hostPathVol *corev1.Volume
+			for i := range pod.Spec.Volumes {
+				if pod.Spec.Volumes[i].HostPath != nil {
+					hostPathVol = &pod.Spec.Volumes[i]
+					break
 				}
-			})
+			}
+			Expect(hostPathVol).ToNot(BeNil(), "expected a hostPath volume for cache")
+			Expect(hostPathVol.HostPath.Path).To(HavePrefix("/var/concourse/cache/job-7-compile-"))
+			dirType := corev1.HostPathDirectoryOrCreate
+			Expect(*hostPathVol.HostPath.Type).To(Equal(dirType))
+
+			By("mounting at the cache path")
+			mainContainer := pod.Spec.Containers[0]
+			var cacheMount *corev1.VolumeMount
+			for i := range mainContainer.VolumeMounts {
+				if mainContainer.VolumeMounts[i].MountPath == "/tmp/build/workdir/.cache" {
+					cacheMount = &mainContainer.VolumeMounts[i]
+					break
+				}
+			}
+			Expect(cacheMount).ToNot(BeNil())
+			Expect(cacheMount.Name).To(Equal(hostPathVol.Name))
 		})
 	})
 
-	Describe("Run with artifact store caches", func() {
-		var container runtime.Container
+	Context("when CacheHostPath is set but JobID is 0 (one-off build)", func() {
+		BeforeEach(func() {
+			setupFakeDBContainer(fakeDBWorker, "cache-oneoff-handle")
 
-		Context("when ArtifactStoreClaim is set with task caches", func() {
-			BeforeEach(func() {
-				setupFakeDBContainer(fakeDBWorker, "artifact-cache-handle")
+			cfgWithHostPath := jetbridge.NewConfig("test-namespace", "")
+			cfgWithHostPath.CacheHostPath = "/var/concourse/cache"
 
-				cfgWithArtifact := jetbridge.NewConfig("test-namespace", "")
-				cfgWithArtifact.ArtifactStoreClaim = "artifact-store-pvc"
+			hostPathWorker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfgWithHostPath)
 
-				artifactWorker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfgWithArtifact)
-
-				var err error
-				container, _, err = artifactWorker.FindOrCreateContainer(
-					ctx,
-					db.NewFixedHandleContainerOwner("artifact-cache-handle"),
-					db.ContainerMetadata{
-						Type:     db.ContainerTypeTask,
-						JobID:    42,
-						StepName: "build-step",
-					},
-					runtime.ContainerSpec{
-						TeamID:    1,
-						Dir:       "/tmp/build/workdir",
-						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
-						Caches:    []string{"/tmp/build/workdir/.cache", "/tmp/build/workdir/.npm"},
-					},
-					delegate,
-				)
-				Expect(err).ToNot(HaveOccurred())
-			})
-
-			It("uses emptyDir volumes for caches when artifact store is configured", func() {
-				_, err := container.Run(ctx, runtime.ProcessSpec{
-					Path: "/bin/sh",
-					Args: []string{"-c", "echo hello"},
-				}, runtime.ProcessIO{})
-				Expect(err).ToNot(HaveOccurred())
-
-				pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
-				Expect(err).ToNot(HaveOccurred())
-				pod := pods.Items[0]
-
-				By("creating emptyDir volumes for caches (not PVC subPath)")
-				var cacheVols []corev1.Volume
-				for _, vol := range pod.Spec.Volumes {
-					if vol.EmptyDir != nil && len(vol.Name) >= 5 && vol.Name[:5] == "cache" {
-						cacheVols = append(cacheVols, vol)
-					}
-				}
-				Expect(cacheVols).To(HaveLen(2))
-
-				By("mounting caches at the correct paths")
-				mainContainer := pod.Spec.Containers[0]
-				cacheMountPaths := []string{}
-				for _, m := range mainContainer.VolumeMounts {
-					if m.MountPath == "/tmp/build/workdir/.cache" || m.MountPath == "/tmp/build/workdir/.npm" {
-						cacheMountPaths = append(cacheMountPaths, m.MountPath)
-						Expect(m.SubPath).To(BeEmpty(), "artifact-store caches should not use subPath")
-					}
-				}
-				Expect(cacheMountPaths).To(ConsistOf("/tmp/build/workdir/.cache", "/tmp/build/workdir/.npm"))
-			})
-
-			It("creates init containers to restore caches from artifact PVC", func() {
-				_, err := container.Run(ctx, runtime.ProcessSpec{
-					Path: "/bin/sh",
-					Args: []string{"-c", "echo hello"},
-				}, runtime.ProcessIO{})
-				Expect(err).ToNot(HaveOccurred())
-
-				pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
-				Expect(err).ToNot(HaveOccurred())
-				pod := pods.Items[0]
-
-				By("having init containers for each cache")
-				Expect(pod.Spec.InitContainers).To(HaveLen(2))
-
-				for i, initC := range pod.Spec.InitContainers {
-					By(fmt.Sprintf("init container %d restores cache from tar", i))
-					Expect(initC.Name).To(HavePrefix("restore-cache-"))
-					Expect(initC.Image).To(Equal("alpine:latest"))
-
-					By("using graceful cache miss with || true")
-					cmd := initC.Command[2]
-					Expect(cmd).To(ContainSubstring("test -f"))
-					Expect(cmd).To(ContainSubstring("tar xf"))
-					Expect(cmd).To(ContainSubstring("|| true"))
-					Expect(cmd).To(ContainSubstring("/artifacts/caches/"))
-
-					By("mounting artifact PVC readonly and cache emptyDir writable")
-					Expect(initC.VolumeMounts).To(HaveLen(2))
-					var pvcMount, cacheMount *corev1.VolumeMount
-					for j := range initC.VolumeMounts {
-						if initC.VolumeMounts[j].Name == "artifact-store" {
-							pvcMount = &initC.VolumeMounts[j]
-						} else {
-							cacheMount = &initC.VolumeMounts[j]
-						}
-					}
-					Expect(pvcMount).ToNot(BeNil())
-					Expect(pvcMount.ReadOnly).To(BeTrue())
-					Expect(cacheMount).ToNot(BeNil())
-				}
-
-				By("targeting different cache paths")
-				paths := []string{
-					pod.Spec.InitContainers[0].VolumeMounts[1].MountPath,
-					pod.Spec.InitContainers[1].VolumeMounts[1].MountPath,
-				}
-				// The non-PVC mount is the cache mount
-				for i, initC := range pod.Spec.InitContainers {
-					for _, m := range initC.VolumeMounts {
-						if m.Name != "artifact-store" {
-							paths[i] = m.MountPath
-						}
-					}
-				}
-				Expect(paths).To(ConsistOf("/tmp/build/workdir/.cache", "/tmp/build/workdir/.npm"))
-			})
+			var err error
+			container, _, err = hostPathWorker.FindOrCreateContainer(
+				ctx,
+				db.NewFixedHandleContainerOwner("cache-oneoff-handle"),
+				db.ContainerMetadata{
+					Type:  db.ContainerTypeTask,
+					JobID: 0,
+				},
+				runtime.ContainerSpec{
+					TeamID:   1,
+					Dir:      "/tmp/build/workdir",
+					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+					Caches:   []string{"/tmp/build/workdir/.cache"},
+				},
+				delegate,
+			)
+			Expect(err).ToNot(HaveOccurred())
 		})
 
-		Context("when both ArtifactStoreClaim and CacheVolumeClaim are set", func() {
-			BeforeEach(func() {
-				setupFakeDBContainer(fakeDBWorker, "both-cache-handle")
+		It("falls back to emptyDir for one-off builds", func() {
+			_, err := container.Run(ctx, runtime.ProcessSpec{
+				Path: "/bin/sh",
+				Args: []string{"-c", "echo hello"},
+			}, runtime.ProcessIO{})
+			Expect(err).ToNot(HaveOccurred())
 
-				cfgWithBoth := jetbridge.NewConfig("test-namespace", "")
-				cfgWithBoth.ArtifactStoreClaim = "artifact-store-pvc"
-				cfgWithBoth.CacheVolumeClaim = "concourse-cache"
+			pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			pod := pods.Items[0]
 
-				bothWorker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfgWithBoth)
-
-				var err error
-				container, _, err = bothWorker.FindOrCreateContainer(
-					ctx,
-					db.NewFixedHandleContainerOwner("both-cache-handle"),
-					db.ContainerMetadata{
-						Type:     db.ContainerTypeTask,
-						JobID:    10,
-						StepName: "test",
-					},
-					runtime.ContainerSpec{
-						TeamID:    1,
-						Dir:       "/tmp/build/workdir",
-						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
-						Caches:    []string{"/tmp/build/workdir/.cache"},
-					},
-					delegate,
-				)
-				Expect(err).ToNot(HaveOccurred())
-			})
-
-			It("prefers artifact store over cache PVC", func() {
-				_, err := container.Run(ctx, runtime.ProcessSpec{
-					Path: "/bin/sh",
-					Args: []string{"-c", "echo hello"},
-				}, runtime.ProcessIO{})
-				Expect(err).ToNot(HaveOccurred())
-
-				pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
-				Expect(err).ToNot(HaveOccurred())
-				pod := pods.Items[0]
-
-				By("not mounting the cache PVC")
-				for _, vol := range pod.Spec.Volumes {
-					if vol.PersistentVolumeClaim != nil {
-						Expect(vol.PersistentVolumeClaim.ClaimName).ToNot(Equal("concourse-cache"),
-							"should not mount cache PVC when artifact store is configured")
-					}
-				}
-
-				By("using emptyDir for caches")
-				mainContainer := pod.Spec.Containers[0]
-				for _, m := range mainContainer.VolumeMounts {
-					if m.MountPath == "/tmp/build/workdir/.cache" {
-						Expect(m.SubPath).To(BeEmpty(), "should not use subPath when artifact store is configured")
-					}
-				}
-			})
+			for _, vol := range pod.Spec.Volumes {
+				Expect(vol.HostPath).To(BeNil(), "one-off builds should not use hostPath")
+			}
 		})
+	})
 	})
 
 	Describe("Run with explicit CacheStore selector", func() {
@@ -1177,7 +771,6 @@ var _ = Describe("Container", func() {
 				setupFakeDBContainer(fakeDBWorker, "explicit-hostpath-handle")
 
 				cfgExplicit := jetbridge.NewConfig("test-namespace", "")
-				cfgExplicit.ArtifactStoreClaim = "artifact-store-pvc"
 				cfgExplicit.CacheHostPath = "/var/concourse/cache"
 				cfgExplicit.CacheStore = jetbridge.CacheStoreHostPath
 
@@ -1232,7 +825,6 @@ var _ = Describe("Container", func() {
 				setupFakeDBContainer(fakeDBWorker, "explicit-emptydir-handle")
 
 				cfgExplicit := jetbridge.NewConfig("test-namespace", "")
-				cfgExplicit.ArtifactStoreClaim = "artifact-store-pvc"
 				cfgExplicit.CacheStore = jetbridge.CacheStoreEmptyDir
 
 				explicitWorker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfgExplicit)
@@ -1285,21 +877,19 @@ var _ = Describe("Container", func() {
 			})
 		})
 
-		Context("when CacheStore=pvc with artifact store configured", func() {
+		Context("when CacheStore=emptydir is explicitly set", func() {
 			BeforeEach(func() {
-				setupFakeDBContainer(fakeDBWorker, "explicit-pvc-handle")
+				setupFakeDBContainer(fakeDBWorker, "explicit-emptydir-handle")
 
 				cfgExplicit := jetbridge.NewConfig("test-namespace", "")
-				cfgExplicit.ArtifactStoreClaim = "artifact-store-pvc"
-				cfgExplicit.CacheVolumeClaim = "concourse-cache"
-				cfgExplicit.CacheStore = jetbridge.CacheStorePVC
+				cfgExplicit.CacheStore = jetbridge.CacheStoreEmptyDir
 
 				explicitWorker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfgExplicit)
 
 				var err error
 				container, _, err = explicitWorker.FindOrCreateContainer(
 					ctx,
-					db.NewFixedHandleContainerOwner("explicit-pvc-handle"),
+					db.NewFixedHandleContainerOwner("explicit-emptydir-handle"),
 					db.ContainerMetadata{
 						Type:     db.ContainerTypeTask,
 						JobID:    42,
@@ -1316,7 +906,7 @@ var _ = Describe("Container", func() {
 				Expect(err).ToNot(HaveOccurred())
 			})
 
-			It("uses PVC subPath even though artifact store is configured", func() {
+			It("uses emptyDir for caches", func() {
 				_, err := container.Run(ctx, runtime.ProcessSpec{
 					Path: "/bin/sh",
 					Args: []string{"-c", "echo hello"},
@@ -1327,16 +917,11 @@ var _ = Describe("Container", func() {
 				Expect(err).ToNot(HaveOccurred())
 				pod := pods.Items[0]
 
-				By("mounting the cache PVC with subPath")
+				By("cache volumes should be emptyDir with no subPath")
 				mainContainer := pod.Spec.Containers[0]
-				var cacheMounts []corev1.VolumeMount
 				for _, m := range mainContainer.VolumeMounts {
-					if m.SubPath != "" {
-						cacheMounts = append(cacheMounts, m)
-					}
+					Expect(m.SubPath).To(BeEmpty(), "emptyDir caches should not use subPath")
 				}
-				Expect(cacheMounts).To(HaveLen(1))
-				Expect(cacheMounts[0].SubPath).To(HavePrefix("job-42-build-step-"))
 			})
 		})
 	})
@@ -2189,204 +1774,62 @@ var _ = Describe("Container", func() {
 		})
 	})
 
-	Describe("Input streaming before exec", func() {
-		var (
-			execContainer runtime.Container
-			execExecutor  *fakeExecExecutor
-			execWorkerIS  *jetbridge.Worker
-		)
-
-		BeforeEach(func() {
-			execExecutor = &fakeExecExecutor{}
-			execWorkerIS = jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
+	Describe("Input streaming is a no-op (handled by init containers)", func() {
+		It("does not exec any streaming commands for inputs", func() {
+			execExecutor := &fakeExecExecutor{}
+			execWorkerIS := jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
 			execWorkerIS.SetExecutor(execExecutor)
-		})
 
-		simulatePodRunning := func(podName string) {
-			p, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, podName, metav1.GetOptions{})
-			ExpectWithOffset(1, err).ToNot(HaveOccurred())
-			p.Status.Phase = corev1.PodRunning
-			_, err = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, p, metav1.UpdateOptions{})
-			ExpectWithOffset(1, err).ToNot(HaveOccurred())
-		}
+			setupFakeDBContainer(fakeDBWorker, "noop-stream-handle")
 
-		Context("when inputs have artifacts", func() {
-			BeforeEach(func() {
-				setupFakeDBContainer(fakeDBWorker, "stream-input-handle")
+			artifact := &fakeArtifact{
+				handle:    "input-vol-1",
+				source:    "k8s-worker-1",
+				streamOut: []byte("tar-stream-data"),
+			}
 
-				artifact := &fakeArtifact{
-					handle:    "source-artifact",
-					source:    "other-worker",
-					streamOut: []byte("tar-stream-data"),
-				}
-
-				var err error
-				execContainer, _, err = execWorkerIS.FindOrCreateContainer(
-					ctx,
-					db.NewFixedHandleContainerOwner("stream-input-handle"),
-					db.ContainerMetadata{Type: db.ContainerTypeTask},
-					runtime.ContainerSpec{
-						TeamID:   1,
-						Dir:      "/tmp/build/workdir",
-						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
-						Inputs: []runtime.Input{
-							{
-								Artifact:        artifact,
-								DestinationPath: "/tmp/build/workdir/my-input",
-							},
+			container, _, err := execWorkerIS.FindOrCreateContainer(
+				ctx,
+				db.NewFixedHandleContainerOwner("noop-stream-handle"),
+				db.ContainerMetadata{Type: db.ContainerTypeTask},
+				runtime.ContainerSpec{
+					TeamID:   1,
+					Dir:      "/tmp/build/workdir",
+					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+					Inputs: []runtime.Input{
+						{
+							Artifact:        artifact,
+							DestinationPath: "/tmp/build/workdir/my-input",
 						},
 					},
-					delegate,
-				)
-				Expect(err).ToNot(HaveOccurred())
-			})
+				},
+				delegate,
+			)
+			Expect(err).ToNot(HaveOccurred())
 
-			It("streams input artifacts into the pod before executing the command", func() {
-				process, err := execContainer.Run(ctx, runtime.ProcessSpec{
-					Path: "/bin/sh",
-					Args: []string{"-c", "cat /tmp/build/workdir/my-input/file"},
-				}, runtime.ProcessIO{})
-				Expect(err).ToNot(HaveOccurred())
+			process, err := container.Run(ctx, runtime.ProcessSpec{
+				Path: "/bin/sh",
+				Args: []string{"-c", "echo done"},
+			}, runtime.ProcessIO{})
+			Expect(err).ToNot(HaveOccurred())
 
-				simulatePodRunning("stream-input-handle")
+			By("simulate pod running so Wait can proceed")
+			pod, podErr := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "noop-stream-handle", metav1.GetOptions{})
+			Expect(podErr).ToNot(HaveOccurred())
+			pod.Status.Phase = corev1.PodRunning
+			pod.Status.ContainerStatuses = []corev1.ContainerStatus{
+				{Name: "main", State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 0}}},
+			}
+			_, podErr = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+			Expect(podErr).ToNot(HaveOccurred())
 
-				result, err := process.Wait(ctx)
-				Expect(err).ToNot(HaveOccurred())
-				Expect(result.ExitStatus).To(Equal(0))
+			result, err := process.Wait(ctx)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(result.ExitStatus).To(Equal(0))
 
-				By("exec calls include tar xf (StreamIn) BEFORE the actual command")
-				Expect(execExecutor.execCalls).To(HaveLen(2))
-
-				streamInCall := execExecutor.execCalls[0]
-				Expect(streamInCall.command).To(Equal([]string{"tar", "xf", "-", "-C", "/tmp/build/workdir/my-input"}))
-				Expect(streamInCall.podName).To(Equal("stream-input-handle"))
-
-				commandCall := execExecutor.execCalls[1]
-				Expect(commandCall.command).To(Equal([]string{"/bin/sh", "-c", "cat /tmp/build/workdir/my-input/file"}))
-			})
-
-			It("passes the artifact's stream data to tar stdin", func() {
-				process, err := execContainer.Run(ctx, runtime.ProcessSpec{
-					Path: "/bin/sh",
-					Args: []string{"-c", "echo done"},
-				}, runtime.ProcessIO{})
-				Expect(err).ToNot(HaveOccurred())
-
-				simulatePodRunning("stream-input-handle")
-
-				_, err = process.Wait(ctx)
-				Expect(err).ToNot(HaveOccurred())
-
-				streamInCall := execExecutor.execCalls[0]
-				Expect(streamInCall.stdin).ToNot(BeNil())
-				stdinData, err := io.ReadAll(streamInCall.stdin)
-				Expect(err).ToNot(HaveOccurred())
-				Expect(stdinData).To(Equal([]byte("tar-stream-data")))
-			})
-		})
-
-		Context("when an input has a nil artifact", func() {
-			BeforeEach(func() {
-				setupFakeDBContainer(fakeDBWorker, "nil-artifact-handle")
-
-				var err error
-				execContainer, _, err = execWorkerIS.FindOrCreateContainer(
-					ctx,
-					db.NewFixedHandleContainerOwner("nil-artifact-handle"),
-					db.ContainerMetadata{Type: db.ContainerTypeTask},
-					runtime.ContainerSpec{
-						TeamID:   1,
-						Dir:      "/tmp/build/workdir",
-						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
-						Inputs: []runtime.Input{
-							{
-								Artifact:        nil,
-								DestinationPath: "/tmp/build/workdir/empty-input",
-							},
-						},
-					},
-					delegate,
-				)
-				Expect(err).ToNot(HaveOccurred())
-			})
-
-			It("skips streaming and executes the command normally", func() {
-				process, err := execContainer.Run(ctx, runtime.ProcessSpec{
-					Path: "/bin/sh",
-					Args: []string{"-c", "echo done"},
-				}, runtime.ProcessIO{})
-				Expect(err).ToNot(HaveOccurred())
-
-				simulatePodRunning("nil-artifact-handle")
-
-				result, err := process.Wait(ctx)
-				Expect(err).ToNot(HaveOccurred())
-				Expect(result.ExitStatus).To(Equal(0))
-
-				By("only the command exec happens — no tar xf calls")
-				Expect(execExecutor.execCalls).To(HaveLen(1))
-				Expect(execExecutor.execCalls[0].command).To(Equal([]string{"/bin/sh", "-c", "echo done"}))
-			})
-		})
-
-		Context("when there are multiple inputs with artifacts", func() {
-			BeforeEach(func() {
-				setupFakeDBContainer(fakeDBWorker, "multi-input-handle")
-
-				var err error
-				execContainer, _, err = execWorkerIS.FindOrCreateContainer(
-					ctx,
-					db.NewFixedHandleContainerOwner("multi-input-handle"),
-					db.ContainerMetadata{Type: db.ContainerTypeTask},
-					runtime.ContainerSpec{
-						TeamID:   1,
-						Dir:      "/tmp/build/workdir",
-						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
-						Inputs: []runtime.Input{
-							{
-								Artifact:        &fakeArtifact{handle: "art-1", source: "w1", streamOut: []byte("data-1")},
-								DestinationPath: "/tmp/build/workdir/input-a",
-							},
-							{
-								Artifact:        &fakeArtifact{handle: "art-2", source: "w1", streamOut: []byte("data-2")},
-								DestinationPath: "/tmp/build/workdir/input-b",
-							},
-						},
-					},
-					delegate,
-				)
-				Expect(err).ToNot(HaveOccurred())
-			})
-
-			It("streams all inputs before executing the command", func() {
-				process, err := execContainer.Run(ctx, runtime.ProcessSpec{
-					Path: "/bin/sh",
-					Args: []string{"-c", "echo done"},
-				}, runtime.ProcessIO{})
-				Expect(err).ToNot(HaveOccurred())
-
-				simulatePodRunning("multi-input-handle")
-
-				result, err := process.Wait(ctx)
-				Expect(err).ToNot(HaveOccurred())
-				Expect(result.ExitStatus).To(Equal(0))
-
-				By("two StreamIn calls + one command exec = 3 total exec calls")
-				Expect(execExecutor.execCalls).To(HaveLen(3))
-
-				By("first two are tar xf calls (StreamIn)")
-				streamPaths := []string{
-					execExecutor.execCalls[0].command[4], // -C <path>
-					execExecutor.execCalls[1].command[4],
-				}
-				Expect(streamPaths).To(ConsistOf(
-					"/tmp/build/workdir/input-a",
-					"/tmp/build/workdir/input-b",
-				))
-
-				By("last is the actual command")
-				Expect(execExecutor.execCalls[2].command).To(Equal([]string{"/bin/sh", "-c", "echo done"}))
-			})
+			By("only the command exec call, no streaming")
+			Expect(execExecutor.execCalls).To(HaveLen(1))
+			Expect(execExecutor.execCalls[0].command).To(Equal([]string{"/bin/sh", "-c", "echo done"}))
 		})
 	})
 
@@ -3024,1174 +2467,7 @@ func (a *fakeArtifact) StreamOut(_ context.Context, _ string, _ compression.Comp
 func (a *fakeArtifact) Handle() string { return a.handle }
 func (a *fakeArtifact) Source() string { return a.source }
 
-var _ = Describe("Container with artifact store", func() {
-	var (
-		fakeDBWorker  *dbfakes.FakeWorker
-		fakeClientset *fake.Clientset
-		ctx           context.Context
-		delegate      runtime.BuildStepDelegate
-	)
 
-	BeforeEach(func() {
-		ctx = context.Background()
-		fakeDBWorker = new(dbfakes.FakeWorker)
-		fakeDBWorker.NameReturns("k8s-worker-1")
-		fakeClientset = fake.NewSimpleClientset()
-		delegate = &noopDelegate{}
-	})
-
-	Describe("Run with ArtifactStoreClaim configured", func() {
-		var (
-			worker    *jetbridge.Worker
-			container runtime.Container
-		)
-
-		BeforeEach(func() {
-			cfg := jetbridge.NewConfig("test-namespace", "")
-			cfg.ArtifactStoreClaim = "concourse-artifacts"
-			worker = jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
-		})
-
-		Context("with no inputs (basic pod)", func() {
-			BeforeEach(func() {
-				setupFakeDBContainer(fakeDBWorker, "artifact-basic-handle")
-
-				var err error
-				container, _, err = worker.FindOrCreateContainer(
-					ctx,
-					db.NewFixedHandleContainerOwner("artifact-basic-handle"),
-					db.ContainerMetadata{Type: db.ContainerTypeTask},
-					runtime.ContainerSpec{
-						TeamID:   1,
-						Dir:      "/workdir",
-						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
-					},
-					delegate,
-				)
-				Expect(err).ToNot(HaveOccurred())
-			})
-
-			It("includes the artifact PVC volume and sidecar but no init containers", func() {
-				_, err := container.Run(ctx, runtime.ProcessSpec{
-					Path: "/bin/sh",
-					Args: []string{"-c", "echo hello"},
-				}, runtime.ProcessIO{})
-				Expect(err).ToNot(HaveOccurred())
-
-				pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
-				Expect(err).ToNot(HaveOccurred())
-				Expect(pods.Items).To(HaveLen(1))
-				pod := pods.Items[0]
-
-				By("adding the artifact store PVC volume")
-				var artifactVol *corev1.Volume
-				for i := range pod.Spec.Volumes {
-					if pod.Spec.Volumes[i].PersistentVolumeClaim != nil &&
-						pod.Spec.Volumes[i].PersistentVolumeClaim.ClaimName == "concourse-artifacts" {
-						artifactVol = &pod.Spec.Volumes[i]
-						break
-					}
-				}
-				Expect(artifactVol).ToNot(BeNil(), "expected artifact store PVC volume")
-				Expect(artifactVol.Name).To(Equal("artifact-store"))
-
-				By("adding the artifact-helper sidecar")
-				Expect(pod.Spec.Containers).To(HaveLen(2))
-				sidecar := pod.Spec.Containers[1]
-				Expect(sidecar.Name).To(Equal("artifact-helper"))
-				Expect(sidecar.Image).To(Equal("alpine:latest"))
-
-				By("sidecar mounts the artifact PVC")
-				var hasPVCMount bool
-				for _, m := range sidecar.VolumeMounts {
-					if m.MountPath == jetbridge.ArtifactMountPath {
-						hasPVCMount = true
-						break
-					}
-				}
-				Expect(hasPVCMount).To(BeTrue(), "sidecar should mount artifact PVC")
-
-				By("main container does NOT mount the artifact PVC")
-				mainContainer := pod.Spec.Containers[0]
-				for _, m := range mainContainer.VolumeMounts {
-					Expect(m.MountPath).ToNot(Equal(jetbridge.ArtifactMountPath),
-						"main container should NOT mount artifact PVC")
-				}
-
-				By("no init containers when no artifact-store inputs")
-				Expect(pod.Spec.InitContainers).To(BeEmpty())
-			})
-		})
-
-		Context("with ArtifactStoreVolume inputs", func() {
-			BeforeEach(func() {
-				setupFakeDBContainer(fakeDBWorker, "artifact-init-handle")
-
-				asv := jetbridge.NewArtifactStoreVolume(
-					"caches/123.tar", "cache-vol-123", "k8s-worker-1", nil,
-				)
-
-				var err error
-				container, _, err = worker.FindOrCreateContainer(
-					ctx,
-					db.NewFixedHandleContainerOwner("artifact-init-handle"),
-					db.ContainerMetadata{Type: db.ContainerTypeTask},
-					runtime.ContainerSpec{
-						TeamID:   1,
-						Dir:      "/tmp/build/workdir",
-						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
-						Inputs: []runtime.Input{
-							{
-								Artifact:        asv,
-								DestinationPath: "/tmp/build/workdir/my-input",
-							},
-						},
-					},
-					delegate,
-				)
-				Expect(err).ToNot(HaveOccurred())
-			})
-
-			It("creates init containers to extract artifacts from the PVC", func() {
-				_, err := container.Run(ctx, runtime.ProcessSpec{
-					Path: "/bin/sh",
-					Args: []string{"-c", "ls /tmp/build/workdir/my-input"},
-				}, runtime.ProcessIO{})
-				Expect(err).ToNot(HaveOccurred())
-
-				pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
-				Expect(err).ToNot(HaveOccurred())
-				pod := pods.Items[0]
-
-				By("having an init container for the artifact-store input")
-				Expect(pod.Spec.InitContainers).To(HaveLen(1))
-				initC := pod.Spec.InitContainers[0]
-				Expect(initC.Name).To(Equal("fetch-input-0"))
-				Expect(initC.Image).To(Equal("alpine:latest"))
-
-				By("init container command extracts tar from PVC to emptyDir without || true")
-				Expect(initC.Command).To(Equal([]string{
-					"sh", "-c",
-					"tar xf /artifacts/artifacts/cache-vol-123.tar -C /tmp/build/workdir/my-input",
-				}))
-
-				By("init container mounts both artifact PVC and the input emptyDir")
-				Expect(initC.VolumeMounts).To(HaveLen(2))
-				var mountPaths []string
-				for _, m := range initC.VolumeMounts {
-					mountPaths = append(mountPaths, m.MountPath)
-				}
-				Expect(mountPaths).To(ConsistOf(
-					jetbridge.ArtifactMountPath,
-					"/tmp/build/workdir/my-input",
-				))
-
-				By("init container has SecurityContext with AllowPrivilegeEscalation=false")
-				Expect(initC.SecurityContext).ToNot(BeNil())
-				Expect(initC.SecurityContext.AllowPrivilegeEscalation).ToNot(BeNil())
-				Expect(*initC.SecurityContext.AllowPrivilegeEscalation).To(BeFalse())
-
-				By("init container command does NOT contain || true")
-				Expect(initC.Command[2]).ToNot(ContainSubstring("|| true"))
-			})
-		})
-
-		Context("with mixed inputs (ArtifactStoreVolume and regular)", func() {
-			BeforeEach(func() {
-				setupFakeDBContainer(fakeDBWorker, "artifact-mixed-handle")
-
-				asv := jetbridge.NewArtifactStoreVolume(
-					"caches/42.tar", "cache-vol-42", "k8s-worker-1", nil,
-				)
-				regular := &fakeArtifact{
-					handle:    "regular-art",
-					source:    "k8s-worker-1",
-					streamOut: []byte("regular-data"),
-				}
-
-				var err error
-				container, _, err = worker.FindOrCreateContainer(
-					ctx,
-					db.NewFixedHandleContainerOwner("artifact-mixed-handle"),
-					db.ContainerMetadata{Type: db.ContainerTypeTask},
-					runtime.ContainerSpec{
-						TeamID:   1,
-						Dir:      "/tmp/build/workdir",
-						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
-						Inputs: []runtime.Input{
-							{
-								Artifact:        asv,
-								DestinationPath: "/tmp/build/workdir/cached-input",
-							},
-							{
-								Artifact:        regular,
-								DestinationPath: "/tmp/build/workdir/streamed-input",
-							},
-						},
-					},
-					delegate,
-				)
-				Expect(err).ToNot(HaveOccurred())
-			})
-
-			It("creates init containers for both artifact-store and regular inputs", func() {
-				_, err := container.Run(ctx, runtime.ProcessSpec{
-					Path: "/bin/sh",
-					Args: []string{"-c", "echo done"},
-				}, runtime.ProcessIO{})
-				Expect(err).ToNot(HaveOccurred())
-
-				pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
-				Expect(err).ToNot(HaveOccurred())
-				pod := pods.Items[0]
-
-				By("init containers for both inputs when artifact store is configured")
-				Expect(pod.Spec.InitContainers).To(HaveLen(2))
-				Expect(pod.Spec.InitContainers[0].Name).To(Equal("fetch-input-0"))
-				Expect(pod.Spec.InitContainers[0].Command[2]).To(ContainSubstring("cache-vol-42.tar"))
-				Expect(pod.Spec.InitContainers[1].Name).To(Equal("fetch-input-1"))
-				Expect(pod.Spec.InitContainers[1].Command[2]).To(ContainSubstring("regular-art.tar"))
-			})
-		})
-
-		Context("with custom ArtifactHelperImage", func() {
-			BeforeEach(func() {
-				cfg := jetbridge.NewConfig("test-namespace", "")
-				cfg.ArtifactStoreClaim = "concourse-artifacts"
-				cfg.ArtifactHelperImage = "my-registry/helper:v1"
-				worker = jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
-
-				setupFakeDBContainer(fakeDBWorker, "artifact-custom-img")
-
-				asv := jetbridge.NewArtifactStoreVolume(
-					"caches/1.tar", "cv-1", "k8s-worker-1", nil,
-				)
-
-				var err error
-				container, _, err = worker.FindOrCreateContainer(
-					ctx,
-					db.NewFixedHandleContainerOwner("artifact-custom-img"),
-					db.ContainerMetadata{Type: db.ContainerTypeTask},
-					runtime.ContainerSpec{
-						TeamID:   1,
-						Dir:      "/workdir",
-						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
-						Inputs: []runtime.Input{
-							{Artifact: asv, DestinationPath: "/workdir/input"},
-						},
-					},
-					delegate,
-				)
-				Expect(err).ToNot(HaveOccurred())
-			})
-
-			It("uses the custom image for init containers and sidecar", func() {
-				_, err := container.Run(ctx, runtime.ProcessSpec{
-					Path: "/bin/sh", Args: []string{"-c", "echo hello"},
-				}, runtime.ProcessIO{})
-				Expect(err).ToNot(HaveOccurred())
-
-				pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
-				Expect(err).ToNot(HaveOccurred())
-				pod := pods.Items[0]
-
-				Expect(pod.Spec.InitContainers).To(HaveLen(1))
-				Expect(pod.Spec.InitContainers[0].Image).To(Equal("my-registry/helper:v1"))
-
-				sidecar := pod.Spec.Containers[1]
-				Expect(sidecar.Image).To(Equal("my-registry/helper:v1"))
-			})
-		})
-	})
-
-	Describe("GCS Fuse pod annotation", func() {
-		It("adds gke-gcsfuse/volumes annotation when ArtifactStoreGCSFuse is true", func() {
-			cfg := jetbridge.NewConfig("test-namespace", "")
-			cfg.ArtifactStoreClaim = "concourse-artifacts"
-			cfg.ArtifactStoreGCSFuse = true
-			worker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
-
-			setupFakeDBContainer(fakeDBWorker, "gcsfuse-handle")
-
-			container, _, err := worker.FindOrCreateContainer(
-				ctx,
-				db.NewFixedHandleContainerOwner("gcsfuse-handle"),
-				db.ContainerMetadata{Type: db.ContainerTypeTask},
-				runtime.ContainerSpec{
-					TeamID:    1,
-					Dir:       "/workdir",
-					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
-				},
-				delegate,
-			)
-			Expect(err).ToNot(HaveOccurred())
-
-			_, err = container.Run(ctx, runtime.ProcessSpec{
-				Path: "/bin/sh", Args: []string{"-c", "echo hello"},
-			}, runtime.ProcessIO{})
-			Expect(err).ToNot(HaveOccurred())
-
-			pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
-			Expect(err).ToNot(HaveOccurred())
-			pod := pods.Items[0]
-
-			Expect(pod.Annotations).To(HaveKeyWithValue("gke-gcsfuse/volumes", "true"))
-		})
-
-		It("does not add gke-gcsfuse/volumes annotation when ArtifactStoreGCSFuse is false", func() {
-			cfg := jetbridge.NewConfig("test-namespace", "")
-			cfg.ArtifactStoreClaim = "concourse-artifacts"
-			cfg.ArtifactStoreGCSFuse = false
-			worker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
-
-			setupFakeDBContainer(fakeDBWorker, "no-gcsfuse-handle")
-
-			container, _, err := worker.FindOrCreateContainer(
-				ctx,
-				db.NewFixedHandleContainerOwner("no-gcsfuse-handle"),
-				db.ContainerMetadata{Type: db.ContainerTypeTask},
-				runtime.ContainerSpec{
-					TeamID:    1,
-					Dir:       "/workdir",
-					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
-				},
-				delegate,
-			)
-			Expect(err).ToNot(HaveOccurred())
-
-			_, err = container.Run(ctx, runtime.ProcessSpec{
-				Path: "/bin/sh", Args: []string{"-c", "echo hello"},
-			}, runtime.ProcessIO{})
-			Expect(err).ToNot(HaveOccurred())
-
-			pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
-			Expect(err).ToNot(HaveOccurred())
-			pod := pods.Items[0]
-
-			Expect(pod.Annotations).ToNot(HaveKey("gke-gcsfuse/volumes"))
-		})
-
-		It("does not add gke-gcsfuse/volumes annotation when no artifact store claim", func() {
-			cfg := jetbridge.NewConfig("test-namespace", "")
-			cfg.ArtifactStoreGCSFuse = true // flag set but no claim
-			worker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
-
-			setupFakeDBContainer(fakeDBWorker, "no-claim-gcsfuse-handle")
-
-			container, _, err := worker.FindOrCreateContainer(
-				ctx,
-				db.NewFixedHandleContainerOwner("no-claim-gcsfuse-handle"),
-				db.ContainerMetadata{Type: db.ContainerTypeTask},
-				runtime.ContainerSpec{
-					TeamID:    1,
-					Dir:       "/workdir",
-					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
-				},
-				delegate,
-			)
-			Expect(err).ToNot(HaveOccurred())
-
-			_, err = container.Run(ctx, runtime.ProcessSpec{
-				Path: "/bin/sh", Args: []string{"-c", "echo hello"},
-			}, runtime.ProcessIO{})
-			Expect(err).ToNot(HaveOccurred())
-
-			pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
-			Expect(err).ToNot(HaveOccurred())
-			pod := pods.Items[0]
-
-			Expect(pod.Annotations).ToNot(HaveKey("gke-gcsfuse/volumes"))
-		})
-	})
-
-	Describe("Slim check pods — skip artifact-helper and GCS FUSE for check steps", func() {
-		It("does NOT include artifact-helper sidecar for check step containers", func() {
-			cfg := jetbridge.NewConfig("test-namespace", "")
-			cfg.ArtifactStoreClaim = "concourse-artifacts"
-			worker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
-
-			setupFakeDBContainer(fakeDBWorker, "check-no-sidecar-handle")
-
-			container, _, err := worker.FindOrCreateContainer(
-				ctx,
-				db.NewFixedHandleContainerOwner("check-no-sidecar-handle"),
-				db.ContainerMetadata{Type: db.ContainerTypeCheck},
-				runtime.ContainerSpec{
-					TeamID:    1,
-					Dir:       "/workdir",
-					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///concourse/registry-image-resource"},
-				},
-				delegate,
-			)
-			Expect(err).ToNot(HaveOccurred())
-
-			_, err = container.Run(ctx, runtime.ProcessSpec{
-				Path: "/opt/resource/check",
-			}, runtime.ProcessIO{})
-			Expect(err).ToNot(HaveOccurred())
-
-			pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
-			Expect(err).ToNot(HaveOccurred())
-			Expect(pods.Items).To(HaveLen(1))
-			pod := pods.Items[0]
-
-			By("check pod has only the main container (no artifact-helper)")
-			Expect(pod.Spec.Containers).To(HaveLen(1))
-			Expect(pod.Spec.Containers[0].Name).To(Equal("main"))
-		})
-
-		It("still includes artifact-helper sidecar for task step containers", func() {
-			cfg := jetbridge.NewConfig("test-namespace", "")
-			cfg.ArtifactStoreClaim = "concourse-artifacts"
-			worker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
-
-			setupFakeDBContainer(fakeDBWorker, "task-with-sidecar-handle")
-
-			container, _, err := worker.FindOrCreateContainer(
-				ctx,
-				db.NewFixedHandleContainerOwner("task-with-sidecar-handle"),
-				db.ContainerMetadata{Type: db.ContainerTypeTask},
-				runtime.ContainerSpec{
-					TeamID:    1,
-					Dir:       "/workdir",
-					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
-				},
-				delegate,
-			)
-			Expect(err).ToNot(HaveOccurred())
-
-			_, err = container.Run(ctx, runtime.ProcessSpec{
-				Path: "/bin/sh", Args: []string{"-c", "echo hello"},
-			}, runtime.ProcessIO{})
-			Expect(err).ToNot(HaveOccurred())
-
-			pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
-			Expect(err).ToNot(HaveOccurred())
-			pod := pods.Items[0]
-
-			Expect(pod.Spec.Containers).To(HaveLen(2))
-			Expect(pod.Spec.Containers[1].Name).To(Equal("artifact-helper"))
-		})
-
-		It("still includes artifact-helper sidecar for get step containers", func() {
-			cfg := jetbridge.NewConfig("test-namespace", "")
-			cfg.ArtifactStoreClaim = "concourse-artifacts"
-			worker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
-
-			setupFakeDBContainer(fakeDBWorker, "get-with-sidecar-handle")
-
-			container, _, err := worker.FindOrCreateContainer(
-				ctx,
-				db.NewFixedHandleContainerOwner("get-with-sidecar-handle"),
-				db.ContainerMetadata{Type: db.ContainerTypeGet},
-				runtime.ContainerSpec{
-					TeamID:    1,
-					Dir:       "/workdir",
-					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///concourse/git-resource"},
-				},
-				delegate,
-			)
-			Expect(err).ToNot(HaveOccurred())
-
-			_, err = container.Run(ctx, runtime.ProcessSpec{
-				Path: "/opt/resource/in", Args: []string{"/tmp/build/get"},
-			}, runtime.ProcessIO{})
-			Expect(err).ToNot(HaveOccurred())
-
-			pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
-			Expect(err).ToNot(HaveOccurred())
-			pod := pods.Items[0]
-
-			Expect(pod.Spec.Containers).To(HaveLen(2))
-			Expect(pod.Spec.Containers[1].Name).To(Equal("artifact-helper"))
-		})
-
-		It("does NOT add gke-gcsfuse/volumes annotation for check step pods", func() {
-			cfg := jetbridge.NewConfig("test-namespace", "")
-			cfg.ArtifactStoreClaim = "concourse-artifacts"
-			cfg.ArtifactStoreGCSFuse = true
-			worker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
-
-			setupFakeDBContainer(fakeDBWorker, "check-no-gcsfuse-handle")
-
-			container, _, err := worker.FindOrCreateContainer(
-				ctx,
-				db.NewFixedHandleContainerOwner("check-no-gcsfuse-handle"),
-				db.ContainerMetadata{Type: db.ContainerTypeCheck},
-				runtime.ContainerSpec{
-					TeamID:    1,
-					Dir:       "/workdir",
-					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///concourse/registry-image-resource"},
-				},
-				delegate,
-			)
-			Expect(err).ToNot(HaveOccurred())
-
-			_, err = container.Run(ctx, runtime.ProcessSpec{
-				Path: "/opt/resource/check",
-			}, runtime.ProcessIO{})
-			Expect(err).ToNot(HaveOccurred())
-
-			pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
-			Expect(err).ToNot(HaveOccurred())
-			pod := pods.Items[0]
-
-			Expect(pod.Annotations).ToNot(HaveKey("gke-gcsfuse/volumes"))
-		})
-
-		It("still adds gke-gcsfuse/volumes annotation for task step pods", func() {
-			cfg := jetbridge.NewConfig("test-namespace", "")
-			cfg.ArtifactStoreClaim = "concourse-artifacts"
-			cfg.ArtifactStoreGCSFuse = true
-			worker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
-
-			setupFakeDBContainer(fakeDBWorker, "task-gcsfuse-handle")
-
-			container, _, err := worker.FindOrCreateContainer(
-				ctx,
-				db.NewFixedHandleContainerOwner("task-gcsfuse-handle"),
-				db.ContainerMetadata{Type: db.ContainerTypeTask},
-				runtime.ContainerSpec{
-					TeamID:    1,
-					Dir:       "/workdir",
-					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
-				},
-				delegate,
-			)
-			Expect(err).ToNot(HaveOccurred())
-
-			_, err = container.Run(ctx, runtime.ProcessSpec{
-				Path: "/bin/sh", Args: []string{"-c", "echo hello"},
-			}, runtime.ProcessIO{})
-			Expect(err).ToNot(HaveOccurred())
-
-			pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
-			Expect(err).ToNot(HaveOccurred())
-			pod := pods.Items[0]
-
-			Expect(pod.Annotations).To(HaveKeyWithValue("gke-gcsfuse/volumes", "true"))
-		})
-	})
-
-	Describe("Run without ArtifactStoreClaim", func() {
-		It("does not include artifact PVC, init containers, or sidecar", func() {
-			cfg := jetbridge.NewConfig("test-namespace", "")
-			worker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
-
-			setupFakeDBContainer(fakeDBWorker, "no-artifact-handle")
-
-			container, _, err := worker.FindOrCreateContainer(
-				ctx,
-				db.NewFixedHandleContainerOwner("no-artifact-handle"),
-				db.ContainerMetadata{Type: db.ContainerTypeTask},
-				runtime.ContainerSpec{
-					TeamID:   1,
-					Dir:      "/workdir",
-					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
-				},
-				delegate,
-			)
-			Expect(err).ToNot(HaveOccurred())
-
-			_, err = container.Run(ctx, runtime.ProcessSpec{
-				Path: "/bin/sh", Args: []string{"-c", "echo hello"},
-			}, runtime.ProcessIO{})
-			Expect(err).ToNot(HaveOccurred())
-
-			pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
-			Expect(err).ToNot(HaveOccurred())
-			pod := pods.Items[0]
-
-			By("no artifact PVC volume")
-			for _, vol := range pod.Spec.Volumes {
-				if vol.PersistentVolumeClaim != nil {
-					Expect(vol.PersistentVolumeClaim.ClaimName).ToNot(Equal("concourse-artifacts"))
-				}
-			}
-
-			By("only main container, no sidecar")
-			Expect(pod.Spec.Containers).To(HaveLen(1))
-			Expect(pod.Spec.Containers[0].Name).To(Equal("main"))
-
-			By("no init containers")
-			Expect(pod.Spec.InitContainers).To(BeEmpty())
-		})
-	})
-
-	Describe("streamInputs skips ALL inputs when artifact store configured", func() {
-		It("skips all inputs (both regular and artifact-store) when ArtifactStoreClaim is set", func() {
-			cfg := jetbridge.NewConfig("test-namespace", "")
-			cfg.ArtifactStoreClaim = "concourse-artifacts"
-
-			fakeExecutor := &fakeExecExecutor{}
-			worker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
-			worker.SetExecutor(fakeExecutor)
-
-			setupFakeDBContainer(fakeDBWorker, "skip-stream-handle")
-
-			asv := jetbridge.NewArtifactStoreVolume(
-				"caches/99.tar", "cache-vol-99", "k8s-worker-1", nil,
-			)
-			regular := &fakeArtifact{
-				handle:    "regular-art",
-				source:    "k8s-worker-1",
-				streamOut: []byte("regular-data"),
-			}
-
-			container, _, err := worker.FindOrCreateContainer(
-				ctx,
-				db.NewFixedHandleContainerOwner("skip-stream-handle"),
-				db.ContainerMetadata{Type: db.ContainerTypeTask},
-				runtime.ContainerSpec{
-					TeamID:   1,
-					Dir:      "/tmp/build/workdir",
-					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
-					Inputs: []runtime.Input{
-						{
-							Artifact:        asv,
-							DestinationPath: "/tmp/build/workdir/cached-input",
-						},
-						{
-							Artifact:        regular,
-							DestinationPath: "/tmp/build/workdir/streamed-input",
-						},
-					},
-				},
-				delegate,
-			)
-			Expect(err).ToNot(HaveOccurred())
-
-			process, err := container.Run(ctx, runtime.ProcessSpec{
-				Path: "/bin/sh",
-				Args: []string{"-c", "echo done"},
-			}, runtime.ProcessIO{})
-			Expect(err).ToNot(HaveOccurred())
-
-			// Simulate pod running
-			pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "skip-stream-handle", metav1.GetOptions{})
-			Expect(err).ToNot(HaveOccurred())
-			pod.Status.Phase = corev1.PodRunning
-			_, err = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
-			Expect(err).ToNot(HaveOccurred())
-
-			result, err := process.Wait(ctx)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(result.ExitStatus).To(Equal(0))
-
-			By("no inputs are streamed via SPDY — ALL are handled by init containers")
-			var streamInCalls []execCall
-			for _, c := range fakeExecutor.execCalls {
-				if len(c.command) > 0 && c.command[0] == "tar" && len(c.command) > 1 && c.command[1] == "xf" {
-					streamInCalls = append(streamInCalls, c)
-				}
-			}
-			Expect(streamInCalls).To(BeEmpty(), "no inputs should be streamed when artifact store is configured")
-		})
-	})
-
-	Describe("uploadOutputsToArtifactStore", func() {
-		It("execs tar commands in the artifact-helper sidecar for each output volume", func() {
-			cfg := jetbridge.NewConfig("test-namespace", "")
-			cfg.ArtifactStoreClaim = "concourse-artifacts"
-
-			fakeExecutor := &fakeExecExecutor{}
-			worker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
-			worker.SetExecutor(fakeExecutor)
-
-			setupFakeDBContainer(fakeDBWorker, "upload-output-handle")
-
-			container, _, err := worker.FindOrCreateContainer(
-				ctx,
-				db.NewFixedHandleContainerOwner("upload-output-handle"),
-				db.ContainerMetadata{Type: db.ContainerTypeTask},
-				runtime.ContainerSpec{
-					TeamID:   1,
-					Dir:      "/tmp/build/workdir",
-					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
-					Outputs: runtime.OutputPaths{
-						"result": "/tmp/build/workdir/result",
-					},
-				},
-				delegate,
-			)
-			Expect(err).ToNot(HaveOccurred())
-
-			process, err := container.Run(ctx, runtime.ProcessSpec{
-				Path: "/bin/sh",
-				Args: []string{"-c", "echo done"},
-			}, runtime.ProcessIO{})
-			Expect(err).ToNot(HaveOccurred())
-
-			// Simulate pod running
-			pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "upload-output-handle", metav1.GetOptions{})
-			Expect(err).ToNot(HaveOccurred())
-			pod.Status.Phase = corev1.PodRunning
-			_, err = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
-			Expect(err).ToNot(HaveOccurred())
-
-			result, err := process.Wait(ctx)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(result.ExitStatus).To(Equal(0))
-
-			By("finding tar cf calls targeting the artifact-helper sidecar")
-			var uploadCalls []execCall
-			for _, c := range fakeExecutor.execCalls {
-				if c.containerName == "artifact-helper" {
-					uploadCalls = append(uploadCalls, c)
-				}
-			}
-			Expect(uploadCalls).ToNot(BeEmpty(), "should have upload calls to artifact-helper sidecar")
-
-			By("upload commands create tars on the artifact PVC")
-			for _, c := range uploadCalls {
-				Expect(c.command[2]).To(ContainSubstring("/artifacts/artifacts/"))
-				Expect(c.command[2]).To(ContainSubstring(".tar"))
-			}
-		})
-
-		It("fails the build when artifact upload fails", func() {
-			cfg := jetbridge.NewConfig("test-namespace", "")
-			cfg.ArtifactStoreClaim = "concourse-artifacts"
-
-			fakeExecutor := &fakeExecExecutor{}
-			worker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
-			worker.SetExecutor(fakeExecutor)
-
-			setupFakeDBContainer(fakeDBWorker, "upload-fail-handle")
-
-			container, _, err := worker.FindOrCreateContainer(
-				ctx,
-				db.NewFixedHandleContainerOwner("upload-fail-handle"),
-				db.ContainerMetadata{Type: db.ContainerTypeTask},
-				runtime.ContainerSpec{
-					TeamID:   1,
-					Dir:      "/tmp/build/workdir",
-					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
-					Outputs: runtime.OutputPaths{
-						"result": "/tmp/build/workdir/result",
-					},
-				},
-				delegate,
-			)
-			Expect(err).ToNot(HaveOccurred())
-
-			// Make artifact upload fail
-			callCount := 0
-			fakeExecutor.execFunc = func() error {
-				callCount++
-				// First call is the command exec, subsequent calls are artifact uploads
-				if callCount > 1 {
-					return fmt.Errorf("disk full")
-				}
-				return nil
-			}
-
-			process, err := container.Run(ctx, runtime.ProcessSpec{
-				Path: "/bin/sh",
-				Args: []string{"-c", "echo done"},
-			}, runtime.ProcessIO{})
-			Expect(err).ToNot(HaveOccurred())
-
-			// Simulate pod running
-			pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "upload-fail-handle", metav1.GetOptions{})
-			Expect(err).ToNot(HaveOccurred())
-			pod.Status.Phase = corev1.PodRunning
-			_, err = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
-			Expect(err).ToNot(HaveOccurred())
-
-			_, err = process.Wait(ctx)
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("uploading artifacts"))
-		})
-	})
-
-	Describe("uploadCachesToArtifactStore", func() {
-		It("execs tar commands in the artifact-helper sidecar for each cache", func() {
-			cfg := jetbridge.NewConfig("test-namespace", "")
-			cfg.ArtifactStoreClaim = "concourse-artifacts"
-
-			fakeExecutor := &fakeExecExecutor{}
-			cacheWorker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
-			cacheWorker.SetExecutor(fakeExecutor)
-
-			setupFakeDBContainer(fakeDBWorker, "upload-cache-handle")
-
-			container, _, err := cacheWorker.FindOrCreateContainer(
-				ctx,
-				db.NewFixedHandleContainerOwner("upload-cache-handle"),
-				db.ContainerMetadata{
-					Type:     db.ContainerTypeTask,
-					JobID:    42,
-					StepName: "build-step",
-				},
-				runtime.ContainerSpec{
-					TeamID:    1,
-					Dir:       "/tmp/build/workdir",
-					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
-					Caches:    []string{"/tmp/build/workdir/.cache", "/tmp/build/workdir/.npm"},
-				},
-				delegate,
-			)
-			Expect(err).ToNot(HaveOccurred())
-
-			process, err := container.Run(ctx, runtime.ProcessSpec{
-				Path: "/bin/sh",
-				Args: []string{"-c", "echo done"},
-			}, runtime.ProcessIO{})
-			Expect(err).ToNot(HaveOccurred())
-
-			// Simulate pod running
-			pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "upload-cache-handle", metav1.GetOptions{})
-			Expect(err).ToNot(HaveOccurred())
-			pod.Status.Phase = corev1.PodRunning
-			_, err = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
-			Expect(err).ToNot(HaveOccurred())
-
-			result, err := process.Wait(ctx)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(result.ExitStatus).To(Equal(0))
-
-			By("finding cache upload calls targeting the artifact-helper sidecar")
-			var cacheUploadCalls []execCall
-			for _, c := range fakeExecutor.execCalls {
-				if c.containerName == "artifact-helper" && len(c.command) > 2 {
-					cmd := c.command[2]
-					if strings.Contains(cmd, "/artifacts/caches/") {
-						cacheUploadCalls = append(cacheUploadCalls, c)
-					}
-				}
-			}
-			Expect(cacheUploadCalls).To(HaveLen(2), "should have upload calls for each cache")
-
-			By("upload commands create tars on the artifact PVC under caches/")
-			for _, c := range cacheUploadCalls {
-				cmd := c.command[2]
-				Expect(cmd).To(ContainSubstring("tar cf"))
-				Expect(cmd).To(ContainSubstring("/artifacts/caches/"))
-				Expect(cmd).To(ContainSubstring(".tar"))
-			}
-		})
-	})
-
-	Describe("artifact-helper sidecar hardening", func() {
-		It("has resource limits and security context on the sidecar", func() {
-			cfg := jetbridge.NewConfig("test-namespace", "")
-			cfg.ArtifactStoreClaim = "concourse-artifacts"
-			worker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
-
-			setupFakeDBContainer(fakeDBWorker, "sidecar-hardening-handle")
-
-			container, _, err := worker.FindOrCreateContainer(
-				ctx,
-				db.NewFixedHandleContainerOwner("sidecar-hardening-handle"),
-				db.ContainerMetadata{Type: db.ContainerTypeTask},
-				runtime.ContainerSpec{
-					TeamID:   1,
-					Dir:      "/workdir",
-					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
-				},
-				delegate,
-			)
-			Expect(err).ToNot(HaveOccurred())
-
-			_, err = container.Run(ctx, runtime.ProcessSpec{
-				Path: "/bin/sh",
-				Args: []string{"-c", "echo hello"},
-			}, runtime.ProcessIO{})
-			Expect(err).ToNot(HaveOccurred())
-
-			pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
-			Expect(err).ToNot(HaveOccurred())
-			Expect(pods.Items).To(HaveLen(1))
-			pod := pods.Items[0]
-
-			By("finding the artifact-helper sidecar")
-			Expect(pod.Spec.Containers).To(HaveLen(2))
-			sidecar := pod.Spec.Containers[1]
-			Expect(sidecar.Name).To(Equal("artifact-helper"))
-
-			By("sidecar has SecurityContext with AllowPrivilegeEscalation=false")
-			Expect(sidecar.SecurityContext).ToNot(BeNil())
-			Expect(sidecar.SecurityContext.AllowPrivilegeEscalation).ToNot(BeNil())
-			Expect(*sidecar.SecurityContext.AllowPrivilegeEscalation).To(BeFalse())
-
-			By("sidecar has resource requests")
-			Expect(sidecar.Resources.Requests).ToNot(BeNil())
-			Expect(sidecar.Resources.Requests.Cpu().Cmp(resource.MustParse("50m"))).To(Equal(0))
-			Expect(sidecar.Resources.Requests.Memory().Cmp(resource.MustParse("64Mi"))).To(Equal(0))
-
-			By("sidecar has resource limits")
-			Expect(sidecar.Resources.Limits).ToNot(BeNil())
-			Expect(sidecar.Resources.Limits.Cpu().Cmp(resource.MustParse("200m"))).To(Equal(0))
-			Expect(sidecar.Resources.Limits.Memory().Cmp(resource.MustParse("256Mi"))).To(Equal(0))
-		})
-	})
-
-	Describe("init containers for regular Volume inputs", func() {
-		It("creates init containers for regular artifact inputs when artifact store is configured", func() {
-			cfg := jetbridge.NewConfig("test-namespace", "")
-			cfg.ArtifactStoreClaim = "concourse-artifacts"
-			worker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
-
-			setupFakeDBContainer(fakeDBWorker, "regular-init-handle")
-
-			regular := &fakeArtifact{
-				handle:    "source-vol-abc",
-				source:    "k8s-worker-1",
-				streamOut: []byte("some-data"),
-			}
-
-			container, _, err := worker.FindOrCreateContainer(
-				ctx,
-				db.NewFixedHandleContainerOwner("regular-init-handle"),
-				db.ContainerMetadata{Type: db.ContainerTypeTask},
-				runtime.ContainerSpec{
-					TeamID:   1,
-					Dir:      "/tmp/build/workdir",
-					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
-					Inputs: []runtime.Input{
-						{
-							Artifact:        regular,
-							DestinationPath: "/tmp/build/workdir/my-input",
-						},
-					},
-				},
-				delegate,
-			)
-			Expect(err).ToNot(HaveOccurred())
-
-			_, err = container.Run(ctx, runtime.ProcessSpec{
-				Path: "/bin/sh",
-				Args: []string{"-c", "echo done"},
-			}, runtime.ProcessIO{})
-			Expect(err).ToNot(HaveOccurred())
-
-			pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
-			Expect(err).ToNot(HaveOccurred())
-			pod := pods.Items[0]
-
-			By("creating an init container for the regular artifact input")
-			Expect(pod.Spec.InitContainers).To(HaveLen(1))
-			initC := pod.Spec.InitContainers[0]
-			Expect(initC.Name).To(Equal("fetch-input-0"))
-
-			By("using ArtifactKey derived from artifact Handle()")
-			Expect(initC.Command[2]).To(ContainSubstring("artifacts/source-vol-abc.tar"))
-			Expect(initC.Command[2]).ToNot(ContainSubstring("|| true"))
-		})
-	})
-})
-
-// failingArtifact is a test double for runtime.Artifact that returns an
-// error on StreamOut, simulating a broken upstream artifact.
-type failingArtifact struct {
-	handle    string
-	source    string
-	streamErr error
-}
-
-func (a *failingArtifact) StreamOut(_ context.Context, _ string, _ compression.Compression) (io.ReadCloser, error) {
-	return nil, a.streamErr
-}
-func (a *failingArtifact) Handle() string { return a.handle }
-func (a *failingArtifact) Source() string { return a.source }
-
-var _ = Describe("streamInputs failure paths (non-artifact-store)", func() {
-	var (
-		fakeDBWorker  *dbfakes.FakeWorker
-		fakeClientset *fake.Clientset
-		ctx           context.Context
-		delegate      runtime.BuildStepDelegate
-	)
-
-	BeforeEach(func() {
-		ctx = context.Background()
-		fakeDBWorker = new(dbfakes.FakeWorker)
-		fakeDBWorker.NameReturns("k8s-worker-1")
-		fakeClientset = fake.NewSimpleClientset()
-		delegate = &noopDelegate{}
-	})
-
-	It("fails the build when StreamOut returns an error on an input artifact", func() {
-		cfg := jetbridge.NewConfig("test-namespace", "")
-		// No ArtifactStoreClaim — uses SPDY streaming path
-
-		fakeExecutor := &fakeExecExecutor{}
-		worker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
-		worker.SetExecutor(fakeExecutor)
-
-		setupFakeDBContainer(fakeDBWorker, "streamout-fail-handle")
-
-		brokenArtifact := &failingArtifact{
-			handle:    "broken-vol",
-			source:    "k8s-worker-1",
-			streamErr: errors.New("upstream pod terminated"),
-		}
-
-		container, _, err := worker.FindOrCreateContainer(
-			ctx,
-			db.NewFixedHandleContainerOwner("streamout-fail-handle"),
-			db.ContainerMetadata{Type: db.ContainerTypeTask},
-			runtime.ContainerSpec{
-				TeamID:   1,
-				Dir:      "/tmp/build/workdir",
-				ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
-				Inputs: []runtime.Input{
-					{
-						Artifact:        brokenArtifact,
-						DestinationPath: "/tmp/build/workdir/my-input",
-					},
-				},
-			},
-			delegate,
-		)
-		Expect(err).ToNot(HaveOccurred())
-
-		process, err := container.Run(ctx, runtime.ProcessSpec{
-			Path: "/bin/sh",
-			Args: []string{"-c", "echo should-not-run"},
-		}, runtime.ProcessIO{})
-		Expect(err).ToNot(HaveOccurred())
-
-		// Simulate pod running so waitForRunning succeeds
-		pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "streamout-fail-handle", metav1.GetOptions{})
-		Expect(err).ToNot(HaveOccurred())
-		pod.Status.Phase = corev1.PodRunning
-		_, err = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
-		Expect(err).ToNot(HaveOccurred())
-
-		_, err = process.Wait(ctx)
-		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("streaming inputs"))
-		Expect(err.Error()).To(ContainSubstring("stream out artifact"))
-		Expect(err.Error()).To(ContainSubstring("upstream pod terminated"))
-
-		By("the main command exec should NOT have been called")
-		for _, c := range fakeExecutor.execCalls {
-			Expect(c.containerName).ToNot(Equal("main"),
-				"main command should not exec when input streaming fails")
-		}
-	})
-
-	It("fails the build when StreamIn (tar extract) returns an error", func() {
-		cfg := jetbridge.NewConfig("test-namespace", "")
-		// No ArtifactStoreClaim — uses SPDY streaming path
-
-		fakeExecutor := &fakeExecExecutor{
-			execErr: errors.New("container not running: tar extract failed"),
-		}
-		worker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
-		worker.SetExecutor(fakeExecutor)
-
-		setupFakeDBContainer(fakeDBWorker, "streamin-fail-handle")
-
-		goodArtifact := &fakeArtifact{
-			handle:    "good-vol",
-			source:    "k8s-worker-1",
-			streamOut: []byte("valid-tar-data"),
-		}
-
-		container, _, err := worker.FindOrCreateContainer(
-			ctx,
-			db.NewFixedHandleContainerOwner("streamin-fail-handle"),
-			db.ContainerMetadata{Type: db.ContainerTypeTask},
-			runtime.ContainerSpec{
-				TeamID:   1,
-				Dir:      "/tmp/build/workdir",
-				ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
-				Inputs: []runtime.Input{
-					{
-						Artifact:        goodArtifact,
-						DestinationPath: "/tmp/build/workdir/my-input",
-					},
-				},
-			},
-			delegate,
-		)
-		Expect(err).ToNot(HaveOccurred())
-
-		process, err := container.Run(ctx, runtime.ProcessSpec{
-			Path: "/bin/sh",
-			Args: []string{"-c", "echo should-not-run"},
-		}, runtime.ProcessIO{})
-		Expect(err).ToNot(HaveOccurred())
-
-		// Simulate pod running
-		pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "streamin-fail-handle", metav1.GetOptions{})
-		Expect(err).ToNot(HaveOccurred())
-		pod.Status.Phase = corev1.PodRunning
-		_, err = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
-		Expect(err).ToNot(HaveOccurred())
-
-		_, err = process.Wait(ctx)
-		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("streaming inputs"))
-		Expect(err.Error()).To(ContainSubstring("stream in to"))
-		Expect(err.Error()).To(ContainSubstring("tar extract failed"))
-	})
-
-	It("processes multiple inputs and fails on the first broken one", func() {
-		cfg := jetbridge.NewConfig("test-namespace", "")
-
-		fakeExecutor := &fakeExecExecutor{}
-		worker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
-		worker.SetExecutor(fakeExecutor)
-
-		setupFakeDBContainer(fakeDBWorker, "multi-input-fail-handle")
-
-		goodArtifact := &fakeArtifact{
-			handle:    "good-vol-1",
-			source:    "k8s-worker-1",
-			streamOut: []byte("good-data"),
-		}
-		brokenArtifact := &failingArtifact{
-			handle:    "broken-vol-2",
-			source:    "k8s-worker-1",
-			streamErr: errors.New("connection reset"),
-		}
-
-		container, _, err := worker.FindOrCreateContainer(
-			ctx,
-			db.NewFixedHandleContainerOwner("multi-input-fail-handle"),
-			db.ContainerMetadata{Type: db.ContainerTypeTask},
-			runtime.ContainerSpec{
-				TeamID:   1,
-				Dir:      "/tmp/build/workdir",
-				ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
-				Inputs: []runtime.Input{
-					{
-						Artifact:        goodArtifact,
-						DestinationPath: "/tmp/build/workdir/input-a",
-					},
-					{
-						Artifact:        brokenArtifact,
-						DestinationPath: "/tmp/build/workdir/input-b",
-					},
-				},
-			},
-			delegate,
-		)
-		Expect(err).ToNot(HaveOccurred())
-
-		process, err := container.Run(ctx, runtime.ProcessSpec{
-			Path: "/bin/sh",
-			Args: []string{"-c", "echo done"},
-		}, runtime.ProcessIO{})
-		Expect(err).ToNot(HaveOccurred())
-
-		// Simulate pod running
-		pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "multi-input-fail-handle", metav1.GetOptions{})
-		Expect(err).ToNot(HaveOccurred())
-		pod.Status.Phase = corev1.PodRunning
-		_, err = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
-		Expect(err).ToNot(HaveOccurred())
-
-		_, err = process.Wait(ctx)
-		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("broken-vol-2"))
-		Expect(err.Error()).To(ContainSubstring("connection reset"))
-	})
-})
 
 var _ = Describe("Concurrent container operations", func() {
 	var (
@@ -4616,7 +2892,6 @@ var _ = Describe("Run with sidecar containers", func() {
 			setupFakeDBContainer(fakeDBWorker, "sidecar-artifact-handle")
 
 			cfgWithArtifact := jetbridge.NewConfig("test-namespace", "")
-			cfgWithArtifact.ArtifactStoreClaim = "concourse-artifacts"
 			artifactWorker = jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfgWithArtifact)
 
 			var err error
@@ -4644,7 +2919,7 @@ var _ = Describe("Run with sidecar containers", func() {
 			Expect(err).ToNot(HaveOccurred())
 		})
 
-		It("includes main, artifact-helper, and user sidecar containers", func() {
+		It("includes main and user sidecar containers (no artifact-helper sidecar)", func() {
 			_, err := container.Run(ctx, runtime.ProcessSpec{
 				Path: "/bin/sh",
 				Args: []string{"-c", "echo hello"},
@@ -4659,11 +2934,11 @@ var _ = Describe("Run with sidecar containers", func() {
 			for _, c := range pod.Spec.Containers {
 				containerNames = append(containerNames, c.Name)
 			}
-			Expect(containerNames).To(Equal([]string{"main", "artifact-helper", "redis"}))
+			Expect(containerNames).To(Equal([]string{"main", "redis"}))
 
-			By("user sidecar gets the same volume mounts as main (not the artifact PVC)")
+			By("user sidecar gets the same volume mounts as main")
 			mainMounts := pod.Spec.Containers[0].VolumeMounts
-			redisMounts := pod.Spec.Containers[2].VolumeMounts
+			redisMounts := pod.Spec.Containers[1].VolumeMounts
 			Expect(redisMounts).To(Equal(mainMounts))
 		})
 	})
@@ -4802,663 +3077,3 @@ var _ = Describe("Run with sidecar containers", func() {
 // ---------------------------------------------------------------
 // End-to-end pipeline integration scenarios
 // ---------------------------------------------------------------
-// These tests simulate realistic Concourse pipeline pod shapes
-// across all step types, custom resource types, operator image
-// overrides, artifact store configurations, and GCS FUSE settings.
-// ---------------------------------------------------------------
-
-var _ = Describe("Pipeline integration scenarios", func() {
-	var (
-		fakeDBWorker   *dbfakes.FakeWorker
-		fakeClientset  *fake.Clientset
-		ctx            context.Context
-		delegate       runtime.BuildStepDelegate
-		pipelineWorker *jetbridge.Worker
-		pipelineCfg    jetbridge.Config
-	)
-
-	BeforeEach(func() {
-		ctx = context.Background()
-		fakeDBWorker = new(dbfakes.FakeWorker)
-		fakeDBWorker.NameReturns("k8s-worker-1")
-		fakeClientset = fake.NewSimpleClientset()
-		delegate = &noopDelegate{}
-
-		// Realistic production config: artifact store, GCS FUSE, custom
-		// artifact-helper image, and image pull secrets.
-		pipelineCfg = jetbridge.NewConfig("pipeline-ns", "")
-		pipelineCfg.ArtifactStoreClaim = "concourse-artifacts"
-		pipelineCfg.ArtifactStoreGCSFuse = true
-		pipelineCfg.ArtifactHelperImage = "gcr.io/my-project/artifact-helper:v2"
-		pipelineCfg.ImagePullSecrets = []string{"registry-creds"}
-		pipelineCfg.ServiceAccount = "concourse-worker"
-		pipelineWorker = jetbridge.NewWorker(fakeDBWorker, fakeClientset, pipelineCfg)
-	})
-
-	// helper: create container, run, return the pod.
-	// Pod names are generated by GeneratePodName, so we find the pod
-	// via the concourse.ci/handle label which always matches the handle.
-	runPod := func(handle string, meta db.ContainerMetadata, spec runtime.ContainerSpec, proc runtime.ProcessSpec) corev1.Pod {
-		setupFakeDBContainer(fakeDBWorker, handle)
-		container, _, err := pipelineWorker.FindOrCreateContainer(
-			ctx,
-			db.NewFixedHandleContainerOwner(handle),
-			meta,
-			spec,
-			delegate,
-		)
-		Expect(err).ToNot(HaveOccurred())
-		_, err = container.Run(ctx, proc, runtime.ProcessIO{})
-		Expect(err).ToNot(HaveOccurred())
-
-		pods, err := fakeClientset.CoreV1().Pods("pipeline-ns").List(ctx, metav1.ListOptions{})
-		Expect(err).ToNot(HaveOccurred())
-
-		// Find our pod by the handle label (pod name is generated)
-		for _, p := range pods.Items {
-			if p.Labels["concourse.ci/handle"] == handle {
-				return p
-			}
-		}
-		Fail("pod with handle " + handle + " not found")
-		return corev1.Pod{}
-	}
-
-		Describe("check step pods are slim", func() {
-			It("has only 1 container, no PVC, no GCS FUSE annotation", func() {
-				pod := runPod(
-					"chk-registry-image-001",
-					db.ContainerMetadata{
-						Type:         db.ContainerTypeCheck,
-						StepName:     "registry-image",
-						PipelineName: "main",
-						JobName:      "",
-						BuildName:    "",
-					},
-					runtime.ContainerSpec{
-						TeamID:    1,
-						Dir:       "/tmp/build/check",
-						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///concourse/registry-image-resource"},
-					},
-					runtime.ProcessSpec{Path: "/opt/resource/check"},
-				)
-
-				By("exactly 1 container — no artifact-helper, no GCS FUSE sidecar")
-				Expect(pod.Spec.Containers).To(HaveLen(1))
-				Expect(pod.Spec.Containers[0].Name).To(Equal("main"))
-
-				By("no artifact store PVC volume")
-				for _, v := range pod.Spec.Volumes {
-					Expect(v.PersistentVolumeClaim).To(BeNil(),
-						"check pod should not have PVC volume %s", v.Name)
-				}
-
-				By("no GCS FUSE annotation")
-				Expect(pod.Annotations).ToNot(HaveKey("gke-gcsfuse/volumes"))
-
-				By("no init containers")
-				Expect(pod.Spec.InitContainers).To(BeEmpty())
-
-				By("image pull secrets and service account are still set")
-				Expect(pod.Spec.ImagePullSecrets).To(ContainElement(
-					corev1.LocalObjectReference{Name: "registry-creds"},
-				))
-				Expect(pod.Spec.ServiceAccountName).To(Equal("concourse-worker"))
-			})
-
-			It("resolves base resource type image via ResourceTypeImages mapping", func() {
-				pod := runPod(
-					"chk-git-resource-002",
-					db.ContainerMetadata{Type: db.ContainerTypeCheck, StepName: "my-repo"},
-					runtime.ContainerSpec{
-						TeamID:    1,
-						ImageSpec: runtime.ImageSpec{ResourceType: "git"},
-					},
-					runtime.ProcessSpec{Path: "/opt/resource/check"},
-				)
-
-				Expect(pod.Spec.Containers[0].Image).To(Equal("concourse/git-resource"))
-				Expect(pod.Spec.Containers).To(HaveLen(1))
-			})
-		})
-
-		Describe("get step pods have artifact-helper", func() {
-			It("has main + artifact-helper, PVC volume, and GCS FUSE annotation", func() {
-				pod := runPod(
-					"get-my-repo-003",
-					db.ContainerMetadata{
-						Type:         db.ContainerTypeGet,
-						StepName:     "my-repo",
-						PipelineName: "main",
-						JobName:      "build",
-						BuildName:    "42",
-					},
-					runtime.ContainerSpec{
-						TeamID:    1,
-						Dir:       "/tmp/build/get",
-						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///concourse/git-resource"},
-						Outputs:   runtime.OutputPaths{"my-repo": "/tmp/build/get/my-repo"},
-					},
-					runtime.ProcessSpec{
-						Path: "/opt/resource/in",
-						Args: []string{"/tmp/build/get/my-repo"},
-					},
-				)
-
-				By("2 containers: main + artifact-helper")
-				Expect(pod.Spec.Containers).To(HaveLen(2))
-				Expect(pod.Spec.Containers[0].Name).To(Equal("main"))
-				Expect(pod.Spec.Containers[1].Name).To(Equal("artifact-helper"))
-
-				By("artifact-helper uses custom image")
-				Expect(pod.Spec.Containers[1].Image).To(Equal("gcr.io/my-project/artifact-helper:v2"))
-
-				By("artifact store PVC volume is present")
-				var foundPVC bool
-				for _, v := range pod.Spec.Volumes {
-					if v.PersistentVolumeClaim != nil && v.PersistentVolumeClaim.ClaimName == "concourse-artifacts" {
-						foundPVC = true
-					}
-				}
-				Expect(foundPVC).To(BeTrue(), "get pod should have artifact PVC volume")
-
-				By("artifact-helper mounts the PVC")
-				var sidecarHasPVC bool
-				for _, m := range pod.Spec.Containers[1].VolumeMounts {
-					if m.MountPath == jetbridge.ArtifactMountPath {
-						sidecarHasPVC = true
-					}
-				}
-				Expect(sidecarHasPVC).To(BeTrue())
-
-				By("GCS FUSE annotation is present")
-				Expect(pod.Annotations).To(HaveKeyWithValue("gke-gcsfuse/volumes", "true"))
-
-				By("output emptyDir volume is present")
-				var foundOutput bool
-				for _, m := range pod.Spec.Containers[0].VolumeMounts {
-					if m.MountPath == "/tmp/build/get/my-repo" {
-						foundOutput = true
-					}
-				}
-				Expect(foundOutput).To(BeTrue(), "get pod should have output volume mount")
-			})
-		})
-
-		Describe("put step pods have artifact-helper", func() {
-			It("has main + artifact-helper, PVC volume, and GCS FUSE annotation", func() {
-				pod := runPod(
-					"put-deploy-004",
-					db.ContainerMetadata{
-						Type:         db.ContainerTypePut,
-						StepName:     "deploy",
-						PipelineName: "main",
-						JobName:      "ship-it",
-						BuildName:    "7",
-					},
-					runtime.ContainerSpec{
-						TeamID:    1,
-						Dir:       "/tmp/build/put",
-						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///concourse/s3-resource"},
-					},
-					runtime.ProcessSpec{
-						Path: "/opt/resource/out",
-						Args: []string{"/tmp/build/put"},
-					},
-				)
-
-				Expect(pod.Spec.Containers).To(HaveLen(2))
-				Expect(pod.Spec.Containers[0].Name).To(Equal("main"))
-				Expect(pod.Spec.Containers[1].Name).To(Equal("artifact-helper"))
-				Expect(pod.Annotations).To(HaveKeyWithValue("gke-gcsfuse/volumes", "true"))
-			})
-		})
-
-		Describe("task step pods have artifact-helper", func() {
-			It("has main + artifact-helper with outputs and correct working directory", func() {
-				pod := runPod(
-					"task-build-005",
-					db.ContainerMetadata{
-						Type:         db.ContainerTypeTask,
-						StepName:     "build",
-						PipelineName: "main",
-						JobName:      "build-and-test",
-						BuildName:    "99",
-					},
-					runtime.ContainerSpec{
-						TeamID:    1,
-						Dir:       "/tmp/build/workdir",
-						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///golang:1.22"},
-						Outputs:   runtime.OutputPaths{"binary": "/tmp/build/workdir/binary"},
-						Env:       []string{"GOOS=linux", "GOARCH=amd64"},
-					},
-					runtime.ProcessSpec{
-						Path: "/bin/sh",
-						Args: []string{"-c", "go build -o binary/ ./..."},
-					},
-				)
-
-				By("2 containers: main + artifact-helper")
-				Expect(pod.Spec.Containers).To(HaveLen(2))
-				Expect(pod.Spec.Containers[1].Name).To(Equal("artifact-helper"))
-
-				By("main container has correct image, workdir, and env")
-				main := pod.Spec.Containers[0]
-				Expect(main.Image).To(Equal("golang:1.22"))
-				Expect(main.WorkingDir).To(Equal("/tmp/build/workdir"))
-				Expect(main.Env).To(ContainElements(
-					corev1.EnvVar{Name: "GOOS", Value: "linux"},
-					corev1.EnvVar{Name: "GOARCH", Value: "amd64"},
-				))
-
-				By("output emptyDir volume is mounted in main")
-				var mainHasOutput bool
-				for _, m := range main.VolumeMounts {
-					if m.MountPath == "/tmp/build/workdir/binary" {
-						mainHasOutput = true
-					}
-				}
-				Expect(mainHasOutput).To(BeTrue())
-
-				By("artifact-helper also mounts the output volume for tar upload")
-				sidecar := pod.Spec.Containers[1]
-				var sidecarHasOutput bool
-				for _, m := range sidecar.VolumeMounts {
-					if m.MountPath == "/tmp/build/workdir/binary" {
-						sidecarHasOutput = true
-					}
-				}
-				Expect(sidecarHasOutput).To(BeTrue())
-
-				By("GCS FUSE annotation is present")
-				Expect(pod.Annotations).To(HaveKeyWithValue("gke-gcsfuse/volumes", "true"))
-			})
-
-			It("supports user-defined sidecars alongside artifact-helper", func() {
-				pod := runPod(
-					"task-with-sidecar-006",
-					db.ContainerMetadata{Type: db.ContainerTypeTask, StepName: "integration-test"},
-					runtime.ContainerSpec{
-						TeamID:    1,
-						Dir:       "/workdir",
-						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///node:20"},
-						Sidecars: []atc.SidecarConfig{
-							{Name: "postgres", Image: "postgres:16", Env: []atc.SidecarEnvVar{{Name: "POSTGRES_PASSWORD", Value: "test"}}},
-							{Name: "redis", Image: "redis:7"},
-						},
-					},
-					runtime.ProcessSpec{Path: "/bin/sh", Args: []string{"-c", "npm test"}},
-				)
-
-				By("4 containers: main + artifact-helper + 2 user sidecars")
-				Expect(pod.Spec.Containers).To(HaveLen(4))
-				Expect(pod.Spec.Containers[0].Name).To(Equal("main"))
-				Expect(pod.Spec.Containers[1].Name).To(Equal("artifact-helper"))
-				Expect(pod.Spec.Containers[2].Name).To(Equal("postgres"))
-				Expect(pod.Spec.Containers[3].Name).To(Equal("redis"))
-			})
-		})
-
-		Describe("custom resource type image resolution", func() {
-			It("resolves default resource type names to Docker images", func() {
-				types := map[string]struct {
-					resourceType string
-					expectedImg  string
-				}{
-					"git":            {resourceType: "git", expectedImg: "concourse/git-resource"},
-					"s3":             {resourceType: "s3", expectedImg: "concourse/s3-resource"},
-					"registry-image": {resourceType: "registry-image", expectedImg: "concourse/registry-image-resource"},
-					"time":           {resourceType: "time", expectedImg: "concourse/time-resource"},
-					"semver":         {resourceType: "semver", expectedImg: "concourse/semver-resource"},
-					"mock":           {resourceType: "mock", expectedImg: "concourse/mock-resource"},
-				}
-
-				for name, tc := range types {
-					handle := fmt.Sprintf("chk-resolve-%s", name)
-					pod := runPod(
-						handle,
-						db.ContainerMetadata{Type: db.ContainerTypeCheck, StepName: name},
-						runtime.ContainerSpec{
-							TeamID:    1,
-							ImageSpec: runtime.ImageSpec{ResourceType: tc.resourceType},
-						},
-						runtime.ProcessSpec{Path: "/opt/resource/check"},
-					)
-
-					Expect(pod.Spec.Containers[0].Image).To(Equal(tc.expectedImg),
-						"resource type %q should resolve to %q", name, tc.expectedImg)
-				}
-			})
-
-			It("uses operator-overridden resource type images", func() {
-				customCfg := jetbridge.NewConfig("pipeline-ns", "")
-				customCfg.ArtifactStoreClaim = "concourse-artifacts"
-				customCfg.ResourceTypeImages = map[string]string{
-					"git":            "my-registry.io/custom-git:v3",
-					"registry-image": "my-registry.io/custom-registry-image:v2",
-					"time":           "concourse/time-resource", // keep default
-				}
-				customWorker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, customCfg)
-
-				// Check with custom git image
-				setupFakeDBContainer(fakeDBWorker, "chk-custom-git-007")
-				container, _, err := customWorker.FindOrCreateContainer(
-					ctx,
-					db.NewFixedHandleContainerOwner("chk-custom-git-007"),
-					db.ContainerMetadata{Type: db.ContainerTypeCheck, StepName: "my-repo"},
-					runtime.ContainerSpec{
-						TeamID:    1,
-						ImageSpec: runtime.ImageSpec{ResourceType: "git"},
-					},
-					delegate,
-				)
-				Expect(err).ToNot(HaveOccurred())
-				_, err = container.Run(ctx, runtime.ProcessSpec{Path: "/opt/resource/check"}, runtime.ProcessIO{})
-				Expect(err).ToNot(HaveOccurred())
-
-				pods, err := fakeClientset.CoreV1().Pods("pipeline-ns").List(ctx, metav1.ListOptions{})
-				Expect(err).ToNot(HaveOccurred())
-
-				var gitPod *corev1.Pod
-				for i := range pods.Items {
-					if pods.Items[i].Labels["concourse.ci/handle"] == "chk-custom-git-007" {
-						gitPod = &pods.Items[i]
-					}
-				}
-				Expect(gitPod).ToNot(BeNil(), "expected pod with handle chk-custom-git-007")
-				Expect(gitPod.Spec.Containers[0].Image).To(Equal("my-registry.io/custom-git:v3"))
-			})
-
-			It("resolves custom pipeline type name via ResourceTypeImages mapping", func() {
-				customCfg := jetbridge.NewConfig("pipeline-ns", "")
-				customCfg.ArtifactStoreClaim = "concourse-artifacts"
-				customCfg.ResourceTypeImages = map[string]string{
-					"git":          "concourse/git-resource",
-					"git-with-ado": "registry.home/git-with-ado-resource:latest",
-				}
-				customWorker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, customCfg)
-
-				setupFakeDBContainer(fakeDBWorker, "chk-custom-pipeline-type-010")
-				container, _, err := customWorker.FindOrCreateContainer(
-					ctx,
-					db.NewFixedHandleContainerOwner("chk-custom-pipeline-type-010"),
-					db.ContainerMetadata{Type: db.ContainerTypeCheck, StepName: "git-with-ado"},
-					runtime.ContainerSpec{
-						TeamID: 1,
-						ImageSpec: runtime.ImageSpec{
-							ResourceType: "git-with-ado",
-						},
-					},
-					delegate,
-				)
-				Expect(err).ToNot(HaveOccurred())
-				_, err = container.Run(ctx, runtime.ProcessSpec{Path: "/opt/resource/check"}, runtime.ProcessIO{})
-				Expect(err).ToNot(HaveOccurred())
-
-				pods, err := fakeClientset.CoreV1().Pods("pipeline-ns").List(ctx, metav1.ListOptions{})
-				Expect(err).ToNot(HaveOccurred())
-
-				var customPod *corev1.Pod
-				for i := range pods.Items {
-					if pods.Items[i].Labels["concourse.ci/handle"] == "chk-custom-pipeline-type-010" {
-						customPod = &pods.Items[i]
-					}
-				}
-				Expect(customPod).ToNot(BeNil(), "expected pod with handle chk-custom-pipeline-type-010")
-				Expect(customPod.Spec.Containers[0].Image).To(Equal("registry.home/git-with-ado-resource:latest"))
-			})
-
-			It("resolves docker:// prefixed URLs for custom type images", func() {
-				pod := runPod(
-					"get-custom-type-008",
-					db.ContainerMetadata{Type: db.ContainerTypeGet, StepName: "custom-resource"},
-					runtime.ContainerSpec{
-						TeamID:    1,
-						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///my-org/custom-resource-type:latest"},
-						Outputs:   runtime.OutputPaths{"custom-resource": "/tmp/build/get/custom-resource"},
-					},
-					runtime.ProcessSpec{Path: "/opt/resource/in", Args: []string{"/tmp/build/get/custom-resource"}},
-				)
-
-				By("strips docker:/// prefix")
-				Expect(pod.Spec.Containers[0].Image).To(Equal("my-org/custom-resource-type:latest"))
-
-				By("get step still gets artifact-helper for custom types")
-				Expect(pod.Spec.Containers).To(HaveLen(2))
-				Expect(pod.Spec.Containers[1].Name).To(Equal("artifact-helper"))
-			})
-		})
-
-		Describe("empty image validation", func() {
-			It("returns an error when resolved image is empty", func() {
-				setupFakeDBContainer(fakeDBWorker, "chk-empty-image-011")
-				container, _, err := pipelineWorker.FindOrCreateContainer(
-					ctx,
-					db.NewFixedHandleContainerOwner("chk-empty-image-011"),
-					db.ContainerMetadata{Type: db.ContainerTypeCheck, StepName: "unknown-type"},
-					runtime.ContainerSpec{
-						TeamID: 1,
-						ImageSpec: runtime.ImageSpec{
-							// Neither ImageURL nor ResourceType is set,
-							// and there's no matching ResourceTypeImages entry
-						},
-					},
-					delegate,
-				)
-				Expect(err).ToNot(HaveOccurred())
-
-				_, err = container.Run(ctx, runtime.ProcessSpec{Path: "/opt/resource/check"}, runtime.ProcessIO{})
-				Expect(err).To(HaveOccurred())
-				Expect(err.Error()).To(ContainSubstring("empty image"))
-			})
-
-			It("includes guidance about --resource-type-image in the error message", func() {
-				setupFakeDBContainer(fakeDBWorker, "chk-empty-image-012")
-				container, _, err := pipelineWorker.FindOrCreateContainer(
-					ctx,
-					db.NewFixedHandleContainerOwner("chk-empty-image-012"),
-					db.ContainerMetadata{Type: db.ContainerTypeCheck, StepName: "unknown-type"},
-					runtime.ContainerSpec{
-						TeamID:    1,
-						ImageSpec: runtime.ImageSpec{},
-					},
-					delegate,
-				)
-				Expect(err).ToNot(HaveOccurred())
-
-				_, err = container.Run(ctx, runtime.ProcessSpec{Path: "/opt/resource/check"}, runtime.ProcessIO{})
-				Expect(err).To(HaveOccurred())
-				Expect(err.Error()).To(ContainSubstring("--resource-type-image"))
-				Expect(err.Error()).To(ContainSubstring("empty image"))
-			})
-		})
-
-		Describe("artifact store init containers for input volumes", func() {
-			It("creates init containers to extract artifacts from PVC for get→task flow", func() {
-				// Simulate a task step that receives an artifact from a
-				// previous get step via the artifact store PVC.
-				asv := jetbridge.NewArtifactStoreVolume(
-					"artifacts/build-42/my-repo.tar",
-					"get-output-vol-abc",
-					"k8s-worker-1",
-					nil,
-				)
-
-				setupFakeDBContainer(fakeDBWorker, "task-with-input-009")
-				container, _, err := pipelineWorker.FindOrCreateContainer(
-					ctx,
-					db.NewFixedHandleContainerOwner("task-with-input-009"),
-					db.ContainerMetadata{Type: db.ContainerTypeTask, StepName: "build"},
-					runtime.ContainerSpec{
-						TeamID:    1,
-						Dir:       "/tmp/build/workdir",
-						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///golang:1.22"},
-						Inputs: []runtime.Input{
-							{
-								Artifact:        asv,
-								DestinationPath: "/tmp/build/workdir/my-repo",
-							},
-						},
-						Outputs: runtime.OutputPaths{"binary": "/tmp/build/workdir/binary"},
-					},
-					delegate,
-				)
-				Expect(err).ToNot(HaveOccurred())
-
-				_, err = container.Run(ctx, runtime.ProcessSpec{
-					Path: "/bin/sh", Args: []string{"-c", "go build -o binary/ ./..."},
-				}, runtime.ProcessIO{})
-				Expect(err).ToNot(HaveOccurred())
-
-				pods, err := fakeClientset.CoreV1().Pods("pipeline-ns").List(ctx, metav1.ListOptions{})
-				Expect(err).ToNot(HaveOccurred())
-				var pod *corev1.Pod
-				for i := range pods.Items {
-					if pods.Items[i].Name == "task-with-input-009" {
-						pod = &pods.Items[i]
-					}
-				}
-				Expect(pod).ToNot(BeNil())
-
-				By("has init container to extract artifact from PVC")
-				Expect(pod.Spec.InitContainers).To(HaveLen(1))
-				init := pod.Spec.InitContainers[0]
-				Expect(init.Image).To(Equal("gcr.io/my-project/artifact-helper:v2"))
-
-				By("init container mounts PVC read-only")
-				var initHasPVC bool
-				for _, m := range init.VolumeMounts {
-					if m.MountPath == jetbridge.ArtifactMountPath && m.ReadOnly {
-						initHasPVC = true
-					}
-				}
-				Expect(initHasPVC).To(BeTrue())
-
-				By("main + artifact-helper containers")
-				Expect(pod.Spec.Containers).To(HaveLen(2))
-				Expect(pod.Spec.Containers[1].Name).To(Equal("artifact-helper"))
-			})
-		})
-
-		Describe("pod labels carry pipeline metadata", func() {
-			It("includes pipeline, job, build, step, and handle labels", func() {
-				pod := runPod(
-					"task-labeled-010",
-					db.ContainerMetadata{
-						Type:         db.ContainerTypeTask,
-						StepName:     "unit-tests",
-						PipelineName: "my-pipeline",
-						JobName:      "test-job",
-						BuildName:    "123",
-					},
-					runtime.ContainerSpec{
-						TeamID:    1,
-						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
-					},
-					runtime.ProcessSpec{Path: "/bin/sh", Args: []string{"-c", "echo ok"}},
-				)
-
-				Expect(pod.Labels).To(HaveKeyWithValue("concourse.ci/pipeline", "my-pipeline"))
-				Expect(pod.Labels).To(HaveKeyWithValue("concourse.ci/job", "test-job"))
-				Expect(pod.Labels).To(HaveKeyWithValue("concourse.ci/build", "123"))
-				Expect(pod.Labels).To(HaveKeyWithValue("concourse.ci/step", "unit-tests"))
-			})
-		})
-
-		Describe("step type comparison across all types", func() {
-			// Validates that the sidecar/annotation behavior is correct
-			// for every ContainerType in a single table-driven test.
-			type stepCase struct {
-				stepType       db.ContainerType
-				expectSidecar  bool
-				expectGCSFuse  bool
-				expectPVC      bool
-			}
-
-			cases := []stepCase{
-				{db.ContainerTypeCheck, false, false, false},
-				{db.ContainerTypeGet, true, true, true},
-				{db.ContainerTypePut, true, true, true},
-				{db.ContainerTypeTask, true, true, true},
-				{db.ContainerTypeRun, true, true, true},
-			}
-
-			for _, tc := range cases {
-				tc := tc // capture range variable
-				It(fmt.Sprintf("type=%s: sidecar=%v, gcsFuse=%v, pvc=%v", tc.stepType, tc.expectSidecar, tc.expectGCSFuse, tc.expectPVC), func() {
-					handle := fmt.Sprintf("step-type-%s-011", tc.stepType)
-					pod := runPod(
-						handle,
-						db.ContainerMetadata{Type: tc.stepType},
-						runtime.ContainerSpec{
-							TeamID:    1,
-							ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
-						},
-						runtime.ProcessSpec{Path: "/bin/sh", Args: []string{"-c", "echo ok"}},
-					)
-
-					if tc.expectSidecar {
-						Expect(pod.Spec.Containers).To(HaveLen(2),
-							"type %s should have artifact-helper", tc.stepType)
-						Expect(pod.Spec.Containers[1].Name).To(Equal("artifact-helper"))
-					} else {
-						Expect(pod.Spec.Containers).To(HaveLen(1),
-							"type %s should NOT have artifact-helper", tc.stepType)
-					}
-
-					if tc.expectGCSFuse {
-						Expect(pod.Annotations).To(HaveKeyWithValue("gke-gcsfuse/volumes", "true"),
-							"type %s should have GCS FUSE annotation", tc.stepType)
-					} else {
-						Expect(pod.Annotations).ToNot(HaveKey("gke-gcsfuse/volumes"),
-							"type %s should NOT have GCS FUSE annotation", tc.stepType)
-					}
-
-					var hasPVC bool
-					for _, v := range pod.Spec.Volumes {
-						if v.PersistentVolumeClaim != nil {
-							hasPVC = true
-						}
-					}
-					if tc.expectPVC {
-						Expect(hasPVC).To(BeTrue(),
-							"type %s should have PVC volume", tc.stepType)
-					} else {
-						Expect(hasPVC).To(BeFalse(),
-							"type %s should NOT have PVC volume", tc.stepType)
-					}
-				})
-			}
-		})
-
-		Describe("without artifact store claim", func() {
-			BeforeEach(func() {
-				noClaim := jetbridge.NewConfig("pipeline-ns", "")
-				noClaim.ArtifactStoreGCSFuse = true // flag set but no claim
-				pipelineWorker = jetbridge.NewWorker(fakeDBWorker, fakeClientset, noClaim)
-			})
-
-			It("no step type gets sidecar or GCS FUSE annotation", func() {
-				for _, stepType := range []db.ContainerType{
-					db.ContainerTypeCheck, db.ContainerTypeGet,
-					db.ContainerTypePut, db.ContainerTypeTask,
-				} {
-					handle := fmt.Sprintf("no-claim-%s-012", stepType)
-					pod := runPod(
-						handle,
-						db.ContainerMetadata{Type: stepType},
-						runtime.ContainerSpec{
-							TeamID:    1,
-							ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
-						},
-						runtime.ProcessSpec{Path: "/bin/sh", Args: []string{"-c", "echo ok"}},
-					)
-
-					Expect(pod.Spec.Containers).To(HaveLen(1),
-						"type %s without claim should have 1 container", stepType)
-					Expect(pod.Annotations).ToNot(HaveKey("gke-gcsfuse/volumes"),
-						"type %s without claim should not have GCS FUSE", stepType)
-				}
-			})
-		})
-	})

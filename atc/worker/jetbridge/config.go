@@ -32,18 +32,11 @@ const (
 	CacheBasePath = "/concourse/cache"
 
 	// DefaultArtifactHelperImage is the container image used for init
-	// containers and the artifact-helper sidecar. Only needs tar.
+	// containers that fetch artifacts from the DaemonSet. Only needs tar.
 	DefaultArtifactHelperImage = "alpine:latest"
 
-	// artifactHelperContainerName is the name of the sidecar container
-	// that handles uploading step outputs to the artifact store PVC.
-	artifactHelperContainerName = "artifact-helper"
-
-	// artifactPVCVolumeName is the pod volume name for the artifact store PVC.
-	artifactPVCVolumeName = "artifact-store"
-
-	// ArtifactMountPath is the mount path inside init containers and the
-	// artifact-helper sidecar where the artifact store PVC is attached.
+	// ArtifactMountPath is the mount path inside init containers where
+	// the artifact hostPath volume is attached.
 	ArtifactMountPath = "/artifacts"
 )
 
@@ -51,14 +44,6 @@ const (
 // for a given volume handle, e.g. "artifacts/<handle>.tar".
 func ArtifactKey(handle string) string {
 	return fmt.Sprintf("artifacts/%s.tar", handle)
-}
-
-// TaskCacheKey returns the canonical relative path on the artifact PVC
-// for a task cache, e.g. "caches/job-42-build-step-abc123def456.tar".
-// Uses the same stable key as PVC SubPath caches so the identity is
-// consistent regardless of storage backend.
-func TaskCacheKey(jobID int, stepName string, cachePath string) string {
-	return fmt.Sprintf("caches/%s.tar", stableCacheKey(jobID, stepName, cachePath))
 }
 
 // DefaultResourceTypeImages maps base Concourse resource type names to their
@@ -94,26 +79,9 @@ func MergeResourceTypeImages(overrides []string) map[string]string {
 	return merged
 }
 
-// ArtifactBackend values for --kubernetes-artifact-backend.
-const (
-	// ArtifactBackendPVC uses the existing PVC-based artifact store (default).
-	ArtifactBackendPVC = "pvc"
-
-	// ArtifactBackendDaemonSet uses node-local hostPath with a DaemonSet HTTP server.
-	ArtifactBackendDaemonSet = "daemonset"
-)
-
 // CacheStore values for --kubernetes-cache-store. Controls which backend
 // is used for task caches.
 const (
-	// CacheStoreArtifact stores caches as tar files on the artifact PVC,
-	// enabling cross-node sharing (e.g. via GCS Fuse).
-	CacheStoreArtifact = "artifact"
-
-	// CacheStorePVC stores caches as subdirectories on a dedicated cache PVC
-	// using SubPath mounts with stable keys.
-	CacheStorePVC = "pvc"
-
 	// CacheStoreHostPath stores caches as directories on the node filesystem,
 	// surviving pod restarts on the same node.
 	CacheStoreHostPath = "hostpath"
@@ -125,8 +93,6 @@ const (
 
 // ValidCacheStores is the set of valid --kubernetes-cache-store values.
 var ValidCacheStores = map[string]bool{
-	CacheStoreArtifact: true,
-	CacheStorePVC:      true,
 	CacheStoreHostPath: true,
 	CacheStoreEmptyDir: true,
 }
@@ -161,40 +127,19 @@ type Config struct {
 	ServiceAccount string
 
 	// CacheStore selects the task cache backend explicitly. Valid values:
-	// "artifact" (tar on artifact PVC), "pvc" (dedicated cache PVC SubPath),
 	// "hostpath" (node-local directories), "emptydir" (ephemeral).
 	// When empty, the backend is auto-selected based on which config
-	// fields are set (artifact store > cache PVC > hostpath > emptydir).
+	// fields are set (hostpath > emptydir).
 	CacheStore string
-
-	// CacheVolumeClaim is the name of a PersistentVolumeClaim to mount
-	// into every pod at CacheBasePath. Cache entries are stored as
-	// subdirectories keyed by (jobID, stepName, path). When empty,
-	// falls back to CacheHostPath or emptyDir.
-	CacheVolumeClaim string
 
 	// CacheHostPath is the base directory on the node filesystem for
 	// persistent task caches. Each cache gets a subdirectory keyed by
 	// (jobID, stepName, path). Data survives pod restarts on the same
-	// node. Only used when CacheVolumeClaim is empty. When both are
-	// empty, caches fall back to emptyDir (ephemeral).
+	// node. When empty, caches fall back to emptyDir (ephemeral).
 	CacheHostPath string
 
-	// ArtifactStoreClaim is the name of a PersistentVolumeClaim for durable
-	// artifact and resource cache storage. In production, this PVC is backed
-	// by GCS FUSE (via StorageClass). In local dev, it's backed by local disk.
-	// When empty, artifact storage is disabled and existing SPDY streaming
-	// is used (the default).
-	ArtifactStoreClaim string
-
-	// ArtifactStoreGCSFuse indicates the artifact store PVC is backed by
-	// the GCS Fuse CSI driver on GKE. When true, pods that mount the
-	// artifact PVC get the "gke-gcsfuse/volumes": "true" annotation
-	// required by the GKE sidecar injector webhook.
-	ArtifactStoreGCSFuse bool
-
 	// ArtifactHelperImage overrides DefaultArtifactHelperImage for init
-	// containers and the artifact-helper sidecar.
+	// containers that fetch artifacts from the DaemonSet.
 	ArtifactHelperImage string
 
 	// ImageRegistry configures a container image registry for custom resource
@@ -202,11 +147,6 @@ type Config struct {
 	// on every pod and its Prefix is used when resolving custom resource type
 	// images. Nil means disabled.
 	ImageRegistry *ImageRegistryConfig
-
-	// ArtifactBackend selects the artifact storage backend.
-	// "pvc" (default) uses the existing PVC-based artifact store.
-	// "daemonset" uses node-local hostPath with a DaemonSet HTTP server.
-	ArtifactBackend string
 
 	// ArtifactDaemonPort is the HTTP port for the DaemonSet artifact server.
 	ArtifactDaemonPort int
@@ -244,11 +184,6 @@ func NewConfig(namespace, kubeconfigPath string) Config {
 		KubeconfigPath:    kubeconfigPath,
 		PodStartupTimeout: DefaultPodStartupTimeout,
 	}
-}
-
-// IsDaemonSetBackend returns true when the DaemonSet artifact backend is active.
-func (c Config) IsDaemonSetBackend() bool {
-	return c.ArtifactBackend == ArtifactBackendDaemonSet
 }
 
 // NewClientset creates a Kubernetes clientset from the Config. If

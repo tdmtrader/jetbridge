@@ -39,19 +39,6 @@ var _ = Describe("Config", func() {
 		})
 	})
 
-	Describe("CacheVolumeClaim field", func() {
-		It("defaults to empty when not set", func() {
-			cfg := jetbridge.NewConfig("my-namespace", "")
-			Expect(cfg.CacheVolumeClaim).To(BeEmpty())
-		})
-
-		It("can be set to a PVC name", func() {
-			cfg := jetbridge.NewConfig("my-namespace", "")
-			cfg.CacheVolumeClaim = "concourse-cache"
-			Expect(cfg.CacheVolumeClaim).To(Equal("concourse-cache"))
-		})
-	})
-
 	Describe("MergeResourceTypeImages", func() {
 		It("returns defaults when no overrides are provided", func() {
 			result := jetbridge.MergeResourceTypeImages(nil)
@@ -125,43 +112,6 @@ var _ = Describe("Config", func() {
 			overrides := []string{"git=my-registry/custom"}
 			jetbridge.MergeResourceTypeImages(overrides)
 			Expect(jetbridge.DefaultResourceTypeImages).To(Equal(original))
-		})
-	})
-
-	Describe("TaskCacheKey", func() {
-		It("returns a path under caches/ with .tar extension", func() {
-			key := jetbridge.TaskCacheKey(42, "build-step", "/tmp/cache")
-			Expect(key).To(HavePrefix("caches/"))
-			Expect(key).To(HaveSuffix(".tar"))
-		})
-
-		It("produces the same key for the same inputs", func() {
-			key1 := jetbridge.TaskCacheKey(42, "build-step", "/tmp/cache")
-			key2 := jetbridge.TaskCacheKey(42, "build-step", "/tmp/cache")
-			Expect(key1).To(Equal(key2))
-		})
-
-		It("produces different keys for different jobs", func() {
-			key1 := jetbridge.TaskCacheKey(42, "build-step", "/tmp/cache")
-			key2 := jetbridge.TaskCacheKey(99, "build-step", "/tmp/cache")
-			Expect(key1).ToNot(Equal(key2))
-		})
-
-		It("produces different keys for different step names", func() {
-			key1 := jetbridge.TaskCacheKey(42, "step-a", "/tmp/cache")
-			key2 := jetbridge.TaskCacheKey(42, "step-b", "/tmp/cache")
-			Expect(key1).ToNot(Equal(key2))
-		})
-
-		It("produces different keys for different cache paths", func() {
-			key1 := jetbridge.TaskCacheKey(42, "build-step", "/cache/a")
-			key2 := jetbridge.TaskCacheKey(42, "build-step", "/cache/b")
-			Expect(key1).ToNot(Equal(key2))
-		})
-
-		It("wraps the stable cache key format", func() {
-			key := jetbridge.TaskCacheKey(42, "build-step", "/tmp/cache")
-			Expect(key).To(MatchRegexp(`^caches/job-42-build-step-[a-f0-9]{12}\.tar$`))
 		})
 	})
 

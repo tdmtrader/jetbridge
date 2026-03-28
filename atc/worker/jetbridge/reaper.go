@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -178,101 +177,16 @@ func (r *Reaper) Run(ctx context.Context) error {
 		}
 	}
 
-	// Clean up PVC cache subdirectories for destroying volumes.
-	err = r.cleanupCacheVolumes(ctx, logger, workerName, activePodNames)
-	if err != nil {
-		logger.Error("failed-to-cleanup-cache-volumes", err)
-		spanErr = err
-		return fmt.Errorf("cleaning up cache volumes: %w", err)
-	}
-
 	// Clean up artifact store entries for destroyed containers.
-	r.cleanupArtifactStoreEntries(ctx, logger, destroying, activePodNames)
+	r.cleanupArtifactStoreEntries(ctx, logger, destroying)
 
 	return nil
 }
 
-// cleanupCacheVolumes removes PVC subdirectories for volumes in "destroying"
-// state by exec-ing rm -rf inside a running pod. Volumes whose directories
-// are successfully removed are then deleted from the DB.
-func (r *Reaper) cleanupCacheVolumes(ctx context.Context, logger lager.Logger, workerName string, activePods []string) error {
-	if r.cfg.CacheVolumeClaim == "" || r.volumeRepository == nil {
-		return nil
-	}
-
-	destroyingVolumes, err := r.volumeRepository.GetDestroyingVolumes(workerName)
-	if err != nil {
-		return fmt.Errorf("finding destroying volumes: %w", err)
-	}
-
-	if len(destroyingVolumes) == 0 {
-		return nil
-	}
-
-	if len(activePods) == 0 || r.executor == nil {
-		logger.Info("skipping-volume-cleanup-no-active-pods")
-		return nil
-	}
-
-	// Use the first active pod as the exec target for cache cleanup.
-	podName := activePods[0]
-	var failedHandles []string
-
-	for _, handle := range destroyingVolumes {
-		// Validate handle to prevent path traversal (e.g. "../../etc").
-		if strings.Contains(handle, "/") || strings.Contains(handle, "..") || handle == "" {
-			logger.Info("skipping-invalid-volume-handle", lager.Data{"handle": handle})
-			failedHandles = append(failedHandles, handle)
-			continue
-		}
-		cachePath := filepath.Join(CacheBasePath, handle)
-		cmd := []string{"rm", "-rf", cachePath}
-		err := r.executor.ExecInPod(ctx, r.cfg.Namespace, podName, mainContainerName, cmd, nil, nil, nil, false,
-			ExecAttrs{Purpose: "gc-cleanup"})
-		if err != nil {
-			logger.Error("failed-to-cleanup-cache-volume", err, lager.Data{"handle": handle})
-			failedHandles = append(failedHandles, handle)
-		}
-	}
-
-	_, err = r.volumeRepository.RemoveDestroyingVolumes(workerName, failedHandles)
-	if err != nil {
-		return fmt.Errorf("removing cleaned volumes from db: %w", err)
-	}
-
-	return nil
-}
-
-// cleanupArtifactStoreEntries removes artifact tar files from the artifact
-// store PVC for destroyed containers. Execs rm in the artifact-helper sidecar
-// of an active pod. Best-effort — failures are logged but don't block GC.
-func (r *Reaper) cleanupArtifactStoreEntries(ctx context.Context, logger lager.Logger, handles []string, activePods []string) {
-	if r.cfg.IsDaemonSetBackend() {
-		r.cleanupDaemonSetArtifacts(ctx, logger, handles)
-		return
-	}
-
-	if r.cfg.ArtifactStoreClaim == "" || r.executor == nil {
-		return
-	}
-	if len(handles) == 0 || len(activePods) == 0 {
-		return
-	}
-
-	podName := activePods[0]
-
-	for _, handle := range handles {
-		if strings.Contains(handle, "/") || strings.Contains(handle, "..") || handle == "" {
-			continue
-		}
-		artifactPath := filepath.Join(ArtifactMountPath, ArtifactKey(handle))
-		cmd := []string{"rm", "-f", artifactPath}
-		err := r.executor.ExecInPod(ctx, r.cfg.Namespace, podName, artifactHelperContainerName, cmd, nil, nil, nil, false,
-			ExecAttrs{Purpose: "gc-cleanup"})
-		if err != nil {
-			logger.Error("failed-to-cleanup-artifact", err, lager.Data{"handle": handle})
-		}
-	}
+// cleanupArtifactStoreEntries removes artifacts from the DaemonSet for
+// destroyed containers. Best-effort — failures are logged but don't block GC.
+func (r *Reaper) cleanupArtifactStoreEntries(ctx context.Context, logger lager.Logger, handles []string) {
+	r.cleanupDaemonSetArtifacts(ctx, logger, handles)
 }
 
 // cleanupDaemonSetArtifacts sends HTTP DELETE requests to DaemonSet pods

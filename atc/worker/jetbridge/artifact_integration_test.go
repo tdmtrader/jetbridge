@@ -40,7 +40,6 @@ var _ = Describe("Artifact Integration", func() {
 		delegate = &noopDelegate{}
 
 		cfg = jetbridge.NewConfig("ci-namespace", "")
-		cfg.ArtifactStoreClaim = "artifact-store-pvc"
 
 		worker = jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
 		worker.SetExecutor(fakeExecutor)
@@ -87,9 +86,9 @@ var _ = Describe("Artifact Integration", func() {
 			Expect(artifact).ToNot(BeNil())
 			Expect(artifact.ID()).To(Equal(10))
 
-			By("verifying the volume is an ArtifactStoreVolume with correct key")
-			asVol, ok := vol.(*jetbridge.ArtifactStoreVolume)
-			Expect(ok).To(BeTrue(), "expected ArtifactStoreVolume, got %T", vol)
+			By("verifying the volume is an DaemonSetVolume with correct key")
+			asVol, ok := vol.(*jetbridge.DaemonSetVolume)
+			Expect(ok).To(BeTrue(), "expected DaemonSetVolume, got %T", vol)
 			Expect(asVol.Key()).To(Equal("artifacts/artifact-vol-1.tar"))
 			Expect(asVol.Handle()).To(Equal("artifact-vol-1"))
 
@@ -100,8 +99,8 @@ var _ = Describe("Artifact Integration", func() {
 			Expect(err).ToNot(HaveOccurred())
 			Expect(found).To(BeTrue())
 
-			lookedUpASV, ok := lookedUpVol.(*jetbridge.ArtifactStoreVolume)
-			Expect(ok).To(BeTrue(), "LookupVolume should return ArtifactStoreVolume when artifact store is configured")
+			lookedUpASV, ok := lookedUpVol.(*jetbridge.DaemonSetVolume)
+			Expect(ok).To(BeTrue(), "LookupVolume should return DaemonSetVolume when artifact store is configured")
 			Expect(lookedUpASV.Key()).To(Equal("artifacts/artifact-vol-1.tar"))
 
 			By("step 3: creating a task container that receives the artifact as input")
@@ -284,21 +283,21 @@ var _ = Describe("Artifact Integration", func() {
 			Expect(putStdoutBuf.String()).To(Equal(putStdout))
 
 			By("verifying the complete get→task→put chain used artifact store volumes")
-			_, isASV := getVol.(*jetbridge.ArtifactStoreVolume)
-			Expect(isASV).To(BeTrue(), "get output should be ArtifactStoreVolume")
-			_, isASV = lookedUpGetVol.(*jetbridge.ArtifactStoreVolume)
-			Expect(isASV).To(BeTrue(), "looked up get output should be ArtifactStoreVolume")
+			_, isASV := getVol.(*jetbridge.DaemonSetVolume)
+			Expect(isASV).To(BeTrue(), "get output should be DaemonSetVolume")
+			_, isASV = lookedUpGetVol.(*jetbridge.DaemonSetVolume)
+			Expect(isASV).To(BeTrue(), "looked up get output should be DaemonSetVolume")
 		})
 	})
 
 	Describe("artifact persistence across pod restarts", func() {
-		It("returns the same ArtifactStoreVolume key across multiple lookups", func() {
+		It("returns the same DaemonSetVolume key across multiple lookups", func() {
 			By("creating an artifact volume")
 			_, fakeCreatedVolume, _ := setupArtifactVolumeFakes("persistent-artifact", 30)
 
 			vol, _, err := worker.CreateVolumeForArtifact(ctx, 1)
 			Expect(err).ToNot(HaveOccurred())
-			originalKey := vol.(*jetbridge.ArtifactStoreVolume).Key()
+			originalKey := vol.(*jetbridge.DaemonSetVolume).Key()
 			Expect(originalKey).To(Equal("artifacts/persistent-artifact.tar"))
 
 			By("looking up the volume (simulating a new step after pod restart)")
@@ -308,7 +307,7 @@ var _ = Describe("Artifact Integration", func() {
 			Expect(err).ToNot(HaveOccurred())
 			Expect(found).To(BeTrue())
 
-			restartedKey := vol2.(*jetbridge.ArtifactStoreVolume).Key()
+			restartedKey := vol2.(*jetbridge.DaemonSetVolume).Key()
 			Expect(restartedKey).To(Equal(originalKey),
 				"artifact key should be deterministic and survive pod restarts")
 
@@ -316,7 +315,7 @@ var _ = Describe("Artifact Integration", func() {
 			vol3, found, err := worker.LookupVolume(ctx, "persistent-artifact")
 			Expect(err).ToNot(HaveOccurred())
 			Expect(found).To(BeTrue())
-			Expect(vol3.(*jetbridge.ArtifactStoreVolume).Key()).To(Equal(originalKey),
+			Expect(vol3.(*jetbridge.DaemonSetVolume).Key()).To(Equal(originalKey),
 				"artifact key should remain stable across all lookups")
 		})
 
@@ -399,25 +398,24 @@ var _ = Describe("Artifact Integration", func() {
 		})
 	})
 
-	Describe("artifact store disabled (fallback to SPDY streaming)", func() {
+	Describe("CreateVolumeForArtifact always returns DaemonSetVolume", func() {
 		var noArtifactWorker *jetbridge.Worker
 
 		BeforeEach(func() {
 			noCfg := jetbridge.NewConfig("ci-namespace", "")
-			// No ArtifactStoreClaim set
 			noArtifactWorker = jetbridge.NewWorker(fakeDBWorker, fakeClientset, noCfg)
 			noArtifactWorker.SetExecutor(fakeExecutor)
 			noArtifactWorker.SetVolumeRepo(fakeVolumeRepo)
 		})
 
-		It("returns a DeferredVolume instead of ArtifactStoreVolume", func() {
+		It("returns a DaemonSetVolume", func() {
 			setupArtifactVolumeFakes("deferred-artifact", 80)
 			vol, _, err := noArtifactWorker.CreateVolumeForArtifact(ctx, 1)
 			Expect(err).ToNot(HaveOccurred())
 
-			_, isASV := vol.(*jetbridge.ArtifactStoreVolume)
-			Expect(isASV).To(BeFalse(),
-				"without artifact store configured, should return DeferredVolume")
+			_, isDaemonSet := vol.(*jetbridge.DaemonSetVolume)
+			Expect(isDaemonSet).To(BeTrue(),
+				"should always return DaemonSetVolume, got %T", vol)
 			Expect(vol.Handle()).To(Equal("deferred-artifact"))
 		})
 	})

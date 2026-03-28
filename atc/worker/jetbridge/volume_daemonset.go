@@ -44,6 +44,11 @@ func (v *DaemonSetVolume) Handle() string {
 	return v.handle
 }
 
+// Key returns the artifact key (e.g. "artifacts/<handle>.tar").
+func (v *DaemonSetVolume) Key() string {
+	return v.key
+}
+
 func (v *DaemonSetVolume) Source() string {
 	return v.workerName
 }

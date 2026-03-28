@@ -21,7 +21,6 @@ import (
 func TestDaemonSetMode_PodHasHostPathVolume(t *testing.T) {
 	cfg := Config{
 		Namespace:              "test-ns",
-		ArtifactBackend:        ArtifactBackendDaemonSet,
 		ArtifactDaemonHostPath: "/var/concourse/artifacts",
 		ArtifactDaemonPort:     8080,
 		ArtifactDaemonService:  "artifact-daemon",
@@ -55,8 +54,8 @@ func TestDaemonSetMode_PodHasHostPathVolume(t *testing.T) {
 // TestDaemonSetMode_HardAffinity verifies the required node affinity.
 func TestDaemonSetMode_HardAffinity(t *testing.T) {
 	cfg := Config{
-		Namespace:       "test-ns",
-		ArtifactBackend: ArtifactBackendDaemonSet,
+		Namespace:              "test-ns",
+		ArtifactDaemonHostPath: "/var/concourse/artifacts",
 	}
 
 	c := &Container{
@@ -94,8 +93,8 @@ func TestDaemonSetMode_HardAffinity(t *testing.T) {
 // TestDaemonSetMode_SoftAffinity verifies soft scheduling toward input source node.
 func TestDaemonSetMode_SoftAffinity(t *testing.T) {
 	cfg := Config{
-		Namespace:       "test-ns",
-		ArtifactBackend: ArtifactBackendDaemonSet,
+		Namespace:              "test-ns",
+		ArtifactDaemonHostPath: "/var/concourse/artifacts",
 	}
 
 	locator := NewArtifactLocator()
@@ -145,7 +144,6 @@ func TestDaemonSetMode_SoftAffinity(t *testing.T) {
 func TestDaemonSetMode_NoAffinityForPVC(t *testing.T) {
 	cfg := Config{
 		Namespace:          "test-ns",
-		ArtifactStoreClaim: "artifacts-pvc",
 	}
 
 	c := &Container{
@@ -167,7 +165,6 @@ func TestDaemonSetMode_NoAffinityForPVC(t *testing.T) {
 func TestDaemonSetMode_InitContainerFetchCommand(t *testing.T) {
 	cfg := Config{
 		Namespace:              "test-ns",
-		ArtifactBackend:        ArtifactBackendDaemonSet,
 		ArtifactDaemonHostPath: "/var/concourse/artifacts",
 		ArtifactDaemonPort:     8080,
 		ArtifactDaemonService:  "artifact-daemon",
@@ -256,63 +253,12 @@ func TestDaemonSetMode_LocatorRecordLookupCleanup(t *testing.T) {
 	}
 }
 
-// --- Gap #4: Sidecar must NOT be created in DaemonSet mode ---
-
-func TestDaemonSetMode_NoSidecarCreated(t *testing.T) {
-	cfg := Config{
-		Namespace:              "test-ns",
-		ArtifactBackend:        ArtifactBackendDaemonSet,
-		ArtifactDaemonHostPath: "/var/concourse/artifacts",
-		ArtifactHelperImage:    "alpine:latest",
-	}
-
-	c := &Container{
-		handle:        "test-handle",
-		podName:       "test-pod",
-		metadata:      db.ContainerMetadata{Type: db.ContainerTypeTask},
-		containerSpec: runtime.ContainerSpec{Dir: "/tmp/build", Type: db.ContainerTypeTask},
-		config:        cfg,
-		properties:    make(map[string]string),
-	}
-
-	_, mounts := c.buildVolumeMounts()
-	sidecar := c.buildArtifactHelperSidecar(mounts)
-	if sidecar != nil {
-		t.Error("expected no sidecar in DaemonSet mode, but one was created")
-	}
-}
-
-// --- Gap #4 corollary: Sidecar IS created in PVC mode ---
-
-func TestPVCMode_SidecarCreated(t *testing.T) {
-	cfg := Config{
-		Namespace:          "test-ns",
-		ArtifactStoreClaim: "artifacts-pvc",
-		ArtifactHelperImage: "alpine:latest",
-	}
-
-	c := &Container{
-		handle:        "test-handle",
-		podName:       "test-pod",
-		metadata:      db.ContainerMetadata{Type: db.ContainerTypeTask},
-		containerSpec: runtime.ContainerSpec{Dir: "/tmp/build", Type: db.ContainerTypeTask},
-		config:        cfg,
-		properties:    make(map[string]string),
-	}
-
-	_, mounts := c.buildVolumeMounts()
-	sidecar := c.buildArtifactHelperSidecar(mounts)
-	if sidecar == nil {
-		t.Error("expected sidecar in PVC mode, but got nil")
-	}
-}
 
 // --- Gap #8: Uploads must be skipped in DaemonSet mode ---
 
 func TestDaemonSetMode_UploadOutputsIsNoop(t *testing.T) {
 	cfg := Config{
 		Namespace:              "test-ns",
-		ArtifactBackend:        ArtifactBackendDaemonSet,
 		ArtifactDaemonHostPath: "/var/concourse/artifacts",
 	}
 
@@ -351,7 +297,6 @@ func TestDaemonSetMode_LocatorRecordCalledAfterUpload(t *testing.T) {
 
 	cfg := Config{
 		Namespace:              "test-ns",
-		ArtifactBackend:        ArtifactBackendDaemonSet,
 		ArtifactDaemonHostPath: "/var/concourse/artifacts",
 	}
 
@@ -403,7 +348,6 @@ func TestDaemonSetMode_RecordOutputLocationsWithEmptyNodeName(t *testing.T) {
 
 	cfg := Config{
 		Namespace:              "test-ns",
-		ArtifactBackend:        ArtifactBackendDaemonSet,
 		ArtifactDaemonHostPath: "/var/concourse/artifacts",
 	}
 
@@ -455,7 +399,6 @@ func TestDaemonSetMode_RecordOutputLocationsWithEmptyNodeName(t *testing.T) {
 func daemonSetConfig() Config {
 	return Config{
 		Namespace:              "test-ns",
-		ArtifactBackend:        ArtifactBackendDaemonSet,
 		ArtifactDaemonHostPath: "/var/concourse/artifacts",
 		ArtifactDaemonPort:     8080,
 		ArtifactDaemonService:  "artifact-daemon",
@@ -567,7 +510,6 @@ func TestDaemonSetMode_InputVolumesAreHostPath(t *testing.T) {
 func TestPVCMode_VolumesStillEmptyDir(t *testing.T) {
 	cfg := Config{
 		Namespace:          "test-ns",
-		ArtifactStoreClaim: "artifacts-pvc",
 		ArtifactHelperImage: "alpine:latest",
 	}
 	c := &Container{
@@ -629,10 +571,6 @@ func TestDaemonSetMode_CachesAreDirectHostPath(t *testing.T) {
 		t.Fatal("no cache volume found")
 	}
 
-	// No cacheEntries should be created (no tar save/restore needed)
-	if len(c.cacheEntries) != 0 {
-		t.Errorf("expected 0 cacheEntries in DaemonSet mode, got %d", len(c.cacheEntries))
-	}
 }
 
 // =======================================================================

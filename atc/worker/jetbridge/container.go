@@ -34,12 +34,6 @@ const (
 	mainContainerName           = "main"
 	exitStatusAnnotationKey     = "concourse.ci/exit-status"
 	resourceResultAnnotationKey = "concourse.ci/resource-result"
-	cachePVCVolumeName          = "cache-pvc"
-
-	// gcsFuseAnnotationKey is the pod annotation required by the GKE
-	// GCS Fuse sidecar injector webhook. When set to "true", the webhook
-	// injects the FUSE mount helper into the pod.
-	gcsFuseAnnotationKey = "gke-gcsfuse/volumes"
 )
 
 // persistableAnnotations maps container property keys to pod annotation keys
@@ -55,15 +49,6 @@ var _ runtime.Container = (*Container)(nil)
 // Container implements runtime.Container backed by a Kubernetes Pod.
 // The Pod is created lazily when Run() is called, since the command
 // (ProcessSpec) isn't known at FindOrCreateContainer time.
-// cacheEntry tracks an emptyDir cache volume created for artifact-store-backed
-// caching. Init containers use this to restore tars, and the sidecar uses it
-// to upload updated caches after task completion.
-type cacheEntry struct {
-	volumeName  string // K8s volume name (e.g. "cache-0")
-	mountPath   string // absolute mount path in the container
-	artifactKey string // path on artifact PVC (e.g. "caches/job-42-build-step-abc123.tar")
-}
-
 type Container struct {
 	handle        string
 	podName       string
@@ -78,7 +63,6 @@ type Container struct {
 	loadAnnotations sync.Once
 	executor        PodExecutor
 	volumes         []*Volume
-	cacheEntries    []cacheEntry
 	artifactLocator *ArtifactLocator
 }
 
@@ -418,10 +402,6 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 		},
 	}
 
-	if sidecar := c.buildArtifactHelperSidecar(volumeMounts); sidecar != nil {
-		containers = append(containers, *sidecar)
-	}
-
 	containers = append(containers, buildSidecarContainers(c.containerSpec.Sidecars, volumeMounts)...)
 
 	// Pause pods trap SIGTERM and exit immediately; 10s is more than
@@ -456,61 +436,40 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 // hostPath artifact store.
 const artifactDaemonHostPathVolumeName = "artifact-daemon-hostpath"
 
-// buildArtifactStoreVolume returns a PVC volume for the artifact store, or nil
-// if ArtifactStoreClaim is not configured. In DaemonSet mode, returns a
-// hostPath volume instead.
+// buildArtifactStoreVolume returns a hostPath volume for the DaemonSet artifact
+// store, or nil if ArtifactDaemonHostPath is not configured.
 func (c *Container) buildArtifactStoreVolume() *corev1.Volume {
 	if c.metadata.Type == db.ContainerTypeCheck {
 		return nil
 	}
 
-	if c.config.IsDaemonSetBackend() {
-		hostPathType := corev1.HostPathDirectoryOrCreate
-		return &corev1.Volume{
-			Name: artifactDaemonHostPathVolumeName,
-			VolumeSource: corev1.VolumeSource{
-				HostPath: &corev1.HostPathVolumeSource{
-					Path: c.config.ArtifactDaemonHostPath,
-					Type: &hostPathType,
-				},
-			},
-		}
-	}
-
-	if c.config.ArtifactStoreClaim == "" {
+	if c.config.ArtifactDaemonHostPath == "" {
 		return nil
 	}
+
+	hostPathType := corev1.HostPathDirectoryOrCreate
 	return &corev1.Volume{
-		Name: artifactPVCVolumeName,
+		Name: artifactDaemonHostPathVolumeName,
 		VolumeSource: corev1.VolumeSource{
-			PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-				ClaimName: c.config.ArtifactStoreClaim,
+			HostPath: &corev1.HostPathVolumeSource{
+				Path: c.config.ArtifactDaemonHostPath,
+				Type: &hostPathType,
 			},
 		},
 	}
 }
 
-// artifactVolumeName returns the appropriate volume name for the current
-// artifact backend mode.
+// artifactVolumeName returns the volume name for the DaemonSet hostPath
+// artifact store.
 func (c *Container) artifactVolumeName() string {
-	if c.config.IsDaemonSetBackend() {
-		return artifactDaemonHostPathVolumeName
-	}
-	return artifactPVCVolumeName
+	return artifactDaemonHostPathVolumeName
 }
 
 // buildArtifactInitContainers creates init containers for each input with a
-// non-nil artifact when ArtifactStoreClaim is configured. Each init container
-// extracts a tar file from the artifact PVC into the corresponding emptyDir
-// volume. The artifact key is derived from the artifact's Handle(), which
-// works for both *Volume (same-build) and *ArtifactStoreVolume (cross-build).
-// hasArtifactStore returns true when any artifact store backend is configured.
-func (c *Container) hasArtifactStore() bool {
-	return c.config.ArtifactStoreClaim != "" || c.config.IsDaemonSetBackend()
-}
-
+// non-nil artifact when ArtifactDaemonHostPath is configured. Each init container
+// fetches an artifact from the DaemonSet hostPath into the corresponding volume.
 func (c *Container) buildArtifactInitContainers(mainMounts []corev1.VolumeMount) ([]corev1.Container, error) {
-	if !c.hasArtifactStore() {
+	if c.config.ArtifactDaemonHostPath == "" {
 		return nil, nil
 	}
 
@@ -549,63 +508,33 @@ func (c *Container) buildArtifactInitContainers(mainMounts []corev1.VolumeMount)
 			},
 		}
 
-		if c.config.IsDaemonSetBackend() {
-			loc, hasLoc := c.artifactLocate(key)
-			if !hasLoc {
-				return nil, fmt.Errorf("artifact location unknown for key %s (input %q): producing step may not have recorded its output", key, input.DestinationPath)
-			}
-			initContainer.Command = c.daemonSetFetchCommand(loc.HostDir, input.DestinationPath)
+		loc, hasLoc := c.artifactLocate(key)
+		if !hasLoc {
+			return nil, fmt.Errorf("artifact location unknown for key %s (input %q): producing step may not have recorded its output", key, input.DestinationPath)
+		}
+		initContainer.Command = c.daemonSetFetchCommand(loc.HostDir, input.DestinationPath)
+		initContainer.Env = append(initContainer.Env, corev1.EnvVar{
+			Name: "MY_NODE_NAME",
+			ValueFrom: &corev1.EnvVarSource{
+				FieldRef: &corev1.ObjectFieldSelector{FieldPath: "spec.nodeName"},
+			},
+		})
+		if loc.NodeName != "" {
 			initContainer.Env = append(initContainer.Env, corev1.EnvVar{
-				Name: "MY_NODE_NAME",
-				ValueFrom: &corev1.EnvVarSource{
-					FieldRef: &corev1.ObjectFieldSelector{FieldPath: "spec.nodeName"},
-				},
+				Name:  "SOURCE_NODE",
+				Value: loc.NodeName,
 			})
-			if loc.NodeName != "" {
+			// Resolve the daemon pod IP on the source node via EndpointSlice
+			// so the fetch script can reach it directly by IP.
+			if daemonIP := c.resolveDaemonPodIP(loc.NodeName); daemonIP != "" {
 				initContainer.Env = append(initContainer.Env, corev1.EnvVar{
-					Name:  "SOURCE_NODE",
-					Value: loc.NodeName,
+					Name:  "SOURCE_DAEMON_IP",
+					Value: daemonIP,
 				})
-				// Resolve the daemon pod IP on the source node via EndpointSlice
-				// so the fetch script can reach it directly by IP.
-				if daemonIP := c.resolveDaemonPodIP(loc.NodeName); daemonIP != "" {
-					initContainer.Env = append(initContainer.Env, corev1.EnvVar{
-						Name:  "SOURCE_DAEMON_IP",
-						Value: daemonIP,
-					})
-				}
-			}
-		} else {
-			initContainer.Command = []string{"sh", "-c",
-				fmt.Sprintf("tar xf %s/%s -C %s",
-					ArtifactMountPath, key, input.DestinationPath),
 			}
 		}
 
 		inits = append(inits, initContainer)
-	}
-
-	// Add cache restore init containers. Each one extracts a previously-saved
-	// cache tar from the artifact PVC into the cache emptyDir volume. Cache
-	// misses (first build) are handled gracefully via || true.
-	for i, entry := range c.cacheEntries {
-		inits = append(inits, corev1.Container{
-			Name:  fmt.Sprintf("restore-cache-%d", i),
-			Image: helperImage,
-			Command: []string{"sh", "-c",
-				fmt.Sprintf("test -f %s/%s && tar xf %s/%s -C %s || true",
-					ArtifactMountPath, entry.artifactKey,
-					ArtifactMountPath, entry.artifactKey, entry.mountPath),
-			},
-			VolumeMounts: []corev1.VolumeMount{
-				{Name: c.artifactVolumeName(), MountPath: ArtifactMountPath, ReadOnly: true},
-				{Name: entry.volumeName, MountPath: entry.mountPath},
-			},
-			ImagePullPolicy: corev1.PullIfNotPresent,
-			SecurityContext: &corev1.SecurityContext{
-				AllowPrivilegeEscalation: &allowEscalation,
-			},
-		})
 	}
 
 	return inits, nil
@@ -761,63 +690,6 @@ func (c *Container) artifactSourceNode(key string) string {
 	return node
 }
 
-// buildArtifactHelperSidecar creates the artifact-helper sidecar container
-// that shares output emptyDir volumes and the artifact PVC. It runs a pause
-// command; the ATC execs tar upload commands in it after step completion.
-// Returns nil if ArtifactStoreClaim is not configured.
-func (c *Container) buildArtifactHelperSidecar(mainMounts []corev1.VolumeMount) *corev1.Container {
-	if !c.hasArtifactStore() {
-		return nil
-	}
-	// DaemonSet mode: no sidecar needed — outputs are on hostPath, uploads
-	// are eliminated, and StreamOut goes through the DaemonSet HTTP server.
-	if c.config.IsDaemonSetBackend() {
-		return nil
-	}
-	// Check steps never produce artifacts — skip the sidecar to reduce
-	// per-check resource overhead and avoid triggering GCS FUSE injection.
-	if c.metadata.Type == db.ContainerTypeCheck {
-		return nil
-	}
-
-	helperImage := c.config.ArtifactHelperImage
-	if helperImage == "" {
-		helperImage = DefaultArtifactHelperImage
-	}
-
-	// The sidecar mounts the same volumes as the main container plus the
-	// artifact PVC. This allows it to read output data from emptyDir and
-	// write tars to the PVC.
-	allMounts := make([]corev1.VolumeMount, len(mainMounts))
-	copy(allMounts, mainMounts)
-	allMounts = append(allMounts, corev1.VolumeMount{
-		Name:      c.artifactVolumeName(),
-		MountPath: ArtifactMountPath,
-	})
-
-	allowEscalation := false
-	return &corev1.Container{
-		Name:            artifactHelperContainerName,
-		Image:           helperImage,
-		Command:         []string{"sh", "-c", "mkdir -p /artifacts/artifacts /artifacts/caches; trap 'exit 0' TERM; sleep 86400 & wait"},
-		VolumeMounts:    allMounts,
-		ImagePullPolicy: corev1.PullIfNotPresent,
-		SecurityContext: &corev1.SecurityContext{
-			AllowPrivilegeEscalation: &allowEscalation,
-		},
-		Resources: corev1.ResourceRequirements{
-			Requests: corev1.ResourceList{
-				corev1.ResourceCPU:    resource.MustParse("50m"),
-				corev1.ResourceMemory: resource.MustParse("64Mi"),
-			},
-			Limits: corev1.ResourceList{
-				corev1.ResourceCPU:    resource.MustParse("200m"),
-				corev1.ResourceMemory: resource.MustParse("256Mi"),
-			},
-		},
-	}
-}
-
 // buildSidecarContainers converts SidecarConfig entries into K8s container
 // specs. Each sidecar receives the same volume mounts as the main container
 // so it can access inputs, outputs, and caches.
@@ -912,14 +784,13 @@ func volumeNameForMountPath(mounts []corev1.VolumeMount, mountPath string) strin
 	return ""
 }
 
-// buildAffinity constructs pod affinity rules for DaemonSet mode. Returns nil
-// for PVC mode or non-task step types.
+// buildAffinity constructs pod affinity rules when DaemonSet hostPath is configured.
+// Returns nil when ArtifactDaemonHostPath is not set.
 //
-// In DaemonSet mode:
 // - Hard affinity: pods MUST land on nodes with concourse.dev/artifact-cache=ready
 // - Soft affinity: prefer the node that holds the most input artifacts
 func (c *Container) buildAffinity() *corev1.Affinity {
-	if !c.config.IsDaemonSetBackend() {
+	if c.config.ArtifactDaemonHostPath == "" {
 		return nil
 	}
 
@@ -1025,15 +896,9 @@ func (c *Container) buildPodLabels() map[string]string {
 	return labels
 }
 
-// buildPodAnnotations returns annotations for the pod. When the artifact
-// store PVC is backed by GCS Fuse, includes the annotation required by
-// the GKE sidecar injector webhook.
+// buildPodAnnotations returns annotations for the pod.
 func (c *Container) buildPodAnnotations() map[string]string {
-	annotations := map[string]string{}
-	if c.config.ArtifactStoreGCSFuse && c.config.ArtifactStoreClaim != "" && !c.config.IsDaemonSetBackend() && c.metadata.Type != db.ContainerTypeCheck {
-		annotations[gcsFuseAnnotationKey] = "true"
-	}
-	return annotations
+	return map[string]string{}
 }
 
 // resolveImage extracts a Kubernetes-compatible image reference from the
@@ -1216,10 +1081,11 @@ func stableCacheKey(jobID int, stepName string, cachePath string) string {
 
 // buildVolumeMounts creates K8s Volume and VolumeMount entries for
 // the container's Dir, inputs, outputs, and caches.
-// stepVolume creates a volume for a step. In DaemonSet mode, it creates a
-// hostPath volume under <hostPath>/steps/<handle>/<subdir>/. Otherwise emptyDir.
+// stepVolume creates a volume for a step. When ArtifactDaemonHostPath is set,
+// it creates a hostPath volume under <hostPath>/steps/<handle>/<subdir>/.
+// Otherwise emptyDir.
 func (c *Container) stepVolume(name, subdir string) corev1.Volume {
-	if c.config.IsDaemonSetBackend() {
+	if c.config.ArtifactDaemonHostPath != "" {
 		dirType := corev1.HostPathDirectoryOrCreate
 		return corev1.Volume{
 			Name: name,
@@ -1313,10 +1179,8 @@ func (c *Container) buildVolumeMounts() ([]corev1.Volume, []corev1.VolumeMount) 
 	cacheMode := c.config.CacheStore
 	if cacheMode == "" {
 		switch {
-		case (c.config.ArtifactStoreClaim != "" || c.config.IsDaemonSetBackend()) && len(resolvedCaches) > 0:
-			cacheMode = CacheStoreArtifact
-		case c.config.CacheVolumeClaim != "":
-			cacheMode = CacheStorePVC
+		case c.config.ArtifactDaemonHostPath != "" && len(resolvedCaches) > 0:
+			cacheMode = CacheStoreHostPath
 		case c.config.CacheHostPath != "" && c.metadata.JobID != 0:
 			cacheMode = CacheStoreHostPath
 		default:
@@ -1325,81 +1189,13 @@ func (c *Container) buildVolumeMounts() ([]corev1.Volume, []corev1.VolumeMount) 
 	}
 
 	switch cacheMode {
-	case CacheStoreArtifact:
-		// DaemonSet mode: mount caches as direct hostPath directories.
-		// No tar save/restore — warm on same node, cold on different node.
-		if c.config.IsDaemonSetBackend() {
-			dirType := corev1.HostPathDirectoryOrCreate
-			for i, cachePath := range resolvedCaches {
-				key := stableCacheKey(c.metadata.JobID, c.metadata.StepName, cachePath)
-				name := fmt.Sprintf("cache-%d", i)
-				volumes = append(volumes, corev1.Volume{
-					Name: name,
-					VolumeSource: corev1.VolumeSource{
-						HostPath: &corev1.HostPathVolumeSource{
-							Path: filepath.Join(c.config.ArtifactDaemonHostPath, "caches", key),
-							Type: &dirType,
-						},
-					},
-				})
-				mounts = append(mounts, corev1.VolumeMount{
-					Name:      name,
-					MountPath: cachePath,
-				})
-				// No cacheEntries — no tar save/restore needed.
-			}
-			break
-		}
-
-		// PVC mode: store caches as tar files on the artifact PVC. Init
-		// containers restore cached data before the task starts, and the
-		// sidecar uploads updated caches after the task completes.
-		for i, cachePath := range resolvedCaches {
-			name := fmt.Sprintf("cache-%d", i)
-			volumes = append(volumes, corev1.Volume{
-				Name: name,
-				VolumeSource: corev1.VolumeSource{
-					EmptyDir: &corev1.EmptyDirVolumeSource{},
-				},
-			})
-			mounts = append(mounts, corev1.VolumeMount{
-				Name:      name,
-				MountPath: cachePath,
-			})
-			c.cacheEntries = append(c.cacheEntries, cacheEntry{
-				volumeName:  name,
-				mountPath:   cachePath,
-				artifactKey: TaskCacheKey(c.metadata.JobID, c.metadata.StepName, cachePath),
-			})
-		}
-
-	case CacheStorePVC:
-		// Mount a dedicated cache PVC and use subPath mounts for each
-		// cache entry so data survives pod restarts.
-		volumes = append(volumes, corev1.Volume{
-			Name: cachePVCVolumeName,
-			VolumeSource: corev1.VolumeSource{
-				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-					ClaimName: c.config.CacheVolumeClaim,
-				},
-			},
-		})
-		mounts = append(mounts, corev1.VolumeMount{
-			Name:      cachePVCVolumeName,
-			MountPath: CacheBasePath,
-		})
-		for _, cachePath := range resolvedCaches {
-			key := stableCacheKey(c.metadata.JobID, c.metadata.StepName, cachePath)
-			mounts = append(mounts, corev1.VolumeMount{
-				Name:      cachePVCVolumeName,
-				MountPath: cachePath,
-				SubPath:   key,
-			})
-		}
-
 	case CacheStoreHostPath:
 		// Use hostPath volumes with stable keys so caches persist across
 		// builds on the same node.
+		basePath := c.config.CacheHostPath
+		if basePath == "" && c.config.ArtifactDaemonHostPath != "" {
+			basePath = filepath.Join(c.config.ArtifactDaemonHostPath, "caches")
+		}
 		dirType := corev1.HostPathDirectoryOrCreate
 		for i, cachePath := range resolvedCaches {
 			key := stableCacheKey(c.metadata.JobID, c.metadata.StepName, cachePath)
@@ -1408,7 +1204,7 @@ func (c *Container) buildVolumeMounts() ([]corev1.Volume, []corev1.VolumeMount) 
 				Name: name,
 				VolumeSource: corev1.VolumeSource{
 					HostPath: &corev1.HostPathVolumeSource{
-						Path: filepath.Join(c.config.CacheHostPath, key),
+						Path: filepath.Join(basePath, key),
 						Type: &dirType,
 					},
 				},

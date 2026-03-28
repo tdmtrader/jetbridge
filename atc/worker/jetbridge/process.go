@@ -1,7 +1,6 @@
 package jetbridge
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -14,7 +13,6 @@ import (
 	"time"
 
 	"code.cloudfoundry.org/lager/v3"
-	"golang.org/x/sync/errgroup"
 	"code.cloudfoundry.org/lager/v3/lagerctx"
 	"github.com/concourse/concourse/atc/metric"
 	"github.com/concourse/concourse/atc/runtime"
@@ -812,7 +810,7 @@ func (p *execProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 				fetchPodFailureContext(ctx, p.clientset, p.config.Namespace, p.podName, p.processIO.Stderr)
 				return runtime.ProcessResult{}, fmt.Errorf("uploading artifacts: %w", uploadErr)
 			}
-			p.uploadCachesToArtifactStore(ctx)
+
 			if p.container != nil {
 				p.container.SetProperty(exitStatusPropertyName, strconv.Itoa(exitCode))
 			}
@@ -831,7 +829,6 @@ func (p *execProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 		fetchPodFailureContext(ctx, p.clientset, p.config.Namespace, p.podName, p.processIO.Stderr)
 		return runtime.ProcessResult{}, fmt.Errorf("uploading artifacts: %w", err)
 	}
-	p.uploadCachesToArtifactStore(ctx)
 
 	if p.container != nil {
 		p.container.SetProperty(exitStatusPropertyName, "0")
@@ -841,289 +838,29 @@ func (p *execProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 	return runtime.ProcessResult{ExitStatus: 0}, nil
 }
 
-// streamInputs streams each input artifact into the corresponding volume
-// on the running pause pod. This must happen after waitForRunning() and
-// before the command is exec'd, so the command sees the input data.
-//
-// When ArtifactStoreClaim is configured, ALL inputs are handled by init
-// containers that extract from the artifact PVC, so streaming is skipped.
+// streamInputs is a no-op — all inputs are handled by init containers
+// that fetch from the DaemonSet hostPath.
 func (p *execProcess) streamInputs(ctx context.Context) error {
-	if p.container == nil {
-		return nil
-	}
-	// When artifact store is configured, ALL inputs are handled by init containers.
-	if p.container.hasArtifactStore() {
-		return nil
-	}
-	for _, input := range p.container.containerSpec.Inputs {
-		if input.Artifact == nil {
-			continue
-		}
-		vol := p.container.volumeForPath(input.DestinationPath)
-		if vol == nil {
-			continue
-		}
-
-		out, err := input.Artifact.StreamOut(ctx, ".", nil)
-		if err != nil {
-			return fmt.Errorf("stream out artifact %q: %w", input.Artifact.Handle(), err)
-		}
-
-		err = vol.StreamIn(ctx, ".", nil, 0, out)
-		out.Close()
-		if err != nil {
-			return fmt.Errorf("stream in to %s: %w", input.DestinationPath, err)
-		}
-	}
 	return nil
 }
 
-// uploadOutputsToArtifactStore execs tar commands in the artifact-helper
-// sidecar to upload step outputs from emptyDir to the artifact PVC.
-// Only volumes corresponding to declared outputs are uploaded — inputs
-// (already on the PVC from init containers) and the working directory
-// are skipped. Cache volumes are handled separately by uploadCachesToArtifactStore.
-// Uploads run concurrently via errgroup. Upload failures are fatal — they
-// propagate as build failures so downstream steps don't silently run with
-// missing inputs.
+// uploadOutputsToArtifactStore records artifact locations for DaemonSet mode.
+// Outputs are already on hostPath — no upload needed.
 func (p *execProcess) uploadOutputsToArtifactStore(ctx context.Context) error {
-	if p.container == nil || !p.container.hasArtifactStore() {
+	if p.container == nil || p.container.config.ArtifactDaemonHostPath == "" {
 		return nil
 	}
 
-	// DaemonSet mode: outputs are already on hostPath — no upload needed.
-	// Record artifact locations for scheduling affinity.
-	if p.container.config.IsDaemonSetBackend() {
-		nodeName := p.fetchPodNodeName(ctx)
-		logger := lagerctx.FromContext(ctx).Session("record-output-locations", lager.Data{
-			"handle":    p.container.handle,
-			"pod":       p.podName,
-			"node":      nodeName,
-			"volumes":   len(p.container.volumes),
-			"type":      string(p.container.containerSpec.Type),
-		})
-		logger.Info("recording-daemonset-artifacts")
-		p.recordOutputLocations(nodeName)
-		return nil
-	}
-
-	outputPaths := p.container.outputPaths()
-	if len(outputPaths) == 0 {
-		return nil
-	}
-
-	// Count volumes with mount paths for the span attribute.
-	var volumeCount int64
-	for _, vol := range p.container.volumes {
-		if vol.MountPath() != "" {
-			volumeCount++
-		}
-	}
-
-	ctx, span := tracing.StartSpan(ctx, "k8s.artifact.upload-outputs", tracing.Attrs{
-		"pod-name":     p.podName,
-		"volume.count": fmt.Sprintf("%d", volumeCount),
+	nodeName := p.fetchPodNodeName(ctx)
+	logger := lagerctx.FromContext(ctx).Session("record-output-locations", lager.Data{
+		"handle":    p.container.handle,
+		"pod":       p.podName,
+		"node":      nodeName,
+		"volumes":   len(p.container.volumes),
+		"type":      string(p.container.containerSpec.Type),
 	})
-	span.SetAttributes(attribute.Int64("volume.count", volumeCount))
-	var spanErr error
-	defer func() { tracing.End(span, spanErr) }()
-
-	g, gctx := errgroup.WithContext(ctx)
-
-	for _, vol := range p.container.volumes {
-		if vol.MountPath() == "" {
-			continue
-		}
-		if !outputPaths[vol.MountPath()] {
-			continue
-		}
-
-		key := ArtifactKey(vol.Handle())
-		mountPath := vol.MountPath()
-
-		g.Go(func() error {
-			if err := p.uploadArtifact(gctx, key, mountPath, "output"); err != nil {
-				return fmt.Errorf("upload artifact %s: %w", key, err)
-			}
-			return nil
-		})
-	}
-	spanErr = g.Wait()
-	return spanErr
-}
-
-// uploadCachesToArtifactStore execs tar commands in the artifact-helper
-// sidecar to save task cache directories to the artifact PVC as tar files.
-// This only runs for CacheStoreArtifact mode — cacheEntries is only populated
-// when caches are backed by the artifact PVC (see buildVolumeMounts in
-// container.go). For CacheStoreHostPath, CacheStorePVC, and CacheStoreEmptyDir,
-// cacheEntries is empty and this function is a no-op.
-// Uploads run concurrently. Cache upload failures are non-fatal — they are
-// logged but do not fail the build, since a missing cache only causes a cold
-// start on the next build.
-func (p *execProcess) uploadCachesToArtifactStore(ctx context.Context) {
-	if p.container == nil || len(p.container.cacheEntries) == 0 {
-		return
-	}
-
-	// DaemonSet mode: caches are direct hostPath mounts — no upload needed.
-	if p.container.config.IsDaemonSetBackend() {
-		return
-	}
-
-	cacheCount := int64(len(p.container.cacheEntries))
-	ctx, span := tracing.StartSpan(ctx, "k8s.artifact.upload-caches", tracing.Attrs{
-		"pod-name":    p.podName,
-		"cache.count": fmt.Sprintf("%d", cacheCount),
-	})
-	span.SetAttributes(attribute.Int64("cache.count", cacheCount))
-	var spanErr error
-	defer func() { tracing.End(span, spanErr) }()
-
-	logger := lagerctx.FromContext(ctx).Session("upload-caches")
-
-	var wg sync.WaitGroup
-	for _, entry := range p.container.cacheEntries {
-		entry := entry
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			if err := p.uploadArtifact(ctx, entry.artifactKey, entry.mountPath, "cache"); err != nil {
-				spanErr = err
-				logger.Error("failed-to-upload-cache", err, lager.Data{
-					"cache-key":  entry.artifactKey,
-					"mount-path": entry.mountPath,
-				})
-			}
-		}()
-	}
-	wg.Wait()
-}
-
-// ArtifactUploadStats holds telemetry data parsed from the two-phase upload
-// command's stdout output.
-type ArtifactUploadStats struct {
-	FileCount     int64
-	SizeBytes     int64
-	TarMillis     int64
-	TransferMillis int64
-}
-
-// ParseArtifactUploadStats parses the structured output from the upload shell
-// script. Expected format: "FILES=<n> TAR_MS=<n> SIZE=<n> TRANSFER_MS=<n>"
-func ParseArtifactUploadStats(output string) ArtifactUploadStats {
-	var stats ArtifactUploadStats
-	for _, field := range strings.Fields(output) {
-		parts := strings.SplitN(field, "=", 2)
-		if len(parts) != 2 {
-			continue
-		}
-		val, err := strconv.ParseInt(parts[1], 10, 64)
-		if err != nil {
-			continue
-		}
-		switch parts[0] {
-		case "FILES":
-			stats.FileCount = val
-		case "TAR_MS":
-			stats.TarMillis = val
-		case "SIZE":
-			stats.SizeBytes = val
-		case "TRANSFER_MS":
-			stats.TransferMillis = val
-		}
-	}
-	return stats
-}
-
-// uploadArtifact performs a two-phase artifact upload in the artifact-helper
-// sidecar: (1) tar to a temp file (measuring tar duration), (2) move to the
-// PVC (measuring transfer duration). File count, tar size, and phase timings
-// are captured as span attributes for observability.
-func (p *execProcess) uploadArtifact(ctx context.Context, key, mountPath, artifactType string) error {
-	ctx, span := tracing.StartSpan(ctx, "k8s.artifact.upload", tracing.Attrs{
-		"artifact.key":        key,
-		"artifact.type":       artifactType,
-		"volume.mount_path":   mountPath,
-	})
-	var spanErr error
-	defer func() { tracing.End(span, spanErr) }()
-
-	dest := fmt.Sprintf("%s/%s", ArtifactMountPath, key)
-	tmpFile := fmt.Sprintf("/tmp/%s", strings.ReplaceAll(key, "/", "_"))
-
-	// Two-phase upload:
-	//   Phase 1: count files, tar to /tmp (local I/O)
-	//   Phase 2: mv from /tmp to PVC (storage I/O)
-	// Timings are reported via stdout for span attribute capture.
-	// Uses /proc/uptime for millisecond-precision timing because Alpine's
-	// BusyBox date does not support %%N (nanoseconds). /proc/uptime gives
-	// centisecond precision (~10ms granularity), which is sufficient.
-	shellScript := fmt.Sprintf(`
-now_ms() { read up _ < /proc/uptime; echo "${up%%%%.*}${up#*.}0"; }
-fc=$(find %s -type f 2>/dev/null | wc -l)
-mkdir -p $(dirname %s)
-t0=$(now_ms)
-tar cf %s -C %s .
-t1=$(now_ms)
-sz=$(stat -c %%s %s 2>/dev/null || stat -f %%z %s 2>/dev/null || echo 0)
-mkdir -p $(dirname %s)
-mv %s %s
-t2=$(now_ms)
-echo "FILES=$fc TAR_MS=$((t1-t0)) SIZE=$sz TRANSFER_MS=$((t2-t1))"
-`,
-		mountPath,
-		tmpFile,
-		tmpFile, mountPath,
-		tmpFile, tmpFile,
-		dest,
-		tmpFile, dest,
-	)
-
-	var stdout bytes.Buffer
-	cmd := []string{"sh", "-c", shellScript}
-
-	purpose := "artifact-upload"
-	if artifactType == "cache" {
-		purpose = "cache-upload"
-	}
-	spanErr = p.executor.ExecInPod(
-		ctx, p.config.Namespace, p.podName,
-		artifactHelperContainerName,
-		cmd, nil, &stdout, nil, false,
-		ExecAttrs{Purpose: purpose, ArtifactKey: key, VolumeMountPath: mountPath},
-	)
-	if spanErr != nil {
-		return spanErr
-	}
-
-	stats := ParseArtifactUploadStats(stdout.String())
-
-	span.SetAttributes(
-		attribute.Int64("artifact.file_count", stats.FileCount),
-		attribute.Int64("artifact.size_bytes", stats.SizeBytes),
-		attribute.Int64("artifact.tar_duration_ms", stats.TarMillis),
-		attribute.Int64("artifact.transfer_duration_ms", stats.TransferMillis),
-	)
-
-	if stats.TarMillis > 0 {
-		span.AddEvent("artifact.tar.completed", oteltrace.WithAttributes(
-			attribute.Int64("duration_ms", stats.TarMillis),
-			attribute.Int64("size_bytes", stats.SizeBytes),
-		))
-	}
-	if stats.TransferMillis > 0 {
-		span.AddEvent("artifact.transfer.completed", oteltrace.WithAttributes(
-			attribute.Int64("duration_ms", stats.TransferMillis),
-		))
-	}
-
-	// Record OTel metrics for dashboards and alerting.
-	tarDuration := time.Duration(stats.TarMillis) * time.Millisecond
-	transferDuration := time.Duration(stats.TransferMillis) * time.Millisecond
-	totalDuration := tarDuration + transferDuration
-	metric.RecordArtifactUpload(ctx, artifactType, totalDuration, stats.SizeBytes, stats.FileCount, tarDuration, transferDuration)
-
+	logger.Info("recording-daemonset-artifacts")
+	p.recordOutputLocations(nodeName)
 	return nil
 }
 
