@@ -1,7 +1,0 @@
-{
-  "mcpServers": {
-    "forge": {
-      "url": "http://localhost:5280/mcp/sse"
-    }
-  }
-}
