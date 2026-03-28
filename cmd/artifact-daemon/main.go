@@ -60,6 +60,12 @@ func main() {
 
 	server := NewServer(logger, *storagePath)
 
+	// Scan hostPath at startup to populate registry with existing artifacts.
+	if err := server.Registry().ScanHostPath(*storagePath); err != nil {
+		logger.Error("failed-to-scan-hostpath", err)
+		// Non-fatal — daemon can still serve explicitly registered artifacts.
+	}
+
 	httpServer := &http.Server{
 		Addr:    fmt.Sprintf(":%d", *port),
 		Handler: server.Handler(),

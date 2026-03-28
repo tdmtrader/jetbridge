@@ -2,11 +2,15 @@ package main
 
 import (
 	"archive/tar"
+	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"code.cloudfoundry.org/lager/v3"
 )
@@ -16,6 +20,7 @@ import (
 type Server struct {
 	logger      lager.Logger
 	storagePath string
+	registry    *Registry
 }
 
 // NewServer creates a new artifact-daemon server.
@@ -23,7 +28,13 @@ func NewServer(logger lager.Logger, storagePath string) *Server {
 	return &Server{
 		logger:      logger,
 		storagePath: storagePath,
+		registry:    NewRegistry(logger),
 	}
+}
+
+// Registry returns the server's artifact registry.
+func (s *Server) Registry() *Registry {
+	return s.registry
 }
 
 // Handler returns the HTTP handler for the server.
@@ -34,6 +45,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /artifacts/", s.handlePutArtifact)
 	mux.HandleFunc("DELETE /artifacts/", s.handleDeleteArtifact)
 	mux.HandleFunc("HEAD /artifacts/", s.handleHeadArtifact)
+	mux.HandleFunc("POST /register", s.handleRegister)
+	mux.HandleFunc("POST /resolve", s.handleResolve)
 	return mux
 }
 
@@ -169,4 +182,144 @@ func (s *Server) handleHeadArtifact(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusOK)
+}
+
+// registerRequest is the JSON body for POST /register.
+type registerRequest struct {
+	Key       string `json:"key"`
+	LocalPath string `json:"local_path"`
+}
+
+// resolveRequest is the JSON body for POST /resolve.
+type resolveRequest struct {
+	Key  string `json:"key"`
+	Dest string `json:"dest"`
+}
+
+// resolveResponse is the JSON body returned by POST /resolve.
+type resolveResponse struct {
+	Status   string `json:"status"`
+	Source   string `json:"source"`
+	Method   string `json:"method"`
+	Duration string `json:"duration,omitempty"`
+	Error    string `json:"error,omitempty"`
+}
+
+// handleRegister accepts POST /register with a JSON body containing
+// {key, local_path} and registers the artifact in the daemon's registry.
+func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
+	var req registerRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf("invalid JSON: %v", err), http.StatusBadRequest)
+		return
+	}
+	if req.Key == "" || req.LocalPath == "" {
+		http.Error(w, "key and local_path are required", http.StatusBadRequest)
+		return
+	}
+
+	// Validate that the path exists on disk.
+	if _, err := os.Stat(req.LocalPath); err != nil {
+		if os.IsNotExist(err) {
+			s.logger.Info("register-path-not-found", lager.Data{"key": req.Key, "path": req.LocalPath})
+			http.Error(w, fmt.Sprintf("path not found: %s", req.LocalPath), http.StatusNotFound)
+			return
+		}
+		s.logger.Error("register-stat-error", err, lager.Data{"key": req.Key, "path": req.LocalPath})
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	s.registry.Register(req.Key, req.LocalPath)
+
+	s.logger.Info("registered", lager.Data{"key": req.Key, "path": req.LocalPath})
+	w.WriteHeader(http.StatusCreated)
+}
+
+// handleResolve accepts POST /resolve with a JSON body containing {key, dest}.
+// It looks up the artifact by key and copies it to the destination path.
+//
+// Resolution order:
+//  1. Check local registry for an explicit registration
+//  2. Fall back to filesystem scan (check if the key maps to a steps/ directory)
+//  3. (Phase 2: query peer daemons for cross-node resolution)
+func (s *Server) handleResolve(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+
+	var req resolveRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf("invalid JSON: %v", err), http.StatusBadRequest)
+		return
+	}
+	if req.Key == "" || req.Dest == "" {
+		http.Error(w, "key and dest are required", http.StatusBadRequest)
+		return
+	}
+
+	logger := s.logger.Session("resolve", lager.Data{"key": req.Key, "dest": req.Dest})
+
+	// Step 1: Check registry for explicit registration.
+	sourcePath, found := s.registry.Lookup(req.Key)
+	if found {
+		if err := s.copyArtifact(sourcePath, req.Dest); err != nil {
+			logger.Error("copy-failed", err, lager.Data{"source": sourcePath})
+			resp := resolveResponse{Status: "error", Source: sourcePath, Method: "local", Error: err.Error()}
+			writeJSON(w, http.StatusInternalServerError, resp)
+			return
+		}
+		duration := time.Since(start)
+		logger.Info("resolved", lager.Data{"method": "registry", "source": sourcePath, "duration": duration.String()})
+		resp := resolveResponse{Status: "ok", Source: sourcePath, Method: "registry", Duration: duration.String()}
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+
+	// Step 2: Fallback — check if key maps to a steps/ directory on disk.
+	// This handles artifacts from previous builds that exist on disk but
+	// weren't explicitly registered (e.g., after daemon restart).
+	stepsPath := filepath.Join(s.storagePath, "artifacts", "steps", req.Key)
+	if info, err := os.Stat(stepsPath); err == nil && info.IsDir() {
+		// Auto-register for future lookups.
+		s.registry.Register(req.Key, stepsPath)
+
+		if err := s.copyArtifact(stepsPath, req.Dest); err != nil {
+			logger.Error("copy-failed", err, lager.Data{"source": stepsPath})
+			resp := resolveResponse{Status: "error", Source: stepsPath, Method: "filesystem", Error: err.Error()}
+			writeJSON(w, http.StatusInternalServerError, resp)
+			return
+		}
+		duration := time.Since(start)
+		logger.Info("resolved", lager.Data{"method": "filesystem", "source": stepsPath, "duration": duration.String()})
+		resp := resolveResponse{Status: "ok", Source: stepsPath, Method: "filesystem", Duration: duration.String()}
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+
+	// Step 3: Not found locally. Phase 2 will add peer discovery here.
+	duration := time.Since(start)
+	logger.Info("not-found", lager.Data{"duration": duration.String()})
+	resp := resolveResponse{Status: "not_found", Method: "local", Duration: duration.String(), Error: fmt.Sprintf("artifact %q not found on this node", req.Key)}
+	writeJSON(w, http.StatusNotFound, resp)
+}
+
+// copyArtifact copies the contents of src directory to dest using cp -a.
+// The destination directory is created if it doesn't exist.
+func (s *Server) copyArtifact(src, dest string) error {
+	if err := os.MkdirAll(dest, 0755); err != nil {
+		return fmt.Errorf("create dest dir: %w", err)
+	}
+
+	// Use cp -a for atomic, permission-preserving copy.
+	// The trailing "/." ensures we copy contents, not the directory itself.
+	cmd := exec.Command("cp", "-a", src+"/.", dest+"/")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("cp -a %s/. %s/: %w (output: %s)", src, dest, err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
+func writeJSON(w http.ResponseWriter, status int, v interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(v)
 }
