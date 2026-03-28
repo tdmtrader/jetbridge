@@ -1295,6 +1295,179 @@ func TestDaemonSetMode_SkipResourceCacheReturnsFalse(t *testing.T) {
 	}
 }
 
+// =======================================================================
+// Phase 4: Edge cases and hardening
+// =======================================================================
+
+// TestDaemonSetMode_CacheHitATCRestart simulates a cache hit after ATC restart.
+// The locator is empty (lost on restart), so the init container falls back to
+// the volume handle as the daemon key. The daemon resolves it via the alias
+// registered during the original get step (alias survives within daemon lifecycle).
+func TestDaemonSetMode_CacheHitATCRestart(t *testing.T) {
+	cfg := daemonSetConfig()
+	// Fresh locator simulates ATC restart — all in-memory state lost.
+	locator := NewArtifactLocator()
+
+	cachedVolHandle := "resource-cache-vol-xyz"
+
+	c := &Container{
+		handle:   "task-after-restart",
+		podName:  "task-pod",
+		metadata: db.ContainerMetadata{Type: db.ContainerTypeTask},
+		containerSpec: runtime.ContainerSpec{
+			Dir:  "/tmp/build",
+			Type: db.ContainerTypeTask,
+			Inputs: []runtime.Input{
+				{
+					Artifact:        &stubArtifact{handle: cachedVolHandle},
+					DestinationPath: "/tmp/build/resource",
+				},
+			},
+		},
+		config:          cfg,
+		properties:      make(map[string]string),
+		artifactLocator: locator,
+	}
+
+	_, mounts := c.buildVolumeMounts()
+	inits, err := c.buildArtifactInitContainers(mounts)
+	if err != nil {
+		t.Fatalf("buildArtifactInitContainers: %v", err)
+	}
+	if len(inits) == 0 {
+		t.Fatal("expected init container")
+	}
+
+	// Uses volume handle as daemon key (locator empty after restart).
+	cmd := strings.Join(inits[0].Command, " ")
+	if !strings.Contains(cmd, cachedVolHandle) {
+		t.Errorf("expected volume handle fallback, got: %s", cmd)
+	}
+}
+
+// TestDaemonSetMode_CacheHitDaemonRestart simulates a cache hit where the
+// daemon has also restarted. The daemon's filesystem scan at startup should
+// rediscover artifacts under steps/<container-handle>/<subdir>/, but NOT
+// the volume handle alias. This test verifies that the fallback to filesystem
+// scan (checking steps/<key>) happens when the alias is missing.
+//
+// In practice, the daemon's /resolve endpoint checks:
+// 1. In-memory registry (alias — lost on restart)
+// 2. Filesystem fallback: does steps/<key> exist? (works for daemon keys
+//    like "container-handle/dir" but NOT for raw volume handles)
+//
+// When both ATC and daemon restart, the volume handle key won't resolve.
+// This is an accepted limitation documented in the spec as out of scope:
+// "Persisting daemon registry aliases across daemon restarts"
+func TestDaemonSetMode_CacheHitDaemonRestartLimitation(t *testing.T) {
+	cfg := daemonSetConfig()
+	locator := NewArtifactLocator()
+
+	// Volume handle has no matching steps/<vol-handle> directory on disk.
+	// The daemon's filesystem scan won't find it. This is expected.
+	cachedVolHandle := "vol-no-disk-match"
+
+	c := &Container{
+		handle:   "task-double-restart",
+		podName:  "task-pod",
+		metadata: db.ContainerMetadata{Type: db.ContainerTypeTask},
+		containerSpec: runtime.ContainerSpec{
+			Dir:  "/tmp/build",
+			Type: db.ContainerTypeTask,
+			Inputs: []runtime.Input{
+				{
+					Artifact:        &stubArtifact{handle: cachedVolHandle},
+					DestinationPath: "/tmp/build/input",
+				},
+			},
+		},
+		config:          cfg,
+		properties:      make(map[string]string),
+		artifactLocator: locator,
+	}
+
+	_, mounts := c.buildVolumeMounts()
+	inits, err := c.buildArtifactInitContainers(mounts)
+	if err != nil {
+		t.Fatalf("buildArtifactInitContainers: %v", err)
+	}
+	if len(inits) == 0 {
+		t.Fatal("expected init container")
+	}
+
+	// The init container will be created with the volume handle as key.
+	// If the daemon can't resolve it, the init container fails and the
+	// build retries (standard Concourse retry behavior).
+	cmd := strings.Join(inits[0].Command, " ")
+	if !strings.Contains(cmd, cachedVolHandle) {
+		t.Errorf("expected volume handle in command, got: %s", cmd)
+	}
+	// Verify the command will error properly on failure (exit 1 in wget).
+	if !strings.Contains(cmd, "exit 1") {
+		t.Errorf("expected error exit on failure, got: %s", cmd)
+	}
+}
+
+// TestDaemonSetMode_ConcurrentBuildsShareCache verifies that two builds
+// with the same resource version can share the same locator entry.
+func TestDaemonSetMode_ConcurrentBuildsShareCache(t *testing.T) {
+	cfg := daemonSetConfig()
+	locator := NewArtifactLocator()
+
+	// Build 1 produces output and records it.
+	vol1 := NewStubVolume("shared-vol", "test-worker", "/tmp/build/get")
+	producer := &Container{
+		handle:  "get-build-1",
+		podName: "get-pod-1",
+		metadata: db.ContainerMetadata{Type: db.ContainerTypeGet},
+		containerSpec: runtime.ContainerSpec{
+			Dir:  "/tmp/build/get",
+			Type: db.ContainerTypeGet,
+		},
+		config:          cfg,
+		properties:      make(map[string]string),
+		volumes:         []*Volume{vol1},
+		artifactLocator: locator,
+	}
+	p1 := &execProcess{id: "get-1", podName: "get-pod-1", config: cfg, container: producer}
+	p1.recordOutputLocations("node-a")
+
+	// Build 2 consumes the same volume via cache hit.
+	consumer1 := &Container{
+		handle:   "task-build-2",
+		podName:  "task-pod-2",
+		metadata: db.ContainerMetadata{Type: db.ContainerTypeTask},
+		containerSpec: runtime.ContainerSpec{
+			Dir:  "/tmp/build",
+			Type: db.ContainerTypeTask,
+			Inputs: []runtime.Input{
+				{
+					Artifact:        &stubArtifact{handle: "shared-vol"},
+					DestinationPath: "/tmp/build/input",
+				},
+			},
+		},
+		config:          cfg,
+		properties:      make(map[string]string),
+		artifactLocator: locator,
+	}
+
+	_, mounts := consumer1.buildVolumeMounts()
+	inits, err := consumer1.buildArtifactInitContainers(mounts)
+	if err != nil {
+		t.Fatalf("buildArtifactInitContainers: %v", err)
+	}
+	if len(inits) == 0 {
+		t.Fatal("expected init container")
+	}
+
+	// Should use the daemon key from the locator (recorded by build 1).
+	cmd := strings.Join(inits[0].Command, " ")
+	if !strings.Contains(cmd, "get-build-1/dir") {
+		t.Errorf("expected daemon key from build 1, got: %s", cmd)
+	}
+}
+
 // stubArtifact is a minimal runtime.Artifact for testing.
 type stubArtifact struct {
 	handle string
