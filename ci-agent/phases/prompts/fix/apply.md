@@ -8,12 +8,12 @@ For each proven issue in the review:
 2. Read the proving test that demonstrates the defect
 3. Apply a minimal fix so the proving test passes
 4. Run the proving test to verify the fix works
-5. Run the full test suite (`{{.Env.test_command}}`) to check for regressions
+5. Run the full test suite (`{{.Env.test_cmd}}`) to check for regressions
 6. If no regressions, commit with message: `fix(<category>): <title> [<issue-id>]`
 7. If regressions occur, revert the fix and skip this issue
 
-{{if .Env.fix_branch}}
-Create a branch named `{{.Env.fix_branch}}` before starting.
+{{if .Env.branch_name}}
+Create a branch named `{{.Env.branch_name}}` before starting.
 {{end}}
 
 Rules:

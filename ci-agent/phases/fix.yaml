@@ -9,11 +9,11 @@ env:
   output_dir:
     var: OUTPUT_DIR
     default: fix-report
-  test_command:
-    var: TEST_COMMAND
+  test_cmd:
+    var: TEST_CMD
     default: "go test ./..."
-  fix_branch:
-    var: FIX_BRANCH
+  branch_name:
+    var: BRANCH_NAME
     default: ""
 mcp:
   - git
@@ -23,7 +23,7 @@ steps:
   - name: fix-issues
     template: prompts/fix/apply.md
     output_schema: schemas/fix_output.json
-    verify_cmd: "${TEST_COMMAND:-go test ./...}"
+    verify_cmd: "${TEST_CMD:-go test ./...}"
     artifacts:
       - name: fix-report
         path: fix-report.json
