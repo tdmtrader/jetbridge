@@ -21,6 +21,7 @@ type Server struct {
 	logger      lager.Logger
 	storagePath string
 	registry    *Registry
+	peers       *PeerResolver
 }
 
 // NewServer creates a new artifact-daemon server.
@@ -35,6 +36,12 @@ func NewServer(logger lager.Logger, storagePath string) *Server {
 // Registry returns the server's artifact registry.
 func (s *Server) Registry() *Registry {
 	return s.registry
+}
+
+// SetPeerResolver configures the peer resolver for cross-node artifact
+// resolution. When nil, /resolve only checks local storage.
+func (s *Server) SetPeerResolver(peers *PeerResolver) {
+	s.peers = peers
 }
 
 // Handler returns the HTTP handler for the server.
@@ -295,10 +302,28 @@ func (s *Server) handleResolve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Step 3: Not found locally. Phase 2 will add peer discovery here.
+	// Step 3: Query peer daemons for cross-node resolution.
+	if s.peers != nil {
+		peerIP, found := s.peers.Probe(r.Context(), req.Key)
+		if found {
+			if err := s.peers.Fetch(r.Context(), peerIP, req.Key, req.Dest); err != nil {
+				logger.Error("peer-fetch-failed", err, lager.Data{"peer": peerIP})
+				resp := resolveResponse{Status: "error", Source: peerIP, Method: "peer", Error: err.Error()}
+				writeJSON(w, http.StatusInternalServerError, resp)
+				return
+			}
+			duration := time.Since(start)
+			logger.Info("resolved", lager.Data{"method": "peer", "peer": peerIP, "duration": duration.String()})
+			resp := resolveResponse{Status: "ok", Source: peerIP, Method: "peer", Duration: duration.String()}
+			writeJSON(w, http.StatusOK, resp)
+			return
+		}
+	}
+
+	// Step 4: Not found anywhere.
 	duration := time.Since(start)
 	logger.Info("not-found", lager.Data{"duration": duration.String()})
-	resp := resolveResponse{Status: "not_found", Method: "local", Duration: duration.String(), Error: fmt.Sprintf("artifact %q not found on this node", req.Key)}
+	resp := resolveResponse{Status: "not_found", Method: "exhausted", Duration: duration.String(), Error: fmt.Sprintf("artifact %q not found on this node or any peer", req.Key)}
 	writeJSON(w, http.StatusNotFound, resp)
 }
 

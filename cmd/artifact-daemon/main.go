@@ -66,6 +66,20 @@ func main() {
 		// Non-fatal — daemon can still serve explicitly registered artifacts.
 	}
 
+	// Set up peer resolver for cross-node artifact resolution.
+	if *nodeName != "" {
+		k8sClientForPeers, err := buildK8sClient()
+		if err != nil {
+			logger.Error("failed-to-create-peer-k8s-client", err)
+			// Non-fatal — cross-node resolution won't work but local still does.
+		} else {
+			podIP := os.Getenv("POD_IP")
+			peers := NewPeerResolver(logger, k8sClientForPeers, *namespace, "artifact-daemon", *port, podIP)
+			server.SetPeerResolver(peers)
+			logger.Info("peer-resolver-configured", lager.Data{"service": "artifact-daemon", "my-ip": podIP})
+		}
+	}
+
 	httpServer := &http.Server{
 		Addr:    fmt.Sprintf(":%d", *port),
 		Handler: server.Handler(),
