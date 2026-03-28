@@ -1,4 +1,5 @@
 # Binaries (in repo root only, not cmd/ source dirs)
+/ci-agent
 /ci-agent-review
 /ci-agent-fix
 /ci-agent-plan
