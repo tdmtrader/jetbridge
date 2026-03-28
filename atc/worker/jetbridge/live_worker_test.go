@@ -6,6 +6,8 @@ package jetbridge_test
 import (
 	"bytes"
 	"context"
+	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -20,10 +22,32 @@ import (
 // setupLiveWorker creates a Worker backed by a real K8s clientset with
 // fake DB components (we only need the DB fakes to satisfy the interface;
 // actual pod creation goes through the real K8s API).
+//
+// DaemonSet artifact config is read from environment variables when available:
+//   - ARTIFACT_DAEMON_HOST_PATH (e.g. /var/concourse/artifacts)
+//   - ARTIFACT_DAEMON_PORT (default 7780)
+//   - ARTIFACT_DAEMON_SERVICE (default artifact-daemon)
+//   - ARTIFACT_HELPER_IMAGE (default alpine:latest)
 func setupLiveWorker(t *testing.T, handle string) (*jetbridge.Worker, runtime.BuildStepDelegate) {
 	t.Helper()
 
 	clientset, cfg := kubeClient(t)
+
+	// Configure DaemonSet artifact backend from env vars if available.
+	if hp := os.Getenv("ARTIFACT_DAEMON_HOST_PATH"); hp != "" {
+		cfg.ArtifactDaemonHostPath = hp
+	}
+	if port := os.Getenv("ARTIFACT_DAEMON_PORT"); port != "" {
+		if p, err := strconv.Atoi(port); err == nil {
+			cfg.ArtifactDaemonPort = p
+		}
+	}
+	if svc := os.Getenv("ARTIFACT_DAEMON_SERVICE"); svc != "" {
+		cfg.ArtifactDaemonService = svc
+	}
+	if img := os.Getenv("ARTIFACT_HELPER_IMAGE"); img != "" {
+		cfg.ArtifactHelperImage = img
+	}
 
 	restConfig, err := jetbridge.RestConfig(*cfg)
 	if err != nil {
@@ -40,6 +64,11 @@ func setupLiveWorker(t *testing.T, handle string) (*jetbridge.Worker, runtime.Bu
 	worker := jetbridge.NewWorker(fakeDBWorker, clientset, *cfg)
 	executor := jetbridge.NewSPDYExecutor(clientset, restConfig)
 	worker.SetExecutor(executor)
+
+	// Set up artifact locator for DaemonSet mode volume passing.
+	if cfg.ArtifactDaemonHostPath != "" {
+		worker.SetArtifactLocator(jetbridge.NewArtifactLocator())
+	}
 
 	return worker, &noopDelegate{}
 }
