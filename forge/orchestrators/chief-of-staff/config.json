@@ -1,0 +1,11 @@
+{
+  "id": "chief-of-staff",
+  "name": "Chief of Staff",
+  "description": "The default orchestrator — manages projects, delegates to workers, and coordinates across tracks.",
+  "scope": "global",
+  "channels": [],
+  "active": true,
+  "isDefault": true,
+  "createdAt": "2026-03-25T02:45:31.387Z",
+  "updatedAt": "2026-03-25T02:45:31.387Z"
+}

@@ -1,0 +1,24 @@
+{
+  "trackId": "scratch_mount_cache_strategies_20260325",
+  "type": "feature",
+  "status": "archived",
+  "description": "Scratch Mount & Cache strategies",
+  "createdAt": "2026-03-26T00:38:38.120Z",
+  "updatedAt": "2026-03-27T02:27:15.534Z",
+  "sessions": [
+    {
+      "slotIndex": 0,
+      "engineType": "claude",
+      "aiSessionId": "a87510e1-7921-40d4-8761-d1c42d6bad9d",
+      "updatedAt": "2026-03-27T02:27:15.465Z"
+    }
+  ],
+  "sessionHistory": [
+    {
+      "slotIndex": 0,
+      "engineType": "claude",
+      "aiSessionId": "a87510e1-7921-40d4-8761-d1c42d6bad9d",
+      "updatedAt": "2026-03-26T00:39:03.025Z"
+    }
+  ]
+}

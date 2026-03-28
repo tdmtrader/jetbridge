@@ -1,0 +1,24 @@
+{
+  "trackId": "k8s_runtime_telemetry_detail_20260326",
+  "type": "feature",
+  "status": "archived",
+  "description": "K8s runtime telemetry detail",
+  "createdAt": "2026-03-26T12:00:00.000Z",
+  "updatedAt": "2026-03-27T16:03:08.396Z",
+  "sessions": [
+    {
+      "slotIndex": 0,
+      "engineType": "claude",
+      "aiSessionId": "fd0b5daf-c265-4861-95cb-44ac66e0bc2b",
+      "updatedAt": "2026-03-27T02:27:39.522Z"
+    }
+  ],
+  "sessionHistory": [
+    {
+      "slotIndex": 0,
+      "engineType": "claude",
+      "aiSessionId": "fd0b5daf-c265-4861-95cb-44ac66e0bc2b",
+      "updatedAt": "2026-03-27T02:27:39.522Z"
+    }
+  ]
+}

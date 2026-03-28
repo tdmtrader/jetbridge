@@ -377,11 +377,8 @@ func (step *GetStep) retrieveFromCacheOrPerformGet(
 	//     * If lock acquisition succeeded, then run the get script and
 	//       initialize the volume as a resource cache.
 	attemptGet := func() (runtime.Volume, bool, resource.VersionResult, runtime.ProcessResult, bool, error) {
-		// DaemonSet mode: skip resource cache lookup. Cached volumes
-		// reference DB handles that have no corresponding hostPath
-		// directory, so the consuming step's init container cannot
-		// locate the artifact. Always perform a fresh get so that
-		// recordOutputLocations populates the ArtifactLocator.
+		// Workers may opt out of resource caching (e.g., when cached
+		// volumes cannot be served by the artifact backend).
 		skipCache := false
 		if sc, ok := worker.(interface{ SkipResourceCache() bool }); ok {
 			skipCache = sc.SkipResourceCache()

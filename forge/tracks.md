@@ -8,7 +8,7 @@ _None_
 
 ## Completed / Archived Tracks
 
-### [x] Track: Finish Setup (Conductor Migration)
+### [~] Track: Finish Setup (Conductor Migration)
 _Link: [./archive/finish_setup_20260303/](./archive/finish_setup_20260303/)_
 
 ---
@@ -375,5 +375,10 @@ _Link: [./tracks/release_versioning_for_fly_and_jetbridge_image_20260327/](./tra
 
 ### [ ] Track: deprecate old agent paths and update tests
 _Link: [./tracks/deprecate_old_agent_paths_and_update_tests_20260327/](./tracks/deprecate_old_agent_paths_and_update_tests_20260327/)_
+
+---
+
+### [ ] Track: Daemon-mediated artifact resolution
+_Link: [./tracks/daemon_mediated_artifact_resolution_20260327/](./tracks/daemon_mediated_artifact_resolution_20260327/)_
 
 ---

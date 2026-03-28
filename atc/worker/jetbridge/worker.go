@@ -60,13 +60,12 @@ func (w *Worker) Name() string {
 	return w.dbWorker.Name()
 }
 
-// SkipResourceCache always returns true for the K8s runtime. Cached volumes
-// reference DB handles with no corresponding hostPath directory, so consuming
-// steps cannot locate them via the ArtifactLocator. Skipping the cache forces
-// a fresh get, which writes outputs to hostPath and records the location in
-// the locator.
+// SkipResourceCache returns false — with daemon-mediated artifact resolution,
+// cached resource volumes can be served by the daemon. The daemon's filesystem
+// scan discovers cached artifacts on disk without requiring an ArtifactLocator
+// entry.
 func (w *Worker) SkipResourceCache() bool {
-	return true
+	return false
 }
 
 func (w *Worker) FindOrCreateContainer(

@@ -495,20 +495,24 @@ func (c *Container) buildArtifactInitContainers(mainMounts []corev1.VolumeMount)
 
 		key := ArtifactKey(input.Artifact.Handle())
 
-		loc, hasLoc := c.artifactLocate(key)
-		if !hasLoc {
-			return nil, fmt.Errorf("artifact location unknown for key %s (input %q): producing step may not have recorded its output", key, input.DestinationPath)
+		// Look up the daemon key from the locator. For fresh get/task outputs,
+		// recordOutputLocations stored "<container-handle>/<subdir>" as HostDir.
+		// For cached resource volumes (cache hit, no pod ran), the locator may
+		// not have an entry — fall back to the volume handle as the daemon key.
+		// The daemon's filesystem scan can still find it on disk.
+		daemonKey := key // fallback: use volume handle directly
+		if loc, hasLoc := c.artifactLocate(key); hasLoc {
+			daemonKey = loc.HostDir
 		}
 
-		// The daemon key (loc.HostDir) is "<container-handle>/<subdir>" which
-		// maps to steps/<key> on the daemon's filesystem. The dest is the
+		// The daemon key maps to steps/<key> on the daemon's filesystem. The dest is the
 		// host path of this init container's input volume.
 		hostDestPath := filepath.Join(c.config.ArtifactDaemonHostPath, "steps", c.handle, fmt.Sprintf("input-%d", i))
 
 		initContainer := corev1.Container{
 			Name:    fmt.Sprintf("fetch-input-%d", i),
 			Image:   helperImage,
-			Command: c.daemonResolveCommand(loc.HostDir, hostDestPath),
+			Command: c.daemonResolveCommand(daemonKey, hostDestPath),
 			VolumeMounts: []corev1.VolumeMount{
 				{Name: c.artifactVolumeName(), MountPath: ArtifactMountPath, ReadOnly: true},
 				{Name: volumeName, MountPath: input.DestinationPath},

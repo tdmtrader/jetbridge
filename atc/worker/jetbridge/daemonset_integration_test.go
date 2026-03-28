@@ -617,10 +617,10 @@ func TestDaemonSetMode_InitContainerUsesDaemonResolve(t *testing.T) {
 
 // --- Phase: Fail-fast tests ---
 
-// TestDaemonSetMode_MissingArtifactLocationReturnsError verifies that
-// buildArtifactInitContainers returns an error when the artifact locator
-// does not have the key for a DaemonSet input.
-func TestDaemonSetMode_MissingArtifactLocationReturnsError(t *testing.T) {
+// TestDaemonSetMode_MissingLocatorFallsBackToVolumeHandle verifies that
+// buildArtifactInitContainers uses the volume handle as daemon key when
+// the locator has no entry (e.g., resource cache hit).
+func TestDaemonSetMode_MissingLocatorFallsBackToVolumeHandle(t *testing.T) {
 	cfg := daemonSetConfig()
 	locator := NewArtifactLocator() // empty — nothing recorded
 
@@ -633,7 +633,7 @@ func TestDaemonSetMode_MissingArtifactLocationReturnsError(t *testing.T) {
 			Type: db.ContainerTypeTask,
 			Inputs: []runtime.Input{
 				{
-					Artifact:        &stubArtifact{handle: "missing-vol"},
+					Artifact:        &stubArtifact{handle: "cached-vol"},
 					DestinationPath: "/tmp/build/input",
 				},
 			},
@@ -644,12 +644,18 @@ func TestDaemonSetMode_MissingArtifactLocationReturnsError(t *testing.T) {
 	}
 
 	_, mounts := c.buildVolumeMounts()
-	_, err := c.buildArtifactInitContainers(mounts)
-	if err == nil {
-		t.Fatal("expected error for missing artifact location, got nil")
+	inits, err := c.buildArtifactInitContainers(mounts)
+	if err != nil {
+		t.Fatalf("expected no error (graceful fallback), got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "artifact location unknown") {
-		t.Errorf("expected error about unknown artifact location, got: %s", err)
+	if len(inits) == 0 {
+		t.Fatal("expected init container")
+	}
+
+	// The init container should use the volume handle as the daemon key.
+	cmd := strings.Join(inits[0].Command, " ")
+	if !strings.Contains(cmd, "cached-vol") {
+		t.Errorf("expected init container to use volume handle as key, got: %s", cmd)
 	}
 }
 

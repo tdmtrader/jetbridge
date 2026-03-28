@@ -1,0 +1,8 @@
+{
+  "trackId": "fix_binary_version_mismatch_in_ci_pipeline_20260327",
+  "type": "bugfix",
+  "status": "completed",
+  "description": "fix binary version mismatch in CI pipeline",
+  "createdAt": "2026-03-27T17:36:14.530Z",
+  "updatedAt": "2026-03-27T18:39:18.862Z"
+}

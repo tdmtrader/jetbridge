@@ -1,7 +1,7 @@
 {
   "mcpServers": {
     "forge": {
-      "url": "http://localhost:5280/mcp/sse?projectPath=%2FUsers%2Ftdmtrader%2Fconcourse%2Fconcourse"
+      "url": "http://localhost:5280/mcp/sse"
     }
   }
 }
