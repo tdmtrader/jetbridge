@@ -11,6 +11,9 @@ import (
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/runtime"
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes/fake"
 )
 
 // TestDaemonSetMode_PodHasHostPathVolume verifies that in DaemonSet mode,
@@ -788,6 +791,136 @@ func TestDaemonSetMode_RecordAndLocateRoundTrip(t *testing.T) {
 		t.Error("expected SOURCE_NODE=node-a env var")
 	}
 }
+
+// --- EndpointSlice-based daemon IP resolution tests ---
+
+// TestDaemonSetMode_ResolveDaemonPodIP verifies that resolveDaemonPodIP
+// looks up the artifact-daemon pod IP for a given node from EndpointSlices.
+func TestDaemonSetMode_ResolveDaemonPodIP(t *testing.T) {
+	cfg := daemonSetConfig()
+
+	// Create a fake clientset with an EndpointSlice for the artifact-daemon service.
+	endpointSlice := &discoveryv1.EndpointSlice{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "artifact-daemon-abc",
+			Namespace: "test-ns",
+			Labels: map[string]string{
+				discoveryv1.LabelServiceName: "artifact-daemon",
+			},
+		},
+		Endpoints: []discoveryv1.Endpoint{
+			{
+				Addresses: []string{"10.0.1.5"},
+				NodeName:  strPtr("node-a"),
+			},
+			{
+				Addresses: []string{"10.0.2.8"},
+				NodeName:  strPtr("node-b"),
+			},
+		},
+	}
+
+	clientset := fake.NewSimpleClientset(endpointSlice)
+
+	c := &Container{
+		handle:    "test",
+		config:    cfg,
+		clientset: clientset,
+	}
+
+	ip := c.resolveDaemonPodIP("node-a")
+	if ip != "10.0.1.5" {
+		t.Errorf("expected 10.0.1.5 for node-a, got %q", ip)
+	}
+
+	ip = c.resolveDaemonPodIP("node-b")
+	if ip != "10.0.2.8" {
+		t.Errorf("expected 10.0.2.8 for node-b, got %q", ip)
+	}
+
+	ip = c.resolveDaemonPodIP("node-c")
+	if ip != "" {
+		t.Errorf("expected empty for unknown node-c, got %q", ip)
+	}
+}
+
+// TestDaemonSetMode_RemoteFetchUsesDaemonIP verifies that when the source
+// is on a different node, the init container gets SOURCE_DAEMON_IP and the
+// fetch script uses it instead of headless service DNS.
+func TestDaemonSetMode_RemoteFetchUsesDaemonIP(t *testing.T) {
+	cfg := daemonSetConfig()
+	locator := NewArtifactLocator()
+	locator.Record(ArtifactKey("remote-vol"), "node-b", "/artifacts/steps/source-handle/out")
+
+	endpointSlice := &discoveryv1.EndpointSlice{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "artifact-daemon-abc",
+			Namespace: "test-ns",
+			Labels: map[string]string{
+				discoveryv1.LabelServiceName: "artifact-daemon",
+			},
+		},
+		Endpoints: []discoveryv1.Endpoint{
+			{
+				Addresses: []string{"10.0.2.8"},
+				NodeName:  strPtr("node-b"),
+			},
+		},
+	}
+
+	clientset := fake.NewSimpleClientset(endpointSlice)
+
+	c := &Container{
+		handle:   "consumer",
+		podName:  "test-pod",
+		metadata: db.ContainerMetadata{Type: db.ContainerTypeTask},
+		containerSpec: runtime.ContainerSpec{
+			Dir:  "/tmp/build",
+			Type: db.ContainerTypeTask,
+			Inputs: []runtime.Input{
+				{
+					Artifact:        &stubArtifact{handle: "remote-vol"},
+					DestinationPath: "/tmp/build/input",
+				},
+			},
+		},
+		config:          cfg,
+		properties:      make(map[string]string),
+		artifactLocator: locator,
+		clientset:       clientset,
+	}
+
+	_, mounts := c.buildVolumeMounts()
+	inits, err := c.buildArtifactInitContainers(mounts)
+	if err != nil {
+		t.Fatalf("buildArtifactInitContainers: %v", err)
+	}
+	if len(inits) == 0 {
+		t.Fatal("expected at least one init container")
+	}
+
+	// Check for SOURCE_DAEMON_IP env var
+	hasDaemonIP := false
+	for _, env := range inits[0].Env {
+		if env.Name == "SOURCE_DAEMON_IP" && env.Value == "10.0.2.8" {
+			hasDaemonIP = true
+		}
+	}
+	if !hasDaemonIP {
+		t.Error("expected SOURCE_DAEMON_IP=10.0.2.8 env var")
+	}
+
+	// Fetch script should use SOURCE_DAEMON_IP, not headless service DNS
+	cmd := strings.Join(inits[0].Command, " ")
+	if !strings.Contains(cmd, "SOURCE_DAEMON_IP") {
+		t.Errorf("expected fetch script to reference SOURCE_DAEMON_IP, got: %s", cmd)
+	}
+	if strings.Contains(cmd, ".svc.cluster.local") {
+		t.Errorf("fetch script should NOT use headless service DNS, got: %s", cmd)
+	}
+}
+
+func strPtr(s string) *string { return &s }
 
 // stubArtifact is a minimal runtime.Artifact for testing.
 type stubArtifact struct {
