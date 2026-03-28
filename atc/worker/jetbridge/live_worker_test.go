@@ -28,7 +28,11 @@ import (
 //   - ARTIFACT_DAEMON_PORT (default 7780)
 //   - ARTIFACT_DAEMON_SERVICE (default artifact-daemon)
 //   - ARTIFACT_HELPER_IMAGE (default alpine:latest)
-func setupLiveWorker(t *testing.T, handle string) (*jetbridge.Worker, runtime.BuildStepDelegate) {
+// setupLiveWorkerWithLocator creates a Worker backed by a real K8s clientset.
+// If locator is non-nil, it is shared across workers (simulating production
+// behavior where a single worker serves all steps in a build). If nil and
+// DaemonSet mode is configured, a new locator is created.
+func setupLiveWorkerWithLocator(t *testing.T, handle string, locator *jetbridge.ArtifactLocator) (*jetbridge.Worker, runtime.BuildStepDelegate, *jetbridge.ArtifactLocator) {
 	t.Helper()
 
 	clientset, cfg := kubeClient(t)
@@ -66,11 +70,20 @@ func setupLiveWorker(t *testing.T, handle string) (*jetbridge.Worker, runtime.Bu
 	worker.SetExecutor(executor)
 
 	// Set up artifact locator for DaemonSet mode volume passing.
+	// Share a single locator across all steps in a build (matches production behavior).
 	if cfg.ArtifactDaemonHostPath != "" {
-		worker.SetArtifactLocator(jetbridge.NewArtifactLocator())
+		if locator == nil {
+			locator = jetbridge.NewArtifactLocator()
+		}
+		worker.SetArtifactLocator(locator)
 	}
 
-	return worker, &noopDelegate{}
+	return worker, &noopDelegate{}, locator
+}
+
+func setupLiveWorker(t *testing.T, handle string) (*jetbridge.Worker, runtime.BuildStepDelegate) {
+	w, d, _ := setupLiveWorkerWithLocator(t, handle, nil)
+	return w, d
 }
 
 // TestLiveWorkerTaskExecution exercises the full Worker → Container → Process

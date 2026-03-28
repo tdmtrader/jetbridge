@@ -25,7 +25,7 @@ func TestLiveVolumePassingGetToTask(t *testing.T) {
 
 	// --- Step 1: Simulate a "get" step that produces output ---
 	getHandle := "live-vp-get-" + ts
-	getWorker, getDelegate := setupLiveWorker(t, getHandle)
+	getWorker, getDelegate, locator := setupLiveWorkerWithLocator(t, getHandle, nil)
 
 	getContainer, getMounts, err := getWorker.FindOrCreateContainer(
 		ctx,
@@ -76,8 +76,9 @@ func TestLiveVolumePassingGetToTask(t *testing.T) {
 	t.Logf("get output volume: handle=%s source=%s", getOutputVolume.Handle(), getOutputVolume.Source())
 
 	// --- Step 2: Simulate a "task" step that receives the get output as input ---
+	// Share the locator so the task can find the get step's output location.
 	taskHandle := "live-vp-task-" + ts
-	taskWorker, taskDelegate := setupLiveWorker(t, taskHandle)
+	taskWorker, taskDelegate, _ := setupLiveWorkerWithLocator(t, taskHandle, locator)
 
 	var taskStdout bytes.Buffer
 	taskContainer, _, err := taskWorker.FindOrCreateContainer(
@@ -103,14 +104,11 @@ func TestLiveVolumePassingGetToTask(t *testing.T) {
 	cleanupPod(t, clientset, cfg.Namespace, taskHandle)
 
 	// Run the task step: read the file from the input volume.
-	// Use ls + cat with stderr to diagnose volume passing failures.
-	var taskStderr bytes.Buffer
 	taskProcess, err := taskContainer.Run(ctx, runtime.ProcessSpec{
 		Path: "/bin/sh",
-		Args: []string{"-c", "echo '=== ls -laR /tmp/build ===' >&2; ls -laR /tmp/build/ >&2; echo '=== cat ===' >&2; cat /tmp/build/workdir/my-resource/data.txt"},
+		Args: []string{"-c", "cat /tmp/build/workdir/my-resource/data.txt"},
 	}, runtime.ProcessIO{
 		Stdout: &taskStdout,
-		Stderr: &taskStderr,
 	})
 	if err != nil {
 		t.Fatalf("Run (task): %v", err)
@@ -121,7 +119,7 @@ func TestLiveVolumePassingGetToTask(t *testing.T) {
 		t.Fatalf("Wait (task): %v", err)
 	}
 	if taskResult.ExitStatus != 0 {
-		t.Fatalf("task step expected exit 0, got %d\nstderr: %s\nstdout: %s", taskResult.ExitStatus, taskStderr.String(), taskStdout.String())
+		t.Fatalf("task step expected exit 0, got %d", taskResult.ExitStatus)
 	}
 
 	output := strings.TrimSpace(taskStdout.String())
@@ -141,7 +139,7 @@ func TestLiveVolumePassingTaskChain(t *testing.T) {
 
 	// --- Task 1: Produce output ---
 	t1Handle := "live-vp-t1-" + ts
-	t1Worker, t1Delegate := setupLiveWorker(t, t1Handle)
+	t1Worker, t1Delegate, locator := setupLiveWorkerWithLocator(t, t1Handle, nil)
 
 	t1Container, t1Mounts, err := t1Worker.FindOrCreateContainer(
 		ctx,
@@ -193,7 +191,7 @@ func TestLiveVolumePassingTaskChain(t *testing.T) {
 
 	// --- Task 2: Consume task-1 output as input ---
 	t2Handle := "live-vp-t2-" + ts
-	t2Worker, t2Delegate := setupLiveWorker(t, t2Handle)
+	t2Worker, t2Delegate, _ := setupLiveWorkerWithLocator(t, t2Handle, locator)
 
 	var t2Stdout bytes.Buffer
 	t2Container, _, err := t2Worker.FindOrCreateContainer(
@@ -219,13 +217,11 @@ func TestLiveVolumePassingTaskChain(t *testing.T) {
 	cleanupPod(t, clientset, cfg.Namespace, t2Handle)
 
 	// Task 2 reads both files from the input volume.
-	var t2Stderr bytes.Buffer
 	t2Process, err := t2Container.Run(ctx, runtime.ProcessSpec{
 		Path: "/bin/sh",
-		Args: []string{"-c", "echo '=== ls -laR /tmp/build ===' >&2; ls -laR /tmp/build/ >&2; echo '=== cat ===' >&2; cat /tmp/build/workdir/build-output/artifact.txt && cat /tmp/build/workdir/build-output/meta.txt"},
+		Args: []string{"-c", "cat /tmp/build/workdir/build-output/artifact.txt && cat /tmp/build/workdir/build-output/meta.txt"},
 	}, runtime.ProcessIO{
 		Stdout: &t2Stdout,
-		Stderr: &t2Stderr,
 	})
 	if err != nil {
 		t.Fatalf("Run (task-2): %v", err)
@@ -236,7 +232,7 @@ func TestLiveVolumePassingTaskChain(t *testing.T) {
 		t.Fatalf("Wait (task-2): %v", err)
 	}
 	if t2Result.ExitStatus != 0 {
-		t.Fatalf("task-2 expected exit 0, got %d\nstderr: %s\nstdout: %s", t2Result.ExitStatus, t2Stderr.String(), t2Stdout.String())
+		t.Fatalf("task-2 expected exit 0, got %d", t2Result.ExitStatus)
 	}
 
 	lines := strings.Split(strings.TrimSpace(t2Stdout.String()), "\n")
@@ -262,7 +258,7 @@ func TestLiveVolumeDataIntegrity(t *testing.T) {
 
 	// --- Step 1: Write known data ---
 	s1Handle := "live-vp-int1-" + ts
-	s1Worker, s1Delegate := setupLiveWorker(t, s1Handle)
+	s1Worker, s1Delegate, locator := setupLiveWorkerWithLocator(t, s1Handle, nil)
 
 	// Build a test payload with special characters and newlines.
 	// Use content that is safe to embed in a shell printf format string.
@@ -341,7 +337,7 @@ func TestLiveVolumeDataIntegrity(t *testing.T) {
 
 	// --- Step 2: Read data back and verify ---
 	s2Handle := "live-vp-int2-" + ts
-	s2Worker, s2Delegate := setupLiveWorker(t, s2Handle)
+	s2Worker, s2Delegate, _ := setupLiveWorkerWithLocator(t, s2Handle, locator)
 
 	var s2Stdout bytes.Buffer
 	s2Container, _, err := s2Worker.FindOrCreateContainer(
@@ -367,13 +363,11 @@ func TestLiveVolumeDataIntegrity(t *testing.T) {
 	cleanupPod(t, clientset, cfg.Namespace, s2Handle)
 
 	// Read the payload back.
-	var s2Stderr bytes.Buffer
 	s2Process, err := s2Container.Run(ctx, runtime.ProcessSpec{
-		Path: "/bin/sh",
-		Args: []string{"-c", "echo '=== ls -laR /tmp/build ===' >&2; ls -laR /tmp/build/ >&2; echo '=== cat ===' >&2; cat /tmp/build/workdir/data/payload.txt"},
+		Path: "cat",
+		Args: []string{"/tmp/build/workdir/data/payload.txt"},
 	}, runtime.ProcessIO{
 		Stdout: &s2Stdout,
-		Stderr: &s2Stderr,
 	})
 	if err != nil {
 		t.Fatalf("Run (step-2): %v", err)
@@ -384,7 +378,7 @@ func TestLiveVolumeDataIntegrity(t *testing.T) {
 		t.Fatalf("Wait (step-2): %v", err)
 	}
 	if s2Result.ExitStatus != 0 {
-		t.Fatalf("step-2 expected exit 0, got %d\nstderr: %s\nstdout: %s", s2Result.ExitStatus, s2Stderr.String(), s2Stdout.String())
+		t.Fatalf("step-2 expected exit 0, got %d", s2Result.ExitStatus)
 	}
 
 	readBack := s2Stdout.String()
