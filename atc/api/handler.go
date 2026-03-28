@@ -241,6 +241,7 @@ func NewHandler(
 		atc.GetAgentFeedback:        http.HandlerFunc(feedbackServer.GetFeedback),
 		atc.GetAgentFeedbackSummary: http.HandlerFunc(feedbackServer.GetSummary),
 		atc.ClassifyAgentVerdict:    http.HandlerFunc(feedbackServer.ClassifyVerdict),
+		atc.GetAgentReviewFindings:  http.HandlerFunc(feedbackServer.GetFindings),
 	}
 
 	return rata.NewRouter(atc.Routes, wrapper.Wrap(handlers))

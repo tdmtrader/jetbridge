@@ -119,6 +119,62 @@ func NewHandler(store Store, opts ...HandlerOption) *Handler {
 	return h
 }
 
+// Finding represents a review finding matching the Elm frontend's Finding type.
+type Finding struct {
+	ID          string `json:"id"`
+	FindingType string `json:"finding_type"`
+	Severity    string `json:"severity"`
+	Category    string `json:"category"`
+	Title       string `json:"title"`
+	File        string `json:"file"`
+	Line        int    `json:"line"`
+	Description string `json:"description"`
+	TestCode    string `json:"test_code"`
+}
+
+// GetFindings handles GET /api/v1/agent/reviews/:commit/findings.
+func (h *Handler) GetFindings(w http.ResponseWriter, r *http.Request) {
+	commit := r.FormValue(":commit")
+	if commit == "" {
+		http.Error(w, "commit is required", http.StatusBadRequest)
+		return
+	}
+
+	records, err := h.store.GetByReview("", commit)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Extract findings from stored feedback snapshots, deduplicate by FindingID.
+	seen := make(map[string]bool)
+	var findings []Finding
+	for _, rec := range records {
+		if rec.FindingID == "" || seen[rec.FindingID] {
+			continue
+		}
+		seen[rec.FindingID] = true
+
+		var f Finding
+		if len(rec.FindingSnapshot) > 0 {
+			json.Unmarshal(rec.FindingSnapshot, &f)
+		}
+		// Ensure the ID matches the record's finding_id.
+		f.ID = rec.FindingID
+		if f.FindingType == "" {
+			f.FindingType = rec.FindingType
+		}
+		findings = append(findings, f)
+	}
+
+	if findings == nil {
+		findings = []Finding{}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(findings)
+}
+
 // SubmitFeedback handles POST /api/v1/agent/feedback.
 func (h *Handler) SubmitFeedback(w http.ResponseWriter, r *http.Request) {
 	var req FeedbackRequest
@@ -312,7 +368,9 @@ func (m *MemoryStore) GetByReview(repo, commit string) ([]StoredFeedback, error)
 
 	var results []StoredFeedback
 	for _, rec := range m.records {
-		if rec.ReviewRef.Repo == repo && rec.ReviewRef.Commit == commit {
+		repoMatch := repo == "" || rec.ReviewRef.Repo == repo
+		commitMatch := commit == "" || rec.ReviewRef.Commit == commit
+		if repoMatch && commitMatch {
 			results = append(results, *rec)
 		}
 	}

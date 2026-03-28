@@ -239,6 +239,99 @@ func TestClassifyEndpointWithCustomClassifier(t *testing.T) {
 	}
 }
 
+func TestGetFindings(t *testing.T) {
+	store := feedback.NewMemoryStore()
+	handler := feedback.NewHandler(store)
+
+	// Pre-populate with findings for commit abc123.
+	snapshot := json.RawMessage(`{"id":"ISS-001","finding_type":"proven_issue","severity":"high","category":"bug","title":"Null pointer","file":"main.go","line":42,"description":"Derefs nil","test_code":""}`)
+	store.Save(&feedback.StoredFeedback{
+		ReviewRef:       feedback.ReviewRef{Repo: "org/repo", Commit: "abc123"},
+		FindingID:       "ISS-001",
+		FindingType:     "proven_issue",
+		FindingSnapshot: snapshot,
+		Verdict:         "accurate",
+		Reviewer:        "alice",
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/agent/reviews/abc123/findings?:commit=abc123", nil)
+	w := httptest.NewRecorder()
+
+	handler.GetFindings(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var findings []feedback.Finding
+	if err := json.Unmarshal(w.Body.Bytes(), &findings); err != nil {
+		t.Fatalf("failed to decode: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 finding, got %d", len(findings))
+	}
+	if findings[0].ID != "ISS-001" {
+		t.Fatalf("expected ISS-001, got %s", findings[0].ID)
+	}
+	if findings[0].Title != "Null pointer" {
+		t.Fatalf("expected 'Null pointer', got %s", findings[0].Title)
+	}
+}
+
+func TestGetFindingsEmpty(t *testing.T) {
+	store := feedback.NewMemoryStore()
+	handler := feedback.NewHandler(store)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/agent/reviews/unknown/findings?:commit=unknown", nil)
+	w := httptest.NewRecorder()
+
+	handler.GetFindings(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	// Must return [] not null.
+	if w.Body.String() != "[]\n" {
+		t.Fatalf("expected empty array, got %s", w.Body.String())
+	}
+}
+
+func TestGetFindingsDeduplicates(t *testing.T) {
+	store := feedback.NewMemoryStore()
+	handler := feedback.NewHandler(store)
+
+	snapshot := json.RawMessage(`{"id":"ISS-001","finding_type":"proven_issue","severity":"high","category":"bug","title":"Bug","file":"a.go","line":1}`)
+	// Two reviewers for the same finding.
+	store.Save(&feedback.StoredFeedback{
+		ReviewRef:       feedback.ReviewRef{Repo: "org/repo", Commit: "abc123"},
+		FindingID:       "ISS-001",
+		FindingType:     "proven_issue",
+		FindingSnapshot: snapshot,
+		Verdict:         "accurate",
+		Reviewer:        "alice",
+	})
+	store.Save(&feedback.StoredFeedback{
+		ReviewRef:       feedback.ReviewRef{Repo: "org/repo", Commit: "abc123"},
+		FindingID:       "ISS-001",
+		FindingType:     "proven_issue",
+		FindingSnapshot: snapshot,
+		Verdict:         "false_positive",
+		Reviewer:        "bob",
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/agent/reviews/abc123/findings?:commit=abc123", nil)
+	w := httptest.NewRecorder()
+
+	handler.GetFindings(w, req)
+
+	var findings []feedback.Finding
+	json.Unmarshal(w.Body.Bytes(), &findings)
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 deduplicated finding, got %d", len(findings))
+	}
+}
+
 // TestClassifyAllVerdictTypes verifies the default classifier handles all
 // verdict types with the comprehensive keyword set matching ci-agent/feedback/classifier.go.
 func TestClassifyAllVerdictTypes(t *testing.T) {
