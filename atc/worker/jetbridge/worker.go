@@ -60,12 +60,13 @@ func (w *Worker) Name() string {
 	return w.dbWorker.Name()
 }
 
-// SkipResourceCache returns false — with daemon-mediated artifact resolution,
-// cached resource volumes can be served by the daemon. The daemon's filesystem
-// scan discovers cached artifacts on disk without requiring an ArtifactLocator
-// entry.
+// SkipResourceCache returns true. Resource cache hits reuse hostPath
+// directories from previous builds, but the resource script (e.g., git clone)
+// expects an empty directory. Until the resource scripts support incremental
+// updates (e.g., git fetch instead of git clone), cache hits cause
+// "destination path already exists" failures.
 func (w *Worker) SkipResourceCache() bool {
-	return false
+	return true
 }
 
 func (w *Worker) FindOrCreateContainer(
