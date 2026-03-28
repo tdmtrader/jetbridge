@@ -24,6 +24,7 @@ func TestFeedbackRoutesRegistered(t *testing.T) {
 		{atc.GetAgentFeedback, "GET", "/api/v1/agent/feedback"},
 		{atc.GetAgentFeedbackSummary, "GET", "/api/v1/agent/feedback/summary"},
 		{atc.ClassifyAgentVerdict, "POST", "/api/v1/agent/feedback/classify"},
+		{atc.GetAgentReviewFindings, "GET", "/api/v1/agent/reviews/:commit/findings"},
 	}
 
 	for _, rr := range requiredRoutes {

@@ -173,15 +173,11 @@ type RunCommand struct {
 		PodStartupTimeout  time.Duration `long:"kubernetes-pod-startup-timeout"    default:"5m" description:"Maximum time to wait for a pod to reach Running state before failing the task."`
 		ImagePullSecrets   []string      `long:"kubernetes-image-pull-secret"      description:"Kubernetes Secret name to use as imagePullSecrets on task Pods. Can be specified multiple times."`
 		ServiceAccount     string        `long:"kubernetes-service-account"        description:"Kubernetes ServiceAccount name to set on task Pods. Defaults to the namespace default SA."`
-		CacheStore         string        `long:"kubernetes-cache-store"            description:"Task cache backend: artifact (tar on artifact PVC, cross-node), pvc (dedicated cache PVC), hostpath (node-local dirs), emptydir (ephemeral). Empty = auto-detect."`
-		CachePVC           string        `long:"kubernetes-cache-pvc"              description:"Name of a PersistentVolumeClaim to mount as a shared cache volume in task Pods. Enables node-local resource and task caching."`
-		CacheHostPath      string        `long:"kubernetes-cache-host-path"        description:"Base directory on host node for persistent task caches. Used when no cache PVC is configured. Caches are node-local and survive pod restarts."`
-		ArtifactStoreClaim    string `long:"kubernetes-artifact-store-claim"      description:"Name of a PersistentVolumeClaim for durable artifact and resource cache storage. In production, back with GCS FUSE via StorageClass. Locally, uses default StorageClass."`
-		ArtifactStoreGCSFuse  bool   `long:"kubernetes-artifact-store-gcs-fuse"  description:"Artifact store PVC is backed by GCS Fuse on GKE. Adds gke-gcsfuse/volumes annotation to task pods."`
-		ArtifactHelperImage   string `long:"kubernetes-artifact-helper-image"     description:"Container image for artifact init containers and sidecar. Defaults to alpine:latest."`
-		ArtifactBackend       string `long:"kubernetes-artifact-backend"          description:"Artifact storage backend: pvc (default, PVC-based) or daemonset (node-local hostPath with DaemonSet HTTP server)."`
+		CacheStore         string        `long:"kubernetes-cache-store"            description:"Task cache backend: hostpath (node-local dirs) or emptydir (ephemeral). Empty = auto-detect."`
+		CacheHostPath      string        `long:"kubernetes-cache-host-path"        description:"Base directory on host node for persistent task caches. Caches are node-local and survive pod restarts."`
+		ArtifactHelperImage   string `long:"kubernetes-artifact-helper-image"     description:"Container image for artifact init containers. Defaults to alpine:latest."`
 		ArtifactDaemonPort    int    `long:"kubernetes-artifact-daemon-port"      default:"8080" description:"HTTP port for the DaemonSet artifact server."`
-		ArtifactDaemonHostPath string `long:"kubernetes-artifact-daemon-host-path" default:"/var/concourse/artifacts" description:"Host path for artifact storage when using DaemonSet backend."`
+		ArtifactDaemonHostPath string `long:"kubernetes-artifact-daemon-host-path" default:"/var/concourse/artifacts" description:"Host path for artifact storage on each node."`
 		ArtifactDaemonService  string `long:"kubernetes-artifact-daemon-service"   default:"artifact-daemon" description:"Headless Service name for DaemonSet per-pod DNS."`
 		ImageRegistryPrefix    string   `long:"kubernetes-image-registry-prefix"     description:"Registry path prefix for custom resource type images (e.g. gcr.io/my-project/concourse). Images are resolved as <prefix>/<type-name>."`
 		ImageRegistrySecret    string   `long:"kubernetes-image-registry-secret"     description:"Kubernetes Secret name (type kubernetes.io/dockerconfigjson) for registry auth. Auto-added to imagePullSecrets on every pod."`
@@ -876,7 +872,7 @@ func (cmd *RunCommand) constructAPIMembers(
 
 	// Create shared ArtifactLocator for DaemonSet mode BEFORE constructPool,
 	// so the pool's worker factory receives the locator.
-	if cmd.k8sArtifactLocator == nil && cmd.Kubernetes.ArtifactBackend == jetbridge.ArtifactBackendDaemonSet {
+	if cmd.k8sArtifactLocator == nil {
 		cmd.k8sArtifactLocator = jetbridge.NewArtifactLocator()
 	}
 
@@ -1117,7 +1113,7 @@ func (cmd *RunCommand) backendComponents(
 	// Create shared ArtifactLocator for DaemonSet mode BEFORE constructPool,
 	// so the pool's worker factory receives the locator. Without this, workers
 	// have a nil locator and recordOutputLocations silently skips.
-	if cmd.k8sArtifactLocator == nil && cmd.Kubernetes.ArtifactBackend == jetbridge.ArtifactBackendDaemonSet {
+	if cmd.k8sArtifactLocator == nil {
 		cmd.k8sArtifactLocator = jetbridge.NewArtifactLocator()
 	}
 
@@ -1266,9 +1262,7 @@ func (cmd *RunCommand) backendComponents(
 
 	// Create shared ArtifactLocator for DaemonSet mode — used by both
 	// Reaper (here) and Worker factory (constructPool).
-	if cmd.Kubernetes.ArtifactBackend == jetbridge.ArtifactBackendDaemonSet {
-		cmd.k8sArtifactLocator = jetbridge.NewArtifactLocator()
-	}
+	cmd.k8sArtifactLocator = jetbridge.NewArtifactLocator()
 
 	if cmd.Kubernetes.Namespace != "" {
 		k8sCfg := jetbridge.NewConfig(cmd.Kubernetes.Namespace, cmd.Kubernetes.Kubeconfig)
@@ -1276,17 +1270,13 @@ func (cmd *RunCommand) backendComponents(
 		k8sCfg.ImagePullSecrets = cmd.Kubernetes.ImagePullSecrets
 		k8sCfg.ServiceAccount = cmd.Kubernetes.ServiceAccount
 		k8sCfg.CacheStore = cmd.Kubernetes.CacheStore
-		k8sCfg.CacheVolumeClaim = cmd.Kubernetes.CachePVC
 		k8sCfg.CacheHostPath = cmd.Kubernetes.CacheHostPath
-		k8sCfg.ArtifactStoreClaim = cmd.Kubernetes.ArtifactStoreClaim
-		k8sCfg.ArtifactStoreGCSFuse = cmd.Kubernetes.ArtifactStoreGCSFuse
 		k8sCfg.ArtifactHelperImage = cmd.Kubernetes.ArtifactHelperImage
-		k8sCfg.ArtifactBackend = cmd.Kubernetes.ArtifactBackend
 		k8sCfg.ArtifactDaemonPort = cmd.Kubernetes.ArtifactDaemonPort
 		k8sCfg.ArtifactDaemonHostPath = cmd.Kubernetes.ArtifactDaemonHostPath
 		k8sCfg.ArtifactDaemonService = cmd.Kubernetes.ArtifactDaemonService
 		if cmd.Kubernetes.CacheStore != "" && !jetbridge.ValidCacheStores[cmd.Kubernetes.CacheStore] {
-			return nil, fmt.Errorf("invalid --kubernetes-cache-store value %q (valid: artifact, pvc, hostpath, emptydir)", cmd.Kubernetes.CacheStore)
+			return nil, fmt.Errorf("invalid --kubernetes-cache-store value %q (valid: hostpath, emptydir)", cmd.Kubernetes.CacheStore)
 		}
 		if cmd.Kubernetes.ImageRegistryPrefix != "" || cmd.Kubernetes.ImageRegistrySecret != "" {
 			k8sCfg.ImageRegistry = &jetbridge.ImageRegistryConfig{
@@ -1313,13 +1303,6 @@ func (cmd *RunCommand) backendComponents(
 		k8sVolumeRepo := db.NewVolumeRepository(dbConn)
 		k8sDestroyer := gc.NewDestroyer(logger, k8sContainerRepo, k8sVolumeRepo)
 		k8sReaper := jetbridge.NewReaper(logger.Session(atc.ComponentK8sWorkerReaper), k8sClientset, k8sCfg, k8sContainerRepo, k8sDestroyer)
-		if k8sCfg.CacheVolumeClaim != "" {
-			k8sRestConfig, err := jetbridge.RestConfig(k8sCfg)
-			if err == nil {
-				k8sReaper.SetVolumeRepo(k8sVolumeRepo)
-				k8sReaper.SetExecutor(jetbridge.NewSPDYExecutor(k8sClientset, k8sRestConfig))
-			}
-		}
 		if cmd.k8sArtifactLocator != nil {
 			k8sReaper.SetArtifactLocator(cmd.k8sArtifactLocator)
 		}
@@ -1397,12 +1380,8 @@ func (cmd *RunCommand) constructPool(dbConn db.DbConn, lockFactory lock.LockFact
 		k8sCfg.ImagePullSecrets = cmd.Kubernetes.ImagePullSecrets
 		k8sCfg.ServiceAccount = cmd.Kubernetes.ServiceAccount
 		k8sCfg.CacheStore = cmd.Kubernetes.CacheStore
-		k8sCfg.CacheVolumeClaim = cmd.Kubernetes.CachePVC
 		k8sCfg.CacheHostPath = cmd.Kubernetes.CacheHostPath
-		k8sCfg.ArtifactStoreClaim = cmd.Kubernetes.ArtifactStoreClaim
-		k8sCfg.ArtifactStoreGCSFuse = cmd.Kubernetes.ArtifactStoreGCSFuse
 		k8sCfg.ArtifactHelperImage = cmd.Kubernetes.ArtifactHelperImage
-		k8sCfg.ArtifactBackend = cmd.Kubernetes.ArtifactBackend
 		k8sCfg.ArtifactDaemonPort = cmd.Kubernetes.ArtifactDaemonPort
 		k8sCfg.ArtifactDaemonHostPath = cmd.Kubernetes.ArtifactDaemonHostPath
 		k8sCfg.ArtifactDaemonService = cmd.Kubernetes.ArtifactDaemonService
@@ -2252,6 +2231,7 @@ func (cmd *RunCommand) constructAPIHandler(
 		clock.NewClock(),
 		dbSigningKeyFactory,
 		dbConn,
+		db.NewAgentFeedbackFactory(dbConn),
 	)
 }
 

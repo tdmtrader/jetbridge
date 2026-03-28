@@ -85,6 +85,7 @@ func NewHandler(
 	clock clock.Clock,
 	dbSigningKeyFactory db.SigningKeyFactory,
 	dbPinger infoserver.DBPinger,
+	feedbackStore feedback.Store,
 ) (http.Handler, error) {
 
 	absCLIDownloadsDir, err := filepath.Abs(cliDownloadsDir)
@@ -114,7 +115,7 @@ func NewHandler(
 	artifactServer := artifactserver.NewServer(logger, workerPool)
 	usersServer := usersserver.NewServer(logger, dbUserFactory)
 	wallServer := wallserver.NewServer(dbWall, logger)
-	feedbackServer := feedback.NewHandler(feedback.NewMemoryStore())
+	feedbackServer := feedback.NewHandler(feedbackStore)
 	if oidcIssuer == "" {
 		oidcIssuer = externalURL
 	}
