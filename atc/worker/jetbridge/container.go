@@ -552,7 +552,7 @@ func (c *Container) daemonResolveCommand(key, hostDest string) []string {
 
 	port := c.config.ArtifactDaemonPort
 	if port == 0 {
-		port = 8080
+		port = 7780
 	}
 
 	// The daemon runs as a DaemonSet pod on the same node. We reach it

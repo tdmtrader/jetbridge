@@ -16,7 +16,7 @@ import (
 )
 
 func main() {
-	port := flag.Int("port", 8080, "HTTP server port")
+	port := flag.Int("port", 7780, "HTTP server port")
 	storagePath := flag.String("storage-path", "/var/concourse/artifacts", "Path to artifact storage directory")
 	ttl := flag.Duration("ttl", 2*time.Hour, "TTL for artifact cleanup sweep")
 	nodeName := flag.String("node-name", "", "Kubernetes node name (for node labeling)")

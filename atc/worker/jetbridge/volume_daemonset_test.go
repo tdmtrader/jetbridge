@@ -21,7 +21,7 @@ func TestDaemonSetVolume_StreamOut_Success(t *testing.T) {
 		handle:     "abc",
 		workerName: "w1",
 		sourceNode: "node-1",
-		config:     Config{Namespace: "test-ns", ArtifactDaemonPort: 8080, ArtifactDaemonService: "artifact-daemon"},
+		config:     Config{Namespace: "test-ns", ArtifactDaemonPort: 7780, ArtifactDaemonService: "artifact-daemon"},
 		httpClient: srv.Client(),
 	}
 	// Override the URL to point to test server
@@ -50,7 +50,7 @@ func TestDaemonSetVolume_StreamOut_NotFound(t *testing.T) {
 		handle:     "missing",
 		workerName: "w1",
 		sourceNode: "node-1",
-		config:     Config{Namespace: "test-ns", ArtifactDaemonPort: 8080},
+		config:     Config{Namespace: "test-ns", ArtifactDaemonPort: 7780},
 		httpClient: srv.Client(),
 	}
 	vol.httpClient.Transport = rewriteTransport{url: srv.URL}

@@ -19,7 +19,7 @@ func TestDaemonSetMode_PodHasHostPathVolume(t *testing.T) {
 	cfg := Config{
 		Namespace:              "test-ns",
 		ArtifactDaemonHostPath: "/var/concourse/artifacts",
-		ArtifactDaemonPort:     8080,
+		ArtifactDaemonPort:     7780,
 		ArtifactDaemonService:  "artifact-daemon",
 		ArtifactHelperImage:    "alpine:latest",
 	}
@@ -163,7 +163,7 @@ func TestDaemonSetMode_InitContainerResolveCommand(t *testing.T) {
 	cfg := Config{
 		Namespace:              "test-ns",
 		ArtifactDaemonHostPath: "/var/concourse/artifacts",
-		ArtifactDaemonPort:     8080,
+		ArtifactDaemonPort:     7780,
 		ArtifactDaemonService:  "artifact-daemon",
 		ArtifactHelperImage:    "alpine:latest",
 	}
@@ -395,7 +395,7 @@ func daemonSetConfig() Config {
 	return Config{
 		Namespace:              "test-ns",
 		ArtifactDaemonHostPath: "/var/concourse/artifacts",
-		ArtifactDaemonPort:     8080,
+		ArtifactDaemonPort:     7780,
 		ArtifactDaemonService:  "artifact-daemon",
 		ArtifactHelperImage:    "alpine:latest",
 	}

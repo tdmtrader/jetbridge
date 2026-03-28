@@ -176,7 +176,7 @@ type RunCommand struct {
 		CacheStore         string        `long:"kubernetes-cache-store"            description:"Task cache backend: hostpath (node-local dirs) or emptydir (ephemeral). Empty = auto-detect."`
 		CacheHostPath      string        `long:"kubernetes-cache-host-path"        description:"Base directory on host node for persistent task caches. Caches are node-local and survive pod restarts."`
 		ArtifactHelperImage   string `long:"kubernetes-artifact-helper-image"     description:"Container image for artifact init containers. Defaults to alpine:latest."`
-		ArtifactDaemonPort    int    `long:"kubernetes-artifact-daemon-port"      default:"8080" description:"HTTP port for the DaemonSet artifact server."`
+		ArtifactDaemonPort    int    `long:"kubernetes-artifact-daemon-port"      default:"7780" description:"HTTP port for the DaemonSet artifact server (hostPort)."`
 		ArtifactDaemonHostPath string `long:"kubernetes-artifact-daemon-host-path" default:"/var/concourse/artifacts" description:"Host path for artifact storage on each node."`
 		ArtifactDaemonService  string `long:"kubernetes-artifact-daemon-service"   default:"artifact-daemon" description:"Headless Service name for DaemonSet per-pod DNS."`
 		ImageRegistryPrefix    string   `long:"kubernetes-image-registry-prefix"     description:"Registry path prefix for custom resource type images (e.g. gcr.io/my-project/concourse). Images are resolved as <prefix>/<type-name>."`

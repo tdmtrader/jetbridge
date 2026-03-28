@@ -130,7 +130,7 @@ func (v *DaemonSetVolume) daemonURL() string {
 	}
 	port := v.config.ArtifactDaemonPort
 	if port == 0 {
-		port = 8080
+		port = 7780
 	}
 	return fmt.Sprintf("http://%s.%s.%s.svc.cluster.local:%d/artifacts/%s",
 		v.sourceNode, svcName, v.config.Namespace, port, v.key)
