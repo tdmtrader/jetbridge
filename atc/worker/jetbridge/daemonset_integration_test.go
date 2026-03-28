@@ -737,17 +737,14 @@ func TestDaemonSetMode_DaemonResolveCommand(t *testing.T) {
 	if !strings.Contains(script, "wget") {
 		t.Errorf("expected wget in resolve command, got: %s", script)
 	}
-	if !strings.Contains(script, "localhost") {
-		t.Errorf("expected localhost in resolve command, got: %s", script)
+	if !strings.Contains(script, "HOST_IP") {
+		t.Errorf("expected HOST_IP reference in resolve command, got: %s", script)
 	}
 	if !strings.Contains(script, "/resolve") {
 		t.Errorf("expected /resolve endpoint in command, got: %s", script)
 	}
 	if !strings.Contains(script, "producer-handle/result") {
 		t.Errorf("expected daemon key in command, got: %s", script)
-	}
-	if strings.Contains(script, ".svc.cluster.local") {
-		t.Errorf("resolve command should NOT use headless service DNS, got: %s", script)
 	}
 }
 

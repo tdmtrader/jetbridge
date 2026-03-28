@@ -513,6 +513,14 @@ func (c *Container) buildArtifactInitContainers(mainMounts []corev1.VolumeMount)
 			Name:    fmt.Sprintf("fetch-input-%d", i),
 			Image:   helperImage,
 			Command: c.daemonResolveCommand(daemonKey, hostDestPath),
+			Env: []corev1.EnvVar{
+				{
+					Name: "HOST_IP",
+					ValueFrom: &corev1.EnvVarSource{
+						FieldRef: &corev1.ObjectFieldSelector{FieldPath: "status.hostIP"},
+					},
+				},
+			},
 			VolumeMounts: []corev1.VolumeMount{
 				{Name: c.artifactVolumeName(), MountPath: ArtifactMountPath, ReadOnly: true},
 				{Name: volumeName, MountPath: input.DestinationPath},
@@ -547,13 +555,17 @@ func (c *Container) daemonResolveCommand(key, hostDest string) []string {
 		port = 8080
 	}
 
+	// The daemon runs as a DaemonSet pod on the same node. We reach it
+	// via the node's host IP (from K8s downward API) + hostPort.
+	// The HOST_IP env var is injected below via the fieldRef.
 	script := fmt.Sprintf(`
 set -e
 KEY="%s"
 DST="%s"
 PORT=%d
-echo "[artifact-fetch] resolving key=${KEY} dest=${DST}" >&2
-RESP=$(wget -qO- --post-data='{"key":"'"${KEY}"'","dest":"'"${DST}"'"}' "http://localhost:${PORT}/resolve" 2>&1) || {
+DAEMON="http://${HOST_IP}:${PORT}"
+echo "[artifact-fetch] resolving key=${KEY} dest=${DST} daemon=${DAEMON}" >&2
+RESP=$(wget -qO- --post-data='{"key":"'"${KEY}"'","dest":"'"${DST}"'"}' "${DAEMON}/resolve" 2>&1) || {
   echo "[artifact-fetch] FAILED: ${RESP}" >&2
   exit 1
 }
