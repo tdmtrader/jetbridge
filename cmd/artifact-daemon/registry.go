@@ -73,12 +73,12 @@ func (r *Registry) Keys() []string {
 //
 // Directory structure:
 //
-//	<storagePath>/artifacts/steps/<handle>/<output>/
+//	<storagePath>/steps/<handle>/<output>/
 //
 // Each <handle> directory is registered with key = handle and path = the
 // full disk path to the handle directory.
 func (r *Registry) ScanHostPath(storagePath string) error {
-	stepsDir := filepath.Join(storagePath, "artifacts", "steps")
+	stepsDir := filepath.Join(storagePath, "steps")
 	entries, err := os.ReadDir(stepsDir)
 	if err != nil {
 		if os.IsNotExist(err) {

@@ -87,7 +87,7 @@ func TestRegistry_ScanHostPath(t *testing.T) {
 	storagePath := t.TempDir()
 
 	// Create step output directories mimicking real artifact layout.
-	stepsDir := filepath.Join(storagePath, "artifacts", "steps")
+	stepsDir := filepath.Join(storagePath, "steps")
 
 	// Handle abc with two outputs
 	os.MkdirAll(filepath.Join(stepsDir, "handle-abc", "result"), 0755)

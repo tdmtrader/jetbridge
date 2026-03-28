@@ -284,7 +284,7 @@ func (s *Server) handleResolve(w http.ResponseWriter, r *http.Request) {
 	// Step 2: Fallback — check if key maps to a steps/ directory on disk.
 	// This handles artifacts from previous builds that exist on disk but
 	// weren't explicitly registered (e.g., after daemon restart).
-	stepsPath := filepath.Join(s.storagePath, "artifacts", "steps", req.Key)
+	stepsPath := filepath.Join(s.storagePath, "steps", req.Key)
 	if info, err := os.Stat(stepsPath); err == nil && info.IsDir() {
 		// Auto-register for future lookups.
 		s.registry.Register(req.Key, stepsPath)
