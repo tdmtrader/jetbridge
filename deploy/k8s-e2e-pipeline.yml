@@ -133,14 +133,12 @@ jobs:
           go mod download
 
           echo "=== Starting Docker daemon (DinD) ==="
-          rm -f /var/run/docker.pid /var/run/containerd/containerd.pid
-          killall dockerd containerd 2>/dev/null || true
-          sleep 2
-          # Mount tmpfs for Docker data — overlay2 fails on overlayfs (nested
-          # overlay), and VFS is too slow for kubeadm init. tmpfs gives us
-          # in-memory I/O with overlay2 as the storage driver.
-          mkdir -p /var/lib/docker
-          mount -t tmpfs -o size=4G tmpfs /var/lib/docker
+          # Thorough cleanup of stale Docker/containerd state from previous runs.
+          killall -9 dockerd containerd 2>/dev/null || true
+          sleep 1
+          rm -rf /var/run/docker.pid /var/run/docker /var/run/containerd /run/containerd
+          mkdir -p /var/lib/docker /run/containerd
+          mount -t tmpfs -o size=4G tmpfs /var/lib/docker 2>/dev/null || true
           /usr/local/bin/dockerd --host=unix:///var/run/docker.sock \
                   --log-level=warn &
           DOCKERD_PID=$!
@@ -213,14 +211,12 @@ jobs:
           go test -c -o /tmp/behavioral.test ./topgun/k8s_behavioral/
 
           echo "=== Starting Docker daemon (DinD) ==="
-          rm -f /var/run/docker.pid /var/run/containerd/containerd.pid
-          killall dockerd containerd 2>/dev/null || true
-          sleep 2
-          # Mount tmpfs for Docker data — overlay2 fails on overlayfs (nested
-          # overlay), and VFS is too slow for kubeadm init. tmpfs gives us
-          # in-memory I/O with overlay2 as the storage driver.
-          mkdir -p /var/lib/docker
-          mount -t tmpfs -o size=4G tmpfs /var/lib/docker
+          # Thorough cleanup of stale Docker/containerd state from previous runs.
+          killall -9 dockerd containerd 2>/dev/null || true
+          sleep 1
+          rm -rf /var/run/docker.pid /var/run/docker /var/run/containerd /run/containerd
+          mkdir -p /var/lib/docker /run/containerd
+          mount -t tmpfs -o size=4G tmpfs /var/lib/docker 2>/dev/null || true
           /usr/local/bin/dockerd --host=unix:///var/run/docker.sock \
                   --log-level=warn &
           DOCKERD_PID=$!
