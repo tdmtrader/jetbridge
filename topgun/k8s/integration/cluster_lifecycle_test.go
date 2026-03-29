@@ -21,6 +21,7 @@ import (
 	"k8s.io/client-go/transport/spdy"
 	"sigs.k8s.io/kind/pkg/cluster"
 	"sigs.k8s.io/kind/pkg/cluster/nodeutils"
+	kindexec "sigs.k8s.io/kind/pkg/exec"
 )
 
 // kindClusterName is the KinD cluster used by this suite. A unique name
@@ -104,6 +105,17 @@ kubeadmConfigPatches:
 		cluster.CreateWithDisplaySalutation(false),
 	)
 	if err != nil {
+		// Dump kubeadm config from the node for debugging timeout issues.
+		if nodes, listErr := kindProvider.ListNodes(kindClusterName); listErr == nil && len(nodes) > 0 {
+			cmd := nodes[0].Command("cat", "/kind/kubeadm.conf")
+			if out, execErr := kindexec.CombinedOutputLines(cmd); execErr == nil {
+				log.Printf("=== kubeadm.conf from node ===\n%s", strings.Join(out, "\n"))
+			}
+			cmd = nodes[0].Command("kubeadm", "version", "-o", "short")
+			if out, execErr := kindexec.CombinedOutputLines(cmd); execErr == nil {
+				log.Printf("kubeadm version: %s", strings.Join(out, " "))
+			}
+		}
 		log.Fatalf("failed to create KinD cluster: %v", err)
 	}
 
