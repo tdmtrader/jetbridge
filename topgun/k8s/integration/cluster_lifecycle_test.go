@@ -114,16 +114,18 @@ kubeadmConfigPatches:
 		cluster.CreateWithDisplaySalutation(false),
 	)
 	if err != nil {
-		// Dump kubeadm config from the node for debugging timeout issues.
-		if nodes, listErr := kindProvider.ListNodes(kindClusterName); listErr == nil && len(nodes) > 0 {
-			cmd := nodes[0].Command("cat", "/kind/kubeadm.conf")
-			if out, execErr := kindexec.CombinedOutputLines(cmd); execErr == nil {
-				log.Printf("=== kubeadm.conf from node ===\n%s", strings.Join(out, "\n"))
-			}
-			cmd = nodes[0].Command("kubeadm", "version", "-o", "short")
-			if out, execErr := kindexec.CombinedOutputLines(cmd); execErr == nil {
-				log.Printf("kubeadm version: %s", strings.Join(out, " "))
-			}
+		// Dump kubeadm config directly via docker exec — KinD's ListNodes
+		// may return nothing if the node was already cleaned up.
+		containerName := kindClusterName + "-control-plane"
+		dumpCmd := exec.Command("docker", "exec", containerName, "cat", "/kind/kubeadm.conf")
+		if out, dumpErr := dumpCmd.CombinedOutput(); dumpErr == nil {
+			log.Printf("=== kubeadm.conf from %s ===\n%s", containerName, string(out))
+		} else {
+			log.Printf("failed to dump kubeadm.conf via docker exec: %v (container may be gone)", dumpErr)
+		}
+		verCmd := exec.Command("docker", "exec", containerName, "kubeadm", "version", "-o", "short")
+		if out, verErr := verCmd.CombinedOutput(); verErr == nil {
+			log.Printf("kubeadm version: %s", strings.TrimSpace(string(out)))
 		}
 		log.Fatalf("failed to create KinD cluster: %v", err)
 	}
