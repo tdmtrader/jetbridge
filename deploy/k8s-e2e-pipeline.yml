@@ -121,7 +121,11 @@ jobs:
           rm -f /var/run/docker.pid /var/run/containerd/containerd.pid
           killall dockerd containerd 2>/dev/null || true
           sleep 2
+          # Use VFS storage driver — fuse-overlayfs crashes during large image
+          # extraction in this DinD environment, and overlay2 needs kernel support.
+          # VFS is slow but stable; the 10m kubeadm timeout compensates.
           /usr/local/bin/dockerd --host=unix:///var/run/docker.sock \
+                  --storage-driver=vfs \
                   --log-level=warn &
           DOCKERD_PID=$!
 
@@ -184,7 +188,11 @@ jobs:
           rm -f /var/run/docker.pid /var/run/containerd/containerd.pid
           killall dockerd containerd 2>/dev/null || true
           sleep 2
+          # Use VFS storage driver — fuse-overlayfs crashes during large image
+          # extraction in this DinD environment, and overlay2 needs kernel support.
+          # VFS is slow but stable; the 10m kubeadm timeout compensates.
           /usr/local/bin/dockerd --host=unix:///var/run/docker.sock \
+                  --storage-driver=vfs \
                   --log-level=warn &
           DOCKERD_PID=$!
 

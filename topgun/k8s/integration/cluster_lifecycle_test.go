@@ -98,12 +98,12 @@ kubeadmConfigPatches:
 - |
   apiVersion: kubeadm.k8s.io/v1beta3
   kind: ClusterConfiguration
-  timeoutForControlPlane: 10m0s
+  timeoutForControlPlane: 15m0s
 - |
   apiVersion: kubeadm.k8s.io/v1beta3
   kind: InitConfiguration
   timeouts:
-    controlPlaneComponentHealthCheck: 10m0s
+    controlPlaneComponentHealthCheck: 15m0s
 `)
 
 	log.Printf("Creating KinD cluster %q...", kindClusterName)
