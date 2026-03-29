@@ -117,7 +117,7 @@ jobs:
 
           echo "=== Starting Docker daemon (DinD) ==="
           /usr/local/bin/dockerd --host=unix:///var/run/docker.sock \
-                  --storage-driver=vfs \
+                  --storage-driver=overlay2 \
                   --log-level=warn &
           DOCKERD_PID=$!
 
@@ -180,7 +180,7 @@ jobs:
         - |
           echo "=== Starting Docker daemon (DinD) ==="
           /usr/local/bin/dockerd --host=unix:///var/run/docker.sock \
-                  --storage-driver=vfs \
+                  --storage-driver=overlay2 \
                   --log-level=warn &
           DOCKERD_PID=$!
 

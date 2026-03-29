@@ -85,7 +85,7 @@ func createKindCluster() string {
 
 	log.Printf("Creating KinD cluster %q...", kindClusterName)
 	err := kindProvider.Create(kindClusterName,
-		cluster.CreateWithWaitForReady(120*time.Second),
+		cluster.CreateWithWaitForReady(5*time.Minute),
 		cluster.CreateWithDisplayUsage(false),
 		cluster.CreateWithDisplaySalutation(false),
 	)
