@@ -118,9 +118,9 @@ jobs:
           go mod download
 
           echo "=== Starting Docker daemon (DinD) ==="
-          rm -f /var/run/docker.pid
-          killall dockerd 2>/dev/null || true
-          sleep 1
+          rm -f /var/run/docker.pid /var/run/containerd/containerd.pid
+          killall dockerd containerd 2>/dev/null || true
+          sleep 2
           /usr/local/bin/dockerd --host=unix:///var/run/docker.sock \
                   --log-level=warn &
           DOCKERD_PID=$!
@@ -181,9 +181,9 @@ jobs:
           go test -c -o /tmp/behavioral.test ./topgun/k8s_behavioral/
 
           echo "=== Starting Docker daemon (DinD) ==="
-          rm -f /var/run/docker.pid
-          killall dockerd 2>/dev/null || true
-          sleep 1
+          rm -f /var/run/docker.pid /var/run/containerd/containerd.pid
+          killall dockerd containerd 2>/dev/null || true
+          sleep 2
           /usr/local/bin/dockerd --host=unix:///var/run/docker.sock \
                   --log-level=warn &
           DOCKERD_PID=$!
