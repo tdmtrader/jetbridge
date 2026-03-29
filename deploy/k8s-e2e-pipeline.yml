@@ -116,6 +116,10 @@ jobs:
           echo "PATH=$PATH"
 
           echo "=== Starting Docker daemon (DinD) ==="
+          # Clean up stale daemon from reused containers.
+          rm -f /var/run/docker.pid
+          killall dockerd 2>/dev/null || true
+          sleep 1
           /usr/local/bin/dockerd --host=unix:///var/run/docker.sock \
                   --log-level=warn &
           DOCKERD_PID=$!
@@ -178,6 +182,10 @@ jobs:
         - -exc
         - |
           echo "=== Starting Docker daemon (DinD) ==="
+          # Clean up stale daemon from reused containers.
+          rm -f /var/run/docker.pid
+          killall dockerd 2>/dev/null || true
+          sleep 1
           /usr/local/bin/dockerd --host=unix:///var/run/docker.sock \
                   --log-level=warn &
           DOCKERD_PID=$!
