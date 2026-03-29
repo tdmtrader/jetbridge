@@ -84,21 +84,11 @@ func createKindCluster() string {
 	// Delete any leftover cluster from a previous interrupted run.
 	kindProvider.Delete(kindClusterName, "")
 
-	// Use K8s 1.29 node image — see integration/cluster_lifecycle_test.go
-	// for rationale (K8s 1.29 respects timeoutForControlPlane, 1.31+ does not).
+	// Default KinD node image. With tmpfs-backed Docker in the pipeline,
+	// overlay2 is available and I/O is in-memory, so kubeadm init completes
+	// well within the default 4m timeout.
 	kindConfig := []byte(`kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
-nodes:
-- role: control-plane
-  image: kindest/node:v1.29.12
-kubeadmConfigPatchesJSON6902:
-- group: kubeadm.k8s.io
-  version: v1beta3
-  kind: ClusterConfiguration
-  patch: |
-    - op: add
-      path: /timeoutForControlPlane
-      value: "15m0s"
 `)
 
 	log.Printf("Creating KinD cluster %q...", kindClusterName)

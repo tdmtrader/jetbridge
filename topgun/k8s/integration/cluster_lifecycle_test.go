@@ -21,7 +21,6 @@ import (
 	"k8s.io/client-go/transport/spdy"
 	"sigs.k8s.io/kind/pkg/cluster"
 	"sigs.k8s.io/kind/pkg/cluster/nodeutils"
-	kindexec "sigs.k8s.io/kind/pkg/exec"
 )
 
 // kindClusterName is the KinD cluster used by this suite. A unique name
@@ -84,50 +83,21 @@ func createKindCluster() string {
 	// Delete any leftover cluster from a previous interrupted run.
 	kindProvider.Delete(kindClusterName, "")
 
-	// Use K8s 1.29 node image — K8s 1.29 has the Timeouts feature as Alpha
-	// (disabled by default), so ClusterConfiguration.timeoutForControlPlane
-	// is the sole and fully respected timeout mechanism. K8s 1.31+ graduated
-	// Timeouts to Beta which caused the deprecated field to be silently
-	// overridden by InitConfiguration.Timeouts defaults.
-	//
-	// Use JSON6902 patch for precision — strategic merge patches can fail
-	// silently if the YAML structure doesn't match expectations.
+	// Default KinD node image (latest supported by KinD v0.31). With tmpfs-backed
+	// Docker in the pipeline, overlay2 is available and I/O is in-memory, so
+	// kubeadm init completes well within the default 4m timeout.
 	kindConfig := []byte(`kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
-nodes:
-- role: control-plane
-  image: kindest/node:v1.29.12
-kubeadmConfigPatchesJSON6902:
-- group: kubeadm.k8s.io
-  version: v1beta3
-  kind: ClusterConfiguration
-  patch: |
-    - op: add
-      path: /timeoutForControlPlane
-      value: "15m0s"
 `)
 
 	log.Printf("Creating KinD cluster %q...", kindClusterName)
 	err := kindProvider.Create(kindClusterName,
 		cluster.CreateWithRawConfig(kindConfig),
-		cluster.CreateWithRetain(true), // keep node on failure so we can inspect kubeadm.conf
-		cluster.CreateWithWaitForReady(20*time.Minute),
+		cluster.CreateWithWaitForReady(10*time.Minute),
 		cluster.CreateWithDisplayUsage(false),
 		cluster.CreateWithDisplaySalutation(false),
 	)
 	if err != nil {
-		// Dump kubeadm config using docker cp (works on stopped containers,
-		// unlike docker exec). CreateWithRetain keeps the container around.
-		containerName := kindClusterName + "-control-plane"
-		tmpConf := filepath.Join(os.TempDir(), "kubeadm-debug.conf")
-		cpCmd := exec.Command("docker", "cp", containerName+":/kind/kubeadm.conf", tmpConf)
-		if cpErr := cpCmd.Run(); cpErr == nil {
-			if data, readErr := os.ReadFile(tmpConf); readErr == nil {
-				log.Printf("=== kubeadm.conf from %s ===\n%s", containerName, string(data))
-			}
-		} else {
-			log.Printf("docker cp kubeadm.conf failed: %v", cpErr)
-		}
 		log.Fatalf("failed to create KinD cluster: %v", err)
 	}
 
