@@ -85,13 +85,13 @@ func createKindCluster() string {
 
 	// KinD config with extended timeouts for DinD environments where
 	// kubeadm init is slower due to nested filesystems (fuse-overlayfs/vfs).
-	// The default controlPlaneComponentHealthCheck is 4m which is too short
-	// for nested Docker (even with fuse-overlayfs).
+	// The default controlPlaneComponentHealthCheck is 4m which is too short.
+	// KinD v0.27.0 uses K8s 1.32 which requires kubeadm v1beta4.
 	kindConfig := []byte(`kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 kubeadmConfigPatches:
 - |
-  apiVersion: kubeadm.k8s.io/v1beta3
+  apiVersion: kubeadm.k8s.io/v1beta4
   kind: ClusterConfiguration
   timeouts:
     controlPlaneComponentHealthCheck: 10m0s
