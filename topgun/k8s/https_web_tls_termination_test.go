@@ -145,7 +145,6 @@ var _ = Describe("Web HTTP or HTTPS(TLS) termination at web node", func() {
 func generateChartConfig(args ...string) []string {
 	return append(args,
 		"--set=worker.enabled=false",
-		"--set=concourse.worker.baggageclaim.driver=detect",
 		"--set=concourse.web.tls.bindPort=443",
 	)
 }

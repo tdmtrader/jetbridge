@@ -105,9 +105,7 @@ func (command *WorkersCommand) Execute([]string) error {
 		}
 
 		fmt.Fprintln(dst, "")
-		fmt.Fprintln(dst, "these stalled workers can be cleaned up by running:")
-		fmt.Fprintln(dst, "")
-		fmt.Fprintln(dst, "    "+ui.Embolden("fly -t %s prune-worker -w (name)", Fly.Target))
+		fmt.Fprintln(dst, "stalled workers are automatically cleaned up by the K8s worker reaper.")
 		fmt.Fprintln(dst, "")
 	}
 

@@ -39,13 +39,6 @@ spec:
               if [ ! -f /keys/session_signing_key ]; then
                 concourse generate-key -t rsa -f /keys/session_signing_key
               fi
-              if [ ! -f /keys/tsa_host_key ]; then
-                concourse generate-key -t ssh -f /keys/tsa_host_key
-              fi
-              if [ ! -f /keys/worker_key ]; then
-                concourse generate-key -t ssh -f /keys/worker_key
-                cp /keys/worker_key.pub /keys/authorized_worker_keys
-              fi
           volumeMounts:
             - name: keys
               mountPath: /keys
@@ -213,10 +206,6 @@ spec:
           env:
             - name: CONCOURSE_SESSION_SIGNING_KEY
               value: /keys/session_signing_key
-            - name: CONCOURSE_TSA_HOST_KEY
-              value: /keys/tsa_host_key
-            - name: CONCOURSE_TSA_AUTHORIZED_KEYS
-              value: /keys/authorized_worker_keys
             {{- if .Values.postgresql.existingSecret }}
             - name: CONCOURSE_POSTGRES_PASSWORD
               valueFrom:

@@ -378,7 +378,7 @@ secrets:
 
   # -- Name of a pre-existing Secret containing signing keys.
   # Required when secrets.create is false. The Secret must contain:
-  #   session_signing_key, tsa_host_key, worker_key, authorized_worker_keys
+  #   session_signing_key
   signingKeySecret: ""
 
 # -- Network policy configuration

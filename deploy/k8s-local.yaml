@@ -174,15 +174,9 @@ spec:
         env:
         - name: CONCOURSE_SESSION_SIGNING_KEY
           value: /keys/session_signing_key
-        - name: CONCOURSE_TSA_HOST_KEY
-          value: /keys/tsa_host_key
-        - name: CONCOURSE_TSA_AUTHORIZED_KEYS
-          value: /keys/authorized_worker_keys
         ports:
         - containerPort: 8080
           name: http
-        - containerPort: 2222
-          name: tsa
         volumeMounts:
         - name: keys
           mountPath: /keys
@@ -196,9 +190,6 @@ spec:
         - -c
         - |
           concourse generate-key -t rsa -f /keys/session_signing_key
-          concourse generate-key -t ssh -f /keys/tsa_host_key
-          concourse generate-key -t ssh -f /keys/worker_key
-          cp /keys/worker_key.pub /keys/authorized_worker_keys
         volumeMounts:
         - name: keys
           mountPath: /keys
@@ -223,6 +214,3 @@ spec:
   - name: http
     port: 8080
     targetPort: 8080
-  - name: tsa
-    port: 2222
-    targetPort: 2222

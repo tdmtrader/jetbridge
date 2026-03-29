@@ -20,8 +20,6 @@ services:
       - ../hack/keys:/concourse-keys
     environment:
       CONCOURSE_SESSION_SIGNING_KEY: /concourse-keys/session_signing_key
-      CONCOURSE_TSA_AUTHORIZED_KEYS: /concourse-keys/authorized_worker_keys
-      CONCOURSE_TSA_HOST_KEY: /concourse-keys/tsa_host_key
       CONCOURSE_PEER_ADDRESS: web-1
 
       CONCOURSE_LOG_LEVEL: debug
@@ -33,7 +31,6 @@ services:
       CONCOURSE_ADD_LOCAL_USER: test:test,guest:guest
       CONCOURSE_MAIN_TEAM_LOCAL_USER: test
       CONCOURSE_CLUSTER_NAME: test
-      CONCOURSE_ENABLE_CACHE_STREAMED_VOLUMES: "true"
 
   web-2:
     image: ${TEST_CONCOURSE_DEV_IMAGE:-concourse/concourse:local}
@@ -45,8 +42,6 @@ services:
       - ../hack/keys:/concourse-keys
     environment:
       CONCOURSE_SESSION_SIGNING_KEY: /concourse-keys/session_signing_key
-      CONCOURSE_TSA_AUTHORIZED_KEYS: /concourse-keys/authorized_worker_keys
-      CONCOURSE_TSA_HOST_KEY: /concourse-keys/tsa_host_key
       CONCOURSE_PEER_ADDRESS: web-2
 
       CONCOURSE_LOG_LEVEL: debug
@@ -58,11 +53,3 @@ services:
       CONCOURSE_ADD_LOCAL_USER: test:test,guest:guest
       CONCOURSE_MAIN_TEAM_LOCAL_USER: test
       CONCOURSE_CLUSTER_NAME: test
-      CONCOURSE_ENABLE_CACHE_STREAMED_VOLUMES: "true"
-
-  worker:
-    depends_on: !reset
-      - web-1
-      - web-2
-    environment:
-      CONCOURSE_TSA_HOST: web-1:2222,web-2:2222
