@@ -109,6 +109,7 @@ kubeadmConfigPatches:
 	log.Printf("Creating KinD cluster %q...", kindClusterName)
 	err := kindProvider.Create(kindClusterName,
 		cluster.CreateWithRawConfig(kindConfig),
+		cluster.CreateWithRetain(true), // keep node on failure so we can inspect kubeadm.conf
 		cluster.CreateWithWaitForReady(20*time.Minute),
 		cluster.CreateWithDisplayUsage(false),
 		cluster.CreateWithDisplaySalutation(false),
