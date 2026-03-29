@@ -83,8 +83,22 @@ func createKindCluster() string {
 	// Delete any leftover cluster from a previous interrupted run.
 	kindProvider.Delete(kindClusterName, "")
 
+	// KinD config with extended timeouts for DinD environments.
+	// Set both old and new timeout fields; omit apiVersion so the patch
+	// matches regardless of which kubeadm version KinD generates.
+	kindConfig := []byte(`kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+kubeadmConfigPatches:
+- |
+  kind: ClusterConfiguration
+  timeoutForControlPlane: 10m0s
+  timeouts:
+    controlPlaneComponentHealthCheck: 10m0s
+`)
+
 	log.Printf("Creating KinD cluster %q...", kindClusterName)
 	err := kindProvider.Create(kindClusterName,
+		cluster.CreateWithRawConfig(kindConfig),
 		cluster.CreateWithWaitForReady(20*time.Minute),
 		cluster.CreateWithDisplayUsage(false),
 		cluster.CreateWithDisplaySalutation(false),
