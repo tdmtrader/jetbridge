@@ -27,3 +27,20 @@ worker/runtime/integration/sample/sample
 # Compiled binaries
 /concourse
 /concourse-linux-arm64
+/concourse-linux-amd64
+/fly-linux-amd64
+/artifact-daemon
+/artifact-daemon-linux-amd64
+
+# Editor / AI tool configs
+.claude/worktrees/
+.codex/
+.cursor/
+.gemini/
+.mcp.json
+
+# Build artifacts
+/fly-assets/
+
+# Forge orchestrator logs
+forge/.orchestrator/

@@ -1,0 +1,24 @@
+{
+  "trackId": "fix_hostpath_reuse_and_enable_resource_caching_20260328",
+  "type": "bugfix",
+  "status": "completed",
+  "description": "Fix hostPath reuse and enable resource caching",
+  "createdAt": "2026-03-28T15:36:51.336Z",
+  "updatedAt": "2026-03-28T22:32:29.882Z",
+  "sessions": [
+    {
+      "slotIndex": 0,
+      "engineType": "claude",
+      "aiSessionId": "f999e659-5c66-4601-ba21-0590d11009b3",
+      "updatedAt": "2026-03-28T15:41:51.762Z"
+    }
+  ],
+  "sessionHistory": [
+    {
+      "slotIndex": 0,
+      "engineType": "claude",
+      "aiSessionId": "f999e659-5c66-4601-ba21-0590d11009b3",
+      "updatedAt": "2026-03-28T15:41:51.762Z"
+    }
+  ]
+}

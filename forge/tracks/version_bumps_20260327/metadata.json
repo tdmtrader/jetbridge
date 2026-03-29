@@ -1,0 +1,24 @@
+{
+  "trackId": "version_bumps_20260327",
+  "type": "feature",
+  "status": "archived",
+  "description": "Version bumps",
+  "createdAt": "2026-03-27T13:53:22.579Z",
+  "updatedAt": "2026-03-27T16:03:06.091Z",
+  "sessions": [
+    {
+      "slotIndex": 0,
+      "engineType": "claude",
+      "aiSessionId": "a1de2ebb-4a88-4ccb-9cbe-855380af8290",
+      "updatedAt": "2026-03-27T13:54:50.774Z"
+    }
+  ],
+  "sessionHistory": [
+    {
+      "slotIndex": 0,
+      "engineType": "claude",
+      "aiSessionId": "a1de2ebb-4a88-4ccb-9cbe-855380af8290",
+      "updatedAt": "2026-03-27T13:54:50.774Z"
+    }
+  ]
+}

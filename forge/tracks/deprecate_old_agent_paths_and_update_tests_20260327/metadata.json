@@ -1,0 +1,24 @@
+{
+  "trackId": "deprecate_old_agent_paths_and_update_tests_20260327",
+  "type": "feature",
+  "status": "archived",
+  "description": "deprecate old agent paths and update tests",
+  "createdAt": "2026-03-27T14:30:12.737Z",
+  "updatedAt": "2026-03-27T16:21:17.670Z",
+  "sessions": [
+    {
+      "slotIndex": 0,
+      "engineType": "claude",
+      "aiSessionId": "a679f8bb-9241-42f6-b77e-599ad466e595",
+      "updatedAt": "2026-03-27T14:30:31.405Z"
+    }
+  ],
+  "sessionHistory": [
+    {
+      "slotIndex": 0,
+      "engineType": "claude",
+      "aiSessionId": "a679f8bb-9241-42f6-b77e-599ad466e595",
+      "updatedAt": "2026-03-27T14:30:31.405Z"
+    }
+  ]
+}

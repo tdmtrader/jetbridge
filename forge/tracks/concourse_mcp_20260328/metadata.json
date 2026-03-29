@@ -1,0 +1,24 @@
+{
+  "trackId": "concourse_mcp_20260328",
+  "type": "feature",
+  "status": "in_progress",
+  "description": "Concourse MCP",
+  "createdAt": "2026-03-28T15:17:16.192Z",
+  "updatedAt": "2026-03-28T15:57:29.422Z",
+  "sessions": [
+    {
+      "slotIndex": 0,
+      "engineType": "claude",
+      "aiSessionId": "3c1dc3d0-ebf9-4983-8dc5-3e184962e112",
+      "updatedAt": "2026-03-28T15:17:35.435Z"
+    }
+  ],
+  "sessionHistory": [
+    {
+      "slotIndex": 0,
+      "engineType": "claude",
+      "aiSessionId": "3c1dc3d0-ebf9-4983-8dc5-3e184962e112",
+      "updatedAt": "2026-03-28T15:17:35.435Z"
+    }
+  ]
+}
