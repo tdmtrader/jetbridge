@@ -156,7 +156,16 @@ jobs:
 
           echo ""
           echo "=== Running K8s integration tests (pre-compiled, KinD cluster) ==="
-          /tmp/integration.test -test.v -test.timeout 30m -test.count 1
+          /tmp/integration.test -test.v -test.timeout 30m -test.count 1 || {
+            echo "=== TEST FAILED — dumping diagnostics ==="
+            echo "--- Docker containers ---"
+            docker ps -a 2>/dev/null || true
+            echo "--- kubeadm.conf from KinD node ---"
+            docker cp concourse-integration-control-plane:/kind/kubeadm.conf /tmp/kubeadm-debug.conf 2>&1 && cat /tmp/kubeadm-debug.conf || echo "(container not available)"
+            echo "--- End diagnostics ---"
+            kill $DOCKERD_PID 2>/dev/null || true
+            exit 1
+          }
           echo "=== K8s integration tests passed ==="
 
           kill $DOCKERD_PID 2>/dev/null || true
