@@ -2,9 +2,11 @@ package worker
 
 import (
 	"code.cloudfoundry.org/lager/v3"
+	"github.com/concourse/concourse/atc/compression"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
+	"github.com/concourse/concourse/atc/worker/native"
 	"k8s.io/client-go/kubernetes"
 )
 
@@ -30,9 +32,21 @@ type DefaultFactory struct {
 	// K8sArtifactLocator tracks artifact → node mapping for DaemonSet mode
 	// scheduling affinity. Shared across all workers and the reaper.
 	K8sArtifactLocator *jetbridge.ArtifactLocator
+
+	// NativeConfig holds the native worker configuration. When non-nil,
+	// workers with a matching platform (e.g. "darwin") are created as
+	// native workers that execute tasks as local OS processes.
+	NativeConfig *native.Config
+
+	// Compression is the compression algorithm for artifact streaming.
+	// Shared by both K8s and native workers.
+	Compression compression.Compression
 }
 
 func (f DefaultFactory) NewWorker(logger lager.Logger, dbWorker db.Worker) runtime.Worker {
+	if f.NativeConfig != nil && dbWorker.Platform() == f.NativeConfig.Platform {
+		return f.newNativeWorker(dbWorker)
+	}
 	return f.newK8sWorker(dbWorker)
 }
 
@@ -46,4 +60,8 @@ func (f DefaultFactory) newK8sWorker(dbWorker db.Worker) *jetbridge.Worker {
 		w.SetArtifactLocator(f.K8sArtifactLocator)
 	}
 	return w
+}
+
+func (f DefaultFactory) newNativeWorker(dbWorker db.Worker) *native.Worker {
+	return native.NewWorker(dbWorker, *f.NativeConfig, f.DB.VolumeRepo, f.Compression)
 }

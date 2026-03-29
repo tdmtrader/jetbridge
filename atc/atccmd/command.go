@@ -14,6 +14,7 @@ import (
 	_ "net/http/pprof"
 	"net/url"
 	"os"
+	"runtime"
 	"strings"
 	"time"
 
@@ -52,6 +53,7 @@ import (
 	"github.com/concourse/concourse/atc/util"
 	"github.com/concourse/concourse/atc/worker"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
+	"github.com/concourse/concourse/atc/worker/native"
 	"github.com/concourse/concourse/atc/wrappa"
 	"github.com/concourse/concourse/skymarshal/dexserver"
 	"github.com/concourse/concourse/skymarshal/legacyserver"
@@ -183,6 +185,13 @@ type RunCommand struct {
 		ImageRegistrySecret    string   `long:"kubernetes-image-registry-secret"     description:"Kubernetes Secret name (type kubernetes.io/dockerconfigjson) for registry auth. Auto-added to imagePullSecrets on every pod."`
 		BaseResourceTypes      []string `long:"kubernetes-base-resource-type"        description:"Override or add a base resource type image. Format: name=image (e.g. git=my-registry/git-resource:v2). Can be specified multiple times. Merges with built-in defaults." value-name:"NAME=IMAGE"`
 	} `group:"Kubernetes Runtime"`
+
+	NativeWorker struct {
+		Enable     bool   `long:"native-worker"           description:"Enable the native worker backend for running tasks as local OS processes (e.g. macOS code signing)."`
+		WorkDir    string `long:"native-worker-dir"        description:"Base directory for native worker scratch space." default:"/tmp/concourse/native"`
+		CacheDir   string `long:"native-worker-cache-dir"  description:"Durable directory for task caches that persist across builds." default:"/tmp/concourse/native/caches"`
+		WorkerName string `long:"native-worker-name"       description:"Name for the native worker." default:"native-darwin"`
+	} `group:"Native Worker"`
 
 	CLIArtifactsDir flag.Dir `long:"cli-artifacts-dir" description:"Directory containing downloadable CLI binaries."`
 	WebPublicDir    flag.Dir `long:"web-public-dir" description:"Web public/ directory to serve live for local development."`
@@ -1314,6 +1323,31 @@ func (cmd *RunCommand) backendComponents(
 		})
 	}
 
+	if cmd.NativeWorker.Enable {
+		nativeCfg := native.Config{
+			WorkDir:    cmd.NativeWorker.WorkDir,
+			CacheDir:   cmd.NativeWorker.CacheDir,
+			Platform:   nativePlatform(),
+			WorkerName: cmd.NativeWorker.WorkerName,
+		}
+
+		components = append(components, RunnableComponent{
+			Component: atc.Component{
+				Name: atc.ComponentNativeWorkerRegistrar,
+			},
+			Runnable: native.NewRegistrar(logger.Session(atc.ComponentNativeWorkerRegistrar), nativeCfg, dbWorkerFactory),
+			Interval: 15 * time.Second,
+		})
+
+		nativeContainerRepo := db.NewContainerRepository(dbConn)
+		components = append(components, RunnableComponent{
+			Component: atc.Component{
+				Name: atc.ComponentNativeWorkerReaper,
+			},
+			Runnable: native.NewReaper(logger.Session(atc.ComponentNativeWorkerReaper), nativeCfg, nativeContainerRepo),
+		})
+	}
+
 	if syslogDrainConfigured {
 		components = append(components, RunnableComponent{
 			Component: atc.Component{
@@ -1330,6 +1364,11 @@ func (cmd *RunCommand) backendComponents(
 	}
 
 	return components, err
+}
+
+// nativePlatform returns the GOOS for the native worker (e.g. "darwin").
+func nativePlatform() string {
+	return runtime.GOOS
 }
 
 func (cmd *RunCommand) compression() compression.Compression {
@@ -1407,6 +1446,18 @@ func (cmd *RunCommand) constructPool(dbConn db.DbConn, lockFactory lock.LockFact
 		factory.K8sExecutor = jetbridge.NewSPDYExecutor(k8sClientset, k8sRestConfig)
 		factory.K8sArtifactLocator = cmd.k8sArtifactLocator
 	}
+
+	if cmd.NativeWorker.Enable {
+		nativeCfg := native.Config{
+			WorkDir:    cmd.NativeWorker.WorkDir,
+			CacheDir:   cmd.NativeWorker.CacheDir,
+			Platform:   nativePlatform(),
+			WorkerName: cmd.NativeWorker.WorkerName,
+		}
+		factory.NativeConfig = &nativeCfg
+	}
+
+	factory.Compression = cmd.compression()
 
 	return worker.NewPool(
 		factory,
