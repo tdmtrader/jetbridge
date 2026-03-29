@@ -83,11 +83,18 @@ func createKindCluster() string {
 	// Delete any leftover cluster from a previous interrupted run.
 	kindProvider.Delete(kindClusterName, "")
 
-	// Default KinD node image (latest supported by KinD v0.31). With tmpfs-backed
-	// Docker in the pipeline, overlay2 is available and I/O is in-memory, so
-	// kubeadm init completes well within the default 4m timeout.
+	// Default KinD node image (v1.35 for KinD v0.31). The kubeadm default
+	// timeout for control plane health check is 4 minutes, which is too short
+	// for DinD environments even with tmpfs+overlay2. Extend to 15 minutes
+	// by patching InitConfiguration.timeouts (the field is supported in K8s
+	// 1.31+ v1beta3 when the Timeouts feature is Beta/GA).
 	kindConfig := []byte(`kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
+kubeadmConfigPatches:
+- |
+  kind: InitConfiguration
+  timeouts:
+    controlPlaneComponentHealthCheck: 15m0s
 `)
 
 	log.Printf("Creating KinD cluster %q...", kindClusterName)
