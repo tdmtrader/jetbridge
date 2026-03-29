@@ -1,5 +1,6 @@
-# Extended test runner for KinD-based integration and behavioral tests.
-# Includes: kind, helm, ginkgo, full Docker daemon (for DinD in privileged tasks).
+# Extended test runner for K3s-based integration and behavioral tests.
+# Uses testcontainers + K3s (replaces KinD — no kubeadm, no timeout issues).
+# Includes: helm, ginkgo, full Docker daemon (for DinD in privileged tasks).
 FROM golang:1.25-bookworm
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -10,7 +11,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     iptables \
     procps \
-    fuse-overlayfs \
     && rm -rf /var/lib/apt/lists/*
 
 # Install kubectl
@@ -20,10 +20,6 @@ RUN curl -fsSL "https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release
 # Install Docker daemon + CLI (full static bundle for DinD)
 RUN curl -fsSL https://download.docker.com/linux/static/stable/x86_64/docker-27.5.1.tgz \
     | tar xz --strip-components=1 -C /usr/local/bin
-
-# Install KinD
-RUN curl -fsSL -o /usr/local/bin/kind https://kind.sigs.k8s.io/dl/v0.31.0/kind-linux-amd64 \
-    && chmod +x /usr/local/bin/kind
 
 # Install Helm (binary must be provided in build context as ./helm)
 # When building locally: curl -fsSL https://get.helm.sh/helm-v3.17.3-linux-amd64.tar.gz | tar xz linux-amd64/helm && mv linux-amd64/helm ./helm

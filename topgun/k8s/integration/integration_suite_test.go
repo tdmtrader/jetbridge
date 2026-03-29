@@ -1,13 +1,13 @@
 // K8s Integration Test Suite
 //
-// This suite is fully self-contained: it creates an ephemeral KinD cluster,
-// deploys Concourse via Helm, runs tests, and tears down automatically.
-// No external cluster connectivity is supported — tests always run in
-// isolation to prevent accidental impact on production clusters.
+// This suite is fully self-contained: it creates an ephemeral K3s cluster
+// via testcontainers, deploys Concourse via Helm, runs tests, and tears
+// down automatically. K3s replaces KinD — no kubeadm, no nested containerd,
+// no timeout patches. A single container provides CNCF-certified Kubernetes.
 //
 // Prerequisites: docker, helm, kubectl
 //
-// Basic run (creates a KinD cluster automatically):
+// Basic run (creates a K3s cluster automatically):
 //
 //   go test ./topgun/k8s/integration/ -count=1 -v -timeout 30m
 //
@@ -17,8 +17,8 @@
 //
 // Environment variables:
 //   FLY_PATH           — path to fly binary (builds from source if unset)
-//   CONCOURSE_IMAGE    — Docker image to load into KinD (default: concourse-local:latest)
-//   SKIP_TEARDOWN      — Set to "1" to keep KinD cluster after tests
+//   CONCOURSE_IMAGE    — Docker image to load into K3s (default: concourse-local:latest)
+//   SKIP_TEARDOWN      — Set to "1" to keep K3s cluster after tests
 //   EVENTUALLY_TIMEOUT — Go duration for Eventually timeout (default: 5m)
 
 package integration_test
@@ -52,12 +52,10 @@ import (
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 )
 
-// TestMain manages the KinD cluster lifecycle outside of Ginkgo.
-// It creates an ephemeral KinD cluster, loads images, deploys Concourse
-// via Helm, and starts a port-forward. The resulting config is passed to
-// the Ginkgo suite via environment variables.
+// TestMain manages the K3s cluster lifecycle outside of Ginkgo.
+// It creates an ephemeral K3s cluster via testcontainers, loads images,
+// deploys Concourse via Helm, and starts a port-forward.
 func TestMain(m *testing.M) {
-	// Self-contained mode only — no external cluster connectivity.
 	if err := verifyPrerequisites(); err != nil {
 		log.Fatalf("prerequisites check failed: %v", err)
 	}
@@ -67,8 +65,8 @@ func TestMain(m *testing.M) {
 
 	ensureConcourseImage(image)
 
-	kubeconfig := createKindCluster()
-	loadImagesIntoKind(image)
+	kubeconfig := createK3sCluster()
+	loadImagesIntoCluster(image)
 
 	chartPath := filepath.Join(mustRepoRoot(), "deploy", "chart")
 	helmDeployConcourse(kubeconfig, namespace, chartPath, image)
@@ -89,7 +87,7 @@ func TestMain(m *testing.M) {
 	if pfMgr != nil {
 		pfMgr.Stop()
 	}
-	deleteKindCluster()
+	deleteK3sCluster()
 
 	os.Exit(code)
 }

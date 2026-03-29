@@ -88,8 +88,19 @@ jobs:
           echo "=== Building kind-runner image (no cache) ==="
           kubectl exec -n cicd ${BUILDER_POD} -- docker build --no-cache -t ${IMAGE} -f /build/Dockerfile /build
 
-          echo "=== Pushing to registry ==="
-          kubectl exec -n cicd ${BUILDER_POD} -- docker push ${IMAGE}
+          echo "=== Pushing to registry (with retry) ==="
+          for attempt in 1 2 3 4 5; do
+            if kubectl exec -n cicd ${BUILDER_POD} -- docker push ${IMAGE}; then
+              echo "Push succeeded on attempt $attempt"
+              break
+            fi
+            echo "Push failed (attempt $attempt/5), retrying in 10s..."
+            sleep 10
+            if [ "$attempt" -eq 5 ]; then
+              echo "All push attempts failed"
+              exit 1
+            fi
+          done
 
           echo "=== kind-runner image built and pushed ==="
 
@@ -144,10 +155,10 @@ jobs:
             sleep 2
           done
 
-          echo "=== Pre-pulling KinD node image ==="
-          docker pull kindest/node:v1.29.12
+          echo "=== Pre-pulling K3s image (testcontainers uses it) ==="
+          docker pull rancher/k3s:v1.31.6-k3s1
 
-          echo "=== Building concourse Docker image for KinD ==="
+          echo "=== Building concourse Docker image ==="
           cat <<'DOCKERFILE' > /tmp/Dockerfile.kind
           FROM ubuntu:22.04
           RUN apt-get update && apt-get install -y ca-certificates dumb-init && rm -rf /var/lib/apt/lists/*
@@ -224,10 +235,10 @@ jobs:
             sleep 2
           done
 
-          echo "=== Pre-pulling KinD node image ==="
-          docker pull kindest/node:v1.29.12
+          echo "=== Pre-pulling K3s image (testcontainers uses it) ==="
+          docker pull rancher/k3s:v1.31.6-k3s1
 
-          echo "=== Building concourse Docker image for KinD ==="
+          echo "=== Building concourse Docker image ==="
           cat <<'DOCKERFILE' > /tmp/Dockerfile.kind
           FROM ubuntu:22.04
           RUN apt-get update && apt-get install -y ca-certificates dumb-init && rm -rf /var/lib/apt/lists/*

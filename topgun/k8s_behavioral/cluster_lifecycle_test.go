@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/testcontainers/testcontainers-go"
+	"github.com/testcontainers/testcontainers-go/modules/k3s"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -19,25 +21,14 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/tools/portforward"
 	"k8s.io/client-go/transport/spdy"
-	"sigs.k8s.io/kind/pkg/cluster"
-	"sigs.k8s.io/kind/pkg/cluster/nodeutils"
 )
 
-// kindClusterName is the KinD cluster used by this Ginkgo process.
-// In parallel mode (--procs=N), each process sets a unique name in
-// SynchronizedBeforeSuite (e.g., "concourse-behavioral-2").
-var kindClusterName = "concourse-behavioral"
+// k3sImage is the K3s image used for the test cluster.
+var k3sImage = "rancher/k3s:v1.31.6-k3s1"
 
-// kindProvider is the Go-native KinD provider. Using the library API
-// instead of shelling out to the `kind` CLI makes the tests fully
-// self-contained — only docker, helm, and kubectl are needed on PATH.
-var kindProvider *cluster.Provider
-
-func init() {
-	kindProvider = cluster.NewProvider(
-		cluster.ProviderWithDocker(),
-	)
-}
+// k3sContainer holds the testcontainers K3s instance for this Ginkgo process.
+// In parallel mode (--procs=N), each process gets its own K3s container.
+var k3sContainer *k3s.K3sContainer
 
 // splitImageRef splits "repo:tag" into its parts. If no tag is present,
 // "latest" is returned as the default tag.
@@ -61,7 +52,6 @@ func findFreePort() int {
 }
 
 // verifyPrerequisites checks that required CLIs are on PATH.
-// Note: kind is NOT required — cluster lifecycle is managed via the Go library.
 func verifyPrerequisites() error {
 	var missing []string
 	for _, bin := range []string{"docker", "helm", "kubectl"} {
@@ -75,47 +65,28 @@ func verifyPrerequisites() error {
 	return nil
 }
 
-// createKindCluster creates an ephemeral KinD cluster via the Go library
-// and returns the path to a kubeconfig file written to disk.
-// Any pre-existing cluster with the same name is deleted first.
-func createKindCluster() string {
-	kubeconfigPath := filepath.Join(os.TempDir(), "kind-kubeconfig-"+kindClusterName)
+// createK3sCluster creates an ephemeral K3s cluster via testcontainers.
+// K3s replaces KinD — no kubeadm, no nested containerd, no timeout patches.
+func createK3sCluster() string {
+	ctx := context.Background()
+	kubeconfigPath := filepath.Join(os.TempDir(), "k3s-kubeconfig-behavioral")
 
-	// Delete any leftover cluster from a previous interrupted run.
-	kindProvider.Delete(kindClusterName, "")
-
-	// Default KinD node image (v1.35 for KinD v0.31). Extend kubeadm
-	// timeout to 15m for DinD environments.
-	kindConfig := []byte(`kind: Cluster
-apiVersion: kind.x-k8s.io/v1alpha4
-kubeadmConfigPatches:
-- |
-  kind: InitConfiguration
-  timeouts:
-    controlPlaneComponentHealthCheck: 15m0s
-`)
-
-	log.Printf("Creating KinD cluster %q...", kindClusterName)
-	err := kindProvider.Create(kindClusterName,
-		cluster.CreateWithRawConfig(kindConfig),
-		cluster.CreateWithWaitForReady(10*time.Minute),
-		cluster.CreateWithDisplayUsage(false),
-		cluster.CreateWithDisplaySalutation(false),
-	)
+	log.Printf("Creating K3s cluster via testcontainers (%s)...", k3sImage)
+	var err error
+	k3sContainer, err = k3s.Run(ctx, k3sImage)
 	if err != nil {
-		log.Fatalf("failed to create KinD cluster: %v", err)
+		log.Fatalf("failed to create K3s cluster: %v", err)
 	}
 
-	// Export kubeconfig to a file for helm/kubectl CLI commands.
-	kubeconfig, err := kindProvider.KubeConfig(kindClusterName, false)
+	kubeconfig, err := k3sContainer.GetKubeConfig(ctx)
 	if err != nil {
-		log.Fatalf("failed to get kubeconfig from KinD: %v", err)
+		log.Fatalf("failed to get kubeconfig from K3s: %v", err)
 	}
-	if err := os.WriteFile(kubeconfigPath, []byte(kubeconfig), 0600); err != nil {
+	if err := os.WriteFile(kubeconfigPath, kubeconfig, 0600); err != nil {
 		log.Fatalf("failed to write kubeconfig: %v", err)
 	}
 
-	log.Printf("KinD cluster ready (kubeconfig: %s)", kubeconfigPath)
+	log.Printf("K3s cluster ready (kubeconfig: %s)", kubeconfigPath)
 	return kubeconfigPath
 }
 
@@ -135,66 +106,55 @@ func ensureConcourseImage(image string) {
 	}
 }
 
-// loadImagesIntoKind loads the locally-built Concourse image into the
-// KinD cluster via the Go library. The image is exported from the local
-// Docker daemon as a tar archive and imported into each KinD node's
-// containerd. Only the locally-built image needs pre-loading because
-// it is not available on any registry.
-func loadImagesIntoKind(concourseImage string) {
-	log.Printf("Loading local image %s into KinD cluster...", concourseImage)
+// loadImagesIntoCluster loads the locally-built Concourse image and test
+// dependency images into the K3s cluster via testcontainers' LoadImages API.
+func loadImagesIntoCluster(concourseImage string) {
+	ctx := context.Background()
 
-	nodeList, err := kindProvider.ListInternalNodes(kindClusterName)
-	if err != nil {
-		log.Fatalf("failed to list KinD nodes: %v", err)
+	log.Printf("Loading %s into K3s cluster...", concourseImage)
+	if err := k3sContainer.LoadImages(ctx, concourseImage); err != nil {
+		log.Fatalf("failed to load image %s into K3s: %v", concourseImage, err)
+	}
+	log.Println("Concourse image loaded.")
+
+	// Pull and load test dependency images.
+	images := []string{
+		"docker.io/library/postgres:16",
+		"docker.io/concourse/mock-resource:latest",
+		"docker.io/library/busybox:latest",
+		"docker.io/library/alpine:3.19",
+		"docker.io/library/alpine:latest",
+		"docker.io/library/nginx:alpine",
 	}
 
-	// Save docker image to a temp tar archive.
-	tmpFile, err := os.CreateTemp("", "kind-image-*.tar")
-	if err != nil {
-		log.Fatalf("failed to create temp file for image archive: %v", err)
-	}
-	defer os.Remove(tmpFile.Name())
-	tmpFile.Close()
-
-	cmd := exec.Command("docker", "save", "-o", tmpFile.Name(), concourseImage)
-	cmd.Stdout = os.Stderr
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		log.Fatalf("docker save failed for %s: %v", concourseImage, err)
-	}
-
-	// Load the tar archive onto each KinD node.
-	for _, node := range nodeList {
-		f, err := os.Open(tmpFile.Name())
-		if err != nil {
-			log.Fatalf("failed to open image archive: %v", err)
+	for _, img := range images {
+		log.Printf("Pre-pulling %s on host...", img)
+		pullCmd := exec.Command("docker", "pull", "--quiet", img)
+		pullCmd.Stdout = os.Stderr
+		pullCmd.Stderr = os.Stderr
+		if err := pullCmd.Run(); err != nil {
+			log.Printf("warning: failed to pull %s on host: %v", img, err)
+			continue
 		}
-		if err := nodeutils.LoadImageArchive(node, f); err != nil {
-			f.Close()
-			log.Fatalf("failed to load image onto node %s: %v", node.String(), err)
+
+		log.Printf("Loading %s into K3s cluster...", img)
+		if err := k3sContainer.LoadImages(ctx, img); err != nil {
+			log.Printf("warning: failed to load %s into K3s: %v", img, err)
 		}
-		f.Close()
 	}
-	log.Println("Local image loaded into KinD cluster.")
+	log.Println("Image loading complete.")
 }
 
 // helmDeployConcourse deploys Concourse via the local Helm chart.
-// Does not use `helm --wait` because PVCs with WaitForFirstConsumer
-// binding mode won't bind until a build pod mounts them. Instead,
-// waits explicitly for the web pod to become ready.
 func helmDeployConcourse(kubeconfig, namespace, chartPath, image string) {
 	repo, tag := splitImageRef(image)
 
-	// Create namespace (ignore if exists).
 	exec.Command("kubectl", "--kubeconfig", kubeconfig,
 		"create", "namespace", namespace).Run()
 
 	log.Printf("Deploying Concourse chart from %s into namespace %s...", chartPath, namespace)
-	// Base extra args for Concourse web.
 	extraArgs := ""
 
-	// When COLLECT_OTEL is set, inject OTel exporter addresses so Concourse
-	// sends metrics and traces to the in-cluster OTel collector.
 	if os.Getenv("COLLECT_OTEL") == "1" {
 		otelAddr := fmt.Sprintf("otel-collector.%s.svc.cluster.local:4317", namespace)
 		extraArgs = "--tracing-otlp-address=" + otelAddr + ",--otel-metrics-otlp-address=" + otelAddr
@@ -207,10 +167,7 @@ func helmDeployConcourse(kubeconfig, namespace, chartPath, image string) {
 		"--kubeconfig", kubeconfig,
 		"--set", fmt.Sprintf("image.repository=%s", repo),
 		"--set", fmt.Sprintf("image.tag=%s", tag),
-		"--set", "image.pullPolicy=IfNotPresent", // only the Concourse image is pre-loaded
-		// Use emptyDir for PostgreSQL — ephemeral KinD clusters don't need
-		// persistent storage, and KinD's local-path-provisioner struggles
-		// under resource contention when multiple clusters run in parallel.
+		"--set", "image.pullPolicy=IfNotPresent",
 		"--set", "postgresql.persistence.enabled=false",
 		"--timeout", "5m",
 	}
@@ -236,14 +193,16 @@ func helmDeployConcourse(kubeconfig, namespace, chartPath, image string) {
 	waitCmd.Stdout = os.Stderr
 	waitCmd.Stderr = os.Stderr
 	if err := waitCmd.Run(); err != nil {
+		descCmd := exec.Command("kubectl", "--kubeconfig", kubeconfig,
+			"-n", namespace, "describe", "pods")
+		descCmd.Stdout = os.Stderr
+		descCmd.Stderr = os.Stderr
+		descCmd.Run()
 		log.Fatalf("timed out waiting for concourse-web pod: %v", err)
 	}
 }
 
-// portForwardManager manages an in-process port-forward tunnel to a
-// Kubernetes pod using the client-go SPDY transport. Unlike shelling out
-// to kubectl, this runs entirely in-process — no subprocess management,
-// no watchdog. If the connection drops, it automatically reconnects.
+// portForwardManager manages an in-process port-forward tunnel.
 type portForwardManager struct {
 	restConfig *rest.Config
 	client     kubernetes.Interface
@@ -252,9 +211,6 @@ type portForwardManager struct {
 	done       chan struct{}
 }
 
-// startPortForward creates an in-process port-forward tunnel to the
-// Concourse web pod on a random available port. The tunnel auto-reconnects
-// if the underlying SPDY connection drops.
 func startPortForward(kubeconfig, namespace string) (string, *portForwardManager) {
 	port := findFreePort()
 
@@ -276,13 +232,11 @@ func startPortForward(kubeconfig, namespace string) (string, *portForwardManager
 		done:       make(chan struct{}),
 	}
 
-	// Start tunnel in background with auto-reconnect; block until ready.
 	initialReady := make(chan struct{})
 	go mgr.run(initialReady)
 
 	select {
 	case <-initialReady:
-		// Tunnel is accepting connections.
 	case <-time.After(30 * time.Second):
 		log.Printf("warning: port-forward readiness timed out after 30s")
 	}
@@ -290,8 +244,6 @@ func startPortForward(kubeconfig, namespace string) (string, *portForwardManager
 	return fmt.Sprintf("http://localhost:%d", port), mgr
 }
 
-// run maintains the port-forward tunnel, reconnecting if it drops.
-// Closes initialReady on the first successful connection.
 func (m *portForwardManager) run(initialReady chan<- struct{}) {
 	first := true
 	for {
@@ -319,15 +271,12 @@ func (m *portForwardManager) run(initialReady chan<- struct{}) {
 	}
 }
 
-// forward establishes a single port-forward tunnel and blocks until it
-// exits. If readySig is non-nil, it is closed when the tunnel is ready.
 func (m *portForwardManager) forward(readySig chan<- struct{}) error {
 	podName, err := m.findWebPod()
 	if err != nil {
 		return fmt.Errorf("find web pod: %w", err)
 	}
 
-	// Build SPDY dialer targeting the pod's portforward subresource.
 	reqURL := m.client.CoreV1().RESTClient().Post().
 		Resource("pods").
 		Namespace(m.namespace).
@@ -344,7 +293,6 @@ func (m *portForwardManager) forward(readySig chan<- struct{}) error {
 	stopChan := make(chan struct{})
 	readyChan := make(chan struct{})
 
-	// Bridge m.done → stopChan so Stop() terminates this tunnel.
 	forwarding := make(chan struct{})
 	go func() {
 		select {
@@ -359,8 +307,8 @@ func (m *portForwardManager) forward(readySig chan<- struct{}) error {
 		[]string{fmt.Sprintf("%d:8080", m.port)},
 		stopChan,
 		readyChan,
-		os.Stderr, // informational output (e.g. "Forwarding from ...")
-		os.Stderr, // error output
+		os.Stderr,
+		os.Stderr,
 	)
 	if err != nil {
 		close(forwarding)
@@ -373,7 +321,6 @@ func (m *portForwardManager) forward(readySig chan<- struct{}) error {
 		close(forwarding)
 	}()
 
-	// Wait for the tunnel to be ready or fail.
 	select {
 	case <-readyChan:
 		log.Printf("Port-forward ready on localhost:%d -> %s:8080", m.port, podName)
@@ -384,11 +331,9 @@ func (m *portForwardManager) forward(readySig chan<- struct{}) error {
 		return fmt.Errorf("port-forward failed before ready: %w", err)
 	}
 
-	// Block until the tunnel exits.
 	return <-errChan
 }
 
-// findWebPod returns the name of a Ready pod with the Concourse web label.
 func (m *portForwardManager) findWebPod() (string, error) {
 	pods, err := m.client.CoreV1().Pods(m.namespace).List(
 		context.Background(),
@@ -411,7 +356,6 @@ func (m *portForwardManager) Stop() {
 	close(m.done)
 }
 
-// waitForAPI polls the Concourse /api/v1/info endpoint until it responds.
 func waitForAPI(url string, timeout time.Duration) {
 	client := &http.Client{Timeout: 5 * time.Second}
 	log.Printf("Waiting for Concourse API at %s...", url)
@@ -440,78 +384,16 @@ func mustRepoRoot() string {
 	return strings.TrimSpace(string(out))
 }
 
-// preloadImages pulls commonly-used images on the host Docker daemon
-// and loads them into the KinD node via tar archive. This avoids
-// requiring the KinD node's containerd to have outbound internet
-// access (e.g. when running inside Colima with restricted networking)
-// and also avoids Docker Hub rate limits.
-func preloadImages() {
-	images := []string{
-		"docker.io/concourse/mock-resource:latest",
-		"docker.io/library/busybox:latest",
-		"docker.io/library/alpine:3.19",
-		"docker.io/library/alpine:latest",
-		"docker.io/library/nginx:alpine",
-	}
-
-	nodeList, err := kindProvider.ListInternalNodes(kindClusterName)
-	if err != nil {
-		log.Printf("warning: failed to list KinD nodes for image preload: %v", err)
-		return
-	}
-
-	for _, image := range images {
-		log.Printf("Pre-pulling %s on host...", image)
-		pullCmd := exec.Command("docker", "pull", "--quiet", image)
-		pullCmd.Stdout = os.Stderr
-		pullCmd.Stderr = os.Stderr
-		if err := pullCmd.Run(); err != nil {
-			log.Printf("warning: failed to pull %s on host: %v", image, err)
-			continue
-		}
-
-		imgTar, err := os.CreateTemp("", "kind-dep-*.tar")
-		if err != nil {
-			log.Printf("warning: failed to create temp file for %s: %v", image, err)
-			continue
-		}
-		imgTar.Close()
-
-		saveCmd := exec.Command("docker", "save", "-o", imgTar.Name(), image)
-		saveCmd.Stdout = os.Stderr
-		saveCmd.Stderr = os.Stderr
-		if err := saveCmd.Run(); err != nil {
-			log.Printf("warning: docker save failed for %s: %v", image, err)
-			os.Remove(imgTar.Name())
-			continue
-		}
-
-		log.Printf("Loading %s into KinD nodes...", image)
-		for _, node := range nodeList {
-			f, err := os.Open(imgTar.Name())
-			if err != nil {
-				log.Printf("warning: failed to open archive for %s: %v", image, err)
-				continue
-			}
-			if err := nodeutils.LoadImageArchive(node, f); err != nil {
-				log.Printf("warning: failed to load %s onto node %s: %v", image, node.String(), err)
-			}
-			f.Close()
-		}
-		os.Remove(imgTar.Name())
-	}
-	log.Printf("Image preloading complete.")
-}
-
-// deleteKindCluster deletes the KinD cluster via the Go library
-// unless SKIP_TEARDOWN is set.
-func deleteKindCluster() {
+// deleteK3sCluster terminates the K3s testcontainer unless SKIP_TEARDOWN is set.
+func deleteK3sCluster() {
 	if os.Getenv("SKIP_TEARDOWN") == "1" {
-		log.Printf("SKIP_TEARDOWN=1: keeping KinD cluster %q running", kindClusterName)
+		log.Printf("SKIP_TEARDOWN=1: keeping K3s cluster running")
 		return
 	}
-	log.Printf("Deleting KinD cluster %q...", kindClusterName)
-	if err := kindProvider.Delete(kindClusterName, ""); err != nil {
-		log.Printf("warning: failed to delete KinD cluster: %v", err)
+	if k3sContainer != nil {
+		log.Println("Terminating K3s cluster...")
+		if err := testcontainers.TerminateContainer(k3sContainer); err != nil {
+			log.Printf("warning: failed to terminate K3s container: %v", err)
+		}
 	}
 }

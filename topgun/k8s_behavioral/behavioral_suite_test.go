@@ -126,20 +126,14 @@ var _ = SynchronizedBeforeSuite(
 		}
 		Expect(json.Unmarshal(data, &shared)).To(Succeed())
 
-		// Each process gets a unique cluster name based on its Ginkgo process
-		// index. GinkgoParallelProcess() returns 1 in single-process mode.
-		kindClusterName = fmt.Sprintf("concourse-behavioral-%d", GinkgoParallelProcess())
-
 		namespace := envOr("K8S_NAMESPACE", "concourse")
 		image := envOr("CONCOURSE_IMAGE", "concourse-local:latest")
 
-		kubeconfig := createKindCluster()
-		loadImagesIntoKind(image)
+		kubeconfig := createK3sCluster()
+		loadImagesIntoCluster(image)
 
 		chartPath := filepath.Join(mustRepoRoot(), "deploy", "chart")
 		helmDeployConcourse(kubeconfig, namespace, chartPath, image)
-
-		preloadImages()
 
 		atcURL, mgr := startPortForward(kubeconfig, namespace)
 		pfMgr = mgr
@@ -190,7 +184,7 @@ var _ = SynchronizedAfterSuite(
 		if pfMgr != nil {
 			pfMgr.Stop()
 		}
-		deleteKindCluster()
+		deleteK3sCluster()
 	},
 	// Process 1 only: clean up shared fly binary build artifacts.
 	func() {
