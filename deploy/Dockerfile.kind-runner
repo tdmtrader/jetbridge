@@ -22,7 +22,7 @@ RUN curl -fsSL https://download.docker.com/linux/static/stable/x86_64/docker-27.
     | tar xz --strip-components=1 -C /usr/local/bin
 
 # Install KinD
-RUN curl -fsSL -o /usr/local/bin/kind https://kind.sigs.k8s.io/dl/v0.27.0/kind-linux-amd64 \
+RUN curl -fsSL -o /usr/local/bin/kind https://kind.sigs.k8s.io/dl/v0.31.0/kind-linux-amd64 \
     && chmod +x /usr/local/bin/kind
 
 # Install Helm (binary must be provided in build context as ./helm)
