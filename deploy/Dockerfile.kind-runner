@@ -24,9 +24,11 @@ RUN curl -fsSL https://download.docker.com/linux/static/stable/x86_64/docker-27.
 RUN curl -fsSL -o /usr/local/bin/kind https://kind.sigs.k8s.io/dl/v0.27.0/kind-linux-amd64 \
     && chmod +x /usr/local/bin/kind
 
-# Install Helm
-RUN curl -fsSL https://get.helm.sh/helm-v3.17.3-linux-amd64.tar.gz \
-    | tar xz --strip-components=1 -C /usr/local/bin linux-amd64/helm
+# Install Helm (binary must be provided in build context as ./helm)
+# When building locally: curl -fsSL https://get.helm.sh/helm-v3.17.3-linux-amd64.tar.gz | tar xz linux-amd64/helm && mv linux-amd64/helm ./helm
+# In CI: the pipeline downloads helm externally and places it at ./helm before building.
+COPY helm /usr/local/bin/helm
+RUN chmod +x /usr/local/bin/helm
 
 # Copy source and cache Go modules + ginkgo CLI
 WORKDIR /src

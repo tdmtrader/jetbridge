@@ -71,12 +71,17 @@ jobs:
             sleep 2
           done
 
+          echo "=== Downloading helm binary (get.helm.sh reachable from task pod) ==="
+          curl --retry 3 -fsSL https://get.helm.sh/helm-v3.17.3-linux-amd64.tar.gz \
+            | tar xz --strip-components=1 -C /tmp linux-amd64/helm
+
           echo "=== Cloning fresh source ==="
           git clone --depth 1 --branch jetbridge https://github.com/tdmtrader/jetbridge.git /tmp/fresh-src
 
-          echo "=== Copying source + Dockerfile to builder ==="
+          echo "=== Copying source + Dockerfile + helm to builder ==="
           kubectl exec -n cicd ${BUILDER_POD} -- mkdir -p /build
           cd /tmp/fresh-src
+          cp /tmp/helm ./helm
           cp deploy/Dockerfile.kind-runner Dockerfile
           tar cf - --exclude=.git . | kubectl exec -i -n cicd ${BUILDER_POD} -- sh -c 'tar xf - -C /build'
 
