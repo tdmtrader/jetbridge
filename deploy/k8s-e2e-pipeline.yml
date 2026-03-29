@@ -112,6 +112,10 @@ jobs:
         - |
           cd /src
 
+          # Initialize a git repo so tests can find the repo root via git rev-parse.
+          # The kind-runner image has source at /src but it's not a git clone.
+          git init -q && git add -A && git commit -q -m "init" --allow-empty
+
           echo "=== Pre-compiling everything before Docker (avoids CPU contention with containerd) ==="
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o concourse-linux-amd64 ./cmd/concourse
           go test -c -o /tmp/integration.test ./topgun/k8s/integration/
@@ -189,6 +193,9 @@ jobs:
         - -exc
         - |
           cd /src
+
+          # Initialize a git repo so tests can find the repo root via git rev-parse.
+          git init -q && git add -A && git commit -q -m "init" --allow-empty
 
           echo "=== Pre-compiling everything before Docker (avoids CPU contention with containerd) ==="
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o concourse-linux-amd64 ./cmd/concourse
