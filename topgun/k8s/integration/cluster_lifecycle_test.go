@@ -173,6 +173,7 @@ func ensureConcourseImage(image string) {
 // requiring the KinD node to have outbound internet access (e.g. when
 // running inside Colima with restricted networking).
 var testDependencyImages = []string{
+	"docker.io/library/postgres:16",
 	"docker.io/library/busybox:latest",
 	"docker.io/library/alpine:latest",
 	"docker.io/concourse/mock-resource:latest",
