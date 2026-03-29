@@ -115,6 +115,7 @@ func ensureConcourseImage(image string) {
 // should be pre-loaded into the K3s cluster. They are pulled by the host
 // Docker daemon and loaded via testcontainers' LoadImages API.
 var testDependencyImages = []string{
+	"docker.io/rancher/mirrored-pause:3.6", // K3s sandbox image — must be pre-loaded since K3s can't resolve DNS in DinD
 	"docker.io/library/postgres:16",
 	"docker.io/library/busybox:latest",
 	"docker.io/library/alpine:latest",

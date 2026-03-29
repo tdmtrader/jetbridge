@@ -119,6 +119,7 @@ func loadImagesIntoCluster(concourseImage string) {
 
 	// Pull and load test dependency images.
 	images := []string{
+		"docker.io/rancher/mirrored-pause:3.6", // K3s sandbox image — must be pre-loaded since K3s can't resolve DNS in DinD
 		"docker.io/library/postgres:16",
 		"docker.io/concourse/mock-resource:latest",
 		"docker.io/library/busybox:latest",
