@@ -84,26 +84,21 @@ func createKindCluster() string {
 	// Delete any leftover cluster from a previous interrupted run.
 	kindProvider.Delete(kindClusterName, "")
 
-	// Use K8s 1.31 node image. In K8s 1.31, the kubeadm Timeouts feature
-	// graduated to Beta (default on), which means the deprecated
-	// ClusterConfiguration.timeoutForControlPlane field may be overridden
-	// by InitConfiguration.Timeouts.controlPlaneComponentHealthCheck (default 4m).
-	// We patch BOTH to ensure the 10-minute timeout survives slow DinD I/O.
+	// Use K8s 1.29 node image — see integration/cluster_lifecycle_test.go
+	// for rationale (K8s 1.29 respects timeoutForControlPlane, 1.31+ does not).
 	kindConfig := []byte(`kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 nodes:
 - role: control-plane
-  image: kindest/node:v1.31.6@sha256:28b7cbb993dfe093c76641a0c95807637213c9109b761f1d422c2400e22b8e87
-kubeadmConfigPatches:
-- |
-  apiVersion: kubeadm.k8s.io/v1beta3
+  image: kindest/node:v1.29.12
+kubeadmConfigPatchesJSON6902:
+- group: kubeadm.k8s.io
+  version: v1beta3
   kind: ClusterConfiguration
-  timeoutForControlPlane: 15m0s
-- |
-  apiVersion: kubeadm.k8s.io/v1beta3
-  kind: InitConfiguration
-  timeouts:
-    controlPlaneComponentHealthCheck: 15m0s
+  patch: |
+    - op: add
+      path: /timeoutForControlPlane
+      value: "15m0s"
 `)
 
 	log.Printf("Creating KinD cluster %q...", kindClusterName)
