@@ -10,6 +10,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     iptables \
     procps \
+    fuse-overlayfs \
     && rm -rf /var/lib/apt/lists/*
 
 # Install kubectl
