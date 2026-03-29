@@ -3,7 +3,7 @@ name: concourse-jetbridge
 description: Concourse CI with JetBridge Kubernetes-native runtime
 type: application
 version: 0.1.0
-appVersion: "0.2.31"
+appVersion: "0.2.32"
 home: https://concourse-ci.org
 sources:
   - https://github.com/concourse/concourse
