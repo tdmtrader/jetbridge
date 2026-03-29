@@ -110,13 +110,15 @@ jobs:
         args:
         - -exc
         - |
-          echo "=== Debug: checking available binaries ==="
-          ls -la /usr/local/bin/docker* || echo "no docker binaries in /usr/local/bin"
-          which dockerd || echo "dockerd not in PATH"
-          echo "PATH=$PATH"
+          cd /src
+
+          echo "=== Building concourse binary (before Docker to avoid resource contention) ==="
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o concourse-linux-amd64 ./cmd/concourse
+
+          echo "=== Verifying module deps ==="
+          go mod download
 
           echo "=== Starting Docker daemon (DinD) ==="
-          # Clean up stale daemon from reused containers.
           rm -f /var/run/docker.pid
           killall dockerd 2>/dev/null || true
           sleep 1
@@ -133,11 +135,10 @@ jobs:
             sleep 2
           done
 
-          cd /src
+          echo "=== Pre-pulling KinD node image ==="
+          docker pull kindest/node:v1.35.0@sha256:452d707d4862f52530247495d180205e029056831160e22870e37e3f6c1ac31f
 
-          echo "=== Building concourse image for KinD ==="
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o concourse-linux-amd64 ./cmd/concourse
-
+          echo "=== Building concourse Docker image for KinD ==="
           cat <<'DOCKERFILE' > /tmp/Dockerfile.kind
           FROM ubuntu:22.04
           RUN apt-get update && apt-get install -y ca-certificates dumb-init && rm -rf /var/lib/apt/lists/*
@@ -150,19 +151,7 @@ jobs:
           echo "=== Image built ==="
 
           echo ""
-          echo "=== Pre-pulling KinD node image (avoids pull during cluster creation) ==="
-          docker pull kindest/node:v1.35.0@sha256:452d707d4862f52530247495d180205e029056831160e22870e37e3f6c1ac31f
-
-          echo ""
-          echo "=== Verifying module deps ==="
-          go mod download
-          go list ./topgun/...
-
-          echo ""
           echo "=== Running K8s integration tests (KinD cluster) ==="
-          echo "This creates an ephemeral KinD cluster, deploys Concourse"
-          echo "via Helm, and runs the topgun integration suite."
-          echo ""
           go test ./topgun/k8s/integration/ -count=1 -v -timeout 30m
           echo "=== K8s integration tests passed ==="
 
@@ -185,8 +174,12 @@ jobs:
         args:
         - -exc
         - |
+          cd /src
+
+          echo "=== Building concourse binary (before Docker to avoid resource contention) ==="
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o concourse-linux-amd64 ./cmd/concourse
+
           echo "=== Starting Docker daemon (DinD) ==="
-          # Clean up stale daemon from reused containers.
           rm -f /var/run/docker.pid
           killall dockerd 2>/dev/null || true
           sleep 1
@@ -203,11 +196,10 @@ jobs:
             sleep 2
           done
 
-          cd /src
+          echo "=== Pre-pulling KinD node image ==="
+          docker pull kindest/node:v1.35.0@sha256:452d707d4862f52530247495d180205e029056831160e22870e37e3f6c1ac31f
 
-          echo "=== Building concourse image for KinD ==="
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o concourse-linux-amd64 ./cmd/concourse
-
+          echo "=== Building concourse Docker image for KinD ==="
           cat <<'DOCKERFILE' > /tmp/Dockerfile.kind
           FROM ubuntu:22.04
           RUN apt-get update && apt-get install -y ca-certificates dumb-init && rm -rf /var/lib/apt/lists/*
@@ -218,10 +210,6 @@ jobs:
           DOCKERFILE
           docker build -f /tmp/Dockerfile.kind -t concourse-local:latest .
           echo "=== Image built ==="
-
-          echo ""
-          echo "=== Pre-pulling KinD node image ==="
-          docker pull kindest/node:v1.35.0@sha256:452d707d4862f52530247495d180205e029056831160e22870e37e3f6c1ac31f
 
           echo ""
           echo "=== Running K8s behavioral tests (2 parallel KinD clusters) ==="
