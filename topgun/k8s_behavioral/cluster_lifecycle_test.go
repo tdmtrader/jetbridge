@@ -84,9 +84,22 @@ func createKindCluster() string {
 	// Delete any leftover cluster from a previous interrupted run.
 	kindProvider.Delete(kindClusterName, "")
 
+	// KinD config with extended timeouts for DinD environments where
+	// kubeadm init is slower due to nested filesystems (fuse-overlayfs/vfs).
+	kindConfig := []byte(`kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+kubeadmConfigPatches:
+- |
+  apiVersion: kubeadm.k8s.io/v1beta3
+  kind: ClusterConfiguration
+  apiServer:
+    timeoutForControlPlane: 8m0s
+`)
+
 	log.Printf("Creating KinD cluster %q...", kindClusterName)
 	err := kindProvider.Create(kindClusterName,
-		cluster.CreateWithWaitForReady(5*time.Minute),
+		cluster.CreateWithRawConfig(kindConfig),
+		cluster.CreateWithWaitForReady(10*time.Minute),
 		cluster.CreateWithDisplayUsage(false),
 		cluster.CreateWithDisplaySalutation(false),
 	)
