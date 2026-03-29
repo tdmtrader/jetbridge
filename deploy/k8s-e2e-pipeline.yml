@@ -140,8 +140,8 @@ jobs:
             sleep 2
           done
 
-          echo "=== Pre-pulling KinD node image (v1.35.0 = KinD v0.31 default) ==="
-          docker pull kindest/node:v1.35.0@sha256:452d707d4862f52530247495d180205e029056831160e22870e37e3f6c1ac31f
+          echo "=== Pre-pulling KinD node image ==="
+          docker pull kindest/node:v1.29.12
 
           echo "=== Building concourse Docker image for KinD ==="
           cat <<'DOCKERFILE' > /tmp/Dockerfile.kind
@@ -217,8 +217,8 @@ jobs:
             sleep 2
           done
 
-          echo "=== Pre-pulling KinD node image (v1.35.0 = KinD v0.31 default) ==="
-          docker pull kindest/node:v1.35.0@sha256:452d707d4862f52530247495d180205e029056831160e22870e37e3f6c1ac31f
+          echo "=== Pre-pulling KinD node image ==="
+          docker pull kindest/node:v1.29.12
 
           echo "=== Building concourse Docker image for KinD ==="
           cat <<'DOCKERFILE' > /tmp/Dockerfile.kind

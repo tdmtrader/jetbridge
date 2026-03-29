@@ -83,28 +83,47 @@ func createKindCluster() string {
 	// Delete any leftover cluster from a previous interrupted run.
 	kindProvider.Delete(kindClusterName, "")
 
-	// Default KinD node image (v1.35 for KinD v0.31). The kubeadm default
-	// timeout for control plane health check is 4 minutes, which is too short
-	// for DinD environments even with tmpfs+overlay2. Extend to 15 minutes
-	// by patching InitConfiguration.timeouts (the field is supported in K8s
-	// 1.31+ v1beta3 when the Timeouts feature is Beta/GA).
+	// Use K8s 1.29 where timeoutForControlPlane is the sole respected
+	// timeout (Timeouts feature is Alpha/disabled in 1.29). Extend to 15m
+	// because DinD environments are CPU-constrained even with tmpfs+overlay2.
 	kindConfig := []byte(`kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+- role: control-plane
+  image: kindest/node:v1.29.12
 kubeadmConfigPatches:
 - |
-  kind: InitConfiguration
-  timeouts:
-    controlPlaneComponentHealthCheck: 15m0s
+  kind: ClusterConfiguration
+  timeoutForControlPlane: 15m0s
 `)
 
-	log.Printf("Creating KinD cluster %q...", kindClusterName)
+	log.Printf("Creating KinD cluster %q (config:\n%s)...", kindClusterName, string(kindConfig))
 	err := kindProvider.Create(kindClusterName,
 		cluster.CreateWithRawConfig(kindConfig),
-		cluster.CreateWithWaitForReady(10*time.Minute),
+		cluster.CreateWithRetain(true),
+		cluster.CreateWithWaitForReady(20*time.Minute),
 		cluster.CreateWithDisplayUsage(false),
 		cluster.CreateWithDisplaySalutation(false),
 	)
 	if err != nil {
+		// Diagnostic: dump kubeadm.conf via docker cp (works on stopped containers)
+		containerName := kindClusterName + "-control-plane"
+		tmpConf := filepath.Join(os.TempDir(), "kubeadm-debug.conf")
+		cpCmd := exec.Command("docker", "cp", containerName+":/kind/kubeadm.conf", tmpConf)
+		if cpErr := cpCmd.Run(); cpErr == nil {
+			if data, readErr := os.ReadFile(tmpConf); readErr == nil {
+				log.Printf("=== /kind/kubeadm.conf from %s ===\n%s", containerName, string(data))
+			} else {
+				log.Printf("read kubeadm-debug.conf failed: %v", readErr)
+			}
+		} else {
+			log.Printf("docker cp kubeadm.conf failed: %v", cpErr)
+		}
+		// Also check if the container still exists
+		psCmd := exec.Command("docker", "ps", "-a", "--filter", "name="+containerName)
+		if out, psErr := psCmd.CombinedOutput(); psErr == nil {
+			log.Printf("=== docker ps for %s ===\n%s", containerName, string(out))
+		}
 		log.Fatalf("failed to create KinD cluster: %v", err)
 	}
 
