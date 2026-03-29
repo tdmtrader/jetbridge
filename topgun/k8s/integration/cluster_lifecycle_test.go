@@ -81,12 +81,12 @@ func createKindCluster() string {
 	kubeconfigPath := filepath.Join(os.TempDir(), "kind-kubeconfig-"+kindClusterName)
 
 	// Delete any leftover cluster from a previous interrupted run.
-	kindProvider.Delete(kindClusterName, "")
+	exec.Command("kind", "delete", "cluster", "--name", kindClusterName).Run()
 
-	// Use K8s 1.29 where timeoutForControlPlane is the sole respected
-	// timeout (Timeouts feature is Alpha/disabled in 1.29). Extend to 15m
-	// because DinD environments are CPU-constrained even with tmpfs+overlay2.
-	kindConfig := []byte(`kind: Cluster
+	// Use kind CLI directly (not Go library) for transparent control over
+	// config, timeouts, and diagnostics. Write config to file so we can
+	// verify exactly what kind receives.
+	kindConfigYAML := `kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 nodes:
 - role: control-plane
@@ -95,44 +95,55 @@ kubeadmConfigPatches:
 - |
   kind: ClusterConfiguration
   timeoutForControlPlane: 15m0s
-`)
+`
+	kindConfigPath := filepath.Join(os.TempDir(), "kind-config.yaml")
+	if writeErr := os.WriteFile(kindConfigPath, []byte(kindConfigYAML), 0644); writeErr != nil {
+		log.Fatalf("failed to write kind config: %v", writeErr)
+	}
+	log.Printf("KinD config written to %s:\n%s", kindConfigPath, kindConfigYAML)
 
-	log.Printf("Creating KinD cluster %q (config:\n%s)...", kindClusterName, string(kindConfig))
-	err := kindProvider.Create(kindClusterName,
-		cluster.CreateWithRawConfig(kindConfig),
-		cluster.CreateWithRetain(true),
-		cluster.CreateWithWaitForReady(20*time.Minute),
-		cluster.CreateWithDisplayUsage(false),
-		cluster.CreateWithDisplaySalutation(false),
+	// Use --retain to keep the node container on failure for diagnostics.
+	// Use --wait to control the outer ready-check timeout.
+	cmd := exec.Command("kind", "create", "cluster",
+		"--name", kindClusterName,
+		"--config", kindConfigPath,
+		"--retain",
+		"--wait", "20m",
+		"--verbosity", "6",
 	)
+	cmd.Stdout = os.Stderr
+	cmd.Stderr = os.Stderr
+	err := cmd.Run()
 	if err != nil {
-		// Diagnostic: dump kubeadm.conf via docker cp (works on stopped containers)
+		// Dump kubeadm.conf from retained node via docker cp
 		containerName := kindClusterName + "-control-plane"
+		log.Printf("=== Diagnostics for failed cluster ===")
+
+		psCmd := exec.Command("docker", "ps", "-a", "--filter", "name="+containerName, "--format", "{{.ID}} {{.Status}}")
+		if out, _ := psCmd.CombinedOutput(); len(out) > 0 {
+			log.Printf("Container status: %s", strings.TrimSpace(string(out)))
+		}
+
 		tmpConf := filepath.Join(os.TempDir(), "kubeadm-debug.conf")
 		cpCmd := exec.Command("docker", "cp", containerName+":/kind/kubeadm.conf", tmpConf)
 		if cpErr := cpCmd.Run(); cpErr == nil {
-			if data, readErr := os.ReadFile(tmpConf); readErr == nil {
-				log.Printf("=== /kind/kubeadm.conf from %s ===\n%s", containerName, string(data))
-			} else {
-				log.Printf("read kubeadm-debug.conf failed: %v", readErr)
+			if data, _ := os.ReadFile(tmpConf); len(data) > 0 {
+				log.Printf("=== /kind/kubeadm.conf ===\n%s", string(data))
 			}
 		} else {
-			log.Printf("docker cp kubeadm.conf failed: %v", cpErr)
+			log.Printf("docker cp failed: %v", cpErr)
 		}
-		// Also check if the container still exists
-		psCmd := exec.Command("docker", "ps", "-a", "--filter", "name="+containerName)
-		if out, psErr := psCmd.CombinedOutput(); psErr == nil {
-			log.Printf("=== docker ps for %s ===\n%s", containerName, string(out))
-		}
-		log.Fatalf("failed to create KinD cluster: %v", err)
+
+		log.Fatalf("kind create cluster failed: %v", err)
 	}
 
-	// Export kubeconfig to a file for helm/kubectl CLI commands.
-	kubeconfig, err := kindProvider.KubeConfig(kindClusterName, false)
+	// Export kubeconfig via kind CLI to a file for helm/kubectl commands.
+	exportCmd := exec.Command("kind", "get", "kubeconfig", "--name", kindClusterName)
+	kubeconfig, err := exportCmd.Output()
 	if err != nil {
 		log.Fatalf("failed to get kubeconfig from KinD: %v", err)
 	}
-	if err := os.WriteFile(kubeconfigPath, []byte(kubeconfig), 0600); err != nil {
+	if err := os.WriteFile(kubeconfigPath, kubeconfig, 0600); err != nil {
 		log.Fatalf("failed to write kubeconfig: %v", err)
 	}
 
@@ -546,7 +557,7 @@ func resolveEndpoint(endpoint string) string {
 	return resolved
 }
 
-// deleteKindCluster deletes the KinD cluster via the Go library
+// deleteKindCluster deletes the KinD cluster via the kind CLI
 // unless SKIP_TEARDOWN is set.
 func deleteKindCluster() {
 	if os.Getenv("SKIP_TEARDOWN") == "1" {
@@ -554,7 +565,10 @@ func deleteKindCluster() {
 		return
 	}
 	log.Printf("Deleting KinD cluster %q...", kindClusterName)
-	if err := kindProvider.Delete(kindClusterName, ""); err != nil {
+	cmd := exec.Command("kind", "delete", "cluster", "--name", kindClusterName)
+	cmd.Stdout = os.Stderr
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
 		log.Printf("warning: failed to delete KinD cluster: %v", err)
 	}
 }
