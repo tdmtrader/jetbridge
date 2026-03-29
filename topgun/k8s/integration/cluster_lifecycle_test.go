@@ -87,6 +87,10 @@ func createKindCluster() string {
 	// Use K8s 1.31 node image: KinD generates kubeadm v1beta3 config, and
 	// timeoutForControlPlane was removed from v1beta3 in K8s 1.32+. Using
 	// 1.31 lets us set the timeout to survive slow DinD environments.
+	//
+	// IMPORTANT: KinD's patch logic ignores patches that don't set apiVersion
+	// (see sigs.k8s.io/kind/pkg/internal/patch/kubeyaml.go). The apiVersion
+	// MUST be present for the merge patch to be applied.
 	kindConfig := []byte(`kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 nodes:
@@ -94,6 +98,7 @@ nodes:
   image: kindest/node:v1.31.6@sha256:28b7cbb993dfe093c76641a0c95807637213c9109b761f1d422c2400e22b8e87
 kubeadmConfigPatches:
 - |
+  apiVersion: kubeadm.k8s.io/v1beta3
   kind: ClusterConfiguration
   timeoutForControlPlane: 10m0s
 `)

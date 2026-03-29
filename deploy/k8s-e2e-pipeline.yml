@@ -121,7 +121,10 @@ jobs:
           rm -f /var/run/docker.pid
           killall dockerd 2>/dev/null || true
           sleep 1
+          # Use fuse-overlayfs storage driver explicitly — auto-detect may fall
+          # back to vfs which is too slow for kubeadm init to complete in time.
           /usr/local/bin/dockerd --host=unix:///var/run/docker.sock \
+                  --storage-driver=fuse-overlayfs \
                   --log-level=warn &
           DOCKERD_PID=$!
 
@@ -129,6 +132,7 @@ jobs:
           for i in $(seq 1 30); do
             if docker info >/dev/null 2>&1; then
               echo "Docker daemon ready"
+              docker info | grep "Storage Driver"
               break
             fi
             sleep 2
@@ -183,7 +187,10 @@ jobs:
           rm -f /var/run/docker.pid
           killall dockerd 2>/dev/null || true
           sleep 1
+          # Use fuse-overlayfs storage driver explicitly — auto-detect may fall
+          # back to vfs which is too slow for kubeadm init to complete in time.
           /usr/local/bin/dockerd --host=unix:///var/run/docker.sock \
+                  --storage-driver=fuse-overlayfs \
                   --log-level=warn &
           DOCKERD_PID=$!
 
@@ -191,6 +198,7 @@ jobs:
           for i in $(seq 1 30); do
             if docker info >/dev/null 2>&1; then
               echo "Docker daemon ready"
+              docker info | grep "Storage Driver"
               break
             fi
             sleep 2
