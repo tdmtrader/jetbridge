@@ -51,20 +51,30 @@ func main() {
 		logger.Info("skipping-node-labeling", lager.Data{"reason": "no --node-name provided"})
 	}
 
-	// Start TTL sweeper in background.
-	sweepDone := make(chan struct{})
-	sweeper := NewSweeper(logger, *storagePath, *ttl, 5*time.Minute)
-	go func() {
-		sweeper.Run(sweepDone)
-	}()
-
 	server := NewServer(logger, *storagePath)
+
+	// Set up alias persistence so volume-handle mappings survive restarts.
+	aliasStore := NewAliasStore(logger, *storagePath)
+	server.Registry().SetAliasStore(aliasStore)
 
 	// Scan hostPath at startup to populate registry with existing artifacts.
 	if err := server.Registry().ScanHostPath(*storagePath); err != nil {
 		logger.Error("failed-to-scan-hostpath", err)
 		// Non-fatal — daemon can still serve explicitly registered artifacts.
 	}
+
+	// Load persisted aliases (after scan so stale validation can check paths).
+	if err := server.Registry().LoadAliases(); err != nil {
+		logger.Error("failed-to-load-aliases", err)
+		// Non-fatal — aliases will be re-registered by ATC on next build.
+	}
+
+	// Start TTL sweeper in background (with registry ref for alias cleanup).
+	sweepDone := make(chan struct{})
+	sweeper := NewSweeper(logger, *storagePath, *ttl, 5*time.Minute, server.Registry())
+	go func() {
+		sweeper.Run(sweepDone)
+	}()
 
 	// Set up peer resolver for cross-node artifact resolution.
 	if *nodeName != "" {

@@ -128,6 +128,101 @@ func TestRegistry_ScanHostPath(t *testing.T) {
 	}
 }
 
+func TestRegistry_RegisterAliasPersists(t *testing.T) {
+	dir := t.TempDir()
+	logger := lagertest.NewTestLogger("registry")
+
+	// Create real directory for the alias path.
+	diskPath := filepath.Join(dir, "steps", "container-abc", "result")
+	os.MkdirAll(diskPath, 0755)
+
+	// Registry 1: register an alias and verify it persists.
+	r1 := daemon.NewRegistry(logger)
+	store := daemon.NewAliasStore(logger, dir)
+	r1.SetAliasStore(store)
+
+	r1.RegisterAlias("vol-handle-xyz", diskPath)
+
+	// Registry 2: load from the same store and verify the alias is there.
+	r2 := daemon.NewRegistry(logger)
+	r2.SetAliasStore(store)
+	if err := r2.LoadAliases(); err != nil {
+		t.Fatalf("LoadAliases: %v", err)
+	}
+
+	path, ok := r2.Lookup("vol-handle-xyz")
+	if !ok {
+		t.Fatal("expected alias to be loaded from disk")
+	}
+	if path != diskPath {
+		t.Errorf("expected %q, got %q", diskPath, path)
+	}
+}
+
+func TestRegistry_RemoveByPath(t *testing.T) {
+	dir := t.TempDir()
+	logger := lagertest.NewTestLogger("registry")
+
+	path1 := filepath.Join(dir, "steps", "abc", "result")
+	path2 := filepath.Join(dir, "steps", "abc", "logs")
+	path3 := filepath.Join(dir, "steps", "def", "output")
+	os.MkdirAll(path1, 0755)
+	os.MkdirAll(path2, 0755)
+	os.MkdirAll(path3, 0755)
+
+	r := daemon.NewRegistry(logger)
+	store := daemon.NewAliasStore(logger, dir)
+	r.SetAliasStore(store)
+
+	r.RegisterAlias("vol-1", path1)
+	r.RegisterAlias("vol-2", path2)
+	r.RegisterAlias("vol-3", path3)
+
+	// Remove all entries under steps/abc.
+	r.RemoveByPath(filepath.Join(dir, "steps", "abc"))
+
+	if _, ok := r.Lookup("vol-1"); ok {
+		t.Error("vol-1 should have been removed")
+	}
+	if _, ok := r.Lookup("vol-2"); ok {
+		t.Error("vol-2 should have been removed")
+	}
+	if _, ok := r.Lookup("vol-3"); !ok {
+		t.Error("vol-3 should still exist")
+	}
+
+	// Verify persistence: only vol-3 should be in aliases.json.
+	r2 := daemon.NewRegistry(logger)
+	r2.SetAliasStore(store)
+	r2.LoadAliases()
+	if r2.Len() != 1 {
+		t.Errorf("expected 1 persisted alias, got %d", r2.Len())
+	}
+}
+
+func TestRegistry_RemoveAlsoUpdatesAliasFile(t *testing.T) {
+	dir := t.TempDir()
+	logger := lagertest.NewTestLogger("registry")
+
+	diskPath := filepath.Join(dir, "steps", "abc", "result")
+	os.MkdirAll(diskPath, 0755)
+
+	r := daemon.NewRegistry(logger)
+	store := daemon.NewAliasStore(logger, dir)
+	r.SetAliasStore(store)
+
+	r.RegisterAlias("vol-abc", diskPath)
+	r.Remove("vol-abc")
+
+	// Load fresh and verify it's gone.
+	r2 := daemon.NewRegistry(logger)
+	r2.SetAliasStore(store)
+	r2.LoadAliases()
+	if _, ok := r2.Lookup("vol-abc"); ok {
+		t.Error("expected vol-abc to be removed from persisted aliases")
+	}
+}
+
 func TestRegistry_ScanHostPath_EmptyDir(t *testing.T) {
 	logger := lagertest.NewTestLogger("registry")
 	r := daemon.NewRegistry(logger)

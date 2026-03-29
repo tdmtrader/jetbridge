@@ -32,7 +32,7 @@ func TestSweeper_RemovesExpiredArtifacts(t *testing.T) {
 	}
 
 	logger := lagertest.NewTestLogger("sweeper")
-	sweeper := daemon.NewSweeper(logger, storagePath, 2*time.Hour, 5*time.Minute)
+	sweeper := daemon.NewSweeper(logger, storagePath, 2*time.Hour, 5*time.Minute, nil)
 
 	sweeper.SweepOnce()
 
@@ -58,7 +58,7 @@ func TestSweeper_RemovesExpiredLegacyFlatFiles(t *testing.T) {
 	os.Chtimes(oldFile, time.Now().Add(-3*time.Hour), time.Now().Add(-3*time.Hour))
 
 	logger := lagertest.NewTestLogger("sweeper")
-	sweeper := daemon.NewSweeper(logger, storagePath, 2*time.Hour, 5*time.Minute)
+	sweeper := daemon.NewSweeper(logger, storagePath, 2*time.Hour, 5*time.Minute, nil)
 
 	sweeper.SweepOnce()
 
@@ -72,13 +72,11 @@ func TestSweeper_NoArtifactsDir(t *testing.T) {
 	// Don't create artifacts dir — sweep should handle gracefully
 
 	logger := lagertest.NewTestLogger("sweeper")
-	sweeper := daemon.NewSweeper(logger, storagePath, 2*time.Hour, 5*time.Minute)
+	sweeper := daemon.NewSweeper(logger, storagePath, 2*time.Hour, 5*time.Minute, nil)
 
 	// Should not panic
 	sweeper.SweepOnce()
 }
-
-// Phase 6: Build-aware sweeper tests
 
 func TestSweeper_SkipsCachesDirectory(t *testing.T) {
 	storagePath := t.TempDir()
@@ -90,7 +88,7 @@ func TestSweeper_SkipsCachesDirectory(t *testing.T) {
 	os.Chtimes(cacheDir, time.Now().Add(-5*time.Hour), time.Now().Add(-5*time.Hour))
 
 	logger := lagertest.NewTestLogger("sweeper")
-	sweeper := daemon.NewSweeper(logger, storagePath, 2*time.Hour, 5*time.Minute)
+	sweeper := daemon.NewSweeper(logger, storagePath, 2*time.Hour, 5*time.Minute, nil)
 
 	sweeper.SweepOnce()
 
@@ -103,19 +101,19 @@ func TestSweeper_SkipsCachesDirectory(t *testing.T) {
 func TestSweeper_RemovesExpiredStepDirectories(t *testing.T) {
 	storagePath := t.TempDir()
 
-	// Create an old step directory
-	oldStep := filepath.Join(storagePath, "artifacts", "steps", "old-handle")
+	// Create an old step directory (under steps/, not artifacts/steps/)
+	oldStep := filepath.Join(storagePath, "steps", "old-handle")
 	os.MkdirAll(filepath.Join(oldStep, "output"), 0755)
 	os.WriteFile(filepath.Join(oldStep, "output", "file.txt"), []byte("x"), 0644)
 	os.Chtimes(oldStep, time.Now().Add(-3*time.Hour), time.Now().Add(-3*time.Hour))
 
 	// Create a fresh step directory
-	freshStep := filepath.Join(storagePath, "artifacts", "steps", "fresh-handle")
+	freshStep := filepath.Join(storagePath, "steps", "fresh-handle")
 	os.MkdirAll(filepath.Join(freshStep, "output"), 0755)
 	os.WriteFile(filepath.Join(freshStep, "output", "file.txt"), []byte("y"), 0644)
 
 	logger := lagertest.NewTestLogger("sweeper")
-	sweeper := daemon.NewSweeper(logger, storagePath, 2*time.Hour, 5*time.Minute)
+	sweeper := daemon.NewSweeper(logger, storagePath, 2*time.Hour, 5*time.Minute, nil)
 
 	sweeper.SweepOnce()
 
@@ -127,5 +125,49 @@ func TestSweeper_RemovesExpiredStepDirectories(t *testing.T) {
 	// Fresh step directory should remain
 	if _, err := os.Stat(freshStep); err != nil {
 		t.Error("expected fresh step directory to remain")
+	}
+}
+
+func TestSweeper_CleansUpAliasesOnRemove(t *testing.T) {
+	storagePath := t.TempDir()
+	logger := lagertest.NewTestLogger("sweeper")
+
+	// Create a step directory that will expire.
+	oldStep := filepath.Join(storagePath, "steps", "container-abc")
+	resultDir := filepath.Join(oldStep, "result")
+	os.MkdirAll(resultDir, 0755)
+	os.WriteFile(filepath.Join(resultDir, "data.txt"), []byte("hello"), 0644)
+	os.Chtimes(oldStep, time.Now().Add(-3*time.Hour), time.Now().Add(-3*time.Hour))
+
+	// Set up registry with alias store and register an alias pointing into that step dir.
+	registry := daemon.NewRegistry(logger)
+	aliasStore := daemon.NewAliasStore(logger, storagePath)
+	registry.SetAliasStore(aliasStore)
+	registry.RegisterAlias("vol-cached-xyz", resultDir)
+
+	// Verify alias is there.
+	if _, ok := registry.Lookup("vol-cached-xyz"); !ok {
+		t.Fatal("alias should exist before sweep")
+	}
+
+	sweeper := daemon.NewSweeper(logger, storagePath, 2*time.Hour, 5*time.Minute, registry)
+	sweeper.SweepOnce()
+
+	// Step directory should be removed.
+	if _, err := os.Stat(oldStep); !os.IsNotExist(err) {
+		t.Error("expected old step to be removed")
+	}
+
+	// Alias should be cleaned up from registry.
+	if _, ok := registry.Lookup("vol-cached-xyz"); ok {
+		t.Error("expected alias to be removed after sweep")
+	}
+
+	// Verify the alias file is also updated (load into fresh registry).
+	r2 := daemon.NewRegistry(logger)
+	r2.SetAliasStore(aliasStore)
+	r2.LoadAliases()
+	if _, ok := r2.Lookup("vol-cached-xyz"); ok {
+		t.Error("expected alias to be gone from persisted file after sweep")
 	}
 }

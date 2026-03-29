@@ -19,15 +19,19 @@ type Sweeper struct {
 	storagePath string
 	ttl         time.Duration
 	interval    time.Duration
+	registry    *Registry
 }
 
-// NewSweeper creates a new Sweeper.
-func NewSweeper(logger lager.Logger, storagePath string, ttl, interval time.Duration) *Sweeper {
+// NewSweeper creates a new Sweeper. The registry parameter is used to clean
+// up alias entries when step directories are removed. Pass nil to skip alias
+// cleanup (e.g. in tests that don't need it).
+func NewSweeper(logger lager.Logger, storagePath string, ttl, interval time.Duration, registry *Registry) *Sweeper {
 	return &Sweeper{
 		logger:      logger,
 		storagePath: storagePath,
 		ttl:         ttl,
 		interval:    interval,
+		registry:    registry,
 	}
 }
 
@@ -52,7 +56,7 @@ func (s *Sweeper) sweep() {
 	removed := 0
 
 	// Sweep step directories: each child of /steps/ is a container handle dir.
-	stepsDir := filepath.Join(s.storagePath, "artifacts", "steps")
+	stepsDir := filepath.Join(s.storagePath, "steps")
 	entries, err := os.ReadDir(stepsDir)
 	if err == nil {
 		for _, entry := range entries {
@@ -68,6 +72,9 @@ func (s *Sweeper) sweep() {
 				if err := os.RemoveAll(handleDir); err != nil {
 					logger.Error("failed-to-remove-step-dir", err, lager.Data{"path": handleDir})
 				} else {
+					if s.registry != nil {
+						s.registry.RemoveByPath(handleDir)
+					}
 					removed++
 				}
 			}

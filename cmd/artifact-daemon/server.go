@@ -237,7 +237,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.registry.Register(req.Key, req.LocalPath)
+	s.registry.RegisterAlias(req.Key, req.LocalPath)
 
 	s.logger.Info("registered", lager.Data{"key": req.Key, "path": req.LocalPath})
 	w.WriteHeader(http.StatusCreated)

@@ -13,7 +13,7 @@ func TestRegisterEndpoint(t *testing.T) {
 	ts, storagePath := setupServer(t)
 
 	// Create a directory to register.
-	artifactDir := filepath.Join(storagePath, "artifacts", "steps", "handle-1", "result")
+	artifactDir := filepath.Join(storagePath, "steps", "handle-1", "result")
 	os.MkdirAll(artifactDir, 0755)
 	os.WriteFile(filepath.Join(artifactDir, "data.txt"), []byte("hello"), 0644)
 
@@ -70,7 +70,7 @@ func TestResolveEndpoint_LocalRegistry(t *testing.T) {
 	ts, storagePath := setupServer(t)
 
 	// Create source artifact.
-	srcDir := filepath.Join(storagePath, "artifacts", "steps", "handle-a", "out")
+	srcDir := filepath.Join(storagePath, "steps", "handle-a", "out")
 	os.MkdirAll(srcDir, 0755)
 	os.WriteFile(filepath.Join(srcDir, "output.txt"), []byte("artifact data"), 0644)
 
@@ -120,7 +120,7 @@ func TestResolveEndpoint_FilesystemFallback(t *testing.T) {
 	ts, storagePath := setupServer(t)
 
 	// Create artifact on disk but DON'T register it.
-	srcDir := filepath.Join(storagePath, "artifacts", "steps", "handle-b", "dir")
+	srcDir := filepath.Join(storagePath, "steps", "handle-b", "dir")
 	os.MkdirAll(srcDir, 0755)
 	os.WriteFile(filepath.Join(srcDir, "file.txt"), []byte("fallback data"), 0644)
 
@@ -192,7 +192,7 @@ func TestResolveEndpoint_MultipleFiles(t *testing.T) {
 	ts, storagePath := setupServer(t)
 
 	// Create source with multiple files and subdirectories.
-	srcDir := filepath.Join(storagePath, "artifacts", "steps", "handle-c", "result")
+	srcDir := filepath.Join(storagePath, "steps", "handle-c", "result")
 	os.MkdirAll(filepath.Join(srcDir, "subdir"), 0755)
 	os.WriteFile(filepath.Join(srcDir, "a.txt"), []byte("aaa"), 0644)
 	os.WriteFile(filepath.Join(srcDir, "b.txt"), []byte("bbb"), 0644)
@@ -234,7 +234,7 @@ func TestResolveEndpoint_StartupScanThenResolve(t *testing.T) {
 	// Create artifact on disk BEFORE server starts (simulating pre-existing data).
 	// The setupServer already ran, but we can simulate by creating the dir and
 	// relying on the filesystem fallback (step 2 in resolve).
-	srcDir := filepath.Join(storagePath, "artifacts", "steps", "old-handle", "output")
+	srcDir := filepath.Join(storagePath, "steps", "old-handle", "output")
 	os.MkdirAll(srcDir, 0755)
 	os.WriteFile(filepath.Join(srcDir, "legacy.txt"), []byte("old data"), 0644)
 
