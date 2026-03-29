@@ -186,6 +186,9 @@ func helmDeployConcourse(kubeconfig, namespace, chartPath, image string) {
 		"--set", fmt.Sprintf("image.repository=%s", repo),
 		"--set", fmt.Sprintf("image.tag=%s", tag),
 		"--set", "image.pullPolicy=IfNotPresent",
+		// Use emptyDir for PostgreSQL — ephemeral test clusters don't need
+		// persistent storage, and PVC provisioning can stall in DinD.
+		"--set", "postgresql.persistence.enabled=false",
 		"--timeout", "5m",
 	}
 	for i, arg := range extraArgs {
