@@ -112,10 +112,9 @@ jobs:
         - |
           cd /src
 
-          echo "=== Building concourse binary (before Docker to avoid resource contention) ==="
+          echo "=== Pre-compiling everything before Docker (avoids CPU contention with containerd) ==="
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o concourse-linux-amd64 ./cmd/concourse
-
-          echo "=== Verifying module deps ==="
+          go test -c -o /tmp/integration.test ./topgun/k8s/integration/
           go mod download
 
           echo "=== Starting Docker daemon (DinD) ==="
@@ -151,8 +150,8 @@ jobs:
           echo "=== Image built ==="
 
           echo ""
-          echo "=== Running K8s integration tests (KinD cluster) ==="
-          go test ./topgun/k8s/integration/ -count=1 -v -timeout 30m
+          echo "=== Running K8s integration tests (pre-compiled, KinD cluster) ==="
+          /tmp/integration.test -test.v -test.timeout 30m -test.count 1
           echo "=== K8s integration tests passed ==="
 
           kill $DOCKERD_PID 2>/dev/null || true
@@ -176,8 +175,9 @@ jobs:
         - |
           cd /src
 
-          echo "=== Building concourse binary (before Docker to avoid resource contention) ==="
+          echo "=== Pre-compiling everything before Docker (avoids CPU contention with containerd) ==="
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o concourse-linux-amd64 ./cmd/concourse
+          go test -c -o /tmp/behavioral.test ./topgun/k8s_behavioral/
 
           echo "=== Starting Docker daemon (DinD) ==="
           rm -f /var/run/docker.pid
@@ -212,10 +212,10 @@ jobs:
           echo "=== Image built ==="
 
           echo ""
-          echo "=== Running K8s behavioral tests (2 parallel KinD clusters) ==="
+          echo "=== Running K8s behavioral tests (pre-compiled, 2 parallel KinD clusters) ==="
           echo "This will take 2-3 hours."
           echo ""
-          ginkgo --procs=${K8S_PROCS:-2} -v --timeout=3h ./topgun/k8s_behavioral/
+          ginkgo --procs=${K8S_PROCS:-2} -v --timeout=3h /tmp/behavioral.test
           echo "=== K8s behavioral tests passed ==="
 
           kill $DOCKERD_PID 2>/dev/null || true
