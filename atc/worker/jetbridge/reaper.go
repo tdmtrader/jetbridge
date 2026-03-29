@@ -207,7 +207,7 @@ func (r *Reaper) cleanupDaemonSetArtifacts(ctx context.Context, logger lager.Log
 	}
 
 	for _, handle := range handles {
-		if strings.Contains(handle, "/") || strings.Contains(handle, "..") || handle == "" {
+		if strings.HasPrefix(handle, "/") || strings.Contains(handle, "..") || handle == "" {
 			continue
 		}
 		key := ArtifactKey(handle)

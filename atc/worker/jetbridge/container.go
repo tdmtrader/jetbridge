@@ -1160,9 +1160,10 @@ func (c *Container) buildVolumeMounts() ([]corev1.Volume, []corev1.VolumeMount) 
 			basePath = filepath.Join(c.config.ArtifactDaemonHostPath, "caches")
 		}
 		dirType := corev1.HostPathDirectoryOrCreate
-		for i, cachePath := range resolvedCaches {
+		for _, cachePath := range resolvedCaches {
 			key := stableCacheKey(c.metadata.JobID, c.metadata.StepName, cachePath)
-			name := fmt.Sprintf("cache-%d", i)
+			name := fmt.Sprintf("cache-%d", idx)
+			idx++
 			volumes = append(volumes, corev1.Volume{
 				Name: name,
 				VolumeSource: corev1.VolumeSource{
@@ -1180,8 +1181,9 @@ func (c *Container) buildVolumeMounts() ([]corev1.Volume, []corev1.VolumeMount) 
 
 	default: // CacheStoreEmptyDir or unknown
 		// Ephemeral emptyDir volumes. Caches are lost on pod termination.
-		for i, cachePath := range resolvedCaches {
-			name := fmt.Sprintf("cache-%d", i)
+		for _, cachePath := range resolvedCaches {
+			name := fmt.Sprintf("cache-%d", idx)
+			idx++
 			volumes = append(volumes, corev1.Volume{
 				Name: name,
 				VolumeSource: corev1.VolumeSource{

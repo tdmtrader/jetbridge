@@ -77,7 +77,7 @@ func (repository *volumeRepository) queryVolumeHandles(tx Tx, cond sq.Eq) ([]str
 	var handles []string
 
 	for rows.Next() {
-		var handle = "handle"
+		var handle string
 		columns := []any{&handle}
 
 		err = rows.Scan(columns...)
