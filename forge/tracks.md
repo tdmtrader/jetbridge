@@ -382,3 +382,8 @@ _Link: [./tracks/deprecate_old_agent_paths_and_update_tests_20260327/](./tracks/
 _Link: [./tracks/daemon_mediated_artifact_resolution_20260327/](./tracks/daemon_mediated_artifact_resolution_20260327/)_
 
 ---
+
+### [ ] Track: Legacy cleanup: dead code, stale config, and broken references
+_Link: [./tracks/legacy_cleanup_dead_code_stale_config_and_broken_references_20260328/](./tracks/legacy_cleanup_dead_code_stale_config_and_broken_references_20260328/)_
+
+---
