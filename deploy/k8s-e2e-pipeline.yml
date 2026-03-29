@@ -150,6 +150,10 @@ jobs:
           echo "=== Image built ==="
 
           echo ""
+          echo "=== Pre-pulling KinD node image (avoids pull during cluster creation) ==="
+          docker pull kindest/node:v1.35.0@sha256:452d707d4862f52530247495d180205e029056831160e22870e37e3f6c1ac31f
+
+          echo ""
           echo "=== Verifying module deps ==="
           go mod download
           go list ./topgun/...
@@ -214,6 +218,10 @@ jobs:
           DOCKERFILE
           docker build -f /tmp/Dockerfile.kind -t concourse-local:latest .
           echo "=== Image built ==="
+
+          echo ""
+          echo "=== Pre-pulling KinD node image ==="
+          docker pull kindest/node:v1.35.0@sha256:452d707d4862f52530247495d180205e029056831160e22870e37e3f6c1ac31f
 
           echo ""
           echo "=== Running K8s behavioral tests (2 parallel KinD clusters) ==="
