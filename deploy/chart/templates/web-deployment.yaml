@@ -169,6 +169,11 @@ spec:
             - --kubernetes-artifact-store-gcs-fuse
             {{- end }}
             {{- end }}
+            {{- if .Values.artifactDaemon.enabled }}
+            - --kubernetes-artifact-daemon-port={{ .Values.artifactDaemon.port | default 7780 }}
+            - --kubernetes-artifact-daemon-host-path={{ .Values.artifactDaemon.hostPath | default "/var/concourse/artifacts" }}
+            - --kubernetes-artifact-daemon-service={{ include "concourse.fullname" . }}-artifact-daemon
+            {{- end }}
             # Tracing
             {{- if .Values.tracing.otlpAddress }}
             - --tracing-otlp-address={{ .Values.tracing.otlpAddress }}

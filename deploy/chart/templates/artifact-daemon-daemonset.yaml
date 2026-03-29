@@ -18,13 +18,14 @@ spec:
         app.kubernetes.io/component: artifact-daemon
     spec:
       serviceAccountName: {{ include "concourse.fullname" . }}-artifact-daemon
+      subdomain: {{ include "concourse.fullname" . }}-artifact-daemon
       terminationGracePeriodSeconds: 30
       containers:
         - name: artifact-daemon
           image: {{ include "concourse.image" . }}
           command:
             - /usr/local/concourse/bin/artifact-daemon
-            - --port={{ .Values.artifactDaemon.port | default 8080 }}
+            - --port={{ .Values.artifactDaemon.port | default 7780 }}
             - --storage-path={{ .Values.artifactDaemon.hostPath | default "/var/concourse/artifacts" }}
             - --ttl={{ .Values.artifactDaemon.ttl | default "2h" }}
             - --node-name=$(NODE_NAME)
@@ -37,7 +38,8 @@ spec:
                   fieldPath: spec.nodeName
           ports:
             - name: http
-              containerPort: {{ .Values.artifactDaemon.port | default 8080 }}
+              containerPort: {{ .Values.artifactDaemon.port | default 7780 }}
+              hostPort: {{ .Values.artifactDaemon.port | default 7780 }}
               protocol: TCP
           livenessProbe:
             httpGet:

@@ -434,8 +434,8 @@ alertingRules:
 artifactDaemon:
   # -- Enable the DaemonSet artifact cache
   enabled: false
-  # -- HTTP server port
-  port: 8080
+  # -- HTTP server port (must match --kubernetes-artifact-daemon-port on the web node)
+  port: 7780
   # -- Host path for artifact storage on each node
   hostPath: /var/concourse/artifacts
   # -- TTL for automatic artifact cleanup (Go duration)
