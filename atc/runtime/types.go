@@ -178,16 +178,12 @@ func (cs *ContainerSpec) Set(key string, value string) {
 	cs.Env = append(cs.Env, envVar)
 }
 
+// Keys returns all environment variable names, implementing
+// propagation.TextMapCarrier for OpenTelemetry trace context injection.
 func (cs *ContainerSpec) Keys() []string {
-	// this implementation isn't technically correct - it gives all environment
-	// vars as the list of keys (rather than just those set by Set), and it
-	// assumes the original keys were all lowercased). from what I can tell,
-	// though, this Keys method isn't currently even used, so this doesn't
-	// matter right now (but may in the future...)
 	keys := make([]string, len(cs.Env))
 	for i, env := range cs.Env {
-		envName := strings.SplitN("=", env, 2)[0]
-		keys[i] = strings.ToLower(envName)
+		keys[i] = strings.ToLower(strings.SplitN(env, "=", 2)[0])
 	}
 	return keys
 }

@@ -43,7 +43,7 @@ func (step *ArtifactInputStep) Run(ctx context.Context, state RunState) (bool, e
 		return false, err
 	}
 
-	// TODO (runtime/#3607): artifact_input_step shouldn't know about db Volumem
+	// TODO (runtime/#3607): artifact_input_step shouldn't know about db Volume;
 	//		has a runState with artifact repo. We could use that.
 	createdVolume, found, err := buildArtifact.Volume(step.build.TeamID())
 	if err != nil {
