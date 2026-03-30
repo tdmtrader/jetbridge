@@ -191,7 +191,11 @@ func helmDeployConcourse(kubeconfig, namespace, chartPath, image string) {
 	log.Printf("Deploying Concourse chart from %s into namespace %s...", chartPath, namespace)
 
 	// Build the list of extra args for the web node.
-	extraArgs := []string{}
+	extraArgs := []string{
+		// Clear the default artifact-daemon-host-path. When non-empty, build
+		// pods require concourse.dev/artifact-cache=ready node label.
+		"--kubernetes-artifact-daemon-host-path=",
+	}
 
 	// When OTEL_EXPORTER_OTLP_ENDPOINT is set, enable server-side tracing.
 	if otlpEndpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"); otlpEndpoint != "" {
