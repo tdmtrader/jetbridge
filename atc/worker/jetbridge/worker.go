@@ -149,11 +149,24 @@ func (w *Worker) buildVolumeMountsForSpec(handle string, spec runtime.ContainerS
 		addMount(w.newVolumeForMount(handle+"-dir", spec.Dir), spec.Dir)
 	}
 
+	// Track input mount paths so overlapping outputs reuse the same volume.
+	// This must match the dedup logic in Container.buildVolumeMounts() — both
+	// use filepath.Clean to normalize trailing slashes on output paths.
+	inputMountPaths := make(map[string]bool, len(spec.Inputs))
 	for i, input := range spec.Inputs {
 		addMount(w.newVolumeForMount(fmt.Sprintf("%s-input-%d", handle, i), input.DestinationPath), input.DestinationPath)
+		inputMountPaths[filepath.Clean(input.DestinationPath)] = true
 	}
 
 	for name, path := range spec.Outputs {
+		// Skip output volumes when an input already covers the same path.
+		// The input volume is the one actually mounted in the K8s pod
+		// (buildVolumeMounts skips the duplicate output), so both
+		// registerOutputs (task_step.go) and recordOutputLocations
+		// (process.go) must agree on using the same volume handle.
+		if inputMountPaths[filepath.Clean(path)] {
+			continue
+		}
 		addMount(w.newVolumeForMount(fmt.Sprintf("%s-output-%s", handle, name), path), path)
 	}
 

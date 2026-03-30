@@ -1473,10 +1473,11 @@ func TestDaemonSetMode_ConcurrentBuildsShareCache(t *testing.T) {
 
 // TestDaemonSetMode_OverlappingInputOutputRecordsInputVolume verifies that
 // when a task declares both an input and output at the same path (e.g.
-// inputs: [{name: repo}], outputs: [{name: repo}]), recordOutputLocations
-// records the INPUT volume's artifact key — not the output volume's key —
-// because the K8s pod only mounts the input volume at the shared path.
-// The output volume is never mounted and contains no data.
+// inputs: [{name: repo}], outputs: [{name: repo}]), only the input volume
+// is created by buildVolumeMountsForSpec (the output volume is skipped).
+// This ensures that registerOutputs (task_step.go) and recordOutputLocations
+// (process.go) both use the same volume handle, so downstream steps can
+// resolve the artifact correctly.
 func TestDaemonSetMode_OverlappingInputOutputRecordsInputVolume(t *testing.T) {
 	locator := NewArtifactLocator()
 
@@ -1485,10 +1486,9 @@ func TestDaemonSetMode_OverlappingInputOutputRecordsInputVolume(t *testing.T) {
 		ArtifactDaemonHostPath: "/var/concourse/artifacts",
 	}
 
-	// Simulate buildVolumeMountsForSpec: creates BOTH input and output volumes
-	// at the same mount path (but with different trailing-slash conventions).
+	// Only the input volume should exist — buildVolumeMountsForSpec skips
+	// the output volume when it overlaps with an input path.
 	inputVol := NewStubVolume("handle-input-0", "test-worker", "/tmp/build/repo")
-	outputVol := NewStubVolume("handle-output-repo", "test-worker", "/tmp/build/repo/")
 
 	c := &Container{
 		handle:  "test-handle",
@@ -1504,7 +1504,7 @@ func TestDaemonSetMode_OverlappingInputOutputRecordsInputVolume(t *testing.T) {
 		},
 		config:          cfg,
 		properties:      make(map[string]string),
-		volumes:         []*Volume{inputVol, outputVol},
+		volumes:         []*Volume{inputVol},
 		artifactLocator: locator,
 	}
 
@@ -1518,8 +1518,7 @@ func TestDaemonSetMode_OverlappingInputOutputRecordsInputVolume(t *testing.T) {
 	p.recordOutputLocations("node-a")
 
 	// The input volume should be recorded since it's the one actually
-	// mounted in the pod. The output volume is never mounted (buildVolumeMounts
-	// skips it) so its handle points to an empty hostPath directory.
+	// mounted in the pod and the only volume created for this path.
 	inputKey := ArtifactKey(inputVol.Handle())
 	loc, found := locator.Locate(inputKey)
 	if !found {
@@ -1528,13 +1527,102 @@ func TestDaemonSetMode_OverlappingInputOutputRecordsInputVolume(t *testing.T) {
 	if loc.NodeName != "node-a" {
 		t.Errorf("expected node node-a, got %s", loc.NodeName)
 	}
+	// The daemonKey should use the output name as subdir since the input
+	// volume's hostPath uses the output name when paths overlap.
+	if loc.HostDir != "test-handle/repo" {
+		t.Errorf("expected hostDir test-handle/repo, got %s", loc.HostDir)
+	}
+}
 
-	// The output volume should NOT be independently recorded, since its
-	// hostPath subdir doesn't contain the actual data.
-	outputKey := ArtifactKey(outputVol.Handle())
-	_, outputFound := locator.Locate(outputKey)
-	if outputFound {
-		t.Errorf("output volume %q should NOT be recorded in locator — it is not mounted in the pod and contains no data", outputVol.Handle())
+// TestDaemonSetMode_ProducerModifierConsumerChain verifies the full
+// producer → modifier (input+output same name) → consumer flow.
+// This is the e2e scenario that was failing: the consumer's fetch-input-0
+// init container couldn't find the modifier's output because registerOutputs
+// and recordOutputLocations disagreed on which volume handle to use.
+func TestDaemonSetMode_ProducerModifierConsumerChain(t *testing.T) {
+	locator := NewArtifactLocator()
+
+	cfg := Config{
+		Namespace:              "test-ns",
+		ArtifactDaemonHostPath: "/var/concourse/artifacts",
+	}
+
+	// Step 1: Producer creates output "shared"
+	producerVol := NewStubVolume("producer-output-shared", "test-worker", "/tmp/build/shared/")
+	producerContainer := &Container{
+		handle:          "producer-handle",
+		podName:         "producer-pod",
+		metadata:        db.ContainerMetadata{Type: db.ContainerTypeTask},
+		containerSpec:   runtime.ContainerSpec{
+			Dir:     "/tmp/build",
+			Type:    db.ContainerTypeTask,
+			Outputs: runtime.OutputPaths{"shared": "/tmp/build/shared/"},
+		},
+		config:          cfg,
+		properties:      make(map[string]string),
+		volumes:         []*Volume{producerVol},
+		artifactLocator: locator,
+	}
+
+	producerProcess := &execProcess{
+		id: "producer", podName: "producer-pod", config: cfg, container: producerContainer,
+	}
+	producerProcess.recordOutputLocations("node-a")
+
+	// Verify producer recorded correctly
+	producerKey := ArtifactKey(producerVol.Handle())
+	producerLoc, found := locator.Locate(producerKey)
+	if !found {
+		t.Fatalf("producer volume not found in locator")
+	}
+	if producerLoc.HostDir != "producer-handle/shared" {
+		t.Errorf("expected producer hostDir producer-handle/shared, got %s", producerLoc.HostDir)
+	}
+
+	// Step 2: Modifier has input "shared" + output "shared" (same path).
+	// buildVolumeMountsForSpec should only create ONE volume (the input).
+	// The output volume is skipped because it overlaps.
+	modifierInputVol := NewStubVolume("modifier-input-0", "test-worker", "/tmp/build/shared")
+
+	modifierContainer := &Container{
+		handle:          "modifier-handle",
+		podName:         "modifier-pod",
+		metadata:        db.ContainerMetadata{Type: db.ContainerTypeTask},
+		containerSpec:   runtime.ContainerSpec{
+			Dir:  "/tmp/build",
+			Type: db.ContainerTypeTask,
+			Inputs: []runtime.Input{
+				{
+					Artifact:        &stubArtifact{handle: producerVol.Handle()},
+					DestinationPath: "/tmp/build/shared",
+				},
+			},
+			Outputs: runtime.OutputPaths{"shared": "/tmp/build/shared/"},
+		},
+		config:          cfg,
+		properties:      make(map[string]string),
+		volumes:         []*Volume{modifierInputVol}, // only input vol — no output vol
+		artifactLocator: locator,
+	}
+
+	modifierProcess := &execProcess{
+		id: "modifier", podName: "modifier-pod", config: cfg, container: modifierContainer,
+	}
+	modifierProcess.recordOutputLocations("node-a")
+
+	// Step 3: Consumer tries to fetch modifier's output.
+	// registerOutputs (task_step.go) would register modifierInputVol as the
+	// artifact for "shared" — the same handle that recordOutputLocations recorded.
+	consumerKey := ArtifactKey(modifierInputVol.Handle())
+	consumerLoc, found := locator.Locate(consumerKey)
+	if !found {
+		t.Fatalf("modifier output (via input volume %q) not found in locator — this is the bug that caused fetch-input-0 to fail", modifierInputVol.Handle())
+	}
+	if consumerLoc.HostDir != "modifier-handle/shared" {
+		t.Errorf("expected modifier hostDir modifier-handle/shared, got %s", consumerLoc.HostDir)
+	}
+	if consumerLoc.NodeName != "node-a" {
+		t.Errorf("expected node-a, got %s", consumerLoc.NodeName)
 	}
 }
 
