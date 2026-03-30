@@ -173,8 +173,7 @@ func helmDeployConcourse(kubeconfig, namespace, chartPath, image string) {
 		"create", "namespace", namespace).Run()
 
 	log.Printf("Deploying Concourse chart from %s into namespace %s...", chartPath, namespace)
-	// Clear artifact-daemon-host-path to prevent node affinity requirement
-	extraArgs := "--kubernetes-artifact-daemon-host-path="
+	extraArgs := ""
 
 	if os.Getenv("COLLECT_OTEL") == "1" {
 		otelAddr := fmt.Sprintf("otel-collector.%s.svc.cluster.local:4317", namespace)
