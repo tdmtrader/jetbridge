@@ -10,7 +10,7 @@ var Version = "0.0.0-dev"
 
 // JetBridgeVersion is the version of the JetBridge edition.
 // Kept in sync with the VERSION file by the CI bump step.
-var JetBridgeVersion = "0.2.55"
+var JetBridgeVersion = "0.2.56"
 
 // ConcourseVersion is the upstream Concourse version this fork is based on.
 var ConcourseVersion = "8.0.1"
