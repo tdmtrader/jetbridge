@@ -265,7 +265,22 @@ func helmDeployConcourse(kubeconfig, namespace, chartPath, image string) {
 	daemonWait.Stdout = os.Stderr
 	daemonWait.Stderr = os.Stderr
 	if err := daemonWait.Run(); err != nil {
-		log.Printf("warning: artifact daemon wait failed: %v (build artifact tests may fail)", err)
+		log.Printf("warning: artifact daemon wait failed: %v", err)
+		// Dump daemon pod status for diagnostics.
+		descCmd := exec.Command("kubectl", "--kubeconfig", kubeconfig,
+			"-n", namespace, "describe", "pods",
+			"-l", "app.kubernetes.io/component=artifact-daemon")
+		descCmd.Stdout = os.Stderr
+		descCmd.Stderr = os.Stderr
+		descCmd.Run()
+		logsCmd := exec.Command("kubectl", "--kubeconfig", kubeconfig,
+			"-n", namespace, "logs",
+			"-l", "app.kubernetes.io/component=artifact-daemon",
+			"--all-containers", "--tail=50")
+		logsCmd.Stdout = os.Stderr
+		logsCmd.Stderr = os.Stderr
+		logsCmd.Run()
+		log.Fatalf("artifact daemon is required for tests — aborting")
 	} else {
 		log.Println("Artifact daemon is ready.")
 	}
