@@ -66,6 +66,19 @@ Kubernetes namespace for task pods. Defaults to release namespace.
 {{- end }}
 
 {{/*
+Artifact-daemon headless service name.
+Uses artifactDaemon.serviceName verbatim when set, otherwise defaults to
+<fullname>-artifact-daemon.
+*/}}
+{{- define "concourse.artifactDaemonServiceName" -}}
+{{- if .Values.artifactDaemon.serviceName }}
+{{- .Values.artifactDaemon.serviceName }}
+{{- else }}
+{{- printf "%s-artifact-daemon" (include "concourse.fullname" .) }}
+{{- end }}
+{{- end }}
+
+{{/*
 PostgreSQL host. Internal service name when bundled, external host otherwise.
 */}}
 {{- define "concourse.postgresHost" -}}

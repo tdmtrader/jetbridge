@@ -189,6 +189,8 @@ func helmDeployConcourse(kubeconfig, namespace, chartPath, image string) {
 		"--set", fmt.Sprintf("image.tag=%s", tag),
 		"--set", "image.pullPolicy=IfNotPresent",
 		"--set", "postgresql.persistence.enabled=false",
+		"--set", "cachePvc.enabled=false",
+		"--set", "artifactStorePvc.enabled=false",
 		"--timeout", "5m",
 	}
 
