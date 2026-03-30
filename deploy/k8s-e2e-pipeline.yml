@@ -130,6 +130,7 @@ jobs:
           echo "=== Pre-compiling everything before Docker (avoids CPU contention with containerd) ==="
           GOOS=linux GOARCH=amd64 go build -o concourse-linux-amd64 ./cmd/concourse
           GOOS=linux GOARCH=amd64 go build -o artifact-daemon-linux-amd64 ./cmd/artifact-daemon
+          go build -o /tmp/fly ./fly
           go test -c -o /tmp/integration.test ./topgun/k8s/integration/
           go mod download
 
@@ -174,7 +175,7 @@ jobs:
           echo "=== Image built ==="
 
           echo "=== Running K8s integration tests (pre-compiled, KinD cluster) ==="
-          /tmp/integration.test -test.v -test.timeout 30m -test.count 1 || {
+          FLY_PATH=/tmp/fly /tmp/integration.test -test.v -test.timeout 30m -test.count 1 || {
             echo "=== TEST FAILED — dumping diagnostics ==="
             echo "--- Docker containers ---"
             docker ps -a 2>/dev/null || true
@@ -213,6 +214,7 @@ jobs:
           echo "=== Pre-compiling everything before Docker (avoids CPU contention with containerd) ==="
           GOOS=linux GOARCH=amd64 go build -o concourse-linux-amd64 ./cmd/concourse
           GOOS=linux GOARCH=amd64 go build -o artifact-daemon-linux-amd64 ./cmd/artifact-daemon
+          go build -o /tmp/fly ./fly
           go test -c -o /tmp/behavioral.test ./topgun/k8s_behavioral/
 
           echo "=== Starting Docker daemon (DinD) ==="
@@ -259,7 +261,7 @@ jobs:
           echo "=== Running K8s behavioral tests (pre-compiled, 2 parallel KinD clusters) ==="
           echo "This will take 2-3 hours."
           echo ""
-          ginkgo --procs=${K8S_PROCS:-2} -v --timeout=3h /tmp/behavioral.test
+          FLY_PATH=/tmp/fly ginkgo --procs=${K8S_PROCS:-2} -v --timeout=3h /tmp/behavioral.test
           echo "=== K8s behavioral tests passed ==="
 
           kill $DOCKERD_PID 2>/dev/null || true
