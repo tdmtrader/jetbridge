@@ -128,7 +128,7 @@ jobs:
           git init -q && git add -A && git -c user.name=ci -c user.email=ci@test commit -q -m "init" --allow-empty
 
           echo "=== Pre-compiling everything before Docker (avoids CPU contention with containerd) ==="
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o concourse-linux-amd64 ./cmd/concourse
+          GOOS=linux GOARCH=amd64 go build -o concourse-linux-amd64 ./cmd/concourse
           go test -c -o /tmp/integration.test ./topgun/k8s/integration/
           go mod download
 
@@ -210,7 +210,7 @@ jobs:
           git init -q && git add -A && git -c user.name=ci -c user.email=ci@test commit -q -m "init" --allow-empty
 
           echo "=== Pre-compiling everything before Docker (avoids CPU contention with containerd) ==="
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o concourse-linux-amd64 ./cmd/concourse
+          GOOS=linux GOARCH=amd64 go build -o concourse-linux-amd64 ./cmd/concourse
           go test -c -o /tmp/behavioral.test ./topgun/k8s_behavioral/
 
           echo "=== Starting Docker daemon (DinD) ==="
