@@ -1149,13 +1149,22 @@ func (p *execProcess) waitForRunning(ctx context.Context) error {
 		}
 
 		if pod.Status.Phase == corev1.PodFailed || pod.Status.Phase == corev1.PodSucceeded {
-			// Include init container statuses in the error to help diagnose
+			// Include init container statuses and logs to diagnose
 			// fetch-input failures in DaemonSet artifact mode.
 			var initStatuses []string
 			for _, cs := range pod.Status.InitContainerStatuses {
 				state := "unknown"
 				if cs.State.Terminated != nil {
 					state = fmt.Sprintf("exit=%d reason=%s", cs.State.Terminated.ExitCode, cs.State.Terminated.Reason)
+					// Fetch init container logs for failed containers.
+					if cs.State.Terminated.ExitCode != 0 {
+						logReq := p.container.clientset.CoreV1().Pods(pod.Namespace).GetLogs(pod.Name, &corev1.PodLogOptions{
+							Container: cs.Name,
+						})
+						if logBytes, logErr := logReq.Do(ctx).Raw(); logErr == nil {
+							state += fmt.Sprintf(" logs=%q", string(logBytes))
+						}
+					}
 				} else if cs.State.Waiting != nil {
 					state = fmt.Sprintf("waiting reason=%s", cs.State.Waiting.Reason)
 				}
