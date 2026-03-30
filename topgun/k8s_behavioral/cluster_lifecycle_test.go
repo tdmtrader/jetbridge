@@ -144,6 +144,19 @@ func loadImagesIntoCluster(concourseImage string) {
 	log.Println("Image loading complete.")
 }
 
+// labelNodesForArtifactCache labels all K3s nodes with the label that
+// the JetBridge artifact daemon node affinity requires.
+func labelNodesForArtifactCache(kubeconfig string) {
+	log.Println("Labeling K3s nodes for artifact cache scheduling...")
+	cmd := exec.Command("kubectl", "--kubeconfig", kubeconfig,
+		"label", "nodes", "--all", "concourse.dev/artifact-cache=ready", "--overwrite")
+	cmd.Stdout = os.Stderr
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		log.Printf("warning: failed to label nodes: %v", err)
+	}
+}
+
 // waitForCoreDNS waits until K3s's CoreDNS is running and ready.
 func waitForCoreDNS(kubeconfig string) {
 	log.Println("Waiting for CoreDNS to be ready...")
@@ -168,6 +181,7 @@ func helmDeployConcourse(kubeconfig, namespace, chartPath, image string) {
 	repo, tag := splitImageRef(image)
 
 	waitForCoreDNS(kubeconfig)
+	labelNodesForArtifactCache(kubeconfig)
 
 	exec.Command("kubectl", "--kubeconfig", kubeconfig,
 		"create", "namespace", namespace).Run()
@@ -191,7 +205,6 @@ func helmDeployConcourse(kubeconfig, namespace, chartPath, image string) {
 		"--set", "postgresql.persistence.enabled=false",
 		"--set", "cachePvc.enabled=false",
 		"--set", "artifactStorePvc.enabled=false",
-		"--set", "artifactDaemon.enabled=false",
 		"--timeout", "5m",
 	}
 

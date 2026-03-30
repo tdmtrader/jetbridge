@@ -154,6 +154,20 @@ func loadImagesIntoCluster(concourseImage string) {
 	log.Println("Image loading complete.")
 }
 
+// labelNodesForArtifactCache labels all K3s nodes with the label that
+// the JetBridge artifact daemon node affinity requires. Without this,
+// build pods are Unschedulable when the artifact daemon is enabled.
+func labelNodesForArtifactCache(kubeconfig string) {
+	log.Println("Labeling K3s nodes for artifact cache scheduling...")
+	cmd := exec.Command("kubectl", "--kubeconfig", kubeconfig,
+		"label", "nodes", "--all", "concourse.dev/artifact-cache=ready", "--overwrite")
+	cmd.Stdout = os.Stderr
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		log.Printf("warning: failed to label nodes: %v", err)
+	}
+}
+
 // waitForCoreDNS waits until K3s's CoreDNS is running and ready.
 // Without this, pods that resolve cluster-internal hostnames (like the
 // migrate-db init container looking up the DB service) fail immediately
@@ -183,6 +197,9 @@ func helmDeployConcourse(kubeconfig, namespace, chartPath, image string) {
 	// Wait for CoreDNS before deploying — the migrate-db init container
 	// needs DNS to resolve the PostgreSQL service hostname.
 	waitForCoreDNS(kubeconfig)
+
+	// Label nodes so build pods with artifact daemon affinity can schedule.
+	labelNodesForArtifactCache(kubeconfig)
 
 	// Create namespace (ignore if exists).
 	exec.Command("kubectl", "--kubeconfig", kubeconfig,
@@ -221,7 +238,6 @@ func helmDeployConcourse(kubeconfig, namespace, chartPath, image string) {
 		// in the built binary yet. The artifact daemon approach is used instead.
 		"--set", "cachePvc.enabled=false",
 		"--set", "artifactStorePvc.enabled=false",
-		"--set", "artifactDaemon.enabled=false",
 		"--timeout", "5m",
 	}
 	for i, arg := range extraArgs {

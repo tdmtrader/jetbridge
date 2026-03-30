@@ -27,7 +27,7 @@ jobs:
         - -exc
         - |
           REGISTRY="registry-docker-registry.cicd.svc.cluster.local:5000"
-          IMAGE="${REGISTRY}/concourse-kind-runner:v17"
+          IMAGE="${REGISTRY}/concourse-kind-runner:v18"
           BUILDER_POD="kind-runner-builder-$$"
 
           cleanup_builder() { kubectl delete pod -n cicd ${BUILDER_POD} --grace-period=0 --force 2>/dev/null || true; }
@@ -115,7 +115,7 @@ jobs:
     timeout: 45m
     config:
       platform: linux
-      rootfs_uri: docker:///registry.home/concourse-kind-runner:v17
+      rootfs_uri: docker:///registry.home/concourse-kind-runner:v18
       run:
         path: sh
         args:
@@ -129,6 +129,7 @@ jobs:
 
           echo "=== Pre-compiling everything before Docker (avoids CPU contention with containerd) ==="
           GOOS=linux GOARCH=amd64 go build -o concourse-linux-amd64 ./cmd/concourse
+          GOOS=linux GOARCH=amd64 go build -o artifact-daemon-linux-amd64 ./cmd/artifact-daemon
           go test -c -o /tmp/integration.test ./topgun/k8s/integration/
           go mod download
 
@@ -164,16 +165,13 @@ jobs:
           FROM debian:bookworm-slim
           RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates dumb-init && rm -rf /var/lib/apt/lists/*
           COPY concourse-linux-amd64 /usr/local/concourse/bin/concourse
-          RUN chmod +x /usr/local/concourse/bin/concourse
+          COPY artifact-daemon-linux-amd64 /usr/local/concourse/bin/artifact-daemon
+          RUN chmod +x /usr/local/concourse/bin/concourse /usr/local/concourse/bin/artifact-daemon
           ENV PATH="/usr/local/concourse/bin:${PATH}"
           ENTRYPOINT ["dumb-init", "concourse"]
           DOCKERFILE
           docker build -f /tmp/Dockerfile.kind -t concourse-local:latest .
           echo "=== Image built ==="
-
-          echo ""
-          echo "=== Verifying concourse binary works ==="
-          docker run --rm concourse-local:latest --help 2>&1 | head -5 || echo "BINARY VERIFICATION FAILED"
 
           echo "=== Running K8s integration tests (pre-compiled, KinD cluster) ==="
           /tmp/integration.test -test.v -test.timeout 30m -test.count 1 || {
@@ -201,7 +199,7 @@ jobs:
     timeout: 4h
     config:
       platform: linux
-      rootfs_uri: docker:///registry.home/concourse-kind-runner:v17
+      rootfs_uri: docker:///registry.home/concourse-kind-runner:v18
       run:
         path: sh
         args:
@@ -214,6 +212,7 @@ jobs:
 
           echo "=== Pre-compiling everything before Docker (avoids CPU contention with containerd) ==="
           GOOS=linux GOARCH=amd64 go build -o concourse-linux-amd64 ./cmd/concourse
+          GOOS=linux GOARCH=amd64 go build -o artifact-daemon-linux-amd64 ./cmd/artifact-daemon
           go test -c -o /tmp/behavioral.test ./topgun/k8s_behavioral/
 
           echo "=== Starting Docker daemon (DinD) ==="
@@ -248,7 +247,8 @@ jobs:
           FROM debian:bookworm-slim
           RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates dumb-init && rm -rf /var/lib/apt/lists/*
           COPY concourse-linux-amd64 /usr/local/concourse/bin/concourse
-          RUN chmod +x /usr/local/concourse/bin/concourse
+          COPY artifact-daemon-linux-amd64 /usr/local/concourse/bin/artifact-daemon
+          RUN chmod +x /usr/local/concourse/bin/concourse /usr/local/concourse/bin/artifact-daemon
           ENV PATH="/usr/local/concourse/bin:${PATH}"
           ENTRYPOINT ["dumb-init", "concourse"]
           DOCKERFILE
