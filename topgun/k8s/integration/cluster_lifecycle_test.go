@@ -221,6 +221,7 @@ func helmDeployConcourse(kubeconfig, namespace, chartPath, image string) {
 		// in the built binary yet. The artifact daemon approach is used instead.
 		"--set", "cachePvc.enabled=false",
 		"--set", "artifactStorePvc.enabled=false",
+		"--set", "artifactDaemon.enabled=false",
 		"--timeout", "5m",
 	}
 	for i, arg := range extraArgs {
