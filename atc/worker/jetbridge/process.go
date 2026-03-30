@@ -909,23 +909,39 @@ func (p *execProcess) recordOutputLocations(nodeName string) {
 
 	outputPaths := p.container.outputPaths()
 
-	// Build reverse map: mount path → output name (used as hostPath subdir).
+	// Build reverse map: cleaned mount path → output name (used as hostPath subdir).
 	mountToOutputName := make(map[string]string)
 	for name, path := range p.container.containerSpec.Outputs {
-		mountToOutputName[path] = name
+		mountToOutputName[filepath.Clean(path)] = name
 	}
 	// Dir volume gets subdir "dir".
 	if p.container.containerSpec.Dir != "" {
 		mountToOutputName[p.container.containerSpec.Dir] = "dir"
 	}
 
+	// Track which output paths have already been recorded. When an input
+	// and output share the same path (common Concourse pattern), only the
+	// first matching volume (the input) should be recorded — the output
+	// volume is never mounted in the pod and contains no data.
+	recordedPaths := make(map[string]bool)
+
 	recorded := 0
 	for _, vol := range p.container.volumes {
-		if vol.MountPath() == "" || !outputPaths[vol.MountPath()] {
+		cleanPath := filepath.Clean(vol.MountPath())
+		if cleanPath == "." || !outputPaths[cleanPath] {
 			continue
 		}
+
+		// Skip if we already recorded a volume at this path (input takes
+		// priority over output because it appears first in the volumes
+		// list and is the one actually mounted in the K8s pod).
+		if recordedPaths[cleanPath] {
+			continue
+		}
+		recordedPaths[cleanPath] = true
+
 		key := ArtifactKey(vol.Handle())
-		subdir := mountToOutputName[vol.MountPath()]
+		subdir := mountToOutputName[cleanPath]
 		if subdir == "" {
 			subdir = "unknown"
 		}

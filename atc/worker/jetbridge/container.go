@@ -168,11 +168,15 @@ func (c *Container) Run(ctx context.Context, spec runtime.ProcessSpec, io runtim
 // the working directory is the implicit output and is included instead.
 // When an output overlaps an input path, it is included because the step
 // may have modified the input data.
+//
+// Paths are normalized via filepath.Clean so that trailing-slash differences
+// between input paths (no slash) and output paths (trailing slash) don't
+// cause mismatches when recording artifact locations.
 func (c *Container) outputPaths() map[string]bool {
 	if len(c.containerSpec.Outputs) > 0 {
 		paths := make(map[string]bool, len(c.containerSpec.Outputs))
 		for _, path := range c.containerSpec.Outputs {
-			paths[path] = true
+			paths[filepath.Clean(path)] = true
 		}
 		return paths
 	}
@@ -398,7 +402,7 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 		initContainers = append(initContainers, *cleanup)
 	}
 
-	artifactInits, err := c.buildArtifactInitContainers(volumeMounts)
+	artifactInits, err := c.buildArtifactInitContainers(volumes, volumeMounts)
 	if err != nil {
 		return nil, fmt.Errorf("build artifact init containers: %w", err)
 	}
@@ -486,7 +490,7 @@ func (c *Container) artifactVolumeName() string {
 // non-nil artifact when ArtifactDaemonHostPath is configured. Each init container
 // sends a resolve request to the local artifact-daemon's /resolve endpoint,
 // which copies the artifact data into the input volume's hostPath directory.
-func (c *Container) buildArtifactInitContainers(mainMounts []corev1.VolumeMount) ([]corev1.Container, error) {
+func (c *Container) buildArtifactInitContainers(podVolumes []corev1.Volume, mainMounts []corev1.VolumeMount) ([]corev1.Container, error) {
 	if c.config.ArtifactDaemonHostPath == "" {
 		return nil, nil
 	}
@@ -523,11 +527,14 @@ func (c *Container) buildArtifactInitContainers(mainMounts []corev1.VolumeMount)
 			daemonKey = loc.HostDir
 		}
 
-		// The daemon key maps to steps/<key> on the daemon's filesystem. The dest
-		// is the host path of this init container's input volume. Use the actual
-		// volume name (from buildVolumeMounts) as the subdir — NOT the input loop
-		// index, since buildVolumeMounts uses a global counter that includes dir.
-		hostDestPath := filepath.Join(c.config.ArtifactDaemonHostPath, "steps", c.handle, volumeName)
+		// The destination is the host path of this init container's input volume.
+		// Look up the actual hostPath from the pod volume spec, which may use
+		// the output name as subdir when input+output paths overlap.
+		hostDestPath := hostPathForVolume(podVolumes, volumeName)
+		if hostDestPath == "" {
+			// Fallback: compute from volume name (pre-overlap behavior).
+			hostDestPath = filepath.Join(c.config.ArtifactDaemonHostPath, "steps", c.handle, volumeName)
+		}
 
 		initContainer := corev1.Container{
 			Name:    fmt.Sprintf("fetch-input-%d", i),
@@ -745,6 +752,17 @@ func volumeNameForMountPath(mounts []corev1.VolumeMount, mountPath string) strin
 	for _, m := range mounts {
 		if m.MountPath == mountPath {
 			return m.Name
+		}
+	}
+	return ""
+}
+
+// hostPathForVolume returns the hostPath.Path for a named volume, or ""
+// if the volume is not hostPath-backed or not found.
+func hostPathForVolume(volumes []corev1.Volume, name string) string {
+	for _, v := range volumes {
+		if v.Name == name && v.HostPath != nil {
+			return v.HostPath.Path
 		}
 	}
 	return ""
@@ -1092,10 +1110,25 @@ func (c *Container) buildVolumeMounts() ([]corev1.Volume, []corev1.VolumeMount) 
 	// where the task reads input data and writes modifications as output.
 	inputMountPaths := make(map[string]bool, len(c.containerSpec.Inputs))
 
+	// Build a map of cleaned output path → output name so that when an input
+	// overlaps an output, we use the output name as the hostPath subdir.
+	// This ensures the daemon filesystem layout matches the daemonKey recorded
+	// by recordOutputLocations (which uses the output name).
+	outputNameByPath := make(map[string]string)
+	for name, path := range c.containerSpec.Outputs {
+		outputNameByPath[filepath.Clean(path)] = name
+	}
+
 	for _, input := range c.containerSpec.Inputs {
 		name := fmt.Sprintf("input-%d", idx)
 		idx++
-		volumes = append(volumes, c.stepVolume(name, name))
+		// When this input path overlaps an output, use the output name as
+		// the hostPath subdir so the daemon key matches the filesystem layout.
+		subdir := name
+		if outName, overlaps := outputNameByPath[filepath.Clean(input.DestinationPath)]; overlaps {
+			subdir = outName
+		}
+		volumes = append(volumes, c.stepVolume(name, subdir))
 		mounts = append(mounts, corev1.VolumeMount{
 			Name:      name,
 			MountPath: input.DestinationPath,

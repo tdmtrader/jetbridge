@@ -196,9 +196,8 @@ func TestDaemonSetMode_InitContainerResolveCommand(t *testing.T) {
 
 	// Build mounts to get volumeName
 	volumes, mounts := c.buildVolumeMounts()
-	_ = volumes
 
-	inits, err := c.buildArtifactInitContainers(mounts)
+	inits, err := c.buildArtifactInitContainers(volumes, mounts)
 	if err != nil {
 		t.Fatalf("buildArtifactInitContainers: %v", err)
 	}
@@ -600,8 +599,8 @@ func TestDaemonSetMode_InitContainerUsesDaemonResolve(t *testing.T) {
 		artifactLocator: locator,
 	}
 
-	_, mounts := c.buildVolumeMounts()
-	inits, err := c.buildArtifactInitContainers(mounts)
+	vols, mounts := c.buildVolumeMounts()
+	inits, err := c.buildArtifactInitContainers(vols, mounts)
 	if err != nil {
 		t.Fatalf("buildArtifactInitContainers: %v", err)
 	}
@@ -647,8 +646,8 @@ func TestDaemonSetMode_MissingLocatorFallsBackToVolumeHandle(t *testing.T) {
 		artifactLocator: locator,
 	}
 
-	_, mounts := c.buildVolumeMounts()
-	inits, err := c.buildArtifactInitContainers(mounts)
+	vols, mounts := c.buildVolumeMounts()
+	inits, err := c.buildArtifactInitContainers(vols, mounts)
 	if err != nil {
 		t.Fatalf("expected no error (graceful fallback), got: %v", err)
 	}
@@ -708,8 +707,8 @@ func TestDaemonSetMode_RecordAndLocateRoundTrip(t *testing.T) {
 		artifactLocator: locator,
 	}
 
-	_, mounts := c.buildVolumeMounts()
-	inits, err := c.buildArtifactInitContainers(mounts)
+	vols, mounts := c.buildVolumeMounts()
+	inits, err := c.buildArtifactInitContainers(vols, mounts)
 	if err != nil {
 		t.Fatalf("buildArtifactInitContainers: %v", err)
 	}
@@ -778,8 +777,8 @@ func TestDaemonSetMode_InitContainerUsesResolveCommand(t *testing.T) {
 		artifactLocator: locator,
 	}
 
-	_, mounts := c.buildVolumeMounts()
-	inits, err := c.buildArtifactInitContainers(mounts)
+	vols, mounts := c.buildVolumeMounts()
+	inits, err := c.buildArtifactInitContainers(vols, mounts)
 	if err != nil {
 		t.Fatalf("buildArtifactInitContainers: %v", err)
 	}
@@ -1188,8 +1187,8 @@ func TestDaemonSetMode_CacheHitFlow(t *testing.T) {
 		artifactLocator: locator,
 	}
 
-	_, mounts := c.buildVolumeMounts()
-	inits, err := c.buildArtifactInitContainers(mounts)
+	vols, mounts := c.buildVolumeMounts()
+	inits, err := c.buildArtifactInitContainers(vols, mounts)
 	if err != nil {
 		t.Fatalf("buildArtifactInitContainers: %v", err)
 	}
@@ -1268,8 +1267,8 @@ func TestDaemonSetMode_CacheMissFlow(t *testing.T) {
 		artifactLocator: locator,
 	}
 
-	_, mounts := consumer.buildVolumeMounts()
-	inits, err := consumer.buildArtifactInitContainers(mounts)
+	vols, mounts := consumer.buildVolumeMounts()
+	inits, err := consumer.buildArtifactInitContainers(vols, mounts)
 	if err != nil {
 		t.Fatalf("buildArtifactInitContainers: %v", err)
 	}
@@ -1329,8 +1328,8 @@ func TestDaemonSetMode_CacheHitATCRestart(t *testing.T) {
 		artifactLocator: locator,
 	}
 
-	_, mounts := c.buildVolumeMounts()
-	inits, err := c.buildArtifactInitContainers(mounts)
+	vols, mounts := c.buildVolumeMounts()
+	inits, err := c.buildArtifactInitContainers(vols, mounts)
 	if err != nil {
 		t.Fatalf("buildArtifactInitContainers: %v", err)
 	}
@@ -1386,8 +1385,8 @@ func TestDaemonSetMode_CacheHitDaemonRestartLimitation(t *testing.T) {
 		artifactLocator: locator,
 	}
 
-	_, mounts := c.buildVolumeMounts()
-	inits, err := c.buildArtifactInitContainers(mounts)
+	vols, mounts := c.buildVolumeMounts()
+	inits, err := c.buildArtifactInitContainers(vols, mounts)
 	if err != nil {
 		t.Fatalf("buildArtifactInitContainers: %v", err)
 	}
@@ -1452,8 +1451,8 @@ func TestDaemonSetMode_ConcurrentBuildsShareCache(t *testing.T) {
 		artifactLocator: locator,
 	}
 
-	_, mounts := consumer1.buildVolumeMounts()
-	inits, err := consumer1.buildArtifactInitContainers(mounts)
+	vols, mounts := consumer1.buildVolumeMounts()
+	inits, err := consumer1.buildArtifactInitContainers(vols, mounts)
 	if err != nil {
 		t.Fatalf("buildArtifactInitContainers: %v", err)
 	}
@@ -1465,6 +1464,186 @@ func TestDaemonSetMode_ConcurrentBuildsShareCache(t *testing.T) {
 	cmd := strings.Join(inits[0].Command, " ")
 	if !strings.Contains(cmd, "get-build-1/dir") {
 		t.Errorf("expected daemon key from build 1, got: %s", cmd)
+	}
+}
+
+// =======================================================================
+// Bug #1: Overlapping input+output must produce correct artifact reference
+// =======================================================================
+
+// TestDaemonSetMode_OverlappingInputOutputRecordsInputVolume verifies that
+// when a task declares both an input and output at the same path (e.g.
+// inputs: [{name: repo}], outputs: [{name: repo}]), recordOutputLocations
+// records the INPUT volume's artifact key — not the output volume's key —
+// because the K8s pod only mounts the input volume at the shared path.
+// The output volume is never mounted and contains no data.
+func TestDaemonSetMode_OverlappingInputOutputRecordsInputVolume(t *testing.T) {
+	locator := NewArtifactLocator()
+
+	cfg := Config{
+		Namespace:              "test-ns",
+		ArtifactDaemonHostPath: "/var/concourse/artifacts",
+	}
+
+	// Simulate buildVolumeMountsForSpec: creates BOTH input and output volumes
+	// at the same mount path (but with different trailing-slash conventions).
+	inputVol := NewStubVolume("handle-input-0", "test-worker", "/tmp/build/repo")
+	outputVol := NewStubVolume("handle-output-repo", "test-worker", "/tmp/build/repo/")
+
+	c := &Container{
+		handle:  "test-handle",
+		podName: "test-pod",
+		metadata: db.ContainerMetadata{Type: db.ContainerTypeTask},
+		containerSpec: runtime.ContainerSpec{
+			Dir:  "/tmp/build",
+			Type: db.ContainerTypeTask,
+			Inputs: []runtime.Input{
+				{DestinationPath: "/tmp/build/repo"},
+			},
+			Outputs: runtime.OutputPaths{"repo": "/tmp/build/repo/"},
+		},
+		config:          cfg,
+		properties:      make(map[string]string),
+		volumes:         []*Volume{inputVol, outputVol},
+		artifactLocator: locator,
+	}
+
+	p := &execProcess{
+		id:        "test",
+		podName:   "test-pod",
+		config:    cfg,
+		container: c,
+	}
+
+	p.recordOutputLocations("node-a")
+
+	// The input volume should be recorded since it's the one actually
+	// mounted in the pod. The output volume is never mounted (buildVolumeMounts
+	// skips it) so its handle points to an empty hostPath directory.
+	inputKey := ArtifactKey(inputVol.Handle())
+	loc, found := locator.Locate(inputKey)
+	if !found {
+		t.Fatalf("expected input volume %q to be recorded in locator, but not found", inputVol.Handle())
+	}
+	if loc.NodeName != "node-a" {
+		t.Errorf("expected node node-a, got %s", loc.NodeName)
+	}
+
+	// The output volume should NOT be independently recorded, since its
+	// hostPath subdir doesn't contain the actual data.
+	outputKey := ArtifactKey(outputVol.Handle())
+	_, outputFound := locator.Locate(outputKey)
+	if outputFound {
+		t.Errorf("output volume %q should NOT be recorded in locator — it is not mounted in the pod and contains no data", outputVol.Handle())
+	}
+}
+
+// =======================================================================
+// Bug #2: Output directories must be created even for non-overlapping outputs
+// =======================================================================
+
+// TestDaemonSetMode_OutputDirCreatedInPod verifies that output volumes
+// produce hostPath directories in the K8s pod spec using HostPathDirectoryOrCreate,
+// ensuring the output directory exists before the task runs.
+func TestDaemonSetMode_OutputDirCreatedInPod(t *testing.T) {
+	cfg := daemonSetConfig()
+	c := &Container{
+		handle:   "build-42",
+		podName:  "test-pod",
+		metadata: db.ContainerMetadata{Type: db.ContainerTypeTask},
+		containerSpec: runtime.ContainerSpec{
+			Dir:     "/tmp/build",
+			Type:    db.ContainerTypeTask,
+			Outputs: runtime.OutputPaths{"result": "/tmp/build/result"},
+		},
+		config:     cfg,
+		properties: make(map[string]string),
+	}
+
+	volumes, mounts := c.buildVolumeMounts()
+
+	// Find the output volume
+	foundOutput := false
+	for _, vol := range volumes {
+		if vol.HostPath != nil && strings.Contains(vol.HostPath.Path, "/result") {
+			foundOutput = true
+			if vol.HostPath.Type == nil || *vol.HostPath.Type != corev1.HostPathDirectoryOrCreate {
+				t.Errorf("output volume should use HostPathDirectoryOrCreate, got %v", vol.HostPath.Type)
+			}
+			expectedPath := filepath.Join(cfg.ArtifactDaemonHostPath, "steps", "build-42", "result")
+			if vol.HostPath.Path != expectedPath {
+				t.Errorf("expected hostPath %s, got %s", expectedPath, vol.HostPath.Path)
+			}
+		}
+	}
+	if !foundOutput {
+		t.Fatal("expected an output volume with hostPath containing /result")
+	}
+
+	// Verify the output is actually mounted
+	foundMount := false
+	for _, m := range mounts {
+		if m.MountPath == "/tmp/build/result" {
+			foundMount = true
+		}
+	}
+	if !foundMount {
+		t.Fatal("expected a volume mount at /tmp/build/result")
+	}
+}
+
+// TestDaemonSetMode_OverlappingOutputDirStillAccessible verifies that when
+// an output overlaps an input, the task can still write to the output path
+// because it shares the input's volume mount. The input volume's hostPath
+// must have HostPathDirectoryOrCreate so the directory exists.
+func TestDaemonSetMode_OverlappingOutputDirStillAccessible(t *testing.T) {
+	cfg := daemonSetConfig()
+	c := &Container{
+		handle:   "build-42",
+		podName:  "test-pod",
+		metadata: db.ContainerMetadata{Type: db.ContainerTypeTask},
+		containerSpec: runtime.ContainerSpec{
+			Dir:  "/tmp/build",
+			Type: db.ContainerTypeTask,
+			Inputs: []runtime.Input{
+				{DestinationPath: "/tmp/build/repo"},
+			},
+			Outputs: runtime.OutputPaths{"repo": "/tmp/build/repo/"},
+		},
+		config:     cfg,
+		properties: make(map[string]string),
+	}
+
+	volumes, mounts := c.buildVolumeMounts()
+
+	// Should only have 2 volumes: dir + shared input (no separate output volume)
+	if len(volumes) != 2 {
+		t.Fatalf("expected 2 volumes (dir + shared input), got %d", len(volumes))
+	}
+
+	// The shared input volume should have HostPathDirectoryOrCreate
+	for _, vol := range volumes {
+		if vol.HostPath != nil && strings.Contains(vol.HostPath.Path, "input-") {
+			if vol.HostPath.Type == nil || *vol.HostPath.Type != corev1.HostPathDirectoryOrCreate {
+				t.Errorf("input volume should use HostPathDirectoryOrCreate, got %v", vol.HostPath.Type)
+			}
+		}
+	}
+
+	// Only 2 mounts, one for dir and one for the shared path
+	if len(mounts) != 2 {
+		t.Fatalf("expected 2 mounts, got %d", len(mounts))
+	}
+
+	// The repo path should be mounted (via the input volume)
+	foundRepo := false
+	for _, m := range mounts {
+		if filepath.Clean(m.MountPath) == "/tmp/build/repo" {
+			foundRepo = true
+		}
+	}
+	if !foundRepo {
+		t.Fatal("expected a volume mount at /tmp/build/repo")
 	}
 }
 
