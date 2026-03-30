@@ -161,8 +161,8 @@ jobs:
 
           echo "=== Building concourse Docker image ==="
           cat <<'DOCKERFILE' > /tmp/Dockerfile.kind
-          FROM ubuntu:22.04
-          RUN apt-get update && apt-get install -y ca-certificates dumb-init && rm -rf /var/lib/apt/lists/*
+          FROM debian:bookworm-slim
+          RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates dumb-init && rm -rf /var/lib/apt/lists/*
           COPY concourse-linux-amd64 /usr/local/concourse/bin/concourse
           RUN chmod +x /usr/local/concourse/bin/concourse
           ENV PATH="/usr/local/concourse/bin:${PATH}"
@@ -242,8 +242,8 @@ jobs:
 
           echo "=== Building concourse Docker image ==="
           cat <<'DOCKERFILE' > /tmp/Dockerfile.kind
-          FROM ubuntu:22.04
-          RUN apt-get update && apt-get install -y ca-certificates dumb-init && rm -rf /var/lib/apt/lists/*
+          FROM debian:bookworm-slim
+          RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates dumb-init && rm -rf /var/lib/apt/lists/*
           COPY concourse-linux-amd64 /usr/local/concourse/bin/concourse
           RUN chmod +x /usr/local/concourse/bin/concourse
           ENV PATH="/usr/local/concourse/bin:${PATH}"
