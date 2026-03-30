@@ -136,7 +136,7 @@ jobs:
           # Thorough cleanup of stale Docker/containerd state from previous runs.
           killall -9 dockerd containerd 2>/dev/null || true
           sleep 1
-          rm -rf /var/run/docker.pid /var/run/docker /var/run/containerd /run/containerd
+          rm -rf /var/run/docker.pid /var/run/docker /var/run/containerd /run/containerd 2>/dev/null || true
           mkdir -p /var/lib/docker /run/containerd
           mount -t tmpfs -o size=4G tmpfs /var/lib/docker 2>/dev/null || true
           # --dns=8.8.8.8 ensures nested containers (K3s) can resolve
@@ -217,7 +217,7 @@ jobs:
           # Thorough cleanup of stale Docker/containerd state from previous runs.
           killall -9 dockerd containerd 2>/dev/null || true
           sleep 1
-          rm -rf /var/run/docker.pid /var/run/docker /var/run/containerd /run/containerd
+          rm -rf /var/run/docker.pid /var/run/docker /var/run/containerd /run/containerd 2>/dev/null || true
           mkdir -p /var/lib/docker /run/containerd
           mount -t tmpfs -o size=4G tmpfs /var/lib/docker 2>/dev/null || true
           # --dns=8.8.8.8 ensures nested containers (K3s) can resolve
