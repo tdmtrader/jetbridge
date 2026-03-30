@@ -23,6 +23,7 @@ spec:
       containers:
         - name: artifact-daemon
           image: {{ include "concourse.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
           command:
             - /usr/local/concourse/bin/artifact-daemon
             - --port={{ .Values.artifactDaemon.port | default 7780 }}
