@@ -63,6 +63,7 @@ type Container struct {
 	executor        PodExecutor
 	volumes         []*Volume
 	artifactLocator *ArtifactLocator
+	nodeIPResolver  *NodeIPResolver
 	// reused is true when FindOrCreateContainer found an existing container
 	// in the DB (crash-recovery path). In DaemonSet mode this means the
 	// hostPath directory may contain stale data and needs cleanup.
@@ -80,6 +81,7 @@ func newContainer(
 	executor PodExecutor,
 	volumes []*Volume,
 	artifactLocator *ArtifactLocator,
+	nodeIPResolver *NodeIPResolver,
 	reused bool,
 ) *Container {
 	return &Container{
@@ -95,6 +97,7 @@ func newContainer(
 		executor:        executor,
 		volumes:         volumes,
 		artifactLocator: artifactLocator,
+		nodeIPResolver:  nodeIPResolver,
 		reused:          reused,
 	}
 }
@@ -141,7 +144,7 @@ func (c *Container) Run(ctx context.Context, spec runtime.ProcessSpec, io runtim
 		}
 		metric.Metrics.ContainersCreated.Inc()
 		c.bindVolumesToPod(podName)
-		return newExecProcess(processID, podName, c.clientset, c.config, c, c.executor, spec, io), nil
+		return newExecProcess(processID, podName, c.clientset, c.config, c, c.executor, spec, io, c.nodeIPResolver), nil
 	}
 
 	// Fallback direct mode: only used when no executor is configured

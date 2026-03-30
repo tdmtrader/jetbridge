@@ -21,6 +21,7 @@ func main() {
 	ttl := flag.Duration("ttl", 2*time.Hour, "TTL for artifact cleanup sweep")
 	nodeName := flag.String("node-name", "", "Kubernetes node name (for node labeling)")
 	namespace := flag.String("namespace", "default", "Kubernetes namespace")
+	serviceName := flag.String("service-name", "artifact-daemon", "Headless service name for EndpointSlice peer discovery")
 	labelKey := flag.String("label-key", "concourse.dev/artifact-cache", "Node label key to set on startup")
 
 	flag.Parse()
@@ -84,9 +85,9 @@ func main() {
 			// Non-fatal — cross-node resolution won't work but local still does.
 		} else {
 			podIP := os.Getenv("POD_IP")
-			peers := NewPeerResolver(logger, k8sClientForPeers, *namespace, "artifact-daemon", *port, podIP)
+			peers := NewPeerResolver(logger, k8sClientForPeers, *namespace, *serviceName, *port, podIP)
 			server.SetPeerResolver(peers)
-			logger.Info("peer-resolver-configured", lager.Data{"service": "artifact-daemon", "my-ip": podIP})
+			logger.Info("peer-resolver-configured", lager.Data{"service": *serviceName, "my-ip": podIP})
 		}
 	}
 

@@ -18,25 +18,27 @@ var _ runtime.Volume = (*DaemonSetVolume)(nil)
 // DaemonSetVolume represents an artifact stored on a DaemonSet node.
 // StreamOut fetches via HTTP from the DaemonSet pod on the source node.
 type DaemonSetVolume struct {
-	key        string // artifact key (the volume handle)
-	handle     string
-	workerName string
-	dbVolume   db.CreatedVolume
-	sourceNode string
-	config     Config
-	httpClient *http.Client
+	key            string // artifact key (the volume handle)
+	handle         string
+	workerName     string
+	dbVolume       db.CreatedVolume
+	sourceNode     string
+	config         Config
+	httpClient     *http.Client
+	nodeIPResolver *NodeIPResolver
 }
 
 // NewDaemonSetVolume creates a DaemonSetVolume.
-func NewDaemonSetVolume(key, handle, workerName string, dbVolume db.CreatedVolume, sourceNode string, config Config) *DaemonSetVolume {
+func NewDaemonSetVolume(key, handle, workerName string, dbVolume db.CreatedVolume, sourceNode string, config Config, nodeIPResolver *NodeIPResolver) *DaemonSetVolume {
 	return &DaemonSetVolume{
-		key:        key,
-		handle:     handle,
-		workerName: workerName,
-		dbVolume:   dbVolume,
-		sourceNode: sourceNode,
-		config:     config,
-		httpClient: &http.Client{Timeout: 30 * time.Second},
+		key:            key,
+		handle:         handle,
+		workerName:     workerName,
+		dbVolume:       dbVolume,
+		sourceNode:     sourceNode,
+		config:         config,
+		httpClient:     &http.Client{Timeout: 30 * time.Second},
+		nodeIPResolver: nodeIPResolver,
 	}
 }
 
@@ -65,7 +67,10 @@ func (v *DaemonSetVolume) StreamOut(ctx context.Context, path string, enc compre
 		return nil, fmt.Errorf("DaemonSetVolume.StreamOut: no source node known (key=%s)", v.key)
 	}
 
-	url := v.daemonURL()
+	url, err := v.daemonURL(ctx)
+	if err != nil {
+		return nil, err
+	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -123,15 +128,20 @@ func (v *DaemonSetVolume) InitializeTaskCache(ctx context.Context, jobID int, st
 	return v.dbVolume.InitializeTaskCache(jobID, stepName, path)
 }
 
-func (v *DaemonSetVolume) daemonURL() string {
-	svcName := v.config.ArtifactDaemonService
-	if svcName == "" {
-		svcName = "artifact-daemon"
-	}
+func (v *DaemonSetVolume) daemonURL(ctx context.Context) (string, error) {
 	port := v.config.ArtifactDaemonPort
 	if port == 0 {
 		port = 7780
 	}
-	return fmt.Sprintf("http://%s.%s.%s.svc.cluster.local:%d/artifacts/%s",
-		v.sourceNode, svcName, v.config.Namespace, port, v.key)
+
+	if v.nodeIPResolver == nil {
+		return "", fmt.Errorf("no node IP resolver configured")
+	}
+
+	nodeIP, err := v.nodeIPResolver.Resolve(ctx, v.sourceNode)
+	if err != nil {
+		return "", fmt.Errorf("resolve node IP for %s: %w", v.sourceNode, err)
+	}
+
+	return fmt.Sprintf("http://%s:%d/artifacts/%s", nodeIP, port, v.key), nil
 }

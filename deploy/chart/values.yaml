@@ -440,8 +440,9 @@ artifactDaemon:
   hostPath: /var/concourse/artifacts
   # -- TTL for automatic artifact cleanup (Go duration)
   ttl: "2h"
-  # -- Headless service name for per-pod DNS resolution
-  serviceName: artifact-daemon
+  # -- Override the headless service name. When set, used verbatim.
+  # Default (when empty): <release-fullname>-artifact-daemon
+  serviceName: ""
   # -- Resource requests and limits for the DaemonSet pods
   resources:
     requests:

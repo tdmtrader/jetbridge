@@ -666,14 +666,15 @@ func (t *podEventTracker) emitPodLifecycleEvents(ctx context.Context, pod *corev
 // baking the command into the Pod spec, it creates a pause Pod and exec-s
 // the real command with full stdin/stdout/stderr separation.
 type execProcess struct {
-	id          string
-	podName     string
-	clientset   kubernetes.Interface
-	config      Config
-	container   *Container
-	executor    PodExecutor
-	processSpec runtime.ProcessSpec
-	processIO   runtime.ProcessIO
+	id             string
+	podName        string
+	clientset      kubernetes.Interface
+	config         Config
+	container      *Container
+	executor       PodExecutor
+	processSpec    runtime.ProcessSpec
+	processIO      runtime.ProcessIO
+	nodeIPResolver *NodeIPResolver
 }
 
 func newExecProcess(
@@ -684,16 +685,18 @@ func newExecProcess(
 	executor PodExecutor,
 	spec runtime.ProcessSpec,
 	io runtime.ProcessIO,
+	nodeIPResolver *NodeIPResolver,
 ) *execProcess {
 	return &execProcess{
-		id:          id,
-		podName:     podName,
-		clientset:   clientset,
-		config:      config,
-		container:   container,
-		executor:    executor,
-		processSpec: spec,
-		processIO:   io,
+		id:             id,
+		podName:        podName,
+		clientset:      clientset,
+		config:         config,
+		container:      container,
+		executor:       executor,
+		processSpec:    spec,
+		processIO:      io,
+		nodeIPResolver: nodeIPResolver,
 	}
 }
 
@@ -956,22 +959,28 @@ func (p *execProcess) recordOutputLocations(nodeName string) {
 // so that cache hits can resolve the volume handle to a disk path.
 // This is best-effort: failures are logged but don't fail the build.
 func (p *execProcess) registerDaemonAlias(nodeName, volumeKey, diskPath string) {
-	svcName := p.config.ArtifactDaemonService
-	if svcName == "" {
-		svcName = "artifact-daemon"
+	if p.nodeIPResolver == nil {
+		fmt.Fprintf(os.Stderr, "WARNING: registerDaemonAlias: no node IP resolver configured\n")
+		return
 	}
+
 	port := p.config.ArtifactDaemonPort
 	if port == 0 {
 		port = 7780
 	}
 
-	url := fmt.Sprintf("http://%s.%s.%s.svc.cluster.local:%d/register",
-		nodeName, svcName, p.config.Namespace, port)
-
-	body := fmt.Sprintf(`{"key":%q,"local_path":%q}`, volumeKey, diskPath)
-
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+
+	nodeIP, err := p.nodeIPResolver.Resolve(ctx, nodeName)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "WARNING: registerDaemonAlias: resolve node IP for %s: %v\n", nodeName, err)
+		return
+	}
+
+	url := fmt.Sprintf("http://%s:%d/register", nodeIP, port)
+
+	body := fmt.Sprintf(`{"key":%q,"local_path":%q}`, volumeKey, diskPath)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(body))
 	if err != nil {

@@ -7,7 +7,37 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes/fake"
 )
+
+// fakeNodeIPResolver creates a NodeIPResolver backed by a fake K8s client
+// with nodes pre-loaded so Resolve() returns deterministic IPs.
+func fakeNodeIPResolver(nodes ...corev1.Node) *NodeIPResolver {
+	objs := make([]interface{}, 0, len(nodes))
+	for i := range nodes {
+		objs = append(objs, &nodes[i])
+	}
+	// Use runtime.Object slice for NewSimpleClientset.
+	cs := fake.NewSimpleClientset()
+	for i := range nodes {
+		cs.CoreV1().Nodes().Create(context.Background(), &nodes[i], metav1.CreateOptions{})
+	}
+	return NewNodeIPResolver(cs)
+}
+
+func testNode(name, ip string) corev1.Node {
+	return corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Status: corev1.NodeStatus{
+			Addresses: []corev1.NodeAddress{
+				{Type: corev1.NodeInternalIP, Address: ip},
+			},
+		},
+	}
+}
 
 func TestDaemonSetVolume_StreamOut_Success(t *testing.T) {
 	content := "tar data here"
@@ -16,13 +46,16 @@ func TestDaemonSetVolume_StreamOut_Success(t *testing.T) {
 	}))
 	defer srv.Close()
 
+	resolver := fakeNodeIPResolver(testNode("node-1", "10.0.0.1"))
+
 	vol := &DaemonSetVolume{
-		key:        "abc",
-		handle:     "abc",
-		workerName: "w1",
-		sourceNode: "node-1",
-		config:     Config{Namespace: "test-ns", ArtifactDaemonPort: 7780, ArtifactDaemonService: "artifact-daemon"},
-		httpClient: srv.Client(),
+		key:            "abc",
+		handle:         "abc",
+		workerName:     "w1",
+		sourceNode:     "node-1",
+		config:         Config{Namespace: "test-ns", ArtifactDaemonPort: 7780},
+		httpClient:     srv.Client(),
+		nodeIPResolver: resolver,
 	}
 	// Override the URL to point to test server
 	vol.httpClient.Transport = rewriteTransport{url: srv.URL}
@@ -45,13 +78,16 @@ func TestDaemonSetVolume_StreamOut_NotFound(t *testing.T) {
 	}))
 	defer srv.Close()
 
+	resolver := fakeNodeIPResolver(testNode("node-1", "10.0.0.1"))
+
 	vol := &DaemonSetVolume{
-		key:        "missing",
-		handle:     "missing",
-		workerName: "w1",
-		sourceNode: "node-1",
-		config:     Config{Namespace: "test-ns", ArtifactDaemonPort: 7780},
-		httpClient: srv.Client(),
+		key:            "missing",
+		handle:         "missing",
+		workerName:     "w1",
+		sourceNode:     "node-1",
+		config:         Config{Namespace: "test-ns", ArtifactDaemonPort: 7780},
+		httpClient:     srv.Client(),
+		nodeIPResolver: resolver,
 	}
 	vol.httpClient.Transport = rewriteTransport{url: srv.URL}
 

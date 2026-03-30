@@ -18,7 +18,7 @@ spec:
         app.kubernetes.io/component: artifact-daemon
     spec:
       serviceAccountName: {{ include "concourse.fullname" . }}-artifact-daemon
-      subdomain: {{ include "concourse.fullname" . }}-artifact-daemon
+      subdomain: {{ include "concourse.artifactDaemonServiceName" . }}
       terminationGracePeriodSeconds: 30
       containers:
         - name: artifact-daemon
@@ -30,12 +30,17 @@ spec:
             - --ttl={{ .Values.artifactDaemon.ttl | default "2h" }}
             - --node-name=$(NODE_NAME)
             - --namespace={{ include "concourse.kubernetesNamespace" . }}
+            - --service-name={{ include "concourse.artifactDaemonServiceName" . }}
             - --label-key=concourse.dev/artifact-cache
           env:
             - name: NODE_NAME
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
           ports:
             - name: http
               containerPort: {{ .Values.artifactDaemon.port | default 7780 }}

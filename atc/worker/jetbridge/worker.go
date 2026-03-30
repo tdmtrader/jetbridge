@@ -24,14 +24,16 @@ type Worker struct {
 	executor        PodExecutor
 	volumeRepo      db.VolumeRepository
 	artifactLocator *ArtifactLocator
+	nodeIPResolver  *NodeIPResolver
 }
 
 // NewWorker creates a new Worker backed by the given Kubernetes clientset.
 func NewWorker(dbWorker db.Worker, clientset kubernetes.Interface, config Config) *Worker {
 	return &Worker{
-		dbWorker:  dbWorker,
-		clientset: clientset,
-		config:    config,
+		dbWorker:       dbWorker,
+		clientset:      clientset,
+		config:         config,
+		nodeIPResolver: NewNodeIPResolver(clientset),
 	}
 }
 
@@ -107,7 +109,7 @@ func (w *Worker) FindOrCreateContainer(
 	// Mark it as reused so Run() can clean up stale hostPath data.
 	if createdContainer != nil {
 		mounts, volumes := w.buildVolumeMountsForSpec(containerHandle, containerSpec)
-		container := newContainer(containerHandle, metadata, containerSpec, createdContainer, w.clientset, w.config, w.Name(), w.executor, volumes, w.artifactLocator, true)
+		container := newContainer(containerHandle, metadata, containerSpec, createdContainer, w.clientset, w.config, w.Name(), w.executor, volumes, w.artifactLocator, w.nodeIPResolver, true)
 		return container, mounts, nil
 	}
 
@@ -122,7 +124,7 @@ func (w *Worker) FindOrCreateContainer(
 	}
 
 	mounts, volumes := w.buildVolumeMountsForSpec(containerHandle, containerSpec)
-	container := newContainer(containerHandle, metadata, containerSpec, createdContainer, w.clientset, w.config, w.Name(), w.executor, volumes, w.artifactLocator, false)
+	container := newContainer(containerHandle, metadata, containerSpec, createdContainer, w.clientset, w.config, w.Name(), w.executor, volumes, w.artifactLocator, w.nodeIPResolver, false)
 	return container, mounts, nil
 }
 
@@ -207,7 +209,7 @@ func (w *Worker) CreateVolumeForArtifact(ctx context.Context, teamID int) (runti
 
 	handle := createdVolume.Handle()
 	key := ArtifactKey(handle)
-	return NewDaemonSetVolume(key, handle, w.Name(), createdVolume, "", w.config), artifact, nil
+	return NewDaemonSetVolume(key, handle, w.Name(), createdVolume, "", w.config, w.nodeIPResolver), artifact, nil
 }
 
 func (w *Worker) LookupContainer(ctx context.Context, handle string) (runtime.Container, bool, error) {
@@ -228,7 +230,7 @@ func (w *Worker) LookupContainer(ctx context.Context, handle string) (runtime.Co
 		return nil, false, nil
 	}
 
-	return newContainer(handle, db.ContainerMetadata{}, runtime.ContainerSpec{}, dbContainer, w.clientset, w.config, w.Name(), w.executor, nil, w.artifactLocator, false), true, nil
+	return newContainer(handle, db.ContainerMetadata{}, runtime.ContainerSpec{}, dbContainer, w.clientset, w.config, w.Name(), w.executor, nil, w.artifactLocator, w.nodeIPResolver, false), true, nil
 }
 
 func (w *Worker) LookupVolume(ctx context.Context, handle string) (runtime.Volume, bool, error) {
@@ -256,7 +258,7 @@ func (w *Worker) LookupVolume(ctx context.Context, handle string) (runtime.Volum
 	if w.artifactLocator != nil {
 		sourceNode, _ = w.artifactLocator.LocateNode(key)
 	}
-	return NewDaemonSetVolume(key, handle, w.Name(), dbVolume, sourceNode, w.config), true, nil
+	return NewDaemonSetVolume(key, handle, w.Name(), dbVolume, sourceNode, w.config, w.nodeIPResolver), true, nil
 }
 
 func markContainerAsFailed(logger lager.Logger, container db.CreatingContainer) {

@@ -28,6 +28,7 @@ type Reaper struct {
 	volumeRepository    db.VolumeRepository
 	executor            PodExecutor
 	artifactLocator     *ArtifactLocator
+	nodeIPResolver      *NodeIPResolver
 	httpClient          *http.Client
 }
 
@@ -46,6 +47,7 @@ func NewReaper(
 		cfg:                 cfg,
 		containerRepository: containerRepository,
 		destroyer:           destroyer,
+		nodeIPResolver:      NewNodeIPResolver(clientset),
 	}
 }
 
@@ -197,10 +199,6 @@ func (r *Reaper) cleanupDaemonSetArtifacts(ctx context.Context, logger lager.Log
 		return
 	}
 
-	svcName := r.cfg.ArtifactDaemonService
-	if svcName == "" {
-		svcName = "artifact-daemon"
-	}
 	port := r.cfg.ArtifactDaemonPort
 	if port == 0 {
 		port = 7780
@@ -216,9 +214,20 @@ func (r *Reaper) cleanupDaemonSetArtifacts(ctx context.Context, logger lager.Log
 			continue
 		}
 
+		if r.nodeIPResolver == nil {
+			logger.Error("no-node-ip-resolver", nil, lager.Data{"handle": handle})
+			continue
+		}
+
+		nodeIP, err := r.nodeIPResolver.Resolve(ctx, sourceNode)
+		if err != nil {
+			logger.Error("failed-to-resolve-node-ip", err, lager.Data{"node": sourceNode, "handle": handle})
+			continue
+		}
+
 		// DELETE the step directory (not a tar file).
-		url := fmt.Sprintf("http://%s.%s.%s.svc.cluster.local:%d/artifacts/steps/%s",
-			sourceNode, svcName, r.cfg.Namespace, port, handle)
+		url := fmt.Sprintf("http://%s:%d/artifacts/steps/%s",
+			nodeIP, port, handle)
 
 		req, err := http.NewRequestWithContext(ctx, http.MethodDelete, url, nil)
 		if err != nil {
