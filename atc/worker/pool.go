@@ -240,6 +240,15 @@ func (pool Pool) allRunningWorkers(logger lager.Logger, spec Spec) ([]db.Worker,
 		if !pool.isWorkerRunning(worker) {
 			continue
 		}
+		// When a platform is specified, only return workers that match.
+		if spec.Platform != "" && worker.Platform() != spec.Platform {
+			continue
+		}
+		// When no platform is specified (resource steps), skip workers
+		// with no resource types — they can only run task steps.
+		if spec.Platform == "" && len(worker.ResourceTypes()) == 0 {
+			continue
+		}
 		if worker.TeamID() != 0 {
 			if spec.TeamID == worker.TeamID() {
 				teamWorkers = append(teamWorkers, worker)

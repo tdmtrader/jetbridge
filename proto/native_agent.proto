@@ -1,0 +1,59 @@
+syntax = "proto3";
+package native;
+option go_package = "github.com/concourse/concourse/atc/worker/native/agentpb";
+
+service NativeAgent {
+  rpc Exec(ExecRequest) returns (stream ExecEvent);
+  rpc Kill(KillRequest) returns (KillResponse);
+  rpc StreamIn(stream StreamInMessage) returns (StreamInResponse);
+  rpc StreamOut(StreamOutRequest) returns (stream StreamOutChunk);
+  rpc Ping(PingRequest) returns (PingResponse);
+}
+
+message ExecRequest {
+  string id = 1;
+  string path = 2;
+  repeated string args = 3;
+  repeated string env = 4;
+  string dir = 5;
+  bytes stdin = 6;
+}
+
+message ExecEvent {
+  oneof event {
+    bytes stdout = 1;
+    bytes stderr = 2;
+    int32 exit_status = 3;
+    string error = 4;
+  }
+}
+
+message KillRequest { string id = 1; }
+message KillResponse {}
+
+message StreamInMessage {
+  oneof message {
+    StreamInMeta meta = 1;
+    bytes data = 2;
+  }
+}
+message StreamInMeta {
+  string path = 1;
+  string encoding = 2;
+  string container_id = 3;
+}
+message StreamInResponse {}
+
+message StreamOutRequest {
+  string path = 1;
+  string encoding = 2;
+  string container_id = 3;
+}
+message StreamOutChunk { bytes data = 1; }
+
+message PingRequest {}
+message PingResponse {
+  string platform = 1;
+  string arch = 2;
+  string version = 3;
+}

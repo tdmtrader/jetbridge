@@ -4,7 +4,12 @@
 
 ## Active Tracks
 
-_None_
+---
+
+### [ ] Track: Remote Native Worker Agent
+_Link: [./tracks/remote_native_worker_agent_20260330/](./tracks/remote_native_worker_agent_20260330/)_
+
+---
 
 ## Completed / Archived Tracks
 
