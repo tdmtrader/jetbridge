@@ -115,7 +115,6 @@ func ensureConcourseImage(image string) {
 // should be pre-loaded into the K3s cluster. They are pulled by the host
 // Docker daemon and loaded via testcontainers' LoadImages API.
 var testDependencyImages = []string{
-	"docker.io/rancher/mirrored-pause:3.6", // K3s sandbox image — must be pre-loaded since K3s can't resolve DNS in DinD
 	"docker.io/library/postgres:16",
 	"docker.io/library/busybox:latest",
 	"docker.io/library/alpine:latest",
@@ -126,7 +125,7 @@ var testDependencyImages = []string{
 // dependency images into the K3s cluster via testcontainers' LoadImages API.
 // After loading, it restarts CoreDNS — K3s starts system pods immediately
 // but they fail without the pause image. Loading pause + restarting fixes it.
-func loadImagesIntoCluster(kubeconfig, concourseImage string) {
+func loadImagesIntoCluster(concourseImage string) {
 	ctx := context.Background()
 
 	// Load the locally-built Concourse image.
@@ -153,15 +152,6 @@ func loadImagesIntoCluster(kubeconfig, concourseImage string) {
 		}
 	}
 	log.Println("Image loading complete.")
-
-	// Restart CoreDNS to pick up the now-available pause image.
-	// K3s started CoreDNS before we loaded images, so it's stuck.
-	log.Println("Restarting CoreDNS to pick up loaded images...")
-	restartCmd := exec.Command("kubectl", "--kubeconfig", kubeconfig,
-		"-n", "kube-system", "rollout", "restart", "deployment/coredns")
-	restartCmd.Stdout = os.Stderr
-	restartCmd.Stderr = os.Stderr
-	restartCmd.Run()
 }
 
 // waitForCoreDNS waits until K3s's CoreDNS is running and ready.
