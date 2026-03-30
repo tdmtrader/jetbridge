@@ -153,9 +153,35 @@ func loadImagesIntoCluster(concourseImage string) {
 	log.Println("Image loading complete.")
 }
 
+// waitForCoreDNS waits until K3s's CoreDNS is running and ready.
+// Without this, pods that resolve cluster-internal hostnames (like the
+// migrate-db init container looking up the DB service) fail immediately
+// with DNS resolution errors.
+func waitForCoreDNS(kubeconfig string) {
+	log.Println("Waiting for CoreDNS to be ready...")
+	waitCmd := exec.Command("kubectl",
+		"--kubeconfig", kubeconfig,
+		"-n", "kube-system",
+		"wait", "--for=condition=ready", "pod",
+		"-l", "k8s-app=kube-dns",
+		"--timeout=120s",
+	)
+	waitCmd.Stdout = os.Stderr
+	waitCmd.Stderr = os.Stderr
+	if err := waitCmd.Run(); err != nil {
+		log.Printf("warning: CoreDNS wait failed: %v (proceeding anyway)", err)
+	} else {
+		log.Println("CoreDNS is ready.")
+	}
+}
+
 // helmDeployConcourse deploys Concourse via the local Helm chart.
 func helmDeployConcourse(kubeconfig, namespace, chartPath, image string) {
 	repo, tag := splitImageRef(image)
+
+	// Wait for CoreDNS before deploying — the migrate-db init container
+	// needs DNS to resolve the PostgreSQL service hostname.
+	waitForCoreDNS(kubeconfig)
 
 	// Create namespace (ignore if exists).
 	exec.Command("kubectl", "--kubeconfig", kubeconfig,
