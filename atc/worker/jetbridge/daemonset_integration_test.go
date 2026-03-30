@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/compression"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/runtime"
@@ -1732,6 +1733,165 @@ func TestDaemonSetMode_OverlappingOutputDirStillAccessible(t *testing.T) {
 	}
 	if !foundRepo {
 		t.Fatal("expected a volume mount at /tmp/build/repo")
+	}
+}
+
+// =======================================================================
+// Sidecar mounts in DaemonSet mode
+// =======================================================================
+
+// TestDaemonSetMode_SidecarGetsHostPathMounts verifies that when using
+// DaemonSet hostPath volumes, sidecars receive the same volume mounts
+// as the main container — including the correct hostPath directories for
+// inputs, outputs, and the working directory.
+func TestDaemonSetMode_SidecarGetsHostPathMounts(t *testing.T) {
+	cfg := daemonSetConfig()
+	c := &Container{
+		handle:   "build-99",
+		podName:  "test-pod",
+		metadata: db.ContainerMetadata{Type: db.ContainerTypeTask},
+		containerSpec: runtime.ContainerSpec{
+			Dir:  "/tmp/build",
+			Type: db.ContainerTypeTask,
+			Inputs: []runtime.Input{
+				{DestinationPath: "/tmp/build/repo"},
+			},
+			Outputs: runtime.OutputPaths{"result": "/tmp/build/result"},
+			Sidecars: []atc.SidecarConfig{
+				{
+					Name:       "helper",
+					Image:      "helper:latest",
+					Command:    []string{"/usr/bin/helper"},
+					WorkingDir: "/tmp/build",
+				},
+			},
+		},
+		config:     cfg,
+		properties: make(map[string]string),
+	}
+
+	volumes, mounts := c.buildVolumeMounts()
+	sidecarContainers := buildSidecarContainers(c.containerSpec.Sidecars, mounts)
+
+	if len(sidecarContainers) != 1 {
+		t.Fatalf("expected 1 sidecar container, got %d", len(sidecarContainers))
+	}
+
+	sidecar := sidecarContainers[0]
+
+	// Sidecar must have the same volume mounts as the main container
+	if len(sidecar.VolumeMounts) != len(mounts) {
+		t.Fatalf("sidecar has %d mounts, main has %d", len(sidecar.VolumeMounts), len(mounts))
+	}
+
+	for i, sm := range sidecar.VolumeMounts {
+		if sm.Name != mounts[i].Name || sm.MountPath != mounts[i].MountPath {
+			t.Errorf("sidecar mount[%d] = {%s, %s}, main = {%s, %s}", i, sm.Name, sm.MountPath, mounts[i].Name, mounts[i].MountPath)
+		}
+	}
+
+	// Verify the sidecar can see all expected paths
+	mountPaths := make(map[string]bool)
+	for _, m := range sidecar.VolumeMounts {
+		mountPaths[m.MountPath] = true
+	}
+
+	if !mountPaths["/tmp/build"] {
+		t.Error("sidecar missing mount for working directory /tmp/build")
+	}
+	if !mountPaths["/tmp/build/repo"] {
+		t.Error("sidecar missing mount for input /tmp/build/repo")
+	}
+	if !mountPaths["/tmp/build/result"] {
+		t.Error("sidecar missing mount for output /tmp/build/result")
+	}
+
+	// Verify all volumes are hostPath with DirectoryOrCreate in DaemonSet mode
+	for _, vol := range volumes {
+		if vol.HostPath == nil {
+			t.Errorf("volume %s should be hostPath in DaemonSet mode", vol.Name)
+			continue
+		}
+		if vol.HostPath.Type == nil || *vol.HostPath.Type != corev1.HostPathDirectoryOrCreate {
+			t.Errorf("volume %s should use HostPathDirectoryOrCreate", vol.Name)
+		}
+	}
+
+	// Verify sidecar WorkingDir is set correctly
+	if sidecar.WorkingDir != "/tmp/build" {
+		t.Errorf("sidecar WorkingDir = %q, want /tmp/build", sidecar.WorkingDir)
+	}
+}
+
+// TestDaemonSetMode_SidecarWithOverlappingInputOutput verifies that sidecars
+// get correct mounts when inputs and outputs overlap (same name). The shared
+// volume must be accessible to the sidecar at the correct path.
+func TestDaemonSetMode_SidecarWithOverlappingInputOutput(t *testing.T) {
+	cfg := daemonSetConfig()
+	c := &Container{
+		handle:   "build-100",
+		podName:  "test-pod",
+		metadata: db.ContainerMetadata{Type: db.ContainerTypeTask},
+		containerSpec: runtime.ContainerSpec{
+			Dir:  "/tmp/build",
+			Type: db.ContainerTypeTask,
+			Inputs: []runtime.Input{
+				{DestinationPath: "/tmp/build/shared"},
+			},
+			Outputs: runtime.OutputPaths{"shared": "/tmp/build/shared/"},
+			Sidecars: []atc.SidecarConfig{
+				{
+					Name:  "watcher",
+					Image: "watcher:latest",
+				},
+			},
+		},
+		config:     cfg,
+		properties: make(map[string]string),
+	}
+
+	volumes, mounts := c.buildVolumeMounts()
+	sidecarContainers := buildSidecarContainers(c.containerSpec.Sidecars, mounts)
+
+	if len(sidecarContainers) != 1 {
+		t.Fatalf("expected 1 sidecar, got %d", len(sidecarContainers))
+	}
+
+	sidecar := sidecarContainers[0]
+
+	// Should only have 2 volumes: dir + shared (output deduped)
+	if len(volumes) != 2 {
+		t.Fatalf("expected 2 volumes (dir + shared), got %d", len(volumes))
+	}
+
+	// Sidecar should have exactly the same mounts as main (2 mounts)
+	if len(sidecar.VolumeMounts) != 2 {
+		t.Fatalf("sidecar should have 2 mounts, got %d", len(sidecar.VolumeMounts))
+	}
+
+	// The shared path must be mounted in the sidecar
+	foundShared := false
+	for _, m := range sidecar.VolumeMounts {
+		if filepath.Clean(m.MountPath) == "/tmp/build/shared" {
+			foundShared = true
+			// The volume name should be input-*, not output-*
+			if !strings.HasPrefix(m.Name, "input-") {
+				t.Errorf("shared mount should use input volume, got %s", m.Name)
+			}
+		}
+	}
+	if !foundShared {
+		t.Error("sidecar missing mount for shared path /tmp/build/shared")
+	}
+
+	// The shared volume's hostPath should use the output name as subdir
+	for _, vol := range volumes {
+		if vol.HostPath != nil && strings.Contains(vol.HostPath.Path, "/shared") {
+			expectedPath := filepath.Join(cfg.ArtifactDaemonHostPath, "steps", "build-100", "shared")
+			if vol.HostPath.Path != expectedPath {
+				t.Errorf("shared volume hostPath = %s, want %s", vol.HostPath.Path, expectedPath)
+			}
+		}
 	}
 }
 
