@@ -66,7 +66,7 @@ func TestMain(m *testing.M) {
 	ensureConcourseImage(image)
 
 	kubeconfig := createK3sCluster()
-	loadImagesIntoCluster(image)
+	loadImagesIntoCluster(kubeconfig, image)
 
 	chartPath := filepath.Join(mustRepoRoot(), "deploy", "chart")
 	helmDeployConcourse(kubeconfig, namespace, chartPath, image)

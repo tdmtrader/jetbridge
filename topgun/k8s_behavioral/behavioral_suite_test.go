@@ -130,7 +130,7 @@ var _ = SynchronizedBeforeSuite(
 		image := envOr("CONCOURSE_IMAGE", "concourse-local:latest")
 
 		kubeconfig := createK3sCluster()
-		loadImagesIntoCluster(image)
+		loadImagesIntoCluster(kubeconfig, image)
 
 		chartPath := filepath.Join(mustRepoRoot(), "deploy", "chart")
 		helmDeployConcourse(kubeconfig, namespace, chartPath, image)
