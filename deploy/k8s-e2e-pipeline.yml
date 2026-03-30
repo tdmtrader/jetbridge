@@ -172,6 +172,9 @@ jobs:
           echo "=== Image built ==="
 
           echo ""
+          echo "=== Verifying concourse binary works ==="
+          docker run --rm concourse-local:latest --help 2>&1 | head -5 || echo "BINARY VERIFICATION FAILED"
+
           echo "=== Running K8s integration tests (pre-compiled, KinD cluster) ==="
           /tmp/integration.test -test.v -test.timeout 30m -test.count 1 || {
             echo "=== TEST FAILED — dumping diagnostics ==="
