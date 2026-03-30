@@ -4,13 +4,13 @@
   "status": "archived",
   "description": "Version bumps",
   "createdAt": "2026-03-27T13:53:22.579Z",
-  "updatedAt": "2026-03-27T16:03:06.091Z",
+  "updatedAt": "2026-03-30T15:16:13.697Z",
   "sessions": [
     {
       "slotIndex": 0,
       "engineType": "claude",
-      "aiSessionId": "a1de2ebb-4a88-4ccb-9cbe-855380af8290",
-      "updatedAt": "2026-03-27T13:54:50.774Z"
+      "aiSessionId": "f999e659-5c66-4601-ba21-0590d11009b3",
+      "updatedAt": "2026-03-30T15:16:13.694Z"
     }
   ],
   "sessionHistory": [
@@ -19,6 +19,12 @@
       "engineType": "claude",
       "aiSessionId": "a1de2ebb-4a88-4ccb-9cbe-855380af8290",
       "updatedAt": "2026-03-27T13:54:50.774Z"
+    },
+    {
+      "slotIndex": 0,
+      "engineType": "claude",
+      "aiSessionId": "f999e659-5c66-4601-ba21-0590d11009b3",
+      "updatedAt": "2026-03-30T15:16:13.694Z"
     }
   ]
 }

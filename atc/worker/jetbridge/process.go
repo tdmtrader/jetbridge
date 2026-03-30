@@ -1149,7 +1149,20 @@ func (p *execProcess) waitForRunning(ctx context.Context) error {
 		}
 
 		if pod.Status.Phase == corev1.PodFailed || pod.Status.Phase == corev1.PodSucceeded {
-			return fmt.Errorf("pod terminated before exec could run (phase: %s)", pod.Status.Phase)
+			// Include init container statuses in the error to help diagnose
+			// fetch-input failures in DaemonSet artifact mode.
+			var initStatuses []string
+			for _, cs := range pod.Status.InitContainerStatuses {
+				state := "unknown"
+				if cs.State.Terminated != nil {
+					state = fmt.Sprintf("exit=%d reason=%s", cs.State.Terminated.ExitCode, cs.State.Terminated.Reason)
+				} else if cs.State.Waiting != nil {
+					state = fmt.Sprintf("waiting reason=%s", cs.State.Waiting.Reason)
+				}
+				initStatuses = append(initStatuses, fmt.Sprintf("%s(%s)", cs.Name, state))
+			}
+			return fmt.Errorf("pod terminated before exec could run (phase: %s, initContainers: [%s])",
+				pod.Status.Phase, strings.Join(initStatuses, ", "))
 		}
 	}
 }

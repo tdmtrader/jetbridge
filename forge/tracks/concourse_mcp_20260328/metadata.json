@@ -4,13 +4,13 @@
   "status": "in_progress",
   "description": "Concourse MCP",
   "createdAt": "2026-03-28T15:17:16.192Z",
-  "updatedAt": "2026-03-28T15:57:29.422Z",
+  "updatedAt": "2026-03-30T15:16:13.695Z",
   "sessions": [
     {
       "slotIndex": 0,
       "engineType": "claude",
-      "aiSessionId": "3c1dc3d0-ebf9-4983-8dc5-3e184962e112",
-      "updatedAt": "2026-03-28T15:17:35.435Z"
+      "aiSessionId": "03b1fd3d-287c-4534-a005-a9e8f2bdebad",
+      "updatedAt": "2026-03-30T15:16:13.668Z"
     }
   ],
   "sessionHistory": [
@@ -19,6 +19,12 @@
       "engineType": "claude",
       "aiSessionId": "3c1dc3d0-ebf9-4983-8dc5-3e184962e112",
       "updatedAt": "2026-03-28T15:17:35.435Z"
+    },
+    {
+      "slotIndex": 0,
+      "engineType": "claude",
+      "aiSessionId": "03b1fd3d-287c-4534-a005-a9e8f2bdebad",
+      "updatedAt": "2026-03-30T15:16:13.668Z"
     }
   ]
 }

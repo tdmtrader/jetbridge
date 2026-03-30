@@ -4,13 +4,13 @@
   "status": "completed",
   "description": "pipeline_migration_guide",
   "createdAt": "2026-03-27T14:13:05.818Z",
-  "updatedAt": "2026-03-27T14:33:47.650Z",
+  "updatedAt": "2026-03-30T15:16:13.694Z",
   "sessions": [
     {
       "slotIndex": 0,
       "engineType": "claude",
-      "aiSessionId": "8255c278-5621-458a-af2d-cd66ef79aec9",
-      "updatedAt": "2026-03-27T14:19:36.339Z"
+      "aiSessionId": "1e5066e8-70a7-4012-b475-af2c459d0aa8",
+      "updatedAt": "2026-03-30T15:16:13.664Z"
     }
   ],
   "sessionHistory": [
@@ -19,6 +19,12 @@
       "engineType": "claude",
       "aiSessionId": "8255c278-5621-458a-af2d-cd66ef79aec9",
       "updatedAt": "2026-03-27T14:19:36.339Z"
+    },
+    {
+      "slotIndex": 0,
+      "engineType": "claude",
+      "aiSessionId": "1e5066e8-70a7-4012-b475-af2c459d0aa8",
+      "updatedAt": "2026-03-30T15:16:13.664Z"
     }
   ]
 }

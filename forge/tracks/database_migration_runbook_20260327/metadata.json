@@ -4,13 +4,13 @@
   "status": "archived",
   "description": "database_migration_runbook",
   "createdAt": "2026-03-27T14:13:05.445Z",
-  "updatedAt": "2026-03-27T14:49:44.599Z",
+  "updatedAt": "2026-03-30T15:16:13.684Z",
   "sessions": [
     {
       "slotIndex": 0,
       "engineType": "claude",
-      "aiSessionId": "f1811ea5-8293-4977-9fd3-eb32b78bd738",
-      "updatedAt": "2026-03-27T14:19:49.448Z"
+      "aiSessionId": "3c1dc3d0-ebf9-4983-8dc5-3e184962e112",
+      "updatedAt": "2026-03-30T15:16:13.654Z"
     }
   ],
   "sessionHistory": [
@@ -19,6 +19,12 @@
       "engineType": "claude",
       "aiSessionId": "f1811ea5-8293-4977-9fd3-eb32b78bd738",
       "updatedAt": "2026-03-27T14:19:49.448Z"
+    },
+    {
+      "slotIndex": 0,
+      "engineType": "claude",
+      "aiSessionId": "3c1dc3d0-ebf9-4983-8dc5-3e184962e112",
+      "updatedAt": "2026-03-30T15:16:13.654Z"
     }
   ]
 }
