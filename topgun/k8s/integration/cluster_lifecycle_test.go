@@ -213,15 +213,43 @@ func helmDeployConcourse(kubeconfig, namespace, chartPath, image string) {
 	waitCmd.Stdout = os.Stderr
 	waitCmd.Stderr = os.Stderr
 	if err := waitCmd.Run(); err != nil {
-		// Dump pod events for diagnostics before failing.
+		log.Printf("=== Web pod not ready — dumping diagnostics ===")
+
+		// Describe all pods.
 		descCmd := exec.Command("kubectl",
-			"--kubeconfig", kubeconfig,
-			"-n", namespace,
-			"describe", "pods",
-		)
+			"--kubeconfig", kubeconfig, "-n", namespace, "describe", "pods")
 		descCmd.Stdout = os.Stderr
 		descCmd.Stderr = os.Stderr
 		descCmd.Run()
+
+		// Get logs from the web container (--previous to get logs from the
+		// last crashed instance, since it's in CrashLoopBackOff).
+		for _, prev := range []string{"", "--previous"} {
+			args := []string{"--kubeconfig", kubeconfig, "-n", namespace,
+				"logs", "-l", "app.kubernetes.io/component=web", "-c", "concourse-web"}
+			if prev != "" {
+				args = append(args, prev)
+			}
+			label := "current"
+			if prev != "" {
+				label = "previous"
+			}
+			log.Printf("--- web container logs (%s) ---", label)
+			logsCmd := exec.Command("kubectl", args...)
+			logsCmd.Stdout = os.Stderr
+			logsCmd.Stderr = os.Stderr
+			logsCmd.Run()
+		}
+
+		// Also get migrate-db init container logs.
+		log.Printf("--- migrate-db init container logs ---")
+		migrateCmd := exec.Command("kubectl",
+			"--kubeconfig", kubeconfig, "-n", namespace,
+			"logs", "-l", "app.kubernetes.io/component=web", "-c", "migrate-db")
+		migrateCmd.Stdout = os.Stderr
+		migrateCmd.Stderr = os.Stderr
+		migrateCmd.Run()
+
 		log.Fatalf("timed out waiting for concourse-web pod: %v", err)
 	}
 }
