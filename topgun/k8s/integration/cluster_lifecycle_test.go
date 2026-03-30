@@ -238,6 +238,9 @@ func helmDeployConcourse(kubeconfig, namespace, chartPath, image string) {
 		// in the built binary yet. The artifact daemon approach is used instead.
 		"--set", "cachePvc.enabled=false",
 		"--set", "artifactStorePvc.enabled=false",
+		// Enable the DaemonSet artifact daemon — needed for artifact passing
+		// between steps. Default is false in values.yaml.
+		"--set", "artifactDaemon.enabled=true",
 		"--timeout", "5m",
 	}
 	for i, arg := range extraArgs {
@@ -248,6 +251,23 @@ func helmDeployConcourse(kubeconfig, namespace, chartPath, image string) {
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
 		log.Fatalf("helm upgrade --install failed: %v", err)
+	}
+
+	// Wait for artifact daemon DaemonSet to be ready.
+	log.Println("Waiting for artifact daemon to be ready...")
+	daemonWait := exec.Command("kubectl",
+		"--kubeconfig", kubeconfig,
+		"-n", namespace,
+		"wait", "--for=condition=ready", "pod",
+		"-l", "app.kubernetes.io/component=artifact-daemon",
+		"--timeout=120s",
+	)
+	daemonWait.Stdout = os.Stderr
+	daemonWait.Stderr = os.Stderr
+	if err := daemonWait.Run(); err != nil {
+		log.Printf("warning: artifact daemon wait failed: %v (build artifact tests may fail)", err)
+	} else {
+		log.Println("Artifact daemon is ready.")
 	}
 
 	log.Println("Waiting for concourse-web pod to be ready...")
