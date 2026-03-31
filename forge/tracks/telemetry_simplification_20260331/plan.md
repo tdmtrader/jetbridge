@@ -1,71 +1,63 @@
 # Plan: Telemetry Simplification
 
-## Phase 1: Remove Scheduler & Algorithm Spans
+## Phase 1: Remove `db.lock.acquire` Span
+
+The single biggest win — 77.7% of all traces.
 
 ### Tasks
 
-- [ ] Remove algorithm resolver spans from `atc/scheduler/algorithm/`
-  - Delete spans: `Algorithm.Compute`, `individualResolver.Resolve`, `pinnedResolver.Resolve`, all `groupResolver.*` spans
-  - Files: `compute.go`, `individual_resolver.go`, `pinned_resolver.go`, `group_resolver.go`
-  - Update any tests that assert on these spans
+- [ ] Remove span from `atc/db/lock/lock.go`
+  - Delete `tracing.StartSpan` call for `db.lock.acquire`
+  - Remove unused tracing imports
+  - Update any tests that assert on this span
 
-- [ ] Remove scheduler sub-phase spans from `atc/scheduler/buildstarter.go`
-  - Delete spans: `scheduler.try-start-pending-build`, `build.schedule`, `build.determine-inputs`, `build.create-plan`, `build.start`
-  - Update any tests that assert on these spans
+## Phase 2: Remove Periodic Polling Root Spans
 
-- [ ] Remove periodic scheduler span from `atc/scheduler/runner.go`
-  - Delete span: `scheduler.Run` (keep `schedule-job`)
-
-## Phase 2: Remove Check/Lidar Internal Spans
+These fire every cycle and are noise when no work happens.
 
 ### Tasks
 
-- [ ] Remove check delegate wait spans from `atc/engine/check_delegate.go`
-  - Delete spans: `check.wait-to-run`, `check.wait-for-rate-limit`, `check.wait-for-lock`
-  - Update any tests that assert on these spans
+- [ ] Remove `scheduler.Run` span from `atc/scheduler/runner.go`
+  - Keep `schedule-job` span (that one is per-job, nested, valuable)
+
+- [ ] Remove `scanner.Run` span from `atc/lidar/scanner.go`
+  - Keep `scanner.check` removal for Phase 3
+
+- [ ] Remove `k8s.reaper.run` span from `atc/worker/jetbridge/reaper.go`
+
+- [ ] Remove `k8s.registrar.register` span from `atc/worker/jetbridge/registrar.go`
+
+## Phase 3: Remove Check Bookkeeping Spans
+
+Child spans inside scanner/check traces that are always <50ms.
+
+### Tasks
 
 - [ ] Remove scanner resolution spans from `atc/lidar/scanner.go`
-  - Delete spans: `scanner.resolveResourceType`, `scanner.resolveResource`, `scanner.Run`
-  - Keep: `scanner.check`
+  - Delete: `scanner.check`, `scanner.resolveResourceType`, `scanner.resolveResource`
 
-## Phase 3: Remove K8s Worker Internal Spans
+- [ ] Remove check delegate wait spans from `atc/engine/check_delegate.go`
+  - Delete: `check.wait-to-run`, `check.wait-for-rate-limit`, `check.wait-for-lock`
 
-### Tasks
+- [ ] Remove `check-factory.try-create` span from `atc/db/check_factory.go`
 
-- [ ] Remove K8s container/volume/process spans
-  - Delete from `container.go`: `k8s.container.attach`
-  - Delete from `volume.go`: `k8s.volume.stream-in`, `k8s.volume.stream-out`
-  - Delete from `process.go`: `k8s.process.wait`, `k8s.exec-process.wait`, `k8s.exec-process.wait-for-running`, `k8s.exec-process.stream-inputs`, `k8s.exec-process.exec`
-  - Keep: `k8s.container.run`, `k8s.spdy.exec`
+- [ ] Remove `db.versions.save` span from `atc/db/resource_config_scope.go`
 
-- [ ] Remove K8s periodic spans
-  - Delete from `reaper.go`: `k8s.reaper.run`
-  - Delete from `registrar.go`: `k8s.registrar.register`
-
-## Phase 4: Remove DB Internal Spans
+## Phase 4: Remove otelhttp Noise
 
 ### Tasks
 
-- [ ] Remove DB internal spans
-  - Delete from `versions_db.go`: `VersionsDB.migrateSingle`, `PaginatedBuilds.migrateLimit`
-  - Delete from `lock/lock.go`: `db.lock.acquire`
-  - Keep: `db.build.create`, `db.versions.save`, `check-factory.try-create`
+- [ ] Remove or filter otelhttp auto-instrumentation from `atc/wrappa/otel_http_wrappa.go`
+  - Evaluate: remove entirely vs filter specific routes
+  - If removing entirely, delete the wrappa and its registration
 
-## Phase 5: OTel Collector Tail-Sampling Config
-
-### Tasks
-
-- [ ] Create/document OTel Collector tail-sampling configuration
-  - Tail-sampling processor: 1% default, always keep > 1s duration
-  - Pass-through for non-HTTP spans
-  - Provide as a reference config file (e.g., `hack/otel-collector-sampling.yaml`)
-
-## Phase 6: Verify & Clean Up
+## Phase 5: Verify & Clean Up
 
 ### Tasks
 
-- [ ] Run full jetbridge test suite
-- [ ] Run scheduler tests
-- [ ] Run engine/exec tests
-- [ ] Remove unused tracing imports from modified files
-- [ ] Document span reduction in a summary
+- [ ] Run scheduler tests (`ginkgo ./atc/scheduler/...`)
+- [ ] Run engine/exec tests (`ginkgo ./atc/engine/...`)
+- [ ] Run jetbridge tests (`ginkgo ./atc/worker/jetbridge/`)
+- [ ] Run DB tests for lock and check_factory (`ginkgo ./atc/db/lock/ ./atc/db/`)
+- [ ] Remove unused tracing imports from all modified files
+- [ ] Verify in Grafana: trace volume dropped, build traces still have full child span trees

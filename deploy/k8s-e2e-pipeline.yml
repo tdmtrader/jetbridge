@@ -106,6 +106,7 @@ jobs:
 
 - name: k8s-integration-tests
   serial: true
+  serial_groups: [k8s-tests]
   plan:
   - get: trigger
     trigger: true
@@ -191,10 +192,11 @@ jobs:
 
 - name: k8s-behavioral-tests
   serial: true
+  serial_groups: [k8s-tests]
   plan:
   - get: trigger
     trigger: true
-    passed: [k8s-integration-tests]
+    passed: [build-kind-runner]
   - task: k8s-behavioral
     privileged: true
     timeout: 4h
