@@ -102,6 +102,152 @@ jobs:
           go test -v -count=1 -timeout 5m ./atc/worker/jetbridge/...
           echo "=== All jetbridge tests passed ==="
 
+- name: build-and-deploy
+  serial_groups: [pipeline]
+  plan:
+  - get: repo
+    trigger: true
+    params: {depth: 1}
+    passed: [k8s-runtime-tests]
+  - task: build-and-push-local
+    privileged: true
+    config:
+      platform: linux
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v5
+      inputs:
+      - name: repo
+      run:
+        path: sh
+        args:
+        - -exc
+        - |
+          cd repo
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          VERSION=$(cat VERSION)
+          echo "Version: ${VERSION} (${SHORT_SHA})"
+
+          LDFLAGS="-s -w -X github.com/concourse/concourse.Version=${VERSION} -X github.com/concourse/concourse.JetBridgeVersion=${VERSION}"
+
+          echo "=== Building concourse binary ==="
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "${LDFLAGS}" -o concourse-linux-amd64 ./cmd/concourse
+          ls -lh concourse-linux-amd64
+          echo "=== Building artifact-daemon binary ==="
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o artifact-daemon-linux-amd64 ./cmd/artifact-daemon
+          ls -lh artifact-daemon-linux-amd64
+
+          echo "=== Building fly CLI for all platforms ==="
+          FLY_LDFLAGS="-s -w -X github.com/concourse/concourse.Version=${VERSION}"
+          mkdir -p fly-assets fly-bin
+          for pair in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
+            OS="${pair%%/*}"
+            ARCH="${pair##*/}"
+            echo "  fly-${OS}-${ARCH}"
+            CGO_ENABLED=0 GOOS=${OS} GOARCH=${ARCH} go build -ldflags "${FLY_LDFLAGS}" -o fly-bin/fly ./fly
+            tar czf fly-assets/fly-${OS}-${ARCH}.tgz -C fly-bin fly
+            rm -f fly-bin/fly
+          done
+          rm -rf fly-bin
+          ls -lh fly-assets/
+
+          echo "=== Verifying binary version ==="
+          BINARY_VERSION=$(./concourse-linux-amd64 --version 2>&1 || true)
+          echo "Binary reports: ${BINARY_VERSION}"
+          if ! echo "${BINARY_VERSION}" | grep -q "${VERSION}"; then
+            echo "FATAL: Binary version mismatch! Expected '${VERSION}' in output but got: ${BINARY_VERSION}"
+            exit 1
+          fi
+          echo "=== Version verified: ${VERSION} ==="
+
+          REGISTRY="registry-docker-registry.cicd.svc.cluster.local:5000"
+          BUILDER_POD="image-builder-$$"
+
+          cleanup_builder() { kubectl delete pod -n cicd ${BUILDER_POD} --grace-period=0 --force 2>/dev/null || true; }
+          trap cleanup_builder EXIT
+          kubectl delete pod -n cicd -l app=image-builder --grace-period=0 --force 2>/dev/null || true
+
+          echo "=== Creating DinD builder pod ==="
+          cat <<PODEOF | kubectl apply -n cicd -f -
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: ${BUILDER_POD}
+            namespace: cicd
+            labels:
+              app: image-builder
+          spec:
+            containers:
+            - name: dind
+              image: docker:dind
+              securityContext:
+                privileged: true
+              env:
+              - name: DOCKER_TLS_CERTDIR
+                value: ""
+              command: ["dockerd", "--host=unix:///var/run/docker.sock", "--insecure-registry=${REGISTRY}", "--insecure-registry=registry.home"]
+          PODEOF
+
+          echo "Waiting for builder pod to be ready..."
+          kubectl wait --for=condition=ready pod/${BUILDER_POD} -n cicd --timeout=120s
+
+          echo "Waiting for Docker daemon..."
+          for i in $(seq 1 30); do
+            if kubectl exec -n cicd ${BUILDER_POD} -- docker info >/dev/null 2>&1; then
+              echo "Docker daemon ready"
+              break
+            fi
+            sleep 2
+          done
+
+          echo "=== Copying binaries to builder pod ==="
+          kubectl cp concourse-linux-amd64 cicd/${BUILDER_POD}:/tmp/concourse-linux-amd64
+          kubectl cp artifact-daemon-linux-amd64 cicd/${BUILDER_POD}:/tmp/artifact-daemon-linux-amd64
+          kubectl cp fly-assets cicd/${BUILDER_POD}:/tmp/fly-assets
+
+          echo "=== Copying Dockerfile to builder pod ==="
+          cat <<'DOCKERFILE' > /tmp/Dockerfile
+          FROM ubuntu:22.04
+          RUN apt-get update && \
+              apt-get install -y ca-certificates dumb-init && \
+              rm -rf /var/lib/apt/lists/*
+          COPY concourse-linux-amd64 /usr/local/concourse/bin/concourse
+          COPY artifact-daemon-linux-amd64 /usr/local/concourse/bin/artifact-daemon
+          COPY fly-assets /usr/local/concourse/fly-assets
+          RUN chmod +x /usr/local/concourse/bin/concourse /usr/local/concourse/bin/artifact-daemon
+          ENV PATH="/usr/local/concourse/bin:${PATH}"
+          ENTRYPOINT ["dumb-init", "concourse"]
+          DOCKERFILE
+          kubectl cp /tmp/Dockerfile cicd/${BUILDER_POD}:/tmp/Dockerfile
+
+          echo "=== Building Docker image ==="
+          kubectl exec -n cicd ${BUILDER_POD} -- \
+            docker build \
+              -t registry.home/jetbridge:latest \
+              -t registry.home/jetbridge:v${VERSION} \
+              -t ${REGISTRY}/jetbridge:latest \
+              -t ${REGISTRY}/jetbridge:v${VERSION} \
+              -f /tmp/Dockerfile /tmp/
+
+          echo "=== Pushing to local registries only (GHCR deferred until after live tests) ==="
+          kubectl exec -n cicd ${BUILDER_POD} -- docker push registry.home/jetbridge:latest
+          kubectl exec -n cicd ${BUILDER_POD} -- docker push registry.home/jetbridge:v${VERSION}
+          kubectl exec -n cicd ${BUILDER_POD} -- docker push ${REGISTRY}/jetbridge:latest
+          kubectl exec -n cicd ${BUILDER_POD} -- docker push ${REGISTRY}/jetbridge:v${VERSION}
+
+          echo "=== Image built and pushed to local registries: v${VERSION} (${SHORT_SHA}) ==="
+
+          echo "=== Deploying to cluster ==="
+          IMAGE="registry.home/jetbridge:v${VERSION}"
+          echo "Setting concourse-web image: ${IMAGE}"
+          kubectl set image deployment/concourse-web concourse-web=${IMAGE} -n cicd
+          kubectl rollout restart deployment/concourse-web -n cicd
+
+          echo "Restarting artifact daemon to pick up new binary..."
+          kubectl rollout restart daemonset/artifact-daemon -n cicd
+          kubectl rollout status daemonset/artifact-daemon -n cicd --timeout=60s
+
+          echo "=== Deploy complete: ${IMAGE} ==="
+          echo "Note: not waiting for web rollout — it kills the tracking pod."
+
 - name: k8s-live-tests
   serial: true
   serial_groups: [pipeline]
@@ -109,7 +255,7 @@ jobs:
   - get: repo
     trigger: true
     params: {depth: 1}
-    passed: [k8s-runtime-tests]
+    passed: [build-and-deploy]
   - task: k8s-live-integration-tests
     config:
       platform: linux
@@ -184,14 +330,14 @@ jobs:
           git push --force origin HEAD:refs/heads/main
           echo "=== Successfully pushed ${SHORT_SHA} to main ==="
 
-- name: build-and-push-image
+- name: push-to-ghcr
   serial_groups: [pipeline]
   plan:
   - get: repo
     trigger: true
     params: {depth: 1}
     passed: [push-to-main]
-  - task: build-and-push-concourse-image
+  - task: push-validated-image-to-ghcr
     privileged: true
     config:
       platform: linux
@@ -203,55 +349,18 @@ jobs:
         args:
         - -exc
         - |
-          echo "=== Cloning repo (shallow) for build ==="
-          git clone --depth 1 --branch main https://github.com/tdmtrader/jetbridge.git repo
           cd repo
           SHORT_SHA=$(git rev-parse --short HEAD)
           VERSION=$(cat VERSION)
-          echo "Version: ${VERSION} (${SHORT_SHA})"
-
-          LDFLAGS="-s -w -X github.com/concourse/concourse.Version=${VERSION} -X github.com/concourse/concourse.JetBridgeVersion=${VERSION}"
-
-          echo "=== Building concourse binary (frontend assets embedded from git) ==="
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "${LDFLAGS}" -o concourse-linux-amd64 ./cmd/concourse
-          ls -lh concourse-linux-amd64
-          echo "=== Building artifact-daemon binary ==="
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o artifact-daemon-linux-amd64 ./cmd/artifact-daemon
-          ls -lh artifact-daemon-linux-amd64
-
-          echo "=== Building fly CLI for all platforms ==="
-          FLY_LDFLAGS="-s -w -X github.com/concourse/concourse.Version=${VERSION}"
-          mkdir -p fly-assets fly-bin
-          for pair in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
-            OS="${pair%%/*}"
-            ARCH="${pair##*/}"
-            echo "  fly-${OS}-${ARCH}"
-            CGO_ENABLED=0 GOOS=${OS} GOARCH=${ARCH} go build -ldflags "${FLY_LDFLAGS}" -o fly-bin/fly ./fly
-            tar czf fly-assets/fly-${OS}-${ARCH}.tgz -C fly-bin fly
-            rm -f fly-bin/fly
-          done
-          rm -rf fly-bin
-          ls -lh fly-assets/
-          echo "=== Binaries built ==="
-
-          echo "=== Verifying binary version ==="
-          BINARY_VERSION=$(./concourse-linux-amd64 --version 2>&1 || true)
-          echo "Binary reports: ${BINARY_VERSION}"
-          if ! echo "${BINARY_VERSION}" | grep -q "${VERSION}"; then
-            echo "FATAL: Binary version mismatch! Expected '${VERSION}' in output but got: ${BINARY_VERSION}"
-            exit 1
-          fi
-          echo "=== Version verified: ${VERSION} ==="
-
           REGISTRY="registry-docker-registry.cicd.svc.cluster.local:5000"
           GHCR="ghcr.io/tdmtrader/jetbridge"
-          BUILDER_POD="image-builder-$$"
+          BUILDER_POD="ghcr-push-$$"
 
           cleanup_builder() { kubectl delete pod -n cicd ${BUILDER_POD} --grace-period=0 --force 2>/dev/null || true; }
           trap cleanup_builder EXIT
-          kubectl delete pod -n cicd -l app=image-builder --grace-period=0 --force 2>/dev/null || true
+          kubectl delete pod -n cicd -l app=ghcr-push --grace-period=0 --force 2>/dev/null || true
 
-          echo "=== Creating DinD builder pod ==="
+          echo "=== Creating DinD pod for GHCR push ==="
           cat <<PODEOF | kubectl apply -n cicd -f -
           apiVersion: v1
           kind: Pod
@@ -259,7 +368,7 @@ jobs:
             name: ${BUILDER_POD}
             namespace: cicd
             labels:
-              app: image-builder
+              app: ghcr-push
           spec:
             containers:
             - name: dind
@@ -272,68 +381,30 @@ jobs:
               command: ["dockerd", "--host=unix:///var/run/docker.sock", "--insecure-registry=${REGISTRY}", "--insecure-registry=registry.home"]
           PODEOF
 
-          echo "Waiting for builder pod to be ready..."
+          echo "Waiting for push pod to be ready..."
           kubectl wait --for=condition=ready pod/${BUILDER_POD} -n cicd --timeout=120s
-
-          echo "Waiting for Docker daemon..."
           for i in $(seq 1 30); do
-            if kubectl exec -n cicd ${BUILDER_POD} -- docker info >/dev/null 2>&1; then
-              echo "Docker daemon ready"
-              break
-            fi
+            if kubectl exec -n cicd ${BUILDER_POD} -- docker info >/dev/null 2>&1; then break; fi
             sleep 2
           done
 
+          echo "=== Pulling validated image from local registry ==="
+          kubectl exec -n cicd ${BUILDER_POD} -- docker pull registry.home/jetbridge:v${VERSION}
+
+          echo "=== Tagging for GHCR ==="
+          kubectl exec -n cicd ${BUILDER_POD} -- docker tag registry.home/jetbridge:v${VERSION} ${GHCR}:${SHORT_SHA}
+          kubectl exec -n cicd ${BUILDER_POD} -- docker tag registry.home/jetbridge:v${VERSION} ${GHCR}:v${VERSION}
+          kubectl exec -n cicd ${BUILDER_POD} -- docker tag registry.home/jetbridge:v${VERSION} ${GHCR}:latest
+
           echo "=== Logging into GHCR ==="
           echo "${GITHUB_TOKEN}" | kubectl exec -i -n cicd ${BUILDER_POD} -- docker login ghcr.io -u tdmtrader --password-stdin
-
-          echo "=== Copying binaries to builder pod ==="
-          kubectl cp concourse-linux-amd64 cicd/${BUILDER_POD}:/tmp/concourse-linux-amd64
-          kubectl cp artifact-daemon-linux-amd64 cicd/${BUILDER_POD}:/tmp/artifact-daemon-linux-amd64
-          kubectl cp fly-assets cicd/${BUILDER_POD}:/tmp/fly-assets
-
-          echo "=== Copying Dockerfile to builder pod ==="
-          cat <<'DOCKERFILE' > /tmp/Dockerfile
-          FROM ubuntu:22.04
-          RUN apt-get update && \
-              apt-get install -y ca-certificates dumb-init && \
-              rm -rf /var/lib/apt/lists/*
-          COPY concourse-linux-amd64 /usr/local/concourse/bin/concourse
-          COPY artifact-daemon-linux-amd64 /usr/local/concourse/bin/artifact-daemon
-          COPY fly-assets /usr/local/concourse/fly-assets
-          RUN chmod +x /usr/local/concourse/bin/concourse /usr/local/concourse/bin/artifact-daemon
-          ENV PATH="/usr/local/concourse/bin:${PATH}"
-          ENTRYPOINT ["dumb-init", "concourse"]
-          DOCKERFILE
-          kubectl cp /tmp/Dockerfile cicd/${BUILDER_POD}:/tmp/Dockerfile
-
-          echo "=== Building Docker image ==="
-          kubectl exec -n cicd ${BUILDER_POD} -- \
-            docker build \
-              -t registry.home/jetbridge:latest \
-              -t registry.home/jetbridge:v${VERSION} \
-              -t ${REGISTRY}/jetbridge:latest \
-              -t ${REGISTRY}/jetbridge:v${VERSION} \
-              -t ${GHCR}:${SHORT_SHA} \
-              -t ${GHCR}:v${VERSION} \
-              -t ${GHCR}:latest \
-              -f /tmp/Dockerfile /tmp/
-
-          echo "=== Pushing to local registries ==="
-          kubectl exec -n cicd ${BUILDER_POD} -- docker push registry.home/jetbridge:latest
-          kubectl exec -n cicd ${BUILDER_POD} -- docker push registry.home/jetbridge:v${VERSION}
-          kubectl exec -n cicd ${BUILDER_POD} -- docker push ${REGISTRY}/jetbridge:latest
-          kubectl exec -n cicd ${BUILDER_POD} -- docker push ${REGISTRY}/jetbridge:v${VERSION}
 
           echo "=== Pushing to GHCR ==="
           kubectl exec -n cicd ${BUILDER_POD} -- docker push ${GHCR}:${SHORT_SHA}
           kubectl exec -n cicd ${BUILDER_POD} -- docker push ${GHCR}:v${VERSION}
           kubectl exec -n cicd ${BUILDER_POD} -- docker push ${GHCR}:latest
 
-          echo "=== Verifying ==="
-          kubectl exec -n cicd ${BUILDER_POD} -- docker images ${GHCR}
-          echo ""
-          echo "=== Image build and push complete: ${GHCR}:v${VERSION} (${SHORT_SHA}) ==="
+          echo "=== GHCR push complete: ${GHCR}:v${VERSION} (${SHORT_SHA}) ==="
 
 - name: tag-and-bump-version
   serial_groups: [pipeline]
@@ -341,7 +412,7 @@ jobs:
   - get: repo
     trigger: true
     params: {depth: 1}
-    passed: [build-and-push-image]
+    passed: [push-to-ghcr]
   - task: tag-and-bump
     config:
       platform: linux
@@ -398,40 +469,3 @@ jobs:
             git push origin jetbridge
             echo "=== Bumped to ${NEXT_VERSION} on jetbridge ==="
           fi
-
-- name: self-upgrade
-  serial_groups: [pipeline]
-  plan:
-  - get: repo
-    trigger: true
-    params: {depth: 1}
-    passed: [tag-and-bump-version]
-  - task: self-upgrade
-    config:
-      platform: linux
-      rootfs_uri: docker:///registry.home/concourse-test-runner:v5
-      inputs:
-      - name: repo
-      run:
-        path: sh
-        args:
-        - -exc
-        - |
-          cd repo
-          VERSION=$(cat VERSION)
-          IMAGE="registry.home/jetbridge:v${VERSION}"
-          echo "=== Deploying concourse-web image: ${IMAGE} ==="
-          echo ""
-          echo "Current concourse-web pod:"
-          kubectl get pods -n cicd -l app=concourse-web
-          echo ""
-
-          echo "=== Setting image to ${IMAGE} ==="
-          kubectl set image deployment/concourse-web concourse-web=${IMAGE} -n cicd
-
-          echo "=== Restarting concourse-web deployment ==="
-          kubectl rollout restart deployment/concourse-web -n cicd
-          echo ""
-          echo "=== Self-upgrade initiated: ${IMAGE} ==="
-          echo "Note: not waiting for rollout — the restart kills the web pod"
-          echo "that is tracking this build, which would leave it stuck forever."

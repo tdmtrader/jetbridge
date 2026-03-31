@@ -649,26 +649,28 @@ func TestBuildArtifactInitContainers_MultipleInputs(t *testing.T) {
 		t.Fatalf("buildArtifactInitContainers: %v", err)
 	}
 
-	// Multiple inputs produce a single batch init container.
-	if len(inits) != 1 {
-		t.Fatalf("expected 1 batch init container, got %d", len(inits))
+	// Multiple inputs produce one init container per input.
+	if len(inits) != 3 {
+		t.Fatalf("expected 3 init containers (one per input), got %d", len(inits))
 	}
 
-	init := inits[0]
-	if init.Name != "fetch-inputs" {
-		t.Errorf("expected name fetch-inputs, got %q", init.Name)
-	}
-	if init.Image != "alpine:latest" {
-		t.Errorf("expected image alpine:latest, got %q", init.Image)
-	}
-	// Batch container should have: 1 hostpath + 3 input volume mounts.
-	if len(init.VolumeMounts) != 4 {
-		t.Errorf("expected 4 volume mounts (1 hostpath + 3 inputs), got %d", len(init.VolumeMounts))
-	}
-	// Command should use /resolve-batch.
-	cmdStr := strings.Join(init.Command, " ")
-	if !strings.Contains(cmdStr, "/resolve-batch") {
-		t.Errorf("expected /resolve-batch in command, got: %s", cmdStr)
+	for i, init := range inits {
+		expectedName := fmt.Sprintf("fetch-input-%d", i)
+		if init.Name != expectedName {
+			t.Errorf("init[%d]: expected name %s, got %q", i, expectedName, init.Name)
+		}
+		if init.Image != "alpine:latest" {
+			t.Errorf("init[%d]: expected image alpine:latest, got %q", i, init.Image)
+		}
+		// Each per-input container should have: 1 hostpath + 1 input volume mount.
+		if len(init.VolumeMounts) != 2 {
+			t.Errorf("init[%d]: expected 2 volume mounts (1 hostpath + 1 input), got %d", i, len(init.VolumeMounts))
+		}
+		// Command should use /resolve.
+		cmdStr := strings.Join(init.Command, " ")
+		if !strings.Contains(cmdStr, "/resolve") {
+			t.Errorf("init[%d]: expected /resolve in command, got: %s", i, cmdStr)
+		}
 	}
 }
 
@@ -699,8 +701,8 @@ func TestBuildArtifactInitContainers_InputWithoutArtifact(t *testing.T) {
 		t.Fatalf("expected 1 init container (nil artifact skipped), got %d", len(inits))
 	}
 
-	if inits[0].Name != "fetch-inputs" {
-		t.Errorf("expected init container name fetch-inputs, got %q", inits[0].Name)
+	if inits[0].Name != "fetch-input-0" {
+		t.Errorf("expected init container name fetch-input-0, got %q", inits[0].Name)
 	}
 }
 
@@ -731,18 +733,21 @@ func TestBuildArtifactInitContainers_LocatorHitVsMiss(t *testing.T) {
 		t.Fatalf("buildArtifactInitContainers: %v", err)
 	}
 
-	// Single batch init container for both inputs.
-	if len(inits) != 1 {
-		t.Fatalf("expected 1 batch init container, got %d", len(inits))
+	// One init container per input.
+	if len(inits) != 2 {
+		t.Fatalf("expected 2 init containers (one per input), got %d", len(inits))
 	}
 
-	// The batch command should contain both the locator HostDir and the volume handle.
-	cmdStr := strings.Join(inits[0].Command, " ")
-	if !contains(cmdStr, "producer-handle/result") {
-		t.Errorf("expected batch command to contain locator HostDir 'producer-handle/result', got: %s", cmdStr)
+	// First init container (vol-a with locator hit) should use the locator HostDir.
+	cmdStr0 := strings.Join(inits[0].Command, " ")
+	if !contains(cmdStr0, "producer-handle/result") {
+		t.Errorf("expected init[0] command to contain locator HostDir 'producer-handle/result', got: %s", cmdStr0)
 	}
-	if !contains(cmdStr, "vol-b") {
-		t.Errorf("expected batch command to contain volume handle 'vol-b' as fallback, got: %s", cmdStr)
+
+	// Second init container (vol-b with no locator entry) should use the volume handle.
+	cmdStr1 := strings.Join(inits[1].Command, " ")
+	if !contains(cmdStr1, "vol-b") {
+		t.Errorf("expected init[1] command to contain volume handle 'vol-b' as fallback, got: %s", cmdStr1)
 	}
 }
 
@@ -843,9 +848,9 @@ func TestBuildPod_InitContainerOrdering(t *testing.T) {
 
 	inits := pod.Spec.InitContainers
 
-	// Expect: 1 cleanup + 1 batch fetch = 2 init containers.
-	if len(inits) != 2 {
-		t.Fatalf("expected 2 init containers, got %d", len(inits))
+	// Expect: 1 cleanup + 2 per-input fetch = 3 init containers.
+	if len(inits) != 3 {
+		t.Fatalf("expected 3 init containers, got %d", len(inits))
 	}
 
 	// First should be cleanup-stale.
@@ -853,9 +858,12 @@ func TestBuildPod_InitContainerOrdering(t *testing.T) {
 		t.Errorf("expected first init container to be 'cleanup-stale', got %q", inits[0].Name)
 	}
 
-	// Second should be the batch fetch container.
-	if inits[1].Name != "fetch-inputs" {
-		t.Errorf("expected second init container to be 'fetch-inputs', got %q", inits[1].Name)
+	// Remaining should be per-input fetch containers.
+	if inits[1].Name != "fetch-input-0" {
+		t.Errorf("expected second init container to be 'fetch-input-0', got %q", inits[1].Name)
+	}
+	if inits[2].Name != "fetch-input-1" {
+		t.Errorf("expected third init container to be 'fetch-input-1', got %q", inits[2].Name)
 	}
 }
 
