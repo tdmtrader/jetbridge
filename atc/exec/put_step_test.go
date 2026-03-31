@@ -296,6 +296,24 @@ var _ = Describe("PutStep", func() {
 			})
 		})
 
+		Context("[PS-06] when a specified input is not found in the artifact repository", func() {
+			BeforeEach(func() {
+				putPlan.Inputs = &atc.InputsConfig{
+					Specified: []string{"input1", "nonexistent-input"},
+				}
+			})
+
+			It("returns a PutInputNotFoundError naming the missing input", func() {
+				Expect(stepErr).To(HaveOccurred())
+				Expect(stepErr).To(BeAssignableToTypeOf(exec.PutInputNotFoundError{}))
+				Expect(stepErr.Error()).To(ContainSubstring("nonexistent-input"))
+			})
+
+			It("does not select a worker or run the resource script", func() {
+				Expect(fakePool.FindOrSelectWorkerCallCount()).To(Equal(0))
+			})
+		})
+
 		Context("when the inputs are detected", func() {
 			BeforeEach(func() {
 				putPlan.Inputs = &atc.InputsConfig{

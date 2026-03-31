@@ -408,7 +408,7 @@ _Link: [./tracks/telemetry_simplification_20260331/](./tracks/telemetry_simplifi
 
 ---
 
-### [ ] Track: Exec Step Behavioral Specification
+### [x] Track: Exec Step Behavioral Specification
 _Link: [./tracks/exec_step_behavioral_spec_20260331/](./tracks/exec_step_behavioral_spec_20260331/)_
 
 ---

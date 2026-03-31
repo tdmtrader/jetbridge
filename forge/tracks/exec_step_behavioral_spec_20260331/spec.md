@@ -277,11 +277,11 @@ When the specified file does not exist in the artifact, the step MUST return an 
 
 ## Section 7: Composite Steps — Sequential and Parallel
 
-### DO-01: Do step — sequential execution
-The do step MUST execute its child steps in order. If any step fails or errors, execution stops and the do step returns that result.
+### DO-01: Do step — sequential execution (planner layer)
+The `do` step is NOT an exec-layer step type. It is handled at the planner layer (`atc/builds/planner.go` `VisitDo`), which converts a `DoStep` into a sequential `DoPlan` (a `[]atc.Plan`). The build engine executes the plans in order. If any step in the sequence fails or errors, execution stops and the build reflects that result.
 
-### DO-02: Do step — success propagation
-The do step returns `(true, nil)` only if ALL child steps return `(true, nil)`.
+### DO-02: Do step — success propagation (planner layer)
+A `do` sequence returns success only if ALL plans in the sequence succeed. This is enforced by the engine's sequential plan execution, not by a dedicated exec step type.
 
 ### IP-01: In-parallel — concurrent execution
 The in_parallel step MUST execute child steps concurrently, up to the configured `limit` (0 = unlimited).
@@ -315,7 +315,7 @@ When `fail_fast` is true on any variable level, the across step MUST cancel rema
 The retry step MUST execute its attempts in order, stopping at the first successful attempt. It returns the result of the last attempted step.
 
 ### RT-02: Retry — error handling
-If an attempt errors (not just fails), the retry step MUST continue to the next attempt. Only `context.Canceled` is propagated immediately.
+If an attempt errors (not just fails) — including `context.DeadlineExceeded` from a per-attempt timeout — the retry step MUST continue to the next attempt. Only `context.Canceled` (outer abort) is propagated immediately and stops all remaining attempts.
 
 ### RT-03: Retry — all attempts exhausted
 If all attempts fail or error, the retry step returns the result of the final attempt.
@@ -351,6 +351,9 @@ The on_error step MUST:
   - Both errors are aggregated (multierror)
   - Returns primary success value with aggregated error
 - If primary returns without error: return primary result without running the hook
+
+### HE-02: OnError — retriable errors do not trigger the hook
+When the primary step returns a `Retriable` error (indicating a transient failure that the retry step should handle), the on_error hook MUST NOT run. Retriable errors bypass the on_error hook entirely.
 
 ### HA-01: OnAbort — hook fires on cancellation
 The on_abort step MUST:

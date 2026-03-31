@@ -3,6 +3,7 @@ package build_test
 import (
 	"context"
 	"io"
+	"sync"
 
 	"github.com/concourse/concourse/atc/compression"
 	. "github.com/concourse/concourse/atc/exec/build"
@@ -224,6 +225,62 @@ var _ = Describe("ArtifactRepository", func() {
 					Expect(found).To(BeFalse())
 				})
 			})
+		})
+	})
+
+	// [AR-02] Repository must be safe for concurrent access.
+	// If the implementation lacks proper locking, concurrent map writes will
+	// panic immediately in Go (without requiring the race detector).
+	Context("[AR-02] concurrent access", func() {
+		It("is safe for concurrent RegisterArtifact, ArtifactFor, and AsMap calls", func() {
+			concurrentRepo := NewRepository()
+
+			const goroutines = 20
+			var wg sync.WaitGroup
+			wg.Add(goroutines)
+
+			for i := 0; i < goroutines; i++ {
+				go func() {
+					defer wg.Done()
+					concurrentRepo.RegisterArtifact("shared-artifact", Artifact("value"), false)
+					concurrentRepo.ArtifactFor("shared-artifact")
+					concurrentRepo.AsMap()
+				}()
+			}
+
+			wg.Wait()
+
+			// After all goroutines finish, the artifact should be registered.
+			_, _, found := concurrentRepo.ArtifactFor("shared-artifact")
+			Expect(found).To(BeTrue())
+		})
+
+		It("is safe for concurrent reads across parent and child scopes", func() {
+			parent := NewRepository()
+			parent.RegisterArtifact("parent-artifact", Artifact("parent-value"), false)
+			child := parent.NewLocalScope()
+
+			var wg sync.WaitGroup
+			wg.Add(20)
+
+			for i := 0; i < 10; i++ {
+				go func() {
+					defer wg.Done()
+					parent.RegisterArtifact("parent-artifact", Artifact("updated"), false)
+					parent.AsMap()
+				}()
+			}
+
+			for i := 0; i < 10; i++ {
+				go func() {
+					defer wg.Done()
+					child.RegisterArtifact("child-artifact", Artifact("child-value"), false)
+					child.ArtifactFor("parent-artifact")
+					child.AsMap()
+				}()
+			}
+
+			wg.Wait()
 		})
 	})
 })

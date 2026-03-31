@@ -301,6 +301,13 @@ var _ = Describe("GetStep", func() {
 			It("logs a message to stderr", func() {
 				Expect(stderrBuf).To(gbytes.Say(`INFO.*found.*cache`))
 			})
+
+			It("[GS-04] registers the cached artifact with fromCache=true", func() {
+				artifact, fromCache, found := artifactRepository.ArtifactFor(build.ArtifactName(getPlan.Name))
+				Expect(found).To(BeTrue())
+				Expect(fromCache).To(BeTrue())
+				Expect(artifact).To(Equal(cacheVolume))
+			})
 		})
 
 		Context("when the cache is missing from the selected worker", func() {
@@ -346,6 +353,12 @@ var _ = Describe("GetStep", func() {
 
 				It("logs a message to stderr", func() {
 					Expect(stderrBuf).To(gbytes.Say(`INFO.*waiting.*lock`))
+				})
+
+				It("[GS-03] retries lock acquisition until successful", func() {
+					// lockOnAttempt(3) returns false for the first 2 calls and true
+					// on the 3rd — verifying that the get step actually loops.
+					Expect(fakeLockFactory.AcquireCallCount()).To(BeNumerically(">=", 3))
 				})
 			})
 		})
@@ -425,6 +438,11 @@ var _ = Describe("GetStep", func() {
 			Expect(fakeDelegate.ErroredCallCount()).To(Equal(1))
 			_, status := fakeDelegate.ErroredArgsForCall(0)
 			Expect(status).To(Equal(exec.TimeoutLogMessage))
+		})
+
+		It("[SE-04] calls Errored but not Finished on timeout", func() {
+			Expect(fakeDelegate.ErroredCallCount()).To(Equal(1))
+			Expect(fakeDelegate.FinishedCallCount()).To(Equal(0))
 		})
 
 		Context("when the timeout is bogus", func() {
@@ -605,6 +623,11 @@ var _ = Describe("GetStep", func() {
 
 		It("does not return an err", func() {
 			Expect(stepErr).ToNot(HaveOccurred())
+		})
+
+		It("[SE-04] calls Finished but not Errored on success", func() {
+			Expect(fakeDelegate.FinishedCallCount()).To(Equal(1))
+			Expect(fakeDelegate.ErroredCallCount()).To(Equal(0))
 		})
 
 		Context("when the source has a repository and version has a digest", func() {
@@ -876,6 +899,46 @@ var _ = Describe("GetStep", func() {
 			Expect(fakeDelegate.FinishedCallCount()).To(Equal(1))
 			_, exitStatus, _ := fakeDelegate.FinishedArgsForCall(0)
 			Expect(exitStatus).To(Equal(exec.ExitStatus(0)))
+		})
+	})
+
+	// [SE-03] Verify the get step fires delegate callbacks in the documented order.
+	//
+	// Get step order: Initializing → Starting → BeforeSelectWorker → SelectedWorker → Finished.
+	// Note: Starting fires before worker selection in get (inside run() before
+	// retrieveFromCacheOrPerformGet), unlike put where Starting comes after SelectedWorker.
+	Context("[SE-03] delegate lifecycle callback ordering", func() {
+		var callOrder []string
+
+		BeforeEach(func() {
+			callOrder = nil
+
+			fakeDelegate.InitializingStub = func(lager.Logger) {
+				callOrder = append(callOrder, "Initializing")
+			}
+			fakeDelegate.StartingStub = func(lager.Logger) {
+				callOrder = append(callOrder, "Starting")
+			}
+			fakeDelegate.BeforeSelectWorkerStub = func(lager.Logger) error {
+				callOrder = append(callOrder, "BeforeSelectWorker")
+				return nil
+			}
+			fakeDelegate.SelectedWorkerStub = func(_ lager.Logger, _ string) {
+				callOrder = append(callOrder, "SelectedWorker")
+			}
+			fakeDelegate.FinishedStub = func(_ lager.Logger, _ exec.ExitStatus, _ resource.VersionResult) {
+				callOrder = append(callOrder, "Finished")
+			}
+		})
+
+		It("[SE-03] fires callbacks in order: Initializing → Starting → BeforeSelectWorker → SelectedWorker → Finished", func() {
+			Expect(callOrder).To(Equal([]string{
+				"Initializing",
+				"Starting",
+				"BeforeSelectWorker",
+				"SelectedWorker",
+				"Finished",
+			}))
 		})
 	})
 })
