@@ -2943,6 +2943,101 @@ var _ = Describe("Run with sidecar containers", func() {
 		})
 	})
 
+	Context("when a sidecar has no workingDir and the main container has a dir", func() {
+		BeforeEach(func() {
+			setupFakeDBContainer(fakeDBWorker, "sidecar-inherit-dir-handle")
+
+			var err error
+			container, _, err = worker.FindOrCreateContainer(
+				ctx,
+				db.NewFixedHandleContainerOwner("sidecar-inherit-dir-handle"),
+				db.ContainerMetadata{Type: db.ContainerTypeTask},
+				runtime.ContainerSpec{
+					TeamID:   1,
+					Dir:      "/tmp/build/workdir",
+					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+					Inputs: []runtime.Input{
+						{DestinationPath: "/tmp/build/workdir/my-input"},
+					},
+					Sidecars: []atc.SidecarConfig{
+						{
+							Name:  "helper",
+							Image: "helper:latest",
+						},
+					},
+				},
+				delegate,
+			)
+			Expect(err).ToNot(HaveOccurred())
+		})
+
+		It("inherits the main container's working directory", func() {
+			_, err := container.Run(ctx, runtime.ProcessSpec{
+				Path: "/bin/sh",
+				Args: []string{"-c", "echo hello"},
+			}, runtime.ProcessIO{})
+			Expect(err).ToNot(HaveOccurred())
+
+			pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			pod := pods.Items[0]
+
+			Expect(pod.Spec.Containers).To(HaveLen(2))
+			main := pod.Spec.Containers[0]
+			sidecar := pod.Spec.Containers[1]
+
+			By("main container has the expected working dir")
+			Expect(main.WorkingDir).To(Equal("/tmp/build/workdir"))
+
+			By("sidecar inherits the same working dir")
+			Expect(sidecar.WorkingDir).To(Equal("/tmp/build/workdir"))
+		})
+	})
+
+	Context("when a sidecar specifies its own workingDir", func() {
+		BeforeEach(func() {
+			setupFakeDBContainer(fakeDBWorker, "sidecar-own-dir-handle")
+
+			var err error
+			container, _, err = worker.FindOrCreateContainer(
+				ctx,
+				db.NewFixedHandleContainerOwner("sidecar-own-dir-handle"),
+				db.ContainerMetadata{Type: db.ContainerTypeTask},
+				runtime.ContainerSpec{
+					TeamID:   1,
+					Dir:      "/tmp/build/workdir",
+					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+					Sidecars: []atc.SidecarConfig{
+						{
+							Name:       "app",
+							Image:      "myapp:latest",
+							WorkingDir: "/app",
+						},
+					},
+				},
+				delegate,
+			)
+			Expect(err).ToNot(HaveOccurred())
+		})
+
+		It("uses the sidecar's own workingDir instead of inheriting", func() {
+			_, err := container.Run(ctx, runtime.ProcessSpec{
+				Path: "/bin/sh",
+				Args: []string{"-c", "echo hello"},
+			}, runtime.ProcessIO{})
+			Expect(err).ToNot(HaveOccurred())
+
+			pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			pod := pods.Items[0]
+
+			Expect(pod.Spec.Containers).To(HaveLen(2))
+			sidecar := pod.Spec.Containers[1]
+
+			Expect(sidecar.WorkingDir).To(Equal("/app"))
+		})
+	})
+
 	Context("when sidecars are configured in exec-mode (pause pod)", func() {
 		var (
 			execWorker   *jetbridge.Worker

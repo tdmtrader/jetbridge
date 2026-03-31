@@ -420,7 +420,7 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 		},
 	}
 
-	containers = append(containers, buildSidecarContainers(c.containerSpec.Sidecars, volumeMounts)...)
+	containers = append(containers, buildSidecarContainers(c.containerSpec.Sidecars, volumeMounts, dir)...)
 
 	// Pause pods trap SIGTERM and exit immediately; 10s is more than
 	// enough grace and avoids the default 30s delay during pod teardown.
@@ -489,8 +489,9 @@ func (c *Container) buildCleanupInitContainer() *corev1.Container {
 
 // buildSidecarContainers converts SidecarConfig entries into K8s container
 // specs. Each sidecar receives the same volume mounts as the main container
-// so it can access inputs, outputs, and caches.
-func buildSidecarContainers(sidecars []atc.SidecarConfig, mainMounts []corev1.VolumeMount) []corev1.Container {
+// so it can access inputs, outputs, and caches. Sidecars that do not specify
+// their own WorkingDir inherit defaultDir from the main container.
+func buildSidecarContainers(sidecars []atc.SidecarConfig, mainMounts []corev1.VolumeMount, defaultDir string) []corev1.Container {
 	if len(sidecars) == 0 {
 		return nil
 	}
@@ -504,12 +505,17 @@ func buildSidecarContainers(sidecars []atc.SidecarConfig, mainMounts []corev1.Vo
 			mounts = append([]corev1.VolumeMount{}, mainMounts...)
 		}
 
+		workDir := sc.WorkingDir
+		if workDir == "" {
+			workDir = defaultDir
+		}
+
 		c := corev1.Container{
 			Name:            sc.Name,
 			Image:           stripImagePrefix(sc.Image),
 			Command:         sc.Command,
 			Args:            sc.Args,
-			WorkingDir:      sc.WorkingDir,
+			WorkingDir:      workDir,
 			VolumeMounts:    mounts,
 			ImagePullPolicy: corev1.PullIfNotPresent,
 			SecurityContext: &corev1.SecurityContext{

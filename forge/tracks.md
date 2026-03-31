@@ -397,3 +397,8 @@ _Link: [./tracks/jetbridge_storage_behavioral_spec_20260330/](./tracks/jetbridge
 _Link: [./tracks/storage_backend_interface_20260330/](./tracks/storage_backend_interface_20260330/)_
 
 ---
+
+### [ ] Track: Sidecar working directory bug
+_Link: [./tracks/sidecar_workdir_bug_20260331/](./tracks/sidecar_workdir_bug_20260331/)_
+
+---
