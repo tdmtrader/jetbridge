@@ -29,13 +29,15 @@ func TestDaemonSetMode_PodHasHostPathVolume(t *testing.T) {
 		ArtifactHelperImage:    "alpine:latest",
 	}
 
+	backend := NewDaemonSetBackend(cfg, nil, nil)
 	c := &Container{
-		handle:        "test-handle",
-		podName:       "test-pod",
-		metadata:      db.ContainerMetadata{Type: db.ContainerTypeTask},
-		containerSpec: runtime.ContainerSpec{Dir: "/tmp/build", Type: db.ContainerTypeTask},
-		config:        cfg,
-		properties:    make(map[string]string),
+		handle:         "test-handle",
+		podName:        "test-pod",
+		metadata:       db.ContainerMetadata{Type: db.ContainerTypeTask},
+		containerSpec:  runtime.ContainerSpec{Dir: "/tmp/build", Type: db.ContainerTypeTask},
+		config:         cfg,
+		properties:     make(map[string]string),
+		storageBackend: backend,
 	}
 
 	vol := c.buildArtifactStoreVolume()
@@ -67,6 +69,7 @@ func TestDaemonSetMode_HardAffinity(t *testing.T) {
 		containerSpec: runtime.ContainerSpec{Dir: "/tmp/build", Type: db.ContainerTypeTask},
 		config:        cfg,
 		properties:    make(map[string]string),
+			storageBackend: NewDaemonSetBackend(cfg, nil, nil),
 	}
 
 	affinity := c.buildAffinity()
@@ -118,7 +121,7 @@ func TestDaemonSetMode_SoftAffinity(t *testing.T) {
 		},
 		config:          cfg,
 		properties:      make(map[string]string),
-		artifactLocator: locator,
+		storageBackend: NewDaemonSetBackend(cfg, locator, nil),
 	}
 
 	affinity := c.buildAffinity()
@@ -192,7 +195,7 @@ func TestDaemonSetMode_InitContainerResolveCommand(t *testing.T) {
 		},
 		config:          cfg,
 		properties:      make(map[string]string),
-		artifactLocator: locator,
+		storageBackend: NewDaemonSetBackend(cfg, locator, nil),
 	}
 
 	// Build mounts to get volumeName
@@ -272,6 +275,7 @@ func TestDaemonSetMode_UploadOutputsIsNoop(t *testing.T) {
 		},
 		config:     cfg,
 		properties: make(map[string]string),
+			storageBackend: NewDaemonSetBackend(cfg, nil, nil),
 	}
 
 	p := &execProcess{
@@ -279,6 +283,7 @@ func TestDaemonSetMode_UploadOutputsIsNoop(t *testing.T) {
 		podName:   "test-pod",
 		config:    cfg,
 		container: c,
+			storageBackend: c.storageBackend,
 	}
 
 	// uploadOutputsToArtifactStore should return nil (no-op) in DaemonSet mode.
@@ -313,7 +318,7 @@ func TestDaemonSetMode_LocatorRecordCalledAfterUpload(t *testing.T) {
 		config:          cfg,
 		properties:      make(map[string]string),
 		volumes:         []*Volume{vol},
-		artifactLocator: locator,
+		storageBackend: NewDaemonSetBackend(cfg, locator, nil),
 	}
 
 	p := &execProcess{
@@ -321,11 +326,12 @@ func TestDaemonSetMode_LocatorRecordCalledAfterUpload(t *testing.T) {
 		podName:   "test-pod",
 		config:    cfg,
 		container: c,
+			storageBackend: c.storageBackend,
 	}
 
 	// recordOutputLocations should exist and record each output volume's
 	// artifact key → node name in the locator.
-	p.recordOutputLocations("test-node-1")
+	p.storageBackend.RecordOutputs(context.Background(), p.container.handle, "test-node-1", p.container.volumes, p.container.containerSpec)
 
 	// Verify the locator was populated for the output volume.
 	key := ArtifactKey(vol.Handle())
@@ -364,7 +370,7 @@ func TestDaemonSetMode_RecordOutputLocationsWithEmptyNodeName(t *testing.T) {
 		config:          cfg,
 		properties:      make(map[string]string),
 		volumes:         []*Volume{vol},
-		artifactLocator: locator,
+		storageBackend: NewDaemonSetBackend(cfg, locator, nil),
 	}
 
 	p := &execProcess{
@@ -372,10 +378,11 @@ func TestDaemonSetMode_RecordOutputLocationsWithEmptyNodeName(t *testing.T) {
 		podName:   "test-pod",
 		config:    cfg,
 		container: c,
+			storageBackend: c.storageBackend,
 	}
 
 	// Record with empty node name (simulates fetchPodNodeName failure).
-	p.recordOutputLocations("")
+	p.storageBackend.RecordOutputs(context.Background(), p.container.handle, "", p.container.volumes, p.container.containerSpec)
 
 	// Should still record the hostDir so downstream steps can locate it.
 	key := ArtifactKey(vol.Handle())
@@ -418,6 +425,7 @@ func TestDaemonSetMode_OutputVolumesAreHostPath(t *testing.T) {
 		},
 		config:     cfg,
 		properties: make(map[string]string),
+			storageBackend: NewDaemonSetBackend(cfg, nil, nil),
 	}
 
 	volumes, _ := c.buildVolumeMounts()
@@ -450,6 +458,7 @@ func TestDaemonSetMode_DirVolumeIsHostPath(t *testing.T) {
 		},
 		config:     cfg,
 		properties: make(map[string]string),
+			storageBackend: NewDaemonSetBackend(cfg, nil, nil),
 	}
 
 	volumes, _ := c.buildVolumeMounts()
@@ -487,6 +496,7 @@ func TestDaemonSetMode_InputVolumesAreHostPath(t *testing.T) {
 		},
 		config:     cfg,
 		properties: make(map[string]string),
+			storageBackend: NewDaemonSetBackend(cfg, nil, nil),
 	}
 
 	volumes, _ := c.buildVolumeMounts()
@@ -548,8 +558,9 @@ func TestDaemonSetMode_CachesAreDirectHostPath(t *testing.T) {
 			Type:   db.ContainerTypeTask,
 			Caches: []string{"/tmp/build/.cache"},
 		},
-		config:     cfg,
-		properties: make(map[string]string),
+		config:         cfg,
+		properties:     make(map[string]string),
+		storageBackend: NewDaemonSetBackend(cfg, nil, nil),
 	}
 
 	volumes, _ := c.buildVolumeMounts()
@@ -597,7 +608,7 @@ func TestDaemonSetMode_InitContainerUsesDaemonResolve(t *testing.T) {
 		},
 		config:          cfg,
 		properties:      make(map[string]string),
-		artifactLocator: locator,
+		storageBackend: NewDaemonSetBackend(cfg, locator, nil),
 	}
 
 	vols, mounts := c.buildVolumeMounts()
@@ -644,7 +655,7 @@ func TestDaemonSetMode_MissingLocatorFallsBackToVolumeHandle(t *testing.T) {
 		},
 		config:          cfg,
 		properties:      make(map[string]string),
-		artifactLocator: locator,
+		storageBackend: NewDaemonSetBackend(cfg, locator, nil),
 	}
 
 	vols, mounts := c.buildVolumeMounts()
@@ -667,9 +678,10 @@ func TestDaemonSetMode_MissingLocatorFallsBackToVolumeHandle(t *testing.T) {
 // daemonResolveCommand generates an exit-1 script when the key is empty.
 func TestDaemonSetMode_EmptyKeyFailsFast(t *testing.T) {
 	cfg := daemonSetConfig()
-	c := &Container{config: cfg}
+	backend := NewDaemonSetBackend(cfg, nil, nil)
+	_ = &Container{config: cfg, storageBackend: backend}
 
-	cmd := c.daemonResolveCommand("", "/tmp/build/input")
+	cmd := backend.daemonResolveCommand("", "/tmp/build/input")
 	script := strings.Join(cmd, " ")
 	if !strings.Contains(script, "exit 1") {
 		t.Errorf("expected exit 1 for empty key, got: %s", script)
@@ -705,7 +717,7 @@ func TestDaemonSetMode_RecordAndLocateRoundTrip(t *testing.T) {
 		},
 		config:          cfg,
 		properties:      make(map[string]string),
-		artifactLocator: locator,
+		storageBackend: NewDaemonSetBackend(cfg, locator, nil),
 	}
 
 	vols, mounts := c.buildVolumeMounts()
@@ -733,9 +745,10 @@ func TestDaemonSetMode_RecordAndLocateRoundTrip(t *testing.T) {
 // generates a wget-based script that calls the local daemon's /resolve endpoint.
 func TestDaemonSetMode_DaemonResolveCommand(t *testing.T) {
 	cfg := daemonSetConfig()
-	c := &Container{config: cfg}
+	backend := NewDaemonSetBackend(cfg, nil, nil)
+	_ = &Container{config: cfg, storageBackend: backend}
 
-	cmd := c.daemonResolveCommand("producer-handle/result", "/var/concourse/artifacts/steps/consumer/input-0")
+	cmd := backend.daemonResolveCommand("producer-handle/result", "/var/concourse/artifacts/steps/consumer/input-0")
 	script := strings.Join(cmd, " ")
 
 	if !strings.Contains(script, "wget") {
@@ -775,7 +788,7 @@ func TestDaemonSetMode_InitContainerUsesResolveCommand(t *testing.T) {
 		},
 		config:          cfg,
 		properties:      make(map[string]string),
-		artifactLocator: locator,
+		storageBackend: NewDaemonSetBackend(cfg, locator, nil),
 	}
 
 	vols, mounts := c.buildVolumeMounts()
@@ -821,9 +834,10 @@ func TestDaemonSetMode_CleanupInitContainerOnReuse(t *testing.T) {
 			Dir:  "/tmp/build/get",
 			Type: db.ContainerTypeGet,
 		},
-		config:     cfg,
-		properties: make(map[string]string),
-		reused:     true,
+		config:         cfg,
+		properties:     make(map[string]string),
+		reused:         true,
+		storageBackend: NewDaemonSetBackend(cfg, nil, nil),
 	}
 
 	cleanup := c.buildCleanupInitContainer()
@@ -876,9 +890,10 @@ func TestDaemonSetMode_NoCleanupOnFreshContainer(t *testing.T) {
 			Dir:  "/tmp/build/get",
 			Type: db.ContainerTypeGet,
 		},
-		config:     cfg,
-		properties: make(map[string]string),
-		reused:     false,
+		config:         cfg,
+		properties:     make(map[string]string),
+		reused:         false,
+		storageBackend: NewDaemonSetBackend(cfg, nil, nil),
 	}
 
 	cleanup := c.buildCleanupInitContainer()
@@ -921,9 +936,10 @@ func TestDaemonSetMode_NoCleanupForCheckContainers(t *testing.T) {
 		containerSpec: runtime.ContainerSpec{
 			Type: db.ContainerTypeCheck,
 		},
-		config:     cfg,
-		properties: make(map[string]string),
-		reused:     true,
+		config:         cfg,
+		properties:     make(map[string]string),
+		reused:         true,
+		storageBackend: NewDaemonSetBackend(cfg, nil, nil),
 	}
 
 	cleanup := c.buildCleanupInitContainer()
@@ -956,7 +972,7 @@ func TestDaemonSetMode_CleanupPrecedesArtifactInits(t *testing.T) {
 		},
 		config:          cfg,
 		properties:      make(map[string]string),
-		artifactLocator: locator,
+		storageBackend: NewDaemonSetBackend(cfg, locator, nil),
 		reused:          true,
 	}
 
@@ -1027,7 +1043,7 @@ func TestDaemonSetMode_RecordOutputLocationRegistersAlias(t *testing.T) {
 		config:          cfg,
 		properties:      make(map[string]string),
 		volumes:         []*Volume{vol},
-		artifactLocator: locator,
+		storageBackend: NewDaemonSetBackend(cfg, locator, nil),
 	}
 
 	p := &execProcess{
@@ -1035,20 +1051,21 @@ func TestDaemonSetMode_RecordOutputLocationRegistersAlias(t *testing.T) {
 		podName:   "test-pod",
 		config:    cfg,
 		container: c,
+			storageBackend: c.storageBackend,
 	}
 
 	// Call registerDaemonAlias directly (since we can't mock DNS resolution
 	// for the K8s service name in unit tests).
 	volumeKey := ArtifactKey(vol.Handle())
 	diskPath := filepath.Join(cfg.ArtifactDaemonHostPath, "steps", "producer-handle", "out")
-	p.registerDaemonAlias("test-node", volumeKey, diskPath)
+	p.storageBackend.(*DaemonSetBackend).registerDaemonAlias("test-node", volumeKey, diskPath)
 
 	// The actual HTTP call fails (no real daemon running), but we can verify
 	// the method runs without panicking. In a real cluster, the daemon would
 	// receive this registration.
 	// For the full integration path, verify recordOutputLocations populates
 	// the locator AND the alias fields.
-	p.recordOutputLocations("test-node")
+	p.storageBackend.RecordOutputs(context.Background(), p.container.handle, "test-node", p.container.volumes, p.container.containerSpec)
 
 	key := ArtifactKey(vol.Handle())
 	loc, found := locator.Locate(key)
@@ -1129,7 +1146,7 @@ func TestDaemonSetMode_NoAliasRegistrationWithoutNodeName(t *testing.T) {
 		config:          cfg,
 		properties:      make(map[string]string),
 		volumes:         []*Volume{vol},
-		artifactLocator: locator,
+		storageBackend: NewDaemonSetBackend(cfg, locator, nil),
 	}
 
 	p := &execProcess{
@@ -1137,11 +1154,12 @@ func TestDaemonSetMode_NoAliasRegistrationWithoutNodeName(t *testing.T) {
 		podName:   "test-pod",
 		config:    cfg,
 		container: c,
+			storageBackend: c.storageBackend,
 	}
 
 	// Record with empty node name — should NOT attempt daemon registration
 	// (would fail with DNS error). This just verifies no panic.
-	p.recordOutputLocations("")
+	p.storageBackend.RecordOutputs(context.Background(), p.container.handle, "", p.container.volumes, p.container.containerSpec)
 
 	// Locator should still be populated.
 	key := ArtifactKey(vol.Handle())
@@ -1185,7 +1203,7 @@ func TestDaemonSetMode_CacheHitFlow(t *testing.T) {
 		},
 		config:          cfg,
 		properties:      make(map[string]string),
-		artifactLocator: locator,
+		storageBackend: NewDaemonSetBackend(cfg, locator, nil),
 	}
 
 	vols, mounts := c.buildVolumeMounts()
@@ -1228,15 +1246,16 @@ func TestDaemonSetMode_CacheMissFlow(t *testing.T) {
 		config:          cfg,
 		properties:      make(map[string]string),
 		volumes:         []*Volume{producerVol},
-		artifactLocator: locator,
+		storageBackend: NewDaemonSetBackend(cfg, locator, nil),
 	}
 	producerProcess := &execProcess{
 		id:        "get",
 		podName:   "get-pod",
 		config:    cfg,
 		container: producer,
+			storageBackend: producer.storageBackend,
 	}
-	producerProcess.recordOutputLocations("node-a")
+	producerProcess.storageBackend.RecordOutputs(context.Background(), producerProcess.container.handle, "node-a", producerProcess.container.volumes, producerProcess.container.containerSpec)
 
 	// Verify the locator was populated.
 	key := ArtifactKey(producerVol.Handle())
@@ -1265,7 +1284,7 @@ func TestDaemonSetMode_CacheMissFlow(t *testing.T) {
 		},
 		config:          cfg,
 		properties:      make(map[string]string),
-		artifactLocator: locator,
+		storageBackend: NewDaemonSetBackend(cfg, locator, nil),
 	}
 
 	vols, mounts := consumer.buildVolumeMounts()
@@ -1326,7 +1345,7 @@ func TestDaemonSetMode_CacheHitATCRestart(t *testing.T) {
 		},
 		config:          cfg,
 		properties:      make(map[string]string),
-		artifactLocator: locator,
+		storageBackend: NewDaemonSetBackend(cfg, locator, nil),
 	}
 
 	vols, mounts := c.buildVolumeMounts()
@@ -1383,7 +1402,7 @@ func TestDaemonSetMode_CacheHitDaemonRestartLimitation(t *testing.T) {
 		},
 		config:          cfg,
 		properties:      make(map[string]string),
-		artifactLocator: locator,
+		storageBackend: NewDaemonSetBackend(cfg, locator, nil),
 	}
 
 	vols, mounts := c.buildVolumeMounts()
@@ -1427,10 +1446,10 @@ func TestDaemonSetMode_ConcurrentBuildsShareCache(t *testing.T) {
 		config:          cfg,
 		properties:      make(map[string]string),
 		volumes:         []*Volume{vol1},
-		artifactLocator: locator,
+		storageBackend: NewDaemonSetBackend(cfg, locator, nil),
 	}
-	p1 := &execProcess{id: "get-1", podName: "get-pod-1", config: cfg, container: producer}
-	p1.recordOutputLocations("node-a")
+	p1 := &execProcess{id: "get-1", podName: "get-pod-1", config: cfg, container: producer, storageBackend: producer.storageBackend}
+	p1.storageBackend.RecordOutputs(context.Background(), p1.container.handle, "node-a", p1.container.volumes, p1.container.containerSpec)
 
 	// Build 2 consumes the same volume via cache hit.
 	consumer1 := &Container{
@@ -1449,7 +1468,7 @@ func TestDaemonSetMode_ConcurrentBuildsShareCache(t *testing.T) {
 		},
 		config:          cfg,
 		properties:      make(map[string]string),
-		artifactLocator: locator,
+		storageBackend: NewDaemonSetBackend(cfg, locator, nil),
 	}
 
 	vols, mounts := consumer1.buildVolumeMounts()
@@ -1506,7 +1525,7 @@ func TestDaemonSetMode_OverlappingInputOutputRecordsInputVolume(t *testing.T) {
 		config:          cfg,
 		properties:      make(map[string]string),
 		volumes:         []*Volume{inputVol},
-		artifactLocator: locator,
+		storageBackend: NewDaemonSetBackend(cfg, locator, nil),
 	}
 
 	p := &execProcess{
@@ -1514,9 +1533,10 @@ func TestDaemonSetMode_OverlappingInputOutputRecordsInputVolume(t *testing.T) {
 		podName:   "test-pod",
 		config:    cfg,
 		container: c,
+			storageBackend: c.storageBackend,
 	}
 
-	p.recordOutputLocations("node-a")
+	p.storageBackend.RecordOutputs(context.Background(), p.container.handle, "node-a", p.container.volumes, p.container.containerSpec)
 
 	// The input volume should be recorded since it's the one actually
 	// mounted in the pod and the only volume created for this path.
@@ -1562,13 +1582,14 @@ func TestDaemonSetMode_ProducerModifierConsumerChain(t *testing.T) {
 		config:          cfg,
 		properties:      make(map[string]string),
 		volumes:         []*Volume{producerVol},
-		artifactLocator: locator,
+		storageBackend: NewDaemonSetBackend(cfg, locator, nil),
 	}
 
 	producerProcess := &execProcess{
 		id: "producer", podName: "producer-pod", config: cfg, container: producerContainer,
+			storageBackend: producerContainer.storageBackend,
 	}
-	producerProcess.recordOutputLocations("node-a")
+	producerProcess.storageBackend.RecordOutputs(context.Background(), producerProcess.container.handle, "node-a", producerProcess.container.volumes, producerProcess.container.containerSpec)
 
 	// Verify producer recorded correctly
 	producerKey := ArtifactKey(producerVol.Handle())
@@ -1603,13 +1624,13 @@ func TestDaemonSetMode_ProducerModifierConsumerChain(t *testing.T) {
 		config:          cfg,
 		properties:      make(map[string]string),
 		volumes:         []*Volume{modifierInputVol}, // only input vol — no output vol
-		artifactLocator: locator,
+		storageBackend: NewDaemonSetBackend(cfg, locator, nil),
 	}
 
 	modifierProcess := &execProcess{
-		id: "modifier", podName: "modifier-pod", config: cfg, container: modifierContainer,
+		id: "modifier", podName: "modifier-pod", config: cfg, container: modifierContainer, storageBackend: modifierContainer.storageBackend,
 	}
-	modifierProcess.recordOutputLocations("node-a")
+	modifierProcess.storageBackend.RecordOutputs(context.Background(), modifierProcess.container.handle, "node-a", modifierProcess.container.volumes, modifierProcess.container.containerSpec)
 
 	// Step 3: Consumer tries to fetch modifier's output.
 	// registerOutputs (task_step.go) would register modifierInputVol as the
@@ -1645,8 +1666,9 @@ func TestDaemonSetMode_OutputDirCreatedInPod(t *testing.T) {
 			Type:    db.ContainerTypeTask,
 			Outputs: runtime.OutputPaths{"result": "/tmp/build/result"},
 		},
-		config:     cfg,
-		properties: make(map[string]string),
+		config:         cfg,
+		properties:     make(map[string]string),
+		storageBackend: NewDaemonSetBackend(cfg, nil, nil),
 	}
 
 	volumes, mounts := c.buildVolumeMounts()
@@ -1699,8 +1721,9 @@ func TestDaemonSetMode_OverlappingOutputDirStillAccessible(t *testing.T) {
 			},
 			Outputs: runtime.OutputPaths{"repo": "/tmp/build/repo/"},
 		},
-		config:     cfg,
-		properties: make(map[string]string),
+		config:         cfg,
+		properties:     make(map[string]string),
+		storageBackend: NewDaemonSetBackend(cfg, nil, nil),
 	}
 
 	volumes, mounts := c.buildVolumeMounts()
@@ -1766,8 +1789,9 @@ func TestDaemonSetMode_SidecarGetsHostPathMounts(t *testing.T) {
 				},
 			},
 		},
-		config:     cfg,
-		properties: make(map[string]string),
+		config:         cfg,
+		properties:     make(map[string]string),
+		storageBackend: NewDaemonSetBackend(cfg, nil, nil),
 	}
 
 	volumes, mounts := c.buildVolumeMounts()
@@ -1846,8 +1870,9 @@ func TestDaemonSetMode_SidecarWithOverlappingInputOutput(t *testing.T) {
 				},
 			},
 		},
-		config:     cfg,
-		properties: make(map[string]string),
+		config:         cfg,
+		properties:     make(map[string]string),
+		storageBackend: NewDaemonSetBackend(cfg, nil, nil),
 	}
 
 	volumes, mounts := c.buildVolumeMounts()

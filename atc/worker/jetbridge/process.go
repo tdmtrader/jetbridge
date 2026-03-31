@@ -5,9 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -674,7 +671,7 @@ type execProcess struct {
 	executor       PodExecutor
 	processSpec    runtime.ProcessSpec
 	processIO      runtime.ProcessIO
-	nodeIPResolver *NodeIPResolver
+	storageBackend StorageBackend
 }
 
 func newExecProcess(
@@ -685,7 +682,7 @@ func newExecProcess(
 	executor PodExecutor,
 	spec runtime.ProcessSpec,
 	io runtime.ProcessIO,
-	nodeIPResolver *NodeIPResolver,
+	storageBackend StorageBackend,
 ) *execProcess {
 	return &execProcess{
 		id:             id,
@@ -696,7 +693,7 @@ func newExecProcess(
 		executor:       executor,
 		processSpec:    spec,
 		processIO:      io,
-		nodeIPResolver: nodeIPResolver,
+		storageBackend: storageBackend,
 	}
 }
 
@@ -848,23 +845,23 @@ func (p *execProcess) streamInputs(ctx context.Context) error {
 	return nil
 }
 
-// uploadOutputsToArtifactStore records artifact locations for DaemonSet mode.
-// Outputs are already on hostPath — no upload needed.
+// uploadOutputsToArtifactStore records artifact locations via the storage
+// backend. Outputs are already on hostPath — no upload needed.
 func (p *execProcess) uploadOutputsToArtifactStore(ctx context.Context) error {
-	if p.container == nil || p.container.config.ArtifactDaemonHostPath == "" {
+	if p.container == nil || p.storageBackend == nil {
 		return nil
 	}
 
 	nodeName := p.fetchPodNodeName(ctx)
 	logger := lagerctx.FromContext(ctx).Session("record-output-locations", lager.Data{
-		"handle":    p.container.handle,
-		"pod":       p.podName,
-		"node":      nodeName,
-		"volumes":   len(p.container.volumes),
-		"type":      string(p.container.containerSpec.Type),
+		"handle":  p.container.handle,
+		"pod":     p.podName,
+		"node":    nodeName,
+		"volumes": len(p.container.volumes),
+		"type":    string(p.container.containerSpec.Type),
 	})
 	logger.Info("recording-daemonset-artifacts")
-	p.recordOutputLocations(nodeName)
+	p.storageBackend.RecordOutputs(ctx, p.container.handle, nodeName, p.container.volumes, p.container.containerSpec)
 	return nil
 }
 
@@ -887,134 +884,6 @@ func (p *execProcess) annotateExitStatus(ctx context.Context, exitCode int) {
 
 func (p *execProcess) SetTTY(_ runtime.TTYSpec) error {
 	return nil
-}
-
-// recordOutputLocations records each output volume's artifact key → node name
-// in the ArtifactLocator. This enables scheduling affinity and local/remote
-// fetch decisions for downstream steps in DaemonSet mode.
-//
-// After recording in the locator, it also registers volume handle aliases in
-// the artifact-daemon via POST /register. This allows cached resource volumes
-// (identified by volume handle, not container handle) to be resolved by the
-// daemon when SkipResourceCache is false.
-//
-// When nodeName is empty (pod not found or API error), recordings still
-// happen with an empty node — the consuming step's init container will fall
-// through to the local cp -a branch (SOURCE_NODE unset), which works when
-// the scheduler places the consumer on the same node via affinity.
-func (p *execProcess) recordOutputLocations(nodeName string) {
-	if p.container == nil || p.container.artifactLocator == nil {
-		return
-	}
-
-	outputPaths := p.container.outputPaths()
-
-	// Build reverse map: cleaned mount path → output name (used as hostPath subdir).
-	mountToOutputName := make(map[string]string)
-	for name, path := range p.container.containerSpec.Outputs {
-		mountToOutputName[filepath.Clean(path)] = name
-	}
-	// Dir volume gets subdir "dir".
-	if p.container.containerSpec.Dir != "" {
-		mountToOutputName[p.container.containerSpec.Dir] = "dir"
-	}
-
-	// Track which output paths have already been recorded. When an input
-	// and output share the same path (common Concourse pattern), only the
-	// first matching volume (the input) should be recorded — the output
-	// volume is never mounted in the pod and contains no data.
-	recordedPaths := make(map[string]bool)
-
-	recorded := 0
-	for _, vol := range p.container.volumes {
-		cleanPath := filepath.Clean(vol.MountPath())
-		if cleanPath == "." || !outputPaths[cleanPath] {
-			continue
-		}
-
-		// Skip if we already recorded a volume at this path (input takes
-		// priority over output because it appears first in the volumes
-		// list and is the one actually mounted in the K8s pod).
-		if recordedPaths[cleanPath] {
-			continue
-		}
-		recordedPaths[cleanPath] = true
-
-		key := ArtifactKey(vol.Handle())
-		subdir := mountToOutputName[cleanPath]
-		if subdir == "" {
-			subdir = "unknown"
-		}
-		// Record the daemon-compatible key: <container-handle>/<subdir>.
-		// This maps directly to the daemon's filesystem layout
-		// steps/<container-handle>/<subdir>/ and is passed to the daemon's
-		// /resolve endpoint by the init container.
-		daemonKey := p.container.handle + "/" + subdir
-		p.container.artifactLocator.Record(key, nodeName, daemonKey)
-
-		// Register the volume handle as an alias in the daemon so that
-		// cache hits (which use volume handle, not container handle) can
-		// be resolved. Best-effort: failures are logged but don't fail
-		// the build since the daemon's filesystem fallback still works.
-		if nodeName != "" && p.container.config.ArtifactDaemonHostPath != "" {
-			diskPath := filepath.Join(p.container.config.ArtifactDaemonHostPath, "steps", p.container.handle, subdir)
-			p.registerDaemonAlias(nodeName, key, diskPath)
-		}
-
-		recorded++
-	}
-	if recorded == 0 && len(p.container.volumes) > 0 {
-		// Log when we have volumes but none matched output paths — helps
-		// diagnose locator-miss issues in DaemonSet mode.
-		fmt.Fprintf(os.Stderr, "WARNING: recordOutputLocations: %d volumes but 0 matched outputPaths %v (handle=%s type=%s)\n",
-			len(p.container.volumes), outputPaths, p.container.handle, p.container.containerSpec.Type)
-	}
-}
-
-// registerDaemonAlias registers a volume handle alias in the artifact-daemon
-// so that cache hits can resolve the volume handle to a disk path.
-// This is best-effort: failures are logged but don't fail the build.
-func (p *execProcess) registerDaemonAlias(nodeName, volumeKey, diskPath string) {
-	if p.nodeIPResolver == nil {
-		fmt.Fprintf(os.Stderr, "WARNING: registerDaemonAlias: no node IP resolver configured\n")
-		return
-	}
-
-	port := p.config.ArtifactDaemonPort
-	if port == 0 {
-		port = 7780
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	nodeIP, err := p.nodeIPResolver.Resolve(ctx, nodeName)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "WARNING: registerDaemonAlias: resolve node IP for %s: %v\n", nodeName, err)
-		return
-	}
-
-	url := fmt.Sprintf("http://%s:%d/register", nodeIP, port)
-
-	body := fmt.Sprintf(`{"key":%q,"local_path":%q}`, volumeKey, diskPath)
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(body))
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "WARNING: registerDaemonAlias: create request: %v\n", err)
-		return
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "WARNING: registerDaemonAlias: %s → %v (key=%s)\n", url, err, volumeKey)
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusCreated {
-		fmt.Fprintf(os.Stderr, "WARNING: registerDaemonAlias: %s → status %d (key=%s)\n", url, resp.StatusCode, volumeKey)
-	}
 }
 
 // fetchPodNodeName retrieves the node name where this pod is running.

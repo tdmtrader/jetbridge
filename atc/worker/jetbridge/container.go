@@ -62,8 +62,7 @@ type Container struct {
 	loadAnnotations sync.Once
 	executor        PodExecutor
 	volumes         []*Volume
-	artifactLocator *ArtifactLocator
-	nodeIPResolver  *NodeIPResolver
+	storageBackend  StorageBackend
 	// reused is true when FindOrCreateContainer found an existing container
 	// in the DB (crash-recovery path). In DaemonSet mode this means the
 	// hostPath directory may contain stale data and needs cleanup.
@@ -80,25 +79,23 @@ func newContainer(
 	workerName string,
 	executor PodExecutor,
 	volumes []*Volume,
-	artifactLocator *ArtifactLocator,
-	nodeIPResolver *NodeIPResolver,
+	storageBackend StorageBackend,
 	reused bool,
 ) *Container {
 	return &Container{
-		handle:          handle,
-		podName:         GeneratePodName(metadata, handle),
-		metadata:        metadata,
-		containerSpec:   containerSpec,
-		dbContainer:     dbContainer,
-		clientset:       clientset,
-		config:          config,
-		workerName:      workerName,
-		properties:      make(map[string]string),
-		executor:        executor,
-		volumes:         volumes,
-		artifactLocator: artifactLocator,
-		nodeIPResolver:  nodeIPResolver,
-		reused:          reused,
+		handle:         handle,
+		podName:        GeneratePodName(metadata, handle),
+		metadata:       metadata,
+		containerSpec:  containerSpec,
+		dbContainer:    dbContainer,
+		clientset:      clientset,
+		config:         config,
+		workerName:     workerName,
+		properties:     make(map[string]string),
+		executor:       executor,
+		volumes:        volumes,
+		storageBackend: storageBackend,
+		reused:         reused,
 	}
 }
 
@@ -144,7 +141,7 @@ func (c *Container) Run(ctx context.Context, spec runtime.ProcessSpec, io runtim
 		}
 		metric.Metrics.ContainersCreated.Inc()
 		c.bindVolumesToPod(podName)
-		return newExecProcess(processID, podName, c.clientset, c.config, c, c.executor, spec, io, c.nodeIPResolver), nil
+		return newExecProcess(processID, podName, c.clientset, c.config, c, c.executor, spec, io, c.storageBackend), nil
 	}
 
 	// Fallback direct mode: only used when no executor is configured
@@ -453,214 +450,41 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 	}, nil
 }
 
-// artifactDaemonHostPathVolumeName is the pod volume name for the DaemonSet
-// hostPath artifact store.
-const artifactDaemonHostPathVolumeName = "artifact-daemon-hostpath"
-
-// buildArtifactStoreVolume returns a hostPath volume for the DaemonSet artifact
-// store, or nil if ArtifactDaemonHostPath is not configured.
+// buildArtifactStoreVolume returns a volume for the artifact store via the
+// storage backend, or nil if no backend is configured.
 func (c *Container) buildArtifactStoreVolume() *corev1.Volume {
-	if c.metadata.Type == db.ContainerTypeCheck {
+	if c.storageBackend == nil {
 		return nil
 	}
-
-	if c.config.ArtifactDaemonHostPath == "" {
-		return nil
-	}
-
-	hostPathType := corev1.HostPathDirectoryOrCreate
-	return &corev1.Volume{
-		Name: artifactDaemonHostPathVolumeName,
-		VolumeSource: corev1.VolumeSource{
-			HostPath: &corev1.HostPathVolumeSource{
-				Path: c.config.ArtifactDaemonHostPath,
-				Type: &hostPathType,
-			},
-		},
-	}
+	return c.storageBackend.ArtifactStoreVolume(c.containerSpec.Type)
 }
 
-// artifactVolumeName returns the volume name for the DaemonSet hostPath
-// artifact store.
+// artifactVolumeName returns the volume name for the artifact store via the
+// storage backend, or empty string if no backend is configured.
 func (c *Container) artifactVolumeName() string {
-	return artifactDaemonHostPathVolumeName
+	if c.storageBackend == nil {
+		return ""
+	}
+	return c.storageBackend.ArtifactStoreVolumeName()
 }
 
-// buildArtifactInitContainers creates init containers for each input with a
-// non-nil artifact when ArtifactDaemonHostPath is configured. Each init container
-// sends a resolve request to the local artifact-daemon's /resolve endpoint,
-// which copies the artifact data into the input volume's hostPath directory.
+// buildArtifactInitContainers creates init containers for fetching input
+// artifacts via the storage backend. Returns nil when no backend is configured.
 func (c *Container) buildArtifactInitContainers(podVolumes []corev1.Volume, mainMounts []corev1.VolumeMount) ([]corev1.Container, error) {
-	if c.config.ArtifactDaemonHostPath == "" {
+	if c.storageBackend == nil {
 		return nil, nil
 	}
-
-	helperImage := c.config.ArtifactHelperImage
-	if helperImage == "" {
-		helperImage = DefaultArtifactHelperImage
-	}
-
-	allowEscalation := false
-
-	var inits []corev1.Container
-	for i, input := range c.containerSpec.Inputs {
-		if input.Artifact == nil {
-			continue
-		}
-
-		// Find the volume name for this input's destination path from the
-		// main container's volume mounts.
-		volumeName := volumeNameForMountPath(mainMounts, input.DestinationPath)
-		if volumeName == "" {
-			continue
-		}
-
-		key := ArtifactKey(input.Artifact.Handle())
-
-		// Look up the daemon key from the locator. For fresh get/task outputs,
-		// recordOutputLocations stored "<container-handle>/<subdir>" as HostDir.
-		// For cached resource volumes (cache hit, no pod ran), the locator may
-		// not have an entry — fall back to the volume handle as the daemon key.
-		// The daemon's filesystem scan can still find it on disk.
-		daemonKey := key // fallback: use volume handle directly
-		if loc, hasLoc := c.artifactLocate(key); hasLoc {
-			daemonKey = loc.HostDir
-		}
-
-		// The destination is the host path of this init container's input volume.
-		// Look up the actual hostPath from the pod volume spec, which may use
-		// the output name as subdir when input+output paths overlap.
-		hostDestPath := hostPathForVolume(podVolumes, volumeName)
-		if hostDestPath == "" {
-			// Fallback: compute from volume name (pre-overlap behavior).
-			hostDestPath = filepath.Join(c.config.ArtifactDaemonHostPath, "steps", c.handle, volumeName)
-		}
-
-		initContainer := corev1.Container{
-			Name:    fmt.Sprintf("fetch-input-%d", i),
-			Image:   helperImage,
-			Command: c.daemonResolveCommand(daemonKey, hostDestPath),
-			Env: []corev1.EnvVar{
-				{
-					Name: "HOST_IP",
-					ValueFrom: &corev1.EnvVarSource{
-						FieldRef: &corev1.ObjectFieldSelector{FieldPath: "status.hostIP"},
-					},
-				},
-			},
-			VolumeMounts: []corev1.VolumeMount{
-				{Name: c.artifactVolumeName(), MountPath: ArtifactMountPath, ReadOnly: true},
-				{Name: volumeName, MountPath: input.DestinationPath},
-			},
-			ImagePullPolicy: corev1.PullIfNotPresent,
-			SecurityContext: &corev1.SecurityContext{
-				AllowPrivilegeEscalation: &allowEscalation,
-			},
-		}
-
-		inits = append(inits, initContainer)
-	}
-
-	return inits, nil
+	return c.storageBackend.BuildFetchInitContainers(c.handle, c.containerSpec.Inputs, podVolumes, mainMounts), nil
 }
 
 // buildCleanupInitContainer creates an init container that removes stale data
-// from the hostPath steps directory for this container handle. This is needed
-// when FindOrCreateContainer reuses an existing container handle (crash
-// recovery): the previous pod's data is still on disk and resource scripts
-// (e.g. git clone) fail with "destination path already exists".
-//
-// Returns nil when cleanup is not needed (fresh container, non-DaemonSet mode,
-// or check containers which don't use the artifact hostPath).
+// from the hostPath steps directory for this container handle. Delegates to
+// the storage backend. Returns nil when no backend is configured.
 func (c *Container) buildCleanupInitContainer() *corev1.Container {
-	if !c.reused {
+	if c.storageBackend == nil {
 		return nil
 	}
-	if c.config.ArtifactDaemonHostPath == "" {
-		return nil
-	}
-	if c.metadata.Type == db.ContainerTypeCheck {
-		return nil
-	}
-
-	helperImage := c.config.ArtifactHelperImage
-	if helperImage == "" {
-		helperImage = DefaultArtifactHelperImage
-	}
-
-	// Clean the steps/<handle>/ directory so the new pod starts fresh.
-	cleanupPath := filepath.Join(ArtifactMountPath, "steps", c.handle)
-	script := fmt.Sprintf(`echo "[cleanup-stale] removing stale hostPath data: %s" >&2; rm -rf %s; mkdir -p %s`, cleanupPath, cleanupPath, cleanupPath)
-
-	allowEscalation := false
-	return &corev1.Container{
-		Name:    "cleanup-stale",
-		Image:   helperImage,
-		Command: []string{"sh", "-c", script},
-		VolumeMounts: []corev1.VolumeMount{
-			{Name: c.artifactVolumeName(), MountPath: ArtifactMountPath},
-		},
-		ImagePullPolicy: corev1.PullIfNotPresent,
-		SecurityContext: &corev1.SecurityContext{
-			AllowPrivilegeEscalation: &allowEscalation,
-		},
-	}
-}
-
-// daemonResolveCommand returns a shell command that resolves an artifact via
-// the local artifact-daemon's /resolve endpoint. The daemon copies from the
-// source path (identified by key) to the destination hostPath directory.
-//
-// key is the daemon-compatible artifact key (e.g. "producer-handle/result")
-// which maps to steps/<key> on the daemon's filesystem.
-// hostDest is the host filesystem path where the daemon should write the data.
-func (c *Container) daemonResolveCommand(key, hostDest string) []string {
-	if key == "" {
-		script := `echo "ERROR: artifact key is empty — producing step did not record its output location" >&2; exit 1`
-		return []string{"sh", "-c", script}
-	}
-
-	port := c.config.ArtifactDaemonPort
-	if port == 0 {
-		port = 7780
-	}
-
-	// The daemon runs as a DaemonSet pod on the same node. We reach it
-	// via the node's host IP (from K8s downward API) + hostPort.
-	// The HOST_IP env var is injected below via the fieldRef.
-	script := fmt.Sprintf(`
-set -e
-KEY="%s"
-DST="%s"
-PORT=%d
-DAEMON="http://${HOST_IP}:${PORT}"
-echo "[artifact-fetch] resolving key=${KEY} dest=${DST} daemon=${DAEMON}" >&2
-RESP=$(wget -qO- --post-data='{"key":"'"${KEY}"'","dest":"'"${DST}"'"}' "${DAEMON}/resolve" 2>&1) || {
-  echo "[artifact-fetch] FAILED: ${RESP}" >&2
-  exit 1
-}
-echo "[artifact-fetch] resolved: ${RESP}" >&2
-`, key, hostDest, port)
-
-	return []string{"sh", "-c", script}
-}
-
-// artifactLocate returns the full ArtifactLocation for a key.
-func (c *Container) artifactLocate(key string) (ArtifactLocation, bool) {
-	if c.artifactLocator == nil {
-		return ArtifactLocation{}, false
-	}
-	return c.artifactLocator.Locate(key)
-}
-
-// artifactSourceNode returns the node name for an artifact key from the
-// locator, or empty string if unknown.
-func (c *Container) artifactSourceNode(key string) string {
-	if c.artifactLocator == nil {
-		return ""
-	}
-	node, _ := c.artifactLocator.LocateNode(key)
-	return node
+	return c.storageBackend.BuildCleanupInitContainer(c.handle, c.containerSpec.Type, c.reused)
 }
 
 // buildSidecarContainers converts SidecarConfig entries into K8s container
@@ -768,85 +592,13 @@ func hostPathForVolume(volumes []corev1.Volume, name string) string {
 	return ""
 }
 
-// buildAffinity constructs pod affinity rules when DaemonSet hostPath is configured.
-// Returns nil when ArtifactDaemonHostPath is not set.
-//
-// - Hard affinity: pods MUST land on nodes with concourse.dev/artifact-cache=ready
-// - Soft affinity: prefer the node that holds the most input artifacts
+// buildAffinity constructs pod affinity rules via the storage backend.
+// Returns nil when no backend is configured.
 func (c *Container) buildAffinity() *corev1.Affinity {
-	if c.config.ArtifactDaemonHostPath == "" {
+	if c.storageBackend == nil {
 		return nil
 	}
-
-	affinity := &corev1.Affinity{
-		NodeAffinity: &corev1.NodeAffinity{
-			RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
-				NodeSelectorTerms: []corev1.NodeSelectorTerm{
-					{
-						MatchExpressions: []corev1.NodeSelectorRequirement{
-							{
-								Key:      "concourse.dev/artifact-cache",
-								Operator: corev1.NodeSelectorOpIn,
-								Values:   []string{"ready"},
-							},
-						},
-					},
-				},
-			},
-		},
-	}
-
-	// Add soft affinity for the node holding the most input artifacts.
-	if c.artifactLocator != nil {
-		preferredNode := c.preferredInputNode()
-		if preferredNode != "" {
-			affinity.NodeAffinity.PreferredDuringSchedulingIgnoredDuringExecution = []corev1.PreferredSchedulingTerm{
-				{
-					Weight: 100,
-					Preference: corev1.NodeSelectorTerm{
-						MatchExpressions: []corev1.NodeSelectorRequirement{
-							{
-								Key:      "kubernetes.io/hostname",
-								Operator: corev1.NodeSelectorOpIn,
-								Values:   []string{preferredNode},
-							},
-						},
-					},
-				},
-			}
-		}
-	}
-
-	return affinity
-}
-
-// preferredInputNode returns the node name that holds the most input
-// artifacts, or empty string if no inputs have known locations.
-func (c *Container) preferredInputNode() string {
-	if c.artifactLocator == nil {
-		return ""
-	}
-
-	counts := make(map[string]int)
-	for _, input := range c.containerSpec.Inputs {
-		if input.Artifact == nil {
-			continue
-		}
-		key := ArtifactKey(input.Artifact.Handle())
-		if node, ok := c.artifactLocator.LocateNode(key); ok {
-			counts[node]++
-		}
-	}
-
-	var best string
-	var bestCount int
-	for node, count := range counts {
-		if count > bestCount {
-			best = node
-			bestCount = count
-		}
-	}
-	return best
+	return c.storageBackend.BuildAffinity(c.containerSpec.Inputs)
 }
 
 // buildPodLabels constructs the label map for the pod, including the
@@ -1065,28 +817,13 @@ func stableCacheKey(jobID int, stepName string, cachePath string) string {
 
 // buildVolumeMounts creates K8s Volume and VolumeMount entries for
 // the container's Dir, inputs, outputs, and caches.
-// stepVolume creates a volume for a step. When ArtifactDaemonHostPath is set,
-// it creates a hostPath volume under <hostPath>/steps/<handle>/<subdir>/.
-// Otherwise emptyDir.
+// stepVolume creates a volume for a step. When a storage backend is set,
+// it delegates to the backend. Otherwise emptyDir.
 func (c *Container) stepVolume(name, subdir string) corev1.Volume {
-	if c.config.ArtifactDaemonHostPath != "" {
-		dirType := corev1.HostPathDirectoryOrCreate
-		return corev1.Volume{
-			Name: name,
-			VolumeSource: corev1.VolumeSource{
-				HostPath: &corev1.HostPathVolumeSource{
-					Path: filepath.Join(c.config.ArtifactDaemonHostPath, "steps", c.handle, subdir),
-					Type: &dirType,
-				},
-			},
-		}
+	if c.storageBackend != nil {
+		return c.storageBackend.StepVolume(name, c.handle, subdir)
 	}
-	return corev1.Volume{
-		Name: name,
-		VolumeSource: corev1.VolumeSource{
-			EmptyDir: &corev1.EmptyDirVolumeSource{},
-		},
-	}
+	return emptyDirVolume(name)
 }
 
 func (c *Container) buildVolumeMounts() ([]corev1.Volume, []corev1.VolumeMount) {
@@ -1178,7 +915,7 @@ func (c *Container) buildVolumeMounts() ([]corev1.Volume, []corev1.VolumeMount) 
 	cacheMode := c.config.CacheStore
 	if cacheMode == "" {
 		switch {
-		case c.config.ArtifactDaemonHostPath != "" && len(resolvedCaches) > 0:
+		case c.storageBackend != nil && len(resolvedCaches) > 0:
 			cacheMode = CacheStoreHostPath
 		case c.config.CacheHostPath != "" && c.metadata.JobID != 0:
 			cacheMode = CacheStoreHostPath
@@ -1189,30 +926,38 @@ func (c *Container) buildVolumeMounts() ([]corev1.Volume, []corev1.VolumeMount) 
 
 	switch cacheMode {
 	case CacheStoreHostPath:
-		// Use hostPath volumes with stable keys so caches persist across
-		// builds on the same node.
-		basePath := c.config.CacheHostPath
-		if basePath == "" && c.config.ArtifactDaemonHostPath != "" {
-			basePath = filepath.Join(c.config.ArtifactDaemonHostPath, "caches")
-		}
-		dirType := corev1.HostPathDirectoryOrCreate
-		for _, cachePath := range resolvedCaches {
-			key := stableCacheKey(c.metadata.JobID, c.metadata.StepName, cachePath)
-			name := fmt.Sprintf("cache-%d", idx)
-			idx++
-			volumes = append(volumes, corev1.Volume{
-				Name: name,
-				VolumeSource: corev1.VolumeSource{
-					HostPath: &corev1.HostPathVolumeSource{
-						Path: filepath.Join(basePath, key),
-						Type: &dirType,
+		if c.storageBackend != nil {
+			for _, cachePath := range resolvedCaches {
+				name := fmt.Sprintf("cache-%d", idx)
+				idx++
+				volumes = append(volumes, c.storageBackend.CacheVolume(name, c.metadata.JobID, c.metadata.StepName, cachePath))
+				mounts = append(mounts, corev1.VolumeMount{
+					Name:      name,
+					MountPath: cachePath,
+				})
+			}
+		} else {
+			// Standalone CacheHostPath mode (no DaemonSet backend).
+			basePath := c.config.CacheHostPath
+			dirType := corev1.HostPathDirectoryOrCreate
+			for _, cachePath := range resolvedCaches {
+				key := stableCacheKey(c.metadata.JobID, c.metadata.StepName, cachePath)
+				name := fmt.Sprintf("cache-%d", idx)
+				idx++
+				volumes = append(volumes, corev1.Volume{
+					Name: name,
+					VolumeSource: corev1.VolumeSource{
+						HostPath: &corev1.HostPathVolumeSource{
+							Path: filepath.Join(basePath, key),
+							Type: &dirType,
+						},
 					},
-				},
-			})
-			mounts = append(mounts, corev1.VolumeMount{
-				Name:      name,
-				MountPath: cachePath,
-			})
+				})
+				mounts = append(mounts, corev1.VolumeMount{
+					Name:      name,
+					MountPath: cachePath,
+				})
+			}
 		}
 
 	default: // CacheStoreEmptyDir or unknown
