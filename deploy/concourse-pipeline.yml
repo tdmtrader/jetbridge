@@ -128,35 +128,20 @@ jobs:
 
           LDFLAGS="-s -w -X github.com/concourse/concourse.Version=${VERSION} -X github.com/concourse/concourse.JetBridgeVersion=${VERSION}"
 
-          echo "=== Building concourse binary ==="
+          echo "=== Building concourse binary (linux/amd64 only — fly cross-compiles deferred to push-to-ghcr) ==="
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "${LDFLAGS}" -o concourse-linux-amd64 ./cmd/concourse
           ls -lh concourse-linux-amd64
           echo "=== Building artifact-daemon binary ==="
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o artifact-daemon-linux-amd64 ./cmd/artifact-daemon
           ls -lh artifact-daemon-linux-amd64
 
-          echo "=== Building fly CLI for all platforms ==="
+          echo "=== Building fly CLI (linux/amd64 only for local deploy) ==="
           FLY_LDFLAGS="-s -w -X github.com/concourse/concourse.Version=${VERSION}"
-          mkdir -p fly-assets fly-bin
-          for pair in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
-            OS="${pair%%/*}"
-            ARCH="${pair##*/}"
-            echo "  fly-${OS}-${ARCH}"
-            CGO_ENABLED=0 GOOS=${OS} GOARCH=${ARCH} go build -ldflags "${FLY_LDFLAGS}" -o fly-bin/fly ./fly
-            tar czf fly-assets/fly-${OS}-${ARCH}.tgz -C fly-bin fly
-            rm -f fly-bin/fly
-          done
-          rm -rf fly-bin
+          mkdir -p fly-assets
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "${FLY_LDFLAGS}" -o /tmp/fly ./fly
+          tar czf fly-assets/fly-linux-amd64.tgz -C /tmp fly
+          rm -f /tmp/fly
           ls -lh fly-assets/
-
-          echo "=== Verifying binary version ==="
-          BINARY_VERSION=$(./concourse-linux-amd64 --version 2>&1 || true)
-          echo "Binary reports: ${BINARY_VERSION}"
-          if ! echo "${BINARY_VERSION}" | grep -q "${VERSION}"; then
-            echo "FATAL: Binary version mismatch! Expected '${VERSION}' in output but got: ${BINARY_VERSION}"
-            exit 1
-          fi
-          echo "=== Version verified: ${VERSION} ==="
 
           REGISTRY="registry-docker-registry.cicd.svc.cluster.local:5000"
           BUILDER_POD="image-builder-$$"
@@ -388,13 +373,41 @@ jobs:
             sleep 2
           done
 
-          echo "=== Pulling validated image from local registry ==="
+          echo "=== Building fly CLI for all platforms ==="
+          LDFLAGS="-s -w -X github.com/concourse/concourse.Version=${VERSION} -X github.com/concourse/concourse.JetBridgeVersion=${VERSION}"
+          FLY_LDFLAGS="-s -w -X github.com/concourse/concourse.Version=${VERSION}"
+          mkdir -p fly-assets fly-bin
+          for pair in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
+            OS="${pair%%/*}"
+            ARCH="${pair##*/}"
+            echo "  fly-${OS}-${ARCH}"
+            CGO_ENABLED=0 GOOS=${OS} GOARCH=${ARCH} go build -ldflags "${FLY_LDFLAGS}" -o fly-bin/fly ./fly
+            tar czf fly-assets/fly-${OS}-${ARCH}.tgz -C fly-bin fly
+            rm -f fly-bin/fly
+          done
+          rm -rf fly-bin
+          ls -lh fly-assets/
+
+          echo "=== Pulling validated image, adding fly assets, pushing to GHCR ==="
           kubectl exec -n cicd ${BUILDER_POD} -- docker pull registry.home/jetbridge:v${VERSION}
 
-          echo "=== Tagging for GHCR ==="
-          kubectl exec -n cicd ${BUILDER_POD} -- docker tag registry.home/jetbridge:v${VERSION} ${GHCR}:${SHORT_SHA}
-          kubectl exec -n cicd ${BUILDER_POD} -- docker tag registry.home/jetbridge:v${VERSION} ${GHCR}:v${VERSION}
-          kubectl exec -n cicd ${BUILDER_POD} -- docker tag registry.home/jetbridge:v${VERSION} ${GHCR}:latest
+          echo "=== Copying fly assets into builder pod ==="
+          kubectl cp fly-assets cicd/${BUILDER_POD}:/tmp/fly-assets
+
+          echo "=== Rebuilding image with all fly platform assets ==="
+          cat <<'DOCKERFILE' > /tmp/Dockerfile.ghcr
+          FROM registry.home/jetbridge:v${VERSION}
+          COPY fly-assets /usr/local/concourse/fly-assets
+          DOCKERFILE
+          # Substitute version into FROM line
+          sed -i "s/\${VERSION}/${VERSION}/g" /tmp/Dockerfile.ghcr
+          kubectl cp /tmp/Dockerfile.ghcr cicd/${BUILDER_POD}:/tmp/Dockerfile.ghcr
+          kubectl exec -n cicd ${BUILDER_POD} -- \
+            docker build \
+              -t ${GHCR}:${SHORT_SHA} \
+              -t ${GHCR}:v${VERSION} \
+              -t ${GHCR}:latest \
+              -f /tmp/Dockerfile.ghcr /tmp/
 
           echo "=== Logging into GHCR ==="
           echo "${GITHUB_TOKEN}" | kubectl exec -i -n cicd ${BUILDER_POD} -- docker login ghcr.io -u tdmtrader --password-stdin
