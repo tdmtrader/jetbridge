@@ -95,8 +95,11 @@ func (b *DaemonSetBackend) BuildFetchInitContainers(handle string, inputs []runt
 	helperImage := b.helperImage()
 	allowEscalation := false
 
-	var inits []corev1.Container
-	for i, input := range inputs {
+	var items []batchItem
+	var mounts []corev1.VolumeMount
+	seenVolumes := map[string]bool{}
+
+	for _, input := range inputs {
 		if input.Artifact == nil {
 			continue
 		}
@@ -107,7 +110,6 @@ func (b *DaemonSetBackend) BuildFetchInitContainers(handle string, inputs []runt
 		}
 
 		key := ArtifactKey(input.Artifact.Handle())
-
 		daemonKey := key
 		if loc, hasLoc := b.artifactLocate(key); hasLoc {
 			daemonKey = loc.HostDir
@@ -118,10 +120,28 @@ func (b *DaemonSetBackend) BuildFetchInitContainers(handle string, inputs []runt
 			hostDestPath = filepath.Join(b.config.ArtifactDaemonHostPath, "steps", handle, volumeName)
 		}
 
-		initContainer := corev1.Container{
-			Name:    fmt.Sprintf("fetch-input-%d", i),
+		items = append(items, batchItem{Key: daemonKey, Dest: hostDestPath})
+
+		if !seenVolumes[volumeName] {
+			seenVolumes[volumeName] = true
+			mounts = append(mounts, corev1.VolumeMount{Name: volumeName, MountPath: input.DestinationPath})
+		}
+	}
+
+	if len(items) == 0 {
+		return nil
+	}
+
+	// Prepend the hostpath volume mount.
+	allMounts := append([]corev1.VolumeMount{
+		{Name: artifactDaemonHostPathVolumeName, MountPath: ArtifactMountPath, ReadOnly: true},
+	}, mounts...)
+
+	return []corev1.Container{
+		{
+			Name:    "fetch-inputs",
 			Image:   helperImage,
-			Command: b.daemonResolveCommand(daemonKey, hostDestPath),
+			Command: b.daemonResolveBatchCommand(items),
 			Env: []corev1.EnvVar{
 				{
 					Name: "HOST_IP",
@@ -130,20 +150,13 @@ func (b *DaemonSetBackend) BuildFetchInitContainers(handle string, inputs []runt
 					},
 				},
 			},
-			VolumeMounts: []corev1.VolumeMount{
-				{Name: artifactDaemonHostPathVolumeName, MountPath: ArtifactMountPath, ReadOnly: true},
-				{Name: volumeName, MountPath: input.DestinationPath},
-			},
+			VolumeMounts:    allMounts,
 			ImagePullPolicy: corev1.PullIfNotPresent,
 			SecurityContext: &corev1.SecurityContext{
 				AllowPrivilegeEscalation: &allowEscalation,
 			},
-		}
-
-		inits = append(inits, initContainer)
+		},
 	}
-
-	return inits
 }
 
 func (b *DaemonSetBackend) daemonResolveCommand(key, hostDest string) []string {
