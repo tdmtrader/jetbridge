@@ -27,7 +27,7 @@ jobs:
         - -exc
         - |
           REGISTRY="registry-docker-registry.cicd.svc.cluster.local:5000"
-          IMAGE="${REGISTRY}/concourse-kind-runner:v26"
+          IMAGE="${REGISTRY}/concourse-kind-runner:v27"
           BUILDER_POD="kind-runner-builder-$$"
 
           cleanup_builder() { kubectl delete pod -n cicd ${BUILDER_POD} --grace-period=0 --force 2>/dev/null || true; }
@@ -115,7 +115,7 @@ jobs:
     timeout: 45m
     config:
       platform: linux
-      rootfs_uri: docker:///registry.home/concourse-kind-runner:v26
+      rootfs_uri: docker:///registry.home/concourse-kind-runner:v27
       run:
         path: sh
         args:
@@ -200,7 +200,7 @@ jobs:
     timeout: 4h
     config:
       platform: linux
-      rootfs_uri: docker:///registry.home/concourse-kind-runner:v26
+      rootfs_uri: docker:///registry.home/concourse-kind-runner:v27
       run:
         path: sh
         args:

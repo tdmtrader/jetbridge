@@ -157,10 +157,21 @@ DST="%s"
 PORT=%d
 DAEMON="http://${HOST_IP}:${PORT}"
 echo "[artifact-fetch] resolving key=${KEY} dest=${DST} daemon=${DAEMON}" >&2
-RESP=$(wget -qO- --post-data='{"key":"'"${KEY}"'","dest":"'"${DST}"'"}' "${DAEMON}/resolve" 2>&1) || {
-  echo "[artifact-fetch] FAILED: ${RESP}" >&2
-  exit 1
-}
+# Retry up to 10 times with backoff — the daemon may not be reachable
+# immediately (hostPort iptables rules propagation, daemon restart after
+# eviction, etc.).
+ATTEMPT=0
+MAX=10
+while true; do
+  ATTEMPT=$((ATTEMPT + 1))
+  RESP=$(wget -qO- -T 5 --post-data='{"key":"'"${KEY}"'","dest":"'"${DST}"'"}' "${DAEMON}/resolve" 2>&1) && break
+  if [ "$ATTEMPT" -ge "$MAX" ]; then
+    echo "[artifact-fetch] FAILED after ${MAX} attempts: ${RESP}" >&2
+    exit 1
+  fi
+  echo "[artifact-fetch] attempt ${ATTEMPT}/${MAX} failed, retrying in 2s..." >&2
+  sleep 2
+done
 echo "[artifact-fetch] resolved: ${RESP}" >&2
 `, key, hostDest, port)
 
