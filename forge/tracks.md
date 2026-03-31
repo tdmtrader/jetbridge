@@ -422,3 +422,8 @@ _Link: [./tracks/cross_node_artifact_reliability_20260331/](./tracks/cross_node_
 _Link: [./tracks/batch_artifact_resolution_20260331/](./tracks/batch_artifact_resolution_20260331/)_
 
 ---
+
+### [ ] Track: K8s Runtime Behavioral Specification
+_Link: [./tracks/k8s_runtime_behavioral_spec_20260331/](./tracks/k8s_runtime_behavioral_spec_20260331/)_
+
+---
