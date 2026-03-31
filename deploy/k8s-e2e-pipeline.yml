@@ -194,7 +194,7 @@ jobs:
   plan:
   - get: trigger
     trigger: true
-    passed: [build-kind-runner]
+    passed: [k8s-integration-tests]
   - task: k8s-behavioral
     privileged: true
     timeout: 4h

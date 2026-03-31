@@ -402,3 +402,8 @@ _Link: [./tracks/storage_backend_interface_20260330/](./tracks/storage_backend_i
 _Link: [./tracks/sidecar_workdir_bug_20260331/](./tracks/sidecar_workdir_bug_20260331/)_
 
 ---
+
+### [ ] Track: Telemetry simplification
+_Link: [./tracks/telemetry_simplification_20260331/](./tracks/telemetry_simplification_20260331/)_
+
+---
