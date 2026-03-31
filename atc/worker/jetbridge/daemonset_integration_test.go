@@ -993,8 +993,8 @@ func TestDaemonSetMode_CleanupPrecedesArtifactInits(t *testing.T) {
 	if pod.Spec.InitContainers[0].Name != "cleanup-stale" {
 		t.Errorf("expected first init container to be cleanup-stale, got %s", pod.Spec.InitContainers[0].Name)
 	}
-	if !strings.HasPrefix(pod.Spec.InitContainers[1].Name, "fetch-input-") {
-		t.Errorf("expected second init container to be fetch-input-*, got %s", pod.Spec.InitContainers[1].Name)
+	if pod.Spec.InitContainers[1].Name != "fetch-inputs" {
+		t.Errorf("expected second init container to be fetch-inputs, got %s", pod.Spec.InitContainers[1].Name)
 	}
 }
 

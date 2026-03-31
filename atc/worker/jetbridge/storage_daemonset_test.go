@@ -3,7 +3,6 @@ package jetbridge
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -185,15 +184,29 @@ func TestDaemonSetBackend_BuildFetchInitContainers_MultipleInputs(t *testing.T) 
 	}
 
 	inits := b.BuildFetchInitContainers("handle", inputs, volumes, mounts)
-	if len(inits) != 3 {
-		t.Fatalf("expected 3 init containers, got %d", len(inits))
+
+	// Multiple inputs should produce a single batch init container.
+	if len(inits) != 1 {
+		t.Fatalf("expected 1 batch init container, got %d", len(inits))
+	}
+	if inits[0].Name != "fetch-inputs" {
+		t.Errorf("expected name fetch-inputs, got %s", inits[0].Name)
 	}
 
-	for i, ic := range inits {
-		expected := fmt.Sprintf("fetch-input-%d", i)
-		if ic.Name != expected {
-			t.Errorf("init[%d] name: expected %s, got %s", i, expected, ic.Name)
-		}
+	// The batch init container should use /resolve-batch.
+	cmdStr := strings.Join(inits[0].Command, " ")
+	if !strings.Contains(cmdStr, "/resolve-batch") {
+		t.Errorf("expected /resolve-batch in command, got: %s", cmdStr)
+	}
+
+	// Should contain all three artifact keys.
+	if !strings.Contains(cmdStr, "vol-a") || !strings.Contains(cmdStr, "vol-b") || !strings.Contains(cmdStr, "vol-c") {
+		t.Errorf("expected all artifact keys in batch command, got: %s", cmdStr)
+	}
+
+	// Should mount all input volumes plus the hostpath volume.
+	if len(inits[0].VolumeMounts) < 4 { // 3 inputs + 1 hostpath
+		t.Errorf("expected at least 4 volume mounts, got %d", len(inits[0].VolumeMounts))
 	}
 }
 
@@ -217,8 +230,9 @@ func TestDaemonSetBackend_BuildFetchInitContainers_SkipsNilArtifact(t *testing.T
 	if len(inits) != 1 {
 		t.Fatalf("expected 1 init container (nil artifact skipped), got %d", len(inits))
 	}
-	if inits[0].Name != "fetch-input-0" {
-		t.Errorf("expected fetch-input-0, got %s", inits[0].Name)
+	// Single valid artifact — should still use batch container name.
+	if inits[0].Name != "fetch-inputs" {
+		t.Errorf("expected fetch-inputs, got %s", inits[0].Name)
 	}
 }
 
@@ -242,7 +256,7 @@ func TestDaemonSetBackend_BuildFetchInitContainers_LocatorHit(t *testing.T) {
 		t.Fatalf("expected 1 init container, got %d", len(inits))
 	}
 
-	// The resolve command should use the locator's HostDir, not the volume handle
+	// The batch command should use the locator's HostDir, not the volume handle.
 	cmdStr := strings.Join(inits[0].Command, " ")
 	if !strings.Contains(cmdStr, "producer-handle/result") {
 		t.Errorf("expected resolve command to use locator HostDir 'producer-handle/result', got: %s", cmdStr)

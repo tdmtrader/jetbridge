@@ -417,3 +417,8 @@ _Link: [./tracks/exec_step_behavioral_spec_20260331/](./tracks/exec_step_behavio
 _Link: [./tracks/cross_node_artifact_reliability_20260331/](./tracks/cross_node_artifact_reliability_20260331/)_
 
 ---
+
+### [ ] Track: Batch Artifact Resolution
+_Link: [./tracks/batch_artifact_resolution_20260331/](./tracks/batch_artifact_resolution_20260331/)_
+
+---

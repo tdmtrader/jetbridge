@@ -2,6 +2,7 @@ package main
 
 import (
 	"archive/tar"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"code.cloudfoundry.org/lager/v3"
@@ -54,6 +56,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("HEAD /artifacts/", s.handleHeadArtifact)
 	mux.HandleFunc("POST /register", s.handleRegister)
 	mux.HandleFunc("POST /resolve", s.handleResolve)
+	mux.HandleFunc("POST /resolve-batch", s.handleResolveBatch)
 	return mux
 }
 
@@ -243,16 +246,66 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusCreated)
 }
 
+// resolveOne resolves a single artifact key to a destination path.
+// It is the core logic shared by handleResolve and handleResolveBatch.
+func (s *Server) resolveOne(ctx context.Context, key, dest string) resolveResponse {
+	start := time.Now()
+	logger := s.logger.Session("resolve", lager.Data{"key": key, "dest": dest})
+
+	// Step 1: Check registry for explicit registration.
+	sourcePath, found := s.registry.Lookup(key)
+	if found {
+		if err := s.copyArtifact(sourcePath, dest); err != nil {
+			logger.Error("copy-failed", err, lager.Data{"source": sourcePath})
+			return resolveResponse{Status: "error", Source: sourcePath, Method: "local", Error: err.Error()}
+		}
+		duration := time.Since(start)
+		logger.Info("resolved", lager.Data{"method": "registry", "source": sourcePath, "duration": duration.String()})
+		return resolveResponse{Status: "ok", Source: sourcePath, Method: "registry", Duration: duration.String()}
+	}
+
+	// Step 2: Fallback — check if key maps to a steps/ directory on disk.
+	stepsPath := filepath.Join(s.storagePath, "steps", key)
+	if info, err := os.Stat(stepsPath); err == nil && info.IsDir() {
+		s.registry.Register(key, stepsPath)
+
+		if err := s.copyArtifact(stepsPath, dest); err != nil {
+			logger.Error("copy-failed", err, lager.Data{"source": stepsPath})
+			return resolveResponse{Status: "error", Source: stepsPath, Method: "filesystem", Error: err.Error()}
+		}
+		duration := time.Since(start)
+		logger.Info("resolved", lager.Data{"method": "filesystem", "source": stepsPath, "duration": duration.String()})
+		return resolveResponse{Status: "ok", Source: stepsPath, Method: "filesystem", Duration: duration.String()}
+	}
+
+	// Step 3: Query peer daemons for cross-node resolution.
+	if s.peers != nil {
+		peerIP, found := s.peers.Probe(ctx, key)
+		if found {
+			if err := s.peers.Fetch(ctx, peerIP, key, dest); err != nil {
+				logger.Error("peer-fetch-failed", err, lager.Data{"peer": peerIP})
+				return resolveResponse{Status: "error", Source: peerIP, Method: "peer", Error: err.Error()}
+			}
+			duration := time.Since(start)
+			logger.Info("resolved", lager.Data{"method": "peer", "peer": peerIP, "duration": duration.String()})
+			return resolveResponse{Status: "ok", Source: peerIP, Method: "peer", Duration: duration.String()}
+		}
+	}
+
+	// Step 4: Not found anywhere.
+	duration := time.Since(start)
+	logger.Info("not-found", lager.Data{"duration": duration.String()})
+	return resolveResponse{Status: "not_found", Method: "exhausted", Duration: duration.String(), Error: fmt.Sprintf("artifact %q not found on this node or any peer", key)}
+}
+
 // handleResolve accepts POST /resolve with a JSON body containing {key, dest}.
 // It looks up the artifact by key and copies it to the destination path.
 //
 // Resolution order:
 //  1. Check local registry for an explicit registration
 //  2. Fall back to filesystem scan (check if the key maps to a steps/ directory)
-//  3. (Phase 2: query peer daemons for cross-node resolution)
+//  3. Query peer daemons for cross-node resolution
 func (s *Server) handleResolve(w http.ResponseWriter, r *http.Request) {
-	start := time.Now()
-
 	var req resolveRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, fmt.Sprintf("invalid JSON: %v", err), http.StatusBadRequest)
@@ -263,68 +316,65 @@ func (s *Server) handleResolve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	logger := s.logger.Session("resolve", lager.Data{"key": req.Key, "dest": req.Dest})
+	resp := s.resolveOne(r.Context(), req.Key, req.Dest)
 
-	// Step 1: Check registry for explicit registration.
-	sourcePath, found := s.registry.Lookup(req.Key)
-	if found {
-		if err := s.copyArtifact(sourcePath, req.Dest); err != nil {
-			logger.Error("copy-failed", err, lager.Data{"source": sourcePath})
-			resp := resolveResponse{Status: "error", Source: sourcePath, Method: "local", Error: err.Error()}
-			writeJSON(w, http.StatusInternalServerError, resp)
-			return
-		}
-		duration := time.Since(start)
-		logger.Info("resolved", lager.Data{"method": "registry", "source": sourcePath, "duration": duration.String()})
-		resp := resolveResponse{Status: "ok", Source: sourcePath, Method: "registry", Duration: duration.String()}
-		writeJSON(w, http.StatusOK, resp)
+	status := http.StatusOK
+	if resp.Status == "error" {
+		status = http.StatusInternalServerError
+	} else if resp.Status == "not_found" {
+		status = http.StatusNotFound
+	}
+	writeJSON(w, status, resp)
+}
+
+// batchResolveRequest is the JSON body for POST /resolve-batch.
+type batchResolveRequest struct {
+	Items []resolveRequest `json:"items"`
+}
+
+// batchResolveResponse is the JSON body returned by POST /resolve-batch.
+type batchResolveResponse struct {
+	Status  string            `json:"status"`
+	Results []resolveResponse `json:"results"`
+}
+
+// handleResolveBatch accepts POST /resolve-batch with a JSON body containing
+// {"items": [{key, dest}, ...]}. It resolves all artifacts concurrently and
+// returns an aggregated response. If any item fails, the overall status is
+// "error" and the HTTP status is 500.
+func (s *Server) handleResolveBatch(w http.ResponseWriter, r *http.Request) {
+	var req batchResolveRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf("invalid JSON: %v", err), http.StatusBadRequest)
 		return
 	}
 
-	// Step 2: Fallback — check if key maps to a steps/ directory on disk.
-	// This handles artifacts from previous builds that exist on disk but
-	// weren't explicitly registered (e.g., after daemon restart).
-	stepsPath := filepath.Join(s.storagePath, "steps", req.Key)
-	if info, err := os.Stat(stepsPath); err == nil && info.IsDir() {
-		// Auto-register for future lookups.
-		s.registry.Register(req.Key, stepsPath)
+	results := make([]resolveResponse, len(req.Items))
 
-		if err := s.copyArtifact(stepsPath, req.Dest); err != nil {
-			logger.Error("copy-failed", err, lager.Data{"source": stepsPath})
-			resp := resolveResponse{Status: "error", Source: stepsPath, Method: "filesystem", Error: err.Error()}
-			writeJSON(w, http.StatusInternalServerError, resp)
-			return
-		}
-		duration := time.Since(start)
-		logger.Info("resolved", lager.Data{"method": "filesystem", "source": stepsPath, "duration": duration.String()})
-		resp := resolveResponse{Status: "ok", Source: stepsPath, Method: "filesystem", Duration: duration.String()}
-		writeJSON(w, http.StatusOK, resp)
-		return
+	var wg sync.WaitGroup
+	for i, item := range req.Items {
+		wg.Add(1)
+		go func(idx int, key, dest string) {
+			defer wg.Done()
+			results[idx] = s.resolveOne(r.Context(), key, dest)
+		}(i, item.Key, item.Dest)
 	}
+	wg.Wait()
 
-	// Step 3: Query peer daemons for cross-node resolution.
-	if s.peers != nil {
-		peerIP, found := s.peers.Probe(r.Context(), req.Key)
-		if found {
-			if err := s.peers.Fetch(r.Context(), peerIP, req.Key, req.Dest); err != nil {
-				logger.Error("peer-fetch-failed", err, lager.Data{"peer": peerIP})
-				resp := resolveResponse{Status: "error", Source: peerIP, Method: "peer", Error: err.Error()}
-				writeJSON(w, http.StatusInternalServerError, resp)
-				return
-			}
-			duration := time.Since(start)
-			logger.Info("resolved", lager.Data{"method": "peer", "peer": peerIP, "duration": duration.String()})
-			resp := resolveResponse{Status: "ok", Source: peerIP, Method: "peer", Duration: duration.String()}
-			writeJSON(w, http.StatusOK, resp)
-			return
+	overall := "ok"
+	for _, res := range results {
+		if res.Status != "ok" {
+			overall = "error"
+			break
 		}
 	}
 
-	// Step 4: Not found anywhere.
-	duration := time.Since(start)
-	logger.Info("not-found", lager.Data{"duration": duration.String()})
-	resp := resolveResponse{Status: "not_found", Method: "exhausted", Duration: duration.String(), Error: fmt.Sprintf("artifact %q not found on this node or any peer", req.Key)}
-	writeJSON(w, http.StatusNotFound, resp)
+	status := http.StatusOK
+	if overall == "error" {
+		status = http.StatusInternalServerError
+	}
+
+	writeJSON(w, status, batchResolveResponse{Status: overall, Results: results})
 }
 
 // copyArtifact copies the contents of src directory to dest using cp -a.

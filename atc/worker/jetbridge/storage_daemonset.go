@@ -2,6 +2,7 @@ package jetbridge
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -84,12 +85,21 @@ func (b *DaemonSetBackend) ArtifactStoreVolumeName() string {
 	return artifactDaemonHostPathVolumeName
 }
 
+// batchItem is a single key/dest pair for the /resolve-batch endpoint.
+type batchItem struct {
+	Key  string `json:"key"`
+	Dest string `json:"dest"`
+}
+
 func (b *DaemonSetBackend) BuildFetchInitContainers(handle string, inputs []runtime.Input, podVolumes []corev1.Volume, mainMounts []corev1.VolumeMount) []corev1.Container {
 	helperImage := b.helperImage()
 	allowEscalation := false
 
-	var inits []corev1.Container
-	for i, input := range inputs {
+	var items []batchItem
+	var mounts []corev1.VolumeMount
+	seenVolumes := map[string]bool{}
+
+	for _, input := range inputs {
 		if input.Artifact == nil {
 			continue
 		}
@@ -100,7 +110,6 @@ func (b *DaemonSetBackend) BuildFetchInitContainers(handle string, inputs []runt
 		}
 
 		key := ArtifactKey(input.Artifact.Handle())
-
 		daemonKey := key
 		if loc, hasLoc := b.artifactLocate(key); hasLoc {
 			daemonKey = loc.HostDir
@@ -111,10 +120,28 @@ func (b *DaemonSetBackend) BuildFetchInitContainers(handle string, inputs []runt
 			hostDestPath = filepath.Join(b.config.ArtifactDaemonHostPath, "steps", handle, volumeName)
 		}
 
-		initContainer := corev1.Container{
-			Name:    fmt.Sprintf("fetch-input-%d", i),
+		items = append(items, batchItem{Key: daemonKey, Dest: hostDestPath})
+
+		if !seenVolumes[volumeName] {
+			seenVolumes[volumeName] = true
+			mounts = append(mounts, corev1.VolumeMount{Name: volumeName, MountPath: input.DestinationPath})
+		}
+	}
+
+	if len(items) == 0 {
+		return nil
+	}
+
+	// Prepend the hostpath volume mount.
+	allMounts := append([]corev1.VolumeMount{
+		{Name: artifactDaemonHostPathVolumeName, MountPath: ArtifactMountPath, ReadOnly: true},
+	}, mounts...)
+
+	return []corev1.Container{
+		{
+			Name:    "fetch-inputs",
 			Image:   helperImage,
-			Command: b.daemonResolveCommand(daemonKey, hostDestPath),
+			Command: b.daemonResolveBatchCommand(items),
 			Env: []corev1.EnvVar{
 				{
 					Name: "HOST_IP",
@@ -123,20 +150,13 @@ func (b *DaemonSetBackend) BuildFetchInitContainers(handle string, inputs []runt
 					},
 				},
 			},
-			VolumeMounts: []corev1.VolumeMount{
-				{Name: artifactDaemonHostPathVolumeName, MountPath: ArtifactMountPath, ReadOnly: true},
-				{Name: volumeName, MountPath: input.DestinationPath},
-			},
+			VolumeMounts:    allMounts,
 			ImagePullPolicy: corev1.PullIfNotPresent,
 			SecurityContext: &corev1.SecurityContext{
 				AllowPrivilegeEscalation: &allowEscalation,
 			},
-		}
-
-		inits = append(inits, initContainer)
+		},
 	}
-
-	return inits
 }
 
 func (b *DaemonSetBackend) daemonResolveCommand(key, hostDest string) []string {
@@ -174,6 +194,50 @@ while true; do
 done
 echo "[artifact-fetch] resolved: ${RESP}" >&2
 `, key, hostDest, port)
+
+	return []string{"sh", "-c", script}
+}
+
+func (b *DaemonSetBackend) daemonResolveBatchCommand(items []batchItem) []string {
+	if len(items) == 0 {
+		return []string{"sh", "-c", "echo '[artifact-fetch] no items to resolve' >&2"}
+	}
+
+	port := b.config.ArtifactDaemonPort
+	if port == 0 {
+		port = 7780
+	}
+
+	// Build the JSON payload for /resolve-batch.
+	type batchPayload struct {
+		Items []batchItem `json:"items"`
+	}
+	payload, _ := json.Marshal(batchPayload{Items: items})
+
+	script := fmt.Sprintf(`
+set -e
+PORT=%d
+DAEMON="http://${HOST_IP}:${PORT}"
+PAYLOAD='%s'
+echo "[artifact-fetch] batch resolving %d artifacts via ${DAEMON}/resolve-batch" >&2
+ATTEMPT=0
+MAX=10
+while true; do
+  ATTEMPT=$((ATTEMPT + 1))
+  RESP=$(wget -qO- -T 180 --header='Content-Type: application/json' --post-data="${PAYLOAD}" "${DAEMON}/resolve-batch" 2>&1) && break
+  if [ "$ATTEMPT" -ge "$MAX" ]; then
+    echo "[artifact-fetch] FAILED after ${MAX} attempts: ${RESP}" >&2
+    exit 1
+  fi
+  echo "[artifact-fetch] attempt ${ATTEMPT}/${MAX} failed, retrying in 2s..." >&2
+  sleep 2
+done
+echo "[artifact-fetch] batch resolved: ${RESP}" >&2
+# Check if the batch had any failures — the daemon returns {"status":"error",...} on partial failure.
+case "${RESP}" in
+  *'"status":"error"'*) echo "[artifact-fetch] batch had failures — see above" >&2; exit 1 ;;
+esac
+`, port, string(payload), len(items))
 
 	return []string{"sh", "-c", script}
 }
