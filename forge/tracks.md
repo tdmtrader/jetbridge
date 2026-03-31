@@ -387,3 +387,13 @@ _Link: [./tracks/daemon_mediated_artifact_resolution_20260327/](./tracks/daemon_
 _Link: [./tracks/legacy_cleanup_dead_code_stale_config_and_broken_references_20260328/](./tracks/legacy_cleanup_dead_code_stale_config_and_broken_references_20260328/)_
 
 ---
+
+### [ ] Track: JetBridge Storage & Artifact Behavioral Specification
+_Link: [./tracks/jetbridge_storage_behavioral_spec_20260330/](./tracks/jetbridge_storage_behavioral_spec_20260330/)_
+
+---
+
+### [ ] Track: Storage Backend Interface Extraction
+_Link: [./tracks/storage_backend_interface_20260330/](./tracks/storage_backend_interface_20260330/)_
+
+---
