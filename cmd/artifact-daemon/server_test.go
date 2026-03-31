@@ -179,7 +179,7 @@ func TestNestedKeys(t *testing.T) {
 	}
 
 	// Verify subdirectories were created on disk
-	expectedPath := filepath.Join(storagePath, "artifacts", "caches", "job-42", "build-abc.tar")
+	expectedPath := filepath.Join(storagePath, "caches", "job-42", "build-abc.tar")
 	if _, err := os.Stat(expectedPath); os.IsNotExist(err) {
 		t.Errorf("nested key did not create subdirectories: %s not found", expectedPath)
 	}
@@ -225,7 +225,7 @@ func TestPutStoresAtCorrectPath(t *testing.T) {
 	resp.Body.Close()
 
 	// Verify file exists on disk at the right location
-	expectedPath := filepath.Join(storagePath, "artifacts", "my-key.tar")
+	expectedPath := filepath.Join(storagePath, "my-key.tar")
 	data, err := os.ReadFile(expectedPath)
 	if err != nil {
 		t.Fatalf("file not found at %s: %v", expectedPath, err)
@@ -241,7 +241,7 @@ func TestGetDirectoryTarsOnTheFly(t *testing.T) {
 	ts, storagePath := setupServer(t)
 
 	// Create a directory with files (simulating step output)
-	stepDir := filepath.Join(storagePath, "artifacts", "steps", "build-42", "result")
+	stepDir := filepath.Join(storagePath, "steps", "build-42", "result")
 	if err := os.MkdirAll(stepDir, 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -287,7 +287,7 @@ func TestDeleteDirectoryRemovesTree(t *testing.T) {
 	ts, storagePath := setupServer(t)
 
 	// Create a directory tree
-	stepDir := filepath.Join(storagePath, "artifacts", "steps", "build-99", "out")
+	stepDir := filepath.Join(storagePath, "steps", "build-99", "out")
 	os.MkdirAll(stepDir, 0755)
 	os.WriteFile(filepath.Join(stepDir, "data.bin"), []byte("x"), 0644)
 
@@ -304,7 +304,7 @@ func TestDeleteDirectoryRemovesTree(t *testing.T) {
 	}
 
 	// Verify the entire tree is gone
-	if _, err := os.Stat(filepath.Join(storagePath, "artifacts", "steps", "build-99")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(storagePath, "steps", "build-99")); !os.IsNotExist(err) {
 		t.Error("expected directory tree to be removed")
 	}
 }
@@ -312,7 +312,7 @@ func TestDeleteDirectoryRemovesTree(t *testing.T) {
 func TestHeadDirectoryReturns200(t *testing.T) {
 	ts, storagePath := setupServer(t)
 
-	stepDir := filepath.Join(storagePath, "artifacts", "steps", "build-50", "src")
+	stepDir := filepath.Join(storagePath, "steps", "build-50", "src")
 	os.MkdirAll(stepDir, 0755)
 
 	req, _ := http.NewRequest(http.MethodHead, ts.URL+"/artifacts/steps/build-50/src", nil)

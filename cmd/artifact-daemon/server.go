@@ -63,7 +63,7 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) artifactPath(r *http.Request) string {
 	key := strings.TrimPrefix(r.URL.Path, "/artifacts/")
-	return filepath.Join(s.storagePath, "artifacts", key)
+	return filepath.Join(s.storagePath, key)
 }
 
 func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {

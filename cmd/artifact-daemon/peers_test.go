@@ -19,7 +19,7 @@ import (
 func TestPeerFetch_DownloadsAndExtractsTar(t *testing.T) {
 	// Set up a fake peer daemon that serves a tar of a directory.
 	peerStorage := t.TempDir()
-	stepDir := filepath.Join(peerStorage, "artifacts", "steps", "handle-x", "result")
+	stepDir := filepath.Join(peerStorage, "steps", "handle-x", "result")
 	os.MkdirAll(stepDir, 0755)
 	os.WriteFile(filepath.Join(stepDir, "output.txt"), []byte("peer data"), 0644)
 	os.MkdirAll(filepath.Join(stepDir, "sub"), 0755)
@@ -119,7 +119,7 @@ func TestPeerProbe_NoPeers(t *testing.T) {
 func TestResolveEndpoint_PeerFallback(t *testing.T) {
 	// Set up a peer daemon with the artifact.
 	peerStorage := t.TempDir()
-	stepDir := filepath.Join(peerStorage, "artifacts", "steps", "remote-handle", "output")
+	stepDir := filepath.Join(peerStorage, "steps", "remote-handle", "output")
 	os.MkdirAll(stepDir, 0755)
 	os.WriteFile(filepath.Join(stepDir, "remote.txt"), []byte("from-peer"), 0644)
 
