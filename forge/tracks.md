@@ -398,7 +398,7 @@ _Link: [./tracks/storage_backend_interface_20260330/](./tracks/storage_backend_i
 
 ---
 
-### [ ] Track: Sidecar working directory bug
+### [x] Track: Sidecar working directory bug
 _Link: [./tracks/sidecar_workdir_bug_20260331/](./tracks/sidecar_workdir_bug_20260331/)_
 
 ---
