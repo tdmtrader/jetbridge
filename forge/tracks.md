@@ -412,3 +412,8 @@ _Link: [./tracks/telemetry_simplification_20260331/](./tracks/telemetry_simplifi
 _Link: [./tracks/exec_step_behavioral_spec_20260331/](./tracks/exec_step_behavioral_spec_20260331/)_
 
 ---
+
+### [ ] Track: Cross-Node Artifact Reliability
+_Link: [./tracks/cross_node_artifact_reliability_20260331/](./tracks/cross_node_artifact_reliability_20260331/)_
+
+---

@@ -19,13 +19,14 @@ import (
 // PeerResolver discovers peer artifact-daemon pods via EndpointSlices
 // and fetches artifacts from them for cross-node resolution.
 type PeerResolver struct {
-	logger    lager.Logger
-	clientset kubernetes.Interface
-	namespace string
-	service   string
-	port      int
-	myPodIP   string // this pod's IP, to skip self during peer probe
-	client    *http.Client
+	logger      lager.Logger
+	clientset   kubernetes.Interface
+	namespace   string
+	service     string
+	port        int
+	myPodIP     string // this pod's IP, to skip self during peer probe
+	probeClient *http.Client
+	fetchClient *http.Client
 }
 
 // NewPeerResolver creates a PeerResolver that discovers peers via the
@@ -38,8 +39,11 @@ func NewPeerResolver(logger lager.Logger, clientset kubernetes.Interface, namesp
 		service:   service,
 		port:      port,
 		myPodIP:   myPodIP,
-		client: &http.Client{
+		probeClient: &http.Client{
 			Timeout: 10 * time.Second,
+		},
+		fetchClient: &http.Client{
+			Timeout: 3 * time.Minute,
 		},
 	}
 }
@@ -72,7 +76,7 @@ func (p *PeerResolver) peerIPs(ctx context.Context) ([]string, error) {
 
 // Probe checks whether any peer daemon has the given artifact key.
 // Returns the IP of the first peer that responds 200 to HEAD /artifacts/<key>,
-// or ("", false) if no peer has it.
+// or ("", false) if no peer has it. Peers are probed concurrently.
 func (p *PeerResolver) Probe(ctx context.Context, key string) (string, bool) {
 	logger := p.logger.Session("peer-probe", lager.Data{"key": key})
 
@@ -86,23 +90,44 @@ func (p *PeerResolver) Probe(ctx context.Context, key string) (string, bool) {
 		return "", false
 	}
 
-	// Probe each peer sequentially. For small clusters this is fast enough.
-	// TODO: parallelize for large clusters.
+	type probeResult struct {
+		ip    string
+		found bool
+	}
+
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	results := make(chan probeResult, len(ips))
+
 	for _, ip := range ips {
-		url := fmt.Sprintf("http://%s:%d/artifacts/steps/%s", ip, p.port, key)
-		req, err := http.NewRequestWithContext(ctx, http.MethodHead, url, nil)
-		if err != nil {
-			continue
-		}
-		resp, err := p.client.Do(req)
-		if err != nil {
-			logger.Debug("peer-unreachable", lager.Data{"peer": ip, "error": err.Error()})
-			continue
-		}
-		resp.Body.Close()
-		if resp.StatusCode == http.StatusOK {
-			logger.Info("peer-found", lager.Data{"peer": ip})
-			return ip, true
+		go func(ip string) {
+			url := fmt.Sprintf("http://%s:%d/artifacts/steps/%s", ip, p.port, key)
+			req, err := http.NewRequestWithContext(ctx, http.MethodHead, url, nil)
+			if err != nil {
+				results <- probeResult{ip: ip, found: false}
+				return
+			}
+			resp, err := p.probeClient.Do(req)
+			if err != nil {
+				logger.Debug("peer-unreachable", lager.Data{"peer": ip, "error": err.Error()})
+				results <- probeResult{ip: ip, found: false}
+				return
+			}
+			resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				results <- probeResult{ip: ip, found: true}
+				return
+			}
+			results <- probeResult{ip: ip, found: false}
+		}(ip)
+	}
+
+	for range len(ips) {
+		r := <-results
+		if r.found {
+			logger.Info("peer-found", lager.Data{"peer": r.ip})
+			return r.ip, true
 		}
 	}
 
@@ -125,7 +150,7 @@ func (p *PeerResolver) Fetch(ctx context.Context, peerIP, key, destPath string) 
 			return fmt.Errorf("create request: %w", err)
 		}
 
-		resp, err := p.client.Do(req)
+		resp, err := p.fetchClient.Do(req)
 		if err != nil {
 			lastErr = err
 			logger.Error("fetch-attempt-failed", err, lager.Data{"attempt": attempt})

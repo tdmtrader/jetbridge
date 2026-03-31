@@ -540,6 +540,21 @@ func TestDaemonSetBackend_DaemonResolveCommand_ValidKey(t *testing.T) {
 	}
 }
 
+func TestDaemonSetBackend_DaemonResolveCommand_Timeout180s(t *testing.T) {
+	b := testBackend(nil)
+	cmd := b.daemonResolveCommand("handle/result", "/dest/path")
+	cmdStr := strings.Join(cmd, " ")
+
+	// Must use 180s timeout to accommodate cross-node large artifact transfers.
+	if !strings.Contains(cmdStr, "-T 180") {
+		t.Errorf("expected wget timeout -T 180 for cross-node reliability, got: %s", cmdStr)
+	}
+	// Must NOT use the old 5s timeout.
+	if strings.Contains(cmdStr, "-T 5") {
+		t.Errorf("wget -T 5 is too short for cross-node transfers, got: %s", cmdStr)
+	}
+}
+
 func TestDaemonSetBackend_DaemonResolveCommand_DefaultPort(t *testing.T) {
 	cfg := testDaemonConfig()
 	cfg.ArtifactDaemonPort = 0

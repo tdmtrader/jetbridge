@@ -164,7 +164,7 @@ ATTEMPT=0
 MAX=10
 while true; do
   ATTEMPT=$((ATTEMPT + 1))
-  RESP=$(wget -qO- -T 5 --post-data='{"key":"'"${KEY}"'","dest":"'"${DST}"'"}' "${DAEMON}/resolve" 2>&1) && break
+  RESP=$(wget -qO- -T 180 --post-data='{"key":"'"${KEY}"'","dest":"'"${DST}"'"}' "${DAEMON}/resolve" 2>&1) && break
   if [ "$ATTEMPT" -ge "$MAX" ]; then
     echo "[artifact-fetch] FAILED after ${MAX} attempts: ${RESP}" >&2
     exit 1

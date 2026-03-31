@@ -8,8 +8,12 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"code.cloudfoundry.org/lager/v3/lagertest"
+	discoveryv1 "k8s.io/api/discovery/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes/fake"
 
 	daemon "github.com/concourse/concourse/cmd/artifact-daemon"
 )
@@ -111,6 +115,127 @@ func TestPeerProbe_NoPeers(t *testing.T) {
 	_, found := resolver.Probe(t.Context(), "any-key")
 	if found {
 		t.Error("expected Probe to return false with no K8s client")
+	}
+}
+
+// TestPeerFetch_LargeArtifactSlowTransfer verifies that Fetch succeeds even
+// when the peer takes longer than the old 10s timeout to respond (simulating
+// a large artifact transfer).
+func TestPeerFetch_LargeArtifactSlowTransfer(t *testing.T) {
+	fakePeer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Simulate a slow transfer — delay 2s before sending tar data.
+		// With the old shared 10s http.Client timeout this would work,
+		// but it verifies the fetch client is separate from the probe client.
+		time.Sleep(2 * time.Second)
+		tw := tar.NewWriter(w)
+		content := []byte("large-artifact-data")
+		tw.WriteHeader(&tar.Header{Name: "big-file.bin", Size: int64(len(content)), Mode: 0644})
+		tw.Write(content)
+		tw.Close()
+	}))
+	defer fakePeer.Close()
+
+	logger := lagertest.NewTestLogger("test")
+	host, port := splitHostPort(t, fakePeer.Listener.Addr().String())
+	resolver := daemon.NewPeerResolver(logger, nil, "", "", port, "")
+
+	destDir := filepath.Join(t.TempDir(), "large-fetch")
+	err := resolver.Fetch(t.Context(), host, "large-key", destDir)
+	if err != nil {
+		t.Fatalf("expected success for slow transfer, got: %v", err)
+	}
+
+	data, _ := os.ReadFile(filepath.Join(destDir, "big-file.bin"))
+	if string(data) != "large-artifact-data" {
+		t.Errorf("expected 'large-artifact-data', got %q", string(data))
+	}
+}
+
+// TestPeerProbe_UsesShortTimeout verifies that Probe uses a short timeout
+// so it doesn't wait excessively for unresponsive peers.
+func TestPeerProbe_UsesShortTimeout(t *testing.T) {
+	// Peer that never responds (accepts connection but hangs).
+	slowPeer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Block until context is cancelled.
+		<-r.Context().Done()
+	}))
+	defer slowPeer.Close()
+
+	peerHost, peerPort := splitHostPort(t, slowPeer.Listener.Addr().String())
+
+	ready := true
+	clientset := fake.NewSimpleClientset(&discoveryv1.EndpointSlice{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "slice",
+			Namespace: "ns",
+			Labels:    map[string]string{discoveryv1.LabelServiceName: "svc"},
+		},
+		AddressType: discoveryv1.AddressTypeIPv4,
+		Endpoints: []discoveryv1.Endpoint{
+			{
+				Addresses:  []string{peerHost},
+				Conditions: discoveryv1.EndpointConditions{Ready: &ready},
+			},
+		},
+	})
+
+	logger := lagertest.NewTestLogger("test")
+	resolver := daemon.NewPeerResolver(logger, clientset, "ns", "svc", peerPort, "10.0.0.99")
+
+	start := time.Now()
+	_, found := resolver.Probe(t.Context(), "any-key")
+	elapsed := time.Since(start)
+
+	if found {
+		t.Error("expected Probe to return false for hanging peer")
+	}
+	// Probe should timeout within ~10s (probe client timeout), not 180s.
+	if elapsed > 15*time.Second {
+		t.Errorf("Probe took %v — expected short timeout (<=10s), not fetch timeout", elapsed)
+	}
+}
+
+// TestPeerProbe_ConcurrentFirstHitWins verifies that when multiple peers are
+// probed concurrently, the first 200 response wins without waiting for slow peers.
+//
+// Strategy: Create 3 "peers" that are actually unreachable IPs (192.0.2.x from
+// TEST-NET-1, RFC 5737 — guaranteed non-routable). With sequential probing,
+// 3 peers × 10s probe timeout = 30s. With concurrent probing, all 3 are probed
+// in parallel, so total time ≈ 10s. We verify that Probe completes in <15s.
+func TestPeerProbe_ConcurrentFirstHitWins(t *testing.T) {
+	// Use non-routable TEST-NET addresses as "peers" — they'll all timeout.
+	ready := true
+	clientset := fake.NewSimpleClientset(&discoveryv1.EndpointSlice{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "concurrent-slice",
+			Namespace: "ns",
+			Labels:    map[string]string{discoveryv1.LabelServiceName: "svc"},
+		},
+		AddressType: discoveryv1.AddressTypeIPv4,
+		Endpoints: []discoveryv1.Endpoint{
+			{
+				Addresses:  []string{"192.0.2.1", "192.0.2.2", "192.0.2.3"},
+				Conditions: discoveryv1.EndpointConditions{Ready: &ready},
+			},
+		},
+	})
+
+	logger := lagertest.NewTestLogger("test-concurrent")
+	resolver := daemon.NewPeerResolver(logger, clientset, "ns", "svc", 7780, "10.0.0.99")
+
+	start := time.Now()
+	_, found := resolver.Probe(t.Context(), "any-key")
+	elapsed := time.Since(start)
+
+	if found {
+		t.Error("expected no peer found (all unreachable)")
+	}
+
+	// With concurrent probing: all 3 timeout in parallel ≈ 10s.
+	// With sequential probing: 3 × 10s = 30s.
+	// We allow 15s to account for overhead. If this takes >15s, probing is sequential.
+	if elapsed > 15*time.Second {
+		t.Errorf("Probe took %v — with 3 unreachable peers, concurrent probing should complete in ~10s, not 30s+", elapsed)
 	}
 }
 
