@@ -360,30 +360,39 @@ jobs:
           git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/tdmtrader/jetbridge.git"
 
           echo "=== Tagging v${VERSION} on main ==="
-          git tag -a "v${VERSION}" -m "Release v${VERSION}"
-          git push origin "v${VERSION}"
-          echo "=== Tagged v${VERSION} ==="
+          if git rev-parse "v${VERSION}" >/dev/null 2>&1; then
+            echo "Tag v${VERSION} already exists — skipping tag creation"
+          else
+            git tag -a "v${VERSION}" -m "Release v${VERSION}"
+            git push origin "v${VERSION}"
+            echo "=== Tagged v${VERSION} ==="
+          fi
 
           echo "=== Bumping patch version on jetbridge branch ==="
           git fetch origin jetbridge
           git checkout jetbridge
 
-          # Increment patch version: 0.2.0 -> 0.2.1
-          MAJOR=$(echo "$VERSION" | cut -d. -f1)
-          MINOR=$(echo "$VERSION" | cut -d. -f2)
-          PATCH=$(echo "$VERSION" | cut -d. -f3)
-          NEXT_PATCH=$((PATCH + 1))
-          NEXT_VERSION="${MAJOR}.${MINOR}.${NEXT_PATCH}"
-          echo "Bumping: ${VERSION} -> ${NEXT_VERSION}"
+          CURRENT_VERSION=$(cat VERSION)
+          if [ "$CURRENT_VERSION" != "$VERSION" ]; then
+            echo "jetbridge VERSION ($CURRENT_VERSION) already differs from main ($VERSION) — bump already done, skipping"
+          else
+            # Increment patch version: 0.2.0 -> 0.2.1
+            MAJOR=$(echo "$VERSION" | cut -d. -f1)
+            MINOR=$(echo "$VERSION" | cut -d. -f2)
+            PATCH=$(echo "$VERSION" | cut -d. -f3)
+            NEXT_PATCH=$((PATCH + 1))
+            NEXT_VERSION="${MAJOR}.${MINOR}.${NEXT_PATCH}"
+            echo "Bumping: ${VERSION} -> ${NEXT_VERSION}"
 
-          echo "${NEXT_VERSION}" > VERSION
-          sed -i "s/JetBridgeVersion = \"${VERSION}\"/JetBridgeVersion = \"${NEXT_VERSION}\"/" versions.go
-          sed -i "s/appVersion: \"${VERSION}\"/appVersion: \"${NEXT_VERSION}\"/" deploy/chart/Chart.yaml
+            echo "${NEXT_VERSION}" > VERSION
+            sed -i "s/JetBridgeVersion = \"${VERSION}\"/JetBridgeVersion = \"${NEXT_VERSION}\"/" versions.go
+            sed -i "s/appVersion: \"${VERSION}\"/appVersion: \"${NEXT_VERSION}\"/" deploy/chart/Chart.yaml
 
-          git add VERSION versions.go deploy/chart/Chart.yaml
-          git commit -m "chore: bump version to ${NEXT_VERSION} [skip ci]"
-          git push origin jetbridge
-          echo "=== Bumped to ${NEXT_VERSION} on jetbridge ==="
+            git add VERSION versions.go deploy/chart/Chart.yaml
+            git commit -m "chore: bump version to ${NEXT_VERSION} [skip ci]"
+            git push origin jetbridge
+            echo "=== Bumped to ${NEXT_VERSION} on jetbridge ==="
+          fi
 
 - name: self-upgrade
   serial_groups: [pipeline]
