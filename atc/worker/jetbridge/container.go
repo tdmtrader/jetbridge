@@ -123,13 +123,27 @@ func (c *Container) Run(ctx context.Context, spec runtime.ProcessSpec, io runtim
 	}
 
 	// Exec mode: use a pause Pod and exec the real command via SPDY.
-	// If the pod already exists (e.g. fly hijack into an existing container),
-	// reuse it. Otherwise create a new pause pod.
+	// If the pod already exists and is Running (e.g. fly hijack or
+	// repeated check on the same container handle), reuse it. If the
+	// pod exists but is in a terminal state (Succeeded/Failed — e.g.
+	// the pause pod's sleep expired or it was evicted), delete it and
+	// create a fresh one. Otherwise create a new pause pod.
 	if execMode {
 		podName := c.podName
-		_, err = c.clientset.CoreV1().Pods(c.config.Namespace).Get(ctx, c.podName, metav1.GetOptions{})
-		if err != nil {
-			// Pod doesn't exist — create a new pause pod.
+		existingPod, getErr := c.clientset.CoreV1().Pods(c.config.Namespace).Get(ctx, c.podName, metav1.GetOptions{})
+		needsCreate := getErr != nil // pod doesn't exist
+
+		if getErr == nil && (existingPod.Status.Phase == corev1.PodSucceeded || existingPod.Status.Phase == corev1.PodFailed) {
+			// Pod exists but is terminal — delete it so we can create a fresh one.
+			logger.Info("deleting-terminal-pod", lager.Data{
+				"pod":   c.podName,
+				"phase": string(existingPod.Status.Phase),
+			})
+			_ = c.clientset.CoreV1().Pods(c.config.Namespace).Delete(ctx, c.podName, metav1.DeleteOptions{})
+			needsCreate = true
+		}
+
+		if needsCreate {
 			var pod *corev1.Pod
 			pod, err = c.createPausePod(ctx, spec)
 			if err != nil {

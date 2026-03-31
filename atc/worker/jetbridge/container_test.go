@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 
 	"github.com/concourse/concourse/atc"
@@ -2064,6 +2065,87 @@ var _ = Describe("Container", func() {
 			Expect(err).ToNot(HaveOccurred())
 			Expect(result.ExitStatus).To(Equal(130))
 		})
+	})
+
+	Describe("Run replaces terminal pod", func() {
+		// Regression test: when a check container's pause pod completes
+		// (e.g. sleep expires) or fails, the next Run must delete it and
+		// create a fresh one instead of trying to exec into a dead pod.
+
+		for _, phase := range []corev1.PodPhase{corev1.PodSucceeded, corev1.PodFailed} {
+			phase := phase
+
+			It(fmt.Sprintf("replaces a %s pod with a new pause pod", phase), func() {
+				terminalExecutor := &fakeExecExecutor{}
+				terminalWorker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
+				terminalWorker.SetExecutor(terminalExecutor)
+
+				// Use a UUID-style handle so GeneratePodName produces a
+				// predictable chk-<resource>-<suffix> pod name.
+				handle := "aaaa1111-bbbb-cccc-dddd-eeee2222ffff"
+				metadata := db.ContainerMetadata{Type: db.ContainerTypeCheck, StepName: "my-time"}
+				podName := jetbridge.GeneratePodName(metadata, handle)
+
+				// Create a pod in terminal state (simulates expired sleep or crash).
+				terminalPod := &corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      podName,
+						Namespace: "test-namespace",
+						Labels: map[string]string{
+							"concourse.ci/worker": "k8s-worker-1",
+						},
+					},
+					Status: corev1.PodStatus{Phase: phase},
+				}
+				_, err := fakeClientset.CoreV1().Pods("test-namespace").Create(ctx, terminalPod, metav1.CreateOptions{})
+				Expect(err).ToNot(HaveOccurred())
+
+				setupFakeDBContainer(fakeDBWorker, handle)
+				container, _, err := terminalWorker.FindOrCreateContainer(
+					ctx,
+					db.NewFixedHandleContainerOwner(handle),
+					metadata,
+					runtime.ContainerSpec{
+						TeamID:    1,
+						Dir:       "/tmp/build/workdir",
+						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///concourse/time-resource"},
+					},
+					delegate,
+				)
+				Expect(err).ToNot(HaveOccurred())
+
+				process, err := container.Run(ctx, runtime.ProcessSpec{
+					Path: "/opt/resource/check",
+				}, runtime.ProcessIO{})
+				Expect(err).ToNot(HaveOccurred())
+
+				By("verifying the terminal pod was replaced with a fresh one")
+				pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
+				Expect(err).ToNot(HaveOccurred())
+
+				var found bool
+				for _, p := range pods.Items {
+					if p.Name == podName {
+						By(fmt.Sprintf("pod %s phase should not be %s", p.Name, phase))
+						Expect(p.Status.Phase).ToNot(Equal(phase), "terminal pod should have been replaced")
+						found = true
+					}
+				}
+				Expect(found).To(BeTrue(), "replacement pod should exist with name "+podName)
+
+				By("simulating the kubelet transitioning the new pod to Running")
+				freshPod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, podName, metav1.GetOptions{})
+				Expect(err).ToNot(HaveOccurred())
+				freshPod.Status.Phase = corev1.PodRunning
+				_, err = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, freshPod, metav1.UpdateOptions{})
+				Expect(err).ToNot(HaveOccurred())
+
+				_ = strings.ToLower("unused") // ensure strings import is used
+				result, err := process.Wait(ctx)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(result.ExitStatus).To(Equal(0))
+			})
+		}
 	})
 
 	Describe("Run metrics", func() {
