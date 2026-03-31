@@ -416,6 +416,10 @@ func waitForAPI(url string, timeout time.Duration) {
 func mustRepoRoot() string {
 	out, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
 	if err != nil {
+		// Fallback for CI images where source is copied (not a git clone).
+		if _, statErr := os.Stat("/src/go.mod"); statErr == nil {
+			return "/src"
+		}
 		log.Fatalf("failed to find repo root: %v", err)
 	}
 	return strings.TrimSpace(string(out))
