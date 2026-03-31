@@ -12,7 +12,6 @@ import (
 	"github.com/concourse/concourse/atc/creds"
 	"github.com/concourse/concourse/atc/db/lock"
 	"github.com/concourse/concourse/atc/util"
-	"github.com/concourse/concourse/tracing"
 )
 
 //counterfeiter:generate . Checkable
@@ -89,13 +88,6 @@ func NewCheckFactory(
 func (c *checkFactory) TryCreateCheck(ctx context.Context, checkable Checkable, resourceTypes ResourceTypes, from atc.Version, manuallyTriggered bool, skipIntervalRecursively bool, toDB bool) (Build, bool, error) {
 	logger := lagerctx.FromContext(ctx)
 
-	ctx, span := tracing.StartSpan(ctx, "check-factory.try-create", tracing.Attrs{
-		"resource":      checkable.Name(),
-		"resource_type": checkable.Type(),
-		"pipeline":      checkable.PipelineName(),
-		"team":          checkable.TeamName(),
-	})
-	defer span.End()
 	sourceDefaults := atc.Source{}
 	parentType, found := resourceTypes.Parent(checkable)
 	if found {

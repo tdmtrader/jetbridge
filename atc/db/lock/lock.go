@@ -1,7 +1,6 @@
 package lock
 
 import (
-	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -12,8 +11,6 @@ import (
 	"sync"
 
 	"code.cloudfoundry.org/lager/v3"
-	"github.com/concourse/concourse/tracing"
-	"go.opentelemetry.io/otel/attribute"
 )
 
 //go:generate go run github.com/maxbrunsfeld/counterfeiter/v6 -generate
@@ -174,8 +171,6 @@ func (f lockFactories) Acquire(logger lager.Logger, id LockID) (Lock, bool, erro
 }
 
 func (f *lockFactory) Acquire(logger lager.Logger, id LockID) (Lock, bool, error) {
-	_, span := tracing.StartSpan(context.Background(), "db.lock.acquire", nil)
-
 	l := &lock{
 		logger:       logger,
 		db:           f.db,
@@ -187,9 +182,6 @@ func (f *lockFactory) Acquire(logger lager.Logger, id LockID) (Lock, bool, error
 	}
 
 	acquired, err := l.Acquire()
-	span.SetAttributes(attribute.String("db.lock_acquired", fmt.Sprintf("%t", acquired)))
-	tracing.End(span, err)
-
 	if err != nil {
 		return nil, false, err
 	}

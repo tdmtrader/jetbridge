@@ -2,7 +2,6 @@ package lidar
 
 import (
 	"context"
-	"strconv"
 	"sync"
 	"time"
 
@@ -13,7 +12,6 @@ import (
 	"github.com/concourse/concourse/atc/imageresolver"
 	"github.com/concourse/concourse/atc/metric"
 	"github.com/concourse/concourse/atc/util"
-	"github.com/concourse/concourse/tracing"
 )
 
 func NewScanner(
@@ -43,9 +41,6 @@ type scanner struct {
 func (s *scanner) Run(ctx context.Context) error {
 	logger := lagerctx.FromContext(ctx)
 
-	spanCtx, span := tracing.StartSpan(ctx, "scanner.Run", nil)
-	defer span.End()
-
 	logger.Info("start")
 	defer logger.Info("end")
 
@@ -63,10 +58,10 @@ func (s *scanner) Run(ctx context.Context) error {
 
 	// Resolve resource type images natively via registry API.
 	if s.resolver != nil {
-		s.scanResourceTypes(spanCtx, resourceTypes)
+		s.scanResourceTypes(ctx, resourceTypes)
 	}
 
-	s.scanResources(spanCtx, resources, resourceTypes)
+	s.scanResources(ctx, resources, resourceTypes)
 
 	return nil
 }
@@ -147,13 +142,6 @@ func (s *scanner) resolveResourceType(ctx context.Context, rt db.ResourceType) {
 		"pipeline": rt.PipelineName(),
 		"team":     rt.TeamName(),
 	})
-
-	_, span := tracing.StartSpan(ctx, "scanner.resolveResourceType", tracing.Attrs{
-		"team":          rt.TeamName(),
-		"pipeline":      rt.PipelineName(),
-		"resource_type": rt.Name(),
-	})
-	defer span.End()
 
 	// Skip resource types with direct image references — already pinned.
 	if rt.Image() != "" {
@@ -335,13 +323,6 @@ func (s *scanner) resolveResource(ctx context.Context, rs db.Resource) {
 		"team":     rs.TeamName(),
 	})
 
-	_, span := tracing.StartSpan(ctx, "scanner.resolveResource", tracing.Attrs{
-		"team":     rs.TeamName(),
-		"pipeline": rs.PipelineName(),
-		"resource": rs.Name(),
-	})
-	defer span.End()
-
 	// Skip if check_every is set to never.
 	if rs.CheckEvery() != nil && rs.CheckEvery().Never {
 		logger.Debug("skip-check-every-never")
@@ -433,22 +414,13 @@ func (s *scanner) resolveResource(ctx context.Context, rs db.Resource) {
 func (s *scanner) check(ctx context.Context, checkable db.Checkable, resourceTypes db.ResourceTypes) {
 	logger := lagerctx.FromContext(ctx)
 
-	spanCtx, span := tracing.StartSpan(ctx, "scanner.check", tracing.Attrs{
-		"team":                     checkable.TeamName(),
-		"pipeline":                 checkable.PipelineName(),
-		"resource":                 checkable.Name(),
-		"type":                     checkable.Type(),
-		"resource_config_scope_id": strconv.Itoa(checkable.ResourceConfigScopeID()),
-	})
-	defer span.End()
-
 	version := checkable.CurrentPinnedVersion()
 
 	if checkable.CheckEvery() != nil && checkable.CheckEvery().Never {
 		return
 	}
 
-	_, created, err := s.checkFactory.TryCreateCheck(lagerctx.NewContext(spanCtx, logger), checkable, resourceTypes, version, false, false, false)
+	_, created, err := s.checkFactory.TryCreateCheck(lagerctx.NewContext(ctx, logger), checkable, resourceTypes, version, false, false, false)
 	if err != nil {
 		logger.Error("failed-to-create-check", err)
 		return

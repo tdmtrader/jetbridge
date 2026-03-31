@@ -10,7 +10,6 @@ import (
 	"code.cloudfoundry.org/lager/v3"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/gc"
-	"github.com/concourse/concourse/tracing"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -75,13 +74,6 @@ func (r *Reaper) Run(ctx context.Context) error {
 
 	workerName := fmt.Sprintf("k8s-%s", r.cfg.Namespace)
 
-	ctx, span := tracing.StartSpan(ctx, "k8s.reaper.run", tracing.Attrs{
-		"worker-name": workerName,
-		"namespace":   r.cfg.Namespace,
-	})
-	var spanErr error
-	defer func() { tracing.End(span, spanErr) }()
-
 	// List all pods belonging to this worker.
 	labelSelector := fmt.Sprintf("%s=%s", workerLabelKey, workerName)
 	pods, err := r.clientset.CoreV1().Pods(r.cfg.Namespace).List(ctx, metav1.ListOptions{
@@ -89,7 +81,6 @@ func (r *Reaper) Run(ctx context.Context) error {
 	})
 	if err != nil {
 		logger.Error("failed-to-list-pods", err)
-		spanErr = err
 		return fmt.Errorf("listing pods: %w", err)
 	}
 
@@ -131,7 +122,6 @@ func (r *Reaper) Run(ctx context.Context) error {
 	err = r.containerRepository.UpdateContainersMissingSince(workerName, handles)
 	if err != nil {
 		logger.Error("failed-to-update-containers-missing-since", err)
-		spanErr = err
 		return fmt.Errorf("updating containers missing since: %w", err)
 	}
 
@@ -140,7 +130,6 @@ func (r *Reaper) Run(ctx context.Context) error {
 	err = r.destroyer.DestroyContainers(workerName, handles)
 	if err != nil {
 		logger.Error("failed-to-destroy-containers", err)
-		spanErr = err
 		return fmt.Errorf("destroying containers: %w", err)
 	}
 
@@ -151,7 +140,6 @@ func (r *Reaper) Run(ctx context.Context) error {
 	_, err = r.containerRepository.DestroyUnknownContainers(workerName, handles)
 	if err != nil {
 		logger.Error("failed-to-destroy-unknown-containers", err)
-		spanErr = err
 		return fmt.Errorf("destroying unknown containers: %w", err)
 	}
 
@@ -159,7 +147,6 @@ func (r *Reaper) Run(ctx context.Context) error {
 	destroying, err := r.containerRepository.FindDestroyingContainers(workerName)
 	if err != nil {
 		logger.Error("failed-to-find-destroying-containers", err)
-		spanErr = err
 		return fmt.Errorf("finding destroying containers: %w", err)
 	}
 
@@ -174,7 +161,6 @@ func (r *Reaper) Run(ctx context.Context) error {
 		err := r.clientset.CoreV1().Pods(r.cfg.Namespace).Delete(ctx, podName, metav1.DeleteOptions{})
 		if err != nil && !apierrors.IsNotFound(err) {
 			logger.Error("failed-to-delete-pod", err, lager.Data{"handle": handle, "pod": podName})
-			spanErr = err
 			return fmt.Errorf("deleting pod %s: %w", podName, err)
 		}
 	}

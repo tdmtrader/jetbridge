@@ -2171,7 +2171,6 @@ func (cmd *RunCommand) constructAPIHandler(
 			wrappa.NewConcurrentRequestPolicy(cmd.ConcurrentRequestLimits),
 		),
 		wrappa.NewAPIMetricsWrappa(logger),
-		wrappa.NewOTelHTTPWrappa(),
 		wrappa.NewPolicyCheckWrappa(logger, policychecker.NewApiPolicyChecker(policyChecker)),
 		wrappa.NewAPIAuthWrappa(
 			checkPipelineAccessHandlerFactory,

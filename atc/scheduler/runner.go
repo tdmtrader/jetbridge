@@ -48,8 +48,6 @@ func (s *Runner) Run(ctx context.Context) error {
 
 	sLog.Debug("start")
 	defer sLog.Debug("done")
-	spanCtx, span := tracing.StartSpan(ctx, "scheduler.Run", nil)
-	defer span.End()
 
 	jobs, err := s.jobsToSchedule(ctx)
 	if err != nil {
@@ -91,7 +89,7 @@ func (s *Runner) Run(ctx context.Context) error {
 
 			defer schedulingLock.Release()
 
-			err = s.scheduleJob(spanCtx, sLog, job)
+			err = s.scheduleJob(ctx, sLog, job)
 			if err != nil {
 				jLog.Error("failed-to-schedule-job", err)
 			}
