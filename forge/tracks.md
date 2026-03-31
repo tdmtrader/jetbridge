@@ -407,3 +407,8 @@ _Link: [./tracks/sidecar_workdir_bug_20260331/](./tracks/sidecar_workdir_bug_202
 _Link: [./tracks/telemetry_simplification_20260331/](./tracks/telemetry_simplification_20260331/)_
 
 ---
+
+### [ ] Track: Exec Step Behavioral Specification
+_Link: [./tracks/exec_step_behavioral_spec_20260331/](./tracks/exec_step_behavioral_spec_20260331/)_
+
+---
