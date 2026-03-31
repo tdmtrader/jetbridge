@@ -403,7 +403,7 @@ _Link: [./tracks/sidecar_workdir_bug_20260331/](./tracks/sidecar_workdir_bug_202
 
 ---
 
-### [ ] Track: Telemetry simplification
+### [x] Track: Telemetry simplification
 _Link: [./tracks/telemetry_simplification_20260331/](./tracks/telemetry_simplification_20260331/)_
 
 ---
