@@ -141,9 +141,14 @@ jobs:
           done
           echo ""
 
+          export ARTIFACT_DAEMON_HOST_PATH=/var/concourse/artifacts
+          export ARTIFACT_DAEMON_PORT=7780
+          export ARTIFACT_DAEMON_SERVICE=artifact-daemon
+
           cd repo
           echo "=== Running jetbridge live integration tests ==="
           echo "These tests create real K8s pods against the live cluster."
+          echo "Artifact daemon: hostPath=$ARTIFACT_DAEMON_HOST_PATH port=$ARTIFACT_DAEMON_PORT"
           echo ""
           go test -tags live -v -count=1 -timeout 5m ./atc/worker/jetbridge/...
           echo "=== Live integration tests passed ==="
