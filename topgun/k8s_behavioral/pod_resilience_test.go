@@ -43,9 +43,10 @@ jobs:
 		Expect(sess.ExitCode()).ToNot(Equal(0))
 	})
 
-	// Triggers OOM by writing to /dev/shm (tmpfs backed by RAM) which
-	// counts against the container's memory cgroup. BusyBox shell string
-	// ops are too memory-efficient to trigger OOM reliably.
+	// Triggers OOM using awk to allocate heap memory in-process.
+	// BusyBox sh string ops and /dev/shm writes don't reliably count
+	// against the container memory cgroup in K3s. Awk's string
+	// concatenation allocates real heap memory that the OOM killer sees.
 	It("detects OOM-killed containers", func() {
 		cfg := writePipelineFile("oom.yml", `
 jobs:
@@ -57,12 +58,9 @@ jobs:
       image_resource: {type: registry-image, source: {repository: busybox}}
       container_limits: {memory: 64MB}
       run:
-        path: sh
+        path: awk
         args:
-        - -c
-        - |
-          dd if=/dev/zero of=/dev/shm/fill bs=1M count=128 2>/dev/null
-          echo should-not-reach
+        - 'BEGIN { s = ""; while(1) { for(i=0;i<10000;i++) s = s "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"; } }'
 `)
 		setAndUnpausePipeline(cfg)
 		triggerJob("oom-job")
