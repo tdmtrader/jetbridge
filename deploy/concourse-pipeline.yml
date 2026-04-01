@@ -148,7 +148,7 @@ jobs:
           git push -f origin "${RC_TAG}"
           echo "=== Release candidate tagged: ${RC_TAG} (${SHORT_SHA}) ==="
 
-- name: build-and-deploy
+- name: build-image
   serial_groups: [pipeline]
   plan:
   - get: repo
@@ -267,7 +267,7 @@ jobs:
               -t ${REGISTRY}/jetbridge:v${NEXT_VERSION}-rc \
               -f /tmp/Dockerfile /tmp/
 
-          echo "=== Pushing to local registries only (GHCR deferred until after live tests) ==="
+          echo "=== Pushing to local registries ==="
           kubectl exec -n cicd ${BUILDER_POD} -- docker push registry.home/jetbridge:latest
           kubectl exec -n cicd ${BUILDER_POD} -- docker push registry.home/jetbridge:v${NEXT_VERSION}-rc
           kubectl exec -n cicd ${BUILDER_POD} -- docker push ${REGISTRY}/jetbridge:latest
@@ -275,18 +275,94 @@ jobs:
 
           echo "=== Image built and pushed to local registries: v${NEXT_VERSION}-rc (${SHORT_SHA}) ==="
 
-          echo "=== Deploying to cluster ==="
+- name: self-upgrade
+  serial_groups: [pipeline]
+  plan:
+  - get: repo
+    trigger: true
+    params: {depth: 0, fetch_tags: true}
+    passed: [build-image]
+  - task: trigger-rollout
+    config:
+      platform: linux
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v5
+      inputs:
+      - name: repo
+      run:
+        path: sh
+        args:
+        - -exc
+        - |
+          cd repo
+          git fetch --tags origin
+
+          LATEST_TAG=$(git tag -l 'v[0-9]*' --sort=-v:refname | grep -v '\-rc' | head -1)
+          VERSION="${LATEST_TAG#v}"
+          MAJOR=$(echo "$VERSION" | cut -d. -f1)
+          MINOR=$(echo "$VERSION" | cut -d. -f2)
+          PATCH=$(echo "$VERSION" | cut -d. -f3)
+          NEXT_VERSION="${MAJOR}.${MINOR}.$((PATCH + 1))"
+
           IMAGE="registry.home/jetbridge:v${NEXT_VERSION}-rc"
-          echo "Setting concourse-web image: ${IMAGE}"
+          echo "=== Self-upgrade: deploying ${IMAGE} ==="
+          echo "Triggering rollout and exiting immediately."
+          echo ""
+
           kubectl set image deployment/concourse-web concourse-web=${IMAGE} -n cicd
           kubectl rollout restart deployment/concourse-web -n cicd
-
-          echo "Restarting artifact daemon to pick up new binary..."
           kubectl rollout restart daemonset/artifact-daemon -n cicd
-          kubectl rollout status daemonset/artifact-daemon -n cicd --timeout=60s
 
-          echo "=== Deploy complete: ${IMAGE} ==="
-          echo "Note: not waiting for web rollout — it kills the tracking pod."
+          echo "=== Rollout triggered. ==="
+
+- name: verify-upgrade
+  serial_groups: [pipeline]
+  plan:
+  - get: repo
+    trigger: true
+    params: {depth: 0, fetch_tags: true}
+    passed: [self-upgrade]
+  - task: check-running-version
+    config:
+      platform: linux
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v5
+      inputs:
+      - name: repo
+      run:
+        path: sh
+        args:
+        - -exc
+        - |
+          cd repo
+          git fetch --tags origin
+
+          LATEST_TAG=$(git tag -l 'v[0-9]*' --sort=-v:refname | grep -v '\-rc' | head -1)
+          VERSION="${LATEST_TAG#v}"
+          MAJOR=$(echo "$VERSION" | cut -d. -f1)
+          MINOR=$(echo "$VERSION" | cut -d. -f2)
+          PATCH=$(echo "$VERSION" | cut -d. -f3)
+          EXPECTED="${MAJOR}.${MINOR}.$((PATCH + 1))-rc"
+
+          CONCOURSE_URL="http://concourse-web.cicd.svc.cluster.local:8080"
+          echo "=== Waiting for Concourse to report version ${EXPECTED} ==="
+          echo ""
+
+          for i in $(seq 1 60); do
+            RUNNING=$(curl -sf "${CONCOURSE_URL}/api/v1/info" 2>/dev/null \
+              | grep -o '"version":"[^"]*"' \
+              | cut -d'"' -f4) || RUNNING="(unreachable)"
+            echo "  attempt ${i}: running=${RUNNING} expected=${EXPECTED}"
+            if [ "$RUNNING" = "$EXPECTED" ]; then
+              echo ""
+              echo "=== Verified: Concourse is running v${EXPECTED} ==="
+              exit 0
+            fi
+            sleep 5
+          done
+
+          echo ""
+          echo "=== FAILED: Concourse did not reach v${EXPECTED} within 5 minutes ==="
+          echo "  Last seen version: ${RUNNING}"
+          exit 1
 
 - name: k8s-live-tests
   serial: true
@@ -295,7 +371,7 @@ jobs:
   - get: repo
     trigger: true
     params: {depth: 1}
-    passed: [build-and-deploy]
+    passed: [verify-upgrade]
   - task: k8s-live-integration-tests
     config:
       platform: linux
@@ -477,19 +553,17 @@ jobs:
           kubectl exec -n cicd ${BUILDER_POD} -- docker push ${GHCR}:v${NEXT_VERSION}
           kubectl exec -n cicd ${BUILDER_POD} -- docker push ${GHCR}:latest
 
-          # --- 4. Redeploy with final release version ---
+          # --- 4. Redeploy with final release version (includes all fly assets) ---
           echo "=== Redeploying with release image ==="
           IMAGE="registry.home/jetbridge:v${NEXT_VERSION}"
           kubectl set image deployment/concourse-web concourse-web=${IMAGE} -n cicd
           kubectl rollout restart deployment/concourse-web -n cicd
+
+          # Clean up the RC tag
+          git push origin --delete "v${NEXT_VERSION}-rc" 2>/dev/null || true
 
           echo "=== Release complete: v${NEXT_VERSION} (${SHORT_SHA}) ==="
           echo "  Tagged: v${NEXT_VERSION}"
           echo "  Main:   pushed"
           echo "  GHCR:   ${GHCR}:v${NEXT_VERSION}"
           echo "  Local:  ${IMAGE}"
-          echo ""
-          echo "No commits pushed to jetbridge — pipeline will NOT re-trigger."
-
-          # Clean up the RC tag now that we have a release
-          git push origin --delete "v${NEXT_VERSION}-rc" 2>/dev/null || true
