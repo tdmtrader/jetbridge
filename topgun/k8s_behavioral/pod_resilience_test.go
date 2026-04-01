@@ -43,10 +43,9 @@ jobs:
 		Expect(sess.ExitCode()).ToNot(Equal(0))
 	})
 
-	// Triggers OOM by growing a shell variable past the 64MB memory limit.
-	// BusyBox sort uses temp files (won't OOM), and eval+base64 produces
-	// shell metacharacters. Instead, we append safe hex strings to a single
-	// variable in a loop — each iteration adds ~2MB of RSS until killed.
+	// Triggers OOM by writing to /dev/shm (tmpfs backed by RAM) which
+	// counts against the container's memory cgroup. BusyBox shell string
+	// ops are too memory-efficient to trigger OOM reliably.
 	It("detects OOM-killed containers", func() {
 		cfg := writePipelineFile("oom.yml", `
 jobs:
@@ -62,11 +61,7 @@ jobs:
         args:
         - -c
         - |
-          blob=""
-          chunk=$(dd if=/dev/urandom bs=1024 count=1024 2>/dev/null | od -A n -t x1 | tr -d ' \n')
-          while true; do
-            blob="${blob}${chunk}"
-          done
+          dd if=/dev/zero of=/dev/shm/fill bs=1M count=128 2>/dev/null
           echo should-not-reach
 `)
 		setAndUnpausePipeline(cfg)
