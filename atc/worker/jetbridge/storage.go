@@ -27,6 +27,16 @@ type StorageBackend interface {
 	RecordOutputs(ctx context.Context, handle, nodeName string, volumes []*Volume, spec runtime.ContainerSpec)
 	WrapVolumeForArtifact(key, handle, workerName string, dbVolume db.CreatedVolume) runtime.Volume
 	WrapVolumeForLookup(key, handle, workerName string, dbVolume db.CreatedVolume) runtime.Volume
+
+	// RegisterResourceCache registers a resource cache alias on the daemon,
+	// mapping the stable cache key (rc-{id}) to the physical disk path of
+	// the get step output. This makes the cache discoverable via HEAD
+	// /resource-caches/{key} on subsequent runs.
+	RegisterResourceCache(ctx context.Context, cacheID int, volumeHandle, nodeName string) error
+
+	// FindResourceCache probes all daemon pods for a cached resource with
+	// the given cache ID. Returns the node name and daemon key if found.
+	FindResourceCache(ctx context.Context, cacheID int) (nodeName string, found bool, err error)
 }
 
 func emptyDirVolume(name string) corev1.Volume {

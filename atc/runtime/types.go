@@ -52,6 +52,25 @@ type Worker interface {
 	LookupContainer(ctx context.Context, handle string) (Container, bool, error)
 	// LookupVolume finds the Volume on the Worker by its handle, if it exists.
 	LookupVolume(ctx context.Context, handle string) (Volume, bool, error)
+
+	// SkipResourceCache returns true if resource caching should be bypassed
+	// for this worker (e.g., when the artifact backend cannot serve cached
+	// volumes). When false, the get step will check for cached resource
+	// versions before running the resource's get script.
+	SkipResourceCache() bool
+
+	// RegisterResourceCache registers the given volume as a cached resource
+	// on the artifact backend, so future get steps for the same resource
+	// cache ID can skip the fetch. Implementations that do not support
+	// daemon-based caching should return nil.
+	RegisterResourceCache(ctx context.Context, cacheID int, volume Volume) error
+
+	// FindDaemonResourceCache checks the artifact backend for an existing
+	// cached resource with the given cache ID. Returns a Volume with the
+	// cache key as its handle (resolvable by the daemon's /resolve-batch
+	// endpoint) and the node name where it was found. Returns (nil, false,
+	// nil) when no cached version exists.
+	FindDaemonResourceCache(ctx context.Context, cacheID int) (Volume, bool, error)
 }
 
 // Container represents an entity that can execute Processes. It need not

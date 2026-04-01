@@ -379,10 +379,7 @@ func (step *GetStep) retrieveFromCacheOrPerformGet(
 	attemptGet := func() (runtime.Volume, bool, resource.VersionResult, runtime.ProcessResult, bool, error) {
 		// Workers may opt out of resource caching (e.g., when cached
 		// volumes cannot be served by the artifact backend).
-		skipCache := false
-		if sc, ok := worker.(interface{ SkipResourceCache() bool }); ok {
-			skipCache = sc.SkipResourceCache()
-		}
+		skipCache := worker.SkipResourceCache()
 		if !skipCache {
 			volume, versionResult, found, err := step.retrieveFromCache(ctx, resourceCache, workerSpec, worker, delegate)
 			if err != nil {
@@ -461,10 +458,20 @@ func (step *GetStep) retrieveFromCache(
 	worker runtime.Worker,
 	delegate GetDelegate,
 ) (runtime.Volume, resource.VersionResult, bool, error) {
+	// First try the DB-backed cache path (for backward compatibility).
 	volume, found, err := step.workerPool.FindResourceCacheVolumeOnWorker(ctx, resourceCache, workerSpec, worker.Name(), delegate.BuildStartTime())
 	if err != nil {
 		return nil, resource.VersionResult{}, false, err
 	}
+
+	// If DB miss, fall back to probing daemon pods directly.
+	if !found {
+		volume, found, err = worker.FindDaemonResourceCache(ctx, resourceCache.ID())
+		if err != nil {
+			return nil, resource.VersionResult{}, false, err
+		}
+	}
+
 	if !found {
 		return nil, resource.VersionResult{}, false, nil
 	}
@@ -529,6 +536,13 @@ func (step *GetStep) performGetAndInitCache(
 	if err := step.resourceCacheFactory.UpdateResourceCacheMetadata(resourceCache, versionResult.Metadata); err != nil {
 		logger.Error("failed-to-update-resource-cache-metadata", err)
 		return nil, resource.VersionResult{}, runtime.ProcessResult{}, err
+	}
+
+	// Register the resource cache alias on the daemon so subsequent get
+	// steps for the same version can skip the fetch entirely.
+	if err := worker.RegisterResourceCache(ctx, resourceCache.ID(), volume); err != nil {
+		logger.Error("failed-to-register-resource-cache", err)
+		// Non-fatal — caching won't work but the get step succeeded.
 	}
 
 	return volume, versionResult, processResult, nil

@@ -1406,6 +1406,22 @@ func (cmd *RunCommand) constructPool(dbConn db.DbConn, lockFactory lock.LockFact
 		factory.K8sConfig = &k8sCfg
 		factory.K8sExecutor = jetbridge.NewSPDYExecutor(k8sClientset, k8sRestConfig)
 		factory.K8sArtifactLocator = cmd.k8sArtifactLocator
+
+		if k8sCfg.ArtifactDaemonService != "" {
+			daemonPort := k8sCfg.ArtifactDaemonPort
+			if daemonPort == 0 {
+				daemonPort = 7780
+			}
+			dcLogger := lager.NewLogger("daemon-client")
+			dcLogger.RegisterSink(lager.NewWriterSink(os.Stderr, lager.INFO))
+			factory.K8sDaemonClient = jetbridge.NewDaemonClient(
+				dcLogger,
+				k8sClientset,
+				k8sCfg.Namespace,
+				k8sCfg.ArtifactDaemonService,
+				daemonPort,
+			)
+		}
 	}
 
 	return worker.NewPool(

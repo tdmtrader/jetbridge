@@ -52,7 +52,7 @@ func main() {
 		logger.Info("skipping-node-labeling", lager.Data{"reason": "no --node-name provided"})
 	}
 
-	server := NewServer(logger, *storagePath)
+	server := NewServer(logger, *storagePath, *nodeName)
 
 	// Set up alias persistence so volume-handle mappings survive restarts.
 	aliasStore := NewAliasStore(logger, *storagePath)

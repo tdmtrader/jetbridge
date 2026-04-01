@@ -34,7 +34,7 @@ func TestDaemonResolve_CrossNode_PeerFallback(t *testing.T) {
 	}
 
 	loggerA := lagertest.NewTestLogger("server-a")
-	serverA := daemon.NewServer(loggerA, storageA)
+	serverA := daemon.NewServer(loggerA, storageA, "node-a")
 	tsA := httptest.NewServer(serverA.Handler())
 	defer tsA.Close()
 
@@ -43,7 +43,7 @@ func TestDaemonResolve_CrossNode_PeerFallback(t *testing.T) {
 	// Server B: the local daemon that does NOT have the artifact.
 	storageB := t.TempDir()
 	loggerB := lagertest.NewTestLogger("server-b")
-	serverB := daemon.NewServer(loggerB, storageB)
+	serverB := daemon.NewServer(loggerB, storageB, "node-b")
 
 	// Create a fake K8s clientset with an EndpointSlice pointing to server A.
 	ready := true
@@ -185,7 +185,7 @@ func TestDaemonResolve_LocalRegistry_NoPeerQueries(t *testing.T) {
 	// Set up local daemon with artifact registered locally.
 	storagePath := t.TempDir()
 	logger := lagertest.NewTestLogger("local-no-peer")
-	server := daemon.NewServer(logger, storagePath)
+	server := daemon.NewServer(logger, storagePath, "test-node")
 
 	// Wire up peer resolver pointing to the fake peer.
 	ready := true

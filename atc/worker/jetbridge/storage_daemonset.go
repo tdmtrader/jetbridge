@@ -24,6 +24,7 @@ type DaemonSetBackend struct {
 	config          Config
 	artifactLocator *ArtifactLocator
 	nodeIPResolver  *NodeIPResolver
+	daemonClient    *DaemonClient
 }
 
 func NewDaemonSetBackend(config Config, locator *ArtifactLocator, resolver *NodeIPResolver) *DaemonSetBackend {
@@ -32,6 +33,13 @@ func NewDaemonSetBackend(config Config, locator *ArtifactLocator, resolver *Node
 		artifactLocator: locator,
 		nodeIPResolver:  resolver,
 	}
+}
+
+// SetDaemonClient sets the DaemonClient used for probing daemon pods for
+// cached resources. Must be called after construction when the K8s clientset
+// is available.
+func (b *DaemonSetBackend) SetDaemonClient(client *DaemonClient) {
+	b.daemonClient = client
 }
 
 func (b *DaemonSetBackend) StepVolume(name, handle, subdir string) corev1.Volume {
@@ -456,4 +464,34 @@ func (b *DaemonSetBackend) WrapVolumeForLookup(key, handle, workerName string, d
 		sourceNode, _ = b.artifactLocator.LocateNode(key)
 	}
 	return NewDaemonSetVolume(key, handle, workerName, dbVolume, sourceNode, b.config, b.nodeIPResolver)
+}
+
+// RegisterResourceCache registers a stable resource cache alias (rc-{id}) on
+// the daemon that hosts the volume. This points to the same disk path as the
+// volume's step output, making it discoverable via HEAD /resource-caches/{key}.
+func (b *DaemonSetBackend) RegisterResourceCache(ctx context.Context, cacheID int, volumeHandle, nodeName string) error {
+	if nodeName == "" {
+		return nil
+	}
+
+	cacheKey := ResourceCacheKey(cacheID)
+
+	// The volume data lives at steps/<handle>/dir on the daemon.
+	diskPath := filepath.Join(b.config.ArtifactDaemonHostPath, "steps", volumeHandle, "dir")
+	b.registerDaemonAlias(nodeName, cacheKey, diskPath)
+
+	// Record in locator for affinity on downstream steps.
+	if b.artifactLocator != nil {
+		b.artifactLocator.Record(cacheKey, nodeName, volumeHandle+"/dir")
+	}
+
+	return nil
+}
+
+// FindResourceCache probes all daemon pods for a cached resource.
+func (b *DaemonSetBackend) FindResourceCache(ctx context.Context, cacheID int) (string, bool, error) {
+	if b.daemonClient == nil {
+		return "", false, nil
+	}
+	return b.daemonClient.ProbeResourceCache(ctx, ResourceCacheKey(cacheID))
 }

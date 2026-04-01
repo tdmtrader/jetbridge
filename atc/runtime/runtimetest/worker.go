@@ -104,6 +104,18 @@ func (w Worker) LookupVolume(ctx context.Context, handle string) (runtime.Volume
 	return nil, false, nil
 }
 
+func (w Worker) SkipResourceCache() bool {
+	return false
+}
+
+func (w Worker) RegisterResourceCache(ctx context.Context, cacheID int, volume runtime.Volume) error {
+	return nil
+}
+
+func (w Worker) FindDaemonResourceCache(ctx context.Context, cacheID int) (runtime.Volume, bool, error) {
+	return nil, false, nil
+}
+
 func (w Worker) DBWorker() db.Worker {
 	return w.DBWorker_
 }

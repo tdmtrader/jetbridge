@@ -283,7 +283,7 @@ func TestResolve_PeerFallback_EndToEnd(t *testing.T) {
 	os.WriteFile(filepath.Join(stepDir, "peer-file.txt"), []byte("from-peer-daemon"), 0644)
 
 	peerLogger := lagertest.NewTestLogger("peer")
-	peerServer := daemon.NewServer(peerLogger, peerStorage)
+	peerServer := daemon.NewServer(peerLogger, peerStorage, "peer-node")
 	peerTS := httptest.NewServer(peerServer.Handler())
 	defer peerTS.Close()
 
@@ -293,7 +293,7 @@ func TestResolve_PeerFallback_EndToEnd(t *testing.T) {
 	// Set up local daemon with no local artifact and a PeerResolver.
 	localStorage := t.TempDir()
 	localLogger := lagertest.NewTestLogger("local")
-	localServer := daemon.NewServer(localLogger, localStorage)
+	localServer := daemon.NewServer(localLogger, localStorage, "local-node")
 
 	// Create a fake K8s clientset with an EndpointSlice pointing to the peer.
 	ready := true

@@ -22,15 +22,17 @@ import (
 type Server struct {
 	logger      lager.Logger
 	storagePath string
+	nodeName    string
 	registry    *Registry
 	peers       *PeerResolver
 }
 
 // NewServer creates a new artifact-daemon server.
-func NewServer(logger lager.Logger, storagePath string) *Server {
+func NewServer(logger lager.Logger, storagePath, nodeName string) *Server {
 	return &Server{
 		logger:      logger,
 		storagePath: storagePath,
+		nodeName:    nodeName,
 		registry:    NewRegistry(logger),
 	}
 }
@@ -57,6 +59,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /register", s.handleRegister)
 	mux.HandleFunc("POST /resolve", s.handleResolve)
 	mux.HandleFunc("POST /resolve-batch", s.handleResolveBatch)
+	mux.HandleFunc("HEAD /resource-caches/", s.handleHeadResourceCache)
+	mux.HandleFunc("GET /resource-caches/", s.handleGetResourceCache)
 	return mux
 }
 
@@ -391,6 +395,91 @@ func (s *Server) copyArtifact(src, dest string) error {
 		return fmt.Errorf("cp -a %s/. %s/: %w (output: %s)", src, dest, err, strings.TrimSpace(string(output)))
 	}
 	return nil
+}
+
+// handleHeadResourceCache checks whether a resource cache key exists on this
+// daemon. The key is looked up in the registry (registered as an alias after a
+// successful get step). Returns 200 with X-Node-Name header if found, 404
+// otherwise.
+func (s *Server) handleHeadResourceCache(w http.ResponseWriter, r *http.Request) {
+	key := strings.TrimPrefix(r.URL.Path, "/resource-caches/")
+	if key == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	path, found := s.registry.Lookup(key)
+	if !found {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+
+	// Verify the path still exists on disk — aliases can become stale if
+	// the sweeper removed the step directory.
+	if _, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			s.registry.Remove(key)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		s.logger.Error("resource-cache-stat-error", err, lager.Data{"key": key, "path": path})
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	if s.nodeName != "" {
+		w.Header().Set("X-Node-Name", s.nodeName)
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+// handleGetResourceCache streams a resource cache as a tar archive. Used by
+// peer daemons to fetch cached resource data for cross-node resolution.
+func (s *Server) handleGetResourceCache(w http.ResponseWriter, r *http.Request) {
+	key := strings.TrimPrefix(r.URL.Path, "/resource-caches/")
+	if key == "" {
+		http.Error(w, "key required", http.StatusBadRequest)
+		return
+	}
+
+	path, found := s.registry.Lookup(key)
+	if !found {
+		http.NotFound(w, r)
+		return
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			s.registry.Remove(key)
+			http.NotFound(w, r)
+			return
+		}
+		s.logger.Error("resource-cache-stat-error", err, lager.Data{"key": key, "path": path})
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	if s.nodeName != "" {
+		w.Header().Set("X-Node-Name", s.nodeName)
+	}
+
+	if info.IsDir() {
+		w.Header().Set("Content-Type", "application/x-tar")
+		s.tarDirectory(w, path)
+		return
+	}
+
+	f, err := os.Open(path)
+	if err != nil {
+		s.logger.Error("resource-cache-open-error", err, lager.Data{"key": key, "path": path})
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	defer f.Close()
+
+	w.Header().Set("Content-Type", "application/octet-stream")
+	io.Copy(w, f)
 }
 
 func writeJSON(w http.ResponseWriter, status int, v interface{}) {

@@ -30,6 +30,10 @@ type DefaultFactory struct {
 	// K8sArtifactLocator tracks artifact → node mapping for DaemonSet mode
 	// scheduling affinity. Shared across all workers and the reaper.
 	K8sArtifactLocator *jetbridge.ArtifactLocator
+
+	// K8sDaemonClient is the DaemonClient used for probing daemon pods for
+	// cached resources. Shared across all workers.
+	K8sDaemonClient *jetbridge.DaemonClient
 }
 
 func (f DefaultFactory) NewWorker(logger lager.Logger, dbWorker db.Worker) runtime.Worker {
@@ -44,6 +48,9 @@ func (f DefaultFactory) newK8sWorker(dbWorker db.Worker) *jetbridge.Worker {
 	w.SetVolumeRepo(f.DB.VolumeRepo)
 	if f.K8sArtifactLocator != nil {
 		w.SetArtifactLocator(f.K8sArtifactLocator)
+	}
+	if f.K8sDaemonClient != nil {
+		w.SetDaemonClient(f.K8sDaemonClient)
 	}
 	return w
 }

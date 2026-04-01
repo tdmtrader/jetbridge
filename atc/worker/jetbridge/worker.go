@@ -72,6 +72,14 @@ func (w *Worker) SetStorageBackend(backend StorageBackend) {
 	w.storageBackend = backend
 }
 
+// SetDaemonClient configures the DaemonClient on the storage backend for
+// probing daemon pods for cached resources.
+func (w *Worker) SetDaemonClient(client *DaemonClient) {
+	if dsb, ok := w.storageBackend.(*DaemonSetBackend); ok {
+		dsb.SetDaemonClient(client)
+	}
+}
+
 func (w *Worker) Name() string {
 	return w.dbWorker.Name()
 }
@@ -288,6 +296,71 @@ func (w *Worker) LookupVolume(ctx context.Context, handle string) (runtime.Volum
 		return w.storageBackend.WrapVolumeForLookup(key, handle, w.Name(), dbVolume), true, nil
 	}
 	return NewDaemonSetVolume(key, handle, w.Name(), dbVolume, "", w.config, w.nodeIPResolver), true, nil
+}
+
+// RegisterResourceCache registers a stable resource cache alias on the daemon
+// after a successful get step. The alias maps rc-{cacheID} to the physical
+// disk path of the get step output, making it discoverable on subsequent runs.
+func (w *Worker) RegisterResourceCache(ctx context.Context, cacheID int, volume runtime.Volume) error {
+	if w.storageBackend == nil {
+		return nil
+	}
+
+	logger := lagerctx.FromContext(ctx).Session("register-resource-cache", lager.Data{
+		"cache-id": cacheID,
+		"handle":   volume.Handle(),
+	})
+
+	// The volume handle for a get step is "{containerHandle}-dir" (see
+	// buildVolumeMountsForSpec). The container handle is the portion before
+	// the last "-dir" suffix.
+	handle := volume.Handle()
+
+	// Look up which node the artifact lives on via the locator. RecordOutputs
+	// has already been called by this point (in process.go), so the locator
+	// should have the node name.
+	var nodeName string
+	if dsb, ok := w.storageBackend.(*DaemonSetBackend); ok && dsb.artifactLocator != nil {
+		nodeName, _ = dsb.artifactLocator.LocateNode(ArtifactKey(handle))
+	}
+
+	if nodeName == "" {
+		logger.Info("skipping-no-node-name", lager.Data{"handle": handle})
+		return nil
+	}
+
+	logger.Info("registering", lager.Data{"node": nodeName})
+	return w.storageBackend.RegisterResourceCache(ctx, cacheID, handle, nodeName)
+}
+
+// FindDaemonResourceCache probes all daemon pods for a cached resource with
+// the given cache ID. On hit, returns a stub volume whose handle is the cache
+// key (rc-{id}), resolvable by the daemon's /resolve-batch endpoint.
+func (w *Worker) FindDaemonResourceCache(ctx context.Context, cacheID int) (runtime.Volume, bool, error) {
+	if w.storageBackend == nil {
+		return nil, false, nil
+	}
+
+	nodeName, found, err := w.storageBackend.FindResourceCache(ctx, cacheID)
+	if err != nil {
+		return nil, false, err
+	}
+	if !found {
+		return nil, false, nil
+	}
+
+	cacheKey := ResourceCacheKey(cacheID)
+
+	// Record in locator so downstream steps get node affinity.
+	if dsb, ok := w.storageBackend.(*DaemonSetBackend); ok && dsb.artifactLocator != nil {
+		dsb.artifactLocator.Record(cacheKey, nodeName, cacheKey)
+	}
+
+	// Return a stub volume with the cache key as handle. When this volume
+	// is passed to BuildFetchInitContainers, the daemon resolves rc-{id}
+	// via its registry alias to the physical disk path.
+	vol := NewStubVolume(cacheKey, w.Name(), "")
+	return vol, true, nil
 }
 
 func markContainerAsFailed(logger lager.Logger, container db.CreatingContainer) {
