@@ -28,6 +28,12 @@ rules:
   - apiGroups: ["apps"]
     resources: ["deployments"]
     verbs: ["get", "list", "watch", "patch", "update"]
+  # EndpointSlice discovery for artifact daemon peer resolution
+  # (used by DaemonClient to discover daemon pod IPs for StreamIn
+  # and resource cache probing)
+  - apiGroups: ["discovery.k8s.io"]
+    resources: ["endpointslices"]
+    verbs: ["get", "list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
