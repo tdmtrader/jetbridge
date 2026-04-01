@@ -126,7 +126,7 @@ jobs:
           git fetch --tags origin
 
           echo "=== Computing next version from tags ==="
-          LATEST_TAG=$(git tag -l 'v[0-9]*' --sort=-v:refname | grep -v '\-rc' | head -1)
+          LATEST_TAG=$(git tag -l 'v0.2.*' --sort=-v:refname | grep -v '\-rc' | head -1)
           if [ -z "$LATEST_TAG" ]; then
             echo "No release tags found, starting at v0.1.0"
             NEXT_VERSION="0.1.0"
@@ -171,7 +171,7 @@ jobs:
           git fetch --tags origin
 
           echo "=== Computing version from tags ==="
-          LATEST_TAG=$(git tag -l 'v[0-9]*' --sort=-v:refname | grep -v '\-rc' | head -1)
+          LATEST_TAG=$(git tag -l 'v0.2.*' --sort=-v:refname | grep -v '\-rc' | head -1)
           VERSION="${LATEST_TAG#v}"
           MAJOR=$(echo "$VERSION" | cut -d. -f1)
           MINOR=$(echo "$VERSION" | cut -d. -f2)
@@ -296,7 +296,7 @@ jobs:
           cd repo
           git fetch --tags origin
 
-          LATEST_TAG=$(git tag -l 'v[0-9]*' --sort=-v:refname | grep -v '\-rc' | head -1)
+          LATEST_TAG=$(git tag -l 'v0.2.*' --sort=-v:refname | grep -v '\-rc' | head -1)
           VERSION="${LATEST_TAG#v}"
           MAJOR=$(echo "$VERSION" | cut -d. -f1)
           MINOR=$(echo "$VERSION" | cut -d. -f2)
@@ -335,7 +335,7 @@ jobs:
           cd repo
           git fetch --tags origin
 
-          LATEST_TAG=$(git tag -l 'v[0-9]*' --sort=-v:refname | grep -v '\-rc' | head -1)
+          LATEST_TAG=$(git tag -l 'v0.2.*' --sort=-v:refname | grep -v '\-rc' | head -1)
           VERSION="${LATEST_TAG#v}"
           MAJOR=$(echo "$VERSION" | cut -d. -f1)
           MINOR=$(echo "$VERSION" | cut -d. -f2)
@@ -440,7 +440,7 @@ jobs:
           git fetch --tags origin
 
           echo "=== Computing release version from tags ==="
-          LATEST_TAG=$(git tag -l 'v[0-9]*' --sort=-v:refname | grep -v '\-rc' | head -1)
+          LATEST_TAG=$(git tag -l 'v0.2.*' --sort=-v:refname | grep -v '\-rc' | head -1)
           VERSION="${LATEST_TAG#v}"
           MAJOR=$(echo "$VERSION" | cut -d. -f1)
           MINOR=$(echo "$VERSION" | cut -d. -f2)
