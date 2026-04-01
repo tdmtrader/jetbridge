@@ -864,6 +864,21 @@ var _ = Describe("Builder", func() {
 						}))
 					})
 				})
+
+				// SF-10: Unknown plan type returns IdentityStep
+				Context("with a plan matching no known type", func() {
+					It("returns an IdentityStep", func() {
+						// Construct a Plan with only an ID — no recognized type fields set
+						unknownPlan := atc.Plan{ID: "unknown-plan-id"}
+						fakeBuild.PrivatePlanReturns(unknownPlan)
+
+						stepper, err := stepperFactory.StepperForBuild(fakeBuild)
+						Expect(err).ToNot(HaveOccurred())
+
+						step := stepper(unknownPlan)
+						Expect(step).To(Equal(exec.IdentityStep{}))
+					})
+				})
 			})
 		})
 	})

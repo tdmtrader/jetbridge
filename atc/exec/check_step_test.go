@@ -15,6 +15,7 @@ import (
 	"github.com/concourse/concourse/atc/db/lock/lockfakes"
 	"github.com/concourse/concourse/atc/exec"
 	"github.com/concourse/concourse/atc/exec/execfakes"
+	"github.com/concourse/concourse/atc/metric"
 	"github.com/concourse/concourse/atc/resource"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/runtime/runtimetest"
@@ -754,6 +755,104 @@ var _ = Describe("CheckStep", func() {
 		Context("having cred evaluation failing", func() {
 			It("errors", func() {
 				Expect(stepErr).To(HaveOccurred())
+			})
+		})
+	})
+
+	// MO-02, MO-03, MO-04: Check metrics
+	Describe("Check Metrics", func() {
+		var fakeLock *lockfakes.FakeLock
+
+		BeforeEach(func() {
+			fakeLock = new(lockfakes.FakeLock)
+			fakeDelegate.WaitToRunReturns(fakeLock, true, nil)
+
+			// Drain any leftover metric state from other tests
+			metric.Metrics.ChecksStarted.Delta()
+			metric.Metrics.ChecksFinishedWithSuccess.Delta()
+			metric.Metrics.ChecksFinishedWithError.Delta()
+		})
+
+		Context("when a check succeeds with versions", func() {
+			BeforeEach(func() {
+				chosenContainer.ProcessDefs[0].Stub.Output = []atc.Version{
+					{"version": "1"},
+				}
+			})
+
+			// MO-02: ChecksStarted incremented at execution start
+			It("increments ChecksStarted", func() {
+				Expect(stepOk).To(BeTrue())
+				Expect(metric.Metrics.ChecksStarted.Delta()).To(BeNumerically("==", 1))
+			})
+
+			// MO-03: ChecksFinishedWithSuccess incremented on success
+			It("increments ChecksFinishedWithSuccess", func() {
+				Expect(stepOk).To(BeTrue())
+				Expect(metric.Metrics.ChecksFinishedWithSuccess.Delta()).To(BeNumerically("==", 1))
+			})
+
+			It("does not increment ChecksFinishedWithError", func() {
+				Expect(stepOk).To(BeTrue())
+				Expect(metric.Metrics.ChecksFinishedWithError.Delta()).To(BeNumerically("==", 0))
+			})
+		})
+
+		Context("when a check fails with non-zero exit", func() {
+			BeforeEach(func() {
+				chosenContainer.ProcessDefs[0].Stub.ExitStatus = 1
+			})
+
+			// MO-04: ChecksFinishedWithError incremented on failure
+			It("increments ChecksFinishedWithError", func() {
+				Expect(stepOk).To(BeFalse())
+				Expect(metric.Metrics.ChecksFinishedWithError.Delta()).To(BeNumerically("==", 1))
+			})
+
+			It("increments ChecksStarted", func() {
+				Expect(stepOk).To(BeFalse())
+				Expect(metric.Metrics.ChecksStarted.Delta()).To(BeNumerically("==", 1))
+			})
+
+			It("does not increment ChecksFinishedWithSuccess", func() {
+				Expect(stepOk).To(BeFalse())
+				Expect(metric.Metrics.ChecksFinishedWithSuccess.Delta()).To(BeNumerically("==", 0))
+			})
+		})
+
+		Context("when a check times out", func() {
+			BeforeEach(func() {
+				checkPlan.Timeout = "1ms"
+
+				chosenContainer.ProcessDefs[0].Stub.Do = func(ctx context.Context, _ *runtimetest.Process) error {
+					select {
+					case <-ctx.Done():
+						return fmt.Errorf("wrapped: %w", ctx.Err())
+					case <-time.After(100 * time.Millisecond):
+						return nil
+					}
+				}
+			})
+
+			It("increments ChecksFinishedWithError on timeout", func() {
+				Expect(stepOk).To(BeFalse())
+				Expect(metric.Metrics.ChecksFinishedWithError.Delta()).To(BeNumerically("==", 1))
+			})
+
+			It("increments ChecksStarted", func() {
+				Expect(stepOk).To(BeFalse())
+				Expect(metric.Metrics.ChecksStarted.Delta()).To(BeNumerically("==", 1))
+			})
+		})
+
+		Context("when WaitToRun returns run=false", func() {
+			BeforeEach(func() {
+				fakeDelegate.WaitToRunReturns(nil, false, nil)
+			})
+
+			It("does not increment ChecksStarted", func() {
+				Expect(stepOk).To(BeTrue())
+				Expect(metric.Metrics.ChecksStarted.Delta()).To(BeNumerically("==", 0))
 			})
 		})
 	})

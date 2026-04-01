@@ -209,4 +209,36 @@ var _ = Describe("ResourceCheckRateLimiter", func() {
 			Expect(limiter.Limit()).To(Equal(rate.Limit(rate.Inf)))
 		})
 	})
+
+	// RL-06: Wait respects context cancellation
+	Context("when the context is cancelled while waiting for rate limit", func() {
+		BeforeEach(func() {
+			checksPerSecond = 0
+		})
+
+		It("returns the context error", func() {
+			By("creating checkables to establish a low rate limit")
+			createCheckable()
+
+			By("advancing past refresh interval to pick up checkable count")
+			fakeClock.Increment(refreshInterval)
+
+			By("consuming the initial token")
+			Expect(<-wait(limiter)).To(Succeed())
+
+			By("setting up a cancellable context")
+			cancelCtx, cancelFn := context.WithCancel(context.Background())
+
+			errs := make(chan error, 1)
+			go func() {
+				errs <- limiter.Wait(cancelCtx)
+			}()
+
+			By("giving the goroutine time to enter the select, then cancelling")
+			Consistently(errs, 50*time.Millisecond).ShouldNot(Receive())
+			cancelFn()
+
+			Eventually(errs).Should(Receive(MatchError(context.Canceled)))
+		})
+	})
 })

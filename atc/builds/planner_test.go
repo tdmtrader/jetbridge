@@ -1530,6 +1530,14 @@ var factoryTests = []PlannerTest{
 		}`,
 	},
 	{
+		Title: "run step with unknown prototype",
+		Config: &atc.RunStep{
+			Message: "some-message",
+			Type:    "bogus-prototype",
+		},
+		Err: builds.UnknownPrototypeError{Prototype: "bogus-prototype"},
+	},
+	{
 		Title: "set_pipeline step",
 
 		Config: &atc.SetPipelineStep{

@@ -13,6 +13,7 @@ import (
 	"github.com/concourse/concourse/atc/component"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbfakes"
+	"github.com/concourse/concourse/atc/metric"
 	"github.com/concourse/concourse/atc/util"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
@@ -246,4 +247,62 @@ func (s *TrackerSuite) TestTrackerDrainsEngine() {
 	s.tracker.Drain(ctx)
 	s.Equal(1, s.fakeEngine.DrainCallCount())
 	s.Equal(ctx, s.fakeEngine.DrainArgsForCall(0))
+}
+
+// BT-05: BuildsRunning metric incremented during build tracking
+func (s *TrackerSuite) TestTrackEmitsBuildsRunningMetric() {
+	// Drain stale gauge state
+	metric.Metrics.BuildsRunning.Max()
+
+	fakeBuild := new(dbfakes.FakeBuild)
+	fakeBuild.IDReturns(1)
+	fakeBuild.NameReturns("42") // non-check build
+
+	s.fakeBuildFactory.GetAllStartedBuildsReturns([]db.Build{fakeBuild}, nil)
+
+	var gaugeSeenDuringRun float64
+	s.fakeEngine.NewBuildStub = func(build db.Build) builds.Runnable {
+		engineBuild := new(buildsfakes.FakeRunnable)
+		engineBuild.RunStub = func(context.Context) {
+			gaugeSeenDuringRun = metric.Metrics.BuildsRunning.Max()
+		}
+		return engineBuild
+	}
+
+	err := s.tracker.Run(context.TODO())
+	s.NoError(err)
+
+	// Wait for the goroutine to finish
+	time.Sleep(100 * time.Millisecond)
+
+	s.GreaterOrEqual(gaugeSeenDuringRun, float64(1), "BuildsRunning should be >= 1 during build execution")
+}
+
+// BT-05: CheckBuildsRunning metric for check builds
+func (s *TrackerSuite) TestTrackEmitsCheckBuildsRunningMetric() {
+	// Drain stale gauge state
+	metric.Metrics.CheckBuildsRunning.Max()
+
+	fakeBuild := new(dbfakes.FakeBuild)
+	fakeBuild.IDReturns(1)
+	fakeBuild.NameReturns(db.CheckBuildName) // check build
+
+	s.fakeBuildFactory.GetAllStartedBuildsReturns([]db.Build{fakeBuild}, nil)
+
+	var gaugeSeenDuringRun float64
+	s.fakeEngine.NewBuildStub = func(build db.Build) builds.Runnable {
+		engineBuild := new(buildsfakes.FakeRunnable)
+		engineBuild.RunStub = func(context.Context) {
+			gaugeSeenDuringRun = metric.Metrics.CheckBuildsRunning.Max()
+		}
+		return engineBuild
+	}
+
+	err := s.tracker.Run(context.TODO())
+	s.NoError(err)
+
+	// Wait for the goroutine to finish
+	time.Sleep(100 * time.Millisecond)
+
+	s.GreaterOrEqual(gaugeSeenDuringRun, float64(1), "CheckBuildsRunning should be >= 1 during check build execution")
 }

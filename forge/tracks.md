@@ -4,7 +4,12 @@
 
 ## Active Tracks
 
-_None_
+---
+
+## [ ] Track: ATC Scheduler Behavioral Specification
+*Link: [./tracks/scheduler_behavioral_spec_20260331/](./tracks/scheduler_behavioral_spec_20260331/)*
+
+---
 
 ## Completed / Archived Tracks
 
@@ -425,5 +430,30 @@ _Link: [./tracks/batch_artifact_resolution_20260331/](./tracks/batch_artifact_re
 
 ### [ ] Track: K8s Runtime Behavioral Specification
 _Link: [./tracks/k8s_runtime_behavioral_spec_20260331/](./tracks/k8s_runtime_behavioral_spec_20260331/)_
+
+---
+
+### [ ] Track: Check Runner Behavioral Specification
+_Link: [./tracks/check_runner_behavioral_spec_20260331/](./tracks/check_runner_behavioral_spec_20260331/)_
+
+---
+
+### [ ] Track: Build Tracker Behavioral Specification
+_Link: [./tracks/build_tracker_behavioral_spec_20260331/](./tracks/build_tracker_behavioral_spec_20260331/)_
+
+---
+
+### [ ] Track: GC Collectors Behavioral Specification
+_Link: [./tracks/gc_collectors_behavioral_spec_20260331/](./tracks/gc_collectors_behavioral_spec_20260331/)_
+
+---
+
+### [ ] Track: Fly CLI Behavioral Specification
+_Link: [./tracks/fly_cli_behavioral_spec_20260331/](./tracks/fly_cli_behavioral_spec_20260331/)_
+
+---
+
+### [ ] Track: Credential Management Behavioral Specification
+_Link: [./tracks/creds_behavioral_spec_20260331/](./tracks/creds_behavioral_spec_20260331/)_
 
 ---

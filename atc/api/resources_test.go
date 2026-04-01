@@ -780,6 +780,24 @@ var _ = Describe("Resources API", func() {
 				Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
 			})
 		})
+
+		// MC-05: Malformed request body returns 400
+		Context("when the request body is malformed JSON", func() {
+			BeforeEach(func() {
+				fakeAccess.IsAuthenticatedReturns(true)
+				fakeAccess.IsAuthorizedReturns(true)
+			})
+
+			It("returns 400", func() {
+				request, err := http.NewRequest("POST", server.URL+"/api/v1/teams/a-team/pipelines/a-pipeline/resources/resource-name/check", bytes.NewBufferString("{invalid"))
+				Expect(err).NotTo(HaveOccurred())
+				request.Header.Set("Content-Type", "application/json")
+
+				resp, err := client.Do(request)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(resp.StatusCode).To(Equal(http.StatusBadRequest))
+			})
+		})
 	})
 
 	Describe("GET /api/v1/teams/:team_name/pipelines/:pipeline_name/resource-types", func() {
@@ -1806,6 +1824,19 @@ var _ = Describe("Resources API", func() {
 			})
 			It("returns 401", func() {
 				Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
+			})
+		})
+
+		// WH-01: Missing webhook token returns 400
+		Context("when webhook_token query param is missing", func() {
+			It("returns 400", func() {
+				request, err := http.NewRequest("POST", server.URL+"/api/v1/teams/a-team/pipelines/a-pipeline/resources/resource-name/check/webhook", nil)
+				Expect(err).NotTo(HaveOccurred())
+				request.Header.Set("Content-Type", "application/json")
+
+				resp, err := client.Do(request)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(resp.StatusCode).To(Equal(http.StatusBadRequest))
 			})
 		})
 	})

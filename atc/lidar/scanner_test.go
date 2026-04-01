@@ -10,6 +10,7 @@ import (
 	"github.com/concourse/concourse/atc/db/dbfakes"
 	"github.com/concourse/concourse/atc/imageresolver/imageresolvertesting"
 	"github.com/concourse/concourse/atc/lidar"
+	"github.com/concourse/concourse/atc/metric"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
@@ -663,6 +664,47 @@ var _ = Describe("Scanner Native Resource Resolution", func() {
 			Expect(err).ToNot(HaveOccurred())
 			Expect(fakeResolver.ResolveCallCount()).To(Equal(1))
 			Expect(fakeCheckFactory.TryCreateCheckCallCount()).To(Equal(1))
+		})
+	})
+
+	// MO-01: ChecksEnqueued metric incremented on check creation
+	Describe("ChecksEnqueued metric", func() {
+		var fakeResource *dbfakes.FakeResource
+
+		BeforeEach(func() {
+			fakeResource = new(dbfakes.FakeResource)
+			fakeResource.NameReturns("metric-resource")
+			fakeResource.SourceReturns(atc.Source{"some": "source"})
+			fakeResource.TypeReturns("some-type")
+
+			fakeCheckFactory.ResourcesReturns([]db.Resource{fakeResource}, nil)
+			fakeCheckFactory.ResourceTypesByPipelineReturns(map[int]db.ResourceTypes{}, nil)
+
+			// Drain any leftover metric state
+			metric.Metrics.ChecksEnqueued.Delta()
+		})
+
+		Context("when a check is created", func() {
+			BeforeEach(func() {
+				fakeBuild := new(dbfakes.FakeBuild)
+				fakeCheckFactory.TryCreateCheckReturns(fakeBuild, true, nil)
+			})
+
+			It("increments ChecksEnqueued", func() {
+				Expect(err).ToNot(HaveOccurred())
+				Expect(metric.Metrics.ChecksEnqueued.Delta()).To(BeNumerically("==", 1))
+			})
+		})
+
+		Context("when a check already exists (not created)", func() {
+			BeforeEach(func() {
+				fakeCheckFactory.TryCreateCheckReturns(nil, false, nil)
+			})
+
+			It("does not increment ChecksEnqueued", func() {
+				Expect(err).ToNot(HaveOccurred())
+				Expect(metric.Metrics.ChecksEnqueued.Delta()).To(BeNumerically("==", 0))
+			})
 		})
 	})
 })

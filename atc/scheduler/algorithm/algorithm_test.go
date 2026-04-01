@@ -3286,4 +3286,79 @@ var _ = DescribeTable("Input resolving",
 			},
 		},
 	}),
+
+	// PC-02: Deterministic job ordering — verifies that passed jobs are iterated
+	// in sorted numerical order, producing deterministic PassedBuildIDs regardless
+	// of map iteration order. With three passed jobs (simple-a, simple-b, simple-c),
+	// the resolver must iterate them in job ID order to produce consistent results.
+	Entry("resolves passed constraints deterministically across multiple jobs", Example{
+		DB: DB{
+			BuildOutputs: []DBRow{
+				// All three jobs output the same version in the same build
+				{Job: "simple-a", BuildID: 1, Resource: "resource-x", Version: "rxv1", CheckOrder: 1},
+				{Job: "simple-b", BuildID: 2, Resource: "resource-x", Version: "rxv1", CheckOrder: 1},
+				{Job: "simple-c", BuildID: 3, Resource: "resource-x", Version: "rxv1", CheckOrder: 1},
+			},
+		},
+
+		Inputs: Inputs{
+			{
+				Name:     "resource-x",
+				Resource: "resource-x",
+				Passed:   []string{"simple-c", "simple-a", "simple-b"},
+			},
+		},
+
+		// Deterministic resolution: all three passed jobs vouch for rxv1,
+		// PassedBuildIDs must always be in the same order (sorted by job ID)
+		Result: Result{
+			OK: true,
+			Values: map[string]string{
+				"resource-x": "rxv1",
+			},
+			PassedBuildIDs: map[string][]int{
+				"resource-x": []int{1, 2, 3},
+			},
+		},
+	}),
+
+	// PC-08: Doom detection — when recursive resolution repeatedly fails with the
+	// same candidate set, the doom mechanism prevents infinite loops. This scenario
+	// creates a situation where the group resolver finds candidates that satisfy
+	// one input but fail recursive resolution for another, then encounters the same
+	// candidates again (triggering candidatesAreDoomed).
+	Entry("doom detection prevents infinite recursion on unsatisfiable passed constraints", Example{
+		DB: DB{
+			BuildOutputs: []DBRow{
+				// job-a produces resource-x v1 and resource-y v1 in build 1
+				{Job: "job-a", BuildID: 1, Resource: "resource-x", Version: "rxv1", CheckOrder: 1},
+				{Job: "job-a", BuildID: 1, Resource: "resource-y", Version: "ryv1", CheckOrder: 1},
+
+				// job-b produces resource-x v1 in build 2 (but NOT resource-y)
+				{Job: "job-b", BuildID: 2, Resource: "resource-x", Version: "rxv1", CheckOrder: 1},
+
+				// job-b produces resource-y v1 in build 3 (but NOT resource-x)
+				{Job: "job-b", BuildID: 3, Resource: "resource-y", Version: "ryv1", CheckOrder: 1},
+			},
+		},
+
+		Inputs: Inputs{
+			// Both inputs must pass through both job-a AND job-b
+			// job-a's build 1 outputs both, but job-b never outputs both in the same build
+			// The resolver will find rxv1 from job-a build 1, then try to find rxv1+ryv1
+			// together through job-b — this fails because build 2 only has rxv1 and
+			// build 3 only has ryv1. The doom detection prevents re-trying the same
+			// candidate set (rxv1 for resource-x, ryv1 for resource-y) after it fails.
+			{Name: "resource-x", Resource: "resource-x", Passed: []string{"job-a", "job-b"}},
+			{Name: "resource-y", Resource: "resource-y", Passed: []string{"job-a", "job-b"}},
+		},
+
+		Result: Result{
+			OK: false,
+			Errors: map[string]string{
+				"resource-x": "no satisfiable builds from passed jobs found for set of inputs",
+				"resource-y": "no satisfiable builds from passed jobs found for set of inputs",
+			},
+		},
+	}),
 )
