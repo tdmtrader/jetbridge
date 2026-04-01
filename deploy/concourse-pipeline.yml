@@ -342,6 +342,11 @@ jobs:
           PATCH=$(echo "$VERSION" | cut -d. -f3)
           EXPECTED="${MAJOR}.${MINOR}.$((PATCH + 1))-rc"
 
+          echo "=== Waiting for rollout to complete ==="
+          kubectl rollout status deployment/concourse-web -n cicd --timeout=120s || true
+          kubectl rollout status daemonset/artifact-daemon -n cicd --timeout=120s || true
+          echo ""
+
           CONCOURSE_URL="http://concourse-web.cicd.svc.cluster.local:8080"
           echo "=== Waiting for Concourse to report version ${EXPECTED} ==="
           echo ""
