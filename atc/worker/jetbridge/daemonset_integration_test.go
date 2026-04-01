@@ -926,7 +926,8 @@ func TestDaemonSetMode_NoCleanupInPVCMode(t *testing.T) {
 }
 
 // TestDaemonSetMode_NoCleanupForCheckContainers verifies that check containers
-// don't get cleanup init containers (they don't use the artifact hostPath).
+// don't get cleanup init containers — they use emptyDir (not hostPath), so
+// there is no stale data to clean up between runs.
 func TestDaemonSetMode_NoCleanupForCheckContainers(t *testing.T) {
 	cfg := daemonSetConfig()
 	c := &Container{

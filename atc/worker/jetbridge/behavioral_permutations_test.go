@@ -517,20 +517,23 @@ func TestBuildVolumeMounts_CheckContainer(t *testing.T) {
 
 	findMountByPath(t, mounts, "/tmp/check")
 
-	// Check containers: stepVolume without ArtifactDaemonHostPath uses emptyDir
-	// because check type returns nil from buildArtifactStoreVolume.
-	// But stepVolume itself uses ArtifactDaemonHostPath if configured.
-	// The key point: buildCleanupInitContainer returns nil for check.
+	// Check containers must use emptyDir even with a DaemonSet backend,
+	// because the same container handle is reused across check runs and
+	// hostPath would leave stale data.
+	assertEmptyDir(t, volumes[0])
+
+	// Check containers use emptyDir (not hostPath) so there is no stale
+	// data across runs. No cleanup init container is needed, even when reused.
 	cleanup := c.buildCleanupInitContainer()
 	if cleanup != nil {
-		t.Error("expected nil cleanup init container for check type, even when reused")
+		t.Error("expected nil cleanup init container for check container")
 	}
 
-	// Also verify with reused=true
+	// Reused check containers still don't need cleanup — emptyDir is fresh per pod.
 	c2 := makeContainer("check-handle-2", meta, spec, cfg, nil, true)
 	cleanup2 := c2.buildCleanupInitContainer()
 	if cleanup2 != nil {
-		t.Error("expected nil cleanup init container for check type, even when reused")
+		t.Error("expected nil cleanup init container for reused check container")
 	}
 }
 

@@ -839,8 +839,11 @@ func stableCacheKey(jobID int, stepName string, cachePath string) string {
 // the container's Dir, inputs, outputs, and caches.
 // stepVolume creates a volume for a step. When a storage backend is set,
 // it delegates to the backend. Otherwise emptyDir.
+// Check containers always use emptyDir — their working directory is
+// ephemeral and must not persist across check runs via hostPath, since
+// the same container handle is reused for every check of the same resource.
 func (c *Container) stepVolume(name, subdir string) corev1.Volume {
-	if c.storageBackend != nil {
+	if c.storageBackend != nil && c.metadata.Type != db.ContainerTypeCheck {
 		return c.storageBackend.StepVolume(name, c.handle, subdir)
 	}
 	return emptyDirVolume(name)
