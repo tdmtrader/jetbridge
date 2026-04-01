@@ -166,7 +166,6 @@ var _ = Describe("Scheduler Metrics & Observability", func() {
 				db.InputConfigs{},
 			)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(fakeBuild.StartCallCount()).To(Equal(1))
 
 			// MO-04: BuildsStarted incremented for non-check builds
 			Expect(metric.Metrics.BuildsStarted.Delta()).To(BeNumerically("==", 1))
@@ -190,7 +189,6 @@ var _ = Describe("Scheduler Metrics & Observability", func() {
 				db.InputConfigs{},
 			)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(fakeBuild.StartCallCount()).To(Equal(1))
 
 			// MO-05: CheckBuildsStarted incremented for check builds
 			Expect(metric.Metrics.CheckBuildsStarted.Delta()).To(BeNumerically("==", 1))

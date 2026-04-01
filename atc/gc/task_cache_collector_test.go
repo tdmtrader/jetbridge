@@ -2,6 +2,7 @@ package gc_test
 
 import (
 	"context"
+	"errors"
 
 	"github.com/concourse/concourse/atc/db/dbfakes"
 	"github.com/concourse/concourse/atc/gc"
@@ -20,11 +21,18 @@ var _ = Describe("TaskCacheCollector", func() {
 	})
 
 	Describe("Run", func() {
-		It("tells the task cache lifecycle to remove invalid task caches", func() {
+		It("succeeds when cleanup completes without error", func() {
+			fakeTaskCacheLifecycle.CleanUpInvalidTaskCachesReturns([]int{1, 2, 3}, nil)
+
 			err := collector.Run(context.TODO())
 			Expect(err).NotTo(HaveOccurred())
+		})
 
-			Expect(fakeTaskCacheLifecycle.CleanUpInvalidTaskCachesCallCount()).To(Equal(1))
+		It("propagates errors from the lifecycle", func() {
+			fakeTaskCacheLifecycle.CleanUpInvalidTaskCachesReturns(nil, errors.New("db gone"))
+
+			err := collector.Run(context.TODO())
+			Expect(err).To(MatchError("db gone"))
 		})
 	})
 })
