@@ -302,29 +302,12 @@ func (step *CheckStep) runCheck(
 }
 
 func (step *CheckStep) containerOwner(delegate CheckDelegate, resourceConfig db.ResourceConfig) db.ContainerOwner {
-	if !step.plan.IsResourceCheck() {
-		return delegate.ContainerOwner(step.planID)
-	}
-
-	// Image-ref types (e.g. image: "concourse/git-resource") are registered
-	// as synthetic base resource types but have no worker_base_resource_types
-	// entry because workers don't self-report them. Use the build step owner
-	// to avoid the worker_base_resource_types lookup.
-	if step.plan.TypeImage.ImageRef != "" {
-		return delegate.ContainerOwner(step.planID)
-	}
-
-	expires := db.ContainerOwnerExpiries{
-		Min: 5 * time.Minute,
-		Max: 1 * time.Hour,
-	}
-
-	// XXX(check-refactor): this can be turned into NewBuildStepContainerOwner
-	// now, but we should understand the performance implications first - it'll
-	// mean a lot more container churn
-	return db.NewResourceConfigCheckSessionContainerOwner(
-		resourceConfig.ID(),
-		resourceConfig.OriginBaseResourceType().ID,
-		expires,
-	)
+	// Every check gets its own container scoped to the build + plan.
+	// The old resourceConfigCheckSessionContainerOwner reused containers
+	// across check builds for the same resource config, which was an
+	// optimization for Garden (long-lived containers). In K8s, pods are
+	// ephemeral and the reaper aggressively deletes pods with exit-status
+	// annotations, creating a race where a reused container's pod is
+	// terminated between checks.
+	return delegate.ContainerOwner(step.planID)
 }

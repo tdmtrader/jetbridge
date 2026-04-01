@@ -43,9 +43,9 @@ jobs:
 		Expect(sess.ExitCode()).ToNot(Equal(0))
 	})
 
-	// TODO: OOM detection works at the runtime level (process_test.go covers
-	// Triggers OOM by feeding 128MB through sort (which buffers all input
-	// in memory) inside a container limited to 64MB.
+	// Triggers OOM by allocating memory in a loop inside a container limited
+	// to 64MB. BusyBox sort uses temp files (not in-memory buffering), so we
+	// use shell variable allocation which forces RSS growth until OOM-killed.
 	It("detects OOM-killed containers", func() {
 		cfg := writePipelineFile("oom.yml", `
 jobs:
@@ -58,7 +58,15 @@ jobs:
       container_limits: {memory: 64MB}
       run:
         path: sh
-        args: ["-c", "head -c 134217728 /dev/zero | sort > /dev/null; echo should-not-reach"]
+        args:
+        - -c
+        - |
+          i=0
+          while true; do
+            eval "v$i=$(head -c 1048576 /dev/urandom | base64)"
+            i=$((i+1))
+          done
+          echo should-not-reach
 `)
 		setAndUnpausePipeline(cfg)
 		triggerJob("oom-job")

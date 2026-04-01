@@ -2,6 +2,7 @@ package main
 
 import (
 	"archive/tar"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -59,6 +60,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /register", s.handleRegister)
 	mux.HandleFunc("POST /resolve", s.handleResolve)
 	mux.HandleFunc("POST /resolve-batch", s.handleResolveBatch)
+	mux.HandleFunc("PUT /stream-in/", s.handleStreamIn)
 	mux.HandleFunc("HEAD /resource-caches/", s.handleHeadResourceCache)
 	mux.HandleFunc("GET /resource-caches/", s.handleGetResourceCache)
 	return mux
@@ -166,6 +168,85 @@ func (s *Server) handlePutArtifact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	w.WriteHeader(http.StatusCreated)
+}
+
+// handleStreamIn accepts a gzipped tar stream and extracts it to steps/{key}/
+// so that resolveOne can discover it via the filesystem fallback. The key is
+// also registered in the in-memory registry for fast lookups.
+func (s *Server) handleStreamIn(w http.ResponseWriter, r *http.Request) {
+	key := strings.TrimPrefix(r.URL.Path, "/stream-in/")
+	if key == "" {
+		http.Error(w, "key required", http.StatusBadRequest)
+		return
+	}
+
+	dest := filepath.Join(s.storagePath, "steps", key)
+	if err := os.MkdirAll(dest, 0755); err != nil {
+		s.logger.Error("failed-to-create-stream-in-dir", err, lager.Data{"key": key})
+		http.Error(w, "create dir: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	gr, err := gzip.NewReader(r.Body)
+	if err != nil {
+		s.logger.Error("failed-to-open-gzip", err, lager.Data{"key": key})
+		http.Error(w, "gzip: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	defer gr.Close()
+
+	tr := tar.NewReader(gr)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			s.logger.Error("failed-to-read-tar", err, lager.Data{"key": key})
+			http.Error(w, "tar: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		target := filepath.Join(dest, hdr.Name)
+		// Path traversal protection.
+		if !strings.HasPrefix(filepath.Clean(target), filepath.Clean(dest)) {
+			continue
+		}
+
+		switch hdr.Typeflag {
+		case tar.TypeDir:
+			if err := os.MkdirAll(target, os.FileMode(hdr.Mode)); err != nil {
+				s.logger.Error("failed-to-create-dir", err, lager.Data{"target": target})
+				http.Error(w, "mkdir: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+		case tar.TypeReg:
+			if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+				s.logger.Error("failed-to-create-parent-dir", err, lager.Data{"target": target})
+				http.Error(w, "mkdir: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+			f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(hdr.Mode))
+			if err != nil {
+				s.logger.Error("failed-to-create-file", err, lager.Data{"target": target})
+				http.Error(w, "create: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+			if _, err := io.Copy(f, tr); err != nil {
+				f.Close()
+				s.logger.Error("failed-to-write-file", err, lager.Data{"target": target})
+				http.Error(w, "write: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+			f.Close()
+		case tar.TypeSymlink:
+			_ = os.Symlink(hdr.Linkname, target)
+		}
+	}
+
+	s.registry.Register(key, dest)
+	s.logger.Info("stream-in-complete", lager.Data{"key": key, "dest": dest})
 	w.WriteHeader(http.StatusCreated)
 }
 

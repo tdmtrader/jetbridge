@@ -239,10 +239,10 @@ func TestVT06_DaemonSetVolume_StreamOut_Non200Status(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// VT-07: DaemonSetVolume StreamIn rejection
+// VT-07: DaemonSetVolume StreamIn requires daemon client or source node
 // ---------------------------------------------------------------------------
 
-func TestVT07_DaemonSetVolume_StreamIn_AlwaysRejectsWithHostPathError(t *testing.T) {
+func TestVT07_DaemonSetVolume_StreamIn_ErrorsWithoutDaemonClient(t *testing.T) {
 	vol := &DaemonSetVolume{
 		key:    "test-key",
 		handle: "test-handle",
@@ -250,10 +250,10 @@ func TestVT07_DaemonSetVolume_StreamIn_AlwaysRejectsWithHostPathError(t *testing
 
 	err := vol.StreamIn(context.Background(), ".", nil, 0, strings.NewReader("data"))
 	if err == nil {
-		t.Fatal("expected error from StreamIn")
+		t.Fatal("expected error from StreamIn without daemon client")
 	}
-	if !strings.Contains(err.Error(), "hostPath writes") {
-		t.Errorf("expected error containing 'hostPath writes', got: %v", err)
+	if !strings.Contains(err.Error(), "no source node or daemon client") {
+		t.Errorf("expected error about missing daemon client, got: %v", err)
 	}
 }
 

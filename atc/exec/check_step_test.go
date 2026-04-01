@@ -405,26 +405,6 @@ var _ = Describe("CheckStep", func() {
 				Context("when the plan is for a resource", func() {
 					BeforeEach(func() {
 						checkPlan.Resource = "some-resource"
-
-						expectedOwner = db.NewResourceConfigCheckSessionContainerOwner(
-							501,
-							502,
-							db.ContainerOwnerExpiries{Min: 5 * time.Minute, Max: 1 * time.Hour},
-						)
-
-						chosenWorker = runtimetest.NewWorker("worker").
-							WithContainer(
-								expectedOwner,
-								runtimetest.NewContainer().WithProcess(
-									runtime.ProcessSpec{
-										Path: "/opt/resource/check",
-									},
-									runtimetest.ProcessStub{},
-								),
-								nil,
-							)
-						chosenContainer = chosenWorker.Containers[0]
-						fakePool.FindOrSelectWorkerReturns(chosenWorker, nil)
 					})
 
 					It("points the resource or resource type to the scope", func() {
@@ -433,7 +413,7 @@ var _ = Describe("CheckStep", func() {
 						Expect(scope).To(Equal(fakeResourceConfigScope))
 					})
 
-					It("uses ResourceConfigCheckSessionOwner", func() {
+					It("uses build step container owner", func() {
 						Expect(chosenContainer.RunningProcesses()).To(HaveLen(1))
 					})
 

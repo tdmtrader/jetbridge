@@ -455,7 +455,11 @@ func (b *DaemonSetBackend) registerDaemonAlias(nodeName, volumeKey, diskPath str
 }
 
 func (b *DaemonSetBackend) WrapVolumeForArtifact(key, handle, workerName string, dbVolume db.CreatedVolume) runtime.Volume {
-	return NewDaemonSetVolume(key, handle, workerName, dbVolume, "", b.config, b.nodeIPResolver)
+	vol := NewDaemonSetVolume(key, handle, workerName, dbVolume, "", b.config, b.nodeIPResolver)
+	if b.daemonClient != nil {
+		vol.SetDaemonClient(b.daemonClient)
+	}
+	return vol
 }
 
 func (b *DaemonSetBackend) WrapVolumeForLookup(key, handle, workerName string, dbVolume db.CreatedVolume) runtime.Volume {

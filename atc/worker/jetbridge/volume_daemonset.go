@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/concourse/concourse/atc/compression"
@@ -26,6 +27,7 @@ type DaemonSetVolume struct {
 	config         Config
 	httpClient     *http.Client
 	nodeIPResolver *NodeIPResolver
+	daemonClient   *DaemonClient // for discovering daemon pods when sourceNode is empty
 }
 
 // NewDaemonSetVolume creates a DaemonSetVolume.
@@ -103,8 +105,57 @@ func (v *DaemonSetVolume) StreamOut(ctx context.Context, path string, enc compre
 	return resp.Body, nil
 }
 
+// SetDaemonClient configures daemon discovery for StreamIn operations.
+func (v *DaemonSetVolume) SetDaemonClient(client *DaemonClient) {
+	v.daemonClient = client
+}
+
 func (v *DaemonSetVolume) StreamIn(ctx context.Context, path string, compression compression.Compression, limitInMB float64, reader io.Reader) error {
-	return fmt.Errorf("DaemonSetVolume: use hostPath writes (key=%s)", v.key)
+	port := v.config.ArtifactDaemonPort
+	if port == 0 {
+		port = 7780
+	}
+
+	var url string
+	if v.sourceNode != "" {
+		u, err := v.daemonURL(ctx)
+		if err != nil {
+			return fmt.Errorf("DaemonSetVolume.StreamIn: %w", err)
+		}
+		// Rewrite /artifacts/ to /stream-in/ for tar extraction.
+		url = strings.Replace(u, "/artifacts/", "/stream-in/", 1)
+	} else if v.daemonClient != nil {
+		ips, err := v.daemonClient.daemonIPs(ctx)
+		if err != nil {
+			return fmt.Errorf("DaemonSetVolume.StreamIn: discover daemons: %w", err)
+		}
+		if len(ips) == 0 {
+			return fmt.Errorf("DaemonSetVolume.StreamIn: no daemon pods discovered")
+		}
+		url = fmt.Sprintf("http://%s:%d/stream-in/%s", ips[0], port, v.key)
+	} else {
+		return fmt.Errorf("DaemonSetVolume.StreamIn: no source node or daemon client (key=%s)", v.key)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, url, reader)
+	if err != nil {
+		return fmt.Errorf("DaemonSetVolume.StreamIn: create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/octet-stream")
+
+	client := &http.Client{Timeout: 5 * time.Minute}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("DaemonSetVolume.StreamIn: PUT %s: %w", url, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return fmt.Errorf("DaemonSetVolume.StreamIn: status %d from %s: %s", resp.StatusCode, url, string(body))
+	}
+
+	return nil
 }
 
 func (v *DaemonSetVolume) InitializeResourceCache(ctx context.Context, cache db.ResourceCache) (*db.UsedWorkerResourceCache, error) {
