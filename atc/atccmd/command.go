@@ -14,6 +14,7 @@ import (
 	_ "net/http/pprof"
 	"net/url"
 	"os"
+	"runtime"
 	"strings"
 	"time"
 
@@ -52,6 +53,13 @@ import (
 	"github.com/concourse/concourse/atc/util"
 	"github.com/concourse/concourse/atc/worker"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
+	"github.com/concourse/concourse/atc/worker/native"
+	"github.com/concourse/concourse/atc/worker/native/agentpb"
+	"github.com/concourse/concourse/atc/worker/native/remote"
+	"google.golang.org/grpc"
+	grpccreds "google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/keepalive"
 	"github.com/concourse/concourse/atc/wrappa"
 	"github.com/concourse/concourse/skymarshal/dexserver"
 	"github.com/concourse/concourse/skymarshal/legacyserver"
@@ -119,6 +127,10 @@ type RunCommand struct {
 	// for DaemonSet mode. Created in backendComponents, used in constructPool.
 	k8sArtifactLocator *jetbridge.ArtifactLocator
 
+	// remoteNativeClients maps worker names to gRPC clients for remote native
+	// agents. Created in backendComponents, used in constructPool.
+	remoteNativeClients map[string]agentpb.NativeAgentClient
+
 	BindIP   flag.IP `long:"bind-ip"   default:"0.0.0.0" description:"IP address on which to listen for web traffic."`
 	BindPort uint16  `long:"bind-port" default:"8080"    description:"Port on which to listen for HTTP traffic."`
 
@@ -183,6 +195,18 @@ type RunCommand struct {
 		ImageRegistrySecret    string   `long:"kubernetes-image-registry-secret"     description:"Kubernetes Secret name (type kubernetes.io/dockerconfigjson) for registry auth. Auto-added to imagePullSecrets on every pod."`
 		BaseResourceTypes      []string `long:"kubernetes-base-resource-type"        description:"Override or add a base resource type image. Format: name=image (e.g. git=my-registry/git-resource:v2). Can be specified multiple times. Merges with built-in defaults." value-name:"NAME=IMAGE"`
 	} `group:"Kubernetes Runtime"`
+
+	NativeWorker struct {
+		Enable     bool   `long:"native-worker"           description:"Enable the native worker backend for running tasks as local OS processes (e.g. macOS code signing)."`
+		WorkDir    string `long:"native-worker-dir"        description:"Base directory for native worker scratch space." default:"/tmp/concourse/native"`
+		CacheDir   string `long:"native-worker-cache-dir"  description:"Durable directory for task caches that persist across builds." default:"/tmp/concourse/native/caches"`
+		WorkerName string `long:"native-worker-name"       description:"Name for the native worker." default:"native-darwin"`
+		Address    string `long:"native-worker-address"    description:"Address of a remote native agent (host:port). When set, darwin tasks are proxied to the remote agent instead of running locally."`
+		Token      string `long:"native-worker-token"      description:"Shared secret for native agent token auth."`
+		TLSCert    string `long:"native-worker-tls-cert"   description:"Client TLS certificate for native agent mTLS."`
+		TLSKey     string `long:"native-worker-tls-key"    description:"Client TLS private key for native agent mTLS."`
+		TLSCA      string `long:"native-worker-tls-ca"     description:"CA certificate for verifying the native agent's server cert."`
+	} `group:"Native Worker"`
 
 	CLIArtifactsDir flag.Dir `long:"cli-artifacts-dir" description:"Directory containing downloadable CLI binaries."`
 	WebPublicDir    flag.Dir `long:"web-public-dir" description:"Web public/ directory to serve live for local development."`
@@ -1314,6 +1338,103 @@ func (cmd *RunCommand) backendComponents(
 		})
 	}
 
+	if cmd.NativeWorker.Enable {
+		nativeCfg := native.Config{
+			WorkDir:    cmd.NativeWorker.WorkDir,
+			CacheDir:   cmd.NativeWorker.CacheDir,
+			Platform:   nativePlatform(),
+			WorkerName: cmd.NativeWorker.WorkerName,
+		}
+
+		components = append(components, RunnableComponent{
+			Component: atc.Component{
+				Name: atc.ComponentNativeWorkerRegistrar,
+			},
+			Runnable: native.NewRegistrar(logger.Session(atc.ComponentNativeWorkerRegistrar), nativeCfg, dbWorkerFactory),
+			Interval: 15 * time.Second,
+		})
+
+		nativeContainerRepo := db.NewContainerRepository(dbConn)
+		components = append(components, RunnableComponent{
+			Component: atc.Component{
+				Name: atc.ComponentNativeWorkerReaper,
+			},
+			Runnable: native.NewReaper(logger.Session(atc.ComponentNativeWorkerReaper), nativeCfg, nativeContainerRepo),
+		})
+	}
+
+	if cmd.NativeWorker.Address != "" {
+		addresses := strings.Split(cmd.NativeWorker.Address, ",")
+
+		// Build dial options once (shared across all agents).
+		dialOpts := []grpc.DialOption{
+			grpc.WithKeepaliveParams(keepalive.ClientParameters{
+				Time:                10 * time.Second,
+				Timeout:             5 * time.Second,
+				PermitWithoutStream: true,
+			}),
+		}
+
+		if cmd.NativeWorker.Token != "" {
+			dialOpts = append(dialOpts, grpc.WithPerRPCCredentials(
+				nativeWorkerTokenCredentials{token: cmd.NativeWorker.Token},
+			))
+		}
+
+		if cmd.NativeWorker.TLSCert != "" && cmd.NativeWorker.TLSKey != "" && cmd.NativeWorker.TLSCA != "" {
+			cert, err := tls.LoadX509KeyPair(cmd.NativeWorker.TLSCert, cmd.NativeWorker.TLSKey)
+			if err != nil {
+				return nil, fmt.Errorf("load native worker client cert: %w", err)
+			}
+			caBytes, err := os.ReadFile(cmd.NativeWorker.TLSCA)
+			if err != nil {
+				return nil, fmt.Errorf("read native worker CA cert: %w", err)
+			}
+			caPool := x509.NewCertPool()
+			if !caPool.AppendCertsFromPEM(caBytes) {
+				return nil, fmt.Errorf("failed to parse native worker CA certificate")
+			}
+			dialOpts = append(dialOpts, grpc.WithTransportCredentials(grpccreds.NewTLS(&tls.Config{
+				Certificates: []tls.Certificate{cert},
+				RootCAs:      caPool,
+			})))
+		} else {
+			dialOpts = append(dialOpts, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		}
+
+		remoteClients := make(map[string]agentpb.NativeAgentClient, len(addresses))
+		addrSanitizer := strings.NewReplacer(":", "_", ".", "_", "-", "_")
+
+		for _, addr := range addresses {
+			addr = strings.TrimSpace(addr)
+
+			remoteConn, err := grpc.NewClient(addr, dialOpts...)
+			if err != nil {
+				return nil, fmt.Errorf("connecting to remote native agent %s: %w", addr, err)
+			}
+			client := agentpb.NewNativeAgentClient(remoteConn)
+
+			workerName := "remote_" + addrSanitizer.Replace(addr)
+			remoteClients[workerName] = client
+
+			componentName := "remote_native_worker_registrar_" + addrSanitizer.Replace(addr)
+			components = append(components, RunnableComponent{
+				Component: atc.Component{
+					Name: componentName,
+				},
+				Runnable: remote.NewRegistrar(
+					logger.Session(componentName),
+					client,
+					workerName,
+					dbWorkerFactory,
+				),
+				Interval: 15 * time.Second,
+			})
+		}
+
+		cmd.remoteNativeClients = remoteClients
+	}
+
 	if syslogDrainConfigured {
 		components = append(components, RunnableComponent{
 			Component: atc.Component{
@@ -1330,6 +1451,11 @@ func (cmd *RunCommand) backendComponents(
 	}
 
 	return components, err
+}
+
+// nativePlatform returns the GOOS for the native worker (e.g. "darwin").
+func nativePlatform() string {
+	return runtime.GOOS
 }
 
 func (cmd *RunCommand) compression() compression.Compression {
@@ -1407,6 +1533,22 @@ func (cmd *RunCommand) constructPool(dbConn db.DbConn, lockFactory lock.LockFact
 		factory.K8sExecutor = jetbridge.NewSPDYExecutor(k8sClientset, k8sRestConfig)
 		factory.K8sArtifactLocator = cmd.k8sArtifactLocator
 	}
+
+	if cmd.NativeWorker.Enable {
+		nativeCfg := native.Config{
+			WorkDir:    cmd.NativeWorker.WorkDir,
+			CacheDir:   cmd.NativeWorker.CacheDir,
+			Platform:   nativePlatform(),
+			WorkerName: cmd.NativeWorker.WorkerName,
+		}
+		factory.NativeConfig = &nativeCfg
+	}
+
+	if len(cmd.remoteNativeClients) > 0 {
+		factory.RemoteNativeClients = cmd.remoteNativeClients
+	}
+
+	factory.Compression = cmd.compression()
 
 	return worker.NewPool(
 		factory,
@@ -2280,4 +2422,14 @@ type RunnableComponent struct {
 func (cmd *RunCommand) isMTLSEnabled() bool {
 	return string(cmd.TLSCaCert) != ""
 }
+
+// nativeWorkerTokenCredentials implements grpc credentials.PerRPCCredentials
+// to inject a Bearer token into every gRPC call to the native agent.
+type nativeWorkerTokenCredentials struct{ token string }
+
+func (c nativeWorkerTokenCredentials) GetRequestMetadata(ctx context.Context, uri ...string) (map[string]string, error) {
+	return map[string]string{"authorization": "Bearer " + c.token}, nil
+}
+
+func (c nativeWorkerTokenCredentials) RequireTransportSecurity() bool { return false }
 

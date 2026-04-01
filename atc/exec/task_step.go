@@ -651,7 +651,8 @@ func (step *TaskStep) loadSidecars(ctx context.Context, logger lager.Logger, rep
 
 func (step *TaskStep) workerSpec(config atc.TaskConfig) worker.Spec {
 	return worker.Spec{
-		TeamID: step.metadata.TeamID,
+		TeamID:   step.metadata.TeamID,
+		Platform: config.Platform,
 	}
 }
 

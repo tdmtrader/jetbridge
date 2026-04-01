@@ -1,4 +1,4 @@
-.PHONY: test-unit test-ci-agent test-fly-integration test-integration test-k8s test-k8s-integration test-k8s-behavioral test-quick test-all
+.PHONY: test-unit test-ci-agent test-fly-integration test-integration test-k8s test-k8s-integration test-k8s-behavioral test-quick test-all proto build-native-agent
 
 # Unit tests: all packages except integration/e2e suites (~5 min)
 # Requires: PostgreSQL running locally
@@ -57,3 +57,13 @@ test-quick: test-unit test-ci-agent
 
 # All tests in order of speed
 test-all: test-unit test-ci-agent test-fly-integration test-integration test-k8s
+
+# Proto generation for native agent gRPC service
+proto:
+	protoc --go_out=. --go_opt=module=github.com/concourse/concourse \
+	       --go-grpc_out=. --go-grpc_opt=module=github.com/concourse/concourse \
+	       proto/native_agent.proto
+
+# Build the native agent binary
+build-native-agent:
+	go build -o native-agent ./cmd/native-agent/

@@ -21,6 +21,8 @@ const (
 	ComponentCollectorPipelines         = "collector_pipelines"
 	ComponentK8sWorkerRegistrar         = "k8s_worker_registrar"
 	ComponentK8sWorkerReaper            = "k8s_worker_reaper"
+	ComponentNativeWorkerRegistrar      = "native_worker_registrar"
+	ComponentNativeWorkerReaper         = "native_worker_reaper"
 	ComponentPipelinePauser             = "pipeline_pauser"
 	ComponentSigningKeyLifecycler       = "signing_key_lifecycler"
 )
