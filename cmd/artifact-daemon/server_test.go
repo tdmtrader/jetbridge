@@ -452,3 +452,74 @@ func TestGetResourceCache_StreamsDirectory(t *testing.T) {
 		t.Error("version.txt not found in tar stream")
 	}
 }
+
+// Cross-node peer probe tests: HEAD /artifacts/steps/{key} must find
+// registry aliases so that peer daemons can discover cached resources.
+
+func TestHeadArtifact_FindsRegistryAlias(t *testing.T) {
+	ts, storagePath, server := setupServerWithRegistry(t)
+
+	// Create step output and register as alias (mimics resource cache registration).
+	dataDir := filepath.Join(storagePath, "steps", "container-xyz", "dir")
+	if err := os.MkdirAll(dataDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(dataDir, "file.txt"), []byte("cached"), 0644)
+	server.Registry().RegisterAlias("rc-42", dataDir)
+
+	// Peer probe sends HEAD /artifacts/steps/rc-42. The handler should find
+	// the registry alias "rc-42" even though steps/rc-42 doesn't exist on disk.
+	req, _ := http.NewRequest(http.MethodHead, ts.URL+"/artifacts/steps/rc-42", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("HEAD failed: %v", err)
+	}
+	resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200 for registry alias via /artifacts/ HEAD, got %d", resp.StatusCode)
+	}
+}
+
+func TestGetArtifact_ServesRegistryAlias(t *testing.T) {
+	ts, storagePath, server := setupServerWithRegistry(t)
+
+	dataDir := filepath.Join(storagePath, "steps", "container-xyz", "dir")
+	if err := os.MkdirAll(dataDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(dataDir, "data.txt"), []byte("hello from cache"), 0644)
+	server.Registry().RegisterAlias("rc-99", dataDir)
+
+	// Peer fetch sends GET /artifacts/steps/rc-99. The handler should serve
+	// the data from the registered path.
+	resp, err := http.Get(ts.URL + "/artifacts/steps/rc-99")
+	if err != nil {
+		t.Fatalf("GET failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for registry alias via /artifacts/ GET, got %d", resp.StatusCode)
+	}
+
+	// Should be a tar stream of the directory.
+	tr := tar.NewReader(resp.Body)
+	found := false
+	for {
+		hdr, err := tr.Next()
+		if err != nil {
+			break
+		}
+		if hdr.Name == "data.txt" {
+			found = true
+			data, _ := io.ReadAll(tr)
+			if string(data) != "hello from cache" {
+				t.Errorf("expected 'hello from cache', got %q", string(data))
+			}
+		}
+	}
+	if !found {
+		t.Error("data.txt not found in tar stream from registry alias")
+	}
+}

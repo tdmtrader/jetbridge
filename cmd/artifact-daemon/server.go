@@ -78,7 +78,17 @@ func (s *Server) artifactPath(r *http.Request) string {
 func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 	path := s.artifactPath(r)
 
+	// Check filesystem first, then fall back to registry aliases.
+	// This enables peer daemons to serve registry-only artifacts
+	// (e.g., resource caches registered via POST /register).
 	info, err := os.Stat(path)
+	if err != nil && os.IsNotExist(err) {
+		// Filesystem miss — try registry lookup.
+		if regPath, found := s.lookupRegistryAlias(r); found {
+			path = regPath
+			info, err = os.Stat(path)
+		}
+	}
 	if err != nil {
 		if os.IsNotExist(err) {
 			http.NotFound(w, r)
@@ -266,8 +276,15 @@ func (s *Server) handleDeleteArtifact(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleHeadArtifact(w http.ResponseWriter, r *http.Request) {
 	path := s.artifactPath(r)
 
+	// Check filesystem first, then fall back to registry aliases.
 	if _, err := os.Stat(path); err != nil {
 		if os.IsNotExist(err) {
+			if regPath, found := s.lookupRegistryAlias(r); found {
+				if _, err := os.Stat(regPath); err == nil {
+					w.WriteHeader(http.StatusOK)
+					return
+				}
+			}
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
@@ -277,6 +294,24 @@ func (s *Server) handleHeadArtifact(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusOK)
+}
+
+// lookupRegistryAlias checks the registry for an artifact key extracted from
+// the request URL. Peer probes send URLs like /artifacts/steps/rc-42, yielding
+// the key "steps/rc-42" — but the registry stores just "rc-42". We try the
+// full key first, then strip common prefixes.
+func (s *Server) lookupRegistryAlias(r *http.Request) (string, bool) {
+	key := strings.TrimPrefix(r.URL.Path, "/artifacts/")
+	if path, found := s.registry.Lookup(key); found {
+		return path, true
+	}
+	// Strip "steps/" prefix — peer probes prepend it but aliases don't have it.
+	if stripped := strings.TrimPrefix(key, "steps/"); stripped != key {
+		if path, found := s.registry.Lookup(stripped); found {
+			return path, true
+		}
+	}
+	return "", false
 }
 
 // registerRequest is the JSON body for POST /register.
