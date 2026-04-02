@@ -470,46 +470,39 @@ func (b *DaemonSetBackend) WrapVolumeForLookup(key, handle, workerName string, d
 	return NewDaemonSetVolume(key, handle, workerName, dbVolume, sourceNode, b.config, b.nodeIPResolver)
 }
 
-// RegisterResourceCache creates a symlink on the shared hostPath filesystem
-// so the daemon can discover the cached resource data. The symlink maps
-// steps/rc-{id} → steps/{containerHandle}/dir, making the cache discoverable
-// via the daemon's filesystem fallback (HEAD /artifacts/steps/rc-{id}).
+// RegisterResourceCache registers a resource cache alias on the daemon using
+// the daemon's POST /register API. The alias maps the cache key (rc-{id}) to
+// the physical disk path of the get step output, making it discoverable via
+// HEAD /artifacts/steps/rc-{id} (filesystem fallback) and /resolve.
 //
-// This approach avoids needing the daemon's /register API (which requires
-// NodeIPResolver and nodes/get RBAC) and works with any daemon version.
+// Instead of using NodeIPResolver (which needs nodes/get RBAC), this discovers
+// the daemon pod IP from EndpointSlices (only needs discovery.k8s.io RBAC) and
+// POSTs the registration directly.
 func (b *DaemonSetBackend) RegisterResourceCache(ctx context.Context, cacheID int, volumeHandle, nodeName string) error {
+	if b.daemonClient == nil {
+		return fmt.Errorf("daemon client not configured")
+	}
+
 	cacheKey := ResourceCacheKey(cacheID)
 
-	// Resolve the target path: the actual data directory on the hostPath.
-	// The volumeHandle is "{containerHandle}-dir" — the data lives at
-	// steps/{containerHandle}/dir.
-	var targetPath string
+	// Resolve the disk path from the locator or by convention.
+	var diskPath string
 	if b.artifactLocator != nil {
 		if loc, found := b.artifactLocator.Locate(ArtifactKey(volumeHandle)); found {
-			targetPath = filepath.Join(b.config.ArtifactDaemonHostPath, "steps", loc.HostDir)
+			diskPath = filepath.Join(b.config.ArtifactDaemonHostPath, "steps", loc.HostDir)
 		}
 	}
-	if targetPath == "" {
+	if diskPath == "" {
 		containerHandle := strings.TrimSuffix(volumeHandle, "-dir")
-		targetPath = filepath.Join(b.config.ArtifactDaemonHostPath, "steps", containerHandle, "dir")
+		diskPath = filepath.Join(b.config.ArtifactDaemonHostPath, "steps", containerHandle, "dir")
 	}
 
-	// Verify the target exists before creating the symlink.
-	if _, err := os.Stat(targetPath); err != nil {
-		return fmt.Errorf("resource cache target path %s does not exist: %w", targetPath, err)
-	}
-
-	// Create a symlink at steps/rc-{id} → target. The daemon's existing
-	// HEAD /artifacts/steps/{key} endpoint stats this path directly, and
-	// the /resolve endpoint's filesystem fallback also finds it.
-	linkPath := filepath.Join(b.config.ArtifactDaemonHostPath, "steps", cacheKey)
-
-	// Remove any existing symlink (e.g., from a previous build with the
-	// same cache ID but different container handle).
-	os.Remove(linkPath)
-
-	if err := os.Symlink(targetPath, linkPath); err != nil {
-		return fmt.Errorf("create resource cache symlink %s → %s: %w", linkPath, targetPath, err)
+	// Find a daemon pod IP to register with. On the same node as the get
+	// step, the daemon has the data locally. On a single-node cluster
+	// there's only one daemon; on multi-node we register on all daemons
+	// but only the one with local data will have the path.
+	if err := b.daemonClient.RegisterAlias(ctx, cacheKey, diskPath); err != nil {
+		return fmt.Errorf("register resource cache alias: %w", err)
 	}
 
 	// Record in locator for affinity on downstream steps.

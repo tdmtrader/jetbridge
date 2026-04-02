@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"code.cloudfoundry.org/lager/v3"
@@ -124,4 +125,53 @@ func (d *DaemonClient) ProbeResourceCache(ctx context.Context, cacheKey string) 
 
 	logger.Debug("cache-not-found", lager.Data{"daemons_checked": len(ips)})
 	return "", false, nil
+}
+
+// RegisterAlias registers an alias on all daemon pods via POST /register.
+// The alias maps key → localPath in the daemon's registry. On a single-node
+// cluster only one daemon exists; on multi-node, only the daemon whose node
+// has the localPath will accept the registration (the daemon validates that
+// the path exists on disk).
+func (d *DaemonClient) RegisterAlias(ctx context.Context, key, localPath string) error {
+	logger := d.logger.Session("register-alias", lager.Data{"key": key})
+
+	ips, err := d.daemonIPs(ctx)
+	if err != nil {
+		return fmt.Errorf("discover daemon IPs: %w", err)
+	}
+	if len(ips) == 0 {
+		return fmt.Errorf("no daemon pods found")
+	}
+
+	body := fmt.Sprintf(`{"key":%q,"local_path":%q}`, key, localPath)
+	registered := false
+
+	for _, ip := range ips {
+		url := fmt.Sprintf("http://%s:%d/register", ip, d.port)
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(body))
+		if err != nil {
+			continue
+		}
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err := d.client.Do(req)
+		if err != nil {
+			logger.Debug("daemon-unreachable", lager.Data{"ip": ip, "error": err.Error()})
+			continue
+		}
+		resp.Body.Close()
+
+		if resp.StatusCode == http.StatusCreated {
+			logger.Info("registered", lager.Data{"daemon_ip": ip})
+			registered = true
+			break // Only need to register on the daemon that has the path
+		}
+		// 404 = path not found on this daemon's node, try next
+		logger.Debug("daemon-rejected", lager.Data{"ip": ip, "status": resp.StatusCode})
+	}
+
+	if !registered {
+		return fmt.Errorf("no daemon accepted registration for key %s (path: %s)", key, localPath)
+	}
+	return nil
 }
