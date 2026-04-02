@@ -32,10 +32,10 @@ func fakeEndpointSlice(namespace, service string, ips ...string) *discoveryv1.En
 	}
 }
 
-func TestProbeResourceCache_Found(t *testing.T) {
-	// Start a fake daemon that responds 200 to HEAD /artifacts/steps/rc-42.
+func TestProbeResourceCache_FoundViaNewEndpoint(t *testing.T) {
+	// Daemon with the new HEAD /resource-caches/ endpoint.
 	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodHead && r.URL.Path == "/artifacts/steps/rc-42" {
+		if r.Method == http.MethodHead && r.URL.Path == "/resource-caches/rc-42" {
 			w.WriteHeader(http.StatusOK)
 			return
 		}
@@ -57,6 +57,39 @@ func TestProbeResourceCache_Found(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("expected cache to be found")
+	}
+	if daemonIP != host {
+		t.Errorf("expected daemon IP %q, got %q", host, daemonIP)
+	}
+}
+
+func TestProbeResourceCache_FoundViaResolveFallback(t *testing.T) {
+	// Older daemon without HEAD /resource-caches/ — falls back to /resolve.
+	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/resolve" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"status":"ok","method":"registry"}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer daemon.Close()
+
+	daemonAddr := daemon.Listener.Addr().String()
+	host := daemonAddr[:len(daemonAddr)-len(":"+portFromAddr(daemonAddr))]
+	port := portFromAddrInt(daemonAddr)
+
+	clientset := fake.NewSimpleClientset(fakeEndpointSlice("cicd", "artifact-daemon", host))
+	logger := lagertest.NewTestLogger("test")
+	client := jetbridge.NewDaemonClient(logger, clientset, "cicd", "artifact-daemon", port)
+
+	daemonIP, found, err := client.ProbeResourceCache(context.Background(), "rc-42")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !found {
+		t.Fatal("expected cache to be found via resolve fallback")
 	}
 	if daemonIP != host {
 		t.Errorf("expected daemon IP %q, got %q", host, daemonIP)

@@ -337,6 +337,19 @@ func (w *Worker) FindDaemonResourceCache(ctx context.Context, cacheID int) (runt
 		return nil, false, nil
 	}
 
+	cacheKey := ResourceCacheKey(cacheID)
+
+	// Fast path: check the in-memory locator first. If the ATC hasn't
+	// restarted since the get step ran, the locator already has the entry
+	// from RegisterResourceCache.
+	if dsb, ok := w.storageBackend.(*DaemonSetBackend); ok && dsb.artifactLocator != nil {
+		if _, found := dsb.artifactLocator.Locate(cacheKey); found {
+			vol := NewStubVolume(cacheKey, w.Name(), "")
+			return vol, true, nil
+		}
+	}
+
+	// Slow path: probe daemon pods for the cache.
 	daemonIP, found, err := w.storageBackend.FindResourceCache(ctx, cacheID)
 	if err != nil {
 		return nil, false, err
@@ -345,11 +358,7 @@ func (w *Worker) FindDaemonResourceCache(ctx context.Context, cacheID int) (runt
 		return nil, false, nil
 	}
 
-	cacheKey := ResourceCacheKey(cacheID)
-
-	// Record in locator so downstream steps get node affinity. The daemon
-	// IP is used as a placeholder — on single-node clusters this is fine,
-	// and on multi-node the affinity is best-effort.
+	// Record in locator so downstream steps get node affinity.
 	if dsb, ok := w.storageBackend.(*DaemonSetBackend); ok && dsb.artifactLocator != nil {
 		dsb.artifactLocator.Record(cacheKey, daemonIP, cacheKey)
 	}

@@ -61,14 +61,13 @@ func (d *DaemonClient) daemonIPs(ctx context.Context) ([]string, error) {
 }
 
 // ProbeResourceCache checks whether any daemon pod has the given resource
-// cache key. The cache is registered as a symlink under steps/{key} on the
-// daemon's hostPath, so we probe with HEAD /artifacts/steps/{key} which
-// works with any daemon version (no new endpoints required).
+// cache key registered. Sends a POST /resolve with a temporary destination
+// to each daemon to check if the key exists in its registry. The daemon's
+// resolveOne checks registry → filesystem → peers, so a registered alias
+// will be found.
 //
-// Returns the daemon pod IP that responded 200 (the node name is not
-// available from the existing /artifacts HEAD response, but the IP is
-// sufficient for the caller to record in the ArtifactLocator).
-// If no daemon has it, returns ("", false, nil).
+// Returns the daemon pod IP that responded with status "ok" or "not_found"
+// indicating the key was found. If no daemon has it, returns ("", false, nil).
 func (d *DaemonClient) ProbeResourceCache(ctx context.Context, cacheKey string) (string, bool, error) {
 	logger := d.logger.Session("probe-resource-cache", lager.Data{"key": cacheKey})
 
@@ -94,7 +93,18 @@ func (d *DaemonClient) ProbeResourceCache(ctx context.Context, cacheKey string) 
 
 	for _, ip := range ips {
 		go func(ip string) {
-			url := fmt.Sprintf("http://%s:%d/artifacts/steps/%s", ip, d.port, cacheKey)
+			// Use HEAD /artifacts/{key} — the daemon stats the raw path.
+			// The registered alias key maps to a disk path, but the HEAD
+			// handler checks storagePath/{key} not the registry.
+			//
+			// Instead, use the new HEAD /resource-caches/{key} endpoint
+			// on upgraded daemons, falling back to checking if the daemon
+			// has the key registered by POSTing a resolve with /dev/null
+			// as destination (the daemon returns "ok" if found without
+			// writing anything meaningful).
+
+			// Try the new endpoint first (daemon v0.2.83+).
+			url := fmt.Sprintf("http://%s:%d/resource-caches/%s", ip, d.port, cacheKey)
 			req, err := http.NewRequestWithContext(ctx, http.MethodHead, url, nil)
 			if err != nil {
 				results <- probeResult{}
@@ -107,7 +117,34 @@ func (d *DaemonClient) ProbeResourceCache(ctx context.Context, cacheKey string) 
 				return
 			}
 			resp.Body.Close()
+
 			if resp.StatusCode == http.StatusOK {
+				results <- probeResult{ip: ip, found: true}
+				return
+			}
+
+			// Fallback for older daemons: POST /resolve with a probe-only
+			// destination. The daemon checks registry → filesystem → peers.
+			// We use a unique temp path to avoid conflicts.
+			resolveURL := fmt.Sprintf("http://%s:%d/resolve", ip, d.port)
+			// Use /tmp/probe-{key} as destination — the daemon will try to
+			// copy data there but we only care about the response status.
+			resolveBody := fmt.Sprintf(`{"key":%q,"dest":"/tmp/concourse-probe-%s"}`, cacheKey, cacheKey)
+			resolveReq, err := http.NewRequestWithContext(ctx, http.MethodPost, resolveURL, strings.NewReader(resolveBody))
+			if err != nil {
+				results <- probeResult{}
+				return
+			}
+			resolveReq.Header.Set("Content-Type", "application/json")
+
+			resolveResp, err := d.client.Do(resolveReq)
+			if err != nil {
+				results <- probeResult{}
+				return
+			}
+			resolveResp.Body.Close()
+
+			if resolveResp.StatusCode == http.StatusOK {
 				results <- probeResult{ip: ip, found: true}
 				return
 			}
