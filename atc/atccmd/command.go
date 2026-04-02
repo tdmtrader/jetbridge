@@ -170,7 +170,8 @@ type RunCommand struct {
 	Kubernetes struct {
 		Namespace          string        `long:"kubernetes-namespace"              description:"Kubernetes namespace in which to run task Pods. When set, enables the K8s execution backend."`
 		Kubeconfig         string        `long:"kubernetes-kubeconfig"             description:"Path to kubeconfig file for K8s backend. If empty, in-cluster configuration is used."`
-		PodStartupTimeout  time.Duration `long:"kubernetes-pod-startup-timeout"    default:"5m" description:"Maximum time to wait for a pod to reach Running state before failing the task."`
+		PodStartupTimeout    time.Duration `long:"kubernetes-pod-startup-timeout"      default:"5m"  description:"Maximum time to wait for a pod to reach Running state before failing the task."`
+		PodSchedulingTimeout time.Duration `long:"kubernetes-pod-scheduling-timeout"   default:"15m" description:"Maximum time to wait for an Unschedulable pod to be scheduled before failing the task. Set to 0 to fail immediately (old behavior)."`
 		ImagePullSecrets   []string      `long:"kubernetes-image-pull-secret"      description:"Kubernetes Secret name to use as imagePullSecrets on task Pods. Can be specified multiple times."`
 		ServiceAccount     string        `long:"kubernetes-service-account"        description:"Kubernetes ServiceAccount name to set on task Pods. Defaults to the namespace default SA."`
 		CacheStore         string        `long:"kubernetes-cache-store"            description:"Task cache backend: hostpath (node-local dirs) or emptydir (ephemeral). Empty = auto-detect."`
@@ -1267,6 +1268,7 @@ func (cmd *RunCommand) backendComponents(
 	if cmd.Kubernetes.Namespace != "" {
 		k8sCfg := jetbridge.NewConfig(cmd.Kubernetes.Namespace, cmd.Kubernetes.Kubeconfig)
 		k8sCfg.PodStartupTimeout = cmd.Kubernetes.PodStartupTimeout
+		k8sCfg.PodSchedulingTimeout = cmd.Kubernetes.PodSchedulingTimeout
 		k8sCfg.ImagePullSecrets = cmd.Kubernetes.ImagePullSecrets
 		k8sCfg.ServiceAccount = cmd.Kubernetes.ServiceAccount
 		k8sCfg.CacheStore = cmd.Kubernetes.CacheStore
@@ -1377,6 +1379,7 @@ func (cmd *RunCommand) constructPool(dbConn db.DbConn, lockFactory lock.LockFact
 	if cmd.Kubernetes.Namespace != "" {
 		k8sCfg := jetbridge.NewConfig(cmd.Kubernetes.Namespace, cmd.Kubernetes.Kubeconfig)
 		k8sCfg.PodStartupTimeout = cmd.Kubernetes.PodStartupTimeout
+		k8sCfg.PodSchedulingTimeout = cmd.Kubernetes.PodSchedulingTimeout
 		k8sCfg.ImagePullSecrets = cmd.Kubernetes.ImagePullSecrets
 		k8sCfg.ServiceAccount = cmd.Kubernetes.ServiceAccount
 		k8sCfg.CacheStore = cmd.Kubernetes.CacheStore

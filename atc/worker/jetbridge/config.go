@@ -15,6 +15,10 @@ const (
 	// pod to reach Running state before failing the task.
 	DefaultPodStartupTimeout = 5 * time.Minute
 
+	// DefaultPodSchedulingTimeout is the default maximum time to wait for
+	// an Unschedulable pod to be scheduled before failing the task.
+	DefaultPodSchedulingTimeout = 15 * time.Minute
+
 	// workerLabelKey is the Pod label used to identify Pods managed by a
 	// particular Concourse K8s worker.
 	workerLabelKey = "concourse.ci/worker"
@@ -112,6 +116,10 @@ type Config struct {
 	// PodStartupTimeout is the maximum time to wait for a pod to reach
 	// Running state. If zero, DefaultPodStartupTimeout is used.
 	PodStartupTimeout time.Duration
+
+	// PodSchedulingTimeout is the maximum time to wait for an Unschedulable
+	// pod to be scheduled. If zero, DefaultPodSchedulingTimeout is used.
+	PodSchedulingTimeout time.Duration
 
 	// ResourceTypeImages maps base resource type names (e.g. "time", "git")
 	// to Docker image references. When the ATC requests a container for a

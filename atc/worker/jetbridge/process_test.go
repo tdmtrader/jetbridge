@@ -908,18 +908,43 @@ var _ = Describe("Process", func() {
 			Expect(err.Error()).To(ContainSubstring("ImagePullBackOff"))
 		})
 
-		It("detects Unschedulable pod condition in waitForRunning", func() {
-			process, err := execContainer.Run(ctx, runtime.ProcessSpec{
+		It("waits for Unschedulable pod and times out", func() {
+			// Use short timeouts so the test completes quickly.
+			// PodSchedulingTimeout must be <= PodStartupTimeout since
+			// waitForRunning extends the startup context to the scheduling
+			// deadline when Unschedulable is detected.
+			shortCfg := cfg
+			shortCfg.PodSchedulingTimeout = 3 * time.Second
+			shortCfg.PodStartupTimeout = 2 * time.Second
+			shortWorker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, shortCfg)
+			shortWorker.SetExecutor(&fakeExecExecutor{})
+			setupFakeDBContainer(fakeDBWorker, "exec-sched-timeout-handle")
+
+			shortContainer, _, err := shortWorker.FindOrCreateContainer(
+				ctx,
+				db.NewFixedHandleContainerOwner("exec-sched-timeout-handle"),
+				db.ContainerMetadata{Type: db.ContainerTypeGet},
+				runtime.ContainerSpec{
+					TeamID:   1,
+					ImageSpec: runtime.ImageSpec{ResourceType: "git"},
+					Type:     db.ContainerTypeGet,
+				},
+				delegate,
+			)
+			Expect(err).ToNot(HaveOccurred())
+
+			stderrBuf := new(bytes.Buffer)
+			process, err := shortContainer.Run(ctx, runtime.ProcessSpec{
 				Path: "/opt/resource/in",
 				Args: []string{"/tmp/build/get"},
 			}, runtime.ProcessIO{
 				Stdin:  bytes.NewBufferString(`{}`),
 				Stdout: new(bytes.Buffer),
-				Stderr: new(bytes.Buffer),
+				Stderr: stderrBuf,
 			})
 			Expect(err).ToNot(HaveOccurred())
 
-			pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "exec-fail-handle", metav1.GetOptions{})
+			pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "exec-sched-timeout-handle", metav1.GetOptions{})
 			Expect(err).ToNot(HaveOccurred())
 
 			pod.Status.Phase = corev1.PodPending
@@ -936,7 +961,103 @@ var _ = Describe("Process", func() {
 
 			_, err = process.Wait(ctx)
 			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("pod scheduling timeout"))
 			Expect(err.Error()).To(ContainSubstring("Unschedulable"))
+			Expect(stderrBuf.String()).To(ContainSubstring("waiting up to"))
+			Expect(stderrBuf.String()).To(ContainSubstring("cluster resources"))
+		})
+
+		It("waits for Unschedulable pod and succeeds when scheduled", func() {
+			shortCfg := cfg
+			shortCfg.PodSchedulingTimeout = 30 * time.Second
+			shortWorker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, shortCfg)
+			shortWorker.SetExecutor(&fakeExecExecutor{})
+			setupFakeDBContainer(fakeDBWorker, "exec-sched-recover-handle")
+
+			shortContainer, _, err := shortWorker.FindOrCreateContainer(
+				ctx,
+				db.NewFixedHandleContainerOwner("exec-sched-recover-handle"),
+				db.ContainerMetadata{Type: db.ContainerTypeGet},
+				runtime.ContainerSpec{
+					TeamID:   1,
+					ImageSpec: runtime.ImageSpec{ResourceType: "git"},
+					Type:     db.ContainerTypeGet,
+				},
+				delegate,
+			)
+			Expect(err).ToNot(HaveOccurred())
+
+			stderrBuf := new(bytes.Buffer)
+			process, err := shortContainer.Run(ctx, runtime.ProcessSpec{
+				Path: "/opt/resource/in",
+				Args: []string{"/tmp/build/get"},
+			}, runtime.ProcessIO{
+				Stdin:  bytes.NewBufferString(`{}`),
+				Stdout: new(bytes.Buffer),
+				Stderr: stderrBuf,
+			})
+			Expect(err).ToNot(HaveOccurred())
+
+			pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "exec-sched-recover-handle", metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			// First: set the pod as Unschedulable.
+			pod.Status.Phase = corev1.PodPending
+			pod.Status.Conditions = []corev1.PodCondition{
+				{
+					Type:    corev1.PodScheduled,
+					Status:  corev1.ConditionFalse,
+					Reason:  "Unschedulable",
+					Message: "0/3 nodes are available: insufficient cpu.",
+				},
+			}
+			_, err = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			// After a short delay, simulate the pod getting scheduled and running.
+			go func() {
+				defer GinkgoRecover()
+				time.Sleep(500 * time.Millisecond)
+
+				pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "exec-sched-recover-handle", metav1.GetOptions{})
+				Expect(err).ToNot(HaveOccurred())
+
+				pod.Status.Phase = corev1.PodRunning
+				pod.Status.Conditions = []corev1.PodCondition{
+					{
+						Type:   corev1.PodScheduled,
+						Status: corev1.ConditionTrue,
+					},
+				}
+				pod.Status.ContainerStatuses = []corev1.ContainerStatus{
+					{
+						Name:  "main",
+						State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}},
+					},
+				}
+				_, err = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+				Expect(err).ToNot(HaveOccurred())
+
+				// Then terminate the main container so Wait returns.
+				time.Sleep(200 * time.Millisecond)
+				pod, _ = fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "exec-sched-recover-handle", metav1.GetOptions{})
+				pod.Status.Phase = corev1.PodSucceeded
+				pod.Status.ContainerStatuses = []corev1.ContainerStatus{
+					{
+						Name: "main",
+						State: corev1.ContainerState{
+							Terminated: &corev1.ContainerStateTerminated{ExitCode: 0},
+						},
+					},
+				}
+				_, err = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+				Expect(err).ToNot(HaveOccurred())
+			}()
+
+			result, err := process.Wait(ctx)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(result.ExitStatus).To(Equal(0))
+			Expect(stderrBuf.String()).To(ContainSubstring("waiting up to"))
 		})
 
 		It("detects pod eviction before reaching Running phase", func() {
