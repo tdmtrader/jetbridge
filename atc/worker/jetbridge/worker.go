@@ -333,7 +333,13 @@ func (w *Worker) RegisterResourceCache(ctx context.Context, cacheID int, volume 
 // resolves it via the daemon's /resolve endpoint which follows the symlink
 // to the original get step output.
 func (w *Worker) FindDaemonResourceCache(ctx context.Context, cacheID int) (runtime.Volume, bool, error) {
+	logger := lagerctx.FromContext(ctx).Session("find-daemon-resource-cache", lager.Data{
+		"cache-id":        cacheID,
+		"has-backend":     w.storageBackend != nil,
+	})
+
 	if w.storageBackend == nil {
+		logger.Info("no-storage-backend")
 		return nil, false, nil
 	}
 
@@ -343,13 +349,16 @@ func (w *Worker) FindDaemonResourceCache(ctx context.Context, cacheID int) (runt
 	// restarted since the get step ran, the locator already has the entry
 	// from RegisterResourceCache.
 	if dsb, ok := w.storageBackend.(*DaemonSetBackend); ok && dsb.artifactLocator != nil {
-		if _, found := dsb.artifactLocator.Locate(cacheKey); found {
+		if loc, found := dsb.artifactLocator.Locate(cacheKey); found {
+			logger.Info("locator-hit", lager.Data{"key": cacheKey, "node": loc.NodeName})
 			vol := NewStubVolume(cacheKey, w.Name(), "")
 			return vol, true, nil
 		}
+		logger.Info("locator-miss", lager.Data{"key": cacheKey})
 	}
 
 	// Slow path: probe daemon pods for the cache.
+	logger.Info("probing-daemons")
 	daemonIP, found, err := w.storageBackend.FindResourceCache(ctx, cacheID)
 	if err != nil {
 		return nil, false, err
