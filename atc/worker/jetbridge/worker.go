@@ -312,8 +312,8 @@ func (w *Worker) RegisterResourceCache(ctx context.Context, cacheID int, volume 
 	})
 
 	// The volume handle for a get step is "{containerHandle}-dir" (see
-	// buildVolumeMountsForSpec). The container handle is the portion before
-	// the last "-dir" suffix.
+	// buildVolumeMountsForSpec). We look up the node via the locator using
+	// the full handle (which is the key RecordOutputs recorded).
 	handle := volume.Handle()
 
 	// Look up which node the artifact lives on via the locator. RecordOutputs

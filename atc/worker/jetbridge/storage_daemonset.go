@@ -480,13 +480,36 @@ func (b *DaemonSetBackend) RegisterResourceCache(ctx context.Context, cacheID in
 
 	cacheKey := ResourceCacheKey(cacheID)
 
-	// The volume data lives at steps/<handle>/dir on the daemon.
-	diskPath := filepath.Join(b.config.ArtifactDaemonHostPath, "steps", volumeHandle, "dir")
+	// The volumeHandle from get_step is "{containerHandle}-dir" (built by
+	// buildVolumeMountsForSpec). The actual data lives at
+	// steps/{containerHandle}/dir. Look up the locator entry for this
+	// volume handle — RecordOutputs already stored the daemonKey as
+	// "{containerHandle}/dir".
+	var diskPath string
+	if b.artifactLocator != nil {
+		if loc, found := b.artifactLocator.Locate(ArtifactKey(volumeHandle)); found {
+			diskPath = filepath.Join(b.config.ArtifactDaemonHostPath, "steps", loc.HostDir)
+		}
+	}
+
+	if diskPath == "" {
+		// Fallback: strip the "-dir" suffix to recover the container handle.
+		containerHandle := strings.TrimSuffix(volumeHandle, "-dir")
+		diskPath = filepath.Join(b.config.ArtifactDaemonHostPath, "steps", containerHandle, "dir")
+	}
+
 	b.registerDaemonAlias(nodeName, cacheKey, diskPath)
 
 	// Record in locator for affinity on downstream steps.
 	if b.artifactLocator != nil {
-		b.artifactLocator.Record(cacheKey, nodeName, volumeHandle+"/dir")
+		// Use the locator's existing HostDir if available, otherwise construct.
+		var daemonKey string
+		if loc, found := b.artifactLocator.Locate(ArtifactKey(volumeHandle)); found {
+			daemonKey = loc.HostDir
+		} else {
+			daemonKey = strings.TrimSuffix(volumeHandle, "-dir") + "/dir"
+		}
+		b.artifactLocator.Record(cacheKey, nodeName, daemonKey)
 	}
 
 	return nil
