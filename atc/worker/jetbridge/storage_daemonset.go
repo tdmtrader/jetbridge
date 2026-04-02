@@ -470,46 +470,51 @@ func (b *DaemonSetBackend) WrapVolumeForLookup(key, handle, workerName string, d
 	return NewDaemonSetVolume(key, handle, workerName, dbVolume, sourceNode, b.config, b.nodeIPResolver)
 }
 
-// RegisterResourceCache registers a stable resource cache alias (rc-{id}) on
-// the daemon that hosts the volume. This points to the same disk path as the
-// volume's step output, making it discoverable via HEAD /resource-caches/{key}.
+// RegisterResourceCache creates a symlink on the shared hostPath filesystem
+// so the daemon can discover the cached resource data. The symlink maps
+// steps/rc-{id} → steps/{containerHandle}/dir, making the cache discoverable
+// via the daemon's filesystem fallback (HEAD /artifacts/steps/rc-{id}).
+//
+// This approach avoids needing the daemon's /register API (which requires
+// NodeIPResolver and nodes/get RBAC) and works with any daemon version.
 func (b *DaemonSetBackend) RegisterResourceCache(ctx context.Context, cacheID int, volumeHandle, nodeName string) error {
-	if nodeName == "" {
-		return nil
-	}
-
 	cacheKey := ResourceCacheKey(cacheID)
 
-	// The volumeHandle from get_step is "{containerHandle}-dir" (built by
-	// buildVolumeMountsForSpec). The actual data lives at
-	// steps/{containerHandle}/dir. Look up the locator entry for this
-	// volume handle — RecordOutputs already stored the daemonKey as
-	// "{containerHandle}/dir".
-	var diskPath string
+	// Resolve the target path: the actual data directory on the hostPath.
+	// The volumeHandle is "{containerHandle}-dir" — the data lives at
+	// steps/{containerHandle}/dir.
+	var targetPath string
 	if b.artifactLocator != nil {
 		if loc, found := b.artifactLocator.Locate(ArtifactKey(volumeHandle)); found {
-			diskPath = filepath.Join(b.config.ArtifactDaemonHostPath, "steps", loc.HostDir)
+			targetPath = filepath.Join(b.config.ArtifactDaemonHostPath, "steps", loc.HostDir)
 		}
 	}
-
-	if diskPath == "" {
-		// Fallback: strip the "-dir" suffix to recover the container handle.
+	if targetPath == "" {
 		containerHandle := strings.TrimSuffix(volumeHandle, "-dir")
-		diskPath = filepath.Join(b.config.ArtifactDaemonHostPath, "steps", containerHandle, "dir")
+		targetPath = filepath.Join(b.config.ArtifactDaemonHostPath, "steps", containerHandle, "dir")
 	}
 
-	b.registerDaemonAlias(nodeName, cacheKey, diskPath)
+	// Verify the target exists before creating the symlink.
+	if _, err := os.Stat(targetPath); err != nil {
+		return fmt.Errorf("resource cache target path %s does not exist: %w", targetPath, err)
+	}
+
+	// Create a symlink at steps/rc-{id} → target. The daemon's existing
+	// HEAD /artifacts/steps/{key} endpoint stats this path directly, and
+	// the /resolve endpoint's filesystem fallback also finds it.
+	linkPath := filepath.Join(b.config.ArtifactDaemonHostPath, "steps", cacheKey)
+
+	// Remove any existing symlink (e.g., from a previous build with the
+	// same cache ID but different container handle).
+	os.Remove(linkPath)
+
+	if err := os.Symlink(targetPath, linkPath); err != nil {
+		return fmt.Errorf("create resource cache symlink %s → %s: %w", linkPath, targetPath, err)
+	}
 
 	// Record in locator for affinity on downstream steps.
-	if b.artifactLocator != nil {
-		// Use the locator's existing HostDir if available, otherwise construct.
-		var daemonKey string
-		if loc, found := b.artifactLocator.Locate(ArtifactKey(volumeHandle)); found {
-			daemonKey = loc.HostDir
-		} else {
-			daemonKey = strings.TrimSuffix(volumeHandle, "-dir") + "/dir"
-		}
-		b.artifactLocator.Record(cacheKey, nodeName, daemonKey)
+	if b.artifactLocator != nil && nodeName != "" {
+		b.artifactLocator.Record(cacheKey, nodeName, cacheKey)
 	}
 
 	return nil

@@ -60,9 +60,14 @@ func (d *DaemonClient) daemonIPs(ctx context.Context) ([]string, error) {
 }
 
 // ProbeResourceCache checks whether any daemon pod has the given resource
-// cache key. Returns the node name of the first daemon that responds 200 to
-// HEAD /resource-caches/{key}. If no daemon has it, returns ("", false, nil).
-// Daemons are probed concurrently; the first hit wins.
+// cache key. The cache is registered as a symlink under steps/{key} on the
+// daemon's hostPath, so we probe with HEAD /artifacts/steps/{key} which
+// works with any daemon version (no new endpoints required).
+//
+// Returns the daemon pod IP that responded 200 (the node name is not
+// available from the existing /artifacts HEAD response, but the IP is
+// sufficient for the caller to record in the ArtifactLocator).
+// If no daemon has it, returns ("", false, nil).
 func (d *DaemonClient) ProbeResourceCache(ctx context.Context, cacheKey string) (string, bool, error) {
 	logger := d.logger.Session("probe-resource-cache", lager.Data{"key": cacheKey})
 
@@ -77,8 +82,8 @@ func (d *DaemonClient) ProbeResourceCache(ctx context.Context, cacheKey string) 
 	}
 
 	type probeResult struct {
-		nodeName string
-		found    bool
+		ip    string
+		found bool
 	}
 
 	ctx, cancel := context.WithCancel(ctx)
@@ -88,7 +93,7 @@ func (d *DaemonClient) ProbeResourceCache(ctx context.Context, cacheKey string) 
 
 	for _, ip := range ips {
 		go func(ip string) {
-			url := fmt.Sprintf("http://%s:%d/resource-caches/%s", ip, d.port, cacheKey)
+			url := fmt.Sprintf("http://%s:%d/artifacts/steps/%s", ip, d.port, cacheKey)
 			req, err := http.NewRequestWithContext(ctx, http.MethodHead, url, nil)
 			if err != nil {
 				results <- probeResult{}
@@ -102,8 +107,7 @@ func (d *DaemonClient) ProbeResourceCache(ctx context.Context, cacheKey string) 
 			}
 			resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
-				nodeName := resp.Header.Get("X-Node-Name")
-				results <- probeResult{nodeName: nodeName, found: true}
+				results <- probeResult{ip: ip, found: true}
 				return
 			}
 			results <- probeResult{}
@@ -113,8 +117,8 @@ func (d *DaemonClient) ProbeResourceCache(ctx context.Context, cacheKey string) 
 	for range ips {
 		r := <-results
 		if r.found {
-			logger.Info("cache-found", lager.Data{"node": r.nodeName})
-			return r.nodeName, true, nil
+			logger.Info("cache-found", lager.Data{"daemon_ip": r.ip})
+			return r.ip, true, nil
 		}
 	}
 

@@ -298,9 +298,9 @@ func (w *Worker) LookupVolume(ctx context.Context, handle string) (runtime.Volum
 	return NewDaemonSetVolume(key, handle, w.Name(), dbVolume, "", w.config, w.nodeIPResolver), true, nil
 }
 
-// RegisterResourceCache registers a stable resource cache alias on the daemon
-// after a successful get step. The alias maps rc-{cacheID} to the physical
-// disk path of the get step output, making it discoverable on subsequent runs.
+// RegisterResourceCache creates a symlink on the daemon's hostPath to cache
+// the resource data for subsequent get steps. The symlink maps
+// steps/rc-{cacheID} → steps/{containerHandle}/dir.
 func (w *Worker) RegisterResourceCache(ctx context.Context, cacheID int, volume runtime.Volume) error {
 	if w.storageBackend == nil {
 		return nil
@@ -311,22 +311,13 @@ func (w *Worker) RegisterResourceCache(ctx context.Context, cacheID int, volume 
 		"handle":   volume.Handle(),
 	})
 
-	// The volume handle for a get step is "{containerHandle}-dir" (see
-	// buildVolumeMountsForSpec). We look up the node via the locator using
-	// the full handle (which is the key RecordOutputs recorded).
 	handle := volume.Handle()
 
-	// Look up which node the artifact lives on via the locator. RecordOutputs
-	// has already been called by this point (in process.go), so the locator
-	// should have the node name.
+	// Look up which node the artifact lives on via the locator (for affinity
+	// recording). RecordOutputs has already been called by this point.
 	var nodeName string
 	if dsb, ok := w.storageBackend.(*DaemonSetBackend); ok && dsb.artifactLocator != nil {
 		nodeName, _ = dsb.artifactLocator.LocateNode(ArtifactKey(handle))
-	}
-
-	if nodeName == "" {
-		logger.Info("skipping-no-node-name", lager.Data{"handle": handle})
-		return nil
 	}
 
 	logger.Info("registering", lager.Data{"node": nodeName})
@@ -334,14 +325,19 @@ func (w *Worker) RegisterResourceCache(ctx context.Context, cacheID int, volume 
 }
 
 // FindDaemonResourceCache probes all daemon pods for a cached resource with
-// the given cache ID. On hit, returns a stub volume whose handle is the cache
-// key (rc-{id}), resolvable by the daemon's /resolve-batch endpoint.
+// the given cache ID. The cache is a symlink at steps/rc-{id} on the daemon's
+// hostPath, discoverable via HEAD /artifacts/steps/rc-{id}.
+//
+// On hit, returns a stub volume whose handle is the cache key (rc-{id}). When
+// this volume is used as input to a task step, BuildFetchInitContainers
+// resolves it via the daemon's /resolve endpoint which follows the symlink
+// to the original get step output.
 func (w *Worker) FindDaemonResourceCache(ctx context.Context, cacheID int) (runtime.Volume, bool, error) {
 	if w.storageBackend == nil {
 		return nil, false, nil
 	}
 
-	nodeName, found, err := w.storageBackend.FindResourceCache(ctx, cacheID)
+	daemonIP, found, err := w.storageBackend.FindResourceCache(ctx, cacheID)
 	if err != nil {
 		return nil, false, err
 	}
@@ -351,14 +347,13 @@ func (w *Worker) FindDaemonResourceCache(ctx context.Context, cacheID int) (runt
 
 	cacheKey := ResourceCacheKey(cacheID)
 
-	// Record in locator so downstream steps get node affinity.
+	// Record in locator so downstream steps get node affinity. The daemon
+	// IP is used as a placeholder — on single-node clusters this is fine,
+	// and on multi-node the affinity is best-effort.
 	if dsb, ok := w.storageBackend.(*DaemonSetBackend); ok && dsb.artifactLocator != nil {
-		dsb.artifactLocator.Record(cacheKey, nodeName, cacheKey)
+		dsb.artifactLocator.Record(cacheKey, daemonIP, cacheKey)
 	}
 
-	// Return a stub volume with the cache key as handle. When this volume
-	// is passed to BuildFetchInitContainers, the daemon resolves rc-{id}
-	// via its registry alias to the physical disk path.
 	vol := NewStubVolume(cacheKey, w.Name(), "")
 	return vol, true, nil
 }

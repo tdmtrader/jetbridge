@@ -33,10 +33,9 @@ func fakeEndpointSlice(namespace, service string, ips ...string) *discoveryv1.En
 }
 
 func TestProbeResourceCache_Found(t *testing.T) {
-	// Start a fake daemon that responds 200 with X-Node-Name.
+	// Start a fake daemon that responds 200 to HEAD /artifacts/steps/rc-42.
 	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodHead && r.URL.Path == "/resource-caches/rc-42" {
-			w.Header().Set("X-Node-Name", "node-1")
+		if r.Method == http.MethodHead && r.URL.Path == "/artifacts/steps/rc-42" {
 			w.WriteHeader(http.StatusOK)
 			return
 		}
@@ -44,9 +43,7 @@ func TestProbeResourceCache_Found(t *testing.T) {
 	}))
 	defer daemon.Close()
 
-	// Extract host:port from the test server URL.
 	daemonAddr := daemon.Listener.Addr().String()
-	// daemonAddr is "127.0.0.1:PORT" — extract the IP and port.
 	host := daemonAddr[:len(daemonAddr)-len(":"+portFromAddr(daemonAddr))]
 	port := portFromAddrInt(daemonAddr)
 
@@ -54,15 +51,15 @@ func TestProbeResourceCache_Found(t *testing.T) {
 	logger := lagertest.NewTestLogger("test")
 	client := jetbridge.NewDaemonClient(logger, clientset, "cicd", "artifact-daemon", port)
 
-	nodeName, found, err := client.ProbeResourceCache(context.Background(), "rc-42")
+	daemonIP, found, err := client.ProbeResourceCache(context.Background(), "rc-42")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !found {
 		t.Fatal("expected cache to be found")
 	}
-	if nodeName != "node-1" {
-		t.Errorf("expected node-1, got %q", nodeName)
+	if daemonIP != host {
+		t.Errorf("expected daemon IP %q, got %q", host, daemonIP)
 	}
 }
 
