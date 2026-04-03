@@ -43,10 +43,11 @@ jobs:
 		Expect(sess.ExitCode()).ToNot(Equal(0))
 	})
 
-	// Triggers OOM using awk to allocate heap memory in-process.
-	// BusyBox sh string ops and /dev/shm writes don't reliably count
-	// against the container memory cgroup in K3s. Awk's string
-	// concatenation allocates real heap memory that the OOM killer sees.
+	// Triggers OOM using a static Go binary that allocates 10 MB slices
+	// in a tight loop. Shell-based approaches (awk, dd, /dev/shm) don't
+	// reliably count against the container memory cgroup in K3s.
+	// The oom-trigger image is built and loaded by buildAndLoadOOMTriggerImage
+	// in cluster_lifecycle_test.go.
 	It("detects OOM-killed containers", func() {
 		cfg := writePipelineFile("oom.yml", `
 jobs:
@@ -55,12 +56,10 @@ jobs:
   - task: eat-memory
     config:
       platform: linux
-      image_resource: {type: registry-image, source: {repository: busybox}}
+      image_resource: {type: registry-image, source: {repository: oom-trigger}}
       container_limits: {memory: 64MB}
       run:
-        path: awk
-        args:
-        - 'BEGIN { s = ""; while(1) { for(i=0;i<10000;i++) s = s "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"; } }'
+        path: /oom-trigger
 `)
 		setAndUnpausePipeline(cfg)
 		triggerJob("oom-job")

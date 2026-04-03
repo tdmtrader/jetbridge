@@ -142,6 +142,67 @@ func loadImagesIntoCluster(concourseImage string) {
 		}
 	}
 	log.Println("Image loading complete.")
+
+	// Build and load the oom-trigger image used by pod_resilience_test.go.
+	// This is a tiny static Go binary that reliably triggers the OOM killer
+	// by allocating large heap slices — shell-based approaches (awk, dd)
+	// don't reliably count against the container memory cgroup in K3s.
+	buildAndLoadOOMTriggerImage(ctx)
+}
+
+// buildAndLoadOOMTriggerImage compiles cmd/oom-trigger as a static binary,
+// packages it into a scratch Docker image, and loads it into the K3s cluster.
+func buildAndLoadOOMTriggerImage(ctx context.Context) {
+	const imageName = "oom-trigger:latest"
+
+	// Check if image already exists (e.g. built by CI pipeline).
+	if err := exec.Command("docker", "image", "inspect", imageName).Run(); err == nil {
+		log.Printf("oom-trigger image already exists, loading into K3s...")
+		if err := k3sContainer.LoadImages(ctx, imageName); err != nil {
+			log.Printf("warning: failed to load %s into K3s: %v", imageName, err)
+		}
+		return
+	}
+
+	root := mustRepoRoot()
+	tmpDir, err := os.MkdirTemp("", "oom-trigger-build-*")
+	if err != nil {
+		log.Printf("warning: failed to create temp dir for oom-trigger: %v", err)
+		return
+	}
+	defer os.RemoveAll(tmpDir)
+
+	log.Println("Building oom-trigger binary...")
+	binPath := filepath.Join(tmpDir, "oom-trigger")
+	build := exec.Command("go", "build", "-o", binPath, "./cmd/oom-trigger")
+	build.Dir = root
+	build.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS=linux", "GOARCH=amd64")
+	build.Stdout = os.Stderr
+	build.Stderr = os.Stderr
+	if err := build.Run(); err != nil {
+		log.Printf("warning: failed to build oom-trigger: %v", err)
+		return
+	}
+
+	dockerfile := filepath.Join(tmpDir, "Dockerfile")
+	if err := os.WriteFile(dockerfile, []byte("FROM scratch\nCOPY oom-trigger /oom-trigger\nENTRYPOINT [\"/oom-trigger\"]\n"), 0644); err != nil {
+		log.Printf("warning: failed to write oom-trigger Dockerfile: %v", err)
+		return
+	}
+
+	log.Println("Building oom-trigger Docker image...")
+	dockerBuild := exec.Command("docker", "build", "-t", imageName, tmpDir)
+	dockerBuild.Stdout = os.Stderr
+	dockerBuild.Stderr = os.Stderr
+	if err := dockerBuild.Run(); err != nil {
+		log.Printf("warning: failed to build oom-trigger image: %v", err)
+		return
+	}
+
+	log.Println("Loading oom-trigger into K3s cluster...")
+	if err := k3sContainer.LoadImages(ctx, imageName); err != nil {
+		log.Printf("warning: failed to load %s into K3s: %v", imageName, err)
+	}
 }
 
 // labelNodesForArtifactCache labels all K3s nodes with the label that

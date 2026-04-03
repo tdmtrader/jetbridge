@@ -259,6 +259,12 @@ jobs:
           docker build -f /tmp/Dockerfile.kind -t concourse-local:latest .
           echo "=== Image built ==="
 
+          echo "=== Building oom-trigger image ==="
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /tmp/oom-trigger ./cmd/oom-trigger
+          printf 'FROM scratch\nCOPY oom-trigger /oom-trigger\nENTRYPOINT ["/oom-trigger"]\n' > /tmp/Dockerfile.oom
+          docker build -f /tmp/Dockerfile.oom -t oom-trigger:latest /tmp/
+          echo "=== oom-trigger image built ==="
+
           echo ""
           echo "=== Running K8s behavioral tests (pre-compiled, 2 parallel KinD clusters) ==="
           echo "This will take 2-3 hours."
