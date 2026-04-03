@@ -324,18 +324,24 @@ func (w *Worker) RegisterResourceCache(ctx context.Context, cacheID int, volume 
 	return w.storageBackend.RegisterResourceCache(ctx, cacheID, handle, nodeName)
 }
 
-// FindDaemonResourceCache probes all daemon pods for a cached resource with
-// the given cache ID. The cache is a symlink at steps/rc-{id} on the daemon's
-// hostPath, discoverable via HEAD /artifacts/steps/rc-{id}.
+// FindDaemonResourceCache probes all live daemon pods for a cached resource
+// with the given cache ID. The cache is a symlink at steps/rc-{id} on the
+// daemon's hostPath, discoverable via HEAD /artifacts/steps/rc-{id}.
 //
 // On hit, returns a stub volume whose handle is the cache key (rc-{id}). When
 // this volume is used as input to a task step, BuildFetchInitContainers
 // resolves it via the daemon's /resolve endpoint which follows the symlink
 // to the original get step output.
+//
+// This method always probes live daemon pods via EndpointSlice discovery.
+// The in-memory ArtifactLocator is intentionally NOT consulted here because
+// it may contain stale entries for nodes that no longer exist (e.g. after a
+// node roll). The locator is only used for scheduling affinity and fetch
+// routing — never as a source of truth for cache existence.
 func (w *Worker) FindDaemonResourceCache(ctx context.Context, cacheID int) (runtime.Volume, bool, error) {
 	logger := lagerctx.FromContext(ctx).Session("find-daemon-resource-cache", lager.Data{
-		"cache-id":        cacheID,
-		"has-backend":     w.storageBackend != nil,
+		"cache-id":    cacheID,
+		"has-backend": w.storageBackend != nil,
 	})
 
 	if w.storageBackend == nil {
@@ -345,19 +351,7 @@ func (w *Worker) FindDaemonResourceCache(ctx context.Context, cacheID int) (runt
 
 	cacheKey := ResourceCacheKey(cacheID)
 
-	// Fast path: check the in-memory locator first. If the ATC hasn't
-	// restarted since the get step ran, the locator already has the entry
-	// from RegisterResourceCache.
-	if dsb, ok := w.storageBackend.(*DaemonSetBackend); ok && dsb.artifactLocator != nil {
-		if loc, found := dsb.artifactLocator.Locate(cacheKey); found {
-			logger.Info("locator-hit", lager.Data{"key": cacheKey, "node": loc.NodeName})
-			vol := NewStubVolume(cacheKey, w.Name(), "")
-			return vol, true, nil
-		}
-		logger.Info("locator-miss", lager.Data{"key": cacheKey})
-	}
-
-	// Slow path: probe daemon pods for the cache.
+	// Probe live daemon pods for the cache.
 	logger.Info("probing-daemons")
 	daemonIP, found, err := w.storageBackend.FindResourceCache(ctx, cacheID)
 	if err != nil {

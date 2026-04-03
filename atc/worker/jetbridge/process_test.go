@@ -769,9 +769,10 @@ var _ = Describe("Process", func() {
 		BeforeEach(func() {
 			fakeExecutor = &fakeExecExecutor{}
 
-			// Use a very short timeout for testing.
+			// Use very short timeouts for testing.
 			timeoutCfg = jetbridge.NewConfig("test-namespace", "")
 			timeoutCfg.PodStartupTimeout = 200 * time.Millisecond
+			timeoutCfg.PodSchedulingTimeout = 200 * time.Millisecond
 
 			timeoutWorker = jetbridge.NewWorker(fakeDBWorker, fakeClientset, timeoutCfg)
 			timeoutWorker.SetExecutor(fakeExecutor)

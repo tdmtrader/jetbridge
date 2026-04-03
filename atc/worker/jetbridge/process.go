@@ -957,11 +957,18 @@ func (p *execProcess) waitForRunning(ctx context.Context) error {
 	}
 	startTime := time.Now()
 
-	// Create a timeout context for the startup deadline. This context may
-	// be replaced with a longer deadline if the pod is Unschedulable and
-	// the scheduling timeout exceeds the startup timeout.
-	timeoutCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer func() { cancel() }()
+	// Use the larger of startup and scheduling timeouts as the context
+	// deadline. The scheduling timeout (default 15m) may exceed the
+	// startup timeout (default 5m) because cluster autoscalers can take
+	// minutes to provision new nodes. The Unschedulable state tracking
+	// below determines which error message to emit on expiry.
+	effectiveTimeout := timeout
+	schedTimeout := podSchedulingTimeout(p.config)
+	if schedTimeout > effectiveTimeout {
+		effectiveTimeout = schedTimeout
+	}
+	timeoutCtx, cancel := context.WithTimeout(ctx, effectiveTimeout)
+	defer cancel()
 
 	watcher := NewPodWatcher(p.clientset, p.config.Namespace, p.podName)
 	defer watcher.Stop()
@@ -987,7 +994,7 @@ func (p *execProcess) waitForRunning(ctx context.Context) error {
 				if !unschedulableFirstSeen.IsZero() && lastPod != nil {
 					msg, _ := isPodUnschedulable(lastPod)
 					writePodDiagnostics(lastPod, p.processIO.Stderr)
-					return fmt.Errorf("pod scheduling timeout: Unschedulable for %s: %s", podSchedulingTimeout(p.config), msg)
+					return fmt.Errorf("pod scheduling timeout: Unschedulable for %s: %s", schedTimeout, msg)
 				}
 				if lastPod != nil {
 					writePodDiagnostics(lastPod, p.processIO.Stderr)
@@ -1044,30 +1051,18 @@ func (p *execProcess) waitForRunning(ctx context.Context) error {
 		if message, unschedulable := isPodUnschedulable(pod); unschedulable {
 			if unschedulableFirstSeen.IsZero() {
 				unschedulableFirstSeen = time.Now()
-				// Extend the timeout context if the scheduling timeout
-				// exceeds the remaining startup timeout. This ensures the
-				// watcher doesn't time out before the scheduling deadline.
-				schedDeadline := time.Now().Add(podSchedulingTimeout(p.config))
-				if dl, ok := timeoutCtx.Deadline(); ok && schedDeadline.After(dl) {
-					cancel()
-					timeoutCtx, cancel = context.WithDeadline(ctx, schedDeadline)
-				}
 			}
 			if !unschedulableNotified {
 				fmt.Fprintf(p.processIO.Stderr, "pod is Unschedulable: %s — waiting up to %s for cluster resources\n", message, podSchedulingTimeout(p.config))
 				unschedulableNotified = true
 			}
-			if time.Since(unschedulableFirstSeen) > podSchedulingTimeout(p.config) {
+			if time.Since(unschedulableFirstSeen) > schedTimeout {
 				writePodDiagnostics(pod, p.processIO.Stderr)
-				return fmt.Errorf("pod scheduling timeout: Unschedulable for %s: %s", podSchedulingTimeout(p.config), message)
+				return fmt.Errorf("pod scheduling timeout: Unschedulable for %s: %s", schedTimeout, message)
 			}
-		} else if !unschedulableFirstSeen.IsZero() {
-			// Pod is no longer Unschedulable — restore the startup timeout
-			// from now (fresh window for actual startup).
+		} else {
 			unschedulableFirstSeen = time.Time{}
 			unschedulableNotified = false
-			cancel()
-			timeoutCtx, cancel = context.WithTimeout(ctx, timeout)
 		}
 
 		if pod.Status.Phase == corev1.PodRunning {

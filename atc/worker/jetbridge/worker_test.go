@@ -3,7 +3,12 @@ package jetbridge_test
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strconv"
+	"strings"
 
+	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbfakes"
 	"github.com/concourse/concourse/atc/runtime"
@@ -11,6 +16,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
 )
@@ -456,5 +462,66 @@ var _ = Describe("Worker", func() {
 			})
 		})
 	})
-})
 
+	Describe("FindDaemonResourceCache", func() {
+		Context("when the locator has a stale entry for a dead node", func() {
+			It("does not return a cache hit from the stale locator entry", func() {
+				// Start a live daemon that does NOT have the cache.
+				daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.WriteHeader(http.StatusNotFound)
+				}))
+				defer daemon.Close()
+
+				// Extract host and port from the test server.
+				addr := daemon.Listener.Addr().String()
+				colonIdx := strings.LastIndex(addr, ":")
+				host := addr[:colonIdx]
+				port, _ := strconv.Atoi(addr[colonIdx+1:])
+
+				// Create a clientset with an EndpointSlice pointing to
+				// the live daemon only (simulating the new node).
+				daemonClientset := fake.NewSimpleClientset(&discoveryv1.EndpointSlice{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "artifact-daemon-abc",
+						Namespace: "test-namespace",
+						Labels: map[string]string{
+							discoveryv1.LabelServiceName: "artifact-daemon",
+						},
+					},
+					Endpoints: []discoveryv1.Endpoint{
+						{Addresses: []string{host}},
+					},
+				})
+
+				// Create a worker with DaemonSet backend (requires
+				// ArtifactDaemonHostPath to activate the locator).
+				daemonCfg := cfg
+				daemonCfg.ArtifactDaemonHostPath = "/var/artifacts"
+				daemonCfg.ArtifactDaemonService = "artifact-daemon"
+				daemonCfg.ArtifactDaemonPort = port
+				daemonWorker := jetbridge.NewWorker(fakeDBWorker, daemonClientset, daemonCfg)
+
+				logger := lagertest.NewTestLogger("test")
+				client := jetbridge.NewDaemonClient(logger, daemonClientset, "test-namespace", "artifact-daemon", port)
+				daemonWorker.SetDaemonClient(client)
+
+				// Seed the locator with a stale entry for a dead node IP.
+				// This simulates: the old node had the cache, then was rolled.
+				locator := jetbridge.NewArtifactLocator()
+				locator.Record("rc-42", "10.0.0.99", "rc-42") // dead node IP
+				daemonWorker.SetArtifactLocator(locator)
+
+				// Re-set the daemon client after SetArtifactLocator
+				// (which replaces the storage backend).
+				daemonWorker.SetDaemonClient(client)
+
+				// FindDaemonResourceCache should NOT return the stale
+				// locator entry — it should probe live daemons and find
+				// nothing, since the live daemon returns 404.
+				_, found, err := daemonWorker.FindDaemonResourceCache(ctx, 42)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(found).To(BeFalse(), "expected no cache hit when the locator entry points to a dead node and no live daemon has the cache")
+			})
+		})
+	})
+})
