@@ -5,6 +5,11 @@ resources:
     uri: https://github.com/tdmtrader/jetbridge.git
     branch: jetbridge
 
+- name: upgrade-settle-timer
+  type: time
+  source:
+    interval: 90s
+
 jobs:
 - name: build-and-vet
   serial_groups: [pipeline]
@@ -312,10 +317,7 @@ jobs:
           kubectl rollout restart deployment/concourse-web -n cicd
           kubectl rollout restart daemonset/artifact-daemon -n cicd
 
-          echo "=== Rollout triggered — waiting for cluster to stabilize ==="
-          kubectl rollout status deployment/concourse-web -n cicd --timeout=180s
-          kubectl rollout status daemonset/artifact-daemon -n cicd --timeout=180s
-          echo "=== Rollout complete ==="
+          echo "=== Rollout triggered. ==="
 
 - name: verify-upgrade
   serial_groups: [pipeline]
@@ -324,6 +326,8 @@ jobs:
     trigger: true
     params: {depth: 0, fetch_tags: true}
     passed: [self-upgrade]
+  - get: upgrade-settle-timer
+    trigger: false
   - task: check-running-version
     config:
       platform: linux
