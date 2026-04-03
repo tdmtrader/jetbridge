@@ -312,7 +312,10 @@ jobs:
           kubectl rollout restart deployment/concourse-web -n cicd
           kubectl rollout restart daemonset/artifact-daemon -n cicd
 
-          echo "=== Rollout triggered. ==="
+          echo "=== Rollout triggered — waiting for cluster to stabilize ==="
+          kubectl rollout status deployment/concourse-web -n cicd --timeout=180s
+          kubectl rollout status daemonset/artifact-daemon -n cicd --timeout=180s
+          echo "=== Rollout complete ==="
 
 - name: verify-upgrade
   serial_groups: [pipeline]
