@@ -29,6 +29,7 @@ func setupLiveResilienceWorker(t *testing.T, handle string, podStartupTimeout ti
 
 	clientset, cfg := kubeClient(t)
 	cfg.PodStartupTimeout = podStartupTimeout
+	cfg.PodSchedulingTimeout = podStartupTimeout
 
 	restConfig, err := jetbridge.RestConfig(*cfg)
 	if err != nil {
