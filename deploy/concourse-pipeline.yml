@@ -128,7 +128,7 @@ jobs:
         - -exc
         - |
           cd repo
-          git fetch --tags origin
+          git fetch --tags --force origin
 
           echo "=== Computing next version from tags ==="
           LATEST_TAG=$(git tag -l 'v0.2.*' --sort=-v:refname | grep -v '\-rc' | head -1)
@@ -173,7 +173,7 @@ jobs:
         - -exc
         - |
           cd repo
-          git fetch --tags origin
+          git fetch --tags --force origin
 
           echo "=== Computing version from tags ==="
           LATEST_TAG=$(git tag -l 'v0.2.*' --sort=-v:refname | grep -v '\-rc' | head -1)
@@ -299,7 +299,7 @@ jobs:
         - -exc
         - |
           cd repo
-          git fetch --tags origin
+          git fetch --tags --force origin
 
           LATEST_TAG=$(git tag -l 'v0.2.*' --sort=-v:refname | grep -v '\-rc' | head -1)
           VERSION="${LATEST_TAG#v}"
@@ -340,7 +340,7 @@ jobs:
         - -exc
         - |
           cd repo
-          git fetch --tags origin
+          git fetch --tags --force origin
 
           LATEST_TAG=$(git tag -l 'v0.2.*' --sort=-v:refname | grep -v '\-rc' | head -1)
           VERSION="${LATEST_TAG#v}"
@@ -449,7 +449,7 @@ jobs:
         - -exc
         - |
           cd repo
-          git fetch --tags origin
+          git fetch --tags --force origin
 
           echo "=== Computing release version from tags ==="
           LATEST_TAG=$(git tag -l 'v0.2.*' --sort=-v:refname | grep -v '\-rc' | head -1)
