@@ -79,6 +79,12 @@ func (v *DaemonSetVolume) DBVolume() db.CreatedVolume {
 // StreamOut fetches the artifact tar from the DaemonSet HTTP server on the
 // source node, optionally extracting a sub-path. The response body is a tar
 // stream that the caller must close.
+//
+// When enc is non-nil and not RawEncoding, the raw tar from the daemon is
+// piped through a compressor before being returned. This satisfies the
+// runtime.Artifact contract which requires StreamOut to return a compressed
+// stream when compression is requested (e.g., Streamer.StreamFile expects
+// gzip-wrapped tar).
 func (v *DaemonSetVolume) StreamOut(ctx context.Context, path string, enc compression.Compression) (io.ReadCloser, error) {
 	if v.sourceNode == "" && v.sourceIP == "" {
 		return nil, fmt.Errorf("DaemonSetVolume.StreamOut: no source node known (key=%s)", v.key)
@@ -117,7 +123,26 @@ func (v *DaemonSetVolume) StreamOut(ctx context.Context, path string, enc compre
 		return nil, fmt.Errorf("unexpected status %d from %s", resp.StatusCode, url)
 	}
 
-	return resp.Body, nil
+	needsCompression := enc != nil && enc.Encoding() != compression.RawEncoding
+	if !needsCompression {
+		return resp.Body, nil
+	}
+
+	// Pipe the raw tar from the daemon through a compressor so callers
+	// (e.g., Streamer.StreamFile) receive the compressed stream they expect.
+	pr, pw := io.Pipe()
+	go func() {
+		compressor := newCompressWriter(pw, enc.Encoding())
+		_, copyErr := io.Copy(compressor, resp.Body)
+		resp.Body.Close()
+
+		if closeErr := compressor.Close(); closeErr != nil && copyErr == nil {
+			copyErr = closeErr
+		}
+		pw.CloseWithError(copyErr)
+	}()
+
+	return pr, nil
 }
 
 // SetDaemonClient configures daemon discovery for StreamIn operations.

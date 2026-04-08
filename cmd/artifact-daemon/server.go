@@ -2,6 +2,7 @@ package main
 
 import (
 	"archive/tar"
+	"bufio"
 	"compress/gzip"
 	"context"
 	"encoding/json"
@@ -181,9 +182,13 @@ func (s *Server) handlePutArtifact(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusCreated)
 }
 
-// handleStreamIn accepts a gzipped tar stream and extracts it to steps/{key}/
-// so that resolveOne can discover it via the filesystem fallback. The key is
-// also registered in the in-memory registry for fast lookups.
+// handleStreamIn accepts a tar stream (optionally gzip-compressed) and extracts
+// it to steps/{key}/ so that resolveOne can discover it via the filesystem
+// fallback. The key is also registered in the in-memory registry for fast lookups.
+//
+// Gzip is auto-detected by peeking at the first two bytes for the gzip magic
+// number (\x1f\x8b). This allows both raw tar (from DaemonSetVolume.StreamIn)
+// and gzipped tar (from fly CLI uploads) to work.
 func (s *Server) handleStreamIn(w http.ResponseWriter, r *http.Request) {
 	key := strings.TrimPrefix(r.URL.Path, "/stream-in/")
 	if key == "" {
@@ -198,15 +203,21 @@ func (s *Server) handleStreamIn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	gr, err := gzip.NewReader(r.Body)
-	if err != nil {
-		s.logger.Error("failed-to-open-gzip", err, lager.Data{"key": key})
-		http.Error(w, "gzip: "+err.Error(), http.StatusBadRequest)
-		return
+	// Auto-detect gzip by peeking at the first 2 bytes.
+	br := bufio.NewReader(r.Body)
+	var tarSource io.Reader = br
+	if magic, err := br.Peek(2); err == nil && magic[0] == 0x1f && magic[1] == 0x8b {
+		gr, err := gzip.NewReader(br)
+		if err != nil {
+			s.logger.Error("failed-to-open-gzip", err, lager.Data{"key": key})
+			http.Error(w, "gzip: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		defer gr.Close()
+		tarSource = gr
 	}
-	defer gr.Close()
 
-	tr := tar.NewReader(gr)
+	tr := tar.NewReader(tarSource)
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {

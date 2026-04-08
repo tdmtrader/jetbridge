@@ -1,6 +1,9 @@
 package jetbridge
 
 import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
 	"context"
 	"io"
 	"net/http"
@@ -8,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/concourse/concourse/atc/compression"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
@@ -157,6 +161,112 @@ func TestDaemonSetVolumeFromIP_StreamOut_NoIP(t *testing.T) {
 	_, err := vol.StreamOut(context.Background(), ".", nil)
 	if err == nil {
 		t.Error("expected error for empty source IP")
+	}
+}
+
+// makeTarball creates a tar archive containing a single file with the given
+// name and content. This simulates what the artifact daemon returns from
+// GET /artifacts/ for a directory.
+func makeTarball(t *testing.T, fileName, content string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	hdr := &tar.Header{
+		Name: fileName,
+		Size: int64(len(content)),
+		Mode: 0644,
+	}
+	if err := tw.WriteHeader(hdr); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write([]byte(content)); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func TestDaemonSetVolume_StreamOut_WithGzipCompression(t *testing.T) {
+	// Daemon returns raw tar (simulating GET /artifacts/).
+	tarData := makeTarball(t, "task.yml", "platform: linux\n")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-tar")
+		w.Write(tarData)
+	}))
+	defer srv.Close()
+
+	resolver := fakeNodeIPResolver(testNode("node-1", "10.0.0.1"))
+	vol := &DaemonSetVolume{
+		key:            "abc",
+		handle:         "abc",
+		workerName:     "w1",
+		sourceNode:     "node-1",
+		config:         Config{Namespace: "test-ns", ArtifactDaemonPort: 7780},
+		httpClient:     srv.Client(),
+		nodeIPResolver: resolver,
+	}
+	vol.httpClient.Transport = rewriteTransport{url: srv.URL}
+
+	reader, err := vol.StreamOut(context.Background(), ".", compression.NewGzipCompression())
+	if err != nil {
+		t.Fatalf("StreamOut with gzip: %v", err)
+	}
+	defer reader.Close()
+
+	// The returned stream must be valid gzip.
+	gr, err := gzip.NewReader(reader)
+	if err != nil {
+		t.Fatalf("gzip.NewReader on StreamOut result: %v", err)
+	}
+	defer gr.Close()
+
+	// Inside the gzip, we must find valid tar with our file.
+	tr := tar.NewReader(gr)
+	hdr, err := tr.Next()
+	if err != nil {
+		t.Fatalf("tar.Next: %v", err)
+	}
+	if hdr.Name != "task.yml" {
+		t.Errorf("expected tar entry 'task.yml', got %q", hdr.Name)
+	}
+	content, _ := io.ReadAll(tr)
+	if string(content) != "platform: linux\n" {
+		t.Errorf("expected 'platform: linux\\n', got %q", string(content))
+	}
+}
+
+func TestDaemonSetVolume_StreamOut_NilCompression_ReturnsRawTar(t *testing.T) {
+	// Daemon returns raw tar.
+	tarData := makeTarball(t, "README.md", "hello")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(tarData)
+	}))
+	defer srv.Close()
+
+	resolver := fakeNodeIPResolver(testNode("node-1", "10.0.0.1"))
+	vol := &DaemonSetVolume{
+		key:            "abc",
+		handle:         "abc",
+		workerName:     "w1",
+		sourceNode:     "node-1",
+		config:         Config{Namespace: "test-ns", ArtifactDaemonPort: 7780},
+		httpClient:     srv.Client(),
+		nodeIPResolver: resolver,
+	}
+	vol.httpClient.Transport = rewriteTransport{url: srv.URL}
+
+	reader, err := vol.StreamOut(context.Background(), ".", nil)
+	if err != nil {
+		t.Fatalf("StreamOut with nil compression: %v", err)
+	}
+	defer reader.Close()
+
+	// With nil compression, the stream should be raw tar (NOT gzip).
+	data, _ := io.ReadAll(reader)
+	if !bytes.Equal(data, tarData) {
+		t.Error("expected raw tar bytes to match daemon response")
 	}
 }
 

@@ -2,6 +2,8 @@ package main_test
 
 import (
 	"archive/tar"
+	"bytes"
+	"compress/gzip"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -521,5 +523,100 @@ func TestGetArtifact_ServesRegistryAlias(t *testing.T) {
 	}
 	if !found {
 		t.Error("data.txt not found in tar stream from registry alias")
+	}
+}
+
+// --- handleStreamIn tests ---
+
+// makeTarBytes creates a tar archive containing a single file.
+func makeTarBytes(t *testing.T, name, content string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	hdr := &tar.Header{Name: name, Size: int64(len(content)), Mode: 0644}
+	if err := tw.WriteHeader(hdr); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write([]byte(content)); err != nil {
+		t.Fatal(err)
+	}
+	tw.Close()
+	return buf.Bytes()
+}
+
+func TestStreamIn_RawTar(t *testing.T) {
+	ts, storagePath := setupServer(t)
+
+	tarData := makeTarBytes(t, "task.yml", "platform: linux\n")
+
+	req, _ := http.NewRequest(http.MethodPut, ts.URL+"/stream-in/build-1", bytes.NewReader(tarData))
+	req.Header.Set("Content-Type", "application/octet-stream")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("PUT /stream-in/: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 201, got %d: %s", resp.StatusCode, string(body))
+	}
+
+	// Verify the file was extracted.
+	data, err := os.ReadFile(filepath.Join(storagePath, "steps", "build-1", "task.yml"))
+	if err != nil {
+		t.Fatalf("extracted file not found: %v", err)
+	}
+	if string(data) != "platform: linux\n" {
+		t.Errorf("expected 'platform: linux\\n', got %q", string(data))
+	}
+}
+
+func TestStreamIn_GzippedTar(t *testing.T) {
+	ts, storagePath := setupServer(t)
+
+	tarData := makeTarBytes(t, "config.yml", "key: value\n")
+
+	// Gzip the tar data.
+	var gzBuf bytes.Buffer
+	gw := gzip.NewWriter(&gzBuf)
+	gw.Write(tarData)
+	gw.Close()
+
+	req, _ := http.NewRequest(http.MethodPut, ts.URL+"/stream-in/build-2", &gzBuf)
+	req.Header.Set("Content-Type", "application/octet-stream")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("PUT /stream-in/: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 201, got %d: %s", resp.StatusCode, string(body))
+	}
+
+	// Verify the file was extracted.
+	data, err := os.ReadFile(filepath.Join(storagePath, "steps", "build-2", "config.yml"))
+	if err != nil {
+		t.Fatalf("extracted file not found: %v", err)
+	}
+	if string(data) != "key: value\n" {
+		t.Errorf("expected 'key: value\\n', got %q", string(data))
+	}
+}
+
+func TestStreamIn_EmptyKey_Returns400(t *testing.T) {
+	ts, _ := setupServer(t)
+
+	req, _ := http.NewRequest(http.MethodPut, ts.URL+"/stream-in/", strings.NewReader("data"))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("PUT: %v", err)
+	}
+	resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("expected 400 for empty key, got %d", resp.StatusCode)
 	}
 }

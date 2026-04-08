@@ -6,6 +6,11 @@
 
 ---
 
+## [ ] Track: Fix gzip invalid header on artifact StreamIn
+*Link: [./tracks/gzip_invalid_header_artifact_streaming_20260408/](./tracks/gzip_invalid_header_artifact_streaming_20260408/)*
+
+---
+
 ## [ ] Track: Stub Volume StreamOut Panic on Daemon Cache Hit
 *Link: [./tracks/stub_volume_streamout_panic_20260408/](./tracks/stub_volume_streamout_panic_20260408/)*
 
