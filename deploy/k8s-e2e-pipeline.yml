@@ -159,9 +159,6 @@ jobs:
             sleep 2
           done
 
-          echo "=== Pre-pulling K3s image (testcontainers uses it) ==="
-          docker pull rancher/k3s:v1.31.6-k3s1
-
           echo "=== Building concourse Docker image ==="
           # Stage only the needed binaries to avoid sending the full repo (~315MB)
           # as Docker build context — that causes OOM/eviction in constrained pods.
@@ -178,6 +175,9 @@ jobs:
           DOCKERFILE
           docker build -t concourse-local:latest /tmp/docker-build/
           echo "=== Image built ==="
+
+          echo "=== Pre-pulling K3s image (after Docker build to avoid layer corruption from shim disconnects) ==="
+          docker pull rancher/k3s:v1.31.6-k3s1
 
           echo "=== Running K8s integration tests (pre-compiled, KinD cluster) ==="
           FLY_PATH=/tmp/fly /tmp/integration.test -test.v -test.timeout 30m -test.count 1 || {
@@ -246,9 +246,6 @@ jobs:
             sleep 2
           done
 
-          echo "=== Pre-pulling K3s image (testcontainers uses it) ==="
-          docker pull rancher/k3s:v1.31.6-k3s1
-
           echo "=== Building concourse Docker image ==="
           # Stage only the needed binaries to avoid sending the full repo (~315MB)
           # as Docker build context — that causes OOM/eviction in constrained pods.
@@ -271,6 +268,9 @@ jobs:
           printf 'FROM scratch\nCOPY oom-trigger /oom-trigger\nENTRYPOINT ["/oom-trigger"]\n' > /tmp/Dockerfile.oom
           docker build -f /tmp/Dockerfile.oom -t oom-trigger:latest /tmp/
           echo "=== oom-trigger image built ==="
+
+          echo "=== Pre-pulling K3s image (after Docker builds to avoid layer corruption from shim disconnects) ==="
+          docker pull rancher/k3s:v1.31.6-k3s1
 
           echo ""
           echo "=== Running K8s behavioral tests (pre-compiled, 2 parallel KinD clusters) ==="
