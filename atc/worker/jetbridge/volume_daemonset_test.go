@@ -270,6 +270,176 @@ func TestDaemonSetVolume_StreamOut_NilCompression_ReturnsRawTar(t *testing.T) {
 	}
 }
 
+// makeMultiFileTarball creates a tar archive containing multiple files.
+// entries is a map of filename → content.
+func makeMultiFileTarball(t *testing.T, entries map[string]string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	for name, content := range entries {
+		hdr := &tar.Header{
+			Name: name,
+			Size: int64(len(content)),
+			Mode: 0644,
+		}
+		if err := tw.WriteHeader(hdr); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tw.Write([]byte(content)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func TestDaemonSetVolume_StreamOut_SubPath_WithGzip(t *testing.T) {
+	// Daemon returns a tar with multiple files (simulating a full repo).
+	tarData := makeMultiFileTarball(t, map[string]string{
+		"README.md":    "# My Repo",
+		"ci/task.yml":  "platform: linux\n",
+		"src/main.go":  "package main",
+	})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-tar")
+		w.Write(tarData)
+	}))
+	defer srv.Close()
+
+	resolver := fakeNodeIPResolver(testNode("node-1", "10.0.0.1"))
+	vol := &DaemonSetVolume{
+		key:            "abc",
+		handle:         "abc",
+		workerName:     "w1",
+		sourceNode:     "node-1",
+		config:         Config{Namespace: "test-ns", ArtifactDaemonPort: 7780},
+		httpClient:     srv.Client(),
+		nodeIPResolver: resolver,
+	}
+	vol.httpClient.Transport = rewriteTransport{url: srv.URL}
+
+	reader, err := vol.StreamOut(context.Background(), "ci/task.yml", compression.NewGzipCompression())
+	if err != nil {
+		t.Fatalf("StreamOut sub-path: %v", err)
+	}
+	defer reader.Close()
+
+	// Decompress gzip, then read tar — should contain ONLY ci/task.yml.
+	gr, err := gzip.NewReader(reader)
+	if err != nil {
+		t.Fatalf("gzip.NewReader: %v", err)
+	}
+	defer gr.Close()
+
+	tr := tar.NewReader(gr)
+	hdr, err := tr.Next()
+	if err != nil {
+		t.Fatalf("tar.Next: %v", err)
+	}
+	if hdr.Name != "ci/task.yml" {
+		t.Errorf("expected tar entry 'ci/task.yml', got %q", hdr.Name)
+	}
+	content, _ := io.ReadAll(tr)
+	if string(content) != "platform: linux\n" {
+		t.Errorf("expected 'platform: linux\\n', got %q", string(content))
+	}
+
+	// There should be no more entries.
+	_, err = tr.Next()
+	if err != io.EOF {
+		t.Errorf("expected EOF after single entry, got err=%v", err)
+	}
+}
+
+func TestDaemonSetVolume_StreamOut_RootPath_ReturnsAllFiles(t *testing.T) {
+	tarData := makeMultiFileTarball(t, map[string]string{
+		"file1.txt": "aaa",
+		"file2.txt": "bbb",
+	})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(tarData)
+	}))
+	defer srv.Close()
+
+	resolver := fakeNodeIPResolver(testNode("node-1", "10.0.0.1"))
+	vol := &DaemonSetVolume{
+		key:            "abc",
+		handle:         "abc",
+		workerName:     "w1",
+		sourceNode:     "node-1",
+		config:         Config{Namespace: "test-ns", ArtifactDaemonPort: 7780},
+		httpClient:     srv.Client(),
+		nodeIPResolver: resolver,
+	}
+	vol.httpClient.Transport = rewriteTransport{url: srv.URL}
+
+	// "." means root — should return the full tar, not filtered.
+	reader, err := vol.StreamOut(context.Background(), ".", nil)
+	if err != nil {
+		t.Fatalf("StreamOut root: %v", err)
+	}
+	defer reader.Close()
+
+	tr := tar.NewReader(reader)
+	count := 0
+	for {
+		_, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("tar.Next: %v", err)
+		}
+		count++
+	}
+	if count != 2 {
+		t.Errorf("expected 2 tar entries for root path, got %d", count)
+	}
+}
+
+func TestDaemonSetVolume_StreamOut_SubPath_FileNotFound(t *testing.T) {
+	tarData := makeMultiFileTarball(t, map[string]string{
+		"README.md": "hello",
+	})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(tarData)
+	}))
+	defer srv.Close()
+
+	resolver := fakeNodeIPResolver(testNode("node-1", "10.0.0.1"))
+	vol := &DaemonSetVolume{
+		key:            "abc",
+		handle:         "abc",
+		workerName:     "w1",
+		sourceNode:     "node-1",
+		config:         Config{Namespace: "test-ns", ArtifactDaemonPort: 7780},
+		httpClient:     srv.Client(),
+		nodeIPResolver: resolver,
+	}
+	vol.httpClient.Transport = rewriteTransport{url: srv.URL}
+
+	reader, err := vol.StreamOut(context.Background(), "nonexistent.yml", compression.NewGzipCompression())
+	if err != nil {
+		t.Fatalf("StreamOut: %v", err)
+	}
+	defer reader.Close()
+
+	// Decompressing and reading tar should yield EOF (no matching entry).
+	gr, err := gzip.NewReader(reader)
+	if err != nil {
+		t.Fatalf("gzip.NewReader: %v", err)
+	}
+	defer gr.Close()
+
+	tr := tar.NewReader(gr)
+	_, err = tr.Next()
+	if err != io.EOF {
+		t.Errorf("expected EOF for nonexistent file, got err=%v", err)
+	}
+}
+
 // rewriteTransport redirects all requests to the test server URL.
 type rewriteTransport struct {
 	url string

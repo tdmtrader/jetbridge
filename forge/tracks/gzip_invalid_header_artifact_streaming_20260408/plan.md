@@ -42,3 +42,18 @@
   - If gzip: wrap in `gzip.NewReader` then `tar.NewReader`
   - If raw: use `tar.NewReader` directly
   - This fixes the latent bug for any future callers of `DaemonSetVolume.StreamIn`
+
+## Phase 4: Fix DaemonSetVolume.StreamOut sub-path filtering
+
+### Tasks
+
+- [x] Write tests for DaemonSetVolume.StreamOut with a sub-path
+  - Daemon serves a tar with multiple files (e.g., `ci/task.yml`, `README.md`, `src/main.go`)
+  - `StreamOut(ctx, "ci/task.yml", gzip)` must return a tar containing only `ci/task.yml`
+  - `StreamOut(ctx, ".", gzip)` must return the full tar (current behavior)
+  - Verify round-trip via `Streamer.StreamFile` returns the correct file content
+
+- [x] Implement sub-path filtering in DaemonSetVolume.StreamOut
+  - After fetching the full tar from the daemon, filter entries client-side
+  - When `path` is not `"."` or `""`, iterate the daemon's tar stream in the goroutine and re-tar only entries matching the requested path
+  - Match `Volume.StreamOut` semantics: `tar cf - -C /mount path` produces a tar with the entry named `path`

@@ -1,6 +1,7 @@
 package jetbridge
 
 import (
+	"archive/tar"
 	"context"
 	"fmt"
 	"io"
@@ -124,25 +125,82 @@ func (v *DaemonSetVolume) StreamOut(ctx context.Context, path string, enc compre
 	}
 
 	needsCompression := enc != nil && enc.Encoding() != compression.RawEncoding
-	if !needsCompression {
+	needsFilter := path != "" && path != "."
+
+	// Fast path: no compression and no sub-path filtering needed.
+	if !needsCompression && !needsFilter {
 		return resp.Body, nil
 	}
 
-	// Pipe the raw tar from the daemon through a compressor so callers
-	// (e.g., Streamer.StreamFile) receive the compressed stream they expect.
+	// Pipe the daemon's raw tar through optional sub-path filtering and
+	// optional compression. This satisfies the runtime.Artifact contract:
+	// - Volume.StreamOut with a sub-path produces a tar containing only that
+	//   entry (matching `tar cf - -C /mount path` semantics).
+	// - Volume.StreamOut with compression wraps the tar in a compressor.
 	pr, pw := io.Pipe()
 	go func() {
-		compressor := newCompressWriter(pw, enc.Encoding())
-		_, copyErr := io.Copy(compressor, resp.Body)
+		var dest io.Writer = pw
+		var compressor io.WriteCloser
+
+		if needsCompression {
+			compressor = newCompressWriter(pw, enc.Encoding())
+			dest = compressor
+		}
+
+		var copyErr error
+		if needsFilter {
+			copyErr = filterTarEntry(resp.Body, dest, path)
+		} else {
+			_, copyErr = io.Copy(dest, resp.Body)
+		}
 		resp.Body.Close()
 
-		if closeErr := compressor.Close(); closeErr != nil && copyErr == nil {
-			copyErr = closeErr
+		if compressor != nil {
+			if closeErr := compressor.Close(); closeErr != nil && copyErr == nil {
+				copyErr = closeErr
+			}
 		}
 		pw.CloseWithError(copyErr)
 	}()
 
 	return pr, nil
+}
+
+// filterTarEntry reads a tar stream from src and writes a new tar stream to
+// dst containing only the entry matching targetPath. This emulates the
+// behavior of `tar cf - -C /mount <path>` which the regular Volume.StreamOut
+// uses when a sub-path is requested.
+func filterTarEntry(src io.Reader, dst io.Writer, targetPath string) error {
+	tr := tar.NewReader(src)
+	tw := tar.NewWriter(dst)
+
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			tw.Close()
+			return fmt.Errorf("reading tar for filter: %w", err)
+		}
+
+		if hdr.Name != targetPath {
+			continue
+		}
+
+		if err := tw.WriteHeader(hdr); err != nil {
+			tw.Close()
+			return fmt.Errorf("writing filtered tar header: %w", err)
+		}
+		if _, err := io.Copy(tw, tr); err != nil {
+			tw.Close()
+			return fmt.Errorf("writing filtered tar body: %w", err)
+		}
+		// Only include the first match — tar entries are unique.
+		break
+	}
+
+	return tw.Close()
 }
 
 // SetDaemonClient configures daemon discovery for StreamIn operations.
