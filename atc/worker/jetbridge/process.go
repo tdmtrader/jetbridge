@@ -946,9 +946,11 @@ func (p *execProcess) SetTTY(_ runtime.TTYSpec) error {
 	return nil
 }
 
-// recreatePausePodIfTerminal checks if the pause pod is in a terminal state
-// (Succeeded/Failed) and recreates it. This handles the race where the GC
+// recreatePausePodIfTerminal checks if the pause pod terminated cleanly
+// (PodSucceeded) and recreates it. This handles the race where the GC
 // reaper terminates a check pod between waitForRunning and the SPDY exec.
+// Only PodSucceeded triggers recreation — PodFailed indicates a genuine
+// container failure (OOM, crash, etc.) that should not be retried.
 func (p *execProcess) recreatePausePodIfTerminal(ctx context.Context) error {
 	pod, err := p.clientset.CoreV1().Pods(p.config.Namespace).Get(ctx, p.podName, metav1.GetOptions{})
 	if err != nil {
@@ -959,8 +961,8 @@ func (p *execProcess) recreatePausePodIfTerminal(ctx context.Context) error {
 		}
 		return fmt.Errorf("pod not found and no container to recreate: %w", err)
 	}
-	if pod.Status.Phase != corev1.PodSucceeded && pod.Status.Phase != corev1.PodFailed {
-		return fmt.Errorf("pod %s is %s, not terminal — cannot recreate", p.podName, pod.Status.Phase)
+	if pod.Status.Phase != corev1.PodSucceeded {
+		return fmt.Errorf("pod %s is %s, not cleanly terminated — cannot recreate", p.podName, pod.Status.Phase)
 	}
 	// Delete the terminal pod and create a fresh pause pod.
 	_ = p.clientset.CoreV1().Pods(p.config.Namespace).Delete(ctx, p.podName, metav1.DeleteOptions{})
@@ -1142,10 +1144,12 @@ func (p *execProcess) waitForRunning(ctx context.Context) error {
 		}
 
 		if pod.Status.Phase == corev1.PodFailed || pod.Status.Phase == corev1.PodSucceeded {
-			// The pause pod terminated (e.g. GC reaper cleaned up a
-			// previous check's container). Attempt to recreate it once
-			// before giving up.
-			if p.container != nil && !podRecreated {
+			// The pause pod was terminated by an external actor (e.g. GC
+			// reaper cleaned up a previous check's container). Attempt to
+			// recreate it once before giving up. Only recreate for PodFailed
+			// — PodSucceeded means the container ran to completion, which
+			// should not be retried.
+			if pod.Status.Phase == corev1.PodFailed && p.container != nil && !podRecreated {
 				logger := lagerctx.FromContext(ctx).Session("wait-for-running-recreate")
 				logger.Info("pod-terminal-recreating", lager.Data{
 					"pod":   p.podName,
