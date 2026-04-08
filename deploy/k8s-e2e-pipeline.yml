@@ -27,7 +27,7 @@ jobs:
         - -exc
         - |
           REGISTRY="registry-docker-registry.cicd.svc.cluster.local:5000"
-          IMAGE_TAG="v31"
+          IMAGE_TAG="v32"
           IMAGE="${REGISTRY}/concourse-kind-runner:${IMAGE_TAG}"
           BUILDER_POD="kind-runner-builder-$$"
 
@@ -141,7 +141,7 @@ jobs:
     timeout: 45m
     config:
       platform: linux
-      rootfs_uri: docker:///registry.home/concourse-kind-runner:v31
+      rootfs_uri: docker:///registry.home/concourse-kind-runner:v32
       run:
         path: sh
         args:
@@ -230,7 +230,7 @@ jobs:
     timeout: 4h
     config:
       platform: linux
-      rootfs_uri: docker:///registry.home/concourse-kind-runner:v31
+      rootfs_uri: docker:///registry.home/concourse-kind-runner:v32
       run:
         path: sh
         args:
