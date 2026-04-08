@@ -789,22 +789,59 @@ func (p *execProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 	// Build the command: [path, arg1, arg2, ...]
 	command := append([]string{p.processSpec.Path}, p.processSpec.Args...)
 
-	execCtx, execSpan := tracing.StartSpan(ctx, "k8s.exec-process.exec", tracing.Attrs{
-		"pod-name": p.podName,
-	})
-	err := p.executor.ExecInPod(
-		execCtx,
-		p.config.Namespace,
-		p.podName,
-		mainContainerName,
-		command,
-		p.processIO.Stdin,
-		p.processIO.Stdout,
-		p.processIO.Stderr,
-		p.processSpec.TTY != nil,
-		ExecAttrs{Purpose: "step-command"},
-	)
-	tracing.End(execSpan, err)
+	// Exec with retry: if the SPDY exec fails because the pause pod was
+	// terminated (e.g. GC reaper cleaned up a previous check's container),
+	// recreate the pod and retry. This handles the race where the pod
+	// transitions from Running → Succeeded between waitForRunning and exec.
+	const maxExecRetries = 2
+	var err error
+	for attempt := 0; attempt <= maxExecRetries; attempt++ {
+		execCtx, execSpan := tracing.StartSpan(ctx, "k8s.exec-process.exec", tracing.Attrs{
+			"pod-name": p.podName,
+			"attempt":  fmt.Sprintf("%d", attempt),
+		})
+		err = p.executor.ExecInPod(
+			execCtx,
+			p.config.Namespace,
+			p.podName,
+			mainContainerName,
+			command,
+			p.processIO.Stdin,
+			p.processIO.Stdout,
+			p.processIO.Stderr,
+			p.processSpec.TTY != nil,
+			ExecAttrs{Purpose: "step-command"},
+		)
+		tracing.End(execSpan, err)
+
+		if err == nil {
+			break
+		}
+		// Only retry on transient SPDY exec errors (container not found,
+		// unable to upgrade connection). These indicate the pod's container
+		// terminated between our readiness check and the exec attempt.
+		msg := err.Error()
+		if !strings.Contains(msg, "container not found") && !strings.Contains(msg, "unable to upgrade connection") {
+			break
+		}
+		if attempt == maxExecRetries {
+			break
+		}
+		logger.Info("exec-retry-on-terminated-pod", lager.Data{
+			"attempt": attempt + 1,
+			"error":   err.Error(),
+		})
+		// Recreate the pause pod if it's in a terminal state.
+		if recreateErr := p.recreatePausePodIfTerminal(ctx); recreateErr != nil {
+			logger.Error("failed-to-recreate-pause-pod", recreateErr)
+			break
+		}
+		// Wait for the new pod to be Running before retrying exec.
+		if waitErr := p.waitForRunning(ctx); waitErr != nil {
+			logger.Error("failed-to-wait-for-recreated-pod", waitErr)
+			break
+		}
+	}
 
 	// Wait for sidecar log streams to finish (bounded to 5s to avoid
 	// blocking indefinitely if a sidecar hangs).
@@ -907,6 +944,39 @@ func (p *execProcess) annotateExitStatus(ctx context.Context, exitCode int) {
 
 func (p *execProcess) SetTTY(_ runtime.TTYSpec) error {
 	return nil
+}
+
+// recreatePausePodIfTerminal checks if the pause pod is in a terminal state
+// (Succeeded/Failed) and recreates it. This handles the race where the GC
+// reaper terminates a check pod between waitForRunning and the SPDY exec.
+func (p *execProcess) recreatePausePodIfTerminal(ctx context.Context) error {
+	pod, err := p.clientset.CoreV1().Pods(p.config.Namespace).Get(ctx, p.podName, metav1.GetOptions{})
+	if err != nil {
+		// Pod doesn't exist — create a new one.
+		if p.container != nil {
+			_, createErr := p.container.createPausePod(ctx, p.processSpec)
+			return createErr
+		}
+		return fmt.Errorf("pod not found and no container to recreate: %w", err)
+	}
+	if pod.Status.Phase != corev1.PodSucceeded && pod.Status.Phase != corev1.PodFailed {
+		return fmt.Errorf("pod %s is %s, not terminal — cannot recreate", p.podName, pod.Status.Phase)
+	}
+	// Delete the terminal pod and create a fresh pause pod.
+	_ = p.clientset.CoreV1().Pods(p.config.Namespace).Delete(ctx, p.podName, metav1.DeleteOptions{})
+	// Wait for the old pod to be fully removed before creating a new one.
+	for i := 0; i < 30; i++ {
+		_, getErr := p.clientset.CoreV1().Pods(p.config.Namespace).Get(ctx, p.podName, metav1.GetOptions{})
+		if getErr != nil {
+			break // pod is gone
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	if p.container != nil {
+		_, createErr := p.container.createPausePod(ctx, p.processSpec)
+		return createErr
+	}
+	return fmt.Errorf("no container reference to recreate pause pod")
 }
 
 // fetchPodNodeName retrieves the node name where this pod is running.
