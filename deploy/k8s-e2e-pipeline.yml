@@ -289,10 +289,18 @@ jobs:
           echo "=== Image built ==="
 
           echo "=== Building oom-trigger image ==="
-          # Use pre-built binary from kind-runner image (source may not survive
-          # registry.home vs in-cluster registry mismatch)
-          cp /usr/local/bin/oom-trigger /tmp/oom-trigger 2>/dev/null \
-            || CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /tmp/oom-trigger ./cmd/oom-trigger
+          # Inline the oom-trigger source — the kind-runner image from
+          # registry.home may not include cmd/oom-trigger due to registry
+          # sync issues between in-cluster and external registries.
+          mkdir -p /tmp/oom-src
+          cat <<'OOMSRC' > /tmp/oom-src/main.go
+          package main
+          func main() {
+            var s [][]byte
+            for { s = append(s, make([]byte, 10<<20)) }
+          }
+          OOMSRC
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /tmp/oom-trigger /tmp/oom-src/main.go
           printf 'FROM scratch\nCOPY oom-trigger /oom-trigger\nENTRYPOINT ["/oom-trigger"]\n' > /tmp/Dockerfile.oom
           docker build -f /tmp/Dockerfile.oom -t oom-trigger:latest /tmp/
           echo "=== oom-trigger image built ==="
