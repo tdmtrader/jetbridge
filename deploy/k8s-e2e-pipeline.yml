@@ -163,7 +163,11 @@ jobs:
           docker pull rancher/k3s:v1.31.6-k3s1
 
           echo "=== Building concourse Docker image ==="
-          cat <<'DOCKERFILE' > /tmp/Dockerfile.kind
+          # Stage only the needed binaries to avoid sending the full repo (~315MB)
+          # as Docker build context — that causes OOM/eviction in constrained pods.
+          mkdir -p /tmp/docker-build
+          cp concourse-linux-amd64 artifact-daemon-linux-amd64 /tmp/docker-build/
+          cat <<'DOCKERFILE' > /tmp/docker-build/Dockerfile
           FROM debian:bookworm-slim
           RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates dumb-init && rm -rf /var/lib/apt/lists/*
           COPY concourse-linux-amd64 /usr/local/concourse/bin/concourse
@@ -172,7 +176,7 @@ jobs:
           ENV PATH="/usr/local/concourse/bin:${PATH}"
           ENTRYPOINT ["dumb-init", "concourse"]
           DOCKERFILE
-          docker build -f /tmp/Dockerfile.kind -t concourse-local:latest .
+          docker build -t concourse-local:latest /tmp/docker-build/
           echo "=== Image built ==="
 
           echo "=== Running K8s integration tests (pre-compiled, KinD cluster) ==="
@@ -247,7 +251,11 @@ jobs:
           docker pull rancher/k3s:v1.31.6-k3s1
 
           echo "=== Building concourse Docker image ==="
-          cat <<'DOCKERFILE' > /tmp/Dockerfile.kind
+          # Stage only the needed binaries to avoid sending the full repo (~315MB)
+          # as Docker build context — that causes OOM/eviction in constrained pods.
+          mkdir -p /tmp/docker-build
+          cp concourse-linux-amd64 artifact-daemon-linux-amd64 /tmp/docker-build/
+          cat <<'DOCKERFILE' > /tmp/docker-build/Dockerfile
           FROM debian:bookworm-slim
           RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates dumb-init && rm -rf /var/lib/apt/lists/*
           COPY concourse-linux-amd64 /usr/local/concourse/bin/concourse
@@ -256,7 +264,7 @@ jobs:
           ENV PATH="/usr/local/concourse/bin:${PATH}"
           ENTRYPOINT ["dumb-init", "concourse"]
           DOCKERFILE
-          docker build -f /tmp/Dockerfile.kind -t concourse-local:latest .
+          docker build -t concourse-local:latest /tmp/docker-build/
           echo "=== Image built ==="
 
           echo "=== Building oom-trigger image ==="

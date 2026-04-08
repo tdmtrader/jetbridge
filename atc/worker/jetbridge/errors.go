@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net"
 	"net/url"
+	"strings"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 )
@@ -41,7 +42,8 @@ func wrapIfTransient(err error) error {
 
 // isTransientK8sError returns true if the error represents a transient K8s
 // API failure that is likely to succeed on retry. This includes server-side
-// errors (429, 500, 503, 504) and network-level errors.
+// errors (429, 500, 503, 504), network-level errors, and SPDY exec failures
+// caused by container lifecycle races.
 func isTransientK8sError(err error) bool {
 	// K8s API server-side errors that are typically transient.
 	if apierrors.IsServerTimeout(err) ||
@@ -58,6 +60,16 @@ func isTransientK8sError(err error) bool {
 	}
 	var netErr net.Error
 	if errors.As(err, &netErr) {
+		return true
+	}
+
+	// SPDY exec failures caused by container lifecycle races. When a check
+	// pod completes before the exec connection is established, the SPDY
+	// upgrade fails with "container not found". This is transient because
+	// the next attempt will create a fresh pause pod.
+	msg := err.Error()
+	if strings.Contains(msg, "container not found") ||
+		strings.Contains(msg, "unable to upgrade connection") {
 		return true
 	}
 

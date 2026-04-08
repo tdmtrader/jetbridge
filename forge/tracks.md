@@ -6,6 +6,11 @@
 
 ---
 
+## [ ] Track: K8s E2E CI Failures
+*Link: [./tracks/k8s_e2e_ci_failures_20260407/](./tracks/k8s_e2e_ci_failures_20260407/)*
+
+---
+
 ## [ ] Track: ATC Scheduler Behavioral Specification
 *Link: [./tracks/scheduler_behavioral_spec_20260331/](./tracks/scheduler_behavioral_spec_20260331/)*
 

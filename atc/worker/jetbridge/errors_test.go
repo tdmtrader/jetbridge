@@ -110,3 +110,32 @@ func TestWrapIfTransientK8sNotFoundPassthrough(t *testing.T) {
 		t.Error("NotFound error should not be wrapped as TransientError")
 	}
 }
+
+func TestWrapIfTransientSPDYExecErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{
+			"container not found",
+			fmt.Errorf("exec in pod: exec stream: unable to upgrade connection: container not found (\"main\")"),
+		},
+		{
+			"unable to upgrade connection",
+			fmt.Errorf("exec in pod: unable to upgrade connection: websocket: bad handshake"),
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			wrapped := wrapIfTransient(tc.err)
+			var te *TransientError
+			if !errors.As(wrapped, &te) {
+				t.Fatalf("expected TransientError wrapper for SPDY exec error, got %T", wrapped)
+			}
+			if !te.IsRetryable() {
+				t.Error("wrapped error should be retryable")
+			}
+		})
+	}
+}
