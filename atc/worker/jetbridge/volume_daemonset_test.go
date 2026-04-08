@@ -112,6 +112,54 @@ func TestDaemonSetVolume_StreamOut_NoSourceNode(t *testing.T) {
 	}
 }
 
+func TestDaemonSetVolumeFromIP_StreamOut_Success(t *testing.T) {
+	content := "cached resource data"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Verify the request path contains the artifact key.
+		if !strings.Contains(r.URL.Path, "/artifacts/rc-42") {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		w.Write([]byte(content))
+	}))
+	defer srv.Close()
+
+	vol := NewDaemonSetVolumeFromIP("rc-42", "rc-42", "worker-1", "10.0.0.5", Config{ArtifactDaemonPort: 7780})
+	// Override transport to route to test server.
+	vol.httpClient.Transport = rewriteTransport{url: srv.URL}
+
+	reader, err := vol.StreamOut(context.Background(), ".", nil)
+	if err != nil {
+		t.Fatalf("StreamOut: %v", err)
+	}
+	defer reader.Close()
+
+	data, _ := io.ReadAll(reader)
+	if string(data) != content {
+		t.Errorf("expected %q, got %q", content, string(data))
+	}
+}
+
+func TestDaemonSetVolumeFromIP_Handle(t *testing.T) {
+	vol := NewDaemonSetVolumeFromIP("rc-42", "rc-42", "worker-1", "10.0.0.5", Config{})
+	if vol.Handle() != "rc-42" {
+		t.Errorf("expected handle rc-42, got %s", vol.Handle())
+	}
+	if vol.Source() != "worker-1" {
+		t.Errorf("expected source worker-1, got %s", vol.Source())
+	}
+}
+
+func TestDaemonSetVolumeFromIP_StreamOut_NoIP(t *testing.T) {
+	// Verify that a DaemonSetVolume with neither sourceNode nor sourceIP errors.
+	vol := NewDaemonSetVolumeFromIP("rc-42", "rc-42", "worker-1", "", Config{})
+	_, err := vol.StreamOut(context.Background(), ".", nil)
+	if err == nil {
+		t.Error("expected error for empty source IP")
+	}
+}
+
 // rewriteTransport redirects all requests to the test server URL.
 type rewriteTransport struct {
 	url string

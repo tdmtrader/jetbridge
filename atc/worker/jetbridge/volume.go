@@ -152,6 +152,10 @@ func (v *Volume) DBVolume() db.CreatedVolume {
 // When compression is non-nil and not raw, the incoming stream is decompressed
 // before being piped to tar.
 func (v *Volume) StreamIn(ctx context.Context, path string, enc compression.Compression, limitInMB float64, reader io.Reader) error {
+	if v.executor == nil {
+		return fmt.Errorf("cannot stream in: volume %s has no executor (stub volume cannot perform I/O)", v.handle)
+	}
+
 	logger := lagerctx.FromContext(ctx).Session("volume-stream-in", lager.Data{
 		"pod":        v.podName,
 		"mount-path": v.mountPath,
@@ -203,6 +207,10 @@ func (v *Volume) StreamIn(ctx context.Context, path string, enc compression.Comp
 // being returned to the caller. This satisfies the runtime.Artifact contract
 // which requires StreamOut to return a compressed tar stream.
 func (v *Volume) StreamOut(ctx context.Context, path string, enc compression.Compression) (io.ReadCloser, error) {
+	if v.executor == nil {
+		return nil, fmt.Errorf("cannot stream out: volume %s has no executor (stub volume cannot perform I/O)", v.handle)
+	}
+
 	logger := lagerctx.FromContext(ctx).Session("volume-stream-out", lager.Data{
 		"pod":        v.podName,
 		"mount-path": v.mountPath,

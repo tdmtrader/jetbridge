@@ -464,6 +464,65 @@ var _ = Describe("Worker", func() {
 	})
 
 	Describe("FindDaemonResourceCache", func() {
+		Context("when the daemon has the cache", func() {
+			It("returns a DaemonSetVolume that can StreamOut via HTTP", func() {
+				// Start a daemon that has the cache.
+				daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if strings.Contains(r.URL.Path, "/resource-caches/") {
+						w.WriteHeader(http.StatusOK)
+						return
+					}
+					if strings.Contains(r.URL.Path, "/artifacts/") {
+						w.Write([]byte("cached-tar-data"))
+						return
+					}
+					w.WriteHeader(http.StatusNotFound)
+				}))
+				defer daemon.Close()
+
+				addr := daemon.Listener.Addr().String()
+				colonIdx := strings.LastIndex(addr, ":")
+				host := addr[:colonIdx]
+				port, _ := strconv.Atoi(addr[colonIdx+1:])
+
+				daemonClientset := fake.NewSimpleClientset(&discoveryv1.EndpointSlice{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "artifact-daemon-abc",
+						Namespace: "test-namespace",
+						Labels: map[string]string{
+							discoveryv1.LabelServiceName: "artifact-daemon",
+						},
+					},
+					Endpoints: []discoveryv1.Endpoint{
+						{Addresses: []string{host}},
+					},
+				})
+
+				daemonCfg := cfg
+				daemonCfg.ArtifactDaemonHostPath = "/var/artifacts"
+				daemonCfg.ArtifactDaemonService = "artifact-daemon"
+				daemonCfg.ArtifactDaemonPort = port
+				daemonWorker := jetbridge.NewWorker(fakeDBWorker, daemonClientset, daemonCfg)
+
+				logger := lagertest.NewTestLogger("test")
+				client := jetbridge.NewDaemonClient(logger, daemonClientset, "test-namespace", "artifact-daemon", port)
+				daemonWorker.SetDaemonClient(client)
+
+				vol, found, err := daemonWorker.FindDaemonResourceCache(ctx, 42)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(found).To(BeTrue())
+				Expect(vol).ToNot(BeNil())
+				Expect(vol.Handle()).To(Equal("rc-42"))
+				Expect(vol.Source()).To(Equal("k8s-worker-1"))
+
+				// The returned volume should be a DaemonSetVolume
+				// that can StreamOut (not a stub that would panic).
+				dsVol, ok := vol.(*jetbridge.DaemonSetVolume)
+				Expect(ok).To(BeTrue(), "expected DaemonSetVolume, got %T", vol)
+				_ = dsVol
+			})
+		})
+
 		Context("when the locator has a stale entry for a dead node", func() {
 			It("does not return a cache hit from the stale locator entry", func() {
 				// Start a live daemon that does NOT have the cache.

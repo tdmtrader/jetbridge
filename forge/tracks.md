@@ -6,6 +6,16 @@
 
 ---
 
+## [ ] Track: Stub Volume StreamOut Panic on Daemon Cache Hit
+*Link: [./tracks/stub_volume_streamout_panic_20260408/](./tracks/stub_volume_streamout_panic_20260408/)*
+
+---
+
+## [ ] Track: Fix resource_config_scope GC Race Condition
+*Link: [./tracks/resource_config_scope_gc_race_20260408/](./tracks/resource_config_scope_gc_race_20260408/)*
+
+---
+
 ## [ ] Track: K8s E2E CI Failures
 *Link: [./tracks/k8s_e2e_ci_failures_20260407/](./tracks/k8s_e2e_ci_failures_20260407/)*
 

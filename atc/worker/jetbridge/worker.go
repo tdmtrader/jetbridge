@@ -366,7 +366,7 @@ func (w *Worker) FindDaemonResourceCache(ctx context.Context, cacheID int) (runt
 		dsb.artifactLocator.Record(cacheKey, daemonIP, cacheKey)
 	}
 
-	vol := NewStubVolume(cacheKey, w.Name(), "")
+	vol := NewDaemonSetVolumeFromIP(cacheKey, cacheKey, w.Name(), daemonIP, w.config)
 	return vol, true, nil
 }
 

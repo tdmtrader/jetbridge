@@ -24,6 +24,7 @@ type DaemonSetVolume struct {
 	workerName     string
 	dbVolume       db.CreatedVolume
 	sourceNode     string
+	sourceIP       string // when set, used directly instead of resolving sourceNode
 	config         Config
 	httpClient     *http.Client
 	nodeIPResolver *NodeIPResolver
@@ -41,6 +42,20 @@ func NewDaemonSetVolume(key, handle, workerName string, dbVolume db.CreatedVolum
 		config:         config,
 		httpClient:     &http.Client{Timeout: 30 * time.Second},
 		nodeIPResolver: nodeIPResolver,
+	}
+}
+
+// NewDaemonSetVolumeFromIP creates a DaemonSetVolume with a known daemon pod IP.
+// This is used when the daemon IP is already known (e.g., from ProbeResourceCache)
+// and no node-name-to-IP resolution is needed.
+func NewDaemonSetVolumeFromIP(key, handle, workerName string, daemonIP string, config Config) *DaemonSetVolume {
+	return &DaemonSetVolume{
+		key:        key,
+		handle:     handle,
+		workerName: workerName,
+		sourceIP:   daemonIP,
+		config:     config,
+		httpClient: &http.Client{Timeout: 30 * time.Second},
 	}
 }
 
@@ -65,7 +80,7 @@ func (v *DaemonSetVolume) DBVolume() db.CreatedVolume {
 // source node, optionally extracting a sub-path. The response body is a tar
 // stream that the caller must close.
 func (v *DaemonSetVolume) StreamOut(ctx context.Context, path string, enc compression.Compression) (io.ReadCloser, error) {
-	if v.sourceNode == "" {
+	if v.sourceNode == "" && v.sourceIP == "" {
 		return nil, fmt.Errorf("DaemonSetVolume.StreamOut: no source node known (key=%s)", v.key)
 	}
 
@@ -117,7 +132,7 @@ func (v *DaemonSetVolume) StreamIn(ctx context.Context, path string, compression
 	}
 
 	var url string
-	if v.sourceNode != "" {
+	if v.sourceNode != "" || v.sourceIP != "" {
 		u, err := v.daemonURL(ctx)
 		if err != nil {
 			return fmt.Errorf("DaemonSetVolume.StreamIn: %w", err)
@@ -183,6 +198,11 @@ func (v *DaemonSetVolume) daemonURL(ctx context.Context) (string, error) {
 	port := v.config.ArtifactDaemonPort
 	if port == 0 {
 		port = 7780
+	}
+
+	// If we already have a direct IP (from ProbeResourceCache), use it.
+	if v.sourceIP != "" {
+		return fmt.Sprintf("http://%s:%d/artifacts/%s", v.sourceIP, port, v.key), nil
 	}
 
 	if v.nodeIPResolver == nil {

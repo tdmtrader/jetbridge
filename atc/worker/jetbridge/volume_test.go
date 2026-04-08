@@ -209,6 +209,37 @@ var _ = Describe("Volume", func() {
 		})
 	})
 
+	Describe("StubVolume (nil executor)", func() {
+		var stubVolume *jetbridge.Volume
+
+		BeforeEach(func() {
+			stubVolume = jetbridge.NewStubVolume("rc-42", "k8s-worker", "")
+		})
+
+		It("StreamOut returns an error instead of panicking", func() {
+			_, err := stubVolume.StreamOut(ctx, ".", nil)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("cannot stream out"))
+			Expect(err.Error()).To(ContainSubstring("no executor"))
+		})
+
+		It("StreamIn returns an error instead of panicking", func() {
+			reader := bytes.NewReader([]byte("data"))
+			err := stubVolume.StreamIn(ctx, ".", nil, 0, reader)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("cannot stream in"))
+			Expect(err.Error()).To(ContainSubstring("no executor"))
+		})
+
+		It("HasExecutor returns false", func() {
+			Expect(stubVolume.HasExecutor()).To(BeFalse())
+		})
+
+		It("Handle returns the stub handle", func() {
+			Expect(stubVolume.Handle()).To(Equal("rc-42"))
+		})
+	})
+
 	Describe("volume uniqueness", func() {
 		It("two volumes with different handles are distinguishable", func() {
 			fakeDBVolume2 := new(dbfakes.FakeCreatedVolume)
