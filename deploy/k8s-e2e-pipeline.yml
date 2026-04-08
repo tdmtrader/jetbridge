@@ -27,7 +27,7 @@ jobs:
         - -exc
         - |
           REGISTRY="registry-docker-registry.cicd.svc.cluster.local:5000"
-          IMAGE="${REGISTRY}/concourse-kind-runner:v30"
+          IMAGE="${REGISTRY}/concourse-kind-runner:v31"
           BUILDER_POD="kind-runner-builder-$$"
 
           cleanup_builder() { kubectl delete pod -n cicd ${BUILDER_POD} --grace-period=0 --force 2>/dev/null || true; }
@@ -78,12 +78,20 @@ jobs:
           echo "=== Cloning fresh source ==="
           git clone --depth 1 --branch jetbridge https://github.com/tdmtrader/jetbridge.git /tmp/fresh-src
 
+          echo "=== Verifying clone has critical directories ==="
+          ls -d /tmp/fresh-src/cmd/oom-trigger /tmp/fresh-src/cmd/concourse /tmp/fresh-src/cmd/artifact-daemon
+          echo "Clone OK — all critical dirs present"
+
           echo "=== Copying source + Dockerfile + helm to builder ==="
           kubectl exec -n cicd ${BUILDER_POD} -- mkdir -p /build
           cd /tmp/fresh-src
           cp /tmp/helm ./helm
           cp deploy/Dockerfile.kind-runner Dockerfile
           tar cf - --exclude=.git . | kubectl exec -i -n cicd ${BUILDER_POD} -- sh -c 'tar xf - -C /build'
+
+          echo "=== Verifying build context on builder pod ==="
+          kubectl exec -n cicd ${BUILDER_POD} -- ls -d /build/cmd/oom-trigger /build/cmd/concourse /build/cmd/artifact-daemon
+          echo "Build context OK"
 
           echo "=== Building kind-runner image (no cache) ==="
           kubectl exec -n cicd ${BUILDER_POD} -- docker build --no-cache -t ${IMAGE} -f /build/Dockerfile /build
@@ -116,7 +124,7 @@ jobs:
     timeout: 45m
     config:
       platform: linux
-      rootfs_uri: docker:///registry.home/concourse-kind-runner:v30
+      rootfs_uri: docker:///registry.home/concourse-kind-runner:v31
       run:
         path: sh
         args:
@@ -205,7 +213,7 @@ jobs:
     timeout: 4h
     config:
       platform: linux
-      rootfs_uri: docker:///registry.home/concourse-kind-runner:v30
+      rootfs_uri: docker:///registry.home/concourse-kind-runner:v31
       run:
         path: sh
         args:
