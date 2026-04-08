@@ -1048,6 +1048,7 @@ func (p *execProcess) waitForRunning(ctx context.Context) error {
 	var unschedulableFirstSeen time.Time
 	var unschedulableNotified bool
 	countsSet := false
+	podRecreated := false
 	tracker := newPodEventTracker()
 	for {
 		pod, err := watcher.Next(timeoutCtx)
@@ -1141,16 +1142,42 @@ func (p *execProcess) waitForRunning(ctx context.Context) error {
 		}
 
 		if pod.Status.Phase == corev1.PodFailed || pod.Status.Phase == corev1.PodSucceeded {
-			// Include init container statuses and logs to diagnose
-			// fetch-input failures in DaemonSet artifact mode.
+			// The pause pod terminated (e.g. GC reaper cleaned up a
+			// previous check's container). Attempt to recreate it once
+			// before giving up.
+			if p.container != nil && !podRecreated {
+				logger := lagerctx.FromContext(ctx).Session("wait-for-running-recreate")
+				logger.Info("pod-terminal-recreating", lager.Data{
+					"pod":   p.podName,
+					"phase": string(pod.Status.Phase),
+				})
+				_ = p.clientset.CoreV1().Pods(p.config.Namespace).Delete(ctx, p.podName, metav1.DeleteOptions{})
+				for i := 0; i < 30; i++ {
+					_, getErr := p.clientset.CoreV1().Pods(p.config.Namespace).Get(ctx, p.podName, metav1.GetOptions{})
+					if getErr != nil {
+						break
+					}
+					time.Sleep(500 * time.Millisecond)
+				}
+				if _, createErr := p.container.createPausePod(ctx, p.processSpec); createErr != nil {
+					return fmt.Errorf("recreate pause pod after terminal: %w", createErr)
+				}
+				// Restart the watcher on the fresh pod.
+				watcher.Stop()
+				watcher = NewPodWatcher(p.clientset, p.config.Namespace, p.podName)
+				podRecreated = true // prevent infinite recreation loop
+				continue
+			}
+
+			// No container reference to recreate — report the error with
+			// init container diagnostics.
 			var initStatuses []string
 			for _, cs := range pod.Status.InitContainerStatuses {
 				state := "unknown"
 				if cs.State.Terminated != nil {
 					state = fmt.Sprintf("exit=%d reason=%s", cs.State.Terminated.ExitCode, cs.State.Terminated.Reason)
-					// Fetch init container logs for failed containers.
 					if cs.State.Terminated.ExitCode != 0 {
-						logReq := p.container.clientset.CoreV1().Pods(pod.Namespace).GetLogs(pod.Name, &corev1.PodLogOptions{
+						logReq := p.clientset.CoreV1().Pods(pod.Namespace).GetLogs(pod.Name, &corev1.PodLogOptions{
 							Container: cs.Name,
 						})
 						if logBytes, logErr := logReq.Do(ctx).Raw(); logErr == nil {
