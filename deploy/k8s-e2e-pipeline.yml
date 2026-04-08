@@ -27,7 +27,8 @@ jobs:
         - -exc
         - |
           REGISTRY="registry-docker-registry.cicd.svc.cluster.local:5000"
-          IMAGE="${REGISTRY}/concourse-kind-runner:v31"
+          IMAGE_TAG="v31"
+          IMAGE="${REGISTRY}/concourse-kind-runner:${IMAGE_TAG}"
           BUILDER_POD="kind-runner-builder-$$"
 
           cleanup_builder() { kubectl delete pod -n cicd ${BUILDER_POD} --grace-period=0 --force 2>/dev/null || true; }
@@ -52,7 +53,7 @@ jobs:
               env:
               - name: DOCKER_TLS_CERTDIR
                 value: ""
-              command: ["dockerd", "--host=unix:///var/run/docker.sock", "--insecure-registry=${REGISTRY}"]
+              command: ["dockerd", "--host=unix:///var/run/docker.sock", "--insecure-registry=${REGISTRY}", "--insecure-registry=registry.home"]
               resources:
                 requests:
                   memory: "4Gi"
@@ -96,7 +97,7 @@ jobs:
           echo "=== Building kind-runner image (no cache) ==="
           kubectl exec -n cicd ${BUILDER_POD} -- docker build --no-cache -t ${IMAGE} -f /build/Dockerfile /build
 
-          echo "=== Pushing to registry (with retry) ==="
+          echo "=== Pushing to in-cluster registry (with retry) ==="
           for attempt in 1 2 3 4 5; do
             if kubectl exec -n cicd ${BUILDER_POD} -- docker push ${IMAGE}; then
               echo "Push succeeded on attempt $attempt"
@@ -107,6 +108,22 @@ jobs:
             if [ "$attempt" -eq 5 ]; then
               echo "All push attempts failed"
               exit 1
+            fi
+          done
+
+          echo "=== Also pushing to registry.home (used by rootfs_uri) ==="
+          EXTERNAL_IMAGE="registry.home/concourse-kind-runner:${IMAGE_TAG}"
+          kubectl exec -n cicd ${BUILDER_POD} -- docker tag ${IMAGE} ${EXTERNAL_IMAGE}
+          for attempt in 1 2 3 4 5; do
+            if kubectl exec -n cicd ${BUILDER_POD} -- docker push ${EXTERNAL_IMAGE}; then
+              echo "Push to registry.home succeeded on attempt $attempt"
+              break
+            fi
+            echo "Push to registry.home failed (attempt $attempt/5), retrying in 10s..."
+            sleep 10
+            if [ "$attempt" -eq 5 ]; then
+              echo "Push to registry.home failed — continuing (in-cluster push succeeded)"
+              break
             fi
           done
 
@@ -272,7 +289,10 @@ jobs:
           echo "=== Image built ==="
 
           echo "=== Building oom-trigger image ==="
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /tmp/oom-trigger ./cmd/oom-trigger
+          # Use pre-built binary from kind-runner image (source may not survive
+          # registry.home vs in-cluster registry mismatch)
+          cp /usr/local/bin/oom-trigger /tmp/oom-trigger 2>/dev/null \
+            || CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /tmp/oom-trigger ./cmd/oom-trigger
           printf 'FROM scratch\nCOPY oom-trigger /oom-trigger\nENTRYPOINT ["/oom-trigger"]\n' > /tmp/Dockerfile.oom
           docker build -f /tmp/Dockerfile.oom -t oom-trigger:latest /tmp/
           echo "=== oom-trigger image built ==="
