@@ -31,6 +31,7 @@ worker/runtime/integration/sample/sample
 /fly-linux-amd64
 /artifact-daemon
 /artifact-daemon-linux-amd64
+/artifact-daemon-linux-arm64
 
 # Editor / AI tool configs
 .claude/worktrees/

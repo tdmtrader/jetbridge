@@ -1,0 +1,7 @@
+{
+  "name": "resource_config_scope_gc_race",
+  "type": "bugfix",
+  "status": "active",
+  "created": "2026-04-08",
+  "branch": "jetbridge"
+}
