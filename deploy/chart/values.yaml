@@ -480,3 +480,18 @@ artifactDaemon:
   affinity: {}
   # -- Tolerations for scheduling on tainted nodes (spot, GPU, etc.)
   tolerations: []
+  # -- TLS/mTLS configuration for encrypted and authenticated daemon communication
+  tls:
+    # -- Enable TLS (HTTPS + mTLS) for the artifact daemon.
+    # When enabled, cross-node traffic (ATC→daemon, daemon→daemon) requires
+    # mutual TLS with client certificates. Init containers verify the daemon's
+    # server cert via the mounted CA. Health probes use HTTPS without client cert.
+    enabled: false
+    # -- Name of an existing Secret containing TLS certs. Keys expected:
+    # ca.crt, tls.crt, tls.key, client.crt, client.key.
+    # When empty and tls.enabled=true, certs are auto-generated.
+    existingSecret: ""
+  # -- NetworkPolicy configuration for the artifact daemon
+  networkPolicy:
+    # -- Enable NetworkPolicy restricting daemon ingress to Concourse pods only
+    enabled: false

@@ -2,8 +2,11 @@ package jetbridge
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -23,19 +26,54 @@ type DaemonClient struct {
 	service   string
 	port      int
 	client    *http.Client
+	scheme    string // "http" or "https"
+}
+
+// DaemonClientTLSConfig holds optional mTLS configuration for the DaemonClient.
+type DaemonClientTLSConfig struct {
+	CertPath   string
+	KeyPath    string
+	CACertPath string
 }
 
 // NewDaemonClient creates a DaemonClient that discovers daemon pods via the
-// given headless service's EndpointSlices.
-func NewDaemonClient(logger lager.Logger, clientset kubernetes.Interface, namespace, service string, port int) *DaemonClient {
+// given headless service's EndpointSlices. When tlsCfg is non-nil, the client
+// uses HTTPS with mTLS (client certificate + CA trust).
+func NewDaemonClient(logger lager.Logger, clientset kubernetes.Interface, namespace, service string, port int, tlsCfg *DaemonClientTLSConfig) *DaemonClient {
+	scheme := "http"
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+
+	if tlsCfg != nil && tlsCfg.CertPath != "" && tlsCfg.KeyPath != "" && tlsCfg.CACertPath != "" {
+		clientCert, err := tls.LoadX509KeyPair(tlsCfg.CertPath, tlsCfg.KeyPath)
+		if err != nil {
+			logger.Error("failed-to-load-client-cert", err)
+		} else {
+			caCertPEM, err := os.ReadFile(tlsCfg.CACertPath)
+			if err != nil {
+				logger.Error("failed-to-read-ca-cert", err)
+			} else {
+				caPool := x509.NewCertPool()
+				caPool.AppendCertsFromPEM(caCertPEM)
+				transport.TLSClientConfig = &tls.Config{
+					Certificates: []tls.Certificate{clientCert},
+					RootCAs:      caPool,
+				}
+				scheme = "https"
+				logger.Info("mtls-enabled")
+			}
+		}
+	}
+
 	return &DaemonClient{
 		logger:    logger,
 		clientset: clientset,
 		namespace: namespace,
 		service:   service,
 		port:      port,
+		scheme:    scheme,
 		client: &http.Client{
-			Timeout: 5 * time.Second,
+			Timeout:   5 * time.Second,
+			Transport: transport,
 		},
 	}
 }
@@ -104,7 +142,7 @@ func (d *DaemonClient) ProbeResourceCache(ctx context.Context, cacheKey string) 
 			// writing anything meaningful).
 
 			// Try the new endpoint first (daemon v0.2.83+).
-			url := fmt.Sprintf("http://%s:%d/resource-caches/%s", ip, d.port, cacheKey)
+			url := fmt.Sprintf("%s://%s:%d/resource-caches/%s", d.scheme, ip, d.port, cacheKey)
 			req, err := http.NewRequestWithContext(ctx, http.MethodHead, url, nil)
 			if err != nil {
 				results <- probeResult{}
@@ -126,7 +164,7 @@ func (d *DaemonClient) ProbeResourceCache(ctx context.Context, cacheKey string) 
 			// Fallback for older daemons: POST /resolve with a probe-only
 			// destination. The daemon checks registry → filesystem → peers.
 			// We use a unique temp path to avoid conflicts.
-			resolveURL := fmt.Sprintf("http://%s:%d/resolve", ip, d.port)
+			resolveURL := fmt.Sprintf("%s://%s:%d/resolve", d.scheme, ip, d.port)
 			// Use /tmp/probe-{key} as destination — the daemon will try to
 			// copy data there but we only care about the response status.
 			resolveBody := fmt.Sprintf(`{"key":%q,"dest":"/tmp/concourse-probe-%s"}`, cacheKey, cacheKey)
@@ -184,7 +222,7 @@ func (d *DaemonClient) RegisterAlias(ctx context.Context, key, localPath string)
 	registered := false
 
 	for _, ip := range ips {
-		url := fmt.Sprintf("http://%s:%d/register", ip, d.port)
+		url := fmt.Sprintf("%s://%s:%d/register", d.scheme, ip, d.port)
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(body))
 		if err != nil {
 			continue

@@ -173,6 +173,11 @@ spec:
             - --kubernetes-artifact-daemon-port={{ .Values.artifactDaemon.port | default 7780 }}
             - --kubernetes-artifact-daemon-host-path={{ .Values.artifactDaemon.hostPath | default "/var/concourse/artifacts" }}
             - --kubernetes-artifact-daemon-service={{ include "concourse.artifactDaemonServiceName" . }}
+            {{- if .Values.artifactDaemon.tls.enabled }}
+            - --kubernetes-artifact-daemon-tls-cert=/etc/concourse/daemon-tls/client.crt
+            - --kubernetes-artifact-daemon-tls-key=/etc/concourse/daemon-tls/client.key
+            - --kubernetes-artifact-daemon-tls-ca-cert=/etc/concourse/daemon-tls/ca.crt
+            {{- end }}
             {{- end }}
             # Tracing
             {{- if .Values.tracing.otlpAddress }}
@@ -259,6 +264,11 @@ spec:
               mountPath: {{ .Values.web.tls.mountPath }}
               readOnly: true
             {{- end }}
+            {{- if and .Values.artifactDaemon.enabled (.Values.artifactDaemon.tls.enabled | default false) }}
+            - name: daemon-tls
+              mountPath: /etc/concourse/daemon-tls
+              readOnly: true
+            {{- end }}
             - name: tmp
               mountPath: /tmp
             {{- with .Values.web.extraVolumeMounts }}
@@ -282,6 +292,11 @@ spec:
         - name: web-tls
           secret:
             secretName: {{ .Values.web.tls.secretName }}
+        {{- end }}
+        {{- if and .Values.artifactDaemon.enabled (.Values.artifactDaemon.tls.enabled | default false) }}
+        - name: daemon-tls
+          secret:
+            secretName: {{ .Values.artifactDaemon.tls.existingSecret | default (printf "%s-artifact-daemon-tls" (include "concourse.fullname" .)) }}
         {{- end }}
         {{- with .Values.web.extraVolumes }}
         {{- toYaml . | nindent 8 }}

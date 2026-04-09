@@ -505,7 +505,7 @@ var _ = Describe("Worker", func() {
 				daemonWorker := jetbridge.NewWorker(fakeDBWorker, daemonClientset, daemonCfg)
 
 				logger := lagertest.NewTestLogger("test")
-				client := jetbridge.NewDaemonClient(logger, daemonClientset, "test-namespace", "artifact-daemon", port)
+				client := jetbridge.NewDaemonClient(logger, daemonClientset, "test-namespace", "artifact-daemon", port, nil)
 				daemonWorker.SetDaemonClient(client)
 
 				vol, found, err := daemonWorker.FindDaemonResourceCache(ctx, 42)
@@ -561,7 +561,7 @@ var _ = Describe("Worker", func() {
 				daemonWorker := jetbridge.NewWorker(fakeDBWorker, daemonClientset, daemonCfg)
 
 				logger := lagertest.NewTestLogger("test")
-				client := jetbridge.NewDaemonClient(logger, daemonClientset, "test-namespace", "artifact-daemon", port)
+				client := jetbridge.NewDaemonClient(logger, daemonClientset, "test-namespace", "artifact-daemon", port, nil)
 				daemonWorker.SetDaemonClient(client)
 
 				// Seed the locator with a stale entry for a dead node IP.

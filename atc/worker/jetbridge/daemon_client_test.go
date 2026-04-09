@@ -49,7 +49,7 @@ func TestProbeResourceCache_FoundViaNewEndpoint(t *testing.T) {
 
 	clientset := fake.NewSimpleClientset(fakeEndpointSlice("cicd", "artifact-daemon", host))
 	logger := lagertest.NewTestLogger("test")
-	client := jetbridge.NewDaemonClient(logger, clientset, "cicd", "artifact-daemon", port)
+	client := jetbridge.NewDaemonClient(logger, clientset, "cicd", "artifact-daemon", port, nil)
 
 	daemonIP, found, err := client.ProbeResourceCache(context.Background(), "rc-42")
 	if err != nil {
@@ -82,7 +82,7 @@ func TestProbeResourceCache_FoundViaResolveFallback(t *testing.T) {
 
 	clientset := fake.NewSimpleClientset(fakeEndpointSlice("cicd", "artifact-daemon", host))
 	logger := lagertest.NewTestLogger("test")
-	client := jetbridge.NewDaemonClient(logger, clientset, "cicd", "artifact-daemon", port)
+	client := jetbridge.NewDaemonClient(logger, clientset, "cicd", "artifact-daemon", port, nil)
 
 	daemonIP, found, err := client.ProbeResourceCache(context.Background(), "rc-42")
 	if err != nil {
@@ -108,7 +108,7 @@ func TestProbeResourceCache_NotFound(t *testing.T) {
 
 	clientset := fake.NewSimpleClientset(fakeEndpointSlice("cicd", "artifact-daemon", host))
 	logger := lagertest.NewTestLogger("test")
-	client := jetbridge.NewDaemonClient(logger, clientset, "cicd", "artifact-daemon", port)
+	client := jetbridge.NewDaemonClient(logger, clientset, "cicd", "artifact-daemon", port, nil)
 
 	_, found, err := client.ProbeResourceCache(context.Background(), "rc-999")
 	if err != nil {
@@ -123,7 +123,7 @@ func TestProbeResourceCache_NoDaemons(t *testing.T) {
 	// Empty EndpointSlice — no daemon pods.
 	clientset := fake.NewSimpleClientset(fakeEndpointSlice("cicd", "artifact-daemon"))
 	logger := lagertest.NewTestLogger("test")
-	client := jetbridge.NewDaemonClient(logger, clientset, "cicd", "artifact-daemon", 7780)
+	client := jetbridge.NewDaemonClient(logger, clientset, "cicd", "artifact-daemon", 7780, nil)
 
 	_, found, err := client.ProbeResourceCache(context.Background(), "rc-1")
 	if err != nil {

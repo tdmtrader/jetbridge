@@ -168,6 +168,22 @@ type Config struct {
 	// ArtifactDaemonService is the headless Service name for per-pod DNS
 	// resolution of the DaemonSet pods.
 	ArtifactDaemonService string
+
+	// ArtifactDaemonTLSCert is the path to the client certificate for mTLS
+	// connections to the artifact daemon.
+	ArtifactDaemonTLSCert string
+
+	// ArtifactDaemonTLSKey is the path to the client private key for mTLS
+	// connections to the artifact daemon.
+	ArtifactDaemonTLSKey string
+
+	// ArtifactDaemonTLSCACert is the path to the CA certificate for verifying
+	// the artifact daemon's server certificate.
+	ArtifactDaemonTLSCACert string
+
+	// ArtifactDaemonTLSEnabled indicates whether TLS is enabled for daemon
+	// communication. Derived from the presence of TLS cert/key/CA paths.
+	ArtifactDaemonTLSEnabled bool
 }
 
 // ImageRegistryConfig holds configuration for a container image registry

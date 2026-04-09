@@ -44,7 +44,7 @@ func TestPeerFetch_DownloadsAndExtractsTar(t *testing.T) {
 	logger := lagertest.NewTestLogger("test")
 	// Parse host and port from peerAddr.
 	host, port := splitHostPort(t, peerAddr)
-	resolver := daemon.NewPeerResolver(logger, nil, "", "", port, "")
+	resolver := daemon.NewPeerResolver(logger, nil, "", "", port, "", nil)
 
 	destDir := filepath.Join(t.TempDir(), "fetched")
 	err := resolver.Fetch(t.Context(), host, "handle-x/result", destDir)
@@ -90,7 +90,7 @@ func TestPeerFetch_RetriesOnFailure(t *testing.T) {
 
 	logger := lagertest.NewTestLogger("test")
 	host, port := splitHostPort(t, fakePeer.Listener.Addr().String())
-	resolver := daemon.NewPeerResolver(logger, nil, "", "", port, "")
+	resolver := daemon.NewPeerResolver(logger, nil, "", "", port, "", nil)
 
 	destDir := filepath.Join(t.TempDir(), "retry-dest")
 	err := resolver.Fetch(t.Context(), host, "some-key", destDir)
@@ -110,7 +110,7 @@ func TestPeerFetch_RetriesOnFailure(t *testing.T) {
 // TestPeerProbe_NoPeers verifies Probe returns false when no K8s client is set.
 func TestPeerProbe_NoPeers(t *testing.T) {
 	logger := lagertest.NewTestLogger("test")
-	resolver := daemon.NewPeerResolver(logger, nil, "", "", 8080, "")
+	resolver := daemon.NewPeerResolver(logger, nil, "", "", 8080, "", nil)
 
 	_, found := resolver.Probe(t.Context(), "any-key")
 	if found {
@@ -137,7 +137,7 @@ func TestPeerFetch_LargeArtifactSlowTransfer(t *testing.T) {
 
 	logger := lagertest.NewTestLogger("test")
 	host, port := splitHostPort(t, fakePeer.Listener.Addr().String())
-	resolver := daemon.NewPeerResolver(logger, nil, "", "", port, "")
+	resolver := daemon.NewPeerResolver(logger, nil, "", "", port, "", nil)
 
 	destDir := filepath.Join(t.TempDir(), "large-fetch")
 	err := resolver.Fetch(t.Context(), host, "large-key", destDir)
@@ -180,7 +180,7 @@ func TestPeerProbe_UsesShortTimeout(t *testing.T) {
 	})
 
 	logger := lagertest.NewTestLogger("test")
-	resolver := daemon.NewPeerResolver(logger, clientset, "ns", "svc", peerPort, "10.0.0.99")
+	resolver := daemon.NewPeerResolver(logger, clientset, "ns", "svc", peerPort, "10.0.0.99", nil)
 
 	start := time.Now()
 	_, found := resolver.Probe(t.Context(), "any-key")
@@ -221,7 +221,7 @@ func TestPeerProbe_ConcurrentFirstHitWins(t *testing.T) {
 	})
 
 	logger := lagertest.NewTestLogger("test-concurrent")
-	resolver := daemon.NewPeerResolver(logger, clientset, "ns", "svc", 7780, "10.0.0.99")
+	resolver := daemon.NewPeerResolver(logger, clientset, "ns", "svc", 7780, "10.0.0.99", nil)
 
 	start := time.Now()
 	_, found := resolver.Probe(t.Context(), "any-key")

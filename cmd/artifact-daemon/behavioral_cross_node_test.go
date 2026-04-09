@@ -66,7 +66,7 @@ func TestDaemonResolve_CrossNode_PeerFallback(t *testing.T) {
 
 	// Attach PeerResolver to server B. Use a bogus myPodIP so server A
 	// is not skipped as self.
-	resolver := daemon.NewPeerResolver(loggerB, clientset, "concourse", "artifact-daemon", portA, "10.0.0.99")
+	resolver := daemon.NewPeerResolver(loggerB, clientset, "concourse", "artifact-daemon", portA, "10.0.0.99", nil)
 	serverB.SetPeerResolver(resolver)
 
 	tsB := httptest.NewServer(serverB.Handler())
@@ -203,7 +203,7 @@ func TestDaemonResolve_LocalRegistry_NoPeerQueries(t *testing.T) {
 			},
 		},
 	})
-	resolver := daemon.NewPeerResolver(logger, clientset, "ns", "svc", peerPort, "10.0.0.99")
+	resolver := daemon.NewPeerResolver(logger, clientset, "ns", "svc", peerPort, "10.0.0.99", nil)
 	server.SetPeerResolver(resolver)
 
 	ts := httptest.NewServer(server.Handler())

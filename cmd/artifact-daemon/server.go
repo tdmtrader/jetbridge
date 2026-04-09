@@ -50,21 +50,56 @@ func (s *Server) SetPeerResolver(peers *PeerResolver) {
 	s.peers = peers
 }
 
-// Handler returns the HTTP handler for the server.
-func (s *Server) Handler() http.Handler {
+// Handler returns the HTTP handler for the server. When tlsEnabled is true,
+// protected routes are wrapped with requireClientCert middleware that returns
+// 401 if the request lacks a verified client certificate. Exempt routes
+// (/healthz, /resolve, /resolve-batch) are accessible without a client cert.
+func (s *Server) Handler(opts ...HandlerOption) http.Handler {
+	cfg := handlerConfig{}
+	for _, o := range opts {
+		o(&cfg)
+	}
+
 	mux := http.NewServeMux()
+
+	// protect wraps a handler with mTLS enforcement when TLS is enabled.
+	protect := func(h http.HandlerFunc) http.HandlerFunc {
+		if cfg.tlsEnabled {
+			return requireClientCert(h)
+		}
+		return h
+	}
+
+	// Exempt paths — no client cert required.
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
-	mux.HandleFunc("GET /artifacts/", s.handleGetArtifact)
-	mux.HandleFunc("PUT /artifacts/", s.handlePutArtifact)
-	mux.HandleFunc("DELETE /artifacts/", s.handleDeleteArtifact)
-	mux.HandleFunc("HEAD /artifacts/", s.handleHeadArtifact)
-	mux.HandleFunc("POST /register", s.handleRegister)
 	mux.HandleFunc("POST /resolve", s.handleResolve)
 	mux.HandleFunc("POST /resolve-batch", s.handleResolveBatch)
-	mux.HandleFunc("PUT /stream-in/", s.handleStreamIn)
-	mux.HandleFunc("HEAD /resource-caches/", s.handleHeadResourceCache)
-	mux.HandleFunc("GET /resource-caches/", s.handleGetResourceCache)
+
+	// Protected paths — require client cert when TLS is enabled.
+	mux.HandleFunc("GET /artifacts/", protect(s.handleGetArtifact))
+	mux.HandleFunc("PUT /artifacts/", protect(s.handlePutArtifact))
+	mux.HandleFunc("DELETE /artifacts/", protect(s.handleDeleteArtifact))
+	mux.HandleFunc("HEAD /artifacts/", protect(s.handleHeadArtifact))
+	mux.HandleFunc("POST /register", protect(s.handleRegister))
+	mux.HandleFunc("PUT /stream-in/", protect(s.handleStreamIn))
+	mux.HandleFunc("HEAD /resource-caches/", protect(s.handleHeadResourceCache))
+	mux.HandleFunc("GET /resource-caches/", protect(s.handleGetResourceCache))
+
 	return mux
+}
+
+// HandlerOption configures the HTTP handler.
+type HandlerOption func(*handlerConfig)
+
+type handlerConfig struct {
+	tlsEnabled bool
+}
+
+// WithTLS enables mTLS enforcement on protected routes.
+func WithTLS() HandlerOption {
+	return func(c *handlerConfig) {
+		c.tlsEnabled = true
+	}
 }
 
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {

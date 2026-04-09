@@ -3,6 +3,8 @@ package main
 import (
 	"archive/tar"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"io"
 	"net/http"
@@ -25,13 +27,48 @@ type PeerResolver struct {
 	service     string
 	port        int
 	myPodIP     string // this pod's IP, to skip self during peer probe
+	scheme      string // "http" or "https"
 	probeClient *http.Client
 	fetchClient *http.Client
 }
 
+// PeerTLSConfig holds optional mTLS configuration for peer communication.
+type PeerTLSConfig struct {
+	CertPath   string
+	KeyPath    string
+	CACertPath string
+}
+
 // NewPeerResolver creates a PeerResolver that discovers peers via the
-// given headless service's EndpointSlices.
-func NewPeerResolver(logger lager.Logger, clientset kubernetes.Interface, namespace, service string, port int, myPodIP string) *PeerResolver {
+// given headless service's EndpointSlices. When tlsCfg is non-nil, peer
+// communication uses HTTPS with mTLS.
+func NewPeerResolver(logger lager.Logger, clientset kubernetes.Interface, namespace, service string, port int, myPodIP string, tlsCfg *PeerTLSConfig) *PeerResolver {
+	scheme := "http"
+	var probeTransport, fetchTransport http.RoundTripper
+
+	if tlsCfg != nil && tlsCfg.CertPath != "" {
+		clientCert, err := tls.LoadX509KeyPair(tlsCfg.CertPath, tlsCfg.KeyPath)
+		if err != nil {
+			logger.Error("failed-to-load-peer-client-cert", err)
+		} else {
+			caCertPEM, err := os.ReadFile(tlsCfg.CACertPath)
+			if err != nil {
+				logger.Error("failed-to-read-peer-ca-cert", err)
+			} else {
+				caPool := x509.NewCertPool()
+				caPool.AppendCertsFromPEM(caCertPEM)
+				tlsConfig := &tls.Config{
+					Certificates: []tls.Certificate{clientCert},
+					RootCAs:      caPool,
+				}
+				probeTransport = &http.Transport{TLSClientConfig: tlsConfig}
+				fetchTransport = &http.Transport{TLSClientConfig: tlsConfig.Clone()}
+				scheme = "https"
+				logger.Info("peer-mtls-enabled")
+			}
+		}
+	}
+
 	return &PeerResolver{
 		logger:    logger,
 		clientset: clientset,
@@ -39,11 +76,14 @@ func NewPeerResolver(logger lager.Logger, clientset kubernetes.Interface, namesp
 		service:   service,
 		port:      port,
 		myPodIP:   myPodIP,
+		scheme:    scheme,
 		probeClient: &http.Client{
-			Timeout: 10 * time.Second,
+			Timeout:   10 * time.Second,
+			Transport: probeTransport,
 		},
 		fetchClient: &http.Client{
-			Timeout: 3 * time.Minute,
+			Timeout:   3 * time.Minute,
+			Transport: fetchTransport,
 		},
 	}
 }
@@ -102,7 +142,7 @@ func (p *PeerResolver) Probe(ctx context.Context, key string) (string, bool) {
 
 	for _, ip := range ips {
 		go func(ip string) {
-			url := fmt.Sprintf("http://%s:%d/artifacts/steps/%s", ip, p.port, key)
+			url := fmt.Sprintf("%s://%s:%d/artifacts/steps/%s", p.scheme, ip, p.port, key)
 			req, err := http.NewRequestWithContext(ctx, http.MethodHead, url, nil)
 			if err != nil {
 				results <- probeResult{ip: ip, found: false}

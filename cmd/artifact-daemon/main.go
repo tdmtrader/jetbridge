@@ -23,6 +23,9 @@ func main() {
 	namespace := flag.String("namespace", "default", "Kubernetes namespace")
 	serviceName := flag.String("service-name", "artifact-daemon", "Headless service name for EndpointSlice peer discovery")
 	labelKey := flag.String("label-key", "concourse.dev/artifact-cache", "Node label key to set on startup")
+	tlsCert := flag.String("tls-cert", "", "Path to TLS server certificate (enables HTTPS with mTLS)")
+	tlsKey := flag.String("tls-key", "", "Path to TLS server private key")
+	tlsCACert := flag.String("tls-ca-cert", "", "Path to CA certificate for verifying client certificates")
 
 	flag.Parse()
 
@@ -77,6 +80,8 @@ func main() {
 		sweeper.Run(sweepDone)
 	}()
 
+	tlsEnabled := *tlsCert != "" && *tlsKey != "" && *tlsCACert != ""
+
 	// Set up peer resolver for cross-node artifact resolution.
 	if *nodeName != "" {
 		k8sClientForPeers, err := buildK8sClient()
@@ -85,15 +90,39 @@ func main() {
 			// Non-fatal — cross-node resolution won't work but local still does.
 		} else {
 			podIP := os.Getenv("POD_IP")
-			peers := NewPeerResolver(logger, k8sClientForPeers, *namespace, *serviceName, *port, podIP)
+
+			var peerTLS *PeerTLSConfig
+			if tlsEnabled {
+				peerTLS = &PeerTLSConfig{
+					CertPath:   *tlsCert, // daemon uses its own server cert as client cert for peers
+					KeyPath:    *tlsKey,
+					CACertPath: *tlsCACert,
+				}
+			}
+
+			peers := NewPeerResolver(logger, k8sClientForPeers, *namespace, *serviceName, *port, podIP, peerTLS)
 			server.SetPeerResolver(peers)
 			logger.Info("peer-resolver-configured", lager.Data{"service": *serviceName, "my-ip": podIP})
 		}
 	}
 
+	var handlerOpts []HandlerOption
+	if tlsEnabled {
+		handlerOpts = append(handlerOpts, WithTLS())
+	}
+
 	httpServer := &http.Server{
 		Addr:    fmt.Sprintf(":%d", *port),
-		Handler: server.Handler(),
+		Handler: server.Handler(handlerOpts...),
+	}
+
+	if tlsEnabled {
+		tlsCfg, err := BuildTLSConfig(*tlsCert, *tlsKey, *tlsCACert)
+		if err != nil {
+			logger.Error("failed-to-build-tls-config", err)
+			os.Exit(1)
+		}
+		httpServer.TLSConfig = tlsCfg
 	}
 
 	errCh := make(chan error, 1)
@@ -104,8 +133,14 @@ func main() {
 			"node-name":    *nodeName,
 			"namespace":    *namespace,
 			"ttl":          ttl.String(),
+			"tls":          tlsEnabled,
 		})
-		errCh <- httpServer.ListenAndServe()
+		if tlsEnabled {
+			// Cert/key already loaded into TLSConfig; pass empty strings.
+			errCh <- httpServer.ListenAndServeTLS("", "")
+		} else {
+			errCh <- httpServer.ListenAndServe()
+		}
 	}()
 
 	sigCh := make(chan os.Signal, 1)

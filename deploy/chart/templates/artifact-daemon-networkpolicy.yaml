@@ -1,0 +1,64 @@
+{{- if and .Values.artifactDaemon.enabled (.Values.artifactDaemon.networkPolicy.enabled | default false) }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "concourse.fullname" . }}-artifact-daemon
+  labels:
+    {{- include "concourse.labels" . | nindent 4 }}
+    app.kubernetes.io/component: artifact-daemon
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "concourse.name" . }}
+      app.kubernetes.io/component: artifact-daemon
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Allow traffic from Concourse web pods
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ include "concourse.name" . }}
+              app.kubernetes.io/component: web
+      ports:
+        - protocol: TCP
+          port: {{ .Values.artifactDaemon.port | default 7780 }}
+    # Allow traffic from Concourse task/check pods (labeled by the K8s runtime)
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ include "concourse.name" . }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.artifactDaemon.port | default 7780 }}
+    # Allow traffic from peer daemon pods (cross-node resolution)
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ include "concourse.name" . }}
+              app.kubernetes.io/component: artifact-daemon
+      ports:
+        - protocol: TCP
+          port: {{ .Values.artifactDaemon.port | default 7780 }}
+  egress:
+    # DNS resolution
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Peer daemon communication (cross-node artifact fetching)
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ include "concourse.name" . }}
+              app.kubernetes.io/component: artifact-daemon
+      ports:
+        - protocol: TCP
+          port: {{ .Values.artifactDaemon.port | default 7780 }}
+    # Kubernetes API server (for EndpointSlice discovery and node labeling)
+    - ports:
+        - protocol: TCP
+          port: 443
+{{- end }}

@@ -180,6 +180,9 @@ type RunCommand struct {
 		ArtifactDaemonPort    int    `long:"kubernetes-artifact-daemon-port"      default:"7780" description:"HTTP port for the DaemonSet artifact server (hostPort)."`
 		ArtifactDaemonHostPath string `long:"kubernetes-artifact-daemon-host-path" description:"Host path for artifact storage on each node. When set, build pods require concourse.dev/artifact-cache=ready node label."`
 		ArtifactDaemonService  string `long:"kubernetes-artifact-daemon-service"   default:"artifact-daemon" description:"Headless Service name for DaemonSet per-pod DNS."`
+		ArtifactDaemonTLSCert    string `long:"kubernetes-artifact-daemon-tls-cert"    description:"Path to client certificate for mTLS with the artifact daemon."`
+		ArtifactDaemonTLSKey     string `long:"kubernetes-artifact-daemon-tls-key"     description:"Path to client private key for mTLS with the artifact daemon."`
+		ArtifactDaemonTLSCACert  string `long:"kubernetes-artifact-daemon-tls-ca-cert" description:"Path to CA certificate for verifying the artifact daemon's server certificate."`
 		ImageRegistryPrefix    string   `long:"kubernetes-image-registry-prefix"     description:"Registry path prefix for custom resource type images (e.g. gcr.io/my-project/concourse). Images are resolved as <prefix>/<type-name>."`
 		ImageRegistrySecret    string   `long:"kubernetes-image-registry-secret"     description:"Kubernetes Secret name (type kubernetes.io/dockerconfigjson) for registry auth. Auto-added to imagePullSecrets on every pod."`
 		BaseResourceTypes      []string `long:"kubernetes-base-resource-type"        description:"Override or add a base resource type image. Format: name=image (e.g. git=my-registry/git-resource:v2). Can be specified multiple times. Merges with built-in defaults." value-name:"NAME=IMAGE"`
@@ -1271,6 +1274,10 @@ func (cmd *RunCommand) backendComponents(
 		k8sCfg.ArtifactDaemonPort = cmd.Kubernetes.ArtifactDaemonPort
 		k8sCfg.ArtifactDaemonHostPath = cmd.Kubernetes.ArtifactDaemonHostPath
 		k8sCfg.ArtifactDaemonService = cmd.Kubernetes.ArtifactDaemonService
+		k8sCfg.ArtifactDaemonTLSCert = cmd.Kubernetes.ArtifactDaemonTLSCert
+		k8sCfg.ArtifactDaemonTLSKey = cmd.Kubernetes.ArtifactDaemonTLSKey
+		k8sCfg.ArtifactDaemonTLSCACert = cmd.Kubernetes.ArtifactDaemonTLSCACert
+		k8sCfg.ArtifactDaemonTLSEnabled = cmd.Kubernetes.ArtifactDaemonTLSCert != ""
 		if cmd.Kubernetes.CacheStore != "" && !jetbridge.ValidCacheStores[cmd.Kubernetes.CacheStore] {
 			return nil, fmt.Errorf("invalid --kubernetes-cache-store value %q (valid: hostpath, emptydir)", cmd.Kubernetes.CacheStore)
 		}
@@ -1382,6 +1389,10 @@ func (cmd *RunCommand) constructPool(dbConn db.DbConn, lockFactory lock.LockFact
 		k8sCfg.ArtifactDaemonPort = cmd.Kubernetes.ArtifactDaemonPort
 		k8sCfg.ArtifactDaemonHostPath = cmd.Kubernetes.ArtifactDaemonHostPath
 		k8sCfg.ArtifactDaemonService = cmd.Kubernetes.ArtifactDaemonService
+		k8sCfg.ArtifactDaemonTLSCert = cmd.Kubernetes.ArtifactDaemonTLSCert
+		k8sCfg.ArtifactDaemonTLSKey = cmd.Kubernetes.ArtifactDaemonTLSKey
+		k8sCfg.ArtifactDaemonTLSCACert = cmd.Kubernetes.ArtifactDaemonTLSCACert
+		k8sCfg.ArtifactDaemonTLSEnabled = cmd.Kubernetes.ArtifactDaemonTLSCert != ""
 		if cmd.Kubernetes.ImageRegistryPrefix != "" || cmd.Kubernetes.ImageRegistrySecret != "" {
 			k8sCfg.ImageRegistry = &jetbridge.ImageRegistryConfig{
 				Prefix:     cmd.Kubernetes.ImageRegistryPrefix,
@@ -1411,12 +1422,23 @@ func (cmd *RunCommand) constructPool(dbConn db.DbConn, lockFactory lock.LockFact
 			}
 			dcLogger := lager.NewLogger("daemon-client")
 			dcLogger.RegisterSink(lager.NewWriterSink(os.Stderr, lager.INFO))
+
+			var daemonTLSCfg *jetbridge.DaemonClientTLSConfig
+			if k8sCfg.ArtifactDaemonTLSCert != "" {
+				daemonTLSCfg = &jetbridge.DaemonClientTLSConfig{
+					CertPath:   k8sCfg.ArtifactDaemonTLSCert,
+					KeyPath:    k8sCfg.ArtifactDaemonTLSKey,
+					CACertPath: k8sCfg.ArtifactDaemonTLSCACert,
+				}
+			}
+
 			factory.K8sDaemonClient = jetbridge.NewDaemonClient(
 				dcLogger,
 				k8sClientset,
 				k8sCfg.Namespace,
 				k8sCfg.ArtifactDaemonService,
 				daemonPort,
+				daemonTLSCfg,
 			)
 		}
 	}

@@ -16,6 +16,8 @@ import (
 )
 
 const artifactDaemonHostPathVolumeName = "artifact-daemon-hostpath"
+const artifactDaemonTLSCAVolumeName = "artifact-daemon-tls-ca"
+const artifactDaemonTLSCAMountPath = "/etc/concourse/daemon-tls"
 
 // Compile-time check that DaemonSetBackend satisfies StorageBackend.
 var _ StorageBackend = (*DaemonSetBackend)(nil)
@@ -145,19 +147,35 @@ func (b *DaemonSetBackend) BuildFetchInitContainers(handle string, inputs []runt
 		{Name: artifactDaemonHostPathVolumeName, MountPath: ArtifactMountPath, ReadOnly: true},
 	}, mounts...)
 
+	envVars := []corev1.EnvVar{
+		{
+			Name: "HOST_IP",
+			ValueFrom: &corev1.EnvVarSource{
+				FieldRef: &corev1.ObjectFieldSelector{FieldPath: "status.hostIP"},
+			},
+		},
+	}
+
+	// When TLS is enabled, mount the CA cert and set SSL_CERT_FILE so
+	// BusyBox wget verifies the daemon's server certificate.
+	if b.config.ArtifactDaemonTLSEnabled && b.config.ArtifactDaemonTLSCACert != "" {
+		allMounts = append(allMounts, corev1.VolumeMount{
+			Name:      artifactDaemonTLSCAVolumeName,
+			MountPath: artifactDaemonTLSCAMountPath,
+			ReadOnly:  true,
+		})
+		envVars = append(envVars, corev1.EnvVar{
+			Name:  "SSL_CERT_FILE",
+			Value: filepath.Join(artifactDaemonTLSCAMountPath, "ca.crt"),
+		})
+	}
+
 	return []corev1.Container{
 		{
 			Name:    "fetch-inputs",
 			Image:   helperImage,
 			Command: b.daemonResolveBatchCommand(items),
-			Env: []corev1.EnvVar{
-				{
-					Name: "HOST_IP",
-					ValueFrom: &corev1.EnvVarSource{
-						FieldRef: &corev1.ObjectFieldSelector{FieldPath: "status.hostIP"},
-					},
-				},
-			},
+			Env:     envVars,
 			VolumeMounts:    allMounts,
 			ImagePullPolicy: corev1.PullIfNotPresent,
 			SecurityContext: &corev1.SecurityContext{
@@ -165,6 +183,13 @@ func (b *DaemonSetBackend) BuildFetchInitContainers(handle string, inputs []runt
 			},
 		},
 	}
+}
+
+func (b *DaemonSetBackend) daemonScheme() string {
+	if b.config.ArtifactDaemonTLSEnabled {
+		return "https"
+	}
+	return "http"
 }
 
 func (b *DaemonSetBackend) daemonResolveCommand(key, hostDest string) []string {
@@ -183,7 +208,7 @@ set -e
 KEY="%s"
 DST="%s"
 PORT=%d
-DAEMON="http://${HOST_IP}:${PORT}"
+DAEMON="%s://${HOST_IP}:${PORT}"
 echo "[artifact-fetch] resolving key=${KEY} dest=${DST} daemon=${DAEMON}" >&2
 # Retry up to 10 times with backoff — the daemon may not be reachable
 # immediately (hostPort iptables rules propagation, daemon restart after
@@ -201,7 +226,7 @@ while true; do
   sleep 2
 done
 echo "[artifact-fetch] resolved: ${RESP}" >&2
-`, key, hostDest, port)
+`, key, hostDest, port, b.daemonScheme())
 
 	return []string{"sh", "-c", script}
 }
@@ -225,7 +250,7 @@ func (b *DaemonSetBackend) daemonResolveBatchCommand(items []batchItem) []string
 	script := fmt.Sprintf(`
 set -e
 PORT=%d
-DAEMON="http://${HOST_IP}:${PORT}"
+DAEMON="%s://${HOST_IP}:${PORT}"
 PAYLOAD='%s'
 echo "[artifact-fetch] batch resolving %d artifacts via ${DAEMON}/resolve-batch" >&2
 ATTEMPT=0
@@ -245,7 +270,7 @@ echo "[artifact-fetch] batch resolved: ${RESP}" >&2
 case "${RESP}" in
   *'"status":"error"'*) echo "[artifact-fetch] batch had failures — see above" >&2; exit 1 ;;
 esac
-`, port, string(payload), len(items))
+`, port, b.daemonScheme(), string(payload), len(items))
 
 	return []string{"sh", "-c", script}
 }

@@ -316,7 +316,7 @@ func TestResolve_PeerFallback_EndToEnd(t *testing.T) {
 		},
 	})
 
-	resolver := daemon.NewPeerResolver(localLogger, clientset, "concourse", "artifact-daemon", peerPort, "10.0.0.99")
+	resolver := daemon.NewPeerResolver(localLogger, clientset, "concourse", "artifact-daemon", peerPort, "10.0.0.99", nil)
 	localServer.SetPeerResolver(resolver)
 
 	localTS := httptest.NewServer(localServer.Handler())
@@ -838,7 +838,7 @@ func TestPeerResolver_PeerIPs_WithEndpointSlices(t *testing.T) {
 		},
 	})
 
-	resolver := daemon.NewPeerResolver(logger, clientset, "test-ns", "my-svc", 8080, "10.0.0.2")
+	resolver := daemon.NewPeerResolver(logger, clientset, "test-ns", "my-svc", 8080, "10.0.0.2", nil)
 
 	// Probe with a key that won't match any peer (they don't exist), but
 	// we can verify self-exclusion by checking the probe tries peers.
@@ -880,7 +880,7 @@ func TestPeerResolver_SelfExclusion(t *testing.T) {
 	})
 
 	// myPodIP = 10.0.0.99, so that IP should be excluded.
-	resolver := daemon.NewPeerResolver(logger, clientset, "ns", "svc", peerPort, "10.0.0.99")
+	resolver := daemon.NewPeerResolver(logger, clientset, "ns", "svc", peerPort, "10.0.0.99", nil)
 	resolver.Probe(context.Background(), "any-key")
 
 	// The fake peer should have been probed (it's not self).
@@ -891,7 +891,7 @@ func TestPeerResolver_SelfExclusion(t *testing.T) {
 
 func TestPeerResolver_NilClientset_ReturnsNil(t *testing.T) {
 	logger := lagertest.NewTestLogger("peer-nil")
-	resolver := daemon.NewPeerResolver(logger, nil, "", "", 8080, "")
+	resolver := daemon.NewPeerResolver(logger, nil, "", "", 8080, "", nil)
 
 	_, found := resolver.Probe(context.Background(), "any-key")
 	if found {
@@ -943,7 +943,7 @@ func TestPeerProbe_FirstResponder200Wins(t *testing.T) {
 		},
 	})
 
-	resolver := daemon.NewPeerResolver(logger, clientset, "ns", "svc", port2, "10.99.99.99")
+	resolver := daemon.NewPeerResolver(logger, clientset, "ns", "svc", port2, "10.99.99.99", nil)
 	ip, found := resolver.Probe(context.Background(), "steps/some-key")
 	if !found {
 		t.Fatal("expected Probe to find peer")
@@ -975,7 +975,7 @@ func TestPeerProbe_NoPeerResponds200(t *testing.T) {
 		},
 	})
 
-	resolver := daemon.NewPeerResolver(logger, clientset, "ns", "svc", port, "10.99.99.99")
+	resolver := daemon.NewPeerResolver(logger, clientset, "ns", "svc", port, "10.99.99.99", nil)
 	_, found := resolver.Probe(context.Background(), "steps/missing-key")
 	if found {
 		t.Error("expected Probe to return false when no peer has the artifact")
@@ -1005,7 +1005,7 @@ func TestPeerFetch_CountsRetryAttempts(t *testing.T) {
 
 	logger := lagertest.NewTestLogger("retry")
 	host, port := splitHostPort(t, fakePeer.Listener.Addr().String())
-	resolver := daemon.NewPeerResolver(logger, nil, "", "", port, "")
+	resolver := daemon.NewPeerResolver(logger, nil, "", "", port, "", nil)
 
 	destDir := filepath.Join(t.TempDir(), "retry")
 	err := resolver.Fetch(context.Background(), host, "retry-key", destDir)
@@ -1032,7 +1032,7 @@ func TestPeerFetch_AllAttemptsExhausted(t *testing.T) {
 
 	logger := lagertest.NewTestLogger("exhaust")
 	host, port := splitHostPort(t, fakePeer.Listener.Addr().String())
-	resolver := daemon.NewPeerResolver(logger, nil, "", "", port, "")
+	resolver := daemon.NewPeerResolver(logger, nil, "", "", port, "", nil)
 
 	destDir := filepath.Join(t.TempDir(), "exhaust")
 	err := resolver.Fetch(context.Background(), host, "fail-key", destDir)
@@ -1069,7 +1069,7 @@ func TestExtractTar_PathTraversal_Skipped(t *testing.T) {
 
 	logger := lagertest.NewTestLogger("traversal")
 	host, port := splitHostPort(t, fakePeer.Listener.Addr().String())
-	resolver := daemon.NewPeerResolver(logger, nil, "", "", port, "")
+	resolver := daemon.NewPeerResolver(logger, nil, "", "", port, "", nil)
 
 	destDir := filepath.Join(t.TempDir(), "extract")
 	err := resolver.Fetch(context.Background(), host, "traversal-key", destDir)
@@ -1110,7 +1110,7 @@ func TestExtractTar_SymlinksExtracted(t *testing.T) {
 
 	logger := lagertest.NewTestLogger("symlink-extract")
 	host, port := splitHostPort(t, fakePeer.Listener.Addr().String())
-	resolver := daemon.NewPeerResolver(logger, nil, "", "", port, "")
+	resolver := daemon.NewPeerResolver(logger, nil, "", "", port, "", nil)
 
 	destDir := filepath.Join(t.TempDir(), "symlinks")
 	err := resolver.Fetch(context.Background(), host, "sym-key", destDir)
@@ -1159,7 +1159,7 @@ func TestPeerResolver_SelfIP_NeverProbed(t *testing.T) {
 	})
 
 	// myPodIP matches the only endpoint => no peers to probe.
-	resolver := daemon.NewPeerResolver(lagertest.NewTestLogger("self"), clientset, "ns", "svc", selfPort, selfHost)
+	resolver := daemon.NewPeerResolver(lagertest.NewTestLogger("self"), clientset, "ns", "svc", selfPort, selfHost, nil)
 	_, found := resolver.Probe(context.Background(), "any-key")
 	if found {
 		t.Error("expected false when self is the only endpoint")

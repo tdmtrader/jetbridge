@@ -1,4 +1,6 @@
 {{- if .Values.artifactDaemon.enabled }}
+{{- $tlsEnabled := .Values.artifactDaemon.tls.enabled | default false }}
+{{- $tlsSecretName := .Values.artifactDaemon.tls.existingSecret | default (printf "%s-artifact-daemon-tls" (include "concourse.fullname" .)) }}
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
@@ -21,6 +23,10 @@ spec:
       subdomain: {{ include "concourse.artifactDaemonServiceName" . }}
       terminationGracePeriodSeconds: 30
       securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        fsGroup: 65534
         seccompProfile:
           type: RuntimeDefault
       containers:
@@ -36,6 +42,11 @@ spec:
             - --namespace={{ include "concourse.kubernetesNamespace" . }}
             - --service-name={{ include "concourse.artifactDaemonServiceName" . }}
             - --label-key=concourse.dev/artifact-cache
+            {{- if $tlsEnabled }}
+            - --tls-cert=/etc/concourse/daemon-tls/tls.crt
+            - --tls-key=/etc/concourse/daemon-tls/tls.key
+            - --tls-ca-cert=/etc/concourse/daemon-tls/ca.crt
+            {{- end }}
           env:
             - name: NODE_NAME
               valueFrom:
@@ -54,24 +65,47 @@ spec:
             httpGet:
               path: /healthz
               port: http
+              {{- if $tlsEnabled }}
+              scheme: HTTPS
+              {{- end }}
             initialDelaySeconds: 5
             periodSeconds: 10
           readinessProbe:
             httpGet:
               path: /healthz
               port: http
+              {{- if $tlsEnabled }}
+              scheme: HTTPS
+              {{- end }}
             initialDelaySeconds: 2
             periodSeconds: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
           resources:
             {{- toYaml .Values.artifactDaemon.resources | nindent 12 }}
           volumeMounts:
             - name: artifact-storage
               mountPath: {{ .Values.artifactDaemon.hostPath | default "/var/concourse/artifacts" }}
+            {{- if $tlsEnabled }}
+            - name: daemon-tls
+              mountPath: /etc/concourse/daemon-tls
+              readOnly: true
+            {{- end }}
       volumes:
         - name: artifact-storage
           hostPath:
             path: {{ .Values.artifactDaemon.hostPath | default "/var/concourse/artifacts" }}
             type: DirectoryOrCreate
+        {{- if $tlsEnabled }}
+        - name: daemon-tls
+          secret:
+            secretName: {{ $tlsSecretName }}
+        {{- end }}
       {{- with .Values.artifactDaemon.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

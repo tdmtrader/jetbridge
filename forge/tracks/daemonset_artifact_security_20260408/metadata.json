@@ -1,0 +1,7 @@
+{
+  "id": "daemonset_artifact_security_20260408",
+  "name": "DaemonSet Artifact Security Hardening",
+  "type": "feature",
+  "status": "active",
+  "createdAt": "2026-04-08"
+}
