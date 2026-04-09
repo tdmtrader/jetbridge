@@ -138,6 +138,12 @@ func (factory *coreStepFactory) CheckStep(
 	delegateFactory DelegateFactory,
 ) exec.Step {
 	containerMetadata.WorkingDirectory = resource.ResourcesDir("check")
+
+	var checkOpts []exec.CheckStepOption
+	if factory.imageResolver != nil {
+		checkOpts = append(checkOpts, exec.WithCheckResolver(factory.imageResolver))
+	}
+
 	checkStep := exec.NewCheckStep(
 		plan.ID,
 		*plan.Check,
@@ -147,6 +153,7 @@ func (factory *coreStepFactory) CheckStep(
 		factory.pool,
 		delegateFactory,
 		factory.defaultCheckTimeout,
+		checkOpts...,
 	)
 
 	checkStep = exec.LogError(checkStep, delegateFactory)

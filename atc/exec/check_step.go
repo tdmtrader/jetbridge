@@ -12,6 +12,7 @@ import (
 	"github.com/concourse/concourse/atc/creds"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/lock"
+	"github.com/concourse/concourse/atc/imageresolver"
 	"github.com/concourse/concourse/atc/metric"
 	"github.com/concourse/concourse/atc/resource"
 	"github.com/concourse/concourse/atc/runtime"
@@ -29,6 +30,18 @@ type CheckStep struct {
 	delegateFactory       CheckDelegateFactory
 	workerPool            Pool
 	defaultCheckTimeout   time.Duration
+	resolver              imageresolver.Resolver
+}
+
+// CheckStepOption configures optional fields on a CheckStep.
+type CheckStepOption func(*CheckStep)
+
+// WithCheckResolver sets an image resolver for native registry-image check
+// resolution, bypassing the need to spawn a check container.
+func WithCheckResolver(r imageresolver.Resolver) CheckStepOption {
+	return func(s *CheckStep) {
+		s.resolver = r
+	}
 }
 
 //counterfeiter:generate . CheckDelegateFactory
@@ -56,8 +69,9 @@ func NewCheckStep(
 	pool Pool,
 	delegateFactory CheckDelegateFactory,
 	defaultCheckTimeout time.Duration,
+	opts ...CheckStepOption,
 ) Step {
-	return &CheckStep{
+	s := &CheckStep{
 		planID:                planID,
 		plan:                  plan,
 		metadata:              metadata,
@@ -67,6 +81,10 @@ func NewCheckStep(
 		delegateFactory:       delegateFactory,
 		defaultCheckTimeout:   defaultCheckTimeout,
 	}
+	for _, o := range opts {
+		o(s)
+	}
+	return s
 }
 
 func (step *CheckStep) Run(ctx context.Context, state RunState) (bool, error) {
@@ -186,8 +204,31 @@ func (step *CheckStep) run(ctx context.Context, state RunState, delegate CheckDe
 			ctx = lagerctx.NewContext(ctx, logger)
 		}
 
-		versions, processResult, runErr := step.runCheck(ctx, logger, delegate, imageSpec, resourceConfig, source, fromVersion)
-		if runErr != nil || processResult.ExitStatus != 0 {
+		var versions []atc.Version
+		var runErr error
+
+		// Native resolution for registry-image — resolve digest via OCI
+		// registry API without spawning a check container. Uses
+		// google.Keychain for Workload Identity / ADC on GCP.
+		if step.resolver != nil && step.plan.Type == "registry-image" {
+			versions, runErr = step.resolveNatively(ctx, logger, source)
+		} else {
+			var processResult runtime.ProcessResult
+			versions, processResult, runErr = step.runCheck(ctx, logger, delegate, imageSpec, resourceConfig, source, fromVersion)
+			if processResult.ExitStatus != 0 {
+				metric.Metrics.ChecksFinishedWithError.Inc()
+
+				if _, err := delegate.UpdateScopeLastCheckEndTime(scope, false); err != nil {
+					return false, fmt.Errorf("update check end time: %w", err)
+				}
+
+				oteltrace.SpanFromContext(ctx).AddEvent("step.finished")
+				delegate.Finished(logger, false)
+				return false, nil
+			}
+		}
+
+		if runErr != nil {
 			metric.Metrics.ChecksFinishedWithError.Inc()
 
 			if _, err := delegate.UpdateScopeLastCheckEndTime(scope, false); err != nil {
@@ -197,12 +238,6 @@ func (step *CheckStep) run(ctx context.Context, state RunState, delegate CheckDe
 			if errors.Is(runErr, context.DeadlineExceeded) {
 				oteltrace.SpanFromContext(ctx).AddEvent("step.errored")
 				delegate.Errored(logger, TimeoutLogMessage)
-				return false, nil
-			}
-
-			if processResult.ExitStatus != 0 {
-				oteltrace.SpanFromContext(ctx).AddEvent("step.finished")
-				delegate.Finished(logger, false)
 				return false, nil
 			}
 
@@ -299,6 +334,35 @@ func (step *CheckStep) runCheck(
 		Source:  source,
 		Version: fromVersion,
 	}.Check(ctx, container, delegate.Stderr())
+}
+
+// resolveNatively resolves a registry-image resource's digest via the OCI
+// registry API without spawning a check container. The source has already
+// been through credential evaluation so ((var)) placeholders are resolved.
+func (step *CheckStep) resolveNatively(ctx context.Context, logger lager.Logger, source atc.Source) ([]atc.Version, error) {
+	repository, _ := source["repository"].(string)
+	if repository == "" {
+		return nil, fmt.Errorf("native check: missing repository in source")
+	}
+	tag, _ := source["tag"].(string)
+
+	var auth *imageresolver.BasicAuth
+	if username, ok := source["username"].(string); ok && username != "" {
+		password, _ := source["password"].(string)
+		auth = &imageresolver.BasicAuth{
+			Username: username,
+			Password: password,
+		}
+	}
+
+	digest, err := step.resolver.Resolve(ctx, repository, tag, auth)
+	if err != nil {
+		return nil, fmt.Errorf("native check: resolving digest for %s: %w", repository, err)
+	}
+
+	logger.Info("native-check-resolved", lager.Data{"repository": repository, "digest": digest})
+
+	return []atc.Version{{"digest": digest}}, nil
 }
 
 func (step *CheckStep) containerOwner(delegate CheckDelegate, resourceConfig db.ResourceConfig) db.ContainerOwner {

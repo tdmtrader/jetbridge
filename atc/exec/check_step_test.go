@@ -15,6 +15,7 @@ import (
 	"github.com/concourse/concourse/atc/db/lock/lockfakes"
 	"github.com/concourse/concourse/atc/exec"
 	"github.com/concourse/concourse/atc/exec/execfakes"
+	"github.com/concourse/concourse/atc/imageresolver/imageresolvertesting"
 	"github.com/concourse/concourse/atc/metric"
 	"github.com/concourse/concourse/atc/resource"
 	"github.com/concourse/concourse/atc/runtime"
@@ -60,6 +61,8 @@ var _ = Describe("CheckStep", func() {
 		stepErr error
 
 		expectedOwner db.ContainerOwner
+
+		checkStepOpts []exec.CheckStepOption
 	)
 
 	BeforeEach(func() {
@@ -155,6 +158,7 @@ var _ = Describe("CheckStep", func() {
 			fakePool,
 			fakeDelegateFactory,
 			defaultTimeout,
+			checkStepOpts...,
 		)
 
 		stepOk, stepErr = checkStep.Run(ctx, runState)
@@ -833,6 +837,125 @@ var _ = Describe("CheckStep", func() {
 			It("does not increment ChecksStarted", func() {
 				Expect(stepOk).To(BeTrue())
 				Expect(metric.Metrics.ChecksStarted.Delta()).To(BeNumerically("==", 0))
+			})
+		})
+	})
+
+	Context("native resolution for registry-image", func() {
+		var (
+			fakeResolver *imageresolvertesting.FakeResolver
+			fakeLock     *lockfakes.FakeLock
+		)
+
+		BeforeEach(func() {
+			fakeResolver = new(imageresolvertesting.FakeResolver)
+			checkStepOpts = []exec.CheckStepOption{exec.WithCheckResolver(fakeResolver)}
+
+			fakeLock = new(lockfakes.FakeLock)
+			fakeDelegate.WaitToRunReturns(fakeLock, true, nil)
+
+			checkPlan = atc.CheckPlan{
+				Name: "some-registry-image",
+				Type: "registry-image",
+				Source: atc.Source{
+					"repository": "gcr.io/my-project/my-image",
+					"tag":        "latest",
+				},
+				TypeImage: atc.TypeImage{
+					BaseType: "registry-image",
+				},
+			}
+		})
+
+		AfterEach(func() {
+			checkStepOpts = nil
+		})
+
+		Context("when the resolver succeeds", func() {
+			BeforeEach(func() {
+				fakeResolver.ResolveReturns("sha256:abc123def456", nil)
+			})
+
+			It("resolves natively without creating a container", func() {
+				Expect(stepErr).ToNot(HaveOccurred())
+				Expect(stepOk).To(BeTrue())
+
+				Expect(fakeResolver.ResolveCallCount()).To(Equal(1))
+				_, repo, tag, auth := fakeResolver.ResolveArgsForCall(0)
+				Expect(repo).To(Equal("gcr.io/my-project/my-image"))
+				Expect(tag).To(Equal("latest"))
+				Expect(auth).To(BeNil())
+
+				// Should NOT have selected a worker or created a container.
+				Expect(fakePool.FindOrSelectWorkerCallCount()).To(Equal(0))
+			})
+
+			It("saves the resolved version", func() {
+				Expect(fakeResourceConfigScope.SaveVersionsCallCount()).To(Equal(1))
+				_, versions := fakeResourceConfigScope.SaveVersionsArgsForCall(0)
+				Expect(versions).To(Equal([]atc.Version{{"digest": "sha256:abc123def456"}}))
+			})
+
+			It("stores the result in run state", func() {
+				var val atc.Version
+				Expect(runState.Result(planID, &val)).To(BeTrue())
+				Expect(val).To(Equal(atc.Version{"digest": "sha256:abc123def456"}))
+			})
+
+			It("updates check timestamps and metrics", func() {
+				Expect(metric.Metrics.ChecksStarted.Delta()).To(BeNumerically(">=", 1))
+				Expect(metric.Metrics.ChecksFinishedWithSuccess.Delta()).To(BeNumerically(">=", 1))
+			})
+		})
+
+		Context("with explicit username/password", func() {
+			BeforeEach(func() {
+				checkPlan.Source = atc.Source{
+					"repository": "private.registry.io/image",
+					"username":   "my-user",
+					"password":   "my-pass",
+				}
+				fakeResolver.ResolveReturns("sha256:deadbeef", nil)
+			})
+
+			It("passes BasicAuth to the resolver", func() {
+				Expect(stepErr).ToNot(HaveOccurred())
+				Expect(fakeResolver.ResolveCallCount()).To(Equal(1))
+				_, _, _, auth := fakeResolver.ResolveArgsForCall(0)
+				Expect(auth).ToNot(BeNil())
+				Expect(auth.Username).To(Equal("my-user"))
+				Expect(auth.Password).To(Equal("my-pass"))
+			})
+		})
+
+		Context("when the resolver fails", func() {
+			BeforeEach(func() {
+				fakeResolver.ResolveReturns("", errors.New("UNAUTHORIZED"))
+			})
+
+			It("returns an error and does not save versions", func() {
+				Expect(stepErr).To(HaveOccurred())
+				Expect(stepErr.Error()).To(ContainSubstring("UNAUTHORIZED"))
+				Expect(fakeResourceConfigScope.SaveVersionsCallCount()).To(Equal(0))
+			})
+
+			It("increments the error metric", func() {
+				Expect(metric.Metrics.ChecksFinishedWithError.Delta()).To(BeNumerically(">=", 1))
+			})
+		})
+
+		Context("when the type is not registry-image", func() {
+			BeforeEach(func() {
+				checkPlan.Type = "git"
+				checkPlan.Source = atc.Source{"uri": "https://example.com/repo.git"}
+				checkPlan.TypeImage = atc.TypeImage{BaseType: "git"}
+			})
+
+			It("falls back to container-based check", func() {
+				// The resolver should NOT be called.
+				Expect(fakeResolver.ResolveCallCount()).To(Equal(0))
+				// A worker should be selected for the container check.
+				Expect(fakePool.FindOrSelectWorkerCallCount()).To(Equal(1))
 			})
 		})
 	})
