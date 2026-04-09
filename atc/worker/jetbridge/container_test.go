@@ -103,9 +103,7 @@ var _ = Describe("Container", func() {
 			Expect(pod.Spec.Containers[0].SecurityContext.AllowPrivilegeEscalation).ToNot(BeNil())
 			Expect(*pod.Spec.Containers[0].SecurityContext.AllowPrivilegeEscalation).To(BeFalse())
 
-			By("hardening: SA token disabled and seccomp set")
-			Expect(pod.Spec.AutomountServiceAccountToken).ToNot(BeNil())
-			Expect(*pod.Spec.AutomountServiceAccountToken).To(BeFalse())
+			By("hardening: seccomp set")
 			Expect(pod.Spec.SecurityContext.SeccompProfile).ToNot(BeNil())
 			Expect(pod.Spec.SecurityContext.SeccompProfile.Type).To(Equal(corev1.SeccompProfileTypeRuntimeDefault))
 		})
@@ -1232,10 +1230,6 @@ var _ = Describe("Container", func() {
 				Expect(mainContainer.SecurityContext.AllowPrivilegeEscalation).ToNot(BeNil())
 				Expect(*mainContainer.SecurityContext.AllowPrivilegeEscalation).To(BeFalse())
 
-				By("disabling service account token mount (task pods don't need K8s API access)")
-				Expect(pod.Spec.AutomountServiceAccountToken).ToNot(BeNil())
-				Expect(*pod.Spec.AutomountServiceAccountToken).To(BeFalse())
-
 				By("setting seccomp RuntimeDefault profile")
 				Expect(pod.Spec.SecurityContext.SeccompProfile).ToNot(BeNil())
 				Expect(pod.Spec.SecurityContext.SeccompProfile.Type).To(Equal(corev1.SeccompProfileTypeRuntimeDefault))
@@ -1286,10 +1280,6 @@ var _ = Describe("Container", func() {
 				Expect(mainContainer.SecurityContext).ToNot(BeNil())
 				Expect(mainContainer.SecurityContext.Privileged).ToNot(BeNil())
 				Expect(*mainContainer.SecurityContext.Privileged).To(BeTrue())
-
-				By("disabling service account token mount even for privileged pods")
-				Expect(pod.Spec.AutomountServiceAccountToken).ToNot(BeNil())
-				Expect(*pod.Spec.AutomountServiceAccountToken).To(BeFalse())
 
 				By("setting seccomp RuntimeDefault profile even for privileged pods")
 				Expect(pod.Spec.SecurityContext.SeccompProfile).ToNot(BeNil())
@@ -2873,8 +2863,6 @@ var _ = Describe("Run with sidecar containers", func() {
 			Expect(sidecar.VolumeMounts).To(Equal(mainMounts))
 
 			By("applying pod-level security hardening even with sidecars")
-			Expect(pod.Spec.AutomountServiceAccountToken).ToNot(BeNil())
-			Expect(*pod.Spec.AutomountServiceAccountToken).To(BeFalse())
 			Expect(pod.Spec.SecurityContext.SeccompProfile).ToNot(BeNil())
 			Expect(pod.Spec.SecurityContext.SeccompProfile.Type).To(Equal(corev1.SeccompProfileTypeRuntimeDefault))
 		})

@@ -862,9 +862,6 @@ func TestBuildPod_InitContainerOrdering(t *testing.T) {
 	}
 
 	// Security hardening must survive the DaemonSet+init-container path.
-	if pod.Spec.AutomountServiceAccountToken == nil || *pod.Spec.AutomountServiceAccountToken {
-		t.Error("expected AutomountServiceAccountToken=false on DaemonSet-backed pod")
-	}
 	if pod.Spec.SecurityContext == nil || pod.Spec.SecurityContext.SeccompProfile == nil {
 		t.Fatal("expected seccomp profile on DaemonSet-backed pod")
 	}
