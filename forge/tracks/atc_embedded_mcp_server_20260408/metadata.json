@@ -2,6 +2,7 @@
   "id": "atc_embedded_mcp_server_20260408",
   "name": "ATC-Embedded MCP Server",
   "type": "feature",
-  "status": "active",
-  "createdAt": "2026-04-08"
+  "status": "completed",
+  "createdAt": "2026-04-08",
+  "completedAt": "2026-04-08"
 }

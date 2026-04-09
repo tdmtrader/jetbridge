@@ -151,7 +151,7 @@ func LoadTarget(selectedTarget TargetName, tracing bool) (Target, error) {
 		return nil, err
 	}
 
-	httpClient := defaultHttpClient(targetProps.Token, targetProps.Insecure, caCertPool, clientCertificate)
+	httpClient := defaultHttpClient(targetProps.Token, targetProps.Insecure, caCertPool, clientCertificate, selectedTarget, targetProps.API)
 	client := concourse.NewClient(targetProps.API, httpClient, tracing)
 
 	return NewTarget(
@@ -289,7 +289,7 @@ func NewAuthenticatedTarget(
 		return nil, err
 	}
 
-	httpClient := defaultHttpClient(token, insecure, caCertPool, clientCertificate)
+	httpClient := defaultHttpClient(token, insecure, caCertPool, clientCertificate, name, url)
 	client := concourse.NewClient(url, httpClient, tracing)
 
 	return NewTarget(
@@ -499,25 +499,29 @@ func (t *target) getInfo() (atc.Info, error) {
 	return t.info, err
 }
 
-func defaultHttpClient(token *TargetToken, insecure bool, caCertPool *x509.CertPool, clientCertificate []tls.Certificate) *http.Client {
-	var oAuthToken *oauth2.Token
+func defaultHttpClient(token *TargetToken, insecure bool, caCertPool *x509.CertPool, clientCertificate []tls.Certificate, targetName TargetName, targetAPI string) *http.Client {
+	baseTransport := transport(insecure, caCertPool, clientCertificate)
+
 	if token != nil {
-		oAuthToken = &oauth2.Token{
-			TokenType:   token.Type,
-			AccessToken: token.Value,
+		var source oauth2.TokenSource
+		if token.RefreshToken != "" {
+			// Use refreshing token source for JWT tokens with refresh tokens
+			source = newRefreshingTokenSource(token, targetName, targetAPI, baseTransport)
+		} else {
+			source = oauth2.StaticTokenSource(&oauth2.Token{
+				TokenType:   token.Type,
+				AccessToken: token.Value,
+			})
+		}
+		return &http.Client{
+			Transport: &oauth2.Transport{
+				Source: source,
+				Base:   baseTransport,
+			},
 		}
 	}
 
-	transport := transport(insecure, caCertPool, clientCertificate)
-
-	if token != nil {
-		transport = &oauth2.Transport{
-			Source: oauth2.StaticTokenSource(oAuthToken),
-			Base:   transport,
-		}
-	}
-
-	return &http.Client{Transport: transport}
+	return &http.Client{Transport: baseTransport}
 }
 
 func loadCACertPool(caCert string) (cert *x509.CertPool, err error) {

@@ -68,11 +68,29 @@ app.ports.renderPipeline.subscribe(function (values) {
 });
 
 app.ports.requestLoginRedirect.subscribe(function (message) {
-  var path = document.location.pathname;
-  var query = document.location.search;
-  var redirect = encodeURIComponent(path + query);
-  var loginUrl = "/login?redirect_uri="+ redirect;
-  document.location.href = loginUrl;
+  // Attempt transparent token refresh before redirecting to login.
+  // The refresh endpoint exchanges the refresh token cookie with Dex
+  // for a new ID token, avoiding a full re-login for expired access tokens.
+  fetch("/sky/token/refresh", { method: "POST", credentials: "same-origin" })
+    .then(function(resp) {
+      if (resp.ok) {
+        // Refresh succeeded — reload the current page with the new token
+        document.location.reload();
+      } else {
+        // Refresh failed (expired/revoked refresh token) — redirect to login
+        var path = document.location.pathname;
+        var query = document.location.search;
+        var redirect = encodeURIComponent(path + query);
+        document.location.href = "/login?redirect_uri=" + redirect;
+      }
+    })
+    .catch(function() {
+      // Network error — redirect to login
+      var path = document.location.pathname;
+      var query = document.location.search;
+      var redirect = encodeURIComponent(path + query);
+      document.location.href = "/login?redirect_uri=" + redirect;
+    });
 });
 
 app.ports.saveToLocalStorage.subscribe(function(params) {

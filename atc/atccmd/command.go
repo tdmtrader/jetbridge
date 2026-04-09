@@ -894,14 +894,11 @@ func (cmd *RunCommand) constructAPIMembers(
 	gcContainerDestroyer := gc.NewDestroyer(logger, dbContainerRepository, dbVolumeRepository)
 	dbBuildFactory := db.NewBuildFactory(dbConn, lockFactory, cmd.GC.OneOffBuildGracePeriod, cmd.GC.FailedGracePeriod)
 	dbCheckFactory := db.NewCheckFactory(dbConn, lockFactory, secretManager, cmd.varSourcePool, checkBuildsChan, nil)
-	dbAccessTokenFactory := db.NewAccessTokenFactory(dbConn)
 	dbSigningKeyFactory := db.NewSigningKeyFactory(dbConn)
 	dbClock := db.NewClock()
 	dbWall := db.NewWall(dbConn, &dbClock)
 
-	MiB := 1024 * 1024
-	claimsCacher := accessor.NewClaimsCacher(dbAccessTokenFactory, 1*MiB)
-	tokenVerifier := cmd.constructTokenVerifier(claimsCacher)
+	tokenVerifier := cmd.constructTokenVerifier()
 
 	teamsCacher := accessor.NewTeamsCacher(
 		logger,
@@ -963,7 +960,6 @@ func (cmd *RunCommand) constructAPIMembers(
 	authHandler, err := cmd.constructAuthHandler(
 		logger,
 		storage,
-		dbAccessTokenFactory,
 		userFactory,
 		displayUserIdGenerator,
 	)
@@ -975,8 +971,6 @@ func (cmd *RunCommand) constructAPIMembers(
 		logger,
 		httpClient,
 		middleware,
-		claimsCacher,
-		dbAccessTokenFactory,
 	)
 	if err != nil {
 		return nil, err
@@ -2025,7 +2019,6 @@ func (cmd *RunCommand) constructLegacyHandler(
 func (cmd *RunCommand) constructAuthHandler(
 	logger lager.Logger,
 	storage storage.Storage,
-	accessTokenFactory db.AccessTokenFactory,
 	userFactory db.UserFactory,
 	displayUserIdGenerator atc.DisplayUserIdGenerator,
 ) (http.Handler, error) {
@@ -2054,12 +2047,12 @@ func (cmd *RunCommand) constructAuthHandler(
 		return nil, err
 	}
 
-	return token.StoreAccessToken(
+	// Dex serves /sky/issuer/* endpoints directly — no token interception.
+	// JWT validation happens in the JWKS verifier on API requests.
+	return token.EnsureUser(
 		logger.Session("dex-server"),
 		dexServer,
-		token.Factory{},
 		token.NewClaimsParser(),
-		accessTokenFactory,
 		userFactory,
 		displayUserIdGenerator,
 	), nil
@@ -2069,8 +2062,6 @@ func (cmd *RunCommand) constructSkyHandler(
 	logger lager.Logger,
 	httpClient *http.Client,
 	middleware token.Middleware,
-	claimsCacher accessor.AccessTokenFetcher,
-	accessTokenFactory db.AccessTokenFactory,
 ) (http.Handler, error) {
 
 	authPath, _ := url.Parse("/sky/issuer/auth")
@@ -2092,17 +2083,14 @@ func (cmd *RunCommand) constructSkyHandler(
 		ClientID:     cmd.Server.ClientID,
 		ClientSecret: cmd.Server.ClientSecret,
 		RedirectURL:  redirectURL.String(),
-		Scopes:       []string{"openid", "profile", "email", "federated:id", "groups"},
+		Scopes:       []string{"openid", "profile", "email", "federated:id", "groups", "offline_access"},
 	}
 
 	skyServer, err := skyserver.NewSkyServer(&skyserver.SkyConfig{
-		Logger:             logger.Session("sky"),
-		TokenMiddleware:    middleware,
-		TokenParser:        token.Factory{},
-		OAuthConfig:        oauth2Config,
-		HTTPClient:         httpClient,
-		ClaimsCacher:       claimsCacher,
-		AccessTokenFactory: accessTokenFactory,
+		Logger:          logger.Session("sky"),
+		TokenMiddleware: middleware,
+		OAuthConfig:     oauth2Config,
+		HTTPClient:      httpClient,
 		StateSigningKey: deriveStateSigningKey(
 			oauth2Config.ClientID,
 			oauth2Config.ClientSecret,
@@ -2124,13 +2112,16 @@ func deriveStateSigningKey(clientID, clientSecret, dbUser, dbPassword string) []
 	return mac.Sum(nil)
 }
 
-func (cmd *RunCommand) constructTokenVerifier(claimsCacher accessor.AccessTokenFetcher) accessor.TokenVerifier {
+func (cmd *RunCommand) constructTokenVerifier() accessor.TokenVerifier {
 	validClients := []string{flyClientID}
 	for clientId := range cmd.Auth.AuthFlags.Clients {
 		validClients = append(validClients, clientId)
 	}
 
-	return accessor.NewVerifier(claimsCacher, validClients)
+	issuerPath, _ := url.Parse("/sky/issuer/keys")
+	jwksURL := cmd.ExternalURL.URL.ResolveReference(issuerPath)
+
+	return accessor.NewJWKSVerifier(jwksURL.String(), validClients)
 }
 
 func (cmd *RunCommand) constructAPIHandler(

@@ -97,6 +97,7 @@ func (command *LoginCommand) Execute(args []string) error {
 
 	var tokenType string
 	var tokenValue string
+	var refreshToken string
 
 	version, err := target.Version()
 	if err != nil {
@@ -122,7 +123,7 @@ func (command *LoginCommand) Execute(args []string) error {
 		tokenType, tokenValue, err = command.legacyAuth(target)
 	} else {
 		if command.Username != "" && command.Password != "" {
-			tokenType, tokenValue, err = command.passwordGrant(client, command.Username, command.Password)
+			tokenType, tokenValue, refreshToken, err = command.passwordGrant(client, command.Username, command.Password)
 		} else {
 			tokenType, tokenValue, err = command.authCodeGrant(client.URL())
 		}
@@ -151,8 +152,9 @@ func (command *LoginCommand) Execute(args []string) error {
 	return command.saveTarget(
 		client.URL(),
 		&rc.TargetToken{
-			Type:  tokenType,
-			Value: tokenValue,
+			Type:         tokenType,
+			Value:        tokenValue,
+			RefreshToken: refreshToken,
 		},
 		target.CACert(),
 		target.ClientCertPath(),
@@ -160,23 +162,29 @@ func (command *LoginCommand) Execute(args []string) error {
 	)
 }
 
-func (command *LoginCommand) passwordGrant(client concourse.Client, username, password string) (string, string, error) {
+func (command *LoginCommand) passwordGrant(client concourse.Client, username, password string) (string, string, string, error) {
 
 	oauth2Config := oauth2.Config{
 		ClientID:     "fly",
 		ClientSecret: "Zmx5",
 		Endpoint:     oauth2.Endpoint{TokenURL: client.URL() + "/sky/issuer/token"},
-		Scopes:       []string{"openid", "profile", "email", "federated:id", "groups"},
+		Scopes:       []string{"openid", "profile", "email", "federated:id", "groups", "offline_access"},
 	}
 
 	ctx := context.WithValue(context.Background(), oauth2.HTTPClient, client.HTTPClient())
 
 	token, err := oauth2Config.PasswordCredentialsToken(ctx, username, password)
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 
-	return token.TokenType, token.AccessToken, nil
+	// Prefer ID token over access token (Dex's ID token contains our claims)
+	idToken, _ := token.Extra("id_token").(string)
+	if idToken != "" {
+		return token.TokenType, idToken, token.RefreshToken, nil
+	}
+
+	return token.TokenType, token.AccessToken, token.RefreshToken, nil
 }
 
 func (command *LoginCommand) authCodeGrant(targetUrl string) (string, string, error) {

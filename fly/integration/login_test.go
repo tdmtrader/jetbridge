@@ -516,7 +516,7 @@ var _ = Describe("login", func() {
 						ghttp.VerifyFormKV("grant_type", "password"),
 						ghttp.VerifyFormKV("username", "some_username"),
 						ghttp.VerifyFormKV("password", "some_password"),
-						ghttp.VerifyFormKV("scope", "openid profile email federated:id groups"),
+						ghttp.VerifyFormKV("scope", "openid profile email federated:id groups offline_access"),
 						ghttp.RespondWithJSONEncoded(200, map[string]string{
 							"token_type":   "Bearer",
 							"access_token": "access-token",
@@ -600,7 +600,7 @@ var _ = Describe("login", func() {
 								ghttp.VerifyFormKV("grant_type", "password"),
 								ghttp.VerifyFormKV("username", "some_other_user"),
 								ghttp.VerifyFormKV("password", "some_other_pass"),
-								ghttp.VerifyFormKV("scope", "openid profile email federated:id groups"),
+								ghttp.VerifyFormKV("scope", "openid profile email federated:id groups offline_access"),
 								ghttp.RespondWithJSONEncoded(200, map[string]string{
 									"token_type":   "Bearer",
 									"access_token": "some-new-token",

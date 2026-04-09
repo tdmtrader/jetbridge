@@ -42,8 +42,9 @@ type TargetProps struct {
 }
 
 type TargetToken struct {
-	Type  string `json:"type"`
-	Value string `json:"value"`
+	Type         string `json:"type"`
+	Value        string `json:"value"`
+	RefreshToken string `json:"refresh_token,omitempty"`
 }
 
 func flyrcPath() string {

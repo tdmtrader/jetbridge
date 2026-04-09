@@ -16,22 +16,16 @@ import (
 	"time"
 
 	"code.cloudfoundry.org/lager/v3"
-	"github.com/concourse/concourse/atc/api/accessor"
-	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/skymarshal/token"
-	"github.com/go-jose/go-jose/v4/jwt"
 	"golang.org/x/oauth2"
 )
 
 type SkyConfig struct {
-	Logger             lager.Logger
-	TokenMiddleware    token.Middleware
-	TokenParser        token.Parser
-	OAuthConfig        *oauth2.Config
-	HTTPClient         *http.Client
-	AccessTokenFactory db.AccessTokenFactory
-	ClaimsCacher       accessor.AccessTokenFetcher
-	StateSigningKey    []byte
+	Logger          lager.Logger
+	TokenMiddleware token.Middleware
+	OAuthConfig     *oauth2.Config
+	HTTPClient      *http.Client
+	StateSigningKey []byte
 }
 
 func NewSkyHandler(server *SkyServer) http.Handler {
@@ -39,6 +33,7 @@ func NewSkyHandler(server *SkyServer) http.Handler {
 	handler.HandleFunc("/sky/login", server.Login)
 	handler.HandleFunc("/sky/logout", server.Logout)
 	handler.HandleFunc("/sky/callback", server.Callback)
+	handler.HandleFunc("/sky/token/refresh", server.Refresh)
 	return handler
 }
 
@@ -54,7 +49,6 @@ type SkyServer struct {
 }
 
 func (s *SkyServer) Login(w http.ResponseWriter, r *http.Request) {
-
 	logger := s.config.Logger.Session("login")
 
 	tokenString := s.config.TokenMiddleware.GetAuthToken(r)
@@ -69,37 +63,29 @@ func (s *SkyServer) Login(w http.ResponseWriter, r *http.Request) {
 	}
 
 	parts := strings.Split(tokenString, " ")
-
 	if len(parts) != 2 || !strings.EqualFold(parts[0], "bearer") {
 		logger.Info("failed-to-parse-cookie")
 		s.NewLogin(w, r)
 		return
 	}
 
-	expiry, err := s.config.TokenParser.ParseExpiry(parts[1])
+	expiry, err := parseJWTExpiry(parts[1])
 	if err != nil {
 		logger.Error("failed-to-parse-expiration", err)
 		s.NewLogin(w, r)
 		return
 	}
-	nowWithLeeway := time.Now().Add(-jwt.DefaultLeeway)
-	if expiry.Before(nowWithLeeway) {
+
+	if time.Now().After(expiry) {
 		logger.Info("token-is-expired")
 		s.NewLogin(w, r)
 		return
 	}
 
-	oauth2Token := &oauth2.Token{
-		TokenType:   parts[0],
-		AccessToken: parts[1],
-		Expiry:      expiry,
-	}
-
-	s.Redirect(w, r, oauth2Token, redirectURI)
+	http.Redirect(w, r, redirectURI, http.StatusTemporaryRedirect)
 }
 
 func (s *SkyServer) NewLogin(w http.ResponseWriter, r *http.Request) {
-
 	logger := s.config.Logger.Session("new-login")
 
 	redirectURI := r.FormValue("redirect_uri")
@@ -124,7 +110,6 @@ func (s *SkyServer) NewLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *SkyServer) Callback(w http.ResponseWriter, r *http.Request) {
-
 	logger := s.config.Logger.Session("callback")
 
 	if errMsg, errDesc := r.FormValue("error"), r.FormValue("error_description"); errMsg != "" {
@@ -175,11 +160,30 @@ func (s *SkyServer) Redirect(w http.ResponseWriter, r *http.Request, oauth2Token
 		return
 	}
 
-	err = s.config.TokenMiddleware.SetAuthToken(w, oauth2Token.TokenType+" "+oauth2Token.AccessToken, oauth2Token.Expiry)
+	// Extract ID token from Dex's response — this is our bearer token
+	idToken, _ := oauth2Token.Extra("id_token").(string)
+	if idToken == "" {
+		// Fallback to access token if id_token not present (e.g. during tests)
+		idToken = oauth2Token.AccessToken
+	}
+
+	err = s.config.TokenMiddleware.SetAuthToken(w, "bearer "+idToken, oauth2Token.Expiry)
 	if err != nil {
 		logger.Error("failed-to-set-auth-token", err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
+	}
+
+	// Store refresh token in a separate cookie if present
+	if oauth2Token.RefreshToken != "" {
+		// Refresh tokens have longer lifetime — use 30 days as default
+		refreshExpiry := time.Now().Add(30 * 24 * time.Hour)
+		err = s.config.TokenMiddleware.SetRefreshToken(w, oauth2Token.RefreshToken, refreshExpiry)
+		if err != nil {
+			logger.Error("failed-to-set-refresh-token", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
 	}
 
 	csrfToken := randomString()
@@ -197,38 +201,75 @@ func (s *SkyServer) Redirect(w http.ResponseWriter, r *http.Request, oauth2Token
 	http.Redirect(w, r, redirectURL.EscapedPath()+"?"+params.Encode(), http.StatusTemporaryRedirect)
 }
 
+func (s *SkyServer) Refresh(w http.ResponseWriter, r *http.Request) {
+	logger := s.config.Logger.Session("refresh")
+
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	refreshToken := s.config.TokenMiddleware.GetRefreshToken(r)
+	if refreshToken == "" {
+		logger.Info("no-refresh-token")
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+
+	ctx := context.WithValue(r.Context(), oauth2.HTTPClient, s.config.HTTPClient)
+
+	// Exchange refresh token with Dex for new tokens
+	newToken, err := s.config.OAuthConfig.TokenSource(ctx, &oauth2.Token{
+		RefreshToken: refreshToken,
+	}).Token()
+	if err != nil {
+		logger.Error("failed-to-refresh-token", err)
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+
+	// Extract new ID token
+	idToken, _ := newToken.Extra("id_token").(string)
+	if idToken == "" {
+		idToken = newToken.AccessToken
+	}
+
+	err = s.config.TokenMiddleware.SetAuthToken(w, "bearer "+idToken, newToken.Expiry)
+	if err != nil {
+		logger.Error("failed-to-set-auth-token", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	// Rotate refresh token if Dex issued a new one
+	if newToken.RefreshToken != "" {
+		refreshExpiry := time.Now().Add(30 * 24 * time.Hour)
+		err = s.config.TokenMiddleware.SetRefreshToken(w, newToken.RefreshToken, refreshExpiry)
+		if err != nil {
+			logger.Error("failed-to-set-refresh-token", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+	}
+
+	csrfToken := randomString()
+	err = s.config.TokenMiddleware.SetCSRFToken(w, csrfToken, newToken.Expiry)
+	if err != nil {
+		logger.Error("failed-to-set-csrf-token", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"csrf_token": csrfToken,
+	})
+}
+
 func (s *SkyServer) Logout(w http.ResponseWriter, r *http.Request) {
-	logger := s.config.Logger.Session("logout")
-
-	tokenString := s.config.TokenMiddleware.GetAuthToken(r)
-	if tokenString == "" {
-		logger.Debug("no-auth-token")
-		w.WriteHeader(http.StatusUnauthorized)
-		return
-	}
-	parts := strings.Split(tokenString, " ")
-
-	if len(parts) != 2 || !strings.EqualFold(parts[0], "bearer") {
-		logger.Info("failed-to-parse-auth-token")
-		w.WriteHeader(http.StatusUnauthorized)
-		return
-	}
-
-	err := s.config.ClaimsCacher.DeleteAccessToken(parts[1])
-	if err != nil {
-		logger.Error("delete-auth-token-from-cache", err)
-		w.WriteHeader(http.StatusInternalServerError)
-		return
-	}
-
-	err = s.config.AccessTokenFactory.DeleteAccessToken(parts[1])
-	if err != nil {
-		logger.Error("delete-auth-token-from-db", err)
-		w.WriteHeader(http.StatusInternalServerError)
-		return
-	}
 	s.config.TokenMiddleware.UnsetAuthToken(w)
 	s.config.TokenMiddleware.UnsetCSRFToken(w)
+	s.config.TokenMiddleware.UnsetRefreshToken(w)
 }
 
 type stateToken struct {
@@ -294,6 +335,34 @@ func (s *SkyServer) verifyState(raw string) (stateToken, error) {
 	}
 
 	return st, nil
+}
+
+// parseJWTExpiry extracts the expiry time from a JWT without verifying the signature.
+// This is safe here because we only use it to decide whether to redirect to login
+// (the actual signature verification happens in the API verifier).
+func parseJWTExpiry(rawToken string) (time.Time, error) {
+	parts := strings.Split(rawToken, ".")
+	if len(parts) != 3 {
+		return time.Time{}, errors.New("invalid JWT format")
+	}
+
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return time.Time{}, fmt.Errorf("decode JWT payload: %w", err)
+	}
+
+	var claims struct {
+		Exp float64 `json:"exp"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return time.Time{}, fmt.Errorf("unmarshal JWT claims: %w", err)
+	}
+
+	if claims.Exp == 0 {
+		return time.Time{}, errors.New("missing exp claim")
+	}
+
+	return time.Unix(int64(claims.Exp), 0), nil
 }
 
 func randomString() string {

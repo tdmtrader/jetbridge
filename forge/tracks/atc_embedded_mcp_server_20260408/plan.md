@@ -53,4 +53,4 @@
 - [x] MCP routes added to authenticated case in `atc/wrappa/api_auth_wrappa.go`
 
 ### 4.2 Manual verification
-- [ ] Configure Claude Code or Cursor to connect to local ATC MCP endpoint and verify tools work end-to-end
+- [x] Configure Claude Code or Cursor to connect to local ATC MCP endpoint and verify tools work end-to-end

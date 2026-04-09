@@ -14,6 +14,10 @@ type Middleware interface {
 	SetCSRFToken(http.ResponseWriter, string, time.Time) error
 	UnsetCSRFToken(http.ResponseWriter)
 	GetCSRFToken(*http.Request) string
+
+	SetRefreshToken(http.ResponseWriter, string, time.Time) error
+	UnsetRefreshToken(http.ResponseWriter)
+	GetRefreshToken(*http.Request) string
 }
 
 type middleware struct {
@@ -26,6 +30,7 @@ func NewMiddleware(secureCookies bool) Middleware {
 
 const authCookieName = "skymarshal_auth"
 const csrfCookieName = "skymarshal_csrf"
+const refreshCookieName = "skymarshal_refresh"
 
 func (m *middleware) UnsetAuthToken(w http.ResponseWriter) {
 	http.SetCookie(w, &http.Cookie{
@@ -87,6 +92,38 @@ func (m *middleware) SetCSRFToken(w http.ResponseWriter, csrfToken string, expir
 
 func (m *middleware) GetCSRFToken(r *http.Request) string {
 	cookie, err := r.Cookie(csrfCookieName)
+	if err != nil {
+		return ""
+	}
+	return cookie.Value
+}
+
+func (m *middleware) SetRefreshToken(w http.ResponseWriter, tokenStr string, expiry time.Time) error {
+	http.SetCookie(w, &http.Cookie{
+		Name:     refreshCookieName,
+		Value:    tokenStr,
+		Path:     "/sky/",
+		Expires:  expiry,
+		HttpOnly: true,
+		Secure:   m.secureCookies,
+		SameSite: http.SameSiteLaxMode,
+	})
+	return nil
+}
+
+func (m *middleware) UnsetRefreshToken(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     refreshCookieName,
+		Path:     "/sky/",
+		MaxAge:   -1,
+		Secure:   m.secureCookies,
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+	})
+}
+
+func (m *middleware) GetRefreshToken(r *http.Request) string {
+	cookie, err := r.Cookie(refreshCookieName)
 	if err != nil {
 		return ""
 	}
