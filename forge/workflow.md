@@ -31,8 +31,12 @@ Each feature task in a track plan includes two sub-tasks:
 
 ### Branch Strategy
 - `jetbridge` — Main development branch for the K8s runtime fork.
+- `main` — Mirrors `jetbridge` after CI passes (pipeline auto-merges).
 - Feature branches: `jetbridge/<feature-name>` — Branched from `jetbridge`.
 - PRs target `jetbridge` branch.
+
+### Keeping main in sync
+The CI pipeline merges `jetbridge` → `main` after all tests pass. Local `main` can fall behind. **Always run `git fetch origin main:main` (without checking out) at the start of Forge commands** (`/forge:status`, `/forge:newTrack`, `/forge:complete`) to ensure the local `main` ref is current. This prevents the Claude Code UI from showing false diff between the branches.
 
 ### Commit Strategy
 - Conventional commits: `type(scope): description`
