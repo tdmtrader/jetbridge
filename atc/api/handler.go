@@ -19,6 +19,7 @@ import (
 	"github.com/concourse/concourse/atc/api/infoserver"
 	"github.com/concourse/concourse/atc/api/jobserver"
 	"github.com/concourse/concourse/atc/api/loglevelserver"
+	"github.com/concourse/concourse/atc/api/mcpserver"
 	"github.com/concourse/concourse/atc/api/pipelineserver"
 	"github.com/concourse/concourse/atc/api/resourceserver"
 	"github.com/concourse/concourse/atc/api/resourceserver/versionserver"
@@ -120,6 +121,9 @@ func NewHandler(
 		oidcIssuer = externalURL
 	}
 	idTokenServer := idtokenserver.NewServer(logger, oidcIssuer, dbSigningKeyFactory)
+
+	mcpServer := mcpserver.NewServer()
+	mcpserver.RegisterTools(mcpServer, dbTeamFactory, dbBuildFactory, externalURL, version)
 
 	handlers := map[string]http.Handler{
 		atc.GetConfig:  http.HandlerFunc(configServer.GetConfig),
@@ -234,6 +238,8 @@ func NewHandler(
 		atc.GetWall:   http.HandlerFunc(wallServer.GetWall),
 		atc.SetWall:   http.HandlerFunc(wallServer.SetWall),
 		atc.ClearWall: http.HandlerFunc(wallServer.ClearWall),
+
+		atc.MCPEndpoint: mcpServer,
 
 		atc.GetOpenIDConfiguration: http.HandlerFunc(idTokenServer.OpenIDConfiguration),
 		atc.GetSigningKeys:         http.HandlerFunc(idTokenServer.SigningKeys),

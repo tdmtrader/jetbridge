@@ -6,6 +6,11 @@
 
 ---
 
+## [ ] Track: ATC-Embedded MCP Server
+*Link: [./tracks/atc_embedded_mcp_server_20260408/](./tracks/atc_embedded_mcp_server_20260408/)*
+
+---
+
 ## [ ] Track: Fix gzip invalid header on artifact StreamIn
 *Link: [./tracks/gzip_invalid_header_artifact_streaming_20260408/](./tracks/gzip_invalid_header_artifact_streaming_20260408/)*
 

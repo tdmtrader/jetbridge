@@ -121,6 +121,8 @@ const (
 	GetAgentFeedbackSummary  = "GetAgentFeedbackSummary"
 	ClassifyAgentVerdict     = "ClassifyAgentVerdict"
 	GetAgentReviewFindings   = "GetAgentReviewFindings"
+
+	MCPEndpoint = "MCPEndpoint"
 )
 
 const (
@@ -246,6 +248,8 @@ var Routes = rata.Routes([]rata.Route{
 	{Path: "/api/v1/agent/feedback", Method: "POST", Name: SubmitAgentFeedback},
 	{Path: "/api/v1/agent/feedback", Method: "GET", Name: GetAgentFeedback},
 	{Path: "/api/v1/agent/reviews/:commit/findings", Method: "GET", Name: GetAgentReviewFindings},
+
+	{Path: "/api/v1/mcp", Method: "POST", Name: MCPEndpoint},
 
 	{Path: "/.well-known/openid-configuration", Method: "GET", Name: GetOpenIDConfiguration},
 	{Path: "/.well-known/jwks.json", Method: "GET", Name: GetSigningKeys},
