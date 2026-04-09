@@ -15,9 +15,13 @@ metadata:
     {{- include "concourse.labels" . | nindent 4 }}
     app.kubernetes.io/component: artifact-daemon
 rules:
+  # Get node info for self-identification; patch to annotate the node
+  # with the daemon's readiness status (concourse.dev/artifact-cache label).
   - apiGroups: [""]
     resources: ["nodes"]
     verbs: ["get", "patch"]
+  # Discover other daemon pods for cross-node artifact routing.
+  # Read-only — daemons never modify endpoint data.
   - apiGroups: ["discovery.k8s.io"]
     resources: ["endpointslices"]
     verbs: ["get", "list", "watch"]

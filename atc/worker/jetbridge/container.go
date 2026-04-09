@@ -442,6 +442,11 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 
 	affinity := c.buildAffinity()
 
+	// Task pods never call the K8s API; disable the SA token mount to
+	// reduce the blast radius of a compromised container. Workload
+	// Identity (GKE) uses the metadata server, not this token.
+	disableTokenMount := false
+
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        c.podName,
@@ -450,14 +455,15 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 			Annotations: c.buildPodAnnotations(),
 		},
 		Spec: corev1.PodSpec{
-			RestartPolicy:      corev1.RestartPolicyNever,
-			SecurityContext:    buildPodSecurityContext(privileged),
-			ImagePullSecrets:   buildImagePullSecrets(c.config.ImagePullSecrets, c.config.ImageRegistry),
-			ServiceAccountName: c.config.ServiceAccount,
-			InitContainers:     initContainers,
-			Volumes:            volumes,
-			Containers:         containers,
-			Affinity:           affinity,
+			RestartPolicy:                 corev1.RestartPolicyNever,
+			AutomountServiceAccountToken:  &disableTokenMount,
+			SecurityContext:               buildPodSecurityContext(privileged),
+			ImagePullSecrets:              buildImagePullSecrets(c.config.ImagePullSecrets, c.config.ImageRegistry),
+			ServiceAccountName:            c.config.ServiceAccount,
+			InitContainers:                initContainers,
+			Volumes:                       volumes,
+			Containers:                    containers,
+			Affinity:                      affinity,
 
 			TerminationGracePeriodSeconds: &terminationGrace,
 		},
@@ -779,7 +785,11 @@ func buildResourceRequirements(limits runtime.ContainerLimits) corev1.ResourceRe
 // know at pod-creation time whether an arbitrary image supports non-root.
 // Container-level AllowPrivilegeEscalation=false still provides hardening.
 func buildPodSecurityContext(privileged bool) *corev1.PodSecurityContext {
-	return &corev1.PodSecurityContext{}
+	return &corev1.PodSecurityContext{
+		SeccompProfile: &corev1.SeccompProfile{
+			Type: corev1.SeccompProfileTypeRuntimeDefault,
+		},
+	}
 }
 
 // buildContainerSecurityContext returns the container-level security context.

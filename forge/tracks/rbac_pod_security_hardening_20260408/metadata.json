@@ -1,0 +1,7 @@
+{
+  "id": "rbac_pod_security_hardening_20260408",
+  "name": "RBAC & Pod Security Hardening",
+  "type": "feature",
+  "status": "active",
+  "createdAt": "2026-04-08"
+}

@@ -6,8 +6,18 @@
 
 ---
 
-## [ ] Track: ATC-Embedded MCP Server
-*Link: [./tracks/atc_embedded_mcp_server_20260408/](./tracks/atc_embedded_mcp_server_20260408/)*
+## [ ] Track: Auth Session Lifetime & Refresh Tokens
+*Link: [./tracks/auth_session_refresh_tokens_20260408/](./tracks/auth_session_refresh_tokens_20260408/)*
+
+---
+
+## [ ] Track: DaemonSet Artifact Security Hardening
+*Link: [./tracks/daemonset_artifact_security_20260408/](./tracks/daemonset_artifact_security_20260408/)*
+
+---
+
+## [ ] Track: RBAC & Pod Security Hardening
+*Link: [./tracks/rbac_pod_security_hardening_20260408/](./tracks/rbac_pod_security_hardening_20260408/)*
 
 ---
 
@@ -37,6 +47,11 @@
 ---
 
 ## Completed / Archived Tracks
+
+### [x] Track: ATC-Embedded MCP Server
+_Link: [./tracks/atc_embedded_mcp_server_20260408/](./tracks/atc_embedded_mcp_server_20260408/)_
+
+---
 
 ### [~] Track: Finish Setup (Conductor Migration)
 _Link: [./archive/finish_setup_20260303/](./archive/finish_setup_20260303/)_

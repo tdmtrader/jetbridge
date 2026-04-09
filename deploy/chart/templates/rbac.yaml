@@ -10,9 +10,13 @@ metadata:
   labels:
     {{- include "concourse.labels" . | nindent 4 }}
 rules:
+  # Read pipeline credential secrets from the cluster. Limited to get
+  # (no list/watch) to prevent enumerating all secrets in the cluster.
   - apiGroups: [""]
     resources: ["secrets"]
     verbs: ["get"]
+  # Resolve node names to IPs for artifact daemon communication
+  # (DaemonClient uses node IP to reach the local daemon pod).
   - apiGroups: [""]
     resources: ["nodes"]
     verbs: ["get"]
@@ -52,17 +56,19 @@ rules:
   - apiGroups: [""]
     resources: ["pods/log"]
     verbs: ["get"]
-  # PVC access for cache and artifact volumes
+  # Read-only PVC access for cache and artifact volume discovery.
+  # No create/delete — PVCs are pre-provisioned by operators or hostPath-backed.
   - apiGroups: [""]
     resources: ["persistentvolumeclaims"]
     verbs: ["get", "list"]
-  # Deployment self-update (used by registrar for worker state)
+  # Worker registrar updates the web deployment's annotations to
+  # record worker state and heartbeat timestamps.
   - apiGroups: ["apps"]
     resources: ["deployments"]
     verbs: ["get", "list", "watch", "patch", "update"]
-  # EndpointSlice discovery for artifact daemon peer resolution
-  # (used by DaemonClient to discover daemon pod IPs for StreamIn
-  # and resource cache probing)
+  # EndpointSlice discovery for artifact daemon peer resolution.
+  # DaemonClient uses this to find daemon pod IPs for cross-node
+  # artifact streaming and resource cache probing. Read-only.
   - apiGroups: ["discovery.k8s.io"]
     resources: ["endpointslices"]
     verbs: ["get", "list", "watch"]

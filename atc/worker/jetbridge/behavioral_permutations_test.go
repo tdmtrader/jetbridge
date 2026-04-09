@@ -860,6 +860,17 @@ func TestBuildPod_InitContainerOrdering(t *testing.T) {
 	if inits[1].Name != "fetch-inputs" {
 		t.Errorf("expected second init container to be 'fetch-inputs', got %q", inits[1].Name)
 	}
+
+	// Security hardening must survive the DaemonSet+init-container path.
+	if pod.Spec.AutomountServiceAccountToken == nil || *pod.Spec.AutomountServiceAccountToken {
+		t.Error("expected AutomountServiceAccountToken=false on DaemonSet-backed pod")
+	}
+	if pod.Spec.SecurityContext == nil || pod.Spec.SecurityContext.SeccompProfile == nil {
+		t.Fatal("expected seccomp profile on DaemonSet-backed pod")
+	}
+	if pod.Spec.SecurityContext.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault {
+		t.Errorf("expected seccomp RuntimeDefault, got %s", pod.Spec.SecurityContext.SeccompProfile.Type)
+	}
 }
 
 // ---------------------------------------------------------------------------

@@ -20,6 +20,9 @@ spec:
       serviceAccountName: {{ include "concourse.fullname" . }}-artifact-daemon
       subdomain: {{ include "concourse.artifactDaemonServiceName" . }}
       terminationGracePeriodSeconds: 30
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: artifact-daemon
           image: {{ include "concourse.image" . }}

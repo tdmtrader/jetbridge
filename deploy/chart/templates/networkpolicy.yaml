@@ -52,4 +52,90 @@ spec:
             matchLabels:
               {{- include "concourse.selectorLabels" . | nindent 14 }}
 {{- end }}
+{{- if .Values.artifactDaemon.enabled }}
+---
+# Artifact daemon: only accept connections from Concourse web pods and
+# task/check init containers (which fetch artifacts via HTTP).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "concourse.fullname" . }}-artifact-daemon
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "concourse.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "concourse.name" . }}
+      app.kubernetes.io/component: artifact-daemon
+  policyTypes:
+    - Ingress
+  ingress:
+    - ports:
+        - port: {{ .Values.artifactDaemon.port | default 7780 }}
+          protocol: TCP
+      from:
+        # Web pods (ATC) that register caches and stream artifacts
+        - podSelector:
+            matchLabels:
+              {{- include "concourse.selectorLabels" . | nindent 14 }}
+        # Task/check pods that fetch artifacts via init containers
+        - podSelector:
+            matchExpressions:
+              - key: concourse.ci/pipeline
+                operator: Exists
+{{- end }}
+{{- if .Values.networkPolicy.taskEgressTo }}
+---
+# Task pod egress: restrict outbound traffic from CI task pods.
+# Always allows DNS, artifact daemon, and GKE metadata server
+# (required for Workload Identity token refresh at 169.254.169.254).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "concourse.fullname" . }}-task-egress
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "concourse.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchExpressions:
+      - key: concourse.ci/pipeline
+        operator: Exists
+  policyTypes:
+    - Egress
+  egress:
+    # DNS resolution (kube-dns / CoreDNS)
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    # GKE metadata server — required for Workload Identity token refresh.
+    # Without this, pods lose GCP credentials when egress is restricted.
+    - to:
+        - ipBlock:
+            cidr: 169.254.169.254/32
+      ports:
+        - port: 80
+          protocol: TCP
+        - port: 988
+          protocol: TCP
+    {{- if .Values.artifactDaemon.enabled }}
+    # Artifact daemon on each node
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ include "concourse.name" . }}
+              app.kubernetes.io/component: artifact-daemon
+      ports:
+        - port: {{ .Values.artifactDaemon.port | default 7780 }}
+          protocol: TCP
+    {{- end }}
+    # Operator-configured additional egress targets
+    {{- range .Values.networkPolicy.taskEgressTo }}
+    - to:
+        {{- toYaml (list .) | nindent 8 }}
+    {{- end }}
+{{- end }}
 {{- end }}

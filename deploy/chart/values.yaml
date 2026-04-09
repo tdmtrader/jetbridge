@@ -38,6 +38,8 @@ web:
     runAsUser: 65534
     runAsGroup: 65534
     fsGroup: 65534
+    seccompProfile:
+      type: RuntimeDefault
 
   # -- Container-level security context for the web container
   containerSecurityContext:
@@ -281,6 +283,8 @@ postgresql:
     runAsUser: 999
     runAsGroup: 999
     fsGroup: 999
+    seccompProfile:
+      type: RuntimeDefault
 
   # -- Container-level security context for the PostgreSQL container
   containerSecurityContext:
@@ -381,6 +385,19 @@ secrets:
   #   session_signing_key
   signingKeySecret: ""
 
+# -- Pod Security Admission (PSA) recommendations.
+# Concourse task pods may run as root (resource type images require it),
+# so the namespace cannot use the "restricted" PSA level. Recommended labels:
+#
+#   kubectl label namespace <ns> \
+#     pod-security.kubernetes.io/enforce=baseline \
+#     pod-security.kubernetes.io/warn=restricted \
+#     pod-security.kubernetes.io/audit=restricted
+#
+# "baseline" enforcement blocks known-dangerous pod configurations while
+# allowing root containers. "restricted" in warn/audit mode surfaces
+# pods that don't meet the strictest standard without blocking them.
+
 # -- Network policy configuration
 networkPolicy:
   # -- Enable NetworkPolicy resources
@@ -394,13 +411,18 @@ networkPolicy:
   #       matchLabels:
   #         app.kubernetes.io/name: ingress-nginx
 
-  # -- Additional egress rules for task pods.
-  # By default, task pods can reach any destination.
-  # Set to restrict outbound traffic from CI task pods.
+  # -- Additional egress destinations for task pods (applied only when non-empty).
+  # When set, task pods are restricted to: DNS, artifact daemon, GKE metadata
+  # server (169.254.169.254 — required for Workload Identity), plus these entries.
+  # When empty (default), task pods have unrestricted egress.
+  # IMPORTANT: On GKE with Workload Identity, the metadata server allowlist is
+  # included automatically. Do NOT remove 169.254.169.254 from the template.
   taskEgressTo: []
-  # Example: allow only internal network:
+  # Example: allow only internal network + Docker Hub:
   #   - ipBlock:
   #       cidr: 10.0.0.0/8
+  #   - ipBlock:
+  #       cidr: 104.16.0.0/12  # Docker Hub / Cloudflare
 
 # -- Pod Disruption Budget configuration
 pdb:
