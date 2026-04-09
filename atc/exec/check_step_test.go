@@ -12,6 +12,8 @@ import (
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbfakes"
+	"github.com/jackc/pgerrcode"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/concourse/concourse/atc/db/lock/lockfakes"
 	"github.com/concourse/concourse/atc/exec"
 	"github.com/concourse/concourse/atc/exec/execfakes"
@@ -728,6 +730,24 @@ var _ = Describe("CheckStep", func() {
 					Expect(errors.Is(stepErr, expectedErr)).To(BeTrue())
 				})
 			})
+
+			Context("when SaveVersions fails with FK violation (scope deleted by GC)", func() {
+				BeforeEach(func() {
+					fakeResourceConfigScope.SaveVersionsReturns(
+						&pgconn.PgError{Code: pgerrcode.ForeignKeyViolation},
+					)
+				})
+
+				It("does not error", func() {
+					Expect(stepErr).NotTo(HaveOccurred())
+				})
+
+				It("finishes with failure (non-fatal)", func() {
+					Expect(fakeDelegate.FinishedCallCount()).To(Equal(1))
+					_, succeeded := fakeDelegate.FinishedArgsForCall(0)
+					Expect(succeeded).To(BeFalse())
+				})
+			})
 		})
 	})
 
@@ -740,6 +760,24 @@ var _ = Describe("CheckStep", func() {
 			It("errors", func() {
 				Expect(stepErr).To(HaveOccurred())
 			})
+		})
+	})
+
+	Context("when PointToCheckedConfig fails with FK violation (scope deleted by GC)", func() {
+		BeforeEach(func() {
+			fakeDelegate.PointToCheckedConfigReturns(
+				&pgconn.PgError{Code: pgerrcode.ForeignKeyViolation},
+			)
+		})
+
+		It("does not error", func() {
+			Expect(stepErr).NotTo(HaveOccurred())
+		})
+
+		It("finishes with failure (non-fatal)", func() {
+			Expect(fakeDelegate.FinishedCallCount()).To(Equal(1))
+			_, succeeded := fakeDelegate.FinishedArgsForCall(0)
+			Expect(succeeded).To(BeFalse())
 		})
 	})
 

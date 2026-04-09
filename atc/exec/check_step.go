@@ -161,6 +161,11 @@ func (step *CheckStep) run(ctx context.Context, state RunState, delegate CheckDe
 	// can be fetched.
 	err = delegate.PointToCheckedConfig(scope)
 	if err != nil {
+		if db.IsForeignKeyViolation(err) {
+			logger.Info("scope-deleted-before-check", lager.Data{"scope": scope.ID()})
+			delegate.Finished(logger, false)
+			return false, nil
+		}
 		return false, fmt.Errorf("update resource config scope: %w", err)
 	}
 
@@ -248,6 +253,11 @@ func (step *CheckStep) run(ctx context.Context, state RunState, delegate CheckDe
 
 		err = scope.SaveVersions(db.NewSpanContext(ctx), versions)
 		if err != nil {
+			if db.IsForeignKeyViolation(err) {
+				logger.Info("scope-deleted-during-check", lager.Data{"scope": scope.ID()})
+				delegate.Finished(logger, false)
+				return false, nil
+			}
 			return false, fmt.Errorf("save versions: %w", err)
 		}
 
