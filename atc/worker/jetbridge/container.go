@@ -442,10 +442,12 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 
 	affinity := c.buildAffinity()
 
-	// Task pods never call the K8s API; disable the SA token mount to
-	// reduce the blast radius of a compromised container. Workload
-	// Identity (GKE) uses the metadata server, not this token.
-	disableTokenMount := false
+	// When a service account is explicitly configured, mount its token so
+	// tasks that need K8s API access (e.g. kubectl) can use it. Otherwise,
+	// disable the token mount to reduce the blast radius of a compromised
+	// container. Workload Identity (GKE) uses the metadata server, not
+	// this token.
+	mountToken := c.config.ServiceAccount != ""
 
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
@@ -456,7 +458,7 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 		},
 		Spec: corev1.PodSpec{
 			RestartPolicy:                 corev1.RestartPolicyNever,
-			AutomountServiceAccountToken:  &disableTokenMount,
+			AutomountServiceAccountToken:  &mountToken,
 			SecurityContext:               buildPodSecurityContext(privileged),
 			ImagePullSecrets:              buildImagePullSecrets(c.config.ImagePullSecrets, c.config.ImageRegistry),
 			ServiceAccountName:            c.config.ServiceAccount,
