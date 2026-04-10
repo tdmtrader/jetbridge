@@ -205,9 +205,10 @@ var _ = Describe("Engine", func() {
 										}
 									})
 
-									It("does not finish the build", func() {
+									It("finishes the build as errored so in-flight tracking is cleared", func() {
 										waitGroup.Wait()
-										Expect(fakeBuild.FinishCallCount()).To(Equal(0))
+										Expect(fakeBuild.FinishCallCount()).To(Equal(1))
+										Expect(fakeBuild.FinishArgsForCall(0)).To(Equal(db.BuildStatusErrored))
 									})
 								})
 

@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -223,6 +224,7 @@ func (b *engineBuild) Run(ctx context.Context) {
 	select {
 	case <-b.release:
 		logger.Info("releasing")
+		b.finish(logger.Session("finish"), fmt.Errorf("build released during drain"), false)
 
 	case <-done:
 		// Don't retry check build because if a check build drops into endless retry,

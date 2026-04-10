@@ -249,6 +249,102 @@ func (s *TrackerSuite) TestTrackerDrainsEngine() {
 	s.Equal(ctx, s.fakeEngine.DrainArgsForCall(0))
 }
 
+func (s *TrackerSuite) TestTrackFinalizesOrphanedBuild() {
+	// Simulate a build where Run() exits without calling Finish().
+	// This happens when engineBuild.Run() hits an early-return path
+	// (e.g. AcquireTrackingLock error, engine drain). The build still
+	// reports IsRunning()==true because Finish() was never called.
+	fakeBuild := new(dbfakes.FakeBuild)
+	fakeBuild.IDReturns(1)
+	fakeBuild.IsRunningReturns(true)
+
+	s.fakeBuildFactory.GetAllStartedBuildsReturns([]db.Build{fakeBuild}, nil)
+
+	done := make(chan struct{})
+	s.fakeEngine.NewBuildStub = func(build db.Build) builds.Runnable {
+		engineBuild := new(buildsfakes.FakeRunnable)
+		engineBuild.RunStub = func(context.Context) {
+			// Return without calling Finish — simulates early exit
+			close(done)
+		}
+		return engineBuild
+	}
+
+	err := s.tracker.Run(context.TODO())
+	s.NoError(err)
+
+	<-done
+
+	s.Eventually(func() bool {
+		return fakeBuild.FinishCallCount() == 1
+	}, time.Second, 10*time.Millisecond, "tracker should finalize orphaned build")
+
+	s.Equal(db.BuildStatusErrored, fakeBuild.FinishArgsForCall(0))
+}
+
+func (s *TrackerSuite) TestTrackDoesNotDoubleFinishCompletedBuild() {
+	// When a build completes normally (IsRunning returns false after
+	// Run), the tracker should NOT call Finish a second time.
+	fakeBuild := new(dbfakes.FakeBuild)
+	fakeBuild.IDReturns(1)
+	fakeBuild.IsRunningReturns(false) // build completed normally
+
+	s.fakeBuildFactory.GetAllStartedBuildsReturns([]db.Build{fakeBuild}, nil)
+
+	done := make(chan struct{})
+	s.fakeEngine.NewBuildStub = func(build db.Build) builds.Runnable {
+		engineBuild := new(buildsfakes.FakeRunnable)
+		engineBuild.RunStub = func(context.Context) {
+			close(done)
+		}
+		return engineBuild
+	}
+
+	err := s.tracker.Run(context.TODO())
+	s.NoError(err)
+
+	<-done
+
+	// Give the defer time to execute
+	time.Sleep(100 * time.Millisecond)
+
+	s.Equal(0, fakeBuild.FinishCallCount(), "tracker should not call Finish on a completed build")
+}
+
+func (s *TrackerSuite) TestTrackOrphanedInMemoryCheckCleansUpInFlightTracking() {
+	// End-to-end test: an in-memory check build wrapped with a cleanup
+	// function (like onFinishBuild) should have its cleanup called even
+	// when Run() exits without calling Finish().
+	cleanedUp := make(chan struct{})
+	fakeBuild := new(dbfakes.FakeBuild)
+	fakeBuild.IDReturns(0)
+	fakeBuild.ResourceIDReturns(42)
+	fakeBuild.IsRunningReturns(true)
+	// When Finish is called, signal cleanup
+	fakeBuild.FinishStub = func(status db.BuildStatus) error {
+		close(cleanedUp)
+		return nil
+	}
+
+	done := make(chan struct{})
+	s.fakeEngine.NewBuildStub = func(build db.Build) builds.Runnable {
+		engineBuild := new(buildsfakes.FakeRunnable)
+		engineBuild.RunStub = func(context.Context) {
+			close(done)
+		}
+		return engineBuild
+	}
+
+	s.buildChan <- fakeBuild
+
+	select {
+	case <-cleanedUp:
+		// Success — cleanup was triggered
+	case <-time.After(2 * time.Second):
+		s.Fail("cleanup was never triggered for orphaned in-memory check build")
+	}
+}
+
 // BT-05: BuildsRunning metric incremented during build tracking
 func (s *TrackerSuite) TestTrackEmitsBuildsRunningMetric() {
 	// Drain stale gauge state

@@ -6,6 +6,11 @@
 
 ---
 
+## [ ] Track: Fix in-flight check tracking leak
+*Link: [./tracks/check_scheduling_inflight_leak_20260409/](./tracks/check_scheduling_inflight_leak_20260409/)*
+
+---
+
 ## [ ] Track: Auth Session Lifetime & Refresh Tokens
 *Link: [./tracks/auth_session_refresh_tokens_20260408/](./tracks/auth_session_refresh_tokens_20260408/)*
 

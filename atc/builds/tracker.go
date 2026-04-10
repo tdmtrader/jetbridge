@@ -96,6 +96,13 @@ func (bt *Tracker) trackBuild(logger lager.Logger, b db.Build) {
 				logger.Error("panic-in-tracker-build-run", err)
 
 				build.Finish(db.BuildStatusErrored)
+			} else if build.IsRunning() {
+				// Build exited Run() without calling Finish (e.g. lock
+				// acquisition error, engine drain). Finalize it so that
+				// in-flight check tracking is cleared and the resource
+				// is not permanently blocked from future checks.
+				logger.Info("finalizing-orphaned-build", loggerData)
+				build.Finish(db.BuildStatusErrored)
 			}
 		}()
 
