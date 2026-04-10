@@ -22,11 +22,10 @@ spec:
       serviceAccountName: {{ include "concourse.fullname" . }}-artifact-daemon
       subdomain: {{ include "concourse.artifactDaemonServiceName" . }}
       terminationGracePeriodSeconds: 30
+      # NOTE: No pod-level runAsNonRoot/runAsUser — the daemon writes to a
+      # hostPath volume, and K8s does not adjust hostPath ownership via fsGroup.
+      # Container-level hardening (drop ALL, no escalation, seccomp) still applies.
       securityContext:
-        runAsNonRoot: true
-        runAsUser: 65534
-        runAsGroup: 65534
-        fsGroup: 65534
         seccompProfile:
           type: RuntimeDefault
       containers:
