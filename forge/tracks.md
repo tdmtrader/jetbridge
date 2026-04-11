@@ -11,28 +11,8 @@
 
 ---
 
-## [ ] Track: Auth Session Lifetime & Refresh Tokens
-*Link: [./tracks/auth_session_refresh_tokens_20260408/](./tracks/auth_session_refresh_tokens_20260408/)*
-
----
-
 ## [ ] Track: DaemonSet Artifact Security Hardening
 *Link: [./tracks/daemonset_artifact_security_20260408/](./tracks/daemonset_artifact_security_20260408/)*
-
----
-
-## [ ] Track: RBAC & Pod Security Hardening
-*Link: [./tracks/rbac_pod_security_hardening_20260408/](./tracks/rbac_pod_security_hardening_20260408/)*
-
----
-
-## [ ] Track: Fix gzip invalid header on artifact StreamIn
-*Link: [./tracks/gzip_invalid_header_artifact_streaming_20260408/](./tracks/gzip_invalid_header_artifact_streaming_20260408/)*
-
----
-
-## [ ] Track: Stub Volume StreamOut Panic on Daemon Cache Hit
-*Link: [./tracks/stub_volume_streamout_panic_20260408/](./tracks/stub_volume_streamout_panic_20260408/)*
 
 ---
 
@@ -46,8 +26,8 @@
 
 ---
 
-## [ ] Track: ATC Scheduler Behavioral Specification
-*Link: [./tracks/scheduler_behavioral_spec_20260331/](./tracks/scheduler_behavioral_spec_20260331/)*
+## [ ] Track: K8s Runtime Behavioral Specification
+*Link: [./tracks/k8s_runtime_behavioral_spec_20260331/](./tracks/k8s_runtime_behavioral_spec_20260331/)*
 
 ---
 
@@ -55,6 +35,101 @@
 
 ### [x] Track: ATC-Embedded MCP Server
 _Link: [./tracks/atc_embedded_mcp_server_20260408/](./tracks/atc_embedded_mcp_server_20260408/)_
+
+---
+
+### [x] Track: Fix in-flight check tracking leak (committed fix)
+_Link: [./tracks/check_scheduling_inflight_leak_20260409/](./tracks/check_scheduling_inflight_leak_20260409/)_
+
+---
+
+### [x] Track: Auth Session Lifetime & Refresh Tokens
+_Link: [./archive/auth_session_refresh_tokens_20260408/](./archive/auth_session_refresh_tokens_20260408/)_
+
+---
+
+### [x] Track: RBAC & Pod Security Hardening
+_Link: [./archive/rbac_pod_security_hardening_20260408/](./archive/rbac_pod_security_hardening_20260408/)_
+
+---
+
+### [x] Track: Fix gzip invalid header on artifact StreamIn
+_Link: [./archive/gzip_invalid_header_artifact_streaming_20260408/](./archive/gzip_invalid_header_artifact_streaming_20260408/)_
+
+---
+
+### [x] Track: Stub Volume StreamOut Panic on Daemon Cache Hit
+_Link: [./archive/stub_volume_streamout_panic_20260408/](./archive/stub_volume_streamout_panic_20260408/)_
+
+---
+
+### [x] Track: ATC Scheduler Behavioral Specification
+_Link: [./archive/scheduler_behavioral_spec_20260331/](./archive/scheduler_behavioral_spec_20260331/)_
+
+---
+
+### [x] Track: Exec Step Behavioral Specification
+_Link: [./archive/exec_step_behavioral_spec_20260331/](./archive/exec_step_behavioral_spec_20260331/)_
+
+---
+
+### [x] Track: Cross-Node Artifact Reliability
+_Link: [./archive/cross_node_artifact_reliability_20260331/](./archive/cross_node_artifact_reliability_20260331/)_
+
+---
+
+### [x] Track: Batch Artifact Resolution
+_Link: [./archive/batch_artifact_resolution_20260331/](./archive/batch_artifact_resolution_20260331/)_
+
+---
+
+### [x] Track: Check Runner Behavioral Specification
+_Link: [./archive/check_runner_behavioral_spec_20260331/](./archive/check_runner_behavioral_spec_20260331/)_
+
+---
+
+### [x] Track: Build Tracker Behavioral Specification
+_Link: [./archive/build_tracker_behavioral_spec_20260331/](./archive/build_tracker_behavioral_spec_20260331/)_
+
+---
+
+### [x] Track: GC Collectors Behavioral Specification
+_Link: [./archive/gc_collectors_behavioral_spec_20260331/](./archive/gc_collectors_behavioral_spec_20260331/)_
+
+---
+
+### [x] Track: Fly CLI Behavioral Specification
+_Link: [./archive/fly_cli_behavioral_spec_20260331/](./archive/fly_cli_behavioral_spec_20260331/)_
+
+---
+
+### [x] Track: Credential Management Behavioral Specification
+_Link: [./archive/creds_behavioral_spec_20260331/](./archive/creds_behavioral_spec_20260331/)_
+
+---
+
+### [x] Track: Storage Backend Interface Extraction
+_Link: [./archive/storage_backend_interface_20260330/](./archive/storage_backend_interface_20260330/)_
+
+---
+
+### [x] Track: Scratch path volumes for task containers
+_Link: [./archive/scratch_path_volumes_for_task_containers_20260325/](./archive/scratch_path_volumes_for_task_containers_20260325/)_
+
+---
+
+### [x] Track: Cache backed by GCS Fuse
+_Link: [./archive/cache_backed_by_gcs_fuse_20260324/](./archive/cache_backed_by_gcs_fuse_20260324/)_
+
+---
+
+### [x] Track: CI Agent OTel GenAI Tracing
+_Link: [./archive/ci_agent_otel_genai_tracing_20260319/](./archive/ci_agent_otel_genai_tracing_20260319/)_
+
+---
+
+### [x] Track: DaemonSet Direct HostPath
+_Link: [./archive/daemonset_direct_hostpath_20260327/](./archive/daemonset_direct_hostpath_20260327/)_
 
 ---
 
@@ -293,11 +368,6 @@ _Link: [./tracks/image_ref_hardening_20260311/](./tracks/image_ref_hardening_202
 
 ---
 
-### [ ] Track: Image Ref Hardening
-_Link: [./tracks/image_ref_hardening_20260311/](./tracks/image_ref_hardening_20260311/)_
-
----
-
 ### [ ] Track: Image Ref Hardening for tasks, etc
 _Link: [./tracks/image_ref_hardening_for_tasks_etc_20260311/](./tracks/image_ref_hardening_for_tasks_etc_20260311/)_
 
@@ -328,17 +398,12 @@ _Link: [./tracks/ai_communication_and_documentation_standards_20260319/](./track
 
 ---
 
-### [ ] Track: CI Agent OTel GenAI Tracing
-_Link: [./tracks/ci_agent_otel_genai_tracing_20260319/](./tracks/ci_agent_otel_genai_tracing_20260319/)_
-
----
-
 ### [ ] Track: GHCR Docker Image Publishing
 _Link: [./tracks/ghcr_docker_image_publishing_20260319/](./tracks/ghcr_docker_image_publishing_20260319/)_
 
 ---
 
-### [ ] Track: GCP Artifact Auth 
+### [ ] Track: GCP Artifact Auth
 _Link: [./tracks/gcp_artifact_auth_20260319/](./tracks/gcp_artifact_auth_20260319/)_
 
 ---
@@ -378,11 +443,6 @@ _Link: [./tracks/caching_behavior_and_pvc_20260324/](./tracks/caching_behavior_a
 
 ---
 
-### [ ] Track: Cache backed by GCS Fuse
-_Link: [./tracks/cache_backed_by_gcs_fuse_20260324/](./tracks/cache_backed_by_gcs_fuse_20260324/)_
-
----
-
 ### [ ] Track: OCI Build Task Cache Testing
 _Link: [./tracks/oci_build_task_cache_testing_20260324/](./tracks/oci_build_task_cache_testing_20260324/)_
 
@@ -395,11 +455,6 @@ _Link: [./tracks/sidecar_details_20260325/](./tracks/sidecar_details_20260325/)_
 
 ### [ ] Track: Scratch Mount & Cache strategies
 _Link: [./tracks/scratch_mount_cache_strategies_20260325/](./tracks/scratch_mount_cache_strategies_20260325/)_
-
----
-
-### [ ] Track: Scratch path volumes for task containers
-_Link: [./tracks/scratch_path_volumes_for_task_containers_20260325/](./tracks/scratch_path_volumes_for_task_containers_20260325/)_
 
 ---
 
@@ -443,11 +498,6 @@ _Link: [./tracks/jetbridge_storage_behavioral_spec_20260330/](./tracks/jetbridge
 
 ---
 
-### [ ] Track: Storage Backend Interface Extraction
-_Link: [./tracks/storage_backend_interface_20260330/](./tracks/storage_backend_interface_20260330/)_
-
----
-
 ### [x] Track: Sidecar working directory bug
 _Link: [./tracks/sidecar_workdir_bug_20260331/](./tracks/sidecar_workdir_bug_20260331/)_
 
@@ -455,50 +505,5 @@ _Link: [./tracks/sidecar_workdir_bug_20260331/](./tracks/sidecar_workdir_bug_202
 
 ### [x] Track: Telemetry simplification
 _Link: [./tracks/telemetry_simplification_20260331/](./tracks/telemetry_simplification_20260331/)_
-
----
-
-### [x] Track: Exec Step Behavioral Specification
-_Link: [./tracks/exec_step_behavioral_spec_20260331/](./tracks/exec_step_behavioral_spec_20260331/)_
-
----
-
-### [ ] Track: Cross-Node Artifact Reliability
-_Link: [./tracks/cross_node_artifact_reliability_20260331/](./tracks/cross_node_artifact_reliability_20260331/)_
-
----
-
-### [ ] Track: Batch Artifact Resolution
-_Link: [./tracks/batch_artifact_resolution_20260331/](./tracks/batch_artifact_resolution_20260331/)_
-
----
-
-### [ ] Track: K8s Runtime Behavioral Specification
-_Link: [./tracks/k8s_runtime_behavioral_spec_20260331/](./tracks/k8s_runtime_behavioral_spec_20260331/)_
-
----
-
-### [ ] Track: Check Runner Behavioral Specification
-_Link: [./tracks/check_runner_behavioral_spec_20260331/](./tracks/check_runner_behavioral_spec_20260331/)_
-
----
-
-### [ ] Track: Build Tracker Behavioral Specification
-_Link: [./tracks/build_tracker_behavioral_spec_20260331/](./tracks/build_tracker_behavioral_spec_20260331/)_
-
----
-
-### [ ] Track: GC Collectors Behavioral Specification
-_Link: [./tracks/gc_collectors_behavioral_spec_20260331/](./tracks/gc_collectors_behavioral_spec_20260331/)_
-
----
-
-### [ ] Track: Fly CLI Behavioral Specification
-_Link: [./tracks/fly_cli_behavioral_spec_20260331/](./tracks/fly_cli_behavioral_spec_20260331/)_
-
----
-
-### [ ] Track: Credential Management Behavioral Specification
-_Link: [./tracks/creds_behavioral_spec_20260331/](./tracks/creds_behavioral_spec_20260331/)_
 
 ---

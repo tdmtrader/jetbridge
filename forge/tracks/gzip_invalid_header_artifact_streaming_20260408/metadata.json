@@ -1,7 +1,0 @@
-{
-  "id": "gzip_invalid_header_artifact_streaming_20260408",
-  "name": "Fix gzip invalid header on artifact StreamIn",
-  "type": "bugfix",
-  "status": "active",
-  "created": "2026-04-08"
-}
