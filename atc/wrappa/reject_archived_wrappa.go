@@ -129,6 +129,8 @@ func (rw *RejectArchivedWrappa) Wrap(handlers rata.Handlers) rata.Handlers {
 			atc.GetAgentFeedbackSummary,
 			atc.ClassifyAgentVerdict,
 			atc.GetAgentReviewFindings,
+			atc.CopyResourceVersions,
+			atc.ListDeprecatedScopes,
 			atc.MCPEndpoint:
 
 		default:
