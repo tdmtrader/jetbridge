@@ -20,6 +20,7 @@ import (
 	"github.com/concourse/concourse/atc/metric"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/tracing"
+	"github.com/concourse/concourse/vars"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -395,6 +396,7 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 
 	env := envVars(c.containerSpec.Env)
 	env = append(env, envVars(processSpec.Env)...)
+	applySecretRefs(env, c.containerSpec.SecretEnv)
 
 	volumes, volumeMounts := c.buildVolumeMounts()
 	resources := buildResourceRequirements(c.containerSpec.Limits)
@@ -694,6 +696,28 @@ func stripImagePrefix(image string) string {
 		}
 	}
 	return image
+}
+
+// applySecretRefs replaces literal Value entries with ValueFrom.SecretKeyRef
+// for env vars that have a matching entry in secretEnv. This prevents secret
+// values from appearing in the pod spec.
+func applySecretRefs(envList []corev1.EnvVar, secretEnv map[string]vars.SecretRef) {
+	if len(secretEnv) == 0 {
+		return
+	}
+	for i := range envList {
+		ref, ok := secretEnv[envList[i].Name]
+		if !ok {
+			continue
+		}
+		envList[i].Value = ""
+		envList[i].ValueFrom = &corev1.EnvVarSource{
+			SecretKeyRef: &corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{Name: ref.Name},
+				Key:                  ref.Key,
+			},
+		}
+	}
 }
 
 func envVars(env []string) []corev1.EnvVar {
