@@ -557,7 +557,61 @@ func (step *TaskStep) containerSpec(logger lager.Logger, state RunState, imageSp
 		containerSpec.Limits.EphemeralStorageRequest = (*uint64)(config.Requests.EphemeralStorage)
 	}
 
+	// Build SecretEnv: for params that were resolved from a K8s Secrets
+	// backend, record the secret ref so the pod builder can use
+	// ValueFrom.SecretKeyRef instead of a literal value.
+	containerSpec.SecretEnv = BuildSecretEnv(config.Params, state)
+
 	return containerSpec, nil
+}
+
+// BuildSecretEnv cross-references resolved param values against tracked
+// secret refs. For each param whose resolved value matches a tracked
+// credential that has a K8s Secret ref, the env var name is mapped to
+// the secret ref.
+func BuildSecretEnv(params atc.TaskEnv, state RunState) map[string]vars.SecretRef {
+	// Collect tracked credentials: varPath -> value
+	credValues := vars.TrackedVarsMap{}
+	state.IterateInterpolatedCreds(credValues)
+
+	// Collect tracked secret refs: varPath -> SecretRef
+	secretRefs := map[string]vars.SecretRef{}
+	state.IterateSecretRefs(secretRefCollector(secretRefs))
+
+	if len(secretRefs) == 0 {
+		return nil
+	}
+
+	// Build reverse map: credential value -> SecretRef
+	valueToRef := map[string]vars.SecretRef{}
+	for varPath, ref := range secretRefs {
+		if val, ok := credValues[varPath]; ok {
+			valueToRef[val] = ref
+		}
+	}
+
+	if len(valueToRef) == 0 {
+		return nil
+	}
+
+	// For each param env var, check if its value matches a tracked secret
+	result := map[string]vars.SecretRef{}
+	for name, value := range params {
+		if ref, ok := valueToRef[value]; ok {
+			result[name] = ref
+		}
+	}
+
+	if len(result) == 0 {
+		return nil
+	}
+	return result
+}
+
+type secretRefCollector map[string]vars.SecretRef
+
+func (c secretRefCollector) YieldSecretRef(varPath string, ref vars.SecretRef) {
+	c[varPath] = ref
 }
 
 // buildProcessIO constructs a ProcessIO with per-sidecar writers when sidecars

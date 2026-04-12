@@ -46,6 +46,7 @@ type RunState interface {
 	AddLocalVar(name string, val any, redact bool)
 
 	IterateInterpolatedCreds(vars.TrackedVarsIterator)
+	IterateSecretRefs(vars.TrackedSecretRefsIterator)
 
 	ArtifactRepository() *build.Repository
 

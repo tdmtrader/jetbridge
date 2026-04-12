@@ -49,6 +49,11 @@ type FakeRunState struct {
 	iterateInterpolatedCredsArgsForCall []struct {
 		arg1 vars.TrackedVarsIterator
 	}
+	IterateSecretRefsStub        func(vars.TrackedSecretRefsIterator)
+	iterateSecretRefsMutex       sync.RWMutex
+	iterateSecretRefsArgsForCall []struct {
+		arg1 vars.TrackedSecretRefsIterator
+	}
 	ListStub        func() ([]vars.Reference, error)
 	listMutex       sync.RWMutex
 	listArgsForCall []struct {
@@ -300,6 +305,38 @@ func (fake *FakeRunState) IterateInterpolatedCredsArgsForCall(i int) vars.Tracke
 	fake.iterateInterpolatedCredsMutex.RLock()
 	defer fake.iterateInterpolatedCredsMutex.RUnlock()
 	argsForCall := fake.iterateInterpolatedCredsArgsForCall[i]
+	return argsForCall.arg1
+}
+
+func (fake *FakeRunState) IterateSecretRefs(arg1 vars.TrackedSecretRefsIterator) {
+	fake.iterateSecretRefsMutex.Lock()
+	fake.iterateSecretRefsArgsForCall = append(fake.iterateSecretRefsArgsForCall, struct {
+		arg1 vars.TrackedSecretRefsIterator
+	}{arg1})
+	stub := fake.IterateSecretRefsStub
+	fake.recordInvocation("IterateSecretRefs", []interface{}{arg1})
+	fake.iterateSecretRefsMutex.Unlock()
+	if stub != nil {
+		fake.IterateSecretRefsStub(arg1)
+	}
+}
+
+func (fake *FakeRunState) IterateSecretRefsCallCount() int {
+	fake.iterateSecretRefsMutex.RLock()
+	defer fake.iterateSecretRefsMutex.RUnlock()
+	return len(fake.iterateSecretRefsArgsForCall)
+}
+
+func (fake *FakeRunState) IterateSecretRefsCalls(stub func(vars.TrackedSecretRefsIterator)) {
+	fake.iterateSecretRefsMutex.Lock()
+	defer fake.iterateSecretRefsMutex.Unlock()
+	fake.IterateSecretRefsStub = stub
+}
+
+func (fake *FakeRunState) IterateSecretRefsArgsForCall(i int) vars.TrackedSecretRefsIterator {
+	fake.iterateSecretRefsMutex.RLock()
+	defer fake.iterateSecretRefsMutex.RUnlock()
+	argsForCall := fake.iterateSecretRefsArgsForCall[i]
 	return argsForCall.arg1
 }
 

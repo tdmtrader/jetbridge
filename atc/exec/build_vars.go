@@ -10,6 +10,7 @@ type buildVariables struct {
 	parentScope interface {
 		vars.Variables
 		IterateInterpolatedCreds(iter vars.TrackedVarsIterator)
+		IterateSecretRefs(iter vars.TrackedSecretRefsIterator)
 	}
 
 	localVars vars.StaticVariables
@@ -57,6 +58,11 @@ func (b *buildVariables) List() ([]vars.Reference, error) {
 func (b *buildVariables) IterateInterpolatedCreds(iter vars.TrackedVarsIterator) {
 	b.tracker.IterateInterpolatedCreds(iter)
 	b.parentScope.IterateInterpolatedCreds(iter)
+}
+
+func (b *buildVariables) IterateSecretRefs(iter vars.TrackedSecretRefsIterator) {
+	b.tracker.IterateSecretRefs(iter)
+	b.parentScope.IterateSecretRefs(iter)
 }
 
 func (b *buildVariables) NewLocalScope() *buildVariables {

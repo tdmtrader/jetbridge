@@ -71,6 +71,10 @@ func (state *runState) IterateInterpolatedCreds(iter vars.TrackedVarsIterator) {
 	state.vars.IterateInterpolatedCreds(iter)
 }
 
+func (state *runState) IterateSecretRefs(iter vars.TrackedSecretRefsIterator) {
+	state.vars.IterateSecretRefs(iter)
+}
+
 func (state *runState) NewLocalScope() RunState {
 	clone := *state
 	clone.vars = state.vars.NewLocalScope()

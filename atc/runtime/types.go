@@ -10,6 +10,7 @@ import (
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/compression"
 	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/vars"
 	"go.opentelemetry.io/otel/propagation"
 )
 
@@ -122,6 +123,11 @@ type ContainerSpec struct {
 	// for running Processes. These are in addition to, but take precedence
 	// over, those defined in the container image's metdata file.
 	Env []string
+	// SecretEnv maps environment variable names to K8s Secret coordinates.
+	// When the runtime supports it, these are emitted as ValueFrom.SecretKeyRef
+	// in the pod spec instead of literal values, so the secret never appears
+	// in the pod spec.
+	SecretEnv map[string]vars.SecretRef
 	// Type is the type of step the Container is for (e.g. task, get, etc.).
 	Type db.ContainerType
 
