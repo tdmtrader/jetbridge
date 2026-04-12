@@ -270,9 +270,12 @@ func (s *Server) handleStreamIn(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
+		// Strip setuid/setgid bits — defense-in-depth (also blocked by allowPrivilegeEscalation: false).
+		mode := os.FileMode(hdr.Mode) &^ (os.ModeSetuid | os.ModeSetgid)
+
 		switch hdr.Typeflag {
 		case tar.TypeDir:
-			if err := os.MkdirAll(target, os.FileMode(hdr.Mode)); err != nil {
+			if err := os.MkdirAll(target, mode); err != nil {
 				s.logger.Error("failed-to-create-dir", err, lager.Data{"target": target})
 				http.Error(w, "mkdir: "+err.Error(), http.StatusInternalServerError)
 				return
@@ -283,7 +286,7 @@ func (s *Server) handleStreamIn(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "mkdir: "+err.Error(), http.StatusInternalServerError)
 				return
 			}
-			f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(hdr.Mode))
+			f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
 			if err != nil {
 				s.logger.Error("failed-to-create-file", err, lager.Data{"target": target})
 				http.Error(w, "create: "+err.Error(), http.StatusInternalServerError)
@@ -550,11 +553,12 @@ func (s *Server) copyArtifact(src, dest string) error {
 		return fmt.Errorf("create dest dir: %w", err)
 	}
 
-	// Use cp -r with mode/timestamp preservation (not ownership — CAP_CHOWN is dropped).
+	// Use cp -Rp (POSIX-portable) for recursive copy preserving mode and timestamps.
+	// -p silently skips ownership preservation when CAP_CHOWN is dropped.
 	// The trailing "/." ensures we copy contents, not the directory itself.
-	cmd := exec.Command("cp", "-r", "--preserve=mode,timestamps", src+"/.", dest+"/")
+	cmd := exec.Command("cp", "-Rp", src+"/.", dest+"/")
 	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("cp -r %s/. %s/: %w (output: %s)", src, dest, err, strings.TrimSpace(string(output)))
+		return fmt.Errorf("cp -Rp %s/. %s/: %w (output: %s)", src, dest, err, strings.TrimSpace(string(output)))
 	}
 	return nil
 }

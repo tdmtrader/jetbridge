@@ -253,14 +253,17 @@ func extractTarToDir(r io.Reader, destDir string) error {
 			continue
 		}
 
+		// Strip setuid/setgid bits — defense-in-depth (also blocked by allowPrivilegeEscalation: false).
+		mode := os.FileMode(hdr.Mode) &^ (os.ModeSetuid | os.ModeSetgid)
+
 		switch hdr.Typeflag {
 		case tar.TypeDir:
-			os.MkdirAll(target, os.FileMode(hdr.Mode))
+			os.MkdirAll(target, mode)
 		case tar.TypeReg:
 			if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
 				return err
 			}
-			f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(hdr.Mode))
+			f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
 			if err != nil {
 				return err
 			}
