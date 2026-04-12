@@ -22,9 +22,11 @@ spec:
       serviceAccountName: {{ include "concourse.fullname" . }}-artifact-daemon
       subdomain: {{ include "concourse.artifactDaemonServiceName" . }}
       terminationGracePeriodSeconds: 30
-      # NOTE: No pod-level runAsNonRoot/runAsUser — the daemon writes to a
-      # hostPath volume, and K8s does not adjust hostPath ownership via fsGroup.
-      # Container-level hardening (drop ALL, no escalation, seccomp) still applies.
+      # NOTE: Daemon runs as root — it manages a shared hostPath volume where task
+      # containers (running as arbitrary UIDs) write artifacts with varying permissions.
+      # K8s does not apply fsGroup to hostPath, so non-root cannot reliably read/clean
+      # task-created files. CAP_DAC_OVERRIDE is the sole capability added back (out of
+      # ~40) to bypass permission checks on those files. Everything else is dropped.
       securityContext:
         seccompProfile:
           type: RuntimeDefault
@@ -83,6 +85,8 @@ spec:
             capabilities:
               drop:
                 - ALL
+              add:
+                - DAC_OVERRIDE
             seccompProfile:
               type: RuntimeDefault
           resources:

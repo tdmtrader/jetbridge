@@ -270,8 +270,10 @@ func (s *Server) handleStreamIn(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		// Strip setuid/setgid bits — defense-in-depth (also blocked by allowPrivilegeEscalation: false).
-		mode := os.FileMode(hdr.Mode) &^ (os.ModeSetuid | os.ModeSetgid)
+		// Normalize permissions: strip setuid/setgid, enforce minimum readable floor.
+		// Dirs get at least 0755, files get at least 0644, so the daemon can always
+		// read and serve artifacts it extracted.
+		mode := sanitizeMode(hdr.Typeflag, os.FileMode(hdr.Mode))
 
 		switch hdr.Typeflag {
 		case tar.TypeDir:
@@ -546,21 +548,49 @@ func (s *Server) handleResolveBatch(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, status, batchResolveResponse{Status: overall, Results: results})
 }
 
-// copyArtifact copies the contents of src directory to dest using cp -a.
-// The destination directory is created if it doesn't exist.
+// copyArtifact copies the contents of src directory to dest atomically.
+// It copies into a temporary sibling directory first, then renames to the
+// final path. This prevents partial state from blocking retries when a
+// previous copy was interrupted (e.g., by restrictive or read-only files
+// left in the destination).
 func (s *Server) copyArtifact(src, dest string) error {
-	if err := os.MkdirAll(dest, 0755); err != nil {
-		return fmt.Errorf("create dest dir: %w", err)
+	// Create a temp directory alongside dest (same filesystem for atomic rename).
+	tmpDest, err := os.MkdirTemp(filepath.Dir(dest), ".cp-tmp-")
+	if err != nil {
+		return fmt.Errorf("create temp dir: %w", err)
 	}
 
 	// Use cp -Rp (POSIX-portable) for recursive copy preserving mode and timestamps.
-	// -p silently skips ownership preservation when CAP_CHOWN is dropped.
 	// The trailing "/." ensures we copy contents, not the directory itself.
-	cmd := exec.Command("cp", "-Rp", src+"/.", dest+"/")
+	cmd := exec.Command("cp", "-Rp", src+"/.", tmpDest+"/")
 	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("cp -Rp %s/. %s/: %w (output: %s)", src, dest, err, strings.TrimSpace(string(output)))
+		os.RemoveAll(tmpDest)
+		return fmt.Errorf("cp -Rp %s/. %s/: %w (output: %s)", src, tmpDest, err, strings.TrimSpace(string(output)))
+	}
+
+	// Remove any existing dest (may contain partial state from a prior failed copy).
+	os.RemoveAll(dest)
+
+	// Atomic rename on the same filesystem.
+	if err := os.Rename(tmpDest, dest); err != nil {
+		os.RemoveAll(tmpDest)
+		return fmt.Errorf("rename %s -> %s: %w", tmpDest, dest, err)
 	}
 	return nil
+}
+
+// sanitizeMode strips setuid/setgid bits and enforces a minimum permission
+// floor so the daemon can always read artifacts it extracted. Directories get
+// at least 0755 (traversable + listable), files get at least 0644 (readable).
+func sanitizeMode(typeflag byte, mode os.FileMode) os.FileMode {
+	mode &^= os.ModeSetuid | os.ModeSetgid
+	switch typeflag {
+	case tar.TypeDir:
+		mode |= 0755
+	case tar.TypeReg:
+		mode |= 0644
+	}
+	return mode
 }
 
 // handleHeadResourceCache checks whether a resource cache key exists on this

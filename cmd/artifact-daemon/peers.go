@@ -253,8 +253,8 @@ func extractTarToDir(r io.Reader, destDir string) error {
 			continue
 		}
 
-		// Strip setuid/setgid bits — defense-in-depth (also blocked by allowPrivilegeEscalation: false).
-		mode := os.FileMode(hdr.Mode) &^ (os.ModeSetuid | os.ModeSetgid)
+		// Normalize permissions: strip setuid/setgid, enforce minimum readable floor.
+		mode := sanitizeMode(hdr.Typeflag, os.FileMode(hdr.Mode))
 
 		switch hdr.Typeflag {
 		case tar.TypeDir:
