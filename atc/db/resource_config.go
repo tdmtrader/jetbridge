@@ -132,6 +132,7 @@ func findOrCreateResourceConfigScope(
 			From("resource_config_scopes").
 			Where(sq.Eq{
 				"resource_config_id": resourceConfig.ID(),
+				"deprecated_at":     nil,
 			}).
 			Where(sq.Expr("resource_id IS NULL")).
 			RunWith(tx).
@@ -142,6 +143,7 @@ func findOrCreateResourceConfigScope(
 			Where(sq.Eq{
 				"resource_id":        resourceID,
 				"resource_config_id": resourceConfig.ID(),
+				"deprecated_at":     nil,
 			}).
 			RunWith(tx).
 			Query()
@@ -194,13 +196,19 @@ func findOrCreateResourceConfigScope(
 			return nil, err
 		}
 
-		// delete outdated scopes for resource
-		_, err = psql.Delete("resource_config_scopes").
+		// soft-delete outdated scopes for resource (preserve versions for history migration)
+		_, err = psql.Update("resource_config_scopes").
+			Set("deprecated_at", sq.Expr("now()")).
+			Set("deprecated_from_resource_id", *uniqueResourceID).
+			Set("resource_id", nil).
 			Where(sq.Eq{
 				"resource_id": *uniqueResourceID,
 			}).
 			Where(sq.NotEq{
 				"resource_config_id": resourceConfig.ID(),
+			}).
+			Where(sq.Eq{
+				"deprecated_at": nil,
 			}).
 			RunWith(tx).
 			Exec()

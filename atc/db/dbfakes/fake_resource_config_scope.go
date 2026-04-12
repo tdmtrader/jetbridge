@@ -27,6 +27,19 @@ type FakeResourceConfigScope struct {
 		result2 bool
 		result3 error
 	}
+	CopyVersionsFromStub        func(int) (int, error)
+	copyVersionsFromMutex       sync.RWMutex
+	copyVersionsFromArgsForCall []struct {
+		arg1 int
+	}
+	copyVersionsFromReturns struct {
+		result1 int
+		result2 error
+	}
+	copyVersionsFromReturnsOnCall map[int]struct {
+		result1 int
+		result2 error
+	}
 	FindVersionStub        func(atc.Version) (db.ResourceConfigVersion, bool, error)
 	findVersionMutex       sync.RWMutex
 	findVersionArgsForCall []struct {
@@ -206,6 +219,70 @@ func (fake *FakeResourceConfigScope) AcquireResourceCheckingLockReturnsOnCall(i 
 		result2 bool
 		result3 error
 	}{result1, result2, result3}
+}
+
+func (fake *FakeResourceConfigScope) CopyVersionsFrom(arg1 int) (int, error) {
+	fake.copyVersionsFromMutex.Lock()
+	ret, specificReturn := fake.copyVersionsFromReturnsOnCall[len(fake.copyVersionsFromArgsForCall)]
+	fake.copyVersionsFromArgsForCall = append(fake.copyVersionsFromArgsForCall, struct {
+		arg1 int
+	}{arg1})
+	stub := fake.CopyVersionsFromStub
+	fakeReturns := fake.copyVersionsFromReturns
+	fake.recordInvocation("CopyVersionsFrom", []interface{}{arg1})
+	fake.copyVersionsFromMutex.Unlock()
+	if stub != nil {
+		return stub(arg1)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2
+	}
+	return fakeReturns.result1, fakeReturns.result2
+}
+
+func (fake *FakeResourceConfigScope) CopyVersionsFromCallCount() int {
+	fake.copyVersionsFromMutex.RLock()
+	defer fake.copyVersionsFromMutex.RUnlock()
+	return len(fake.copyVersionsFromArgsForCall)
+}
+
+func (fake *FakeResourceConfigScope) CopyVersionsFromCalls(stub func(int) (int, error)) {
+	fake.copyVersionsFromMutex.Lock()
+	defer fake.copyVersionsFromMutex.Unlock()
+	fake.CopyVersionsFromStub = stub
+}
+
+func (fake *FakeResourceConfigScope) CopyVersionsFromArgsForCall(i int) int {
+	fake.copyVersionsFromMutex.RLock()
+	defer fake.copyVersionsFromMutex.RUnlock()
+	argsForCall := fake.copyVersionsFromArgsForCall[i]
+	return argsForCall.arg1
+}
+
+func (fake *FakeResourceConfigScope) CopyVersionsFromReturns(result1 int, result2 error) {
+	fake.copyVersionsFromMutex.Lock()
+	defer fake.copyVersionsFromMutex.Unlock()
+	fake.CopyVersionsFromStub = nil
+	fake.copyVersionsFromReturns = struct {
+		result1 int
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeResourceConfigScope) CopyVersionsFromReturnsOnCall(i int, result1 int, result2 error) {
+	fake.copyVersionsFromMutex.Lock()
+	defer fake.copyVersionsFromMutex.Unlock()
+	fake.CopyVersionsFromStub = nil
+	if fake.copyVersionsFromReturnsOnCall == nil {
+		fake.copyVersionsFromReturnsOnCall = make(map[int]struct {
+			result1 int
+			result2 error
+		})
+	}
+	fake.copyVersionsFromReturnsOnCall[i] = struct {
+		result1 int
+		result2 error
+	}{result1, result2}
 }
 
 func (fake *FakeResourceConfigScope) FindVersion(arg1 atc.Version) (db.ResourceConfigVersion, bool, error) {

@@ -41,6 +41,8 @@ type ResourceConfigScope interface {
 		logger lager.Logger,
 	) (lock.Lock, bool, error)
 
+	CopyVersionsFrom(sourceScopeID int) (int, error)
+
 	LastCheck() (LastCheck, error)
 	UpdateLastCheckStartTime(int, *json.RawMessage) (bool, error)
 	UpdateLastCheckEndTime(bool) (bool, error)
@@ -267,6 +269,30 @@ func (r *resourceConfigScope) UpdateLastCheckEndTime(succeeded bool) (bool, erro
 	r.conn.Bus().Notify(atc.ComponentLidarScanner)
 
 	return true, nil
+}
+
+// CopyVersionsFrom copies all resource config versions from a source scope into
+// this scope, skipping any versions that already exist (by version_sha256).
+// Returns the number of new versions copied.
+func (r *resourceConfigScope) CopyVersionsFrom(sourceScopeID int) (int, error) {
+	result, err := r.conn.Exec(`
+		INSERT INTO resource_config_versions
+			(resource_config_scope_id, version, version_md5, version_sha256, metadata, check_order, span_context)
+		SELECT $1, version, version_md5, version_sha256, metadata, check_order, span_context
+		FROM resource_config_versions
+		WHERE resource_config_scope_id = $2
+		ON CONFLICT (resource_config_scope_id, version_sha256) DO NOTHING
+	`, r.id, sourceScopeID)
+	if err != nil {
+		return 0, err
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+
+	return int(rowsAffected), nil
 }
 
 func saveResourceVersion(tx Tx, rcsID int, version atc.Version, metadata ResourceConfigMetadataFields, spanContext SpanContext) (bool, error) {

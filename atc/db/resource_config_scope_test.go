@@ -357,6 +357,185 @@ var _ = Describe("Resource Config Scope", func() {
 		})
 	})
 
+	Describe("Scope Deprecation on Config Change", func() {
+		It("soft-deletes old scope when FindOrCreateScope is called with a different config", func() {
+			resource := scenario.Resource("some-resource")
+			oldScopeID := resource.ResourceConfigScopeID()
+			Expect(oldScopeID).ToNot(BeZero())
+
+			// Save versions to the old scope
+			err := resourceScope.SaveVersions(db.SpanContext{}, []atc.Version{
+				{"ref": "v1"},
+				{"ref": "v2"},
+			})
+			Expect(err).ToNot(HaveOccurred())
+
+			// Create a new resource config with different source (simulating a source change)
+			newRC, err := resourceConfigFactory.FindOrCreateResourceConfig(
+				"some-base-resource-type",
+				atc.Source{"some": "different-source"},
+				nil,
+			)
+			Expect(err).ToNot(HaveOccurred())
+
+			// Call FindOrCreateScope with the new config — this should deprecate the old scope
+			_, err = newRC.FindOrCreateScope(intptr(resource.ID()))
+			Expect(err).ToNot(HaveOccurred())
+
+			// Verify old scope still exists (soft-deleted, not hard-deleted)
+			var deprecatedAt *time.Time
+			var deprecatedFromResourceID *int
+			err = dbConn.QueryRow(
+				`SELECT deprecated_at, deprecated_from_resource_id FROM resource_config_scopes WHERE id = $1`,
+				oldScopeID,
+			).Scan(&deprecatedAt, &deprecatedFromResourceID)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(deprecatedAt).ToNot(BeNil())
+			Expect(*deprecatedFromResourceID).To(Equal(resource.ID()))
+
+			// Verify versions still exist on the deprecated scope
+			var versionCount int
+			err = dbConn.QueryRow(
+				`SELECT COUNT(*) FROM resource_config_versions WHERE resource_config_scope_id = $1`,
+				oldScopeID,
+			).Scan(&versionCount)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(versionCount).To(Equal(2))
+		})
+	})
+
+	Describe("CopyVersionsFrom", func() {
+		It("copies versions from a source scope to the target scope", func() {
+			// Save versions to the current scope
+			err := resourceScope.SaveVersions(db.SpanContext{}, []atc.Version{
+				{"ref": "v1"},
+				{"ref": "v2"},
+				{"ref": "v3"},
+			})
+			Expect(err).ToNot(HaveOccurred())
+
+			// Create a second resource with a different config to get a new scope
+			scenario2 := dbtest.Setup(
+				builder.WithPipeline(atc.Config{
+					Resources: atc.ResourceConfigs{
+						{
+							Name: "target-resource",
+							Type: "some-base-resource-type",
+							Source: atc.Source{
+								"some": "other-source",
+							},
+						},
+					},
+					Jobs: atc.JobConfigs{
+						{
+							Name: "some-job",
+							PlanSequence: []atc.Step{
+								{
+									Config: &atc.GetStep{
+										Name: "target-resource",
+									},
+								},
+							},
+						},
+					},
+				}),
+				builder.WithResourceVersions("target-resource"),
+			)
+
+			targetResource := scenario2.Resource("target-resource")
+			rc2, found, err := resourceConfigFactory.FindResourceConfigByID(targetResource.ResourceConfigID())
+			Expect(err).ToNot(HaveOccurred())
+			Expect(found).To(BeTrue())
+
+			targetScope, err := rc2.FindOrCreateScope(intptr(targetResource.ID()))
+			Expect(err).ToNot(HaveOccurred())
+
+			// Copy versions from source to target
+			copied, err := targetScope.CopyVersionsFrom(resourceScope.ID())
+			Expect(err).ToNot(HaveOccurred())
+			Expect(copied).To(Equal(3))
+
+			// Verify versions exist in target scope (3 copied + versions from WithResourceVersions)
+			var count int
+			err = dbConn.QueryRow(
+				`SELECT COUNT(*) FROM resource_config_versions WHERE resource_config_scope_id = $1`,
+				targetScope.ID(),
+			).Scan(&count)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(count).To(BeNumerically(">=", 3))
+		})
+
+		It("skips duplicates with ON CONFLICT DO NOTHING", func() {
+			// Save versions to source scope
+			err := resourceScope.SaveVersions(db.SpanContext{}, []atc.Version{
+				{"ref": "v1"},
+				{"ref": "v2"},
+			})
+			Expect(err).ToNot(HaveOccurred())
+
+			// Create target scope with one overlapping version
+			scenario2 := dbtest.Setup(
+				builder.WithPipeline(atc.Config{
+					Resources: atc.ResourceConfigs{
+						{
+							Name: "target-resource",
+							Type: "some-base-resource-type",
+							Source: atc.Source{
+								"some": "other-source-2",
+							},
+						},
+					},
+					Jobs: atc.JobConfigs{
+						{
+							Name: "some-job",
+							PlanSequence: []atc.Step{
+								{
+									Config: &atc.GetStep{
+										Name: "target-resource",
+									},
+								},
+							},
+						},
+					},
+				}),
+				builder.WithResourceVersions("target-resource"),
+			)
+
+			targetResource := scenario2.Resource("target-resource")
+			rc2, found, err := resourceConfigFactory.FindResourceConfigByID(targetResource.ResourceConfigID())
+			Expect(err).ToNot(HaveOccurred())
+			Expect(found).To(BeTrue())
+
+			targetScope, err := rc2.FindOrCreateScope(intptr(targetResource.ID()))
+			Expect(err).ToNot(HaveOccurred())
+
+			// Pre-populate target with v1
+			err = targetScope.SaveVersions(db.SpanContext{}, []atc.Version{
+				{"ref": "v1"},
+			})
+			Expect(err).ToNot(HaveOccurred())
+
+			// Copy — should only add v2 (v1 already exists)
+			copied, err := targetScope.CopyVersionsFrom(resourceScope.ID())
+			Expect(err).ToNot(HaveOccurred())
+			Expect(copied).To(Equal(1))
+		})
+
+		It("returns 0 when all source versions already exist in target", func() {
+			// Save versions to the source scope
+			err := resourceScope.SaveVersions(db.SpanContext{}, []atc.Version{
+				{"ref": "v1"},
+				{"ref": "v2"},
+			})
+			Expect(err).ToNot(HaveOccurred())
+
+			// Copy from source to itself — all versions already exist
+			copied, err := resourceScope.CopyVersionsFrom(resourceScope.ID())
+			Expect(err).ToNot(HaveOccurred())
+			Expect(copied).To(Equal(0))
+		})
+	})
+
 	Describe("AcquireResourceCheckingLock", func() {
 		Context("when there has been a check recently", func() {
 			var lock lock.Lock
