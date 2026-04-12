@@ -2,26 +2,26 @@
 
 ## Phase 1: Database Migration — Soft-Delete Infrastructure
 
-### [ ] 1.1 Write migration: add `deprecated_at` to `resource_config_scopes`
+### [x] 1.1 Write migration: add `deprecated_at` to `resource_config_scopes` 137b778ba9
 - New migration file in `atc/db/migration/migrations/`
 - `ALTER TABLE resource_config_scopes ADD COLUMN deprecated_at TIMESTAMP WITH TIME ZONE`
 - Add index: `CREATE INDEX ON resource_config_scopes (deprecated_at) WHERE deprecated_at IS NOT NULL`
 - Down migration drops the column
 
-### [ ] 1.2 Update `findOrCreateResourceConfigScope()` to soft-delete
+### [x] 1.2 Update `findOrCreateResourceConfigScope()` to soft-delete 137b778ba9
 - File: `atc/db/resource_config.go` lines 197-209
 - Replace `DELETE FROM resource_config_scopes WHERE resource_id = X AND resource_config_id != Y` with `UPDATE ... SET deprecated_at = now()`
 - Also set `resource_id = NULL` on the deprecated scope (so it no longer blocks the unique constraint)
 - Add test: scope transition marks old scope deprecated instead of deleting it
 
-### [ ] 1.3 Exclude deprecated scopes from active queries
+### [x] 1.3 Exclude deprecated scopes from active queries 137b778ba9
 - Ensure `findOrCreateResourceConfigScope()` ignores deprecated scopes when checking for existing
 - Add `WHERE deprecated_at IS NULL` to scope lookup queries
 - Verify resource check scheduling skips deprecated scopes
 
 ## Phase 2: Version Copy Mechanism
 
-### [ ] 2.1 Write `CopyVersionsFrom()` on ResourceConfigScope
+### [x] 2.1 Write `CopyVersionsFrom()` on ResourceConfigScope 137b778ba9
 - File: `atc/db/resource_config_scope.go`
 - Method signature: `CopyVersionsFrom(sourceScopeID int) (int, error)` returning count copied
 - SQL: INSERT ... SELECT with ON CONFLICT DO NOTHING
