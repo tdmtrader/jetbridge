@@ -51,12 +51,12 @@
 
 ## Phase 4: API Endpoint
 
-### [ ] 4.1 Register route
+### [x] 4.1 Register route 4aa24cc346
 - File: `atc/routes.go`
 - Add: `PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/copy-versions`
 - Handler name: `CopyResourceVersions`
 
-### [ ] 4.2 Implement API handler
+### [x] 4.2 Implement API handler 4aa24cc346
 - File: `atc/api/resourceserver/copy_versions.go` (new)
 - Parse request body: `{ "from_scope_id": int }`
 - Validate: source scope exists, is deprecated, belongs to this resource (via `deprecated_from_resource_id`)
@@ -67,12 +67,12 @@
 
 ## Phase 5: Fly CLI Command
 
-### [ ] 5.1 Add `CopyResourceVersions()` to go-concourse client
+### [x] 5.1 Add `CopyResourceVersions()` to go-concourse client 897de8877c
 - File: `go-concourse/concourse/team.go`
 - Method calls PUT endpoint from Phase 4
 - Returns versions copied count
 
-### [ ] 5.2 Implement `fly copy-resource-versions` command
+### [x] 5.2 Implement `fly copy-resource-versions` command 897de8877c
 - File: `fly/commands/copy_resource_versions.go` (new)
 - Register in `fly/commands/fly.go`
 - Flags: `--resource PIPELINE/RESOURCE` (required), `--from-scope ID` (optional)
