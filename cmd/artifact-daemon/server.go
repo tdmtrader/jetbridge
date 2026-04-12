@@ -560,12 +560,15 @@ func (s *Server) copyArtifact(src, dest string) error {
 		return fmt.Errorf("create temp dir: %w", err)
 	}
 
-	// Use cp -Rp (POSIX-portable) for recursive copy preserving mode and timestamps.
-	// The trailing "/." ensures we copy contents, not the directory itself.
-	cmd := exec.Command("cp", "-Rp", src+"/.", tmpDest+"/")
+	// Use cp -R (recursive only — no ownership/mode preservation). The daemon
+	// has CAP_DAC_OVERRIDE to read source files owned by any UID, but does NOT
+	// have CAP_CHOWN. GNU cp -p as root treats chown failure as a hard error,
+	// so we must not use -p. Ownership/mode preservation is unnecessary anyway —
+	// these are ephemeral artifact cache copies.
+	cmd := exec.Command("cp", "-R", src+"/.", tmpDest+"/")
 	if output, err := cmd.CombinedOutput(); err != nil {
 		os.RemoveAll(tmpDest)
-		return fmt.Errorf("cp -Rp %s/. %s/: %w (output: %s)", src, tmpDest, err, strings.TrimSpace(string(output)))
+		return fmt.Errorf("cp -R %s/. %s/: %w (output: %s)", src, tmpDest, err, strings.TrimSpace(string(output)))
 	}
 
 	// Remove any existing dest (may contain partial state from a prior failed copy).
