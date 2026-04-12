@@ -126,7 +126,9 @@ func (a *auditor) ValidateAction(action string) bool {
 		atc.ListSharedForResource,
 		atc.ListSharedForResourceType,
 		atc.ClearResourceVersions,
-		atc.ClearResourceTypeVersions:
+		atc.ClearResourceTypeVersions,
+		atc.CopyResourceVersions,
+		atc.ListDeprecatedScopes:
 		return a.EnableResourceAuditLog
 	case
 		atc.SaveConfig,
