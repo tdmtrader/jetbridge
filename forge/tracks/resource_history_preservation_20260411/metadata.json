@@ -1,0 +1,8 @@
+{
+  "trackId": "resource_history_preservation_20260411",
+  "type": "feature",
+  "status": "planned",
+  "description": "Preserve resource version history across type/source config changes via soft-delete scopes and fly copy-resource-versions",
+  "createdAt": "2026-04-11T00:00:00.000Z",
+  "updatedAt": "2026-04-11T00:00:00.000Z"
+}

@@ -6,6 +6,11 @@
 
 ---
 
+## [ ] Track: Resource History Preservation Across Config Changes
+*Link: [./tracks/resource_history_preservation_20260411/](./tracks/resource_history_preservation_20260411/)*
+
+---
+
 ## [ ] Track: Fix in-flight check tracking leak
 *Link: [./tracks/check_scheduling_inflight_leak_20260409/](./tracks/check_scheduling_inflight_leak_20260409/)*
 
