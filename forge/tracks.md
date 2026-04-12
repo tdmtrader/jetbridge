@@ -6,11 +6,6 @@
 
 ---
 
-## [ ] Track: Resource History Preservation Across Config Changes
-*Link: [./tracks/resource_history_preservation_20260411/](./tracks/resource_history_preservation_20260411/)*
-
----
-
 ## [ ] Track: Fix in-flight check tracking leak
 *Link: [./tracks/check_scheduling_inflight_leak_20260409/](./tracks/check_scheduling_inflight_leak_20260409/)*
 
@@ -37,6 +32,11 @@
 ---
 
 ## Completed / Archived Tracks
+
+### [x] Track: Resource History Preservation Across Config Changes
+_Link: [./tracks/resource_history_preservation_20260411/](./tracks/resource_history_preservation_20260411/)_
+
+---
 
 ### [x] Track: ATC-Embedded MCP Server
 _Link: [./tracks/atc_embedded_mcp_server_20260408/](./tracks/atc_embedded_mcp_server_20260408/)_
