@@ -221,6 +221,21 @@ type FakeTeam struct {
 		result1 int64
 		result2 error
 	}
+	CopyResourceVersionsStub        func(atc.PipelineRef, string, int) (int, error)
+	copyResourceVersionsMutex       sync.RWMutex
+	copyResourceVersionsArgsForCall []struct {
+		arg1 atc.PipelineRef
+		arg2 string
+		arg3 int
+	}
+	copyResourceVersionsReturns struct {
+		result1 int
+		result2 error
+	}
+	copyResourceVersionsReturnsOnCall map[int]struct {
+		result1 int
+		result2 error
+	}
 	CreateArtifactStub        func(io.Reader, string, []string) (atc.WorkerArtifact, error)
 	createArtifactMutex       sync.RWMutex
 	createArtifactArgsForCall []struct {
@@ -495,6 +510,20 @@ type FakeTeam struct {
 	}
 	listContainersReturnsOnCall map[int]struct {
 		result1 []atc.Container
+		result2 error
+	}
+	ListDeprecatedScopesStub        func(atc.PipelineRef, string) ([]atc.DeprecatedScope, error)
+	listDeprecatedScopesMutex       sync.RWMutex
+	listDeprecatedScopesArgsForCall []struct {
+		arg1 atc.PipelineRef
+		arg2 string
+	}
+	listDeprecatedScopesReturns struct {
+		result1 []atc.DeprecatedScope
+		result2 error
+	}
+	listDeprecatedScopesReturnsOnCall map[int]struct {
+		result1 []atc.DeprecatedScope
 		result2 error
 	}
 	ListJobsStub        func(atc.PipelineRef) ([]atc.Job, error)
@@ -1808,6 +1837,72 @@ func (fake *FakeTeam) ClearTaskCacheReturnsOnCall(i int, result1 int64, result2 
 	}{result1, result2}
 }
 
+func (fake *FakeTeam) CopyResourceVersions(arg1 atc.PipelineRef, arg2 string, arg3 int) (int, error) {
+	fake.copyResourceVersionsMutex.Lock()
+	ret, specificReturn := fake.copyResourceVersionsReturnsOnCall[len(fake.copyResourceVersionsArgsForCall)]
+	fake.copyResourceVersionsArgsForCall = append(fake.copyResourceVersionsArgsForCall, struct {
+		arg1 atc.PipelineRef
+		arg2 string
+		arg3 int
+	}{arg1, arg2, arg3})
+	stub := fake.CopyResourceVersionsStub
+	fakeReturns := fake.copyResourceVersionsReturns
+	fake.recordInvocation("CopyResourceVersions", []interface{}{arg1, arg2, arg3})
+	fake.copyResourceVersionsMutex.Unlock()
+	if stub != nil {
+		return stub(arg1, arg2, arg3)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2
+	}
+	return fakeReturns.result1, fakeReturns.result2
+}
+
+func (fake *FakeTeam) CopyResourceVersionsCallCount() int {
+	fake.copyResourceVersionsMutex.RLock()
+	defer fake.copyResourceVersionsMutex.RUnlock()
+	return len(fake.copyResourceVersionsArgsForCall)
+}
+
+func (fake *FakeTeam) CopyResourceVersionsCalls(stub func(atc.PipelineRef, string, int) (int, error)) {
+	fake.copyResourceVersionsMutex.Lock()
+	defer fake.copyResourceVersionsMutex.Unlock()
+	fake.CopyResourceVersionsStub = stub
+}
+
+func (fake *FakeTeam) CopyResourceVersionsArgsForCall(i int) (atc.PipelineRef, string, int) {
+	fake.copyResourceVersionsMutex.RLock()
+	defer fake.copyResourceVersionsMutex.RUnlock()
+	argsForCall := fake.copyResourceVersionsArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2, argsForCall.arg3
+}
+
+func (fake *FakeTeam) CopyResourceVersionsReturns(result1 int, result2 error) {
+	fake.copyResourceVersionsMutex.Lock()
+	defer fake.copyResourceVersionsMutex.Unlock()
+	fake.CopyResourceVersionsStub = nil
+	fake.copyResourceVersionsReturns = struct {
+		result1 int
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeTeam) CopyResourceVersionsReturnsOnCall(i int, result1 int, result2 error) {
+	fake.copyResourceVersionsMutex.Lock()
+	defer fake.copyResourceVersionsMutex.Unlock()
+	fake.CopyResourceVersionsStub = nil
+	if fake.copyResourceVersionsReturnsOnCall == nil {
+		fake.copyResourceVersionsReturnsOnCall = make(map[int]struct {
+			result1 int
+			result2 error
+		})
+	}
+	fake.copyResourceVersionsReturnsOnCall[i] = struct {
+		result1 int
+		result2 error
+	}{result1, result2}
+}
+
 func (fake *FakeTeam) CreateArtifact(arg1 io.Reader, arg2 string, arg3 []string) (atc.WorkerArtifact, error) {
 	var arg3Copy []string
 	if arg3 != nil {
@@ -3059,6 +3154,71 @@ func (fake *FakeTeam) ListContainersReturnsOnCall(i int, result1 []atc.Container
 	}
 	fake.listContainersReturnsOnCall[i] = struct {
 		result1 []atc.Container
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeTeam) ListDeprecatedScopes(arg1 atc.PipelineRef, arg2 string) ([]atc.DeprecatedScope, error) {
+	fake.listDeprecatedScopesMutex.Lock()
+	ret, specificReturn := fake.listDeprecatedScopesReturnsOnCall[len(fake.listDeprecatedScopesArgsForCall)]
+	fake.listDeprecatedScopesArgsForCall = append(fake.listDeprecatedScopesArgsForCall, struct {
+		arg1 atc.PipelineRef
+		arg2 string
+	}{arg1, arg2})
+	stub := fake.ListDeprecatedScopesStub
+	fakeReturns := fake.listDeprecatedScopesReturns
+	fake.recordInvocation("ListDeprecatedScopes", []interface{}{arg1, arg2})
+	fake.listDeprecatedScopesMutex.Unlock()
+	if stub != nil {
+		return stub(arg1, arg2)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2
+	}
+	return fakeReturns.result1, fakeReturns.result2
+}
+
+func (fake *FakeTeam) ListDeprecatedScopesCallCount() int {
+	fake.listDeprecatedScopesMutex.RLock()
+	defer fake.listDeprecatedScopesMutex.RUnlock()
+	return len(fake.listDeprecatedScopesArgsForCall)
+}
+
+func (fake *FakeTeam) ListDeprecatedScopesCalls(stub func(atc.PipelineRef, string) ([]atc.DeprecatedScope, error)) {
+	fake.listDeprecatedScopesMutex.Lock()
+	defer fake.listDeprecatedScopesMutex.Unlock()
+	fake.ListDeprecatedScopesStub = stub
+}
+
+func (fake *FakeTeam) ListDeprecatedScopesArgsForCall(i int) (atc.PipelineRef, string) {
+	fake.listDeprecatedScopesMutex.RLock()
+	defer fake.listDeprecatedScopesMutex.RUnlock()
+	argsForCall := fake.listDeprecatedScopesArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2
+}
+
+func (fake *FakeTeam) ListDeprecatedScopesReturns(result1 []atc.DeprecatedScope, result2 error) {
+	fake.listDeprecatedScopesMutex.Lock()
+	defer fake.listDeprecatedScopesMutex.Unlock()
+	fake.ListDeprecatedScopesStub = nil
+	fake.listDeprecatedScopesReturns = struct {
+		result1 []atc.DeprecatedScope
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeTeam) ListDeprecatedScopesReturnsOnCall(i int, result1 []atc.DeprecatedScope, result2 error) {
+	fake.listDeprecatedScopesMutex.Lock()
+	defer fake.listDeprecatedScopesMutex.Unlock()
+	fake.ListDeprecatedScopesStub = nil
+	if fake.listDeprecatedScopesReturnsOnCall == nil {
+		fake.listDeprecatedScopesReturnsOnCall = make(map[int]struct {
+			result1 []atc.DeprecatedScope
+			result2 error
+		})
+	}
+	fake.listDeprecatedScopesReturnsOnCall[i] = struct {
+		result1 []atc.DeprecatedScope
 		result2 error
 	}{result1, result2}
 }

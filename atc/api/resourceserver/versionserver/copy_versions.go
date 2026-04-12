@@ -5,15 +5,12 @@ import (
 	"net/http"
 
 	"code.cloudfoundry.org/lager/v3"
+	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 )
 
 type CopyVersionsRequest struct {
 	FromScopeID int `json:"from_scope_id"`
-}
-
-type CopyVersionsResponse struct {
-	VersionsCopied int `json:"versions_copied"`
 }
 
 func (s *Server) CopyResourceVersions(pipeline db.Pipeline) http.Handler {
@@ -77,6 +74,6 @@ func (s *Server) CopyResourceVersions(pipeline db.Pipeline) http.Handler {
 			return
 		}
 
-		s.writeJSONResponse(w, CopyVersionsResponse{VersionsCopied: copied})
+		s.writeJSONResponse(w, atc.CopyVersionsResponse{VersionsCopied: copied})
 	})
 }

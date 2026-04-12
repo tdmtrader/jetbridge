@@ -20,3 +20,13 @@ type ClearResourceCacheResponse struct {
 type ClearVersionsResponse struct {
 	VersionsRemoved int64 `json:"versions_removed"`
 }
+
+type CopyVersionsResponse struct {
+	VersionsCopied int `json:"versions_copied"`
+}
+
+type DeprecatedScope struct {
+	ID           int    `json:"id"`
+	DeprecatedAt string `json:"deprecated_at"`
+	ConfigID     int    `json:"config_id"`
+}

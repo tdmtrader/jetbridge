@@ -176,6 +176,62 @@ func (team *team) ClearResourceVersions(pipelineRef atc.PipelineRef, resourceNam
 	}
 }
 
+func (team *team) CopyResourceVersions(pipelineRef atc.PipelineRef, resourceName string, fromScopeID int) (int, error) {
+	params := rata.Params{
+		"team_name":     team.Name(),
+		"pipeline_name": pipelineRef.Name,
+		"resource_name": resourceName,
+	}
+
+	body, _ := json.Marshal(map[string]int{"from_scope_id": fromScopeID})
+
+	var copyResponse atc.CopyVersionsResponse
+	responseHeaders := http.Header{}
+	response := internal.Response{
+		Headers: &responseHeaders,
+		Result:  &copyResponse,
+	}
+	request := internal.Request{
+		RequestName: atc.CopyResourceVersions,
+		Params:      params,
+		Query:       pipelineRef.QueryParams(),
+		Header:      http.Header{"Content-Type": []string{"application/json"}},
+		Body:        bytes.NewReader(body),
+	}
+	err := team.connection.Send(request, &response)
+	if err != nil {
+		return 0, err
+	}
+
+	return copyResponse.VersionsCopied, nil
+}
+
+func (team *team) ListDeprecatedScopes(pipelineRef atc.PipelineRef, resourceName string) ([]atc.DeprecatedScope, error) {
+	params := rata.Params{
+		"team_name":     team.Name(),
+		"pipeline_name": pipelineRef.Name,
+		"resource_name": resourceName,
+	}
+
+	var scopes []atc.DeprecatedScope
+	responseHeaders := http.Header{}
+	response := internal.Response{
+		Headers: &responseHeaders,
+		Result:  &scopes,
+	}
+	request := internal.Request{
+		RequestName: atc.ListDeprecatedScopes,
+		Params:      params,
+		Query:       pipelineRef.QueryParams(),
+	}
+	err := team.connection.Send(request, &response)
+	if err != nil {
+		return nil, err
+	}
+
+	return scopes, nil
+}
+
 func (team *team) ClearResourceTypeVersions(pipelineRef atc.PipelineRef, resourceTypeName string) (int64, error) {
 	params := rata.Params{
 		"team_name":          team.Name(),

@@ -71,6 +71,7 @@ type FlyCommand struct {
 	DisableResourceVersion DisableResourceVersionCommand `command:"disable-resource-version"   alias:"drv"  description:"Disable a version of a resource"`
 	ClearResourceCache     ClearResourceCacheCommand     `command:"clear-resource-cache"       alias:"crc"  description:"Clear cache of a resource"`
 	ClearVersions          ClearVersionsCommand          `command:"clear-versions"       alias:"cv"  description:"Clear versions of a resource or resource type"`
+	CopyResourceVersions   CopyResourceVersionsCommand   `command:"copy-resource-versions" alias:"crv" description:"Copy versions from a deprecated scope into a resource's current scope"`
 
 	CheckResourceType CheckResourceTypeCommand `command:"check-resource-type" alias:"crt"  description:"Check a resource-type"`
 

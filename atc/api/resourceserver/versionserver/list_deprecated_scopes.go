@@ -4,14 +4,9 @@ import (
 	"net/http"
 
 	"code.cloudfoundry.org/lager/v3"
+	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 )
-
-type DeprecatedScopeResponse struct {
-	ID           int    `json:"id"`
-	DeprecatedAt string `json:"deprecated_at"`
-	ConfigID     int    `json:"config_id"`
-}
 
 func (s *Server) ListDeprecatedScopes(pipeline db.Pipeline) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -38,17 +33,13 @@ func (s *Server) ListDeprecatedScopes(pipeline db.Pipeline) http.Handler {
 			return
 		}
 
-		var response []DeprecatedScopeResponse
+		response := make([]atc.DeprecatedScope, 0, len(deprecated))
 		for _, scope := range deprecated {
-			response = append(response, DeprecatedScopeResponse{
+			response = append(response, atc.DeprecatedScope{
 				ID:           scope.ID,
 				DeprecatedAt: scope.DeprecatedAt.Format("2006-01-02T15:04:05Z"),
 				ConfigID:     scope.ConfigID,
 			})
-		}
-
-		if response == nil {
-			response = []DeprecatedScopeResponse{}
 		}
 
 		s.writeJSONResponse(w, response)
