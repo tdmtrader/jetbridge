@@ -404,6 +404,42 @@ var _ = Describe("Resource Config Scope", func() {
 		})
 	})
 
+	Describe("DeprecatedScopes", func() {
+		It("returns deprecated scopes for a resource after config change", func() {
+			resource := scenario.Resource("some-resource")
+
+			// Trigger a config change to deprecate the current scope
+			newRC, err := resourceConfigFactory.FindOrCreateResourceConfig(
+				"some-base-resource-type",
+				atc.Source{"some": "changed-source"},
+				nil,
+			)
+			Expect(err).ToNot(HaveOccurred())
+
+			_, err = newRC.FindOrCreateScope(intptr(resource.ID()))
+			Expect(err).ToNot(HaveOccurred())
+
+			// Reload resource to get fresh state
+			reloaded, err := resource.Reload()
+			Expect(err).ToNot(HaveOccurred())
+			Expect(reloaded).To(BeTrue())
+
+			// Query deprecated scopes
+			deprecated, err := resource.DeprecatedScopes()
+			Expect(err).ToNot(HaveOccurred())
+			Expect(deprecated).To(HaveLen(1))
+			Expect(deprecated[0].DeprecatedAt).ToNot(BeZero())
+		})
+
+		It("returns empty slice when no deprecated scopes exist", func() {
+			resource := scenario.Resource("some-resource")
+
+			deprecated, err := resource.DeprecatedScopes()
+			Expect(err).ToNot(HaveOccurred())
+			Expect(deprecated).To(BeEmpty())
+		})
+	})
+
 	Describe("CopyVersionsFrom", func() {
 		It("copies versions from a source scope to the target scope", func() {
 			// Save versions to the current scope

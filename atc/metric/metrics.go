@@ -106,6 +106,21 @@ func (event ResourceConfigCollectorDuration) Emit(logger lager.Logger) {
 	RecordGCCollectorDuration(context.Background(), "resource-config", ms(event.Duration))
 }
 
+type DeprecatedScopeCollectorDuration struct {
+	Duration time.Duration
+}
+
+func (event DeprecatedScopeCollectorDuration) Emit(logger lager.Logger) {
+	Metrics.emit(
+		logger.Session("gc-deprecated-scope-collector-duration"),
+		Event{
+			Name:  "gc: deprecated scope collector duration (ms)",
+			Value: ms(event.Duration),
+		},
+	)
+	RecordGCCollectorDuration(context.Background(), "deprecated-scope", ms(event.Duration))
+}
+
 type ResourceCacheCollectorDuration struct {
 	Duration time.Duration
 }

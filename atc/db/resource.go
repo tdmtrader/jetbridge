@@ -127,7 +127,17 @@ type Resource interface {
 
 	SharedResourcesAndTypes() (atc.ResourcesAndTypes, error)
 
+	DeprecatedScopes() ([]DeprecatedScope, error)
+
 	Reload() (bool, error)
+}
+
+// DeprecatedScope represents a soft-deleted resource config scope that
+// previously belonged to this resource before a config change.
+type DeprecatedScope struct {
+	ID           int
+	DeprecatedAt time.Time
+	ConfigID     int
 }
 
 var (
@@ -484,6 +494,38 @@ func (r *resource) CurrentPinnedVersion() atc.Version {
 
 func (r *resource) BuildSummary() *atc.BuildSummary {
 	return r.buildSummary
+}
+
+// DeprecatedScopes returns all soft-deleted resource config scopes that
+// previously belonged to this resource, ordered by most recently deprecated first.
+func (r *resource) DeprecatedScopes() ([]DeprecatedScope, error) {
+	rows, err := psql.Select("id", "deprecated_at", "resource_config_id").
+		From("resource_config_scopes").
+		Where(sq.Eq{
+			"deprecated_from_resource_id": r.id,
+		}).
+		Where(sq.NotEq{
+			"deprecated_at": nil,
+		}).
+		OrderBy("deprecated_at DESC").
+		RunWith(r.conn).
+		Query()
+	if err != nil {
+		return nil, err
+	}
+	defer Close(rows)
+
+	var scopes []DeprecatedScope
+	for rows.Next() {
+		var s DeprecatedScope
+		err := rows.Scan(&s.ID, &s.DeprecatedAt, &s.ConfigID)
+		if err != nil {
+			return nil, err
+		}
+		scopes = append(scopes, s)
+	}
+
+	return scopes, nil
 }
 
 func (r *resource) ClearVersions() (int64, error) {

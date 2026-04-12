@@ -172,6 +172,18 @@ type FakeResource struct {
 	currentPinnedVersionReturnsOnCall map[int]struct {
 		result1 atc.Version
 	}
+	DeprecatedScopesStub        func() ([]db.DeprecatedScope, error)
+	deprecatedScopesMutex       sync.RWMutex
+	deprecatedScopesArgsForCall []struct {
+	}
+	deprecatedScopesReturns struct {
+		result1 []db.DeprecatedScope
+		result2 error
+	}
+	deprecatedScopesReturnsOnCall map[int]struct {
+		result1 []db.DeprecatedScope
+		result2 error
+	}
 	DisableVersionStub        func(int) error
 	disableVersionMutex       sync.RWMutex
 	disableVersionArgsForCall []struct {
@@ -1297,6 +1309,62 @@ func (fake *FakeResource) CurrentPinnedVersionReturnsOnCall(i int, result1 atc.V
 	fake.currentPinnedVersionReturnsOnCall[i] = struct {
 		result1 atc.Version
 	}{result1}
+}
+
+func (fake *FakeResource) DeprecatedScopes() ([]db.DeprecatedScope, error) {
+	fake.deprecatedScopesMutex.Lock()
+	ret, specificReturn := fake.deprecatedScopesReturnsOnCall[len(fake.deprecatedScopesArgsForCall)]
+	fake.deprecatedScopesArgsForCall = append(fake.deprecatedScopesArgsForCall, struct {
+	}{})
+	stub := fake.DeprecatedScopesStub
+	fakeReturns := fake.deprecatedScopesReturns
+	fake.recordInvocation("DeprecatedScopes", []interface{}{})
+	fake.deprecatedScopesMutex.Unlock()
+	if stub != nil {
+		return stub()
+	}
+	if specificReturn {
+		return ret.result1, ret.result2
+	}
+	return fakeReturns.result1, fakeReturns.result2
+}
+
+func (fake *FakeResource) DeprecatedScopesCallCount() int {
+	fake.deprecatedScopesMutex.RLock()
+	defer fake.deprecatedScopesMutex.RUnlock()
+	return len(fake.deprecatedScopesArgsForCall)
+}
+
+func (fake *FakeResource) DeprecatedScopesCalls(stub func() ([]db.DeprecatedScope, error)) {
+	fake.deprecatedScopesMutex.Lock()
+	defer fake.deprecatedScopesMutex.Unlock()
+	fake.DeprecatedScopesStub = stub
+}
+
+func (fake *FakeResource) DeprecatedScopesReturns(result1 []db.DeprecatedScope, result2 error) {
+	fake.deprecatedScopesMutex.Lock()
+	defer fake.deprecatedScopesMutex.Unlock()
+	fake.DeprecatedScopesStub = nil
+	fake.deprecatedScopesReturns = struct {
+		result1 []db.DeprecatedScope
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeResource) DeprecatedScopesReturnsOnCall(i int, result1 []db.DeprecatedScope, result2 error) {
+	fake.deprecatedScopesMutex.Lock()
+	defer fake.deprecatedScopesMutex.Unlock()
+	fake.DeprecatedScopesStub = nil
+	if fake.deprecatedScopesReturnsOnCall == nil {
+		fake.deprecatedScopesReturnsOnCall = make(map[int]struct {
+			result1 []db.DeprecatedScope
+			result2 error
+		})
+	}
+	fake.deprecatedScopesReturnsOnCall[i] = struct {
+		result1 []db.DeprecatedScope
+		result2 error
+	}{result1, result2}
 }
 
 func (fake *FakeResource) DisableVersion(arg1 int) error {
