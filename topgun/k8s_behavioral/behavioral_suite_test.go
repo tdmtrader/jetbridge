@@ -350,11 +350,11 @@ func newMockVersion(resourceName string, tag string) string {
 
 	version := guid.String() + "-" + tag
 
-	// Retry on transient pod race conditions. These happen when the mock
-	// resource check pod completes so fast that the K8s worker cannot exec
-	// into it in time. Known error variants:
-	//   - "pod terminated before exec could run"
-	//   - "unable to upgrade connection: container not found"
+	// Retry on transient race conditions. Known variants:
+	//   - "pod terminated before exec could run" / "container not found":
+	//     the mock check pod completes before the K8s worker can exec into it
+	//   - "SQLSTATE 23503": GC deletes the resource_config_scope between
+	//     the check creating it and saving versions (FK violation race)
 	for attempt := 0; attempt < 3; attempt++ {
 		sess := fly.Start("check-resource", "-r", inPipeline(resourceName), "-f", "version:"+version)
 		<-sess.Exited
@@ -363,13 +363,14 @@ func newMockVersion(resourceName string, tag string) string {
 		}
 		output := string(sess.Out.Contents()) + string(sess.Err.Contents())
 		if strings.Contains(output, "pod terminated before exec could run") ||
-			strings.Contains(output, "container not found") {
+			strings.Contains(output, "container not found") ||
+			strings.Contains(output, "SQLSTATE 23503") {
 			time.Sleep(2 * time.Second)
 			continue
 		}
 		Fail("check-resource failed: " + output)
 	}
-	Fail("check-resource failed after 3 retries due to pod race condition")
+	Fail("check-resource failed after 3 retries due to transient race condition")
 	return version
 }
 
@@ -394,7 +395,8 @@ func newMockVersionOrSkip(resourceName string, tag string) string {
 		}
 		output := string(sess.Out.Contents()) + string(sess.Err.Contents())
 		if strings.Contains(output, "pod terminated before exec could run") ||
-			strings.Contains(output, "container not found") {
+			strings.Contains(output, "container not found") ||
+			strings.Contains(output, "SQLSTATE 23503") {
 			time.Sleep(2 * time.Second)
 			continue
 		}
@@ -405,7 +407,7 @@ func newMockVersionOrSkip(resourceName string, tag string) string {
 		}
 		Fail("check-resource failed: " + output)
 	}
-	Fail("check-resource failed after 3 retries due to pod race condition")
+	Fail("check-resource failed after 3 retries due to transient race condition")
 	return version
 }
 
