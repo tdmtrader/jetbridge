@@ -5,27 +5,28 @@ import (
 	"sync"
 
 	"github.com/concourse/concourse/atc/creds"
+	"github.com/concourse/concourse/vars"
 )
 
 type FakeSecretRefProvider struct {
-	GetSecretRefStub        func(string) (*creds.K8sSecretRef, bool)
+	GetSecretRefStub        func(string) (*vars.SecretRef, bool)
 	getSecretRefMutex       sync.RWMutex
 	getSecretRefArgsForCall []struct {
 		arg1 string
 	}
 	getSecretRefReturns struct {
-		result1 *creds.K8sSecretRef
+		result1 *vars.SecretRef
 		result2 bool
 	}
 	getSecretRefReturnsOnCall map[int]struct {
-		result1 *creds.K8sSecretRef
+		result1 *vars.SecretRef
 		result2 bool
 	}
 	invocations      map[string][][]interface{}
 	invocationsMutex sync.RWMutex
 }
 
-func (fake *FakeSecretRefProvider) GetSecretRef(arg1 string) (*creds.K8sSecretRef, bool) {
+func (fake *FakeSecretRefProvider) GetSecretRef(arg1 string) (*vars.SecretRef, bool) {
 	fake.getSecretRefMutex.Lock()
 	ret, specificReturn := fake.getSecretRefReturnsOnCall[len(fake.getSecretRefArgsForCall)]
 	fake.getSecretRefArgsForCall = append(fake.getSecretRefArgsForCall, struct {
@@ -50,7 +51,7 @@ func (fake *FakeSecretRefProvider) GetSecretRefCallCount() int {
 	return len(fake.getSecretRefArgsForCall)
 }
 
-func (fake *FakeSecretRefProvider) GetSecretRefCalls(stub func(string) (*creds.K8sSecretRef, bool)) {
+func (fake *FakeSecretRefProvider) GetSecretRefCalls(stub func(string) (*vars.SecretRef, bool)) {
 	fake.getSecretRefMutex.Lock()
 	defer fake.getSecretRefMutex.Unlock()
 	fake.GetSecretRefStub = stub
@@ -63,28 +64,28 @@ func (fake *FakeSecretRefProvider) GetSecretRefArgsForCall(i int) string {
 	return argsForCall.arg1
 }
 
-func (fake *FakeSecretRefProvider) GetSecretRefReturns(result1 *creds.K8sSecretRef, result2 bool) {
+func (fake *FakeSecretRefProvider) GetSecretRefReturns(result1 *vars.SecretRef, result2 bool) {
 	fake.getSecretRefMutex.Lock()
 	defer fake.getSecretRefMutex.Unlock()
 	fake.GetSecretRefStub = nil
 	fake.getSecretRefReturns = struct {
-		result1 *creds.K8sSecretRef
+		result1 *vars.SecretRef
 		result2 bool
 	}{result1, result2}
 }
 
-func (fake *FakeSecretRefProvider) GetSecretRefReturnsOnCall(i int, result1 *creds.K8sSecretRef, result2 bool) {
+func (fake *FakeSecretRefProvider) GetSecretRefReturnsOnCall(i int, result1 *vars.SecretRef, result2 bool) {
 	fake.getSecretRefMutex.Lock()
 	defer fake.getSecretRefMutex.Unlock()
 	fake.GetSecretRefStub = nil
 	if fake.getSecretRefReturnsOnCall == nil {
 		fake.getSecretRefReturnsOnCall = make(map[int]struct {
-			result1 *creds.K8sSecretRef
+			result1 *vars.SecretRef
 			result2 bool
 		})
 	}
 	fake.getSecretRefReturnsOnCall[i] = struct {
-		result1 *creds.K8sSecretRef
+		result1 *vars.SecretRef
 		result2 bool
 	}{result1, result2}
 }

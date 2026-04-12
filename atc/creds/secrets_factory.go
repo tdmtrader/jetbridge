@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/concourse/concourse/atc"
+	"github.com/concourse/concourse/vars"
 )
 
 //counterfeiter:generate . SecretsFactory
@@ -49,13 +50,9 @@ func GetWithParams(secrets Secrets, path string, params SecretLookupParams) (any
 	return secrets.Get(path)
 }
 
-// K8sSecretRef holds the coordinates of a Kubernetes Secret so that a pod spec
-// can reference it via ValueFrom.SecretKeyRef instead of embedding the literal value.
-type K8sSecretRef struct {
-	Namespace string
-	Name      string
-	Key       string
-}
+// K8sSecretRef is an alias for vars.SecretRef for backwards compatibility.
+// Use vars.SecretRef directly in new code.
+type K8sSecretRef = vars.SecretRef
 
 // SecretRefProvider is an optional interface that credential managers may
 // implement to advertise that they can provide native Kubernetes Secret
@@ -64,7 +61,7 @@ type K8sSecretRef struct {
 //
 //counterfeiter:generate . SecretRefProvider
 type SecretRefProvider interface {
-	GetSecretRef(path string) (*K8sSecretRef, bool)
+	GetSecretRef(path string) (*vars.SecretRef, bool)
 }
 
 // if the provided secrets implements SecretsWithParams, it calls NewSecretLookupPathsWithParams on it with the provided params, otherwise NewSecretLookupPaths is called
