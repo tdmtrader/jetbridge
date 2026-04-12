@@ -59,6 +59,8 @@ var DefaultRoles = map[string]string{
 	atc.GetDownstreamResourceCausality: ViewerRole,
 	atc.GetUpstreamResourceCausality:   ViewerRole,
 	atc.ClearResourceCache:             OperatorRole,
+	atc.CopyResourceVersions:           OperatorRole,
+	atc.ListDeprecatedScopes:           ViewerRole,
 	atc.ListAllPipelines:               ViewerRole,
 	atc.ListPipelines:                  ViewerRole,
 	atc.GetPipeline:                    ViewerRole,

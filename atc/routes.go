@@ -46,6 +46,8 @@ const (
 
 	ListResourceVersions           = "ListResourceVersions"
 	ClearResourceVersions          = "ClearResourceVersions"
+	CopyResourceVersions           = "CopyResourceVersions"
+	ListDeprecatedScopes           = "ListDeprecatedScopes"
 	ClearResourceTypeVersions      = "ClearResourceTypeVersions"
 	GetResourceVersion             = "GetResourceVersion"
 	EnableResourceVersion          = "EnableResourceVersion"
@@ -193,6 +195,8 @@ var Routes = rata.Routes([]rata.Route{
 
 	{Path: "/api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions", Method: "GET", Name: ListResourceVersions},
 	{Path: "/api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions", Method: "DELETE", Name: ClearResourceVersions},
+	{Path: "/api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/copy-versions", Method: "PUT", Name: CopyResourceVersions},
+	{Path: "/api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/deprecated-scopes", Method: "GET", Name: ListDeprecatedScopes},
 	{Path: "/api/v1/teams/:team_name/pipelines/:pipeline_name/resource-types/:resource_type_name/versions", Method: "DELETE", Name: ClearResourceTypeVersions},
 	{Path: "/api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions/:resource_config_version_id", Method: "GET", Name: GetResourceVersion},
 	{Path: "/api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions/:resource_config_version_id/enable", Method: "PUT", Name: EnableResourceVersion},

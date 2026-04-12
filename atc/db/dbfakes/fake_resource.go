@@ -130,6 +130,19 @@ type FakeResource struct {
 	configPinnedVersionReturnsOnCall map[int]struct {
 		result1 atc.Version
 	}
+	CopyVersionsFromScopeStub        func(int) (int, error)
+	copyVersionsFromScopeMutex       sync.RWMutex
+	copyVersionsFromScopeArgsForCall []struct {
+		arg1 int
+	}
+	copyVersionsFromScopeReturns struct {
+		result1 int
+		result2 error
+	}
+	copyVersionsFromScopeReturnsOnCall map[int]struct {
+		result1 int
+		result2 error
+	}
 	CreateBuildStub        func(context.Context, bool, atc.Plan) (db.Build, bool, error)
 	createBuildMutex       sync.RWMutex
 	createBuildArgsForCall []struct {
@@ -1121,6 +1134,70 @@ func (fake *FakeResource) ConfigPinnedVersionReturnsOnCall(i int, result1 atc.Ve
 	fake.configPinnedVersionReturnsOnCall[i] = struct {
 		result1 atc.Version
 	}{result1}
+}
+
+func (fake *FakeResource) CopyVersionsFromScope(arg1 int) (int, error) {
+	fake.copyVersionsFromScopeMutex.Lock()
+	ret, specificReturn := fake.copyVersionsFromScopeReturnsOnCall[len(fake.copyVersionsFromScopeArgsForCall)]
+	fake.copyVersionsFromScopeArgsForCall = append(fake.copyVersionsFromScopeArgsForCall, struct {
+		arg1 int
+	}{arg1})
+	stub := fake.CopyVersionsFromScopeStub
+	fakeReturns := fake.copyVersionsFromScopeReturns
+	fake.recordInvocation("CopyVersionsFromScope", []interface{}{arg1})
+	fake.copyVersionsFromScopeMutex.Unlock()
+	if stub != nil {
+		return stub(arg1)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2
+	}
+	return fakeReturns.result1, fakeReturns.result2
+}
+
+func (fake *FakeResource) CopyVersionsFromScopeCallCount() int {
+	fake.copyVersionsFromScopeMutex.RLock()
+	defer fake.copyVersionsFromScopeMutex.RUnlock()
+	return len(fake.copyVersionsFromScopeArgsForCall)
+}
+
+func (fake *FakeResource) CopyVersionsFromScopeCalls(stub func(int) (int, error)) {
+	fake.copyVersionsFromScopeMutex.Lock()
+	defer fake.copyVersionsFromScopeMutex.Unlock()
+	fake.CopyVersionsFromScopeStub = stub
+}
+
+func (fake *FakeResource) CopyVersionsFromScopeArgsForCall(i int) int {
+	fake.copyVersionsFromScopeMutex.RLock()
+	defer fake.copyVersionsFromScopeMutex.RUnlock()
+	argsForCall := fake.copyVersionsFromScopeArgsForCall[i]
+	return argsForCall.arg1
+}
+
+func (fake *FakeResource) CopyVersionsFromScopeReturns(result1 int, result2 error) {
+	fake.copyVersionsFromScopeMutex.Lock()
+	defer fake.copyVersionsFromScopeMutex.Unlock()
+	fake.CopyVersionsFromScopeStub = nil
+	fake.copyVersionsFromScopeReturns = struct {
+		result1 int
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeResource) CopyVersionsFromScopeReturnsOnCall(i int, result1 int, result2 error) {
+	fake.copyVersionsFromScopeMutex.Lock()
+	defer fake.copyVersionsFromScopeMutex.Unlock()
+	fake.CopyVersionsFromScopeStub = nil
+	if fake.copyVersionsFromScopeReturnsOnCall == nil {
+		fake.copyVersionsFromScopeReturnsOnCall = make(map[int]struct {
+			result1 int
+			result2 error
+		})
+	}
+	fake.copyVersionsFromScopeReturnsOnCall[i] = struct {
+		result1 int
+		result2 error
+	}{result1, result2}
 }
 
 func (fake *FakeResource) CreateBuild(arg1 context.Context, arg2 bool, arg3 atc.Plan) (db.Build, bool, error) {
