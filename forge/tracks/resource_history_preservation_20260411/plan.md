@@ -80,13 +80,13 @@
 - Behavior with `--from-scope`: copy directly
 - Print result: "Copied N versions from scope X to current scope Y"
 
-### [ ] 5.3 Write fly integration test
+### [x] 5.3 Write fly integration test cc824f6ee2
 - File: `fly/integration/copy_resource_versions_test.go` (new)
 - Test against mock ATC: successful copy, scope not found error, unauthorized
 
 ## Phase 6: End-to-End Validation
 
-### [ ] 6.1 Integration test: full flow
+### [x] 6.1 Integration test: full flow cc824f6ee2
 - Set pipeline with resource A (type: custom-registry-image, source with useGoogleAuth)
 - Trigger check, accumulate versions
 - Run a build that uses resource A as input
@@ -95,7 +95,7 @@
 - Call copy-versions API
 - Verify: versions exist in new scope, build history resolves, pin works
 
-### [ ] 6.2 Integration test: GC respects grace period
+### [x] 6.2 Integration test: GC respects grace period 63f8ac81bd
 - Create deprecated scope
 - Run GC with short grace period — verify NOT collected (within period)
 - Advance time past grace period
