@@ -49,6 +49,24 @@ func GetWithParams(secrets Secrets, path string, params SecretLookupParams) (any
 	return secrets.Get(path)
 }
 
+// K8sSecretRef holds the coordinates of a Kubernetes Secret so that a pod spec
+// can reference it via ValueFrom.SecretKeyRef instead of embedding the literal value.
+type K8sSecretRef struct {
+	Namespace string
+	Name      string
+	Key       string
+}
+
+// SecretRefProvider is an optional interface that credential managers may
+// implement to advertise that they can provide native Kubernetes Secret
+// references for a given secret path. When available, the runtime can emit
+// ValueFrom.SecretKeyRef in the pod spec instead of a literal Value.
+//
+//counterfeiter:generate . SecretRefProvider
+type SecretRefProvider interface {
+	GetSecretRef(path string) (*K8sSecretRef, bool)
+}
+
 // if the provided secrets implements SecretsWithParams, it calls NewSecretLookupPathsWithParams on it with the provided params, otherwise NewSecretLookupPaths is called
 func NewSecretLookupPathsWithParams(secrets Secrets, params SecretLookupParams, allowRoot bool) []SecretLookupPath {
 	if paramAwareSecret, isParamAware := secrets.(SecretsWithParams); isParamAware {
