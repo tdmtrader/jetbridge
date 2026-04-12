@@ -440,6 +440,82 @@ var _ = Describe("Resource Config Scope", func() {
 		})
 	})
 
+	Describe("Full History Migration Lifecycle", func() {
+		It("preserves version history across a config change via deprecation + copy", func() {
+			resource := scenario.Resource("some-resource")
+			oldScopeID := resource.ResourceConfigScopeID()
+
+			// 1. Save versions to the current (soon-to-be-deprecated) scope
+			err := resourceScope.SaveVersions(db.SpanContext{}, []atc.Version{
+				{"ref": "v1"},
+				{"ref": "v2"},
+				{"ref": "v3"},
+			})
+			Expect(err).ToNot(HaveOccurred())
+
+			// 2. Simulate a config change (new source)
+			newRC, err := resourceConfigFactory.FindOrCreateResourceConfig(
+				"some-base-resource-type",
+				atc.Source{"some": "new-source-after-change"},
+				nil,
+			)
+			Expect(err).ToNot(HaveOccurred())
+
+			newScope, err := newRC.FindOrCreateScope(intptr(resource.ID()))
+			Expect(err).ToNot(HaveOccurred())
+
+			// 3. Verify old scope was deprecated and new scope is different
+			Expect(newScope.ID()).ToNot(Equal(oldScopeID))
+
+			// Old scope versions still exist
+			var oldVersionCount int
+			err = dbConn.QueryRow(
+				`SELECT COUNT(*) FROM resource_config_versions WHERE resource_config_scope_id = $1`,
+				oldScopeID,
+			).Scan(&oldVersionCount)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(oldVersionCount).To(Equal(3))
+
+			// New scope has no versions yet
+			var newVersionCount int
+			err = dbConn.QueryRow(
+				`SELECT COUNT(*) FROM resource_config_versions WHERE resource_config_scope_id = $1`,
+				newScope.ID(),
+			).Scan(&newVersionCount)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(newVersionCount).To(Equal(0))
+
+			// 4. Copy versions from deprecated scope to new scope
+			copied, err := newScope.CopyVersionsFrom(oldScopeID)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(copied).To(Equal(3))
+
+			// 5. Verify versions now exist in the new scope
+			err = dbConn.QueryRow(
+				`SELECT COUNT(*) FROM resource_config_versions WHERE resource_config_scope_id = $1`,
+				newScope.ID(),
+			).Scan(&newVersionCount)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(newVersionCount).To(Equal(3))
+
+			// 6. Verify DeprecatedScopes() returns the old scope
+			reloaded, err := resource.Reload()
+			Expect(err).ToNot(HaveOccurred())
+			Expect(reloaded).To(BeTrue())
+
+			deprecated, err := resource.DeprecatedScopes()
+			Expect(err).ToNot(HaveOccurred())
+			Expect(deprecated).To(HaveLen(1))
+			Expect(deprecated[0].ID).To(Equal(oldScopeID))
+
+			// 7. Verify CopyVersionsFromScope also works (the convenience method)
+			// Re-copy should yield 0 since all versions already exist
+			copiedAgain, err := resource.CopyVersionsFromScope(oldScopeID)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(copiedAgain).To(Equal(0))
+		})
+	})
+
 	Describe("CopyVersionsFrom", func() {
 		It("copies versions from a source scope to the target scope", func() {
 			// Save versions to the current scope
