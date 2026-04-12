@@ -100,3 +100,11 @@
 - Run GC with short grace period — verify NOT collected (within period)
 - Advance time past grace period
 - Run GC — verify collected
+
+## Phase 7: MCP Server Integration
+
+### [x] 7.1 Add list_deprecated_scopes and copy_resource_versions MCP tools 74de487c53
+- File: `atc/api/mcpserver/tools.go`
+- list_deprecated_scopes: Lists soft-deleted scopes for a resource
+- copy_resource_versions: Copies versions with ownership validation
+- Tests cover: happy paths, empty results, invalid scope
