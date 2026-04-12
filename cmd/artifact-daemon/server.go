@@ -550,11 +550,11 @@ func (s *Server) copyArtifact(src, dest string) error {
 		return fmt.Errorf("create dest dir: %w", err)
 	}
 
-	// Use cp -a for atomic, permission-preserving copy.
+	// Use cp -r with mode/timestamp preservation (not ownership — CAP_CHOWN is dropped).
 	// The trailing "/." ensures we copy contents, not the directory itself.
-	cmd := exec.Command("cp", "-a", src+"/.", dest+"/")
+	cmd := exec.Command("cp", "-r", "--preserve=mode,timestamps", src+"/.", dest+"/")
 	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("cp -a %s/. %s/: %w (output: %s)", src, dest, err, strings.TrimSpace(string(output)))
+		return fmt.Errorf("cp -r %s/. %s/: %w (output: %s)", src, dest, err, strings.TrimSpace(string(output)))
 	}
 	return nil
 }
