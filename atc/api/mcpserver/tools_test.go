@@ -41,12 +41,12 @@ var _ = Describe("Tools", func() {
 	})
 
 	Describe("tools/list", func() {
-		It("returns all 18 tools", func() {
+		It("returns all 20 tools", func() {
 			body := jsonRPCBody("tools/list", 1, nil)
 			resp := doMCP(server, body)
 			result := decodeResult(resp)
 			tools := result["tools"].([]any)
-			Expect(tools).To(HaveLen(18))
+			Expect(tools).To(HaveLen(20))
 
 			names := make([]string, len(tools))
 			for i, t := range tools {
@@ -59,6 +59,7 @@ var _ = Describe("Tools", func() {
 				"get_build", "get_build_log", "trigger_job", "abort_build",
 				"list_resources", "list_resource_versions", "check_resource",
 				"get_job", "list_teams", "get_build_plan", "get_info",
+				"list_deprecated_scopes", "copy_resource_versions",
 			))
 		})
 	})
@@ -305,6 +306,84 @@ var _ = Describe("Tools", func() {
 
 			result := callTool(server, "get_build_plan", map[string]any{"build_id": 42})
 			Expect(result).To(ContainSubstring("plan-1"))
+		})
+	})
+
+	Describe("list_deprecated_scopes", func() {
+		It("returns deprecated scopes for a resource", func() {
+			fakeResource := new(dbfakes.FakeResource)
+			fakeResource.NameReturns("my-resource")
+			fakeResource.DeprecatedScopesReturns([]db.DeprecatedScope{
+				{ID: 42, DeprecatedAt: time.Date(2026, 4, 10, 12, 0, 0, 0, time.UTC), ConfigID: 17},
+				{ID: 38, DeprecatedAt: time.Date(2026, 4, 8, 9, 30, 0, 0, time.UTC), ConfigID: 15},
+			}, nil)
+			fakePipeline.ResourceReturns(fakeResource, true, nil)
+
+			result := callTool(server, "list_deprecated_scopes", map[string]any{
+				"team":     "main",
+				"pipeline": "my-pipeline",
+				"resource": "my-resource",
+			})
+			var scopes []map[string]any
+			Expect(json.Unmarshal([]byte(result), &scopes)).To(Succeed())
+			Expect(scopes).To(HaveLen(2))
+			Expect(scopes[0]["id"]).To(BeEquivalentTo(42))
+			Expect(scopes[1]["id"]).To(BeEquivalentTo(38))
+		})
+
+		It("returns empty list when no deprecated scopes", func() {
+			fakeResource := new(dbfakes.FakeResource)
+			fakeResource.DeprecatedScopesReturns([]db.DeprecatedScope{}, nil)
+			fakePipeline.ResourceReturns(fakeResource, true, nil)
+
+			result := callTool(server, "list_deprecated_scopes", map[string]any{
+				"team":     "main",
+				"pipeline": "my-pipeline",
+				"resource": "my-resource",
+			})
+			var scopes []map[string]any
+			Expect(json.Unmarshal([]byte(result), &scopes)).To(Succeed())
+			Expect(scopes).To(BeEmpty())
+		})
+	})
+
+	Describe("copy_resource_versions", func() {
+		It("copies versions from a deprecated scope", func() {
+			fakeResource := new(dbfakes.FakeResource)
+			fakeResource.NameReturns("my-resource")
+			fakeResource.DeprecatedScopesReturns([]db.DeprecatedScope{
+				{ID: 42, DeprecatedAt: time.Date(2026, 4, 10, 12, 0, 0, 0, time.UTC), ConfigID: 17},
+			}, nil)
+			fakeResource.CopyVersionsFromScopeReturns(150, nil)
+			fakePipeline.ResourceReturns(fakeResource, true, nil)
+
+			result := callTool(server, "copy_resource_versions", map[string]any{
+				"team":          "main",
+				"pipeline":      "my-pipeline",
+				"resource":      "my-resource",
+				"from_scope_id": 42,
+			})
+			var output map[string]any
+			Expect(json.Unmarshal([]byte(result), &output)).To(Succeed())
+			Expect(output["success"]).To(BeTrue())
+			Expect(output["versions_copied"]).To(BeEquivalentTo(150))
+		})
+
+		It("returns error when scope does not belong to resource", func() {
+			fakeResource := new(dbfakes.FakeResource)
+			fakeResource.NameReturns("my-resource")
+			fakeResource.DeprecatedScopesReturns([]db.DeprecatedScope{
+				{ID: 42, DeprecatedAt: time.Date(2026, 4, 10, 12, 0, 0, 0, time.UTC), ConfigID: 17},
+			}, nil)
+			fakePipeline.ResourceReturns(fakeResource, true, nil)
+
+			_, isError := callToolRaw(server, "copy_resource_versions", map[string]any{
+				"team":          "main",
+				"pipeline":      "my-pipeline",
+				"resource":      "my-resource",
+				"from_scope_id": 99,
+			})
+			Expect(isError).To(BeTrue())
 		})
 	})
 })

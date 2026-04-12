@@ -28,6 +28,8 @@ func RegisterTools(s *Server, teamFactory db.TeamFactory, buildFactory db.BuildF
 	registerListTeams(s, teamFactory)
 	registerGetBuildPlan(s, buildFactory)
 	registerGetInfo(s, externalURL, version)
+	registerListDeprecatedScopes(s, teamFactory)
+	registerCopyResourceVersions(s, teamFactory)
 }
 
 // --- helpers ---
@@ -949,6 +951,143 @@ func registerGetInfo(s *Server, externalURL string, version string) {
 			return getInfoOutput{
 				Version: version,
 				URL:     externalURL,
+			}, nil
+		},
+	)
+}
+
+// --- list_deprecated_scopes ---
+
+type listDeprecatedScopesInput struct {
+	Team     string `json:"team"`
+	Pipeline string `json:"pipeline"`
+	Resource string `json:"resource"`
+}
+
+type deprecatedScopeInfo struct {
+	ID           int    `json:"id"`
+	DeprecatedAt string `json:"deprecated_at"`
+	ConfigID     int    `json:"config_id"`
+}
+
+func registerListDeprecatedScopes(s *Server, teamFactory db.TeamFactory) {
+	s.AddTool("list_deprecated_scopes",
+		"List deprecated resource config scopes for a resource. These are previous scopes that were soft-deleted when the resource's type or source parameters changed. Use with copy_resource_versions to migrate version history.",
+		MustJSON(map[string]any{
+			"type":     "object",
+			"required": []string{"team", "pipeline", "resource"},
+			"properties": map[string]any{
+				"team":     map[string]any{"type": "string", "description": "Team name"},
+				"pipeline": map[string]any{"type": "string", "description": "Pipeline name"},
+				"resource": map[string]any{"type": "string", "description": "Resource name"},
+			},
+		}),
+		func(ctx context.Context, args json.RawMessage) (any, error) {
+			var input listDeprecatedScopesInput
+			if err := json.Unmarshal(args, &input); err != nil {
+				return nil, fmt.Errorf("invalid arguments: %w", err)
+			}
+			team, err := findTeam(teamFactory, input.Team)
+			if err != nil {
+				return nil, err
+			}
+			pipeline, err := findPipeline(team, input.Pipeline)
+			if err != nil {
+				return nil, err
+			}
+			resource, found, err := pipeline.Resource(input.Resource)
+			if err != nil {
+				return nil, fmt.Errorf("finding resource: %w", err)
+			}
+			if !found {
+				return nil, fmt.Errorf("resource %q not found", input.Resource)
+			}
+			deprecated, err := resource.DeprecatedScopes()
+			if err != nil {
+				return nil, fmt.Errorf("listing deprecated scopes: %w", err)
+			}
+			result := make([]deprecatedScopeInfo, len(deprecated))
+			for i, scope := range deprecated {
+				result[i] = deprecatedScopeInfo{
+					ID:           scope.ID,
+					DeprecatedAt: scope.DeprecatedAt.Format("2006-01-02T15:04:05Z"),
+					ConfigID:     scope.ConfigID,
+				}
+			}
+			return result, nil
+		},
+	)
+}
+
+// --- copy_resource_versions ---
+
+type copyResourceVersionsInput struct {
+	Team        string `json:"team"`
+	Pipeline    string `json:"pipeline"`
+	Resource    string `json:"resource"`
+	FromScopeID int    `json:"from_scope_id"`
+}
+
+func registerCopyResourceVersions(s *Server, teamFactory db.TeamFactory) {
+	s.AddTool("copy_resource_versions",
+		"Copy resource versions from a deprecated scope into the resource's current scope. Use list_deprecated_scopes first to find available scope IDs. This preserves version history when a resource's type or source parameters change.",
+		MustJSON(map[string]any{
+			"type":     "object",
+			"required": []string{"team", "pipeline", "resource", "from_scope_id"},
+			"properties": map[string]any{
+				"team":          map[string]any{"type": "string", "description": "Team name"},
+				"pipeline":      map[string]any{"type": "string", "description": "Pipeline name"},
+				"resource":      map[string]any{"type": "string", "description": "Resource name"},
+				"from_scope_id": map[string]any{"type": "integer", "description": "ID of the deprecated scope to copy versions from (get from list_deprecated_scopes)"},
+			},
+		}),
+		func(ctx context.Context, args json.RawMessage) (any, error) {
+			var input copyResourceVersionsInput
+			if err := json.Unmarshal(args, &input); err != nil {
+				return nil, fmt.Errorf("invalid arguments: %w", err)
+			}
+			team, err := findTeam(teamFactory, input.Team)
+			if err != nil {
+				return nil, err
+			}
+			pipeline, err := findPipeline(team, input.Pipeline)
+			if err != nil {
+				return nil, err
+			}
+			resource, found, err := pipeline.Resource(input.Resource)
+			if err != nil {
+				return nil, fmt.Errorf("finding resource: %w", err)
+			}
+			if !found {
+				return nil, fmt.Errorf("resource %q not found", input.Resource)
+			}
+
+			// Validate the scope belongs to this resource
+			deprecated, err := resource.DeprecatedScopes()
+			if err != nil {
+				return nil, fmt.Errorf("listing deprecated scopes: %w", err)
+			}
+			var validScope bool
+			for _, scope := range deprecated {
+				if scope.ID == input.FromScopeID {
+					validScope = true
+					break
+				}
+			}
+			if !validScope {
+				return nil, fmt.Errorf("scope %d not found or does not belong to resource %q", input.FromScopeID, input.Resource)
+			}
+
+			copied, err := resource.CopyVersionsFromScope(input.FromScopeID)
+			if err != nil {
+				return nil, fmt.Errorf("copying versions: %w", err)
+			}
+
+			return map[string]any{
+				"success":         true,
+				"versions_copied": copied,
+				"from_scope_id":   input.FromScopeID,
+				"message":         fmt.Sprintf("copied %d versions from scope %d", copied, input.FromScopeID),
 			}, nil
 		},
 	)
