@@ -620,3 +620,162 @@ func TestStreamIn_EmptyKey_Returns400(t *testing.T) {
 		t.Errorf("expected 400 for empty key, got %d", resp.StatusCode)
 	}
 }
+
+// --- Permission hardening regression tests ---
+
+// TestStreamIn_SetuidSetgidStripped verifies that setuid/setgid bits in tar
+// headers are stripped during extraction (defense-in-depth).
+func TestStreamIn_SetuidSetgidStripped(t *testing.T) {
+	ts, storagePath := setupServer(t)
+
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+
+	// File with setuid bit (mode 04755).
+	content := []byte("#!/bin/sh\necho hi\n")
+	tw.WriteHeader(&tar.Header{
+		Name: "setuid-binary",
+		Size: int64(len(content)),
+		Mode: 04755,
+	})
+	tw.Write(content)
+
+	// File with setgid bit (mode 02755).
+	tw.WriteHeader(&tar.Header{
+		Name: "setgid-binary",
+		Size: int64(len(content)),
+		Mode: 02755,
+	})
+	tw.Write(content)
+
+	// File with both setuid+setgid (mode 06755).
+	tw.WriteHeader(&tar.Header{
+		Name: "suidsgid-binary",
+		Size: int64(len(content)),
+		Mode: 06755,
+	})
+	tw.Write(content)
+	tw.Close()
+
+	req, _ := http.NewRequest(http.MethodPut, ts.URL+"/stream-in/suid-test", bytes.NewReader(buf.Bytes()))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("PUT: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", resp.StatusCode)
+	}
+
+	extractDir := filepath.Join(storagePath, "steps", "suid-test")
+
+	// Verify setuid stripped: 04755 → 0755.
+	info, err := os.Stat(filepath.Join(extractDir, "setuid-binary"))
+	if err != nil {
+		t.Fatalf("setuid-binary not found: %v", err)
+	}
+	if info.Mode()&os.ModeSetuid != 0 {
+		t.Errorf("setuid bit should be stripped, got mode %v", info.Mode())
+	}
+
+	// Verify setgid stripped: 02755 → 0755.
+	info, err = os.Stat(filepath.Join(extractDir, "setgid-binary"))
+	if err != nil {
+		t.Fatalf("setgid-binary not found: %v", err)
+	}
+	if info.Mode()&os.ModeSetgid != 0 {
+		t.Errorf("setgid bit should be stripped, got mode %v", info.Mode())
+	}
+
+	// Verify both stripped: 06755 → 0755.
+	info, err = os.Stat(filepath.Join(extractDir, "suidsgid-binary"))
+	if err != nil {
+		t.Fatalf("suidsgid-binary not found: %v", err)
+	}
+	if info.Mode()&(os.ModeSetuid|os.ModeSetgid) != 0 {
+		t.Errorf("setuid+setgid bits should be stripped, got mode %v", info.Mode())
+	}
+}
+
+// TestStreamIn_RestrictiveModesNormalized verifies that restrictive permission
+// modes in tar headers are normalized to a minimum floor (dirs ≥ 0755,
+// files ≥ 0644) so the daemon can always read extracted artifacts.
+func TestStreamIn_RestrictiveModesNormalized(t *testing.T) {
+	ts, storagePath := setupServer(t)
+
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+
+	// Directory with mode 0700 (only owner can access).
+	tw.WriteHeader(&tar.Header{
+		Typeflag: tar.TypeDir,
+		Name:     "restrictive-dir/",
+		Mode:     0700,
+	})
+
+	// File with mode 0600 (only owner can read/write).
+	content := []byte("secret data")
+	tw.WriteHeader(&tar.Header{
+		Name: "restrictive-dir/secret.txt",
+		Size: int64(len(content)),
+		Mode: 0600,
+	})
+	tw.Write(content)
+
+	// File with mode 0000 (no access).
+	tw.WriteHeader(&tar.Header{
+		Name: "restrictive-dir/locked.txt",
+		Size: int64(len(content)),
+		Mode: 0000,
+	})
+	tw.Write(content)
+	tw.Close()
+
+	req, _ := http.NewRequest(http.MethodPut, ts.URL+"/stream-in/perm-test", bytes.NewReader(buf.Bytes()))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("PUT: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", resp.StatusCode)
+	}
+
+	extractDir := filepath.Join(storagePath, "steps", "perm-test")
+
+	// Dir 0700 should be normalized to at least 0755.
+	info, err := os.Stat(filepath.Join(extractDir, "restrictive-dir"))
+	if err != nil {
+		t.Fatalf("restrictive-dir not found: %v", err)
+	}
+	if info.Mode().Perm()&0755 != 0755 {
+		t.Errorf("dir mode should have at least 0755, got %04o", info.Mode().Perm())
+	}
+
+	// File 0600 should be normalized to at least 0644.
+	info, err = os.Stat(filepath.Join(extractDir, "restrictive-dir", "secret.txt"))
+	if err != nil {
+		t.Fatalf("secret.txt not found: %v", err)
+	}
+	if info.Mode().Perm()&0644 != 0644 {
+		t.Errorf("file mode should have at least 0644, got %04o", info.Mode().Perm())
+	}
+
+	// File 0000 should be normalized to at least 0644.
+	info, err = os.Stat(filepath.Join(extractDir, "restrictive-dir", "locked.txt"))
+	if err != nil {
+		t.Fatalf("locked.txt not found: %v", err)
+	}
+	if info.Mode().Perm()&0644 != 0644 {
+		t.Errorf("file mode 0000 should be normalized to at least 0644, got %04o", info.Mode().Perm())
+	}
+
+	// Verify content is readable.
+	data, err := os.ReadFile(filepath.Join(extractDir, "restrictive-dir", "secret.txt"))
+	if err != nil {
+		t.Fatalf("should be able to read normalized file: %v", err)
+	}
+	if string(data) != "secret data" {
+		t.Errorf("expected 'secret data', got %q", string(data))
+	}
+}

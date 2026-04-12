@@ -272,6 +272,60 @@ func TestRegister_DuplicateOverwrites(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// DA-PERM-01: Atomic copy — retry succeeds despite stale partial destination
+// ---------------------------------------------------------------------------
+
+// TestResolve_AtomicCopy_OverwritesStaleDestination verifies that /resolve
+// succeeds even when the destination directory already contains read-only files
+// from a prior interrupted copy. The atomic copy pattern (temp dir + rename)
+// should cleanly replace the stale destination.
+func TestResolve_AtomicCopy_OverwritesStaleDestination(t *testing.T) {
+	ts, storagePath := setupServer(t)
+
+	// Create the source artifact.
+	srcDir := filepath.Join(storagePath, "steps", "atomic-handle", "output")
+	os.MkdirAll(srcDir, 0755)
+	os.WriteFile(filepath.Join(srcDir, "result.txt"), []byte("fresh-data"), 0644)
+
+	// Register it.
+	regBody := `{"key":"atomic-handle/output","local_path":"` + srcDir + `"}`
+	resp, err := http.Post(ts.URL+"/register", "application/json", strings.NewReader(regBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	// Pre-create a "stale" destination with a read-only file to simulate a
+	// prior interrupted copy. Without atomic copy, cp -R would fail trying
+	// to overwrite the read-only file.
+	destDir := filepath.Join(t.TempDir(), "stale-dest")
+	os.MkdirAll(destDir, 0755)
+	os.WriteFile(filepath.Join(destDir, "result.txt"), []byte("stale-data"), 0444) // read-only
+
+	// Resolve should succeed despite the stale destination.
+	resolveBody := `{"key":"atomic-handle/output","dest":"` + destDir + `"}`
+	resp, err = http.Post(ts.URL+"/resolve", "application/json", strings.NewReader(resolveBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, string(body))
+	}
+
+	// Verify fresh data replaced stale data.
+	data, err := os.ReadFile(filepath.Join(destDir, "result.txt"))
+	if err != nil {
+		t.Fatalf("result.txt not found after atomic copy: %v", err)
+	}
+	if string(data) != "fresh-data" {
+		t.Errorf("expected 'fresh-data', got %q (stale data not replaced)", string(data))
+	}
+}
+
+// ---------------------------------------------------------------------------
 // DA-08/DA-09: POST /resolve with peer fallback
 // ---------------------------------------------------------------------------
 

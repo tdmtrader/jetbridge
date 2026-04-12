@@ -2,6 +2,7 @@ package main_test
 
 import (
 	"archive/tar"
+	"bytes"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -267,6 +268,68 @@ func TestResolveEndpoint_PeerFallback(t *testing.T) {
 }
 
 // splitHostPort extracts host and port from "host:port" string.
+// TestPeerFetch_RestrictiveModesNormalized verifies that tar entries with
+// restrictive modes (e.g., 0700 dirs, 0600 files from container rootfs) are
+// normalized to a minimum floor during peer extraction.
+func TestPeerFetch_RestrictiveModesNormalized(t *testing.T) {
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+
+	// Directory with mode 0700 (restrictive — e.g., /var/cache/apt/archives/partial).
+	tw.WriteHeader(&tar.Header{Typeflag: tar.TypeDir, Name: "restricted/", Mode: 0700})
+
+	// File with mode 0600 (e.g., postgres data files).
+	content := []byte("db-data")
+	tw.WriteHeader(&tar.Header{Name: "restricted/data.txt", Size: int64(len(content)), Mode: 0600})
+	tw.Write(content)
+
+	// File with setuid bit (e.g., /usr/bin/passwd).
+	tw.WriteHeader(&tar.Header{Name: "restricted/suid-bin", Size: int64(len(content)), Mode: 04755})
+	tw.Write(content)
+	tw.Close()
+
+	fakePeer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(buf.Bytes())
+	}))
+	defer fakePeer.Close()
+
+	logger := lagertest.NewTestLogger("perm-normalize")
+	host, port := splitHostPort(t, fakePeer.Listener.Addr().String())
+	resolver := daemon.NewPeerResolver(logger, nil, "", "", port, "", nil)
+
+	destDir := filepath.Join(t.TempDir(), "normalized")
+	if err := resolver.Fetch(t.Context(), host, "perm-key", destDir); err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+
+	// Dir 0700 → at least 0755.
+	info, err := os.Stat(filepath.Join(destDir, "restricted"))
+	if err != nil {
+		t.Fatalf("restricted/ not found: %v", err)
+	}
+	if info.Mode().Perm()&0755 != 0755 {
+		t.Errorf("dir should have at least 0755, got %04o", info.Mode().Perm())
+	}
+
+	// File 0600 → at least 0644.
+	info, err = os.Stat(filepath.Join(destDir, "restricted", "data.txt"))
+	if err != nil {
+		t.Fatalf("data.txt not found: %v", err)
+	}
+	if info.Mode().Perm()&0644 != 0644 {
+		t.Errorf("file should have at least 0644, got %04o", info.Mode().Perm())
+	}
+
+	// Setuid stripped: 04755 → 0755.
+	info, err = os.Stat(filepath.Join(destDir, "restricted", "suid-bin"))
+	if err != nil {
+		t.Fatalf("suid-bin not found: %v", err)
+	}
+	if info.Mode()&os.ModeSetuid != 0 {
+		t.Errorf("setuid should be stripped, got mode %v", info.Mode())
+	}
+}
+
 func splitHostPort(t *testing.T, addr string) (string, int) {
 	t.Helper()
 	var host string
