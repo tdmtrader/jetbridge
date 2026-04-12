@@ -1,0 +1,8 @@
+{
+  "trackId": "k8s_secret_ref_passthrough_for_pipeline_vars_20260412",
+  "type": "feature",
+  "status": "in_progress",
+  "description": "K8s Secret Ref Passthrough for Pipeline Vars",
+  "createdAt": "2026-04-12T20:47:49.334Z",
+  "updatedAt": "2026-04-12T20:49:44.822Z"
+}

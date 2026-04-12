@@ -33,7 +33,7 @@
 
 ## Completed / Archived Tracks
 
-### [x] Track: Resource History Preservation Across Config Changes
+### [~] Track: Resource History Preservation Across Config Changes
 _Link: [./tracks/resource_history_preservation_20260411/](./tracks/resource_history_preservation_20260411/)_
 
 ---
@@ -510,5 +510,10 @@ _Link: [./tracks/sidecar_workdir_bug_20260331/](./tracks/sidecar_workdir_bug_202
 
 ### [x] Track: Telemetry simplification
 _Link: [./tracks/telemetry_simplification_20260331/](./tracks/telemetry_simplification_20260331/)_
+
+---
+
+### [ ] Track: K8s Secret Ref Passthrough for Pipeline Vars
+_Link: [./tracks/k8s_secret_ref_passthrough_for_pipeline_vars_20260412/](./tracks/k8s_secret_ref_passthrough_for_pipeline_vars_20260412/)_
 
 ---
