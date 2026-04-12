@@ -28,7 +28,7 @@
 - Preserve: version, version_md5, version_sha256, metadata, check_order, span_context
 - Write unit tests: copy with duplicates, copy from empty scope, copy preserves check_order
 
-### [ ] 2.2 Write `DeprecatedScopes()` on Resource
+### [x] 2.2 Write `DeprecatedScopes()` on Resource 63f8ac81bd
 - File: `atc/db/resource.go`
 - Method: `DeprecatedScopes() ([]ResourceConfigScope, error)`
 - Query: `SELECT * FROM resource_config_scopes WHERE resource_id = $1 AND deprecated_at IS NOT NULL` — wait, resource_id is NULLed in 1.2
@@ -38,12 +38,12 @@
 
 ## Phase 3: GC for Deprecated Scopes
 
-### [ ] 3.1 Add `--deprecated-scope-grace-period` ATC flag
+### [x] 3.1 Add `--deprecated-scope-grace-period` ATC flag 63f8ac81bd
 - File: `atc/atccmd/command.go`
 - Default: 30 days (`720h`)
 - Wire into GC component configuration
 
-### [ ] 3.2 Extend GC to collect deprecated scopes
+### [x] 3.2 Extend GC to collect deprecated scopes 63f8ac81bd
 - File: `atc/gc/resource_config_collector.go` (or new `deprecated_scope_collector.go`)
 - Query: `DELETE FROM resource_config_scopes WHERE deprecated_at IS NOT NULL AND deprecated_at < now() - $grace_period`
 - CASCADE handles version deletion
