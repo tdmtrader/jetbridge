@@ -11,12 +11,14 @@ import (
 )
 
 var _ = Describe("Skip Image Resource Download", func() {
-	// When a get step targets a registry-image type resource, the physical
-	// download is skipped and kubelet pulls the image natively. No get pod
-	// is created.
+	// When a get step has skip_download: true, the physical download is
+	// skipped and kubelet pulls the image natively. No get pod is created.
+	// Without skip_download, registry-image gets behave like any other
+	// resource type and create a get pod.
 	//
-	// The fetch_artifact param forces the full download path, creating a
-	// get pod and making the artifact volume available to downstream steps.
+	// Image get plans for custom resource type resolution (FetchImagePlan)
+	// automatically set SkipDownload for registry-image types — no pod is
+	// created for check/step image resolution.
 	//
 	// These tests use images already in testDependencyImages (busybox,
 	// alpine, mock-resource) which are pre-loaded into KinD. The native
@@ -77,11 +79,13 @@ jobs:
 - name: upstream-job
   plan:
   - get: alpine-image
+    skip_download: true
 
 - name: downstream-job
   plan:
   - get: alpine-image
     passed: [upstream-job]
+    skip_download: true
   - task: use-image
     image: alpine-image
     config:
@@ -116,7 +120,7 @@ jobs:
 				"concourse.ci/type=get,concourse.ci/pipeline=%s", pipelineName,
 			))
 			Expect(pods).To(BeEmpty(),
-				"expected no get pods — registry-image type should short-circuit",
+				"expected no get pods — skip_download: true skips the physical download",
 			)
 		})
 
@@ -180,6 +184,7 @@ jobs:
 - name: artifact-sidecar-job
   plan:
   - get: sidecar-image
+    skip_download: true
   - task: with-artifact-sidecar
     config:
       platform: linux
@@ -233,7 +238,7 @@ jobs:
 				"concourse.ci/type=get,concourse.ci/pipeline=%s", pipelineName,
 			))
 			Expect(getPodsFound).To(BeEmpty(),
-				"expected no get pods — registry-image should short-circuit",
+				"expected no get pods — skip_download: true skips the physical download",
 			)
 		})
 	})
