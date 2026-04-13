@@ -571,6 +571,17 @@ func (s *Server) copyArtifact(src, dest string) error {
 		return fmt.Errorf("cp -R %s/. %s/: %w (output: %s)", src, tmpDest, err, strings.TrimSpace(string(output)))
 	}
 
+	// Ensure world-readable permissions so non-root task containers can access
+	// artifacts. Source files may have restrictive modes (e.g. 0600) set by the
+	// producing step's UID. The daemon owns the copies (root:root) so chmod
+	// succeeds without CAP_FOWNER. "a+rX" adds read for all and execute only
+	// on directories (where owner already has execute).
+	chmodCmd := exec.Command("chmod", "-R", "a+rX", tmpDest)
+	if output, err := chmodCmd.CombinedOutput(); err != nil {
+		os.RemoveAll(tmpDest)
+		return fmt.Errorf("chmod -R a+rX %s: %w (output: %s)", tmpDest, err, strings.TrimSpace(string(output)))
+	}
+
 	// Remove any existing dest (may contain partial state from a prior failed copy).
 	os.RemoveAll(dest)
 

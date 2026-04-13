@@ -228,6 +228,54 @@ func TestResolveEndpoint_MultipleFiles(t *testing.T) {
 	}
 }
 
+func TestResolveEndpoint_RestrictivePermissionsBecomWorldReadable(t *testing.T) {
+	ts, storagePath := setupServer(t)
+
+	// Create source artifact with restrictive permissions (e.g. a resource image
+	// running as an arbitrary UID that created 0600 files and 0700 dirs).
+	srcDir := filepath.Join(storagePath, "steps", "handle-restricted", "out")
+	os.MkdirAll(filepath.Join(srcDir, "subdir"), 0700)
+	os.WriteFile(filepath.Join(srcDir, "secret.txt"), []byte("data"), 0600)
+	os.WriteFile(filepath.Join(srcDir, "subdir", "nested.txt"), []byte("nested"), 0600)
+
+	// Register and resolve.
+	regBody := `{"key":"handle-restricted/out","local_path":"` + srcDir + `"}`
+	resp, _ := http.Post(ts.URL+"/register", "application/json", strings.NewReader(regBody))
+	resp.Body.Close()
+
+	destDir := filepath.Join(t.TempDir(), "dest-restricted")
+	resolveBody := `{"key":"handle-restricted/out","dest":"` + destDir + `"}`
+	resp, err := http.Post(ts.URL+"/resolve", "application/json", strings.NewReader(resolveBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	// Verify files are world-readable (o+r) and directories are world-traversable (o+rx).
+	for _, check := range []struct {
+		path    string
+		minMode os.FileMode
+	}{
+		{"secret.txt", 0644},
+		{"subdir", 0755},
+		{"subdir/nested.txt", 0644},
+	} {
+		info, err := os.Stat(filepath.Join(destDir, check.path))
+		if err != nil {
+			t.Errorf("missing %s: %v", check.path, err)
+			continue
+		}
+		perm := info.Mode().Perm()
+		if perm&check.minMode != check.minMode {
+			t.Errorf("%s: expected at least %04o, got %04o", check.path, check.minMode, perm)
+		}
+	}
+}
+
 func TestResolveEndpoint_StartupScanThenResolve(t *testing.T) {
 	ts, storagePath := setupServer(t)
 
