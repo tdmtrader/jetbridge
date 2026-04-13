@@ -448,11 +448,14 @@ func (step *TaskStep) imageSpec(ctx context.Context, logger lager.Logger, state 
 		if !found {
 			return runtime.ImageSpec{}, MissingTaskImageSourceError{step.plan.ImageArtifactName}
 		}
-		if artifact != nil {
-			imageSpec.ImageArtifact = artifact
-		} else if imageRef, ok := state.ArtifactRepository().ImageRefFor(build.ArtifactName(step.plan.ImageArtifactName)); ok {
-			// Short-circuited get step on K8s — no volume, just an image URL
+		if imageRef, ok := state.ArtifactRepository().ImageRefFor(build.ArtifactName(step.plan.ImageArtifactName)); ok {
+			// Prefer the image ref URL when available — JetBridge's
+			// container runtime pulls images natively via the URL.
+			// The artifact volume (if present) is still available as
+			// a build input for steps that need the OCI content.
 			imageSpec.ImageURL = imageRef
+		} else if artifact != nil {
+			imageSpec.ImageArtifact = artifact
 		}
 
 		//an image_resource

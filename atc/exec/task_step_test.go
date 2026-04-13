@@ -977,17 +977,32 @@ var _ = Describe("TaskStep", func() {
 			})
 		})
 
-		Context("when image artifact has a volume (full get step, backward compat)", func() {
+		Context("when image artifact has both a volume and an image ref (full get of registry-image)", func() {
+			BeforeEach(func() {
+				taskPlan.ImageArtifactName = "some-image-artifact"
+				imageVolume := runtimetest.NewVolume("image-volume")
+				repo.RegisterArtifact("some-image-artifact", imageVolume, false)
+				repo.RegisterImageRef("some-image-artifact", "docker:///myrepo/myimage@sha256:abc123")
+			})
+
+			It("prefers the image ref URL over the artifact volume", func() {
+				Expect(chosenContainer.Spec.ImageSpec).To(Equal(runtime.ImageSpec{
+					ImageURL: "docker:///myrepo/myimage@sha256:abc123",
+				}))
+			})
+		})
+
+		Context("when image artifact has a volume but no image ref (non-registry-image type)", func() {
 			var imageVolume *runtimetest.Volume
 
 			BeforeEach(func() {
 				taskPlan.ImageArtifactName = "some-image-artifact"
 				imageVolume = runtimetest.NewVolume("image-volume")
 				repo.RegisterArtifact("some-image-artifact", imageVolume, false)
-				// No image ref registered — full download was done
+				// No image ref registered — this is a non-registry resource type
 			})
 
-			It("still uses the ImageArtifact (not ImageURL)", func() {
+			It("falls back to using the artifact volume", func() {
 				Expect(chosenContainer.Spec.ImageSpec).To(Equal(runtime.ImageSpec{
 					ImageArtifact: imageVolume,
 				}))
