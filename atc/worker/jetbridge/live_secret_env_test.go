@@ -89,7 +89,17 @@ func TestLiveSecretEnvRef(t *testing.T) {
 		t.Fatalf("creating container: %v", err)
 	}
 
-	// 3. Verify the pod spec uses SecretKeyRef
+	// 3. Run a command — this creates the pod and lets us verify the spec
+	process, err := container.Run(ctx, runtime.ProcessSpec{
+		Path: "/bin/sh",
+		Args: []string{"-c", "echo $SECRET_VAR"},
+		Dir:  "/tmp",
+	}, runtime.ProcessIO{})
+	if err != nil {
+		t.Fatalf("running process: %v", err)
+	}
+
+	// 4. Verify the pod spec uses SecretKeyRef (pod exists now after Run)
 	pod, err := clientset.CoreV1().Pods(ns).Get(ctx, handle, metav1.GetOptions{})
 	if err != nil {
 		t.Fatalf("getting pod: %v", err)
@@ -132,17 +142,7 @@ func TestLiveSecretEnvRef(t *testing.T) {
 		t.Error("PLAIN_VAR should not have ValueFrom")
 	}
 
-	// 4. Run a command that reads the secret env var to verify the kubelet
-	// actually injected the value from the K8s Secret
-	process, err := container.Run(ctx, runtime.ProcessSpec{
-		Path: "/bin/sh",
-		Args: []string{"-c", "echo $SECRET_VAR"},
-		Dir:  "/tmp",
-	}, runtime.ProcessIO{})
-	if err != nil {
-		t.Fatalf("running process: %v", err)
-	}
-
+	// 5. Wait for the process and verify the kubelet injected the secret value
 	result, err := process.Wait(ctx)
 	if err != nil {
 		t.Fatalf("waiting for process: %v", err)
