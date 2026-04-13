@@ -5,11 +5,6 @@ resources:
     uri: https://github.com/tdmtrader/jetbridge.git
     branch: jetbridge
 
-- name: upgrade-settle-timer
-  type: time
-  source:
-    interval: 90s
-
 jobs:
 - name: build-and-vet
   serial_groups: [pipeline]
@@ -326,8 +321,6 @@ jobs:
     trigger: true
     params: {depth: 0, fetch_tags: true}
     passed: [self-upgrade]
-  - get: upgrade-settle-timer
-    trigger: false
   - task: check-running-version
     config:
       platform: linux
@@ -350,9 +343,15 @@ jobs:
           EXPECTED="${MAJOR}.${MINOR}.$((PATCH + 1))-rc"
 
           echo "=== Waiting for rollout to complete ==="
-          kubectl rollout status deployment/concourse-web -n cicd --timeout=120s || true
-          kubectl rollout status daemonset/artifact-daemon -n cicd --timeout=120s || true
-          echo ""
+          kubectl rollout status deployment/concourse-web -n cicd --timeout=180s
+          kubectl rollout status daemonset/artifact-daemon -n cicd --timeout=180s
+
+          echo "=== Waiting for pods to be ready ==="
+          kubectl wait --for=condition=ready pod -l app.kubernetes.io/component=web -n cicd --timeout=120s
+          kubectl wait --for=condition=ready pod -l app.kubernetes.io/component=artifact-daemon -n cicd --timeout=120s
+
+          echo "=== Letting service endpoints settle (15s) ==="
+          sleep 15
 
           CONCOURSE_URL="http://concourse-web.cicd.svc.cluster.local:8080"
           echo "=== Waiting for Concourse to report version ${EXPECTED} ==="
