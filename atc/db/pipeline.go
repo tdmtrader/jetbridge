@@ -1255,7 +1255,7 @@ func (p *pipeline) SetResourceConfigScopeForResource(name string, scope Resource
 
 	defer Rollback(tx)
 
-	err = setResourceConfigScopeForResource(tx, scope, sq.Eq{
+	_, err = setResourceConfigScopeForResource(tx, scope, sq.Eq{
 		"pipeline_id": p.id,
 		"name":        name,
 	})
@@ -1272,10 +1272,11 @@ func (p *pipeline) SetResourceConfigScopeForResource(name string, scope Resource
 }
 
 func (p *pipeline) SetResourceConfigScopeForResourceType(name string, scope ResourceConfigScope) error {
-	return setResourceConfigScopeForResourceType(p.conn, scope, sq.Eq{
+	_, err := setResourceConfigScopeForResourceType(p.conn, scope, sq.Eq{
 		"pipeline_id": p.id,
 		"name":        name,
 	})
+	return err
 }
 
 func (p *pipeline) SetResourceConfigScopeForPrototype(name string, scope ResourceConfigScope) error {

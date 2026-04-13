@@ -94,13 +94,27 @@ var _ = Describe("Component Notifications", func() {
 		})
 
 		Describe("Resource.SetResourceConfigScope", func() {
-			It("notifies the scanner", func() {
+			It("notifies the scanner when scope changes", func() {
 				received := listenFor(atc.ComponentLidarScanner)
 
 				err := resource.SetResourceConfigScope(scope)
 				Expect(err).NotTo(HaveOccurred())
 
 				Expect(received()).To(BeTrue(), "expected scanner notification after SetResourceConfigScope")
+			})
+
+			It("does not notify the scanner when scope is unchanged", func() {
+				// First call — sets the scope.
+				err := resource.SetResourceConfigScope(scope)
+				Expect(err).NotTo(HaveOccurred())
+
+				// Second call — same scope, should not notify.
+				received := listenFor(atc.ComponentLidarScanner)
+
+				err = resource.SetResourceConfigScope(scope)
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(received()).To(BeFalse(), "did not expect scanner notification when scope is unchanged")
 			})
 		})
 
@@ -183,24 +197,38 @@ var _ = Describe("Component Notifications", func() {
 		})
 
 		Describe("ResourceConfigScope.SaveVersions", func() {
-			It("notifies the scanner", func() {
+			It("notifies the scanner when new versions are saved", func() {
 				received := listenFor(atc.ComponentLidarScanner)
 
 				err := scope.SaveVersions(db.SpanContext{}, []atc.Version{{"ver": "1"}})
 				Expect(err).NotTo(HaveOccurred())
 
-				Expect(received()).To(BeTrue(), "expected scanner notification after SaveVersions")
+				Expect(received()).To(BeTrue(), "expected scanner notification after SaveVersions with new version")
+			})
+
+			It("does not notify the scanner when re-saving existing versions", func() {
+				// First save — inserts the version.
+				err := scope.SaveVersions(db.SpanContext{}, []atc.Version{{"ver": "1"}})
+				Expect(err).NotTo(HaveOccurred())
+
+				// Second save — same version already exists.
+				received := listenFor(atc.ComponentLidarScanner)
+
+				err = scope.SaveVersions(db.SpanContext{}, []atc.Version{{"ver": "1"}})
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(received()).To(BeFalse(), "did not expect scanner notification when re-saving existing version")
 			})
 		})
 
 		Describe("ResourceConfigScope.UpdateLastCheckEndTime", func() {
-			It("notifies the scanner", func() {
+			It("does not notify the scanner", func() {
 				received := listenFor(atc.ComponentLidarScanner)
 
 				_, err := scope.UpdateLastCheckEndTime(true)
 				Expect(err).NotTo(HaveOccurred())
 
-				Expect(received()).To(BeTrue(), "expected scanner notification after UpdateLastCheckEndTime")
+				Expect(received()).To(BeFalse(), "did not expect scanner notification after UpdateLastCheckEndTime")
 			})
 		})
 	})
@@ -362,7 +390,12 @@ var _ = Describe("Component Notifications", func() {
 	})
 
 	Describe("ResourceType scanner notifications", func() {
-		It("notifies the scanner on SetResourceConfigScope", func() {
+		var (
+			rt    db.ResourceType
+			scope db.ResourceConfigScope
+		)
+
+		BeforeEach(func() {
 			scenario := dbtest.Setup(
 				builder.WithPipeline(atc.Config{
 					ResourceTypes: atc.ResourceTypes{
@@ -375,15 +408,31 @@ var _ = Describe("Component Notifications", func() {
 				}),
 			)
 
-			rt := scenario.ResourceType("some-type")
-			scope := createResourceTypeScope(rt)
+			rt = scenario.ResourceType("some-type")
+			scope = createResourceTypeScope(rt)
+		})
 
+		It("notifies the scanner when scope changes", func() {
 			received := listenFor(atc.ComponentLidarScanner)
 
 			err := rt.SetResourceConfigScope(scope)
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(received()).To(BeTrue(), "expected scanner notification after ResourceType.SetResourceConfigScope")
+		})
+
+		It("does not notify the scanner when scope is unchanged", func() {
+			// First call — sets the scope.
+			err := rt.SetResourceConfigScope(scope)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Second call — same scope, should not notify.
+			received := listenFor(atc.ComponentLidarScanner)
+
+			err = rt.SetResourceConfigScope(scope)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(received()).To(BeFalse(), "did not expect scanner notification when ResourceType scope is unchanged")
 		})
 	})
 })

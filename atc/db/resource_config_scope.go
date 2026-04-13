@@ -89,20 +89,22 @@ func (r *resourceConfigScope) LastCheck() (LastCheck, error) {
 // that already exist in the DB will be re-ordered using
 // incrementCheckOrder to input the correct check order
 func (r *resourceConfigScope) SaveVersions(spanContext SpanContext, versions []atc.Version) error {
-	err := saveVersions(r.conn, r.ID(), versions, spanContext)
+	containsNewVersion, err := saveVersions(r.conn, r.ID(), versions, spanContext)
 	if err != nil {
 		return err
 	}
 
-	r.conn.Bus().Notify(atc.ComponentLidarScanner)
+	if containsNewVersion {
+		r.conn.Bus().Notify(atc.ComponentLidarScanner)
+	}
 
 	return nil
 }
 
-func saveVersions(conn DbConn, rcsID int, versions []atc.Version, spanContext SpanContext) (err error) {
+func saveVersions(conn DbConn, rcsID int, versions []atc.Version, spanContext SpanContext) (bool, error) {
 	tx, err := conn.Begin()
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	defer Rollback(tx)
@@ -111,7 +113,7 @@ func saveVersions(conn DbConn, rcsID int, versions []atc.Version, spanContext Sp
 	for _, version := range versions {
 		newVersion, err := saveResourceVersion(tx, rcsID, version, nil, spanContext)
 		if err != nil {
-			return err
+			return false, err
 		}
 
 		containsNewVersion = containsNewVersion || newVersion
@@ -123,27 +125,27 @@ func saveVersions(conn DbConn, rcsID int, versions []atc.Version, spanContext Sp
 		for _, version := range versions {
 			versionJSON, err := json.Marshal(version)
 			if err != nil {
-				return err
+				return false, err
 			}
 
 			err = incrementCheckOrder(tx, rcsID, string(versionJSON))
 			if err != nil {
-				return err
+				return false, err
 			}
 		}
 
 		err = requestScheduleForJobsUsingResourceConfigScope(tx, rcsID)
 		if err != nil {
-			return err
+			return false, err
 		}
 	}
 
 	err = tx.Commit()
 	if err != nil {
-		return err
+		return false, err
 	}
 
-	return nil
+	return containsNewVersion, nil
 }
 
 func (r *resourceConfigScope) FindVersion(v atc.Version) (ResourceConfigVersion, bool, error) {
@@ -265,8 +267,6 @@ func (r *resourceConfigScope) UpdateLastCheckEndTime(succeeded bool) (bool, erro
 	if err != nil {
 		return false, err
 	}
-
-	r.conn.Bus().Notify(atc.ComponentLidarScanner)
 
 	return true, nil
 }

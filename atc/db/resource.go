@@ -274,7 +274,7 @@ func (r *resource) SetResourceConfigScope(scope ResourceConfigScope) error {
 
 	defer Rollback(tx)
 
-	err = setResourceConfigScopeForResource(tx, scope, sq.Eq{"id": r.id})
+	changed, err := setResourceConfigScopeForResource(tx, scope, sq.Eq{"id": r.id})
 	if err != nil {
 		return err
 	}
@@ -284,12 +284,14 @@ func (r *resource) SetResourceConfigScope(scope ResourceConfigScope) error {
 		return err
 	}
 
-	r.conn.Bus().Notify(atc.ComponentLidarScanner)
+	if changed {
+		r.conn.Bus().Notify(atc.ComponentLidarScanner)
+	}
 
 	return nil
 }
 
-func setResourceConfigScopeForResource(tx Tx, scope ResourceConfigScope, pred any, args ...any) error {
+func setResourceConfigScopeForResource(tx Tx, scope ResourceConfigScope, pred any, args ...any) (bool, error) {
 	var resourceID int
 	err := psql.Update("resources").
 		Set("resource_config_id", scope.ResourceConfig().ID()).
@@ -307,17 +309,17 @@ func setResourceConfigScopeForResource(tx Tx, scope ResourceConfigScope, pred an
 		Scan(&resourceID)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return nil
+			return false, nil
 		}
-		return err
+		return false, err
 	}
 
 	err = requestScheduleForJobsUsingResource(tx, resourceID)
 	if err != nil {
-		return err
+		return false, err
 	}
 
-	return nil
+	return true, nil
 }
 
 func (r *resource) CheckPlan(planFactory atc.PlanFactory, imagePlanner atc.ImagePlanner, from atc.Version, interval atc.CheckEvery, sourceDefaults atc.Source, skipInterval bool, skipIntervalRecursively bool) atc.Plan {

@@ -1333,7 +1333,7 @@ func (b *build) SaveOutput(
 		}
 	}
 
-	err = setResourceConfigScopeForResource(tx, resourceConfigScope, sq.Eq{
+	_, err = setResourceConfigScopeForResource(tx, resourceConfigScope, sq.Eq{
 		"id": theResource.ID(),
 	})
 	if err != nil {

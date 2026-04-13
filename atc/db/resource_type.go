@@ -289,18 +289,20 @@ func (t *resourceType) Reload() (bool, error) {
 }
 
 func (r *resourceType) SetResourceConfigScope(scope ResourceConfigScope) error {
-	err := setResourceConfigScopeForResourceType(r.conn, scope, sq.Eq{"id": r.id})
+	changed, err := setResourceConfigScopeForResourceType(r.conn, scope, sq.Eq{"id": r.id})
 	if err != nil {
 		return err
 	}
 
-	r.conn.Bus().Notify(atc.ComponentLidarScanner)
+	if changed {
+		r.conn.Bus().Notify(atc.ComponentLidarScanner)
+	}
 
 	return nil
 }
 
-func setResourceConfigScopeForResourceType(conn sq.Runner, scope ResourceConfigScope, pred any, args ...any) error {
-	_, err := psql.Update("resource_types").
+func setResourceConfigScopeForResourceType(conn sq.Runner, scope ResourceConfigScope, pred any, args ...any) (bool, error) {
+	result, err := psql.Update("resource_types").
 		Set("resource_config_id", scope.ResourceConfig().ID()).
 		Where(pred, args...).
 		Where(sq.Or{
@@ -310,10 +312,15 @@ func setResourceConfigScopeForResourceType(conn sq.Runner, scope ResourceConfigS
 		RunWith(conn).
 		Exec()
 	if err != nil {
-		return err
+		return false, err
 	}
 
-	return nil
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+
+	return rowsAffected > 0, nil
 }
 
 func (r *resourceType) CheckPlan(planFactory atc.PlanFactory, imagePlanner atc.ImagePlanner, from atc.Version, interval atc.CheckEvery, sourceDefaults atc.Source, skipInterval bool, skipIntervalRecursively bool) atc.Plan {
