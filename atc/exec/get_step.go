@@ -179,14 +179,10 @@ func (step *GetStep) run(ctx context.Context, state RunState, delegate GetDelega
 		return false, err
 	}
 
-	// Skip the physical image download when:
-	// - skip_download is explicitly set in the pipeline config, OR
-	// - the type is registry-image (implicit optimization for backwards compat)
-	// The fetch_artifact param forces the full download (for build contexts, DinD, etc.).
-	//
-	_, fetchArtifact := step.plan.Params["fetch_artifact"]
-	isRegistryImage := step.plan.Type == "registry-image"
-	if (step.plan.SkipDownload || isRegistryImage) && !fetchArtifact {
+	// Skip the physical image download when skip_download is explicitly set
+	// in the pipeline config. Only the image ref URL and version metadata are
+	// registered — no container is created.
+	if step.plan.SkipDownload {
 		versionResult := resource.VersionResult{
 			Version:  version,
 			Metadata: nil,
@@ -238,10 +234,6 @@ func (step *GetStep) run(ctx context.Context, state RunState, delegate GetDelega
 
 		return true, nil
 	}
-
-	// Strip fetch_artifact from params — it's a Concourse-internal flag,
-	// not something the resource's get script understands.
-	delete(params, "fetch_artifact")
 
 	containerSpec := runtime.ContainerSpec{
 		TeamID:   step.metadata.TeamID,

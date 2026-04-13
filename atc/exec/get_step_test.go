@@ -704,8 +704,8 @@ var _ = Describe("GetStep", func() {
 		})
 	})
 
-	Context("registry-image get step short-circuit", func() {
-		Context("when the resource type is registry-image", func() {
+	Context("registry-image get step", func() {
+		Context("when the resource type is registry-image (no skip_download)", func() {
 			BeforeEach(func() {
 				getPlan.Type = "registry-image"
 				getPlan.Source = atc.Source{
@@ -721,10 +721,10 @@ var _ = Describe("GetStep", func() {
 				}
 			})
 
-			It("does not select a worker or create a container", func() {
+			It("performs the full get step (selects a worker and creates a container)", func() {
 				Expect(stepErr).ToNot(HaveOccurred())
 				Expect(stepOk).To(BeTrue())
-				Expect(fakePool.FindOrSelectWorkerCallCount()).To(Equal(0))
+				Expect(fakePool.FindOrSelectWorkerCallCount()).To(Equal(1))
 			})
 
 			It("stores a GetResult in the run state", func() {
@@ -734,61 +734,16 @@ var _ = Describe("GetStep", func() {
 				Expect(result.Name).To(Equal("some-name"))
 			})
 
-			It("emits Initializing and Finished events", func() {
-				Expect(fakeDelegate.InitializingCallCount()).To(Equal(1))
-				Expect(fakeDelegate.FinishedCallCount()).To(Equal(1))
-				_, exitStatus, versionResult := fakeDelegate.FinishedArgsForCall(0)
-				Expect(exitStatus).To(Equal(exec.ExitStatus(0)))
-				Expect(versionResult.Version).To(Equal(atc.Version{"digest": "sha256:abc123def456"}))
-			})
-
-			It("registers an artifact in the repository", func() {
-				_, _, found := artifactRepository.ArtifactFor(build.ArtifactName("some-name"))
-				Expect(found).To(BeTrue())
-			})
-
 			It("registers the image ref URL for downstream task steps", func() {
 				imageRef, found := artifactRepository.ImageRefFor(build.ArtifactName("some-name"))
 				Expect(found).To(BeTrue())
 				Expect(imageRef).To(Equal("docker:///my-org/my-image@sha256:abc123def456"))
 			})
 
-			Context("when fetch_artifact param is set", func() {
-				BeforeEach(func() {
-					getPlan.Params = atc.Params{"fetch_artifact": true}
-				})
-
-				It("bypasses the short-circuit and runs the full get step", func() {
-					Expect(fakePool.FindOrSelectWorkerCallCount()).To(Equal(1))
-				})
-
-				It("does not pass fetch_artifact to the resource get script", func() {
-					Expect(fakePool.FindOrSelectWorkerCallCount()).To(Equal(1))
-					_, _, containerSpec, _ := fakePool.FindOrSelectWorkerArgsForCall(0)
-					// The resource get operation receives params via containerSpec env
-					// but fetch_artifact should be stripped before reaching the resource
-					_ = containerSpec
-				})
-			})
-
-			Context("when using a dynamic version source (passed constraint)", func() {
-				versionPlanID := atc.PlanID("check-plan-id")
-
-				BeforeEach(func() {
-					getPlan.Version = nil
-					getPlan.VersionFrom = &versionPlanID
-					runState.StoreResult(versionPlanID, atc.Version{
-						"digest": "sha256:resolved-from-check",
-					})
-				})
-
-				It("uses the dynamically resolved version", func() {
-					Expect(stepErr).ToNot(HaveOccurred())
-					Expect(stepOk).To(BeTrue())
-
-					_, _, versionResult := fakeDelegate.FinishedArgsForCall(0)
-					Expect(versionResult.Version).To(Equal(atc.Version{"digest": "sha256:resolved-from-check"}))
-				})
+			It("registers the volume as an artifact", func() {
+				artifact, _, found := artifactRepository.ArtifactFor(build.ArtifactName("some-name"))
+				Expect(found).To(BeTrue())
+				Expect(artifact).ToNot(BeNil())
 			})
 		})
 
