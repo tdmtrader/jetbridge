@@ -51,6 +51,30 @@ var _ = Describe("Config", func() {
 				Expect(typeImage.GetPlan).ToNot(BeNil())
 				Expect(typeImage.CheckPlan).ToNot(BeNil())
 			})
+
+			It("sets SkipDownload on the image get plan for registry-image types", func() {
+				typeImage := types.ImageForType("some-plan", "custom-git", nil, false)
+				Expect(typeImage.GetPlan).ToNot(BeNil())
+				Expect(typeImage.GetPlan.Get.SkipDownload).To(BeTrue())
+			})
+		})
+
+		Context("when the resource type uses a non-registry-image type", func() {
+			BeforeEach(func() {
+				types = ResourceTypes{
+					{
+						Name:   "custom-s3",
+						Type:   "s3",
+						Source: Source{"bucket": "my-bucket"},
+					},
+				}
+			})
+
+			It("does not set SkipDownload on the image get plan", func() {
+				typeImage := types.ImageForType("some-plan", "custom-s3", nil, false)
+				Expect(typeImage.GetPlan).ToNot(BeNil())
+				Expect(typeImage.GetPlan.Get.SkipDownload).To(BeFalse())
+			})
 		})
 
 		Context("when the resource type has a resolved digest (from native registry resolution)", func() {

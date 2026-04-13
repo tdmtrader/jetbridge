@@ -360,7 +360,9 @@ func FetchImagePlan(planID PlanID, image ImageResource, resourceTypes ResourceTy
 		tags = stepTags
 	}
 
-	// Construct get plan for image
+	// Construct get plan for image.
+	// For registry-image types, set SkipDownload since JetBridge only needs
+	// the image ref URL — the container runtime pulls images directly.
 	imageGetPlan := Plan{
 		ID: getPlanID,
 		Get: &GetPlan{
@@ -370,6 +372,8 @@ func FetchImagePlan(planID PlanID, image ImageResource, resourceTypes ResourceTy
 			Params: image.Params,
 
 			TypeImage: resourceTypes.ImageForType(getPlanID, image.Type, tags, skipInterval),
+
+			SkipDownload: image.Type == "registry-image",
 
 			Tags: tags,
 		},
