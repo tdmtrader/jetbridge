@@ -206,6 +206,23 @@ func (v *Volume) StreamIn(ctx context.Context, path string, enc compression.Comp
 // When compression is non-nil and not raw, the tar stream is compressed before
 // being returned to the caller. This satisfies the runtime.Artifact contract
 // which requires StreamOut to return a compressed tar stream.
+//
+// DEPRECATED FOR ARTIFACT READS. This method execs into the pod the volume is
+// bound to (v.podName), which breaks as soon as the reaper deletes that pod
+// after the step's exit-status annotation is written (see
+// atc/worker/jetbridge/reaper.go and atc/worker/jetbridge/process.go:932-940).
+//
+// Step producers must wrap their output volumes via Worker.ArtifactFromVolume
+// before registering in build.Repository, so downstream StreamOut calls
+// dispatch to *DaemonSetVolume.StreamOut (HTTP to the node's DaemonSet pod)
+// instead of this exec-backed implementation. See track
+// route_artifact_reads_through_daemonset_remove_exec_backed_artifact_io_20260418.
+//
+// This method remains only to satisfy the runtime.Volume interface and to
+// support unit tests that exercise the exec path directly. It MUST NOT be
+// reached in production after Phase 3 of the above track, and the startup
+// validation in atc/atccmd/command.go (validateK8sRuntime) enforces the
+// DaemonSet configuration that guarantees the correct routing.
 func (v *Volume) StreamOut(ctx context.Context, path string, enc compression.Compression) (io.ReadCloser, error) {
 	if v.executor == nil {
 		return nil, fmt.Errorf("cannot stream out: volume %s has no executor (stub volume cannot perform I/O)", v.handle)

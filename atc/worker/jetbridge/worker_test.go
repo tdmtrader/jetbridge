@@ -696,5 +696,38 @@ var _ = Describe("Worker", func() {
 				Expect(worker.ArtifactFromVolume(nil)).To(BeNil())
 			})
 		})
+
+		Context("regression guard for the exec-backed artifact-read path", func() {
+			// Phase 5 of the track makes the exec-backed *Volume.StreamOut
+			// path reachable only from test code. This guard ensures a
+			// DaemonSet-enabled worker NEVER hands out a *Volume reference
+			// from ArtifactFromVolume, which would re-introduce the
+			// "exec stream: pods ... not found" failure mode.
+			It("never returns a *Volume (exec-backed) when a DaemonSet backend is configured", func() {
+				daemonCfg := cfg
+				daemonCfg.ArtifactDaemonHostPath = "/var/artifacts"
+				daemonWorker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, daemonCfg)
+
+				// Try every kind of volume we produce in the runtime:
+				// DeferredVolume (container mounts when an executor is
+				// set) and StubVolume (placeholder when no executor).
+				inputs := []runtime.Volume{
+					jetbridge.NewDeferredVolume("deferred-1", "w", nil, "ns", "main", "/mnt/d"),
+					jetbridge.NewStubVolume("stub-1", "w", "/mnt/s"),
+				}
+
+				for _, vol := range inputs {
+					artifact := daemonWorker.ArtifactFromVolume(vol)
+					_, isExecVolume := artifact.(*jetbridge.Volume)
+					Expect(isExecVolume).To(BeFalse(),
+						"ArtifactFromVolume handed out a *jetbridge.Volume for handle %q — "+
+							"this would route StreamOut through exec into the producer pod, "+
+							"which breaks once the reaper deletes the pod. Wrap via the "+
+							"DaemonSet storage backend instead.",
+						vol.Handle(),
+					)
+				}
+			})
+		})
 	})
 })
