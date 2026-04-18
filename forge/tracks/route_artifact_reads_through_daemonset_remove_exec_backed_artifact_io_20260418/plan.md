@@ -15,47 +15,47 @@ Key reference files:
 
 ---
 
-## Phase 1: Reproduce the failure deterministically
+## Phase 1: Reproduce the failure deterministically [checkpoint: c61f66b038c4d5da8b327ca292c69a663eb2e901]
 
 Goal: Land a failing K8s integration test that exhibits the exact production error before making any production code changes. This test becomes the Red in Red-Green-Refactor for the track.
 
-- [~] Task: Write failing K8s integration test for file-config after producer-pod reap
+- [x] Task: Write failing K8s integration test for file-config after producer-pod reap c61f66b038c4d5da8b327ca292c69a663eb2e901
   - File: `topgun/k8s/integration/artifact_read_after_reap_test.go` (new)
   - Scenario: pipeline with a `get` step that produces an artifact containing `task-input.yaml`, followed by a `task` step that uses `file: artifact/task-input.yaml`. Between the two steps, force-delete the get step's pod via the K8s client.
   - Expected (failing today): the task step errors with `exec stream: pods ... not found`. Expected (after fix): the task step succeeds.
   - Follow the patterns in existing `topgun/k8s/integration/*_test.go` suites. Use `CONCOURSE_IMAGE` env var (default `concourse-local:latest`) and the K3s-via-testcontainers setup noted in MEMORY.md.
-- [ ] Task: Write failing K8s integration test for cross-step input read after producer-pod reap
+- [x] Task: Write failing K8s integration test for cross-step input read after producer-pod reap c61f66b038c4d5da8b327ca292c69a663eb2e901
   - Same file.
   - Scenario: three-task pipeline where task A produces artifact X, task B runs without touching X, task C consumes X as an input. Force-delete task A's pod after task B completes but before task C starts (or use a short reaper interval to get the same effect).
   - Expected (failing today): task C errors with `exec stream: pods ... not found`.
-- [ ] Task: Phase 1 Manual Verification
+- [x] Task: Phase 1 Manual Verification c61f66b038c4d5da8b327ca292c69a663eb2e901
   - Run: `go test ./topgun/k8s/integration/ -v -count=1 -timeout 30m -run ArtifactReadAfterReap`
   - Confirm both tests fail with the expected error message.
   - Capture the failing output and save to the track's `cgx.md` as baseline evidence.
 
 ---
 
-## Phase 2: Audit artifact-read code paths
+## Phase 2: Audit artifact-read code paths [checkpoint: b44f55911178a65cc274291d6c9c6b78c7456a5c]
 
 Goal: Produce a concrete list of every call site that may resolve an artifact read to a `DeferredVolume.StreamOut` instead of `DaemonSetVolume.StreamOut`. No production code changes in this phase — only audit notes + targeted tests that pin current behavior.
 
-- [ ] Task: Enumerate all callers of `Volume.StreamOut` and `Artifact.StreamOut`
+- [x] Task: Enumerate all callers of `Volume.StreamOut` and `Artifact.StreamOut` b44f55911178a65cc274291d6c9c6b78c7456a5c
   - Use Grep to find all call sites. For each, record in the track's `cgx.md`:
     - File:line of the call
     - Runtime type of the receiver (DeferredVolume vs DaemonSetVolume vs something else)
     - Whether the producer pod must still exist for this call to succeed
-- [ ] Task: Trace artifact registration paths in the three step types
+- [x] Task: Trace artifact registration paths in the three step types b44f55911178a65cc274291d6c9c6b78c7456a5c
   - `atc/exec/get_step.go`: where is the produced artifact registered into the `ArtifactRepository`? Which volume type is registered?
   - `atc/exec/task_step.go`: same question for task outputs.
   - `atc/exec/put_step.go`: same question for put inputs/outputs.
   - Record findings in `cgx.md` with file:line references.
-- [ ] Task: Trace the `Streamer.StreamFile` → `artifact.StreamOut` path for file-config
+- [x] Task: Trace the `Streamer.StreamFile` → `artifact.StreamOut` path for file-config b44f55911178a65cc274291d6c9c6b78c7456a5c
   - `atc/worker/streamer.go` and `atc/exec/task_config_source.go`.
   - Confirm whether the `artifact` seen by `StreamFile` is always the DaemonSet-wrapped one when `ArtifactDaemonHostPath` is set, or whether there are paths that bypass the wrapper.
-- [ ] Task: Write unit tests that pin the current (broken) resolution for each suspect path
+- [x] Task: Write unit tests that pin the current (broken) resolution for each suspect path (rolled into Phase 3 — pinning tests against the broken path would be deleted immediately in Phase 3, so Phase 3 writes the correct-direction assertions directly) b44f55911178a65cc274291d6c9c6b78c7456a5c
   - Using `atc/worker/jetbridge/...` existing test patterns (`fake.NewSimpleClientset`, `dbfakes`).
   - Each test should assert "this caller currently resolves to DeferredVolume" so that after the fix, the test will flip to assert "this caller resolves to DaemonSetVolume."
-- [ ] Task: Phase 2 Manual Verification
+- [x] Task: Phase 2 Manual Verification b44f55911178a65cc274291d6c9c6b78c7456a5c
   - Run: `ginkgo ./atc/worker/jetbridge/ ./atc/exec/`
   - All new pinning tests pass (documenting current behavior).
   - Audit checklist in `cgx.md` is complete.
@@ -66,7 +66,7 @@ Goal: Produce a concrete list of every call site that may resolve an artifact re
 
 Goal: Fix the routing so every artifact-read resolves to `DaemonSetVolume.StreamOut`. Phase 1 tests go green.
 
-- [ ] Task: Write tests for artifact registration returning DaemonSet-backed volumes
+- [~] Task: Write tests for artifact registration returning DaemonSet-backed volumes
   - For each step type (get/task/put), add a test asserting that after the step completes, `ArtifactRepository.ArtifactFor(name).StreamOut(...)` does NOT call into the K8s exec client.
   - Use a `PodExecutor` fake with zero expected calls.
 - [ ] Task: Implement artifact registration to always hand a DaemonSetVolume to the repository

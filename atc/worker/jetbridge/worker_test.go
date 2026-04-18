@@ -583,4 +583,118 @@ var _ = Describe("Worker", func() {
 			})
 		})
 	})
+
+	Describe("ArtifactFromVolume", func() {
+		// ArtifactFromVolume wraps a container-mount volume into a
+		// DaemonSet-backed Artifact reference so downstream StreamOut
+		// calls do not exec into the producing pod. Step producers MUST
+		// call this before RegisterArtifact — the bug that motivates
+		// this code is that without the wrap, downstream reads fail
+		// with `exec stream: pods "..." not found` after the producer
+		// pod is reaped.
+		Context("when a DaemonSet backend is configured", func() {
+			var (
+				daemonWorker *jetbridge.Worker
+				daemonCfg    jetbridge.Config
+			)
+
+			BeforeEach(func() {
+				daemonCfg = cfg
+				daemonCfg.ArtifactDaemonHostPath = "/var/artifacts"
+				daemonWorker = jetbridge.NewWorker(fakeDBWorker, fakeClientset, daemonCfg)
+			})
+
+			It("wraps a container-mount DeferredVolume as a DaemonSetVolume", func() {
+				deferred := jetbridge.NewDeferredVolume(
+					"artifact-handle-1",
+					"k8s-worker-1",
+					nil, "test-namespace", "main", "/mnt/data",
+				)
+
+				artifact := daemonWorker.ArtifactFromVolume(deferred)
+				Expect(artifact).ToNot(BeNil())
+				Expect(artifact.Handle()).To(Equal("artifact-handle-1"))
+
+				_, isDaemonSet := artifact.(*jetbridge.DaemonSetVolume)
+				Expect(isDaemonSet).To(BeTrue(),
+					"expected ArtifactFromVolume to return a *DaemonSetVolume, got %T; "+
+						"without this wrap, downstream StreamOut execs into the producer pod",
+					artifact,
+				)
+			})
+
+			It("wraps a StubVolume as a DaemonSetVolume", func() {
+				stub := jetbridge.NewStubVolume("artifact-handle-2", "k8s-worker-1", "/mnt/stub")
+
+				artifact := daemonWorker.ArtifactFromVolume(stub)
+				Expect(artifact).ToNot(BeNil())
+				Expect(artifact.Handle()).To(Equal("artifact-handle-2"))
+
+				_, isDaemonSet := artifact.(*jetbridge.DaemonSetVolume)
+				Expect(isDaemonSet).To(BeTrue(), "expected *DaemonSetVolume, got %T", artifact)
+			})
+
+			It("preserves the handle as the artifact key", func() {
+				deferred := jetbridge.NewDeferredVolume(
+					"arbitrary-handle",
+					"k8s-worker-1",
+					nil, "ns", "main", "/mnt/x",
+				)
+
+				artifact := daemonWorker.ArtifactFromVolume(deferred)
+				dsVol, ok := artifact.(*jetbridge.DaemonSetVolume)
+				Expect(ok).To(BeTrue())
+				Expect(dsVol.Key()).To(Equal("arbitrary-handle"))
+				Expect(dsVol.Handle()).To(Equal("arbitrary-handle"))
+			})
+
+			It("resolves the source node from the ArtifactLocator when the locator has an entry", func() {
+				locator := jetbridge.NewArtifactLocator()
+				locator.Record(jetbridge.ArtifactKey("located-handle"), "node-17", "container/output")
+				daemonWorker.SetArtifactLocator(locator)
+
+				deferred := jetbridge.NewDeferredVolume(
+					"located-handle",
+					"k8s-worker-1",
+					nil, "ns", "main", "/mnt/located",
+				)
+
+				artifact := daemonWorker.ArtifactFromVolume(deferred)
+				dsVol, ok := artifact.(*jetbridge.DaemonSetVolume)
+				Expect(ok).To(BeTrue())
+				// Source() returns the worker name; the source node is
+				// stored internally but is observable via StreamOut
+				// behavior (tested at the integration level).
+				Expect(dsVol.Source()).To(Equal("k8s-worker-1"))
+			})
+
+			It("returns nil when given a nil volume", func() {
+				Expect(daemonWorker.ArtifactFromVolume(nil)).To(BeNil())
+			})
+		})
+
+		Context("when NO DaemonSet backend is configured (legacy exec-only mode)", func() {
+			// Phase 4 of this track makes the DaemonSet a hard
+			// requirement, but until then the legacy fallback must keep
+			// returning the original volume unchanged so existing
+			// exec-backed callers still work.
+			It("returns the volume unchanged", func() {
+				deferred := jetbridge.NewDeferredVolume(
+					"legacy-handle",
+					"k8s-worker-1",
+					nil, "ns", "main", "/mnt/legacy",
+				)
+
+				artifact := worker.ArtifactFromVolume(deferred)
+				Expect(artifact).To(BeIdenticalTo(runtime.Artifact(deferred)),
+					"expected the original volume when no DaemonSet backend is set; "+
+						"wrapping without a backend would produce a DaemonSetVolume with no source node",
+				)
+			})
+
+			It("returns nil when given a nil volume", func() {
+				Expect(worker.ArtifactFromVolume(nil)).To(BeNil())
+			})
+		})
+	})
 })

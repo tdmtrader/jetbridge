@@ -268,7 +268,7 @@ func (step *GetStep) run(ctx context.Context, state RunState, delegate GetDelega
 
 	trace.SpanFromContext(ctx).AddEvent("step.starting")
 	delegate.Starting(logger)
-	volume, fromCache, versionResult, processResult, err := step.retrieveFromCacheOrPerformGet(
+	artifact, fromCache, versionResult, processResult, err := step.retrieveFromCacheOrPerformGet(
 		ctx,
 		logger,
 		delegate,
@@ -301,7 +301,7 @@ func (step *GetStep) run(ctx context.Context, state RunState, delegate GetDelega
 
 		state.ArtifactRepository().RegisterArtifact(
 			build.ArtifactName(step.plan.Name),
-			volume,
+			artifact,
 			fromCache,
 		)
 
@@ -342,7 +342,7 @@ func (step *GetStep) retrieveFromCacheOrPerformGet(
 	workerSpec worker.Spec,
 	containerSpec runtime.ContainerSpec,
 	containerOwner db.ContainerOwner,
-) (runtime.Volume, bool, resource.VersionResult, runtime.ProcessResult, error) {
+) (runtime.Artifact, bool, resource.VersionResult, runtime.ProcessResult, error) {
 	err := delegate.BeforeSelectWorker(logger)
 	if err != nil {
 		return nil, false, resource.VersionResult{}, runtime.ProcessResult{}, err
@@ -415,7 +415,7 @@ func (step *GetStep) retrieveFromCacheOrPerformGet(
 		return nil, false, resource.VersionResult{}, runtime.ProcessResult{}, err
 	}
 	if ok {
-		return volume, fromCache, versionResult, processResult, nil
+		return worker.ArtifactFromVolume(volume), fromCache, versionResult, processResult, nil
 	}
 
 	// Resource not cached and failed to acquire lock. Try again after
@@ -436,7 +436,7 @@ func (step *GetStep) retrieveFromCacheOrPerformGet(
 				return nil, false, resource.VersionResult{}, runtime.ProcessResult{}, err
 			}
 			if ok {
-				return volume, fromCache, versionResult, processResult, nil
+				return worker.ArtifactFromVolume(volume), fromCache, versionResult, processResult, nil
 			}
 			// Still can't acquire that darn lock. Wait another interval.
 		}

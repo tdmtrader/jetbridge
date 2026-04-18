@@ -116,6 +116,13 @@ func (w Worker) FindDaemonResourceCache(ctx context.Context, cacheID int) (runti
 	return nil, false, nil
 }
 
+// ArtifactFromVolume returns the volume unchanged — the runtimetest Worker
+// does not model a DaemonSet artifact cache, so producer-pod-decoupled
+// reads are not exercised in this fake.
+func (w Worker) ArtifactFromVolume(vol runtime.Volume) runtime.Artifact {
+	return vol
+}
+
 func (w Worker) DBWorker() db.Worker {
 	return w.DBWorker_
 }

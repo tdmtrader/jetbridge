@@ -72,6 +72,19 @@ type Worker interface {
 	// endpoint) and the node name where it was found. Returns (nil, false,
 	// nil) when no cached version exists.
 	FindDaemonResourceCache(ctx context.Context, cacheID int) (Volume, bool, error)
+
+	// ArtifactFromVolume wraps a step-local volume as an Artifact reference
+	// suitable for registration in a build's artifact repository. The wrapped
+	// reference must be safe to stream from after the producing container's
+	// pod has been reaped — e.g. by resolving through a node-local artifact
+	// cache rather than exec-ing into the producer pod.
+	//
+	// Producer steps (get / task / put) MUST call this before handing a
+	// volume to build.Repository.RegisterArtifact. Implementations that
+	// cannot decouple the artifact from the producer's process may return
+	// the volume unchanged; in that case downstream reads remain coupled to
+	// the producer pod's lifecycle.
+	ArtifactFromVolume(vol Volume) Artifact
 }
 
 // Container represents an entity that can execute Processes. It need not

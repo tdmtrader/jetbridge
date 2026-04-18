@@ -404,7 +404,7 @@ func (step *TaskStep) run(ctx context.Context, state RunState, delegate TaskDele
 
 	result, runErr := process.Wait(ctx)
 
-	step.registerOutputs(logger, repository, config, volumeMounts, step.containerMetadata)
+	step.registerOutputs(logger, repository, worker, config, volumeMounts, step.containerMetadata)
 
 	// Do not initialize caches for one-off builds
 	if step.metadata.JobID != 0 {
@@ -712,7 +712,7 @@ func (step *TaskStep) workerSpec(config atc.TaskConfig) worker.Spec {
 	}
 }
 
-func (step *TaskStep) registerOutputs(logger lager.Logger, repository *build.Repository, config atc.TaskConfig, volumeMounts []runtime.VolumeMount, metadata db.ContainerMetadata) {
+func (step *TaskStep) registerOutputs(logger lager.Logger, repository *build.Repository, worker runtime.Worker, config atc.TaskConfig, volumeMounts []runtime.VolumeMount, metadata db.ContainerMetadata) {
 	logger.Debug("registering-outputs", lager.Data{"outputs": config.Outputs})
 
 	for _, output := range config.Outputs {
@@ -725,7 +725,13 @@ func (step *TaskStep) registerOutputs(logger lager.Logger, repository *build.Rep
 
 		for _, mount := range volumeMounts {
 			if filepath.Clean(mount.MountPath) == filepath.Clean(outputPath) {
-				repository.RegisterArtifact(build.ArtifactName(outputName), mount.Volume, false)
+				// Wrap the container-mount volume as a DaemonSet-backed
+				// Artifact reference before handing it to the repository.
+				// Without this wrap, downstream consumers would exec into
+				// the producing pod for StreamOut, which breaks once the
+				// reaper deletes the pod (see forge/tracks/route_artifact_reads_through_daemonset_remove_exec_backed_artifact_io_20260418).
+				artifact := worker.ArtifactFromVolume(mount.Volume)
+				repository.RegisterArtifact(build.ArtifactName(outputName), artifact, false)
 			}
 		}
 	}

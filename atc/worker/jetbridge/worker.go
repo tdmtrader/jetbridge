@@ -370,6 +370,30 @@ func (w *Worker) FindDaemonResourceCache(ctx context.Context, cacheID int) (runt
 	return vol, true, nil
 }
 
+// ArtifactFromVolume wraps a step-local container-mount volume as an Artifact
+// reference that streams via the DaemonSet artifact cache instead of exec-ing
+// into the producing pod. This is the piece that decouples downstream artifact
+// reads from the producer pod's lifecycle: by the time a step registers its
+// output, RecordOutputs has already published the artifact's location in the
+// locator and registered an HTTP alias on the node's daemon, so the wrapped
+// reference can fetch directly from the DaemonSet even after the producer pod
+// has been reaped.
+//
+// When no DaemonSet backend is configured (legacy exec-only mode), the volume
+// is returned unchanged — callers will still see the producer-pod coupling.
+// Phase 4 of the "route artifact reads through DaemonSet" track makes a
+// configured DaemonSet backend a hard requirement so the fallback goes away.
+func (w *Worker) ArtifactFromVolume(vol runtime.Volume) runtime.Artifact {
+	if vol == nil {
+		return nil
+	}
+	if w.storageBackend == nil {
+		return vol
+	}
+	key := ArtifactKey(vol.Handle())
+	return w.storageBackend.WrapVolumeForLookup(key, vol.Handle(), w.Name(), nil)
+}
+
 func markContainerAsFailed(logger lager.Logger, container db.CreatingContainer) {
 	if container != nil {
 		_, err := container.Failed()
