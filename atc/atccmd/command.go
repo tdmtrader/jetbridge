@@ -1843,7 +1843,35 @@ func (cmd *RunCommand) validate() error {
 		errs = multierror.Append(errs, err)
 	}
 
+	if err := cmd.validateK8sRuntime(); err != nil {
+		errs = multierror.Append(errs, err)
+	}
+
 	return errs.ErrorOrNil()
+}
+
+// validateK8sRuntime enforces the DaemonSet artifact cache as a hard
+// requirement for the Kubernetes runtime. Without it, every step-produced
+// artifact is read via exec into the producing pod, and downstream consumers
+// fail with `exec stream: pods "..." not found` once the reaper deletes the
+// producer pod.
+//
+// When --kubernetes-namespace is set (i.e. the K8s runtime is enabled),
+// --kubernetes-artifact-daemon-host-path MUST also be set. This replaces the
+// prior silent fallback to exec-backed artifact I/O.
+//
+// See track
+// route_artifact_reads_through_daemonset_remove_exec_backed_artifact_io_20260418.
+func (cmd *RunCommand) validateK8sRuntime() error {
+	if cmd.Kubernetes.Namespace == "" {
+		return nil
+	}
+	if cmd.Kubernetes.ArtifactDaemonHostPath == "" {
+		return errors.New("--kubernetes-artifact-daemon-host-path is required when --kubernetes-namespace is set: " +
+			"the DaemonSet artifact cache is mandatory for the K8s runtime, because downstream artifact reads " +
+			"must not exec into the producing pod (which is reaped as soon as the step finishes)")
+	}
+	return nil
 }
 
 func (cmd *RunCommand) nonTLSBindAddr() string {

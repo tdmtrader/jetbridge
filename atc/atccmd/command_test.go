@@ -86,6 +86,40 @@ func (s *CommandSuite) TestKubernetesFieldsExistOnRunCommand() {
 	s.Equal("/etc/k8s/config", cmd.Kubernetes.Kubeconfig)
 }
 
+// K8s runtime startup requires the DaemonSet artifact cache. Without it,
+// every step-produced artifact reads via exec into the producer pod, which
+// fails once the reaper deletes the pod. The web must refuse to start in that
+// configuration rather than silently fall back to the broken exec path.
+// See track
+// route_artifact_reads_through_daemonset_remove_exec_backed_artifact_io_20260418.
+
+func (s *CommandSuite) TestK8sRuntimeRequiresArtifactDaemonHostPath() {
+	cmd := &atccmd.RunCommand{}
+	cmd.Kubernetes.Namespace = "concourse"
+	// ArtifactDaemonHostPath intentionally left empty.
+
+	err := atccmd.ValidateK8sRuntimeForTest(cmd)
+	s.Error(err, "expected validation to fail when K8s runtime is on and DaemonSet host path is unset")
+	s.Contains(err.Error(), "kubernetes-artifact-daemon-host-path is required")
+}
+
+func (s *CommandSuite) TestK8sRuntimeAcceptsConfiguredDaemonHostPath() {
+	cmd := &atccmd.RunCommand{}
+	cmd.Kubernetes.Namespace = "concourse"
+	cmd.Kubernetes.ArtifactDaemonHostPath = "/var/concourse/artifacts"
+
+	err := atccmd.ValidateK8sRuntimeForTest(cmd)
+	s.NoError(err, "expected validation to pass when DaemonSet host path is set")
+}
+
+func (s *CommandSuite) TestK8sRuntimeValidationSkippedWhenK8sDisabled() {
+	cmd := &atccmd.RunCommand{}
+	// Namespace empty — K8s runtime not enabled.
+
+	err := atccmd.ValidateK8sRuntimeForTest(cmd)
+	s.NoError(err, "expected validation to be a no-op when --kubernetes-namespace is empty")
+}
+
 func TestSuite(t *testing.T) {
 	suite.Run(t, &CommandSuite{
 		Assertions: require.New(t),
