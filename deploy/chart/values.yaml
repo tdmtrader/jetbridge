@@ -453,9 +453,17 @@ alertingRules:
 # When enabled, deploys a DaemonSet on each node with a local HTTP file server
 # for artifact storage. Provides sub-second local reads and fast cross-node
 # transfers, replacing the PVC-based artifact store for improved performance.
+#
+# REQUIRED when the Kubernetes runtime is enabled (worker.kubernetes.enabled
+# or any mode that sets --kubernetes-namespace). The web deployment refuses to
+# start with an unset artifact-daemon host path because every step-produced
+# artifact must be read via HTTP from the DaemonSet rather than exec-ing into
+# a reaped producer pod. See track
+# route_artifact_reads_through_daemonset_remove_exec_backed_artifact_io_20260418.
 artifactDaemon:
-  # -- Enable the DaemonSet artifact cache
-  enabled: false
+  # -- Enable the DaemonSet artifact cache.
+  # MUST be true for K8s-runtime deployments; web startup fails otherwise.
+  enabled: true
   # -- HTTP server port (must match --kubernetes-artifact-daemon-port on the web node)
   port: 7780
   # -- Host path for artifact storage on each node
