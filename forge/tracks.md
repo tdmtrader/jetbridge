@@ -517,3 +517,18 @@ _Link: [./tracks/telemetry_simplification_20260331/](./tracks/telemetry_simplifi
 _Link: [./tracks/k8s_secret_ref_passthrough_for_pipeline_vars_20260412/](./tracks/k8s_secret_ref_passthrough_for_pipeline_vars_20260412/)_
 
 ---
+
+### [ ] Track: Remove implicit registry-image skip download
+_Link: [./tracks/remove_implicit_registry_image_skip_download_20260412/](./tracks/remove_implicit_registry_image_skip_download_20260412/)_
+
+---
+
+### [ ] Track: Fix native check self-notification feedback loop
+_Link: [./tracks/fix_native_check_self_notification_feedback_loop_20260413/](./tracks/fix_native_check_self_notification_feedback_loop_20260413/)_
+
+---
+
+### [ ] Track: Route artifact reads through DaemonSet; remove exec-backed artifact I/O
+_Link: [./tracks/route_artifact_reads_through_daemonset_remove_exec_backed_artifact_io_20260418/](./tracks/route_artifact_reads_through_daemonset_remove_exec_backed_artifact_io_20260418/)_
+
+---
