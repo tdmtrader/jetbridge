@@ -132,17 +132,17 @@ Goal: Delete the now-unreachable exec-backed artifact-read code. `Volume.StreamO
 
 ---
 
-## Phase 6: Documentation and memory updates
+## Phase 6: Documentation and memory updates [checkpoint: d656eba4c4c53b393c1e798151d8c2e7c477f05b]
 
-- [~] Task: Update MEMORY.md `project_artifact_architecture.md` note
+- [x] Task: Update MEMORY.md `project_artifact_architecture.md` note d656eba4c4c53b393c1e798151d8c2e7c477f05b
   - Clarify: DaemonSet is required (not optional) for the K8s runtime.
   - Current config field: `ArtifactDaemonHostPath` (a path string), not an enum.
   - Exec is retained ONLY for step-output capture; all artifact READS go through the DaemonSet.
-- [ ] Task: Update `deploy/chart/values.yaml` documentation
+- [x] Task: Update `deploy/chart/values.yaml` documentation d656eba4c4c53b393c1e798151d8c2e7c477f05b
   - Flip `artifactDaemon.enabled` default to `true` if not already, and add a note that disabling it is unsupported on the K8s runtime.
-- [ ] Task: Update `CLAUDE.md` if K8s runtime sections reference the exec path
+- [x] Task: Update `CLAUDE.md` if K8s runtime sections reference the exec path d656eba4c4c53b393c1e798151d8c2e7c477f05b
   - Adjust any dev/test instructions that implied exec-backed artifact I/O was a supported mode.
-- [ ] Task: Phase 6 Manual Verification
+- [x] Task: Phase 6 Manual Verification d656eba4c4c53b393c1e798151d8c2e7c477f05b
   - Spot-check updated docs render correctly.
   - Confirm track is ready for close-out via `/forge:complete`.
 
