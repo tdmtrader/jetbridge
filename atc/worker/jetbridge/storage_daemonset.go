@@ -492,6 +492,23 @@ func (b *DaemonSetBackend) WrapVolumeForLookup(ctx context.Context, key, handle,
 	if b.artifactLocator != nil {
 		sourceNode, _ = b.artifactLocator.LocateNode(key)
 	}
+
+	// Resource-cache handles (rc-{id}) never appear in the locator as
+	// an authoritative node-keyed entry: the original get step that
+	// populated the cache may have run in a different ATC process, on
+	// a different build, or long before the current lookup. When the
+	// locator has no entry, probe the live daemons to find which one
+	// currently has the cache and bind the volume directly to that
+	// pod IP. This sidesteps NodeIPResolver (which can't help — we
+	// never learned a node name) and avoids stale-entry risk.
+	if sourceNode == "" && b.daemonClient != nil && isResourceCacheKey(key) {
+		probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		if daemonIP, found, err := b.daemonClient.ProbeResourceCache(probeCtx, key); err == nil && found {
+			return NewDaemonSetVolumeFromIP(key, handle, workerName, daemonIP, b.config)
+		}
+	}
+
 	return NewDaemonSetVolume(key, handle, workerName, dbVolume, sourceNode, b.config, b.nodeIPResolver)
 }
 
