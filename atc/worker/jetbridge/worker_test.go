@@ -599,6 +599,64 @@ var _ = Describe("Worker", func() {
 			})
 		})
 
+		Context("when a probe hit occurs", func() {
+			// The ArtifactLocator's NodeName field is contractually a K8s
+			// Node object name. A daemon pod IP is not a valid value for
+			// that field. The probe-hit code path does not learn a node
+			// name (it only learns a pod IP), so it must not write to the
+			// locator — downstream lookups re-probe instead.
+			It("writes nothing to the ArtifactLocator for the cache key", func() {
+				daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if r.Method == http.MethodHead && strings.Contains(r.URL.Path, "/resource-caches/") {
+						w.WriteHeader(http.StatusOK)
+						return
+					}
+					w.WriteHeader(http.StatusNotFound)
+				}))
+				defer daemon.Close()
+
+				addr := daemon.Listener.Addr().String()
+				colonIdx := strings.LastIndex(addr, ":")
+				host := addr[:colonIdx]
+				port, _ := strconv.Atoi(addr[colonIdx+1:])
+
+				daemonClientset := fake.NewSimpleClientset(&discoveryv1.EndpointSlice{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "artifact-daemon-abc",
+						Namespace: "test-namespace",
+						Labels: map[string]string{
+							discoveryv1.LabelServiceName: "artifact-daemon",
+						},
+					},
+					Endpoints: []discoveryv1.Endpoint{
+						{Addresses: []string{host}},
+					},
+				})
+
+				daemonCfg := cfg
+				daemonCfg.ArtifactDaemonHostPath = "/var/artifacts"
+				daemonCfg.ArtifactDaemonService = "artifact-daemon"
+				daemonCfg.ArtifactDaemonPort = port
+				daemonWorker := jetbridge.NewWorker(fakeDBWorker, daemonClientset, daemonCfg)
+
+				logger := lagertest.NewTestLogger("test")
+				client := jetbridge.NewDaemonClient(logger, daemonClientset, "test-namespace", "artifact-daemon", port, nil)
+
+				locator := jetbridge.NewArtifactLocator()
+				daemonWorker.SetArtifactLocator(locator)
+				daemonWorker.SetDaemonClient(client)
+
+				_, found, err := daemonWorker.FindDaemonResourceCache(ctx, 42)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(found).To(BeTrue())
+
+				_, ok := locator.Locate("rc-42")
+				Expect(ok).To(BeFalse(),
+					"probe hits must not write to the ArtifactLocator: "+
+						"the daemon pod IP is not a valid NodeName")
+			})
+		})
+
 		Context("when the locator has a stale entry for a dead node", func() {
 			It("does not return a cache hit from the stale locator entry", func() {
 				// Start a live daemon that does NOT have the cache.
