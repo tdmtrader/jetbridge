@@ -532,3 +532,8 @@ _Link: [./tracks/fix_native_check_self_notification_feedback_loop_20260413/](./t
 _Link: [./tracks/route_artifact_reads_through_daemonset_remove_exec_backed_artifact_io_20260418/](./tracks/route_artifact_reads_through_daemonset_remove_exec_backed_artifact_io_20260418/)_
 
 ---
+
+### [ ] Track: fix cache locator pod ip poisoning
+_Link: [./tracks/fix_cache_locator_pod_ip_poisoning_20260423/](./tracks/fix_cache_locator_pod_ip_poisoning_20260423/)_
+
+---

@@ -1,0 +1,8 @@
+{
+  "trackId": "fix_cache_locator_pod_ip_poisoning_20260423",
+  "type": "bugfix",
+  "status": "in_progress",
+  "description": "fix cache locator pod ip poisoning",
+  "createdAt": "2026-04-23T13:43:56.396Z",
+  "updatedAt": "2026-04-23T13:57:16.304Z"
+}
