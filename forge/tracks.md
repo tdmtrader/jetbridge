@@ -33,7 +33,7 @@
 
 ## Completed / Archived Tracks
 
-### [~] Track: Resource History Preservation Across Config Changes
+### [x] Track: Resource History Preservation Across Config Changes
 _Link: [./tracks/resource_history_preservation_20260411/](./tracks/resource_history_preservation_20260411/)_
 
 ---

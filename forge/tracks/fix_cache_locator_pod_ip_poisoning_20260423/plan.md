@@ -1,6 +1,6 @@
 # Implementation Plan: fix cache locator pod ip poisoning
 
-## Phase 1: Reproduce, fix, and harden
+## Phase 1: Reproduce, fix, and harden [checkpoint: 8574f59bea]
 
 - [x] Task: Write failing test — `FindDaemonResourceCache` hit → 12b0743df1
       downstream `LookupVolume(cacheKey)` → `StreamOut` must succeed
