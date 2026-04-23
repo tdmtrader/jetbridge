@@ -361,10 +361,17 @@ func (w *Worker) FindDaemonResourceCache(ctx context.Context, cacheID int) (runt
 		return nil, false, nil
 	}
 
-	// Record in locator so downstream steps get node affinity.
-	if dsb, ok := w.storageBackend.(*DaemonSetBackend); ok && dsb.artifactLocator != nil {
-		dsb.artifactLocator.Record(cacheKey, daemonIP, cacheKey)
-	}
+	// Intentionally do NOT record in the ArtifactLocator here. The
+	// locator's NodeName field is contractually a K8s Node object name;
+	// we only learned a daemon pod IP from the probe, not a node name.
+	// Writing the IP under NodeName poisons downstream lookups: any
+	// later WrapVolumeForLookup on the same key would feed the IP into
+	// NodeIPResolver and fail with `nodes "<IP>" not found`.
+	//
+	// Downstream lookups (worker.LookupVolume, ArtifactFromVolume) re-probe
+	// live daemons for rc-* keys when the locator has no entry — see
+	// DaemonSetBackend.WrapVolumeForLookup. Re-probing on lookup is cheap
+	// (one EndpointSlice list + a few HEADs) and avoids stale-entry risk.
 
 	vol := NewDaemonSetVolumeFromIP(cacheKey, cacheKey, w.Name(), daemonIP, w.config)
 	return vol, true, nil
