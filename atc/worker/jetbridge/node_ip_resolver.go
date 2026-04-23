@@ -2,6 +2,7 @@ package jetbridge
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -10,6 +11,12 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 )
+
+// ErrNodeNameIsIP is returned by Resolve when the caller passes an
+// IP-shaped string as a nodeName. The K8s Nodes API is keyed by Node
+// object name, never by IP, so such calls can only fail — surfacing
+// this sentinel makes accidental misuse loud.
+var ErrNodeNameIsIP = errors.New("node name argument is an IP address, not a K8s Node name")
 
 // NodeIPResolver resolves Kubernetes node names to their internal IP addresses.
 // Results are cached with a TTL to avoid repeated API calls.
