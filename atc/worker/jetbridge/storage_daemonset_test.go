@@ -488,7 +488,7 @@ func TestDaemonSetBackend_WrapVolumeForLookup_WithLocator(t *testing.T) {
 	locator.Record("key-1", "source-node", "handle/dir")
 
 	b := testBackend(locator)
-	vol := b.WrapVolumeForLookup("key-1", "handle-1", "worker-1", nil)
+	vol := b.WrapVolumeForLookup(context.Background(), "key-1", "handle-1", "worker-1", nil)
 
 	dsv, ok := vol.(*DaemonSetVolume)
 	if !ok {
@@ -501,7 +501,7 @@ func TestDaemonSetBackend_WrapVolumeForLookup_WithLocator(t *testing.T) {
 
 func TestDaemonSetBackend_WrapVolumeForLookup_WithoutLocator(t *testing.T) {
 	b := NewDaemonSetBackend(testDaemonConfig(), nil, nil)
-	vol := b.WrapVolumeForLookup("key-1", "handle-1", "worker-1", nil)
+	vol := b.WrapVolumeForLookup(context.Background(), "key-1", "handle-1", "worker-1", nil)
 
 	dsv, ok := vol.(*DaemonSetVolume)
 	if !ok {

@@ -487,7 +487,7 @@ func (b *DaemonSetBackend) WrapVolumeForArtifact(key, handle, workerName string,
 	return vol
 }
 
-func (b *DaemonSetBackend) WrapVolumeForLookup(key, handle, workerName string, dbVolume db.CreatedVolume) runtime.Volume {
+func (b *DaemonSetBackend) WrapVolumeForLookup(ctx context.Context, key, handle, workerName string, dbVolume db.CreatedVolume) runtime.Volume {
 	var sourceNode string
 	if b.artifactLocator != nil {
 		sourceNode, _ = b.artifactLocator.LocateNode(key)

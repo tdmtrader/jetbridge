@@ -293,7 +293,7 @@ func (w *Worker) LookupVolume(ctx context.Context, handle string) (runtime.Volum
 
 	key := ArtifactKey(handle)
 	if w.storageBackend != nil {
-		return w.storageBackend.WrapVolumeForLookup(key, handle, w.Name(), dbVolume), true, nil
+		return w.storageBackend.WrapVolumeForLookup(ctx, key, handle, w.Name(), dbVolume), true, nil
 	}
 	return NewDaemonSetVolume(key, handle, w.Name(), dbVolume, "", w.config, w.nodeIPResolver), true, nil
 }
@@ -391,7 +391,7 @@ func (w *Worker) ArtifactFromVolume(vol runtime.Volume) runtime.Artifact {
 		return vol
 	}
 	key := ArtifactKey(vol.Handle())
-	return w.storageBackend.WrapVolumeForLookup(key, vol.Handle(), w.Name(), nil)
+	return w.storageBackend.WrapVolumeForLookup(context.Background(), key, vol.Handle(), w.Name(), nil)
 }
 
 func markContainerAsFailed(logger lager.Logger, container db.CreatingContainer) {

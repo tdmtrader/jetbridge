@@ -26,7 +26,7 @@ type StorageBackend interface {
 	BuildAffinity(inputs []runtime.Input) *corev1.Affinity
 	RecordOutputs(ctx context.Context, handle, nodeName string, volumes []*Volume, spec runtime.ContainerSpec)
 	WrapVolumeForArtifact(key, handle, workerName string, dbVolume db.CreatedVolume) runtime.Volume
-	WrapVolumeForLookup(key, handle, workerName string, dbVolume db.CreatedVolume) runtime.Volume
+	WrapVolumeForLookup(ctx context.Context, key, handle, workerName string, dbVolume db.CreatedVolume) runtime.Volume
 
 	// RegisterResourceCache registers a resource cache alias on the daemon,
 	// mapping the stable cache key (rc-{id}) to the physical disk path of
