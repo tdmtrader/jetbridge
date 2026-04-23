@@ -3,6 +3,7 @@ package jetbridge_test
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -520,6 +521,81 @@ var _ = Describe("Worker", func() {
 				dsVol, ok := vol.(*jetbridge.DaemonSetVolume)
 				Expect(ok).To(BeTrue(), "expected DaemonSetVolume, got %T", vol)
 				_ = dsVol
+			})
+		})
+
+		Context("when a downstream step wraps the returned volume via ArtifactFromVolume", func() {
+			// Regression: FindDaemonResourceCache used to write the daemon
+			// pod IP into the ArtifactLocator under the NodeName field.
+			// Downstream ArtifactFromVolume → WrapVolumeForLookup would
+			// then read that IP back and construct a DaemonSetVolume whose
+			// sourceNode was an IP. StreamOut would hand that IP to
+			// NodeIPResolver.Resolve, which hits the K8s Nodes API and
+			// fails with `nodes "<IP>" not found`.
+			//
+			// This test mirrors the production trigger in
+			// atc/exec/get_step.go:418 — `worker.ArtifactFromVolume(volume)`
+			// is called on whatever FindDaemonResourceCache returned.
+			It("StreamOut on the wrapped artifact succeeds without resolving the daemon IP as a node name", func() {
+				daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if r.Method == http.MethodHead && strings.Contains(r.URL.Path, "/resource-caches/") {
+						w.WriteHeader(http.StatusOK)
+						return
+					}
+					if r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/artifacts/") {
+						w.Write([]byte("cached-tar-data"))
+						return
+					}
+					w.WriteHeader(http.StatusNotFound)
+				}))
+				defer daemon.Close()
+
+				addr := daemon.Listener.Addr().String()
+				colonIdx := strings.LastIndex(addr, ":")
+				host := addr[:colonIdx]
+				port, _ := strconv.Atoi(addr[colonIdx+1:])
+
+				daemonClientset := fake.NewSimpleClientset(&discoveryv1.EndpointSlice{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "artifact-daemon-abc",
+						Namespace: "test-namespace",
+						Labels: map[string]string{
+							discoveryv1.LabelServiceName: "artifact-daemon",
+						},
+					},
+					Endpoints: []discoveryv1.Endpoint{
+						{Addresses: []string{host}},
+					},
+				})
+
+				daemonCfg := cfg
+				daemonCfg.ArtifactDaemonHostPath = "/var/artifacts"
+				daemonCfg.ArtifactDaemonService = "artifact-daemon"
+				daemonCfg.ArtifactDaemonPort = port
+				daemonWorker := jetbridge.NewWorker(fakeDBWorker, daemonClientset, daemonCfg)
+
+				logger := lagertest.NewTestLogger("test")
+				client := jetbridge.NewDaemonClient(logger, daemonClientset, "test-namespace", "artifact-daemon", port, nil)
+				daemonWorker.SetDaemonClient(client)
+
+				vol, found, err := daemonWorker.FindDaemonResourceCache(ctx, 42)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(found).To(BeTrue())
+				Expect(vol).ToNot(BeNil())
+
+				artifact := daemonWorker.ArtifactFromVolume(vol)
+				Expect(artifact).ToNot(BeNil())
+				Expect(artifact.Handle()).To(Equal("rc-42"))
+
+				reader, err := artifact.StreamOut(ctx, ".", nil)
+				Expect(err).ToNot(HaveOccurred(),
+					"StreamOut must not fail resolving the daemon pod IP as a K8s Node name")
+				Expect(reader).ToNot(BeNil())
+				defer reader.Close()
+
+				body, err := io.ReadAll(reader)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(string(body)).To(Equal("cached-tar-data"))
 			})
 		})
 
