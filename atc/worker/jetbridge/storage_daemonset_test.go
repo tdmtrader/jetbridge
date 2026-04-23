@@ -8,16 +8,81 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 
+	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/atc/compression"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/runtime"
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
 )
+
+// daemonTestServer wraps an httptest.Server for daemon-backed lookup tests.
+// It records every request URL so callers can assert which endpoints
+// were (or were not) hit.
+type daemonTestServer struct {
+	srv      *httptest.Server
+	host     string
+	port     int
+	requests atomic.Int32
+	paths    chan string
+}
+
+func newDaemonTestServer(handler http.HandlerFunc) *daemonTestServer {
+	d := &daemonTestServer{
+		paths: make(chan string, 32),
+	}
+	d.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		d.requests.Add(1)
+		select {
+		case d.paths <- r.Method + " " + r.URL.Path:
+		default:
+		}
+		handler(w, r)
+	}))
+	addr := d.srv.Listener.Addr().String()
+	colonIdx := strings.LastIndex(addr, ":")
+	d.host = addr[:colonIdx]
+	d.port, _ = strconv.Atoi(addr[colonIdx+1:])
+	return d
+}
+
+func (d *daemonTestServer) close() { d.srv.Close() }
+
+func (d *daemonTestServer) requestCount() int { return int(d.requests.Load()) }
+
+// daemonBackend builds a DaemonSetBackend wired to the given daemon test
+// server with EndpointSlice discovery seeded for that daemon's host.
+func daemonBackend(t *testing.T, locator *ArtifactLocator, daemon *daemonTestServer) *DaemonSetBackend {
+	t.Helper()
+	cfg := testDaemonConfig()
+	cfg.ArtifactDaemonPort = daemon.port
+
+	clientset := fake.NewSimpleClientset(&discoveryv1.EndpointSlice{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "artifact-daemon-abc",
+			Namespace: cfg.Namespace,
+			Labels: map[string]string{
+				discoveryv1.LabelServiceName: cfg.ArtifactDaemonService,
+			},
+		},
+		Endpoints: []discoveryv1.Endpoint{
+			{Addresses: []string{daemon.host}},
+		},
+	})
+
+	resolver := NewNodeIPResolver(clientset)
+	b := NewDaemonSetBackend(cfg, locator, resolver)
+	logger := lagertest.NewTestLogger("test")
+	b.SetDaemonClient(NewDaemonClient(logger, clientset, cfg.Namespace, cfg.ArtifactDaemonService, cfg.ArtifactDaemonPort, nil))
+	return b
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -509,6 +574,153 @@ func TestDaemonSetBackend_WrapVolumeForLookup_WithoutLocator(t *testing.T) {
 	}
 	if dsv.sourceNode != "" {
 		t.Errorf("expected empty sourceNode without locator, got %s", dsv.sourceNode)
+	}
+}
+
+// TestDaemonSetBackend_WrapVolumeForLookup_RcKeyProbesDaemons covers the
+// happy path of Option D: when the locator has no entry and the handle
+// is a resource cache key, WrapVolumeForLookup probes live daemons via
+// the DaemonClient and returns a volume bound directly to the daemon
+// pod IP — sidestepping NodeIPResolver entirely.
+func TestDaemonSetBackend_WrapVolumeForLookup_RcKeyProbesDaemons(t *testing.T) {
+	daemon := newDaemonTestServer(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodHead && strings.HasPrefix(r.URL.Path, "/resource-caches/"):
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/artifacts/"):
+			w.Write([]byte("cached-tar-data"))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+	defer daemon.close()
+
+	b := daemonBackend(t, NewArtifactLocator(), daemon)
+
+	vol := b.WrapVolumeForLookup(context.Background(), "rc-42", "rc-42", "worker-1", nil)
+
+	dsv, ok := vol.(*DaemonSetVolume)
+	if !ok {
+		t.Fatalf("expected *DaemonSetVolume, got %T", vol)
+	}
+	if dsv.sourceIP != daemon.host {
+		t.Errorf("expected sourceIP %q (from probe), got %q", daemon.host, dsv.sourceIP)
+	}
+	if dsv.sourceNode != "" {
+		t.Errorf("expected empty sourceNode (probe only learns IP), got %q", dsv.sourceNode)
+	}
+
+	// StreamOut must succeed — proves the volume is bound to a working
+	// daemon and never touches NodeIPResolver.
+	reader, err := dsv.StreamOut(context.Background(), ".", nil)
+	if err != nil {
+		t.Fatalf("StreamOut: %v", err)
+	}
+	defer reader.Close()
+	body, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if string(body) != "cached-tar-data" {
+		t.Errorf("expected cached-tar-data, got %q", string(body))
+	}
+}
+
+// TestDaemonSetBackend_WrapVolumeForLookup_RcKeyHonorsLocator covers the
+// case where a real get step has populated the locator with a node-name
+// entry for the cache key. WrapVolumeForLookup must NOT re-probe — the
+// recorded node name is authoritative, and the daemon HTTP server should
+// see zero requests.
+func TestDaemonSetBackend_WrapVolumeForLookup_RcKeyHonorsLocator(t *testing.T) {
+	daemon := newDaemonTestServer(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("daemon should not be probed when locator has an entry; got %s %s", r.Method, r.URL.Path)
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+	defer daemon.close()
+
+	locator := NewArtifactLocator()
+	locator.Record("rc-42", "real-node-name", "rc-42")
+
+	b := daemonBackend(t, locator, daemon)
+
+	vol := b.WrapVolumeForLookup(context.Background(), "rc-42", "rc-42", "worker-1", nil)
+
+	dsv, ok := vol.(*DaemonSetVolume)
+	if !ok {
+		t.Fatalf("expected *DaemonSetVolume, got %T", vol)
+	}
+	if dsv.sourceNode != "real-node-name" {
+		t.Errorf("expected sourceNode real-node-name (from locator), got %q", dsv.sourceNode)
+	}
+	if dsv.sourceIP != "" {
+		t.Errorf("expected empty sourceIP when locator hit, got %q", dsv.sourceIP)
+	}
+	if got := daemon.requestCount(); got != 0 {
+		t.Errorf("expected zero daemon requests when locator has entry, got %d", got)
+	}
+}
+
+// TestDaemonSetBackend_WrapVolumeForLookup_NonRcKeyNeverProbes guards
+// against accidental over-probing. Only resource-cache-shaped keys
+// (rc-{id}) should trigger the probe; other handles must keep the
+// legacy behavior even when the locator is empty.
+func TestDaemonSetBackend_WrapVolumeForLookup_NonRcKeyNeverProbes(t *testing.T) {
+	daemon := newDaemonTestServer(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("daemon should not be probed for non-rc key; got %s %s", r.Method, r.URL.Path)
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+	defer daemon.close()
+
+	b := daemonBackend(t, NewArtifactLocator(), daemon)
+
+	for _, key := range []string{"artifact-handle-1", "build-42-result", "input-vol"} {
+		t.Run(key, func(t *testing.T) {
+			vol := b.WrapVolumeForLookup(context.Background(), key, key, "worker-1", nil)
+			dsv, ok := vol.(*DaemonSetVolume)
+			if !ok {
+				t.Fatalf("expected *DaemonSetVolume, got %T", vol)
+			}
+			if dsv.sourceNode != "" {
+				t.Errorf("expected empty sourceNode (no locator entry), got %q", dsv.sourceNode)
+			}
+			if dsv.sourceIP != "" {
+				t.Errorf("expected empty sourceIP (no probe), got %q", dsv.sourceIP)
+			}
+		})
+	}
+
+	if got := daemon.requestCount(); got != 0 {
+		t.Errorf("expected zero daemon requests for non-rc keys, got %d", got)
+	}
+}
+
+// TestDaemonSetBackend_WrapVolumeForLookup_RcKeyProbeErrorFallsThrough
+// covers the failure-mode path: when daemon discovery yields nothing
+// (no EndpointSlices), the probe returns (`""`, false, nil) per the
+// existing `daemonIPs` contract. WrapVolumeForLookup must fall through
+// to today's empty-sourceNode path without panicking and without
+// returning a nil volume.
+func TestDaemonSetBackend_WrapVolumeForLookup_RcKeyProbeErrorFallsThrough(t *testing.T) {
+	cfg := testDaemonConfig()
+	clientset := fake.NewSimpleClientset() // no EndpointSlices → no daemons
+	resolver := NewNodeIPResolver(clientset)
+	b := NewDaemonSetBackend(cfg, NewArtifactLocator(), resolver)
+	logger := lagertest.NewTestLogger("test")
+	b.SetDaemonClient(NewDaemonClient(logger, clientset, cfg.Namespace, cfg.ArtifactDaemonService, cfg.ArtifactDaemonPort, nil))
+
+	vol := b.WrapVolumeForLookup(context.Background(), "rc-42", "rc-42", "worker-1", nil)
+	if vol == nil {
+		t.Fatal("expected non-nil volume even when probe finds nothing")
+	}
+	dsv, ok := vol.(*DaemonSetVolume)
+	if !ok {
+		t.Fatalf("expected *DaemonSetVolume, got %T", vol)
+	}
+	if dsv.sourceNode != "" {
+		t.Errorf("expected empty sourceNode after failed probe, got %q", dsv.sourceNode)
+	}
+	if dsv.sourceIP != "" {
+		t.Errorf("expected empty sourceIP after failed probe, got %q", dsv.sourceIP)
 	}
 }
 
