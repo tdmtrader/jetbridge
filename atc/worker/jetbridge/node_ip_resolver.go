@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"sync"
 	"time"
 
@@ -44,6 +45,16 @@ func NewNodeIPResolver(clientset kubernetes.Interface) *NodeIPResolver {
 
 // Resolve returns the internal IP address for the given node name.
 func (r *NodeIPResolver) Resolve(ctx context.Context, nodeName string) (string, error) {
+	// Reject IP-shaped inputs up front. The K8s Nodes API is keyed by Node
+	// object name, not by IP, so a Get with an IP can only fail with a
+	// misleading "nodes \"<IP>\" not found". Surfacing a typed sentinel
+	// makes accidental misuse loud (e.g. callers conflating pod IPs with
+	// node names — see the daemon-IP-poisoning regression in
+	// FindDaemonResourceCache).
+	if net.ParseIP(nodeName) != nil {
+		return "", fmt.Errorf("%w: %q", ErrNodeNameIsIP, nodeName)
+	}
+
 	// Check cache first.
 	r.mu.RLock()
 	entry, ok := r.cache[nodeName]
