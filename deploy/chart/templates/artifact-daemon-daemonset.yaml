@@ -1,6 +1,28 @@
 {{- if .Values.artifactDaemon.enabled }}
 {{- $tlsEnabled := .Values.artifactDaemon.tls.enabled | default false }}
 {{- $tlsSecretName := .Values.artifactDaemon.tls.existingSecret | default (printf "%s-artifact-daemon-tls" (include "concourse.fullname" .)) }}
+{{- /*
+   Resolve mirror.replicas: numbers pass through (including the explicit
+   value 0 = disabled); the literal "all" maps to -1 (the daemon's flag
+   value for "every live peer"). Anything else is a misconfiguration and
+   we let Helm fail loudly.
+
+   Note: we read the value directly rather than using `default` because
+   `default` treats Go's zero-value (int 0) as "unset" and would silently
+   override an operator's intentional `replicas: 0` with the chart default.
+*/ -}}
+{{- $mirrorReplicasRaw := .Values.artifactDaemon.mirror.replicas }}
+{{- if eq $mirrorReplicasRaw nil }}
+  {{- $mirrorReplicasRaw = 2 }}
+{{- end }}
+{{- $mirrorReplicas := $mirrorReplicasRaw }}
+{{- if kindIs "string" $mirrorReplicasRaw }}
+  {{- if eq $mirrorReplicasRaw "all" }}
+    {{- $mirrorReplicas = -1 }}
+  {{- else }}
+    {{- fail (printf "artifactDaemon.mirror.replicas must be an integer or the string \"all\", got %q" $mirrorReplicasRaw) }}
+  {{- end }}
+{{- end }}
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
@@ -48,6 +70,9 @@ spec:
             - --tls-key=/etc/concourse/daemon-tls/tls.key
             - --tls-ca-cert=/etc/concourse/daemon-tls/ca.crt
             {{- end }}
+            - --mirror-replicas={{ $mirrorReplicas }}
+            - --mirror-concurrency={{ .Values.artifactDaemon.mirror.concurrency | default 4 }}
+            - --mirror-timeout={{ .Values.artifactDaemon.mirror.timeout | default "5m" }}
           env:
             - name: NODE_NAME
               valueFrom:

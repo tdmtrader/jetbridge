@@ -488,6 +488,21 @@ artifactDaemon:
   affinity: {}
   # -- Tolerations for scheduling on tainted nodes (spot, GPU, etc.)
   tolerations: []
+  # -- Outbound mirror configuration. Each step output (and resource cache
+  # alias) is asynchronously mirrored to peer daemons after it lands so the
+  # artifact survives loss of the producing node (spot preemption, crash).
+  mirror:
+    # -- Replication factor.
+    #   0     — mirroring disabled (default behavior is single-node)
+    #   N     — mirror to up to (N-1) peers; if fewer peers exist than
+    #           requested, mirrors to all available peers (no error)
+    #   "all" — mirror to every live peer (translates to -1 on the daemon)
+    # Default 2 = local + 1 peer copy. Suitable for 1-4 node fleets.
+    replicas: 2
+    # -- Max concurrent in-flight mirror jobs per daemon.
+    concurrency: 4
+    # -- Per-peer per-job mirror PUT timeout.
+    timeout: "5m"
   # -- TLS/mTLS configuration for encrypted and authenticated daemon communication
   tls:
     # -- Enable TLS (HTTPS + mTLS) for the artifact daemon.
