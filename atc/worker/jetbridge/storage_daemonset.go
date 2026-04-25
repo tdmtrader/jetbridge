@@ -427,6 +427,11 @@ func (b *DaemonSetBackend) RecordOutputs(ctx context.Context, handle, nodeName s
 		if nodeName != "" {
 			diskPath := filepath.Join(b.config.ArtifactDaemonHostPath, "steps", handle, subdir)
 			b.registerDaemonAlias(nodeName, key, diskPath)
+			// Trigger an outbound mirror on the producer's daemon so the
+			// step output survives loss of this node. Best-effort: if the
+			// trigger fails, the build still succeeds — node loss just
+			// reverts to today's behavior (rerun required).
+			b.triggerMirror(nodeName, daemonKey)
 		}
 
 		recorded++
@@ -435,6 +440,27 @@ func (b *DaemonSetBackend) RecordOutputs(ctx context.Context, handle, nodeName s
 		fmt.Fprintf(os.Stderr, "WARNING: RecordOutputs: %d volumes but 0 matched outputPaths %v (handle=%s type=%s)\n",
 			len(volumes), outputPaths, handle, spec.Type)
 	}
+}
+
+// triggerMirror fires a best-effort POST /mirror on the producer's daemon
+// for daemonKey (the on-disk path under steps/, e.g. "handle/result").
+// All errors are swallowed — the build's outputs are already persisted on
+// the producer; absence of mirror is not a step failure, just lost
+// resilience.
+func (b *DaemonSetBackend) triggerMirror(nodeName, daemonKey string) {
+	if b.daemonClient == nil || b.nodeIPResolver == nil {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	nodeIP, err := b.nodeIPResolver.Resolve(ctx, nodeName)
+	if err != nil {
+		// Already logged by Resolve.
+		return
+	}
+	_ = b.daemonClient.TriggerMirror(ctx, nodeIP, daemonKey)
 }
 
 func (b *DaemonSetBackend) registerDaemonAlias(nodeName, volumeKey, diskPath string) {
