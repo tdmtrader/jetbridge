@@ -512,7 +512,7 @@ func TestDaemonSetVolume_StreamOut_FallsBackToPeer_OnConnectionRefused(t *testin
 		switch {
 		case r.Method == http.MethodHead && r.URL.Path == "/artifacts/steps/h/o":
 			w.WriteHeader(http.StatusOK)
-		case r.Method == http.MethodGet && r.URL.Path == "/artifacts/h/o":
+		case r.Method == http.MethodGet && r.URL.Path == "/artifacts/steps/h/o":
 			w.Write([]byte("peer-served-content"))
 		default:
 			w.WriteHeader(http.StatusNotFound)

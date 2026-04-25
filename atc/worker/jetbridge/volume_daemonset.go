@@ -313,7 +313,12 @@ func (v *DaemonSetVolume) fetchArtifactWithPeerFallback(ctx context.Context) (*h
 	if port == 0 {
 		port = 7780
 	}
-	peerURL := fmt.Sprintf("http://%s:%d/artifacts/%s", peerIP, port, v.key)
+	// Peer fallback URL uses the steps/ filesystem path. Peers receive
+	// mirrored data via /stream-in which extracts to {storage}/steps/{key}
+	// — they don't have the producer-side registry aliases. The producer
+	// served /artifacts/{key} via alias resolution; for peers the URL must
+	// hit the on-disk path directly.
+	peerURL := fmt.Sprintf("http://%s:%d/artifacts/steps/%s", peerIP, port, v.key)
 	resp, err := v.fetchOnce(ctx, peerURL)
 	if err != nil {
 		return nil, fmt.Errorf("fetch artifact from peer %s: %w", peerIP, err)
