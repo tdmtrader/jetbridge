@@ -274,6 +274,45 @@ func (d *DaemonClient) ProbeStepArtifact(ctx context.Context, key string) (strin
 	return "", false, nil
 }
 
+// TriggerMirror fires a fire-and-forget POST /mirror to the daemon at
+// daemonIP, asking it to schedule an async mirror of the artifact at
+// `key` to peer daemons. The recorded producer node's daemon is the
+// only one that actually runs the mirror (only it has the data on
+// disk), so callers should target the producer's daemon IP.
+//
+// Best-effort by contract: returns nil on 202 success, on transport
+// failure, AND on non-202 responses. All non-success outcomes are
+// logged. The motivation is that mirror trigger is an optimization;
+// failing to schedule it MUST NOT fail the producing step. If the
+// mirror doesn't happen, the build's data lives on a single node and
+// reverts to today's behavior — a node loss forces a rerun, but the
+// step itself succeeded.
+func (d *DaemonClient) TriggerMirror(ctx context.Context, daemonIP, key string) error {
+	logger := d.logger.Session("trigger-mirror", lager.Data{"daemon_ip": daemonIP, "key": key})
+
+	url := fmt.Sprintf("%s://%s:%d/mirror", d.scheme, daemonIP, d.port)
+	body := fmt.Sprintf(`{"key":%q}`, key)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(body))
+	if err != nil {
+		logger.Error("create-request-failed", err)
+		return nil
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := d.client.Do(req)
+	if err != nil {
+		logger.Debug("daemon-unreachable", lager.Data{"error": err.Error()})
+		return nil
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusAccepted {
+		logger.Info("non-202", lager.Data{"status": resp.StatusCode})
+	}
+	return nil
+}
+
 // RegisterAlias registers an alias on all daemon pods via POST /register.
 // The alias maps key → localPath in the daemon's registry. On a single-node
 // cluster only one daemon exists; on multi-node, only the daemon whose node
