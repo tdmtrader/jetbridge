@@ -1,6 +1,7 @@
 package main_test
 
 import (
+	"archive/tar"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"code.cloudfoundry.org/lager/v3/lagertest"
 	discoveryv1 "k8s.io/api/discovery/v1"
@@ -235,4 +237,133 @@ func TestDaemonResolve_LocalRegistry_NoPeerQueries(t *testing.T) {
 	if string(data) != "local-only" {
 		t.Errorf("expected 'local-only', got %q", string(data))
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Mirror behavioral: stream-in to producer → mirror lands on peer →
+// producer dies → peer still serves the artifact.
+// (P2d.1 of artifact_daemon_resilience_20260425.)
+// ---------------------------------------------------------------------------
+
+func TestMirror_AfterStreamIn_PeerServesAfterProducerDeath(t *testing.T) {
+	// ---- Peer (server B) — should receive the mirrored data. ----
+	storageB := t.TempDir()
+	loggerB := lagertest.NewTestLogger("server-b")
+	serverB := daemon.NewServer(loggerB, storageB, "node-b")
+	tsB := httptest.NewServer(serverB.Handler())
+	defer tsB.Close()
+
+	hostB, portB := splitHostPort(t, tsB.Listener.Addr().String())
+
+	// ---- Producer (server A) — receives stream-in, mirrors to B. ----
+	storageA := t.TempDir()
+	loggerA := lagertest.NewTestLogger("server-a")
+	serverA := daemon.NewServer(loggerA, storageA, "node-a")
+
+	// EndpointSlice has B as the only peer. myPodIP=10.0.0.99 ensures
+	// nothing on the slice matches "self" so B isn't accidentally skipped.
+	ready := true
+	clientset := fake.NewSimpleClientset(&discoveryv1.EndpointSlice{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "artifact-daemon-slice",
+			Namespace: "concourse",
+			Labels:    map[string]string{discoveryv1.LabelServiceName: "artifact-daemon"},
+		},
+		AddressType: discoveryv1.AddressTypeIPv4,
+		Endpoints: []discoveryv1.Endpoint{
+			{Addresses: []string{hostB}, Conditions: discoveryv1.EndpointConditions{Ready: &ready}},
+		},
+	})
+
+	peers := daemon.NewPeerResolver(loggerA, clientset, "concourse", "artifact-daemon", portB, "10.0.0.99", nil)
+
+	mirror := daemon.NewMirror(daemon.MirrorConfig{
+		StoragePath:    storageA,
+		Port:           portB, // mirror PUTs to peers on this port
+		Scheme:         "http",
+		Replicas:       2,
+		Concurrency:    4,
+		PerPeerTimeout: 5 * time.Second,
+		Peers:          peers,
+		Client:         &http.Client{Timeout: 5 * time.Second},
+		Logger:         loggerA,
+	})
+	defer mirror.Stop()
+	serverA.SetMirrorTrigger(mirror.Trigger)
+
+	tsA := httptest.NewServer(serverA.Handler())
+	defer tsA.Close()
+
+	// ---- Stream a tar into A → triggers async mirror to B. ----
+	body := makeTarPayload(t, "mirror-content")
+	req, _ := http.NewRequest(http.MethodPut, tsA.URL+"/stream-in/handle/output", body)
+	req.Header.Set("Content-Type", "application/x-tar")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("PUT /stream-in to A: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("PUT /stream-in: expected 201, got %d", resp.StatusCode)
+	}
+
+	// ---- Wait for mirror to settle on B (poll filesystem). ----
+	mirroredFile := filepath.Join(storageB, "steps", "handle/output", "data.txt")
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(mirroredFile); err == nil {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	mirrored, err := os.ReadFile(mirroredFile)
+	if err != nil {
+		t.Fatalf("expected mirrored file on peer at %s: %v", mirroredFile, err)
+	}
+	if string(mirrored) != "mirror-content" {
+		t.Errorf("expected mirrored content 'mirror-content', got %q", string(mirrored))
+	}
+
+	// ---- Simulate producer death — close A. Peer should still serve. ----
+	tsA.Close()
+
+	resp, err = http.Get(tsB.URL + "/artifacts/steps/handle/output")
+	if err != nil {
+		t.Fatalf("GET from peer B after producer death: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("peer B: expected 200, got %d", resp.StatusCode)
+	}
+
+	// Body is a tar — find data.txt and verify content.
+	tr := tarReaderFromResponse(t, resp.Body)
+	found := false
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("reading tar: %v", err)
+		}
+		if hdr.Name == "data.txt" {
+			data, _ := io.ReadAll(tr)
+			if string(data) != "mirror-content" {
+				t.Errorf("peer-served data.txt: expected 'mirror-content', got %q", string(data))
+			}
+			found = true
+		}
+	}
+	if !found {
+		t.Error("peer-served tar did not contain data.txt")
+	}
+}
+
+// tarReaderFromResponse opens a *tar.Reader on a response body. Trivial
+// helper, just keeps the test bodies clean.
+func tarReaderFromResponse(t *testing.T, r io.Reader) *tar.Reader {
+	t.Helper()
+	return tar.NewReader(r)
 }
