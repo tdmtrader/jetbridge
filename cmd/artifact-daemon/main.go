@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"flag"
 	"fmt"
 	"net/http"
@@ -26,6 +28,9 @@ func main() {
 	tlsCert := flag.String("tls-cert", "", "Path to TLS server certificate (enables HTTPS with mTLS)")
 	tlsKey := flag.String("tls-key", "", "Path to TLS server private key")
 	tlsCACert := flag.String("tls-ca-cert", "", "Path to CA certificate for verifying client certificates")
+	mirrorReplicas := flag.Int("mirror-replicas", 2, "Replication factor for outbound mirror: 0=disabled, N=local + (N-1) peers, -1=all peers")
+	mirrorConcurrency := flag.Int("mirror-concurrency", 4, "Max concurrent in-flight mirror jobs")
+	mirrorTimeout := flag.Duration("mirror-timeout", 5*time.Minute, "Per-peer per-job mirror PUT timeout")
 
 	flag.Parse()
 
@@ -83,6 +88,7 @@ func main() {
 	tlsEnabled := *tlsCert != "" && *tlsKey != "" && *tlsCACert != ""
 
 	// Set up peer resolver for cross-node artifact resolution.
+	var mirror *Mirror
 	if *nodeName != "" {
 		k8sClientForPeers, err := buildK8sClient()
 		if err != nil {
@@ -103,6 +109,36 @@ func main() {
 			peers := NewPeerResolver(logger, k8sClientForPeers, *namespace, *serviceName, *port, podIP, peerTLS)
 			server.SetPeerResolver(peers)
 			logger.Info("peer-resolver-configured", lager.Data{"service": *serviceName, "my-ip": podIP})
+
+			// Wire up the outbound mirror manager. The mirror reuses the
+			// peer resolver for endpoint discovery and shares the daemon's
+			// TLS config (when enabled) for cross-node PUTs.
+			if *mirrorReplicas != 0 {
+				mirrorClient := buildMirrorHTTPClient(logger, peerTLS, *mirrorTimeout)
+				scheme := "http"
+				if tlsEnabled {
+					scheme = "https"
+				}
+				mirror = NewMirror(MirrorConfig{
+					StoragePath:    *storagePath,
+					Port:           *port,
+					Scheme:         scheme,
+					Replicas:       *mirrorReplicas,
+					Concurrency:    *mirrorConcurrency,
+					PerPeerTimeout: *mirrorTimeout,
+					Peers:          peers,
+					Client:         mirrorClient,
+					Logger:         logger.Session("mirror"),
+				})
+				server.SetMirrorTrigger(mirror.Trigger)
+				logger.Info("mirror-configured", lager.Data{
+					"replicas":    *mirrorReplicas,
+					"concurrency": *mirrorConcurrency,
+					"timeout":     mirrorTimeout.String(),
+				})
+			} else {
+				logger.Info("mirror-disabled", lager.Data{"reason": "--mirror-replicas=0"})
+			}
 		}
 	}
 
@@ -154,6 +190,12 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Drain mirror jobs before sweeping / shutting down. This is best-effort
+	// — Wait blocks until in-flight jobs complete (capped by per-peer timeout).
+	if mirror != nil {
+		mirror.Stop()
+	}
+
 	// Stop sweeper.
 	close(sweepDone)
 
@@ -186,4 +228,36 @@ func buildK8sClient() (kubernetes.Interface, error) {
 		return nil, fmt.Errorf("in-cluster config: %w", err)
 	}
 	return kubernetes.NewForConfig(config)
+}
+
+// buildMirrorHTTPClient constructs the http.Client used by the Mirror
+// manager for PUT /stream-in to peers. When peerTLS is configured, the
+// client uses mTLS (same client cert as the peer probe path).
+func buildMirrorHTTPClient(logger lager.Logger, peerTLS *PeerTLSConfig, timeout time.Duration) *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+
+	if peerTLS != nil && peerTLS.CertPath != "" {
+		clientCert, err := tls.LoadX509KeyPair(peerTLS.CertPath, peerTLS.KeyPath)
+		if err != nil {
+			logger.Error("mirror-load-client-cert-failed", err)
+		} else {
+			caCertPEM, err := os.ReadFile(peerTLS.CACertPath)
+			if err != nil {
+				logger.Error("mirror-read-ca-cert-failed", err)
+			} else {
+				caPool := x509.NewCertPool()
+				caPool.AppendCertsFromPEM(caCertPEM)
+				transport.TLSClientConfig = &tls.Config{
+					Certificates: []tls.Certificate{clientCert},
+					RootCAs:      caPool,
+				}
+				logger.Info("mirror-mtls-enabled")
+			}
+		}
+	}
+
+	return &http.Client{
+		Transport: transport,
+		Timeout:   timeout,
+	}
 }
