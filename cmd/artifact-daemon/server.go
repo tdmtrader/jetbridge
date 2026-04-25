@@ -317,6 +317,14 @@ func (s *Server) handleStreamIn(w http.ResponseWriter, r *http.Request) {
 
 	s.registry.Register(key, dest)
 	s.logger.Info("stream-in-complete", lager.Data{"key": key, "dest": dest})
+
+	// Schedule outbound mirror to peer daemons so the new artifact survives
+	// loss of this node. Best-effort: the trigger queues a background job
+	// and returns immediately; mirror is disabled by passing a nil trigger.
+	if s.mirrorTrigger != nil {
+		s.mirrorTrigger(r.Context(), key)
+	}
+
 	w.WriteHeader(http.StatusCreated)
 }
 
