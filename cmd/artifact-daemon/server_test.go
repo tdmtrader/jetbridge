@@ -4,12 +4,14 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"code.cloudfoundry.org/lager/v3/lagertest"
@@ -779,3 +781,107 @@ func TestStreamIn_RestrictiveModesNormalized(t *testing.T) {
 		t.Errorf("expected 'secret data', got %q", string(data))
 	}
 }
+
+// ---------------------------------------------------------------------------
+// POST /mirror — enqueues an outbound mirror job (P2a of
+// artifact_daemon_resilience_20260425).
+// ---------------------------------------------------------------------------
+
+// recordingMirror collects keys passed to Trigger so tests can assert
+// scheduling without running real network I/O.
+type recordingMirror struct {
+	mu   sync.Mutex
+	keys []string
+}
+
+func (m *recordingMirror) Trigger(ctx context.Context, key string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.keys = append(m.keys, key)
+}
+
+func (m *recordingMirror) calls() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]string, len(m.keys))
+	copy(out, m.keys)
+	return out
+}
+
+func TestPostMirror_EnqueuesJobAndReturns202(t *testing.T) {
+	storagePath := t.TempDir()
+	logger := lagertest.NewTestLogger("artifact-daemon")
+	server := daemon.NewServer(logger, storagePath, "test-node")
+
+	rec := &recordingMirror{}
+	server.SetMirrorTrigger(rec.Trigger)
+
+	ts := httptest.NewServer(server.Handler())
+	defer ts.Close()
+
+	resp, err := http.Post(ts.URL+"/mirror", "application/json",
+		strings.NewReader(`{"key":"handle/output"}`))
+	if err != nil {
+		t.Fatalf("POST /mirror failed: %v", err)
+	}
+	resp.Body.Close()
+
+	if resp.StatusCode != http.StatusAccepted {
+		t.Errorf("expected 202 Accepted, got %d", resp.StatusCode)
+	}
+
+	calls := rec.calls()
+	if len(calls) != 1 || calls[0] != "handle/output" {
+		t.Errorf("expected Trigger to be called once with 'handle/output', got %v", calls)
+	}
+}
+
+func TestPostMirror_EmptyKey_Returns400(t *testing.T) {
+	storagePath := t.TempDir()
+	logger := lagertest.NewTestLogger("artifact-daemon")
+	server := daemon.NewServer(logger, storagePath, "test-node")
+
+	rec := &recordingMirror{}
+	server.SetMirrorTrigger(rec.Trigger)
+
+	ts := httptest.NewServer(server.Handler())
+	defer ts.Close()
+
+	resp, err := http.Post(ts.URL+"/mirror", "application/json",
+		strings.NewReader(`{"key":""}`))
+	if err != nil {
+		t.Fatalf("POST /mirror failed: %v", err)
+	}
+	resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("expected 400 for empty key, got %d", resp.StatusCode)
+	}
+	if calls := rec.calls(); len(calls) != 0 {
+		t.Errorf("expected no Trigger calls for empty key, got %v", calls)
+	}
+}
+
+func TestPostMirror_InvalidJSON_Returns400(t *testing.T) {
+	storagePath := t.TempDir()
+	logger := lagertest.NewTestLogger("artifact-daemon")
+	server := daemon.NewServer(logger, storagePath, "test-node")
+
+	rec := &recordingMirror{}
+	server.SetMirrorTrigger(rec.Trigger)
+
+	ts := httptest.NewServer(server.Handler())
+	defer ts.Close()
+
+	resp, err := http.Post(ts.URL+"/mirror", "application/json",
+		strings.NewReader(`not json`))
+	if err != nil {
+		t.Fatalf("POST /mirror failed: %v", err)
+	}
+	resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("expected 400 for invalid JSON, got %d", resp.StatusCode)
+	}
+}
+
