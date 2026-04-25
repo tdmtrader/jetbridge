@@ -31,6 +31,8 @@ func main() {
 	mirrorReplicas := flag.Int("mirror-replicas", 2, "Replication factor for outbound mirror: 0=disabled, N=local + (N-1) peers, -1=all peers")
 	mirrorConcurrency := flag.Int("mirror-concurrency", 4, "Max concurrent in-flight mirror jobs")
 	mirrorTimeout := flag.Duration("mirror-timeout", 5*time.Minute, "Per-peer per-job mirror PUT timeout")
+	preemptionWatch := flag.Bool("preemption-watch", false, "Watch GCP metadata server for spot preemption notice and evacuate unmirrored artifacts before termination")
+	preemptionBudget := flag.Duration("preemption-budget", 25*time.Second, "Total time budget for synchronous evacuation on preemption")
 
 	flag.Parse()
 
@@ -152,6 +154,29 @@ func main() {
 		Handler: server.Handler(handlerOpts...),
 	}
 
+	// Wire preemption watcher if enabled. The watcher long-polls GCP
+	// metadata in its own goroutine and fires Mirror.Evacuate when the
+	// preempted endpoint transitions to TRUE.
+	preemptCtx, preemptCancel := context.WithCancel(context.Background())
+	defer preemptCancel()
+	if *preemptionWatch && mirror != nil {
+		watcher := NewPreemptionWatcher(logger.Session("preempt"), DefaultPreemptionMetadataURL,
+			func(ctx context.Context) {
+				logger.Info("evacuating-on-preemption", lager.Data{
+					"budget": preemptionBudget.String(),
+				})
+				mirror.Evacuate(ctx, *preemptionBudget)
+			})
+		go watcher.Run(preemptCtx)
+		logger.Info("preemption-watcher-started", lager.Data{
+			"budget": preemptionBudget.String(),
+		})
+	} else if *preemptionWatch {
+		logger.Info("preemption-watch-disabled", lager.Data{
+			"reason": "mirror not configured (--mirror-replicas=0 or no node-name)",
+		})
+	}
+
 	if tlsEnabled {
 		tlsCfg, err := BuildTLSConfig(*tlsCert, *tlsKey, *tlsCACert)
 		if err != nil {
@@ -189,6 +214,9 @@ func main() {
 		logger.Error("server-failed", err)
 		os.Exit(1)
 	}
+
+	// Cancel the preemption watcher's poll loop so it exits cleanly.
+	preemptCancel()
 
 	// Drain mirror jobs before sweeping / shutting down. This is best-effort
 	// — Wait blocks until in-flight jobs complete (capped by per-peer timeout).
