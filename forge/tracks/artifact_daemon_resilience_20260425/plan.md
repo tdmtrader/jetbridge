@@ -9,7 +9,7 @@ Foundation. Plumbs peer-probe fallback into the artifact read path. No
 behavior change today (no peer ever has the data) — becomes the recovery
 path the moment Phase 2 lands.
 
-- [~] Task: Write failing unit test —
+- [x] Task: Write failing unit test — 0c77cfb96d
       `DaemonClient.ProbeStepArtifact(ctx, "h/o")` discovers daemon IPs
       via fake EndpointSlices, sends concurrent HEAD `/artifacts/steps/h/o`,
       returns the IP of the first 200, returns `("", false, nil)` when no
@@ -17,36 +17,36 @@ path the moment Phase 2 lands.
       one-hit-one-error.
       File: `atc/worker/jetbridge/daemon_client_test.go`.
 
-- [ ] Task: Implement `DaemonClient.ProbeStepArtifact` modeled on
+- [x] Task: Implement `DaemonClient.ProbeStepArtifact` modeled on 55c8205b00
       `ProbeResourceCache`. Concurrent HEAD with cancel-on-first-hit.
       File: `atc/worker/jetbridge/daemon_client.go`.
 
-- [ ] Task: Write failing unit test — `DaemonSetVolume.StreamOut` with
+- [x] Task: Write failing unit test — `DaemonSetVolume.StreamOut` with 9719c9933e
       a recorded node that returns connection-refused falls back to
       `ProbeStepArtifact`, succeeds from the discovered IP. Use
       `httptest` for both producer (refuses) and peer (serves) daemons.
       File: `atc/worker/jetbridge/volume_daemonset_test.go`.
 
-- [ ] Task: Write failing unit test — `DaemonSetVolume.StreamOut`
+- [x] Task: Write failing unit test — `DaemonSetVolume.StreamOut` 9719c9933e
       fallback returns the original "not found" error when
       `ProbeStepArtifact` finds nothing.
       File: `atc/worker/jetbridge/volume_daemonset_test.go`.
 
-- [ ] Task: Write passing-stays-passing unit test — happy-path
+- [x] Task: Write passing-stays-passing unit test — happy-path 9719c9933e
       `StreamOut` with live recorded node performs ZERO peer probes
       (assert via fake daemon hit count).
       File: `atc/worker/jetbridge/volume_daemonset_test.go`.
 
-- [ ] Task: Implement peer-fallback in `DaemonSetVolume.StreamOut`.
+- [x] Task: Implement peer-fallback in `DaemonSetVolume.StreamOut`. ca3f9f551f
       Decision tree: connection error → probe; `ErrNodeNameIsIP` →
       probe; HTTP 4xx/5xx → probe; success → return. Probe budget:
       5s inherited from existing patterns.
       File: `atc/worker/jetbridge/volume_daemonset.go`.
 
-- [ ] Task: Run `ginkgo ./atc/worker/jetbridge/...` and confirm all
+- [x] Task: Run `ginkgo ./atc/worker/jetbridge/...` and confirm all ca3f9f551f
       previously-red tests are green and no existing tests regressed.
 
-- [ ] Task: Phase 1 Manual Verification
+- [x] Task: Phase 1 Manual Verification
 
 ---
 
