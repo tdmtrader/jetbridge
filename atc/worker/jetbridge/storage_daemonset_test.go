@@ -690,6 +690,89 @@ func TestDaemonSetBackend_RecordOutputs_TriggerMirrorFailureDoesNotPanic(t *test
 }
 
 // ---------------------------------------------------------------------------
+// RegisterResourceCache mirror-trigger ordering (P2b.5)
+// ---------------------------------------------------------------------------
+
+func TestDaemonSetBackend_RegisterResourceCache_TriggersMirrorBeforeAlias(t *testing.T) {
+	// Spec: mirror trigger fires BEFORE the alias broadcast so peers have
+	// (or are receiving) the data by the time RegisterAlias broadcasts a
+	// /register that requires the path to exist on disk.
+	var (
+		mu        sync.Mutex
+		callOrder []string
+	)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		callOrder = append(callOrder, r.Method+" "+r.URL.Path)
+		mu.Unlock()
+		switch r.URL.Path {
+		case "/register":
+			w.WriteHeader(http.StatusCreated)
+		case "/mirror":
+			w.WriteHeader(http.StatusAccepted)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer ts.Close()
+
+	addr := strings.TrimPrefix(ts.URL, "http://")
+	colonIdx := strings.LastIndex(addr, ":")
+	host := addr[:colonIdx]
+	port, _ := strconv.Atoi(addr[colonIdx+1:])
+
+	node := &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: "node-1"},
+		Status: corev1.NodeStatus{
+			Addresses: []corev1.NodeAddress{{Type: corev1.NodeInternalIP, Address: host}},
+		},
+	}
+	clientset := fake.NewSimpleClientset(node, &discoveryv1.EndpointSlice{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "artifact-daemon-fixture",
+			Namespace: "test-ns",
+			Labels:    map[string]string{discoveryv1.LabelServiceName: "artifact-daemon"},
+		},
+		Endpoints: []discoveryv1.Endpoint{{Addresses: []string{host}}},
+	})
+	resolver := NewNodeIPResolver(clientset)
+
+	cfg := testDaemonConfig()
+	cfg.ArtifactDaemonPort = port
+
+	locator := NewArtifactLocator()
+	b := NewDaemonSetBackend(cfg, locator, resolver)
+	logger := lagertest.NewTestLogger("test")
+	b.SetDaemonClient(NewDaemonClient(logger, clientset, "test-ns", "artifact-daemon", port, nil))
+
+	if err := b.RegisterResourceCache(context.Background(), 42, "container-handle-dir", "node-1"); err != nil {
+		t.Fatalf("RegisterResourceCache: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	mirrorIdx, registerIdx := -1, -1
+	for i, c := range callOrder {
+		if c == "POST /mirror" && mirrorIdx < 0 {
+			mirrorIdx = i
+		}
+		if c == "POST /register" && registerIdx < 0 {
+			registerIdx = i
+		}
+	}
+	if mirrorIdx < 0 {
+		t.Fatalf("expected POST /mirror call, never observed; callOrder=%v", callOrder)
+	}
+	if registerIdx < 0 {
+		t.Fatalf("expected POST /register call, never observed; callOrder=%v", callOrder)
+	}
+	if mirrorIdx > registerIdx {
+		t.Errorf("/mirror MUST precede /register so peers have data when alias broadcasts arrive; got order: %v", callOrder)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // WrapVolumeForArtifact / WrapVolumeForLookup
 // ---------------------------------------------------------------------------
 
