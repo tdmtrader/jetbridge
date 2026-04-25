@@ -91,37 +91,9 @@ func (v *DaemonSetVolume) StreamOut(ctx context.Context, path string, enc compre
 		return nil, fmt.Errorf("DaemonSetVolume.StreamOut: no source node known (key=%s)", v.key)
 	}
 
-	url, err := v.daemonURL(ctx)
+	resp, err := v.fetchArtifactWithPeerFallback(ctx)
 	if err != nil {
 		return nil, err
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, fmt.Errorf("create request: %w", err)
-	}
-
-	var resp *http.Response
-	for attempt := 0; attempt < 3; attempt++ {
-		resp, err = v.httpClient.Do(req)
-		if err == nil {
-			break
-		}
-		if attempt < 2 {
-			time.Sleep(2 * time.Second)
-		}
-	}
-	if err != nil {
-		return nil, fmt.Errorf("fetch artifact from %s: %w", url, err)
-	}
-
-	if resp.StatusCode == http.StatusNotFound {
-		resp.Body.Close()
-		return nil, fmt.Errorf("artifact not found on node %s (key=%s)", v.sourceNode, v.key)
-	}
-	if resp.StatusCode != http.StatusOK {
-		resp.Body.Close()
-		return nil, fmt.Errorf("unexpected status %d from %s", resp.StatusCode, url)
 	}
 
 	needsCompression := enc != nil && enc.Encoding() != compression.RawEncoding
@@ -275,6 +247,104 @@ func (v *DaemonSetVolume) InitializeTaskCache(ctx context.Context, jobID int, st
 		return nil
 	}
 	return v.dbVolume.InitializeTaskCache(jobID, stepName, path)
+}
+
+// fetchArtifactWithPeerFallback gets the artifact tar from the recorded
+// source node, falling back to a peer daemon when the recorded node is
+// unreachable, has been removed from the cluster, or returns an error
+// (4xx/5xx). Peer fallback only fires when a daemonClient is configured;
+// otherwise the recorded-source error is surfaced verbatim (preserves
+// existing behavior for tests / callers without daemon discovery).
+//
+// The fallback path probes every live daemon for a step copy of the
+// artifact (HEAD /artifacts/steps/{key}), then fetches from the first
+// daemon that has it. A successful peer fetch returns a 200 response
+// whose body the caller is responsible for closing.
+//
+// On a probe miss (no peer has the data), returns a "not found on node
+// or any peer" error so debug output makes the failure mode obvious.
+func (v *DaemonSetVolume) fetchArtifactWithPeerFallback(ctx context.Context) (*http.Response, error) {
+	primaryURL, primaryURLErr := v.daemonURL(ctx)
+
+	// Try the recorded source first (skip if URL resolution failed —
+	// e.g., NodeIPResolver returned ErrNodeNameIsIP).
+	var (
+		resp        *http.Response
+		fetchErr    error
+		recordedURL string
+	)
+	if primaryURLErr == nil {
+		recordedURL = primaryURL
+		resp, fetchErr = v.fetchOnce(ctx, primaryURL)
+		if fetchErr == nil && resp.StatusCode == http.StatusOK {
+			return resp, nil
+		}
+	}
+
+	// No fallback configured — surface the recorded-source error verbatim.
+	if v.daemonClient == nil {
+		if primaryURLErr != nil {
+			return nil, primaryURLErr
+		}
+		if resp != nil {
+			defer resp.Body.Close()
+			if resp.StatusCode == http.StatusNotFound {
+				return nil, fmt.Errorf("artifact not found on node %s (key=%s)", v.sourceNode, v.key)
+			}
+			return nil, fmt.Errorf("unexpected status %d from %s", resp.StatusCode, recordedURL)
+		}
+		return nil, fmt.Errorf("fetch artifact from %s: %w", recordedURL, fetchErr)
+	}
+
+	// Recorded source failed in some way (transport error, ErrNodeNameIsIP,
+	// 4xx, or 5xx). Probe peers and try again.
+	if resp != nil {
+		resp.Body.Close()
+	}
+
+	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	peerIP, found, _ := v.daemonClient.ProbeStepArtifact(probeCtx, v.key)
+	if !found {
+		return nil, fmt.Errorf("artifact not found on node %s or any peer (key=%s)", v.sourceNode, v.key)
+	}
+
+	port := v.config.ArtifactDaemonPort
+	if port == 0 {
+		port = 7780
+	}
+	peerURL := fmt.Sprintf("http://%s:%d/artifacts/%s", peerIP, port, v.key)
+	resp, err := v.fetchOnce(ctx, peerURL)
+	if err != nil {
+		return nil, fmt.Errorf("fetch artifact from peer %s: %w", peerIP, err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		return nil, fmt.Errorf("peer %s returned status %d (key=%s)", peerIP, resp.StatusCode, v.key)
+	}
+	return resp, nil
+}
+
+// fetchOnce performs a single GET attempt loop with the existing 3-attempt /
+// 2-second-backoff retry policy. Returns the response on success or the
+// last transport error after all retries fail.
+func (v *DaemonSetVolume) fetchOnce(ctx context.Context, url string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+
+	var resp *http.Response
+	for attempt := 0; attempt < 3; attempt++ {
+		resp, err = v.httpClient.Do(req)
+		if err == nil {
+			return resp, nil
+		}
+		if attempt < 2 {
+			time.Sleep(2 * time.Second)
+		}
+	}
+	return nil, err
 }
 
 func (v *DaemonSetVolume) daemonURL(ctx context.Context) (string, error) {
