@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -295,6 +296,160 @@ func TestMirrorJob_Run_NoPeers_NoOp(t *testing.T) {
 	if len(outcomes) != 0 {
 		t.Errorf("expected no outcomes for empty peers, got %v", outcomes)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Mirror.Evacuate — synchronous flush of unmirrored step dirs on
+// preemption notice (P3.4).
+// ---------------------------------------------------------------------------
+
+func TestMirror_Evacuate_FlushesUnmirroredStepDirs(t *testing.T) {
+	// Set up storage with two step output dirs:
+	//   steps/handle-a/done/   — already mirrored (mirrorStatus has "ok")
+	//   steps/handle-b/pending/ — unmirrored (no mirrorStatus entry)
+	storage := t.TempDir()
+	for _, dir := range []string{"steps/handle-a/done", "steps/handle-b/pending"} {
+		full := filepath.Join(storage, dir)
+		if err := os.MkdirAll(full, 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(full, "f.txt"), []byte("payload"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Track which keys peer received PUTs for.
+	var (
+		mu      sync.Mutex
+		putKeys []string
+	)
+	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPut && len(r.URL.Path) > len("/stream-in/") {
+			key := r.URL.Path[len("/stream-in/"):]
+			mu.Lock()
+			putKeys = append(putKeys, key)
+			mu.Unlock()
+			w.WriteHeader(http.StatusCreated)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer peer.Close()
+
+	const peerHost = "evacuate-peer"
+	transport := &mirrorRoutingTransport{routes: map[string]string{
+		peerHost + ":7780": peer.URL,
+	}}
+
+	logger := lagertest.NewTestLogger("evacuate")
+	mirror := &Mirror{
+		storagePath:    storage,
+		port:           7780,
+		scheme:         "http",
+		replicas:       2,
+		perPeerTimeout: 5 * time.Second,
+		pool:           NewWorkerPool(2),
+		client:         &http.Client{Transport: transport, Timeout: 5 * time.Second},
+		logger:         logger,
+		status:         make(map[string]map[string]string),
+		// Inject an evacuation-only peer list — bypassing PeerResolver
+		// (which would need a real K8s clientset). The Evacuate impl
+		// uses this when set so we can drive the test without K8s fakes.
+		evacuationPeers: []string{peerHost},
+	}
+	defer mirror.Stop()
+
+	// Mark "handle-a/done" as already mirrored so Evacuate skips it.
+	mirror.recordStatus("handle-a/done", []mirrorPeerOutcome{
+		{Peer: peerHost, Status: "ok"},
+	})
+
+	mirror.Evacuate(context.Background(), 5*time.Second)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(putKeys) != 1 || putKeys[0] != "handle-b/pending" {
+		t.Errorf("expected exactly one PUT for handle-b/pending; got %v", putKeys)
+	}
+}
+
+func TestMirror_Evacuate_RespectsBudget(t *testing.T) {
+	// Pre-create several step dirs, all unmirrored. Use a slow peer that
+	// times out per request; Evacuate's budget should bound total runtime.
+	storage := t.TempDir()
+	for i := 0; i < 5; i++ {
+		full := filepath.Join(storage, "steps", "h", "out"+itoaSimple(i))
+		os.MkdirAll(full, 0755)
+		os.WriteFile(filepath.Join(full, "f.txt"), []byte("x"), 0644)
+	}
+
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(200 * time.Millisecond) // longer than per-peer timeout below
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer slow.Close()
+
+	transport := &mirrorRoutingTransport{routes: map[string]string{
+		"slow-peer:7780": slow.URL,
+	}}
+
+	mirror := &Mirror{
+		storagePath:     storage,
+		port:            7780,
+		scheme:          "http",
+		replicas:        2,
+		perPeerTimeout:  50 * time.Millisecond,
+		pool:            NewWorkerPool(2),
+		client:          &http.Client{Transport: transport, Timeout: 1 * time.Second},
+		logger:          lagertest.NewTestLogger("evacuate-budget"),
+		status:          make(map[string]map[string]string),
+		evacuationPeers: []string{"slow-peer"},
+	}
+	defer mirror.Stop()
+
+	budget := 200 * time.Millisecond
+	start := time.Now()
+	mirror.Evacuate(context.Background(), budget)
+	elapsed := time.Since(start)
+
+	// Allow some slop above the budget for goroutine cleanup (~50ms).
+	if elapsed > budget+500*time.Millisecond {
+		t.Errorf("Evacuate ran %v, well above budget %v", elapsed, budget)
+	}
+}
+
+func TestMirror_Evacuate_RejectsNewTriggerAfterCall(t *testing.T) {
+	mirror := &Mirror{
+		storagePath:    t.TempDir(),
+		replicas:       2,
+		pool:           NewWorkerPool(2),
+		logger:         lagertest.NewTestLogger("evacuate-reject"),
+		status:         make(map[string]map[string]string),
+		client:         &http.Client{},
+	}
+
+	mirror.Evacuate(context.Background(), 100*time.Millisecond)
+
+	// After Evacuate, the pool must be drained so subsequent Trigger
+	// calls cannot enqueue work (there's no point — we're shutting down).
+	if mirror.pool.Submit(func() {}) {
+		t.Error("expected pool to reject Submit after Evacuate")
+	}
+}
+
+// itoaSimple is a tiny helper to avoid importing strconv just for this
+// test (strconv IS already imported elsewhere in this file via mirrorJob
+// tests, but keeping it local avoids accidental shadowing).
+func itoaSimple(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	out := ""
+	for n > 0 {
+		out = string(rune('0'+n%10)) + out
+		n /= 10
+	}
+	return out
 }
 
 // hostFromURL extracts the host (without scheme/port) from an httptest URL
