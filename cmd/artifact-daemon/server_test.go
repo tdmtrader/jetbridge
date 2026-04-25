@@ -885,3 +885,79 @@ func TestPostMirror_InvalidJSON_Returns400(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// handleStreamIn → mirror trigger (P2a.7).
+// ---------------------------------------------------------------------------
+
+// makeTarPayload returns a small tar stream containing one file
+// at "data.txt" with the given content. Used to drive PUT /stream-in/.
+func makeTarPayload(t *testing.T, content string) *bytes.Reader {
+	t.Helper()
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	hdr := &tar.Header{
+		Name:     "data.txt",
+		Mode:     0644,
+		Size:     int64(len(content)),
+		Typeflag: tar.TypeReg,
+	}
+	if err := tw.WriteHeader(hdr); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write([]byte(content)); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return bytes.NewReader(buf.Bytes())
+}
+
+func TestStreamIn_SchedulesMirrorTrigger(t *testing.T) {
+	storagePath := t.TempDir()
+	logger := lagertest.NewTestLogger("artifact-daemon")
+	server := daemon.NewServer(logger, storagePath, "test-node")
+
+	rec := &recordingMirror{}
+	server.SetMirrorTrigger(rec.Trigger)
+
+	ts := httptest.NewServer(server.Handler())
+	defer ts.Close()
+
+	body := makeTarPayload(t, "payload-bytes")
+	req, _ := http.NewRequest(http.MethodPut, ts.URL+"/stream-in/handle/output", body)
+	req.Header.Set("Content-Type", "application/x-tar")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("stream-in failed: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("stream-in: expected 201, got %d", resp.StatusCode)
+	}
+
+	calls := rec.calls()
+	if len(calls) != 1 || calls[0] != "handle/output" {
+		t.Errorf("expected mirror trigger to fire once with key 'handle/output', got %v", calls)
+	}
+}
+
+func TestStreamIn_MirrorTriggerOmitted_StillSucceeds(t *testing.T) {
+	// No mirror trigger set: stream-in must still complete without panic
+	// and without error. (Daemon running with mirror disabled.)
+	ts, _ := setupServer(t)
+
+	body := makeTarPayload(t, "payload")
+	req, _ := http.NewRequest(http.MethodPut, ts.URL+"/stream-in/key/x", body)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("stream-in failed: %v", err)
+	}
+	resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated {
+		t.Errorf("expected 201 even without mirror, got %d", resp.StatusCode)
+	}
+}
+
