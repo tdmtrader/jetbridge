@@ -488,6 +488,21 @@ artifactDaemon:
   affinity: {}
   # -- Tolerations for scheduling on tainted nodes (spot, GPU, etc.)
   tolerations: []
+  # -- Spot preemption watcher (GCP only). When enabled, the daemon long-
+  # polls metadata.google.internal/computeMetadata/v1/instance/preempted
+  # and synchronously evacuates any unmirrored step outputs to live peers
+  # within the budget when preemption is signaled.
+  #
+  # Closes the async-mirror window: graceful preempts get a flush instead
+  # of forcing a rerun. Crashes (no warning) still fall back to rerun.
+  preemption:
+    # -- Enable the GCP preemption watcher. Set true on GCP spot fleets;
+    # leave false elsewhere (the metadata endpoint will be unreachable
+    # outside GCP and the watcher will log retries indefinitely).
+    enabled: false
+    # -- Total time budget for synchronous evacuation. GCP gives ~30s
+    # preemption warning; default 25s leaves slack for daemon shutdown.
+    budget: "25s"
   # -- Outbound mirror configuration. Each step output (and resource cache
   # alias) is asynchronously mirrored to peer daemons after it lands so the
   # artifact survives loss of the producing node (spot preemption, crash).

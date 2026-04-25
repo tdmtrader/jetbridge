@@ -73,6 +73,10 @@ spec:
             - --mirror-replicas={{ $mirrorReplicas }}
             - --mirror-concurrency={{ .Values.artifactDaemon.mirror.concurrency | default 4 }}
             - --mirror-timeout={{ .Values.artifactDaemon.mirror.timeout | default "5m" }}
+            {{- if .Values.artifactDaemon.preemption.enabled }}
+            - --preemption-watch
+            - --preemption-budget={{ .Values.artifactDaemon.preemption.budget | default "25s" }}
+            {{- end }}
           env:
             - name: NODE_NAME
               valueFrom:
