@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -525,6 +526,166 @@ func TestDaemonSetBackend_RecordOutputs_CallsDaemon(t *testing.T) {
 	// Verify locator was updated
 	if _, found := locator.Locate("vol-1"); !found {
 		t.Error("expected locator to have entry")
+	}
+}
+
+func TestDaemonSetBackend_RecordOutputs_TriggersMirrorAfterAlias(t *testing.T) {
+	// Track the order /register and /mirror are called so we can assert
+	// alias is registered first (the mirror trigger fires after alias on
+	// the producer's daemon).
+	var (
+		mu             sync.Mutex
+		callOrder      []string
+		registerBodies []map[string]string
+		mirrorBodies   []map[string]string
+	)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		callOrder = append(callOrder, r.Method+" "+r.URL.Path)
+		mu.Unlock()
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/register":
+			var body map[string]string
+			json.NewDecoder(r.Body).Decode(&body)
+			mu.Lock()
+			registerBodies = append(registerBodies, body)
+			mu.Unlock()
+			w.WriteHeader(http.StatusCreated)
+		case r.Method == http.MethodPost && r.URL.Path == "/mirror":
+			var body map[string]string
+			json.NewDecoder(r.Body).Decode(&body)
+			mu.Lock()
+			mirrorBodies = append(mirrorBodies, body)
+			mu.Unlock()
+			w.WriteHeader(http.StatusAccepted)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer ts.Close()
+
+	addr := strings.TrimPrefix(ts.URL, "http://")
+	colonIdx := strings.LastIndex(addr, ":")
+	host := addr[:colonIdx]
+	port, _ := strconv.Atoi(addr[colonIdx+1:])
+
+	node := &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: "node-1"},
+		Status: corev1.NodeStatus{
+			Addresses: []corev1.NodeAddress{{Type: corev1.NodeInternalIP, Address: host}},
+		},
+	}
+	clientset := fake.NewSimpleClientset(node, &discoveryv1.EndpointSlice{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "artifact-daemon-abc",
+			Namespace: "test-ns",
+			Labels:    map[string]string{discoveryv1.LabelServiceName: "artifact-daemon"},
+		},
+		Endpoints: []discoveryv1.Endpoint{{Addresses: []string{host}}},
+	})
+	resolver := NewNodeIPResolver(clientset)
+
+	cfg := testDaemonConfig()
+	cfg.ArtifactDaemonPort = port
+
+	locator := NewArtifactLocator()
+	b := NewDaemonSetBackend(cfg, locator, resolver)
+	logger := lagertest.NewTestLogger("test")
+	b.SetDaemonClient(NewDaemonClient(logger, clientset, "test-ns", "artifact-daemon", port, nil))
+
+	volumes := []*Volume{NewStubVolume("vol-1", "worker", "/tmp/output")}
+	spec := runtime.ContainerSpec{
+		Outputs: runtime.OutputPaths{"result": "/tmp/output"},
+		Type:    db.ContainerTypeTask,
+	}
+
+	b.RecordOutputs(context.Background(), "handle", "node-1", volumes, spec)
+
+	// Locator entry still recorded (existing behavior).
+	if _, found := locator.Locate("vol-1"); !found {
+		t.Error("expected locator entry for vol-1")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if len(registerBodies) != 1 {
+		t.Errorf("expected 1 /register call, got %d", len(registerBodies))
+	}
+	if len(mirrorBodies) != 1 {
+		t.Errorf("expected 1 /mirror call, got %d (call order: %v)", len(mirrorBodies), callOrder)
+	}
+	if len(mirrorBodies) >= 1 {
+		// Mirror key is the daemonKey "{handle}/{subdir}", not the volume handle.
+		if got := mirrorBodies[0]["key"]; got != "handle/result" {
+			t.Errorf("expected mirror key 'handle/result', got %q", got)
+		}
+	}
+
+	// Order: /register MUST come before /mirror so that if the trigger
+	// races with the daemon's mirror.run, the data path is settled first.
+	registerIdx, mirrorIdx := -1, -1
+	for i, c := range callOrder {
+		if c == "POST /register" && registerIdx < 0 {
+			registerIdx = i
+		}
+		if c == "POST /mirror" && mirrorIdx < 0 {
+			mirrorIdx = i
+		}
+	}
+	if registerIdx >= 0 && mirrorIdx >= 0 && registerIdx > mirrorIdx {
+		t.Errorf("/register must precede /mirror; call order: %v", callOrder)
+	}
+}
+
+func TestDaemonSetBackend_RecordOutputs_TriggerMirrorFailureDoesNotPanic(t *testing.T) {
+	// Daemon /register works but /mirror returns 500 — RecordOutputs must
+	// still complete without error and locator must still be populated.
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/register":
+			w.WriteHeader(http.StatusCreated)
+		case "/mirror":
+			w.WriteHeader(http.StatusInternalServerError)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer ts.Close()
+
+	addr := strings.TrimPrefix(ts.URL, "http://")
+	colonIdx := strings.LastIndex(addr, ":")
+	host := addr[:colonIdx]
+	port, _ := strconv.Atoi(addr[colonIdx+1:])
+
+	node := &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: "node-1"},
+		Status: corev1.NodeStatus{
+			Addresses: []corev1.NodeAddress{{Type: corev1.NodeInternalIP, Address: host}},
+		},
+	}
+	clientset := fake.NewSimpleClientset(node)
+	resolver := NewNodeIPResolver(clientset)
+
+	cfg := testDaemonConfig()
+	cfg.ArtifactDaemonPort = port
+
+	locator := NewArtifactLocator()
+	b := NewDaemonSetBackend(cfg, locator, resolver)
+	logger := lagertest.NewTestLogger("test")
+	b.SetDaemonClient(NewDaemonClient(logger, clientset, "test-ns", "artifact-daemon", port, nil))
+
+	volumes := []*Volume{NewStubVolume("vol-1", "worker", "/tmp/output")}
+	spec := runtime.ContainerSpec{
+		Outputs: runtime.OutputPaths{"result": "/tmp/output"},
+		Type:    db.ContainerTypeTask,
+	}
+
+	// Must not panic.
+	b.RecordOutputs(context.Background(), "handle", "node-1", volumes, spec)
+
+	if _, found := locator.Locate("vol-1"); !found {
+		t.Error("expected locator entry even when mirror trigger failed")
 	}
 }
 
