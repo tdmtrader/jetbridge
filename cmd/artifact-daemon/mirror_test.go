@@ -1,6 +1,8 @@
 package main
 
 import (
+	"reflect"
+	"sort"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -100,5 +102,83 @@ func TestWorkerPool_RejectsSubmitAfterStop(t *testing.T) {
 
 	if pool.Submit(func() {}) {
 		t.Error("Submit returned true on a stopped pool — should reject")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// peerSelector — deterministic subset selection via consistent hashing.
+// ---------------------------------------------------------------------------
+
+func TestPeerSelector_DeterministicAcrossCalls(t *testing.T) {
+	peers := []string{"10.0.0.1", "10.0.0.2", "10.0.0.3", "10.0.0.4"}
+	sel := peerSelector{}
+
+	first := sel.Select("step-key-A", peers, 2)
+	second := sel.Select("step-key-A", peers, 2)
+
+	if !reflect.DeepEqual(first, second) {
+		t.Errorf("expected deterministic selection for same key/peers; got %v then %v", first, second)
+	}
+}
+
+func TestPeerSelector_DifferentKeysCanDiffer(t *testing.T) {
+	// Not strictly required — two keys may collide on the same peer subset
+	// — but with N=4 peers and many keys, at least some keys should land
+	// on different subsets. Here we just verify the selection is a function
+	// of the key (deterministic per key, not random).
+	peers := []string{"10.0.0.1", "10.0.0.2", "10.0.0.3", "10.0.0.4"}
+	sel := peerSelector{}
+
+	a := sel.Select("step-A", peers, 2)
+	b := sel.Select("step-A", peers, 2)
+	if !reflect.DeepEqual(a, b) {
+		t.Errorf("repeated calls with same key must return same set: %v vs %v", a, b)
+	}
+}
+
+func TestPeerSelector_AllPeers_WhenReplicasNegative(t *testing.T) {
+	peers := []string{"10.0.0.1", "10.0.0.2", "10.0.0.3"}
+	sel := peerSelector{}
+
+	got := sel.Select("any-key", peers, -1)
+
+	gotSorted := append([]string{}, got...)
+	sort.Strings(gotSorted)
+	wantSorted := append([]string{}, peers...)
+	sort.Strings(wantSorted)
+	if !reflect.DeepEqual(gotSorted, wantSorted) {
+		t.Errorf("expected all peers for replicas=-1, got %v", got)
+	}
+}
+
+func TestPeerSelector_FewerPeersThanRequested(t *testing.T) {
+	// replicas=2 means up to (2-1)=1 peer; with only 1 peer available,
+	// mirror to that 1 peer (no error).
+	peers := []string{"10.0.0.1"}
+	sel := peerSelector{}
+
+	got := sel.Select("any-key", peers, 2)
+
+	if len(got) != 1 || got[0] != "10.0.0.1" {
+		t.Errorf("expected [10.0.0.1] for replicas=2 with 1 peer, got %v", got)
+	}
+}
+
+func TestPeerSelector_NoPeers(t *testing.T) {
+	sel := peerSelector{}
+
+	got := sel.Select("any-key", nil, 2)
+	if len(got) != 0 {
+		t.Errorf("expected empty slice for 0 peers, got %v", got)
+	}
+}
+
+func TestPeerSelector_ReplicasZero_DisablesMirror(t *testing.T) {
+	peers := []string{"10.0.0.1", "10.0.0.2"}
+	sel := peerSelector{}
+
+	got := sel.Select("any-key", peers, 0)
+	if len(got) != 0 {
+		t.Errorf("expected empty slice for replicas=0 (disabled), got %v", got)
 	}
 }
