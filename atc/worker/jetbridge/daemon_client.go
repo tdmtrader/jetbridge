@@ -202,6 +202,78 @@ func (d *DaemonClient) ProbeResourceCache(ctx context.Context, cacheKey string) 
 	return "", false, nil
 }
 
+// ProbeStepArtifact checks whether any daemon pod has the given step
+// artifact key on disk. Sends a concurrent HEAD /artifacts/steps/{key}
+// to every discovered daemon IP and returns the IP of the first peer
+// that responds 200.
+//
+// Used by DaemonSetVolume.StreamOut to fall back to peer reads when
+// the originally-recorded producer node is unreachable (spot
+// preemption, crash, network partition). Symmetric to the daemon-side
+// peer probe in cmd/artifact-daemon/peers.go.
+//
+// Returns ("", false, nil) when no daemon has the key. Discovery
+// failure is treated as a miss (returns nil error) so the caller
+// falls through to its existing not-found error path.
+func (d *DaemonClient) ProbeStepArtifact(ctx context.Context, key string) (string, bool, error) {
+	logger := d.logger.Session("probe-step-artifact", lager.Data{"key": key})
+
+	ips, err := d.daemonIPs(ctx)
+	if err != nil {
+		logger.Error("discovery-failed", err)
+		return "", false, nil
+	}
+	if len(ips) == 0 {
+		logger.Debug("no-daemons")
+		return "", false, nil
+	}
+
+	type probeResult struct {
+		ip    string
+		found bool
+	}
+
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	results := make(chan probeResult, len(ips))
+
+	for _, ip := range ips {
+		go func(ip string) {
+			url := fmt.Sprintf("%s://%s:%d/artifacts/steps/%s", d.scheme, ip, d.port, key)
+			req, err := http.NewRequestWithContext(ctx, http.MethodHead, url, nil)
+			if err != nil {
+				results <- probeResult{}
+				return
+			}
+			resp, err := d.client.Do(req)
+			if err != nil {
+				logger.Debug("daemon-unreachable", lager.Data{"ip": ip, "error": err.Error()})
+				results <- probeResult{}
+				return
+			}
+			resp.Body.Close()
+
+			if resp.StatusCode == http.StatusOK {
+				results <- probeResult{ip: ip, found: true}
+				return
+			}
+			results <- probeResult{}
+		}(ip)
+	}
+
+	for range ips {
+		r := <-results
+		if r.found {
+			logger.Info("artifact-found", lager.Data{"daemon_ip": r.ip})
+			return r.ip, true, nil
+		}
+	}
+
+	logger.Debug("artifact-not-found", lager.Data{"daemons_checked": len(ips)})
+	return "", false, nil
+}
+
 // RegisterAlias registers an alias on all daemon pods via POST /register.
 // The alias maps key → localPath in the daemon's registry. On a single-node
 // cluster only one daemon exists; on multi-node, only the daemon whose node
