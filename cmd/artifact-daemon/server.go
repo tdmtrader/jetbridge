@@ -22,11 +22,12 @@ import (
 // Server is the artifact-daemon HTTP server that stores and serves
 // artifact tar files from local hostPath storage.
 type Server struct {
-	logger      lager.Logger
-	storagePath string
-	nodeName    string
-	registry    *Registry
-	peers       *PeerResolver
+	logger        lager.Logger
+	storagePath   string
+	nodeName      string
+	registry      *Registry
+	peers         *PeerResolver
+	mirrorTrigger func(ctx context.Context, key string)
 }
 
 // NewServer creates a new artifact-daemon server.
@@ -48,6 +49,13 @@ func (s *Server) Registry() *Registry {
 // resolution. When nil, /resolve only checks local storage.
 func (s *Server) SetPeerResolver(peers *PeerResolver) {
 	s.peers = peers
+}
+
+// SetMirrorTrigger wires the outbound mirror manager so that handleStreamIn
+// and POST /mirror schedule a background replication after the local data
+// settles. Pass nil (or skip the call) to disable mirroring.
+func (s *Server) SetMirrorTrigger(trigger func(ctx context.Context, key string)) {
+	s.mirrorTrigger = trigger
 }
 
 // Handler returns the HTTP handler for the server. When tlsEnabled is true,
@@ -81,6 +89,7 @@ func (s *Server) Handler(opts ...HandlerOption) http.Handler {
 	mux.HandleFunc("DELETE /artifacts/", protect(s.handleDeleteArtifact))
 	mux.HandleFunc("HEAD /artifacts/", protect(s.handleHeadArtifact))
 	mux.HandleFunc("POST /register", protect(s.handleRegister))
+	mux.HandleFunc("POST /mirror", protect(s.handleMirrorTrigger))
 	mux.HandleFunc("PUT /stream-in/", protect(s.handleStreamIn))
 	mux.HandleFunc("HEAD /resource-caches/", protect(s.handleHeadResourceCache))
 	mux.HandleFunc("GET /resource-caches/", protect(s.handleGetResourceCache))
@@ -369,6 +378,38 @@ func (s *Server) lookupRegistryAlias(r *http.Request) (string, bool) {
 type registerRequest struct {
 	Key       string `json:"key"`
 	LocalPath string `json:"local_path"`
+}
+
+// mirrorRequest is the JSON body for POST /mirror.
+type mirrorRequest struct {
+	Key string `json:"key"`
+}
+
+// handleMirrorTrigger accepts POST /mirror with a JSON body containing
+// {"key": "handle/output"} and schedules an asynchronous mirror of the
+// local steps/{key}/ directory to peer daemons. Returns 202 Accepted
+// immediately — the caller should not wait on the mirror to complete.
+//
+// The mirror trigger function is set by SetMirrorTrigger; if unset (mirror
+// disabled), the endpoint still accepts the request and returns 202 so
+// that ATC callers don't fail when talking to a daemon that has mirror
+// off.
+func (s *Server) handleMirrorTrigger(w http.ResponseWriter, r *http.Request) {
+	var req mirrorRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf("invalid JSON: %v", err), http.StatusBadRequest)
+		return
+	}
+	if req.Key == "" {
+		http.Error(w, "key is required", http.StatusBadRequest)
+		return
+	}
+
+	if s.mirrorTrigger != nil {
+		s.mirrorTrigger(r.Context(), req.Key)
+	}
+
+	w.WriteHeader(http.StatusAccepted)
 }
 
 // resolveRequest is the JSON body for POST /resolve.
