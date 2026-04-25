@@ -2,6 +2,7 @@ package jetbridge_test
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -267,6 +268,88 @@ func TestProbeStepArtifact_OneHitOneError(t *testing.T) {
 	}
 	if daemonIP != hitHost {
 		t.Errorf("expected daemon IP %q, got %q", hitHost, daemonIP)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TriggerMirror — fire-and-forget POST /mirror to a specific daemon IP.
+// ---------------------------------------------------------------------------
+
+func TestTriggerMirror_PostsCorrectBody(t *testing.T) {
+	var (
+		gotMethod string
+		gotPath   string
+		gotBody   []byte
+		hits      int
+	)
+	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		gotBody, _ = io.ReadAll(r.Body)
+		hits++
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer daemon.Close()
+
+	addr := daemon.Listener.Addr().String()
+	host := addr[:len(addr)-len(":"+portFromAddr(addr))]
+	port := portFromAddrInt(addr)
+
+	clientset := fake.NewSimpleClientset(fakeEndpointSlice("ns", "artifact-daemon", host))
+	logger := lagertest.NewTestLogger("test")
+	client := jetbridge.NewDaemonClient(logger, clientset, "ns", "artifact-daemon", port, nil)
+
+	err := client.TriggerMirror(context.Background(), host, "handle/output")
+	if err != nil {
+		t.Fatalf("TriggerMirror returned error: %v", err)
+	}
+
+	if gotMethod != http.MethodPost {
+		t.Errorf("expected POST, got %s", gotMethod)
+	}
+	if gotPath != "/mirror" {
+		t.Errorf("expected /mirror, got %s", gotPath)
+	}
+	if string(gotBody) != `{"key":"handle/output"}` && string(gotBody) != `{"key":"handle/output"}`+"\n" {
+		t.Errorf("unexpected body: %q", string(gotBody))
+	}
+	if hits != 1 {
+		t.Errorf("expected 1 hit, got %d", hits)
+	}
+}
+
+func TestTriggerMirror_BestEffort_OnUnreachable(t *testing.T) {
+	// 203.0.113.99 is TEST-NET-3 — connections will fail. The method must
+	// not return an error; failures are logged so they show up in
+	// observability without failing the producing step.
+	clientset := fake.NewSimpleClientset(fakeEndpointSlice("ns", "artifact-daemon", "203.0.113.99"))
+	logger := lagertest.NewTestLogger("test")
+	client := jetbridge.NewDaemonClient(logger, clientset, "ns", "artifact-daemon", 7780, nil)
+
+	err := client.TriggerMirror(context.Background(), "203.0.113.99", "handle/output")
+	if err != nil {
+		t.Errorf("TriggerMirror should be best-effort but returned: %v", err)
+	}
+}
+
+func TestTriggerMirror_BestEffort_OnNon202(t *testing.T) {
+	// Daemon returns 500 — should not propagate as an error.
+	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer daemon.Close()
+
+	addr := daemon.Listener.Addr().String()
+	host := addr[:len(addr)-len(":"+portFromAddr(addr))]
+	port := portFromAddrInt(addr)
+
+	clientset := fake.NewSimpleClientset(fakeEndpointSlice("ns", "artifact-daemon", host))
+	logger := lagertest.NewTestLogger("test")
+	client := jetbridge.NewDaemonClient(logger, clientset, "ns", "artifact-daemon", port, nil)
+
+	err := client.TriggerMirror(context.Background(), host, "handle/output")
+	if err != nil {
+		t.Errorf("TriggerMirror should be best-effort on 5xx but returned: %v", err)
 	}
 }
 
