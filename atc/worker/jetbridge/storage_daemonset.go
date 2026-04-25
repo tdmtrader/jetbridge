@@ -565,6 +565,14 @@ func (b *DaemonSetBackend) RegisterResourceCache(ctx context.Context, cacheID in
 		diskPath = filepath.Join(b.config.ArtifactDaemonHostPath, "steps", containerHandle, "dir")
 	}
 
+	// Trigger mirror BEFORE the alias broadcast so peers have the
+	// underlying step output by the time RegisterAlias requires the path
+	// to exist on disk. The daemonKey is the path under steps/ on disk —
+	// derived from diskPath by stripping the storage hostPath prefix.
+	if daemonKey := strings.TrimPrefix(diskPath, b.config.ArtifactDaemonHostPath+"/steps/"); daemonKey != diskPath {
+		b.triggerMirror(nodeName, daemonKey)
+	}
+
 	// Find a daemon pod IP to register with. On the same node as the get
 	// step, the daemon has the data locally. On a single-node cluster
 	// there's only one daemon; on multi-node we register on all daemons
