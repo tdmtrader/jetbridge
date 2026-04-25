@@ -1,11 +1,18 @@
 package main
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
 	"sort"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"code.cloudfoundry.org/lager/v3/lagertest"
 )
 
 // ---------------------------------------------------------------------------
@@ -182,3 +189,149 @@ func TestPeerSelector_ReplicasZero_DisablesMirror(t *testing.T) {
 		t.Errorf("expected empty slice for replicas=0 (disabled), got %v", got)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// mirrorJob — best-effort tar+PUT to N peers.
+// ---------------------------------------------------------------------------
+
+func TestMirrorJob_Run_RecordsPerPeerOutcomes(t *testing.T) {
+	// Source directory with one file.
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "data.txt"), []byte("hello"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Three peers:
+	//   ok       — accepts /stream-in/handle/output and 201's
+	//   rejects  — always 500
+	//   slow     — sleeps longer than per-peer timeout
+	var okHits, rejectHits, slowHits int32
+
+	ok := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&okHits, 1)
+		if r.Method == http.MethodPut && r.URL.Path == "/stream-in/handle/output" {
+			w.WriteHeader(http.StatusCreated)
+			return
+		}
+		w.WriteHeader(http.StatusBadRequest)
+	}))
+	defer ok.Close()
+
+	rejects := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&rejectHits, 1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer rejects.Close()
+
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&slowHits, 1)
+		time.Sleep(500 * time.Millisecond) // longer than perPeerTimeout below
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer slow.Close()
+
+	// Peers list includes all three. Routing transport directs each "host"
+	// in the URL to the right test server.
+	peerOK := hostFromURL(ok.URL)
+	peerReject := hostFromURL(rejects.URL)
+	peerSlow := hostFromURL(slow.URL)
+
+	transport := &mirrorRoutingTransport{routes: map[string]string{
+		peerOK + ":7780":     ok.URL,
+		peerReject + ":7780": rejects.URL,
+		peerSlow + ":7780":   slow.URL,
+	}}
+
+	job := &mirrorJob{
+		key:            "handle/output",
+		sourceDir:      src,
+		peers:          []string{peerOK, peerReject, peerSlow},
+		port:           7780,
+		scheme:         "http",
+		client:         &http.Client{Transport: transport, Timeout: 5 * time.Second},
+		logger:         lagertest.NewTestLogger("mirror"),
+		perPeerTimeout: 100 * time.Millisecond, // forces slow peer to timeout
+	}
+
+	// Must NOT panic, must NOT return any error.
+	outcomes := job.Run(context.Background())
+
+	if len(outcomes) != 3 {
+		t.Fatalf("expected 3 outcomes (one per peer), got %d", len(outcomes))
+	}
+
+	byPeer := make(map[string]string)
+	for _, o := range outcomes {
+		byPeer[o.Peer] = o.Status
+	}
+	if byPeer[peerOK] != "ok" {
+		t.Errorf("expected ok peer status=ok, got %q (full outcomes: %+v)", byPeer[peerOK], outcomes)
+	}
+	if byPeer[peerReject] != "rejected" {
+		t.Errorf("expected rejecting peer status=rejected, got %q", byPeer[peerReject])
+	}
+	if byPeer[peerSlow] != "unreachable" {
+		t.Errorf("expected slow peer status=unreachable (timeout), got %q", byPeer[peerSlow])
+	}
+	if got := atomic.LoadInt32(&okHits); got != 1 {
+		t.Errorf("expected 1 PUT to ok peer, got %d", got)
+	}
+}
+
+func TestMirrorJob_Run_NoPeers_NoOp(t *testing.T) {
+	src := t.TempDir()
+	job := &mirrorJob{
+		key:       "h/o",
+		sourceDir: src,
+		peers:     nil,
+		port:      7780,
+		scheme:    "http",
+		client:    &http.Client{},
+		logger:    lagertest.NewTestLogger("mirror"),
+	}
+
+	outcomes := job.Run(context.Background())
+	if len(outcomes) != 0 {
+		t.Errorf("expected no outcomes for empty peers, got %v", outcomes)
+	}
+}
+
+// hostFromURL extracts the host (without scheme/port) from an httptest URL
+// like "http://127.0.0.1:54321".
+func hostFromURL(u string) string {
+	// strip "http://"
+	if len(u) > 7 && u[:7] == "http://" {
+		u = u[7:]
+	}
+	// strip ":port"
+	for i := 0; i < len(u); i++ {
+		if u[i] == ':' {
+			return u[:i]
+		}
+	}
+	return u
+}
+
+// mirrorRoutingTransport routes by URL host:port to a target server URL.
+// "" means refuse the request (synthetic error).
+type mirrorRoutingTransport struct {
+	routes map[string]string
+}
+
+func (t *mirrorRoutingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	target, ok := t.routes[req.URL.Host]
+	if !ok || target == "" {
+		return nil, &mirrorTransportErr{host: req.URL.Host}
+	}
+	// Strip "http://" from target.
+	if len(target) > 7 && target[:7] == "http://" {
+		target = target[7:]
+	}
+	req.URL.Scheme = "http"
+	req.URL.Host = target
+	return http.DefaultTransport.RoundTrip(req)
+}
+
+type mirrorTransportErr struct{ host string }
+
+func (e *mirrorTransportErr) Error() string { return "connection refused: " + e.host }
