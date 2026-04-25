@@ -230,12 +230,13 @@ func TestMirrorJob_Run_RecordsPerPeerOutcomes(t *testing.T) {
 	}))
 	defer slow.Close()
 
-	// Peers list includes all three. Routing transport directs each "host"
-	// in the URL to the right test server.
-	peerOK := hostFromURL(ok.URL)
-	peerReject := hostFromURL(rejects.URL)
-	peerSlow := hostFromURL(slow.URL)
-
+	// Use synthetic peer hostnames so the routing map keys don't collide
+	// (httptest binds all servers to 127.0.0.1, just on different ports).
+	const (
+		peerOK     = "peer-ok"
+		peerReject = "peer-rejects"
+		peerSlow   = "peer-slow"
+	)
 	transport := &mirrorRoutingTransport{routes: map[string]string{
 		peerOK + ":7780":     ok.URL,
 		peerReject + ":7780": rejects.URL,
