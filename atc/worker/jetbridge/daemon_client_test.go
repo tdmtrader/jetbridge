@@ -134,6 +134,142 @@ func TestProbeResourceCache_NoDaemons(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// ProbeStepArtifact
+// ---------------------------------------------------------------------------
+
+func TestProbeStepArtifact_OneDaemonHit(t *testing.T) {
+	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead && r.URL.Path == "/artifacts/steps/handle/output" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer daemon.Close()
+
+	daemonAddr := daemon.Listener.Addr().String()
+	host := daemonAddr[:len(daemonAddr)-len(":"+portFromAddr(daemonAddr))]
+	port := portFromAddrInt(daemonAddr)
+
+	clientset := fake.NewSimpleClientset(fakeEndpointSlice("cicd", "artifact-daemon", host))
+	logger := lagertest.NewTestLogger("test")
+	client := jetbridge.NewDaemonClient(logger, clientset, "cicd", "artifact-daemon", port, nil)
+
+	daemonIP, found, err := client.ProbeStepArtifact(context.Background(), "handle/output")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !found {
+		t.Fatal("expected step artifact to be found")
+	}
+	if daemonIP != host {
+		t.Errorf("expected daemon IP %q, got %q", host, daemonIP)
+	}
+}
+
+func TestProbeStepArtifact_OneDaemonMiss(t *testing.T) {
+	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer daemon.Close()
+
+	daemonAddr := daemon.Listener.Addr().String()
+	host := daemonAddr[:len(daemonAddr)-len(":"+portFromAddr(daemonAddr))]
+	port := portFromAddrInt(daemonAddr)
+
+	clientset := fake.NewSimpleClientset(fakeEndpointSlice("cicd", "artifact-daemon", host))
+	logger := lagertest.NewTestLogger("test")
+	client := jetbridge.NewDaemonClient(logger, clientset, "cicd", "artifact-daemon", port, nil)
+
+	daemonIP, found, err := client.ProbeStepArtifact(context.Background(), "handle/output")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if found {
+		t.Errorf("expected step artifact to NOT be found, got daemonIP=%q", daemonIP)
+	}
+	if daemonIP != "" {
+		t.Errorf("expected empty daemon IP on miss, got %q", daemonIP)
+	}
+}
+
+func TestProbeStepArtifact_NoDaemons(t *testing.T) {
+	clientset := fake.NewSimpleClientset(fakeEndpointSlice("cicd", "artifact-daemon"))
+	logger := lagertest.NewTestLogger("test")
+	client := jetbridge.NewDaemonClient(logger, clientset, "cicd", "artifact-daemon", 7780, nil)
+
+	daemonIP, found, err := client.ProbeStepArtifact(context.Background(), "handle/output")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if found {
+		t.Error("expected not found with no daemons")
+	}
+	if daemonIP != "" {
+		t.Errorf("expected empty daemon IP, got %q", daemonIP)
+	}
+}
+
+func TestProbeStepArtifact_AllMiss(t *testing.T) {
+	// One httptest server returning 404 for everything, registered TWICE
+	// in the EndpointSlice (simulating two peer daemons that both miss).
+	miss := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer miss.Close()
+
+	addr := miss.Listener.Addr().String()
+	host := addr[:len(addr)-len(":"+portFromAddr(addr))]
+	port := portFromAddrInt(addr)
+
+	clientset := fake.NewSimpleClientset(fakeEndpointSlice("cicd", "artifact-daemon", host, host))
+	logger := lagertest.NewTestLogger("test")
+	client := jetbridge.NewDaemonClient(logger, clientset, "cicd", "artifact-daemon", port, nil)
+
+	daemonIP, found, err := client.ProbeStepArtifact(context.Background(), "handle/output")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if found {
+		t.Errorf("expected not found across all-miss daemons, got daemonIP=%q", daemonIP)
+	}
+}
+
+func TestProbeStepArtifact_OneHitOneError(t *testing.T) {
+	// Two daemon entries: one returns 200, the other (a TEST-NET-3
+	// reserved IP) refuses connections. Probe must succeed via the hit.
+	hit := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead && r.URL.Path == "/artifacts/steps/handle/output" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer hit.Close()
+
+	addr := hit.Listener.Addr().String()
+	hitHost := addr[:len(addr)-len(":"+portFromAddr(addr))]
+	port := portFromAddrInt(addr)
+
+	// Both endpoints share the configured port. 203.0.113.99 is a TEST-NET-3
+	// reserved address — connections will fail, exactly like a dead peer.
+	clientset := fake.NewSimpleClientset(fakeEndpointSlice("cicd", "artifact-daemon", hitHost, "203.0.113.99"))
+	logger := lagertest.NewTestLogger("test")
+	client := jetbridge.NewDaemonClient(logger, clientset, "cicd", "artifact-daemon", port, nil)
+
+	daemonIP, found, err := client.ProbeStepArtifact(context.Background(), "handle/output")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !found {
+		t.Fatal("expected hit daemon to win despite unreachable peer")
+	}
+	if daemonIP != hitHost {
+		t.Errorf("expected daemon IP %q, got %q", hitHost, daemonIP)
+	}
+}
+
 func portFromAddr(addr string) string {
 	for i := len(addr) - 1; i >= 0; i-- {
 		if addr[i] == ':' {
