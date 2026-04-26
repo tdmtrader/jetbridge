@@ -176,7 +176,7 @@ and ATC-side triggers.
 
 ---
 
-## Phase 3: GCP preemption-triggered evacuation
+## Phase 3: GCP preemption-triggered evacuation [checkpoint: 445e8c8bd5]
 
 Closes the async-mirror window for graceful spot preemption. Crash
 recovery is intentionally out of scope — those builds rerun.

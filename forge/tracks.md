@@ -33,7 +33,7 @@
 
 ## Completed / Archived Tracks
 
-### [~] Track: Resource History Preservation Across Config Changes
+### [x] Track: Resource History Preservation Across Config Changes
 _Link: [./tracks/resource_history_preservation_20260411/](./tracks/resource_history_preservation_20260411/)_
 
 ---
@@ -538,7 +538,7 @@ _Link: [./tracks/fix_cache_locator_pod_ip_poisoning_20260423/](./tracks/fix_cach
 
 ---
 
-### [ ] Track: Artifact Daemon Resilience
+### [x] Track: Artifact Daemon Resilience
 _Link: [./tracks/artifact_daemon_resilience_20260425/](./tracks/artifact_daemon_resilience_20260425/)_
 
 ---
