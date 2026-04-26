@@ -318,10 +318,11 @@ type Mirror struct {
 	mu     sync.RWMutex
 	status map[string]map[string]string // key → peer → status (for Phase 3 evacuation)
 
-	// evacuationPeers is an optional explicit peer list used during
-	// Evacuate. Tests set this to bypass PeerResolver + EndpointSlice.
-	// In production, Evacuate falls back to peers.peerIPs if this is
-	// nil/empty.
+	// evacuationPeers is an optional explicit peer list used by both
+	// Trigger's run loop and Evacuate's synchronous path. Tests set this
+	// to bypass PeerResolver + EndpointSlice (which would need a real
+	// K8s fake to wire). When empty (production default), the code
+	// falls back to peers.peerIPs.
 	evacuationPeers []string
 }
 
@@ -384,14 +385,18 @@ func (m *Mirror) run(ctx context.Context, key string) {
 		return
 	}
 
-	if m.peers == nil {
-		m.logger.Debug("mirror-no-peer-resolver", lager.Data{"key": key})
-		return
-	}
-	peerIPs, err := m.peers.peerIPs(ctx)
-	if err != nil {
-		m.logger.Error("mirror-peer-discovery-failed", err, lager.Data{"key": key})
-		return
+	peerIPs := m.evacuationPeers
+	if len(peerIPs) == 0 {
+		if m.peers == nil {
+			m.logger.Debug("mirror-no-peer-resolver", lager.Data{"key": key})
+			return
+		}
+		ips, err := m.peers.peerIPs(ctx)
+		if err != nil {
+			m.logger.Error("mirror-peer-discovery-failed", err, lager.Data{"key": key})
+			return
+		}
+		peerIPs = ips
 	}
 
 	chosen := peerSelector{}.Select(key, peerIPs, m.replicas)

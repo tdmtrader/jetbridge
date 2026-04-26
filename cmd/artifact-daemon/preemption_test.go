@@ -186,6 +186,71 @@ func TestPreemptionWatcher_FiresEvacuate_FlushesUnmirroredToPeer(t *testing.T) {
 	}
 }
 
+// TestPreemptionWatcher_IgnoresMalformedBody verifies that surprising
+// metadata responses (extra whitespace, unexpected case, garbage) do
+// NOT fire the evacuation callback. Only the literal "TRUE" should
+// trigger — anything else is treated as not-yet-preempted.
+func TestPreemptionWatcher_IgnoresMalformedBody(t *testing.T) {
+	cases := []string{
+		"true",      // wrong case
+		"PREEMPTED", // wrong word
+		"",          // empty
+		"\x00\x01",  // garbage bytes
+		"YES",
+	}
+	for _, body := range cases {
+		t.Run("body="+body, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+				w.Write([]byte(body))
+			}))
+			defer srv.Close()
+
+			var fired int32
+			logger := lagertest.NewTestLogger("malformed")
+			watcher := NewPreemptionWatcher(logger, srv.URL, func(ctx context.Context) {
+				atomic.AddInt32(&fired, 1)
+			})
+
+			ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+			defer cancel()
+			watcher.Run(ctx)
+
+			if got := atomic.LoadInt32(&fired); got != 0 {
+				t.Errorf("body %q should NOT fire callback, but it did (count=%d)", body, got)
+			}
+		})
+	}
+}
+
+// TestPreemptionWatcher_AllowsTrailingWhitespace verifies that "TRUE\n"
+// (with a trailing newline — a common quirk of HTTP body responses)
+// still fires the callback. The metadata server is documented to return
+// the exact value but we should be tolerant of whitespace.
+func TestPreemptionWatcher_AllowsTrailingWhitespace(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("TRUE\n"))
+	}))
+	defer srv.Close()
+
+	fired := make(chan struct{}, 1)
+	logger := lagertest.NewTestLogger("trailing-ws")
+	watcher := NewPreemptionWatcher(logger, srv.URL, func(ctx context.Context) {
+		fired <- struct{}{}
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go watcher.Run(ctx)
+
+	select {
+	case <-fired:
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected TRUE\\n (with trailing newline) to fire callback")
+	}
+}
+
 func TestPreemptionWatcher_DoesNotFireOnFalse(t *testing.T) {
 	// Server returns "FALSE" indefinitely. Watcher should keep polling
 	// without firing the callback.

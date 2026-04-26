@@ -332,6 +332,42 @@ func TestTriggerMirror_BestEffort_OnUnreachable(t *testing.T) {
 	}
 }
 
+// TestTriggerMirror_EmptyDaemonIP verifies the method doesn't construct
+// a malformed URL when daemonIP is empty (defensive — callers should
+// never pass empty, but a typo or null could happen). Should return
+// nil (best-effort) without panicking.
+func TestTriggerMirror_EmptyDaemonIP(t *testing.T) {
+	clientset := fake.NewSimpleClientset()
+	logger := lagertest.NewTestLogger("test")
+	client := jetbridge.NewDaemonClient(logger, clientset, "ns", "artifact-daemon", 7780, nil)
+
+	// Must not panic. The actual HTTP request will fail (URL like
+	// http://:7780/mirror is malformed) but TriggerMirror swallows
+	// errors per its best-effort contract.
+	err := client.TriggerMirror(context.Background(), "", "handle/output")
+	if err != nil {
+		t.Errorf("TriggerMirror must be best-effort even with empty daemonIP, got: %v", err)
+	}
+}
+
+// TestTriggerMirror_ContextCancelled verifies that a cancelled context
+// doesn't cause the method to leak the request or surface a context
+// error to the caller — best-effort means transport problems don't
+// fail the producing step.
+func TestTriggerMirror_ContextCancelled(t *testing.T) {
+	clientset := fake.NewSimpleClientset(fakeEndpointSlice("ns", "artifact-daemon", "1.2.3.4"))
+	logger := lagertest.NewTestLogger("test")
+	client := jetbridge.NewDaemonClient(logger, clientset, "ns", "artifact-daemon", 7780, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // pre-cancel
+
+	err := client.TriggerMirror(ctx, "1.2.3.4", "handle/output")
+	if err != nil {
+		t.Errorf("TriggerMirror with pre-cancelled ctx must still return nil, got: %v", err)
+	}
+}
+
 func TestTriggerMirror_BestEffort_OnNon202(t *testing.T) {
 	// Daemon returns 500 — should not propagate as an error.
 	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -491,3 +491,384 @@ func (t *mirrorRoutingTransport) RoundTrip(req *http.Request) (*http.Response, e
 type mirrorTransportErr struct{ host string }
 
 func (e *mirrorTransportErr) Error() string { return "connection refused: " + e.host }
+
+// ---------------------------------------------------------------------------
+// Robustness / safety tests: data integrity, sweeper races, concurrent load,
+// shutdown races, edge cases.
+// ---------------------------------------------------------------------------
+
+// TestMirrorJob_Run_PreservesSubdirsAndMultipleFiles verifies a realistic
+// step-output shape (multiple files, nested subdir) round-trips through
+// the tar+PUT path byte-for-byte. Critical for deployment confidence:
+// confirms peers receive exactly what producers wrote.
+func TestMirrorJob_Run_PreservesSubdirsAndMultipleFiles(t *testing.T) {
+	src := t.TempDir()
+	// Build a small tree: top.txt + sub/nested.txt + sub/deeper/leaf.bin
+	files := map[string][]byte{
+		"top.txt":             []byte("top-level content\n"),
+		"sub/nested.txt":      []byte("nested\nmulti-line\n"),
+		"sub/deeper/leaf.bin": {0x00, 0x01, 0x02, 0xff, 0xfe},
+	}
+	for rel, data := range files {
+		full := filepath.Join(src, rel)
+		if err := os.MkdirAll(filepath.Dir(full), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, data, 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Peer extracts received tar to a separate hostPath using the daemon's
+	// real handleStreamIn — so we exercise the full PUT → extract → disk
+	// path (not just "did the bytes get sent").
+	peerStorage := t.TempDir()
+	peerLogger := lagertest.NewTestLogger("peer-rcv")
+	peerServer := NewServer(peerLogger, peerStorage, "peer")
+	peerHTTP := httptest.NewServer(peerServer.Handler())
+	defer peerHTTP.Close()
+
+	const peerHost = "integrity-peer"
+	transport := &mirrorRoutingTransport{routes: map[string]string{
+		peerHost + ":7780": peerHTTP.URL,
+	}}
+
+	job := &mirrorJob{
+		key:            "h/o",
+		sourceDir:      src,
+		peers:          []string{peerHost},
+		port:           7780,
+		scheme:         "http",
+		client:         &http.Client{Transport: transport, Timeout: 5 * time.Second},
+		logger:         lagertest.NewTestLogger("integrity"),
+		perPeerTimeout: 5 * time.Second,
+	}
+
+	outcomes := job.Run(context.Background())
+	if len(outcomes) != 1 || outcomes[0].Status != "ok" {
+		t.Fatalf("expected ok outcome, got %+v", outcomes)
+	}
+
+	// Verify peer got byte-for-byte matches.
+	for rel, want := range files {
+		got, err := os.ReadFile(filepath.Join(peerStorage, "steps", "h/o", rel))
+		if err != nil {
+			t.Errorf("missing on peer: %s — %v", rel, err)
+			continue
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("byte mismatch on peer for %s: got %v, want %v", rel, got, want)
+		}
+	}
+}
+
+// TestMirror_Trigger_SourceDisappearsBeforeJobRuns covers the sweeper race:
+// Trigger queues a job, then the artifact's source dir is deleted (e.g.
+// by the daemon's TTL sweeper) before the worker pool gets to it. The
+// job must log and exit cleanly — no panic, no zombie goroutine.
+func TestMirror_Trigger_SourceDisappearsBeforeJobRuns(t *testing.T) {
+	storage := t.TempDir()
+	src := filepath.Join(storage, "steps", "race-handle", "out")
+	if err := os.MkdirAll(src, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "f.txt"), []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Peer that should never receive a PUT (because source was deleted).
+	var puts int32
+	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&puts, 1)
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer peer.Close()
+
+	const peerHost = "race-peer"
+	transport := &mirrorRoutingTransport{routes: map[string]string{
+		peerHost + ":7780": peer.URL,
+	}}
+
+	mirror := &Mirror{
+		storagePath:     storage,
+		port:            7780,
+		scheme:          "http",
+		replicas:        2,
+		perPeerTimeout:  3 * time.Second,
+		pool:            NewWorkerPool(2),
+		client:          &http.Client{Transport: transport, Timeout: 3 * time.Second},
+		logger:          lagertest.NewTestLogger("sweeper-race"),
+		status:          make(map[string]map[string]string),
+		evacuationPeers: []string{peerHost},
+	}
+	defer mirror.Stop()
+
+	// Delete the source BEFORE submitting the job so the worker sees it
+	// missing.
+	if err := os.RemoveAll(src); err != nil {
+		t.Fatal(err)
+	}
+
+	mirror.Trigger(context.Background(), "race-handle/out")
+	mirror.pool.Stop()
+	mirror.pool.Wait()
+
+	if got := atomic.LoadInt32(&puts); got != 0 {
+		t.Errorf("peer should have received zero PUTs after source vanished; got %d", got)
+	}
+}
+
+// TestMirror_Trigger_ConcurrentMultiKeyLoad simulates a realistic pipeline:
+// many concurrent Trigger calls for distinct keys, with bounded peer
+// concurrency. All keys must eventually reach the peer and the worker
+// pool must clean up cleanly.
+func TestMirror_Trigger_ConcurrentMultiKeyLoad(t *testing.T) {
+	storage := t.TempDir()
+
+	// Pre-create 10 step output dirs.
+	const numKeys = 10
+	keys := make([]string, numKeys)
+	for i := 0; i < numKeys; i++ {
+		key := "h-" + itoaSimple(i) + "/out"
+		keys[i] = key
+		full := filepath.Join(storage, "steps", key)
+		os.MkdirAll(full, 0755)
+		os.WriteFile(filepath.Join(full, "f.txt"), []byte(itoaSimple(i)), 0644)
+	}
+
+	var receivedKeys sync.Map
+	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPut && len(r.URL.Path) > len("/stream-in/") {
+			receivedKeys.Store(r.URL.Path[len("/stream-in/"):], true)
+			w.WriteHeader(http.StatusCreated)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer peer.Close()
+
+	const peerHost = "load-peer"
+	transport := &mirrorRoutingTransport{routes: map[string]string{
+		peerHost + ":7780": peer.URL,
+	}}
+
+	mirror := &Mirror{
+		storagePath:     storage,
+		port:            7780,
+		scheme:          "http",
+		replicas:        2,
+		perPeerTimeout:  3 * time.Second,
+		pool:            NewWorkerPool(4), // cap at 4 concurrent
+		client:          &http.Client{Transport: transport, Timeout: 3 * time.Second},
+		logger:          lagertest.NewTestLogger("load"),
+		status:          make(map[string]map[string]string),
+		evacuationPeers: []string{peerHost},
+	}
+
+	// Fire all triggers as fast as possible.
+	for _, k := range keys {
+		mirror.Trigger(context.Background(), k)
+	}
+
+	// Drain.
+	mirror.Stop()
+
+	// Verify every key reached the peer.
+	for _, k := range keys {
+		if _, ok := receivedKeys.Load(k); !ok {
+			t.Errorf("key %q did not reach peer under concurrent load", k)
+		}
+	}
+}
+
+// TestMirror_Trigger_AfterStop_ReturnsCleanly verifies that once the
+// mirror is shutting down, late Trigger calls don't panic and don't
+// leak goroutines. main.go's shutdown sequence calls Stop while
+// in-flight RecordOutputs may still be calling Trigger.
+func TestMirror_Trigger_AfterStop_ReturnsCleanly(t *testing.T) {
+	storage := t.TempDir()
+	mirror := &Mirror{
+		storagePath: storage,
+		port:        7780,
+		scheme:      "http",
+		replicas:    2,
+		pool:        NewWorkerPool(2),
+		client:      &http.Client{},
+		logger:      lagertest.NewTestLogger("post-stop"),
+		status:      make(map[string]map[string]string),
+	}
+	mirror.Stop()
+
+	// Should not panic and should not block.
+	done := make(chan struct{})
+	go func() {
+		mirror.Trigger(context.Background(), "any-key")
+		close(done)
+	}()
+	select {
+	case <-done:
+		// Good.
+	case <-time.After(2 * time.Second):
+		t.Fatal("Trigger after Stop blocked instead of returning")
+	}
+}
+
+// TestMirror_Trigger_NilReceiver_NoOp verifies the documented nil-safety.
+// Daemon code calls mirror.Trigger from handleStreamIn even when mirror
+// is disabled (cfg.replicas=0 → mirror is nil). Must be a clean no-op.
+func TestMirror_Trigger_NilReceiver_NoOp(t *testing.T) {
+	var m *Mirror
+	// Must not panic.
+	m.Trigger(context.Background(), "key")
+	m.Stop()
+	m.Evacuate(context.Background(), 100*time.Millisecond)
+}
+
+// TestMirror_Trigger_ReplicasZero_NoOp verifies that with replicas=0,
+// Trigger is an explicit no-op even on a non-nil receiver. Important
+// because main.go skips Mirror construction entirely when replicas=0
+// — but if a future code path constructs one, the early-return must
+// hold.
+func TestMirror_Trigger_ReplicasZero_NoOp(t *testing.T) {
+	storage := t.TempDir()
+	src := filepath.Join(storage, "steps", "h/o")
+	os.MkdirAll(src, 0755)
+	os.WriteFile(filepath.Join(src, "f.txt"), []byte("x"), 0644)
+
+	var puts int32
+	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&puts, 1)
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer peer.Close()
+
+	const peerHost = "should-not-be-called"
+	mirror := &Mirror{
+		storagePath:     storage,
+		replicas:        0, // disabled
+		pool:            NewWorkerPool(2),
+		client:          &http.Client{},
+		logger:          lagertest.NewTestLogger("rf-zero"),
+		status:          make(map[string]map[string]string),
+		evacuationPeers: []string{peerHost},
+	}
+	defer mirror.Stop()
+
+	mirror.Trigger(context.Background(), "h/o")
+	mirror.pool.Stop()
+	mirror.pool.Wait()
+
+	if got := atomic.LoadInt32(&puts); got != 0 {
+		t.Errorf("expected zero peer hits with replicas=0, got %d", got)
+	}
+}
+
+// TestMirror_Evacuate_NoStepsDir_CleanNoOp verifies Evacuate is safe to
+// call on a daemon that has done no work yet (storagePath/steps/ doesn't
+// exist). This can happen on first-startup preemption.
+func TestMirror_Evacuate_NoStepsDir_CleanNoOp(t *testing.T) {
+	mirror := &Mirror{
+		storagePath: t.TempDir(), // no steps/ subdirectory
+		replicas:    2,
+		pool:        NewWorkerPool(2),
+		client:      &http.Client{},
+		logger:      lagertest.NewTestLogger("evac-empty"),
+		status:      make(map[string]map[string]string),
+	}
+	defer mirror.Stop()
+
+	// Must not panic, must return promptly.
+	done := make(chan struct{})
+	go func() {
+		mirror.Evacuate(context.Background(), 1*time.Second)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Evacuate hung when steps/ didn't exist")
+	}
+}
+
+// TestMirrorJob_Run_EmptySourceDir_NoPanic verifies tar of an empty dir
+// produces a valid (empty) tar that the peer accepts. Emptiness can
+// happen when a step produces no output but registers an empty volume.
+func TestMirrorJob_Run_EmptySourceDir_NoPanic(t *testing.T) {
+	src := t.TempDir() // empty
+
+	peerStorage := t.TempDir()
+	peerServer := NewServer(lagertest.NewTestLogger("empty-peer"), peerStorage, "peer")
+	peerHTTP := httptest.NewServer(peerServer.Handler())
+	defer peerHTTP.Close()
+
+	const peerHost = "empty-peer"
+	transport := &mirrorRoutingTransport{routes: map[string]string{
+		peerHost + ":7780": peerHTTP.URL,
+	}}
+
+	job := &mirrorJob{
+		key:            "h/o",
+		sourceDir:      src,
+		peers:          []string{peerHost},
+		port:           7780,
+		scheme:         "http",
+		client:         &http.Client{Transport: transport, Timeout: 3 * time.Second},
+		logger:         lagertest.NewTestLogger("empty"),
+		perPeerTimeout: 3 * time.Second,
+	}
+	outcomes := job.Run(context.Background())
+	if len(outcomes) != 1 || outcomes[0].Status != "ok" {
+		t.Errorf("expected empty dir to mirror successfully, got %+v", outcomes)
+	}
+}
+
+// TestMirrorJob_Run_PartialPeerSuccess verifies per-peer outcome
+// independence: when some peers succeed and others fail, the successes
+// are recorded as ok and the failures as rejected/unreachable. The job
+// must NOT abort early on first failure.
+func TestMirrorJob_Run_PartialPeerSuccess(t *testing.T) {
+	src := t.TempDir()
+	os.WriteFile(filepath.Join(src, "f.txt"), []byte("data"), 0644)
+
+	okPeer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer okPeer.Close()
+
+	rejectPeer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer rejectPeer.Close()
+
+	transport := &mirrorRoutingTransport{routes: map[string]string{
+		"ok-peer:7780":     okPeer.URL,
+		"reject-peer:7780": rejectPeer.URL,
+		"dead-peer:7780":   "", // refused
+	}}
+
+	job := &mirrorJob{
+		key:            "h/o",
+		sourceDir:      src,
+		peers:          []string{"ok-peer", "reject-peer", "dead-peer"},
+		port:           7780,
+		scheme:         "http",
+		client:         &http.Client{Transport: transport, Timeout: 3 * time.Second},
+		logger:         lagertest.NewTestLogger("partial"),
+		perPeerTimeout: 3 * time.Second,
+	}
+	outcomes := job.Run(context.Background())
+
+	byPeer := make(map[string]string)
+	for _, o := range outcomes {
+		byPeer[o.Peer] = o.Status
+	}
+	if byPeer["ok-peer"] != "ok" {
+		t.Errorf("ok-peer expected ok, got %q", byPeer["ok-peer"])
+	}
+	if byPeer["reject-peer"] != "rejected" {
+		t.Errorf("reject-peer expected rejected, got %q", byPeer["reject-peer"])
+	}
+	if byPeer["dead-peer"] != "unreachable" {
+		t.Errorf("dead-peer expected unreachable, got %q", byPeer["dead-peer"])
+	}
+}

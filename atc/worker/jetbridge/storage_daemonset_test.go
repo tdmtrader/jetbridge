@@ -638,6 +638,108 @@ func TestDaemonSetBackend_RecordOutputs_TriggersMirrorAfterAlias(t *testing.T) {
 	}
 }
 
+// TestDaemonSetBackend_RecordOutputs_MultipleOutputs_TriggersMirrorForEach
+// verifies the realistic case where a task step produces multiple outputs
+// (e.g. compiled binary + report). Each output must get both a /register
+// AND a /mirror call independently.
+func TestDaemonSetBackend_RecordOutputs_MultipleOutputs_TriggersMirrorForEach(t *testing.T) {
+	var (
+		mu          sync.Mutex
+		registerKeys []string
+		mirrorKeys  []string
+	)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/register":
+			var body map[string]string
+			json.NewDecoder(r.Body).Decode(&body)
+			mu.Lock()
+			registerKeys = append(registerKeys, body["key"])
+			mu.Unlock()
+			w.WriteHeader(http.StatusCreated)
+		case "/mirror":
+			var body map[string]string
+			json.NewDecoder(r.Body).Decode(&body)
+			mu.Lock()
+			mirrorKeys = append(mirrorKeys, body["key"])
+			mu.Unlock()
+			w.WriteHeader(http.StatusAccepted)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer ts.Close()
+
+	addr := strings.TrimPrefix(ts.URL, "http://")
+	colonIdx := strings.LastIndex(addr, ":")
+	host := addr[:colonIdx]
+	port, _ := strconv.Atoi(addr[colonIdx+1:])
+
+	node := &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: "node-1"},
+		Status: corev1.NodeStatus{
+			Addresses: []corev1.NodeAddress{{Type: corev1.NodeInternalIP, Address: host}},
+		},
+	}
+	clientset := fake.NewSimpleClientset(node, &discoveryv1.EndpointSlice{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "artifact-daemon-multi",
+			Namespace: "test-ns",
+			Labels:    map[string]string{discoveryv1.LabelServiceName: "artifact-daemon"},
+		},
+		Endpoints: []discoveryv1.Endpoint{{Addresses: []string{host}}},
+	})
+	resolver := NewNodeIPResolver(clientset)
+
+	cfg := testDaemonConfig()
+	cfg.ArtifactDaemonPort = port
+
+	locator := NewArtifactLocator()
+	b := NewDaemonSetBackend(cfg, locator, resolver)
+	logger := lagertest.NewTestLogger("multi")
+	b.SetDaemonClient(NewDaemonClient(logger, clientset, "test-ns", "artifact-daemon", port, nil))
+
+	// Three outputs from the same step.
+	volumes := []*Volume{
+		NewStubVolume("vol-binary", "worker", "/tmp/binary"),
+		NewStubVolume("vol-report", "worker", "/tmp/report"),
+		NewStubVolume("vol-logs", "worker", "/tmp/logs"),
+	}
+	spec := runtime.ContainerSpec{
+		Outputs: runtime.OutputPaths{
+			"binary": "/tmp/binary",
+			"report": "/tmp/report",
+			"logs":   "/tmp/logs",
+		},
+		Type: db.ContainerTypeTask,
+	}
+
+	b.RecordOutputs(context.Background(), "multi-handle", "node-1", volumes, spec)
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	// Expect 3 /register calls and 3 /mirror calls (one per output).
+	if len(registerKeys) != 3 {
+		t.Errorf("expected 3 /register calls (one per output), got %d: %v", len(registerKeys), registerKeys)
+	}
+	if len(mirrorKeys) != 3 {
+		t.Errorf("expected 3 /mirror calls (one per output), got %d: %v", len(mirrorKeys), mirrorKeys)
+	}
+
+	// Each mirror key should be of the form multi-handle/{output} —
+	// daemonKey, not the volume handle.
+	gotMirrorSet := make(map[string]bool)
+	for _, k := range mirrorKeys {
+		gotMirrorSet[k] = true
+	}
+	for _, expected := range []string{"multi-handle/binary", "multi-handle/report", "multi-handle/logs"} {
+		if !gotMirrorSet[expected] {
+			t.Errorf("expected mirror key %q in set %v", expected, mirrorKeys)
+		}
+	}
+}
+
 func TestDaemonSetBackend_RecordOutputs_TriggerMirrorFailureDoesNotPanic(t *testing.T) {
 	// Daemon /register works but /mirror returns 500 — RecordOutputs must
 	// still complete without error and locator must still be populated.
