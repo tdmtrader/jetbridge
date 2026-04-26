@@ -50,7 +50,7 @@ path the moment Phase 2 lands.
 
 ---
 
-## Phase 2: Async background mirror
+## Phase 2: Async background mirror [checkpoint: e7b76f9808]
 
 The main event. Adds the mirror endpoint, worker pool, peer selection,
 and ATC-side triggers.
@@ -181,7 +181,7 @@ and ATC-side triggers.
 Closes the async-mirror window for graceful spot preemption. Crash
 recovery is intentionally out of scope — those builds rerun.
 
-- [ ] Task: Write failing unit test —
+- [x] Task: Write failing unit test — 0cd933def0
       `preemption.Watcher.Run(ctx)` long-polls
       `metadata.google.internal/computeMetadata/v1/instance/preempted?wait_for_change=true`
       with `Metadata-Flavor: Google` header, fires its callback once
@@ -189,46 +189,46 @@ recovery is intentionally out of scope — those builds rerun.
       `httptest` server.
       File: `cmd/artifact-daemon/preemption_test.go` (new file).
 
-- [ ] Task: Write failing unit test — watcher logs and retries on
+- [x] Task: Write failing unit test — watcher logs and retries on 0cd933def0
       transient metadata server errors without exiting.
       File: `cmd/artifact-daemon/preemption_test.go`.
 
-- [ ] Task: Implement `cmd/artifact-daemon/preemption.go`:
+- [x] Task: Implement `cmd/artifact-daemon/preemption.go`: 1fe584bec5
       `Watcher` struct, `Run(ctx)` long-poll loop, `OnPreempted`
       callback hook.
       File: `cmd/artifact-daemon/preemption.go` (new file).
 
-- [ ] Task: Write failing unit test — `Mirror.Evacuate(ctx, budget)`:
+- [x] Task: Write failing unit test — `Mirror.Evacuate(ctx, budget)`: 7cc581b7b2
       stops accepting new jobs, iterates over local step dirs whose
       `mirrorStatus` is missing or partial, fans out PUTs within the
       budget, returns when budget elapses.
       File: `cmd/artifact-daemon/mirror_test.go`.
 
-- [ ] Task: Implement `Mirror.Evacuate` and `Mirror.Drain` (called
+- [x] Task: Implement `Mirror.Evacuate` and `Mirror.Drain` (called d69be6842a
       by the preemption callback). Per-peer timeout = 5s; total
       budget = 25s by default.
       File: `cmd/artifact-daemon/mirror.go`.
 
-- [ ] Task: Add daemon flags `--preemption-watch` (default `false`),
+- [x] Task: Add daemon flags `--preemption-watch` (default `false`), 3878424cd5
       `--preemption-budget` (default `25s`). Wire watcher into
       `main.go` so its `OnPreempted` callback invokes
       `Mirror.Evacuate`.
       File: `cmd/artifact-daemon/main.go`.
 
-- [ ] Task: Add `artifactDaemon.preemption` block to
+- [x] Task: Add `artifactDaemon.preemption` block to 235a23f21d
       `deploy/chart/values.yaml` (default `enabled: false`,
       `budget: "25s"`); plumb into DaemonSet args.
       Files: `deploy/chart/values.yaml`,
       `deploy/chart/templates/artifact-daemon-daemonset.yaml`.
 
-- [ ] Task: Behavioral test — fake metadata server fires preempt
+- [x] Task: Behavioral test — fake metadata server fires preempt fe0986d4c8
       mid-mirror; `Evacuate` flushes the unmirrored artifact to a
       peer before the budget expires.
       File: `cmd/artifact-daemon/preemption_test.go`.
 
-- [ ] Task: Run all test suites (`make test-unit`,
+- [x] Task: Run all test suites (`make test-unit`, fe0986d4c8
       `ginkgo ./atc/worker/jetbridge/...`,
       `go test ./cmd/artifact-daemon/...`,
       `helm template deploy/chart`).
 
-- [ ] Task: Phase 3 Manual Verification
+- [x] Task: Phase 3 Manual Verification
