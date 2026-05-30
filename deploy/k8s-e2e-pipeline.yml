@@ -9,12 +9,23 @@ resources:
   type: time
   source:
     interval: 24h
+# Source under test, fetched fresh each run. The kind-runner image provides only
+# the toolchain (go, docker, kubectl, helm); the source is NOT taken from the
+# image's baked /src — that goes stale when the worker serves a cached image tag.
+- name: repo
+  type: git
+  icon: git
+  source:
+    uri: https://github.com/tdmtrader/jetbridge.git
+    branch: jetbridge
 
 jobs:
 - name: build-kind-runner
   serial: true
   plan:
   - get: trigger
+    trigger: true
+  - get: repo
     trigger: true
   - task: build-kind-runner-image
     privileged: true
@@ -136,22 +147,26 @@ jobs:
   - get: trigger
     trigger: true
     passed: [build-kind-runner]
+  - get: repo
+    passed: [build-kind-runner]
   - task: k8s-integration
     privileged: true
     timeout: 45m
+    attempts: 2
     config:
       platform: linux
+      inputs:
+      - name: repo
       rootfs_uri: docker:///registry.home/concourse-kind-runner:v35
       run:
         path: sh
         args:
         - -exc
         - |
-          cd /src
-
-          # Initialize a git repo so tests can find the repo root via git rev-parse.
-          # The kind-runner image has source at /src but it's not a git clone.
-          git init -q && git add -A && git -c user.name=ci -c user.email=ci@test commit -q -m "init" --allow-empty
+          # Build from the freshly-fetched git resource, NOT the image's baked
+          # /src (which goes stale behind a cached image tag). repo is a real
+          # checkout, so tests resolve the repo root via git rev-parse directly.
+          cd repo
 
           echo "=== Pre-compiling everything before Docker (avoids CPU contention with containerd) ==="
           GOOS=linux GOARCH=amd64 go build -o concourse-linux-amd64 ./cmd/concourse
@@ -225,21 +240,26 @@ jobs:
   - get: trigger
     trigger: true
     passed: [k8s-integration-tests]
+  - get: repo
+    passed: [k8s-integration-tests]
   - task: k8s-behavioral
     privileged: true
     timeout: 4h
+    attempts: 2
     config:
       platform: linux
+      inputs:
+      - name: repo
       rootfs_uri: docker:///registry.home/concourse-kind-runner:v35
       run:
         path: sh
         args:
         - -exc
         - |
-          cd /src
-
-          # Initialize a git repo so tests can find the repo root via git rev-parse.
-          git init -q && git add -A && git -c user.name=ci -c user.email=ci@test commit -q -m "init" --allow-empty
+          # Build from the freshly-fetched git resource, NOT the image's baked
+          # /src (which goes stale behind a cached image tag). repo is a real
+          # checkout, so tests resolve the repo root via git rev-parse directly.
+          cd repo
 
           echo "=== Pre-compiling everything before Docker (avoids CPU contention with containerd) ==="
           GOOS=linux GOARCH=amd64 go build -o concourse-linux-amd64 ./cmd/concourse
