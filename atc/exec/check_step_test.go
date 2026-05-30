@@ -734,7 +734,7 @@ var _ = Describe("CheckStep", func() {
 			Context("when SaveVersions fails with FK violation (scope deleted by GC)", func() {
 				BeforeEach(func() {
 					fakeResourceConfigScope.SaveVersionsReturns(
-						&pgconn.PgError{Code: pgerrcode.ForeignKeyViolation},
+						fmt.Errorf("save versions: %w", &pgconn.PgError{Code: pgerrcode.ForeignKeyViolation}),
 					)
 				})
 
