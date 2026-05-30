@@ -45,11 +45,16 @@
 - [x] e9de3901fe Instrument the behavioral harness to dump concourse-web logs on
       spec failure (was only showing fly client output) so the guard log is
       visible in CI output.
-- [~] DECISIVE NEXT STEP (runtime): push to origin/jetbridge, rebuild kind-runner,
-      run the full `k8s-e2e` chain; when behavioral fails, inspect the dumped web
-      logs for `scope-deleted-during-check` (guard fired) vs a raw `save versions:`
-      build error (guard bypassed). Disambiguates the contradiction static analysis
-      cannot.
+- [x] DECISIVE RUNTIME RESULT: pushed + ran instrumented chain. Behavioral
+      reproduced the flake, but my instrumentation was ABSENT => CI compiled from
+      a STALE kind-runner image. ROOT CAUSE = worker serves cached
+      `concourse-kind-runner:v33` by tag, ignoring fresh pushes. The FK guards
+      were never actually tested in CI. (Details in cgx.md.)
+- [x] 4cdf75c6cc FIX the staleness: bump kind-runner tag v33 → v34 + set-pipeline
+      (forces fresh pull). The real cache-bust.
+- [~] Re-run the v34 chain (build-kind-runner → integration → behavioral) to test
+      the CURRENT code for the first time. Expected: my instrumentation now
+      present; the run reveals whether the guards fire on the real error.
 - [x] ded0ca4ae7 (low-risk improvement) `ensureConcourseImage` now honors
       `CONCOURSE_REBUILD_IMAGE=1` and always logs the deployed image id + created
       time, so a stale-binary deploy is diagnosable from the next CI run's output.

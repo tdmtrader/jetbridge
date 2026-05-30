@@ -113,6 +113,41 @@ The contradiction (guard present + provably catches the real error, yet build
 image staleness. Resolve via runtime: trigger a behavioral run and capture web
 logs (`scope-deleted-during-check` vs raw `save versions:`).
 
+## ROOT CAUSE CONFIRMED (2026-05-30): CI ran stale kind-runner images
+
+Triggered the instrumented chain (build-kind-runner #177 fresh push of v33 →
+integration retry GREEN 122/122 → behavioral). Behavioral reproduced the flake:
+`runs a pipeline with custom resource types` FAILED — but this time with a
+DIFFERENT FK path than #100:
+```
+update resource config scope: set resource scope: ERROR: ... violates foreign key
+constraint "resources_resource_config_scope_id_fkey" (SQLSTATE 23503)  -> errored
+```
+(check_step.go:169 wrapping check_delegate.go:225 `SetResourceConfigScope`, via
+the GUARDED PointToCheckedConfig path at check_step.go:162-169.)
+
+DECISIVE: my pushed instrumentation (the `Using Concourse image …` provenance log
+AND the on-failure web-log dump) was COMPLETELY ABSENT from the run, despite
+build-kind-runner #177 rebuilding+pushing a fresh v33 after my push. The OLD
+ensureConcourseImage string was also absent (it no-logs when the image exists).
+=> the behavioral task compiled Concourse from a STALE image's /src.
+
+Mechanism: the pipeline reuses the `concourse-kind-runner:v33` TAG; the worker
+serves a cached v33 by tag, ignoring build-kind-runner's fresh push to the same
+tag. So integration + behavioral have been running STALE code — the FK guards
+(April) were likely never exercised in CI, which is why the flake persisted and
+why both "guarded" paths appeared to leak.
+
+Same disease as the registry.home/jetbridge:latest daemon image staleness.
+
+FIX (commit 4cdf75c6cc): bump kind-runner tag v33 → v34 (pipeline's established
+cache-bust pattern) + set-pipeline. Forces a fresh pull of a never-cached tag.
+
+### anti-pattern
+- [2026-05-30] Reusing a mutable image tag (v33) for CI rootfs means workers
+  serve cached content and silently ignore fresh pushes — invalidating CI
+  results. Either use immutable tags/digests or always bump on change.
+
 ## Key references
 - `atc/exec/check_step.go:162-167, 254-262` — FK guards
 - `atc/db/errors.go` — `IsForeignKeyViolation` (errors.As + SQLSTATE string fallback)
