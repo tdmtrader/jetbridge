@@ -1,8 +1,8 @@
 {
   "trackId": "check_scheduling_inflight_leak_20260409",
   "type": "bugfix",
-  "status": "in_progress",
+  "status": "archived",
   "description": "Fix in-flight check tracking leak that permanently blocks automatic resource checks",
   "createdAt": "2026-04-09T00:00:00.000Z",
-  "updatedAt": "2026-04-09T00:00:00.000Z"
+  "updatedAt": "2026-05-30T00:00:00.000Z"
 }

@@ -1,8 +1,8 @@
 {
   "trackId": "route_artifact_reads_through_daemonset_remove_exec_backed_artifact_io_20260418",
   "type": "bugfix",
-  "status": "in_progress",
+  "status": "archived",
   "description": "Route artifact reads through DaemonSet; remove exec-backed artifact I/O",
   "createdAt": "2026-04-18T17:11:16.604Z",
-  "updatedAt": "2026-04-18T17:24:22.063Z"
+  "updatedAt": "2026-05-30T00:00:00.000Z"
 }
