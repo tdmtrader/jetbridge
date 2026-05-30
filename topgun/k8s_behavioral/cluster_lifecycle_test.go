@@ -93,8 +93,14 @@ func createK3sCluster() string {
 // ensureConcourseImage checks if the Concourse Docker image exists locally
 // and builds it from source if not found.
 func ensureConcourseImage(image string) {
-	if err := exec.Command("docker", "image", "inspect", image).Run(); err != nil {
-		log.Printf("Concourse image %q not found locally, building from source...", image)
+	exists := exec.Command("docker", "image", "inspect", image).Run() == nil
+
+	// Build when absent, or when a rebuild is forced. Reusing a stale local
+	// image silently tests old code (the image tag is reused as-is), so
+	// CONCOURSE_REBUILD_IMAGE=1 is the escape hatch for local iteration. CI
+	// pre-builds this image in the pipeline task, so the default path reuses it.
+	if !exists || os.Getenv("CONCOURSE_REBUILD_IMAGE") == "1" {
+		log.Printf("Building Concourse image %q from source...", image)
 		root := mustRepoRoot()
 		cmd := exec.Command("docker", "build", "-f", "Dockerfile.build", "-t", image, root)
 		cmd.Dir = root
@@ -103,6 +109,12 @@ func ensureConcourseImage(image string) {
 		if err := cmd.Run(); err != nil {
 			log.Fatalf("failed to build Concourse image: %v", err)
 		}
+	}
+
+	// Log the image's id + creation time so a stale reuse is diagnosable from
+	// test output — otherwise a stale binary deploy is invisible in the logs.
+	if out, err := exec.Command("docker", "image", "inspect", "--format", "{{.Id}} created={{.Created}}", image).Output(); err == nil {
+		log.Printf("Using Concourse image %q: %s", image, strings.TrimSpace(string(out)))
 	}
 }
 
