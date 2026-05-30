@@ -6,11 +6,6 @@
 
 ---
 
-## [ ] Track: Fix in-flight check tracking leak
-*Link: [./tracks/check_scheduling_inflight_leak_20260409/](./tracks/check_scheduling_inflight_leak_20260409/)*
-
----
-
 ## [ ] Track: DaemonSet Artifact Security Hardening
 *Link: [./tracks/daemonset_artifact_security_20260408/](./tracks/daemonset_artifact_security_20260408/)*
 
@@ -44,7 +39,7 @@ _Link: [./tracks/atc_embedded_mcp_server_20260408/](./tracks/atc_embedded_mcp_se
 ---
 
 ### [x] Track: Fix in-flight check tracking leak (committed fix)
-_Link: [./tracks/check_scheduling_inflight_leak_20260409/](./tracks/check_scheduling_inflight_leak_20260409/)_
+_Link: [./archive/check_scheduling_inflight_leak_20260409/](./archive/check_scheduling_inflight_leak_20260409/)_
 
 ---
 
@@ -518,8 +513,8 @@ _Link: [./tracks/k8s_secret_ref_passthrough_for_pipeline_vars_20260412/](./track
 
 ---
 
-### [ ] Track: Remove implicit registry-image skip download
-_Link: [./tracks/remove_implicit_registry_image_skip_download_20260412/](./tracks/remove_implicit_registry_image_skip_download_20260412/)_
+### [x] Track: Remove implicit registry-image skip download
+_Link: [./archive/remove_implicit_registry_image_skip_download_20260412/](./archive/remove_implicit_registry_image_skip_download_20260412/)_
 
 ---
 
@@ -528,8 +523,8 @@ _Link: [./tracks/fix_native_check_self_notification_feedback_loop_20260413/](./t
 
 ---
 
-### [ ] Track: Route artifact reads through DaemonSet; remove exec-backed artifact I/O
-_Link: [./tracks/route_artifact_reads_through_daemonset_remove_exec_backed_artifact_io_20260418/](./tracks/route_artifact_reads_through_daemonset_remove_exec_backed_artifact_io_20260418/)_
+### [x] Track: Route artifact reads through DaemonSet; remove exec-backed artifact I/O
+_Link: [./archive/route_artifact_reads_through_daemonset_remove_exec_backed_artifact_io_20260418/](./archive/route_artifact_reads_through_daemonset_remove_exec_backed_artifact_io_20260418/)_
 
 ---
 

@@ -1,0 +1,8 @@
+{
+  "trackId": "remove_implicit_registry_image_skip_download_20260412",
+  "type": "bugfix",
+  "status": "archived",
+  "description": "Remove implicit registry-image skip download",
+  "createdAt": "2026-04-13T03:25:20.888Z",
+  "updatedAt": "2026-05-30T00:00:00.000Z"
+}
