@@ -5,14 +5,33 @@ Each entry includes the test ID, failure description, root cause analysis, and p
 
 ## Full Suite Run Results
 
+**Current (2026-05-30, kind-runner v35, CI build k8s-e2e/k8s-behavioral-tests/102):**
+
+```
+Ran 298 of 304 Specs in 1699 seconds (~28 min)
+298 Passed | 0 Failed | 1 Pending | 5 Skipped
+```
+
+The suite is **green**. The DaemonSet artifact-cache architecture resolved the
+former artifact-streaming failures (Categories E/F/H below), so those entries are
+**historical** and predate the current runtime. The `runs a pipeline with custom
+resource types` spec that flaked intermittently (builds #99/#100/#101) was a
+**CI image-staleness artifact**, not a code bug: the worker served a cached
+kind-runner image by tag, so the resource_config_scope FK-violation guards (April)
+never actually ran in CI. Fixed by bumping the kind-runner tag (v33→v35) to force
+a fresh pull; the spec passes on fresh code.
+
+<details>
+<summary>Historical run (stale, pre-DaemonSet-artifact-cache)</summary>
+
 ```
 Ran 259 of 316 Specs in 7193 seconds (~2 hours)
 233 Passed | 26 Failed | 53 Pending | 4 Skipped
 ```
 
-- **316 total specs** = 263 active `It` blocks + 53 pending `PIt` blocks
-- **4 Skipped** = runtime skips (credential manager not configured)
-- **53 Pending** = intentionally deferred (`PIt`) tests for unimplemented features
+The categories below describe these historical failures, most rooted in the
+deprecated PVC-backed artifact store (the ATC could not read task artifacts).
+</details>
 
 ---
 

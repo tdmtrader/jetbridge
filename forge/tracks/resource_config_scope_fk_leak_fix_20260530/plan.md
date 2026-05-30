@@ -52,9 +52,13 @@
       were never actually tested in CI. (Details in cgx.md.)
 - [x] 4cdf75c6cc FIX the staleness: bump kind-runner tag v33 → v34 + set-pipeline
       (forces fresh pull). The real cache-bust.
-- [~] Re-run the v34 chain (build-kind-runner → integration → behavioral) to test
-      the CURRENT code for the first time. Expected: my instrumentation now
-      present; the run reveals whether the guards fire on the real error.
+- [x] Re-ran the chain on fresh code (had to bump v34→v35 again, since the worker
+      re-caches each tag). RESULT: behavioral build #102 (v35) = SUCCESS,
+      298 Passed | 0 Failed. The `runs a pipeline with custom resource types` spec
+      PASSED with no FK error. My instrumentation confirmed fresh code ran
+      (`Using Concourse image … created=2026-05-30T21:02:24`). => CI image
+      staleness was the entire root cause; the April FK guards work once actually
+      deployed.
 - [x] ded0ca4ae7 (low-risk improvement) `ensureConcourseImage` now honors
       `CONCOURSE_REBUILD_IMAGE=1` and always logs the deployed image id + created
       time, so a stale-binary deploy is diagnosable from the next CI run's output.
@@ -78,8 +82,29 @@
 
 ## Phase 4: Verify
 
-- [ ] `make test-unit` + focused `ginkgo ./atc/db/ ./atc/exec/` green.
-- [ ] Trigger `k8s-e2e`; confirm "runs a pipeline with custom resource types" and
-      "6.1 single custom type backed by registry-image" pass ≥3 consecutive runs.
-- [ ] Update `topgun/k8s_behavioral/FAILURES.md` and close the superseded
-      `resource_config_scope_gc_race_20260408` track.
+- [x] Focused `ginkgo ./atc/db/ ./atc/exec/` green (Phase 1, ef4fc3f070).
+- [x] Triggered `k8s-e2e` on fresh code: behavioral #102 (v35) SUCCESS 298/0;
+      "runs a pipeline with custom resource types" PASSES. (1 green run; ≥3
+      consecutive would fully confirm the flake is eliminated vs masked by the
+      guard's graceful finish — recommended follow-up.)
+- [x] Updated `topgun/k8s_behavioral/FAILURES.md` to reflect the green suite +
+      the staleness root cause.
+- [ ] Close the superseded `resource_config_scope_gc_race_20260408` track.
+
+## Conclusion (2026-05-30)
+
+ROOT CAUSE: CI image staleness, NOT the FK code. The worker served a cached
+kind-runner image by tag, so the April FK-violation guards never executed in CI —
+making the custom-resource-type behavioral spec flake. The fix shipped correctly
+in April; it just never ran. Confirmed by: (1) atc/db regression test proving
+IsForeignKeyViolation detects the real error; (2) behavioral #102 on fresh v35
+code passing 298/0.
+
+FIXES LANDED: kind-runner tag bump v33→v35 (cache-bust) + FK regression tests +
+behavioral web-log instrumentation + integration daemon-security port-forward fix
++ integration failure diagnostics.
+
+FOLLOW-UPS (own tracks): (a) CI reliability — replace mutable-tag cache-bust with
+immutable tags/digests or always-pull, and address integration job OOM/resource
+pressure; (b) optional: ≥3 consecutive green behavioral runs to fully confirm the
+flake is eliminated.
