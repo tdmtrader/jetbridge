@@ -34,6 +34,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -218,6 +219,7 @@ var _ = BeforeEach(func() {
 })
 
 var _ = AfterEach(func() {
+	dumpWebLogsOnFailure()
 	destroyPipeline()
 	if pipelineName != "" {
 		cleanupPodsWithLabel(fmt.Sprintf(
@@ -236,6 +238,28 @@ func envOr(key, defaultVal string) string {
 		return v
 	}
 	return defaultVal
+}
+
+// dumpWebLogsOnFailure prints recent concourse-web logs when the current spec
+// failed. The build log otherwise only shows fly client output; web-side
+// diagnostics (e.g. the "scope-deleted-during-check" FK-race guard log) live in
+// the web pod and are needed to tell whether a guard fired vs was bypassed.
+func dumpWebLogsOnFailure() {
+	if !CurrentSpecReport().Failed() || config.Kubeconfig == "" {
+		return
+	}
+	out, err := exec.Command("kubectl",
+		"--kubeconfig", config.Kubeconfig,
+		"-n", config.Namespace,
+		"logs", "-l", "app.kubernetes.io/component=web",
+		"--tail=800", "--prefix",
+	).CombinedOutput()
+	if err != nil {
+		log.Printf("dumpWebLogsOnFailure: kubectl logs failed: %v", err)
+		return
+	}
+	log.Printf("=== concourse-web logs (tail 800) for FAILED spec %q ===\n%s=== end concourse-web logs ===",
+		CurrentSpecReport().FullText(), string(out))
 }
 
 // ---------------------------------------------------------------------
