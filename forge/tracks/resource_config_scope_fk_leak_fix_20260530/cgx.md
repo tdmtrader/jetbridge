@@ -148,6 +148,26 @@ cache-bust pattern) + set-pipeline. Forces a fresh pull of a never-cached tag.
   serve cached content and silently ignore fresh pushes — invalidating CI
   results. Either use immutable tags/digests or always bump on change.
 
+## Staleness-exposed integration failures resolved (2026-05-30)
+
+Running fresh code (v34/v35) surfaced 2 integration failures stale CI had masked:
+- #1 `Artifact Daemon Security: can write to hostPath storage` — TEST BUG: connected
+  to daemon Status.PodIP (not routable from the test host in testcontainers-K3s).
+  Fixed (commit 07d0d449f7) with a portForwardDaemon helper. PASSES on v35.
+- #2 `Artifact Read After Producer Pod Reap` — ENVIRONMENTAL: fly watch SIGKILLed
+  (exit 137) at ~3s = OOM/resource pressure, NOT a route-artifact regression.
+  Confirmed by passing on a clean v35 run. Added dumpDiagnosticsOnFailure
+  (events + web logs) to confirm OOM if it recurs.
+
+Integration v35 retry: SUCCESS 128 Passed | 0 Failed. Behavioral now unblocked.
+
+### meta-finding (own track candidate)
+- [2026-05-30] The k8s-e2e integration job is environmentally flaky: ~3 of 5 runs
+  errored at setup or mid-run (OOM/resource pressure in the KinD-in-DinD task
+  pods). And the v33→v34→v35 tag-bump cache-bust is a band-aid — the real fix is
+  immutable tags/digests or always-pull for the kind-runner rootfs. Worth a
+  dedicated CI-reliability track.
+
 ## Key references
 - `atc/exec/check_step.go:162-167, 254-262` — FK guards
 - `atc/db/errors.go` — `IsForeignKeyViolation` (errors.As + SQLSTATE string fallback)
