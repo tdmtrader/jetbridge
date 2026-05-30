@@ -28,7 +28,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -201,10 +203,66 @@ var _ = BeforeEach(func() {
 })
 
 var _ = AfterEach(func() {
+	dumpDiagnosticsOnFailure()
 	destroyPipeline()
 	cleanupOrphanedPods()
 	Expect(os.RemoveAll(tmp)).To(Succeed())
 })
+
+// dumpDiagnosticsOnFailure prints namespace events and recent concourse-web
+// logs when the current spec failed. Helps distinguish real failures from
+// resource-pressure kills (e.g. a SIGKILL/exit-137 OOM of fly or a task pod) in
+// the heavy KinD-in-DinD CI environment.
+func dumpDiagnosticsOnFailure() {
+	if !CurrentSpecReport().Failed() || config.Kubeconfig == "" {
+		return
+	}
+	if events, err := exec.Command("kubectl", "--kubeconfig", config.Kubeconfig,
+		"-n", config.Namespace, "get", "events", "--sort-by=.lastTimestamp",
+	).CombinedOutput(); err == nil {
+		log.Printf("=== k8s events (%s) for FAILED spec %q ===\n%s",
+			config.Namespace, CurrentSpecReport().FullText(), string(events))
+	}
+	if webLogs, err := exec.Command("kubectl", "--kubeconfig", config.Kubeconfig,
+		"-n", config.Namespace, "logs", "-l", "app.kubernetes.io/component=web",
+		"--tail=300", "--prefix",
+	).CombinedOutput(); err == nil {
+		log.Printf("=== concourse-web logs (tail 300) ===\n%s=== end diagnostics ===", string(webLogs))
+	}
+}
+
+// portForwardDaemon starts a kubectl port-forward to the given artifact daemon
+// pod and returns a base URL plus a stop func. Pod IPs are not routable from the
+// test host in the testcontainers-K3s environment, so daemon HTTP checks must go
+// through a port-forward (the same way the suite reaches the ATC).
+func portForwardDaemon(podName string, port int) (string, func()) {
+	localPort := findFreePort()
+	cmd := exec.Command("kubectl",
+		"--kubeconfig", config.Kubeconfig,
+		"-n", config.Namespace,
+		"port-forward", "pod/"+podName,
+		fmt.Sprintf("%d:%d", localPort, port),
+	)
+	cmd.Stdout = GinkgoWriter
+	cmd.Stderr = GinkgoWriter
+	Expect(cmd.Start()).To(Succeed(), "failed to start kubectl port-forward to daemon")
+
+	Eventually(func() error {
+		conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", localPort), time.Second)
+		if err != nil {
+			return err
+		}
+		_ = conn.Close()
+		return nil
+	}, 30*time.Second, 500*time.Millisecond).Should(Succeed(), "port-forward to daemon did not become ready")
+
+	return fmt.Sprintf("http://127.0.0.1:%d", localPort), func() {
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+			_, _ = cmd.Process.Wait()
+		}
+	}
+}
 
 // ---------------------------------------------------------------------
 // Config helpers

@@ -46,11 +46,9 @@ var _ = Describe("Artifact Daemon Security", func() {
 	})
 
 	It("can write to hostPath storage", func() {
-		By("getting the daemon pod IP")
-		podIP := daemonPod.Status.PodIP
-		Expect(podIP).ToNot(BeEmpty(), "expected daemon pod to have a PodIP")
-
-		daemonURL := fmt.Sprintf("http://%s:7780", podIP)
+		By("port-forwarding to the daemon pod (pod IPs are not routable from the test host)")
+		daemonURL, stop := portForwardDaemon(daemonPod.Name, 7780)
+		defer stop()
 		client := &http.Client{Timeout: 10 * time.Second}
 
 		By("verifying /healthz is reachable")
@@ -121,10 +119,11 @@ var _ = Describe("Artifact Daemon Security", func() {
 			if *sc.RunAsNonRoot {
 				// Verify the daemon can still write — if this PUT fails,
 				// RunAsNonRoot is breaking hostPath access.
-				podIP := daemonPod.Status.PodIP
+				daemonURL, stop := portForwardDaemon(daemonPod.Name, 7780)
+				defer stop()
 				client := &http.Client{Timeout: 10 * time.Second}
 				req, _ := http.NewRequest(http.MethodPut,
-					fmt.Sprintf("http://%s:7780/artifacts/non-root-check", podIP),
+					daemonURL+"/artifacts/non-root-check",
 					bytes.NewReader([]byte("test")))
 				resp, err := client.Do(req)
 				if err != nil || resp.StatusCode != http.StatusCreated {
