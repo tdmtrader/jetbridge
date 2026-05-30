@@ -42,10 +42,14 @@
       content-hashed COPY layer), so CI deploys fresh. Stale-binary hypothesis
       REFUTED for CI. helmDeployConcourse parses the ref correctly
       (splitImageRef) and deploys with IfNotPresent into a fresh K3s container.
-- [ ] DECISIVE NEXT STEP (runtime): trigger a `k8s-e2e` behavioral run; when it
-      fails, inspect web logs for `scope-deleted-during-check` (guard fired) vs a
-      raw `save versions:` build error (guard bypassed). This disambiguates the
-      remaining contradiction that static/image analysis cannot.
+- [x] e9de3901fe Instrument the behavioral harness to dump concourse-web logs on
+      spec failure (was only showing fly client output) so the guard log is
+      visible in CI output.
+- [~] DECISIVE NEXT STEP (runtime): push to origin/jetbridge, rebuild kind-runner,
+      run the full `k8s-e2e` chain; when behavioral fails, inspect the dumped web
+      logs for `scope-deleted-during-check` (guard fired) vs a raw `save versions:`
+      build error (guard bypassed). Disambiguates the contradiction static analysis
+      cannot.
 - [x] ded0ca4ae7 (low-risk improvement) `ensureConcourseImage` now honors
       `CONCOURSE_REBUILD_IMAGE=1` and always logs the deployed image id + created
       time, so a stale-binary deploy is diagnosable from the next CI run's output.
