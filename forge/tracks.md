@@ -6,6 +6,12 @@
 
 ---
 
+## [ ] Track: Resolve resource_config_scope FK-violation leak
+*Link: [./tracks/resource_config_scope_fk_leak_fix_20260530/](./tracks/resource_config_scope_fk_leak_fix_20260530/)*
+*Supersedes: `resource_config_scope_gc_race_20260408`*
+
+---
+
 ## [ ] Track: DaemonSet Artifact Security Hardening
 *Link: [./tracks/daemonset_artifact_security_20260408/](./tracks/daemonset_artifact_security_20260408/)*
 
@@ -13,6 +19,7 @@
 
 ## [ ] Track: Fix resource_config_scope GC Race Condition
 *Link: [./tracks/resource_config_scope_gc_race_20260408/](./tracks/resource_config_scope_gc_race_20260408/)*
+*Superseded by `resource_config_scope_fk_leak_fix_20260530` — fix was ineffective; behavioral spec still flaps.*
 
 ---
 

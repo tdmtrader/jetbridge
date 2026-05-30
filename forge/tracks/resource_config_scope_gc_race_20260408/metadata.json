@@ -3,5 +3,7 @@
   "type": "bugfix",
   "status": "active",
   "created": "2026-04-08",
-  "branch": "jetbridge"
+  "branch": "jetbridge",
+  "supersededBy": "resource_config_scope_fk_leak_fix_20260530",
+  "note": "Fix (59c43a31ff + 9bb8537a6a) shipped but the custom-resource-type behavioral spec still flaps with the FK violation; superseding track investigates why the deployed guard does not fire."
 }
