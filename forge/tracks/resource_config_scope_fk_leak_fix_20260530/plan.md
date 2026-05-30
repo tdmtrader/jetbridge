@@ -11,7 +11,7 @@
       (origin == HEAD for the 3 files), deferred FK (constraint is immediate
       ON DELETE CASCADE), unguarded Update* calls (UPDATE on scope row → no FK).
 
-## Phase 1: Reproduce in the real check path (RED)
+## Phase 1: Reproduce in the real check path (RED) [checkpoint: 4fd5e9e01c]
 
 - [x] ef4fc3f070 Write integration test `atc/db/errors_test.go` (real Postgres via
       postgresrunner): create a `resource_config_scope`, delete it, call
@@ -32,10 +32,23 @@
       is present (e.g., log `scope-deleted-during-check` already exists — confirm
       it appears in web logs during a reproduced race), to prove at runtime which
       binary is deployed.
-- [ ] Audit the behavioral harness image path: confirm `concourse-local:latest`
-      built in the task is the image actually loaded into the KinD/K3s cluster
-      (no stale layer reuse). Cross-check with the `registry.home` staleness
-      finding. File/fix any image-propagation gap.
+- [x] Audit the behavioral harness image path. FINDINGS: (1) footgun —
+      `ensureConcourseImage` (topgun/k8s_behavioral/cluster_lifecycle_test.go:95)
+      only builds when the image is ABSENT, silently reusing a stale
+      `concourse-local:latest` if present (same in `buildAndLoadOOMTriggerImage`
+      + integration suite). Real reliability bug for local/reused envs. (2) BUT
+      this does NOT explain CI #100: the pipeline behavioral task runs
+      `docker build -t concourse-local:latest` BEFORE the test (fresh binary,
+      content-hashed COPY layer), so CI deploys fresh. Stale-binary hypothesis
+      REFUTED for CI. helmDeployConcourse parses the ref correctly
+      (splitImageRef) and deploys with IfNotPresent into a fresh K3s container.
+- [ ] DECISIVE NEXT STEP (runtime): trigger a `k8s-e2e` behavioral run; when it
+      fails, inspect web logs for `scope-deleted-during-check` (guard fired) vs a
+      raw `save versions:` build error (guard bypassed). This disambiguates the
+      remaining contradiction that static/image analysis cannot.
+- [ ] (low-risk improvement) Make `ensureConcourseImage` log the reused image's
+      created-time/digest so stale reuse is visible in test output; optionally
+      honor `CONCOURSE_REBUILD_IMAGE=1`.
 - [ ] Re-run the behavioral spec against a confirmed-fresh deploy.
 
 ## Phase 2b: Code-path bypass hypothesis (only if Phase 1 reproduces a leak)

@@ -88,6 +88,31 @@ verifies the deployed binary actually contains the guard at runtime.
 - [2026-05-30] No forge MCP server connected in this session; all track-file
   operations were manual edits + git commits (the skill's documented fallback).
 
+## Phase 2a image-path audit (2026-05-30)
+
+- Footgun: `topgun/k8s_behavioral/cluster_lifecycle_test.go:95` `ensureConcourseImage`
+  only `docker build`s when the image is ABSENT — reuses a stale
+  `concourse-local:latest` if present (same in `buildAndLoadOOMTriggerImage` and
+  `topgun/k8s/integration/cluster_lifecycle_test.go`). Real stale-code risk for
+  local/reused runs.
+- Refutation for CI: the pipeline behavioral task (`deploy/k8s-e2e-pipeline.yml`)
+  runs `docker build -t concourse-local:latest` before the test from a
+  freshly-compiled binary; Docker COPY layers are content-hashed, so CI always
+  deploys fresh. `helmDeployConcourse` parses the ref correctly and deploys with
+  `pullPolicy=IfNotPresent` into a fresh testcontainers K3s. => stale-binary
+  hypothesis REFUTED for build #100.
+
+### anti-pattern
+- [2026-05-30] `ensureConcourseImage` "build only if absent" silently tests stale
+  code on reused environments. Image-provisioning for tests should rebuild on
+  source change or at least surface the image's age/digest.
+
+### Outstanding
+The contradiction (guard present + provably catches the real error, yet build
+#100 errored on the guarded `save versions:` path) is NOT explained by code or
+image staleness. Resolve via runtime: trigger a behavioral run and capture web
+logs (`scope-deleted-during-check` vs raw `save versions:`).
+
 ## Key references
 - `atc/exec/check_step.go:162-167, 254-262` — FK guards
 - `atc/db/errors.go` — `IsForeignKeyViolation` (errors.As + SQLSTATE string fallback)
