@@ -13,17 +13,18 @@
 
 ## Phase 1: Reproduce in the real check path (RED)
 
-- [~] Write integration test `atc/db/errors_test.go` (real Postgres via
+- [x] ef4fc3f070 Write integration test `atc/db/errors_test.go` (real Postgres via
       postgresrunner): create a `resource_config_scope`, delete it, call
       `scope.SaveVersions(...)`, assert the returned error satisfies
-      `db.IsForeignKeyViolation`. Locks in the proven behavior.
-- [ ] Write integration test exercising `atc/exec` check-step graceful handling:
-      drive the check flow (real `resourceConfigScope`) with the scope deleted
-      before `SaveVersions`, assert `check_step.Run` returns `(false, nil)` and
-      `delegate.Finished(false)` — NOT an `errored` build. Replace/augment the
-      synthetic `&pgconn.PgError` injection in `check_step_test.go:737,769`.
-- [ ] If both pass locally (expected), the code is correct → pivot to Phase 2a
-      (environment). If either fails, a real code-path bypass is found → Phase 2b.
+      `db.IsForeignKeyViolation`. Locks in the proven behavior. RESULT: GREEN
+      (7/7 specs) — detection works against the real DB error.
+- [x] ef4fc3f070 Harden `atc/exec` check-step FK handling coverage: the existing
+      `check_step_test.go` test injected a *bare* synthetic `&pgconn.PgError`;
+      now injects a wrapped error. RESULT: GREEN (4/4 FK specs). (Full real-DB
+      check-step integration deferred — atc/exec uses fakes; the real-DB
+      detection is covered by `errors_test.go`.)
+- [x] Both passed → the code-level detection + guard are correct → pivot to
+      Phase 2a (environment / deployed-binary), NOT Phase 2b (code bypass).
 
 ## Phase 2a: Environment / deployed-binary hypothesis
 

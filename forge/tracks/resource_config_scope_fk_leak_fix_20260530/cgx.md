@@ -57,6 +57,37 @@ staleness (consistent with the `registry.home` daemon image rejecting `--mirror-
 flags it should support). Phase 1 reproduces in the real check path; Phase 2a
 verifies the deployed binary actually contains the guard at runtime.
 
+## Phase 1 result (2026-05-30, commit ef4fc3f070)
+
+- `atc/db/errors_test.go` real-DB GC-race test is **GREEN**: deleting the
+  `resource_config_scope` then calling `SaveVersions` yields an error that
+  `IsForeignKeyViolation` detects. Confirms in the real flow what `cmd/fkrepro`
+  showed: detection is correct. The leak is therefore NOT a code-level detection
+  bug → Phase 2a (deployed-binary / image propagation) is the live hypothesis.
+- Hardened `atc/exec/check_step_test.go` FK test to a wrapped error (was a bare
+  synthetic `*pgconn.PgError`). GREEN.
+
+### good-pattern
+- [2026-05-30] A throwaway in-module reproduction (`cmd/fkrepro`) using the exact
+  production driver path (`sql.Open("pgx")` + `tx.QueryRow().Scan()`) decisively
+  refuted the "detection is broken" hypothesis before any fix was written, then
+  was promoted into a permanent `errors_test.go` regression test.
+
+### anti-pattern
+- [2026-05-30] The prior fix's unit tests injected a *synthetic* unwrapped
+  `&pgconn.PgError`, which `errors.As` matches trivially — so the tests passed
+  without ever exercising the real error shape. Guard against this: detection
+  helpers that classify driver errors must be tested against a real DB error.
+
+### frustration
+- [2026-05-30] Ginkgo CLI/package version mismatch (CLI 2.28.1 vs package 2.27.3)
+  prints a loud warning on every run; use `go run github.com/onsi/ginkgo/v2/ginkgo`
+  to match. Non-fatal but noisy.
+
+### missing-capability
+- [2026-05-30] No forge MCP server connected in this session; all track-file
+  operations were manual edits + git commits (the skill's documented fallback).
+
 ## Key references
 - `atc/exec/check_step.go:162-167, 254-262` — FK guards
 - `atc/db/errors.go` — `IsForeignKeyViolation` (errors.As + SQLSTATE string fallback)
