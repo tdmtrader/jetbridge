@@ -46,9 +46,11 @@
       fails, inspect web logs for `scope-deleted-during-check` (guard fired) vs a
       raw `save versions:` build error (guard bypassed). This disambiguates the
       remaining contradiction that static/image analysis cannot.
-- [ ] (low-risk improvement) Make `ensureConcourseImage` log the reused image's
-      created-time/digest so stale reuse is visible in test output; optionally
-      honor `CONCOURSE_REBUILD_IMAGE=1`.
+- [x] ded0ca4ae7 (low-risk improvement) `ensureConcourseImage` now honors
+      `CONCOURSE_REBUILD_IMAGE=1` and always logs the deployed image id + created
+      time, so a stale-binary deploy is diagnosable from the next CI run's output.
+      (Sibling `buildAndLoadOOMTriggerImage` + integration suite have the same
+      reuse pattern — left as follow-ups; not on the FK path.)
 - [ ] Re-run the behavioral spec against a confirmed-fresh deploy.
 
 ## Phase 2b: Code-path bypass hypothesis (only if Phase 1 reproduces a leak)
