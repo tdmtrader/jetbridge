@@ -2,17 +2,17 @@
 
 ## Phase 1: Decouple source from the toolchain image + auto-retry
 
-- [ ] Add a `repo` git resource to `deploy/k8s-e2e-pipeline.yml`
-      (uri https://github.com/tdmtrader/jetbridge.git, branch jetbridge — matches
-      the existing jetbridge pipeline + build-kind-runner's clone).
-- [ ] `build-kind-runner`: add `get: repo` (trigger) so the source version is an
-      input → enables `passed: [build-kind-runner]` consistency downstream.
-- [ ] `k8s-integration-tests`: add `get: repo` (passed: [build-kind-runner]);
-      add `inputs: [{name: repo}]` to the task; change `cd /src` → `cd repo` and
-      drop the `git init` hack (repo is a real checkout); add `attempts: 2`.
-- [ ] `k8s-behavioral-tests`: add `get: repo` (passed: [k8s-integration-tests]);
-      same task changes (`inputs: [repo]`, `cd repo`, `attempts: 2`).
-- [ ] `fly set-pipeline` to validate + apply.
+- [x] Add a `repo` git resource to `deploy/k8s-e2e-pipeline.yml` (line 15;
+      uri https://github.com/tdmtrader/jetbridge.git, branch jetbridge).
+- [x] `build-kind-runner`: `get: repo` (line 28) so the source version is an input.
+- [x] `k8s-integration-tests`: `get: repo` `passed: [build-kind-runner]`
+      (lines 150-151); `inputs: [repo]` (line 159); `cd repo` (line 169);
+      `attempts: 2` (line 155).
+- [x] `k8s-behavioral-tests`: `get: repo` `passed: [k8s-integration-tests]`
+      (lines 243-244); `inputs: [repo]` (line 252); `cd repo` (line 262);
+      `attempts: 2` (line 248).
+- [x] `fly set-pipeline` applied + validated: integration #181 built from `cd repo`
+      (path `/tmp/build/.../repo/...`), not baked `/src`, with no tag bump.
 
 ## Phase 2: Validate fresh-source-without-tag-bump
 
@@ -38,12 +38,22 @@ get-pod is reaped still routes through the reaped pod instead of the DaemonSet.
 NOT OOM (dumpDiagnosticsOnFailure showed normal scheduling events). This is a real
 regression in the route-artifact track, masked until now by stale CI. → own track.
 
-## Phase 3: Follow-up hardening (optional / future)
+## Phase 3: Follow-up hardening (DEFERRED — out of scope per spec)
 
-- [ ] Toolchain image immutability: pin the kind-runner rootfs by digest (a
+Explicitly out of scope for this track (spec "Out of Scope": full immutable-tag/
+digest pinning is future hardening; OOM tuning needs cluster-sizing data). The
+day-to-day staleness is already solved by the Phase 1 source-decoupling. These
+remain as documented future work — split to a dedicated hardening track if/when
+the toolchain image or cluster capacity becomes the bottleneck.
+
+- [~] Toolchain image immutability: pin the kind-runner rootfs by digest (a
       registry-image resource get used as the task `image:`) so even Dockerfile
       changes can't serve stale; resolves the insecure-registry caveat first.
-- [ ] OOM: right-size task-pod memory / reduce nested concurrency once cluster
-      capacity is known.
-- [ ] Consider dropping the `COPY . .` source bake from Dockerfile.kind-runner
-      entirely (image becomes pure toolchain) once Phase 1 is proven.
+      NOTE: needs Dockerfile.kind-runner rework — its build-time validation steps
+      (`go build ./cmd/concourse`, `go test -c ./topgun/...`) still consume the
+      baked `/src`; dropping `COPY . .` requires removing those first.
+- [~] OOM: right-size task-pod memory / reduce nested concurrency once cluster
+      capacity is known. (`attempts: 2` already absorbs transient retries; this is
+      for the early-startup OOM-kills that `attempts` cannot recover.)
+- [~] Consider dropping the `COPY . .` source bake from Dockerfile.kind-runner
+      entirely (image becomes pure toolchain) — coupled with the digest-pin item.

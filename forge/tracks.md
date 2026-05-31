@@ -6,9 +6,9 @@
 
 ---
 
-## [ ] Track: k8s-e2e CI reliability (stale-image + OOM)
+## [x] Track: k8s-e2e CI reliability (stale-image + OOM)
 *Link: [./tracks/ci_reliability_k8s_e2e_20260530/](./tracks/ci_reliability_k8s_e2e_20260530/)*
-*Staleness fix (build from git resource) + attempts:2 landed & validated; OOM resource-sizing is a Phase 3 follow-up.*
+*Completed 2026-05-31 — source decoupled from toolchain image (build from `repo` git resource, no tag bump needed); `attempts: 2` added; validated via #181 + #102/#103. Phase 3 (digest pinning, OOM sizing) deferred as out-of-scope future hardening.*
 
 ---
 

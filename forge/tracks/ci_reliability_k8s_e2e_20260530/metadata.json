@@ -1,9 +1,11 @@
 {
   "trackId": "ci_reliability_k8s_e2e_20260530",
   "type": "refactor",
-  "status": "active",
-  "description": "Fix k8s-e2e CI reliability: stale-image staleness (mutable-tag cache) and integration/behavioral OOM flakiness",
+  "status": "completed",
+  "description": "Fixed k8s-e2e CI staleness at the root: decoupled the source-under-test from the kind-runner toolchain image. integration + behavioral jobs now build from a fresh `repo` git resource (`cd repo`) instead of the image's baked `/src`, so a code change is tested fresh WITHOUT a mutable-tag bump (the prior band-aid). Added `attempts: 2` to the privileged tasks to absorb transient OOM/resource-pressure retries. Validated: integration #181 built from `cd repo` (not `/src`) with no tag bump; chain green through behavioral #102/#103.",
   "branch": "jetbridge",
   "createdAt": "2026-05-30T00:00:00.000Z",
-  "updatedAt": "2026-05-30T00:00:00.000Z"
+  "updatedAt": "2026-05-31T00:00:00.000Z",
+  "completedAt": "2026-05-31T00:00:00.000Z",
+  "completionCaveats": "Phase 3 hardening deferred as out-of-scope per spec: immutable-tag/digest pinning of the toolchain image (needs Dockerfile.kind-runner rework to drop the baked-/src build-time validation steps) and OOM pod-memory right-sizing (needs cluster-capacity data; attempts:2 already covers transient retries). Split to a dedicated hardening track if the toolchain image or cluster capacity becomes the bottleneck."
 }
