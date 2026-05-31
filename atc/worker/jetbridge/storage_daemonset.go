@@ -531,11 +531,22 @@ func (b *DaemonSetBackend) WrapVolumeForLookup(ctx context.Context, key, handle,
 		probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()
 		if daemonIP, found, err := b.daemonClient.ProbeResourceCache(probeCtx, key); err == nil && found {
-			return NewDaemonSetVolumeFromIP(key, handle, workerName, daemonIP, b.config)
+			vol := NewDaemonSetVolumeFromIP(key, handle, workerName, daemonIP, b.config)
+			vol.SetDaemonClient(b.daemonClient)
+			return vol
 		}
 	}
 
-	return NewDaemonSetVolume(key, handle, workerName, dbVolume, sourceNode, b.config, b.nodeIPResolver)
+	vol := NewDaemonSetVolume(key, handle, workerName, dbVolume, sourceNode, b.config, b.nodeIPResolver)
+	// Wire the daemonClient so lookup-wrapped reads (e.g. a web-process
+	// file-config StreamOut on a get-step output) get peer-fallback and
+	// daemon discovery when the recorded source node is unreachable —
+	// matching WrapVolumeForArtifact. Without this the volume can only hit
+	// the recorded node and hard-fails with no recovery.
+	if b.daemonClient != nil {
+		vol.SetDaemonClient(b.daemonClient)
+	}
+	return vol
 }
 
 // RegisterResourceCache registers a resource cache alias on the daemon using

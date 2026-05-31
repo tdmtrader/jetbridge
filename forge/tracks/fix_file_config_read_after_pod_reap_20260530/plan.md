@@ -2,42 +2,51 @@
 
 ## Phase 0: Confirm the root cause (read-only)
 
-- [ ] Trace whether get-step output volumes are registered/mirrored with the
-      DaemonSet. Grep: `RegisterResourceCache`, `RecordOutputs`, `TriggerMirror`,
-      `DaemonClient` usage in `atc/exec/get_step.go`, `atc/engine/`, and
-      `atc/worker/jetbridge/`. Compare to how task OUTPUTS get registered
-      (the cross-step case that works).
-- [ ] Inspect `ArtifactFromVolume(...).StreamOut` in `atc/worker/jetbridge`
-      (volume.go / worker.go around the DaemonSet-backed volume): when the
-      producing pod is gone, does it re-probe the daemon (cf.
-      fix_cache_locator_pod_ip_poisoning) or exec? Find the exec fallback that
-      reaches `executor.go:122`.
-- [ ] Decide H1 (get output not registered with daemon) vs H2 (StreamOut doesn't
-      re-probe). Record the finding in cgx.md.
+- [x] Trace whether get-step output volumes are registered/mirrored with the
+      DaemonSet. FINDING: they ARE — get Dir volume is hostPath-backed at
+      steps/{handle}/dir, RecordOutputs matches it (Get != Task/Check) and
+      registers a daemon alias under ArtifactKey({handle}-dir), and get_step.go:302
+      wraps it via ArtifactFromVolume. Pure-H1 refuted. (see cgx.md Phase 0 finding)
+- [x] Inspect `ArtifactFromVolume(...).StreamOut`. FINDING: ArtifactFromVolume →
+      WrapVolumeForLookup → *DaemonSetVolume, whose StreamOut is HTTP-ONLY and
+      NEVER execs — so it cannot reach executor.go:122. BUT WrapVolumeForLookup
+      creates the volume WITHOUT a daemonClient (unlike WrapVolumeForArtifact),
+      so it has no peer-fallback / daemon-discovery recovery.
+- [x] Decide H1 vs H2. DECISION (provisional, needs CI confirm): neither pure form —
+      it's a routing-resilience gap. The lookup-wrapped DaemonSetVolume lacks a
+      daemonClient, so its read depends entirely on locator sourceNode + NodeIP
+      resolution + a best-effort alias POST; any failure hard-fails with no recovery.
+      The "exec stream" text is the test's own assertion guess, not a confirmed error.
+      BLOCKER: confirm exact failure from CI build #181 diagnostics (fly token invalid).
 
-## Phase 1: Reproduce (RED)
+## Phase 1: Reproduce / confirm the real failure (RED)
 
-- [ ] Add a focused test that exercises the file-config read path with the
-      producing volume/pod removed and asserts it routes via the DaemonSet
-      (not exec). Prefer a unit/integration test in `atc/worker/jetbridge` or
-      `atc/exec` that can run locally against fakes/real-DB where possible; the
-      full behavior is covered by the existing topgun integration spec.
-- [ ] Confirm it reproduces the exec-into-reaped-pod failure.
+- [x] CONFIRMED via CI build #181 diagnostics: the build errors DURING THE GET
+      STEP ("pod deleted externally before reaching Running: Pending"), failing in
+      ~6.5s (< the 45s `hold`). The premise (artifact-routing exec) was WRONG — it's
+      a TEST RACE: `deleteProducerPod` deleted the get pod mid-fetch. (cgx.md "CI
+      CONFIRMATION")
+- [x] Reproduced the daemonClient-gap (resilience) via a unit test:
+      `TestDaemonSetBackend_WrapVolumeForLookup_SetsDaemonClient` fails before the
+      fix (lookup-wrapped volume had nil daemonClient → no peer-fallback).
 
 ## Phase 2: Fix (GREEN)
 
-- [ ] If H1: register/mirror the get-step output with the DaemonSet so the
-      daemon can serve it after the pod dies (mirror on get completion, or
-      register a cache alias — mirror the approach used for task outputs /
-      resource caches).
-- [ ] If H2: make the wrapped artifact's StreamOut re-probe the daemon and route
-      via HTTP instead of falling back to exec when the producing pod is absent.
-- [ ] Ensure no exec-backed StreamOut remains on this read path.
+- [x] Test race fix (`topgun/k8s/integration/artifact_read_after_reap_test.go`):
+      gate producer-pod deletion on the intermediate step (`hold`/`bystander`)
+      being Running (proves the producer completed), and target the producer by
+      `concourse.ci/step` label (cross-step has 3 type=task pods). Both specs.
+- [x] Resilience fix (`atc/worker/jetbridge/storage_daemonset.go` WrapVolumeForLookup):
+      wire `SetDaemonClient` on the returned volume(s) so lookup-wrapped reads
+      (web-process file-config StreamOut) get peer-fallback / daemon discovery,
+      matching WrapVolumeForArtifact.
 
 ## Phase 3: Verify
 
-- [ ] `make test-unit` + focused `ginkgo ./atc/exec/ ./atc/worker/jetbridge/`.
-- [ ] CI: `k8s-e2e/k8s-integration-tests` spec "loads a file-based task config
-      even after the producing get pod has been reaped" passes (build exits 0).
-      CI builds from fresh `repo` now, so just push + trigger (no tag bump).
-- [ ] Confirm no regression in the sibling read-after-reap / get / task specs.
+- [x] Local: `go vet ./topgun/k8s/integration/` + `go build ./atc/worker/jetbridge/`
+      pass; `go test ./atc/worker/jetbridge/` (storage/volume/worker) green incl. the
+      two new WrapVolumeForLookup tests.
+- [ ] CI: push + trigger `k8s-e2e/k8s-integration-tests`; spec "loads a file-based
+      task config even after the producing get pod has been reaped" must now exit 0
+      (and take >45s, proving `hold` ran). CI builds from fresh `repo` (no tag bump).
+- [ ] Confirm no regression in the sibling cross-step / get / task specs.

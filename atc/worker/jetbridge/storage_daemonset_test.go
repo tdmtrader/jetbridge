@@ -1070,6 +1070,46 @@ func TestDaemonSetBackend_WrapVolumeForLookup_RcKeyProbeErrorFallsThrough(t *tes
 	}
 }
 
+// TestDaemonSetBackend_WrapVolumeForLookup_SetsDaemonClient guards the
+// resilience fix: a lookup-wrapped volume must carry the backend's
+// daemonClient so its StreamOut can peer-fallback / discover daemons when
+// the recorded source node is unreachable. Without this, web-process reads
+// of a get-step output (e.g. a file: task config) can only hit the recorded
+// node and hard-fail with no recovery. Mirrors WrapVolumeForArtifact.
+func TestDaemonSetBackend_WrapVolumeForLookup_SetsDaemonClient(t *testing.T) {
+	daemon := newDaemonTestServer(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	})
+	defer daemon.close()
+
+	locator := NewArtifactLocator()
+	locator.Record("artifact-key-1", "source-node", "handle/dir")
+	b := daemonBackend(t, locator, daemon)
+
+	vol := b.WrapVolumeForLookup(context.Background(), "artifact-key-1", "handle-1", "worker-1", nil)
+	dsv, ok := vol.(*DaemonSetVolume)
+	if !ok {
+		t.Fatalf("expected *DaemonSetVolume, got %T", vol)
+	}
+	if dsv.daemonClient == nil {
+		t.Fatal("expected lookup-wrapped volume to carry a daemonClient for peer-fallback")
+	}
+}
+
+// TestDaemonSetBackend_WrapVolumeForLookup_NoDaemonClientStaysNil verifies the
+// fix doesn't fabricate a client when the backend has none configured.
+func TestDaemonSetBackend_WrapVolumeForLookup_NoDaemonClientStaysNil(t *testing.T) {
+	b := testBackend(nil) // testBackend wires no daemonClient
+	vol := b.WrapVolumeForLookup(context.Background(), "artifact-key-1", "handle-1", "worker-1", nil)
+	dsv, ok := vol.(*DaemonSetVolume)
+	if !ok {
+		t.Fatalf("expected *DaemonSetVolume, got %T", vol)
+	}
+	if dsv.daemonClient != nil {
+		t.Error("expected nil daemonClient when backend has none configured")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Nil backend fallback (container.go behavior with nil StorageBackend)
 // ---------------------------------------------------------------------------
