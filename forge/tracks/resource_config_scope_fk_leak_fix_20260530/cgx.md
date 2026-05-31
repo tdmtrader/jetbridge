@@ -168,9 +168,45 @@ Integration v35 retry: SUCCESS 128 Passed | 0 Failed. Behavioral now unblocked.
   immutable tags/digests or always-pull for the kind-runner rootfs. Worth a
   dedicated CI-reliability track.
 
+## Phase 3 defense-in-depth (2026-05-31)
+
+Two consecutive green behavioral runs confirmed (#102 + #103, v35, 298/0) via
+`fly -t home watch`, closing the runtime question. Then closed the native-path
+gap:
+
+- `atc/lidar/scanner.go` `resolveResourceType` + `resolveResource` previously
+  logged ANY error from `SetResourceConfigScope` / `SaveVersions` at `Error` and
+  returned. Functionally non-fatal (lidar goroutine, not a build), but logging a
+  benign GC-race FK violation as `Error` is a false-positive alert.
+- FIX: added `db.IsForeignKeyViolation(err)` branches that demote the race to
+  `Debug` (`scope-deleted-before-version-save` for the SetResourceConfigScope FK,
+  `scope-deleted-during-version-save` for the SaveVersions FK), mirroring the
+  `check_step.go` convention. Non-FK errors keep `Error`.
+- Tests: 12 new specs in `atc/lidar/scanner_test.go` (injected a wrapped
+  `*pgconn.PgError` 23503; assert Debug present + Error absent; SetResourceConfigScope
+  FK skips SaveVersions; non-FK still logs Error). All 43 lidar specs green;
+  `go build ./...` clean.
+
+INSERT audit conclusion: the only FK surfaces that propagate to a build/scan are
+`SaveVersions` and `SetResourceConfigScope`; both are now guarded on the build
+path (check_step.go) AND the native scan path (scanner.go). `UpdateScopeLastCheck*`
+are UPDATEs → 0 rows on delete, no FK.
+
+### good-pattern
+- [2026-05-31] Shared error blocks across two near-identical functions
+  (`resolveResourceType`/`resolveResource`) edited via a single `replace_all`
+  matching only the FK-distinct inner block — keeps the guard identical in both
+  sites and avoids drift.
+
+### decision
+- [2026-05-31] For the native scanner, demote FK race to `Debug` (not `Info` like
+  check_step): the scanner runs continuously in the background and is not tied to
+  a user build, so a routine GC race shouldn't surface at build-visible level.
+
 ## Key references
-- `atc/exec/check_step.go:162-167, 254-262` — FK guards
+- `atc/exec/check_step.go:162-170, 254-262` — FK guards (build path)
+- `atc/lidar/scanner.go` resolveResourceType + resolveResource — FK guards (native path, 2026-05-31)
 - `atc/db/errors.go` — `IsForeignKeyViolation` (errors.As + SQLSTATE string fallback)
 - `atc/db/resource_config_scope.go:91-149, 298-331` — SaveVersions / saveResourceVersion
-- `atc/lidar/scanner.go:224, 399` — native-path SaveVersions (unguarded, logs+returns)
-- Prior track: `forge/tracks/resource_config_scope_gc_race_20260408/`
+- `atc/lidar/scanner_test.go` — FK-race specs (Phase 3)
+- Prior track: `forge/tracks/resource_config_scope_gc_race_20260408/` (completed 1ac2631301)

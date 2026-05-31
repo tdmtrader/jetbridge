@@ -28,10 +28,12 @@
 
 ## Phase 2a: Environment / deployed-binary hypothesis
 
-- [ ] Add a one-line startup or check-path log assertion that the FK guard build
-      is present (e.g., log `scope-deleted-during-check` already exists — confirm
-      it appears in web logs during a reproduced race), to prove at runtime which
-      binary is deployed.
+- [x] Add a one-line startup or check-path log assertion that the FK guard build
+      is present. RESOLVED (obsolete as written): the provenance log from
+      ded0ca4ae7 (`Using Concourse image … created=<ts>`) already proves at
+      runtime which binary is deployed; that was the decisive signal for the
+      staleness root cause. There is no longer a race to observe the guard firing
+      on — once fresh code runs, the spec passes with no FK violation (#102/#103).
 - [x] Audit the behavioral harness image path. FINDINGS: (1) footgun —
       `ensureConcourseImage` (topgun/k8s_behavioral/cluster_lifecycle_test.go:95)
       only builds when the image is ABSENT, silently reusing a stale
@@ -64,32 +66,52 @@
       time, so a stale-binary deploy is diagnosable from the next CI run's output.
       (Sibling `buildAndLoadOOMTriggerImage` + integration suite have the same
       reuse pattern — left as follow-ups; not on the FK path.)
-- [ ] Re-run the behavioral spec against a confirmed-fresh deploy.
+- [x] Re-run the behavioral spec against a confirmed-fresh deploy. DONE: two
+      consecutive green runs on fresh code — behavioral #102 AND #103 (v35),
+      298 Passed | 0 Failed; "runs a pipeline with custom resource types" passes
+      in both (verified 2026-05-31 via `fly -t home watch`).
 
 ## Phase 2b: Code-path bypass hypothesis (only if Phase 1 reproduces a leak)
 
-- [ ] Identify the exact statement/path that leaks the FK error in the real flow.
-- [ ] Apply the minimal guard so the error is detected and handled gracefully.
+- [x] N/A — Phase 1 established the code-level detection + guards are correct
+      (real-DB `errors_test.go` GREEN); the leak was environmental (image
+      staleness), not a code-path bypass. No statement leaks the FK error in the
+      real flow once fresh code is deployed.
 
 ## Phase 3: Close remaining FK-race gaps (defense in depth)
 
-- [ ] Decide and document native-path policy: `lidar/scanner.go:224,399`
-      `SaveVersions` currently logs `failed-to-save-versions` and returns. Confirm
-      silent-drop is acceptable for native type resolution, or add explicit
-      `IsForeignKeyViolation` handling + a debug log, and a test.
-- [ ] Audit all scope-referencing INSERTs reachable during a check for the same
-      race; guard any that can propagate to a build.
+- [x] Decide and document native-path policy: `lidar/scanner.go` `SaveVersions`
+      (and `SetResourceConfigScope`) on both native paths (`resolveResourceType`,
+      `resolveResource`). DECISION: do NOT silently drop at `Error` level — that
+      logs a benign GC race as a false-positive error. Added explicit
+      `db.IsForeignKeyViolation` handling that demotes the race to `Debug`
+      (`scope-deleted-before-version-save` / `scope-deleted-during-version-save`),
+      mirroring the `atc/exec/check_step.go` guard convention. Non-FK errors keep
+      the existing `Error` log. Covered by 12 new specs in
+      `atc/lidar/scanner_test.go` (FK→Debug, no Error; SetResourceConfigScope FK
+      skips SaveVersions; non-FK→Error preserved). All 43 lidar specs green.
+- [x] Audit all scope-referencing INSERTs reachable during a check for the same
+      race. CONCLUSION: the only FK surfaces that propagate to a build/scan are
+      `SaveVersions` (resource_config_versions FK) and `SetResourceConfigScope`
+      (resources/resource_types FK). Both are now guarded on BOTH the build path
+      (`check_step.go:162-170,254-262`) and the native scan path
+      (`scanner.go` resolveResourceType + resolveResource). `UpdateScopeLastCheck*Time`
+      are UPDATEs on the scope row → delete yields 0 rows, no FK error (per cgx).
 
 ## Phase 4: Verify
 
 - [x] Focused `ginkgo ./atc/db/ ./atc/exec/` green (Phase 1, ef4fc3f070).
-- [x] Triggered `k8s-e2e` on fresh code: behavioral #102 (v35) SUCCESS 298/0;
-      "runs a pipeline with custom resource types" PASSES. (1 green run; ≥3
-      consecutive would fully confirm the flake is eliminated vs masked by the
-      guard's graceful finish — recommended follow-up.)
+- [x] Triggered `k8s-e2e` on fresh code: behavioral #102 AND #103 (v35) both
+      SUCCESS 298/0; "runs a pipeline with custom resource types" PASSES in both.
+      (2 consecutive green runs as of 2026-05-31; a 3rd would fully confirm the
+      flake is eliminated vs masked by the guard's graceful finish — the one
+      remaining nice-to-have, accrues with normal nightly runs.)
 - [x] Updated `topgun/k8s_behavioral/FAILURES.md` to reflect the green suite +
-      the staleness root cause.
-- [ ] Close the superseded `resource_config_scope_gc_race_20260408` track.
+      the staleness root cause (cites #103).
+- [x] Closed the superseded `resource_config_scope_gc_race_20260408` track
+      (completed 2026-05-31, commit 1ac2631301).
+- [x] Phase 3 defense-in-depth: native `lidar/scanner.go` FK handling + 12 specs
+      (this track's lidar commit).
 
 ## Conclusion (2026-05-30)
 
