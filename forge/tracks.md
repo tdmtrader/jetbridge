@@ -23,9 +23,9 @@
 
 ---
 
-## [ ] Track: Fix resource_config_scope GC Race Condition
+## [x] Track: Fix resource_config_scope GC Race Condition
 *Link: [./tracks/resource_config_scope_gc_race_20260408/](./tracks/resource_config_scope_gc_race_20260408/)*
-*Superseded by `resource_config_scope_fk_leak_fix_20260530` — fix was ineffective; behavioral spec still flaps.*
+*Completed 2026-05-31 — guard code correct; behavioral spec green (#102/#103) once image-staleness was fixed. `resource_config_scope_fk_leak_fix_20260530` continues defense-in-depth.*
 
 ---
 

@@ -22,4 +22,4 @@
 ## Phase 3: Verify
 
 - [x] Run focused FK violation tests — 4/4 passed
-- [ ] Run K8s behavioral test suite — "runs a pipeline with custom resource types" must pass
+- [x] Run K8s behavioral test suite — "runs a pipeline with custom resource types" must pass (CI build k8s-e2e/k8s-behavioral-tests/103: 298 Passed | 0 Failed; spec passes reliably across #102 & #103)

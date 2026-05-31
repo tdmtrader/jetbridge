@@ -1,9 +1,11 @@
 {
   "name": "resource_config_scope_gc_race",
+  "trackId": "resource_config_scope_gc_race_20260408",
   "type": "bugfix",
-  "status": "active",
+  "status": "completed",
   "created": "2026-04-08",
+  "completedAt": "2026-05-31",
   "branch": "jetbridge",
   "supersededBy": "resource_config_scope_fk_leak_fix_20260530",
-  "note": "Fix (59c43a31ff + 9bb8537a6a) shipped but the custom-resource-type behavioral spec still flaps with the FK violation; superseding track investigates why the deployed guard does not fire."
+  "note": "FK-violation guard (commits 59c43a31ff + 9bb8537a6a in atc/exec/check_step.go: SaveVersions + PointToCheckedConfig) shipped and is correct. The 'runs a pipeline with custom resource types' behavioral spec now passes reliably across CI builds k8s-e2e/k8s-behavioral-tests/#102 and #103 (298 Passed | 0 Failed). The earlier flake was an image-staleness artifact (stale kind-runner served the guard's source by a cached tag, so it never actually ran in CI); resolved once the kind-runner tag was bumped (v33->v35) to force fresh code. Superseding track resource_config_scope_fk_leak_fix_20260530 continues defense-in-depth (native lidar/scanner.go path, real-Postgres regression tests)."
 }
