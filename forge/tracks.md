@@ -6,6 +6,18 @@
 
 ---
 
+## [ ] Track: Fix file-config read after producer pod reap
+*Link: [./tracks/fix_file_config_read_after_pod_reap_20260530/](./tracks/fix_file_config_read_after_pod_reap_20260530/)*
+*Real regression in `file:` task-config reads, exposed once CI stopped testing stale images.*
+
+---
+
+## [ ] Track: k8s-e2e CI reliability (stale-image + OOM)
+*Link: [./tracks/ci_reliability_k8s_e2e_20260530/](./tracks/ci_reliability_k8s_e2e_20260530/)*
+*Staleness fix (build from git resource) + attempts:2 landed & validated; OOM resource-sizing is a Phase 3 follow-up.*
+
+---
+
 ## [ ] Track: Resolve resource_config_scope FK-violation leak
 *Link: [./tracks/resource_config_scope_fk_leak_fix_20260530/](./tracks/resource_config_scope_fk_leak_fix_20260530/)*
 *Supersedes: `resource_config_scope_gc_race_20260408`*

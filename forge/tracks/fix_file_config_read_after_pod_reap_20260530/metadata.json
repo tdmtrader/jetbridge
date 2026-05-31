@@ -1,0 +1,9 @@
+{
+  "trackId": "fix_file_config_read_after_pod_reap_20260530",
+  "type": "bugfix",
+  "status": "active",
+  "description": "File-based task config (task: file:) read after the producing get pod is reaped execs into the dead pod instead of routing through the DaemonSet -> 'exec stream: pods not found'",
+  "branch": "jetbridge",
+  "createdAt": "2026-05-30T00:00:00.000Z",
+  "updatedAt": "2026-05-30T00:00:00.000Z"
+}
