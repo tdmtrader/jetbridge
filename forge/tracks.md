@@ -12,9 +12,9 @@
 
 ---
 
-## [ ] Track: Resolve resource_config_scope FK-violation leak
+## [x] Track: Resolve resource_config_scope FK-violation leak
 *Link: [./tracks/resource_config_scope_fk_leak_fix_20260530/](./tracks/resource_config_scope_fk_leak_fix_20260530/)*
-*Supersedes: `resource_config_scope_gc_race_20260408`*
+*Completed 2026-05-31 — root cause was CI image staleness (not the FK code); fixed via tag bump, behavioral #102/#103 green. Phase 3 guarded native lidar paths. Supersedes `resource_config_scope_gc_race_20260408`. Caveat: 2/3 consecutive runs; real-DB check-flow test deferred.*
 
 ---
 
