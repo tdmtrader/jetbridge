@@ -46,7 +46,9 @@
 - [x] Local: `go vet ./topgun/k8s/integration/` + `go build ./atc/worker/jetbridge/`
       pass; `go test ./atc/worker/jetbridge/` (storage/volume/worker) green incl. the
       two new WrapVolumeForLookup tests.
-- [ ] CI: push + trigger `k8s-e2e/k8s-integration-tests`; spec "loads a file-based
-      task config even after the producing get pod has been reaped" must now exit 0
-      (and take >45s, proving `hold` ran). CI builds from fresh `repo` (no tag bump).
-- [ ] Confirm no regression in the sibling cross-step / get / task specs.
+- [x] CI: pushed + triggered `k8s-e2e/k8s-integration-tests`. Build #184 GREEN:
+      `SUCCESS! -- 128 Passed | 0 Failed` (vs #181 `126 Passed | 2 Failed` — the two
+      read-after-reap specs). 18m2s runtime. (#183 errored early on the known DinD/OOM
+      flakiness before reaching the specs; #184 was a clean re-trigger.)
+- [x] No regression: 0 Failed across all 128 specs, including the sibling cross-step
+      and the existing get/task specs.
