@@ -1,9 +1,10 @@
 {
   "trackId": "fix_file_config_read_after_pod_reap_20260530",
   "type": "bugfix",
-  "status": "active",
-  "description": "File-based task config (task: file:) read after the producing get pod is reaped execs into the dead pod instead of routing through the DaemonSet -> 'exec stream: pods not found'",
+  "status": "completed",
+  "description": "Read-after-pod-reap integration spec failed consistently. Root cause was a TEST RACE (deleteProducerPod killed the get pod mid-fetch), not artifact routing. Fixed by gating pod deletion on the intermediate step running + targeting by concourse.ci/step label; also wired daemonClient onto WrapVolumeForLookup volumes for read resilience. CI build #184 green (128 passed, 0 failed).",
   "branch": "jetbridge",
   "createdAt": "2026-05-30T00:00:00.000Z",
-  "updatedAt": "2026-05-30T00:00:00.000Z"
+  "updatedAt": "2026-05-31T00:00:00.000Z",
+  "completedAt": "2026-05-31T00:00:00.000Z"
 }

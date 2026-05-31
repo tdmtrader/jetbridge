@@ -6,12 +6,6 @@
 
 ---
 
-## [ ] Track: Fix file-config read after producer pod reap
-*Link: [./tracks/fix_file_config_read_after_pod_reap_20260530/](./tracks/fix_file_config_read_after_pod_reap_20260530/)*
-*Real regression in `file:` task-config reads, exposed once CI stopped testing stale images.*
-
----
-
 ## [ ] Track: k8s-e2e CI reliability (stale-image + OOM)
 *Link: [./tracks/ci_reliability_k8s_e2e_20260530/](./tracks/ci_reliability_k8s_e2e_20260530/)*
 *Staleness fix (build from git resource) + attempts:2 landed & validated; OOM resource-sizing is a Phase 3 follow-up.*
@@ -46,6 +40,12 @@
 ---
 
 ## Completed / Archived Tracks
+
+### [x] Track: Fix file-config read after producer pod reap
+_Link: [./tracks/fix_file_config_read_after_pod_reap_20260530/](./tracks/fix_file_config_read_after_pod_reap_20260530/)_
+_Root cause was a test race (get pod deleted mid-fetch), not artifact routing; fixed test gating + wired daemonClient on lookup volumes. CI #184 green (128 passed, 0 failed)._
+
+---
 
 ### [x] Track: Resource History Preservation Across Config Changes
 _Link: [./tracks/resource_history_preservation_20260411/](./tracks/resource_history_preservation_20260411/)_
