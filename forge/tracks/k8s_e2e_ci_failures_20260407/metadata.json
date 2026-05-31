@@ -2,7 +2,10 @@
   "id": "k8s_e2e_ci_failures_20260407",
   "name": "K8s E2E CI Failures",
   "type": "bugfix",
-  "status": "active",
+  "status": "completed",
   "created": "2026-04-07",
-  "updated": "2026-04-07"
+  "updated": "2026-05-31",
+  "completedAt": "2026-05-31",
+  "branch": "jetbridge",
+  "note": "Both k8s-e2e jobs green: k8s-behavioral-tests #103 (298 Passed | 0 Failed) and k8s-integration-tests #184 succeeded. Behavioral pod-termination fixed (serial_groups chaining via passed constraint + reduced docker build context); integration check-exec race fixed (transient-error classification + exec retry / pause-pod recreation); kind-runner image bumped to bust stale node-image cache. FAILURES.md updated to cite build #103. Note: build-kind-runner #186 errored on an infra flake (#185 green) — CI-builder reliability is tracked separately under ci_reliability_k8s_e2e_20260530."
 }

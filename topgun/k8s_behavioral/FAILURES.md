@@ -5,21 +5,23 @@ Each entry includes the test ID, failure description, root cause analysis, and p
 
 ## Full Suite Run Results
 
-**Current (2026-05-30, kind-runner v35, CI build k8s-e2e/k8s-behavioral-tests/102):**
+**Current (verified 2026-05-31, kind-runner v35, CI build k8s-e2e/k8s-behavioral-tests/103; #102 identical):**
 
 ```
-Ran 298 of 304 Specs in 1699 seconds (~28 min)
+Ran 298 of 304 Specs in 1743 seconds (~29 min)
 298 Passed | 0 Failed | 1 Pending | 5 Skipped
 ```
 
-The suite is **green**. The DaemonSet artifact-cache architecture resolved the
-former artifact-streaming failures (Categories E/F/H below), so those entries are
-**historical** and predate the current runtime. The `runs a pipeline with custom
-resource types` spec that flaked intermittently (builds #99/#100/#101) was a
-**CI image-staleness artifact**, not a code bug: the worker served a cached
-kind-runner image by tag, so the resource_config_scope FK-violation guards (April)
-never actually ran in CI. Fixed by bumping the kind-runner tag (v33→v35) to force
-a fresh pull; the spec passes on fresh code.
+The suite is **green** across two consecutive runs (#102, #103). The DaemonSet
+artifact-cache architecture resolved the former artifact-streaming failures
+(Categories E/F/H below), so those entries are **historical** and predate the
+current runtime. The `runs a pipeline with custom resource types` spec that flaked
+intermittently (builds #99/#100/#101) now passes reliably in #103. Two
+complementary fixes closed it: (1) the `resource_config_scope` FK-violation guards
+in `atc/exec/check_step.go` (handle `SaveVersions`/`PointToCheckedConfig` FK
+violations from the GC race as non-fatal), and (2) bumping the kind-runner tag
+(v33→v35) so the worker pulls fresh code instead of serving the FK guards' April
+fix by a stale cached image. The guards now actually run in CI, and the spec passes.
 
 <details>
 <summary>Historical run (stale, pre-DaemonSet-artifact-cache)</summary>

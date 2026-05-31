@@ -29,8 +29,9 @@
 
 ---
 
-## [ ] Track: K8s E2E CI Failures
+## [x] Track: K8s E2E CI Failures
 *Link: [./tracks/k8s_e2e_ci_failures_20260407/](./tracks/k8s_e2e_ci_failures_20260407/)*
+*Completed 2026-05-31 — both jobs green (behavioral #103, integration #184); FAILURES.md updated.*
 
 ---
 

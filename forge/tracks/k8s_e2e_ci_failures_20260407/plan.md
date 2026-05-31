@@ -30,9 +30,9 @@
 - [x] Task: Diagnose `cmd/oom-trigger` missing from v29 kind-runner image (transient tar truncation via kubectl exec pipe)
 - [x] Task: Add oom-trigger pre-compilation to Dockerfile.kind-runner to catch missing files at build time
 - [x] Task: Bump to v30, push, update pipeline, trigger build #117
-- [~] Task: Monitor behavioral tests with v30 image
+- [x] Task: Monitor behavioral tests with v30 image (behavioral #102/#103 both green: 298 Passed | 0 Failed)
 
 ## Phase 6: Verify and Cleanup
 
-- [ ] Task: Confirm both integration and behavioral jobs are green
-- [ ] Task: Update `FAILURES.md` to reflect current state
+- [x] Task: Confirm both integration and behavioral jobs are green (integration #184 succeeded; behavioral #103 succeeded)
+- [x] Task: Update `FAILURES.md` to reflect current state (cited build #103, dual FK-guard + image-tag fix)
