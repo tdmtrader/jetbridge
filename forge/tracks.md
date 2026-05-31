@@ -527,7 +527,7 @@ _Link: [./tracks/telemetry_simplification_20260331/](./tracks/telemetry_simplifi
 
 ---
 
-### [ ] Track: K8s Secret Ref Passthrough for Pipeline Vars
+### [x] Track: K8s Secret Ref Passthrough for Pipeline Vars
 _Link: [./tracks/k8s_secret_ref_passthrough_for_pipeline_vars_20260412/](./tracks/k8s_secret_ref_passthrough_for_pipeline_vars_20260412/)_
 
 ---

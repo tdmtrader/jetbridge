@@ -1,8 +1,10 @@
 {
   "trackId": "k8s_secret_ref_passthrough_for_pipeline_vars_20260412",
   "type": "feature",
-  "status": "in_progress",
-  "description": "K8s Secret Ref Passthrough for Pipeline Vars",
+  "status": "completed",
+  "description": "Emit ValueFrom.SecretKeyRef instead of plain-text env values for ((vars)) resolved from the K8s Secrets credential manager, so secret values never appear in pod specs. Added SecretRefProvider interface + K8sSecretRef type (atc/creds), extended CredVarsTracker to record secret refs alongside interpolated creds, added ContainerSpec.SecretEnv, wired task_step containerSpec() population, and branched the jetbridge pod builder (atc/worker/jetbridge/container.go) to emit SecretKeyRef. Non-K8s cred managers (Vault/SSM/Conjur/CredHub) unaffected; log redaction preserved. All 5 phases complete (25/25 tasks).",
+  "branch": "jetbridge",
   "createdAt": "2026-04-12T20:47:49.334Z",
-  "updatedAt": "2026-04-12T20:49:44.822Z"
+  "updatedAt": "2026-05-31T00:00:00.000Z",
+  "completedAt": "2026-05-31T00:00:00.000Z"
 }
