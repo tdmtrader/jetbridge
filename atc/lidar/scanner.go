@@ -215,6 +215,14 @@ func (s *scanner) resolveResourceType(ctx context.Context, rt db.ResourceType) {
 	// Point the resource type to this config scope.
 	err = rt.SetResourceConfigScope(scope)
 	if err != nil {
+		if db.IsForeignKeyViolation(err) {
+			// Scope was deleted by GC mid-resolve (the resources /
+			// resource_types FK to resource_config_scopes). Expected transient
+			// race — the next scan retries with a fresh scope, so this is not an
+			// error. Mirrors the guard in atc/exec/check_step.go.
+			logger.Debug("scope-deleted-before-version-save", lager.Data{"scope": scope.ID()})
+			return
+		}
 		logger.Error("failed-to-set-resource-config-scope", err)
 		return
 	}
@@ -223,6 +231,14 @@ func (s *scanner) resolveResourceType(ctx context.Context, rt db.ResourceType) {
 	version := atc.Version{"digest": digest}
 	err = scope.SaveVersions(db.SpanContext{}, []atc.Version{version})
 	if err != nil {
+		if db.IsForeignKeyViolation(err) {
+			// Scope was deleted by GC between resolve and save (the
+			// resource_config_versions FK to resource_config_scopes). Expected
+			// transient race — the next scan retries. Mirrors the guard in
+			// atc/exec/check_step.go.
+			logger.Debug("scope-deleted-during-version-save", lager.Data{"scope": scope.ID()})
+			return
+		}
 		logger.Error("failed-to-save-versions", err)
 		return
 	}
@@ -388,6 +404,14 @@ func (s *scanner) resolveResource(ctx context.Context, rs db.Resource) {
 	// Point the resource to this config scope.
 	err = rs.SetResourceConfigScope(scope)
 	if err != nil {
+		if db.IsForeignKeyViolation(err) {
+			// Scope was deleted by GC mid-resolve (the resources /
+			// resource_types FK to resource_config_scopes). Expected transient
+			// race — the next scan retries with a fresh scope, so this is not an
+			// error. Mirrors the guard in atc/exec/check_step.go.
+			logger.Debug("scope-deleted-before-version-save", lager.Data{"scope": scope.ID()})
+			return
+		}
 		logger.Error("failed-to-set-resource-config-scope", err)
 		return
 	}
@@ -396,6 +420,14 @@ func (s *scanner) resolveResource(ctx context.Context, rs db.Resource) {
 	version := atc.Version{"digest": digest}
 	err = scope.SaveVersions(db.SpanContext{}, []atc.Version{version})
 	if err != nil {
+		if db.IsForeignKeyViolation(err) {
+			// Scope was deleted by GC between resolve and save (the
+			// resource_config_versions FK to resource_config_scopes). Expected
+			// transient race — the next scan retries. Mirrors the guard in
+			// atc/exec/check_step.go.
+			logger.Debug("scope-deleted-during-version-save", lager.Data{"scope": scope.ID()})
+			return
+		}
 		logger.Error("failed-to-save-versions", err)
 		return
 	}

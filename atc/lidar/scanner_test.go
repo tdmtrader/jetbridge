@@ -3,20 +3,45 @@ package lidar_test
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"time"
 
+	"code.cloudfoundry.org/lager/v3"
+	"code.cloudfoundry.org/lager/v3/lagerctx"
+	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbfakes"
 	"github.com/concourse/concourse/atc/imageresolver/imageresolvertesting"
 	"github.com/concourse/concourse/atc/lidar"
 	"github.com/concourse/concourse/atc/metric"
+	"github.com/jackc/pgerrcode"
+	"github.com/jackc/pgx/v5/pgconn"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
 
 type Scanner interface {
 	Run(ctx context.Context) error
+}
+
+// fkViolation builds an error with the shape the production check/resolve paths
+// see when the GC deletes a resource_config_scope mid-flight: a *pgconn.PgError
+// (SQLSTATE 23503) wrapped with context, matching db.IsForeignKeyViolation.
+func fkViolation(prefix string) error {
+	return fmt.Errorf("%s: %w", prefix, &pgconn.PgError{Code: pgerrcode.ForeignKeyViolation})
+}
+
+// loggedAt reports whether logs contain an entry at the given level whose
+// message ends with suffix (lager prefixes the session path, so match the tail).
+func loggedAt(logs []lager.LogFormat, level lager.LogLevel, suffix string) bool {
+	for _, l := range logs {
+		if l.LogLevel == level && strings.HasSuffix(l.Message, suffix) {
+			return true
+		}
+	}
+	return false
 }
 
 var _ = Describe("Scanner", func() {
@@ -225,6 +250,8 @@ var _ = Describe("Scanner Resource Type Resolution", func() {
 
 		scanner Scanner
 
+		logger *lagertest.TestLogger
+
 		ctx    context.Context
 		cancel context.CancelFunc
 	)
@@ -236,7 +263,8 @@ var _ = Describe("Scanner Resource Type Resolution", func() {
 		fakeResolver = new(imageresolvertesting.FakeResolver)
 
 		scanner = lidar.NewScanner(fakeCheckFactory, planFactory, 10, fakeResolver, fakeResourceConfigFactory)
-		ctx, cancel = context.WithCancel(context.Background())
+		logger = lagertest.NewTestLogger("test")
+		ctx, cancel = context.WithCancel(lagerctx.NewContext(context.Background(), logger))
 
 		fakeCheckFactory.ResourcesReturns(nil, nil)
 	})
@@ -317,6 +345,55 @@ var _ = Describe("Scanner Resource Type Resolution", func() {
 			Expect(fakeResourceConfigScope.UpdateLastCheckEndTimeCallCount()).To(Equal(1))
 			succeeded := fakeResourceConfigScope.UpdateLastCheckEndTimeArgsForCall(0)
 			Expect(succeeded).To(BeTrue())
+		})
+
+		Context("when SaveVersions hits an FK violation (scope deleted by GC)", func() {
+			BeforeEach(func() {
+				fakeResourceConfigScope.SaveVersionsReturns(fkViolation("save versions"))
+			})
+
+			It("does not error the whole scan", func() {
+				Expect(err).ToNot(HaveOccurred())
+			})
+
+			It("logs the race at debug, not error", func() {
+				Expect(loggedAt(logger.Logs(), lager.DEBUG, "scope-deleted-during-version-save")).To(BeTrue())
+				Expect(loggedAt(logger.Logs(), lager.ERROR, "failed-to-save-versions")).To(BeFalse())
+			})
+
+			It("skips the post-save check-end-time update", func() {
+				Expect(fakeResourceConfigScope.UpdateLastCheckEndTimeCallCount()).To(Equal(0))
+			})
+		})
+
+		Context("when SetResourceConfigScope hits an FK violation (scope deleted by GC)", func() {
+			BeforeEach(func() {
+				fakeResourceType.SetResourceConfigScopeReturns(fkViolation("set resource scope"))
+			})
+
+			It("does not error the whole scan", func() {
+				Expect(err).ToNot(HaveOccurred())
+			})
+
+			It("logs the race at debug, not error", func() {
+				Expect(loggedAt(logger.Logs(), lager.DEBUG, "scope-deleted-before-version-save")).To(BeTrue())
+				Expect(loggedAt(logger.Logs(), lager.ERROR, "failed-to-set-resource-config-scope")).To(BeFalse())
+			})
+
+			It("does not attempt to save versions", func() {
+				Expect(fakeResourceConfigScope.SaveVersionsCallCount()).To(Equal(0))
+			})
+		})
+
+		Context("when SaveVersions fails with a non-FK error", func() {
+			BeforeEach(func() {
+				fakeResourceConfigScope.SaveVersionsReturns(errors.New("connection refused"))
+			})
+
+			It("still logs it as an error, not silently dropped", func() {
+				Expect(err).ToNot(HaveOccurred())
+				Expect(loggedAt(logger.Logs(), lager.ERROR, "failed-to-save-versions")).To(BeTrue())
+			})
 		})
 
 		Context("with basic auth credentials in source", func() {
@@ -442,6 +519,8 @@ var _ = Describe("Scanner Native Resource Resolution", func() {
 
 		scanner Scanner
 
+		logger *lagertest.TestLogger
+
 		ctx    context.Context
 		cancel context.CancelFunc
 	)
@@ -453,7 +532,8 @@ var _ = Describe("Scanner Native Resource Resolution", func() {
 		fakeResolver = new(imageresolvertesting.FakeResolver)
 
 		scanner = lidar.NewScanner(fakeCheckFactory, planFactory, 10, fakeResolver, fakeResourceConfigFactory)
-		ctx, cancel = context.WithCancel(context.Background())
+		logger = lagertest.NewTestLogger("test")
+		ctx, cancel = context.WithCancel(lagerctx.NewContext(context.Background(), logger))
 
 		// No resource types in these tests.
 		fakeCheckFactory.ResourceTypesByPipelineReturns(map[int]db.ResourceTypes{}, nil)
@@ -534,6 +614,40 @@ var _ = Describe("Scanner Native Resource Resolution", func() {
 
 			// Verify no check pod was created.
 			Expect(fakeCheckFactory.TryCreateCheckCallCount()).To(Equal(0))
+		})
+
+		Context("when SaveVersions hits an FK violation (scope deleted by GC)", func() {
+			BeforeEach(func() {
+				fakeResourceConfigScope.SaveVersionsReturns(fkViolation("save versions"))
+			})
+
+			It("does not error the whole scan", func() {
+				Expect(err).ToNot(HaveOccurred())
+			})
+
+			It("logs the race at debug, not error", func() {
+				Expect(loggedAt(logger.Logs(), lager.DEBUG, "scope-deleted-during-version-save")).To(BeTrue())
+				Expect(loggedAt(logger.Logs(), lager.ERROR, "failed-to-save-versions")).To(BeFalse())
+			})
+		})
+
+		Context("when SetResourceConfigScope hits an FK violation (scope deleted by GC)", func() {
+			BeforeEach(func() {
+				fakeResource.SetResourceConfigScopeReturns(fkViolation("set resource scope"))
+			})
+
+			It("does not error the whole scan", func() {
+				Expect(err).ToNot(HaveOccurred())
+			})
+
+			It("logs the race at debug, not error", func() {
+				Expect(loggedAt(logger.Logs(), lager.DEBUG, "scope-deleted-before-version-save")).To(BeTrue())
+				Expect(loggedAt(logger.Logs(), lager.ERROR, "failed-to-set-resource-config-scope")).To(BeFalse())
+			})
+
+			It("does not attempt to save versions", func() {
+				Expect(fakeResourceConfigScope.SaveVersionsCallCount()).To(Equal(0))
+			})
 		})
 
 		Context("with basic auth credentials in source", func() {
