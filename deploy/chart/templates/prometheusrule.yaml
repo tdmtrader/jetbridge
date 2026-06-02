@@ -37,4 +37,12 @@ spec:
           annotations:
             summary: "Database connection pool exhausted"
             description: "Active DB connections have reached the maximum pool size."
+        - alert: ConcourseWorkerHeartbeatStale
+          expr: concourse_worker_heartbeat_age > 60
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Worker heartbeat stale (>60s)"
+            description: "A worker has not re-registered in over 60 seconds (heartbeat TTL is 30s); it may be unhealthy or partitioned."
 {{- end }}

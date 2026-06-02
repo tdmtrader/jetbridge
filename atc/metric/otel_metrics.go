@@ -18,6 +18,7 @@ var (
 	k8sPodFailuresCounter       otelmetric.Int64Counter
 	resourceCheckDurationHist   otelmetric.Float64Histogram
 	workerHeartbeatAgeGauge     otelmetric.Float64Gauge
+	volumeOperationDurationHist otelmetric.Float64Histogram
 )
 
 // InitOTelMetrics creates OTel instruments for core Concourse metrics.
@@ -91,6 +92,15 @@ func InitOTelMetrics() {
 	)
 	if err == nil {
 		workerHeartbeatAgeGauge = g
+	}
+
+	h, err = meter.Float64Histogram(
+		"concourse.k8s.volume_operation_duration",
+		otelmetric.WithDescription("Duration of K8s volume operations in seconds (op=stream_in|initialize)"),
+		otelmetric.WithUnit("s"),
+	)
+	if err == nil {
+		volumeOperationDurationHist = h
 	}
 }
 
@@ -180,6 +190,21 @@ func RecordWorkerHeartbeatAge(ctx context.Context, age time.Duration, workerName
 	workerHeartbeatAgeGauge.Record(ctx, age.Seconds(),
 		otelmetric.WithAttributes(
 			attribute.String("worker", workerName),
+		),
+	)
+}
+
+// RecordVolumeOperationDuration records the duration of a K8s volume operation.
+// op is one of "stream_in" (tar write into a build pod) or "initialize" (cache
+// initialization). Cross-node reads are daemon-mediated (DaemonSetVolume) and
+// are not recorded here.
+func RecordVolumeOperationDuration(ctx context.Context, duration time.Duration, op string) {
+	if volumeOperationDurationHist == nil {
+		return
+	}
+	volumeOperationDurationHist.Record(ctx, duration.Seconds(),
+		otelmetric.WithAttributes(
+			attribute.String("op", op),
 		),
 	)
 }

@@ -124,4 +124,36 @@ var _ = Describe("OTel Core Metrics", func() {
 			Expect(s.DataPoints[0].Value).To(BeNumerically(">=", 5.0))
 		})
 	})
+
+	Describe("volume operation duration histogram", func() {
+		It("records the duration with an op attribute", func() {
+			metric.RecordVolumeOperationDuration(context.Background(), 2*time.Second, "stream_in")
+
+			h := findHistogram("concourse.k8s.volume_operation_duration")
+			Expect(h).ToNot(BeNil(), "expected to find concourse.k8s.volume_operation_duration metric")
+			Expect(h.DataPoints).NotTo(BeEmpty())
+			Expect(h.DataPoints[0].Sum).To(BeNumerically(">=", 2.0))
+
+			op, ok := h.DataPoints[0].Attributes.Value("op")
+			Expect(ok).To(BeTrue())
+			Expect(op.AsString()).To(Equal("stream_in"))
+		})
+
+		It("distinguishes operations by the op label", func() {
+			metric.RecordVolumeOperationDuration(context.Background(), 1*time.Second, "stream_in")
+			metric.RecordVolumeOperationDuration(context.Background(), 1*time.Second, "initialize")
+
+			h := findHistogram("concourse.k8s.volume_operation_duration")
+			Expect(h).ToNot(BeNil())
+
+			ops := map[string]bool{}
+			for _, dp := range h.DataPoints {
+				if v, ok := dp.Attributes.Value("op"); ok {
+					ops[v.AsString()] = true
+				}
+			}
+			Expect(ops).To(HaveKey("stream_in"))
+			Expect(ops).To(HaveKey("initialize"))
+		})
+	})
 })
