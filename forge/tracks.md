@@ -398,8 +398,9 @@ _Link: [./tracks/deploy_and_validate_20260313/](./tracks/deploy_and_validate_202
 
 ---
 
-### [ ] Track: production readiness
+### [x] Track: production readiness
 _Link: [./tracks/production_readiness_20260313/](./tracks/production_readiness_20260313/)_
+_Completed 2026-05-31 — reconciled stale plan; finished the valid slice (volume metric, WorkerHeartbeatStale alert, helm securityContext test, RBAC verify, manual verification). Caveat: hardens deploy/chart (e2e chart), NOT prod's upstream-chart ArgoCD deploy._
 
 ---
 

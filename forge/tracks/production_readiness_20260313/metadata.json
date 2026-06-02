@@ -1,17 +1,11 @@
 {
   "trackId": "production_readiness_20260313",
   "type": "feature",
-  "status": "in_progress",
-  "description": "production readiness",
+  "status": "completed",
+  "description": "Production readiness hardening for the K8s/JetBridge Helm chart (deploy/chart): pod securityContexts, NetworkPolicy, PDB, RBAC scoping, graceful shutdown, signing-key mgmt, conn-pool config, ServiceMonitor, health endpoint, observability metrics, alerting rules. Reconciled against current main (telemetry_simplification superseded the tracing tasks; PVC/GCS-Fuse backend removed from the engine) and finished the still-valid slice.",
   "createdAt": "2026-03-13T13:14:49.121Z",
-  "updatedAt": "2026-03-13T13:36:30.921Z",
-  "sessions": [
-    {
-      "slotIndex": 0,
-      "engineType": "claude",
-      "aiSessionId": "ea4e6881-3d08-4c71-8669-6f5d827b602e",
-      "accountId": "system-claude",
-      "updatedAt": "2026-03-13T13:15:02.367Z"
-    }
-  ]
+  "updatedAt": "2026-05-31T00:00:00.000Z",
+  "completedAt": "2026-05-31T00:00:00.000Z",
+  "branch": "jetbridge",
+  "completionCaveats": "(1) Plan was 2.5mo stale; reconciled — dropped Phase 2.3 scanner span (conflicts with telemetry_simplification), resolver span (by decision), and Phase 1.8 GCS-Fuse/NFS examples (PVC/GCS-Fuse backend removed from the engine: --kubernetes-artifact-store-claim no longer exists). (2) Phase 2 metric manual-verification is partial: health endpoint verified 200 on a fresh image, but the new OTel metrics aren't exposed on a default /metrics endpoint (need an OTLP/Prometheus-exporter pipeline + a volume op); code is compiled-in and unit-tested. (3) IMPORTANT scope finding: this track hardens deploy/chart (chart 'concourse-jetbridge' v0.1.0), which is what the e2e suites deploy. Production concourse.home does NOT use this chart — it's ArgoCD-managed from the UPSTREAM concourse chart v20.0.1 (concourse-charts.storage.googleapis.com) + home-infra values, running the jetbridge image. So this chart hardening does not affect prod until/unless prod migrates to deploy/chart. (4) Live RBAC drift + chart-default --kubernetes-artifact-store-claim bug are tracked separately (see plan)."
 }
