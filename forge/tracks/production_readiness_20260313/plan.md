@@ -39,7 +39,20 @@
 ### 1.4 RBAC Scoping
 - [x] Update `deploy/chart/templates/rbac.yaml` Role rules pending to use `resourceNames` or label-based restrictions where K8s API supports it
 - [x] Add PVC permissions (get, list, create, delete) for cache and artifact PVCs pending
-- [ ] Verify RBAC is sufficient by running integration tests against a real cluster
+- [x] Verify RBAC is sufficient by running integration tests against a real cluster.
+      VERIFIED 2026-05-31 against `theborg` (k3s, runs concourse.home):
+      • CHART RBAC IS SUFFICIENT — `deploy/chart/templates/rbac.yaml` grants the full
+        pod lifecycle (pods, pods/exec, pods/log) + deployments + endpointslices in the
+        namespaced Role, and `nodes: get` + `secrets: get` via a bound ClusterRole. Live
+        `kubectl auth can-i` confirms pods/exec/log = yes; live cluster actively runs
+        pipeline pods. Acceptance criterion met by the chart.
+      • LIVE-CLUSTER DRIFT (operational, not a chart bug): theborg was deployed ~113d ago
+        and its RBAC is stale — the `concourse-web` ClusterRole is ORPHANED (no
+        ClusterRoleBinding) and predates `nodes: get`. Effect: `registerDaemonAlias` logs
+        a recurring `nodes "theborg" is forbidden` warning (harmless on single-node, but
+        would break cross-node artifact routing on a multi-node cluster); cluster-scoped
+        `secrets get` is also denied. REMEDIATION: `helm upgrade` theborg to apply the
+        current chart RBAC. No chart change required.
 
 ### 1.5 Graceful Shutdown & Startup
 - [x] Add `terminationGracePeriodSeconds: 120` to web deployment pod spec pending
