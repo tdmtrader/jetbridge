@@ -424,8 +424,9 @@ _Link: [./archive/ghcr_docker_image_publishing_20260319/](./archive/ghcr_docker_
 
 ---
 
-### [ ] Track: GCP Artifact Auth
-_Link: [./tracks/gcp_artifact_auth_20260319/](./tracks/gcp_artifact_auth_20260319/)_
+### [x] Track: GCP Artifact Auth
+_Link: [./archive/gcp_artifact_auth_20260319/](./archive/gcp_artifact_auth_20260319/)_
+_Completed 2026-06-03 — scanner/image resolver now uses `authn.NewMultiKeychain(google.Keychain, authn.DefaultKeychain)` for GCP Artifact Registry (Workload Identity/ADC) with Docker-config fallback. Landed in `35aaacbfb1`, unit test green, live in theborg build `f6a6a8833d`. Status had been stale at `backlog`._
 
 ---
 
