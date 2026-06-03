@@ -7,13 +7,13 @@
 ---
 
 ## [x] Track: k8s-e2e CI reliability (stale-image + OOM)
-*Link: [./tracks/ci_reliability_k8s_e2e_20260530/](./tracks/ci_reliability_k8s_e2e_20260530/)*
+*Link: [./archive/ci_reliability_k8s_e2e_20260530/](./archive/ci_reliability_k8s_e2e_20260530/)*
 *Completed 2026-05-31 — source decoupled from toolchain image (build from `repo` git resource, no tag bump needed); `attempts: 2` added; validated via #181 + #102/#103. Phase 3 (digest pinning, OOM sizing) deferred as out-of-scope future hardening.*
 
 ---
 
 ## [x] Track: Resolve resource_config_scope FK-violation leak
-*Link: [./tracks/resource_config_scope_fk_leak_fix_20260530/](./tracks/resource_config_scope_fk_leak_fix_20260530/)*
+*Link: [./archive/resource_config_scope_fk_leak_fix_20260530/](./archive/resource_config_scope_fk_leak_fix_20260530/)*
 *Completed 2026-05-31 — root cause was CI image staleness (not the FK code); fixed via tag bump, behavioral #102/#103 green. Phase 3 guarded native lidar paths. Supersedes `resource_config_scope_gc_race_20260408`. Caveat: 2/3 consecutive runs; real-DB check-flow test deferred.*
 
 ---
@@ -24,13 +24,13 @@
 ---
 
 ## [x] Track: Fix resource_config_scope GC Race Condition
-*Link: [./tracks/resource_config_scope_gc_race_20260408/](./tracks/resource_config_scope_gc_race_20260408/)*
+*Link: [./archive/resource_config_scope_gc_race_20260408/](./archive/resource_config_scope_gc_race_20260408/)*
 *Completed 2026-05-31 — guard code correct; behavioral spec green (#102/#103) once image-staleness was fixed. `resource_config_scope_fk_leak_fix_20260530` continues defense-in-depth.*
 
 ---
 
 ## [x] Track: K8s E2E CI Failures
-*Link: [./tracks/k8s_e2e_ci_failures_20260407/](./tracks/k8s_e2e_ci_failures_20260407/)*
+*Link: [./archive/k8s_e2e_ci_failures_20260407/](./archive/k8s_e2e_ci_failures_20260407/)*
 *Completed 2026-05-31 — both jobs green (behavioral #103, integration #184); FAILURES.md updated.*
 
 ---
@@ -43,18 +43,18 @@
 ## Completed / Archived Tracks
 
 ### [x] Track: Fix file-config read after producer pod reap
-_Link: [./tracks/fix_file_config_read_after_pod_reap_20260530/](./tracks/fix_file_config_read_after_pod_reap_20260530/)_
+_Link: [./archive/fix_file_config_read_after_pod_reap_20260530/](./archive/fix_file_config_read_after_pod_reap_20260530/)_
 _Root cause was a test race (get pod deleted mid-fetch), not artifact routing; fixed test gating + wired daemonClient on lookup volumes. CI #184 green (128 passed, 0 failed)._
 
 ---
 
 ### [x] Track: Resource History Preservation Across Config Changes
-_Link: [./tracks/resource_history_preservation_20260411/](./tracks/resource_history_preservation_20260411/)_
+_Link: [./archive/resource_history_preservation_20260411/](./archive/resource_history_preservation_20260411/)_
 
 ---
 
 ### [x] Track: ATC-Embedded MCP Server
-_Link: [./tracks/atc_embedded_mcp_server_20260408/](./tracks/atc_embedded_mcp_server_20260408/)_
+_Link: [./archive/atc_embedded_mcp_server_20260408/](./archive/atc_embedded_mcp_server_20260408/)_
 
 ---
 
@@ -334,93 +334,93 @@ _Link: [./archive/too_many_check_pods_20260211/](./archive/too_many_check_pods_2
 ---
 
 ### [x] Track: Add safeguards against redudant checks
-_Link: [./tracks/add_safeguards_against_redudant_checks_20260303/](./tracks/add_safeguards_against_redudant_checks_20260303/)_
+_Link: [./archive/add_safeguards_against_redudant_checks_20260303/](./archive/add_safeguards_against_redudant_checks_20260303/)_
 
 ---
 
 ### [x] Track: Other pg notify opportunities
-_Link: [./tracks/other_pg_notify_opportunities_20260303/](./tracks/other_pg_notify_opportunities_20260303/)_
+_Link: [./archive/other_pg_notify_opportunities_20260303/](./archive/other_pg_notify_opportunities_20260303/)_
 
 ---
 
 ### [x] Track: OTel observability pipeline for Grafana and test suites
-_Link: [./tracks/otel_observability_pipeline_for_grafana_and_test_suites_20260305/](./tracks/otel_observability_pipeline_for_grafana_and_test_suites_20260305/)_
+_Link: [./archive/otel_observability_pipeline_for_grafana_and_test_suites_20260305/](./archive/otel_observability_pipeline_for_grafana_and_test_suites_20260305/)_
 
 ---
 
 ### [x] Track: Deprecate old code paths
-_Link: [./tracks/deprecate_old_code_paths_20260305/](./tracks/deprecate_old_code_paths_20260305/)_
+_Link: [./archive/deprecate_old_code_paths_20260305/](./archive/deprecate_old_code_paths_20260305/)_
 
 ---
 
 ### [ ] Track: K8s Sidecars
-_Link: [./tracks/k8s_sidecars_20260305/](./tracks/k8s_sidecars_20260305/)_
+_Link: [./archive/k8s_sidecars_20260305/](./archive/k8s_sidecars_20260305/)_
 
 ---
 
 ### [x] Track: Nested test spans for integration suite tracing
-_Link: [./tracks/nested_test_spans_for_integration_suite_tracing_20260308/](./tracks/nested_test_spans_for_integration_suite_tracing_20260308/)_
+_Link: [./archive/nested_test_spans_for_integration_suite_tracing_20260308/](./archive/nested_test_spans_for_integration_suite_tracing_20260308/)_
 
 ---
 
 ### [x] Track: evaluate-tempo-traces
-_Link: [./tracks/evaluate_tempo_traces_20260309/](./tracks/evaluate_tempo_traces_20260309/)_
+_Link: [./archive/evaluate_tempo_traces_20260309/](./archive/evaluate_tempo_traces_20260309/)_
 
 ---
 
 ### [x] Track: dead-code-cleanup
-_Link: [./tracks/dead_code_cleanup_20260310/](./tracks/dead_code_cleanup_20260310/)_
+_Link: [./archive/dead_code_cleanup_20260310/](./archive/dead_code_cleanup_20260310/)_
 
 ---
 
 ### [x] Track: Test running
-_Link: [./tracks/test_running_20260310/](./tracks/test_running_20260310/)_
+_Link: [./archive/test_running_20260310/](./archive/test_running_20260310/)_
 
 ---
 
 ### [ ] Track: AI feature segregation
-_Link: [./tracks/ai_feature_segregation_20260311/](./tracks/ai_feature_segregation_20260311/)_
+_Link: [./archive/ai_feature_segregation_20260311/](./archive/ai_feature_segregation_20260311/)_
 
 ---
 
 ### [ ] Track: Image Ref Hardening
-_Link: [./tracks/image_ref_hardening_20260311/](./tracks/image_ref_hardening_20260311/)_
+_Link: [./archive/image_ref_hardening_20260311/](./archive/image_ref_hardening_20260311/)_
 
 ---
 
 ### [ ] Track: Image Ref Hardening for tasks, etc
-_Link: [./tracks/image_ref_hardening_for_tasks_etc_20260311/](./tracks/image_ref_hardening_for_tasks_etc_20260311/)_
+_Link: [./archive/image_ref_hardening_for_tasks_etc_20260311/](./archive/image_ref_hardening_for_tasks_etc_20260311/)_
 
 ---
 
 ### [x] Track: deploy-and-validate
-_Link: [./tracks/deploy_and_validate_20260313/](./tracks/deploy_and_validate_20260313/)_
+_Link: [./archive/deploy_and_validate_20260313/](./archive/deploy_and_validate_20260313/)_
 
 ---
 
 ### [x] Track: production readiness
-_Link: [./tracks/production_readiness_20260313/](./tracks/production_readiness_20260313/)_
+_Link: [./archive/production_readiness_20260313/](./archive/production_readiness_20260313/)_
 _Completed 2026-05-31 — reconciled stale plan; finished the valid slice (volume metric, WorkerHeartbeatStale alert, helm securityContext test, RBAC verify, manual verification). Caveat: hardens deploy/chart (e2e chart), NOT prod's upstream-chart ArgoCD deploy._
 
 ---
 
 ### [ ] Track: GCP Hyperdisk Exploration
-_Link: [./tracks/gcp_hyperdisk_exploration_20260313/](./tracks/gcp_hyperdisk_exploration_20260313/)_
+_Link: [./archive/gcp_hyperdisk_exploration_20260313/](./archive/gcp_hyperdisk_exploration_20260313/)_
 
 ---
 
 ### [ ] Track: documentation
-_Link: [./tracks/documentation_20260316/](./tracks/documentation_20260316/)_
+_Link: [./archive/documentation_20260316/](./archive/documentation_20260316/)_
 
 ---
 
 ### [ ] Track: AI Communication and Documentation Standards
-_Link: [./tracks/ai_communication_and_documentation_standards_20260319/](./tracks/ai_communication_and_documentation_standards_20260319/)_
+_Link: [./archive/ai_communication_and_documentation_standards_20260319/](./archive/ai_communication_and_documentation_standards_20260319/)_
 
 ---
 
 ### [ ] Track: GHCR Docker Image Publishing
-_Link: [./tracks/ghcr_docker_image_publishing_20260319/](./tracks/ghcr_docker_image_publishing_20260319/)_
+_Link: [./archive/ghcr_docker_image_publishing_20260319/](./archive/ghcr_docker_image_publishing_20260319/)_
 
 ---
 
@@ -430,7 +430,7 @@ _Link: [./tracks/gcp_artifact_auth_20260319/](./tracks/gcp_artifact_auth_2026031
 ---
 
 ### [ ] Track: Burstable QoS for task containers
-_Link: [./tracks/burstable_qos_for_task_containers_20260321/](./tracks/burstable_qos_for_task_containers_20260321/)_
+_Link: [./archive/burstable_qos_for_task_containers_20260321/](./archive/burstable_qos_for_task_containers_20260321/)_
 
 ---
 
@@ -440,7 +440,7 @@ _Link: [./tracks/test_and_deploy_pipeline_20260322/](./tracks/test_and_deploy_pi
 ---
 
 ### [ ] Track: Sidecar image handoff
-_Link: [./tracks/sidecar_image_handoff_20260323/](./tracks/sidecar_image_handoff_20260323/)_
+_Link: [./archive/sidecar_image_handoff_20260323/](./archive/sidecar_image_handoff_20260323/)_
 
 ---
 
@@ -465,7 +465,7 @@ _Link: [./tracks/caching_behavior_and_pvc_20260324/](./tracks/caching_behavior_a
 ---
 
 ### [ ] Track: OCI Build Task Cache Testing
-_Link: [./tracks/oci_build_task_cache_testing_20260324/](./tracks/oci_build_task_cache_testing_20260324/)_
+_Link: [./archive/oci_build_task_cache_testing_20260324/](./archive/oci_build_task_cache_testing_20260324/)_
 
 ---
 
@@ -475,32 +475,32 @@ _Link: [./tracks/sidecar_details_20260325/](./tracks/sidecar_details_20260325/)_
 ---
 
 ### [ ] Track: Scratch Mount & Cache strategies
-_Link: [./tracks/scratch_mount_cache_strategies_20260325/](./tracks/scratch_mount_cache_strategies_20260325/)_
+_Link: [./archive/scratch_mount_cache_strategies_20260325/](./archive/scratch_mount_cache_strategies_20260325/)_
 
 ---
 
 ### [ ] Track: Version bumps
-_Link: [./tracks/version_bumps_20260327/](./tracks/version_bumps_20260327/)_
+_Link: [./archive/version_bumps_20260327/](./archive/version_bumps_20260327/)_
 
 ---
 
 ### [ ] Track: database_migration_runbook
-_Link: [./tracks/database_migration_runbook_20260327/](./tracks/database_migration_runbook_20260327/)_
+_Link: [./archive/database_migration_runbook_20260327/](./archive/database_migration_runbook_20260327/)_
 
 ---
 
 ### [ ] Track: pipeline_migration_guide
-_Link: [./tracks/pipeline_migration_guide_20260327/](./tracks/pipeline_migration_guide_20260327/)_
+_Link: [./archive/pipeline_migration_guide_20260327/](./archive/pipeline_migration_guide_20260327/)_
 
 ---
 
 ### [ ] Track: Release versioning for fly and JetBridge image
-_Link: [./tracks/release_versioning_for_fly_and_jetbridge_image_20260327/](./tracks/release_versioning_for_fly_and_jetbridge_image_20260327/)_
+_Link: [./archive/release_versioning_for_fly_and_jetbridge_image_20260327/](./archive/release_versioning_for_fly_and_jetbridge_image_20260327/)_
 
 ---
 
 ### [ ] Track: deprecate old agent paths and update tests
-_Link: [./tracks/deprecate_old_agent_paths_and_update_tests_20260327/](./tracks/deprecate_old_agent_paths_and_update_tests_20260327/)_
+_Link: [./archive/deprecate_old_agent_paths_and_update_tests_20260327/](./archive/deprecate_old_agent_paths_and_update_tests_20260327/)_
 
 ---
 
@@ -520,17 +520,17 @@ _Link: [./tracks/jetbridge_storage_behavioral_spec_20260330/](./tracks/jetbridge
 ---
 
 ### [x] Track: Sidecar working directory bug
-_Link: [./tracks/sidecar_workdir_bug_20260331/](./tracks/sidecar_workdir_bug_20260331/)_
+_Link: [./archive/sidecar_workdir_bug_20260331/](./archive/sidecar_workdir_bug_20260331/)_
 
 ---
 
 ### [x] Track: Telemetry simplification
-_Link: [./tracks/telemetry_simplification_20260331/](./tracks/telemetry_simplification_20260331/)_
+_Link: [./archive/telemetry_simplification_20260331/](./archive/telemetry_simplification_20260331/)_
 
 ---
 
 ### [x] Track: K8s Secret Ref Passthrough for Pipeline Vars
-_Link: [./tracks/k8s_secret_ref_passthrough_for_pipeline_vars_20260412/](./tracks/k8s_secret_ref_passthrough_for_pipeline_vars_20260412/)_
+_Link: [./archive/k8s_secret_ref_passthrough_for_pipeline_vars_20260412/](./archive/k8s_secret_ref_passthrough_for_pipeline_vars_20260412/)_
 
 ---
 
@@ -540,7 +540,7 @@ _Link: [./archive/remove_implicit_registry_image_skip_download_20260412/](./arch
 ---
 
 ### [x] Track: Fix native check self-notification feedback loop
-_Link: [./tracks/fix_native_check_self_notification_feedback_loop_20260413/](./tracks/fix_native_check_self_notification_feedback_loop_20260413/)_
+_Link: [./archive/fix_native_check_self_notification_feedback_loop_20260413/](./archive/fix_native_check_self_notification_feedback_loop_20260413/)_
 _Completed 2026-06-03 — gated `SaveVersions`/`SetResourceConfigScope` notifies and dropped the `UpdateLastCheckEndTime` notify (committed `c3e9f6d48b`). Cluster-verified on theborg/`cicd` via `LISTEN scanner`: 13 checks → only 2 notifies (both genuine new versions); native registry-image path resolved on the web node with 8 same-digest resolves → 1 saved version, 0 steady-state notifies; pin/unpin still notify. Follow-up spun off: native resolver ignores `insecure`/`ca_certs`._
 
 ---
@@ -551,11 +551,11 @@ _Link: [./archive/route_artifact_reads_through_daemonset_remove_exec_backed_arti
 ---
 
 ### [ ] Track: fix cache locator pod ip poisoning
-_Link: [./tracks/fix_cache_locator_pod_ip_poisoning_20260423/](./tracks/fix_cache_locator_pod_ip_poisoning_20260423/)_
+_Link: [./archive/fix_cache_locator_pod_ip_poisoning_20260423/](./archive/fix_cache_locator_pod_ip_poisoning_20260423/)_
 
 ---
 
 ### [x] Track: Artifact Daemon Resilience
-_Link: [./tracks/artifact_daemon_resilience_20260425/](./tracks/artifact_daemon_resilience_20260425/)_
+_Link: [./archive/artifact_daemon_resilience_20260425/](./archive/artifact_daemon_resilience_20260425/)_
 
 ---
