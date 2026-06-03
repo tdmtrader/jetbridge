@@ -539,8 +539,9 @@ _Link: [./archive/remove_implicit_registry_image_skip_download_20260412/](./arch
 
 ---
 
-### [ ] Track: Fix native check self-notification feedback loop
+### [x] Track: Fix native check self-notification feedback loop
 _Link: [./tracks/fix_native_check_self_notification_feedback_loop_20260413/](./tracks/fix_native_check_self_notification_feedback_loop_20260413/)_
+_Completed 2026-06-03 — gated `SaveVersions`/`SetResourceConfigScope` notifies and dropped the `UpdateLastCheckEndTime` notify (committed `c3e9f6d48b`). Cluster-verified on theborg/`cicd` via `LISTEN scanner`: 13 checks → only 2 notifies (both genuine new versions); native registry-image path resolved on the web node with 8 same-digest resolves → 1 saved version, 0 steady-state notifies; pin/unpin still notify. Follow-up spun off: native resolver ignores `insecure`/`ca_certs`._
 
 ---
 

@@ -1,0 +1,9 @@
+{
+  "trackId": "fix_native_check_self_notification_feedback_loop_20260413",
+  "type": "bugfix",
+  "status": "completed",
+  "description": "Fix native check self-notification feedback loop",
+  "createdAt": "2026-04-13T16:30:11.439Z",
+  "updatedAt": "2026-06-03T11:29:24.000Z",
+  "completedAt": "2026-06-03T11:29:24.000Z"
+}
