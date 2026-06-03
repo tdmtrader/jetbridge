@@ -353,7 +353,7 @@ _Link: [./archive/deprecate_old_code_paths_20260305/](./archive/deprecate_old_co
 
 ---
 
-### [ ] Track: K8s Sidecars
+### [x] Track: K8s Sidecars
 _Link: [./archive/k8s_sidecars_20260305/](./archive/k8s_sidecars_20260305/)_
 
 ---
@@ -378,17 +378,17 @@ _Link: [./archive/test_running_20260310/](./archive/test_running_20260310/)_
 
 ---
 
-### [ ] Track: AI feature segregation
+### [x] Track: AI feature segregation
 _Link: [./archive/ai_feature_segregation_20260311/](./archive/ai_feature_segregation_20260311/)_
 
 ---
 
-### [ ] Track: Image Ref Hardening
+### [x] Track: Image Ref Hardening
 _Link: [./archive/image_ref_hardening_20260311/](./archive/image_ref_hardening_20260311/)_
 
 ---
 
-### [ ] Track: Image Ref Hardening for tasks, etc
+### [x] Track: Image Ref Hardening for tasks, etc
 _Link: [./archive/image_ref_hardening_for_tasks_etc_20260311/](./archive/image_ref_hardening_for_tasks_etc_20260311/)_
 
 ---
@@ -409,17 +409,17 @@ _Link: [./archive/gcp_hyperdisk_exploration_20260313/](./archive/gcp_hyperdisk_e
 
 ---
 
-### [ ] Track: documentation
+### [x] Track: documentation
 _Link: [./archive/documentation_20260316/](./archive/documentation_20260316/)_
 
 ---
 
-### [ ] Track: AI Communication and Documentation Standards
+### [x] Track: AI Communication and Documentation Standards
 _Link: [./archive/ai_communication_and_documentation_standards_20260319/](./archive/ai_communication_and_documentation_standards_20260319/)_
 
 ---
 
-### [ ] Track: GHCR Docker Image Publishing
+### [x] Track: GHCR Docker Image Publishing
 _Link: [./archive/ghcr_docker_image_publishing_20260319/](./archive/ghcr_docker_image_publishing_20260319/)_
 
 ---
@@ -430,7 +430,7 @@ _Completed 2026-06-03 — scanner/image resolver now uses `authn.NewMultiKeychai
 
 ---
 
-### [ ] Track: Burstable QoS for task containers
+### [x] Track: Burstable QoS for task containers
 _Link: [./archive/burstable_qos_for_task_containers_20260321/](./archive/burstable_qos_for_task_containers_20260321/)_
 
 ---
@@ -440,7 +440,7 @@ _Link: [./tracks/test_and_deploy_pipeline_20260322/](./tracks/test_and_deploy_pi
 
 ---
 
-### [ ] Track: Sidecar image handoff
+### [x] Track: Sidecar image handoff
 _Link: [./archive/sidecar_image_handoff_20260323/](./archive/sidecar_image_handoff_20260323/)_
 
 ---
@@ -480,17 +480,17 @@ _Link: [./archive/scratch_mount_cache_strategies_20260325/](./archive/scratch_mo
 
 ---
 
-### [ ] Track: Version bumps
+### [x] Track: Version bumps
 _Link: [./archive/version_bumps_20260327/](./archive/version_bumps_20260327/)_
 
 ---
 
-### [ ] Track: database_migration_runbook
+### [x] Track: database_migration_runbook
 _Link: [./archive/database_migration_runbook_20260327/](./archive/database_migration_runbook_20260327/)_
 
 ---
 
-### [ ] Track: pipeline_migration_guide
+### [x] Track: pipeline_migration_guide
 _Link: [./archive/pipeline_migration_guide_20260327/](./archive/pipeline_migration_guide_20260327/)_
 
 ---
@@ -500,7 +500,7 @@ _Link: [./archive/release_versioning_for_fly_and_jetbridge_image_20260327/](./ar
 
 ---
 
-### [ ] Track: deprecate old agent paths and update tests
+### [x] Track: deprecate old agent paths and update tests
 _Link: [./archive/deprecate_old_agent_paths_and_update_tests_20260327/](./archive/deprecate_old_agent_paths_and_update_tests_20260327/)_
 
 ---
@@ -551,7 +551,7 @@ _Link: [./archive/route_artifact_reads_through_daemonset_remove_exec_backed_arti
 
 ---
 
-### [ ] Track: fix cache locator pod ip poisoning
+### [x] Track: fix cache locator pod ip poisoning
 _Link: [./archive/fix_cache_locator_pod_ip_poisoning_20260423/](./archive/fix_cache_locator_pod_ip_poisoning_20260423/)_
 
 ---
