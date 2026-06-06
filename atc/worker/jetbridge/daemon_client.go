@@ -2,11 +2,8 @@ package jetbridge
 
 import (
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"fmt"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
@@ -44,23 +41,13 @@ func NewDaemonClient(logger lager.Logger, clientset kubernetes.Interface, namesp
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 
 	if tlsCfg != nil && tlsCfg.CertPath != "" && tlsCfg.KeyPath != "" && tlsCfg.CACertPath != "" {
-		clientCert, err := tls.LoadX509KeyPair(tlsCfg.CertPath, tlsCfg.KeyPath)
+		tlsConfig, err := loadDaemonClientTLS(tlsCfg.CertPath, tlsCfg.KeyPath, tlsCfg.CACertPath)
 		if err != nil {
-			logger.Error("failed-to-load-client-cert", err)
+			logger.Error("failed-to-load-daemon-client-tls", err)
 		} else {
-			caCertPEM, err := os.ReadFile(tlsCfg.CACertPath)
-			if err != nil {
-				logger.Error("failed-to-read-ca-cert", err)
-			} else {
-				caPool := x509.NewCertPool()
-				caPool.AppendCertsFromPEM(caCertPEM)
-				transport.TLSClientConfig = &tls.Config{
-					Certificates: []tls.Certificate{clientCert},
-					RootCAs:      caPool,
-				}
-				scheme = "https"
-				logger.Info("mtls-enabled")
-			}
+			transport.TLSClientConfig = tlsConfig
+			scheme = "https"
+			logger.Info("mtls-enabled")
 		}
 	}
 

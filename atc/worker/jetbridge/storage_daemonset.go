@@ -186,10 +186,7 @@ func (b *DaemonSetBackend) BuildFetchInitContainers(handle string, inputs []runt
 }
 
 func (b *DaemonSetBackend) daemonScheme() string {
-	if b.config.ArtifactDaemonTLSEnabled {
-		return "https"
-	}
-	return "http"
+	return daemonURLScheme(b.config)
 }
 
 func (b *DaemonSetBackend) daemonResolveCommand(key, hostDest string) []string {
@@ -483,7 +480,7 @@ func (b *DaemonSetBackend) registerDaemonAlias(nodeName, volumeKey, diskPath str
 		return
 	}
 
-	url := fmt.Sprintf("http://%s:%d/register", nodeIP, port)
+	url := fmt.Sprintf("%s://%s:%d/register", b.daemonScheme(), nodeIP, port)
 	body := fmt.Sprintf(`{"key":%q,"local_path":%q}`, volumeKey, diskPath)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(body))
@@ -493,7 +490,10 @@ func (b *DaemonSetBackend) registerDaemonAlias(nodeName, volumeKey, diskPath str
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := http.DefaultClient.Do(req)
+	// /register is a protected daemon path; use the mTLS-aware client (carries
+	// the client cert when TLS is enabled) rather than http.DefaultClient.
+	client := newDaemonHTTPClient(b.config, 0)
+	resp, err := client.Do(req)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "WARNING: registerDaemonAlias: %s → %v (key=%s)\n", url, err, volumeKey)
 		return

@@ -191,6 +191,14 @@ func waitForCoreDNS(kubeconfig string) {
 }
 
 // helmDeployConcourse deploys Concourse via the local Helm chart.
+// artifactDaemonTLSEnabled reports whether the suite should deploy the artifact
+// daemon with mTLS hardening enabled. Opt-in via ARTIFACT_DAEMON_TLS so the
+// default suite run stays on plain HTTP; set it to verify the TLS data path.
+func artifactDaemonTLSEnabled() bool {
+	v := os.Getenv("ARTIFACT_DAEMON_TLS")
+	return v == "1" || strings.EqualFold(v, "true")
+}
+
 func helmDeployConcourse(kubeconfig, namespace, chartPath, image string) {
 	repo, tag := splitImageRef(image)
 
@@ -242,6 +250,13 @@ func helmDeployConcourse(kubeconfig, namespace, chartPath, image string) {
 		// between steps. Default is false in values.yaml.
 		"--set", "artifactDaemon.enabled=true",
 		"--timeout", "5m",
+	}
+	// Optionally harden the daemon with mTLS (opt-in via ARTIFACT_DAEMON_TLS).
+	// The chart auto-generates the CA + server/client certs; the web pod and
+	// init containers are wired for HTTPS automatically. Kept opt-in so the
+	// default suite run stays on plain HTTP and is unaffected.
+	if artifactDaemonTLSEnabled() {
+		helmArgs = append(helmArgs, "--set", "artifactDaemon.tls.enabled=true")
 	}
 	for i, arg := range extraArgs {
 		helmArgs = append(helmArgs, "--set", fmt.Sprintf("web.extraArgs[%d]=%s", i, arg))

@@ -41,7 +41,7 @@ func NewDaemonSetVolume(key, handle, workerName string, dbVolume db.CreatedVolum
 		dbVolume:       dbVolume,
 		sourceNode:     sourceNode,
 		config:         config,
-		httpClient:     &http.Client{Timeout: 30 * time.Second},
+		httpClient:     newDaemonHTTPClient(config, 30*time.Second),
 		nodeIPResolver: nodeIPResolver,
 	}
 }
@@ -56,7 +56,7 @@ func NewDaemonSetVolumeFromIP(key, handle, workerName string, daemonIP string, c
 		workerName: workerName,
 		sourceIP:   daemonIP,
 		config:     config,
-		httpClient: &http.Client{Timeout: 30 * time.Second},
+		httpClient: newDaemonHTTPClient(config, 30*time.Second),
 	}
 }
 
@@ -202,7 +202,7 @@ func (v *DaemonSetVolume) StreamIn(ctx context.Context, path string, compression
 		if len(ips) == 0 {
 			return fmt.Errorf("DaemonSetVolume.StreamIn: no daemon pods discovered")
 		}
-		url = fmt.Sprintf("http://%s:%d/stream-in/%s", ips[0], port, v.key)
+		url = fmt.Sprintf("%s://%s:%d/stream-in/%s", daemonURLScheme(v.config), ips[0], port, v.key)
 	} else {
 		return fmt.Errorf("DaemonSetVolume.StreamIn: no source node or daemon client (key=%s)", v.key)
 	}
@@ -213,7 +213,9 @@ func (v *DaemonSetVolume) StreamIn(ctx context.Context, path string, compression
 	}
 	req.Header.Set("Content-Type", "application/octet-stream")
 
-	client := &http.Client{Timeout: 5 * time.Minute}
+	// Reuse the volume's transport (which carries the mTLS client cert when
+	// TLS is enabled) but with a longer timeout suited to large uploads.
+	client := &http.Client{Timeout: 5 * time.Minute, Transport: v.httpClient.Transport}
 	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("DaemonSetVolume.StreamIn: PUT %s: %w", url, err)
@@ -318,7 +320,7 @@ func (v *DaemonSetVolume) fetchArtifactWithPeerFallback(ctx context.Context) (*h
 	// — they don't have the producer-side registry aliases. The producer
 	// served /artifacts/{key} via alias resolution; for peers the URL must
 	// hit the on-disk path directly.
-	peerURL := fmt.Sprintf("http://%s:%d/artifacts/steps/%s", peerIP, port, v.key)
+	peerURL := fmt.Sprintf("%s://%s:%d/artifacts/steps/%s", daemonURLScheme(v.config), peerIP, port, v.key)
 	resp, err := v.fetchOnce(ctx, peerURL)
 	if err != nil {
 		return nil, fmt.Errorf("fetch artifact from peer %s: %w", peerIP, err)
@@ -360,7 +362,7 @@ func (v *DaemonSetVolume) daemonURL(ctx context.Context) (string, error) {
 
 	// If we already have a direct IP (from ProbeResourceCache), use it.
 	if v.sourceIP != "" {
-		return fmt.Sprintf("http://%s:%d/artifacts/%s", v.sourceIP, port, v.key), nil
+		return fmt.Sprintf("%s://%s:%d/artifacts/%s", daemonURLScheme(v.config), v.sourceIP, port, v.key), nil
 	}
 
 	if v.nodeIPResolver == nil {
@@ -372,5 +374,5 @@ func (v *DaemonSetVolume) daemonURL(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("resolve node IP for %s: %w", v.sourceNode, err)
 	}
 
-	return fmt.Sprintf("http://%s:%d/artifacts/%s", nodeIP, port, v.key), nil
+	return fmt.Sprintf("%s://%s:%d/artifacts/%s", daemonURLScheme(v.config), nodeIP, port, v.key), nil
 }

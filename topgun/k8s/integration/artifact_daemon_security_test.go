@@ -3,6 +3,8 @@ package integration_test
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,7 +15,61 @@ import (
 	. "github.com/onsi/gomega"
 
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
+
+// daemonServesTLS reports whether the deployed daemon is serving HTTPS, detected
+// from the pod's readiness probe scheme (set by the chart when TLS is enabled).
+func daemonServesTLS(pod *corev1.Pod) bool {
+	c := mainContainer(pod)
+	if c.ReadinessProbe != nil && c.ReadinessProbe.HTTPGet != nil {
+		return c.ReadinessProbe.HTTPGet.Scheme == corev1.URISchemeHTTPS
+	}
+	return false
+}
+
+// daemonTLSSecretName returns the secret backing the daemon's "daemon-tls"
+// volume, or "" if TLS is not mounted.
+func daemonTLSSecretName(pod *corev1.Pod) string {
+	for _, v := range pod.Spec.Volumes {
+		if v.Name == "daemon-tls" && v.Secret != nil {
+			return v.Secret.SecretName
+		}
+	}
+	return ""
+}
+
+// daemonMTLSClients builds two HTTPS clients from the daemon-tls secret: one
+// presenting the client certificate (withCert) and one trusting only the server
+// CA (noCert). The daemon's server cert carries 127.0.0.1/localhost SANs, so
+// both verify the server over a port-forward.
+func daemonMTLSClients(pod *corev1.Pod) (withCert, noCert *http.Client) {
+	secretName := daemonTLSSecretName(pod)
+	Expect(secretName).ToNot(BeEmpty(), "expected daemon-tls secret to be mounted on the daemon pod")
+
+	secret, err := kubeClient.CoreV1().Secrets(config.Namespace).Get(
+		context.Background(), secretName, metav1.GetOptions{})
+	Expect(err).ToNot(HaveOccurred())
+
+	caPool := x509.NewCertPool()
+	Expect(caPool.AppendCertsFromPEM(secret.Data["ca.crt"])).To(BeTrue(), "daemon CA cert should parse")
+
+	clientCert, err := tls.X509KeyPair(secret.Data["client.crt"], secret.Data["client.key"])
+	Expect(err).ToNot(HaveOccurred(), "client cert/key should load")
+
+	withCert = &http.Client{
+		Timeout: 10 * time.Second,
+		Transport: &http.Transport{TLSClientConfig: &tls.Config{
+			RootCAs:      caPool,
+			Certificates: []tls.Certificate{clientCert},
+		}},
+	}
+	noCert = &http.Client{
+		Timeout: 10 * time.Second,
+		Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: caPool}},
+	}
+	return withCert, noCert
+}
 
 var _ = Describe("Artifact Daemon Security", func() {
 	var daemonPod *corev1.Pod
@@ -49,7 +105,14 @@ var _ = Describe("Artifact Daemon Security", func() {
 		By("port-forwarding to the daemon pod (pod IPs are not routable from the test host)")
 		daemonURL, stop := portForwardDaemon(daemonPod.Name, 7780)
 		defer stop()
+
+		// When the daemon is TLS-hardened, /artifacts is a protected path:
+		// connect over HTTPS and present the client cert. Otherwise plain HTTP.
 		client := &http.Client{Timeout: 10 * time.Second}
+		if daemonServesTLS(daemonPod) {
+			daemonURL = strings.Replace(daemonURL, "http://", "https://", 1)
+			client, _ = daemonMTLSClients(daemonPod)
+		}
 
 		By("verifying /healthz is reachable")
 		Eventually(func() int {
@@ -94,6 +157,55 @@ var _ = Describe("Artifact Daemon Security", func() {
 			daemonURL+"/artifacts/"+testKey, nil)
 		delResp, _ := client.Do(delReq)
 		if delResp != nil {
+			delResp.Body.Close()
+		}
+	})
+
+	It("enforces mTLS on protected paths when TLS is enabled", func() {
+		if !daemonServesTLS(daemonPod) {
+			Skip("daemon not deployed with TLS — set ARTIFACT_DAEMON_TLS=true to run this check")
+		}
+
+		// Reaching this point already proves the HTTPS readiness/liveness
+		// probes pass: the suite waits for the daemon pod to become Ready,
+		// and with TLS on those probes use scheme: HTTPS.
+		By("port-forwarding to the TLS daemon")
+		daemonURL, stop := portForwardDaemon(daemonPod.Name, 7780)
+		defer stop()
+		daemonURL = strings.Replace(daemonURL, "http://", "https://", 1)
+		withCert, noCert := daemonMTLSClients(daemonPod)
+
+		key := fmt.Sprintf("mtls-test-%d", time.Now().UnixNano())
+
+		By("rejecting a protected path (PUT /artifacts) without a client cert → 401")
+		req, err := http.NewRequest(http.MethodPut, daemonURL+"/artifacts/"+key, strings.NewReader("x"))
+		Expect(err).ToNot(HaveOccurred())
+		resp, err := noCert.Do(req)
+		Expect(err).ToNot(HaveOccurred(),
+			"TLS handshake should succeed (server cert is trusted); only the client cert is absent")
+		resp.Body.Close()
+		Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized),
+			"protected paths must require a client certificate")
+
+		By("allowing the exempt /healthz path without a client cert → 200")
+		hresp, err := noCert.Get(daemonURL + "/healthz")
+		Expect(err).ToNot(HaveOccurred())
+		hresp.Body.Close()
+		Expect(hresp.StatusCode).To(Equal(http.StatusOK),
+			"/healthz is exempt and must work without a client cert over HTTPS")
+
+		By("allowing a protected path WITH a valid client cert → 201")
+		preq, err := http.NewRequest(http.MethodPut, daemonURL+"/artifacts/"+key, strings.NewReader("mtls-ok"))
+		Expect(err).ToNot(HaveOccurred())
+		presp, err := withCert.Do(preq)
+		Expect(err).ToNot(HaveOccurred())
+		presp.Body.Close()
+		Expect(presp.StatusCode).To(Equal(http.StatusCreated),
+			"a valid client cert must be accepted on protected paths")
+
+		By("cleaning up the test artifact")
+		delReq, _ := http.NewRequest(http.MethodDelete, daemonURL+"/artifacts/"+key, nil)
+		if delResp, _ := withCert.Do(delReq); delResp != nil {
 			delResp.Body.Close()
 		}
 	})

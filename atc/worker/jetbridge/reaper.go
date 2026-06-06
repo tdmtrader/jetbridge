@@ -63,7 +63,7 @@ func (r *Reaper) SetExecutor(executor PodExecutor) {
 // SetArtifactLocator sets the ArtifactLocator for DaemonSet cleanup.
 func (r *Reaper) SetArtifactLocator(locator *ArtifactLocator) {
 	r.artifactLocator = locator
-	r.httpClient = &http.Client{Timeout: 10 * time.Second}
+	r.httpClient = newDaemonHTTPClient(r.cfg, 10*time.Second)
 }
 
 // Run implements component.Runnable. It reports active pods to the DB,
@@ -212,8 +212,8 @@ func (r *Reaper) cleanupDaemonSetArtifacts(ctx context.Context, logger lager.Log
 		}
 
 		// DELETE the step directory (not a tar file).
-		url := fmt.Sprintf("http://%s:%d/artifacts/steps/%s",
-			nodeIP, port, handle)
+		url := fmt.Sprintf("%s://%s:%d/artifacts/steps/%s",
+			daemonURLScheme(r.cfg), nodeIP, port, handle)
 
 		req, err := http.NewRequestWithContext(ctx, http.MethodDelete, url, nil)
 		if err != nil {

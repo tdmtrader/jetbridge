@@ -151,7 +151,7 @@ jobs:
     passed: [build-kind-runner]
   - task: k8s-integration
     privileged: true
-    timeout: 45m
+    timeout: 60m
     attempts: 2
     config:
       platform: linux
@@ -230,7 +230,22 @@ jobs:
             kill $DOCKERD_PID 2>/dev/null || true
             exit 1
           }
-          echo "=== K8s integration tests passed ==="
+          echo "=== K8s integration tests passed (plain HTTP) ==="
+
+          echo "=== Running artifact daemon mTLS verification (ARTIFACT_DAEMON_TLS=true) ==="
+          # Redeploys the suite with the daemon TLS-hardened (chart auto-generates
+          # the CA + server/client certs; web pod + init containers wire HTTPS
+          # automatically) and re-runs the Artifact* specs — daemon mTLS
+          # enforcement, artifact passing (stream-in/out), and read-after-reap
+          # (peer fetch) — so the mTLS data path is exercised end-to-end.
+          ARTIFACT_DAEMON_TLS=true FLY_PATH=/tmp/fly /tmp/integration.test \
+            -test.v -test.timeout 25m -test.count 1 -ginkgo.focus 'Artifact' || {
+            echo "=== mTLS VERIFICATION FAILED — dumping diagnostics ==="
+            docker ps -a 2>/dev/null || true
+            kill $DOCKERD_PID 2>/dev/null || true
+            exit 1
+          }
+          echo "=== Artifact daemon mTLS verification passed ==="
 
           kill $DOCKERD_PID 2>/dev/null || true
 
