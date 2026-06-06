@@ -18,8 +18,9 @@
 
 ---
 
-## [ ] Track: DaemonSet Artifact Security Hardening
-*Link: [./tracks/daemonset_artifact_security_20260408/](./tracks/daemonset_artifact_security_20260408/)*
+## [x] Track: DaemonSet Artifact Security Hardening
+*Link: [./archive/daemonset_artifact_security_20260408/](./archive/daemonset_artifact_security_20260408/)*
+*Completed 2026-06-06 — daemon mTLS (server + ATC clients + init containers), NetworkPolicy, SecurityContext (root + CAP_DAC_OVERRIDE). Verification surfaced & fixed the incomplete ATC data plane + by-IP cert SAN/init-container bugs; green end-to-end on k8s-e2e CI #192 (plain 128/0, mTLS 10/0), now run automatically via ARTIFACT_DAEMON_TLS=true.*
 
 ---
 
