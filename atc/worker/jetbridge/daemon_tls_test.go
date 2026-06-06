@@ -134,6 +134,32 @@ func TestNewDaemonHTTPClient_FallsBackWhenCertsMissing(t *testing.T) {
 	}
 }
 
+func TestDaemonTLSServerName(t *testing.T) {
+	// testDaemonConfig: service "artifact-daemon", namespace "test-ns".
+	if got, want := daemonTLSServerName(testDaemonConfig()), "artifact-daemon.test-ns.svc"; got != want {
+		t.Errorf("expected ServerName %q, got %q", want, got)
+	}
+	empty := testDaemonConfig()
+	empty.ArtifactDaemonService = ""
+	if got := daemonTLSServerName(empty); got != "" {
+		t.Errorf("expected empty ServerName when service unknown, got %q", got)
+	}
+}
+
+// TestNewDaemonHTTPClient_SetsServerName guards the regression where mTLS by pod
+// IP failed cert verification ("certificate is valid for 127.0.0.1, not
+// <podIP>") because no ServerName was set to the cert's service-DNS SAN.
+func TestNewDaemonHTTPClient_SetsServerName(t *testing.T) {
+	client := newDaemonHTTPClient(tlsDaemonConfig(t), 30*time.Second)
+	transport, ok := client.Transport.(*http.Transport)
+	if !ok || transport.TLSClientConfig == nil {
+		t.Fatal("expected an mTLS transport")
+	}
+	if got, want := transport.TLSClientConfig.ServerName, "artifact-daemon.test-ns.svc"; got != want {
+		t.Errorf("expected ServerName %q (cert SAN) so by-IP dials verify, got %q", want, got)
+	}
+}
+
 // TestDaemonSetVolume_DaemonURLSchemeFollowsTLS guards the regression where the
 // ATC-side data-plane URLs were hardcoded to http:// even with mTLS enabled.
 func TestDaemonSetVolume_DaemonURLSchemeFollowsTLS(t *testing.T) {
@@ -157,7 +183,9 @@ func TestDaemonSetVolume_DaemonURLSchemeFollowsTLS(t *testing.T) {
 }
 
 // TestBuildFetchInitContainers_TLSWiring verifies the init container fetches
-// over HTTPS and mounts the daemon CA so BusyBox wget can verify the server.
+// over HTTPS with --no-check-certificate (the daemon is dialed by node IP,
+// which is not a cert SAN) and that NO CA volume is mounted — mounting a volume
+// the pod doesn't have previously made the pod spec invalid.
 func TestBuildFetchInitContainers_TLSWiring(t *testing.T) {
 	b := NewDaemonSetBackend(tlsDaemonConfig(t), nil, nil)
 	inputs := []runtime.Input{
@@ -176,33 +204,24 @@ func TestBuildFetchInitContainers_TLSWiring(t *testing.T) {
 	if !strings.Contains(cmdStr, "https://") {
 		t.Errorf("expected init container command to use https://, got: %s", cmdStr)
 	}
+	if !strings.Contains(cmdStr, "--no-check-certificate") {
+		t.Errorf("expected --no-check-certificate (node IP is not a cert SAN), got: %s", cmdStr)
+	}
 
-	var sslCertFile string
 	for _, e := range c.Env {
 		if e.Name == "SSL_CERT_FILE" {
-			sslCertFile = e.Value
+			t.Error("did not expect SSL_CERT_FILE — server cert verification is skipped")
 		}
 	}
-	if sslCertFile != "/etc/concourse/daemon-tls/ca.crt" {
-		t.Errorf("expected SSL_CERT_FILE=/etc/concourse/daemon-tls/ca.crt, got %q", sslCertFile)
-	}
-
-	var hasCAMount bool
 	for _, m := range c.VolumeMounts {
-		if m.Name == artifactDaemonTLSCAVolumeName {
-			hasCAMount = true
-			if m.MountPath != artifactDaemonTLSCAMountPath {
-				t.Errorf("expected CA mount path %q, got %q", artifactDaemonTLSCAMountPath, m.MountPath)
-			}
+		if m.Name == "artifact-daemon-tls-ca" {
+			t.Error("did not expect a CA volume mount — the pod has no such volume, which invalidates the pod spec")
 		}
-	}
-	if !hasCAMount {
-		t.Errorf("expected init container to mount the daemon CA volume %q", artifactDaemonTLSCAVolumeName)
 	}
 }
 
-// TestBuildFetchInitContainers_NoTLSMountWhenDisabled confirms the CA mount and
-// SSL_CERT_FILE are absent (and scheme stays http) when TLS is off.
+// TestBuildFetchInitContainers_NoTLSMountWhenDisabled confirms the scheme stays
+// http and no TLS options are added when TLS is off.
 func TestBuildFetchInitContainers_NoTLSMountWhenDisabled(t *testing.T) {
 	b := NewDaemonSetBackend(testDaemonConfig(), nil, nil)
 	inputs := []runtime.Input{
@@ -217,17 +236,16 @@ func TestBuildFetchInitContainers_NoTLSMountWhenDisabled(t *testing.T) {
 	}
 	c := inits[0]
 
-	if strings.Contains(strings.Join(c.Command, " "), "https://") {
+	cmdStr := strings.Join(c.Command, " ")
+	if strings.Contains(cmdStr, "https://") {
 		t.Error("expected http:// scheme when TLS disabled")
+	}
+	if strings.Contains(cmdStr, "--no-check-certificate") {
+		t.Error("did not expect --no-check-certificate when TLS disabled")
 	}
 	for _, e := range c.Env {
 		if e.Name == "SSL_CERT_FILE" {
 			t.Error("expected no SSL_CERT_FILE when TLS disabled")
-		}
-	}
-	for _, m := range c.VolumeMounts {
-		if m.Name == artifactDaemonTLSCAVolumeName {
-			t.Error("expected no daemon CA mount when TLS disabled")
 		}
 	}
 }

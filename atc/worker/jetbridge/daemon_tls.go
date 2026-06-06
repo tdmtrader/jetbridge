@@ -29,11 +29,26 @@ func daemonClientTLSConfigured(cfg Config) bool {
 		cfg.ArtifactDaemonTLSCACert != ""
 }
 
+// daemonTLSServerName returns the DNS name to verify the daemon's server
+// certificate against. ATC dials daemon pods by their (dynamic) pod IP, which
+// cannot be a cert SAN; the chart-issued server cert instead carries the
+// headless service DNS name. Setting this as the TLS ServerName makes Go verify
+// against that SAN regardless of the IP dialed. Returns "" when the service or
+// namespace is unknown (verification then falls back to the dial host).
+func daemonTLSServerName(cfg Config) string {
+	if cfg.ArtifactDaemonService == "" || cfg.Namespace == "" {
+		return ""
+	}
+	return fmt.Sprintf("%s.%s.svc", cfg.ArtifactDaemonService, cfg.Namespace)
+}
+
 // loadDaemonClientTLS builds a *tls.Config that presents the configured client
 // certificate and trusts the daemon CA, for mTLS with the artifact daemon. It
 // is the single source of truth for the ATC-side daemon TLS config, shared by
-// NewDaemonClient and newDaemonHTTPClient.
-func loadDaemonClientTLS(certPath, keyPath, caCertPath string) (*tls.Config, error) {
+// NewDaemonClient and newDaemonHTTPClient. serverName (when non-empty) is the
+// SAN to verify the daemon's server cert against — required because daemons are
+// dialed by pod IP, not by a name in the cert.
+func loadDaemonClientTLS(certPath, keyPath, caCertPath, serverName string) (*tls.Config, error) {
 	clientCert, err := tls.LoadX509KeyPair(certPath, keyPath)
 	if err != nil {
 		return nil, fmt.Errorf("load daemon client cert: %w", err)
@@ -49,6 +64,7 @@ func loadDaemonClientTLS(certPath, keyPath, caCertPath string) (*tls.Config, err
 	return &tls.Config{
 		Certificates: []tls.Certificate{clientCert},
 		RootCAs:      caPool,
+		ServerName:   serverName,
 	}, nil
 }
 
@@ -68,6 +84,7 @@ func newDaemonHTTPClient(cfg Config, timeout time.Duration) *http.Client {
 			cfg.ArtifactDaemonTLSCert,
 			cfg.ArtifactDaemonTLSKey,
 			cfg.ArtifactDaemonTLSCACert,
+			daemonTLSServerName(cfg),
 		)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "WARNING: artifact daemon mTLS: %v — falling back to plain HTTP\n", err)

@@ -16,8 +16,6 @@ import (
 )
 
 const artifactDaemonHostPathVolumeName = "artifact-daemon-hostpath"
-const artifactDaemonTLSCAVolumeName = "artifact-daemon-tls-ca"
-const artifactDaemonTLSCAMountPath = "/etc/concourse/daemon-tls"
 
 // Compile-time check that DaemonSetBackend satisfies StorageBackend.
 var _ StorageBackend = (*DaemonSetBackend)(nil)
@@ -156,19 +154,13 @@ func (b *DaemonSetBackend) BuildFetchInitContainers(handle string, inputs []runt
 		},
 	}
 
-	// When TLS is enabled, mount the CA cert and set SSL_CERT_FILE so
-	// BusyBox wget verifies the daemon's server certificate.
-	if b.config.ArtifactDaemonTLSEnabled && b.config.ArtifactDaemonTLSCACert != "" {
-		allMounts = append(allMounts, corev1.VolumeMount{
-			Name:      artifactDaemonTLSCAVolumeName,
-			MountPath: artifactDaemonTLSCAMountPath,
-			ReadOnly:  true,
-		})
-		envVars = append(envVars, corev1.EnvVar{
-			Name:  "SSL_CERT_FILE",
-			Value: filepath.Join(artifactDaemonTLSCAMountPath, "ca.crt"),
-		})
-	}
+	// Note: when TLS is enabled the init container reaches the daemon over
+	// HTTPS at ${HOST_IP}:7780 (the node IP, via hostPort). The node IP cannot
+	// be a certificate SAN, so BusyBox wget can't verify the hostname; the
+	// resolve command uses --no-check-certificate instead. The connection is
+	// still TLS-encrypted, and /resolve(-batch) is an exempt, same-node,
+	// NetworkPolicy-protected control path — artifact data flows via the shared
+	// hostPath, not over this HTTP call. No CA cert mount is needed.
 
 	return []corev1.Container{
 		{
@@ -189,6 +181,18 @@ func (b *DaemonSetBackend) daemonScheme() string {
 	return daemonURLScheme(b.config)
 }
 
+// wgetTLSOpts returns extra BusyBox wget options for daemon HTTPS calls. When
+// TLS is enabled it adds --no-check-certificate: the init container dials the
+// daemon by node IP (HOST_IP), which is not a cert SAN, so hostname
+// verification cannot succeed. The connection is still encrypted; /resolve is
+// an exempt, same-node, NetworkPolicy-protected control path.
+func (b *DaemonSetBackend) wgetTLSOpts() string {
+	if b.config.ArtifactDaemonTLSEnabled {
+		return "--no-check-certificate"
+	}
+	return ""
+}
+
 func (b *DaemonSetBackend) daemonResolveCommand(key, hostDest string) []string {
 	if key == "" {
 		script := `echo "ERROR: artifact key is empty — producing step did not record its output location" >&2; exit 1`
@@ -206,6 +210,7 @@ KEY="%s"
 DST="%s"
 PORT=%d
 DAEMON="%s://${HOST_IP}:${PORT}"
+WGET_OPTS="%s"
 echo "[artifact-fetch] resolving key=${KEY} dest=${DST} daemon=${DAEMON}" >&2
 # Retry up to 10 times with backoff — the daemon may not be reachable
 # immediately (hostPort iptables rules propagation, daemon restart after
@@ -214,7 +219,7 @@ ATTEMPT=0
 MAX=10
 while true; do
   ATTEMPT=$((ATTEMPT + 1))
-  RESP=$(wget -qO- -T 180 --post-data='{"key":"'"${KEY}"'","dest":"'"${DST}"'"}' "${DAEMON}/resolve" 2>&1) && break
+  RESP=$(wget ${WGET_OPTS} -qO- -T 180 --post-data='{"key":"'"${KEY}"'","dest":"'"${DST}"'"}' "${DAEMON}/resolve" 2>&1) && break
   if [ "$ATTEMPT" -ge "$MAX" ]; then
     echo "[artifact-fetch] FAILED after ${MAX} attempts: ${RESP}" >&2
     exit 1
@@ -223,7 +228,7 @@ while true; do
   sleep 2
 done
 echo "[artifact-fetch] resolved: ${RESP}" >&2
-`, key, hostDest, port, b.daemonScheme())
+`, key, hostDest, port, b.daemonScheme(), b.wgetTLSOpts())
 
 	return []string{"sh", "-c", script}
 }
@@ -248,13 +253,14 @@ func (b *DaemonSetBackend) daemonResolveBatchCommand(items []batchItem) []string
 set -e
 PORT=%d
 DAEMON="%s://${HOST_IP}:${PORT}"
+WGET_OPTS="%s"
 PAYLOAD='%s'
 echo "[artifact-fetch] batch resolving %d artifacts via ${DAEMON}/resolve-batch" >&2
 ATTEMPT=0
 MAX=10
 while true; do
   ATTEMPT=$((ATTEMPT + 1))
-  RESP=$(wget -qO- -T 180 --header='Content-Type: application/json' --post-data="${PAYLOAD}" "${DAEMON}/resolve-batch" 2>&1) && break
+  RESP=$(wget ${WGET_OPTS} -qO- -T 180 --header='Content-Type: application/json' --post-data="${PAYLOAD}" "${DAEMON}/resolve-batch" 2>&1) && break
   if [ "$ATTEMPT" -ge "$MAX" ]; then
     echo "[artifact-fetch] FAILED after ${MAX} attempts: ${RESP}" >&2
     exit 1
@@ -267,7 +273,7 @@ echo "[artifact-fetch] batch resolved: ${RESP}" >&2
 case "${RESP}" in
   *'"status":"error"'*) echo "[artifact-fetch] batch had failures — see above" >&2; exit 1 ;;
 esac
-`, port, b.daemonScheme(), string(payload), len(items))
+`, port, b.daemonScheme(), b.wgetTLSOpts(), string(payload), len(items))
 
 	return []string{"sh", "-c", script}
 }

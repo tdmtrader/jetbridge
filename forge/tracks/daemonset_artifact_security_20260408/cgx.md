@@ -39,3 +39,28 @@ in-cluster mTLS assertions. Full jetbridge + daemon suites green.
 testcontainers K3s suite are recorded as flaky (namespace errors). The TLS suite run
 (`ARTIFACT_DAEMON_TLS=true`) is staged but still needs an actual run — locally if
 Colima cooperates, else via the `k8s-e2e` CI pipeline.
+
+### 2026-06-06 (cont.) — CI run (k8s-e2e #191) found two real TLS bugs
+
+Ran on the live `k8s-e2e` pipeline (`ARTIFACT_DAEMON_TLS=true`). Plain-HTTP suite
+passed 128/0; the mTLS run failed 5/10 — and the failures were **real bugs the unit
+tests couldn't see**, all rooted in one fact: **the daemon is addressed by IP (pod IP
+for ATC Go clients, node IP for init containers), but the server cert only covers the
+service DNS + 127.0.0.1/localhost.**
+
+1. **Init-container pod invalid** — `volumeMounts[N].name: Not found:
+   "artifact-daemon-tls-ca"`. Phase 4 added the CA *mount* to the init container but
+   never added the *Volume* to the pod → every task pod was rejected by the API
+   server. Fix: the init container can't verify a node-IP host anyway, so it now uses
+   `wget --no-check-certificate` (still TLS-encrypted; `/resolve` is exempt + same-node
+   + NetworkPolicy-protected, data flows via hostPath). Removed the CA mount entirely.
+2. **mTLS by pod IP failed verification** — `x509: certificate is valid for 127.0.0.1,
+   not 172.17.0.3`. Fix: set `tls.Config.ServerName` to `<service>.<ns>.svc` (a cert
+   SAN) in both `newDaemonHTTPClient` and `NewDaemonClient`, so by-IP dials verify
+   against the cert's service-DNS name. Confirmed the chart's `--kubernetes-artifact-
+   daemon-service` flag and the cert SAN are the identical string.
+
+My security/enforcement spec (no-cert→401, cert→201, /healthz→200) **passed** —
+port-forward uses 127.0.0.1, which is a cert SAN — so the daemon mTLS server + client
+cert handling were already correct. Lesson: unit tests that assert on a *container's*
+volumeMounts don't catch a missing *pod* Volume; only an in-cluster run does.
