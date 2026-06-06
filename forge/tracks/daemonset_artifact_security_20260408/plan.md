@@ -81,7 +81,7 @@ Now runs via the **testcontainers** integration suite (`topgun/k8s/integration`)
 - [x] Verify health probes work with `scheme: HTTPS` — implicit: suite waits for daemon Ready, which requires the HTTPS probes to pass
 - [x] Init container HTTPS + CA mount + `SSL_CERT_FILE` — unit-tested in `atc/worker/jetbridge/daemon_tls_test.go` (`TestBuildFetchInitContainers_TLSWiring`)
 - [x] Deploy without TLS flags — unchanged HTTP behavior — default suite run (TLS off) + `TestBuildFetchInitContainers_NoTLSMountWhenDisabled`
-- [ ] **RUN the suite with `ARTIFACT_DAEMON_TLS=true`** (locally via Docker/Colima or the `k8s-e2e` CI) to execute the above in-cluster
+- [x] **RAN the suite with `ARTIFACT_DAEMON_TLS=true` on `k8s-e2e` CI — GREEN** (build #192, 2026-06-06): plain-HTTP `128 Passed | 0 Failed`, mTLS run `10 Passed | 0 Failed` (Daemon Security + Artifact Passing + Read-After-Reap over mTLS). Now runs automatically every CI run. Two bugs found+fixed first (#191): init-container CA-volume crash → `--no-check-certificate`; by-IP cert SAN mismatch → `ServerName` override. See cgx.md.
 
 ## Phase 8: ATC-side data-plane mTLS (gap found during Phase 7 verification)
 
