@@ -225,6 +225,7 @@
 - [x] Get user approval on spec and coverage matrix
 
 ### Phase 2: P1 Missing Test Cases
+[checkpoint: ef6e458fa3 — 2026-06-07; all P1 tasks complete; SC-11 verified live on theborg (control 1.11s / test 6.90s / delta 5.79s); coverage 79/87 Full (91%), 0 Missing; non-live suite 326/326 deterministic (25x)]
 - [x] Write tests for SC-07: Sidecar log streaming mechanics
   - Dedicated writer routing
   - Prefix fallback (`[sidecar-name]` format)
