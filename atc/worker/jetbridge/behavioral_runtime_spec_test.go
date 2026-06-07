@@ -19,6 +19,7 @@ package jetbridge_test
 //   OE-07: sidecar.started span event (with container.name attribute)
 //   OE-08: pod.phase.<phase> span events on phase transitions
 //   OE-09: Observability event deduplication via podEventTracker
+//   OE-10: Metrics recording (K8sPodStartupDuration, K8sImagePullFailures, K8sPodFailure)
 
 import (
 	"bytes"
@@ -29,11 +30,15 @@ import (
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbfakes"
+	"github.com/concourse/concourse/atc/metric"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 	"github.com/concourse/concourse/tracing"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"go.opentelemetry.io/otel"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	corev1 "k8s.io/api/core/v1"
@@ -1295,7 +1300,7 @@ var _ = Describe("[OE-09] Observability event deduplication", func() {
 // k8s.exec-process.wait-for-running span, like OE-02/04/06.
 // ──────────────────────────────────────────────────────────────────────────────
 
-var _ = Describe("[OE] Remaining span events (OE-01, OE-05, OE-07, OE-08)", func() {
+var _ = Describe("[OE] Remaining observability coverage (OE-01, OE-05, OE-07, OE-08, OE-10)", func() {
 	var (
 		fakeDBWorker  *dbfakes.FakeWorker
 		fakeClientset *fake.Clientset
@@ -1557,5 +1562,127 @@ var _ = Describe("[OE] Remaining span events (OE-01, OE-05, OE-07, OE-08)", func
 		phase, ok := attrValue(ev, "pod.phase")
 		Expect(ok).To(BeTrue(), "pod.phase.running event must carry a pod.phase attribute")
 		Expect(phase).To(Equal("Running"))
+	})
+
+	// ── OE-10: Metrics recording ────────────────────────────────────────────
+	// Driven through the same exec-mode runtime. The in-process Monitor metrics
+	// (K8sPodStartupDuration gauge, K8sImagePullFailures counter) are package
+	// globals read directly; the OTel K8sPodFailure counter is read back via a
+	// ManualReader. Specs run serially within a Ginkgo process, so resetting the
+	// shared in-process metrics at the start of a spec is race-free.
+
+	It("[OE-10] records K8sPodStartupDuration when the pod reaches Running", func() {
+		// Reset the shared gauge's max-tracking before driving startup.
+		metric.Metrics.K8sPodStartupDuration.Max()
+
+		startContainer("oe10-startup")
+		process := run()
+
+		pod := getPod("oe10-startup")
+		pod.Status.Phase = corev1.PodPending
+		updateStatus(pod)
+
+		go func() {
+			time.Sleep(20 * time.Millisecond)
+			pod.Status.Phase = corev1.PodRunning
+			pod.Status.ContainerStatuses = []corev1.ContainerStatus{
+				{Name: "main", State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}},
+			}
+			_, _ = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+		}()
+
+		result, err := process.Wait(ctx)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(result.ExitStatus).To(Equal(0))
+
+		// Set(...) was called with the startup duration in ms (>= the 20ms wait).
+		Expect(metric.Metrics.K8sPodStartupDuration.Max()).To(BeNumerically(">", 0),
+			"expected a positive K8sPodStartupDuration to be recorded on successful startup")
+	})
+
+	It("[OE-10] increments K8sImagePullFailures when a container hits ImagePullBackOff", func() {
+		// Reset the shared counter (Delta swaps it back to zero).
+		metric.Metrics.K8sImagePullFailures.Delta()
+
+		startContainer("oe10-imgpull")
+		process := run()
+
+		// Pre-stage ImagePullBackOff so it's detected on the initial sync.
+		pod := getPod("oe10-imgpull")
+		pod.Status.Phase = corev1.PodPending
+		pod.Status.ContainerStatuses = []corev1.ContainerStatus{
+			{
+				Name: "main",
+				State: corev1.ContainerState{
+					Waiting: &corev1.ContainerStateWaiting{
+						Reason:  "ImagePullBackOff",
+						Message: "Back-off pulling image \"busybox\"",
+					},
+				},
+			},
+		}
+		updateStatus(pod)
+
+		_, err := process.Wait(ctx)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("ImagePullBackOff"))
+
+		Expect(metric.Metrics.K8sImagePullFailures.Delta()).To(Equal(float64(1)),
+			"expected K8sImagePullFailures to be incremented exactly once")
+	})
+
+	It("[OE-10] records the K8sPodFailure OTel counter with a reason attribute", func() {
+		// Wire a manual reader so the OTel pod-failures counter is collectable.
+		reader := sdkmetric.NewManualReader()
+		mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+		otel.SetMeterProvider(mp)
+		metric.InitOTelMetrics()
+
+		startContainer("oe10-podfailure")
+		process := run()
+
+		// Pre-stage an OOM kill; the OOM check fires before the Running check.
+		pod := getPod("oe10-podfailure")
+		pod.Status.Phase = corev1.PodRunning
+		pod.Status.ContainerStatuses = []corev1.ContainerStatus{
+			{
+				Name: "main",
+				State: corev1.ContainerState{
+					Terminated: &corev1.ContainerStateTerminated{
+						Reason:   "OOMKilled",
+						ExitCode: 137,
+					},
+				},
+			},
+		}
+		updateStatus(pod)
+
+		_, err := process.Wait(ctx)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("OOMKilled"))
+
+		var rm metricdata.ResourceMetrics
+		Expect(reader.Collect(ctx, &rm)).To(Succeed())
+
+		var podFailures *metricdata.Sum[int64]
+		for _, sm := range rm.ScopeMetrics {
+			for _, m := range sm.Metrics {
+				if m.Name == "concourse.k8s.pod_failures" {
+					if s, ok := m.Data.(metricdata.Sum[int64]); ok {
+						podFailures = &s
+					}
+				}
+			}
+		}
+		Expect(podFailures).ToNot(BeNil(), "expected concourse.k8s.pod_failures counter")
+
+		found := false
+		for _, dp := range podFailures.DataPoints {
+			if v, ok := dp.Attributes.Value("reason"); ok && v.AsString() == "OOMKilled" {
+				found = true
+				Expect(dp.Value).To(BeNumerically(">=", int64(1)))
+			}
+		}
+		Expect(found).To(BeTrue(), "expected a pod_failures data point with reason=OOMKilled")
 	})
 })

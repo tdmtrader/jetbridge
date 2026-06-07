@@ -27,3 +27,10 @@
 
 ### good-pattern (attribute assertions)
 - [2026-06-07] Asserting span *event attributes* (node.name, container.name, pod.phase) — not just event names — caught real coverage value: iterate `span.Events()`, match `e.Name`, then range `e.Attributes` comparing `string(kv.Key)` and `kv.Value.AsString()`. No extra import needed (attribute.KeyValue methods suffice).
+
+### good-pattern (OE-10 metrics — two layers)
+- [2026-06-07] K8s runtime metrics live in TWO layers: in-process `metric.Metrics.*` (Monitor; `Counter.Delta()` swaps-to-0, `Gauge.Max()` swaps-max-to-(-1) — both self-resetting reads, so reset-at-spec-start is race-free given Ginkgo's serial-within-process execution) AND OTel instruments via `metric.Record*`/`metric.Metrics` that are NO-OPs until `InitOTelMetrics()` binds them to a meter provider. The OTel `concourse.k8s.pod_failures` Int64Counter had ZERO test coverage anywhere.
+- [2026-06-07] To assert an OTel counter through the runtime: `sdkmetric.NewManualReader()` → `NewMeterProvider(WithReader)` → `otel.SetMeterProvider` → `metric.InitOTelMetrics()` BEFORE driving the failure, then `reader.Collect()` and match `metricdata.Sum[int64]` data points by `Attributes.Value("reason")`. Pattern lifted from atc/metric/otel_metrics_test.go.
+
+### missing-capability
+- [2026-06-07] No Forge MCP server connected this session — all status/task/checkpoint ops done via manual plan.md edits + git notes (workflow's documented fallback). Worked fine but loses metadata.json↔tracks.md auto-sync.

@@ -136,9 +136,9 @@
 | OE-07 | Sidecar started event | ✅ Full | behavioral_runtime_spec_test.go | sidecar.started event + container.name attribute verified for non-main container reaching Running |
 | OE-08 | Pod phase change events | ✅ Full | behavioral_runtime_spec_test.go | pod.phase.pending and pod.phase.running events + pod.phase attribute verified on transitions |
 | OE-09 | Event deduplication | ✅ Full | behavioral_runtime_spec_test.go | pod.scheduled and sidecar.started deduplication explicitly verified |
-| OE-10 | Metrics recording | ⚠️ Partial | process_test.go | Some metrics checked but not comprehensive |
+| OE-10 | Metrics recording | ✅ Full | behavioral_runtime_spec_test.go | K8sPodStartupDuration gauge, K8sImagePullFailures counter, and K8sPodFailure OTel counter (reason attr) all verified through the exec-mode runtime |
 
-**Summary:** 8/10 Full, 2/10 Partial, 0 Missing
+**Summary:** 9/10 Full, 1/10 Partial, 0 Missing
 
 ### Section 9: Configuration (7 requirements)
 
@@ -167,9 +167,9 @@
 | 5. GC | 9 | 9 | 0 | 0 | 100% full |
 | 6. Registration | 6 | 6 | 0 | 0 | 100% full |
 | 7. Watch | 10 | 8 | 2 | 0 | 80% full |
-| 8. Observability | 10 | 8 | 2 | 0 | 80% full |
+| 8. Observability | 10 | 9 | 1 | 0 | 90% full |
 | 9. Configuration | 7 | 6 | 1 | 0 | 86% full |
-| **TOTAL** | **87** | **77** | **9** | **1** | **89% full** |
+| **TOTAL** | **87** | **78** | **8** | **1** | **90% full** |
 
 ---
 
@@ -204,7 +204,7 @@
 | ~~OE-06~~ | ~~init.container.failed span event~~ | ✅ Done — behavioral_runtime_spec_test.go |
 | ~~OE-07~~ | ~~sidecar.started span event~~ | ✅ Done — behavioral_runtime_spec_test.go (container.name attr) |
 | ~~OE-08~~ | ~~Pod phase change events~~ | ✅ Done — behavioral_runtime_spec_test.go (pod.phase.* + attr) |
-| OE-10 | Metrics recording verification | Still partial |
+| ~~OE-10~~ | ~~Metrics recording verification~~ | ✅ Done — behavioral_runtime_spec_test.go (gauge + counter + OTel reason attr) |
 
 ### P3: Nice-to-Have (Edge cases and robustness)
 
@@ -244,7 +244,7 @@
 - [x] Write tests for OE-04: image.pulling and image.pulled span events
 - [x] Write tests for OE-06: init.container.failed span event
 - [x] Write tests for OE-01, OE-05, OE-07, OE-08: Remaining span event assertions
-- [ ] Write tests for OE-10: Metrics recording verification
+- [x] Write tests for OE-10: Metrics recording verification
 
 ### Phase 4: P3 Edge Cases (Optional)
 - [ ] Write explicit test for PE-02 direct mode command embedding
