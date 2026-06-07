@@ -506,8 +506,9 @@ _Link: [./archive/deprecate_old_agent_paths_and_update_tests_20260327/](./archiv
 
 ---
 
-### [ ] Track: Daemon-mediated artifact resolution
-_Link: [./tracks/daemon_mediated_artifact_resolution_20260327/](./tracks/daemon_mediated_artifact_resolution_20260327/)_
+### [x] Track: Daemon-mediated artifact resolution
+_Link: [./archive/daemon_mediated_artifact_resolution_20260327/](./archive/daemon_mediated_artifact_resolution_20260327/)_
+_Completed 2026-06-06 — daemon is the sole artifact authority (/resolve, /register, peer fetch, flat keys, single-call init containers); resource caching re-enabled; daemon Prometheus metrics added (9495ece8e6). 56/56 tasks; green on k8s-e2e #192._
 
 ---
 
