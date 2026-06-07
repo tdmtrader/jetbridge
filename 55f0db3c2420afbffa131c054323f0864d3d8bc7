@@ -1,0 +1,9 @@
+Track: k8s_runtime_behavioral_spec_20260331 (Phase 3, P2 — final task)
+Task: Write tests for OE-10 (metrics recording verification)
+Tests: 3 new specs in atc/worker/jetbridge/behavioral_runtime_spec_test.go
+  - K8sPodStartupDuration gauge set on success
+  - K8sImagePullFailures counter incremented on ImagePullBackOff
+  - K8sPodFailure OTel counter (reason=OOMKilled) via ManualReader
+Verify: ginkgo --focus='OE-10' -> all green; full jetbridge suite 326/326 pass
+Coverage: 77->78/87 Full (89%->90%); Observability section 8->9/10 Full
+Phase 3 (P2) now COMPLETE -> awaiting checkpoint approval
