@@ -251,6 +251,7 @@
 - [x] Write tests for OE-10: Metrics recording verification
 
 ### Phase 4: P3 Edge Cases (Optional)
+[checkpoint: d459d26bed — 2026-06-07; all P3 tasks complete; coverage 83/87 Full (95%), 0 Missing, Sections 1 & 4 now 100%; suite 332/332 deterministic (15x)]
 - [x] Write explicit test for PE-02 direct mode command embedding
 - [x] Write test for PE-09 direct mode log streaming assertion
 - [x] Write test for RF-14 init container failure log retrieval
