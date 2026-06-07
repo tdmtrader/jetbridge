@@ -258,6 +258,6 @@
 - [x] Write test for RF-15 complete exec mode failure context scenarios
 
 ### Phase 5: Coverage Report
-- [x] Re-run all jetbridge tests, verify no regressions — 300/300 pass
+- [x] Re-run all jetbridge tests, verify no regressions — 332/332 pass (deterministic over 15x --repeat)
 - [x] Update coverage matrix with new test locations
-- [x] Final gap analysis — 73/87 Full (84%), up from 62/87 (71%)
+- [x] Final gap analysis — 83/87 Full (95%), 4 Partial, 0 Missing; up from 62/87 (71%) at track start. Progression: 73/87 (84%) after the initial spec/backfill, then Phase 2 SC-11 live (theborg), Phase 3 OE-10 metrics, and Phase 4 P3 edge cases brought it to 95% with Sections 1–6 at 100%.
