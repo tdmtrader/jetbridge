@@ -24,6 +24,7 @@ package jetbridge_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"time"
 
@@ -1684,5 +1685,276 @@ var _ = Describe("[OE] Remaining observability coverage (OE-01, OE-05, OE-07, OE
 			}
 		}
 		Expect(found).To(BeTrue(), "expected a pod_failures data point with reason=OOMKilled")
+	})
+})
+
+// ──────────────────────────────────────────────────────────────────────────────
+// P3 edge cases: PE-02, PE-09, RF-14, RF-15
+//
+// PE-02: direct mode (no executor) bakes the command into the pod spec.
+// PE-09: direct mode Wait streams logs and resolves the exit code (incl. defaults).
+// RF-14: exec-mode init container failure error includes name, state, and logs.
+// RF-15: exec-mode failure context writes pod AND node diagnostics to stderr.
+// ──────────────────────────────────────────────────────────────────────────────
+
+var _ = Describe("[P3] Runtime edge cases (PE-02, PE-09, RF-14, RF-15)", func() {
+	var (
+		fakeDBWorker  *dbfakes.FakeWorker
+		fakeClientset *fake.Clientset
+		ctx           context.Context
+		cfg           jetbridge.Config
+		delegate      runtime.BuildStepDelegate
+	)
+
+	BeforeEach(func() {
+		ctx = context.Background()
+		fakeDBWorker = new(dbfakes.FakeWorker)
+		fakeDBWorker.NameReturns("k8s-worker-1")
+		fakeClientset = fake.NewSimpleClientset()
+		cfg = jetbridge.NewConfig("test-namespace", "")
+		delegate = &noopDelegate{}
+	})
+
+	getPod := func(name string) *corev1.Pod {
+		pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, name, metav1.GetOptions{})
+		Expect(err).ToNot(HaveOccurred())
+		return pod
+	}
+	updateStatus := func(pod *corev1.Pod) {
+		_, err := fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+		Expect(err).ToNot(HaveOccurred())
+	}
+
+	// directContainer builds a container on a worker WITHOUT an executor, so
+	// Run() takes the direct-mode path (command baked into the pod spec).
+	directContainer := func(handle string) runtime.Container {
+		setupFakeDBContainer(fakeDBWorker, handle)
+		worker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
+		container, _, err := worker.FindOrCreateContainer(
+			ctx,
+			db.NewFixedHandleContainerOwner(handle),
+			db.ContainerMetadata{Type: db.ContainerTypeTask},
+			runtime.ContainerSpec{
+				TeamID:    1,
+				Dir:       "/workdir",
+				ImageSpec: runtime.ImageSpec{ImageURL: "busybox"},
+				Type:      db.ContainerTypeTask,
+			},
+			delegate,
+		)
+		Expect(err).ToNot(HaveOccurred())
+		return container
+	}
+
+	// execContainerWith builds a container on a worker WITH the given executor,
+	// so Run() takes the exec (pause-pod) path.
+	execContainerWith := func(handle string, executor jetbridge.PodExecutor) runtime.Container {
+		setupFakeDBContainer(fakeDBWorker, handle)
+		worker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
+		worker.SetExecutor(executor)
+		container, _, err := worker.FindOrCreateContainer(
+			ctx,
+			db.NewFixedHandleContainerOwner(handle),
+			db.ContainerMetadata{Type: db.ContainerTypeGet},
+			runtime.ContainerSpec{
+				TeamID:    1,
+				ImageSpec: runtime.ImageSpec{ResourceType: "git"},
+				Type:      db.ContainerTypeGet,
+			},
+			delegate,
+		)
+		Expect(err).ToNot(HaveOccurred())
+		return container
+	}
+
+	Describe("PE-02: direct mode command embedding", func() {
+		It("[PE-02] bakes the real command into the main container (no pause pod) and counts the container", func() {
+			container := directContainer("pe02-direct")
+
+			metric.Metrics.ContainersCreated.Delta() // reset shared counter
+
+			_, err := container.Run(ctx, runtime.ProcessSpec{
+				Path: "/opt/resource/in",
+				Args: []string{"/tmp/build/get"},
+			}, runtime.ProcessIO{})
+			Expect(err).ToNot(HaveOccurred())
+
+			pod := getPod("pe02-direct")
+			var main *corev1.Container
+			for i := range pod.Spec.Containers {
+				if pod.Spec.Containers[i].Name == "main" {
+					main = &pod.Spec.Containers[i]
+				}
+			}
+			Expect(main).ToNot(BeNil(), "expected a main container")
+
+			// The actual command is embedded directly — not exec'd via a pause pod.
+			Expect(main.Command).To(Equal([]string{"/opt/resource/in"}))
+			Expect(main.Args).To(Equal([]string{"/tmp/build/get"}))
+			Expect(main.Command).ToNot(ContainElement("sh"),
+				"direct mode must not use the pause-pod sleep command")
+
+			// PE-02: ContainersCreated metric incremented.
+			Expect(metric.Metrics.ContainersCreated.Delta()).To(BeNumerically(">=", float64(1)))
+		})
+	})
+
+	Describe("PE-09: direct mode process completion", func() {
+		It("[PE-09] streams pod logs to Stdout, returns the main container exit code, and deletes the pod", func() {
+			container := directContainer("pe09-exit")
+
+			stdout := new(bytes.Buffer)
+			process, err := container.Run(ctx, runtime.ProcessSpec{Path: "/bin/run"}, runtime.ProcessIO{
+				Stdout: stdout,
+				Stderr: new(bytes.Buffer),
+			})
+			Expect(err).ToNot(HaveOccurred())
+
+			pod := getPod("pe09-exit")
+			pod.Status.Phase = corev1.PodSucceeded
+			pod.Status.ContainerStatuses = []corev1.ContainerStatus{
+				{Name: "main", State: corev1.ContainerState{
+					Terminated: &corev1.ContainerStateTerminated{ExitCode: 7},
+				}},
+			}
+			updateStatus(pod)
+
+			result, err := process.Wait(ctx)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(result.ExitStatus).To(Equal(7))
+
+			// PE-09: pod logs streamed to Stdout (fake clientset emits "fake logs").
+			Expect(stdout.String()).To(ContainSubstring("fake logs"))
+
+			// PE-09: pod deleted after the process exits.
+			_, getErr := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "pe09-exit", metav1.GetOptions{})
+			Expect(getErr).To(HaveOccurred(), "expected the pod to be deleted after Wait")
+		})
+
+		It("[PE-09] defaults to exit 0 for PodSucceeded with no main container status", func() {
+			container := directContainer("pe09-succ-default")
+			process, err := container.Run(ctx, runtime.ProcessSpec{Path: "/bin/run"}, runtime.ProcessIO{
+				Stdout: new(bytes.Buffer),
+			})
+			Expect(err).ToNot(HaveOccurred())
+
+			pod := getPod("pe09-succ-default")
+			pod.Status.Phase = corev1.PodSucceeded // no ContainerStatuses
+			updateStatus(pod)
+
+			result, err := process.Wait(ctx)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(result.ExitStatus).To(Equal(0))
+		})
+
+		It("[PE-09] defaults to exit 1 for PodFailed with no main container status", func() {
+			container := directContainer("pe09-fail-default")
+			process, err := container.Run(ctx, runtime.ProcessSpec{Path: "/bin/run"}, runtime.ProcessIO{
+				Stdout: new(bytes.Buffer),
+			})
+			Expect(err).ToNot(HaveOccurred())
+
+			pod := getPod("pe09-fail-default")
+			pod.Status.Phase = corev1.PodFailed // no ContainerStatuses
+			updateStatus(pod)
+
+			result, err := process.Wait(ctx)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(result.ExitStatus).To(Equal(1))
+		})
+	})
+
+	Describe("RF-14: init container failure reporting", func() {
+		It("[RF-14] returns an error with the failed init container's name, state, and retrieved logs", func() {
+			container := execContainerWith("rf14-init", &fakeExecExecutor{})
+
+			process, err := container.Run(ctx, runtime.ProcessSpec{
+				Path: "/opt/resource/in",
+				Args: []string{"/tmp/build/get"},
+			}, runtime.ProcessIO{
+				Stdin:  bytes.NewBufferString(`{}`),
+				Stdout: new(bytes.Buffer),
+				Stderr: new(bytes.Buffer),
+			})
+			Expect(err).ToNot(HaveOccurred())
+
+			// Pod reaches a terminal phase with a FAILED init container. Using
+			// PodSucceeded keeps waitForRunning out of the pause-pod recreate
+			// branch (which only triggers on PodFailed) so it reports the init
+			// diagnostics directly.
+			pod := getPod("rf14-init")
+			pod.Status.Phase = corev1.PodSucceeded
+			pod.Status.InitContainerStatuses = []corev1.ContainerStatus{
+				{
+					Name:  "fetch-input-0",
+					Image: "alpine:latest",
+					State: corev1.ContainerState{
+						Terminated: &corev1.ContainerStateTerminated{ExitCode: 1, Reason: "Error"},
+					},
+				},
+			}
+			updateStatus(pod)
+
+			_, err = process.Wait(ctx)
+			Expect(err).To(HaveOccurred())
+			msg := err.Error()
+			Expect(msg).To(ContainSubstring("pod terminated before exec could run"))
+			Expect(msg).To(ContainSubstring("fetch-input-0"), "init container name must be reported")
+			Expect(msg).To(ContainSubstring("exit=1"), "init container exit code must be reported")
+			Expect(msg).To(ContainSubstring("reason=Error"), "init container reason must be reported")
+			Expect(msg).To(ContainSubstring(`logs="fake logs"`), "init container logs must be fetched (best-effort)")
+		})
+	})
+
+	Describe("RF-15: exec mode failure context", func() {
+		It("[RF-15] writes both pod and node diagnostics to stderr when an exec operation fails", func() {
+			// A node with a spot label so node diagnostics have something to report.
+			node := &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:   "spot-node-x",
+					Labels: map[string]string{"cloud.google.com/gke-spot": "true"},
+				},
+				Status: corev1.NodeStatus{
+					Conditions: []corev1.NodeCondition{
+						{Type: corev1.NodeMemoryPressure, Status: corev1.ConditionTrue, Message: "node memory low"},
+					},
+				},
+			}
+			_, err := fakeClientset.CoreV1().Nodes().Create(ctx, node, metav1.CreateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			// Executor fails with a non-retryable, non-ExecExitError error so the
+			// generic exec-failure branch runs fetchPodFailureContext.
+			executor := &fakeExecExecutor{execErr: errors.New("exec stream: connection refused")}
+			container := execContainerWith("rf15-node", executor)
+
+			stderr := new(bytes.Buffer)
+			process, err := container.Run(ctx, runtime.ProcessSpec{
+				Path: "/opt/resource/in",
+				Args: []string{"/tmp/build/get"},
+			}, runtime.ProcessIO{
+				Stdin:  bytes.NewBufferString(`{}`),
+				Stdout: new(bytes.Buffer),
+				Stderr: stderr,
+			})
+			Expect(err).ToNot(HaveOccurred())
+
+			// Pin the pod onto the node and mark it Running so waitForRunning
+			// passes and the exec is attempted. NodeName is a spec field, so a
+			// full Update is required (UpdateStatus only persists status).
+			pod := getPod("rf15-node")
+			pod.Spec.NodeName = "spot-node-x"
+			pod.Status.Phase = corev1.PodRunning
+			_, err = fakeClientset.CoreV1().Pods("test-namespace").Update(ctx, pod, metav1.UpdateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			_, err = process.Wait(ctx)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("exec in pod"))
+
+			out := stderr.String()
+			Expect(out).To(ContainSubstring("Pod Failure Diagnostics"), "pod diagnostics must be written")
+			Expect(out).To(ContainSubstring("spot/preemptible instance"), "node diagnostics must be written")
+		})
 	})
 })

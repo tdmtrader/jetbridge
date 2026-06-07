@@ -9,19 +9,19 @@
 | ID | Requirement | Coverage | Test Location | Notes |
 |-----|-------------|----------|---------------|-------|
 | PE-01 | Exec mode pod creation | ✅ Full | container_test.go:1461, live_worker_test.go:91,240,297 | Pause pod creation, reuse, survival all tested |
-| PE-02 | Direct mode pod creation | ⚠️ Partial | process_test.go:66, container_test.go:2154 | Basic creation tested; "embed command" semantics not explicit |
+| PE-02 | Direct mode pod creation | ✅ Full | behavioral_runtime_spec_test.go | Command/Args baked into main container (not pause cmd) + ContainersCreated metric now explicitly tested |
 | PE-03 | Pod spec invariants | ✅ Full | container_test.go:74,1279, behavioral_runtime_spec_test.go | ImagePullPolicy=PullIfNotPresent on main container now explicitly tested |
 | PE-04 | Security context | ✅ Full | container_test.go:1181 | Both privileged and non-privileged modes tested |
 | PE-05 | Image reference resolution | ✅ Full | container_test.go:3221, behavioral_runtime_spec_test.go | Main container stripping now explicitly tested for docker:///, docker://, raw:/// |
 | PE-06 | Environment variable merging | ✅ Full | container_test.go:74, behavioral_runtime_spec_test.go | ContainerSpec + ProcessSpec merge and override precedence now explicit |
 | PE-07 | Resource requirements | ✅ Full | container_test.go:930 | All QoS classes + ephemeral storage |
 | PE-08 | Exec mode command execution | ✅ Full | process_test.go:848, live_worker_test.go:182, behavioral_runtime_spec_test.go | TTY=true and TTY=false now explicitly tested |
-| PE-09 | Direct mode process completion | ⚠️ Partial | process_test.go:66-151, 1676 | Polling and exit codes tested; log streaming not explicit |
+| PE-09 | Direct mode process completion | ✅ Full | behavioral_runtime_spec_test.go | Log streaming to Stdout, exit-code extraction, default 0/1 for Succeeded/Failed, and pod deletion now explicitly tested |
 | PE-10 | Context cancellation | ✅ Full | process_test.go:127,992 | Both delete (direct) and preserve (exec) tested |
 | PE-11 | Exit status persistence | ✅ Full | container_test.go:2271 | Both in-memory and annotation tested |
 | PE-12 | Attach and reattachment | ✅ Full | container_test.go:2271, live_worker_test.go:297 | All paths tested + hijack e2e |
 
-**Summary:** 10/12 Full, 2/12 Partial, 0 Missing
+**Summary:** 12/12 Full, 0 Partial, 0 Missing
 
 ### Section 2: Pod Naming (7 requirements)
 
@@ -72,10 +72,10 @@
 | RF-11 | Node diagnostics | ✅ Full | process_test.go:632 | Pressures, spot labels, cordoned status |
 | RF-12 | Transient error classification | ✅ Full | process_test.go:1131 | |
 | RF-13 | Transient error wrapping | ✅ Full | process_test.go:1214 | |
-| RF-14 | Init container failure | ⚠️ Partial | process_test.go:1855 | Span event tested; failure path incomplete |
-| RF-15 | Exec mode failure context | ⚠️ Partial | process_test.go:1046 | fetchPodFailureContext tested partially |
+| RF-14 | Init container failure | ✅ Full | behavioral_runtime_spec_test.go | Error now asserted to include init name, exit=N, reason, and retrieved logs="..." |
+| RF-15 | Exec mode failure context | ✅ Full | behavioral_runtime_spec_test.go, process_test.go:1178,1229 | Pod+node diagnostics on exec failure and "pod no longer exists" path tested |
 
-**Summary:** 13/15 Full, 2/15 Partial, 0 Missing
+**Summary:** 15/15 Full, 0 Partial, 0 Missing
 
 ### Section 5: Pod Cleanup & GC (9 requirements)
 
@@ -160,16 +160,16 @@
 
 | Section | Requirements | Full | Partial | Missing | Coverage |
 |---------|-------------|------|---------|---------|----------|
-| 1. Pod Execution | 12 | 10 | 2 | 0 | 83% full |
+| 1. Pod Execution | 12 | 12 | 0 | 0 | 100% full |
 | 2. Pod Naming | 7 | 7 | 0 | 0 | 100% full |
 | 3. Sidecar | 11 | 11 | 0 | 0 | 100% full |
-| 4. Resilience | 15 | 13 | 2 | 0 | 87% full |
+| 4. Resilience | 15 | 15 | 0 | 0 | 100% full |
 | 5. GC | 9 | 9 | 0 | 0 | 100% full |
 | 6. Registration | 6 | 6 | 0 | 0 | 100% full |
 | 7. Watch | 10 | 8 | 2 | 0 | 80% full |
 | 8. Observability | 10 | 9 | 1 | 0 | 90% full |
 | 9. Configuration | 7 | 6 | 1 | 0 | 86% full |
-| **TOTAL** | **87** | **79** | **8** | **0** | **91% full** |
+| **TOTAL** | **87** | **83** | **4** | **0** | **95% full** |
 
 ---
 
@@ -210,10 +210,12 @@
 
 | ID | Gap | What's Missing |
 |----|-----|---------------|
-| PE-02 | Direct mode "embed command" semantics explicit test | Implicitly covered by process tests |
-| PW-08 | Non-pod event filtering | Handled by K8s watch API; low risk |
-| PW-10 | Initial sync retry loop | Retry implemented; edge case test |
-| CF-06 | Artifact helper image default value test | Default defined in code; low risk |
+| ~~PE-02~~ | ~~Direct mode "embed command" semantics explicit test~~ | ✅ Done — behavioral_runtime_spec_test.go |
+| PW-08 | Non-pod event filtering | Handled by K8s watch API; low risk (remaining Partial) |
+| PW-10 | Initial sync retry loop | Retry implemented; edge case test (remaining Partial) |
+| CF-06 | Artifact helper image default value test | Default defined in code; low risk (remaining Partial) |
+
+> After Phase 4, the only remaining Partial requirements are PW-08, PW-10, OE-03 (verified transitively by OE-04), and CF-06 — all low-risk edge cases. Coverage: **83/87 Full (95%), 4 Partial, 0 Missing.**
 
 ---
 
@@ -249,10 +251,10 @@
 - [x] Write tests for OE-10: Metrics recording verification
 
 ### Phase 4: P3 Edge Cases (Optional)
-- [ ] Write explicit test for PE-02 direct mode command embedding
-- [ ] Write test for PE-09 direct mode log streaming assertion
-- [ ] Write test for RF-14 init container failure log retrieval
-- [ ] Write test for RF-15 complete exec mode failure context scenarios
+- [x] Write explicit test for PE-02 direct mode command embedding
+- [x] Write test for PE-09 direct mode log streaming assertion
+- [x] Write test for RF-14 init container failure log retrieval
+- [x] Write test for RF-15 complete exec mode failure context scenarios
 
 ### Phase 5: Coverage Report
 - [x] Re-run all jetbridge tests, verify no regressions — 300/300 pass
