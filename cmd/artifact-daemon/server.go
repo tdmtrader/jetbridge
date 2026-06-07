@@ -28,6 +28,7 @@ type Server struct {
 	registry      *Registry
 	peers         *PeerResolver
 	mirrorTrigger func(ctx context.Context, key string)
+	metrics       *metrics
 }
 
 // NewServer creates a new artifact-daemon server.
@@ -37,6 +38,7 @@ func NewServer(logger lager.Logger, storagePath, nodeName string) *Server {
 		storagePath: storagePath,
 		nodeName:    nodeName,
 		registry:    NewRegistry(logger),
+		metrics:     newMetrics(),
 	}
 }
 
@@ -78,10 +80,14 @@ func (s *Server) Handler(opts ...HandlerOption) http.Handler {
 		return h
 	}
 
-	// Exempt paths — no client cert required.
+	// Exempt paths — no client cert required (kubelet probes and Prometheus
+	// scrapers cannot present client certs; protected by NetworkPolicy).
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 	mux.HandleFunc("POST /resolve", s.handleResolve)
 	mux.HandleFunc("POST /resolve-batch", s.handleResolveBatch)
+	if s.metrics != nil {
+		mux.Handle("GET /metrics", s.metrics.handler())
+	}
 
 	// Protected paths — require client cert when TLS is enabled.
 	mux.HandleFunc("GET /artifacts/", protect(s.handleGetArtifact))
@@ -468,8 +474,11 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 
 // resolveOne resolves a single artifact key to a destination path.
 // It is the core logic shared by handleResolve and handleResolveBatch.
-func (s *Server) resolveOne(ctx context.Context, key, dest string) resolveResponse {
+func (s *Server) resolveOne(ctx context.Context, key, dest string) (resp resolveResponse) {
 	start := time.Now()
+	defer func() {
+		s.metrics.recordResolve(resp.Method, resp.Status, time.Since(start))
+	}()
 	logger := s.logger.Session("resolve", lager.Data{"key": key, "dest": dest})
 
 	// Step 1: Check registry for explicit registration.
