@@ -1,0 +1,20 @@
+PHASE 3 CHECKPOINT — k8s_runtime_behavioral_spec_20260331 (P2 Partial Coverage Completion)
+
+Status: COMPLETE & VERIFIED (no manual/cluster verification required — all unit/behavioral specs on fake.NewSimpleClientset).
+
+Work commits:
+  345adc8f01  OE-01/05/07/08 span-event tests (+4 specs)
+  55f0db3c24  OE-10 metrics tests (+3 specs)
+
+Verification (run by agent 2026-06-07):
+  ginkgo --focus='\[OE-0[1578]\]|\[OE-10\]' ./atc/worker/jetbridge/  -> 7/7 pass
+  ginkgo ./atc/worker/jetbridge/                                     -> 326/326 pass, 0 failed
+  go vet ./atc/worker/jetbridge/                                     -> clean
+
+Coverage delta: 73->78 / 87 Full (84%->90%); Section 8 Observability 4->9 / 10 Full.
+New behavior locked in: pod.scheduled(node.name), init.container.completed(container.name),
+sidecar.started(container.name), pod.phase.*(pod.phase attr), and OE-10 metrics
+(K8sPodStartupDuration gauge, K8sImagePullFailures counter, OTel concourse.k8s.pod_failures
+counter w/ reason attr — previously untested).
+
+Remaining in track: SC-11 (Phase 2, live cluster) + Phase 4 P3 optional edge cases.
