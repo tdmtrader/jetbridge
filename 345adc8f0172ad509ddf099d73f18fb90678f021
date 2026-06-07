@@ -1,0 +1,6 @@
+Track: k8s_runtime_behavioral_spec_20260331 (Phase 3, P2)
+Task: Write tests for OE-01, OE-05, OE-07, OE-08 (remaining span event assertions)
+Tests: 4 new specs in atc/worker/jetbridge/behavioral_runtime_spec_test.go
+Verify: ginkgo --focus='OE-01|OE-05|OE-07|OE-08' -> 4/4 pass; full jetbridge suite 323/323 pass
+Coverage: 73->77/87 Full (84%->89%); Observability section 4->8/10 Full
+Remaining in Phase 3: OE-10 (metrics recording verification)
