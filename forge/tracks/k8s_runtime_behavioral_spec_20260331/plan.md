@@ -234,6 +234,7 @@
   - sidecar.started deduplication
 
 ### Phase 3: P2 Partial Coverage Completion
+[checkpoint: 55f0db3c24 — 2026-06-07; all P2 tasks complete; coverage 78/87 Full (90%); jetbridge suite 326/326 green, vet clean]
 - [x] Write tests for PE-03: ImagePullPolicy assertion on main container
 - [x] Write tests for PE-05: Image prefix stripping on main container (docker:///, docker://, raw:///)
 - [x] Write tests for PE-06: Environment variable merging from container spec + process spec
