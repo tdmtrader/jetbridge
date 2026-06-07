@@ -18,3 +18,12 @@
 - The pause pod pattern enables hijack but introduces complexity in GC (exit-status annotation for fast cleanup)
 - Transient error handling (3-error threshold) is a critical resilience mechanism that prevents cascading failures
 - Event deduplication via podEventTracker is essential for trace quality but has no dedicated tests
+
+## Implementation Notes
+
+### good-pattern
+- [2026-06-07] OE span-event tests (OE-01/05/07/08) are *characterization tests*: the production code already emits the events, so the test passes immediately and locks in the contract (fails only on regression). Correct framing for a docs/coverage-backfill track — don't fake a Red phase by breaking prod code.
+- [2026-06-07] All exec-mode lifecycle span events land on the `k8s.exec-process.wait-for-running` span via `emitPodLifecycleEvents` (process.go:594) + the inline `pod.phase.*` emission (process.go:1092). The established harness (spanRecorder + stage pod status via fake clientset initial-sync snapshot, then a 20ms-delayed goroutine transition to PodRunning so Wait() returns) drives all of them — reused verbatim from OE-02/04/06.
+
+### good-pattern (attribute assertions)
+- [2026-06-07] Asserting span *event attributes* (node.name, container.name, pod.phase) — not just event names — caught real coverage value: iterate `span.Events()`, match `e.Name`, then range `e.Attributes` comparing `string(kv.Key)` and `kv.Value.AsString()`. No extra import needed (attribute.KeyValue methods suffice).

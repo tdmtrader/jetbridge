@@ -11,9 +11,13 @@ package jetbridge_test
 //   SC-07: Sidecar log streaming routing (dedicated writer vs prefix fallback)
 //   RF-04: InvalidImageName and CreateContainerConfigError terminal waiting states
 //   RF-09: Failure detection priority order (OOM before ImagePullBackOff)
+//   OE-01: pod.scheduled span event (with node.name attribute)
 //   OE-02: pod.initialized span event
 //   OE-04: image.pulled span event
+//   OE-05: init.container.completed span event
 //   OE-06: init.container.failed span event
+//   OE-07: sidecar.started span event (with container.name attribute)
+//   OE-08: pod.phase.<phase> span events on phase transitions
 //   OE-09: Observability event deduplication via podEventTracker
 
 import (
@@ -69,8 +73,8 @@ var _ = Describe("[PE-03] ImagePullPolicy for main container", func() {
 			db.NewFixedHandleContainerOwner("pe03-handle"),
 			db.ContainerMetadata{Type: db.ContainerTypeTask},
 			runtime.ContainerSpec{
-				TeamID:   1,
-				Dir:      "/workdir",
+				TeamID:    1,
+				Dir:       "/workdir",
 				ImageSpec: runtime.ImageSpec{ImageURL: "busybox:latest"},
 			},
 			delegate,
@@ -122,8 +126,8 @@ var _ = Describe("[PE-05] Image URL prefix stripping for main container", func()
 				db.NewFixedHandleContainerOwner(handle),
 				db.ContainerMetadata{Type: db.ContainerTypeTask},
 				runtime.ContainerSpec{
-					TeamID:   1,
-					Dir:      "/workdir",
+					TeamID:    1,
+					Dir:       "/workdir",
 					ImageSpec: runtime.ImageSpec{ImageURL: rawImage},
 				},
 				delegate,
@@ -177,10 +181,10 @@ var _ = Describe("[PE-06] Environment variable merging", func() {
 			db.NewFixedHandleContainerOwner("pe06-handle"),
 			db.ContainerMetadata{Type: db.ContainerTypeTask},
 			runtime.ContainerSpec{
-				TeamID:   1,
-				Dir:      "/workdir",
+				TeamID:    1,
+				Dir:       "/workdir",
 				ImageSpec: runtime.ImageSpec{ImageURL: "busybox"},
-				Env: []string{"CONTAINER_VAR=from_container", "SHARED_VAR=container_value"},
+				Env:       []string{"CONTAINER_VAR=from_container", "SHARED_VAR=container_value"},
 			},
 			delegate,
 		)
@@ -217,10 +221,10 @@ var _ = Describe("[PE-06] Environment variable merging", func() {
 			db.NewFixedHandleContainerOwner("pe06-override-handle"),
 			db.ContainerMetadata{Type: db.ContainerTypeTask},
 			runtime.ContainerSpec{
-				TeamID:   1,
-				Dir:      "/workdir",
+				TeamID:    1,
+				Dir:       "/workdir",
 				ImageSpec: runtime.ImageSpec{ImageURL: "busybox"},
-				Env: []string{"SHARED_VAR=from_container"},
+				Env:       []string{"SHARED_VAR=from_container"},
 			},
 			delegate,
 		)
@@ -285,7 +289,7 @@ var _ = Describe("[PE-08] TTY flag in exec mode", func() {
 			db.NewFixedHandleContainerOwner("pe08-tty-handle"),
 			db.ContainerMetadata{Type: db.ContainerTypeTask},
 			runtime.ContainerSpec{
-				TeamID:   1,
+				TeamID:    1,
 				ImageSpec: runtime.ImageSpec{ImageURL: "busybox"},
 			},
 			delegate,
@@ -330,7 +334,7 @@ var _ = Describe("[PE-08] TTY flag in exec mode", func() {
 			db.NewFixedHandleContainerOwner("pe08-notty-handle"),
 			db.ContainerMetadata{Type: db.ContainerTypeTask},
 			runtime.ContainerSpec{
-				TeamID:   1,
+				TeamID:    1,
 				ImageSpec: runtime.ImageSpec{ImageURL: "busybox"},
 			},
 			delegate,
@@ -397,8 +401,8 @@ var _ = Describe("[SC-07] Sidecar log streaming routing (direct mode)", func() {
 			db.NewFixedHandleContainerOwner("sc07-dedicated-handle"),
 			db.ContainerMetadata{Type: db.ContainerTypeTask},
 			runtime.ContainerSpec{
-				TeamID:   1,
-				Dir:      "/workdir",
+				TeamID:    1,
+				Dir:       "/workdir",
 				ImageSpec: runtime.ImageSpec{ImageURL: "busybox"},
 				Sidecars: []atc.SidecarConfig{
 					{Name: "postgres", Image: "postgres:15"},
@@ -461,8 +465,8 @@ var _ = Describe("[SC-07] Sidecar log streaming routing (direct mode)", func() {
 			db.NewFixedHandleContainerOwner("sc07-prefix-handle"),
 			db.ContainerMetadata{Type: db.ContainerTypeTask},
 			runtime.ContainerSpec{
-				TeamID:   1,
-				Dir:      "/workdir",
+				TeamID:    1,
+				Dir:       "/workdir",
 				ImageSpec: runtime.ImageSpec{ImageURL: "busybox"},
 				Sidecars: []atc.SidecarConfig{
 					{Name: "redis", Image: "redis:7"},
@@ -543,7 +547,7 @@ var _ = Describe("[RF-04] Additional terminal waiting states", func() {
 				db.NewFixedHandleContainerOwner(handle),
 				db.ContainerMetadata{Type: db.ContainerTypeTask},
 				runtime.ContainerSpec{
-					TeamID:   1,
+					TeamID:    1,
 					ImageSpec: runtime.ImageSpec{ImageURL: "busybox"},
 				},
 				delegate,
@@ -621,7 +625,7 @@ var _ = Describe("[RF-09] Failure detection priority order", func() {
 			db.NewFixedHandleContainerOwner("rf09-oom-vs-crash"),
 			db.ContainerMetadata{Type: db.ContainerTypeTask},
 			runtime.ContainerSpec{
-				TeamID:   1,
+				TeamID:    1,
 				ImageSpec: runtime.ImageSpec{ImageURL: "busybox"},
 			},
 			delegate,
@@ -683,7 +687,7 @@ var _ = Describe("[RF-09] Failure detection priority order", func() {
 			db.NewFixedHandleContainerOwner("rf09-pull-vs-exit"),
 			db.ContainerMetadata{Type: db.ContainerTypeTask},
 			runtime.ContainerSpec{
-				TeamID:   1,
+				TeamID:    1,
 				ImageSpec: runtime.ImageSpec{ImageURL: "busybox"},
 			},
 			delegate,
@@ -792,10 +796,10 @@ var _ = Describe("[OE] Observability span events", func() {
 				db.NewFixedHandleContainerOwner("oe-span-handle"),
 				db.ContainerMetadata{Type: db.ContainerTypeTask},
 				runtime.ContainerSpec{
-					TeamID:   1,
-					Dir:      "/workdir",
+					TeamID:    1,
+					Dir:       "/workdir",
 					ImageSpec: runtime.ImageSpec{ImageURL: "busybox"},
-					Type:     db.ContainerTypeTask,
+					Type:      db.ContainerTypeTask,
 				},
 				delegate,
 			)
@@ -903,10 +907,10 @@ var _ = Describe("[OE] Observability span events", func() {
 				db.NewFixedHandleContainerOwner("oe-init-fail-handle"),
 				db.ContainerMetadata{Type: db.ContainerTypeTask},
 				runtime.ContainerSpec{
-					TeamID:   1,
-					Dir:      "/workdir",
+					TeamID:    1,
+					Dir:       "/workdir",
 					ImageSpec: runtime.ImageSpec{ImageURL: "busybox"},
-					Type:     db.ContainerTypeTask,
+					Type:      db.ContainerTypeTask,
 				},
 				delegate,
 			)
@@ -1015,10 +1019,10 @@ var _ = Describe("[OE-06] init.container.failed span event (dedicated test)", fu
 			db.NewFixedHandleContainerOwner("oe06-init-fail-run"),
 			db.ContainerMetadata{Type: db.ContainerTypeTask},
 			runtime.ContainerSpec{
-				TeamID:   1,
-				Dir:      "/workdir",
+				TeamID:    1,
+				Dir:       "/workdir",
 				ImageSpec: runtime.ImageSpec{ImageURL: "busybox"},
-				Type:     db.ContainerTypeTask,
+				Type:      db.ContainerTypeTask,
 			},
 			delegate,
 		)
@@ -1140,10 +1144,10 @@ var _ = Describe("[OE-09] Observability event deduplication", func() {
 			db.NewFixedHandleContainerOwner("oe09-dedup-handle"),
 			db.ContainerMetadata{Type: db.ContainerTypeTask},
 			runtime.ContainerSpec{
-				TeamID:   1,
-				Dir:      "/workdir",
+				TeamID:    1,
+				Dir:       "/workdir",
 				ImageSpec: runtime.ImageSpec{ImageURL: "busybox"},
-				Type:     db.ContainerTypeTask,
+				Type:      db.ContainerTypeTask,
 			},
 			delegate,
 		)
@@ -1216,10 +1220,10 @@ var _ = Describe("[OE-09] Observability event deduplication", func() {
 			db.NewFixedHandleContainerOwner("oe09-sidecar-dedup"),
 			db.ContainerMetadata{Type: db.ContainerTypeTask},
 			runtime.ContainerSpec{
-				TeamID:   1,
-				Dir:      "/workdir",
+				TeamID:    1,
+				Dir:       "/workdir",
 				ImageSpec: runtime.ImageSpec{ImageURL: "busybox"},
-				Type:     db.ContainerTypeTask,
+				Type:      db.ContainerTypeTask,
 				Sidecars: []atc.SidecarConfig{
 					{Name: "postgres", Image: "postgres:15"},
 				},
@@ -1281,3 +1285,277 @@ var _ = Describe("[OE-09] Observability event deduplication", func() {
 	})
 })
 
+// ──────────────────────────────────────────────────────────────────────────────
+// OE-01, OE-05, OE-07, OE-08: Remaining observability span events
+//
+// These characterize the span events emitted during exec-mode waitForRunning:
+// pod.scheduled and the per-container lifecycle events from emitPodLifecycleEvents
+// (init.container.completed, sidecar.started) plus the pod.phase.<phase> events
+// emitted on each phase transition. All four land on the
+// k8s.exec-process.wait-for-running span, like OE-02/04/06.
+// ──────────────────────────────────────────────────────────────────────────────
+
+var _ = Describe("[OE] Remaining span events (OE-01, OE-05, OE-07, OE-08)", func() {
+	var (
+		fakeDBWorker  *dbfakes.FakeWorker
+		fakeClientset *fake.Clientset
+		execWorker    *jetbridge.Worker
+		execContainer runtime.Container
+		fakeExecutor  *fakeExecExecutor
+		ctx           context.Context
+		cfg           jetbridge.Config
+		delegate      runtime.BuildStepDelegate
+		spanRecorder  *tracetest.SpanRecorder
+	)
+
+	BeforeEach(func() {
+		spanRecorder = new(tracetest.SpanRecorder)
+		tp := sdktrace.NewTracerProvider(
+			sdktrace.WithSpanProcessor(spanRecorder),
+			sdktrace.WithSyncer(tracetest.NewInMemoryExporter()),
+		)
+		tracing.ConfigureTraceProvider(tp)
+
+		ctx = context.Background()
+		fakeDBWorker = new(dbfakes.FakeWorker)
+		fakeDBWorker.NameReturns("k8s-worker-1")
+		fakeClientset = fake.NewSimpleClientset()
+		cfg = jetbridge.NewConfig("test-namespace", "")
+		delegate = &noopDelegate{}
+		fakeExecutor = &fakeExecExecutor{}
+		execWorker = jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
+		execWorker.SetExecutor(fakeExecutor)
+	})
+
+	AfterEach(func() {
+		tracing.Configured = false
+	})
+
+	// waitSpan returns the exec-mode wait-for-running span, where all the
+	// observability lifecycle events are recorded.
+	waitSpan := func() sdktrace.ReadOnlySpan {
+		for _, s := range spanRecorder.Ended() {
+			if s.Name() == "k8s.exec-process.wait-for-running" {
+				return s
+			}
+		}
+		return nil
+	}
+
+	eventNames := func(span sdktrace.ReadOnlySpan) []string {
+		names := []string{}
+		for _, e := range span.Events() {
+			names = append(names, e.Name)
+		}
+		return names
+	}
+
+	findEvent := func(span sdktrace.ReadOnlySpan, name string) (sdktrace.Event, bool) {
+		for _, e := range span.Events() {
+			if e.Name == name {
+				return e, true
+			}
+		}
+		return sdktrace.Event{}, false
+	}
+
+	attrValue := func(e sdktrace.Event, key string) (string, bool) {
+		for _, kv := range e.Attributes {
+			if string(kv.Key) == key {
+				return kv.Value.AsString(), true
+			}
+		}
+		return "", false
+	}
+
+	// startContainer creates a DB-backed exec container ready to Run().
+	startContainer := func(handle string) {
+		setupFakeDBContainer(fakeDBWorker, handle)
+		var err error
+		execContainer, _, err = execWorker.FindOrCreateContainer(
+			ctx,
+			db.NewFixedHandleContainerOwner(handle),
+			db.ContainerMetadata{Type: db.ContainerTypeTask},
+			runtime.ContainerSpec{
+				TeamID:    1,
+				Dir:       "/workdir",
+				ImageSpec: runtime.ImageSpec{ImageURL: "busybox"},
+				Type:      db.ContainerTypeTask,
+			},
+			delegate,
+		)
+		Expect(err).ToNot(HaveOccurred())
+	}
+
+	run := func() runtime.Process {
+		process, err := execContainer.Run(ctx, runtime.ProcessSpec{
+			Path: "/bin/sh",
+		}, runtime.ProcessIO{
+			Stdin:  bytes.NewBufferString(`{}`),
+			Stdout: new(bytes.Buffer),
+			Stderr: new(bytes.Buffer),
+		})
+		Expect(err).ToNot(HaveOccurred())
+		return process
+	}
+
+	getPod := func(handle string) *corev1.Pod {
+		pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, handle, metav1.GetOptions{})
+		Expect(err).ToNot(HaveOccurred())
+		return pod
+	}
+
+	updateStatus := func(pod *corev1.Pod) {
+		_, err := fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+		Expect(err).ToNot(HaveOccurred())
+	}
+
+	It("[OE-01] emits pod.scheduled with node.name when PodScheduled becomes True", func() {
+		startContainer("oe01-scheduled")
+		process := run()
+
+		// Initial sync snapshot: pod scheduled onto a node, not yet Running.
+		pod := getPod("oe01-scheduled")
+		pod.Spec.NodeName = "node-oe01"
+		pod.Status.Phase = corev1.PodPending
+		pod.Status.Conditions = []corev1.PodCondition{
+			{Type: corev1.PodScheduled, Status: corev1.ConditionTrue},
+		}
+		updateStatus(pod)
+
+		// Concurrent transition to Running so Wait() can complete.
+		go func() {
+			time.Sleep(20 * time.Millisecond)
+			pod.Status.Phase = corev1.PodRunning
+			pod.Status.ContainerStatuses = []corev1.ContainerStatus{
+				{Name: "main", State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}},
+			}
+			_, _ = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+		}()
+
+		result, err := process.Wait(ctx)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(result.ExitStatus).To(Equal(0))
+
+		span := waitSpan()
+		Expect(span).ToNot(BeNil(), "expected k8s.exec-process.wait-for-running span")
+		Expect(eventNames(span)).To(ContainElement("pod.scheduled"))
+
+		ev, ok := findEvent(span, "pod.scheduled")
+		Expect(ok).To(BeTrue())
+		node, ok := attrValue(ev, "node.name")
+		Expect(ok).To(BeTrue(), "pod.scheduled event must carry a node.name attribute")
+		Expect(node).To(Equal("node-oe01"))
+	})
+
+	It("[OE-05] emits init.container.completed when an init container exits 0", func() {
+		startContainer("oe05-init-done")
+		process := run()
+
+		// Initial sync snapshot: init container has completed successfully.
+		pod := getPod("oe05-init-done")
+		pod.Status.Phase = corev1.PodPending
+		pod.Status.InitContainerStatuses = []corev1.ContainerStatus{
+			{
+				Name:  "fetch-input-0",
+				Image: "alpine:latest",
+				State: corev1.ContainerState{
+					Terminated: &corev1.ContainerStateTerminated{ExitCode: 0, Reason: "Completed"},
+				},
+			},
+		}
+		updateStatus(pod)
+
+		go func() {
+			time.Sleep(20 * time.Millisecond)
+			pod.Status.Phase = corev1.PodRunning
+			pod.Status.ContainerStatuses = []corev1.ContainerStatus{
+				{Name: "main", State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}},
+			}
+			_, _ = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+		}()
+
+		result, err := process.Wait(ctx)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(result.ExitStatus).To(Equal(0))
+
+		span := waitSpan()
+		Expect(span).ToNot(BeNil(), "expected k8s.exec-process.wait-for-running span")
+		Expect(eventNames(span)).To(ContainElement("init.container.completed"))
+
+		ev, ok := findEvent(span, "init.container.completed")
+		Expect(ok).To(BeTrue())
+		name, ok := attrValue(ev, "container.name")
+		Expect(ok).To(BeTrue(), "init.container.completed event must carry a container.name attribute")
+		Expect(name).To(Equal("fetch-input-0"))
+	})
+
+	It("[OE-07] emits sidecar.started with container.name when a non-main container reaches Running", func() {
+		startContainer("oe07-sidecar")
+		process := run()
+
+		pod := getPod("oe07-sidecar")
+		pod.Status.Phase = corev1.PodPending
+		updateStatus(pod)
+
+		// Main and a sidecar both reach Running. The sidecar (non-"main") must
+		// emit sidecar.started; main reaching Running lets Wait() complete.
+		go func() {
+			time.Sleep(20 * time.Millisecond)
+			pod.Status.Phase = corev1.PodRunning
+			pod.Status.ContainerStatuses = []corev1.ContainerStatus{
+				{Name: "main", State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}},
+				{Name: "metrics-sidecar", State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}},
+			}
+			_, _ = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+		}()
+
+		result, err := process.Wait(ctx)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(result.ExitStatus).To(Equal(0))
+
+		span := waitSpan()
+		Expect(span).ToNot(BeNil(), "expected k8s.exec-process.wait-for-running span")
+		Expect(eventNames(span)).To(ContainElement("sidecar.started"))
+
+		ev, ok := findEvent(span, "sidecar.started")
+		Expect(ok).To(BeTrue())
+		name, ok := attrValue(ev, "container.name")
+		Expect(ok).To(BeTrue(), "sidecar.started event must carry a container.name attribute")
+		Expect(name).To(Equal("metrics-sidecar"))
+	})
+
+	It("[OE-08] emits pod.phase.<phase> events on phase transitions", func() {
+		startContainer("oe08-phase")
+		process := run()
+
+		// Initial sync snapshot observes Pending.
+		pod := getPod("oe08-phase")
+		pod.Status.Phase = corev1.PodPending
+		updateStatus(pod)
+
+		// Transition to Running.
+		go func() {
+			time.Sleep(20 * time.Millisecond)
+			pod.Status.Phase = corev1.PodRunning
+			pod.Status.ContainerStatuses = []corev1.ContainerStatus{
+				{Name: "main", State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}},
+			}
+			_, _ = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+		}()
+
+		result, err := process.Wait(ctx)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(result.ExitStatus).To(Equal(0))
+
+		span := waitSpan()
+		Expect(span).ToNot(BeNil(), "expected k8s.exec-process.wait-for-running span")
+		Expect(eventNames(span)).To(ContainElements("pod.phase.pending", "pod.phase.running"))
+
+		ev, ok := findEvent(span, "pod.phase.running")
+		Expect(ok).To(BeTrue())
+		phase, ok := attrValue(ev, "pod.phase")
+		Expect(ok).To(BeTrue(), "pod.phase.running event must carry a pod.phase attribute")
+		Expect(phase).To(Equal("Running"))
+	})
+})

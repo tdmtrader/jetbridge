@@ -127,18 +127,18 @@
 
 | ID | Requirement | Coverage | Test Location | Notes |
 |-----|-------------|----------|---------------|-------|
-| OE-01 | Pod scheduled event | ⚠️ Partial | process_test.go (span infra) | Tracing infrastructure exists but specific span assertions not found |
+| OE-01 | Pod scheduled event | ✅ Full | behavioral_runtime_spec_test.go | pod.scheduled event + node.name attribute verified when PodScheduled becomes True |
 | OE-02 | Pod initialized event | ✅ Full | behavioral_runtime_spec_test.go | pod.initialized event verified in k8s.exec-process.wait-for-running span |
 | OE-03 | Image pulling event | ⚠️ Partial | process_test.go | Infrastructure present; verified transitively by OE-04 |
 | OE-04 | Image pulled event | ✅ Full | behavioral_runtime_spec_test.go | image.pulling and image.pulled events verified via ContainerCreating → Running transition |
-| OE-05 | Init container completion | ⚠️ Partial | process_test.go:1855 | Span event tested partially |
+| OE-05 | Init container completion | ✅ Full | behavioral_runtime_spec_test.go | init.container.completed event + container.name attribute verified for exit-0 init container |
 | OE-06 | Init container failure | ✅ Full | behavioral_runtime_spec_test.go | init.container.failed event verified for non-zero exit code |
-| OE-07 | Sidecar started event | ⚠️ Partial | process_test.go | |
-| OE-08 | Pod phase change events | ⚠️ Partial | process_test.go | |
+| OE-07 | Sidecar started event | ✅ Full | behavioral_runtime_spec_test.go | sidecar.started event + container.name attribute verified for non-main container reaching Running |
+| OE-08 | Pod phase change events | ✅ Full | behavioral_runtime_spec_test.go | pod.phase.pending and pod.phase.running events + pod.phase attribute verified on transitions |
 | OE-09 | Event deduplication | ✅ Full | behavioral_runtime_spec_test.go | pod.scheduled and sidecar.started deduplication explicitly verified |
 | OE-10 | Metrics recording | ⚠️ Partial | process_test.go | Some metrics checked but not comprehensive |
 
-**Summary:** 4/10 Full, 6/10 Partial, 0 Missing
+**Summary:** 8/10 Full, 2/10 Partial, 0 Missing
 
 ### Section 9: Configuration (7 requirements)
 
@@ -167,9 +167,9 @@
 | 5. GC | 9 | 9 | 0 | 0 | 100% full |
 | 6. Registration | 6 | 6 | 0 | 0 | 100% full |
 | 7. Watch | 10 | 8 | 2 | 0 | 80% full |
-| 8. Observability | 10 | 4 | 6 | 0 | 40% full |
+| 8. Observability | 10 | 8 | 2 | 0 | 80% full |
 | 9. Configuration | 7 | 6 | 1 | 0 | 86% full |
-| **TOTAL** | **87** | **73** | **13** | **1** | **84% full** |
+| **TOTAL** | **87** | **77** | **9** | **1** | **89% full** |
 
 ---
 
@@ -196,14 +196,14 @@
 | ~~RF-09~~ | ~~Failure detection priority order verification~~ | ✅ Done — behavioral_runtime_spec_test.go |
 | RF-14 | Init container failure log retrieval | Still partial |
 | RF-15 | Exec mode failure context completeness | Still partial |
-| OE-01 | pod.scheduled span event | Still partial |
+| ~~OE-01~~ | ~~pod.scheduled span event~~ | ✅ Done — behavioral_runtime_spec_test.go (node.name attr) |
 | ~~OE-02~~ | ~~pod.initialized span event~~ | ✅ Done — behavioral_runtime_spec_test.go |
 | OE-03 | image.pulling span event | Verified transitively by OE-04 test |
 | ~~OE-04~~ | ~~image.pulled span event~~ | ✅ Done — behavioral_runtime_spec_test.go |
-| OE-05 | init.container.completed span event | Still partial |
+| ~~OE-05~~ | ~~init.container.completed span event~~ | ✅ Done — behavioral_runtime_spec_test.go (container.name attr) |
 | ~~OE-06~~ | ~~init.container.failed span event~~ | ✅ Done — behavioral_runtime_spec_test.go |
-| OE-07 | sidecar.started span event | Still partial |
-| OE-08 | Pod phase change events | Still partial |
+| ~~OE-07~~ | ~~sidecar.started span event~~ | ✅ Done — behavioral_runtime_spec_test.go (container.name attr) |
+| ~~OE-08~~ | ~~Pod phase change events~~ | ✅ Done — behavioral_runtime_spec_test.go (pod.phase.* + attr) |
 | OE-10 | Metrics recording verification | Still partial |
 
 ### P3: Nice-to-Have (Edge cases and robustness)
@@ -222,7 +222,7 @@
 ### Phase 1: Spec Review & Approval
 - [x] Write behavioral spec (87 requirements across 9 sections)
 - [x] Build coverage matrix with gap analysis
-- [ ] Get user approval on spec and coverage matrix
+- [x] Get user approval on spec and coverage matrix
 
 ### Phase 2: P1 Missing Test Cases
 - [x] Write tests for SC-07: Sidecar log streaming mechanics
@@ -243,7 +243,7 @@
 - [x] Write tests for OE-02: pod.initialized span event
 - [x] Write tests for OE-04: image.pulling and image.pulled span events
 - [x] Write tests for OE-06: init.container.failed span event
-- [ ] Write tests for OE-01, OE-05, OE-07, OE-08: Remaining span event assertions
+- [x] Write tests for OE-01, OE-05, OE-07, OE-08: Remaining span event assertions
 - [ ] Write tests for OE-10: Metrics recording verification
 
 ### Phase 4: P3 Edge Cases (Optional)
