@@ -34,3 +34,10 @@
 
 ### missing-capability
 - [2026-06-07] No Forge MCP server connected this session — all status/task/checkpoint ops done via manual plan.md edits + git notes (workflow's documented fallback). Worked fine but loses metadata.json↔tracks.md auto-sync.
+
+### good-pattern (SC-11 live test — timing the 5s bound)
+- [2026-06-07] SC-11 (sidecar log-stream 5s bounded wait) genuinely needs a live cluster: the fake clientset's GetLogs returns instantly so the WaitGroup never blocks. Wrote a plain Go test under `//go:build live` (jetbridge live_*_test.go convention — NOT Ginkgo) at live_sidecar_logstream_test.go.
+- [2026-06-07] Key insight: the exec-mode bound only engages when `ProcessIO.SidecarWriters` has a dedicated writer (process.go:777). A `sleep 86400` sidecar keeps `streamSidecarLogs`' io.Copy blocked forever, forcing the 5s `select{<-sidecarDone; <-time.After(5s)}` to fire. To isolate the 5s from pod-startup noise: run a CONTROL (no SidecarWriter → no bound) and assert (test - control) ≈ 5s. Live result on theborg: control 1.1s, test 6.9s, delta 5.79s. Robust + non-flaky.
+
+### good-pattern (running jetbridge live tests against theborg)
+- [2026-06-07] `KUBECONFIG=~/.kube/config K8S_TEST_NAMESPACE=<ns> go test -tags live -run '^TestLiveX$' -v -count=1 -timeout 5m ./atc/worker/jetbridge/`. Current kube-context `theborg` → https://theborg.home:6443. Create a THROWAWAY namespace (not cicd/concourse — those are live) with no pod-security label so privileged pods are allowed; `t.Cleanup` deletes pods, then delete the ns. Colima/Docker was down so testcontainers wasn't an option.

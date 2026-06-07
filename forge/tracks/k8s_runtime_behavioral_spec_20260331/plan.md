@@ -51,9 +51,9 @@
 | SC-08 | Failure before main starts | ✅ Full | process_test.go:1530 | |
 | SC-09 | Failure after main exits | ✅ Full | process_test.go:1587 | |
 | SC-10 | Pod stays Running with sidecars | ✅ Full | container_test.go:1525 | |
-| SC-11 | Log stream timeout | ❌ Missing | — | No test for 5-second timeout on sidecar log wait |
+| SC-11 | Log stream timeout | ✅ Full | live_sidecar_logstream_test.go | 5s bounded wait verified live on theborg: 86400s sidecar → Wait() returns in ~6.9s (delta ~5.8s over no-writer control) |
 
-**Summary:** 10/11 Full, 0 Partial, 1 Missing
+**Summary:** 11/11 Full, 0 Partial, 0 Missing
 
 ### Section 4: Resilience & Failure Handling (15 requirements)
 
@@ -162,14 +162,14 @@
 |---------|-------------|------|---------|---------|----------|
 | 1. Pod Execution | 12 | 10 | 2 | 0 | 83% full |
 | 2. Pod Naming | 7 | 7 | 0 | 0 | 100% full |
-| 3. Sidecar | 11 | 10 | 0 | 1 | 91% full |
+| 3. Sidecar | 11 | 11 | 0 | 0 | 100% full |
 | 4. Resilience | 15 | 13 | 2 | 0 | 87% full |
 | 5. GC | 9 | 9 | 0 | 0 | 100% full |
 | 6. Registration | 6 | 6 | 0 | 0 | 100% full |
 | 7. Watch | 10 | 8 | 2 | 0 | 80% full |
 | 8. Observability | 10 | 9 | 1 | 0 | 90% full |
 | 9. Configuration | 7 | 6 | 1 | 0 | 86% full |
-| **TOTAL** | **87** | **78** | **8** | **1** | **90% full** |
+| **TOTAL** | **87** | **79** | **8** | **0** | **91% full** |
 
 ---
 
@@ -180,7 +180,7 @@
 | ID | Gap | Status |
 |----|-----|--------|
 | ~~SC-07~~ | ~~Sidecar log streaming (dedicated writers, prefix fallback, retry)~~ | ✅ Done — behavioral_runtime_spec_test.go |
-| SC-11 | Sidecar log stream 5-second timeout | ❌ Still missing — requires live test |
+| ~~SC-11~~ | ~~Sidecar log stream 5-second timeout~~ | ✅ Done — live_sidecar_logstream_test.go (verified live on theborg) |
 | ~~OE-09~~ | ~~Observability event deduplication~~ | ✅ Done — behavioral_runtime_spec_test.go |
 
 ### P2: Should-Have (Partial coverage needing completion)
@@ -228,7 +228,7 @@
 - [x] Write tests for SC-07: Sidecar log streaming mechanics
   - Dedicated writer routing
   - Prefix fallback (`[sidecar-name]` format)
-- [ ] Write tests for SC-11: Sidecar log stream 5-second timeout — needs live test
+- [x] Write tests for SC-11: Sidecar log stream 5-second timeout — live_sidecar_logstream_test.go (verified live on theborg)
 - [x] Write tests for OE-09: Observability event deduplication
   - pod.scheduled deduplication
   - sidecar.started deduplication
