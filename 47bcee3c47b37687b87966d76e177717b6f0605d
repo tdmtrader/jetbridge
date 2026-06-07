@@ -1,0 +1,15 @@
+PHASE 4 CHECKPOINT — k8s_runtime_behavioral_spec_20260331 (P3 Edge Cases, optional)
+
+Status: COMPLETE & VERIFIED (all fake-clientset unit specs, no cluster needed).
+
+Tasks: PE-02, PE-09, RF-14, RF-15 (6 specs, behavioral_runtime_spec_test.go)
+Work commit: d459d26bed
+
+Verification (agent-run 2026-06-07):
+  ginkgo --focus='\[P3\]' ./atc/worker/jetbridge/  -> 6/6 pass
+  full jetbridge suite -> 332/332, deterministic over 15x ginkgo --repeat
+  go vet ./atc/worker/jetbridge/ -> clean
+
+Coverage: 83/87 Full (95%), 4 Partial, 0 Missing. Sections 1-6 all 100%.
+ALL FIVE PHASES NOW COMPLETE. Remaining Partials (PW-08, PW-10, OE-03, CF-06)
+are intentionally-deferred low-risk edge cases.
