@@ -36,12 +36,13 @@
 
 ---
 
-## [ ] Track: K8s Runtime Behavioral Specification
-*Link: [./tracks/k8s_runtime_behavioral_spec_20260331/](./tracks/k8s_runtime_behavioral_spec_20260331/)*
+## Completed / Archived Tracks
 
 ---
 
-## Completed / Archived Tracks
+## [x] Track: K8s Runtime Behavioral Specification
+*Link: [./archive/k8s_runtime_behavioral_spec_20260331/](./archive/k8s_runtime_behavioral_spec_20260331/)*
+*Completed 2026-06-07 — 87-requirement behavioral spec + coverage backfill for the JetBridge K8s runtime. All 5 phases done; coverage 83/87 Full (95%), 0 Missing (up from 62/87 at start, 73/87 mid-track). Added 14 specs (OE span events/metrics, PE/RF edge cases) + SC-11 sidecar log-stream 5s bound verified live on theborg (control 1.11s / test 6.90s). Fixed a pre-existing process_test.go goroutine-leak flake; suite 332/332 deterministic. Remaining 4 Partials (PW-08, PW-10, OE-03, CF-06) intentionally deferred as low-risk edge cases.*
 
 ### [x] Track: Fix file-config read after producer pod reap
 _Link: [./archive/fix_file_config_read_after_pod_reap_20260530/](./archive/fix_file_config_read_after_pod_reap_20260530/)_
