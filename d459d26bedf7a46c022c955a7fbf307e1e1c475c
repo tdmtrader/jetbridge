@@ -1,0 +1,5 @@
+Track: k8s_runtime_behavioral_spec_20260331 (Phase 4, P3 — all 4 tasks)
+Tasks: PE-02 (direct cmd embed), PE-09 (direct Wait/log/exit), RF-14 (init failure logs), RF-15 (pod+node diag)
+Tests: 6 specs in behavioral_runtime_spec_test.go
+Verify: ginkgo --focus='\[P3\]' -> 6/6; full suite 332/332, deterministic 15x --repeat; go vet clean
+Coverage: 79->83/87 Full (91%->95%); Sections 1 & 4 now 100%; 4 low-risk Partials remain (PW-08, PW-10, OE-03, CF-06)
