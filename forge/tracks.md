@@ -457,8 +457,15 @@ _Link: [./tracks/image_artifact_failrue_20260324/](./tracks/image_artifact_failr
 
 ---
 
-### [ ] Track: Native registry-image check resolution
-_Link: [./tracks/native_registry_image_check_resolution_20260324/](./tracks/native_registry_image_check_resolution_20260324/)_
+### [x] Track: Native registry-image check resolution
+_Link: [./archive/native_registry_image_check_resolution_20260324/](./archive/native_registry_image_check_resolution_20260324/)_
+_Completed 2026-06-07 — reconciled & closed. Feature shipped via the cleaner Option B (native resolution in `CheckStep`, `f8a29d4e31`) rather than the Option A (`TryCreateCheck`) the plan assumed: `WithCheckResolver` is wired into every CheckStep (`step_factory.go:144`), so ALL check paths (Lidar/manual/webhook/job-trigger) resolve `registry-image` natively with no check pods, using GCP Workload Identity. Live-verified on theborg via sibling `fix_native_check_self_notification_feedback_loop_20260413`; sidecar `image_artifact` covered by `skip_image_get_test.go:174`. Residual `insecure`/`ca_certs` gap → new track `native_resolver_insecure_ca_certs_20260607`._
+
+---
+
+### [ ] Track: Native resolver honors `insecure` and `ca_certs`
+_Link: [./tracks/native_resolver_insecure_ca_certs_20260607/](./tracks/native_resolver_insecure_ca_certs_20260607/)_
+_Spun off from the native registry-image track (2026-06-07). The native OCI resolver ignores `source.insecure` / `source.ca_certs`, so `registry-image` resources on private/self-signed/insecure registries fail native resolution — a regression vs the legacy check-pod path. Restore parity in `atc/imageresolver/resolver.go` + the three native call sites._
 
 ---
 

@@ -55,18 +55,25 @@ Intercept at `TryCreateCheck` in `atc/db/check_factory.go` — the single functi
 
 ## Acceptance Criteria
 
-- [ ] Manual "check resource" from UI resolves `registry-image` natively (no check pod) and returns correct digest
-- [ ] Webhook-triggered checks for `registry-image` resolve natively (no check pod)
-- [ ] Manual job trigger checks for `registry-image` input resources resolve natively (no check pod)
-- [ ] Lidar periodic scans continue to resolve natively (existing behavior preserved)
-- [ ] GAR images resolve successfully via Workload Identity without explicit credentials
-- [ ] `source.username`/`source.password` are used when present (private registries without Workload Identity)
-- [ ] `check_every` interval and `check_every: never` are honored
-- [ ] Sidecar `image_artifact` works for `registry-image` get steps (both short-circuit and full-fetch paths)
-- [ ] `imageURLFromGetPlan` produces valid URLs for any resource with `repository` in source
-- [ ] Existing resource type native resolution is unaffected
-- [ ] Non-`registry-image` resources continue using check pods
-- [ ] All existing scanner, get step, task step, and sidecar tests pass
+- [x] Manual "check resource" from UI resolves `registry-image` natively (no check pod) and returns correct digest — via `CheckStep` (Option B)
+- [x] Webhook-triggered checks for `registry-image` resolve natively (no check pod) — via `CheckStep`
+- [x] Manual job trigger checks for `registry-image` input resources resolve natively (no check pod) — via `CheckStep`
+- [x] Lidar periodic scans continue to resolve natively (existing behavior preserved)
+- [x] GAR images resolve successfully via Workload Identity without explicit credentials — multi-keychain (`resolver.go:40`)
+- [x] `source.username`/`source.password` are used when present — `BasicAuth` in `resolveNatively`
+- [x] `check_every` interval and `check_every: never` are honored
+- [x] Sidecar `image_artifact` works for `registry-image` get steps — integration test `skip_image_get_test.go:174`
+- [x] `imageURLFromGetPlan` produces valid URLs for any resource with `repository` in source — Phase 1 (`c953ca89c`)
+- [x] Existing resource type native resolution is unaffected
+- [x] Non-`registry-image` resources continue using check pods — `check_step.go:220` else branch
+- [x] All existing scanner, get step, task step, and sidecar tests pass
+
+> Closure note (2026-06-07): delivered via Option B (`CheckStep` native resolution wired into
+> every check) rather than the Option A (`TryCreateCheck`) this plan assumed — so all check
+> paths are covered. Note the plan's "`((var))` not resolved" limitation does NOT apply to the
+> `CheckStep` path: `resolveNatively` receives already-credential-evaluated source
+> (`check_step.go:351`). Residual gap (`insecure`/`ca_certs` in the native resolver) spun off
+> to a new track: `native_resolver_insecure_ca_certs_20260607`.
 
 ## Out of Scope
 

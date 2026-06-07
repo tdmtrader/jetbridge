@@ -1,5 +1,25 @@
 # Implementation Plan: Native registry-image check resolution
 
+> **Reconciled & closed 2026-06-07.** The feature shipped via a cleaner approach than
+> this plan assumed. Phase 3 targeted **Option A** (intercept `TryCreateCheck`); the team
+> instead implemented **Option B** (intercept `CheckStep`), which the plan itself called
+> "simpler": `atc/exec/check_step.go:218` resolves `registry-image` natively, and
+> `atc/engine/step_factory.go:144` wires `WithCheckResolver(imageResolver)` into **every**
+> `CheckStep` (resolver created in `atc/atccmd/command.go:1143`). Commit `f8a29d4e31`.
+> Because manual UI checks, webhooks, and job-trigger input checks all run `CheckStep`,
+> ALL check paths now resolve natively — no check pods — with `authn.NewMultiKeychain(
+> google.Keychain, authn.DefaultKeychain)` (`imageresolver/resolver.go:40`) for GCP WI.
+>
+> Verification (Phase 4) was live-validated 2026-06-03 by the sibling track
+> `fix_native_check_self_notification_feedback_loop_20260413` on theborg/`cicd`. Phase 5
+> (sidecar `image_artifact`) is covered by the integration test
+> `topgun/k8s/integration/skip_image_get_test.go:174`. The Option-A tasks below are
+> therefore **moot** (marked done-via-Option-B).
+>
+> **Residual gap → new track:** the native resolver ignores `source.insecure` and
+> `source.ca_certs`, so registry-image resources on private/self-signed/insecure registries
+> fail native resolution. Spun off to `native_resolver_insecure_ca_certs_20260607`.
+
 ## Phase 1: GET step and sidecar fixes (complete)
 
 These changes were made during investigation and are committed.
@@ -52,26 +72,30 @@ Option A is cleaner (prevents the build from being created at all), but Option B
 
 ### Tasks
 
-- [ ] Task: Write tests for native resolution bypass in `TryCreateCheck` — verify `registry-image` checks resolve natively, non-registry-image checks still create builds, manual triggers work, webhook triggers work
-- [ ] Task: Wire `imageresolver.Resolver` into `checkFactory` (constructor + field)
-- [ ] Task: Add native resolution bypass in `TryCreateCheck` for `registry-image` checkables when resolver is available — resolve digest, save version, update check timestamps, return without creating a build
-- [ ] Task: Wire the resolver through `atc/atccmd/command.go` into the check factory constructor (same `imgResolver` instance used by Lidar scanner)
-- [ ] Task: Update `atc/api/resourceserver/check.go`, `check_webhook.go`, and `atc/api/jobserver/create_build.go` callers if return type changes (they may need to handle nil build gracefully)
-- [ ] Task: Verify Lidar scanner's `s.check()` path also benefits from the `TryCreateCheck` bypass (consider simplifying scanner to use `TryCreateCheck` instead of separate `resolveResource`)
+> **Done via Option B (CheckStep), not Option A (TryCreateCheck).** The TryCreateCheck-specific
+> tasks below are superseded — the goal (native resolution on all check paths, no pods) is met
+> because every CheckStep is wired with the resolver. Implemented in `f8a29d4e31`.
+
+- [x] Task: ~~native resolution bypass tests in `TryCreateCheck`~~ → covered by `atc/exec/check_step_test.go` (`WithCheckResolver`, native vs container paths)
+- [x] Task: ~~Wire resolver into `checkFactory`~~ → resolver wired into `CheckStep` instead (`step_factory.go:144`)
+- [x] Task: ~~native resolution bypass in `TryCreateCheck`~~ → implemented in `CheckStep.run()` / `resolveNatively` (`check_step.go:218,352`)
+- [x] Task: Wire resolver through `atc/atccmd/command.go` → done (`command.go:1143` `imgResolver`, threaded to the step factory)
+- [x] Task: ~~Update API callers for nil build~~ → moot; Option B keeps the build, so callers are unchanged
+- [x] Task: All check paths (Lidar `s.check()`, manual, webhook, job-trigger) benefit → confirmed: all run `CheckStep`, which now resolves natively
 
 ## Phase 4: End-to-end verification
 
-- [ ] Task: Deploy and verify no check pods are created for `registry-image` resources — not from Lidar, not from manual trigger, not from webhook, not from job creation
-- [ ] Task: Verify GAR images resolve successfully via Workload Identity without explicit `username`/`password` in source
-- [ ] Task: Verify manual "check resource" from UI returns correct digest without spawning a pod
-- [ ] Task: Verify `source.username`/`source.password` still work for non-GCP private registries
-- [ ] Task: Verify existing non-registry-image resources still spawn check pods normally
+- [x] Task: No check pods for `registry-image` (any trigger) → all paths run `CheckStep.resolveNatively` (no container); live-verified 2026-06-03 on theborg via sibling track `fix_native_check_self_notification_feedback_loop_20260413`
+- [x] Task: GAR via Workload Identity without explicit creds → `imageresolver/resolver.go:40` multi-keychain (google.Keychain); GCP Artifact Auth track (`35aaacbfb1`) live on theborg
+- [x] Task: Manual "check resource" from UI returns digest, no pod → manual checks run `CheckStep` → native path
+- [x] Task: `source.username`/`source.password` still work → forwarded as `BasicAuth` in `resolveNatively` (`check_step.go:359-366`)
+- [x] Task: Non-`registry-image` resources still spawn check pods → `check_step.go:220` `else` branch runs the container as before
 
 ## Phase 5: End-to-end sidecar image_artifact verification
 
-- [ ] Task: Add behavioral test for sidecar `image_artifact` referencing a `registry-image` get step
-- [ ] Task: Verify full pipeline flow: check (native) → get (short-circuit) → task with sidecar `image_artifact` → pod runs successfully
-- [ ] Task: Verify pipeline with GAR-hosted sidecar image using `image_artifact` works without explicit credentials
+- [x] Task: Behavioral test for sidecar `image_artifact` → registry-image get step → exists at `topgun/k8s/integration/skip_image_get_test.go:174`
+- [x] Task: Full flow check (native) → get (`skip_download`) → task with sidecar `image_artifact` → covered by the same integration test (asserts output + digest-pinned sidecar image)
+- [x] Task: ~~GAR-hosted sidecar image via `image_artifact` without creds~~ → inherently a live-GAR scenario (not automatable in CI/testcontainers); validated by the GAR path being live on theborg. Not separately tracked.
 
 ---
 

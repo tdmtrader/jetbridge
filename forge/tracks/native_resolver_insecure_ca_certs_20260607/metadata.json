@@ -1,0 +1,8 @@
+{
+  "trackId": "native_resolver_insecure_ca_certs_20260607",
+  "type": "bug",
+  "status": "planned",
+  "description": "Native registry-image resolver ignores source.insecure and source.ca_certs, breaking checks against private/self-signed/insecure registries",
+  "createdAt": "2026-06-07T00:00:00Z",
+  "updatedAt": "2026-06-07T00:00:00Z"
+}
