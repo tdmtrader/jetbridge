@@ -53,8 +53,8 @@ var _ = Describe("Process", func() {
 			db.NewFixedHandleContainerOwner("process-test-handle"),
 			db.ContainerMetadata{Type: db.ContainerTypeTask},
 			runtime.ContainerSpec{
-				TeamID:   1,
-				Dir:      "/workdir",
+				TeamID:    1,
+				Dir:       "/workdir",
 				ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 			},
 			delegate,
@@ -785,9 +785,9 @@ var _ = Describe("Process", func() {
 				db.NewFixedHandleContainerOwner("timeout-handle"),
 				db.ContainerMetadata{Type: db.ContainerTypeGet},
 				runtime.ContainerSpec{
-					TeamID:   1,
+					TeamID:    1,
 					ImageSpec: runtime.ImageSpec{ResourceType: "git"},
-					Type:     db.ContainerTypeGet,
+					Type:      db.ContainerTypeGet,
 				},
 				delegate,
 			)
@@ -848,8 +848,8 @@ var _ = Describe("Process", func() {
 
 	Describe("execProcess failure state detection", func() {
 		var (
-			fakeExecutor *fakeExecExecutor
-			execWorker   *jetbridge.Worker
+			fakeExecutor  *fakeExecExecutor
+			execWorker    *jetbridge.Worker
 			execContainer runtime.Container
 		)
 
@@ -866,9 +866,9 @@ var _ = Describe("Process", func() {
 				db.NewFixedHandleContainerOwner("exec-fail-handle"),
 				db.ContainerMetadata{Type: db.ContainerTypeGet},
 				runtime.ContainerSpec{
-					TeamID:   1,
+					TeamID:    1,
 					ImageSpec: runtime.ImageSpec{ResourceType: "git"},
-					Type:     db.ContainerTypeGet,
+					Type:      db.ContainerTypeGet,
 				},
 				delegate,
 			)
@@ -926,9 +926,9 @@ var _ = Describe("Process", func() {
 				db.NewFixedHandleContainerOwner("exec-sched-timeout-handle"),
 				db.ContainerMetadata{Type: db.ContainerTypeGet},
 				runtime.ContainerSpec{
-					TeamID:   1,
+					TeamID:    1,
 					ImageSpec: runtime.ImageSpec{ResourceType: "git"},
-					Type:     db.ContainerTypeGet,
+					Type:      db.ContainerTypeGet,
 				},
 				delegate,
 			)
@@ -980,9 +980,9 @@ var _ = Describe("Process", func() {
 				db.NewFixedHandleContainerOwner("exec-sched-recover-handle"),
 				db.ContainerMetadata{Type: db.ContainerTypeGet},
 				runtime.ContainerSpec{
-					TeamID:   1,
+					TeamID:    1,
 					ImageSpec: runtime.ImageSpec{ResourceType: "git"},
-					Type:     db.ContainerTypeGet,
+					Type:      db.ContainerTypeGet,
 				},
 				delegate,
 			)
@@ -1041,7 +1041,17 @@ var _ = Describe("Process", func() {
 
 				// Then terminate the main container so Wait returns.
 				time.Sleep(200 * time.Millisecond)
-				pod, _ = fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "exec-sched-recover-handle", metav1.GetOptions{})
+				// By now process.Wait may have already returned (the pod reached
+				// Running above) and the spec may have ended, tearing down and
+				// re-creating the shared fakeClientset in the next spec's
+				// BeforeEach. If so, this Get returns NotFound — bail out rather
+				// than UpdateStatus-ing an empty (name="") pod, which would fail
+				// an assertion in this leaked goroutine and be misattributed to
+				// whichever spec is running at the time.
+				pod, err = fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "exec-sched-recover-handle", metav1.GetOptions{})
+				if err != nil {
+					return
+				}
 				pod.Status.Phase = corev1.PodSucceeded
 				pod.Status.ContainerStatuses = []corev1.ContainerStatus{
 					{
@@ -1156,9 +1166,9 @@ var _ = Describe("Process", func() {
 				db.NewFixedHandleContainerOwner("exec-diag-handle"),
 				db.ContainerMetadata{Type: db.ContainerTypeGet},
 				runtime.ContainerSpec{
-					TeamID:   1,
+					TeamID:    1,
 					ImageSpec: runtime.ImageSpec{ResourceType: "git"},
-					Type:     db.ContainerTypeGet,
+					Type:      db.ContainerTypeGet,
 				},
 				delegate,
 			)
@@ -1262,7 +1272,7 @@ var _ = Describe("Process", func() {
 				db.NewFixedHandleContainerOwner("transient-ok-handle"),
 				db.ContainerMetadata{Type: db.ContainerTypeTask},
 				runtime.ContainerSpec{
-					TeamID:   1,
+					TeamID:    1,
 					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 				},
 				delegate,
@@ -1311,7 +1321,7 @@ var _ = Describe("Process", func() {
 				db.NewFixedHandleContainerOwner("transient-fail-handle"),
 				db.ContainerMetadata{Type: db.ContainerTypeTask},
 				runtime.ContainerSpec{
-					TeamID:   1,
+					TeamID:    1,
 					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 				},
 				delegate,
@@ -1345,7 +1355,7 @@ var _ = Describe("Process", func() {
 				db.NewFixedHandleContainerOwner("transient-reset-handle"),
 				db.ContainerMetadata{Type: db.ContainerTypeTask},
 				runtime.ContainerSpec{
-					TeamID:   1,
+					TeamID:    1,
 					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 				},
 				delegate,
@@ -1411,8 +1421,8 @@ var _ = Describe("Process", func() {
 					db.NewFixedHandleContainerOwner("image-pull-fail-handle"),
 					db.ContainerMetadata{Type: db.ContainerTypeTask},
 					runtime.ContainerSpec{
-						TeamID:   1,
-						Dir:      "/workdir",
+						TeamID:    1,
+						Dir:       "/workdir",
 						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 					},
 					delegate,
@@ -1474,8 +1484,8 @@ var _ = Describe("Process", func() {
 					db.NewFixedHandleContainerOwner("startup-duration-handle"),
 					db.ContainerMetadata{Type: db.ContainerTypeTask},
 					runtime.ContainerSpec{
-						TeamID:   1,
-						Dir:      "/workdir",
+						TeamID:    1,
+						Dir:       "/workdir",
 						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 					},
 					delegate,
@@ -1541,8 +1551,8 @@ var _ = Describe("Process sidecar lifecycle", func() {
 				db.NewFixedHandleContainerOwner("sidecar-lifecycle-handle"),
 				db.ContainerMetadata{Type: db.ContainerTypeTask},
 				runtime.ContainerSpec{
-					TeamID:   1,
-					Dir:      "/workdir",
+					TeamID:    1,
+					Dir:       "/workdir",
 					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 					Sidecars: []atc.SidecarConfig{
 						{
@@ -1603,8 +1613,8 @@ var _ = Describe("Process sidecar lifecycle", func() {
 				db.NewFixedHandleContainerOwner("sidecar-fail-handle"),
 				db.ContainerMetadata{Type: db.ContainerTypeTask},
 				runtime.ContainerSpec{
-					TeamID:   1,
-					Dir:      "/workdir",
+					TeamID:    1,
+					Dir:       "/workdir",
 					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 					Sidecars: []atc.SidecarConfig{
 						{Name: "redis", Image: "redis:7"},
@@ -1657,8 +1667,8 @@ var _ = Describe("Process sidecar lifecycle", func() {
 				db.NewFixedHandleContainerOwner("sidecar-fail-handle"),
 				db.ContainerMetadata{Type: db.ContainerTypeTask},
 				runtime.ContainerSpec{
-					TeamID:   1,
-					Dir:      "/workdir",
+					TeamID:    1,
+					Dir:       "/workdir",
 					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 					Sidecars: []atc.SidecarConfig{
 						{Name: "bad-image", Image: "nonexistent:latest"},
@@ -1714,8 +1724,8 @@ var _ = Describe("Process sidecar lifecycle", func() {
 				db.NewFixedHandleContainerOwner("sidecar-imgfail-handle"),
 				db.ContainerMetadata{Type: db.ContainerTypeTask},
 				runtime.ContainerSpec{
-					TeamID:   1,
-					Dir:      "/workdir",
+					TeamID:    1,
+					Dir:       "/workdir",
 					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 					Sidecars: []atc.SidecarConfig{
 						{Name: "bad-image", Image: "nonexistent:latest"},
@@ -1811,8 +1821,8 @@ var _ = Describe("Pod phase transition spans", func() {
 				db.NewFixedHandleContainerOwner("phase-span-handle"),
 				db.ContainerMetadata{Type: db.ContainerTypeTask},
 				runtime.ContainerSpec{
-					TeamID:   1,
-					Dir:      "/workdir",
+					TeamID:    1,
+					Dir:       "/workdir",
 					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 				},
 				delegate,
@@ -1925,9 +1935,9 @@ var _ = Describe("Pod phase transition spans", func() {
 				db.NewFixedHandleContainerOwner("exec-phase-handle"),
 				db.ContainerMetadata{Type: db.ContainerTypeGet},
 				runtime.ContainerSpec{
-					TeamID:   1,
+					TeamID:    1,
 					ImageSpec: runtime.ImageSpec{ResourceType: "git"},
-					Type:     db.ContainerTypeGet,
+					Type:      db.ContainerTypeGet,
 				},
 				delegate,
 			)
@@ -1994,10 +2004,10 @@ var _ = Describe("Pod phase transition spans", func() {
 				db.NewFixedHandleContainerOwner("init-sidecar-handle"),
 				db.ContainerMetadata{Type: db.ContainerTypeTask},
 				runtime.ContainerSpec{
-					TeamID:   1,
-					Dir:      "/workdir",
+					TeamID:    1,
+					Dir:       "/workdir",
 					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
-					Type:     db.ContainerTypeTask,
+					Type:      db.ContainerTypeTask,
 					Sidecars: []atc.SidecarConfig{
 						{Name: "postgres", Image: "postgres:15"},
 					},
@@ -2132,10 +2142,10 @@ var _ = Describe("Pod phase transition spans", func() {
 				db.NewFixedHandleContainerOwner("pvc-image-handle"),
 				db.ContainerMetadata{Type: db.ContainerTypeTask},
 				runtime.ContainerSpec{
-					TeamID:   1,
-					Dir:      "/workdir",
+					TeamID:    1,
+					Dir:       "/workdir",
 					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
-					Type:     db.ContainerTypeTask,
+					Type:      db.ContainerTypeTask,
 				},
 				delegate,
 			)
