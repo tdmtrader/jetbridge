@@ -462,8 +462,9 @@ _Link: [./tracks/native_registry_image_check_resolution_20260324/](./tracks/nati
 
 ---
 
-### [ ] Track: Caching behavior and PVC
-_Link: [./tracks/caching_behavior_and_pvc_20260324/](./tracks/caching_behavior_and_pvc_20260324/)_
+### [x] Track: Caching behavior and PVC
+_Link: [./archive/caching_behavior_and_pvc_20260324/](./archive/caching_behavior_and_pvc_20260324/)_
+_Completed 2026-06-07 — reconciled & closed. Task-cache persistence fix (stable `(jobID,stepName,path)` key + hostPath, `159fc0c482`) shipped and was adopted by the artifact daemon (`DaemonSetBackend.CacheVolume` reuses `stableCacheKey`). Both original bugs (UUID key, emptyDir wipe) fixed in production; verified by CI behavioral suite `caching_test.go` (CACHE HIT / scoping / clear-task-cache, not among k8s-e2e failures). De-scoped: GC of stale on-disk cache dirs → spun off as a follow-up hygiene task._
 
 ---
 

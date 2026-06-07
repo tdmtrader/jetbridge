@@ -36,13 +36,18 @@ The metadata needed for a stable key (`c.metadata.JobID`, `c.metadata.StepName`,
 ## Acceptance Criteria
 
 - [x] Cache SubPath key is deterministic: same job + step + path always maps to same directory
-- [ ] Builds of the same job reuse cached data (behavioral test: CACHE HIT on second build)
-- [ ] Different jobs have isolated caches (behavioral test: scope-a vs scope-b)
-- [ ] `fly clear-task-cache` clears the correct cache directory
-- [ ] hostPath fallback works when no PVC is configured
-- [ ] hostPath base directory is configurable via `--kubernetes-cache-host-path`
-- [ ] Helm chart exposes `cacheHostPath` value
-- [ ] Unit tests cover stable key generation and both PVC/hostPath code paths
+- [x] Builds of the same job reuse cached data (behavioral test: CACHE HIT on second build)
+- [x] Different jobs have isolated caches (behavioral test: scope-a vs scope-b)
+- [x] `fly clear-task-cache` clears the correct cache directory (behavioral test green)
+- [x] hostPath fallback works when no PVC is configured
+- [x] hostPath base directory is configurable via `--kubernetes-cache-host-path`
+- [x] Helm chart exposes `cacheHostPath` value
+- [x] Unit tests cover stable key generation and both PVC/hostPath code paths
+
+> Closure note (2026-06-07): core fix adopted by the artifact daemon
+> (`DaemonSetBackend.CacheVolume` reuses `stableCacheKey`); all acceptance
+> criteria met or CI-validated. The only residual item — GC of stale on-disk
+> cache directories — is de-scoped to a follow-up hygiene task (Requirement 5).
 
 ## Out of Scope
 
