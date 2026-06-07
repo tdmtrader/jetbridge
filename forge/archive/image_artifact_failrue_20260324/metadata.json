@@ -1,0 +1,19 @@
+{
+  "trackId": "image_artifact_failrue_20260324",
+  "type": "feature",
+  "status": "completed",
+  "description": "image artifact failrue",
+  "createdAt": "2026-03-24T17:49:19.956Z",
+  "updatedAt": "2026-03-24T19:14:21.523Z",
+  "sessions": [
+    {
+      "slotIndex": 0,
+      "engineType": "claude",
+      "aiSessionId": "af127580-9944-4f24-9b99-c94ed353a4e4",
+      "accountId": "system-claude",
+      "updatedAt": "2026-03-24T19:14:21.523Z"
+    }
+  ],
+  "completedAt": "2026-06-07",
+  "closedReason": "VOID stub: untouched template (created and abandoned in ~25 min). The image/artifact problem domain is covered by ~7 completed tracks (native_registry_image_check_resolution, gzip_invalid_header, bug_in_empty_artifact_resolution_with_daemonset, image_ref_hardening, etc.)."
+}

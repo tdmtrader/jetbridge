@@ -1,0 +1,19 @@
+{
+  "trackId": "test_and_deploy_pipeline_20260322",
+  "type": "feature",
+  "status": "completed",
+  "description": "Test and Deploy Pipeline",
+  "createdAt": "2026-03-22T14:55:46.018Z",
+  "updatedAt": "2026-03-22T14:56:00.775Z",
+  "sessions": [
+    {
+      "slotIndex": 0,
+      "engineType": "claude",
+      "aiSessionId": "abfe705a-7e0c-4daf-bace-667b7f6b66b4",
+      "accountId": "system-claude",
+      "updatedAt": "2026-03-22T14:56:00.775Z"
+    }
+  ],
+  "completedAt": "2026-06-07",
+  "closedReason": "Delivered in deploy/concourse-pipeline.yml (git-triggered test chain -> push-to-main -> GHCR image build/push -> theborg self-upgrade); all spec requirements met and iterated heavily since. Metadata/checkboxes stale."
+}

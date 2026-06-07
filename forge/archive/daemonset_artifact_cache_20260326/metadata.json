@@ -1,0 +1,12 @@
+{
+  "trackId": "daemonset_artifact_cache_20260326",
+  "type": "feature",
+  "status": "completed",
+  "description": "DaemonSet artifact cache",
+  "createdAt": "2026-03-26T12:00:00.000Z",
+  "updatedAt": "2026-03-26T12:00:00.000Z",
+  "sessions": [],
+  "sessionHistory": [],
+  "completedAt": "2026-06-07",
+  "closedReason": "Shipped and evolved past its dual-backend framing: the DaemonSet became the SOLE authoritative artifact backend (the proposed ArtifactBackend pvc|daemonset toggle never shipped). Superseded by daemon_mediated_artifact_resolution / daemonset_direct_hostpath / artifact_daemon_resilience."
+}

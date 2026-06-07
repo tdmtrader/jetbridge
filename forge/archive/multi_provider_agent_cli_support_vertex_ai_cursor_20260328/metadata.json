@@ -1,0 +1,10 @@
+{
+  "trackId": "multi_provider_agent_cli_support_vertex_ai_cursor_20260328",
+  "type": "feature",
+  "status": "completed",
+  "description": "Multi-provider agent CLI support (Vertex AI + Cursor)",
+  "createdAt": "2026-03-28T15:09:25.374Z",
+  "updatedAt": "2026-03-28T15:09:25.374Z",
+  "completedAt": "2026-06-07",
+  "closedReason": "Closed as WON'T-DO (product decision, 2026-06-07). Not started; the ci-agent remains Anthropic/Claude-only (llm/client.go, tracing.go:46). Spec/plan remain valid and re-openable if multi-provider (Cursor + Vertex AI) becomes a priority."
+}

@@ -1,8 +1,0 @@
-{
-  "trackId": "deprecate_pvc_and_spdy_artifact_backends_20260327",
-  "type": "refactor",
-  "status": "backlog",
-  "description": "Deprecate PVC and SPDY artifact backends",
-  "createdAt": "2026-03-28T02:44:27.875Z",
-  "updatedAt": "2026-03-28T02:44:27.875Z"
-}

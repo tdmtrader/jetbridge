@@ -437,8 +437,9 @@ _Link: [./archive/burstable_qos_for_task_containers_20260321/](./archive/burstab
 
 ---
 
-### [ ] Track: Test and Deploy Pipeline
-_Link: [./tracks/test_and_deploy_pipeline_20260322/](./tracks/test_and_deploy_pipeline_20260322/)_
+### [x] Track: Test and Deploy Pipeline
+_Link: [./archive/test_and_deploy_pipeline_20260322/](./archive/test_and_deploy_pipeline_20260322/)_
+_Completed 2026-06-07 — delivered in deploy/concourse-pipeline.yml (git-triggered test->push-main->GHCR->self-upgrade); iterated since._
 
 ---
 
@@ -447,13 +448,15 @@ _Link: [./archive/sidecar_image_handoff_20260323/](./archive/sidecar_image_hando
 
 ---
 
-### [ ] Track: Load var
-_Link: [./tracks/load_var_20260323/](./tracks/load_var_20260323/)_
+### [x] Track: Load var
+_Link: [./archive/load_var_20260323/](./archive/load_var_20260323/)_
+_Completed 2026-06-07 — VOID stub — never scoped; load_var is a fully-implemented inherited upstream feature (47 specs)._
 
 ---
 
-### [ ] Track: image artifact failrue
-_Link: [./tracks/image_artifact_failrue_20260324/](./tracks/image_artifact_failrue_20260324/)_
+### [x] Track: image artifact failrue
+_Link: [./archive/image_artifact_failrue_20260324/](./archive/image_artifact_failrue_20260324/)_
+_Completed 2026-06-07 — VOID stub — never scoped; image/artifact domain covered by ~7 completed tracks._
 
 ---
 
@@ -480,8 +483,9 @@ _Link: [./archive/oci_build_task_cache_testing_20260324/](./archive/oci_build_ta
 
 ---
 
-### [ ] Track: Sidecar Details
-_Link: [./tracks/sidecar_details_20260325/](./tracks/sidecar_details_20260325/)_
+### [x] Track: Sidecar Details
+_Link: [./archive/sidecar_details_20260325/](./archive/sidecar_details_20260325/)_
+_Completed 2026-06-07 — completed-but-unreconciled; per-sidecar status/logs/events UI + fly watch shipped 2026-03-25 (feat(ui) commits), live._
 
 ---
 
@@ -527,8 +531,9 @@ _Closed 2026-06-07 as a VOID stub — never scoped (placeholder spec/plan), no w
 
 ---
 
-### [ ] Track: JetBridge Storage & Artifact Behavioral Specification
-_Link: [./tracks/jetbridge_storage_behavioral_spec_20260330/](./tracks/jetbridge_storage_behavioral_spec_20260330/)_
+### [x] Track: JetBridge Storage & Artifact Behavioral Specification
+_Link: [./archive/jetbridge_storage_behavioral_spec_20260330/](./archive/jetbridge_storage_behavioral_spec_20260330/)_
+_Completed 2026-06-07 — tests written in creation commit bf727ceb29; 56 storage/artifact requirements covered, daemon suite green (companion to the k8s_runtime spec)._
 
 ---
 
@@ -570,5 +575,50 @@ _Link: [./archive/fix_cache_locator_pod_ip_poisoning_20260423/](./archive/fix_ca
 
 ### [x] Track: Artifact Daemon Resilience
 _Link: [./archive/artifact_daemon_resilience_20260425/](./archive/artifact_daemon_resilience_20260425/)_
+
+---
+
+
+<!-- batch-closed 2026-06-07 (tracks not previously indexed) -->
+
+### [x] Track: Concourse MCP
+_Link: [./archive/concourse_mcp_20260328/](./archive/concourse_mcp_20260328/)_
+_Completed 2026-06-07 — superseded by atc_embedded_mcp_server_20260408 — embedded MCP live at /api/v1/mcp (e7656ea91b)._
+
+---
+
+### [x] Track: Fix k8s-e2e pipeline kind-runner build and test execution
+_Link: [./archive/fix_k8s_e2e_pipeline_kind_runner_build_and_test_execution_20260328/](./archive/fix_k8s_e2e_pipeline_kind_runner_build_and_test_execution_20260328/)_
+_Completed 2026-06-07 — superseded by KinD->K3s migration (fdc608a890) + completed CI tracks; both bugs fixed, suites green._
+
+---
+
+### [x] Track: Deprecate PVC and SPDY artifact backends
+_Link: [./archive/deprecate_pvc_and_spdy_artifact_backends_20260327/](./archive/deprecate_pvc_and_spdy_artifact_backends_20260327/)_
+_Completed 2026-06-07 — done in 1b3972e893 (-6378 LOC); DaemonSet is the sole StorageBackend._
+
+---
+
+### [x] Track: Multi-provider agent CLI support (Vertex AI + Cursor)
+_Link: [./archive/multi_provider_agent_cli_support_vertex_ai_cursor_20260328/](./archive/multi_provider_agent_cli_support_vertex_ai_cursor_20260328/)_
+_Completed 2026-06-07 — closed WON'T-DO (product decision); ci-agent remains Anthropic-only; spec/plan re-openable._
+
+---
+
+### [x] Track: Fix 4 failing K8s behavioral tests
+_Link: [./archive/behavioral_test_fixes_20260327/](./archive/behavioral_test_fixes_20260327/)_
+_Completed 2026-06-07 — completed; 4 fixes shipped (cc5ae9592, 9e6f21a8e); metadata was stale at planned._
+
+---
+
+### [x] Track: DaemonSet artifact cache
+_Link: [./archive/daemonset_artifact_cache_20260326/](./archive/daemonset_artifact_cache_20260326/)_
+_Completed 2026-06-07 — shipped & evolved past its dual-backend framing; DaemonSet became the sole backend (superseded)._
+
+---
+
+### [x] Track: Agentic Cleanup Phase 2
+_Link: [./archive/agentic_cleanup_phase_2_20260327/](./archive/agentic_cleanup_phase_2_20260327/)_
+_Completed 2026-06-07 — VOID stub — untouched template; cleanup already covered by completed tracks._
 
 ---

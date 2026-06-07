@@ -1,0 +1,12 @@
+{
+  "trackId": "behavioral_test_fixes_20260327",
+  "type": "bugfix",
+  "status": "completed",
+  "description": "Fix 4 failing K8s behavioral tests",
+  "createdAt": "2026-03-27T05:00:00.000Z",
+  "updatedAt": "2026-03-27T05:00:00.000Z",
+  "sessions": [],
+  "sessionHistory": [],
+  "completedAt": "2026-06-07",
+  "closedReason": "Completed: the 4 K8s behavioral test fixes shipped (commits cc5ae9592, 9e6f21a8e) and are live (process.go:776, build_step_delegate.go:266). Metadata was stale at 'planned'."
+}

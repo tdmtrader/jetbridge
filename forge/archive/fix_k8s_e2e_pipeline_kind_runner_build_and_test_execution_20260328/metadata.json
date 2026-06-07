@@ -1,0 +1,10 @@
+{
+  "trackId": "fix_k8s_e2e_pipeline_kind_runner_build_and_test_execution_20260328",
+  "type": "bugfix",
+  "status": "completed",
+  "description": "Fix k8s-e2e pipeline kind-runner build and test execution",
+  "createdAt": "2026-03-28T22:27:20.099Z",
+  "updatedAt": "2026-03-28T22:47:34.930Z",
+  "completedAt": "2026-06-07",
+  "closedReason": "Superseded by the KinD->K3s/testcontainers migration (fdc608a890) and completed CI tracks ci_reliability_k8s_e2e_20260530 + k8s_e2e_ci_failures_20260407. Both named bugs resolved; suites green (#102/#103, 298/0)."
+}

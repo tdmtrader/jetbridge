@@ -1,0 +1,9 @@
+{
+  "id": "jetbridge_storage_behavioral_spec_20260330",
+  "name": "JetBridge Storage & Artifact Behavioral Specification",
+  "type": "docs",
+  "status": "completed",
+  "created": "2026-03-30",
+  "completedAt": "2026-06-07",
+  "closedReason": "Completed-but-unreconciled: the behavioral tests were written in the creation commit bf727ceb29. All 56 storage/artifact requirements (DA/AR/PD/VT/CO/RC/LR) are covered and the daemon behavioral suite is green. Mirrors the companion k8s_runtime spec closed earlier today."
+}

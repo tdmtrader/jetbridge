@@ -1,0 +1,19 @@
+{
+  "trackId": "load_var_20260323",
+  "type": "feature",
+  "status": "completed",
+  "description": "Load var",
+  "createdAt": "2026-03-24T01:07:33.296Z",
+  "updatedAt": "2026-03-24T01:07:46.425Z",
+  "sessions": [
+    {
+      "slotIndex": 0,
+      "engineType": "claude",
+      "aiSessionId": "e28aa2e3-911b-4ba9-81f6-32b415c055a4",
+      "accountId": "system-claude",
+      "updatedAt": "2026-03-24T01:07:46.424Z"
+    }
+  ],
+  "completedAt": "2026-06-07",
+  "closedReason": "VOID stub: untouched template (abandoned in ~13s). Concourse `load_var` is a fully-implemented inherited UPSTREAM feature (atc/exec/load_var_step.go, 47 specs) \u2014 there was never any fork-specific work to do."
+}

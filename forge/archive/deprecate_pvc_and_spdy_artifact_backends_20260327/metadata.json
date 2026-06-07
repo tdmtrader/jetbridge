@@ -1,0 +1,10 @@
+{
+  "trackId": "deprecate_pvc_and_spdy_artifact_backends_20260327",
+  "type": "refactor",
+  "status": "completed",
+  "description": "Deprecate PVC and SPDY artifact backends",
+  "createdAt": "2026-03-28T02:44:27.875Z",
+  "updatedAt": "2026-03-28T02:44:27.875Z",
+  "completedAt": "2026-06-07",
+  "closedReason": "Done in 1b3972e893 (refactor: deprecate PVC and SPDY artifact backends, -6378 LOC) ~30 min after track creation. DaemonSetBackend is now the sole StorageBackend; PVC/SPDY files deleted; cache modes are hostpath/emptydir only."
+}
