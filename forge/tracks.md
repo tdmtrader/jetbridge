@@ -521,8 +521,9 @@ _Completed 2026-06-06 — daemon is the sole artifact authority (/resolve, /regi
 
 ---
 
-### [ ] Track: Legacy cleanup: dead code, stale config, and broken references
-_Link: [./tracks/legacy_cleanup_dead_code_stale_config_and_broken_references_20260328/](./tracks/legacy_cleanup_dead_code_stale_config_and_broken_references_20260328/)_
+### [x] Track: Legacy cleanup: dead code, stale config, and broken references
+_Link: [./archive/legacy_cleanup_dead_code_stale_config_and_broken_references_20260328/](./archive/legacy_cleanup_dead_code_stale_config_and_broken_references_20260328/)_
+_Closed 2026-06-07 as a VOID stub — never scoped (placeholder spec/plan), no work performed. Premise already satisfied: Garden/Baggageclaim/TSA/beacon/gardenruntime are fully removed (0 refs), 0 stale flags, and the legacy-cleanup theme is covered by 5 completed tracks (legacy-cleanup-20260210, deprecate_old_code_paths_20260305, dead_code_cleanup_20260310, deprecate_old_agent_paths_and_update_tests_20260327, deprecate-produces-registry-image). Remaining PVC/SPDY cleanup is owned by its own track._
 
 ---
 
