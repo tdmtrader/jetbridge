@@ -1,0 +1,4 @@
+Supporting fix for k8s_runtime_behavioral_spec_20260331 Phase 2.
+Pre-existing flake in process_test.go (leaked goroutine, ignored Get error -> 'pods "" not found')
+surfaced by the newly-added OE specs shifting Ginkgo spec ordering. Misattributed to OE-10 spec
+via GinkgoRecover. Fixed by guarding the second-phase Get. Deterministic over 25x full-suite runs.
