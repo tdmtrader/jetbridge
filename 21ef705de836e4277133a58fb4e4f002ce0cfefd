@@ -1,0 +1,21 @@
+PHASE 2 CHECKPOINT — k8s_runtime_behavioral_spec_20260331 (P1 Missing Test Cases)
+
+Status: COMPLETE & VERIFIED. SC-11 required live-cluster verification, performed against theborg.
+
+Tasks:
+  SC-07  sidecar log streaming mechanics      (unit, behavioral_runtime_spec_test.go)
+  SC-11  sidecar log-stream 5s bounded wait   (LIVE, live_sidecar_logstream_test.go)
+  OE-09  observability event deduplication    (unit, behavioral_runtime_spec_test.go)
+
+Work commits:
+  6f506fd8cb  fix: leaked-goroutine flake in process_test.go (surfaced by the added specs)
+  ef6e458fa3  test: SC-11 live test (+ plan/cgx)
+
+Verification (agent-run 2026-06-07):
+  SC-11 live on theborg (ns jetbridge-sc11-test): control 1.11s / test 6.90s / delta 5.79s
+        -> 5s bound engaged, returns in ~6.9s vs a 86400s sidecar (no hang)
+  go vet -tags live ./atc/worker/jetbridge/  -> clean
+  non-live suite: 326/326, deterministic over 25x ginkgo --repeat (flake fixed)
+
+Coverage: Section 3 Sidecar 11/11 Full; overall 79/87 Full (91%), 0 Missing.
+Remaining: Phase 4 optional P3 (PE-02, PE-09, RF-14, RF-15).
