@@ -79,14 +79,14 @@ Simplify the ATC's role: locator becomes a hint, registration calls the daemon.
 
 With daemon-mediated resolution, cached volumes can be served directly.
 
-- [~] Change `SkipResourceCache()` to return `false`
-- [ ] Ensure `LookupVolume` for cached resource returns a volume with the correct key
-- [ ] Daemon serves cached volumes via /resolve (they exist on hostPath from previous builds)
-- [ ] Verify cache hit flow: get step finds cache → no pod created → downstream task init container calls daemon → daemon serves from local disk
-- [ ] Add test: cached resource version is served without re-executing resource script
-- [ ] Add test: cache hit followed by daemon-mediated fetch in downstream step
-- [ ] Measure performance improvement: compare pipeline duration with/without cache hits
-- [ ] Phase 6 verification: cache hits work end-to-end, pipeline is faster for repeated versions
+- [x] Change `SkipResourceCache()` to return `false` 2c87d6747c (`worker.go:93`; 3 tests assert false)
+- [x] Ensure `LookupVolume` for cached resource returns a volume with the correct key ae394dac96 (`worker.go:274` + `ResourceCacheKey`)
+- [x] Daemon serves cached volumes via /resolve ae394dac96 (`HEAD/GET /resource-caches/{key}` + `ProbeResourceCache`)
+- [x] Verify cache hit flow: get finds cache → no pod → daemon serves — `get_step.go:374` `retrieveFromCache` + `GetStepCacheHits`; green in k8s-e2e #192
+- [x] Add test: cached resource version served without re-executing — `resource_cache_key_test.go`, `daemon_client_test.go`, `k8s_behavioral/caching_test.go`
+- [x] Add test: cache hit followed by daemon-mediated fetch downstream — `k8s/integration` artifact-passing + caching specs (green #192)
+- [ ] Measure performance improvement: compare pipeline duration with/without cache hits — *optional, not yet quantified*
+- [x] Phase 6 verification: cache hits work end-to-end — green on k8s-e2e #192 (full plain suite incl. resource/caching specs). *(perf delta not quantified — see above)*
 
 ---
 
@@ -94,13 +94,13 @@ With daemon-mediated resolution, cached volumes can be served directly.
 
 Remove dead code, add observability, harden edge cases.
 
-- [ ] Remove old `daemonSetFetchCommand` and related helper functions if not done in Phase 4
-- [ ] Remove `resolveDaemonPodIP` and EndpointSlice lookup from container.go (moved to daemon)
-- [ ] Add daemon health check endpoint (`GET /healthz`) for K8s liveness/readiness probes
-- [ ] Add Prometheus metrics to daemon: resolve_requests_total, resolve_duration_seconds, peer_fetch_total
-- [ ] Handle daemon pod restart: re-scan hostPath, re-populate registry
-- [ ] Handle node drain: artifacts on drained node are fetched from peers by consumers on other nodes
-- [ ] Run full CI pipeline: build-and-vet, unit-tests, k8s-runtime-tests, k8s-live-tests
-- [ ] Phase 7 verification: clean CI, no dead code, observability in place
+- [x] Remove old `daemonSetFetchCommand` and related helpers c81d366e7 (confirmed: no references remain)
+- [x] Remove `resolveDaemonPodIP` and EndpointSlice lookup from container.go c81d366e7 (moved to daemon)
+- [x] Add daemon health check endpoint (`GET /healthz`) 9470c1ded7 (`server.go` mux)
+- [x] Add Prometheus metrics to daemon: resolve_requests_total, resolve_duration_seconds, peer_fetch_total 9495ece8e6 (`metrics.go` + `GET /metrics`, TDD)
+- [x] Handle daemon pod restart: re-scan hostPath, re-populate registry e6332ed2d (startup filesystem scan + `/resolve` fallback scan)
+- [x] Handle node drain: artifacts fetched from peers by consumers on other nodes 61d1cd0fc (peer discovery + fetch)
+- [x] Run full CI pipeline — k8s-e2e #192 GREEN (build-and-vet, unit, k8s-integration incl. resource caching + artifact passing; mTLS variant also green)
+- [x] Phase 7 verification: clean CI, no dead code, observability in place — metrics added (9495ece8e6), dead code removed, CI green
 
 ---
