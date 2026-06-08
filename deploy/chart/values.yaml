@@ -172,6 +172,26 @@ kubernetes:
   # When set, this secret is added to pods that pull resource type images.
   imageRegistrySecret: ""
 
+  # -- Kubernetes credential manager.
+  # Resolves pipeline ((vars)) from Kubernetes Secrets instead of static
+  # set-pipeline vars (-v/-l), which are wiped on every `fly set-pipeline`
+  # that omits them. Lookup namespace is "<namespacePrefix><team>"
+  # (e.g. team "main" -> "concourse-main"); secret name is tried as
+  # "<pipeline>.<var>" then "<var>"; the value is read from the secret's
+  # "value" data key. Example for ((github-token)) on team main:
+  #   kubectl create ns concourse-main
+  #   kubectl -n concourse-main create secret generic github-token \
+  #     --from-literal=value=<PAT>
+  # The web ServiceAccount already has cluster-wide secrets:get via
+  # rbac.yaml (requires rbac.create=true), so no extra RBAC is needed.
+  credentialManager:
+    # -- Enable the in-cluster Kubernetes credential manager
+    # (passes --kubernetes-in-cluster to the web command).
+    enabled: false
+    # -- Namespace prefix for secret lookups. Lookup namespace is
+    # "<namespacePrefix><team>". Default "concourse-".
+    namespacePrefix: "concourse-"
+
 # -- Explicit task cache backend selector.
 # Valid values: artifact, pvc, hostpath, emptydir.
 # When empty (default), auto-detects based on which config is set:

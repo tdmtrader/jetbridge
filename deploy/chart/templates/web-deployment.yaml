@@ -179,6 +179,13 @@ spec:
             - --kubernetes-artifact-daemon-tls-ca-cert=/etc/concourse/daemon-tls/ca.crt
             {{- end }}
             {{- end }}
+            # Kubernetes credential manager (resolve ((vars)) from k8s Secrets)
+            {{- if .Values.kubernetes.credentialManager.enabled }}
+            - --kubernetes-in-cluster
+            {{- if .Values.kubernetes.credentialManager.namespacePrefix }}
+            - --kubernetes-namespace-prefix={{ .Values.kubernetes.credentialManager.namespacePrefix }}
+            {{- end }}
+            {{- end }}
             # Tracing
             {{- if .Values.tracing.otlpAddress }}
             - --tracing-otlp-address={{ .Values.tracing.otlpAddress }}
