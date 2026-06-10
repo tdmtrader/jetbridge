@@ -104,6 +104,12 @@ var (
 var _ = postgresrunner.GinkgoRunner(&postgresRunner)
 
 var _ = BeforeEach(func() {
+	// atc.EnableGlobalResources is package-global state; specs that enable it
+	// in their own BeforeEach would otherwise leak it into every later spec in
+	// the same process, flaking specs that depend on the unique-history default
+	// (e.g. scope deprecation, which is skipped for global scopes).
+	atc.EnableGlobalResources = false
+
 	logger = lagertest.NewTestLogger("test")
 
 	postgresRunner.CreateTestDBFromTemplate()
