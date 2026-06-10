@@ -590,126 +590,24 @@ avoid it.
 
 ### Running Kubernetes tests
 
-Kubernetes-related testing are all end-to-end, living under `topgun/k8s`. They
-require access to a real Kubernetes cluster with access granted through a
-properly configured `~/.kube/config` file.
-
-[`kind`] is a great choice when it comes to running a local Kubernetes cluster -
-all you need is `docker`, and the `kind` CLI. If you wish to run the tests with
-a high degree of concurrency, it's advised to have multiple kubernetes nodes.
-This can be achieved with the following `kind` config:
-
-```yaml
-kind: Cluster
-apiVersion: kind.x-k8s.io/v1alpha4
-nodes:
-- role: control-plane
-- role: worker
-- role: worker
-- role: worker
-- role: worker
-```
-
-
-With the cluster up, the next step is to have a proper [Tiller] setup (the tests
-still run with Helm 2):
-
+The Kubernetes runtime has two end-to-end suites, both run against an
+ephemeral K3s cluster provisioned via testcontainers (Docker is the only
+cluster prerequisite):
 
 ```bash
-kubectl create serviceaccount \
-	--namespace kube-system \
-	tiller
+# integration suite (topgun/k8s/integration/)
+make test-k8s-integration
 
-kubectl create clusterrolebinding \
-	tiller-cluster-rule \
-	--clusterrole=cluster-admin \
-	--serviceaccount=kube-system:tiller
-
-helm init \
-	--service-account tiller \
-	--upgrade
+# full behavioral suite (topgun/k8s_behavioral/)
+make test-k8s-behavioral
 ```
 
+See [TESTING.md](TESTING.md) for image build steps and timing expectations.
 
-The tests require a few environment variables to be set:
-
-- `CONCOURSE_IMAGE_TAG` or `CONCOURSE_IMAGE_DIGEST`: the tag or digest to use
-when deploying Concourse in the k8s cluster
-- `CONCOURSE_IMAGE_NAME`: the name of the image to use when deploying Concourse
-to the Kubernetes cluster
-- `HELM_CHARTS_DIR`: path to a clone of the [`helm/charts`][helm-charts] repo. This is used
-to define the postgres chart that Concourse depends on.
-- `CONCOURSE_CHART_DIR`: location in the filesystem where a copy of [`the Concourse Helm
-chart`][concourse-helm-chart] exists.
-
-
-With those set, go to `topgun/k8s` and run Ginkgo:
-
-```sh
-# run the test cases serially
-ginkgo .
-
-# run the test cases with a concurrency level of 16
-ginkgo -nodes=16 .
-```
-
-[`kind`]: https://kind.sigs.k8s.io/
-[Tiller]: https://v2.helm.sh/docs/install/
-
-### A note on `topgun`
-
-The `topgun/` suite is quite heavyweight and we don't currently expect most
-contributors to run or modify it. It's also kind of hard for ~~mere mortals~~
-external contributors to run anyway.
-
-To run `topgun`, a BOSH director up and running is required - the only
-requirement with regards to where BOSH sits is having the ability to reach the
-instance that it creates (the tests make requests to them).
-
-You can have a local setup by leveraging the `dev` scripts in
-the [concourse-bosh-release] repo:
-
-[concourse-bosh-release]: https://github.com/concourse/concourse-bosh-release
-
-```bash
-# clone the concourse-bosh-release repository
-#
-git clone https://github.com/concourse/concourse-bosh-release cbr && cd $_
-
-
-# run the setup script
-#
-./dev/vbox/setup
-```
-
-`setup` will take care of creating the BOSH director (aliased as `vbox`),
-uploading basic releases that we need for testing, as well as a BOSH Lite
-stemcell.
-
-With the director up, we can head to the tests.
-
-```bash
-# fetch the concourse repo, and get into it
-#
-git clone https://github.com/concourse/concourse concourse && cd $_
-
-# get inside the topgun suite that you want to work on.
-#
-cd ./topgun/$SUITE
-
-# run the tests of that suite
-#
-BOSH_ENVIRONMENT=vbox ginkgo -v .
-```
-
-ps.: you must have already installed the BOSH cli first.
-
-[concourse-helm-chart]: https://github.com/concourse/concourse-chart/blob/master/README.md
 [coc]: https://github.com/concourse/concourse/blob/master/CODE_OF_CONDUCT.md
 [discord]: https://discord.gg/MeRxXKW
 [docs]: https://github.com/concourse/docs
 [fav-commit]: https://dhwthompson.com/2019/my-favourite-git-commit
-[helm-charts]: https://github.com/helm/charts/blob/master/README.md
 [how-to-fork]: https://help.github.com/articles/fork-a-repo/
 [how-to-pr]: https://help.github.com/articles/creating-a-pull-request-from-a-fork/
 [sb-changes]: https://medium.com/@kentbeck_7670/bs-changes-e574bc396aaa

@@ -1,8 +1,6 @@
 package integration_test
 
 import (
-	"os"
-	"path/filepath"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -24,15 +22,7 @@ var _ = Describe("K8s Pipeline E2E", func() {
 	// - volume passing between tasks
 	// - mock resource put/get round-trip
 	PIt("runs the full K8s validation pipeline with real resource types", Label("e2e"), func() {
-		// Use the pipeline file from topgun/k8s/pipelines/
-		repoRoot := os.Getenv("CONCOURSE_REPO_ROOT")
-		if repoRoot == "" {
-			// Fall back to finding it relative to the test binary.
-			repoRoot = filepath.Join("..", "..", "..")
-		}
-		pipelineFile := filepath.Join(repoRoot, "topgun", "k8s", "pipelines", "k8s-validation.yml")
-		Expect(pipelineFile).To(BeAnExistingFile())
-
+		pipelineFile := writePipelineFile("k8s-validation.yml", k8sValidationPipeline)
 		setAndUnpausePipeline(pipelineFile)
 
 		By("triggering the validation job")
@@ -417,3 +407,103 @@ jobs:
 		)
 	})
 })
+
+// k8sValidationPipeline is the full validation pipeline previously kept at
+// topgun/k8s/pipelines/k8s-validation.yml; inlined when the orphaned
+// topgun/k8s root suite and its fixture dirs were removed.
+const k8sValidationPipeline = `
+# K8s Runtime Validation Pipeline
+#
+# This pipeline validates that Concourse pipelines with real resource types
+# work correctly on the Kubernetes runtime. It exercises:
+#   1. Git resource (clone)
+#   2. Registry image resource (pull and use as task image)
+#   3. Task execution with inputs/outputs
+#   4. Volume passing between tasks
+#   5. Mock resource put/get (resource protocol round-trip)
+
+resources:
+- name: concourse-examples
+  type: git
+  source:
+    uri: https://github.com/concourse/examples.git
+    branch: master
+
+- name: alpine
+  type: registry-image
+  source:
+    repository: alpine
+    tag: "3.19"
+
+- name: test-output
+  type: mock
+  source:
+    mirror_self: true
+
+jobs:
+- name: validate-k8s-runtime
+  plan:
+  # Stage 1: Git clone
+  - get: concourse-examples
+    params:
+      depth: 1
+
+  # Stage 2: Pull container image
+  - get: alpine
+
+  # Stage 3: Task using git input, producing output, with pulled image
+  - task: process-source
+    image: alpine
+    config:
+      platform: linux
+      inputs:
+      - name: concourse-examples
+      outputs:
+      - name: results
+      run:
+        path: sh
+        args:
+        - -c
+        - |
+          set -ex
+          # Verify git clone worked
+          test -d concourse-examples/.git
+          test -f concourse-examples/README.md
+
+          # Report environment
+          echo "hostname: $(hostname)"
+          echo "git files: $(find concourse-examples -maxdepth 1 -type f | wc -l | tr -d ' ')"
+
+          # Create output for next stage
+          echo "processed at $(date -u +%Y-%m-%dT%H:%M:%SZ)" > results/timestamp.txt
+          cp concourse-examples/README.md results/
+          ls -la results/
+
+  # Stage 4: Task consuming previous task's output (volume passing)
+  - task: verify-output
+    image: alpine
+    config:
+      platform: linux
+      inputs:
+      - name: results
+      run:
+        path: sh
+        args:
+        - -c
+        - |
+          set -ex
+          # Verify volume passing worked
+          test -f results/timestamp.txt
+          test -f results/README.md
+          cat results/timestamp.txt
+          echo "volume-passing-verified"
+
+  # Stage 5: Put to mock resource (validates put step protocol)
+  - put: test-output
+    params:
+      version: k8s-validated
+
+  # Stage 6: Get the version we just put
+  - get: test-output
+    passed: [validate-k8s-runtime]
+`
