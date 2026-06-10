@@ -23,6 +23,13 @@
 
 ## Frustrations & Friction
 
+- [2026-06-10] Second audit miss caught during Phase 3: `atc/db/migration/cli/`
+  was flagged certain-dead ("zero references from binaries"), but the documented
+  developer script `atc/scripts/create-migration` builds it (`go build ... ./db/migration/cli`).
+  The verification grep used `--include="*.sh"` and missed the extensionless
+  script. Kept the CLI. Lesson: when sweeping for consumers of a path, do not
+  constrain grep by file extension — shell scripts in this repo frequently have
+  no extension (atc/scripts/*, hack/*).
 - [2026-06-10] Audit miss caught during Phase 1: the spec claimed
   `topgun/k8s/pipelines/` was referenced only by the deleted root suite, but the
   LIVE integration suite's pending spec (`k8s_pipeline_e2e_test.go` PIt

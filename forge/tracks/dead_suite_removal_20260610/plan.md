@@ -39,23 +39,25 @@
 
 ## Phase 3: Small dead-file sweep
 
-- [ ] Task: Delete `vars/varsfakes/` AND remove the generate directives in
+- [x] Task: Delete `vars/varsfakes/` AND remove the generate directives in 312e74c48d
       `vars/variables.go` (lines 8–10: `//go:generate ... counterfeiter` +
       `//counterfeiter:generate . Variables`); verify `go generate ./vars/...`
       no longer recreates the fake and `ginkgo ./vars/` is green
-- [ ] Task: Delete `atc/cmd/atc/` (vestigial entrypoint; zero references)
-- [ ] Task: Delete `skymarshal/logger/` (zero importers)
-- [ ] Task: Delete `atc/db/migration/cli/` and update the stale pointer at
-      `CONTRIBUTING.md:395`
-- [ ] Task: Delete `Dockerfile.testrunner` (zero references; active runners live in deploy/)
-- [ ] Task: Delete `hack/bosh-topgun` (BOSH-era script)
-- [ ] Task: `git rm package-lock.json` (build is Yarn-only via corepack +
+- [x] Task: Delete `atc/cmd/atc/` (vestigial entrypoint; zero references) 312e74c48d
+- [x] Task: Delete `skymarshal/logger/` (zero importers) 312e74c48d
+- [x] ~~Task: Delete `atc/db/migration/cli/` and update the stale pointer at
+      `CONTRIBUTING.md:395`~~ — SKIPPED: not dead. The documented
+      `atc/scripts/create-migration` script builds this CLI (audit grep missed
+      the extensionless script). CONTRIBUTING.md pointer is accurate; kept.
+- [x] Task: Delete `Dockerfile.testrunner` (zero references; active runners live in deploy/) 312e74c48d
+- [x] Task: Delete `hack/bosh-topgun` (BOSH-era script) 312e74c48d
+- [x] Task: `git rm package-lock.json` (build is Yarn-only via corepack + 312e74c48d
       yarn.lock in Dockerfile.build); add a `package-lock.json` ignore entry if
       npm regenerates it locally
-- [ ] Task: Delete `atc/integration/team_migration_test.go` (XDescribe'd since the
+- [x] Task: Delete `atc/integration/team_migration_test.go` (XDescribe'd since the 312e74c48d
       ATC 3.13 era; `randomString` helper has no other callers);
       `ginkgo ./atc/integration/` green
-- [ ] Task: Phase 3 Manual Verification — `go build ./... && go vet ./... && make test-quick`
+- [~] Task: Phase 3 Manual Verification — `go build ./... && go vet ./... && make test-quick`
 
 ---
 
