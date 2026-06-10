@@ -37,7 +37,7 @@
 
 ---
 
-## Phase 3: Small dead-file sweep
+## Phase 3: Small dead-file sweep [checkpoint: 312e74c48d]
 
 - [x] Task: Delete `vars/varsfakes/` AND remove the generate directives in 312e74c48d
       `vars/variables.go` (lines 8–10: `//go:generate ... counterfeiter` +
@@ -57,7 +57,7 @@
 - [x] Task: Delete `atc/integration/team_migration_test.go` (XDescribe'd since the 312e74c48d
       ATC 3.13 era; `randomString` helper has no other callers);
       `ginkgo ./atc/integration/` green
-- [~] Task: Phase 3 Manual Verification — `go build ./... && go vet ./... && make test-quick`
+- [x] Task: Phase 3 Manual Verification — `go build ./... && go vet ./... && make test-quick` 312e74c48d
 
 ---
 
