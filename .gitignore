@@ -45,3 +45,4 @@ worker/runtime/integration/sample/sample
 
 # Forge orchestrator logs
 forge/.orchestrator/
+package-lock.json
