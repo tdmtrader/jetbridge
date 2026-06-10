@@ -6,7 +6,7 @@
 
 ## Phase 1: Orphaned topgun/k8s root suite
 
-- [ ] Task: Delete the 15 `package k8s` test files directly in `topgun/k8s/`
+- [x] Task: Delete the 15 `package k8s` test files directly in `topgun/k8s/` 5e811b420b
       (`k8s_suite_test.go`, `container_limits_test.go`, `dns_proxy_test.go`,
       `ephemeral_worker_test.go`, `external_postgres_test.go`,
       `external_worker_test.go`, `https_web_tls_termination_test.go`,
@@ -14,13 +14,13 @@
       `mainteam_role_test.go`, `prometheus_test.go`, `tsa_node_port_test.go`,
       `web_scaling_test.go`, `worker_lifecycle_test.go`) — do NOT touch
       `topgun/k8s/integration/`
-- [ ] Task: Delete fixture dirs `topgun/k8s/pipelines/`, `topgun/k8s/certs/`, and
+- [x] Task: Delete fixture dirs `topgun/k8s/pipelines/`, `topgun/k8s/certs/`, and 5e811b420b
       `topgun/tasks/` (referenced only by the deleted suite — verified via repo-wide grep)
-- [ ] Task: Keep `topgun/exec.go` / `topgun/fly.go`; verify live suites still
+- [x] Task: Keep `topgun/exec.go` / `topgun/fly.go`; verify live suites still 5e811b420b
       compile: `go vet ./topgun/...`
-- [ ] Task: Sweep for dangling references: `git grep -l "topgun/k8s\b" -- ':!topgun/k8s/integration'`
+- [x] Task: Sweep for dangling references: `git grep -l "topgun/k8s\b" -- ':!topgun/k8s/integration'` 5e811b420b
       across Makefile, deploy/, docs, TESTING.md; fix any hits
-- [ ] Task: Phase 1 Manual Verification — `go build ./... && make test-quick`
+- [~] Task: Phase 1 Manual Verification — `go build ./... && make test-quick`
 
 ---
 
