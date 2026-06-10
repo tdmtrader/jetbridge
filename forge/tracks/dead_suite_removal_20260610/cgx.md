@@ -73,4 +73,12 @@
 
 ## Insights & Suggestions
 
+- [2026-06-10] Phase 2 parity record: all 10 standalone cmd/concourse-mcp tools
+  (abort_build, get_build, get_build_log, get_pipeline, list_builds, list_jobs,
+  list_pipelines, pause_pipeline, trigger_job, unpause_pipeline) are present in
+  the embedded atc/api/mcpserver/tools.go (grep count 1 each), which adds ~9
+  more (check_resource, copy_resource_versions, get_build_plan, get_info,
+  get_job, list_resources, list_resource_versions, list_teams,
+  list_deprecated_scopes). Standalone server deleted as strictly superseded.
+
 ---

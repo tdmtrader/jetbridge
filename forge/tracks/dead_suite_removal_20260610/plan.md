@@ -24,16 +24,16 @@
 
 ---
 
-## Phase 2: Superseded standalone MCP server
+## Phase 2: Superseded standalone MCP server [checkpoint: e68f39c840]
 
-- [ ] Task: Re-confirm tool parity superset (embedded `atc/api/mcpserver/tools.go`
+- [x] Task: Re-confirm tool parity superset (embedded `atc/api/mcpserver/tools.go` e68f39c840
       covers all 10 standalone tools: abort_build, get_build, get_build_log,
       get_pipeline, list_builds, list_jobs, list_pipelines, pause_pipeline,
       trigger_job, unpause_pipeline) — one-command grep check, record output in cgx.md
-- [ ] Task: Delete `cmd/concourse-mcp/` (main.go + mcpserver/ + mcpserverfakes/)
-- [ ] Task: Sweep for references: `git grep -n "concourse-mcp"` across the repo
+- [x] Task: Delete `cmd/concourse-mcp/` (main.go + mcpserver/ + mcpserverfakes/) e68f39c840
+- [x] Task: Sweep for references: `git grep -n "concourse-mcp"` across the repo e68f39c840
       (build scripts, deploy/, docs, .mcp.json) — fix any hits
-- [ ] Task: Phase 2 Manual Verification — `go build ./... && ginkgo ./atc/api/mcpserver/`
+- [x] Task: Phase 2 Manual Verification — `go build ./... && ginkgo ./atc/api/mcpserver/` e68f39c840
 
 ---
 
