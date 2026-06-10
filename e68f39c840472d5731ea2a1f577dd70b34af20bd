@@ -1,0 +1,6 @@
+dead_suite_removal_20260610 Phase 2 verification report:
+- parity: all 10 standalone tools present in embedded atc/api/mcpserver (grep-verified)
+- go build ./... OK
+- ginkgo ./atc/api/mcpserver/: 33/33 green
+- ref sweep: only remaining 'concourse-mcp' is the embedded server's MCP identity string (kept)
+- user approved checkpoint 2026-06-10
