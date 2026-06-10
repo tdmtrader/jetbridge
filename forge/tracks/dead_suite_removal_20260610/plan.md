@@ -4,7 +4,7 @@
 > Verification baseline: `go build ./...` + `go vet ./...` (ignore the pre-existing
 > `atc/exec/artifact_input_step_test.go` vet failure) + targeted suites per phase.
 
-## Phase 1: Orphaned topgun/k8s root suite
+## Phase 1: Orphaned topgun/k8s root suite [checkpoint: 5e811b420b]
 
 - [x] Task: Delete the 15 `package k8s` test files directly in `topgun/k8s/` 5e811b420b
       (`k8s_suite_test.go`, `container_limits_test.go`, `dns_proxy_test.go`,
@@ -20,7 +20,7 @@
       compile: `go vet ./topgun/...`
 - [x] Task: Sweep for dangling references: `git grep -l "topgun/k8s\b" -- ':!topgun/k8s/integration'` 5e811b420b
       across Makefile, deploy/, docs, TESTING.md; fix any hits
-- [~] Task: Phase 1 Manual Verification — `go build ./... && make test-quick`
+- [x] Task: Phase 1 Manual Verification — `go build ./... && make test-quick` 5e811b420b
 
 ---
 
