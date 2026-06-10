@@ -63,10 +63,10 @@
 
 ## Phase 4: Final verification & CI
 
-- [ ] Task: Full sweep: `git grep -nE "concourse-mcp|bosh-topgun|varsfakes|skymarshal/logger|migration/cli|Dockerfile.testrunner"`
+- [x] Task: Full sweep: `git grep -nE "concourse-mcp|bosh-topgun|varsfakes|skymarshal/logger|migration/cli|Dockerfile.testrunner"` 977d40dadf
       returns no active-code hits (forge/ archive + memory notes excepted)
-- [ ] Task: `make test-quick` + `make test-fly-integration` green locally
-- [ ] Task: Compile-check both live K8s suites: `go vet ./topgun/...`
+- [x] Task: `make test-quick` + `make test-fly-integration` green locally 977d40dadf
+- [x] Task: Compile-check both live K8s suites: `go vet ./topgun/...` 977d40dadf
 - [ ] Task: Commit (conventional: `chore(cleanup): remove dead topgun/k8s root suite, standalone MCP server, orphaned files`),
       push, and confirm the `k8s-e2e` pipeline (integration + behavioral) goes green
 - [ ] Task: Phase 4 Manual Verification

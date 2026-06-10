@@ -47,6 +47,13 @@
 
 ## Patterns Observed
 
+- [2026-06-10] THIRD pre-existing test failure surfaced by this track's gates
+  (977d40dadf): fly/integration workers specs expected the old upstream
+  ordering, but JetBridge's fly workers groups running → outdated → stalled.
+  Reproduced at baseline 92a2fbda3f via worktree before fixing. Running
+  full local tiers evidently hasn't been routine — three stale-expectation
+  failures were sitting on the branch (migration constant, global-flag leak,
+  fly workers ordering).
 - [2026-06-10] Phase 1 verification surfaced TWO unrelated pre-existing failures
   in `make test-quick`, both attributed via a clean-HEAD worktree
   (`git worktree add /tmp/headcheck HEAD` → run same suite there):
