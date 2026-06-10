@@ -6,6 +6,12 @@
 
 ---
 
+## [ ] Track: Dead Suite Removal
+*Link: [./tracks/dead_suite_removal_20260610/](./tracks/dead_suite_removal_20260610/)*
+*Created 2026-06-10 from a repo-wide cleanup audit. Removes ~5k LOC of verified-dead code: the orphaned `topgun/k8s/` root suite (TSA/GKE-era, unwired from Makefile/CI) + its fixtures, the standalone `cmd/concourse-mcp` (superseded by the embedded `atc/api/mcpserver`, tool parity verified), and 8 small orphaned files (varsfakes, atc/cmd/atc, skymarshal/logger, migration/cli, Dockerfile.testrunner, hack/bosh-topgun, package-lock.json, XDescribe'd team-migration test). No functional impact; live suites `topgun/k8s/integration/` + `topgun/k8s_behavioral/` preserved.*
+
+---
+
 ## [x] Track: k8s-e2e CI reliability (stale-image + OOM)
 *Link: [./archive/ci_reliability_k8s_e2e_20260530/](./archive/ci_reliability_k8s_e2e_20260530/)*
 *Completed 2026-05-31 — source decoupled from toolchain image (build from `repo` git resource, no tag bump needed); `attempts: 2` added; validated via #181 + #102/#103. Phase 3 (digest pinning, OOM sizing) deferred as out-of-scope future hardening.*
