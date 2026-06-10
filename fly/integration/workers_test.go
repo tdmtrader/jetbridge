@@ -158,11 +158,11 @@ var _ = Describe("workers", func() {
 				Data: []ui.TableRow{
 					{{Contents: "worker-1"}, {Contents: "1"}, {Contents: "platform1"}, {Contents: "tag1"}, {Contents: "team-1"}, {Contents: "running"}, {Contents: "4.5.6"}, {Contents: "2d"}},
 					{{Contents: "worker-2"}, {Contents: "0"}, {Contents: "platform2"}, {Contents: "tag2, tag3"}, {Contents: "team-1"}, {Contents: "running"}, {Contents: "4.5.6"}, {Contents: "1d"}},
-					{{Contents: "worker-3"}, {Contents: "10"}, {Contents: "platform3"}, {Contents: "none", Color: color.New(color.Faint)}, {Contents: "none", Color: color.New(color.Faint)}, {Contents: "stalled"}, {Contents: "4.5.6"}, {Contents: "10h3m"}},
-					{{Contents: "worker-5"}, {Contents: "5"}, {Contents: "platform5"}, {Contents: "none", Color: color.New(color.Faint)}, {Contents: "none", Color: color.New(color.Faint)}, {Contents: "stalled"}, {Contents: "4.5.6"}, {Contents: "n/a", Color: color.New(color.Faint)}},
 					{{Contents: "worker-6"}, {Contents: "0"}, {Contents: "platform2"}, {Contents: "tag1"}, {Contents: "team-1"}, {Contents: "running"}, {Contents: "1.2.3", Color: color.New(color.FgRed)}, {Contents: "n/a", Color: color.New(color.Faint)}},
 					{{Contents: "worker-7"}, {Contents: "0"}, {Contents: "platform2"}, {Contents: "tag1"}, {Contents: "team-1"}, {Contents: "running"}, {Contents: "none", Color: color.New(color.FgRed)}, {Contents: "n/a", Color: color.New(color.Faint)}},
+					{{Contents: "worker-3"}, {Contents: "10"}, {Contents: "platform3"}, {Contents: "none", Color: color.New(color.Faint)}, {Contents: "none", Color: color.New(color.Faint)}, {Contents: "stalled"}, {Contents: "4.5.6"}, {Contents: "10h3m"}},
 					{{Contents: "worker-4"}, {Contents: "7"}, {Contents: "platform4"}, {Contents: "tag1"}, {Contents: "team-1"}, {Contents: "stalled"}, {Contents: "4.5.6"}, {Contents: "8h30m"}},
+					{{Contents: "worker-5"}, {Contents: "5"}, {Contents: "platform5"}, {Contents: "none", Color: color.New(color.Faint)}, {Contents: "none", Color: color.New(color.Faint)}, {Contents: "stalled"}, {Contents: "4.5.6"}, {Contents: "n/a", Color: color.New(color.Faint)}},
 				},
 			}))
 		})
@@ -354,11 +354,11 @@ var _ = Describe("workers", func() {
 					Data: []ui.TableRow{
 						{{Contents: "worker-1"}, {Contents: "1"}, {Contents: "platform1"}, {Contents: "tag1"}, {Contents: "team-1"}, {Contents: "running"}, {Contents: "4.5.6"}, {Contents: "n/a", Color: color.New(color.Faint)}, {Contents: "1"}, {Contents: "resource-1, resource-2"}},
 						{{Contents: "worker-2"}, {Contents: "0"}, {Contents: "platform2"}, {Contents: "tag2, tag3"}, {Contents: "team-1"}, {Contents: "running"}, {Contents: "4.5.6"}, {Contents: "n/a", Color: color.New(color.Faint)}, {Contents: "1"}, {Contents: "resource-1"}},
-						{{Contents: "worker-3"}, {Contents: "10"}, {Contents: "platform3"}, {Contents: "none", Color: color.New(color.Faint)}, {Contents: "none", Color: color.New(color.Faint)}, {Contents: "stalled"}, {Contents: "4.5.6"}, {Contents: "n/a", Color: color.New(color.Faint)}, {Contents: "1"}, {Contents: "none", Color: color.New(color.Faint)}},
-						{{Contents: "worker-5"}, {Contents: "5"}, {Contents: "platform5"}, {Contents: "none", Color: color.New(color.Faint)}, {Contents: "none", Color: color.New(color.Faint)}, {Contents: "stalled"}, {Contents: "4.5.6"}, {Contents: "n/a", Color: color.New(color.Faint)}, {Contents: "1"}, {Contents: "none", Color: color.New(color.Faint)}},
 						{{Contents: "worker-6"}, {Contents: "0"}, {Contents: "platform2"}, {Contents: "tag1"}, {Contents: "team-1"}, {Contents: "running"}, {Contents: "1.2.3", Color: color.New(color.FgRed)}, {Contents: "n/a", Color: color.New(color.Faint)}, {Contents: "1"}, {Contents: "none", Color: color.New(color.Faint)}},
 						{{Contents: "worker-7"}, {Contents: "0"}, {Contents: "platform2"}, {Contents: "tag1"}, {Contents: "team-1"}, {Contents: "running"}, {Contents: "none", Color: color.New(color.FgRed)}, {Contents: "n/a", Color: color.New(color.Faint)}, {Contents: "0"}, {Contents: "none", Color: color.New(color.Faint)}},
+						{{Contents: "worker-3"}, {Contents: "10"}, {Contents: "platform3"}, {Contents: "none", Color: color.New(color.Faint)}, {Contents: "none", Color: color.New(color.Faint)}, {Contents: "stalled"}, {Contents: "4.5.6"}, {Contents: "n/a", Color: color.New(color.Faint)}, {Contents: "1"}, {Contents: "none", Color: color.New(color.Faint)}},
 						{{Contents: "worker-4"}, {Contents: "7"}, {Contents: "platform4"}, {Contents: "tag1"}, {Contents: "team-1"}, {Contents: "stalled"}, {Contents: "4.5.6"}, {Contents: "n/a", Color: color.New(color.Faint)}, {Contents: "1"}, {Contents: "none", Color: color.New(color.Faint)}},
+						{{Contents: "worker-5"}, {Contents: "5"}, {Contents: "platform5"}, {Contents: "none", Color: color.New(color.Faint)}, {Contents: "none", Color: color.New(color.Faint)}, {Contents: "stalled"}, {Contents: "4.5.6"}, {Contents: "n/a", Color: color.New(color.Faint)}, {Contents: "1"}, {Contents: "none", Color: color.New(color.Faint)}},
 					},
 				}))
 			})
