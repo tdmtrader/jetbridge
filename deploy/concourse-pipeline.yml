@@ -310,7 +310,7 @@ jobs:
 
           kubectl set image deployment/concourse-web concourse-web=${IMAGE} -n cicd
           kubectl rollout restart deployment/concourse-web -n cicd
-          kubectl rollout restart daemonset/artifact-daemon -n cicd
+          kubectl rollout restart daemonset/concourse-artifact-daemon -n cicd
 
           echo "=== Rollout triggered. ==="
 
@@ -344,7 +344,7 @@ jobs:
 
           echo "=== Waiting for rollout to complete ==="
           kubectl rollout status deployment/concourse-web -n cicd --timeout=180s
-          kubectl rollout status daemonset/artifact-daemon -n cicd --timeout=180s
+          kubectl rollout status daemonset/concourse-artifact-daemon -n cicd --timeout=180s
 
           echo "=== Waiting for pods to be ready ==="
           kubectl wait --for=condition=ready pod -l app.kubernetes.io/component=web -n cicd --timeout=120s
