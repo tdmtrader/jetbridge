@@ -26,7 +26,7 @@ v8.0.1:1765921815
 "
 
 # JetBridge target version
-JETBRIDGE_VERSION=1773105501
+JETBRIDGE_VERSION=1773105503
 
 # Minimum supported source version (v6.x)
 MIN_SUPPORTED_VERSION=1601993582
