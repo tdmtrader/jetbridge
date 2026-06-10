@@ -1,0 +1,7 @@
+dead_suite_removal_20260610 Phase 1 verification report:
+- go build ./... OK
+- go vet ./topgun/... OK (live suites compile; only exec.go/fly.go/integration/behavioral remain)
+- dangling-reference sweep: zero hits outside live suites
+- make test-quick: exit 0, 74 ginkgo suites + ci-agent green
+- pre-existing failures fixed en route: 2fe8226c08 (stale jetbridgeHeadMigration), 85110f79b5 (EnableGlobalResources leak flake, 3 green seeds)
+- user approved checkpoint 2026-06-10
