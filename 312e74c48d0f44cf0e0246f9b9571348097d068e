@@ -1,0 +1,7 @@
+dead_suite_removal_20260610 Phase 3 verification report:
+- go build ./... OK; go vet: only pre-existing artifact_input_step_test.go finding
+- go generate ./vars/... no longer recreates varsfakes; ginkgo ./vars/ 99/99
+- ginkgo ./atc/integration/ 21/21 after team_migration_test.go removal
+- make test-quick: exit 0, 73 suites green
+- scope correction: atc/db/migration/cli KEPT (built by atc/scripts/create-migration)
+- user approved checkpoint 2026-06-10
