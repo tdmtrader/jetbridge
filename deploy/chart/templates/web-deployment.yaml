@@ -125,7 +125,14 @@ spec:
             - --cluster-name={{ .Values.web.clusterName }}
             - --log-level={{ .Values.web.logLevel }}
             # Auth
-            - --add-local-user={{ .Values.web.localUsers }}
+            # localUsers is a comma-separated "user:pass,user2:pass2" list, but
+            # Concourse's CLI map flag splits only on the first colon and does
+            # NOT split on commas — so emit one --add-local-user per user.
+            {{- range splitList "," .Values.web.localUsers }}
+            {{- if trim . }}
+            - --add-local-user={{ trim . }}
+            {{- end }}
+            {{- end }}
             - --main-team-local-user={{ .Values.web.mainTeamLocalUser }}
             {{- if .Values.web.tls.enabled }}
             # TLS

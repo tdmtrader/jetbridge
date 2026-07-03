@@ -26,7 +26,9 @@ web:
   # -- Log level: debug, info, error
   logLevel: info
 
-  # -- Local user credentials (user:password pairs)
+  # -- Local user credentials. Comma-separated "user:password" pairs, e.g.
+  # "admin:s3cret,ci:token". The chart emits one --add-local-user flag per
+  # pair (Concourse's CLI flag does not itself split on commas).
   localUsers: "test:test"
 
   # -- Main team local user (granted admin on the main team)

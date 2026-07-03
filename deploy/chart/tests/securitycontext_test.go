@@ -31,7 +31,8 @@ type deployment struct {
 					FSGroup      *int64 `json:"fsGroup"`
 				} `json:"securityContext"`
 				Containers []struct {
-					Name            string `json:"name"`
+					Name            string   `json:"name"`
+					Args            []string `json:"args"`
 					SecurityContext struct {
 						AllowPrivilegeEscalation *bool `json:"allowPrivilegeEscalation"`
 						ReadOnlyRootFilesystem   *bool `json:"readOnlyRootFilesystem"`
@@ -135,6 +136,58 @@ func TestPostgresContainerSecurityContext(t *testing.T) {
 	}
 	if !containsStr(c.SecurityContext.Capabilities.Drop, "ALL") {
 		t.Errorf("postgres container should drop ALL capabilities, got %v", c.SecurityContext.Capabilities.Drop)
+	}
+}
+
+// renderChartSetString is like renderChart but uses `--set-string` so values
+// containing commas (escaped as `\,`) survive helm's --set list parsing.
+func renderChartSetString(t *testing.T, sets ...string) string {
+	t.Helper()
+	if _, err := exec.LookPath("helm"); err != nil {
+		t.Skip("helm not on PATH; skipping chart render test")
+	}
+	chartDir, err := filepath.Abs("..")
+	if err != nil {
+		t.Fatalf("resolve chart dir: %v", err)
+	}
+	args := []string{"template", "test-release", chartDir}
+	for _, s := range sets {
+		args = append(args, "--set-string", s)
+	}
+	out, err := exec.Command("helm", args...).CombinedOutput()
+	if err != nil {
+		t.Fatalf("helm template failed: %v\n%s", err, out)
+	}
+	return string(out)
+}
+
+// TestWebLocalUsersSplitIntoSeparateFlags guards against the flag-parsing bug
+// where a comma-separated localUsers string was emitted as a single
+// `--add-local-user` argument. Concourse's CLI map parser splits only on the
+// first colon and does not split on commas, so a value like
+// "admin:pw,test:test" collapsed into one user "admin" whose password was the
+// entire remainder ("pw,test:test"). The chart must emit one flag per user.
+func TestWebLocalUsersSplitIntoSeparateFlags(t *testing.T) {
+	manifests := renderChartSetString(t, `web.localUsers=admin:Fish25\,test:test\,guest:guest`)
+	web := findDeployment(t, manifests, "-web")
+	if len(web.Spec.Template.Spec.Containers) == 0 {
+		t.Fatal("web Deployment has no containers")
+	}
+	args := web.Spec.Template.Spec.Containers[0].Args
+
+	want := []string{
+		"--add-local-user=admin:Fish25",
+		"--add-local-user=test:test",
+		"--add-local-user=guest:guest",
+	}
+	for _, w := range want {
+		if !containsStr(args, w) {
+			t.Errorf("web args missing %q; got %v", w, args)
+		}
+	}
+	// The whole-string single-flag form must NOT be present.
+	if containsStr(args, "--add-local-user=admin:Fish25,test:test,guest:guest") {
+		t.Error("web args still contains the un-split single --add-local-user flag")
 	}
 }
 
