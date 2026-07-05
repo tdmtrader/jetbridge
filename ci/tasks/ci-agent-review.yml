@@ -19,6 +19,7 @@ params:
   FAIL_ON_CRITICAL: "false"
   REVIEW_DIFF_ONLY: "false"
   BASE_REF: "main"
+  AGENT_REVIEW_PUBLISH_TOKEN: ""
 
 run:
   path: sh
@@ -52,3 +53,15 @@ run:
     echo "=== Review complete ==="
     echo "Review output:"
     cat "$OUTPUT_DIR/review.json" | head -50
+
+    if [ -n "${AGENT_REVIEW_PUBLISH_TOKEN:-}" ]; then
+      echo ""
+      echo "=== Publishing review to ATC ==="
+      if ci-agent publish --review "$OUTPUT_DIR/review.json"; then
+        echo "Published for build ${BUILD_ID:-unknown}"
+      else
+        echo "WARNING: failed to publish review to ATC (results still available as artifact)"
+      fi
+    else
+      echo "AGENT_REVIEW_PUBLISH_TOKEN not set; skipping publish"
+    fi
