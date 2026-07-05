@@ -54,7 +54,11 @@ run:
     echo "Review output:"
     cat "$OUTPUT_DIR/review.json" | head -50
 
-    if [ -n "${AGENT_REVIEW_PUBLISH_TOKEN:-}" ]; then
+    set +x
+    has_publish_token=false
+    [ -n "${AGENT_REVIEW_PUBLISH_TOKEN:-}" ] && has_publish_token=true
+    set -x
+    if [ "$has_publish_token" = true ]; then
       echo ""
       echo "=== Publishing review to ATC ==="
       if ci-agent publish --review "$OUTPUT_DIR/review.json"; then
