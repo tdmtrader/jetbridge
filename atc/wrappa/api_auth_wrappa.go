@@ -81,7 +81,8 @@ func (wrappa *APIAuthWrappa) Wrap(handlers rata.Handlers) rata.Handlers {
 			atc.DeleteWorker,
 			atc.ListTeamBuilds,
 			atc.GetUser,
-			atc.MCPEndpoint:
+			atc.MCPEndpoint,
+			atc.GetBuildAgentReviews:
 			newHandler = auth.CheckAuthenticationHandler(handler, rejector)
 
 		// unauthenticated / delegating to handler (validate token if provided)
@@ -99,7 +100,8 @@ func (wrappa *APIAuthWrappa) Wrap(handlers rata.Handlers) rata.Handlers {
 			atc.MainJobBadge,
 			atc.GetWall,
 			atc.GetOpenIDConfiguration,
-			atc.GetSigningKeys:
+			atc.GetSigningKeys,
+			atc.SubmitAgentReview:
 			newHandler = auth.CheckAuthenticationIfProvidedHandler(handler, rejector)
 
 		// admin
@@ -161,6 +163,7 @@ func (wrappa *APIAuthWrappa) Wrap(handlers rata.Handlers) rata.Handlers {
 			atc.GetAgentFeedbackSummary,
 			atc.ClassifyAgentVerdict,
 			atc.GetAgentReviewFindings,
+			atc.ListTeamAgentReviews,
 			atc.CopyResourceVersions,
 			atc.ListDeprecatedScopes:
 			newHandler = auth.CheckAuthorizationHandler(handler, rejector)
