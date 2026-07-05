@@ -66,6 +66,12 @@ rules:
   - apiGroups: ["apps"]
     resources: ["deployments"]
     verbs: ["get", "list", "watch", "patch", "update"]
+  # Self-upgrade/verify-upgrade pipeline runs `kubectl rollout status/restart`
+  # against the artifact-daemon DaemonSet. rollout status needs list/watch;
+  # without them the check hangs until timeout and the job errors.
+  - apiGroups: ["apps"]
+    resources: ["daemonsets"]
+    verbs: ["get", "list", "watch", "patch", "update"]
   # EndpointSlice discovery for artifact daemon peer resolution.
   # DaemonClient uses this to find daemon pod IPs for cross-node
   # artifact streaming and resource cache probing. Read-only.
