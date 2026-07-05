@@ -35,11 +35,12 @@ func TestParseSubmission(t *testing.T) {
 
 func TestParseSubmissionRejectsMissingFields(t *testing.T) {
 	cases := map[string]string{
-		"no build_id": `{"review": ` + validReview + `}`,
-		"no review":   `{"build_id": 42}`,
-		"no repo":     `{"build_id": 42, "review": {"schema_version":"1.0.0","metadata":{"commit":"abc"},"score":{"value":1},"summary":"x"}}`,
-		"no commit":   `{"build_id": 42, "review": {"schema_version":"1.0.0","metadata":{"repo":"r"},"score":{"value":1},"summary":"x"}}`,
-		"bad json":    `{`,
+		"no build_id":       `{"review": ` + validReview + `}`,
+		"negative build_id": `{"build_id": -1, "review": ` + validReview + `}`,
+		"no review":         `{"build_id": 42}`,
+		"no repo":           `{"build_id": 42, "review": {"schema_version":"1.0.0","metadata":{"commit":"abc"},"score":{"value":1},"summary":"x"}}`,
+		"no commit":         `{"build_id": 42, "review": {"schema_version":"1.0.0","metadata":{"repo":"r"},"score":{"value":1},"summary":"x"}}`,
+		"bad json":          `{`,
 	}
 	for name, body := range cases {
 		if _, err := reviews.ParseSubmission([]byte(body)); err == nil {
@@ -84,5 +85,96 @@ func TestMemoryStoreUpsert(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].Score != 9 {
 		t.Errorf("upsert did not replace: %+v", got)
+	}
+}
+
+func TestMemoryStoreUpsertDistinctKeys(t *testing.T) {
+	store := reviews.NewMemoryStore()
+	rec := &reviews.StoredReview{BuildID: 1, Repo: "r", CommitSha: "c1", Score: 5, Review: json.RawMessage(`{}`)}
+	if err := store.Upsert(rec); err != nil {
+		t.Fatal(err)
+	}
+	rec2 := &reviews.StoredReview{BuildID: 1, Repo: "r", CommitSha: "c2", Score: 9, Review: json.RawMessage(`{}`)}
+	if err := store.Upsert(rec2); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.GetByBuild(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 records for distinct keys, got %d: %+v", len(got), got)
+	}
+	// GetByBuild returns oldest-first (insertion order).
+	if got[0].CommitSha != "c1" || got[1].CommitSha != "c2" {
+		t.Errorf("GetByBuild not oldest-first: %+v", got)
+	}
+}
+
+func TestMemoryStoreGetByBuildMultipleRecords(t *testing.T) {
+	store := reviews.NewMemoryStore()
+	records := []*reviews.StoredReview{
+		{BuildID: 7, Repo: "repo-a", CommitSha: "aaa", Score: 1, Review: json.RawMessage(`{}`)},
+		{BuildID: 7, Repo: "repo-b", CommitSha: "bbb", Score: 2, Review: json.RawMessage(`{}`)},
+		{BuildID: 8, Repo: "repo-a", CommitSha: "ccc", Score: 3, Review: json.RawMessage(`{}`)},
+	}
+	for _, rec := range records {
+		if err := store.Upsert(rec); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := store.GetByBuild(7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 records for build 7, got %d: %+v", len(got), got)
+	}
+	if got[0].Repo != "repo-a" || got[1].Repo != "repo-b" {
+		t.Errorf("wrong records or order: %+v", got)
+	}
+}
+
+func TestMemoryStoreListByTeamNewestFirstWithLimit(t *testing.T) {
+	store := reviews.NewMemoryStore()
+	records := []*reviews.StoredReview{
+		{BuildID: 1, TeamName: "main", Repo: "r", CommitSha: "c1", Score: 1, Review: json.RawMessage(`{}`)},
+		{BuildID: 2, TeamName: "main", Repo: "r", CommitSha: "c2", Score: 2, Review: json.RawMessage(`{}`)},
+		{BuildID: 3, TeamName: "main", Repo: "r", CommitSha: "c3", Score: 3, Review: json.RawMessage(`{}`)},
+	}
+	for _, rec := range records {
+		if err := store.Upsert(rec); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := store.ListByTeam("main", reviews.ListFilter{Limit: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 records, got %d: %+v", len(got), got)
+	}
+	// Newest first: Limit keeps the two most recently inserted.
+	if got[0].CommitSha != "c3" || got[1].CommitSha != "c2" {
+		t.Errorf("ListByTeam not newest-first: %+v", got)
+	}
+}
+
+func TestMemoryStoreCopiesOnUpsert(t *testing.T) {
+	store := reviews.NewMemoryStore()
+	rec := &reviews.StoredReview{BuildID: 1, Repo: "r", CommitSha: "c", Score: 5, Review: json.RawMessage(`{}`)}
+	if err := store.Upsert(rec); err != nil {
+		t.Fatal(err)
+	}
+	rec.Score = 99 // caller mutation after Upsert must not alter the store
+	got, err := store.GetByBuild(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Score != 5 {
+		t.Errorf("store affected by caller mutation: %+v", got)
+	}
+	if got[0].CreatedAt == 0 {
+		t.Error("CreatedAt not defaulted on upsert")
 	}
 }

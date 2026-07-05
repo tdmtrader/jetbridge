@@ -1,6 +1,9 @@
 package reviews
 
-import "sync"
+import (
+	"sync"
+	"time"
+)
 
 // MemoryStore is an in-memory Store for testing.
 type MemoryStore struct {
@@ -15,13 +18,18 @@ func NewMemoryStore() *MemoryStore {
 func (m *MemoryStore) Upsert(rec *StoredReview) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	// Store a copy so caller mutation after Upsert can't alter the store.
+	cp := *rec
+	if cp.CreatedAt == 0 {
+		cp.CreatedAt = time.Now().Unix()
+	}
 	for i, existing := range m.records {
-		if existing.BuildID == rec.BuildID && existing.Repo == rec.Repo && existing.CommitSha == rec.CommitSha {
-			m.records[i] = rec
+		if existing.BuildID == cp.BuildID && existing.Repo == cp.Repo && existing.CommitSha == cp.CommitSha {
+			m.records[i] = &cp
 			return nil
 		}
 	}
-	m.records = append(m.records, rec)
+	m.records = append(m.records, &cp)
 	return nil
 }
 
@@ -41,7 +49,11 @@ func (m *MemoryStore) ListByTeam(team string, filter ListFilter) ([]StoredReview
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	results := []StoredReview{}
-	for _, rec := range m.records {
+	// Iterate newest-first (reverse insertion order) so Limit keeps the
+	// newest N, matching the Postgres implementation's created-descending
+	// ordering.
+	for i := len(m.records) - 1; i >= 0; i-- {
+		rec := m.records[i]
 		if rec.TeamName != team {
 			continue
 		}

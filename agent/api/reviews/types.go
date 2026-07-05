@@ -38,7 +38,7 @@ func ParseSubmission(body []byte) (*Submission, error) {
 	if err := json.Unmarshal(body, &sub); err != nil {
 		return nil, fmt.Errorf("invalid JSON: %w", err)
 	}
-	if sub.BuildID == 0 {
+	if sub.BuildID <= 0 {
 		return nil, fmt.Errorf("build_id is required")
 	}
 	if len(sub.Review) == 0 {
@@ -85,7 +85,9 @@ type StoredReview struct {
 	DurationSeconds  int             `json:"duration_seconds"`
 	Review           json.RawMessage `json:"review,omitempty"`
 	CreatedAt        int64           `json:"created_at"`
-	EvaluatedCount   int             `json:"evaluated_count"`
+	// EvaluatedCount is filled by the DB store's feedback join, not by
+	// ToStoredReview or MemoryStore.Upsert.
+	EvaluatedCount int `json:"evaluated_count"`
 }
 
 func (s *Submission) ToStoredReview(ctx BuildContext) *StoredReview {
@@ -119,7 +121,14 @@ type ListFilter struct {
 
 // Store is the interface for review persistence.
 type Store interface {
+	// Upsert inserts the record, replacing any existing record with the
+	// same (BuildID, Repo, CommitSha) key.
 	Upsert(rec *StoredReview) error
+	// GetByBuild returns records for the build ordered oldest-first
+	// (created ascending).
 	GetByBuild(buildID int) ([]StoredReview, error)
+	// ListByTeam returns records for the team ordered newest-first
+	// (created descending) — ListFilter.Limit therefore keeps the
+	// newest N.
 	ListByTeam(team string, filter ListFilter) ([]StoredReview, error)
 }
