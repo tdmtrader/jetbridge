@@ -28,6 +28,21 @@ all =
                         , Result.map (List.head >> Maybe.map (.provenIssues >> List.length)) >> Expect.equal (Ok (Just 1))
                         , Result.map (List.head >> Maybe.map .findingCount) >> Expect.equal (Ok (Just 2))
                         ]
+        , test "tolerates an empty finding object without failing the list" <|
+            \_ ->
+                """
+                [{"build_id":42,"build_name":"3","team_name":"main","pipeline_name":"cs","job_name":"ar",
+                  "repo":"concourse","commit_sha":"abc123","branch":"jetbridge",
+                  "score":7.5,"max_score":10,"pass":true,"proven_count":1,"observation_count":0,
+                  "summary":"one bug","agent_model":"m","duration_seconds":60,"created_at":1700000000,
+                  "evaluated_count":1,"finding_count":1,
+                  "proven_issues":[{}],
+                  "observations":[],
+                  "feedback":{}}]
+                """
+                    |> Json.Decode.decodeString (Json.Decode.list AgentReview.decodeBuildReview)
+                    |> Result.map (List.head >> Maybe.map (.provenIssues >> List.map (\f -> ( f.id, f.title ))))
+                    |> Expect.equal (Ok (Just [ ( "", "" ) ]))
         , test "decodes a review summary row" <|
             \_ ->
                 """

@@ -105,12 +105,15 @@ decodeSummary =
         |> andMap (defaultTo 0 <| Json.Decode.field "evaluated_count" Json.Decode.int)
 
 
+{-| All fields tolerant: the ATC keeps partially-decoded findings rather than
+dropping them, so nothing here may be required.
+-}
 decodeFinding : Json.Decode.Decoder Finding
 decodeFinding =
     Json.Decode.succeed Finding
-        |> andMap (Json.Decode.field "id" Json.Decode.string)
+        |> andMap (defaultTo "" <| Json.Decode.field "id" Json.Decode.string)
         |> andMap (defaultTo "" <| Json.Decode.field "severity" Json.Decode.string)
-        |> andMap (Json.Decode.field "title" Json.Decode.string)
+        |> andMap (defaultTo "" <| Json.Decode.field "title" Json.Decode.string)
         |> andMap (defaultTo "" <| Json.Decode.field "description" Json.Decode.string)
         |> andMap (defaultTo "" <| Json.Decode.field "file" Json.Decode.string)
         |> andMap (defaultTo 0 <| Json.Decode.field "line" Json.Decode.int)
