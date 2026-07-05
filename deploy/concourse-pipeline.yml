@@ -115,6 +115,7 @@ jobs:
     params: {depth: 0, fetch_tags: true}
     passed: [k8s-runtime-tests]
   - task: create-rc-tag
+    attempts: 2
     config:
       platform: linux
       rootfs_uri: docker:///registry.home/concourse-test-runner:v5
@@ -162,6 +163,7 @@ jobs:
     passed: [tag-rc]
   - task: build-and-push-local
     privileged: true
+    attempts: 2
     config:
       platform: linux
       rootfs_uri: docker:///registry.home/concourse-test-runner:v5
@@ -288,6 +290,7 @@ jobs:
     params: {depth: 0, fetch_tags: true}
     passed: [build-image]
   - task: trigger-rollout
+    attempts: 2
     config:
       platform: linux
       rootfs_uri: docker:///registry.home/concourse-test-runner:v5
@@ -327,6 +330,7 @@ jobs:
     params: {depth: 0, fetch_tags: true}
     passed: [self-upgrade]
   - task: check-running-version
+    attempts: 2
     config:
       platform: linux
       rootfs_uri: docker:///registry.home/concourse-test-runner:v5
