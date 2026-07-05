@@ -6,6 +6,12 @@
 
 ---
 
+## [ ] Track: In-flight builds survive web restarts
+*Link: [./tracks/build_survival_across_web_restart_20260704/](./tracks/build_survival_across_web_restart_20260704/)*
+*Created 2026-07-04 from the verify-upgrade settle-timer follow-up. Root cause (verified, supersedes the pod-deletion hypothesis): fork commit 8b5476828f errors all in-flight builds on engine drain AND via the tracker safety net (also breaking lock-contention and Retriable resume paths); pod deletion is downstream GC. Fix: scope both to in-memory check builds, plus an in-pod supervisor so exec-mode task steps resume (not re-run) after a web restart. Live reattach-across-restart test on theborg.*
+
+---
+
 ## [ ] Track: Dead Suite Removal
 *Link: [./tracks/dead_suite_removal_20260610/](./tracks/dead_suite_removal_20260610/)*
 *Created 2026-06-10 from a repo-wide cleanup audit. Removes ~5k LOC of verified-dead code: the orphaned `topgun/k8s/` root suite (TSA/GKE-era, unwired from Makefile/CI) + its fixtures, the standalone `cmd/concourse-mcp` (superseded by the embedded `atc/api/mcpserver`, tool parity verified), and 8 small orphaned files (varsfakes, atc/cmd/atc, skymarshal/logger, migration/cli, Dockerfile.testrunner, hack/bosh-topgun, package-lock.json, XDescribe'd team-migration test). No functional impact; live suites `topgun/k8s/integration/` + `topgun/k8s_behavioral/` preserved.*
