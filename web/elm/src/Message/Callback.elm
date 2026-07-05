@@ -2,6 +2,7 @@ module Message.Callback exposing (Callback(..))
 
 import Browser.Dom
 import Concourse
+import Concourse.AgentReview
 import Concourse.Pagination exposing (Page, Paginated)
 import Http
 import Message.Message
@@ -64,3 +65,6 @@ type Callback
     | AllPipelinesFetched (Fetched (List Concourse.Pipeline))
     | GotViewport DomID (Result Browser.Dom.Error Browser.Dom.Viewport)
     | GotElement (Result Browser.Dom.Error Browser.Dom.Element)
+    | BuildAgentReviewsFetched (Fetched (List Concourse.AgentReview.BuildReview))
+    | TeamAgentReviewsFetched (Fetched (List Concourse.AgentReview.Summary))
+    | AgentReviewVerdictSubmitted String (Fetched ())
