@@ -58,6 +58,7 @@ type Route
       -- the version field is really only used as a hack to populate the breadcrumbs, it's not actually used by anyhting else
     | Causality { id : Concourse.VersionedResourceIdentifier, direction : Concourse.CausalityDirection, version : Maybe Concourse.Version, groups : List String }
     | DownloadFly
+    | AgentReviews { teamName : String }
 
 
 type SearchType
@@ -311,6 +312,12 @@ downloadFly =
     map (always DownloadFly) (s "download-fly")
 
 
+agentReviews : Parser ((b -> Route) -> a) a
+agentReviews =
+    map (\teamName -> always <| AgentReviews { teamName = teamName })
+        (s "teams" </> string </> s "agent-reviews")
+
+
 causality : Parser ((InstanceVars -> Route) -> a) a
 causality =
     let
@@ -476,6 +483,7 @@ sitemap =
         [ resource
         , job
         , dashboard
+        , agentReviews
         , pipeline
         , build
         , oneOffBuild
@@ -586,6 +594,10 @@ toString route =
             ( [ "download-fly" ], [] )
                 |> RouteBuilder.build
 
+        AgentReviews { teamName } ->
+            ( [ "teams", teamName, "agent-reviews" ], [] )
+                |> RouteBuilder.build
+
 
 parsePath : Url.Url -> Maybe Route
 parsePath url =
@@ -693,6 +705,9 @@ getGroups route =
         DownloadFly ->
             []
 
+        AgentReviews _ ->
+            []
+
 
 withGroups : List String -> Route -> Route
 withGroups groups route =
@@ -722,4 +737,7 @@ withGroups groups route =
             route
 
         DownloadFly ->
+            route
+
+        AgentReviews _ ->
             route
