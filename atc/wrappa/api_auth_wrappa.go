@@ -100,9 +100,17 @@ func (wrappa *APIAuthWrappa) Wrap(handlers rata.Handlers) rata.Handlers {
 			atc.MainJobBadge,
 			atc.GetWall,
 			atc.GetOpenIDConfiguration,
-			atc.GetSigningKeys,
-			atc.SubmitAgentReview:
+			atc.GetSigningKeys:
 			newHandler = auth.CheckAuthenticationIfProvidedHandler(handler, rejector)
+
+		// unauthenticated at the Concourse-token layer: publishers authenticate
+		// with a static bearer token that the handler itself validates
+		// (agent/api/reviews.Handler.SubmitReview), not a Concourse user
+		// session/JWT. CheckAuthenticationIfProvidedHandler would reject any
+		// non-JWT Authorization header before the handler ever saw it, so this
+		// route must not go through Concourse token verification at all.
+		case atc.SubmitAgentReview:
+			// no-op: pass straight through to the handler
 
 		// admin
 		case atc.GetLogLevel,
