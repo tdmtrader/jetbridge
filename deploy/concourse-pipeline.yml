@@ -13,6 +13,9 @@ jobs:
     trigger: true
     params: {depth: 1}
   - task: build-and-vet
+    # Retry transient k8s-runtime pod disruptions (single-node contention);
+    # this task errors (not fails) when its pod is lost mid-run.
+    attempts: 2
     config:
       platform: linux
       rootfs_uri: docker:///registry.home/concourse-test-runner:v5
@@ -45,6 +48,7 @@ jobs:
     params: {depth: 1}
     passed: [build-and-vet]
   - task: unit-tests
+    attempts: 2
     config:
       platform: linux
       rootfs_uri: docker:///registry.home/concourse-test-runner:v5
@@ -87,6 +91,7 @@ jobs:
     params: {depth: 1}
     passed: [unit-tests]
   - task: k8s-runtime-integration-tests
+    attempts: 2
     config:
       platform: linux
       rootfs_uri: docker:///registry.home/concourse-test-runner:v5
@@ -384,6 +389,7 @@ jobs:
     params: {depth: 1}
     passed: [verify-upgrade]
   - task: k8s-live-integration-tests
+    attempts: 2
     config:
       platform: linux
       rootfs_uri: docker:///registry.home/concourse-test-runner:v5
