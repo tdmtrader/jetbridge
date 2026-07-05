@@ -76,6 +76,60 @@ func TestSubmitMalformed(t *testing.T) {
 	}
 }
 
+func TestSubmitOversizedBody(t *testing.T) {
+	h, _, _ := newHandler(t)
+	req := httptest.NewRequest("POST", "/api/v1/agent/reviews",
+		strings.NewReader(`{"build_id":42,"review":`+strings.Repeat(" ", 5<<20)+`}`))
+	req.Header.Set("Authorization", "Bearer secret-token")
+	rec := httptest.NewRecorder()
+	h.SubmitReview(rec, req)
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Errorf("code = %d, want 413", rec.Code)
+	}
+}
+
+func TestGetByBuildToleratesMalformedFinding(t *testing.T) {
+	h, store, _ := newHandler(t)
+	// One well-formed and one malformed proven issue ("line": "ten").
+	review := `{
+		"schema_version": "1.0.0",
+		"metadata": {"repo": "concourse", "commit": "def456"},
+		"score": {"value": 5, "max": 10, "pass": false},
+		"proven_issues": [
+			{"id": "PI-1", "title": "good", "file": "a.go", "line": 1, "category": "correctness"},
+			{"id": "PI-2", "title": "bad line", "file": "b.go", "line": "ten", "category": "correctness"}
+		],
+		"observations": [],
+		"summary": "mixed"
+	}`
+	store.Upsert(&reviews.StoredReview{
+		BuildID: 42, TeamName: "main", Repo: "concourse", CommitSha: "def456",
+		ProvenCount: 2, ObservationCount: 0, Review: json.RawMessage(review),
+	})
+
+	req := httptest.NewRequest("GET", "/api/v1/builds/42/agent-reviews", nil)
+	req.Form = map[string][]string{":build_id": {"42"}}
+	rec := httptest.NewRecorder()
+	h.GetByBuild(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code = %d", rec.Code)
+	}
+	var got []reviews.BuildReviewResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d reviews", len(got))
+	}
+	if len(got[0].ProvenIssues) != 2 {
+		t.Errorf("proven issues = %d, want 2 (malformed entry must not vanish)", len(got[0].ProvenIssues))
+	}
+	if got[0].FindingCount != got[0].ProvenCount+got[0].ObservationCount {
+		t.Errorf("finding_count %d disagrees with proven+observation %d",
+			got[0].FindingCount, got[0].ProvenCount+got[0].ObservationCount)
+	}
+}
+
 func TestSubmitAndGetByBuild(t *testing.T) {
 	h, _, fbStore := newHandler(t)
 	req := httptest.NewRequest("POST", "/api/v1/agent/reviews", strings.NewReader(postBody()))

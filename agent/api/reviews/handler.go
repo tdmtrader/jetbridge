@@ -3,6 +3,7 @@ package reviews
 import (
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strconv"
@@ -79,7 +80,12 @@ func (h *Handler) SubmitReview(w http.ResponseWriter, r *http.Request) {
 
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 4<<20))
 	if err != nil {
-		http.Error(w, "request too large", http.StatusBadRequest)
+		var mbe *http.MaxBytesError
+		if errors.As(err, &mbe) {
+			http.Error(w, "request body exceeds 4MB", http.StatusRequestEntityTooLarge)
+			return
+		}
+		http.Error(w, "failed to read request body", http.StatusBadRequest)
 		return
 	}
 	sub, err := ParseSubmission(body)
@@ -103,6 +109,7 @@ func (h *Handler) SubmitReview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(map[string]string{"status": "saved"})
 }
@@ -129,6 +136,12 @@ func (h *Handler) GetByBuild(w http.ResponseWriter, r *http.Request) {
 		if err := json.Unmarshal(rec.Review, &payload); err == nil {
 			resp.ProvenIssues = decodeFindings(payload.ProvenIssues)
 			resp.Observations = decodeFindings(payload.Observations)
+			resp.FindingCount = len(resp.ProvenIssues) + len(resp.Observations)
+		} else {
+			// The raw payload is unreadable, so fall back to the counts
+			// denormalized at ingest — finding_count must never disagree
+			// with proven_count + observation_count in the same response.
+			resp.FindingCount = rec.ProvenCount + rec.ObservationCount
 		}
 		if resp.ProvenIssues == nil {
 			resp.ProvenIssues = []Finding{}
@@ -136,10 +149,13 @@ func (h *Handler) GetByBuild(w http.ResponseWriter, r *http.Request) {
 		if resp.Observations == nil {
 			resp.Observations = []Finding{}
 		}
-		resp.FindingCount = len(resp.ProvenIssues) + len(resp.Observations)
 
+		// Degrade: panel must render without feedback.
 		fbs, err := h.feedbackStore.GetByReview(rec.Repo, rec.CommitSha)
 		if err == nil {
+			// Multiple reviewers on the same finding collapse last-write-wins
+			// by store order — deliberate for v1; evaluated_count means
+			// distinct findings triaged, not total feedback records.
 			for _, fb := range fbs {
 				resp.Feedback[fb.FindingID] = FindingFeedback{
 					Verdict: fb.Verdict, Notes: fb.Notes, Reviewer: fb.Reviewer,
@@ -161,9 +177,9 @@ func decodeFindings(raws []json.RawMessage) []Finding {
 	findings := make([]Finding, 0, len(raws))
 	for _, raw := range raws {
 		var f Finding
-		if err := json.Unmarshal(raw, &f); err == nil {
-			findings = append(findings, f)
-		}
+		// tolerate partial decode — never drop a finding the ingest counted
+		json.Unmarshal(raw, &f)
+		findings = append(findings, f)
 	}
 	return findings
 }
