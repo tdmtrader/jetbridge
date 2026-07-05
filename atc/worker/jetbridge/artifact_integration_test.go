@@ -158,9 +158,7 @@ var _ = Describe("Artifact Integration", func() {
 			By("verifying the main command was exec'd (plus artifact-helper tar calls)")
 			Expect(fakeExecutor.execCalls).ToNot(BeEmpty())
 			// The first exec call is the main task command
-			Expect(fakeExecutor.execCalls[0].command).To(Equal([]string{
-				"/bin/sh", "-c", "cat /tmp/build/workdir/my-input/data.txt",
-			}))
+			expectSupervisedExec(fakeExecutor.execCalls[0].command, `'/bin/sh' '-c' 'cat /tmp/build/workdir/my-input/data.txt'`)
 			Expect(fakeExecutor.execCalls[0].containerName).To(Equal("main"))
 
 			// Remaining calls are artifact-helper sidecar tar commands

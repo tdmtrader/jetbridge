@@ -202,8 +202,8 @@ var _ = Describe("Container", func() {
 				db.NewFixedHandleContainerOwner("input-vol-handle"),
 				db.ContainerMetadata{Type: db.ContainerTypeTask},
 				runtime.ContainerSpec{
-					TeamID:   1,
-					Dir:      "/tmp/build/workdir",
+					TeamID:    1,
+					Dir:       "/tmp/build/workdir",
 					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 					Inputs: []runtime.Input{
 						{
@@ -266,8 +266,8 @@ var _ = Describe("Container", func() {
 				db.NewFixedHandleContainerOwner("output-vol-handle"),
 				db.ContainerMetadata{Type: db.ContainerTypeTask},
 				runtime.ContainerSpec{
-					TeamID:   1,
-					Dir:      "/tmp/build/workdir",
+					TeamID:    1,
+					Dir:       "/tmp/build/workdir",
 					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 					Outputs: runtime.OutputPaths{
 						"result":   "/tmp/build/workdir/result",
@@ -321,8 +321,8 @@ var _ = Describe("Container", func() {
 				db.NewFixedHandleContainerOwner("shared-io-handle"),
 				db.ContainerMetadata{Type: db.ContainerTypeTask},
 				runtime.ContainerSpec{
-					TeamID:   1,
-					Dir:      "/tmp/build/workdir",
+					TeamID:    1,
+					Dir:       "/tmp/build/workdir",
 					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 					Inputs: []runtime.Input{
 						{DestinationPath: "/tmp/build/workdir/repo"},
@@ -400,8 +400,8 @@ var _ = Describe("Container", func() {
 				db.NewFixedHandleContainerOwner("nonoverlap-io-handle"),
 				db.ContainerMetadata{Type: db.ContainerTypeTask},
 				runtime.ContainerSpec{
-					TeamID:   1,
-					Dir:      "/tmp/build/workdir",
+					TeamID:    1,
+					Dir:       "/tmp/build/workdir",
 					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 					Inputs: []runtime.Input{
 						{DestinationPath: "/tmp/build/workdir/source"},
@@ -448,10 +448,10 @@ var _ = Describe("Container", func() {
 				db.NewFixedHandleContainerOwner("cache-vol-handle"),
 				db.ContainerMetadata{Type: db.ContainerTypeTask},
 				runtime.ContainerSpec{
-					TeamID:   1,
-					Dir:      "/tmp/build/workdir",
+					TeamID:    1,
+					Dir:       "/tmp/build/workdir",
 					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
-					Caches:   []string{"/tmp/build/workdir/.cache"},
+					Caches:    []string{"/tmp/build/workdir/.cache"},
 				},
 				delegate,
 			)
@@ -659,113 +659,113 @@ var _ = Describe("Container", func() {
 			BeforeEach(func() {
 				setupFakeDBContainer(fakeDBWorker, "cache-hostpath-handle")
 
-			cfgWithHostPath := jetbridge.NewConfig("test-namespace", "")
-			cfgWithHostPath.CacheHostPath = "/var/concourse/cache"
+				cfgWithHostPath := jetbridge.NewConfig("test-namespace", "")
+				cfgWithHostPath.CacheHostPath = "/var/concourse/cache"
 
-			hostPathWorker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfgWithHostPath)
+				hostPathWorker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfgWithHostPath)
 
-			var err error
-			container, _, err = hostPathWorker.FindOrCreateContainer(
-				ctx,
-				db.NewFixedHandleContainerOwner("cache-hostpath-handle"),
-				db.ContainerMetadata{
-					Type:     db.ContainerTypeTask,
-					JobID:    7,
-					StepName: "compile",
-				},
-				runtime.ContainerSpec{
-					TeamID:   1,
-					Dir:      "/tmp/build/workdir",
-					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
-					Caches:   []string{"/tmp/build/workdir/.cache"},
-				},
-				delegate,
-			)
-			Expect(err).ToNot(HaveOccurred())
-		})
+				var err error
+				container, _, err = hostPathWorker.FindOrCreateContainer(
+					ctx,
+					db.NewFixedHandleContainerOwner("cache-hostpath-handle"),
+					db.ContainerMetadata{
+						Type:     db.ContainerTypeTask,
+						JobID:    7,
+						StepName: "compile",
+					},
+					runtime.ContainerSpec{
+						TeamID:    1,
+						Dir:       "/tmp/build/workdir",
+						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+						Caches:    []string{"/tmp/build/workdir/.cache"},
+					},
+					delegate,
+				)
+				Expect(err).ToNot(HaveOccurred())
+			})
 
-		It("uses hostPath volumes with stable keys for caches", func() {
-			_, err := container.Run(ctx, runtime.ProcessSpec{
-				Path: "/bin/sh",
-				Args: []string{"-c", "echo hello"},
-			}, runtime.ProcessIO{})
-			Expect(err).ToNot(HaveOccurred())
+			It("uses hostPath volumes with stable keys for caches", func() {
+				_, err := container.Run(ctx, runtime.ProcessSpec{
+					Path: "/bin/sh",
+					Args: []string{"-c", "echo hello"},
+				}, runtime.ProcessIO{})
+				Expect(err).ToNot(HaveOccurred())
 
-			pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
-			Expect(err).ToNot(HaveOccurred())
-			pod := pods.Items[0]
+				pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
+				Expect(err).ToNot(HaveOccurred())
+				pod := pods.Items[0]
 
-			By("creating hostPath volumes for caches")
-			var hostPathVol *corev1.Volume
-			for i := range pod.Spec.Volumes {
-				if pod.Spec.Volumes[i].HostPath != nil {
-					hostPathVol = &pod.Spec.Volumes[i]
-					break
+				By("creating hostPath volumes for caches")
+				var hostPathVol *corev1.Volume
+				for i := range pod.Spec.Volumes {
+					if pod.Spec.Volumes[i].HostPath != nil {
+						hostPathVol = &pod.Spec.Volumes[i]
+						break
+					}
 				}
-			}
-			Expect(hostPathVol).ToNot(BeNil(), "expected a hostPath volume for cache")
-			Expect(hostPathVol.HostPath.Path).To(HavePrefix("/var/concourse/cache/job-7-compile-"))
-			dirType := corev1.HostPathDirectoryOrCreate
-			Expect(*hostPathVol.HostPath.Type).To(Equal(dirType))
+				Expect(hostPathVol).ToNot(BeNil(), "expected a hostPath volume for cache")
+				Expect(hostPathVol.HostPath.Path).To(HavePrefix("/var/concourse/cache/job-7-compile-"))
+				dirType := corev1.HostPathDirectoryOrCreate
+				Expect(*hostPathVol.HostPath.Type).To(Equal(dirType))
 
-			By("mounting at the cache path")
-			mainContainer := pod.Spec.Containers[0]
-			var cacheMount *corev1.VolumeMount
-			for i := range mainContainer.VolumeMounts {
-				if mainContainer.VolumeMounts[i].MountPath == "/tmp/build/workdir/.cache" {
-					cacheMount = &mainContainer.VolumeMounts[i]
-					break
+				By("mounting at the cache path")
+				mainContainer := pod.Spec.Containers[0]
+				var cacheMount *corev1.VolumeMount
+				for i := range mainContainer.VolumeMounts {
+					if mainContainer.VolumeMounts[i].MountPath == "/tmp/build/workdir/.cache" {
+						cacheMount = &mainContainer.VolumeMounts[i]
+						break
+					}
 				}
-			}
-			Expect(cacheMount).ToNot(BeNil())
-			Expect(cacheMount.Name).To(Equal(hostPathVol.Name))
-		})
-	})
-
-	Context("when CacheHostPath is set but JobID is 0 (one-off build)", func() {
-		BeforeEach(func() {
-			setupFakeDBContainer(fakeDBWorker, "cache-oneoff-handle")
-
-			cfgWithHostPath := jetbridge.NewConfig("test-namespace", "")
-			cfgWithHostPath.CacheHostPath = "/var/concourse/cache"
-
-			hostPathWorker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfgWithHostPath)
-
-			var err error
-			container, _, err = hostPathWorker.FindOrCreateContainer(
-				ctx,
-				db.NewFixedHandleContainerOwner("cache-oneoff-handle"),
-				db.ContainerMetadata{
-					Type:  db.ContainerTypeTask,
-					JobID: 0,
-				},
-				runtime.ContainerSpec{
-					TeamID:   1,
-					Dir:      "/tmp/build/workdir",
-					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
-					Caches:   []string{"/tmp/build/workdir/.cache"},
-				},
-				delegate,
-			)
-			Expect(err).ToNot(HaveOccurred())
+				Expect(cacheMount).ToNot(BeNil())
+				Expect(cacheMount.Name).To(Equal(hostPathVol.Name))
+			})
 		})
 
-		It("falls back to emptyDir for one-off builds", func() {
-			_, err := container.Run(ctx, runtime.ProcessSpec{
-				Path: "/bin/sh",
-				Args: []string{"-c", "echo hello"},
-			}, runtime.ProcessIO{})
-			Expect(err).ToNot(HaveOccurred())
+		Context("when CacheHostPath is set but JobID is 0 (one-off build)", func() {
+			BeforeEach(func() {
+				setupFakeDBContainer(fakeDBWorker, "cache-oneoff-handle")
 
-			pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
-			Expect(err).ToNot(HaveOccurred())
-			pod := pods.Items[0]
+				cfgWithHostPath := jetbridge.NewConfig("test-namespace", "")
+				cfgWithHostPath.CacheHostPath = "/var/concourse/cache"
 
-			for _, vol := range pod.Spec.Volumes {
-				Expect(vol.HostPath).To(BeNil(), "one-off builds should not use hostPath")
-			}
+				hostPathWorker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfgWithHostPath)
+
+				var err error
+				container, _, err = hostPathWorker.FindOrCreateContainer(
+					ctx,
+					db.NewFixedHandleContainerOwner("cache-oneoff-handle"),
+					db.ContainerMetadata{
+						Type:  db.ContainerTypeTask,
+						JobID: 0,
+					},
+					runtime.ContainerSpec{
+						TeamID:    1,
+						Dir:       "/tmp/build/workdir",
+						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+						Caches:    []string{"/tmp/build/workdir/.cache"},
+					},
+					delegate,
+				)
+				Expect(err).ToNot(HaveOccurred())
+			})
+
+			It("falls back to emptyDir for one-off builds", func() {
+				_, err := container.Run(ctx, runtime.ProcessSpec{
+					Path: "/bin/sh",
+					Args: []string{"-c", "echo hello"},
+				}, runtime.ProcessIO{})
+				Expect(err).ToNot(HaveOccurred())
+
+				pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
+				Expect(err).ToNot(HaveOccurred())
+				pod := pods.Items[0]
+
+				for _, vol := range pod.Spec.Volumes {
+					Expect(vol.HostPath).To(BeNil(), "one-off builds should not use hostPath")
+				}
+			})
 		})
-	})
 	})
 
 	Describe("Run with explicit CacheStore selector", func() {
@@ -947,8 +947,8 @@ var _ = Describe("Container", func() {
 					db.NewFixedHandleContainerOwner("limits-handle"),
 					db.ContainerMetadata{Type: db.ContainerTypeTask},
 					runtime.ContainerSpec{
-						TeamID:   1,
-						Dir:      "/workdir",
+						TeamID:    1,
+						Dir:       "/workdir",
 						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 						Limits: runtime.ContainerLimits{
 							CPU:    &cpu,
@@ -999,8 +999,8 @@ var _ = Describe("Container", func() {
 					db.NewFixedHandleContainerOwner("no-limits-handle"),
 					db.ContainerMetadata{Type: db.ContainerTypeTask},
 					runtime.ContainerSpec{
-						TeamID:   1,
-						Dir:      "/workdir",
+						TeamID:    1,
+						Dir:       "/workdir",
 						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 					},
 					delegate,
@@ -1040,8 +1040,8 @@ var _ = Describe("Container", func() {
 					db.NewFixedHandleContainerOwner("burstable-handle"),
 					db.ContainerMetadata{Type: db.ContainerTypeTask},
 					runtime.ContainerSpec{
-						TeamID: 1,
-						Dir:    "/workdir",
+						TeamID:    1,
+						Dir:       "/workdir",
 						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 						Limits: runtime.ContainerLimits{
 							CPU:           &cpuLimit,
@@ -1091,8 +1091,8 @@ var _ = Describe("Container", func() {
 					db.NewFixedHandleContainerOwner("requests-only-handle"),
 					db.ContainerMetadata{Type: db.ContainerTypeTask},
 					runtime.ContainerSpec{
-						TeamID: 1,
-						Dir:    "/workdir",
+						TeamID:    1,
+						Dir:       "/workdir",
 						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 						Limits: runtime.ContainerLimits{
 							CPURequest:    &cpuReq,
@@ -1141,8 +1141,8 @@ var _ = Describe("Container", func() {
 					db.NewFixedHandleContainerOwner("ephemeral-handle"),
 					db.ContainerMetadata{Type: db.ContainerTypeTask},
 					runtime.ContainerSpec{
-						TeamID: 1,
-						Dir:    "/workdir",
+						TeamID:    1,
+						Dir:       "/workdir",
 						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 						Limits: runtime.ContainerLimits{
 							CPU:                     &cpuLimit,
@@ -1195,8 +1195,8 @@ var _ = Describe("Container", func() {
 					db.NewFixedHandleContainerOwner("secure-handle"),
 					db.ContainerMetadata{Type: db.ContainerTypeTask},
 					runtime.ContainerSpec{
-						TeamID:   1,
-						Dir:      "/workdir",
+						TeamID: 1,
+						Dir:    "/workdir",
 						ImageSpec: runtime.ImageSpec{
 							ImageURL:   "docker:///busybox",
 							Privileged: false,
@@ -1246,8 +1246,8 @@ var _ = Describe("Container", func() {
 					db.NewFixedHandleContainerOwner("priv-handle"),
 					db.ContainerMetadata{Type: db.ContainerTypeTask},
 					runtime.ContainerSpec{
-						TeamID:   1,
-						Dir:      "/workdir",
+						TeamID: 1,
+						Dir:    "/workdir",
 						ImageSpec: runtime.ImageSpec{
 							ImageURL:   "docker:///busybox",
 							Privileged: true,
@@ -1307,8 +1307,8 @@ var _ = Describe("Container", func() {
 					db.NewFixedHandleContainerOwner("secrets-handle"),
 					db.ContainerMetadata{Type: db.ContainerTypeTask},
 					runtime.ContainerSpec{
-						TeamID:   1,
-						Dir:      "/workdir",
+						TeamID:    1,
+						Dir:       "/workdir",
 						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 					},
 					delegate,
@@ -1351,8 +1351,8 @@ var _ = Describe("Container", func() {
 					db.NewFixedHandleContainerOwner("no-secrets-handle"),
 					db.ContainerMetadata{Type: db.ContainerTypeTask},
 					runtime.ContainerSpec{
-						TeamID:   1,
-						Dir:      "/workdir",
+						TeamID:    1,
+						Dir:       "/workdir",
 						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 					},
 					delegate,
@@ -1490,8 +1490,8 @@ var _ = Describe("Container", func() {
 				db.NewFixedHandleContainerOwner("exec-task-handle"),
 				db.ContainerMetadata{Type: db.ContainerTypeTask},
 				runtime.ContainerSpec{
-					TeamID:   1,
-					Dir:      "/workdir",
+					TeamID:    1,
+					Dir:       "/workdir",
 					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 				},
 				delegate,
@@ -1531,7 +1531,7 @@ var _ = Describe("Container", func() {
 			Expect(result.ExitStatus).To(Equal(0))
 
 			Expect(execExecutor.execCalls).To(HaveLen(1))
-			Expect(execExecutor.execCalls[0].command).To(Equal([]string{"/bin/sh", "-c", "echo hello"}))
+			expectSupervisedExec(execExecutor.execCalls[0].command, `'/bin/sh' '-c' 'echo hello'`)
 		})
 
 		It("keeps pause pod alive after command completes with exit 0", func() {
@@ -1605,8 +1605,8 @@ var _ = Describe("Container", func() {
 					db.NewFixedHandleContainerOwner("vm-input-handle"),
 					db.ContainerMetadata{Type: db.ContainerTypeTask},
 					runtime.ContainerSpec{
-						TeamID:   1,
-						Dir:      "/tmp/build/workdir",
+						TeamID:    1,
+						Dir:       "/tmp/build/workdir",
 						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 						Inputs: []runtime.Input{
 							{DestinationPath: "/tmp/build/workdir/my-input"},
@@ -1657,8 +1657,8 @@ var _ = Describe("Container", func() {
 					db.NewFixedHandleContainerOwner("vm-output-handle"),
 					db.ContainerMetadata{Type: db.ContainerTypeTask},
 					runtime.ContainerSpec{
-						TeamID:   1,
-						Dir:      "/tmp/build/workdir",
+						TeamID:    1,
+						Dir:       "/tmp/build/workdir",
 						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 						Outputs: runtime.OutputPaths{
 							"result":   "/tmp/build/workdir/result",
@@ -1708,10 +1708,10 @@ var _ = Describe("Container", func() {
 					db.NewFixedHandleContainerOwner("vm-cache-handle"),
 					db.ContainerMetadata{Type: db.ContainerTypeTask},
 					runtime.ContainerSpec{
-						TeamID:   1,
-						Dir:      "/tmp/build/workdir",
+						TeamID:    1,
+						Dir:       "/tmp/build/workdir",
 						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
-						Caches:   []string{"/tmp/build/workdir/.cache"},
+						Caches:    []string{"/tmp/build/workdir/.cache"},
 					},
 					delegate,
 				)
@@ -1755,8 +1755,8 @@ var _ = Describe("Container", func() {
 					db.NewFixedHandleContainerOwner("deferred-pod-handle"),
 					db.ContainerMetadata{Type: db.ContainerTypeTask},
 					runtime.ContainerSpec{
-						TeamID:   1,
-						Dir:      "/tmp/build/workdir",
+						TeamID:    1,
+						Dir:       "/tmp/build/workdir",
 						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 						Inputs: []runtime.Input{
 							{DestinationPath: "/tmp/build/workdir/my-input"},
@@ -1806,8 +1806,8 @@ var _ = Describe("Container", func() {
 				db.NewFixedHandleContainerOwner("noop-stream-handle"),
 				db.ContainerMetadata{Type: db.ContainerTypeTask},
 				runtime.ContainerSpec{
-					TeamID:   1,
-					Dir:      "/tmp/build/workdir",
+					TeamID:    1,
+					Dir:       "/tmp/build/workdir",
 					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 					Inputs: []runtime.Input{
 						{
@@ -1842,7 +1842,7 @@ var _ = Describe("Container", func() {
 
 			By("only the command exec call, no streaming")
 			Expect(execExecutor.execCalls).To(HaveLen(1))
-			Expect(execExecutor.execCalls[0].command).To(Equal([]string{"/bin/sh", "-c", "echo done"}))
+			expectSupervisedExec(execExecutor.execCalls[0].command, `'/bin/sh' '-c' 'echo done'`)
 		})
 	})
 
@@ -1867,8 +1867,8 @@ var _ = Describe("Container", func() {
 				db.NewFixedHandleContainerOwner("output-extract-handle"),
 				db.ContainerMetadata{Type: db.ContainerTypeTask},
 				runtime.ContainerSpec{
-					TeamID:   1,
-					Dir:      "/tmp/build/workdir",
+					TeamID:    1,
+					Dir:       "/tmp/build/workdir",
 					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 					Outputs: runtime.OutputPaths{
 						"result": "/tmp/build/workdir/result",
@@ -2173,8 +2173,8 @@ var _ = Describe("Container", func() {
 					db.NewFixedHandleContainerOwner("metric-success-handle"),
 					db.ContainerMetadata{Type: db.ContainerTypeTask},
 					runtime.ContainerSpec{
-						TeamID:   1,
-						Dir:      "/workdir",
+						TeamID:    1,
+						Dir:       "/workdir",
 						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 					},
 					delegate,
@@ -2216,8 +2216,8 @@ var _ = Describe("Container", func() {
 					db.NewFixedHandleContainerOwner("metric-exec-success"),
 					db.ContainerMetadata{Type: db.ContainerTypeTask},
 					runtime.ContainerSpec{
-						TeamID:   1,
-						Dir:      "/workdir",
+						TeamID:    1,
+						Dir:       "/workdir",
 						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 					},
 					delegate,
@@ -2250,8 +2250,8 @@ var _ = Describe("Container", func() {
 					db.NewFixedHandleContainerOwner("metric-fail-handle"),
 					db.ContainerMetadata{Type: db.ContainerTypeTask},
 					runtime.ContainerSpec{
-						TeamID:   1,
-						Dir:      "/workdir",
+						TeamID:    1,
+						Dir:       "/workdir",
 						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 					},
 					delegate,
@@ -2426,7 +2426,7 @@ var _ = Describe("Container", func() {
 				db.NewFixedHandleContainerOwner("fail-create-handle"),
 				db.ContainerMetadata{Type: db.ContainerTypeTask},
 				runtime.ContainerSpec{
-					TeamID:   1,
+					TeamID:    1,
 					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 				},
 				delegate,
@@ -2446,7 +2446,7 @@ var _ = Describe("Container", func() {
 				db.NewFixedHandleContainerOwner("db-fail-handle"),
 				db.ContainerMetadata{Type: db.ContainerTypeTask},
 				runtime.ContainerSpec{
-					TeamID:   1,
+					TeamID:    1,
 					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 				},
 				delegate,
@@ -2464,7 +2464,7 @@ var _ = Describe("Container", func() {
 				db.NewFixedHandleContainerOwner("dup-handle"),
 				db.ContainerMetadata{Type: db.ContainerTypeTask},
 				runtime.ContainerSpec{
-					TeamID:   1,
+					TeamID:    1,
 					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 				},
 				delegate,
@@ -2489,7 +2489,7 @@ var _ = Describe("Container", func() {
 				db.NewFixedHandleContainerOwner("stale-creating-handle"),
 				db.ContainerMetadata{Type: db.ContainerTypeTask},
 				runtime.ContainerSpec{
-					TeamID:   1,
+					TeamID:    1,
 					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 				},
 				delegate,
@@ -2517,7 +2517,7 @@ var _ = Describe("Container", func() {
 				db.NewFixedHandleContainerOwner("stale-fail-handle"),
 				db.ContainerMetadata{Type: db.ContainerTypeTask},
 				runtime.ContainerSpec{
-					TeamID:   1,
+					TeamID:    1,
 					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 				},
 				delegate,
@@ -2561,8 +2561,6 @@ func (a *fakeArtifact) StreamOut(_ context.Context, _ string, _ compression.Comp
 func (a *fakeArtifact) Handle() string { return a.handle }
 func (a *fakeArtifact) Source() string { return a.source }
 
-
-
 var _ = Describe("Concurrent container operations", func() {
 	var (
 		fakeDBWorker  *dbfakes.FakeWorker
@@ -2590,8 +2588,8 @@ var _ = Describe("Concurrent container operations", func() {
 			db.NewFixedHandleContainerOwner("concurrent-props-handle"),
 			db.ContainerMetadata{Type: db.ContainerTypeTask},
 			runtime.ContainerSpec{
-				TeamID:   1,
-				Dir:      "/workdir",
+				TeamID:    1,
+				Dir:       "/workdir",
 				ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 			},
 			delegate,
@@ -2658,8 +2656,8 @@ var _ = Describe("Concurrent container operations", func() {
 					db.NewFixedHandleContainerOwner(fmt.Sprintf("concurrent-handle-%d", n)),
 					db.ContainerMetadata{Type: db.ContainerTypeTask},
 					runtime.ContainerSpec{
-						TeamID:   1,
-						Dir:      "/workdir",
+						TeamID:    1,
+						Dir:       "/workdir",
 						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 					},
 					delegate,
@@ -2699,8 +2697,8 @@ var _ = Describe("Concurrent container operations", func() {
 					db.NewFixedHandleContainerOwner(handle),
 					db.ContainerMetadata{Type: db.ContainerTypeTask},
 					runtime.ContainerSpec{
-						TeamID:   1,
-						Dir:      "/workdir",
+						TeamID:    1,
+						Dir:       "/workdir",
 						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 					},
 					delegate,
@@ -2762,8 +2760,8 @@ var _ = Describe("Run with sidecar containers", func() {
 				db.NewFixedHandleContainerOwner("no-sidecar-handle"),
 				db.ContainerMetadata{Type: db.ContainerTypeTask},
 				runtime.ContainerSpec{
-					TeamID:   1,
-					Dir:      "/workdir",
+					TeamID:    1,
+					Dir:       "/workdir",
 					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 				},
 				delegate,
@@ -2798,8 +2796,8 @@ var _ = Describe("Run with sidecar containers", func() {
 				db.NewFixedHandleContainerOwner("one-sidecar-handle"),
 				db.ContainerMetadata{Type: db.ContainerTypeTask},
 				runtime.ContainerSpec{
-					TeamID:   1,
-					Dir:      "/tmp/build/workdir",
+					TeamID:    1,
+					Dir:       "/tmp/build/workdir",
 					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 					Inputs: []runtime.Input{
 						{DestinationPath: "/tmp/build/workdir/my-repo"},
@@ -2878,8 +2876,8 @@ var _ = Describe("Run with sidecar containers", func() {
 				db.NewFixedHandleContainerOwner("multi-sidecar-handle"),
 				db.ContainerMetadata{Type: db.ContainerTypeTask},
 				runtime.ContainerSpec{
-					TeamID:   1,
-					Dir:      "/tmp/build/workdir",
+					TeamID:    1,
+					Dir:       "/tmp/build/workdir",
 					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 					Sidecars: []atc.SidecarConfig{
 						{
@@ -2928,8 +2926,8 @@ var _ = Describe("Run with sidecar containers", func() {
 				db.NewFixedHandleContainerOwner("sidecar-full-handle"),
 				db.ContainerMetadata{Type: db.ContainerTypeTask},
 				runtime.ContainerSpec{
-					TeamID:   1,
-					Dir:      "/workdir",
+					TeamID:    1,
+					Dir:       "/workdir",
 					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 					Sidecars: []atc.SidecarConfig{
 						{
@@ -2998,8 +2996,8 @@ var _ = Describe("Run with sidecar containers", func() {
 				db.NewFixedHandleContainerOwner("sidecar-artifact-handle"),
 				db.ContainerMetadata{Type: db.ContainerTypeTask},
 				runtime.ContainerSpec{
-					TeamID:   1,
-					Dir:      "/tmp/build/workdir",
+					TeamID:    1,
+					Dir:       "/tmp/build/workdir",
 					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 					Inputs: []runtime.Input{
 						{DestinationPath: "/tmp/build/workdir/my-input"},
@@ -3051,8 +3049,8 @@ var _ = Describe("Run with sidecar containers", func() {
 				db.NewFixedHandleContainerOwner("sidecar-inherit-dir-handle"),
 				db.ContainerMetadata{Type: db.ContainerTypeTask},
 				runtime.ContainerSpec{
-					TeamID:   1,
-					Dir:      "/tmp/build/workdir",
+					TeamID:    1,
+					Dir:       "/tmp/build/workdir",
 					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 					Inputs: []runtime.Input{
 						{DestinationPath: "/tmp/build/workdir/my-input"},
@@ -3102,8 +3100,8 @@ var _ = Describe("Run with sidecar containers", func() {
 				db.NewFixedHandleContainerOwner("sidecar-own-dir-handle"),
 				db.ContainerMetadata{Type: db.ContainerTypeTask},
 				runtime.ContainerSpec{
-					TeamID:   1,
-					Dir:      "/tmp/build/workdir",
+					TeamID:    1,
+					Dir:       "/tmp/build/workdir",
 					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 					Sidecars: []atc.SidecarConfig{
 						{
@@ -3155,8 +3153,8 @@ var _ = Describe("Run with sidecar containers", func() {
 				db.NewFixedHandleContainerOwner("sidecar-exec-handle"),
 				db.ContainerMetadata{Type: db.ContainerTypeTask},
 				runtime.ContainerSpec{
-					TeamID:   1,
-					Dir:      "/workdir",
+					TeamID:    1,
+					Dir:       "/workdir",
 					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 					Sidecars: []atc.SidecarConfig{
 						{
@@ -3207,8 +3205,8 @@ var _ = Describe("Run with sidecar containers", func() {
 				db.NewFixedHandleContainerOwner("sidecar-prefix-handle"),
 				db.ContainerMetadata{Type: db.ContainerTypeTask},
 				runtime.ContainerSpec{
-					TeamID:   1,
-					Dir:      "/workdir",
+					TeamID:    1,
+					Dir:       "/workdir",
 					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 					Sidecars: []atc.SidecarConfig{
 						{

@@ -12,6 +12,7 @@ import (
 
 	"code.cloudfoundry.org/lager/v3"
 	"code.cloudfoundry.org/lager/v3/lagerctx"
+	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/metric"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/tracing"
@@ -350,10 +351,10 @@ func (p *Process) copyWithPrefix(r io.Reader, prefix string) {
 // terminalWaitingReasons is the set of container waiting reasons that indicate
 // a terminal failure from which the pod will never recover.
 var terminalWaitingReasons = map[string]bool{
-	"ImagePullBackOff":  true,
-	"ErrImagePull":      true,
-	"CrashLoopBackOff":  true,
-	"InvalidImageName":  true,
+	"ImagePullBackOff":           true,
+	"ErrImagePull":               true,
+	"CrashLoopBackOff":           true,
+	"InvalidImageName":           true,
 	"CreateContainerConfigError": true,
 }
 
@@ -724,6 +725,15 @@ func (p *execProcess) ID() string {
 	return p.id
 }
 
+// supervised reports whether this process should run under the in-pod task
+// supervisor. Only task steps qualify: get/put/check use the stdin/stdout
+// resource protocol, which the supervisor's log-file indirection would break.
+func (p *execProcess) supervised() bool {
+	return p.container != nil &&
+		p.container.metadata.Type == db.ContainerTypeTask &&
+		p.processIO.Stdin == nil
+}
+
 // Wait waits for the pause Pod to reach Running state, streams input
 // artifacts into the pod, then exec-s the actual command with ProcessIO
 // piped through.
@@ -788,6 +798,13 @@ func (p *execProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 
 	// Build the command: [path, arg1, arg2, ...]
 	command := append([]string{p.processSpec.Path}, p.processSpec.Args...)
+
+	// Task steps run under an in-pod supervisor so that a web restart can
+	// re-exec the same command and take over the still-running process
+	// instead of starting a second copy (see supervisor.go).
+	if p.supervised() {
+		command = supervisorCommand(p.id, p.processSpec)
+	}
 
 	// Exec with retry: if the SPDY exec fails because the pause pod was
 	// terminated (e.g. GC reaper cleaned up a previous check's container),

@@ -107,9 +107,9 @@ var _ = Describe("Integration", func() {
 			Expect(err).ToNot(HaveOccurred())
 			Expect(result.ExitStatus).To(Equal(0))
 
-			By("verifying the real command was exec'd via the executor")
+			By("verifying the real command was exec'd under the task supervisor")
 			Expect(fakeExecutor.execCalls).To(HaveLen(1))
-			Expect(fakeExecutor.execCalls[0].command).To(Equal([]string{"/bin/sh", "-c", "echo hello world && exit 0"}))
+			expectSupervisedExec(fakeExecutor.execCalls[0].command, `'/bin/sh' '-c' 'echo hello world && exit 0'`)
 
 			By("verifying exit status is stored in container properties")
 			props, err := container.Properties()
@@ -135,6 +135,61 @@ var _ = Describe("Integration", func() {
 			result, err := process.Wait(ctx)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(result.ExitStatus).To(Equal(2))
+		})
+	})
+
+	Describe("task reattach after web restart", func() {
+		It("re-execs the identical supervisor command against the surviving pod", func() {
+			spec := runtime.ContainerSpec{
+				TeamID: 1,
+				Dir:    "/tmp/build/workdir",
+				ImageSpec: runtime.ImageSpec{
+					ImageURL: "docker:///ubuntu:22.04",
+				},
+			}
+			processSpec := runtime.ProcessSpec{
+				Path: "/bin/sh",
+				Args: []string{"-c", "make release"},
+				Dir:  "/tmp/build/workdir",
+			}
+
+			By("web 1: running the task")
+			container1 := createContainer("task-reattach", db.ContainerTypeTask, spec)
+			process1, err := container1.Run(ctx, processSpec, runtime.ProcessIO{})
+			Expect(err).ToNot(HaveOccurred())
+			simulatePodRunning("task-reattach")
+			_, err = process1.Wait(ctx)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(fakeExecutor.execCalls).To(HaveLen(1))
+			web1Command := fakeExecutor.execCalls[0].command
+
+			By("simulating web 1 dying before the exit status was recorded")
+			pod, err := fakeClientset.CoreV1().Pods("ci-namespace").Get(ctx, "task-reattach", metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			pod.Annotations = nil
+			_, err = fakeClientset.CoreV1().Pods("ci-namespace").Update(ctx, pod, metav1.UpdateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			By("web 2: a fresh container for the same handle cannot attach (no completion status)")
+			container2 := createContainer("task-reattach", db.ContainerTypeTask, spec)
+			_, err = container2.Attach(ctx, "task-reattach", runtime.ProcessIO{})
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("no completion status"))
+
+			By("web 2: Run reuses the surviving pod and re-execs the identical command")
+			process2, err := container2.Run(ctx, processSpec, runtime.ProcessIO{})
+			Expect(err).ToNot(HaveOccurred())
+			_, err = process2.Wait(ctx)
+			Expect(err).ToNot(HaveOccurred())
+
+			pods, err := fakeClientset.CoreV1().Pods("ci-namespace").List(ctx, metav1.ListOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(pods.Items).To(HaveLen(1), "no second pod may be created on reattach")
+
+			Expect(fakeExecutor.execCalls).To(HaveLen(2))
+			Expect(fakeExecutor.execCalls[1].command).To(Equal(web1Command),
+				"re-exec must be byte-identical so the supervisor resumes instead of restarting")
+			expectSupervisedExec(fakeExecutor.execCalls[1].command, `'/bin/sh' '-c' 'make release'`)
 		})
 	})
 
@@ -255,9 +310,9 @@ var _ = Describe("Integration", func() {
 
 		It("returns an error when the context is cancelled during an exec-mode resource step", func() {
 			container := createContainer("cancel-resource", db.ContainerTypeGet, runtime.ContainerSpec{
-				TeamID:   1,
+				TeamID:    1,
 				ImageSpec: runtime.ImageSpec{ResourceType: "git"},
-				Type:     db.ContainerTypeGet,
+				Type:      db.ContainerTypeGet,
 			})
 
 			// Make the executor block by returning context error
@@ -333,9 +388,9 @@ var _ = Describe("Integration", func() {
 
 		It("detects pod eviction in a resource get step and returns a diagnostic error", func() {
 			container := createContainer("get-evicted", db.ContainerTypeGet, runtime.ContainerSpec{
-				TeamID:   1,
+				TeamID:    1,
 				ImageSpec: runtime.ImageSpec{ResourceType: "git"},
-				Type:     db.ContainerTypeGet,
+				Type:      db.ContainerTypeGet,
 			})
 
 			fakeExecutor.execStdout = []byte(`{}`)
@@ -496,7 +551,7 @@ var _ = Describe("Integration", func() {
 
 			By("verifying the command was exec'd with the correct working dir")
 			Expect(fakeExecutor.execCalls).To(HaveLen(1))
-			Expect(fakeExecutor.execCalls[0].command).To(Equal([]string{"/bin/sh", "-c", "go build -o /tmp/build/workdir/binary/app ./..."}))
+			expectSupervisedExec(fakeExecutor.execCalls[0].command, `'/bin/sh' '-c' 'go build -o /tmp/build/workdir/binary/app ./...'`)
 		})
 
 		It("passes inputs from a get step to a put step via volume mounts", func() {
@@ -633,14 +688,14 @@ var _ = Describe("Integration", func() {
 
 			By("verifying the real command was exec'd in the main container")
 			Expect(fakeExecutor.execCalls).To(HaveLen(1))
-			Expect(fakeExecutor.execCalls[0].command).To(Equal([]string{"/bin/sh", "-c", "npm test"}))
+			expectSupervisedExec(fakeExecutor.execCalls[0].command, `'/bin/sh' '-c' 'npm test'`)
 			Expect(fakeExecutor.execCalls[0].containerName).To(Equal("main"))
 		})
 
 		It("runs a task with multiple sidecars", func() {
 			container := createContainer("task-multi-sidecar", db.ContainerTypeTask, runtime.ContainerSpec{
-				TeamID:   1,
-				Dir:      "/tmp/build/workdir",
+				TeamID:    1,
+				Dir:       "/tmp/build/workdir",
 				ImageSpec: runtime.ImageSpec{ImageURL: "docker:///python:3.12"},
 				Sidecars: []atc.SidecarConfig{
 					{

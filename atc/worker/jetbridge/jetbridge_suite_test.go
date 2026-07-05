@@ -32,3 +32,14 @@ func setupFakeDBContainer(fakeDBWorker *dbfakes.FakeWorker, handle string) {
 	fakeDBWorker.FindContainerReturns(nil, nil, nil)
 	fakeDBWorker.CreateContainerReturns(fakeCreatingContainer, nil)
 }
+
+// expectSupervisedExec asserts that a task exec command was wrapped in the
+// in-pod task supervisor, embedding the original command as quoted words.
+// quotedCommand is the shell-quoted form, e.g. `'/bin/sh' '-c' 'npm test'`.
+func expectSupervisedExec(command []string, quotedCommand string) {
+	ExpectWithOffset(1, command).To(HaveLen(3))
+	ExpectWithOffset(1, command[0]).To(Equal("sh"))
+	ExpectWithOffset(1, command[1]).To(Equal("-c"))
+	ExpectWithOffset(1, command[2]).To(ContainSubstring(quotedCommand))
+	ExpectWithOffset(1, command[2]).To(ContainSubstring(`trap '' HUP`))
+}

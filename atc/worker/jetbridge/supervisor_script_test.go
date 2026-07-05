@@ -1,0 +1,117 @@
+package jetbridge
+
+import (
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"syscall"
+	"time"
+
+	"github.com/concourse/concourse/atc/runtime"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+)
+
+// These specs execute the supervisor script with the local POSIX sh to
+// verify its runtime semantics: exit-code propagation, taking over a
+// still-running command without restarting it, and log replay after
+// completion. They spawn real processes but need no cluster.
+var _ = Describe("Task exec supervisor script execution", func() {
+	var stateID string
+
+	// runSupervisor executes the supervisor for the given shell command and
+	// returns combined output and exit code once it completes.
+	runSupervisor := func(shellCommand string) (string, int) {
+		cmd := supervisorCommand(stateID, runtime.ProcessSpec{
+			Path: "sh",
+			Args: []string{"-c", shellCommand},
+		})
+		out, err := exec.Command(cmd[0], cmd[1], cmd[2]).CombinedOutput()
+		exitCode := 0
+		if err != nil {
+			exitErr, ok := err.(*exec.ExitError)
+			Expect(ok).To(BeTrue(), "unexpected non-exit error: %v, output: %s", err, out)
+			exitCode = exitErr.ExitCode()
+		}
+		return string(out), exitCode
+	}
+
+	BeforeEach(func() {
+		stateID = fmt.Sprintf("test-%d-%d-%d", os.Getpid(), GinkgoParallelProcess(), time.Now().UnixNano())
+	})
+
+	AfterEach(func() {
+		os.RemoveAll(filepath.Join("/tmp", "concourse-task-"+sanitizeForPath(stateID)))
+	})
+
+	It("runs the command, streams its output, and propagates the exit code", func() {
+		out, code := runSupervisor("echo hello from task; exit 7")
+		Expect(out).To(ContainSubstring("hello from task"))
+		Expect(code).To(Equal(7))
+	})
+
+	It("takes over a still-running command without restarting it", func() {
+		// web 1: start the supervisor, then kill it mid-command (SIGKILL,
+		// like the web process dying). The command must survive.
+		cmd1 := supervisorCommand(stateID, runtime.ProcessSpec{
+			Path: "sh",
+			Args: []string{"-c", "echo run-marker; sleep 3; echo finished; exit 5"},
+		})
+		web1 := exec.Command(cmd1[0], cmd1[1], cmd1[2])
+		Expect(web1.Start()).To(Succeed())
+
+		// Give the supervisor time to start the command, then kill web 1.
+		time.Sleep(1500 * time.Millisecond)
+		Expect(web1.Process.Kill()).To(Succeed())
+		_ = web1.Wait()
+
+		// web 2: re-exec the identical supervisor command. It must attach
+		// to the running command (not start a second copy) and report the
+		// real exit code.
+		out, code := runSupervisor("echo run-marker; sleep 3; echo finished; exit 5")
+		Expect(code).To(Equal(5))
+		Expect(out).To(ContainSubstring("finished"))
+		Expect(strings.Count(out, "run-marker")).To(Equal(1), "command must not be restarted on takeover")
+	})
+
+	It("replays the log and exit code when the command already completed", func() {
+		out1, code1 := runSupervisor("echo one-shot-output; exit 3")
+		Expect(code1).To(Equal(3))
+		Expect(out1).To(ContainSubstring("one-shot-output"))
+
+		out2, code2 := runSupervisor("echo one-shot-output; exit 3")
+		Expect(code2).To(Equal(3))
+		Expect(out2).To(ContainSubstring("one-shot-output"))
+
+		// The command must not have run twice: the log holds exactly one
+		// occurrence even after two supervisor invocations.
+		logBytes, err := os.ReadFile(filepath.Join("/tmp", "concourse-task-"+sanitizeForPath(stateID), "log"))
+		Expect(err).ToNot(HaveOccurred())
+		Expect(strings.Count(string(logBytes), "one-shot-output")).To(Equal(1))
+	})
+
+	It("shields the command from SIGHUP so pty teardown cannot kill it", func() {
+		// Send HUP to the runner subshell directly; a HUP-shielded runner
+		// keeps going and records its exit code.
+		cmd := supervisorCommand(stateID, runtime.ProcessSpec{
+			Path: "sh",
+			Args: []string{"-c", "sleep 2; exit 9"},
+		})
+		web := exec.Command(cmd[0], cmd[1], cmd[2])
+		Expect(web.Start()).To(Succeed())
+
+		time.Sleep(1 * time.Second)
+		pidBytes, err := os.ReadFile(filepath.Join("/tmp", "concourse-task-"+sanitizeForPath(stateID), "pid"))
+		Expect(err).ToNot(HaveOccurred())
+		var runnerPid int
+		_, err = fmt.Sscanf(strings.TrimSpace(string(pidBytes)), "%d", &runnerPid)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(syscall.Kill(runnerPid, syscall.SIGHUP)).To(Succeed())
+
+		Expect(web.Wait()).ToNot(Succeed()) // exit 9 surfaces as ExitError
+		Expect(web.ProcessState.ExitCode()).To(Equal(9))
+	})
+})
