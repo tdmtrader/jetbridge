@@ -40,7 +40,8 @@ func (wrappa *APIAuthWrappa) Wrap(handlers rata.Handlers) rata.Handlers {
 		switch name {
 		// pipeline is public or authorized
 		case atc.GetBuild,
-			atc.BuildResources:
+			atc.BuildResources,
+			atc.GetBuildAgentReviews:
 			newHandler = wrappa.checkBuildReadAccessHandlerFactory.AnyJobHandler(handler, rejector)
 
 		// pipeline and job are public or authorized
@@ -81,8 +82,7 @@ func (wrappa *APIAuthWrappa) Wrap(handlers rata.Handlers) rata.Handlers {
 			atc.DeleteWorker,
 			atc.ListTeamBuilds,
 			atc.GetUser,
-			atc.MCPEndpoint,
-			atc.GetBuildAgentReviews:
+			atc.MCPEndpoint:
 			newHandler = auth.CheckAuthenticationHandler(handler, rejector)
 
 		// unauthenticated / delegating to handler (validate token if provided)

@@ -111,4 +111,5 @@ var DefaultRoles = map[string]string{
 	atc.ClassifyAgentVerdict:    MemberRole,
 	atc.GetAgentReviewFindings:  ViewerRole,
 	atc.ListTeamAgentReviews:    ViewerRole,
+	atc.GetBuildAgentReviews:    ViewerRole,
 }

@@ -93,6 +93,36 @@ var _ = Describe("Agent Reviews API", func() {
 			Expect(found).To(BeTrue(), "expected to find the itest/deadbeef review in team listing")
 		}
 	})
+
+	It("rejects a user with no access to the build's team", func() {
+		client := login(atcURL, "test", "test")
+
+		build, err := client.Team("main").CreateBuild(atc.Plan{})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(build.ID).To(BeNumerically(">", 0))
+
+		// v-user only has a role on "some-team", not "main", so it must
+		// be rejected when reading a main-team build's agent reviews.
+		setupTeam(atcURL, atc.Team{
+			Name: "some-team",
+			Auth: atc.TeamAuth{
+				"viewer": map[string][]string{
+					"users":  []string{"local:v-user"},
+					"groups": []string{},
+				},
+			},
+		})
+
+		otherTeamClient := login(atcURL, "v-user", "v-user")
+		httpClient := otherTeamClient.HTTPClient()
+		req, err := http.NewRequest("GET", atcURL+"/api/v1/builds/"+strconv.Itoa(build.ID)+"/agent-reviews", nil)
+		Expect(err).NotTo(HaveOccurred())
+
+		resp, err := httpClient.Do(req)
+		Expect(err).NotTo(HaveOccurred())
+		defer resp.Body.Close()
+		Expect(resp.StatusCode).To(Equal(http.StatusForbidden))
+	})
 })
 
 // plainHTTPClient is a dedicated client for hitting the ATC directly.
