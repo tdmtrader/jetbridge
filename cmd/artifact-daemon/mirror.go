@@ -2,7 +2,6 @@ package main
 
 import (
 	"archive/tar"
-	"bytes"
 	"context"
 	"fmt"
 	"hash/fnv"
@@ -11,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -165,39 +165,27 @@ type mirrorPeerOutcome struct {
 // returns a top-level error; per-peer outcomes are reported via the return
 // value.
 type mirrorJob struct {
-	key            string        // artifact key (e.g., "handle/output")
-	sourceDir      string        // absolute path to the directory to mirror
-	peers          []string      // peer hosts (no port)
-	port           int           // daemon port on each peer
-	scheme         string        // "http" or "https"
-	client         *http.Client  // pre-built client (TLS-aware where needed)
+	key            string       // artifact key (e.g., "handle/output")
+	sourceDir      string       // absolute path to the directory to mirror
+	peers          []string     // peer hosts (no port)
+	port           int          // daemon port on each peer
+	scheme         string       // "http" or "https"
+	client         *http.Client // pre-built client (TLS-aware where needed)
 	logger         lager.Logger
 	perPeerTimeout time.Duration // per-peer request timeout
 }
 
 // Run mirrors the source directory to every peer concurrently. Returns a
 // per-peer outcome list; never returns an error.
+//
+// Each peer gets its own tar walk streamed through an io.Pipe — the tar is
+// never staged in memory. Buffering it (concurrency × artifact size of heap)
+// is what drove daemon RSS past 4GB; disk reads are page-cache-cheap, so one
+// walk per peer costs far less than one artifact-sized buffer per job.
 func (j *mirrorJob) Run(ctx context.Context) []mirrorPeerOutcome {
 	if len(j.peers) == 0 {
 		return nil
 	}
-
-	// Tar the source once into a buffer so we can fan out cheaply. Step
-	// outputs are typically small enough that holding the tar in memory is
-	// fine; for very large artifacts the consumer's stream-in path is the
-	// bottleneck, not our buffer.
-	var tarBuf bytes.Buffer
-	if err := tarDir(&tarBuf, j.sourceDir); err != nil {
-		j.logger.Error("tar-source-dir-failed", err, lager.Data{
-			"src": j.sourceDir,
-		})
-		out := make([]mirrorPeerOutcome, 0, len(j.peers))
-		for _, p := range j.peers {
-			out = append(out, mirrorPeerOutcome{Peer: p, Status: "unreachable", Err: err})
-		}
-		return out
-	}
-	body := tarBuf.Bytes()
 
 	out := make([]mirrorPeerOutcome, len(j.peers))
 	var wg sync.WaitGroup
@@ -205,14 +193,14 @@ func (j *mirrorJob) Run(ctx context.Context) []mirrorPeerOutcome {
 		wg.Add(1)
 		go func(idx int, peerHost string) {
 			defer wg.Done()
-			out[idx] = j.putToPeer(ctx, peerHost, body)
+			out[idx] = j.putToPeer(ctx, peerHost)
 		}(i, peer)
 	}
 	wg.Wait()
 	return out
 }
 
-func (j *mirrorJob) putToPeer(ctx context.Context, peer string, body []byte) mirrorPeerOutcome {
+func (j *mirrorJob) putToPeer(ctx context.Context, peer string) mirrorPeerOutcome {
 	timeout := j.perPeerTimeout
 	if timeout == 0 {
 		timeout = 5 * time.Minute
@@ -220,9 +208,18 @@ func (j *mirrorJob) putToPeer(ctx context.Context, peer string, body []byte) mir
 	pctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
+	// Stream the tar through a pipe. A tar error surfaces through
+	// CloseWithError as the request body error; on an early peer response
+	// the transport closes the body, unblocking the writer goroutine.
+	pr, pw := io.Pipe()
+	go func() {
+		pw.CloseWithError(tarDir(pw, j.sourceDir))
+	}()
+
 	url := fmt.Sprintf("%s://%s:%d/stream-in/%s", j.scheme, peer, j.port, j.key)
-	req, err := http.NewRequestWithContext(pctx, http.MethodPut, url, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(pctx, http.MethodPut, url, pr)
 	if err != nil {
+		pr.Close()
 		return mirrorPeerOutcome{Peer: peer, Status: "unreachable", Err: err}
 	}
 	req.Header.Set("Content-Type", "application/x-tar")
@@ -433,6 +430,24 @@ func (m *Mirror) recordStatus(key string, outcomes []mirrorPeerOutcome) {
 	}
 	for _, o := range outcomes {
 		m.status[key][o.Peer] = o.Status
+	}
+}
+
+// ForgetHandle prunes mirror status entries for all keys under the given
+// step handle (keys are "handle/output"). Called when the sweeper removes a
+// step directory so the status map doesn't grow for the daemon's lifetime.
+// Safe to call on a nil receiver.
+func (m *Mirror) ForgetHandle(handle string) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	prefix := handle + "/"
+	for key := range m.status {
+		if strings.HasPrefix(key, prefix) {
+			delete(m.status, key)
+		}
 	}
 }
 

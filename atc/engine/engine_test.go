@@ -222,6 +222,14 @@ var _ = Describe("Engine", func() {
 											Expect(fakeBuild.FinishCallCount()).To(Equal(1))
 											Expect(fakeBuild.FinishArgsForCall(0)).To(Equal(db.BuildStatusErrored))
 										})
+
+										It("saves an error event explaining the drain", func() {
+											waitGroup.Wait()
+											Expect(fakeBuild.SaveEventCallCount()).To(Equal(1))
+											ev := fakeBuild.SaveEventArgsForCall(0)
+											Expect(ev.EventType()).To(Equal(event.EventTypeError))
+											Expect(ev.(event.Error).Message).To(Equal("build released during drain"))
+										})
 									})
 								})
 
@@ -272,6 +280,11 @@ var _ = Describe("Engine", func() {
 										Expect(fakeBuild.FinishCallCount()).To(Equal(1))
 										Expect(fakeBuild.FinishArgsForCall(0)).To(Equal(db.BuildStatusFailed))
 									})
+
+									It("does not save an error event", func() {
+										waitGroup.Wait()
+										Expect(fakeBuild.SaveEventCallCount()).To(Equal(0))
+									})
 								})
 
 								Context("when the build finishes with error", func() {
@@ -284,6 +297,14 @@ var _ = Describe("Engine", func() {
 											waitGroup.Wait()
 											Expect(fakeBuild.FinishCallCount()).To(Equal(1))
 											Expect(fakeBuild.FinishArgsForCall(0)).To(Equal(db.BuildStatusErrored))
+										})
+
+										It("saves an error event with the message", func() {
+											waitGroup.Wait()
+											Expect(fakeBuild.SaveEventCallCount()).To(Equal(1))
+											ev := fakeBuild.SaveEventArgsForCall(0)
+											Expect(ev.EventType()).To(Equal(event.EventTypeError))
+											Expect(ev.(event.Error).Message).To(Equal("nope"))
 										})
 									})
 
@@ -302,6 +323,14 @@ var _ = Describe("Engine", func() {
 												Expect(fakeBuild.FinishCallCount()).To(Equal(1))
 												Expect(fakeBuild.FinishArgsForCall(0)).To(Equal(db.BuildStatusErrored))
 											})
+
+											It("saves an error event with the unwrapped cause", func() {
+												waitGroup.Wait()
+												Expect(fakeBuild.SaveEventCallCount()).To(Equal(1))
+												ev := fakeBuild.SaveEventArgsForCall(0)
+												Expect(ev.EventType()).To(Equal(event.EventTypeError))
+												Expect(ev.(event.Error).Message).To(Equal("nope"))
+											})
 										})
 
 										Context("when this is a normal build", func() {
@@ -316,6 +345,11 @@ var _ = Describe("Engine", func() {
 								Context("when the build finishes with cancelled error", func() {
 									BeforeEach(func() {
 										fakeStep.RunReturns(false, context.Canceled)
+									})
+
+									It("does not save an error event", func() {
+										waitGroup.Wait()
+										Expect(fakeBuild.SaveEventCallCount()).To(Equal(0))
 									})
 
 									It("finishes the build", func() {

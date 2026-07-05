@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"code.cloudfoundry.org/lager/v3/lagertest"
 
@@ -961,3 +962,213 @@ func TestStreamIn_MirrorTriggerOmitted_StillSucceeds(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Stream-in atomicity: partially-extracted artifacts must never be visible
+// at their final path. Readers (resolve, GET/HEAD, peer probes) treat any
+// existing steps/{key} dir as a complete artifact, so extraction goes to a
+// temp dir and is renamed into place only on success.
+// ---------------------------------------------------------------------------
+
+// A truncated upload (client died mid-body) must not leave a partial
+// steps/{key} directory that resolve/GET would serve as authoritative.
+func TestStreamIn_TruncatedUpload_LeavesNoPartialDir(t *testing.T) {
+	ts, storagePath := setupServer(t)
+
+	// A tar whose header claims 1024 bytes but whose body is cut short.
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	if err := tw.WriteHeader(&tar.Header{Name: "cut.bin", Mode: 0644, Size: 1024, Typeflag: tar.TypeReg}); err != nil {
+		t.Fatal(err)
+	}
+	tw.Write(bytes.Repeat([]byte("x"), 512))
+	truncated := buf.Bytes() // no tw.Close(), body ends mid-entry
+
+	req, _ := http.NewRequest(http.MethodPut, ts.URL+"/stream-in/partial-1", bytes.NewReader(truncated))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("PUT /stream-in/: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode == http.StatusCreated {
+		t.Fatal("expected truncated upload to be rejected")
+	}
+
+	if _, err := os.Stat(filepath.Join(storagePath, "steps", "partial-1")); !os.IsNotExist(err) {
+		t.Errorf("expected no steps/partial-1 dir after failed upload, stat err: %v", err)
+	}
+}
+
+// While an upload is in flight, the final path must not exist yet — a
+// concurrent resolve or peer probe must miss, not serve a partial tree.
+func TestStreamIn_InFlightUpload_NotVisibleAtFinalPath(t *testing.T) {
+	ts, storagePath := setupServer(t)
+
+	pr, pw := io.Pipe()
+	respCh := make(chan *http.Response, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		req, _ := http.NewRequest(http.MethodPut, ts.URL+"/stream-in/inflight-1", pr)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			errCh <- err
+			return
+		}
+		respCh <- resp
+	}()
+
+	// Send a complete first file, then stall with the connection open.
+	tw := tar.NewWriter(pw)
+	if err := tw.WriteHeader(&tar.Header{Name: "first.txt", Mode: 0644, Size: 5, Typeflag: tar.TypeReg}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write([]byte("hello")); err != nil {
+		t.Fatal(err)
+	}
+	tw.Flush()
+
+	// Give the server time to have extracted first.txt somewhere.
+	time.Sleep(300 * time.Millisecond)
+
+	if _, err := os.Stat(filepath.Join(storagePath, "steps", "inflight-1")); !os.IsNotExist(err) {
+		t.Errorf("steps/inflight-1 visible during in-flight upload, stat err: %v", err)
+	}
+
+	// Complete the upload; now it must appear, fully formed.
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	pw.Close()
+
+	select {
+	case resp := <-respCh:
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusCreated {
+			body, _ := io.ReadAll(resp.Body)
+			t.Fatalf("expected 201, got %d: %s", resp.StatusCode, string(body))
+		}
+	case err := <-errCh:
+		t.Fatalf("PUT failed: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(storagePath, "steps", "inflight-1", "first.txt"))
+	if err != nil {
+		t.Fatalf("completed artifact missing: %v", err)
+	}
+	if string(data) != "hello" {
+		t.Errorf("expected 'hello', got %q", string(data))
+	}
+}
+
+// PUT /artifacts/ writes through a temp file + rename so an in-flight or
+// failed upload never exposes a truncated file at the final path.
+func TestPutArtifact_TruncatedUpload_LeavesNoPartialFile(t *testing.T) {
+	ts, storagePath := setupServer(t)
+
+	pr, pw := io.Pipe()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		req, _ := http.NewRequest(http.MethodPut, ts.URL+"/artifacts/broken.tar", pr)
+		resp, err := http.DefaultClient.Do(req)
+		if err == nil {
+			resp.Body.Close()
+		}
+	}()
+
+	// Write part of the body, then stall with the connection open. The
+	// handler is now mid-copy; the final path must not exist yet.
+	if _, err := pw.Write([]byte("partial")); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(300 * time.Millisecond)
+
+	finalPath := filepath.Join(storagePath, "broken.tar")
+	if _, err := os.Stat(finalPath); !os.IsNotExist(err) {
+		t.Errorf("broken.tar visible during in-flight upload, stat err: %v", err)
+	}
+
+	// Kill the upload mid-body; no partial file may remain.
+	pw.CloseWithError(io.ErrUnexpectedEOF)
+	<-done
+
+	if _, err := os.Stat(finalPath); !os.IsNotExist(err) {
+		t.Errorf("expected no broken.tar after failed upload, stat err: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// tarDirectory error propagation: a failure mid-stream must abort the
+// connection, not deliver a clean-looking truncated tar.
+// ---------------------------------------------------------------------------
+
+func TestGetArtifact_TarFailureMidStream_AbortsConnection(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("chmod 000 is not effective as root")
+	}
+	ts, storagePath := setupServer(t)
+
+	dir := filepath.Join(storagePath, "steps", "handle-x", "output")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	// First entry streams fine; the second is unreadable, failing the walk
+	// after the 200 header and some body bytes are already out.
+	if err := os.WriteFile(filepath.Join(dir, "a-first.txt"), []byte("fine"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "b-unreadable.txt"), []byte("secret"), 0000); err != nil {
+		t.Fatal(err)
+	}
+
+	// The client must observe a hard failure — at the request itself (abort
+	// before the buffered response flushed) or while reading the body (abort
+	// mid-stream). What it must never get is a clean-looking truncated tar.
+	resp, err := http.Get(ts.URL + "/artifacts/steps/handle-x/output")
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
+
+	if _, err := io.ReadAll(resp.Body); err == nil {
+		t.Error("expected reading the body to fail when tarring errors mid-stream; got a clean (truncated) tar instead")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Sweeper read-touch: serving an artifact refreshes its step dir mtime so
+// actively-used artifacts aren't deleted at the TTL mid-build.
+// ---------------------------------------------------------------------------
+
+func TestResolve_TouchesStepDirSoSweeperSpares(t *testing.T) {
+	ts, storagePath := setupServer(t)
+
+	handleDir := filepath.Join(storagePath, "steps", "old-handle")
+	outputDir := filepath.Join(handleDir, "output")
+	if err := os.MkdirAll(outputDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outputDir, "data.txt"), []byte("keep me"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	past := time.Now().Add(-3 * time.Hour)
+	os.Chtimes(handleDir, past, past)
+
+	// Resolve the artifact — this read must refresh the handle dir mtime.
+	dest := filepath.Join(t.TempDir(), "dest")
+	body := strings.NewReader(`{"key":"old-handle/output","dest":"` + dest + `"}`)
+	resp, err := http.Post(ts.URL+"/resolve", "application/json", body)
+	if err != nil {
+		t.Fatalf("POST /resolve: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected resolve to succeed, got %d", resp.StatusCode)
+	}
+
+	sweeper := daemon.NewSweeper(lagertest.NewTestLogger("sweeper"), storagePath, 2*time.Hour, 5*time.Minute, nil)
+	sweeper.SweepOnce()
+
+	if _, err := os.Stat(outputDir); err != nil {
+		t.Errorf("expected recently-read artifact to survive the sweep: %v", err)
+	}
+}

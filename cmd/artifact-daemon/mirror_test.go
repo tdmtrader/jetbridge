@@ -1,7 +1,10 @@
 package main
 
 import (
+	"archive/tar"
+	"bytes"
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -420,12 +423,12 @@ func TestMirror_Evacuate_RespectsBudget(t *testing.T) {
 
 func TestMirror_Evacuate_RejectsNewTriggerAfterCall(t *testing.T) {
 	mirror := &Mirror{
-		storagePath:    t.TempDir(),
-		replicas:       2,
-		pool:           NewWorkerPool(2),
-		logger:         lagertest.NewTestLogger("evacuate-reject"),
-		status:         make(map[string]map[string]string),
-		client:         &http.Client{},
+		storagePath: t.TempDir(),
+		replicas:    2,
+		pool:        NewWorkerPool(2),
+		logger:      lagertest.NewTestLogger("evacuate-reject"),
+		status:      make(map[string]map[string]string),
+		client:      &http.Client{},
 	}
 
 	mirror.Evacuate(context.Background(), 100*time.Millisecond)
@@ -870,5 +873,106 @@ func TestMirrorJob_Run_PartialPeerSuccess(t *testing.T) {
 	}
 	if byPeer["dead-peer"] != "unreachable" {
 		t.Errorf("dead-peer expected unreachable, got %q", byPeer["dead-peer"])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Memory discipline: mirror PUTs must stream the tar, not buffer it in heap.
+// ---------------------------------------------------------------------------
+
+// TestMirrorJob_Run_StreamsBodyInsteadOfBuffering guards against re-introducing
+// the bytes.Buffer staging that made daemon RSS scale with concurrency ×
+// artifact size (4+GB observed). A streamed (io.Pipe) body announces no
+// Content-Length (chunked transfer, r.ContentLength == -1 server-side); a
+// pre-buffered []byte body would announce the full tar size.
+func TestMirrorJob_Run_StreamsBodyInsteadOfBuffering(t *testing.T) {
+	src := t.TempDir()
+	payload := bytes.Repeat([]byte("x"), 1<<20) // 1MB
+	if err := os.WriteFile(filepath.Join(src, "big.bin"), payload, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	var contentLength int64
+	var received []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		contentLength = r.ContentLength
+		received, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer srv.Close()
+
+	transport := &mirrorRoutingTransport{routes: map[string]string{
+		"peer-a:7780": srv.URL,
+	}}
+	job := &mirrorJob{
+		key:            "handle/output",
+		sourceDir:      src,
+		peers:          []string{"peer-a"},
+		port:           7780,
+		scheme:         "http",
+		client:         &http.Client{Transport: transport, Timeout: 5 * time.Second},
+		logger:         lagertest.NewTestLogger("mirror"),
+		perPeerTimeout: 5 * time.Second,
+	}
+
+	outcomes := job.Run(context.Background())
+	if len(outcomes) != 1 || outcomes[0].Status != "ok" {
+		t.Fatalf("expected single ok outcome, got %+v", outcomes)
+	}
+
+	if contentLength != -1 {
+		t.Errorf("expected streamed (chunked) body with ContentLength -1, got %d — body was pre-buffered", contentLength)
+	}
+
+	// The tar must still round-trip intact through the pipe.
+	tr := tar.NewReader(bytes.NewReader(received))
+	found := false
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("reading received tar: %v", err)
+		}
+		if hdr.Name == "big.bin" {
+			data, err := io.ReadAll(tr)
+			if err != nil {
+				t.Fatalf("reading big.bin from tar: %v", err)
+			}
+			if !bytes.Equal(data, payload) {
+				t.Errorf("big.bin corrupted through pipe: got %d bytes, want %d", len(data), len(payload))
+			}
+			found = true
+		}
+	}
+	if !found {
+		t.Error("big.bin missing from received tar")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Status map pruning: entries must not accumulate for the daemon's lifetime.
+// ---------------------------------------------------------------------------
+
+func TestMirror_ForgetHandle_PrunesStatusEntries(t *testing.T) {
+	m := NewMirror(MirrorConfig{
+		StoragePath: t.TempDir(),
+		Replicas:    2,
+		Logger:      lagertest.NewTestLogger("mirror"),
+	})
+	defer m.Stop()
+
+	m.recordStatus("h1/out", []mirrorPeerOutcome{{Peer: "p1", Status: "ok"}})
+	m.recordStatus("h1/cache", []mirrorPeerOutcome{{Peer: "p1", Status: "ok"}})
+	m.recordStatus("h2/out", []mirrorPeerOutcome{{Peer: "p1", Status: "ok"}})
+
+	m.ForgetHandle("h1")
+
+	if m.isAtLeastOnePeerOK("h1/out") || m.isAtLeastOnePeerOK("h1/cache") {
+		t.Error("expected h1 status entries to be pruned")
+	}
+	if !m.isAtLeastOnePeerOK("h2/out") {
+		t.Error("expected h2 status entry to survive pruning of h1")
 	}
 }

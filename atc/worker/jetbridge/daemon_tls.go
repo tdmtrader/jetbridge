@@ -94,3 +94,16 @@ func newDaemonHTTPClient(cfg Config, timeout time.Duration) *http.Client {
 	}
 	return &http.Client{Timeout: timeout, Transport: transport}
 }
+
+// newDaemonStreamingHTTPClient returns an *http.Client for streaming artifact
+// data to/from the daemon. Unlike newDaemonHTTPClient, it sets no
+// whole-request timeout: http.Client.Timeout covers reading the entire
+// response body, which would sever long-running tar streams mid-read
+// (surfacing as "unexpected EOF" at the consumer). The handshake is still
+// bounded via the transport's ResponseHeaderTimeout, so a dead daemon fails
+// fast while an active stream can run as long as it needs.
+func newDaemonStreamingHTTPClient(cfg Config) *http.Client {
+	client := newDaemonHTTPClient(cfg, 0)
+	client.Transport.(*http.Transport).ResponseHeaderTimeout = 30 * time.Second
+	return client
+}

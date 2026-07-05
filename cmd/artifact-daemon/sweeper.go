@@ -10,7 +10,9 @@ import (
 
 // Sweeper periodically removes expired artifacts from the hostPath storage.
 // It sweeps two areas:
-//   - /steps/<handle>/ directories: removed if mtime > TTL (and no active pod)
+//   - /steps/<handle>/ directories: removed if the dir mtime exceeds the TTL.
+//     Reads (resolve, GET) refresh the mtime, so only artifacts nothing has
+//     touched for a full TTL are removed.
 //   - Legacy flat files under /artifacts/: removed if mtime > TTL
 //
 // It does NOT sweep /caches/ — those are cleaned only by DB-driven GC.
@@ -20,6 +22,17 @@ type Sweeper struct {
 	ttl         time.Duration
 	interval    time.Duration
 	registry    *Registry
+
+	// onStepDirRemoved is called with the handle name after a step
+	// directory is removed, so other components (the mirror status map)
+	// can drop their bookkeeping for it. Set before Run starts.
+	onStepDirRemoved func(handle string)
+}
+
+// SetOnStepDirRemoved registers a callback invoked with the handle name each
+// time a step directory is swept. Must be called before Run starts.
+func (s *Sweeper) SetOnStepDirRemoved(fn func(handle string)) {
+	s.onStepDirRemoved = fn
 }
 
 // NewSweeper creates a new Sweeper. The registry parameter is used to clean
@@ -74,6 +87,9 @@ func (s *Sweeper) sweep() {
 				} else {
 					if s.registry != nil {
 						s.registry.RemoveByPath(handleDir)
+					}
+					if s.onStepDirRemoved != nil {
+						s.onStepDirRemoved(entry.Name())
 					}
 					removed++
 				}

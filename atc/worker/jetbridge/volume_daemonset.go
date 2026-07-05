@@ -41,7 +41,7 @@ func NewDaemonSetVolume(key, handle, workerName string, dbVolume db.CreatedVolum
 		dbVolume:       dbVolume,
 		sourceNode:     sourceNode,
 		config:         config,
-		httpClient:     newDaemonHTTPClient(config, 30*time.Second),
+		httpClient:     newDaemonStreamingHTTPClient(config),
 		nodeIPResolver: nodeIPResolver,
 	}
 }
@@ -56,7 +56,7 @@ func NewDaemonSetVolumeFromIP(key, handle, workerName string, daemonIP string, c
 		workerName: workerName,
 		sourceIP:   daemonIP,
 		config:     config,
-		httpClient: newDaemonHTTPClient(config, 30*time.Second),
+		httpClient: newDaemonStreamingHTTPClient(config),
 	}
 }
 
@@ -213,10 +213,11 @@ func (v *DaemonSetVolume) StreamIn(ctx context.Context, path string, compression
 	}
 	req.Header.Set("Content-Type", "application/octet-stream")
 
-	// Reuse the volume's transport (which carries the mTLS client cert when
-	// TLS is enabled) but with a longer timeout suited to large uploads.
-	client := &http.Client{Timeout: 5 * time.Minute, Transport: v.httpClient.Transport}
-	resp, err := client.Do(req)
+	// The volume's streaming client carries the mTLS client cert when TLS is
+	// enabled and has no whole-request timeout, so large uploads are not
+	// severed mid-body (the handshake is still bounded by the transport's
+	// ResponseHeaderTimeout).
+	resp, err := v.httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("DaemonSetVolume.StreamIn: PUT %s: %w", url, err)
 	}

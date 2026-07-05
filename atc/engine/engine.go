@@ -150,8 +150,8 @@ func (b *engineBuild) Run(ctx context.Context) {
 		logger.Error("failed-to-construct-build-stepper", err)
 
 		// Fails the build if BuildStep returned an error because such unrecoverable
-		// errors will cause a build to never start to run.
-		b.buildStepErrored(logger, err.Error())
+		// errors will cause a build to never start to run. finish emits the
+		// error event.
 		b.finish(logger.Session("finish"), err, false)
 
 		return
@@ -167,8 +167,8 @@ func (b *engineBuild) Run(ctx context.Context) {
 		logger.Error("failed-to-create-run-state", err)
 
 		// Fails the build if fetching the pipeline variables fails, as these errors
-		// are unrecoverable - e.g. if pipeline var_sources is wrong
-		b.buildStepErrored(logger, err.Error())
+		// are unrecoverable - e.g. if pipeline var_sources is wrong. finish
+		// emits the error event.
 		b.finish(logger.Session("finish"), err, false)
 
 		return
@@ -264,6 +264,16 @@ func (b *engineBuild) finish(logger lager.Logger, err error, succeeded bool) {
 		logger.Info("aborted")
 
 	} else if err != nil {
+		// Surface the error in the build output. Without this, an errored
+		// build (a check build especially) shows no reason in the UI — the
+		// message would otherwise only exist in the web process log.
+		message := err.Error()
+		var retriable exec.Retriable
+		if errors.As(err, &retriable) {
+			message = retriable.Cause.Error()
+		}
+		b.buildStepErrored(logger, message)
+
 		b.saveStatus(logger, atc.StatusErrored)
 		logger.Info("errored", lager.Data{"error": err.Error()})
 

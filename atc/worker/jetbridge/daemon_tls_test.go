@@ -249,3 +249,33 @@ func TestBuildFetchInitContainers_NoTLSMountWhenDisabled(t *testing.T) {
 		}
 	}
 }
+
+// A whole-request http.Client.Timeout covers reading the response body, which
+// severs long-running artifact tar streams mid-read ("unexpected EOF"). The
+// streaming client must bound only the handshake (via ResponseHeaderTimeout),
+// never the body read.
+func TestNewDaemonStreamingHTTPClient_NoWholeRequestTimeout(t *testing.T) {
+	client := newDaemonStreamingHTTPClient(testDaemonConfig())
+	if client.Timeout != 0 {
+		t.Errorf("expected no whole-request timeout, got %v", client.Timeout)
+	}
+	transport, ok := client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("expected *http.Transport, got %T", client.Transport)
+	}
+	if transport.ResponseHeaderTimeout <= 0 {
+		t.Error("expected a ResponseHeaderTimeout to bound the handshake")
+	}
+}
+
+func TestDaemonSetVolumeUsesStreamingClient(t *testing.T) {
+	vol := NewDaemonSetVolume("key", "handle", "worker", nil, "node", testDaemonConfig(), nil)
+	if vol.httpClient.Timeout != 0 {
+		t.Errorf("NewDaemonSetVolume: expected no whole-request timeout, got %v", vol.httpClient.Timeout)
+	}
+
+	volFromIP := NewDaemonSetVolumeFromIP("key", "handle", "worker", "10.0.0.1", testDaemonConfig())
+	if volFromIP.httpClient.Timeout != 0 {
+		t.Errorf("NewDaemonSetVolumeFromIP: expected no whole-request timeout, got %v", volFromIP.httpClient.Timeout)
+	}
+}

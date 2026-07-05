@@ -171,3 +171,34 @@ func TestSweeper_CleansUpAliasesOnRemove(t *testing.T) {
 		t.Error("expected alias to be gone from persisted file after sweep")
 	}
 }
+
+// The mirror status map is pruned via a callback when the sweeper removes a
+// step directory — otherwise entries accumulate for the daemon's lifetime.
+func TestSweeper_NotifiesCallbackWhenStepDirRemoved(t *testing.T) {
+	storagePath := t.TempDir()
+	stepsDir := filepath.Join(storagePath, "steps")
+
+	oldHandle := filepath.Join(stepsDir, "expired-handle")
+	if err := os.MkdirAll(filepath.Join(oldHandle, "output"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	past := time.Now().Add(-3 * time.Hour)
+	os.Chtimes(oldHandle, past, past)
+
+	freshHandle := filepath.Join(stepsDir, "fresh-handle")
+	if err := os.MkdirAll(freshHandle, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	var removed []string
+	sweeper := daemon.NewSweeper(lagertest.NewTestLogger("sweeper"), storagePath, 2*time.Hour, 5*time.Minute, nil)
+	sweeper.SetOnStepDirRemoved(func(handle string) {
+		removed = append(removed, handle)
+	})
+
+	sweeper.SweepOnce()
+
+	if len(removed) != 1 || removed[0] != "expired-handle" {
+		t.Errorf("expected callback for expired-handle only, got %v", removed)
+	}
+}

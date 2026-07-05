@@ -150,10 +150,18 @@ func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.touchStepDir(path)
+
 	// Directory: tar on-the-fly and stream.
 	if info.IsDir() {
 		w.Header().Set("Content-Type", "application/x-tar")
-		s.tarDirectory(w, path)
+		if err := s.tarDirectory(w, path); err != nil {
+			s.logger.Error("failed-to-tar-artifact", err, lager.Data{"path": path})
+			// The 200 header and part of the body are already out; abort
+			// the connection so the client sees a hard failure instead of
+			// a clean-looking truncated tar.
+			panic(http.ErrAbortHandler)
+		}
 		return
 	}
 
@@ -167,15 +175,20 @@ func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 	defer f.Close()
 
 	w.Header().Set("Content-Type", "application/octet-stream")
-	io.Copy(w, f)
+	if _, err := io.Copy(w, f); err != nil {
+		s.logger.Error("failed-to-stream-artifact", err, lager.Data{"path": path})
+		panic(http.ErrAbortHandler)
+	}
 }
 
-// tarDirectory writes a tar archive of the directory to w.
-func (s *Server) tarDirectory(w http.ResponseWriter, dir string) {
+// tarDirectory writes a tar archive of the directory to w. Any error —
+// including a file changing or disappearing mid-walk — is returned so the
+// caller can abort the response; a silently truncated tar reads as complete
+// on the client side.
+func (s *Server) tarDirectory(w io.Writer, dir string) error {
 	tw := tar.NewWriter(w)
-	defer tw.Close()
 
-	filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 		if err != nil || info.IsDir() {
 			return err
 		}
@@ -204,6 +217,26 @@ func (s *Server) tarDirectory(w http.ResponseWriter, dir string) {
 		_, err = io.Copy(tw, f)
 		return err
 	})
+	if err != nil {
+		// Deliberately skip tw.Close(): writing the tar terminator would
+		// make the truncated stream parse as a complete archive.
+		return err
+	}
+	return tw.Close()
+}
+
+// touchStepDir bumps the mtime of the steps/{handle} directory containing
+// path (when path is under steps/) so the TTL sweeper treats actively-read
+// artifacts as fresh. Best-effort.
+func (s *Server) touchStepDir(path string) {
+	stepsRoot := filepath.Join(s.storagePath, "steps")
+	rel, err := filepath.Rel(stepsRoot, path)
+	if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
+		return
+	}
+	handle := strings.Split(rel, string(filepath.Separator))[0]
+	now := time.Now()
+	_ = os.Chtimes(filepath.Join(stepsRoot, handle), now, now)
 }
 
 func (s *Server) handlePutArtifact(w http.ResponseWriter, r *http.Request) {
@@ -215,16 +248,42 @@ func (s *Server) handlePutArtifact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	f, err := os.Create(path)
+	// Write through a temp file + rename: GET serves whatever exists at the
+	// final path, so an in-flight or failed upload must never be visible
+	// there as a truncated artifact.
+	f, err := os.CreateTemp(filepath.Dir(path), ".put-tmp-")
 	if err != nil {
 		s.logger.Error("failed-to-create-artifact", err, lager.Data{"path": path})
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	defer f.Close()
+	tmpPath := f.Name()
 
 	if _, err := io.Copy(f, r.Body); err != nil {
+		f.Close()
+		os.Remove(tmpPath)
 		s.logger.Error("failed-to-write-artifact", err, lager.Data{"path": path})
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(tmpPath)
+		s.logger.Error("failed-to-close-artifact", err, lager.Data{"path": path})
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	// CreateTemp uses 0600; artifacts are served to any authenticated reader.
+	if err := os.Chmod(tmpPath, 0644); err != nil {
+		os.Remove(tmpPath)
+		s.logger.Error("failed-to-chmod-artifact", err, lager.Data{"path": path})
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	if err := os.Rename(tmpPath, path); err != nil {
+		os.Remove(tmpPath)
+		s.logger.Error("failed-to-rename-artifact", err, lager.Data{"path": path})
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -247,11 +306,25 @@ func (s *Server) handleStreamIn(w http.ResponseWriter, r *http.Request) {
 	}
 
 	dest := filepath.Join(s.storagePath, "steps", key)
-	if err := os.MkdirAll(dest, 0755); err != nil {
+
+	// Extract into a temp sibling and rename into place on success. Readers
+	// (resolve, GET/HEAD, peer probes) treat any existing steps/{key} dir as
+	// a complete artifact, so partial state — an in-flight extraction or a
+	// failed upload — must never be visible at the final path.
+	stepsRoot := filepath.Join(s.storagePath, "steps")
+	if err := os.MkdirAll(stepsRoot, 0755); err != nil {
 		s.logger.Error("failed-to-create-stream-in-dir", err, lager.Data{"key": key})
 		http.Error(w, "create dir: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+	tmpDest, err := os.MkdirTemp(stepsRoot, ".in-tmp-")
+	if err != nil {
+		s.logger.Error("failed-to-create-stream-in-tmp-dir", err, lager.Data{"key": key})
+		http.Error(w, "create tmp dir: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	// No-op after the successful rename; cleans up on every error path.
+	defer os.RemoveAll(tmpDest)
 
 	// Auto-detect gzip by peeking at the first 2 bytes.
 	br := bufio.NewReader(r.Body)
@@ -279,9 +352,9 @@ func (s *Server) handleStreamIn(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		target := filepath.Join(dest, hdr.Name)
+		target := filepath.Join(tmpDest, hdr.Name)
 		// Path traversal protection.
-		if !strings.HasPrefix(filepath.Clean(target), filepath.Clean(dest)) {
+		if !strings.HasPrefix(filepath.Clean(target), filepath.Clean(tmpDest)) {
 			continue
 		}
 
@@ -319,6 +392,21 @@ func (s *Server) handleStreamIn(w http.ResponseWriter, r *http.Request) {
 		case tar.TypeSymlink:
 			_ = os.Symlink(hdr.Linkname, target)
 		}
+	}
+
+	// Move the fully-extracted tree into place. Remove any previous copy
+	// first (rename onto a non-empty dir fails); the gap between the two is
+	// microseconds, versus the whole extraction window before this change.
+	if err := os.MkdirAll(filepath.Dir(dest), 0755); err != nil {
+		s.logger.Error("failed-to-create-stream-in-parent", err, lager.Data{"key": key})
+		http.Error(w, "create parent: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	os.RemoveAll(dest)
+	if err := os.Rename(tmpDest, dest); err != nil {
+		s.logger.Error("failed-to-rename-stream-in", err, lager.Data{"key": key, "tmp": tmpDest})
+		http.Error(w, "rename: "+err.Error(), http.StatusInternalServerError)
+		return
 	}
 
 	s.registry.Register(key, dest)
@@ -488,6 +576,7 @@ func (s *Server) resolveOne(ctx context.Context, key, dest string) (resp resolve
 			logger.Error("copy-failed", err, lager.Data{"source": sourcePath})
 			return resolveResponse{Status: "error", Source: sourcePath, Method: "local", Error: err.Error()}
 		}
+		s.touchStepDir(sourcePath)
 		duration := time.Since(start)
 		logger.Info("resolved", lager.Data{"method": "registry", "source": sourcePath, "duration": duration.String()})
 		return resolveResponse{Status: "ok", Source: sourcePath, Method: "registry", Duration: duration.String()}
@@ -502,6 +591,7 @@ func (s *Server) resolveOne(ctx context.Context, key, dest string) (resp resolve
 			logger.Error("copy-failed", err, lager.Data{"source": stepsPath})
 			return resolveResponse{Status: "error", Source: stepsPath, Method: "filesystem", Error: err.Error()}
 		}
+		s.touchStepDir(stepsPath)
 		duration := time.Since(start)
 		logger.Info("resolved", lager.Data{"method": "filesystem", "source": stepsPath, "duration": duration.String()})
 		return resolveResponse{Status: "ok", Source: stepsPath, Method: "filesystem", Duration: duration.String()}
@@ -732,9 +822,16 @@ func (s *Server) handleGetResourceCache(w http.ResponseWriter, r *http.Request) 
 		w.Header().Set("X-Node-Name", s.nodeName)
 	}
 
+	s.touchStepDir(path)
+
 	if info.IsDir() {
 		w.Header().Set("Content-Type", "application/x-tar")
-		s.tarDirectory(w, path)
+		if err := s.tarDirectory(w, path); err != nil {
+			s.logger.Error("failed-to-tar-resource-cache", err, lager.Data{"key": key, "path": path})
+			// Headers already sent; abort so the peer sees a hard failure
+			// rather than a clean-looking truncated tar.
+			panic(http.ErrAbortHandler)
+		}
 		return
 	}
 
@@ -747,7 +844,10 @@ func (s *Server) handleGetResourceCache(w http.ResponseWriter, r *http.Request) 
 	defer f.Close()
 
 	w.Header().Set("Content-Type", "application/octet-stream")
-	io.Copy(w, f)
+	if _, err := io.Copy(w, f); err != nil {
+		s.logger.Error("failed-to-stream-resource-cache", err, lager.Data{"key": key, "path": path})
+		panic(http.ErrAbortHandler)
+	}
 }
 
 func writeJSON(w http.ResponseWriter, status int, v interface{}) {

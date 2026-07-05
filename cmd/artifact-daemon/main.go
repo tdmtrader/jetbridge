@@ -80,12 +80,11 @@ func main() {
 		// Non-fatal — aliases will be re-registered by ATC on next build.
 	}
 
-	// Start TTL sweeper in background (with registry ref for alias cleanup).
+	// TTL sweeper (with registry ref for alias cleanup). Started below,
+	// after the mirror is wired up, so its step-dir-removed callback can
+	// prune mirror status without racing sweeper startup.
 	sweepDone := make(chan struct{})
 	sweeper := NewSweeper(logger, *storagePath, *ttl, 5*time.Minute, server.Registry())
-	go func() {
-		sweeper.Run(sweepDone)
-	}()
 
 	tlsEnabled := *tlsCert != "" && *tlsKey != "" && *tlsCACert != ""
 
@@ -143,6 +142,15 @@ func main() {
 			}
 		}
 	}
+
+	// Start the sweeper now that the mirror (if any) exists: swept step
+	// dirs also drop their mirror status entries, keeping the status map
+	// bounded. ForgetHandle is nil-receiver-safe, so this wiring is
+	// unconditional.
+	sweeper.SetOnStepDirRemoved(mirror.ForgetHandle)
+	go func() {
+		sweeper.Run(sweepDone)
+	}()
 
 	var handlerOpts []HandlerOption
 	if tlsEnabled {
