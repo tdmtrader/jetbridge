@@ -16,6 +16,10 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "publish" {
+		os.Exit(runPublish(os.Args[2:]))
+	}
+
 	if err := tracing.Init(context.Background()); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: tracing init: %v\n", err)
 	}
