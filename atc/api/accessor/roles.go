@@ -88,7 +88,7 @@ var DefaultRoles = map[string]string{
 	atc.ListContainers:                 ViewerRole,
 	atc.GetContainer:                   ViewerRole,
 	atc.HijackContainer:                MemberRole,
-	atc.ListVolumes: ViewerRole,
+	atc.ListVolumes:                    ViewerRole,
 	atc.ListTeams:                      ViewerRole,
 	atc.GetTeam:                        ViewerRole,
 	atc.SetTeam:                        OwnerRole,
@@ -99,4 +99,16 @@ var DefaultRoles = map[string]string{
 	atc.GetArtifact:                    MemberRole,
 	atc.ListBuildArtifacts:             ViewerRole,
 	atc.GetWall:                        ViewerRole,
+	// Agent review/feedback routes. Every route wrapped in
+	// CheckAuthorizationHandler needs an entry here: a missing entry
+	// resolves to requiredRole "" and hasRequiredRole's default case,
+	// making the route admin-only. (The atc/integration suite's login
+	// user is on the main team and therefore admin, so it would not
+	// catch a regression here.)
+	atc.SubmitAgentFeedback:     MemberRole,
+	atc.GetAgentFeedback:        ViewerRole,
+	atc.GetAgentFeedbackSummary: ViewerRole,
+	atc.ClassifyAgentVerdict:    MemberRole,
+	atc.GetAgentReviewFindings:  ViewerRole,
+	atc.ListTeamAgentReviews:    ViewerRole,
 }
