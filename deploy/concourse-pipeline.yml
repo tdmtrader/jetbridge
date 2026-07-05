@@ -4,18 +4,6 @@ resources:
   source:
     uri: https://github.com/tdmtrader/jetbridge.git
     branch: jetbridge
-# Settle timer: gates verify-upgrade so its build starts on a timer tick rather
-# than the instant self-upgrade finishes. self-upgrade restarts concourse-web
-# (the ATC); a job triggered immediately runs a task pod on that restarting web
-# and its build is errored when the old web pod terminates. Ticking every 2m
-# means verify-upgrade starts after the rollout has settled, and if a tick ever
-# races the restart, the next tick re-fires it (self-healing). Reconciled from
-# prior live-only drift so it no longer disappears on set-pipeline.
-- name: upgrade-settle-timer
-  type: time
-  source:
-    interval: 2m
-
 jobs:
 - name: build-and-vet
   serial_groups: [pipeline]
@@ -336,13 +324,13 @@ jobs:
 - name: verify-upgrade
   serial_groups: [pipeline]
   plan:
-  # Trigger on the settle timer (delay after self-upgrade's ATC restart), not on
-  # repo directly — repo is a passed-gate input only, so it never fires the
-  # instant self-upgrade completes.
-  - get: upgrade-settle-timer
-    trigger: true
+  # Triggered once per upgraded commit. No settle timer: in-flight builds
+  # survive the self-upgrade web rollout (engine drain releases job builds
+  # and the task supervisor resumes them — build_survival track), and a
+  # timer trigger re-fires forever, failing after every release because
+  # "latest tag + 1"-rc only exists once the NEXT commit builds it.
   - get: repo
-    trigger: false
+    trigger: true
     params: {depth: 0, fetch_tags: true}
     passed: [self-upgrade]
   - task: check-running-version
