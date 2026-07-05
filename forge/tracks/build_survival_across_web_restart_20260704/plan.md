@@ -39,6 +39,8 @@
       commit Phase 1 (`fix(engine): release in-flight job builds on drain
       instead of erroring them`).
 
+[checkpoint: 7c59cbbfa6 — unit-green, make test-unit 83/83 suites, user-approved 2026-07-04]
+
 ## Phase 2: Resumable task exec (atc/worker/jetbridge)
 
 - [ ] Task 2.1: Design the supervisor script as a Go constant + builder
