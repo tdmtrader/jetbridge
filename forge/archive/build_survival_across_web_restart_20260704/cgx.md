@@ -62,3 +62,29 @@
 - Task-step-only supervisor for true resume; get/put/check keep re-exec
   semantics (stdin protocol, short-lived, results recovered via annotation).
 - Settle timer and `attempts: 2` stay until this soaks through release cycles.
+
+## Evidence (Phase 3 close-out, 2026-07-05)
+
+- **Live runtime test** (`TestLiveTaskResume`, theborg throwaway ns): web1's
+  TTY exec severed mid-command → pod + command survived → fresh worker
+  attached, replayed output with exactly one start marker (resumed, not
+  restarted), real exit code 4, exit-status annotation recorded. PASS 24s.
+- **Before/after drain comparison in the release pipeline**: previous
+  rollout (self-upgrade/172, old drain code outgoing) errored the in-flight
+  verify-upgrade/104 in the 23s restart window; next rollout
+  (self-upgrade/173, FIXED web outgoing) — verify-upgrade/114 ran through
+  the same window and succeeded. k8s-live-tests/570 green (validated the
+  hijack/command-hash fix in the daemon-equipped CI env); release/46
+  succeeded.
+- **Direct e2e on the live cluster**: `resume-e2e/long-task` #1
+  (busybox, 180s sleep) triggered; `kubectl rollout restart
+  deploy/concourse-web -n cicd` issued 2s after task start (01:14:49);
+  old replica gone by 01:15:20; build ran through the restart and
+  SUCCEEDED with output "e2e-start ... e2e-done" exactly once each — no
+  failed-to-get-pod, no restart, no duplicate execution.
+- **Regression posture**: settle timer (1127c59301) and `attempts: 2` are
+  now belt-and-suspenders; candidates for removal after a few release
+  cycles (deliberately NOT removed in this track, per spec).
+- Post-release verify-upgrade churn (116+ expecting next-rc after
+  release/46) is the known ArgoCD :latest / version-label quirk —
+  pre-existing, unrelated to this track.

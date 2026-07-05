@@ -4,7 +4,7 @@
 
 ## Phase 0: Reproduce and pin the root cause
 
-- [ ] Task 0.1: Write a reproduction note from live evidence. On theborg, pull
+- [x] (evidence in cgx.md, gathered during Phase 3) Task 0.1: Write a reproduction note from live evidence. On theborg, pull
       the web logs / build events from a recent upgrade-window failure (or
       trigger one in a sandbox team: start a long build, restart web) and
       confirm the sequence: `releasing` / `finalizing-orphaned-build` log lines
@@ -78,7 +78,7 @@
       Run: `KUBECONFIG=~/.kube/config K8S_TEST_NAMESPACE=<sandbox-ns> go test
       -tags live -run '^TestLiveTaskResume$' -v -count=1 -timeout 10m
       ./atc/worker/jetbridge/`.
-- [ ] Task 3.2: E2E on theborg: deploy the branch image to a sandbox install
+- [x] 8c1bcdc185 Task 3.2: E2E on theborg: deploy the branch image to a sandbox install
       (or piggyback on the release pipeline's self-upgrade), start a build
       with a ≥2-minute task, `kubectl rollout restart` the web deployment
       mid-build, and verify the build succeeds with no `failed-to-get-pod`
@@ -87,7 +87,7 @@
       `make test-fly-integration` green; note in cgx.md whether the
       verify-upgrade settle timer and `attempts: 2` are now removable
       (do NOT remove in this track).
-- [ ] Task 3.4: Update memory (`project_jetbridge_release_pipeline.md` root
+- [x] 8c1bcdc185 Task 3.4: Update memory (`project_jetbridge_release_pipeline.md` root
       cause refinement) and close out: conventional commits squashed onto
       `jetbridge` per workflow.md.
 
@@ -97,3 +97,4 @@
   DB-level erroring even before runtime resume lands; reattach falls back to
   re-exec as today).
 - After Phase 3: live evidence required before marking the track complete.
+  [checkpoint: 8c1bcdc185 — live+e2e green 2026-07-05, see cgx.md Evidence]

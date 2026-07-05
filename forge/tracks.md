@@ -6,9 +6,9 @@
 
 ---
 
-## [ ] Track: In-flight builds survive web restarts
-*Link: [./tracks/build_survival_across_web_restart_20260704/](./tracks/build_survival_across_web_restart_20260704/)*
-*Created 2026-07-04 from the verify-upgrade settle-timer follow-up. Root cause (verified, supersedes the pod-deletion hypothesis): fork commit 8b5476828f errors all in-flight builds on engine drain AND via the tracker safety net (also breaking lock-contention and Retriable resume paths); pod deletion is downstream GC. Fix: scope both to in-memory check builds, plus an in-pod supervisor so exec-mode task steps resume (not re-run) after a web restart. Live reattach-across-restart test on theborg.*
+## [x] Track: In-flight builds survive web restarts
+*Link: [./archive/build_survival_across_web_restart_20260704/](./archive/build_survival_across_web_restart_20260704/)*
+*Completed 2026-07-05 — root cause was DB-level (fork commit 8b5476828f errored builds on engine drain + tracker safety net, also breaking lock-contention and Retriable resume; pod deletion was downstream GC), NOT jetbridge pod cleanup. Fix: both mechanisms scoped to in-memory check builds (7c59cbbfa6) + in-pod POSIX-sh supervisor so task steps resume, not re-run, across web restarts (d0d4d4217a; busybox kill-0 and command-hash fixes 582f4aebe8/8c1bcdc185). Verified: TestLiveTaskResume green on theborg, verify-upgrade/114 survived the self-upgrade rollout window (old code errored the equivalent #104), direct e2e build survived kubectl rollout restart mid-task, released in release/46. Settle timer + attempts:2 left in place as belt-and-suspenders; removable after soak.*
 
 ---
 
