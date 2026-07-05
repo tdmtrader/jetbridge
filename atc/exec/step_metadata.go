@@ -94,8 +94,26 @@ func (metadata StepMetadata) Env() []string {
 	return env
 }
 
+// TaskEnv returns the env exposed to task containers. Unlike upstream
+// Concourse, this fork exposes build identity so tasks (e.g. ci-agent
+// publish) can report results back to the ATC keyed by build.
 func (metadata StepMetadata) TaskEnv() []string {
 	env := []string{}
+	if metadata.BuildID != 0 {
+		env = append(env, fmt.Sprintf("BUILD_ID=%d", metadata.BuildID))
+	}
+	if metadata.BuildName != "" {
+		env = append(env, "BUILD_NAME="+metadata.BuildName)
+	}
+	if metadata.TeamName != "" {
+		env = append(env, "BUILD_TEAM_NAME="+metadata.TeamName)
+	}
+	if metadata.JobName != "" {
+		env = append(env, "BUILD_JOB_NAME="+metadata.JobName)
+	}
+	if metadata.PipelineName != "" {
+		env = append(env, "BUILD_PIPELINE_NAME="+metadata.PipelineName)
+	}
 	if metadata.ExternalURL != "" {
 		env = append(env, "ATC_EXTERNAL_URL="+metadata.ExternalURL)
 	}

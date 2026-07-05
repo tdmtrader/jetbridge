@@ -185,8 +185,8 @@ var _ = Describe("TaskStep", func() {
 			fakePool.FindOrSelectWorkerReturns(chosenWorker, nil)
 		})
 
-		It("Task env includes atc external url", func() {
-			Expect(chosenContainer.Spec.Env).To(ConsistOf("ATC_EXTERNAL_URL=http://foo.bar", "SECURE=secret-task-param"))
+		It("Task env includes atc external url and build identity", func() {
+			Expect(chosenContainer.Spec.Env).To(ConsistOf("ATC_EXTERNAL_URL=http://foo.bar", "BUILD_ID=1234", "SECURE=secret-task-param"))
 		})
 
 		Context("before running the task", func() {

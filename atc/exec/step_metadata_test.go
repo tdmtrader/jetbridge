@@ -101,4 +101,32 @@ var _ = Describe("StepMetadata", func() {
 			})
 		})
 	})
+
+	Describe("TaskEnv", func() {
+		Context("when populating fields", func() {
+			It("returns build identity env for tasks", func() {
+				Expect(exec.StepMetadata{
+					BuildID:      42,
+					BuildName:    "3",
+					TeamName:     "main",
+					JobName:      "agent-review",
+					PipelineName: "concourse-self",
+					ExternalURL:  "https://concourse.home",
+				}.TaskEnv()).To(ConsistOf(
+					"BUILD_ID=42",
+					"BUILD_NAME=3",
+					"BUILD_TEAM_NAME=main",
+					"BUILD_JOB_NAME=agent-review",
+					"BUILD_PIPELINE_NAME=concourse-self",
+					"ATC_EXTERNAL_URL=https://concourse.home",
+				))
+			})
+		})
+
+		Context("when fields are empty", func() {
+			It("returns an empty list", func() {
+				Expect(exec.StepMetadata{}.TaskEnv()).To(Equal([]string{}))
+			})
+		})
+	})
 })
