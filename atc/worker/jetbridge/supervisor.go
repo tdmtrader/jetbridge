@@ -27,16 +27,23 @@ import (
 //
 // Like pauseCommand, this requires only POSIX sh built-ins plus tail/mv,
 // which are present in busybox and coreutils images.
+// Note: the runner-liveness check must go through alive() — busybox
+// `kill -0 ""` exits 0, so a bare kill on the (possibly empty) pid file
+// would misread "never started" as "running".
 const supervisorScriptTemplate = `S=__STATE_DIR__
+alive() {
+  pid="$(cat "$S/pid" 2>/dev/null)"
+  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
+}
 mkdir -p "$S"
 : >>"$S/log"
-if [ ! -f "$S/exit" ] && ! kill -0 "$(cat "$S/pid" 2>/dev/null)" 2>/dev/null; then
+if [ ! -f "$S/exit" ] && ! alive; then
   ( trap '' HUP; __COMMAND__ >>"$S/log" 2>&1; echo $? >"$S/exit.tmp" && mv "$S/exit.tmp" "$S/exit" ) &
   echo $! >"$S/pid"
 fi
 tail -n +1 -f "$S/log" 2>/dev/null &
 T=$!
-while [ ! -f "$S/exit" ] && kill -0 "$(cat "$S/pid" 2>/dev/null)" 2>/dev/null; do sleep 1; done
+while [ ! -f "$S/exit" ] && alive; do sleep 1; done
 sleep 2
 kill "$T" 2>/dev/null
 wait "$T" 2>/dev/null

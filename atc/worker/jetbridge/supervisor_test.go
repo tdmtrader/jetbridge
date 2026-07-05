@@ -43,7 +43,11 @@ var _ = Describe("Task exec supervisor", func() {
 		})
 
 		It("only starts the command when it is not already running or finished", func() {
-			Expect(command[2]).To(ContainSubstring(`if [ ! -f "$S/exit" ] && ! kill -0`))
+			Expect(command[2]).To(ContainSubstring(`if [ ! -f "$S/exit" ] && ! alive; then`))
+		})
+
+		It("treats a missing or empty pid file as not-running (busybox kill -0 \"\" exits 0)", func() {
+			Expect(command[2]).To(ContainSubstring(`[ -n "$pid" ] && kill -0 "$pid"`))
 		})
 
 		It("appends to the log instead of truncating so reattach keeps prior output", func() {
