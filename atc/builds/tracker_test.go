@@ -249,13 +249,47 @@ func (s *TrackerSuite) TestTrackerDrainsEngine() {
 	s.Equal(ctx, s.fakeEngine.DrainArgsForCall(0))
 }
 
-func (s *TrackerSuite) TestTrackFinalizesOrphanedBuild() {
-	// Simulate a build where Run() exits without calling Finish().
-	// This happens when engineBuild.Run() hits an early-return path
-	// (e.g. AcquireTrackingLock error, engine drain). The build still
-	// reports IsRunning()==true because Finish() was never called.
+func (s *TrackerSuite) TestTrackDoesNotFinalizeReleasedJobBuild() {
+	// A job build whose Run() exits while the build is still running is a
+	// legitimate resume path (engine drain, tracking lock held by another
+	// web, retryable step error). The tracker must NOT error it — the build
+	// stays "started" so a later tracker cycle (possibly on a new web)
+	// re-attaches to it.
 	fakeBuild := new(dbfakes.FakeBuild)
 	fakeBuild.IDReturns(1)
+	fakeBuild.NameReturns("42") // job builds have numeric names
+	fakeBuild.IsRunningReturns(true)
+
+	s.fakeBuildFactory.GetAllStartedBuildsReturns([]db.Build{fakeBuild}, nil)
+
+	done := make(chan struct{})
+	s.fakeEngine.NewBuildStub = func(build db.Build) builds.Runnable {
+		engineBuild := new(buildsfakes.FakeRunnable)
+		engineBuild.RunStub = func(context.Context) {
+			// Return without calling Finish — simulates early exit
+			close(done)
+		}
+		return engineBuild
+	}
+
+	err := s.tracker.Run(context.TODO())
+	s.NoError(err)
+
+	<-done
+
+	// Give the defer time to execute
+	time.Sleep(100 * time.Millisecond)
+
+	s.Equal(0, fakeBuild.FinishCallCount(), "tracker must not finalize a released job build")
+}
+
+func (s *TrackerSuite) TestTrackFinalizesOrphanedCheckBuild() {
+	// A check build whose Run() exits without calling Finish() must be
+	// finalized so the checkFactory's in-flight tracking (cleared via
+	// onFinishBuild.Finish) is not permanently leaked.
+	fakeBuild := new(dbfakes.FakeBuild)
+	fakeBuild.IDReturns(1)
+	fakeBuild.NameReturns(db.CheckBuildName)
 	fakeBuild.IsRunningReturns(true)
 
 	s.fakeBuildFactory.GetAllStartedBuildsReturns([]db.Build{fakeBuild}, nil)
@@ -277,7 +311,7 @@ func (s *TrackerSuite) TestTrackFinalizesOrphanedBuild() {
 
 	s.Eventually(func() bool {
 		return fakeBuild.FinishCallCount() == 1
-	}, time.Second, 10*time.Millisecond, "tracker should finalize orphaned build")
+	}, time.Second, 10*time.Millisecond, "tracker should finalize orphaned check build")
 
 	s.Equal(db.BuildStatusErrored, fakeBuild.FinishArgsForCall(0))
 }
@@ -319,6 +353,7 @@ func (s *TrackerSuite) TestTrackOrphanedInMemoryCheckCleansUpInFlightTracking() 
 	fakeBuild := new(dbfakes.FakeBuild)
 	fakeBuild.IDReturns(0)
 	fakeBuild.ResourceIDReturns(42)
+	fakeBuild.NameReturns(db.CheckBuildName)
 	fakeBuild.IsRunningReturns(true)
 	// When Finish is called, signal cleanup
 	fakeBuild.FinishStub = func(status db.BuildStatus) error {

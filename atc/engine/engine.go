@@ -224,7 +224,13 @@ func (b *engineBuild) Run(ctx context.Context) {
 	select {
 	case <-b.release:
 		logger.Info("releasing")
-		b.finish(logger.Session("finish"), fmt.Errorf("build released during drain"), false)
+
+		// In-memory check builds cannot resume across a restart, so finalize
+		// them to clear in-flight check tracking. Job builds are left in
+		// "started" so the next web's build tracker re-attaches to them.
+		if b.build.Name() == db.CheckBuildName {
+			b.finish(logger.Session("finish"), fmt.Errorf("build released during drain"), false)
+		}
 
 	case <-done:
 		// Don't retry check build because if a check build drops into endless retry,

@@ -205,10 +205,23 @@ var _ = Describe("Engine", func() {
 										}
 									})
 
-									It("finishes the build as errored so in-flight tracking is cleared", func() {
-										waitGroup.Wait()
-										Expect(fakeBuild.FinishCallCount()).To(Equal(1))
-										Expect(fakeBuild.FinishArgsForCall(0)).To(Equal(db.BuildStatusErrored))
+									Context("when this is a job build", func() {
+										It("does not finish the build, leaving it running for the next web to resume", func() {
+											waitGroup.Wait()
+											Expect(fakeBuild.FinishCallCount()).To(Equal(0))
+										})
+									})
+
+									Context("when this is an in-memory check build", func() {
+										BeforeEach(func() {
+											fakeBuild.NameReturns(db.CheckBuildName)
+										})
+
+										It("finishes the build as errored so in-flight check tracking is cleared", func() {
+											waitGroup.Wait()
+											Expect(fakeBuild.FinishCallCount()).To(Equal(1))
+											Expect(fakeBuild.FinishArgsForCall(0)).To(Equal(db.BuildStatusErrored))
+										})
 									})
 								})
 
