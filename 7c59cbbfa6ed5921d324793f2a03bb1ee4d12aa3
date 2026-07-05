@@ -1,0 +1,3 @@
+Phase 1 checkpoint: drain & tracker semantics.
+Verification: atc/engine 233/233, atc/builds green, go vet clean, make test-unit 83/83 suites (4m46s).
+User approved checkpoint 2026-07-04.
