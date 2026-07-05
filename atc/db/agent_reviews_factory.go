@@ -1,6 +1,7 @@
 package db
 
 import (
+	"database/sql"
 	"encoding/json"
 	"strconv"
 
@@ -104,10 +105,7 @@ func (f *agentReviewsFactory) ListByTeam(team string, filter reviews.ListFilter)
 	return scanReviewRows(rows, false)
 }
 
-func scanReviewRows(rows interface {
-	Next() bool
-	Scan(dest ...any) error
-}, withPayload bool) ([]reviews.StoredReview, error) {
+func scanReviewRows(rows *sql.Rows, withPayload bool) ([]reviews.StoredReview, error) {
 	results := []reviews.StoredReview{}
 	for rows.Next() {
 		var rec reviews.StoredReview
@@ -130,5 +128,5 @@ func scanReviewRows(rows interface {
 		}
 		results = append(results, rec)
 	}
-	return results, nil
+	return results, rows.Err()
 }

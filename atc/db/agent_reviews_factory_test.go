@@ -42,6 +42,17 @@ var _ = Describe("AgentReviewsFactory", func() {
 		Expect(got[0].Review).To(MatchJSON(`{"schema_version":"1.0.0"}`))
 	})
 
+	It("returns multiple reviews for one build oldest-first", func() {
+		Expect(factory.Upsert(rec(107, "main", "p", "r-first", "c-first", 6))).To(Succeed())
+		Expect(factory.Upsert(rec(107, "main", "p", "r-second", "c-second", 8))).To(Succeed())
+
+		got, err := factory.GetByBuild(107)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(got).To(HaveLen(2))
+		Expect(got[0].Repo).To(Equal("r-first")) // oldest first
+		Expect(got[1].Repo).To(Equal("r-second"))
+	})
+
 	It("upserts on (build_id, repo, commit_sha)", func() {
 		Expect(factory.Upsert(rec(102, "main", "p", "r", "c2", 5.0))).To(Succeed())
 		Expect(factory.Upsert(rec(102, "main", "p", "r", "c2", 9.0))).To(Succeed())
@@ -69,6 +80,22 @@ var _ = Describe("AgentReviewsFactory", func() {
 		Expect(filtered[0].BuildID).To(Equal(103))
 	})
 
+	It("applies Limit, and Limit 0 returns all rows", func() {
+		Expect(factory.Upsert(rec(108, "main", "p", "r1", "c8", 8))).To(Succeed())
+		Expect(factory.Upsert(rec(109, "main", "p", "r2", "c9", 6))).To(Succeed())
+
+		limited, err := factory.ListByTeam("main", reviews.ListFilter{Limit: 1})
+		Expect(err).ToNot(HaveOccurred())
+		Expect(limited).To(HaveLen(1))
+		Expect(limited[0].BuildID).To(Equal(109)) // truncation keeps the newest
+
+		all, err := factory.ListByTeam("main", reviews.ListFilter{Limit: 0})
+		Expect(err).ToNot(HaveOccurred())
+		Expect(all).To(HaveLen(2))
+		Expect(all[0].BuildID).To(Equal(109))
+		Expect(all[1].BuildID).To(Equal(108))
+	})
+
 	It("counts evaluated findings from agent_feedback in listings", func() {
 		Expect(factory.Upsert(rec(106, "main", "p", "fbrepo", "fbc", 8))).To(Succeed())
 
@@ -77,6 +104,22 @@ var _ = Describe("AgentReviewsFactory", func() {
 		Expect(fbFactory.Save(&fbRec)).To(Succeed())
 
 		got, err := factory.ListByTeam("main", reviews.ListFilter{Repo: "fbrepo", Limit: 10})
+		Expect(err).ToNot(HaveOccurred())
+		Expect(got).To(HaveLen(1))
+		Expect(got[0].EvaluatedCount).To(Equal(1))
+	})
+
+	It("counts distinct finding_ids, not feedback rows", func() {
+		Expect(factory.Upsert(rec(110, "main", "p", "distrepo", "distc", 8))).To(Succeed())
+
+		fbFactory := db.NewAgentFeedbackFactory(dbConn)
+		// Two reviewers weigh in on the SAME finding — one evaluated finding.
+		fbA := feedbackRecord("distrepo", "distc", "PI-1", "accurate", "tdm")
+		Expect(fbFactory.Save(&fbA)).To(Succeed())
+		fbB := feedbackRecord("distrepo", "distc", "PI-1", "noisy", "bob")
+		Expect(fbFactory.Save(&fbB)).To(Succeed())
+
+		got, err := factory.ListByTeam("main", reviews.ListFilter{Repo: "distrepo", Limit: 10})
 		Expect(err).ToNot(HaveOccurred())
 		Expect(got).To(HaveLen(1))
 		Expect(got[0].EvaluatedCount).To(Equal(1))
