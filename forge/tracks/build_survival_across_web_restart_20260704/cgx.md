@@ -30,7 +30,17 @@
 
 ## Frustrations & Friction
 
-_(log during implementation)_
+- [2026-07-04] busybox portability bite: `kill -0 ""` exits 0 on busybox
+  (bash errors), so the supervisor's liveness check silently never started
+  the command on real task images while all local/macOS script tests passed.
+  Lesson: any POSIX-sh script destined for arbitrary task images must be
+  smoke-tested on busybox (a 30s kubectl-exec on theborg) before trusting
+  local sh results.
+- [2026-07-04] Live-test debugging trap: sharing one bytes.Buffer between
+  ProcessIO Stdout and Stderr races (SPDY writes them from separate
+  goroutines) and corrupted output into NUL bytes that looked like a file
+  sparseness bug. Production is safe (event writers / TTY merge); added
+  syncBuffer to the live test.
 
 ## Good Patterns
 

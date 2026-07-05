@@ -43,31 +43,31 @@
 
 ## Phase 2: Resumable task exec (atc/worker/jetbridge)
 
-- [ ] Task 2.1: Design the supervisor script as a Go constant + builder
+- [x] d0d4d4217a Task 2.1: Design the supervisor script as a Go constant + builder
       (`supervisor.go`): POSIX-sh only; state dir `/tmp/concourse-task-<id>`;
       pid/log/exit files; alive-check via `kill -0`; tail-and-wait branch;
       replay branch; propagate real exit code. Document busybox compatibility
       assumptions next to `pauseCommand` in container.go.
-- [ ] Task 2.2: Write failing unit tests: `execProcess.Wait` for a
+- [x] d0d4d4217a Task 2.2: Write failing unit tests: `execProcess.Wait` for a
       `ContainerTypeTask` container wraps the command in the supervisor
       (assert on the command passed to the fake `PodExecutor`); get/put/check
       containers exec the raw command unchanged; exit-status annotation still
       written from the supervisor's exit code.
-- [ ] Task 2.3: Implement supervisor wrapping in `execProcess.Wait` /
+- [x] d0d4d4217a Task 2.3: Implement supervisor wrapping in `execProcess.Wait` /
       `newExecProcess` (task-type only, exec mode only).
-- [ ] Task 2.4: Write failing unit test for reattach flow: `Attach` on an
+- [x] d0d4d4217a Task 2.4: Write failing unit test for reattach flow: `Attach` on an
       exec-mode task container with no exit annotation still errors into
       `attachOrRun`'s `Run()` fallback (unchanged contract), and `Run()` on an
       existing Running pod re-execs the SAME supervisor command (idempotent by
       design). Verify `container_test.go` expectations still hold.
-- [ ] Task 2.5: Run `ginkgo ./atc/worker/jetbridge/` full suite; fix fallout
+- [x] d0d4d4217a Task 2.5: Run `ginkgo ./atc/worker/jetbridge/` full suite; fix fallout
       (behavioral_runtime_spec_test.go asserts on exec commands in several
       specs). Commit Phase 2 (`feat(jetbridge): resumable task exec via
       in-pod supervisor`).
 
 ## Phase 3: Live + end-to-end verification
 
-- [ ] Task 3.1: Write live test `live_task_resume_test.go`
+- [x] 582f4aebe8 Task 3.1: Write live test `live_task_resume_test.go`
       (`//go:build live`, plain Go test, pattern from
       live_sidecar_logstream_test.go): throwaway namespace on theborg; start a
       long task (`sleep 90; echo done >> /tmp/marker`) through Worker →
@@ -83,7 +83,7 @@
       with a ≥2-minute task, `kubectl rollout restart` the web deployment
       mid-build, and verify the build succeeds with no `failed-to-get-pod`
       events. Record evidence (build URL, timings) in cgx.md.
-- [ ] Task 3.3: Regression sweep: `make test-unit` and
+- [x] 582f4aebe8 Task 3.3: Regression sweep: `make test-unit` and
       `make test-fly-integration` green; note in cgx.md whether the
       verify-upgrade settle timer and `attempts: 2` are now removable
       (do NOT remove in this track).
