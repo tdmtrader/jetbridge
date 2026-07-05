@@ -7,10 +7,13 @@ module Build.Models exposing
 import Build.Header.Models exposing (BuildPageType(..), CommentBarVisibility, CurrentOutput(..), HistoryItem)
 import Build.Output.Models exposing (OutputModel)
 import Concourse
+import Concourse.AgentReview
 import Concourse.BuildStatus as BuildStatus
+import Dict exposing (Dict)
 import Keyboard
 import Login.Login as Login
 import Routes exposing (Highlight)
+import Set exposing (Set)
 import Time
 
 
@@ -32,6 +35,13 @@ type alias Model =
                 , hasLoadedYet : Bool
                 , notFound : Bool
                 , reapTime : Maybe Time.Posix
+                , agentReviews : List Concourse.AgentReview.BuildReview
+                , agentReviewLoadError : Bool
+                , agentReviewPanelExpanded : Bool
+                , expandedFindings : Set String
+                , showObservations : Bool
+                , agentReviewNotes : Dict String String
+                , verdictErrors : Set String
                 }
             )
         )
