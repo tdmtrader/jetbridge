@@ -9,6 +9,8 @@ import Dict
 import Expect
 import Message.Callback as Callback
 import Message.Effects as Effects
+import Message.Message
+import Message.TopLevelMessage as Msgs
 import Test exposing (Test, describe, test)
 import Test.Html.Query as Query
 import Test.Html.Selector exposing (class, containing, id, text)
@@ -95,4 +97,70 @@ all =
                         [ Query.hasNot [ id "agent-review-panel" ]
                         , Query.has [ containing [ text "Couldn't load agent review." ] ]
                         ]
+        , test "clicking a verdict submits it with the typed note" <|
+            \_ ->
+                Common.init "/builds/1"
+                    |> withBuildLoaded
+                    |> Application.handleCallback (Callback.BuildAgentReviewsFetched (Ok [ sampleReview ]))
+                    |> Tuple.first
+                    |> Application.update
+                        (Msgs.Update <|
+                            Message.Message.AgentReviewNoteChanged "PI-1" "my note"
+                        )
+                    |> Tuple.first
+                    |> Application.update
+                        (Msgs.Update <|
+                            Message.Message.AgentReviewVerdictClicked
+                                { repo = "concourse"
+                                , commitSha = "abc123def"
+                                , findingId = "PI-1"
+                                , verdict = "accurate"
+                                , reviewer = "anonymous"
+                                }
+                        )
+                    |> Tuple.second
+                    |> Common.contains
+                        (Effects.SubmitAgentReviewVerdict
+                            { repo = "concourse"
+                            , commitSha = "abc123def"
+                            , findingId = "PI-1"
+                            , verdict = "accurate"
+                            , notes = "my note"
+                            , reviewer = "anonymous"
+                            }
+                        )
+        , test "clicking a verdict twice submits twice (no dedupe in v1)" <|
+            \_ ->
+                let
+                    click =
+                        Application.update
+                            (Msgs.Update <|
+                                Message.Message.AgentReviewVerdictClicked
+                                    { repo = "concourse"
+                                    , commitSha = "abc123def"
+                                    , findingId = "PI-1"
+                                    , verdict = "accurate"
+                                    , reviewer = "anonymous"
+                                    }
+                            )
+
+                    submit =
+                        Effects.SubmitAgentReviewVerdict
+                            { repo = "concourse"
+                            , commitSha = "abc123def"
+                            , findingId = "PI-1"
+                            , verdict = "accurate"
+                            , notes = ""
+                            , reviewer = "anonymous"
+                            }
+                in
+                Common.init "/builds/1"
+                    |> withBuildLoaded
+                    |> Application.handleCallback (Callback.BuildAgentReviewsFetched (Ok [ sampleReview ]))
+                    |> Tuple.first
+                    |> click
+                    |> Tuple.first
+                    |> click
+                    |> Tuple.second
+                    |> Common.contains submit
         ]
