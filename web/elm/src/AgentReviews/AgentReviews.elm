@@ -121,7 +121,7 @@ reviewRow : AgentReview.Summary -> Html Message
 reviewRow s =
     Html.a
         [ class "agent-review-row"
-        , href ("/builds/" ++ String.fromInt s.buildId)
+        , href (Routes.toString (Routes.OneOffBuild { id = s.buildId, highlight = Routes.HighlightNothing }))
         , style "display" "flex"
         , style "align-items" "center"
         , style "gap" "12px"
