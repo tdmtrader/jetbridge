@@ -1,6 +1,8 @@
 package jetbridge
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"strings"
 
 	"github.com/concourse/concourse/atc/runtime"
@@ -54,16 +56,22 @@ const taskStateDirPrefix = "/tmp/concourse-task-"
 
 // supervisorCommand returns the sh invocation that runs the given process
 // spec under the task supervisor. The state dir is derived from the process
-// ID, which is stable across web restarts, so a re-exec of the same process
-// resolves to the same supervisor state.
+// ID plus a hash of the command, both stable across web restarts: a new
+// web's byte-identical re-exec resolves to the same supervisor state and
+// resumes, while a different command on the same container (e.g. a hijack
+// shell) gets fresh state and actually runs.
 func supervisorCommand(processID string, spec runtime.ProcessSpec) []string {
 	words := make([]string, 0, 1+len(spec.Args))
 	for _, w := range append([]string{spec.Path}, spec.Args...) {
 		words = append(words, shellQuote(w))
 	}
+	command := strings.Join(words, " ")
 
-	script := strings.ReplaceAll(supervisorScriptTemplate, "__STATE_DIR__", shellQuote(taskStateDirPrefix+sanitizeForPath(processID)))
-	script = strings.ReplaceAll(script, "__COMMAND__", strings.Join(words, " "))
+	h := sha256.Sum256([]byte(command))
+	stateDir := taskStateDirPrefix + sanitizeForPath(processID) + "-" + hex.EncodeToString(h[:])[:8]
+
+	script := strings.ReplaceAll(supervisorScriptTemplate, "__STATE_DIR__", shellQuote(stateDir))
+	script = strings.ReplaceAll(script, "__COMMAND__", command)
 
 	return []string{"sh", "-c", script}
 }

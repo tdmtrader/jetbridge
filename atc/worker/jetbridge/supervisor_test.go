@@ -24,8 +24,28 @@ var _ = Describe("Task exec supervisor", func() {
 			Expect(command[1]).To(Equal("-c"))
 		})
 
-		It("derives the state dir from the process ID", func() {
-			Expect(command[2]).To(ContainSubstring("'/tmp/concourse-task-task'"))
+		It("derives the state dir from the process ID and command hash", func() {
+			Expect(command[2]).To(MatchRegexp(`'/tmp/concourse-task-task-[0-9a-f]{8}'`))
+		})
+
+		It("gives the identical command the identical state dir (reattach resumes)", func() {
+			again := supervisorCommand("task", runtime.ProcessSpec{
+				Path: "/bin/sh",
+				Args: []string{"-c", "echo hello && exit 0"},
+			})
+			Expect(again).To(Equal(command))
+		})
+
+		It("gives a different command a different state dir (hijack runs fresh)", func() {
+			other := supervisorCommand("task", runtime.ProcessSpec{
+				Path: "/bin/sh",
+				Args: []string{"-c", "echo hijack-works"},
+			})
+			Expect(other[2]).NotTo(Equal(command[2]))
+			stateDir := func(script string) string {
+				return script[:len("S='/tmp/concourse-task-task-xxxxxxxx'")]
+			}
+			Expect(stateDir(other[2])).NotTo(Equal(stateDir(command[2])))
 		})
 
 		It("embeds the quoted original command", func() {
@@ -62,7 +82,7 @@ var _ = Describe("Task exec supervisor", func() {
 
 		It("sanitizes process IDs for filesystem use", func() {
 			cmd := supervisorCommand("some/weird id", runtime.ProcessSpec{Path: "true"})
-			Expect(cmd[2]).To(ContainSubstring("'/tmp/concourse-task-some-weird-id'"))
+			Expect(cmd[2]).To(MatchRegexp(`'/tmp/concourse-task-some-weird-id-[0-9a-f]{8}'`))
 		})
 	})
 

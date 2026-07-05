@@ -22,6 +22,13 @@ import (
 var _ = Describe("Task exec supervisor script execution", func() {
 	var stateID string
 
+	// stateDirOf extracts the supervisor state dir from a generated script.
+	stateDirOf := func(script string) string {
+		start := strings.Index(script, "S='") + len("S='")
+		end := strings.Index(script[start:], "'")
+		return script[start : start+end]
+	}
+
 	// runSupervisor executes the supervisor for the given shell command and
 	// returns combined output and exit code once it completes.
 	runSupervisor := func(shellCommand string) (string, int) {
@@ -44,7 +51,10 @@ var _ = Describe("Task exec supervisor script execution", func() {
 	})
 
 	AfterEach(func() {
-		os.RemoveAll(filepath.Join("/tmp", "concourse-task-"+sanitizeForPath(stateID)))
+		matches, _ := filepath.Glob(filepath.Join("/tmp", "concourse-task-"+sanitizeForPath(stateID)+"-*"))
+		for _, m := range matches {
+			os.RemoveAll(m)
+		}
 	})
 
 	It("runs the command, streams its output, and propagates the exit code", func() {
@@ -88,7 +98,11 @@ var _ = Describe("Task exec supervisor script execution", func() {
 
 		// The command must not have run twice: the log holds exactly one
 		// occurrence even after two supervisor invocations.
-		logBytes, err := os.ReadFile(filepath.Join("/tmp", "concourse-task-"+sanitizeForPath(stateID), "log"))
+		cmd := supervisorCommand(stateID, runtime.ProcessSpec{
+			Path: "sh",
+			Args: []string{"-c", "echo one-shot-output; exit 3"},
+		})
+		logBytes, err := os.ReadFile(filepath.Join(stateDirOf(cmd[2]), "log"))
 		Expect(err).ToNot(HaveOccurred())
 		Expect(strings.Count(string(logBytes), "one-shot-output")).To(Equal(1))
 	})
@@ -104,7 +118,7 @@ var _ = Describe("Task exec supervisor script execution", func() {
 		Expect(web.Start()).To(Succeed())
 
 		time.Sleep(1 * time.Second)
-		pidBytes, err := os.ReadFile(filepath.Join("/tmp", "concourse-task-"+sanitizeForPath(stateID), "pid"))
+		pidBytes, err := os.ReadFile(filepath.Join(stateDirOf(cmd[2]), "pid"))
 		Expect(err).ToNot(HaveOccurred())
 		var runnerPid int
 		_, err = fmt.Sscanf(strings.TrimSpace(string(pidBytes)), "%d", &runnerPid)
