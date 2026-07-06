@@ -131,6 +131,7 @@ func main() {
 					Peers:          peers,
 					Client:         mirrorClient,
 					Logger:         logger.Session("mirror"),
+					Guard:          server.Guard(),
 				})
 				server.SetMirrorTrigger(mirror.Trigger)
 				logger.Info("mirror-configured", lager.Data{

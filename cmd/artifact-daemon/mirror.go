@@ -173,6 +173,16 @@ type mirrorJob struct {
 	client         *http.Client // pre-built client (TLS-aware where needed)
 	logger         lager.Logger
 	perPeerTimeout time.Duration // per-peer request timeout
+	guard          *ReadGuard    // holds the handle's shared lock during tar walks (nil-safe)
+}
+
+// keyHandle returns the step handle segment of an artifact key
+// ("handle/output" → "handle").
+func keyHandle(key string) string {
+	if i := strings.IndexByte(key, '/'); i > 0 {
+		return key[:i]
+	}
+	return key
 }
 
 // Run mirrors the source directory to every peer concurrently. Returns a
@@ -211,8 +221,15 @@ func (j *mirrorJob) putToPeer(ctx context.Context, peer string) mirrorPeerOutcom
 	// Stream the tar through a pipe. A tar error surfaces through
 	// CloseWithError as the request body error; on an early peer response
 	// the transport closes the body, unblocking the writer goroutine.
+	//
+	// The walk holds the handle's shared lock: filepath.Walk silently omits
+	// files deleted before it enumerates them, so tarring a tree that a
+	// concurrent stream-in replace or sweep is deleting would mirror a
+	// truncated copy as if complete.
 	pr, pw := io.Pipe()
 	go func() {
+		release := j.guard.BeginRead(keyHandle(j.key))
+		defer release()
 		pw.CloseWithError(tarDir(pw, j.sourceDir))
 	}()
 
@@ -223,6 +240,9 @@ func (j *mirrorJob) putToPeer(ctx context.Context, peer string) mirrorPeerOutcom
 		return mirrorPeerOutcome{Peer: peer, Status: "unreachable", Err: err}
 	}
 	req.Header.Set("Content-Type", "application/x-tar")
+	// Mark this write as mirror-originated so the receiving daemon does not
+	// re-trigger its own mirror of it (feedback loop).
+	req.Header.Set(MirrorOriginHeader, "true")
 
 	resp, err := j.client.Do(req)
 	if err != nil {
@@ -311,6 +331,7 @@ type Mirror struct {
 	peers  *PeerResolver
 	client *http.Client
 	logger lager.Logger
+	guard  *ReadGuard
 
 	mu     sync.RWMutex
 	status map[string]map[string]string // key → peer → status (for Phase 3 evacuation)
@@ -334,6 +355,7 @@ type MirrorConfig struct {
 	Peers          *PeerResolver
 	Client         *http.Client
 	Logger         lager.Logger
+	Guard          *ReadGuard // coordinates tar walks with deleters (nil-safe)
 }
 
 // NewMirror constructs a Mirror with its worker pool started. Caller must
@@ -353,6 +375,7 @@ func NewMirror(cfg MirrorConfig) *Mirror {
 		peers:          cfg.Peers,
 		client:         cfg.Client,
 		logger:         cfg.Logger,
+		guard:          cfg.Guard,
 		status:         make(map[string]map[string]string),
 	}
 }
@@ -415,6 +438,7 @@ func (m *Mirror) run(ctx context.Context, key string) {
 		client:         m.client,
 		logger:         m.logger.Session("mirror-job", lager.Data{"key": key}),
 		perPeerTimeout: m.perPeerTimeout,
+		guard:          m.guard,
 	}
 	outcomes := job.Run(ctx)
 
@@ -543,6 +567,7 @@ func (m *Mirror) evacuateOne(ctx context.Context, key string) {
 		client:         m.client,
 		logger:         m.logger.Session("evacuate-job", lager.Data{"key": key}),
 		perPeerTimeout: m.perPeerTimeout,
+		guard:          m.guard,
 	}
 	outcomes := job.Run(ctx)
 	m.recordStatus(key, outcomes)

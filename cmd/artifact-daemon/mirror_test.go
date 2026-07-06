@@ -976,3 +976,90 @@ func TestMirror_ForgetHandle_PrunesStatusEntries(t *testing.T) {
 		t.Error("expected h2 status entry to survive pruning of h1")
 	}
 }
+
+// The mirror's tar walk must hold the handle's shared lock: walking a tree
+// that a stream-in replace or sweep is deleting silently omits files and
+// mirrors a truncated copy as complete.
+func TestMirrorJob_TarWalkWaitsForExclusiveHolder(t *testing.T) {
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "data.txt"), []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.Copy(io.Discard, r.Body)
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer srv.Close()
+
+	guard := NewReadGuard()
+	job := &mirrorJob{
+		key:            "handle-z/output",
+		sourceDir:      src,
+		peers:          []string{"peer-a"},
+		port:           7780,
+		scheme:         "http",
+		client:         &http.Client{Transport: &mirrorRoutingTransport{routes: map[string]string{"peer-a:7780": srv.URL}}},
+		logger:         lagertest.NewTestLogger("mirror"),
+		perPeerTimeout: 5 * time.Second,
+		guard:          guard,
+	}
+
+	// Hold the handle exclusively, as a stream-in replace would.
+	release := guard.BeginSweep("handle-z")
+
+	outcomes := make(chan []mirrorPeerOutcome, 1)
+	go func() { outcomes <- job.Run(context.Background()) }()
+
+	select {
+	case <-outcomes:
+		t.Fatal("mirror tar walk ran while the handle was held exclusively")
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	release()
+
+	select {
+	case out := <-outcomes:
+		if len(out) != 1 || out[0].Status != "ok" {
+			t.Fatalf("expected ok outcome after release, got %+v", out)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("mirror job never completed after guard release")
+	}
+}
+
+// Mirror PUTs must identify themselves so the receiving daemon does not
+// re-mirror them (feedback loop).
+func TestMirrorJob_PutsCarryMirrorOriginHeader(t *testing.T) {
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "data.txt"), []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	var gotHeader string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHeader = r.Header.Get(MirrorOriginHeader)
+		io.Copy(io.Discard, r.Body)
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer srv.Close()
+
+	job := &mirrorJob{
+		key:            "h/o",
+		sourceDir:      src,
+		peers:          []string{"peer-a"},
+		port:           7780,
+		scheme:         "http",
+		client:         &http.Client{Transport: &mirrorRoutingTransport{routes: map[string]string{"peer-a:7780": srv.URL}}},
+		logger:         lagertest.NewTestLogger("mirror"),
+		perPeerTimeout: 5 * time.Second,
+	}
+	out := job.Run(context.Background())
+	if len(out) != 1 || out[0].Status != "ok" {
+		t.Fatalf("expected ok outcome, got %+v", out)
+	}
+	if gotHeader == "" {
+		t.Error("expected mirror PUT to carry the mirror-origin header")
+	}
+}

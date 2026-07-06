@@ -135,7 +135,7 @@ func (s *Sweeper) sweep() {
 // dir is spared. Deleting without this coordination lets cp -R copy a
 // half-removed tree and report success (partial artifact served as complete).
 func (s *Sweeper) removeStepDir(logger lager.Logger, handleDir, handle string, cutoff time.Time) bool {
-	release := s.guard.BeginSweep()
+	release := s.guard.BeginSweep(handle)
 	defer release()
 
 	// Re-stat under the exclusive lock: an in-flight read refreshed the

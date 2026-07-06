@@ -1172,3 +1172,42 @@ func TestResolve_TouchesStepDirSoSweeperSpares(t *testing.T) {
 		t.Errorf("expected recently-read artifact to survive the sweep: %v", err)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Mirror feedback loop: an inbound write that itself came from a peer's
+// mirror must NOT re-trigger mirroring — otherwise daemons ping-pong the
+// same key forever (B re-mirrors to A, A replaces its original and
+// re-mirrors to B, ...), and every racy hop can propagate a truncated copy.
+// ---------------------------------------------------------------------------
+
+func TestStreamIn_MirrorOriginWrite_DoesNotRetriggerMirror(t *testing.T) {
+	storagePath := t.TempDir()
+	server := daemon.NewServer(lagertest.NewTestLogger("artifact-daemon"), storagePath, "test-node")
+	rec := &recordingMirror{}
+	server.SetMirrorTrigger(rec.Trigger)
+	ts := httptest.NewServer(server.Handler())
+	defer ts.Close()
+
+	body := makeTarPayload(t, "mirrored-bytes")
+	req, _ := http.NewRequest(http.MethodPut, ts.URL+"/stream-in/handle/output", body)
+	req.Header.Set("Content-Type", "application/x-tar")
+	req.Header.Set(daemon.MirrorOriginHeader, "true")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("stream-in failed: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("stream-in: expected 201, got %d", resp.StatusCode)
+	}
+
+	if calls := rec.calls(); len(calls) != 0 {
+		t.Errorf("expected no mirror re-trigger for a mirror-origin write, got %v", calls)
+	}
+
+	// The artifact itself must still be stored and registered.
+	if _, err := os.Stat(filepath.Join(storagePath, "steps", "handle", "output")); err != nil {
+		t.Errorf("mirror-origin write not stored: %v", err)
+	}
+}

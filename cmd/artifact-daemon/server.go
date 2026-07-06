@@ -51,6 +51,25 @@ func (s *Server) Guard() *ReadGuard {
 	return s.guard
 }
 
+// stepHandle returns the steps/{handle} segment guarding a path under the
+// steps root, or the path itself for non-steps paths (legacy flat files) so
+// they still get a consistent per-path lock.
+func (s *Server) stepHandle(path string) string {
+	stepsRoot := filepath.Join(s.storagePath, "steps")
+	rel, err := filepath.Rel(stepsRoot, path)
+	if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
+		return path
+	}
+	return strings.Split(rel, string(filepath.Separator))[0]
+}
+
+// MirrorOriginHeader marks a PUT /stream-in as originating from a peer
+// daemon's mirror. Such writes must not re-trigger mirroring: the origin
+// daemon fans out to all chosen peers itself, and a re-trigger makes peers
+// ping-pong the same key forever, each racy hop able to propagate a
+// truncated copy.
+const MirrorOriginHeader = "X-Concourse-Mirror"
+
 // Registry returns the server's artifact registry.
 func (s *Server) Registry() *Registry {
 	return s.registry
@@ -161,7 +180,7 @@ func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 
 	// Hold the read guard while serving so the sweeper cannot delete the
 	// directory mid-stream. Released via defer: the tar-abort path panics.
-	release := s.guard.BeginRead()
+	release := s.guard.BeginRead(s.stepHandle(path))
 	defer release()
 	s.touchStepDir(path)
 
@@ -408,17 +427,23 @@ func (s *Server) handleStreamIn(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Move the fully-extracted tree into place. Remove any previous copy
-	// first (rename onto a non-empty dir fails); the gap between the two is
-	// microseconds, versus the whole extraction window before this change.
+	// first (rename onto a non-empty dir fails). The replace is destructive
+	// like a sweep: take the handle's exclusive lock so in-flight reads
+	// (resolve copies, GET/mirror tar walks) never see a half-removed tree.
 	if err := os.MkdirAll(filepath.Dir(dest), 0755); err != nil {
 		s.logger.Error("failed-to-create-stream-in-parent", err, lager.Data{"key": key})
 		http.Error(w, "create parent: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	os.RemoveAll(dest)
-	if err := os.Rename(tmpDest, dest); err != nil {
-		s.logger.Error("failed-to-rename-stream-in", err, lager.Data{"key": key, "tmp": tmpDest})
-		http.Error(w, "rename: "+err.Error(), http.StatusInternalServerError)
+	renameErr := func() error {
+		release := s.guard.BeginSweep(s.stepHandle(dest))
+		defer release()
+		os.RemoveAll(dest)
+		return os.Rename(tmpDest, dest)
+	}()
+	if renameErr != nil {
+		s.logger.Error("failed-to-rename-stream-in", renameErr, lager.Data{"key": key, "tmp": tmpDest})
+		http.Error(w, "rename: "+renameErr.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -428,7 +453,10 @@ func (s *Server) handleStreamIn(w http.ResponseWriter, r *http.Request) {
 	// Schedule outbound mirror to peer daemons so the new artifact survives
 	// loss of this node. Best-effort: the trigger queues a background job
 	// and returns immediately; mirror is disabled by passing a nil trigger.
-	if s.mirrorTrigger != nil {
+	// Writes that themselves arrived via a peer's mirror must NOT re-trigger
+	// (see MirrorOriginHeader) — the origin daemon already fanned out, and
+	// re-mirroring makes daemons ping-pong the same key indefinitely.
+	if s.mirrorTrigger != nil && r.Header.Get(MirrorOriginHeader) == "" {
 		s.mirrorTrigger(r.Context(), key)
 	}
 
@@ -440,7 +468,7 @@ func (s *Server) handleDeleteArtifact(w http.ResponseWriter, r *http.Request) {
 
 	// Deletion is destructive like a sweep: wait out in-flight reads so a
 	// concurrent copy never sees a half-removed tree.
-	release := s.guard.BeginSweep()
+	release := s.guard.BeginSweep(s.stepHandle(path))
 	defer release()
 
 	err := os.RemoveAll(path)
@@ -717,7 +745,7 @@ func (s *Server) handleResolveBatch(w http.ResponseWriter, r *http.Request) {
 // mid-copy (cp -R silently omits files removed before enumeration), and the
 // touch makes the sweeper's under-lock re-check spare the directory.
 func (s *Server) copyArtifactGuarded(src, dest string) error {
-	release := s.guard.BeginRead()
+	release := s.guard.BeginRead(s.stepHandle(src))
 	defer release()
 	s.touchStepDir(src)
 	return s.copyArtifact(src, dest)
@@ -850,7 +878,7 @@ func (s *Server) handleGetResourceCache(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// Same guard discipline as handleGetArtifact: no sweeps mid-stream.
-	release := s.guard.BeginRead()
+	release := s.guard.BeginRead(s.stepHandle(path))
 	defer release()
 	s.touchStepDir(path)
 

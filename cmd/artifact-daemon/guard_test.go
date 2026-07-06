@@ -38,7 +38,7 @@ func TestSweeper_BlocksOnInFlightRead_AndSparesTouchedDir(t *testing.T) {
 	sweeper := NewSweeper(lagertest.NewTestLogger("sweeper"), storagePath, 2*time.Hour, 5*time.Minute, nil)
 	sweeper.SetGuard(guard)
 
-	release := guard.BeginRead()
+	release := guard.BeginRead("in-use")
 
 	sweepDone := make(chan struct{})
 	go func() {
@@ -78,7 +78,7 @@ func TestSweeper_RemovesExpiredDirAfterReadReleases_WhenNotTouched(t *testing.T)
 	sweeper := NewSweeper(lagertest.NewTestLogger("sweeper"), storagePath, 2*time.Hour, 5*time.Minute, nil)
 	sweeper.SetGuard(guard)
 
-	release := guard.BeginRead()
+	release := guard.BeginRead("stale")
 	sweepDone := make(chan struct{})
 	go func() {
 		sweeper.SweepOnce()
@@ -109,7 +109,7 @@ func TestResolve_HoldsReadGuardDuringCopy(t *testing.T) {
 
 	// Hold the guard exclusively (as the sweeper would mid-removal); a
 	// resolve must block rather than copy from a directory being deleted.
-	release := srv.Guard().BeginSweep()
+	release := srv.Guard().BeginSweep("handle-y")
 
 	dest := filepath.Join(t.TempDir(), "dest")
 	resolved := make(chan resolveResponse, 1)
@@ -136,5 +136,28 @@ func TestResolve_HoldsReadGuardDuringCopy(t *testing.T) {
 
 	if _, err := os.Stat(filepath.Join(dest, "data.txt")); err != nil {
 		t.Errorf("resolved copy incomplete: %v", err)
+	}
+}
+
+// The guard is keyed per step handle: work on one handle must not block
+// work on another (a 5-minute mirror PUT of one artifact must not stall
+// every read/replace on the node).
+func TestReadGuard_IsKeyedPerHandle(t *testing.T) {
+	guard := NewReadGuard()
+
+	releaseRead := guard.BeginRead("handle-a")
+	defer releaseRead()
+
+	done := make(chan struct{})
+	go func() {
+		release := guard.BeginSweep("handle-b")
+		release()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("sweep of handle-b blocked behind read of handle-a")
 	}
 }
