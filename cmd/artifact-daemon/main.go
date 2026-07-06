@@ -85,6 +85,7 @@ func main() {
 	// prune mirror status without racing sweeper startup.
 	sweepDone := make(chan struct{})
 	sweeper := NewSweeper(logger, *storagePath, *ttl, 5*time.Minute, server.Registry())
+	sweeper.SetGuard(server.Guard())
 
 	tlsEnabled := *tlsCert != "" && *tlsKey != "" && *tlsCACert != ""
 

@@ -27,6 +27,17 @@ type Sweeper struct {
 	// directory is removed, so other components (the mirror status map)
 	// can drop their bookkeeping for it. Set before Run starts.
 	onStepDirRemoved func(handle string)
+
+	// guard serializes step-dir removal against in-flight reads. Nil-safe
+	// (tests without a server); main wires the server's guard. Set before
+	// Run starts.
+	guard *ReadGuard
+}
+
+// SetGuard wires the read/sweep coordination guard. Must be called before
+// Run starts.
+func (s *Sweeper) SetGuard(g *ReadGuard) {
+	s.guard = g
 }
 
 // SetOnStepDirRemoved registers a callback invoked with the handle name each
@@ -82,15 +93,7 @@ func (s *Sweeper) sweep() {
 				continue
 			}
 			if info.ModTime().Before(cutoff) {
-				if err := os.RemoveAll(handleDir); err != nil {
-					logger.Error("failed-to-remove-step-dir", err, lager.Data{"path": handleDir})
-				} else {
-					if s.registry != nil {
-						s.registry.RemoveByPath(handleDir)
-					}
-					if s.onStepDirRemoved != nil {
-						s.onStepDirRemoved(entry.Name())
-					}
+				if s.removeStepDir(logger, handleDir, entry.Name(), cutoff) {
 					removed++
 				}
 			}
@@ -124,6 +127,39 @@ func (s *Sweeper) sweep() {
 	if removed > 0 {
 		logger.Info("completed", lager.Data{"removed": removed})
 	}
+}
+
+// removeStepDir deletes an expired step directory, coordinating with
+// in-flight reads: it waits out active reads via the guard, then re-checks
+// the mtime — a read that just completed touched the dir, in which case the
+// dir is spared. Deleting without this coordination lets cp -R copy a
+// half-removed tree and report success (partial artifact served as complete).
+func (s *Sweeper) removeStepDir(logger lager.Logger, handleDir, handle string, cutoff time.Time) bool {
+	release := s.guard.BeginSweep()
+	defer release()
+
+	// Re-stat under the exclusive lock: an in-flight read refreshed the
+	// mtime, so the earlier expiry check may be stale.
+	info, err := os.Stat(handleDir)
+	if err != nil {
+		return false
+	}
+	if !info.ModTime().Before(cutoff) {
+		logger.Debug("spared-recently-read-step-dir", lager.Data{"path": handleDir})
+		return false
+	}
+
+	if err := os.RemoveAll(handleDir); err != nil {
+		logger.Error("failed-to-remove-step-dir", err, lager.Data{"path": handleDir})
+		return false
+	}
+	if s.registry != nil {
+		s.registry.RemoveByPath(handleDir)
+	}
+	if s.onStepDirRemoved != nil {
+		s.onStepDirRemoved(handle)
+	}
+	return true
 }
 
 // SweepOnce performs a single sweep pass (for testing).

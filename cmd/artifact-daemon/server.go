@@ -29,6 +29,7 @@ type Server struct {
 	peers         *PeerResolver
 	mirrorTrigger func(ctx context.Context, key string)
 	metrics       *metrics
+	guard         *ReadGuard
 }
 
 // NewServer creates a new artifact-daemon server.
@@ -39,7 +40,15 @@ func NewServer(logger lager.Logger, storagePath, nodeName string) *Server {
 		nodeName:    nodeName,
 		registry:    NewRegistry(logger),
 		metrics:     newMetrics(),
+		guard:       NewReadGuard(),
 	}
+}
+
+// Guard returns the read/sweep coordination guard. The sweeper takes its
+// exclusive side per directory removal so reads never copy from a directory
+// being deleted.
+func (s *Server) Guard() *ReadGuard {
+	return s.guard
 }
 
 // Registry returns the server's artifact registry.
@@ -150,6 +159,10 @@ func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Hold the read guard while serving so the sweeper cannot delete the
+	// directory mid-stream. Released via defer: the tar-abort path panics.
+	release := s.guard.BeginRead()
+	defer release()
 	s.touchStepDir(path)
 
 	// Directory: tar on-the-fly and stream.
@@ -425,6 +438,11 @@ func (s *Server) handleStreamIn(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDeleteArtifact(w http.ResponseWriter, r *http.Request) {
 	path := s.artifactPath(r)
 
+	// Deletion is destructive like a sweep: wait out in-flight reads so a
+	// concurrent copy never sees a half-removed tree.
+	release := s.guard.BeginSweep()
+	defer release()
+
 	err := os.RemoveAll(path)
 	if err != nil {
 		s.logger.Error("failed-to-delete-artifact", err, lager.Data{"path": path})
@@ -572,11 +590,10 @@ func (s *Server) resolveOne(ctx context.Context, key, dest string) (resp resolve
 	// Step 1: Check registry for explicit registration.
 	sourcePath, found := s.registry.Lookup(key)
 	if found {
-		if err := s.copyArtifact(sourcePath, dest); err != nil {
+		if err := s.copyArtifactGuarded(sourcePath, dest); err != nil {
 			logger.Error("copy-failed", err, lager.Data{"source": sourcePath})
 			return resolveResponse{Status: "error", Source: sourcePath, Method: "local", Error: err.Error()}
 		}
-		s.touchStepDir(sourcePath)
 		duration := time.Since(start)
 		logger.Info("resolved", lager.Data{"method": "registry", "source": sourcePath, "duration": duration.String()})
 		return resolveResponse{Status: "ok", Source: sourcePath, Method: "registry", Duration: duration.String()}
@@ -587,11 +604,10 @@ func (s *Server) resolveOne(ctx context.Context, key, dest string) (resp resolve
 	if info, err := os.Stat(stepsPath); err == nil && info.IsDir() {
 		s.registry.Register(key, stepsPath)
 
-		if err := s.copyArtifact(stepsPath, dest); err != nil {
+		if err := s.copyArtifactGuarded(stepsPath, dest); err != nil {
 			logger.Error("copy-failed", err, lager.Data{"source": stepsPath})
 			return resolveResponse{Status: "error", Source: stepsPath, Method: "filesystem", Error: err.Error()}
 		}
-		s.touchStepDir(stepsPath)
 		duration := time.Since(start)
 		logger.Info("resolved", lager.Data{"method": "filesystem", "source": stepsPath, "duration": duration.String()})
 		return resolveResponse{Status: "ok", Source: stepsPath, Method: "filesystem", Duration: duration.String()}
@@ -694,6 +710,17 @@ func (s *Server) handleResolveBatch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, status, batchResolveResponse{Status: overall, Results: results})
+}
+
+// copyArtifactGuarded wraps copyArtifact with the read guard and a
+// pre-copy mtime touch: the guard keeps the sweeper from deleting src
+// mid-copy (cp -R silently omits files removed before enumeration), and the
+// touch makes the sweeper's under-lock re-check spare the directory.
+func (s *Server) copyArtifactGuarded(src, dest string) error {
+	release := s.guard.BeginRead()
+	defer release()
+	s.touchStepDir(src)
+	return s.copyArtifact(src, dest)
 }
 
 // copyArtifact copies the contents of src directory to dest atomically.
@@ -822,6 +849,9 @@ func (s *Server) handleGetResourceCache(w http.ResponseWriter, r *http.Request) 
 		w.Header().Set("X-Node-Name", s.nodeName)
 	}
 
+	// Same guard discipline as handleGetArtifact: no sweeps mid-stream.
+	release := s.guard.BeginRead()
+	defer release()
 	s.touchStepDir(path)
 
 	if info.IsDir() {
