@@ -73,6 +73,7 @@ func main() {
 		}
 	}
 
+	startedAt := time.Now()
 	results, err := phaserunner.Run(ctx, phaserunner.Options{
 		ConfigPath: phasePath,
 		Config:     cfg,
@@ -85,6 +86,16 @@ func main() {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "phase error: %v\n", err)
 		os.Exit(2)
+	}
+
+	if cfg.Name == "review" {
+		repoDir := envconfig.StringOrDefault("REPO_DIR", "")
+		if ev, ok := cfg.Env["repo_dir"]; ok {
+			repoDir = envconfig.StringOrDefault(ev.Var, ev.Default)
+		}
+		if err := fillReviewMetadata(cfg, outputDir, repoDir, agentCLI, agentModel, time.Since(startedAt)); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: fill review metadata: %v\n", err)
+		}
 	}
 
 	fmt.Printf("%s: %s (confidence: %.2f)\n", cfg.Name, results.Status, results.Confidence)
