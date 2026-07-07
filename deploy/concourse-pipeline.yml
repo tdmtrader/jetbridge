@@ -42,7 +42,7 @@ jobs:
 - name: agent-review
   plan:
   - get: repo
-    trigger: true
+    trigger: false
     params: {depth: 25}
   - task: run-agent-review
     config:
