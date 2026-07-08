@@ -1625,7 +1625,7 @@ This is the exact harness `AgentReviewsPageTests.elm` uses: the first test asser
 
 - [ ] **Step 2: Run test to verify it fails.** Run: `cd web/elm && npx elm-test tests/Scorecards/ScorecardsPageTests.elm; cd ../..` — Expected: FAIL (module `Scorecards.Scorecards` does not exist, and the `/workflows/.../scorecard` route is unknown to `Routes`/`SubPage`).
 
-- [ ] **Step 3: Write `web/elm/src/Scorecards/Scorecards.elm`** (structure mirrors `AgentReviews/AgentReviews.elm`; `view` returns a `Browser.Document`-style record `{ title, body }` as that page does — match its exact return type):
+- [ ] **Step 3: Write `web/elm/src/Scorecards/Scorecards.elm`** (structure mirrors `AgentReviews/AgentReviews.elm`; match its exact return types — `view : Session -> Model -> Html Message` returning the top-level `div` directly, plus a separate `documentTitle : String`. `SubPage.view` builds the `( String, Html Message )` tuple itself from those two, exactly as it does for the `AgentReviewsModel` clause at `web/elm/src/SubPage/SubPage.elm:460`):
 
 ```elm
 module Scorecards.Scorecards exposing
@@ -1708,25 +1708,21 @@ subscriptions =
     []
 
 
-view : Session -> Model -> { title : String, body : List (Html Message) }
+view : Session -> Model -> Html Message
 view _ model =
-    { title = documentTitle
-    , body =
-        [ div [ class "scorecard-page", style "padding" "20px" ]
-            [ Html.h1 [] [ text ("Scorecard — " ++ model.workflowName) ]
-            , case model.scorecard of
-                Just sc ->
-                    scorecardTable sc
+    div [ class "scorecard-page", style "padding" "20px" ]
+        [ Html.h1 [] [ text ("Scorecard — " ++ model.workflowName) ]
+        , case model.scorecard of
+            Just sc ->
+                scorecardTable sc
 
-                Nothing ->
-                    if model.loadError then
-                        div [] [ text "Failed to load scorecard." ]
+            Nothing ->
+                if model.loadError then
+                    div [] [ text "Failed to load scorecard." ]
 
-                    else
-                        div [] [ text "Loading…" ]
-            ]
+                else
+                    div [] [ text "Loading…" ]
         ]
-    }
 
 
 scorecardTable : Scorecard -> Html Message
@@ -1935,7 +1931,14 @@ scorecards =
             -- copy the body of the adjacent `AgentReviews _ ->` clause verbatim
 ```
 
-- [ ] **Step 8: Wire the SubPage** in `web/elm/src/SubPage/SubPage.elm`. Mirror every `AgentReviews` clause: add `import Scorecards.Scorecards as Scorecards`; add `| ScorecardsModel Scorecards.Model` to the page model union; add the `Routes.Scorecards params -> Scorecards.init params |> Tuple.mapFirst ScorecardsModel` init clause; add the `handleCallback`, `view`, `subscriptions`, `update`, and `tooltip` delegation clauses for `ScorecardsModel` (copy the `AgentReviewsModel` clauses exactly, swapping the module name).
+- [ ] **Step 8: Wire the SubPage** in `web/elm/src/SubPage/SubPage.elm`. Mirror every `AgentReviews` clause: add `import Scorecards.Scorecards as Scorecards`; add `| ScorecardsModel Scorecards.Model` to the page model union; add the `Routes.Scorecards params -> Scorecards.init params |> Tuple.mapFirst ScorecardsModel` init clause; add the `handleCallback`, `subscriptions`, `update`, and `tooltip` delegation clauses for `ScorecardsModel` (copy the `AgentReviewsModel` clauses exactly, swapping the module name). The `view` clause builds the `( String, Html Message )` tuple from the page's `documentTitle` + `view`, exactly as the `AgentReviewsModel` clause does at `SubPage.elm:460-463`:
+
+```elm
+        ScorecardsModel model ->
+            ( Scorecards.documentTitle
+            , Scorecards.view session model
+            )
+```
 
 - [ ] **Step 9: Compile + test.** Run: `cd web/elm && npx elm make src/Main.elm --output=/dev/null && npx elm-test tests/Scorecards/ScorecardsPageTests.elm; cd ../..` — Expected: compile succeeds, page test PASS. Fix any non-exhaustive `case` warnings the two new union variants surface (each is a mechanical `ScorecardsModel ... -> ...` or `Scorecards _ -> ...` branch parallel to the `AgentReviews` one).
 

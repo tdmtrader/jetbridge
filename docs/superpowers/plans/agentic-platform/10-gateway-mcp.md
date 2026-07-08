@@ -355,6 +355,15 @@ type Usage struct {
 	Model        string  `json:"model"`
 	InputTokens  int64   `json:"input_tokens"`
 	OutputTokens int64   `json:"output_tokens"`
+	// CacheReadTokens/CacheCreationTokens carry the claude envelope's
+	// usage.cache_read_input_tokens / usage.cache_creation_input_tokens. They
+	// are NOT part of §3.3 GatewayUsage or the subagent.result event (neither
+	// lists cache tokens), but the cost.record event and the ledger row MUST
+	// carry them: the gateway is the named producer of cost.record (§5), whose
+	// payload "mirrors budget.LedgerEntry (§2.7): {…, cache_read_tokens,
+	// cache_creation_tokens, …}", and agent_cost_ledger (§1.4) has both columns.
+	CacheReadTokens     int64 `json:"cache_read_tokens"`
+	CacheCreationTokens int64 `json:"cache_creation_tokens"`
 	Turns        int     `json:"turns"`
 	CostUSD      float64 `json:"cost_usd"`
 	DurationMS   int     `json:"duration_ms"`
@@ -461,6 +470,9 @@ func TestClaudeAdapterParsesEnvelope(t *testing.T) {
 	}
 	if resp.Usage.CostUSD != 0.1234 || resp.Usage.InputTokens != 100 || resp.Usage.OutputTokens != 50 || resp.Usage.Turns != 3 {
 		t.Errorf("usage = %+v", resp.Usage)
+	}
+	if resp.Usage.CacheReadTokens != 10 || resp.Usage.CacheCreationTokens != 5 {
+		t.Errorf("cache tokens = %+v", resp.Usage)
 	}
 	if resp.Usage.Provider != "claude" || resp.Usage.Model != "claude-sonnet-4-5" {
 		t.Errorf("provider/model = %+v", resp.Usage)
@@ -609,13 +621,15 @@ func (a *ClaudeAdapter) Invoke(ctx context.Context, req Request, maxCostUSD floa
 	return &Response{
 		Answer: answer,
 		Usage: Usage{
-			Provider:     "claude",
-			Model:        env.Model,
-			InputTokens:  env.Usage.InputTokens,
-			OutputTokens: env.Usage.OutputTokens,
-			Turns:        env.NumTurns,
-			CostUSD:      env.CostUSD,
-			DurationMS:   elapsedMS,
+			Provider:            "claude",
+			Model:               env.Model,
+			InputTokens:         env.Usage.InputTokens,
+			OutputTokens:        env.Usage.OutputTokens,
+			CacheReadTokens:     env.Usage.CacheReadInputTokens,
+			CacheCreationTokens: env.Usage.CacheCreationInputTokens,
+			Turns:               env.NumTurns,
+			CostUSD:             env.CostUSD,
+			DurationMS:          elapsedMS,
 		},
 	}, nil
 }
@@ -694,7 +708,8 @@ func TestMeterEmitsEventsAndPostsLedger(t *testing.T) {
 	callID := m.CallStart("request_review", "claude", "claude-sonnet-4-5", 512)
 	m.CallResult(callID, "request_review", "ok", gatewaymcp.Usage{
 		Provider: "claude", Model: "claude-sonnet-4-5",
-		InputTokens: 100, OutputTokens: 50, Turns: 3, CostUSD: 0.42, DurationMS: 850,
+		InputTokens: 100, OutputTokens: 50, CacheReadTokens: 10, CacheCreationTokens: 5,
+		Turns: 3, CostUSD: 0.42, DurationMS: 850,
 	}, intPtr(2))
 	m.Flush() // block for the fire-and-forget POST in the test
 
@@ -708,6 +723,10 @@ func TestMeterEmitsEventsAndPostsLedger(t *testing.T) {
 	if !strings.Contains(events, `"cost.record"`) {
 		t.Errorf("missing cost.record event: %s", events)
 	}
+	// cost.record mirrors budget.LedgerEntry (§5), so it MUST carry cache tokens.
+	if !strings.Contains(events, `"cache_read_tokens":10`) || !strings.Contains(events, `"cache_creation_tokens":5`) {
+		t.Errorf("cost.record missing cache tokens: %s", events)
+	}
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -720,6 +739,9 @@ func TestMeterEmitsEventsAndPostsLedger(t *testing.T) {
 	}
 	if e.TicketID == nil || *e.TicketID != 42 || e.CostUSD != 0.42 || e.Turns != 3 {
 		t.Errorf("ledger entry = %+v", e)
+	}
+	if e.CacheReadTokens != 10 || e.CacheCreationTokens != 5 {
+		t.Errorf("ledger entry missing cache tokens: %+v", e)
 	}
 	if !strings.Contains(string(e.Metadata), `"workflow":"standard-dev@3"`) {
 		t.Errorf("metadata missing workflow tag: %s", e.Metadata)
@@ -807,6 +829,7 @@ func (m *Meter) CallResult(callID, tool, status string, u Usage, findingCount *i
 	m.emit(schema.EventCostRecord, schema.CostRecordData{
 		Source: budget.SourceGateway, Provider: u.Provider, Model: u.Model,
 		InputTokens: u.InputTokens, OutputTokens: u.OutputTokens,
+		CacheReadTokens: u.CacheReadTokens, CacheCreationTokens: u.CacheCreationTokens,
 		Turns: u.Turns, CostUSD: u.CostUSD,
 	})
 	m.postLedger(u)
@@ -848,6 +871,7 @@ func (m *Meter) postLedger(u Usage) {
 		TicketID: m.cfg.TicketID, PipelineRunID: m.cfg.PipelineRunID, BuildID: m.cfg.BuildID,
 		Source: budget.SourceGateway, Provider: u.Provider, Model: u.Model,
 		InputTokens: u.InputTokens, OutputTokens: u.OutputTokens,
+		CacheReadTokens: u.CacheReadTokens, CacheCreationTokens: u.CacheCreationTokens,
 		Turns: u.Turns, CostUSD: u.CostUSD,
 	}
 	if tag := m.cfg.WorkflowTag(); tag != "" {

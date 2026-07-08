@@ -32,10 +32,10 @@
 
 **Prior waves (assumed LANDED exactly as 00-shared-contracts.md + earlier plans' §11 addenda define):**
 
-- **scorecards** (wave 4): the `scorecard-rollup-api` surface — route `GetAgentWorkflowScorecard GET /api/v1/agent/workflows/:workflow_name/scorecard?versions=3,4` (authorized viewer), returning per-version rollups over `agent_run_metrics`/`agent_cost_ledger`/`agent_outcomes`/judge scores/gate results keyed by workflow-definition version (gate pass rate, cost per ticket, turns, findings per ticket, judge scores, human verdict distributions, with counts alongside rates), indexed by `(workflow_version, day)`, ok/failed/error enforced. This plan's experiment scorecard delta view (Task 10) calls this route for each variant version and diffs the results — it does NOT re-implement rollup SQL.
+- **scorecards** (wave 4): the `scorecard-rollup-api` surface — route `GetAgentWorkflowScorecard GET /api/v1/agent/workflows/:workflow_name/scorecard?versions=3,4` (authorized viewer), returning per-version rollups over `agent_run_metrics`/`agent_cost_ledger`/`agent_outcomes`/judge scores/gate results keyed by workflow-definition version (gate pass rate, cost per ticket, turns, findings per ticket, judge scores, human verdict distributions, with counts alongside rates), indexed by `(workflow_version, day)`, ok/failed/error enforced. Its only Store method is `Scorecard(workflowName string, versions []int) (*Scorecard, error)` — keyed by `(workflow_name, workflow_version)`, **no ticket-set filter**. This plan's experiment delta view (Task 10) needs a rollup restricted to one experiment's specific tickets (a strict subset of a version's traffic), which that surface cannot express; rather than grow a new scorecards method it reuses the *scorecard SQL recipe* (aggregate column list + `FILTER`/`LEFT JOIN agent_outcomes`) in an experiment-owned `ScorecardForTickets` query over the same shared tables filtered by `ticket_id`. It does NOT depend on the scorecards package at runtime.
 - **delivery-outcomes** (wave 4): `agent_outcomes` table (migration 1773106090) + `agent/api/outcomes` (`Outcome`, `MergeState` constants `MergeOpen`/`Merged`/`MergedWithFixes`/`ClosedUnmerged`, `Store`, additive `BaseSha`/`CreatedAt`/`UpdatedAt`); `atc/db.NewAgentOutcomesFactory`; the `agent/gitcheck` package + `agent/outcomewatcher` RunnableComponent (component name `agent_outcome_watcher`); the §1.11.1 addendum (human-touch delta = LINES via numstat of non-`concourse-agent[bot]` first-parent commits; `merged_with_fixes ⇔ human_commit_count > 0`; merge-detection heuristics v1); routes `GetAgentTicketOutcome`, `SetAgentTicketDisposition`, `GetAgentTicketDiff`, `GetAgentTicketReviews`. This plan reads `agent_outcomes` via LEFT JOIN on `ticket_id`.
 - **dispatch** (wave 4): the `renderer-library-and-golden-templates` surface — a renderer library resolving a workflow-definition version into a `template: true` pipeline config with fully-resolved `agent:`/`harvest:` step config (render-time-resolution rule, contracts §2.8), sidecar mix, gate policy, checkpoint declarations, materialized `spec.md`/`plan.md` run inputs; golden-file-validated against `atc configvalidate`; plus the dispatcher RunnableComponent that claims `queued` tickets, admits against `budget`, attaches vaulted credentials, creates the run, and transitions the ticket through `tickets.Store.Transition`. This plan's experiment runner reuses dispatch's *dispatch-a-ticket* path: it creates `origin:retrospective`/experiment tickets in the appropriate state and lets the dispatcher render+run them (Task 9 chooses the ticket-dispatch reuse over calling the renderer directly — see Task 1 addendum). Its exported surface consumed here: `atc/db.NewAgentTicketsFactory` (ticket-core) + the dispatcher claiming `queued` tickets; no direct call into the renderer library from this workstream.
-- **ticket-core** (wave 2): `agent/api/tickets` — `Ticket` (fields incl. `Repo`, `WorkflowName`, `WorkflowVersion *int`, `Origin`, `State`, `BudgetUSD *float64`, `CreatedBy`, `ExternalRef`), `State` constants (`StateDraft`, `StateQueued`, …), `Origin` values `web/fly/jira/retrospective`, `ListFilter{State, Repo, Origin, Limit}`, `TransitionMeta{PipelineRunID *int, Branch string, ErrorDetail string, By string}`, `Store` (with `Transition` as the ONLY state writer, `Create` always inserts `state='draft'`), `MemoryStore`, `CreateRequest`, errors, `ValidOrigin`; `atc/db.NewAgentTicketsFactory(dbConn)` (dbfakes `FakeAgentTicketsFactory`). **CreateAgentTicket origin rule (ticket-core addendum §2.1):** principal writes may create only `origin:"retrospective"`; the retrospective agent's platform-mcp principal creates its proposal tickets through the existing `CreateAgentTicket` route.
+- **ticket-core** (wave 2): `agent/api/tickets` — `Ticket` (fields incl. `Repo`, `WorkflowName`, `WorkflowVersion *int`, `Origin`, `State`, `BudgetUSD *float64`, `CreatedBy`, `ExternalRef`), `State` constants (`StateDraft`, `StateQueued`, …), `Origin` values `web/fly/jira/retrospective`, `ListFilter{State, Repo, Origin, Limit}`, `TransitionMeta{PipelineRunID *int, Branch string, ErrorDetail string}` (**no `By` field** — frozen by ticket-core addendum §2.1.1; attribution is carried by `Ticket.CreatedBy`, set at `Create` time), `Store` (with `Transition` as the ONLY state writer, `Create` always inserts `state='draft'`), `MemoryStore`, `CreateRequest`, errors, `ValidOrigin`; `atc/db.NewAgentTicketsFactory(dbConn)` (dbfakes `FakeAgentTicketsFactory`). **CreateAgentTicket origin rule (ticket-core addendum §2.1):** principal writes may create only `origin:"retrospective"`; the retrospective agent's platform-mcp principal creates its proposal tickets through the existing `CreateAgentTicket` route.
 - **credentials-and-budgets** (wave 1): `agent/budget` (`Checker` with `GlobalDailyRemaining() (Remaining, error)`, `TicketRemaining`, `Record(LedgerEntry)`; `Remaining{LimitUSD, SpentUSD, RemainingUSD, Exhausted}`; `Ledger.Rollup(groupBy, since, until)`; `GroupByWorkflow`/`GroupByUser`/`GroupByTicket`/`GroupByDay`; `RollupRow{Key, Entries, InputTokens, OutputTokens, Turns, CostUSD}`); `agent_cost_ledger` with `source` CHECK including `'retrospective'`; the platform-credential policy §1.13 (`agent-platform` service user funds `source IN ('harvest_judge','retrospective','probe')`; global daily cap includes platform spend) + the long-lived `agent-platform-credential` K8s secret (§8.2); the `--agent-daily-budget-usd` web flag (0 = unlimited). The retrospective workflow is funded by the platform credential; the experiment runner's admission uses `GlobalDailyRemaining()`.
 - **workflow-store** (wave 1): `agent/workflow` — `Definition{ID, Name, Version, ContentHash, Live, RawYAML, Config}`, `Config` (parsed §6 YAML: `SchemaVersion`, `Name`, `Defaults`, `Budget`, `Sidecars`, `Prompts`, `Steps[]` with `Agent`/`Checkpoint`/`Prompt`/`Sidecars`/`BudgetSliceUSD`/`Inputs`/`Outputs`, `HITL`, `GatePolicy`, `Judge`), `Parse([]byte) (Config, error)`, `Store` (`Import`, `Get`, `Live`, `List`, `Versions`, `Promote`); `atc/db.NewAgentWorkflowsFactory`. The retrospective workflow (Task 18) is imported through this store like any other definition.
 - **agent-step** (wave 2): `agent/schema` nested module (`schema.RunMetrics` with `Results json.RawMessage`, `EventCounts map[string]int`, `WorkflowName`, `WorkflowVersion *int`, `Status`; `schema.Results` with `Metadata map[string]interface{}`; event reader/writer + event-type constants incl. `tool.result`, `gate.result`); `agent/api/metrics.Store` with `ListByTicket(ticketID) ([]schema.RunMetrics, error)` + `db.NewAgentRunMetricsFactory`. Friction mining (Task 15) reads `agent_run_metrics.event_counts` and the events artifact handle.
@@ -46,11 +46,11 @@
 
 **This plan PRODUCES (contract surfaces `experiment-substrate` §1.12 — this plan is its owner):**
 - 00-shared-contracts.md **§1.12 Experiment substrate** — `agent_benchmark_cases`, `agent_experiments`, `agent_experiment_runs` DDL as written, plus the Task 1 additive `defect_link` column on `agent_reviews` (§1.12.1 addendum, Task 12).
-- 00-shared-contracts.md **§4.2** rows `ListAgentBenchmarkCases`/`CreateAgentBenchmarkCase`, `CreateAgentExperiment`/`GetAgentExperiment` (already in the table) plus additive rows `ListAgentExperiments`, `GetAgentExperimentDelta`, and the analytics routes `GetAgentFindingAnalytics`/`GetAgentCalibration`/`GetAgentFriction` declared in Task 1's addendum.
+- 00-shared-contracts.md **§4.2** rows `ListAgentBenchmarkCases`/`CreateAgentBenchmarkCase`, `CreateAgentExperiment`/`GetAgentExperiment` (already in the table) plus additive rows `ListAgentExperiments`, `GetAgentExperimentDelta`, the analytics routes `GetAgentFindingAnalytics`/`GetAgentCalibration`/`GetAgentFriction`, and the retrospective-trigger route `RunAgentRetrospective` (POST `/api/v1/agent/retrospective`, member) declared in Task 1's addendum.
 - The defect→ticket linking convention (Task 1/12 addendum §1.12.1) that missed-issue-rate depends on, agreed before data accrues.
 
 **This plan CONSUMES:**
-- **`scorecard-rollup-api`** (§4.2 `GetAgentWorkflowScorecard`, over §1.8/§1.4/§1.11) — the experiment delta view diffs two versions' scorecards.
+- **`scorecard-rollup-api`** (§4.2 `GetAgentWorkflowScorecard`, over §1.8/§1.4/§1.11) — as a *recipe* only: the experiment delta view (Task 10) reuses scorecards' aggregate-SQL shape and numeric field names in its own ticket-scoped `ScorecardForTickets` query. It does NOT call the scorecards route or import the scorecards package (that surface has no ticket-set filter — see the scorecards prior-wave note above).
 - **`renderer-library-and-golden-templates`** + **`pipeline-runs-api-and-lifecycle`** (§1.5/§2.3/§7) — via ticket dispatch: the runner enqueues tickets the dispatcher renders and runs.
 - **`ticket-tables-and-transition-function`** (§1.7/§2.1) — `origin:retrospective` seam, `Transition`, `CreateAgentTicket`.
 - **`budget-library-and-cost-ledger`** + **`platform-credential-policy`** (§1.4/§2.7/§1.13) — daily-cap admission + retrospective funding.
@@ -66,17 +66,17 @@
 
 ### Task 1: Wave-start contract addendum — experiment/benchmark schema freeze, analytics routes, dispatch-reuse decision
 
-The charter requires the benchmark/experiment schema "as needed" and the daily-cap reliance to be explicit rather than silently assumed. This workstream owns §1.12, so this addendum is an owner amendment: it pins the API request/response shapes the contracts doc names but never bodies, records the experiment-runner-dispatches-tickets decision (avoiding a second renderer entrypoint), and declares the four additive routes. Task 12 adds the defect-link column addendum separately (it touches `agent_reviews`, harvest-step's table, so it is a distinct sign-off note).
+The charter requires the benchmark/experiment schema "as needed" and the daily-cap reliance to be explicit rather than silently assumed. This workstream owns §1.12, so this addendum is an owner amendment: it pins the API request/response shapes the contracts doc names but never bodies, records the experiment-runner-dispatches-tickets decision (avoiding a second renderer entrypoint), and declares the five additive routes (two experiment, three analytics, and the M2 retrospective trigger). Task 12 adds the defect-link column addendum separately (it touches `agent_reviews`, harvest-step's table, so it is a distinct sign-off note).
 
 **Files:**
-- Modify: `docs/superpowers/plans/agentic-platform/00-shared-contracts.md` (insert `### 1.12.2` after the §1.12 closing paragraph — the `[DECIDED HERE: benchmark cases live in the DB…]` line region, before `### 1.13`; append four rows to the §4.2 route table after the `GetAgentExperiment` row; append to the §11 Amendment log at end of file)
+- Modify: `docs/superpowers/plans/agentic-platform/00-shared-contracts.md` (insert `### 1.12.2` after the §1.12 closing paragraph — the `[DECIDED HERE: benchmark cases live in the DB…]` line region, before `### 1.13`; append five rows to the §4.2 route table after the `GetAgentExperiment` row; append to the §11 Amendment log at end of file)
 
 **Steps:**
 
 - [ ] **Step 1: Insert the §1.12.2 addendum** immediately after §1.12's `agent_experiment_runs` block and the "[DECIDED HERE: benchmark cases live in the DB…]" paragraph (before `### 1.13`):
 
 ````markdown
-### 1.12.2 Experiment substrate wave-5 addendum — owner: **process-intel-experiments** (2026-07-08; sign-off consumers: scorecards)
+### 1.12.2 Experiment substrate wave-5 addendum — owner: **process-intel-experiments** (2026-07-08; affects/notified: scorecards — recipe reuse only, no change to the scorecards surface)
 
 **Runner dispatches tickets, not the renderer directly [DECIDED HERE]:** the experiment runner does NOT call dispatch's renderer library or `PipelineRunFactory.CreateRun` directly. For each `(benchmark_case, workflow{name,version}, repetition)` matrix cell it creates an ordinary `agent_tickets` row (`origin:'fly'`, `repo`=case.repo, `workflow_name`/`workflow_version` = the variant, `body` = case.prompt, `created_by`='experiment-<id>'), sets `agent_experiment_runs.ticket_id`, and transitions the ticket `draft→queued` through `tickets.Store.Transition`. The wave-4 dispatcher then renders and runs it exactly like any queued ticket, so experiments and normal dispatch share one render+admit+run+transition path (no second entrypoint to keep in sync). The runner links `agent_experiment_runs.pipeline_run_id` from the ticket's `pipeline_run_id` once the dispatcher sets it, and mirrors the ticket's terminal state into `agent_experiment_runs.status` (`merged`/`merged_with_fixes`/`needs_review`→`ok`, `failed`→`failed`, `errored`→`error`). `agent_experiment_runs` gains one additive column: `ticket_id INTEGER` (join key `agent_tickets.id`, per the plain-column convention).
 
@@ -88,32 +88,38 @@ The charter requires the benchmark/experiment schema "as needed" and the daily-c
 - `POST /api/v1/agent/experiments` body: `{"name","description","matrix":{"cases":["name"...],"workflows":[{"name","version"}...],"repetitions":N}}` → 200 `Experiment` (§2.9), 400 on empty cases/workflows or unknown case name or unknown workflow version, 202 semantics: row is created `pending`; the runner picks it up.
 - `GET /api/v1/agent/experiments` → 200 `[]Experiment` (metadata, newest first).
 - `GET /api/v1/agent/experiments/:experiment_id` → 200 `Experiment` incl. `runs:[]ExperimentRun`, 404 unknown, 400 non-integer id.
-- `GET /api/v1/agent/experiments/:experiment_id/delta` (`?baseline=<workflow_version>`) → 200 `ExperimentDelta` (§2.9): per-workflow-version scorecard columns for the experiment's variants side-by-side, computed by calling `GetAgentWorkflowScorecard` internally for each variant restricted to this experiment's runs, plus per-column deltas vs the baseline version; 404 unknown experiment.
+- `GET /api/v1/agent/experiments/:experiment_id/delta` (`?baseline=<workflow_version>`) → 200 `ExperimentDelta` (§2.9): per-workflow-version scorecard-shaped columns for the experiment's variants side-by-side, computed by an experiment-owned ticket-scoped rollup (`experiments.Store.ScorecardForTickets`) over `agent_run_metrics`/`agent_cost_ledger`/`agent_outcomes` filtered to each variant's tickets, plus per-column deltas vs the baseline version; 404 unknown experiment. **Note:** the wave-4 `scorecard-rollup-api` (`GetAgentWorkflowScorecard`, keyed by `(workflow_name, workflow_version)`) has no ticket-set filter, so this workstream computes the ticket-restricted rollup itself over the shared tables rather than calling that route — no new scorecards surface is required, and the numeric field names match so the delta columns are labeled consistently.
 
-**Go domain types (§2.9, owner: process-intel-experiments, `agent/api/experiments/types.go`):** `BenchmarkCase{ID, Name, Repo, Prompt, BeforeRef, ReferenceRef, Tags []string, Notes, CreatedBy, CreatedAt int64}`, `Experiment{ID, Name, Description, Matrix, Status, CreatedBy, CreatedAt, CompletedAt int64, Runs []ExperimentRun}`, `Matrix{Cases []string, Workflows []WorkflowRef, Repetitions int}` (`WorkflowRef{Name string, Version int}`), `ExperimentRun{BenchmarkCaseName, WorkflowName, WorkflowVersion, Repetition int, TicketID *int, PipelineRunID *int, Status string}`, `ExperimentDelta{ExperimentID, Baseline int, Columns []DeltaColumn}` (`DeltaColumn{WorkflowVersion int, Scorecard json.RawMessage, Deltas map[string]float64}`). `//counterfeiter:generate . Store` interface `CreateCase`/`ListCases`/`GetCaseByName`/`CreateExperiment`/`GetExperiment`/`ListExperiments`/`ClaimPending`/`LinkRun`/`SetRunStatus`/`FinishExperiment`. `atc/db.NewAgentExperimentFactory(conn DbConn)` implements it.
+**Go domain types (§2.9, owner: process-intel-experiments, `agent/api/experiments/types.go`):** `BenchmarkCase{ID, Name, Repo, Prompt, BeforeRef, ReferenceRef, Tags []string, Notes, CreatedBy, CreatedAt int64}`, `Experiment{ID, Name, Description, Matrix, Status, CreatedBy, CreatedAt, CompletedAt int64, Runs []ExperimentRun}`, `Matrix{Cases []string, Workflows []WorkflowRef, Repetitions int}` (`WorkflowRef{Name string, Version int}`), `ExperimentRun{BenchmarkCaseName, WorkflowName, WorkflowVersion, Repetition int, TicketID *int, PipelineRunID *int, Status string}`, `ExperimentDelta{ExperimentID, Baseline int, Columns []DeltaColumn}` (`DeltaColumn{WorkflowVersion int, Scorecard json.RawMessage, Deltas map[string]float64}`). `//counterfeiter:generate . Store` interface `CreateCase`/`ListCases`/`GetCaseByName`/`CreateExperiment`/`GetExperiment`/`ListExperiments`/`ClaimPending`/`LinkRun`/`SetRunStatus`/`FinishExperiment`/`ScorecardForTickets` (`ScorecardForTickets(workflowName string, version int, ticketIDs []int) (json.RawMessage, map[string]float64, error)` — the ticket-scoped rollup backing the delta view; the scorecards package has no ticket-set-filtered surface). `atc/db.NewAgentExperimentFactory(conn DbConn)` implements it.
 
 **Analytics routes (M2, additive to §4.2):**
 - `GET /api/v1/agent/analytics/findings` (`?repo=&workflow_name=&since=&until=`) → `FindingAnalytics` (§2.10): findings-per-ticket per repo/workflow version, recurring finding categories ranked as automation candidates, catches-migrate-leftward series (findings-per-ticket over time vs escaped-defect count). Authorized viewer.
 - `GET /api/v1/agent/analytics/calibration` (`?workflow_name=&since=&until=`) → `Calibration` (§2.10): false-positive rate from six-verdict feedback (`false_positive`+`noisy`+`overly_strict` over evaluated findings), missed-issue rate from `agent_reviews.defect_link` (§1.12.1). Authorized viewer.
 - `GET /api/v1/agent/analytics/friction` (`?workflow_name=&since=&until=`) → `Friction` (§2.10): the 2–3 frozen signatures (failing-test-loop rate, tool-error rate, turn-burn outliers). Authorized viewer.
+
+**Retrospective trigger route (M2, additive to §4.2):**
+- `POST /api/v1/agent/retrospective` (`RunAgentRetrospective`) → 200 `{"filed": true}` on success. Synchronously invokes the retrospective trigger's `RunOnce(ctx, "manual")`, which reads findings/calibration/friction, renders an intel snapshot, and files one `origin:'retrospective'` ticket through `CreateAgentTicket` + `Transition` (draft→queued). Authorized member (initiates platform-funded work; funded by the platform credential per §1.13). No new write path — the only mutation is the ticket, via the existing Transition seam.
 ````
 
-- [ ] **Step 2: Append four route rows** to the §4.2 table (after the `CreateAgentExperiment / GetAgentExperiment` row):
+- [ ] **Step 2: Append five route rows** to the §4.2 table (after the `CreateAgentExperiment / GetAgentExperiment` row):
 
 ```markdown
 | `ListAgentExperiments` | GET | `/api/v1/agent/experiments` | authorized viewer | process-intel-experiments |
 | `GetAgentExperimentDelta` | GET | `/api/v1/agent/experiments/:experiment_id/delta` | authorized viewer | process-intel-experiments |
 | `GetAgentFindingAnalytics` / `GetAgentCalibration` / `GetAgentFriction` | GET | `/api/v1/agent/analytics/{findings,calibration,friction}` | authorized viewer | process-intel-experiments |
+| `RunAgentRetrospective` | POST | `/api/v1/agent/retrospective` | authorized member | process-intel-experiments |
 ```
+
+`RunAgentRetrospective` is the M2 manual-trigger route (Task 20): it synchronously invokes the retrospective trigger's `RunOnce(ctx, "manual")`, which files an `origin:retrospective` ticket. Member tier (it initiates platform-funded work), on the `CheckAgentAuthorizationHandler` group like every other `/api/v1/agent/*` route (decision 21).
 
 - [ ] **Step 3: Append to the §11 Amendment log:**
 
 ```markdown
-- 2026-07-08 (process-intel-experiments wave-5 planning; owner of §1.12; affects: scorecards):
-  added §1.12.2 — experiment-runner-dispatches-tickets decision (no second renderer entrypoint; matrix cells become origin:'fly' tickets queued through Transition; agent_experiment_runs gains additive ticket_id), daily-cap admission via budget.GlobalDailyRemaining() (over-cap cells stay pending, never error), the benchmark/experiment/analytics HTTP request-response shapes, §2.9 experiment Go types (agent/api/experiments), §2.10 analytics types (agent/intel), and four additive §4.2 routes (ListAgentExperiments, GetAgentExperimentDelta, GetAgentFindingAnalytics/Calibration/Friction). Reads-only over prior-wave tables; no new ingestion.
+- 2026-07-08 (process-intel-experiments wave-5 planning; owner of §1.12; affects/notified: scorecards — recipe reuse only, no change to the scorecards surface):
+  added §1.12.2 — experiment-runner-dispatches-tickets decision (no second renderer entrypoint; matrix cells become origin:'fly' tickets queued through Transition; agent_experiment_runs gains additive ticket_id), daily-cap admission via budget.GlobalDailyRemaining() (over-cap cells stay pending, never error), the benchmark/experiment/analytics HTTP request-response shapes, §2.9 experiment Go types (agent/api/experiments) — incl. the experiment-owned `experiments.Store.ScorecardForTickets(workflowName, version, ticketIDs)` ticket-scoped rollup that backs the delta view (the wave-4 scorecard-rollup-api has no ticket-set filter, so the delta reuses its SQL recipe rather than its route/package — NO change to the scorecards surface is required or made), §2.10 analytics types (agent/intel), and five additive §4.2 routes: ListAgentExperiments, GetAgentExperimentDelta, GetAgentFindingAnalytics/Calibration/Friction (all authorized viewer), and RunAgentRetrospective (POST /api/v1/agent/retrospective, authorized member — the M2 manual retrospective trigger that files an origin:retrospective ticket). Reads-only over prior-wave tables; no new ingestion (RunAgentRetrospective writes only a ticket via the existing Transition seam).
 ```
 
-- [ ] **Step 4: Verify the entry landed:** `grep -n "experiment-runner-dispatches-tickets\|§1.12.2" docs/superpowers/plans/agentic-platform/00-shared-contracts.md` — expect hits in §1.12 and §11.
+- [ ] **Step 4: Verify the entry landed:** `grep -n "experiment-runner-dispatches-tickets\|§1.12.2\|RunAgentRetrospective" docs/superpowers/plans/agentic-platform/00-shared-contracts.md` — expect §1.12.2 in the §1.12 region and §11 log, and `RunAgentRetrospective` in both the §1.12.2 addendum and the §4.2 route table (five new rows total).
 
 - [ ] **Step 5: Commit:**
 
@@ -487,6 +493,15 @@ type Store interface {
 	SetRunStatus(experimentID int, cell Cell, pipelineRunID *int, status string) error
 	// FinishExperiment marks it complete/error once all cells are terminal.
 	FinishExperiment(id int, status string) error
+
+	// ScorecardForTickets returns a scorecard-shaped rollup for one workflow
+	// version restricted to a set of ticket ids (an experiment's runs), over
+	// agent_run_metrics/agent_cost_ledger/agent_outcomes. Backs the delta
+	// view (Task 10) — the scorecards package has no ticket-set-filtered
+	// rollup, so this workstream computes it here. Returns raw JSON (for the
+	// delta column) + a flat numeric map (for diffing). Empty ticketIDs
+	// yields a zero rollup.
+	ScorecardForTickets(workflowName string, version int, ticketIDs []int) (json.RawMessage, map[string]float64, error)
 }
 ```
 
@@ -496,6 +511,7 @@ type Store interface {
 package experiments
 
 import (
+	"encoding/json"
 	"sync"
 	"time"
 )
@@ -639,6 +655,15 @@ func (s *MemoryStore) FinishExperiment(id int, status string) error {
 		}
 	}
 	return nil
+}
+
+// ScorecardForTickets returns a zero rollup in the memory double — the
+// metrics tables it aggregates (agent_run_metrics/agent_cost_ledger/
+// agent_outcomes) live only in the DB factory (Task 4). ComputeDelta's own
+// unit test (Task 10) injects an explicit ScorecardFunc; the real query is
+// covered by the atc/db factory test.
+func (s *MemoryStore) ScorecardForTickets(workflowName string, version int, ticketIDs []int) (json.RawMessage, map[string]float64, error) {
+	return json.RawMessage(`{}`), map[string]float64{}, nil
 }
 
 func (s *MemoryStore) find(experimentID int, cell Cell) *ExperimentRun {
@@ -1069,6 +1094,45 @@ func (f *agentExperimentFactory) FinishExperiment(id int, status string) error {
 
 Note: `psql`, `Rollback`, and `pq` (`github.com/lib/pq`) are already available in package `db` (used across `atc/db/*_factory.go`); the `ANY(tags)` filter is applied in Go post-fetch if squirrel's placeholder handling proves awkward — swap the `q.Where("$1 = ANY(tags)", tag)` line for `sq.Expr("? = ANY(tags)", tag)` which the Dollar formatter renumbers correctly.
 
+- [ ] **Step 3b: Add `ScorecardForTickets`** (backs the delta view — Task 10; the scorecards package has no ticket-set-filtered rollup). It aggregates the same tables the wave-4 scorecards `Store.Scorecard` query does (`agent_run_metrics` volume/status split, `agent_cost_ledger` cost+turns, `agent_reviews.proven_count+observation_count` findings, LEFT JOIN `agent_outcomes` for merge/human-touch), but for **one** `version` and filtered to a ticket set, and returns both the raw JSON and a flat numeric map. Follow the scorecards aggregate SQL recipe (plan 13, Task 3/4/5 — `FILTER (WHERE …)`, `LEFT JOIN agent_outcomes`, dark outcome columns when the table is absent) and reuse its numeric field names so delta columns match the standalone scorecard page:
+
+```go
+func (f *agentExperimentFactory) ScorecardForTickets(workflowName string, version int, ticketIDs []int) (json.RawMessage, map[string]float64, error) {
+	if len(ticketIDs) == 0 {
+		raw := json.RawMessage(`{}`)
+		return raw, map[string]float64{}, nil
+	}
+	// One row of aggregate columns over agent_run_metrics / agent_cost_ledger
+	// / agent_outcomes, restricted to workflow (name,version) AND
+	// ticket_id = ANY($ticketIDs). Column list mirrors scorecards.Scorecard's
+	// numeric fields (cost_usd, turns, gate_pass_rate, findings_per_ticket,
+	// merge_rate, human_lines_delta, …); LEFT JOIN agent_outcomes so merge
+	// columns are nullable/dark until the watcher fills them.
+	row := psql.Select(
+		`COUNT(DISTINCT m.ticket_id)                                    AS ticket_count`,
+		`COALESCE(SUM(c.cost_usd),0)                                    AS cost_usd`,
+		`COALESCE(SUM(m.turns),0)                                       AS turns`,
+		`AVG((r.proven_count + r.observation_count))                    AS findings_per_ticket`,
+		`AVG(CASE WHEN o.merge_state IN ('merged','merged_with_fixes') THEN 1.0 ELSE 0.0 END) AS merge_rate`,
+		// … remaining scorecard numeric columns, same expressions as plan 13
+	).
+		From("agent_run_metrics m").
+		LeftJoin("agent_cost_ledger c ON c.ticket_id = m.ticket_id").
+		LeftJoin("agent_reviews r ON r.ticket_id = m.ticket_id").
+		LeftJoin("agent_outcomes o ON o.ticket_id = m.ticket_id").
+		Where(sq.Eq{"m.workflow_name": workflowName, "m.workflow_version": version}).
+		Where(sq.Expr("m.ticket_id = ANY(?)", pq.Array(ticketIDs))).
+		RunWith(f.conn).QueryRow()
+	// Scan into a struct, build the flat map[string]float64 and json.Marshal it.
+	// (Full column list + scan mirrors scorecards; elided here for brevity.)
+	metrics := map[string]float64{ /* scanned fields */ }
+	raw, err := json.Marshal(metrics)
+	return raw, metrics, err
+}
+```
+
+(`json` and `pq` are already imported in the factory file. The `agent_outcomes`/`agent_reviews` LEFT JOINs degrade to nulls if those tables are empty, matching the scorecards dark-column behavior.)
+
 - [ ] **Step 4: Run to green:**
 
 ```bash
@@ -1287,12 +1351,23 @@ git commit -m "feat(agent): benchmark-case CRUD API routes" -m "Co-Authored-By: 
 ### Task 6: `fly agent benchmarks` — list/create benchmark cases
 
 **Files:**
+- Modify: `fly/commands/internal/displayhelpers/error_handling.go` (add a `Succeedf` stdout helper — see Step 0; consumed by Tasks 6, 11, 20)
 - Create: `fly/commands/agent_benchmarks.go`
 - Modify: `fly/commands/agent.go` (add `Benchmarks AgentBenchmarksCommand` field to the shared `AgentCommand` struct — additive merge per the credentials wave-1 addendum)
 - Modify: `go-concourse/concourse/agent.go` (client methods `ListAgentBenchmarkCases`/`CreateAgentBenchmarkCase` — file created by an earlier agent workstream; append additively)
 - Test: `fly/integration/agent_benchmarks_test.go`
 
 Follows the `fly agent costs` recipe (Task 17 of credentials-and-budgets); drives the routes over `target.Client().HTTPClient()` via go-concourse.
+
+- [ ] **Step 0: Add the `Succeedf` stdout helper to `displayhelpers`.** `displayhelpers` today exports only `Failf`/`FailWithErrorf` (both write to `ui.Stderr` and `os.Exit(1)`) — there is no success-to-stdout counterpart, but all three fly commands here (Tasks 6, 11, 20) print a confirmation line the integration tests assert on stdout. Add, in `fly/commands/internal/displayhelpers/error_handling.go`, a mirror of `Failf` that writes to stdout and does not exit:
+
+```go
+func Succeedf(message string, args ...any) {
+	fmt.Fprintf(os.Stdout, message+"\n", args...)
+}
+```
+
+(`fmt` and `os` are already imported.) This is a fly-internal helper, additive-only — no contract surface.
 
 - [ ] **Step 1: Write the failing integration spec `fly/integration/agent_benchmarks_test.go`** (recipe: the `fly agent` spec in credentials-and-budgets):
 
@@ -2023,7 +2098,10 @@ func (r *Runner) queueCell(logger lager.Logger, exp *api.Experiment, run api.Exp
 		logger.Error("failed-to-create-ticket", err)
 		return
 	}
-	if err := r.tickets.Transition(ticketID, tickets.StateDraft, tickets.StateQueued, tickets.TransitionMeta{By: fmt.Sprintf("experiment-%d", exp.ID)}); err != nil {
+	// Attribution rides on Ticket.CreatedBy (set above at Create time);
+	// TransitionMeta has no By field (ticket-core §2.1.1). No side-band
+	// values apply to draft→queued, so the meta is empty.
+	if err := r.tickets.Transition(ticketID, tickets.StateDraft, tickets.StateQueued, tickets.TransitionMeta{}); err != nil {
 		logger.Error("failed-to-queue-ticket", err, lager.Data{"ticket": ticketID})
 		return
 	}
@@ -2115,7 +2193,7 @@ git commit -m "feat(atc): experiment_runner component - daily-cap-admitted ticke
 - Modify: `agent/api/experiments/handler.go` (`GetExperimentDelta` method)
 - Modify: `atc/routes.go`, `atc/api/handler.go`, `atc/wrappa/api_auth_wrappa.go`, `atc/api/accessor/roles.go` (`GetAgentExperimentDelta`, viewer)
 
-The delta computes, per workflow version in the experiment's matrix, a scorecard restricted to this experiment's runs, then diffs each against a baseline version. It does NOT re-implement rollups: it calls the scorecards surface via an injected `ScorecardFunc func(workflowName string, version int, ticketIDs []int) (json.RawMessage, map[string]float64, error)` (wired in `atc/api/handler.go` to the scorecards package's rollup query filtered to the experiment's ticket ids; the metrics are returned as a `map[string]float64` of the numeric scorecard fields for diffing). Deltas are per-metric `variant − baseline`.
+The delta computes, per workflow version in the experiment's matrix, a scorecard-shaped rollup restricted to this experiment's runs, then diffs each against a baseline version. **Why not reuse the scorecards package:** the wave-4 `scorecard-rollup-api` surface exposes exactly one method — `scorecards.Store.Scorecard(workflowName string, versions []int) (*Scorecard, error)` (plan 13) — keyed by `(workflow_name, workflow_version)` with no ticket-set filter, and its only route is `GetAgentWorkflowScorecard?versions=`. It **cannot** restrict a rollup to one experiment's specific tickets, which the delta requires (an experiment reruns the same benchmark cases, so its runs are a strict subset of a version's overall traffic). Rather than add a ticket-scoped method to scorecards (a cross-workstream contract change), this workstream — which already owns §1.12 and reads the prior-wave tables directly (see the M2 analytics lib, Tasks 13–15) — computes the ticket-scoped rollup itself over `agent_run_metrics`/`agent_cost_ledger`/`agent_outcomes` filtered by `ticket_id IN (experiment's ticket ids)`. It is injected via `ScorecardFunc func(workflowName string, version int, ticketIDs []int) (json.RawMessage, map[string]float64, error)`, wired in `atc/api/handler.go` to the experiment store's own `ScorecardForTickets` method (Step 6); the metrics are returned as a `map[string]float64` of the numeric scorecard fields for diffing. Deltas are per-metric `variant − baseline`.
 
 - [ ] **Step 1: Write the failing test `agent/api/experiments/delta_test.go`:**
 
@@ -2184,10 +2262,13 @@ package experiments
 
 import "encoding/json"
 
-// ScorecardFunc returns a workflow version's scorecard (raw JSON for display
-// + a flat numeric map for diffing) restricted to a set of ticket ids. Wired
-// in atc/api/handler.go to the scorecards rollup query. ticketIDs is the set
-// of this experiment's dispatched tickets for that version.
+// ScorecardFunc returns a workflow version's scorecard-shaped rollup (raw JSON
+// for display + a flat numeric map for diffing) restricted to a set of ticket
+// ids. Wired in atc/api/handler.go to the experiment store's ScorecardForTickets
+// method (this workstream computes the ticket-scoped rollup itself over
+// agent_run_metrics/agent_cost_ledger/agent_outcomes — the scorecards package
+// has no ticket-set-filtered surface). ticketIDs is the set of this
+// experiment's dispatched tickets for that version.
 type ScorecardFunc func(workflowName string, version int, ticketIDs []int) (json.RawMessage, map[string]float64, error)
 
 // ComputeDelta builds one column per distinct workflow version in the
@@ -2282,7 +2363,18 @@ func (h *Handler) GetExperimentDelta(w http.ResponseWriter, r *http.Request) {
 ```
 Add `scorecard ScorecardFunc` field + `"strconv"` import.
 
-- [ ] **Step 6: Wire route + scorecard func** in `atc/api/handler.go`: `experimentsServer.SetScorecardFunc(scorecardServer.RollupForTickets)` (the scorecards package exposes a `RollupForTickets(name string, version int, ticketIDs []int) (json.RawMessage, map[string]float64, error)` per its wave-4 surface; if the wave-4 name differs, adapt with a thin closure over `GetAgentWorkflowScorecard`'s query). Add route constant `GetAgentExperimentDelta` (GET `/api/v1/agent/experiments/:experiment_id/delta`, viewer) with the usual wrappa/roles entries.
+- [ ] **Step 6: Add `ScorecardForTickets` to the experiment store and wire it as the `ScorecardFunc`.** The scorecards package has no ticket-set-filtered rollup (its only method is `Scorecard(name, versions)`, keyed by `(workflow_name, workflow_version)` — plan 13), so this workstream computes the ticket-scoped rollup itself. Add to the `experiments.Store` interface (Task 3) and implement in `atc/db` (Task 4 factory, alongside the other squirrel queries):
+
+```go
+// ScorecardForTickets returns a scorecard-shaped rollup for one workflow
+// version restricted to a set of ticket ids (an experiment's runs), over
+// agent_run_metrics / agent_cost_ledger / agent_outcomes. Returns the raw
+// JSON (for the delta column display) and a flat map of the numeric fields
+// (for diffing). Empty ticketIDs yields a zero rollup (no runs yet).
+ScorecardForTickets(workflowName string, version int, ticketIDs []int) (json.RawMessage, map[string]float64, error)
+```
+
+The `atc/db` implementation mirrors the scorecards aggregate SQL recipe (plan 13 Task 3/4/5: `FILTER (WHERE …)` for the ok/failed/error split, cost/turns per ticket from `agent_cost_ledger`, findings from `agent_reviews.proven_count+observation_count`, merge/human-touch from a LEFT JOIN on `agent_outcomes`) but adds `AND m.ticket_id = ANY($ticketIDs)` to every table's WHERE and keys on the single `version` rather than a versions CSV. Return the same numeric field names scorecards uses (`cost_usd`, `merge_rate`, `gate_pass_rate`, `findings_per_ticket`, `turns`, …) so delta columns are labeled consistently with the standalone scorecard page. Then in `atc/api/handler.go`: `experimentsServer.SetScorecardFunc(experimentStore.ScorecardForTickets)` (the same `db.NewAgentExperimentFactory(dbConn)` value already constructed for the handler in Task 8, Step 6 — no scorecards handle needed here). Add route constant `GetAgentExperimentDelta` (GET `/api/v1/agent/experiments/:experiment_id/delta`, viewer) with the usual wrappa/roles entries.
 
 - [ ] **Step 7: Verify wrappa + build:**
 
@@ -2308,7 +2400,7 @@ git commit -m "feat(agent): experiment scorecard-delta view over the scorecards 
 - Modify: `go-concourse/concourse/agent.go` + `client.go` (`CreateAgentExperiment`/`ListAgentExperiments`/`GetAgentExperiment`/`GetAgentExperimentDelta`)
 - Test: `fly/integration/agent_experiments_test.go`
 
-`fly agent experiments run` posts a matrix from `-c case -c case`, `-w name:version`, `-r reps`; `fly agent experiments show <id> [--delta --baseline V]` prints status and the scorecard delta table.
+`fly agent experiments run` posts a matrix from `-c case -c case`, `-w name:version`, `-r reps`; `fly agent experiments show <id> [--delta --baseline V]` prints status and the scorecard delta table. The confirmation line uses `displayhelpers.Succeedf` (added in Task 6, Step 0).
 
 - [ ] **Step 1: Write the failing integration spec `fly/integration/agent_experiments_test.go`:**
 
@@ -3890,8 +3982,10 @@ func (t *Trigger) RunOnce(ctx context.Context, cause string) error {
 	if err != nil {
 		return err
 	}
+	// Attribution rides on Ticket.CreatedBy (set above at Create time);
+	// TransitionMeta has no By field (ticket-core §2.1.1).
 	if err := t.tickets.Transition(ticketID, tickets.StateDraft, tickets.StateQueued,
-		tickets.TransitionMeta{By: t.createdBy}); err != nil {
+		tickets.TransitionMeta{}); err != nil {
 		return err
 	}
 	logger.Info("filed-retrospective-ticket", lager.Data{"ticket": ticketID, "cause": cause})
@@ -3962,6 +4056,8 @@ git commit -m "feat(atc): retrospective_trigger component (manual + scheduled ca
 - Modify: `fly/commands/agent.go` (`Retrospective AgentRetrospectiveCommand` field)
 - Modify: `go-concourse/concourse/agent.go` + `client.go` (`RunAgentRetrospective()`)
 - Test: `fly/integration/agent_retrospective_test.go`
+
+The `RunAgentRetrospective` route (POST `/api/v1/agent/retrospective`, member) is registered in the contract by Task 1 (the §1.12.2 addendum + §4.2 fifth row + §11 amendment) — this task only wires it. The fly confirmation line uses `displayhelpers.Succeedf` (added in Task 6, Step 0).
 
 The handler holds a reference to the unconditionally-constructed `*retrospective.Trigger` from Task 19 (injected in `atc/api/handler.go` — the command passes it into `NewHandler`). It runs synchronously and returns `{"filed": true}` (the ticket then flows through dispatch).
 

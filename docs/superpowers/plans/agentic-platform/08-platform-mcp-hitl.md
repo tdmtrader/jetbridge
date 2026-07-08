@@ -50,8 +50,10 @@ Scope-out (must NOT appear in this plan): push/publish/archive mechanics (harves
 - [ ] Survey the landed wave-1/2 seams and capture the results (paste command output into the addendum's survey block below):
 
 ```bash
-# principal wrappa helpers (agent-identity): exact names of the pure-principal and combined principal-or-authorized wrappers
-grep -n "CheckAgentPrincipal\|CheckAgentAuthorization" atc/api/auth/*.go atc/wrappa/api_auth_wrappa.go
+# principal wrappa helpers (agent-identity) + the combined principal-or-main-team helper (ticket-core, wave 2).
+# The combined helper is named AgentPrincipalOrMainTeamHandler (contains neither "CheckAgentPrincipal"
+# nor "CheckAgentAuthorization"), so it MUST be in the alternation or the survey misses it — Task 6 needs it.
+grep -n "CheckAgentPrincipal\|CheckAgentAuthorization\|AgentPrincipalOrMainTeam\|func.*HandlerFor" atc/api/auth/*.go atc/wrappa/api_auth_wrappa.go
 # ticket-core routes + the wrappa case groups my routes must join
 grep -n "AgentTicket" atc/routes.go atc/wrappa/api_auth_wrappa.go atc/api/accessor/roles.go
 # GetAgentTicket response shape: does it embed spec + tasks?
@@ -75,7 +77,7 @@ ls deploy/Dockerfile.* && grep -rn "mcp-dev" ci/ deploy/ 2>/dev/null
   - §8.1: new row — `PLATFORM_MCP_EVENTS_PATH` | platform | literal | NDJSON event-log path for the sidecar's flight-recorder events (`human.ask`, `human.answer`, `checkpoint.*`); unset = stdout (pod logs).
   - §3.2 timeout resolution detail: when the sidecar resolves a timed-out question it sends `answered_by: "platform-mcp"` (the per-run principal *name* is not in the §8.1 env contract; if dispatch later adds `AGENT_PRINCIPAL_NAME`, the sidecar prefers it).
   - platform-mcp packaging (§8.5 instantiation): source `agent/platformmcp` (main module), binary `cmd/platform-mcp`, image `ghcr.io/tdmtrader/mcp-platform` from `deploy/Dockerfile.platform-mcp`.
-  - Landed-seam survey results (recorded at execution time): combined principal-or-authorized wrappa helper name = `<fill>`; GetAgentTicket response embeds spec/tasks = `<yes/no>`; ticket page Elm module = `<path>`; dev-mcp CI job template lives at `<path/pipeline>`.
+  - Landed-seam survey results (recorded at execution time): combined principal-or-main-team wrappa helper name = `<fill — expected `auth.AgentPrincipalOrMainTeamHandler(principalTier, mainTeamTier http.Handler) http.Handler` per ticket-core plan 06; two already-wrapped handler tiers, NOT `(handler, rejector, scope)`>`; principal-tier factory method = `<fill — expected `checkAgentPrincipalHandlerFactory.HandlerFor(delegate, rejector, scope)`>`; main-team tier = `<fill — expected `auth.CheckAgentAuthorizationHandler(handler, rejector)`>`; questions:answer scope constant = `<fill — expected `principals.ScopeQuestionsAnswer`>`; GetAgentTicket response embeds spec/tasks = `<yes/no>`; ticket page Elm module = `<path>`; dev-mcp CI job template lives at `<path/pipeline>`.
 ```
 
   The `<fill>` markers are filled by THIS task from the survey output before committing — they must not survive into the committed addendum.
@@ -1313,18 +1315,20 @@ go build ./atc/... && ginkgo ./atc/wrappa/
 
 Expected: `you missed a spot: "AskAgentQuestion"` panic in the api-auth wrappa specs.
 
-- [ ] Wire auth tiers in `atc/wrappa/api_auth_wrappa.go`, joining the case groups ticket-core landed (survey Task 1 recorded the exact helper names; §4.1/§4.2 define the tiers). Following the contract route table:
-  - `AskAgentQuestion` → same case as `SubmitAgentTicketSpec` / `SubmitAgentTicketPlan`: `principal(tickets:write)` — i.e. add to that existing case group.
-  - `ListAgentTicketQuestions` and `GetAgentQuestion` → same case as `GetAgentTicket`: `principal(tickets:read); also authorized viewer` — add both names to that case group.
-  - `AnswerAgentQuestion` → new case using the same combined wrapper `GetAgentTicket`'s group uses, but with scope `questions:answer` and member-level authorization:
+- [ ] Wire auth tiers in `atc/wrappa/api_auth_wrappa.go`, reusing the case groups and the combined helper ticket-core landed in wave 2 (§4.1/§4.2 define the tiers; the Task 1 survey grep — now including `AgentPrincipalOrMainTeam`/`HandlerFor` — records the exact landed names). Ticket-core's registration task (plan 06 lines 2768–2795) is the copyable template: the combined helper is `auth.AgentPrincipalOrMainTeamHandler(principalTier, mainTeamTier http.Handler) http.Handler` (two ALREADY-WRAPPED handler tiers — NOT `(handler, rejector, scope)`), the principal tier is built via `wrappa.checkAgentPrincipalHandlerFactory.HandlerFor(handler, rejector, <scope>)`, the main-team tier via `auth.CheckAgentAuthorizationHandler(handler, rejector)`, and scope constants come from `agent/api/principals` (`principals.ScopeTicketsWrite`, `principals.ScopeTicketsRead`, `principals.ScopeQuestionsAnswer`). The file already imports `principals` after wave 2; if the survey shows it does not, add `"github.com/concourse/concourse/agent/api/principals"`. Following the contract route table (§4.2):
+  - `AskAgentQuestion` → `principal(tickets:write)` only (no viewer tier). Add its name to ticket-core's principal-only case group (the one holding `atc.UpdateAgentTicketTask`, which uses `wrappa.checkAgentPrincipalHandlerFactory.HandlerFor(handler, rejector, principals.ScopeTicketsWrite)`).
+  - `ListAgentTicketQuestions` and `GetAgentQuestion` → `principal(tickets:read); also authorized viewer`. Add both names to ticket-core's combined-read case group (the `atc.GetAgentTicket` case that reads `principals.ScopeTicketsRead`).
+  - `AnswerAgentQuestion` → new combined case, scope `questions:answer`, member-level authorization: the same `AgentPrincipalOrMainTeamHandler` composition, with the principal tier scoped to `principals.ScopeQuestionsAnswer`:
 
 ```go
+		// combined tier: agent principal (questions:answer, sidecar timeout
+		// resolution only — §3.2) OR authorized main-team member (human answer).
+		// Same combined helper the ticket-core routes use (plan 06 :2779).
 		case atc.AnswerAgentQuestion:
-			// authorized member (human answer) OR principal(questions:answer)
-			// (sidecar timeout resolution, §3.2). Same combined wrapper the
-			// ticket-core routes use — substitute the landed helper name
-			// recorded in the Task 1 addendum survey.
-			newHandler = auth.CheckAgentPrincipalOrAuthorizedHandler(handler, rejector, "questions:answer")
+			newHandler = auth.AgentPrincipalOrMainTeamHandler(
+				wrappa.checkAgentPrincipalHandlerFactory.HandlerFor(handler, rejector, principals.ScopeQuestionsAnswer),
+				auth.CheckAgentAuthorizationHandler(handler, rejector),
+			)
 ```
 
 - [ ] Add all four route names to the no-op case list in `atc/wrappa/reject_archived_wrappa.go` (after `atc.ListTeamAgentReviews`, line 134) and to the `EnableSystemAuditLog` case in `atc/auditor/auditor.go` (after `atc.ListTeamAgentReviews`, line 157).
@@ -3578,6 +3582,77 @@ func TestCheckpointRejected(t *testing.T) {
 	}
 }
 
+// TestCheckpointConcurrentDedup asserts the per-name dedup guard: two
+// simultaneous POSTs for the same checkpoint name (the client-restart-mid-park
+// case) must file exactly ONE agent_run_questions row, and both POSTs must
+// return the same resolved answer once a human answers that single row.
+func TestCheckpointConcurrentDedup(t *testing.T) {
+	store := questions.NewMemoryStore()
+	atc := fullStubATC(t, store)
+	srv := newAskServer(t, atc.URL, "park", 0)
+
+	// Answer the single open checkpoint once it appears, and record the peak
+	// number of simultaneously-open rows — the guard must keep it at 1.
+	maxOpen := 0
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 200; i++ {
+			open, _ := store.OpenForTicket(42)
+			if len(open) > maxOpen {
+				maxOpen = len(open)
+			}
+			if len(open) >= 1 {
+				_ = store.Answer(42, open[0].ID, "approve", "tdm")
+				return
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}()
+
+	post := func() (int, map[string]any) {
+		req := httptest.NewRequest("POST", "/checkpoint",
+			strings.NewReader(`{"name": "plan-approval", "description": "Approve the plan"}`))
+		w := httptest.NewRecorder()
+		srv.Mux().ServeHTTP(w, req)
+		var out map[string]any
+		_ = json.Unmarshal(w.Body.Bytes(), &out)
+		return w.Code, out
+	}
+
+	type result struct {
+		code int
+		out  map[string]any
+	}
+	results := make(chan result, 2)
+	for i := 0; i < 2; i++ {
+		go func() {
+			code, out := post()
+			results <- result{code, out}
+		}()
+	}
+
+	for i := 0; i < 2; i++ {
+		r := <-results
+		if r.code != 200 {
+			t.Fatalf("checkpoint POST %d: expected 200, got %d", i, r.code)
+		}
+		if r.out["approved"] != true || r.out["answered_by"] != "tdm" {
+			t.Fatalf("checkpoint POST %d: unexpected result: %v", i, r.out)
+		}
+	}
+	<-done
+
+	// Exactly one row filed across both concurrent POSTs.
+	all, _ := store.ListForTicket(42, 50)
+	if len(all) != 1 {
+		t.Fatalf("expected exactly 1 checkpoint row, got %d: %+v", len(all), all)
+	}
+	if maxOpen > 1 {
+		t.Fatalf("dedup guard failed: %d rows open simultaneously", maxOpen)
+	}
+}
+
 func TestCheckpointRequiresName(t *testing.T) {
 	store := questions.NewMemoryStore()
 	atc := fullStubATC(t, store)
@@ -3598,6 +3673,21 @@ go test ./agent/platformmcp/
 ```
 
 Expected failure: `501 checkpoint endpoint lands in Task 14`.
+
+- [ ] Add the per-name dedup guard to the `Server` struct in `agent/platformmcp/server.go` (the struct landed in Task 11 with fields `cfg`/`client`/`events`/`mcp`/`mux`). Add two fields and initialize the map in `NewServer` (next to the other field assignments):
+
+```go
+// added to the Server struct (Task 11) for the Task 14 checkpoint dedup:
+	ckMu       sync.Mutex     // guards ckOpen
+	ckOpen     map[string]int // checkpoint name -> open question id, this process lifetime
+```
+
+```go
+// added inside NewServer's &Server{...} literal:
+	ckOpen: map[string]int{},
+```
+
+  (add `"sync"` to `server.go`'s imports if the file does not already import it).
 
 - [ ] Write `agent/platformmcp/checkpoint.go` (delete the temporary handler from `server.go`):
 
@@ -3627,6 +3717,14 @@ type checkpointResponse struct {
 // handleCheckpoint is the internal (non-MCP) checkpoint endpoint (§3.2 +
 // Task 1 addendum). It files a kind=checkpoint question and BLOCKS until a
 // human approves or rejects. Checkpoints always park — no timeout.
+//
+// Per-name dedup: if the checkpoint CLIENT process restarts mid-park it
+// re-POSTs the same name; without a guard that files a second open row.
+// ckOpen maps name -> the open question id for this sidecar's lifetime; a
+// concurrent/repeat POST for a name already in flight re-awaits the SAME
+// row instead of filing a new one. The guard is released once the row
+// resolves (so a later, distinct checkpoint of the same name still files a
+// fresh question).
 func (s *Server) handleCheckpoint(w http.ResponseWriter, r *http.Request) {
 	var req checkpointRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -3637,32 +3735,56 @@ func (s *Server) handleCheckpoint(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "name is required", http.StatusBadRequest)
 		return
 	}
-	question := req.Description
-	if question == "" {
-		question = fmt.Sprintf("Approve checkpoint %q for ticket %d?", req.Name, s.cfg.TicketID)
+
+	// Reserve (or join) the open question for this name.
+	s.ckMu.Lock()
+	questionID, inFlight := s.ckOpen[req.Name]
+	if !inFlight {
+		question := req.Description
+		if question == "" {
+			question = fmt.Sprintf("Approve checkpoint %q for ticket %d?", req.Name, s.cfg.TicketID)
+		}
+		q := s.newQuestion(questions.KindCheckpoint, question, []string{"approve", "reject"}, "")
+		q.TimeoutPolicy = questions.TimeoutPark
+		q.TimeoutSeconds = 0
+		created, err := s.client.AskQuestion(r.Context(), q)
+		if err != nil {
+			s.ckMu.Unlock()
+			http.Error(w, fmt.Sprintf("filing checkpoint: %s", err), http.StatusBadGateway)
+			return
+		}
+		questionID = created.ID
+		s.ckOpen[req.Name] = questionID
+		s.ckMu.Unlock()
+
+		s.events.Emit(schema.EventCheckpointWait, map[string]any{
+			"question_id": questionID,
+			"checkpoint":  req.Name,
+		})
+	} else {
+		// A POST for this name is already parked on questionID; fall through
+		// and await the same row. Only the first filer emits checkpoint.wait.
+		s.ckMu.Unlock()
 	}
 
-	q := s.newQuestion(questions.KindCheckpoint, question, []string{"approve", "reject"}, "")
-	q.TimeoutPolicy = questions.TimeoutPark
-	q.TimeoutSeconds = 0
-	created, err := s.client.AskQuestion(r.Context(), q)
+	answered, _, err := s.client.AwaitAnswer(r.Context(), questionID, nil)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("filing checkpoint: %s", err), http.StatusBadGateway)
-		return
-	}
-	s.events.Emit(schema.EventCheckpointWait, map[string]any{
-		"question_id": created.ID,
-		"checkpoint":  req.Name,
-	})
-
-	answered, _, err := s.client.AwaitAnswer(r.Context(), created.ID, nil)
-	if err != nil {
+		// Transport error awaiting the answer: leave the reservation in place
+		// so a client retry re-awaits the same open row rather than re-filing.
 		http.Error(w, fmt.Sprintf("awaiting checkpoint: %s", err), http.StatusBadGateway)
 		return
 	}
+
+	// Resolved: release the name so a later distinct checkpoint files fresh.
+	s.ckMu.Lock()
+	if s.ckOpen[req.Name] == questionID {
+		delete(s.ckOpen, req.Name)
+	}
+	s.ckMu.Unlock()
+
 	approved := answered.Answer == "approve"
 	s.events.Emit(schema.EventCheckpointRelease, map[string]any{
-		"question_id": created.ID,
+		"question_id": questionID,
 		"approved":    approved,
 		"answered_by": answered.AnsweredBy,
 	})
@@ -3672,6 +3794,8 @@ func (s *Server) handleCheckpoint(w http.ResponseWriter, r *http.Request) {
 	})
 }
 ```
+
+  Note: `AwaitAnswer` is called for BOTH the filer and any joiner, so every concurrent POST for the same name returns the resolved approve/reject once the human answers — the guard only prevents a second `agent_run_questions` row, it does not drop responses.
 
 - [ ] Write the failing client test `cmd/platform-mcp/checkpoint_test.go`:
 
@@ -3828,7 +3952,7 @@ func runCheckpoint(args []string) int {
 }
 ```
 
-  Note the duplicate-row caveat: if the checkpoint CLIENT process itself is restarted mid-park, a re-POST files a second question row. The sidecar keeps one open checkpoint per name per process lifetime as a dedupe (add to `handleCheckpoint`: an in-memory `map[string]int` name→question-id guard that re-awaits the existing open row instead of re-filing — include this in the implementation and assert it with a test that POSTs `/checkpoint` twice concurrently and observes a single open row).
+  The per-name dedup guard (`ckOpen` map + `ckMu`, added to the `Server` struct above and implemented in `handleCheckpoint`) is exercised by `TestCheckpointConcurrentDedup` in the checkpoint test block above: two simultaneous POSTs for the same name observe exactly one open `agent_run_questions` row and both return the same resolved answer.
 
 - [ ] Run to verify pass:
 

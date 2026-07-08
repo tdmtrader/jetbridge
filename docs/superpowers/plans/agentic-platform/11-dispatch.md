@@ -53,17 +53,17 @@ The renderer (`agent/dispatch.Render`) is a pure function `Render(RenderInput) (
 
 - **Template shape:** one job `name: run`; its plan is the ordered `agent:`/checkpoint steps from the definition followed by the implicitly-appended terminal `harvest:` step (§6.1: harvest is never declared in `steps`). The job is an entry job (no `passed:`), so `CreateRun` auto-triggers it (§7.1 point 8).
 - **Params schema declared by the rendered template:** exactly the run-identity params the dispatcher fills — `ticket_id` (number, required), `pipeline_run_id` is NOT a param (it is the run's own id, injected by the agent-step env at exec time from `AGENT_PIPELINE_RUN_ID`, which the renderer sets to the literal `((run))` var pipeline-runs injects). The reserved name `run` (§7.1 point 5) is never declared. Rationale: keeping the template's declared params minimal avoids params-schema validation coupling; ticket/workflow identity travels as literal step `env`, not as params, per the render-time-resolution rule (§2.8).
-- **spec.md / plan.md as run inputs:** materialized by dispatch into the run's first agent step as an artifact named `ticket` (contents keyed `spec.md`/`plan.md`), surfaced to the agent workspace. The renderer records these files in `RenderOutput.RunInputs`; the dispatcher writes them to the ephemeral run secret's sibling `agent-run-<id>-inputs` ConfigMap and mounts them (v1: the renderer emits an `env`-passed inline copy — see the agent-step `AGENT_PROMPT`/`prompt_file` convention — so no new mount seam is required this wave; the ConfigMap mount is a documented future optimization).
+- **spec.md / plan.md as run inputs:** the ticket's spec/plan reach the agent as an `env`-passed inline copy on the **first agent step** (v1) — no new mount seam is required this wave. The renderer bakes the rendered markdown into that step's `Env` under the literal keys `AGENT_SPEC_MD` and `AGENT_PLAN_MD` (contents produced via `tickets.RenderSpecMarkdown`/`RenderPlanMarkdown`), following the agent-step `AGENT_PROMPT`/`prompt_file` inline-content convention. The same bytes are ALSO recorded in `RenderOutput.RunInputs` (filename→contents) so the dispatcher can, as a documented future optimization, materialize them as a sibling `agent-run-<id>-inputs` ConfigMap mounted as an artifact named `ticket`; that mount is NOT built this wave — the env copy is the shipping v1 mechanism and the whole reason the renderer carries the ticket context.
 - **Persistence:** the dispatcher persists the rendered `atc.Config` via `db.Team.SavePipeline(atc.PipelineRef{Name: "agent-ticket-<id>"}, config, 0, false)` to obtain the base template pipeline id, then calls `db.PipelineRunFactory.CreateRun(templateID, params, "dispatcher")`. One template pipeline per ticket (name `agent-ticket-<ticket-id>`); re-dispatch after send-back re-saves (bumping `ConfigVersion`) and creates a new run number under the same template.
 - **`budget.TicketBudgets` implementation:** dispatch supplies `dispatch.TicketBudgets` resolving `tickets.budget_usd ?? workflow.Config.Budget.TicketUSD` via `tickets.Store.Get` + the resolved live `workflow.Definition` — this is the real implementation the wave-1 `budget.NoTicketBudgets` stub stood in for.
-- **Ephemeral secret ticket label:** the dispatcher sets the `concourse/ticket: "<ticket-id>"` label on `agent-run-<run-id>` by passing it through the `SecretAttacher` (credentials-and-budgets' §8.2 left the ticket label to dispatch); v1 the attacher already labels `concourse/agent-run`, and dispatch does a follow-up `Patch` to add `concourse/ticket` when `ticket_id > 0`.
+- **Ephemeral secret ticket label:** credentials-and-budgets' §8.2 left the `concourse/ticket` label to dispatch (the `SecretAttacher.Attach` seam has no ticket parameter and labels only `concourse/agent-run`). Dispatch owns a `dispatch.RunSecretLabeler` seam (K8s impl `dispatch.K8sRunSecretLabeler` over `kubernetes.Interface`) and, after `Attach` succeeds, does a follow-up strategic-merge `Patch` adding `concourse/ticket: "<ticket-id>"` when `ticket_id > 0`. This label is for operator filtering only — the reaper's safety-net GC keys off `concourse/agent-run` alone — so a labeling failure is logged, never fatal to a dispatched run.
 - **Per-run principal:** the dispatcher mints a per-run `agent_principals` row named `agent-run-<run-id>` with scopes `[tickets:read, tickets:write, metrics:write, costs:write, questions:answer]` and `expires_at = now + run timeout`, via `principals.Store.Create`; the returned raw token becomes the secret's `principal-token` key. Revoked by the run-lifecycle cleanup path (best-effort; expiry is the hard backstop).
 ````
 
 - [ ] **Step 2: Append to the §11 Amendment log** at the end of the file:
 
 ```markdown
-- 2026-07-08 (dispatch wave-4 planning; affects: process-intel-experiments, credentials-and-budgets, ticket-core, pipeline-runs — additive only): added §2.8.2 (Renderer pure-function shape `Render(RenderInput)(RenderOutput,error)`; rendered template is a single `template: true` pipeline named `agent-ticket-<id>` with one entry job `run` = agent/checkpoint steps + implicit terminal harvest; declared params minimal (`ticket_id`); ticket/workflow identity travels as literal step env not params; persistence via `Team.SavePipeline` then `PipelineRunFactory.CreateRun`; dispatch-owned `budget.TicketBudgets` implementation `dispatch.TicketBudgets` (tickets.budget_usd ?? workflow default); `concourse/ticket` secret label applied by dispatch; per-run principal `agent-run-<run-id>` scopes + expiry). No existing rows changed.
+- 2026-07-08 (dispatch wave-4 planning; affects: process-intel-experiments, credentials-and-budgets, ticket-core, pipeline-runs — additive only): added §2.8.2 (Renderer pure-function shape `Render(RenderInput)(RenderOutput,error)`; rendered template is a single `template: true` pipeline named `agent-ticket-<id>` with one entry job `run` = agent/checkpoint steps + implicit terminal harvest; declared params minimal (`ticket_id`); ticket/workflow identity travels as literal step env not params; spec/plan reach the agent as an inline env copy on the first agent step under keys `AGENT_SPEC_MD`/`AGENT_PLAN_MD` (also mirrored in `RenderOutput.RunInputs` for a future ConfigMap-mount optimization); persistence via `Team.SavePipeline` then `PipelineRunFactory.CreateRun`; dispatch-owned `budget.TicketBudgets` implementation `dispatch.TicketBudgets` (tickets.budget_usd ?? workflow default); `concourse/ticket` secret label applied by dispatch via a `dispatch.RunSecretLabeler` follow-up Patch after Attach (best-effort; GC keys off `concourse/agent-run` alone); per-run principal `agent-run-<run-id>` scopes + expiry). No existing rows changed.
 ```
 
 - [ ] **Step 3: Commit**
@@ -133,7 +133,19 @@ func workflowAgentStep() workflow.Step {
 Run: `cd /Users/tdmtrader/concourse/concourse && go test ./agent/dispatch/`
 Expected: FAIL — `no required module provides package github.com/concourse/concourse/agent/dispatch`.
 
-- [ ] **Step 4: Write `agent/dispatch/render_types.go`:**
+- [ ] **Step 4: Add the render-time `Version` pass-through to `workflow.Config`.** The renderer stamps `AGENT_WORKFLOW_VERSION` (§8.1) from `RenderInput.Workflow.Version`, but `workflow.Config` from workflow-store carries no `Version` field (version lives on `Definition`, §2.2 / 05-workflow-store.md). Add the field here — the very first task that imports `workflow` — so every later renderer task (Task 3 onward) compiles when it reads `in.Workflow.Version`. Verify absence first:
+
+Run: `cd /Users/tdmtrader/concourse/concourse && grep -n "Version" agent/workflow/definition.go`
+
+If `Config` lacks a `Version` field, add one after `Name` in `agent/workflow/definition.go`'s `Config` struct:
+
+```go
+	Version int `yaml:"-" json:"-"` // render-time pass-through; NOT part of the hashed YAML (hash covers RawYAML, not the marshaled struct)
+```
+
+It is excluded from YAML/JSON so it never affects the content hash or wire format. Confirm clean: `go build ./agent/workflow/`. If workflow-store already carries a version pass-through on `Config`, skip this step.
+
+- [ ] **Step 5: Write `agent/dispatch/render_types.go`:**
 
 ```go
 // Package dispatch renders workflow definitions into pipeline templates
@@ -164,8 +176,10 @@ type RenderInput struct {
 }
 
 // RenderOutput is the self-contained result. Config is a template: true
-// pipeline with exactly one entry job "run"; RunInputs are the materialized
-// read-only workspace files (spec.md/plan.md); Params is passed verbatim to
+// pipeline with exactly one entry job "run"; RunInputs mirrors the ticket
+// spec/plan markdown (also baked as an inline env copy on the first agent
+// step per §2.8.2 — the shipping v1 delivery mechanism; RunInputs backs a
+// future ConfigMap-mount optimization); Params is passed verbatim to
 // PipelineRunFactory.CreateRun.
 type RenderOutput struct {
 	Config    atc.Config
@@ -195,16 +209,16 @@ func (in RenderInput) Validate() error {
 }
 ```
 
-- [ ] **Step 5: Run to verify pass**
+- [ ] **Step 6: Run to verify pass**
 
 Run: `cd /Users/tdmtrader/concourse/concourse && go test ./agent/dispatch/`
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add agent/dispatch/render_types.go agent/dispatch/render_types_test.go
-git commit -m "feat(dispatch): agent/dispatch package + RenderInput/RenderOutput types" -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+git add agent/dispatch/render_types.go agent/dispatch/render_types_test.go agent/workflow/definition.go
+git commit -m "feat(dispatch): agent/dispatch package + RenderInput/RenderOutput types (+ workflow.Config.Version pass-through)" -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ```
 
 ---
@@ -662,15 +676,37 @@ func TestRenderProducesTemplatePipelineWithOneRunJob(t *testing.T) {
 	if out.RunInputs["spec.md"] == "" || out.RunInputs["plan.md"] == "" {
 		t.Errorf("run inputs missing: %+v", out.RunInputs)
 	}
+
+	// §2.8.2: the ticket's spec/plan reach the agent as an inline env copy on
+	// the FIRST agent step (v1 mechanism; no mount seam). The first plan step
+	// here is "write-spec"; assert the env copy is present and matches RunInputs.
+	first, ok := out.Config.Jobs[0].PlanSequence[0].Config.(*atcAgent)
+	if !ok {
+		t.Fatalf("first plan step is not an agent step: %T", out.Config.Jobs[0].PlanSequence[0].Config)
+	}
+	if first.Env["AGENT_SPEC_MD"] != out.RunInputs["spec.md"] || first.Env["AGENT_SPEC_MD"] == "" {
+		t.Errorf("first agent step must carry AGENT_SPEC_MD inline copy, got %q", first.Env["AGENT_SPEC_MD"])
+	}
+	if first.Env["AGENT_PLAN_MD"] != out.RunInputs["plan.md"] || first.Env["AGENT_PLAN_MD"] == "" {
+		t.Errorf("first agent step must carry AGENT_PLAN_MD inline copy, got %q", first.Env["AGENT_PLAN_MD"])
+	}
+	// A later agent step (index 2, "implement") must NOT carry the copy — only
+	// the first agent step does (keeps env small and the source unambiguous).
+	if third, ok := out.Config.Jobs[0].PlanSequence[2].Config.(*atcAgent); ok {
+		if _, present := third.Env["AGENT_SPEC_MD"]; present {
+			t.Errorf("only the first agent step carries the spec/plan copy; step 2 must not")
+		}
+	}
 }
 ```
 
-- [ ] **Step 2: Add the type-assert helper** at the bottom of `agent/dispatch/render_test.go`:
+- [ ] **Step 2: Add the type-assert helpers** at the bottom of `agent/dispatch/render_test.go`:
 
 ```go
 import "github.com/concourse/concourse/atc"
 
 type atcHarvest = atc.HarvestStep
+type atcAgent = atc.AgentStep
 ```
 
 - [ ] **Step 3: Run to verify failure**
@@ -703,13 +739,28 @@ func Render(in RenderInput) (RenderOutput, error) {
 		return RenderOutput{}, err
 	}
 
+	// §2.8.2: the ticket's spec/plan travel to the agent as an inline env copy
+	// on the FIRST agent step (v1 mechanism; no mount seam this wave). Render
+	// the markdown once and bake it into that step below.
+	specMD := string(tickets.RenderSpecMarkdown(in.Ticket, in.Spec))
+	planMD := string(tickets.RenderPlanMarkdown(in.Ticket, in.Tasks))
+
 	plan := make([]atc.Step, 0, len(in.Workflow.Steps)+1)
+	firstAgentBaked := false
 	for _, s := range in.Workflow.Steps {
 		switch {
 		case s.Agent != "":
 			as, err := RenderAgentStep(in, s)
 			if err != nil {
 				return RenderOutput{}, err
+			}
+			if !firstAgentBaked {
+				// Inline the ticket context on the first agent step only, so it
+				// is unambiguous which step owns the copy and later steps stay
+				// lean (they receive the workspace artifact, not the raw ticket).
+				as.Env["AGENT_SPEC_MD"] = specMD
+				as.Env["AGENT_PLAN_MD"] = planMD
+				firstAgentBaked = true
 			}
 			plan = append(plan, atc.Step{Config: &as})
 		case s.Checkpoint != "":
@@ -739,9 +790,11 @@ func Render(in RenderInput) (RenderOutput, error) {
 		},
 	}
 
+	// Mirror the same bytes into RunInputs for the future ConfigMap-mount
+	// optimization (§2.8.2); the shipping v1 path is the env copy baked above.
 	runInputs := map[string]string{
-		"spec.md": string(tickets.RenderSpecMarkdown(in.Ticket, in.Spec)),
-		"plan.md": string(tickets.RenderPlanMarkdown(in.Ticket, in.Tasks)),
+		"spec.md": specMD,
+		"plan.md": planMD,
 	}
 
 	return RenderOutput{
@@ -943,7 +996,7 @@ Expected: FAIL — `read golden (run with -update to create): ... no such file`.
 Run: `cd /Users/tdmtrader/concourse/concourse && go test ./agent/dispatch/ -run TestRenderGolden -update`
 Expected: PASS (writes `standard-dev.golden.yml`).
 
-- [ ] **Step 5: Inspect the golden by eye** — open `agent/dispatch/testdata/standard-dev.golden.yml` and confirm: `template: true`; one job `run`; four plan steps (`agent: write-spec`, `agent: checkpoint-plan-approval`, `agent: implement`, `harvest: harvest`); the harvest step carries `gate_policy` with three gates and a `judge` with `pass_threshold: 6.5` and `budget_usd: 1`; agent steps carry inline sidecars with role-names `dev`/`platform` and the resolved images; env includes `AGENT_PIPELINE_RUN_ID: ((run))`.
+- [ ] **Step 5: Inspect the golden by eye** — open `agent/dispatch/testdata/standard-dev.golden.yml` and confirm: `template: true`; one job `run`; four plan steps (`agent: write-spec`, `agent: checkpoint-plan-approval`, `agent: implement`, `harvest: harvest`); the harvest step carries `gate_policy` with three gates and a `judge` with `pass_threshold: 6.5` and `budget_usd: 1`; agent steps carry inline sidecars with role-names `dev`/`platform` and the resolved images; env includes `AGENT_PIPELINE_RUN_ID: ((run))`; the FIRST agent step (`write-spec`) additionally carries `AGENT_SPEC_MD`/`AGENT_PLAN_MD` inline copies (§2.8.2) while the second agent step (`implement`) does not.
 
 - [ ] **Step 6: Run to verify pass** (golden now compares clean)
 
@@ -1108,11 +1161,11 @@ func (r *RenderResolver) Resolve(t tickets.Ticket, spec *tickets.Spec, tasks []t
 }
 ```
 
-- [ ] **Step 4: Add `Version` to `workflow.Config` note.** `workflow.Config` from workflow-store has no `Version` field (version lives on `Definition`). Add a pass-through `Version int` field only if absent. Verify first:
+- [ ] **Step 4: Confirm the `workflow.Config.Version` pass-through exists.** The resolver stamps `cfg.Version = def.Version` (above), relying on the `Config.Version` field added back in Task 2, Step 4. Verify it is present:
 
-Run: `cd /Users/tdmtrader/concourse/concourse && grep -n "Version" agent/workflow/definition.go`
+Run: `cd /Users/tdmtrader/concourse/concourse && grep -n "Version int" agent/workflow/definition.go`
 
-If `Config` lacks a `Version` field, add one after `Name` in `agent/workflow/definition.go`'s `Config` struct: `Version int \`yaml:"-" json:"-"\` // render-time pass-through, not part of the hashed YAML`. (It is excluded from YAML so it never affects the content hash — the hash is over `RawYAML`, not the marshaled struct.) Re-run `go build ./agent/workflow/` to confirm clean.
+Expected: the `Version int \`yaml:"-" json:"-"\`` field is present on `Config`. If it is somehow absent (Task 2 skipped it because workflow-store already had one under a different name), reconcile before proceeding — `resolver.go` will not compile otherwise.
 
 - [ ] **Step 5: Run to verify pass**
 
@@ -1122,9 +1175,11 @@ Expected: PASS.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add agent/dispatch/resolver.go agent/dispatch/resolver_test.go agent/workflow/definition.go
+git add agent/dispatch/resolver.go agent/dispatch/resolver_test.go
 git commit -m "feat(dispatch): RenderResolver resolves live/pinned workflow into a RenderInput" -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ```
+
+(`agent/workflow/definition.go`'s `Config.Version` field was already committed in Task 2, Step 7 — nothing new to stage here for it.)
 
 ---
 
@@ -1378,8 +1433,14 @@ package dispatch
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"strconv"
 	"time"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes"
 
 	"github.com/concourse/concourse/agent/api/principals"
 	"github.com/concourse/concourse/agent/api/tickets"
@@ -1399,6 +1460,19 @@ type PrincipalMinter interface {
 	Create(spec principals.CreateSpec) (principals.Principal, string, error)
 }
 
+// RunSecretLabeler applies the dispatch-owned `concourse/ticket` label to the
+// ephemeral run secret. credentials.SecretAttacher.Attach (§2.6) takes no
+// ticket parameter and labels only `concourse/agent-run`; §8.2's full label
+// set is satisfied jointly, with the ticket half applied here as a follow-up
+// Patch (§2.8.2; credentials-and-budgets 02-...md §8.2 note: "ticket label is
+// dispatch's job"). The reaper's safety-net GC keys off `concourse/agent-run`
+// alone, so this label is for human/operator filtering, not GC correctness.
+type RunSecretLabeler interface {
+	// LabelTicket patches label `concourse/ticket: "<ticketID>"` onto secret
+	// agent-run-<runID>. Called only when ticketID > 0. Idempotent.
+	LabelTicket(ctx context.Context, runID, ticketID int) error
+}
+
 // PipelineSaver is the narrow SavePipeline seam. The real db.Team satisfies it
 // structurally, and tests supply a tiny fake — no need to satisfy the whole
 // db.Team interface.
@@ -1415,6 +1489,7 @@ type Deps struct {
 	Credentials   CredentialResolver
 	Principals    PrincipalMinter
 	SecretAttach  credentials.SecretAttacher
+	SecretLabeler RunSecretLabeler // applies the concourse/ticket label (§2.8.2); nil-safe (skipped if nil)
 	Runs          db.PipelineRunFactory
 	Team          PipelineSaver // SavePipeline of the rendered template (real db.Team satisfies this)
 	RunTimeout    time.Duration
@@ -1465,6 +1540,44 @@ func MintRunPrincipal(ctx context.Context, pm PrincipalMinter, runID int, timeou
 	}
 	return token, nil
 }
+
+// ticketLabel is the dispatch-owned §8.2 label key (credentials-and-budgets
+// owns `concourse/agent-run`; the ticket half is dispatch's, §2.8.2).
+const ticketLabel = "concourse/ticket"
+
+// K8sRunSecretLabeler patches the concourse/ticket label onto the ephemeral
+// run secret via a strategic-merge patch (creates-or-overwrites the one label,
+// leaving the attacher's concourse/agent-run label and the secret data intact).
+// It talks to the same worker namespace the SecretAttacher writes to.
+type K8sRunSecretLabeler struct {
+	client    kubernetes.Interface
+	namespace string
+}
+
+func NewK8sRunSecretLabeler(client kubernetes.Interface, namespace string) *K8sRunSecretLabeler {
+	return &K8sRunSecretLabeler{client: client, namespace: namespace}
+}
+
+func (l *K8sRunSecretLabeler) LabelTicket(ctx context.Context, runID, ticketID int) error {
+	// Merge-patch only the label map — never touches secret data. Secret name
+	// matches credentials.RunSecretName(runID) = "agent-run-<runID>".
+	patch, err := json.Marshal(map[string]any{
+		"metadata": map[string]any{
+			"labels": map[string]string{ticketLabel: strconv.Itoa(ticketID)},
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("label run %d secret: marshal patch: %w", runID, err)
+	}
+	name := fmt.Sprintf("agent-run-%d", runID)
+	_, err = l.client.CoreV1().Secrets(l.namespace).Patch(ctx, name, types.StrategicMergePatchType, patch, metav1.PatchOptions{})
+	if err != nil {
+		return fmt.Errorf("label run %d secret %q with ticket %d: %w", runID, name, ticketID, err)
+	}
+	return nil
+}
+
+var _ RunSecretLabeler = (*K8sRunSecretLabeler)(nil)
 ```
 
 - [ ] **Step 4: Run to verify pass**
@@ -1476,7 +1589,7 @@ Expected: PASS.
 
 ```bash
 git add agent/dispatch/deps.go agent/dispatch/deps_test.go
-git commit -m "feat(dispatch): Deps struct + credential resolution and per-run principal mint helpers" -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+git commit -m "feat(dispatch): Deps struct + credential/principal helpers + K8sRunSecretLabeler (concourse/ticket label)" -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ```
 
 ---
@@ -1529,6 +1642,9 @@ func TestDispatchOneHappyPath(t *testing.T) {
 	}
 	if h.attached == 0 {
 		t.Error("must attach the ephemeral secret")
+	}
+	if h.labeledTicket != 7 {
+		t.Errorf("must patch the concourse/ticket label with the ticket id (§2.8.2), got %d", h.labeledTicket)
 	}
 	if h.createdRuns != 1 {
 		t.Errorf("must create exactly one run, got %d", h.createdRuns)
@@ -1621,6 +1737,7 @@ type harness struct {
 	credExpired           bool
 	budgetGlobalRemaining float64
 	attached              int
+	labeledTicket         int // ticket id the labeler was called with (0 = never)
 	createdRuns           int
 	finishedAborted       int
 	cleaned               int
@@ -1636,13 +1753,14 @@ func (h *harness) dispatch(tkt tickets.Ticket) dispatch.Outcome {
 		Tickets:      &hTickets{h: h, tkt: tkt},
 		Resolver:     dispatch.NewRenderResolver(hWorkflowStore(), "img:v1", "https://c.home"),
 		Budget:       &hBudget{h: h},
-		Credentials:  &hCreds{h: h},
-		Principals:   &fakePrincipals{token: "cap1.5.secret"},
-		SecretAttach: &hAttacher{h: h},
-		Runs:         &hRuns{h: h},
-		Team:         &hTeam{},
-		RunTimeout:   time.Hour,
-		MaxAttempts:  3,
+		Credentials:   &hCreds{h: h},
+		Principals:    &fakePrincipals{token: "cap1.5.secret"},
+		SecretAttach:  &hAttacher{h: h},
+		SecretLabeler: &hLabeler{h: h},
+		Runs:          &hRuns{h: h},
+		Team:          &hTeam{},
+		RunTimeout:    time.Hour,
+		MaxAttempts:   3,
 	}
 	return dispatch.DispatchOne(context.Background(), deps, tkt)
 }
@@ -1729,6 +1847,13 @@ func (a *hAttacher) Attach(_ context.Context, runID int, _ *credentials.Credenti
 }
 func (a *hAttacher) Cleanup(context.Context, int) error { a.h.cleaned++; return nil }
 
+type hLabeler struct{ h *harness }
+
+func (l *hLabeler) LabelTicket(_ context.Context, _ int, ticketID int) error {
+	l.h.labeledTicket = ticketID
+	return nil
+}
+
 type hRuns struct{ h *harness }
 
 func (r *hRuns) CreateRun(templateID int, _ map[string]any, _ string) (db.PipelineRun, error) {
@@ -1793,6 +1918,8 @@ import (
 	"errors"
 	"fmt"
 
+	"code.cloudfoundry.org/lager/v3/lagerctx"
+
 	"github.com/concourse/concourse/agent/api/tickets"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
@@ -1819,7 +1946,10 @@ const (
 //  4. CLAIM via Transition(queued->running, {PipelineRunID}) — this is the
 //     atomic multi-node guard AND records the run id in one write.
 //     ErrStaleTransition => another node won: clean up the orphan run + secret.
-//  5. mint the per-run principal + attach the ephemeral secret.
+//  5. mint the per-run principal + attach the ephemeral secret, then Patch the
+//     dispatch-owned concourse/ticket label onto it (§2.8.2; best-effort — a
+//     labeling failure never fails a dispatched run since GC keys off
+//     concourse/agent-run alone).
 // A platform fault after step 4 transitions running->errored.
 func DispatchOne(ctx context.Context, deps Deps, t tickets.Ticket) Outcome {
 	// (1) Budget admission. Over-cap defers (stays queued), never fails.
@@ -1902,6 +2032,15 @@ func DispatchOne(ctx context.Context, deps Deps, t tickets.Ticket) Outcome {
 	}
 	if _, err := deps.SecretAttach.Attach(ctx, runID, cred, principalToken); err != nil {
 		return errorClaimed(deps, t, fmt.Errorf("attach run secret: %w", err))
+	}
+	// Follow-up Patch of the dispatch-owned concourse/ticket label (§2.8.2/§8.2).
+	// The reaper GC keys off concourse/agent-run alone, so a labeling failure is
+	// non-fatal — log it, but do NOT error a successfully-dispatched run.
+	if deps.SecretLabeler != nil && t.ID > 0 {
+		if err := deps.SecretLabeler.LabelTicket(ctx, runID, t.ID); err != nil {
+			lagerctx.FromContext(ctx).Error("label-run-secret-with-ticket", err,
+				map[string]any{"run": runID, "ticket": t.ID})
+		}
 	}
 
 	return OutcomeDispatched
@@ -2017,16 +2156,17 @@ func newHarnessMulti(t *testing.T, queued []tickets.Ticket) *harness {
 
 func (h *harness) deps() dispatch.Deps {
 	return dispatch.Deps{
-		Tickets:      &hTicketsList{h: h},
-		Resolver:     dispatch.NewRenderResolver(hWorkflowStore(), "img:v1", "https://c.home"),
-		Budget:       &hBudget{h: h},
-		Credentials:  &hCreds{h: h},
-		Principals:   &fakePrincipals{token: "cap1.5.secret"},
-		SecretAttach: &hAttacher{h: h},
-		Runs:         &hRuns{h: h},
-		Team:         &hTeam{},
-		RunTimeout:   time.Hour,
-		MaxAttempts:  3,
+		Tickets:       &hTicketsList{h: h},
+		Resolver:      dispatch.NewRenderResolver(hWorkflowStore(), "img:v1", "https://c.home"),
+		Budget:        &hBudget{h: h},
+		Credentials:   &hCreds{h: h},
+		Principals:    &fakePrincipals{token: "cap1.5.secret"},
+		SecretAttach:  &hAttacher{h: h},
+		SecretLabeler: &hLabeler{h: h},
+		Runs:          &hRuns{h: h},
+		Team:          &hTeam{},
+		RunTimeout:    time.Hour,
+		MaxAttempts:   3,
 	}
 }
 ```
@@ -2316,22 +2456,24 @@ Then, immediately after the `k8sReaper` `RunnableComponent` append (after the bl
 			GlobalDailyCapUSD: cmd.AgentDailyBudgetUSD,
 		})
 		secretAttacher := credentials.NewK8sSecretAttacher(k8sClientset, cmd.Kubernetes.Namespace)
+		secretLabeler := dispatch.NewK8sRunSecretLabeler(k8sClientset, cmd.Kubernetes.Namespace)
 
 		components = append(components, RunnableComponent{
 			Component: atc.Component{
 				Name: atc.ComponentAgentDispatcher,
 			},
 			Runnable: dispatch.NewDispatcher(dispatch.Deps{
-				Tickets:      agentTickets,
-				Resolver:     dispatchResolver,
-				Budget:       dispatchChecker,
-				Credentials:  agentCredentials,
-				Principals:   agentPrincipals,
-				SecretAttach: secretAttacher,
-				Runs:         agentRunFactory,
-				Team:         mainTeam,
-				RunTimeout:   cmd.AgentRunTimeout,
-				MaxAttempts:  3,
+				Tickets:       agentTickets,
+				Resolver:      dispatchResolver,
+				Budget:        dispatchChecker,
+				Credentials:   agentCredentials,
+				Principals:    agentPrincipals,
+				SecretAttach:  secretAttacher,
+				SecretLabeler: secretLabeler,
+				Runs:          agentRunFactory,
+				Team:          mainTeam,
+				RunTimeout:    cmd.AgentRunTimeout,
+				MaxAttempts:   3,
 			}),
 			Interval: 10 * time.Second, // polling backstop; NOTIFY on ticket queue wakes it sooner
 		})
@@ -2593,6 +2735,6 @@ Do NOT use `--race` with ginkgo per CLAUDE.md (parallel compilation failures). T
 **Rollback notes for the risky diffs:**
 - **Task 13 (`command.go` wiring)** is the only edit outside the new `agent/dispatch` package. It is additive and K8s-gated: the whole `RunnableComponent` append lives inside `if cmd.Kubernetes.Namespace != ""`, so a non-K8s web node is unaffected. Rollback = delete the appended block + the `ComponentAgentDispatcher` constant + the `--agent-run-timeout` flag. No migrations, no schema, no route changes to revert (dispatch owns none).
 - **Task 1 (contract addendum)** is doc-only and additive to §11; rollback = drop the §2.8.2 subsection and the amendment-log line. Consumers of §2.8.2 (process-intel-experiments, wave 5) have not planned against it yet, so the blast radius is zero within wave 4.
-- **Task 7 `workflow.Config.Version` field** (if added): it is `yaml:"-" json:"-"` so it never affects the content hash or wire format — safe. If workflow-store already carries a version pass-through, skip that edit.
+- **Task 2 `workflow.Config.Version` field** (if added): it is `yaml:"-" json:"-"` so it never affects the content hash or wire format — safe. The field is added in Task 2 (Step 4) because Task 3's renderer is the first code to read `in.Workflow.Version`; Task 7 only relies on it. If workflow-store already carries a version pass-through, skip that edit.
 - **Poison-ticket handling (Task 11):** the attempt cap errors a ticket rather than re-queuing forever. If a legitimate ticket trips the cap due to transient platform faults, a human re-queues it via `TransitionAgentTicket` (errored→queued is a valid edge, §1.7) — the cap is a safety valve, not a terminal wall.
 - **Multi-node safety:** the dispatcher relies on the component `Coordinator` lock (single Run across nodes) AND the `queued→running` guarded transition (intra-pass claim). Both must hold; if the Coordinator wiring changes upstream, the guarded transition still prevents double dispatch, degrading to redundant-but-safe work.

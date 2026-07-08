@@ -1411,13 +1411,18 @@ func (m *Mirror) IsAncestor(sha, branch string) (bool, error) {
 
 // MergePoint describes how pushedSha landed on the target branch.
 type MergePoint struct {
-	Merged     bool
-	MergedSha  string // the merge commit (or fast-forward tip / pushedSha)
-	TipAtMerge string // the branch tip at the moment it merged (for the delta window)
+	Merged        bool
+	MergedSha     string // the merge commit (or fast-forward tip / pushedSha)
+	TipAtMerge    string // the branch tip at the moment it merged (for the delta window)
+	FastForwarded bool   // true when no merge commit was found (ff / rebase-merge onto target)
 }
 
-// MergePoint resolves the merge commit that brought pushedSha into branch.
-// Precondition: IsAncestor(pushedSha, branch) is true.
+// MergePoint resolves the merge commit that brought pushedSha into the TARGET
+// branch (the `branch` arg is the target, e.g. "main"). Precondition:
+// IsAncestor(pushedSha, branch) is true. Note: MergePoint does NOT know the
+// agent branch's name, so for a fast-forward it can only fall back to
+// pushedSha for TipAtMerge; the §1.11.1 "agent branch remote head" refinement
+// is applied by Detect (which owns the agent branch name) — see FastForwarded.
 func (m *Mirror) MergePoint(pushedSha, branch string) (MergePoint, error) {
 	// oldest merge commit on the ancestry path from pushedSha to the branch head
 	out, err := m.run(m.dir, "rev-list", "--ancestry-path", "--merges", "--reverse",
@@ -1427,13 +1432,12 @@ func (m *Mirror) MergePoint(pushedSha, branch string) (MergePoint, error) {
 	}
 	lines := nonEmptyLines(out)
 	if len(lines) == 0 {
-		// fast-forward: no merge commit. Prefer the agent branch remote head
-		// if it still exists, else pushedSha itself.
-		tip := pushedSha
-		if head, err := m.run(m.dir, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch); err == nil {
-			_ = head // main head is the merged sha; tip stays pushed for a pure ff
-		}
-		return MergePoint{Merged: true, MergedSha: pushedSha, TipAtMerge: tip}, nil
+		// Fast-forward: no merge commit on the ancestry path. With only the
+		// target branch in hand, the documented fallback is pushedSha itself
+		// (§1.11.1: "the agent branch's remote head if the branch still
+		// exists, else pushed_sha"). Detect refines TipAtMerge to the agent
+		// branch head when FastForwarded is set.
+		return MergePoint{Merged: true, MergedSha: pushedSha, TipAtMerge: pushedSha, FastForwarded: true}, nil
 	}
 	mergeCommit := lines[0]
 	tip := pushedSha
@@ -1820,11 +1824,26 @@ func (m *Mirror) Detect(base, pushed, branch, target string, scanLimit int) (*Re
 		if err != nil {
 			return nil, err
 		}
-		delta, err := m.HumanDelta(pushed, mp.TipAtMerge)
+		// §1.11.1 fast-forward refinement: MergePoint only knows the target
+		// branch, so it falls back to pushed for a fast-forward. Detect owns
+		// the agent branch name, so it resolves the branch's remote head as
+		// tip-at-merge (the delta window covers human commits that fast-
+		// forwarded onto the branch before it merged); if the branch was
+		// deleted, the documented fallback is pushed. True merges (a merge
+		// commit exists) already carry the correct second-parent tip.
+		tip := mp.TipAtMerge
+		mergedSha := mp.MergedSha
+		if mp.FastForwarded {
+			if head, err := m.run(m.dir, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch); err == nil && head != "" {
+				tip = head
+				mergedSha = head // §1.11.1: merged_sha = tip-at-merge for a pure ff
+			}
+		}
+		delta, err := m.HumanDelta(pushed, tip)
 		if err != nil {
 			return nil, err
 		}
-		return resultFrom(mp.MergedSha, delta), nil
+		return resultFrom(mergedSha, delta), nil
 	}
 
 	// Squash fallback (needs a known base).

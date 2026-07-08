@@ -17,7 +17,7 @@
 **Landed prior waves (assume these exist exactly as 00-shared-contracts.md defines; do not re-implement):**
 - **dev-mcp:** `agent/devmcp` contract types (`Component`, `ToolResult`, `Failure`, `Status` with `StatusOK/StatusFailed/StatusError`, `EnvEndpoint = "DEV_MCP_URL"`), the `Client` interface + `NewClient(endpoint, opts...)` streamable-HTTP client with `WithProgress`, `RPCError`, and generated `devmcpfakes.FakeClient` (§3.1).
 - **agent-step:** `atc.AgentStep`/`atc.AgentPlan` and the full step recipe; `atc/exec/sidecars.go` helpers `loadSidecarConfigs`, `resolveSidecarImages`, `sidecarProcessIO`; `exec.AgentStep` with `attachOrRun` resumability; `agent/schema` nested module with `Event`, `EventWriter`/`EventReader`, `Results`, `ThreeWayStatus`, `RunStatusOK/RunStatusFailed/RunStatusError`, and payload structs `StepStartData`, `StepEndData`, `GateStartData`, `GateResultData`, `JudgeScoreDimension`, `JudgeScoreData`, `PushDoneData`, `CostRecordData`; `agent/api/metrics` `Store` (`Upsert/GetByBuild/ListByTicket`) + `db.NewAgentRunMetricsFactory`; engine options `WithAgentStepImage/WithAgentMetricsStore/WithAgentBudgetChecker`; the `--agent-step-image` flag; `deploy/agent-runner/Dockerfile`; `db.ContainerTypeAgent`; Elm `BuildStepAgent`.
-- **ticket-core:** `agent/api/tickets` (`Ticket`, `State` constants, `Store` with `Transition(id, from, to, meta)`, `TransitionMeta{By, ErrorDetail, PipelineRunID, Branch}` per addendum §2.1.1), `db.NewAgentTicketsFactory(dbConn)`, `ticketsfakes` counterfeiter fakes.
+- **ticket-core:** `agent/api/tickets` (`Ticket`, `State` constants, `Store` with `Transition(id, from, to, meta)`, `TransitionMeta{PipelineRunID *int, Branch string, ErrorDetail string}` — frozen by ticket-core §2.1; there is **no** actor/`By` field, so harvest carries "harvest" attribution via flight-recorder events, not the transition), `db.NewAgentTicketsFactory(dbConn)`, `ticketsfakes` counterfeiter fakes.
 - **credentials-and-budgets:** `agent/budget` (`Checker`, `LedgerEntry`, `Remaining`, `SourceHarvestJudge = "harvest_judge"`), `agent_cost_ledger` with `source` CHECK including `harvest_judge`, the long-lived `agent-platform-credential` K8s secret (key `anthropic-token`) kept in sync by the platform-credential syncer (§1.13, §8.2).
 - **workflow-store:** the §6 YAML grammar with the `gate_policy` and `judge` slots this step interprets (declared-but-inert until now).
 
@@ -3109,7 +3109,6 @@ Synchronous before `Run` returns (same GC-race guarantee as the agent step): met
 			Expect(id).To(Equal(42))
 			Expect(from).To(Equal(tickets.StateRunning))
 			Expect(to).To(Equal(tickets.StateNeedsReview))
-			Expect(meta.By).To(Equal("harvest"))
 			Expect(meta.Branch).To(Equal("agent/ticket-42"))
 		})
 
@@ -3333,7 +3332,7 @@ func (step *HarvestStep) ingestAndRecord(
 		return
 	}
 	var to tickets.State
-	meta := tickets.TransitionMeta{By: "harvest"}
+	meta := tickets.TransitionMeta{} // ticket-core §2.1: no actor field — actor is carried by flight events
 	switch status {
 	case schema.RunStatusOK:
 		to = tickets.StateNeedsReview
