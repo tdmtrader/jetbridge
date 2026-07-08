@@ -81,7 +81,7 @@ The §11 amendment log is the required mechanism for contract changes ("changes 
     - `GET /api/v1/agent/workflows/:workflow_name/versions/:version` → 200 `Definition` incl. `config` + `raw_yaml`, 404 unknown, 400 non-integer version.
     - `POST /api/v1/agent/workflows/:workflow_name/versions` — body is the raw definition YAML (any Content-Type, ≤1 MiB) → 200 `Definition` (idempotent on content hash: re-importing identical bytes returns the existing version), 400 on parse/validation/name-mismatch, 413 oversize.
     - `PUT /api/v1/agent/workflows/:workflow_name/versions/:version/live` → 204, 404 unknown (name, version).
-  - Slot-shape freeze for wave-3 review: the `checkpoint:` step fields (`on_reject: fail|send_back`), `hitl` block (`ask_timeout: park|default|fail`, `ask_timeout_seconds`), `gate_policy` block (§6.3 YAML grammar), and `judge` block are stored and write-time validated by workflow-store but INERT until platform-mcp-hitl and harvest-step consume them; those workstreams review these shapes at wave-3 start and any change lands as a new `schema_version`, never a mutation of v1. §6.1's "optional top-level `schemas` map" is realized as `schemas: map[string]string` in `Config`.
+  - Slot-shape freeze for wave-3 review: the `checkpoint:` step fields (`on_reject: fail|send_back`), `hitl` block (`ask_timeout: park|default|fail`, `ask_timeout_seconds`), `gate_policy` block (§6.3 YAML grammar — each `gates[]` entry carries `gate`, `scope`, `focus`, `timeout`, and the optional `retries: 0..2` flake-retry key harvest-step consumes; workflow-store validates the `0..2` bound at import and carries `Gate.Retries` through so dispatch's renderer can map it onto `harvest.Gate.Retries`), and `judge` block are stored and write-time validated by workflow-store but INERT until platform-mcp-hitl and harvest-step consume them; those workstreams review these shapes at wave-3 start and any change lands as a new `schema_version`, never a mutation of v1. §6.1's "optional top-level `schemas` map" is realized as `schemas: map[string]string` in `Config`.
   - Wrappa placement note: the five workflow routes land in the existing `auth.CheckAuthorizationHandler` case group (admin-only in effect, per decision 21) with `DefaultRoles` entries in place; agent-identity moves them onto `CheckAgentAuthorizationHandler` together with the existing agent feedback routes.
 ```
 
@@ -220,6 +220,7 @@ gate_policy:
   - gate: test
     scope: affected_then_full
     timeout: 45m
+    retries: 1
   - gate: lint
     scope: affected
   on_gate_failure: needs_review
@@ -276,7 +277,7 @@ func TestParseFullSample(t *testing.T) {
 	if len(cfg.GatePolicy.Gates) != 3 || cfg.GatePolicy.OnGateFailure != "needs_review" {
 		t.Errorf("GatePolicy = %+v", cfg.GatePolicy)
 	}
-	if cfg.GatePolicy.Gates[1].Timeout != "45m" {
+	if cfg.GatePolicy.Gates[1].Timeout != "45m" || cfg.GatePolicy.Gates[1].Retries != 1 {
 		t.Errorf("gate 1 = %+v", cfg.GatePolicy.Gates[1])
 	}
 	if cfg.Judge == nil || len(cfg.Judge.Rubric) != 3 || cfg.Judge.PassThreshold != 6.5 {
@@ -402,6 +403,7 @@ type Gate struct {
 	Scope   string `yaml:"scope" json:"scope"` // affected | full | affected_then_full
 	Focus   string `yaml:"focus,omitempty" json:"focus,omitempty"`
 	Timeout string `yaml:"timeout,omitempty" json:"timeout,omitempty"` // Go duration; default 30m (harvest-side)
+	Retries int    `yaml:"retries,omitempty" json:"retries,omitempty"` // 0-2 failed-only re-runs; interpreted by harvest-step (§6.3 flake stance)
 }
 
 // Judge is the rubric block for the schema-constrained judge (§6.4;
@@ -538,6 +540,7 @@ func TestValidateRejects(t *testing.T) {
 		{"bad gate name", mutate(t, "- gate: lint", "- gate: vibes"), "gate"},
 		{"bad gate scope", mutate(t, "scope: affected_then_full", "scope: sometimes"), "scope"},
 		{"bad gate timeout", mutate(t, "timeout: 45m", "timeout: eventually"), "timeout"},
+		{"gate retries out of range", mutate(t, "retries: 1", "retries: 3"), "retries must be 0-2"},
 		{"bad on_gate_failure", mutate(t, "on_gate_failure: needs_review", "on_gate_failure: explode"), "on_gate_failure"},
 		{"judge weight zero", mutate(t, "weight: 3", "weight: 0"), "weight"},
 		{"judge threshold out of range", mutate(t, "pass_threshold: 6.5", "pass_threshold: 11"), "pass_threshold"},
@@ -718,6 +721,9 @@ func (c *Config) Validate() error {
 			if _, err := time.ParseDuration(g.Timeout); err != nil {
 				return fmt.Errorf("workflow: gate_policy.gates[%d]: invalid timeout %q", i, g.Timeout)
 			}
+		}
+		if g.Retries < 0 || g.Retries > 2 {
+			return fmt.Errorf("workflow: gate_policy.gates[%d]: retries must be 0-2, got %d", i, g.Retries)
 		}
 	}
 	if len(c.GatePolicy.Gates) > 0 && c.GatePolicy.OnGateFailure != "needs_review" {

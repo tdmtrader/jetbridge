@@ -22,7 +22,7 @@
 - **agent-identity (w1):** `agent/api/principals` — `principals.Store` (`Create(CreateSpec) (Principal, token, error)`), `CreateSpec{Name,Description,Scopes,TeamName,CreatedBy,ExpiresAt}`, scope constants `ScopeTicketsRead`/`ScopeTicketsWrite`/`ScopeMetricsWrite`/`ScopeCostsWrite`/`ScopeQuestionsAnswer`; `db.NewAgentPrincipalsFactory(dbConn)` returns a `principals.Store`. Dispatch mints the per-run principal token here (§8.1 `AGENT_PRINCIPAL_TOKEN`).
 - **credentials-and-budgets (w1):** `agent/budget` — `budget.Checker` (`TicketRemaining`/`GlobalDailyRemaining`/`StepSlice`/`Record`), `budget.NewChecker(ledger, budgets, cfg)`, `budget.TicketBudgets` seam (charter note: "real implementation arrives with ticket-core/dispatch" — **this plan supplies it**, Task 8), `budget.Remaining`, `budget.LedgerEntry`, source constants (`SourceAgentStep`…); `agent/credentials` — `credentials.Backend` (embeds `Store` with `Resolve(userID,kind) (*Credential,bool,error)`, `KindAnthropicOAuth`), `credentials.SecretAttacher` (`Attach(ctx,runID,cred,principalToken) (name,error)`, `Cleanup(ctx,runID)`), `credentials.NewK8sSecretAttacher(clientset, ns)`, `db.NewAgentUserCredentialsFactory(dbConn)` (impl `credentials.Backend`), `db.NewAgentCostLedgerFactory(dbConn)` (impl `budget.Ledger`); web flag `--agent-daily-budget-usd` (`cmd.AgentDailyBudgetUSD`) and the `budget.NewChecker` wiring already exist in `command.go`.
 - **pipeline-runs (w1):** `db.PipelineRunFactory` (`CreateRun(templatePipelineID int, params map[string]any, createdBy string) (PipelineRun, error)`, `ErrNotATemplate`, `ErrTemplateNotFound`), `db.NewPipelineRunFactory(dbConn, lockFactory)`; `atc.Config` gains `Template bool` + `Params []ParamSchema` + `RunRetentionConfig`; the `pipeline_run_lifecycler` component (owns run completion + secret `Cleanup` on completion per §8.2). §7.1 addendum: reserved param name `run`; entry jobs auto-triggered by `CreateRun`; template flag stays true on instances.
-- **workflow-store (w1):** `agent/workflow` — `workflow.Config` grammar (§6: `SchemaVersion`,`Name`,`Defaults`,`Budget{TicketUSD,JudgeUSD}`,`Sidecars map[string]Sidecar{Image,Role,Providers}`,`Prompts map[string]string`,`Schemas`,`Steps []Step{Agent,Prompt,Sidecars,BudgetSliceUSD,Model,MaxTurns,Inputs,Outputs,OutputSchema,Checkpoint,OnReject}`,`HITL{AskTimeout,AskTimeoutSeconds}`,`GatePolicy{Gates []Gate,OnGateFailure}`,`Gate{Gate,Scope,Focus,Timeout}`,`Judge{Rubric []RubricDimension,PassThreshold}`), `workflow.Parse([]byte)`, `workflow.Definition{ID,Name,Version,ContentHash,Live,Config,RawYAML}`, `workflow.Store` (`Live(name) (*Definition,bool,error)`, `Get(name,version)`), `db.NewAgentWorkflowsFactory(dbConn)` (impl `workflow.Store`).
+- **workflow-store (w1):** `agent/workflow` — `workflow.Config` grammar (§6: `SchemaVersion`,`Name`,`Defaults`,`Budget{TicketUSD,JudgeUSD}`,`Sidecars map[string]Sidecar{Image,Role,Providers}`,`Prompts map[string]string`,`Schemas`,`Steps []Step{Agent,Prompt,Sidecars,BudgetSliceUSD,Model,MaxTurns,Inputs,Outputs,OutputSchema,Checkpoint,OnReject}`,`HITL{AskTimeout,AskTimeoutSeconds}`,`GatePolicy{Gates []Gate,OnGateFailure}`,`Gate{Gate,Scope,Focus,Timeout,Retries}`,`Judge{Rubric []RubricDimension,PassThreshold}`), `workflow.Parse([]byte)`, `workflow.Definition{ID,Name,Version,ContentHash,Live,Config,RawYAML}`, `workflow.Store` (`Live(name) (*Definition,bool,error)`, `Get(name,version)`), `db.NewAgentWorkflowsFactory(dbConn)` (impl `workflow.Store`).
 - **ticket-core (w2):** `agent/api/tickets` — `tickets.Ticket` (§2.1), `State` constants (`StateQueued`,`StateRunning`,`StateNeedsReview`,`StateFailed`,`StateErrored`,`StateDraft`), `tickets.Store` (`Get`, `List(ListFilter)`, `Transition(id, from, to, TransitionMeta)`, `LatestSpec`, `ActivePlan`), `TransitionMeta{PipelineRunID *int, Branch string, ErrorDetail string}`, `ListFilter{State,Repo,Origin,Limit}`, errors `ErrStaleTransition`/`ErrTicketNotFound`/`ErrInvalidTransition`, render helpers `tickets.RenderSpecMarkdown(t, spec)` / `tickets.RenderPlanMarkdown(t, tasks)`, `db.NewAgentTicketsFactory(dbConn)`. Transition side effects (addendum §2.1): `→running` sets `dispatched_at`, `pipeline_run_id`; `→queued` from `running` bumps `attempt_count`; UPDATE guarded by `WHERE id=$id AND state=$from`; zero rows → `ErrStaleTransition`/`ErrTicketNotFound`.
 - **agent-step (w2):** `atc.AgentStep` (§2.8: `Name`(`json:"agent"`),`Prompt`,`PromptFile`,`Model`,`MaxTurns`,`BudgetSliceUSD`,`OutputSchema`,`Sidecars []SidecarSource`,`Inputs`,`Outputs`,`Env map[string]string`,`Timeout`,`Limits`,`Requests`) registered in `StepPrecedence`; §8.1 agent-step addendum env vars (`AGENT_PROMPT`, `AGENT_PROMPT_FILE`, `AGENT_MODEL`, `AGENT_MAX_TURNS`, `AGENT_OUTPUT_SCHEMA`, `AGENT_FLIGHT_DIR`, plus identity keys `AGENT_TICKET_ID`/`AGENT_PIPELINE_RUN_ID`/`AGENT_WORKFLOW_NAME`/`AGENT_WORKFLOW_VERSION`/`AGENT_WORKFLOW_HASH`/`AGENT_BUDGET_SLICE_USD` and MCP-URL-by-sidecar-name derivation `dev`/`platform`/`gateway`→7780/7781/7782); web flag `--agent-step-image`.
 - **harvest-step (w3):** `atc.HarvestStep` (§2.8.1: `Name`(`json:"harvest"`),`Workspace`,`Repo`,`TargetBranch`,`TicketID`,`PipelineRunID`,`Branch`,`Push`,`DevMCP *SidecarSource`,`GatePolicy harvest.GatePolicy`,`Judge *harvest.JudgeConfig`,`Timeout`) registered in `StepPrecedence`; `agent/harvest` — `harvest.GatePolicy{Gates []Gate{Gate,Scope,Focus,Timeout,Retries},OnGateFailure}`, `harvest.JudgeConfig{Rubric []RubricDimension{Name,Weight,Guidance},PassThreshold,Model,BudgetUSD}`; harvest exec reads `HARVEST_CONFIG` env + mounts `agent-harvest-git-<slug>` git creds on the main container only.
@@ -460,7 +460,7 @@ func fullWorkflow() workflow.Config {
 		GatePolicy: workflow.GatePolicy{
 			Gates: []workflow.Gate{
 				{Gate: "build", Scope: "affected"},
-				{Gate: "test", Scope: "affected_then_full", Timeout: "45m"},
+				{Gate: "test", Scope: "affected_then_full", Timeout: "45m", Retries: 1},
 			},
 			OnGateFailure: "needs_review",
 		},
@@ -495,8 +495,8 @@ func TestRenderHarvestStep(t *testing.T) {
 	if h.DevMCP == nil || h.DevMCP.Config == nil || h.DevMCP.Config.Image != "ghcr.io/tdmtrader/mcp-dev-concourse:v1" {
 		t.Fatalf("dev_mcp not resolved: %+v", h.DevMCP)
 	}
-	if len(h.GatePolicy.Gates) != 2 || h.GatePolicy.Gates[1].Scope != "affected_then_full" {
-		t.Errorf("gate policy not copied: %+v", h.GatePolicy)
+	if len(h.GatePolicy.Gates) != 2 || h.GatePolicy.Gates[1].Scope != "affected_then_full" || h.GatePolicy.Gates[1].Retries != 1 {
+		t.Errorf("gate policy not copied (incl. retries): %+v", h.GatePolicy)
 	}
 	if h.Judge == nil || h.Judge.PassThreshold != 6.5 || h.Judge.BudgetUSD != 1.0 {
 		t.Fatalf("judge not resolved (BudgetUSD from Budget.JudgeUSD): %+v", h.Judge)
@@ -566,6 +566,7 @@ func RenderHarvestStep(in RenderInput) (atc.HarvestStep, error) {
 			Scope:   g.Scope,
 			Focus:   g.Focus,
 			Timeout: g.Timeout,
+			Retries: g.Retries,
 		})
 	}
 	onFail := in.Workflow.GatePolicy.OnGateFailure
