@@ -15,7 +15,7 @@
 **Charter (workstreams.json `agent-step`, wave 2, size L).** Scope in: (1) full step-type recipe; (2) step config schema v1 with inline prompt, sidecar mounts, budget-slice env, artifacts in/out, resumable execution, no push credentials in the agent pod; (3) `agent_run_metrics` migration + factory + principal-authed ingest route with tolerant parsing and an ingestion-before-GC guarantee; (4) open item 11 — extract ONLY the results/events schema types from ci-agent into a shared module; (5) live theborg sidecar-MCP wiring proof; (6) cutover of the live theborg/cicd agent-review job with dual-running. Scope out: credential vaulting (v1 consumes ordinary var-source secrets), real MCP sidecar servers, harvest/push, scorecard views.
 
 **Prior waves (assumed landed exactly as 00-shared-contracts.md defines):**
-- **agent-identity**: `agent_principals` table (§1.2), `auth.CheckAgentPrincipalHandler(handler, rejector, scope)` wrappa tier, `CheckAgentAuthorizationHandler` for team-less `/api/v1/agent/*` authorized routes (§4.2 closing paragraph, decision 21), scope vocabulary including `metrics:write` (§4.1).
+- **agent-identity**: `agent_principals` table (§1.2), `auth.CheckAgentPrincipalHandlerFactory` wrappa tier (consumed as a `wrappa` struct field via `checkAgentPrincipalHandlerFactory.HandlerFor(handler, rejector, scope)`; constructed with `auth.NewCheckAgentPrincipalHandlerFactory`), `CheckAgentAuthorizationHandler` for team-less `/api/v1/agent/*` authorized routes (§4.2 closing paragraph, decision 21), scope vocabulary including `metrics:write` exported as `principals.ScopeMetricsWrite` (§4.1). Note: contracts §4.1 describes this tier with the shorthand `auth.CheckAgentPrincipalHandler(...)`, but agent-identity froze the actual Go surface as the `CheckAgentPrincipalHandlerFactory` interface (01-agent-identity §11 addendum) — use the factory form.
 - **credentials-and-budgets**: `agent_cost_ledger` (§1.4), `agent/budget` package with `budget.Checker` interface + `budget.LedgerEntry` + `Remaining` (§2.7) and its counterfeiter fake `agent/budget/budgetfakes.FakeChecker`, the `agent-run-<run-id>` ephemeral secret contract (§8.2).
 - **pipeline-runs, dev-mcp, workflow-store**: not directly consumed by code in this plan; the render-time-resolution rule (§2.8) means this step never reads workflow tables — dispatch's wave-4 renderer emits the exact `AgentStep` shape defined here.
 
@@ -1144,7 +1144,15 @@ Adds the two §4.2 rows owned by agent-step. Consumes agent-identity's landed `a
 
 - [ ] Run `ginkgo ./atc/wrappa/` — expect failure: the exhaustive auth switch panics `you missed a spot: "SubmitAgentRunMetrics"` (this is the failing test for the wrappa change).
 - [ ] In `atc/wrappa/api_auth_wrappa.go`:
-  - Add `case atc.SubmitAgentRunMetrics:` to the principal-scope tier landed by agent-identity, with scope `metrics:write` (per contracts §4.1). The landed pattern is `newHandler = auth.CheckAgentPrincipalHandler(handler, rejector, "<scope>")`; match the exact helper signature that wave 1 landed (grep `CheckAgentPrincipalHandler` first and copy an existing principal case such as `SubmitAgentReview`).
+  - Add `case atc.SubmitAgentRunMetrics:` to the principal-scope tier landed by agent-identity, with scope `principals.ScopeMetricsWrite` (per contracts §4.1). The landed pattern is a call on the `wrappa` struct's factory field (agent-identity added the field `checkAgentPrincipalHandlerFactory auth.CheckAgentPrincipalHandlerFactory` to the wrappa struct + constructor). Add:
+
+```go
+		case atc.SubmitAgentRunMetrics:
+			newHandler = wrappa.checkAgentPrincipalHandlerFactory.HandlerFor(
+				handler, rejector, principals.ScopeMetricsWrite)
+```
+
+    Import `"github.com/concourse/concourse/agent/api/principals"`. Grep `checkAgentPrincipalHandlerFactory` first and copy the existing `SubmitAgentReview` case as landed by agent-identity (which uses `HandlerForWithLegacyBypass` for its dual-accept window — metrics has no legacy token, so use the strict `HandlerFor`). Contracts §4.1 uses the shorthand `auth.CheckAgentPrincipalHandler(...)`, but the frozen Go surface is the factory interface — do not call a bare free function.
   - Add `atc.ListAgentRunMetrics` to the team-less agent-authorized case group (the one agent-identity moved `GetAgentFeedback` etc. onto — grep `CheckAgentAuthorizationHandler`).
 - [ ] In `atc/api/accessor/roles.go` add to `DefaultRoles`:
 
@@ -2476,7 +2484,7 @@ Replaces the build-from-source shell job in the live theborg/cicd `concourse` pi
 
 **Steps:**
 
-- [ ] Add the `agent-review-native` job after the existing `agent-review` job (:110). The prompt is the `prompt:` text from `ci-agent/phases/review.yaml` copied verbatim (the same instructions the shell job feeds ci-agent), adapted only where it references phase-runner file paths (output goes to `review/review.json`):
+- [ ] Add the `agent-review-native` job after the existing `agent-review` job (:110). The prompt body is the real review-phase prompt template `ci-agent/phases/prompts/review/findings.md` (the file `ci-agent/phases/review.yaml` references as `template: prompts/review/findings.md` — `review.yaml` itself contains no `prompt:` text). The phase-runner normally resolves that file's Go-template placeholders (`{{.Env.repo_dir}}`, `{{if eq .Env.diff_only "true"}}…`, `{{.Env.base_ref}}`, `{{.Env.score_threshold}}`) at runtime; the native `agent:` step does NOT run Go-template substitution, so inline the template with those placeholders resolved to this job's fixed values (`repo_dir` → `repo`, `diff_only` → `true` so the diff block is kept, `base_ref` → `main`, `score_threshold` → `7.0`) and change the output path to `review/review.json`:
 
 ```yaml
 - name: agent-review-native
@@ -2486,8 +2494,51 @@ Replaces the build-from-source shell job in the live theborg/cicd `concourse` pi
     params: {depth: 25}
   - agent: review
     prompt: |
-      # <verbatim copy of the review prompt from ci-agent/phases/review.yaml,
-      #  with output instructions pointing at review/review.json>
+      You are a code review agent. Analyze the repository at repo for real defects (not style issues).
+
+      Only review files changed in diff against base ref: main
+      Use `git diff main...HEAD --name-only` to determine changed files.
+
+      For each concern:
+      1. Write a failing Go test that proves the defect
+      2. Classify severity by what the test demonstrates
+
+      Write a JSON object with this structure to review/review.json:
+      {
+        "schema_version": "1.0.0",
+        "proven_issues": [
+          {
+            "id": "ISS-001",
+            "severity": "critical|high|medium|low",
+            "title": "short description",
+            "description": "detailed explanation",
+            "file": "path/to/file.go",
+            "line": 42,
+            "category": "security|correctness|performance|maintainability|testing",
+            "test_code": "package ...\n\nimport \"testing\"\n\nfunc TestXxx(t *testing.T) { ... }",
+            "test_file": "path/to/file_test.go",
+            "test_name": "TestXxx"
+          }
+        ],
+        "observations": [
+          {
+            "id": "OBS-001",
+            "title": "short description",
+            "file": "path/to/file.go",
+            "line": 42,
+            "category": "security|correctness|performance|maintainability|testing"
+          }
+        ],
+        "score": {
+          "value": 8.5,
+          "max": 10.0,
+          "pass": true,
+          "threshold": 7.0
+        }
+      }
+
+      If a concern cannot be proven with a test, include it in observations, not proven_issues.
+      Run any generated tests to verify they actually fail against the current code before reporting.
     model: ((agent-model))
     max_turns: 50
     inputs: [repo]
