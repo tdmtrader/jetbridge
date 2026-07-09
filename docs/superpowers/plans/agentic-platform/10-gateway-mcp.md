@@ -1096,7 +1096,7 @@ git commit -m "feat(gateway-mcp): budget-slice cutoff guard (never silent trunca
 
 ### Task 7: MCP server assembly — `request_review` + `ask_agent` tools
 
-Wires the adapter, meter, and slice guard into the two MCP tools. Schemas are byte-for-byte §3.3. Malformed input is an MCP-level error (`-32602` via the mcpserver's handler-error path); everything else is expressed in the payload `status` (`ok`/`failed`/`error`). The cutoff path returns `status: "failed"` with `summary` prefixed `budget cutoff:` and full usage-so-far.
+Wires the adapter, meter, and slice guard into the two MCP tools. Schemas are byte-for-byte §3.3. Invalid input (missing or unparseable arguments, validated inside the tool handler) is an MCP tool error (`isError=true`) — the shared `atc/api/mcpserver` maps every handler-returned error to a `tools/call` result carrying the error text with `isError=true`, NOT a JSON-RPC `-32602` error object (it only emits `-32602` for a malformed `tools/call` envelope, never for a handler's returned error; locked in by its committed `server_test.go` "returns error result when tool handler errors"). Everything else is expressed in the payload `status` (`ok`/`failed`/`error`). The cutoff path returns `status: "failed"` with `summary` prefixed `budget cutoff:` and full usage-so-far.
 
 **Files:**
 - Create: `agent/gatewaymcp/server.go`
@@ -1394,6 +1394,10 @@ type rawReviewFinding struct {
 	Category     string `json:"category"`
 }
 
+// handleRequestReview validates then dispatches request_review. A validation
+// error is returned plainly; the shared mcpserver surfaces it as a tools/call
+// result with isError=true (its handler-error path — never a JSON-RPC -32602
+// object, which it reserves for a malformed tools/call envelope).
 func (s *Server) handleRequestReview(ctx context.Context, args json.RawMessage) (any, error) {
 	var in struct {
 		Diff     string `json:"diff"`
@@ -1403,16 +1407,16 @@ func (s *Server) handleRequestReview(ctx context.Context, args json.RawMessage) 
 		Model    string `json:"model"`
 	}
 	if err := json.Unmarshal(args, &in); err != nil {
-		return nil, fmt.Errorf("invalid arguments: %w", err) // -32602
+		return nil, fmt.Errorf("invalid arguments: %w", err) // → MCP tool error (isError=true), not -32602
 	}
 	if in.Diff == "" {
-		return nil, fmt.Errorf("diff is required") // -32602
+		return nil, fmt.Errorf("diff is required") // → MCP tool error (isError=true), not -32602
 	}
 	if in.Provider == "" {
 		in.Provider = "claude"
 	}
 	if !providerEnum[in.Provider] {
-		return nil, fmt.Errorf("unknown provider %q", in.Provider) // -32602
+		return nil, fmt.Errorf("unknown provider %q", in.Provider) // → MCP tool error (isError=true), not -32602
 	}
 	if in.Provider != s.adapter.Name() {
 		return reviewResult{Status: "error", Summary: fmt.Sprintf("provider %q not available in this sidecar (only %q)", in.Provider, s.adapter.Name())}, nil
@@ -1458,16 +1462,16 @@ func (s *Server) handleAskAgent(ctx context.Context, args json.RawMessage) (any,
 		OutputSchema string `json:"output_schema"`
 	}
 	if err := json.Unmarshal(args, &in); err != nil {
-		return nil, fmt.Errorf("invalid arguments: %w", err) // -32602
+		return nil, fmt.Errorf("invalid arguments: %w", err) // → MCP tool error (isError=true), not -32602
 	}
 	if in.Prompt == "" {
-		return nil, fmt.Errorf("prompt is required") // -32602
+		return nil, fmt.Errorf("prompt is required") // → MCP tool error (isError=true), not -32602
 	}
 	if in.Provider == "" {
 		in.Provider = "claude"
 	}
 	if !providerEnum[in.Provider] {
-		return nil, fmt.Errorf("unknown provider %q", in.Provider) // -32602
+		return nil, fmt.Errorf("unknown provider %q", in.Provider) // → MCP tool error (isError=true), not -32602
 	}
 	if in.Provider != s.adapter.Name() {
 		return askResult{Status: "error", Answer: "", Usage: gatewayUsage{Provider: in.Provider}}, nil
@@ -2303,3 +2307,6 @@ This workstream adds no `atc/db` migration and no ATC route, so `ginkgo ./atc/..
 - *Metering (Task 5)*: the ledger POST is fire-and-forget — an ATC outage or a `costs:write` scope mismatch degrades to logged `error` events, never a failed tool call or a failed build (§1.4 rule). If ledger rows appear with the wrong `source`/`metadata`, they are append-only join-key data safe to leave; fix the writer and new rows are correct.
 - *Cutoff (Task 6)*: enforced entirely against the env-provided `AGENT_BUDGET_SLICE_USD`; setting it unset/0 disables the ceiling (uncapped) for a hand-written pipeline while debugging, with no code change.
 - *Dockerfile claude pin (Task 10)*: the bundled `@anthropic-ai/claude-code` version is pinned; a bad bump is reverted by restoring the prior tag and re-running `build-mcp-gateway` — the old image tag remains in GHCR and referenced workflow definitions keep working (import validation rejects `latest`, so nothing silently follows the bump).
+
+**Amendment log (this plan):**
+- 2026-07-08 (consistency fix; owner: gateway-mcp): corrected the Task 7 handler-error mechanism (pre-existing inconsistency, NOT introduced by the spec/plan-delivery change). The plan claimed invalid/malformed tool input produces a JSON-RPC `-32602` error object "via the mcpserver's handler-error path," but the gateway builds ON the shared `atc/api/mcpserver` (unlike dev-mcp/04, which ships its own server that genuinely emits `-32602`), and that shared server maps every tool-handler-returned error to a `tools/call` result with `isError=true` — it only emits `-32602` for a malformed `tools/call` envelope, never for a handler's returned error (locked in by its committed `server_test.go` "returns error result when tool handler errors"). Reworded the Task 7 intro plus the six `// -32602` code comments in `handleRequestReview`/`handleAskAgent` (Task 7 `tools.go`) to "MCP tool error (`isError=true`)", and added a doc comment on `handleRequestReview` naming the mechanism. Task 7's `TestMalformedInputIsMCPError` already asserts `result.isError=true` (never a top-level `-32602` object), so no test change was needed. Matches the same correction applied to 00-shared-contracts §3.2 and 08-platform-mcp-hitl during the platform-mcp read-tool work.
