@@ -78,7 +78,7 @@ The charter requires the nullable-join schema "agreed with scorecards at wave st
 
 **Human-touch delta definition [CONFIRMED — lines, not hunks; supersedes §1.11's prose only in unit precision]:** `human_lines_added`/`human_lines_deleted` are summed `git show --numstat` line counts of commits in `pushed_sha..<tip-at-merge>` (first-parent walk, merge commits excluded) whose author name is not `concourse-agent[bot]` (§8.3). `human_commit_count` counts those commits. `merged_with_fixes ⇔ human_commit_count > 0`. Binary files numstat as `-`/`-` and count 0 lines. Scorecards MUST label the columns "lines" in any UI.
 
-**Outcome-row creation:** rows are created by the outcome watcher (NOT harvest). Each tick it scans tickets in `needs_review` with a non-empty `branch` and no outcome row, resolving `pushed_sha`/`base_sha` from the newest `agent_run_metrics` row for that ticket whose `results.metadata.pushed_branch` equals the ticket branch. Fallback when no metrics row carries the shas (e.g. metrics reaped): `pushed_sha` = remote branch head at first sync — weaker, because pre-existing human commits then dilute the delta baseline; `base_sha` stays `''` and the diff API returns 404 until it is known. While `merge_state = 'open'`, a re-push (send-back → re-dispatch cycle) refreshes `branch`/`pushed_sha`/`base_sha` in place; terminal rows are never refreshed.
+**Outcome-row creation:** rows are created by the outcome watcher (NOT harvest). Each tick it scans tickets in `needs_review` with a non-empty `branch` and no outcome row, resolving `pushed_sha`/`base_sha` from the newest `agent_run_metrics` row for that ticket whose `results.metadata.pushed_branch` equals the ticket branch. Fallback when no metrics row carries the shas (e.g. metrics reaped): `pushed_sha` = remote branch head at first sync — weaker, because pre-existing human commits then dilute the delta baseline; `base_sha` stays `''` and the diff API returns 404 until it is known. While `merge_state = 'open'`, a re-push refreshes `branch`/`pushed_sha`/`base_sha` in place. A send-back disposition drives the row to `closed_unmerged`; when the ticket later cycles `sent_back → queued → running → needs_review` and is re-dispatched, the watcher's `Ensure` **re-arms** that row — a row with `merge_state = 'closed_unmerged' AND disposition = 'sent_back'` is reset to `open` with fresh `branch`/`pushed_sha`/`base_sha` and its disposition fields cleared, so the re-worked branch's eventual human merge is still detected (F6). Truly terminal rows — `merged`/`merged_with_fixes`, or `closed_unmerged` via `abandoned` — are never refreshed.
 
 **Merge-detection heuristics v1 [DECIDED HERE]:**
 1. **Primary (true merges + fast-forward):** merged ⇔ `git merge-base --is-ancestor <pushed_sha> refs/heads/<target_branch>` in a `--mirror` clone. `merged_sha` = the oldest merge commit on `git rev-list --ancestry-path --merges <pushed_sha>..<target>` (the commit that brought the branch in); tip-at-merge = that merge commit's second parent when it descends from `pushed_sha`, else `pushed_sha`. Fast-forward (no merge commit on the ancestry path): `merged_sha` = tip-at-merge = the agent branch's remote head if the branch still exists, else `pushed_sha`.
@@ -108,6 +108,7 @@ The charter requires the nullable-join schema "agreed with scorecards at wave st
 
 ```markdown
 - 2026-07-08 (delivery-outcomes planning): added §1.11.1 — wave-start agent_outcomes agreement with scorecards (LEFT-JOIN-on-ticket_id contract; delta unit = LINES via numstat of non-bot first-parent commits; additive base_sha column + agent_outcomes_open partial index; Outcome gains BaseSha/CreatedAt/UpdatedAt), outcome-row creation from harvest run-metrics with branch-head fallback, merge-detection heuristics v1 (ancestor primary, patch-id squash fallback, documented limits: edited squashes/rebase-merges stay open; closed_unmerged only via disposition), watcher/diff web flags (--agent-outcome-git-dir master switch, url template, https-only creds, 5m interval, squash scan limit), and two additive §4.2 routes GetAgentTicketDiff / GetAgentTicketReviews (windowed diff; reviews-by-ticket in the GetBuildAgentReviews response shape). Affects: scorecards, process-intel-experiments.
+- 2026-07-09 (delivery-outcomes planning, F6 fix): clarified the §1.11.1 outcome-row lifecycle for the send-back → re-dispatch → merge loop. A send-back disposition sets `closed_unmerged`, but the state machine allows `sent_back → queued → running → needs_review`; on re-dispatch the watcher's `Store.Ensure` now RE-ARMS a row where `merge_state = 'closed_unmerged' AND disposition = 'sent_back'` back to `open` with fresh branch/pushed_sha/base_sha (disposition fields cleared), so the re-worked branch's eventual human merge is recorded (previously the merge — and the human-touch delta, spec §9 — was silently lost on the rework loop). `abandoned` and `merged`/`merged_with_fixes` rows remain terminal and are never re-armed. No schema change (Ensure ON CONFLICT WHERE broadened only). Affects: scorecards, process-intel-experiments.
 ```
 
 - [ ] Commit: `git add docs/superpowers/plans/agentic-platform/00-shared-contracts.md && git commit -m "docs(agentic): delivery-outcomes contract addendum - outcomes schema agreement, watcher heuristics, diff/reviews routes"`
@@ -245,6 +246,41 @@ func TestMemoryStoreEnsureRefreshesOnlyOpenRows(t *testing.T) {
 	got, _, _ = s.Get(7)
 	if got.PushedSha != "ccc" {
 		t.Fatalf("merged row must not refresh: %+v", got)
+	}
+
+	// F6: a send-back row (closed_unmerged + disposition='sent_back') is
+	// RE-ARMED by Ensure — reset to open with fresh shas and cleared
+	// disposition — so the re-dispatch loop's merge is detected.
+	if err := s.Ensure(&outcomes.Outcome{TicketID: 8, Repo: "r", Branch: "agent/ticket-8", PushedSha: "p1", BaseSha: "b1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetDisposition(8, outcomes.DispositionInput{Disposition: outcomes.DispositionSentBack, Reason: "incomplete", By: "u"}); err != nil {
+		t.Fatal(err)
+	}
+	if g, _, _ := s.Get(8); g.MergeState != outcomes.ClosedUnmerged {
+		t.Fatalf("send-back must close the row: %+v", g)
+	}
+	if err := s.Ensure(&outcomes.Outcome{TicketID: 8, Repo: "r", Branch: "agent/ticket-8", PushedSha: "p2", BaseSha: "b2"}); err != nil {
+		t.Fatal(err)
+	}
+	got, _, _ = s.Get(8)
+	if got.MergeState != outcomes.MergeOpen || got.PushedSha != "p2" || got.BaseSha != "b2" || got.Disposition != "" {
+		t.Fatalf("sent_back row must re-arm to open with fresh shas + cleared disposition: %+v", got)
+	}
+
+	// An abandoned closed row is terminal — Ensure must NOT re-arm it.
+	if err := s.Ensure(&outcomes.Outcome{TicketID: 9, Repo: "r", Branch: "agent/ticket-9", PushedSha: "q1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetDisposition(9, outcomes.DispositionInput{Disposition: outcomes.DispositionAbandoned, Reason: "wont_do", By: "u"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Ensure(&outcomes.Outcome{TicketID: 9, Repo: "r", Branch: "agent/ticket-9", PushedSha: "q2"}); err != nil {
+		t.Fatal(err)
+	}
+	got, _, _ = s.Get(9)
+	if got.MergeState != outcomes.ClosedUnmerged || got.PushedSha != "q1" {
+		t.Fatalf("abandoned row must stay closed and not refresh: %+v", got)
 	}
 }
 
@@ -410,7 +446,13 @@ type DispositionInput struct {
 type Store interface {
 	// Ensure inserts the row if absent (unique ticket_id). When the row
 	// exists and merge_state = 'open', it refreshes branch/pushed_sha/
-	// base_sha (re-push after send-back); terminal rows are untouched.
+	// base_sha (re-push during the same review). It also RE-ARMS a row
+	// that a send-back disposition drove to closed_unmerged: when
+	// merge_state = 'closed_unmerged' AND disposition = 'sent_back', the
+	// row is reset to 'open' with fresh branch/pushed_sha/base_sha so the
+	// re-dispatch loop's eventual human merge is detected (F6). Other
+	// terminal rows (merged/merged_with_fixes, or closed_unmerged via
+	// 'abandoned') are untouched.
 	Ensure(o *Outcome) error
 	Get(ticketID int) (*Outcome, bool, error)
 	// ListOpen returns rows with merge_state = 'open', oldest-first.
@@ -461,7 +503,18 @@ func (s *MemoryStore) Ensure(o *Outcome) error {
 		s.rows[o.TicketID] = &cp
 		return nil
 	}
-	if existing.MergeState == MergeOpen {
+	// Re-arm a send-back row so the re-dispatch loop's merge is detected (F6):
+	// a sent_back disposition drove this open row to closed_unmerged, but the
+	// ticket has cycled sent_back → queued → running → needs_review again.
+	reArm := existing.MergeState == ClosedUnmerged && existing.Disposition == DispositionSentBack
+	if existing.MergeState == MergeOpen || reArm {
+		if reArm {
+			existing.MergeState = MergeOpen
+			existing.Disposition = ""
+			existing.DispositionReason = ""
+			existing.DispositionNotes = ""
+			existing.DisposedBy = ""
+		}
 		existing.Branch = o.Branch
 		existing.PushedSha = o.PushedSha
 		existing.BaseSha = o.BaseSha
@@ -651,6 +704,31 @@ var _ = Describe("AgentOutcomesFactory", func() {
 		Expect(got.Disposition).To(Equal("sent_back"))
 	})
 
+	It("re-arms a sent_back row on Ensure but leaves an abandoned row terminal (F6)", func() {
+		// sent_back → Ensure reopens with fresh shas + cleared disposition
+		Expect(factory.Ensure(&outcomes.Outcome{TicketID: 506, Repo: "r", Branch: "agent/ticket-506", PushedSha: "p1", BaseSha: "b1"})).To(Succeed())
+		Expect(factory.SetDisposition(506, outcomes.DispositionInput{Disposition: "sent_back", Reason: "incomplete", By: "u"})).To(Succeed())
+		got, _, _ := factory.Get(506)
+		Expect(got.MergeState).To(Equal(outcomes.ClosedUnmerged))
+
+		Expect(factory.Ensure(&outcomes.Outcome{TicketID: 506, Repo: "r", Branch: "agent/ticket-506", PushedSha: "p2", BaseSha: "b2"})).To(Succeed())
+		got, _, _ = factory.Get(506)
+		Expect(got.MergeState).To(Equal(outcomes.MergeOpen))
+		Expect(got.PushedSha).To(Equal("p2"))
+		Expect(got.BaseSha).To(Equal("b2"))
+		Expect(got.Disposition).To(BeEmpty())
+		open, _ := factory.ListOpen()
+		Expect(open).To(HaveLen(1)) // the re-armed row is back on the work-list
+
+		// abandoned → Ensure must NOT re-arm; row stays closed and shas frozen
+		Expect(factory.Ensure(&outcomes.Outcome{TicketID: 507, Repo: "r", Branch: "agent/ticket-507", PushedSha: "q1"})).To(Succeed())
+		Expect(factory.SetDisposition(507, outcomes.DispositionInput{Disposition: "abandoned", Reason: "wont_do", By: "u"})).To(Succeed())
+		Expect(factory.Ensure(&outcomes.Outcome{TicketID: 507, Repo: "r", Branch: "agent/ticket-507", PushedSha: "q2"})).To(Succeed())
+		got, _, _ = factory.Get(507)
+		Expect(got.MergeState).To(Equal(outcomes.ClosedUnmerged))
+		Expect(got.PushedSha).To(Equal("q1"))
+	})
+
 	It("stamps last_checked_at on Touch", func() {
 		Expect(factory.Ensure(&outcomes.Outcome{TicketID: 505, Repo: "r", Branch: "b"})).To(Succeed())
 		Expect(factory.Touch(505)).To(Succeed())
@@ -698,15 +776,30 @@ const outcomeColumns = `ticket_id, repo, branch, pushed_sha, base_sha, merge_sta
 // on an existing OPEN row (re-push after send-back). The WHERE-guarded
 // UPDATE-in-DO leaves terminal rows untouched.
 func (f *agentOutcomesFactory) Ensure(o *outcomes.Outcome) error {
+	// The ON CONFLICT WHERE also re-arms a send-back row (closed_unmerged with
+	// disposition='sent_back') back to 'open' and clears the disposition, so the
+	// re-dispatch loop's eventual human merge is detected (F6). Truly terminal
+	// rows (merged/merged_with_fixes, or abandoned) never match the WHERE.
 	_, err := f.conn.Exec(
 		`INSERT INTO agent_outcomes (ticket_id, repo, branch, pushed_sha, base_sha, merge_state)
 		 VALUES ($1, $2, $3, $4, $5, 'open')
 		 ON CONFLICT (ticket_id) DO UPDATE SET
-		   branch     = EXCLUDED.branch,
-		   pushed_sha = EXCLUDED.pushed_sha,
-		   base_sha   = EXCLUDED.base_sha,
+		   branch      = EXCLUDED.branch,
+		   pushed_sha  = EXCLUDED.pushed_sha,
+		   base_sha    = EXCLUDED.base_sha,
+		   merge_state = 'open',
+		   disposition = CASE WHEN agent_outcomes.merge_state = 'closed_unmerged'
+		                      THEN '' ELSE agent_outcomes.disposition END,
+		   disposition_reason = CASE WHEN agent_outcomes.merge_state = 'closed_unmerged'
+		                             THEN '' ELSE agent_outcomes.disposition_reason END,
+		   disposition_notes  = CASE WHEN agent_outcomes.merge_state = 'closed_unmerged'
+		                             THEN '' ELSE agent_outcomes.disposition_notes END,
+		   disposed_by = CASE WHEN agent_outcomes.merge_state = 'closed_unmerged'
+		                      THEN '' ELSE agent_outcomes.disposed_by END,
 		   updated_at = now()
-		 WHERE agent_outcomes.merge_state = 'open'`,
+		 WHERE agent_outcomes.merge_state = 'open'
+		    OR (agent_outcomes.merge_state = 'closed_unmerged'
+		        AND agent_outcomes.disposition = 'sent_back')`,
 		o.TicketID, o.Repo, o.Branch, o.PushedSha, o.BaseSha,
 	)
 	return err
@@ -2452,6 +2545,74 @@ var _ = Describe("outcomewatcher", func() {
 		Expect(tk.State).To(Equal(tickets.StateNeedsReview))
 	})
 
+	It("re-arms a sent-back row and detects the rework merge with the NEW shas (F6)", func() {
+		// tick 1: create the open row for the first push.
+		Expect(watcher.Run(nil)).To(Succeed())
+		o, _, _ := outcomeStore.Get(ticketID)
+		Expect(o.PushedSha).To(Equal(pushed))
+		Expect(o.MergeState).To(Equal(outcomes.MergeOpen))
+
+		// human sends the ticket back: disposition closes the row unmerged,
+		// then the ticket walks sent_back → queued → running.
+		Expect(outcomeStore.SetDisposition(ticketID, outcomes.DispositionInput{
+			Disposition: outcomes.DispositionSentBack, Reason: "incomplete", By: "tdmtrader",
+		})).To(Succeed())
+		o, _, _ = outcomeStore.Get(ticketID)
+		Expect(o.MergeState).To(Equal(outcomes.ClosedUnmerged))
+		_ = ticketStore.Transition(ticketID, tickets.StateNeedsReview, tickets.StateSentBack, tickets.TransitionMeta{})
+		_ = ticketStore.Transition(ticketID, tickets.StateSentBack, tickets.StateQueued, tickets.TransitionMeta{})
+		_ = ticketStore.Transition(ticketID, tickets.StateQueued, tickets.StateRunning, tickets.TransitionMeta{})
+
+		// the re-worked branch: a new HUMAN commit is pushed (new head) on top
+		// of the first push. A fresh harvest metrics row carries the NEW shas.
+		// The commit is authored by a human so the rework counts toward the
+		// human-touch delta (merged_with_fixes ⇔ human_commit_count > 0).
+		seed := filepath.Join(tmp, "seed")
+		newBase := pushed // the rework is based on the first push
+		Expect(os.WriteFile(filepath.Join(seed, "g.go"), []byte("package g\n"), 0o644)).To(Succeed())
+		git(seed, "add", ".")
+		humanCommit := exec.Command("git", "commit", "-m", "human rework")
+		humanCommit.Dir = seed
+		humanCommit.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=Reviewer", "GIT_AUTHOR_EMAIL=rev@example.com",
+			"GIT_COMMITTER_NAME=Reviewer", "GIT_COMMITTER_EMAIL=rev@example.com")
+		out, err := humanCommit.CombinedOutput()
+		Expect(err).NotTo(HaveOccurred(), "human commit: %s", out)
+		reworked := git(seed, "rev-parse", "HEAD")
+		Expect(reworked).NotTo(Equal(pushed))
+		git(seed, "push", "origin", "HEAD:refs/heads/agent/ticket-1")
+		md, _ := json.Marshal(map[string]any{
+			"metadata": map[string]any{"pushed_branch": "agent/ticket-1", "head_sha": reworked, "base_sha": newBase},
+		})
+		_ = metricStore.Upsert(&schema.RunMetrics{
+			BuildID: 2, PlanID: "0.1", StepName: "harvest", TicketID: &ticketID,
+			Status: schema.RunStatusOK, Results: json.RawMessage(md),
+		})
+
+		// ticket is back at needs_review; the reworked branch is then merged.
+		_ = ticketStore.Transition(ticketID, tickets.StateRunning, tickets.StateNeedsReview, tickets.TransitionMeta{Branch: "agent/ticket-1"})
+		git(seed, "push", "origin", "HEAD:main")
+
+		// tick 2: seedRows must RE-ARM the closed_unmerged/sent_back row back to
+		// open with the NEW shas — not `continue` past it.
+		Expect(watcher.Run(nil)).To(Succeed())
+		o, _, _ = outcomeStore.Get(ticketID)
+		Expect(o.MergeState).To(Equal(outcomes.MergeOpen), "row must be re-armed to open")
+		Expect(o.PushedSha).To(Equal(reworked), "pushed_sha must be the reworked head")
+		Expect(o.BaseSha).To(Equal(newBase))
+		Expect(o.Disposition).To(BeEmpty(), "the send-back disposition must be cleared on re-arm")
+
+		// tick 3: detect the merge on the re-armed row. Because a human commit
+		// (the rework) precedes the merge, the outcome is merged_with_fixes.
+		Expect(watcher.Run(nil)).To(Succeed())
+		o, _, _ = outcomeStore.Get(ticketID)
+		Expect(o.MergeState).To(Equal(outcomes.MergedWithFixes))
+		Expect(o.PushedSha).To(Equal(reworked))
+		Expect(o.BaseSha).To(Equal(newBase))
+		tk, _, _ := ticketStore.Get(ticketID)
+		Expect(tk.State).To(Equal(tickets.StateMergedWithFixes))
+	})
+
 	It("serves the windowed diff via the MirrorProvider seam", func() {
 		Expect(watcher.Run(nil)).To(Succeed()) // creates the row + fetches the mirror
 		page, err := cache.Diff("tdmtrader/concourse", base, pushed, 0, 50)
@@ -2605,11 +2766,15 @@ func (w *Watcher) seedRows() error {
 		if tk.Branch == "" {
 			continue
 		}
-		if _, found, err := w.outcomes.Get(tk.ID); err != nil {
-			return err
-		} else if found {
-			continue // already tracked; re-push refresh handled by RecordMerge/Ensure elsewhere
-		}
+		// Ensure is idempotent and does the refresh itself: it inserts a new
+		// row, refreshes branch/pushed_sha/base_sha on an existing open row
+		// (plain needs_review → queued → needs_review re-dispatch, or a re-push
+		// mid-review), AND re-arms a send-back row (closed_unmerged +
+		// disposition='sent_back') back to open with fresh shas (F6). We must
+		// NOT `continue` on a found row — that was the old bug: the re-worked
+		// branch's new pushed_sha/base_sha never got re-resolved, so the human
+		// merge on the rework loop was silently lost (spec §9 delta). Terminal
+		// merged / abandoned rows are left untouched by Ensure.
 		pushed, base := w.resolveShas(tk)
 		if err := w.outcomes.Ensure(&outcomes.Outcome{
 			TicketID: tk.ID, Repo: tk.Repo, Branch: tk.Branch,
@@ -2707,7 +2872,7 @@ func (w *Watcher) recordAndTransition(tk *tickets.Ticket, res *gitcheck.Result) 
 }
 ```
 
-- [ ] Run `ginkgo ./agent/outcomewatcher/` — expect green (row-creation, merge detection + transition, open-stays-open, and the diff-provider seam all pass against real git).
+- [ ] Run `ginkgo ./agent/outcomewatcher/` — expect green (row-creation, merge detection + transition, open-stays-open, the send-back re-arm + rework-merge loop (F6), and the diff-provider seam all pass against real git). Before the `seedRows` re-arm fix (unconditional `continue` on a found row) the F6 spec fails at `Expect(o.MergeState).To(Equal(outcomes.MergeOpen), "row must be re-armed to open")` — the row stays `closed_unmerged` and the rework merge is never recorded.
 - [ ] Commit: `git add agent/outcomewatcher agent/gitcheck && git commit -m "feat(delivery-outcomes): outcome watcher RunnableComponent + mirror cache"`
 
 ---
@@ -3868,3 +4033,6 @@ Per CLAUDE.md: unit tests run in parallel with `-p`; **never** pass `--race` (pa
 - **`agent/api/reviews.GetByBuild` refactor (Task 9)** is behaviour-preserving (the loop body was lifted verbatim into `BuildResponseFor`); its own handler_test is the guard. If the extracted function ever diverges, revert Task 9's `handler.go` edit and inline the loop again — the ticket reviews handler is the only other caller.
 - **The disposition endpoint transitions the ticket through `tickets.Store.Transition` FIRST, then writes `agent_outcomes`** — if the transition is rejected (409), no disposition row is written, so ticket state and outcome state never diverge. This ordering is load-bearing; do not reorder it.
 - **Single-writer discipline:** the watcher and the disposition handler are the only two writers of outcome-driven ticket states, and both go through `tickets.Store.Transition` with a `from` guard. A concurrent transition (e.g. a human abandons while the watcher detects a merge) makes the loser's `Transition` fail `ErrStaleTransition`/`ErrInvalidTransition` and no-op — never a corrupt state. The watcher's `detectMerges` re-checks `tk.State == needs_review` before acting, so a human disposition mid-tick is respected.
+
+**Design-review amendments:**
+- **2026-07-09 (F6 — send-back → re-dispatch → merge never recorded):** `seedRows` (Task 10 `agent/outcomewatcher/watcher.go`) previously `continue`d unconditionally on any found outcome row, so a re-dispatched ticket's row was never re-resolved. Combined with a send-back disposition moving the row to terminal `closed_unmerged` and `Ensure`'s refresh firing only `WHERE merge_state='open'`, the re-worked branch's eventual human merge was silently lost (spec §9 human-touch delta). Fix: (1) `Store.Ensure` — both `MemoryStore` (Task 3) and `agentOutcomesFactory` (Task 4 SQL) — now RE-ARM a row where `merge_state='closed_unmerged' AND disposition='sent_back'` back to `open` with fresh branch/pushed_sha/base_sha and cleared disposition fields; `abandoned` and merged rows stay terminal. (2) `seedRows` no longer `continue`s on a found row — it always calls `Ensure`, so the plain `needs_review → queued → needs_review` re-dispatch path also refreshes shas. (3) §1.11.1 prose + the `Store.Ensure` interface doc-comment now document the re-arm; the misleading "handled … elsewhere" comment was removed. Tests added: `TestMemoryStoreEnsureRefreshesOnlyOpenRows` gains send-back-re-arm + abandoned-stays-closed cases (Task 3); the `AgentOutcomesFactory` suite gains "re-arms a sent_back row on Ensure but leaves an abandoned row terminal (F6)" (Task 4); the `outcomewatcher` suite gains "re-arms a sent-back row and detects the rework merge with the NEW shas (F6)" driving `needs_review → sent_back → queued → running → needs_review(new sha) → merged` and asserting the row ends `merged_with_fixes` with the new base/pushed shas. Contract-visible surface unchanged (no new `Store` method, no schema change — `Ensure`'s `ON CONFLICT WHERE` was broadened only).

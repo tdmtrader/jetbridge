@@ -52,6 +52,7 @@ The charter says schemas "agreed at wave start" must be written down, not assume
 The renderer (`agent/dispatch.Render`) is a pure function `Render(RenderInput) (RenderOutput, error)` with no DB access. `RenderInput` carries the resolved `workflow.Config`, the `tickets.Ticket`, its latest `*tickets.Spec`, and active `[]tickets.Task`, plus the resolved image flags (`AgentStepImage`, and the per-sidecar images already inline in the workflow's `sidecars` map) and `ATCExternalURL`. `RenderOutput` carries the `atc.Config` (a `template: true` pipeline with exactly one job named `run`), the materialized run-input files (`map[string]string` of `spec.md`/`plan.md` → contents, produced via `tickets.RenderSpecMarkdown`/`RenderPlanMarkdown`, populated ONLY when `spec_delivery: files`), and the `params map[string]any` the dispatcher passes to `CreateRun`. `RenderInput` still carries Ticket + Spec + Tasks in both delivery modes — they are needed to materialize the files in `files` mode and to fill params.
 
 - **Template shape:** one job `name: run`; its plan is the ordered `agent:`/checkpoint steps from the definition followed by the implicitly-appended terminal `harvest:` step (§6.1: harvest is never declared in `steps`). The job is an entry job (no `passed:`), so `CreateRun` auto-triggers it (§7.1 point 8).
+- **Checkpoint steps render as `task:`, not `agent:` (F1, 2026-07-09):** each `workflow.Step{Checkpoint:...}` becomes an `atc.TaskStep` named `checkpoint-<name>` whose `run` invokes `platform-mcp checkpoint --name <name>` (image = the workflow's `platform` sidecar image, which ships the `cmd/platform-mcp` binary) with the `platform` sidecar mounted and `PLATFORM_MCP_URL=http://127.0.0.1:7781/mcp` set as a literal param. The container's exit code natively gates the run (exit 0 approve / exit 1 reject; 08-platform-mcp-hitl.md §3.2). It is deliberately NOT an `atc.AgentStep` — an AgentStep's main process is hardwired to agent-runner/claude with no command override, so it could not run the checkpoint client and a rejected checkpoint would exit 0, defeating the gate. `on_reject: fail` needs no wrapper (the non-zero exit propagates → run fails → ticket needs_review); `on_reject: send_back` is the dispatcher's refinement of the same failed run (→queued re-dispatch). No `PLATFORM_MCP_CHECKPOINT*` env or LLM prompt is emitted.
 - **Params schema declared by the rendered template:** exactly the run-identity params the dispatcher fills — `ticket_id` (number, required), `pipeline_run_id` is NOT a param (it is the run's own id, injected by the agent-step env at exec time from `AGENT_PIPELINE_RUN_ID`, which the renderer sets to the literal `((run))` var pipeline-runs injects). The reserved name `run` (§7.1 point 5) is never declared. Rationale: keeping the template's declared params minimal avoids params-schema validation coupling; ticket/workflow identity travels as literal step `env`, not as params, per the render-time-resolution rule (§2.8).
 - **Read model (default = MCP):** by default (`spec_delivery: mcp` or omitted) the renderer injects NO spec/plan bytes into any agent step. There is no `AGENT_SPEC_MD`/`AGENT_PLAN_MD` env key — those keys are DELETED from the emission target. The agent reaches spec/plan exclusively through the platform-mcp read tools (`read_ticket`, `list_tasks`, `get_task`; contracts §3.2, implemented by 08-platform-mcp-hitl over the ticket-core `Store` methods `Get`/`LatestSpec`/`ActivePlan`), loading only what it needs and working the plan through task handles. The DB stays the single source of truth; nothing is flattened into a monolithic blob. The workflow's first agent step prompt instructs the agent to begin by calling `read_ticket` and `list_tasks` (and `get_task` per task as it works) — a one-line seed-prompt convention.
 - **spec.md / plan.md as run inputs (opt-in `spec_delivery: files`):** when the resolved `workflow.Config.SpecDelivery == "files"`, the renderer materializes read-only `spec.md`/`plan.md` (contents produced via `tickets.RenderSpecMarkdown`/`RenderPlanMarkdown`, which are KEPT) into `RenderOutput.RunInputs` (filename→contents). The dispatcher mounts them READ-ONLY as an artifact named `ticket` on the agent steps — a file mount, NOT env vars. In `mcp` mode `RenderOutput.RunInputs` is empty. In BOTH modes the platform-mcp sidecar is mounted and all its tools work; `files` mode is purely additive (a read-only mount) and does not disable the MCP read path. `SpecDelivery` is read off the resolved `workflow.Config` (grammar owned by 05-workflow-store; contracts §6): yaml key `spec_delivery`, Go field `SpecDelivery string`, values `"mcp"` (default when empty) | `"files"`, a normal hashed field.
@@ -66,6 +67,7 @@ The renderer (`agent/dispatch.Render`) is a pure function `Render(RenderInput) (
 ```markdown
 - 2026-07-08 (dispatch wave-4 planning; affects: process-intel-experiments, credentials-and-budgets, ticket-core, pipeline-runs — additive only): added §2.8.2 (Renderer pure-function shape `Render(RenderInput)(RenderOutput,error)`; rendered template is a single `template: true` pipeline named `agent-ticket-<id>` with one entry job `run` = agent/checkpoint steps + implicit terminal harvest; declared params minimal (`ticket_id`); ticket/workflow identity travels as literal step env not params; persistence via `Team.SavePipeline` then `PipelineRunFactory.CreateRun`; dispatch-owned `budget.TicketBudgets` implementation `dispatch.TicketBudgets` (tickets.budget_usd ?? workflow default); `concourse/ticket` secret label applied by dispatch via a `dispatch.RunSecretLabeler` follow-up Patch after Attach (best-effort; GC keys off `concourse/agent-run` alone); per-run principal `agent-run-<run-id>` scopes + expiry). No existing rows changed.
 - 2026-07-08 (frozen delta — spec/plan via granular platform-mcp read tools + optional file mount; affects: platform-mcp-hitl, dispatch, workflow-store, ticket-core-consumers — supersedes the prior "inline env copy under `AGENT_SPEC_MD`/`AGENT_PLAN_MD`" design in §2.8.2): the default read model is MCP — agents reach spec/plan ONLY via platform-mcp read tools (`read_ticket`, `list_tasks`, `get_task`; §3.2) and no spec/plan bytes are injected into any agent step by default. The `AGENT_SPEC_MD`/`AGENT_PLAN_MD` env keys are DELETED from the renderer emission target. New optional workflow-definition field `spec_delivery` (Go `workflow.Config.SpecDelivery string`, values `"mcp"` default | `"files"`, a normal hashed field; 05-workflow-store owns the grammar, §6 mirrors it): `files` mode materializes read-only `spec.md`/`plan.md` (via `tickets.RenderSpecMarkdown`/`RenderPlanMarkdown`, KEPT) into `RenderOutput.RunInputs`, mounted READ-ONLY as an artifact named `ticket` on the agent steps — a mount, NOT env vars; `mcp` mode leaves `RunInputs` empty. In both modes the platform-mcp sidecar is mounted. `read_ticket` returns envelope+spec only (tasks removed); `list_tasks`/`get_task` provide the task skeleton/detail; `update_task_status` is the write-back in both modes. No existing rows changed.
+- 2026-07-09 (dispatch design-review fix F1 — checkpoint renders as a TASK step, not an agent step; co-signed with platform-mcp-hitl; affects: dispatch, platform-mcp-hitl — corrects §2.8.2 emission target, additive/no-row-change): the renderer emits each `workflow.Step{Checkpoint:...}` as an `atc.TaskStep` named `checkpoint-<name>`, NOT an `atc.AgentStep`. Rationale: an `AgentStep`'s main process is hardwired to agent-runner/claude with no command override, so it cannot run the deterministic checkpoint client — a rejected checkpoint would exit 0 and the run would proceed as if approved, defeating the human gate. The TaskStep's `Config.Run` invokes `platform-mcp checkpoint --name <checkpoint>` (image = the workflow's `platform` sidecar image `ghcr.io/tdmtrader/mcp-platform`, which ships the `cmd/platform-mcp` binary) with the `platform` sidecar mounted; the container's exit code natively drives step success/failure (exit 0 approve / exit 1 reject-or-error, per 08-platform-mcp-hitl.md §3.2 line 79), so `on_reject: fail` needs no wrapper — the non-zero exit propagates → run fails → dispatcher walks the ticket to `needs_review`. `on_reject: send_back` is the dispatcher's refinement of that same failed run (reads on_reject off the resolved `workflow.Config.Steps`, maps a rejected send_back checkpoint to the →queued re-dispatch path); the renderer emits the identical bare failing task step for both values. The checkpoint client reaches the sidecar via `PLATFORM_MCP_URL=http://127.0.0.1:7781/mcp` (set as a literal TaskStep param, since a task step does NOT get agent-step's MCP-URL-by-sidecar-name derivation). The two `PLATFORM_MCP_CHECKPOINT`/`PLATFORM_MCP_CHECKPOINT_ON_REJECT` env vars and the "Await human approval…" LLM prompt from the earlier agent-step rendering are DELETED — nothing read them and an LLM prompt cannot gate a run. `workflow.Step` carries no free-text description (grammar: `Checkpoint`+`OnReject` only), so the client is invoked with `--name` alone; `--description` stays optional/omitted. No existing rows changed.
 ```
 
 - [ ] **Step 3: Commit**
@@ -680,6 +682,36 @@ func TestRenderProducesTemplatePipelineWithOneRunJob(t *testing.T) {
 		// resolved below in Step 2 helper
 	}
 
+	// The checkpoint (plan step index 1) MUST render as a task: step whose
+	// container exit code natively drives success/failure — NOT an agent: step
+	// (an AgentStep's hardwired agent-runner main process cannot run the
+	// deterministic checkpoint client, so a rejected checkpoint would exit 0
+	// and the run would proceed as if approved). Assert: it is a *atc.TaskStep;
+	// its run invokes `platform-mcp checkpoint --name plan-approval`; it mounts
+	// the platform sidecar; and it carries NEITHER stale PLATFORM_MCP_CHECKPOINT*
+	// env var (those are deleted — the container's exit code is the signal).
+	cp, ok := out.Config.Jobs[0].PlanSequence[1].Config.(*atcTask)
+	if !ok {
+		t.Fatalf("checkpoint step must be a task step, got %T", out.Config.Jobs[0].PlanSequence[1].Config)
+	}
+	if cp.Name != "checkpoint-plan-approval" {
+		t.Errorf("checkpoint step name = %q, want checkpoint-plan-approval", cp.Name)
+	}
+	if cp.Config == nil || cp.Config.Run.Path != "platform-mcp" ||
+		len(cp.Config.Run.Args) != 3 || cp.Config.Run.Args[0] != "checkpoint" ||
+		cp.Config.Run.Args[1] != "--name" || cp.Config.Run.Args[2] != "plan-approval" {
+		t.Fatalf("checkpoint run must be `platform-mcp checkpoint --name plan-approval`, got %+v", cp.Config.Run)
+	}
+	if len(cp.Sidecars) != 1 || cp.Sidecars[0].Config == nil || cp.Sidecars[0].Config.Name != "platform" {
+		t.Fatalf("checkpoint must mount the platform sidecar, got %+v", cp.Sidecars)
+	}
+	if _, present := cp.Params["PLATFORM_MCP_CHECKPOINT"]; present {
+		t.Errorf("stale PLATFORM_MCP_CHECKPOINT env must be deleted; the exit code is the signal")
+	}
+	if _, present := cp.Params["PLATFORM_MCP_CHECKPOINT_ON_REJECT"]; present {
+		t.Errorf("stale PLATFORM_MCP_CHECKPOINT_ON_REJECT env must be deleted; on_reject is the dispatcher's refinement, not container env")
+	}
+
 	// §2.8.2 default read model = MCP: NO spec/plan bytes are injected. RunInputs
 	// is empty and NO agent step carries AGENT_SPEC_MD/AGENT_PLAN_MD env — the
 	// agent reaches spec/plan via the platform-mcp read tools (read_ticket /
@@ -734,6 +766,66 @@ func TestRenderFilesModeMaterializesRunInputs(t *testing.T) {
 		t.Errorf("files mode delivers spec via mount, never AGENT_SPEC_MD env; got %q", first.Env["AGENT_SPEC_MD"])
 	}
 }
+
+// TestRenderCheckpointOnRejectFailFailsRun is the human-gate proof at render
+// level: with on_reject: fail, the checkpoint renders as a BARE task step whose
+// non-zero container exit propagates and fails the run. The client exits 1 on
+// reject (§3.2), so the only way the gate holds is if nothing in the rendered
+// plan swallows that exit — the step must NOT be wrapped in a `try:`, and must
+// carry no on_success/on_failure/ensure hook that would mask the failure. If a
+// future edit re-renders the checkpoint as an agent: step (main process
+// hardwired to agent-runner, always exit 0), this assertion catches it: an
+// agent: step cannot fail on reject, so the type assertion below fails.
+func TestRenderCheckpointOnRejectFailFailsRun(t *testing.T) {
+	cfg := fullWorkflow()
+	cfg.Defaults = workflow.Defaults{Model: "claude-sonnet-4-5", MaxTurns: 80}
+	cfg.Prompts = map[string]string{"spec": "s"}
+	cfg.Steps = []workflow.Step{
+		{Agent: "write-spec", Prompt: "spec", Sidecars: []string{"dev"}, BudgetSliceUSD: 2, Outputs: []string{"workspace"}},
+		{Checkpoint: "plan-approval", OnReject: "fail"},
+	}
+	in := dispatch.RenderInput{Workflow: cfg, AgentStepImage: "img:v1", ATCExternalURL: "https://concourse.home"}
+	in.Ticket = tickets.Ticket{ID: 42, Repo: "tdmtrader/concourse", TargetBranch: "main", Title: "Fix X"}
+
+	out, err := dispatch.Render(in)
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+
+	step := out.Config.Jobs[0].PlanSequence[1]
+	if step.Config == nil {
+		t.Fatal("checkpoint plan step is empty")
+	}
+	// The checkpoint's StepConfig MUST be a bare *atc.TaskStep — the exit code
+	// IS the run's success signal. atc.Step wraps failure-masking modifiers as
+	// their own StepConfig types (TryStep, OnFailureStep, EnsureStep, …). If the
+	// checkpoint were wrapped in any of those, or re-rendered as an *AgentStep
+	// (main process hardwired to agent-runner => always exit 0), this direct
+	// type assertion fails and the human gate is proven broken.
+	switch step.Config.(type) {
+	case *atc.TryStep, *atc.OnFailureStep, *atc.OnSuccessStep, *atc.EnsureStep:
+		t.Fatalf("on_reject=fail checkpoint must not be wrapped in a failure-masking modifier; got %T", step.Config)
+	}
+	cp, ok := step.Config.(*atcTask)
+	if !ok {
+		t.Fatalf("on_reject=fail checkpoint must be a bare task step whose exit fails the run, got %T", step.Config)
+	}
+	// The client always exits 1 on reject; a task step's exit is unignored.
+	if cp.Config == nil || cp.Config.Run.Path != "platform-mcp" {
+		t.Errorf("checkpoint main process must be the platform-mcp client (exit 1 on reject), got %+v", cp.Config)
+	}
+
+	// The rendered plan (bare failing task step included) still validates.
+	if _, errs := configvalidate.Validate(out.Config); len(errs) != 0 {
+		t.Fatalf("configvalidate errors on rendered plan with fail-checkpoint: %v", errs)
+	}
+}
+```
+
+This test imports `configvalidate`; add it to the import block (the golden test in Task 6 also imports it, so if Task 6 lands first the import already exists — keep the two files' imports consistent):
+
+```go
+import "github.com/concourse/concourse/atc/configvalidate"
 ```
 
 - [ ] **Step 2: Add the type-assert helpers** at the bottom of `agent/dispatch/render_test.go`:
@@ -743,11 +835,12 @@ import "github.com/concourse/concourse/atc"
 
 type atcHarvest = atc.HarvestStep
 type atcAgent = atc.AgentStep
+type atcTask = atc.TaskStep
 ```
 
 - [ ] **Step 3: Run to verify failure**
 
-Run: `cd /Users/tdmtrader/concourse/concourse && go test ./agent/dispatch/ -run TestRenderProduces`
+Run: `cd /Users/tdmtrader/concourse/concourse && go test ./agent/dispatch/ -run 'TestRenderProduces|TestRenderFilesMode|TestRenderCheckpointOnReject'`
 Expected: FAIL — `undefined: dispatch.Render`.
 
 - [ ] **Step 4: Write `agent/dispatch/render.go`:**
@@ -833,29 +926,62 @@ func Render(in RenderInput) (RenderOutput, error) {
 	}, nil
 }
 
-// renderCheckpointStep renders a workflow checkpoint into an agent: step
-// running the platform sidecar's checkpoint endpoint (§3.2: checkpoints reuse
-// the ask_human park/resume mechanism via a dedicated checkpoint step). The
-// step's prompt is the internal directive the platform-mcp checkpoint runner
-// recognizes; on_reject maps to the step's failure behavior (fail => step
-// fails => run fails => ticket needs_review, per §3.2).
-func renderCheckpointStep(in RenderInput, s workflow.Step) atc.AgentStep {
+// renderCheckpointStep renders a workflow checkpoint into a TASK step whose
+// main container runs the deterministic `platform-mcp checkpoint` client with
+// the platform sidecar mounted (§3.2 checkpoint addendum, 08-platform-mcp-hitl.md
+// line 79). It is NOT an agent: step — an AgentStep's main process is hardwired
+// to agent-runner/claude with no command override, so it could not run the
+// checkpoint client and a rejected checkpoint would exit 0 and let the run
+// proceed as if approved, defeating the human gate. As a TaskStep, the
+// container's own exit code natively drives step success/failure: the client
+// POSTs the sidecar's /checkpoint, blocks until a human resolves it, and exits
+// 0 (approve) or 1 (reject-or-error). Exit 1 fails the step => run fails =>
+// ticket needs_review (the single transition function's failed path).
+//
+// on_reject mapping (§3.2, 08-platform-mcp-hitl.md line 79): at the STEP level
+// BOTH `fail` and `send_back` fail the step on reject — the client always exits
+// 1, and the renderer emits the SAME bare failing task step for either value.
+// `fail` lets the non-zero exit propagate untouched: run fails => the
+// dispatcher walks the ticket to needs_review via the transition function.
+// `send_back` is the dispatcher's refinement of that same failed run: it reads
+// on_reject off the resolved workflow.Config.Steps (which the dispatcher
+// already has in hand — NOT re-derived from the rendered step) and, on a failed
+// run whose failing step is a `send_back` checkpoint, maps to the sent-back
+// path (→queued re-dispatch, attempt_count bumped per §2.1) instead of terminal
+// needs_review. The renderer does NOT change the container's behavior for
+// send_back; it only guarantees a failing task step so the dispatcher has a
+// failure to map.
+//
+// The checkpoint has no free-text description in the workflow grammar
+// (workflow.Step carries Checkpoint + OnReject only; §5 grammar), so the
+// client is invoked with --name alone; --description stays optional/omitted.
+func renderCheckpointStep(in RenderInput, s workflow.Step) atc.TaskStep {
 	platform := in.Workflow.Sidecars["platform"]
-	env := map[string]string{
-		"ATC_EXTERNAL_URL":            in.ATCExternalURL,
-		"AGENT_TICKET_ID":             fmt.Sprintf("%d", in.Ticket.ID),
-		"AGENT_PIPELINE_RUN_ID":       "((run))",
-		"AGENT_STEP_NAME":             "checkpoint-" + s.Checkpoint,
-		"PLATFORM_MCP_CHECKPOINT":     s.Checkpoint,
-		"PLATFORM_MCP_CHECKPOINT_ON_REJECT": s.OnReject,
+	// PLATFORM_MCP_URL is set literally here (a TaskStep does not get the
+	// agent-step MCP-URL-by-sidecar-name derivation); the checkpoint client
+	// trims /mcp and POSTs …/checkpoint (§8.1: platform => 127.0.0.1:7781).
+	params := atc.TaskEnv{
+		"ATC_EXTERNAL_URL":      in.ATCExternalURL,
+		"AGENT_TICKET_ID":       fmt.Sprintf("%d", in.Ticket.ID),
+		"AGENT_PIPELINE_RUN_ID": "((run))",
+		"AGENT_STEP_NAME":       "checkpoint-" + s.Checkpoint,
+		"AGENT_PRINCIPAL_TOKEN": "((principal-token))",
+		"PLATFORM_MCP_URL":      "http://127.0.0.1:7781/mcp",
 	}
-	return atc.AgentStep{
-		Name:   "checkpoint-" + s.Checkpoint,
-		Prompt: fmt.Sprintf("Await human approval of checkpoint %q via platform-mcp.", s.Checkpoint),
+	return atc.TaskStep{
+		Name:     "checkpoint-" + s.Checkpoint,
+		Params:   params,
 		Sidecars: []atc.SidecarSource{
 			{Config: &atc.SidecarConfig{Name: platform.Role, Image: platform.Image}},
 		},
-		Env: env,
+		Config: &atc.TaskConfig{
+			Platform:      "linux",
+			ImageResource: &atc.ImageResource{Type: "registry-image", Source: atc.Source{"repository": platform.Image}},
+			Run: atc.TaskRunConfig{
+				Path: "platform-mcp",
+				Args: []string{"checkpoint", "--name", s.Checkpoint},
+			},
+		},
 	}
 }
 ```
@@ -863,7 +989,7 @@ func renderCheckpointStep(in RenderInput, s workflow.Step) atc.AgentStep {
 - [ ] **Step 5: Run to verify pass**
 
 Run: `cd /Users/tdmtrader/concourse/concourse && go test ./agent/dispatch/`
-Expected: PASS (all render tests).
+Expected: PASS (all render tests, including `TestRenderProducesTemplatePipelineWithOneRunJob` asserting the checkpoint is a `*atc.TaskStep` invoking `platform-mcp checkpoint --name plan-approval` with the platform sidecar and no `PLATFORM_MCP_CHECKPOINT*` env, and `TestRenderCheckpointOnRejectFailFailsRun` asserting the on_reject=fail checkpoint is a bare task step whose non-zero exit fails the run and the plan still passes `configvalidate`).
 
 - [ ] **Step 6: Commit**
 
@@ -1025,7 +1151,7 @@ Expected: FAIL — `read golden (run with -update to create): ... no such file`.
 Run: `cd /Users/tdmtrader/concourse/concourse && go test ./agent/dispatch/ -run TestRenderGolden -update`
 Expected: PASS (writes `standard-dev.golden.yml`).
 
-- [ ] **Step 5: Inspect the golden by eye** — open `agent/dispatch/testdata/standard-dev.golden.yml` and confirm: `template: true`; one job `run`; four plan steps (`agent: write-spec`, `agent: checkpoint-plan-approval`, `agent: implement`, `harvest: harvest`); the harvest step carries `gate_policy` with three gates and a `judge` with `pass_threshold: 6.5` and `budget_usd: 1`; agent steps carry inline sidecars with role-names `dev`/`platform` and the resolved images; env includes `AGENT_PIPELINE_RUN_ID: ((run))`. The fixture omits `spec_delivery` (default `mcp`), so NO agent step carries `AGENT_SPEC_MD`/`AGENT_PLAN_MD` env (§2.8.2 default read model); the agent reaches spec/plan via the platform-mcp read tools, seeded by the first step's prompt ("Read the ticket via platform-mcp read_ticket …").
+- [ ] **Step 5: Inspect the golden by eye** — open `agent/dispatch/testdata/standard-dev.golden.yml` and confirm: `template: true`; one job `run`; four plan steps (`agent: write-spec`, then a `task: checkpoint-plan-approval` whose `config.run.path: platform-mcp` with args `[checkpoint, --name, plan-approval]` and a `platform` sidecar — NOT an `agent:` step, and carrying neither `PLATFORM_MCP_CHECKPOINT` nor `PLATFORM_MCP_CHECKPOINT_ON_REJECT`, then `agent: implement`, then `harvest: harvest`); the harvest step carries `gate_policy` with three gates and a `judge` with `pass_threshold: 6.5` and `budget_usd: 1`; agent steps carry inline sidecars with role-names `dev`/`platform` and the resolved images; env includes `AGENT_PIPELINE_RUN_ID: ((run))`. The fixture omits `spec_delivery` (default `mcp`), so NO agent step carries `AGENT_SPEC_MD`/`AGENT_PLAN_MD` env (§2.8.2 default read model); the agent reaches spec/plan via the platform-mcp read tools, seeded by the first step's prompt ("Read the ticket via platform-mcp read_ticket …").
 
 - [ ] **Step 6: Run to verify pass** (golden now compares clean)
 

@@ -609,7 +609,7 @@ DROP TABLE agent_run_metrics;
 
 ### Task 7: `agent/api/metrics` — Store interface, submission parsing, memory store, HTTP handler
 
-Follows the `agent/api/reviews` idiom exactly (types + `Store` + `memory_store.go` + `handler.go`, `r.FormValue(":ticket_id")` for rata params).
+Follows the `agent/api/reviews` idiom exactly (types + `Store` + `memory_store.go` + `handler.go`, `r.FormValue(":ticket_id")` for rata params). The `Store` interface carries both `Upsert(rm) error` (the convenience form consumed by harvest-step and delivery-outcomes) and `UpsertReturningInserted(rm) (bool, error)` (a first-insert discriminator consumed by Task 13's ledger-dedup gate, finding F3) — additive, so existing consumers and the `metricsfakes.FakeStore` `Upsert*` methods are unchanged.
 
 **Files:**
 - Create: `agent/api/metrics/types.go`
@@ -674,6 +674,16 @@ type Store interface {
 	// (BuildID, PlanID) key. Ingestion is idempotent across step retries
 	// and web-restart resumes.
 	Upsert(rm *schema.RunMetrics) error
+	// UpsertReturningInserted is Upsert with a first-insert discriminator:
+	// inserted is true only when the row was newly INSERTed (the
+	// ON CONFLICT (build_id, plan_id) clause did NOT fire), and false on a
+	// resume/retry that updated an existing row. The append-only
+	// agent_cost_ledger has no dedup key of its own (§1.4), so callers that
+	// append a ledger row per ingestion (Task 13) gate that append on this
+	// flag to charge each (build_id, plan_id) exactly once across web-restart
+	// resumes — reusing the metrics table's unique key as the single dedup
+	// authority. Upsert is Upsert(rm) = { _, err := UpsertReturningInserted(rm); return err }.
+	UpsertReturningInserted(rm *schema.RunMetrics) (inserted bool, err error)
 	// GetByBuild returns rows for a build, oldest-first.
 	GetByBuild(buildID int) ([]schema.RunMetrics, error)
 	// ListByTicket returns rows for a ticket, oldest-first.
@@ -783,15 +793,21 @@ func NewMemoryStore() *MemoryStore {
 }
 
 func (s *MemoryStore) Upsert(rm *schema.RunMetrics) error {
+	_, err := s.UpsertReturningInserted(rm)
+	return err
+}
+
+func (s *MemoryStore) UpsertReturningInserted(rm *schema.RunMetrics) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	key := [2]any{rm.BuildID, rm.PlanID}
-	if _, ok := s.rows[key]; !ok {
+	_, existed := s.rows[key]
+	if !existed {
 		s.seq++
 		s.ord[key] = s.seq
 	}
 	s.rows[key] = *rm
-	return nil
+	return !existed, nil
 }
 
 func (s *MemoryStore) GetByBuild(buildID int) ([]schema.RunMetrics, error) {
@@ -898,7 +914,7 @@ func (h *Handler) ListByTicket(w http.ResponseWriter, r *http.Request) {
 
 ### Task 8: `atc/db` AgentRunMetricsFactory
 
-Implements `metrics.Store` with squirrel, upsert `ON CONFLICT (build_id, plan_id)`, epoch-seconds scan — the `agent_reviews_factory.go` recipe (atc/db/agent_reviews_factory.go:26 Upsert, :61 column scan).
+Implements `metrics.Store` with squirrel, upsert `ON CONFLICT (build_id, plan_id)`, epoch-seconds scan — the `agent_reviews_factory.go` recipe (atc/db/agent_reviews_factory.go:26 Upsert, :61 column scan). The upsert also returns a first-insert discriminator (`UpsertReturningInserted`, via `RETURNING (xmax = 0)`) that Task 13 gates the append-only ledger write on (finding F3).
 
 **Files:**
 - Create: `atc/db/agent_run_metrics_factory.go`
@@ -940,11 +956,15 @@ var _ = Describe("AgentRunMetricsFactory", func() {
 			EventsArtifact: "vol-1",
 			EventCounts:    map[string]int{"tool.call": 4},
 		}
-		Expect(factory.Upsert(rm)).To(Succeed())
+		inserted, err := factory.UpsertReturningInserted(rm)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(inserted).To(BeTrue()) // first insert on (build_id, plan_id) 42/5f2a
 
 		rm.Summary = "second"
 		rm.CostUSD = 0.43
-		Expect(factory.Upsert(rm)).To(Succeed())
+		inserted, err = factory.UpsertReturningInserted(rm)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(inserted).To(BeFalse()) // ON CONFLICT fired — resume/retry, not a new row
 
 		rows, err := factory.ListByTicket(7)
 		Expect(err).ToNot(HaveOccurred())
@@ -1000,11 +1020,24 @@ type agentRunMetricsFactory struct {
 }
 
 func (f *agentRunMetricsFactory) Upsert(rm *schema.RunMetrics) error {
+	_, err := f.UpsertReturningInserted(rm)
+	return err
+}
+
+// UpsertReturningInserted performs the ON CONFLICT (build_id, plan_id) upsert and
+// reports whether the row was newly inserted. The discriminator is Postgres's
+// system column `xmax`: on a fresh INSERT the tuple has no prior version so
+// `xmax = 0`; when the ON CONFLICT DO UPDATE fires, the update replaces an
+// existing tuple and `xmax <> 0`. `RETURNING (xmax = 0) AS inserted` therefore
+// distinguishes a first insert from a resume/retry update in the same statement,
+// with no extra round-trip. Callers gate the append-only ledger write on this
+// flag so a web-restart resume never double-charges (§1.4 has no ledger dedup key).
+func (f *agentRunMetricsFactory) UpsertReturningInserted(rm *schema.RunMetrics) (bool, error) {
 	var eventCounts, results any
 	if rm.EventCounts != nil {
 		b, err := json.Marshal(rm.EventCounts)
 		if err != nil {
-			return err
+			return false, err
 		}
 		eventCounts = b
 	}
@@ -1012,7 +1045,8 @@ func (f *agentRunMetricsFactory) Upsert(rm *schema.RunMetrics) error {
 		results = []byte(rm.Results)
 	}
 
-	_, err := psql.Insert("agent_run_metrics").
+	var inserted bool
+	err := psql.Insert("agent_run_metrics").
 		Columns(
 			"ticket_id", "pipeline_run_id", "build_id", "plan_id", "step_name",
 			"workflow_name", "workflow_version", "workflow_hash",
@@ -1048,10 +1082,12 @@ func (f *agentRunMetricsFactory) Upsert(rm *schema.RunMetrics) error {
 			cost_usd = EXCLUDED.cost_usd,
 			results = EXCLUDED.results,
 			events_artifact = EXCLUDED.events_artifact,
-			event_counts = EXCLUDED.event_counts`).
+			event_counts = EXCLUDED.event_counts
+		RETURNING (xmax = 0) AS inserted`).
 		RunWith(f.conn).
-		Exec()
-	return err
+		QueryRow().
+		Scan(&inserted)
+	return inserted, err
 }
 
 const runMetricsColumns = `m.ticket_id, m.pipeline_run_id, m.build_id, m.plan_id, m.step_name,
@@ -1117,7 +1153,7 @@ func scanRunMetricsRows(rows *sql.Rows) ([]schema.RunMetrics, error) {
 
   Note: `cost_usd NUMERIC` scans into `float64` — match `agent_reviews`' handling (its `score` column scans into float64 directly and works in production); if the driver rejects NUMERIC→float64 here, scan into `[]byte` + `strconv.ParseFloat` instead.
 - [ ] Run `ginkgo --focus="AgentRunMetricsFactory" ./atc/db/` — expect pass (full suite: `ginkgo ./atc/db/`, ~90s).
-- [ ] Commit: `git add atc/db && git commit -m "feat(db): AgentRunMetricsFactory implementing metrics.Store"`
+- [ ] Commit: `git add atc/db && git commit -m "feat(db): AgentRunMetricsFactory implementing metrics.Store (with first-insert discriminator for ledger dedup, F3)"`
 
 ---
 
@@ -1692,6 +1728,10 @@ func (step *AgentStep) Run(ctx context.Context, state RunState) (bool, error) {
 
 The ingestion-before-GC guarantee: ingestion runs synchronously inside `Run` before the step returns, reading from the just-registered `flight` output volume via `Streamer.StreamFile` (the DaemonSet fabric path — same seam `LoadVarStep` uses at load_var_step.go:138). Tolerant of crashed agents: missing/malformed files or a stream without `step.end` produce a `status=error` row; ingest failures never fail the step; a fire-and-forget ledger record lands cost in `agent_cost_ledger`.
 
+Two resume/timeout invariants this task must hold (design-review findings F3/F4, 2026-07-09):
+- **F3 — ledger charged exactly once.** The metrics row is idempotent under `ON CONFLICT (build_id, plan_id)`, but `agent_cost_ledger` is append-only with no dedup key (§1.4), so a web-restart resume (which re-runs the whole `Step.Run`: re-attach → `process.Wait` → re-register outputs → re-ingest) would double-append the cost row and inflate spend against both the per-ticket budget and the global daily cap. The ledger append is therefore gated on a first-insert discriminator returned by the metrics upsert (`Store.UpsertReturningInserted`, Task 7/8), reusing the `(build_id, plan_id)` key as the single dedup authority — no ledger schema change, and the gateway's own `source='gateway'` rows for the same build/plan are untouched.
+- **F4 — timed-out steps still measured.** Ingestion is called on the `DeadlineExceeded` path too, but the step's `ctx` is the timeout-scoped context (already expired), so reading through it would fail both `StreamFile` calls and record a zero-cost `status=error` row with no ledger entry — losing measurement on exactly the costliest (runaway) steps. `ingestFlightRecorder` therefore detaches from the deadline (`context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)`) before the reads.
+
 **Files:**
 - Modify: `atc/exec/agent_step.go` (add `ingestFlightRecorder` + call it from `run` after output registration)
 - Test: `atc/exec/agent_step_test.go` (ingestion contexts)
@@ -1702,14 +1742,21 @@ The ingestion-before-GC guarantee: ingestion runs synchronously inside `Run` bef
   - `results.json` → `{"schema_version":"1.0","status":"pass","confidence":1,"summary":"done","artifacts":[]}`
   - `events.ndjson` → four NDJSON lines: `step.start` (`{"step_name":"write-spec","build_id":1,"plan_id":"p"}`), `tool.call` (`{"tool":"run_tests"}`), `cost.record` (`{"source":"agent_step","provider":"anthropic","model":"m1","input_tokens":100,"output_tokens":50,"cache_read_tokens":1,"cache_creation_tokens":2,"turns":9,"cost_usd":0.42}`), `step.end` (`{"step_name":"write-spec","status":"ok","summary":"done","wall_time_seconds":61,"cost_usd":0.42,"turns":9}`).
 
+  Ingestion now calls `Store.UpsertReturningInserted` (Task 7), not `Upsert`, so assert against the counterfeiter fake's `UpsertReturningInserted*` methods. In the `BeforeEach`, default the fake to a fresh insert: `fakeMetricsStore.UpsertReturningInsertedReturns(true, nil)` — the ledger append is gated on that flag (finding F3), so the first `Run` in each spec must see `inserted=true`.
+
 ```go
 	Context("flight-recorder ingestion", func() {
+		BeforeEach(func() {
+			// first ingestion of a (build_id, plan_id) is always a fresh insert
+			fakeMetricsStore.UpsertReturningInsertedReturns(true, nil)
+		})
+
 		It("upserts a RunMetrics row before Run returns", func() {
 			ok, err := step.Run(ctx, state)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(ok).To(BeTrue())
-			Expect(fakeMetricsStore.UpsertCallCount()).To(Equal(1))
-			rm := fakeMetricsStore.UpsertArgsForCall(0)
+			Expect(fakeMetricsStore.UpsertReturningInsertedCallCount()).To(Equal(1))
+			rm := fakeMetricsStore.UpsertReturningInsertedArgsForCall(0)
 			Expect(rm.Status).To(Equal("ok"))
 			Expect(rm.BuildID).To(Equal(stepMetadata.BuildID))
 			Expect(rm.PlanID).To(Equal(string(planID)))
@@ -1725,7 +1772,7 @@ The ingestion-before-GC guarantee: ingestion runs synchronously inside `Run` bef
 		It("records an error row when events.ndjson has no step.end", func() {
 			// events fixture truncated after tool.call
 			step.Run(ctx, state)
-			rm := fakeMetricsStore.UpsertArgsForCall(0)
+			rm := fakeMetricsStore.UpsertReturningInsertedArgsForCall(0)
 			Expect(rm.Status).To(Equal("error"))
 			Expect(rm.EventCounts).To(HaveKeyWithValue("tool.call", 1)) // partial counts kept
 		})
@@ -1735,16 +1782,18 @@ The ingestion-before-GC guarantee: ingestion runs synchronously inside `Run` bef
 			ok, err := step.Run(ctx, state)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(ok).To(BeTrue()) // exit status still drives step success
-			rm := fakeMetricsStore.UpsertArgsForCall(0)
+			rm := fakeMetricsStore.UpsertReturningInsertedArgsForCall(0)
 			Expect(rm.Status).To(Equal("error"))
 			Expect(rm.Summary).To(ContainSubstring("flight recorder"))
 		})
 
 		It("never fails the step when the metrics upsert errors", func() {
-			fakeMetricsStore.UpsertReturns(errors.New("db down"))
+			fakeMetricsStore.UpsertReturningInsertedReturns(false, errors.New("db down"))
 			ok, err := step.Run(ctx, state)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(ok).To(BeTrue())
+			// upsert failure ⇒ inserted=false ⇒ no ledger append (cannot prove first-insert)
+			Expect(fakeChecker.RecordCallCount()).To(Equal(0))
 		})
 
 		It("records a fire-and-forget ledger entry when cost was incurred", func() {
@@ -1755,13 +1804,62 @@ The ingestion-before-GC guarantee: ingestion runs synchronously inside `Run` bef
 		It("maps abstain results to failed", func() {
 			// results.json fixture status "abstain"
 			step.Run(ctx, state)
-			Expect(fakeMetricsStore.UpsertArgsForCall(0).Status).To(Equal("failed"))
+			Expect(fakeMetricsStore.UpsertReturningInsertedArgsForCall(0).Status).To(Equal("failed"))
+		})
+
+		// --- finding F3: ledger charged exactly once across a web-restart resume ---
+		It("appends the ledger entry exactly once across two Run invocations (resume)", func() {
+			// First Run: fresh insert → ledger append fires.
+			fakeMetricsStore.UpsertReturningInsertedReturns(true, nil)
+			_, err := step.Run(ctx, state)
+			Expect(err).ToNot(HaveOccurred())
+
+			// Web restart: Step.Run re-executes, re-attaches, re-ingests. The
+			// metrics upsert now hits ON CONFLICT and reports inserted=false.
+			fakeMetricsStore.UpsertReturningInsertedReturns(false, nil)
+			_, err = step.Run(ctx, state)
+			Expect(err).ToNot(HaveOccurred())
+
+			Expect(fakeMetricsStore.UpsertReturningInsertedCallCount()).To(Equal(2)) // upsert idempotent, both runs
+			Expect(fakeChecker.RecordCallCount()).To(Equal(1))                       // ledger charged ONCE
+		})
+
+		// --- finding F4: timed-out step still records pre-timeout cost + ledger ---
+		It("still ingests cost/tokens and records the ledger when the step times out", func() {
+			// runtimetest.ProcessStub.Err is a plain string, so use the Call hook
+			// to return the sentinel context.DeadlineExceeded from Wait (matching
+			// what MaybeTimeout's cancelled ctx surfaces). The flight volume stays
+			// fully populated — the runner flushed before the kill. ctx into Run is
+			// the expired timeout context, so ingestFlightRecorder must detach from
+			// it (WithoutCancel) or both StreamFile reads fail.
+			chosenContainer.WithProcess(
+				runtime.ProcessSpec{ID: "agent"},
+				runtimetest.ProcessStub{
+					Call: func(context.Context, *runtimetest.Process) (runtime.ProcessResult, error) {
+						return runtime.ProcessResult{}, context.DeadlineExceeded
+					},
+				},
+			)
+
+			ok, err := step.Run(ctx, state)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(ok).To(BeFalse()) // timeout ⇒ step not successful
+
+			Expect(fakeMetricsStore.UpsertReturningInsertedCallCount()).To(Equal(1))
+			rm := fakeMetricsStore.UpsertReturningInsertedArgsForCall(0)
+			Expect(rm.CostUSD).To(BeNumerically("~", 0.42, 1e-9)) // pre-timeout cost preserved
+			Expect(rm.Turns).To(Equal(9))
+			Expect(rm.Usage.InputTokens).To(Equal(int64(100)))
+			Expect(rm.EventCounts).To(HaveKeyWithValue("tool.call", 1))
+			Expect(fakeChecker.RecordCallCount()).To(Equal(1)) // ledger entry recorded despite timeout
 		})
 	})
 ```
 
-- [ ] Run `ginkgo --focus="ingestion" ./atc/exec/` — expect failure.
-- [ ] Implement in `atc/exec/agent_step.go` and call it from `run` immediately after output registration (step 10 of Task 12), on every path where the container ran — including the `DeadlineExceeded` branch — before the exit handling returns:
+  The F4 spec depends on the streamer fixture ignoring context cancellation — the fake `StreamFileStub` returns its reader regardless of the passed `ctx`, which is exactly the point: the production `Streamer` would fail on the expired `ctx`, and the fix is that `ingestFlightRecorder` never passes it one. If the existing test harness wires `fakeStreamer.StreamFileStub` to honor `ctx.Err()`, have it return the fixture reader when the context is live and an error otherwise — the detached `ingestCtx` keeps it live, so the assertion still holds and the pre-fix code (which threaded the expired `ctx`) fails it.
+
+- [ ] Run `ginkgo --focus="ingestion" ./atc/exec/` — expect failure (undefined `UpsertReturningInserted*` fake methods until Task 7's fake is regenerated; then the two new specs fail against pre-fix behavior).
+- [ ] Implement in `atc/exec/agent_step.go` and call it from `run` immediately after output registration (step 10 of Task 12), on every path where the container ran — including the `DeadlineExceeded` branch — before the exit handling returns. Pass the same timeout-scoped `ctx` you have in scope: `ingestFlightRecorder` **internally detaches** it (`context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)`) so a timed-out step still ingests its pre-timeout cost/tokens rather than reading through an already-cancelled deadline (finding F4). Do NOT pre-detach at the call site — the detach lives inside `ingestFlightRecorder` so both callers (normal + timeout) get it for free.
 
 ```go
 // ingestFlightRecorder reads flight/results.json and flight/events.ndjson
@@ -1781,6 +1879,18 @@ func (step *AgentStep) ingestFlightRecorder(
 	if step.metricsStore == nil {
 		return
 	}
+
+	// Detach from the step deadline. `ctx` is the timeout-scoped context from
+	// MaybeTimeout (Task 12 step 8); on the DeadlineExceeded path it is already
+	// cancelled, and every StreamFile call threads ctx down to
+	// http.NewRequestWithContext, so both reads below would fail instantly and a
+	// timed-out step — the costliest, most measurement-critical case — would
+	// record a bare status=error row with zero cost/tokens/event_counts and no
+	// ledger entry. WithoutCancel keeps the request-scoped values (tracing,
+	// lager) while dropping the deadline; the fresh 30s bound keeps ingestion
+	// (which blocks the build from completing) from hanging on a wedged fabric.
+	ingestCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancel()
 
 	rm := schema.RunMetrics{
 		BuildID:         step.metadata.BuildID,
@@ -1814,7 +1924,7 @@ func (step *AgentStep) ingestFlightRecorder(
 
 	if flightArtifact != nil {
 		// results.json
-		if rc, err := step.streamer.StreamFile(ctx, flightArtifact, "results.json"); err == nil {
+		if rc, err := step.streamer.StreamFile(ingestCtx, flightArtifact, "results.json"); err == nil {
 			raw, readErr := io.ReadAll(io.LimitReader(rc, 5<<20))
 			rc.Close()
 			var results schema.Results
@@ -1832,7 +1942,7 @@ func (step *AgentStep) ingestFlightRecorder(
 		}
 
 		// events.ndjson: counts + cost rollup + step.end detection
-		if rc, err := step.streamer.StreamFile(ctx, flightArtifact, "events.ndjson"); err == nil {
+		if rc, err := step.streamer.StreamFile(ingestCtx, flightArtifact, "events.ndjson"); err == nil {
 			counts := map[string]int{}
 			sawStepEnd := false
 			reader := schema.NewEventReader(rc)
@@ -1877,11 +1987,21 @@ func (step *AgentStep) ingestFlightRecorder(
 		}
 	}
 
-	if err := step.metricsStore.Upsert(&rm); err != nil {
+	// Upsert reports whether THIS ingestion inserted the row (inserted=true) or
+	// updated an existing one (inserted=false, i.e. a web-restart resume: the
+	// whole Step.Run re-executes, re-attaches, and re-ingests). The metrics row
+	// is idempotent under ON CONFLICT (build_id, plan_id), but agent_cost_ledger
+	// is append-only with no dedup key (§1.4) — so the ledger append below is
+	// gated on `inserted` to charge each step exactly once. On a metrics-store
+	// error inserted is false, so a failed upsert also skips the ledger append
+	// (we cannot prove first-insert), preserving "every dollar enters the ledger
+	// exactly once" over "at least once".
+	inserted, err := step.metricsStore.UpsertReturningInserted(&rm)
+	if err != nil {
 		logger.Error("failed-to-ingest-run-metrics", err)
 	}
 
-	if step.budgetChecker != nil && rm.CostUSD > 0 {
+	if inserted && step.budgetChecker != nil && rm.CostUSD > 0 {
 		entry := budget.LedgerEntry{
 			// field names mirror agent_cost_ledger columns (contracts §1.4/§2.7);
 			// align to the exact struct credentials-and-budgets landed.
@@ -1920,7 +2040,7 @@ func envInt(env map[string]string, key string) (int, bool) {
 
   Step success remains purely a function of the process exit status — ingestion never changes the return values.
 - [ ] Run `ginkgo ./atc/exec/` — expect pass.
-- [ ] Commit: `git add atc/exec && git commit -m "feat(exec): synchronous server-side flight-recorder ingestion with tolerant parsing and ledger record"`
+- [ ] Commit: `git add atc/exec && git commit -m "feat(exec): synchronous server-side flight-recorder ingestion — detached ingest ctx (F4), first-insert-gated ledger record (F3)"`
 
 ---
 
@@ -2612,3 +2732,13 @@ Never use `--race` with the parallel Ginkgo runs (CLAUDE.md — parallel compila
 - *Ingestion (Task 13)* is deliberately non-fatal end to end: a bad deploy degrades to missing metrics rows plus error-status rows, never failed builds.
 
 **Deferred/known risks:** `budget.LedgerEntry` field names are derived from §1.4 column names — align to the struct credentials-and-budgets actually landed (one-line fixes at Tasks 13/16). The claude CLI pin in the agent-runner image must match what the live review job verifies today. The prompt port in Task 19 trades exact ci-agent parity for the permanent step — the dual-running window is the verification mechanism, and score divergence beyond ±2 blocks retirement of the shell job.
+
+---
+
+## §11 — Amendment log
+
+- **2026-07-09 (design-review findings F3 + F4, `REVIEW.md` §2 majors 3–4).** Two ~2-line correctness fixes to the shared flight-recorder ingestion path (`ingestFlightRecorder`, Task 13), both defending the program's "every dollar / everything measurable" invariants:
+  - **F3 — ledger double-charge on web-restart resume.** `budgetChecker.Record` was called unconditionally whenever `rm.CostUSD > 0`. Because the metrics row is idempotent under `ON CONFLICT (build_id, plan_id)` but `agent_cost_ledger` (§1.4) is append-only with no dedup key, a resume re-appended the cost row and inflated per-ticket and global-daily spend. Fix: `metrics.Store` (Task 7) gains an additive `UpsertReturningInserted(rm) (inserted bool, err error)`; the factory (Task 8) implements it via `RETURNING (xmax = 0) AS inserted` (fresh INSERT ⇒ `xmax = 0`; ON-CONFLICT UPDATE ⇒ `xmax <> 0`); Task 13 gates the ledger append on `inserted && rm.CostUSD > 0`. Reuses the `(build_id, plan_id)` key as the single dedup authority — no ledger schema change, and the gateway's own `source='gateway'` rows for the same build/plan are unaffected. `Upsert(rm) error` is retained (derived from the new method) so harvest-step (09) and delivery-outcomes (12) consumers and the `metricsfakes.FakeStore.Upsert*` methods are unchanged. New Task-13 spec asserts `Record` fires exactly once across two `Run` invocations (resume), and a Task-8 spec asserts `inserted` is true on first upsert and false on the ON-CONFLICT update.
+  - **F4 — timed-out steps recorded zero cost/tokens.** Task 13 ingests on the `DeadlineExceeded` path too, but the step's `ctx` is the already-expired timeout context from `MaybeTimeout`, so both `StreamFile` reads failed immediately and a timed-out step recorded a bare `status=error` row with zero cost/tokens/`event_counts` and no ledger entry — losing measurement on the costliest steps. Fix: `ingestFlightRecorder` detaches from the deadline before the reads (`ingestCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second); defer cancel()`) and threads `ingestCtx` into both `StreamFile` calls. New Task-13 spec forces `process.Wait` to return `context.DeadlineExceeded` with a populated flight volume and asserts the metrics row still carries pre-timeout cost/turns/`event_counts` and that a ledger entry is recorded.
+
+  No shared-contract table/column/route/env names changed; the `Store` change is additive within the agent-step-owned `agent/api/metrics` surface (§2.4 `RunMetrics` and §1.8 `agent_run_metrics` are byte-for-byte unchanged). No cross-workstream sign-off required.

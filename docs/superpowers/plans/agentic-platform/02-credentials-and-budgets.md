@@ -3576,7 +3576,7 @@ git commit -m "feat(agent): ephemeral agent-run K8s secret attacher with idempot
 
 ### Task 15: Platform-credential secret syncer (RunnableComponent)
 
-§8.2 long-lived secret: keeps `agent-platform-credential` in sync with the `agent-platform` service user's vault row. Polling component (never notify-only — fork lesson), wired next to the K8s registrar/reaper in `atc/atccmd/command.go`.
+§8.2 long-lived secret: keeps `agent-platform-credential` in sync with the `agent-platform` service user's vault row. Sync is **bidirectional** (§8.2, amended 2026-07-09 in `00-shared-contracts.md`): credential vaulted → create/update the secret; credential absent → delete any existing secret so a revoked token can never be mounted. Polling component (never notify-only — fork lesson), wired next to the K8s registrar/reaper in `atc/atccmd/command.go`.
 
 **Files:**
 - Create: `agent/credentials/platform_syncer.go`
@@ -3598,6 +3598,8 @@ import (
 
 	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/agent/credentials"
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
 )
@@ -3656,7 +3658,39 @@ func TestSyncerNoopsWithoutPlatformCredential(t *testing.T) {
 		t.Fatal("secret must not exist when the vault has no platform credential")
 	}
 }
+
+func TestSyncerDeletesSecretWhenCredentialUnvaulted(t *testing.T) {
+	// Seed the platform secret as if a prior sync (with a vaulted credential)
+	// had created it, then unvault the credential. Bidirectional sync (§8.2)
+	// requires the syncer to DELETE the now-stale secret so no pod can mount a
+	// revoked token.
+	syncer, _, clientset := newSyncerFixture(false)
+	seed := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      credentials.PlatformSecretName,
+			Namespace: "concourse-workers",
+			Labels:    map[string]string{"concourse/agent-platform-credential": "true"},
+		},
+		Type:       corev1.SecretTypeOpaque,
+		StringData: map[string]string{"anthropic-token": "sk-stale"},
+	}
+	if _, err := clientset.CoreV1().Secrets("concourse-workers").
+		Create(context.Background(), seed, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := syncer.Run(context.Background()); err != nil {
+		t.Fatalf("unvaulted credential must not error the component: %v", err)
+	}
+
+	if _, err := clientset.CoreV1().Secrets("concourse-workers").
+		Get(context.Background(), credentials.PlatformSecretName, metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("stale platform secret must be deleted after the credential is unvaulted, got err=%v", err)
+	}
+}
 ```
+
+(`corev1` and `apierrors` are already in the import block above.)
 
 - [ ] Run to verify it fails:
 
@@ -3664,7 +3698,7 @@ func TestSyncerNoopsWithoutPlatformCredential(t *testing.T) {
 go test ./agent/credentials/
 ```
 
-Expected failure: compile error `undefined: credentials.PlatformSecretSyncer`.
+Expected failure: compile error `undefined: credentials.PlatformSecretSyncer` (all four tests, including `TestSyncerDeletesSecretWhenCredentialUnvaulted`, fail to compile until the syncer exists). Once the syncer is written, `TestSyncerDeletesSecretWhenCredentialUnvaulted` is what drives the `!found` branch to DELETE rather than no-op — a no-op `!found` return leaves the seeded secret in place and fails the `IsNotFound` assertion.
 
 - [ ] Write `agent/credentials/platform_syncer.go` (`PlatformUserSub`/`PlatformUserName` already live in `types.go`, Task 4):
 
@@ -3732,7 +3766,20 @@ func (s *PlatformSecretSyncer) Run(ctx context.Context) error {
 	if !found {
 		// Not an error: the platform credential is provisioned by an admin
 		// running `fly agent auth --platform` (PutRequest.User = "platform").
-		s.logger.Info("platform-credential-not-vaulted")
+		// Bidirectional sync (§8.2): if the credential was unvaulted (admin ran
+		// `fly agent auth --platform --delete`), the stale K8s secret MUST be
+		// removed so no pod can mount a revoked token. NotFound is tolerated —
+		// same idiom as the run-secret Cleanup path.
+		err := s.client.CoreV1().Secrets(s.namespace).Delete(ctx, PlatformSecretName, metav1.DeleteOptions{})
+		if apierrors.IsNotFound(err) {
+			s.logger.Info("platform-credential-not-vaulted")
+			return nil
+		}
+		if err != nil {
+			s.logger.Error("failed-to-delete-platform-secret", err)
+			return err
+		}
+		s.logger.Info("platform-secret-deleted")
 		return nil
 	}
 
@@ -3822,7 +3869,7 @@ Expected: clean build.
 ```bash
 git add agent/credentials/platform_syncer.go agent/credentials/platform_syncer_test.go \
         atc/component.go atc/atccmd/command.go
-git commit -m "feat(atc): platform-credential secret syncer component"
+git commit -m "feat(atc): platform-credential secret syncer component (bidirectional: deletes secret on unvault)"
 ```
 
 ---
@@ -5072,6 +5119,9 @@ If `ginkgo ./atc/db/` reports `database "testdb_template" already exists`, anoth
 - Migrations: every `.up.sql` has an exact-inverse `.down.sql`; `concourse migrate --migrate-db-to-version 1773105504` returns to the pre-workstream schema. The 1773106022 down deletes the `agent-platform` users row (cascades its vault rows — intended).
 - `atc/db/migration/encryption.go` rotation-list entry: safe to revert only together with dropping the vault table; with the table present, reverting reintroduces the silent-skip-on-rotation bug.
 - `atc/wrappa` pass-through for `SubmitAgentCostRecord`: the handler enforces the static token; if the route must be disabled in an emergency, deploy with `--agent-review-publish-token=""` (both reviews and costs publishing turn off, returning 403).
-- Platform syncer: removing the `RunnableComponent` block in `atccmd/command.go` disables it cleanly; the `agent-platform-credential` secret is inert data (delete with `kubectl delete secret agent-platform-credential -n <ns>`).
+- Platform syncer: removing the `RunnableComponent` block in `atccmd/command.go` disables it cleanly; the `agent-platform-credential` secret is inert data (delete with `kubectl delete secret agent-platform-credential -n <ns>`). Note: while the syncer is running it OWNS this secret bidirectionally — unvaulting the credential deletes the secret on the next pass (see the 2026-07-09 amendment below), so a manual `kubectl create` will be reaped unless a matching vault row exists.
+
+**Plan amendments:**
+- **2026-07-09 (design-review F11 — syncer deletes stale secret on unvault):** Task 15 `PlatformSecretSyncer.Run` no longer no-ops when the platform credential is absent. The `!found` branch now DELETEs any existing `agent-platform-credential` K8s secret (NotFound-tolerant, reusing the run-secret `Cleanup` idiom) so a revoked/unvaulted token can never remain mountable. Sync is now bidirectional: vaulted → create/update; absent → delete-if-present. Added failing test `TestSyncerDeletesSecretWhenCredentialUnvaulted` (seeds the secret, runs with no vaulted credential, asserts `IsNotFound`); the test file gains `corev1`/`apierrors` imports. The §8.2 bidirectional-sync contract text is amended in `00-shared-contracts.md` by the shared-contracts editor (same date); this plan references it and keeps `agent-platform-credential` / `anthropic-token` names identical.
 - ci-agent feed: reverting the `--costs` flag from `ci/tasks/ci-agent-review.yml` stops ledger writes without code changes (publish skips when the flag is absent).
 - `fly status` nag degrades silently against older ATCs (any error from the credentials route is swallowed), so fly/web version skew is safe in both directions.

@@ -175,6 +175,7 @@ Existing tables extended, not duplicated: `agent_reviews`, `agent_feedback`.
 ## Failure handling
 
 - Budget exhaustion → dispatch queues (daily cap) or run halts at the gateway with ticket state `needs-review` and a partial work product (per-ticket cap). Never silent truncation.
+- Budget enforcement points differ by spend source. The main agent's *own* claude-CLI spend is bounded per-step by `--max-turns` and the step timeout, then reconciled against the budget at step-admission (the dispatcher's daily-cap check and the agent step's `StepSlice` resolution) and post-hoc when its usage envelope is ingested — **not** interrupted mid-call. Only *cross-agent* gateway calls receive a mid-call dollar cutoff; the gateway is the one place a live dollar ceiling halts an in-flight LLM call.
 - Harvest gate failure → ticket `needs-review` with failing evidence attached; nothing is pushed.
 - Run timeout / platform fault → status `error` (not `failed`); dispatcher retry semantics with attempt caps.
 - `ask_human` timeout → configurable per workflow definition (park indefinitely vs. proceed-with-default vs. fail).
@@ -203,3 +204,7 @@ Existing tables extended, not duplicated: `agent_reviews`, `agent_feedback`.
 9. Retrospective workflow v1 scope (which inputs, proposal format, cadence).
 10. Jira sync design (phase 2).
 11. Consolidation strategy for ci-agent module / `agent/` package / atium concepts (shared schema module vs. contract tests).
+
+## Amendments
+
+- **2026-07-09 (F12 — budget-honesty correction, Failure handling):** Added a line to §Failure handling clarifying that the main agent's own claude-CLI spend is bounded per-step by `--max-turns` / step timeout and reconciled against the budget at step-admission (dispatcher daily-cap check + agent step `StepSlice`) and post-hoc at usage ingestion — **not** mid-call; only cross-agent gateway calls receive a mid-call dollar cutoff. This corrects the earlier implication (rev 2 §11 "Enforcement at the gateway (metering + cutoff)") that the gateway caps *all* agent spend. No contract names changed; consistent with 00-shared-contracts.md §2.7 (`budget.Checker.StepSlice`), §2.8 (`AgentStep.MaxTurns`), and 10-gateway-mcp.md (gateway cutoff enforced only against `AGENT_BUDGET_SLICE_USD`).

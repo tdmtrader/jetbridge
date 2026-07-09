@@ -1847,6 +1847,33 @@ func TestConfigFromEnvDefaultsAndErrors(t *testing.T) {
 		t.Fatal("expected error when ATC_EXTERNAL_URL is missing")
 	}
 }
+
+// TestConfigFromEnvTimeoutPolicyRequiresPositiveSeconds is the defense-in-depth
+// cross-field check (mirrors workflow-store): a non-park policy with a
+// non-positive timeout can never fire, so a hand-set sidecar env must fail
+// loudly at startup rather than park forever. park+0 stays legal (indefinite).
+func TestConfigFromEnvTimeoutPolicyRequiresPositiveSeconds(t *testing.T) {
+	base := func() {
+		t.Setenv("ATC_EXTERNAL_URL", "https://concourse.home")
+		t.Setenv("AGENT_PRINCIPAL_TOKEN", "cap1.9.secret")
+		t.Setenv("AGENT_TICKET_ID", "42")
+		t.Setenv("PLATFORM_MCP_ASK_TIMEOUT_SECONDS", "0")
+	}
+	for _, policy := range []string{"default", "fail"} {
+		base()
+		t.Setenv("PLATFORM_MCP_ASK_TIMEOUT_POLICY", policy)
+		if _, err := platformmcp.ConfigFromEnv(); err == nil {
+			t.Fatalf("policy %q + 0 seconds: expected error, got nil", policy)
+		}
+	}
+
+	// park + 0 is legal (wait indefinitely).
+	base()
+	t.Setenv("PLATFORM_MCP_ASK_TIMEOUT_POLICY", "park")
+	if _, err := platformmcp.ConfigFromEnv(); err != nil {
+		t.Fatalf("park + 0 seconds: expected no error, got %v", err)
+	}
+}
 ```
 
 - [ ] Run to verify it fails:
@@ -1923,6 +1950,15 @@ func ConfigFromEnv() (Config, error) {
 	case "park", "default", "fail":
 	default:
 		return cfg, fmt.Errorf("invalid PLATFORM_MCP_ASK_TIMEOUT_POLICY %q", cfg.TimeoutPolicy)
+	}
+	// Defense-in-depth (mirrors workflow-store's cross-field check): a
+	// default/fail policy with a non-positive timeout would never fire and
+	// the sidecar would park indefinitely — the opposite of the operator's
+	// intent. A hand-set sidecar env must fail loudly at startup rather than
+	// silently degrade to park-forever. (park is the ONE policy where a 0
+	// timeout is legal — it means "wait indefinitely".)
+	if (cfg.TimeoutPolicy == "default" || cfg.TimeoutPolicy == "fail") && cfg.TimeoutSeconds <= 0 {
+		return cfg, fmt.Errorf("PLATFORM_MCP_ASK_TIMEOUT_SECONDS must be > 0 when PLATFORM_MCP_ASK_TIMEOUT_POLICY is %q", cfg.TimeoutPolicy)
 	}
 	if cfg.ListenAddr == "" {
 		cfg.ListenAddr = ":7781"
@@ -3737,7 +3773,16 @@ git commit -m "feat(platform-mcp): sidecar binary serve mode" -m "Co-Authored-By
 - Create: `cmd/platform-mcp/checkpoint.go` (replaces the Task 13 `runCheckpoint` temporary body)
 - Test: `agent/platformmcp/checkpoint_test.go`, `cmd/platform-mcp/checkpoint_test.go`
 
-Checkpoint gates (§3.2, Task 1 addendum) reuse the ask_human primitive: the rendered pipeline (wave 4; wave-3 hand-written pipelines do the same by hand) inserts a step whose main container runs `platform-mcp checkpoint --name <n>` with the platform sidecar mounted; the client POSTs the sidecar's `/checkpoint`, which files a `kind=checkpoint` question (`options: ["approve","reject"]`, always `park`) and blocks until a human resolves it. Reject ⇒ exit 1 ⇒ step fails ⇒ run fails ⇒ ticket `needs_review` (dispatch's renderer owns `on_reject: send_back` refinements — out of scope here).
+Checkpoint gates (§3.2, Task 1 addendum) reuse the ask_human primitive. **Render contract (co-signed with dispatch, §11 2026-07-09):** dispatch's renderer materializes a checkpoint declaration as a plain **`atc.TaskStep`** whose main container runs the **deterministic `platform-mcp checkpoint --name <n>` client** — NOT an LLM `AgentStep`. There is no model in the loop: the checkpoint is a container that runs a fixed CLI, POSTs the sidecar, and blocks on its HTTP response. The rendered pipeline (wave 4; wave-3 hand-written pipelines do the same by hand) mounts the platform sidecar into that task; the client POSTs the sidecar's `/checkpoint`, which files a `kind=checkpoint` question (`options: ["approve","reject"]`, always `park`) and blocks until a human resolves it.
+
+**Exit-code semantics (this plan OWNS them) — confirmed explicit:**
+- **Approve** ⇒ sidecar returns `{"approved": true}` ⇒ client **exits 0** ⇒ TaskStep succeeds ⇒ run continues.
+- **Reject / transport failure after retries** ⇒ sidecar returns `{"approved": false}` (or the client exhausts retries) ⇒ client **exits non-zero** (1) ⇒ TaskStep fails ⇒ run fails ⇒ ticket `needs_review`.
+- **Usage error** (missing `--name` / `PLATFORM_MCP_URL`) ⇒ client **exits 2**.
+
+**`on_reject` mapping (both values live in dispatch's renderer, wave 4; recorded here for the co-signed contract):**
+- `on_reject: fail` (default) ⇒ renderer emits the checkpoint client verbatim ⇒ reject ⇒ client exits non-zero ⇒ step fails ⇒ run fails ⇒ ticket `needs_review`. This is the ONLY path this plan implements.
+- `on_reject: send_back` ⇒ the renderer wraps/branches on the client's non-zero exit to route the run back to an earlier step and signal the sent-back outcome (renderer-owned; out of scope here). At the **step** level both values fail the step on reject; the difference is purely what dispatch renders around it.
 
 - [ ] Write the failing test `agent/platformmcp/checkpoint_test.go`:
 
@@ -5092,6 +5137,8 @@ make test-quick                             # final gate
 
 **Amendment log (this plan):**
 - 2026-07-08 (platform-mcp-hitl wave-3; FROZEN DELTA "spec/plan via granular platform-mcp read tools + optional file mount"): replaced the read model. `read_ticket` now returns envelope + spec ONLY (tasks removed); added `list_tasks` (skeleton) and `get_task(ordering)` (detail; unknown ordering → MCP tool error `isError=true`, matching how the shared `atc/api/mcpserver` surfaces handler errors — NOT a JSON-RPC `-32602` object) to Task 10 (registration, handlers via `ATCClient.GetTicket`, tests) and Task 15 (contract kit + stub). `update_task_status` unchanged. Tool count 5 → 7 updated everywhere it is enumerated (Goal, Architecture, scope table, Task 10 header/intro/tests, Task 15 `Run`). No spec/plan bytes are injected by default; the optional `files` mode (workflow field `spec_delivery`) is owned by workflow-store + dispatch (wave 4) and does not change this plan's tasks. Affected workstreams: platform-mcp-hitl, dispatch, workflow-store, ticket-core-consumers. Contract addendum bullet added to the Task 1 §11 block.
+- 2026-07-09 (design-review F1 — checkpoint render contract co-signed with dispatch; owners: platform-mcp-hitl + dispatch): recorded the render contract for the checkpoint mechanism this plan OWNS. Dispatch's renderer (wave 4) materializes a checkpoint declaration as a plain `atc.TaskStep` running the **deterministic `platform-mcp checkpoint --name <n>` client** (Task 14 / `cmd/platform-mcp/checkpoint.go`), NOT an LLM `AgentStep` — there is no model awaiting the checkpoint; a fixed CLI POSTs the sidecar's `POST /checkpoint` and blocks on its HTTP response. Confirmed the plan documents the client's exit-code semantics explicitly (approve → exit 0 → step succeeds; reject or transport-failure-after-retries → exit 1 → step fails → run fails → ticket `needs_review`; usage error → exit 2) and the `on_reject` mapping (`on_reject: fail` = the default this plan implements: client exits non-zero → step fails → run fails → ticket `needs_review`; `on_reject: send_back` = dispatch's renderer branches on the non-zero exit to route the run back and signal the sent-back outcome — renderer-owned, out of scope here; at the step level both values fail the step on reject). Reworded the Task 14 intro to state the render contract and enumerate the exit-code/on_reject mapping. Verified no task text implies the checkpoint is awaited by an LLM prompt (the sidecar `handleCheckpoint` "await" is the deterministic HTTP handler blocking on the answer row). This co-signs the already-frozen contracts §11 F1 bullet (2026-07-09, dispatch + platform-mcp-hitl) and decision 12, which are authoritative for the render contract; no new contracts bullet is added (the decision already exists there).
+- 2026-07-09 (design-review F7 — timeout defense-in-depth; owner: platform-mcp-hitl): added a cross-field check to `ConfigFromEnv` (Task 9, `agent/platformmcp/config.go`) mirroring workflow-store's new validation — a sidecar config with `PLATFORM_MCP_ASK_TIMEOUT_POLICY ∈ {default,fail}` but `PLATFORM_MCP_ASK_TIMEOUT_SECONDS <= 0` now fails loudly at startup (`must be > 0 when ... is %q`) rather than parking indefinitely; `park`+0 stays legal (wait forever). Added `TestConfigFromEnvTimeoutPolicyRequiresPositiveSeconds` to `agent/platformmcp/config_test.go` asserting default/fail+0 error and park+0 succeed. Defense-in-depth: the renderer (wave 4) normally guarantees this, but a hand-set sidecar env must not silently degrade.
 - 2026-07-08 (consistency fix; owner: platform-mcp-hitl): corrected the `get_task` unknown-ordering error mechanism. The plan claimed an unknown ordering yields a JSON-RPC `-32602` error object, but Task 10's handler returns a plain `fmt.Errorf`, and the shared `atc/api/mcpserver` (already committed) maps every handler error to a `tools/call` result with `isError=true` — it only emits `-32602` for a malformed `tools/call` envelope, never for a handler's returned error (locked in by its committed tests). Reworded the §3.2 read-model addendum bullet (Task 1), the Task 10 intro + `getTask` doc comment, and the Task 10 header amendment (08:78) to state "MCP tool error (`isError=true`)" rather than "JSON-RPC `-32602`". Strengthened the Task 10 and Task 15 unknown-ordering tests to assert the response carries NO top-level JSON-RPC `error` object AND `result.isError=true` (previously they only checked `isErr` truthiness, which passed regardless of mechanism). Matching bullet appended to the contracts §11 amendment log.
 
 **Rollback notes for the risky diffs:**

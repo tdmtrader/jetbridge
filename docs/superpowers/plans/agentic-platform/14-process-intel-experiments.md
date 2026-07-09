@@ -3149,6 +3149,8 @@ The Queryer runs read-only aggregate SQL. Findings-per-version joins `agent_run_
 package db_test
 
 import (
+	"time"
+
 	"github.com/concourse/concourse/agent/intel"
 	"github.com/concourse/concourse/atc/db"
 
@@ -3181,10 +3183,43 @@ var _ = Describe("AgentIntelQueryer", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(counts).To(HaveKey("accurate"))
 	})
+
+	It("applies the SinceUnix/UntilUnix window to the counts", func() {
+		// Backdate a merged review + defect_link + feedback verdict to a fixed
+		// old instant, then confirm an all-time filter counts them but a window
+		// that starts AFTER them excludes them — proving applyWindow/the raw
+		// $since/$until binds actually reach the SQL (the routes advertise
+		// ?since/until and the handler parses them; before this fix the SQL
+		// ignored the window and every metric was all-time).
+		old := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+		seedWindowedIntelRow(dbConn, old) // suite helper below: inserts 1 merged review + defect_link + 1 'accurate' feedback dated `old`
+
+		allTimeMerged, err := q.MergedReviewCount(intel.Filter{})
+		Expect(err).NotTo(HaveOccurred())
+
+		// A window opening one second after the backdated row must not see it.
+		since := old.Add(time.Second).Unix()
+		windowedMerged, err := q.MergedReviewCount(intel.Filter{SinceUnix: since})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(windowedMerged).To(BeNumerically("<", allTimeMerged),
+			"since-window must exclude the backdated merged review")
+
+		windowedMissed, err := q.DefectLinkCount(intel.Filter{SinceUnix: since})
+		Expect(err).NotTo(HaveOccurred())
+		allTimeMissed, err := q.DefectLinkCount(intel.Filter{})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(windowedMissed).To(BeNumerically("<", allTimeMissed))
+
+		windowedVerdicts, err := q.VerdictCounts(intel.Filter{SinceUnix: since})
+		Expect(err).NotTo(HaveOccurred())
+		allTimeVerdicts, err := q.VerdictCounts(intel.Filter{})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(windowedVerdicts["accurate"]).To(BeNumerically("<", allTimeVerdicts["accurate"]))
+	})
 })
 ```
 
-(The seed helper is the existing `atc/db` agent-review test fixture; extend it in this task to insert one `agent_outcomes` merged row + one `defect_link` + one `agent_feedback` verdict, guarded so other specs are unaffected.)
+(The seed helper is the existing `atc/db` agent-review test fixture; extend it in this task to insert one `agent_outcomes` merged row + one `defect_link` + one `agent_feedback` verdict, guarded so other specs are unaffected. Add a second helper `seedWindowedIntelRow(conn, at time.Time)` that inserts a merged review + `defect_link` + one `accurate` feedback row with `created_at`/`occurred_at` forced to `at` — the windowing spec above uses it to prove the `[since, until)` bound reaches every metric. Add the `time` import to the spec file.)
 
 - [ ] **Step 2: Run to see it fail:**
 
@@ -3216,6 +3251,23 @@ func applyWorkflow(b sq.SelectBuilder, alias string, f intel.Filter) sq.SelectBu
 	return b
 }
 
+// applyWindow bounds a query to the half-open interval [since, until) on the
+// given timestamp column (e.g. "m.created_at", "r.created_at", "occurred_at").
+// SinceUnix/UntilUnix are epoch seconds; 0 means unbounded on that end. Mirrors
+// the GetAgentCostRollup precedent (occurred_at >= $since [AND < $until]) so
+// every analytics metric respects the ?since=&until= route params instead of
+// silently reporting all-time. to_timestamp() converts epoch seconds to the
+// TIMESTAMPTZ the created_at/occurred_at columns store.
+func applyWindow(b sq.SelectBuilder, tsColumn string, f intel.Filter) sq.SelectBuilder {
+	if f.SinceUnix > 0 {
+		b = b.Where(sq.GtOrEq{tsColumn: sq.Expr("to_timestamp(?)", f.SinceUnix)})
+	}
+	if f.UntilUnix > 0 {
+		b = b.Where(sq.Lt{tsColumn: sq.Expr("to_timestamp(?)", f.UntilUnix)})
+	}
+	return b
+}
+
 func (q *agentIntelQueryer) FindingsByVersion(f intel.Filter) ([]intel.VersionFindings, error) {
 	// findings = proven_issues + observations counts on reviews joined to
 	// run-metrics rows carrying workflow_name/version + ticket_id.
@@ -3232,6 +3284,7 @@ func (q *agentIntelQueryer) FindingsByVersion(f intel.Filter) ([]intel.VersionFi
 		GroupBy("m.workflow_name", "m.workflow_version").
 		OrderBy("m.workflow_name", "m.workflow_version")
 	b = applyWorkflow(b, "m", f)
+	b = applyWindow(b, "m.created_at", f)
 	if f.Repo != "" {
 		b = b.Where(sq.Eq{"r.repo": f.Repo})
 	}
@@ -3253,16 +3306,20 @@ func (q *agentIntelQueryer) FindingsByVersion(f intel.Filter) ([]intel.VersionFi
 
 func (q *agentIntelQueryer) RecurringCategories(f intel.Filter) ([]intel.RecurringClass, error) {
 	// Unnest finding categories out of the stored review JSON.
+	// $2/$3 bound the window on r.created_at (0 = unbounded on that end),
+	// mirroring the GetAgentCostRollup since/until precedent.
 	const raw = `
 SELECT obj->>'category' AS category, COUNT(*) AS n, COUNT(DISTINCT r.repo) AS repos
 FROM agent_reviews r,
      LATERAL jsonb_array_elements(COALESCE(r.review->'observations','[]'::jsonb)
                                   || COALESCE(r.review->'proven_issues','[]'::jsonb)) AS obj
 WHERE ($1 = '' OR r.repo = $1)
+  AND ($2 = 0 OR r.created_at >= to_timestamp($2))
+  AND ($3 = 0 OR r.created_at <  to_timestamp($3))
 GROUP BY obj->>'category'
 ORDER BY n DESC
 LIMIT 20`
-	rows, err := q.conn.Query(raw, f.Repo)
+	rows, err := q.conn.Query(raw, f.Repo, f.SinceUnix, f.UntilUnix)
 	if err != nil {
 		return nil, err
 	}
@@ -3279,6 +3336,9 @@ LIMIT 20`
 }
 
 func (q *agentIntelQueryer) LeftwardSeries(f intel.Filter) ([]intel.LeftwardPoint, error) {
+	// $1/$2 bound both CTEs to the [since, until) window (0 = unbounded on
+	// that end), per the GetAgentCostRollup since/until precedent — without
+	// this the leftward series ran over all history regardless of ?since/until.
 	const raw = `
 WITH per_month AS (
   SELECT to_char(m.created_at, 'YYYY-MM') AS bucket,
@@ -3287,18 +3347,24 @@ WITH per_month AS (
   FROM agent_run_metrics m
   LEFT JOIN agent_reviews r ON r.ticket_id = m.ticket_id
   WHERE m.ticket_id IS NOT NULL
+    AND ($1 = 0 OR m.created_at >= to_timestamp($1))
+    AND ($2 = 0 OR m.created_at <  to_timestamp($2))
   GROUP BY 1
 ),
 defects AS (
   SELECT to_char(created_at,'YYYY-MM') AS bucket, COUNT(*) AS escaped
-  FROM agent_reviews WHERE defect_link IS NOT NULL GROUP BY 1
+  FROM agent_reviews
+  WHERE defect_link IS NOT NULL
+    AND ($1 = 0 OR created_at >= to_timestamp($1))
+    AND ($2 = 0 OR created_at <  to_timestamp($2))
+  GROUP BY 1
 )
 SELECT p.bucket,
        CASE WHEN p.tickets>0 THEN p.findings::float/p.tickets ELSE 0 END,
        COALESCE(d.escaped,0)
 FROM per_month p LEFT JOIN defects d ON d.bucket = p.bucket
 ORDER BY p.bucket`
-	rows, err := q.conn.Query(raw)
+	rows, err := q.conn.Query(raw, f.SinceUnix, f.UntilUnix)
 	if err != nil {
 		return nil, err
 	}
@@ -3315,9 +3381,10 @@ ORDER BY p.bucket`
 }
 
 func (q *agentIntelQueryer) VerdictCounts(f intel.Filter) (map[string]int, error) {
-	rows, err := psql.Select("verdict", "COUNT(*)").
-		From("agent_feedback").GroupBy("verdict").
-		RunWith(q.conn).Query()
+	b := psql.Select("verdict", "COUNT(*)").
+		From("agent_feedback").GroupBy("verdict")
+	b = applyWindow(b, "created_at", f)
+	rows, err := b.RunWith(q.conn).Query()
 	if err != nil {
 		return nil, err
 	}
@@ -3336,24 +3403,29 @@ func (q *agentIntelQueryer) VerdictCounts(f intel.Filter) (map[string]int, error
 
 func (q *agentIntelQueryer) MergedReviewCount(f intel.Filter) (int, error) {
 	var n int
-	err := psql.Select("COUNT(*)").
+	b := psql.Select("COUNT(*)").
 		From("agent_reviews r").
 		Join("agent_outcomes o ON o.ticket_id = r.ticket_id").
 		Where(sq.Eq{"o.merge_state": []string{"merged", "merged_with_fixes"}}).
-		Where("r.ticket_id IS NOT NULL").
-		RunWith(q.conn).QueryRow().Scan(&n)
+		Where("r.ticket_id IS NOT NULL")
+	b = applyWindow(b, "r.created_at", f)
+	err := b.RunWith(q.conn).QueryRow().Scan(&n)
 	return n, err
 }
 
 func (q *agentIntelQueryer) DefectLinkCount(f intel.Filter) (int, error) {
 	var n int
-	err := psql.Select("COUNT(*)").From("agent_reviews").
-		Where("defect_link IS NOT NULL").
-		RunWith(q.conn).QueryRow().Scan(&n)
+	b := psql.Select("COUNT(*)").From("agent_reviews").
+		Where("defect_link IS NOT NULL")
+	b = applyWindow(b, "created_at", f)
+	err := b.RunWith(q.conn).QueryRow().Scan(&n)
 	return n, err
 }
 
 func (q *agentIntelQueryer) FrictionAggregates(f intel.Filter) (loops, toolErr, turnBurn float64, sample int, err error) {
+	// $2/$3 bound the window on created_at (0 = unbounded on that end), per the
+	// GetAgentCostRollup since/until precedent — friction signatures respect
+	// ?since/until instead of aggregating every run ever recorded.
 	const raw = `
 SELECT
   COALESCE(AVG( (event_counts->>'gate.result')::int ),0)         AS loops,
@@ -3364,13 +3436,15 @@ SELECT
   COALESCE(percentile_cont(0.9) WITHIN GROUP (ORDER BY turns),0)  AS turn_burn,
   COUNT(*)                                                        AS sample
 FROM agent_run_metrics
-WHERE ($1 = '' OR workflow_name = $1)`
-	err = q.conn.QueryRow(raw, f.WorkflowName).Scan(&loops, &toolErr, &turnBurn, &sample)
+WHERE ($1 = '' OR workflow_name = $1)
+  AND ($2 = 0 OR created_at >= to_timestamp($2))
+  AND ($3 = 0 OR created_at <  to_timestamp($3))`
+	err = q.conn.QueryRow(raw, f.WorkflowName, f.SinceUnix, f.UntilUnix).Scan(&loops, &toolErr, &turnBurn, &sample)
 	return
 }
 ```
 
-Note: `agent_reviews.proven_count`/`observation_count` are existing denormalized columns (`reviews.StoredReview`); `event_counts->>'gate.result'` etc. read the §1.8 JSONB. `psql`/`DbConn.Query`/`QueryRow` are the package-`db` idioms used throughout `*_factory.go`.
+Note: `agent_reviews.proven_count`/`observation_count` are existing denormalized columns (`reviews.StoredReview`); `event_counts->>'gate.result'` etc. read the §1.8 JSONB. `psql`/`DbConn.Query`/`QueryRow` are the package-`db` idioms used throughout `*_factory.go`. Every method applies the `Filter`'s `SinceUnix`/`UntilUnix` window (via `applyWindow` for squirrel builders, or `$since/$until` binds in the raw-SQL methods) against `created_at`/`occurred_at` — mirroring `GetAgentCostRollup`'s half-open `[since, until)` semantics (0 = unbounded on that end). Without this the routes advertise `?since=&until=` and the handler parses them, but the SQL ignored them and every metric was all-time.
 
 - [ ] **Step 4: Run to green:**
 
@@ -3589,11 +3663,11 @@ git commit -m "feat(web): minimal agent intel view (calibration + friction table
 
 ### Task 18: Retrospective workflow definition + intel-context materializer
 
-The retrospective is an `agent:` step run (not new execution machinery): a workflow definition whose single agent step reads a materialized intel summary and files `origin:retrospective` proposal tickets via platform-mcp's `read_ticket`/spec/plan tools + `CreateAgentTicket`. This task lands (a) the seed workflow YAML and (b) a materializer that renders the intel snapshot into a read-only `intel.md` workspace input.
+The retrospective is an `agent:` step run (not new execution machinery): a workflow definition whose single agent step reads the intel snapshot and files `origin:retrospective` proposal tickets via platform-mcp's `read_ticket`/`submit_spec` tools + `CreateAgentTicket`. This task lands (a) the seed workflow YAML and (b) a materializer (`RenderIntelMarkdown`) that renders the intel snapshot as markdown. That markdown is delivered to the agent as the retrospective ticket's **spec body** (Task 19 submits it via `tickets.Store.SubmitSpec`), which the agent reads through platform-mcp `read_ticket` in default `spec_delivery: mcp` mode — NOT as an `intel.md` workspace file (default mcp mode materializes no spec/plan files; contracts §3.2). The renderer just produces the markdown bytes; the trigger owns delivery.
 
 **Files:**
 - Create: `agent/retrospective/workflow.go` (the embedded seed definition YAML + `SeedDefinition() []byte`)
-- Create: `agent/retrospective/context.go` (`RenderIntelMarkdown(FindingAnalytics, Calibration, Friction, outcomes summary) []byte`)
+- Create: `agent/retrospective/context.go` (`RenderIntelMarkdown(FindingAnalytics, Calibration, Friction) []byte` — the snapshot markdown Task 19 delivers as the ticket's spec body)
 - Test: `agent/retrospective/context_test.go`
 - Create: `docs/agentic/retrospective-workflow.yml` (human-readable copy of the seed, imported via `fly agent workflows import`)
 
@@ -3658,8 +3732,12 @@ import (
 	"github.com/concourse/concourse/agent/intel"
 )
 
-// RenderIntelMarkdown produces the read-only intel.md workspace input the
-// retrospective agent reads. Deterministic; no LLM. Sections: recurring
+// RenderIntelMarkdown produces the process-intelligence snapshot markdown the
+// retrospective agent reads. Task 19's trigger delivers this as the retrospective
+// ticket's spec body (via tickets.Store.SubmitSpec), so the agent reaches it
+// through platform-mcp read_ticket in default spec_delivery: mcp mode — it is
+// NOT written to an intel.md workspace file (default mcp mode materializes no
+// spec/plan files; contracts §3.2). Deterministic; no LLM. Sections: recurring
 // finding classes (automation candidates), calibration, friction signatures.
 func RenderIntelMarkdown(fa *intel.FindingAnalytics, cal *intel.Calibration, fr *intel.Friction) []byte {
 	var b strings.Builder
@@ -3708,7 +3786,7 @@ var seedWorkflow []byte
 func SeedDefinition() []byte { return seedWorkflow }
 ```
 
-- [ ] **Step 5: Write `agent/retrospective/seed_workflow.yml`** (embedded; a linear single-agent workflow that reads intel.md and files proposals):
+- [ ] **Step 5: Write `agent/retrospective/seed_workflow.yml`** (embedded; a linear single-agent workflow that reads the snapshot via platform-mcp `read_ticket` — the trigger delivers it as the ticket's spec — and files proposals):
 
 ```yaml
 schema_version: 1
@@ -3730,9 +3808,11 @@ sidecars:
 
 prompts:
   retrospect: |
-    You are running the platform's retrospective. Read intel.md in your
-    workspace: recurring review findings, calibration rates, and friction
-    signatures over the recent window.
+    You are running the platform's retrospective. Read the ticket via
+    platform-mcp: call read_ticket — its spec is the process-intelligence
+    snapshot (recurring review findings, calibration rates, and friction
+    signatures over the recent window). Read it from the returned spec's
+    body_md.
 
     For each HIGH-SIGNAL, ACTIONABLE improvement (a recurring finding class that
     a lint rule or dev-mcp gate could catch; a prompt amendment that would cut a
@@ -3743,7 +3823,7 @@ prompts:
       lint-rule | prompt-amendment | dev-mcp-gate | workflow-edit
 
       ## Evidence
-      <the intel.md numbers that justify this — e.g. "caught 4 times in review across 2 repos">
+      <the snapshot numbers from read_ticket's spec that justify this — e.g. "caught 4 times in review across 2 repos">
 
       ## Concrete change
       <the specific rule/prompt/gate/edit to make>
@@ -3791,7 +3871,7 @@ git commit -m "feat(agent): retrospective seed workflow + intel-context material
 
 ### Task 19: `retrospective_trigger` component — manual + recurring cadence
 
-The charter: "manual-triggered cadence first, then recurring". Implement one trigger that (a) ensures the `retrospective` workflow is imported+live, (b) on demand or on a configurable interval, gathers the intel snapshot, and (c) files ONE `origin:retrospective` ticket whose body carries the rendered intel snapshot (so it reaches the agent as the dispatched run's `spec.md`), queued through `Transition` for the wave-4 dispatcher to render+run. Recurring cadence is a web-node flag `--agent-retrospective-interval` (0 = manual only). A manual trigger arrives via `fly agent retrospective run` (Task 20) which POSTs a "run now" that the trigger honors on its next tick (or immediately, via a DB flag row).
+The charter: "manual-triggered cadence first, then recurring". Implement one trigger that (a) ensures the `retrospective` workflow is imported+live, (b) on demand or on a configurable interval, gathers the intel snapshot over a bounded trailing window (30 days — charter "mine a month"; the analytics SQL honors `Filter.SinceUnix`/`UntilUnix` per Task 16), and (c) files ONE `origin:retrospective` ticket that delivers the rendered intel snapshot as the ticket's **versioned spec** (via `tickets.Store.SubmitSpec`) so the dispatched retrospective agent reaches it through platform-mcp `read_ticket` in default `spec_delivery: mcp` mode — the ticket is then queued through `Transition` for the wave-4 dispatcher to render+run. (The snapshot is NOT stuffed into `Ticket.Body`: `read_ticket` returns the latest spec via `LatestSpec`, not the raw body, so a body-only snapshot would never reach the agent — contracts §3.2.) Recurring cadence is a web-node flag `--agent-retrospective-interval` (0 = manual only). A manual trigger arrives via `fly agent retrospective run` (Task 20) which POSTs a "run now" that the trigger honors on its next tick (or immediately, via a DB flag row).
 
 **Files:**
 - Create: `agent/retrospective/trigger.go`
@@ -3873,14 +3953,22 @@ var _ = Describe("Trigger", func() {
 		trig = retrospective.NewTrigger(stubQueryer{}, ticketStore, wfStore, "retrospective-agent")
 	})
 
-	It("files one queued retrospective ticket with the intel snapshot in its body", func() {
+	It("files one queued retrospective ticket delivering the intel snapshot as the spec", func() {
 		Expect(trig.RunOnce(context.Background(), "manual")).To(Succeed())
 
 		Expect(ticketStore.CreateCallCount()).To(Equal(1))
 		created := ticketStore.CreateArgsForCall(0)
 		Expect(created.Origin).To(Equal("retrospective"))
 		Expect(created.WorkflowName).To(Equal("retrospective"))
-		Expect(created.Body).To(ContainSubstring("nil-deref")) // intel snapshot embedded
+
+		// The snapshot is delivered as the ticket's VERSIONED SPEC (so
+		// platform-mcp read_ticket surfaces it in default mcp mode), NOT the
+		// raw Ticket.Body — read_ticket returns LatestSpec, not the body.
+		Expect(ticketStore.SubmitSpecCallCount()).To(Equal(1))
+		specTicketID, spec := ticketStore.SubmitSpecArgsForCall(0)
+		Expect(specTicketID).To(Equal(55))
+		Expect(spec.Body).To(ContainSubstring("nil-deref")) // intel snapshot in the spec
+
 		id, from, to, _ := ticketStore.TransitionArgsForCall(0)
 		Expect(id).To(Equal(55))
 		Expect(from).To(Equal(tickets.StateDraft))
@@ -3914,7 +4002,9 @@ package retrospective
 import (
 	"context"
 	"fmt"
+	"time"
 
+	"code.cloudfoundry.org/lager/v3"
 	"code.cloudfoundry.org/lager/v3/lagerctx"
 
 	"github.com/concourse/concourse/agent/api/tickets"
@@ -3956,7 +4046,11 @@ func (t *Trigger) RunOnce(ctx context.Context, cause string) error {
 		logger.Info("imported-retrospective-seed")
 	}
 
-	f := intel.Filter{}
+	// Mine a bounded trailing window (30 days), not all history — the charter
+	// ("mine a month") and the Step-3 prose both call for a recent window, and
+	// the analytics SQL now honors Filter.SinceUnix/UntilUnix (Task 16). An
+	// empty intel.Filter{} would report all-time and drown recent signal.
+	f := intel.Filter{SinceUnix: time.Now().Add(-30 * 24 * time.Hour).Unix()}
 	fa, err := t.analyzer.Findings(f)
 	if err != nil {
 		return err
@@ -3973,7 +4067,7 @@ func (t *Trigger) RunOnce(ctx context.Context, cause string) error {
 
 	ticketID, err := t.tickets.Create(&tickets.Ticket{
 		Title:        fmt.Sprintf("Retrospective (%s)", cause),
-		Body:         string(snapshot),
+		Body:         "Process-intelligence retrospective — the intel snapshot is the ticket's spec (read it via platform-mcp read_ticket).",
 		Origin:       "retrospective",
 		Repo:         "tdmtrader/concourse",
 		WorkflowName: "retrospective",
@@ -3981,6 +4075,20 @@ func (t *Trigger) RunOnce(ctx context.Context, cause string) error {
 	})
 	if err != nil {
 		return err
+	}
+	// Deliver the intel snapshot as the ticket's VERSIONED SPEC (not Ticket.Body):
+	// the retrospective agent runs in default `spec_delivery: mcp` mode, so it
+	// reaches the snapshot only through platform-mcp `read_ticket`, which returns
+	// the latest spec via tickets.Store.LatestSpec (contracts §3.2). Putting the
+	// snapshot in Ticket.Body would NOT surface it to the agent — read_ticket
+	// returns the spec, not the raw body. SubmitSpec is the single spec writer
+	// (contracts §2.1); it stores the snapshot as spec version 1.
+	if _, err := t.tickets.SubmitSpec(ticketID, tickets.Spec{
+		Title:       fmt.Sprintf("Retrospective (%s)", cause),
+		Body:        string(snapshot),
+		SubmittedBy: t.createdBy,
+	}); err != nil {
+		return fmt.Errorf("submitting retrospective spec: %w", err)
 	}
 	// Attribution rides on Ticket.CreatedBy (set above at Create time);
 	// TransitionMeta has no By field (ticket-core §2.1.1).
@@ -3998,7 +4106,7 @@ func (t *Trigger) Run(ctx context.Context) error {
 }
 ```
 
-Add the `lager` import (`code.cloudfoundry.org/lager/v3`).
+The import block above already carries `code.cloudfoundry.org/lager/v3` (for `lager.Data`) and `time` (for the 30-day trailing window).
 
 - [ ] **Step 6: Run to green:**
 
@@ -4235,3 +4343,11 @@ Both milestones exercise real dispatch → jetbridge pods, so a live smoke test 
 ### Milestone split at execution time
 
 Per the charter and scaffolding decision 8, M1 (Tasks 1–11) and M2 (Tasks 12–20) are separately shippable. If executing as two forge tracks: M1 depends only on wave-4 dispatch/pipeline-runs/scorecards; M2 additionally depends on the `agent_reviews.defect_link` column (Task 12) and reads `agent_outcomes`/`agent_feedback` populated by real runs — M2's analytics are meaningful only once M1 (or normal dispatch) has produced run history, so land M1 first and let data accrue before trusting M2's numbers (charter risk: "friction signatures need run volume to mean anything — ship the queries, expect tuning").
+
+---
+
+## §11 Amendment log (this plan)
+
+- **2026-07-09 (design-review fixes F9, F10 — no contract-name changes; all names stay identical to 00-shared-contracts.md):**
+  - **F9 (analytics window never applied):** the routes advertise `?since=&until=`, `intel.Filter` carries `SinceUnix`/`UntilUnix`, and the handler parses them, but Task 16's Queryer SQL ignored the window (every metric was all-time) and Task 19's retrospective trigger passed an empty `intel.Filter{}` (mined all history) — contradicting the Step-3 prose and the charter's "mine a month". Fix: added an `applyWindow(b, tsColumn, f)` helper mirroring the existing `applyWorkflow`, and called it in every squirrel Queryer method (`FindingsByVersion` on `m.created_at`, `VerdictCounts` on `created_at`, `MergedReviewCount` on `r.created_at`, `DefectLinkCount` on `created_at`) against `created_at`/`occurred_at`; bound `$since/$until` into the three raw-SQL methods (`RecurringCategories`, `LeftwardSeries`, `FrictionAggregates`), following the `GetAgentCostRollup` half-open `[since, until)` precedent (0 = unbounded, `to_timestamp()` for the epoch-seconds→TIMESTAMPTZ conversion). Task 19's trigger now builds a bounded trailing-30-day filter (`SinceUnix: time.Now().Add(-30*24*time.Hour).Unix()`) instead of `intel.Filter{}`. Added a Task-16 Ginkgo spec ("applies the SinceUnix/UntilUnix window to the counts") that backdates a merged review + `defect_link` + `accurate` feedback to 2020 and asserts a since-window excludes them while an all-time filter counts them (new suite helper `seedWindowedIntelRow`; `time` import added to the spec).
+  - **F10 (retrospective intel delivery seam):** Task 18 built `RenderIntelMarkdown` as "the read-only intel.md workspace input" and the seed prompt said "Read intel.md in your workspace," but nothing produced an `intel.md` file — Task 19 put the snapshot in `Ticket.Body` (which is NOT the versioned Spec that `read_ticket`/`LatestSpec` returns; in default `spec_delivery: mcp` mode no file is materialized). Fix: (a) amended the seed prompt to "Read the ticket via platform-mcp: call `read_ticket` — its spec is the snapshot … `body_md`"; (b) Task 19's trigger now delivers the snapshot via `tickets.Store.SubmitSpec(ticketID, tickets.Spec{Title, Body: snapshot, SubmittedBy})` (spec version 1) between `Create` and `Transition`, with a lightweight pointer `Ticket.Body`, so `read_ticket` surfaces it (contracts §3.2); (c) corrected Task 18's framing (intro, `context.go` file line, `RenderIntelMarkdown` doc comment) and Step-5's seed description to describe spec-delivery rather than a non-existent `intel.md` workspace file. Updated the Task-19 spec ("files one queued retrospective ticket delivering the intel snapshot as the spec") to assert `SubmitSpecCallCount() == 1` and that the submitted `spec.Body` contains the snapshot, instead of checking `created.Body`. Contract-visible names used verbatim from ticket-core/platform-mcp: `tickets.Store.SubmitSpec`, `tickets.Spec{Title, Body, SubmittedBy}`, `read_ticket`, `submit_spec`, `spec_delivery: mcp`.

@@ -548,6 +548,10 @@ func TestValidateRejects(t *testing.T) {
 		{"bad on_reject", mutate(t, "on_reject: fail", "on_reject: retry"), "on_reject"},
 		{"bad ask_timeout", mutate(t, "ask_timeout: park", "ask_timeout: snooze"), "ask_timeout"},
 		{"negative ask_timeout_seconds", mutate(t, "ask_timeout_seconds: 0", "ask_timeout_seconds: -5"), "ask_timeout_seconds"},
+		// default/fail timeout policy with a non-positive deadline never fires —
+		// the ask parks forever, defeating the policy. Reject it at import.
+		{"default ask_timeout with zero seconds", mutate(t, "ask_timeout: park", "ask_timeout: default"), "requires ask_timeout_seconds > 0"},
+		{"fail ask_timeout with zero seconds", mutate(t, "ask_timeout: park", "ask_timeout: fail"), "requires ask_timeout_seconds > 0"},
 		{"bad gate name", mutate(t, "- gate: lint", "- gate: vibes"), "gate"},
 		{"bad gate scope", mutate(t, "scope: affected_then_full", "scope: sometimes"), "scope"},
 		{"bad gate timeout", mutate(t, "timeout: 45m", "timeout: eventually"), "timeout"},
@@ -730,6 +734,13 @@ func (c *Config) Validate() error {
 	}
 	if c.HITL.AskTimeoutSeconds < 0 {
 		return fmt.Errorf("workflow: hitl.ask_timeout_seconds must be >= 0")
+	}
+	// A default/fail timeout policy needs a positive deadline to act on: with
+	// ask_timeout_seconds <= 0 the ask never times out, so the policy never
+	// fires and the run parks forever anyway — the opposite of what the author
+	// asked for. Reject the incoherent combination loudly at import instead.
+	if (c.HITL.AskTimeout == "default" || c.HITL.AskTimeout == "fail") && c.HITL.AskTimeoutSeconds <= 0 {
+		return fmt.Errorf("workflow: hitl.ask_timeout %q requires ask_timeout_seconds > 0 (got %d) — otherwise the ask never times out and the run parks forever", c.HITL.AskTimeout, c.HITL.AskTimeoutSeconds)
 	}
 
 	for i, g := range c.GatePolicy.Gates {
@@ -2540,6 +2551,7 @@ package workflow_test
 
 import (
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/concourse/concourse/agent/workflow"
@@ -2583,6 +2595,30 @@ func TestSeedStandardDevValidates(t *testing.T) {
 	}
 	if cfg.Judge == nil {
 		t.Error("seed must declare the judge rubric slot")
+	}
+
+	// The seed omits spec_delivery, so it must resolve to the default "mcp"
+	// read model — the reference workflow demonstrates the default path.
+	resolved := cfg.SpecDelivery
+	if resolved == "" {
+		resolved = "mcp"
+	}
+	if resolved != "mcp" {
+		t.Errorf("seed spec_delivery must resolve to mcp (default path), got %q", resolved)
+	}
+	// Coherence: under the mcp read model no spec/plan bytes are injected, so
+	// no prompt body may point agents at spec.md/plan.md files or embed the
+	// bare {{.Spec}}/{{.Tasks}} tokens — those belong only to spec_delivery:
+	// files. Agents must read via platform-mcp read_ticket/list_tasks/get_task.
+	if resolved == "mcp" {
+		forbidden := []string{"spec.md", "plan.md", "{{.Spec}}", "{{.Tasks}}"}
+		for name, body := range cfg.Prompts {
+			for _, tok := range forbidden {
+				if strings.Contains(body, tok) {
+					t.Errorf("prompt %q contains %q, incoherent with spec_delivery=mcp (read via platform-mcp read_ticket/list_tasks/get_task)", name, tok)
+				}
+			}
+		}
 	}
 
 	// The hash is the provenance unit: 64 hex chars over the exact bytes.
@@ -2633,23 +2669,27 @@ prompts:
     humans rely on them.
   implement: |
     You are an implementation agent working in the workspace repository.
-    The approved spec and plan are in spec.md and plan.md. For each task in
-    {{.Tasks}}, follow TDD red-green-refactor: write the failing test, make
-    it pass minimally, refactor. After each task, run dev-mcp run_tests with
-    the affected components and mark the task done with platform-mcp
-    update_task_status. Commit after each green task.
+    Read the approved spec with platform-mcp read_ticket and the task list
+    with platform-mcp list_tasks (call get_task per task for its detail as
+    you reach it). For each task, follow TDD red-green-refactor: write the
+    failing test, make it pass minimally, refactor. After each task, run
+    dev-mcp run_tests with the affected components and mark the task done
+    with platform-mcp update_task_status. Commit after each green task.
   qa: |
-    You are a QA agent. Compare the implementation in the workspace against
-    the acceptance criteria in {{.Spec}}. Identify untested behaviors and
-    add meaningful coverage for them. Run dev-mcp run_tests on affected
-    components, then the full suite. Fix any test you added that fails;
-    report (do not fix) production defects you find, in the workspace notes.
+    You are a QA agent. Read the acceptance criteria with platform-mcp
+    read_ticket and the tasks with platform-mcp list_tasks / get_task, then
+    compare the implementation in the workspace against them. Identify
+    untested behaviors and add meaningful coverage for them. Run dev-mcp
+    run_tests on affected components, then the full suite. Fix any test you
+    added that fails; report (do not fix) production defects you find, in
+    the workspace notes.
   review: |
-    You are a code-review agent. Review the workspace diff against the base
-    branch for correctness bugs, missing coverage, and scope creep relative
-    to {{.Spec}}. For each finding, verify it by writing or running a test
-    through dev-mcp before reporting. Write findings to review.json in the
-    workspace.
+    You are a code-review agent. Read the spec and tasks with platform-mcp
+    read_ticket and list_tasks / get_task, then review the workspace diff
+    against the base branch for correctness bugs, missing coverage, and
+    scope creep relative to that spec. For each finding, verify it by
+    writing or running a test through dev-mcp before reporting. Write
+    findings to review.json in the workspace.
   fix: |
     You are a fix agent. Read review.json in the workspace. Apply fixes for
     verified findings only, one commit per finding, re-running dev-mcp
@@ -2768,3 +2808,7 @@ Never pass `--race` to the Ginkgo suites (parallel compilation failures, per CLA
 ## Addendum
 
 - **2026-07-08 (spec/plan delivery model — frozen delta):** Added the optional top-level `spec_delivery` grammar field to `workflow.Config` (Go `SpecDelivery string`, yaml/json `spec_delivery,omitempty`; values `""`/`mcp`/`files`, empty ⇒ `mcp`). Write-time validation (Task 4 `Config.Validate`) accepts only those three values and rejects any other; it is a normal hashed field (participates in the content hash like every other YAML key). This plan owns the grammar slot only — the field is INERT here (workflow-store never renders). It is consumed by **dispatch's renderer** (11-dispatch, which reads `SpecDelivery` to pick the read model: `mcp` injects no spec/plan bytes and DELETEs the old `AGENT_SPEC_MD`/`AGENT_PLAN_MD` env keys — agents read via the platform-mcp `read_ticket`/`list_tasks`/`get_task` tools; `files` materializes read-only `spec.md`/`plan.md` mounted as the `ticket` artifact) and is referenced by **contracts §6** (grammar mirror). Supersedes the prior "rendered spec.md/plan.md delivered via env vars" design so the DB stays the single source of truth and nothing is flattened by default. Affected workstreams: platform-mcp-hitl, dispatch, workflow-store, ticket-core-consumers. Edits landed: `Config` struct field (Task 3), `Validate` accept/reject rule (Task 4), Task 3 happy-path default-case assertion, Task 4 reject case + `files` accept assertion, and the Task 1 slot-shape freeze + §11 amendment-log entries.
+
+- **2026-07-09 (design-review F5 — seed prompt/delivery coherence, WAVE-1 blocker):** The `standard-dev` seed omits `spec_delivery`, so it resolves to the default `mcp` read model — but its Task 8 `implement`/`qa`/`review` prompts still told agents "the approved spec and plan are in spec.md and plan.md" and embedded the bare `{{.Spec}}`/`{{.Tasks}}` template tokens, which are only populated under `spec_delivery: files`. Under `mcp` no spec/plan bytes are injected, so those prompts pointed the reference workflow (the exemplar every import copies) at files that never exist. Rewrote all three prompts to the default MCP read model — read via platform-mcp `read_ticket` / `list_tasks` / `get_task`, mirroring the `plan` prompt — and dropped every `spec.md`/`plan.md`/`{{.Spec}}`/`{{.Tasks}}` reference from the seed body. The seed stays on the default path (NOT switched to `files`) so it demonstrates the reference read model. Guarded by a new coherence assertion in `TestSeedStandardDevValidates` (Task 8): resolve `spec_delivery` (empty ⇒ `mcp`) and, when it is `mcp`, fail if any `cfg.Prompts` body contains `"spec.md"`, `"plan.md"`, `"{{.Spec}}"`, or `"{{.Tasks}}"` (added `"strings"` import). Affected workstreams: dispatch (renderer contract unchanged — this only aligns the seed prose with the already-frozen `mcp` model), platform-mcp-hitl (read-tool surface). Edits landed: seed `implement`/`qa`/`review` prompt bodies (Task 8 yaml), `TestSeedStandardDevValidates` coherence assertion + `strings` import (Task 8 test).
+
+- **2026-07-09 (design-review F7 — ask_timeout cross-field validation):** `Config.Validate` (Task 4) validated `hitl.ask_timeout` (enum) and `hitl.ask_timeout_seconds` (>= 0) independently, so a definition with `ask_timeout: default` or `ask_timeout: fail` and `ask_timeout_seconds: 0` (or any value <= 0) passed import — yet that combination never times out, so the timeout policy never fires and the run silently parks forever, the exact opposite of what `default`/`fail` request. Added a cross-field rule after the two existing checks that REJECTS `ask_timeout ∈ {default, fail}` with `ask_timeout_seconds <= 0`, failing loudly at import. `park` (with or without a deadline) is unaffected, so the seed (`ask_timeout: park`, `ask_timeout_seconds: 0`) still validates. Guarded by two new `TestValidateRejects` cases (Task 4): mutate the fixture's `ask_timeout: park` to `default` and to `fail` (leaving `ask_timeout_seconds: 0`), each expecting the substring `requires ask_timeout_seconds > 0`. Affected workstreams: platform-mcp-hitl (consumes the `hitl` block; this only tightens import validation, no shape change). Edits landed: `Config.Validate` cross-field check (Task 4 parse.go), two `TestValidateRejects` cases (Task 4 test).

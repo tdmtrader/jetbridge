@@ -310,7 +310,9 @@ git commit -m "feat(scorecards): aggregate domain types, versions CSV parse, Sto
 
 ### Task 3: `atc/db` ScorecardStore — metrics-side aggregate (volume, taxonomy, cost, turns)
 
-The first half of the SQL: everything computable from `agent_run_metrics` + `agent_cost_ledger` alone (volume denominators, the ok/failed/error split, cost/turns per ticket). Findings/judge/verdict (Task 4) and outcomes (Task 5) extend the same store. Follows the `agent_reviews_factory.go` recipe (squirrel `psql`, `f.conn.Query`, epoch-seconds scan).
+The first half of the SQL: the authoritative `live`/`content_hash` read from `agent_workflow_definitions` (§1.6), plus everything computable from `agent_run_metrics` + `agent_cost_ledger` alone (volume denominators, the ok/failed/error split, cost/turns per ticket). Findings/judge/verdict (Task 4) and outcomes (Task 5) extend the same store. Follows the `agent_reviews_factory.go` recipe (squirrel `psql`, `f.conn.Query`, epoch-seconds scan).
+
+The `definition` read is what makes `col.Live` and `col.ContentHash` authoritative: it runs FIRST in `perVersion` so the "live" badge (Task 9) reflects the promoted version and a not-yet-run candidate still reports its real content hash — the metrics-derived `MAX(workflow_hash)` becomes at most a fallback. Without it, `col.Live` is always false and a candidate version with no run rows returns an empty hash, defeating the live-vs-candidate comparison spec §8 says is the scorecard's reason to exist. It reads only what workflow-store's `Live(name)`/`Versions(name)` already expose (05-workflow-store.md:1073/1349).
 
 **Files:**
 - Create: `atc/db/scorecard_store.go`
@@ -358,6 +360,20 @@ var _ = Describe("ScorecardStore", func() {
 			  (2, 'agent_step', 0.50, 5),
 			  (3, 'agent_step', 0.10, 1)`)
 		Expect(err).ToNot(HaveOccurred())
+
+		// Authoritative definitions (workflow-store §1.6): v3 is the promoted
+		// (live) version; v4 is a candidate (not live). content_hash here is the
+		// source of truth for col.ContentHash / col.Live — independent of whether
+		// the version has run. A row is inserted for v5 with NO run metrics to
+		// prove a not-yet-run candidate still returns its real content_hash.
+		_, err = dbConn.Exec(`
+			INSERT INTO agent_workflow_definitions
+			  (name, version, content_hash, live, definition, description, created_by)
+			VALUES
+			  ('standard-dev', 3, 'def-hash-v3', true,  '{}', '', 'seed'),
+			  ('standard-dev', 4, 'def-hash-v4', false, '{}', '', 'seed'),
+			  ('standard-dev', 5, 'def-hash-v5', false, '{}', '', 'seed')`)
+		Expect(err).ToNot(HaveOccurred())
 	})
 
 	It("aggregates volume, ok/failed/error taxonomy, cost, and turns per version", func() {
@@ -392,6 +408,34 @@ var _ = Describe("ScorecardStore", func() {
 		Expect(sc.Columns[0].Version).To(Equal(99))
 		Expect(sc.Columns[0].TicketCount).To(Equal(0))
 		Expect(sc.Columns[0].CostUSDPerTicket).To(BeNil())
+		Expect(sc.Columns[0].Live).To(BeFalse())    // no definition row
+		Expect(sc.Columns[0].ContentHash).To(Equal("")) // undefined version
+	})
+
+	It("sets Live and ContentHash AUTHORITATIVELY from agent_workflow_definitions", func() {
+		// v3 is promoted (live), v4 is a candidate, v5 is a candidate that has
+		// NOT run yet (no agent_run_metrics rows). The live flag and content
+		// hash come from agent_workflow_definitions, not from run metrics.
+		sc, err := store.Scorecard("standard-dev", []int{3, 4, 5})
+		Expect(err).ToNot(HaveOccurred())
+		Expect(sc.Columns).To(HaveLen(3))
+
+		v3 := sc.Columns[0]
+		Expect(v3.Version).To(Equal(3))
+		Expect(v3.Live).To(BeTrue())                       // promoted version's badge lights
+		Expect(v3.ContentHash).To(Equal("def-hash-v3"))    // definition wins over metrics MAX(workflow_hash)="h3"
+
+		v4 := sc.Columns[1]
+		Expect(v4.Version).To(Equal(4))
+		Expect(v4.Live).To(BeFalse())                      // candidate is not live
+		Expect(v4.ContentHash).To(Equal("def-hash-v4"))
+
+		v5 := sc.Columns[2]
+		Expect(v5.Version).To(Equal(5))
+		Expect(v5.TicketCount).To(Equal(0))                // never ran
+		Expect(v5.StepCount).To(Equal(0))
+		Expect(v5.Live).To(BeFalse())
+		Expect(v5.ContentHash).To(Equal("def-hash-v5"))    // real hash even with zero run rows
 	})
 })
 ```
@@ -441,10 +485,51 @@ func (s *scorecardStore) Scorecard(workflowName string, versions []int) (*scorec
 func (s *scorecardStore) perVersion(name string, version int) (*scorecards.VersionColumn, error) {
 	col := &scorecards.VersionColumn{Version: version}
 
+	// definition() runs FIRST so col.Live and col.ContentHash come
+	// AUTHORITATIVELY from agent_workflow_definitions (the source of truth for
+	// which version is promoted and what its content hash is), independent of
+	// whether the version has any run rows yet. A not-yet-run candidate version
+	// must still report its real content_hash and live=false — that is the
+	// whole point of a live-vs-candidate scorecard comparison (spec §8).
+	if err := s.definition(name, version, col); err != nil {
+		return nil, err
+	}
 	if err := s.metricsAndCost(name, version, col); err != nil {
 		return nil, err
 	}
 	return col, nil
+}
+
+// definition reads the authoritative live flag + content hash from
+// agent_workflow_definitions (workflow-store §1.6, unique on (name, version)).
+// This is the source of truth for the "live" badge (Task 9) and for the
+// content hash shown per column: a candidate version that has not run yet has
+// no agent_run_metrics rows, so a metrics-derived hash would be empty and the
+// column would look dark and not-live — defeating the promotion comparison.
+// Missing row (version not defined) leaves col.Live=false / col.ContentHash
+// unset; metricsAndCost's MAX(workflow_hash) is at most a fallback (§11
+// 2026-07-09 amendment). Reads only what workflow-store's Live(name)/
+// Versions(name) already expose (05-workflow-store.md:1073/1349).
+func (s *scorecardStore) definition(name string, version int, col *scorecards.VersionColumn) error {
+	var contentHash sql.NullString
+	var live sql.NullBool
+	err := s.conn.QueryRow(`
+		SELECT content_hash, live
+		FROM agent_workflow_definitions
+		WHERE name = $1 AND version = $2`,
+		name, version,
+	).Scan(&contentHash, &live)
+	if err == sql.ErrNoRows {
+		return nil // version not defined; leave Live=false, ContentHash unset
+	}
+	if err != nil {
+		return err
+	}
+	if contentHash.Valid {
+		col.ContentHash = contentHash.String
+	}
+	col.Live = live.Bool
+	return nil
 }
 
 // metricsAndCost fills volume/taxonomy from agent_run_metrics and
@@ -452,7 +537,10 @@ func (s *scorecardStore) perVersion(name string, version int) (*scorecards.Versi
 // by ticket_id (authoritative per-ticket spend, incl. gateway rows) over
 // the DISTINCT tickets this version ran — not by metadata->>'workflow',
 // which is a display-attribution convenience that a hand-dispatched run
-// may omit.
+// may omit. The MAX(workflow_hash) here is only a FALLBACK for col.ContentHash:
+// definition() (called first in perVersion) sets the authoritative hash from
+// agent_workflow_definitions, and this must not overwrite it — the metrics
+// hash is used only if the definition row was absent.
 func (s *scorecardStore) metricsAndCost(name string, version int, col *scorecards.VersionColumn) error {
 	var stepCount, ticketCount, ok, failed, errored int
 	var workflowHash sql.NullString
@@ -476,7 +564,10 @@ func (s *scorecardStore) metricsAndCost(name string, version int, col *scorecard
 	col.StepOK = ok
 	col.StepFailed = failed
 	col.StepError = errored
-	if workflowHash.Valid {
+	// Fallback only: definition() already set the authoritative hash from
+	// agent_workflow_definitions. Never clobber it with the metrics-derived
+	// MAX(workflow_hash) — fill from metrics ONLY when definition() found no row.
+	if col.ContentHash == "" && workflowHash.Valid {
 		col.ContentHash = workflowHash.String
 	}
 
@@ -2021,3 +2112,9 @@ git commit -m "feat(db): scorecard (workflow_version, day) covering indexes (mig
 - The **migration** (Task 10) is index-only and fully reversible via its `.down.sql`; dropping the two indexes changes performance only, never correctness. It is the highest wave-4 number (`1773106110`); if it merges/deploys before a lower wave-4 migration, the version-pointer migrator will still apply the lower ones on the next deploy only if they land first — so merge wave-4 branches in migration-number order (`…090` delivery-outcomes → dispatch's block → `…110` scorecards) before any theborg deploy, per the wave-1 migration-ordering addendum.
 - The **`agent_outcomes` LEFT JOIN** (Task 5) is guarded by `to_regclass('agent_outcomes') IS NOT NULL` — if delivery-outcomes' `1773106090` is not yet deployed, outcome columns render dark and the scorecard still returns. No rollback needed for the ordering; the guard is the safety.
 - The **Elm ticket-page integration** (Task 8, Step 9) is the only edit to a file this plan does not own (`AgentTickets/AgentTicket.elm`, ticket-core's). It adds a model field, a fetch on the existing poll, and a panel render — additive. To back out: remove the `metrics` field, the `FetchTicketAgentMetrics` emit, and the `AgentMetricsPanel.view` call; the panel module and its route remain unused but compilable.
+
+---
+
+## §11. Amendments
+
+- **2026-07-09 (design-review F8 — live flag + authoritative content hash):** Fixed a defect where `col.Live` was never true (the "live" badge in Task 9 never lit) and `col.ContentHash` came only from `MAX(workflow_hash)` over `agent_run_metrics`, so a not-yet-run candidate version returned an all-zero, empty-hash, not-live column — defeating the live-vs-candidate promotion comparison that spec §8 says is the scorecard's reason to exist. **Change:** added a `definition(name, version, col)` read to `atc/db/scorecard_store.go` (`SELECT content_hash, live FROM agent_workflow_definitions WHERE name=$1 AND version=$2`, workflow-store §1.6, unique `(name, version)`), called FIRST in `perVersion` (Task 3), setting `col.Live` and `col.ContentHash` AUTHORITATIVELY. `metricsAndCost`'s `MAX(workflow_hash)` is now a fallback only (`if col.ContentHash == ""`), never clobbering the definition-derived hash. It reads only what `Live(name)`/`Versions(name)` already expose (05-workflow-store.md:1073/1349) — no new workflow-store surface. Added a Task 3 store spec asserting `col.Live` is true for the promoted version (v3) and false for candidates (v4, v5), and that a not-yet-run candidate (v5, zero run rows) still returns its real `content_hash` (`def-hash-v5`); extended the Task 3 `BeforeEach` fixture with `agent_workflow_definitions` rows for v3 (live) / v4 / v5. No contract, table, column, route, or migration change — `agent_workflow_definitions` and its `content_hash`/`live` columns are consumed exactly as workflow-store defines them.
