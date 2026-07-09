@@ -72,7 +72,7 @@ The §11 amendment log is the required mechanism for contract changes ("changes 
 - [ ] Append to the §11 amendment log:
 
 ```markdown
-- 2026-07-XX (workflow-store, owner amendments; affects consumers: dispatch, harvest-step, platform-mcp-hitl, scorecards, process-intel-experiments — additive only):
+- 2026-07-08 (workflow-store, owner amendments; affects consumers: dispatch, harvest-step, platform-mcp-hitl, scorecards, process-intel-experiments — additive only):
   - §1.6: added `promoted_by TEXT NOT NULL DEFAULT ''` so `Store.Promote`'s existing `promotedBy` argument is persisted (the interface already carried it; the DDL had no column).
   - §2.2: added `Definition.RawYAML` (`json:"raw_yaml,omitempty"`) carrying the exact stored YAML bytes on `Get`/`Live` responses; `List`/`Versions` leave it empty (and leave `config` as a zero object — metadata-only listings).
   - §4.2 workflow-route HTTP shapes pinned by the owner:
@@ -81,11 +81,10 @@ The §11 amendment log is the required mechanism for contract changes ("changes 
     - `GET /api/v1/agent/workflows/:workflow_name/versions/:version` → 200 `Definition` incl. `config` + `raw_yaml`, 404 unknown, 400 non-integer version.
     - `POST /api/v1/agent/workflows/:workflow_name/versions` — body is the raw definition YAML (any Content-Type, ≤1 MiB) → 200 `Definition` (idempotent on content hash: re-importing identical bytes returns the existing version), 400 on parse/validation/name-mismatch, 413 oversize.
     - `PUT /api/v1/agent/workflows/:workflow_name/versions/:version/live` → 204, 404 unknown (name, version).
-  - Slot-shape freeze for wave-3 review: the `checkpoint:` step fields (`on_reject: fail|send_back`), `hitl` block (`ask_timeout: park|default|fail`, `ask_timeout_seconds`), `gate_policy` block (§6.3 YAML grammar — each `gates[]` entry carries `gate`, `scope`, `focus`, `timeout`, and the optional `retries: 0..2` flake-retry key harvest-step consumes; workflow-store validates the `0..2` bound at import and carries `Gate.Retries` through so dispatch's renderer can map it onto `harvest.Gate.Retries`), and `judge` block are stored and write-time validated by workflow-store but INERT until platform-mcp-hitl and harvest-step consume them; those workstreams review these shapes at wave-3 start and any change lands as a new `schema_version`, never a mutation of v1. §6.1's "optional top-level `schemas` map" is realized as `schemas: map[string]string` in `Config`.
+  - §6 grammar: added the optional top-level `spec_delivery` field (Go `Config.SpecDelivery string`, yaml/json `spec_delivery,omitempty`; values `""`/`mcp`/`files`, empty ⇒ `mcp`; a normal hashed field, write-time validated to reject any other value). This replaces the prior "rendered spec.md/plan.md as env vars `AGENT_SPEC_MD`/`AGENT_PLAN_MD`" design: the DB stays the single source of truth and nothing is flattened by default. Owned by workflow-store (§6), referenced by contracts §6, consumed by dispatch's renderer (11-dispatch) — `mcp` injects no spec/plan bytes (agents read via platform-mcp `read_ticket`/`list_tasks`/`get_task`, implemented by platform-mcp-hitl over ticket-core `Store` methods `Get`/`LatestSpec`/`ActivePlan`); `files` materializes read-only `spec.md`/`plan.md` mounted as the `ticket` artifact. Affects consumers: platform-mcp-hitl, dispatch, workflow-store, ticket-core-consumers.
+  - Slot-shape freeze for wave-3 review: the `checkpoint:` step fields (`on_reject: fail|send_back`), `hitl` block (`ask_timeout: park|default|fail`, `ask_timeout_seconds`), `gate_policy` block (§6.3 YAML grammar — each `gates[]` entry carries `gate`, `scope`, `focus`, `timeout`, and the optional `retries: 0..2` flake-retry key harvest-step consumes; workflow-store validates the `0..2` bound at import and carries `Gate.Retries` through so dispatch's renderer can map it onto `harvest.Gate.Retries`), and `judge` block are stored and write-time validated by workflow-store but INERT until platform-mcp-hitl and harvest-step consume them; those workstreams review these shapes at wave-3 start and any change lands as a new `schema_version`, never a mutation of v1. §6.1's "optional top-level `schemas` map" is realized as `schemas: map[string]string` in `Config`. The optional top-level `spec_delivery` field (`SpecDelivery string`, values `""`/`mcp`/`files`, empty ⇒ `mcp`) is a normal hashed field owned by this grammar and validated at import; it is INERT here (workflow-store never renders) and is consumed by dispatch's renderer to pick the spec/plan read model — `mcp` (default: no spec/plan bytes injected; agents read via platform-mcp `read_ticket`/`list_tasks`/`get_task`) vs `files` (read-only `spec.md`/`plan.md` mounted as the `ticket` artifact).
   - Wrappa placement note: the five workflow routes land in the existing `auth.CheckAuthorizationHandler` case group (admin-only in effect, per decision 21) with `DefaultRoles` entries in place; agent-identity moves them onto `CheckAgentAuthorizationHandler` together with the existing agent feedback routes.
 ```
-
-(Replace `2026-07-XX` with the actual date.)
 
 - [ ] Commit: `git add docs/superpowers/plans/agentic-platform/00-shared-contracts.md && git commit -m "docs(agentic-platform): workflow-store owner amendments — promoted_by, RawYAML, route shapes, slot freeze"`
 
@@ -250,6 +249,11 @@ func TestParseFullSample(t *testing.T) {
 	if cfg.Name != "standard-dev" {
 		t.Errorf("Name = %q", cfg.Name)
 	}
+	// spec_delivery is omitted from the sample: empty ⇒ mcp semantics
+	// (dispatch's renderer injects no spec/plan bytes).
+	if cfg.SpecDelivery != "" {
+		t.Errorf("SpecDelivery = %q, want \"\" (defaults to mcp)", cfg.SpecDelivery)
+	}
 	if cfg.Defaults.Model != "claude-sonnet-4-5" || cfg.Defaults.MaxTurns != 80 {
 		t.Errorf("Defaults = %+v", cfg.Defaults)
 	}
@@ -333,6 +337,12 @@ type Config struct {
 	SchemaVersion int                `yaml:"schema_version" json:"schema_version"`
 	Name          string             `yaml:"name" json:"name"`
 	Description   string             `yaml:"description,omitempty" json:"description,omitempty"`
+	// SpecDelivery selects how the ticket's spec/plan reach agent steps at
+	// render time: "mcp" (default when empty — agents read via platform-mcp
+	// read_ticket/list_tasks/get_task, no bytes injected) or "files"
+	// (read-only spec.md/plan.md mounted as the "ticket" artifact). Consumed
+	// by dispatch's renderer; a normal hashed field (contracts §6).
+	SpecDelivery  string             `yaml:"spec_delivery,omitempty" json:"spec_delivery,omitempty"`
 	Defaults      Defaults           `yaml:"defaults,omitempty" json:"defaults,omitempty"`
 	Budget        Budget             `yaml:"budget,omitempty" json:"budget,omitempty"`
 	Sidecars      map[string]Sidecar `yaml:"sidecars,omitempty" json:"sidecars,omitempty"`
@@ -526,6 +536,7 @@ func TestValidateRejects(t *testing.T) {
 	}{
 		{"wrong schema_version", mutate(t, "schema_version: 1", "schema_version: 2"), "schema_version must be 1"},
 		{"missing name", mutate(t, "name: standard-dev", "name: \"\""), "name is required"},
+		{"bad spec_delivery", mutate(t, "name: standard-dev", "name: standard-dev\nspec_delivery: telepathy"), "spec_delivery must be mcp or files"},
 		{"step with both agent and checkpoint", mutate(t, "- checkpoint: plan-approval", "- checkpoint: plan-approval\n  agent: sneaky\n  prompt: spec"), "exactly one of"},
 		{"agent step without prompt", mutate(t, "  prompt: spec\n", "\n"), "prompt is required"},
 		{"unknown prompt key", mutate(t, "  prompt: spec", "  prompt: nonexistent"), "unknown prompt"},
@@ -569,6 +580,7 @@ func TestValidateRejects(t *testing.T) {
 func TestValidateAcceptsMinimalDefinition(t *testing.T) {
 	minimal := `schema_version: 1
 name: tiny
+spec_delivery: files
 prompts:
   work: |
     Do the work.
@@ -583,6 +595,9 @@ steps:
 	}
 	if cfg.HITL.AskTimeout != "" || cfg.Judge != nil || len(cfg.GatePolicy.Gates) != 0 {
 		t.Errorf("optional blocks must stay zero: %+v", cfg)
+	}
+	if cfg.SpecDelivery != "files" {
+		t.Errorf("SpecDelivery = %q, want files", cfg.SpecDelivery)
 	}
 }
 ```
@@ -603,6 +618,13 @@ func (c *Config) Validate() error {
 	}
 	if c.Name == "" {
 		return fmt.Errorf("workflow: name is required")
+	}
+	switch c.SpecDelivery {
+	case "", "mcp", "files":
+		// "" ⇒ mcp (the default); dispatch's renderer treats the empty
+		// string identically to "mcp".
+	default:
+		return fmt.Errorf("workflow: spec_delivery must be mcp or files, got %q", c.SpecDelivery)
 	}
 	if c.Budget.TicketUSD < 0 {
 		return fmt.Errorf("workflow: budget.ticket_usd must be >= 0")
@@ -2740,3 +2762,9 @@ Never pass `--race` to the Ginkgo suites (parallel compilation failures, per CLA
 - The migration is additive (one new table, no existing-table changes); `1773106040_create_agent_workflow_definitions.down.sql` drops exactly the table, and no existing code path touches it unless the new routes are exercised. Reverting the workstream = revert the commits; no data migration to unwind.
 - `atc/wrappa/api_auth_wrappa.go` has an exhaustive switch that panics on unknown route names — the routes.go and wrappa edits must land in the same commit (Task 9 does this). If a partial revert removes one side, the `ginkgo ./atc/wrappa/` "handles each route" spec catches the panic before deploy.
 - `Promote` uses clear-then-set inside a single transaction against the `agent_workflow_definitions_live` partial unique index; if a rollout is interrupted there is no window where two versions are live (index-enforced), only a window where none is — dispatch (wave 4) treats "no live version" as not-dispatchable, so this is safe.
+
+---
+
+## Addendum
+
+- **2026-07-08 (spec/plan delivery model — frozen delta):** Added the optional top-level `spec_delivery` grammar field to `workflow.Config` (Go `SpecDelivery string`, yaml/json `spec_delivery,omitempty`; values `""`/`mcp`/`files`, empty ⇒ `mcp`). Write-time validation (Task 4 `Config.Validate`) accepts only those three values and rejects any other; it is a normal hashed field (participates in the content hash like every other YAML key). This plan owns the grammar slot only — the field is INERT here (workflow-store never renders). It is consumed by **dispatch's renderer** (11-dispatch, which reads `SpecDelivery` to pick the read model: `mcp` injects no spec/plan bytes and DELETEs the old `AGENT_SPEC_MD`/`AGENT_PLAN_MD` env keys — agents read via the platform-mcp `read_ticket`/`list_tasks`/`get_task` tools; `files` materializes read-only `spec.md`/`plan.md` mounted as the `ticket` artifact) and is referenced by **contracts §6** (grammar mirror). Supersedes the prior "rendered spec.md/plan.md delivered via env vars" design so the DB stays the single source of truth and nothing is flattened by default. Affected workstreams: platform-mcp-hitl, dispatch, workflow-store, ticket-core-consumers. Edits landed: `Config` struct field (Task 3), `Validate` accept/reject rule (Task 4), Task 3 happy-path default-case assertion, Task 4 reject case + `files` accept assertion, and the Task 1 slot-shape freeze + §11 amendment-log entries.

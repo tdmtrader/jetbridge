@@ -897,19 +897,90 @@ The dev-mcp workstream also ships:
 
 All tools operate on the ticket identified by `AGENT_TICKET_ID` in the sidecar's env (§8.1) — agents cannot address other tickets. The sidecar calls the ATC API with its principal token (scopes `tickets:read`, `tickets:write`).
 
+**Read model [DECIDED HERE — supersedes rendered-spec/plan env injection]:** agents reach the ticket's spec and plan **only** through these platform-mcp read tools (`read_ticket`, `list_tasks`, `get_task`); no spec/plan bytes are injected into any agent step by default. The tools back onto ticket-core `Store` methods (`Get` / `LatestSpec` / `ActivePlan`, §2.1). The optional file-mount delivery path is workflow-definition opt-in (`spec_delivery: files`, §6) and is read-only; `update_task_status` remains the write-back in both delivery modes.
+
 **`read_ticket`** — input: `{ "type": "object", "properties": {}, "additionalProperties": false }`
-result:
+result (envelope + spec **only**; tasks are reached via `list_tasks`/`get_task`):
 ```json
 {
   "type": "object",
   "required": ["ticket"],
   "properties": {
-    "ticket": { "$ref": "#/defs/Ticket (§2.1 JSON shape)" },
-    "spec":   { "description": "latest spec (title, body, acceptance_criteria, links) or null" },
-    "tasks":  { "type": "array", "description": "active plan tasks with status" }
+    "ticket": {
+      "type": "object",
+      "required": ["id", "title", "repo", "state", "budget_usd", "workflow_name", "workflow_version"],
+      "properties": {
+        "id":               { "type": "integer" },
+        "title":            { "type": "string" },
+        "repo":             { "type": "string" },
+        "state":            { "type": "string" },
+        "budget_usd":       { "type": "number" },
+        "workflow_name":    { "type": "string" },
+        "workflow_version": { "type": "integer" }
+      }
+    },
+    "spec": {
+      "description": "latest spec or null",
+      "type": ["object", "null"],
+      "required": ["title", "acceptance_criteria", "body_md"],
+      "properties": {
+        "title":               { "type": "string" },
+        "acceptance_criteria": { "type": "array", "items": { "type": "string" } },
+        "body_md":             { "type": "string" }
+      }
+    }
   }
 }
 ```
+
+**`list_tasks`** — input: `{ "type": "object", "properties": {}, "additionalProperties": false }`
+result (cheap skeleton of the active plan — **no** detail bodies):
+```json
+{
+  "type": "object",
+  "required": ["tasks"],
+  "properties": {
+    "tasks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["ordering", "title", "status"],
+        "properties": {
+          "ordering": { "type": "integer" },
+          "title":    { "type": "string" },
+          "status":   { "type": "string" }
+        }
+      }
+    }
+  }
+}
+```
+
+**`get_task`** — input:
+```json
+{
+  "type": "object",
+  "required": ["ordering"],
+  "properties": {
+    "ordering": { "type": "integer" }
+  },
+  "additionalProperties": false
+}
+```
+result (one active-plan task with its detail body):
+```json
+{
+  "type": "object",
+  "required": ["ordering", "title", "status", "detail_md"],
+  "properties": {
+    "ordering":  { "type": "integer" },
+    "title":     { "type": "string" },
+    "status":    { "type": "string" },
+    "detail_md": { "type": "string" }
+  }
+}
+```
+An unknown `ordering` (not present in the active plan) is an MCP tool error (`isError=true`) — a `tools/call` result carrying the error text, matching how the shared `atc/api/mcpserver` surfaces every handler error — not an `ok`-with-empty result. (This is a tool-level error, NOT a JSON-RPC `-32602` error object: the shared mcpserver only emits `-32602` for a malformed `tools/call` envelope, never for a tool handler's returned error.)
 
 **`submit_spec`** — input:
 ```json
@@ -1195,6 +1266,15 @@ schema_version: 1
 name: standard-dev            # must match agent_workflow_definitions.name on import
 description: spec -> plan -> implement -> review loop, single agent
 
+spec_delivery: mcp           # mcp (default when omitted) | files
+                             # mcp   = agents read spec/plan only via platform-mcp
+                             #         read tools (read_ticket/list_tasks/get_task);
+                             #         NO spec/plan bytes injected into any step.
+                             # files = additionally materialize read-only spec.md /
+                             #         plan.md, mounted as artifact "ticket" (§3.2, §11-dispatch).
+                             # Normal hashed field (Go: workflow.Config.SpecDelivery
+                             # string); import validation rejects any other value.
+
 defaults:
   model: claude-sonnet-4-5    # any step may override
   max_turns: 80
@@ -1217,8 +1297,8 @@ sidecars:                     # named sidecar set; steps reference by name
 
 prompts:                      # prompt templates, inline — hashed with the definition.
   spec: |                     # Go text/template; render context: .Ticket .Spec .Tasks .Params
-    Read the ticket via platform-mcp read_ticket, explore the repo, then
-    submit a spec with submit_spec. ...
+    Begin by calling platform-mcp read_ticket and list_tasks (get_task per
+    task as you work). Explore the repo, then submit a spec with submit_spec. ...
   implement: |
     Implement the active plan task by task. Use dev-mcp run_tests with
     affected components after each task. ...
@@ -1469,3 +1549,5 @@ Set by the agent-step exec implementation (values resolved at render/dispatch ti
   - §1.9 / §3.2 / §6 / new decision 22 (affects: platform-mcp-hitl, workflow-store, dispatch): added the missing default-answer carrier (`default` field on `ask_human` input) and the sidecar-driven timeout-resolution protocol.
   - §4.1 / §4.2 (affects: agent-identity, platform-mcp-hitl, pipeline-runs): `AnswerAgentQuestion` gains `principal(questions:answer)` for timeout resolution; `runs:create` removed from the scope vocabulary (no route granted it; run creation is in-process).
   - §8.2 / §8.3 / §1.13 / new decision 23 (affects: credentials-and-budgets, harvest-step, process-intel-experiments): defined the previously missing carrier for the platform Anthropic credential — long-lived `agent-platform-credential` secret.
+- 2026-07-08: spec/plan delivery via granular platform-mcp read tools + optional file mount (affects: platform-mcp-hitl, dispatch, workflow-store, ticket-core-consumers). Supersedes the prior "rendered spec.md/plan.md as read-only workspace inputs via env vars AGENT_SPEC_MD/AGENT_PLAN_MD" design. §3.2: `read_ticket` returns envelope + spec **only** (tasks removed); added `list_tasks` (cheap skeleton) and `get_task` (one task with `detail_md`; unknown ordering → MCP tool error `isError=true`, matching how the shared `atc/api/mcpserver` surfaces handler errors — NOT a JSON-RPC `-32602` object); `update_task_status` unchanged (write-back, available in both delivery modes). §6: added optional top-level `spec_delivery: mcp|files` (default `mcp`; Go `workflow.Config.SpecDelivery`; normal hashed field; import validation rejects other values); seed-prompt convention now instructs the first agent step to begin with `read_ticket`/`list_tasks` (`get_task` per task). Default (`mcp`/empty) injects no spec/plan bytes into any step; `files` materializes read-only `spec.md`/`plan.md` (via `tickets.RenderSpecMarkdown`/`RenderPlanMarkdown`) mounted read-only as artifact `ticket`. §8.1 carries no `AGENT_SPEC_MD`/`AGENT_PLAN_MD` keys (never present here; dispatch deletes them where they existed). DB remains single source of truth; nothing flattened by default.
+- 2026-07-08: `get_task` unknown-ordering error-mechanism correction (affects: platform-mcp-hitl). §3.2 previously promised an unknown `ordering` returns a JSON-RPC `-32602` error object, but the shared `atc/api/mcpserver` maps every tool handler's returned error to a `tools/call` result with `isError=true` (a successful call carrying error content) and only emits `-32602` for a malformed `tools/call` envelope — it has no path from a handler to a `-32602` error object (locked in by its committed tests). §3.2 now specifies an unknown ordering as an MCP tool error (`isError=true`), consistent with every other platform-mcp tool-validation error, and 08-platform-mcp-hitl's handler/tests assert the response carries NO top-level JSON-RPC error object plus `result.isError=true`.

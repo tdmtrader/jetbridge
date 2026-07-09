@@ -2,9 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Ship the agent's mid-flight platform surface — `read_ticket`, `submit_spec`, `submit_plan`, `update_task_status`, `ask_human` — as the platform-mcp sidecar, with park/resume over a long-poll question API, checkpoint-gate execution on the same primitive, a polling-backed webhook notification channel plus ticket-page banner, contract tests, and a live theborg restart-while-parked proof.
+**Goal:** Ship the agent's mid-flight platform surface — `read_ticket`, `list_tasks`, `get_task`, `submit_spec`, `submit_plan`, `update_task_status`, `ask_human` — as the platform-mcp sidecar, with park/resume over a long-poll question API, checkpoint-gate execution on the same primitive, a polling-backed webhook notification channel plus ticket-page banner, contract tests, and a live theborg restart-while-parked proof.
 
-**Architecture:** A new `agent_run_questions` table + factory + four ATC routes (ask / list / get-long-poll / answer) carry the HITL state; the sidecar (`agent/platformmcp`, binary `cmd/platform-mcp`, image `ghcr.io/tdmtrader/mcp-platform`) is an MCP streamable-HTTP server that translates the five tools into principal-authed calls against ticket-core's routes and the new question routes, parking by blocking the MCP call over a resilient long-poll. Notifications are delivered by a polling RunnableComponent (`agent_notifier`) that POSTs a generic webhook (§8.4) — never notify-only, per the fork's lossy-NOTIFY lesson.
+**Read model (default = MCP):** the agent reaches spec/plan ONLY through the platform-mcp read tools (`read_ticket` → envelope + spec; `list_tasks` → the cheap task skeleton; `get_task` → one task's detail). No spec/plan bytes are injected into any agent step by default — the DB stays the single source of truth and nothing is flattened into a monolithic markdown blob. The `files` opt-in (rendered read-only `spec.md`/`plan.md` mounted as the `ticket` artifact) is owned by dispatch's renderer (workflow field `spec_delivery`, wave 4); this plan implements only the MCP read tools, which stay mounted and functional in BOTH delivery modes.
+
+**Architecture:** A new `agent_run_questions` table + factory + four ATC routes (ask / list / get-long-poll / answer) carry the HITL state; the sidecar (`agent/platformmcp`, binary `cmd/platform-mcp`, image `ghcr.io/tdmtrader/mcp-platform`) is an MCP streamable-HTTP server that translates the seven tools into principal-authed calls against ticket-core's routes and the new question routes, parking by blocking the MCP call over a resilient long-poll. The three read tools (`read_ticket`/`list_tasks`/`get_task`) all resolve against ticket-core's `GetAgentTicket` route, which embeds spec + tasks server-side (backed by Store `Get`/`LatestSpec`/`ActivePlan`); the sidecar projects that one payload into the three typed results, dropping tasks from `read_ticket`. Notifications are delivered by a polling RunnableComponent (`agent_notifier`) that POSTs a generic webhook (§8.4) — never notify-only, per the fork's lossy-NOTIFY lesson.
 
 **Tech Stack:** Go (main module), squirrel/psql + counterfeiter in `atc/db`, `atc/api/mcpserver` for the MCP protocol, plain-Go httptest tests in `agent/*`, Ginkgo in `atc/db`/`atc/api`/`atc/wrappa`, Elm 0.19 (`web/elm`) for the banner, plain-Go `//go:build live` tests against theborg for park/resume.
 
@@ -17,7 +19,7 @@
 | scope_in item | Tasks |
 |---|---|
 | platform-mcp sidecar server, packaged per dev-mcp's image convention, authenticating as a scoped agent principal bound to the ticket/run | 9, 10, 13, 16 |
-| Schema-constrained submit_spec/submit_plan/update_task_status through ticket-core's mutation path; read_ticket; live task progress on the ticket page | 10 (tools write via ticket-core's routes; the ticket page's task list — landed in wave 2 — renders the rows they write) |
+| Schema-constrained submit_spec/submit_plan/update_task_status through ticket-core's mutation path; read_ticket/list_tasks/get_task; live task progress on the ticket page | 10 (write tools go through ticket-core's routes; the read tools project the `GetAgentTicket` payload — `read_ticket` = envelope + spec, `list_tasks` = task skeleton, `get_task` = one task's detail; the ticket page's task list — landed in wave 2 — renders the rows they write) |
 | ask_human: park via supervisor wait semantics, question+options on the ticket page, resume on answer, parked step counts as running, per-workflow timeout policy from rendered step config (env) | 2, 3, 4, 5, 6, 9, 11, 17 |
 | OWNS checkpoint-gate execution via the same park/resume primitive | 14 |
 | Concrete notification mechanism: ticket-page banner + one real channel, polling-backed | 7, 8, 17 |
@@ -73,6 +75,7 @@ ls deploy/Dockerfile.* && grep -rn "mcp-dev" ci/ deploy/ 2>/dev/null
   - §1.9: `agent_run_questions` gains `notified_at TIMESTAMPTZ` (NULL = webhook not yet delivered) via migration `1773106071`, plus partial index `agent_run_questions_unnotified ON agent_run_questions (asked_at) WHERE notified_at IS NULL`. Additive; consumed only by the notifier component.
   - §4.2: new route `ListAgentTicketQuestions` — GET `/api/v1/agent/tickets/:ticket_id/questions` (`?open=true` filters unanswered) — auth `authorized viewer; also principal(tickets:read)`. The frozen table omitted a list route; the ticket-page banner requires one.
   - §8.4: the notifier is component `atc.ComponentAgentNotifier` ("agent_notifier"), polling every 10s (never notify-only), gated on web flag `--agent-notify-webhook-url`; it delivers question/checkpoint notifications and marks rows via `notified_at`. Ticket-state and budget notification kinds are emitted by their owners calling `agent/notify.Notifier` when those workstreams land.
+  - §3.2 read-model (FROZEN DELTA — supersedes the prior "rendered spec.md/plan.md via `AGENT_SPEC_MD`/`AGENT_PLAN_MD`" design): agents reach spec/plan ONLY through granular platform-mcp read tools; no spec/plan bytes are injected into any agent step by default. `read_ticket` returns envelope + spec ONLY (input `{}`; tasks REMOVED). Two new read tools: `list_tasks` (input `{}` → `{"tasks":[{"ordering","title","status"}]}`, the cheap skeleton, no detail bodies) and `get_task` (input `{"ordering":int}` → `{"ordering","title","status","detail_md"}`, unknown ordering → MCP tool error `isError=true` — the shared `atc/api/mcpserver` surfaces every handler error as a `tools/call` result with `isError=true`, NOT a JSON-RPC `-32602` object). `update_task_status` is UNCHANGED and remains the write-back in both delivery modes. All three read tools back onto ticket-core Store `Get`/`LatestSpec`/`ActivePlan` (here via the embedding `GetAgentTicket` route). The optional `files` delivery mode (workflow field `spec_delivery: mcp|files`, default `mcp`; owned by workflow-store §6 + dispatch's renderer, wave 4) materializes read-only `spec.md`/`plan.md` mounted as the `ticket` artifact — the platform-mcp read tools stay mounted and functional in BOTH modes. Affected workstreams: platform-mcp-hitl, dispatch, workflow-store, ticket-core-consumers.
   - §3.2: the checkpoint internal endpoint is `POST /checkpoint` on the sidecar's `MCP_LISTEN_ADDR` (same mux as `/mcp` and `/healthz`), body `{"name": "...", "description": "..."}`, blocking response `{"approved": bool, "answer": "...", "answered_by": "..."}`. Checkpoint client mode: `platform-mcp checkpoint --name <n> [--description <d>]`, exit 0 approved / exit 1 rejected-or-error. `on_reject: send_back` semantics live in dispatch's renderer (wave 4); at the step level both values fail the step on reject.
   - §8.1: new row — `PLATFORM_MCP_EVENTS_PATH` | platform | literal | NDJSON event-log path for the sidecar's flight-recorder events (`human.ask`, `human.answer`, `checkpoint.*`); unset = stdout (pod logs).
   - §3.2 timeout resolution detail: when the sidecar resolves a timed-out question it sends `answered_by: "platform-mcp"` (the per-run principal *name* is not in the §8.1 env contract; if dispatch later adds `AGENT_PRINCIPAL_NAME`, the sidecar prefers it).
@@ -2215,10 +2218,53 @@ func (c *ATCClient) do(ctx context.Context, method, path string, body any, out a
 	return nil
 }
 
-// GetTicketRaw returns the GetAgentTicket response body verbatim. Per §3.2
-// read_ticket returns {ticket, spec, tasks}; ticket-core's handler embeds
-// spec+tasks (survey Task 1). If the response has no "ticket" key the caller
-// wraps it (tolerated drift, recorded in the addendum).
+// TicketPayload mirrors the GetAgentTicket response: envelope + latest spec +
+// active-plan tasks, all embedded by ticket-core's handler (backed by Store
+// Get / LatestSpec / ActivePlan — survey Task 1). The three read tools each
+// fetch this ONE payload and project it: read_ticket keeps ticket+spec and
+// DROPS tasks; list_tasks projects the task skeleton; get_task returns one
+// task's detail. Tasks are never flattened into markdown — the structure is
+// preserved and served through typed tools (§3.2 read model).
+type TicketPayload struct {
+	Ticket json.RawMessage `json:"ticket"`
+	Spec   json.RawMessage `json:"spec"`
+	Tasks  []TicketTask    `json:"tasks"`
+}
+
+// TicketTask is one active-plan task as embedded in the GetAgentTicket payload.
+// DetailMD is the per-task markdown body; list_tasks omits it, get_task returns it.
+type TicketTask struct {
+	Ordering int    `json:"ordering"`
+	Title    string `json:"title"`
+	Status   string `json:"status"`
+	DetailMD string `json:"detail_md"`
+}
+
+// GetTicket fetches and decodes the GetAgentTicket payload. It tolerates the
+// bare-ticket drift the survey warned about: a response with no "ticket" key
+// is treated as the envelope itself (spec null, no tasks).
+func (c *ATCClient) GetTicket(ctx context.Context) (*TicketPayload, error) {
+	raw, err := c.GetTicketRaw(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		return nil, fmt.Errorf("decoding ticket response: %w", err)
+	}
+	if _, ok := probe["ticket"]; !ok {
+		return &TicketPayload{Ticket: json.RawMessage(raw)}, nil
+	}
+	var payload TicketPayload
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return nil, fmt.Errorf("decoding ticket payload: %w", err)
+	}
+	return &payload, nil
+}
+
+// GetTicketRaw returns the GetAgentTicket response body verbatim; ticket-core's
+// handler embeds spec+tasks (survey Task 1). Kept for read_ticket, which
+// re-projects the payload to envelope + spec ONLY.
 func (c *ATCClient) GetTicketRaw(ctx context.Context) (json.RawMessage, error) {
 	var raw json.RawMessage
 	err := c.do(ctx, http.MethodGet, fmt.Sprintf("/api/v1/agent/tickets/%d", c.ticketID), nil, &raw)
@@ -2340,7 +2386,7 @@ git commit -m "feat(platform-mcp): sidecar env config + restart-resilient ATC cl
 
 ---
 
-### Task 10: MCP server assembly + read_ticket / submit_spec / submit_plan / update_task_status
+### Task 10: MCP server assembly + read_ticket / list_tasks / get_task / submit_spec / submit_plan / update_task_status
 
 **Files:**
 - Create: `agent/platformmcp/server.go`
@@ -2348,6 +2394,8 @@ git commit -m "feat(platform-mcp): sidecar env config + restart-resilient ATC cl
 - Test: `agent/platformmcp/tools_test.go`
 
 The MCP protocol layer is `atc/api/mcpserver` (verified: `NewServer()`, `AddTool(name, description, schema, handler)`, `ServeHTTP` at `atc/api/mcpserver/server.go:24/31/42`, `MustJSON` at `:179`). Tool input schemas below are byte-for-byte the §3.2 contract.
+
+This task registers all seven tools; six are implemented here (`read_ticket`, `list_tasks`, `get_task`, `submit_spec`, `submit_plan`, `update_task_status`) and `ask_human` is stubbed (Task 11). The three read tools project the single `GetAgentTicket` payload (`ATCClient.GetTicket`, Task 9): `read_ticket` returns envelope + spec and DROPS tasks; `list_tasks` returns the `{ordering,title,status}` skeleton with no detail bodies; `get_task(ordering)` returns one task including `detail_md`, or an MCP tool error (`isError=true`) on an unknown ordering — the shared `atc/api/mcpserver` maps a handler's returned error to a `tools/call` result with `isError=true`, so an unknown ordering is a tool-level error, NOT a JSON-RPC `-32602` error object.
 
 - [ ] Write the failing test `agent/platformmcp/tools_test.go`. The helper drives the server exactly the way an MCP client does — JSON-RPC `tools/call` POSTs against `ServeHTTP` — with a stub ATC behind it:
 
@@ -2406,7 +2454,11 @@ func stubTicketATC(t *testing.T) (*httptest.Server, *map[string]any) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/agent/tickets/42", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"ticket":{"id":42,"title":"fix flaky test","state":"running"},"spec":null,"tasks":[]}`)
+		fmt.Fprint(w, `{"ticket":{"id":42,"title":"fix flaky test","state":"running"},`+
+			`"spec":{"title":"Fix flake","acceptance_criteria":["green 10x"],"body_md":"## Rationale"},`+
+			`"tasks":[`+
+			`{"ordering":1,"title":"write failing test","status":"done","detail_md":"repro the flake"},`+
+			`{"ordering":2,"title":"fix","status":"pending","detail_md":"see spec"}]}`)
 	})
 	mux.HandleFunc("POST /api/v1/agent/tickets/42/spec", func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
@@ -2450,7 +2502,7 @@ func newTestServer(t *testing.T, atcURL string) *platformmcp.Server {
 	return srv
 }
 
-func TestToolsListExposesExactlyFiveTools(t *testing.T) {
+func TestToolsListExposesExactlySevenTools(t *testing.T) {
 	atc, _ := stubTicketATC(t)
 	srv := newTestServer(t, atc.URL)
 
@@ -2472,13 +2524,13 @@ func TestToolsListExposesExactlyFiveTools(t *testing.T) {
 	for _, tool := range resp.Result.Tools {
 		names = append(names, tool.Name)
 	}
-	want := []string{"read_ticket", "submit_spec", "submit_plan", "update_task_status", "ask_human"}
+	want := []string{"read_ticket", "list_tasks", "get_task", "submit_spec", "submit_plan", "update_task_status", "ask_human"}
 	if fmt.Sprint(names) != fmt.Sprint(want) {
 		t.Fatalf("tools = %v, want %v", names, want)
 	}
 }
 
-func TestReadTicket(t *testing.T) {
+func TestReadTicketReturnsEnvelopeAndSpecOnly(t *testing.T) {
 	atc, _ := stubTicketATC(t)
 	srv := newTestServer(t, atc.URL)
 
@@ -2491,12 +2543,113 @@ func TestReadTicket(t *testing.T) {
 			ID    int    `json:"id"`
 			Title string `json:"title"`
 		} `json:"ticket"`
+		Spec *struct {
+			Title string `json:"title"`
+		} `json:"spec"`
 	}
 	if err := json.Unmarshal(result, &out); err != nil {
 		t.Fatal(err)
 	}
 	if out.Ticket.ID != 42 || out.Ticket.Title != "fix flaky test" {
 		t.Fatalf("unexpected ticket: %+v", out)
+	}
+	if out.Spec == nil || out.Spec.Title != "Fix flake" {
+		t.Fatalf("expected spec embedded, got %+v", out.Spec)
+	}
+	// tasks MUST NOT appear in read_ticket's result (§3.2 read model).
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal(result, &probe); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := probe["tasks"]; ok {
+		t.Fatalf("read_ticket must not include tasks, got %s", result)
+	}
+}
+
+func TestListTasksReturnsSkeletonWithoutDetail(t *testing.T) {
+	atc, _ := stubTicketATC(t)
+	srv := newTestServer(t, atc.URL)
+
+	result, isErr := callTool(t, srv.Mux(), "list_tasks", map[string]any{})
+	if isErr {
+		t.Fatalf("list_tasks errored: %s", result)
+	}
+	var out struct {
+		Tasks []map[string]json.RawMessage `json:"tasks"`
+	}
+	if err := json.Unmarshal(result, &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Tasks) != 2 {
+		t.Fatalf("expected 2 tasks, got %+v", out.Tasks)
+	}
+	for _, task := range out.Tasks {
+		if _, ok := task["detail_md"]; ok {
+			t.Fatalf("list_tasks must omit detail_md, got %v", task)
+		}
+		for _, key := range []string{"ordering", "title", "status"} {
+			if _, ok := task[key]; !ok {
+				t.Fatalf("list_tasks task missing %q: %v", key, task)
+			}
+		}
+	}
+}
+
+func TestGetTaskReturnsDetailAndErrorsOnUnknownOrdering(t *testing.T) {
+	atc, _ := stubTicketATC(t)
+	srv := newTestServer(t, atc.URL)
+
+	result, isErr := callTool(t, srv.Mux(), "get_task", map[string]any{"ordering": 2})
+	if isErr {
+		t.Fatalf("get_task errored: %s", result)
+	}
+	var task struct {
+		Ordering int    `json:"ordering"`
+		Title    string `json:"title"`
+		Status   string `json:"status"`
+		DetailMD string `json:"detail_md"`
+	}
+	if err := json.Unmarshal(result, &task); err != nil {
+		t.Fatal(err)
+	}
+	if task.Ordering != 2 || task.Title != "fix" || task.Status != "pending" || task.DetailMD != "see spec" {
+		t.Fatalf("unexpected task: %+v", task)
+	}
+
+	// Unknown ordering is an MCP tool error (isError=true) — the shared mcpserver
+	// maps the handler's returned error to a tools/call result with isError=true,
+	// NOT a JSON-RPC -32602 error object. Assert both the isError flag AND that the
+	// tool-result content names the ordering, and that no top-level JSON-RPC error
+	// (which -32602 would carry) is present.
+	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_task","arguments":{"ordering":99}}}`
+	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("unknown-ordering call: HTTP %d: %s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Error  *struct {
+			Code int `json:"code"`
+		} `json:"error"`
+		Result struct {
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+			IsError bool `json:"isError"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode rpc response: %v: %s", err, w.Body.String())
+	}
+	if resp.Error != nil {
+		t.Fatalf("unknown ordering must be a tool error, not a JSON-RPC error object (got code %d)", resp.Error.Code)
+	}
+	if !resp.Result.IsError {
+		t.Fatalf("expected tool result isError=true for unknown ordering, got %s", w.Body.String())
+	}
+	if len(resp.Result.Content) == 0 || !strings.Contains(resp.Result.Content[0].Text, "99") {
+		t.Fatalf("expected error content naming the unknown ordering, got %s", w.Body.String())
 	}
 }
 
@@ -2673,11 +2826,30 @@ var taskStatuses = map[string]bool{
 
 func (s *Server) registerTools() {
 	s.mcp.AddTool("read_ticket",
-		"Read this run's ticket: envelope, latest spec, and active plan tasks.",
+		"Read this run's ticket: envelope and latest spec (call list_tasks / get_task for the plan).",
 		mcpserver.MustJSON(map[string]any{
 			"type": "object", "properties": map[string]any{}, "additionalProperties": false,
 		}),
 		s.readTicket)
+
+	s.mcp.AddTool("list_tasks",
+		"List the active plan's tasks (ordering, title, status) — a cheap skeleton with no detail bodies.",
+		mcpserver.MustJSON(map[string]any{
+			"type": "object", "properties": map[string]any{}, "additionalProperties": false,
+		}),
+		s.listTasks)
+
+	s.mcp.AddTool("get_task",
+		"Get one active-plan task by its ordering, including its detail_md body.",
+		mcpserver.MustJSON(map[string]any{
+			"type":     "object",
+			"required": []string{"ordering"},
+			"properties": map[string]any{
+				"ordering": map[string]any{"type": "integer", "description": "task position in the active plan"},
+			},
+			"additionalProperties": false,
+		}),
+		s.getTask)
 
 	s.mcp.AddTool("submit_spec",
 		"Submit the spec for this ticket. Structure enters here — never as markdown files.",
@@ -2755,20 +2927,71 @@ func (s *Server) registerTools() {
 		s.askHuman)
 }
 
+// readTicket returns envelope + spec ONLY — tasks are deliberately dropped from
+// this result (§3.2 read model). Agents reach the plan through list_tasks /
+// get_task so the whole plan is never dumped into context.
 func (s *Server) readTicket(ctx context.Context, _ json.RawMessage) (any, error) {
-	raw, err := s.client.GetTicketRaw(ctx)
+	payload, err := s.client.GetTicket(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("reading ticket: %w", err)
 	}
-	var probe map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &probe); err != nil {
-		return nil, fmt.Errorf("decoding ticket response: %w", err)
+	out := map[string]any{"ticket": payload.Ticket}
+	if len(payload.Spec) > 0 {
+		out["spec"] = payload.Spec
+	} else {
+		out["spec"] = nil
 	}
-	if _, ok := probe["ticket"]; ok {
-		return json.RawMessage(raw), nil
+	return out, nil
+}
+
+// listTasks returns the cheap task skeleton — {ordering, title, status} with no
+// detail bodies (§3.2). It backs onto ticket-core's ActivePlan via GetAgentTicket.
+func (s *Server) listTasks(ctx context.Context, _ json.RawMessage) (any, error) {
+	payload, err := s.client.GetTicket(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("listing tasks: %w", err)
 	}
-	// Bare-ticket response shape: wrap per the §3.2 result schema.
-	return map[string]any{"ticket": json.RawMessage(raw), "spec": nil, "tasks": []any{}}, nil
+	type taskSkeleton struct {
+		Ordering int    `json:"ordering"`
+		Title    string `json:"title"`
+		Status   string `json:"status"`
+	}
+	skeleton := make([]taskSkeleton, 0, len(payload.Tasks))
+	for _, task := range payload.Tasks {
+		skeleton = append(skeleton, taskSkeleton{
+			Ordering: task.Ordering, Title: task.Title, Status: task.Status,
+		})
+	}
+	return map[string]any{"tasks": skeleton}, nil
+}
+
+// getTask returns one active-plan task including its detail_md. An unknown
+// ordering returns a handler error, which the shared atc/api/mcpserver maps to
+// an MCP tool error — a tools/call result with isError=true carrying the error
+// text (§3.2). This is a tool-level error, NOT a JSON-RPC -32602 error object;
+// the mcpserver only emits -32602 for a malformed tools/call envelope.
+func (s *Server) getTask(ctx context.Context, args json.RawMessage) (any, error) {
+	var in struct {
+		Ordering int `json:"ordering"`
+	}
+	if err := json.Unmarshal(args, &in); err != nil {
+		return nil, fmt.Errorf("invalid arguments: %w", err)
+	}
+	payload, err := s.client.GetTicket(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("getting task: %w", err)
+	}
+	for _, task := range payload.Tasks {
+		if task.Ordering == in.Ordering {
+			return map[string]any{
+				"ordering":  task.Ordering,
+				"title":     task.Title,
+				"status":    task.Status,
+				"detail_md": task.DetailMD,
+			}, nil
+		}
+	}
+	return nil, fmt.Errorf("no task with ordering %d in the active plan", in.Ordering)
 }
 
 func (s *Server) submitSpec(ctx context.Context, args json.RawMessage) (any, error) {
@@ -2840,7 +3063,7 @@ func (s *Server) updateTaskStatus(ctx context.Context, args json.RawMessage) (an
 
   `askHuman` is implemented in Task 11 — for this task's compile, add a temporary body in `tools.go` returning `nil, fmt.Errorf("ask_human lands in Task 11")` and REPLACE it in Task 11 (the Task 11 test would fail against the temporary body, so nothing placeholder survives).
 
-- [ ] Run to verify pass (the `ask_human` presence assertion in `TestToolsListExposesExactlyFiveTools` passes because the tool is registered; only Task 11 exercises its behavior):
+- [ ] Run to verify pass (the `ask_human` presence assertion in `TestToolsListExposesExactlySevenTools` passes because the tool is registered; only Task 11 exercises its behavior):
 
 ```bash
 go test ./agent/platformmcp/
@@ -2850,7 +3073,7 @@ go test ./agent/platformmcp/
 
 ```bash
 git add agent/platformmcp/
-git commit -m "feat(platform-mcp): MCP server with read_ticket/submit_spec/submit_plan/update_task_status" -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+git commit -m "feat(platform-mcp): MCP server with read_ticket/list_tasks/get_task + spec/plan/task writes" -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ```
 
 ---
@@ -4029,7 +4252,7 @@ Expected failure: package does not exist.
 
 ```go
 // Package contracttest validates any platform-mcp endpoint against the §3.2
-// contract: five tools, exact schema names, park/resume behavior. Run it
+// contract: seven tools, exact schema names, park/resume behavior. Run it
 // in-process (this repo) or against a container (CI image job, §8.5).
 package contracttest
 
@@ -4084,7 +4307,9 @@ func NewStubATC(t *testing.T, ticketID int) *StubATC {
 
 	mux.HandleFunc("GET "+base, withTicket(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"ticket":{"id":%d,"title":"contract ticket","state":"running"},"spec":null,"tasks":[]}`, ticketID)
+		fmt.Fprintf(w, `{"ticket":{"id":%d,"title":"contract ticket","state":"running"},`+
+			`"spec":{"title":"contract spec","acceptance_criteria":["ok"],"body_md":"body"},`+
+			`"tasks":[{"ordering":1,"title":"first","status":"pending","detail_md":"do the thing"}]}`, ticketID)
 	}))
 	mux.HandleFunc("POST "+base+"/spec", withTicket(func(w http.ResponseWriter, r *http.Request) {
 		s.SpecVersions++
@@ -4202,26 +4427,51 @@ func Run(t *testing.T, endpointURL string) {
 		t.Fatalf("initialize failed: %v", init)
 	}
 
-	// tools/list: exactly the five §3.2 tools.
+	// tools/list: exactly the seven §3.2 tools.
 	list := rpc("tools/list", nil)
 	tools := list["result"].(map[string]any)["tools"].([]any)
 	names := map[string]bool{}
 	for _, tool := range tools {
 		names[tool.(map[string]any)["name"].(string)] = true
 	}
-	for _, want := range []string{"read_ticket", "submit_spec", "submit_plan", "update_task_status", "ask_human"} {
+	for _, want := range []string{"read_ticket", "list_tasks", "get_task", "submit_spec", "submit_plan", "update_task_status", "ask_human"} {
 		if !names[want] {
 			t.Fatalf("tools/list missing %q (got %v)", want, names)
 		}
 	}
-	if len(names) != 5 {
-		t.Fatalf("expected exactly 5 tools, got %v", names)
+	if len(names) != 7 {
+		t.Fatalf("expected exactly 7 tools, got %v", names)
 	}
 
-	// read_ticket returns a ticket object.
+	// read_ticket returns envelope + spec but NOT tasks (§3.2 read model).
 	text, isErr := callTool("read_ticket", map[string]any{})
-	if isErr || !bytes.Contains([]byte(text), []byte(`"ticket"`)) {
+	if isErr || !bytes.Contains([]byte(text), []byte(`"ticket"`)) || !bytes.Contains([]byte(text), []byte(`"spec"`)) {
 		t.Fatalf("read_ticket: isErr=%v %s", isErr, text)
+	}
+	if bytes.Contains([]byte(text), []byte(`"tasks"`)) {
+		t.Fatalf("read_ticket must not include tasks: %s", text)
+	}
+
+	// list_tasks returns the skeleton; get_task returns detail; unknown ordering errors.
+	text, isErr = callTool("list_tasks", map[string]any{})
+	if isErr || !bytes.Contains([]byte(text), []byte(`"ordering"`)) {
+		t.Fatalf("list_tasks: isErr=%v %s", isErr, text)
+	}
+	if bytes.Contains([]byte(text), []byte(`"detail_md"`)) {
+		t.Fatalf("list_tasks must omit detail_md: %s", text)
+	}
+	text, isErr = callTool("get_task", map[string]any{"ordering": 1})
+	if isErr || !bytes.Contains([]byte(text), []byte(`"detail_md"`)) {
+		t.Fatalf("get_task: isErr=%v %s", isErr, text)
+	}
+	// Unknown ordering is an MCP tool error (isError=true), NOT a JSON-RPC -32602
+	// error object — the shared mcpserver maps handler errors to isError results.
+	unknownOrdering := rpc("tools/call", map[string]any{"name": "get_task", "arguments": map[string]any{"ordering": 999}})
+	if unknownOrdering["error"] != nil {
+		t.Fatalf("get_task unknown ordering must be a tool error, not a JSON-RPC error object: %v", unknownOrdering["error"])
+	}
+	if result, _ := unknownOrdering["result"].(map[string]any); result == nil || result["isError"] != true {
+		t.Fatalf("get_task must reject an unknown ordering with a tool error (isError=true): %v", unknownOrdering)
 	}
 
 	// submit_spec: input error without title, version on success.
@@ -4837,6 +5087,12 @@ make test-quick                             # final gate
 **Live-test requirements (theborg):** `KUBECONFIG=~/.kube/config`, kube-context `theborg` (https://theborg.home:6443), a THROWAWAY namespace via `kubectl create ns` (never `cicd`/`concourse` — live workloads), no pod-security label. Colima/Docker is usually down on this machine, so testcontainers is not an option — theborg is the live target. The Task 18 test cleans up its pod via `cleanupPod` + namespace deletion. The Task 16 docker smoke also needs Docker; when unavailable locally, rely on the theborg CI image job (dev-mcp's template) to build/contract-test/push `ghcr.io/tdmtrader/mcp-platform`, then `fly -t cicd set-pipeline` on concourse.home per the template's instructions.
 
 **Manual end-to-end sanity (post-merge, wave-3 hand-written pipeline):** add the platform sidecar to an `agent:` step (`sidecars: [platform]`, image `ghcr.io/tdmtrader/mcp-platform:<tag>`), set `--agent-notify-webhook-url` to an ntfy topic, have the agent call `ask_human`; verify the run shows `running` while parked (pipeline-runs contract §1.5), the webhook fires within ~10s, the banner renders on the ticket page, answering resumes the step, and a checkpoint step (`platform-mcp checkpoint --name plan-approval`) blocks/exits per the approve/reject buttons.
+
+**Seed-prompt convention (default `spec_delivery: mcp`):** the workflow's first agent step prompt instructs the agent to begin by calling `read_ticket` and `list_tasks` (then `get_task` per task as it works). No spec/plan bytes are injected — the read tools are the entry point. Keep this to a one-line prompt convention; the prompt text itself is authored in the workflow definition (workflow-store), not here.
+
+**Amendment log (this plan):**
+- 2026-07-08 (platform-mcp-hitl wave-3; FROZEN DELTA "spec/plan via granular platform-mcp read tools + optional file mount"): replaced the read model. `read_ticket` now returns envelope + spec ONLY (tasks removed); added `list_tasks` (skeleton) and `get_task(ordering)` (detail; unknown ordering → MCP tool error `isError=true`, matching how the shared `atc/api/mcpserver` surfaces handler errors — NOT a JSON-RPC `-32602` object) to Task 10 (registration, handlers via `ATCClient.GetTicket`, tests) and Task 15 (contract kit + stub). `update_task_status` unchanged. Tool count 5 → 7 updated everywhere it is enumerated (Goal, Architecture, scope table, Task 10 header/intro/tests, Task 15 `Run`). No spec/plan bytes are injected by default; the optional `files` mode (workflow field `spec_delivery`) is owned by workflow-store + dispatch (wave 4) and does not change this plan's tasks. Affected workstreams: platform-mcp-hitl, dispatch, workflow-store, ticket-core-consumers. Contract addendum bullet added to the Task 1 §11 block.
+- 2026-07-08 (consistency fix; owner: platform-mcp-hitl): corrected the `get_task` unknown-ordering error mechanism. The plan claimed an unknown ordering yields a JSON-RPC `-32602` error object, but Task 10's handler returns a plain `fmt.Errorf`, and the shared `atc/api/mcpserver` (already committed) maps every handler error to a `tools/call` result with `isError=true` — it only emits `-32602` for a malformed `tools/call` envelope, never for a handler's returned error (locked in by its committed tests). Reworded the §3.2 read-model addendum bullet (Task 1), the Task 10 intro + `getTask` doc comment, and the Task 10 header amendment (08:78) to state "MCP tool error (`isError=true`)" rather than "JSON-RPC `-32602`". Strengthened the Task 10 and Task 15 unknown-ordering tests to assert the response carries NO top-level JSON-RPC `error` object AND `result.isError=true` (previously they only checked `isErr` truthiness, which passed regardless of mechanism). Matching bullet appended to the contracts §11 amendment log.
 
 **Rollback notes for the risky diffs:**
 - *Route registration (Task 6)* touches four exhaustive switches; a missed entry panics the ATC at wrap time — this fails loudly in `ginkgo ./atc/wrappa/`, not in production. Reverting is a clean `git revert` of the Task 6 commit; nothing else depends on the routes until the sidecar ships.

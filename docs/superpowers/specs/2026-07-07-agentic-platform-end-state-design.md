@@ -39,7 +39,7 @@ New `agent_tickets` table + `/api/v1/agent/tickets` CRUD + web page with edit mo
 - `origin` field (`web`, `fly`, `jira`, `retrospective`) from day one so the future Jira sync is just another writer — no schema redesign when it arrives.
 - References a workflow definition (name + version), a target repo, a per-ticket budget (defaulted, overridable), and the triggering user (for credential attachment and cost attribution).
 
-**Spec/plan storage — DB-resident, envelope + prose:** No `.md` files as source of truth, and no fully-schematized prose. A spec row = structured fields (title, acceptance criteria, links) + a markdown `body` column; plan tasks are structured rows (`agent_ticket_tasks`: id, title, status, ordering, optional markdown detail). Prose stays markdown because rationale and tradeoffs are load-bearing context for downstream agents and humans; structure enters through **schema-constrained tool calls** (`platform.submit_spec`, `platform.submit_plan`), never by parsing markdown. Workspaces receive rendered `spec.md`/`plan.md` as read-only inputs since agents work best reading files. The ticket UI shows live task progress.
+**Spec/plan storage — DB-resident, envelope + prose:** No `.md` files as source of truth, and no fully-schematized prose. A spec row = structured fields (title, acceptance criteria, links) + a markdown `body` column; plan tasks are structured rows (`agent_ticket_tasks`: id, title, status, ordering, optional markdown detail). Prose stays markdown because rationale and tradeoffs are load-bearing context for downstream agents and humans. The **write path** is `submit_spec`/`submit_plan` (schema-constrained tool calls, never markdown parsing). The **read path** is the granular platform-mcp read tools — `read_ticket` (envelope + spec), `list_tasks` (task skeleton), `get_task` (one task's detail on demand), `update_task_status` (write-back) — so structured storage is never flattened to a document by default and the agent loads only what it needs. A workflow definition MAY opt into read-only `spec.md`/`plan.md` file materialization (`spec_delivery: files`) for prompt-cache friendliness. The ticket UI shows live task progress.
 
 ### 2. Workflow definitions
 
@@ -97,7 +97,7 @@ Sidecars (jetbridge's existing sidecar support) are the agent's capability surfa
 
 The platform defines the interface; each repo ships its implementation. This is what makes the platform language- and layout-agnostic: nothing ever guesses a shell command.
 
-**platform-mcp:** the agent's mid-flight interaction surface with the platform itself: `read_ticket`, `submit_spec`, `submit_plan`, `update_task_status`, `ask_human` (§10). Small by design; anything terminal is the harvest step's job.
+**platform-mcp:** the agent's mid-flight interaction surface with the platform itself: `read_ticket`, `list_tasks`, `get_task`, `submit_spec`, `submit_plan`, `update_task_status`, `ask_human` (§10). Small by design; anything terminal is the harvest step's job.
 
 **agent-gateway-mcp:** provider-agnostic subagent access — `request_review(diff, rubric)`, `ask_agent(prompt, provider, model)`. Behind the tool contract sits an adapter layer (claude CLI, codex, cursor-cli, ...). v1 backend: **in-sidecar execution** (gateway container bundles provider CLIs); a platform-scheduled-pod backend can land later behind the same contract. The gateway is the **universal metering point**: every cross-agent call's tokens/turns/cost/latency lands in the flight recorder, enabling cross-provider comparison.
 

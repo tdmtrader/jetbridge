@@ -49,11 +49,12 @@ The charter says schemas "agreed at wave start" must be written down, not assume
 ````markdown
 ### 2.8.2 Renderer output + dispatch persistence — owner: **dispatch** (addendum, 2026-07-08; consumers: process-intel-experiments)
 
-The renderer (`agent/dispatch.Render`) is a pure function `Render(RenderInput) (RenderOutput, error)` with no DB access. `RenderInput` carries the resolved `workflow.Config`, the `tickets.Ticket`, its latest `*tickets.Spec`, and active `[]tickets.Task`, plus the resolved image flags (`AgentStepImage`, and the per-sidecar images already inline in the workflow's `sidecars` map) and `ATCExternalURL`. `RenderOutput` carries the `atc.Config` (a `template: true` pipeline with exactly one job named `run`), the materialized run-input files (`map[string]string` of `spec.md`/`plan.md` → contents, produced via `tickets.RenderSpecMarkdown`/`RenderPlanMarkdown`), and the `params map[string]any` the dispatcher passes to `CreateRun`.
+The renderer (`agent/dispatch.Render`) is a pure function `Render(RenderInput) (RenderOutput, error)` with no DB access. `RenderInput` carries the resolved `workflow.Config`, the `tickets.Ticket`, its latest `*tickets.Spec`, and active `[]tickets.Task`, plus the resolved image flags (`AgentStepImage`, and the per-sidecar images already inline in the workflow's `sidecars` map) and `ATCExternalURL`. `RenderOutput` carries the `atc.Config` (a `template: true` pipeline with exactly one job named `run`), the materialized run-input files (`map[string]string` of `spec.md`/`plan.md` → contents, produced via `tickets.RenderSpecMarkdown`/`RenderPlanMarkdown`, populated ONLY when `spec_delivery: files`), and the `params map[string]any` the dispatcher passes to `CreateRun`. `RenderInput` still carries Ticket + Spec + Tasks in both delivery modes — they are needed to materialize the files in `files` mode and to fill params.
 
 - **Template shape:** one job `name: run`; its plan is the ordered `agent:`/checkpoint steps from the definition followed by the implicitly-appended terminal `harvest:` step (§6.1: harvest is never declared in `steps`). The job is an entry job (no `passed:`), so `CreateRun` auto-triggers it (§7.1 point 8).
 - **Params schema declared by the rendered template:** exactly the run-identity params the dispatcher fills — `ticket_id` (number, required), `pipeline_run_id` is NOT a param (it is the run's own id, injected by the agent-step env at exec time from `AGENT_PIPELINE_RUN_ID`, which the renderer sets to the literal `((run))` var pipeline-runs injects). The reserved name `run` (§7.1 point 5) is never declared. Rationale: keeping the template's declared params minimal avoids params-schema validation coupling; ticket/workflow identity travels as literal step `env`, not as params, per the render-time-resolution rule (§2.8).
-- **spec.md / plan.md as run inputs:** the ticket's spec/plan reach the agent as an `env`-passed inline copy on the **first agent step** (v1) — no new mount seam is required this wave. The renderer bakes the rendered markdown into that step's `Env` under the literal keys `AGENT_SPEC_MD` and `AGENT_PLAN_MD` (contents produced via `tickets.RenderSpecMarkdown`/`RenderPlanMarkdown`), following the agent-step `AGENT_PROMPT`/`prompt_file` inline-content convention. The same bytes are ALSO recorded in `RenderOutput.RunInputs` (filename→contents) so the dispatcher can, as a documented future optimization, materialize them as a sibling `agent-run-<id>-inputs` ConfigMap mounted as an artifact named `ticket`; that mount is NOT built this wave — the env copy is the shipping v1 mechanism and the whole reason the renderer carries the ticket context.
+- **Read model (default = MCP):** by default (`spec_delivery: mcp` or omitted) the renderer injects NO spec/plan bytes into any agent step. There is no `AGENT_SPEC_MD`/`AGENT_PLAN_MD` env key — those keys are DELETED from the emission target. The agent reaches spec/plan exclusively through the platform-mcp read tools (`read_ticket`, `list_tasks`, `get_task`; contracts §3.2, implemented by 08-platform-mcp-hitl over the ticket-core `Store` methods `Get`/`LatestSpec`/`ActivePlan`), loading only what it needs and working the plan through task handles. The DB stays the single source of truth; nothing is flattened into a monolithic blob. The workflow's first agent step prompt instructs the agent to begin by calling `read_ticket` and `list_tasks` (and `get_task` per task as it works) — a one-line seed-prompt convention.
+- **spec.md / plan.md as run inputs (opt-in `spec_delivery: files`):** when the resolved `workflow.Config.SpecDelivery == "files"`, the renderer materializes read-only `spec.md`/`plan.md` (contents produced via `tickets.RenderSpecMarkdown`/`RenderPlanMarkdown`, which are KEPT) into `RenderOutput.RunInputs` (filename→contents). The dispatcher mounts them READ-ONLY as an artifact named `ticket` on the agent steps — a file mount, NOT env vars. In `mcp` mode `RenderOutput.RunInputs` is empty. In BOTH modes the platform-mcp sidecar is mounted and all its tools work; `files` mode is purely additive (a read-only mount) and does not disable the MCP read path. `SpecDelivery` is read off the resolved `workflow.Config` (grammar owned by 05-workflow-store; contracts §6): yaml key `spec_delivery`, Go field `SpecDelivery string`, values `"mcp"` (default when empty) | `"files"`, a normal hashed field.
 - **Persistence:** the dispatcher persists the rendered `atc.Config` via `db.Team.SavePipeline(atc.PipelineRef{Name: "agent-ticket-<id>"}, config, 0, false)` to obtain the base template pipeline id, then calls `db.PipelineRunFactory.CreateRun(templateID, params, "dispatcher")`. One template pipeline per ticket (name `agent-ticket-<ticket-id>`); re-dispatch after send-back re-saves (bumping `ConfigVersion`) and creates a new run number under the same template.
 - **`budget.TicketBudgets` implementation:** dispatch supplies `dispatch.TicketBudgets` resolving `tickets.budget_usd ?? workflow.Config.Budget.TicketUSD` via `tickets.Store.Get` + the resolved live `workflow.Definition` — this is the real implementation the wave-1 `budget.NoTicketBudgets` stub stood in for.
 - **Ephemeral secret ticket label:** credentials-and-budgets' §8.2 left the `concourse/ticket` label to dispatch (the `SecretAttacher.Attach` seam has no ticket parameter and labels only `concourse/agent-run`). Dispatch owns a `dispatch.RunSecretLabeler` seam (K8s impl `dispatch.K8sRunSecretLabeler` over `kubernetes.Interface`) and, after `Attach` succeeds, does a follow-up strategic-merge `Patch` adding `concourse/ticket: "<ticket-id>"` when `ticket_id > 0`. This label is for operator filtering only — the reaper's safety-net GC keys off `concourse/agent-run` alone — so a labeling failure is logged, never fatal to a dispatched run.
@@ -63,7 +64,8 @@ The renderer (`agent/dispatch.Render`) is a pure function `Render(RenderInput) (
 - [ ] **Step 2: Append to the §11 Amendment log** at the end of the file:
 
 ```markdown
-- 2026-07-08 (dispatch wave-4 planning; affects: process-intel-experiments, credentials-and-budgets, ticket-core, pipeline-runs — additive only): added §2.8.2 (Renderer pure-function shape `Render(RenderInput)(RenderOutput,error)`; rendered template is a single `template: true` pipeline named `agent-ticket-<id>` with one entry job `run` = agent/checkpoint steps + implicit terminal harvest; declared params minimal (`ticket_id`); ticket/workflow identity travels as literal step env not params; spec/plan reach the agent as an inline env copy on the first agent step under keys `AGENT_SPEC_MD`/`AGENT_PLAN_MD` (also mirrored in `RenderOutput.RunInputs` for a future ConfigMap-mount optimization); persistence via `Team.SavePipeline` then `PipelineRunFactory.CreateRun`; dispatch-owned `budget.TicketBudgets` implementation `dispatch.TicketBudgets` (tickets.budget_usd ?? workflow default); `concourse/ticket` secret label applied by dispatch via a `dispatch.RunSecretLabeler` follow-up Patch after Attach (best-effort; GC keys off `concourse/agent-run` alone); per-run principal `agent-run-<run-id>` scopes + expiry). No existing rows changed.
+- 2026-07-08 (dispatch wave-4 planning; affects: process-intel-experiments, credentials-and-budgets, ticket-core, pipeline-runs — additive only): added §2.8.2 (Renderer pure-function shape `Render(RenderInput)(RenderOutput,error)`; rendered template is a single `template: true` pipeline named `agent-ticket-<id>` with one entry job `run` = agent/checkpoint steps + implicit terminal harvest; declared params minimal (`ticket_id`); ticket/workflow identity travels as literal step env not params; persistence via `Team.SavePipeline` then `PipelineRunFactory.CreateRun`; dispatch-owned `budget.TicketBudgets` implementation `dispatch.TicketBudgets` (tickets.budget_usd ?? workflow default); `concourse/ticket` secret label applied by dispatch via a `dispatch.RunSecretLabeler` follow-up Patch after Attach (best-effort; GC keys off `concourse/agent-run` alone); per-run principal `agent-run-<run-id>` scopes + expiry). No existing rows changed.
+- 2026-07-08 (frozen delta — spec/plan via granular platform-mcp read tools + optional file mount; affects: platform-mcp-hitl, dispatch, workflow-store, ticket-core-consumers — supersedes the prior "inline env copy under `AGENT_SPEC_MD`/`AGENT_PLAN_MD`" design in §2.8.2): the default read model is MCP — agents reach spec/plan ONLY via platform-mcp read tools (`read_ticket`, `list_tasks`, `get_task`; §3.2) and no spec/plan bytes are injected into any agent step by default. The `AGENT_SPEC_MD`/`AGENT_PLAN_MD` env keys are DELETED from the renderer emission target. New optional workflow-definition field `spec_delivery` (Go `workflow.Config.SpecDelivery string`, values `"mcp"` default | `"files"`, a normal hashed field; 05-workflow-store owns the grammar, §6 mirrors it): `files` mode materializes read-only `spec.md`/`plan.md` (via `tickets.RenderSpecMarkdown`/`RenderPlanMarkdown`, KEPT) into `RenderOutput.RunInputs`, mounted READ-ONLY as an artifact named `ticket` on the agent steps — a mount, NOT env vars; `mcp` mode leaves `RunInputs` empty. In both modes the platform-mcp sidecar is mounted. `read_ticket` returns envelope+spec only (tasks removed); `list_tasks`/`get_task` provide the task skeleton/detail; `update_task_status` is the write-back in both modes. No existing rows changed.
 ```
 
 - [ ] **Step 3: Commit**
@@ -176,14 +178,17 @@ type RenderInput struct {
 }
 
 // RenderOutput is the self-contained result. Config is a template: true
-// pipeline with exactly one entry job "run"; RunInputs mirrors the ticket
-// spec/plan markdown (also baked as an inline env copy on the first agent
-// step per §2.8.2 — the shipping v1 delivery mechanism; RunInputs backs a
-// future ConfigMap-mount optimization); Params is passed verbatim to
+// pipeline with exactly one entry job "run". RunInputs carries the ticket
+// spec/plan markdown ONLY when the workflow opts into files delivery
+// (workflow.Config.SpecDelivery == "files"); the dispatcher mounts it
+// read-only as an artifact named "ticket" on the agent steps (§2.8.2). In
+// the default "mcp" mode RunInputs is empty and no spec/plan bytes are
+// injected — the agent reaches spec/plan via the platform-mcp read tools
+// (read_ticket / list_tasks / get_task). Params is passed verbatim to
 // PipelineRunFactory.CreateRun.
 type RenderOutput struct {
 	Config    atc.Config
-	RunInputs map[string]string // filename -> contents (spec.md, plan.md)
+	RunInputs map[string]string // filename -> contents (spec.md, plan.md); empty in mcp mode
 	Params    map[string]any    // {"ticket_id": <id>}
 }
 
@@ -618,7 +623,7 @@ git commit -m "feat(dispatch): render terminal harvest step from workflow gate-p
 
 ### Task 5: Assemble the full pipeline `atc.Config` (`Render`)
 
-Combine the agent/checkpoint steps + terminal harvest into one `template: true` pipeline with a single entry job `run`. Checkpoint steps (`workflow.Step{Checkpoint:...}`) render to a `task:`-style checkpoint step that platform-mcp-hitl's rendered checkpoint recognizes (§3.2). Per §2.8.2, the declared params are minimal (`ticket_id`), and `spec.md`/`plan.md` go into `RunInputs`.
+Combine the agent/checkpoint steps + terminal harvest into one `template: true` pipeline with a single entry job `run`. Checkpoint steps (`workflow.Step{Checkpoint:...}`) render to a `task:`-style checkpoint step that platform-mcp-hitl's rendered checkpoint recognizes (§3.2). Per §2.8.2, the declared params are minimal (`ticket_id`). The default read model is MCP: NO spec/plan bytes are injected into any agent step and `RunInputs` is empty — the agent reaches spec/plan through the platform-mcp read tools (`read_ticket`/`list_tasks`/`get_task`). Only when the resolved `workflow.Config.SpecDelivery == "files"` does the renderer populate `RunInputs` with `spec.md`/`plan.md` (for the dispatcher to mount read-only as an artifact named `ticket`).
 
 **Files:**
 - Create: `agent/dispatch/render.go`
@@ -674,29 +679,59 @@ func TestRenderProducesTemplatePipelineWithOneRunJob(t *testing.T) {
 	if _, ok := last.(*atcHarvest); !ok {
 		// resolved below in Step 2 helper
 	}
-	if out.RunInputs["spec.md"] == "" || out.RunInputs["plan.md"] == "" {
-		t.Errorf("run inputs missing: %+v", out.RunInputs)
-	}
 
-	// §2.8.2: the ticket's spec/plan reach the agent as an inline env copy on
-	// the FIRST agent step (v1 mechanism; no mount seam). The first plan step
-	// here is "write-spec"; assert the env copy is present and matches RunInputs.
+	// §2.8.2 default read model = MCP: NO spec/plan bytes are injected. RunInputs
+	// is empty and NO agent step carries AGENT_SPEC_MD/AGENT_PLAN_MD env — the
+	// agent reaches spec/plan via the platform-mcp read tools (read_ticket /
+	// list_tasks / get_task).
+	if len(out.RunInputs) != 0 {
+		t.Errorf("mcp (default) mode must leave RunInputs empty, got %+v", out.RunInputs)
+	}
 	first, ok := out.Config.Jobs[0].PlanSequence[0].Config.(*atcAgent)
 	if !ok {
 		t.Fatalf("first plan step is not an agent step: %T", out.Config.Jobs[0].PlanSequence[0].Config)
 	}
-	if first.Env["AGENT_SPEC_MD"] != out.RunInputs["spec.md"] || first.Env["AGENT_SPEC_MD"] == "" {
-		t.Errorf("first agent step must carry AGENT_SPEC_MD inline copy, got %q", first.Env["AGENT_SPEC_MD"])
+	if _, present := first.Env["AGENT_SPEC_MD"]; present {
+		t.Errorf("mcp mode must NOT inject AGENT_SPEC_MD env; got %q", first.Env["AGENT_SPEC_MD"])
 	}
-	if first.Env["AGENT_PLAN_MD"] != out.RunInputs["plan.md"] || first.Env["AGENT_PLAN_MD"] == "" {
-		t.Errorf("first agent step must carry AGENT_PLAN_MD inline copy, got %q", first.Env["AGENT_PLAN_MD"])
+	if _, present := first.Env["AGENT_PLAN_MD"]; present {
+		t.Errorf("mcp mode must NOT inject AGENT_PLAN_MD env; got %q", first.Env["AGENT_PLAN_MD"])
 	}
-	// A later agent step (index 2, "implement") must NOT carry the copy — only
-	// the first agent step does (keeps env small and the source unambiguous).
+	// No later agent step carries the copy either.
 	if third, ok := out.Config.Jobs[0].PlanSequence[2].Config.(*atcAgent); ok {
 		if _, present := third.Env["AGENT_SPEC_MD"]; present {
-			t.Errorf("only the first agent step carries the spec/plan copy; step 2 must not")
+			t.Errorf("mcp mode injects no spec/plan env on any agent step")
 		}
+	}
+}
+
+func TestRenderFilesModeMaterializesRunInputs(t *testing.T) {
+	cfg := fullWorkflow()
+	cfg.SpecDelivery = "files" // opt in to the read-only spec.md/plan.md mount
+	cfg.Defaults = workflow.Defaults{Model: "claude-sonnet-4-5", MaxTurns: 80}
+	cfg.Prompts = map[string]string{"spec": "s"}
+	cfg.Steps = []workflow.Step{
+		{Agent: "write-spec", Prompt: "spec", Sidecars: []string{"dev"}, BudgetSliceUSD: 2, Outputs: []string{"workspace"}},
+	}
+	in := dispatch.RenderInput{Workflow: cfg, AgentStepImage: "img:v1", ATCExternalURL: "https://concourse.home"}
+	in.Ticket = tickets.Ticket{ID: 42, Repo: "tdmtrader/concourse", TargetBranch: "main", Title: "Fix X"}
+	in.Spec = &tickets.Spec{Title: "Fix X", Body: "do the thing"}
+	in.Tasks = []tickets.Task{{Ordering: 1, Title: "step one", Status: tickets.TaskPending}}
+
+	out, err := dispatch.Render(in)
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	// files mode materializes the read-only spec.md/plan.md the dispatcher mounts
+	// as the "ticket" artifact. The bytes come from RenderSpecMarkdown/RenderPlanMarkdown.
+	if out.RunInputs["spec.md"] == "" || out.RunInputs["plan.md"] == "" {
+		t.Errorf("files mode must materialize spec.md/plan.md run inputs, got %+v", out.RunInputs)
+	}
+	// files mode STILL injects no spec/plan env — the file mount replaces env, and
+	// the platform-mcp read tools remain available in both modes.
+	first := out.Config.Jobs[0].PlanSequence[0].Config.(*atcAgent)
+	if _, present := first.Env["AGENT_SPEC_MD"]; present {
+		t.Errorf("files mode delivers spec via mount, never AGENT_SPEC_MD env; got %q", first.Env["AGENT_SPEC_MD"])
 	}
 }
 ```
@@ -740,14 +775,7 @@ func Render(in RenderInput) (RenderOutput, error) {
 		return RenderOutput{}, err
 	}
 
-	// §2.8.2: the ticket's spec/plan travel to the agent as an inline env copy
-	// on the FIRST agent step (v1 mechanism; no mount seam this wave). Render
-	// the markdown once and bake it into that step below.
-	specMD := string(tickets.RenderSpecMarkdown(in.Ticket, in.Spec))
-	planMD := string(tickets.RenderPlanMarkdown(in.Ticket, in.Tasks))
-
 	plan := make([]atc.Step, 0, len(in.Workflow.Steps)+1)
-	firstAgentBaked := false
 	for _, s := range in.Workflow.Steps {
 		switch {
 		case s.Agent != "":
@@ -755,14 +783,10 @@ func Render(in RenderInput) (RenderOutput, error) {
 			if err != nil {
 				return RenderOutput{}, err
 			}
-			if !firstAgentBaked {
-				// Inline the ticket context on the first agent step only, so it
-				// is unambiguous which step owns the copy and later steps stay
-				// lean (they receive the workspace artifact, not the raw ticket).
-				as.Env["AGENT_SPEC_MD"] = specMD
-				as.Env["AGENT_PLAN_MD"] = planMD
-				firstAgentBaked = true
-			}
+			// §2.8.2 default read model = MCP: inject NO spec/plan bytes. The agent
+			// reaches spec/plan via the platform-mcp read tools (read_ticket /
+			// list_tasks / get_task). files mode delivers them as a read-only mount
+			// (RunInputs below), never as env — so no step ever carries AGENT_SPEC_MD.
 			plan = append(plan, atc.Step{Config: &as})
 		case s.Checkpoint != "":
 			cs := renderCheckpointStep(in, s)
@@ -791,11 +815,15 @@ func Render(in RenderInput) (RenderOutput, error) {
 		},
 	}
 
-	// Mirror the same bytes into RunInputs for the future ConfigMap-mount
-	// optimization (§2.8.2); the shipping v1 path is the env copy baked above.
-	runInputs := map[string]string{
-		"spec.md": specMD,
-		"plan.md": planMD,
+	// §2.8.2: only files mode materializes the read-only spec.md/plan.md the
+	// dispatcher mounts as the "ticket" artifact. In the default mcp mode
+	// RunInputs stays nil — the platform-mcp read tools are the delivery path.
+	var runInputs map[string]string
+	if in.Workflow.SpecDelivery == "files" {
+		runInputs = map[string]string{
+			"spec.md": string(tickets.RenderSpecMarkdown(in.Ticket, in.Spec)),
+			"plan.md": string(tickets.RenderPlanMarkdown(in.Ticket, in.Tasks)),
+		}
 	}
 
 	return RenderOutput{
@@ -997,7 +1025,7 @@ Expected: FAIL — `read golden (run with -update to create): ... no such file`.
 Run: `cd /Users/tdmtrader/concourse/concourse && go test ./agent/dispatch/ -run TestRenderGolden -update`
 Expected: PASS (writes `standard-dev.golden.yml`).
 
-- [ ] **Step 5: Inspect the golden by eye** — open `agent/dispatch/testdata/standard-dev.golden.yml` and confirm: `template: true`; one job `run`; four plan steps (`agent: write-spec`, `agent: checkpoint-plan-approval`, `agent: implement`, `harvest: harvest`); the harvest step carries `gate_policy` with three gates and a `judge` with `pass_threshold: 6.5` and `budget_usd: 1`; agent steps carry inline sidecars with role-names `dev`/`platform` and the resolved images; env includes `AGENT_PIPELINE_RUN_ID: ((run))`; the FIRST agent step (`write-spec`) additionally carries `AGENT_SPEC_MD`/`AGENT_PLAN_MD` inline copies (§2.8.2) while the second agent step (`implement`) does not.
+- [ ] **Step 5: Inspect the golden by eye** — open `agent/dispatch/testdata/standard-dev.golden.yml` and confirm: `template: true`; one job `run`; four plan steps (`agent: write-spec`, `agent: checkpoint-plan-approval`, `agent: implement`, `harvest: harvest`); the harvest step carries `gate_policy` with three gates and a `judge` with `pass_threshold: 6.5` and `budget_usd: 1`; agent steps carry inline sidecars with role-names `dev`/`platform` and the resolved images; env includes `AGENT_PIPELINE_RUN_ID: ((run))`. The fixture omits `spec_delivery` (default `mcp`), so NO agent step carries `AGENT_SPEC_MD`/`AGENT_PLAN_MD` env (§2.8.2 default read model); the agent reaches spec/plan via the platform-mcp read tools, seeded by the first step's prompt ("Read the ticket via platform-mcp read_ticket …").
 
 - [ ] **Step 6: Run to verify pass** (golden now compares clean)
 
