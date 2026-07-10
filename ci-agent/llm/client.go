@@ -61,10 +61,42 @@ func (c *ClaudeClient) Call(ctx context.Context, prompt string, opts CallOpts) (
 
 var jsonBlockRe = regexp.MustCompile("(?s)```json\\s*\\n(.+?)\\n```")
 
-// ExtractJSON extracts JSON from raw output, handling markdown code block wrapping.
+// ExtractJSON extracts JSON from raw LLM output. Models don't reliably return
+// pure JSON: sometimes it's fenced in a ```json block, sometimes it's a bare
+// object wrapped in prose ("Here is my review:\n{...}"). Downstream consumers
+// (artifact validation, publish) require the extracted bytes to be valid JSON,
+// so try progressively: use the data as-is if it already parses, else a fenced
+// block, else the span from the first bracket to the last.
 func ExtractJSON(data []byte) json.RawMessage {
+	if json.Valid(data) {
+		return json.RawMessage(data)
+	}
 	if m := jsonBlockRe.FindSubmatch(data); m != nil {
-		return json.RawMessage(m[1])
+		if inner := ExtractJSON(m[1]); json.Valid(inner) {
+			return inner
+		}
+	}
+	if span := jsonSpan(data); span != nil {
+		return span
 	}
 	return json.RawMessage(data)
+}
+
+// jsonSpan returns the substring from the first opening bracket to the last
+// closing bracket when that span is valid JSON, or nil when no such span
+// exists. This recovers a bare JSON value embedded in surrounding prose.
+func jsonSpan(data []byte) json.RawMessage {
+	start := bytes.IndexAny(data, "{[")
+	if start < 0 {
+		return nil
+	}
+	end := bytes.LastIndexAny(data, "}]")
+	if end < start {
+		return nil
+	}
+	span := data[start : end+1]
+	if json.Valid(span) {
+		return json.RawMessage(span)
+	}
+	return nil
 }

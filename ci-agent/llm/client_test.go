@@ -44,6 +44,26 @@ var _ = Describe("ExtractJSON", func() {
 		Expect(m["a"]).To(Equal(1))
 		Expect(m["b"]).To(Equal(2))
 	})
+
+	It("extracts bare JSON preceded by prose (no code fence)", func() {
+		input := []byte("Here is my review:\n{\"key\": \"value\"}")
+		result := llm.ExtractJSON(input)
+		Expect(json.Valid(result)).To(BeTrue())
+
+		var m map[string]string
+		Expect(json.Unmarshal(result, &m)).To(Succeed())
+		Expect(m["key"]).To(Equal("value"))
+	})
+
+	It("extracts bare JSON followed by trailing prose (no code fence)", func() {
+		input := []byte("{\"key\": \"value\"}\n\nThat concludes the review.")
+		result := llm.ExtractJSON(input)
+		Expect(json.Valid(result)).To(BeTrue())
+
+		var m map[string]string
+		Expect(json.Unmarshal(result, &m)).To(Succeed())
+		Expect(m["key"]).To(Equal("value"))
+	})
 })
 
 var _ = Describe("NewClaudeClient", func() {
@@ -132,5 +152,22 @@ var _ = Describe("ParseCLIEnvelope", func() {
 		Expect(cr.Model).To(BeEmpty())
 		// Result should still contain the raw data
 		Expect(string(cr.Result)).To(Equal("not json at all"))
+	})
+
+	It("extracts valid JSON when the result field wraps it in prose", func() {
+		// Real-world failure: the model prefaces its JSON with prose and no
+		// code fence, so the published artifact must still be valid JSON.
+		envelope := []byte(`{
+			"type": "result",
+			"result": "Here is the review:\n{\"score\": 9}",
+			"model": "claude-sonnet-5"
+		}`)
+
+		cr := llm.ParseCLIEnvelope(envelope)
+		Expect(json.Valid(cr.Result)).To(BeTrue())
+
+		var m map[string]int
+		Expect(json.Unmarshal(cr.Result, &m)).To(Succeed())
+		Expect(m["score"]).To(Equal(9))
 	})
 })
