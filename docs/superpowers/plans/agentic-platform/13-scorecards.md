@@ -31,7 +31,7 @@
 - **workflow-store** (wave 1): `agent_workflow_definitions` (§1.6; columns `name`, `version`, `content_hash`, `live`, `description`, `promoted_at`, unique `(name, version)`); `agent/workflow.Store` + `atc/db.NewAgentWorkflowDefinitionsFactory`; the `Live(name)` / `Versions(name)` reads. Scorecards uses the workflow name/version as its comparison key; it does not parse definition YAML.
 - **credentials-and-budgets** (wave 1): `agent_cost_ledger` (§1.4; columns incl. `ticket_id`, `pipeline_run_id`, `source`, `cost_usd`, `turns`, `metadata JSONB`); `budget.RollupRow{Key, Entries, InputTokens, OutputTokens, Turns, CostUSD}`; the `GetAgentCostRollup` route `GET /api/v1/agent/costs?group_by=user|ticket|day|workflow`. **Workflow attribution rides `agent_cost_ledger.metadata->>'workflow'` formatted `"<name>@<version>"`** (credentials-and-budgets addendum, 2026-07-08) — writers that know their workflow (agent-step ingest, gateway metering) set it. Scorecards reads cost per ticket from `agent_cost_ledger` joined by `ticket_id` rather than by that metadata key (see Task 3 rationale).
 - **agent-identity** (wave 1): `auth.CheckAgentAuthorizationHandler(handler, rejector)` case group giving team-less `/api/v1/agent/*` routes real main-team viewer/member authorization (contracts decision 21); `accessor/roles.go`'s `DefaultRoles` map is effective for these routes. Scorecards' one route rides this tier.
-- **delivery-outcomes** (wave-mate, parallel — see below): `agent_outcomes` (§1.11 + §1.11.1 additive deltas) keyed uniquely on `ticket_id`, columns `merge_state ∈ {open,merged,merged_with_fixes,closed_unmerged}`, `merged_at`, `human_commit_count`, `human_lines_added`, `human_lines_deleted`, `disposition ∈ {'',sent_back,abandoned}`, `base_sha`. **Delta unit is LINES** (numstat of non-`concourse-agent[bot]` first-parent commits, §1.11.1).
+- **delivery-outcomes** (wave-mate, parallel — see below): `agent_outcomes` (§1.11 + §1.11.1 additive deltas) keyed uniquely on `ticket_id`, columns `merge_state ∈ {open,merged,merged_with_fixes,closed_unmerged,concluded}`, `merged_at`, `human_commit_count`, `human_lines_added`, `human_lines_deleted`, `disposition ∈ {'',sent_back,abandoned,concluded}` (`concluded` = the 2026-07-09 terminal "run finished, human reviewed, no merge intended" state for spike/research flows — FLOWS.md §3/§4; a concluded disposition closes the row as `merge_state='concluded'`, never `closed_unmerged` — 12's §1.11.1 watcher contract), `base_sha`. **Delta unit is LINES** (numstat of non-`concourse-agent[bot]` first-parent commits, §1.11.1).
 
 **Wave-mates (parallel, NOT landed — coordinate, do not depend on files):**
 - **delivery-outcomes** produces `agent_outcomes`. Its Task 1 writes contract §1.11.1 — the "agreed at wave start" join contract (LEFT JOIN on `ticket_id`, delta = lines). Scorecards' Task 1 records the reciprocal sign-off so the agreement is bilateral in the amendment log, and scorecards' outcome query (Task 5) is written to tolerate the table being absent at deploy time (returns dark columns) so neither workstream blocks the other. **Migration ordering hazard:** `agent_outcomes` is `1773106090` (delivery-outcomes) and scorecards' index migration is `1773106110`. The scorecard index migration touches only `agent_run_metrics` and `agent_reviews` (never `agent_outcomes`), so the two never collide; but the scorecard **query** referencing `agent_outcomes` will fail at runtime if deployed before `1773106090`. Task 5 guards this (see step: existence check + `--agent-scorecard-outcomes` implicit tolerance).
@@ -74,7 +74,7 @@ The charter mandates "Indexes by (workflow_version, day) from day one" but §1.1
 - [ ] **Step 2: Append the amendment-log entry.** At the end of `## 11. Amendment log`, append:
 
 ```markdown
-- 2026-07-08 (scorecards planning): allocated migration block 1773106110–19 to scorecards (previously unallocated — §1.1 gave it no block because it adds no domain tables; it needs one index-only migration `1773106110` for the charter-mandated `(workflow_version, day)` covering indexes on `agent_run_metrics` and `agent_reviews`, additive-only, no schema change). Recorded the reciprocal sign-off on delivery-outcomes' §1.11.1 `agent_outcomes` wave-start join contract: scorecards joins `agent_outcomes` LEFT (unique `ticket_id`), reads `merge_state`/`merged_at`/`human_commit_count`/`human_lines_added`/`human_lines_deleted`/`disposition` as written, treats every one as nullable (dark until the same-wave watcher fills them), labels the delta columns "lines", and never writes or requires the table (queries degrade to dark outcome columns when `agent_outcomes` is absent at deploy time). Human verdict distributions are read from `agent_feedback.verdict` over the six-verdict taxonomy; findings-per-ticket counts `agent_reviews.proven_count + observation_count` for `ticket_id`-linked rows. No promotion gate is ever derived from these numbers (spec §8 / charter scope-out). Affects: delivery-outcomes, process-intel-experiments.
+- 2026-07-08 (scorecards planning): allocated migration block 1773106110–19 to scorecards (previously unallocated — §1.1 gave it no block because it adds no domain tables; it needs one index-only migration `1773106110` for the charter-mandated `(workflow_version, day)` covering indexes on `agent_run_metrics` and `agent_reviews`, additive-only, no schema change). Recorded the reciprocal sign-off on delivery-outcomes' §1.11.1 `agent_outcomes` wave-start join contract: scorecards joins `agent_outcomes` LEFT (unique `ticket_id`), reads `merge_state`/`merged_at`/`human_commit_count`/`human_lines_added`/`human_lines_deleted`/`disposition` as written, treats every one as nullable (dark until the same-wave watcher fills them), labels the delta columns "lines", and never writes or requires the table (queries degrade to dark outcome columns when `agent_outcomes` is absent at deploy time). Concluded tickets (`disposition='concluded'` — the terminal "run finished, human reviewed, no merge intended" state for spike/research flows) are surfaced as their own `concluded_count` and EXCLUDED from merge-rate/merged-untouched/sent-back denominators (denominator = merge-intent outcomes, `outcome_count − concluded_count`), so no-merge-intent flows never read as merge failures. Human verdict distributions are read from `agent_feedback.verdict` over the six-verdict taxonomy; findings-per-ticket counts `agent_reviews.proven_count + observation_count` for `ticket_id`-linked rows. No promotion gate is ever derived from these numbers (spec §8 / charter scope-out). Affects: delivery-outcomes, process-intel-experiments.
 ```
 
 - [ ] **Step 3: Verify the additions parse.** Run `grep -n "1773106110–19 | scorecards\|scorecards planning" docs/superpowers/plans/agentic-platform/00-shared-contracts.md` — expect two matching lines (the table row and the log entry).
@@ -228,8 +228,13 @@ type VersionColumn struct {
 	VerdictDistribution VerdictDistribution `json:"verdict_distribution"`
 
 	// Outcome-derived (LEFT JOIN agent_outcomes; all nil until the
-	// same-wave watcher lands — §1.11.1). MergeState denominators use
-	// OutcomeCount (tickets that reached needs_review with an outcome row).
+	// same-wave watcher lands — §1.11.1). Rate denominators are the
+	// MERGE-INTENT outcomes: OutcomeCount − ConcludedCount. Concluded
+	// tickets ("run finished, human reviewed, no merge intended" —
+	// spike/research flows; disposition='concluded', the 2026-07-09
+	// CONCLUDED terminal state) never intended to merge, so they get
+	// their own count column and are excluded from merge/merged-untouched/
+	// sent-back denominators rather than depressing the rates.
 	OutcomeCount        *int     `json:"outcome_count,omitempty"`
 	MergedCount         *int     `json:"merged_count,omitempty"`
 	MergeRate           *float64 `json:"merge_rate,omitempty"`
@@ -237,6 +242,7 @@ type VersionColumn struct {
 	MergedUntouchedRate *float64 `json:"merged_untouched_rate,omitempty"`
 	SentBackCount       *int     `json:"sent_back_count,omitempty"`        // disposition='sent_back'
 	SentBackRate        *float64 `json:"sent_back_rate,omitempty"`
+	ConcludedCount      *int     `json:"concluded_count,omitempty"`        // disposition='concluded' (no merge intent; NOT in rate denominators)
 	HumanLinesTotal     *int     `json:"human_lines_total,omitempty"`      // added+deleted, labeled "lines"
 	TimeToMergeMedianHrs *float64 `json:"time_to_merge_median_hrs,omitempty"`
 }
@@ -785,7 +791,7 @@ git commit -m "feat(scorecards): gate pass rate, findings/ticket, judge mean, si
 
 ### Task 5: ScorecardStore — outcome columns via NULLABLE LEFT JOIN onto agent_outcomes
 
-The dark-until-filled outcome columns (merge rate, merged-untouched, sent-back, human-touch lines, time-to-merge). Because `agent_outcomes` is a wave-mate table (`1773106090`), the query first checks the table exists; when it does not, the outcome pointers stay nil (dark) and the scorecard still returns. When it exists, LEFT JOIN on unique `ticket_id` per §1.11.1.
+The dark-until-filled outcome columns (merge rate, merged-untouched, sent-back, concluded, human-touch lines, time-to-merge). Because `agent_outcomes` is a wave-mate table (`1773106090`), the query first checks the table exists; when it does not, the outcome pointers stay nil (dark) and the scorecard still returns. When it exists, LEFT JOIN on unique `ticket_id` per §1.11.1. **Concluded tickets** (`disposition='concluded'` — the 2026-07-09 terminal "no merge intended" state; FLOWS.md spike-research) are counted in their own `ConcludedCount` column and EXCLUDED from every rate denominator: rates divide by merge-intent outcomes (`outcome_count − concluded_count`), so a finished spike never reads as a failed merge.
 
 **Files:**
 - Modify: `atc/db/scorecard_store.go` (add `outcomes` method + call from `perVersion`)
@@ -824,7 +830,49 @@ The dark-until-filled outcome columns (merge rate, merged-untouched, sent-back, 
 			Expect(*v3.MergedUntouchedCount).To(Equal(1)) // only merge_state='merged'
 			Expect(*v3.MergedUntouchedRate).To(BeNumerically("~", 0.5, 1e-9))
 			Expect(*v3.SentBackCount).To(Equal(0))
+			Expect(*v3.ConcludedCount).To(Equal(0)) // no spikes among these outcomes
 			Expect(*v3.HumanLinesTotal).To(Equal(12)) // 8 + 4
+		})
+
+		Context("and a concluded (no-merge-intent) ticket among the outcomes", func() {
+			BeforeEach(func() {
+				// ticket 4 is a v3 spike: run finished, human reviewed, concluded —
+				// no merge was ever intended (disposition='concluded', the 2026-07-09
+				// CONCLUDED terminal state; FLOWS.md spike-research flow). Per 12's
+				// §1.11.1 watcher contract the disposition closes the row as
+				// merge_state='concluded' (never 'closed_unmerged'); merged_sha is
+				// TEXT NOT NULL DEFAULT '' so the no-merge row inserts ''.
+				_, err := dbConn.Exec(`
+					INSERT INTO agent_run_metrics
+					  (ticket_id, build_id, plan_id, step_name, workflow_name, workflow_version, workflow_hash, status, turns, cost_usd)
+					VALUES
+					  (4, 103, 'e', 'investigate', 'standard-dev', 3, 'h3', 'ok', 7, 0.70)`)
+				Expect(err).ToNot(HaveOccurred())
+
+				_, err = dbConn.Exec(`
+					INSERT INTO agent_outcomes
+					  (ticket_id, repo, branch, pushed_sha, base_sha, merge_state, merged_sha, merged_at,
+					   human_commit_count, human_lines_added, human_lines_deleted, disposition)
+					VALUES
+					  (4, 'o/r', 'agent/ticket-4', 's4', 'b4', 'concluded', '', NULL,
+					   0, 0, 0, 'concluded')`)
+				Expect(err).ToNot(HaveOccurred())
+			})
+
+			It("surfaces the concluded count and does NOT depress merge/sent-back rates", func() {
+				sc, err := store.Scorecard("standard-dev", []int{3})
+				Expect(err).ToNot(HaveOccurred())
+				v3 := sc.Columns[0]
+
+				Expect(*v3.OutcomeCount).To(Equal(3))   // all outcome rows, incl. the spike
+				Expect(*v3.ConcludedCount).To(Equal(1)) // its own column
+				Expect(*v3.MergedCount).To(Equal(2))
+				// Denominator is merge-intent outcomes (3 − 1 concluded = 2):
+				// the concluded spike must NOT drag merge rate down to 2/3.
+				Expect(*v3.MergeRate).To(BeNumerically("~", 1.0, 1e-9))
+				Expect(*v3.MergedUntouchedRate).To(BeNumerically("~", 0.5, 1e-9))
+				Expect(*v3.SentBackRate).To(BeNumerically("~", 0.0, 1e-9))
+			})
 		})
 	})
 ```
@@ -860,6 +908,11 @@ Then add the method:
 // the scorecard still returns — neither workstream blocks the other. When
 // the table exists, OutcomeCount is set (0 when no rows), and each rate is
 // nil only when its denominator is 0. Delta columns are LINES (§1.11.1).
+// Rate denominators are MERGE-INTENT outcomes (outcomeCount − concluded):
+// concluded tickets (disposition='concluded' — "run finished, human
+// reviewed, no merge intended"; spike/research flows, 2026-07-09 CONCLUDED
+// amendment) never meant to merge, so they get their own count and are
+// excluded from merge/merged-untouched/sent-back denominators.
 func (s *scorecardStore) outcomes(name string, version int, col *scorecards.VersionColumn) error {
 	var exists bool
 	if err := s.conn.QueryRow(
@@ -876,7 +929,7 @@ func (s *scorecardStore) outcomes(name string, version int, col *scorecards.Vers
 	  WHERE workflow_name = $1 AND workflow_version = $2 AND ticket_id IS NOT NULL
 	)`
 
-	var outcomeCount, mergedCount, mergedUntouched, sentBack, humanLines int
+	var outcomeCount, mergedCount, mergedUntouched, sentBack, concluded, humanLines int
 	var ttmMedianHrs sql.NullFloat64
 	err := s.conn.QueryRow(ticketsCTE+`
 		SELECT
@@ -884,6 +937,7 @@ func (s *scorecardStore) outcomes(name string, version int, col *scorecards.Vers
 		  COUNT(*) FILTER (WHERE o.merge_state IN ('merged','merged_with_fixes')),
 		  COUNT(*) FILTER (WHERE o.merge_state = 'merged'),
 		  COUNT(*) FILTER (WHERE o.disposition = 'sent_back'),
+		  COUNT(*) FILTER (WHERE o.disposition = 'concluded'),
 		  COALESCE(SUM(o.human_lines_added + o.human_lines_deleted), 0),
 		  PERCENTILE_CONT(0.5) WITHIN GROUP (
 		    ORDER BY EXTRACT(EPOCH FROM (o.merged_at - o.created_at)) / 3600.0
@@ -891,7 +945,7 @@ func (s *scorecardStore) outcomes(name string, version int, col *scorecards.Vers
 		FROM agent_outcomes o
 		WHERE o.ticket_id IN (SELECT ticket_id FROM v_tickets)`,
 		name, version,
-	).Scan(&outcomeCount, &mergedCount, &mergedUntouched, &sentBack, &humanLines, &ttmMedianHrs)
+	).Scan(&outcomeCount, &mergedCount, &mergedUntouched, &sentBack, &concluded, &humanLines, &ttmMedianHrs)
 	if err != nil {
 		return err
 	}
@@ -900,11 +954,15 @@ func (s *scorecardStore) outcomes(name string, version int, col *scorecards.Vers
 	col.MergedCount = &mergedCount
 	col.MergedUntouchedCount = &mergedUntouched
 	col.SentBackCount = &sentBack
+	col.ConcludedCount = &concluded
 	col.HumanLinesTotal = &humanLines
-	if outcomeCount > 0 {
-		mr := float64(mergedCount) / float64(outcomeCount)
-		mur := float64(mergedUntouched) / float64(outcomeCount)
-		sbr := float64(sentBack) / float64(outcomeCount)
+	// Merge-intent denominator: concluded tickets never intended to merge,
+	// so they must not depress the rates (2026-07-09 CONCLUDED amendment).
+	intent := outcomeCount - concluded
+	if intent > 0 {
+		mr := float64(mergedCount) / float64(intent)
+		mur := float64(mergedUntouched) / float64(intent)
+		sbr := float64(sentBack) / float64(intent)
 		col.MergeRate = &mr
 		col.MergedUntouchedRate = &mur
 		col.SentBackRate = &sbr
@@ -917,7 +975,7 @@ func (s *scorecardStore) outcomes(name string, version int, col *scorecards.Vers
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes.** Run: `ginkgo --focus="ScorecardStore" ./atc/db/` — Expected: PASS (all specs incl. the two new outcome specs).
+- [ ] **Step 4: Run test to verify it passes.** Run: `ginkgo --focus="ScorecardStore" ./atc/db/` — Expected: PASS (all specs incl. the new outcome specs — filled, dark, and concluded-excluded).
 
 - [ ] **Step 5: Commit.**
 
@@ -1133,7 +1191,7 @@ all =
                            "verdict_distribution":{"accurate":2,"false_positive":1,"noisy":0,"overly_strict":0,"partially_correct":0,"missed_context":0},
                            "outcome_count":2,"merged_count":2,"merge_rate":1.0,
                            "merged_untouched_count":1,"merged_untouched_rate":0.5,
-                           "sent_back_count":0,"sent_back_rate":0.0,"human_lines_total":12},
+                           "sent_back_count":0,"sent_back_rate":0.0,"concluded_count":0,"human_lines_total":12},
                           {"version":4,"content_hash":"h4","live":false,
                            "ticket_count":1,"step_count":1,"step_ok":0,"step_failed":0,"step_error":1,
                            "cost_usd_total":0.1,"turns_total":1,
@@ -1315,6 +1373,7 @@ type alias VersionColumn =
     , mergedUntouchedRate : Maybe Float
     , sentBackCount : Maybe Int
     , sentBackRate : Maybe Float
+    , concludedCount : Maybe Int
     , humanLinesTotal : Maybe Int
     , timeToMergeMedianHrs : Maybe Float
     }
@@ -1368,6 +1427,7 @@ decodeColumn =
         |> andMap (maybeFloat "merged_untouched_rate")
         |> andMap (maybeInt "sent_back_count")
         |> andMap (maybeFloat "sent_back_rate")
+        |> andMap (maybeInt "concluded_count")
         |> andMap (maybeInt "human_lines_total")
         |> andMap (maybeFloat "time_to_merge_median_hrs")
 
@@ -1656,6 +1716,7 @@ col v =
     , mergedUntouchedRate = Nothing
     , sentBackCount = Nothing
     , sentBackRate = Nothing
+    , concludedCount = Nothing
     , humanLinesTotal = Nothing
     , timeToMergeMedianHrs = Nothing
     }
@@ -1841,14 +1902,15 @@ scorecardTable sc =
                 cols
             , metricRow "Verdicts (acc/fp/noisy/strict/partial/missed)" verdictCell cols
             , metricRow "Merge rate"
-                (\c -> maybeRateWithCount c.mergeRate c.mergedCount c.outcomeCount)
+                (\c -> maybeRateWithCount c.mergeRate c.mergedCount (intentDenom c))
                 cols
             , metricRow "Merged untouched"
-                (\c -> maybeRateWithCount c.mergedUntouchedRate c.mergedUntouchedCount c.outcomeCount)
+                (\c -> maybeRateWithCount c.mergedUntouchedRate c.mergedUntouchedCount (intentDenom c))
                 cols
             , metricRow "Sent back"
-                (\c -> maybeRateWithCount c.sentBackRate c.sentBackCount c.outcomeCount)
+                (\c -> maybeRateWithCount c.sentBackRate c.sentBackCount (intentDenom c))
                 cols
+            , metricRow "Concluded (no merge intent)" (\c -> maybeIntText c.concludedCount) cols
             , metricRow "Human-touch (lines)" (\c -> maybeIntText c.humanLinesTotal) cols
             , metricRow "Time to merge (median hrs)" (\c -> maybeNum c.timeToMergeMedianHrs) cols
             ]
@@ -1887,6 +1949,19 @@ verdictCell c =
             (List.map String.fromInt
                 [ d.accurate, d.falsePositive, d.noisy, d.overlyStrict, d.partiallyCorrect, d.missedContext ]
             )
+
+
+
+-- Rate denominators are MERGE-INTENT outcomes: concluded tickets never
+-- intended to merge (spike/research flows; 2026-07-09 CONCLUDED amendment),
+-- so the displayed "(n/d)" excludes them, matching the store's math.
+
+
+intentDenom : VersionColumn -> Maybe Int
+intentDenom c =
+    Maybe.map
+        (\total -> total - Maybe.withDefault 0 c.concludedCount)
+        c.outcomeCount
 
 
 
@@ -2117,4 +2192,6 @@ git commit -m "feat(db): scorecard (workflow_version, day) covering indexes (mig
 
 ## §11. Amendments
 
+- **2026-07-09 (flow-decoupling — CONCLUDED tickets in rollups):** The owner-approved CONCLUDED decision (FLOWS.md §3 spike-research / §4 harvest-knob row) adds a terminal ticket state `concluded` — "run finished, human reviewed, no merge intended" (spike/research flows), reachable from `needs_review` via explicit human disposition, a positive sibling of `abandoned` — landing in the frozen §1.7 lifecycle enum now to avoid a later migration, and mirrored into `agent_outcomes.disposition` (now `{'',sent_back,abandoned,concluded}`) by delivery-outcomes' watcher. Without this edit, every finished spike would rot in the rollups as an unmerged outcome, silently depressing merge rate and penalizing exactly the flows that were never supposed to merge. **Change (scorecards side only — no schema, route, or migration change here):** (a) `VersionColumn` gains `ConcludedCount *int` (`concluded_count`, dark-until-watcher like its siblings), surfacing concluded tickets as their own count column (Task 2); (b) the `outcomes` aggregate counts `disposition='concluded'` and switches every rate denominator (merge rate, merged-untouched, sent-back) from `outcome_count` to the merge-intent count `outcome_count − concluded_count`, with rates nil when the intent count is 0 (Task 5); (c) the Task 5 store spec is extended with a nested Context inserting a v3 spike (ticket 4, `disposition='concluded'`) and asserting `OutcomeCount=3`, `ConcludedCount=1`, and `MergeRate` still 1.0 — i.e. a concluded ticket does NOT depress merge rate to 2/3 — plus a `ConcludedCount=0` assertion in the base outcomes spec; (d) Elm decoder field `concludedCount` (Task 7), a "Concluded (no merge intent)" metric row, and an `intentDenom` helper so the displayed "(n/d)" matches the store's denominator (Task 9); (e) Task 1's reciprocal §1.11.1 sign-off text now records the concluded-exclusion semantics so the bilateral contract carries it. `abandoned` is deliberately unchanged: an abandoned merge-intent ticket is a real failure and stays in the denominator.
 - **2026-07-09 (design-review F8 — live flag + authoritative content hash):** Fixed a defect where `col.Live` was never true (the "live" badge in Task 9 never lit) and `col.ContentHash` came only from `MAX(workflow_hash)` over `agent_run_metrics`, so a not-yet-run candidate version returned an all-zero, empty-hash, not-live column — defeating the live-vs-candidate promotion comparison that spec §8 says is the scorecard's reason to exist. **Change:** added a `definition(name, version, col)` read to `atc/db/scorecard_store.go` (`SELECT content_hash, live FROM agent_workflow_definitions WHERE name=$1 AND version=$2`, workflow-store §1.6, unique `(name, version)`), called FIRST in `perVersion` (Task 3), setting `col.Live` and `col.ContentHash` AUTHORITATIVELY. `metricsAndCost`'s `MAX(workflow_hash)` is now a fallback only (`if col.ContentHash == ""`), never clobbering the definition-derived hash. It reads only what `Live(name)`/`Versions(name)` already expose (05-workflow-store.md:1073/1349) — no new workflow-store surface. Added a Task 3 store spec asserting `col.Live` is true for the promoted version (v3) and false for candidates (v4, v5), and that a not-yet-run candidate (v5, zero run rows) still returns its real `content_hash` (`def-hash-v5`); extended the Task 3 `BeforeEach` fixture with `agent_workflow_definitions` rows for v3 (live) / v4 / v5. No contract, table, column, route, or migration change — `agent_workflow_definitions` and its `content_hash`/`live` columns are consumed exactly as workflow-store defines them.
+- **2026-07-09 (verifier follow-ups — concluded fixture + stale merge_state enum):** Two doc-consistency defects against 12-delivery-outcomes' decided CONCLUDED semantics (12's §1.11.1 addendum, "Concluded is not a failure", and the watcher spec: a concluded disposition closes the row as `merge_state='concluded'`, NOT `closed_unmerged`, and scorecards MUST NOT bucket concluded rows with `closed_unmerged`). **Change (test fixture + contract restatement only — no schema, query, route, or assertion change):** (a) Task 5's concluded-spike fixture row for ticket 4 now inserts `merge_state='concluded'` (was `'closed_unmerged'`, directly contradicting the watcher contract) and `merged_sha=''` (was `NULL`, which would fail at spec runtime — `merged_sha` is `TEXT NOT NULL DEFAULT ''` in both contracts §1.11 and 12's migration). All existing assertions hold unchanged: the aggregate counts concluded via `disposition='concluded'` and merged via `merge_state IN ('merged','merged_with_fixes')`, so `OutcomeCount=3`, `ConcludedCount=1`, `MergedCount=2`, `MergeRate` 1.0 are unaffected. (b) The delivery-outcomes dependency summary (Context §"Prior waves") now lists `merge_state ∈ {open,merged,merged_with_fixes,closed_unmerged,concluded}` — the enum had omitted `'concluded'` in the same sentence that documented the concluded disposition — and notes the concluded-closes-as-`'concluded'` rule so the bilateral contract restatement matches 12's §1.11.1.

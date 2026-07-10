@@ -202,7 +202,7 @@ CREATE TABLE agent_tickets (
     state                  TEXT NOT NULL DEFAULT 'draft'
                            CHECK (state IN ('draft','queued','running','needs_review',
                                             'merged','merged_with_fixes','sent_back',
-                                            'abandoned','failed','errored')),
+                                            'abandoned','concluded','failed','errored')),
     origin                 TEXT NOT NULL DEFAULT 'web'
                            CHECK (origin IN ('web','fly','jira','retrospective')),
     repo                   TEXT NOT NULL,             -- canonical slug, joins agent_reviews.repo
@@ -235,7 +235,7 @@ CREATE INDEX agent_tickets_repo  ON agent_tickets (repo, created_at DESC);
 **State machine** (the single-writer transition function, §2.1, is the only legal writer of `state`):
 
 ```
-draft → queued → running → needs_review → merged | merged_with_fixes | sent_back | abandoned
+draft → queued → running → needs_review → merged | merged_with_fixes | sent_back | abandoned | concluded
 draft → abandoned
 queued → draft (unqueue) | abandoned
 running → queued (retryable platform error OR rejected send_back checkpoint re-dispatch; attempt_count++) | failed | errored | needs_review
@@ -245,6 +245,8 @@ failed | errored → queued (manual retry)
 ```
 
 *(2026-07-09 amendment, §11)* `running → queued` has **two legitimate callers**: dispatch's retryable-platform-error path and dispatch's run-completion reconciler when a `send_back` checkpoint is rejected (§3.2); the §2.1 side effect (attempt_count+1, completed_at=NULL, queued_at=now()) covers both. `running → needs_review` has **two writers**: harvest (primary) and the run-completion reconciler (later/backup safety net). `ErrStaleTransition`/`ErrTicketNotFound` are benign to the reconciler — harvest may have raced.
+
+*(2026-07-09 amendment, §11 — FLOWS.md spike-research / `concluded`)* **`concluded` is a TERMINAL state**: "run finished, human reviewed, no merge intended" — the positive sibling of `abandoned`, for spike/research/advisory flows whose deliverable is findings rather than a merged branch. It is entered **only** from `needs_review` via an explicit human disposition (`SetAgentTicketDisposition` §4.2 → the §2.1 transition function; harvest, dispatch, and the run-completion reconciler never write it). No merge is expected: the **outcome watcher MUST NOT poll or wait on `concluded` tickets** — if an outcome row exists (harvest pushed a branch), setting the disposition closes it terminally: as with `abandoned`, the watcher stops polling and no merge is expected, but the row closes as its own `merge_state = 'concluded'` — never `closed_unmerged` (§1.11 / §1.11.1, delivery-outcomes) — and merge-rate metrics exclude `concluded` tickets from their denominators (a finished spike is a success, not a miss). Landed in the frozen enum now because the CHECK constraint cannot be amended cheaply later (now-or-migration, FLOWS.md §4).
 
 `1773106051_create_agent_ticket_specs.up.sql`:
 
@@ -283,6 +285,8 @@ CREATE INDEX agent_ticket_tasks_ticket ON agent_ticket_tasks (ticket_id, plan_ve
 ```
 
 The active plan for a ticket is `MAX(plan_version)`; older versions are retained for process intelligence.
+
+*(2026-07-09 amendment, §11 — FLOWS.md E5)* **Normative: a ticket MAY have zero spec rows and zero task rows through its entire lifecycle.** Spec-lessness is the normal entry state — rendering happens at dispatch, before any agent step can call `submit_spec`, so even the seeded spec-first workflow dispatches against a spec-less ticket — and workflows that never submit a spec or plan (direct-fix, spike-research) are first-class. Every consumer (the renderer §6.2, the platform-mcp read tools §3.2, ticket UI, harvest, scorecards) must handle absence as a normal value, never as an error.
 
 ### 1.8 `agent_run_metrics` — owner: **agent-step**; consumers: gateway-mcp, scorecards, process-intel-experiments, harvest-step
 
@@ -380,17 +384,19 @@ CREATE TABLE agent_outcomes (
     branch              TEXT NOT NULL,             -- agent/ticket-<id>
     pushed_sha          TEXT NOT NULL DEFAULT '',  -- branch head at harvest push time
     merge_state         TEXT NOT NULL DEFAULT 'open'
-                        CHECK (merge_state IN ('open','merged','merged_with_fixes','closed_unmerged')),
+                        CHECK (merge_state IN ('open','merged','merged_with_fixes','closed_unmerged',
+                                               'concluded')),  -- 'concluded' added 2026-07-09 flow-decoupling (§11)
     merged_sha          TEXT NOT NULL DEFAULT '',  -- default-branch commit from which pushed_sha became reachable
     merged_at           TIMESTAMPTZ,
     human_commit_count  INTEGER NOT NULL DEFAULT 0,   -- commits on the branch after pushed_sha, non-agent author
     human_lines_added   INTEGER NOT NULL DEFAULT 0,   -- human-touch delta: numstat of those commits
     human_lines_deleted INTEGER NOT NULL DEFAULT 0,
     disposition         TEXT NOT NULL DEFAULT ''
-                        CHECK (disposition IN ('','sent_back','abandoned')),
+                        CHECK (disposition IN ('','sent_back','abandoned','concluded')),
     disposition_reason  TEXT NOT NULL DEFAULT ''
                         CHECK (disposition_reason IN ('','wrong_approach','incomplete','defective',
-                                                      'superseded','not_needed','style','other')),
+                                                      'superseded','not_needed','style','other',
+                                                      'research_complete')),  -- 'research_complete' added 2026-07-09 flow-decoupling (§11)
     disposition_notes   TEXT NOT NULL DEFAULT '',
     disposed_by         TEXT NOT NULL DEFAULT '',
     last_checked_at     TIMESTAMPTZ,
@@ -402,7 +408,7 @@ CREATE TABLE agent_outcomes (
 
 **Human-touch delta definition [DECIDED HERE]:** the sum of `git diff --numstat <pushed_sha>..<branch-head-at-merge>` restricted to commits whose author is not the platform's git identity (`concourse-agent[bot]` — see §8.3). Merge commits themselves are excluded (first-parent walk). Computed once by the outcome watcher when `merge_state` transitions to merged; `merged_with_fixes` ⇔ `human_commit_count > 0`.
 
-Explicit dispositions (`sent_back`/`abandoned`) live here (with the reason taxonomy); the ticket `state` mirrors them via the transition function.
+Explicit dispositions (`sent_back`/`abandoned`/`concluded`) live here (with the reason taxonomy); the ticket `state` mirrors them via the transition function. *(2026-07-09 amendment, §11)* A `concluded` disposition (needs_review → concluded, §1.7) closes the outcome terminally: as with `abandoned`, the outcome watcher stops polling the row — no merge is expected — but the row closes as its own `merge_state = 'concluded'` (never `closed_unmerged`; §1.11.1 / delivery-outcomes, which must never bucket `concluded` with `closed_unmerged` failures), and merge-rate metrics exclude the ticket from their denominators. Spike/research runs that never pushed have no outcome row at all; `concluded` is still valid for them (the disposition then only drives the ticket state).
 
 ### 1.12 Experiment substrate — owner: **process-intel-experiments**; consumers: scorecards
 
@@ -480,6 +486,7 @@ const (
 	StateMergedWithFixes  State = "merged_with_fixes"
 	StateSentBack         State = "sent_back"
 	StateAbandoned        State = "abandoned"
+	StateConcluded        State = "concluded" // terminal; needs_review → concluded via human disposition only (§1.7)
 	StateFailed           State = "failed"
 	StateErrored          State = "errored"
 )
@@ -530,6 +537,8 @@ type Store interface {
 ```
 
 `atc/db/agent_tickets_factory.go` implements `tickets.Store` (counterfeiter fake for consumers). Consumers (dispatch, harvest, HITL, outcomes) receive the interface, never raw SQL.
+
+*(2026-07-09 amendment, §11 — FLOWS.md E5)* **Absence semantics (normative):** `LatestSpec` returns `(nil, false, nil)` when the ticket has no spec rows, and `ActivePlan` returns `([]Task{}, nil)` — an empty slice with a nil error — when the ticket has no plan. Neither is an error condition, and implementers must not add error-on-absence: dispatch's renderer (§6.2) and the platform-mcp read tools (§3.2) rely on exactly these zero values for spec-less/plan-less tickets (§1.7).
 
 ### 2.2 WorkflowDefinition — owner: **workflow-store** (`agent/workflow/definition.go`)
 
@@ -644,6 +653,10 @@ const (
 	Merged              MergeState = "merged"
 	MergedWithFixes     MergeState = "merged_with_fixes"
 	ClosedUnmerged      MergeState = "closed_unmerged"
+	// MergeConcluded added 2026-07-09 flow-decoupling (§11): terminal close for
+	// a 'concluded' disposition — no merge intended (spike/research flows).
+	// Never bucketed with ClosedUnmerged; excluded from merge-rate denominators.
+	MergeConcluded      MergeState = "concluded"
 )
 
 type Outcome struct {
@@ -657,7 +670,7 @@ type Outcome struct {
 	HumanCommitCount  int        `json:"human_commit_count"`
 	HumanLinesAdded   int        `json:"human_lines_added"`
 	HumanLinesDeleted int        `json:"human_lines_deleted"`
-	Disposition       string     `json:"disposition,omitempty"`        // sent_back | abandoned
+	Disposition       string     `json:"disposition,omitempty"`        // sent_back | abandoned | concluded
 	DispositionReason string     `json:"disposition_reason,omitempty"` // §1.11 taxonomy
 	DispositionNotes  string     `json:"disposition_notes,omitempty"`
 	DisposedBy        string     `json:"disposed_by,omitempty"`
@@ -934,7 +947,7 @@ result (envelope + spec **only**; tasks are reached via `list_tasks`/`get_task`)
       }
     },
     "spec": {
-      "description": "latest spec or null",
+      "description": "latest spec, if any — null when the ticket has no spec, the normal state for spec-less workflows (§1.7)",
       "type": ["object", "null"],
       "required": ["title", "acceptance_criteria", "body_md"],
       "properties": {
@@ -970,6 +983,8 @@ result (cheap skeleton of the active plan — **no** detail bodies):
 }
 ```
 
+A ticket with no active plan yields `{"tasks": []}` — a **successful** result, not an error; plan-lessness is how agents in plan-less workflows discover there is nothing to walk (§1.7 zero-rows rule).
+
 **`get_task`** — input:
 ```json
 {
@@ -994,7 +1009,7 @@ result (one active-plan task with its detail body):
   }
 }
 ```
-An unknown `ordering` (not present in the active plan) is an MCP tool error (`isError=true`) — a `tools/call` result carrying the error text, matching how the shared `atc/api/mcpserver` surfaces every handler error — not an `ok`-with-empty result. (This is a tool-level error, NOT a JSON-RPC `-32602` error object: the shared mcpserver only emits `-32602` for a malformed `tools/call` envelope, never for a tool handler's returned error.)
+An unknown `ordering` (not present in the active plan) is an MCP tool error (`isError=true`) — a `tools/call` result carrying the error text, matching how the shared `atc/api/mcpserver` surfaces every handler error — not an `ok`-with-empty result. (This is a tool-level error, NOT a JSON-RPC `-32602` error object: the shared mcpserver only emits `-32602` for a malformed `tools/call` envelope, never for a tool handler's returned error.) *(2026-07-09 amendment, §11 — FLOWS.md E5)* The same mechanism applies when the ticket has **no active plan at all**: `get_task` returns an MCP tool error (`isError=true`) whose text names the absent plan — `no active plan for ticket <id>` — because the caller addressed a specific task that cannot exist. This is deliberate asymmetry with `list_tasks` (empty list, success): agents discover plan-lessness via `list_tasks`, and only a mis-addressed `get_task` errors.
 
 **`submit_spec`** — input:
 ```json
@@ -1314,7 +1329,7 @@ sidecars:                     # named sidecar set; steps reference by name
     providers: [claude]       # which adapters this workflow may use
 
 prompts:                      # prompt templates, inline — hashed with the definition.
-  spec: |                     # Go text/template; render context: .Ticket .Spec .Tasks .Params
+  spec: |                     # Go text/template; render context: .Ticket .Spec .Tasks .Params (nil-safe, §6.2)
     Begin by calling platform-mcp read_ticket and list_tasks (get_task per
     task as you work). Explore the repo, then submit a spec with submit_spec. ...
   implement: |
@@ -1380,6 +1395,54 @@ Linear sequence only — **no branching, no loops, no parallel fan-out in v1**. 
 ### 6.2 Prompt packaging [DECIDED HERE]
 
 Prompts are **inline in the definition YAML** (not repo files, not separate rows): the content hash then covers prompts, so "same workflow, different prompt" is a different version — which is precisely the unit of comparison scorecards need. Go `text/template` with the render context frozen as `.Ticket`, `.Spec`, `.Tasks`, `.Params` (renderer resolves; step receives final text per §2.8's resolution rule).
+
+**Nil-safe render semantics [DECIDED HERE — 2026-07-09 amendment, §11; FLOWS.md E2]:** `.Spec` MAY be nil and `.Tasks` MAY be empty at render time — this is the **NORMAL** state, not an edge case: rendering happens at dispatch, before any agent step runs, so every dispatch (including the seeded spec-first workflow, whose spec is created mid-run by its first agent step) renders against a spec-less ticket. Template execution MUST NOT fail on absence. The mechanism is exactly one — **nil-safe method accessors on a pointer view type**:
+
+```go
+// agent/workflow/rendercontext.go — constructed by dispatch's renderer (plan 11)
+// from tickets.Store.Get / LatestSpec / ActivePlan (§2.1 absence semantics).
+type RenderContext struct {
+	Ticket TicketView        // envelope; always present
+	Spec   *SpecView         // nil when LatestSpec returned ok=false (no spec rows)
+	Tasks  []TaskView        // empty when ActivePlan returned [] (no plan)
+	Params map[string]string
+}
+
+// SpecView exposes NO exported fields; every template accessor is a nil-safe
+// pointer-receiver method. Go text/template happily invokes methods on a nil
+// pointer receiver, so bare leaf access can never hit the
+// "nil pointer evaluating" execution error — there is no field path to it.
+type SpecView struct{ spec *tickets.Spec }
+
+func (s *SpecView) Title() string {
+	if s == nil || s.spec == nil {
+		return ""
+	}
+	return s.spec.Title
+}
+
+func (s *SpecView) BodyMD() string {
+	if s == nil || s.spec == nil {
+		return ""
+	}
+	return s.spec.Body
+}
+
+func (s *SpecView) AcceptanceCriteria() []string {
+	if s == nil || s.spec == nil {
+		return nil
+	}
+	return s.spec.AcceptanceCriteria
+}
+```
+
+What this buys, normatively:
+
+- `{{if .Spec}}` is the guard for spec-conditional prompt content — a nil `*SpecView` is falsy in text/template, so templates gate optional sections with it (and SHOULD, for any prose that only makes sense when a spec exists).
+- Bare `{{.Spec.Title}}` / `{{.Spec.BodyMD}}` on a spec-less ticket renders the **empty string**, not a template execution error — the accessor is a method call on a nil receiver, which Go text/template executes normally. A template omitting the guard degrades to blanks; it never fails the dispatch.
+- `{{if .Tasks}}` is falsy on the empty slice and `{{range .Tasks}}` iterates zero times; `TaskView` is a value type (exported fields are fine — slice elements are never nil).
+
+**Import gate:** workflow-store's `Validate()` (plan 05) executes every `prompts` template against a validation-only mirror of the render context in its dispatch-time ground state — `.Spec` nil, `.Tasks` empty, and *(2026-07-09 verifier follow-up, aligning with plan 05's `nilRenderContext`)* tolerant `map[string]any` values for `.Ticket` and `.Params`, so a reference to an unknown envelope or param field renders `<no value>` instead of false-rejecting the definition (the envelope is always present at render; only a nil-deref is the import-blocking bug) — and rejects the definition on any execution error. Note the mirror's `.Spec` is a plain nil pointer *without* the nil-safe accessors above, so a bare `{{.Spec.Title}}` fails the import gate even though the dispatch renderer would degrade it to blanks: the gate deliberately forces the `{{if .Spec}}` guard. A template that cannot render a spec-less ticket is caught at import, never at dispatch. Renderer-side golden tests with `Spec=nil`/`Tasks=nil` in both `spec_delivery` modes land in plan 11 (FLOWS.md E4).
 
 ### 6.3 Gate-policy language (frozen for harvest-step and dispatch)
 
@@ -1574,6 +1637,8 @@ Set by the **owning exec implementation** (agent-step, harvest-step) or by **dis
 25. `((run))` = per-template run number (display only); `((run_id))` = `pipeline_runs.id`, allocated pre-materialization in the `CreateRun` tx — the only cross-table key; both names reserved in the params validator (§7).
 26. Per-run secret deletion is owned by credentials-and-budgets' `RunSecretReaper` polling component (plan 02), not the pipeline-run lifecycler (§8.2).
 27. Harvest re-pushes to `agent/ticket-<n>` with `--force-with-lease` (harvest is the branch's only credentialed writer; per-attempt branch names forbidden, §2.8.1).
+28. Ticket lifecycle gains the terminal state `concluded` ("run finished, human reviewed, no merge intended" — spike/research flows): entered only from `needs_review` via explicit human disposition; positive sibling of `abandoned`; the outcome watcher never waits on it and merge-rate metrics exclude it (frozen-enum now-or-migration decision, FLOWS.md §4).
+29. Spec-lessness/plan-lessness is normative: a ticket MAY have zero spec and zero task rows for its entire lifecycle; store methods return zero values on absence (`LatestSpec → (nil,false,nil)`, `ActivePlan → ([]Task{},nil)`); the render context is nil-safe via `*SpecView` method accessors (bare `{{.Spec.Title}}` on a spec-less ticket renders empty, `{{if .Spec}}` guards conditional content); workflow-store import validation executes every prompt against the zero render context.
 
 ## 11. Amendment log
 
@@ -1605,3 +1670,11 @@ Set by the **owning exec implementation** (agent-step, harvest-step) or by **dis
   - **F30** — §7 reserved-vars contract + §8.1 row (co-signed pipeline-runs + dispatch + harvest-step): `((run_id))` is a new reserved var carrying `pipeline_runs.id`, allocated pre-materialization (`nextval` in the `CreateRun` tx, explicit-id insert); `((run))` remains the per-template run NUMBER (display/instance-group only, never a cross-table key); both names rejected as user param names by the params validator; interpolation covers params, sidecar env values, and secretKeyRef secret names; all cross-table keys (`AGENT_PIPELINE_RUN_ID`, `agent-run-<id>` secret, metrics/questions/reviews/gateway rows) use `((run_id))`; step execs fall back to `envInt("AGENT_PIPELINE_RUN_ID")` when a rendered plan's `PipelineRunID` is 0.
   - **F32** — new §2.8.1 (co-signed harvest-step + ticket-core): harvest re-push pinned as `git push --force-with-lease=refs/heads/agent/ticket-<n>` (attempt 2+ is a fresh clone ⇒ plain push is deterministically non-fast-forward); safe because §8.3 makes harvest the branch's only credentialed writer; per-attempt branch names forbidden; divergent-remote-head fixture spec required.
   - **F22** — §8.2 Lifecycle (deletion ownership): per-run `agent-run-<id>` secret deletion is owned by credentials-and-budgets' new `RunSecretReaper` polling component (plan 02, beside `PlatformSecretSyncer`; label-driven sweep + narrow `RunActive(runID)` seam; best-effort principal revoke in the same pass; covers the Attach→schedule crash window). Plan 03's lifecycler stays pure (no clientset) — the earlier "pipeline-run lifecycle component deletes on completion via Cleanup" attribution is retracted.
+- 2026-07-09: **flow-decoupling edits + `concluded` terminal state** (per FLOWS.md edit list E2/E5 and its §4 now-or-migration call on the state enum; owner-approved; affects: workflow-store, dispatch, platform-mcp-hitl, ticket-core, delivery-outcomes, scorecards):
+  - **E2 — §6.2 nil-safe render semantics made normative.** `.Spec` MAY be nil / `.Tasks` MAY be empty at render time — the NORMAL state, since rendering happens at dispatch before any agent step can submit a spec. One mechanism, specified exactly: the renderer builds `RenderContext{Ticket TicketView, Spec *SpecView, Tasks []TaskView, Params map[string]string}` where `SpecView` has no exported fields and only nil-safe pointer-receiver method accessors (`Title`/`BodyMD`/`AcceptanceCriteria`) — so `{{if .Spec}}` guards work (nil pointer is falsy) AND bare `{{.Spec.Title}}` on a spec-less ticket renders the empty string instead of failing template execution. `{{range .Tasks}}` iterates zero times on the empty slice. Workflow-store `Validate()` gains an import gate: every prompt template is executed against the zero render context and the definition is rejected on execution error (renderer golden tests with `Spec=nil`/`Tasks=nil` in both delivery modes land in plan 11, FLOWS.md E4). §6 YAML render-context comment annotated. New decision 29.
+  - **E5 — zero spec/task rows normative** (§1.7, §2.1, §3.2): added "a ticket MAY have zero spec rows and zero task rows through its entire lifecycle; all consumers must handle absence" to §1.7; §2.1 documents `LatestSpec → (nil, false, nil)` and `ActivePlan → ([]Task{}, nil)` (empty slice, nil error — implementers must not add error-on-absence); §3.2 softens `read_ticket`'s spec description to "latest spec, if any", pins `list_tasks` with no plan as `{"tasks": []}` success, and specifies `get_task` with no active plan as an MCP tool error (`isError=true`) naming the absent plan (`no active plan for ticket <id>`), matching the unknown-ordering mechanism.
+  - **`concluded`** (§1.7 CHECK + state machine, §2.1 `StateConcluded`, §1.11 disposition CHECK + prose, §2.5 comment, new decision 28): new TERMINAL ticket state — "run finished, human reviewed, no merge intended" (spike/research flows) — the positive sibling of `abandoned`, entered only from `needs_review` via explicit human disposition (`SetAgentTicketDisposition` → transition function; never written by harvest/dispatch/reconciler). The outcome watcher must not wait on `concluded` tickets (an existing outcome row is closed terminally like `abandoned` — watcher stops polling, no merge expected — but as its own `merge_state = 'concluded'`, never `closed_unmerged` (§1.11.1 / delivery-outcomes); push-less runs have no row), and merge-rate metrics exclude them. Landed now because §1.7's enum is frozen — adding it later means a CHECK-constraint migration plus backfill ambiguity for spikes already rotting in `needs_review`.
+- 2026-07-09: **flow-decoupling verifier follow-ups** (affects: delivery-outcomes, scorecards, workflow-store, dispatch):
+  - **Concluded ≠ closed_unmerged.** The three "closes the outcome exactly like `abandoned`" phrasings (§1.7, §1.11, and the `concluded` entry above) reworded to separate the shared terminal behavior (watcher stops polling; no merge expected) from the differing close state: a `concluded` disposition closes the row as its own `merge_state = 'concluded'`, never `closed_unmerged` (delivery-outcomes owns the distinction and must never bucket the two).
+  - **Symmetric enum amendment.** The 2026-07-09 edit had amended only the `disposition` CHECK in the §1.11 DDL; the DDL is now amended in place symmetrically — `merge_state` CHECK gains `'concluded'` and `disposition_reason` CHECK gains `'research_complete'` — and §2.5 gains `MergeConcluded = "concluded"` (matching delivery-outcomes' `types.go`). 12-delivery-outcomes' §1.11.1 addendum bullet remains the authoritative carrier and now records the §2.5 constant too.
+  - **§6.2 import gate aligned to plan 05.** The gate context is plan 05's enforcing `nilRenderContext` mirror — tolerant `map[string]any` `.Ticket`/`.Params` (unknown envelope-field references render `<no value>`, never false-rejected), `.Spec` a plain nil pointer so only a `.Spec` nil-deref import-blocks — replacing the earlier "zero `TicketView`" wording, which would have rejected templates plan 05 accepts.

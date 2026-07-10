@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Turn the ticket page into a lightweight PR view (paginated diff, review evidence, judge score, plan progress, cost, six-verdict feedback), add ticket-level dispositions (sent-back/abandoned with a reason taxonomy), and ship the native outcome watcher that records merged / merged-with-fixes / human-touch delta by polling git repos directly — no webhooks.
+**Goal:** Turn the ticket page into a lightweight PR view (paginated diff, review evidence, judge score, plan progress, cost, six-verdict feedback), add ticket-level dispositions (sent-back/abandoned/concluded with a reason taxonomy), and ship the native outcome watcher that records merged / merged-with-fixes / human-touch delta by polling git repos directly — no webhooks.
 
 **Architecture:** A new `agent_outcomes` table (migration `1773106090`) + `agent/api/outcomes` domain package + `atc/db.NewAgentOutcomesFactory` hold merge facts and dispositions keyed by ticket. A new `agent/gitcheck` package maintains bare `git clone --mirror` caches on the web node and answers ancestor / merge-point / human-delta / patch-id / diff questions by shelling out to real git (the `agent/harvest/workspace.go` recipe). `agent/outcomewatcher` is the RunnableComponent (polling only — never notify-only, per the fork lesson) that creates outcome rows from harvest run-metrics, detects merges (reachability first, patch-id squash fallback), and walks the ticket lifecycle **exclusively through ticket-core's `tickets.Store.Transition`**. Four HTTP routes (`GetAgentTicketOutcome`, `SetAgentTicketDisposition`, `GetAgentTicketDiff`, `GetAgentTicketReviews`) feed the Elm PR view, which reuses `Build/AgentReview.elm` and `Concourse/AgentReview.elm` verbatim for the evidence panel and six-verdict feedback.
 
@@ -19,7 +19,7 @@ Scope-in → task mapping (every item maps):
 | scope_in item | Tasks |
 |---|---|
 | Elm ticket PR view: paginated diff, review-evidence panel reusing `Build/AgentReview.elm`, judge score, plan-task progress, cost from ledger rollups, six-verdict finding feedback | 8 (diff API), 9 (reviews-by-ticket API), 13 (Elm data layer), 14 (Elm PR view), 15 (six-verdict wiring) |
-| Ticket-level disposition UI: sent-back / abandoned + reason taxonomy + free text | 3 (taxonomy), 5 (disposition + outcome API), 13, 14 (UI) |
+| Ticket-level disposition UI: sent-back / abandoned + reason taxonomy + free text (+ `concluded`, 2026-07-09 flow-decoupling amendment — FLOWS.md §4) | 3 (taxonomy), 5 (disposition + outcome API), 13, 14 (UI) |
 | `agent_outcomes` migration + factory — nullable-join schema agreed with scorecards at wave start | 1 (wave-start agreement addendum), 2 (migration), 3 (types), 4 (factory) |
 | Outcome watcher RunnableComponent (open item 8): polite configurable polling, branch-head-reachable-from-default for merged, pre-merge human-commit detection for merged-with-fixes, human-touch delta with patch-id fallback for squash merges + documented v1 limits, native repo checking, no webhooks | 1 (heuristics frozen in writing), 6 (git machinery), 7 (git detection logic), 10 (watcher), 11 (component wiring) |
 | Outcome states flow into the ticket lifecycle exclusively via the transition function | 5, 10 (both call `tickets.Store.Transition`; tests assert no other state writes), 12 (fly disposition still goes through the API → transition) |
@@ -29,7 +29,7 @@ Scope-in → task mapping (every item maps):
 **Prior waves (assumed LANDED exactly as 00-shared-contracts.md + the earlier plans' §11 addenda define):**
 
 - **agent-identity** (wave 1): `atc/api/auth.CheckAgentAuthorizationHandler(handler http.Handler, rejector Rejector) http.Handler` — the wrappa case group giving team-less `/api/v1/agent/*` `authorized` routes real main-team viewer/member authorization (contracts decision 21); the five pre-existing agent feedback routes plus every wave-2/3 team-less `authorized` route already sit in that case group. `accessor.GetAccessor(r).Claims().UserName` (a struct field) resolves the acting human; handlers avoid importing `atc/api/accessor` (cycle through `atc/db`) by taking an injected `UserNameFunc` wired in `atc/api/handler.go`.
-- **ticket-core** (wave 2): package `agent/api/tickets` — `Ticket` (fields incl. `Repo`, `Branch`, `TargetBranch`, `State`, `UserName`, `WorkflowName`, `BudgetUSD *float64`), `State` constants (`StateNeedsReview`, `StateMerged`, `StateMergedWithFixes`, `StateSentBack`, `StateAbandoned`, `StateRunning`, …), `TicketDetail{Ticket, Spec *Spec, Tasks []Task}`, `Task{Ordering int; Title, Detail string; Status TaskStatus}`, `ListFilter{State State; Repo, Origin string; Limit int}`, `TransitionMeta{PipelineRunID *int; Branch string; ErrorDetail string}` (**NO `By` field** — frozen by ticket-core addendum §2.1.1), errors `ErrInvalidTransition`/`ErrStaleTransition`/`ErrTicketNotFound`, func `ValidTransition(from, to State) bool`, `Store` interface (with `Transition` as the ONLY state writer), `MemoryStore`, counterfeiter fake `ticketsfakes.FakeStore`; `atc/db.NewAgentTicketsFactory(dbConn)` implementing `tickets.Store` (dbfakes `FakeAgentTicketsFactory`); `UserNameFunc func(r *http.Request) string`; the Elm ticket page `web/elm/src/AgentTickets/AgentTicket.elm` (patterned on `AgentReviews/AgentReviews.elm`), data layer `web/elm/src/Concourse/AgentTicket.elm`, endpoint `Api.Endpoints.AgentTicket`, effect `Effects.FetchAgentTicket Int`, callback `Callback.AgentTicketFetched`, route `/agent-tickets/:id`, a 5s-polling task list. State machine (§1.7): `needs_review → merged | merged_with_fixes | sent_back | abandoned`. Transition side effects (addendum §2.1.1): → any terminal outcome state stamps `completed_at=now()`.
+- **ticket-core** (wave 2): package `agent/api/tickets` — `Ticket` (fields incl. `Repo`, `Branch`, `TargetBranch`, `State`, `UserName`, `WorkflowName`, `BudgetUSD *float64`), `State` constants (`StateNeedsReview`, `StateMerged`, `StateMergedWithFixes`, `StateSentBack`, `StateAbandoned`, `StateConcluded`, `StateRunning`, … — `StateConcluded` is the 2026-07-09 flow-decoupling addition (FLOWS.md §4): the lifecycle enum is frozen up front, so the neutral spike/research terminal "run finished, human reviewed, no merge intended" lands in ticket-core NOW rather than via a later migration; it is a positive sibling of `StateAbandoned`, reachable only from `needs_review` via explicit human disposition), `TicketDetail{Ticket, Spec *Spec, Tasks []Task}`, `Task{Ordering int; Title, Detail string; Status TaskStatus}`, `ListFilter{State State; Repo, Origin string; Limit int}`, `TransitionMeta{PipelineRunID *int; Branch string; ErrorDetail string}` (**NO `By` field** — frozen by ticket-core addendum §2.1.1), errors `ErrInvalidTransition`/`ErrStaleTransition`/`ErrTicketNotFound`, func `ValidTransition(from, to State) bool`, `Store` interface (with `Transition` as the ONLY state writer), `MemoryStore`, counterfeiter fake `ticketsfakes.FakeStore`; `atc/db.NewAgentTicketsFactory(dbConn)` implementing `tickets.Store` (dbfakes `FakeAgentTicketsFactory`); `UserNameFunc func(r *http.Request) string`; the Elm ticket page `web/elm/src/AgentTickets/AgentTicket.elm` (patterned on `AgentReviews/AgentReviews.elm`), data layer `web/elm/src/Concourse/AgentTicket.elm`, endpoint `Api.Endpoints.AgentTicket`, effect `Effects.FetchAgentTicket Int`, callback `Callback.AgentTicketFetched`, route `/agent-tickets/:id`, a 5s-polling task list. State machine (§1.7): `needs_review → merged | merged_with_fixes | sent_back | abandoned | concluded`. Transition side effects (addendum §2.1.1): → any terminal outcome state stamps `completed_at=now()` (including `concluded`).
 - **harvest-step** (wave 3): `agent_reviews`/`agent_feedback` ticket linkage columns (migration `1773106080`) with `reviews.StoredReview.TicketID *int`/`PipelineRunID *int` and `reviews.Store.ListByTicket(ticketID int) ([]StoredReview, error)`; `agent/api/reviews.BuildReviewResponse` (embeds `StoredReview` + `ProvenIssues`/`Observations []Finding` + `Feedback map[string]FindingFeedback` + `FindingCount int`); the harvest step transitions tickets `running → needs_review` with `TransitionMeta{Branch: "agent/ticket-<id>"}` on gates-ok, and upserts an `agent_run_metrics` row whose `results.json` `metadata` carries `{"pushed_branch","head_sha","base_sha","gates","judge",...}` (addendum §2.8.1); judge findings land in `agent_reviews.review` as `observations` with `category:"judge"`, gate failures as `proven_issues` with `category:"gate"`, feedback on judge findings submitted with `finding_type:"judge"` (§6.4.1 — the mapping this plan's UI wires); git identity `concourse-agent[bot]` (§8.3, decision 18); `agent/harvest/workspace.go` git helpers (`HeadSHA`, `BaseSHA`, `Diff(dir, base, maxBytes)`, `DiffTruncatedMarker`, `ChangedPaths`, `BuildManifest`) as the real-git-fixture-test recipe.
 - **agent-step** (wave 2): `agent/schema` nested module (`schema.RunMetrics` with `Results json.RawMessage`, `StepName`, `TicketID *int`; `schema.Results` with `Metadata map[string]interface{}`); `agent/api/metrics.Store.ListByTicket(ticketID int) ([]schema.RunMetrics, error)`; `atc/db.NewAgentRunMetricsFactory(dbConn)`.
 - **credentials-and-budgets** (wave 1): `GetAgentCostRollup` route `GET /api/v1/agent/costs?group_by=ticket` (authorized viewer) returning cost rollup rows — the cost display on the PR view calls this existing route via the existing `fly agent costs` / Elm cost endpoint; **no new backend cost code in this plan**.
@@ -65,7 +65,7 @@ The charter requires the nullable-join schema "agreed with scorecards at wave st
 
 **Steps:**
 
-- [ ] Insert the following subsection immediately after §1.11's closing paragraph ("Explicit dispositions (`sent_back`/`abandoned`) live here …", before `### 1.12 Experiment substrate`):
+- [ ] Insert the following subsection immediately after §1.11's closing paragraph ("Explicit dispositions (`sent_back`/`abandoned`/`concluded`) live here …", before `### 1.12 Experiment substrate`):
 
 ````markdown
 ### 1.11.1 agent_outcomes wave-4 addendum — owner: **delivery-outcomes** (2026-07-08; sign-off consumers: scorecards, process-intel-experiments)
@@ -75,15 +75,18 @@ The charter requires the nullable-join schema "agreed with scorecards at wave st
 - `base_sha TEXT NOT NULL DEFAULT ''` — the gate-diff base recorded by harvest (`results.json` `metadata.base_sha`, §2.8.1). Needed because after a merge, `merge-base(pushed_sha, default)` degenerates toward `pushed_sha`, so the PR-view diff must pin the pre-merge base.
 - `CREATE INDEX agent_outcomes_open ON agent_outcomes (merge_state) WHERE merge_state = 'open';` — the watcher's work-list scan.
 - `Outcome` (§2.5) gains `BaseSha string \`json:"base_sha,omitempty"\``, `CreatedAt int64`, `UpdatedAt int64` (epoch seconds, matching every other agent API type).
+- **[2026-07-09 flow-decoupling]** `merge_state` CHECK gains `'concluded'`; `disposition` CHECK gains `'concluded'`; `disposition_reason` CHECK gains `'research_complete'` (taxonomy meaning: spike/research complete, no merge intended); `MergeState` (§2.5) gains `MergeConcluded = "concluded"`. Landed now, alongside ticket-core's `concluded` lifecycle state (FLOWS.md §4: the enums are frozen up front — deciding this later means a migration). *(2026-07-09 verifier follow-up: all four deltas are also amended in place in contracts §1.11/§2.5 with dated comments, so contracts is self-consistent before wave start; this bullet remains the authoritative record of the change.)*
 
 **Human-touch delta definition [CONFIRMED — lines, not hunks; supersedes §1.11's prose only in unit precision]:** `human_lines_added`/`human_lines_deleted` are summed `git show --numstat` line counts of commits in `pushed_sha..<tip-at-merge>` (first-parent walk, merge commits excluded) whose author name is not `concourse-agent[bot]` (§8.3). `human_commit_count` counts those commits. `merged_with_fixes ⇔ human_commit_count > 0`. Binary files numstat as `-`/`-` and count 0 lines. Scorecards MUST label the columns "lines" in any UI.
 
-**Outcome-row creation:** rows are created by the outcome watcher (NOT harvest). Each tick it scans tickets in `needs_review` with a non-empty `branch` and no outcome row, resolving `pushed_sha`/`base_sha` from the newest `agent_run_metrics` row for that ticket whose `results.metadata.pushed_branch` equals the ticket branch. Fallback when no metrics row carries the shas (e.g. metrics reaped): `pushed_sha` = remote branch head at first sync — weaker, because pre-existing human commits then dilute the delta baseline; `base_sha` stays `''` and the diff API returns 404 until it is known. While `merge_state = 'open'`, a re-push refreshes `branch`/`pushed_sha`/`base_sha` in place. A send-back disposition drives the row to `closed_unmerged`; when the ticket later cycles `sent_back → queued → running → needs_review` and is re-dispatched, the watcher's `Ensure` **re-arms** that row — a row with `merge_state = 'closed_unmerged' AND disposition = 'sent_back'` is reset to `open` with fresh `branch`/`pushed_sha`/`base_sha` and its disposition fields cleared, so the re-worked branch's eventual human merge is still detected (F6). Truly terminal rows — `merged`/`merged_with_fixes`, or `closed_unmerged` via `abandoned` — are never refreshed.
+**Outcome-row creation:** rows are created by the outcome watcher (NOT harvest). Each tick it scans tickets in `needs_review` with a non-empty `branch` and no outcome row, resolving `pushed_sha`/`base_sha` from the newest `agent_run_metrics` row for that ticket whose `results.metadata.pushed_branch` equals the ticket branch. Fallback when no metrics row carries the shas (e.g. metrics reaped): `pushed_sha` = remote branch head at first sync — weaker, because pre-existing human commits then dilute the delta baseline; `base_sha` stays `''` and the diff API returns 404 until it is known. While `merge_state = 'open'`, a re-push refreshes `branch`/`pushed_sha`/`base_sha` in place. A send-back disposition drives the row to `closed_unmerged`; when the ticket later cycles `sent_back → queued → running → needs_review` and is re-dispatched, the watcher's `Ensure` **re-arms** that row — a row with `merge_state = 'closed_unmerged' AND disposition = 'sent_back'` is reset to `open` with fresh `branch`/`pushed_sha`/`base_sha` and its disposition fields cleared, so the re-worked branch's eventual human merge is still detected (F6). Truly terminal rows — `merged`/`merged_with_fixes`, `closed_unmerged` via `abandoned`, or `concluded` — are never refreshed. A `concluded` disposition ("run finished, human reviewed, no merge intended" — spike/research flows, FLOWS.md §3) closes the row as `merge_state = 'concluded'`: the watcher **skips merge-detection entirely** for concluded tickets — the row leaves the open work-list permanently, is never re-armed, and never waits on (or reacts to) a branch merge, even if a human later merges the spike branch anyway.
 
 **Merge-detection heuristics v1 [DECIDED HERE]:**
 1. **Primary (true merges + fast-forward):** merged ⇔ `git merge-base --is-ancestor <pushed_sha> refs/heads/<target_branch>` in a `--mirror` clone. `merged_sha` = the oldest merge commit on `git rev-list --ancestry-path --merges <pushed_sha>..<target>` (the commit that brought the branch in); tip-at-merge = that merge commit's second parent when it descends from `pushed_sha`, else `pushed_sha`. Fast-forward (no merge commit on the ancestry path): `merged_sha` = tip-at-merge = the agent branch's remote head if the branch still exists, else `pushed_sha`.
 2. **Squash fallback:** when not an ancestor, compute `git patch-id --stable` of the single combined patch `base_sha..<branch tip>` and compare against the patch-ids of the newest N first-parent commits on the target branch (N = `--agent-outcome-squash-scan-limit`, default 200). A match ⇒ merged with `merged_sha` = the matching squash commit; human delta still computed from the agent branch (`pushed_sha..branch head`).
-3. **Documented v1 limits:** rebase-merges and squash-merges whose content was edited during merge produce no patch-id match — the outcome stays `open` until a human sets a disposition (the honest answer; never guess). Branch deletion without merge is NOT auto-closed. `closed_unmerged` is set **only** by an explicit disposition (`sent_back`/`abandoned`) in v1. `--is-ancestor` cannot distinguish "merged then reverted"; a revert is human-touch on the *default* branch, out of delta scope by definition (delta measures the agent *branch*).
+3. **Documented v1 limits:** rebase-merges and squash-merges whose content was edited during merge produce no patch-id match — the outcome stays `open` until a human sets a disposition (the honest answer; never guess). Branch deletion without merge is NOT auto-closed. `closed_unmerged` is set **only** by an explicit disposition (`sent_back`/`abandoned`) in v1; a `concluded` disposition closes the row as `concluded` instead, and merge-detection is skipped for it from that point on. `--is-ancestor` cannot distinguish "merged then reverted"; a revert is human-touch on the *default* branch, out of delta scope by definition (delta measures the agent *branch*).
+
+**Concluded is not a failure [DECIDED HERE, 2026-07-09]:** `merge_state = 'concluded'` (disposition `concluded`, reason `research_complete` unless a better taxonomy fit applies) marks a *successful* delivery whose deliverable is findings, not a merge — spike/research flows (FLOWS.md §3 spike-research). Scorecards MUST exclude `concluded` rows from merge-rate denominators and MUST NOT bucket them with `closed_unmerged` failures; count them as a separate positive outcome class (a finished spike rotting in `needs_review` and dragging down merge rate is exactly the anti-pattern this state removes).
 
 **Watcher & diff configuration [DECIDED HERE]:** web-node flags, all under one group: `--agent-outcome-git-dir` (bare-mirror cache directory; **empty disables both the watcher and the diff API** — the master switch), `--agent-outcome-git-url-template` (default `https://github.com/{repo}.git`; `{repo}` is the canonical slug), `--agent-outcome-git-username` / `--agent-outcome-git-token` (optional fetch credentials, https-only, injected via a temp credential-store file exactly like harvest push §8.3 — never argv), `--agent-outcome-check-interval` (default `5m`; the component's polling interval — "polite" = one `git fetch --prune` per repo per tick regardless of ticket count), `--agent-outcome-squash-scan-limit` (default 200). Component name: `agent_outcome_watcher`. Ticket state changes ride the transition function, so the §8.4 webhook fires for merge outcomes with no extra code here.
 
@@ -109,6 +112,7 @@ The charter requires the nullable-join schema "agreed with scorecards at wave st
 ```markdown
 - 2026-07-08 (delivery-outcomes planning): added §1.11.1 — wave-start agent_outcomes agreement with scorecards (LEFT-JOIN-on-ticket_id contract; delta unit = LINES via numstat of non-bot first-parent commits; additive base_sha column + agent_outcomes_open partial index; Outcome gains BaseSha/CreatedAt/UpdatedAt), outcome-row creation from harvest run-metrics with branch-head fallback, merge-detection heuristics v1 (ancestor primary, patch-id squash fallback, documented limits: edited squashes/rebase-merges stay open; closed_unmerged only via disposition), watcher/diff web flags (--agent-outcome-git-dir master switch, url template, https-only creds, 5m interval, squash scan limit), and two additive §4.2 routes GetAgentTicketDiff / GetAgentTicketReviews (windowed diff; reviews-by-ticket in the GetBuildAgentReviews response shape). Affects: scorecards, process-intel-experiments.
 - 2026-07-09 (delivery-outcomes planning, F6 fix): clarified the §1.11.1 outcome-row lifecycle for the send-back → re-dispatch → merge loop. A send-back disposition sets `closed_unmerged`, but the state machine allows `sent_back → queued → running → needs_review`; on re-dispatch the watcher's `Store.Ensure` now RE-ARMS a row where `merge_state = 'closed_unmerged' AND disposition = 'sent_back'` back to `open` with fresh branch/pushed_sha/base_sha (disposition fields cleared), so the re-worked branch's eventual human merge is recorded (previously the merge — and the human-touch delta, spec §9 — was silently lost on the rework loop). `abandoned` and `merged`/`merged_with_fixes` rows remain terminal and are never re-armed. No schema change (Ensure ON CONFLICT WHERE broadened only). Affects: scorecards, process-intel-experiments.
+- 2026-07-09 (delivery-outcomes planning, flow-decoupling: CONCLUDED): added the neutral terminal outcome `concluded` per the owner-approved FLOWS.md §4 decision ("run finished, human reviewed, no merge intended" — spike/research flows; a positive sibling of `abandoned`, reachable only via explicit human disposition from `needs_review`). §1.11.1 changes: `merge_state`/`disposition` CHECKs gain `'concluded'`, `disposition_reason` gains `'research_complete'`; a `concluded` disposition closes the row as `merge_state='concluded'`; the watcher skips merge-detection for concluded tickets (never re-armed, never waits on a branch merge); scorecard rule: `concluded` is NOT a failure — exclude from merge-rate denominators, never bucket with `closed_unmerged`. Rides ticket-core's same-day `StateConcluded` enum addition (`needs_review → concluded`, stamps `completed_at`) — landed now because the lifecycle enum is frozen up front (later = migration). Affects: scorecards, process-intel-experiments, ticket-core.
 ```
 
 - [ ] Commit: `git add docs/superpowers/plans/agentic-platform/00-shared-contracts.md && git commit -m "docs(agentic): delivery-outcomes contract addendum - outcomes schema agreement, watcher heuristics, diff/reviews routes"`
@@ -124,7 +128,7 @@ The charter requires the nullable-join schema "agreed with scorecards at wave st
 
 **Steps:**
 
-- [ ] Write `atc/db/migration/migrations/1773106090_create_agent_outcomes.up.sql` — §1.11 DDL verbatim plus the two §1.11.1 additive deltas (`base_sha`, partial index). Migration files are picked up automatically via `go:embed migrations` (`atc/db/migration/migration.go`) — no registration code:
+- [ ] Write `atc/db/migration/migrations/1773106090_create_agent_outcomes.up.sql` — §1.11 DDL verbatim plus the §1.11.1 additive deltas (`base_sha`, partial index, and the 2026-07-09 `concluded`/`research_complete` enum additions). Migration files are picked up automatically via `go:embed migrations` (`atc/db/migration/migration.go`) — no registration code:
 
 ```sql
 CREATE TABLE agent_outcomes (
@@ -135,17 +139,19 @@ CREATE TABLE agent_outcomes (
     pushed_sha          TEXT NOT NULL DEFAULT '',
     base_sha            TEXT NOT NULL DEFAULT '',
     merge_state         TEXT NOT NULL DEFAULT 'open'
-                        CHECK (merge_state IN ('open','merged','merged_with_fixes','closed_unmerged')),
+                        CHECK (merge_state IN ('open','merged','merged_with_fixes','closed_unmerged',
+                                               'concluded')),
     merged_sha          TEXT NOT NULL DEFAULT '',
     merged_at           TIMESTAMPTZ,
     human_commit_count  INTEGER NOT NULL DEFAULT 0,
     human_lines_added   INTEGER NOT NULL DEFAULT 0,
     human_lines_deleted INTEGER NOT NULL DEFAULT 0,
     disposition         TEXT NOT NULL DEFAULT ''
-                        CHECK (disposition IN ('','sent_back','abandoned')),
+                        CHECK (disposition IN ('','sent_back','abandoned','concluded')),
     disposition_reason  TEXT NOT NULL DEFAULT ''
                         CHECK (disposition_reason IN ('','wrong_approach','incomplete','defective',
-                                                      'superseded','not_needed','style','other')),
+                                                      'superseded','not_needed','style',
+                                                      'research_complete','other')),
     disposition_notes   TEXT NOT NULL DEFAULT '',
     disposed_by         TEXT NOT NULL DEFAULT '',
     last_checked_at     TIMESTAMPTZ,
@@ -200,10 +206,13 @@ func TestDispositionValidation(t *testing.T) {
 	if !outcomes.ValidDisposition("sent_back") || !outcomes.ValidDisposition("abandoned") {
 		t.Error("sent_back and abandoned must be valid dispositions")
 	}
+	if !outcomes.ValidDisposition("concluded") {
+		t.Error("concluded must be a valid disposition (flow-decoupling 2026-07-09)")
+	}
 	if outcomes.ValidDisposition("") || outcomes.ValidDisposition("merged") {
 		t.Error("empty and merged must be invalid dispositions")
 	}
-	for _, r := range []string{"wrong_approach", "incomplete", "defective", "superseded", "not_needed", "style", "other"} {
+	for _, r := range []string{"wrong_approach", "incomplete", "defective", "superseded", "not_needed", "style", "research_complete", "other"} {
 		if !outcomes.ValidDispositionReason(r) {
 			t.Errorf("reason %q must be valid", r)
 		}
@@ -281,6 +290,39 @@ func TestMemoryStoreEnsureRefreshesOnlyOpenRows(t *testing.T) {
 	got, _, _ = s.Get(9)
 	if got.MergeState != outcomes.ClosedUnmerged || got.PushedSha != "q1" {
 		t.Fatalf("abandoned row must stay closed and not refresh: %+v", got)
+	}
+}
+
+func TestMemoryStoreConcludedDisposition(t *testing.T) {
+	s := outcomes.NewMemoryStore()
+	_ = s.Ensure(&outcomes.Outcome{TicketID: 3, Repo: "r", Branch: "agent/ticket-3", PushedSha: "p1", BaseSha: "b1"})
+
+	// a concluded disposition closes the open row as 'concluded', NOT
+	// closed_unmerged — it is a positive terminal, not a failure.
+	if err := s.SetDisposition(3, outcomes.DispositionInput{
+		Disposition: outcomes.DispositionConcluded, Reason: "research_complete",
+		Notes: "findings in ticket body", By: "tdmtrader",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, _, _ := s.Get(3)
+	if got.MergeState != outcomes.MergeConcluded || got.Disposition != outcomes.DispositionConcluded {
+		t.Fatalf("concluded must close the row as concluded: %+v", got)
+	}
+
+	// concluded is terminal: Ensure must NOT re-arm it (unlike sent_back).
+	if err := s.Ensure(&outcomes.Outcome{TicketID: 3, Repo: "r", Branch: "agent/ticket-3", PushedSha: "p2", BaseSha: "b2"}); err != nil {
+		t.Fatal(err)
+	}
+	got, _, _ = s.Get(3)
+	if got.MergeState != outcomes.MergeConcluded || got.PushedSha != "p1" || got.Disposition != outcomes.DispositionConcluded {
+		t.Fatalf("concluded row must stay terminal, keep its shas, and keep its disposition: %+v", got)
+	}
+
+	// and it leaves the watcher's open work-list permanently.
+	open, err := s.ListOpen()
+	if err != nil || len(open) != 0 {
+		t.Fatalf("concluded row must leave ListOpen: %v %v", open, err)
 	}
 }
 
@@ -364,6 +406,12 @@ const (
 	Merged          MergeState = "merged"
 	MergedWithFixes MergeState = "merged_with_fixes"
 	ClosedUnmerged  MergeState = "closed_unmerged"
+	// MergeConcluded is the neutral terminal (flow-decoupling 2026-07-09,
+	// FLOWS.md §4): run finished, human reviewed, no merge intended —
+	// spike/research flows. Set only by a 'concluded' disposition; never
+	// re-armed, never merge-scanned, and NOT a failure (scorecards exclude
+	// it from merge-rate denominators, §1.11.1).
+	MergeConcluded MergeState = "concluded"
 )
 
 // BotAuthor is the platform git identity (§8.3). Commits with this author
@@ -373,16 +421,22 @@ const BotAuthor = "concourse-agent[bot]"
 const (
 	DispositionSentBack  = "sent_back"
 	DispositionAbandoned = "abandoned"
+	// DispositionConcluded is the positive sibling of abandoned: the run is
+	// done and reviewed, and no merge was ever intended (spike/research).
+	// It maps to the needs_review → concluded lifecycle edge.
+	DispositionConcluded = "concluded"
 )
 
 // DispositionReasons is the §1.11 reason taxonomy, in display order.
+// research_complete: spike/research complete, no merge intended (pairs
+// with the 'concluded' disposition).
 var DispositionReasons = []string{
 	"wrong_approach", "incomplete", "defective",
-	"superseded", "not_needed", "style", "other",
+	"superseded", "not_needed", "style", "research_complete", "other",
 }
 
 func ValidDisposition(d string) bool {
-	return d == DispositionSentBack || d == DispositionAbandoned
+	return d == DispositionSentBack || d == DispositionAbandoned || d == DispositionConcluded
 }
 
 func ValidDispositionReason(r string) bool {
@@ -433,7 +487,7 @@ type MergeResult struct {
 
 // DispositionInput is a human's explicit ticket-level verdict.
 type DispositionInput struct {
-	Disposition string // sent_back | abandoned
+	Disposition string // sent_back | abandoned | concluded
 	Reason      string // §1.11 taxonomy
 	Notes       string // free text
 	By          string // username
@@ -451,8 +505,8 @@ type Store interface {
 	// merge_state = 'closed_unmerged' AND disposition = 'sent_back', the
 	// row is reset to 'open' with fresh branch/pushed_sha/base_sha so the
 	// re-dispatch loop's eventual human merge is detected (F6). Other
-	// terminal rows (merged/merged_with_fixes, or closed_unmerged via
-	// 'abandoned') are untouched.
+	// terminal rows (merged/merged_with_fixes, closed_unmerged via
+	// 'abandoned', or concluded) are untouched.
 	Ensure(o *Outcome) error
 	Get(ticketID int) (*Outcome, bool, error)
 	// ListOpen returns rows with merge_state = 'open', oldest-first.
@@ -462,7 +516,8 @@ type Store interface {
 	// ErrOutcomeNotFound if absent.
 	RecordMerge(ticketID int, res MergeResult) error
 	// SetDisposition records the human verdict; an open row's
-	// merge_state becomes closed_unmerged, terminal states are kept.
+	// merge_state becomes closed_unmerged ('concluded' when the
+	// disposition is 'concluded'), terminal states are kept.
 	SetDisposition(ticketID int, d DispositionInput) error
 	// Touch stamps last_checked_at = now.
 	Touch(ticketID int) error
@@ -582,7 +637,13 @@ func (s *MemoryStore) SetDisposition(ticketID int, d DispositionInput) error {
 	o.DispositionNotes = d.Notes
 	o.DisposedBy = d.By
 	if o.MergeState == MergeOpen {
-		o.MergeState = ClosedUnmerged
+		if d.Disposition == DispositionConcluded {
+			// positive terminal: no merge was ever intended (§1.11.1) —
+			// the watcher skips merge-detection from here on.
+			o.MergeState = MergeConcluded
+		} else {
+			o.MergeState = ClosedUnmerged
+		}
 	}
 	o.UpdatedAt = time.Now().Unix()
 	return nil
@@ -729,6 +790,26 @@ var _ = Describe("AgentOutcomesFactory", func() {
 		Expect(got.PushedSha).To(Equal("q1"))
 	})
 
+	It("closes an open row as concluded and never re-arms it (flow-decoupling 2026-07-09)", func() {
+		Expect(factory.Ensure(&outcomes.Outcome{TicketID: 508, Repo: "r", Branch: "agent/ticket-508", PushedSha: "s1", BaseSha: "t1"})).To(Succeed())
+		Expect(factory.SetDisposition(508, outcomes.DispositionInput{
+			Disposition: "concluded", Reason: "research_complete", Notes: "spike findings in ticket", By: "tdmtrader",
+		})).To(Succeed())
+		got, _, _ := factory.Get(508)
+		Expect(got.MergeState).To(Equal(outcomes.MergeConcluded), "concluded closes as 'concluded', not closed_unmerged")
+		Expect(got.Disposition).To(Equal("concluded"))
+		Expect(got.DispositionReason).To(Equal("research_complete"))
+
+		// concluded is terminal: the sent_back re-arm WHERE must never match it
+		Expect(factory.Ensure(&outcomes.Outcome{TicketID: 508, Repo: "r", Branch: "agent/ticket-508", PushedSha: "s2", BaseSha: "t2"})).To(Succeed())
+		got, _, _ = factory.Get(508)
+		Expect(got.MergeState).To(Equal(outcomes.MergeConcluded))
+		Expect(got.PushedSha).To(Equal("s1"), "shas stay frozen — the watcher never re-arms a concluded row")
+		Expect(got.Disposition).To(Equal("concluded"))
+		open, _ := factory.ListOpen()
+		Expect(open).To(BeEmpty(), "concluded rows leave the watcher work-list permanently")
+	})
+
 	It("stamps last_checked_at on Touch", func() {
 		Expect(factory.Ensure(&outcomes.Outcome{TicketID: 505, Repo: "r", Branch: "b"})).To(Succeed())
 		Expect(factory.Touch(505)).To(Succeed())
@@ -779,7 +860,8 @@ func (f *agentOutcomesFactory) Ensure(o *outcomes.Outcome) error {
 	// The ON CONFLICT WHERE also re-arms a send-back row (closed_unmerged with
 	// disposition='sent_back') back to 'open' and clears the disposition, so the
 	// re-dispatch loop's eventual human merge is detected (F6). Truly terminal
-	// rows (merged/merged_with_fixes, or abandoned) never match the WHERE.
+	// rows (merged/merged_with_fixes, abandoned, or concluded) never match the
+	// WHERE — 'concluded' is its own merge_state, so neither arm can touch it.
 	_, err := f.conn.Exec(
 		`INSERT INTO agent_outcomes (ticket_id, repo, branch, pushed_sha, base_sha, merge_state)
 		 VALUES ($1, $2, $3, $4, $5, 'open')
@@ -859,11 +941,14 @@ func (f *agentOutcomesFactory) RecordMerge(ticketID int, res outcomes.MergeResul
 }
 
 func (f *agentOutcomesFactory) SetDisposition(ticketID int, d outcomes.DispositionInput) error {
-	// Open rows become closed_unmerged; terminal rows keep merge_state.
+	// Open rows become closed_unmerged — or 'concluded' for a concluded
+	// disposition (positive terminal, §1.11.1); terminal rows keep merge_state.
 	result, err := f.conn.Exec(
 		`UPDATE agent_outcomes SET
 		   disposition = $2, disposition_reason = $3, disposition_notes = $4, disposed_by = $5,
-		   merge_state = CASE WHEN merge_state = 'open' THEN 'closed_unmerged' ELSE merge_state END,
+		   merge_state = CASE WHEN merge_state = 'open'
+		                      THEN CASE WHEN $2 = 'concluded' THEN 'concluded' ELSE 'closed_unmerged' END
+		                      ELSE merge_state END,
 		   updated_at = now()
 		 WHERE ticket_id = $1`,
 		ticketID, d.Disposition, d.Reason, d.Notes, d.By,
@@ -941,7 +1026,7 @@ func scanOutcome(row scannable) (*outcomes.Outcome, error) {
 
 ### Task 5: `agent/api/outcomes` HTTP handler — GetAgentTicketOutcome + SetAgentTicketDisposition (through the transition function)
 
-The disposition endpoint is a state-changing write: it records the disposition in `agent_outcomes` AND walks the ticket lifecycle to `sent_back`/`abandoned` **exclusively through `tickets.Store.Transition`** (single-writer discipline). Same handler serves the read-only outcome fetch. Follows the `agent/api/tickets/handler.go` idiom — the handler must NOT import `atc/api/accessor` (cycle); it takes an injected `UserNameFunc`.
+The disposition endpoint is a state-changing write: it records the disposition in `agent_outcomes` AND walks the ticket lifecycle to `sent_back`/`abandoned`/`concluded` **exclusively through `tickets.Store.Transition`** (single-writer discipline; `concluded` rides the `needs_review → concluded` edge added by the 2026-07-09 flow-decoupling amendment). Same handler serves the read-only outcome fetch. Follows the `agent/api/tickets/handler.go` idiom — the handler must NOT import `atc/api/accessor` (cycle); it takes an injected `UserNameFunc`.
 
 **Files:**
 - Create: `agent/api/outcomes/handler.go`
@@ -1046,6 +1131,34 @@ func TestSetDispositionTransitionsTicket(t *testing.T) {
 	}
 }
 
+func TestSetDispositionConcludedTransitionsTicket(t *testing.T) {
+	h, os, ts := newHandler(t)
+	seedNeedsReview(t, os, ts, 1)
+
+	// concluded: spike/research done, human reviewed, no merge intended.
+	body, _ := json.Marshal(map[string]string{
+		"disposition": "concluded", "reason": "research_complete", "notes": "findings recorded in ticket body",
+	})
+	req := httptest.NewRequest("PUT", "/api/v1/agent/tickets/1/disposition", bytes.NewReader(body))
+	req.Form = map[string][]string{":ticket_id": {"1"}}
+	rec := httptest.NewRecorder()
+	h.SetDisposition(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code = %d body=%s", rec.Code, rec.Body)
+	}
+
+	// outcome row closes as 'concluded' — never closed_unmerged, never open
+	got, _, _ := os.Get(1)
+	if got.Disposition != outcomes.DispositionConcluded || got.MergeState != outcomes.MergeConcluded || got.DisposedBy != "tdmtrader" {
+		t.Fatalf("concluded outcome not recorded: %+v", got)
+	}
+	// ticket took the needs_review → concluded edge via the single writer
+	tk, _, _ := ts.Get(1)
+	if tk.State != tickets.StateConcluded {
+		t.Fatalf("ticket state = %s, want concluded", tk.State)
+	}
+}
+
 func TestSetDispositionRejectsBadTaxonomy(t *testing.T) {
 	h, os, ts := newHandler(t)
 	seedNeedsReview(t, os, ts, 1)
@@ -1129,15 +1242,20 @@ func NewHandler(store Store, ticketStore tickets.Store, userName UserNameFunc) *
 
 // DispositionRequest is the PUT body for SetAgentTicketDisposition.
 type DispositionRequest struct {
-	Disposition string `json:"disposition"` // sent_back | abandoned
+	Disposition string `json:"disposition"` // sent_back | abandoned | concluded
 	Reason      string `json:"reason"`      // §1.11 taxonomy (required)
 	Notes       string `json:"notes,omitempty"`
 }
 
 // dispositionToState maps a disposition to its ticket lifecycle state.
+// All three are needs_review edges; concluded is the neutral terminal
+// ("run finished, human reviewed, no merge intended" — FLOWS.md §4).
 func dispositionToState(d string) tickets.State {
-	if d == DispositionAbandoned {
+	switch d {
+	case DispositionAbandoned:
 		return tickets.StateAbandoned
+	case DispositionConcluded:
+		return tickets.StateConcluded
 	}
 	return tickets.StateSentBack
 }
@@ -1171,7 +1289,7 @@ func (h *Handler) SetDisposition(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !ValidDisposition(req.Disposition) {
-		http.Error(w, "disposition must be sent_back or abandoned", http.StatusBadRequest)
+		http.Error(w, "disposition must be sent_back, abandoned, or concluded", http.StatusBadRequest)
 		return
 	}
 	if !ValidDispositionReason(req.Reason) {
@@ -2632,6 +2750,40 @@ var _ = Describe("outcomewatcher", func() {
 		Expect(tk.State).To(Equal(tickets.StateMergedWithFixes))
 	})
 
+	It("skips merge-detection for a concluded ticket — the row closes as 'concluded' and never flips (flow-decoupling 2026-07-09)", func() {
+		// tick 1: create the open row for the pushed spike branch.
+		Expect(watcher.Run(nil)).To(Succeed())
+		o, _, _ := outcomeStore.Get(ticketID)
+		Expect(o.MergeState).To(Equal(outcomes.MergeOpen))
+
+		// human concludes the spike: run finished, reviewed, no merge intended.
+		// The disposition closes the row as 'concluded' (NOT closed_unmerged)
+		// and the ticket takes the needs_review → concluded edge via the
+		// single writer — exactly what the API handler does (Task 5).
+		Expect(outcomeStore.SetDisposition(ticketID, outcomes.DispositionInput{
+			Disposition: outcomes.DispositionConcluded, Reason: "research_complete", By: "tdmtrader",
+		})).To(Succeed())
+		o, _, _ = outcomeStore.Get(ticketID)
+		Expect(o.MergeState).To(Equal(outcomes.MergeConcluded))
+		Expect(ticketStore.Transition(ticketID, tickets.StateNeedsReview, tickets.StateConcluded, tickets.TransitionMeta{})).To(Succeed())
+
+		// someone merges the spike branch upstream anyway (it happens: a
+		// reviewer cherry-picks the prototype). The outcome must NOT flip —
+		// concluded never waits on, or reacts to, a branch merge.
+		seed := filepath.Join(tmp, "seed")
+		git(seed, "push", "origin", "HEAD:main")
+
+		// tick 2: the concluded row is off the open work-list (ListOpen) and
+		// the ticket is no longer needs_review (seedRows scans needs_review
+		// only), so nothing is re-armed and nothing is detected.
+		Expect(watcher.Run(nil)).To(Succeed())
+		o, _, _ = outcomeStore.Get(ticketID)
+		Expect(o.MergeState).To(Equal(outcomes.MergeConcluded), "concluded is terminal — merge-detection is skipped")
+		Expect(o.Disposition).To(Equal(outcomes.DispositionConcluded), "the concluded disposition is never cleared")
+		tk, _, _ := ticketStore.Get(ticketID)
+		Expect(tk.State).To(Equal(tickets.StateConcluded), "the ticket never leaves concluded")
+	})
+
 	It("serves the windowed diff via the MirrorProvider seam", func() {
 		Expect(watcher.Run(nil)).To(Succeed()) // creates the row + fetches the mirror
 		page, err := cache.Diff("tdmtrader/concourse", base, pushed, 0, 50)
@@ -2793,7 +2945,8 @@ func (w *Watcher) seedRows() error {
 		// NOT `continue` on a found row — that was the old bug: the re-worked
 		// branch's new pushed_sha/base_sha never got re-resolved, so the human
 		// merge on the rework loop was silently lost (spec §9 delta). Terminal
-		// merged / abandoned rows are left untouched by Ensure.
+		// merged / abandoned / concluded rows are left untouched by Ensure
+		// (and concluded tickets never appear in this needs_review scan).
 		pushed, base := w.resolveShas(tk)
 		if err := w.outcomes.Ensure(&outcomes.Outcome{
 			TicketID: tk.ID, Repo: tk.Repo, Branch: tk.Branch,
@@ -2891,7 +3044,7 @@ func (w *Watcher) recordAndTransition(tk *tickets.Ticket, res *gitcheck.Result) 
 }
 ```
 
-- [ ] Run `ginkgo ./agent/outcomewatcher/` — expect green (row-creation, merge detection + transition, open-stays-open, the send-back re-arm + rework-merge loop (F6), and the diff-provider seam all pass against real git). Before the `seedRows` re-arm fix (unconditional `continue` on a found row) the F6 spec fails at `Expect(o.MergeState).To(Equal(outcomes.MergeOpen), "row must be re-armed to open")` — the row stays `closed_unmerged` and the rework merge is never recorded. Two orderings in that spec are load-bearing (F38): the merge is pushed only AFTER the tick-2 re-arm assertions (`Run` does seedRows then detectMerges in one tick, so an earlier merge push would be detected on the re-arm tick and hide the open-row state), and the `merged_with_fixes` verdict comes from the post-push "human fix before merge" commit — the only commit in the `pushed_sha..tip` window — never from the rework commit, which IS the new pushed_sha and therefore outside the delta.
+- [ ] Run `ginkgo ./agent/outcomewatcher/` — expect green (row-creation, merge detection + transition, open-stays-open, the send-back re-arm + rework-merge loop (F6), the concluded skip-merge-detection spec, and the diff-provider seam all pass against real git). The concluded spec needs no watcher code change — the skip falls out structurally (`ListOpen` excludes `merge_state='concluded'`; `seedRows` scans `needs_review` only; the `Ensure` re-arm WHERE matches only `closed_unmerged`+`sent_back`) — but it pins that structure: if anyone later broadens `Ensure`'s re-arm or the work-list, this spec fails at `Expect(o.MergeState).To(Equal(outcomes.MergeConcluded))`. Before the `seedRows` re-arm fix (unconditional `continue` on a found row) the F6 spec fails at `Expect(o.MergeState).To(Equal(outcomes.MergeOpen), "row must be re-armed to open")` — the row stays `closed_unmerged` and the rework merge is never recorded. Two orderings in that spec are load-bearing (F38): the merge is pushed only AFTER the tick-2 re-arm assertions (`Run` does seedRows then detectMerges in one tick, so an earlier merge push would be detected on the re-arm tick and hide the open-row state), and the `merged_with_fixes` verdict comes from the post-push "human fix before merge" commit — the only commit in the `pushed_sha..tip` window — never from the rework commit, which IS the new pushed_sha and therefore outside the delta.
 - [ ] Commit: `git add agent/outcomewatcher agent/gitcheck && git commit -m "feat(delivery-outcomes): outcome watcher RunnableComponent + mirror cache"`
 
 ---
@@ -3081,7 +3234,7 @@ where `outcomeDiffProvider` is computed once earlier in this method (next to whe
 
 ### Task 12: go-concourse client + `fly agent tickets dispose`
 
-A `SetAgentTicketDisposition` client method and a `fly agent tickets dispose` subcommand so a human can send-back/abandon from the CLI (the disposition still rides the API → transition function). Follows the `agent_tickets.go` client idiom (Task 10 of ticket-core) and the shared `AgentCommand` struct (credentials-and-budgets addendum: wave-mates append subcommand fields).
+A `SetAgentTicketDisposition` client method and a `fly agent tickets dispose` subcommand so a human can send-back/abandon/conclude from the CLI (the disposition still rides the API → transition function). Follows the `agent_tickets.go` client idiom (Task 10 of ticket-core) and the shared `AgentCommand` struct (credentials-and-budgets addendum: wave-mates append subcommand fields).
 
 **Files:**
 - Modify: `go-concourse/concourse/client.go` (add `SetAgentTicketDisposition` to the `Client` interface, after the ticket-core methods)
@@ -3213,7 +3366,7 @@ var _ = Describe("fly agent tickets dispose", func() {
 - [ ] Add the `Dispose` subcommand field to the tickets command struct in `fly/commands/agent.go` (the `AgentTicketsCommand` ticket-core created; match its field style):
 
 ```go
-	Dispose AgentTicketDisposeCommand `command:"dispose" description:"Send back or abandon a ticket with a reason"`
+	Dispose AgentTicketDisposeCommand `command:"dispose" description:"Send back, abandon, or conclude a ticket with a reason"`
 ```
 
 - [ ] Create `fly/commands/agent_ticket_dispose.go`:
@@ -3231,8 +3384,8 @@ import (
 
 type AgentTicketDisposeCommand struct {
 	Ticket      int    `long:"ticket" required:"true" description:"Ticket id"`
-	Disposition string `long:"disposition" required:"true" choice:"sent_back" choice:"abandoned" description:"Disposition"`
-	Reason      string `long:"reason" required:"true" description:"Reason taxonomy value (wrong_approach|incomplete|defective|superseded|not_needed|style|other)"`
+	Disposition string `long:"disposition" required:"true" choice:"sent_back" choice:"abandoned" choice:"concluded" description:"Disposition (concluded = run reviewed, no merge intended — spike/research)"`
+	Reason      string `long:"reason" required:"true" description:"Reason taxonomy value (wrong_approach|incomplete|defective|superseded|not_needed|style|research_complete|other)"`
 	Notes       string `long:"notes" description:"Free-text notes"`
 }
 
@@ -3327,9 +3480,10 @@ import Json.Decode.Extra exposing (andMap)
 
 
 -- dispositionReasons is the §1.11 taxonomy, matching outcomes.DispositionReasons order.
+-- research_complete: spike/research complete, no merge intended (pairs with 'concluded').
 dispositionReasons : List String
 dispositionReasons =
-    [ "wrong_approach", "incomplete", "defective", "superseded", "not_needed", "style", "other" ]
+    [ "wrong_approach", "incomplete", "defective", "superseded", "not_needed", "style", "research_complete", "other" ]
 
 
 type alias Outcome =
@@ -3775,6 +3929,7 @@ mergeStateLabel s =
         "merged" -> "merged"
         "merged_with_fixes" -> "merged with fixes"
         "closed_unmerged" -> "closed (unmerged)"
+        "concluded" -> "concluded (no merge intended)"
         _ -> "open"
 
 
@@ -3818,7 +3973,7 @@ wire `prView model` into the existing page body, and add `ClickAgentTicketDiffMo
 
 ### Task 15: Elm six-verdict feedback + disposition UI on the ticket page
 
-The evidence panel (`Build.AgentReview.view`) emits the existing review messages — `AgentReviewVerdictClicked`, `AgentReviewNoteChanged`, `ToggleAgentReviewFinding`, `ToggleAgentReviewObservations`, `ToggleAgentReviewPanel` — which the `AgentReviews/AgentReviews.elm` page already handles. Wire the same handling into the ticket page (reusing the `SubmitAgentReviewVerdict` effect that posts to `AgentFeedback`, so judge findings' six-verdict feedback flows into the existing calibration loop). Then add the ticket-level disposition control (sent-back/abandoned + reason dropdown + notes) that calls `SetAgentTicketDisposition`.
+The evidence panel (`Build.AgentReview.view`) emits the existing review messages — `AgentReviewVerdictClicked`, `AgentReviewNoteChanged`, `ToggleAgentReviewFinding`, `ToggleAgentReviewObservations`, `ToggleAgentReviewPanel` — which the `AgentReviews/AgentReviews.elm` page already handles. Wire the same handling into the ticket page (reusing the `SubmitAgentReviewVerdict` effect that posts to `AgentFeedback`, so judge findings' six-verdict feedback flows into the existing calibration loop). Then add the ticket-level disposition control (sent-back/abandoned/concluded + reason dropdown + notes) that calls `SetAgentTicketDisposition` — `concluded` is the positive "spike/research done, no merge intended" verdict, not a failure.
 
 **Files:**
 - Modify: `web/elm/src/AgentTickets/AgentTicket.elm` (message handling in `update`; disposition form in `view`)
@@ -3900,6 +4055,19 @@ all =
                         (Effects.SetAgentTicketDisposition 12
                             { disposition = "sent_back", reason = "incomplete", notes = "" }
                         )
+        , test "concluded is offered and submits with research_complete (flow-decoupling)" <|
+            \_ ->
+                loadedPage
+                    |> Application.update (Message.Update <| Message.AgentTicketDispositionChanged "concluded")
+                    |> Tuple.first
+                    |> Application.update (Message.Update <| Message.AgentTicketDispositionReasonChanged "research_complete")
+                    |> Tuple.first
+                    |> Application.update (Message.Update <| Message.SubmitAgentTicketDisposition)
+                    |> Tuple.second
+                    |> Common.contains
+                        (Effects.SetAgentTicketDisposition 12
+                            { disposition = "concluded", reason = "research_complete", notes = "" }
+                        )
         ]
 ```
 
@@ -3947,7 +4115,7 @@ dispositionForm : Model -> Html Message
 dispositionForm model =
     Html.div [ class "ticket-disposition" ]
         [ Html.select [ onInput AgentTicketDispositionChanged ]
-            (List.map optionFor [ "", "sent_back", "abandoned" ])
+            (List.map optionFor [ "", "sent_back", "abandoned", "concluded" ])
         , Html.select [ onInput AgentTicketDispositionReasonChanged ]
             (List.map optionFor ("" :: Concourse.AgentOutcome.dispositionReasons))
         , Html.textarea [ class "disposition-notes", onInput AgentTicketDispositionNotesChanged ] []
@@ -4051,8 +4219,10 @@ Per CLAUDE.md: unit tests run in parallel with `-p`; **never** pass `--race` (pa
 - **The outcome watcher is off by default:** `--agent-outcome-git-dir` empty disables both the component and the diff API. Shipping the code without setting the flag is a no-op — the safe default for the first deploy. Turn it on per-repo once the mirror dir has disk headroom.
 - **`agent/api/reviews.GetByBuild` refactor (Task 9)** is behaviour-preserving (the loop body was lifted verbatim into `BuildResponseFor`); its own handler_test is the guard. If the extracted function ever diverges, revert Task 9's `handler.go` edit and inline the loop again — the ticket reviews handler is the only other caller.
 - **The disposition endpoint transitions the ticket through `tickets.Store.Transition` FIRST, then writes `agent_outcomes`** — if the transition is rejected (409), no disposition row is written, so ticket state and outcome state never diverge. This ordering is load-bearing; do not reorder it.
-- **Single-writer discipline:** the watcher and the disposition handler are the only two writers of outcome-driven ticket states, and both go through `tickets.Store.Transition` with a `from` guard. A concurrent transition (e.g. a human abandons while the watcher detects a merge) makes the loser's `Transition` fail `ErrStaleTransition`/`ErrInvalidTransition` and no-op — never a corrupt state. The watcher's `detectMerges` re-checks `tk.State == needs_review` before acting, so a human disposition mid-tick is respected.
+- **Single-writer discipline:** the watcher and the disposition handler are the only two writers of outcome-driven ticket states (merged/merged_with_fixes via the watcher; sent_back/abandoned/concluded via the handler), and both go through `tickets.Store.Transition` with a `from` guard. A concurrent transition (e.g. a human abandons while the watcher detects a merge) makes the loser's `Transition` fail `ErrStaleTransition`/`ErrInvalidTransition` and no-op — never a corrupt state. The watcher's `detectMerges` re-checks `tk.State == needs_review` before acting, so a human disposition mid-tick is respected.
 
 **Design-review amendments:**
 - **2026-07-09 (F6 — send-back → re-dispatch → merge never recorded):** `seedRows` (Task 10 `agent/outcomewatcher/watcher.go`) previously `continue`d unconditionally on any found outcome row, so a re-dispatched ticket's row was never re-resolved. Combined with a send-back disposition moving the row to terminal `closed_unmerged` and `Ensure`'s refresh firing only `WHERE merge_state='open'`, the re-worked branch's eventual human merge was silently lost (spec §9 human-touch delta). Fix: (1) `Store.Ensure` — both `MemoryStore` (Task 3) and `agentOutcomesFactory` (Task 4 SQL) — now RE-ARM a row where `merge_state='closed_unmerged' AND disposition='sent_back'` back to `open` with fresh branch/pushed_sha/base_sha and cleared disposition fields; `abandoned` and merged rows stay terminal. (2) `seedRows` no longer `continue`s on a found row — it always calls `Ensure`, so the plain `needs_review → queued → needs_review` re-dispatch path also refreshes shas. (3) §1.11.1 prose + the `Store.Ensure` interface doc-comment now document the re-arm; the misleading "handled … elsewhere" comment was removed. Tests added: `TestMemoryStoreEnsureRefreshesOnlyOpenRows` gains send-back-re-arm + abandoned-stays-closed cases (Task 3); the `AgentOutcomesFactory` suite gains "re-arms a sent_back row on Ensure but leaves an abandoned row terminal (F6)" (Task 4); the `outcomewatcher` suite gains "re-arms a sent-back row and detects the rework merge with the NEW shas (F6)" driving `needs_review → sent_back → queued → running → needs_review(new shas)`, asserting the tick-2 re-arm while the branch is still unmerged, then landing a post-push human fix commit and merging so the row ends `merged_with_fixes` (non-empty `pushed_sha..tip` delta) with the new base/pushed shas. Contract-visible surface unchanged (no new `Store` method, no schema change — `Ensure`'s `ON CONFLICT WHERE` was broadened only).
 - **2026-07-09 (F38 — F6 watcher spec: merge pushed too early + unearned `merged_with_fixes`):** final-review fix to the Task 10 spec "re-arms a sent-back row and detects the rework merge with the NEW shas (F6)". Two defects: (1) the spec pushed the merge to `main` BEFORE tick 2 — but `Watcher.Run` executes `seedRows` then `detectMerges` in the same tick, so the merge was detected on the re-arm tick itself and the tick-2 open-row assertions (`MergeOpen`, reworked shas, cleared disposition) could never observe the re-armed state; (2) it expected `merged_with_fixes` from the rework commit alone — but the rework commit IS the new `pushed_sha`, so `pushed_sha..tip-at-merge` was empty and by the plan's own frozen definition (`merged_with_fixes ⇔ human_commit_count > 0` over that window, §1.11.1 / Task 1) the correct verdict was plain `merged`. Fix: the rework commit is now a bot commit (the re-dispatched agent's push — the honest fixture; its authorship never mattered to the delta), the merge push moves AFTER the tick-2 re-arm assertions, and a genuine human commit ("human fix before merge", `Reviewer` author) lands on top of the reworked push before the merge — the only commit in the delta window — with new assertions `HumanCommitCount == 1` and `HumanLinesAdded > 0`. Misleading comments corrected in place; Task 10's expect-green note now flags both load-bearing orderings. Watcher/`Ensure` implementation code unchanged — this was a test-recipe bug, not a runtime bug. The F6 amendment entry above was corrected to describe the merge-after-re-arm + post-push-human-fix recipe. Contract-visible surface unchanged.
+- **2026-07-09 (flow-decoupling — CONCLUDED terminal state; FLOWS.md §3 spike-research / §4):** owner-approved decision: a new TERMINAL ticket state `concluded` — "run finished, human reviewed, no merge intended" (spike/research flows) — reachable from `needs_review` via explicit human disposition, a positive sibling of `abandoned`, landed NOW because the §1.7 lifecycle enum is frozen up front (deciding later means a migration). Changes in this plan: (1) **Task 1 §1.11.1** — `merge_state`/`disposition` CHECKs gain `'concluded'`, `disposition_reason` gains `'research_complete'` (spike/research complete, no merge intended); outcome-row lifecycle documents that a `concluded` disposition closes the row as `merge_state='concluded'` (terminal, never re-armed, watcher skips merge-detection permanently); new scorecard-facing rule "**Concluded is not a failure**" — exclude from merge-rate denominators, never bucket with `closed_unmerged`; §11 log entry appended. (2) **Task 2** migration CHECKs extended. (3) **Task 3** — `MergeConcluded`/`DispositionConcluded` constants, `research_complete` in `DispositionReasons`, `ValidDisposition` accepts it; `MemoryStore.SetDisposition` closes an open row as `concluded` for a concluded disposition; `TestMemoryStoreConcludedDisposition` pins close-as-concluded + no-re-arm + off-the-work-list. (4) **Task 4** — factory `SetDisposition` SQL CASE targets `'concluded'` when `$2='concluded'`; new spec "closes an open row as concluded and never re-arms it". (5) **Task 5** — `dispositionToState` maps `concluded → tickets.StateConcluded` (the `needs_review → concluded` edge, still exclusively via `tickets.Store.Transition`); new handler test `TestSetDispositionConcludedTransitionsTicket`. (6) **Task 10** — new watcher spec "skips merge-detection for a concluded ticket": after a concluded disposition + transition, a subsequent upstream merge of the spike branch must NOT flip the row or the ticket; no watcher code change (the skip is structural — `ListOpen`/`seedRows`/re-arm WHERE all exclude it) but the spec pins that structure. (7) **Tasks 12/13/14/15** — fly `--disposition` gains `choice:"concluded"` and the reason list `research_complete`; Elm `dispositionReasons` gains `research_complete`; `mergeStateLabel` renders "concluded (no merge intended)"; the disposition dropdown offers `concluded`; new Elm test case submits concluded/research_complete. Depends on ticket-core's same-day amendment adding `StateConcluded` + the `needs_review → concluded` edge (stamps `completed_at`, fires the §8.4 webhook via the transition function — no code here). Affects: scorecards, process-intel-experiments, ticket-core.
+- **2026-07-09 (verifier follow-up — Task 1 insertion anchor drifted by the concluded amendment):** Task 1's insertion step quoted §1.11's closing paragraph as "Explicit dispositions (`sent_back`/`abandoned`) live here …", but the same-day concluded amendment to 00-shared-contracts.md rewrote that paragraph to "Explicit dispositions (`sent_back`/`abandoned`/`concluded`) live here …" — a literal-anchor mismatch that risked a mis-placed §1.11.1 insertion at execution time. Fix: the quoted anchor text in the Task 1 step now includes `/`concluded`` so it matches the amended contracts paragraph verbatim. No task content, code, or contract-surface change — anchor text only.

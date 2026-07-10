@@ -54,7 +54,7 @@ The renderer (`agent/dispatch.Render`) is a pure function `Render(RenderInput) (
 - **Template shape:** one job `name: run`; its plan is the ordered `agent:`/checkpoint steps from the definition followed by the implicitly-appended terminal `harvest:` step (§6.1: harvest is never declared in `steps`). The job is an entry job (no `passed:`), so `CreateRun` auto-triggers it (§7.1 point 8).
 - **Checkpoint steps render as `task:`, not `agent:` (F1, 2026-07-09; REWRITTEN 2026-07-09 per the frozen checkpoint seam delta — resolves F14/F15/F16/F28/F29/F36):** each `workflow.Step{Checkpoint:...}` becomes a bare `atc.TaskStep` named `checkpoint-<name>` — identical for both `on_reject` values, never wrapped in try/on_failure/ensure — whose `run` invokes `platform-mcp checkpoint --name <name>` resolved on PATH (the platform-mcp image installs the binary at `/usr/local/bin/platform-mcp` and is **shell-bearing** — alpine base with POSIX `sh` + `tail`/`mv`/`cat`/`sleep`/`mkdir`/`kill` — because it doubles as the task MAIN image under jetbridge's sh supervisor; F28, delta §8). `Config.ImageResource.Source` is built by the renderer helper `splitImageRef(image) (repo, tag)` and emits `{repository, tag}` with the tag **split out**; digest refs (`@sha256:`) pass whole into `repository` with no tag key — never a tag inside `repository` (the native resolver appends `:latest` unconditionally, so `repository: …:v1` is a fatal `name.ParseReference` error; F29). Task params carry `ATC_EXTERNAL_URL` / `AGENT_TICKET_ID` / `AGENT_PIPELINE_RUN_ID: ((run_id))` / `AGENT_STEP_NAME: checkpoint-<name>` / `PLATFORM_MCP_URL=http://127.0.0.1:7781/mcp` and **NO `AGENT_PRINCIPAL_TOKEN`** — the client authenticates to nothing (the pod boundary is the auth boundary; the old `((principal-token))` param was an undefined var that failed interpolation on every run; F16). Exactly one inline `platform` sidecar is mounted (Name `"platform"` — the fixed role key), carrying the same four identity rows as literal env plus `AGENT_PRINCIPAL_TOKEN` via `ValueFrom.SecretKeyRef {name: "agent-run-((run_id))", key: "principal-token"}` (F15, Task 4b seam) — the SIDECAR is the trust boundary: its `POST /checkpoint` handler files the `kind='checkpoint'` `agent_run_questions` row via the ATC API, long-polls until answered, and emits the §5 `checkpoint.wait`/`checkpoint.release` events; the client only POSTs it over pod-local loopback and exits 0 (approve) / 1 (reject or error) / 2 (usage). **Render-time guard (F36):** a checkpoint step in a workflow whose `sidecars` map has no `platform` entry (or an empty image) makes `Render` return `checkpoint %q requires a "platform" sidecar in the workflow definition` — never a zero-value sidecar. No timeout is set (checkpoints always park). `on_reject: fail`/`send_back` both render this identical bare failing step; the mapping is applied post-hoc by the dispatcher's **run-completion reconciler** (delta §6, Task 11b) from the ticket's frozen workflow config — the client and sidecar never see it. No `PLATFORM_MCP_CHECKPOINT*` env or LLM prompt is emitted.
 - **Params schema declared by the rendered template:** exactly the run-identity params the dispatcher fills — `ticket_id` (number, required), `pipeline_run_id` is NOT a param (it is the run's own id, injected at exec time from `AGENT_PIPELINE_RUN_ID`, which the renderer sets to the literal `((run_id))` reserved var — `pipeline_runs.id`, allocated before materialization per the F30 delta (2026-07-09) — at BOTH renderer sites: agent-step env and the checkpoint task's params + sidecar env; interpolation covers the whole pipeline config including secretKeyRef secret names). The reserved names `run` and `run_id` (§7.1) are never declared. Rationale: keeping the template's declared params minimal avoids params-schema validation coupling; ticket/workflow identity travels as literal step `env`, not as params, per the render-time-resolution rule (§2.8).
-- **Read model (default = MCP):** by default (`spec_delivery: mcp` or omitted) the renderer injects NO spec/plan bytes into any agent step. There is no `AGENT_SPEC_MD`/`AGENT_PLAN_MD` env key — those keys are DELETED from the emission target. The agent reaches spec/plan exclusively through the platform-mcp read tools (`read_ticket`, `list_tasks`, `get_task`; contracts §3.2, implemented by 08-platform-mcp-hitl over the ticket-core `Store` methods `Get`/`LatestSpec`/`ActivePlan`), loading only what it needs and working the plan through task handles. The DB stays the single source of truth; nothing is flattened into a monolithic blob. The workflow's first agent step prompt instructs the agent to begin by calling `read_ticket` and `list_tasks` (and `get_task` per task as it works) — a one-line seed-prompt convention.
+- **Read model (default = MCP):** by default (`spec_delivery: mcp` or omitted) the renderer injects NO spec/plan bytes into any agent step. There is no `AGENT_SPEC_MD`/`AGENT_PLAN_MD` env key — those keys are DELETED from the emission target. The agent reaches spec/plan exclusively through the platform-mcp read tools (`read_ticket`, `list_tasks`, `get_task`; contracts §3.2, implemented by 08-platform-mcp-hitl over the ticket-core `Store` methods `Get`/`LatestSpec`/`ActivePlan`), loading only what it needs and working the plan through task handles. The DB stays the single source of truth; nothing is flattened into a monolithic blob. The workflow's first agent step prompt instructs the agent to begin by calling `read_ticket` and `list_tasks` (and `get_task` per task as it works) — a one-line seed-prompt convention. *(Amended 2026-07-09, flow-decoupling E4: `.Spec` MAY be nil and `.Tasks` MAY be empty at render time — at first dispatch this is ALWAYS true, because rendering happens before any agent step runs; even the seeded standard-dev workflow creates its spec mid-run, so `read_ticket` may return `spec: null`. The renderer and all prompt templates must be nil-safe per contracts §6.2's nil-safe render semantics. The read-then-submit-spec opening is a standard-dev seed convention, not a renderer or platform rule; spec-less workflows are first-class.)*
 - **spec.md / plan.md as run inputs (opt-in `spec_delivery: files`):** when the resolved `workflow.Config.SpecDelivery == "files"`, the renderer materializes read-only `spec.md`/`plan.md` (contents produced via `tickets.RenderSpecMarkdown`/`RenderPlanMarkdown`, which are KEPT) into `RenderOutput.RunInputs` (filename→contents). The dispatcher mounts them READ-ONLY as an artifact named `ticket` on the agent steps — a file mount, NOT env vars. In `mcp` mode `RenderOutput.RunInputs` is empty. In BOTH modes the platform-mcp sidecar is mounted and all its tools work; `files` mode is purely additive (a read-only mount) and does not disable the MCP read path. `SpecDelivery` is read off the resolved `workflow.Config` (grammar owned by 05-workflow-store; contracts §6): yaml key `spec_delivery`, Go field `SpecDelivery string`, values `"mcp"` (default when empty) | `"files"`, a normal hashed field.
 - **Persistence:** the dispatcher persists the rendered `atc.Config` via `db.Team.SavePipeline(atc.PipelineRef{Name: "agent-ticket-<id>"}, config, 0, false)` to obtain the base template pipeline id, then calls `db.PipelineRunFactory.CreateRun(templateID, params, "dispatcher")`. One template pipeline per ticket (name `agent-ticket-<ticket-id>`); re-dispatch after send-back re-saves (bumping `ConfigVersion`) and creates a new run number under the same template.
 - **`budget.TicketBudgets` implementation:** dispatch supplies `dispatch.TicketBudgets` resolving `tickets.budget_usd ?? workflow.Config.Budget.TicketUSD` via `tickets.Store.Get` + the resolved live `workflow.Definition` — this is the real implementation the wave-1 `budget.NoTicketBudgets` stub stood in for.
@@ -1619,6 +1619,193 @@ Expected: PASS.
 ```bash
 git add agent/dispatch/testdata agent/dispatch/golden_test.go
 git commit -m "test(dispatch): golden-file render of standard-dev validated against configvalidate" -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+```
+
+---
+
+### Task 6b: Golden render test — spec-less/plan-less ticket in BOTH `spec_delivery` modes *(added 2026-07-09, flow-decoupling edit E4)*
+
+*(Amendment, 2026-07-09 — FLOWS.md E4, closing soft couplings S1/S2.)* `Spec == nil` / `Tasks == nil` is not an edge case — it is the renderer's **normal input**: rendering happens at dispatch, before any agent step can call `submit_spec`, so every first dispatch (including the seeded standard-dev workflow, whose spec is written mid-run by its first agent step) renders against a spec-less, plan-less ticket. Yet Task 5's files-mode test and Task 6's golden only exercise populated inputs. This task pins nil-safety in both delivery modes per contracts §6.2's nil-safe render semantics (amendment 2026-07-09):
+
+- **mcp mode (default):** renders clean — no error, no phantom `RunInputs` files, no phantom `AGENT_SPEC_MD`/`AGENT_PLAN_MD` env, and the emitted template is byte-identical to the populated-spec golden (the invariance IS the assertion: no spec bytes may leak into the pipeline config).
+- **files mode:** `spec.md`/`plan.md` still materialize, as the graceful empty states pinned by ticket-core's markdown goldens (06 Task 9: `RenderSpecMarkdown(t, nil)` → ticket envelope + problem statement; `RenderPlanMarkdown(t, nil)` → `"No plan submitted yet."`) — never a template execution error, never half-rendered output.
+
+**Files:**
+- Create: `agent/dispatch/render_nilspec_test.go`
+
+**Steps:**
+
+- [ ] **Step 1: Write the test** `agent/dispatch/render_nilspec_test.go` (same `dispatch_test` package as `render_test.go`/`golden_test.go`, so the Task 5 Step 2 type-assert helpers are in scope):
+
+```go
+package dispatch_test
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/concourse/concourse/agent/api/tickets"
+	"github.com/concourse/concourse/agent/dispatch"
+	"github.com/concourse/concourse/agent/workflow"
+	"github.com/concourse/concourse/atc/configvalidate"
+	"sigs.k8s.io/yaml"
+)
+
+// nilSpecInput is the render input EVERY first dispatch produces: Spec=nil,
+// Tasks=nil. Rendering happens at dispatch time, before any agent step can
+// call submit_spec, so the spec-less ticket is the renderer's NORMAL input —
+// even the seeded standard-dev workflow writes its spec mid-run (contracts
+// §6.2 nil-safe render semantics, amended 2026-07-09; FLOWS.md S1/S2).
+// read_ticket may return spec:null (§3.2); the read-then-submit-spec seed
+// prompt is a standard-dev convention, not a renderer requirement.
+func nilSpecInput(t *testing.T) dispatch.RenderInput {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join("testdata", "standard-dev.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := workflow.Parse(raw)
+	if err != nil {
+		t.Fatalf("parse fixture: %v", err)
+	}
+	cfg.Version = 3
+
+	in := dispatch.RenderInput{Workflow: *cfg, AgentStepImage: "ghcr.io/tdmtrader/agent-runner:v1", ATCExternalURL: "https://concourse.home", WorkflowHashForTest: "deadbeef"}
+	in.Ticket = tickets.Ticket{ID: 42, Repo: "tdmtrader/concourse", TargetBranch: "main", Title: "Fix X", Body: "context", Origin: "web"}
+	in.Spec = nil  // no spec row exists yet — always true at first dispatch
+	in.Tasks = nil // no plan rows either
+	return in
+}
+
+// TestRenderGoldenNilSpecMCPMode: default (mcp) delivery with a spec-less,
+// plan-less ticket renders clean and byte-identical to Task 6's
+// populated-spec golden. Identity to the SAME golden is deliberate: in mcp
+// mode the pipeline template must not vary with spec presence. If a
+// legitimate future change makes the two diverge, mint a separate
+// standard-dev-nospec.golden.yml rather than weakening this compare.
+func TestRenderGoldenNilSpecMCPMode(t *testing.T) {
+	in := nilSpecInput(t) // fixture omits spec_delivery → default "mcp"
+
+	out, err := dispatch.Render(in)
+	if err != nil {
+		t.Fatalf("Render must be nil-safe on Spec/Tasks (contracts §6.2), got: %v", err)
+	}
+	warnings, errs := configvalidate.Validate(out.Config)
+	if len(errs) != 0 {
+		t.Fatalf("configvalidate errors on nil-spec render: %v (warnings: %v)", errs, warnings)
+	}
+	// No phantom files: mcp mode leaves RunInputs empty regardless of spec presence.
+	if len(out.RunInputs) != 0 {
+		t.Errorf("mcp mode with nil spec must leave RunInputs empty, got %+v", out.RunInputs)
+	}
+	// No phantom params: the declared-params contract stays {ticket_id} (§2.8.2).
+	if got := out.Params["ticket_id"]; got != 42 || len(out.Params) != 1 {
+		t.Errorf("nil spec must not change params {ticket_id: 42}, got %+v", out.Params)
+	}
+	// No phantom env: nil spec must not resurrect the deleted AGENT_SPEC_MD /
+	// AGENT_PLAN_MD keys (or any spec-derived env) on ANY agent step.
+	for i, step := range out.Config.Jobs[0].PlanSequence {
+		ag, ok := step.Config.(*atcAgent) // helper alias from render_test.go (Task 5 Step 2)
+		if !ok {
+			continue // checkpoint task / terminal harvest
+		}
+		for _, key := range []string{"AGENT_SPEC_MD", "AGENT_PLAN_MD"} {
+			if _, present := ag.Env[key]; present {
+				t.Errorf("plan step %d: nil-spec mcp render must not inject %s", i, key)
+			}
+		}
+	}
+
+	got, err := yaml.Marshal(out.Config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := os.ReadFile(filepath.Join("testdata", "standard-dev.golden.yml"))
+	if err != nil {
+		t.Fatalf("read Task 6 golden (generate first: -run TestRenderGoldenStandardDev -update): %v", err)
+	}
+	if string(got) != string(want) {
+		t.Errorf("nil-spec render diverged from the populated-spec golden — spec bytes are leaking into the template.\n--- got ---\n%s\n--- want ---\n%s", got, want)
+	}
+}
+
+// TestRenderNilSpecFilesMode: opt-in files delivery with a spec-less ticket
+// must materialize spec.md/plan.md as graceful empty-state markdown — the
+// exact bytes ticket-core's goldens pin (06 Task 9) — not error, not emit a
+// template-execution artifact.
+func TestRenderNilSpecFilesMode(t *testing.T) {
+	in := nilSpecInput(t)
+	in.Workflow.SpecDelivery = "files"
+
+	out, err := dispatch.Render(in)
+	if err != nil {
+		t.Fatalf("files mode must render a spec-less ticket (contracts §6.2), got: %v", err)
+	}
+	warnings, errs := configvalidate.Validate(out.Config)
+	if len(errs) != 0 {
+		t.Fatalf("configvalidate errors on nil-spec files-mode render: %v (warnings: %v)", errs, warnings)
+	}
+
+	// RenderSpecMarkdown(ticket, nil) → ticket envelope + problem statement.
+	wantSpec := `# Ticket #42: Fix X
+
+- repo: tdmtrader/concourse
+- target branch: main
+- origin: web
+
+## Problem statement
+
+context
+`
+	if out.RunInputs["spec.md"] != wantSpec {
+		t.Errorf("spec-less spec.md must be the envelope + problem-statement empty state:\n--- got ---\n%s\n--- want ---\n%s", out.RunInputs["spec.md"], wantSpec)
+	}
+	// RenderPlanMarkdown(ticket, nil) → the explicit no-plan stub.
+	wantPlan := "# Plan — ticket #42\n\nNo plan submitted yet.\n"
+	if out.RunInputs["plan.md"] != wantPlan {
+		t.Errorf("plan-less plan.md must be the explicit empty state:\n--- got ---\n%q\n--- want ---\n%q", out.RunInputs["plan.md"], wantPlan)
+	}
+	// Belt-and-braces against template/format-verb leakage in either file.
+	for name, contents := range out.RunInputs {
+		if strings.Contains(contents, "<no value>") || strings.Contains(contents, "%!") {
+			t.Errorf("%s leaked a template/format error:\n%s", name, contents)
+		}
+	}
+}
+```
+
+- [ ] **Step 2: Run**
+
+Run: `cd /Users/tdmtrader/concourse/concourse && go test ./agent/dispatch/ -run 'TestRenderGoldenNilSpec|TestRenderNilSpecFiles'`
+Expected: **PASS** — if Task 5's `render.go` was written as specified, `Render` already passes `in.Spec`/`in.Tasks` straight through to the nil-tolerant `tickets.RenderSpecMarkdown`/`RenderPlanMarkdown` and never dereferences `.Spec`. If instead this FAILS with a nil-pointer panic or a render error, that is exactly the S1 breakage this task exists to catch: fix `render.go` (and any prompt-template plumbing) to be nil-safe per contracts §6.2 — guard every `.Spec` access, keep the tickets renderers as the only spec/plan serialization path — then re-run to PASS. Do NOT "fix" the test by populating `in.Spec`.
+
+- [ ] **Step 3: Mutation check — prove the test bites.** Temporarily break nil-safety in `agent/dispatch/render.go` by replacing the files-mode materialization line
+
+```go
+			"spec.md": string(tickets.RenderSpecMarkdown(in.Ticket, in.Spec)),
+```
+
+with a direct dereference:
+
+```go
+			"spec.md": in.Spec.Body, // MUTATION — do not commit
+```
+
+Run: `cd /Users/tdmtrader/concourse/concourse && go test ./agent/dispatch/ -run 'TestRenderNilSpecFiles'`
+Expected: FAIL (nil-pointer panic caught by the test). **Revert the mutation** and re-run both tests to PASS.
+
+- [ ] **Step 4: Run the whole package**
+
+Run: `cd /Users/tdmtrader/concourse/concourse && go test ./agent/dispatch/`
+Expected: PASS (including Task 6's `TestRenderGoldenStandardDev` against the same, unchanged golden).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add agent/dispatch/render_nilspec_test.go
+git commit -m "test(dispatch): pin nil-spec/nil-plan render in both spec_delivery modes (flow-decoupling E4)" -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ```
 
 ---

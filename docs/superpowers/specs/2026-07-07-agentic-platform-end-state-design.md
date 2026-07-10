@@ -23,7 +23,7 @@ Every dollar is budgeted and attributed. Workflow versions compete on scorecards
 The platform fixes the **contract around a workflow**, not the workflow itself.
 
 **Constant (the contract):**
-- Front: ticket → spec + plan (structured envelope, markdown prose bodies — see §1).
+- Front: a ticket (whose structured spec + plan storage — structured envelope, markdown prose bodies — is *available to any workflow that wants it*, see §1; flows that work directly from the ticket body are equally first-class).
 - Back: work product = pushed branch + patch manifest + review evidence + judge score + outcome tracking.
 - Throughout: flight-recorder event stream, cost accounting, gate results.
 
@@ -35,7 +35,7 @@ The platform fixes the **contract around a workflow**, not the workflow itself.
 
 New `agent_tickets` table + `/api/v1/agent/tickets` CRUD + web page with edit mode.
 
-- Lifecycle: `draft → queued → running → needs-review → merged | merged-with-fixes | sent-back | abandoned | failed` (post-review states in §9).
+- Lifecycle: `draft → queued → running → needs-review → merged | merged-with-fixes | sent-back | abandoned | concluded | failed` (post-review states in §9). `concluded` is terminal, reached from `needs-review` by explicit human disposition, for flows with no merge intent (spike/research) — a positive sibling of `abandoned`.
 - `origin` field (`web`, `fly`, `jira`, `retrospective`) from day one so the future Jira sync is just another writer — no schema redesign when it arrives.
 - References a workflow definition (name + version), a target repo, a per-ticket budget (defaulted, overridable), and the triggering user (for credential attachment and cost attribution).
 
@@ -125,6 +125,7 @@ Tickets don't end at `needs-review`. The platform watches the target repo native
 - **merged:** the agent branch's head becomes reachable from the default branch.
 - **merged-with-fixes:** human commits landed on the agent branch before merge. The **human-touch delta** (lines the human changed post-agent) is recorded — the single most honest quality metric the platform collects.
 - **sent-back / abandoned:** explicit disposition on the ticket UI with a small reason taxonomy + free text (the ticket-level analog of six-verdict finding feedback).
+- **concluded:** explicit human disposition from `needs-review` for flows with no merge intent (spike/research) — "run finished, human reviewed, no merge intended" — a positive terminal sibling of `abandoned`, so finished spikes neither rot in `needs-review` nor count against merge-rate metrics.
 
 Outcomes feed the scorecards (§8) and process intelligence (§10). Jira status sync rides the same seam in phase 2.
 
@@ -208,3 +209,4 @@ Existing tables extended, not duplicated: `agent_reviews`, `agent_feedback`.
 ## Amendments
 
 - **2026-07-09 (F12 — budget-honesty correction, Failure handling):** Added a line to §Failure handling clarifying that the main agent's own claude-CLI spend is bounded per-step by `--max-turns` / step timeout and reconciled against the budget at step-admission (dispatcher daily-cap check + agent step `StepSlice`) and post-hoc at usage ingestion — **not** mid-call; only cross-agent gateway calls receive a mid-call dollar cutoff. This corrects the earlier implication (rev 2 §11 "Enforcement at the gateway (metering + cutoff)") that the gateway caps *all* agent spend. No contract names changed; consistent with 00-shared-contracts.md §2.7 (`budget.Checker.StepSlice`), §2.8 (`AgentStep.MaxTurns`), and 10-gateway-mcp.md (gateway cutoff enforced only against `AGENT_BUDGET_SLICE_USD`).
+- **2026-07-09 (E1 — flow decoupling, per `plans/agentic-platform/FLOWS.md`):** Reworded the "Constants vs. variables" Front constant from "ticket → spec + plan" to "a ticket (whose structured spec + plan storage is available to any workflow that wants it)" — the enforced front constant is the ticket envelope; spec/plan rows are optional per-workflow instrumentation, and ticket-body-driven flows are first-class (kills FLOWS.md couplings R1/R2 at the source). Added the terminal `concluded` state to the §1 lifecycle enum now, before the enum freezes ("run finished, human reviewed, no merge intended"; reached from `needs-review` by explicit human disposition; positive sibling of `abandoned`), plus a §9 outcome-tracking entry so concluded spikes don't rot in `needs-review` or depress merge-rate scorecards (FLOWS.md §3 spike-research gap, §4 harvest-knob row).

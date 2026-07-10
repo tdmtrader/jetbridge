@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Store, hash, version, import, and promote workflow definitions in `agent_workflow_definitions` — with the §6 composition grammar validated at write time, a content-hash provenance function generalized from ci-agent, API + `fly agent workflows` commands, and today's five ci-agent phases decomposed into a seed `standard-dev` v1 definition.
+**Goal:** Store, hash, version, import, and promote workflow definitions in `agent_workflow_definitions` — with the §6 composition grammar validated at write time, a content-hash provenance function generalized from ci-agent, API + `fly agent workflows` commands, and today's five ci-agent phases decomposed into a seed `standard-dev` v1 definition — plus two equal-standing flow-decoupling seeds, `direct-dev` (direct one-shot) and `test-first-dev` (test-first contract), per FLOWS.md E3 (2026-07-09 amendment).
 
 **Architecture:** A new root-module package `agent/workflow` owns the parsed `Definition`/`Config` types, the YAML grammar parser with phaseconfig-style eager validation, the sha256 content hash, and the `Store` interface. `atc/db/agent_workflows_factory.go` implements `Store` over migration `1773106040` (following the `agent_reviews_factory.go` recipe), `agent/api/workflows` serves the five §4.2 routes (following `agent/api/reviews`), and `fly agent workflows list/show/import/set-live` drives them over the authenticated `target.Client().HTTPClient()`. The renderer, execution, and scorecards are explicitly NOT built here — checkpoint and gate-policy slots are declared-but-inert grammar that this store only validates.
 
@@ -562,6 +562,10 @@ func TestValidateRejects(t *testing.T) {
 		{"duplicate judge dimension", mutate(t, "- name: tests", "- name: correctness"), "duplicate"},
 		{"input not produced earlier", mutate(t, "  inputs: [workspace]\n", "  inputs: [workspace, phantom]\n"), "phantom"},
 		{"unparseable prompt template", mutate(t, "{{.Ticket.Title}}", "{{.Ticket.Title"), "template"},
+		// E2b (2026-07-09): .Spec is nil at EVERY dispatch render (rendering
+		// happens before any agent can submit a spec — contracts §6.2
+		// nil-safety), so a bare deref must fail at IMPORT, not at dispatch.
+		{"bare .Spec deref in prompt", mutate(t, "{{.Ticket.Title}}", "{{.Spec.Title}}"), "spec-less"},
 		{"duplicate step name", mutate(t, "- agent: implement", "- agent: write-spec"), "duplicate"},
 		{"checkpoint with agent fields", mutate(t, "  on_reject: fail", "  on_reject: fail\n  max_turns: 5"), "checkpoint"},
 		{"negative ticket budget", mutate(t, "ticket_usd: 15.0", "ticket_usd: -2"), "ticket_usd"},
@@ -604,15 +608,104 @@ steps:
 		t.Errorf("SpecDelivery = %q, want files", cfg.SpecDelivery)
 	}
 }
+
+// TestValidateAcceptsNilSafeSpecTemplates (E2b, 2026-07-09): templates that
+// guard .Spec and range .Tasks render cleanly against the spec-less context
+// every dispatch sees (contracts §6.2 nil-safety), so they must import clean —
+// including envelope/params field access, which is always tolerated.
+func TestValidateAcceptsNilSafeSpecTemplates(t *testing.T) {
+	guarded := mutate(t, "{{.Ticket.Title}}",
+		"{{if .Spec}}{{.Spec.Title}}{{end}} {{range .Tasks}}{{.Title}} {{end}}{{.Ticket.Body}} {{.Params.extra}}")
+	if _, err := workflow.Parse([]byte(guarded)); err != nil {
+		t.Fatalf("guarded spec/tasks templates must validate: %v", err)
+	}
+}
+
+// TestValidateRejectsWorkspacelessDefinition (E6a, 2026-07-09, FLOWS S4): the
+// implicit terminal harvest step consumes the `workspace` artifact
+// (11-dispatch's RenderHarvestStep hard-codes it as harvest's input). A
+// definition in which no step outputs it used to validate clean and then fail
+// EVERY run at the harvest step — reject it at import instead.
+func TestValidateRejectsWorkspacelessDefinition(t *testing.T) {
+	noWorkspace := `schema_version: 1
+name: no-workspace
+prompts:
+  work: |
+    Do the work.
+steps:
+- agent: work
+  prompt: work
+  outputs: [notes]
+`
+	_, err := workflow.Parse([]byte(noWorkspace))
+	if err == nil {
+		t.Fatal("definition with no workspace output must be rejected")
+	}
+	if !strings.Contains(err.Error(), `no step outputs "workspace"`) {
+		t.Errorf("error %q must name the missing workspace output", err.Error())
+	}
+}
+
+// TestValidateRejectsCheckpointWithoutPlatformSidecar (E6b, 2026-07-09,
+// FLOWS S5): import mirror of dispatch's F36 render-time guard — a rendered
+// checkpoint task mounts the definition's "platform" sidecar; without that
+// entry every dispatch of this definition errors at render. Catch it at
+// import.
+func TestValidateRejectsCheckpointWithoutPlatformSidecar(t *testing.T) {
+	noPlatform := `schema_version: 1
+name: no-platform
+sidecars:
+  dev:
+    image: ghcr.io/tdmtrader/mcp-dev-concourse:0.1.0
+    role: dev
+prompts:
+  work: |
+    Do the work.
+steps:
+- agent: work
+  prompt: work
+  sidecars: [dev]
+  outputs: [workspace]
+- checkpoint: human-gate
+  on_reject: fail
+`
+	_, err := workflow.Parse([]byte(noPlatform))
+	if err == nil {
+		t.Fatal("checkpoint without a platform sidecar must be rejected")
+	}
+	if !strings.Contains(err.Error(), `checkpoint "human-gate" requires a "platform" sidecar`) {
+		t.Errorf("error %q must point at the missing platform sidecar", err.Error())
+	}
+}
 ```
 
 - [ ] Run to verify failure: `go test ./agent/workflow/ -run TestValidate` — expect multiple sub-test failures ("expected validation error, got nil").
-- [ ] Replace `Validate` in `agent/workflow/parse.go` with the full grammar (add imports `"strings"`, `"text/template"`, `"time"`):
+- [ ] Replace `Validate` in `agent/workflow/parse.go` with the full grammar (add imports `"io"`, `"strings"`, `"text/template"`, `"time"`):
 
 ```go
 var validSidecarRoles = map[string]bool{"dev": true, "platform": true, "gateway": true, "custom": true}
 var validGates = map[string]bool{"build": true, "test": true, "lint": true}
 var validGateScopes = map[string]bool{"affected": true, "full": true, "affected_then_full": true}
+
+// nilRenderContext mirrors the frozen §6.2 render context (.Ticket .Spec
+// .Tasks .Params) in its dispatch-time ground state: .Spec nil and .Tasks
+// empty — always true at render, which happens BEFORE any agent step can
+// submit a spec (contracts §6.2 nil-safety, 2026-07-09). .Ticket and .Params
+// are tolerant maps so envelope/params field access renders "<no value>"
+// instead of erroring (the envelope is always present at render; only a
+// nil-deref is the import-blocking bug). Validation-only mirror — dispatch
+// owns the real context type.
+var nilRenderContext = struct {
+	Ticket map[string]any
+	Spec   *struct{}
+	Tasks  []map[string]any
+	Params map[string]any
+}{
+	Ticket: map[string]any{},
+	Spec:   nil,
+	Tasks:  []map[string]any{},
+	Params: map[string]any{},
+}
 
 // Validate checks the §6 grammar rules. Unknown YAML keys are ignored
 // (forward compatibility); known keys are strictly checked.
@@ -656,8 +749,16 @@ func (c *Config) Validate() error {
 	}
 
 	for key, body := range c.Prompts {
-		if _, err := template.New(key).Parse(body); err != nil {
+		tmpl, err := template.New(key).Parse(body)
+		if err != nil {
 			return fmt.Errorf("workflow: prompt %q: invalid Go text/template: %w", key, err)
+		}
+		// E2b (contracts §6.2 nil-safety, 2026-07-09): execute the template
+		// against the spec-less context every dispatch render sees, so a bare
+		// `.Spec.<field>` deref fails HERE with a clear error instead of
+		// failing the dispatch of every ticket that runs this definition.
+		if err := tmpl.Execute(io.Discard, nilRenderContext); err != nil {
+			return fmt.Errorf("workflow: prompt %q: does not render against a spec-less ticket (.Spec is nil and .Tasks is empty at every dispatch render — guard with {{if .Spec}} or read via platform-mcp read_ticket/list_tasks): %w", key, err)
 		}
 	}
 
@@ -724,7 +825,23 @@ func (c *Config) Validate() error {
 				s.MaxTurns != 0 || len(s.Inputs) > 0 || len(s.Outputs) > 0 || s.OutputSchema != "" {
 				return fmt.Errorf("workflow: checkpoint %q: agent-step fields are not allowed on a checkpoint", s.Checkpoint)
 			}
+			// E6b (FLOWS S5, 2026-07-09): import mirror of dispatch's F36
+			// render-time guard — the rendered checkpoint task mounts the
+			// definition's "platform" sidecar (the fixed role key); without
+			// that entry every dispatch errors at render. Fail at import.
+			if _, ok := c.Sidecars["platform"]; !ok {
+				return fmt.Errorf("workflow: checkpoint %q requires a %q sidecar in the workflow definition (dispatch's F36 render guard, mirrored at import)", s.Checkpoint, "platform")
+			}
 		}
+	}
+
+	// E6a (FLOWS S4, 2026-07-09): the implicit terminal harvest step consumes
+	// the "workspace" artifact (11-dispatch hard-codes it as harvest's input,
+	// for push and advisory shapes alike). A definition in which no step
+	// outputs it would import clean and then fail every run at harvest —
+	// close the validate-clean/run-broken gap here.
+	if !produced["workspace"] {
+		return fmt.Errorf("workflow: no step outputs %q — the implicit harvest step consumes it, so every run of this definition would fail at harvest", "workspace")
 	}
 
 	switch c.HITL.AskTimeout {
@@ -2776,6 +2893,371 @@ judge:
 
 ---
 
+### Task 13: Seed library — `direct-dev` and `test-first-dev` flow-decoupling seeds (2026-07-09 amendment)
+
+FLOWS.md (E3 + §5 "recommended first seeds") establishes that seed content is the strongest remaining spec→plan coupling (S3): `standard-dev` is the template every planner copies, so spec-first propagates as the de facto default even though the grammar never requires it. This task ships two equal-standing seeds so spec-lessness is first-class and *tested*, not merely tolerated:
+
+- **`direct-dev`** (FLOWS "direct-one-shot"): one implement step working directly from the ticket body via platform-mcp `read_ticket` — no `submit_spec`, no `submit_plan`, no checkpoint. The judge rubric is worded against **the ticket body**, never a spec. Its validation test doubles as the proof that a spec-less definition imports clean end-to-end.
+- **`test-first-dev`** (FLOWS "test-first-contract"): step 1 writes FAILING tests as the contract and mirrors the test manifest into the spec body via `submit_spec` (the checkpoint-evidence workaround documented in FLOWS.md §3 — the approval row shows no mid-run workspace, so the reviewer approves the contract from the ticket page's spec panel); a `tests-approved` checkpoint (`on_reject: send_back`) gates on a human; step 2 implements to green without weakening the tests. The gate policy runs the **full** test suite; the judge carries the `tests-unmodified` dimension from the FLOWS sketch.
+
+Both seeds must pass the Task 4 E6 import rules (some step outputs `workspace`; a checkpoint requires a declared `platform` sidecar) and the Task 12 mcp-mode prompt-coherence rule (no `spec.md`/`plan.md`/`{{.Spec}}`/`{{.Tasks}}` references — both seeds omit `spec_delivery`, so they resolve to the default `mcp` read model).
+
+**Files:**
+
+- Create: `agent/workflow/seeds/direct-dev.yaml`
+- Create: `agent/workflow/seeds/test-first-dev.yaml`
+- Test: `agent/workflow/seed_test.go` (extend)
+
+**Steps:**
+
+- [ ] Append the failing tests to `agent/workflow/seed_test.go` (imports `os`/`strings`/`testing`/`workflow` are already present from Task 12):
+
+```go
+// assertMCPPromptCoherence enforces the Task-12 coherence rule for any seed
+// on the default mcp read model: no prompt may point agents at spec.md/plan.md
+// files or embed the bare {{.Spec}}/{{.Tasks}} tokens — those belong only to
+// spec_delivery: files. Agents read via platform-mcp
+// read_ticket/list_tasks/get_task.
+func assertMCPPromptCoherence(t *testing.T, cfg *workflow.Config) {
+	t.Helper()
+	resolved := cfg.SpecDelivery
+	if resolved == "" {
+		resolved = "mcp"
+	}
+	if resolved != "mcp" {
+		t.Fatalf("seed spec_delivery must resolve to mcp (default path), got %q", resolved)
+	}
+	forbidden := []string{"spec.md", "plan.md", "{{.Spec}}", "{{.Tasks}}"}
+	for name, body := range cfg.Prompts {
+		for _, tok := range forbidden {
+			if strings.Contains(body, tok) {
+				t.Errorf("prompt %q contains %q, incoherent with spec_delivery=mcp", name, tok)
+			}
+		}
+	}
+}
+
+// TestSeedDirectDevValidates (E3, 2026-07-09): the direct one-shot seed — the
+// ticket body IS the spec. Importing it clean is the executable proof that a
+// spec-less definition is first-class (FLOWS.md §1 bottom line), not merely
+// tolerated: no submit_spec, no submit_plan, no checkpoint, anywhere.
+func TestSeedDirectDevValidates(t *testing.T) {
+	raw, err := os.ReadFile("seeds/direct-dev.yaml")
+	if err != nil {
+		t.Fatalf("read seed: %v", err)
+	}
+
+	cfg, err := workflow.Parse(raw)
+	if err != nil {
+		t.Fatalf("spec-less seed must import clean: %v", err)
+	}
+	if cfg.Name != "direct-dev" {
+		t.Errorf("Name = %q", cfg.Name)
+	}
+
+	// Exactly one agent step, no checkpoints, workspace produced (the E6a
+	// import rule the implicit harvest depends on).
+	if len(cfg.Steps) != 1 || cfg.Steps[0].Agent != "implement" {
+		t.Fatalf("Steps = %+v, want the single implement step", cfg.Steps)
+	}
+	if len(cfg.Steps[0].Outputs) != 1 || cfg.Steps[0].Outputs[0] != "workspace" {
+		t.Errorf("implement step must output workspace, got %+v", cfg.Steps[0].Outputs)
+	}
+
+	// Spec-less by construction: the prompts never call the spec/plan write
+	// tools; the ticket body is the whole contract, read via read_ticket.
+	for name, body := range cfg.Prompts {
+		if strings.Contains(body, "submit_spec") || strings.Contains(body, "submit_plan") {
+			t.Errorf("prompt %q must not call submit_spec/submit_plan in the direct one-shot seed", name)
+		}
+	}
+	if !strings.Contains(cfg.Prompts["implement"], "read_ticket") {
+		t.Error("implement prompt must read the ticket via platform-mcp read_ticket")
+	}
+
+	// The judge grades against the ticket body — there is no spec to cite.
+	if cfg.Judge == nil || len(cfg.Judge.Rubric) == 0 {
+		t.Fatal("seed must declare a judge rubric")
+	}
+	foundBody := false
+	for _, d := range cfg.Judge.Rubric {
+		if strings.Contains(d.Guidance, "ticket body") {
+			foundBody = true
+		}
+		if strings.Contains(strings.ToLower(d.Guidance), "spec's acceptance criteria") {
+			t.Errorf("rubric %q cites a spec; this flow has none", d.Name)
+		}
+	}
+	if !foundBody {
+		t.Error("at least one rubric dimension must grade against the ticket body")
+	}
+
+	if len(cfg.GatePolicy.Gates) == 0 {
+		t.Error("seed must declare the gate-policy slot")
+	}
+	assertMCPPromptCoherence(t, cfg)
+}
+
+// TestSeedTestFirstDevValidates (seed #3, 2026-07-09): the test-first contract
+// seed — failing tests ARE the approved contract, mirrored into the spec body
+// via submit_spec (the checkpoint-evidence workaround in FLOWS.md §3),
+// human-gated at the tests-approved checkpoint, then implemented to green
+// under a full-suite gate.
+func TestSeedTestFirstDevValidates(t *testing.T) {
+	raw, err := os.ReadFile("seeds/test-first-dev.yaml")
+	if err != nil {
+		t.Fatalf("read seed: %v", err)
+	}
+
+	cfg, err := workflow.Parse(raw)
+	if err != nil {
+		t.Fatalf("seed must validate: %v", err)
+	}
+	if cfg.Name != "test-first-dev" {
+		t.Errorf("Name = %q", cfg.Name)
+	}
+
+	// write-tests -> tests-approved checkpoint -> implement.
+	wantSteps := []string{"write-tests", "tests-approved", "implement"}
+	if len(cfg.Steps) != len(wantSteps) {
+		t.Fatalf("Steps = %d, want %d", len(cfg.Steps), len(wantSteps))
+	}
+	for i, want := range wantSteps {
+		name := cfg.Steps[i].Agent
+		if cfg.Steps[i].Checkpoint != "" {
+			name = cfg.Steps[i].Checkpoint
+		}
+		if name != want {
+			t.Errorf("step %d = %q, want %q", i, name, want)
+		}
+	}
+	if cfg.Steps[1].OnReject != "send_back" {
+		t.Errorf("tests-approved on_reject = %q, want send_back (a rejected contract goes back to its author)", cfg.Steps[1].OnReject)
+	}
+
+	// The checkpoint renders with the definition's platform sidecar
+	// (Task 4 E6b import rule / dispatch F36 render guard).
+	if _, ok := cfg.Sidecars["platform"]; !ok {
+		t.Error("seed must declare the platform sidecar its checkpoint renders with")
+	}
+
+	// The contract mirror: the write-tests prompt submits the test manifest
+	// as the spec body so the reviewer can approve from the ticket page.
+	if !strings.Contains(cfg.Prompts["write-tests"], "submit_spec") {
+		t.Error("write-tests prompt must mirror the test manifest via submit_spec")
+	}
+	if strings.Contains(cfg.Prompts["implement"], "submit_spec") || strings.Contains(cfg.Prompts["implement"], "submit_plan") {
+		t.Error("implement prompt must not write spec/plan rows; the contract is already approved")
+	}
+
+	// The gate policy runs the FULL test suite — green-on-the-contract is
+	// the whole point of the flow.
+	foundFull := false
+	for _, g := range cfg.GatePolicy.Gates {
+		if g.Gate == "test" && g.Scope == "full" {
+			foundFull = true
+		}
+	}
+	if !foundFull {
+		t.Error("gate policy must run gate test with scope full")
+	}
+
+	// The judge must grade contract integrity: tests unmodified since the
+	// checkpoint (FLOWS.md test-first sketch).
+	if cfg.Judge == nil {
+		t.Fatal("seed must declare a judge rubric")
+	}
+	foundUnmodified := false
+	for _, d := range cfg.Judge.Rubric {
+		if d.Name == "tests-unmodified" {
+			foundUnmodified = true
+		}
+	}
+	if !foundUnmodified {
+		t.Error("rubric must include the tests-unmodified dimension")
+	}
+
+	assertMCPPromptCoherence(t, cfg)
+}
+```
+
+- [ ] Run to verify failure: `go test ./agent/workflow/ -run TestSeed` — expect `read seed: open seeds/direct-dev.yaml: no such file or directory` (and the same for `test-first-dev.yaml`; `TestSeedStandardDevValidates` stays green).
+- [ ] Write `agent/workflow/seeds/direct-dev.yaml`:
+
+```yaml
+# direct-dev v1 — direct one-shot (FLOWS.md "direct-one-shot"): the ticket
+# body IS the spec. One implement step, no submit_spec/submit_plan, no
+# checkpoint; the implicit harvest pushes agent/ticket-N as usual. Shipped
+# as an equal-standing peer of standard-dev (E3) so spec-first stops
+# reading as the default.
+# Import:  fly agent workflows import agent/workflow/seeds/direct-dev.yaml
+# Promote: fly agent workflows set-live direct-dev 1
+schema_version: 1
+name: direct-dev
+description: direct one-shot; the ticket body is the spec; single implement step
+
+defaults:
+  model: claude-sonnet-4-5
+  max_turns: 60
+
+budget:
+  ticket_usd: 3.0
+  judge_usd: 0.5
+
+sidecars:
+  dev:
+    image: ghcr.io/tdmtrader/mcp-dev-concourse:0.1.0
+    role: dev
+  platform:
+    image: ghcr.io/tdmtrader/mcp-platform:0.1.0
+    role: platform
+
+prompts:
+  implement: |
+    You are an implementation agent working in the workspace repository.
+    Read the ticket with platform-mcp read_ticket and implement exactly
+    what the ticket body asks — nothing more. There is no spec and no plan
+    for this ticket: the body is the whole contract, and you do not submit
+    one. Work test-first where behavior changes: write the failing test,
+    make it pass minimally, refactor. Run dev-mcp run_tests with the
+    affected components before you finish, and commit in small, reviewable
+    increments.
+
+steps:
+- agent: implement
+  prompt: implement
+  sidecars: [dev, platform]
+  budget_slice_usd: 2.5
+  outputs: [workspace]
+
+gate_policy:
+  gates:
+  - gate: build
+    scope: affected
+  - gate: test
+    scope: affected_then_full
+  on_gate_failure: needs_review
+
+judge:
+  rubric:
+  - name: body-fidelity
+    weight: 3
+    guidance: "Does the change do exactly what the ticket body asks — no more, no less? The body is the only contract; there is no spec."
+  - name: tests
+    weight: 2
+    guidance: "Are changed behaviors covered by meaningful tests?"
+  - name: scope-discipline
+    weight: 1
+    guidance: "Small tractable diff; no drive-by refactors beyond what the ticket body asks."
+  pass_threshold: 6.5
+```
+
+- [ ] Write `agent/workflow/seeds/test-first-dev.yaml`:
+
+```yaml
+# test-first-dev v1 — test-first contract (FLOWS.md "test-first-contract"):
+# the failing tests ARE the approved contract. Step 1 commits failing tests
+# and mirrors the test manifest into the spec body via submit_spec — the
+# checkpoint-evidence workaround noted in FLOWS.md §3 (the approval row
+# shows no mid-run workspace, so the reviewer approves the contract from
+# the ticket page's spec panel). The tests-approved checkpoint gates on a
+# human; step 2 implements to green without weakening the tests. Gates run
+# the FULL suite.
+# Import:  fly agent workflows import agent/workflow/seeds/test-first-dev.yaml
+# Promote: fly agent workflows set-live test-first-dev 1
+schema_version: 1
+name: test-first-dev
+description: failing tests as the approved contract -> human approves tests -> implement to green
+
+defaults:
+  model: claude-sonnet-4-5
+  max_turns: 80
+
+budget:
+  ticket_usd: 8.0
+  judge_usd: 1.0
+
+sidecars:
+  dev:
+    image: ghcr.io/tdmtrader/mcp-dev-concourse:0.1.0
+    role: dev
+  platform:
+    image: ghcr.io/tdmtrader/mcp-platform:0.1.0
+    role: platform
+
+prompts:
+  write-tests: |
+    You are a test-contract agent. Read the ticket with platform-mcp
+    read_ticket. Translate the ticket body into a set of FAILING tests that
+    pin the wanted behavior precisely — these tests are the contract the
+    implementer will be graded against. Do not write production code. Run
+    dev-mcp run_tests on the affected components to prove each new test
+    fails for the right reason, then commit the failing tests. Finally,
+    mirror the contract for human review: call platform-mcp submit_spec
+    with a test manifest as the spec body — one line per test (file, test
+    name, the behavior it pins) plus a short note on anything the ticket
+    body left ambiguous. The reviewer approves the tests from the ticket
+    page, so the manifest must stand alone.
+  implement: |
+    You are an implementation agent. The failing tests committed in this
+    workspace are the approved contract. Make them pass with the minimal
+    production change: run dev-mcp run_tests on affected components as you
+    go, then the full suite before you finish. Do NOT weaken the contract —
+    never edit, delete, skip, or loosen an approved test; if a test looks
+    wrong, stop and ask a human with platform-mcp ask_human instead. Commit
+    in small increments.
+
+steps:
+- agent: write-tests
+  prompt: write-tests
+  sidecars: [dev, platform]
+  budget_slice_usd: 2.5
+  outputs: [workspace]
+
+- checkpoint: tests-approved
+  on_reject: send_back
+
+- agent: implement
+  prompt: implement
+  sidecars: [dev, platform]
+  budget_slice_usd: 4.0
+  max_turns: 120
+  inputs: [workspace]
+  outputs: [workspace]
+
+hitl:
+  ask_timeout: park
+  ask_timeout_seconds: 0
+
+gate_policy:
+  gates:
+  - gate: build
+    scope: affected
+  - gate: test
+    scope: full
+    timeout: 60m
+  on_gate_failure: needs_review
+
+judge:
+  rubric:
+  - name: contract-green
+    weight: 3
+    guidance: "Do the approved tests pass, and does the implementation satisfy exactly the behaviors those tests pin?"
+  - name: tests-unmodified
+    weight: 3
+    guidance: "Are the tests approved at the tests-approved checkpoint unmodified — not edited, deleted, skipped, or loosened — since that approval?"
+  - name: scope-discipline
+    weight: 1
+    guidance: "Minimal production diff to reach green; no drive-by refactors."
+  pass_threshold: 6.5
+```
+
+- [ ] Run to verify pass: `go test ./agent/workflow/ -run TestSeed` — expect `ok` (all three seed tests green: both new seeds satisfy the Task 4 E6 rules — `workspace` produced, `platform` sidecar declared for the `tests-approved` checkpoint — and the mcp-mode coherence assertion).
+- [ ] Run the package once more in full: `go test ./agent/workflow/` — expect `ok`.
+- [ ] Commit: `git add agent/workflow/seeds agent/workflow/seed_test.go && git commit -m "feat(workflow-store): direct-dev and test-first-dev flow-decoupling seeds (FLOWS E3 + seed #3)"`
+
+---
+
 ## Execution notes
 
 **Full test suite for this workstream** (PostgreSQL required for the `atc/db` and `atc/api` tiers — check `pg_isready` first):
@@ -2812,3 +3294,9 @@ Never pass `--race` to the Ginkgo suites (parallel compilation failures, per CLA
 - **2026-07-09 (design-review F5 — seed prompt/delivery coherence, WAVE-1 blocker):** The `standard-dev` seed omits `spec_delivery`, so it resolves to the default `mcp` read model — but its Task 8 `implement`/`qa`/`review` prompts still told agents "the approved spec and plan are in spec.md and plan.md" and embedded the bare `{{.Spec}}`/`{{.Tasks}}` template tokens, which are only populated under `spec_delivery: files`. Under `mcp` no spec/plan bytes are injected, so those prompts pointed the reference workflow (the exemplar every import copies) at files that never exist. Rewrote all three prompts to the default MCP read model — read via platform-mcp `read_ticket` / `list_tasks` / `get_task`, mirroring the `plan` prompt — and dropped every `spec.md`/`plan.md`/`{{.Spec}}`/`{{.Tasks}}` reference from the seed body. The seed stays on the default path (NOT switched to `files`) so it demonstrates the reference read model. Guarded by a new coherence assertion in `TestSeedStandardDevValidates` (Task 8): resolve `spec_delivery` (empty ⇒ `mcp`) and, when it is `mcp`, fail if any `cfg.Prompts` body contains `"spec.md"`, `"plan.md"`, `"{{.Spec}}"`, or `"{{.Tasks}}"` (added `"strings"` import). Affected workstreams: dispatch (renderer contract unchanged — this only aligns the seed prose with the already-frozen `mcp` model), platform-mcp-hitl (read-tool surface). Edits landed: seed `implement`/`qa`/`review` prompt bodies (Task 8 yaml), `TestSeedStandardDevValidates` coherence assertion + `strings` import (Task 8 test).
 
 - **2026-07-09 (design-review F7 — ask_timeout cross-field validation):** `Config.Validate` (Task 4) validated `hitl.ask_timeout` (enum) and `hitl.ask_timeout_seconds` (>= 0) independently, so a definition with `ask_timeout: default` or `ask_timeout: fail` and `ask_timeout_seconds: 0` (or any value <= 0) passed import — yet that combination never times out, so the timeout policy never fires and the run silently parks forever, the exact opposite of what `default`/`fail` request. Added a cross-field rule after the two existing checks that REJECTS `ask_timeout ∈ {default, fail}` with `ask_timeout_seconds <= 0`, failing loudly at import. `park` (with or without a deadline) is unaffected, so the seed (`ask_timeout: park`, `ask_timeout_seconds: 0`) still validates. Guarded by two new `TestValidateRejects` cases (Task 4): mutate the fixture's `ask_timeout: park` to `default` and to `fail` (leaving `ask_timeout_seconds: 0`), each expecting the substring `requires ask_timeout_seconds > 0`. Affected workstreams: platform-mcp-hitl (consumes the `hitl` block; this only tightens import validation, no shape change). Edits landed: `Config.Validate` cross-field check (Task 4 parse.go), two `TestValidateRejects` cases (Task 4 test).
+
+- **2026-07-09 (flow-decoupling E2b — §6.2 nil-safety enforced at import):** Contracts §6.2 (as amended 2026-07-09, FLOWS.md E2) makes nil-safe render semantics normative: `.Spec` may be nil and `.Tasks` may be empty at render time — in fact they ALWAYS are at dispatch, because rendering happens before any agent step can submit a spec, so even the seeded spec-first workflow renders every dispatch against a spec-less ticket (FLOWS S1, the one soft coupling with hard breakage potential: a prompt dereferencing `.Spec.Title` failed Go text/template execution and errored the dispatch of every ticket). Workflow-store now enforces the rule at IMPORT: `Config.Validate` (Task 4) executes each parsed prompt template against `nilRenderContext` — a validation-only mirror of the frozen §6.2 context with `.Spec` a nil pointer, `.Tasks` an empty slice, and `.Ticket`/`.Params` tolerant maps (envelope/params field access renders `<no value>` and never false-rejects; only a nil-deref errors) — so a bare `.Spec.<field>` deref fails at import with a clear, actionable error (`does not render against a spec-less ticket … guard with {{if .Spec}} or read via platform-mcp`) instead of at dispatch. Guarded templates (`{{if .Spec}}`, `{{range .Tasks}}`, `{{with .Spec}}`) import clean. Guarded by one new `TestValidateRejects` case (bare `.Spec.Title`, substring `spec-less`) and `TestValidateAcceptsNilSafeSpecTemplates`. Affected workstreams: dispatch (its render tests keep the nil-`Spec` golden per FLOWS E4; the renderer contract is unchanged — this only front-loads the failure), contracts (normative source). Edits landed: `nilRenderContext` var + prompts-loop `tmpl.Execute(io.Discard, …)` check + `"io"` import (Task 4 parse.go), reject-table case + accept test (Task 4 test).
+
+- **2026-07-09 (flow-decoupling E6 — close the two validate-clean/run-broken gaps, FLOWS S4+S5):** Two definitions could pass import and then break every run: (a) a definition in which no step outputs `workspace` — the implicit terminal harvest step hard-codes `workspace` as its input (11-dispatch RenderHarvestStep), so every run failed at harvest (S4); (b) a definition with a `checkpoint:` step but no `platform` entry in its `sidecars` map — dispatch's F36 render-time guard errors every render, since the rendered checkpoint task mounts the definition's platform sidecar (S5). Both are now rejected at import by `Config.Validate` (Task 4): after the step loop, `produced["workspace"]` must be true (`no step outputs "workspace" — the implicit harvest step consumes it`); inside the checkpoint branch, `c.Sidecars["platform"]` must exist (`checkpoint %q requires a "platform" sidecar in the workflow definition (dispatch's F36 render guard, mirrored at import)`). Pure additive validation; every existing fixture/seed already satisfies both (all sample steps output `workspace`; the fixture and standard-dev declare `platform`). Guarded by `TestValidateRejectsWorkspacelessDefinition` and `TestValidateRejectsCheckpointWithoutPlatformSidecar` (Task 4). Affected workstreams: dispatch (F36 guard stays as defense-in-depth; harvest input contract unchanged), harvest-step (consumes `workspace`; no shape change). Edits landed: two `Validate` checks (Task 4 parse.go), two standalone TDD tests (Task 4 test).
+
+- **2026-07-09 (flow-decoupling E3 + seed #3 — `direct-dev` and `test-first-dev` seeds, new Task 13):** Seed content was the strongest remaining spec→plan coupling (FLOWS S3): `standard-dev` was the only seed, so the spec-first shape propagated as the de facto default despite the grammar never requiring it. Appended Task 13 shipping two equal-standing seeds plus their validation tests. **`direct-dev`** (FLOWS "direct-one-shot", E3): a single `implement` step working directly from the ticket body via platform-mcp `read_ticket` — no `submit_spec`/`submit_plan`, no checkpoint, `outputs: [workspace]`, ~$3 budget, build+test gates, judge rubric worded against **the ticket body** (`body-fidelity`; a rubric citing "the spec's acceptance criteria" fails the test). `TestSeedDirectDevValidates` is the executable proof that a spec-less definition imports clean. **`test-first-dev`** (FLOWS "test-first-contract", seed #3): step 1 `write-tests` commits FAILING tests as the contract and calls `submit_spec` with the test manifest as the spec body (the checkpoint-evidence mirror documented in FLOWS.md §3 — the approval row shows no mid-run workspace, so the reviewer approves from the ticket page's spec panel); checkpoint `tests-approved` (`on_reject: send_back`); step 2 `implement` makes the committed tests pass without weakening them. Gate policy runs the **full** suite (`gate: test, scope: full`); judge carries the `tests-unmodified` dimension. Both seeds omit `spec_delivery` (default `mcp`), satisfy the E6 import rules (workspace produced; `platform` sidecar declared for the checkpoint), and pass the Task-12 mcp-mode prompt-coherence assertion — extracted into a shared `assertMCPPromptCoherence` helper for the new tests (no `spec.md`/`plan.md`/`{{.Spec}}`/`{{.Tasks}}` references). Affected workstreams: dispatch + platform-mcp-hitl + harvest-step (consumers of the seeded shapes; no contract change — both seeds are pure §6 data), scorecards (the FLOWS §5 A/B pairs now exist as importable definitions). Edits landed: Task 13 (two seed YAMLs, two seed tests + coherence helper), Goal line.

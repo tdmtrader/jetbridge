@@ -55,7 +55,7 @@ Freeze, in writing, the small extensions this plan makes beyond the literal text
 - 2026-07-08 (ticket-core planning addendum, cross-workstream sign-off note):
   - §1.7 (affects: platform-mcp-hitl, dispatch, harvest-step, delivery-outcomes, process-intel-experiments): `agent_tickets` gains two additive columns in migration `1773106050`: `created_by TEXT NOT NULL DEFAULT ''` (the agent-identity audit-attribution convention — principal name or human username that created the row) and `external_ref TEXT NOT NULL DEFAULT ''` (the Jira phase-2 seam from spec open item 10: holds the external issue key, e.g. `PROJ-123`; empty for native tickets; see docs/superpowers/plans/agentic-platform/ticket-jira-sync-phase2.md). Field growth only; all other §1.7 columns, checks, and indexes are byte-identical.
   - §2.1 (affects: platform-mcp-hitl, dispatch, harvest-step, delivery-outcomes): Go surface names frozen by ticket-core, all in `agent/api/tickets`: `Ticket` gains `CreatedBy`/`ExternalRef` fields; supporting types `Spec`, `Link`, `Task`, `TaskStatus` (constants `TaskPending`, `TaskInProgress`, `TaskDone`, `TaskSkipped`, `TaskBlocked`), `ListFilter{State, Repo, Origin, Limit}`, `Update{Title, Body, BudgetUSD, WorkflowName, WorkflowVersion, TargetBranch}` (all pointers, nil = unchanged), `TransitionMeta{PipelineRunID *int, Branch string, ErrorDetail string}`, `TicketDetail{Ticket, Spec *Spec, Tasks []Task}`; HTTP request types `CreateRequest`, `UpdateRequest`, `TransitionRequest`, `SpecSubmission`, `PlanSubmission` (+`PlanTask`), `TaskStatusRequest`; errors `ErrInvalidTransition`, `ErrTicketNotFound`, `ErrStaleTransition`, `ErrNoActivePlan`, `ErrTaskNotFound`; funcs `ValidTransition(from, to State) bool`, `ValidState`, `ValidOrigin`, `ValidTaskStatus`; `MemoryStore`. The `Store` interface gains one additive method: `AppendTaskNote(ticketID, planVersion, ordering int, note string) error` — the persistence carrier for §3.2 `update_task_status`'s optional `note` field (appended to the task's `detail` as a markdown blockquote, `"> <note>"`, joined with blank lines). `atc/db.AgentTicketsFactory` / `NewAgentTicketsFactory` (dbfakes: `FakeAgentTicketsFactory`).
-  - §2.1 transition side effects (affects: dispatch, harvest-step, platform-mcp-hitl, delivery-outcomes): `Transition` records: → `queued`: `queued_at=now()`, `completed_at=NULL`, `attempt_count+1` when from=`running` — the edge reads `running → queued (retryable platform error OR rejected send_back checkpoint re-dispatch; attempt_count++)`; its two legitimate callers are dispatch's retry path and dispatch's run-completion reconciler (checkpoint-seam delta §6, 2026-07-09); → `draft` (unqueue): `queued_at=NULL`; → `running`: `dispatched_at=now()`, `pipeline_run_id` from meta; → `needs_review`: `branch` from meta when non-empty — TWO writers: harvest (primary, per 09-harvest-step) and dispatch's run-completion reconciler (backup/safety net, empty meta); → `merged`/`merged_with_fixes`/`sent_back`/`abandoned`/`failed`/`errored`: `completed_at=now()`, plus `error_detail` from meta on `errored`. The UPDATE is guarded by `WHERE id=$id AND state=$from`; zero rows updated resolves to `ErrTicketNotFound` (row gone) or `ErrStaleTransition` (state changed concurrently). `Store.Create` always inserts `state='draft'`; queueing is a separate Transition call (single-writer discipline).
+  - §2.1 transition side effects (affects: dispatch, harvest-step, platform-mcp-hitl, delivery-outcomes): `Transition` records: → `queued`: `queued_at=now()`, `completed_at=NULL`, `attempt_count+1` when from=`running` — the edge reads `running → queued (retryable platform error OR rejected send_back checkpoint re-dispatch; attempt_count++)`; its two legitimate callers are dispatch's retry path and dispatch's run-completion reconciler (checkpoint-seam delta §6, 2026-07-09); → `draft` (unqueue): `queued_at=NULL`; → `running`: `dispatched_at=now()`, `pipeline_run_id` from meta; → `needs_review`: `branch` from meta when non-empty — TWO writers: harvest (primary, per 09-harvest-step) and dispatch's run-completion reconciler (backup/safety net, empty meta); → `merged`/`merged_with_fixes`/`sent_back`/`abandoned`/`concluded`/`failed`/`errored`: `completed_at=now()`, plus `error_detail` from meta on `errored`. The `needs_review → concluded` edge (flow-decoupling delta, 2026-07-09, per FLOWS.md §3 spike-research / §4 state-enum decision) is TERMINAL — "run finished, human reviewed, no merge intended" — the positive sibling of `abandoned`, reachable ONLY via explicit human disposition from `needs_review`, no outgoing edges; it lands in the frozen enum NOW (pre-freeze) so no later migration is needed. The UPDATE is guarded by `WHERE id=$id AND state=$from`; zero rows updated resolves to `ErrTicketNotFound` (row gone) or `ErrStaleTransition` (state changed concurrently). `Store.Create` always inserts `state='draft'`; queueing is a separate Transition call (single-writer discipline).
   - §2.1/§3.2 (affects: platform-mcp-hitl): the `GetAgentTicket` response body is exactly `tickets.TicketDetail` JSON — `{"ticket": <§2.1 Ticket>, "spec": <latest Spec or null>, "tasks": [<active-plan Task>...]}` — the payload `read_ticket` returns verbatim in wave 3. `TransitionAgentTicket` returns 409 on `ErrInvalidTransition`/`ErrStaleTransition`, 404 on missing ticket. `CreateAgentTicket` origin rules: principal writes may only create `origin:"retrospective"`; human writes may create `web`/`fly`; `jira` is rejected (400) until the phase-2 sync component exists.
   - §4.1 (affects: platform-mcp-hitl, delivery-outcomes): combined route tiers ("authorized member (main); also principal(<scope>)") are implemented by a new composition helper owned by ticket-core: `atc/api/auth.AgentPrincipalOrMainTeamHandler(principalTier, mainTeamTier http.Handler) http.Handler` — dispatches on the `cap1.` bearer-token prefix: cap1 tokens go to the principal tier (`CheckAgentPrincipalHandlerFactory.HandlerFor`), everything else to `CheckAgentAuthorizationHandler`. platform-mcp-hitl reuses it for `GetAgentQuestion`/`AnswerAgentQuestion` in wave 3.
   - Render helper (affects: dispatch): `tickets.RenderSpecMarkdown(t Ticket, spec *Spec) []byte` and `tickets.RenderPlanMarkdown(t Ticket, tasks []Task) []byte` produce the deterministic read-only `spec.md`/`plan.md` workspace inputs dispatch materializes at render time. Plan task glyphs: `[ ]` pending, `[~]` in_progress, `[x]` done, `[-]` skipped, `[!]` blocked.
@@ -102,7 +102,7 @@ CREATE TABLE agent_tickets (
     state                  TEXT NOT NULL DEFAULT 'draft'
                            CHECK (state IN ('draft','queued','running','needs_review',
                                             'merged','merged_with_fixes','sent_back',
-                                            'abandoned','failed','errored')),
+                                            'abandoned','concluded','failed','errored')),
     origin                 TEXT NOT NULL DEFAULT 'web'
                            CHECK (origin IN ('web','fly','jira','retrospective')),
     repo                   TEXT NOT NULL,             -- canonical slug, joins agent_reviews.repo
@@ -235,6 +235,12 @@ func TestValidTransitionMatrix(t *testing.T) {
 		{tickets.StateNeedsReview, tickets.StateMergedWithFixes},
 		{tickets.StateNeedsReview, tickets.StateSentBack},
 		{tickets.StateNeedsReview, tickets.StateAbandoned},
+		// needs_review→concluded: TERMINAL positive sibling of abandoned —
+		// "run finished, human reviewed, no merge intended" (spike/research
+		// flows; FLOWS.md §3 spike-research, §4 state-enum decision).
+		// Explicit human disposition ONLY; added pre-freeze (2026-07-09) so
+		// the frozen enum never needs a later migration.
+		{tickets.StateNeedsReview, tickets.StateConcluded},
 		{tickets.StateNeedsReview, tickets.StateQueued},
 		{tickets.StateSentBack, tickets.StateQueued},
 		{tickets.StateFailed, tickets.StateQueued},
@@ -256,6 +262,9 @@ func TestValidTransitionMatrix(t *testing.T) {
 		{tickets.StateMergedWithFixes, tickets.StateQueued},
 		{tickets.StateAbandoned, tickets.StateQueued},    // abandoned is terminal
 		{tickets.StateNeedsReview, tickets.StateRunning}, // re-dispatch goes via queued
+		{tickets.StateDraft, tickets.StateConcluded},     // concluding requires a reviewed run
+		{tickets.StateRunning, tickets.StateConcluded},   // must land in needs_review first
+		{tickets.StateConcluded, tickets.StateQueued},    // concluded is terminal — no exits
 	}
 	for _, tr := range forbidden {
 		if tickets.ValidTransition(tr.from, tr.to) {
@@ -268,7 +277,8 @@ func TestValidStateOriginTaskStatus(t *testing.T) {
 	for _, s := range []tickets.State{
 		tickets.StateDraft, tickets.StateQueued, tickets.StateRunning,
 		tickets.StateNeedsReview, tickets.StateMerged, tickets.StateMergedWithFixes,
-		tickets.StateSentBack, tickets.StateAbandoned, tickets.StateFailed, tickets.StateErrored,
+		tickets.StateSentBack, tickets.StateAbandoned, tickets.StateConcluded,
+		tickets.StateFailed, tickets.StateErrored,
 	} {
 		if !tickets.ValidState(s) {
 			t.Errorf("ValidState(%q) = false, want true", s)
@@ -325,6 +335,11 @@ const (
 	StateMergedWithFixes State = "merged_with_fixes"
 	StateSentBack        State = "sent_back"
 	StateAbandoned       State = "abandoned"
+	// StateConcluded is TERMINAL: run finished, human reviewed, no merge
+	// intended (spike/research flows) — the positive sibling of abandoned.
+	// In the frozen enum from day one per FLOWS.md §3/§4 (pre-freeze add,
+	// 2026-07-09), so it never needs a later migration.
+	StateConcluded       State = "concluded"
 	StateFailed          State = "failed"
 	StateErrored         State = "errored"
 )
@@ -338,11 +353,14 @@ const (
 //     retry path and dispatch's run-completion reconciler.
 //   - running → needs_review — two writers: harvest (primary) and
 //     dispatch's run-completion reconciler (backup/safety net).
+//   - needs_review → concluded — TERMINAL, explicit human disposition
+//     ONLY: "run finished, human reviewed, no merge intended"
+//     (spike/research flows; FLOWS.md §3). Positive sibling of abandoned.
 var validTransitions = map[State][]State{
 	StateDraft:       {StateQueued, StateAbandoned},
 	StateQueued:      {StateRunning, StateDraft, StateAbandoned},
 	StateRunning:     {StateQueued, StateNeedsReview, StateFailed, StateErrored},
-	StateNeedsReview: {StateMerged, StateMergedWithFixes, StateSentBack, StateAbandoned, StateQueued},
+	StateNeedsReview: {StateMerged, StateMergedWithFixes, StateSentBack, StateAbandoned, StateConcluded, StateQueued},
 	StateSentBack:    {StateQueued},
 	StateFailed:      {StateQueued},
 	StateErrored:     {StateQueued},
@@ -363,7 +381,7 @@ func ValidState(s State) bool {
 	}
 	// terminal states have no outgoing edges but are still valid
 	switch s {
-	case StateMerged, StateMergedWithFixes, StateAbandoned:
+	case StateMerged, StateMergedWithFixes, StateAbandoned, StateConcluded:
 		return true
 	}
 	return false
@@ -847,7 +865,7 @@ func (m *MemoryStore) Transition(id int, from, to State, meta TransitionMeta) er
 		if meta.Branch != "" {
 			t.Branch = meta.Branch
 		}
-	case StateMerged, StateMergedWithFixes, StateSentBack, StateAbandoned, StateFailed, StateErrored:
+	case StateMerged, StateMergedWithFixes, StateSentBack, StateAbandoned, StateConcluded, StateFailed, StateErrored:
 		t.CompletedAt = time.Now().Unix()
 		if to == StateErrored {
 			t.ErrorDetail = meta.ErrorDetail
@@ -1406,6 +1424,28 @@ The one function that mutates `agent_tickets.state`. Optimistic concurrency (`WH
 			Expect(got.CompletedAt).To(BeNumerically(">", 0))
 		})
 
+		It("stamps completed_at on needs_review→concluded (spike disposition, terminal)", func() {
+			Expect(factory.Transition(id, tickets.StateDraft, tickets.StateQueued,
+				tickets.TransitionMeta{})).To(Succeed())
+			Expect(factory.Transition(id, tickets.StateQueued, tickets.StateRunning,
+				tickets.TransitionMeta{})).To(Succeed())
+			Expect(factory.Transition(id, tickets.StateRunning, tickets.StateNeedsReview,
+				tickets.TransitionMeta{})).To(Succeed())
+
+			// needs_review → concluded: explicit human disposition — "run
+			// finished, human reviewed, no merge intended" (FLOWS.md §3
+			// spike-research). Positive sibling of abandoned; TERMINAL.
+			Expect(factory.Transition(id, tickets.StateNeedsReview, tickets.StateConcluded,
+				tickets.TransitionMeta{})).To(Succeed())
+			got, _, _ := factory.Get(id)
+			Expect(got.State).To(Equal(tickets.StateConcluded))
+			Expect(got.CompletedAt).To(BeNumerically(">", 0))
+
+			// No exits: concluded tickets never re-enter the queue.
+			Expect(factory.Transition(id, tickets.StateConcluded, tickets.StateQueued,
+				tickets.TransitionMeta{})).To(MatchError(tickets.ErrInvalidTransition))
+		})
+
 		It("records error_detail on errored, clears completed_at on requeue, and counts attempts", func() {
 			Expect(factory.Transition(id, tickets.StateDraft, tickets.StateQueued,
 				tickets.TransitionMeta{})).To(Succeed())
@@ -1464,7 +1504,7 @@ The one function that mutates `agent_tickets.state`. Optimistic concurrency (`WH
 	})
 ```
 
-- [ ] Run to verify it fails: `ginkgo --focus="AgentTicketsFactory" ./atc/db/` — expected failure: the six new specs fail with `not yet implemented (plan task 5)`.
+- [ ] Run to verify it fails: `ginkgo --focus="AgentTicketsFactory" ./atc/db/` — expected failure: the seven new specs fail with `not yet implemented (plan task 5)`.
 
 - [ ] Replace the Task-4 `Transition` stub in `atc/db/agent_tickets_factory.go` with the real single writer:
 
@@ -1508,7 +1548,7 @@ func (f *agentTicketsFactory) Transition(id int, from, to tickets.State, meta ti
 			q = q.Set("branch", meta.Branch)
 		}
 	case tickets.StateMerged, tickets.StateMergedWithFixes, tickets.StateSentBack,
-		tickets.StateAbandoned, tickets.StateFailed, tickets.StateErrored:
+		tickets.StateAbandoned, tickets.StateConcluded, tickets.StateFailed, tickets.StateErrored:
 		q = q.Set("completed_at", sq.Expr("now()"))
 		if to == tickets.StateErrored {
 			q = q.Set("error_detail", meta.ErrorDetail)
@@ -3453,7 +3493,7 @@ type AgentTicketsCommand struct {
 }
 
 type AgentTicketsListCommand struct {
-	State  string `long:"state" description:"Filter by lifecycle state (draft, queued, running, needs_review, merged, merged_with_fixes, sent_back, abandoned, failed, errored)"`
+	State  string `long:"state" description:"Filter by lifecycle state (draft, queued, running, needs_review, merged, merged_with_fixes, sent_back, abandoned, concluded, failed, errored)"`
 	Repo   string `long:"repo" description:"Filter by repo slug (e.g. tdmtrader/concourse)"`
 	Origin string `long:"origin" description:"Filter by origin (web, fly, jira, retrospective)"`
 	Limit  int    `long:"limit" default:"50" description:"Maximum tickets to list"`
@@ -4107,6 +4147,10 @@ stateColors state =
         "sent_back" ->
             ( "#5c3d1e", "#f0c99f" )
 
+        "concluded" ->
+            -- terminal, positive, no merge intended (spike/research)
+            ( "#1e4f4a", "#9fdfd0" )
+
         "failed" ->
             ( "#5c2626", "#f0a0a0" )
 
@@ -4449,4 +4493,6 @@ Never use `--race` (parallel compilation failures, per CLAUDE.md). If `database 
 ## Amendment log (this plan)
 
 - **2026-07-09 (final-review F17, ticket-core leg — checkpoint-seam delta §7, co-signed dispatch/platform-mcp-hitl/ticket-core/shared-contracts):** Dispatch gains a run-completion reconciler (plan 11, new Task 11b) that walks `StateRunning` tickets whose pipeline run completed; on a rejected `send_back` checkpoint it calls `Transition(running→queued, TransitionMeta{})`. **NO `validTransitions` matrix change** — `StateRunning` already lists `StateQueued`; this plan's change is semantic broadening + guard rails so no future edit narrows the edges the reconciler depends on. Edits landed (all in-place, no task renumbering): (1) the edge annotation everywhere it appears is now `running → queued (retryable platform error OR rejected send_back checkpoint re-dispatch; attempt_count++)` — Task 1 §2.1 side-effects addendum bullet, Task 3 `validTransitions` doc comment, Task 3 `MemoryStore.Transition`, Task 5 DB `Transition`; (2) the §2.1 side effects for the new caller are pinned by test — the Task 5 requeue spec now asserts, on `running→queued` with empty `TransitionMeta{}` (the reconciler's exact call shape), `attempt_count == 1`, `completed_at` cleared, and `queued_at` re-stamped (`sql.NullTime` query); (3) matrix-test comments in Task 3's `TestValidTransitionMatrix` name dispatch's run-completion reconciler as the SECOND legitimate caller of `running→queued`, and record the TWO-WRITERS rule for `running→needs_review` (harvest primary per 09-harvest-step:94, reconciler backup/safety net) — mirrored into the Task 1 addendum, `TransitionMeta.Branch` comment, `Store` doc comment, and Task 5 intro (racing writers see benign `ErrStaleTransition`/`ErrTicketNotFound`). The re-dispatch loop cap is NOT this plan's concern: the reconciler requeues unconditionally; dispatch's existing MaxAttempts guard (plan 11 Task 11) errors a queued ticket at the cap. Ticket-core surface is otherwise unchanged (no new types, methods, routes, or migrations).
+
+- **2026-07-09 (flow-decoupling, CONCLUDED terminal state — FLOWS.md §3 spike-research / §4 state-enum decision, owner-approved):** The lifecycle enum gains one state, `concluded` — "run finished, human reviewed, no merge intended" (spike/research flows) — the positive sibling of `abandoned`, reachable ONLY from `needs_review` via explicit human disposition, TERMINAL (no outgoing edges). Rationale: this plan freezes the enum up front (charter: "full lifecycle enum from day one"; migration `1773106050`'s CHECK cannot be amended cheaply later), so per FLOWS.md §4 the state-enum decision is the one spike-flow piece that must NOT be deferred — `concluded` is added PRE-FREEZE; the harvest push knob and repo-relaxation that make spike flows fully expressible remain deferred to plans 05/11. Edits landed (all in-place, no task renumbering): (1) Task 2 migration `1773106050` state CHECK gains `'concluded'`; (2) Task 3 `types.go` gains `StateConcluded` (doc comment pins terminal + human-disposition-only semantics), `validTransitions[StateNeedsReview]` gains `StateConcluded` (no `validTransitions[StateConcluded]` entry — terminal), `ValidState`'s terminal-state switch gains it, and `MemoryStore.Transition`'s terminal case stamps `completed_at`; (3) Task 3 `TestValidTransitionMatrix` gains an allowed case (`needs_review→concluded`, comment pinning the FLOWS.md semantics) and three forbidden cases (`draft→concluded`, `running→concluded`, `concluded→queued` — terminal, no exits); `TestValidStateOriginTaskStatus` lists it; (4) Task 5 DB `Transition` terminal case gains `tickets.StateConcluded` and a new seventh spec pins `completed_at` stamped on `needs_review→concluded` plus `ErrInvalidTransition` on any exit; (5) Task 1's §2.1 side-effects addendum bullet adds `concluded` to the terminal set and documents the edge; (6) UI surfaces list it — fly `--state` filter description and the Elm `stateColors` badge case (distinct teal: terminal-positive, not merged-green). No new routes, Store methods, or migrations beyond the CHECK-list membership; handlers validate via `ValidState`/`ValidTransition` and pick the state up automatically. Wave-3+ consumers: delivery-outcomes owns the human disposition button; harvest/dispatch never write `concluded`.
 
