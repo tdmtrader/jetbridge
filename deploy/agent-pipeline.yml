@@ -65,7 +65,7 @@ jobs:
       - path: gopath/pkg/mod
       - path: gocache
       params:
-        ANTHROPIC_API_KEY: ((anthropic-api-key))
+        CLAUDE_TOKEN: ((anthropic-api-key))
         AGENT_CLI: claude
         AGENT_MODEL: ((agent-model))
         SCORE_THRESHOLD: "7.0"
@@ -79,6 +79,15 @@ jobs:
         - |
           export GOPATH="$(pwd)/gopath"
           export GOCACHE="$(pwd)/gocache"
+
+          # Route the Claude credential to the right env var so either an
+          # Anthropic API key (sk-ant-api...) or a Claude Code OAuth token
+          # (sk-ant-oat..., from `claude setup-token`) works.
+          case "${CLAUDE_TOKEN:-}" in
+            sk-ant-oat*) export CLAUDE_CODE_OAUTH_TOKEN="$CLAUDE_TOKEN" ;;
+            "")          echo "WARN: no Claude credential set (((anthropic-api-key)) empty)" ;;
+            *)           export ANTHROPIC_API_KEY="$CLAUDE_TOKEN" ;;
+          esac
 
           echo "=== Installing Node.js and Claude CLI ==="
           curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
@@ -129,7 +138,7 @@ jobs:
       - path: gopath/pkg/mod
       - path: gocache
       params:
-        ANTHROPIC_API_KEY: ((anthropic-api-key))
+        CLAUDE_TOKEN: ((anthropic-api-key))
         AGENT_CLI: claude
         AGENT_MODEL: ((agent-model))
         SCORE_THRESHOLD: "7.0"
@@ -142,6 +151,15 @@ jobs:
         - |
           export GOPATH="$(pwd)/gopath"
           export GOCACHE="$(pwd)/gocache"
+
+          # Route the Claude credential to the right env var so either an
+          # Anthropic API key (sk-ant-api...) or a Claude Code OAuth token
+          # (sk-ant-oat..., from `claude setup-token`) works.
+          case "${CLAUDE_TOKEN:-}" in
+            sk-ant-oat*) export CLAUDE_CODE_OAUTH_TOKEN="$CLAUDE_TOKEN" ;;
+            "")          echo "WARN: no Claude credential set (((anthropic-api-key)) empty)" ;;
+            *)           export ANTHROPIC_API_KEY="$CLAUDE_TOKEN" ;;
+          esac
 
           echo "=== Installing Node.js and Claude CLI ==="
           curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
@@ -192,7 +210,7 @@ jobs:
       - path: gopath/pkg/mod
       - path: gocache
       params:
-        ANTHROPIC_API_KEY: ((anthropic-api-key))
+        CLAUDE_TOKEN: ((anthropic-api-key))
         AGENT_CLI: claude
         AGENT_MODEL: ((agent-model))
         CONFIDENCE_THRESHOLD: "0.6"
@@ -204,6 +222,15 @@ jobs:
         - |
           export GOPATH="$(pwd)/gopath"
           export GOCACHE="$(pwd)/gocache"
+
+          # Route the Claude credential to the right env var so either an
+          # Anthropic API key (sk-ant-api...) or a Claude Code OAuth token
+          # (sk-ant-oat..., from `claude setup-token`) works.
+          case "${CLAUDE_TOKEN:-}" in
+            sk-ant-oat*) export CLAUDE_CODE_OAUTH_TOKEN="$CLAUDE_TOKEN" ;;
+            "")          echo "WARN: no Claude credential set (((anthropic-api-key)) empty)" ;;
+            *)           export ANTHROPIC_API_KEY="$CLAUDE_TOKEN" ;;
+          esac
 
           echo "=== Installing Node.js and Claude CLI ==="
           curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
@@ -253,7 +280,7 @@ jobs:
       - path: gopath/pkg/mod
       - path: gocache
       params:
-        ANTHROPIC_API_KEY: ((anthropic-api-key))
+        CLAUDE_TOKEN: ((anthropic-api-key))
         AGENT_CLI: claude
         AGENT_MODEL: ((agent-model))
         MAX_RETRIES: "2"
@@ -265,6 +292,15 @@ jobs:
         - |
           export GOPATH="$(pwd)/gopath"
           export GOCACHE="$(pwd)/gocache"
+
+          # Route the Claude credential to the right env var so either an
+          # Anthropic API key (sk-ant-api...) or a Claude Code OAuth token
+          # (sk-ant-oat..., from `claude setup-token`) works.
+          case "${CLAUDE_TOKEN:-}" in
+            sk-ant-oat*) export CLAUDE_CODE_OAUTH_TOKEN="$CLAUDE_TOKEN" ;;
+            "")          echo "WARN: no Claude credential set (((anthropic-api-key)) empty)" ;;
+            *)           export ANTHROPIC_API_KEY="$CLAUDE_TOKEN" ;;
+          esac
 
           echo "=== Installing Node.js and Claude CLI ==="
           curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
@@ -318,7 +354,7 @@ jobs:
       - path: gopath/pkg/mod
       - path: gocache
       params:
-        ANTHROPIC_API_KEY: ((anthropic-api-key))
+        CLAUDE_TOKEN: ((anthropic-api-key))
         AGENT_CLI: claude
         AGENT_MODEL: ((agent-model))
         TEST_CMD: "go test ./..."
@@ -333,6 +369,15 @@ jobs:
         - |
           export GOPATH="$(pwd)/gopath"
           export GOCACHE="$(pwd)/gocache"
+
+          # Route the Claude credential to the right env var so either an
+          # Anthropic API key (sk-ant-api...) or a Claude Code OAuth token
+          # (sk-ant-oat..., from `claude setup-token`) works.
+          case "${CLAUDE_TOKEN:-}" in
+            sk-ant-oat*) export CLAUDE_CODE_OAUTH_TOKEN="$CLAUDE_TOKEN" ;;
+            "")          echo "WARN: no Claude credential set (((anthropic-api-key)) empty)" ;;
+            *)           export ANTHROPIC_API_KEY="$CLAUDE_TOKEN" ;;
+          esac
 
           echo "=== Installing Node.js and Claude CLI ==="
           curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
