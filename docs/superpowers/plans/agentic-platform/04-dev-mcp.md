@@ -63,7 +63,7 @@ The contracts doc decides the big points (tool schemas, taxonomy, streamable HTT
 - [ ] Verify the entry landed: `grep -n "dev-mcp interface finalization" docs/superpowers/plans/agentic-platform/00-shared-contracts.md` — expect one hit in §11.
 - [ ] Commit: `git add docs/superpowers/plans/agentic-platform/00-shared-contracts.md && git commit -m "docs(dev-mcp): finalize open-item-3 interface details in shared-contracts amendment log" -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"`
 
-> **Amended 2026-07-09 (SSE transport & park hardening delta, resolves F13 — this plan's assignment is this amendment-log entry ONLY; no dev-mcp code, config, or image changes).** dev-mcp's Task 4 server is the empirically proven-surviving pattern (the claude CLI v2.1.77 abandons a progress-free buffered tools/call at exactly 60s, silently; the 15s SSE heartbeat keeps it alive) and its §3-preamble SSE finalization is promoted to the wire spec of record for all three sidecars. The steps below record that promotion in the §11 amendment log.
+> **Amended 2026-07-09 (SSE transport & park hardening delta, resolves F13 — this plan's assignment is this amendment-log entry PLUS the Task 8 heartbeat bounds validation; no dev-mcp config or image changes).** *(Corrected 2026-07-10, verifier follow-up: this preamble originally claimed "this amendment-log entry ONLY; no dev-mcp code, config, or image changes" — internally contradicting the "VALIDATION in all three binaries" sentence the entry itself promotes. The pre-correction Task 8 `main.go` only `log.Fatalf`'d on an unparseable `DEV_MCP_PROGRESS_INTERVAL`; `0s`/`-5s` flowed into `devmcp.NewServer`, whose `<= 0 → DefaultHeartbeat` fallback is exactly the silent clamp the delta forbids, and `45s` was silently accepted past the ≤30s bound — re-opening the F13 failure class for harvest-driven long tool calls. Task 8 now carries the same fatal `<= 0` / `> 30s` bounds check as platform-mcp (08 Task 9 `ConfigFromEnv` + Task 13 `TestServeModeFailsFastOnBadProgressInterval`) and gateway (10 Task 2), with a mirrored cmd-level test.)* dev-mcp's Task 4 server is the empirically proven-surviving pattern (the claude CLI v2.1.77 abandons a progress-free buffered tools/call at exactly 60s, silently; the 15s SSE heartbeat keeps it alive) and its §3-preamble SSE finalization is promoted to the wire spec of record for all three sidecars. The steps below record that promotion in the §11 amendment log.
 
 - [ ] Append the following second entry to the end of §11 (after the 2026-07-08 dev-mcp interface-finalization entry above):
 
@@ -72,7 +72,7 @@ The contracts doc decides the big points (tool schemas, taxonomy, streamable HTT
   - **Wire spec of record:** the 2026-07-08 Progress/SSE bullet above — SSE gating on `Accept: text/event-stream` AND `params._meta.progressToken`, frames `event: message` + `data: <json-rpc message>`, progress notifications `{"jsonrpc":"2.0","method":"notifications/progress","params":{"progressToken":<echoed verbatim>,"message":"<latest>"}}` on a coalescing heartbeat ticker, final JSON-RPC response as the LAST SSE frame, buffered JSON when the client doesn't opt in — now binds dev-mcp, platform-mcp, AND gateway (delta D1/D3). Rationale is empirical: the claude CLI (v2.1.77) abandons a progress-free buffered tools/call at exactly 60s, silently ("(completed with no output)", no error flag); `MCP_TOOL_TIMEOUT` does NOT prevent it. Any MCP tool whose handler can block longer than 30s MUST be served over this SSE path.
   - **Mirrored implementation, not shared code:** `ci-agent` is a standalone Go module — the root module MUST NOT `require` ci-agent and ci-agent MUST NOT `require` the root. `ci-agent/devmcp` stays the reference server, unchanged; `atc/api/mcpserver` (currently buffered-only) is upgraded IN PLACE with a byte-similar port of `ci-agent/devmcp`'s SSE path (lands as 08 Task 9b, before 08 Task 10 and 10 Task 7), and platform-mcp/gateway build on it. No new shared module is extracted. Drift guard: `atc/api/mcpserver/server_test.go` gains SSE tests mirrored from `ci-agent/devmcp/server_test.go` (04 Task 4) asserting the identical frame shape.
   - **Heartbeat env pattern:** `DEV_MCP_PROGRESS_INTERVAL` generalizes to `<ROLE>_MCP_PROGRESS_INTERVAL` — `DEV_MCP_PROGRESS_INTERVAL` / `PLATFORM_MCP_PROGRESS_INTERVAL` / `GATEWAY_MCP_PROGRESS_INTERVAL` — Go duration syntax, default 15s (`DefaultHeartbeat`, half the §3.1 30s progress bound, 4x margin under the 60s CLI cliff). VALIDATION in all three binaries: a set-but-invalid value, a value <= 0, or a value > 30s is a FATAL startup error — never clamp silently.
-  - dev-mcp is already compliant (its Task 4 server is the F13 proven-surviving implementation); nothing else in plan 04 changes.
+  - dev-mcp's TRANSPORT is already compliant (its Task 4 server is the F13 proven-surviving implementation) and its BINARY enforces the same fatal bounds on `DEV_MCP_PROGRESS_INTERVAL` (04 Task 8: set-but-invalid, <= 0, or > 30s exits at startup, mirrored cmd-level test; `devmcp.NewServer`'s `<= 0 → DefaultHeartbeat` fallback is a library convenience for the unset case only — never reachable from a set env var); nothing else in plan 04 changes.
 ```
 
 - [ ] Verify the entry landed: `grep -n "SSE transport generalization" docs/superpowers/plans/agentic-platform/00-shared-contracts.md` — expect one hit in §11.
@@ -1958,6 +1958,9 @@ func registerAffectedComponents(s *Server, cfg Config) {
 
 **Files:**
 - Create: `ci-agent/cmd/dev-mcp/main.go`
+- Test: `ci-agent/cmd/dev-mcp/main_test.go`
+
+> **Amended 2026-07-10 (verifier follow-up on the F13 SSE delta):** the binary enforces the frozen heartbeat bounds (00 §3.1 as amended 2026-07-09: a set-but-invalid `DEV_MCP_PROGRESS_INTERVAL`, a value `<= 0`, or a value `> 30s` is a FATAL startup error — never clamped silently). The pre-amendment `main.go` only caught unparseable values: `0s`/`-5s` flowed into `devmcp.NewServer`, whose `<= 0 → DefaultHeartbeat` fallback is exactly the forbidden silent clamp, and `45s` was accepted past the ≤30s bound. Mirrors 08 Task 9/Task 13 and 10 Task 2; the `NewServer` fallback itself stays (unset env = library default), matching `mcpserver.NewServerWithHeartbeat`.
 
 **Steps:**
 
@@ -1994,11 +1997,18 @@ func main() {
 		log.Fatalf("dev-mcp: %s", err)
 	}
 
+	// F13 delta (00 §3.1, 2026-07-09): a set-but-invalid, <= 0, or > 30s
+	// heartbeat is a FATAL startup error — never clamped silently. The
+	// <= 0 check must live HERE: devmcp.NewServer's <= 0 fallback would
+	// otherwise silently substitute DefaultHeartbeat.
 	heartbeat := devmcp.DefaultHeartbeat
 	if raw := os.Getenv("DEV_MCP_PROGRESS_INTERVAL"); raw != "" {
 		heartbeat, err = time.ParseDuration(raw)
 		if err != nil {
 			log.Fatalf("dev-mcp: invalid DEV_MCP_PROGRESS_INTERVAL: %s", err)
+		}
+		if heartbeat <= 0 || heartbeat > 30*time.Second {
+			log.Fatalf("dev-mcp: DEV_MCP_PROGRESS_INTERVAL must be > 0 and <= 30s (contracts §3.1 progress bound), got %s", heartbeat)
 		}
 	}
 
@@ -2035,6 +2045,51 @@ func main() {
 ```
 
 - [ ] Verify it builds: `cd ci-agent && go build ./cmd/dev-mcp` — expect success (delete the produced `dev-mcp` binary from the working tree afterwards: `rm -f ci-agent/dev-mcp`).
+- [ ] Add the F13 heartbeat-bounds validation smoke `ci-agent/cmd/dev-mcp/main_test.go` (mirrors 08 Task 13's `TestServeModeFailsFastOnBadProgressInterval`; fails against a binary that ignores or clamps the env — in particular against the pre-amendment `main.go`, where `0s`/`-5s`/`45s` all started serving):
+
+```go
+package main
+
+import (
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+// TestMainFailsFastOnBadProgressInterval (F13 SSE seam delta, 00 §3.1
+// 2026-07-09; mirrored from 08 Task 13 / 10 Task 2): a
+// DEV_MCP_PROGRESS_INTERVAL that is invalid, <= 0, or > 30s must be a
+// FATAL startup error — never clamped silently to DefaultHeartbeat.
+func TestMainFailsFastOnBadProgressInterval(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "dev-mcp")
+	build := exec.Command("go", "build", "-o", bin, ".")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("go build: %v: %s", err, out)
+	}
+	smoke, err := filepath.Abs(filepath.Join("..", "..", "devmcp", "testdata", "smoke.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []string{"bogus", "0s", "-5s", "45s"} {
+		cmd := exec.Command(bin, "--config", smoke, "--workdir", t.TempDir())
+		cmd.Env = append(os.Environ(), "DEV_MCP_PROGRESS_INTERVAL="+bad)
+		out, err := cmd.CombinedOutput()
+		if err == nil {
+			t.Fatalf("DEV_MCP_PROGRESS_INTERVAL=%q: expected non-zero exit, got clean start", bad)
+		}
+		// the config is valid (Task 8 smoke.yml), so the fatal must be the
+		// heartbeat's — assert the message names the env var, ruling out a
+		// config-load failure masquerading as a pass.
+		if !strings.Contains(string(out), "DEV_MCP_PROGRESS_INTERVAL") {
+			t.Fatalf("DEV_MCP_PROGRESS_INTERVAL=%q: fatal exit, but not for the heartbeat: %s", bad, out)
+		}
+	}
+}
+```
+
+- [ ] Run to verify pass: `cd ci-agent && go test ./cmd/dev-mcp/ -count=1` — all green (valid overrides stay covered by Task 11's e2e, which starts the binary with short in-bounds heartbeats like `200ms`).
 - [ ] Smoke-check by hand (automated coverage lands in Task 11's e2e suite):
 
 ```bash

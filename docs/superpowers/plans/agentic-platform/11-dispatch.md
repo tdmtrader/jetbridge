@@ -59,7 +59,7 @@ The renderer (`agent/dispatch.Render`) is a pure function `Render(RenderInput) (
 - **Persistence:** the dispatcher persists the rendered `atc.Config` via `db.Team.SavePipeline(atc.PipelineRef{Name: "agent-ticket-<id>"}, config, 0, false)` to obtain the base template pipeline id, then calls `db.PipelineRunFactory.CreateRun(templateID, params, "dispatcher")`. One template pipeline per ticket (name `agent-ticket-<ticket-id>`); re-dispatch after send-back re-saves (bumping `ConfigVersion`) and creates a new run number under the same template.
 - **`budget.TicketBudgets` implementation:** dispatch supplies `dispatch.TicketBudgets` resolving `tickets.budget_usd ?? workflow.Config.Budget.TicketUSD` via `tickets.Store.Get` + the resolved live `workflow.Definition` — this is the real implementation the wave-1 `budget.NoTicketBudgets` stub stood in for.
 - **Ephemeral secret ticket label:** credentials-and-budgets' §8.2 left the `concourse/ticket` label to dispatch (the `SecretAttacher.Attach` seam has no ticket parameter and labels only `concourse/agent-run`). Dispatch owns a `dispatch.RunSecretLabeler` seam (K8s impl `dispatch.K8sRunSecretLabeler` over `kubernetes.Interface`) and, after `Attach` succeeds, does a follow-up strategic-merge `Patch` adding `concourse/ticket: "<ticket-id>"` when `ticket_id > 0`. This label is for operator filtering only — the reaper's safety-net GC keys off `concourse/agent-run` alone — so a labeling failure is logged, never fatal to a dispatched run.
-- **Per-run principal:** the dispatcher mints a per-run `agent_principals` row named `agent-run-<run-id>` with scopes `[tickets:read, tickets:write, metrics:write, costs:write, questions:answer]` and `expires_at = now + run timeout`, via `principals.Store.Create`; the returned raw token becomes the secret's `principal-token` key. Revoked by the run-lifecycle cleanup path (best-effort; expiry is the hard backstop).
+- **Per-run principal:** the dispatcher mints a per-run `agent_principals` row named `agent-run-<run-id>` with scopes `[tickets:read, tickets:write, metrics:write, costs:write, questions:answer]` and `expires_at = now + --agent-run-timeout` (6h default) — EXCEPT when the rendered workflow contains any park-policy step (a checkpoint step, which always parks per the checkpoint seam delta, or `hitl.ask_timeout: park`), in which case `expires_at = now + --agent-park-timeout` (web flag, `time.Duration`, default `72h`, defined beside `--agent-run-timeout` in `atc/atccmd/command.go`; F31 principal-expiry leg, §8.1 `AGENT_PRINCIPAL_TOKEN` row / PARK-DURATION BOUNDS §3.2). Expiry is NOT NULL in either case — it stays the hard backstop, and a parked question outliving it fails loudly per the AwaitAnswer fatal-auth contract (plan 08). Minted via `principals.Store.Create`; the returned raw token becomes the secret's `principal-token` key. Revoked by the run-lifecycle cleanup path (best-effort; expiry is the hard backstop).
 ````
 
 - [ ] **Step 2: Append to the §11 Amendment log** at the end of the file:
@@ -1962,6 +1962,7 @@ import (
 	"github.com/concourse/concourse/agent/api/principals"
 	"github.com/concourse/concourse/agent/credentials"
 	"github.com/concourse/concourse/agent/dispatch"
+	"github.com/concourse/concourse/agent/workflow"
 )
 
 type fakeCreds struct {
@@ -2021,6 +2022,50 @@ func TestMintRunPrincipalScopes(t *testing.T) {
 	}
 }
 
+// F31 principal-expiry leg (contracts §8.1 AGENT_PRINCIPAL_TOKEN row +
+// §3.2 PARK-DURATION BOUNDS, 2026-07-09): park-policy workflows select
+// --agent-park-timeout, everything else --agent-run-timeout.
+func TestRunPrincipalTimeoutSelection(t *testing.T) {
+	plain := workflow.Config{Steps: []workflow.Step{{Agent: "a", Prompt: "spec"}}}
+	withCheckpoint := workflow.Config{Steps: []workflow.Step{
+		{Agent: "a", Prompt: "spec"},
+		{Checkpoint: "plan-approval", OnReject: "fail"},
+	}}
+	askPark := workflow.Config{
+		Steps: []workflow.Step{{Agent: "a", Prompt: "spec"}},
+		HITL:  workflow.HITL{AskTimeout: "park"},
+	}
+
+	if got := dispatch.RunPrincipalTimeout(plain, 6*time.Hour, 72*time.Hour); got != 6*time.Hour {
+		t.Errorf("plain workflow = %v, want 6h (run timeout)", got)
+	}
+	if got := dispatch.RunPrincipalTimeout(withCheckpoint, 6*time.Hour, 72*time.Hour); got != 72*time.Hour {
+		t.Errorf("checkpoint workflow = %v, want 72h (checkpoints always park)", got)
+	}
+	if got := dispatch.RunPrincipalTimeout(askPark, 6*time.Hour, 72*time.Hour); got != 72*time.Hour {
+		t.Errorf("ask_timeout=park workflow = %v, want 72h (park timeout)", got)
+	}
+}
+
+func TestMintRunPrincipalParkExpiry(t *testing.T) {
+	fp := &fakePrincipals{token: "cap1.5.secret"}
+	parked := workflow.Config{Steps: []workflow.Step{{Checkpoint: "ship", OnReject: "send_back"}}}
+	before := time.Now()
+	_, err := dispatch.MintRunPrincipal(context.Background(), fp, 78,
+		dispatch.RunPrincipalTimeout(parked, 6*time.Hour, 72*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fp.lastSpec.ExpiresAt == nil {
+		t.Fatal("park-policy principal must still carry an expiry (NOT NULL — the backstop stays)")
+	}
+	got := time.Unix(*fp.lastSpec.ExpiresAt, 0)
+	want := before.Add(72 * time.Hour)
+	if got.Before(want.Add(-time.Minute)) || got.After(want.Add(2*time.Minute)) {
+		t.Errorf("park-policy expiry = %v, want ~%v (now + 72h, --agent-park-timeout default)", got, want)
+	}
+}
+
 func contains(s, sub string) bool { return len(s) >= len(sub) && (s == sub || indexOf(s, sub) >= 0) }
 func indexOf(s, sub string) int {
 	for i := 0; i+len(sub) <= len(s); i++ {
@@ -2034,8 +2079,8 @@ func indexOf(s, sub string) int {
 
 - [ ] **Step 2: Run to verify failure**
 
-Run: `cd /Users/tdmtrader/concourse/concourse && go test ./agent/dispatch/ -run 'TestResolveUserCredential|TestMintRunPrincipal'`
-Expected: FAIL — `undefined: dispatch.ResolveUserCredential`.
+Run: `cd /Users/tdmtrader/concourse/concourse && go test ./agent/dispatch/ -run 'TestResolveUserCredential|TestMintRunPrincipal|TestRunPrincipalTimeout'`
+Expected: FAIL — `undefined: dispatch.ResolveUserCredential` (and `dispatch.RunPrincipalTimeout`).
 
 - [ ] **Step 3: Write `agent/dispatch/deps.go`:**
 
@@ -2057,6 +2102,7 @@ import (
 	"github.com/concourse/concourse/agent/api/tickets"
 	"github.com/concourse/concourse/agent/budget"
 	"github.com/concourse/concourse/agent/credentials"
+	"github.com/concourse/concourse/agent/workflow"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 )
@@ -2104,6 +2150,7 @@ type Deps struct {
 	Runs          db.PipelineRunFactory
 	Team          PipelineSaver // SavePipeline of the rendered template (real db.Team satisfies this)
 	RunTimeout    time.Duration
+	ParkTimeout   time.Duration // principal expiry for park-policy runs (--agent-park-timeout, default 72h; F31 leg, contracts §8.1 + §3.2 PARK-DURATION BOUNDS)
 	MaxAttempts   int // attempt cap; over cap => errored, not re-queued
 }
 
@@ -2150,6 +2197,29 @@ func MintRunPrincipal(ctx context.Context, pm PrincipalMinter, runID int, timeou
 		return "", fmt.Errorf("mint per-run principal: %w", err)
 	}
 	return token, nil
+}
+
+// RunPrincipalTimeout selects the per-run principal lifetime (F31
+// principal-expiry leg; contracts §8.1 AGENT_PRINCIPAL_TOKEN row + §3.2
+// PARK-DURATION BOUNDS, 2026-07-09): a run whose frozen workflow contains
+// any park-policy step — a checkpoint step (checkpoints always park per the
+// checkpoint seam delta; no timeout is rendered) or `hitl.ask_timeout: park`
+// — is minted with expires_at = now + parkTimeout (--agent-park-timeout,
+// default 72h) so a parked question is not killed by the 6h run timeout.
+// Every other run uses runTimeout (--agent-run-timeout). The result is never
+// zero-expiry-forever: expiry stays NOT NULL and remains the hard backstop —
+// a park outliving it fails LOUDLY via the AwaitAnswer fatal-auth contract
+// (consecutive-401/403 limit, plan 08), never as a silent forever-park.
+func RunPrincipalTimeout(cfg workflow.Config, runTimeout, parkTimeout time.Duration) time.Duration {
+	if cfg.HITL.AskTimeout == "park" {
+		return parkTimeout
+	}
+	for _, s := range cfg.Steps {
+		if s.Checkpoint != "" {
+			return parkTimeout
+		}
+	}
+	return runTimeout
 }
 
 // ticketLabel is the dispatch-owned §8.2 label key (credentials-and-budgets
@@ -2371,6 +2441,7 @@ func (h *harness) dispatch(tkt tickets.Ticket) dispatch.Outcome {
 		Runs:          &hRuns{h: h},
 		Team:          &hTeam{},
 		RunTimeout:    time.Hour,
+		ParkTimeout:   72 * time.Hour,
 		MaxAttempts:   3,
 	}
 	return dispatch.DispatchOne(context.Background(), deps, tkt)
@@ -2557,7 +2628,9 @@ const (
 //  4. CLAIM via Transition(queued->running, {PipelineRunID}) — this is the
 //     atomic multi-node guard AND records the run id in one write.
 //     ErrStaleTransition => another node won: clean up the orphan run + secret.
-//  5. mint the per-run principal + attach the ephemeral secret, then Patch the
+//  5. mint the per-run principal (park-policy workflows — any checkpoint, or
+//     ask_timeout: park — expire at now + ParkTimeout instead of RunTimeout;
+//     F31 leg) + attach the ephemeral secret, then Patch the
 //     dispatch-owned concourse/ticket label onto it (§2.8.2; best-effort — a
 //     labeling failure never fails a dispatched run since GC keys off
 //     concourse/agent-run alone).
@@ -2637,7 +2710,11 @@ func DispatchOne(ctx context.Context, deps Deps, t tickets.Ticket) Outcome {
 	}
 
 	// (5) From here on we hold the claim; platform faults => running->errored.
-	principalToken, err := MintRunPrincipal(ctx, deps.Principals, runID, deps.RunTimeout)
+	// Park-policy workflows (any checkpoint step, or hitl.ask_timeout: park)
+	// get the --agent-park-timeout expiry so a parked run's principal outlives
+	// the 6h run timeout (F31 leg, contracts §8.1 + §3.2 PARK-DURATION BOUNDS).
+	principalToken, err := MintRunPrincipal(ctx, deps.Principals, runID,
+		RunPrincipalTimeout(in.Workflow, deps.RunTimeout, deps.ParkTimeout))
 	if err != nil {
 		return errorClaimed(deps, t, err)
 	}
@@ -2777,6 +2854,7 @@ func (h *harness) deps() dispatch.Deps {
 		Runs:          &hRuns{h: h},
 		Team:          &hTeam{},
 		RunTimeout:    time.Hour,
+		ParkTimeout:   72 * time.Hour,
 		MaxAttempts:   3,
 	}
 }
@@ -2917,7 +2995,7 @@ Decision tree (frozen, delta §6; keyed off `agent_run_questions.answer` — the
 - Modify: `agent/dispatch/dispatcher.go` (call the reconciler after the queued loop)
 - Modify: `agent/dispatch/dispatch_one_fakes_test.go` (`hRuns.GetRunByID` stub — the factory interface grows)
 - Modify: `atc/db/pipeline_run_factory.go` + test (additive `GetRunByID`, co-signed pipeline-runs)
-- Modify (cross-plan, co-signed platform-mcp-hitl): 08's `agentQuestionsFactory` gains additive `ListByRun`
+- Depends on (NOT modified here): 08 Task 14b's additive `ListByRun` on `agent/api/questions` + `atc/db/agent_questions_factory.go` — plan 08 owns and fully lands that surface (newest-asked first)
 - (Wiring of `Deps.Questions` lands in Task 13's `command.go` block, which runs after this task and was updated 2026-07-09 to include it)
 
 **Steps:**
@@ -2971,26 +3049,10 @@ And add a spec to the pipeline-run factory DB test:
 Run: `cd /Users/tdmtrader/concourse/concourse && pg_isready && ginkgo --focus="gets a run by its global id" ./atc/db/`
 Expected: PASS after the two edits (FAIL to compile before them).
 
-- [ ] **Step 2: Add the additive `ListByRun` to 08's questions factory (co-signed platform-mcp-hitl).** In the `agentQuestionsFactory` (08 Task landing `atc/db/agent_questions_factory.go`), mirror `OpenForTicket`:
+- [ ] **Step 2: Confirm `ListByRun` is landed by 08 Task 14b — nothing to implement here.** The additive `ListByRun(pipelineRunID int) ([]questions.Question, error)` store surface is owned and FULLY landed by 08 Task 14b (co-signed platform-mcp-hitl): the `agent/api/questions` Store interface + `MemoryStore`, the SQL in `atc/db/agent_questions_factory.go`, the regenerated fake, and the tests (`TestListByRun` + the factory It-block). Its frozen ordering contract is **newest-asked first** (`ORDER BY q.asked_at DESC, q.id DESC`; 08's tests assert it — "ordering is part of the contract"). Do NOT re-implement or reorder it in this plan: the reconciler does not depend on store ordering — it filters to `kind='checkpoint'` rows and re-sorts locally by `AskedAt` in `reconcileOne` (Step 6 below), so newest-first at the store is fine.
 
-```go
-// ListByRun returns every question row filed against a pipeline run,
-// oldest-first (additive, 2026-07-09 checkpoint seam delta §6 — consumed by
-// dispatch's run-completion reconciler; co-signed platform-mcp-hitl).
-func (f *agentQuestionsFactory) ListByRun(pipelineRunID int) ([]questions.Question, error) {
-	rows, err := f.conn.Query(
-		`SELECT `+questionColumns+` FROM agent_run_questions q
-		 WHERE q.pipeline_run_id = $1
-		 ORDER BY q.asked_at ASC, q.id ASC`,
-		pipelineRunID,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	return scanQuestionRows(rows)
-}
-```
+Run: `cd /Users/tdmtrader/concourse/concourse && grep -n "func (f \*agentQuestionsFactory) ListByRun" atc/db/agent_questions_factory.go && grep -n "ListByRun" agent/api/questions/types.go`
+Expected: both hits present. If either is missing, 08 Task 14b has not landed in this worktree — execute it first, then continue here.
 
 - [ ] **Step 3: Write the failing reconciler tests** `agent/dispatch/reconcile_test.go`:
 
@@ -3261,9 +3323,11 @@ import "github.com/concourse/concourse/agent/api/questions"
 
 // QuestionLister is the narrow questions seam the run-completion reconciler
 // needs (frozen 2026-07-09 checkpoint seam delta §6). ListByRun is additive
-// on 08's questions store (co-signed platform-mcp-hitl); Answer releases
-// orphaned checkpoint rows — Answer(id, "", "dispatcher") — so the
-// open-questions index and ticket banner clear.
+// on 08's questions store, landed entirely by 08 Task 14b (newest-asked
+// first is that plan's frozen ordering contract; the reconciler re-sorts
+// locally and does not rely on store order). Answer releases orphaned
+// checkpoint rows — Answer(id, "", "dispatcher") — so the open-questions
+// index and ticket banner clear.
 type QuestionLister interface {
 	ListByRun(pipelineRunID int) ([]questions.Question, error)
 	Answer(id int, answer, answeredBy string) error
@@ -3686,6 +3750,7 @@ Then, immediately after the `k8sReaper` `RunnableComponent` append (after the bl
 				Team:          mainTeam,
 				Questions:     dispatch.NewFactoryQuestionLister(agentQuestions), // run-completion reconciler (Task 11b, 2026-07-09)
 				RunTimeout:    cmd.AgentRunTimeout,
+				ParkTimeout:   cmd.AgentParkTimeout, // park-policy principal expiry (F31 leg, contracts §8.1)
 				MaxAttempts:   3,
 			}),
 			Interval: 10 * time.Second, // polling backstop; NOTIFY on ticket queue wakes it sooner
@@ -3694,10 +3759,11 @@ Then, immediately after the `k8sReaper` `RunnableComponent` append (after the bl
 
 Note: `db.NewAgentUserCredentialsFactory(dbConn)` returns a type embedding `credentials.Backend` (which embeds `credentials.Store`), so it satisfies the `dispatch.CredentialResolver` interface (`Resolve(int, string)`) directly. `db.NewAgentPrincipalsFactory(dbConn)` returns a `principals.Store`, satisfying `dispatch.PrincipalMinter` (`Create`). `mainTeam` (`db.Team`) satisfies `dispatch.PipelineSaver` via its `SavePipeline` method.
 
-- [ ] **Step 5: Add the `--agent-run-timeout` flag.** In the `RunCommand` struct near the other agent flags (find with `grep -n "AgentStepImage\|AgentDailyBudgetUSD" atc/atccmd/command.go`), add:
+- [ ] **Step 5: Add the `--agent-run-timeout` and `--agent-park-timeout` flags.** In the `RunCommand` struct near the other agent flags (find with `grep -n "AgentStepImage\|AgentDailyBudgetUSD" atc/atccmd/command.go`), add both, adjacent (contracts §8.1 requires `--agent-park-timeout` defined beside `--agent-run-timeout`):
 
 ```go
-	AgentRunTimeout time.Duration `long:"agent-run-timeout" default:"6h" description:"Max wall-clock for one agent ticket run; the per-run principal token and ephemeral secret expire after this."`
+	AgentRunTimeout  time.Duration `long:"agent-run-timeout" default:"6h" description:"Max wall-clock for one agent ticket run; the per-run principal token and ephemeral secret expire after this."`
+	AgentParkTimeout time.Duration `long:"agent-park-timeout" default:"72h" description:"Principal expiry for runs whose workflow contains a park-policy step (any checkpoint, or ask_human with ask_timeout: park) — the hard backstop on how long a run may stay parked awaiting a human. Never NULL; a park outliving it fails loudly (F31)."`
 ```
 
 - [ ] **Step 6: Add imports.** Ensure `command.go`'s import block has `"github.com/concourse/concourse/agent/dispatch"`, `"github.com/concourse/concourse/agent/budget"`, `"github.com/concourse/concourse/agent/credentials"`. Confirm which are already imported (credentials-and-budgets' wiring likely added `budget`/`credentials`):
@@ -3908,6 +3974,7 @@ var _ = Describe("Checkpoint reject paths (live)", func() {
 			Team:         team,
 			Questions:    dispatch.NewFactoryQuestionLister(questionStore),
 			RunTimeout:   time.Hour,
+			ParkTimeout:  72 * time.Hour, // checkpoint workflow => park-policy expiry (F31); zero here would mint an already-expired principal
 			MaxAttempts:  3,
 		}
 		d := dispatch.NewDispatcher(deps)
@@ -4117,7 +4184,7 @@ Do NOT use `--race` with ginkgo per CLAUDE.md (parallel compilation failures). T
 - Task 14 isolates the K8s-only behavior (real API-server secret labels, idempotency, not-found-tolerant cleanup) that a fake clientset returns instantly and therefore cannot verify.
 
 **Rollback notes for the risky diffs:**
-- **Task 13 (`command.go` wiring)** is the only edit outside the new `agent/dispatch` package. It is additive and K8s-gated: the whole `RunnableComponent` append lives inside `if cmd.Kubernetes.Namespace != ""`, so a non-K8s web node is unaffected. Rollback = delete the appended block + the `ComponentAgentDispatcher` constant + the `--agent-run-timeout` flag. No migrations, no schema, no route changes to revert (dispatch owns none).
+- **Task 13 (`command.go` wiring)** is the only edit outside the new `agent/dispatch` package. It is additive and K8s-gated: the whole `RunnableComponent` append lives inside `if cmd.Kubernetes.Namespace != ""`, so a non-K8s web node is unaffected. Rollback = delete the appended block + the `ComponentAgentDispatcher` constant + the `--agent-run-timeout` and `--agent-park-timeout` flags. No migrations, no schema, no route changes to revert (dispatch owns none).
 - **Task 1 (contract addendum)** is doc-only and additive to §11; rollback = drop the §2.8.2 subsection and the amendment-log line. Consumers of §2.8.2 (process-intel-experiments, wave 5) have not planned against it yet, so the blast radius is zero within wave 4.
 - **Task 2 `workflow.Config.Version` field** (if added): it is `yaml:"-" json:"-"` so it never affects the content hash or wire format — safe. The field is added in Task 2 (Step 4) because Task 3's renderer is the first code to read `in.Workflow.Version`; Task 7 only relies on it. If workflow-store already carries a version pass-through, skip that edit.
 - **Poison-ticket handling (Task 11):** the attempt cap errors a ticket rather than re-queuing forever. If a legitimate ticket trips the cap due to transient platform faults, a human re-queues it via `TransitionAgentTicket` (errored→queued is a valid edge, §1.7) — the cap is a safety valve, not a terminal wall.
