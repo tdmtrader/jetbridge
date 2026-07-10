@@ -6,7 +6,7 @@
 
 **Read model (default = MCP):** the agent reaches spec/plan ONLY through the platform-mcp read tools (`read_ticket` → envelope + spec; `list_tasks` → the cheap task skeleton; `get_task` → one task's detail). No spec/plan bytes are injected into any agent step by default — the DB stays the single source of truth and nothing is flattened into a monolithic markdown blob. The `files` opt-in (rendered read-only `spec.md`/`plan.md` mounted as the `ticket` artifact) is owned by dispatch's renderer (workflow field `spec_delivery`, wave 4); this plan implements only the MCP read tools, which stay mounted and functional in BOTH delivery modes.
 
-**Architecture:** A new `agent_run_questions` table + factory + four ATC routes (ask / list / get-long-poll / answer) carry the HITL state; the sidecar (`agent/platformmcp`, binary `cmd/platform-mcp`, image `ghcr.io/tdmtrader/mcp-platform`) is an MCP streamable-HTTP server that translates the seven tools into principal-authed calls against ticket-core's routes and the new question routes, parking by blocking the MCP call over a resilient long-poll. The three read tools (`read_ticket`/`list_tasks`/`get_task`) all resolve against ticket-core's `GetAgentTicket` route, which embeds spec + tasks server-side (backed by Store `Get`/`LatestSpec`/`ActivePlan`); the sidecar projects that one payload into the three typed results, dropping tasks from `read_ticket`. Notifications are delivered by a polling RunnableComponent (`agent_notifier`) that POSTs a generic webhook (§8.4) — never notify-only, per the fork's lossy-NOTIFY lesson.
+**Architecture:** A new `agent_run_questions` table + factory + four ATC routes (ask / list / get-long-poll / answer) carry the HITL state; the sidecar (`agent/platformmcp`, binary `cmd/platform-mcp`, image `ghcr.io/tdmtrader/mcp-platform`) is an MCP streamable-HTTP server **with SSE progress heartbeats** (Task 9b upgrades the shared `atc/api/mcpserver` in place — mandatory, per the 2026-07-09 SSE seam delta/F13: the claude CLI silently abandons a progress-free buffered tools/call at exactly 60s, so a parked `ask_human` can NEVER deliver its answer without <60s heartbeats) that translates the seven tools into principal-authed calls against ticket-core's routes and the new question routes, parking by blocking the MCP call over a resilient long-poll. The long-poll client treats transport/5xx errors as retry-forever but N consecutive 401/403s as fatal (F31 leg 3), so an expired/revoked principal fails loudly instead of parking forever. The three read tools (`read_ticket`/`list_tasks`/`get_task`) all resolve against ticket-core's `GetAgentTicket` route, which embeds spec + tasks server-side (backed by Store `Get`/`LatestSpec`/`ActivePlan`); the sidecar projects that one payload into the three typed results, dropping tasks from `read_ticket`. Notifications are delivered by a polling RunnableComponent (`agent_notifier`) that POSTs a generic webhook (§8.4) — never notify-only, per the fork's lossy-NOTIFY lesson.
 
 **Tech Stack:** Go (main module), squirrel/psql + counterfeiter in `atc/db`, `atc/api/mcpserver` for the MCP protocol, plain-Go httptest tests in `agent/*`, Ginkgo in `atc/db`/`atc/api`/`atc/wrappa`, Elm 0.19 (`web/elm`) for the banner, plain-Go `//go:build live` tests against theborg for park/resume.
 
@@ -20,11 +20,11 @@
 |---|---|
 | platform-mcp sidecar server, packaged per dev-mcp's image convention, authenticating as a scoped agent principal bound to the ticket/run | 9, 10, 13, 16 |
 | Schema-constrained submit_spec/submit_plan/update_task_status through ticket-core's mutation path; read_ticket/list_tasks/get_task; live task progress on the ticket page | 10 (write tools go through ticket-core's routes; the read tools project the `GetAgentTicket` payload — `read_ticket` = envelope + spec, `list_tasks` = task skeleton, `get_task` = one task's detail; the ticket page's task list — landed in wave 2 — renders the rows they write) |
-| ask_human: park via supervisor wait semantics, question+options on the ticket page, resume on answer, parked step counts as running, per-workflow timeout policy from rendered step config (env) | 2, 3, 4, 5, 6, 9, 11, 17 |
-| OWNS checkpoint-gate execution via the same park/resume primitive | 14 |
+| ask_human: park via supervisor wait semantics, question+options on the ticket page, resume on answer, parked step counts as running, per-workflow timeout policy from rendered step config (env) | 2, 3, 4, 5, 6, 9, 9b, 11, 17 |
+| OWNS checkpoint-gate execution via the same park/resume primitive | 14, 14b |
 | Concrete notification mechanism: ticket-page banner + one real channel, polling-backed | 7, 8, 17 |
 | Contract tests for the platform-mcp interface | 15 |
-| Live theborg test: restart-while-parked | 18 |
+| Live theborg test: restart-while-parked | 18 (+ 18b: the mandatory real-CLI >5-minute park pin — the FIRST wave-3 deliverable; gates 10 Task 7 merge) |
 
 Scope-out (must NOT appear in this plan): push/publish/archive mechanics (harvest-step), `request_review`/`ask_agent` (gateway-mcp), rendering checkpoint declarations into pipelines (dispatch's renderer, wave 4).
 
@@ -76,7 +76,7 @@ ls deploy/Dockerfile.* && grep -rn "mcp-dev" ci/ deploy/ 2>/dev/null
   - §4.2: new route `ListAgentTicketQuestions` — GET `/api/v1/agent/tickets/:ticket_id/questions` (`?open=true` filters unanswered) — auth `authorized viewer; also principal(tickets:read)`. The frozen table omitted a list route; the ticket-page banner requires one.
   - §8.4: the notifier is component `atc.ComponentAgentNotifier` ("agent_notifier"), polling every 10s (never notify-only), gated on web flag `--agent-notify-webhook-url`; it delivers question/checkpoint notifications and marks rows via `notified_at`. Ticket-state and budget notification kinds are emitted by their owners calling `agent/notify.Notifier` when those workstreams land.
   - §3.2 read-model (FROZEN DELTA — supersedes the prior "rendered spec.md/plan.md via `AGENT_SPEC_MD`/`AGENT_PLAN_MD`" design): agents reach spec/plan ONLY through granular platform-mcp read tools; no spec/plan bytes are injected into any agent step by default. `read_ticket` returns envelope + spec ONLY (input `{}`; tasks REMOVED). Two new read tools: `list_tasks` (input `{}` → `{"tasks":[{"ordering","title","status"}]}`, the cheap skeleton, no detail bodies) and `get_task` (input `{"ordering":int}` → `{"ordering","title","status","detail_md"}`, unknown ordering → MCP tool error `isError=true` — the shared `atc/api/mcpserver` surfaces every handler error as a `tools/call` result with `isError=true`, NOT a JSON-RPC `-32602` object). `update_task_status` is UNCHANGED and remains the write-back in both delivery modes. All three read tools back onto ticket-core Store `Get`/`LatestSpec`/`ActivePlan` (here via the embedding `GetAgentTicket` route). The optional `files` delivery mode (workflow field `spec_delivery: mcp|files`, default `mcp`; owned by workflow-store §6 + dispatch's renderer, wave 4) materializes read-only `spec.md`/`plan.md` mounted as the `ticket` artifact — the platform-mcp read tools stay mounted and functional in BOTH modes. Affected workstreams: platform-mcp-hitl, dispatch, workflow-store, ticket-core-consumers.
-  - §3.2: the checkpoint internal endpoint is `POST /checkpoint` on the sidecar's `MCP_LISTEN_ADDR` (same mux as `/mcp` and `/healthz`), body `{"name": "...", "description": "..."}`, blocking response `{"approved": bool, "answer": "...", "answered_by": "..."}`. Checkpoint client mode: `platform-mcp checkpoint --name <n> [--description <d>]`, exit 0 approved / exit 1 rejected-or-error. `on_reject: send_back` semantics live in dispatch's renderer (wave 4); at the step level both values fail the step on reject.
+  - §3.2: the checkpoint internal endpoint is `POST /checkpoint` on the sidecar's `MCP_LISTEN_ADDR` (same mux as `/mcp` and `/healthz`), body `{"name": "...", "description": "..."}`, blocking response `{"approved": bool, "answer": "...", "answered_by": "..."}`. Frozen response codes: **200** = resolved (body above); **400** = empty/missing `name` or invalid JSON; **502** = ATC transport error filing or awaiting the row (the sidecar KEEPS the per-name reservation so a client retry re-awaits the same open row). This bullet **SUPERSEDES** (not merely amends) the retracted §3.2/§11-F1/decision-12 client→ATC wording — the sentences saying the checkpoint client "inserts the row", "long-polls the ATC route", "reads reject-policy from argv", and is "NOT a call to a sidecar internal checkpoint endpoint" are RETRACTED per the 2026-07-09 checkpoint-seam delta (F14): the CLIENT talks ONLY to the pod-local sidecar over loopback HTTP and authenticates to nothing; the SIDECAR is the trust boundary and the only ATC caller. Checkpoint client mode: `platform-mcp checkpoint --name <n> [--description <d>]`, exit 0 approved / exit 1 rejected-or-error / exit 2 usage error. `on_reject: send_back` semantics live in dispatch's **run-completion reconciler** (plan 11 Task 11b) — NOT the renderer, which emits the identical bare failing TaskStep for both values; at the step level both values fail the step on reject.
   - §8.1: new row — `PLATFORM_MCP_EVENTS_PATH` | platform | literal | NDJSON event-log path for the sidecar's flight-recorder events (`human.ask`, `human.answer`, `checkpoint.*`); unset = stdout (pod logs).
   - §3.2 timeout resolution detail: when the sidecar resolves a timed-out question it sends `answered_by: "platform-mcp"` (the per-run principal *name* is not in the §8.1 env contract; if dispatch later adds `AGENT_PRINCIPAL_NAME`, the sidecar prefers it).
   - platform-mcp packaging (§8.5 instantiation): source `agent/platformmcp` (main module), binary `cmd/platform-mcp`, image `ghcr.io/tdmtrader/mcp-platform` from `deploy/Dockerfile.platform-mcp`.
@@ -1792,6 +1792,7 @@ package platformmcp_test
 
 import (
 	"testing"
+	"time"
 
 	"github.com/concourse/concourse/agent/platformmcp"
 )
@@ -1874,6 +1875,46 @@ func TestConfigFromEnvTimeoutPolicyRequiresPositiveSeconds(t *testing.T) {
 		t.Fatalf("park + 0 seconds: expected no error, got %v", err)
 	}
 }
+
+// TestConfigFromEnvProgressInterval is the D3 SSE-heartbeat validation
+// (2026-07-09 SSE seam delta): unset = 0 (server defaults to 15s); a set
+// value must parse as a Go duration, be > 0, and be <= 30s (contracts §3.1
+// progress mandate — the claude CLI abandons a progress-free tools/call at
+// exactly 60s). Never clamp silently: invalid/<=0/>30s are fatal at startup.
+func TestConfigFromEnvProgressInterval(t *testing.T) {
+	base := func() {
+		t.Setenv("ATC_EXTERNAL_URL", "https://concourse.home")
+		t.Setenv("AGENT_PRINCIPAL_TOKEN", "cap1.9.secret")
+		t.Setenv("AGENT_TICKET_ID", "42")
+	}
+
+	base()
+	cfg, err := platformmcp.ConfigFromEnv()
+	if err != nil {
+		t.Fatalf("ConfigFromEnv: %v", err)
+	}
+	if cfg.ProgressInterval != 0 {
+		t.Fatalf("unset PLATFORM_MCP_PROGRESS_INTERVAL: expected 0 (server default), got %s", cfg.ProgressInterval)
+	}
+
+	base()
+	t.Setenv("PLATFORM_MCP_PROGRESS_INTERVAL", "10s")
+	cfg, err = platformmcp.ConfigFromEnv()
+	if err != nil {
+		t.Fatalf("ConfigFromEnv with 10s: %v", err)
+	}
+	if cfg.ProgressInterval != 10*time.Second {
+		t.Fatalf("expected 10s, got %s", cfg.ProgressInterval)
+	}
+
+	for _, bad := range []string{"bogus", "0s", "-5s", "45s", "31s"} {
+		base()
+		t.Setenv("PLATFORM_MCP_PROGRESS_INTERVAL", bad)
+		if _, err := platformmcp.ConfigFromEnv(); err == nil {
+			t.Fatalf("PLATFORM_MCP_PROGRESS_INTERVAL=%q: expected fatal error, got nil", bad)
+		}
+	}
+}
 ```
 
 - [ ] Run to verify it fails:
@@ -1898,6 +1939,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"time"
 )
 
 type Config struct {
@@ -1911,6 +1953,11 @@ type Config struct {
 	TimeoutSeconds int    // PLATFORM_MCP_ASK_TIMEOUT_SECONDS (default 0 = indefinite)
 	ListenAddr     string // MCP_LISTEN_ADDR (default :7781, §8.1)
 	EventsPath     string // PLATFORM_MCP_EVENTS_PATH ("" = stdout; Task 1 addendum)
+	// ProgressInterval is the SSE progress-heartbeat interval
+	// (PLATFORM_MCP_PROGRESS_INTERVAL, Go duration; SSE seam delta D3).
+	// 0 = unset = mcpserver.DefaultHeartbeat (15s). Set values must be
+	// > 0 and <= 30s — never clamped, always fatal at startup.
+	ProgressInterval time.Duration
 }
 
 func ConfigFromEnv() (Config, error) {
@@ -1963,6 +2010,21 @@ func ConfigFromEnv() (Config, error) {
 	if cfg.ListenAddr == "" {
 		cfg.ListenAddr = ":7781"
 	}
+	// D3 (SSE seam delta, 2026-07-09): the §3.1 progress mandate requires a
+	// heartbeat at least every 30s; the empirical cliff is the claude CLI
+	// abandoning a progress-free tools/call at exactly 60s. A set-but-invalid
+	// value, a value <= 0, or a value > 30s is a FATAL startup error — never
+	// clamp silently.
+	if raw := os.Getenv("PLATFORM_MCP_PROGRESS_INTERVAL"); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil {
+			return cfg, fmt.Errorf("PLATFORM_MCP_PROGRESS_INTERVAL must be a Go duration: %w", err)
+		}
+		if d <= 0 || d > 30*time.Second {
+			return cfg, fmt.Errorf("PLATFORM_MCP_PROGRESS_INTERVAL must be > 0 and <= 30s (progress mandate, contracts §3.1), got %s", d)
+		}
+		cfg.ProgressInterval = d
+	}
 	return cfg, nil
 }
 
@@ -1987,6 +2049,8 @@ package platformmcp_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -2150,6 +2214,92 @@ func TestAwaitAnswerSurvivesATCRestart(t *testing.T) {
 	}
 }
 
+const pendingQuestionBody = `{"id":7,"ticket_id":42,"kind":"question","question":"q","asked_at":1}`
+const answeredQuestionBody = `{"id":7,"ticket_id":42,"kind":"question","question":"q","asked_at":1,"answered_at":2,"answer":"yes","answered_by":"tdm"}`
+
+// scriptedStub serves GET question polls with per-attempt scripted responses —
+// it drives AwaitAnswer's error classification (D6, 2026-07-09 SSE seam delta).
+func scriptedStub(t *testing.T, respond func(attempt int) (status int, body string)) (*httptest.Server, *atomic.Int64) {
+	t.Helper()
+	var attempts atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := int(attempts.Add(1))
+		status, body := respond(n)
+		if body != "" {
+			w.Header().Set("Content-Type", "application/json")
+		}
+		w.WriteHeader(status)
+		fmt.Fprint(w, body)
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &attempts
+}
+
+// D6 t1: a principal the ATC rejects forever becomes fatal after EXACTLY
+// AuthFailureLimit (frozen 12) consecutive 401s — never a silent forever-park.
+func TestAwaitAnswerFatalAfterConsecutiveAuthFailures(t *testing.T) {
+	srv, attempts := scriptedStub(t, func(int) (int, string) {
+		return http.StatusUnauthorized, ""
+	})
+	c := testClient(srv.URL)
+	c.RetryInterval = time.Millisecond
+
+	_, _, err := c.AwaitAnswer(context.Background(), 7, nil)
+	if !errors.Is(err, platformmcp.ErrPrincipalRejected) {
+		t.Fatalf("expected ErrPrincipalRejected, got %v", err)
+	}
+	if got := attempts.Load(); got != 12 {
+		t.Fatalf("expected exactly 12 attempts (frozen AuthFailureLimit), got %d", got)
+	}
+}
+
+// D6 t2: 5xx is NEVER fatal — a web restart may 500 for far more than the
+// auth limit's worth of polls and the park must ride through it.
+func TestAwaitAnswerRetries5xxForever(t *testing.T) {
+	srv, _ := scriptedStub(t, func(attempt int) (int, string) {
+		if attempt <= 20 { // > AuthFailureLimit
+			return http.StatusInternalServerError, ""
+		}
+		return http.StatusOK, answeredQuestionBody
+	})
+	c := testClient(srv.URL)
+	c.RetryInterval = time.Millisecond
+
+	q, timedOut, err := c.AwaitAnswer(context.Background(), 7, nil)
+	if err != nil || timedOut {
+		t.Fatalf("AwaitAnswer: timedOut=%v err=%v", timedOut, err)
+	}
+	if q.Answer != "yes" {
+		t.Fatalf("unexpected answer: %+v", q)
+	}
+}
+
+// D6 t3: the counter is CONSECUTIVE — any success (even a still-pending poll)
+// resets it, so alternating 401/success-pending never trips the fatal path.
+func TestAwaitAnswerAuthFailureCounterResets(t *testing.T) {
+	srv, _ := scriptedStub(t, func(attempt int) (int, string) {
+		switch {
+		case attempt <= 40 && attempt%2 == 1:
+			return http.StatusUnauthorized, "" // 20 total 401s, never consecutive
+		case attempt <= 40:
+			return http.StatusOK, pendingQuestionBody
+		default:
+			return http.StatusOK, answeredQuestionBody
+		}
+	})
+	c := testClient(srv.URL)
+	c.PollWait = time.Millisecond
+	c.RetryInterval = time.Millisecond
+
+	q, timedOut, err := c.AwaitAnswer(context.Background(), 7, nil)
+	if err != nil || timedOut {
+		t.Fatalf("AwaitAnswer: timedOut=%v err=%v (counter must reset on success)", timedOut, err)
+	}
+	if q.Answer != "yes" {
+		t.Fatalf("unexpected answer: %+v", q)
+	}
+}
+
 func TestAnswerQuestionSendsBody(t *testing.T) {
 	var gotBody map[string]string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -2185,6 +2335,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -2193,10 +2344,32 @@ import (
 	"github.com/concourse/concourse/agent/api/questions"
 )
 
+// StatusError is returned by do for EVERY non-2xx ATC response so callers can
+// inspect the status via errors.As — AwaitAnswer's fatal-auth counting depends
+// on it (D6, 2026-07-09 SSE seam delta / F31 leg 3).
+type StatusError struct {
+	Method string
+	Path   string
+	Code   int
+	Body   string
+}
+
+func (e *StatusError) Error() string {
+	return fmt.Sprintf("%s %s: %d: %s", e.Method, e.Path, e.Code, e.Body)
+}
+
+// ErrPrincipalRejected is returned (wrapped) by AwaitAnswer after
+// AuthFailureLimit CONSECUTIVE 401/403 responses: the per-run principal is
+// expired or revoked, and the step must fail loudly rather than park forever.
+var ErrPrincipalRejected = errors.New("agent principal rejected: consecutive auth failures exceeded limit")
+
 // ATCClient is the sidecar's principal-authed ATC API client. Its long-poll
 // loop (AwaitAnswer) is the park half of the §3.2 park/resume protocol:
-// transport errors are retried forever — an ATC/web-node restart while parked
-// just means a few failed polls until the new node answers.
+// transport errors and 5xx responses are retried forever — an ATC/web-node
+// restart while parked just means a few failed polls until the new node
+// answers — but AuthFailureLimit CONSECUTIVE 401/403 responses are fatal
+// (ErrPrincipalRejected): a revoked or expired per-run principal must fail
+// the step loudly, never silently park it forever (F31 leg 3).
 type ATCClient struct {
 	baseURL  string
 	token    string
@@ -2207,6 +2380,12 @@ type ATCClient struct {
 	PollWait time.Duration
 	// RetryInterval is the sleep after a failed poll (default 5s).
 	RetryInterval time.Duration
+	// AuthFailureLimit is the number of CONSECUTIVE 401/403 responses after
+	// which AwaitAnswer gives up with ErrPrincipalRejected. FROZEN default 12:
+	// with RetryInterval 5s that is >= 60s of sustained auth failures, which
+	// outlives the §1.2 60s principal-verification cache — a revoked principal
+	// is confirmed while a cache-warm blip cannot trip it.
+	AuthFailureLimit int
 }
 
 func NewATCClient(baseURL, principalToken string, ticketID int) *ATCClient {
@@ -2216,9 +2395,10 @@ func NewATCClient(baseURL, principalToken string, ticketID int) *ATCClient {
 		ticketID: ticketID,
 		// No global timeout: long-polls legitimately hold the connection.
 		// Individual requests carry contexts.
-		http:          &http.Client{},
-		PollWait:      30 * time.Second,
-		RetryInterval: 5 * time.Second,
+		http:             &http.Client{},
+		PollWait:         30 * time.Second,
+		RetryInterval:    5 * time.Second,
+		AuthFailureLimit: 12,
 	}
 }
 
@@ -2246,7 +2426,10 @@ func (c *ATCClient) do(ctx context.Context, method, path string, body any, out a
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return fmt.Errorf("%s %s: %d: %s", method, path, resp.StatusCode, bytes.TrimSpace(msg))
+		return &StatusError{
+			Method: method, Path: path, Code: resp.StatusCode,
+			Body: string(bytes.TrimSpace(msg)),
+		}
 	}
 	if out != nil {
 		return json.NewDecoder(resp.Body).Decode(out)
@@ -2375,9 +2558,13 @@ func (c *ATCClient) AnswerQuestion(ctx context.Context, questionID int, answer, 
 
 // AwaitAnswer long-polls until the question is answered (returns q, false),
 // the deadline passes (returns nil, true — caller applies the timeout
-// policy), or ctx is cancelled. Transport/5xx errors are retried indefinitely:
-// parked runs must survive web-node restarts.
+// policy), or ctx is cancelled. Transport errors and 5xx responses are
+// retried indefinitely (parked runs must survive web-node restarts);
+// CONSECUTIVE 401/403 responses are counted and become fatal at
+// AuthFailureLimit, returning an error wrapping ErrPrincipalRejected. The
+// counter resets on any success and on any non-auth error (D6/F31 leg 3).
 func (c *ATCClient) AwaitAnswer(ctx context.Context, questionID int, deadline *time.Time) (*questions.Question, bool, error) {
+	authFailures := 0
 	for {
 		if deadline != nil && time.Now().After(*deadline) {
 			return nil, true, nil
@@ -2393,6 +2580,16 @@ func (c *ATCClient) AwaitAnswer(ctx context.Context, questionID int, deadline *t
 			if ctx.Err() != nil {
 				return nil, false, ctx.Err()
 			}
+			var se *StatusError
+			if errors.As(err, &se) && (se.Code == http.StatusUnauthorized || se.Code == http.StatusForbidden) {
+				authFailures++
+				if authFailures >= c.AuthFailureLimit {
+					return nil, false, fmt.Errorf("question %d: %d consecutive 401/403 responses: %w",
+						questionID, c.AuthFailureLimit, ErrPrincipalRejected)
+				}
+			} else {
+				authFailures = 0 // transport or 5xx: retry forever
+			}
 			select {
 			case <-ctx.Done():
 				return nil, false, ctx.Err()
@@ -2400,6 +2597,7 @@ func (c *ATCClient) AwaitAnswer(ctx context.Context, questionID int, deadline *t
 			}
 			continue
 		}
+		authFailures = 0
 		if q.AnsweredAt != 0 {
 			return q, false, nil
 		}
@@ -2422,6 +2620,406 @@ git commit -m "feat(platform-mcp): sidecar env config + restart-resilient ATC cl
 
 ---
 
+### Task 9b: SSE progress-heartbeat transport in `atc/api/mcpserver` (D2, 2026-07-09 SSE seam delta — lands BEFORE Task 10 and before gateway 10 Task 7)
+
+**Files:**
+- Modify: `atc/api/mcpserver/server.go` (upgraded IN PLACE — no new module)
+- Modify: `atc/api/mcpserver/protocol.go` (`callToolParams` gains `_meta.progressToken`; new notification type)
+- Modify: `atc/api/mcpserver/tools.go` + `atc/api/mcpserver/tools_test.go` + existing `server_test.go` handler literals (mechanical 3-arg signature update)
+- Test: `atc/api/mcpserver/server_test.go` (new SSE Describe block, MIRRORED from `ci-agent/devmcp/server_test.go`, 04 Task 4)
+
+**Why (F13, empirical):** the claude CLI (v2.1.77) silently abandons a buffered, progress-free MCP `tools/call` at exactly 60s — the model sees "(completed with no output)", no error flag; `MCP_TOOL_TIMEOUT` does NOT prevent it (it drives only the outer ~27.8h watchdog). A parked `ask_human` therefore can NEVER deliver its answer over the current buffered-only `atc/api/mcpserver`. The proven-surviving implementation is dev-mcp's SSE progress-heartbeat server (`ci-agent/devmcp`, 04 Task 4). `ci-agent` is a separate Go module and neither module may require the other, so this task is an explicit **MIRRORED IMPLEMENTATION** — a byte-similar port, drift-guarded by mirrored tests; the wire spec of record is 04 Task 1's §3-preamble amendment. Consumers: platform-mcp (Task 10) and gateway (10 Task 7) get SSE for free; dev-mcp keeps `ci-agent/devmcp` unchanged. Frozen error-mapping difference from devmcp is PRESERVED, not ported: handler errors remain `isError=true` tool results (never `-32602`), in both buffered and SSE modes — the final SSE frame carries exactly the response the buffered path would have written.
+
+- [ ] Write the failing mirrored SSE tests — append this Describe block to `atc/api/mcpserver/server_test.go` (add `"fmt"`, `"strings"`, and `"time"` to its imports; `"io"`, `"net/http"`, `"net/http/httptest"` are already there):
+
+```go
+var _ = Describe("SSE progress streaming (mirrored from ci-agent/devmcp/server_test.go — 04 Task 4 wire spec)", func() {
+	newSSEServer := func(heartbeat time.Duration, handler mcpserver.ToolHandler) *httptest.Server {
+		s := mcpserver.NewServerWithHeartbeat(heartbeat)
+		s.AddTool("echo", "echoes back", json.RawMessage(`{"type":"object"}`), handler)
+		ts := httptest.NewServer(s)
+		DeferCleanup(ts.Close)
+		return ts
+	}
+
+	sseCall := func(url string) (*http.Response, error) {
+		req, err := http.NewRequest(http.MethodPost, url, strings.NewReader(
+			`{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"echo","arguments":{},"_meta":{"progressToken":"tok-1"}}}`))
+		Expect(err).NotTo(HaveOccurred())
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "text/event-stream")
+		return http.DefaultClient.Do(req)
+	}
+
+	It("streams progress notifications over SSE and ends with the final response frame", func() {
+		ts := newSSEServer(50*time.Millisecond, func(_ context.Context, _ json.RawMessage, progress func(string)) (any, error) {
+			progress("halfway there")
+			time.Sleep(150 * time.Millisecond)
+			return map[string]any{"status": "ok"}, nil
+		})
+
+		resp, err := sseCall(ts.URL)
+		Expect(err).NotTo(HaveOccurred())
+		defer resp.Body.Close()
+		Expect(resp.Header.Get("Content-Type")).To(Equal("text/event-stream"))
+
+		body, err := io.ReadAll(resp.Body)
+		Expect(err).NotTo(HaveOccurred())
+		frames := string(body)
+		Expect(frames).To(ContainSubstring("event: message"))
+		Expect(frames).To(ContainSubstring(`"notifications/progress"`))
+		Expect(frames).To(ContainSubstring(`"tok-1"`))
+		Expect(frames).To(ContainSubstring("halfway there"))
+		// The final JSON-RPC response is the LAST SSE frame.
+		Expect(frames).To(ContainSubstring(`"id":7`))
+		lastFrame := frames[strings.LastIndex(frames, "event: message"):]
+		Expect(lastFrame).To(ContainSubstring(`"status":"ok"`))
+	})
+
+	It("emits heartbeats even when the handler produces no progress output", func() {
+		ts := newSSEServer(30*time.Millisecond, func(_ context.Context, _ json.RawMessage, _ func(string)) (any, error) {
+			time.Sleep(120 * time.Millisecond)
+			return map[string]any{"status": "ok"}, nil
+		})
+		resp, err := sseCall(ts.URL)
+		Expect(err).NotTo(HaveOccurred())
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		Expect(err).NotTo(HaveOccurred())
+		// >= 2 heartbeat frames with the default "running <tool>" message.
+		Expect(strings.Count(string(body), `"running echo"`)).To(BeNumerically(">=", 2))
+	})
+
+	It("stays buffered JSON when the client does not opt in", func() {
+		ts := newSSEServer(30*time.Millisecond, func(_ context.Context, _ json.RawMessage, progress func(string)) (any, error) {
+			progress("dropped on the buffered path")
+			return map[string]any{"status": "ok"}, nil
+		})
+		// No Accept: text/event-stream, no _meta.progressToken.
+		resp, err := http.Post(ts.URL, "application/json", strings.NewReader(
+			`{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"echo","arguments":{}}}`))
+		Expect(err).NotTo(HaveOccurred())
+		defer resp.Body.Close()
+		Expect(resp.Header.Get("Content-Type")).To(ContainSubstring("application/json"))
+		body, err := io.ReadAll(resp.Body)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(string(body)).NotTo(ContainSubstring("notifications/progress"))
+		Expect(string(body)).To(ContainSubstring(`"status":"ok"`))
+	})
+
+	It("carries handler errors as isError=true in the final SSE frame — never -32602", func() {
+		ts := newSSEServer(30*time.Millisecond, func(_ context.Context, _ json.RawMessage, _ func(string)) (any, error) {
+			return nil, fmt.Errorf("kaboom")
+		})
+		resp, err := sseCall(ts.URL)
+		Expect(err).NotTo(HaveOccurred())
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		Expect(err).NotTo(HaveOccurred())
+		frames := string(body)
+		Expect(frames).To(ContainSubstring(`"isError":true`))
+		Expect(frames).To(ContainSubstring("kaboom"))
+		Expect(frames).NotTo(ContainSubstring(`-32602`))
+	})
+})
+```
+
+- [ ] Run to verify it fails:
+
+```bash
+ginkgo ./atc/api/mcpserver/
+```
+
+Expected failure: `undefined: mcpserver.NewServerWithHeartbeat` (and the 3-arg handler literals do not compile against the 2-arg `ToolHandler`).
+
+- [ ] Update `atc/api/mcpserver/protocol.go` — `callToolParams` gains the progress opt-in and a notification type is added:
+
+```go
+type callToolParams struct {
+	Name      string          `json:"name"`
+	Arguments json.RawMessage `json:"arguments,omitempty"`
+	// Meta carries the MCP progress opt-in: a client that wants SSE progress
+	// sends params._meta.progressToken; it is echoed verbatim in every
+	// notifications/progress frame (04 Task 1 wire spec).
+	Meta *struct {
+		ProgressToken json.RawMessage `json:"progressToken"`
+	} `json:"_meta,omitempty"`
+}
+
+// jsonRPCNotification is a server-initiated message (no id) — the
+// notifications/progress frames on the SSE path.
+type jsonRPCNotification struct {
+	JSONRPC string `json:"jsonrpc"`
+	Method  string `json:"method"`
+	Params  any    `json:"params,omitempty"`
+}
+```
+
+- [ ] Rewrite `atc/api/mcpserver/server.go` (the upgrade in place; `handleInitialize`/`handleToolsList`/`writeHTTPError`/`MustJSON` are unchanged and omitted here):
+
+```go
+package mcpserver
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
+	"time"
+)
+
+const protocolVersion = "2024-11-05"
+
+// DefaultHeartbeat is half the contract's "progress at least every 30s" bound
+// (contracts §3.1), leaving 4x margin under the claude CLI's empirical 60s
+// abandonment of progress-free tools/call requests (F13). Same value and
+// rationale as ci-agent/devmcp.DefaultHeartbeat — mirrored, not imported.
+const DefaultHeartbeat = 15 * time.Second
+
+// ToolHandler is a function that handles an MCP tool call. progress reports
+// the latest human-readable progress line for a long-running call; it is
+// never nil — buffered (non-SSE) calls receive a no-op func(string) {}.
+type ToolHandler func(ctx context.Context, args json.RawMessage, progress func(string)) (any, error)
+
+// Server is an MCP server that dispatches tool calls over HTTP.
+// It implements http.Handler using the MCP Streamable HTTP transport,
+// answering progress-bearing tools/call requests over SSE with coalescing
+// heartbeat notifications (mirrored from ci-agent/devmcp — 04 Task 4).
+type Server struct {
+	tools     []ToolDef
+	handlers  map[string]ToolHandler
+	heartbeat time.Duration
+}
+
+// NewServer creates an MCP server with no tools registered and the default
+// 15s progress heartbeat (existing ATC callers compile unchanged).
+func NewServer() *Server {
+	return NewServerWithHeartbeat(0)
+}
+
+// NewServerWithHeartbeat creates a server with the given progress-heartbeat
+// interval; d <= 0 uses DefaultHeartbeat. Sidecars construct via
+// NewServerWithHeartbeat(cfg.ProgressInterval).
+func NewServerWithHeartbeat(d time.Duration) *Server {
+	if d <= 0 {
+		d = DefaultHeartbeat
+	}
+	return &Server{
+		handlers:  make(map[string]ToolHandler),
+		heartbeat: d,
+	}
+}
+
+// AddTool registers a tool with the server.
+func (s *Server) AddTool(name, description string, schema json.RawMessage, handler ToolHandler) {
+	s.tools = append(s.tools, ToolDef{
+		Name:        name,
+		Description: description,
+		InputSchema: schema,
+	})
+	s.handlers[name] = handler
+}
+
+// ServeHTTP implements http.Handler for the MCP Streamable HTTP transport.
+// POST requests contain JSON-RPC messages; responses are JSON, or SSE for
+// progress-bearing tools/call requests.
+func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	body, err := io.ReadAll(io.LimitReader(r.Body, 10*1024*1024))
+	if err != nil {
+		writeHTTPError(w, -32700, "failed to read request body")
+		return
+	}
+
+	var req jsonRPCRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		writeHTTPError(w, -32700, "parse error")
+		return
+	}
+
+	if req.Method == "tools/call" {
+		s.handleToolsCall(w, r, &req)
+		return
+	}
+
+	resp := s.dispatch(r.Context(), &req)
+	if resp == nil {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
+}
+
+func (s *Server) dispatch(ctx context.Context, req *jsonRPCRequest) *jsonRPCResponse {
+	switch req.Method {
+	case "initialize":
+		return s.handleInitialize(req)
+	case "notifications/initialized":
+		return nil
+	case "tools/list":
+		return s.handleToolsList(req)
+	case "ping":
+		return &jsonRPCResponse{JSONRPC: "2.0", ID: req.ID, Result: map[string]any{}}
+	default:
+		return &jsonRPCResponse{
+			JSONRPC: "2.0",
+			ID:      req.ID,
+			Error:   &jsonRPCError{Code: -32601, Message: fmt.Sprintf("method not found: %s", req.Method)},
+		}
+	}
+}
+
+// handleToolsCall answers a tools/call request: buffered JSON by default, SSE
+// with heartbeat progress when the client opts in via Accept: text/event-stream
+// AND params._meta.progressToken (the devmcp wire spec, ported verbatim).
+// Error mapping is UNCHANGED from the buffered-only server: a handler error is
+// an isError=true tool result — never -32602 — in both modes.
+func (s *Server) handleToolsCall(w http.ResponseWriter, r *http.Request, req *jsonRPCRequest) {
+	var params callToolParams
+	if err := json.Unmarshal(req.Params, &params); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(&jsonRPCResponse{
+			JSONRPC: "2.0",
+			ID:      req.ID,
+			Error:   &jsonRPCError{Code: -32602, Message: "invalid params"},
+		})
+		return
+	}
+
+	handler, ok := s.handlers[params.Name]
+	if !ok {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(s.toolErrorResponse(req.ID, fmt.Sprintf("unknown tool: %s", params.Name)))
+		return
+	}
+
+	flusher, canFlush := w.(http.Flusher)
+	wantSSE := canFlush &&
+		strings.Contains(r.Header.Get("Accept"), "text/event-stream") &&
+		params.Meta != nil && len(params.Meta.ProgressToken) > 0
+
+	if !wantSSE {
+		result, err := handler(r.Context(), params.Arguments, func(string) {})
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(s.toolResponse(req.ID, result, err))
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
+
+	progressCh := make(chan string, 64)
+	done := make(chan *jsonRPCResponse, 1)
+	go func() {
+		result, err := handler(r.Context(), params.Arguments, func(msg string) {
+			select {
+			case progressCh <- msg:
+			default: // never block the running tool on a slow consumer
+			}
+		})
+		done <- s.toolResponse(req.ID, result, err)
+	}()
+
+	emit := func(msg string) {
+		writeSSE(w, &jsonRPCNotification{
+			JSONRPC: "2.0",
+			Method:  "notifications/progress",
+			Params: map[string]any{
+				"progressToken": params.Meta.ProgressToken,
+				"message":       msg,
+			},
+		})
+		flusher.Flush()
+	}
+
+	ticker := time.NewTicker(s.heartbeat)
+	defer ticker.Stop()
+	lastMsg := fmt.Sprintf("running %s", params.Name)
+	for {
+		select {
+		case msg := <-progressCh:
+			lastMsg = msg // coalesce: remember, emit on the next tick
+		case <-ticker.C:
+			emit(lastMsg)
+		case resp := <-done:
+			writeSSE(w, resp)
+			flusher.Flush()
+			return
+		}
+	}
+}
+
+// toolResponse builds the tools/call response with the buffered path's exact
+// (frozen) error mapping: handler error => isError=true tool result.
+func (s *Server) toolResponse(id json.RawMessage, result any, err error) *jsonRPCResponse {
+	if err != nil {
+		return s.toolErrorResponse(id, fmt.Sprintf("error: %s", err.Error()))
+	}
+	resultJSON, merr := json.Marshal(result)
+	if merr != nil {
+		return s.toolErrorResponse(id, fmt.Sprintf("error marshaling result: %s", merr.Error()))
+	}
+	return &jsonRPCResponse{
+		JSONRPC: "2.0",
+		ID:      id,
+		Result: callToolResult{
+			Content: []contentBlock{{Type: "text", Text: string(resultJSON)}},
+		},
+	}
+}
+
+func (s *Server) toolErrorResponse(id json.RawMessage, msg string) *jsonRPCResponse {
+	return &jsonRPCResponse{
+		JSONRPC: "2.0",
+		ID:      id,
+		Result: callToolResult{
+			Content: []contentBlock{{Type: "text", Text: msg}},
+			IsError: true,
+		},
+	}
+}
+
+func writeSSE(w io.Writer, msg any) {
+	data, _ := json.Marshal(msg)
+	fmt.Fprintf(w, "event: message\ndata: %s\n\n", data)
+}
+```
+
+- [ ] Mechanically update every handler literal to the 3-arg signature (they all ignore `progress`; the signature is uniform across the tree — verified by grep):
+
+```bash
+perl -pi -e 's/func\(ctx context\.Context, args json\.RawMessage\) \(any, error\)/func(ctx context.Context, args json.RawMessage, _ func(string)) (any, error)/g' \
+  atc/api/mcpserver/tools.go atc/api/mcpserver/tools_test.go atc/api/mcpserver/server_test.go
+grep -rn "json.RawMessage) (any, error)" atc/api/mcpserver/ | grep -v "func(string)" && echo "MISSED A HANDLER" || echo OK
+```
+
+  `atc/api/handler.go` calls only `mcpserver.NewServer()` + `mcpserver.RegisterTools(...)` — it compiles unchanged (verified at `atc/api/handler.go:145-146`).
+
+- [ ] Run to verify pass (the whole ATC must still compile — the signature change is breaking inside the package only):
+
+```bash
+ginkgo ./atc/api/mcpserver/ && go build ./atc/... && ginkgo ./atc/api/
+```
+
+- [ ] Commit:
+
+```bash
+git add atc/api/mcpserver/
+git commit -m "feat(mcpserver): SSE progress-heartbeat transport mirrored from ci-agent/devmcp (F13)" -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+```
+
+---
+
 ### Task 10: MCP server assembly + read_ticket / list_tasks / get_task / submit_spec / submit_plan / update_task_status
 
 **Files:**
@@ -2429,7 +3027,7 @@ git commit -m "feat(platform-mcp): sidecar env config + restart-resilient ATC cl
 - Create: `agent/platformmcp/tools.go`
 - Test: `agent/platformmcp/tools_test.go`
 
-The MCP protocol layer is `atc/api/mcpserver` (verified: `NewServer()`, `AddTool(name, description, schema, handler)`, `ServeHTTP` at `atc/api/mcpserver/server.go:24/31/42`, `MustJSON` at `:179`). Tool input schemas below are byte-for-byte the §3.2 contract.
+The MCP protocol layer is `atc/api/mcpserver` **as upgraded by Task 9b** (SSE progress heartbeats; 3-arg `ToolHandler` with `progress func(string)`; `NewServerWithHeartbeat`, `AddTool(name, description, schema, handler)`, `ServeHTTP`, `MustJSON`). The sidecar constructs it via `mcpserver.NewServerWithHeartbeat(cfg.ProgressInterval)` so `PLATFORM_MCP_PROGRESS_INTERVAL` (Task 9) drives the heartbeat; 0 = the frozen 15s default. Tool input schemas below are byte-for-byte the §3.2 contract.
 
 This task registers all seven tools; six are implemented here (`read_ticket`, `list_tasks`, `get_task`, `submit_spec`, `submit_plan`, `update_task_status`) and `ask_human` is stubbed (Task 11). The three read tools project the single `GetAgentTicket` payload (`ATCClient.GetTicket`, Task 9): `read_ticket` returns envelope + spec and DROPS tasks; `list_tasks` returns the `{ordering,title,status}` skeleton with no detail bodies; `get_task(ordering)` returns one task including `detail_md`, or an MCP tool error (`isError=true`) on an unknown ordering — the shared `atc/api/mcpserver` maps a handler's returned error to a `tools/call` result with `isError=true`, so an unknown ordering is a tool-level error, NOT a JSON-RPC `-32602` error object.
 
@@ -2806,8 +3404,11 @@ func NewServer(cfg Config) (*Server, error) {
 		cfg:    cfg,
 		client: NewATCClient(cfg.ATCURL, cfg.PrincipalToken, cfg.TicketID),
 		events: events,
-		mcp:    mcpserver.NewServer(),
-		mux:    http.NewServeMux(),
+		// SSE heartbeat interval from PLATFORM_MCP_PROGRESS_INTERVAL; 0 =
+		// mcpserver.DefaultHeartbeat (15s). Task 9b's upgraded server keeps a
+		// parked ask_human alive past the claude CLI's 60s abandonment (F13).
+		mcp: mcpserver.NewServerWithHeartbeat(cfg.ProgressInterval),
+		mux: http.NewServeMux(),
 	}
 	s.registerTools()
 	s.mux.Handle("/mcp", s.mcp)
@@ -2820,10 +3421,24 @@ func NewServer(cfg Config) (*Server, error) {
 
 func (s *Server) Mux() *http.ServeMux { return s.mux }
 
+// ListenAndServe serves /mcp, /healthz, and /checkpoint. SERVER-TIMEOUT RULE
+// (D4, 2026-07-09 SSE seam delta — frozen for all three sidecar binaries):
+// WriteTimeout and IdleTimeout MUST be 0 — any nonzero WriteTimeout severs
+// long SSE streams and blocking /checkpoint responses mid-park.
+// ReadHeaderTimeout 5s is allowed (and set) to bound slow-header abuse.
 func (s *Server) ListenAndServe() error {
-	return http.ListenAndServe(s.cfg.ListenAddr, s.mux)
+	srv := &http.Server{
+		Addr:              s.cfg.ListenAddr,
+		Handler:           s.mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		WriteTimeout:      0,
+		IdleTimeout:       0,
+	}
+	return srv.ListenAndServe()
 }
 ```
+
+  (add `"time"` to `server.go`'s imports).
 
   So this task compiles and passes in-order, temporarily define in `server.go` (Task 12 replaces `EventLog` with the real NDJSON writer — its tests fail against this no-op; Task 14 replaces `handleCheckpoint` — its tests fail against the 501; neither survives):
 
@@ -2966,7 +3581,7 @@ func (s *Server) registerTools() {
 // readTicket returns envelope + spec ONLY — tasks are deliberately dropped from
 // this result (§3.2 read model). Agents reach the plan through list_tasks /
 // get_task so the whole plan is never dumped into context.
-func (s *Server) readTicket(ctx context.Context, _ json.RawMessage) (any, error) {
+func (s *Server) readTicket(ctx context.Context, _ json.RawMessage, _ func(string)) (any, error) {
 	payload, err := s.client.GetTicket(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("reading ticket: %w", err)
@@ -2982,7 +3597,7 @@ func (s *Server) readTicket(ctx context.Context, _ json.RawMessage) (any, error)
 
 // listTasks returns the cheap task skeleton — {ordering, title, status} with no
 // detail bodies (§3.2). It backs onto ticket-core's ActivePlan via GetAgentTicket.
-func (s *Server) listTasks(ctx context.Context, _ json.RawMessage) (any, error) {
+func (s *Server) listTasks(ctx context.Context, _ json.RawMessage, _ func(string)) (any, error) {
 	payload, err := s.client.GetTicket(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("listing tasks: %w", err)
@@ -3006,7 +3621,7 @@ func (s *Server) listTasks(ctx context.Context, _ json.RawMessage) (any, error) 
 // an MCP tool error — a tools/call result with isError=true carrying the error
 // text (§3.2). This is a tool-level error, NOT a JSON-RPC -32602 error object;
 // the mcpserver only emits -32602 for a malformed tools/call envelope.
-func (s *Server) getTask(ctx context.Context, args json.RawMessage) (any, error) {
+func (s *Server) getTask(ctx context.Context, args json.RawMessage, _ func(string)) (any, error) {
 	var in struct {
 		Ordering int `json:"ordering"`
 	}
@@ -3030,7 +3645,7 @@ func (s *Server) getTask(ctx context.Context, args json.RawMessage) (any, error)
 	return nil, fmt.Errorf("no task with ordering %d in the active plan", in.Ordering)
 }
 
-func (s *Server) submitSpec(ctx context.Context, args json.RawMessage) (any, error) {
+func (s *Server) submitSpec(ctx context.Context, args json.RawMessage, _ func(string)) (any, error) {
 	var in struct {
 		Title              string              `json:"title"`
 		Body               string              `json:"body"`
@@ -3053,7 +3668,7 @@ func (s *Server) submitSpec(ctx context.Context, args json.RawMessage) (any, err
 	return map[string]int{"version": version}, nil
 }
 
-func (s *Server) submitPlan(ctx context.Context, args json.RawMessage) (any, error) {
+func (s *Server) submitPlan(ctx context.Context, args json.RawMessage, _ func(string)) (any, error) {
 	var in struct {
 		Tasks []TaskSubmission `json:"tasks"`
 	}
@@ -3075,7 +3690,7 @@ func (s *Server) submitPlan(ctx context.Context, args json.RawMessage) (any, err
 	return map[string]int{"plan_version": planVersion}, nil
 }
 
-func (s *Server) updateTaskStatus(ctx context.Context, args json.RawMessage) (any, error) {
+func (s *Server) updateTaskStatus(ctx context.Context, args json.RawMessage, _ func(string)) (any, error) {
 	var in struct {
 		Ordering int    `json:"ordering"`
 		Status   string `json:"status"`
@@ -3097,7 +3712,7 @@ func (s *Server) updateTaskStatus(ctx context.Context, args json.RawMessage) (an
 }
 ```
 
-  `askHuman` is implemented in Task 11 — for this task's compile, add a temporary body in `tools.go` returning `nil, fmt.Errorf("ask_human lands in Task 11")` and REPLACE it in Task 11 (the Task 11 test would fail against the temporary body, so nothing placeholder survives).
+  `askHuman` is implemented in Task 11 — for this task's compile, add a temporary body in `tools.go` (`func (s *Server) askHuman(ctx context.Context, args json.RawMessage, progress func(string)) (any, error)` — the Task 9b 3-arg signature) returning `nil, fmt.Errorf("ask_human lands in Task 11")` and REPLACE it in Task 11 (the Task 11 test would fail against the temporary body, so nothing placeholder survives).
 
 - [ ] Run to verify pass (the `ask_human` presence assertion in `TestToolsListExposesExactlySevenTools` passes because the tool is registered; only Task 11 exercises its behavior):
 
@@ -3266,6 +3881,34 @@ func TestAskHumanInputErrors(t *testing.T) {
 		t.Fatalf("expected question-required error, got %s", result)
 	}
 }
+
+// TestAskHumanPrincipalRejectedFailsLoudly (D6/F31 leg 3): once the per-run
+// principal is revoked or expired the ATC 401s every poll; after the frozen
+// 12 consecutive auth failures the tool call must fail LOUDLY with a
+// "principal rejected:"-prefixed MCP tool error (isError=true) — never park
+// forever on a dead principal.
+func TestAskHumanPrincipalRejectedFailsLoudly(t *testing.T) {
+	store := questions.NewMemoryStore()
+	qmux := stubQuestionMux(t, store)
+	mux := http.NewServeMux()
+	// Asking succeeds; every subsequent poll is rejected (revoked principal).
+	mux.Handle("POST /api/v1/agent/tickets/42/questions", qmux)
+	mux.HandleFunc("GET /api/v1/agent/tickets/42/questions/", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	})
+	atc := httptest.NewServer(mux)
+	t.Cleanup(atc.Close)
+
+	srv := newAskServer(t, atc.URL, "park", 0)
+
+	result, isErr := callTool(t, srv.Mux(), "ask_human", map[string]any{"question": "anyone?"})
+	if !isErr {
+		t.Fatalf("expected MCP tool error after consecutive 401s, got %s", result)
+	}
+	if !strings.Contains(string(result), "principal rejected:") {
+		t.Fatalf("expected 'principal rejected:' prefix in the tool error, got %s", result)
+	}
+}
 ```
 
 - [ ] Run to verify it fails:
@@ -3284,6 +3927,7 @@ package platformmcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -3313,7 +3957,15 @@ type askHumanResult struct {
 // row is answered. The sidecar itself enforces the timeout and, on expiry, is
 // the writer that resolves the row (policy default/fail) so a timed-out row
 // never stays open. Policy park = no deadline: only a human resolves it.
-func (s *Server) askHuman(ctx context.Context, args json.RawMessage) (any, error) {
+//
+// ask_human is a MUST-stream tool (D4, 2026-07-09 SSE seam delta): it can
+// block unboundedly, so it is served over Task 9b's SSE progress path. The
+// progress call below sets the parked message once; the server's heartbeat
+// ticker repeats the latest message every interval (<60s — the claude CLI's
+// empirical abandonment bound, F13). A consecutive-401/403 fatal from
+// AwaitAnswer surfaces as a LOUD "principal rejected:" tool error
+// (isError=true) instead of an eternal park (D6/F31 leg 3).
+func (s *Server) askHuman(ctx context.Context, args json.RawMessage, progress func(string)) (any, error) {
 	var in askHumanInput
 	if err := json.Unmarshal(args, &in); err != nil {
 		return nil, fmt.Errorf("invalid arguments: %w", err)
@@ -3339,9 +3991,17 @@ func (s *Server) askHuman(ctx context.Context, args json.RawMessage) (any, error
 		"question":    in.Question,
 		"options":     in.Options,
 	})
+	// Park-start progress line (D4): emitted once here, repeated by the SSE
+	// heartbeat ticker for the whole park.
+	progress(fmt.Sprintf("parked: waiting for human answer to question %d", created.ID))
 
 	answered, timedOut, err := s.awaitWithPolicy(ctx, created.ID, created.AskedAt, in.Default)
 	if err != nil {
+		if errors.Is(err, ErrPrincipalRejected) {
+			// Fail LOUDLY: the step errors instead of parking forever on a
+			// revoked/expired principal (D6/F31 leg 3).
+			return nil, fmt.Errorf("principal rejected: %w", err)
+		}
 		return nil, err
 	}
 	waitSeconds := time.Now().Unix() - created.AskedAt
@@ -3751,6 +4411,35 @@ func main() {
 
   For this task, `runCheckpoint` is a one-line function in `main.go` that prints "checkpoint mode lands in Task 14" and returns 2; Task 14 replaces it with the real client (its tests fail against this body, so it cannot survive).
 
+  The binary inherits BOTH halves of the D4 server rules without further code here: the progress-interval validation is `ConfigFromEnv`'s (Task 9 — a set-but-invalid, <= 0, or > 30s `PLATFORM_MCP_PROGRESS_INTERVAL` errors, so `main` exits 2), and the serving `http.Server` is `Server.ListenAndServe`'s (Task 10 — `WriteTimeout: 0`, `IdleTimeout: 0`, `ReadHeaderTimeout: 5s`; any nonzero WriteTimeout would sever long SSE streams and blocking `/checkpoint` responses).
+
+- [ ] Add the D3 validation smoke to `cmd/platform-mcp/main_test.go` (fails against a binary that ignores or clamps the env):
+
+```go
+// TestServeModeFailsFastOnBadProgressInterval (D3, 2026-07-09 SSE seam delta):
+// a PLATFORM_MCP_PROGRESS_INTERVAL that is invalid, <= 0, or > 30s must be a
+// FATAL startup error — never clamped silently.
+func TestServeModeFailsFastOnBadProgressInterval(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "platform-mcp")
+	build := exec.Command("go", "build", "-o", bin, ".")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("go build: %v: %s", err, out)
+	}
+	for _, bad := range []string{"bogus", "0s", "45s"} {
+		cmd := exec.Command(bin)
+		cmd.Env = append(os.Environ(),
+			"ATC_EXTERNAL_URL=http://127.0.0.1:1",
+			"AGENT_PRINCIPAL_TOKEN=cap1.9.secret",
+			"AGENT_TICKET_ID=42",
+			"PLATFORM_MCP_PROGRESS_INTERVAL="+bad,
+		)
+		if err := cmd.Run(); err == nil {
+			t.Fatalf("PLATFORM_MCP_PROGRESS_INTERVAL=%q: expected non-zero exit", bad)
+		}
+	}
+}
+```
+
 - [ ] Run to verify pass:
 
 ```bash
@@ -3775,14 +4464,18 @@ git commit -m "feat(platform-mcp): sidecar binary serve mode" -m "Co-Authored-By
 
 Checkpoint gates (§3.2, Task 1 addendum) reuse the ask_human primitive. **Render contract (co-signed with dispatch, §11 2026-07-09):** dispatch's renderer materializes a checkpoint declaration as a plain **`atc.TaskStep`** whose main container runs the **deterministic `platform-mcp checkpoint --name <n>` client** — NOT an LLM `AgentStep`. There is no model in the loop: the checkpoint is a container that runs a fixed CLI, POSTs the sidecar, and blocks on its HTTP response. The rendered pipeline (wave 4; wave-3 hand-written pipelines do the same by hand) mounts the platform sidecar into that task; the client POSTs the sidecar's `/checkpoint`, which files a `kind=checkpoint` question (`options: ["approve","reject"]`, always `park`) and blocks until a human resolves it.
 
-**Exit-code semantics (this plan OWNS them) — confirmed explicit:**
+**Exit-code semantics (this plan OWNS them; FROZEN) — confirmed explicit:**
 - **Approve** ⇒ sidecar returns `{"approved": true}` ⇒ client **exits 0** ⇒ TaskStep succeeds ⇒ run continues.
-- **Reject / transport failure after retries** ⇒ sidecar returns `{"approved": false}` (or the client exhausts retries) ⇒ client **exits non-zero** (1) ⇒ TaskStep fails ⇒ run fails ⇒ ticket `needs_review`.
+- **Reject / non-200 / bad response / transport failure after retries / fatal-auth** ⇒ client **exits 1** ⇒ TaskStep fails ⇒ run fails ⇒ dispatch's run-completion reconciler applies the `on_reject` branch (below). The fatal-auth case (sidecar's `AwaitAnswer` hit the consecutive-401/403 limit, D6) additionally carries the frozen stderr line prefix **`principal rejected:`**.
 - **Usage error** (missing `--name` / `PLATFORM_MCP_URL`) ⇒ client **exits 2**.
 
-**`on_reject` mapping (both values live in dispatch's renderer, wave 4; recorded here for the co-signed contract):**
-- `on_reject: fail` (default) ⇒ renderer emits the checkpoint client verbatim ⇒ reject ⇒ client exits non-zero ⇒ step fails ⇒ run fails ⇒ ticket `needs_review`. This is the ONLY path this plan implements.
-- `on_reject: send_back` ⇒ the renderer wraps/branches on the client's non-zero exit to route the run back to an earlier step and signal the sent-back outcome (renderer-owned; out of scope here). At the **step** level both values fail the step on reject; the difference is purely what dispatch renders around it.
+**`on_reject` mapping (CORRECTED per the 2026-07-09 checkpoint-seam delta/F14 — the branch lives in dispatch's run-completion RECONCILER, plan 11 Task 11b, NOT the renderer):**
+- The renderer emits the IDENTICAL bare failing `atc.TaskStep` for BOTH `on_reject` values — never wrapped in try/on_failure/ensure modifiers. Reject ⇒ client exits 1 ⇒ step fails ⇒ run fails.
+- After the run completes failed, dispatch's run-completion reconciler (plan 11 Task 11b) reads the run's latest answered `kind='checkpoint'` row (via this plan's `ListByRun`, Task 14b), resolves the ticket's frozen workflow config, and branches: `on_reject: fail` (or step not found) ⇒ ticket `needs_review`; `on_reject: send_back` ⇒ ticket re-queued (`running→queued`, attempt_count++, capped by dispatch's MaxAttempts guard). At the **step** level both values fail the step on reject; the difference is purely what the reconciler does with the completed run.
+
+**Sidecar env in checkpoint pods (delta §2/§3, informative here — dispatch's renderer owns the emitting code):** the platform sidecar's §8.1 env arrives as renderer-emitted literal `SidecarConfig` env rows (`ATC_EXTERNAL_URL`, `AGENT_TICKET_ID`, `AGENT_PIPELINE_RUN_ID=((run_id))`, `AGENT_STEP_NAME=checkpoint-<name>`) plus `AGENT_PRINCIPAL_TOKEN` as a `secretKeyRef` ValueFrom entry (`agent-run-((run_id))`/`principal-token`), gated by the web flag `--kubernetes-sidecar-secret-prefixes`. The checkpoint CLIENT gets NO token — it authenticates to nothing (pod-local loopback is the auth boundary) and reads only `PLATFORM_MCP_URL`. Checkpoint question rows carry `build_id=0` in v1; `pipeline_run_id` + `step_name` are the join keys.
+
+**Checkpoint SSE exemption (D4, 2026-07-09 SSE seam delta):** the checkpoint gate is NOT an MCP `tools/call` — it is a deterministic CLI blocking on the sidecar's internal `POST /checkpoint`, with no claude CLI in the loop, so the 60s abandonment (F13) cannot occur and the SSE mandate does not apply to it. It is instead bound by: (a) the D4 server-timeout rule (`WriteTimeout: 0` / `IdleTimeout: 0` on the serving mux — Task 10's `ListenAndServe`), (b) the client's `http.Client` having NO global timeout, and (c) the full F31 park hardening — the sidecar awaits via the same `ATCClient.AwaitAnswer`, so a dead principal becomes a loud `principal rejected:` failure (exit 1), not an eternal park.
 
 - [ ] Write the failing test `agent/platformmcp/checkpoint_test.go`:
 
@@ -3964,6 +4657,7 @@ package platformmcp
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 
@@ -4039,6 +4733,13 @@ func (s *Server) handleCheckpoint(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		// Transport error awaiting the answer: leave the reservation in place
 		// so a client retry re-awaits the same open row rather than re-filing.
+		// A consecutive-401/403 fatal (D6/F31 leg 3) is surfaced with the
+		// frozen "principal rejected:" prefix so the checkpoint client can
+		// echo it verbatim to stderr before exiting 1.
+		if errors.Is(err, ErrPrincipalRejected) {
+			http.Error(w, fmt.Sprintf("principal rejected: awaiting checkpoint: %s", err), http.StatusBadGateway)
+			return
+		}
 		http.Error(w, fmt.Sprintf("awaiting checkpoint: %s", err), http.StatusBadGateway)
 		return
 	}
@@ -4136,7 +4837,31 @@ func TestCheckpointClientRequiresName(t *testing.T) {
 		t.Fatalf("expected exit 2 without --name, got %v", exitErr)
 	}
 }
+
+// TestCheckpointClientPrincipalRejected (D6/F31 leg 3): when the sidecar's
+// AwaitAnswer hits the consecutive-401/403 limit it answers 502 with a
+// "principal rejected:"-prefixed body; the client must exit 1 (frozen code)
+// and echo that prefix on stderr — a loud failure, never a silent hang.
+func TestCheckpointClientPrincipalRejected(t *testing.T) {
+	sidecar := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "principal rejected: awaiting checkpoint: question 7: 12 consecutive 401/403 responses: agent principal rejected: consecutive auth failures exceeded limit", http.StatusBadGateway)
+	}))
+	defer sidecar.Close()
+
+	cmd := exec.Command(buildBinary(t), "checkpoint", "--name", "plan-approval")
+	cmd.Env = append(os.Environ(), "PLATFORM_MCP_URL="+sidecar.URL+"/mcp")
+	out, err := cmd.CombinedOutput()
+	exitErr, ok := err.(*exec.ExitError)
+	if !ok || exitErr.ExitCode() != 1 {
+		t.Fatalf("expected exit 1 on fatal-auth, got %v (out=%s)", err, out)
+	}
+	if !strings.Contains(string(out), "principal rejected:") {
+		t.Fatalf("expected 'principal rejected:' on stderr, got %s", out)
+	}
+}
 ```
+
+  (add `"strings"` to `cmd/platform-mcp/checkpoint_test.go`'s imports).
 
 - [ ] Run to verify it fails (`runCheckpoint` is still the Task 13 stub returning 2):
 
@@ -4154,6 +4879,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"strings"
@@ -4161,9 +4887,15 @@ import (
 )
 
 // runCheckpoint is checkpoint-client mode: POST the sidecar's /checkpoint and
-// block until approved/rejected. Exit 0 = approved, 1 = rejected or transport
-// failure after retries, 2 = usage error. Transport errors before a response
-// are retried (the sidecar may still be starting; §8.5 readiness ordering).
+// block until approved/rejected. Exit codes FROZEN (checkpoint-seam + SSE seam
+// deltas, 2026-07-09): 0 = approved; 1 = rejected OR non-200 OR bad response
+// OR retries exhausted (a sidecar fatal-auth arrives as a 502 whose body
+// carries the frozen "principal rejected:" prefix — echoed verbatim to
+// stderr); 2 = usage error. Transport errors before a response are retried
+// 60 x 5s (the sidecar may still be starting; §8.5 readiness ordering).
+// The http.Client MUST have no global timeout (D4): this call blocks for the
+// entire park — checkpoints are exempt from the SSE mandate (no claude CLI in
+// the loop) but not from the no-timeout rules.
 func runCheckpoint(args []string) int {
 	fs := flag.NewFlagSet("checkpoint", flag.ContinueOnError)
 	name := fs.String("name", "", "checkpoint name from the workflow definition (required)")
@@ -4198,7 +4930,10 @@ func runCheckpoint(args []string) int {
 		}
 		defer resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
-			fmt.Fprintf(os.Stderr, "checkpoint: sidecar returned %d\n", resp.StatusCode)
+			// Echo the sidecar's error body verbatim — the fatal-auth path's
+			// "principal rejected:" prefix must reach the step log (D6).
+			msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+			fmt.Fprintf(os.Stderr, "checkpoint: sidecar returned %d: %s\n", resp.StatusCode, bytes.TrimSpace(msg))
 			return 1
 		}
 		var out struct {
@@ -4233,6 +4968,211 @@ go test ./agent/platformmcp/ ./cmd/platform-mcp/
 ```bash
 git add agent/platformmcp/ cmd/platform-mcp/
 git commit -m "feat(platform-mcp): checkpoint-gate endpoint + client mode on the park/resume primitive" -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+```
+
+---
+
+### Task 14b: `ListByRun` store surface + checkpoint answer validation (checkpoint-seam delta, 2026-07-09 — co-signed with dispatch)
+
+**Files:**
+- Modify: `agent/api/questions/types.go` (Store interface), `agent/api/questions/memory_store.go`, `agent/api/questions/handler.go`
+- Modify: `atc/db/agent_questions_factory.go` (+ regenerate `atc/db/dbfakes/fake_agent_questions_factory.go`)
+- Test: `agent/api/questions/handler_test.go` (extend), `agent/api/questions/store_test.go` (extend), `atc/db/agent_questions_factory_test.go` (extend)
+
+Two additive surfaces frozen by the checkpoint-seam delta:
+1. **`ListByRun(pipelineRunID int) ([]Question, error)`** — consumed by dispatch's run-completion reconciler (plan 11 Task 11b) through its narrow `dispatch.QuestionLister` interface (`ListByRun` + the already-existing `Answer`). The reconciler reads the run's latest answered checkpoint row to branch `on_reject`, and releases orphaned unanswered rows.
+2. **Checkpoint answer validation (delta §4)** — the ATC answer route rejects any answer not in the row's options when `kind='checkpoint'`, so the stored answer is EXACTLY `'approve'` or `'reject'`. (There is NO `approved` column; the reconciler's normative predicate is `answer <> 'approve'`.) Empty answers — legal for ordinary questions as the fail-policy resolution — are rejected on checkpoint rows at the ROUTE level; the reconciler's own orphan release (`Answer(id, "", "dispatcher")`) goes through the Store directly, not this route.
+
+- [ ] Write the failing tests. Append to `agent/api/questions/store_test.go`:
+
+```go
+func TestListByRun(t *testing.T) {
+	store := questions.NewMemoryStore()
+	run7, run8 := 7, 8
+	ask := func(runID *int, text string) int {
+		id, err := store.Ask(&questions.Question{
+			TicketID: 42, PipelineRunID: runID, Question: text,
+		})
+		if err != nil {
+			t.Fatalf("Ask(%s): %v", text, err)
+		}
+		return id
+	}
+	first := ask(&run7, "first for run 7")
+	second := ask(&run7, "second for run 7")
+	ask(&run8, "for run 8")
+	ask(nil, "no run")
+
+	byRun, err := store.ListByRun(7)
+	if err != nil {
+		t.Fatalf("ListByRun: %v", err)
+	}
+	if len(byRun) != 2 {
+		t.Fatalf("expected 2 questions for run 7, got %d: %+v", len(byRun), byRun)
+	}
+	// Newest-asked first (asked_at DESC, id DESC) — the reconciler reads
+	// the LATEST checkpoint row, so ordering is part of the contract.
+	if byRun[0].ID != second || byRun[1].ID != first {
+		t.Fatalf("expected newest-first [%d %d], got [%d %d]", second, first, byRun[0].ID, byRun[1].ID)
+	}
+}
+```
+
+  Append to `agent/api/questions/handler_test.go`:
+
+```go
+// TestAnswerCheckpointRejectsNonOptionAnswer (checkpoint-seam delta §4): for
+// kind=checkpoint rows the route-stored answer must be exactly one of the
+// row's options — including rejecting the empty answer — so dispatch's
+// reconciler can treat answer <> 'approve' as an explicit human rejection.
+func TestAnswerCheckpointRejectsNonOptionAnswer(t *testing.T) {
+	store := questions.NewMemoryStore()
+	h := questions.NewHandler(store)
+	runID := 7
+	id, err := store.Ask(&questions.Question{
+		TicketID: 42, PipelineRunID: &runID, Kind: questions.KindCheckpoint,
+		Question: "Approve checkpoint?", Options: []string{"approve", "reject"},
+		TimeoutPolicy: questions.TimeoutPark,
+	})
+	if err != nil {
+		t.Fatalf("Ask: %v", err)
+	}
+
+	put := func(answer string) int {
+		body := fmt.Sprintf(`{"answer":%q,"answered_by":"tdm"}`, answer)
+		r := httptest.NewRequest(http.MethodPut, "/answer", strings.NewReader(body))
+		r.ParseForm()
+		r.Form.Set(":ticket_id", "42")
+		r.Form.Set(":question_id", fmt.Sprint(id))
+		w := httptest.NewRecorder()
+		h.AnswerQuestion(w, r)
+		return w.Code
+	}
+
+	if code := put("maybe"); code != http.StatusBadRequest {
+		t.Fatalf("non-option answer on a checkpoint: expected 400, got %d", code)
+	}
+	if code := put(""); code != http.StatusBadRequest {
+		t.Fatalf("empty answer on a checkpoint: expected 400 (route level), got %d", code)
+	}
+	if code := put("reject"); code != http.StatusOK {
+		t.Fatalf("valid reject: expected 200, got %d", code)
+	}
+}
+```
+
+- [ ] Run to verify failure (`store.ListByRun` undefined; the empty-answer case returns 200 against the pre-delta handler):
+
+```bash
+go test ./agent/api/questions/
+```
+
+- [ ] Add `ListByRun` to the Store interface in `agent/api/questions/types.go` (after `ListForTicket`):
+
+```go
+	// ListByRun returns every question filed under the pipeline run,
+	// newest-asked first — consumed by dispatch's run-completion reconciler
+	// (plan 11 Task 11b) via its narrow QuestionLister interface.
+	ListByRun(pipelineRunID int) ([]Question, error)
+```
+
+- [ ] Implement it in `agent/api/questions/memory_store.go` (add `"sort"` to the imports):
+
+```go
+func (m *MemoryStore) ListByRun(pipelineRunID int) ([]Question, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []Question
+	for _, row := range m.rows {
+		if row.PipelineRunID != nil && *row.PipelineRunID == pipelineRunID {
+			out = append(out, *row)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].AskedAt != out[j].AskedAt {
+			return out[i].AskedAt > out[j].AskedAt
+		}
+		return out[i].ID > out[j].ID
+	})
+	return out, nil
+}
+```
+
+- [ ] Add the checkpoint validation to `AnswerQuestion` in `agent/api/questions/handler.go`, directly after the existing options check:
+
+```go
+	// Checkpoint rows are stricter (checkpoint-seam delta §4): the stored
+	// answer must be EXACTLY one of the row's options ('approve'/'reject') —
+	// the empty answer is rejected too, so answer <> 'approve' always means
+	// an explicit human rejection to dispatch's reconciler.
+	if q.Kind == KindCheckpoint && !contains(q.Options, req.Answer) {
+		http.Error(w, "checkpoint answer must be one of the question's options", http.StatusBadRequest)
+		return
+	}
+```
+
+- [ ] Run to verify pass, then extend the SQL side. Append to the `atc/db/agent_questions_factory_test.go` Describe block:
+
+```go
+	It("lists questions by pipeline run, newest first, for the dispatch reconciler", func() {
+		runID := 512
+		firstID, err := factory.Ask(&questions.Question{
+			TicketID: 9004, PipelineRunID: &runID, Kind: questions.KindCheckpoint,
+			Question: "Approve checkpoint \"plan-approval\"?", Options: []string{"approve", "reject"},
+			TimeoutPolicy: questions.TimeoutPark,
+		})
+		Expect(err).ToNot(HaveOccurred())
+		secondID, err := factory.Ask(&questions.Question{
+			TicketID: 9004, PipelineRunID: &runID, Question: "unrelated question on the same run",
+		})
+		Expect(err).ToNot(HaveOccurred())
+		otherRun := 513
+		_, err = factory.Ask(&questions.Question{
+			TicketID: 9004, PipelineRunID: &otherRun, Question: "different run",
+		})
+		Expect(err).ToNot(HaveOccurred())
+
+		byRun, err := factory.ListByRun(512)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(byRun).To(HaveLen(2))
+		Expect(byRun[0].ID).To(Equal(secondID))
+		Expect(byRun[1].ID).To(Equal(firstID))
+	})
+```
+
+- [ ] Implement `ListByRun` in `atc/db/agent_questions_factory.go` (next to `ListForTicket`) and regenerate the fake:
+
+```go
+func (f *agentQuestionsFactory) ListByRun(pipelineRunID int) ([]questions.Question, error) {
+	rows, err := f.conn.Query(
+		`SELECT `+questionColumns+` FROM agent_run_questions q
+		 WHERE q.pipeline_run_id = $1
+		 ORDER BY q.asked_at DESC, q.id DESC`,
+		pipelineRunID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanQuestionRows(rows)
+}
+```
+
+```bash
+go generate ./atc/db/
+```
+
+- [ ] Run to verify pass:
+
+```bash
+go test ./agent/api/questions/ && ginkgo ./atc/db/
+```
+
+- [ ] Commit:
+
+```bash
+git add agent/api/questions/ atc/db/agent_questions_factory.go atc/db/agent_questions_factory_test.go atc/db/dbfakes/fake_agent_questions_factory.go
+git commit -m "feat(agent): ListByRun store surface + strict checkpoint answer validation for the dispatch reconciler" -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ```
 
 ---
@@ -4282,6 +5222,36 @@ func TestPlatformMCPContract(t *testing.T) {
 	defer endpoint.Close()
 
 	contracttest.Run(t, endpoint.URL)
+}
+
+// TestPlatformMCPSSEHeartbeats (D4/D7, 2026-07-09 SSE seam delta): a server
+// with a fast heartbeat and a slow-answering stub must stream >= 2
+// notifications/progress frames (spaced < 30s) before the final result frame
+// on a parked ask_human. This is the contract-kit twin of gateway 10 Task 7's
+// 40s-fake-adapter test; the REAL claude-CLI cadence is pinned by Task 18b.
+func TestPlatformMCPSSEHeartbeats(t *testing.T) {
+	stub := contracttest.NewStubATC(t, 42)
+	stub.AutoAnswer("yes", "contract-bot", 500*time.Millisecond)
+
+	srv, err := platformmcp.NewServer(platformmcp.Config{
+		ATCURL:           stub.URL(),
+		PrincipalToken:   contracttest.StubToken,
+		TicketID:         42,
+		BuildID:          1,
+		StepName:         "contract",
+		TimeoutPolicy:    "park",
+		ListenAddr:       ":0",
+		ProgressInterval: 100 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.TunePolling(50*time.Millisecond, 20*time.Millisecond)
+
+	endpoint := httptest.NewServer(srv.Mux())
+	defer endpoint.Close()
+
+	contracttest.RunSSEHeartbeats(t, endpoint.URL)
 }
 ```
 
@@ -4564,7 +5534,77 @@ func Run(t *testing.T, endpointURL string) {
 		t.Fatalf("ask_human did not resume with a real answer: %+v (waited %s)", answer, time.Since(start))
 	}
 }
+
+// RunSSEHeartbeats validates the D4 MUST-stream contract on ask_human
+// (2026-07-09 SSE seam delta): a progress-opted tools/call that parks longer
+// than the heartbeat interval must yield >= 2 notifications/progress frames
+// spaced < 30s apart BEFORE the final result frame, with the progressToken
+// echoed verbatim. The endpoint must be configured with a sub-second
+// ProgressInterval and an AutoAnswer delay of at least ~5x that interval.
+func RunSSEHeartbeats(t *testing.T, endpointURL string) {
+	t.Helper()
+
+	body := `{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"ask_human","arguments":{"question":"sse heartbeat check?"},"_meta":{"progressToken":"hb-1"}}}`
+	req, err := http.NewRequest(http.MethodPost, endpointURL+"/mcp", bytes.NewReader([]byte(body)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "text/event-stream")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("ask_human SSE: %v", err)
+	}
+	defer resp.Body.Close()
+	if got := resp.Header.Get("Content-Type"); got != "text/event-stream" {
+		t.Fatalf("expected text/event-stream, got %q", got)
+	}
+
+	scanner := bufio.NewScanner(resp.Body)
+	var progressTimes []time.Time
+	var finalSeen bool
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		payload := strings.TrimPrefix(line, "data: ")
+		if strings.Contains(payload, `"notifications/progress"`) {
+			if finalSeen {
+				t.Fatal("progress frame AFTER the final result frame")
+			}
+			if !strings.Contains(payload, `"hb-1"`) {
+				t.Fatalf("progress frame missing the echoed progressToken: %s", payload)
+			}
+			progressTimes = append(progressTimes, time.Now())
+			continue
+		}
+		if strings.Contains(payload, `"id":9`) {
+			finalSeen = true
+			if !strings.Contains(payload, "answer") {
+				t.Fatalf("final frame missing the tool result: %s", payload)
+			}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("reading SSE stream: %v", err)
+	}
+	if !finalSeen {
+		t.Fatal("never saw the final JSON-RPC response frame (it must be the LAST SSE frame)")
+	}
+	if len(progressTimes) < 2 {
+		t.Fatalf("expected >= 2 progress heartbeats before the answer, got %d", len(progressTimes))
+	}
+	for i := 1; i < len(progressTimes); i++ {
+		if gap := progressTimes[i].Sub(progressTimes[i-1]); gap >= 30*time.Second {
+			t.Fatalf("heartbeat gap %s >= 30s (contracts §3.1 progress mandate)", gap)
+		}
+	}
+}
 ```
+
+  (add `"bufio"` and `"strings"` to `contracttest.go`'s imports).
 
 - [ ] Run to verify pass:
 
@@ -4587,11 +5627,17 @@ git commit -m "feat(platform-mcp): contract-test kit + stub ATC" -m "Co-Authored
 - Create: `deploy/Dockerfile.platform-mcp`
 - Modify: the cicd pipeline config where dev-mcp's image job landed (survey Task 1 recorded the location; dev-mcp's job is the copyable template)
 
-- [ ] Write `deploy/Dockerfile.platform-mcp` (per §8.5: static Go binary, serves on `MCP_LISTEN_ADDR`, `GET /healthz`, non-root; precedent: `deploy/Dockerfile.ci-agent`):
+**Image rule (F28, 2026-07-09 checkpoint-seam delta §8 — the final stage is FROZEN):** the platform-mcp image is BOTH the platform sidecar image AND the checkpoint TASK MAIN image, so it must satisfy jetbridge's task-main constraint: POSIX `sh` plus `tail`, `mv`, `cat`, `sleep`, `mkdir`, `kill` (the pause command at `atc/worker/jetbridge/container.go:363` is `sh -c "trap 'exit 0' TERM; sleep 86400 & wait"`, and task steps run under the sh-based supervisor, `supervisor.go:35-77`). A distroless base has NO `sh` — the checkpoint pod never even reaches Running. Hence alpine, NOT distroless. The general constraint is recorded as a new §8.5 note in `00-shared-contracts.md`: **"any image used as a jetbridge task MAIN image needs POSIX sh + tail/mv/cat/sleep/mkdir/kill; distroless bases are sidecar-only"** — `mcp-dev-concourse` and `mcp-gateway` remain sidecar-only and MAY stay distroless. Sidecar use runs the ENTRYPOINT (MCP server mode); checkpoint task use ignores the ENTRYPOINT (explicit `run.path: platform-mcp`, resolved on PATH, executed under the sh supervisor).
+
+- [ ] Write `deploy/Dockerfile.platform-mcp` (per §8.5: static Go binary, serves on `MCP_LISTEN_ADDR`, `GET /healthz`, non-root; builder stage per `deploy/Dockerfile.ci-agent`; final stage frozen per delta §8):
 
 ```dockerfile
 # platform-mcp sidecar image (shared contracts §8.5)
 # ghcr.io/tdmtrader/mcp-platform:<release-tag>
+#
+# ALSO the checkpoint TASK MAIN image (checkpoint-seam delta §8/F28): the
+# final stage must keep POSIX sh + tail/mv/cat/sleep/mkdir/kill for
+# jetbridge's pause command and sh-based task supervisor. Never distroless.
 FROM golang:1.25-bookworm AS builder
 
 WORKDIR /src
@@ -4599,15 +5645,18 @@ COPY . .
 # agent/schema is a nested module resolved via the root go.mod replace.
 RUN CGO_ENABLED=0 go build -o /platform-mcp ./cmd/platform-mcp
 
-FROM gcr.io/distroless/static-debian12:nonroot
-
-COPY --from=builder /platform-mcp /platform-mcp
+FROM alpine:3.21
+RUN adduser -D -u 65532 nonroot
+COPY --from=builder /platform-mcp /usr/local/bin/platform-mcp
+# build-time smoke check: task-main-image contract (F28)
+RUN command -v sh && for c in tail mv cat sleep mkdir kill; do command -v "$c" >/dev/null || exit 1; done
+USER nonroot
 ENV MCP_LISTEN_ADDR=:7781
 EXPOSE 7781
-ENTRYPOINT ["/platform-mcp"]
+ENTRYPOINT ["/usr/local/bin/platform-mcp"]
 ```
 
-- [ ] Verify the image builds and serves (requires Docker; on this machine Colima is usually down — if `docker info` fails, run this step on theborg CI only and verify the local binary path instead with `go build ./cmd/platform-mcp/`):
+- [ ] Verify the image builds and serves, and that the task-main-image contract holds at run time too (requires Docker; on this machine Colima is usually down — if `docker info` fails, run this step on theborg CI only and verify the local binary path instead with `go build ./cmd/platform-mcp/`):
 
 ```bash
 docker build -f deploy/Dockerfile.platform-mcp -t mcp-platform:dev . \
@@ -4618,6 +5667,9 @@ docker build -f deploy/Dockerfile.platform-mcp -t mcp-platform:dev . \
        -p 7781:7781 mcp-platform:dev \
   && sleep 2 && curl -fsS http://127.0.0.1:7781/healthz \
   && docker rm -f mcp-platform-smoke
+# F28 runtime smoke: the checkpoint-task shape — sh supervisor + binary on PATH.
+docker run --rm --entrypoint sh mcp-platform:dev \
+  -c 'command -v platform-mcp && for c in tail mv cat sleep mkdir kill; do command -v "$c" >/dev/null || exit 1; done && echo task-main-contract-ok'
 ```
 
 - [ ] Add the image job to the cicd pipeline, copying dev-mcp's template job verbatim with these substitutions: job name `build-mcp-platform`, dockerfile `deploy/Dockerfile.platform-mcp`, image `ghcr.io/tdmtrader/mcp-platform`, contract-test command `go test ./agent/platformmcp/contracttest/` (the kit's docker-mode wiring follows whatever shape dev-mcp's template established — same task file, different env). Then `fly -t cicd set-pipeline` per the template's own instructions (see Execution notes).
@@ -5084,6 +6136,273 @@ git commit -m "test(jetbridge): live restart-while-parked proof with pause-cost 
 
 ---
 
+### Task 18b: MANDATORY real-CLI >5-minute park pin (D7, 2026-07-09 SSE seam delta — FIRST wave-3 deliverable; gates gateway 10 Task 7 merge)
+
+**Files:**
+- Create: `agent/platformmcp/live_cli_park_test.go` (`//go:build live`, plain Go — NOT Ginkgo)
+
+This is the empirical pin that the F13 failure mode cannot regress: the REAL `claude` CLI (>= 2.1.77) is driven through an `ask_human` that parks **longer than 5 minutes**, against the real platform-mcp sidecar on the Task 9b transport. Without SSE heartbeats the CLI abandons the call at exactly 60s, silently, with the model seeing "(completed with no output)" — this test fails loudly on that signature. It is fully hermetic: no theborg, no real Anthropic API — `ANTHROPIC_BASE_URL` points at a local stub that scripts the model into exactly one `ask_human` tools/call and then echoes the tool result; it runs on any host with the claude CLI on PATH (`t.Skip` otherwise) and is pinnable in CI. Gateway does NOT duplicate this pin; 10 Task 7's contract tests cover its side with the 40s-fake-adapter SSE assertion.
+
+- [ ] Write `agent/platformmcp/live_cli_park_test.go`:
+
+```go
+//go:build live
+// +build live
+
+package platformmcp_test
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/concourse/concourse/agent/platformmcp"
+	"github.com/concourse/concourse/agent/platformmcp/contracttest"
+)
+
+// sseRecorder tees the sidecar's responses and timestamps every
+// notifications/progress frame — the CLI consumes the stream, so cadence is
+// observed at the wire, between CLI and sidecar.
+type sseRecorder struct {
+	mu    sync.Mutex
+	times []time.Time
+	next  http.Handler
+}
+
+func (rec *sseRecorder) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	rec.next.ServeHTTP(&recordingWriter{ResponseWriter: w, rec: rec}, r)
+}
+
+type recordingWriter struct {
+	http.ResponseWriter
+	rec *sseRecorder
+}
+
+func (w *recordingWriter) Write(p []byte) (int, error) {
+	if bytes.Contains(p, []byte("notifications/progress")) {
+		w.rec.mu.Lock()
+		w.rec.times = append(w.rec.times, time.Now())
+		w.rec.mu.Unlock()
+	}
+	return w.ResponseWriter.Write(p)
+}
+
+func (w *recordingWriter) Flush() {
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// anthropicStub is the hermetic model: turn 1 (no tool_result in the request)
+// scripts one ask_human tool_use; turn 2 echoes the tool result as text.
+func anthropicStub(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/v1/messages") {
+			http.NotFound(w, r)
+			return
+		}
+		raw, _ := io.ReadAll(r.Body)
+		body := string(raw)
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+
+		if !strings.Contains(body, "tool_result") {
+			writeAnthropicEvents(w,
+				`{"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"stub","content":[],"stop_reason":null,"usage":{"input_tokens":1,"output_tokens":1}}}`,
+				`{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"mcp__platform__ask_human","input":{}}}`,
+				`{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"question\":\"Live park pin: proceed?\"}"}}`,
+				`{"type":"content_block_stop","index":0}`,
+				`{"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null},"usage":{"output_tokens":5}}`,
+				`{"type":"message_stop"}`,
+			)
+			return
+		}
+
+		echoJSON, _ := json.Marshal("TOOL RESULT: " + extractToolResult(body))
+		writeAnthropicEvents(w,
+			`{"type":"message_start","message":{"id":"msg_2","type":"message","role":"assistant","model":"stub","content":[],"stop_reason":null,"usage":{"input_tokens":1,"output_tokens":1}}}`,
+			`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
+			fmt.Sprintf(`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":%s}}`, echoJSON),
+			`{"type":"content_block_stop","index":0}`,
+			`{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":5}}`,
+			`{"type":"message_stop"}`,
+		)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func writeAnthropicEvents(w http.ResponseWriter, events ...string) {
+	f, _ := w.(http.Flusher)
+	for _, data := range events {
+		var probe struct {
+			Type string `json:"type"`
+		}
+		_ = json.Unmarshal([]byte(data), &probe)
+		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", probe.Type, data)
+		if f != nil {
+			f.Flush()
+		}
+	}
+}
+
+func extractToolResult(body string) string {
+	var req struct {
+		Messages []struct {
+			Content json.RawMessage `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal([]byte(body), &req); err != nil {
+		return ""
+	}
+	for i := len(req.Messages) - 1; i >= 0; i-- {
+		var blocks []map[string]any
+		if err := json.Unmarshal(req.Messages[i].Content, &blocks); err != nil {
+			continue
+		}
+		for _, b := range blocks {
+			if b["type"] == "tool_result" {
+				out, _ := json.Marshal(b["content"])
+				return string(out)
+			}
+		}
+	}
+	return ""
+}
+
+// TestLiveCLIParkPin is the mandatory F13 pin (D7): the REAL claude CLI parks
+// on ask_human for > 5 minutes and MUST receive the human answer, with ~15s
+// progress heartbeats observed at the wire throughout the park. Run:
+//
+//	go test -tags live -run '^TestLiveCLIParkPin$' -v -count=1 -timeout 12m \
+//	  ./agent/platformmcp/
+func TestLiveCLIParkPin(t *testing.T) {
+	claudeBin, err := exec.LookPath("claude")
+	if err != nil {
+		t.Skip("claude CLI not on PATH — the F13 pin requires the real CLI (>= 2.1.77)")
+	}
+	if out, verr := exec.Command(claudeBin, "--version").CombinedOutput(); verr == nil {
+		t.Logf("claude CLI: %s (need >= 2.1.77 — the version the F13 experiment pinned)", strings.TrimSpace(string(out)))
+	}
+
+	const parkFor = 5*time.Minute + 30*time.Second // answered at t+5m30s: > 5 minutes parked
+
+	// (1) stub ATC: the real questions handler over a memory store; the
+	// stand-in human answers every open question parkFor after it appears.
+	stub := contracttest.NewStubATC(t, 42)
+	stub.AutoAnswer("push on", "live-pin", parkFor)
+
+	// (2) the REAL platform-mcp sidecar on the upgraded atc/api/mcpserver —
+	// ProgressInterval 0 = the frozen 15s default heartbeat.
+	srv, err := platformmcp.NewServer(platformmcp.Config{
+		ATCURL:         stub.URL(),
+		PrincipalToken: contracttest.StubToken,
+		TicketID:       42,
+		StepName:       "live-cli-park",
+		TimeoutPolicy:  "park",
+		ListenAddr:     ":0",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := &sseRecorder{next: srv.Mux()}
+	sidecar := httptest.NewServer(recorder)
+	defer sidecar.Close()
+
+	// (3) hermetic model + MCP config pointing ONLY at the sidecar.
+	model := anthropicStub(t)
+	mcpConfig := filepath.Join(t.TempDir(), "mcp.json")
+	cfg := fmt.Sprintf(`{"mcpServers":{"platform":{"type":"http","url":"%s/mcp"}}}`, sidecar.URL)
+	if err := os.WriteFile(mcpConfig, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 9*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, claudeBin,
+		"-p", "Call the ask_human tool once, then repeat its answer verbatim.",
+		"--strict-mcp-config", "--mcp-config", mcpConfig,
+		"--output-format", "text",
+	)
+	cmd.Env = append(os.Environ(),
+		"ANTHROPIC_BASE_URL="+model.URL,
+		"ANTHROPIC_API_KEY=live-pin-dummy",
+	)
+	start := time.Now()
+	out, err := cmd.CombinedOutput()
+	elapsed := time.Since(start)
+	transcript := string(out)
+	t.Logf("claude ran %s; transcript:\n%s", elapsed, transcript)
+	if err != nil {
+		t.Fatalf("claude CLI failed: %v", err)
+	}
+
+	// (4) it really parked > 5 minutes. (The AutoAnswer sweep clock starts a
+	// beat before the CLI launches, so compare against the 5-minute floor,
+	// not the full 5m30s.)
+	if elapsed < 5*time.Minute {
+		t.Fatalf("CLI returned after %s — it cannot have parked > 5 minutes", elapsed)
+	}
+	// (5a) the human answer made it back through the > 5-minute park.
+	if !strings.Contains(transcript, "push on") {
+		t.Fatalf("transcript missing the human answer %q", "push on")
+	}
+	// (5b) the F13 failure signature must NOT appear.
+	if strings.Contains(transcript, "(completed with no output)") {
+		t.Fatal("F13 REGRESSION: the CLI silently abandoned the parked tools/call")
+	}
+	// (5c) ~15s heartbeat cadence throughout the park, observed at the wire.
+	recorder.mu.Lock()
+	times := append([]time.Time(nil), recorder.times...)
+	recorder.mu.Unlock()
+	if len(times) < 15 { // 5m30s / 15s ≈ 22 frames; allow scheduling slack
+		t.Fatalf("expected >= 15 progress frames across the park, got %d", len(times))
+	}
+	for i := 1; i < len(times); i++ {
+		if gap := times[i].Sub(times[i-1]); gap >= 30*time.Second {
+			t.Fatalf("heartbeat gap %s >= 30s at frame %d (contracts §3.1)", gap, i)
+		}
+	}
+	t.Logf("park pin: %d progress frames over %s, answer delivered", len(times), elapsed)
+}
+```
+
+- [ ] Compile-check without the CLI (the build tag keeps it out of normal runs):
+
+```bash
+go vet -tags live ./agent/platformmcp/
+```
+
+- [ ] Run it (any host with the claude CLI; NO cluster or theborg needed):
+
+```bash
+go test -tags live -run '^TestLiveCLIParkPin$' -v -count=1 -timeout 12m ./agent/platformmcp/
+```
+
+Expected: PASS in ~6 minutes with `park pin: N progress frames over 5mXXs` in the log. **Sequencing (D9):** this test is the FIRST wave-3 deliverable and its PASS gates the merge of gateway 10 Task 7 — park empirically cannot work without the SSE transport, so nothing downstream builds on an unpinned seam.
+
+- [ ] Commit:
+
+```bash
+git add agent/platformmcp/live_cli_park_test.go
+git commit -m "test(platform-mcp): mandatory real-CLI >5-minute park pin (F13/D7)" -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+```
+
+---
+
 ### Task 19: full verification sweep
 
 **Files:** none new — runs the workstream's whole surface.
@@ -5093,8 +6412,15 @@ git commit -m "test(jetbridge): live restart-while-parked proof with pause-cost 
 ```bash
 go vet ./agent/... ./cmd/platform-mcp/ && \
 go test ./agent/api/questions/ ./agent/notify/ ./agent/platformmcp/... ./cmd/platform-mcp/ && \
+ginkgo ./atc/api/mcpserver/ && \
 ginkgo ./atc/db/migration/ && ginkgo ./atc/db/ && \
 ginkgo ./atc/wrappa/ && ginkgo ./atc/api/ && ginkgo ./atc/atccmd/ && ginkgo ./atc/auditor/
+```
+
+- [ ] The mandatory F13 park pin (Task 18b — required by this sweep on any host with the claude CLI; it `t.Skip`s cleanly elsewhere, but a wave-3 sign-off needs one PASSING run on record):
+
+```bash
+go test -tags live -run '^TestLiveCLIParkPin$' -v -count=1 -timeout 12m ./agent/platformmcp/
 ```
 
 - [ ] Elm side:
@@ -5123,10 +6449,12 @@ git add -A && git commit -m "fix(platform-mcp): verification sweep fixes" -m "Co
 
 ```bash
 go test ./agent/api/questions/ ./agent/notify/ ./agent/platformmcp/... ./cmd/platform-mcp/   # plain Go, no DB
+ginkgo ./atc/api/mcpserver/                 # Task 9b SSE transport (mirrored anti-drift tests)
 ginkgo ./atc/db/migration/ ./atc/db/        # needs PostgreSQL (pg_isready); never --race
 ginkgo ./atc/wrappa/ ./atc/api/ ./atc/auditor/ ./atc/atccmd/
 yarn test && yarn build-elm
 make test-quick                             # final gate
+go test -tags live -run '^TestLiveCLIParkPin$' -v -count=1 -timeout 12m ./agent/platformmcp/  # F13 pin (needs claude CLI; skips without)
 ```
 
 **Live-test requirements (theborg):** `KUBECONFIG=~/.kube/config`, kube-context `theborg` (https://theborg.home:6443), a THROWAWAY namespace via `kubectl create ns` (never `cicd`/`concourse` — live workloads), no pod-security label. Colima/Docker is usually down on this machine, so testcontainers is not an option — theborg is the live target. The Task 18 test cleans up its pod via `cleanupPod` + namespace deletion. The Task 16 docker smoke also needs Docker; when unavailable locally, rely on the theborg CI image job (dev-mcp's template) to build/contract-test/push `ghcr.io/tdmtrader/mcp-platform`, then `fly -t cicd set-pipeline` on concourse.home per the template's instructions.
@@ -5139,12 +6467,15 @@ make test-quick                             # final gate
 - 2026-07-08 (platform-mcp-hitl wave-3; FROZEN DELTA "spec/plan via granular platform-mcp read tools + optional file mount"): replaced the read model. `read_ticket` now returns envelope + spec ONLY (tasks removed); added `list_tasks` (skeleton) and `get_task(ordering)` (detail; unknown ordering → MCP tool error `isError=true`, matching how the shared `atc/api/mcpserver` surfaces handler errors — NOT a JSON-RPC `-32602` object) to Task 10 (registration, handlers via `ATCClient.GetTicket`, tests) and Task 15 (contract kit + stub). `update_task_status` unchanged. Tool count 5 → 7 updated everywhere it is enumerated (Goal, Architecture, scope table, Task 10 header/intro/tests, Task 15 `Run`). No spec/plan bytes are injected by default; the optional `files` mode (workflow field `spec_delivery`) is owned by workflow-store + dispatch (wave 4) and does not change this plan's tasks. Affected workstreams: platform-mcp-hitl, dispatch, workflow-store, ticket-core-consumers. Contract addendum bullet added to the Task 1 §11 block.
 - 2026-07-09 (design-review F1 — checkpoint render contract co-signed with dispatch; owners: platform-mcp-hitl + dispatch): recorded the render contract for the checkpoint mechanism this plan OWNS. Dispatch's renderer (wave 4) materializes a checkpoint declaration as a plain `atc.TaskStep` running the **deterministic `platform-mcp checkpoint --name <n>` client** (Task 14 / `cmd/platform-mcp/checkpoint.go`), NOT an LLM `AgentStep` — there is no model awaiting the checkpoint; a fixed CLI POSTs the sidecar's `POST /checkpoint` and blocks on its HTTP response. Confirmed the plan documents the client's exit-code semantics explicitly (approve → exit 0 → step succeeds; reject or transport-failure-after-retries → exit 1 → step fails → run fails → ticket `needs_review`; usage error → exit 2) and the `on_reject` mapping (`on_reject: fail` = the default this plan implements: client exits non-zero → step fails → run fails → ticket `needs_review`; `on_reject: send_back` = dispatch's renderer branches on the non-zero exit to route the run back and signal the sent-back outcome — renderer-owned, out of scope here; at the step level both values fail the step on reject). Reworded the Task 14 intro to state the render contract and enumerate the exit-code/on_reject mapping. Verified no task text implies the checkpoint is awaited by an LLM prompt (the sidecar `handleCheckpoint` "await" is the deterministic HTTP handler blocking on the answer row). This co-signs the already-frozen contracts §11 F1 bullet (2026-07-09, dispatch + platform-mcp-hitl) and decision 12, which are authoritative for the render contract; no new contracts bullet is added (the decision already exists there).
 - 2026-07-09 (design-review F7 — timeout defense-in-depth; owner: platform-mcp-hitl): added a cross-field check to `ConfigFromEnv` (Task 9, `agent/platformmcp/config.go`) mirroring workflow-store's new validation — a sidecar config with `PLATFORM_MCP_ASK_TIMEOUT_POLICY ∈ {default,fail}` but `PLATFORM_MCP_ASK_TIMEOUT_SECONDS <= 0` now fails loudly at startup (`must be > 0 when ... is %q`) rather than parking indefinitely; `park`+0 stays legal (wait forever). Added `TestConfigFromEnvTimeoutPolicyRequiresPositiveSeconds` to `agent/platformmcp/config_test.go` asserting default/fail+0 error and park+0 succeed. Defense-in-depth: the renderer (wave 4) normally guarantees this, but a hand-set sidecar env must not silently degrade.
+- 2026-07-09 (final review F14 + F28 — checkpoint-seam delta legs owned by platform-mcp-hitl; co-signed dispatch/ticket-core/contracts): **(F14)** the sidecar-POST `/checkpoint` model is now the SINGLE frozen checkpoint mechanism — the Task 1 addendum bullet gained the frozen response codes (200 resolved / 400 bad name / 502 ATC transport error with the reservation kept) and now records that it SUPERSEDES (not merely amends) contracts §3.2's retracted client→ATC wording ("client inserts the row / long-polls the ATC route / reads reject-policy from argv / NOT a sidecar endpoint" — all retracted); corrected "`on_reject: send_back` semantics live in dispatch's renderer" to "live in dispatch's **run-completion reconciler** (plan 11 Task 11b)" in both the addendum bullet and the Task 14 intro (the renderer emits the identical bare failing TaskStep for both values; the reconciler branches on the latest answered checkpoint row after the run completes). Task 14 mechanics (handleCheckpoint + ckOpen dedup + runCheckpoint client, exit 0/1/2, 60x5s retry) are unchanged and now the single frozen model; the Task 14 intro also records the delta §2/§3 sidecar-env seam (renderer-emitted literal env + AGENT_PRINCIPAL_TOKEN secretKeyRef from `agent-run-((run_id))`/`principal-token`, gated by `--kubernetes-sidecar-secret-prefixes`; the CLIENT gets no token). NEW Task 14b adds the delta's two additive surfaces with TDD: `Store.ListByRun(pipelineRunID)` (memory + SQL + fake; newest-first ordering asserted — consumed by the reconciler's `dispatch.QuestionLister`) and answer-route validation for `kind='checkpoint'` rows (answer must be one of the row's options, empty included — tests `TestListByRun`, `TestAnswerCheckpointRejectsNonOptionAnswer`, and a factory It-block). **(F28)** `deploy/Dockerfile.platform-mcp` (Task 16) replaced its distroless final stage with the delta §8 FROZEN `alpine:3.21` stage (nonroot uid 65532, binary at `/usr/local/bin/platform-mcp`, build-time `command -v` smoke for sh/tail/mv/cat/sleep/mkdir/kill, ENTRYPOINT, `MCP_LISTEN_ADDR=:7781`) — the image is BOTH the platform sidecar image and the checkpoint TASK MAIN image, and jetbridge's pause command (`container.go:363`, `sh -c ...`) plus sh-based supervisor (`supervisor.go:35-77`) make a shell mandatory; added the runtime docker smoke for the task-main shape and documented the constraint ("task MAIN images need POSIX sh + tail/mv/cat/sleep/mkdir/kill; distroless is sidecar-only" — normative §8.5 note lives in 00).
+- 2026-07-09 (final review F13 + F31 leg 3 — SSE seam delta D2/D4/D6/D7, platform legs; owner: platform-mcp-hitl): **(D2, new Task 9b — lands BEFORE Task 10 and gates gateway 10 Task 7)** upgraded `atc/api/mcpserver` IN PLACE with a byte-similar MIRRORED port of `ci-agent/devmcp`'s SSE progress path (modules must not require each other): `DefaultHeartbeat = 15s`, `NewServerWithHeartbeat(d)` (d <= 0 → default; `NewServer()` unchanged so ATC callers compile), BREAKING 3-arg `ToolHandler` gaining `progress func(string)` (buffered calls get a no-op; all handler literals updated mechanically via one perl one-liner), `callToolParams` gains `_meta.progressToken`, SSE gating on `Accept: text/event-stream` AND the token, `event: message` frames, coalescing heartbeat ticker (buffered chan 64, non-blocking send, `lastMsg` default `running <tool>`), final JSON-RPC response as the LAST SSE frame; the locked "handler error ⇒ isError=true, never -32602" mapping preserved in BOTH modes; mirrored SSE tests added to `server_test.go` as the anti-drift guard. **(D6, Task 9)** `ATCClient.do` now returns `*StatusError{Method,Path,Code,Body}` for every non-2xx; added `ErrPrincipalRejected` and `AuthFailureLimit` (frozen default 12 ≈ >= 60s at 5s retry, outliving the §1.2 60s verification cache); `AwaitAnswer` counts CONSECUTIVE 401/403 (reset on success or non-auth error) and returns the wrapped fatal at the limit while still retrying transport/5xx forever — the contradicting doc comments were rewritten; three frozen unit tests added (fatal-after-exactly-12-401s, 5xx-never-fatal, alternating-counter-reset); `Config.ProgressInterval` + `PLATFORM_MCP_PROGRESS_INTERVAL` parsing added (unset = 15s default; set-but-invalid/<= 0/> 30s = fatal, never clamped; `TestConfigFromEnvProgressInterval`). **(D4/D6 propagation)** Task 10 constructs via `NewServerWithHeartbeat(cfg.ProgressInterval)` and its `ListenAndServe` sets the frozen server-timeout rule (`WriteTimeout: 0`, `IdleTimeout: 0`, `ReadHeaderTimeout: 5s`); Task 11's `ask_human` is a MUST-stream tool — it calls `progress("parked: waiting for human answer to question <id>")` at park start and surfaces `ErrPrincipalRejected` as a LOUD `principal rejected:`-prefixed tool error (test `TestAskHumanPrincipalRejectedFailsLoudly`); Task 13 gained the binary-level env-validation smoke (`TestServeModeFailsFastOnBadProgressInterval`); Task 14 records the checkpoint SSE EXEMPTION (POST /checkpoint is not an MCP tools/call — no claude CLI in the loop) with its own hardening (no-timeout `http.Client`, D4 mux timeouts, fatal-auth ⇒ exit 1 + `principal rejected:` stderr prefix echoed from the sidecar's 502 body — tests `TestCheckpointClientPrincipalRejected` and the handleCheckpoint `errors.Is` branch); Task 15's kit gained `RunSSEHeartbeats` (>= 2 progress frames spaced < 30s before the final frame on a parked ask_human; self-test `TestPlatformMCPSSEHeartbeats`). **(D7, new Task 18b)** the mandatory real-CLI park pin `agent/platformmcp/live_cli_park_test.go` (`//go:build live`): the REAL `claude` CLI (>= 2.1.77, `--strict-mcp-config`, hermetic `ANTHROPIC_BASE_URL` stub scripting one ask_human then echoing the tool result) parks > 5 minutes (stub ATC answers at t+5m30s); asserts the answer is delivered, "(completed with no output)" never appears, and ~15s heartbeat cadence at the wire (>= 15 frames, every gap < 30s) — declared the FIRST wave-3 deliverable, gating 10 Task 7 merge, and added to Task 19's sweep. Exit codes and `MCP_LISTEN_ADDR`/ports/endpoints unchanged (D8: no image content changes beyond the F28 leg above).
 - 2026-07-08 (consistency fix; owner: platform-mcp-hitl): corrected the `get_task` unknown-ordering error mechanism. The plan claimed an unknown ordering yields a JSON-RPC `-32602` error object, but Task 10's handler returns a plain `fmt.Errorf`, and the shared `atc/api/mcpserver` (already committed) maps every handler error to a `tools/call` result with `isError=true` — it only emits `-32602` for a malformed `tools/call` envelope, never for a handler's returned error (locked in by its committed tests). Reworded the §3.2 read-model addendum bullet (Task 1), the Task 10 intro + `getTask` doc comment, and the Task 10 header amendment (08:78) to state "MCP tool error (`isError=true`)" rather than "JSON-RPC `-32602`". Strengthened the Task 10 and Task 15 unknown-ordering tests to assert the response carries NO top-level JSON-RPC `error` object AND `result.isError=true` (previously they only checked `isErr` truthiness, which passed regardless of mechanism). Matching bullet appended to the contracts §11 amendment log.
 
 **Rollback notes for the risky diffs:**
 - *Route registration (Task 6)* touches four exhaustive switches; a missed entry panics the ATC at wrap time — this fails loudly in `ginkgo ./atc/wrappa/`, not in production. Reverting is a clean `git revert` of the Task 6 commit; nothing else depends on the routes until the sidecar ships.
 - *Migrations (Task 2)*: both have exact down migrations; `agent_run_questions` has no FKs into core tables (plain join keys per the contracts conventions), so down-migrating drops nothing shared.
 - *`atccmd` component wiring (Task 8)* is gated behind `--agent-notify-webhook-url`; with the flag unset the component never registers — deploys are unaffected until opted in.
-- *Sidecar/binary/image (Tasks 9–16)* are net-new packages consumed by nothing in-tree; reverting them cannot break CI pipelines.
+- *`atc/api/mcpserver` SSE upgrade (Task 9b)* is the one NON-net-new diff in the sidecar range: the 3-arg `ToolHandler` is a breaking in-package signature change (all registrations updated mechanically; `atc/api/handler.go` compiles unchanged). Reverting it alone re-breaks Tasks 10–15 and re-opens F13 — revert the whole Task 9b–15 range together or not at all. Buffered behavior is bit-identical for clients that don't opt in, so ATC's own `/api/v1/mcp` consumers are unaffected either way.
+- *Sidecar/binary/image (Tasks 9–16)* are otherwise net-new packages consumed by nothing in-tree; reverting them cannot break CI pipelines.
 - *Elm (Task 17)*: the banner renders `text ""` with no open questions; if the page integration misbehaves, reverting the page-module hunk while keeping the new modules is safe (they are pure).
 - *Known duplicate-row edge*: a checkpoint client re-POSTing after a client-container restart files a second question row unless the sidecar's per-name dedupe (Task 14) holds; if a stray open checkpoint row appears, answer it via the UI — it is join-key-only data, safe to resolve by hand in `agent_run_questions`.

@@ -3215,6 +3215,18 @@ var _ = Describe("AgentIntelQueryer", func() {
 		allTimeVerdicts, err := q.VerdictCounts(intel.Filter{})
 		Expect(err).NotTo(HaveOccurred())
 		Expect(windowedVerdicts["accurate"]).To(BeNumerically("<", allTimeVerdicts["accurate"]))
+
+		// And the until bound (the other applyWindow branch): a window closing
+		// one second AFTER the backdated row must count exactly it — proving
+		// the `< to_timestamp(?)` half-open upper bound binds too. Both bounds
+		// must go through sq.Expr (build_factory getBuildsWithDates idiom);
+		// a Sqlizer inside sq.GtOrEq/sq.Lt errors at exec time under squirrel
+		// v1.5.4, which this spec would surface as a query error here.
+		until := old.Add(time.Second).Unix()
+		untilMerged, err := q.MergedReviewCount(intel.Filter{UntilUnix: until})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(untilMerged).To(Equal(1),
+			"until-window must include only the backdated merged review")
 	})
 })
 ```
@@ -3258,12 +3270,18 @@ func applyWorkflow(b sq.SelectBuilder, alias string, f intel.Filter) sq.SelectBu
 // every analytics metric respects the ?since=&until= route params instead of
 // silently reporting all-time. to_timestamp() converts epoch seconds to the
 // TIMESTAMPTZ the created_at/occurred_at columns store.
+//
+// NOTE: both bounds use sq.Expr — the build_factory.go getBuildsWithDates
+// idiom (`b.start_time >= to_timestamp(?)`). Do NOT write these as
+// sq.GtOrEq{tsColumn: sq.Expr(...)}/sq.Lt{...}: squirrel v1.5.4 map-comparison
+// values unwrap only driver.Valuer, so a Sqlizer value is bound as the expr
+// struct itself and every windowed query errors at exec time.
 func applyWindow(b sq.SelectBuilder, tsColumn string, f intel.Filter) sq.SelectBuilder {
 	if f.SinceUnix > 0 {
-		b = b.Where(sq.GtOrEq{tsColumn: sq.Expr("to_timestamp(?)", f.SinceUnix)})
+		b = b.Where(sq.Expr(tsColumn+" >= to_timestamp(?)", f.SinceUnix))
 	}
 	if f.UntilUnix > 0 {
-		b = b.Where(sq.Lt{tsColumn: sq.Expr("to_timestamp(?)", f.UntilUnix)})
+		b = b.Where(sq.Expr(tsColumn+" < to_timestamp(?)", f.UntilUnix))
 	}
 	return b
 }
@@ -4351,3 +4369,5 @@ Per the charter and scaffolding decision 8, M1 (Tasks 1–11) and M2 (Tasks 12�
 - **2026-07-09 (design-review fixes F9, F10 — no contract-name changes; all names stay identical to 00-shared-contracts.md):**
   - **F9 (analytics window never applied):** the routes advertise `?since=&until=`, `intel.Filter` carries `SinceUnix`/`UntilUnix`, and the handler parses them, but Task 16's Queryer SQL ignored the window (every metric was all-time) and Task 19's retrospective trigger passed an empty `intel.Filter{}` (mined all history) — contradicting the Step-3 prose and the charter's "mine a month". Fix: added an `applyWindow(b, tsColumn, f)` helper mirroring the existing `applyWorkflow`, and called it in every squirrel Queryer method (`FindingsByVersion` on `m.created_at`, `VerdictCounts` on `created_at`, `MergedReviewCount` on `r.created_at`, `DefectLinkCount` on `created_at`) against `created_at`/`occurred_at`; bound `$since/$until` into the three raw-SQL methods (`RecurringCategories`, `LeftwardSeries`, `FrictionAggregates`), following the `GetAgentCostRollup` half-open `[since, until)` precedent (0 = unbounded, `to_timestamp()` for the epoch-seconds→TIMESTAMPTZ conversion). Task 19's trigger now builds a bounded trailing-30-day filter (`SinceUnix: time.Now().Add(-30*24*time.Hour).Unix()`) instead of `intel.Filter{}`. Added a Task-16 Ginkgo spec ("applies the SinceUnix/UntilUnix window to the counts") that backdates a merged review + `defect_link` + `accurate` feedback to 2020 and asserts a since-window excludes them while an all-time filter counts them (new suite helper `seedWindowedIntelRow`; `time` import added to the spec).
   - **F10 (retrospective intel delivery seam):** Task 18 built `RenderIntelMarkdown` as "the read-only intel.md workspace input" and the seed prompt said "Read intel.md in your workspace," but nothing produced an `intel.md` file — Task 19 put the snapshot in `Ticket.Body` (which is NOT the versioned Spec that `read_ticket`/`LatestSpec` returns; in default `spec_delivery: mcp` mode no file is materialized). Fix: (a) amended the seed prompt to "Read the ticket via platform-mcp: call `read_ticket` — its spec is the snapshot … `body_md`"; (b) Task 19's trigger now delivers the snapshot via `tickets.Store.SubmitSpec(ticketID, tickets.Spec{Title, Body: snapshot, SubmittedBy})` (spec version 1) between `Create` and `Transition`, with a lightweight pointer `Ticket.Body`, so `read_ticket` surfaces it (contracts §3.2); (c) corrected Task 18's framing (intro, `context.go` file line, `RenderIntelMarkdown` doc comment) and Step-5's seed description to describe spec-delivery rather than a non-existent `intel.md` workspace file. Updated the Task-19 spec ("files one queued retrospective ticket delivering the intel snapshot as the spec") to assert `SubmitSpecCallCount() == 1` and that the submitted `spec.Body` contains the snapshot, instead of checking `created.Body`. Contract-visible names used verbatim from ticket-core/platform-mcp: `tickets.Store.SubmitSpec`, `tickets.Spec{Title, Body, SubmittedBy}`, `read_ticket`, `submit_spec`, `spec_delivery: mcp`.
+- **2026-07-09 (final-review fix F39 — no contract-name changes; `applyWindow` is a package-private helper):**
+  - **F39 (`applyWindow` bound a Sqlizer as a map value):** the F9 fix wrote `b.Where(sq.GtOrEq{tsColumn: sq.Expr("to_timestamp(?)", f.SinceUnix)})` (and the `sq.Lt` mirror). Squirrel v1.5.4's map comparisons unwrap only `driver.Valuer` values — a Sqlizer value is passed to the driver as the `sq.Expr` struct itself, so every windowed squirrel query (`FindingsByVersion`, `VerdictCounts`, `MergedReviewCount`, `DefectLinkCount`) errored at exec time whenever `SinceUnix`/`UntilUnix` was set. Fix: rewrote both branches of Task 16's `applyWindow` with the repo idiom `b.Where(sq.Expr(tsColumn+" >= to_timestamp(?)", f.SinceUnix))` / `b.Where(sq.Expr(tsColumn+" < to_timestamp(?)", f.UntilUnix))` — the `getBuildsWithDates` precedent in `atc/db/build_factory.go` (`b.start_time >= to_timestamp(?)`) — and added a doc-comment warning against the Sqlizer-in-map form. The three raw-SQL methods (`RecurringCategories`, `LeftwardSeries`, `FrictionAggregates`) already bind `to_timestamp($n)` directly and were unaffected. Extended the Task-16 windowing spec ("applies the SinceUnix/UntilUnix window to the counts") to also assert the `UntilUnix` branch: `MergedReviewCount(intel.Filter{UntilUnix: old.Add(time.Second).Unix()})` must count exactly the backdated row — so both `applyWindow` branches are executed against a real DB and the old Sqlizer-in-map form would fail the spec with an exec-time error, not a silently-wrong count.

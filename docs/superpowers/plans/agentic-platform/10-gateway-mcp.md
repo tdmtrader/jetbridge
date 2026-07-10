@@ -4,7 +4,7 @@
 
 **Goal:** Ship the `mcp-gateway` sidecar exposing `request_review(diff, rubric)` and `ask_agent(prompt, provider, model)` over a provider-adapter layer, meter every cross-agent call into the flight-recorder (`agent/schema` events) and the cost ledger (fire-and-forget `POST /api/v1/agent/costs`), and enforce a budget-slice cutoff via the credentials-and-budgets library that halts with a `budget cutoff:` `failed` signal instead of ever silently truncating.
 
-**Architecture:** A new main-module package `agent/gatewaymcp` (binary `cmd/gateway-mcp`, image `ghcr.io/tdmtrader/mcp-gateway`) is a streamable-HTTP MCP server (`atc/api/mcpserver`, the same protocol layer platform-mcp uses) whose two tools dispatch through an `Adapter` interface. The v1 `claude` adapter runs the bundled `claude` CLI in-sidecar, parses the `--output-format json` envelope for cost/usage (re-implemented locally because ci-agent's `llm` package is a separate, non-importable module), and hard-stops the subprocess when the metered running cost would exceed the remaining slice. Each call emits `subagent.call`/`subagent.result`/`cost.record` events (constants already in `agent/schema` from agent-step) to an NDJSON event log and POSTs a `budget.LedgerEntry` to ATC using the run's `AGENT_PRINCIPAL_TOKEN` — both fire-and-forget so a metering failure never fails the caller.
+**Architecture:** A new main-module package `agent/gatewaymcp` (binary `cmd/gateway-mcp`, image `ghcr.io/tdmtrader/mcp-gateway`) is a streamable-HTTP MCP server (`atc/api/mcpserver`, the same protocol layer platform-mcp uses — SSE-capable after 08 Task 9b's in-place upgrade: `NewServerWithHeartbeat` + the 3-arg `ToolHandler`; `request_review`/`ask_agent` are MUST-stream tools per the 2026-07-09 SSE delta because they routinely exceed the claude CLI's empirical 60s buffered-call abandonment) whose two tools dispatch through an `Adapter` interface. The v1 `claude` adapter runs the bundled `claude` CLI in-sidecar, parses the `--output-format json` envelope for cost/usage (re-implemented locally because ci-agent's `llm` package is a separate, non-importable module), and hard-stops the subprocess when the metered running cost would exceed the remaining slice. Each call emits `subagent.call`/`subagent.result`/`cost.record` events (constants already in `agent/schema` from agent-step) to an NDJSON event log and POSTs a `budget.LedgerEntry` to ATC using the run's `AGENT_PRINCIPAL_TOKEN` — both fire-and-forget so a metering failure never fails the caller.
 
 **Tech Stack:** Go 1.25 (main module + the nested `agent/schema` module via the root `replace`), `atc/api/mcpserver` MCP protocol, `os/exec` for the claude CLI, plain-Go `testing` + `httptest` for `agent/gatewaymcp` and `cmd/gateway-mcp`, counterfeiter fakes, Docker-in-DinD image build on the existing theborg `cicd` pipeline (dev-mcp's `build-mcp-dev-image` job is the copyable template), plain-Go `//go:build live` tests against theborg.
 
@@ -26,6 +26,7 @@
 - **credentials-and-budgets (wave 1):** `agent_cost_ledger` (§1.4); the `agent/budget` package with `budget.Checker` (`StepSlice`, `Record`, `TicketRemaining`), `budget.LedgerEntry`, `budget.Remaining`, `budget.SourceGateway`, and `budgetfakes.FakeChecker` (§2.7); the `POST /api/v1/agent/costs` route (`SubmitAgentCostRecord`) whose body is a JSON `budget.LedgerEntry` (credentials plan Task, `agent/api/costs` handler) — this is the gateway's fire-and-forget metering sink. Per the credentials wave-1 addendum, metering writers set `metadata: {"workflow": "<name>@<version>"}` on ledger rows.
 - **agent-step (wave 2):** `agent/schema` extracted as a nested stdlib-only Go module (`require`+`replace` in the root and ci-agent `go.mod`s); §5 event constants `EventSubagentCall`, `EventSubagentResult`, `EventCostRecord`, `EventBudgetWarn`, `EventBudgetStop` and their payload structs `SubagentCallData`, `SubagentResultData`, `CostRecordData`, `BudgetData` (agent-step Task 4); the merged `schema.Event{Timestamp string; Type EventType; Data json.RawMessage}` + `schema.NewEventWriter`/`EventWriter.Write` (auto-fills a missing timestamp); the proven sidecar wiring/env contract (§8.1 + the agent-step addendum): `GATEWAY_MCP_URL=http://127.0.0.1:7782/mcp`, and the gateway container receives `CLAUDE_CODE_OAUTH_TOKEN`, `AGENT_PRINCIPAL_TOKEN`, `ATC_EXTERNAL_URL`, `AGENT_TICKET_ID`, `AGENT_PIPELINE_RUN_ID`, `BUILD_ID`, `AGENT_BUDGET_SLICE_USD` (agent-step addendum explicitly names gateway as the `AGENT_BUDGET_SLICE_USD` reader).
 - **dev-mcp (wave 1):** the §8.5 sidecar image packaging convention (`deploy/MCP_IMAGES.md`) and the copyable CI job `build-mcp-dev-image` in `deploy/concourse-pipeline.yml`.
+- **platform-mcp-hitl Task 9b (wave-3 sibling; HARD ORDERING DEPENDENCY — added 2026-07-09, SSE delta):** the in-place SSE upgrade of the shared `atc/api/mcpserver` — `const DefaultHeartbeat = 15 * time.Second`, `NewServerWithHeartbeat(d time.Duration)` (d <= 0 → DefaultHeartbeat), the BREAKING 3-arg `ToolHandler func(ctx context.Context, args json.RawMessage, progress func(string)) (any, error)`, and the SSE tools/call path (gated on `Accept: text/event-stream` + `params._meta.progressToken`; coalescing-ticker `notifications/progress` heartbeat frames; the final JSON-RPC response as the LAST SSE frame; a byte-similar mirrored port of `ci-agent/devmcp`'s proven implementation) — MUST land before this plan's Task 7. The gateway acquires SSE purely by consuming that upgrade: NO gateway-local transport code. 08 Task 18b (the real-CLI >5-minute park pin test) gates this plan's Task 7 merge; the gateway does not duplicate the CLI pin.
 
 **Contract surfaces this plan PRODUCES** (`00-shared-contracts.md`):
 - **§3.3 agent-gateway-mcp** — `request_review`/`ask_agent` tool schemas, the `GatewayUsage` result embed, the `Adapter` interface (`agent/gateway/adapter.go` per the contract; this plan places it in `agent/gatewaymcp/adapter.go` — see the Task 1 addendum and `contract_deviations`), and the cutoff contract.
@@ -37,11 +38,11 @@
 - §1.4 `agent_cost_ledger` + §2.7 budget library (`budget.Checker`, `budget.LedgerEntry`, `budget.SourceGateway`) + the `POST /api/v1/agent/costs` route.
 - §1.13 / §8.2 platform-credential policy (the run credential the gateway sends provider calls with is `CLAUDE_CODE_OAUTH_TOKEN`, sourced by dispatch from the per-run or platform credential secret — the gateway reads whatever env it is given, never resolves credentials itself).
 - §5 flight-recorder event schema (`agent/schema` constants + payloads).
-- §8.1 env-var contract (fixed port 7782, `GATEWAY_MCP_URL`, `MCP_LISTEN_ADDR` override, `AGENT_BUDGET_SLICE_USD`).
+- §8.1 env-var contract (fixed port 7782, `GATEWAY_MCP_URL`, `MCP_LISTEN_ADDR` override, `AGENT_BUDGET_SLICE_USD`, and — per the 2026-07-09 SSE delta — `GATEWAY_MCP_PROGRESS_INTERVAL`, whose normative definition lives in the amended §8.1).
 - §8.5 sidecar image packaging convention + the dev-mcp CI job template.
 
 **Verified code seams (line anchors current on branch `jetbridge` HEAD `fb1c54fac2`; waves 1–2 will have extended shared files — anchor to named neighbors, not raw numbers):**
-- `atc/api/mcpserver/server.go:24` `NewServer()`, `:31` `AddTool(name, description, schema, handler)`, `:42` `ServeHTTP` (Streamable HTTP, buffered JSON — no SSE/progress), `:179` `MustJSON`. The gateway reuses this verbatim (main-module package, unlike ci-agent's dev-mcp server).
+- `atc/api/mcpserver/server.go:24` `NewServer()`, `:31` `AddTool(name, description, schema, handler)`, `:42` `ServeHTTP`, `:179` `MustJSON`. *(Corrected 2026-07-09, SSE delta: this line previously read "Streamable HTTP, buffered JSON — no SSE/progress" — stale after 08 Task 9b upgrades the shared server in place: `NewServerWithHeartbeat(d)` beside the unchanged `NewServer()`, `DefaultHeartbeat = 15s`, the 3-arg `ToolHandler` carrying `progress func(string)`, and an SSE tools/call path gated on `Accept: text/event-stream` + `params._meta.progressToken` with the final JSON-RPC response as the last SSE frame. Buffered JSON remains the behavior when the client doesn't opt in.)* The gateway reuses this verbatim (main-module package, unlike ci-agent's dev-mcp server).
 - `ci-agent/llm/result.go:40-83` `cliEnvelope` + `ParseCLIEnvelope` (the claude `--output-format json` envelope: `cost_usd`, `usage.{input_tokens,output_tokens,cache_read_input_tokens,cache_creation_input_tokens}`, `num_turns`, `model`, `duration_ms`, `result`) — the reference the gateway's local parser mirrors; NOT importable (ci-agent is module `github.com/concourse/ci-agent` with no main-module dep).
 - `ci-agent/llm/client.go:38-60` `ClaudeClient.Call` (argv `-p <prompt> --output-format json [--model m]`, `cmd.Dir`, stdout/stderr capture, `ctx.Err()` timeout handling) — the reference for the claude adapter's subprocess call.
 - `ci-agent/adapter/adapter.go:19-29` `rawFinding` (title/description/file/line/severity_hint/category) — the shape a review prompt asks the model to emit; the gateway maps it to §3.3 `findings`.
@@ -55,7 +56,7 @@
 
 ### Task 1: Wave-start contract addendum (gateway ↔ platform-mcp packaging + metering agreements)
 
-Three things need cross-workstream agreement recorded in §11 BEFORE code lands: (a) the gateway's packaging instantiation and the fact that gateway + platform-mcp both extend the same cicd pipeline (wave-3 parallel branches — the CI-job additions must merge additively, exactly like the `fly agent` struct agreement in the credentials addendum); (b) the gateway's event-log path env var (platform-mcp added `PLATFORM_MCP_EVENTS_PATH`; the gateway needs the analogous `GATEWAY_MCP_EVENTS_PATH`); (c) the `Adapter` interface package path (contracts §3.3 says `agent/gateway/adapter.go`; this plan uses one package `agent/gatewaymcp`, matching platform-mcp's single-package layout).
+Three things need cross-workstream agreement recorded in §11 BEFORE code lands: (a) the gateway's packaging instantiation and the fact that gateway + platform-mcp both extend the same cicd pipeline (wave-3 parallel branches — the CI-job additions must merge additively, exactly like the `fly agent` struct agreement in the credentials addendum); (b) the gateway's event-log path env var (platform-mcp added `PLATFORM_MCP_EVENTS_PATH`; the gateway needs the analogous `GATEWAY_MCP_EVENTS_PATH`); (c) the `Adapter` interface package path (contracts §3.3 says `agent/gateway/adapter.go`; this plan uses one package `agent/gatewaymcp`, matching platform-mcp's single-package layout). A fourth item was added 2026-07-09 by the frozen SSE delta: (d) the HARD wave-3 ordering dependency on 08 Task 9b (the in-place SSE upgrade of `atc/api/mcpserver`) — the gateway acquires its SSE progress-heartbeat transport entirely by consuming that upgrade, with no gateway-local transport code, and 08 Task 18b (real-CLI >5-min park pin) gates this plan's Task 7 merge.
 
 **Files:**
 - Modify: `docs/superpowers/plans/agentic-platform/00-shared-contracts.md` (append to `## 11. Amendment log`, currently ends after the platform-mcp-hitl entry)
@@ -86,6 +87,7 @@ grep -rn "PLATFORM_MCP_EVENTS_PATH" docs/superpowers/plans/agentic-platform/00-s
   - **Metering sink = the cost-record route, not direct DB:** the gateway is a sidecar with no DB access; it meters by POSTing a `budget.LedgerEntry` JSON body (§2.7) to `POST /api/v1/agent/costs` (`SubmitAgentCostRecord`) with `Authorization: Bearer <AGENT_PRINCIPAL_TOKEN>` (scope `costs:write`), `Source: budget.SourceGateway` ("gateway"), `Metadata: {"workflow": "<name>@<version>"}` when workflow env tags are present (per the credentials wave-1 addendum). This write is FIRE-AND-FORGET: a non-2xx or transport error is logged to the event log and never fails the tool call (matches §1.4 "ledger writes never fail a build").
   - **Cutoff budget source:** the gateway enforces the cutoff against the per-STEP slice from env `AGENT_BUDGET_SLICE_USD` (§8.1), NOT by calling `budget.Checker` (the sidecar cannot reach the DB). The slice is the remaining headroom the agent step already resolved via `budget.Checker.StepSlice` at step start (agent-step exec). The gateway tracks its own cumulative spend across all calls in one sidecar lifetime and cuts a call off when `cumulative_before_call + running_call_cost >= slice`. `AGENT_BUDGET_SLICE_USD` unset or `0` = uncapped (the "0 = uncapped" convention, §2.8/§2.7 `Remaining`). This closes the "cutoff must not double-count" concern in the charter: dispatch admission and the agent-step slice are the DB-backed accounting; the gateway only enforces the already-sliced ceiling and reports spend back to the same ledger.
   - **gateway packaging (§8.5 instantiation):** source `agent/gatewaymcp` (main module), binary `cmd/gateway-mcp`, image `ghcr.io/tdmtrader/mcp-gateway` from `deploy/Dockerfile.mcp-gateway`; the image bundles the `claude` CLI (pinned). CI job `build-mcp-gateway` copies dev-mcp's `build-mcp-dev-image` template. gateway-mcp and platform-mcp are parallel wave-3 branches BOTH appending a job to `deploy/concourse-pipeline.yml`; the additions are non-overlapping (different job names, no shared `serial_groups`) and MUST merge additively — neither edits the other's job.
+  - **SSE transport + wave-3 ordering (added 2026-07-09, frozen SSE delta):** the gateway acquires the SSE progress-heartbeat transport by consuming the upgraded shared `atc/api/mcpserver` (08 Task 9b: `NewServerWithHeartbeat`, 3-arg `ToolHandler` with `progress func(string)`, `DefaultHeartbeat` 15s) — NO gateway-local transport code. HARD ORDERING: 08 Task 9b lands before gateway Task 7, and 08 Task 18b (the real-CLI >5-minute park pin) gates gateway Task 7's merge (the gateway does not duplicate the CLI pin). `request_review` and `ask_agent` are MUST-stream tools per the §3-preamble rule (any handler that can block > 30s): a review call routinely exceeds the claude CLI's empirical 60s buffered-call abandonment — the F13 failure class. Heartbeat override env `GATEWAY_MCP_PROGRESS_INTERVAL` (normative §8.1 row added by the SSE delta): Go duration, default 15s; a set-but-invalid value, a value <= 0, or a value > 30s is a fatal startup error — never clamp silently.
   - Landed-seam survey results (recorded at execution time): budget cost-record route path = `<fill>`; gateway event constants present in agent/schema = `<fill: yes/no>`; dev-mcp CI template job name/location = `<fill>`; platform-mcp events-path env = `<fill>`.
 ```
 
@@ -101,7 +103,7 @@ git commit -m "docs(gateway-mcp): wave-3 contract addendum — adapter path, eve
 
 ### Task 2: Sidecar config + env parsing (`agent/gatewaymcp`)
 
-The sidecar's runtime config, read entirely from the §8.1 env contract. Modeled on `agent/platformmcp/config.go` (`ConfigFromEnv`).
+The sidecar's runtime config, read entirely from the §8.1 env contract. Modeled on `agent/platformmcp/config.go` (`ConfigFromEnv`). Per the 2026-07-09 SSE delta (D3), the config also carries the SSE heartbeat override `GATEWAY_MCP_PROGRESS_INTERVAL`: Go duration syntax, default `mcpserver.DefaultHeartbeat` (15s — half of contracts §3.1's 30s progress bound, 4x margin under the claude CLI's empirical 60s abandonment cliff); a set-but-invalid value, a value <= 0, or a value > 30s is a FATAL config error — never clamp silently (same parse-or-die pattern as dev-mcp's `DEV_MCP_PROGRESS_INTERVAL`).
 
 **Files:**
 - Create: `agent/gatewaymcp/config.go`
@@ -116,6 +118,7 @@ package gatewaymcp_test
 
 import (
 	"testing"
+	"time"
 
 	"github.com/concourse/concourse/agent/gatewaymcp"
 )
@@ -180,6 +183,43 @@ func TestConfigFromEnvRequiresPrincipalToken(t *testing.T) {
 		t.Fatal("expected error when AGENT_PRINCIPAL_TOKEN is missing")
 	}
 }
+
+// SSE delta D3 (2026-07-09): heartbeat default + override + hard bounds.
+func TestConfigFromEnvProgressIntervalDefaultsTo15s(t *testing.T) {
+	t.Setenv("ATC_EXTERNAL_URL", "https://concourse.home")
+	t.Setenv("AGENT_PRINCIPAL_TOKEN", "cap1.9.secret")
+	t.Setenv("GATEWAY_MCP_PROGRESS_INTERVAL", "")
+
+	cfg, err := gatewaymcp.ConfigFromEnv()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.ProgressInterval != 15*time.Second {
+		t.Errorf("ProgressInterval = %v, want 15s (mcpserver.DefaultHeartbeat)", cfg.ProgressInterval)
+	}
+}
+
+func TestConfigFromEnvProgressIntervalOverrideAndBounds(t *testing.T) {
+	t.Setenv("ATC_EXTERNAL_URL", "https://concourse.home")
+	t.Setenv("AGENT_PRINCIPAL_TOKEN", "cap1.9.secret")
+
+	t.Setenv("GATEWAY_MCP_PROGRESS_INTERVAL", "10s")
+	cfg, err := gatewaymcp.ConfigFromEnv()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.ProgressInterval != 10*time.Second {
+		t.Errorf("ProgressInterval = %v, want 10s", cfg.ProgressInterval)
+	}
+
+	// Set-but-invalid, <= 0, or > 30s are FATAL — never clamped (SSE delta D3).
+	for _, bad := range []string{"banana", "0", "-5s", "31s", "45s", "1h"} {
+		t.Setenv("GATEWAY_MCP_PROGRESS_INTERVAL", bad)
+		if _, err := gatewaymcp.ConfigFromEnv(); err == nil {
+			t.Errorf("GATEWAY_MCP_PROGRESS_INTERVAL=%q: expected fatal config error", bad)
+		}
+	}
+}
 ```
 
 - [ ] Run to verify it fails: `go test ./agent/gatewaymcp/` — expect `no Go files` / undefined `gatewaymcp`.
@@ -198,6 +238,9 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"time"
+
+	"github.com/concourse/concourse/atc/api/mcpserver"
 )
 
 // Config is the sidecar's runtime configuration, read from the §8.1 env
@@ -216,6 +259,11 @@ type Config struct {
 	ListenAddr     string   // MCP_LISTEN_ADDR (default :7782, §8.1)
 	EventsPath     string   // GATEWAY_MCP_EVENTS_PATH ("" = stdout; Task 1 addendum)
 	ClaudeCLI      string   // GATEWAY_CLAUDE_CLI (default "claude"; test override)
+	// ProgressInterval is the SSE heartbeat cadence (GATEWAY_MCP_PROGRESS_INTERVAL,
+	// SSE delta D3 2026-07-09). Default mcpserver.DefaultHeartbeat (15s).
+	// Set-but-invalid, <= 0, or > 30s (§3.1 progress bound) is a fatal config
+	// error — never clamped silently.
+	ProgressInterval time.Duration
 }
 
 // WorkflowTag is the "<name>@<version>" ledger metadata value (Task 1
@@ -266,6 +314,23 @@ func ConfigFromEnv() (Config, error) {
 	}
 	if cfg.ClaudeCLI == "" {
 		cfg.ClaudeCLI = "claude"
+	}
+	// SSE heartbeat (SSE delta D3): default 15s; hard-bounded below the §3.1
+	// 30s progress mandate. Fatal on bad values — a silently clamped heartbeat
+	// would mask the F13 60s claude-CLI abandonment class in production.
+	cfg.ProgressInterval = mcpserver.DefaultHeartbeat
+	if raw := os.Getenv("GATEWAY_MCP_PROGRESS_INTERVAL"); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil {
+			return cfg, fmt.Errorf("GATEWAY_MCP_PROGRESS_INTERVAL must be a Go duration: %w", err)
+		}
+		if d <= 0 {
+			return cfg, fmt.Errorf("GATEWAY_MCP_PROGRESS_INTERVAL must be > 0, got %s", d)
+		}
+		if d > 30*time.Second {
+			return cfg, fmt.Errorf("GATEWAY_MCP_PROGRESS_INTERVAL must be <= 30s (contracts §3.1 progress bound), got %s", d)
+		}
+		cfg.ProgressInterval = d
 	}
 	return cfg, nil
 }
@@ -1098,6 +1163,8 @@ git commit -m "feat(gateway-mcp): budget-slice cutoff guard (never silent trunca
 
 Wires the adapter, meter, and slice guard into the two MCP tools. Schemas are byte-for-byte §3.3. Invalid input (missing or unparseable arguments, validated inside the tool handler) is an MCP tool error (`isError=true`) — the shared `atc/api/mcpserver` maps every handler-returned error to a `tools/call` result carrying the error text with `isError=true`, NOT a JSON-RPC `-32602` error object (it only emits `-32602` for a malformed `tools/call` envelope, never for a handler's returned error; locked in by its committed `server_test.go` "returns error result when tool handler errors"). Everything else is expressed in the payload `status` (`ok`/`failed`/`error`). The cutoff path returns `status: "failed"` with `summary` prefixed `budget cutoff:` and full usage-so-far.
 
+**MUST-STREAM (added 2026-07-09, frozen SSE delta D4 — depends on 08 Task 9b landing first):** `request_review` and `ask_agent` are enumerated MUST-stream tools. The in-sidecar claude CLI subprocess routinely runs multi-minute (>60s is the NORM for `request_review`), which is exactly the F13 failure class: the *calling* claude CLI silently abandons a buffered, progress-free tools/call at exactly 60s ("(completed with no output)"; `MCP_TOOL_TIMEOUT` does not prevent it). The server is therefore built with `mcpserver.NewServerWithHeartbeat(cfg.ProgressInterval)` and the handlers use the upgraded 3-arg `ToolHandler` (`func(ctx context.Context, args json.RawMessage, progress func(string)) (any, error)`). Handlers need NO explicit progress calls — the server's coalescing ticker emits `running request_review` / `running ask_agent` heartbeats regardless — but the adapter MAY feed status lines via `progress`. Clients that don't opt in (no `Accept: text/event-stream` + `_meta.progressToken`) still get the buffered one-shot JSON body, and their handlers receive a no-op `progress`.
+
 **Files:**
 - Create: `agent/gatewaymcp/server.go`
 - Create: `agent/gatewaymcp/tools.go`
@@ -1111,12 +1178,15 @@ Wires the adapter, meter, and slice guard into the two MCP tools. Schemas are by
 package gatewaymcp_test
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/concourse/concourse/agent/gatewaymcp"
 	"github.com/concourse/concourse/agent/gatewaymcp/gatewaymcpfakes"
@@ -1245,6 +1315,100 @@ func TestMalformedInputIsMCPError(t *testing.T) {
 	}
 	_ = context.Background()
 }
+
+// TestSSEProgressHeartbeatsOnSlowAdapter is the FROZEN SSE contract test (SSE
+// delta D7, 2026-07-09): a 40s fake adapter MUST yield >= 2
+// notifications/progress frames spaced < 30s apart before the final tools/call
+// result frame. With the default 15s heartbeat that is frames at ~15s and
+// ~30s, result at ~40s. This pins the F13 fix: without SSE heartbeats the
+// calling claude CLI abandons the call at exactly 60s.
+func TestSSEProgressHeartbeatsOnSlowAdapter(t *testing.T) {
+	if testing.Short() {
+		t.Skip("sleeps a real 40s (frozen by the SSE delta); skipped under -short")
+	}
+	fake := new(gatewaymcpfakes.FakeAdapter)
+	fake.NameReturns("claude")
+	fake.InvokeStub = func(ctx context.Context, _ gatewaymcp.Request, _ float64) (*gatewaymcp.Response, error) {
+		select {
+		case <-time.After(40 * time.Second):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		return &gatewaymcp.Response{Answer: "slow answer", Usage: gatewaymcp.Usage{Provider: "claude", Model: "m", CostUSD: 0.1, DurationMS: 40000}}, nil
+	}
+	srv := newTestServer(t, fake, 0) // cfg.ProgressInterval zero → DefaultHeartbeat 15s
+	ts := httptest.NewServer(srv.Mux())
+	defer ts.Close()
+
+	body, _ := json.Marshal(map[string]any{
+		"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+		"params": map[string]any{
+			"name": "ask_agent", "arguments": map[string]any{"prompt": "slow"},
+			"_meta": map[string]any{"progressToken": "tok-1"}, // the SSE opt-in (08 Task 9b gating)
+		},
+	})
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/mcp", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "text/event-stream")
+
+	start := time.Now()
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/event-stream") {
+		t.Fatalf("Content-Type = %q, want text/event-stream", ct)
+	}
+
+	var progressAt []time.Time
+	var final map[string]any
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 1<<20), 1<<20)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		var msg map[string]any
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &msg); err != nil {
+			t.Fatalf("bad SSE frame %q: %v", line, err)
+		}
+		if msg["method"] == "notifications/progress" {
+			params := msg["params"].(map[string]any)
+			if params["progressToken"] != "tok-1" {
+				t.Errorf("progressToken = %v, want tok-1 echoed verbatim", params["progressToken"])
+			}
+			progressAt = append(progressAt, time.Now())
+			continue
+		}
+		final = msg // the tools/call JSON-RPC response is the LAST SSE frame
+		break
+	}
+
+	// Frozen assertion: >= 2 progress frames, each gap (incl. start→first) < 30s.
+	if len(progressAt) < 2 {
+		t.Fatalf("got %d notifications/progress frames, want >= 2", len(progressAt))
+	}
+	prev := start
+	for i, at := range progressAt {
+		if gap := at.Sub(prev); gap >= 30*time.Second {
+			t.Errorf("progress frame %d arrived %v after the previous — must be < 30s", i, gap)
+		}
+		prev = at
+	}
+	if final == nil {
+		t.Fatal("stream ended without the final tools/call result frame")
+	}
+	text := final["result"].(map[string]any)["content"].([]any)[0].(map[string]any)["text"].(string)
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(text), &payload); err != nil {
+		t.Fatalf("final payload not JSON: %v", err)
+	}
+	if payload["status"] != "ok" || payload["answer"] != "slow answer" {
+		t.Errorf("final payload = %v", payload)
+	}
+}
 ```
 
 - [ ] Run to verify it fails: `go test ./agent/gatewaymcp/` — expect undefined `NewServer`.
@@ -1255,6 +1419,7 @@ package gatewaymcp
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/concourse/concourse/atc/api/mcpserver"
 )
@@ -1262,6 +1427,9 @@ import (
 // Server assembles the gateway sidecar: the MCP endpoint at POST /mcp and the
 // pod readiness probe at GET /healthz (§8.5). Tools dispatch through the
 // Adapter; the Meter records every call; the SliceGuard enforces the cutoff.
+// request_review/ask_agent are MUST-stream tools (SSE delta D4): the MCP
+// endpoint serves SSE progress heartbeats to opted-in clients via the upgraded
+// shared mcpserver (08 Task 9b).
 type Server struct {
 	cfg     Config
 	adapter Adapter
@@ -1278,8 +1446,10 @@ func NewServer(cfg Config, adapter Adapter, meter *Meter) *Server {
 		adapter: adapter,
 		meter:   meter,
 		guard:   NewSliceGuard(cfg.BudgetSliceUSD),
-		mcp:     mcpserver.NewServer(),
-		mux:     http.NewServeMux(),
+		// SSE progress heartbeats per 08 Task 9b; cfg.ProgressInterval <= 0
+		// (e.g. a zero-value test Config) falls back to DefaultHeartbeat (15s).
+		mcp: mcpserver.NewServerWithHeartbeat(cfg.ProgressInterval),
+		mux: http.NewServeMux(),
 	}
 	s.registerTools()
 	s.mux.Handle("/mcp", s.mcp)
@@ -1291,12 +1461,23 @@ func NewServer(cfg Config, adapter Adapter, meter *Meter) *Server {
 
 func (s *Server) Mux() *http.ServeMux { return s.mux }
 
+// ListenAndServe serves the sidecar with the SSE delta's D4 server-timeout
+// rule: WriteTimeout and IdleTimeout MUST be 0 — any nonzero WriteTimeout
+// severs a long SSE stream mid-call (a multi-minute request_review would die
+// silently). ReadHeaderTimeout alone guards the accept path.
 func (s *Server) ListenAndServe() error {
-	return http.ListenAndServe(s.cfg.ListenAddr, s.mux)
+	srv := &http.Server{
+		Addr:              s.cfg.ListenAddr,
+		Handler:           s.mux,
+		WriteTimeout:      0, // D4: never sever long SSE streams
+		IdleTimeout:       0, // D4
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	return srv.ListenAndServe()
 }
 ```
 
-- [ ] Write `agent/gatewaymcp/tools.go` (schemas verbatim §3.3; the review prompt assembly + finding mapping mirror `ci-agent/adapter/adapter.go`'s `rawFinding`; the cutoff path returns `failed` with the `budget cutoff:` summary):
+- [ ] Write `agent/gatewaymcp/tools.go` (schemas verbatim §3.3; the review prompt assembly + finding mapping mirror `ci-agent/adapter/adapter.go`'s `rawFinding`; the cutoff path returns `failed` with the `budget cutoff:` summary; handlers are 3-arg `ToolHandler`s per 08 Task 9b — the ticker guarantees `running <tool>` heartbeats even if a handler never calls `progress`):
 
 ```go
 package gatewaymcp
@@ -1398,7 +1579,13 @@ type rawReviewFinding struct {
 // error is returned plainly; the shared mcpserver surfaces it as a tools/call
 // result with isError=true (its handler-error path — never a JSON-RPC -32602
 // object, which it reserves for a malformed tools/call envelope).
-func (s *Server) handleRequestReview(ctx context.Context, args json.RawMessage) (any, error) {
+//
+// MUST-stream (SSE delta D4): a review routinely exceeds 60s, the empirical
+// claude-CLI buffered-call abandonment cliff. progress is the 3-arg
+// ToolHandler's status feed (no-op for buffered clients); the server's ticker
+// emits "running request_review" heartbeats regardless, so the explicit
+// progress calls below are informational (MAY), not load-bearing.
+func (s *Server) handleRequestReview(ctx context.Context, args json.RawMessage, progress func(string)) (any, error) {
 	var in struct {
 		Diff     string `json:"diff"`
 		Rubric   string `json:"rubric"`
@@ -1435,6 +1622,7 @@ func (s *Server) handleRequestReview(ctx context.Context, args json.RawMessage) 
 		return reviewResult{Status: "failed", Summary: fmt.Sprintf("%s slice of $%.2f exhausted ($%.2f spent) before this review", CutoffPrefix, rem.LimitUSD, rem.SpentUSD)}, nil
 	}
 
+	progress(fmt.Sprintf("dispatching request_review to the %s adapter", in.Provider))
 	callID := s.meter.CallStart("request_review", in.Provider, in.Model, len(prompt))
 	resp, err := s.adapter.Invoke(ctx, Request{Tool: "request_review", Prompt: prompt, Model: in.Model, OutputSchema: "findings"}, s.guard.Remaining().RemainingUSD)
 	if err != nil {
@@ -1454,7 +1642,9 @@ func (s *Server) handleRequestReview(ctx context.Context, args json.RawMessage) 
 	return reviewResult{Status: "ok", Summary: fmt.Sprintf("%d finding(s)", fc), Findings: findings, Usage: toGatewayUsage(resp.Usage)}, nil
 }
 
-func (s *Server) handleAskAgent(ctx context.Context, args json.RawMessage) (any, error) {
+// handleAskAgent is a MUST-stream tool like handleRequestReview (SSE delta
+// D4); same 3-arg ToolHandler contract and heartbeat guarantees.
+func (s *Server) handleAskAgent(ctx context.Context, args json.RawMessage, progress func(string)) (any, error) {
 	var in struct {
 		Prompt       string `json:"prompt"`
 		Provider     string `json:"provider"`
@@ -1483,6 +1673,7 @@ func (s *Server) handleAskAgent(ctx context.Context, args json.RawMessage) (any,
 		return askResult{Status: "failed", Answer: fmt.Sprintf("%s slice of $%.2f exhausted ($%.2f spent) before this call", CutoffPrefix, rem.LimitUSD, rem.SpentUSD)}, nil
 	}
 
+	progress(fmt.Sprintf("dispatching ask_agent to the %s adapter", in.Provider))
 	callID := s.meter.CallStart("ask_agent", in.Provider, in.Model, len(in.Prompt))
 	resp, err := s.adapter.Invoke(ctx, Request{Tool: "ask_agent", Prompt: in.Prompt, Model: in.Model, OutputSchema: in.OutputSchema}, s.guard.Remaining().RemainingUSD)
 	if err != nil {
@@ -1542,7 +1733,7 @@ func parseFindings(raw string) []finding {
 }
 ```
 
-- [ ] Run to verify pass: `go test ./agent/gatewaymcp/` — expect PASS.
+- [ ] Run to verify pass: `go test ./agent/gatewaymcp/` — expect PASS. (The frozen SSE heartbeat test sleeps a real 40s — that duration is pinned by the SSE delta D7 and must not be shortened; use `go test -short` only for inner-loop iteration. Verification sweeps run it in full.)
 - [ ] Commit:
 
 ```bash
@@ -1554,7 +1745,7 @@ git commit -m "feat(gateway-mcp): MCP server with request_review + ask_agent too
 
 ### Task 8: `cmd/gateway-mcp` binary (serve mode)
 
-The container entrypoint. Reads env, assembles the server with the claude adapter and an event log at `GATEWAY_MCP_EVENTS_PATH` (or stdout), and serves `/mcp` + `/healthz`. Modeled on `cmd/platform-mcp/main.go`.
+The container entrypoint. Reads env, assembles the server with the claude adapter and an event log at `GATEWAY_MCP_EVENTS_PATH` (or stdout), and serves `/mcp` + `/healthz`. Modeled on `cmd/platform-mcp/main.go`. Per the 2026-07-09 SSE delta (D3/D4): the binary validates `GATEWAY_MCP_PROGRESS_INTERVAL` at startup (via Task 2's `ConfigFromEnv` — set-but-invalid, <= 0, or > 30s is a fatal exit, never a silent clamp) and serves through `Server.ListenAndServe`, which applies the D4 server-timeout rule (`WriteTimeout: 0`, `IdleTimeout: 0`, `ReadHeaderTimeout: 5s`) so long SSE streams are never severed.
 
 **Files:**
 - Create: `cmd/gateway-mcp/main.go`
@@ -1647,6 +1838,25 @@ func TestServeModeFailsFastOnBadEnv(t *testing.T) {
 		t.Fatal("expected non-zero exit without required env")
 	}
 }
+
+// SSE delta D3: interval validation is a FATAL startup error, never a clamp.
+func TestServeModeFailsFastOnBadProgressInterval(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "gateway-mcp")
+	if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
+		t.Fatalf("go build: %v: %s", err, out)
+	}
+	for _, bad := range []string{"45s", "0", "banana"} {
+		cmd := exec.Command(bin)
+		cmd.Env = append(os.Environ(),
+			"AGENT_PRINCIPAL_TOKEN=cap1.9.secret",
+			"CLAUDE_CODE_OAUTH_TOKEN=tok",
+			"GATEWAY_MCP_PROGRESS_INTERVAL="+bad,
+		)
+		if err := cmd.Run(); err == nil {
+			t.Errorf("GATEWAY_MCP_PROGRESS_INTERVAL=%q: expected non-zero exit", bad)
+		}
+	}
+}
 ```
 
 - [ ] Run to verify it fails: `go test ./cmd/gateway-mcp/` — expect `no Go files`.
@@ -1690,7 +1900,11 @@ func main() {
 	meter := gatewaymcp.NewMeter(cfg, schema.NewEventWriter(eventSink), nil)
 	srv := gatewaymcp.NewServer(cfg, adapter, meter)
 
-	fmt.Fprintf(os.Stderr, "gateway-mcp: serving MCP on %s (provider %s, slice $%.2f)\n", cfg.ListenAddr, adapter.Name(), cfg.BudgetSliceUSD)
+	fmt.Fprintf(os.Stderr, "gateway-mcp: serving MCP on %s (provider %s, slice $%.2f, sse heartbeat %s)\n", cfg.ListenAddr, adapter.Name(), cfg.BudgetSliceUSD, cfg.ProgressInterval)
+	// srv.ListenAndServe applies the SSE delta's D4 server-timeout rule
+	// (WriteTimeout: 0, IdleTimeout: 0, ReadHeaderTimeout: 5s) — a nonzero
+	// WriteTimeout would sever long SSE streams mid-call. Interval validation
+	// (fatal on invalid/<=0/>30s) already happened in ConfigFromEnv above.
 	if err := srv.ListenAndServe(); err != nil {
 		fmt.Fprintf(os.Stderr, "gateway-mcp: %s\n", err)
 		os.Exit(1)
@@ -1710,7 +1924,7 @@ git commit -m "feat(gateway-mcp): sidecar binary serve mode (/mcp + /healthz)" -
 
 ### Task 9: Contract-test kit (`agent/gatewaymcp/contracttest`)
 
-The spec's testing approach requires contract tests for all three MCP surfaces; dev-mcp's `agent/devmcp/contracttest` and platform-mcp's `agent/platformmcp/contracttest` set the style: `contracttest.Run(t, endpointURL)` validates any serving endpoint — in-process here, `docker run` in the CI image job (Task 10). The kit points the sidecar at a stub claude CLI (a bundled fixture script) via `GATEWAY_CLAUDE_CLI` so it never needs a real provider or ATC.
+The spec's testing approach requires contract tests for all three MCP surfaces; dev-mcp's `agent/devmcp/contracttest` and platform-mcp's `agent/platformmcp/contracttest` set the style: `contracttest.Run(t, endpointURL)` validates any serving endpoint — in-process here, `docker run` in the CI image job (Task 10). The kit points the sidecar at a stub claude CLI (a bundled fixture script) via `GATEWAY_CLAUDE_CLI` so it never needs a real provider or ATC. Per the 2026-07-09 SSE delta, the kit also checks progress emission the same way platform-mcp's kit does: a tools/call sent with the SSE opt-in (`Accept: text/event-stream` + `params._meta.progressToken`) must come back as an SSE stream whose final frame carries the tools/call result (transport shape; heartbeat *timing* against a slow adapter is pinned by Task 7's frozen 40s test).
 
 **Files:**
 - Create: `agent/gatewaymcp/contracttest/contracttest.go`
@@ -1789,17 +2003,20 @@ func (FakeAdapter) Invoke(_ context.Context, req gatewaymcp.Request, _ float64) 
 package contracttest
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 )
 
 // Run validates a serving gateway endpoint (base URL WITHOUT /mcp) against
 // the §3.3 contract: healthz, tools/list advertises both tools, request_review
 // returns the findings+usage shape with an ok status, ask_agent returns
-// answer+usage, and malformed input is an MCP-level error.
+// answer+usage, malformed input is an MCP-level error, and the SSE opt-in path
+// (SSE delta, 08 Task 9b) returns the tools/call result as the final SSE frame.
 func Run(t *testing.T, endpointURL string) {
 	t.Helper()
 
@@ -1887,6 +2104,42 @@ func Run(t *testing.T, endpointURL string) {
 	if _, isErr := callTool("request_review", map[string]any{}); !isErr {
 		t.Error("request_review without diff must be an MCP-level error")
 	}
+
+	// SSE opt-in (SSE delta 2026-07-09 / 08 Task 9b, mirroring platform-mcp's
+	// kit): Accept: text/event-stream + params._meta.progressToken must switch
+	// the response to an SSE stream whose LAST frame is the tools/call result.
+	// The fake adapter is fast, so zero progress frames is acceptable here —
+	// heartbeat timing is pinned by the gateway's 40s slow-adapter test.
+	sseBody := `{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"ask_agent","arguments":{"prompt":"sse ping"},"_meta":{"progressToken":"kit-1"}}}`
+	sseReq, err := http.NewRequest(http.MethodPost, endpointURL+"/mcp", bytes.NewReader([]byte(sseBody)))
+	if err != nil {
+		t.Fatalf("sse request: %v", err)
+	}
+	sseReq.Header.Set("Content-Type", "application/json")
+	sseReq.Header.Set("Accept", "text/event-stream")
+	sseResp, err := http.DefaultClient.Do(sseReq)
+	if err != nil {
+		t.Fatalf("sse tools/call: %v", err)
+	}
+	defer sseResp.Body.Close()
+	if ct := sseResp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/event-stream") {
+		t.Fatalf("sse opt-in: Content-Type = %q, want text/event-stream", ct)
+	}
+	var lastData string
+	scanner := bufio.NewScanner(sseResp.Body)
+	scanner.Buffer(make([]byte, 1<<20), 1<<20)
+	for scanner.Scan() {
+		if line := scanner.Text(); strings.HasPrefix(line, "data: ") {
+			lastData = strings.TrimPrefix(line, "data: ")
+		}
+	}
+	var finalMsg map[string]any
+	if err := json.Unmarshal([]byte(lastData), &finalMsg); err != nil {
+		t.Fatalf("sse final frame not JSON: %v (%q)", err, lastData)
+	}
+	if finalMsg["result"] == nil {
+		t.Fatalf("sse final frame is not the tools/call result: %v", finalMsg)
+	}
 }
 
 func assertUsage(t *testing.T, v any) {
@@ -1915,7 +2168,7 @@ git commit -m "feat(gateway-mcp): contract-test kit for the request_review/ask_a
 
 ### Task 10: Sidecar image packaging (§8.5) — Dockerfile + CI job
 
-Instantiates the dev-mcp packaging convention for the gateway. The image bundles the `claude` CLI (pinned) plus the static gateway binary. The CI job copies dev-mcp's `build-mcp-dev-image` template with gateway substitutions and runs the Task 9 kit against the built image; it merges additively with platform-mcp's `build-mcp-platform` job (Task 1 addendum).
+Instantiates the dev-mcp packaging convention for the gateway. The image bundles the `claude` CLI (pinned) plus the static gateway binary. The CI job copies dev-mcp's `build-mcp-dev-image` template with gateway substitutions and runs the Task 9 kit against the built image; it merges additively with platform-mcp's `build-mcp-platform` job (Task 1 addendum). *(2026-07-09 SSE delta D8: NO image-content change for SSE — the image picks up the upgraded `atc/api/mcpserver` on its normal binary rebuild; ports 7782, `/mcp`, `/healthz`, and the bundled adapter CLI are all unchanged. The claude CLI needed by 08 Task 18b's park pin test lives on the test host, not in this image.)*
 
 **Files:**
 - Create: `deploy/Dockerfile.mcp-gateway`
@@ -2266,7 +2519,7 @@ go build ./cmd/gateway-mcp && rm -f gateway-mcp       # binary builds
 go vet ./agent/gatewaymcp/... ./cmd/gateway-mcp/
 ```
 
-Expect all PASS. (No `atc/db` migration or Ginkgo suite is touched — gateway-mcp owns no table and wires nothing into ATC beyond consuming the existing `/api/v1/agent/costs` route over the wire.)
+Expect all PASS. (No `atc/db` migration or Ginkgo suite is touched — gateway-mcp owns no table and wires nothing into ATC beyond consuming the existing `/api/v1/agent/costs` route over the wire. Do NOT pass `-short`: the sweep must run Task 7's frozen 40s SSE heartbeat test in full.)
 
 - [ ] Run the module-wide build to confirm nothing else broke: `go build ./...` — expect success.
 - [ ] Confirm the pipeline config still validates: `go build ./fly && ./fly validate-pipeline -c deploy/concourse-pipeline.yml && rm -f fly` — expect `looks good`.
@@ -2310,3 +2563,11 @@ This workstream adds no `atc/db` migration and no ATC route, so `ginkgo ./atc/..
 
 **Amendment log (this plan):**
 - 2026-07-08 (consistency fix; owner: gateway-mcp): corrected the Task 7 handler-error mechanism (pre-existing inconsistency, NOT introduced by the spec/plan-delivery change). The plan claimed invalid/malformed tool input produces a JSON-RPC `-32602` error object "via the mcpserver's handler-error path," but the gateway builds ON the shared `atc/api/mcpserver` (unlike dev-mcp/04, which ships its own server that genuinely emits `-32602`), and that shared server maps every tool-handler-returned error to a `tools/call` result with `isError=true` — it only emits `-32602` for a malformed `tools/call` envelope, never for a handler's returned error (locked in by its committed `server_test.go` "returns error result when tool handler errors"). Reworded the Task 7 intro plus the six `// -32602` code comments in `handleRequestReview`/`handleAskAgent` (Task 7 `tools.go`) to "MCP tool error (`isError=true`)", and added a doc comment on `handleRequestReview` naming the mechanism. Task 7's `TestMalformedInputIsMCPError` already asserts `result.isError=true` (never a top-level `-32602` object), so no test change was needed. Matches the same correction applied to 00-shared-contracts §3.2 and 08-platform-mcp-hitl during the platform-mcp read-tool work.
+- 2026-07-09 (F13 / frozen SSE-transport delta, gateway legs D2-consumption + D3 + D4; owner: gateway-mcp; final-review Fable pass, REVIEW.md §8): the real claude CLI (v2.1.77, empirical) silently abandons a buffered, progress-free MCP tools/call at exactly 60s — `request_review`/`ask_agent` routinely exceed that, so without SSE progress heartbeats every long gateway call hits the F13 failure class. Applied:
+  1. **Survey correction (Context, `atc/api/mcpserver` seam line):** "buffered JSON — no SSE/progress" was stale; after 08 Task 9b the shared server is SSE-capable in place (`NewServerWithHeartbeat`, `DefaultHeartbeat = 15s`, 3-arg `ToolHandler` with `progress func(string)`, SSE gated on `Accept: text/event-stream` + `params._meta.progressToken`, final JSON-RPC response as the last SSE frame — a mirrored port of `ci-agent/devmcp`'s proven implementation; module-boundary rule per the delta's D1).
+  2. **Task 1 addendum (item d + new §11 bullet):** HARD wave-3 ordering — 08 Task 9b lands before this plan's Task 7; 08 Task 18b (real-CLI >5-minute park pin) gates Task 7's merge; the gateway acquires SSE purely by consuming the shared upgrade (no gateway-local transport code, no gateway CLI-pin test).
+  3. **Task 2 (D3):** `Config.ProgressInterval` from `GATEWAY_MCP_PROGRESS_INTERVAL` — Go duration, default `mcpserver.DefaultHeartbeat` (15s); set-but-invalid, <= 0, or > 30s is a FATAL config error, never clamped. Tests added: `TestConfigFromEnvProgressIntervalDefaultsTo15s`, `TestConfigFromEnvProgressIntervalOverrideAndBounds`.
+  4. **Task 7 (D4 + D2 consumption):** `request_review` and `ask_agent` declared MUST-stream; server built via `mcpserver.NewServerWithHeartbeat(cfg.ProgressInterval)`; both handlers moved to the 3-arg `ToolHandler` (the ticker guarantees `running <tool>` heartbeats; handlers/adapters MAY feed status lines via `progress`); `Server.ListenAndServe` now constructs an explicit `http.Server` with `WriteTimeout: 0`, `IdleTimeout: 0`, `ReadHeaderTimeout: 5s` (D4 server-timeout rule). Test added — the FROZEN D7 contract assertion: `TestSSEProgressHeartbeatsOnSlowAdapter` (40s fake adapter ⇒ >= 2 `notifications/progress` frames spaced < 30s apart, progressToken echoed verbatim, final SSE frame is the tools/call result).
+  5. **Task 8:** binary logs the heartbeat interval and fails fast on a bad `GATEWAY_MCP_PROGRESS_INTERVAL` (validation in `ConfigFromEnv`; serve path inherits the D4 timeout rule from `Server.ListenAndServe`). Test added: `TestServeModeFailsFastOnBadProgressInterval`.
+  6. **Task 9:** contract-test kit now checks progress emission the way platform-mcp's kit does — SSE opt-in tools/call must return `Content-Type: text/event-stream` with the tools/call result as the final SSE frame (transport shape; timing pinned by Task 7's 40s test).
+  7. **Task 10 (D8):** image explicitly unchanged — the upgraded mcpserver arrives via the normal binary rebuild; the pin-test claude CLI lives on the test host, not in the image. Task 12's sweep notes `-short` must not be used.

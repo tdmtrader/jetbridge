@@ -44,12 +44,12 @@ Consumers (later waves): dispatch, platform-mcp-hitl, process-intel-experiments.
 ### Design decisions resolving spec open item 1 (recorded in contracts addendum, Task 1)
 
 1. **Base vs instance:** run instances keep `template: true` in their materialized config, so `pipelines.template` is true for both the base template row and its run instances. Base = `template AND instance_vars IS NULL`. The scheduler skips base templates only; lidar's periodic check scan skips ALL `template = true` rows (base and instances).
-2. **"Versions pinned at creation" v1 semantics:** implemented as a *frozen check set*, not literal per-resource config pins: one manually-triggered check per resource is enqueued at run creation (same seam as the `CheckResource` API handler), periodic re-checks are disabled, and `trigger: true` is rewritten to `false` at materialization on get steps **without** `passed:` constraints (external-version triggering). Gets **with** `passed:` keep their trigger flag — the scheduler only auto-creates builds for `FirstOccurrence && Trigger` inputs (`atc/scheduler/scheduler.go:90-113`), so preserving passed-chain triggers is what makes "downstream jobs flow through passed: chains as normal" (spec §3) actually happen. Explicit `version:` pins in the template pass through untouched. Documented v1 limitation: if another pipeline shares a resource-config scope and produces new versions mid-run, a not-yet-scheduled job without `passed:` constraints may resolve a newer version.
+2. **"Versions pinned at creation" v1 semantics:** implemented as a *frozen check set*, not literal per-resource config pins: one manually-triggered check per resource is enqueued at run creation **by `PipelineRunFactory.CreateRun` itself** (same seam as the `CheckResource` API handler; the API handler is a pass-through — in-process consumers calling the factory get the frozen check set too; amended 2026-07-09, F27), periodic re-checks are disabled, and `trigger: true` is rewritten to `false` at materialization on get steps **without** `passed:` constraints (external-version triggering). Gets **with** `passed:` keep their trigger flag — the scheduler only auto-creates builds for `FirstOccurrence && Trigger` inputs (`atc/scheduler/scheduler.go:90-113`), so preserving passed-chain triggers is what makes "downstream jobs flow through passed: chains as normal" (spec §3) actually happen. Explicit `version:` pins in the template pass through untouched. Documented v1 limitation: if another pipeline shares a resource-config scope and produces new versions mid-run, a not-yet-scheduled job without `passed:` constraints may resolve a newer version.
 3. **Completion:** a run completes when its instance pipeline has no job builds in `pending`/`started`, at least one job build exists, and no active unpaused job has `schedule_requested > last_scheduled` (closes the entry-finished-but-downstream-not-yet-created race using existing columns). Aggregate status is worst-of over the latest build per job: `errored > aborted > failed > succeeded`.
-4. **Retriggers/late builds:** completion is not final — a completed run whose instance pipeline gains a pending/started job build is *reopened* (status back to `running`, `completed_at` cleared) and completes again with a recomputed worst-of. This requires two factory methods beyond contracts §2.3 (`CompletedRunsWithNewActivity`, `RunsToArchive`) and three PipelineRun methods (`Reopen`, `CheckComplete`, `InstancePipeline`) — recorded as a contracts addendum.
+4. **Retriggers/late builds:** completion is not final — a completed run whose instance pipeline gains a pending/started job build, **or a job build that completed after the run's `completed_at`** (covers retriggers that start AND finish inside one polling window, when the Finish notify arrives after the build has already left pending/started; amended 2026-07-09, F26), is *reopened* (status back to `running`, `completed_at` cleared) and completes again with a recomputed worst-of. The completed-after predicate is self-terminating: reopen→re-complete stamps a newer `completed_at`. This requires two factory methods beyond contracts §2.3 (`CompletedRunsWithNewActivity`, `RunsToArchive`) and three PipelineRun methods (`Reopen`, `CheckComplete`, `InstancePipeline`) — recorded as a contracts addendum.
 5. **Parked-run contract:** a parked step keeps its build `started`; the completion query therefore never completes a parked run. Owned here, proven by an explicit unit spec (Task 9).
 6. **Retention YAML carrier:** top-level `run_retention: {keep_last: K, ttl_days: N}` config key mirrored to `pipelines.run_retention` (contracts §1.5 defines the column; §7 omitted the YAML key — addendum documents it).
-7. **Reserved param name:** `run` is reserved (it is the instance var); the params-schema validator rejects it.
+7. **Reserved param names:** `run` and `run_id` are reserved (amended 2026-07-09, F30). `run` is the instance var / per-template run NUMBER; `run_id` is a second materialization-time static var carrying the globally-unique `pipeline_runs.id`, allocated via `nextval` inside the creation transaction BEFORE materialization (it is NOT part of `instance_vars`). Anything keying cross-template state — metrics, questions, reviews, gateway rows, §8.1 `AGENT_PIPELINE_RUN_ID` — must interpolate `((run_id))`, never `((run))` (run numbers reset per template and collide). The params-schema validator rejects both names.
 8. **Direct job triggering** on a base template returns 409 with a message pointing at `fly run-pipeline`.
 
 ---
@@ -77,8 +77,11 @@ Write the wave-1 implementation decisions into the shared contracts doc so dispa
      instances. Base template = `template AND instance_vars IS NULL`. Scheduler skips base
      templates only; lidar's periodic check scan skips all `template = true` rows.
   2. **"Versions pinned at creation" v1.** Implemented as a frozen check set: one
-     manually-triggered check per resource enqueued at run creation
-     (`CheckFactory.TryCreateCheck`, same as the `CheckResource` handler), periodic checks
+     manually-triggered check per resource enqueued at run creation **by
+     `db.PipelineRunFactory.CreateRun` itself** (`CheckFactory.TryCreateCheck`, same seam
+     as the `CheckResource` handler; the `POST .../runs` handler is a pass-through, so
+     in-process consumers — dispatch, experiments — get the frozen check set too;
+     amended 2026-07-09, F27), periodic checks
      disabled, `trigger: true` stripped at materialization from get steps WITHOUT
      `passed:` constraints. Gets WITH `passed:` keep their trigger flag so downstream
      jobs flow through chains as normal (spec §3) — external resource versions can never
@@ -89,7 +92,10 @@ Write the wave-1 implementation decisions into the shared contracts doc so dispa
   3. **Completion + reopen.** Completion additionally requires no active unpaused job with
      `schedule_requested > last_scheduled` (closes the downstream-not-yet-created race).
      Completion is re-entrant: a completed run whose instance pipeline gains a
-     pending/started job build is reopened (status `running`, `completed_at` cleared) and
+     pending/started job build — or a job build that COMPLETED after the run's
+     `completed_at` (fast-finishing retriggers that never linger in pending/started;
+     self-terminating because reopen→re-complete stamps a newer `completed_at`;
+     amended 2026-07-09, F26) — is reopened (status `running`, `completed_at` cleared) and
      completes again. §2.3 gains:
      `PipelineRun.Reopen() error`, `PipelineRun.CheckComplete() (PipelineRunStatus, bool, error)`,
      `PipelineRun.InstancePipeline() (Pipeline, bool, error)`, plus getters
@@ -100,7 +106,8 @@ Write the wave-1 implementation decisions into the shared contracts doc so dispa
      `run_retention: {keep_last: K, ttl_days: N}` (Go: `atc.RunRetentionConfig`), mirrored to
      `pipelines.run_retention` at SaveConfig time. `keep_last` ranks completed, non-archived
      runs per template by number descending.
-  5. **Reserved param name.** A params-schema entry named `run` is a config validation error.
+  5. **Reserved param names.** A params-schema entry named `run` or `run_id` is a config
+     validation error (`run_id` added 2026-07-09, F30).
   6. **Template job triggering.** `CreateJobBuild` on a base template returns
      409 Conflict, body: `cannot trigger jobs on a template pipeline; use "fly run-pipeline" to create a run`.
   7. **Wire shapes.** `POST .../runs` body: `{"params": {"name": <value>, ...}}`
@@ -110,6 +117,15 @@ Write the wave-1 implementation decisions into the shared contracts doc so dispa
   8. **Entry-job trigger semantics.** Entry jobs (no `passed:` on any input) are triggered as
      manually-triggered builds by `CreateRun` inside the creation call, after the creation
      transaction commits.
+  9. **Run-id var (`((run_id))`).** `pipeline_runs.id` is allocated via `nextval` inside the
+     creation transaction BEFORE materialization and injected as a second reserved static
+     var alongside `((run))` (added 2026-07-09, F30). `((run))` = per-template run NUMBER
+     (also the `instance_vars` identity; numbers reset per template). `((run_id))` =
+     globally-unique `pipeline_runs.id`; it resolves at materialization only and is NOT
+     part of `instance_vars`. Anything keying cross-template state (agent metrics,
+     questions, reviews, gateway ledger rows — §8.1 `AGENT_PIPELINE_RUN_ID`) MUST
+     interpolate `((run_id))`, never `((run))`. Co-signed with dispatch (renderer sites)
+     and harvest.
   ```
 
 - [ ] Append to the §11 amendment log:
@@ -118,6 +134,12 @@ Write the wave-1 implementation decisions into the shared contracts doc so dispa
   - 2026-07-08: pipeline-runs wave-1 addendum (§7.1): template-column-true-on-instances rule,
     frozen-check-set pinning, completion reopen semantics + §2.3 interface extensions,
     run_retention YAML key, reserved param name `run`, 409 on template job trigger, wire shapes.
+  - 2026-07-09: pipeline-runs design-review fixes F26/F27/F30 in §7.1: reopen detection also
+    matches job builds completed after the run's `completed_at` (fast-finish retriggers, F26);
+    the frozen-check enqueue lives in `db.PipelineRunFactory.CreateRun`, the runs handler is a
+    pass-through (F27); new reserved var `((run_id))` = `pipeline_runs.id` allocated via
+    `nextval` before materialization, reserved param names now `run` AND `run_id` (F30,
+    co-signed with dispatch + harvest for the §8.1 `AGENT_PIPELINE_RUN_ID` consumers).
   ```
 
 - [ ] Commit:
@@ -578,11 +600,12 @@ Write the wave-1 implementation decisions into the shared contracts doc so dispa
   		Expect(errs).To(ContainElement(ContainSubstring("run_retention is only allowed on template pipelines")))
   	})
 
-  	It("rejects the reserved name, duplicates, bad types, enums without values, and bad defaults", func() {
+  	It("rejects the reserved names, duplicates, bad types, enums without values, and bad defaults", func() {
   		errs := validate(atc.Config{
   			Template: true,
   			Params: []atc.ParamSchema{
   				{Name: "run", Type: "string"},
+  				{Name: "run_id", Type: "string"},
   				{Name: "dup", Type: "string"},
   				{Name: "dup", Type: "string"},
   				{Name: "weird", Type: "list"},
@@ -592,6 +615,7 @@ Write the wave-1 implementation decisions into the shared contracts doc so dispa
   			Jobs: atc.JobConfigs{validJob},
   		})
   		Expect(errs).To(ContainElement(ContainSubstring(`name "run" is reserved`)))
+  		Expect(errs).To(ContainElement(ContainSubstring(`name "run_id" is reserved`)))
   		Expect(errs).To(ContainElement(ContainSubstring("duplicate param name")))
   		Expect(errs).To(ContainElement(ContainSubstring(`invalid type "list"`)))
   		Expect(errs).To(ContainElement(ContainSubstring("enum params must declare values")))
@@ -628,6 +652,11 @@ Write the wave-1 implementation decisions into the shared contracts doc so dispa
   		}
   		if p.Name == "run" {
   			errorMessages = append(errorMessages, identifier+`: name "run" is reserved for the run number`)
+  		}
+  		if p.Name == "run_id" {
+  			// second reserved var: pipeline_runs.id, injected at
+  			// materialization (shared-contracts §7.1 item 9; F30 2026-07-09)
+  			errorMessages = append(errorMessages, identifier+`: name "run_id" is reserved for the pipeline-run id`)
   		}
   		if seen[p.Name] {
   			errorMessages = append(errorMessages, identifier+": duplicate param name")
@@ -717,7 +746,7 @@ Write the wave-1 implementation decisions into the shared contracts doc so dispa
   	}
 
   	It("resolves params and the run number, strips external triggers, keeps passed-chain triggers and unknown vars", func() {
-  		out, err := atc.MaterializeRunConfig(template, 42, map[string]any{"ref": "abc123"})
+  		out, err := atc.MaterializeRunConfig(template, 42, 9001, map[string]any{"ref": "abc123"})
   		Expect(err).ToNot(HaveOccurred())
 
   		Expect(out.Template).To(BeTrue())
@@ -738,9 +767,23 @@ Write the wave-1 implementation decisions into the shared contracts doc so dispa
   		withRun.Resources = atc.ResourceConfigs{
   			{Name: "repo", Type: "git", Source: atc.Source{"tag": "run-((run))"}},
   		}
-  		out, err := atc.MaterializeRunConfig(withRun, 7, map[string]any{"run": "hijack"})
+  		out, err := atc.MaterializeRunConfig(withRun, 7, 9001, map[string]any{"run": "hijack"})
   		Expect(err).ToNot(HaveOccurred())
   		Expect(out.Resources[0].Source["tag"]).To(Equal("run-7"))
+  	})
+
+  	// F30 (2026-07-09): ((run_id)) carries the globally-unique
+  	// pipeline_runs.id — the value §8.1 AGENT_PIPELINE_RUN_ID is defined as.
+  	// ((run)) is only the per-template run NUMBER and collides across
+  	// templates; renderers keying cross-template state must use ((run_id)).
+  	It("makes ((run_id)) available as the global pipeline_runs.id and gives it precedence over params", func() {
+  		withRunID := template
+  		withRunID.Resources = atc.ResourceConfigs{
+  			{Name: "repo", Type: "git", Source: atc.Source{"tag": "run-((run))-id-((run_id))"}},
+  		}
+  		out, err := atc.MaterializeRunConfig(withRunID, 7, 9001, map[string]any{"run_id": "hijack"})
+  		Expect(err).ToNot(HaveOccurred())
+  		Expect(out.Resources[0].Source["tag"]).To(Equal("run-7-id-9001"))
   	})
   })
 
@@ -782,7 +825,12 @@ Write the wave-1 implementation decisions into the shared contracts doc so dispa
 
   // MaterializeRunConfig produces the concrete config for a pipeline-run
   // instance: ((param)) references are resolved from the validated params and
-  // the run number (the "run" instance var takes precedence), and reactive
+  // two reserved vars (which take precedence over params) — ((run)), the
+  // per-template run NUMBER (also the instance var), and ((run_id)), the
+  // globally-unique pipeline_runs.id allocated before materialization
+  // (shared-contracts §7.1 item 9; F30 2026-07-09: run numbers reset per
+  // template, so cross-template consumers such as §8.1 AGENT_PIPELINE_RUN_ID
+  // must interpolate ((run_id))). Reactive
   // semantics are stripped: get steps WITHOUT passed: constraints have
   // trigger: true rewritten to false (external resource versions never
   // trigger a run-instance build). Gets WITH passed: keep their trigger flag
@@ -790,14 +838,14 @@ Write the wave-1 implementation decisions into the shared contracts doc so dispa
   // this is what lets downstream jobs flow through passed: chains as normal
   // (spec §3). Unresolved ((vars)) are left intact for runtime var sources,
   // matching the set_pipeline step (Resolve(false)).
-  func MaterializeRunConfig(template Config, runNumber int, params map[string]any) (Config, error) {
+  func MaterializeRunConfig(template Config, runNumber int, runID int, params map[string]any) (Config, error) {
   	payload, err := json.Marshal(template)
   	if err != nil {
   		return Config{}, err
   	}
 
   	staticVars := []vars.Variables{
-  		vars.StaticVariables{"run": runNumber},
+  		vars.StaticVariables{"run": runNumber, "run_id": runID},
   		vars.StaticVariables(params),
   	}
 
@@ -867,7 +915,7 @@ Write the wave-1 implementation decisions into the shared contracts doc so dispa
 ### Task 7: DB — mirror template columns onto `pipelines`, expose accessors
 
 **Files:**
-- Modify: `atc/db/pipeline.go:59` (Pipeline interface), `atc/db/pipeline.go:135` (struct fields), `atc/db/pipeline.go:156` (pipelinesQuery), `atc/db/pipeline.go:189` (accessors)
+- Modify: `atc/db/pipeline.go:59` (Pipeline interface), `atc/db/pipeline.go:135` (struct fields), `atc/db/pipeline.go:156` (pipelinesQuery), `atc/db/pipeline.go:189` (accessors), `atc/db/pipeline.go:235` (`Config()` — F19, 2026-07-09)
 - Modify: `atc/db/team.go:409` (`savePipeline` insert values map at :469 and update `Set`s at :514), `atc/db/team.go:1333` (`scanPipeline`)
 - Test: `atc/db/pipeline_test.go` (append Describe)
 
@@ -900,10 +948,29 @@ Write the wave-1 implementation decisions into the shared contracts doc so dispa
   		Expect(pipeline.RunRetention()).To(Equal(config.RunRetention))
   		Expect(pipeline.LastRunNumber()).To(Equal(0))
 
+  		// F19 (2026-07-09): Config() must reconstruct the three template
+  		// fields — Task 8's CreateRun re-saves template.Config() as the run
+  		// instance (so a dropped Template flag would save instances with
+  		// template=false, breaking lidar exclusion and version pinning), and
+  		// the get-pipeline API (atc/api/configserver/get.go:60) serves
+  		// Config(), so a fly get-pipeline → set-pipeline round trip would
+  		// silently de-template.
+  		roundTripped, err := pipeline.Config()
+  		Expect(err).ToNot(HaveOccurred())
+  		Expect(roundTripped.Template).To(BeTrue())
+  		Expect(roundTripped.Params).To(Equal(config.Params))
+  		Expect(roundTripped.RunRetention).To(Equal(config.RunRetention))
+
   		// non-template pipelines default to false/nil
   		Expect(defaultPipeline.Template()).To(BeFalse())
   		Expect(defaultPipeline.ParamsSchema()).To(BeNil())
   		Expect(defaultPipeline.RunRetention()).To(BeNil())
+
+  		defaultConfig, err := defaultPipeline.Config()
+  		Expect(err).ToNot(HaveOccurred())
+  		Expect(defaultConfig.Template).To(BeFalse())
+  		Expect(defaultConfig.Params).To(BeNil())
+  		Expect(defaultConfig.RunRetention).To(BeNil())
   	})
   })
   ```
@@ -948,6 +1015,23 @@ Write the wave-1 implementation decisions into the shared contracts doc so dispa
   func (p *pipeline) ParamsSchema() []atc.ParamSchema       { return p.paramsSchema }
   func (p *pipeline) RunRetention() *atc.RunRetentionConfig { return p.runRetention }
   func (p *pipeline) LastRunNumber() int                    { return p.lastRunNumber }
+  ```
+
+- [ ] **F19 (2026-07-09):** carry the three fields through `Config()` (atc/db/pipeline.go:235). `Config()` reconstructs `atc.Config` from the row and per-entity tables — without this the three new fields are silently dropped: Task 8's `CreateRun` reads `template.Config()` and re-saves it as the instance, so instances would save `template=false` (lidar exclusion broken, version pinning broken, the Task 8 `instance.Template()` assertion fails), and `fly get-pipeline` → `set-pipeline` (configserver/get.go:60 serves `Config()`) would silently de-template. Set the fields from the already-scanned row in the final struct literal:
+
+  ```go
+  	config := atc.Config{
+  		Groups:        p.Groups(),
+  		VarSources:    p.VarSources(),
+  		Resources:     resources.Configs(),
+  		ResourceTypes: resourceTypes.Configs(),
+  		Prototypes:    prototypes.Configs(),
+  		Jobs:          jobConfigs,
+  		Display:       p.Display(),
+  		Template:      p.template,
+  		Params:        p.paramsSchema,
+  		RunRetention:  p.runRetention,
+  	}
   ```
 
 - [ ] Extend `scanPipeline` (atc/db/team.go:1333): add locals and scan targets at the end of the Scan call, then unmarshal:
@@ -1028,7 +1112,7 @@ Write the wave-1 implementation decisions into the shared contracts doc so dispa
 - [ ] Commit:
   ```bash
   git add atc/db/pipeline.go atc/db/team.go atc/db/dbfakes/
-  git commit -m "feat(db): mirror template/params_schema/run_retention onto pipelines rows" -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+  git commit -m "feat(db): mirror template/params_schema/run_retention onto pipelines rows and Config()" -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
   ```
 
 ---
@@ -1048,6 +1132,8 @@ Write the wave-1 implementation decisions into the shared contracts doc so dispa
   package db_test
 
   import (
+  	"fmt"
+
   	"github.com/concourse/concourse/atc"
   	"github.com/concourse/concourse/atc/db"
 
@@ -1067,7 +1153,9 @@ Write the wave-1 implementation decisions into the shared contracts doc so dispa
   			{Name: "greeting", Type: "string", Default: "hello"},
   		},
   		Resources: atc.ResourceConfigs{
-  			{Name: "some-resource", Type: "some-base-resource-type", Source: atc.Source{"some": "((greeting))"}},
+  			// marker exercises both reserved vars: ((run)) = per-template
+  			// number, ((run_id)) = global pipeline_runs.id (F30, 2026-07-09)
+  			{Name: "some-resource", Type: "some-base-resource-type", Source: atc.Source{"some": "((greeting))", "marker": "run-((run))-id-((run_id))"}},
   		},
   		Jobs: atc.JobConfigs{
   			{
@@ -1086,7 +1174,10 @@ Write the wave-1 implementation decisions into the shared contracts doc so dispa
   	}
 
   	BeforeEach(func() {
-  		factory = db.NewPipelineRunFactory(dbConn, lockFactory)
+  		// logger and checkFactory are db-suite globals (db_suite_test.go:70/:47);
+  		// the CheckFactory is injected so CreateRun itself enqueues the frozen
+  		// check set (F27, 2026-07-09)
+  		factory = db.NewPipelineRunFactory(logger, dbConn, lockFactory, checkFactory)
 
   		var err error
   		template, _, err = defaultTeam.SavePipeline(
@@ -1113,6 +1204,9 @@ Write the wave-1 implementation decisions into the shared contracts doc so dispa
   		instanceConfig, err := instance.Config()
   		Expect(err).ToNot(HaveOccurred())
   		Expect(instanceConfig.Resources[0].Source["some"]).To(Equal("hello"))
+  		// F30 (2026-07-09): ((run_id)) resolved to the pre-allocated
+  		// pipeline_runs.id, ((run)) to the per-template number
+  		Expect(instanceConfig.Resources[0].Source["marker"]).To(Equal(fmt.Sprintf("run-1-id-%d", run.ID())))
   		// the downstream get has passed: [entry], so it KEEPS trigger: true
   		// (passed-chain flow); only non-passed gets are stripped
   		Expect(instanceConfig.Jobs[1].Inputs()[0].Trigger).To(BeTrue())
@@ -1166,6 +1260,48 @@ Write the wave-1 implementation decisions into the shared contracts doc so dispa
   		running, err := factory.RunningRuns()
   		Expect(err).ToNot(HaveOccurred())
   		Expect(len(running)).To(BeNumerically(">=", 2))
+  	})
+
+  	// F27 (2026-07-09): the frozen-check enqueue lives in the FACTORY, not
+  	// the API handler — lidar excludes template pipelines, so a run created
+  	// by an in-process consumer (dispatch, experiments) whose entry job has
+  	// a get step would otherwise pend forever on an empty version set.
+  	It("enqueues the frozen check set at creation so get-step entry jobs get versions", func() {
+  		getEntryConfig := atc.Config{
+  			Template: true,
+  			Resources: atc.ResourceConfigs{
+  				{Name: "some-resource", Type: "some-base-resource-type", Source: atc.Source{"some": "source"}},
+  			},
+  			Jobs: atc.JobConfigs{
+  				{Name: "entry-get", PlanSequence: []atc.Step{
+  					{Config: &atc.GetStep{Name: "some-resource", Trigger: true}},
+  				}},
+  			},
+  		}
+  		getTemplate, _, err := defaultTeam.SavePipeline(
+  			atc.PipelineRef{Name: "frozen-check-template"}, getEntryConfig, db.ConfigVersion(0), false)
+  		Expect(err).ToNot(HaveOccurred())
+
+  		run, err := factory.CreateRun(getTemplate.ID(), nil, "some-user")
+  		Expect(err).ToNot(HaveOccurred())
+
+  		instance, found, err := run.InstancePipeline()
+  		Expect(err).ToNot(HaveOccurred())
+  		Expect(found).To(BeTrue())
+
+  		resource, found, err := instance.Resource("some-resource")
+  		Expect(err).ToNot(HaveOccurred())
+  		Expect(found).To(BeTrue())
+
+  		// exactly one manually-triggered check build persisted for the
+  		// instance resource (TryCreateCheck toDB=true writes a builds row
+  		// with resource_id set)
+  		var checkBuilds int
+  		err = dbConn.QueryRow(
+  			`SELECT COUNT(*) FROM builds WHERE resource_id = $1`, resource.ID()).
+  			Scan(&checkBuilds)
+  		Expect(err).ToNot(HaveOccurred())
+  		Expect(checkBuilds).To(Equal(1))
   	})
   })
   ```
@@ -1435,12 +1571,15 @@ Write the wave-1 implementation decisions into the shared contracts doc so dispa
   package db
 
   import (
+  	"context"
   	"database/sql"
   	"encoding/json"
   	"errors"
   	"fmt"
 
   	sq "github.com/Masterminds/squirrel"
+  	"code.cloudfoundry.org/lager/v3"
+  	"code.cloudfoundry.org/lager/v3/lagerctx"
   	"github.com/concourse/concourse/atc"
   	"github.com/concourse/concourse/atc/db/lock"
   )
@@ -1471,13 +1610,32 @@ Write the wave-1 implementation decisions into the shared contracts doc so dispa
   	RunsToArchive() ([]PipelineRun, error)
   }
 
-  func NewPipelineRunFactory(conn DbConn, lockFactory lock.LockFactory) PipelineRunFactory {
-  	return &pipelineRunFactory{conn: conn, lockFactory: lockFactory}
+  // NewPipelineRunFactory constructs the factory. The CheckFactory is
+  // injected (F27, 2026-07-09) because CreateRun itself enqueues the frozen
+  // check set — the runs API handler is a pass-through, so in-process
+  // consumers (dispatch, experiments) get identical semantics. The logger is
+  // injected (Registrar/Reaper idiom) because CreateRun has no ctx/logger
+  // parameter (§2.3 frozen signature) and the check enqueue is best-effort:
+  // its failures must be logged, never returned.
+  func NewPipelineRunFactory(
+  	logger lager.Logger,
+  	conn DbConn,
+  	lockFactory lock.LockFactory,
+  	checkFactory CheckFactory,
+  ) PipelineRunFactory {
+  	return &pipelineRunFactory{
+  		logger:       logger,
+  		conn:         conn,
+  		lockFactory:  lockFactory,
+  		checkFactory: checkFactory,
+  	}
   }
 
   type pipelineRunFactory struct {
-  	conn        DbConn
-  	lockFactory lock.LockFactory
+  	logger       lager.Logger
+  	conn         DbConn
+  	lockFactory  lock.LockFactory
+  	checkFactory CheckFactory
   }
 
   func (f *pipelineRunFactory) CreateRun(templatePipelineID int, params map[string]any, createdBy string) (PipelineRun, error) {
@@ -1497,6 +1655,12 @@ Write the wave-1 implementation decisions into the shared contracts doc so dispa
   		return nil, err
   	}
 
+  	// Relies on Task 7's Config() carrying Template/Params/RunRetention
+  	// (F19, 2026-07-09): the returned config is re-saved as the instance, so
+  	// a Config() that dropped Template would save instances with
+  	// template=false and break lidar exclusion + version pinning. If the
+  	// instance.Template() assertion in the factory test fails, fix
+  	// db.pipeline.Config() — do NOT force Template=true here.
   	config, err := template.Config()
   	if err != nil {
   		return nil, err
@@ -1517,7 +1681,19 @@ Write the wave-1 implementation decisions into the shared contracts doc so dispa
   		return nil, err
   	}
 
-  	instanceConfig, err := atc.MaterializeRunConfig(config, number, validated)
+  	// F30 (2026-07-09): allocate pipeline_runs.id BEFORE materialization so
+  	// ((run_id)) — the globally-unique id that §8.1 AGENT_PIPELINE_RUN_ID is
+  	// defined as — can be interpolated into the instance config. nextval
+  	// keeps the SERIAL sequence consistent with the explicit-id insert below.
+  	var runID int
+  	err = tx.QueryRow(
+  		`SELECT nextval(pg_get_serial_sequence('pipeline_runs', 'id'))`,
+  	).Scan(&runID)
+  	if err != nil {
+  		return nil, err
+  	}
+
+  	instanceConfig, err := atc.MaterializeRunConfig(config, number, runID, validated)
   	if err != nil {
   		return nil, err
   	}
@@ -1542,6 +1718,7 @@ Write the wave-1 implementation decisions into the shared contracts doc so dispa
   	}
 
   	run := newPipelineRun(f.conn, f.lockFactory)
+  	run.id = runID
   	run.templatePipelineID = templatePipelineID
   	run.instancePipelineID = sql.NullInt64{Int64: int64(instanceID), Valid: true}
   	run.number = number
@@ -1549,13 +1726,15 @@ Write the wave-1 implementation decisions into the shared contracts doc so dispa
   	run.status = PipelineRunRunning
   	run.createdBy = createdBy
 
+  	// explicit id: pre-allocated above so ((run_id)) is already baked into
+  	// the saved instance config (F30)
   	err = psql.Insert("pipeline_runs").
-  		Columns("template_pipeline_id", "instance_pipeline_id", "number", "params", "created_by").
-  		Values(templatePipelineID, instanceID, number, paramsPayload, createdBy).
-  		Suffix("RETURNING id, created_at").
+  		Columns("id", "template_pipeline_id", "instance_pipeline_id", "number", "params", "created_by").
+  		Values(runID, templatePipelineID, instanceID, number, paramsPayload, createdBy).
+  		Suffix("RETURNING created_at").
   		RunWith(tx).
   		QueryRow().
-  		Scan(&run.id, &run.createdAt)
+  		Scan(&run.createdAt)
   	if err != nil {
   		return nil, err
   	}
@@ -1584,9 +1763,54 @@ Write the wave-1 implementation decisions into the shared contracts doc so dispa
   				return nil, fmt.Errorf("triggering entry job %s: %w", jobName, err)
   			}
   		}
+
+  		// F27 (2026-07-09): the frozen check set is enqueued HERE, by the
+  		// factory, per shared-contracts §7.1 item 2 — not in the API handler.
+  		f.enqueueInitialChecks(instance)
   	}
 
   	return run, nil
+  }
+
+  // enqueueInitialChecks fires one manually-triggered check per resource of
+  // the run's instance pipeline — the frozen-check-set pinning model
+  // (shared-contracts §7.1). It lives on the factory (F27, 2026-07-09) so
+  // in-process consumers (dispatch, experiments) get the frozen check set
+  // too: lidar excludes template pipelines, so a factory-created run whose
+  // entry job has a get step would otherwise pend forever on an empty
+  // version set (NULL scope → trivially-passing ResourcesChecked → zero
+  // versions). Best-effort: failures are logged, never fail run creation
+  // (fly check-resource remains available).
+  func (f *pipelineRunFactory) enqueueInitialChecks(instance Pipeline) {
+  	logger := f.logger.Session("enqueue-initial-checks", lager.Data{
+  		"pipeline": instance.Name(), "instance-vars": instance.InstanceVars(),
+  	})
+
+  	resourceTypes, err := instance.ResourceTypes()
+  	if err != nil {
+  		logger.Error("failed-to-load-instance-resource-types", err)
+  		return
+  	}
+  	resources, err := instance.Resources()
+  	if err != nil {
+  		logger.Error("failed-to-load-instance-resources", err)
+  		return
+  	}
+
+  	for _, resource := range resources {
+  		_, _, err := f.checkFactory.TryCreateCheck(
+  			lagerctx.NewContext(context.Background(), logger),
+  			resource,
+  			resourceTypes,
+  			nil,  // from latest
+  			true, // manually triggered: skip interval
+  			true, // skip interval recursively
+  			true, // persist to DB
+  		)
+  		if err != nil {
+  			logger.Error("failed-to-enqueue-initial-check", err, lager.Data{"resource": resource.Name()})
+  		}
+  	}
   }
 
   func (f *pipelineRunFactory) GetRun(templatePipelineID, number int) (PipelineRun, bool, error) {
@@ -1632,6 +1856,16 @@ Write the wave-1 implementation decisions into the shared contracts doc so dispa
   	return f.scanRuns(rows)
   }
 
+  // CompletedRunsWithNewActivity returns non-running, non-archived runs whose
+  // instance pipeline has a pending/started job build — OR a job build that
+  // COMPLETED after the run's completed_at (F26, 2026-07-09): the Finish
+  // notify (the only wakeup besides the 10s poll) fires after a build leaves
+  // pending/started, so a retrigger that starts AND finishes inside one
+  // polling gap would otherwise never be observed and the run would keep a
+  // stale terminal status forever (plan-creation failures Finish without ever
+  // starting — buildstarter.go:225). Self-terminating: reopen clears
+  // completed_at (run leaves this query via the status filter) and the
+  // re-complete stamps a newer completed_at than every existing end_time.
   func (f *pipelineRunFactory) CompletedRunsWithNewActivity() ([]PipelineRun, error) {
   	rows, err := pipelineRunsQuery.
   		Where(sq.NotEq{"r.status": string(PipelineRunRunning)}).
@@ -1640,7 +1874,9 @@ Write the wave-1 implementation decisions into the shared contracts doc so dispa
   			SELECT 1 FROM builds b
   			WHERE b.pipeline_id = r.instance_pipeline_id
   			AND b.job_id IS NOT NULL
-  			AND b.status IN ('pending','started'))`)).
+  			AND (b.status IN ('pending','started')
+  			     OR (b.completed AND r.completed_at IS NOT NULL
+  			         AND b.end_time > r.completed_at)))`)).
   		OrderBy("r.id ASC").
   		RunWith(f.conn).
   		Query()
@@ -1737,7 +1973,7 @@ Write the wave-1 implementation decisions into the shared contracts doc so dispa
 - [ ] Commit:
   ```bash
   git add atc/db/pipeline_run.go atc/db/pipeline_run_factory.go atc/db/pipeline_run_factory_test.go atc/db/dbfakes/
-  git commit -m "feat(db): PipelineRunFactory with run creation, numbering, materialization and entry-job triggering" -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+  git commit -m "feat(db): PipelineRunFactory with run creation, numbering, materialization, entry-job triggering and frozen-check enqueue" -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
   ```
 
 ---
@@ -1803,7 +2039,7 @@ The implementation landed in Task 8 (`CheckComplete`, `Reopen`, `CompletedRunsWi
   	}
 
   	BeforeEach(func() {
-  		factory = db.NewPipelineRunFactory(dbConn, lockFactory)
+  		factory = db.NewPipelineRunFactory(logger, dbConn, lockFactory, checkFactory)
 
   		template, _, err := defaultTeam.SavePipeline(
   			atc.PipelineRef{Name: "completion-template"}, config, db.ConfigVersion(0), false)
@@ -1911,6 +2147,44 @@ The implementation landed in Task 8 (`CheckComplete`, `Reopen`, `CompletedRunsWi
   		Expect(err).ToNot(HaveOccurred())
   		Expect(again).To(BeEmpty())
   	})
+
+  	// F26 (2026-07-09): the Finish notify fires only after a build has left
+  	// pending/started, so a retrigger that starts AND finishes inside one
+  	// 10s polling gap is invisible to the pending/started predicate — the
+  	// run would keep a stale terminal status forever. The widened predicate
+  	// also matches builds that COMPLETED after the run's completed_at, and
+  	// is self-terminating: reopen→re-complete stamps a newer completed_at.
+  	It("surfaces fast-finishing retriggers that never linger in pending or started", func() {
+  		_, err := dbConn.Exec(
+  			`UPDATE builds SET status = 'succeeded' WHERE pipeline_id = $1`, instance.ID())
+  		Expect(err).ToNot(HaveOccurred())
+  		markScheduled(instance.ID())
+  		Expect(run.Finish(db.PipelineRunSucceeded)).To(Succeed())
+
+  		// the retrigger is created AND finished before the lifecycler ever
+  		// observes it: by observation time nothing is pending/started, only
+  		// a completed build with end_time > the run's completed_at
+  		finishBuild("entry", db.BuildStatusFailed)
+
+  		reactivated, err := factory.CompletedRunsWithNewActivity()
+  		Expect(err).ToNot(HaveOccurred())
+  		Expect(reactivated).To(HaveLen(1))
+  		Expect(reactivated[0].ID()).To(Equal(run.ID()))
+
+  		// reopen → recompute → re-finish: the fresh completed_at is newer
+  		// than every build end_time, so the run stops matching (no loop)
+  		Expect(reactivated[0].Reopen()).To(Succeed())
+  		markScheduled(instance.ID())
+  		status, complete, err := reactivated[0].CheckComplete()
+  		Expect(err).ToNot(HaveOccurred())
+  		Expect(complete).To(BeTrue())
+  		Expect(status).To(Equal(db.PipelineRunFailed))
+  		Expect(reactivated[0].Finish(status)).To(Succeed())
+
+  		again, err := factory.CompletedRunsWithNewActivity()
+  		Expect(err).ToNot(HaveOccurred())
+  		Expect(again).To(BeEmpty())
+  	})
   })
   ```
 
@@ -1922,7 +2196,7 @@ The implementation landed in Task 8 (`CheckComplete`, `Reopen`, `CompletedRunsWi
 - [ ] Commit:
   ```bash
   git add atc/db/pipeline_run_test.go
-  git commit -m "test(db): pipeline-run completion contract incl. parked-run and reopen semantics" -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+  git commit -m "test(db): pipeline-run completion contract incl. parked-run, reopen and fast-finish-retrigger semantics" -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
   ```
 
 ---
@@ -1965,7 +2239,7 @@ The implementation landed in Task 8 (`CheckComplete`, `Reopen`, `CompletedRunsWi
   	}
 
   	BeforeEach(func() {
-  		factory = db.NewPipelineRunFactory(dbConn, lockFactory)
+  		factory = db.NewPipelineRunFactory(logger, dbConn, lockFactory, checkFactory)
   	})
 
   	It("selects completed runs beyond keep_last, newest kept", func() {
@@ -2074,7 +2348,7 @@ The implementation landed in Task 8 (`CheckComplete`, `Reopen`, `CompletedRunsWi
   			atc.PipelineRef{Name: "sched-template"}, templateConfig, db.ConfigVersion(0), false)
   		Expect(err).ToNot(HaveOccurred())
 
-  		runFactory := db.NewPipelineRunFactory(dbConn, lockFactory)
+  		runFactory := db.NewPipelineRunFactory(logger, dbConn, lockFactory, checkFactory)
   		template, found, err := defaultTeam.Pipeline(atc.PipelineRef{Name: "sched-template"})
   		Expect(err).ToNot(HaveOccurred())
   		Expect(found).To(BeTrue())
@@ -2467,10 +2741,10 @@ The implementation landed in Task 8 (`CheckComplete`, `Reopen`, `CompletedRunsWi
   	b.conn.Bus().Notify(atc.ComponentPipelineRunLifecycler)
   ```
 
-- [ ] Wire the component in `atc/atccmd/command.go`. At :1108 (with the other backend factories):
+- [ ] Wire the component in `atc/atccmd/command.go`. At :1108 (with the other backend factories; `logger` is a `backendComponents` parameter at :1079 and `dbCheckFactory` is constructed just above at :1103 — the CheckFactory injection is F27, 2026-07-09):
 
   ```go
-  	dbPipelineRunFactory := db.NewPipelineRunFactory(dbConn, lockFactory)
+  	dbPipelineRunFactory := db.NewPipelineRunFactory(logger, dbConn, lockFactory, dbCheckFactory)
   ```
   In the `components` slice (after the `ComponentSigningKeyLifecycler` entry at :1257; the default 10s polling interval applies — polling + notify, never notify-only):
 
@@ -2750,7 +3024,7 @@ The implementation landed in Task 8 (`CheckComplete`, `Reopen`, `CompletedRunsWi
   }
   ```
 
-- [ ] Implement `atc/api/runserver/server.go`:
+- [ ] Implement `atc/api/runserver/server.go` (no CheckFactory here — the frozen-check enqueue lives in `db.PipelineRunFactory.CreateRun` per F27, 2026-07-09; the handler is a pass-through):
 
   ```go
   package runserver
@@ -2761,20 +3035,17 @@ The implementation landed in Task 8 (`CheckComplete`, `Reopen`, `CompletedRunsWi
   )
 
   type Server struct {
-  	logger       lager.Logger
-  	checkFactory db.CheckFactory
-  	runFactory   db.PipelineRunFactory
+  	logger     lager.Logger
+  	runFactory db.PipelineRunFactory
   }
 
   func NewServer(
   	logger lager.Logger,
-  	checkFactory db.CheckFactory,
   	runFactory db.PipelineRunFactory,
   ) *Server {
   	return &Server{
-  		logger:       logger,
-  		checkFactory: checkFactory,
-  		runFactory:   runFactory,
+  		logger:     logger,
+  		runFactory: runFactory,
   	}
   }
   ```
@@ -2785,7 +3056,6 @@ The implementation landed in Task 8 (`CheckComplete`, `Reopen`, `CompletedRunsWi
   package runserver
 
   import (
-  	"context"
   	"encoding/json"
   	"errors"
   	"fmt"
@@ -2794,7 +3064,6 @@ The implementation landed in Task 8 (`CheckComplete`, `Reopen`, `CompletedRunsWi
   	"strconv"
 
   	"code.cloudfoundry.org/lager/v3"
-  	"code.cloudfoundry.org/lager/v3/lagerctx"
 
   	"github.com/concourse/concourse/atc"
   	"github.com/concourse/concourse/atc/api/accessor"
@@ -2829,6 +3098,10 @@ The implementation landed in Task 8 (`CheckComplete`, `Reopen`, `CompletedRunsWi
   		}
 
   		acc := accessor.GetAccessor(r)
+  		// pass-through: CreateRun itself triggers entry jobs AND enqueues
+  		// the frozen check set (shared-contracts §7.1 items 2/8; F27,
+  		// 2026-07-09 — previously the enqueue lived here, which left
+  		// factory-created runs without their frozen checks)
   		run, err := s.runFactory.CreateRun(pipeline.ID(), validated, acc.UserInfo().DisplayUserId)
   		if err != nil {
   			logger.Error("failed-to-create-run", err)
@@ -2836,55 +3109,12 @@ The implementation landed in Task 8 (`CheckComplete`, `Reopen`, `CompletedRunsWi
   			return
   		}
 
-  		s.enqueueInitialChecks(logger, run)
-
   		w.WriteHeader(http.StatusCreated)
   		err = json.NewEncoder(w).Encode(present.PipelineRun(run))
   		if err != nil {
   			logger.Error("failed-to-encode-run", err)
   		}
   	})
-  }
-
-  // enqueueInitialChecks fires one manually-triggered check per resource of
-  // the run's instance pipeline — the frozen-check-set pinning model
-  // (shared-contracts §7.1). Best-effort: failures are logged, never fail
-  // run creation (fly check-resource remains available).
-  func (s *Server) enqueueInitialChecks(logger lager.Logger, run db.PipelineRun) {
-  	instance, found, err := run.InstancePipeline()
-  	if err != nil {
-  		logger.Error("failed-to-load-instance-pipeline", err)
-  		return
-  	}
-  	if !found {
-  		return
-  	}
-
-  	resourceTypes, err := instance.ResourceTypes()
-  	if err != nil {
-  		logger.Error("failed-to-load-instance-resource-types", err)
-  		return
-  	}
-  	resources, err := instance.Resources()
-  	if err != nil {
-  		logger.Error("failed-to-load-instance-resources", err)
-  		return
-  	}
-
-  	for _, resource := range resources {
-  		_, _, err := s.checkFactory.TryCreateCheck(
-  			lagerctx.NewContext(context.Background(), logger),
-  			resource,
-  			resourceTypes,
-  			nil,  // from latest
-  			true, // manually triggered: skip interval
-  			true, // skip interval recursively
-  			true, // persist to DB
-  		)
-  		if err != nil {
-  			logger.Error("failed-to-enqueue-initial-check", err, lager.Data{"resource": resource.Name()})
-  		}
-  	}
   }
 
   func (s *Server) ListRuns(pipeline db.Pipeline) http.Handler {
@@ -2946,10 +3176,10 @@ The implementation landed in Task 8 (`CheckComplete`, `Reopen`, `CompletedRunsWi
   }
   ```
 
-- [ ] Wire into `atc/api/handler.go`: add param `dbPipelineRunFactory db.PipelineRunFactory` to `NewHandler` (after `dbCheckFactory` at :46); construct the server next to `pipelineServer` (:109):
+- [ ] Wire into `atc/api/handler.go`: add param `dbPipelineRunFactory db.PipelineRunFactory` to `NewHandler` (after `dbCheckFactory` at :46); construct the server next to `pipelineServer` (:109 — no CheckFactory: the factory owns the frozen-check enqueue, F27 2026-07-09):
 
   ```go
-  	runServer := runserver.NewServer(logger, dbCheckFactory, dbPipelineRunFactory)
+  	runServer := runserver.NewServer(logger, dbPipelineRunFactory)
   ```
   and add route entries next to the pipeline entries (:198):
 
@@ -2962,7 +3192,7 @@ The implementation landed in Task 8 (`CheckComplete`, `Reopen`, `CompletedRunsWi
 
 - [ ] Update callers:
   - `atc/api/api_suite_test.go`: declare `fakePipelineRunFactory *dbfakes.FakePipelineRunFactory` with the other suite vars (:49 block), initialize it in the BeforeEach (`fakePipelineRunFactory = new(dbfakes.FakePipelineRunFactory)`) and pass it in the `api.NewHandler(...)` call (:182) after `dbCheckFactory`.
-  - `atc/atccmd/command.go`: add `dbPipelineRunFactory db.PipelineRunFactory` parameter to `constructAPIHandler` (:2181, after `dbCheckFactory`), pass it through to `api.NewHandler` (:2256), and at the `constructAPIHandler` call site inside `constructAPIMembers` (:932) construct and pass `db.NewPipelineRunFactory(dbConn, lockFactory)`.
+  - `atc/atccmd/command.go`: add `dbPipelineRunFactory db.PipelineRunFactory` parameter to `constructAPIHandler` (:2181, after `dbCheckFactory`), pass it through to `api.NewHandler` (:2256), and at the `constructAPIHandler` call site inside `constructAPIMembers` (:932) construct and pass `db.NewPipelineRunFactory(logger, dbConn, lockFactory, dbCheckFactory)` (`logger` is the `constructAPIMembers` parameter at :846; `dbCheckFactory` is constructed at :902 — F27, 2026-07-09).
 
 - [ ] Run to green:
   ```bash
@@ -2972,7 +3202,7 @@ The implementation landed in Task 8 (`CheckComplete`, `Reopen`, `CompletedRunsWi
 - [ ] Commit:
   ```bash
   git add atc/pipeline_run.go atc/api/
-  git commit -m "feat(api): pipeline-run create/list/get handlers with initial-check enqueue" -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+  git commit -m "feat(api): pipeline-run create/list/get handlers (pass-through to PipelineRunFactory)" -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
   ```
 
 ---
@@ -3998,3 +4228,12 @@ Never use `--race` (parallel compilation failures per CLAUDE.md). Do not reduce 
 - `build.Finish` gained one non-blocking `Notify` — removable independently; polling covers the loss (never notify-only, per the fork's lossy-NOTIFY lesson).
 
 **Known v1 limitations (documented in contracts §7.1):** frozen-check-set pinning can see newer versions from shared scopes for non-`passed:` inputs of late jobs; `keep_last: 0` is not representable (JSON omitempty); a run whose entry-job build creation fails midway stays `running` until TTL retention or manual archive.
+
+---
+
+## Design-review amendments
+
+- **2026-07-09 (F19 — `pipeline.Config()` dropped Template/Params/RunRetention; BLOCKER):** `atc/db/pipeline.go` `Config()` (:235) reconstructs only the 7 legacy fields, so Task 8's `CreateRun` — which reads `template.Config()` and re-saves it as the instance — would have saved instances with `template=false`, breaking lidar exclusion (Task 12) and frozen-check version pinning, and failing the plan's own `instance.Template()` assertion mid-Task-8; `fly get-pipeline` → `set-pipeline` (configserver/get.go:60 serves `Config()`) would silently de-template. **Change:** Task 7 gains an explicit step setting `Template`/`Params`/`RunRetention` from the already-scanned row in `Config()`'s final struct literal, and the Task 7 spec gains a save→`Config()` round-trip assertion block (template AND non-template default cases). Task 8's `CreateRun` needs no change; a warning comment above `template.Config()` tells implementers to fix `Config()` — never to force `Template=true` in the factory — if the `instance.Template()` assertion fails. No contract change (contracts §7 already defines the three `atc.Config` keys).
+- **2026-07-09 (F26 — reopen detection missed fast-finishing builds):** `CompletedRunsWithNewActivity` matched only `pending`/`started` builds, but the `build.Finish` notify (the only wakeup besides the 10s poll) fires after a build leaves those states — a retrigger that started AND finished inside one polling gap (plan-creation failures Finish without ever starting, buildstarter.go:225) was never observed, leaving the run's terminal status stale forever (violating design decision 4). **Change:** the Task 8 EXISTS predicate is widened with `OR (b.completed AND r.completed_at IS NOT NULL AND b.end_time > r.completed_at)` — self-terminating, since reopen→re-complete stamps a `completed_at` newer than every build `end_time`. Task 9 gains the spec "surfaces fast-finishing retriggers that never linger in pending or started" (finish a retrigger build immediately after `run.Finish`, assert the run surfaces, then reopen→re-complete and assert it stops surfacing). Design decision 4 and §7.1 item 3 (Task 1) amended to state the completed-after-`completed_at` predicate.
+- **2026-07-09 (F27 — frozen-check enqueue lived only in the API handler; latent, contract hygiene):** `enqueueInitialChecks` was implemented on the runserver handler while §7.1 promised checks "at run creation" and later-wave consumers (dispatch, experiments — contracts decision 22) call `db.PipelineRunFactory` in-process; with lidar excluding template pipelines, a factory-created run whose entry job has a get step would pend forever (NULL scope → trivially-passing `ResourcesChecked` → zero versions). Latent today (no planned consumer renders get-step entry jobs) but a §7.1 contract mismatch. **Change:** the enqueue moved into `pipelineRunFactory.CreateRun` (Task 8): `NewPipelineRunFactory` now injects a `CheckFactory` plus a `lager.Logger` (Registrar/Reaper idiom — the §2.3 `CreateRun` signature is frozen without ctx/logger, and the enqueue is best-effort: failures logged, never returned). The Task 16 handler is reduced to a pass-through (`runserver.NewServer(logger, runFactory)`, no CheckFactory, `enqueueInitialChecks` deleted from `runs.go`); all constructor call sites updated (Tasks 8/9/10/11 tests use the db-suite `logger`/`checkFactory` globals; Task 14 wires `dbCheckFactory` from command.go:1103, Task 16 from :902). New Task 8 factory DB spec "enqueues the frozen check set at creation so get-step entry jobs get versions" (template with a get-step entry job; asserts exactly one persisted check build for the instance resource). §7.1 item 2 (Task 1) amended; frozen interface `PipelineRunFactory`/`CreateRun` shapes unchanged.
+- **2026-07-09 (F30-part — `((run_id))` reserved var + id allocation before materialization; co-signed with dispatch + harvest):** §8.1 defines `AGENT_PIPELINE_RUN_ID` as `pipeline_runs.id`, but the only run-scoped var was `((run))` — the per-template run NUMBER, which resets per template and collides across tickets (metrics/questions/reviews/gateway rows would key on colliding numbers while tickets/secrets/principals use the id). **Change (this plan's part):** `CreateRun` (Task 8) allocates `pipeline_runs.id` inside the creation transaction via `SELECT nextval(pg_get_serial_sequence('pipeline_runs','id'))` BEFORE materialization and inserts the row with the explicit id (`RETURNING created_at` only); `atc.MaterializeRunConfig` (Task 6) gains a `runID int` parameter and injects `run_id` as a second reserved static var alongside `run` (precedence over params); the params-schema validator (Task 5) reserves `run_id` next to `run` (new reject assertion). Tests: Task 6 gains the `((run_id))` resolution/precedence spec; Task 8's factory spec interpolates a `run-((run))-id-((run_id))` marker source and asserts it equals `run-1-id-<run.ID()>`. Design decision 7, §7.1 items 5 + new item 9, and the §11 log (Task 1) record the var. The renderer-site switch to `((run_id))` and the harvest `AGENT_PIPELINE_RUN_ID` env fallback are dispatch's (plan 11) and harvest's (plan 09) parts of F30.

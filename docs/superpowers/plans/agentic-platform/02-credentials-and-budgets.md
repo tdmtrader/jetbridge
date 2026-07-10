@@ -29,7 +29,7 @@
 - §1.3 `agent_user_credentials`, §1.4 `agent_cost_ledger`, §1.13 Platform credential policy
 - §2.6 UserCredential (`agent/credentials/types.go`), §2.7 Budget library (`agent/budget/budget.go`)
 - §4.2 routes `SetAgentUserCredential`, `GetAgentUserCredentialStatus`, `DeleteAgentUserCredential`, `GetAgentCostRollup`, `SubmitAgentCostRecord`
-- §8.2 ephemeral run secret `agent-run-<run-id>` + long-lived `agent-platform-credential` secret
+- §8.2 ephemeral run secret `agent-run-<run-id>` + long-lived `agent-platform-credential` secret + the run-secret safety-net reaper (`RunSecretReaper`, Task 15a — per-run secret cleanup is OWNED here per final-review F22; dispatch's in-process `Cleanup` is only the first line of defense)
 
 **Contract surfaces this plan CONSUMES:**
 - §1.2/§4.1 (agent-identity): `principal(costs:write)` — deferred via addendum; NOT consumed in code this wave.
@@ -72,6 +72,8 @@ The contracts doc has four points that need cross-workstream agreement recorded 
   - **Third credentials migration:** 1773106022 (within the allocated 1773106020–29 block) seeds the §1.13 `agent-platform` service user and creates the `agent_cost_daily_rollup` SQL view (the "dashboard view" deliverable).
   - **§1.13 ticket-budget arithmetic:** `budget.Ledger.SpentForTicket` (and therefore `Checker.TicketRemaining`/`StepSlice`) EXCLUDES `source = 'harvest_judge'` rows — per §1.13 the judge must never be starved by an agent that burned the ticket budget; judge spend is capped separately by the workflow's `judge_usd`. The global daily cap (`SpentSince`) includes ALL sources, platform spend included.
   - **Platform-credential provisioning (§1.13/§8.2):** the `agent-platform` service user never logs in, so `PUT /api/v1/agent/user-credentials` accepts an optional body field `"user": "platform"` (the ONLY non-self value), allowed for admin tokens only, which vaults the credential onto the service user's row; `GET`/`DELETE /api/v1/agent/user-credentials[/:kind]?user=platform` mirror it. Surfaced as `fly agent auth --platform [--delete]` (admin). All other access remains strictly self-scoped.
+- 2026-07-09 (credentials-and-budgets final-review F22 addendum; affects: pipeline-runs, dispatch, agent-identity, gateway-mcp):
+  - **Run-secret cleanup ownership (§8.2's "reaper safety-net GC"):** OWNED by credentials-and-budgets. `credentials.RunSecretReaper` (plan 02 Task 15a) IS the safety-net GC that §8.2, plan 03, and plan 11 reference: a polling `RunnableComponent` beside the platform syncer that lists worker-namespace secrets by the `concourse/agent-run` label, deletes any whose run is complete or absent (narrow `RunActive(runID)` seam; production impl `atc/db.NewAgentRunChecker` over `pipeline_runs` — absent row OR absent table = inactive), and best-effort revokes the per-run principal `agent-run-<run-id>` in the same pass. Attribution rewording: dispatch's in-process `SecretAttacher.Cleanup` on abort/error paths (plan 11) is the FIRST line of defense only; plan 03's lifecycler stays deliberately pure (no attacher/clientset — do NOT plumb one in). A 5-minute creation-grace window protects the dispatch `CreateRun`→`Attach` ordering from sweep races. The `PrincipalRevoker` binding ships nil until agent-identity's store lands (its cutover task binds it) — safe interim because per-run principals carry `expires_at`, unlike the secret.
 ```
 
 - [ ] Commit:
@@ -87,11 +89,144 @@ git commit -m "docs(agent): wave-1 credentials-and-budgets contract addendum"
 
 The probe answers: does headless `claude -p` usage under a `CLAUDE_CODE_OAUTH_TOKEN` share the token owner's interactive rate-limit window? Build the harness now; Task 3 runs it. Plain Go test, `//go:build live`, per the jetbridge live-test pattern (CLAUDE.md).
 
+**Decisiveness (final-review F35, 2026-07-09):** `/status` displays usage at coarse granularity, so a burst of tiny "Reply with exactly: ok" calls can be invisible even when the window IS shared — a null `/status` delta from such a burst can never support a NOT-SHARED conclusion. The harness therefore (a) defaults `PROBE_PROMPT` to a ~800-word generation so the burst is sized ABOVE display granularity, (b) sums the captured CLI envelopes' usage into a `PROBE_TOTAL` line (the envelope side of the comparison), and (c) the memo's verdict is calibrated against an interactive burst that visibly moved `/status` (threshold T), with an asymmetric rule: any visible delta ⇒ SHARED; NOT SHARED only above 2×T; anything else ⇒ INCONCLUSIVE, which downstream consumers MUST treat as SHARED.
+
 **Files:**
+- Create: `agent/credentials/probe_usage.go`
+- Create: `agent/credentials/probe_usage_test.go`
 - Create: `agent/credentials/live_rate_limit_probe_test.go`
 - Create: `docs/superpowers/plans/agentic-platform/notes/2026-07-rate-limit-probe.md`
 
 **Steps:**
+
+- [ ] Write the failing unit test `agent/credentials/probe_usage_test.go` (plain `go test`, NOT live-gated — the summing must be verifiable without a cluster):
+
+```go
+package credentials_test
+
+import (
+	"testing"
+
+	"github.com/concourse/concourse/agent/credentials"
+)
+
+func TestSumProbeUsageSumsEnvelopes(t *testing.T) {
+	logs := `PROBE_START calls=2 sleep=2s
+PROBE_RESULT call=1 wall_ms=5000 {"type":"result","is_error":false,"total_cost_usd":0.031,"usage":{"input_tokens":12,"output_tokens":820}}
+PROBE_RESULT call=2 wall_ms=6100 {"type":"result","is_error":true,"cost_usd":0.009,"usage":{"input_tokens":11,"output_tokens":240}}
+PROBE_DONE`
+
+	totals := credentials.SumProbeUsage(logs)
+	if totals.Envelopes != 2 {
+		t.Fatalf("envelopes: %d", totals.Envelopes)
+	}
+	if totals.InputTokens != 23 || totals.OutputTokens != 1060 {
+		t.Fatalf("tokens: in=%d out=%d", totals.InputTokens, totals.OutputTokens)
+	}
+	// older CLI envelopes say cost_usd, newer say total_cost_usd — both count
+	if totals.CostUSD < 0.0399 || totals.CostUSD > 0.0401 {
+		t.Fatalf("cost: %f", totals.CostUSD)
+	}
+	if totals.Errors != 1 {
+		t.Fatalf("errors: %d", totals.Errors)
+	}
+}
+
+func TestSumProbeUsageSkipsUnparseableLines(t *testing.T) {
+	logs := `PROBE_RESULT call=1 wall_ms=100 bash: claude: command not found
+PROBE_RESULT call=2 wall_ms=100 {"not":"a CLI envelope"}
+random line {"type":"result","usage":{"output_tokens":99}}`
+
+	totals := credentials.SumProbeUsage(logs)
+	if totals.Envelopes != 0 {
+		t.Fatalf("nothing should parse, got %d envelopes", totals.Envelopes)
+	}
+}
+```
+
+- [ ] Run to verify it fails:
+
+```bash
+go test ./agent/credentials/
+```
+
+Expected failure: compile error `undefined: credentials.SumProbeUsage`.
+
+- [ ] Write `agent/credentials/probe_usage.go`:
+
+```go
+package credentials
+
+import (
+	"encoding/json"
+	"strings"
+)
+
+// ProbeTotals sums the usage reported by the CLI envelopes the rate-limit
+// probe captures. F35: `/status` displays usage at coarse granularity, so
+// the decision memo compares this envelope-side total against a calibrated
+// interactive burst — a probe burst too small to move /status can never
+// support a NOT-SHARED conclusion.
+type ProbeTotals struct {
+	Envelopes    int
+	InputTokens  int
+	OutputTokens int
+	CostUSD      float64
+	Errors       int
+}
+
+type probeEnvelope struct {
+	Type         string  `json:"type"`
+	IsError      bool    `json:"is_error"`
+	CostUSD      float64 `json:"cost_usd"`       // older CLI versions
+	TotalCostUSD float64 `json:"total_cost_usd"` // newer CLI versions
+	Usage        struct {
+		InputTokens  int `json:"input_tokens"`
+		OutputTokens int `json:"output_tokens"`
+	} `json:"usage"`
+}
+
+// SumProbeUsage extracts the JSON envelope from each PROBE_RESULT line of
+// the probe pod's logs and sums usage into a PROBE_TOTAL. Lines without a
+// parseable envelope are skipped — they still show up in the raw log, but
+// contribute nothing here, so Envelopes < calls flags a degraded run.
+func SumProbeUsage(logs string) ProbeTotals {
+	var totals ProbeTotals
+	for _, line := range strings.Split(logs, "\n") {
+		if !strings.HasPrefix(line, "PROBE_RESULT ") {
+			continue
+		}
+		brace := strings.Index(line, "{")
+		if brace < 0 {
+			continue
+		}
+		var env probeEnvelope
+		if err := json.Unmarshal([]byte(line[brace:]), &env); err != nil || env.Type == "" {
+			continue
+		}
+		totals.Envelopes++
+		totals.InputTokens += env.Usage.InputTokens
+		totals.OutputTokens += env.Usage.OutputTokens
+		cost := env.TotalCostUSD
+		if cost == 0 {
+			cost = env.CostUSD
+		}
+		totals.CostUSD += cost
+		if env.IsError {
+			totals.Errors++
+		}
+	}
+	return totals
+}
+```
+
+- [ ] Run to verify pass:
+
+```bash
+go test ./agent/credentials/
+```
+
+Expected: `ok`.
 
 - [ ] Write `agent/credentials/live_rate_limit_probe_test.go`. It is compile-gated behind `live` so it cannot break normal builds; it refuses live namespaces:
 
@@ -110,6 +245,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/concourse/concourse/agent/credentials"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -122,12 +258,18 @@ import (
 // (`claude` → /status) before and after, and records findings in
 // docs/superpowers/plans/agentic-platform/notes/2026-07-rate-limit-probe.md.
 //
+// F35: the default prompt is a ~800-word generation (NOT a one-token "ok")
+// so the burst is sized above /status display granularity, and the captured
+// envelopes' usage is summed into a PROBE_TOTAL line the memo compares
+// against the calibrated interactive threshold T.
+//
 // Required env:
 //   CLAUDE_CODE_OAUTH_TOKEN  - token from `claude setup-token`
 //   K8S_TEST_NAMESPACE       - THROWAWAY namespace (not cicd/concourse/default)
 // Optional env:
 //   PROBE_CALLS (default 5), PROBE_SLEEP_SECONDS (default 5),
-//   PROBE_IMAGE (default node:22-bookworm), PROBE_MODEL (default: CLI default)
+//   PROBE_IMAGE (default node:22-bookworm), PROBE_MODEL (default: CLI default),
+//   PROBE_PROMPT (default: ~800-word essay generation)
 func TestLiveRateLimitProbe(t *testing.T) {
 	token := os.Getenv("CLAUDE_CODE_OAUTH_TOKEN")
 	if token == "" {
@@ -156,6 +298,12 @@ func TestLiveRateLimitProbe(t *testing.T) {
 	if m := os.Getenv("PROBE_MODEL"); m != "" {
 		modelFlag = "--model " + m
 	}
+	// F35: default to a generation large enough to register on /status —
+	// one-token replies sit below its display granularity.
+	prompt := os.Getenv("PROBE_PROMPT")
+	if prompt == "" {
+		prompt = "Write an 800-word essay on the history of container orchestration. Output only the essay."
+	}
 
 	stamp := time.Now().Format("150405")
 	secretName := "rate-limit-probe-token-" + stamp
@@ -177,7 +325,7 @@ npm install -g @anthropic-ai/claude-code >/dev/null 2>&1
 echo "PROBE_START calls=%d sleep=%ds"
 for i in $(seq 1 %d); do
   start=$(date +%%s%%3N)
-  out=$(claude -p "Reply with exactly: ok" --output-format json %s 2>&1) || true
+  out=$(claude -p "$PROBE_PROMPT" --output-format json %s 2>&1) || true
   end=$(date +%%s%%3N)
   echo "PROBE_RESULT call=$i wall_ms=$((end-start)) $out"
   sleep %d
@@ -197,6 +345,9 @@ echo PROBE_DONE`, calls, sleepSec, calls, modelFlag, sleepSec)
 				Image:   image,
 				Command: []string{"bash", "-c", script},
 				Env: []corev1.EnvVar{{
+					Name:  "PROBE_PROMPT",
+					Value: prompt,
+				}, {
 					Name: "CLAUDE_CODE_OAUTH_TOKEN",
 					ValueFrom: &corev1.EnvVarSource{
 						SecretKeyRef: &corev1.SecretKeySelector{
@@ -255,7 +406,17 @@ echo PROBE_DONE`, calls, sleepSec, calls, modelFlag, sleepSec)
 			t.Logf("LIMIT SIGNAL: %s", line)
 		}
 	}
-	t.Logf("probe complete: %d calls, %d rate-limit signals — record findings in the decision memo", calls, limited)
+
+	// F35: sum the captured envelopes — the memo compares this against the
+	// calibrated interactive threshold T. A run with no parseable envelopes
+	// cannot support ANY conclusion, so it fails loudly.
+	totals := credentials.SumProbeUsage(logs)
+	if totals.Envelopes == 0 {
+		t.Fatalf("no parseable CLI envelopes in %d calls — PROBE_TOTAL cannot be computed; the memo may not conclude anything from this run", calls)
+	}
+	t.Logf("PROBE_TOTAL calls=%d envelopes=%d input_tokens=%d output_tokens=%d cost_usd=%.4f errors=%d",
+		calls, totals.Envelopes, totals.InputTokens, totals.OutputTokens, totals.CostUSD, totals.Errors)
+	t.Logf("probe complete: %d calls, %d rate-limit signals — record PROBE_TOTAL and findings in the decision memo", calls, limited)
 }
 
 func probeClient(t *testing.T) kubernetes.Interface {
@@ -296,7 +457,7 @@ func envIntOr(t *testing.T, name string, def int) int {
 go vet -tags live ./agent/credentials/
 ```
 
-Expected: exits 0 (package has only this test file so far; vet compiles it).
+Expected: exits 0 (the package holds `probe_usage.go` plus this live-gated file; vet compiles both).
 
 - [ ] Write the memo template `docs/superpowers/plans/agentic-platform/notes/2026-07-rate-limit-probe.md`:
 
@@ -311,19 +472,26 @@ Expected: exits 0 (package has only this test file so far; vet compiles it).
 ## Method
 
 1. Owner opens an interactive `claude` session and records `/status` usage BEFORE.
-2. Run the probe: N sequential headless `claude -p` calls in a pod on theborg with the owner's setup-token.
-3. Owner records `/status` usage AFTER; compare deltas; note any 429/limit signals in probe output.
-4. Optional second burst with PROBE_CALLS=20 to stress the window.
+2. **Calibrate /status granularity (F35):** in the interactive session, generate output (long essays) until `/status` FIRST visibly moves. Record the approximate volume (output tokens / cost, from the interactive transcript) that produced that first visible movement — this is the calibrated visibility threshold **T**. Without T, no NOT-SHARED verdict is possible.
+3. Run the probe: N sequential headless `claude -p` calls of `PROBE_PROMPT` (default ~800-word generations — sized ABOVE display granularity, per F35) in a pod on theborg with the owner's setup-token. Record the test's `PROBE_TOTAL` line (envelope-summed input/output tokens, cost, errors).
+4. Owner records `/status` usage AFTER; compare deltas; note any 429/limit signals in probe output.
+5. If `PROBE_TOTAL` < 2×T, escalate: rerun with `PROBE_CALLS=20` (and/or a longer `PROBE_PROMPT`) until `PROBE_TOTAL` ≥ 2×T or limit signals appear.
 
 ## Raw results
 
-| run | calls | wall-time per call (ms) | limit signals | interactive usage before | interactive usage after |
-|---|---|---|---|---|---|
-| 1 | _ | _ | _ | _ | _ |
+- Calibrated visibility threshold **T** (interactive volume that first moved `/status`): _
+
+| run | calls | prompt | wall-time per call (ms) | PROBE_TOTAL tokens in/out | PROBE_TOTAL cost (usd) | limit signals | interactive usage before | interactive usage after |
+|---|---|---|---|---|---|---|---|---|
+| 1 | _ | _ | _ | _ | _ | _ | _ | _ |
 
 ## Findings
 
-- Shared window: YES / NO / PARTIAL — _evidence_
+- Shared window: SHARED / NOT SHARED / PARTIAL / INCONCLUSIVE — _evidence_
+- **Decisiveness rule (F35 — asymmetric, calibrated against T):**
+  - ANY visible `/status` delta attributable to the probe ⇒ **SHARED** (a small burst can only under-report sharing, never fake it).
+  - **NOT SHARED** may be concluded ONLY when `PROBE_TOTAL` ≥ 2×T AND `/status` did not move.
+  - Anything else ⇒ **INCONCLUSIVE**. Record it as such; downstream consumers MUST treat INCONCLUSIVE as SHARED (fail-safe: throttle as if shared).
 - Headless failure mode when limited: _error string, envelope `is_error`, exit code_
 
 ## Decision (feeds budget defaults and batch sizing)
@@ -336,13 +504,16 @@ Expected: exits 0 (package has only this test file so far; vet compiles it).
 ## Consequences
 
 - If SHARED: dispatch (wave 4) must throttle per-user concurrency; experiments (wave 5) batch under the daily cap with per-user serialization; document in workflow defaults.
-- If NOT shared: budgets are purely cost-control; concurrency limited only by the daily cap.
+- If NOT SHARED (only concludable above the calibrated 2×T threshold): budgets are purely cost-control; concurrency limited only by the daily cap.
+- If INCONCLUSIVE: identical operational posture to SHARED — dispatch/experiments throttle as if shared, and the memo notes what a future decisive rerun would need (bigger burst, longer prompt, fresh calibration).
 ```
 
 - [ ] Commit:
 
 ```bash
-git add agent/credentials/live_rate_limit_probe_test.go docs/superpowers/plans/agentic-platform/notes/2026-07-rate-limit-probe.md
+git add agent/credentials/probe_usage.go agent/credentials/probe_usage_test.go \
+        agent/credentials/live_rate_limit_probe_test.go \
+        docs/superpowers/plans/agentic-platform/notes/2026-07-rate-limit-probe.md
 git commit -m "feat(agent): live rate-limit probe harness + decision memo template"
 ```
 
@@ -365,7 +536,9 @@ kubectl --context theborg create namespace agent-probe-$(date +%m%d)
 
 - [ ] Record interactive usage BEFORE: operator runs `claude` locally (the account whose setup-token is used), runs `/status`, screenshots/copies the usage block into the memo's Raw results table.
 
-- [ ] Run the probe (operator supplies the token; 5 calls first):
+- [ ] **Calibrate the /status visibility threshold T (F35):** still in the interactive session, ask for long generations (e.g. "write a 2000-word essay …") and re-check `/status` after each until it FIRST visibly moves. Record the approximate output-token/cost volume that produced that first movement as T in the memo's Raw results. No NOT-SHARED verdict is permitted without T.
+
+- [ ] Run the probe (operator supplies the token; 5 calls of the default ~800-word `PROBE_PROMPT` first):
 
 ```bash
 KUBECONFIG=~/.kube/config \
@@ -374,11 +547,11 @@ CLAUDE_CODE_OAUTH_TOKEN=<paste from `claude setup-token`> \
 go test -tags live -run '^TestLiveRateLimitProbe$' -v -count=1 -timeout 30m ./agent/credentials/
 ```
 
-Expected: test PASSES, prints `PROBE_RESULT` lines with per-call wall-times and JSON envelopes, ends with `PROBE_DONE`.
+Expected: test PASSES, prints `PROBE_RESULT` lines with per-call wall-times and JSON envelopes, a `PROBE_TOTAL` summary line (envelope-summed tokens/cost — fails loudly if no envelope parsed), and ends with `PROBE_DONE`.
 
-- [ ] Record interactive usage AFTER (same `/status` check); if the deltas are ambiguous, rerun with `PROBE_CALLS=20 PROBE_SLEEP_SECONDS=2`.
+- [ ] Record interactive usage AFTER (same `/status` check). Apply the memo's decisiveness rule (F35): any visible delta ⇒ SHARED; if no delta and `PROBE_TOTAL` < 2×T, the run is not decisive — escalate with `PROBE_CALLS=20 PROBE_SLEEP_SECONDS=2` (and/or a longer `PROBE_PROMPT`) until `PROBE_TOTAL` ≥ 2×T or a delta/limit signal appears.
 
-- [ ] Fill in ALL sections of `docs/superpowers/plans/agentic-platform/notes/2026-07-rate-limit-probe.md`: raw results, findings (shared YES/NO/PARTIAL with evidence), decision numbers (per-ticket default, daily cap recommendation, concurrency guidance), consequences. Flip status line to `PROBE RUN — DECISION RECORDED`.
+- [ ] Fill in ALL sections of `docs/superpowers/plans/agentic-platform/notes/2026-07-rate-limit-probe.md`: raw results (including T and every run's `PROBE_TOTAL`), findings (SHARED / NOT SHARED / PARTIAL / INCONCLUSIVE per the calibrated rule — INCONCLUSIVE is a legitimate verdict and downstream treats it as SHARED), decision numbers (per-ticket default, daily cap recommendation, concurrency guidance), consequences. Flip status line to `PROBE RUN — DECISION RECORDED`.
 
 - [ ] Delete the throwaway namespace:
 
@@ -3874,6 +4047,584 @@ git commit -m "feat(atc): platform-credential secret syncer component (bidirecti
 
 ---
 
+### Task 15a: Run-secret safety-net reaper (`RunSecretReaper` RunnableComponent)
+
+**Added 2026-07-09 (final-review F22).** §8.2's "reaper safety-net GC" was referenced by plans 00/03/11 but implemented by none — every completed run would permanently leak `agent-run-<id>` holding the user's decrypted Anthropic token, and a crash between `Attach` and pod scheduling would orphan it forever. Ownership is recorded in the Task 1 F22 addendum: this plan implements the reaper, beside the platform syncer (same clientset + namespace, same `RunnableComponent` block in `atc/atccmd/command.go`). It sweeps worker-namespace secrets labeled `concourse/agent-run`, deletes any whose run is complete or absent (narrow `RunActive(runID)` seam), and best-effort revokes the matching per-run principal `agent-run-<run-id>` in the same pass. A 5-minute creation-grace window protects dispatch's `CreateRun`→`Attach` ordering from sweep races. Dispatch's in-process `Cleanup` remains the first line; plan 03's lifecycler stays pure (no clientset).
+
+**Files:**
+- Create: `agent/credentials/secret_reaper.go`
+- Test: `agent/credentials/secret_reaper_test.go`
+- Create: `atc/db/agent_run_checker.go`
+- Test: `atc/db/agent_run_checker_test.go`
+- Modify: `atc/component.go` (new constant after `ComponentAgentPlatformCredentialSyncer`, Task 15)
+- Modify: `atc/atccmd/command.go` (append component inside the `cmd.Kubernetes.Namespace != ""` block, immediately after the Task 15 syncer)
+- Modify: `deploy/chart/templates/rbac.yaml` (namespaced secrets rule for the pod-manager Role — the web SA currently has only cluster-wide `secrets: get`, which cannot list-by-label or delete)
+
+**Steps:**
+
+- [ ] Write the failing test `agent/credentials/secret_reaper_test.go` (fake clientset per repo convention; fakes for the two narrow seams):
+
+```go
+package credentials_test
+
+import (
+	"context"
+	"fmt"
+	"strconv"
+	"testing"
+	"time"
+
+	"code.cloudfoundry.org/lager/v3/lagertest"
+	"github.com/concourse/concourse/agent/credentials"
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes/fake"
+)
+
+type fakeRunChecker struct {
+	active map[int]bool
+	failOn map[int]bool
+	calls  []int
+}
+
+func (f *fakeRunChecker) RunActive(runID int) (bool, error) {
+	f.calls = append(f.calls, runID)
+	if f.failOn[runID] {
+		return false, fmt.Errorf("checker exploded for run %d", runID)
+	}
+	return f.active[runID], nil
+}
+
+type fakeRevoker struct {
+	names []string
+	err   error
+}
+
+func (f *fakeRevoker) RevokeByName(name string) error {
+	f.names = append(f.names, name)
+	return f.err
+}
+
+func seedRunSecret(t *testing.T, clientset *fake.Clientset, ns string, runID int, age time.Duration) {
+	t.Helper()
+	_, err := clientset.CoreV1().Secrets(ns).Create(context.Background(), &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              credentials.RunSecretName(runID),
+			Namespace:         ns,
+			Labels:            map[string]string{credentials.RunLabel: strconv.Itoa(runID)},
+			CreationTimestamp: metav1.NewTime(time.Now().Add(-age)),
+		},
+		Type: corev1.SecretTypeOpaque,
+		StringData: map[string]string{
+			credentials.SecretKeyAnthropicToken: "tok",
+			credentials.SecretKeyPrincipalToken: "cap1.1.x",
+		},
+	}, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestReaperDeletesFinishedRunSecretAndRevokesPrincipal(t *testing.T) {
+	clientset := fake.NewSimpleClientset()
+	seedRunSecret(t, clientset, "ns", 42, time.Hour) // finished
+	seedRunSecret(t, clientset, "ns", 43, time.Hour) // still running
+	checker := &fakeRunChecker{active: map[int]bool{43: true}}
+	revoker := &fakeRevoker{}
+	reaper := credentials.NewRunSecretReaper(lagertest.NewTestLogger("reaper"), clientset, "ns", checker, revoker)
+
+	if err := reaper.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := clientset.CoreV1().Secrets("ns").Get(context.Background(), "agent-run-42", metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("finished run's secret must be reaped, got err=%v", err)
+	}
+	if _, err := clientset.CoreV1().Secrets("ns").Get(context.Background(), "agent-run-43", metav1.GetOptions{}); err != nil {
+		t.Fatalf("active run's secret must survive: %v", err)
+	}
+	if len(revoker.names) != 1 || revoker.names[0] != "agent-run-42" {
+		t.Fatalf("revoked principals: %v", revoker.names)
+	}
+}
+
+func TestReaperDeletesSecretWhoseRunRowIsAbsent(t *testing.T) {
+	// The F22 crash window: Attach succeeded but the run row was never
+	// created (or was deleted). Absent = inactive = reap.
+	clientset := fake.NewSimpleClientset()
+	seedRunSecret(t, clientset, "ns", 7, time.Hour)
+	reaper := credentials.NewRunSecretReaper(
+		lagertest.NewTestLogger("reaper"), clientset, "ns", &fakeRunChecker{}, nil)
+
+	if err := reaper.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := clientset.CoreV1().Secrets("ns").Get(context.Background(), "agent-run-7", metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("orphaned secret must be reaped, got err=%v", err)
+	}
+}
+
+func TestReaperGraceWindowProtectsFreshSecrets(t *testing.T) {
+	// Protects the dispatch CreateRun→Attach ordering: a just-created
+	// secret is never reaped even when its run is not (yet) visible.
+	clientset := fake.NewSimpleClientset()
+	seedRunSecret(t, clientset, "ns", 9, 0)
+	checker := &fakeRunChecker{}
+	reaper := credentials.NewRunSecretReaper(lagertest.NewTestLogger("reaper"), clientset, "ns", checker, nil)
+
+	if err := reaper.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := clientset.CoreV1().Secrets("ns").Get(context.Background(), "agent-run-9", metav1.GetOptions{}); err != nil {
+		t.Fatalf("fresh secret must survive the grace window: %v", err)
+	}
+	if len(checker.calls) != 0 {
+		t.Fatalf("fresh secret must not even be checked: %v", checker.calls)
+	}
+}
+
+func TestReaperIgnoresSecretsWithoutRunLabel(t *testing.T) {
+	clientset := fake.NewSimpleClientset(&corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              credentials.PlatformSecretName,
+			Namespace:         "ns",
+			Labels:            map[string]string{"concourse/agent-platform-credential": "true"},
+			CreationTimestamp: metav1.NewTime(time.Now().Add(-time.Hour)),
+		},
+	})
+	checker := &fakeRunChecker{}
+	reaper := credentials.NewRunSecretReaper(lagertest.NewTestLogger("reaper"), clientset, "ns", checker, nil)
+
+	if err := reaper.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := clientset.CoreV1().Secrets("ns").Get(context.Background(), credentials.PlatformSecretName, metav1.GetOptions{}); err != nil {
+		t.Fatalf("platform secret must never be touched: %v", err)
+	}
+	if len(checker.calls) != 0 {
+		t.Fatalf("unlabeled secrets must not be checked: %v", checker.calls)
+	}
+}
+
+func TestReaperRevokeIsBestEffort(t *testing.T) {
+	// nil revoker (wave-1 wiring, before agent-identity binds it)
+	clientset := fake.NewSimpleClientset()
+	seedRunSecret(t, clientset, "ns", 11, time.Hour)
+	reaper := credentials.NewRunSecretReaper(
+		lagertest.NewTestLogger("reaper"), clientset, "ns", &fakeRunChecker{}, nil)
+	if err := reaper.Run(context.Background()); err != nil {
+		t.Fatalf("nil revoker must be tolerated: %v", err)
+	}
+	if _, err := clientset.CoreV1().Secrets("ns").Get(context.Background(), "agent-run-11", metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("secret must be reaped with nil revoker, got err=%v", err)
+	}
+
+	// failing revoker: revocation is attempted, its error logged, never fatal
+	seedRunSecret(t, clientset, "ns", 12, time.Hour)
+	revoker := &fakeRevoker{err: fmt.Errorf("store down")}
+	reaper = credentials.NewRunSecretReaper(
+		lagertest.NewTestLogger("reaper"), clientset, "ns", &fakeRunChecker{}, revoker)
+	if err := reaper.Run(context.Background()); err != nil {
+		t.Fatalf("revoker error must not fail the sweep: %v", err)
+	}
+	if _, err := clientset.CoreV1().Secrets("ns").Get(context.Background(), "agent-run-12", metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("secret must be reaped despite revoke failure, got err=%v", err)
+	}
+	if len(revoker.names) != 1 || revoker.names[0] != "agent-run-12" {
+		t.Fatalf("revocation must be attempted: %v", revoker.names)
+	}
+}
+
+func TestReaperSkipsUnparseableRunLabel(t *testing.T) {
+	clientset := fake.NewSimpleClientset(&corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              "agent-run-mystery",
+			Namespace:         "ns",
+			Labels:            map[string]string{credentials.RunLabel: "not-a-number"},
+			CreationTimestamp: metav1.NewTime(time.Now().Add(-time.Hour)),
+		},
+	})
+	reaper := credentials.NewRunSecretReaper(
+		lagertest.NewTestLogger("reaper"), clientset, "ns", &fakeRunChecker{}, nil)
+
+	if err := reaper.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := clientset.CoreV1().Secrets("ns").Get(context.Background(), "agent-run-mystery", metav1.GetOptions{}); err != nil {
+		t.Fatalf("unparseable label must be skipped (logged), not deleted: %v", err)
+	}
+}
+
+func TestReaperContinuesSweepWhenCheckerErrors(t *testing.T) {
+	clientset := fake.NewSimpleClientset()
+	seedRunSecret(t, clientset, "ns", 21, time.Hour) // checker errors
+	seedRunSecret(t, clientset, "ns", 22, time.Hour) // reapable
+	checker := &fakeRunChecker{failOn: map[int]bool{21: true}}
+	reaper := credentials.NewRunSecretReaper(lagertest.NewTestLogger("reaper"), clientset, "ns", checker, nil)
+
+	err := reaper.Run(context.Background())
+	if err == nil {
+		t.Fatal("sweep must surface the checker error (component retries next interval)")
+	}
+	if _, err := clientset.CoreV1().Secrets("ns").Get(context.Background(), "agent-run-21", metav1.GetOptions{}); err != nil {
+		t.Fatalf("run 21's secret must be kept on checker error (fail closed): %v", err)
+	}
+	if _, err := clientset.CoreV1().Secrets("ns").Get(context.Background(), "agent-run-22", metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("one bad run must not block the rest of the sweep, got err=%v", err)
+	}
+}
+```
+
+- [ ] Run to verify it fails:
+
+```bash
+go test ./agent/credentials/
+```
+
+Expected failure: compile error `undefined: credentials.NewRunSecretReaper`.
+
+- [ ] Write `agent/credentials/secret_reaper.go`:
+
+```go
+package credentials
+
+import (
+	"context"
+	"fmt"
+	"strconv"
+	"time"
+
+	"code.cloudfoundry.org/lager/v3"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
+)
+
+// RunChecker reports whether an agent run is still active. Narrow seam
+// (F22): the production implementation is atc/db.NewAgentRunChecker over
+// the pipeline_runs table (contracts §1.5, owned by pipeline-runs); an
+// absent row — or an absent table, before that wave-mate merges — means
+// the run cannot be active.
+type RunChecker interface {
+	RunActive(runID int) (bool, error)
+}
+
+// PrincipalRevoker best-effort revokes the per-run principal named
+// agent-run-<run-id> (dispatch addendum 2026-07-08). Bound to an adapter
+// over agent-identity's principals.Store by its cutover task; nil until
+// then — safe because per-run principals carry expires_at, unlike the
+// secret this reaper exists to delete.
+type PrincipalRevoker interface {
+	RevokeByName(name string) error
+}
+
+// RunSecretReapGrace protects dispatch's CreateRun→Attach ordering from
+// sweep races: secrets younger than this are never considered.
+const RunSecretReapGrace = 5 * time.Minute
+
+// RunSecretReaper is §8.2's "reaper safety-net GC" (final-review F22):
+// dispatch's in-process Cleanup on abort/error paths is the first line of
+// defense, this polling component is the guarantee. It lists worker-
+// namespace secrets by the concourse/agent-run label, deletes any whose
+// run is complete or absent, and best-effort revokes the matching per-run
+// principal in the same pass.
+type RunSecretReaper struct {
+	logger    lager.Logger
+	client    kubernetes.Interface
+	namespace string
+	runs      RunChecker
+	revoker   PrincipalRevoker // may be nil (see PrincipalRevoker)
+}
+
+func NewRunSecretReaper(
+	logger lager.Logger,
+	client kubernetes.Interface,
+	namespace string,
+	runs RunChecker,
+	revoker PrincipalRevoker,
+) *RunSecretReaper {
+	return &RunSecretReaper{
+		logger:    logger,
+		client:    client,
+		namespace: namespace,
+		runs:      runs,
+		revoker:   revoker,
+	}
+}
+
+// Run implements component.Runnable. One failing secret does not block
+// the rest of the sweep; the first error is returned so the component
+// retries on its next interval.
+func (r *RunSecretReaper) Run(ctx context.Context) error {
+	secrets, err := r.client.CoreV1().Secrets(r.namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: RunLabel,
+	})
+	if err != nil {
+		return fmt.Errorf("listing run secrets: %w", err)
+	}
+
+	var sweepErr error
+	for i := range secrets.Items {
+		secret := &secrets.Items[i]
+
+		runID, err := strconv.Atoi(secret.Labels[RunLabel])
+		if err != nil {
+			r.logger.Info("skipping-unparseable-run-label", lager.Data{
+				"secret": secret.Name, "label": secret.Labels[RunLabel],
+			})
+			continue
+		}
+		if time.Since(secret.CreationTimestamp.Time) < RunSecretReapGrace {
+			continue // Attach may precede the run row becoming visible
+		}
+
+		active, err := r.runs.RunActive(runID)
+		if err != nil {
+			// Fail closed: keep the secret, surface the error, keep sweeping.
+			r.logger.Error("failed-to-check-run", err, lager.Data{"run_id": runID})
+			if sweepErr == nil {
+				sweepErr = err
+			}
+			continue
+		}
+		if active {
+			continue
+		}
+
+		err = r.client.CoreV1().Secrets(r.namespace).Delete(ctx, secret.Name, metav1.DeleteOptions{})
+		if err != nil && !apierrors.IsNotFound(err) {
+			r.logger.Error("failed-to-delete-run-secret", err, lager.Data{"secret": secret.Name})
+			if sweepErr == nil {
+				sweepErr = err
+			}
+			continue
+		}
+		r.logger.Info("reaped-run-secret", lager.Data{"secret": secret.Name, "run_id": runID})
+
+		if r.revoker != nil {
+			if err := r.revoker.RevokeByName(RunSecretName(runID)); err != nil {
+				// Best-effort: the principal expires on its own (expires_at).
+				r.logger.Error("failed-to-revoke-run-principal", err, lager.Data{
+					"principal": RunSecretName(runID),
+				})
+			}
+		}
+	}
+	return sweepErr
+}
+```
+
+- [ ] Run to verify pass:
+
+```bash
+go test ./agent/credentials/
+```
+
+Expected: `ok`.
+
+- [ ] Write the failing Ginkgo test `atc/db/agent_run_checker_test.go` for the production `RunActive` seam:
+
+```go
+package db_test
+
+import (
+	"github.com/concourse/concourse/atc/db"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+)
+
+var _ = Describe("AgentRunChecker", func() {
+	var checker *db.AgentRunChecker
+
+	// pipeline_runs is pipeline-runs' migration 1773106031 (contracts §1.5).
+	// The Task 1 merge-order addendum lands credentials BEFORE pipeline-runs,
+	// so create the table with the exact §1.5 DDL when absent; once
+	// 1773106031 merges this becomes a no-op.
+	createPipelineRuns := func() {
+		_, err := dbConn.Exec(`
+			CREATE TABLE IF NOT EXISTS pipeline_runs (
+				id                   SERIAL PRIMARY KEY,
+				template_pipeline_id INTEGER NOT NULL REFERENCES pipelines (id) ON DELETE CASCADE,
+				instance_pipeline_id INTEGER REFERENCES pipelines (id) ON DELETE SET NULL,
+				number               INTEGER NOT NULL,
+				params               JSONB NOT NULL DEFAULT '{}',
+				status               TEXT NOT NULL DEFAULT 'running'
+				                     CHECK (status IN ('running','succeeded','failed','errored','aborted')),
+				created_by           TEXT NOT NULL DEFAULT '',
+				created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+				completed_at         TIMESTAMPTZ,
+				archived             BOOLEAN NOT NULL DEFAULT false
+			)`)
+		Expect(err).ToNot(HaveOccurred())
+	}
+
+	BeforeEach(func() {
+		checker = db.NewAgentRunChecker(dbConn)
+	})
+
+	It("reports running rows active and finished/absent rows inactive", func() {
+		createPipelineRuns()
+
+		var runningID, doneID int
+		err := dbConn.QueryRow(`
+			INSERT INTO pipeline_runs (template_pipeline_id, number, status)
+			VALUES ($1, 990001, 'running') RETURNING id`, defaultPipeline.ID()).Scan(&runningID)
+		Expect(err).ToNot(HaveOccurred())
+		err = dbConn.QueryRow(`
+			INSERT INTO pipeline_runs (template_pipeline_id, number, status, completed_at)
+			VALUES ($1, 990002, 'succeeded', now()) RETURNING id`, defaultPipeline.ID()).Scan(&doneID)
+		Expect(err).ToNot(HaveOccurred())
+
+		Expect(checker.RunActive(runningID)).To(BeTrue())
+		Expect(checker.RunActive(doneID)).To(BeFalse())
+		Expect(checker.RunActive(999999999)).To(BeFalse()) // absent row = inactive
+	})
+
+	It("treats an absent pipeline_runs table as no-active-runs (undefined_table)", func() {
+		// Each spec gets a fresh DB from the template (suite-level
+		// BeforeEach: CreateTestDBFromTemplate), so dropping here cannot
+		// leak into other specs.
+		_, err := dbConn.Exec(`DROP TABLE IF EXISTS pipeline_runs`)
+		Expect(err).ToNot(HaveOccurred())
+
+		active, err := checker.RunActive(1)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(active).To(BeFalse())
+	})
+})
+```
+
+- [ ] Run to verify it fails (PostgreSQL must be running: `pg_isready`):
+
+```bash
+ginkgo --focus="AgentRunChecker" ./atc/db/
+```
+
+Expected failure: compile error `undefined: db.AgentRunChecker`.
+
+- [ ] Write `atc/db/agent_run_checker.go`:
+
+```go
+package db
+
+import (
+	"errors"
+
+	"github.com/concourse/concourse/agent/credentials"
+	"github.com/lib/pq"
+)
+
+// AgentRunChecker implements credentials.RunChecker (the RunSecretReaper's
+// narrow RunActive seam, final-review F22) over the pipeline_runs table
+// (contracts §1.5, owned by the pipeline-runs workstream).
+type AgentRunChecker struct {
+	conn DbConn
+}
+
+func NewAgentRunChecker(conn DbConn) *AgentRunChecker {
+	return &AgentRunChecker{conn: conn}
+}
+
+// RunActive reports whether the run row exists and is still running.
+// Absent rows are inactive — the run finished, was deleted, or was never
+// created; either way its secret must not outlive it. An absent
+// pipeline_runs TABLE (credentials merges before pipeline-runs per the
+// Task 1 merge-order addendum) also means no run can be active: dispatch
+// does not exist yet, so any labeled secret is a stray.
+func (c *AgentRunChecker) RunActive(runID int) (bool, error) {
+	var active bool
+	err := c.conn.QueryRow(
+		`SELECT EXISTS (SELECT 1 FROM pipeline_runs WHERE id = $1 AND status = 'running')`,
+		runID,
+	).Scan(&active)
+
+	var pqErr *pq.Error
+	if errors.As(err, &pqErr) && pqErr.Code == "42P01" { // undefined_table
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return active, nil
+}
+
+var _ credentials.RunChecker = (*AgentRunChecker)(nil)
+```
+
+- [ ] Run to verify pass:
+
+```bash
+ginkgo --focus="AgentRunChecker" ./atc/db/
+```
+
+Expected: green.
+
+- [ ] Add the component constant in `atc/component.go`, immediately after `ComponentAgentPlatformCredentialSyncer` (Task 15):
+
+```go
+	ComponentAgentRunSecretReaper = "agent_run_secret_reaper"
+```
+
+- [ ] Wire the component in `atc/atccmd/command.go` inside the `if cmd.Kubernetes.Namespace != ""` block, immediately after the Task 15 syncer `components = append(...)` (the `credentials` import is already present from Task 15):
+
+```go
+		components = append(components, RunnableComponent{
+			Component: atc.Component{
+				Name: atc.ComponentAgentRunSecretReaper,
+			},
+			Runnable: credentials.NewRunSecretReaper(
+				logger.Session(atc.ComponentAgentRunSecretReaper),
+				k8sClientset,
+				cmd.Kubernetes.Namespace,
+				db.NewAgentRunChecker(dbConn),
+				nil, // PrincipalRevoker: bound by agent-identity's cutover task (Task 1 F22 addendum)
+			),
+			Interval: time.Minute,
+		})
+```
+
+- [ ] Grant the web SA the secret verbs the attacher/syncer/reaper need. In `deploy/chart/templates/rbac.yaml`, add a namespaced rule to the `pod-manager` Role (after the `pods/log` rule) — the existing ClusterRole `secrets: get` deliberately stays get-only:
+
+```yaml
+  # Agent credential secrets (§8.2): the run-secret attacher and platform
+  # syncer create/update agent-run-*/agent-platform-credential secrets, and
+  # the RunSecretReaper safety net (F22) lists by the concourse/agent-run
+  # label and deletes strays. Namespaced — worker namespace only; the
+  # cluster-wide secrets rule above remains get-only.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "create", "update", "delete"]
+```
+
+- [ ] Verify the rendered chart contains the rule:
+
+```bash
+helm template test deploy/chart | grep -B2 -A2 '"secrets"'
+```
+
+Expected: two matches — the ClusterRole rule with `verbs: ["get"]` and the pod-manager Role rule with `verbs: ["get", "list", "create", "update", "delete"]`.
+
+- [ ] Verify compile:
+
+```bash
+go build ./atc/...
+```
+
+Expected: clean build.
+
+- [ ] Commit:
+
+```bash
+git add agent/credentials/secret_reaper.go agent/credentials/secret_reaper_test.go \
+        atc/db/agent_run_checker.go atc/db/agent_run_checker_test.go \
+        atc/component.go atc/atccmd/command.go deploy/chart/templates/rbac.yaml
+git commit -m "feat(atc): run-secret safety-net reaper component (F22: per-run secret cleanup owned here)"
+```
+
+---
+
 ### Task 16: go-concourse client methods
 
 Four methods on the `Client` interface (`go-concourse/concourse/client.go:15-40`), recipe from `user.go`/`wall.go`.
@@ -5082,6 +5833,14 @@ fly -t home agent costs --group-by day
 
 Expected: a `ci_agent`-sourced row for today with nonzero `cost (usd)`. (Requires the cicd pipeline's review job params to gain `AGENT_COST_USER` and the updated task yml — the pipeline already passes `AGENT_REVIEW_PUBLISH_TOKEN`.)
 
+- [ ] Reaper steady-state check (Task 15a, F22) once the branch is deployed: the worker namespace must hold no stale run secrets —
+
+```bash
+kubectl --context theborg -n cicd get secrets -l concourse/agent-run
+```
+
+Expected: `No resources found` (per-run secrets exist only while a run is active or within the 5-minute reap grace; anything older indicates the reaper component is not running — check `agent_run_secret_reaper` in the components table).
+
 - [ ] Commit:
 
 ```bash
@@ -5112,7 +5871,7 @@ If `ginkgo ./atc/db/` reports `database "testdb_template" already exists`, anoth
 **Ordering constraints:**
 - Task 1 (addendum) first — it is the wave-start agreement other planners read.
 - Tasks 2–3 (probe) are the charter's FIRST DELIVERABLE; run Task 3 as soon as the harness lands, in parallel with Tasks 4+.
-- Task 13 depends on 4, 7, 11, 12; Task 15 on 6 and 14; Task 16 on 11, 13; Task 17 on 16; Task 19 on 13–18.
+- Task 13 depends on 4, 7, 11, 12; Task 15 on 6 and 14; Task 15a on 14 and 15 (constants/wiring order in `atc/component.go` / `atccmd/command.go`); Task 16 on 11, 13; Task 17 on 16; Task 19 on 13–18.
 - MERGE ORDER HAZARD: the migrator is version-pointer based. If this branch (1773106020–22) merges and deploys before agent-identity's 1773106010, theborg will never apply 1773106010. Coordinate merge order per the Task 1 addendum, or hold deploys until both are merged.
 
 **Rollback notes for the risky diffs:**
@@ -5120,8 +5879,11 @@ If `ginkgo ./atc/db/` reports `database "testdb_template" already exists`, anoth
 - `atc/db/migration/encryption.go` rotation-list entry: safe to revert only together with dropping the vault table; with the table present, reverting reintroduces the silent-skip-on-rotation bug.
 - `atc/wrappa` pass-through for `SubmitAgentCostRecord`: the handler enforces the static token; if the route must be disabled in an emergency, deploy with `--agent-review-publish-token=""` (both reviews and costs publishing turn off, returning 403).
 - Platform syncer: removing the `RunnableComponent` block in `atccmd/command.go` disables it cleanly; the `agent-platform-credential` secret is inert data (delete with `kubectl delete secret agent-platform-credential -n <ns>`). Note: while the syncer is running it OWNS this secret bidirectionally — unvaulting the credential deletes the secret on the next pass (see the 2026-07-09 amendment below), so a manual `kubectl create` will be reaped unless a matching vault row exists.
+- Run-secret reaper (Task 15a): removing its `RunnableComponent` block disables it cleanly, but doing so re-opens F22 — completed runs then leak live-token secrets until dispatch's in-process `Cleanup` (the first line of defense only) or a manual `kubectl delete secret -l concourse/agent-run` sweep. The 5-minute grace window means an emergency `kubectl create secret` with the `concourse/agent-run` label survives at most one sweep interval unless a matching running `pipeline_runs` row exists.
 
 **Plan amendments:**
+- **2026-07-09 (final-review F22 — run-secret safety-net reaper was owned by nobody):** §8.2's "reaper safety-net GC" was referenced by plans 00/03/11 and implemented by none: every completed run permanently leaked `agent-run-<id>` (a live decrypted user token, no expiry), and a crash between `Attach` and pod scheduling orphaned it forever. Added **Task 15a**: `credentials.RunSecretReaper`, a polling `RunnableComponent` (`agent_run_secret_reaper`, 1-minute interval) wired beside the Task 15 platform syncer in the `atccmd/command.go` K8s block. It lists worker-namespace secrets by the `concourse/agent-run` label, deletes any whose run is complete or absent via the narrow `RunActive(runID)` seam (`credentials.RunChecker`; production impl `atc/db.NewAgentRunChecker` over `pipeline_runs` — absent row OR absent table = inactive, tolerating the credentials-before-pipeline-runs merge order), best-effort revokes the per-run principal `agent-run-<run-id>` via a nil-tolerant `PrincipalRevoker` seam (bound by agent-identity's cutover; safe interim — principals carry `expires_at`), and protects dispatch's `CreateRun`→`Attach` ordering with a 5-minute creation-grace window (`RunSecretReapGrace`). Also adds the namespaced secrets RBAC rule (`get/list/create/update/delete`) to the chart's pod-manager Role, which Tasks 14/15 silently needed too (the web SA previously had only cluster-wide `secrets: get`). Tests added: seven plain-Go reaper tests (`TestReaperDeletesFinishedRunSecretAndRevokesPrincipal`, `TestReaperDeletesSecretWhoseRunRowIsAbsent`, `TestReaperGraceWindowProtectsFreshSecrets`, `TestReaperIgnoresSecretsWithoutRunLabel`, `TestReaperRevokeIsBestEffort`, `TestReaperSkipsUnparseableRunLabel`, `TestReaperContinuesSweepWhenCheckerErrors`) and a two-spec Ginkgo `AgentRunChecker` suite (running/finished/absent rows; undefined_table 42P01 ⇒ inactive). Ownership + attribution rewording recorded in contracts §11 via the Task 1 F22 addendum (plan 03's lifecycler stays pure; plan 11's `Cleanup` is first-line only); Task 19 gains a deployed steady-state check (`kubectl get secrets -l concourse/agent-run` empty).
+- **2026-07-09 (final-review F35 — probe burst below /status granularity made NO unsound):** the probe's 5–20 × "Reply with exactly: ok" burst sat below `/status` display granularity, so a null delta could not distinguish "not shared" from "shared but invisible" — yet the memo forced YES/NO/PARTIAL and seeded every later wave's budget defaults. Task 2 now (a) defaults `PROBE_PROMPT` to a ~800-word generation (env-overridable, plumbed into the probe pod), (b) sums the captured CLI envelopes into a `PROBE_TOTAL` line via new pure helper `credentials.SumProbeUsage` (`ProbeTotals`; accepts both `cost_usd` and `total_cost_usd`; fails the run loudly when zero envelopes parse), with unit tests `TestSumProbeUsageSumsEnvelopes` / `TestSumProbeUsageSkipsUnparseableLines`; and (c) the memo template replaces YES/NO/PARTIAL with SHARED / NOT SHARED / PARTIAL / INCONCLUSIVE under a calibrated, asymmetric decisiveness rule: the operator first records threshold **T** (the interactive volume that first visibly moves `/status`); any visible delta ⇒ SHARED; NOT SHARED only when `PROBE_TOTAL` ≥ 2×T with no delta; anything else ⇒ INCONCLUSIVE, which downstream consumers MUST treat as SHARED. Task 3's operator steps gain the calibration burst and the escalate-until-decisive rule.
 - **2026-07-09 (design-review F11 — syncer deletes stale secret on unvault):** Task 15 `PlatformSecretSyncer.Run` no longer no-ops when the platform credential is absent. The `!found` branch now DELETEs any existing `agent-platform-credential` K8s secret (NotFound-tolerant, reusing the run-secret `Cleanup` idiom) so a revoked/unvaulted token can never remain mountable. Sync is now bidirectional: vaulted → create/update; absent → delete-if-present. Added failing test `TestSyncerDeletesSecretWhenCredentialUnvaulted` (seeds the secret, runs with no vaulted credential, asserts `IsNotFound`); the test file gains `corev1`/`apierrors` imports. The §8.2 bidirectional-sync contract text is amended in `00-shared-contracts.md` by the shared-contracts editor (same date); this plan references it and keeps `agent-platform-credential` / `anthropic-token` names identical.
 - ci-agent feed: reverting the `--costs` flag from `ci/tasks/ci-agent-review.yml` stops ledger writes without code changes (publish skips when the flag is absent).
 - `fly status` nag degrades silently against older ATCs (any error from the credentials route is swallowed), so fly/web version skew is safe in both directions.

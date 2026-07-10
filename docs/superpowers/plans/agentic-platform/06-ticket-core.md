@@ -55,7 +55,7 @@ Freeze, in writing, the small extensions this plan makes beyond the literal text
 - 2026-07-08 (ticket-core planning addendum, cross-workstream sign-off note):
   - §1.7 (affects: platform-mcp-hitl, dispatch, harvest-step, delivery-outcomes, process-intel-experiments): `agent_tickets` gains two additive columns in migration `1773106050`: `created_by TEXT NOT NULL DEFAULT ''` (the agent-identity audit-attribution convention — principal name or human username that created the row) and `external_ref TEXT NOT NULL DEFAULT ''` (the Jira phase-2 seam from spec open item 10: holds the external issue key, e.g. `PROJ-123`; empty for native tickets; see docs/superpowers/plans/agentic-platform/ticket-jira-sync-phase2.md). Field growth only; all other §1.7 columns, checks, and indexes are byte-identical.
   - §2.1 (affects: platform-mcp-hitl, dispatch, harvest-step, delivery-outcomes): Go surface names frozen by ticket-core, all in `agent/api/tickets`: `Ticket` gains `CreatedBy`/`ExternalRef` fields; supporting types `Spec`, `Link`, `Task`, `TaskStatus` (constants `TaskPending`, `TaskInProgress`, `TaskDone`, `TaskSkipped`, `TaskBlocked`), `ListFilter{State, Repo, Origin, Limit}`, `Update{Title, Body, BudgetUSD, WorkflowName, WorkflowVersion, TargetBranch}` (all pointers, nil = unchanged), `TransitionMeta{PipelineRunID *int, Branch string, ErrorDetail string}`, `TicketDetail{Ticket, Spec *Spec, Tasks []Task}`; HTTP request types `CreateRequest`, `UpdateRequest`, `TransitionRequest`, `SpecSubmission`, `PlanSubmission` (+`PlanTask`), `TaskStatusRequest`; errors `ErrInvalidTransition`, `ErrTicketNotFound`, `ErrStaleTransition`, `ErrNoActivePlan`, `ErrTaskNotFound`; funcs `ValidTransition(from, to State) bool`, `ValidState`, `ValidOrigin`, `ValidTaskStatus`; `MemoryStore`. The `Store` interface gains one additive method: `AppendTaskNote(ticketID, planVersion, ordering int, note string) error` — the persistence carrier for §3.2 `update_task_status`'s optional `note` field (appended to the task's `detail` as a markdown blockquote, `"> <note>"`, joined with blank lines). `atc/db.AgentTicketsFactory` / `NewAgentTicketsFactory` (dbfakes: `FakeAgentTicketsFactory`).
-  - §2.1 transition side effects (affects: dispatch, harvest-step, platform-mcp-hitl, delivery-outcomes): `Transition` records: → `queued`: `queued_at=now()`, `completed_at=NULL`, `attempt_count+1` when from=`running`; → `draft` (unqueue): `queued_at=NULL`; → `running`: `dispatched_at=now()`, `pipeline_run_id` from meta; → `needs_review`: `branch` from meta when non-empty; → `merged`/`merged_with_fixes`/`sent_back`/`abandoned`/`failed`/`errored`: `completed_at=now()`, plus `error_detail` from meta on `errored`. The UPDATE is guarded by `WHERE id=$id AND state=$from`; zero rows updated resolves to `ErrTicketNotFound` (row gone) or `ErrStaleTransition` (state changed concurrently). `Store.Create` always inserts `state='draft'`; queueing is a separate Transition call (single-writer discipline).
+  - §2.1 transition side effects (affects: dispatch, harvest-step, platform-mcp-hitl, delivery-outcomes): `Transition` records: → `queued`: `queued_at=now()`, `completed_at=NULL`, `attempt_count+1` when from=`running` — the edge reads `running → queued (retryable platform error OR rejected send_back checkpoint re-dispatch; attempt_count++)`; its two legitimate callers are dispatch's retry path and dispatch's run-completion reconciler (checkpoint-seam delta §6, 2026-07-09); → `draft` (unqueue): `queued_at=NULL`; → `running`: `dispatched_at=now()`, `pipeline_run_id` from meta; → `needs_review`: `branch` from meta when non-empty — TWO writers: harvest (primary, per 09-harvest-step) and dispatch's run-completion reconciler (backup/safety net, empty meta); → `merged`/`merged_with_fixes`/`sent_back`/`abandoned`/`failed`/`errored`: `completed_at=now()`, plus `error_detail` from meta on `errored`. The UPDATE is guarded by `WHERE id=$id AND state=$from`; zero rows updated resolves to `ErrTicketNotFound` (row gone) or `ErrStaleTransition` (state changed concurrently). `Store.Create` always inserts `state='draft'`; queueing is a separate Transition call (single-writer discipline).
   - §2.1/§3.2 (affects: platform-mcp-hitl): the `GetAgentTicket` response body is exactly `tickets.TicketDetail` JSON — `{"ticket": <§2.1 Ticket>, "spec": <latest Spec or null>, "tasks": [<active-plan Task>...]}` — the payload `read_ticket` returns verbatim in wave 3. `TransitionAgentTicket` returns 409 on `ErrInvalidTransition`/`ErrStaleTransition`, 404 on missing ticket. `CreateAgentTicket` origin rules: principal writes may only create `origin:"retrospective"`; human writes may create `web`/`fly`; `jira` is rejected (400) until the phase-2 sync component exists.
   - §4.1 (affects: platform-mcp-hitl, delivery-outcomes): combined route tiers ("authorized member (main); also principal(<scope>)") are implemented by a new composition helper owned by ticket-core: `atc/api/auth.AgentPrincipalOrMainTeamHandler(principalTier, mainTeamTier http.Handler) http.Handler` — dispatches on the `cap1.` bearer-token prefix: cap1 tokens go to the principal tier (`CheckAgentPrincipalHandlerFactory.HandlerFor`), everything else to `CheckAgentAuthorizationHandler`. platform-mcp-hitl reuses it for `GetAgentQuestion`/`AnswerAgentQuestion` in wave 3.
   - Render helper (affects: dispatch): `tickets.RenderSpecMarkdown(t Ticket, spec *Spec) []byte` and `tickets.RenderPlanMarkdown(t Ticket, tasks []Task) []byte` produce the deterministic read-only `spec.md`/`plan.md` workspace inputs dispatch materializes at render time. Plan task glyphs: `[ ]` pending, `[~]` in_progress, `[x]` done, `[-]` skipped, `[!]` blocked.
@@ -220,7 +220,14 @@ func TestValidTransitionMatrix(t *testing.T) {
 		{tickets.StateQueued, tickets.StateRunning},
 		{tickets.StateQueued, tickets.StateDraft},
 		{tickets.StateQueued, tickets.StateAbandoned},
+		// running→queued: retryable platform error OR rejected send_back
+		// checkpoint re-dispatch (attempt_count++). TWO legitimate callers —
+		// dispatch's retry path AND dispatch's run-completion reconciler
+		// (checkpoint-seam delta §6, 2026-07-09). Do not narrow this edge.
 		{tickets.StateRunning, tickets.StateQueued},
+		// running→needs_review: TWO writers — harvest (primary, 09) and
+		// dispatch's run-completion reconciler (backup/safety net). Do not
+		// narrow this edge either.
 		{tickets.StateRunning, tickets.StateNeedsReview},
 		{tickets.StateRunning, tickets.StateFailed},
 		{tickets.StateRunning, tickets.StateErrored},
@@ -324,6 +331,13 @@ const (
 
 // validTransitions is the §1.7 state machine. Transition (the
 // single-writer function) consults it; nothing else writes state.
+//
+// Edge notes (do not narrow):
+//   - running → queued (retryable platform error OR rejected send_back
+//     checkpoint re-dispatch; attempt_count++) — callers: dispatch's
+//     retry path and dispatch's run-completion reconciler.
+//   - running → needs_review — two writers: harvest (primary) and
+//     dispatch's run-completion reconciler (backup/safety net).
 var validTransitions = map[State][]State{
 	StateDraft:       {StateQueued, StateAbandoned},
 	StateQueued:      {StateRunning, StateDraft, StateAbandoned},
@@ -475,13 +489,13 @@ type Update struct {
 // TransitionMeta carries the side-band values a transition records.
 type TransitionMeta struct {
 	PipelineRunID *int   // recorded on → running (set by dispatch)
-	Branch        string // recorded on → needs_review (set by harvest)
+	Branch        string // recorded on → needs_review (harvest, the primary writer; the reconciler backup-writer leaves it empty)
 	ErrorDetail   string // recorded on → errored
 }
 
 // Store is the single-writer contract. Transition is THE ONLY way any
-// code path (API handler, dispatcher, harvest, outcome watcher, HITL)
-// changes Ticket.State. It enforces the state machine in
+// code path (API handler, dispatcher — including its run-completion
+// reconciler — harvest, outcome watcher, HITL) changes Ticket.State. It enforces the state machine in
 // shared-contracts §1.7, records timestamps, and returns
 // ErrInvalidTransition otherwise. It uses optimistic concurrency: the
 // UPDATE is guarded by the expected `from` state.
@@ -820,6 +834,8 @@ func (m *MemoryStore) Transition(id int, from, to State, meta TransitionMeta) er
 	case StateQueued:
 		t.CompletedAt = 0
 		if from == StateRunning {
+			// running → queued (retryable platform error OR rejected
+			// send_back checkpoint re-dispatch; attempt_count++).
 			t.AttemptCount++
 		}
 	case StateRunning:
@@ -1338,7 +1354,7 @@ func (f *agentTicketsFactory) LatestSpec(ticketID int) (*tickets.Spec, bool, err
 
 ### Task 5: DB factory — `Transition`, the single writer
 
-The one function that mutates `agent_tickets.state`. Optimistic concurrency (`WHERE id AND state = from`), §1.7 side effects, and the three error cases. Every later component (dispatch wave 4, harvest wave 3, platform-mcp wave 3, outcome watcher wave 4) calls this and nothing else.
+The one function that mutates `agent_tickets.state`. Optimistic concurrency (`WHERE id AND state = from`), §1.7 side effects, and the three error cases. Every later component (dispatch wave 4 — both its queued-dispatch loop and its run-completion reconciler, harvest wave 3, platform-mcp wave 3, outcome watcher wave 4) calls this and nothing else. `ErrStaleTransition`/`ErrTicketNotFound` are BENIGN to racing callers (harvest vs. reconciler on `running→needs_review` — they log and continue), which is exactly what the optimistic `WHERE state = from` guard is for.
 
 **Files:**
 - Modify: `atc/db/agent_tickets_factory.go` (replace the Task-4 `Transition` stub)
@@ -1410,10 +1426,21 @@ The one function that mutates `agent_tickets.state`. Optimistic concurrency (`WH
 
 			Expect(factory.Transition(id, tickets.StateQueued, tickets.StateRunning,
 				tickets.TransitionMeta{})).To(Succeed())
+			// running→queued (retryable platform error OR rejected send_back
+			// checkpoint re-dispatch; attempt_count++). Second legitimate
+			// caller: dispatch's run-completion reconciler (checkpoint-seam
+			// delta §6, 2026-07-09), which requeues with TransitionMeta{}
+			// exactly as below — these side-effect assertions are its
+			// contract; do not narrow them.
 			Expect(factory.Transition(id, tickets.StateRunning, tickets.StateQueued,
 				tickets.TransitionMeta{})).To(Succeed())
 			got, _, _ = factory.Get(id)
 			Expect(got.AttemptCount).To(Equal(1)) // running→queued increments
+			Expect(got.CompletedAt).To(BeZero())  // stays cleared for re-dispatch
+			var requeuedAt sql.NullTime
+			Expect(dbConn.QueryRow(`SELECT queued_at FROM agent_tickets WHERE id = $1`, id).
+				Scan(&requeuedAt)).To(Succeed())
+			Expect(requeuedAt.Valid).To(BeTrue()) // queued_at re-stamped
 		})
 
 		It("rejects illegal edges without touching the row", func() {
@@ -1466,6 +1493,9 @@ func (f *agentTicketsFactory) Transition(id int, from, to tickets.State, meta ti
 		q = q.Set("queued_at", sq.Expr("now()")).
 			Set("completed_at", nil)
 		if from == tickets.StateRunning {
+			// running → queued (retryable platform error OR rejected
+			// send_back checkpoint re-dispatch; attempt_count++) — called
+			// by dispatch's retry path and its run-completion reconciler.
 			q = q.Set("attempt_count", sq.Expr("attempt_count + 1"))
 		}
 	case tickets.StateRunning:
@@ -4413,4 +4443,10 @@ Never use `--race` (parallel compilation failures, per CLAUDE.md). If `database 
 - **Wrappa/auth (Task 8):** the exhaustive-switch panic (`you missed a spot`) makes a route/tier mismatch fail closed at wrappa-construction time (caught by `ginkgo ./atc/wrappa/`), and a missing `DefaultRoles` entry fails toward admin-only (documented at `atc/api/accessor/roles.go:102-107`) — over-restrictive, never over-permissive. Reverting Task 8's commit fully de-registers the routes.
 - **API surface:** consumers arrive in wave 3+ (platform-mcp-hitl, dispatch). Until then the routes are only exercised by fly and the web page, so a revert has no cross-workstream blast radius beyond re-planning wave 3 against the restored addendum.
 - **Elm bundle (Task 13):** `web/public/elm*.js` are generated; a bad bundle reverts with the commit. The page is reachable only via direct URL (no nav entry in v1) — a rendering bug cannot break existing CI pages beyond the shared SubPage wiring, which the full elm-test suite covers.
+
+---
+
+## Amendment log (this plan)
+
+- **2026-07-09 (final-review F17, ticket-core leg — checkpoint-seam delta §7, co-signed dispatch/platform-mcp-hitl/ticket-core/shared-contracts):** Dispatch gains a run-completion reconciler (plan 11, new Task 11b) that walks `StateRunning` tickets whose pipeline run completed; on a rejected `send_back` checkpoint it calls `Transition(running→queued, TransitionMeta{})`. **NO `validTransitions` matrix change** — `StateRunning` already lists `StateQueued`; this plan's change is semantic broadening + guard rails so no future edit narrows the edges the reconciler depends on. Edits landed (all in-place, no task renumbering): (1) the edge annotation everywhere it appears is now `running → queued (retryable platform error OR rejected send_back checkpoint re-dispatch; attempt_count++)` — Task 1 §2.1 side-effects addendum bullet, Task 3 `validTransitions` doc comment, Task 3 `MemoryStore.Transition`, Task 5 DB `Transition`; (2) the §2.1 side effects for the new caller are pinned by test — the Task 5 requeue spec now asserts, on `running→queued` with empty `TransitionMeta{}` (the reconciler's exact call shape), `attempt_count == 1`, `completed_at` cleared, and `queued_at` re-stamped (`sql.NullTime` query); (3) matrix-test comments in Task 3's `TestValidTransitionMatrix` name dispatch's run-completion reconciler as the SECOND legitimate caller of `running→queued`, and record the TWO-WRITERS rule for `running→needs_review` (harvest primary per 09-harvest-step:94, reconciler backup/safety net) — mirrored into the Task 1 addendum, `TransitionMeta.Branch` comment, `Store` doc comment, and Task 5 intro (racing writers see benign `ErrStaleTransition`/`ErrTicketNotFound`). The re-dispatch loop cap is NOT this plan's concern: the reconciler requeues unconditionally; dispatch's existing MaxAttempts guard (plan 11 Task 11) errors a queued ticket at the cap. Ticket-core surface is otherwise unchanged (no new types, methods, routes, or migrations).
 

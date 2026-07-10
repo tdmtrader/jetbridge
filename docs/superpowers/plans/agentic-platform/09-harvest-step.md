@@ -28,7 +28,9 @@
 **Key design decisions (recorded in the Task 1 addendum):**
 - The harvest pod's main container reuses the **agent-runner image** (`--agent-step-image`): it already ships git, ca-certs, and the pinned claude CLI the judge needs; this plan adds the `harvest-runner` binary to that image. No new flag.
 - Harvest-runner **exit taxonomy**: 0 = gates passed (push/judge per config), 1 = gates failed (verification rejected the work), 2 = platform error. `results.json` status `pass/fail/error` mirrors it; ticket transitions: `ok → needs_review` (+branch), `failed → needs_review` (nothing pushed), `error → errored`.
-- **Push-by-sha:** harvest pushes the exact `HEAD` sha captured *before* the judge runs (`git push origin <sha>:refs/heads/<branch>`), so a misbehaving judge process can never alter what is pushed.
+- **Push-by-sha:** harvest pushes the exact `HEAD` sha captured *before* the judge runs (`git push --force-with-lease=refs/heads/<branch> origin <sha>:refs/heads/<branch>` — *amended 2026-07-09, F32*: the lease makes attempt 2+'s fresh-clone re-push of the stable branch succeed instead of erroring non-fast-forward; harvest is the branch's only credentialed writer per §8.3), so a misbehaving judge process can never alter what is pushed.
+- **Clean tree or fail** *(2026-07-09, F33)*: `git status --porcelain` runs right after the head sha is captured; any output ⇒ `workspace-dirty` evidence finding + exit 1 (`needs_review`) with no gates, no judge, no push, and no auto-discard — gates verify the tree while push delivers HEAD, so a dirty tree would let green evidence attach to unverified commits.
+- **Sidecar readiness before gates** *(2026-07-09, F34)*: harvest-runner waits on dev-mcp's `GET /healthz` (2s/60s, shared `agent/devmcp.WaitHealthy` helper also used by agent-runner) before the first gate call; a never-healthy sidecar is exit 2 (platform error), not a gate failure.
 - **Judge is advisory:** a judge *error* (CLI crash, malformed verdict) never blocks the push and never fails gates — it is recorded as `judge_error` in evidence/events. Gate failures are the only hard gate (spec §5: independent re-verification is the trust mechanism; §8: judge is triage signal).
 
 ---
@@ -42,12 +44,14 @@ The charter requires the terminal-step schema "published early in the wave" and 
 
 **Steps:**
 
+> *Amended 2026-07-09 (final review F32/F33/F30):* the fenced §2.8.1 text below now (a) pins the push as `--force-with-lease` (F32), (b) pins the worktree-cleanliness check (F33), and (c) adds the additive `env` schema field + the `AGENT_PIPELINE_RUN_ID` exec fallback (F30, co-signed pipeline-runs + dispatch per 00 §7/§11). Note that 00-shared-contracts.md ALREADY contains a standalone `### 2.8.1 Harvest push addendum (2026-07-09, F32)` block (landed by the final-review contracts pass at :779): when inserting the subsection below, place it immediately ABOVE that block and demote the block by deleting its `### 2.8.1 Harvest push addendum …` heading line — its body text stays as the closing "Push pin" paragraph of the single, merged §2.8.1.
+
 - [ ] Insert the following subsection immediately after §2.8's closing "**Render-time-resolution rule (binding)**" paragraph (line 777 region):
 
 ````markdown
 ### 2.8.1 Harvest terminal-step schema — owner: **harvest-step** (addendum, 2026-07-08; frozen for dispatch's renderer)
 
-The executable form of §2.8's `HarvestStep` sketch. Additive deltas from the sketch: `target_branch` (gate-diff base + `affected_components` input), `dev_mcp` (the repo's dev-mcp sidecar — §2.8 gave the step no way to reach a dev-mcp server), `pipeline_run_id` (evidence linkage; renderer emits it, hand-written pipelines may omit), and package-qualified policy/judge types (§6.3 places them in `agent/harvest`).
+The executable form of §2.8's `HarvestStep` sketch. Additive deltas from the sketch: `target_branch` (gate-diff base + `affected_components` input), `dev_mcp` (the repo's dev-mcp sidecar — §2.8 gave the step no way to reach a dev-mcp server), `pipeline_run_id` (evidence linkage; renderer emits it, hand-written pipelines may omit), `env` (renderer-emitted §8.1 identity rows — added 2026-07-09, F30: a Go renderer cannot place `((run_id))` in the int `pipeline_run_id` field, so identity travels as env exactly as it does on agent steps), and package-qualified policy/judge types (§6.3 places them in `agent/harvest`).
 
 ```go
 // atc/steps.go — parse key "harvest", registered before "run" in StepPrecedence
@@ -60,6 +64,7 @@ type HarvestStep struct {
 	PipelineRunID int                  `json:"pipeline_run_id,omitempty"` // 0 = unknown (hand-dispatched)
 	Branch        string               `json:"branch,omitempty"`          // e.g. agent/ticket-42
 	Push          bool                 `json:"push,omitempty"`            // requires branch
+	Env           map[string]string    `json:"env,omitempty"`             // renderer-emitted §8.1 identity/provenance rows (2026-07-09, F30)
 	DevMCP        *SidecarSource       `json:"dev_mcp,omitempty"`         // repo's dev-mcp image; required when gates declared
 	GatePolicy    harvest.GatePolicy   `json:"gate_policy"`               // §6.3
 	Judge         *harvest.JudgeConfig `json:"judge,omitempty"`           // §6.4; nil = no judge
@@ -86,10 +91,11 @@ type RubricDimension struct {
 
 **Execution contract [DECIDED HERE]:**
 - Main container image = the `--agent-step-image` image (it gains a `harvest-runner` binary; git + claude CLI already present). Process: path `harvest-runner`, well-known process ID `harvest` (resumable via attachOrRun).
-- Env (extends §8.1): `HARVEST_CONFIG` = JSON of `agent/harvest.Config` (step_name/workspace/repo/target_branch/ticket_id/pipeline_run_id/branch/push/gate_policy/judge); `AGENT_FLIGHT_DIR`; `AGENT_TICKET_ID` (when > 0); `DEV_MCP_URL=http://127.0.0.1:7780/mcp` (when `dev_mcp` declared). Judge-configured pods additionally get `CLAUDE_CODE_OAUTH_TOKEN` via `secretKeyRef` from `agent-platform-credential`/`anthropic-token` (§8.2) — never the per-run user token.
+- Env (extends §8.1): `HARVEST_CONFIG` = JSON of `agent/harvest.Config` (step_name/workspace/repo/target_branch/ticket_id/pipeline_run_id/branch/push/gate_policy/judge); `AGENT_FLIGHT_DIR`; `AGENT_TICKET_ID` (when > 0); `DEV_MCP_URL=http://127.0.0.1:7780/mcp` (when `dev_mcp` declared). Judge-configured pods additionally get `CLAUDE_CODE_OAUTH_TOKEN` via `secretKeyRef` from `agent-platform-credential`/`anthropic-token` (§8.2) — never the per-run user token. The token key is `SecretEnv`-only (no literal counterpart): jetbridge `applySecretRefs` APPENDS the secretKeyRef EnvVar (§8.2 Consumption, 2026-07-09, F20 — landed by agent-step Task 11B). *(2026-07-09, F30)* The exec var-interpolates `HarvestStep.Env` rows and copies them into the pod env; **run-id fallback (binding, §7/§8.1):** when `pipeline_run_id` is 0 (the renderer leaves it 0 — see the schema note), the exec resolves the effective run id from the `AGENT_PIPELINE_RUN_ID` env row and uses it everywhere the run id flows (HARVEST_CONFIG, pod env, metrics/evidence linkage).
 - Git credentials (§8.3): secret `agent-harvest-git-<slug>` (`harvest.GitCredSecretName(repo)`: lowercase, non-alphanumerics → `-`) volume-mounted read-only at `/var/run/agent/git/` on the **main container only**, only when `push: true`. New seam: `runtime.ContainerSpec.SecretMounts []runtime.SecretMount{SecretName, MountPath}`; jetbridge mounts these exclusively on the main container — sidecars never receive them.
 - Exit taxonomy: 0 = gates ok, 1 = gates failed, 2 = platform error. `results.json` status `pass/fail/error` respectively; `metadata` carries `{"gates": [GateOutcome…], "judge": {…}|null, "judge_error": "…", "pushed_branch": "…", "head_sha": "…", "base_sha": "…"}`.
-- Push-by-sha: `git push origin <head-sha-recorded-before-judge>:refs/heads/<branch>` — judge-process workspace mutation cannot alter the pushed state. Judge errors are advisory (recorded, never block push).
+- Push-by-sha *(amended 2026-07-09, F32 — see the Push pin paragraph at the end of this subsection, co-signed ticket-core)*: `git push --force-with-lease=refs/heads/<branch> origin <head-sha-recorded-before-judge>:refs/heads/<branch>` — judge-process workspace mutation cannot alter the pushed state, and attempt 2+ of the rework loop (a fresh clone re-pushing the stable `agent/ticket-<n>` branch) is not rejected non-fast-forward. Safe: §8.3 makes harvest the branch's only credentialed writer; the lease is taken against the remote-tracking ref fetched at clone time, so it only fails on a concurrent harvest (which correctly errors). Per-attempt branch names are FORBIDDEN (they break §1.7 branch identity and §1.11 merge detection). Judge errors are advisory (recorded, never block push).
+- Worktree cleanliness *(2026-07-09, F33)*: immediately after resolving the head sha, the runner checks `git status --porcelain`; ANY output ⇒ the finding is recorded in the evidence payload (proven issue `workspace-dirty`) and the run returns status **fail** (exit 1 → `needs_review`) — no gates run, nothing is judged, nothing is pushed. Rationale: gates verify the working tree while push delivers committed HEAD, so a dirty tree lets green evidence attach to a branch that would fail those gates. A dirty tree is the AGENT's failure, not a platform fault, and is NEVER auto-discarded (`git clean -fdx` would delete gitignored build caches).
 - Flight-dir outputs: `events.ndjson` (`step.start/gate.start/gate.result/judge.score/cost.record/push.done/step.end`, §5), `results.json`, `manifest.json` (patch manifest: `{"repo","branch","base_sha","head_sha","commits":[{"sha","author","subject"}],"files":[{"path","added","deleted"}]}`; `push.done.manifest_artifact = "manifest.json"`), `review.json` (evidence payload, §6.4.1).
 - Server-side (exec, synchronous before the step returns): `agent_run_metrics` upsert; `agent_reviews` upsert with `ticket_id`/`pipeline_run_id` (§1.10); `agent_cost_ledger` record with `source='harvest_judge'` (fire-and-forget); ticket transition (`running→needs_review` on ok/failed with `branch` set on ok, `running→errored` with `error_detail` on error) — skipped when `ticket_id = 0`.
 ````
@@ -121,6 +127,7 @@ type RubricDimension struct {
 
 ```markdown
 - 2026-07-08 (harvest-step planning): added §2.8.1 (executable HarvestStep schema: target_branch/dev_mcp/pipeline_run_id additions, agent/harvest.JudgeConfig definition, HARVEST_CONFIG env, SecretMounts main-container-only git-cred seam, exit taxonomy, push-by-sha, flight-dir manifest/review conventions, server-side ingestion duties); §6.3 gains per-gate `retries` + the failed-only/flaky-surfaced stance (agreed with workflow-store); added §6.4.1 (judge execution, verdict JSON, judge/gate finding conventions with finding_type "judge", evidence payload shape, COALESCE linkage upsert, GateResultData attempt/flaky keys). Affects: dispatch, delivery-outcomes, scorecards, process-intel-experiments, workflow-store.
+- 2026-07-09 (harvest final-review fixes F30/F33/F34; affects: dispatch, pipeline-runs, agent-step): §2.8.1 gains the additive `HarvestStep.env` field (renderer-emitted §8.1 identity rows; the harvest exec falls back to the `AGENT_PIPELINE_RUN_ID` env row when `pipeline_run_id` is 0 — the F30 co-signed contract's plan-09 leg) and the worktree-cleanliness pin (F33: `git status --porcelain` right after head-sha; dirty ⇒ evidence finding + status fail/exit 1, nothing pushed, no auto-discard); the F32 push pin (already landed at :779) is folded into the merged §2.8.1. Sidecar readiness (F34): harvest-runner reuses agent-runner's 2s/60s `GET /healthz` wait via the shared `agent/devmcp.WaitHealthy` helper before any gate call; never-healthy ⇒ exit 2 (platform error).
 ```
 
 - [ ] Commit: `git add docs/superpowers/plans/agentic-platform/00-shared-contracts.md && git commit -m "docs(agentic): harvest-step contract addendum - terminal-step schema, flake stance, judge mapping"`
@@ -752,6 +759,8 @@ One coherent compile unit, mirroring the landed agent-step recipe: adding `Visit
 			pipeline_run_id: 7
 			branch: agent/ticket-42
 			push: true
+			env:
+			  AGENT_PIPELINE_RUN_ID: ((run_id))
 			dev_mcp:
 			  name: dev
 			  image: ghcr.io/tdmtrader/mcp-dev-concourse:v0.1.0
@@ -781,6 +790,7 @@ One coherent compile unit, mirroring the landed agent-step recipe: adding `Visit
 			PipelineRunID: 7,
 			Branch:        "agent/ticket-42",
 			Push:          true,
+			Env:           map[string]string{"AGENT_PIPELINE_RUN_ID": "((run_id))"}, // F30: renderers emit the id as env
 			DevMCP: &atc.SidecarSource{
 				Config: &atc.SidecarConfig{Name: "dev", Image: "ghcr.io/tdmtrader/mcp-dev-concourse:v0.1.0"},
 			},
@@ -856,6 +866,11 @@ type HarvestStep struct {
 	PipelineRunID int                  `json:"pipeline_run_id,omitempty"`
 	Branch        string               `json:"branch,omitempty"`
 	Push          bool                 `json:"push,omitempty"`
+	// Env carries renderer-emitted §8.1 identity/provenance rows (e.g.
+	// AGENT_PIPELINE_RUN_ID: ((run_id))), mirroring AgentStep.Env — a Go
+	// renderer cannot place ((run_id)) in the int PipelineRunID field
+	// (§2.8.1 additive delta, 2026-07-09, F30).
+	Env           map[string]string    `json:"env,omitempty"`
 	DevMCP        *SidecarSource       `json:"dev_mcp,omitempty"`
 	GatePolicy    harvest.GatePolicy   `json:"gate_policy"`
 	Judge         *harvest.JudgeConfig `json:"judge,omitempty"`
@@ -953,6 +968,7 @@ type HarvestPlan struct {
 	PipelineRunID int                  `json:"pipeline_run_id,omitempty"`
 	Branch        string               `json:"branch,omitempty"`
 	Push          bool                 `json:"push,omitempty"`
+	Env           map[string]string    `json:"env,omitempty"` // §8.1 identity rows (2026-07-09, F30)
 	DevMCP        *SidecarSource       `json:"dev_mcp,omitempty"`
 	GatePolicy    harvest.GatePolicy   `json:"gate_policy"`
 	Judge         *harvest.JudgeConfig `json:"judge,omitempty"`
@@ -973,6 +989,7 @@ func (visitor *planVisitor) VisitHarvest(step *atc.HarvestStep) error {
 		PipelineRunID: step.PipelineRunID,
 		Branch:        step.Branch,
 		Push:          step.Push,
+		Env:           step.Env,
 		DevMCP:        step.DevMCP,
 		GatePolicy:    step.GatePolicy,
 		Judge:         step.Judge,
@@ -1077,6 +1094,8 @@ func (visitor *planVisitor) VisitHarvest(step *atc.HarvestStep) error {
 ### Task 7: `agent/harvest` workspace git helpers — head/base/diff/manifest/push
 
 Real-git fixture tests (the foundation of the fixture-workspace suite). Push is by-sha so later phases can never alter the pushed state.
+
+> *Amended 2026-07-09 (final review F32/F33):* the push is pinned as `--force-with-lease=refs/heads/<branch>` per the §2.8.1 push addendum (attempt 2+ of the rework loop is a fresh clone re-pushing the stable `agent/ticket-<n>` branch — a plain push is deterministically rejected non-fast-forward). The required divergent-remote-head fixture spec is below. This task also adds the `Porcelain` cleanliness helper Task 10's F33 check consumes. Both behaviors verified against real git 2026-07-09: with no remote-tracking ref the lease permits branch creation; a fresh clone's lease matches the fetched tip, so the re-push force-updates; only a concurrent writer breaks the lease.
 
 **Files:**
 - Create: `agent/harvest/workspace.go`
@@ -1201,6 +1220,37 @@ var _ = Describe("workspace git helpers", func() {
 		Expect(remoteHead).To(Equal(head))
 	})
 
+	It("re-pushes a rework attempt over a divergent remote head (force-with-lease, F32/§2.8.1)", func() {
+		head, _ := harvest.HeadSHA(ws)
+		Expect(harvest.Push(nil, ws, head, "agent/ticket-42", "", "")).To(Succeed())
+
+		// attempt 2 of the rework loop: a FRESH clone with different
+		// commits — a plain push would be rejected non-fast-forward. The
+		// clone fetches the branch tip, so the lease matches the remote.
+		ws2 := filepath.Join(filepath.Dir(ws), "workspace-attempt-2")
+		git(filepath.Dir(ws), "clone", bare, ws2)
+		Expect(os.WriteFile(filepath.Join(ws2, "rework.go"), []byte("package r\n"), 0o644)).To(Succeed())
+		git(ws2, "add", ".")
+		git(ws2, "commit", "-m", "rework after review")
+		head2, err := harvest.HeadSHA(ws2)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(head2).NotTo(Equal(head))
+
+		Expect(harvest.Push(nil, ws2, head2, "agent/ticket-42", "", "")).To(Succeed())
+		Expect(git(bare, "rev-parse", "refs/heads/agent/ticket-42")).To(Equal(head2))
+	})
+
+	It("reports worktree cleanliness via Porcelain (F33)", func() {
+		out, err := harvest.Porcelain(ws)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(out).To(BeEmpty(), "committed fixture must be clean")
+
+		Expect(os.WriteFile(filepath.Join(ws, "uncommitted.txt"), []byte("wip"), 0o644)).To(Succeed())
+		out, err = harvest.Porcelain(ws)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(out).To(ContainSubstring("uncommitted.txt"))
+	})
+
 	It("refuses credentials on non-https remotes", func() {
 		head, _ := harvest.HeadSHA(ws)
 		err := harvest.Push(nil, ws, head, "agent/ticket-42", "bot", "tok")
@@ -1245,6 +1295,14 @@ func runGit(ctx context.Context, dir string, args ...string) (string, error) {
 // HeadSHA returns the workspace's HEAD commit.
 func HeadSHA(dir string) (string, error) {
 	return runGit(nil, dir, "rev-parse", "HEAD")
+}
+
+// Porcelain returns `git status --porcelain` output — empty means the
+// worktree is clean. Harvest fails fast on a dirty tree (§2.8.1
+// cleanliness pin, F33): gates verify the tree while push delivers HEAD,
+// so a dirty tree would let green evidence attach to unverified commits.
+func Porcelain(dir string) (string, error) {
+	return runGit(nil, dir, "status", "--porcelain")
 }
 
 // BaseSHA returns the merge-base of HEAD and the target branch, preferring
@@ -1347,10 +1405,21 @@ func BuildManifest(dir, baseSHA, headSHA, repo, branch string) (*Manifest, error
 }
 
 // Push delivers exactly `sha` to refs/heads/<branch> on origin (push-by-sha,
-// §2.8.1). With credentials, the origin remote must be http(s); the token is
-// injected via a temp git credential-store file, never argv (§8.3).
+// §2.8.1). The push is --force-with-lease against the branch (§2.8.1 push
+// addendum, F32): attempt 2+ of the rework loop runs from a fresh clone, so
+// a plain push to the existing agent/ticket-<n> head is deterministically
+// non-fast-forward; the lease (taken against the remote-tracking ref fetched
+// at clone time) keeps a concurrent writer an error. Harvest is the branch's
+// only credentialed writer (§8.3). With credentials, the origin remote must
+// be http(s); the token is injected via a temp git credential-store file,
+// never argv (§8.3).
 func Push(ctx context.Context, dir, sha, branch, username, token string) error {
-	args := []string{"push", "origin", sha + ":refs/heads/" + branch}
+	args := []string{
+		"push",
+		"--force-with-lease=refs/heads/" + branch,
+		"origin",
+		sha + ":refs/heads/" + branch,
+	}
 
 	if username == "" && token == "" {
 		_, err := runGit(ctx, dir, args...)
@@ -2058,13 +2127,16 @@ func buildJudgePrompt(cfg JudgeConfig, diff string) string {
 
 ### Task 10: `agent/harvest` runner orchestration + `cmd/harvest-runner` + image
 
-The deterministic pod entrypoint: gates → judge → push → evidence, all under the flight recorder, with the §2.8.1 exit taxonomy. Also adds the binary to the agent-runner image.
+The deterministic pod entrypoint: cleanliness → gates → judge → push → evidence, all under the flight recorder, with the §2.8.1 exit taxonomy. Also adds the binary to the agent-runner image.
+
+> *Amended 2026-07-09 (final review F33/F34):* (a) `run()` now checks `git status --porcelain` (Task 7's `Porcelain`) right after resolving the head sha — a dirty tree records a `workspace-dirty` evidence finding and returns **StatusFail** (exit 1 → `needs_review`): nothing gated, nothing judged, nothing pushed, never auto-discarded (§2.8.1 cleanliness pin). (b) Before the first gate call, harvest-runner waits for the dev-mcp sidecar's `GET /healthz` — the same 2s-interval/60s-timeout wait agent-runner does (07 Task 15 step 2) — extracted here into the shared helper `agent/devmcp.WaitHealthy` (additive file in dev-mcp's package; agent-runner swaps its inline wait for this helper, a pure refactor its existing specs already cover). Timeout ⇒ `error` event + StatusError "dev-mcp sidecar never became healthy" ⇒ exit 2 (platform error, not agent failure — matches the frozen exit taxonomy). Sidecars have no readiness probe and RestartPolicyNever; jetbridge execs on pod-Running only, so without this wait a startup race becomes an errored ticket.
 
 **Files:**
 - Create: `agent/harvest/harvest.go`
+- Create: `agent/devmcp/health.go` (shared sidecar-readiness helper, F34 — consumed here and by agent-runner)
 - Create: `cmd/harvest-runner/main.go`
 - Modify: `deploy/agent-runner/Dockerfile` (created by agent-step Task 16 — add the harvest-runner build + COPY)
-- Test: `agent/harvest/harvest_test.go`
+- Test: `agent/harvest/harvest_test.go`, `agent/devmcp/health_test.go`
 
 **Steps:**
 
@@ -2077,8 +2149,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -2208,6 +2283,52 @@ var _ = Describe("harvest.Run", func() {
 		Expect(readResults().Status).To(Equal(schema.StatusError))
 	})
 
+	It("dirty workspace: fails fast, runs no gates, pushes nothing (F33/§2.8.1)", func() {
+		Expect(os.WriteFile(filepath.Join(ws, "uncommitted.txt"), []byte("wip"), 0o644)).To(Succeed())
+
+		exit, err := harvest.Run(context.Background(), cfg, flight, filepath.Dir(ws), deps)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(exit).To(Equal(1)) // agent's failure -> needs_review, NOT a platform error
+
+		By("gates never ran and nothing was pushed")
+		Expect(client.RunTestsCallCount()).To(BeZero())
+		Expect(git(bare, "for-each-ref", "refs/heads/agent")).To(BeEmpty())
+
+		By("no auto-discard: the uncommitted file is untouched")
+		_, statErr := os.Stat(filepath.Join(ws, "uncommitted.txt"))
+		Expect(statErr).NotTo(HaveOccurred())
+
+		res := readResults()
+		Expect(res.Status).To(Equal(schema.StatusFail))
+		Expect(res.Metadata["dirty_workspace"]).To(ContainSubstring("uncommitted.txt"))
+
+		evidence, err := os.ReadFile(filepath.Join(flight, "review.json"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(string(evidence)).To(ContainSubstring(`"workspace-dirty"`))
+		Expect(string(evidence)).To(ContainSubstring(`"category":"gate"`))
+	})
+
+	It("gates with a never-healthy dev-mcp sidecar: exits 2 without a gate call (F34)", func() {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusServiceUnavailable)
+		}))
+		defer srv.Close()
+		GinkgoT().Setenv(devmcp.EnvEndpoint, srv.URL+"/mcp")
+
+		deps.Client = nil // production path: client construction is health-gated
+		deps.HealthInterval = 10 * time.Millisecond
+		deps.HealthTimeout = 100 * time.Millisecond
+
+		exit, err := harvest.Run(context.Background(), cfg, flight, filepath.Dir(ws), deps)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(exit).To(Equal(2))
+
+		res := readResults()
+		Expect(res.Status).To(Equal(schema.StatusError))
+		Expect(res.Summary).To(ContainSubstring("never became healthy"))
+		Expect(git(bare, "for-each-ref", "refs/heads/agent")).To(BeEmpty())
+	})
+
 	It("judge error is advisory: still pushes and exits 0", func() {
 		deps.ClaudePath = filepath.Join(tmp, "missing-claude")
 
@@ -2226,6 +2347,125 @@ var _ = Describe("harvest.Run", func() {
 ```
 
 - [ ] Run `ginkgo --focus="harvest.Run" ./agent/harvest/` — expect compile failure.
+- [ ] Write the failing helper test `agent/devmcp/health_test.go` (F34 — the extracted sidecar-readiness wait, shared with agent-runner):
+
+```go
+package devmcp_test
+
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/concourse/concourse/agent/devmcp"
+)
+
+func TestWaitHealthyDelayedHealthy(t *testing.T) {
+	var polls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/healthz" {
+			t.Errorf("polled %q, want /healthz", r.URL.Path)
+		}
+		if atomic.AddInt32(&polls, 1) < 3 {
+			w.WriteHeader(http.StatusServiceUnavailable) // still starting
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	err := devmcp.WaitHealthy(context.Background(), srv.URL+"/mcp", 10*time.Millisecond, time.Second)
+	if err != nil {
+		t.Fatalf("WaitHealthy on a delayed-healthy sidecar: %v", err)
+	}
+	if atomic.LoadInt32(&polls) < 3 {
+		t.Fatalf("expected >=3 polls, got %d", polls)
+	}
+}
+
+func TestWaitHealthyNeverHealthy(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+
+	err := devmcp.WaitHealthy(context.Background(), srv.URL+"/mcp", 10*time.Millisecond, 80*time.Millisecond)
+	if err == nil {
+		t.Fatal("WaitHealthy must time out on a never-healthy sidecar")
+	}
+}
+```
+
+- [ ] Run `go test ./agent/devmcp/ -run TestWaitHealthy` — expect FAIL (`undefined: devmcp.WaitHealthy`).
+- [ ] Write `agent/devmcp/health.go`:
+
+```go
+package devmcp
+
+import (
+	"context"
+	"fmt"
+	"net/http"
+	"strings"
+	"time"
+)
+
+// Default sidecar-readiness wait (§8.5: every sidecar exposes GET /healthz;
+// jetbridge execs on pod-Running only, sidecars have no readiness probe and
+// RestartPolicyNever, so runners must wait before the first call).
+const (
+	DefaultHealthInterval = 2 * time.Second
+	DefaultHealthTimeout  = 60 * time.Second
+)
+
+// HealthURL derives a sidecar's health endpoint from its MCP endpoint by
+// replacing the trailing /mcp with /healthz.
+func HealthURL(mcpURL string) string {
+	return strings.TrimSuffix(mcpURL, "/mcp") + "/healthz"
+}
+
+// WaitHealthy polls GET HealthURL(mcpURL) every interval until it returns
+// 200 or timeout elapses. Shared by agent-runner (every declared MCP
+// sidecar, 07 Task 15 step 2) and harvest-runner (the dev-mcp sidecar
+// before the first gate call, F34). Zero interval/timeout use the defaults.
+func WaitHealthy(ctx context.Context, mcpURL string, interval, timeout time.Duration) error {
+	if interval <= 0 {
+		interval = DefaultHealthInterval
+	}
+	if timeout <= 0 {
+		timeout = DefaultHealthTimeout
+	}
+	deadline := time.Now().Add(timeout)
+	client := &http.Client{Timeout: interval}
+	for {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, HealthURL(mcpURL), nil)
+		if err != nil {
+			return err
+		}
+		resp, err := client.Do(req)
+		if err == nil {
+			resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				return nil
+			}
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("sidecar at %s never became healthy within %s", mcpURL, timeout)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(interval):
+		}
+	}
+}
+```
+
+- [ ] Run `go test ./agent/devmcp/ -run TestWaitHealthy` — expect PASS.
+- [ ] Cross-plan note (agent-step, 07 Task 15 step 2): agent-runner's inline per-sidecar `/healthz` wait becomes a call to `devmcp.WaitHealthy(ctx, url, 0, 0)` — a pure refactor; its existing runner specs keep passing unchanged.
 - [ ] Write `agent/harvest/harvest.go`:
 
 ```go
@@ -2254,10 +2494,15 @@ const (
 
 // RunDeps are the runner's injectable dependencies.
 type RunDeps struct {
-	Client     devmcp.Client // nil → devmcp.NewClient(os.Getenv(devmcp.EnvEndpoint)) when gates exist
+	Client     devmcp.Client // nil → health-gated devmcp.NewClient(os.Getenv(devmcp.EnvEndpoint)) when gates exist
 	ClaudePath string        // "" → "claude"
 	GitCredDir string        // "" → GitCredMountPath; username/token files (§8.3)
 	Stdout     io.Writer     // "" → os.Stdout (build log)
+
+	// Sidecar-readiness wait (F34): zero values use devmcp's 2s/60s
+	// defaults; only exercised on the nil-Client production path.
+	HealthInterval time.Duration
+	HealthTimeout  time.Duration
 }
 
 // FromEnv assembles (Config, flightDir, workDir) from the §2.8.1 env contract.
@@ -2281,9 +2526,10 @@ func FromEnv() (Config, string, string, error) {
 	return cfg, flightDir, workDir, nil
 }
 
-// Run executes the harvest sequence: gates → judge (advisory) → push-by-sha
-// → evidence, all recorded to the flight dir. workDir is the step working
-// directory; the workspace checkout is workDir/<cfg.Workspace>.
+// Run executes the harvest sequence: cleanliness check → gates → judge
+// (advisory) → push-by-sha → evidence, all recorded to the flight dir.
+// workDir is the step working directory; the workspace checkout is
+// workDir/<cfg.Workspace>.
 func Run(ctx context.Context, cfg Config, flightDir, workDir string, deps RunDeps) (int, error) {
 	start := time.Now()
 	stdout := deps.Stdout
@@ -2344,6 +2590,30 @@ func run(ctx context.Context, cfg Config, flightDir, workDir string, deps RunDep
 		evidence.Summary = "workspace is not a git checkout: " + err.Error()
 		return schema.StatusError, meta, evidence
 	}
+
+	// --- cleanliness (§2.8.1 pin, F33): gates verify the tree, push
+	// delivers HEAD — a dirty tree fails fast BEFORE anything is verified.
+	// The agent's failure (exit 1 -> needs_review), never auto-discarded.
+	dirty, err := Porcelain(ws)
+	if err != nil {
+		evidence.Summary = "cannot check workspace cleanliness: " + err.Error()
+		return schema.StatusError, meta, evidence
+	}
+	if dirty != "" {
+		meta["head_sha"] = headSHA
+		meta["dirty_workspace"] = dirty
+		evidence.Metadata.Commit = headSHA
+		evidence.ProvenIssues = append(evidence.ProvenIssues, EvidenceFinding{
+			ID: "workspace-dirty", Severity: "high",
+			Title:       "workspace has uncommitted changes",
+			Description: "gates verify the working tree but push delivers committed HEAD; nothing was verified, judged, or pushed. The agent must commit its work.\n\n" + dirty,
+			Category:    "gate",
+		})
+		evidence.Score(0, false)
+		evidence.Summary = "workspace has uncommitted changes — nothing verified, nothing pushed"
+		return schema.StatusFail, meta, evidence
+	}
+
 	baseSHA, err := BaseSHA(ws, cfg.TargetBranch)
 	if err != nil {
 		evidence.Summary = "cannot resolve target-branch base: " + err.Error()
@@ -2364,7 +2634,18 @@ func run(ctx context.Context, cfg Config, flightDir, workDir string, deps RunDep
 	if len(cfg.GatePolicy.Gates) > 0 {
 		client := deps.Client
 		if client == nil {
-			client = devmcp.NewClient(os.Getenv(devmcp.EnvEndpoint), devmcp.WithProgress(func(tool, msg string) {
+			// Readiness wait before the FIRST gate call (F34): sidecars
+			// have no readiness probe and RestartPolicyNever — a startup
+			// race must be a bounded wait, not an errored ticket. Same
+			// 2s/60s wait agent-runner does (shared devmcp.WaitHealthy).
+			endpoint := os.Getenv(devmcp.EnvEndpoint)
+			if werr := devmcp.WaitHealthy(ctx, endpoint, deps.HealthInterval, deps.HealthTimeout); werr != nil {
+				evidence.Summary = "dev-mcp sidecar never became healthy: " + werr.Error()
+				emit(events, schema.EventError, map[string]string{"message": evidence.Summary})
+				evidence.Score(0, false)
+				return schema.StatusError, meta, evidence
+			}
+			client = devmcp.NewClient(endpoint, devmcp.WithProgress(func(tool, msg string) {
 				fmt.Fprintf(stdout, "dev-mcp %s: %s\n", tool, msg)
 			}))
 		}
@@ -2633,7 +2914,7 @@ func (e *Evidence) Score(value float64, pass bool) {
 ```
 
   Note: `Evidence.ScoreField` marshals under the JSON key `"score"` while the Go method `Score` sets it — Go allows the field/method name split because the field is `ScoreField`.
-- [ ] Run `ginkgo ./agent/harvest/` — iterate until the four `harvest.Run` specs pass (the judge-error advisory case, the pass/fail exit codes, push-by-sha, and evidence keys are the load-bearing assertions).
+- [ ] Run `ginkgo ./agent/harvest/` — iterate until the six `harvest.Run` specs pass (the judge-error advisory case, the pass/fail exit codes, push-by-sha, the dirty-workspace fail-fast, the never-healthy sidecar exit 2, and evidence keys are the load-bearing assertions).
 - [ ] Write `cmd/harvest-runner/main.go`:
 
 ```go
@@ -2682,14 +2963,16 @@ RUN CGO_ENABLED=0 go build -o /out/agent-runner ./cmd/agent-runner \
 COPY --from=build /out/harvest-runner /usr/local/bin/harvest-runner
 ```
 
-  (Replace the existing single-binary `RUN`/add the second `COPY` next to the agent-runner one; the runtime stage already has git + claude CLI + non-root user — everything harvest needs.)
-- [ ] Commit: `git add agent/harvest cmd/harvest-runner deploy/agent-runner && git commit -m "feat(harvest): runner orchestration, evidence payload, harvest-runner binary in the agent-runner image"`
+  (Replace the existing single-binary `RUN`/add the second `COPY` next to the agent-runner one; the runtime stage already has git + the claude CLI — everything harvest needs. *Amended 2026-07-09, F25/§8.5 scoping:* the shared runner image runs as **root** with `ENV IS_SANDBOX=1` per 07 Task 16 as amended — jetbridge hostPath step volumes are kubelet-created root:root 0755 and fsGroup is ignored for hostPath, so a non-root harvest-runner would EACCES writing the flight recorder. No separate image change lands in this plan; harvest-runner inherits it.)
+- [ ] Commit: `git add agent/harvest agent/devmcp cmd/harvest-runner deploy/agent-runner && git commit -m "feat(harvest): runner orchestration, evidence payload, cleanliness+readiness guards, harvest-runner binary in the agent-runner image"`
 
 ---
 
 ### Task 11: `runtime.ContainerSpec.SecretMounts` + jetbridge main-container-only mounting
 
 The §8.3 seam: secret volumes mounted read-only on the MAIN container only. Today `buildSidecarContainers` (atc/worker/jetbridge/container.go:510) copies the main container's mount list to every sidecar — so the git-cred mount must be appended AFTER the sidecar containers are built.
+
+> *Scope narrowed 2026-07-09 (final review F20 / runtime-seams package):* this task is the **SecretMounts seam ONLY**. The `applySecretRefs` APPEND change (secretKeyRef-only EnvVars for `SecretEnv` keys with no literal counterpart — how the judge's `CLAUDE_CODE_OAUTH_TOKEN` reaches the harvest pod) is **removed from this task's scope**: it lands in wave 2 as part of agent-step **07 Task 11B "jetbridge runtime seams"**, with its own fake-clientset spec. 07 Task 11B is a stated **prerequisite** of this task. Two consequences here: (a) `buildSidecarContainers` now takes FIVE args — `buildSidecarContainers(sidecars, mainMounts, defaultDir, sidecarEnv, sidecarSecretEnv)` — so the `buildPod` insertion point below anchors on the five-arg call; (b) `applySecretRefs(env, secretEnv)` already RETURNS the (possibly grown) slice — do not re-implement either behavior here, and do not add any literal-placeholder workaround (forbidden by §8.2).
 
 **Files:**
 - Modify: `atc/runtime/types.go:143` region (after `SecretEnv`)
@@ -2792,7 +3075,7 @@ type SecretMount struct {
 }
 ```
 
-- [ ] In `atc/worker/jetbridge/container.go` `buildPod`, AFTER the line `containers = append(containers, buildSidecarContainers(c.containerSpec.Sidecars, volumeMounts, dir)...)` (:443), insert:
+- [ ] In `atc/worker/jetbridge/container.go` `buildPod`, AFTER the sidecar append — since 07 Task 11B the five-arg call `containers = append(containers, buildSidecarContainers(c.containerSpec.Sidecars, volumeMounts, dir, c.containerSpec.SidecarEnv, c.containerSpec.SidecarSecretEnv)...)` (:443 region) — insert:
 
 ```go
 	// Secret volume mounts go on the MAIN container only (contracts §8.3):
@@ -2822,6 +3105,8 @@ type SecretMount struct {
 ### Task 12: `exec.HarvestStep` — container spec, env, secrets, process
 
 Modeled on the landed `exec.AgentStep` (which itself mirrors `TaskStep.run`): same delegate (`TaskDelegateFactory`), same sidecar helpers, same `attachOrRun` resumability. Ingestion/evidence/transition come in Task 13.
+
+> *Amended 2026-07-09 (final review F20/F21/F30):* (a) step 6's judge token works precisely because 07 Task 11B's `applySecretRefs` **APPENDS** a secretKeyRef EnvVar for the `SecretEnv`-only `CLAUDE_CODE_OAUTH_TOKEN` key (`agent-platform-credential`/`anthropic-token`) — no literal placeholder is set, and adding one is forbidden (§8.2). (b) step 7 normalizes the dev sidecar's `WorkingDir` to the workspace artifact's mount path per the §8.5 CWD convention (Piece 4b). (c) steps 3–4 resolve the effective pipeline-run id: `step.plan.PipelineRunID` when > 0, else the `AGENT_PIPELINE_RUN_ID` row of the plan's var-interpolated `Env` (F30 — a Go renderer cannot put `((run_id))` in the int field); the resolved id feeds `HARVEST_CONFIG`, the pod env, and Task 13's linkage.
 
 **Files:**
 - Create: `atc/exec/harvest_step.go`
@@ -2894,6 +3179,9 @@ var _ = Describe("HarvestStep", func() {
 		Expect(spec.Sidecars).To(HaveLen(1))
 		Expect(spec.Sidecars[0].Name).To(Equal("dev"))
 
+		By("pointing the sidecar's CWD at the workspace mount (§8.5 CWD convention, F21)")
+		Expect(spec.Sidecars[0].WorkingDir).To(Equal(spec.Inputs[0].DestinationPath))
+
 		By("mounting the git-cred secret main-container-only, judge token via SecretEnv")
 		Expect(spec.SecretMounts).To(ConsistOf(runtime.SecretMount{
 			SecretName: "agent-harvest-git-tdmtrader-concourse",
@@ -2910,6 +3198,24 @@ var _ = Describe("HarvestStep", func() {
 		_, _, spec, _ := fakePool.FindOrSelectWorkerArgsForCall(0)
 		Expect(spec.SecretMounts).To(BeEmpty())
 		Expect(spec.SecretEnv).ToNot(HaveKey("CLAUDE_CODE_OAUTH_TOKEN"))
+	})
+
+	It("falls back to the AGENT_PIPELINE_RUN_ID env row when the plan field is 0 (F30/§7)", func() {
+		// fixture plan but with PipelineRunID: 0 and
+		// Env: map[string]string{"AGENT_PIPELINE_RUN_ID": "7"} — the shape a
+		// Go renderer emits (it cannot put ((run_id)) in the int field).
+		_, err := step.Run(ctx, state)
+		Expect(err).ToNot(HaveOccurred())
+		_, _, spec, _ := fakePool.FindOrSelectWorkerArgsForCall(0)
+
+		var cfg harvest.Config
+		for _, e := range spec.Env {
+			if strings.HasPrefix(e, "HARVEST_CONFIG=") {
+				Expect(json.Unmarshal([]byte(strings.TrimPrefix(e, "HARVEST_CONFIG=")), &cfg)).To(Succeed())
+			}
+		}
+		Expect(cfg.PipelineRunID).To(Equal(7))
+		Expect(spec.Env).To(ContainElement("AGENT_PIPELINE_RUN_ID=7"))
 	})
 
 	It("runs harvest-runner as the well-known harvest process", func() {
@@ -2992,6 +3298,12 @@ type HarvestStep struct {
 	reviewsStore      reviews.Store
 	ticketStore       tickets.Store
 	budgetChecker     budget.Checker
+
+	// pipelineRunID is the EFFECTIVE run id, resolved once in run():
+	// plan.PipelineRunID when > 0, else the AGENT_PIPELINE_RUN_ID row of
+	// the interpolated plan Env (F30/§7 — renderers leave the int field 0).
+	// Consumed by ingestAndRecord (Task 13) for metrics/evidence linkage.
+	pipelineRunID int
 }
 
 func NewHarvestStep(
@@ -3038,11 +3350,11 @@ func (step *HarvestStep) Run(ctx context.Context, state RunState) (bool, error) 
   `run` implements, in order (each block adapted from the landed `agent_step.go`, which cites `task_step.go`):
   1. Logger session `"harvest-step"`; `delegate.Initializing(logger)`.
   2. Guard: `if step.harvestImage == "" { return false, errors.New("harvest step requires the web node to be started with --agent-step-image (the image also carries harvest-runner)") }`.
-  3. **Config env:** build `harvest.Config{StepName: step.plan.Name, Workspace: step.plan.Workspace, Repo: step.plan.Repo, TargetBranch: step.plan.TargetBranch, TicketID: step.plan.TicketID, PipelineRunID: step.plan.PipelineRunID, Branch: step.plan.Branch, Push: step.plan.Push, GatePolicy: step.plan.GatePolicy, Judge: step.plan.Judge}`; `cfgJSON, err := json.Marshal(cfg)` (error → return it).
-  4. **Env assembly:** `env := step.metadata.TaskEnv()` + `harvest.EnvConfig+"="+string(cfgJSON)` + `"AGENT_STEP_NAME="+step.plan.Name` + `"AGENT_FLIGHT_DIR="+artifactPath(step.containerMetadata.WorkingDirectory, "flight", "")` + when `step.plan.TicketID > 0` `"AGENT_TICKET_ID="+strconv.Itoa(step.plan.TicketID)` + when `step.plan.PipelineRunID > 0` `"AGENT_PIPELINE_RUN_ID="+strconv.Itoa(step.plan.PipelineRunID)`.
+  3. **Env interpolation + effective run id (F30):** resolve `step.plan.Env` exactly like the agent step (07 Task 12 step 3: keys sorted with `sort.Strings`, each value through `creds.NewString(state, raw).Evaluate()`; interpolation failure → return the error) into `resolvedEnv map[string]string`. Then `step.pipelineRunID = step.plan.PipelineRunID`; when it is 0, `if id, ok := envInt(resolvedEnv, "AGENT_PIPELINE_RUN_ID"); ok { step.pipelineRunID = id }` (`envInt` as landed by agent-step Task 12 — Go renderers cannot put `((run_id))` in the int field, so the id arrives as an env row; §7/§8.1 fallback contract). **Config env:** build `harvest.Config{StepName: step.plan.Name, Workspace: step.plan.Workspace, Repo: step.plan.Repo, TargetBranch: step.plan.TargetBranch, TicketID: step.plan.TicketID, PipelineRunID: step.pipelineRunID, Branch: step.plan.Branch, Push: step.plan.Push, GatePolicy: step.plan.GatePolicy, Judge: step.plan.Judge}`; `cfgJSON, err := json.Marshal(cfg)` (error → return it).
+  4. **Env assembly:** `env := step.metadata.TaskEnv()` + each `resolvedEnv` row `k+"="+v` (sorted; skip the `AGENT_TICKET_ID`/`AGENT_PIPELINE_RUN_ID` keys — re-emitted canonically next) + `harvest.EnvConfig+"="+string(cfgJSON)` + `"AGENT_STEP_NAME="+step.plan.Name` + `"AGENT_FLIGHT_DIR="+artifactPath(step.containerMetadata.WorkingDirectory, "flight", "")` + when `step.plan.TicketID > 0` `"AGENT_TICKET_ID="+strconv.Itoa(step.plan.TicketID)` + when `step.pipelineRunID > 0` `"AGENT_PIPELINE_RUN_ID="+strconv.Itoa(step.pipelineRunID)`.
   5. **ContainerSpec:** `TeamID`/`TeamName`/`JobID` from metadata, `StepName: step.plan.Name`, `ImageSpec: runtime.ImageSpec{ImageURL: step.harvestImage}`, `Type: step.containerMetadata.Type`, `Dir: step.containerMetadata.WorkingDirectory`, `Env: env`. Inputs: exactly one — `state.ArtifactRepository().ArtifactFor(build.ArtifactName(step.plan.Workspace))`; missing → `MissingInputsError{[]string{step.plan.Workspace}}`; `DestinationPath: artifactPath(workdir, step.plan.Workspace, "")`. Outputs: `runtime.OutputPaths{"flight": ensureTrailingSlash(artifactPath(workdir, "flight", ""))}` — nothing else leaves the harvest pod. Limits/Requests: `step.defaultLimits`/`step.defaultRequests`.
-  6. **Secrets:** when `step.plan.Push && step.plan.Branch != ""`: `containerSpec.SecretMounts = []runtime.SecretMount{{SecretName: harvest.GitCredSecretName(step.plan.Repo), MountPath: harvest.GitCredMountPath}}`. When `step.plan.Judge != nil`: `containerSpec.SecretEnv = map[string]vars.SecretRef{"CLAUDE_CODE_OAUTH_TOKEN": {Name: harvest.PlatformCredentialSecret, Key: harvest.PlatformCredentialSecretKey}}` (§8.2 — the platform credential, never the per-run user token).
-  7. **dev-mcp sidecar:** when `step.plan.DevMCP != nil`: `sidecars, err := loadSidecarConfigs(ctx, logger, state.ArtifactRepository(), step.streamer, []atc.SidecarSource{*step.plan.DevMCP})`; `resolveSidecarImages(ctx, logger, state, step.imageResolver, sidecars)`; `containerSpec.Sidecars = sidecars`; `delegate.EmitSidecarPlans(logger, sidecars)`; append `"DEV_MCP_URL=http://127.0.0.1:7780/mcp"` to `containerSpec.Env` (§8.1 fixed port).
+  6. **Secrets:** when `step.plan.Push && step.plan.Branch != ""`: `containerSpec.SecretMounts = []runtime.SecretMount{{SecretName: harvest.GitCredSecretName(step.plan.Repo), MountPath: harvest.GitCredMountPath}}`. When `step.plan.Judge != nil`: `containerSpec.SecretEnv = map[string]vars.SecretRef{"CLAUDE_CODE_OAUTH_TOKEN": {Name: harvest.PlatformCredentialSecret, Key: harvest.PlatformCredentialSecretKey}}` (§8.2 — the platform credential, never the per-run user token). *Note (2026-07-09, F20):* this key is deliberately `SecretEnv`-ONLY — no matching literal env entry exists or is added; it reaches the pod because jetbridge `applySecretRefs` (07 Task 11B) **appends** a secretKeyRef EnvVar for `SecretEnv` keys with no literal counterpart. The literal-placeholder workaround is forbidden (§8.2 Consumption).
+  7. **dev-mcp sidecar:** when `step.plan.DevMCP != nil`: `sidecars, err := loadSidecarConfigs(ctx, logger, state.ArtifactRepository(), step.streamer, []atc.SidecarSource{*step.plan.DevMCP})`; `resolveSidecarImages(ctx, logger, state, step.imageResolver, sidecars)`; *(2026-07-09, F21/§8.5 CWD convention)* for each loaded sidecar whose `WorkingDir == ""`, set `sc.WorkingDir = artifactPath(step.containerMetadata.WorkingDirectory, step.plan.Workspace, "")` in-place before assigning — dev-mcp images ship a bare-binary ENTRYPOINT with CWD-relative flag defaults (no hardcoded `/workspace`), so the exec must point the sidecar's CWD at the workspace mount; then `containerSpec.Sidecars = sidecars`; `delegate.EmitSidecarPlans(logger, sidecars)`; append `"DEV_MCP_URL=http://127.0.0.1:7780/mcp"` to `containerSpec.Env` (§8.1 fixed port).
   8. **Placement + timeout + process:** identical to the agent step — `tracing.Inject(ctx, &containerSpec)`; `owner := db.NewBuildStepContainerOwner(step.metadata.BuildID, step.planID, step.metadata.TeamID)`; `delegate.BeforeSelectWorker`; `step.workerPool.FindOrSelectWorker(...)`; `MaybeTimeout(ctx, step.plan.Timeout, step.defaultTimeout)`; `delegate.SelectedWorker`; `worker.FindOrCreateContainer(...)`; `delegate.Starting(logger)`; `process, err := attachOrRun(ctx, container, runtime.ProcessSpec{ID: harvestProcessID, Path: "harvest-runner", Dir: step.containerMetadata.WorkingDirectory}, sidecarProcessIO(delegate, containerSpec.Sidecars))`; `result, runErr := process.Wait(ctx)`.
   9. **Output registration:** register the `flight` volume mount as an artifact (`worker.ArtifactFromVolume` wrap, `repository.RegisterArtifact(build.ArtifactName("flight"), artifact, false)` — same loop the agent step uses).
   10. **Ingest + record + transition:** `step.ingestAndRecord(ctx, logger, wkr, volumeMounts, time.Since(start))` — Task 13; called on every path where the container ran, including `DeadlineExceeded`, before returning.
@@ -3226,8 +3538,10 @@ func (step *HarvestStep) ingestAndRecord(
 		tid := step.plan.TicketID
 		rm.TicketID = &tid
 	}
-	if step.plan.PipelineRunID > 0 {
-		prid := step.plan.PipelineRunID
+	// step.pipelineRunID is the EFFECTIVE run id resolved in run() (plan
+	// field, else the AGENT_PIPELINE_RUN_ID env row — F30/§7 fallback).
+	if step.pipelineRunID > 0 {
+		prid := step.pipelineRunID
 		rm.PipelineRunID = &prid
 	}
 
@@ -3543,7 +3857,7 @@ decodeBuildStepHarvest =
 
 ### Task 17: Fixture-workspace end-to-end suite — gates pass / fail / flaky
 
-The charter's trust-foundation suite, exercising the REAL runner binary path (`harvest.Run` with a real git workspace, a scripted dev-mcp fake, a stub claude, and a local bare remote) — one spec per posture, plus the flaky case that proves the retry stance surfaces rather than hides flakiness. Task 10 covered unit-level orchestration; this task locks the three postures together against regressions and asserts the full flight-dir contract each time.
+The charter's trust-foundation suite, exercising the REAL runner binary path (`harvest.Run` with a real git workspace, a scripted dev-mcp fake, a stub claude, and a local bare remote) — one spec per posture, plus the flaky case that proves the retry stance surfaces rather than hides flakiness. Task 10 covered unit-level orchestration; this task locks the postures together against regressions and asserts the full flight-dir contract each time. *(Amended 2026-07-09, F33: a fourth DIRTY posture pins the worktree-cleanliness stance — uncommitted changes fail the harvest before any gate runs, with no auto-discard.)*
 
 **Files:**
 - Create: `agent/harvest/fixture_e2e_test.go`
@@ -3647,6 +3961,30 @@ var _ = Describe("fixture workspace postures", func() {
 		evidence, _ := os.ReadFile(filepath.Join(flight, "review.json"))
 		Expect(string(evidence)).To(ContainSubstring(`"gate-test`))
 		Expect(string(evidence)).To(ContainSubstring("--- FAIL: TestX"))
+	})
+
+	It("DIRTY posture: uncommitted changes fail the harvest before any gate runs (F33)", func() {
+		client.BuildReturns(pass, nil)
+		client.RunTestsReturns(pass, nil)
+		Expect(os.WriteFile(filepath.Join(ws, "wip.txt"), []byte("uncommitted"), 0o644)).To(Succeed())
+
+		exit, err := harvest.Run(context.Background(), cfg, flight, filepath.Dir(ws), deps)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(exit).To(Equal(harvest.ExitGatesFailed)) // agent failure, NOT platform error
+
+		flightContract(schema.StatusFail)
+
+		By("no gate ran, nothing was pushed")
+		Expect(client.BuildCallCount()).To(BeZero())
+		Expect(client.RunTestsCallCount()).To(BeZero())
+		Expect(git(bare, "for-each-ref", "refs/heads/agent")).To(BeEmpty())
+
+		By("no auto-discard: the agent's uncommitted work survives")
+		_, statErr := os.Stat(filepath.Join(ws, "wip.txt"))
+		Expect(statErr).NotTo(HaveOccurred())
+
+		evidence, _ := os.ReadFile(filepath.Join(flight, "review.json"))
+		Expect(string(evidence)).To(ContainSubstring(`"workspace-dirty"`))
 	})
 
 	It("FLAKY posture: fails once then passes - delivered, but visibly flaky", func() {
@@ -3781,7 +4119,10 @@ func TestLiveHarvestCredentialIsolation(t *testing.T) {
 		return stdout.String() + stderr.String(), err
 	}
 
-	// --- harvest-shaped pod: git-cred SecretMount + platform-token SecretEnv + dev sidecar
+	// --- harvest-shaped pod: git-cred SecretMount + platform-token SecretEnv + dev sidecar.
+	// CLAUDE_CODE_OAUTH_TOKEN is a SecretEnv-ONLY key (no literal env entry):
+	// this exercises applySecretRefs' APPEND path (07 Task 11B, F20) live —
+	// with replace-only semantics the main container would silently get no var.
 	harvestHandle := "live-harvest-" + stamp
 	cleanupPod(t, clientset, ns, harvestHandle)
 	{
@@ -3997,6 +4338,7 @@ go run ./fly validate-pipeline -c /tmp/harvest-demo-pipeline.yml
 
 ```bash
 ginkgo ./agent/api/reviews/ ./agent/harvest/          # contract types, gates, judge, runner, fixtures
+go test ./agent/devmcp/ -run TestWaitHealthy           # shared sidecar-readiness helper (F34)
 (cd agent/schema && go test ./...)                     # nested module (attempt/flaky additions)
 ginkgo ./atc/ ./atc/builds/ ./atc/configvalidate/      # step parse/validate/plan
 ginkgo ./atc/exec/ ./atc/engine/                       # exec step + engine wiring
@@ -4020,7 +4362,7 @@ Before any real push test against a live repo: the per-repo secret `agent-harves
 
 **Rollback notes for the risky diffs:**
 - **Migration 1773106080** is additive (nullable columns + partial indexes); `.down.sql` drops exactly what it created. Existing review publishing is untouched (upsert key unchanged; linkage preserved via COALESCE).
-- **jetbridge `SecretMounts` (Task 11)** is the only change on the shared pod-construction path. It is inert when `SecretMounts` is empty (every existing caller). To roll back: revert the `buildPod` hunk and the `runtime` type — no data migration involved. The main-container-only invariant is pinned by the Task 11 spec asserting sidecars carry no secret mount.
+- **jetbridge `SecretMounts` (Task 11)** is this plan's only change on the shared pod-construction path (the `applySecretRefs` append, `SidecarEnv`/`SidecarSecretEnv`, and the pause loop land earlier via agent-step 07 Task 11B — narrowed 2026-07-09). It is inert when `SecretMounts` is empty (every existing caller). To roll back: revert the `buildPod` hunk and the `runtime` type — no data migration involved. The main-container-only invariant is pinned by the Task 11 spec asserting sidecars carry no secret mount.
 - **Step-union changes (Task 6)** follow the exhaustive `StepVisitor` pattern — a revert is a clean removal of the `harvest` detector + visitor methods; pipelines containing `harvest:` steps then fail config validation loudly rather than misparsing.
 - **Ticket transitions (Task 13)** go exclusively through `tickets.Store.Transition` with `from=running` guards — a double-running harvest (retry/resume) makes the second transition fail `ErrInvalidTransition` and logs, never corrupts state. Evidence upsert is idempotent on `(build_id, repo, commit_sha)`.
 - **The shared image change (Task 10)** adds a second binary to `deploy/agent-runner/Dockerfile`; the live theborg review job pins its image by tag, so nothing changes for it until a new tag is built and referenced. If the image build breaks, the previous tag keeps working.

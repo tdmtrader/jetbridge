@@ -2563,21 +2563,17 @@ var _ = Describe("outcomewatcher", func() {
 		_ = ticketStore.Transition(ticketID, tickets.StateSentBack, tickets.StateQueued, tickets.TransitionMeta{})
 		_ = ticketStore.Transition(ticketID, tickets.StateQueued, tickets.StateRunning, tickets.TransitionMeta{})
 
-		// the re-worked branch: a new HUMAN commit is pushed (new head) on top
-		// of the first push. A fresh harvest metrics row carries the NEW shas.
-		// The commit is authored by a human so the rework counts toward the
-		// human-touch delta (merged_with_fixes ⇔ human_commit_count > 0).
+		// the re-worked branch: the re-dispatched agent pushes a NEW head (bot
+		// commit) on top of the first push. A fresh harvest metrics row carries
+		// the NEW shas. NOTE (F38): this rework commit becomes the row's new
+		// pushed_sha, so it is NOT part of the human-touch delta — the delta
+		// window is pushed_sha..tip-at-merge (§1.11.1). merged_with_fixes is
+		// earned below by a separate human commit landing AFTER this push.
 		seed := filepath.Join(tmp, "seed")
 		newBase := pushed // the rework is based on the first push
 		Expect(os.WriteFile(filepath.Join(seed, "g.go"), []byte("package g\n"), 0o644)).To(Succeed())
 		git(seed, "add", ".")
-		humanCommit := exec.Command("git", "commit", "-m", "human rework")
-		humanCommit.Dir = seed
-		humanCommit.Env = append(os.Environ(),
-			"GIT_AUTHOR_NAME=Reviewer", "GIT_AUTHOR_EMAIL=rev@example.com",
-			"GIT_COMMITTER_NAME=Reviewer", "GIT_COMMITTER_EMAIL=rev@example.com")
-		out, err := humanCommit.CombinedOutput()
-		Expect(err).NotTo(HaveOccurred(), "human commit: %s", out)
+		git(seed, "commit", "-m", "agent rework")
 		reworked := git(seed, "rev-parse", "HEAD")
 		Expect(reworked).NotTo(Equal(pushed))
 		git(seed, "push", "origin", "HEAD:refs/heads/agent/ticket-1")
@@ -2589,12 +2585,15 @@ var _ = Describe("outcomewatcher", func() {
 			Status: schema.RunStatusOK, Results: json.RawMessage(md),
 		})
 
-		// ticket is back at needs_review; the reworked branch is then merged.
+		// ticket is back at needs_review. The branch is deliberately NOT merged
+		// yet (F38): Run does seedRows then detectMerges in the SAME tick, so a
+		// merge pushed before tick 2 would be detected on the re-arm tick and
+		// the open-row assertions below would never observe the re-arm.
 		_ = ticketStore.Transition(ticketID, tickets.StateRunning, tickets.StateNeedsReview, tickets.TransitionMeta{Branch: "agent/ticket-1"})
-		git(seed, "push", "origin", "HEAD:main")
 
 		// tick 2: seedRows must RE-ARM the closed_unmerged/sent_back row back to
-		// open with the NEW shas — not `continue` past it.
+		// open with the NEW shas — not `continue` past it. detectMerges finds
+		// the branch still unmerged, so the row stays open through the tick.
 		Expect(watcher.Run(nil)).To(Succeed())
 		o, _, _ = outcomeStore.Get(ticketID)
 		Expect(o.MergeState).To(Equal(outcomes.MergeOpen), "row must be re-armed to open")
@@ -2602,13 +2601,33 @@ var _ = Describe("outcomewatcher", func() {
 		Expect(o.BaseSha).To(Equal(newBase))
 		Expect(o.Disposition).To(BeEmpty(), "the send-back disposition must be cleared on re-arm")
 
-		// tick 3: detect the merge on the re-armed row. Because a human commit
-		// (the rework) precedes the merge, the outcome is merged_with_fixes.
+		// NOW the human reviewer lands a fix commit on top of the reworked push
+		// and merges to main. Only this commit sits inside pushed_sha..tip, so
+		// merged_with_fixes is genuinely earned (human_commit_count > 0 with a
+		// non-empty line delta). Merging the reworked head alone would be plain
+		// `merged` — an empty pushed_sha..tip delta (§1.11.1). The branch ref
+		// stays at `reworked` and no new metrics row is written, so the row's
+		// pushed_sha is not refreshed past the human commit.
+		Expect(os.WriteFile(filepath.Join(seed, "g.go"), []byte("package g\n\nvar Fix = 1\n"), 0o644)).To(Succeed())
+		git(seed, "add", ".")
+		humanFix := exec.Command("git", "commit", "-m", "human fix before merge")
+		humanFix.Dir = seed
+		humanFix.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=Reviewer", "GIT_AUTHOR_EMAIL=rev@example.com",
+			"GIT_COMMITTER_NAME=Reviewer", "GIT_COMMITTER_EMAIL=rev@example.com")
+		out, err := humanFix.CombinedOutput()
+		Expect(err).NotTo(HaveOccurred(), "human fix commit: %s", out)
+		git(seed, "push", "origin", "HEAD:main")
+
+		// tick 3: detect the merge on the re-armed row with a non-empty
+		// pushed_sha..tip human-touch delta.
 		Expect(watcher.Run(nil)).To(Succeed())
 		o, _, _ = outcomeStore.Get(ticketID)
 		Expect(o.MergeState).To(Equal(outcomes.MergedWithFixes))
 		Expect(o.PushedSha).To(Equal(reworked))
 		Expect(o.BaseSha).To(Equal(newBase))
+		Expect(o.HumanCommitCount).To(Equal(1), "only the post-push human fix is in the delta window")
+		Expect(o.HumanLinesAdded).To(BeNumerically(">", 0), "merged_with_fixes must carry a non-empty delta")
 		tk, _, _ := ticketStore.Get(ticketID)
 		Expect(tk.State).To(Equal(tickets.StateMergedWithFixes))
 	})
@@ -2872,7 +2891,7 @@ func (w *Watcher) recordAndTransition(tk *tickets.Ticket, res *gitcheck.Result) 
 }
 ```
 
-- [ ] Run `ginkgo ./agent/outcomewatcher/` — expect green (row-creation, merge detection + transition, open-stays-open, the send-back re-arm + rework-merge loop (F6), and the diff-provider seam all pass against real git). Before the `seedRows` re-arm fix (unconditional `continue` on a found row) the F6 spec fails at `Expect(o.MergeState).To(Equal(outcomes.MergeOpen), "row must be re-armed to open")` — the row stays `closed_unmerged` and the rework merge is never recorded.
+- [ ] Run `ginkgo ./agent/outcomewatcher/` — expect green (row-creation, merge detection + transition, open-stays-open, the send-back re-arm + rework-merge loop (F6), and the diff-provider seam all pass against real git). Before the `seedRows` re-arm fix (unconditional `continue` on a found row) the F6 spec fails at `Expect(o.MergeState).To(Equal(outcomes.MergeOpen), "row must be re-armed to open")` — the row stays `closed_unmerged` and the rework merge is never recorded. Two orderings in that spec are load-bearing (F38): the merge is pushed only AFTER the tick-2 re-arm assertions (`Run` does seedRows then detectMerges in one tick, so an earlier merge push would be detected on the re-arm tick and hide the open-row state), and the `merged_with_fixes` verdict comes from the post-push "human fix before merge" commit — the only commit in the `pushed_sha..tip` window — never from the rework commit, which IS the new pushed_sha and therefore outside the delta.
 - [ ] Commit: `git add agent/outcomewatcher agent/gitcheck && git commit -m "feat(delivery-outcomes): outcome watcher RunnableComponent + mirror cache"`
 
 ---
@@ -4035,4 +4054,5 @@ Per CLAUDE.md: unit tests run in parallel with `-p`; **never** pass `--race` (pa
 - **Single-writer discipline:** the watcher and the disposition handler are the only two writers of outcome-driven ticket states, and both go through `tickets.Store.Transition` with a `from` guard. A concurrent transition (e.g. a human abandons while the watcher detects a merge) makes the loser's `Transition` fail `ErrStaleTransition`/`ErrInvalidTransition` and no-op — never a corrupt state. The watcher's `detectMerges` re-checks `tk.State == needs_review` before acting, so a human disposition mid-tick is respected.
 
 **Design-review amendments:**
-- **2026-07-09 (F6 — send-back → re-dispatch → merge never recorded):** `seedRows` (Task 10 `agent/outcomewatcher/watcher.go`) previously `continue`d unconditionally on any found outcome row, so a re-dispatched ticket's row was never re-resolved. Combined with a send-back disposition moving the row to terminal `closed_unmerged` and `Ensure`'s refresh firing only `WHERE merge_state='open'`, the re-worked branch's eventual human merge was silently lost (spec §9 human-touch delta). Fix: (1) `Store.Ensure` — both `MemoryStore` (Task 3) and `agentOutcomesFactory` (Task 4 SQL) — now RE-ARM a row where `merge_state='closed_unmerged' AND disposition='sent_back'` back to `open` with fresh branch/pushed_sha/base_sha and cleared disposition fields; `abandoned` and merged rows stay terminal. (2) `seedRows` no longer `continue`s on a found row — it always calls `Ensure`, so the plain `needs_review → queued → needs_review` re-dispatch path also refreshes shas. (3) §1.11.1 prose + the `Store.Ensure` interface doc-comment now document the re-arm; the misleading "handled … elsewhere" comment was removed. Tests added: `TestMemoryStoreEnsureRefreshesOnlyOpenRows` gains send-back-re-arm + abandoned-stays-closed cases (Task 3); the `AgentOutcomesFactory` suite gains "re-arms a sent_back row on Ensure but leaves an abandoned row terminal (F6)" (Task 4); the `outcomewatcher` suite gains "re-arms a sent-back row and detects the rework merge with the NEW shas (F6)" driving `needs_review → sent_back → queued → running → needs_review(new sha) → merged` and asserting the row ends `merged_with_fixes` with the new base/pushed shas. Contract-visible surface unchanged (no new `Store` method, no schema change — `Ensure`'s `ON CONFLICT WHERE` was broadened only).
+- **2026-07-09 (F6 — send-back → re-dispatch → merge never recorded):** `seedRows` (Task 10 `agent/outcomewatcher/watcher.go`) previously `continue`d unconditionally on any found outcome row, so a re-dispatched ticket's row was never re-resolved. Combined with a send-back disposition moving the row to terminal `closed_unmerged` and `Ensure`'s refresh firing only `WHERE merge_state='open'`, the re-worked branch's eventual human merge was silently lost (spec §9 human-touch delta). Fix: (1) `Store.Ensure` — both `MemoryStore` (Task 3) and `agentOutcomesFactory` (Task 4 SQL) — now RE-ARM a row where `merge_state='closed_unmerged' AND disposition='sent_back'` back to `open` with fresh branch/pushed_sha/base_sha and cleared disposition fields; `abandoned` and merged rows stay terminal. (2) `seedRows` no longer `continue`s on a found row — it always calls `Ensure`, so the plain `needs_review → queued → needs_review` re-dispatch path also refreshes shas. (3) §1.11.1 prose + the `Store.Ensure` interface doc-comment now document the re-arm; the misleading "handled … elsewhere" comment was removed. Tests added: `TestMemoryStoreEnsureRefreshesOnlyOpenRows` gains send-back-re-arm + abandoned-stays-closed cases (Task 3); the `AgentOutcomesFactory` suite gains "re-arms a sent_back row on Ensure but leaves an abandoned row terminal (F6)" (Task 4); the `outcomewatcher` suite gains "re-arms a sent-back row and detects the rework merge with the NEW shas (F6)" driving `needs_review → sent_back → queued → running → needs_review(new shas)`, asserting the tick-2 re-arm while the branch is still unmerged, then landing a post-push human fix commit and merging so the row ends `merged_with_fixes` (non-empty `pushed_sha..tip` delta) with the new base/pushed shas. Contract-visible surface unchanged (no new `Store` method, no schema change — `Ensure`'s `ON CONFLICT WHERE` was broadened only).
+- **2026-07-09 (F38 — F6 watcher spec: merge pushed too early + unearned `merged_with_fixes`):** final-review fix to the Task 10 spec "re-arms a sent-back row and detects the rework merge with the NEW shas (F6)". Two defects: (1) the spec pushed the merge to `main` BEFORE tick 2 — but `Watcher.Run` executes `seedRows` then `detectMerges` in the same tick, so the merge was detected on the re-arm tick itself and the tick-2 open-row assertions (`MergeOpen`, reworked shas, cleared disposition) could never observe the re-armed state; (2) it expected `merged_with_fixes` from the rework commit alone — but the rework commit IS the new `pushed_sha`, so `pushed_sha..tip-at-merge` was empty and by the plan's own frozen definition (`merged_with_fixes ⇔ human_commit_count > 0` over that window, §1.11.1 / Task 1) the correct verdict was plain `merged`. Fix: the rework commit is now a bot commit (the re-dispatched agent's push — the honest fixture; its authorship never mattered to the delta), the merge push moves AFTER the tick-2 re-arm assertions, and a genuine human commit ("human fix before merge", `Reviewer` author) lands on top of the reworked push before the merge — the only commit in the delta window — with new assertions `HumanCommitCount == 1` and `HumanLinesAdded > 0`. Misleading comments corrected in place; Task 10's expect-green note now flags both load-bearing orderings. Watcher/`Ensure` implementation code unchanged — this was a test-recipe bug, not a runtime bug. The F6 amendment entry above was corrected to describe the merge-after-re-arm + post-push-human-fix recipe. Contract-visible surface unchanged.

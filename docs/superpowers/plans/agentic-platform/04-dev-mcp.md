@@ -18,7 +18,7 @@
 
 **Contract surfaces this plan PRODUCES** (00-shared-contracts.md):
 - **§3.1 "dev-mcp"** — the five tool schemas, the shared result payload, the Go client interface at `agent/devmcp/client.go`, the contract-test kit at `agent/devmcp/contracttest`, and this repo's implementation at `ci-agent/cmd/dev-mcp` with components `atc`, `fly`, `web`, `ci-agent`, `topgun`.
-- **§8.5 "Sidecar image packaging convention"** — `ghcr.io/tdmtrader/mcp-dev-concourse`, static Go binary entrypoint on `MCP_LISTEN_ADDR` (default `:7780`), `GET /healthz`, non-root, contract-kit-gated CI job in the existing `cicd` pipeline as the copyable template.
+- **§8.5 "Sidecar image packaging convention"** — `ghcr.io/tdmtrader/mcp-dev-concourse`, bare static Go binary entrypoint (no hardcoded paths; workspace taken from CWD set by the owning exec — 2026-07-09 CWD convention) on `MCP_LISTEN_ADDR` (default `:7780`), `GET /healthz`, non-root (MCP sidecar images only; runner images run as root per the 2026-07-09 §8.5 scoping), contract-kit-gated CI job in the existing `cicd` pipeline as the copyable template.
 - **§3 preamble + §11** — implementation-level finalization of open item 3 is appended to the amendment log in Task 1 (SSE frame format, error-code assignments, exit-code convention, heartbeat env var, log-path convention, `dev-mcp.yml` reference config format).
 
 **Contract surfaces this plan CONSUMES:**
@@ -29,7 +29,7 @@
 **Downstream consumers (later waves, do not block on them):** harvest-step and process-intel-experiments consume the Go client; agent-step consumes the sidecar wiring assumption; platform-mcp-hitl and gateway-mcp copy the packaging convention and CI job.
 
 **Key codebase facts verified for this plan:**
-- `atc/api/mcpserver/server.go` — in-house MCP precedent: `AddTool(name, description, schema, handler)`, JSON-RPC dispatch for `initialize`/`tools/list`/`tools/call`/`ping`, tool payload serialized as a single `text` content block (`server.go:161-167`). It has **no** SSE/progress support, so the dev-mcp server re-implements the pattern with progress added (and cannot import it anyway — different module).
+- `atc/api/mcpserver/server.go` — in-house MCP precedent: `AddTool(name, description, schema, handler)`, JSON-RPC dispatch for `initialize`/`tools/list`/`tools/call`/`ping`, tool payload serialized as a single `text` content block (`server.go:161-167`). It has **no** SSE/progress support, so the dev-mcp server re-implements the pattern with progress added (and cannot import it anyway — different module). *(2026-07-09: still true at this plan's wave-1 execution time; the SSE delta later upgrades `atc/api/mcpserver` in place with a byte-similar port of this plan's SSE path — 08 Task 9b — with mirrored server tests as the drift guard; see the Task 1 2026-07-09 amendment entry.)*
 - `ci-agent/go.mod` — module `github.com/concourse/ci-agent`, deps: goccy/go-yaml, ginkgo/gomega, otel. Test style: Ginkgo bootstrap per package (`ci-agent/phaseconfig`).
 - Root `package.json` scripts: `build` (`yarn run build`), `test` (`cd web/elm && elm-test`), `analyse` — the `web` component's commands.
 - `Makefile:5-16` — `test-unit` is `ginkgo -r -p` (skips ci-agent), `test-ci-agent` is `cd ci-agent && go test ./...`. **`ginkgo -r` does not run packages without Ginkgo suites**, so the plain-`testing` packages (contracttest, e2e) get a new `test-dev-mcp` make target wired into `test-quick`.
@@ -62,6 +62,21 @@ The contracts doc decides the big points (tool schemas, taxonomy, streamable HTT
 
 - [ ] Verify the entry landed: `grep -n "dev-mcp interface finalization" docs/superpowers/plans/agentic-platform/00-shared-contracts.md` — expect one hit in §11.
 - [ ] Commit: `git add docs/superpowers/plans/agentic-platform/00-shared-contracts.md && git commit -m "docs(dev-mcp): finalize open-item-3 interface details in shared-contracts amendment log" -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"`
+
+> **Amended 2026-07-09 (SSE transport & park hardening delta, resolves F13 — this plan's assignment is this amendment-log entry ONLY; no dev-mcp code, config, or image changes).** dev-mcp's Task 4 server is the empirically proven-surviving pattern (the claude CLI v2.1.77 abandons a progress-free buffered tools/call at exactly 60s, silently; the 15s SSE heartbeat keeps it alive) and its §3-preamble SSE finalization is promoted to the wire spec of record for all three sidecars. The steps below record that promotion in the §11 amendment log.
+
+- [ ] Append the following second entry to the end of §11 (after the 2026-07-08 dev-mcp interface-finalization entry above):
+
+```markdown
+- 2026-07-09 (SSE transport generalization — dev-mcp's §3-preamble SSE finalization becomes NORMATIVE for all three sidecars; owner: dev-mcp; consumers notified: platform-mcp-hitl, gateway-mcp, agent-step, harvest-step; resolves F13):
+  - **Wire spec of record:** the 2026-07-08 Progress/SSE bullet above — SSE gating on `Accept: text/event-stream` AND `params._meta.progressToken`, frames `event: message` + `data: <json-rpc message>`, progress notifications `{"jsonrpc":"2.0","method":"notifications/progress","params":{"progressToken":<echoed verbatim>,"message":"<latest>"}}` on a coalescing heartbeat ticker, final JSON-RPC response as the LAST SSE frame, buffered JSON when the client doesn't opt in — now binds dev-mcp, platform-mcp, AND gateway (delta D1/D3). Rationale is empirical: the claude CLI (v2.1.77) abandons a progress-free buffered tools/call at exactly 60s, silently ("(completed with no output)", no error flag); `MCP_TOOL_TIMEOUT` does NOT prevent it. Any MCP tool whose handler can block longer than 30s MUST be served over this SSE path.
+  - **Mirrored implementation, not shared code:** `ci-agent` is a standalone Go module — the root module MUST NOT `require` ci-agent and ci-agent MUST NOT `require` the root. `ci-agent/devmcp` stays the reference server, unchanged; `atc/api/mcpserver` (currently buffered-only) is upgraded IN PLACE with a byte-similar port of `ci-agent/devmcp`'s SSE path (lands as 08 Task 9b, before 08 Task 10 and 10 Task 7), and platform-mcp/gateway build on it. No new shared module is extracted. Drift guard: `atc/api/mcpserver/server_test.go` gains SSE tests mirrored from `ci-agent/devmcp/server_test.go` (04 Task 4) asserting the identical frame shape.
+  - **Heartbeat env pattern:** `DEV_MCP_PROGRESS_INTERVAL` generalizes to `<ROLE>_MCP_PROGRESS_INTERVAL` — `DEV_MCP_PROGRESS_INTERVAL` / `PLATFORM_MCP_PROGRESS_INTERVAL` / `GATEWAY_MCP_PROGRESS_INTERVAL` — Go duration syntax, default 15s (`DefaultHeartbeat`, half the §3.1 30s progress bound, 4x margin under the 60s CLI cliff). VALIDATION in all three binaries: a set-but-invalid value, a value <= 0, or a value > 30s is a FATAL startup error — never clamp silently.
+  - dev-mcp is already compliant (its Task 4 server is the F13 proven-surviving implementation); nothing else in plan 04 changes.
+```
+
+- [ ] Verify the entry landed: `grep -n "SSE transport generalization" docs/superpowers/plans/agentic-platform/00-shared-contracts.md` — expect one hit in §11.
+- [ ] Commit: `git add docs/superpowers/plans/agentic-platform/00-shared-contracts.md && git commit -m "docs(dev-mcp): promote SSE frame/heartbeat spec to normative for all three sidecars (F13 delta)" -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"`
 
 ---
 
@@ -3012,7 +3027,9 @@ test-quick: test-unit test-ci-agent test-dev-mcp
 
 ### Task 12: Sidecar image packaging — Dockerfile + convention doc
 
-Owns 00-shared-contracts.md §8.5. The image bundles the toolchain this repo's `dev-mcp.yml` commands need (go, ginkgo, node/yarn); the workspace is mounted at `/workspace` by the pod spec (mounting mechanics are agent-step's scope, not ours).
+Owns 00-shared-contracts.md §8.5. The image bundles the toolchain this repo's `dev-mcp.yml` commands need (go, ginkgo, node/yarn); the image never hardcodes a workspace path — per the §8.5 CWD convention (co-signed dev-mcp + agent-step + harvest-step, 2026-07-09), the owning exec implementation sets the sidecar container's `WorkingDir` to the workspace artifact's mount path, and the binary's path-valued flags default relative to CWD (`--config dev-mcp.yml`, `--workdir .`; Task 8).
+
+> **Amended 2026-07-09 (F21 — dev-mcp `/workspace` mismatch, runtime-seams delta Piece 4c):** jetbridge mounts the workspace at a hashed workdir path and nothing mounts `/workspace`, so a hardcoded `--config /workspace/dev-mcp.yml --workdir /workspace` ENTRYPOINT dies at start (RestartPolicyNever), gates get connection-refused, ticket errored. Fix: bare-binary ENTRYPOINT relying on the already-relative flag defaults; the owning exec (07/09 Task 12 step 7) sets the sidecar `WorkingDir`. The Args-append variant (appending flags after an exec-form ENTRYPOINT that already carries them) is FORBIDDEN — duplicate flags. `MCP_IMAGES.md` additionally records the CWD convention and scopes the non-root rule to MCP sidecar images only (main-step runner images `agent-runner`/`harvest-runner` run as root, per §8.5 as amended by runtime-seams Piece 5b).
 
 **Files:**
 - Create: `deploy/Dockerfile.mcp-dev-concourse`, `deploy/MCP_IMAGES.md`
@@ -3026,10 +3043,11 @@ Owns 00-shared-contracts.md §8.5. The image bundles the toolchain this repo's `
 #
 # Packaging convention (00-shared-contracts.md §8.5, owned by dev-mcp and
 # reused by mcp-platform and mcp-gateway):
-#   - static Go binary ENTRYPOINT serving streamable-HTTP MCP on
-#     MCP_LISTEN_ADDR (default :7780 for the dev role)
+#   - static Go binary ENTRYPOINT (bare — no hardcoded paths) serving
+#     streamable-HTTP MCP on MCP_LISTEN_ADDR (default :7780 for the dev role)
 #   - GET /healthz for the pod readiness probe
-#   - runs as non-root
+#   - runs as non-root (MCP sidecar images only; main-step runner images
+#     run as root — §8.5 scoping, 2026-07-09)
 #   - version tag = the shipping repo's release tag (or short sha for
 #     untagged builds); `latest` is never referenced by workflow definitions
 
@@ -3057,9 +3075,10 @@ ENV MCP_LISTEN_ADDR=:7780
 ENV GOPATH=/home/devmcp/go
 EXPOSE 7780
 
-# The agent workspace (a repo checkout with dev-mcp.yml at its root) is
-# mounted at /workspace by the pod spec (agent-step's wiring, wave 2).
-ENTRYPOINT ["/usr/local/bin/dev-mcp", "--config", "/workspace/dev-mcp.yml", "--workdir", "/workspace"]
+# The owning exec sets this container's WorkingDir to the workspace
+# artifact's mount path (shared-contracts §8.5 CWD convention); all
+# path-valued flags default relative to CWD, so no path is hardcoded.
+ENTRYPOINT ["/usr/local/bin/dev-mcp"]
 ```
 
 - [ ] Write `deploy/MCP_IMAGES.md` — the copyable convention platform-mcp and gateway reuse:
@@ -3076,9 +3095,10 @@ Consumers: platform-mcp-hitl (`mcp-platform`), gateway-mcp (`mcp-gateway`).
 |---|---|
 | Registry/name | `ghcr.io/tdmtrader/mcp-<name>` (`mcp-dev-concourse`, `mcp-platform`, `mcp-gateway`) |
 | Version tag | the shipping repo's release tag when HEAD is tagged, else the short sha; `latest` is never pushed nor referenced (workflow-definition import validation rejects untagged/`latest` images) |
-| Entrypoint | static Go binary serving streamable-HTTP MCP (`POST /mcp`) on `MCP_LISTEN_ADDR` (defaults: `:7780` dev, `:7781` platform, `:7782` gateway) |
+| Entrypoint | bare static Go binary (`ENTRYPOINT ["/usr/local/bin/<name>"]`, no flags, no hardcoded paths) serving streamable-HTTP MCP (`POST /mcp`) on `MCP_LISTEN_ADDR` (defaults: `:7780` dev, `:7781` platform, `:7782` gateway) |
+| Workspace discovery | §8.5 CWD convention (co-signed dev-mcp, agent-step, harvest-step): images never hardcode a workspace path (no `/workspace`); every path-valued flag defaults relative to the process CWD (dev-mcp: `--config dev-mcp.yml`, `--workdir .`); the owning exec implementation sets the sidecar's `WorkingDir` to the workspace artifact's mount path inside the hashed build workdir (jetbridge falls back to the main container's Dir when no workspace artifact exists) |
 | Health | `GET /healthz` → 200, used as the pod readiness probe |
-| User | non-root (uid 1000) |
+| User | non-root (uid 1000) — **MCP sidecar images only**; main-step runner images (`agent-runner`, `harvest-runner`) run as **root** like every other step image, because jetbridge hostPath step volumes are kubelet-created root:root 0755 and fsGroup is ignored for hostPath (§8.5 scoping, 2026-07-09) |
 | Gate | the image's contract-test kit MUST pass against the built image before push ("push on green") |
 
 ## CI job template
@@ -3110,6 +3130,8 @@ the spec's testing approach).
 ### Task 13: CI job `build-mcp-dev-image` in the cicd pipeline
 
 The §8.5 copyable template job: build the image in a DinD pod (the verified `tag-push-release` pattern at `deploy/concourse-pipeline.yml:520-676`), run the contract kit against the running container, push to GHCR on green.
+
+> **Amended 2026-07-09 (F21 follow-through):** the smoke `docker run` gains `-w /workspace` — with the bare-binary ENTRYPOINT (Task 12 as amended) the container takes the workspace from CWD, so the CI job must set the working directory the way the owning exec sets the pod's sidecar `WorkingDir`. This also makes the smoke run a standing check that the image genuinely has no hardcoded workspace path: it only finds `dev-mcp.yml` because `-w` put it there.
 
 **Files:**
 - Modify: `deploy/concourse-pipeline.yml:677` (append job at end of file)
@@ -3184,8 +3206,11 @@ The §8.5 copyable template job: build the image in a DinD pod (the verified `ta
               -t ${IMAGE}:${TAG} /build
 
           echo "=== Starting the built image against the repo workspace ==="
+          # -w /workspace emulates the exec-set WorkingDir (§8.5 CWD
+          # convention): the bare-binary ENTRYPOINT takes the workspace
+          # from CWD, so the smoke run must set it like the pod spec does.
           kubectl exec -n cicd ${BUILDER_POD} -- \
-            docker run -d --name devmcp -v /build:/workspace ${IMAGE}:${TAG}
+            docker run -d --name devmcp -v /build:/workspace -w /workspace ${IMAGE}:${TAG}
           kubectl exec -n cicd ${BUILDER_POD} -- sh -c '
             for i in $(seq 1 30); do
               if docker run --rm --network container:devmcp curlimages/curl:8.7.1 \

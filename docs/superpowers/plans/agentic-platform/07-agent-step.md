@@ -609,7 +609,7 @@ DROP TABLE agent_run_metrics;
 
 ### Task 7: `agent/api/metrics` — Store interface, submission parsing, memory store, HTTP handler
 
-Follows the `agent/api/reviews` idiom exactly (types + `Store` + `memory_store.go` + `handler.go`, `r.FormValue(":ticket_id")` for rata params). The `Store` interface carries both `Upsert(rm) error` (the convenience form consumed by harvest-step and delivery-outcomes) and `UpsertReturningInserted(rm) (bool, error)` (a first-insert discriminator consumed by Task 13's ledger-dedup gate, finding F3) — additive, so existing consumers and the `metricsfakes.FakeStore` `Upsert*` methods are unchanged.
+Follows the `agent/api/reviews` idiom exactly (types + `Store` + `memory_store.go` + `handler.go`, `r.FormValue(":ticket_id")` for rata params). The `Store` interface carries `Upsert(rm) error` (the convenience form consumed by harvest-step and delivery-outcomes), `UpsertReturningInserted(rm) (bool, error)` (a first-insert discriminator consumed by Task 13's ledger-dedup gate, finding F3), and — added by the 2026-07-09 final-review amendment, finding F24 — `InsertIfAbsent(rm) (bool, error)` (the DEGRADED-ingestion write: insert-only, `ON CONFLICT DO NOTHING`, so a re-ingestion that read no flight data can never clobber a real row). All additive, so existing consumers and the `metricsfakes.FakeStore` `Upsert*` methods are unchanged.
 
 **Files:**
 - Create: `agent/api/metrics/types.go`
@@ -684,6 +684,15 @@ type Store interface {
 	// resumes — reusing the metrics table's unique key as the single dedup
 	// authority. Upsert is Upsert(rm) = { _, err := UpsertReturningInserted(rm); return err }.
 	UpsertReturningInserted(rm *schema.RunMetrics) (inserted bool, err error)
+	// InsertIfAbsent writes the row only when no (BuildID, PlanID) row exists
+	// yet (ON CONFLICT (build_id, plan_id) DO NOTHING) and reports whether it
+	// inserted. This is the DEGRADED-ingestion write (finding F24, 2026-07-09):
+	// when a re-ingestion read no flight data — a web-restart resume whose
+	// in-memory volume locator is gone, or a reaped-pod rerun — its zero-cost
+	// status=error row must never clobber a real row written by an earlier,
+	// successful ingestion. inserted=false means a row already existed and
+	// nothing was written.
+	InsertIfAbsent(rm *schema.RunMetrics) (inserted bool, err error)
 	// GetByBuild returns rows for a build, oldest-first.
 	GetByBuild(buildID int) ([]schema.RunMetrics, error)
 	// ListByTicket returns rows for a ticket, oldest-first.
@@ -810,6 +819,19 @@ func (s *MemoryStore) UpsertReturningInserted(rm *schema.RunMetrics) (bool, erro
 	return !existed, nil
 }
 
+func (s *MemoryStore) InsertIfAbsent(rm *schema.RunMetrics) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := [2]any{rm.BuildID, rm.PlanID}
+	if _, existed := s.rows[key]; existed {
+		return false, nil // never clobber an existing row (F24)
+	}
+	s.seq++
+	s.ord[key] = s.seq
+	s.rows[key] = *rm
+	return true, nil
+}
+
 func (s *MemoryStore) GetByBuild(buildID int) ([]schema.RunMetrics, error) {
 	return s.list(func(rm schema.RunMetrics) bool { return rm.BuildID == buildID })
 }
@@ -914,7 +936,7 @@ func (h *Handler) ListByTicket(w http.ResponseWriter, r *http.Request) {
 
 ### Task 8: `atc/db` AgentRunMetricsFactory
 
-Implements `metrics.Store` with squirrel, upsert `ON CONFLICT (build_id, plan_id)`, epoch-seconds scan — the `agent_reviews_factory.go` recipe (atc/db/agent_reviews_factory.go:26 Upsert, :61 column scan). The upsert also returns a first-insert discriminator (`UpsertReturningInserted`, via `RETURNING (xmax = 0)`) that Task 13 gates the append-only ledger write on (finding F3).
+Implements `metrics.Store` with squirrel, upsert `ON CONFLICT (build_id, plan_id)`, epoch-seconds scan — the `agent_reviews_factory.go` recipe (atc/db/agent_reviews_factory.go:26 Upsert, :61 column scan). The upsert also returns a first-insert discriminator (`UpsertReturningInserted`, via `RETURNING (xmax = 0)`) that Task 13 gates the append-only ledger write on (finding F3). Amended 2026-07-09 (finding F24): the factory also implements `InsertIfAbsent` — same insert, `ON CONFLICT (build_id, plan_id) DO NOTHING` — the degraded-ingestion write that can never overwrite an existing row.
 
 **Files:**
 - Create: `atc/db/agent_run_metrics_factory.go`
@@ -989,6 +1011,40 @@ var _ = Describe("AgentRunMetricsFactory", func() {
 		Expect(rows[0].TicketID).To(BeNil())
 		Expect(rows[0].WorkflowVersion).To(BeNil())
 	})
+
+	// --- finding F24: degraded re-ingestion must never clobber a real row ---
+	It("InsertIfAbsent inserts when absent and preserves an existing row", func() {
+		good := &schema.RunMetrics{
+			BuildID: 44, PlanID: "bb", StepName: "implement",
+			Status: "ok", Summary: "real ingestion", CostUSD: 0.42, Turns: 9,
+		}
+		inserted, err := factory.UpsertReturningInserted(good)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(inserted).To(BeTrue())
+
+		// Degraded re-ingestion (resume with no flight data readable): the
+		// zero-cost error row hits ON CONFLICT DO NOTHING and writes nothing.
+		degraded := &schema.RunMetrics{
+			BuildID: 44, PlanID: "bb", StepName: "implement",
+			Status: "error", Summary: "flight recorder output missing",
+		}
+		inserted, err = factory.InsertIfAbsent(degraded)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(inserted).To(BeFalse())
+
+		rows, err := factory.GetByBuild(44)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(rows).To(HaveLen(1))
+		Expect(rows[0].Status).To(Equal("ok")) // web-1's real row survives
+		Expect(rows[0].CostUSD).To(BeNumerically("~", 0.42, 1e-9))
+
+		// And it still inserts when no row exists (crashed agent, first run).
+		inserted, err = factory.InsertIfAbsent(&schema.RunMetrics{
+			BuildID: 45, PlanID: "cc", StepName: "s", Status: "error", Summary: "crashed",
+		})
+		Expect(err).ToNot(HaveOccurred())
+		Expect(inserted).To(BeTrue())
+	})
 })
 ```
 
@@ -1001,6 +1057,7 @@ package db
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 
 	"github.com/concourse/concourse/agent/api/metrics"
 	schema "github.com/concourse/concourse/agent/schema"
@@ -1087,6 +1144,53 @@ func (f *agentRunMetricsFactory) UpsertReturningInserted(rm *schema.RunMetrics) 
 		RunWith(f.conn).
 		QueryRow().
 		Scan(&inserted)
+	return inserted, err
+}
+
+// InsertIfAbsent is the degraded-ingestion write (finding F24): identical
+// column/value construction to UpsertReturningInserted, but the conflict
+// clause is DO NOTHING, so an existing (build_id, plan_id) row — a real row
+// from an earlier, successful ingestion — is never overwritten. With
+// DO NOTHING, RETURNING yields no row when the conflict fires, which scans
+// as sql.ErrNoRows ⇒ inserted=false, nothing written.
+func (f *agentRunMetricsFactory) InsertIfAbsent(rm *schema.RunMetrics) (bool, error) {
+	var eventCounts, results any
+	if rm.EventCounts != nil {
+		b, err := json.Marshal(rm.EventCounts)
+		if err != nil {
+			return false, err
+		}
+		eventCounts = b
+	}
+	if len(rm.Results) > 0 {
+		results = []byte(rm.Results)
+	}
+
+	var inserted bool
+	err := psql.Insert("agent_run_metrics").
+		Columns(
+			"ticket_id", "pipeline_run_id", "build_id", "plan_id", "step_name",
+			"workflow_name", "workflow_version", "workflow_hash",
+			"status", "summary", "model",
+			"input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens",
+			"turns", "wall_time_seconds", "cost_usd",
+			"results", "events_artifact", "event_counts",
+		).
+		Values(
+			rm.TicketID, rm.PipelineRunID, rm.BuildID, rm.PlanID, rm.StepName,
+			rm.WorkflowName, rm.WorkflowVersion, rm.WorkflowHash,
+			rm.Status, rm.Summary, rm.Model,
+			rm.Usage.InputTokens, rm.Usage.OutputTokens, rm.Usage.CacheReadInputTokens, rm.Usage.CacheCreationInputTokens,
+			rm.Turns, rm.WallTimeSeconds, rm.CostUSD,
+			results, rm.EventsArtifact, eventCounts,
+		).
+		Suffix(`ON CONFLICT (build_id, plan_id) DO NOTHING RETURNING true`).
+		RunWith(f.conn).
+		QueryRow().
+		Scan(&inserted)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil // conflict fired — existing row preserved
+	}
 	return inserted, err
 }
 
@@ -1528,9 +1632,261 @@ func (visitor *planVisitor) VisitAgent(step *atc.AgentStep) error {
 
 ---
 
+### Task 11B: jetbridge runtime seams (added 2026-07-09 — final-review findings F15/F18/F20/F31-pause)
+
+The wave-2 runtime-seams work package, frozen 2026-07-09 across the co-signed plans. Five plans (07, 08, 09, 11, 04) depend on these seams; they are built exactly once, HERE. **Hard prerequisite of Tasks 12, 14, and 18 — sequence this task before them.** No jetbridge edits are permitted in any plan other than this task and 09 Task 11 (SecretMounts only). Consumers: dev-mcp (04, CWD convention), harvest-step (09, applySecretRefs append + dev-sidecar WorkingDir), platform-mcp-hitl (08) and dispatch (11) via the checkpoint renderer's co-signed delta, shared-contracts (00, §8.1/§8.2/§8.5/§11 registry edits).
+
+Four pieces:
+- **F15** — `runtime.ContainerSpec` gains per-sidecar env + secret-ref maps (`SidecarEnv`, `SidecarSecretEnv`), applied by `buildSidecarContainers`. The public YAML surface is UNCHANGED: `atc.SidecarConfig`/`atc.SidecarEnvVar` (atc/sidecar.go:13–35) gain NO ValueFrom and no new fields — secret refs reach sidecars exclusively through the runtime-level maps, populated by the owning exec implementation (never from pipeline YAML).
+- **F18** — `supervised()` extends to `Task || Agent`. Agent steps REQUIRE supervision: web-restart resume (`attachOrRun`) and the ask_human/checkpoint park protocol are built on the supervisor keeping the process alive across severed exec sessions (shared-contracts §3.2). `db.ContainerTypeAgent` lands here (moved from Task 14, which now consumes it).
+- **F20** — `applySecretRefs` gains APPEND semantics for SecretEnv-only keys (returns the slice). Required in wave 2 by this plan's own `SidecarSecretEnv` keys (no literal counterparts); consumed in wave 3 by harvest's judge token. The empty-placeholder workaround (a fake literal added just to be replaced) is FORBIDDEN.
+- **F31 (pause leg)** — the pause command loops its bounded sleep so parked pods survive past 24h (a bare `sleep 86400` kills the pod 24h after creation, breaking ask_human/checkpoint parks).
+
+**Files:**
+- Modify: `atc/runtime/types.go` (:185 — two fields after `Sidecars`)
+- Modify: `atc/db/container_metadata.go` (:26–32 const block + :34–49 `ContainerTypeFromString`)
+- Modify: `atc/worker/jetbridge/container.go` (:361–363 `pauseCommand`, :399 + :439 `buildPod` call sites, :510 `buildSidecarContainers`, :704–721 `applySecretRefs`)
+- Modify: `atc/worker/jetbridge/process.go` (:731–735 `supervised`)
+- Test: `atc/worker/jetbridge/container_test.go` (new per-sidecar env/secret + append specs on the one-sidecar scaffolding at :2790; pause-literal updates at :1517/:3186), `atc/worker/jetbridge/process_test.go` (supervised table), `atc/worker/jetbridge/integration_test.go` (:101 pause literal)
+
+**Steps:**
+
+- [ ] Write the failing fake-clientset specs in `atc/worker/jetbridge/container_test.go`, copying the one-sidecar context scaffolding at :2790 (adjust the pod-fetch/container-lookup helpers to that scaffolding's exact shape at execution time):
+
+```go
+	Context("per-sidecar env and secret refs (runtime seams, F15)", func() {
+		BeforeEach(func() {
+			containerSpec.Sidecars = []atc.SidecarConfig{
+				{Name: "platform", Image: "mcp-platform:v1"},
+				{Name: "dev", Image: "mcp-dev:v1"},
+			}
+			containerSpec.SidecarEnv = map[string][]string{
+				"platform": {"ATC_EXTERNAL_URL=https://ci.example.com", "AGENT_TICKET_ID=7"},
+			}
+			containerSpec.SidecarSecretEnv = map[string]map[string]vars.SecretRef{
+				"platform": {"AGENT_PRINCIPAL_TOKEN": {Name: "agent-run-42", Key: "principal-token"}},
+			}
+		})
+
+		It("applies literals then env rows then secret refs to the named sidecar only", func() {
+			pod := createdPod() // the :2790 scaffolding's fake-clientset pod fetch
+			platform := containerByName(pod, "platform")
+			Expect(platform.Env).To(ContainElements(
+				corev1.EnvVar{Name: "ATC_EXTERNAL_URL", Value: "https://ci.example.com"},
+				corev1.EnvVar{Name: "AGENT_TICKET_ID", Value: "7"},
+			))
+			Expect(platform.Env).To(ContainElement(corev1.EnvVar{
+				Name: "AGENT_PRINCIPAL_TOKEN",
+				ValueFrom: &corev1.EnvVarSource{
+					SecretKeyRef: &corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{Name: "agent-run-42"},
+						Key:                  "principal-token",
+					},
+				},
+			}))
+			// the secret ref never appears as a literal Value
+			for _, e := range platform.Env {
+				if e.Name == "AGENT_PRINCIPAL_TOKEN" {
+					Expect(e.Value).To(BeEmpty())
+				}
+			}
+			// the dev sidecar and the main container carry NONE of these entries
+			for _, c := range []corev1.Container{containerByName(pod, "dev"), containerByName(pod, mainContainerName)} {
+				for _, e := range c.Env {
+					Expect(e.Name).ToNot(Or(
+						Equal("ATC_EXTERNAL_URL"), Equal("AGENT_TICKET_ID"), Equal("AGENT_PRINCIPAL_TOKEN")))
+				}
+			}
+		})
+	})
+
+	Context("SecretEnv-only keys (runtime seams, F20)", func() {
+		It("appends a secretKeyRef-only EnvVar when no literal exists", func() {
+			containerSpec.Env = nil
+			containerSpec.SecretEnv = map[string]vars.SecretRef{
+				"CLAUDE_CODE_OAUTH_TOKEN": {Name: "agent-platform-credential", Key: "anthropic-token"},
+			}
+			pod := createdPod()
+			main := containerByName(pod, mainContainerName)
+			var matches []corev1.EnvVar
+			for _, e := range main.Env {
+				if e.Name == "CLAUDE_CODE_OAUTH_TOKEN" {
+					matches = append(matches, e)
+				}
+			}
+			Expect(matches).To(HaveLen(1)) // exactly one — appended, not duplicated
+			Expect(matches[0].Value).To(BeEmpty())
+			Expect(matches[0].ValueFrom.SecretKeyRef.Name).To(Equal("agent-platform-credential"))
+			Expect(matches[0].ValueFrom.SecretKeyRef.Key).To(Equal("anthropic-token"))
+		})
+	})
+```
+
+- [ ] Write the supervised-gate table spec in `atc/worker/jetbridge/process_test.go`: a table across container metadata types asserting the pod's exec command (recorded by the fake executor) is the **supervisor command** for `db.ContainerTypeTask` and `db.ContainerTypeAgent` with nil Stdin, and the **raw command** for `db.ContainerTypeGet` and for ANY type when `ProcessIO.Stdin` is non-nil:
+
+```go
+	DescribeTable("supervised gates the in-pod supervisor on container type and stdin (F18)",
+		func(cType db.ContainerType, withStdin bool, wantSupervisor bool) {
+			// build the container via the suite scaffolding with
+			// db.ContainerMetadata{Type: cType}; run a process with
+			// ProcessIO{Stdin: stdinFor(withStdin)}; then assert on the
+			// command the fake executor received:
+			//   wantSupervisor ⇒ command[0] ends in the supervisor invocation
+			//     (supervisorCommand, supervisor.go:63)
+			//   !wantSupervisor ⇒ command equals the raw ProcessSpec command
+		},
+		Entry("task, no stdin → supervised", db.ContainerTypeTask, false, true),
+		Entry("agent, no stdin → supervised", db.ContainerTypeAgent, false, true),
+		Entry("get, no stdin → raw command", db.ContainerTypeGet, false, false),
+		Entry("task with stdin → raw command", db.ContainerTypeTask, true, false),
+		Entry("agent with stdin → raw command", db.ContainerTypeAgent, true, false),
+	)
+```
+
+- [ ] Update the three existing pause-command literal assertions to the new loop form — `container_test.go:1517`, `container_test.go:3186`, `integration_test.go:101` each become:
+
+```go
+	Expect(pod.Spec.Containers[0].Command).To(Equal([]string{"sh", "-c", "trap 'exit 0' TERM; while :; do sleep 86400 & wait $!; done"}))
+```
+
+  (Test commands inside live/behavioral fixtures that use the old one-shot idiom as their OWN payload — e.g. `live_sidecar_test.go` — are fine as-is; only the pod-lifetime pause constant is normative.)
+- [ ] Run `ginkgo ./atc/worker/jetbridge/` — expect compile failure (`SidecarEnv`/`SidecarSecretEnv`/`ContainerTypeAgent` undefined), then spec failures.
+- [ ] **Piece 1a** — `atc/runtime/types.go`: add two fields to `ContainerSpec`, immediately after `Sidecars []atc.SidecarConfig` (:185):
+
+```go
+	// SidecarEnv maps a sidecar name (matching Sidecars[i].Name) to extra
+	// environment variables in "NAME=VALUE" form (same convention as Env),
+	// injected into that sidecar's container only. Populated by the owning
+	// exec implementation (agent/harvest/checkpoint steps) per
+	// shared-contracts §8.1 — never from public pipeline YAML.
+	SidecarEnv map[string][]string
+
+	// SidecarSecretEnv maps a sidecar name to env-var-name → K8s Secret
+	// coordinates, emitted as ValueFrom.SecretKeyRef in that sidecar's
+	// container spec (same secretKeyRef-only rule as SecretEnv, §8.2).
+	SidecarSecretEnv map[string]map[string]vars.SecretRef
+```
+
+- [ ] **Piece 2a** — `atc/db/container_metadata.go`: add `ContainerTypeAgent ContainerType = "agent"` to the const block (:26–32) and a `case "agent":` arm in `ContainerTypeFromString` (:34–49), mirroring `run`. (Moved into this task from Task 14, which now consumes it.)
+- [ ] **Piece 1b** — `atc/worker/jetbridge/container.go`: `buildSidecarContainers` (:510) gains the two maps as parameters:
+
+```go
+func buildSidecarContainers(
+	sidecars []atc.SidecarConfig,
+	mainMounts []corev1.VolumeMount,
+	defaultDir string,
+	sidecarEnv map[string][]string,
+	sidecarSecretEnv map[string]map[string]vars.SecretRef,
+) []corev1.Container
+```
+
+  Call site in `buildPod` (:439) becomes:
+
+```go
+	containers = append(containers, buildSidecarContainers(
+		c.containerSpec.Sidecars, volumeMounts, dir,
+		c.containerSpec.SidecarEnv, c.containerSpec.SidecarSecretEnv)...)
+```
+
+  Inside the per-sidecar loop, the existing `for _, e := range sc.Env` block (:542–544) is replaced by:
+
+```go
+	var env []corev1.EnvVar
+	for _, e := range sc.Env {
+		env = append(env, corev1.EnvVar{Name: e.Name, Value: e.Value})
+	}
+	env = append(env, envVars(sidecarEnv[sc.Name])...)
+	env = applySecretRefs(env, sidecarSecretEnv[sc.Name])
+	c.Env = env
+```
+
+  Ordering is deterministic: YAML-declared literals first (declaration order), then `SidecarEnv` (caller order), then SecretEnv-only appends (sorted by name — Piece 3). Nil map lookups yield nil and are no-ops, so all existing callers (task sidecars) build byte-identical pods.
+- [ ] **Piece 3** — `atc/worker/jetbridge/container.go` (:704–721): replace `applySecretRefs` in full (signature now RETURNS the slice; `sort` is already imported):
+
+```go
+// applySecretRefs converts literal Value entries to ValueFrom.SecretKeyRef
+// for env vars with a matching entry in secretEnv, and APPENDS a
+// secretKeyRef-only EnvVar (in sorted name order, for deterministic pod
+// specs) for secretEnv keys that have no literal entry. This keeps secret
+// values out of the pod spec either way. Returns the (possibly grown) slice.
+func applySecretRefs(envList []corev1.EnvVar, secretEnv map[string]vars.SecretRef) []corev1.EnvVar {
+	if len(secretEnv) == 0 {
+		return envList
+	}
+	refFor := func(ref vars.SecretRef) *corev1.EnvVarSource {
+		return &corev1.EnvVarSource{
+			SecretKeyRef: &corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{Name: ref.Name},
+				Key:                  ref.Key,
+			},
+		}
+	}
+	seen := map[string]bool{}
+	for i := range envList {
+		ref, ok := secretEnv[envList[i].Name]
+		if !ok {
+			continue
+		}
+		seen[envList[i].Name] = true
+		envList[i].Value = ""
+		envList[i].ValueFrom = refFor(ref)
+	}
+	var missing []string
+	for name := range secretEnv {
+		if !seen[name] {
+			missing = append(missing, name)
+		}
+	}
+	sort.Strings(missing)
+	for _, name := range missing {
+		envList = append(envList, corev1.EnvVar{Name: name, ValueFrom: refFor(secretEnv[name])})
+	}
+	return envList
+}
+```
+
+  Call site in `buildPod` (:399) becomes `env = applySecretRefs(env, c.containerSpec.SecretEnv)`. Behavior-preserving for every existing caller: keys with matching literals are replaced exactly as before; the append leg only fires for SecretEnv-only keys, which no current caller produces (`BuildSecretEnv` derives SecretEnv from vars already present as literals).
+- [ ] **Piece 2b** — `atc/worker/jetbridge/process.go` (:731–735), exact replacement (the Stdin==nil guard is kept verbatim; no other process.go change; `supervisorCommand` at supervisor.go:63 is untouched):
+
+```go
+// supervised reports whether this process should run under the in-pod task
+// supervisor. Task and agent steps qualify: get/put/check use the
+// stdin/stdout resource protocol, which the supervisor's log-file
+// indirection would break. Agent steps REQUIRE supervision — web-restart
+// resume (attachOrRun) and the ask_human/checkpoint park protocol are
+// built on the supervisor keeping the process alive across severed exec
+// sessions (shared-contracts §3.2).
+func (p *execProcess) supervised() bool {
+	if p.container == nil || p.processIO.Stdin != nil {
+		return false
+	}
+	t := p.container.metadata.Type
+	return t == db.ContainerTypeTask || t == db.ContainerTypeAgent
+}
+```
+
+- [ ] **Piece 6** — `atc/worker/jetbridge/container.go` (:361–363), exact replacement:
+
+```go
+// pauseCommand is the shell command used by pause pods. It idles forever
+// (a looped bounded sleep — busybox sh has no infinite sleep) and exits
+// cleanly on SIGTERM so the pod can be stopped. The loop matters: a bare
+// `sleep 86400` kills the pod 24h after creation, which breaks parked
+// agent steps (ask_human/checkpoint park can exceed 24h).
+const pauseCommand = "trap 'exit 0' TERM; while :; do sleep 86400 & wait $!; done"
+```
+
+  (`wait $!` — not bare `wait` — keeps the TERM trap responsive inside the loop.)
+- [ ] Run `ginkgo ./atc/worker/jetbridge/ && ginkgo ./atc/runtime/ && ginkgo ./atc/db/ && go build ./atc/...` — expect pass.
+- [ ] Commit: `git add atc/runtime atc/db/container_metadata.go atc/worker/jetbridge && git commit -m "feat(runtime): jetbridge runtime seams — per-sidecar env/secret refs, agent supervision, secret-ref append, pause loop"`
+
+---
+
 ### Task 12: `exec.AgentStep` — container spec, env contract, budget slice, process
 
 The core execution path, modeled line-by-line on `TaskStep.run`. Reuses the `TaskDelegate` interface (it already has `EmitSidecarPlans`/`SidecarWriter`; `SetTaskConfig` is simply not called) via `TaskDelegateFactory` — both defined in `atc/exec/task_step.go:60–86`, produced by the engine's `DelegateFactory.TaskDelegate` (atc/engine/delegate_factory.go:65). No engine changes in this task; the step is constructed directly in tests. Flight-recorder ingestion is added in Task 13 — this task's `Run` does not yet write metrics rows.
+
+**Task 11B is a hard prerequisite** (amended 2026-07-09, runtime-seams findings F15/F21): step 7 below populates `ContainerSpec.SidecarEnv`/`SidecarSecretEnv` — the §8.1 "set by the owning exec implementation" assertion made real — and normalizes each MCP sidecar's unset `WorkingDir` to the workspace artifact's mount path (§8.5 CWD convention).
 
 **Files:**
 - Create: `atc/exec/agent_step.go`
@@ -1713,11 +2069,149 @@ func (step *AgentStep) Run(ctx context.Context, state RunState) (bool, error) {
   4. **Budget slice:** `slice := step.plan.BudgetSliceUSD`. If `step.budgetChecker != nil && slice > 0` and `resolvedEnv["AGENT_TICKET_ID"]` parses to an int > 0: `remaining, err := step.budgetChecker.StepSlice(ticketID, slice)`; on err, log `"failed-to-resolve-budget-slice"` and keep the configured slice; if `remaining.Exhausted`: `delegate.Errored(logger, "budget slice exhausted before start")`, `delegate.Finished(logger, ExitStatus(1))`, return `(false, nil)` — no worker is selected, nothing runs; else `slice = remaining.RemainingUSD`.
   5. **Env assembly:** `env := step.metadata.TaskEnv()` (step_metadata.go:100) + `k+"="+v` for resolvedEnv + `AGENT_STEP_NAME=<plan.Name>`, `AGENT_MODEL` (when set), `AGENT_MAX_TURNS` (when > 0, `strconv.Itoa`), `AGENT_OUTPUT_SCHEMA` (when set), `AGENT_PROMPT=<plan.Prompt>` or `AGENT_PROMPT_FILE=<plan.PromptFile>`, `AGENT_FLIGHT_DIR=<workdir>/flight`, and when slice > 0 `AGENT_BUDGET_SLICE_USD=` + `strconv.FormatFloat(slice, 'f', 2, 64)`.
   6. **ContainerSpec** (task_step.go:513 pattern): `TeamID`/`TeamName`/`JobID` from metadata, `StepName: step.plan.Name`, `ImageSpec: runtime.ImageSpec{ImageURL: step.agentImage}`, `Env: env`, `Type: step.containerMetadata.Type`, `Dir: step.containerMetadata.WorkingDirectory`. Inputs: for each `plan.Inputs` name, `state.ArtifactRepository().ArtifactFor(build.ArtifactName(name))`; missing → collect and return `MissingInputsError{missing}` (exec/task_step.go:30); `DestinationPath: artifactPath(workdir, name, "")`. Outputs: `runtime.OutputPaths` mapping each `plan.Outputs` name PLUS the implicit `"flight"` to `ensureTrailingSlash(artifactPath(workdir, name, ""))`. Limits/Requests: merge `plan.Limits`/`plan.Requests` over `step.defaultLimits`/`step.defaultRequests` (the nil-field merge at task_step.go:241–261, applied to the plan fields instead of a task config). `SecretEnv: BuildSecretEnv(atc.TaskEnv(resolvedEnv), state)` (task_step.go:575) — this is how `CLAUDE_CODE_OAUTH_TOKEN` from a K8s-secret var source becomes a `secretKeyRef` per §8.2.
-  7. **Sidecars:** `sidecars, err := loadSidecarConfigs(ctx, logger, state.ArtifactRepository(), step.streamer, step.plan.Sidecars)`; `resolveSidecarImages(ctx, logger, state, step.imageResolver, sidecars)`; `containerSpec.Sidecars = sidecars`; when non-empty `delegate.EmitSidecarPlans(logger, sidecars)` (Task 11 helpers). Then for each sidecar name found in `mcpSidecarPorts`, append `strings.ToUpper(name)+"_MCP_URL=http://127.0.0.1:"+strconv.Itoa(port)+"/mcp"` to `containerSpec.Env` (after loading, so file-sourced sidecars count too).
+  7. **Sidecars:** `sidecars, err := loadSidecarConfigs(ctx, logger, state.ArtifactRepository(), step.streamer, step.plan.Sidecars)`; `resolveSidecarImages(ctx, logger, state, step.imageResolver, sidecars)`; when non-empty `delegate.EmitSidecarPlans(logger, sidecars)` (Task 11 helpers). Then for each sidecar name found in `mcpSidecarPorts`, append `strings.ToUpper(name)+"_MCP_URL=http://127.0.0.1:"+strconv.Itoa(port)+"/mcp"` to `containerSpec.Env` (after loading, so file-sourced sidecars count too).
+
+     **Amended 2026-07-09 (runtime-seams F15/F21, Piece 1d + 4b — Task 11B prerequisite):** before assigning `containerSpec.Sidecars = sidecars`, populate the per-sidecar seam maps per §8.1 and normalize the workspace `WorkingDir`, in-place on the loaded slice:
+
+```go
+	// §8.1 sidecar rows (F15): common + identity rows for every MCP sidecar.
+	// Identity rows are empty for pure-CI steps (no ticket/run env).
+	common := []string{
+		"ATC_EXTERNAL_URL=" + step.metadata.ExternalURL,
+		"BUILD_ID=" + strconv.Itoa(step.metadata.BuildID),
+	}
+	if v := resolvedEnv["AGENT_TICKET_ID"]; v != "" {
+		common = append(common, "AGENT_TICKET_ID="+v)
+	}
+	if v := resolvedEnv["AGENT_PIPELINE_RUN_ID"]; v != "" {
+		common = append(common, "AGENT_PIPELINE_RUN_ID="+v)
+	}
+
+	// Sidecar secret refs derive from the deterministic §8.2 secret name.
+	// No pipeline-run id ⇒ no sidecar secret env (pure-CI agent steps get
+	// sidecars without platform credentials, per §8.1).
+	runID, _ := strconv.Atoi(resolvedEnv["AGENT_PIPELINE_RUN_ID"])
+	secretName := "agent-run-" + strconv.Itoa(runID)
+
+	// §8.5 CWD convention (F21): sidecar images never hardcode /workspace.
+	// When the plan carries a `workspace` artifact, the owning exec points
+	// each unset MCP-sidecar WorkingDir at its mount path; otherwise leave
+	// unset (jetbridge falls back to the main container's Dir).
+	wsPath := ""
+	for _, n := range append(append([]string{}, step.plan.Inputs...), step.plan.Outputs...) {
+		if n == "workspace" {
+			wsPath = artifactPath(step.containerMetadata.WorkingDirectory, "workspace", "")
+		}
+	}
+
+	for i := range sidecars {
+		name := sidecars[i].Name
+		if _, ok := mcpSidecarPorts[name]; !ok {
+			continue
+		}
+
+		rows := append([]string{}, common...)
+		switch name {
+		case "platform":
+			for _, k := range []string{"PLATFORM_MCP_ASK_TIMEOUT_POLICY", "PLATFORM_MCP_ASK_TIMEOUT_SECONDS"} {
+				if v := resolvedEnv[k]; v != "" {
+					rows = append(rows, k+"="+v)
+				}
+			}
+			if runID > 0 {
+				setSidecarSecretRef(&containerSpec, name, "AGENT_PRINCIPAL_TOKEN",
+					vars.SecretRef{Name: secretName, Key: "principal-token"})
+			}
+		case "gateway":
+			if slice > 0 {
+				rows = append(rows, "AGENT_BUDGET_SLICE_USD="+strconv.FormatFloat(slice, 'f', 2, 64))
+			}
+			if runID > 0 {
+				setSidecarSecretRef(&containerSpec, name, "AGENT_PRINCIPAL_TOKEN",
+					vars.SecretRef{Name: secretName, Key: "principal-token"})
+				setSidecarSecretRef(&containerSpec, name, "CLAUDE_CODE_OAUTH_TOKEN",
+					vars.SecretRef{Name: secretName, Key: "anthropic-token"})
+			}
+			// case "dev": common+identity only
+		}
+		if containerSpec.SidecarEnv == nil {
+			containerSpec.SidecarEnv = map[string][]string{}
+		}
+		containerSpec.SidecarEnv[name] = rows
+
+		if wsPath != "" && sidecars[i].WorkingDir == "" {
+			sidecars[i].WorkingDir = wsPath
+		}
+	}
+
+	containerSpec.Sidecars = sidecars
+```
+
+     with the package-level helper (also in `agent_step.go`; import `"github.com/concourse/concourse/vars"`):
+
+```go
+func setSidecarSecretRef(spec *runtime.ContainerSpec, sidecar, envName string, ref vars.SecretRef) {
+	if spec.SidecarSecretEnv == nil {
+		spec.SidecarSecretEnv = map[string]map[string]vars.SecretRef{}
+	}
+	if spec.SidecarSecretEnv[sidecar] == nil {
+		spec.SidecarSecretEnv[sidecar] = map[string]vars.SecretRef{}
+	}
+	spec.SidecarSecretEnv[sidecar][envName] = ref
+}
+```
+
+     `vars.SecretRef` is `{Namespace, Name, Key string}` (vars/tracker.go:15) — `Namespace` stays empty (pod namespace). The main container's `CLAUDE_CODE_OAUTH_TOKEN` path is unchanged (`SecretEnv: BuildSecretEnv(...)`, step 6).
   8. **Placement + timeout** (task_step.go:345–378): `tracing.Inject(ctx, &containerSpec)`; `owner := db.NewBuildStepContainerOwner(step.metadata.BuildID, step.planID, step.metadata.TeamID)`; `delegate.BeforeSelectWorker`; `step.workerPool.FindOrSelectWorker(ctx, owner, containerSpec, worker.Spec{TeamID: step.metadata.TeamID})`; `MaybeTimeout(ctx, step.plan.Timeout, step.defaultTimeout)` + defer cancel; `delegate.SelectedWorker`; `worker.FindOrCreateContainer(ctx, owner, step.containerMetadata, containerSpec, delegate)`.
   9. **Process** (task_step.go:379–405): `delegate.Starting(logger)`; `process, err := attachOrRun(ctx, container, runtime.ProcessSpec{ID: agentProcessID, Path: "agent-runner", Dir: step.containerMetadata.WorkingDirectory, TTY: &runtime.TTYSpec{WindowSize: runtime.WindowSize{Columns: 500, Rows: 500}}}, sidecarProcessIO(delegate, containerSpec.Sidecars))` — `attachOrRun` (task_step.go:431) is what makes the step resume across web restarts under the jetbridge supervisor; `result, runErr := process.Wait(ctx)`.
   10. **Outputs registration** (task_step.go:715 pattern, including the `worker.ArtifactFromVolume` DaemonSet wrap): for each name in `plan.Outputs` plus `"flight"`, match `volumeMounts` by cleaned path and `repository.RegisterArtifact(build.ArtifactName(name), artifact, false)`.
   11. **Exit handling** identical to task_step.go:416–428: `context.DeadlineExceeded` → `delegate.Errored(logger, TimeoutLogMessage)`, return `(false, nil)`; other runErr → return it; else `delegate.Finished(logger, ExitStatus(result.ExitStatus))`, return `(result.ExitStatus == 0, nil)`.
+- [ ] Add the exec-level runtime-seams specs (amendment 2026-07-09, F15/F21) to `atc/exec/agent_step_test.go` — these assert what the step PUTS ON the ContainerSpec; the jetbridge side is covered by Task 11B:
+
+```go
+	It("populates per-sidecar env and secret refs for MCP sidecars (F15)", func() {
+		// plan.Env: AGENT_TICKET_ID=7, AGENT_PIPELINE_RUN_ID=42;
+		// plan.Sidecars: platform + gateway; plan.BudgetSliceUSD: 2.5
+		step.Run(ctx, state)
+		_, _, spec, _ := fakePool.FindOrSelectWorkerArgsForCall(0)
+		Expect(spec.SidecarEnv["platform"]).To(ContainElements(
+			"ATC_EXTERNAL_URL="+stepMetadata.ExternalURL,
+			"BUILD_ID="+strconv.Itoa(stepMetadata.BuildID),
+			"AGENT_TICKET_ID=7",
+			"AGENT_PIPELINE_RUN_ID=42",
+		))
+		Expect(spec.SidecarSecretEnv["platform"]).To(HaveKeyWithValue(
+			"AGENT_PRINCIPAL_TOKEN", vars.SecretRef{Name: "agent-run-42", Key: "principal-token"}))
+		Expect(spec.SidecarEnv["gateway"]).To(ContainElement(HavePrefix("AGENT_BUDGET_SLICE_USD=")))
+		Expect(spec.SidecarSecretEnv["gateway"]).To(HaveKeyWithValue(
+			"AGENT_PRINCIPAL_TOKEN", vars.SecretRef{Name: "agent-run-42", Key: "principal-token"}))
+		Expect(spec.SidecarSecretEnv["gateway"]).To(HaveKeyWithValue(
+			"CLAUDE_CODE_OAUTH_TOKEN", vars.SecretRef{Name: "agent-run-42", Key: "anthropic-token"}))
+	})
+
+	It("emits no sidecar secret env without a pipeline-run id (pure CI)", func() {
+		// plan.Env carries no AGENT_PIPELINE_RUN_ID
+		step.Run(ctx, state)
+		_, _, spec, _ := fakePool.FindOrSelectWorkerArgsForCall(0)
+		Expect(spec.SidecarSecretEnv).To(BeEmpty())
+		Expect(spec.SidecarEnv["platform"]).To(ContainElement(HavePrefix("ATC_EXTERNAL_URL=")))
+	})
+
+	It("sets each unset MCP sidecar WorkingDir to the workspace mount (F21)", func() {
+		// plan.Outputs includes "workspace"; sidecar config leaves WorkingDir unset
+		step.Run(ctx, state)
+		_, _, spec, _ := fakePool.FindOrSelectWorkerArgsForCall(0)
+		Expect(spec.Sidecars[0].WorkingDir).To(HaveSuffix("/workspace")) // <hashed-workdir>/workspace
+	})
+
+	It("leaves sidecar WorkingDir unset without a workspace artifact (jetbridge default)", func() {
+		// plan has no input/output named "workspace"
+		step.Run(ctx, state)
+		_, _, spec, _ := fakePool.FindOrSelectWorkerArgsForCall(0)
+		Expect(spec.Sidecars[0].WorkingDir).To(BeEmpty())
+	})
+```
+
 - [ ] Run `ginkgo --focus="AgentStep" ./atc/exec/` — expect pass.
 - [ ] Run `ginkgo ./atc/exec/` — full package green.
 - [ ] Commit: `git add atc/exec && git commit -m "feat(exec): agent step execution — env contract, sidecars, budget slice, resumable process"`
@@ -1728,9 +2222,10 @@ func (step *AgentStep) Run(ctx context.Context, state RunState) (bool, error) {
 
 The ingestion-before-GC guarantee: ingestion runs synchronously inside `Run` before the step returns, reading from the just-registered `flight` output volume via `Streamer.StreamFile` (the DaemonSet fabric path — same seam `LoadVarStep` uses at load_var_step.go:138). Tolerant of crashed agents: missing/malformed files or a stream without `step.end` produce a `status=error` row; ingest failures never fail the step; a fire-and-forget ledger record lands cost in `agent_cost_ledger`.
 
-Two resume/timeout invariants this task must hold (design-review findings F3/F4, 2026-07-09):
+Three resume/timeout invariants this task must hold (design-review findings F3/F4, 2026-07-09; final-review finding F24, 2026-07-09):
 - **F3 — ledger charged exactly once.** The metrics row is idempotent under `ON CONFLICT (build_id, plan_id)`, but `agent_cost_ledger` is append-only with no dedup key (§1.4), so a web-restart resume (which re-runs the whole `Step.Run`: re-attach → `process.Wait` → re-register outputs → re-ingest) would double-append the cost row and inflate spend against both the per-ticket budget and the global daily cap. The ledger append is therefore gated on a first-insert discriminator returned by the metrics upsert (`Store.UpsertReturningInserted`, Task 7/8), reusing the `(build_id, plan_id)` key as the single dedup authority — no ledger schema change, and the gateway's own `source='gateway'` rows for the same build/plan are untouched.
-- **F4 — timed-out steps still measured.** Ingestion is called on the `DeadlineExceeded` path too, but the step's `ctx` is the timeout-scoped context (already expired), so reading through it would fail both `StreamFile` calls and record a zero-cost `status=error` row with no ledger entry — losing measurement on exactly the costliest (runaway) steps. `ingestFlightRecorder` therefore detaches from the deadline (`context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)`) before the reads.
+- **F4 — timed-out steps still measured.** Ingestion is called on the `DeadlineExceeded` path too, but the step's `ctx` is the timeout-scoped context (already expired), so reading through it would fail both `StreamFile` calls and record a zero-cost `status=error` row with no ledger entry — losing measurement on exactly the costliest (runaway) steps. `ingestFlightRecorder` therefore detaches from the deadline (`context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)`) before the reads. *(Amended 2026-07-09, finding F23: the detach alone is necessary but not sufficient — on deadline/transport-severed execs jetbridge skipped `uploadOutputsToArtifactStore`, so the flight volume had no locator and `StreamFile` failed regardless of context. Task 13B fixes the jetbridge side; the live readability assertion lives in Task 18.)*
+- **F24 — degraded re-ingestion never clobbers a real row.** On a restart-resume of an already-completed step, `Attach` → `exitedProcess` never re-records outputs and the in-memory volume locator is ephemeral (artifact_locator.go:16–17), so the re-ingestion reads NO flight data and would degrade to a `{status: error, cost 0}` row — which, through the unconditional all-columns `DO UPDATE`, would destroy web-1's real row (scorecards and outcomes read it). Fix: track whether any flight file was actually read; when nothing was read, write via `Store.InsertIfAbsent` (`ON CONFLICT DO NOTHING`, Task 7/8) instead of the upsert — the degraded row lands only when no row exists yet (genuinely crashed agent), and an existing good row survives untouched. Known, accepted consequence (see §11): a **reaped-pod rerun** (reaper.go:87–101 deletes the pod; a fresh `Run` re-executes the whole claude session) reads real flight data for its second execution but hits `inserted=false` on the upsert, so the second run's cost is intentionally never ledgered — the `(build_id, plan_id)` dedup key cannot distinguish re-ingest from re-execute, and under-counting beats double-charging; reaper changes are deferred.
 
 **Files:**
 - Modify: `atc/exec/agent_step.go` (add `ingestFlightRecorder` + call it from `run` after output registration)
@@ -1778,11 +2273,15 @@ Two resume/timeout invariants this task must hold (design-review findings F3/F4,
 		})
 
 		It("records an error row when the flight files are missing entirely", func() {
-			// fakeStreamer returns an error for both files
+			// fakeStreamer returns an error for both files ⇒ no flight data was
+			// read ⇒ DEGRADED ingestion goes through InsertIfAbsent (F24), never
+			// the clobbering upsert. First run, no existing row ⇒ inserted.
+			fakeMetricsStore.InsertIfAbsentReturns(true, nil)
 			ok, err := step.Run(ctx, state)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(ok).To(BeTrue()) // exit status still drives step success
-			rm := fakeMetricsStore.UpsertReturningInsertedArgsForCall(0)
+			Expect(fakeMetricsStore.UpsertReturningInsertedCallCount()).To(BeZero())
+			rm := fakeMetricsStore.InsertIfAbsentArgsForCall(0)
 			Expect(rm.Status).To(Equal("error"))
 			Expect(rm.Summary).To(ContainSubstring("flight recorder"))
 		})
@@ -1807,20 +2306,27 @@ Two resume/timeout invariants this task must hold (design-review findings F3/F4,
 			Expect(fakeMetricsStore.UpsertReturningInsertedArgsForCall(0).Status).To(Equal("failed"))
 		})
 
-		// --- finding F3: ledger charged exactly once across a web-restart resume ---
-		It("appends the ledger entry exactly once across two Run invocations (resume)", func() {
-			// First Run: fresh insert → ledger append fires.
+		// --- findings F3 + F24: web-restart resume neither re-charges the ledger
+		// nor clobbers the real metrics row ---
+		It("appends the ledger once and never clobbers across two Run invocations (resume)", func() {
+			// First Run: flight data reads fine, fresh insert → ledger append fires.
 			fakeMetricsStore.UpsertReturningInsertedReturns(true, nil)
 			_, err := step.Run(ctx, state)
 			Expect(err).ToNot(HaveOccurred())
 
-			// Web restart: Step.Run re-executes, re-attaches, re-ingests. The
-			// metrics upsert now hits ON CONFLICT and reports inserted=false.
-			fakeMetricsStore.UpsertReturningInsertedReturns(false, nil)
+			// Web restart: Step.Run re-executes, re-attaches, re-ingests — but the
+			// in-memory volume locator is gone (artifact_locator.go is ephemeral)
+			// and exitedProcess never re-records outputs, so BOTH StreamFile reads
+			// fail. The degraded re-ingestion must go through InsertIfAbsent
+			// (ON CONFLICT DO NOTHING) so its zero-cost error row cannot destroy
+			// web-1's real row (F24) — and inserted=false skips the ledger (F3).
+			fakeStreamer.StreamFileReturns(nil, errors.New("no locator for volume"))
+			fakeMetricsStore.InsertIfAbsentReturns(false, nil) // row already exists
 			_, err = step.Run(ctx, state)
 			Expect(err).ToNot(HaveOccurred())
 
-			Expect(fakeMetricsStore.UpsertReturningInsertedCallCount()).To(Equal(2)) // upsert idempotent, both runs
+			Expect(fakeMetricsStore.UpsertReturningInsertedCallCount()).To(Equal(1)) // full ingest only on web-1
+			Expect(fakeMetricsStore.InsertIfAbsentCallCount()).To(Equal(1))          // degraded path on web-2
 			Expect(fakeChecker.RecordCallCount()).To(Equal(1))                       // ledger charged ONCE
 		})
 
@@ -1832,14 +2338,18 @@ Two resume/timeout invariants this task must hold (design-review findings F3/F4,
 			// fully populated — the runner flushed before the kill. ctx into Run is
 			// the expired timeout context, so ingestFlightRecorder must detach from
 			// it (WithoutCancel) or both StreamFile reads fail.
-			chosenContainer.WithProcess(
-				runtime.ProcessSpec{ID: "agent"},
-				runtimetest.ProcessStub{
-					Call: func(context.Context, *runtimetest.Process) (runtime.ProcessResult, error) {
-						return runtime.ProcessResult{}, context.DeadlineExceeded
-					},
-				},
-			)
+			//
+			// Fixed 2026-07-09 (finding F37): runtimetest's WithProcess is
+			// copy-on-write — it RETURNS a new container, so calling it here and
+			// discarding the result installs nothing (and a bare
+			// ProcessSpec{ID: "agent"} would never DeepEqual-match the step's full
+			// spec anyway). Mutate the harness-registered process definition's
+			// stub in place instead:
+			chosenContainer.ProcessDefs[0].Stub.Call = func(
+				context.Context, *runtimetest.Process,
+			) (runtime.ProcessResult, error) {
+				return runtime.ProcessResult{}, context.DeadlineExceeded
+			}
 
 			ok, err := step.Run(ctx, state)
 			Expect(err).ToNot(HaveOccurred())
@@ -1858,7 +2368,7 @@ Two resume/timeout invariants this task must hold (design-review findings F3/F4,
 
   The F4 spec depends on the streamer fixture ignoring context cancellation — the fake `StreamFileStub` returns its reader regardless of the passed `ctx`, which is exactly the point: the production `Streamer` would fail on the expired `ctx`, and the fix is that `ingestFlightRecorder` never passes it one. If the existing test harness wires `fakeStreamer.StreamFileStub` to honor `ctx.Err()`, have it return the fixture reader when the context is live and an error otherwise — the detached `ingestCtx` keeps it live, so the assertion still holds and the pre-fix code (which threaded the expired `ctx`) fails it.
 
-- [ ] Run `ginkgo --focus="ingestion" ./atc/exec/` — expect failure (undefined `UpsertReturningInserted*` fake methods until Task 7's fake is regenerated; then the two new specs fail against pre-fix behavior).
+- [ ] Run `ginkgo --focus="ingestion" ./atc/exec/` — expect failure (undefined `UpsertReturningInserted*`/`InsertIfAbsent*` fake methods until Task 7's fake is regenerated; then the new F3/F4/F24 specs fail against pre-fix behavior).
 - [ ] Implement in `atc/exec/agent_step.go` and call it from `run` immediately after output registration (step 10 of Task 12), on every path where the container ran — including the `DeadlineExceeded` branch — before the exit handling returns. Pass the same timeout-scoped `ctx` you have in scope: `ingestFlightRecorder` **internally detaches** it (`context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)`) so a timed-out step still ingests its pre-timeout cost/tokens rather than reading through an already-cancelled deadline (finding F4). Do NOT pre-detach at the call site — the detach lives inside `ingestFlightRecorder` so both callers (normal + timeout) get it for free.
 
 ```go
@@ -1922,9 +2432,16 @@ func (step *AgentStep) ingestFlightRecorder(
 	rm.Status = schema.RunStatusError
 	rm.Summary = "flight recorder output missing"
 
+	// flightRead tracks whether ANY flight data was actually read. When it
+	// stays false this is a DEGRADED ingestion (missing mount, ephemeral
+	// locator on a restart-resume, reaped pod) and the write below must go
+	// through InsertIfAbsent so it can never clobber a real row (finding F24).
+	flightRead := false
+
 	if flightArtifact != nil {
 		// results.json
 		if rc, err := step.streamer.StreamFile(ingestCtx, flightArtifact, "results.json"); err == nil {
+			flightRead = true
 			raw, readErr := io.ReadAll(io.LimitReader(rc, 5<<20))
 			rc.Close()
 			var results schema.Results
@@ -1943,6 +2460,7 @@ func (step *AgentStep) ingestFlightRecorder(
 
 		// events.ndjson: counts + cost rollup + step.end detection
 		if rc, err := step.streamer.StreamFile(ingestCtx, flightArtifact, "events.ndjson"); err == nil {
+			flightRead = true
 			counts := map[string]int{}
 			sawStepEnd := false
 			reader := schema.NewEventReader(rc)
@@ -1996,7 +2514,21 @@ func (step *AgentStep) ingestFlightRecorder(
 	// error inserted is false, so a failed upsert also skips the ledger append
 	// (we cannot prove first-insert), preserving "every dollar enters the ledger
 	// exactly once" over "at least once".
-	inserted, err := step.metricsStore.UpsertReturningInserted(&rm)
+	//
+	// DEGRADED ingestion (finding F24): when no flight data was actually read —
+	// restart-resume with an ephemeral locator, reaped pod, missing mount — rm
+	// is a zero-cost status=error shell, and pushing it through the all-columns
+	// DO UPDATE would destroy a real row written by an earlier ingestion
+	// (scorecards and delivery-outcomes read that row). Write it insert-only
+	// instead: it lands when no row exists (genuinely crashed agent) and is a
+	// no-op when one does.
+	var inserted bool
+	var err error
+	if flightRead {
+		inserted, err = step.metricsStore.UpsertReturningInserted(&rm)
+	} else {
+		inserted, err = step.metricsStore.InsertIfAbsent(&rm)
+	}
 	if err != nil {
 		logger.Error("failed-to-ingest-run-metrics", err)
 	}
@@ -2040,16 +2572,74 @@ func envInt(env map[string]string, key string) (int, bool) {
 
   Step success remains purely a function of the process exit status — ingestion never changes the return values.
 - [ ] Run `ginkgo ./atc/exec/` — expect pass.
-- [ ] Commit: `git add atc/exec && git commit -m "feat(exec): synchronous server-side flight-recorder ingestion — detached ingest ctx (F4), first-insert-gated ledger record (F3)"`
+- [ ] Commit: `git add atc/exec && git commit -m "feat(exec): synchronous server-side flight-recorder ingestion — detached ingest ctx (F4), first-insert-gated ledger record (F3), non-destructive degraded re-ingestion (F24)"`
+
+---
+
+### Task 13B: jetbridge — record output locations on the severed-exec path (added 2026-07-09, finding F23)
+
+Deadline- and transport-severed execs return through the non-`ExecExitError` branch of `execProcess.Wait` (process.go:899–902), which skips `uploadOutputsToArtifactStore` (:906) — the ONLY publisher of an output volume's locator entry in the DaemonSet artifact store. Without a locator, `WrapVolumeForLookup` yields `sourceNode==""` and `StreamOut` fails instantly (storage_daemonset.go:522–546, volume_daemonset.go:90–92). Consequence for this plan: on the step-timeout path, Task 13's ingestion fails BOTH `StreamFile` reads no matter how it detaches its context (the F4 `WithoutCancel` fix is necessary but not sufficient), so timed-out steps still record zero cost. The same gap breaks timed-out task steps' hook inputs. Fix: a best-effort, 15s-bounded `uploadOutputsToArtifactStore` call in that branch, on a detached context, with failures logged and never returned.
+
+This is the one additional jetbridge edit sanctioned outside Task 11B's frozen runtime-seams scope (finding F23 is 07-owned; see REVIEW.md §8). Sequence after Task 11B (same file). The Task 13 unit specs structurally CANNOT catch this — the fake streamer bypasses artifact location entirely — so the end-to-end proof is the live readability assertion added to Task 18.
+
+**Files:**
+- Modify: `atc/worker/jetbridge/process.go` (:899–902 branch)
+- Test: `atc/worker/jetbridge/process_test.go`; live readability assertion in `live_agent_resume_test.go` (Task 18)
+
+**Steps:**
+
+- [ ] Write the failing spec in `atc/worker/jetbridge/process_test.go`, on the existing fake-executor + fake-storage-backend scaffolding: the executor's exec returns a non-`ExecExitError` transport error (e.g. `errors.New("error dialing backend: EOF")`); assert that the storage backend's `RecordOutputs` is called exactly once before `Wait` returns, and that `Wait` still returns the wrapped transport error (the recording is best-effort, not a rescue):
+
+```go
+	It("records output locations even when the exec is severed by a transport error (F23)", func() {
+		fakeExecutor.ExecInPodReturns(errors.New("error dialing backend: EOF"))
+
+		_, err := process.Wait(ctx)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("exec in pod"))
+
+		Expect(fakeStorageBackend.RecordOutputsCallCount()).To(Equal(1))
+	})
+```
+
+- [ ] Run `ginkgo --focus="severed" ./atc/worker/jetbridge/` — expect failure (`RecordOutputs` never called).
+- [ ] Implement: in `execProcess.Wait`, the branch at process.go:899–902 becomes:
+
+```go
+		logger.Error("failed-to-exec-in-pod", err)
+		fetchPodFailureContext(ctx, p.clientset, p.config.Namespace, p.podName, p.processIO.Stderr)
+
+		// Best-effort output-location recording (finding F23). This branch is
+		// reached on deadline-severed and transport-severed execs — the step
+		// timeout included — and uploadOutputsToArtifactStore is the ONLY
+		// publisher of the output volumes' locator entries in the DaemonSet
+		// store. Without it, server-side flight-recorder ingestion (and
+		// timed-out task steps' hook inputs) see sourceNode=="" and StreamOut
+		// fails instantly, however the exec layer detaches its read context.
+		// ctx may already be cancelled/expired here, so detach and bound the
+		// call; failures are logged, never returned — the transport error
+		// below stays the caller-visible result.
+		uploadCtx, cancelUpload := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+		if uploadErr := p.uploadOutputsToArtifactStore(uploadCtx); uploadErr != nil {
+			logger.Error("failed-to-record-outputs-after-severed-exec", uploadErr)
+		}
+		cancelUpload()
+
+		spanErr = err
+		return runtime.ProcessResult{}, wrapIfTransient(fmt.Errorf("exec in pod: %w", err))
+```
+
+- [ ] Run `ginkgo ./atc/worker/jetbridge/` — expect pass (the `ExecExitError` and success paths already record outputs; this spec covers the third branch).
+- [ ] Commit: `git add atc/worker/jetbridge && git commit -m "fix(jetbridge): best-effort output-location recording on severed-exec paths (F23) — timed-out steps keep readable outputs"`
 
 ---
 
 ### Task 14: Engine wiring — container type, CoreStepFactory.AgentStep, builder dispatch
 
-`exec.NewAgentStep` and its options exist (Tasks 12–13); this task routes `Agent` plans to it.
+`exec.NewAgentStep` and its options exist (Tasks 12–13); this task routes `Agent` plans to it. Amended 2026-07-09 (runtime-seams F18): `db.ContainerTypeAgent` is now **consumed, not added** — the constant and its parse case landed in Task 11B, where the same commit extends jetbridge's `supervised()` to cover it (the agent process MUST run under the in-pod supervisor for web-restart resume and the park protocol to exist). The rest of the engine wiring is unchanged.
 
 **Files:**
-- Modify: `atc/db/container_metadata.go:24` (add `ContainerTypeAgent ContainerType = "agent"` + parse case in the from-string function at :43 region)
+- Consume: `db.ContainerTypeAgent` (added by Task 11B — this task no longer touches `atc/db/container_metadata.go`)
 - Modify: `atc/engine/builder.go:20` (CoreStepFactory interface + `buildAgentStep` dispatch before `plan.Run` at :138)
 - Modify: `atc/engine/step_factory.go:166` region (constructor; new option fields)
 - Modify: `atc/engine/enginefakes/` (regenerate)
@@ -2058,8 +2648,7 @@ func envInt(env map[string]string, key string) (int, bool) {
 **Steps:**
 
 - [ ] Add a builder test case in `atc/engine/builder_test.go` next to the run-step context (:558): a plan built from `planFactory.NewPlan(atc.AgentPlan{Name: "write-spec", Prompt: "p"})`; assert `fakeCoreStepFactory.AgentStepCallCount()` is 1 and the received plan / stepMetadata / containerMetadata match (containerMetadata `Type: db.ContainerTypeAgent`, `StepName: "write-spec"`). Copy the surrounding `expectedPlan`/`ArgsForCall` assertions verbatim from the run case (:558–566), substituting names.
-- [ ] Run `ginkgo ./atc/engine/` — expect compile failure (`AgentStep` not on `CoreStepFactory`, fake missing).
-- [ ] In `atc/db/container_metadata.go` add the constant and the `case "agent":` parse arm mirroring `run` (:31/:45).
+- [ ] Run `ginkgo ./atc/engine/` — expect compile failure (`AgentStep` not on `CoreStepFactory`, fake missing). (`db.ContainerTypeAgent` already exists — Task 11B.)
 - [ ] In `atc/engine/builder.go`:
   - Add to `CoreStepFactory` (after `RunStep` :24): `AgentStep(atc.Plan, exec.StepMetadata, db.ContainerMetadata, DelegateFactory) exec.Step`
   - Add dispatch before `plan.Run` (:138):
@@ -2168,7 +2757,7 @@ func (factory *coreStepFactory) AgentStep(
 
 - [ ] Regenerate engine fakes: `go generate ./atc/engine/...`
 - [ ] Run `ginkgo ./atc/engine/` — expect pass.
-- [ ] Commit: `git add atc/db/container_metadata.go atc/engine && git commit -m "feat(engine): route agent plans to exec.AgentStep with image/metrics/budget options"`
+- [ ] Commit: `git add atc/engine && git commit -m "feat(engine): route agent plans to exec.AgentStep with image/metrics/budget options"`
 
 ---
 
@@ -2401,7 +2990,7 @@ func main() {
 
   where `agentBudgetChecker` is the `budget.Checker` instance credentials-and-budgets wired into `command.go` in wave 1 — locate it with `grep -n "budget\." atc/atccmd/command.go` and reuse it (thread it into `constructEngine` as a parameter alongside the existing ones, plus `dbConn` for the metrics factory if not already in scope; wave-1 code determines the exact constructor — the §2.7 `Checker` interface is the only binding surface).
 - [ ] Run `go build ./atc/... && go run ./cmd/concourse web --help 2>&1 | grep agent-step-image` — expect the flag listed.
-- [ ] Create `deploy/agent-runner/Dockerfile` (packaging per §8.5: pinned provider CLI, non-root):
+- [ ] Create `deploy/agent-runner/Dockerfile` (packaging per §8.5 as amended 2026-07-09, finding F25: pinned provider CLI; the image runs as **root** — §8.5's non-root convention is scoped to MCP sidecar images only; this Dockerfile also hosts `harvest-runner` per 09 Task 10, which inherits the same decision):
 
 ```dockerfile
 FROM golang:1.25-bookworm AS build
@@ -2416,10 +3005,16 @@ RUN npm install -g @anthropic-ai/claude-code@2.0.1 \
     && apt-get update && apt-get install -y --no-install-recommends git ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=build /out/agent-runner /usr/local/bin/agent-runner
-RUN useradd -u 1001 -m agent
-USER agent
+# Root, like every other step image: jetbridge hostPath step volumes are
+# kubelet-created root:root 0755 and fsGroup is ignored for hostPath, so a
+# non-root user gets EACCES writing the flight recorder. IS_SANDBOX=1 lets
+# the claude CLI accept --dangerously-skip-permissions when running as root
+# (single-tenant, pod-isolated sandbox).
+ENV IS_SANDBOX=1
 ENTRYPOINT ["agent-runner"]
 ```
+
+  (No `USER` directive — earlier drafts' `RUN useradd -u 1001 -m agent` + `USER agent` are DELETED: the first live run would EACCES on `results.json` against the root:root 0755 hostPath output volume, storage_daemonset.go:45–56, and nothing before the Task 19 dual-run would catch it. Task 18's flight-mount write tripwire now guards this permanently.)
 
 - [ ] Add a `build-agent-runner-image` job to `deploy/concourse-pipeline.yml` copying the `build-image` job's DinD-builder pattern (deploy/concourse-pipeline.yml:226–352) but building `deploy/agent-runner/Dockerfile` with context `.` and pushing `registry.home/agent-runner:v<version>` and `ghcr.io/tdmtrader/agent-runner:v<version>`; `trigger: false` (manual — the image changes rarely), `passed: [unit-tests]`.
 - [ ] Validate the pipeline config: `fly validate-pipeline -c deploy/concourse-pipeline.yml`.
@@ -2464,6 +3059,8 @@ decodeBuildStepAgent =
 ### Task 18: Live theborg tests — sidecar-MCP wiring proof and agent-process resume
 
 The wiring proof the three wave-3 sidecar workstreams assume: a main container reaches a stub MCP tool served from a sidecar over localhost in the pause-pod model, with startup-order tolerance and clean teardown. Plus the supervisor-resume proof for the well-known `agent` process ID. Plain Go tests, `//go:build live`, `kubeClient(t)` + throwaway namespace per CLAUDE.md.
+
+Amended 2026-07-09 (final-review findings F18/F23/F25) — three binding additions: (1) the resume test MUST use `db.ContainerTypeAgent` at BOTH `FindOrCreateContainer` sites — a copy that keeps `ContainerTypeTask` passes vacuously against the pre-11B `supervised()` and is a review-rejectable defect; (2) the MCP test gains a flight-mount write tripwire so a hostPath-permission regression on output volumes fails this test instead of the first production run; (3) the resume test gains the F23 readability assertion — outputs must be streamable after a severed exec, before any re-attach.
 
 **Files:**
 - Create: `atc/worker/jetbridge/live_agent_mcp_test.go`
@@ -2522,7 +3119,13 @@ HTTPServer(("127.0.0.1", 7781), H).serve_forever()
 	containerSpec := runtime.ContainerSpec{
 		TeamID:    1,
 		ImageSpec: runtime.ImageSpec{ImageURL: "docker:///python:3.12-alpine"},
+		Dir:       "/tmp/build/agent",
 		Env:       []string{"PLATFORM_MCP_URL=http://127.0.0.1:7781/mcp"},
+		// Output volume for the flight-write tripwire (finding F25): jetbridge
+		// hostPath output volumes are kubelet-created root:root 0755, so this
+		// mount is exactly what agent-runner must be able to write results.json
+		// into. A permission regression fails HERE, not on the first live run.
+		Outputs: runtime.OutputPaths{"flight": "/tmp/build/agent/flight/"},
 		Sidecars: []atc.SidecarConfig{{
 			Name:    "platform",
 			Image:   "python:3.12-alpine",
@@ -2553,6 +3156,13 @@ while True:
         time.sleep(1)
 req = urllib.request.Request(base + "/mcp", data=b'{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"stub"}}', headers={"Content-Type": "application/json"})
 print(urllib.request.urlopen(req, timeout=10).read().decode())
+# Flight-mount write tripwire (finding F25): prove the main container can
+# write the root:root 0755 hostPath output volume it runs on.
+import os
+os.makedirs("/tmp/build/agent/flight", exist_ok=True)
+with open("/tmp/build/agent/flight/tripwire", "w") as f:
+    f.write("ok\n")
+print("flight-write-ok")
 `
 
 	var stdout, stderr bytes.Buffer
@@ -2574,11 +3184,34 @@ print(urllib.request.urlopen(req, timeout=10).read().decode())
 	if !strings.Contains(stdout.String(), "stub-tool-result-42") {
 		t.Fatalf("expected stub tool result in output, got: %s", stdout.String())
 	}
+	if !strings.Contains(stdout.String(), "flight-write-ok") {
+		t.Fatalf("flight-mount write tripwire failed — hostPath output volume not writable by the main container (finding F25): %s / %s",
+			stdout.String(), stderr.String())
+	}
 }
 ```
 
   (Adjust `setupLiveWorker`/`cleanupPod`/`kubeClient` calls to their exact signatures in `live_test.go`/`live_worker_test.go` at execution time; teardown is the existing `t.Cleanup`-based pod deletion in those helpers.)
 - [ ] Write `live_agent_resume_test.go`: copy `TestLiveTaskResume` (live_task_resume_test.go:33) wholesale, renamed `TestLiveAgentProcessResume`, with `ProcessSpec{ID: "agent", …}` on the web-1 `container1.Run` and the web-2 takeover using `container2.Attach(ctx, "agent", …)` — proving the `agent` process ID survives a severed exec session without the command restarting (the exec's `attachOrRun` contract from Task 12).
+
+  **BINDING (amended 2026-07-09, finding F18):** the copy MUST pass `db.ContainerMetadata{Type: db.ContainerTypeAgent}` at **BOTH** `FindOrCreateContainer` sites — the web-1 site mirroring live_task_resume_test.go:61 and the web-2 takeover site mirroring :118. Supervision is gated on the container type (`supervised()`, Task 11B): a copy that keeps `ContainerTypeTask` exercises only the already-proven task path and passes **vacuously** — that is a review-rejectable defect, not a passing test. The test proves: one "started" line total across both webs, exit status recovered by web-2, pod survives web-1 death.
+- [ ] Extend `TestLiveAgentProcessResume` with the F23 readability assertion (amended 2026-07-09): give the container spec an output (`Outputs: runtime.OutputPaths{"flight": …}`) and have the long-running command write a marker file into it before its sleep (`echo flight-data > <flight-mount>/tripwire; …`). After web-1's `Wait` returns severed (the test's deadline-cancelled/killed exec session) and **before** web-2 attaches, stream the marker back through the DaemonSet fabric and assert its contents:
+
+```go
+	// F23: the severed-exec branch must have recorded the output volume's
+	// locator — otherwise WrapVolumeForLookup yields sourceNode=="" and this
+	// StreamOut fails instantly, which is exactly the regression that made
+	// timed-out agent steps unmeasurable.
+	rc, err := flightVolume.StreamOut(ctx, "tripwire", baggageclaim.GzipEncoding)
+	if err != nil {
+		t.Fatalf("flight output not readable after severed exec (F23 locator missing): %v", err)
+	}
+	defer rc.Close()
+	// un-tar and assert the file body contains "flight-data" (reuse the
+	// stream-read helper from the existing live volume tests)
+```
+
+  (Adjust the volume-handle lookup and stream-read helper to the exact `live_test.go`/volume-test helpers at execution time; the assertion that matters is: readable after severance, before re-attach.)
 - [ ] Compile-check without a cluster: `go vet -tags live ./atc/worker/jetbridge/`.
 - [ ] Run both against theborg (throwaway namespace; NEVER cicd/concourse):
 
@@ -2730,6 +3363,7 @@ Never use `--race` with the parallel Ginkgo runs (CLAUDE.md — parallel compila
 - *ci-agent schema switch (Task 3)* is the only cross-module diff; if it destabilizes the live review pipeline (which builds ci-agent from source at HEAD), revert is `git revert` of that single commit — the nested module (Task 2) stands alone.
 - *Cutover (Task 19)*: the old shell job is not deleted until 5 dual-green runs are recorded; rollback at any point is `fly set-pipeline` with the previous YAML (the shell job block is preserved in git history).
 - *Ingestion (Task 13)* is deliberately non-fatal end to end: a bad deploy degrades to missing metrics rows plus error-status rows, never failed builds.
+- *Runtime seams (Task 11B) + severed-exec recording (Task 13B)* are jetbridge-wide but behavior-preserving for existing callers (nil seam maps are no-ops; the applySecretRefs append leg fires only for SecretEnv-only keys, which no pre-existing caller produces; the F23 upload is best-effort and never changes `Wait`'s returned error). The one behavioral change to watch is `supervised()` covering `ContainerTypeAgent` and the pause-loop command — both revert cleanly as isolated hunks of the Task 11B commit.
 
 **Deferred/known risks:** `budget.LedgerEntry` field names are derived from §1.4 column names — align to the struct credentials-and-budgets actually landed (one-line fixes at Tasks 13/16). The claude CLI pin in the agent-runner image must match what the live review job verifies today. The prompt port in Task 19 trades exact ci-agent parity for the permanent step — the dual-running window is the verification mechanism, and score divergence beyond ±2 blocks retirement of the shell job.
 
@@ -2739,6 +3373,18 @@ Never use `--race` with the parallel Ginkgo runs (CLAUDE.md — parallel compila
 
 - **2026-07-09 (design-review findings F3 + F4, `REVIEW.md` §2 majors 3–4).** Two ~2-line correctness fixes to the shared flight-recorder ingestion path (`ingestFlightRecorder`, Task 13), both defending the program's "every dollar / everything measurable" invariants:
   - **F3 — ledger double-charge on web-restart resume.** `budgetChecker.Record` was called unconditionally whenever `rm.CostUSD > 0`. Because the metrics row is idempotent under `ON CONFLICT (build_id, plan_id)` but `agent_cost_ledger` (§1.4) is append-only with no dedup key, a resume re-appended the cost row and inflated per-ticket and global-daily spend. Fix: `metrics.Store` (Task 7) gains an additive `UpsertReturningInserted(rm) (inserted bool, err error)`; the factory (Task 8) implements it via `RETURNING (xmax = 0) AS inserted` (fresh INSERT ⇒ `xmax = 0`; ON-CONFLICT UPDATE ⇒ `xmax <> 0`); Task 13 gates the ledger append on `inserted && rm.CostUSD > 0`. Reuses the `(build_id, plan_id)` key as the single dedup authority — no ledger schema change, and the gateway's own `source='gateway'` rows for the same build/plan are unaffected. `Upsert(rm) error` is retained (derived from the new method) so harvest-step (09) and delivery-outcomes (12) consumers and the `metricsfakes.FakeStore.Upsert*` methods are unchanged. New Task-13 spec asserts `Record` fires exactly once across two `Run` invocations (resume), and a Task-8 spec asserts `inserted` is true on first upsert and false on the ON-CONFLICT update.
-  - **F4 — timed-out steps recorded zero cost/tokens.** Task 13 ingests on the `DeadlineExceeded` path too, but the step's `ctx` is the already-expired timeout context from `MaybeTimeout`, so both `StreamFile` reads failed immediately and a timed-out step recorded a bare `status=error` row with zero cost/tokens/`event_counts` and no ledger entry — losing measurement on the costliest steps. Fix: `ingestFlightRecorder` detaches from the deadline before the reads (`ingestCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second); defer cancel()`) and threads `ingestCtx` into both `StreamFile` calls. New Task-13 spec forces `process.Wait` to return `context.DeadlineExceeded` with a populated flight volume and asserts the metrics row still carries pre-timeout cost/turns/`event_counts` and that a ledger entry is recorded.
+  - **F4 — timed-out steps recorded zero cost/tokens.** Task 13 ingests on the `DeadlineExceeded` path too, but the step's `ctx` is the already-expired timeout context from `MaybeTimeout`, so both `StreamFile` reads failed immediately and a timed-out step recorded a bare `status=error` row with zero cost/tokens/`event_counts` and no ledger entry — losing measurement on the costliest steps. Fix: `ingestFlightRecorder` detaches from the deadline before the reads (`ingestCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second); defer cancel()`) and threads `ingestCtx` into both `StreamFile` calls. New Task-13 spec forces `process.Wait` to return `context.DeadlineExceeded` with a populated flight volume and asserts the metrics row still carries pre-timeout cost/turns/`event_counts` and that a ledger entry is recorded. *(Amended 2026-07-09, finding F23: the detach is necessary but NOT sufficient — deadline-severed execs also skipped jetbridge's `uploadOutputsToArtifactStore`, the only publisher of the flight volume's locator, so both reads failed regardless of context. Task 13B closes the jetbridge side; the F4 unit spec passes either way because its fake streamer bypasses artifact location, which is why Task 18 carries the live readability assertion.)*
 
   No shared-contract table/column/route/env names changed; the `Store` change is additive within the agent-step-owned `agent/api/metrics` surface (§2.4 `RunMetrics` and §1.8 `agent_run_metrics` are byte-for-byte unchanged). No cross-workstream sign-off required.
+
+- **2026-07-09 (final-review findings, `REVIEW.md` §8 — runtime-seams package F15/F18/F20/F21/F25/F31-pause, owned here per the frozen 2026-07-09 seam delta, plus agent-step findings F23/F24/F37).**
+  - **Task 11B (new) — jetbridge runtime seams.** Inserted after Task 11 as a hard prerequisite of Tasks 12/14/18; all wave-2 jetbridge/runtime Go changes land in this ONE task (consumers: 04 dev-mcp, 08 platform-mcp-hitl, 09 harvest-step, 11 dispatch, 00 registry). Contents: (F15) `runtime.ContainerSpec` gains `SidecarEnv map[string][]string` + `SidecarSecretEnv map[string]map[string]vars.SecretRef`, applied per-sidecar by `buildSidecarContainers(sidecars, mainMounts, defaultDir, sidecarEnv, sidecarSecretEnv)`; public YAML (`atc.SidecarConfig`/`SidecarEnvVar`) unchanged, no ValueFrom. (F20) `applySecretRefs(envList, secretEnv) []corev1.EnvVar` now RETURNS the slice and APPENDS sorted secretKeyRef-only EnvVars for SecretEnv-only keys — behavior-preserving for existing callers; the empty-placeholder workaround is forbidden. (F18) `supervised()` = `(ContainerTypeTask || ContainerTypeAgent) && Stdin == nil`; `db.ContainerTypeAgent = "agent"` (+ parse case) moved into Task 11B from Task 14, which now consumes it. (F31 pause leg) `pauseCommand` becomes `trap 'exit 0' TERM; while :; do sleep 86400 & wait $!; done` so parked pods survive past 24h; literal assertions at container_test.go:1517/:3186 and integration_test.go:101 updated.
+  - **Task 12 (amended, F15/F21).** Step 7 now populates `SidecarEnv`/`SidecarSecretEnv` per §8.1 — common `ATC_EXTERNAL_URL`/`BUILD_ID` + identity rows for every `mcpSidecarPorts` sidecar; platform additionally gets the ASK_TIMEOUT rows and an `AGENT_PRINCIPAL_TOKEN` secret ref; gateway gets `AGENT_BUDGET_SLICE_USD` plus `AGENT_PRINCIPAL_TOKEN` and `CLAUDE_CODE_OAUTH_TOKEN` refs; refs derive from the deterministic §8.2 secret name `agent-run-<AGENT_PIPELINE_RUN_ID>` (keys `principal-token`/`anthropic-token`); no run id ⇒ no sidecar secret env (pure CI). Step 7 also normalizes each MCP sidecar's unset `WorkingDir` to `artifactPath(workdir, "workspace", "")` when the plan carries a `workspace` artifact (§8.5 CWD convention — sidecar images ship bare-binary ENTRYPOINTs, no hardcoded `/workspace`). New exec-level specs assert both.
+  - **Task 13B (new, F23) — jetbridge severed-exec output recording.** The non-`ExecExitError` branch of `execProcess.Wait` (process.go:899–902) skipped `uploadOutputsToArtifactStore`, so deadline/transport-severed execs left outputs unlocatable and timed-out steps recorded zero cost despite F4. Fix: best-effort `uploadOutputsToArtifactStore` under `context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)` in that branch (logged, never returned; also repairs timed-out task steps' hook inputs), plus a process_test.go spec and a live readability assertion in Task 18 (the unit-level fake streamer structurally cannot catch this).
+  - **F24 — degraded re-ingestion is now non-destructive; reaped-pod reruns intentionally under-count.** `metrics.Store` (Task 7) gains additive `InsertIfAbsent(rm) (bool, error)`; the factory (Task 8) implements it via `ON CONFLICT (build_id, plan_id) DO NOTHING` (sql.ErrNoRows ⇒ inserted=false, nothing written). Task 13's `ingestFlightRecorder` tracks whether any flight file was actually read; when nothing was read (restart-resume with the ephemeral locator gone, reaped pod, missing mount) it writes via `InsertIfAbsent` instead of the all-columns upsert, so a zero-cost `status=error` shell can never clobber a real row consumed by scorecards/outcomes. The F3 resume spec now feeds a failing streamer on the second `Run` and asserts the degraded path + single ledger charge. **Accepted trade-off, recorded here:** a reaped-pod rerun re-executes the whole claude session and its second run's real cost lands with `inserted=false` — never ledgered. The `(build_id, plan_id)` dedup key cannot distinguish re-ingest from re-execute; under-counting beats double-charging, and reaper changes are deferred.
+  - **F37 — F4 timeout spec stub fixed.** The spec installed its `DeadlineExceeded` stub via `chosenContainer.WithProcess(...)` with the result discarded — runtimetest's `WithProcess` is copy-on-write, so the stub never took effect (and the bare `ProcessSpec{ID: "agent"}` would never DeepEqual-match). Replaced with the harness idiom: mutate `chosenContainer.ProcessDefs[0].Stub.Call` in place.
+  - **Task 14 (amended, F18).** `db.ContainerTypeAgent` consumed, not added (moved to Task 11B); engine wiring otherwise unchanged.
+  - **Task 16 (amended, F25).** `deploy/agent-runner/Dockerfile` drops `useradd`/`USER agent` and runs as **root** with `ENV IS_SANDBOX=1` (claude refuses `--dangerously-skip-permissions` as root otherwise): jetbridge hostPath step volumes are kubelet-created root:root 0755 and fsGroup is ignored for hostPath, so a non-root runner EACCESes writing the flight recorder on its first live run. §8.5's non-root convention is scoped to MCP sidecar images only (00-shared-contracts + `deploy/MCP_IMAGES.md` carry the matching scoping edits); the same decision covers `harvest-runner` (09 Task 10, same Dockerfile).
+  - **Task 18 (amended, F18/F23/F25).** `live_agent_resume_test.go` MUST use `db.ContainerMetadata{Type: db.ContainerTypeAgent}` at BOTH `FindOrCreateContainer` sites (a `ContainerTypeTask` copy passes vacuously — review-rejectable) and gains the F23 post-severance output-readability assertion; `live_agent_mcp_test.go` gains the flight-mount write tripwire (`flight-write-ok`) so hostPath-permission regressions fail the live test instead of production.
+
+  Cross-workstream: contract-visible names match the frozen seam delta exactly (`SidecarEnv`, `SidecarSecretEnv`, `applySecretRefs` append semantics, `db.ContainerTypeAgent`, the pause command string, `agent-run-<run-id>`/`principal-token`/`anthropic-token`, `IS_SANDBOX=1`). 00-shared-contracts §8.1/§8.2/§8.5/§11, 04 Tasks 12–13, and 09 Tasks 11–12 carry the co-signed consumer edits in their own files. F23/F24/F37 are agent-step-internal; the Task 13B jetbridge edit is the one sanctioned addition outside Task 11B's frozen scope.
