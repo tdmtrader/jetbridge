@@ -302,7 +302,10 @@ jobs:
           spec:
             containers:
             - name: dind
-              image: docker:dind
+              # Pinned to 26.x (runc 1.1.x). The rolling docker:dind tag moved to
+              # runc >=1.2, whose /proc masking (tmpfs nr_inodes=1) theborg's 5.4
+              # kernel rejects with "can't mask dir /proc/acpi: invalid argument".
+              image: docker:26-dind
               securityContext:
                 privileged: true
               env:
@@ -585,7 +588,10 @@ jobs:
           spec:
             containers:
             - name: dind
-              image: docker:dind
+              # Pinned to 26.x (runc 1.1.x). The rolling docker:dind tag moved to
+              # runc >=1.2, whose /proc masking (tmpfs nr_inodes=1) theborg's 5.4
+              # kernel rejects with "can't mask dir /proc/acpi: invalid argument".
+              image: docker:26-dind
               securityContext:
                 privileged: true
               env:
