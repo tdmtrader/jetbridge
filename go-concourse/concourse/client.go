@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/concourse/concourse/agent/api/costs"
+	"github.com/concourse/concourse/agent/credentials"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/go-concourse/concourse/internal"
 )
@@ -36,6 +38,11 @@ type Client interface {
 	GetWall() (atc.Wall, error)
 	SetWall(atc.Wall) error
 	ClearWall() error
+	SetAgentUserCredential(req credentials.PutRequest) error
+	AgentUserCredentialStatus() ([]credentials.Credential, error)
+	// platform=true targets the §1.13 service user's credential (admin only).
+	DeleteAgentUserCredential(kind string, platform bool) error
+	AgentCostRollup(groupBy, since, until string) (costs.RollupResponse, error)
 }
 
 type client struct {
