@@ -17,11 +17,13 @@ Consumers: platform-mcp-hitl (`mcp-platform`), gateway-mcp (`mcp-gateway`).
 
 ## CI job template
 
-`deploy/concourse-pipeline.yml` job `build-mcp-dev-image` is the copyable
-template: DinD pod → `docker build` → run the container against the repo
-workspace → run the contract kit against it (`go test ./agent/devmcp/e2e/
--run TestLiveImageContract` with `DEV_MCP_ENDPOINT` set) → `docker push` on
-green. New sidecar images copy that job, swap the Dockerfile and the
+Plan 04 Task 13 (`docs/superpowers/plans/agentic-platform/04-dev-mcp.md`,
+a live-cluster task) will add the `build-mcp-dev-image` job to
+`deploy/concourse-pipeline.yml` as the copyable template: DinD pod →
+`docker build` → run the container against the repo workspace → run the
+contract kit against it (`go test ./agent/devmcp/e2e/ -run
+TestLiveImageContract` with `DEV_MCP_ENDPOINT` set) → `docker push` on
+green. New sidecar images will copy that job, swap the Dockerfile and the
 contract-kit invocation (platform-mcp and gateway ship their own kits per
 the spec's testing approach).
 
@@ -29,7 +31,8 @@ the spec's testing approach).
 
 - The image carries go + ginkgo + node/yarn but NO PostgreSQL: `run_tests`
   on the `atc`/`fly` components needs a reachable Postgres (CLAUDE.md), so
-  the CI job exercises the self-contained `ci-agent` component instead.
+  the Task 13 CI job will exercise the self-contained `ci-agent` component
+  instead.
   Full-suite gates against atc run where Postgres exists (harvest pods can
   mount one later; out of dev-mcp scope).
 - `lint(web)` (`yarn run analyse`) requires `node_modules` installed in the
