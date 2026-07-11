@@ -88,4 +88,64 @@ steps:
 		Expect(err).ToNot(HaveOccurred())
 		Expect(found).To(BeFalse())
 	})
+
+	It("lists the latest version per name", func() {
+		_, err := factory.Import("wf-list-a", defYAML("wf-list-a", "A one."), "alice")
+		Expect(err).ToNot(HaveOccurred())
+		_, err = factory.Import("wf-list-a", defYAML("wf-list-a", "A two."), "alice")
+		Expect(err).ToNot(HaveOccurred())
+		_, err = factory.Import("wf-list-b", defYAML("wf-list-b", "B one."), "alice")
+		Expect(err).ToNot(HaveOccurred())
+
+		list, err := factory.List()
+		Expect(err).ToNot(HaveOccurred())
+
+		byName := map[string]workflow.Definition{}
+		for _, d := range list {
+			byName[d.Name] = d
+			Expect(d.RawYAML).To(BeEmpty()) // metadata-only listing
+		}
+		Expect(byName["wf-list-a"].Version).To(Equal(2))
+		Expect(byName["wf-list-b"].Version).To(Equal(1))
+	})
+
+	It("returns all versions ascending", func() {
+		_, err := factory.Import("wf-vers", defYAML("wf-vers", "One."), "alice")
+		Expect(err).ToNot(HaveOccurred())
+		_, err = factory.Import("wf-vers", defYAML("wf-vers", "Two."), "alice")
+		Expect(err).ToNot(HaveOccurred())
+
+		versions, err := factory.Versions("wf-vers")
+		Expect(err).ToNot(HaveOccurred())
+		Expect(versions).To(HaveLen(2))
+		Expect(versions[0].Version).To(Equal(1))
+		Expect(versions[1].Version).To(Equal(2))
+
+		Expect(factory.Versions("wf-nonexistent")).To(BeEmpty())
+	})
+
+	It("promotes atomically, swapping the live flag", func() {
+		_, err := factory.Import("wf-promote", defYAML("wf-promote", "One."), "alice")
+		Expect(err).ToNot(HaveOccurred())
+		_, err = factory.Import("wf-promote", defYAML("wf-promote", "Two."), "alice")
+		Expect(err).ToNot(HaveOccurred())
+
+		Expect(factory.Promote("wf-promote", 1, "alice")).To(Succeed())
+		live, found, err := factory.Live("wf-promote")
+		Expect(err).ToNot(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(live.Version).To(Equal(1))
+
+		Expect(factory.Promote("wf-promote", 2, "bob")).To(Succeed())
+		live, _, err = factory.Live("wf-promote")
+		Expect(err).ToNot(HaveOccurred())
+		Expect(live.Version).To(Equal(2))
+
+		v1, _, err := factory.Get("wf-promote", 1)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(v1.Live).To(BeFalse())
+
+		Expect(factory.Promote("wf-promote", 99, "alice")).To(MatchError(workflow.ErrVersionNotFound))
+		Expect(factory.Promote("wf-nonexistent", 1, "alice")).To(MatchError(workflow.ErrVersionNotFound))
+	})
 })

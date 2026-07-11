@@ -119,13 +119,72 @@ func (f *agentWorkflowsFactory) getOne(where string, args ...any) (*workflow.Def
 }
 
 func (f *agentWorkflowsFactory) List() ([]workflow.Definition, error) {
-	return nil, errors.New("not implemented") // Task 7
+	rows, err := f.conn.Query(`
+		SELECT DISTINCT ON (name) ` + workflowMetaColumns + `
+		FROM agent_workflow_definitions
+		ORDER BY name, version DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanWorkflowMetaRows(rows)
 }
 
 func (f *agentWorkflowsFactory) Versions(name string) ([]workflow.Definition, error) {
-	return nil, errors.New("not implemented") // Task 7
+	rows, err := f.conn.Query(`
+		SELECT `+workflowMetaColumns+`
+		FROM agent_workflow_definitions
+		WHERE name = $1
+		ORDER BY version ASC`, name)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanWorkflowMetaRows(rows)
 }
 
 func (f *agentWorkflowsFactory) Promote(name string, version int, promotedBy string) error {
-	return errors.New("not implemented") // Task 7
+	tx, err := f.conn.Begin()
+	if err != nil {
+		return err
+	}
+	defer Rollback(tx)
+
+	// Clear-then-set inside one tx: the partial unique index
+	// agent_workflow_definitions_live enforces at most one live row per
+	// name at every intermediate statement.
+	_, err = tx.Exec(`UPDATE agent_workflow_definitions SET live = false WHERE name = $1 AND live`, name)
+	if err != nil {
+		return err
+	}
+
+	res, err := tx.Exec(`
+		UPDATE agent_workflow_definitions
+		SET live = true, promoted_at = now(), promoted_by = $3
+		WHERE name = $1 AND version = $2`,
+		name, version, promotedBy)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return workflow.ErrVersionNotFound
+	}
+	return tx.Commit()
+}
+
+func scanWorkflowMetaRows(rows *sql.Rows) ([]workflow.Definition, error) {
+	out := []workflow.Definition{}
+	for rows.Next() {
+		var def workflow.Definition
+		if err := rows.Scan(&def.ID, &def.Name, &def.Version, &def.ContentHash, &def.Live,
+			&def.Description, &def.CreatedBy, &def.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, def)
+	}
+	return out, rows.Err()
 }
