@@ -46,3 +46,6 @@ worker/runtime/integration/sample/sample
 # Forge orchestrator logs
 forge/.orchestrator/
 package-lock.json
+
+# local dev cluster state (hack/local-dev-up.sh)
+/.local-cluster/
