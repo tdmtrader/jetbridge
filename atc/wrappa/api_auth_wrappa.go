@@ -3,6 +3,7 @@ package wrappa
 import (
 	"fmt"
 
+	"github.com/concourse/concourse/agent/api/principals"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api/auth"
 	"github.com/tedsuo/rata"
@@ -13,6 +14,7 @@ type APIAuthWrappa struct {
 	checkBuildReadAccessHandlerFactory  auth.CheckBuildReadAccessHandlerFactory
 	checkBuildWriteAccessHandlerFactory auth.CheckBuildWriteAccessHandlerFactory
 	checkWorkerTeamAccessHandlerFactory auth.CheckWorkerTeamAccessHandlerFactory
+	checkAgentPrincipalHandlerFactory   auth.CheckAgentPrincipalHandlerFactory
 }
 
 func NewAPIAuthWrappa(
@@ -20,12 +22,14 @@ func NewAPIAuthWrappa(
 	checkBuildReadAccessHandlerFactory auth.CheckBuildReadAccessHandlerFactory,
 	checkBuildWriteAccessHandlerFactory auth.CheckBuildWriteAccessHandlerFactory,
 	checkWorkerTeamAccessHandlerFactory auth.CheckWorkerTeamAccessHandlerFactory,
+	checkAgentPrincipalHandlerFactory auth.CheckAgentPrincipalHandlerFactory,
 ) *APIAuthWrappa {
 	return &APIAuthWrappa{
 		checkPipelineAccessHandlerFactory:   checkPipelineAccessHandlerFactory,
 		checkBuildReadAccessHandlerFactory:  checkBuildReadAccessHandlerFactory,
 		checkBuildWriteAccessHandlerFactory: checkBuildWriteAccessHandlerFactory,
 		checkWorkerTeamAccessHandlerFactory: checkWorkerTeamAccessHandlerFactory,
+		checkAgentPrincipalHandlerFactory:   checkAgentPrincipalHandlerFactory,
 	}
 }
 
@@ -103,14 +107,13 @@ func (wrappa *APIAuthWrappa) Wrap(handlers rata.Handlers) rata.Handlers {
 			atc.GetSigningKeys:
 			newHandler = auth.CheckAuthenticationIfProvidedHandler(handler, rejector)
 
-		// unauthenticated at the Concourse-token layer: publishers authenticate
-		// with a static bearer token that the handler itself validates
-		// (agent/api/reviews.Handler.SubmitReview), not a Concourse user
-		// session/JWT. CheckAuthenticationIfProvidedHandler would reject any
-		// non-JWT Authorization header before the handler ever saw it, so this
-		// route must not go through Concourse token verification at all.
+		// principal(reviews:write) — 00-shared-contracts.md §4.1. The
+		// legacy static publish token is still accepted inside the
+		// handler during the dual-accept window, so requests without a
+		// cap1 token bypass to the delegate instead of being rejected.
 		case atc.SubmitAgentReview:
-			// no-op: pass straight through to the handler
+			newHandler = wrappa.checkAgentPrincipalHandlerFactory.HandlerForWithLegacyBypass(
+				handler, rejector, principals.ScopeReviewsWrite)
 
 		// admin
 		case atc.GetLogLevel,

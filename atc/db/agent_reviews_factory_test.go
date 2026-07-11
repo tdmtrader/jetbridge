@@ -26,7 +26,8 @@ var _ = Describe("AgentReviewsFactory", func() {
 			Score: score, MaxScore: 10, Pass: score >= 7,
 			ProvenCount: 1, ObservationCount: 2, Summary: "s",
 			AgentModel: "claude-sonnet-5", DurationSeconds: 60,
-			Review: json.RawMessage(`{"schema_version":"1.0.0"}`),
+			SubmittedBy: "itest-reviewer",
+			Review:      json.RawMessage(`{"schema_version":"1.0.0"}`),
 		}
 	}
 
@@ -40,6 +41,7 @@ var _ = Describe("AgentReviewsFactory", func() {
 		Expect(got[0].Score).To(Equal(7.5))
 		Expect(got[0].CreatedAt).To(BeNumerically(">", 0))
 		Expect(got[0].Review).To(MatchJSON(`{"schema_version":"1.0.0"}`))
+		Expect(got[0].SubmittedBy).To(Equal("itest-reviewer"))
 	})
 
 	It("returns multiple reviews for one build oldest-first", func() {

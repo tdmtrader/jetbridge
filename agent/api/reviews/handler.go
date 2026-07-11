@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/concourse/concourse/agent/api/feedback"
+	"github.com/concourse/concourse/agent/api/principals"
 )
 
 // BuildLookupFunc resolves a build ID to its context. found=false when
@@ -66,16 +67,28 @@ type BuildReviewResponse struct {
 }
 
 // SubmitReview handles POST /api/v1/agent/reviews.
+//
+// Auth: the wrappa wraps this route in principal(reviews:write) with a
+// legacy bypass (atc/wrappa/api_auth_wrappa.go). A verified principal
+// arrives via the request context; anything else falls back to the
+// static publish token this handler has always validated (dual-accept
+// window; removed with --agent-review-publish-token).
 func (h *Handler) SubmitReview(w http.ResponseWriter, r *http.Request) {
-	if h.publishToken == "" {
-		http.Error(w, "agent review publishing is not enabled", http.StatusForbidden)
-		return
-	}
-	auth := r.Header.Get("Authorization")
-	token, ok := strings.CutPrefix(auth, "Bearer ")
-	if !ok || subtle.ConstantTimeCompare([]byte(token), []byte(h.publishToken)) != 1 {
-		http.Error(w, "invalid publish token", http.StatusUnauthorized)
-		return
+	submittedBy := ""
+	if p, ok := principals.FromContext(r.Context()); ok {
+		submittedBy = p.Name
+	} else {
+		if h.publishToken == "" {
+			http.Error(w, "agent review publishing is not enabled", http.StatusForbidden)
+			return
+		}
+		auth := r.Header.Get("Authorization")
+		token, ok := strings.CutPrefix(auth, "Bearer ")
+		if !ok || subtle.ConstantTimeCompare([]byte(token), []byte(h.publishToken)) != 1 {
+			http.Error(w, "invalid publish token", http.StatusUnauthorized)
+			return
+		}
+		submittedBy = principals.LegacyPublishPrincipalName
 	}
 
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 4<<20))
@@ -104,7 +117,9 @@ func (h *Handler) SubmitReview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.store.Upsert(sub.ToStoredReview(buildCtx)); err != nil {
+	rec := sub.ToStoredReview(buildCtx)
+	rec.SubmittedBy = submittedBy
+	if err := h.store.Upsert(rec); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}

@@ -88,6 +88,11 @@ type StoredReview struct {
 	// EvaluatedCount is filled by the DB store's feedback join, not by
 	// ToStoredReview or MemoryStore.Upsert.
 	EvaluatedCount int `json:"evaluated_count"`
+	// SubmittedBy is the writing principal's name (audit-attribution
+	// convention): the verified agent principal, or 'legacy-publish'
+	// for static-token writes during the dual-accept window. Filled by
+	// the handler, never by ToStoredReview.
+	SubmittedBy string `json:"submitted_by"`
 }
 
 func (s *Submission) ToStoredReview(ctx BuildContext) *StoredReview {

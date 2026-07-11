@@ -21,6 +21,7 @@ import (
 	"code.cloudfoundry.org/lager/v3"
 	"code.cloudfoundry.org/lager/v3/lagerctx"
 	"github.com/concourse/concourse"
+	"github.com/concourse/concourse/agent/api/principals"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api"
 	"github.com/concourse/concourse/atc/api/accessor"
@@ -215,7 +216,7 @@ type RunCommand struct {
 		ClientSecret            string `long:"client-secret" required:"true" description:"Client secret to use for login flow"`
 	} `group:"Web Server"`
 
-	AgentReviewPublishToken string `long:"agent-review-publish-token" description:"Static bearer token accepted for publishing agent review results via POST /api/v1/agent/reviews. Publishing is disabled when empty."`
+	AgentReviewPublishToken string `long:"agent-review-publish-token" description:"DEPRECATED: static bearer token accepted for publishing agent review results during the agent-principal dual-accept window. Mint a reviews:write agent principal instead (POST /api/v1/agent/principals). This flag will be removed at the end of the window."`
 
 	LogDBQueries   bool `long:"log-db-queries" description:"Log database queries."`
 	LogClusterName bool `long:"log-cluster-name" description:"Log cluster name."`
@@ -2209,6 +2210,7 @@ func (cmd *RunCommand) constructAPIHandler(
 	checkBuildWriteAccessHandlerFactory := auth.NewCheckBuildWriteAccessHandlerFactory(dbBuildFactory)
 	agentPrincipalsFactory := db.NewAgentPrincipalsFactory(dbConn)
 	checkWorkerTeamAccessHandlerFactory := auth.NewCheckWorkerTeamAccessHandlerFactory(dbWorkerFactory)
+	checkAgentPrincipalHandlerFactory := auth.NewCheckAgentPrincipalHandlerFactory(principals.NewVerifier(agentPrincipalsFactory))
 
 	rejectArchivedHandlerFactory := pipelineserver.NewRejectArchivedHandlerFactory(teamFactory)
 
@@ -2242,6 +2244,7 @@ func (cmd *RunCommand) constructAPIHandler(
 			checkBuildReadAccessHandlerFactory,
 			checkBuildWriteAccessHandlerFactory,
 			checkWorkerTeamAccessHandlerFactory,
+			checkAgentPrincipalHandlerFactory,
 		),
 		wrappa.NewRejectArchivedWrappa(rejectArchivedHandlerFactory),
 		wrappa.NewConcourseVersionWrappa(concourse.Version),

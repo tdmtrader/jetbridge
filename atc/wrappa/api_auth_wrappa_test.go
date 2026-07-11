@@ -1,6 +1,7 @@
 package wrappa_test
 
 import (
+	"github.com/concourse/concourse/agent/api/principals"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api/auth"
 	"github.com/concourse/concourse/atc/db/dbfakes"
@@ -45,6 +46,7 @@ var _ = Describe("APIAuthWrappa", func() {
 					fakeCheckBuildReadAccessHandlerFactory,
 					fakeCheckBuildWriteAccessHandlerFactory,
 					fakeCheckWorkerTeamAccessHandlerFactory,
+					auth.NewCheckAgentPrincipalHandlerFactory(principals.NewVerifier(principals.NewMemoryStore())),
 				).Wrap(inputHandlers)
 			}).NotTo(Panic())
 		})

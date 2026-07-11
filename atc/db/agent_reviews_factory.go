@@ -29,13 +29,13 @@ func (f *agentReviewsFactory) Upsert(rec *reviews.StoredReview) error {
 			"build_id", "build_name", "team_name", "pipeline_name", "job_name",
 			"repo", "commit_sha", "branch",
 			"score", "max_score", "pass", "proven_count", "observation_count",
-			"summary", "agent_model", "duration_seconds", "review",
+			"summary", "agent_model", "duration_seconds", "submitted_by", "review",
 		).
 		Values(
 			rec.BuildID, rec.BuildName, rec.TeamName, rec.PipelineName, rec.JobName,
 			rec.Repo, rec.CommitSha, rec.Branch,
 			rec.Score, rec.MaxScore, rec.Pass, rec.ProvenCount, rec.ObservationCount,
-			rec.Summary, rec.AgentModel, rec.DurationSeconds, []byte(rec.Review),
+			rec.Summary, rec.AgentModel, rec.DurationSeconds, rec.SubmittedBy, []byte(rec.Review),
 		).
 		Suffix(`ON CONFLICT (build_id, repo, commit_sha) DO UPDATE SET
 			build_name = EXCLUDED.build_name,
@@ -51,7 +51,7 @@ func (f *agentReviewsFactory) Upsert(rec *reviews.StoredReview) error {
 			summary = EXCLUDED.summary,
 			agent_model = EXCLUDED.agent_model,
 			duration_seconds = EXCLUDED.duration_seconds,
-			review = EXCLUDED.review,
+			submitted_by = EXCLUDED.submitted_by,
 			updated_at = now()`).
 		RunWith(f.conn).
 		Exec()
@@ -61,7 +61,7 @@ func (f *agentReviewsFactory) Upsert(rec *reviews.StoredReview) error {
 const reviewColumns = `r.build_id, r.build_name, r.team_name, r.pipeline_name, r.job_name,
 	r.repo, r.commit_sha, r.branch,
 	r.score, r.max_score, r.pass, r.proven_count, r.observation_count,
-	r.summary, r.agent_model, r.duration_seconds,
+	r.summary, r.agent_model, r.duration_seconds, r.submitted_by,
 	EXTRACT(EPOCH FROM r.created_at)::bigint,
 	(SELECT COUNT(DISTINCT fb.finding_id) FROM agent_feedback fb
 	  WHERE fb.repo = r.repo AND fb.commit_sha = r.commit_sha)`
@@ -114,7 +114,7 @@ func scanReviewRows(rows *sql.Rows, withPayload bool) ([]reviews.StoredReview, e
 			&rec.BuildID, &rec.BuildName, &rec.TeamName, &rec.PipelineName, &rec.JobName,
 			&rec.Repo, &rec.CommitSha, &rec.Branch,
 			&rec.Score, &rec.MaxScore, &rec.Pass, &rec.ProvenCount, &rec.ObservationCount,
-			&rec.Summary, &rec.AgentModel, &rec.DurationSeconds,
+			&rec.Summary, &rec.AgentModel, &rec.DurationSeconds, &rec.SubmittedBy,
 			&rec.CreatedAt, &rec.EvaluatedCount,
 		}
 		if withPayload {
