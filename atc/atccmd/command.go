@@ -22,6 +22,7 @@ import (
 	"code.cloudfoundry.org/lager/v3/lagerctx"
 	"github.com/concourse/concourse"
 	"github.com/concourse/concourse/agent/api/principals"
+	"github.com/concourse/concourse/agent/credentials"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api"
 	"github.com/concourse/concourse/atc/api/accessor"
@@ -1320,6 +1321,19 @@ func (cmd *RunCommand) backendComponents(
 				Name: atc.ComponentK8sWorkerReaper,
 			},
 			Runnable: k8sReaper,
+		})
+
+		components = append(components, RunnableComponent{
+			Component: atc.Component{
+				Name: atc.ComponentAgentPlatformCredentialSyncer,
+			},
+			Runnable: credentials.NewPlatformSecretSyncer(
+				logger.Session(atc.ComponentAgentPlatformCredentialSyncer),
+				db.NewAgentUserCredentialsFactory(dbConn),
+				k8sClientset,
+				cmd.Kubernetes.Namespace,
+			),
+			Interval: time.Minute,
 		})
 	}
 
