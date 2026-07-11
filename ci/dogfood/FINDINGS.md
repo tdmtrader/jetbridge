@@ -42,6 +42,31 @@ Newest first.
 
 ## Loop / harness friction
 
+- **Pushing to `jetbridge` mid-dogfood-run restarts web and double-spends the
+  agent.** Build 525330's log shows the implement task ran TWICE (two full
+  Claude sessions, two `dogfood-implement: pass` results) plus three gate
+  executions. Cause: every push to `jetbridge` triggers the self-release chain
+  (build-and-vet → build-image → release → self-upgrade), and self-upgrade
+  restarts the web node ~10-12 min after the push. A restart mid-build is
+  survived (build resumes rather than errors — the build-survival work doing
+  its job) but the resumed build re-runs the implement step from scratch
+  because the worked-repo volume died with the old task pod. The morning docs
+  push (`748a797a1b`) landed minutes before Task 4 was dispatched; its
+  self-upgrade restarted web at 15:58Z, mid-gate, and the whole
+  implement+gate sequence re-ran. Every such restart costs a full agent run
+  out of the owner's shared rate-limit window.
+  → *Operational rule:* batch pushes BEFORE dispatching; never dispatch until
+  the release chain triggered by your push has finished self-upgrade and the
+  web pod is stable (`fly builds` shows no jetbridge/* in flight; check
+  self-upgrade completed).
+  → *Leftward fix candidates:* (a) path-filter the release chain's git
+  resource to ignore docs-only commits (`docs/**`, `ci/dogfood/FINDINGS.md`),
+  so plan/log commits stop triggering deploys; (b) make the resumed build
+  reuse the implement step's committed output instead of re-running it
+  (worked-repo is gone with the pod, but the dogfood.json/summary artifacts
+  could be persisted); (c) teach dispatch.sh to refuse/warn when a
+  self-upgrade is pending.
+
 - **UI (Elm) work is not dogfoodable on the current gate.** The dogfood test
   gate runs `go test` only; Elm needs `elm make` / `elm-test` plus in-browser
   visual verification. Workstream 15 (platform-home) is therefore human-built,
