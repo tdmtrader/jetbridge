@@ -180,6 +180,14 @@ func (s *Server) handleToolsCall(w http.ResponseWriter, r *http.Request, req *rp
 	progressCh := make(chan string, 64)
 	done := make(chan *rpcResponse, 1)
 	go func() {
+		// a panicking handler must not kill the sidecar: recover and
+		// surface it as the internal-error frame (-32603, the code
+		// toolResponse already uses for marshal failures).
+		defer func() {
+			if rec := recover(); rec != nil {
+				done <- &rpcResponse{JSONRPC: "2.0", ID: req.ID, Error: &rpcError{Code: -32603, Message: fmt.Sprintf("tool handler panicked: %v", rec)}}
+			}
+		}()
 		result, err := handler(r.Context(), params.Arguments, func(msg string) {
 			select {
 			case progressCh <- msg:

@@ -111,4 +111,32 @@ var _ = Describe("Server", func() {
 		Expect(string(body)).To(ContainSubstring("halfway there"))
 		Expect(string(body)).To(ContainSubstring(`"id":7`))
 	})
+
+	It("survives a panicking tool handler on the SSE path and keeps serving", func() {
+		newServer(50*time.Millisecond, func(_ context.Context, _ json.RawMessage, _ devmcp.ProgressFunc) (any, error) {
+			panic("tool exploded")
+		})
+
+		req, err := http.NewRequest(http.MethodPost, ts.URL, strings.NewReader(
+			`{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"echo","arguments":{},"_meta":{"progressToken":"tok-2"}}}`))
+		Expect(err).NotTo(HaveOccurred())
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "text/event-stream")
+
+		resp, err := http.DefaultClient.Do(req)
+		Expect(err).NotTo(HaveOccurred())
+		defer resp.Body.Close()
+		Expect(resp.Header.Get("Content-Type")).To(Equal("text/event-stream"))
+
+		body, err := io.ReadAll(resp.Body)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(string(body)).To(ContainSubstring(`"code":-32603`))
+		Expect(string(body)).To(ContainSubstring("panicked"))
+		Expect(string(body)).To(ContainSubstring(`"id":8`))
+
+		// the sidecar is still alive after the panic
+		pong := post(ts.URL, `{"jsonrpc":"2.0","id":9,"method":"ping"}`)
+		Expect(pong).NotTo(HaveKey("error"))
+		Expect(pong).To(HaveKey("result"))
+	})
 })
