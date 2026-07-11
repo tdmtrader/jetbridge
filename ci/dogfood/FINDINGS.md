@@ -5,6 +5,20 @@ jetbridge (concourse.home). This is the raw material the process-intelligence
 loop (plan 14) will eventually mine automatically; for now it's hand-kept.
 Newest first.
 
+## Plan gaps the agents found (leftward candidates)
+
+- **Migration-head bumps must also touch `docs/migration/migrate-preflight.sh`.**
+  Dogfooding agent-identity Task 2 (build 525203), the agent found that
+  `migrate-preflight.sh` hardcodes its own `JETBRIDGE_VERSION` constant — a
+  duplicate of `jetbridgeHeadMigration` (`legacy_upgrade_test.go`) that the
+  migration test suite checks. Every plan task that bumps the head migration
+  (agent-identity T2, credentials T5/T8/T10, ticket-core, …) must sync BOTH, but
+  only the Go constant is documented. The F1–F40 review couldn't catch this — it's
+  test-infra state, not code logic. Verified locally (15/15 specs pass with the
+  fix). → *Leftward fix:* amend every migration-bearing plan's head-bump step to
+  touch both constants, or add a single `migration-head-bump` convention note all
+  such tasks reference. Prevents each future migration task rediscovering it.
+
 ## Loop / harness friction
 
 - **UI (Elm) work is not dogfoodable on the current gate.** The dogfood test
