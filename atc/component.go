@@ -24,6 +24,7 @@ const (
 	ComponentK8sWorkerReaper            = "k8s_worker_reaper"
 	ComponentPipelinePauser             = "pipeline_pauser"
 	ComponentSigningKeyLifecycler       = "signing_key_lifecycler"
+	ComponentPipelineRunLifecycler      = "pipeline_run_lifecycler"
 )
 
 type Component struct {

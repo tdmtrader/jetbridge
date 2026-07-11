@@ -828,6 +828,7 @@ WITH RECURSIVE pipelines_to_archive AS (
 	b.conn.Bus().Notify(atc.ComponentCollectorChecks)
 	b.conn.Bus().Notify(atc.ComponentCollectorContainers)
 	b.conn.Bus().Notify(atc.ComponentK8sWorkerReaper)
+	b.conn.Bus().Notify(atc.ComponentPipelineRunLifecycler)
 
 	return nil
 }

@@ -47,6 +47,7 @@ import (
 	"github.com/concourse/concourse/atc/metric"
 	"github.com/concourse/concourse/atc/pauser"
 	"github.com/concourse/concourse/atc/policy"
+	"github.com/concourse/concourse/atc/runlifecycle"
 	"github.com/concourse/concourse/atc/scheduler"
 	"github.com/concourse/concourse/atc/scheduler/algorithm"
 	"github.com/concourse/concourse/atc/syslog"
@@ -1102,6 +1103,7 @@ func (cmd *RunCommand) backendComponents(
 
 	dbBuildFactory := db.NewBuildFactory(dbConn, lockFactory, cmd.GC.OneOffBuildGracePeriod, cmd.GC.FailedGracePeriod)
 	dbCheckFactory := db.NewCheckFactory(dbConn, lockFactory, secretManager, cmd.varSourcePool, checkBuildsChan, util.NewSequenceGenerator(1))
+	dbPipelineRunFactory := db.NewPipelineRunFactory(logger, dbConn, lockFactory, dbCheckFactory)
 	dbPipelineFactory := db.NewPipelineFactory(dbConn, lockFactory)
 	dbJobFactory := db.NewJobFactory(dbConn, lockFactory)
 	dbPipelineLifecycle := db.NewPipelineLifecycle(dbConn, lockFactory)
@@ -1255,6 +1257,12 @@ func (cmd *RunCommand) backendComponents(
 				KeyRotationPeriod:   cmd.SigningKey.RotationPeriod,
 				KeyGracePeriod:      cmd.SigningKey.GracePeriod,
 			},
+		},
+		{
+			Component: atc.Component{
+				Name: atc.ComponentPipelineRunLifecycler,
+			},
+			Runnable: runlifecycle.NewLifecycler(dbPipelineRunFactory),
 		},
 	}
 
