@@ -593,6 +593,44 @@ var _ = Describe("CheckFactory", func() {
 				})
 			})
 		})
+
+		Context("with template pipelines", func() {
+			It("excludes resources of base templates and run instances, keeps ordinary instanced pipelines", func() {
+				resourceJob := func(template bool) atc.Config {
+					return atc.Config{
+						Template: template,
+						Resources: atc.ResourceConfigs{
+							{Name: "check-res", Type: "some-base-resource-type", Source: atc.Source{"a": "b"}},
+						},
+						Jobs: atc.JobConfigs{
+							{Name: "j", PlanSequence: []atc.Step{
+								{Config: &atc.GetStep{Name: "check-res"}},
+							}},
+						},
+					}
+				}
+
+				template, _, err := defaultTeam.SavePipeline(
+					atc.PipelineRef{Name: "check-template"}, resourceJob(true), db.ConfigVersion(0), false)
+				Expect(err).ToNot(HaveOccurred())
+
+				ordinary, _, err := defaultTeam.SavePipeline(
+					atc.PipelineRef{Name: "check-ordinary", InstanceVars: atc.InstanceVars{"branch": "main"}},
+					resourceJob(false), db.ConfigVersion(0), false)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(ordinary.Reload()).To(BeTrue())
+
+				resources, err := checkFactory.Resources()
+				Expect(err).ToNot(HaveOccurred())
+
+				var pipelineIDs []int
+				for _, r := range resources {
+					pipelineIDs = append(pipelineIDs, r.PipelineID())
+				}
+				Expect(pipelineIDs).To(ContainElement(ordinary.ID()))
+				Expect(pipelineIDs).ToNot(ContainElement(template.ID()))
+			})
+		})
 	})
 
 	Describe("ResourceTypes", func() {
