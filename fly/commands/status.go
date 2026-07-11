@@ -35,7 +35,10 @@ func (c *StatusCommand) Execute([]string) error {
 				continue
 			}
 			until := time.Until(time.Unix(cred.ExpiresAt, 0))
-			if until < 30*24*time.Hour {
+			if until < 0 {
+				fmt.Printf("WARNING: your agent %s credential expired %d days ago — run `fly -t %s agent auth` to refresh\n",
+					cred.Kind, int((-until).Hours()/24), Fly.Target)
+			} else if until < 30*24*time.Hour {
 				fmt.Printf("WARNING: your agent %s credential expires in %d days — run `fly -t %s agent auth` to refresh\n",
 					cred.Kind, int(until.Hours()/24), Fly.Target)
 			}

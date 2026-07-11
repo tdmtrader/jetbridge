@@ -159,4 +159,31 @@ var _ = Describe("fly agent", func() {
 			Expect(sess.Out).To(gbytes.Say("logged in successfully"))
 		})
 	})
+
+	Describe("fly status expiry nag for an already-expired credential", func() {
+		BeforeEach(func() {
+			atcServer.Reset()
+			atcServer.AppendHandlers(
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("GET", "/api/v1/user"),
+					ghttp.RespondWithJSONEncoded(http.StatusOK, map[string]any{"user_name": "test"}),
+				),
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("GET", "/api/v1/agent/user-credentials"),
+					ghttp.RespondWithJSONEncoded(http.StatusOK, []credentials.Credential{
+						{UserID: 7, Kind: "anthropic_oauth", ExpiresAt: time.Now().Add(-3 * 24 * time.Hour).Unix()},
+					}),
+				),
+			)
+		})
+
+		It("says the credential expired, not that it expires in negative days", func() {
+			flyCmd := exec.Command(flyPath, "-t", targetName, "status")
+			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+			Expect(err).NotTo(HaveOccurred())
+			Eventually(sess).Should(gexec.Exit(0))
+			Expect(sess.Out).To(gbytes.Say("WARNING: your agent anthropic_oauth credential expired 3 days ago"))
+			Expect(sess.Out).To(gbytes.Say("logged in successfully"))
+		})
+	})
 })
