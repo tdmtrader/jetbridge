@@ -59,6 +59,11 @@ func main() {
 
 	httpServer := &http.Server{Addr: addr, Handler: mux}
 
+	// drained is closed only after Shutdown returns; main must wait on it
+	// after ListenAndServe unblocks (which happens as soon as the listener
+	// closes, while in-flight requests are still draining) or the process
+	// exits mid-drain and in-flight tool calls lose their final frame.
+	drained := make(chan struct{})
 	go func() {
 		sig := make(chan os.Signal, 1)
 		signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
@@ -66,10 +71,12 @@ func main() {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		httpServer.Shutdown(shutdownCtx)
+		close(drained)
 	}()
 
 	log.Printf("dev-mcp: serving %d components on %s", len(cfg.Components), addr)
 	if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("dev-mcp: %s", err)
 	}
+	<-drained
 }
