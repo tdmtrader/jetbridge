@@ -170,6 +170,9 @@ var _ = BeforeEach(func() {
 	fakePolicyChecker = new(policycheckerfakes.FakePolicyChecker)
 	fakePolicyChecker.CheckReturns(policy.PassedPolicyCheck(), nil)
 
+	principalsStore := principals.NewMemoryStore()
+	checkAgentPrincipalHandlerFactory := auth.NewCheckAgentPrincipalHandlerFactory(principals.NewVerifier(principalsStore))
+
 	apiWrapper := wrappa.MultiWrappa{
 		wrappa.NewPolicyCheckWrappa(logger, fakePolicyChecker),
 		wrappa.NewAPIAuthWrappa(
@@ -177,6 +180,7 @@ var _ = BeforeEach(func() {
 			checkBuildReadAccessHandlerFactory,
 			checkBuildWriteAccessHandlerFactory,
 			checkWorkerTeamAccessHandlerFactory,
+			checkAgentPrincipalHandlerFactory,
 		),
 	}
 
@@ -225,7 +229,7 @@ var _ = BeforeEach(func() {
 		nil,
 		feedback.NewMemoryStore(),
 		reviews.NewMemoryStore(),
-		principals.NewMemoryStore(),
+		principalsStore,
 		"test-agent-review-publish-token",
 	)
 

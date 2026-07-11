@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/concourse/concourse/agent/api/feedback"
+	"github.com/concourse/concourse/agent/api/principals"
 	"github.com/concourse/concourse/agent/api/reviews"
 )
 
@@ -212,5 +213,42 @@ func TestListByTeam(t *testing.T) {
 	}
 	if got[0].Review != nil {
 		t.Error("listing must not include the JSONB payload")
+	}
+}
+
+func TestSubmitWithPrincipalContextSkipsStaticToken(t *testing.T) {
+	h, store, _ := newHandler(t)
+
+	req := httptest.NewRequest("POST", "/api/v1/agent/reviews", strings.NewReader(postBody()))
+	// no Authorization header at all — the wrappa already verified the principal
+	req = req.WithContext(principals.NewContext(req.Context(), principals.Principal{
+		ID: 3, Name: "itest-reviewer",
+	}))
+	rec := httptest.NewRecorder()
+	h.SubmitReview(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("code = %d body %s, want 201", rec.Code, rec.Body)
+	}
+	recs, _ := store.GetByBuild(42)
+	if len(recs) != 1 || recs[0].SubmittedBy != "itest-reviewer" {
+		t.Errorf("submitted_by = %+v, want itest-reviewer", recs)
+	}
+}
+
+func TestSubmitWithStaticTokenAttributesLegacyPublish(t *testing.T) {
+	h, store, _ := newHandler(t)
+
+	req := httptest.NewRequest("POST", "/api/v1/agent/reviews", strings.NewReader(postBody()))
+	req.Header.Set("Authorization", "Bearer secret-token")
+	rec := httptest.NewRecorder()
+	h.SubmitReview(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("code = %d body %s, want 201", rec.Code, rec.Body)
+	}
+	recs, _ := store.GetByBuild(42)
+	if len(recs) != 1 || recs[0].SubmittedBy != principals.LegacyPublishPrincipalName {
+		t.Errorf("submitted_by = %+v, want legacy-publish", recs)
 	}
 }
