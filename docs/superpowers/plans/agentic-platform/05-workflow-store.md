@@ -92,6 +92,8 @@ The §11 amendment log is the required mechanism for contract changes ("changes 
 
 ### Task 2: Migration 1773106040 — `agent_workflow_definitions`
 
+**Convention:** migration head bump — follow [CONVENTIONS.md §C2](CONVENTIONS.md) (also bump `docs/migration/migrate-preflight.sh` `JETBRIDGE_VERSION`, same commit).
+
 **Files:**
 
 - Create: `atc/db/migration/migrations/1773106040_create_agent_workflow_definitions.up.sql`
@@ -2061,6 +2063,8 @@ func (h *Handler) Promote(w http.ResponseWriter, r *http.Request) {
 ---
 
 ### Task 9: ATC wiring — routes, wrappa, roles, handler map, atccmd
+
+**Convention:** route-adding task — follow [CONVENTIONS.md §C1](CONVENTIONS.md): all SIX touchpoints (including `atc/wrappa/reject_archived_wrappa.go` and `atc/auditor/auditor.go` `ValidateAction`, not listed below) in the same commit; verify with `go test ./atc/wrappa/... ./atc/auditor/...`.
 
 **Files:**
 
