@@ -77,6 +77,26 @@ var _ = Describe("HTTPClient", func() {
 			Expect(ids).To(Equal([]string{"atc"}))
 		})
 
+		It("sends nil changed_paths as an empty array, never null (the server rejects null with -32602)", func() {
+			var gotArgs map[string]any
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var body map[string]any
+				Expect(json.NewDecoder(r.Body).Decode(&body)).To(Succeed())
+				gotArgs = body["params"].(map[string]any)["arguments"].(map[string]any)
+
+				w.Header().Set("Content-Type", "application/json")
+				id, _ := json.Marshal(body["id"])
+				json.NewEncoder(w).Encode(toolTextResult(id,
+					`{"components":[],"unmapped_paths":[]}`))
+			}))
+			defer ts.Close()
+
+			ids, err := devmcp.NewClient(ts.URL).AffectedComponents(context.Background(), nil)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(ids).To(BeEmpty())
+			Expect(gotArgs["changed_paths"]).To(Equal([]any{}))
+		})
+
 		It("maps JSON-RPC errors to *devmcp.RPCError", func() {
 			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				var body map[string]any

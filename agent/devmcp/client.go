@@ -268,6 +268,11 @@ type affectedArgs struct {
 }
 
 func (c *HTTPClient) AffectedComponents(ctx context.Context, paths []string) ([]string, error) {
+	if paths == nil {
+		// nil marshals as JSON null, which the server rejects (-32602:
+		// changed_paths is required); normalize to an empty array.
+		paths = []string{}
+	}
 	var res AffectedResult
 	if err := c.callTool(ctx, ToolAffectedComponents, affectedArgs{ChangedPaths: paths}, &res); err != nil {
 		return nil, err
