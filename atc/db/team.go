@@ -464,6 +464,24 @@ func savePipeline(
 		return 0, false, err
 	}
 
+	var paramsSchema sql.NullString
+	if config.Params != nil {
+		b, err := json.Marshal(config.Params)
+		if err != nil {
+			return 0, false, err
+		}
+		paramsSchema = sql.NullString{String: string(b), Valid: true}
+	}
+
+	var runRetention sql.NullString
+	if config.RunRetention != nil {
+		b, err := json.Marshal(config.RunRetention)
+		if err != nil {
+			return 0, false, err
+		}
+		runRetention = sql.NullString{String: string(b), Valid: true}
+	}
+
 	var pipelineID int
 	if !existingConfig {
 		values := map[string]any{
@@ -479,6 +497,9 @@ func savePipeline(
 			"parent_job_id":   jobID,
 			"parent_build_id": buildID,
 			"instance_vars":   instanceVars,
+			"template":        config.Template,
+			"params_schema":   paramsSchema,
+			"run_retention":   runRetention,
 		}
 		var ordering sql.NullInt64
 		var secondaryOrdering sql.NullInt64
@@ -521,6 +542,9 @@ func savePipeline(
 			Set("last_updated", sq.Expr("now()")).
 			Set("parent_job_id", jobID).
 			Set("parent_build_id", buildID).
+			Set("template", config.Template).
+			Set("params_schema", paramsSchema).
+			Set("run_retention", runRetention).
 			Where(sq.And{
 				pipelineRefWhereClause,
 				sq.Eq{"version": from},
@@ -1343,8 +1367,10 @@ func scanPipeline(p *pipeline, scan scannable) error {
 		instanceVars  sql.NullString
 		pausedBy      sql.NullString
 		pausedAt      sql.NullTime
+		paramsSchema  sql.NullString
+		runRetention  sql.NullString
 	)
-	err := scan.Scan(&p.id, &p.name, &groups, &varSources, &display, &nonce, &p.configVersion, &p.teamID, &p.teamName, &p.paused, &p.public, &p.archived, &lastUpdated, &parentJobID, &parentBuildID, &instanceVars, &pausedBy, &pausedAt)
+	err := scan.Scan(&p.id, &p.name, &groups, &varSources, &display, &nonce, &p.configVersion, &p.teamID, &p.teamName, &p.paused, &p.public, &p.archived, &lastUpdated, &parentJobID, &parentBuildID, &instanceVars, &pausedBy, &pausedAt, &p.template, &paramsSchema, &runRetention, &p.lastRunNumber)
 	if err != nil {
 		return err
 	}
@@ -1404,6 +1430,20 @@ func scanPipeline(p *pipeline, scan scannable) error {
 
 	if pausedAt.Valid {
 		p.pausedAt = pausedAt.Time
+	}
+
+	if paramsSchema.Valid {
+		err = json.Unmarshal([]byte(paramsSchema.String), &p.paramsSchema)
+		if err != nil {
+			return err
+		}
+	}
+
+	if runRetention.Valid {
+		err = json.Unmarshal([]byte(runRetention.String), &p.runRetention)
+		if err != nil {
+			return err
+		}
 	}
 
 	return nil

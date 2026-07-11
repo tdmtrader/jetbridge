@@ -113,4 +113,7 @@ var DefaultRoles = map[string]string{
 	atc.ListTeamAgentReviews:    ViewerRole,
 	atc.GetBuildAgentReviews:    ViewerRole,
 	atc.GetAgentCostRollup:      ViewerRole,
+	atc.CreatePipelineRun:       MemberRole,
+	atc.ListPipelineRuns:        ViewerRole,
+	atc.GetPipelineRun:          ViewerRole,
 }

@@ -331,6 +331,20 @@ type FakeTeam struct {
 		result1 atc.Build
 		result2 error
 	}
+	CreatePipelineRunStub        func(atc.PipelineRef, map[string]any) (atc.PipelineRun, error)
+	createPipelineRunMutex       sync.RWMutex
+	createPipelineRunArgsForCall []struct {
+		arg1 atc.PipelineRef
+		arg2 map[string]any
+	}
+	createPipelineRunReturns struct {
+		result1 atc.PipelineRun
+		result2 error
+	}
+	createPipelineRunReturnsOnCall map[int]struct {
+		result1 atc.PipelineRun
+		result2 error
+	}
 	DeletePipelineStub        func(atc.PipelineRef) (bool, error)
 	deletePipelineMutex       sync.RWMutex
 	deletePipelineArgsForCall []struct {
@@ -423,6 +437,22 @@ type FakeTeam struct {
 	getContainerReturnsOnCall map[int]struct {
 		result1 atc.Container
 		result2 error
+	}
+	GetPipelineRunStub        func(atc.PipelineRef, int) (atc.PipelineRun, bool, error)
+	getPipelineRunMutex       sync.RWMutex
+	getPipelineRunArgsForCall []struct {
+		arg1 atc.PipelineRef
+		arg2 int
+	}
+	getPipelineRunReturns struct {
+		result1 atc.PipelineRun
+		result2 bool
+		result3 error
+	}
+	getPipelineRunReturnsOnCall map[int]struct {
+		result1 atc.PipelineRun
+		result2 bool
+		result3 error
 	}
 	HidePipelineStub        func(atc.PipelineRef) (bool, error)
 	hidePipelineMutex       sync.RWMutex
@@ -537,6 +567,19 @@ type FakeTeam struct {
 	}
 	listJobsReturnsOnCall map[int]struct {
 		result1 []atc.Job
+		result2 error
+	}
+	ListPipelineRunsStub        func(atc.PipelineRef) ([]atc.PipelineRun, error)
+	listPipelineRunsMutex       sync.RWMutex
+	listPipelineRunsArgsForCall []struct {
+		arg1 atc.PipelineRef
+	}
+	listPipelineRunsReturns struct {
+		result1 []atc.PipelineRun
+		result2 error
+	}
+	listPipelineRunsReturnsOnCall map[int]struct {
+		result1 []atc.PipelineRun
 		result2 error
 	}
 	ListPipelinesStub        func() ([]atc.Pipeline, error)
@@ -2319,6 +2362,71 @@ func (fake *FakeTeam) CreatePipelineBuildReturnsOnCall(i int, result1 atc.Build,
 	}{result1, result2}
 }
 
+func (fake *FakeTeam) CreatePipelineRun(arg1 atc.PipelineRef, arg2 map[string]any) (atc.PipelineRun, error) {
+	fake.createPipelineRunMutex.Lock()
+	ret, specificReturn := fake.createPipelineRunReturnsOnCall[len(fake.createPipelineRunArgsForCall)]
+	fake.createPipelineRunArgsForCall = append(fake.createPipelineRunArgsForCall, struct {
+		arg1 atc.PipelineRef
+		arg2 map[string]any
+	}{arg1, arg2})
+	stub := fake.CreatePipelineRunStub
+	fakeReturns := fake.createPipelineRunReturns
+	fake.recordInvocation("CreatePipelineRun", []interface{}{arg1, arg2})
+	fake.createPipelineRunMutex.Unlock()
+	if stub != nil {
+		return stub(arg1, arg2)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2
+	}
+	return fakeReturns.result1, fakeReturns.result2
+}
+
+func (fake *FakeTeam) CreatePipelineRunCallCount() int {
+	fake.createPipelineRunMutex.RLock()
+	defer fake.createPipelineRunMutex.RUnlock()
+	return len(fake.createPipelineRunArgsForCall)
+}
+
+func (fake *FakeTeam) CreatePipelineRunCalls(stub func(atc.PipelineRef, map[string]any) (atc.PipelineRun, error)) {
+	fake.createPipelineRunMutex.Lock()
+	defer fake.createPipelineRunMutex.Unlock()
+	fake.CreatePipelineRunStub = stub
+}
+
+func (fake *FakeTeam) CreatePipelineRunArgsForCall(i int) (atc.PipelineRef, map[string]any) {
+	fake.createPipelineRunMutex.RLock()
+	defer fake.createPipelineRunMutex.RUnlock()
+	argsForCall := fake.createPipelineRunArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2
+}
+
+func (fake *FakeTeam) CreatePipelineRunReturns(result1 atc.PipelineRun, result2 error) {
+	fake.createPipelineRunMutex.Lock()
+	defer fake.createPipelineRunMutex.Unlock()
+	fake.CreatePipelineRunStub = nil
+	fake.createPipelineRunReturns = struct {
+		result1 atc.PipelineRun
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeTeam) CreatePipelineRunReturnsOnCall(i int, result1 atc.PipelineRun, result2 error) {
+	fake.createPipelineRunMutex.Lock()
+	defer fake.createPipelineRunMutex.Unlock()
+	fake.CreatePipelineRunStub = nil
+	if fake.createPipelineRunReturnsOnCall == nil {
+		fake.createPipelineRunReturnsOnCall = make(map[int]struct {
+			result1 atc.PipelineRun
+			result2 error
+		})
+	}
+	fake.createPipelineRunReturnsOnCall[i] = struct {
+		result1 atc.PipelineRun
+		result2 error
+	}{result1, result2}
+}
+
 func (fake *FakeTeam) DeletePipeline(arg1 atc.PipelineRef) (bool, error) {
 	fake.deletePipelineMutex.Lock()
 	ret, specificReturn := fake.deletePipelineReturnsOnCall[len(fake.deletePipelineArgsForCall)]
@@ -2766,6 +2874,74 @@ func (fake *FakeTeam) GetContainerReturnsOnCall(i int, result1 atc.Container, re
 		result1 atc.Container
 		result2 error
 	}{result1, result2}
+}
+
+func (fake *FakeTeam) GetPipelineRun(arg1 atc.PipelineRef, arg2 int) (atc.PipelineRun, bool, error) {
+	fake.getPipelineRunMutex.Lock()
+	ret, specificReturn := fake.getPipelineRunReturnsOnCall[len(fake.getPipelineRunArgsForCall)]
+	fake.getPipelineRunArgsForCall = append(fake.getPipelineRunArgsForCall, struct {
+		arg1 atc.PipelineRef
+		arg2 int
+	}{arg1, arg2})
+	stub := fake.GetPipelineRunStub
+	fakeReturns := fake.getPipelineRunReturns
+	fake.recordInvocation("GetPipelineRun", []interface{}{arg1, arg2})
+	fake.getPipelineRunMutex.Unlock()
+	if stub != nil {
+		return stub(arg1, arg2)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2, ret.result3
+	}
+	return fakeReturns.result1, fakeReturns.result2, fakeReturns.result3
+}
+
+func (fake *FakeTeam) GetPipelineRunCallCount() int {
+	fake.getPipelineRunMutex.RLock()
+	defer fake.getPipelineRunMutex.RUnlock()
+	return len(fake.getPipelineRunArgsForCall)
+}
+
+func (fake *FakeTeam) GetPipelineRunCalls(stub func(atc.PipelineRef, int) (atc.PipelineRun, bool, error)) {
+	fake.getPipelineRunMutex.Lock()
+	defer fake.getPipelineRunMutex.Unlock()
+	fake.GetPipelineRunStub = stub
+}
+
+func (fake *FakeTeam) GetPipelineRunArgsForCall(i int) (atc.PipelineRef, int) {
+	fake.getPipelineRunMutex.RLock()
+	defer fake.getPipelineRunMutex.RUnlock()
+	argsForCall := fake.getPipelineRunArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2
+}
+
+func (fake *FakeTeam) GetPipelineRunReturns(result1 atc.PipelineRun, result2 bool, result3 error) {
+	fake.getPipelineRunMutex.Lock()
+	defer fake.getPipelineRunMutex.Unlock()
+	fake.GetPipelineRunStub = nil
+	fake.getPipelineRunReturns = struct {
+		result1 atc.PipelineRun
+		result2 bool
+		result3 error
+	}{result1, result2, result3}
+}
+
+func (fake *FakeTeam) GetPipelineRunReturnsOnCall(i int, result1 atc.PipelineRun, result2 bool, result3 error) {
+	fake.getPipelineRunMutex.Lock()
+	defer fake.getPipelineRunMutex.Unlock()
+	fake.GetPipelineRunStub = nil
+	if fake.getPipelineRunReturnsOnCall == nil {
+		fake.getPipelineRunReturnsOnCall = make(map[int]struct {
+			result1 atc.PipelineRun
+			result2 bool
+			result3 error
+		})
+	}
+	fake.getPipelineRunReturnsOnCall[i] = struct {
+		result1 atc.PipelineRun
+		result2 bool
+		result3 error
+	}{result1, result2, result3}
 }
 
 func (fake *FakeTeam) HidePipeline(arg1 atc.PipelineRef) (bool, error) {
@@ -3283,6 +3459,70 @@ func (fake *FakeTeam) ListJobsReturnsOnCall(i int, result1 []atc.Job, result2 er
 	}
 	fake.listJobsReturnsOnCall[i] = struct {
 		result1 []atc.Job
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeTeam) ListPipelineRuns(arg1 atc.PipelineRef) ([]atc.PipelineRun, error) {
+	fake.listPipelineRunsMutex.Lock()
+	ret, specificReturn := fake.listPipelineRunsReturnsOnCall[len(fake.listPipelineRunsArgsForCall)]
+	fake.listPipelineRunsArgsForCall = append(fake.listPipelineRunsArgsForCall, struct {
+		arg1 atc.PipelineRef
+	}{arg1})
+	stub := fake.ListPipelineRunsStub
+	fakeReturns := fake.listPipelineRunsReturns
+	fake.recordInvocation("ListPipelineRuns", []interface{}{arg1})
+	fake.listPipelineRunsMutex.Unlock()
+	if stub != nil {
+		return stub(arg1)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2
+	}
+	return fakeReturns.result1, fakeReturns.result2
+}
+
+func (fake *FakeTeam) ListPipelineRunsCallCount() int {
+	fake.listPipelineRunsMutex.RLock()
+	defer fake.listPipelineRunsMutex.RUnlock()
+	return len(fake.listPipelineRunsArgsForCall)
+}
+
+func (fake *FakeTeam) ListPipelineRunsCalls(stub func(atc.PipelineRef) ([]atc.PipelineRun, error)) {
+	fake.listPipelineRunsMutex.Lock()
+	defer fake.listPipelineRunsMutex.Unlock()
+	fake.ListPipelineRunsStub = stub
+}
+
+func (fake *FakeTeam) ListPipelineRunsArgsForCall(i int) atc.PipelineRef {
+	fake.listPipelineRunsMutex.RLock()
+	defer fake.listPipelineRunsMutex.RUnlock()
+	argsForCall := fake.listPipelineRunsArgsForCall[i]
+	return argsForCall.arg1
+}
+
+func (fake *FakeTeam) ListPipelineRunsReturns(result1 []atc.PipelineRun, result2 error) {
+	fake.listPipelineRunsMutex.Lock()
+	defer fake.listPipelineRunsMutex.Unlock()
+	fake.ListPipelineRunsStub = nil
+	fake.listPipelineRunsReturns = struct {
+		result1 []atc.PipelineRun
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeTeam) ListPipelineRunsReturnsOnCall(i int, result1 []atc.PipelineRun, result2 error) {
+	fake.listPipelineRunsMutex.Lock()
+	defer fake.listPipelineRunsMutex.Unlock()
+	fake.ListPipelineRunsStub = nil
+	if fake.listPipelineRunsReturnsOnCall == nil {
+		fake.listPipelineRunsReturnsOnCall = make(map[int]struct {
+			result1 []atc.PipelineRun
+			result2 error
+		})
+	}
+	fake.listPipelineRunsReturnsOnCall[i] = struct {
+		result1 []atc.PipelineRun
 		result2 error
 	}{result1, result2}
 }

@@ -270,6 +270,16 @@ type FakePipeline struct {
 		result1 db.Jobs
 		result2 error
 	}
+	LastRunNumberStub        func() int
+	lastRunNumberMutex       sync.RWMutex
+	lastRunNumberArgsForCall []struct {
+	}
+	lastRunNumberReturns struct {
+		result1 int
+	}
+	lastRunNumberReturnsOnCall map[int]struct {
+		result1 int
+	}
 	LastUpdatedStub        func() time.Time
 	lastUpdatedMutex       sync.RWMutex
 	lastUpdatedArgsForCall []struct {
@@ -301,6 +311,16 @@ type FakePipeline struct {
 	}
 	nameReturnsOnCall map[int]struct {
 		result1 string
+	}
+	ParamsSchemaStub        func() []atc.ParamSchema
+	paramsSchemaMutex       sync.RWMutex
+	paramsSchemaArgsForCall []struct {
+	}
+	paramsSchemaReturns struct {
+		result1 []atc.ParamSchema
+	}
+	paramsSchemaReturnsOnCall map[int]struct {
+		result1 []atc.ParamSchema
 	}
 	ParentBuildIDStub        func() int
 	parentBuildIDMutex       sync.RWMutex
@@ -511,6 +531,16 @@ type FakePipeline struct {
 		result1 db.Resources
 		result2 error
 	}
+	RunRetentionStub        func() *atc.RunRetentionConfig
+	runRetentionMutex       sync.RWMutex
+	runRetentionArgsForCall []struct {
+	}
+	runRetentionReturns struct {
+		result1 *atc.RunRetentionConfig
+	}
+	runRetentionReturnsOnCall map[int]struct {
+		result1 *atc.RunRetentionConfig
+	}
 	SetParentIDsStub        func(int, int) error
 	setParentIDsMutex       sync.RWMutex
 	setParentIDsArgsForCall []struct {
@@ -578,6 +608,16 @@ type FakePipeline struct {
 	}
 	teamNameReturnsOnCall map[int]struct {
 		result1 string
+	}
+	TemplateStub        func() bool
+	templateMutex       sync.RWMutex
+	templateArgsForCall []struct {
+	}
+	templateReturns struct {
+		result1 bool
+	}
+	templateReturnsOnCall map[int]struct {
+		result1 bool
 	}
 	UnpauseStub        func() error
 	unpauseMutex       sync.RWMutex
@@ -1890,6 +1930,59 @@ func (fake *FakePipeline) JobsReturnsOnCall(i int, result1 db.Jobs, result2 erro
 	}{result1, result2}
 }
 
+func (fake *FakePipeline) LastRunNumber() int {
+	fake.lastRunNumberMutex.Lock()
+	ret, specificReturn := fake.lastRunNumberReturnsOnCall[len(fake.lastRunNumberArgsForCall)]
+	fake.lastRunNumberArgsForCall = append(fake.lastRunNumberArgsForCall, struct {
+	}{})
+	stub := fake.LastRunNumberStub
+	fakeReturns := fake.lastRunNumberReturns
+	fake.recordInvocation("LastRunNumber", []interface{}{})
+	fake.lastRunNumberMutex.Unlock()
+	if stub != nil {
+		return stub()
+	}
+	if specificReturn {
+		return ret.result1
+	}
+	return fakeReturns.result1
+}
+
+func (fake *FakePipeline) LastRunNumberCallCount() int {
+	fake.lastRunNumberMutex.RLock()
+	defer fake.lastRunNumberMutex.RUnlock()
+	return len(fake.lastRunNumberArgsForCall)
+}
+
+func (fake *FakePipeline) LastRunNumberCalls(stub func() int) {
+	fake.lastRunNumberMutex.Lock()
+	defer fake.lastRunNumberMutex.Unlock()
+	fake.LastRunNumberStub = stub
+}
+
+func (fake *FakePipeline) LastRunNumberReturns(result1 int) {
+	fake.lastRunNumberMutex.Lock()
+	defer fake.lastRunNumberMutex.Unlock()
+	fake.LastRunNumberStub = nil
+	fake.lastRunNumberReturns = struct {
+		result1 int
+	}{result1}
+}
+
+func (fake *FakePipeline) LastRunNumberReturnsOnCall(i int, result1 int) {
+	fake.lastRunNumberMutex.Lock()
+	defer fake.lastRunNumberMutex.Unlock()
+	fake.LastRunNumberStub = nil
+	if fake.lastRunNumberReturnsOnCall == nil {
+		fake.lastRunNumberReturnsOnCall = make(map[int]struct {
+			result1 int
+		})
+	}
+	fake.lastRunNumberReturnsOnCall[i] = struct {
+		result1 int
+	}{result1}
+}
+
 func (fake *FakePipeline) LastUpdated() time.Time {
 	fake.lastUpdatedMutex.Lock()
 	ret, specificReturn := fake.lastUpdatedReturnsOnCall[len(fake.lastUpdatedArgsForCall)]
@@ -2049,6 +2142,59 @@ func (fake *FakePipeline) NameReturnsOnCall(i int, result1 string) {
 	}
 	fake.nameReturnsOnCall[i] = struct {
 		result1 string
+	}{result1}
+}
+
+func (fake *FakePipeline) ParamsSchema() []atc.ParamSchema {
+	fake.paramsSchemaMutex.Lock()
+	ret, specificReturn := fake.paramsSchemaReturnsOnCall[len(fake.paramsSchemaArgsForCall)]
+	fake.paramsSchemaArgsForCall = append(fake.paramsSchemaArgsForCall, struct {
+	}{})
+	stub := fake.ParamsSchemaStub
+	fakeReturns := fake.paramsSchemaReturns
+	fake.recordInvocation("ParamsSchema", []interface{}{})
+	fake.paramsSchemaMutex.Unlock()
+	if stub != nil {
+		return stub()
+	}
+	if specificReturn {
+		return ret.result1
+	}
+	return fakeReturns.result1
+}
+
+func (fake *FakePipeline) ParamsSchemaCallCount() int {
+	fake.paramsSchemaMutex.RLock()
+	defer fake.paramsSchemaMutex.RUnlock()
+	return len(fake.paramsSchemaArgsForCall)
+}
+
+func (fake *FakePipeline) ParamsSchemaCalls(stub func() []atc.ParamSchema) {
+	fake.paramsSchemaMutex.Lock()
+	defer fake.paramsSchemaMutex.Unlock()
+	fake.ParamsSchemaStub = stub
+}
+
+func (fake *FakePipeline) ParamsSchemaReturns(result1 []atc.ParamSchema) {
+	fake.paramsSchemaMutex.Lock()
+	defer fake.paramsSchemaMutex.Unlock()
+	fake.ParamsSchemaStub = nil
+	fake.paramsSchemaReturns = struct {
+		result1 []atc.ParamSchema
+	}{result1}
+}
+
+func (fake *FakePipeline) ParamsSchemaReturnsOnCall(i int, result1 []atc.ParamSchema) {
+	fake.paramsSchemaMutex.Lock()
+	defer fake.paramsSchemaMutex.Unlock()
+	fake.ParamsSchemaStub = nil
+	if fake.paramsSchemaReturnsOnCall == nil {
+		fake.paramsSchemaReturnsOnCall = make(map[int]struct {
+			result1 []atc.ParamSchema
+		})
+	}
+	fake.paramsSchemaReturnsOnCall[i] = struct {
+		result1 []atc.ParamSchema
 	}{result1}
 }
 
@@ -3057,6 +3203,59 @@ func (fake *FakePipeline) ResourcesReturnsOnCall(i int, result1 db.Resources, re
 	}{result1, result2}
 }
 
+func (fake *FakePipeline) RunRetention() *atc.RunRetentionConfig {
+	fake.runRetentionMutex.Lock()
+	ret, specificReturn := fake.runRetentionReturnsOnCall[len(fake.runRetentionArgsForCall)]
+	fake.runRetentionArgsForCall = append(fake.runRetentionArgsForCall, struct {
+	}{})
+	stub := fake.RunRetentionStub
+	fakeReturns := fake.runRetentionReturns
+	fake.recordInvocation("RunRetention", []interface{}{})
+	fake.runRetentionMutex.Unlock()
+	if stub != nil {
+		return stub()
+	}
+	if specificReturn {
+		return ret.result1
+	}
+	return fakeReturns.result1
+}
+
+func (fake *FakePipeline) RunRetentionCallCount() int {
+	fake.runRetentionMutex.RLock()
+	defer fake.runRetentionMutex.RUnlock()
+	return len(fake.runRetentionArgsForCall)
+}
+
+func (fake *FakePipeline) RunRetentionCalls(stub func() *atc.RunRetentionConfig) {
+	fake.runRetentionMutex.Lock()
+	defer fake.runRetentionMutex.Unlock()
+	fake.RunRetentionStub = stub
+}
+
+func (fake *FakePipeline) RunRetentionReturns(result1 *atc.RunRetentionConfig) {
+	fake.runRetentionMutex.Lock()
+	defer fake.runRetentionMutex.Unlock()
+	fake.RunRetentionStub = nil
+	fake.runRetentionReturns = struct {
+		result1 *atc.RunRetentionConfig
+	}{result1}
+}
+
+func (fake *FakePipeline) RunRetentionReturnsOnCall(i int, result1 *atc.RunRetentionConfig) {
+	fake.runRetentionMutex.Lock()
+	defer fake.runRetentionMutex.Unlock()
+	fake.RunRetentionStub = nil
+	if fake.runRetentionReturnsOnCall == nil {
+		fake.runRetentionReturnsOnCall = make(map[int]struct {
+			result1 *atc.RunRetentionConfig
+		})
+	}
+	fake.runRetentionReturnsOnCall[i] = struct {
+		result1 *atc.RunRetentionConfig
+	}{result1}
+}
+
 func (fake *FakePipeline) SetParentIDs(arg1 int, arg2 int) error {
 	fake.setParentIDsMutex.Lock()
 	ret, specificReturn := fake.setParentIDsReturnsOnCall[len(fake.setParentIDsArgsForCall)]
@@ -3408,6 +3607,59 @@ func (fake *FakePipeline) TeamNameReturnsOnCall(i int, result1 string) {
 	}
 	fake.teamNameReturnsOnCall[i] = struct {
 		result1 string
+	}{result1}
+}
+
+func (fake *FakePipeline) Template() bool {
+	fake.templateMutex.Lock()
+	ret, specificReturn := fake.templateReturnsOnCall[len(fake.templateArgsForCall)]
+	fake.templateArgsForCall = append(fake.templateArgsForCall, struct {
+	}{})
+	stub := fake.TemplateStub
+	fakeReturns := fake.templateReturns
+	fake.recordInvocation("Template", []interface{}{})
+	fake.templateMutex.Unlock()
+	if stub != nil {
+		return stub()
+	}
+	if specificReturn {
+		return ret.result1
+	}
+	return fakeReturns.result1
+}
+
+func (fake *FakePipeline) TemplateCallCount() int {
+	fake.templateMutex.RLock()
+	defer fake.templateMutex.RUnlock()
+	return len(fake.templateArgsForCall)
+}
+
+func (fake *FakePipeline) TemplateCalls(stub func() bool) {
+	fake.templateMutex.Lock()
+	defer fake.templateMutex.Unlock()
+	fake.TemplateStub = stub
+}
+
+func (fake *FakePipeline) TemplateReturns(result1 bool) {
+	fake.templateMutex.Lock()
+	defer fake.templateMutex.Unlock()
+	fake.TemplateStub = nil
+	fake.templateReturns = struct {
+		result1 bool
+	}{result1}
+}
+
+func (fake *FakePipeline) TemplateReturnsOnCall(i int, result1 bool) {
+	fake.templateMutex.Lock()
+	defer fake.templateMutex.Unlock()
+	fake.TemplateStub = nil
+	if fake.templateReturnsOnCall == nil {
+		fake.templateReturnsOnCall = make(map[int]struct {
+			result1 bool
+		})
+	}
+	fake.templateReturnsOnCall[i] = struct {
+		result1 bool
 	}{result1}
 }
 

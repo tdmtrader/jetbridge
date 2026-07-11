@@ -33,6 +33,10 @@ type Team interface {
 
 	CreatePipelineBuild(pipelineRef atc.PipelineRef, plan atc.Plan) (atc.Build, error)
 
+	CreatePipelineRun(pipelineRef atc.PipelineRef, params map[string]any) (atc.PipelineRun, error)
+	ListPipelineRuns(pipelineRef atc.PipelineRef) ([]atc.PipelineRun, error)
+	GetPipelineRun(pipelineRef atc.PipelineRef, number int) (atc.PipelineRun, bool, error)
+
 	BuildInputsForJob(pipelineRef atc.PipelineRef, jobName string) ([]atc.BuildInput, bool, error)
 
 	Job(pipelineRef atc.PipelineRef, jobName string) (atc.Job, bool, error)

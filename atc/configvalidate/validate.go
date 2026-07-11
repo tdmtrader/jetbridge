@@ -87,6 +87,11 @@ func Validate(c atc.Config) ([]atc.ConfigWarning, []string) {
 	}
 	warnings = append(warnings, displayWarnings...)
 
+	paramsErr := validateParamsSchema(c)
+	if paramsErr != nil {
+		errorMessages = append(errorMessages, formatErr("params", paramsErr))
+	}
+
 	cycleErr := validateCycle(c)
 
 	if cycleErr != nil {
@@ -572,4 +577,67 @@ func findJobByName(jobName string, jobs atc.JobConfigs) atc.JobConfig {
 		}
 	}
 	return atc.JobConfig{}
+}
+
+func validateParamsSchema(c atc.Config) error {
+	var errorMessages []string
+
+	if len(c.Params) > 0 && !c.Template {
+		errorMessages = append(errorMessages, "params schema is only allowed on template pipelines (set template: true)")
+	}
+	if c.RunRetention != nil && !c.Template {
+		errorMessages = append(errorMessages, "run_retention is only allowed on template pipelines (set template: true)")
+	}
+	if c.RunRetention != nil {
+		if c.RunRetention.KeepLast < 0 {
+			errorMessages = append(errorMessages, "run_retention.keep_last must not be negative")
+		}
+		if c.RunRetention.TTLDays < 0 {
+			errorMessages = append(errorMessages, "run_retention.ttl_days must not be negative")
+		}
+	}
+
+	seen := map[string]bool{}
+	for i, p := range c.Params {
+		identifier := fmt.Sprintf("params[%d] (%q)", i, p.Name)
+
+		if p.Name == "" {
+			errorMessages = append(errorMessages, identifier+": name is required")
+			continue
+		}
+		if p.Name == "run" {
+			errorMessages = append(errorMessages, identifier+`: name "run" is reserved for the run number`)
+		}
+		if p.Name == "run_id" {
+			// second reserved var: pipeline_runs.id, injected at
+			// materialization (shared-contracts §7.1 item 9; F30 2026-07-09)
+			errorMessages = append(errorMessages, identifier+`: name "run_id" is reserved for the pipeline-run id`)
+		}
+		if seen[p.Name] {
+			errorMessages = append(errorMessages, identifier+": duplicate param name")
+		}
+		seen[p.Name] = true
+
+		switch p.Type {
+		case "string", "number", "bool":
+			if len(p.Values) > 0 {
+				errorMessages = append(errorMessages, identifier+": values is only allowed for enum params")
+			}
+		case "enum":
+			if len(p.Values) == 0 {
+				errorMessages = append(errorMessages, identifier+": enum params must declare values")
+			}
+		default:
+			errorMessages = append(errorMessages, fmt.Sprintf("%s: invalid type %q (must be string, number, bool or enum)", identifier, p.Type))
+			continue
+		}
+
+		if p.Default != nil {
+			if _, err := atc.ValidateRunParams([]atc.ParamSchema{p}, nil); err != nil {
+				errorMessages = append(errorMessages, fmt.Sprintf("%s: %s", identifier, err))
+			}
+		}
+	}
+
+	return compositeErr(errorMessages)
 }

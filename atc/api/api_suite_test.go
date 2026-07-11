@@ -64,6 +64,7 @@ var (
 	dbBuildFactory          *dbfakes.FakeBuildFactory
 	dbUserFactory           *dbfakes.FakeUserFactory
 	dbCheckFactory          *dbfakes.FakeCheckFactory
+	fakePipelineRunFactory  *dbfakes.FakePipelineRunFactory
 	dbTeam                  *dbfakes.FakeTeam
 	dbWall                  *dbfakes.FakeWall
 	fakeSecretManager       *credsfakes.FakeSecrets
@@ -114,6 +115,7 @@ var _ = BeforeEach(func() {
 	dbBuildFactory = new(dbfakes.FakeBuildFactory)
 	dbUserFactory = new(dbfakes.FakeUserFactory)
 	dbCheckFactory = new(dbfakes.FakeCheckFactory)
+	fakePipelineRunFactory = new(dbfakes.FakePipelineRunFactory)
 	dbWall = new(dbfakes.FakeWall)
 	dbSigningKeyFactory = new(dbfakes.FakeSigningKeyFactory)
 
@@ -204,6 +206,7 @@ var _ = BeforeEach(func() {
 		fakeVolumeRepository,
 		dbBuildFactory,
 		dbCheckFactory,
+		fakePipelineRunFactory,
 		dbResourceConfigFactory,
 		dbUserFactory,
 

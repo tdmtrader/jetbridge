@@ -1,6 +1,8 @@
 package db_test
 
 import (
+	"fmt"
+
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	. "github.com/onsi/ginkgo/v2"
@@ -1094,6 +1096,43 @@ var _ = Describe("JobFactory", func() {
 					))
 				})
 			})
+		})
+	})
+
+	Describe("template pipelines and scheduling", func() {
+		templateConfig := atc.Config{
+			Template: true,
+			Jobs: atc.JobConfigs{
+				{Name: "template-job", PlanSequence: []atc.Step{
+					{Config: &atc.TaskStep{Name: "t", ConfigPath: "task.yml"}},
+				}},
+			},
+		}
+
+		It("excludes base template jobs but includes run-instance jobs", func() {
+			_, _, err := defaultTeam.SavePipeline(
+				atc.PipelineRef{Name: "sched-template"}, templateConfig, db.ConfigVersion(0), false)
+			Expect(err).ToNot(HaveOccurred())
+
+			runFactory := db.NewPipelineRunFactory(logger, dbConn, lockFactory, checkFactory)
+			template, found, err := defaultTeam.Pipeline(atc.PipelineRef{Name: "sched-template"})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(found).To(BeTrue())
+			_, err = runFactory.CreateRun(template.ID(), nil, "test")
+			Expect(err).ToNot(HaveOccurred())
+
+			jobs, err := jobFactory.JobsToSchedule()
+			Expect(err).ToNot(HaveOccurred())
+
+			var names []string
+			for _, job := range jobs {
+				if job.PipelineName() == "sched-template" {
+					names = append(names, fmt.Sprintf("%s/%v", job.Name(), job.PipelineInstanceVars()))
+				}
+			}
+			// only the run instance's job appears, never the base template's
+			Expect(names).To(HaveLen(1))
+			Expect(names[0]).To(ContainSubstring("run"))
 		})
 	})
 })

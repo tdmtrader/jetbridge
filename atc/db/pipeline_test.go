@@ -2276,3 +2276,53 @@ var _ = Describe("Pipeline", func() {
 func intptr(i int) *int {
 	return &i
 }
+
+var _ = Describe("template pipeline columns", func() {
+	It("mirrors template, params schema and run retention from the config", func() {
+		config := atc.Config{
+			Template: true,
+			Params: []atc.ParamSchema{
+				{Name: "greeting", Type: "string", Default: "hello"},
+			},
+			RunRetention: &atc.RunRetentionConfig{KeepLast: 3, TTLDays: 7},
+			Jobs: atc.JobConfigs{
+				{Name: "entry", PlanSequence: []atc.Step{
+					{Config: &atc.TaskStep{Name: "t", ConfigPath: "task.yml"}},
+				}},
+			},
+		}
+
+		pipeline, _, err := defaultTeam.SavePipeline(
+			atc.PipelineRef{Name: "template-columns-pipeline"}, config, db.ConfigVersion(0), false)
+		Expect(err).ToNot(HaveOccurred())
+
+		Expect(pipeline.Template()).To(BeTrue())
+		Expect(pipeline.ParamsSchema()).To(Equal(config.Params))
+		Expect(pipeline.RunRetention()).To(Equal(config.RunRetention))
+		Expect(pipeline.LastRunNumber()).To(Equal(0))
+
+		// F19 (2026-07-09): Config() must reconstruct the three template
+		// fields — Task 8's CreateRun re-saves template.Config() as the run
+		// instance (so a dropped Template flag would save instances with
+		// template=false, breaking lidar exclusion and version pinning), and
+		// the get-pipeline API (atc/api/configserver/get.go:60) serves
+		// Config(), so a fly get-pipeline → set-pipeline round trip would
+		// silently de-template.
+		roundTripped, err := pipeline.Config()
+		Expect(err).ToNot(HaveOccurred())
+		Expect(roundTripped.Template).To(BeTrue())
+		Expect(roundTripped.Params).To(Equal(config.Params))
+		Expect(roundTripped.RunRetention).To(Equal(config.RunRetention))
+
+		// non-template pipelines default to false/nil
+		Expect(defaultPipeline.Template()).To(BeFalse())
+		Expect(defaultPipeline.ParamsSchema()).To(BeNil())
+		Expect(defaultPipeline.RunRetention()).To(BeNil())
+
+		defaultConfig, err := defaultPipeline.Config()
+		Expect(err).ToNot(HaveOccurred())
+		Expect(defaultConfig.Template).To(BeFalse())
+		Expect(defaultConfig.Params).To(BeNil())
+		Expect(defaultConfig.RunRetention).To(BeNil())
+	})
+})

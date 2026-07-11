@@ -2756,3 +2756,94 @@ var _ = Describe("ValidateConfig", func() {
 		})
 	})
 })
+
+var _ = Describe("params schema validation", func() {
+	validJob := atc.JobConfig{
+		Name: "entry",
+		PlanSequence: []atc.Step{
+			{Config: &atc.TaskStep{Name: "t", ConfigPath: "task.yml"}},
+		},
+	}
+
+	validate := func(c atc.Config) []string {
+		_, errorMessages := configvalidate.Validate(c)
+		return errorMessages
+	}
+
+	It("accepts a valid template with params and retention", func() {
+		errs := validate(atc.Config{
+			Template: true,
+			Params: []atc.ParamSchema{
+				{Name: "commit", Type: "string", Required: true},
+				{Name: "suite", Type: "enum", Values: []string{"a", "b"}, Default: "a"},
+			},
+			RunRetention: &atc.RunRetentionConfig{KeepLast: 5},
+			Jobs:         atc.JobConfigs{validJob},
+		})
+		Expect(errs).To(BeEmpty())
+	})
+
+	It("rejects params on non-template pipelines", func() {
+		errs := validate(atc.Config{
+			Params: []atc.ParamSchema{{Name: "commit", Type: "string"}},
+			Jobs:   atc.JobConfigs{validJob},
+		})
+		Expect(errs).To(ContainElement(ContainSubstring("params schema is only allowed on template pipelines")))
+	})
+
+	It("rejects run_retention on non-template pipelines", func() {
+		errs := validate(atc.Config{
+			RunRetention: &atc.RunRetentionConfig{KeepLast: 1},
+			Jobs:         atc.JobConfigs{validJob},
+		})
+		Expect(errs).To(ContainElement(ContainSubstring("run_retention is only allowed on template pipelines")))
+	})
+
+	// review finding (2026-07-11): negative retention values were accepted at
+	// set-pipeline time and only misbehaved later in the archival query
+	It("rejects negative run_retention values", func() {
+		errs := validate(atc.Config{
+			Template:     true,
+			RunRetention: &atc.RunRetentionConfig{KeepLast: -1},
+			Jobs:         atc.JobConfigs{validJob},
+		})
+		Expect(errs).To(ContainElement(ContainSubstring("run_retention.keep_last must not be negative")))
+
+		errs = validate(atc.Config{
+			Template:     true,
+			RunRetention: &atc.RunRetentionConfig{TTLDays: -7},
+			Jobs:         atc.JobConfigs{validJob},
+		})
+		Expect(errs).To(ContainElement(ContainSubstring("run_retention.ttl_days must not be negative")))
+
+		errs = validate(atc.Config{
+			Template:     true,
+			RunRetention: &atc.RunRetentionConfig{KeepLast: -2, TTLDays: -3},
+			Jobs:         atc.JobConfigs{validJob},
+		})
+		Expect(errs).To(ContainElement(ContainSubstring("run_retention.keep_last must not be negative")))
+		Expect(errs).To(ContainElement(ContainSubstring("run_retention.ttl_days must not be negative")))
+	})
+
+	It("rejects the reserved names, duplicates, bad types, enums without values, and bad defaults", func() {
+		errs := validate(atc.Config{
+			Template: true,
+			Params: []atc.ParamSchema{
+				{Name: "run", Type: "string"},
+				{Name: "run_id", Type: "string"},
+				{Name: "dup", Type: "string"},
+				{Name: "dup", Type: "string"},
+				{Name: "weird", Type: "list"},
+				{Name: "empty-enum", Type: "enum"},
+				{Name: "bad-default", Type: "number", Default: "not-a-number"},
+			},
+			Jobs: atc.JobConfigs{validJob},
+		})
+		Expect(errs).To(ContainElement(ContainSubstring(`name "run" is reserved`)))
+		Expect(errs).To(ContainElement(ContainSubstring(`name "run_id" is reserved`)))
+		Expect(errs).To(ContainElement(ContainSubstring("duplicate param name")))
+		Expect(errs).To(ContainElement(ContainSubstring(`invalid type "list"`)))
+		Expect(errs).To(ContainElement(ContainSubstring("enum params must declare values")))
+		Expect(errs).To(ContainElement(ContainSubstring("invalid default")))
+	})
+})

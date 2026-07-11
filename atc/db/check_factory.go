@@ -181,6 +181,10 @@ func (c *checkFactory) Resources() ([]Resource, error) {
 		LeftJoin("(select DISTINCT(resource_id) FROM job_outputs) jo ON jo.resource_id = r.id").
 		Where(sq.And{
 			sq.Eq{"p.paused": false},
+			// template pipelines (base AND run instances) never get periodic
+			// checks; run instances get one manually-triggered check at
+			// creation (shared-contracts §7.1)
+			sq.Eq{"p.template": false},
 		}).
 		Where(sq.Or{
 			sq.And{

@@ -48,6 +48,7 @@ import (
 	"github.com/concourse/concourse/atc/metric"
 	"github.com/concourse/concourse/atc/pauser"
 	"github.com/concourse/concourse/atc/policy"
+	"github.com/concourse/concourse/atc/runlifecycle"
 	"github.com/concourse/concourse/atc/scheduler"
 	"github.com/concourse/concourse/atc/scheduler/algorithm"
 	"github.com/concourse/concourse/atc/syslog"
@@ -904,6 +905,7 @@ func (cmd *RunCommand) constructAPIMembers(
 	gcContainerDestroyer := gc.NewDestroyer(logger, dbContainerRepository, dbVolumeRepository)
 	dbBuildFactory := db.NewBuildFactory(dbConn, lockFactory, cmd.GC.OneOffBuildGracePeriod, cmd.GC.FailedGracePeriod)
 	dbCheckFactory := db.NewCheckFactory(dbConn, lockFactory, secretManager, cmd.varSourcePool, checkBuildsChan, nil)
+	dbPipelineRunFactory := db.NewPipelineRunFactory(logger, dbConn, lockFactory, dbCheckFactory)
 	dbSigningKeyFactory := db.NewSigningKeyFactory(dbConn)
 	dbClock := db.NewClock()
 	dbWall := db.NewWall(dbConn, &dbClock)
@@ -947,6 +949,7 @@ func (cmd *RunCommand) constructAPIMembers(
 		gcContainerDestroyer,
 		dbBuildFactory,
 		dbCheckFactory,
+		dbPipelineRunFactory,
 		dbResourceConfigFactory,
 		userFactory,
 		pool,
@@ -1105,6 +1108,7 @@ func (cmd *RunCommand) backendComponents(
 
 	dbBuildFactory := db.NewBuildFactory(dbConn, lockFactory, cmd.GC.OneOffBuildGracePeriod, cmd.GC.FailedGracePeriod)
 	dbCheckFactory := db.NewCheckFactory(dbConn, lockFactory, secretManager, cmd.varSourcePool, checkBuildsChan, util.NewSequenceGenerator(1))
+	dbPipelineRunFactory := db.NewPipelineRunFactory(logger, dbConn, lockFactory, dbCheckFactory)
 	dbPipelineFactory := db.NewPipelineFactory(dbConn, lockFactory)
 	dbJobFactory := db.NewJobFactory(dbConn, lockFactory)
 	dbPipelineLifecycle := db.NewPipelineLifecycle(dbConn, lockFactory)
@@ -1258,6 +1262,12 @@ func (cmd *RunCommand) backendComponents(
 				KeyRotationPeriod:   cmd.SigningKey.RotationPeriod,
 				KeyGracePeriod:      cmd.SigningKey.GracePeriod,
 			},
+		},
+		{
+			Component: atc.Component{
+				Name: atc.ComponentPipelineRunLifecycler,
+			},
+			Runnable: runlifecycle.NewLifecycler(dbPipelineRunFactory),
 		},
 	}
 
@@ -2223,6 +2233,7 @@ func (cmd *RunCommand) constructAPIHandler(
 	gcContainerDestroyer gc.Destroyer,
 	dbBuildFactory db.BuildFactory,
 	dbCheckFactory db.CheckFactory,
+	dbPipelineRunFactory db.PipelineRunFactory,
 	resourceConfigFactory db.ResourceConfigFactory,
 	dbUserFactory db.UserFactory,
 	workerPool worker.Pool,
@@ -2303,6 +2314,7 @@ func (cmd *RunCommand) constructAPIHandler(
 		dbVolumeRepository,
 		dbBuildFactory,
 		dbCheckFactory,
+		dbPipelineRunFactory,
 		resourceConfigFactory,
 		dbUserFactory,
 
