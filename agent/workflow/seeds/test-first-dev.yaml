@@ -1,0 +1,95 @@
+# test-first-dev v1 — test-first contract (FLOWS.md "test-first-contract"):
+# the failing tests ARE the approved contract. Step 1 commits failing tests
+# and mirrors the test manifest into the spec body via submit_spec — the
+# checkpoint-evidence workaround noted in FLOWS.md §3 (the approval row
+# shows no mid-run workspace, so the reviewer approves the contract from
+# the ticket page's spec panel). The tests-approved checkpoint gates on a
+# human; step 2 implements to green without weakening the tests. Gates run
+# the FULL suite.
+# Import:  fly agent workflows import agent/workflow/seeds/test-first-dev.yaml
+# Promote: fly agent workflows set-live test-first-dev 1
+schema_version: 1
+name: test-first-dev
+description: failing tests as the approved contract -> human approves tests -> implement to green
+
+defaults:
+  model: claude-sonnet-4-5
+  max_turns: 80
+
+budget:
+  ticket_usd: 8.0
+  judge_usd: 1.0
+
+sidecars:
+  dev:
+    image: ghcr.io/tdmtrader/mcp-dev-concourse:0.1.0
+    role: dev
+  platform:
+    image: ghcr.io/tdmtrader/mcp-platform:0.1.0
+    role: platform
+
+prompts:
+  write-tests: |
+    You are a test-contract agent. Read the ticket with platform-mcp
+    read_ticket. Translate the ticket body into a set of FAILING tests that
+    pin the wanted behavior precisely — these tests are the contract the
+    implementer will be graded against. Do not write production code. Run
+    dev-mcp run_tests on the affected components to prove each new test
+    fails for the right reason, then commit the failing tests. Finally,
+    mirror the contract for human review: call platform-mcp submit_spec
+    with a test manifest as the spec body — one line per test (file, test
+    name, the behavior it pins) plus a short note on anything the ticket
+    body left ambiguous. The reviewer approves the tests from the ticket
+    page, so the manifest must stand alone.
+  implement: |
+    You are an implementation agent. The failing tests committed in this
+    workspace are the approved contract. Make them pass with the minimal
+    production change: run dev-mcp run_tests on affected components as you
+    go, then the full suite before you finish. Do NOT weaken the contract —
+    never edit, delete, skip, or loosen an approved test; if a test looks
+    wrong, stop and ask a human with platform-mcp ask_human instead. Commit
+    in small increments.
+
+steps:
+- agent: write-tests
+  prompt: write-tests
+  sidecars: [dev, platform]
+  budget_slice_usd: 2.5
+  outputs: [workspace]
+
+- checkpoint: tests-approved
+  on_reject: send_back
+
+- agent: implement
+  prompt: implement
+  sidecars: [dev, platform]
+  budget_slice_usd: 4.0
+  max_turns: 120
+  inputs: [workspace]
+  outputs: [workspace]
+
+hitl:
+  ask_timeout: park
+  ask_timeout_seconds: 0
+
+gate_policy:
+  gates:
+  - gate: build
+    scope: affected
+  - gate: test
+    scope: full
+    timeout: 60m
+  on_gate_failure: needs_review
+
+judge:
+  rubric:
+  - name: contract-green
+    weight: 3
+    guidance: "Do the approved tests pass, and does the implementation satisfy exactly the behaviors those tests pin?"
+  - name: tests-unmodified
+    weight: 3
+    guidance: "Are the tests approved at the tests-approved checkpoint unmodified — not edited, deleted, skipped, or loosened — since that approval?"
+  - name: scope-discipline
+    weight: 1
+    guidance: "Minimal production diff to reach green; no drive-by refactors."
+  pass_threshold: 6.5
