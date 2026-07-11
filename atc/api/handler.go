@@ -8,9 +8,12 @@ import (
 	"code.cloudfoundry.org/clock"
 	"code.cloudfoundry.org/lager/v3"
 	"github.com/concourse/concourse/atc"
+	"github.com/concourse/concourse/agent/api/costs"
 	"github.com/concourse/concourse/agent/api/feedback"
 	principalsapi "github.com/concourse/concourse/agent/api/principals"
 	reviewsapi "github.com/concourse/concourse/agent/api/reviews"
+	"github.com/concourse/concourse/agent/budget"
+	"github.com/concourse/concourse/agent/credentials"
 	"github.com/concourse/concourse/atc/api/accessor"
 	"github.com/concourse/concourse/atc/api/artifactserver"
 	"github.com/concourse/concourse/atc/api/buildserver"
@@ -93,6 +96,9 @@ func NewHandler(
 	reviewsStore reviewsapi.Store,
 	principalsStore principalsapi.Store,
 	agentReviewPublishToken string,
+	credentialsBackend credentials.Backend,
+	costLedger budget.Ledger,
+	agentDailyBudgetUSD float64,
 ) (http.Handler, error) {
 
 	absCLIDownloadsDir, err := filepath.Abs(cliDownloadsDir)
@@ -146,6 +152,19 @@ func NewHandler(
 			return accessor.GetAccessor(r).Claims().UserName
 		},
 	)
+	credentialsServer := credentials.NewHandler(credentialsBackend, func(r *http.Request) (string, string, bool, bool) {
+		acc := accessor.GetAccessor(r)
+		claims := acc.Claims()
+		name := claims.PreferredUsername
+		if name == "" {
+			name = claims.UserName
+		}
+		return claims.Sub, name, acc.IsAdmin(), claims.Sub != ""
+	})
+	costChecker := budget.NewChecker(costLedger, budget.NoTicketBudgets{}, budget.Config{
+		GlobalDailyCapUSD: agentDailyBudgetUSD,
+	})
+	costsServer := costs.NewHandler(costLedger, costChecker, agentReviewPublishToken)
 	if oidcIssuer == "" {
 		oidcIssuer = externalURL
 	}
@@ -284,6 +303,12 @@ func NewHandler(
 		atc.SubmitAgentReview:    http.HandlerFunc(reviewsServer.SubmitReview),
 		atc.GetBuildAgentReviews: http.HandlerFunc(reviewsServer.GetByBuild),
 		atc.ListTeamAgentReviews: http.HandlerFunc(reviewsServer.ListByTeam),
+
+		atc.SetAgentUserCredential:       http.HandlerFunc(credentialsServer.Set),
+		atc.GetAgentUserCredentialStatus: http.HandlerFunc(credentialsServer.Status),
+		atc.DeleteAgentUserCredential:    http.HandlerFunc(credentialsServer.Delete),
+		atc.GetAgentCostRollup:           http.HandlerFunc(costsServer.GetRollup),
+		atc.SubmitAgentCostRecord:        http.HandlerFunc(costsServer.SubmitRecord),
 
 		atc.CreateAgentPrincipal: http.HandlerFunc(principalsServer.CreatePrincipal),
 		atc.ListAgentPrincipals:  http.HandlerFunc(principalsServer.ListPrincipals),

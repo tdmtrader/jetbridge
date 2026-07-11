@@ -218,6 +218,8 @@ type RunCommand struct {
 
 	AgentReviewPublishToken string `long:"agent-review-publish-token" description:"DEPRECATED: static bearer token accepted for publishing agent review results during the agent-principal dual-accept window. Mint a reviews:write agent principal instead (POST /api/v1/agent/principals). This flag will be removed at the end of the window."`
 
+	AgentDailyBudgetUSD float64 `long:"agent-daily-budget-usd" default:"0" description:"Global daily agent LLM spend cap in USD across all agent work, enforced by dispatch admission and reported by the cost rollup API. 0 disables the cap."`
+
 	LogDBQueries   bool `long:"log-db-queries" description:"Log database queries."`
 	LogClusterName bool `long:"log-cluster-name" description:"Log cluster name."`
 
@@ -2302,6 +2304,9 @@ func (cmd *RunCommand) constructAPIHandler(
 		db.NewAgentReviewsFactory(dbConn),
 		agentPrincipalsFactory,
 		cmd.AgentReviewPublishToken,
+		db.NewAgentUserCredentialsFactory(dbConn),
+		db.NewAgentCostLedgerFactory(dbConn),
+		cmd.AgentDailyBudgetUSD,
 	)
 }
 
