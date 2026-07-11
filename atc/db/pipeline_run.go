@@ -39,7 +39,9 @@ type PipelineRun interface {
 	// CheckComplete reports whether the run's instance pipeline is quiescent
 	// (no job builds pending or started, at least one job build exists, no
 	// active unpaused job awaiting scheduling) and, if so, the worst-of
-	// aggregate status (errored > aborted > failed > succeeded).
+	// aggregate status (errored > aborted > failed > succeeded). A run whose
+	// instance pipeline has been destroyed can never become quiescent and
+	// completes as errored.
 	CheckComplete() (PipelineRunStatus, bool, error)
 
 	Finish(status PipelineRunStatus) error
@@ -114,7 +116,11 @@ func (r *pipelineRun) InstancePipeline() (Pipeline, bool, error) {
 func (r *pipelineRun) CheckComplete() (PipelineRunStatus, bool, error) {
 	instanceID, ok := r.InstancePipelineID()
 	if !ok {
-		return "", false, nil
+		// the instance pipeline was destroyed out from under the run
+		// (instance_pipeline_id is ON DELETE SET NULL): it can never become
+		// quiescent, so terminate as errored instead of staying 'running'
+		// forever. (review finding, 2026-07-11)
+		return PipelineRunErrored, true, nil
 	}
 
 	var active, total, unscheduled int

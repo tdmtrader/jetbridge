@@ -127,6 +127,28 @@ var _ = Describe("PipelineRun completion", func() {
 		Expect(status).To(Equal(db.PipelineRunAborted))
 	})
 
+	// review finding (2026-07-11): instance_pipeline_id is ON DELETE SET
+	// NULL, and CheckComplete used to report not-complete on the NULLed FK —
+	// so a run whose instance pipeline was destroyed stayed 'running'
+	// forever. A destroyed instance can never become quiescent; the run must
+	// terminate as errored on the next lifecycler tick.
+	It("completes as errored when the instance pipeline is destroyed", func() {
+		Expect(instance.Destroy()).To(Succeed())
+
+		// reload the run the way the lifecycler does (RunningRuns rescans):
+		// the destroy NULLed the FK in the DB
+		reloaded, found, err := factory.GetRun(run.TemplatePipelineID(), run.Number())
+		Expect(err).ToNot(HaveOccurred())
+		Expect(found).To(BeTrue())
+		_, hasInstance := reloaded.InstancePipelineID()
+		Expect(hasInstance).To(BeFalse())
+
+		status, complete, err := reloaded.CheckComplete()
+		Expect(err).ToNot(HaveOccurred())
+		Expect(complete).To(BeTrue())
+		Expect(status).To(Equal(db.PipelineRunErrored))
+	})
+
 	It("surfaces retriggers on completed runs and reopens them", func() {
 		_, err := dbConn.Exec(
 			`UPDATE builds SET status = 'succeeded' WHERE pipeline_id = $1`, instance.ID())
