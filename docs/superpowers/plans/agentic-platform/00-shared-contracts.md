@@ -1598,6 +1598,66 @@ Everything keyed across tables — `agent_run_metrics.pipeline_run_id`, `agent_r
 
 Fly: `fly -t t run-pipeline -p <template> -v key=val [-v ...]` (struct field + command file per the fly recipe); `fly runs -p <template>` lists runs.
 
+### 7.1 Pipeline-runs implementation addendum (wave 1, owner: pipeline-runs)
+
+Decisions made while implementing §1.5/§2.3/§7; consumers (dispatch, platform-mcp-hitl,
+process-intel-experiments) should code against these:
+
+1. **Template column on instances.** Run instances keep `template: true` in their
+   materialized config, so `pipelines.template` is true for base templates AND their run
+   instances. Base template = `template AND instance_vars IS NULL`. Scheduler skips base
+   templates only; lidar's periodic check scan skips all `template = true` rows.
+2. **"Versions pinned at creation" v1.** Implemented as a frozen check set: one
+   manually-triggered check per resource enqueued at run creation **by
+   `db.PipelineRunFactory.CreateRun` itself** (`CheckFactory.TryCreateCheck`, same seam
+   as the `CheckResource` handler; the `POST .../runs` handler is a pass-through, so
+   in-process consumers — dispatch, experiments — get the frozen check set too;
+   amended 2026-07-09, F27), periodic checks
+   disabled, `trigger: true` stripped at materialization from get steps WITHOUT
+   `passed:` constraints. Gets WITH `passed:` keep their trigger flag so downstream
+   jobs flow through chains as normal (spec §3) — external resource versions can never
+   trigger a run-instance build, but passed-chain propagation can. Explicit `version:`
+   pins pass through. Known limitation: a shared resource-config scope fed by other
+   pipelines can surface newer versions to not-yet-scheduled jobs that lack `passed:`
+   constraints.
+3. **Completion + reopen.** Completion additionally requires no active unpaused job with
+   `schedule_requested > last_scheduled` (closes the downstream-not-yet-created race).
+   Completion is re-entrant: a completed run whose instance pipeline gains a
+   pending/started job build — or a job build that COMPLETED after the run's
+   `completed_at` (fast-finishing retriggers that never linger in pending/started;
+   self-terminating because reopen→re-complete stamps a newer `completed_at`;
+   amended 2026-07-09, F26) — is reopened (status `running`, `completed_at` cleared) and
+   completes again. §2.3 gains:
+   `PipelineRun.Reopen() error`, `PipelineRun.CheckComplete() (PipelineRunStatus, bool, error)`,
+   `PipelineRun.InstancePipeline() (Pipeline, bool, error)`, plus getters
+   `CreatedAt() time.Time`, `CompletedAt() (time.Time, bool)`, `Archived() bool`;
+   `PipelineRunFactory` gains `CompletedRunsWithNewActivity() ([]PipelineRun, error)` and
+   `RunsToArchive() ([]PipelineRun, error)`.
+4. **Retention YAML carrier.** Top-level pipeline-config key
+   `run_retention: {keep_last: K, ttl_days: N}` (Go: `atc.RunRetentionConfig`), mirrored to
+   `pipelines.run_retention` at SaveConfig time. `keep_last` ranks completed, non-archived
+   runs per template by number descending.
+5. **Reserved param names.** A params-schema entry named `run` or `run_id` is a config
+   validation error (`run_id` added 2026-07-09, F30).
+6. **Template job triggering.** `CreateJobBuild` on a base template returns
+   409 Conflict, body: `cannot trigger jobs on a template pipeline; use "fly run-pipeline" to create a run`.
+7. **Wire shapes.** `POST .../runs` body: `{"params": {"name": <value>, ...}}`
+   (`atc.CreatePipelineRunRequest`). Response/list element (`atc.PipelineRun`):
+   `{"id": int, "number": int, "status": string, "params": object, "created_by": string,
+   "created_at": epoch-seconds, "completed_at": epoch-seconds-omitempty, "archived": bool-omitempty}`.
+8. **Entry-job trigger semantics.** Entry jobs (no `passed:` on any input) are triggered as
+   manually-triggered builds by `CreateRun` inside the creation call, after the creation
+   transaction commits.
+9. **Run-id var (`((run_id))`).** `pipeline_runs.id` is allocated via `nextval` inside the
+   creation transaction BEFORE materialization and injected as a second reserved static
+   var alongside `((run))` (added 2026-07-09, F30). `((run))` = per-template run NUMBER
+   (also the `instance_vars` identity; numbers reset per template). `((run_id))` =
+   globally-unique `pipeline_runs.id`; it resolves at materialization only and is NOT
+   part of `instance_vars`. Anything keying cross-template state (agent metrics,
+   questions, reviews, gateway ledger rows — §8.1 `AGENT_PIPELINE_RUN_ID`) MUST
+   interpolate `((run_id))`, never `((run))`. Co-signed with dispatch (renderer sites)
+   and harvest.
+
 ---
 
 ## 8. Env-var / K8s-secret credential-injection contract — owners: **credentials-and-budgets** (secrets + helper), **agent-step** (step env), **dev-mcp** (ports/packaging); consumers: dispatch, gateway-mcp, harvest-step, platform-mcp-hitl
@@ -1781,3 +1841,12 @@ Set by the **owning exec implementation** (agent-step, harvest-step) or by **dis
   - §1.2 / attribution convention (affects: harvest-step, ticket-core, delivery-outcomes): `agent_reviews` gains `submitted_by TEXT NOT NULL DEFAULT ''` via migration `1773106011` (inside agent-identity's 1773106010–19 block), recording the writing principal's name — the first demonstrator of the created_by/submitted_by audit-attribution convention. Orthogonal to harvest-step's planned ticket/run linkage columns (block 1773106080–89); no collision.
   - §4.1 Go surface names frozen by agent-identity: package `agent/api/principals` (types `Principal`, `CreateSpec`, `Store`, `Verifier`, `MemoryStore`, `Handler`; funcs `MintToken`, `ParseTokenID`, `HashToken`, `DisplayPrefix`, `NewContext`, `FromContext`; scope constants `ScopeReviewsWrite`, `ScopeTicketsRead`, `ScopeTicketsWrite`, `ScopeMetricsWrite`, `ScopeCostsWrite`, `ScopeQuestionsAnswer`; `LegacyPublishPrincipalName`; `TokenVersionPrefix = "cap1."`); `atc/db.AgentPrincipalsFactory` / `NewAgentPrincipalsFactory`; `atc/api/auth.CheckAgentPrincipalHandlerFactory` / `NewCheckAgentPrincipalHandlerFactory`; `atc/api/auth.CheckAgentAuthorizationHandler`. Verification failures on the principal tier are uniformly 401.
   - §4.2: the per-route scope audit (the document later workstreams add rows to) lives at `docs/superpowers/plans/agentic-platform/agent-route-scopes.md`.
+- 2026-07-08: pipeline-runs wave-1 addendum (§7.1): template-column-true-on-instances rule,
+  frozen-check-set pinning, completion reopen semantics + §2.3 interface extensions,
+  run_retention YAML key, reserved param name `run`, 409 on template job trigger, wire shapes.
+- 2026-07-09: pipeline-runs design-review fixes F26/F27/F30 in §7.1: reopen detection also
+  matches job builds completed after the run's `completed_at` (fast-finish retriggers, F26);
+  the frozen-check enqueue lives in `db.PipelineRunFactory.CreateRun`, the runs handler is a
+  pass-through (F27); new reserved var `((run_id))` = `pipeline_runs.id` allocated via
+  `nextval` before materialization, reserved param names now `run` AND `run_id` (F30,
+  co-signed with dispatch + harvest for the §8.1 `AGENT_PIPELINE_RUN_ID` consumers).
