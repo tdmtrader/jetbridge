@@ -1458,6 +1458,25 @@ and route entries after line 262 (`{Path: "/api/v1/teams/:team_name/agent-review
 			newHandler = auth.CheckAdminHandler(handler, rejector)
 ```
 
+- [ ] Add the three routes to the pass-through (leave-handler-as-is) case in `atc/wrappa/reject_archived_wrappa.go` after `atc.ListTeamAgentReviews,` (this switch panics `how do archived pipelines affect your endpoint?` on any unlisted route):
+
+```go
+			atc.ListTeamAgentReviews,
+			atc.CreateAgentPrincipal,
+			atc.ListAgentPrincipals,
+			atc.RevokeAgentPrincipal,
+```
+
+- [ ] Add the three routes to the `EnableSystemAuditLog` case in `atc/auditor/auditor.go` `ValidateAction`, extending the case that ends with `atc.ListTeamAgentReviews:` (this switch panics `unhandled action: ...` on any unlisted route; `atc/auditor` `TestAuditor` fails the full suite otherwise):
+
+```go
+		atc.ListTeamAgentReviews,
+		atc.CreateAgentPrincipal,
+		atc.ListAgentPrincipals,
+		atc.RevokeAgentPrincipal:
+		return a.EnableSystemAuditLog
+```
+
 - [ ] Wire the server in `atc/api/handler.go`: add param after `reviewsStore reviewsapi.Store,` (line 91):
 
 ```go
@@ -1485,9 +1504,9 @@ and add handler-map entries after `atc.ListTeamAgentReviews` (line 277):
 
 - [ ] Update callers: in `atc/api/api_suite_test.go` add `principals.NewMemoryStore(),` between `reviews.NewMemoryStore(),` (line 226) and `"test-agent-review-publish-token",` (line 227), importing `"github.com/concourse/concourse/agent/api/principals"`. In `atc/atccmd/command.go` add `agentPrincipalsFactory := db.NewAgentPrincipalsFactory(dbConn)` next to the other factory constructions at line 2207, and pass `agentPrincipalsFactory,` between `db.NewAgentReviewsFactory(dbConn),` and `cmd.AgentReviewPublishToken,` (line 2298-2299).
 
-- [ ] Run `go build ./... && ginkgo ./atc/wrappa/ && ginkgo ./atc/api/` — expect PASS (the wrappa "handles each route" spec exercises the new admin entries; a missing switch case would panic `you missed a spot`).
+- [ ] Run `go build ./... && ginkgo ./atc/wrappa/ ./atc/auditor/ && ginkgo ./atc/api/` — expect PASS (the wrappa "handles each route" spec exercises the new admin entries and panics `you missed a spot` on a missing auth case; the wrappa `RejectArchivedWrappa` and auditor `TestAuditor` specs iterate every route and panic on any unlisted one).
 
-- [ ] Commit: `git add atc/db/agent_principals_factory.go atc/db/agent_principals_factory_test.go agent/api/principals/ atc/routes.go atc/wrappa/api_auth_wrappa.go atc/api/handler.go atc/api/api_suite_test.go atc/atccmd/command.go && git commit -m "feat(atc): agent principals factory + admin mint/list/revoke API"`
+- [ ] Commit: `git add atc/db/agent_principals_factory.go atc/db/agent_principals_factory_test.go agent/api/principals/ atc/routes.go atc/wrappa/api_auth_wrappa.go atc/wrappa/reject_archived_wrappa.go atc/auditor/auditor.go atc/api/handler.go atc/api/api_suite_test.go atc/atccmd/command.go && git commit -m "feat(atc): agent principals factory + admin mint/list/revoke API"`
 
 ---
 
