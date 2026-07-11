@@ -1,0 +1,7 @@
+schema_version: 1
+components:
+  - id: smoke
+    description: smoke-test component
+    paths: ["smoke/"]
+    kind: other
+    build: { cmd: ["true"] }

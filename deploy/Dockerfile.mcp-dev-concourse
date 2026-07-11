@@ -1,0 +1,40 @@
+# ghcr.io/tdmtrader/mcp-dev-concourse — this repo's dev-mcp sidecar image.
+#
+# Packaging convention (00-shared-contracts.md §8.5, owned by dev-mcp and
+# reused by mcp-platform and mcp-gateway):
+#   - static Go binary ENTRYPOINT (bare — no hardcoded paths) serving
+#     streamable-HTTP MCP on MCP_LISTEN_ADDR (default :7780 for the dev role)
+#   - GET /healthz for the pod readiness probe
+#   - runs as non-root (MCP sidecar images only; main-step runner images
+#     run as root — §8.5 scoping, 2026-07-09)
+#   - version tag = the shipping repo's release tag (or short sha for
+#     untagged builds); `latest` is never referenced by workflow definitions
+
+FROM golang:1.25-bookworm AS builder
+WORKDIR /src
+COPY ci-agent/ .
+RUN CGO_ENABLED=0 go build -o /dev-mcp ./cmd/dev-mcp
+
+FROM golang:1.25-bookworm
+
+# Toolchain required by this repo's dev-mcp.yml commands:
+# ginkgo (atc/fly test targets; version pinned to ci-agent/go.mod),
+# node + yarn via corepack (web component's package.json scripts).
+RUN go install github.com/onsi/ginkgo/v2/ginkgo@v2.28.1
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+    apt-get install -y --no-install-recommends nodejs && \
+    corepack enable && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN useradd --uid 1000 --create-home devmcp
+COPY --from=builder /dev-mcp /usr/local/bin/dev-mcp
+
+USER devmcp
+ENV MCP_LISTEN_ADDR=:7780
+ENV GOPATH=/home/devmcp/go
+EXPOSE 7780
+
+# The owning exec sets this container's WorkingDir to the workspace
+# artifact's mount path (shared-contracts §8.5 CWD convention); all
+# path-valued flags default relative to CWD, so no path is hardcoded.
+ENTRYPOINT ["/usr/local/bin/dev-mcp"]

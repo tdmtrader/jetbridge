@@ -1,0 +1,59 @@
+# dev-mcp reference-implementation config for this repo
+# (docs/superpowers/plans/agentic-platform/00-shared-contracts.md §3.1, §11).
+# Commands mirror the CLAUDE.md test inventory and Makefile targets.
+# NOTE: atc/fly test targets need a local PostgreSQL (see CLAUDE.md); the
+# `web` component needs node/yarn (root package.json scripts).
+schema_version: 1
+
+repo:
+  build: { cmd: ["go", "build", "./cmd/concourse", "./cmd/artifact-daemon"] }
+  # make exits 2 when a sub-command fails, so 2 is a test failure, not
+  # harness breakage.
+  test:  { cmd: ["make", "test-quick"], failed_exit_codes: [1, 2] }
+  lint:  { cmd: ["go", "vet", "./atc/...", "./fly/...", "./agent/..."] }
+
+components:
+  - id: atc
+    description: "ATC web node: API, scheduler, worker runtimes, DB layer (Ginkgo; needs local PostgreSQL)"
+    paths: ["atc/"]
+    kind: service
+    build: { cmd: ["go", "build", "./atc/..."] }
+    test:
+      cmd: ["ginkgo", "-r", "-p", "--keep-going", "--skip-package=integration", "./atc/"]
+      focus_flag: "--focus"
+    lint: { cmd: ["go", "vet", "./atc/..."] }
+
+  - id: fly
+    description: "fly CLI (Ginkgo; integration suite excluded — run via make test-fly-integration)"
+    paths: ["fly/"]
+    kind: cli
+    build: { cmd: ["go", "build", "./fly/..."] }
+    test:
+      cmd: ["ginkgo", "-r", "--keep-going", "--skip-package=integration", "./fly/"]
+      focus_flag: "--focus"
+    lint: { cmd: ["go", "vet", "./fly/..."] }
+
+  - id: web
+    description: "Elm/JS frontend bundle (root package.json scripts; needs node + yarn)"
+    paths: ["web/"]
+    kind: web
+    build: { cmd: ["yarn", "run", "build"] }
+    test:  { cmd: ["yarn", "run", "test"] }
+    lint:  { cmd: ["yarn", "run", "analyse"] }
+
+  - id: ci-agent
+    description: "standalone ci-agent module (review/QA/plan phases, dev-mcp server)"
+    paths: ["ci-agent/"]
+    kind: cli
+    build: { cmd: ["go", "build", "./..."], dir: "ci-agent" }
+    test:
+      cmd: ["go", "test", "./...", "-count=1", "-timeout", "5m"]
+      dir: "ci-agent"
+      focus_flag: "-run"
+    lint: { cmd: ["go", "vet", "./..."], dir: "ci-agent" }
+
+  - id: topgun
+    description: "K8s integration/behavioral suites (needs Docker + KinD/K3s; multi-minute; test only)"
+    paths: ["topgun/"]
+    kind: other
+    test: { cmd: ["make", "test-k8s-integration"], failed_exit_codes: [1, 2] }

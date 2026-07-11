@@ -1,0 +1,15 @@
+# Minimal single-component fixture repo: proves the dev-mcp contract is
+# layout- and language-agnostic (no Go, no Makefile, no Concourse shape).
+schema_version: 1
+repo:
+  build: { cmd: ["sh", "scripts/build.sh"] }
+  test:  { cmd: ["sh", "scripts/test.sh"], focus_flag: "--focus" }
+  lint:  { cmd: ["sh", "scripts/lint.sh"] }
+components:
+  - id: app
+    description: single shell-script application
+    paths: ["src/"]
+    kind: cli
+    build: { cmd: ["sh", "scripts/build.sh"] }
+    test:  { cmd: ["sh", "scripts/test.sh"], focus_flag: "--focus" }
+    lint:  { cmd: ["sh", "scripts/lint.sh"] }

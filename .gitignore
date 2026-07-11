@@ -52,3 +52,6 @@ package-lock.json
 /concourse-linux-arm64
 /artifact-daemon-linux-arm64
 /fly-assets/
+
+# dev-mcp command logs (workspace-relative, contract §11 addendum)
+.dev-mcp/
