@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/concourse/concourse/agent/api/costs"
+	"github.com/concourse/concourse/agent/api/principals"
 	"github.com/concourse/concourse/agent/budget"
 )
 
@@ -48,6 +49,45 @@ func TestSubmitDisabledWithoutConfiguredToken(t *testing.T) {
 	h := costs.NewHandler(ledger, checker, "")
 	if rec := submit(t, h, "anything", `{"source":"ci_agent","cost_usd":1}`); rec.Code != http.StatusForbidden {
 		t.Fatalf("got %d", rec.Code)
+	}
+}
+
+func TestSubmitWithPrincipalContextSkipsStaticToken(t *testing.T) {
+	h, ledger := newHandler()
+
+	req := httptest.NewRequest("POST", "/api/v1/agent/costs",
+		strings.NewReader(`{"source":"ci_agent","cost_usd":0.42}`))
+	// no Authorization header at all — the wrappa already verified the principal
+	req = req.WithContext(principals.NewContext(req.Context(), principals.Principal{
+		ID: 3, Name: "itest-recorder",
+	}))
+	rec := httptest.NewRecorder()
+	h.SubmitRecord(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("code = %d body %s, want 201", rec.Code, rec.Body)
+	}
+	spent, _ := ledger.SpentSince(time.Now().Add(-time.Minute))
+	if spent != 0.42 {
+		t.Fatalf("ledger spent = %v", spent)
+	}
+}
+
+func TestSubmitWithPrincipalContextWorksWithoutConfiguredToken(t *testing.T) {
+	ledger := budget.NewMemoryLedger()
+	checker := budget.NewChecker(ledger, budget.NoTicketBudgets{}, budget.Config{Location: time.UTC})
+	h := costs.NewHandler(ledger, checker, "")
+
+	req := httptest.NewRequest("POST", "/api/v1/agent/costs",
+		strings.NewReader(`{"source":"ci_agent","cost_usd":0.1}`))
+	req = req.WithContext(principals.NewContext(req.Context(), principals.Principal{
+		ID: 3, Name: "itest-recorder",
+	}))
+	rec := httptest.NewRecorder()
+	h.SubmitRecord(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("code = %d body %s, want 201", rec.Code, rec.Body)
 	}
 }
 
