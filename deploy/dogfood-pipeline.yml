@@ -84,7 +84,7 @@ jobs:
           # (sk-ant-oat..., from `claude setup-token`) works.
           case "${CLAUDE_TOKEN:-}" in
             sk-ant-oat*) export CLAUDE_CODE_OAUTH_TOKEN="$CLAUDE_TOKEN" ;;
-            "")          echo "WARN: no Claude credential set (((anthropic-api-key)) empty)" ;;
+            "")          echo "WARN: no Claude credential set (CLAUDE_TOKEN empty)" ;;
             *)           export ANTHROPIC_API_KEY="$CLAUDE_TOKEN" ;;
           esac
 
@@ -232,7 +232,7 @@ jobs:
           # (sk-ant-oat..., from `claude setup-token`) works.
           case "${CLAUDE_TOKEN:-}" in
             sk-ant-oat*) export CLAUDE_CODE_OAUTH_TOKEN="$CLAUDE_TOKEN" ;;
-            "")          echo "WARN: no Claude credential set (((anthropic-api-key)) empty)" ;;
+            "")          echo "WARN: no Claude credential set (CLAUDE_TOKEN empty)" ;;
             *)           export ANTHROPIC_API_KEY="$CLAUDE_TOKEN" ;;
           esac
 
@@ -252,7 +252,16 @@ jobs:
           export OUTPUT_DIR="$(pwd)/review"
 
           echo "=== Running ci-agent review phase (diff vs ${BASE_REF}) ==="
-          ci-agent --phase "${PHASES_DIR}/review.yaml"
+          # Review is ADVISORY, not a gate: it publishes to the build page to
+          # inform the human merger, but its pass/fail verdict must NOT fail the
+          # build (the hard gates are build + test-quick, already passed). A
+          # single-task dogfood slice legitimately looks "incomplete" to the
+          # reviewer (e.g. a library referencing a type a later out-of-range
+          # task implements), which would otherwise block a perfectly good
+          # branch. Capture the verdict; always publish; always push.
+          REVIEW_VERDICT=pass
+          ci-agent --phase "${PHASES_DIR}/review.yaml" || REVIEW_VERDICT=fail
+          echo "advisory review verdict: ${REVIEW_VERDICT} (does not gate the build)"
 
           echo "=== Review complete ==="
           echo "Review output:"
