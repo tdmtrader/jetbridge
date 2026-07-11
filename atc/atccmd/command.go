@@ -2302,6 +2302,7 @@ func (cmd *RunCommand) constructAPIHandler(
 		db.NewAgentReviewsFactory(dbConn),
 		agentPrincipalsFactory,
 		cmd.AgentReviewPublishToken,
+		db.NewAgentWorkflowsFactory(dbConn),
 	)
 }
 

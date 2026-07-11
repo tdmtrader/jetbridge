@@ -11,6 +11,8 @@ import (
 	"github.com/concourse/concourse/agent/api/feedback"
 	principalsapi "github.com/concourse/concourse/agent/api/principals"
 	reviewsapi "github.com/concourse/concourse/agent/api/reviews"
+	workflowsapi "github.com/concourse/concourse/agent/api/workflows"
+	"github.com/concourse/concourse/agent/workflow"
 	"github.com/concourse/concourse/atc/api/accessor"
 	"github.com/concourse/concourse/atc/api/artifactserver"
 	"github.com/concourse/concourse/atc/api/buildserver"
@@ -93,6 +95,7 @@ func NewHandler(
 	reviewsStore reviewsapi.Store,
 	principalsStore principalsapi.Store,
 	agentReviewPublishToken string,
+	workflowStore workflow.Store,
 ) (http.Handler, error) {
 
 	absCLIDownloadsDir, err := filepath.Abs(cliDownloadsDir)
@@ -140,6 +143,7 @@ func NewHandler(
 		},
 		agentReviewPublishToken,
 	)
+	workflowsServer := workflowsapi.NewHandler(workflowStore)
 	principalsServer := principalsapi.NewHandler(
 		principalsStore,
 		func(r *http.Request) string {
@@ -284,6 +288,12 @@ func NewHandler(
 		atc.SubmitAgentReview:    http.HandlerFunc(reviewsServer.SubmitReview),
 		atc.GetBuildAgentReviews: http.HandlerFunc(reviewsServer.GetByBuild),
 		atc.ListTeamAgentReviews: http.HandlerFunc(reviewsServer.ListByTeam),
+
+		atc.ListAgentWorkflows:          http.HandlerFunc(workflowsServer.List),
+		atc.ListAgentWorkflowVersions:   http.HandlerFunc(workflowsServer.Versions),
+		atc.GetAgentWorkflowVersion:     http.HandlerFunc(workflowsServer.Get),
+		atc.CreateAgentWorkflowVersion:  http.HandlerFunc(workflowsServer.Import),
+		atc.PromoteAgentWorkflowVersion: http.HandlerFunc(workflowsServer.Promote),
 
 		atc.CreateAgentPrincipal: http.HandlerFunc(principalsServer.CreatePrincipal),
 		atc.ListAgentPrincipals:  http.HandlerFunc(principalsServer.ListPrincipals),
