@@ -2,6 +2,8 @@ package publish_test
 
 import (
 	"context"
+	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -116,5 +118,87 @@ func TestPublishValidatesInputs(t *testing.T) {
 		if err := publish.Publish(context.Background(), opts); err == nil {
 			t.Errorf("%s: expected error", name)
 		}
+	}
+}
+
+func TestPublishCostsPostsEachRecord(t *testing.T) {
+	var bodies [][]byte
+	var auths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/agent/costs" || r.Method != "POST" {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		auths = append(auths, r.Header.Get("Authorization"))
+		body, _ := io.ReadAll(r.Body)
+		bodies = append(bodies, body)
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	costsPath := filepath.Join(dir, "costs.json")
+	if err := os.WriteFile(costsPath, []byte(`[
+		{"step":"analyze","model":"claude-sonnet-5","input_tokens":100,"output_tokens":50,"cache_read_tokens":10,"cache_creation_tokens":5,"turns":4,"cost_usd":0.25,"duration_ms":1200}
+	]`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := publish.PublishCosts(context.Background(), publish.CostsOptions{
+		ATCURL:    srv.URL,
+		BuildID:   "1234",
+		Token:     "publish-secret",
+		CostsPath: costsPath,
+		Phase:     "review",
+		UserName:  "tdmtrader",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bodies) != 1 {
+		t.Fatalf("posted %d records", len(bodies))
+	}
+	if auths[0] != "Bearer publish-secret" {
+		t.Fatalf("auth: %q", auths[0])
+	}
+
+	var rec map[string]any
+	if err := json.Unmarshal(bodies[0], &rec); err != nil {
+		t.Fatal(err)
+	}
+	if rec["source"] != "ci_agent" || rec["build_id"] != float64(1234) ||
+		rec["step_name"] != "review/analyze" || rec["cost_usd"] != 0.25 ||
+		rec["user_name"] != "tdmtrader" || rec["provider"] != "anthropic" ||
+		rec["turns"] != float64(4) || rec["input_tokens"] != float64(100) {
+		t.Fatalf("record: %v", rec)
+	}
+}
+
+func TestPublishCostsSkipsMissingFile(t *testing.T) {
+	err := publish.PublishCosts(context.Background(), publish.CostsOptions{
+		ATCURL:    "http://unused.invalid",
+		BuildID:   "1",
+		Token:     "t",
+		CostsPath: filepath.Join(t.TempDir(), "absent.json"),
+	})
+	if err != nil {
+		t.Fatalf("missing costs.json must be a silent skip: %v", err)
+	}
+}
+
+func TestPublishCostsReturnsErrorOnServerFailure(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", http.StatusBadRequest)
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	costsPath := filepath.Join(dir, "costs.json")
+	os.WriteFile(costsPath, []byte(`[{"step":"s","cost_usd":1}]`), 0644)
+
+	err := publish.PublishCosts(context.Background(), publish.CostsOptions{
+		ATCURL: srv.URL, BuildID: "1", Token: "t", CostsPath: costsPath,
+	})
+	if err == nil {
+		t.Fatal("server 4xx must surface as an error (caller downgrades to a warning)")
 	}
 }

@@ -20,6 +20,7 @@ params:
   REVIEW_DIFF_ONLY: "false"
   BASE_REF: "main"
   AGENT_REVIEW_PUBLISH_TOKEN: ""
+  AGENT_COST_USER: ""
 
 run:
   path: sh
@@ -61,7 +62,7 @@ run:
     if [ "$has_publish_token" = true ]; then
       echo ""
       echo "=== Publishing review to ATC ==="
-      if ci-agent publish --review "$OUTPUT_DIR/review.json"; then
+      if ci-agent publish --review "$OUTPUT_DIR/review.json" --costs "$OUTPUT_DIR/costs.json"; then
         echo "Published for build ${BUILD_ID:-unknown}"
       else
         echo "WARNING: failed to publish review to ATC (results still available as artifact)"
