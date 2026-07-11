@@ -4,6 +4,15 @@ resources:
   source:
     uri: https://github.com/tdmtrader/jetbridge.git
     branch: jetbridge
+    # Docs-only churn must not trigger the self-release chain (every push
+    # restarts web ~10-12 min later and double-spends in-flight dogfood
+    # builds — see ci/dogfood/FINDINGS.md "Pushing to jetbridge mid-run").
+    # Deliberately narrow: ci/** and deploy/** still trigger.
+    ignore_paths:
+    - docs/**
+    - ci/dogfood/FINDINGS.md
+    - notes/**
+    - forge/**
 jobs:
 - name: build-and-vet
   serial_groups: [pipeline]

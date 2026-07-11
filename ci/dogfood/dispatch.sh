@@ -14,6 +14,8 @@
 #   DOGFOOD_FLAT  set to 1 to use a plain suffixed pipeline name instead of an
 #                 instanced pipeline (fallback if the web node does not have
 #                 pipeline instances enabled)
+#   DOGFOOD_FORCE set to 1 to skip the settled-release-chain guard and
+#                 dispatch even while jetbridge/* builds are in flight
 set -eu
 
 usage() {
@@ -38,6 +40,28 @@ BRANCH_NAME="agent/dogfood-${PLAN_SLUG}-${RANGE_SLUG}"
 
 CONFIG="$REPO_ROOT/deploy/dogfood-pipeline.yml"
 WEB_URL="https://concourse.home"
+
+# Wait-for-settled-chain guard (ci/dogfood/FINDINGS.md): a pending/started
+# jetbridge/* build means a release chain is in flight, and its self-upgrade
+# restarts web ~10-12 min after the push — a restart mid-run re-runs the
+# implement step and double-spends the shared rate-limit window. `fly builds`
+# name column is pipeline/job/build-name, status is the third column.
+if [ "${DOGFOOD_FORCE:-0}" = "1" ]; then
+  echo "warning: DOGFOOD_FORCE=1 — skipping the settled-release-chain guard" >&2
+else
+  RECENT_BUILDS=$(fly -t "$TARGET" builds --count 30) || {
+    echo "error: 'fly -t $TARGET builds' failed; cannot verify the release chain is settled" >&2
+    exit 3
+  }
+  IN_FLIGHT=$(printf '%s\n' "$RECENT_BUILDS" \
+    | awk '$2 ~ /^jetbridge\// && ($3 == "pending" || $3 == "started")')
+  if [ -n "$IN_FLIGHT" ]; then
+    echo "error: jetbridge release chain in flight — dispatching now risks a mid-run web restart:" >&2
+    printf '%s\n' "$IN_FLIGHT" >&2
+    echo "wait for these to settle (fly -t $TARGET builds), or override with DOGFOOD_FORCE=1" >&2
+    exit 3
+  fi
+fi
 
 if [ "${DOGFOOD_FLAT:-0}" = "1" ]; then
   PIPELINE="dogfood-${PLAN_SLUG}-${RANGE_SLUG}"

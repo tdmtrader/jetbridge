@@ -70,6 +70,8 @@ Freeze, in writing, the small extensions this plan makes beyond the literal text
 
 The three ticket tables, DDL per contracts §1.7 plus the two Task-1 addendum columns. Migration files are picked up automatically via `go:embed migrations` (`atc/db/migration/migration.go:153`) — no registration code.
 
+**Convention:** migration head bump — follow [CONVENTIONS.md §C2](CONVENTIONS.md) (also bump `docs/migration/migrate-preflight.sh` `JETBRIDGE_VERSION`, same commit).
+
 **Files:**
 - Create: `atc/db/migration/migrations/1773106050_create_agent_tickets.up.sql`
 - Create: `atc/db/migration/migrations/1773106050_create_agent_tickets.down.sql`
@@ -2652,6 +2654,8 @@ func (h *Handler) UpdateTask(w http.ResponseWriter, r *http.Request) {
 ### Task 8: Route registration, auth tiers, ATC wiring
 
 Registers the eight routes (contracts §4.2 rows exactly), lands the combined-tier composition helper `auth.AgentPrincipalOrMainTeamHandler`, wires the wrappa switch, `DefaultRoles`, `atc/api/handler.go`, and `atc/atccmd/command.go`, and flips the route-audit rows to live. The wrappa test (`atc/wrappa/api_auth_wrappa_test.go:36` "handles each route") iterates every `atc.Routes` entry and panics on a missing case — that panic is this task's failing test.
+
+**Convention:** route-adding task — follow [CONVENTIONS.md §C1](CONVENTIONS.md): all SIX touchpoints (including `atc/wrappa/reject_archived_wrappa.go` and `atc/auditor/auditor.go` `ValidateAction`, not listed below) in the same commit; verify with `go test ./atc/wrappa/... ./atc/auditor/...`.
 
 **Files:**
 - Modify: `atc/routes.go` (route-name consts after `GetAgentReviewFindings` block at :121-129; route entries after the agent reviews block at :254-262)

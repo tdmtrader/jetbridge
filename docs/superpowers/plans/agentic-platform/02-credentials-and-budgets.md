@@ -970,6 +970,8 @@ git commit -m "feat(agent): credentials domain types, Store/SecretAttacher contr
 
 SQL is §1.3 of the contracts doc, verbatim. Also adds the vault column to the hardcoded key-rotation list (`encryptedColumns`) and bumps the legacy-upgrade head constant.
 
+**Convention:** migration head bump — follow [CONVENTIONS.md §C2](CONVENTIONS.md) (also bump `docs/migration/migrate-preflight.sh` `JETBRIDGE_VERSION`, same commit).
+
 **Files:**
 - Create: `atc/db/migration/migrations/1773106020_create_agent_user_credentials.up.sql`
 - Create: `atc/db/migration/migrations/1773106020_create_agent_user_credentials.down.sql`
@@ -2110,6 +2112,8 @@ git commit -m "feat(agent): budget library - checker arithmetic, ledger seam, me
 
 SQL is §1.4 verbatim: append-only, NULLABLE `ticket_id` join key (no FK — tickets land in wave 2), CHECK-constrained `source`.
 
+**Convention:** migration head bump — follow [CONVENTIONS.md §C2](CONVENTIONS.md) (also bump `docs/migration/migrate-preflight.sh` `JETBRIDGE_VERSION`, same commit).
+
 **Files:**
 - Create: `atc/db/migration/migrations/1773106021_create_agent_cost_ledger.up.sql`
 - Create: `atc/db/migration/migrations/1773106021_create_agent_cost_ledger.down.sql`
@@ -2529,6 +2533,8 @@ git commit -m "feat(db): AgentCostLedgerFactory implementing budget.Ledger with 
 ### Task 10: Migration 1773106022 — platform service user seed + dashboard view
 
 Implements §1.13's service user (`sub='agent-platform'`, `connector='local'`, `username='platform'`) and the "dashboard view" deliverable as a SQL view over the ledger (queryable from Grafana/psql without app code).
+
+**Convention:** migration head bump — follow [CONVENTIONS.md §C2](CONVENTIONS.md) (also bump `docs/migration/migrate-preflight.sh` `JETBRIDGE_VERSION`, same commit).
 
 **Files:**
 - Create: `atc/db/migration/migrations/1773106022_seed_agent_platform_user_and_cost_view.up.sql`
@@ -3356,6 +3362,8 @@ git commit -m "feat(agent): self-scoped credential vault HTTP handler"
 ### Task 13: Routes, wrappa, roles, API + web-command wiring
 
 Registers the five contract routes and threads the new stores/flag through both `api.NewHandler` call sites. The wrappa exhaustive-switch test is the failing-test lever: adding routes without wrappa entries panics `you missed a spot`.
+
+**Convention:** route-adding task — follow [CONVENTIONS.md §C1](CONVENTIONS.md): all SIX touchpoints (including `atc/wrappa/reject_archived_wrappa.go` and `atc/auditor/auditor.go` `ValidateAction`, not listed below) in the same commit; verify with `go test ./atc/wrappa/... ./atc/auditor/...`.
 
 **Files:**
 - Modify: `atc/routes.go:125` (constants after `GetAgentReviewFindings`), `atc/routes.go:258` (route entries after the agent feedback block)

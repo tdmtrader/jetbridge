@@ -153,6 +153,8 @@ Write the wave-1 implementation decisions into the shared contracts doc so dispa
 
 ### Task 2: Migrations 1773106030 + 1773106031
 
+**Convention:** migration head bump — follow [CONVENTIONS.md §C2](CONVENTIONS.md) (bump BOTH `atc/db/migration/legacy_upgrade_test.go` `jetbridgeHeadMigration` AND `docs/migration/migrate-preflight.sh` `JETBRIDGE_VERSION`, same commit).
+
 **Files:**
 - Create: `atc/db/migration/migrations/1773106030_add_template_columns_to_pipelines.up.sql`
 - Create: `atc/db/migration/migrations/1773106030_add_template_columns_to_pipelines.down.sql`
@@ -2778,6 +2780,8 @@ The implementation landed in Task 8 (`CheckComplete`, `Reopen`, `CompletedRunsWi
 
 ### Task 15: Routes, auth wrappa, reject-archived wrappa, roles
 
+**Convention:** route-adding task — follow [CONVENTIONS.md §C1](CONVENTIONS.md): all SIX touchpoints (including `atc/auditor/auditor.go` `ValidateAction`, not listed below) in the same commit; verify with `go test ./atc/wrappa/... ./atc/auditor/...`.
+
 **Files:**
 - Modify: `atc/routes.go:127` (constants) and `atc/routes.go:260` (route entries)
 - Modify: `atc/wrappa/api_auth_wrappa.go:176` (authorized case)
@@ -4213,6 +4217,8 @@ Tasks 23–26 implement this plan's share of the PARK-V2 seam delta (exit-and-re
 ---
 
 ### Task 23 (PARK-V2): Migration 1773106032 — non-terminal `awaiting_human` run status
+
+**Convention:** migration head bump — follow [CONVENTIONS.md §C2](CONVENTIONS.md) (bump BOTH `atc/db/migration/legacy_upgrade_test.go` `jetbridgeHeadMigration` AND `docs/migration/migrate-preflight.sh` `JETBRIDGE_VERSION`, same commit).
 
 **Files:**
 - Create: `atc/db/migration/migrations/1773106032_add_awaiting_human_to_pipeline_runs.up.sql`
