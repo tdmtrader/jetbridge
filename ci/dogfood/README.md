@@ -38,3 +38,21 @@ with `DOGFOOD_FLAT=1`.
   any agent branch containing a migration, list every unmerged sibling branch's migration
   numbers and merge (and let theborg deploy) in ascending order — or hold deploys until
   all are merged. (ROADMAP §6, first bullet.)
+
+## Operational notes
+
+- **Always dispatch via `dispatch.sh`, not `fly trigger-job` alone.** The runner pipeline's
+  task params and guard scripts live in the *server-stored* pipeline config. `trigger-job`
+  reuses that stored config; it does NOT pick up edits to `deploy/dogfood-pipeline.yml` or
+  a newer `((base_branch))` commit's pipeline structure. `dispatch.sh` re-runs
+  `set-pipeline` every time, so it always applies the latest config. If you must hand-run a
+  job after editing the pipeline YAML, re-run `set-pipeline` first. (Note: the git resource
+  DOES fetch the latest repo commit, so agent/phase *code* is always current — only the
+  pipeline's own params/steps are pinned to the last `set-pipeline`.)
+- **Write-workload permissions (F25).** The implement task sets `AGENT_SKIP_PERMISSIONS=1`
+  and `IS_SANDBOX=1` so headless claude can write files as root. Read-only phases (review)
+  omit these and keep the default posture. If a future claude version changes the
+  permission-bypass flag, the single point of change is `ci-agent/llm/client.go`.
+- **A blocked/no-op agent fails loudly.** The implement task exits non-zero if it produces
+  zero commits, and the push task independently refuses to push an empty branch. A green
+  build therefore means the agent actually did work — but still read the diff before merging.
