@@ -7,6 +7,19 @@ Newest first.
 
 ## Plan gaps the agents found (leftward candidates)
 
+- **Agent replace-instead-of-add error in exactly the code the gate can't test.**
+  Task 5 (build `run/1`) told the agent to *add* `submitted_by = EXCLUDED.submitted_by,`
+  to `agent_reviews_factory.go`'s ON CONFLICT SET list; the agent *replaced*
+  `review = EXCLUDED.review,` with it instead — re-submitted reviews would keep
+  the stale payload. The full gate passed anyway because the factory spec is
+  Postgres-backed (can't run in the gate image), and the existing upsert spec
+  used an identical payload for both upserts so it couldn't have caught the drop
+  even locally. Caught in human review; fixed and the spec strengthened to vary
+  payload + submitted_by across the conflict (verified: the strengthened spec
+  fails against the agent's version). → *Signals:* (1) the human local-verify
+  rule for Postgres-backed slices is load-bearing, not ceremonial; (2) upsert
+  specs must assert every ON CONFLICT column that matters, not just one.
+
 - **Adding an API route touches SIX places, not four — the plans list ~four.**
   Dogfooding agent-identity Task 4 (build 525330) failed the gate on
   `atc/auditor` `TestAuditor` ("all routes are handled and does not panic"):
