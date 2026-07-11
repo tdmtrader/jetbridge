@@ -57,6 +57,10 @@ type Pipeline interface {
 	TeamID() int
 	TeamName() string
 	InstanceVars() atc.InstanceVars
+	Template() bool
+	ParamsSchema() []atc.ParamSchema
+	RunRetention() *atc.RunRetentionConfig
+	LastRunNumber() int
 	ParentJobID() int
 	ParentBuildID() int
 	Groups() atc.GroupConfigs
@@ -145,6 +149,10 @@ type pipeline struct {
 	public        bool
 	archived      bool
 	lastUpdated   time.Time
+	template      bool
+	paramsSchema  []atc.ParamSchema
+	runRetention  *atc.RunRetentionConfig
+	lastRunNumber int
 
 	conn        DbConn
 	lockFactory lock.LockFactory
@@ -171,7 +179,11 @@ var pipelinesQuery = psql.Select(`
 		p.parent_build_id,
 		p.instance_vars,
 		p.paused_by,
-		p.paused_at`).
+		p.paused_at,
+		p.template,
+		p.params_schema,
+		p.run_retention,
+		p.last_run_number`).
 	From("pipelines p").
 	LeftJoin("teams t ON p.team_id = t.id")
 
@@ -199,6 +211,11 @@ func (p *pipeline) PausedAt() time.Time              { return p.pausedAt }
 func (p *pipeline) PausedBy() string                 { return p.pausedBy }
 func (p *pipeline) Archived() bool                   { return p.archived }
 func (p *pipeline) LastUpdated() time.Time           { return p.lastUpdated }
+
+func (p *pipeline) Template() bool                        { return p.template }
+func (p *pipeline) ParamsSchema() []atc.ParamSchema       { return p.paramsSchema }
+func (p *pipeline) RunRetention() *atc.RunRetentionConfig { return p.runRetention }
+func (p *pipeline) LastRunNumber() int                    { return p.lastRunNumber }
 
 func (p *pipeline) CheckPaused() (bool, error) {
 	var paused bool
@@ -266,6 +283,9 @@ func (p *pipeline) Config() (atc.Config, error) {
 		Prototypes:    prototypes.Configs(),
 		Jobs:          jobConfigs,
 		Display:       p.Display(),
+		Template:      p.template,
+		Params:        p.paramsSchema,
+		RunRetention:  p.runRetention,
 	}
 
 	return config, nil
