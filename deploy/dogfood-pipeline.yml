@@ -61,6 +61,13 @@ jobs:
         PLAN_FILE: ((plan_file))
         TASK_RANGE: ((task_range))
         BASE_BRANCH: ((base_branch))
+        # Write-workload: headless claude has no human to approve tool
+        # permissions, so file writes are blocked without this. IS_SANDBOX=1 is
+        # required for claude to accept --dangerously-skip-permissions as root
+        # (golang image runs as root). This is review-finding F25 confirmed by
+        # dogfood run #1.
+        AGENT_SKIP_PERMISSIONS: "1"
+        IS_SANDBOX: "1"
         # ci-agent phase timeout (main.go TIMEOUT env). A multi-task TDD slice
         # is much longer than the review phase's default 10m.
         TIMEOUT: "120m"
@@ -121,6 +128,16 @@ jobs:
           cd worked-repo
           git log --oneline dogfood-base..HEAD
           git status --short
+          # The phase can report pass even when the agent was blocked and made
+          # no changes (dogfood run #1: file writes denied -> zero commits ->
+          # "pass"). Fail loudly here so a blocked/no-op run never looks green
+          # and never reaches the gate/review/push tasks.
+          COMMITS=$(git rev-list --count dogfood-base..HEAD)
+          echo "commits on top of base: ${COMMITS}"
+          if [ "${COMMITS}" = "0" ]; then
+            echo "FATAL: dogfood-implement produced no commits — agent blocked or no-op. See its output above."
+            exit 1
+          fi
 
   # ---------------------------------------------------------------------
   # 2. Test-quick gate.

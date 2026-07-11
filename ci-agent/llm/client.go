@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"regexp"
 )
@@ -39,6 +40,14 @@ func (c *ClaudeClient) Call(ctx context.Context, prompt string, opts CallOpts) (
 	args := []string{"-p", prompt, "--output-format", "json"}
 	if opts.Model != "" {
 		args = append(args, "--model", opts.Model)
+	}
+	// Write-workload phases (e.g. dogfood-implement) run headless with no human
+	// to approve tool permissions, so file writes are blocked in the default
+	// mode. Opt in via AGENT_SKIP_PERMISSIONS so read-only phases (review) keep
+	// the default posture. Running as root additionally requires IS_SANDBOX=1
+	// for claude to accept the flag.
+	if v := os.Getenv("AGENT_SKIP_PERMISSIONS"); v == "1" || v == "true" {
+		args = append(args, "--dangerously-skip-permissions")
 	}
 
 	cmd := exec.CommandContext(ctx, c.CLI, args...)
