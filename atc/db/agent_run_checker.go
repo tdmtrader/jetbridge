@@ -19,16 +19,20 @@ func NewAgentRunChecker(conn DbConn) *AgentRunChecker {
 	return &AgentRunChecker{conn: conn}
 }
 
-// RunActive reports whether the run row exists and is still running.
-// Absent rows are inactive — the run finished, was deleted, or was never
-// created; either way its secret must not outlive it. An absent
-// pipeline_runs TABLE (credentials merges before pipeline-runs per the
-// Task 1 merge-order addendum) also means no run can be active: dispatch
-// does not exist yet, so any labeled secret is a stray.
+// RunActive reports whether the run row exists and is still active:
+// running, or parked in the non-terminal awaiting_human state — per
+// PARK-V2 (contracts §11) awaiting_human COUNTS AS ACTIVE, so the
+// agent-run-<run-id> secret and per-run principal row survive the wait
+// for the continuation to re-attach. Absent rows are inactive — the run
+// finished, was deleted, or was never created; either way its secret
+// must not outlive it. An absent pipeline_runs TABLE (credentials merges
+// before pipeline-runs per the Task 1 merge-order addendum) also means
+// no run can be active: dispatch does not exist yet, so any labeled
+// secret is a stray.
 func (c *AgentRunChecker) RunActive(runID int) (bool, error) {
 	var active bool
 	err := c.conn.QueryRow(
-		`SELECT EXISTS (SELECT 1 FROM pipeline_runs WHERE id = $1 AND status = 'running')`,
+		`SELECT EXISTS (SELECT 1 FROM pipeline_runs WHERE id = $1 AND status IN ('running','awaiting_human'))`,
 		runID,
 	).Scan(&active)
 

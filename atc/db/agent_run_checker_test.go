@@ -23,7 +23,7 @@ var _ = Describe("AgentRunChecker", func() {
 				number               INTEGER NOT NULL,
 				params               JSONB NOT NULL DEFAULT '{}',
 				status               TEXT NOT NULL DEFAULT 'running'
-				                     CHECK (status IN ('running','succeeded','failed','errored','aborted')),
+				                     CHECK (status IN ('running','awaiting_human','succeeded','failed','errored','aborted')),
 				created_by           TEXT NOT NULL DEFAULT '',
 				created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
 				completed_at         TIMESTAMPTZ,
@@ -52,6 +52,20 @@ var _ = Describe("AgentRunChecker", func() {
 		Expect(checker.RunActive(runningID)).To(BeTrue())
 		Expect(checker.RunActive(doneID)).To(BeFalse())
 		Expect(checker.RunActive(999999999)).To(BeFalse()) // absent row = inactive
+	})
+
+	It("counts awaiting_human runs as active (PARK-V2, contracts §11)", func() {
+		createPipelineRuns()
+
+		// The agent-run-<run-id> secret and per-run principal row must
+		// survive the wait for the continuation to re-attach.
+		var parkedID int
+		err := dbConn.QueryRow(`
+			INSERT INTO pipeline_runs (template_pipeline_id, number, status)
+			VALUES ($1, 990003, 'awaiting_human') RETURNING id`, defaultPipeline.ID()).Scan(&parkedID)
+		Expect(err).ToNot(HaveOccurred())
+
+		Expect(checker.RunActive(parkedID)).To(BeTrue())
 	})
 
 	It("treats an absent pipeline_runs table as no-active-runs (undefined_table)", func() {
