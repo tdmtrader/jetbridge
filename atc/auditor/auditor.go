@@ -155,6 +155,11 @@ func (a *auditor) ValidateAction(action string) bool {
 		atc.SubmitAgentReview,
 		atc.GetBuildAgentReviews,
 		atc.ListTeamAgentReviews,
+		atc.SetAgentUserCredential,
+		atc.GetAgentUserCredentialStatus,
+		atc.DeleteAgentUserCredential,
+		atc.GetAgentCostRollup,
+		atc.SubmitAgentCostRecord,
 		atc.CreateAgentPrincipal,
 		atc.ListAgentPrincipals,
 		atc.RevokeAgentPrincipal:

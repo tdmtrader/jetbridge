@@ -22,6 +22,7 @@ import (
 	"code.cloudfoundry.org/lager/v3/lagerctx"
 	"github.com/concourse/concourse"
 	"github.com/concourse/concourse/agent/api/principals"
+	"github.com/concourse/concourse/agent/credentials"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api"
 	"github.com/concourse/concourse/atc/api/accessor"
@@ -217,6 +218,8 @@ type RunCommand struct {
 	} `group:"Web Server"`
 
 	AgentReviewPublishToken string `long:"agent-review-publish-token" description:"DEPRECATED: static bearer token accepted for publishing agent review results during the agent-principal dual-accept window. Mint a reviews:write agent principal instead (POST /api/v1/agent/principals). This flag will be removed at the end of the window."`
+
+	AgentDailyBudgetUSD float64 `long:"agent-daily-budget-usd" default:"0" description:"Global daily agent LLM spend cap in USD across all agent work, enforced by dispatch admission and reported by the cost rollup API. 0 disables the cap."`
 
 	LogDBQueries   bool `long:"log-db-queries" description:"Log database queries."`
 	LogClusterName bool `long:"log-cluster-name" description:"Log cluster name."`
@@ -1319,6 +1322,33 @@ func (cmd *RunCommand) backendComponents(
 			},
 			Runnable: k8sReaper,
 		})
+
+		components = append(components, RunnableComponent{
+			Component: atc.Component{
+				Name: atc.ComponentAgentPlatformCredentialSyncer,
+			},
+			Runnable: credentials.NewPlatformSecretSyncer(
+				logger.Session(atc.ComponentAgentPlatformCredentialSyncer),
+				db.NewAgentUserCredentialsFactory(dbConn),
+				k8sClientset,
+				cmd.Kubernetes.Namespace,
+			),
+			Interval: time.Minute,
+		})
+
+		components = append(components, RunnableComponent{
+			Component: atc.Component{
+				Name: atc.ComponentAgentRunSecretReaper,
+			},
+			Runnable: credentials.NewRunSecretReaper(
+				logger.Session(atc.ComponentAgentRunSecretReaper),
+				k8sClientset,
+				cmd.Kubernetes.Namespace,
+				db.NewAgentRunChecker(dbConn),
+				nil, // PrincipalRevoker: bound by agent-identity's cutover task (Task 1 F22 addendum)
+			),
+			Interval: time.Minute,
+		})
 	}
 
 	if syslogDrainConfigured {
@@ -2302,6 +2332,9 @@ func (cmd *RunCommand) constructAPIHandler(
 		db.NewAgentReviewsFactory(dbConn),
 		agentPrincipalsFactory,
 		cmd.AgentReviewPublishToken,
+		db.NewAgentUserCredentialsFactory(dbConn),
+		db.NewAgentCostLedgerFactory(dbConn),
+		cmd.AgentDailyBudgetUSD,
 	)
 }
 

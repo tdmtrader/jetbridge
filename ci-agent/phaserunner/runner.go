@@ -41,6 +41,20 @@ type StepResult struct {
 	Error    string          `json:"error,omitempty"`
 }
 
+// StepCost captures per-step LLM usage for the cost ledger feed
+// (published by `ci-agent publish --costs` to /api/v1/agent/costs).
+type StepCost struct {
+	Step                string  `json:"step"`
+	Model               string  `json:"model,omitempty"`
+	InputTokens         int64   `json:"input_tokens"`
+	OutputTokens        int64   `json:"output_tokens"`
+	CacheReadTokens     int64   `json:"cache_read_tokens"`
+	CacheCreationTokens int64   `json:"cache_creation_tokens"`
+	Turns               int     `json:"turns"`
+	CostUSD             float64 `json:"cost_usd"`
+	DurationMS          int     `json:"duration_ms"`
+}
+
 // Run executes a phase: for each step, render prompt, call LLM, write artifacts, optionally verify.
 func Run(ctx context.Context, opts Options) (*schema.Results, error) {
 	ctx, phaseSpan := citracing.Tracer().Start(ctx, "phase.run",
@@ -76,6 +90,7 @@ func Run(ctx context.Context, opts Options) (*schema.Results, error) {
 	stepOutputsRaw := make(map[string]json.RawMessage)
 	stepOutputsStr := make(map[string]string)
 	var stepResults []StepResult
+	var stepCosts []StepCost
 	allPassed := true
 
 	for _, step := range opts.Config.Steps {
@@ -116,6 +131,17 @@ func Run(ctx context.Context, opts Options) (*schema.Results, error) {
 		}
 
 		output := cr.Result
+		stepCosts = append(stepCosts, StepCost{
+			Step:                step.Name,
+			Model:               cr.Model,
+			InputTokens:         int64(cr.Usage.InputTokens),
+			OutputTokens:        int64(cr.Usage.OutputTokens),
+			CacheReadTokens:     int64(cr.Usage.CacheReadInputTokens),
+			CacheCreationTokens: int64(cr.Usage.CacheCreationInputTokens),
+			Turns:               cr.NumTurns,
+			CostUSD:             cr.CostUSD,
+			DurationMS:          cr.DurationMS,
+		})
 		stepOutputsRaw[step.Name] = output
 		stepOutputsStr[step.Name] = string(output)
 
@@ -197,6 +223,12 @@ func Run(ctx context.Context, opts Options) (*schema.Results, error) {
 	// Write step-results.json for detailed inspection
 	stepData, _ := json.MarshalIndent(stepResults, "", "  ")
 	os.WriteFile(filepath.Join(opts.OutputDir, "step-results.json"), stepData, 0644)
+
+	// Write costs.json for the ledger feed (fire-and-forget downstream).
+	if len(stepCosts) > 0 {
+		costData, _ := json.MarshalIndent(stepCosts, "", "  ")
+		os.WriteFile(filepath.Join(opts.OutputDir, "costs.json"), costData, 0644)
+	}
 
 	emitEvent(ew, schema.EventAgentEnd, map[string]string{"status": string(status)})
 

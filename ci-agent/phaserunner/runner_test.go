@@ -479,3 +479,64 @@ var _ = Describe("RenderTemplate", func() {
 		Expect(result).To(Equal("Value: "))
 	})
 })
+
+// usageClient returns canned usage/cost data with every call.
+type usageClient struct{}
+
+func (usageClient) Call(_ context.Context, _ string, _ llm.CallOpts) (llm.CallResult, error) {
+	return llm.CallResult{
+		Result:  json.RawMessage(`{"ok":true}`),
+		Model:   "claude-sonnet-5",
+		CostUSD: 0.25,
+		Usage: llm.Usage{
+			InputTokens:              100,
+			OutputTokens:             50,
+			CacheReadInputTokens:     10,
+			CacheCreationInputTokens: 5,
+		},
+		NumTurns:   4,
+		DurationMS: 1200,
+	}, nil
+}
+
+var _ = Describe("Run cost accounting", func() {
+	It("writes per-step usage to costs.json", func() {
+		tmpDir, err := os.MkdirTemp("", "phaserunner-costs-test")
+		Expect(err).NotTo(HaveOccurred())
+		defer os.RemoveAll(tmpDir)
+		baseDir := filepath.Join(tmpDir, "base")
+		outputDir := filepath.Join(tmpDir, "output")
+		Expect(os.MkdirAll(baseDir, 0755)).To(Succeed())
+		Expect(os.WriteFile(filepath.Join(baseDir, "prompt.md"), []byte("hello"), 0644)).To(Succeed())
+
+		cfg := &phaseconfig.Config{
+			Name: "review",
+			Steps: []phaseconfig.Step{
+				{Name: "analyze", Template: "prompt.md"},
+			},
+		}
+
+		_, err = phaserunner.Run(context.Background(), phaserunner.Options{
+			Config:    cfg,
+			OutputDir: outputDir,
+			Client:    usageClient{},
+			BaseDir:   baseDir,
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		data, err := os.ReadFile(filepath.Join(outputDir, "costs.json"))
+		Expect(err).NotTo(HaveOccurred())
+		var recs []phaserunner.StepCost
+		Expect(json.Unmarshal(data, &recs)).To(Succeed())
+		Expect(recs).To(HaveLen(1))
+		Expect(recs[0].Step).To(Equal("analyze"))
+		Expect(recs[0].Model).To(Equal("claude-sonnet-5"))
+		Expect(recs[0].CostUSD).To(Equal(0.25))
+		Expect(recs[0].InputTokens).To(Equal(int64(100)))
+		Expect(recs[0].OutputTokens).To(Equal(int64(50)))
+		Expect(recs[0].CacheReadTokens).To(Equal(int64(10)))
+		Expect(recs[0].CacheCreationTokens).To(Equal(int64(5)))
+		Expect(recs[0].Turns).To(Equal(4))
+		Expect(recs[0].DurationMS).To(Equal(1200))
+	})
+})

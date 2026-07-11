@@ -60,6 +60,10 @@ var _ = Describe("status", func() {
 						ghttp.VerifyRequest("GET", "/api/v1/user"),
 						ghttp.RespondWithJSONEncoded(200, map[string]any{"team": "test"}),
 					),
+					ghttp.CombineHandlers(
+						ghttp.VerifyRequest("GET", "/api/v1/agent/user-credentials"),
+						ghttp.RespondWithJSONEncoded(200, []map[string]any{}),
+					),
 				)
 			})
 

@@ -15,6 +15,8 @@ import (
 	"github.com/concourse/concourse/agent/api/feedback"
 	"github.com/concourse/concourse/agent/api/principals"
 	"github.com/concourse/concourse/agent/api/reviews"
+	"github.com/concourse/concourse/agent/budget"
+	"github.com/concourse/concourse/agent/credentials"
 	"github.com/concourse/concourse/atc/api"
 	"github.com/concourse/concourse/atc/api/accessor"
 	"github.com/concourse/concourse/atc/api/accessor/accessorfakes"
@@ -231,6 +233,9 @@ var _ = BeforeEach(func() {
 		reviews.NewMemoryStore(),
 		principalsStore,
 		"test-agent-review-publish-token",
+		credentials.NewMemoryBackend(),
+		budget.NewMemoryLedger(),
+		0,
 	)
 
 	Expect(err).NotTo(HaveOccurred())

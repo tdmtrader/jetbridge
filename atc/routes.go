@@ -124,6 +124,12 @@ const (
 	ClassifyAgentVerdict     = "ClassifyAgentVerdict"
 	GetAgentReviewFindings   = "GetAgentReviewFindings"
 
+	SetAgentUserCredential       = "SetAgentUserCredential"
+	GetAgentUserCredentialStatus = "GetAgentUserCredentialStatus"
+	DeleteAgentUserCredential    = "DeleteAgentUserCredential"
+	GetAgentCostRollup           = "GetAgentCostRollup"
+	SubmitAgentCostRecord        = "SubmitAgentCostRecord"
+
 	SubmitAgentReview    = "SubmitAgentReview"
 	GetBuildAgentReviews = "GetBuildAgentReviews"
 	ListTeamAgentReviews = "ListTeamAgentReviews"
@@ -260,6 +266,12 @@ var Routes = rata.Routes([]rata.Route{
 	{Path: "/api/v1/agent/feedback", Method: "POST", Name: SubmitAgentFeedback},
 	{Path: "/api/v1/agent/feedback", Method: "GET", Name: GetAgentFeedback},
 	{Path: "/api/v1/agent/reviews/:commit/findings", Method: "GET", Name: GetAgentReviewFindings},
+
+	{Path: "/api/v1/agent/user-credentials", Method: "PUT", Name: SetAgentUserCredential},
+	{Path: "/api/v1/agent/user-credentials", Method: "GET", Name: GetAgentUserCredentialStatus},
+	{Path: "/api/v1/agent/user-credentials/:kind", Method: "DELETE", Name: DeleteAgentUserCredential},
+	{Path: "/api/v1/agent/costs", Method: "GET", Name: GetAgentCostRollup},
+	{Path: "/api/v1/agent/costs", Method: "POST", Name: SubmitAgentCostRecord},
 
 	{Path: "/api/v1/agent/reviews", Method: "POST", Name: SubmitAgentReview},
 	{Path: "/api/v1/builds/:build_id/agent-reviews", Method: "GET", Name: GetBuildAgentReviews},

@@ -7,6 +7,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/concourse/concourse/agent/api/costs"
+	"github.com/concourse/concourse/agent/credentials"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/go-concourse/concourse"
 )
@@ -22,6 +24,33 @@ type FakeClient struct {
 	}
 	abortBuildReturnsOnCall map[int]struct {
 		result1 error
+	}
+	AgentCostRollupStub        func(string, string, string) (costs.RollupResponse, error)
+	agentCostRollupMutex       sync.RWMutex
+	agentCostRollupArgsForCall []struct {
+		arg1 string
+		arg2 string
+		arg3 string
+	}
+	agentCostRollupReturns struct {
+		result1 costs.RollupResponse
+		result2 error
+	}
+	agentCostRollupReturnsOnCall map[int]struct {
+		result1 costs.RollupResponse
+		result2 error
+	}
+	AgentUserCredentialStatusStub        func() ([]credentials.Credential, error)
+	agentUserCredentialStatusMutex       sync.RWMutex
+	agentUserCredentialStatusArgsForCall []struct {
+	}
+	agentUserCredentialStatusReturns struct {
+		result1 []credentials.Credential
+		result2 error
+	}
+	agentUserCredentialStatusReturnsOnCall map[int]struct {
+		result1 []credentials.Credential
+		result2 error
 	}
 	BuildStub        func(string) (atc.Build, bool, error)
 	buildMutex       sync.RWMutex
@@ -104,6 +133,18 @@ type FakeClient struct {
 		result1 error
 	}
 	clearWallReturnsOnCall map[int]struct {
+		result1 error
+	}
+	DeleteAgentUserCredentialStub        func(string, bool) error
+	deleteAgentUserCredentialMutex       sync.RWMutex
+	deleteAgentUserCredentialArgsForCall []struct {
+		arg1 string
+		arg2 bool
+	}
+	deleteAgentUserCredentialReturns struct {
+		result1 error
+	}
+	deleteAgentUserCredentialReturnsOnCall map[int]struct {
 		result1 error
 	}
 	FindTeamStub        func(string) (concourse.Team, error)
@@ -257,6 +298,17 @@ type FakeClient struct {
 		result1 *atc.Worker
 		result2 error
 	}
+	SetAgentUserCredentialStub        func(credentials.PutRequest) error
+	setAgentUserCredentialMutex       sync.RWMutex
+	setAgentUserCredentialArgsForCall []struct {
+		arg1 credentials.PutRequest
+	}
+	setAgentUserCredentialReturns struct {
+		result1 error
+	}
+	setAgentUserCredentialReturnsOnCall map[int]struct {
+		result1 error
+	}
 	SetWallStub        func(atc.Wall) error
 	setWallMutex       sync.RWMutex
 	setWallArgsForCall []struct {
@@ -364,6 +416,128 @@ func (fake *FakeClient) AbortBuildReturnsOnCall(i int, result1 error) {
 	fake.abortBuildReturnsOnCall[i] = struct {
 		result1 error
 	}{result1}
+}
+
+func (fake *FakeClient) AgentCostRollup(arg1 string, arg2 string, arg3 string) (costs.RollupResponse, error) {
+	fake.agentCostRollupMutex.Lock()
+	ret, specificReturn := fake.agentCostRollupReturnsOnCall[len(fake.agentCostRollupArgsForCall)]
+	fake.agentCostRollupArgsForCall = append(fake.agentCostRollupArgsForCall, struct {
+		arg1 string
+		arg2 string
+		arg3 string
+	}{arg1, arg2, arg3})
+	stub := fake.AgentCostRollupStub
+	fakeReturns := fake.agentCostRollupReturns
+	fake.recordInvocation("AgentCostRollup", []interface{}{arg1, arg2, arg3})
+	fake.agentCostRollupMutex.Unlock()
+	if stub != nil {
+		return stub(arg1, arg2, arg3)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2
+	}
+	return fakeReturns.result1, fakeReturns.result2
+}
+
+func (fake *FakeClient) AgentCostRollupCallCount() int {
+	fake.agentCostRollupMutex.RLock()
+	defer fake.agentCostRollupMutex.RUnlock()
+	return len(fake.agentCostRollupArgsForCall)
+}
+
+func (fake *FakeClient) AgentCostRollupCalls(stub func(string, string, string) (costs.RollupResponse, error)) {
+	fake.agentCostRollupMutex.Lock()
+	defer fake.agentCostRollupMutex.Unlock()
+	fake.AgentCostRollupStub = stub
+}
+
+func (fake *FakeClient) AgentCostRollupArgsForCall(i int) (string, string, string) {
+	fake.agentCostRollupMutex.RLock()
+	defer fake.agentCostRollupMutex.RUnlock()
+	argsForCall := fake.agentCostRollupArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2, argsForCall.arg3
+}
+
+func (fake *FakeClient) AgentCostRollupReturns(result1 costs.RollupResponse, result2 error) {
+	fake.agentCostRollupMutex.Lock()
+	defer fake.agentCostRollupMutex.Unlock()
+	fake.AgentCostRollupStub = nil
+	fake.agentCostRollupReturns = struct {
+		result1 costs.RollupResponse
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeClient) AgentCostRollupReturnsOnCall(i int, result1 costs.RollupResponse, result2 error) {
+	fake.agentCostRollupMutex.Lock()
+	defer fake.agentCostRollupMutex.Unlock()
+	fake.AgentCostRollupStub = nil
+	if fake.agentCostRollupReturnsOnCall == nil {
+		fake.agentCostRollupReturnsOnCall = make(map[int]struct {
+			result1 costs.RollupResponse
+			result2 error
+		})
+	}
+	fake.agentCostRollupReturnsOnCall[i] = struct {
+		result1 costs.RollupResponse
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeClient) AgentUserCredentialStatus() ([]credentials.Credential, error) {
+	fake.agentUserCredentialStatusMutex.Lock()
+	ret, specificReturn := fake.agentUserCredentialStatusReturnsOnCall[len(fake.agentUserCredentialStatusArgsForCall)]
+	fake.agentUserCredentialStatusArgsForCall = append(fake.agentUserCredentialStatusArgsForCall, struct {
+	}{})
+	stub := fake.AgentUserCredentialStatusStub
+	fakeReturns := fake.agentUserCredentialStatusReturns
+	fake.recordInvocation("AgentUserCredentialStatus", []interface{}{})
+	fake.agentUserCredentialStatusMutex.Unlock()
+	if stub != nil {
+		return stub()
+	}
+	if specificReturn {
+		return ret.result1, ret.result2
+	}
+	return fakeReturns.result1, fakeReturns.result2
+}
+
+func (fake *FakeClient) AgentUserCredentialStatusCallCount() int {
+	fake.agentUserCredentialStatusMutex.RLock()
+	defer fake.agentUserCredentialStatusMutex.RUnlock()
+	return len(fake.agentUserCredentialStatusArgsForCall)
+}
+
+func (fake *FakeClient) AgentUserCredentialStatusCalls(stub func() ([]credentials.Credential, error)) {
+	fake.agentUserCredentialStatusMutex.Lock()
+	defer fake.agentUserCredentialStatusMutex.Unlock()
+	fake.AgentUserCredentialStatusStub = stub
+}
+
+func (fake *FakeClient) AgentUserCredentialStatusReturns(result1 []credentials.Credential, result2 error) {
+	fake.agentUserCredentialStatusMutex.Lock()
+	defer fake.agentUserCredentialStatusMutex.Unlock()
+	fake.AgentUserCredentialStatusStub = nil
+	fake.agentUserCredentialStatusReturns = struct {
+		result1 []credentials.Credential
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeClient) AgentUserCredentialStatusReturnsOnCall(i int, result1 []credentials.Credential, result2 error) {
+	fake.agentUserCredentialStatusMutex.Lock()
+	defer fake.agentUserCredentialStatusMutex.Unlock()
+	fake.AgentUserCredentialStatusStub = nil
+	if fake.agentUserCredentialStatusReturnsOnCall == nil {
+		fake.agentUserCredentialStatusReturnsOnCall = make(map[int]struct {
+			result1 []credentials.Credential
+			result2 error
+		})
+	}
+	fake.agentUserCredentialStatusReturnsOnCall[i] = struct {
+		result1 []credentials.Credential
+		result2 error
+	}{result1, result2}
 }
 
 func (fake *FakeClient) Build(arg1 string) (atc.Build, bool, error) {
@@ -747,6 +921,68 @@ func (fake *FakeClient) ClearWallReturnsOnCall(i int, result1 error) {
 		})
 	}
 	fake.clearWallReturnsOnCall[i] = struct {
+		result1 error
+	}{result1}
+}
+
+func (fake *FakeClient) DeleteAgentUserCredential(arg1 string, arg2 bool) error {
+	fake.deleteAgentUserCredentialMutex.Lock()
+	ret, specificReturn := fake.deleteAgentUserCredentialReturnsOnCall[len(fake.deleteAgentUserCredentialArgsForCall)]
+	fake.deleteAgentUserCredentialArgsForCall = append(fake.deleteAgentUserCredentialArgsForCall, struct {
+		arg1 string
+		arg2 bool
+	}{arg1, arg2})
+	stub := fake.DeleteAgentUserCredentialStub
+	fakeReturns := fake.deleteAgentUserCredentialReturns
+	fake.recordInvocation("DeleteAgentUserCredential", []interface{}{arg1, arg2})
+	fake.deleteAgentUserCredentialMutex.Unlock()
+	if stub != nil {
+		return stub(arg1, arg2)
+	}
+	if specificReturn {
+		return ret.result1
+	}
+	return fakeReturns.result1
+}
+
+func (fake *FakeClient) DeleteAgentUserCredentialCallCount() int {
+	fake.deleteAgentUserCredentialMutex.RLock()
+	defer fake.deleteAgentUserCredentialMutex.RUnlock()
+	return len(fake.deleteAgentUserCredentialArgsForCall)
+}
+
+func (fake *FakeClient) DeleteAgentUserCredentialCalls(stub func(string, bool) error) {
+	fake.deleteAgentUserCredentialMutex.Lock()
+	defer fake.deleteAgentUserCredentialMutex.Unlock()
+	fake.DeleteAgentUserCredentialStub = stub
+}
+
+func (fake *FakeClient) DeleteAgentUserCredentialArgsForCall(i int) (string, bool) {
+	fake.deleteAgentUserCredentialMutex.RLock()
+	defer fake.deleteAgentUserCredentialMutex.RUnlock()
+	argsForCall := fake.deleteAgentUserCredentialArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2
+}
+
+func (fake *FakeClient) DeleteAgentUserCredentialReturns(result1 error) {
+	fake.deleteAgentUserCredentialMutex.Lock()
+	defer fake.deleteAgentUserCredentialMutex.Unlock()
+	fake.DeleteAgentUserCredentialStub = nil
+	fake.deleteAgentUserCredentialReturns = struct {
+		result1 error
+	}{result1}
+}
+
+func (fake *FakeClient) DeleteAgentUserCredentialReturnsOnCall(i int, result1 error) {
+	fake.deleteAgentUserCredentialMutex.Lock()
+	defer fake.deleteAgentUserCredentialMutex.Unlock()
+	fake.DeleteAgentUserCredentialStub = nil
+	if fake.deleteAgentUserCredentialReturnsOnCall == nil {
+		fake.deleteAgentUserCredentialReturnsOnCall = make(map[int]struct {
+			result1 error
+		})
+	}
+	fake.deleteAgentUserCredentialReturnsOnCall[i] = struct {
 		result1 error
 	}{result1}
 }
@@ -1463,6 +1699,67 @@ func (fake *FakeClient) SaveWorkerReturnsOnCall(i int, result1 *atc.Worker, resu
 		result1 *atc.Worker
 		result2 error
 	}{result1, result2}
+}
+
+func (fake *FakeClient) SetAgentUserCredential(arg1 credentials.PutRequest) error {
+	fake.setAgentUserCredentialMutex.Lock()
+	ret, specificReturn := fake.setAgentUserCredentialReturnsOnCall[len(fake.setAgentUserCredentialArgsForCall)]
+	fake.setAgentUserCredentialArgsForCall = append(fake.setAgentUserCredentialArgsForCall, struct {
+		arg1 credentials.PutRequest
+	}{arg1})
+	stub := fake.SetAgentUserCredentialStub
+	fakeReturns := fake.setAgentUserCredentialReturns
+	fake.recordInvocation("SetAgentUserCredential", []interface{}{arg1})
+	fake.setAgentUserCredentialMutex.Unlock()
+	if stub != nil {
+		return stub(arg1)
+	}
+	if specificReturn {
+		return ret.result1
+	}
+	return fakeReturns.result1
+}
+
+func (fake *FakeClient) SetAgentUserCredentialCallCount() int {
+	fake.setAgentUserCredentialMutex.RLock()
+	defer fake.setAgentUserCredentialMutex.RUnlock()
+	return len(fake.setAgentUserCredentialArgsForCall)
+}
+
+func (fake *FakeClient) SetAgentUserCredentialCalls(stub func(credentials.PutRequest) error) {
+	fake.setAgentUserCredentialMutex.Lock()
+	defer fake.setAgentUserCredentialMutex.Unlock()
+	fake.SetAgentUserCredentialStub = stub
+}
+
+func (fake *FakeClient) SetAgentUserCredentialArgsForCall(i int) credentials.PutRequest {
+	fake.setAgentUserCredentialMutex.RLock()
+	defer fake.setAgentUserCredentialMutex.RUnlock()
+	argsForCall := fake.setAgentUserCredentialArgsForCall[i]
+	return argsForCall.arg1
+}
+
+func (fake *FakeClient) SetAgentUserCredentialReturns(result1 error) {
+	fake.setAgentUserCredentialMutex.Lock()
+	defer fake.setAgentUserCredentialMutex.Unlock()
+	fake.SetAgentUserCredentialStub = nil
+	fake.setAgentUserCredentialReturns = struct {
+		result1 error
+	}{result1}
+}
+
+func (fake *FakeClient) SetAgentUserCredentialReturnsOnCall(i int, result1 error) {
+	fake.setAgentUserCredentialMutex.Lock()
+	defer fake.setAgentUserCredentialMutex.Unlock()
+	fake.SetAgentUserCredentialStub = nil
+	if fake.setAgentUserCredentialReturnsOnCall == nil {
+		fake.setAgentUserCredentialReturnsOnCall = make(map[int]struct {
+			result1 error
+		})
+	}
+	fake.setAgentUserCredentialReturnsOnCall[i] = struct {
+		result1 error
+	}{result1}
 }
 
 func (fake *FakeClient) SetWall(arg1 atc.Wall) error {
