@@ -201,6 +201,8 @@ replace github.com/concourse/concourse/agent/schema => ../agent/schema
 
 Produces the §5 additions (all consumers in waves 3–5 import these) and the conventions-bullet status mapping (`pass→ok`, `fail→failed`, `error→error`, `abstain→failed` + abstained flag).
 
+> **Amended 2026-07-10 (PARK-V2 seam delta §F).** The schema surface this task lands is extended additively by Task 21: wire status `parked` (`StatusParked`/`RunStatusParked`, `ThreeWayStatus` maps `parked → parked`), `session_id` on `Results` and `StepEndData`, `resumed`/`replayed` on `StepStartData`, and two new event types `step.park`/`step.resume`. Nothing in this task's code changes — implement it as written; Task 21 carries the additions so already-landed code needs no rebase.
+
 **Files:**
 - Create: `agent/schema/status.go`
 - Create: `agent/schema/event_payloads.go`
@@ -554,6 +556,8 @@ type RunMetrics struct {
 ### Task 6: `agent_run_metrics` migration (1773106060)
 
 DDL exactly per §1.8. Migration numbers come from the agent-step block 1773106060–69.
+
+> **Amended 2026-07-10 (PARK-V2 seam delta §B6/§F).** The `status` CHECK below is widened to include `'parked'` and the table gains a `session_id` column by the additive migration `1773106062` (Task 21) — do NOT edit this migration in place. Task 8's factory column lists (upsert + scan) must include `session_id` once Task 21 lands (one-line extensions, covered by the factory suite). The agent-step block also owns `1773106061` (`agent_run_step_state`, Task 25).
 
 **Files:**
 - Create: `atc/db/migration/migrations/1773106060_create_agent_run_metrics.up.sql`
@@ -1888,6 +1892,8 @@ The core execution path, modeled line-by-line on `TaskStep.run`. Reuses the `Tas
 
 **Task 11B is a hard prerequisite** (amended 2026-07-09, runtime-seams findings F15/F21): step 7 below populates `ContainerSpec.SidecarEnv`/`SidecarSecretEnv` — the §8.1 "set by the owning exec implementation" assertion made real — and normalizes each MCP sidecar's unset `WorkingDir` to the workspace artifact's mount path (§8.5 CWD convention).
 
+> **Amended 2026-07-10 (PARK-V2 seam delta §D, decision 32).** Step 4's `budgetChecker.StepSlice` call is now load-bearing for continuations too: `StepSlice(ticketID, sliceUSD)` is a **resolution** (min of slice and ticket remaining), NOT a reservation, and it MUST run at the start of **every** execution of the step — a continuation build re-resolves naturally and, because the park-exit partial spend was already ledgered (Task 26), the re-resolved slice is automatically tighter. Never cache the resolved slice across executions and never skip the call on a resume. Task 26 adds the continuation consult (`agent_run_step_state` lookup, replay/resume/cold) and the exit-86 distinguished end around this task's `run`; implement this task as written.
+
 **Files:**
 - Create: `atc/exec/agent_step.go`
 - Test: `atc/exec/agent_step_test.go`
@@ -2221,6 +2227,8 @@ func setSidecarSecretRef(spec *runtime.ContainerSpec, sidecar, envName string, r
 ### Task 13: `exec.AgentStep` — server-side flight-recorder ingestion
 
 The ingestion-before-GC guarantee: ingestion runs synchronously inside `Run` before the step returns, reading from the just-registered `flight` output volume via `Streamer.StreamFile` (the DaemonSet fabric path — same seam `LoadVarStep` uses at load_var_step.go:138). Tolerant of crashed agents: missing/malformed files or a stream without `step.end` produce a `status=error` row; ingest failures never fail the step; a fire-and-forget ledger record lands cost in `agent_cost_ledger`.
+
+> **Amended 2026-07-10 (PARK-V2 seam delta §B6/§F).** Task 26 extends `ingestFlightRecorder` additively: `rm.SessionID` is read from `results.json`, and a stream ending in `step.park` with no `step.end` is the ONE sanctioned exception to the missing-`step.end`-is-error rule — it ingests as status `parked` (partial spend still ledgered through the normal F3 `inserted` gate; a continuation build has a new `build_id`, so its row never collides with the park-exit row). Implement this task as written; the parked branch lands in Task 26.
 
 Three resume/timeout invariants this task must hold (design-review findings F3/F4, 2026-07-09; final-review finding F24, 2026-07-09):
 - **F3 — ledger charged exactly once.** The metrics row is idempotent under `ON CONFLICT (build_id, plan_id)`, but `agent_cost_ledger` is append-only with no dedup key (§1.4), so a web-restart resume (which re-runs the whole `Step.Run`: re-attach → `process.Wait` → re-register outputs → re-ingest) would double-append the cost row and inflate spend against both the per-ticket budget and the global daily cap. The ledger append is therefore gated on a first-insert discriminator returned by the metrics upsert (`Store.UpsertReturningInserted`, Task 7/8), reusing the `(build_id, plan_id)` key as the single dedup authority — no ledger schema change, and the gateway's own `source='gateway'` rows for the same build/plan are untouched.
@@ -2764,6 +2772,8 @@ func (factory *coreStepFactory) AgentStep(
 ### Task 15: `agent-runner` binary
 
 Deterministic pod entrypoint: waits for declared MCP sidecars, invokes the claude CLI, writes the flight recorder. Lives in the main module (`agent/runner` package + thin `cmd/agent-runner`). CLI envelope parsing follows `ci-agent/llm/result.go` (cost_usd, usage, num_turns, is_error — with `total_cost_usd` fallback for newer CLIs).
+
+> **Amended 2026-07-10 (PARK-V2 seam delta §§B/D/F/G).** Two of this task's decisions are superseded by the PARK-V2 tasks and must NOT be re-implemented later as written here: (1) step 4's `--output-format json` becomes `--output-format stream-json` teed line-by-line to stdout with a tee-only truncation guard, and step 5's "parse the last non-empty line" becomes "capture the terminal `result` stream event" — Task 23; (2) the runner additionally gains the `flight/park.json` watcher → SIGTERM → grace → SIGKILL → exit **86** park-exit path, session-JSONL capture to `flight/session.jsonl` at EVERY exit, and the `--resume` continuation mode (`AGENT_SESSION_ID`/`AGENT_SESSION_FILE`, frozen `runner.ContinuationPrompt`) — Task 24, gated on the Task 20 empirical pin. `cliEnvelope` below gains `SessionID string \`json:"session_id"\`` in Task 23. If this task is already landed, Tasks 23/24 amend it in place; if not yet started, still implement it as written first — the PARK-V2 tasks are deliberately expressed as diffs against this baseline.
 
 **Files:**
 - Create: `agent/runner/runner.go`
@@ -3336,6 +3346,1231 @@ Replaces the build-from-source shell job in the live theborg/cicd `concourse` pi
 
 ---
 
+## PARK-V2 — exit-and-respawn for long human-waits (added 2026-07-10)
+
+**Provenance:** the frozen PARK-V2 seam delta (2026-07-10; amends the 2026-07-09 "SSE transport & park hardening" entry; implements FLOWS.md Part 2 §P2.5 recommendations #1–#4 — read that section first, it is the agent-model audit that motivates every task below; contracts decisions 30–32). Owner-approved: (1) exit-and-respawn hybrid for long parks with the non-terminal `awaiting_human` RUN state decided pre-freeze; (2) stream-json live watching; (3) session JSONL + session_id capture; (4) parked UI badge. **The TICKET enum is NOT reopened** — a parked ticket stays `running`; parked-ness surfaces via run state + open questions (delta §H, owned by 03/08).
+
+**This plan owns the runner/exec/schema halves.** Co-signed halves live elsewhere and are NOT implemented here: `awaiting_human` run status + lifecycler entry/exit + park-timeout expiry (03-pipeline-runs, migration `1773106032`); the `--agent-short-park-max` web flag's primary definition (11-dispatch, Task 13); sidecar threshold timer + atomic `flight/park.json` writer + checkpoint-client exit 3 + `question_hash` find-or-create dedup (08-platform-mcp-hitl, migration `1773106072`); `reconcileAwaitingRuns` + principal/secret re-mint + continuation-build trigger (11-dispatch, Task 11c); `SecretAttacher.Attach` create-or-update + `RunPrincipalTimeout` (02-credentials-and-budgets); run-status API string + `fly runs` + Elm amber badge (03). The runner side treats `flight/park.json` as an opaque signal file with the delta §B1 payload; the exec side treats the OPEN `agent_run_questions` row as the platform's authority — the build status is only a carrier (delta §B5).
+
+**Ordering and the gate:** Task 20 (the delta §I empirical pin) is the **FIRST deliverable of the PARK-V2 build and gates Tasks 24–27**. Tasks 21–23 (accommodations #1/#2: stream-json tee, session capture, additive schema) and Task 25 (additive, inert schema) land regardless of the pin's outcome. Pin RED ⇒ ship with `--agent-short-park-max=0` (pure PARK-V1), mark Tasks 24/26/27 deferred in this file, and record the red result in §11 — zero schema waste, everything landed stays additive and inert at 0.
+
+---
+
+### Task 20: PARK-V2 empirical pin — `TestLiveClaudeParkExitResume` (FIRST deliverable; gates Tasks 24–27)
+
+The F13-style gating test (delta §I, mirrors 08 Task 18b's role): does the pinned claude CLI, SIGTERM'd mid-`ask_human`, leave a resumable session JSONL whose restored copy — under a fresh HOME/cwd, against a fresh answered stub sidecar — makes `claude -p --resume <id>` re-issue the pending tools/call and complete? Plain Go, `//go:build live_claude`, needs the pinned CLI on PATH + `CLAUDE_CODE_OAUTH_TOKEN` (or `ANTHROPIC_API_KEY`); **no cluster, no postgres**.
+
+Mechanism assumptions are split VERIFIED-IN-DOCS vs NEEDS-EMPIRICAL-PIN in the delta; this test answers pins **P1** (stream-json flag shape / `--verbose` requirement / result-event field parity incl. session_id+cost), **P2** (cwd-slug derivation + incremental JSONL append — pending `tool_use` on disk before the call resolves), **P3** (SIGTERM behavior — prompt exit, envelope optional), **P4** (THE GATE — resume re-issues the pending tools/call; whether the resumed envelope's session_id equals or forks the original), **P5** (resumed envelope cost per-invocation vs session-cumulative), **P6** (tool availability on resume comes from the live `--mcp-config`, not the transcript).
+
+**Files:**
+- Create: `agent/runner/continuation.go` (frozen constants shared by test + Task 24)
+- Create: `agent/runner/live_claude_resume_test.go`
+
+**Steps:**
+
+- [ ] Write `agent/runner/continuation.go`:
+
+```go
+package runner
+
+import "strings"
+
+// ContinuationPrompt is the FROZEN prompt for every `claude -p --resume`
+// continuation invocation (PARK-V2 delta §D). Do not edit without a contracts
+// amendment — the empirical pin (TestLiveClaudeParkExitResume) verifies this
+// exact string makes the resumed model re-issue its pending tool call.
+const ContinuationPrompt = "Your wait for a human has ended and the question has been answered. Re-issue your pending platform-mcp tool call to receive the answer, then continue your task. If your step's goal is already complete, finish now."
+
+// ExitAwaitingHuman is the frozen agent-runner park-exit code (delta §B2):
+// the step ended because a human-wait crossed --agent-short-park-max, not
+// because the agent finished or failed. exec.AgentStep matches on it.
+const ExitAwaitingHuman = 86
+
+// CwdSlug derives the claude CLI's per-project session directory name for a
+// working directory (~/.claude/projects/<slug>/<session-id>.jsonl).
+// Empirical pin P2 verifies this rule at the pinned CLI version — if the
+// pinned CLI derives it differently, fix THIS function (test and runner both
+// call it, so they cannot drift apart).
+func CwdSlug(dir string) string {
+	return strings.ReplaceAll(dir, "/", "-")
+}
+```
+
+- [ ] Write `agent/runner/live_claude_resume_test.go`:
+
+```go
+//go:build live_claude
+
+package runner_test
+
+// TestLiveClaudeParkExitResume is THE PARK-V2 gating pin (frozen delta §I).
+// Needs the pinned claude CLI (the version in deploy/agent-runner/Dockerfile)
+// on PATH and CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY in the env.
+//
+//	go test -tags live_claude -run '^TestLiveClaudeParkExitResume$' -v \
+//	  -count=1 -timeout 15m ./agent/runner/
+//
+// GREEN ⇒ Tasks 24–27 proceed. RED ⇒ ship --agent-short-park-max=0 (pure
+// PARK-V1); Tasks 21–23/25 land anyway (additive + inert). Either way paste
+// the run output + the P1–P6 answers into this plan's §11 amendment log.
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"sync"
+	"syscall"
+	"testing"
+	"time"
+
+	"github.com/concourse/concourse/agent/runner"
+)
+
+// stubMCP is a minimal streamable-HTTP MCP server exposing one tool,
+// ask_human. In parked mode a tools/call blocks with SSE heartbeats (the
+// PARK-V1 short-park behavior); in answered mode it returns the answer
+// immediately (the §E find-or-create fast path a fresh sidecar shows a
+// resumed agent). The JSON-RPC-over-HTTP shape here is the P1/P4 measurement
+// instrument, not a contract — adjust to what the PINNED CLI actually speaks
+// if the initialize handshake fails (claude --debug shows the exchange).
+type stubMCP struct {
+	mu       sync.Mutex
+	askCalls int
+	answered bool
+	answer   string
+}
+
+func (s *stubMCP) calls() int { s.mu.Lock(); defer s.mu.Unlock(); return s.askCalls }
+
+func (s *stubMCP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	body, _ := io.ReadAll(r.Body)
+	var req struct {
+		ID     json.RawMessage `json:"id"`
+		Method string          `json:"method"`
+	}
+	json.Unmarshal(body, &req)
+	reply := func(result any) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": result})
+	}
+	switch req.Method {
+	case "initialize":
+		reply(map[string]any{
+			"protocolVersion": "2024-11-05",
+			"capabilities":    map[string]any{"tools": map[string]any{}},
+			"serverInfo":      map[string]any{"name": "stub-platform", "version": "0.0.1"},
+		})
+	case "notifications/initialized":
+		w.WriteHeader(http.StatusAccepted)
+	case "tools/list":
+		reply(map[string]any{"tools": []map[string]any{{
+			"name":        "ask_human",
+			"description": "Ask the human operator a question and wait for the answer.",
+			"inputSchema": map[string]any{
+				"type":       "object",
+				"properties": map[string]any{"question": map[string]any{"type": "string"}},
+				"required":   []string{"question"},
+			},
+		}}})
+	case "tools/call":
+		s.mu.Lock()
+		s.askCalls++
+		answered := s.answered
+		s.mu.Unlock()
+		if answered {
+			reply(map[string]any{"content": []map[string]any{{"type": "text", "text": s.answer}}})
+			return
+		}
+		// PARK: hold the call open, heartbeating, until the client
+		// (SIGTERM'd claude) disconnects — delta §B3.
+		w.Header().Set("Content-Type", "text/event-stream")
+		fl, _ := w.(http.Flusher)
+		for {
+			select {
+			case <-r.Context().Done():
+				return
+			case <-time.After(5 * time.Second):
+				fmt.Fprint(w, ": heartbeat\n\n")
+				if fl != nil {
+					fl.Flush()
+				}
+			}
+		}
+	default:
+		reply(map[string]any{})
+	}
+}
+
+func writeMCPConfig(t *testing.T, dir, url string) string {
+	t.Helper()
+	path := filepath.Join(dir, "mcp.json")
+	cfg := map[string]any{"mcpServers": map[string]any{
+		"platform": map[string]any{"type": "http", "url": url},
+	}}
+	raw, _ := json.Marshal(cfg)
+	if err := os.WriteFile(path, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// findSessionJSONL globs HOME/.claude/projects/*/*.jsonl and returns the
+// newest file plus its session id (the basename). P2: the file must exist
+// and grow incrementally while claude runs.
+func findSessionJSONL(t *testing.T, home string) (string, string) {
+	t.Helper()
+	matches, err := filepath.Glob(filepath.Join(home, ".claude", "projects", "*", "*.jsonl"))
+	if err != nil || len(matches) == 0 {
+		t.Fatalf("no session JSONL under %s/.claude/projects (P2 RED): %v", home, err)
+	}
+	newest := matches[0]
+	var newestMod time.Time
+	for _, m := range matches {
+		if fi, err := os.Stat(m); err == nil && fi.ModTime().After(newestMod) {
+			newest, newestMod = m, fi.ModTime()
+		}
+	}
+	return newest, strings.TrimSuffix(filepath.Base(newest), ".jsonl")
+}
+
+// assertPendingToolUse asserts the transcript's LAST assistant message
+// carries an unresolved ask_human tool_use — the delta's transcript-safety
+// claim (P2): the assistant message with the pending call is on disk BEFORE
+// the MCP call resolves, so even SIGKILL cannot lose it.
+func assertPendingToolUse(t *testing.T, path string) {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lastAssistant string
+	for _, line := range strings.Split(string(raw), "\n") {
+		if strings.Contains(line, `"type":"assistant"`) || strings.Contains(line, `"role":"assistant"`) {
+			lastAssistant = line
+		}
+	}
+	if !strings.Contains(lastAssistant, "tool_use") || !strings.Contains(lastAssistant, "ask_human") {
+		t.Fatalf("last assistant message lacks the pending ask_human tool_use (P2 RED):\n%s", lastAssistant)
+	}
+}
+
+func TestLiveClaudeParkExitResume(t *testing.T) {
+	if _, err := exec.LookPath("claude"); err != nil {
+		t.Skip("claude CLI not on PATH")
+	}
+
+	stub := &stubMCP{answer: "ANSWER: option B — proceed."}
+	srv := httptest.NewServer(stub)
+	defer srv.Close()
+
+	// ---- (1) park: headless claude forced into ask_human against the stub ----
+	home1, work1 := t.TempDir(), t.TempDir()
+	prompt := "Call the ask_human tool with the question 'Which option should I take, A or B?'. " +
+		"You MUST call the tool and wait for its answer before doing anything else. " +
+		"After you receive the answer, reply with exactly the option letter it names and stop."
+
+	cmd := exec.Command("claude", "-p", prompt,
+		"--output-format", "stream-json", "--verbose", // P1: --verbose requirement measured here
+		"--mcp-config", writeMCPConfig(t, work1, srv.URL),
+		"--allowedTools", "mcp__platform__ask_human",
+		"--dangerously-skip-permissions",
+	)
+	cmd.Dir = work1
+	cmd.Env = append(os.Environ(), "HOME="+home1, "IS_SANDBOX=1")
+	var out1 bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out1, &out1
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(3 * time.Minute)
+	for stub.calls() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("claude never called ask_human:\n%s", out1.String())
+		}
+		time.Sleep(time.Second)
+	}
+	time.Sleep(5 * time.Second) // let the pending tool_use JSONL append flush (P2)
+
+	// ---- (2) SIGTERM mid-call — the park-exit ----
+	cmd.Process.Signal(syscall.SIGTERM)
+	werr := cmd.Wait() // P3: exit code + final envelope deliberately NOT required
+	t.Logf("P3: SIGTERM wait err=%v; stream tail:\n%s", werr, tail(out1.String(), 2000))
+
+	sessionFile, sessionID := findSessionJSONL(t, home1)
+	assertPendingToolUse(t, sessionFile)
+
+	// ---- (3) fresh HOME/cwd + fresh ANSWERED stub; restore ONLY the JSONL ----
+	stub.mu.Lock()
+	stub.answered = true
+	callsAtResume := stub.askCalls
+	stub.mu.Unlock()
+
+	home2, work2 := t.TempDir(), t.TempDir()
+	dest := filepath.Join(home2, ".claude", "projects", runner.CwdSlug(work2), sessionID+".jsonl")
+	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(sessionFile)
+	if err := os.WriteFile(dest, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	resume := exec.Command("claude", "-p", runner.ContinuationPrompt,
+		"--resume", sessionID,
+		"--output-format", "stream-json", "--verbose",
+		"--mcp-config", writeMCPConfig(t, work2, srv.URL), // P6: tools come from the LIVE config
+		"--allowedTools", "mcp__platform__ask_human",
+		"--dangerously-skip-permissions",
+	)
+	resume.Dir = work2
+	resume.Env = append(os.Environ(), "HOME="+home2, "IS_SANDBOX=1")
+	out2, err := resume.CombinedOutput()
+	if err != nil {
+		t.Fatalf("P4 RED — resume invocation failed (fall back to --agent-short-park-max=0): %v\n%s", err, out2)
+	}
+
+	// ---- (4) the gate: the pending tools/call was RE-ISSUED and answered ----
+	if stub.calls() <= callsAtResume {
+		t.Fatalf("P4 RED — resumed claude never re-issued ask_human:\n%s", out2)
+	}
+
+	// Terminal result event of the resumed stream (P1 field parity).
+	var env struct {
+		Type         string  `json:"type"`
+		SessionID    string  `json:"session_id"`
+		CostUSD      float64 `json:"cost_usd"`
+		TotalCostUSD float64 `json:"total_cost_usd"`
+		NumTurns     int     `json:"num_turns"`
+		IsError      bool    `json:"is_error"`
+	}
+	for _, line := range strings.Split(string(out2), "\n") {
+		var probe struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal([]byte(line), &probe) == nil && probe.Type == "result" {
+			json.Unmarshal([]byte(line), &env)
+		}
+	}
+	if env.Type != "result" {
+		t.Fatalf("P1 RED — no terminal result event in resumed stream:\n%s", out2)
+	}
+	if env.IsError {
+		t.Fatalf("P4 RED — resumed claude ended in error:\n%s", out2)
+	}
+	if env.SessionID == sessionID {
+		t.Logf("P4: resume PRESERVES the session id (%s)", sessionID)
+	} else {
+		t.Logf("P4: resume FORKS the session id (%s -> %s) — agent_run_step_state.session_id follows the LATEST envelope id", sessionID, env.SessionID)
+	}
+	t.Logf("P5: resumed envelope cost_usd=%v total_cost_usd=%v num_turns=%d — compare against phase-1 partial usage to classify per-invocation vs session-cumulative", env.CostUSD, env.TotalCostUSD, env.NumTurns)
+}
+
+func tail(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return "…" + s[len(s)-n:]
+}
+```
+
+- [ ] Compile-check without the CLI: `go vet -tags live_claude ./agent/runner/` — expect clean (fix imports until it is).
+- [ ] Run against the real pinned CLI (check `deploy/agent-runner/Dockerfile` for the pin; install that exact version locally if the local `claude --version` differs):
+
+```
+go test -tags live_claude -run '^TestLiveClaudeParkExitResume$' -v -count=1 -timeout 15m ./agent/runner/
+```
+
+- [ ] **Record the pin results in §11 of this plan** (paste the `t.Logf` P1–P6 answers verbatim): P1 whether `--verbose` was required and the result-event field parity; P2 the actual cwd-slug rule (fix `runner.CwdSlug` if it differed) and the pending-tool_use-on-disk confirmation; P3 SIGTERM exit behavior + whether any final envelope appeared; P4 re-issue confirmed + session-id preserve-or-fork; P5 cost semantics (if **cumulative**, Task 26's continuation ingestion must subtract the park-exit partial before appending the ledger row — flag it there); P6 tool availability from the live config.
+- [ ] **GATE:** green ⇒ proceed with Tasks 21–27 in order. Red ⇒ still land Tasks 21–23 and 25 (additive/inert), set `CONCOURSE_AGENT_SHORT_PARK_MAX=0` in the theborg deploy values, mark Tasks 24/26/27 "deferred (pin red, <date>)" in this file, and record the failure mode in §11.
+- [ ] Commit: `git add agent/runner && git commit -m "test(agent-runner): PARK-V2 gating pin — live claude park-exit/resume proof (delta sI, pins P1-P6)"`
+
+---
+
+### Task 21: Contract addendum + `agent/schema` PARK-V2 surface + metrics migration 1773106062
+
+Accommodation #2's schema half (delta §F) plus the PARK-V2 env rows this plan owns. Lands regardless of the Task 20 outcome — all additive, inert until a sidecar ever writes `park.json`.
+
+**Files:**
+- Modify: `docs/superpowers/plans/agentic-platform/00-shared-contracts.md` (flight-output/flight-prev/exit-code contract block + §11 log; the §8.1 env rows and §5 parked-ingestion exception are PRE-APPLIED by the frozen delta — verify, don't re-append)
+- Modify: `agent/schema/results.go`, `agent/schema/status.go`, `agent/schema/event_payloads.go`, `agent/schema/metrics.go`
+- Create: `atc/db/migration/migrations/1773106062_agent_run_metrics_parked.up.sql` / `.down.sql`
+- Test: `agent/schema/results_test.go`, `status_test.go`, `event_payloads_test.go`, `metrics_test.go`
+
+**Steps:**
+
+- [ ] VERIFY (do not re-append) that the four §8.1 agent-step-owned env rows — `AGENT_PARK_EXIT_GRACE_SECONDS`, `AGENT_STREAM_LOG_MAX_LINE_BYTES`, `AGENT_SESSION_ID`, `AGENT_SESSION_FILE` — are already present in 00-shared-contracts.md §8.1: they were PRE-APPLIED by the frozen delta (2026-07-10). Re-appending them duplicates the table rows. The §5 ingestion-rule exception (a stream ending in `step.park` with no `step.end` ingests as status `parked`, not error) is likewise PRE-APPLIED in 00 §5 — verify it, don't re-add it.
+
+- [ ] The 00 edits that DO still land in this task (none of these exist in 00 yet — `flight-prev` has zero mentions there): add the flight-output/exit-code contract block to 00-shared-contracts.md (flight-output conventions, beside §5/§8.1):
+
+```markdown
+- **Flight-output contract additions (PARK-V2 §F):** `flight/session.jsonl` (the claude session JSONL, copied by the runner at EVERY exit — normal or park) and `results.json.session_id` are additive members of the flight output. `flight/park.json` (written by the platform sidecar at threshold-crossing, delta §B1) rides the ingested flight artifact as park-exit provenance. `flight-prev` joins `flight` as a reserved artifact name (the continuation's restored-flight INPUT; a user-declared artifact named `flight-prev` is a validation error).
+- **Exit-code registry:** agent-runner exit `86` = awaiting-human park-exit (frozen); checkpoint client exit `3` = parked-past-threshold (owned by 08).
+```
+
+  and log in §11 (recording the delta as a whole — the §8.1/§5 legs were pre-applied, this task lands the flight-output block): `- 2026-07-10 (agent-step, PARK-V2 seam delta): §8.1 gains AGENT_PARK_EXIT_GRACE_SECONDS / AGENT_STREAM_LOG_MAX_LINE_BYTES / AGENT_SESSION_ID / AGENT_SESSION_FILE; flight output gains session.jsonl + park.json + the flight-prev reserved name; §5 gains step.park/step.resume + the parked ingestion exception; §1.8 status CHECK gains 'parked' + session_id column (migration 1773106062); §1.14 agent_run_step_state (migration 1773106061). Consumers: dispatch renderer (continuation env), platform-mcp (park.json shape), scorecards (parked rows + (pipeline_run_id, step_name) cost aggregation note per decision 32).`
+- [ ] Extend `agent/schema/status_test.go` (new entry in the existing table) and `agent/schema/results_test.go` (parked round-trip):
+
+```go
+			Entry("parked", schema.StatusParked, schema.RunStatusParked, false),
+```
+
+```go
+	It("accepts status parked and round-trips session_id (PARK-V2 sF)", func() {
+		r := schema.Results{
+			SchemaVersion: "1.0", Status: schema.StatusParked, Confidence: 1,
+			Summary: "awaiting human answer to question 7", Artifacts: []schema.Artifact{},
+			SessionID: "abc-123",
+		}
+		Expect(r.Validate()).To(Succeed())
+		data, err := json.Marshal(r)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(string(data)).To(ContainSubstring(`"session_id":"abc-123"`))
+	})
+```
+
+- [ ] Add payload specs to `agent/schema/event_payloads_test.go`:
+
+```go
+	It("marshals StepParkData and StepResumeData with snake_case keys (PARK-V2)", func() {
+		data, err := json.Marshal(schema.StepParkData{
+			StepName: "implement", QuestionID: 7, WaitSecondsAtExit: 1800, SessionID: "abc-123",
+		})
+		Expect(err).ToNot(HaveOccurred())
+		Expect(string(data)).To(MatchJSON(`{"step_name":"implement","question_id":7,"wait_seconds_at_exit":1800,"session_id":"abc-123"}`))
+
+		data, err = json.Marshal(schema.StepResumeData{StepName: "implement", SessionID: "abc-123", QuestionID: 7})
+		Expect(err).ToNot(HaveOccurred())
+		Expect(string(data)).To(MatchJSON(`{"step_name":"implement","session_id":"abc-123","question_id":7}`))
+	})
+
+	It("omits the new optional StepStart/StepEnd keys when unset (additive)", func() {
+		data, _ := json.Marshal(schema.StepStartData{StepName: "s"})
+		Expect(string(data)).ToNot(ContainSubstring("resumed"))
+		Expect(string(data)).ToNot(ContainSubstring("replayed"))
+		data, _ = json.Marshal(schema.StepEndData{StepName: "s", Status: "ok", Summary: "x"})
+		Expect(string(data)).ToNot(ContainSubstring("session_id"))
+	})
+```
+
+- [ ] Run `cd agent/schema && go test ./...` — expect compile failure.
+- [ ] Implement, all additive:
+  - `results.go`: add `StatusParked Status = "parked"` to the const block + `validStatuses`; add `SessionID string \`json:"session_id,omitempty"\`` to `Results`; extend the `Validate` error string to `"must be one of pass, fail, error, abstain, parked"`.
+  - `status.go`: add `RunStatusParked = "parked"`; add `case StatusParked: return RunStatusParked, false` to `ThreeWayStatus`.
+  - `event_payloads.go`: add constants `EventStepPark EventType = "step.park"` and `EventStepResume EventType = "step.resume"`; add to `StepStartData` the fields `Resumed bool \`json:"resumed,omitempty"\`` and `Replayed bool \`json:"replayed,omitempty"\``; add to `StepEndData` the field `SessionID string \`json:"session_id,omitempty"\``; add:
+
+```go
+// StepParkData is emitted by the agent-runner/exec at a park-exit (PARK-V2
+// §B/§F): the step ended awaiting a human, the run enters awaiting_human.
+type StepParkData struct {
+	StepName          string `json:"step_name"`
+	QuestionID        int    `json:"question_id"`
+	WaitSecondsAtExit int    `json:"wait_seconds_at_exit"`
+	SessionID         string `json:"session_id"`
+}
+
+// StepResumeData is emitted by the agent-runner at a continuation start.
+type StepResumeData struct {
+	StepName   string `json:"step_name"`
+	SessionID  string `json:"session_id"`
+	QuestionID int    `json:"question_id,omitempty"`
+}
+```
+
+  - `metrics.go`: add `SessionID string \`json:"session_id,omitempty"\`` to `RunMetrics` (between `CostUSD` and `Results`).
+- [ ] Run `cd agent/schema && go test ./...` — expect pass.
+- [ ] Write `1773106062_agent_run_metrics_parked.up.sql` (agent-step migration block; the inline CHECK in 1773106060 gets the default constraint name `agent_run_metrics_status_check`):
+
+```sql
+ALTER TABLE agent_run_metrics DROP CONSTRAINT agent_run_metrics_status_check;
+ALTER TABLE agent_run_metrics ADD CONSTRAINT agent_run_metrics_status_check
+    CHECK (status IN ('ok','failed','error','parked'));
+ALTER TABLE agent_run_metrics ADD COLUMN session_id TEXT NOT NULL DEFAULT '';
+```
+
+  and `.down.sql`:
+
+```sql
+ALTER TABLE agent_run_metrics DROP COLUMN session_id;
+DELETE FROM agent_run_metrics WHERE status = 'parked';
+ALTER TABLE agent_run_metrics DROP CONSTRAINT agent_run_metrics_status_check;
+ALTER TABLE agent_run_metrics ADD CONSTRAINT agent_run_metrics_status_check
+    CHECK (status IN ('ok','failed','error'));
+```
+
+- [ ] Extend the Task 8 factory: add `session_id` to the upsert column list (+ `EXCLUDED.session_id` in the DO UPDATE), the scan list, and one round-trip assertion in the factory suite (`rm.SessionID = "abc-123"` in, same out).
+- [ ] Run `ginkgo ./atc/db/migration/ && ginkgo ./atc/db/` — expect pass.
+- [ ] Commit: `git add docs agent/schema atc/db && git commit -m "feat(agent-schema): PARK-V2 surface — parked status, session_id, step.park/step.resume events (delta sF, migration 1773106062)"`
+
+---
+
+### Task 22: ci-agent session_id capture — `CallResult.SessionID` + `step.end` payload
+
+Stop discarding the already-parsed envelope field (`ci-agent/llm/result.go:51` parses `session_id` into `cliEnvelope` and drops it). Lands regardless of the pin. Note the ci-agent module has its OWN schema import (agent/schema, post-Task 3) — no new types needed here.
+
+**Files:**
+- Modify: `ci-agent/llm/result.go`, `ci-agent/llm/result_test.go`
+- Modify: `ci-agent/phaserunner/runner.go` (the `step.end` emitter — `grep -n "EventStepEnd\|step.end" ci-agent/phaserunner/runner.go` for the exact payload-construction site)
+
+**Steps:**
+
+- [ ] Add to `ci-agent/llm/result_test.go`:
+
+```go
+func TestParseCLIEnvelopeCapturesSessionID(t *testing.T) {
+	res := ParseCLIEnvelope([]byte(`{"type":"result","result":"\"ok\"","session_id":"sess-42","cost_usd":0.1}`))
+	if res.SessionID != "sess-42" {
+		t.Fatalf("expected session id sess-42, got %q", res.SessionID)
+	}
+}
+```
+
+- [ ] Run `cd ci-agent && go test ./llm/` — expect compile failure (`res.SessionID` undefined).
+- [ ] In `ci-agent/llm/result.go`: add to `CallResult`:
+
+```go
+	// SessionID is the claude session id from the CLI envelope (PARK-V2 §F).
+	SessionID string
+```
+
+  and add `SessionID: env.SessionID,` to the `CallResult` literal in `ParseCLIEnvelope`.
+- [ ] In `ci-agent/phaserunner/runner.go`, add `"session_id"` (from the phase's `CallResult.SessionID`) to the `step.end` event payload it emits — matching the additive `StepEndData.SessionID` key from Task 21. Extend the nearest phaserunner test fixture asserting the `step.end` payload.
+- [ ] Run `cd ci-agent && go test ./... -count=1` — expect pass.
+- [ ] Commit: `git add ci-agent && git commit -m "feat(ci-agent): capture claude session_id into CallResult and step.end (PARK-V2 sF)"`
+
+---
+
+### Task 23: `agent-runner` — stream-json tee + session JSONL capture (accommodations #1 + #2)
+
+Delta §G + §F, runner half. Switch from `--output-format json` to `--output-format stream-json`: tee each NDJSON line to stdout (the existing build-event fabric — `fly watch` becomes a live transcript) with the `AGENT_STREAM_LOG_MAX_LINE_BYTES` truncation guard applied ON THE TEE ONLY; parse the stream to (a) accumulate best-effort usage/cost (the park-exit partial envelope, Task 24 consumes it) and (b) capture the terminal `result` event as THE envelope for `results.json`. Copy the session JSONL to `flight/session.jsonl` at EVERY exit. Lands regardless of the pin (pin P1 refines the flag shape — apply its recorded answer here).
+
+**Files:**
+- Create: `agent/runner/stream.go`
+- Modify: `agent/runner/runner.go`, `agent/runner/envelope.go`
+- Test: `agent/runner/runner_test.go`, `agent/runner/stream_test.go`
+
+**Steps:**
+
+- [ ] Write `agent/runner/stream_test.go`:
+
+```go
+package runner
+
+import (
+	"bytes"
+	"strings"
+	"testing"
+)
+
+func TestConsumeStreamTeesTruncatesAndCapturesEnvelope(t *testing.T) {
+	long := strings.Repeat("x", 100)
+	in := strings.Join([]string{
+		`{"type":"system","subtype":"init","session_id":"sess-1"}`,
+		`{"type":"assistant","message":{"usage":{"input_tokens":100,"output_tokens":50}},"session_id":"sess-1","pad":"` + long + `"}`,
+		`{"type":"result","subtype":"success","result":"\"done\"","session_id":"sess-1","cost_usd":0.42,"num_turns":9,"is_error":false,"usage":{"input_tokens":120,"output_tokens":60}}`,
+	}, "\n")
+
+	var tee bytes.Buffer
+	st := consumeStream(strings.NewReader(in), &tee, 80)
+
+	if st.envelope == nil {
+		t.Fatal("terminal result event not captured")
+	}
+	if st.envelope.SessionID != "sess-1" || st.envelope.costUSD() != 0.42 {
+		t.Fatalf("envelope mismatch: %+v", st.envelope)
+	}
+	if st.sessionID != "sess-1" {
+		t.Fatalf("session id not captured from stream: %q", st.sessionID)
+	}
+	if st.usage.InputTokens != 100 || st.usage.OutputTokens != 50 {
+		t.Fatalf("partial usage not accumulated: %+v", st.usage)
+	}
+	// tee truncated the long line; the PARSER saw it whole (usage above proves it)
+	if !strings.Contains(tee.String(), "…[truncated") {
+		t.Fatalf("expected tee truncation marker, got:\n%s", tee.String())
+	}
+	// short lines pass through verbatim
+	if !strings.Contains(tee.String(), `"subtype":"init"`) {
+		t.Fatalf("short line not teed verbatim:\n%s", tee.String())
+	}
+}
+```
+
+- [ ] Run `go test ./agent/runner/` — expect compile failure.
+- [ ] Write `agent/runner/stream.go`:
+
+```go
+package runner
+
+import (
+	"bufio"
+	"encoding/json"
+	"fmt"
+	"io"
+)
+
+// streamEvent is one NDJSON line of `claude --output-format stream-json`.
+// Only the fields the runner consumes; unknown keys are ignored. Pin P1
+// records the exact shape at the pinned CLI version.
+type streamEvent struct {
+	Type      string `json:"type"` // system | assistant | user | result
+	SessionID string `json:"session_id"`
+	Message   struct {
+		Usage struct {
+			InputTokens              int64 `json:"input_tokens"`
+			OutputTokens             int64 `json:"output_tokens"`
+			CacheReadInputTokens     int64 `json:"cache_read_input_tokens"`
+			CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
+		} `json:"usage"`
+	} `json:"message"`
+}
+
+type streamState struct {
+	sessionID string
+	turns     int
+	usage     struct {
+		InputTokens              int64
+		OutputTokens             int64
+		CacheReadInputTokens     int64
+		CacheCreationInputTokens int64
+	}
+	envelope *cliEnvelope // terminal result event; nil when claude died first (P3)
+}
+
+// consumeStream tees every NDJSON line to logw — truncating individual lines
+// longer than maxLine ON THE TEE ONLY (large tool_results are the offender;
+// PARK-V2 §G log-volume guard) — while the parser always sees the full line.
+// It accumulates best-effort usage for the park-exit partial envelope and
+// captures the terminal result event as THE envelope for results.json.
+func consumeStream(r io.Reader, logw io.Writer, maxLine int) *streamState {
+	st := &streamState{}
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 0, 64*1024), 32<<20)
+	for sc.Scan() {
+		line := sc.Bytes()
+		if maxLine > 0 && len(line) > maxLine {
+			fmt.Fprintf(logw, "%s…[truncated %d bytes]\n", line[:maxLine], len(line)-maxLine)
+		} else {
+			logw.Write(line)
+			logw.Write([]byte("\n"))
+		}
+
+		var ev streamEvent
+		if json.Unmarshal(line, &ev) != nil {
+			continue // non-JSON noise stays teed, never parsed
+		}
+		if ev.SessionID != "" {
+			st.sessionID = ev.SessionID
+		}
+		switch ev.Type {
+		case "assistant":
+			st.turns++
+			st.usage.InputTokens += ev.Message.Usage.InputTokens
+			st.usage.OutputTokens += ev.Message.Usage.OutputTokens
+			st.usage.CacheReadInputTokens += ev.Message.Usage.CacheReadInputTokens
+			st.usage.CacheCreationInputTokens += ev.Message.Usage.CacheCreationInputTokens
+		case "result":
+			var env cliEnvelope
+			if json.Unmarshal(line, &env) == nil {
+				st.envelope = &env
+			}
+		}
+	}
+	return st
+}
+```
+
+- [ ] Amend `agent/runner/envelope.go`: add `SessionID string \`json:"session_id"\`` to `cliEnvelope` (parity with ci-agent/llm/result.go:51).
+- [ ] Amend `agent/runner/runner.go`:
+  - `Config` gains `MaxLogLineBytes int` (0 ⇒ default 16384) and `HomeDir string` (empty ⇒ `os.UserHomeDir()`; tests override); `FromEnv` reads `AGENT_STREAM_LOG_MAX_LINE_BYTES`.
+  - Step 4's args become `-p <prompt> --output-format stream-json --verbose` (drop `--output-format json`; keep `--model`/`--max-turns`/`--dangerously-skip-permissions`/`--mcp-config` exactly as before; adjust `--verbose` per the recorded P1 answer). Wire `cmd.StdoutPipe()` into `st := consumeStream(pipe, cfg.Stdout, cfg.MaxLogLineBytes)` run on the calling goroutine between `cmd.Start()` and `cmd.Wait()`.
+  - Step 5 becomes: `env := st.envelope`; when nil (claude died without a terminal event — SIGTERM/SIGKILL, pin P3) synthesize a partial envelope from `st.usage`/`st.turns` with `CostUSD: 0` and note `"no terminal result event"` — the runner MUST NOT require the envelope.
+  - Step 6/7: `results.json` gains `SessionID: st.sessionID`; `step.end` event data gains `SessionID: st.sessionID`.
+  - New helper, called at EVERY exit path (normal, error, and Task 24's park-exit) right before `results.json` is written:
+
+```go
+// copySessionJSONL copies the claude session transcript into the flight
+// output (PARK-V2 §F): flight/session.jsonl rides the artifact fabric so a
+// continuation build can restore it. Best-effort — a missing transcript is
+// logged into the events stream, never fatal.
+func copySessionJSONL(cfg Config, sessionID string) error {
+	if sessionID == "" {
+		return fmt.Errorf("no session id observed on the stream")
+	}
+	src := filepath.Join(cfg.homeDir(), ".claude", "projects", CwdSlug(cfg.WorkDir), sessionID+".jsonl")
+	raw, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(cfg.FlightDir, "session.jsonl"), raw, 0o644)
+}
+```
+
+- [ ] Update `agent/runner/runner_test.go`: the stub claude scripts now emit NDJSON streams (an `init` line with `session_id`, an `assistant` line, a `result` line) instead of a single envelope; each test pre-creates `<home>/.claude/projects/<CwdSlug(workdir)>/<session-id>.jsonl` and sets `cfg.HomeDir`; new assertions — `results.json` carries `session_id`, `flight/session.jsonl` exists with the fixture content, and the events `step.end` data carries `session_id`.
+- [ ] Run `go test ./agent/runner/ && go build ./cmd/agent-runner` — expect pass.
+- [ ] Commit: `git add agent/runner && git commit -m "feat(agent-runner): stream-json live tee with truncation guard + session JSONL capture (PARK-V2 sF/sG)"`
+
+---
+
+### Task 24: `agent-runner` — park-exit watcher, exit 86, and `--resume` continuation mode **[GATED on Task 20 green]**
+
+Delta §B2 + §D, runner half. While claude runs, a watcher goroutine stats `flight/park.json` every 5s (sentinel file, atomically written by the platform sidecar — 08's half; it persists across sidecar crashes and rides the flight artifact as provenance). On appearance: SIGTERM claude → wait `AGENT_PARK_EXIT_GRACE_SECONDS` (default 30) → SIGKILL. Transcript safety is pins P2/P3: the pending `tool_use` is on disk before the MCP call resolves, and no final envelope is required. Then: copy the session JSONL, write `results.json` status `parked` + `session_id` + best-effort partial usage, emit `step.park`, exit **86**. Resume mode: `AGENT_SESSION_ID`/`AGENT_SESSION_FILE` install the JSONL under `~/.claude/projects/<cwd-slug>/` and invoke `claude -p --resume <id>` with the frozen `runner.ContinuationPrompt`, emitting `step.resume`.
+
+**Files:**
+- Create: `agent/runner/park.go`
+- Modify: `agent/runner/runner.go`
+- Test: `agent/runner/park_test.go`
+
+**Steps:**
+
+- [ ] Write `agent/runner/park_test.go`:
+
+```go
+package runner_test
+
+import (
+	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/concourse/concourse/agent/runner"
+	schema "github.com/concourse/concourse/agent/schema"
+)
+
+// stub claude that traps TERM and would otherwise run for a minute — the
+// park-exit must come from the watcher, not the stub finishing. It emits an
+// init stream event first so the runner observes the session id.
+const parkStub = `#!/bin/sh
+echo '{"type":"system","subtype":"init","session_id":"sess-park"}'
+trap 'exit 143' TERM
+sleep 60
+`
+
+func TestParkExitWritesParkedResultsAndExits86(t *testing.T) {
+	dir := t.TempDir()
+	flight := filepath.Join(dir, "flight")
+	os.MkdirAll(flight, 0o755)
+	home := t.TempDir()
+
+	// pre-create the session transcript the runner must capture
+	proj := filepath.Join(home, ".claude", "projects", runner.CwdSlug(dir))
+	os.MkdirAll(proj, 0o755)
+	os.WriteFile(filepath.Join(proj, "sess-park.jsonl"), []byte(`{"role":"assistant"}`+"\n"), 0o644)
+
+	claude := filepath.Join(dir, "claude")
+	os.WriteFile(claude, []byte(parkStub), 0o755)
+
+	// the sidecar's threshold-crossing signal appears 2s in (delta §B1 payload)
+	go func() {
+		time.Sleep(2 * time.Second)
+		park := map[string]any{
+			"question_id": 7, "kind": "question", "step_name": "write-spec",
+			"asked_at": "2026-07-10T12:00:00Z", "threshold_seconds": 1800,
+			"crossed_at": "2026-07-10T12:30:00Z",
+		}
+		raw, _ := json.Marshal(park)
+		tmp := filepath.Join(flight, ".park.json.tmp")
+		os.WriteFile(tmp, raw, 0o644)
+		os.Rename(tmp, filepath.Join(flight, "park.json")) // atomic, like the sidecar's mv
+	}()
+
+	exit, err := runner.Run(context.Background(), runner.Config{
+		Prompt: "p", FlightDir: flight, WorkDir: dir, StepName: "write-spec",
+		ClaudePath: claude, HomeDir: home, ParkExitGraceSeconds: 5,
+	})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if exit != runner.ExitAwaitingHuman {
+		t.Fatalf("expected exit %d, got %d", runner.ExitAwaitingHuman, exit)
+	}
+
+	var results schema.Results
+	raw, _ := os.ReadFile(filepath.Join(flight, "results.json"))
+	if err := json.Unmarshal(raw, &results); err != nil {
+		t.Fatal(err)
+	}
+	if results.Status != schema.StatusParked || results.SessionID != "sess-park" {
+		t.Fatalf("expected parked/sess-park, got %s/%s", results.Status, results.SessionID)
+	}
+	if _, err := os.Stat(filepath.Join(flight, "session.jsonl")); err != nil {
+		t.Fatalf("session.jsonl not captured at park-exit: %v", err)
+	}
+
+	// event stream ends in step.park with the question id — the sanctioned
+	// missing-step.end exception (contracts §5)
+	events, _ := os.ReadFile(filepath.Join(flight, "events.ndjson"))
+	lines := strings.Split(strings.TrimSpace(string(events)), "\n")
+	last := lines[len(lines)-1]
+	if !strings.Contains(last, `"step.park"`) || !strings.Contains(last, `"question_id":7`) {
+		t.Fatalf("expected terminal step.park event, got: %s", last)
+	}
+	if strings.Contains(string(events), `"step.end"`) {
+		t.Fatalf("park-exit must not emit step.end:\n%s", events)
+	}
+}
+
+func TestResumeModeInstallsSessionAndPassesResumeFlag(t *testing.T) {
+	dir := t.TempDir()
+	flight := filepath.Join(dir, "flight")
+	os.MkdirAll(flight, 0o755)
+	home := t.TempDir()
+
+	// restored flight-prev input carrying the prior session transcript
+	prev := filepath.Join(dir, "flight-prev")
+	os.MkdirAll(prev, 0o755)
+	os.WriteFile(filepath.Join(prev, "session.jsonl"), []byte(`{"role":"assistant"}`+"\n"), 0o644)
+
+	// stub claude that records its argv and emits a full happy stream
+	argsFile := filepath.Join(dir, "argv")
+	stub := "#!/bin/sh\nprintf '%s\\n' \"$@\" > " + argsFile + "\n" +
+		`echo '{"type":"system","subtype":"init","session_id":"sess-park"}'` + "\n" +
+		`echo '{"type":"result","subtype":"success","result":"\"done\"","session_id":"sess-park","cost_usd":0.1,"num_turns":2,"is_error":false,"usage":{"input_tokens":10,"output_tokens":5}}'` + "\n"
+	claude := filepath.Join(dir, "claude")
+	os.WriteFile(claude, []byte(stub), 0o755)
+
+	exit, err := runner.Run(context.Background(), runner.Config{
+		Prompt: "ignored on resume", FlightDir: flight, WorkDir: dir, StepName: "write-spec",
+		ClaudePath: claude, HomeDir: home,
+		SessionID: "sess-park", SessionFile: filepath.Join(prev, "session.jsonl"),
+	})
+	if err != nil || exit != 0 {
+		t.Fatalf("resume run: exit=%d err=%v", exit, err)
+	}
+
+	// transcript installed where --resume looks for it
+	installed := filepath.Join(home, ".claude", "projects", runner.CwdSlug(dir), "sess-park.jsonl")
+	if _, err := os.Stat(installed); err != nil {
+		t.Fatalf("session file not installed: %v", err)
+	}
+
+	argv, _ := os.ReadFile(argsFile)
+	if !strings.Contains(string(argv), "--resume") || !strings.Contains(string(argv), "sess-park") {
+		t.Fatalf("claude not invoked with --resume sess-park:\n%s", argv)
+	}
+	if !strings.Contains(string(argv), runner.ContinuationPrompt) {
+		t.Fatalf("continuation prompt not passed:\n%s", argv)
+	}
+
+	// first event is step.resume
+	events, _ := os.ReadFile(filepath.Join(flight, "events.ndjson"))
+	if !strings.Contains(strings.SplitN(string(events), "\n", 2)[0], `"step.resume"`) {
+		t.Fatalf("expected leading step.resume event:\n%s", events)
+	}
+}
+```
+
+- [ ] Run `go test ./agent/runner/` — expect compile failure (`ParkExitGraceSeconds`/`SessionID`/`SessionFile` undefined).
+- [ ] Write `agent/runner/park.go`:
+
+```go
+package runner
+
+import (
+	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"syscall"
+	"time"
+)
+
+// parkSignal is the sidecar-written flight/park.json payload (delta §B1).
+// The sidecar writes it atomically (temp + mv), so a partial read is
+// impossible; the file rides the ingested flight artifact as provenance.
+type parkSignal struct {
+	QuestionID       int    `json:"question_id"`
+	Kind             string `json:"kind"` // question | checkpoint
+	StepName         string `json:"step_name"`
+	AskedAt          string `json:"asked_at"`
+	ThresholdSeconds int    `json:"threshold_seconds"`
+	CrossedAt        string `json:"crossed_at"`
+}
+
+// watchPark polls flight/park.json every 5s while claude runs (delta §B2).
+// On appearance it stores the signal, SIGTERMs claude, and SIGKILLs after
+// the grace period unless claude exited first (done closes).
+func watchPark(ctx context.Context, done <-chan struct{}, flightDir string, proc *os.Process, grace time.Duration, out chan<- parkSignal) {
+	tick := time.NewTicker(5 * time.Second)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-done:
+			return
+		case <-tick.C:
+			raw, err := os.ReadFile(filepath.Join(flightDir, "park.json"))
+			if err != nil {
+				continue
+			}
+			var sig parkSignal
+			if json.Unmarshal(raw, &sig) != nil {
+				continue
+			}
+			out <- sig
+			proc.Signal(syscall.SIGTERM)
+			select {
+			case <-done: // exited within grace
+			case <-time.After(grace):
+				proc.Kill()
+			}
+			return
+		}
+	}
+}
+```
+
+- [ ] Amend `agent/runner/runner.go`:
+  - `Config` gains `ParkExitGraceSeconds int` (0 ⇒ 30; env `AGENT_PARK_EXIT_GRACE_SECONDS`), `SessionID string` (env `AGENT_SESSION_ID`), `SessionFile string` (env `AGENT_SESSION_FILE`) — the latter two set only on continuation builds by the exec (Task 26).
+  - **Resume mode** (before building args): when `cfg.SessionID != ""` — copy `cfg.SessionFile` to `filepath.Join(cfg.homeDir(), ".claude", "projects", CwdSlug(cfg.WorkDir), cfg.SessionID+".jsonl")` (MkdirAll first; a missing SessionFile is exit 2 with a clear error — the exec always supplies it); replace the prompt with `ContinuationPrompt` and prepend `--resume <cfg.SessionID>` to the args; write `EventStepResume` (`schema.StepResumeData{StepName: cfg.StepName, SessionID: cfg.SessionID}`) as the FIRST event; pass `Resumed: true` on the `StepStartData`.
+  - **Watcher wiring** (around `cmd.Wait()`): `parkCh := make(chan parkSignal, 1)`; `done := make(chan struct{})`; `go watchPark(ctx, done, cfg.FlightDir, cmd.Process, cfg.grace(), parkCh)`; after `consumeStream` + `cmd.Wait()` return, `close(done)`.
+  - **Park-exit path**: `select { case sig := <-parkCh: … default: }` — when a signal was consumed: write `EventCostRecord` from `st.usage`/`st.turns` (best-effort partial; nil envelope is EXPECTED — pin P3, never require one); write `EventStepPark` (`schema.StepParkData{StepName: cfg.StepName, QuestionID: sig.QuestionID, WaitSecondsAtExit: waitSeconds(sig), SessionID: st.sessionID}`) as the TERMINAL event (NO `step.end` — the sanctioned §5 exception); `copySessionJSONL(cfg, st.sessionID)`; write `results.json` with `Status: schema.StatusParked`, `SessionID: st.sessionID`, `Summary: fmt.Sprintf("awaiting human answer to question %d", sig.QuestionID)`; return `(ExitAwaitingHuman, nil)`. `waitSeconds` parses `sig.AskedAt`/`sig.CrossedAt` (RFC3339) and falls back to `sig.ThresholdSeconds` on parse failure.
+  - `cmd/agent-runner/main.go` is unchanged — `Run` returns 86 with a nil error and `os.Exit(86)` propagates it as the pod's exit status (the jetbridge supervisor surfaces it as the process `ExitStatus` the exec matches on).
+- [ ] Run `go test ./agent/runner/ && go build ./cmd/agent-runner` — expect pass.
+- [ ] Commit: `git add agent/runner && git commit -m "feat(agent-runner): park-exit watcher (SIGTERM/grace/SIGKILL, exit 86) and --resume continuation mode (PARK-V2 sB2/sD)"`
+
+---
+
+### Task 25: Migration 1773106061 — `agent_run_step_state` + `db.AgentRunStepStateFactory`
+
+Contracts §1.14 (delta §B6), DDL verbatim. The durable per-logical-step record the continuation build consults: `state='completed'` rows short-circuit-replay, `state='awaiting_human'` rows resume. Additive and inert at `--agent-short-park-max=0` (the table only gains rows once Task 26 lands) — lands regardless of the pin.
+
+**Files:**
+- Create: `atc/db/migration/migrations/1773106061_create_agent_run_step_state.up.sql` / `.down.sql`
+- Create: `atc/db/agent_run_step_state_factory.go`
+- Create: `atc/db/dbfakes/fake_agent_run_step_state_factory.go` (counterfeiter)
+- Test: `atc/db/agent_run_step_state_factory_test.go`
+
+**Steps:**
+
+- [ ] Write `1773106061_create_agent_run_step_state.up.sql` (delta §B6 verbatim):
+
+```sql
+CREATE TABLE agent_run_step_state (
+    id              BIGSERIAL PRIMARY KEY,
+    pipeline_run_id INTEGER NOT NULL,
+    step_name       TEXT NOT NULL,
+    state           TEXT NOT NULL CHECK (state IN ('completed','awaiting_human')),
+    build_id        INTEGER NOT NULL,            -- build that produced this state
+    session_id      TEXT NOT NULL DEFAULT '',    -- latest claude session id for this step
+    question_id     INTEGER,                     -- open agent_run_questions row at park-exit
+    artifacts       JSONB NOT NULL DEFAULT '{}', -- {"workspace": "<fabric handle>", "flight": "<handle>", ...}
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (pipeline_run_id, step_name)
+);
+```
+
+  and `.down.sql`: `DROP TABLE agent_run_step_state;`
+- [ ] Write the Ginkgo factory suite (template-DB recipe, mirror `agent_reviews_factory` / Task 8's suite): upsert-inserts, upsert-updates-in-place on `(pipeline_run_id, step_name)` conflict (state flips `awaiting_human` → `completed`, artifacts replaced), `Find` returns `(state, true, nil)` / `(zero, false, nil)`, `question_id` NULL round-trip.
+- [ ] Run `ginkgo --focus="AgentRunStepState" ./atc/db/` — expect compile failure.
+- [ ] Write `atc/db/agent_run_step_state_factory.go` (squirrel + counterfeiter recipe, per `atc/db/agent_reviews_factory.go`):
+
+```go
+package db
+
+import (
+	"database/sql"
+	"encoding/json"
+
+	sq "github.com/Masterminds/squirrel"
+)
+
+// AgentRunStepState is one logical agent step's latest state within a
+// pipeline run (PARK-V2 §B6, contracts §1.14). Continuation builds consult
+// it keyed (pipeline_run_id, step_name): completed ⇒ zero-cost replay,
+// awaiting_human ⇒ --resume, absent ⇒ cold run.
+type AgentRunStepState struct {
+	PipelineRunID int
+	StepName      string
+	State         string // completed | awaiting_human
+	BuildID       int
+	SessionID     string
+	QuestionID    *int
+	Artifacts     map[string]string // artifact name -> fabric volume handle
+}
+
+const (
+	AgentStepStateCompleted     = "completed"
+	AgentStepStateAwaitingHuman = "awaiting_human"
+)
+
+//counterfeiter:generate . AgentRunStepStateFactory
+type AgentRunStepStateFactory interface {
+	Upsert(state AgentRunStepState) error
+	Find(pipelineRunID int, stepName string) (AgentRunStepState, bool, error)
+}
+
+type agentRunStepStateFactory struct {
+	conn DbConn
+}
+
+func NewAgentRunStepStateFactory(conn DbConn) AgentRunStepStateFactory {
+	return &agentRunStepStateFactory{conn: conn}
+}
+
+func (f *agentRunStepStateFactory) Upsert(s AgentRunStepState) error {
+	artifacts, err := json.Marshal(s.Artifacts)
+	if err != nil {
+		return err
+	}
+	_, err = psql.Insert("agent_run_step_state").
+		Columns("pipeline_run_id", "step_name", "state", "build_id", "session_id", "question_id", "artifacts").
+		Values(s.PipelineRunID, s.StepName, s.State, s.BuildID, s.SessionID, s.QuestionID, artifacts).
+		Suffix(`ON CONFLICT (pipeline_run_id, step_name) DO UPDATE SET
+			state = EXCLUDED.state,
+			build_id = EXCLUDED.build_id,
+			session_id = EXCLUDED.session_id,
+			question_id = EXCLUDED.question_id,
+			artifacts = EXCLUDED.artifacts,
+			created_at = now()`).
+		RunWith(f.conn).
+		Exec()
+	return err
+}
+
+func (f *agentRunStepStateFactory) Find(pipelineRunID int, stepName string) (AgentRunStepState, bool, error) {
+	var (
+		s         AgentRunStepState
+		artifacts []byte
+	)
+	err := psql.Select("pipeline_run_id", "step_name", "state", "build_id", "session_id", "question_id", "artifacts").
+		From("agent_run_step_state").
+		Where(sq.Eq{"pipeline_run_id": pipelineRunID, "step_name": stepName}).
+		RunWith(f.conn).
+		QueryRow().
+		Scan(&s.PipelineRunID, &s.StepName, &s.State, &s.BuildID, &s.SessionID, &s.QuestionID, &artifacts)
+	if err == sql.ErrNoRows {
+		return AgentRunStepState{}, false, nil
+	}
+	if err != nil {
+		return AgentRunStepState{}, false, err
+	}
+	if err := json.Unmarshal(artifacts, &s.Artifacts); err != nil {
+		return AgentRunStepState{}, false, err
+	}
+	return s, true, nil
+}
+```
+
+  (`QuestionID *int` scans NULL directly; if the suite's `Scan` balks, use `sql.NullInt64` internally — match whatever `agent_reviews_factory` does for its nullable columns.)
+- [ ] Regenerate fakes: `go generate ./atc/db/...`
+- [ ] Run `ginkgo ./atc/db/migration/ && ginkgo --focus="AgentRunStepState" ./atc/db/` — expect pass.
+- [ ] Commit: `git add atc/db && git commit -m "feat(db): agent_run_step_state table + factory (migration 1773106061, PARK-V2 sB6)"`
+
+---
+
+### Task 26: `exec.AgentStep` — exit-86 distinguished end, step-state upserts, continuation replay/resume, parked ingestion **[GATED on Task 20 green]**
+
+Delta §B5/§B6/§D, exec half. No fifth Concourse BUILD status: exit 86 fails the build **as a carrier only**; the distinguished end is (1) exit 86, (2) the additive `awaiting_human` build event + the `step.park` flight event, (3) the `agent_run_step_state` row. The platform's authority is the OPEN park-policy question row (08/11's half) — this exec never reads or writes run status. A pod that dies while parked leaves the open row + step-state row, so the park now survives pod death (an improvement over PARK-V1).
+
+**Files:**
+- Modify: `atc/exec/agent_step.go`, `atc/exec/agent_step_test.go`
+- Modify: `atc/exec/task_step.go` (:60 region — `TaskDelegate` interface gains `AwaitingHuman`)
+- Modify: `atc/event/events.go`, `atc/event/types.go`, `atc/event/parser.go` (additive event type)
+- Modify: `atc/engine/task_delegate.go` (implement `AwaitingHuman`), `atc/engine/step_factory.go` + `atc/atccmd/command.go` (wire `WithAgentStepStateFactory` / `engine.WithAgentStepStateFactory(db.NewAgentRunStepStateFactory(dbConn))`)
+- Modify: `atc/step_validator.go` (reserve `flight-prev` alongside `flight`)
+- Regenerate: `atc/exec/execfakes`, `atc/engine/enginefakes`
+- Test: `atc/exec/agent_step_test.go`, `atc/event/` suite
+
+**Steps:**
+
+- [ ] Add the additive build event (`atc/event/events.go`, constant in `types.go`, registration in `parser.go` mirroring an existing 1.0 event):
+
+```go
+// AwaitingHuman marks an agent step that exited to await a human answer
+// (PARK-V2 §B5). The build finishes failed as a carrier; this event is one
+// leg of the distinguished end (with runner exit 86 and the
+// agent_run_step_state row). Consumers derive "awaiting human" from run
+// state + open questions, never from build status.
+type AwaitingHuman struct {
+	Time       int64  `json:"time"`
+	Origin     Origin `json:"origin"`
+	QuestionID int    `json:"question_id"`
+	SessionID  string `json:"session_id,omitempty"`
+}
+
+func (AwaitingHuman) EventType() atc.EventType  { return EventTypeAwaitingHuman }
+func (AwaitingHuman) Version() atc.EventVersion { return "1.0" }
+```
+
+  Verify the Elm event decoder tolerates unknown event types before shipping (unlike the PLAN decoder from Task 17, the event stream decoder is expected to skip unknowns — if it is strict, add a minimal ignore-case the way Task 17 added the plan case).
+- [ ] Add `AwaitingHuman(logger lager.Logger, questionID int, sessionID string)` to the `TaskDelegate` interface (task_step.go:60 region), implement in `atc/engine/task_delegate.go` via `d.build.SaveEvent(event.AwaitingHuman{Time: time.Now().Unix(), Origin: …, QuestionID: questionID, SessionID: sessionID})` (mirror `Finished`'s save-and-log shape), regenerate `execfakes`/`enginefakes`.
+- [ ] Write the failing specs in `atc/exec/agent_step_test.go` (fixtures: `fakeStepStateFactory *dbfakes.FakeAgentRunStepStateFactory` via new option `exec.WithAgentStepStateFactory`; plan env carries `AGENT_PIPELINE_RUN_ID=42`):
+
+```go
+	Context("PARK-V2", func() {
+		It("appends PLATFORM_MCP_PARK_PATH to the platform sidecar env (delta §B1 producer, F15)", func() {
+			// plan.Sidecars includes platform (Task 12 fixtures). The flight
+			// output always exists (step 10 registers it unconditionally), so
+			// the row is unconditional for agent steps; checkpoint pods never
+			// get it (dispatch's renderer does not emit it) — unset = never
+			// write, per 08 Task 9c.
+			step.Run(ctx, state)
+			_, _, spec, _ := fakePool.FindOrSelectWorkerArgsForCall(0)
+			Expect(spec.SidecarEnv["platform"]).To(ContainElement(
+				SatisfyAll(HavePrefix("PLATFORM_MCP_PARK_PATH="), HaveSuffix("/flight/park.json"))))
+		})
+
+		It("upserts state=completed with output handles at a normal end", func() {
+			_, err := step.Run(ctx, state)
+			Expect(err).ToNot(HaveOccurred())
+			s := fakeStepStateFactory.UpsertArgsForCall(0)
+			Expect(s.State).To(Equal(db.AgentStepStateCompleted))
+			Expect(s.PipelineRunID).To(Equal(42))
+			Expect(s.StepName).To(Equal("write-spec"))
+			Expect(s.Artifacts).To(HaveKey("workspace"))
+			Expect(s.Artifacts).To(HaveKey("flight"))
+		})
+
+		It("treats exit 86 as the distinguished awaiting-human end", func() {
+			// process stub exits 86; flight fixtures: results.json status
+			// "parked" + session_id "sess-1"; events end in step.park;
+			// park.json carries question_id 7
+			ok, err := step.Run(ctx, state)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(ok).To(BeFalse()) // failed build = carrier only
+
+			rm := fakeMetricsStore.UpsertReturningInsertedArgsForCall(0)
+			Expect(rm.Status).To(Equal("parked")) // NOT error, despite no step.end
+			Expect(rm.SessionID).To(Equal("sess-1"))
+			Expect(fakeChecker.RecordCallCount()).To(Equal(1)) // partial spend ledgered (F3 gate)
+
+			s := fakeStepStateFactory.UpsertArgsForCall(0)
+			Expect(s.State).To(Equal(db.AgentStepStateAwaitingHuman))
+			Expect(s.SessionID).To(Equal("sess-1"))
+			Expect(*s.QuestionID).To(Equal(7))
+			Expect(s.Artifacts).To(HaveKey("flight"))
+
+			_, qid, sid := fakeDelegate.AwaitingHumanArgsForCall(0)
+			Expect(qid).To(Equal(7))
+			Expect(sid).To(Equal("sess-1"))
+		})
+
+		It("short-circuit-replays a completed step without selecting a worker", func() {
+			fakeStepStateFactory.FindReturns(db.AgentRunStepState{
+				State: db.AgentStepStateCompleted,
+				Artifacts: map[string]string{"workspace": "vol-ws", "flight": "vol-fl"},
+			}, true, nil)
+			ok, err := step.Run(ctx, state)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(ok).To(BeTrue())
+			Expect(fakePool.FindOrSelectWorkerCallCount()).To(BeZero()) // zero claude, zero cost
+			Expect(fakeChecker.StepSliceCallCount()).To(BeZero())       // no admission for a replay
+			_, found := state.ArtifactRepository().ArtifactFor(build.ArtifactName("workspace"))
+			Expect(found).To(BeTrue())
+		})
+
+		It("resumes an awaiting_human step with session env and restored inputs", func() {
+			qid := 7
+			fakeStepStateFactory.FindReturns(db.AgentRunStepState{
+				State: db.AgentStepStateAwaitingHuman, SessionID: "sess-1", QuestionID: &qid,
+				Artifacts: map[string]string{"workspace": "vol-ws", "flight": "vol-fl"},
+			}, true, nil)
+			step.Run(ctx, state)
+			_, _, spec, _ := fakePool.FindOrSelectWorkerArgsForCall(0)
+			Expect(spec.Env).To(ContainElement("AGENT_SESSION_ID=sess-1"))
+			Expect(spec.Env).To(ContainElement(HaveSuffix("/flight-prev/session.jsonl")))
+			Expect(spec.Inputs).To(ContainElement(HaveField("DestinationPath", HaveSuffix("/flight-prev"))))
+			// StepSlice re-resolved at every execution (decision 32) — never skipped on resume
+			Expect(fakeChecker.StepSliceCallCount()).To(Equal(1))
+		})
+	})
+```
+
+- [ ] Run `ginkgo --focus="PARK-V2" ./atc/exec/` — expect failure.
+- [ ] Implement in `atc/exec/agent_step.go`:
+  - `const agentExitAwaitingHuman = 86` (mirrors `runner.ExitAwaitingHuman`; defined locally so exec does not import the runner) and option `WithAgentStepStateFactory(f db.AgentRunStepStateFactory)`.
+  - **Park-sentinel path env (delta §B1 producer, F15; follow-up 2026-07-10 — this exec is the `PLATFORM_MCP_PARK_PATH` producer, NOT dispatch's renderer, which cannot know the flight mount path at render time):** amend the Task 12 step-7 sidecar env assembly's `case "platform":` branch to append the sentinel destination row:
+
+```go
+			rows = append(rows, "PLATFORM_MCP_PARK_PATH="+
+				artifactPath(step.containerMetadata.WorkingDirectory, "flight", "park.json"))
+```
+
+    Unconditional for agent steps — the `flight` output always exists (step 10 registers it), and the flight volume already reaches sidecars via jetbridge's `buildSidecarContainers` mount inheritance, so the path is valid inside the platform container. Checkpoint pods never get the row (the renderer does not emit it) — the legal unset = never-write shape (08 Task 9c). Landing this in the GATED Task 26 keeps the rollback story coherent: at a red Task 20 pin the env is never set and an `ask_human` threshold crossing degrades LOUDLY to the SSE park (08 Task 11b) — moot anyway under the fallback `--agent-short-park-max=0`. Matching §8.1 row added to 00-shared-contracts; 08's Task 1 addendum row corrected in place.
+  - **Continuation consult** (new step 0 of `run`, after env interpolation resolves `AGENT_PIPELINE_RUN_ID`, before the budget slice): when `stepStateFactory != nil && runID > 0`, `row, found, err := stepStateFactory.Find(runID, plan.Name)`; lookup errors log and fall through to a cold run (never fail the step on a read).
+    * `found && row.State == completed` ⇒ **short-circuit replay** (delta §D — REQUIRED, not optional: standard-dev's plan-approval checkpoint parking overnight is the common case; without this every resume re-runs `write-spec` cold): for each `(name, handle)` in `row.Artifacts`, locate the volume through the pool/fabric (`step.workerPool` + `wkr.ArtifactFromVolume` — the same lookup seam the streamer resolves handles with; verify the exact locate-by-handle signature on the `Pool` interface at execution time) and `state.ArtifactRepository().RegisterArtifact(build.ArtifactName(name), artifact, false)`; write the two §5 events as NDJSON lines to `delegate.Stdout()` (`step.start` with `"replayed": true`, then `step.end` — visible in `fly watch`; no pod, no flight stream, no metrics row); `delegate.Finished(logger, ExitStatus(0))`; return `(true, nil)`. Zero claude, zero cost, no `StepSlice` call.
+    * `found && row.State == awaiting_human` ⇒ **resume**: restore `row.Artifacts["workspace"]` under its own name and `row.Artifacts["flight"]` under the reserved input name **`flight-prev`** (the fresh `flight` OUTPUT name stays free); append to the env assembly `AGENT_SESSION_ID=<row.SessionID>` and `AGENT_SESSION_FILE=<artifactPath(workdir, "flight-prev", "session.jsonl")>`; proceed through the NORMAL path (budget slice re-resolution included — decision 32: `StepSlice` is a resolution, the ledgered park-exit partial makes the re-resolved slice tighter automatically; **if pin P5 recorded session-cumulative costs, subtract the park-exit row's cost before the continuation's ledger append**).
+    * not found ⇒ cold run (steps after the parked one; unchanged path).
+  - **Parked ingestion** (`ingestFlightRecorder` amendments, all additive): `rm.SessionID = results.SessionID`; track `sawStepPark` alongside `sawStepEnd` in the events loop (also parse `StepParkData` to capture the question id back to the caller — return it, or hoist it into a small `ingestResult` struct); the missing-`step.end` error branch becomes `if !sawStepEnd && !sawStepPark { …error… }` — a stream ending in `step.park` keeps the results.json `parked` status (the ONE sanctioned exception, contracts §5). The ledger append is UNCHANGED (normal F3 `inserted` gate — the continuation build has a new `build_id`, so its later row never collides).
+  - **Exit-86 branch** (step 11, checked before the generic exit handling): outputs were already registered by step 10 (including `flight` with `session.jsonl` — the F23 upload path already guarantees registration on non-happy exits) and ingestion already ran synchronously; when `result.ExitStatus == agentExitAwaitingHuman`: build `artifacts := map[string]string{}` from the step's registered output volume handles (the same `volumeMounts` loop ingestion uses); `stepStateFactory.Upsert(db.AgentRunStepState{PipelineRunID: runID, StepName: plan.Name, State: awaiting_human, BuildID: step.metadata.BuildID, SessionID: rm.SessionID, QuestionID: &questionID, Artifacts: artifacts})` (upsert errors: log + `delegate.Errored` — the open question row is the platform's authority, but losing the row breaks resume, so surface loudly); `delegate.AwaitingHuman(logger, questionID, rm.SessionID)`; `delegate.Finished(logger, ExitStatus(86))`; return `(false, nil)`.
+  - **Normal-end upsert** (same branch structure, exit 0): `stepStateFactory.Upsert(… State: completed, SessionID: rm.SessionID, Artifacts: artifacts …)` — errors logged, never fatal.
+- [ ] Reserve `flight-prev` in the Task 10 validator exactly as `flight` is reserved (a user-declared input/output named `flight-prev` is a validation error); extend the Task 10 validator test table.
+- [ ] Wire the factory: `engine.WithAgentStepStateFactory(...)` option in `atc/engine/step_factory.go` (threaded into `AgentStep` as `exec.WithAgentStepStateFactory`), `db.NewAgentRunStepStateFactory(dbConn)` at the Task 16 call site in `atc/atccmd/command.go`; regenerate engine fakes.
+- [ ] Run `ginkgo ./atc/exec/ ./atc/engine/ ./atc/event/ && go test ./atc/ -count=1` — expect pass.
+- [ ] Commit: `git add atc && git commit -m "feat(exec): PARK-V2 agent step — exit-86 awaiting-human end, step-state replay/resume, parked ingestion (delta sB/sD)"`
+
+---
+
+### Task 27: Continuation-pin — step-state-referenced volumes exempt from orphan GC **[GATED on Task 20 green]**
+
+Delta §B6 GC pin: artifact volumes whose handles appear in `agent_run_step_state.artifacts` of a run in (`running`, `awaiting_human`) are exempt from volume GC, so workspace/flight state "stays" across the zero-pod gap in the DaemonSet artifact cache. The single choke point is DB-side: `volumeRepository.GetOrphanedVolumes` (atc/db/volume_repository.go:542) is what feeds the GC collector that flips volumes to `destroying`, and the jetbridge reaper only ever acts on `destroying` volumes (reaper.go:176–183 cleans DaemonSet artifact entries from that same list) — so one query edit pins both the volume and its fabric locator, with **no jetbridge-side code change**. Bounded by construction: the pin dissolves when the run reaches a terminal status, and `--agent-park-timeout` (72h, lifecycler-enforced — 03's half) guarantees every run does.
+
+**Files:**
+- Modify: `atc/db/volume_repository.go` (:542 `GetOrphanedVolumes`)
+- Test: `atc/db/volume_repository_test.go`
+
+**Steps:**
+
+- [ ] Write the failing specs in `atc/db/volume_repository_test.go` (existing orphaned-volumes context; fixtures need a `pipeline_runs` row — its table landed in wave 1 (03), so insert directly with the suite's raw-SQL helper):
+
+```go
+		Context("continuation-pinned volumes (PARK-V2 §B6)", func() {
+			It("excludes volumes referenced by step-state rows of non-terminal runs", func() {
+				// volume 'vol-ws' orphaned by every existing rule, BUT:
+				// pipeline_runs row id=42 status='awaiting_human' and
+				// agent_run_step_state(pipeline_run_id: 42, artifacts: {"workspace":"vol-ws"})
+				orphaned, err := volumeRepository.GetOrphanedVolumes()
+				Expect(err).ToNot(HaveOccurred())
+				Expect(handlesOf(orphaned)).ToNot(ContainElement("vol-ws"))
+			})
+
+			It("releases the pin when the run reaches a terminal status", func() {
+				// same fixtures, then UPDATE pipeline_runs SET status='errored'
+				orphaned, err := volumeRepository.GetOrphanedVolumes()
+				Expect(err).ToNot(HaveOccurred())
+				Expect(handlesOf(orphaned)).To(ContainElement("vol-ws"))
+			})
+		})
+```
+
+- [ ] Run `ginkgo --focus="continuation-pinned" ./atc/db/` — expect failure (the pinned volume is returned).
+- [ ] Implement — add one `NOT EXISTS` predicate to the `GetOrphanedVolumes` query builder (after the existing `Where` clauses at :561):
+
+```go
+		// PARK-V2 continuation-pin (§B6): volumes whose handles appear in
+		// agent_run_step_state.artifacts of a non-terminal run must survive
+		// the zero-pod awaiting_human gap so a continuation build can restore
+		// them from the DaemonSet artifact cache. The pin dissolves when the
+		// run reaches a terminal status; --agent-park-timeout (72h) bounds it.
+		Where(sq.Expr(`NOT EXISTS (
+			SELECT 1
+			FROM agent_run_step_state ss
+			JOIN pipeline_runs pr ON pr.id = ss.pipeline_run_id
+			CROSS JOIN LATERAL jsonb_each_text(ss.artifacts) a(name, handle)
+			WHERE pr.status IN ('running','awaiting_human')
+			  AND a.handle = v.handle
+		)`)).
+```
+
+  (`jsonb_each_text` over the artifacts object matches on the handle VALUES; the LATERAL stays cheap at this table's row counts — one row per (run, step), bounded by run retention. `pipeline_runs` landed in wave 1 (03), and its `awaiting_human` status value ships in 03's migration `1773106032` — sequence this task after that migration exists, or the fixture insert fails its CHECK.)
+- [ ] Run `ginkgo ./atc/db/` — expect pass (the full suite guards the query against regressions in the seven existing orphan predicates).
+- [ ] Commit: `git add atc/db && git commit -m "feat(db): PARK-V2 continuation-pin — step-state-referenced volumes exempt from orphan GC (delta sB6)"`
+
+---
+
 ## Execution notes
 
 **Full workstream test suite, in dependency order:**
@@ -3357,6 +4592,14 @@ Never use `--race` with the parallel Ginkgo runs (CLAUDE.md — parallel compila
 
 **Live tests (theborg):** plain-Go, `-tags live`, THROWAWAY namespace only (never `cicd`/`concourse`); Colima/Docker is usually down on this machine, so testcontainers is not an option. Commands are embedded in Task 18. The `k8s-live-tests` job in the cicd pipeline runs `go test -tags live ./atc/worker/jetbridge/...` against namespace `concourse` after self-upgrade — the two new live tests run there automatically once merged (they use the `kubeClient(t)`/namespace helpers, so they tolerate that namespace).
 
+**PARK-V2 ordering (added 2026-07-10):** Task 20 (`TestLiveClaudeParkExitResume`, `-tags live_claude` — needs only the pinned claude CLI + a token, NO cluster/postgres) is the FIRST PARK-V2 deliverable and gates Tasks 24/26/27:
+
+```bash
+go test -tags live_claude -run '^TestLiveClaudeParkExitResume$' -v -count=1 -timeout 15m ./agent/runner/
+```
+
+Tasks 21–23 and 25 land regardless of the pin (additive; inert at `--agent-short-park-max=0`). Cross-plan sequencing: Task 26's continuation env consumes 08's sidecar `park.json` writer and 11's `reconcileAwaitingRuns` for an END-TO-END resume, but every Task 21–27 unit/DB suite here is self-contained; Task 27's DB fixture needs 03's `awaiting_human` status migration (`1773106032`) to exist first.
+
 **Rollback notes for the risky diffs:**
 - *StepVisitor interface change (Task 10)* is the widest compile surface; it is additive and revertible by dropping the `agent` detector from `StepPrecedence` (configs with `agent:` then fail validation with "no core step type declared" instead of executing — a safe failure mode).
 - *NewHandler signature change (Task 9)*: expect mechanical rebase conflicts with whatever agent-identity landed in `atc/api/handler.go` — parameter appends only.
@@ -3366,6 +4609,8 @@ Never use `--race` with the parallel Ginkgo runs (CLAUDE.md — parallel compila
 - *Runtime seams (Task 11B) + severed-exec recording (Task 13B)* are jetbridge-wide but behavior-preserving for existing callers (nil seam maps are no-ops; the applySecretRefs append leg fires only for SecretEnv-only keys, which no pre-existing caller produces; the F23 upload is best-effort and never changes `Wait`'s returned error). The one behavioral change to watch is `supervised()` covering `ContainerTypeAgent` and the pause-loop command — both revert cleanly as isolated hunks of the Task 11B commit.
 
 **Deferred/known risks:** `budget.LedgerEntry` field names are derived from §1.4 column names — align to the struct credentials-and-budgets actually landed (one-line fixes at Tasks 13/16). The claude CLI pin in the agent-runner image must match what the live review job verifies today. The prompt port in Task 19 trades exact ci-agent parity for the permanent step — the dual-running window is the verification mechanism, and score divergence beyond ±2 blocks retirement of the shell job.
+
+**PARK-V2 rollback (added 2026-07-10):** the whole exit-and-respawn branch is behind `--agent-short-park-max` — setting it to `0` (or leaving `CONCOURSE_AGENT_SHORT_PARK_MAX` unset at `0`) restores pure PARK-V1 behavior end to end: the sidecar never writes `park.json`, the runner watcher never fires, exit 86 never occurs, `agent_run_step_state` stays empty, no run enters `awaiting_human`, and the Task 27 GC predicate matches nothing. All PARK-V2 schema is additive and inert at 0 — that is the designed escape hatch if the Task 20 pin is red OR if a live regression appears post-cutover. Per-workflow threshold override (`hitl.short_park_max_seconds`) is explicitly DEFERRED — global flag only in v1.
 
 ---
 
@@ -3388,3 +4633,16 @@ Never use `--race` with the parallel Ginkgo runs (CLAUDE.md — parallel compila
   - **Task 18 (amended, F18/F23/F25).** `live_agent_resume_test.go` MUST use `db.ContainerMetadata{Type: db.ContainerTypeAgent}` at BOTH `FindOrCreateContainer` sites (a `ContainerTypeTask` copy passes vacuously — review-rejectable) and gains the F23 post-severance output-readability assertion; `live_agent_mcp_test.go` gains the flight-mount write tripwire (`flight-write-ok`) so hostPath-permission regressions fail the live test instead of production.
 
   Cross-workstream: contract-visible names match the frozen seam delta exactly (`SidecarEnv`, `SidecarSecretEnv`, `applySecretRefs` append semantics, `db.ContainerTypeAgent`, the pause command string, `agent-run-<run-id>`/`principal-token`/`anthropic-token`, `IS_SANDBOX=1`). 00-shared-contracts §8.1/§8.2/§8.5/§11, 04 Tasks 12–13, and 09 Tasks 11–12 carry the co-signed consumer edits in their own files. F23/F24/F37 are agent-step-internal; the Task 13B jetbridge edit is the one sanctioned addition outside Task 11B's frozen scope.
+
+- **2026-07-10 (PARK-V2 seam delta — exit-and-respawn for long human-waits; FROZEN 2026-07-10, amends the 2026-07-09 SSE-park entry; implements FLOWS.md Part 2 §P2.5 recommendations #1–#4; contracts decisions 30–32).** This plan gains the new "PARK-V2" section (Tasks 20–27) owning the runner/exec/schema halves; SHORT parks (< `--agent-short-park-max`, default 30m) keep the unchanged PARK-V1 SSE path, LONG parks exit-and-respawn. Nothing in F13/F31 legs 1–3 or the checkpoint seam is retracted — PARK-V2 sits above them and makes the >threshold branch of each moot.
+  - **Task 20 (new, THE GATE)** — `agent/runner/live_claude_resume_test.go` `TestLiveClaudeParkExitResume` (`//go:build live_claude`, real pinned CLI, no cluster): SIGTERM claude mid-`ask_human` against a parking stub MCP server, assert the pending `tool_use` is on disk, restore ONLY the JSONL under a fresh HOME/cwd, `claude -p --resume` against a fresh ANSWERED stub, assert the pending tools/call is RE-ISSUED and completes. Answers pins P1–P6 (recorded here on execution). Green ⇒ Tasks 24–27 proceed; red ⇒ ship `--agent-short-park-max=0` (pure PARK-V1), zero schema waste. Also lands the frozen `runner.ContinuationPrompt`, `runner.ExitAwaitingHuman = 86`, and `runner.CwdSlug`.
+  - **Task 21 (new, delta §F)** — contract addendum (§8.1 rows `AGENT_PARK_EXIT_GRACE_SECONDS`/`AGENT_STREAM_LOG_MAX_LINE_BYTES`/`AGENT_SESSION_ID`/`AGENT_SESSION_FILE`; flight output gains `session.jsonl` + `park.json` + reserved `flight-prev`; exit-code registry 86/3; §5 `step.park`-without-`step.end` ingestion exception) + `agent/schema` additions (`StatusParked`/`RunStatusParked` + `ThreeWayStatus` mapping, `Results.SessionID`, `RunMetrics.SessionID`, `EventStepPark`/`EventStepResume` + `StepParkData`/`StepResumeData`, `StepStartData.Resumed/.Replayed`, `StepEndData.SessionID`) + migration `1773106062` (metrics CHECK gains `'parked'`, column `session_id`).
+  - **Task 22 (new, accommodation #2)** — `ci-agent/llm/result.go` `CallResult` gains `SessionID` (populated from the envelope field parsed at :51 and previously discarded); ci-agent's `step.end` payload gains `session_id`.
+  - **Task 23 (new, accommodation #1, delta §G)** — agent-runner switches to `--output-format stream-json` teed line-by-line to stdout (`fly watch` = live transcript) with the 16KiB tee-only truncation guard (parser always sees full lines); the stream is parsed for best-effort usage accumulation + the terminal `result` event as THE envelope (never required — pin P3); session JSONL copied to `flight/session.jsonl` at EVERY exit; `results.json` gains `session_id`. Supersedes Task 15's `--output-format json` + last-line parse.
+  - **Task 24 (new, GATED, delta §B2/§D)** — runner park-exit path: 5s `flight/park.json` stat watcher → SIGTERM claude → `AGENT_PARK_EXIT_GRACE_SECONDS` (30) → SIGKILL → partial `cost.record` + terminal `step.park` (no `step.end`) → `results.json` status `parked` + session_id → exit **86**; resume mode: `AGENT_SESSION_ID`/`AGENT_SESSION_FILE` install the transcript under `~/.claude/projects/<cwd-slug>/` and invoke `claude -p --resume <id>` with the frozen `ContinuationPrompt`, leading `step.resume` event.
+  - **Task 25 (new, delta §B6)** — migration `1773106061` `agent_run_step_state` (contracts §1.14, UNIQUE (pipeline_run_id, step_name)) + `db.AgentRunStepStateFactory` (Upsert/Find) + fake.
+  - **Task 26 (new, GATED, delta §B5/§B6/§D)** — exec.AgentStep: exit-86 distinguished end (no fifth build status — build fails as CARRIER; the triple is exit 86 + additive `atc/event.AwaitingHuman` build event + the step-state row; the platform's authority stays the open question row); outputs registered + parked partial ingestion (status `parked`, session_id, ledger via the normal F3 gate) + `awaiting_human` step-state upsert with artifact handles; continuation consult keyed (pipeline_run_id, step_name) — `completed` ⇒ zero-cost short-circuit replay by handle restore (REQUIRED: overnight plan-approval parks are the common case), `awaiting_human` ⇒ restore workspace + `flight-prev` inputs and set session env, absent ⇒ cold; `completed` upsert at every normal end; `StepSlice` re-resolved at every execution start (decision 32 — resolution not reservation; park-exit partial spend already ledgered makes it self-tightening; P5-cumulative caveat flagged inline); `TaskDelegate` gains `AwaitingHuman(logger, questionID, sessionID)`; validator reserves `flight-prev`. *(Follow-up 2026-07-10 — `PLATFORM_MCP_PARK_PATH` producer assigned:)* the frozen delta's §B1 sentinel-path env had NO producer — plan 11's renderer emits only `PLATFORM_MCP_SHORT_PARK_MAX_SECONDS` and cannot know the flight mount path at render time, and 08's Task 1 addendum wrongly attributed the row to the renderer, so every `ask_human` long-park would have degraded LOUDLY to the SSE park (the ask_human half of PARK-V2 never activating). Per F15 (sidecar rows for exec-owned steps are populated programmatically by the owning exec), Task 26 now appends `PLATFORM_MCP_PARK_PATH=<flight mount>/park.json` to `ContainerSpec.SidecarEnv["platform"]` in the Task 12 step-7 assembly (agent steps only; checkpoint pods stay unset = never write); co-signed edits: 08's addendum row + `Config.ParkPath` comments corrected, 00 §8.1 gains the row.
+  - **Task 27 (new, GATED, delta §B6)** — continuation-pin: `GetOrphanedVolumes` (volume_repository.go:542) excludes volumes whose handles appear in `agent_run_step_state.artifacts` of runs in (`running`,`awaiting_human`) — one DB-side predicate pins both the volume and its DaemonSet fabric locator (the jetbridge reaper only acts on `destroying` volumes); dissolves at terminal run status, bounded by `--agent-park-timeout` (72h).
+  - **Inline notes** added to Tasks 4/6/12/13/15 so already-landed baseline code is amended (never re-implemented) by the PARK-V2 tasks; execution notes gain the PARK-V2 ordering + rollback paragraphs.
+
+  Cross-workstream (co-signed, NOT implemented here): 03-pipeline-runs owns `awaiting_human` run status (migration `1773106032`), lifecycler entry/exit, park-timeout expiry + `run.park_expired` notification, run-status API/`fly runs`/Elm badge; 08-platform-mcp-hitl owns the sidecar threshold timer + atomic `park.json` writer, checkpoint-client exit 3, `question_hash` find-or-create dedup (migration `1773106072`), ticket-page chip; 11-dispatch owns `reconcileAwaitingRuns` (Task 11c), principal/secret re-mint, continuation-build trigger (`created_by = "agent-dispatcher:resume"`); 02-credentials-and-budgets owns the `SecretAttacher.Attach` create-or-update amendment + `RunActive` counting `awaiting_human` as active; 13-scorecards notes the (pipeline_run_id, step_name) cost-aggregation rule. The TICKET state enum was deliberately NOT reopened — parked-ness is a derivation (run `awaiting_human` OR open questions), never a ticket state.

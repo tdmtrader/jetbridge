@@ -4,7 +4,7 @@
 
 **Goal:** Render a live workflow-definition version into a `template: true` pipeline (golden-file validated) whose `agent:` steps and terminal `harvest:` step are fully self-contained, then ship the `dispatcher` RunnableComponent that claims `queued` tickets, admits them against budgets, attaches the filer's vaulted credential as an ephemeral K8s secret, creates the pipeline run, and walks the ticket through the single transition function.
 
-**Architecture:** Two libraries in a new `agent/dispatch` package. (1) A pure `Renderer` turns a `workflow.Config` + a `tickets.Ticket` (+ its spec/plan) into an `atc.Config` with `Template: true`, one job of rendered `agent:` steps interleaved with checkpoint steps, and an implicitly-appended terminal `harvest:` step — matching contracts §2.8 / §2.8.1 exactly, resolving every workflow-table reference into literal step config (the render-time-resolution rule). (2) A `Dispatcher` (RunnableComponent, polling+notify via the component Coordinator's lock, never notify-only) that loops over queued tickets, uses `tickets.Store.Transition(queued→running)` as the atomic multi-node claim, admits via `budget.Checker`, resolves the credential via `credentials.Backend` + `credentials.SecretAttacher`, persists the rendered template via `team.SavePipeline`, and starts the run via `db.PipelineRunFactory.CreateRun`. Each `Run` pass ends with a **run-completion reconciler** (`reconcileCompletedRuns`, Task 11b; added 2026-07-09 per the frozen checkpoint seam delta §6, F17) that walks `running` tickets whose pipeline run completed and applies the frozen decision tree — rejected `send_back` checkpoint ⇒ `running→queued` re-dispatch, rejected `fail` checkpoint or checkpoint-free failure ⇒ `running→needs_review`, unanswered checkpoint on a dead run ⇒ `running→errored` (orphan rows released), succeeded-but-still-running ⇒ `needs_review` safety net. Dispatch owns **no new tables and no new migrations** — it is pure integration of six wave-1/2/3 contract surfaces.
+**Architecture:** Two libraries in a new `agent/dispatch` package. (1) A pure `Renderer` turns a `workflow.Config` + a `tickets.Ticket` (+ its spec/plan) into an `atc.Config` with `Template: true`, one job of rendered `agent:` steps interleaved with checkpoint steps, and an implicitly-appended terminal `harvest:` step — matching contracts §2.8 / §2.8.1 exactly, resolving every workflow-table reference into literal step config (the render-time-resolution rule). (2) A `Dispatcher` (RunnableComponent, polling+notify via the component Coordinator's lock, never notify-only) that loops over queued tickets, uses `tickets.Store.Transition(queued→running)` as the atomic multi-node claim, admits via `budget.Checker`, resolves the credential via `credentials.Backend` + `credentials.SecretAttacher`, persists the rendered template via `team.SavePipeline`, and starts the run via `db.PipelineRunFactory.CreateRun`. Each `Run` pass ends with a **run-completion reconciler** (`reconcileCompletedRuns`, Task 11b; added 2026-07-09 per the frozen checkpoint seam delta §6, F17) that walks `running` tickets whose pipeline run completed and applies the frozen decision tree — rejected `send_back` checkpoint ⇒ `running→queued` re-dispatch, rejected `fail` checkpoint or checkpoint-free failure ⇒ `running→needs_review`, unanswered checkpoint on a dead run ⇒ `running→errored` (orphan rows released), succeeded-but-still-running ⇒ `needs_review` safety net. A sibling pass **`reconcileAwaitingRuns`** (Task 11c; added 2026-07-10 per the frozen PARK-V2 seam delta §D) re-arms `awaiting_human` runs whose park questions are all answered: revoke-and-re-mint the per-run principal (park-aware expiry), refresh the run secret via `SecretAttacher.Attach`'s amended create-or-update contract, and trigger a continuation build through the existing `db.Job.CreateBuild` seam (`created_by: "agent-dispatcher:resume"`) — the reconciler never writes `pipeline_runs.status` (the lifecycler flips the run back to `running` via its reopen machinery; single-writer preserved). Dispatch owns **no new tables and no new migrations** — it is pure integration of six wave-1/2/3 contract surfaces.
 
 **Tech Stack:** Go (`agent/dispatch`, `atc/db`, `atc/atccmd`), Ginkgo/Gomega for `atc/*` packages, plain `testing` for the stdlib-only renderer, squirrel/`goccy/go-yaml`, the component framework (`atc/component`), client-go fake clientset for secret-attach tests, and the theborg live-cluster pattern for the end-to-end dispatch proof.
 
@@ -14,7 +14,7 @@
 
 **Charter (id: `dispatch`, size L, wave 4).** Goal: render workflow-definition versions into concrete pipeline templates (golden-file validated), then ship the RunnableComponent that claims queued tickets, admits against budgets, attaches vaulted credentials, and makes "queued" sufficient. Two milestones:
 - **MILESTONE 1 — renderer library:** definition version → `template: true` pipeline config with fully-resolved `agent:` step config (steps never read workflow tables), sidecar mix, gate policy, checkpoint declarations, terminal harvest step; golden-file tests per definition version validated against `atc configvalidate`; rendered `spec.md`/`plan.md` materialized as run inputs; hand-dispatch via `fly run-pipeline` supported immediately (retires the wave-3 hand-written template).
-- **MILESTONE 2 — dispatcher RunnableComponent:** SQL claim/retry/timeout semantics with attempt caps under multi-web-node deployments; budget admission (per-ticket + global daily cap — over-cap dispatches stay queued, never failed; platform faults → error, not failed); credential resolution `agent_user_credentials` → ephemeral K8s secret, credential-expiry mid-run → error with owner noted; ticket transitions `queued→running→needs_review/failed/errored` exclusively through ticket-core's transition function; **run-completion reconciliation** (added 2026-07-09, checkpoint seam delta §6, F17): the same Dispatcher pass walks `running` tickets whose run completed — rejected `send_back` checkpoints re-queue (`running→queued`, attempt_count++ via §2.1, loop capped by the existing MaxAttempts guard), rejected `fail` checkpoints and checkpoint-free failures go to `needs_review`, unanswered checkpoints on a completed run go to `errored` with the orphan question rows released.
+- **MILESTONE 2 — dispatcher RunnableComponent:** SQL claim/retry/timeout semantics with attempt caps under multi-web-node deployments; budget admission (per-ticket + global daily cap — over-cap dispatches stay queued, never failed; platform faults → error, not failed); credential resolution `agent_user_credentials` → ephemeral K8s secret, credential-expiry mid-run → error with owner noted; ticket transitions `queued→running→needs_review/failed/errored` exclusively through ticket-core's transition function; **run-completion reconciliation** (added 2026-07-09, checkpoint seam delta §6, F17): the same Dispatcher pass walks `running` tickets whose run completed — rejected `send_back` checkpoints re-queue (`running→queued`, attempt_count++ via §2.1, loop capped by the existing MaxAttempts guard), rejected `fail` checkpoints and checkpoint-free failures go to `needs_review`, unanswered checkpoints on a completed run go to `errored` with the orphan question rows released; **awaiting-run re-arm** (added 2026-07-10, PARK-V2 seam delta §D, FLOWS.md P2.5): the same Dispatcher pass walks `awaiting_human` runs with zero open park-policy questions and re-arms each — principal revoke-and-re-mint (`RunPrincipalTimeout`-aware expiry), secret refresh (create-or-update `Attach`, credential re-resolved via `credentials.Backend`), continuation build (`db.Job.CreateBuild` on the instanced pipeline's entry job `run`). Budget decision 32 (frozen): the continuation is the SAME logical step — no double `StepSlice` admission, because `StepSlice` is a RESOLUTION (min of slice and ticket remaining), not a reservation; the park-exit partial spend is already ledgered, so re-resolution at continuation start is automatically self-tightening.
 
 **scope_out (do NOT implement here):** harvest logic (a rendered step — harvest-step owns it), ticket CRUD/UI (ticket-core, delivery-outcomes), experiment batch creation (process-intel-experiments reuses this renderer). This plan therefore produces zero SQL migrations and no new HTTP routes — it consumes existing factories in-process (contracts §4.1: `runs:create` scope was removed; run creation is in-process via `PipelineRunFactory`).
 
@@ -31,7 +31,9 @@
 
 **Contract-surface sections this plan CONSUMES:** `ticket-tables-and-transition-function` (§1.7, §2.1), `workflow-definition-schema-and-hash` (§1.6, §2.2, §6), `pipeline-runs-api-and-lifecycle` (§1.5, §2.3, §7, §7.1), `agent-step-config-schema` (§2.8, §8.1), `harvest-terminal-step-schema-and-gate-policy` (§1.10, §2.8.1, §6.3, §8.3), `budget-library-and-cost-ledger` (§1.4, §2.7), `user-credential-vault-and-secret-helper` (§1.3, §2.6, §8.2), `agent-principal-auth` (§1.2, §4.1 — minting a per-run principal).
 
-**Real-code seams verified on branch `jetbridge`:** `atc/component.go:1-32` (component name constants — add `ComponentAgentDispatcher`), `atc/atccmd/command.go:795-829` (component Runner + Coordinator lock wiring), `:1186-1258` (`backendComponents` slice), `:1300-1315` (K8s clientset construction — `jetbridge.NewClientset(k8sCfg)`), `:2340` (`RunnableComponent` struct), `atc/pauser/pipeline_pauser.go` (RunnableComponent recipe: `Run(ctx) error`), `atc/db/team.go:45-50` + `:619` (`SavePipeline(ref, atc.Config, from, initiallyPaused)`), `atc/config.go:20-28` (`Config` fields + `UnmarshalConfig`), `atc/sidecar.go:13-63` (`SidecarConfig`/`SidecarSource`/`SidecarEnvVar`), `atc/steps.go:14` (`Step` envelope), `atc/configvalidate/validate.go:42` (`Validate(atc.Config)`), `atc/component/runner.go:13` (`NotificationsBus`).
+**PARK-V2 seam delta (FROZEN 2026-07-10; implements FLOWS.md P2.5 recommendations #1–#4 — read Part 2, the agent-model audit, before executing the PARK-V2 tasks):** long human-waits exit-and-respawn — past `--agent-short-park-max` (30m default; `0` disables, the rollback hatch) the platform SIDECAR (owner of the threshold timer for BOTH `ask_human` and `/checkpoint` parks) writes `flight/park.json`, the agent-runner SIGTERMs claude and exits 86 (the checkpoint client exits 3), the build finishes `failed` as a carrier only, and the lifecycler moves the run to the non-terminal `pipeline_runs.status = 'awaiting_human'` (zero pods, no live claude). Dispatch's additional surfaces: it CONSUMES the `db.PipelineRunAwaitingHuman` status constant (migration `1773106032`, owned by pipeline-runs, which also owns the lifecycler entry/exit including the `--agent-park-timeout` wall-clock expiry pass and the reopen flip back to `running`), open-park detection via the Task 11b `QuestionLister` rows (`answered_at IS NULL AND timeout_policy='park'` — ONLY park rows count; default/fail rows self-resolve), the additive `principals.Store.RevokeByName` (co-signed agent-identity, Task 11c), and `credentials.SecretAttacher.Attach`'s amended CREATE-OR-UPDATE contract (§8.2/§2.6, owned by credentials-and-budgets — same `agent-run-<pipeline_run_id>` secret; continuation pods are new pods, so the updated `principal-token` key is picked up at container start). It PRODUCES the re-arm pass (`reconcileAwaitingRuns`, Task 11c — no new component constant), the `--agent-short-park-max` web flag (Task 13), the additive `db.PipelineRun.CreateContinuationBuild` (co-signed pipeline-runs, Task 11c), and the renderer's `PLATFORM_MCP_SHORT_PARK_MAX_SECONDS` literal platform-sidecar env emission on agent AND checkpoint steps (delta §A; Tasks 2/3/5/7) — the renderer's ONLY PARK-V2 env row (clarified 2026-07-10 follow-up): `PLATFORM_MCP_PARK_PATH` is NOT renderer-emitted — the renderer cannot know the flight mount path at render time; per F15 the agent-step exec appends it via `ContainerSpec.SidecarEnv["platform"]` (plan 07 Task 26, contracts §8.1), and checkpoint pods deliberately never get it (unset = never write; the `202` response is that pod's exit signal). Per-workflow `hitl.short_park_max_seconds` is explicitly DEFERRED — global flag only in v1. The TICKET enum is NOT reopened: an awaiting run's ticket stays `running`; parked-ness surfaces via run state + open questions (delta §H, owned by pipeline-runs/platform-mcp-hitl UI surfaces, not here).
+
+**Real-code seams verified on branch `jetbridge`:** `atc/component.go:1-32` (component name constants — add `ComponentAgentDispatcher`), `atc/atccmd/command.go:795-829` (component Runner + Coordinator lock wiring), `:1186-1258` (`backendComponents` slice), `:1300-1315` (K8s clientset construction — `jetbridge.NewClientset(k8sCfg)`), `:2340` (`RunnableComponent` struct), `atc/pauser/pipeline_pauser.go` (RunnableComponent recipe: `Run(ctx) error`), `atc/db/team.go:45-50` + `:619` (`SavePipeline(ref, atc.Config, from, initiallyPaused)`), `atc/config.go:20-28` (`Config` fields + `UnmarshalConfig`), `atc/sidecar.go:13-63` (`SidecarConfig`/`SidecarSource`/`SidecarEnvVar`), `atc/steps.go:14` (`Step` envelope), `atc/configvalidate/validate.go:42` (`Validate(atc.Config)`), `atc/component/runner.go:13` (`NotificationsBus`), and (verified 2026-07-10 for Task 11c's continuation seam) `atc/db/job.go:87/:825` (`Job.CreateBuild(createdBy string) (Build, error)`), `atc/db/pipeline.go:108` (`Pipeline.Job(name string) (Job, bool, error)`), `atc/db/job.go:100` (`Job.GetPendingBuilds()`).
 
 ---
 
@@ -81,7 +83,7 @@ git commit -m "docs(dispatch): wave-4 contract addendum - renderer output + disp
 
 ### Task 2: `agent/dispatch` package skeleton + `RenderInput`/`RenderOutput` types
 
-The renderer is a pure library (no DB, no k8s) so it can be unit-tested with plain `testing` and reused by process-intel-experiments. Define its input/output types first, referencing only already-landed types from `atc`, `agent/workflow`, and `agent/api/tickets`.
+The renderer is a pure library (no DB, no k8s) so it can be unit-tested with plain `testing` and reused by process-intel-experiments. Define its input/output types first, referencing only already-landed types from `atc`, `agent/workflow`, and `agent/api/tickets`. *(Amended 2026-07-10, PARK-V2 delta §A: `RenderInput` gains `ShortParkMaxSeconds int` — the exit-and-respawn threshold the renderer stamps onto the platform sidecar as literal env, Tasks 3/5. `0` = never exit, pure PARK-V1; the zero value keeps every existing test valid, so `Validate` does not check it.)*
 
 **Files:**
 - Create: `agent/dispatch/render_types.go`
@@ -177,6 +179,15 @@ type RenderInput struct {
 	Tasks          []tickets.Task  // active plan, or empty
 	AgentStepImage string          // --agent-step-image value; empty is an error
 	ATCExternalURL string          // ATC base URL for ATC_EXTERNAL_URL env
+
+	// ShortParkMaxSeconds is rendered into the platform sidecar env as
+	// PLATFORM_MCP_SHORT_PARK_MAX_SECONDS on agent AND checkpoint steps
+	// (PARK-V2 delta §A, 2026-07-10): past this threshold the SIDECAR (which
+	// owns the park timer for both ask_human and /checkpoint parks) writes
+	// flight/park.json and the step exits to be respawned on answer. 0 =
+	// never exit (pure PARK-V1 SSE park — the rollback hatch). The dispatcher
+	// sets it from --agent-short-park-max via RenderResolver.WithShortParkMax.
+	ShortParkMaxSeconds int
 }
 
 // RenderOutput is the self-contained result. Config is a template: true
@@ -232,7 +243,7 @@ git commit -m "feat(dispatch): agent/dispatch package + RenderInput/RenderOutput
 
 ### Task 3: Render one `agent:` step from a `workflow.Step`
 
-The core of the render-time-resolution rule: a `workflow.Step{Agent:...}` becomes an `atc.AgentStep` with the prompt text inlined from `workflow.Config.Prompts`, sidecars resolved to inline `atc.SidecarConfig` (image + role-name so agent-step's exec derives the MCP URL by name), budget slice + model + max-turns resolved with `Defaults` fallback, and the §8.1 identity/provenance env baked in as literal values. *(Amended 2026-07-09, F30 delta: `AGENT_PIPELINE_RUN_ID` is the `((run_id))` reserved var — `pipeline_runs.id`, allocated pre-materialization by `CreateRun` — NOT the per-template `((run))` number, whose values collide across tickets. The renderer injects `((run_id))` at both sites: here and in `renderCheckpointStep`.)*
+The core of the render-time-resolution rule: a `workflow.Step{Agent:...}` becomes an `atc.AgentStep` with the prompt text inlined from `workflow.Config.Prompts`, sidecars resolved to inline `atc.SidecarConfig` (image + role-name so agent-step's exec derives the MCP URL by name), budget slice + model + max-turns resolved with `Defaults` fallback, and the §8.1 identity/provenance env baked in as literal values. *(Amended 2026-07-09, F30 delta: `AGENT_PIPELINE_RUN_ID` is the `((run_id))` reserved var — `pipeline_runs.id`, allocated pre-materialization by `CreateRun` — NOT the per-template `((run))` number, whose values collide across tickets. The renderer injects `((run_id))` at both sites: here and in `renderCheckpointStep`.)* *(Amended 2026-07-10, PARK-V2 delta §A: the renderer stamps `PLATFORM_MCP_SHORT_PARK_MAX_SECONDS` as a literal env row on the `platform`-role sidecar — and ONLY that sidecar; the platform sidecar owns the short-park timer. Plan 07's exec populates its §8.1 sidecar env programmatically through the same literal-Env seam, so the renderer-emitted row passes through untouched.)*
 
 **Files:**
 - Create: `agent/dispatch/render_agent.go`
@@ -272,6 +283,7 @@ func TestRenderAgentStepResolvesInlinePromptAndSidecars(t *testing.T) {
 	in.Ticket.Repo = "tdmtrader/concourse"
 	in.Workflow.Version = 3
 	in.WorkflowHashForTest = "abc123"
+	in.ShortParkMaxSeconds = 1800 // PARK-V2 delta §A (2026-07-10)
 
 	got, err := dispatch.RenderAgentStep(in, step)
 	if err != nil {
@@ -294,6 +306,22 @@ func TestRenderAgentStepResolvesInlinePromptAndSidecars(t *testing.T) {
 	}
 	if got.Sidecars[0].Config.Name != "dev" || got.Sidecars[0].Config.Image != "ghcr.io/tdmtrader/mcp-dev-concourse:v1" {
 		t.Errorf("dev sidecar wrong: %+v", got.Sidecars[0].Config)
+	}
+	// PARK-V2 (2026-07-10, delta §A): the platform sidecar — and only it —
+	// carries the short-park threshold as literal env. 0 would mean never exit.
+	var shortPark string
+	for _, e := range got.Sidecars[1].Config.Env {
+		if e.Name == "PLATFORM_MCP_SHORT_PARK_MAX_SECONDS" {
+			shortPark = e.Value
+		}
+	}
+	if shortPark != "1800" {
+		t.Errorf("platform sidecar must carry PLATFORM_MCP_SHORT_PARK_MAX_SECONDS=1800, got %q (env %+v)", shortPark, got.Sidecars[1].Config.Env)
+	}
+	for _, e := range got.Sidecars[0].Config.Env {
+		if e.Name == "PLATFORM_MCP_SHORT_PARK_MAX_SECONDS" {
+			t.Errorf("only the platform sidecar owns the short-park timer; dev sidecar must not carry it")
+		}
 	}
 	if got.Env["AGENT_TICKET_ID"] != "42" || got.Env["AGENT_WORKFLOW_NAME"] != "standard-dev" ||
 		got.Env["AGENT_WORKFLOW_VERSION"] != "3" || got.Env["AGENT_WORKFLOW_HASH"] != "abc123" ||
@@ -369,6 +397,20 @@ func RenderAgentStep(in RenderInput, s workflow.Step) (atc.AgentStep, error) {
 	sidecars, err := renderSidecars(in.Workflow, s.Sidecars)
 	if err != nil {
 		return atc.AgentStep{}, fmt.Errorf("agent step %q: %w", s.Agent, err)
+	}
+
+	// PARK-V2 (2026-07-10, delta §A): the platform sidecar owns the short-park
+	// timer for BOTH ask_human and /checkpoint parks; the renderer stamps the
+	// threshold as literal env on it (and only it). 0 = never exit (pure
+	// PARK-V1). Plan 07's exec adds its §8.1 sidecar env through the same
+	// literal-Env seam, so this row passes through untouched.
+	for _, sc := range sidecars {
+		if sc.Config != nil && sc.Config.Name == "platform" {
+			sc.Config.Env = append(sc.Config.Env, atc.SidecarEnvVar{
+				Name:  "PLATFORM_MCP_SHORT_PARK_MAX_SECONDS",
+				Value: strconv.Itoa(in.ShortParkMaxSeconds),
+			})
+		}
 	}
 
 	// §8.1 identity + provenance env; AGENT_PIPELINE_RUN_ID is the ((run_id))
@@ -916,7 +958,7 @@ git commit -m "feat(atc/jetbridge): sidecar env secretKeyRef ValueFrom, gated by
 
 ### Task 5: Assemble the full pipeline `atc.Config` (`Render`)
 
-Combine the agent/checkpoint steps + terminal harvest into one `template: true` pipeline with a single entry job `run`. Checkpoint steps (`workflow.Step{Checkpoint:...}`) render to a `task:`-style checkpoint step that platform-mcp-hitl's rendered checkpoint recognizes (§3.2). *(Amended 2026-07-09 per the frozen checkpoint seam delta §2: `renderCheckpointStep` emits the delta shape verbatim — NO `AGENT_PRINCIPAL_TOKEN` param (F16), `((run_id))` at both env sites (F30), `ImageResource.Source` split into repository+tag via the new `splitImageRef` helper (F29), one inline `platform` sidecar with four literal env rows + the principal-token secretKeyRef ValueFrom (F15, Task 4b seam), and a render-time guard erroring when the workflow declares a checkpoint but no `platform` sidecar (F36).)* Per §2.8.2, the declared params are minimal (`ticket_id`). The default read model is MCP: NO spec/plan bytes are injected into any agent step and `RunInputs` is empty — the agent reaches spec/plan through the platform-mcp read tools (`read_ticket`/`list_tasks`/`get_task`). Only when the resolved `workflow.Config.SpecDelivery == "files"` does the renderer populate `RunInputs` with `spec.md`/`plan.md` (for the dispatcher to mount read-only as an artifact named `ticket`).
+Combine the agent/checkpoint steps + terminal harvest into one `template: true` pipeline with a single entry job `run`. Checkpoint steps (`workflow.Step{Checkpoint:...}`) render to a `task:`-style checkpoint step that platform-mcp-hitl's rendered checkpoint recognizes (§3.2). *(Amended 2026-07-09 per the frozen checkpoint seam delta §2: `renderCheckpointStep` emits the delta shape verbatim — NO `AGENT_PRINCIPAL_TOKEN` param (F16), `((run_id))` at both env sites (F30), `ImageResource.Source` split into repository+tag via the new `splitImageRef` helper (F29), one inline `platform` sidecar with four literal env rows + the principal-token secretKeyRef ValueFrom (F15, Task 4b seam), and a render-time guard erroring when the workflow declares a checkpoint but no `platform` sidecar (F36).)* *(Amended 2026-07-10, PARK-V2 delta §A: the checkpoint's inline `platform` sidecar gains the literal `PLATFORM_MCP_SHORT_PARK_MAX_SECONDS` env row — the threshold applies to `/checkpoint` parks exactly as to `ask_human` parks; past it the sidecar answers the blocked client POST with `202 {"parked": true}` and the client exits with the frozen code 3 = parked-past-threshold, which fails the task — exactly the carrier the run-level `awaiting_human` machinery wants (delta §B4/§B5). Still no step timeout. If Task 6's goldens landed first, regenerate them with `-update` — they gain the row.)* Per §2.8.2, the declared params are minimal (`ticket_id`). The default read model is MCP: NO spec/plan bytes are injected into any agent step and `RunInputs` is empty — the agent reaches spec/plan through the platform-mcp read tools (`read_ticket`/`list_tasks`/`get_task`). Only when the resolved `workflow.Config.SpecDelivery == "files"` does the renderer populate `RunInputs` with `spec.md`/`plan.md` (for the dispatcher to mount read-only as an artifact named `ticket`).
 
 **Files:**
 - Create: `agent/dispatch/render.go`
@@ -950,6 +992,7 @@ func TestRenderProducesTemplatePipelineWithOneRunJob(t *testing.T) {
 	in.Ticket = tickets.Ticket{ID: 42, Repo: "tdmtrader/concourse", TargetBranch: "main", Title: "Fix X"}
 	in.Spec = &tickets.Spec{Title: "Fix X", Body: "do the thing"}
 	in.Tasks = []tickets.Task{{Ordering: 1, Title: "step one", Status: tickets.TaskPending}}
+	in.ShortParkMaxSeconds = 1800 // PARK-V2 delta §A (2026-07-10)
 
 	out, err := dispatch.Render(in)
 	if err != nil {
@@ -1036,6 +1079,11 @@ func TestRenderProducesTemplatePipelineWithOneRunJob(t *testing.T) {
 	if literals["ATC_EXTERNAL_URL"] != "https://concourse.home" || literals["AGENT_TICKET_ID"] != "42" ||
 		literals["AGENT_PIPELINE_RUN_ID"] != "((run_id))" || literals["AGENT_STEP_NAME"] != "checkpoint-plan-approval" {
 		t.Errorf("platform sidecar literal env rows wrong (F15): %+v", literals)
+	}
+	// PARK-V2 (2026-07-10, delta §A): checkpoint parks obey the same threshold
+	// as ask_human parks — the sidecar env carries it as a literal row.
+	if literals["PLATFORM_MCP_SHORT_PARK_MAX_SECONDS"] != "1800" {
+		t.Errorf("platform sidecar must carry PLATFORM_MCP_SHORT_PARK_MAX_SECONDS=1800 (PARK-V2), got %q", literals["PLATFORM_MCP_SHORT_PARK_MAX_SECONDS"])
 	}
 	if tokenRef == nil || tokenRef.Name != "agent-run-((run_id))" || tokenRef.Key != "principal-token" {
 		t.Fatalf("platform sidecar must carry AGENT_PRINCIPAL_TOKEN via secretKeyRef {agent-run-((run_id)), principal-token} (F15), got %+v", tokenRef)
@@ -1370,6 +1418,13 @@ func renderCheckpointStep(in RenderInput, s workflow.Step) (atc.TaskStep, error)
 		{Name: "AGENT_TICKET_ID", Value: fmt.Sprintf("%d", in.Ticket.ID)},
 		{Name: "AGENT_PIPELINE_RUN_ID", Value: "((run_id))"},
 		{Name: "AGENT_STEP_NAME", Value: stepName},
+		// PARK-V2 (2026-07-10, delta §A): the sidecar owns the short-park
+		// timer; past this threshold its /checkpoint handler responds
+		// 202 {"parked": true}, the client exits 3 (parked-past-threshold),
+		// the task fails as a carrier, and the run goes awaiting_human.
+		// 0 = never exit (pure PARK-V1). The question row stays open — it is
+		// the durable representation of the wait.
+		{Name: "PLATFORM_MCP_SHORT_PARK_MAX_SECONDS", Value: strconv.Itoa(in.ShortParkMaxSeconds)},
 		{Name: "AGENT_PRINCIPAL_TOKEN", ValueFrom: &atc.SidecarEnvVarSource{
 			SecretKeyRef: &atc.SidecarSecretKeySelector{Name: "agent-run-((run_id))", Key: "principal-token"},
 		}},
@@ -1416,7 +1471,7 @@ func splitImageRef(image string) (repo, tag string) {
 }
 ```
 
-(`render.go`'s import block gains `"strings"`.)
+(`render.go`'s import block gains `"strings"` — and `"strconv"` for the PARK-V2 `PLATFORM_MCP_SHORT_PARK_MAX_SECONDS` row, 2026-07-10.)
 
 - [ ] **Step 4b: Add the in-package `splitImageRef` table test** (added 2026-07-09, F29; the helper is unexported per the frozen delta name, so the test lives in `package dispatch`) — create `agent/dispatch/render_internal_test.go`:
 
@@ -1812,7 +1867,7 @@ git commit -m "test(dispatch): pin nil-spec/nil-plan render in both spec_deliver
 
 ### Task 7: `RenderResolver` — resolve a ticket's live workflow definition into a `RenderInput`
 
-The dispatcher does not read workflow tables inside the render (render-time-resolution rule) — it *resolves* the live/pinned definition first, then hands the renderer a fully-materialized `RenderInput`. This resolver consumes `workflow.Store` + `tickets.Store` and is the seam between the pure renderer and the DB.
+The dispatcher does not read workflow tables inside the render (render-time-resolution rule) — it *resolves* the live/pinned definition first, then hands the renderer a fully-materialized `RenderInput`. This resolver consumes `workflow.Store` + `tickets.Store` and is the seam between the pure renderer and the DB. *(Amended 2026-07-10, PARK-V2 delta §A: the resolver also threads the short-park threshold into `RenderInput.ShortParkMaxSeconds` via a chainable `WithShortParkMax(time.Duration)` setter — existing `NewRenderResolver` call sites stay valid; an un-set resolver renders `0` = never exit, i.e. pure PARK-V1.)*
 
 **Files:**
 - Create: `agent/dispatch/resolver.go`
@@ -1861,7 +1916,8 @@ func TestResolveLiveDefinition(t *testing.T) {
 	store := &fakeWorkflowStore{live: map[string]*workflow.Definition{"standard-dev": def}}
 
 	tkt := tickets.Ticket{ID: 42, Repo: "r/x", WorkflowName: "standard-dev"} // WorkflowVersion nil => live
-	r := dispatch.NewRenderResolver(store, "img:v1", "https://c.home")
+	r := dispatch.NewRenderResolver(store, "img:v1", "https://c.home").
+		WithShortParkMax(30 * time.Minute) // PARK-V2 delta §A (2026-07-10)
 	in, err := r.Resolve(tkt, nil, nil)
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
@@ -1871,6 +1927,9 @@ func TestResolveLiveDefinition(t *testing.T) {
 	}
 	if in.AgentStepImage != "img:v1" || in.ATCExternalURL != "https://c.home" {
 		t.Errorf("resolver did not thread image/url: %+v", in)
+	}
+	if in.ShortParkMaxSeconds != 1800 {
+		t.Errorf("resolver must thread the short-park threshold in whole seconds, got %d", in.ShortParkMaxSeconds)
 	}
 }
 
@@ -1883,6 +1942,8 @@ func TestResolveNoLiveVersionErrors(t *testing.T) {
 	}
 }
 ```
+
+(`resolver_test.go`'s import block gains `"time"` for the `WithShortParkMax` call, 2026-07-10.)
 
 - [ ] **Step 2: Run to verify failure**
 
@@ -1911,13 +1972,25 @@ var ErrNoLiveWorkflow = errors.New("no live or pinned workflow version for ticke
 // resolving its workflow definition (pinned version or live). It is the only
 // component that touches workflow.Store; the renderer stays pure.
 type RenderResolver struct {
-	workflows      workflow.Store
-	agentStepImage string
-	atcExternalURL string
+	workflows           workflow.Store
+	agentStepImage      string
+	atcExternalURL      string
+	shortParkMaxSeconds int // PARK-V2 delta §A (2026-07-10); 0 = never exit
 }
 
 func NewRenderResolver(workflows workflow.Store, agentStepImage, atcExternalURL string) *RenderResolver {
 	return &RenderResolver{workflows: workflows, agentStepImage: agentStepImage, atcExternalURL: atcExternalURL}
+}
+
+// WithShortParkMax sets the exit-and-respawn threshold rendered into the
+// platform sidecar env as PLATFORM_MCP_SHORT_PARK_MAX_SECONDS (PARK-V2 delta
+// §A, 2026-07-10; --agent-short-park-max, Task 13). Truncates to whole
+// seconds. 0 disables exit-and-respawn entirely (pure PARK-V1 SSE park — the
+// rollback hatch). Chainable so existing NewRenderResolver call sites are
+// untouched.
+func (r *RenderResolver) WithShortParkMax(d time.Duration) *RenderResolver {
+	r.shortParkMaxSeconds = int(d / time.Second)
+	return r
 }
 
 // Resolve looks up the ticket's workflow (pinned WorkflowVersion, else live),
@@ -1955,9 +2028,12 @@ func (r *RenderResolver) Resolve(t tickets.Ticket, spec *tickets.Spec, tasks []t
 		AgentStepImage:      r.agentStepImage,
 		ATCExternalURL:      r.atcExternalURL,
 		WorkflowHashForTest: def.ContentHash,
+		ShortParkMaxSeconds: r.shortParkMaxSeconds, // PARK-V2 delta §A (2026-07-10)
 	}, nil
 }
 ```
+
+(`resolver.go`'s import block gains `"time"`, 2026-07-10.)
 
 - [ ] **Step 4: Confirm the `workflow.Config.Version` pass-through exists.** The resolver stamps `cfg.Version = def.Version` (above), relying on the `Config.Version` field added back in Task 2, Step 4. Verify it is present:
 
@@ -3166,7 +3242,7 @@ git commit -m "feat(dispatch): Dispatcher RunnableComponent loop with attempt-ca
 
 *(Added 2026-07-09 per the frozen checkpoint seam delta §6. Milestone 2. F17: a rejected bare checkpoint halts the plan BEFORE the terminal harvest step, so nothing ever transitioned the ticket — `on_reject: fail` stranded it in `running` forever, and `send_back`'s →queued re-dispatch had no signal path at all.)*
 
-The reconciler is a pass on the EXISTING `dispatch.Dispatcher` RunnableComponent (`atc.ComponentAgentDispatcher`; polling+notify, never notify-only) — **no new component constant**. Each `Run` pass, after the queued-dispatch loop, it calls `(d *Dispatcher) reconcileCompletedRuns(ctx, logger)`. Candidates: tickets in `StateRunning` with non-nil `pipeline_run_id` whose `pipeline_runs` row is COMPLETE (`completed_at` set; statuses per §1.5 — a PARKED run counts as running, so the reconciler can never fire mid-park). All ticket writes go through ticket-core's `Transition` (the single writer); `ErrStaleTransition`/`ErrTicketNotFound` are BENIGN — log and continue — harvest may have raced (harvest at 09:94 is the primary writer of the succeeded→needs_review edge; **TWO-WRITERS is now the recorded contract**, the reconciler is the later/backup writer). Ticket-core edge note (delta §7, owned by 06): `validTransitions` ALREADY contains `StateRunning: {StateQueued, …}` — NO matrix change here; the edge annotation broadens to `running → queued (retryable platform error OR rejected send_back checkpoint re-dispatch; attempt_count++)` and 06's matrix test gains a comment naming this reconciler as the second legitimate caller.
+The reconciler is a pass on the EXISTING `dispatch.Dispatcher` RunnableComponent (`atc.ComponentAgentDispatcher`; polling+notify, never notify-only) — **no new component constant**. Each `Run` pass, after the queued-dispatch loop, it calls `(d *Dispatcher) reconcileCompletedRuns(ctx, logger)`. Candidates: tickets in `StateRunning` with non-nil `pipeline_run_id` whose `pipeline_runs` row is COMPLETE (`completed_at` set; statuses per §1.5 — a PARKED run counts as running, so the reconciler can never fire mid-park). *(Amended 2026-07-10, PARK-V2 delta §C: an `awaiting_human` run also has `completed_at` NULL, so it is likewise never a candidate here — Task 11c owns it; `reconcileCompletedRuns` is UNCHANGED by PARK-V2. The one new flow INTO this reconciler: when the lifecycler's `--agent-park-timeout` wall-clock pass ends an `awaiting_human` run as `errored` — releasing its open rows via `Answer(id, "", "platform")` and firing `run.park_expired` — the now-complete errored run lands in THIS reconciler's existing branch (b.3) (or (b.2) if any checkpoint row somehow stayed open) and the ticket is errored/triaged exactly as today.)* All ticket writes go through ticket-core's `Transition` (the single writer); `ErrStaleTransition`/`ErrTicketNotFound` are BENIGN — log and continue — harvest may have raced (harvest at 09:94 is the primary writer of the succeeded→needs_review edge; **TWO-WRITERS is now the recorded contract**, the reconciler is the later/backup writer). Ticket-core edge note (delta §7, owned by 06): `validTransitions` ALREADY contains `StateRunning: {StateQueued, …}` — NO matrix change here; the edge annotation broadens to `running → queued (retryable platform error OR rejected send_back checkpoint re-dispatch; attempt_count++)` and 06's matrix test gains a comment naming this reconciler as the second legitimate caller.
 
 Decision tree (frozen, delta §6; keyed off `agent_run_questions.answer` — there is NO `approved` column):
 - **(a)** Run succeeded but ticket still running → `Transition(running→needs_review)` (safety net).
@@ -3748,6 +3824,650 @@ git commit -m "feat(dispatch): run-completion reconciler walks tickets whose run
 
 ---
 
+### Task 11c: Awaiting-run re-arm — `reconcileAwaitingRuns` (PARK-V2 seam delta §D, 2026-07-10)
+
+*(Added 2026-07-10 per the frozen PARK-V2 seam delta — exit-and-respawn for long human-waits; implements FLOWS.md P2.5 recommendations, co-signed agent-step + platform-mcp-hitl + pipeline-runs + shared contracts. Milestone 2.)*
+
+Context: past `--agent-short-park-max` the platform sidecar writes `flight/park.json`, the agent-runner SIGTERMs claude and exits 86 (the checkpoint client exits 3), the build finishes `failed` as a carrier only, and the lifecycler moves the run to non-terminal `pipeline_runs.status = 'awaiting_human'` — zero pods, no live claude, the OPEN park-policy `agent_run_questions` row is the durable representation of the wait (the authority; never the build status). When the human answers, someone must RE-ARM the run. That is this task.
+
+The re-arm is a sibling pass on the EXISTING `dispatch.Dispatcher` (`atc.ComponentAgentDispatcher`; polling+notify, never notify-only) — **no new component constant**, same `Dispatcher.Run` pass, running immediately after `reconcileCompletedRuns`. **Candidates:** runs `status='awaiting_human'` with ZERO open park-policy questions remaining (`answered_at IS NULL AND timeout_policy='park'` — ONLY `park` rows count; default/fail rows self-resolve, §C). Candidates are driven from `tickets.Store.List(StateRunning)`: the ticket enum is NOT reopened (delta §H — an awaiting run's ticket stays `running`), so every awaiting run is reachable through its running ticket's `pipeline_run_id` and a runs-side `ListAwaiting` surface is deliberately NOT added.
+
+Per candidate, three legs (delta §D):
+1. **Principal re-mint** — revoke-and-recreate `agent-run-<run-id>` with `expires_at = now + RunPrincipalTimeout(cfg, frozen workflow)` (the EXISTING park-aware helper from Task 9: 72h if the frozen workflow still contains park-policy steps, else `--agent-run-timeout`). Revocation needs the additive `principals.Store.RevokeByName` (Step 1, co-signed agent-identity).
+2. **Secret refresh** — `credentials.SecretAttacher.Attach` under its AMENDED contract (additive, §8.2/§2.6, owned by credentials-and-budgets): CREATE-OR-UPDATE the same `agent-run-<pipeline_run_id>` secret. Continuation pods are new pods, so the updated `principal-token` key is picked up at container start; the credential is re-resolved through `credentials.Backend`, so a rotated user OAuth token is honored (and an expired one errors with the owner noted, the existing `ResolveUserCredential` behavior).
+3. **Continuation build** — a manual build of the same entry job `run` on the same instanced pipeline via the existing `db.Job.CreateBuild` seam (verified `atc/db/job.go:87/:825`), `created_by = "agent-dispatcher:resume"`, exposed to dispatch as the additive `db.PipelineRun.CreateContinuationBuild` (Step 3, co-signed pipeline-runs) with a pending/started double-fire guard.
+
+The reconciler **never writes `pipeline_runs.status`** — the lifecycler's F26 reopen machinery (status filter extended to include `awaiting_human`, owned by plan 03) flips the run back to `running` when the continuation build appears; single-writer preserved. `reconcileCompletedRuns` is unchanged — an `awaiting_human` run has `completed_at` NULL so it is not complete, and the park-timeout-expired errored run flows into that reconciler's existing branches (see the Task 11b amendment). What the continuation build DOES is the exec's business (plan 07: `agent_run_step_state` keyed `(pipeline_run_id, step_name)` — completed steps replay by artifact restore at zero cost, the parked step `--resume`s its session, later steps run cold); dispatch only triggers it.
+
+**Notify:** the ATC `AnswerAgentQuestion` route (plan 08) additionally fires `atc.ComponentAgentDispatcher`'s component notify so resume is prompt — that wiring is 08's; Task 13's 10s `Interval` remains the polling fallback here (never notify-only, per the fork's dropped-notification lesson). The notify-triggered behavior is tested below as "answer arrives between passes ⇒ the very next pass re-arms".
+
+**Budget (decision 32, frozen — document, no code here):** the continuation is the SAME logical step and there is NO double admission, because `budget.Checker.StepSlice(ticketID, sliceUSD)` is a RESOLUTION (min of slice and ticket remaining), not a reservation. The continuation exec calls it again naturally at step start; the park-exit partial spend was already ledgered (delta §B6, normal F3 `inserted` gate — a new build means a new `(build_id, plan_id)` row, no dedup collision), so the re-resolved slice is automatically TIGHTER. Re-resolution can only shrink, never double-count: the append-only ledger is the single spend authority. Scorecard note (§1.8 consumer note): executions of one logical step share `(pipeline_run_id, step_name)` — aggregate cost/turns across rows with that key.
+
+**Interaction with `--agent-short-park-max=0`:** the pass needs no gating on the flag — with exit-and-respawn disabled, no run ever enters `awaiting_human`, so the candidate set is empty and the pass is inert.
+
+**Files:**
+- Create: `agent/dispatch/reconcile_awaiting.go`
+- Test: `agent/dispatch/reconcile_awaiting_test.go`
+- Modify: `agent/dispatch/deps.go` (`PrincipalRevoker` seam + `Deps.PrincipalRevoker`)
+- Modify: `agent/dispatch/dispatcher.go` (call the pass after `reconcileCompletedRuns`)
+- Modify: `agent/api/principals` types + `atc/db/agent_principals_factory.go` + test (additive `RevokeByName`, co-signed agent-identity)
+- Modify: `atc/db/pipeline_run_factory.go` (or the `PipelineRun` object file) + integration test (additive `PipelineRun.CreateContinuationBuild`, co-signed pipeline-runs)
+- Depends on (NOT modified here): plan 03's PARK-V2 block — the `'awaiting_human'` status CHECK (migration `1773106032`), the `db.PipelineRunAwaitingHuman` constant, the lifecycler entry/exit passes, and the `--agent-park-timeout` expiry pass. Plan 08's `AnswerAgentQuestion`→dispatcher-notify hookup. Plan 07's `agent_run_step_state` + continuation exec semantics.
+- (Wiring of `Deps.PrincipalRevoker` + the resolver's `WithShortParkMax` lands in Task 13's `command.go` block, updated 2026-07-10.)
+
+**Steps:**
+
+- [ ] **Step 1: Add the additive principal revoke (co-signed agent-identity).** In the `principals.Store` interface (`agent/api/principals`), add:
+
+```go
+	// RevokeByName revokes/deletes a principal by its unique name. Idempotent:
+	// revoking an absent principal is a no-op, nil error. (Additive,
+	// 2026-07-10 PARK-V2 delta §D — dispatch's awaiting-run re-arm does
+	// revoke-and-recreate on agent-run-<run-id> so the continuation gets a
+	// fresh token with a fresh park-aware expiry; co-signed agent-identity.)
+	RevokeByName(name string) error
+```
+
+Implementation in `atc/db/agent_principals_factory.go`:
+
+```go
+func (f *agentPrincipalsFactory) RevokeByName(name string) error {
+	_, err := psql.Delete("agent_principals").
+		Where(sq.Eq{"name": name}).
+		RunWith(f.conn).
+		Exec()
+	if err != nil {
+		return fmt.Errorf("revoke principal %q: %w", name, err)
+	}
+	return nil
+}
+```
+
+And a spec in the agent-principals factory DB test:
+
+```go
+	It("revokes a principal by name, idempotently (PARK-V2 re-arm, 2026-07-10)", func() {
+		_, _, err := store.Create(principals.CreateSpec{Name: "agent-run-9001", TeamName: "main", CreatedBy: "test"})
+		Expect(err).ToNot(HaveOccurred())
+
+		Expect(store.RevokeByName("agent-run-9001")).To(Succeed())
+		Expect(store.RevokeByName("agent-run-9001")).To(Succeed(), "revoking an absent principal is a no-op")
+
+		// A revoked name can be re-minted (the re-arm's recreate half).
+		_, tok, err := store.Create(principals.CreateSpec{Name: "agent-run-9001", TeamName: "main", CreatedBy: "test"})
+		Expect(err).ToNot(HaveOccurred())
+		Expect(tok).ToNot(BeEmpty())
+	})
+```
+
+Run: `cd /Users/tdmtrader/concourse/concourse && pg_isready && ginkgo --focus="revokes a principal by name" ./atc/db/`
+Expected: PASS after the two edits (FAIL to compile before them).
+
+- [ ] **Step 2: Confirm plan 03's PARK-V2 surfaces are landed — nothing to implement here.** The `'awaiting_human'` status (non-terminal; partial status index `WHERE status IN ('running','awaiting_human')`), the `db.PipelineRunAwaitingHuman` constant, the lifecycler entry rule (no builds pending/started + ≥1 entry build ran + open park rows exist ⇒ `awaiting_human`, `completed_at` stays NULL), its reopen-filter extension, and the `--agent-park-timeout` expiry pass are all owned and landed by pipeline-runs (03's PARK-V2 block, migration `1773106032`). Verify:
+
+Run: `cd /Users/tdmtrader/concourse/concourse && grep -rn "PipelineRunAwaitingHuman" atc/db/pipeline_run_factory.go atc/db/ | head -5`
+Expected: the constant is present. If missing, 03's PARK-V2 block has not landed in this worktree — execute it first, then continue here.
+
+- [ ] **Step 3: Add the additive continuation-build seam (co-signed pipeline-runs).** On the `db.PipelineRun` interface, add:
+
+```go
+	// CreateContinuationBuild triggers a manual build of the entry job "run"
+	// on this run's instanced pipeline via the existing db.Job.CreateBuild
+	// seam (additive, 2026-07-10 PARK-V2 delta §D; consumed by dispatch's
+	// reconcileAwaitingRuns; created_by should be "agent-dispatcher:resume").
+	// Returns created=false with a nil error when the job already has a
+	// pending/started build — the double-fire guard for the window between
+	// build creation and the lifecycler's reopen flip back to 'running'
+	// (successive Dispatcher passes must not stack continuations). It never
+	// writes pipeline_runs.status.
+	CreateContinuationBuild(createdBy string) (buildID int, created bool, err error)
+```
+
+Implementation on the `pipelineRun` object (it already holds `conn`, `lockFactory`, and its instanced `pipelineID`):
+
+```go
+func (r *pipelineRun) CreateContinuationBuild(createdBy string) (int, bool, error) {
+	pipeline := newPipeline(r.conn, r.lockFactory)
+	err := scanPipeline(pipeline, pipelinesQuery.
+		Where(sq.Eq{"p.id": r.pipelineID}).
+		RunWith(r.conn).
+		QueryRow())
+	if err != nil {
+		return 0, false, fmt.Errorf("continuation: pipeline %d: %w", r.pipelineID, err)
+	}
+
+	job, found, err := pipeline.Job("run")
+	if err != nil || !found {
+		return 0, false, fmt.Errorf("continuation: entry job %q on pipeline %d: found=%v err=%v", "run", r.pipelineID, found, err)
+	}
+
+	// Double-fire guard: a pending/started build on the entry job means a
+	// continuation (or the original build) is already in flight.
+	var inFlight bool
+	err = r.conn.QueryRow(
+		`SELECT EXISTS (SELECT 1 FROM builds WHERE job_id = $1 AND status IN ('pending','started'))`,
+		job.ID(),
+	).Scan(&inFlight)
+	if err != nil {
+		return 0, false, fmt.Errorf("continuation: in-flight check: %w", err)
+	}
+	if inFlight {
+		return 0, false, nil
+	}
+
+	build, err := job.CreateBuild(createdBy)
+	if err != nil {
+		return 0, false, fmt.Errorf("continuation: create build: %w", err)
+	}
+	return build.ID(), true, nil
+}
+```
+
+(Match the file's actual scan/query helper names — `newPipeline`/`scanPipeline`/`pipelinesQuery` per `atc/db/pipeline.go`; `Job(name)` verified at `atc/db/pipeline.go:108`, `CreateBuild(createdBy)` at `atc/db/job.go:87`.)
+
+And a spec in the pipeline-run integration test (Task 12's suite, real Postgres):
+
+```go
+	It("creates a continuation build on the entry job exactly once while one is in flight (PARK-V2, 2026-07-10)", func() {
+		run, err := factory.CreateRun(template.ID(), map[string]any{"ticket_id": 1}, "test")
+		Expect(err).ToNot(HaveOccurred())
+
+		// CreateRun auto-triggered the entry job (§7.1 point 8): a pending
+		// build exists, so the guard must refuse to stack a continuation.
+		_, created, err := run.CreateContinuationBuild("agent-dispatcher:resume")
+		Expect(err).ToNot(HaveOccurred())
+		Expect(created).To(BeFalse(), "pending first build => no stacked continuation")
+
+		// Drain the auto-triggered build (finish it via the suite's pipeline
+		// handle: pipeline.Job("run") -> GetPendingBuilds -> Finish succeeded),
+		// then the continuation is created and attributed.
+		drainEntryJobBuilds(pipeline) // suite helper added alongside this spec
+		buildID, created, err := run.CreateContinuationBuild("agent-dispatcher:resume")
+		Expect(err).ToNot(HaveOccurred())
+		Expect(created).To(BeTrue())
+		Expect(buildID).ToNot(BeZero())
+
+		build, found, err := buildFactory.Build(buildID)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(build.CreatedBy()).ToNot(BeNil())
+		Expect(*build.CreatedBy()).To(Equal("agent-dispatcher:resume"))
+	})
+```
+
+Write `drainEntryJobBuilds` with the suite's existing pipeline fixture (`pipeline.Job("run")` → `GetPendingBuilds()` → `Finish(db.BuildStatusSucceeded)` each; adapt to the Task 12 bootstrap's variable names when landing).
+
+Run: `cd /Users/tdmtrader/concourse/concourse && pg_isready && ginkgo --focus="creates a continuation build" ./agent/dispatch/integration/`
+Expected: PASS after the edits.
+
+- [ ] **Step 4: Write the failing re-arm tests** `agent/dispatch/reconcile_awaiting_test.go` (extends Task 11b's fakes — `rTickets`/`rQuestions`/`rRun` are reused as-is):
+
+```go
+package dispatch_test
+
+import (
+	"context"
+	"fmt"
+	"testing"
+	"time"
+
+	"github.com/concourse/concourse/agent/api/questions"
+	"github.com/concourse/concourse/agent/api/tickets"
+	"github.com/concourse/concourse/agent/credentials"
+	"github.com/concourse/concourse/agent/dispatch"
+	"github.com/concourse/concourse/atc/db"
+)
+
+// --- fakes (extending Task 11b's) -------------------------------------------
+
+// aRun is an rRun that also records continuation builds. After the first
+// continuation it flips stacked=true, mimicking the pending build that now
+// exists — the DB-side double-fire guard.
+type aRun struct {
+	rRun
+	continuations []string // created_by per created continuation
+	stacked       bool
+}
+
+func (r *aRun) CreateContinuationBuild(createdBy string) (int, bool, error) {
+	if r.stacked {
+		return 0, false, nil
+	}
+	r.continuations = append(r.continuations, createdBy)
+	r.stacked = true
+	return 9000 + len(r.continuations), true, nil
+}
+
+type aRuns struct {
+	hRuns // Task 10 stubs
+	run *aRun
+}
+
+func (r *aRuns) GetRunByID(id int) (db.PipelineRun, bool, error) {
+	if r.run != nil && r.run.id == id {
+		return r.run, true, nil
+	}
+	return nil, false, nil
+}
+
+type aRevoker struct{ revoked []string }
+
+func (r *aRevoker) RevokeByName(name string) error {
+	r.revoked = append(r.revoked, name)
+	return nil
+}
+
+type aAttacher struct {
+	runIDs     []int
+	tokens     []string // principal tokens passed to Attach
+	credTokens []string // credential tokens passed to Attach (rotation proof)
+}
+
+func (a *aAttacher) Attach(_ context.Context, runID int, cred *credentials.Credential, principalToken string) (string, error) {
+	a.runIDs = append(a.runIDs, runID)
+	a.tokens = append(a.tokens, principalToken)
+	a.credTokens = append(a.credTokens, cred.Token)
+	return fmt.Sprintf("agent-run-%d", runID), nil
+}
+
+func (a *aAttacher) Cleanup(context.Context, int) error { return nil }
+
+type aCreds struct{ token string }
+
+func (c aCreds) Resolve(userID int, kind string) (*credentials.Credential, bool, error) {
+	return &credentials.Credential{UserID: userID, UserName: "tdm", Kind: kind, Token: c.token}, true, nil
+}
+
+// --- fixtures ----------------------------------------------------------------
+
+// awaitingTicket: the ticket enum is NOT reopened (delta §H) — an awaiting
+// run's ticket stays StateRunning; UserID drives the credential re-resolve.
+func awaitingTicket(id, runID int) tickets.Ticket {
+	t := runningReconcileTicket(id, runID)
+	uid := 3
+	t.UserID = &uid
+	return t
+}
+
+// parkRow builds an ask_human park-policy question row (kind "question").
+func parkRow(id int, answered bool) questions.Question {
+	q := questions.Question{
+		ID: id, TicketID: 7, PipelineRunID: intp(100),
+		StepName: "implement", Kind: "question",
+		TimeoutPolicy: "park", AskedAt: int64(10 + id),
+	}
+	if answered {
+		q.AnsweredAt = int64(20 + id)
+		q.Answer = "proceed with option A"
+		q.AnsweredBy = "tdm"
+	}
+	return q
+}
+
+type awaitingHarness struct {
+	ts  *rTickets
+	qs  *rQuestions
+	run *aRun
+	rev *aRevoker
+	att *aAttacher
+	fp  *fakePrincipals
+	d   *dispatch.Dispatcher
+}
+
+func newAwaitingHarness(rows []questions.Question) *awaitingHarness {
+	h := &awaitingHarness{
+		ts:  &rTickets{running: []tickets.Ticket{awaitingTicket(7, 100)}},
+		qs:  &rQuestions{rows: rows},
+		run: &aRun{rRun: rRun{id: 100, status: db.PipelineRunAwaitingHuman, complete: false}},
+		rev: &aRevoker{},
+		att: &aAttacher{},
+		fp:  &fakePrincipals{token: "cap1.6.fresh"},
+	}
+	// reconcileWorkflowStore's frozen config contains a checkpoint step, so
+	// RunPrincipalTimeout must select ParkTimeout (72h) on re-mint.
+	h.d = dispatch.NewDispatcher(dispatch.Deps{
+		Tickets:          h.ts,
+		Resolver:         dispatch.NewRenderResolver(reconcileWorkflowStore("send_back"), "img:v1", "https://c.home"),
+		Credentials:      aCreds{token: "sk-rotated"},
+		Principals:       h.fp,
+		PrincipalRevoker: h.rev,
+		SecretAttach:     h.att,
+		Questions:        h.qs,
+		Runs:             &aRuns{run: h.run},
+		RunTimeout:       6 * time.Hour,
+		ParkTimeout:      72 * time.Hour,
+	})
+	return h
+}
+
+// --- specs (frozen re-arm, PARK-V2 delta §D) ----------------------------------
+
+func TestReconcileAwaitingRearmsHappyPath(t *testing.T) {
+	// All park rows answered; one open NON-park row must NOT block (§C: only
+	// timeout_policy='park' rows count — default rows self-resolve).
+	openDefault := parkRow(2, false)
+	openDefault.TimeoutPolicy = ""
+	h := newAwaitingHarness([]questions.Question{parkRow(1, true), openDefault})
+
+	if err := h.d.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(h.rev.revoked) != 1 || h.rev.revoked[0] != "agent-run-100" {
+		t.Fatalf("re-arm must revoke-and-recreate agent-run-100; revoked %v", h.rev.revoked)
+	}
+	if h.fp.lastSpec.Name != "agent-run-100" {
+		t.Errorf("re-mint principal name = %q, want agent-run-100", h.fp.lastSpec.Name)
+	}
+	if len(h.att.runIDs) != 1 || h.att.runIDs[0] != 100 || h.att.tokens[0] != "cap1.6.fresh" {
+		t.Fatalf("secret refresh must Attach the fresh principal token to run 100; saw runs=%v tokens=%v", h.att.runIDs, h.att.tokens)
+	}
+	if len(h.run.continuations) != 1 || h.run.continuations[0] != "agent-dispatcher:resume" {
+		t.Fatalf(`continuation must be created with created_by "agent-dispatcher:resume"; saw %v`, h.run.continuations)
+	}
+	if len(h.ts.log) != 0 {
+		t.Errorf("re-arm must NOT transition the ticket (it stays running; the lifecycler flips the RUN); saw %v", h.ts.log)
+	}
+}
+
+func TestReconcileAwaitingNoOpWhileParkQuestionOpen(t *testing.T) {
+	h := newAwaitingHarness([]questions.Question{parkRow(1, false)})
+
+	if err := h.d.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(h.rev.revoked) != 0 || len(h.att.runIDs) != 0 || len(h.run.continuations) != 0 {
+		t.Fatalf("open park question => untouched (no revoke/attach/continuation); saw rev=%v att=%v cont=%v",
+			h.rev.revoked, h.att.runIDs, h.run.continuations)
+	}
+}
+
+func TestReconcileAwaitingPrincipalParkAwareExpiry(t *testing.T) {
+	// The frozen workflow still contains a checkpoint (park-policy) step, so
+	// the re-minted principal must get the 72h park expiry, not the 6h run
+	// expiry — same RunPrincipalTimeout helper as first dispatch.
+	h := newAwaitingHarness([]questions.Question{parkRow(1, true)})
+	before := time.Now()
+
+	if err := h.d.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if h.fp.lastSpec.ExpiresAt == nil {
+		t.Fatal("re-minted principal must carry an expiry (NOT NULL — the backstop stays)")
+	}
+	got := time.Unix(*h.fp.lastSpec.ExpiresAt, 0)
+	want := before.Add(72 * time.Hour)
+	if got.Before(want.Add(-time.Minute)) || got.After(want.Add(2*time.Minute)) {
+		t.Errorf("re-mint expiry = %v, want ~%v (now + ParkTimeout; park-aware)", got, want)
+	}
+}
+
+func TestReconcileAwaitingSecretRefreshUsesReResolvedCredential(t *testing.T) {
+	// The credential is re-resolved through credentials.Backend at re-arm, so
+	// a token the user rotated during the wait is what lands in the secret.
+	h := newAwaitingHarness([]questions.Question{parkRow(1, true)})
+
+	if err := h.d.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(h.att.credTokens) != 1 || h.att.credTokens[0] != "sk-rotated" {
+		t.Fatalf("Attach must receive the re-resolved (rotated) credential; saw %v", h.att.credTokens)
+	}
+}
+
+func TestReconcileAwaitingNotifyTriggeredPass(t *testing.T) {
+	// Pass 1: parked, open question => no-op. The answer then arrives (the
+	// ATC AnswerAgentQuestion route fires the dispatcher's notify — plan 08's
+	// wiring; polling is the fallback). Pass 2 — the notify-triggered wake —
+	// re-arms exactly once. Pass 3: the run still reads awaiting_human until
+	// the lifecycler flips it, but the pending continuation trips the
+	// double-fire guard, so nothing stacks.
+	h := newAwaitingHarness([]questions.Question{parkRow(1, false)})
+
+	if err := h.d.Run(context.Background()); err != nil {
+		t.Fatalf("pass 1: %v", err)
+	}
+	if len(h.run.continuations) != 0 {
+		t.Fatal("pass 1 must not re-arm while the question is open")
+	}
+
+	h.qs.rows = []questions.Question{parkRow(1, true)} // the human answered
+
+	if err := h.d.Run(context.Background()); err != nil {
+		t.Fatalf("pass 2: %v", err)
+	}
+	if len(h.run.continuations) != 1 {
+		t.Fatalf("notify-triggered pass must re-arm exactly once; saw %v", h.run.continuations)
+	}
+
+	if err := h.d.Run(context.Background()); err != nil {
+		t.Fatalf("pass 3: %v", err)
+	}
+	if len(h.run.continuations) != 1 {
+		t.Fatalf("double-fire guard: pass 3 must not stack a second continuation; saw %v", h.run.continuations)
+	}
+}
+
+func TestReconcileAwaitingSkipsNonAwaitingRuns(t *testing.T) {
+	// A live (running) run is not a candidate; completed runs belong to
+	// reconcileCompletedRuns (Task 11b).
+	h := newAwaitingHarness([]questions.Question{parkRow(1, true)})
+	h.run.status = db.PipelineRunRunning
+
+	if err := h.d.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(h.rev.revoked) != 0 || len(h.run.continuations) != 0 {
+		t.Fatalf("non-awaiting run must be untouched; saw rev=%v cont=%v", h.rev.revoked, h.run.continuations)
+	}
+}
+```
+
+- [ ] **Step 5: Run to verify failure**
+
+Run: `cd /Users/tdmtrader/concourse/concourse && go test ./agent/dispatch/ -run TestReconcileAwaiting`
+Expected: FAIL — `Deps` has no field `PrincipalRevoker`; `dispatch.PrincipalRevoker` undefined.
+
+- [ ] **Step 6: Add the `PrincipalRevoker` seam to `agent/dispatch/deps.go`:**
+
+```go
+// PrincipalRevoker is the revoke half of the awaiting-run re-arm's
+// revoke-and-recreate (PARK-V2 delta §D, 2026-07-10). The additive
+// principals.Store.RevokeByName satisfies it (co-signed agent-identity), so
+// Task 13 wires the same agentPrincipals value into both Principals and
+// PrincipalRevoker.
+type PrincipalRevoker interface {
+	RevokeByName(name string) error
+}
+```
+
+And add to the `Deps` struct (after `Principals`):
+
+```go
+	PrincipalRevoker PrincipalRevoker // awaiting-run re-arm seam (Task 11c, 2026-07-10); nil disables reconcileAwaitingRuns with a logged warning
+```
+
+- [ ] **Step 7: Write `agent/dispatch/reconcile_awaiting.go`:**
+
+```go
+package dispatch
+
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"code.cloudfoundry.org/lager/v3"
+
+	"github.com/concourse/concourse/agent/api/tickets"
+	"github.com/concourse/concourse/atc/db"
+)
+
+// reconcileAwaitingRuns re-arms runs parked out of existence (PARK-V2 seam
+// delta §D, 2026-07-10). A run in non-terminal 'awaiting_human' has zero pods
+// and no live claude; the OPEN park-policy agent_run_questions row is the
+// durable representation of the wait. When every park row is answered, this
+// pass (1) revoke-and-re-mints the per-run principal with a park-aware
+// expiry, (2) refreshes the ephemeral run secret via Attach's amended
+// create-or-update contract (credential re-resolved, so a rotated user OAuth
+// token is honored), and (3) triggers the continuation build through the
+// existing db.Job.CreateBuild seam (created_by "agent-dispatcher:resume").
+//
+// It NEVER writes pipeline_runs.status — the lifecycler's reopen machinery
+// (status filter extended to awaiting_human, owned by pipeline-runs) flips
+// the run back to 'running' when the continuation build appears. Candidates
+// are driven from StateRunning tickets: the ticket enum is NOT reopened
+// (delta §H) — an awaiting run's ticket stays 'running'. Park-timeout expiry
+// is the LIFECYCLER's job (--agent-park-timeout wall clock), not ours: an
+// expired park completes the run errored and flows into
+// reconcileCompletedRuns' existing branches.
+func (d *Dispatcher) reconcileAwaitingRuns(ctx context.Context, logger lager.Logger) {
+	logger = logger.Session("reconcile-awaiting-runs")
+	if d.deps.Questions == nil || d.deps.PrincipalRevoker == nil {
+		logger.Info("skipped-missing-seam")
+		return
+	}
+
+	running, err := d.deps.Tickets.List(tickets.ListFilter{State: tickets.StateRunning})
+	if err != nil {
+		logger.Error("failed-to-list-running-tickets", err)
+		return
+	}
+
+	for _, t := range running {
+		if t.PipelineRunID == nil {
+			continue
+		}
+		run, found, err := d.deps.Runs.GetRunByID(*t.PipelineRunID)
+		if err != nil {
+			logger.Error("failed-to-get-run", err, lager.Data{"ticket": t.ID, "run": *t.PipelineRunID})
+			continue
+		}
+		if !found || run.Status() != db.PipelineRunAwaitingHuman {
+			continue // live runs are live; completed runs are reconcileCompletedRuns' job
+		}
+
+		rows, err := d.deps.Questions.ListByRun(*t.PipelineRunID)
+		if err != nil {
+			logger.Error("failed-to-list-questions", err, lager.Data{"run": *t.PipelineRunID})
+			continue
+		}
+		stillWaiting := false
+		for _, q := range rows {
+			// Only park-policy rows count (§C): default/fail rows self-resolve.
+			if q.AnsweredAt == 0 && q.TimeoutPolicy == "park" {
+				stillWaiting = true
+				break
+			}
+		}
+		if stillWaiting {
+			continue // the human has not answered; the lifecycler owns expiry
+		}
+
+		if err := d.rearmOne(ctx, t, run); err != nil {
+			logger.Error("failed-to-rearm-run", err, lager.Data{"ticket": t.ID, "run": *t.PipelineRunID})
+			continue
+		}
+		logger.Info("rearmed", lager.Data{"ticket": t.ID, "run": *t.PipelineRunID})
+	}
+}
+
+// rearmOne performs the three re-arm legs for one answered awaiting run.
+// Partial failure is retried by the next pass and is safe by construction:
+// revoke-and-recreate is idempotent, Attach is create-or-update, and
+// CreateContinuationBuild's pending/started guard prevents stacked
+// continuations.
+func (d *Dispatcher) rearmOne(ctx context.Context, t tickets.Ticket, run db.PipelineRun) error {
+	runID := run.ID()
+
+	// The FROZEN workflow (pinned version recorded at dispatch) drives the
+	// park-aware principal lifetime — the same RunPrincipalTimeout helper
+	// used at first dispatch (Task 9).
+	in, err := d.deps.Resolver.Resolve(t, nil, nil)
+	if err != nil {
+		return fmt.Errorf("resolve frozen workflow: %w", err)
+	}
+
+	// Credential re-resolved through credentials.Backend so a token the user
+	// rotated during the wait is honored; expiry errors with the owner noted.
+	if t.UserID == nil {
+		return fmt.Errorf("ticket %d has no user; cannot re-resolve credential for re-arm", t.ID)
+	}
+	cred, err := ResolveUserCredential(d.deps.Credentials, *t.UserID, time.Now())
+	if err != nil {
+		return fmt.Errorf("re-resolve credential: %w", err)
+	}
+
+	// Leg 1: revoke-and-re-mint agent-run-<run-id> with a fresh expiry.
+	name := fmt.Sprintf("agent-run-%d", runID)
+	if err := d.deps.PrincipalRevoker.RevokeByName(name); err != nil {
+		return fmt.Errorf("revoke stale principal %q: %w", name, err)
+	}
+	token, err := MintRunPrincipal(ctx, d.deps.Principals, runID,
+		RunPrincipalTimeout(in.Workflow, d.deps.RunTimeout, d.deps.ParkTimeout))
+	if err != nil {
+		return err
+	}
+
+	// Leg 2: refresh the run secret. Attach's amended contract (§8.2/§2.6,
+	// additive, owned by credentials-and-budgets) is CREATE-OR-UPDATE on the
+	// same agent-run-<run-id> secret; continuation pods are NEW pods, so the
+	// updated principal-token key is picked up at container start.
+	if _, err := d.deps.SecretAttach.Attach(ctx, runID, cred, token); err != nil {
+		return fmt.Errorf("refresh run secret: %w", err)
+	}
+
+	// Leg 3: continuation build on the instanced pipeline's entry job "run".
+	// What it does per step is the exec's business (plan 07's
+	// agent_run_step_state: completed steps replay from restored artifacts at
+	// zero cost, the parked step --resumes its session, later steps run
+	// cold). BUDGET (decision 32): no re-admission here — the continuation
+	// exec calls Checker.StepSlice again at step start, and the park-exit
+	// partial spend already ledgered makes the re-resolved slice
+	// self-tightening (StepSlice is a resolution, not a reservation).
+	_, created, err := run.CreateContinuationBuild("agent-dispatcher:resume")
+	if err != nil {
+		return fmt.Errorf("continuation build: %w", err)
+	}
+	if !created {
+		// Already in flight (the double-fire window between build creation
+		// and the lifecycler's reopen flip). Nothing to do.
+		return nil
+	}
+	return nil
+}
+```
+
+- [ ] **Step 8: Call the pass from `Dispatcher.Run`.** In `agent/dispatch/dispatcher.go`, immediately after the `d.reconcileCompletedRuns(ctx, logger)` call added in Task 11b Step 7:
+
+```go
+	// 2026-07-10 (PARK-V2 delta §D): sibling pass — re-arm awaiting_human
+	// runs whose park questions are all answered (principal re-mint + secret
+	// refresh + continuation build). Same pass, same component, no new
+	// constant. The ATC AnswerAgentQuestion route also fires this component's
+	// notify (plan 08's wiring) so resume is prompt; the polling interval
+	// remains the fallback. Never aborts the pass.
+	d.reconcileAwaitingRuns(ctx, logger)
+```
+
+Task 11b's eight reconcile specs are unaffected: their `Deps.PrincipalRevoker` is nil, so the awaiting pass logs `skipped-missing-seam` and returns; conversely this task's awaiting runs have `completed_at` NULL, so `reconcileCompletedRuns` skips them.
+
+- [ ] **Step 9: Run to verify pass**
+
+Run: `cd /Users/tdmtrader/concourse/concourse && go test ./agent/dispatch/`
+Expected: PASS (all six awaiting specs + the eight Task 11b specs + every earlier dispatch test).
+
+- [ ] **Step 10: Build check + commit**
+
+Run: `cd /Users/tdmtrader/concourse/concourse && go build ./agent/... ./atc/db/`
+Expected: clean.
+
+```bash
+git add agent/dispatch/reconcile_awaiting.go agent/dispatch/reconcile_awaiting_test.go agent/dispatch/deps.go agent/dispatch/dispatcher.go atc/db/pipeline_run_factory.go atc/db/agent_principals_factory.go agent/api/principals/
+git commit -m "feat(dispatch): awaiting-run re-arm reconciler (PARK-V2 exit-and-respawn, delta §D)" -m "reconcileAwaitingRuns: awaiting_human runs with zero open park questions get principal revoke-and-re-mint (park-aware expiry), secret refresh via create-or-update Attach (credential re-resolved), and a continuation build via db.Job.CreateBuild (created_by agent-dispatcher:resume, pending/started double-fire guard). Never writes pipeline_runs.status. Budget decision 32: StepSlice re-resolution is self-tightening; no double admission." -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+```
+
+---
+
 ### Task 12: DB-backed integration test — real render → SavePipeline → CreateRun
 
 Prove the render output actually saves as a valid pipeline and a run is created against real Postgres, using the real `db.NewPipelineRunFactory`, `db.Team.SavePipeline`, and `db.NewAgentWorkflowsFactory`. This exercises the seams the fakes stand in for. Ginkgo (this is an `atc/db`-adjacent test needing the DB fixtures).
@@ -3913,7 +4633,11 @@ Then, immediately after the `k8sReaper` `RunnableComponent` append (after the bl
 		agentQuestions := db.NewAgentQuestionsFactory(dbConn) // reconciler seam (Task 11b, 2026-07-09)
 		agentRunFactory := db.NewPipelineRunFactory(dbConn, lockFactory)
 
-		dispatchResolver := dispatch.NewRenderResolver(agentWorkflows, cmd.AgentStepImage, cmd.ExternalURL.String())
+		// PARK-V2 delta §A (2026-07-10): the threshold is rendered into the
+		// platform sidecar env as PLATFORM_MCP_SHORT_PARK_MAX_SECONDS on agent
+		// AND checkpoint steps; 0 = never exit (pure PARK-V1).
+		dispatchResolver := dispatch.NewRenderResolver(agentWorkflows, cmd.AgentStepImage, cmd.ExternalURL.String()).
+			WithShortParkMax(cmd.AgentShortParkMax)
 		dispatchBudgets := dispatch.NewTicketBudgets(agentTickets, dispatchResolver)
 		dispatchChecker := budget.NewChecker(agentLedger, dispatchBudgets, budget.Config{
 			GlobalDailyCapUSD: cmd.AgentDailyBudgetUSD,
@@ -3931,6 +4655,7 @@ Then, immediately after the `k8sReaper` `RunnableComponent` append (after the bl
 				Budget:        dispatchChecker,
 				Credentials:   agentCredentials,
 				Principals:    agentPrincipals,
+				PrincipalRevoker: agentPrincipals, // awaiting-run re-arm revoke-and-re-mint (Task 11c, 2026-07-10 PARK-V2 delta §D)
 				SecretAttach:  secretAttacher,
 				SecretLabeler: secretLabeler,
 				Runs:          agentRunFactory,
@@ -3944,14 +4669,17 @@ Then, immediately after the `k8sReaper` `RunnableComponent` append (after the bl
 		})
 ```
 
-Note: `db.NewAgentUserCredentialsFactory(dbConn)` returns a type embedding `credentials.Backend` (which embeds `credentials.Store`), so it satisfies the `dispatch.CredentialResolver` interface (`Resolve(int, string)`) directly. `db.NewAgentPrincipalsFactory(dbConn)` returns a `principals.Store`, satisfying `dispatch.PrincipalMinter` (`Create`). `mainTeam` (`db.Team`) satisfies `dispatch.PipelineSaver` via its `SavePipeline` method.
+Note: `db.NewAgentUserCredentialsFactory(dbConn)` returns a type embedding `credentials.Backend` (which embeds `credentials.Store`), so it satisfies the `dispatch.CredentialResolver` interface (`Resolve(int, string)`) directly. `db.NewAgentPrincipalsFactory(dbConn)` returns a `principals.Store`, satisfying `dispatch.PrincipalMinter` (`Create`) — and, 2026-07-10, `dispatch.PrincipalRevoker` (`RevokeByName`, additive per Task 11c Step 1), so the SAME value is wired into both fields. `mainTeam` (`db.Team`) satisfies `dispatch.PipelineSaver` via its `SavePipeline` method.
 
-- [ ] **Step 5: Add the `--agent-run-timeout` and `--agent-park-timeout` flags.** In the `RunCommand` struct near the other agent flags (find with `grep -n "AgentStepImage\|AgentDailyBudgetUSD" atc/atccmd/command.go`), add both, adjacent (contracts §8.1 requires `--agent-park-timeout` defined beside `--agent-run-timeout`):
+- [ ] **Step 5: Add the `--agent-run-timeout`, `--agent-park-timeout` and `--agent-short-park-max` flags.** In the `RunCommand` struct near the other agent flags (find with `grep -n "AgentStepImage\|AgentDailyBudgetUSD" atc/atccmd/command.go`), add all three, adjacent (contracts §8.1 requires `--agent-park-timeout` defined beside `--agent-run-timeout`; the PARK-V2 delta §A requires `--agent-short-park-max` defined beside `--agent-park-timeout`):
 
 ```go
-	AgentRunTimeout  time.Duration `long:"agent-run-timeout" default:"6h" description:"Max wall-clock for one agent ticket run; the per-run principal token and ephemeral secret expire after this."`
-	AgentParkTimeout time.Duration `long:"agent-park-timeout" default:"72h" description:"Principal expiry for runs whose workflow contains a park-policy step (any checkpoint, or ask_human with ask_timeout: park) — the hard backstop on how long a run may stay parked awaiting a human. Never NULL; a park outliving it fails loudly (F31)."`
+	AgentRunTimeout   time.Duration `long:"agent-run-timeout" default:"6h" description:"Max wall-clock for one agent ticket run; the per-run principal token and ephemeral secret expire after this."`
+	AgentParkTimeout  time.Duration `long:"agent-park-timeout" default:"72h" description:"Principal expiry for runs whose workflow contains a park-policy step (any checkpoint, or ask_human with ask_timeout: park) — the hard backstop on how long a run may stay parked awaiting a human. Never NULL; a park outliving it fails loudly (F31)."`
+	AgentShortParkMax time.Duration `long:"agent-short-park-max" default:"30m" description:"Threshold separating short parks (SSE, agent stays live) from long parks (agent exits and is respawned on answer — PARK-V2). Rendered to the platform sidecar as PLATFORM_MCP_SHORT_PARK_MAX_SECONDS. 0 disables exit-and-respawn entirely (pure SSE park — the rollback hatch)."`
 ```
+
+*(PARK-V2 delta §A rationale for the 30m default: strictly below every surviving F31 ceiling — the ~4h kubelet SPDY idle severance is the smallest; the 24h pod and 6h/72h principal are far above. Anthropic prompt-cache TTL is 5min, so any park past a few minutes pays the full cache-miss re-send whether the process lived or died — the only marginal cost of exiting is pod re-schedule, while work-hours checkpoint approvals answered in minutes keep the cheap SSE path. Per-workflow `hitl.short_park_max_seconds` is DEFERRED — global flag only in v1. The sidecar owns the threshold TIMER — it starts the park, holds `asked_at`, and already runs the SSE heartbeat ticker; it applies to BOTH `ask_human` and `/checkpoint` parks. The lifecycler is the SECOND consumer of `cmd.AgentParkTimeout` — its park-expiry pass, owned by plan 03.)*
 
 - [ ] **Step 6: Add imports.** Ensure `command.go`'s import block has `"github.com/concourse/concourse/agent/dispatch"`, `"github.com/concourse/concourse/agent/budget"`, `"github.com/concourse/concourse/agent/credentials"`. Confirm which are already imported (credentials-and-budgets' wiring likely added `budget`/`credentials`):
 
@@ -4354,6 +5082,9 @@ pg_isready && ginkgo ./agent/dispatch/integration/
 # 2b. Runtime-seam tests added 2026-07-09 (Task 4b — sidecar secretKeyRef env):
 go test ./atc/ && go test ./atc/worker/jetbridge/ -run TestSidecarSecretEnv
 
+# 2c. PARK-V2 re-arm tests added 2026-07-10 (Task 11c; pure fakes, no deps):
+go test ./agent/dispatch/ -run TestReconcileAwaiting
+
 # 3. atc build/vet after the command.go wiring (Task 13):
 go build ./atc/... && go vet ./atc/atccmd/
 
@@ -4371,7 +5102,8 @@ Do NOT use `--race` with ginkgo per CLAUDE.md (parallel compilation failures). T
 - Task 14 isolates the K8s-only behavior (real API-server secret labels, idempotency, not-found-tolerant cleanup) that a fake clientset returns instantly and therefore cannot verify.
 
 **Rollback notes for the risky diffs:**
-- **Task 13 (`command.go` wiring)** is the only edit outside the new `agent/dispatch` package. It is additive and K8s-gated: the whole `RunnableComponent` append lives inside `if cmd.Kubernetes.Namespace != ""`, so a non-K8s web node is unaffected. Rollback = delete the appended block + the `ComponentAgentDispatcher` constant + the `--agent-run-timeout` and `--agent-park-timeout` flags. No migrations, no schema, no route changes to revert (dispatch owns none).
+- **Task 13 (`command.go` wiring)** is the only edit outside the new `agent/dispatch` package (plus Task 4b's runtime seam and Task 11c's two additive DB-side methods). It is additive and K8s-gated: the whole `RunnableComponent` append lives inside `if cmd.Kubernetes.Namespace != ""`, so a non-K8s web node is unaffected. Rollback = delete the appended block + the `ComponentAgentDispatcher` constant + the `--agent-run-timeout`, `--agent-park-timeout` and `--agent-short-park-max` flags. No migrations, no schema, no route changes to revert (dispatch owns none).
+- **PARK-V2 (Tasks 2/3/5/7 renderer env, Task 11c re-arm, Task 13 flag; 2026-07-10):** the operational rollback is `--agent-short-park-max=0` — no run ever exits its park, no run ever enters `awaiting_human`, `reconcileAwaitingRuns`' candidate set is empty, and behavior is pure PARK-V1 with zero schema waste (the delta's schema changes are additive and inert at 0, and none of them live in this plan anyway — `1773106032`/`1773106061`/`1773106072` belong to pipeline-runs/agent-step/platform-mcp). The empirical pin gating the whole PARK-V2 build is plan 07's `TestLiveClaudeParkExitResume` (delta §I) — if it goes red on the pinned CLI, ship with the flag at 0 and everything in THIS plan remains correct and dormant. Code rollback = delete `reconcile_awaiting.go`(+test), the `PrincipalRevoker` seam/field, the `WithShortParkMax` setter + `ShortParkMaxSeconds` threading, the sidecar env row at both render sites (regenerate goldens), and the two additive DB methods (`RevokeByName`, `CreateContinuationBuild`).
 - **Task 1 (contract addendum)** is doc-only and additive to §11; rollback = drop the §2.8.2 subsection and the amendment-log line. Consumers of §2.8.2 (process-intel-experiments, wave 5) have not planned against it yet, so the blast radius is zero within wave 4.
 - **Task 2 `workflow.Config.Version` field** (if added): it is `yaml:"-" json:"-"` so it never affects the content hash or wire format — safe. The field is added in Task 2 (Step 4) because Task 3's renderer is the first code to read `in.Workflow.Version`; Task 7 only relies on it. If workflow-store already carries a version pass-through, skip that edit.
 - **Poison-ticket handling (Task 11):** the attempt cap errors a ticket rather than re-queuing forever. If a legitimate ticket trips the cap due to transient platform faults, a human re-queues it via `TransitionAgentTicket` (errored→queued is a valid edge, §1.7) — the cap is a safety valve, not a terminal wall.

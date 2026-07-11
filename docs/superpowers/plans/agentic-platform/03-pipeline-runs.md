@@ -19,7 +19,7 @@ Scope in:
 2. `POST /api/v1/teams/:team/pipelines/:name/runs` + `fly run-pipeline -p <template> -v k=v`; monotonic run numbers as `instance_vars {run: N}`; entry jobs auto-triggered.
 3. `pipeline_runs` migration + factory (number, params, aggregate status, timestamps).
 4. Run-lifecycle RunnableComponent (polling + notify, never notify-only): worst-of aggregate status, completion detection including in-flight aborts and retriggers.
-5. OWNS the parked-run contract: a parked agent step keeps its build `started`, therefore a parked run counts as `running` — the contract platform-mcp's `ask_human` rides.
+5. OWNS the parked-run contract: a parked agent step keeps its build `started`, therefore a parked run counts as `running` — the contract platform-mcp's `ask_human` rides. *(2026-07-10, PARK-V2 seam delta: this is now the SHORT-PARK half only. The LONG-PARK half — the non-terminal `awaiting_human` run state entered when a parked step exits past `--agent-short-park-max` — is ALSO owned here: Tasks 23–26.)*
 6. Retention (keep_last / ttl) via existing pipeline-archival machinery; template-page runs list (status, params, duration) in the Elm UI.
 7. Unit tests on completion/retention + one topgun behavioral spec proving non-template pipelines are untouched.
 
@@ -32,7 +32,7 @@ This is wave 1; `depends_on: []`. Nothing has landed before us and we consume no
 ### Contract surfaces
 
 **PRODUCES** `pipeline-runs-api-and-lifecycle` — defined in `docs/superpowers/plans/agentic-platform/00-shared-contracts.md`:
-- §1.5 "`pipeline_runs` + pipelines template columns" (DDL, run-number allocation, completion contract incl. parked-run rule)
+- §1.5 "`pipeline_runs` + pipelines template columns" (DDL, run-number allocation, completion contract incl. parked-run rule; *2026-07-10 PARK-V2:* §1.5 now also defines the non-terminal `awaiting_human` status — migration `1773106032`, owned here, Tasks 23–26)
 - §2.3 "PipelineRun" (`atc/db/pipeline_run.go` Go types)
 - §4.2 route table rows `CreatePipelineRun` / `ListPipelineRuns` / `GetPipelineRun`
 - §7 "Pipeline-run params schema and template flag" (YAML keys, `atc/config.go` additions, validation rules, fly commands)
@@ -47,10 +47,11 @@ Consumers (later waves): dispatch, platform-mcp-hitl, process-intel-experiments.
 2. **"Versions pinned at creation" v1 semantics:** implemented as a *frozen check set*, not literal per-resource config pins: one manually-triggered check per resource is enqueued at run creation **by `PipelineRunFactory.CreateRun` itself** (same seam as the `CheckResource` API handler; the API handler is a pass-through — in-process consumers calling the factory get the frozen check set too; amended 2026-07-09, F27), periodic re-checks are disabled, and `trigger: true` is rewritten to `false` at materialization on get steps **without** `passed:` constraints (external-version triggering). Gets **with** `passed:` keep their trigger flag — the scheduler only auto-creates builds for `FirstOccurrence && Trigger` inputs (`atc/scheduler/scheduler.go:90-113`), so preserving passed-chain triggers is what makes "downstream jobs flow through passed: chains as normal" (spec §3) actually happen. Explicit `version:` pins in the template pass through untouched. Documented v1 limitation: if another pipeline shares a resource-config scope and produces new versions mid-run, a not-yet-scheduled job without `passed:` constraints may resolve a newer version.
 3. **Completion:** a run completes when its instance pipeline has no job builds in `pending`/`started`, at least one job build exists, and no active unpaused job has `schedule_requested > last_scheduled` (closes the entry-finished-but-downstream-not-yet-created race using existing columns). Aggregate status is worst-of over the latest build per job: `errored > aborted > failed > succeeded`.
 4. **Retriggers/late builds:** completion is not final — a completed run whose instance pipeline gains a pending/started job build, **or a job build that completed after the run's `completed_at`** (covers retriggers that start AND finish inside one polling window, when the Finish notify arrives after the build has already left pending/started; amended 2026-07-09, F26), is *reopened* (status back to `running`, `completed_at` cleared) and completes again with a recomputed worst-of. The completed-after predicate is self-terminating: reopen→re-complete stamps a newer `completed_at`. This requires two factory methods beyond contracts §2.3 (`CompletedRunsWithNewActivity`, `RunsToArchive`) and three PipelineRun methods (`Reopen`, `CheckComplete`, `InstancePipeline`) — recorded as a contracts addendum.
-5. **Parked-run contract:** a parked step keeps its build `started`; the completion query therefore never completes a parked run. Owned here, proven by an explicit unit spec (Task 9).
+5. **Parked-run contract:** a parked step keeps its build `started`; the completion query therefore never completes a parked run. Owned here, proven by an explicit unit spec (Task 9). *(2026-07-10, PARK-V2: SHORT-PARK half only — see decision 9 for the long-park `awaiting_human` state.)*
 6. **Retention YAML carrier:** top-level `run_retention: {keep_last: K, ttl_days: N}` config key mirrored to `pipelines.run_retention` (contracts §1.5 defines the column; §7 omitted the YAML key — addendum documents it).
 7. **Reserved param names:** `run` and `run_id` are reserved (amended 2026-07-09, F30). `run` is the instance var / per-template run NUMBER; `run_id` is a second materialization-time static var carrying the globally-unique `pipeline_runs.id`, allocated via `nextval` inside the creation transaction BEFORE materialization (it is NOT part of `instance_vars`). Anything keying cross-template state — metrics, questions, reviews, gateway rows, §8.1 `AGENT_PIPELINE_RUN_ID` — must interpolate `((run_id))`, never `((run))` (run numbers reset per template and collide). The params-schema validator rejects both names.
 8. **Direct job triggering** on a base template returns 409 with a message pointing at `fly run-pipeline`.
+9. **`awaiting_human` run state (added 2026-07-10, PARK-V2 seam delta — decided pre-freeze, per the `concluded` enum lesson):** past `--agent-short-park-max` a parked step EXITS (agent-runner exit 86 / checkpoint client exit 3) and its build finishes `failed` as a carrier only. The lifecycler, finding the run quiescent but with OPEN park-policy `agent_run_questions` rows (`answered_at IS NULL AND timeout_policy = 'park'` — `default`/`fail` rows self-resolve and never count), moves it to the non-terminal `awaiting_human` status (`completed_at` stays NULL) instead of finishing it. The open question row — never the build status — is the authority: a genuine failure has no open park row; a pod that DIES while parked leaves the row and therefore still resumes (an improvement over PARK-V1's lost park). Exit paths: (1) a continuation build (dispatch's `reconcileAwaitingRuns`, plan 11) surfaces through the F26 reopen machinery — whose `NotEq('running')` status filter already admits `awaiting_human` — and `Reopen` flips the run back to `running`; (2) the `--agent-park-timeout` wall clock (72h default; same flag as dispatch's park-policy principal expiry — the lifecycler is its second consumer) ends the run `errored`, releases the rows (`Answer(id, "", "platform")`), and fires the §8.4 notification `event: "run.park_expired"`. The lifecycler stays the ONLY `pipeline_runs.status` writer. Completion detection treats `awaiting_human` exactly as pending: retention keys off `completed_at` (NULL — never archived mid-wait; `RunsToArchive`'s `keep_last` leg is explicitly taught this, Task 24) and dispatch's run-completion reconciler requires a COMPLETE run. `RunActive(runID)` (plan 02's `RunSecretReaper` seam) counts `awaiting_human` as ACTIVE. Tasks 23–26; inert while `--agent-short-park-max=0`.
 
 ---
 
@@ -1982,6 +1983,8 @@ Write the wave-1 implementation decisions into the shared contracts doc so dispa
 
 The implementation landed in Task 8 (`CheckComplete`, `Reopen`, `CompletedRunsWithNewActivity`); this task pins the completion contract with specs, including the parked-run rule this workstream OWNS.
 
+*(2026-07-10, PARK-V2: the "does not complete while a build is started" spec below pins the SHORT-PARK half — a park below `--agent-short-park-max` holds its build `started`. The LONG-PARK half — quiescent run + open park-policy question rows → non-terminal `awaiting_human` — is pinned by Task 24's specs.)*
+
 **Files:**
 - Create: `atc/db/pipeline_run_test.go`
 - Test: same file
@@ -2540,6 +2543,8 @@ The implementation landed in Task 8 (`CheckComplete`, `Reopen`, `CompletedRunsWi
 ---
 
 ### Task 14: `pipeline_run_lifecycler` RunnableComponent + wiring + notify
+
+*(2026-07-10, PARK-V2: Task 25 later extends this component — constructor becomes `NewLifecycler(runFactory, questions, notifier, parkTimeout)`, the completion loop gains the awaiting-human entry branch, and a park-expiry pass is added. Implement Task 14 exactly as written first; Task 25 is a separately-committed amendment.)*
 
 **Files:**
 - Modify: `atc/component.go:26` (constant)
@@ -4199,6 +4204,803 @@ The charter's non-negotiable regression proof. Runs in `topgun/k8s_behavioral/` 
 
 ---
 
+## PARK-V2 amendment tasks (added 2026-07-10)
+
+Tasks 23–26 implement this plan's share of the PARK-V2 seam delta (exit-and-respawn for long human-waits; frozen 2026-07-10, co-signed agent-step + platform-mcp-hitl + pipeline-runs + dispatch + shared contracts — motivated by FLOWS.md Part 2, the agent-model audit; read its P2.5 recommendations first). This plan owns the **run-state machinery**: the `awaiting_human` status vocabulary, entry, reopen-on-continuation, park-timeout expiry, retention immunity, and the run-page half of the parked badge. NOT here: `flight/park.json`, exit-86, session capture, continuation-build semantics (plan 07), `question_hash` dedup + the ticket-page chip (plan 08), `reconcileAwaitingRuns` + the flags' primary definitions (plan 11).
+
+**Sequencing/gating:** these tasks run as part of the PARK-V2 build, gated on plan 07's §I empirical pin (`TestLiveClaudeParkExitResume`) — red pin means ship with `--agent-short-park-max=0` (pure PARK-V1), under which everything below is additive and inert. Task 24's queries read `agent_run_questions`, so plan 08's migration `1773106070` must already be in the tree (migration ids order correctly: `1773106032` < `1773106070`, and `1773106032` touches only `pipeline_runs`). The TICKET enum is NOT reopened — the ticket stays `running`; parked-ness surfaces via run state + open questions.
+
+---
+
+### Task 23 (PARK-V2): Migration 1773106032 — non-terminal `awaiting_human` run status
+
+**Files:**
+- Create: `atc/db/migration/migrations/1773106032_add_awaiting_human_to_pipeline_runs.up.sql`
+- Create: `atc/db/migration/migrations/1773106032_add_awaiting_human_to_pipeline_runs.down.sql`
+- Test: existing migration suite (`ginkgo ./atc/db/migration/`)
+
+**Steps:**
+
+- [ ] Write `1773106032_add_awaiting_human_to_pipeline_runs.up.sql` (exact DDL from contracts §1.5's 2026-07-10 PARK-V2 amendment; the inline CHECK from migration `1773106031` was auto-named `pipeline_runs_status_check` by Postgres):
+
+  ```sql
+  -- PARK-V2 (2026-07-10): a run whose parked step exited past
+  -- --agent-short-park-max waits with ZERO pods and no live claude; the open
+  -- park-policy agent_run_questions rows are the durable representation of
+  -- the wait. awaiting_human is NON-terminal: completed_at stays NULL.
+  ALTER TABLE pipeline_runs DROP CONSTRAINT pipeline_runs_status_check;
+  ALTER TABLE pipeline_runs ADD CONSTRAINT pipeline_runs_status_check
+      CHECK (status IN ('running','awaiting_human','succeeded','failed','errored','aborted'));
+
+  DROP INDEX pipeline_runs_status;
+  CREATE INDEX pipeline_runs_status ON pipeline_runs (status)
+      WHERE status IN ('running','awaiting_human');
+  ```
+
+- [ ] Write `1773106032_add_awaiting_human_to_pipeline_runs.down.sql`:
+
+  ```sql
+  -- End awaiting_human runs as errored on downgrade — the same terminal
+  -- state the park-timeout expiry path assigns.
+  UPDATE pipeline_runs SET status = 'errored', completed_at = now()
+      WHERE status = 'awaiting_human';
+
+  DROP INDEX pipeline_runs_status;
+  CREATE INDEX pipeline_runs_status ON pipeline_runs (status)
+      WHERE status = 'running';
+
+  ALTER TABLE pipeline_runs DROP CONSTRAINT pipeline_runs_status_check;
+  ALTER TABLE pipeline_runs ADD CONSTRAINT pipeline_runs_status_check
+      CHECK (status IN ('running','succeeded','failed','errored','aborted'));
+  ```
+
+- [ ] Run the migration suite:
+  ```bash
+  ginkgo ./atc/db/migration/
+  ```
+  Expect: green (full up path; SQL errors in the new files fail it).
+
+- [ ] Commit:
+  ```bash
+  git add atc/db/migration/migrations/1773106032_*
+  git commit -m "feat(db): non-terminal awaiting_human pipeline-run status (migration 1773106032, PARK-V2)" -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+  ```
+
+---
+
+### Task 24 (PARK-V2): DB — `awaiting_human` vocabulary, entry/reopen/expiry predicates, retention immunity
+
+**Files:**
+- Modify: `atc/db/pipeline_run.go` (status const, `HasOpenParkQuestions`, `EnterAwaitingHuman`)
+- Modify: `atc/db/pipeline_run_factory.go` (`AwaitingRunsPastParkTimeout`, `RunsToArchive` filter, `CompletedRunsWithNewActivity` doc)
+- Test: `atc/db/pipeline_run_test.go` (append Describe)
+
+**Steps:**
+
+- [ ] Append the failing Describe to `atc/db/pipeline_run_test.go` (add `"fmt"` and `"time"` to the imports if missing; `agent_run_questions` is plan 08's table — this workstream is a read-only consumer, so specs seed rows directly):
+
+  ```go
+  var _ = Describe("PipelineRun awaiting_human (PARK-V2)", func() {
+  	var (
+  		factory  db.PipelineRunFactory
+  		template db.Pipeline
+  		run      db.PipelineRun
+  		instance db.Pipeline
+  	)
+
+  	config := atc.Config{
+  		Template: true,
+  		Jobs: atc.JobConfigs{
+  			{Name: "entry", PlanSequence: []atc.Step{
+  				{Config: &atc.TaskStep{Name: "t", ConfigPath: "task.yml"}},
+  			}},
+  		},
+  	}
+
+  	// seed an agent_run_questions row (plan 08's table, migration 1773106070)
+  	seedQuestion := func(runID int, policy string, answered bool, age time.Duration) {
+  		_, err := dbConn.Exec(`
+  			INSERT INTO agent_run_questions
+  				(ticket_id, pipeline_run_id, step_name, question,
+  				 timeout_policy, asked_at, answered_at, answer)
+  			VALUES
+  				(7, $1, 'implement', 'proceed?', $2, now() - $3::interval,
+  				 CASE WHEN $4 THEN now() END,
+  				 CASE WHEN $4 THEN 'yes' END)`,
+  			runID, policy, fmt.Sprintf("%d seconds", int(age.Seconds())), answered)
+  		Expect(err).ToNot(HaveOccurred())
+  	}
+
+  	BeforeEach(func() {
+  		factory = db.NewPipelineRunFactory(logger, dbConn, lockFactory, checkFactory)
+
+  		var err error
+  		template, _, err = defaultTeam.SavePipeline(
+  			atc.PipelineRef{Name: "awaiting-template"}, config, db.ConfigVersion(0), false)
+  		Expect(err).ToNot(HaveOccurred())
+
+  		run, err = factory.CreateRun(template.ID(), nil, "test")
+  		Expect(err).ToNot(HaveOccurred())
+
+  		var found bool
+  		instance, found, err = run.InstancePipeline()
+  		Expect(err).ToNot(HaveOccurred())
+  		Expect(found).To(BeTrue())
+  	})
+
+  	It("reports open park-policy questions only", func() {
+  		open, err := run.HasOpenParkQuestions()
+  		Expect(err).ToNot(HaveOccurred())
+  		Expect(open).To(BeFalse())
+
+  		seedQuestion(run.ID(), "default", false, time.Minute) // self-resolving policy: never counts
+  		seedQuestion(run.ID(), "park", true, time.Minute)     // answered: never counts
+  		open, err = run.HasOpenParkQuestions()
+  		Expect(err).ToNot(HaveOccurred())
+  		Expect(open).To(BeFalse())
+
+  		seedQuestion(run.ID(), "park", false, time.Minute)
+  		open, err = run.HasOpenParkQuestions()
+  		Expect(err).ToNot(HaveOccurred())
+  		Expect(open).To(BeTrue())
+  	})
+
+  	It("enters awaiting_human without stamping completed_at and leaves the running set", func() {
+  		Expect(run.EnterAwaitingHuman()).To(Succeed())
+  		Expect(run.Status()).To(Equal(db.PipelineRunAwaitingHuman))
+  		_, hasCompletedAt := run.CompletedAt()
+  		Expect(hasCompletedAt).To(BeFalse(), "awaiting_human is NON-terminal: completed_at stays NULL")
+
+  		running, err := factory.RunningRuns()
+  		Expect(err).ToNot(HaveOccurred())
+  		for _, r := range running {
+  			Expect(r.ID()).ToNot(Equal(run.ID()), "awaiting runs must not be completion-checked")
+  		}
+  	})
+
+  	It("stays invisible to the reopen query while quiescent, surfaces on a continuation build", func() {
+  		// simulate the park-exit carrier: the exit-86 build finished failed
+  		_, err := dbConn.Exec(
+  			`UPDATE builds SET status = 'failed' WHERE pipeline_id = $1`, instance.ID())
+  		Expect(err).ToNot(HaveOccurred())
+  		seedQuestion(run.ID(), "park", false, time.Minute)
+  		Expect(run.EnterAwaitingHuman()).To(Succeed())
+
+  		surfaced := func() bool {
+  			runs, err := factory.CompletedRunsWithNewActivity()
+  			Expect(err).ToNot(HaveOccurred())
+  			for _, r := range runs {
+  				if r.ID() == run.ID() {
+  					return true
+  				}
+  			}
+  			return false
+  		}
+  		Expect(surfaced()).To(BeFalse(), "a quiescent awaiting run must not churn the reopen pass")
+
+  		// the continuation build (created by dispatch's reconcileAwaitingRuns, plan 11)
+  		job, found, err := instance.Job("entry")
+  		Expect(err).ToNot(HaveOccurred())
+  		Expect(found).To(BeTrue())
+  		_, err = job.CreateBuild("agent-dispatcher:resume")
+  		Expect(err).ToNot(HaveOccurred())
+
+  		Expect(surfaced()).To(BeTrue(), "the F26 reopen query's status filter admits awaiting_human")
+
+  		reactivated, err := factory.CompletedRunsWithNewActivity()
+  		Expect(err).ToNot(HaveOccurred())
+  		for _, r := range reactivated {
+  			if r.ID() == run.ID() {
+  				Expect(r.Reopen()).To(Succeed())
+  				Expect(r.Status()).To(Equal(db.PipelineRunRunning))
+  			}
+  		}
+  	})
+
+  	It("is never archived mid-wait: keep_last skips awaiting_human", func() {
+  		retTemplate, _, err := defaultTeam.SavePipeline(
+  			atc.PipelineRef{Name: "awaiting-retention"},
+  			atc.Config{
+  				Template:     true,
+  				RunRetention: &atc.RunRetentionConfig{KeepLast: 1},
+  				Jobs:         config.Jobs,
+  			}, db.ConfigVersion(0), false)
+  		Expect(err).ToNot(HaveOccurred())
+
+  		waiting, err := factory.CreateRun(retTemplate.ID(), nil, "test") // number 1: lowest rank
+  		Expect(err).ToNot(HaveOccurred())
+  		Expect(waiting.EnterAwaitingHuman()).To(Succeed())
+
+  		second, err := factory.CreateRun(retTemplate.ID(), nil, "test")
+  		Expect(err).ToNot(HaveOccurred())
+  		Expect(second.Finish(db.PipelineRunSucceeded)).To(Succeed())
+  		third, err := factory.CreateRun(retTemplate.ID(), nil, "test")
+  		Expect(err).ToNot(HaveOccurred())
+  		Expect(third.Finish(db.PipelineRunSucceeded)).To(Succeed())
+
+  		// keep_last=1 keeps #3 and archives #2 — but must NOT touch #1,
+  		// which ranks lowest of all yet is awaiting a human
+  		toArchive, err := factory.RunsToArchive()
+  		Expect(err).ToNot(HaveOccurred())
+  		Expect(toArchive).To(HaveLen(1))
+  		Expect(toArchive[0].ID()).To(Equal(second.ID()))
+  	})
+
+  	It("selects awaiting runs whose OLDEST open park question outlived the park timeout", func() {
+  		seedQuestion(run.ID(), "park", false, 100*time.Hour) // stale — the oldest governs
+  		seedQuestion(run.ID(), "park", false, time.Hour)
+  		Expect(run.EnterAwaitingHuman()).To(Succeed())
+
+  		freshRun, err := factory.CreateRun(template.ID(), nil, "test")
+  		Expect(err).ToNot(HaveOccurred())
+  		seedQuestion(freshRun.ID(), "park", false, time.Hour)
+  		Expect(freshRun.EnterAwaitingHuman()).To(Succeed())
+
+  		// all questions answered → NOT expiry's business: dispatch's
+  		// reconcileAwaitingRuns (plan 11) resumes it
+  		answeredRun, err := factory.CreateRun(template.ID(), nil, "test")
+  		Expect(err).ToNot(HaveOccurred())
+  		seedQuestion(answeredRun.ID(), "park", true, 100*time.Hour)
+  		Expect(answeredRun.EnterAwaitingHuman()).To(Succeed())
+
+  		expired, err := factory.AwaitingRunsPastParkTimeout(72 * time.Hour)
+  		Expect(err).ToNot(HaveOccurred())
+  		Expect(expired).To(HaveLen(1))
+  		Expect(expired[0].ID()).To(Equal(run.ID()))
+  	})
+  })
+  ```
+
+- [ ] Run and see compile failure (`HasOpenParkQuestions` undefined):
+  ```bash
+  ginkgo --focus="awaiting_human" ./atc/db/
+  ```
+
+- [ ] Extend `atc/db/pipeline_run.go`. Status const (in the block after `PipelineRunRunning`):
+
+  ```go
+  	// PipelineRunAwaitingHuman is NON-terminal (PARK-V2, 2026-07-10): the
+  	// run's parked step exited past --agent-short-park-max and the run waits
+  	// for a human with zero pods; completed_at stays NULL.
+  	PipelineRunAwaitingHuman PipelineRunStatus = "awaiting_human"
+  ```
+
+  Interface additions (after `Reopen() error`):
+
+  ```go
+  	// HasOpenParkQuestions reports whether open (unanswered) park-policy
+  	// agent_run_questions rows exist for this run — the durable
+  	// representation of a long park (PARK-V2). Only timeout_policy='park'
+  	// rows count: default/fail rows self-resolve (contracts §3.2).
+  	HasOpenParkQuestions() (bool, error)
+
+  	// EnterAwaitingHuman moves a running run into the non-terminal
+  	// awaiting_human state. completed_at is NOT stamped, so retention and
+  	// dispatch's run-completion reconciler ignore the run by construction.
+  	EnterAwaitingHuman() error
+  ```
+
+  Method bodies (after `Reopen`):
+
+  ```go
+  func (r *pipelineRun) HasOpenParkQuestions() (bool, error) {
+  	var open bool
+  	err := r.conn.QueryRow(`
+  		SELECT EXISTS (
+  			SELECT 1 FROM agent_run_questions q
+  			WHERE q.pipeline_run_id = $1
+  			  AND q.answered_at IS NULL
+  			  AND q.timeout_policy = 'park')`, r.id).
+  		Scan(&open)
+  	return open, err
+  }
+
+  func (r *pipelineRun) EnterAwaitingHuman() error {
+  	_, err := psql.Update("pipeline_runs").
+  		Set("status", string(PipelineRunAwaitingHuman)).
+  		Where(sq.Eq{"id": r.id, "status": string(PipelineRunRunning)}).
+  		RunWith(r.conn).
+  		Exec()
+  	if err == nil {
+  		r.status = PipelineRunAwaitingHuman
+  	}
+  	return err
+  }
+  ```
+
+- [ ] Extend `atc/db/pipeline_run_factory.go`. Add `"time"` to the imports and the interface method (after `RunsToArchive`):
+
+  ```go
+  	// AwaitingRunsPastParkTimeout returns awaiting_human runs whose OLDEST
+  	// open park question has asked_at + parkTimeout < now() — the
+  	// --agent-park-timeout wall clock (PARK-V2). Runs whose open questions
+  	// were all answered are NOT returned: resuming them is dispatch's
+  	// reconcileAwaitingRuns' job (plan 11), never the lifecycler's.
+  	AwaitingRunsPastParkTimeout(parkTimeout time.Duration) ([]PipelineRun, error)
+  ```
+
+  Implementation:
+
+  ```go
+  func (f *pipelineRunFactory) AwaitingRunsPastParkTimeout(parkTimeout time.Duration) ([]PipelineRun, error) {
+  	rows, err := pipelineRunsQuery.
+  		Where(sq.Eq{"r.status": string(PipelineRunAwaitingHuman), "r.archived": false}).
+  		Where(sq.Expr(`(
+  			SELECT min(q.asked_at)
+  			FROM agent_run_questions q
+  			WHERE q.pipeline_run_id = r.id
+  			  AND q.answered_at IS NULL
+  			  AND q.timeout_policy = 'park'
+  		) < now() - make_interval(secs => ?)`, parkTimeout.Seconds())).
+  		OrderBy("r.id ASC").
+  		RunWith(f.conn).
+  		Query()
+  	if err != nil {
+  		return nil, err
+  	}
+  	return f.scanRuns(rows)
+  }
+  ```
+
+- [ ] In `RunsToArchive`, teach the `keep_last` leg the new status — change the candidate CTE's
+
+  ```sql
+  			  AND r.status <> 'running'
+  ```
+  to
+  ```sql
+  			  AND r.status NOT IN ('running','awaiting_human')
+  ```
+  with the comment `-- PARK-V2: awaiting_human is treated exactly as pending — never archived mid-wait (the ttl leg was already immune: completed_at IS NULL)`. This is the ONE place "treats it exactly as pending" was not already true by construction.
+
+- [ ] In `CompletedRunsWithNewActivity`, no code change — the existing `sq.NotEq{"r.status": "running"}` filter deliberately ADMITS `awaiting_human`, and the F26 completed-after leg cannot match it (`completed_at IS NULL`). Append to the doc comment:
+
+  ```go
+  // PARK-V2 (2026-07-10): the NotEq('running') status filter deliberately
+  // admits awaiting_human — a pending/started CONTINUATION build surfaces the
+  // waiting run here and Reopen flips it back to running (the exit path the
+  // §1.5 awaiting_human contract assigns to this query). The completed-after
+  // leg can never match an awaiting run: its completed_at is NULL.
+  ```
+
+- [ ] Regenerate fakes and run to green (then the full db suite for scan regressions):
+  ```bash
+  go generate ./atc/db/... && ginkgo --focus="awaiting_human" ./atc/db/ && ginkgo ./atc/db/
+  ```
+
+- [ ] Commit:
+  ```bash
+  git add atc/db/pipeline_run.go atc/db/pipeline_run_factory.go atc/db/pipeline_run_test.go atc/db/dbfakes/
+  git commit -m "feat(db): awaiting_human entry/reopen/expiry predicates and retention immunity (PARK-V2)" -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+  ```
+
+---
+
+### Task 25 (PARK-V2): Lifecycler — awaiting-human entry branch + `--agent-park-timeout` expiry pass
+
+The lifecycler stays the ONLY `pipeline_runs.status` writer: entry (running → awaiting_human), reopen (awaiting_human → running, via the Task 24 query), and expiry (awaiting_human → errored) all live here. Dispatch's `reconcileAwaitingRuns` (plan 11) only re-mints credentials and creates the continuation build — it never writes run status.
+
+**Files:**
+- Modify: `atc/runlifecycle/lifecycler.go`, `atc/runlifecycle/lifecycler_test.go`
+- Modify: `agent/notify/notifier.go` (additive `Event` field — plan 08's file, co-signed by the PARK-V2 delta; skip if plan 08's amendment already added it)
+- Modify: `atc/atccmd/command.go` (component wiring from Task 14)
+
+**Steps:**
+
+- [ ] Add the additive field to `agent/notify/notifier.go`'s `Notification` struct (the §8.4 payload gains an optional discriminator; existing senders are unaffected):
+
+  ```go
+  	Event string `json:"event,omitempty"` // e.g. "run.park_expired" (PARK-V2); empty for plain kind-only notifications
+  ```
+
+- [ ] Update `atc/runlifecycle/lifecycler_test.go`: extend the suite vars and BeforeEach —
+
+  ```go
+  	var (
+  		factory          *dbfakes.FakePipelineRunFactory
+  		questionsFactory *dbfakes.FakeAgentQuestionsFactory
+  		notifier         *notifyfakes.FakeNotifier
+  		lifecycler       *runlifecycle.Lifecycler
+  	)
+
+  	BeforeEach(func() {
+  		factory = new(dbfakes.FakePipelineRunFactory)
+  		questionsFactory = new(dbfakes.FakeAgentQuestionsFactory)
+  		notifier = new(notifyfakes.FakeNotifier)
+  		lifecycler = runlifecycle.NewLifecycler(factory, questionsFactory, notifier, 72*time.Hour)
+  	})
+  ```
+  (imports: `"time"`, `"github.com/concourse/concourse/agent/api/questions"`, `"github.com/concourse/concourse/agent/notify/notifyfakes"`), and append the failing specs:
+
+  ```go
+  	It("enters awaiting_human instead of finishing when open park questions exist", func() {
+  		parked := new(dbfakes.FakePipelineRun)
+  		parked.CheckCompleteReturns(db.PipelineRunFailed, true, nil)
+  		parked.HasOpenParkQuestionsReturns(true, nil)
+  		factory.RunningRunsReturns([]db.PipelineRun{parked}, nil)
+
+  		Expect(lifecycler.Run(context.Background())).To(Succeed())
+
+  		Expect(parked.EnterAwaitingHumanCallCount()).To(Equal(1))
+  		Expect(parked.FinishCallCount()).To(Equal(0),
+  			"the exit-86 failed build is a carrier only — the open park row is the authority")
+  	})
+
+  	It("finishes normally when the quiescent run has no open park questions", func() {
+  		done := new(dbfakes.FakePipelineRun)
+  		done.CheckCompleteReturns(db.PipelineRunSucceeded, true, nil)
+  		done.HasOpenParkQuestionsReturns(false, nil)
+  		factory.RunningRunsReturns([]db.PipelineRun{done}, nil)
+
+  		Expect(lifecycler.Run(context.Background())).To(Succeed())
+  		Expect(done.EnterAwaitingHumanCallCount()).To(Equal(0))
+  		Expect(done.FinishCallCount()).To(Equal(1))
+  	})
+
+  	It("expires awaiting runs past the park timeout: releases rows, errors the run, notifies", func() {
+  		expired := new(dbfakes.FakePipelineRun)
+  		expired.IDReturns(31)
+  		factory.AwaitingRunsPastParkTimeoutReturns([]db.PipelineRun{expired}, nil)
+  		questionsFactory.ListByRunReturns([]questions.Question{
+  			{ID: 5, TicketID: 7, TimeoutPolicy: "park", Question: "proceed?"},
+  			{ID: 6, TicketID: 7, TimeoutPolicy: "park", AnsweredAt: 1751500000}, // answered: left alone
+  		}, nil)
+
+  		Expect(lifecycler.Run(context.Background())).To(Succeed())
+
+  		Expect(factory.AwaitingRunsPastParkTimeoutArgsForCall(0)).To(Equal(72 * time.Hour))
+  		Expect(questionsFactory.AnswerCallCount()).To(Equal(1))
+  		ticketID, questionID, answer, answeredBy := questionsFactory.AnswerArgsForCall(0)
+  		Expect(ticketID).To(Equal(7))
+  		Expect(questionID).To(Equal(5))
+  		Expect(answer).To(Equal(""))
+  		Expect(answeredBy).To(Equal("platform"))
+
+  		Expect(expired.FinishCallCount()).To(Equal(1))
+  		Expect(expired.FinishArgsForCall(0)).To(Equal(db.PipelineRunErrored))
+
+  		Expect(notifier.NotifyCallCount()).To(Equal(1))
+  		_, n := notifier.NotifyArgsForCall(0)
+  		Expect(n.Event).To(Equal("run.park_expired"))
+  		Expect(n.Kind).To(Equal("state"))
+  		Expect(n.TicketID).To(Equal(7))
+  	})
+
+  	It("keeps the run awaiting when a question release fails (retried next pass)", func() {
+  		expired := new(dbfakes.FakePipelineRun)
+  		factory.AwaitingRunsPastParkTimeoutReturns([]db.PipelineRun{expired}, nil)
+  		questionsFactory.ListByRunReturns([]questions.Question{
+  			{ID: 5, TicketID: 7, TimeoutPolicy: "park"},
+  		}, nil)
+  		questionsFactory.AnswerReturns(errors.New("boom"))
+
+  		Expect(lifecycler.Run(context.Background())).To(Succeed())
+  		Expect(expired.FinishCallCount()).To(Equal(0))
+  		Expect(notifier.NotifyCallCount()).To(Equal(0))
+  	})
+  ```
+
+- [ ] Run and see compile failure:
+  ```bash
+  ginkgo ./atc/runlifecycle/
+  ```
+
+- [ ] Extend `atc/runlifecycle/lifecycler.go`. Struct + constructor (notifier is nil when `--agent-notify-webhook-url` is unset):
+
+  ```go
+  type Lifecycler struct {
+  	runFactory  db.PipelineRunFactory
+  	questions   db.AgentQuestionsFactory
+  	notifier    notify.Notifier // nil = UI-only (no webhook configured)
+  	parkTimeout time.Duration   // --agent-park-timeout (second consumer; dispatch's principal mint is the first)
+  }
+
+  func NewLifecycler(
+  	runFactory db.PipelineRunFactory,
+  	questions db.AgentQuestionsFactory,
+  	notifier notify.Notifier,
+  	parkTimeout time.Duration,
+  ) *Lifecycler {
+  	return &Lifecycler{
+  		runFactory:  runFactory,
+  		questions:   questions,
+  		notifier:    notifier,
+  		parkTimeout: parkTimeout,
+  	}
+  }
+  ```
+  (imports gain `"time"`, `"github.com/concourse/concourse/agent/notify"`.)
+
+  In the completion loop, replace the `if err := run.Finish(status)` block's lead-in so the park check runs first (between `if !complete { continue }` and the Finish call):
+
+  ```go
+  		// PARK-V2 (2026-07-10): a long-park exit leaves the run quiescent
+  		// (the exit-86 build finished failed as a carrier) with an OPEN
+  		// park-policy question row — the durable representation of the
+  		// wait. Enter the non-terminal awaiting_human state instead of
+  		// finishing; the authority is the open row, never the build status.
+  		// A genuine failure has no open park row; a pod that died while
+  		// parked leaves the row and therefore still resumes.
+  		parked, err := run.HasOpenParkQuestions()
+  		if err != nil {
+  			logger.Error("failed-to-check-open-park-questions", err, lager.Data{"run-id": run.ID()})
+  			continue
+  		}
+  		if parked {
+  			if err := run.EnterAwaitingHuman(); err != nil {
+  				logger.Error("failed-to-enter-awaiting-human", err, lager.Data{"run-id": run.ID()})
+  				continue
+  			}
+  			logger.Info("run-awaiting-human", lager.Data{"run-id": run.ID()})
+  			continue
+  		}
+  ```
+
+  After the reopen loop (before the archive pass), add the expiry pass:
+
+  ```go
+  	// PARK-V2: --agent-park-timeout wall clock. Note the reopen pass above
+  	// already handles the resume exit path — its query admits awaiting_human
+  	// runs that gained a continuation build.
+  	if l.parkTimeout > 0 {
+  		expired, err := l.runFactory.AwaitingRunsPastParkTimeout(l.parkTimeout)
+  		if err != nil {
+  			logger.Error("failed-to-list-park-expired-runs", err)
+  			return err
+  		}
+  		for _, run := range expired {
+  			l.expirePark(ctx, logger, run)
+  		}
+  	}
+  ```
+
+  and the helper at the bottom of the file:
+
+  ```go
+  // expirePark ends an awaiting_human run whose oldest open park question
+  // outlived --agent-park-timeout: release the open rows (Answer with the
+  // empty answer, answered_by "platform" — same release shape as dispatch's
+  // orphan branch), finish the run errored, and fire the §8.4
+  // run.park_expired notification so the owner learns why. The now-complete
+  // errored run then flows into dispatch's run-completion reconciler, which
+  // errors the ticket (plan 11). Any failure leaves the run awaiting_human
+  // for a retry next pass — release before Finish, so a half-released run is
+  // re-selected rather than half-forgotten.
+  func (l *Lifecycler) expirePark(ctx context.Context, logger lager.Logger, run db.PipelineRun) {
+  	qs, err := l.questions.ListByRun(run.ID())
+  	if err != nil {
+  		logger.Error("failed-to-list-run-questions", err, lager.Data{"run-id": run.ID()})
+  		return
+  	}
+
+  	ticketID := 0
+  	oldestQuestion := ""
+  	for _, q := range qs {
+  		if q.AnsweredAt != 0 || q.TimeoutPolicy != "park" {
+  			continue
+  		}
+  		if err := l.questions.Answer(q.TicketID, q.ID, "", "platform"); err != nil {
+  			logger.Error("failed-to-release-park-question", err,
+  				lager.Data{"run-id": run.ID(), "question-id": q.ID})
+  			return
+  		}
+  		ticketID = q.TicketID
+  		if oldestQuestion == "" {
+  			oldestQuestion = q.Question
+  		}
+  	}
+
+  	if err := run.Finish(db.PipelineRunErrored); err != nil {
+  		logger.Error("failed-to-error-park-expired-run", err, lager.Data{"run-id": run.ID()})
+  		return
+  	}
+  	logger.Info("run-park-expired", lager.Data{"run-id": run.ID(), "ticket-id": ticketID})
+
+  	if l.notifier != nil {
+  		err := l.notifier.Notify(ctx, notify.Notification{
+  			Kind:     "state",
+  			Event:    "run.park_expired",
+  			TicketID: ticketID,
+  			Title:    fmt.Sprintf("Run %d park expired", run.ID()),
+  			Body:     fmt.Sprintf("run %d waited past --agent-park-timeout for: %s", run.ID(), oldestQuestion),
+  		})
+  		if err != nil {
+  			// best-effort: the state change is already durable
+  			logger.Error("failed-to-notify-park-expired", err, lager.Data{"run-id": run.ID()})
+  		}
+  	}
+  }
+  ```
+  (import `"fmt"`.)
+
+- [ ] Run to green:
+  ```bash
+  ginkgo ./atc/runlifecycle/
+  ```
+
+- [ ] Update the Task 14 wiring in `atc/atccmd/command.go` (backendComponents block):
+
+  ```go
+  	dbAgentQuestionsFactory := db.NewAgentQuestionsFactory(dbConn)
+  	var parkNotifier notify.Notifier
+  	if cmd.AgentNotifyWebhookURL != "" {
+  		parkNotifier = notify.NewWebhookNotifier(cmd.AgentNotifyWebhookURL, nil)
+  	}
+  ```
+  and the component entry becomes:
+  ```go
+  			Runnable: runlifecycle.NewLifecycler(dbPipelineRunFactory, dbAgentQuestionsFactory, parkNotifier, cmd.AgentParkTimeout),
+  ```
+  Flag provenance: `--agent-notify-webhook-url` is defined by plan 08 Task 8 and `AgentParkTimeout time.Duration \`long:"agent-park-timeout" default:"72h" ...\`` by plan 11 Task 13 Step 5 — whichever plan lands first defines them; if either is absent when this task executes, add the identical definition (they are contracts-frozen shapes, §8.4 / §8.1).
+
+- [ ] Verify:
+  ```bash
+  go build ./atc/... ./agent/... && go test ./agent/notify/
+  ```
+
+- [ ] Commit:
+  ```bash
+  git add atc/runlifecycle/ atc/atccmd/command.go agent/notify/
+  git commit -m "feat(atc): lifecycler awaiting_human entry + agent-park-timeout expiry pass (PARK-V2)" -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+  ```
+
+---
+
+### Task 26 (PARK-V2): Parked badge, run-page half — API/fly status pass-through + Elm amber badge
+
+The status string flows through the existing presenter (`string(run.Status())`), go-concourse, and the fly table untouched — this task PINS that with specs and adds the amber badge to the Elm runs list. The ticket-page "Awaiting human" chip is plan 08's half (its Task 17 banner); the derivation there is (run status `awaiting_human`) OR (open questions exist) — no ticket-state enum change anywhere.
+
+**Files:**
+- Modify: `atc/api/runs_test.go` (append spec)
+- Modify: `fly/integration/runs_test.go` (append spec)
+- Modify: `web/elm/src/Pipeline/Pipeline.elm` (`viewRun` status span → `viewRunStatus` helper), `web/elm/tests/PipelineTests.elm` (append test)
+- Modify: `web/public/*` (rebuilt committed bundle)
+
+**Steps:**
+
+- [ ] Append to the `GET .../runs` Describe in `atc/api/runs_test.go` (pins the API serialization of the new status):
+
+  ```go
+  		It("serializes awaiting_human runs (PARK-V2 parked badge)", func() {
+  			fakeRun := new(dbfakes.FakePipelineRun)
+  			fakeRun.NumberReturns(3)
+  			fakeRun.StatusReturns(db.PipelineRunAwaitingHuman)
+  			fakePipelineRunFactory.ListRunsReturns([]db.PipelineRun{fakeRun}, nil)
+
+  			resp, err := client.Get(server.URL + "/api/v1/teams/a-team/pipelines/a-pipeline/runs")
+  			Expect(err).NotTo(HaveOccurred())
+
+  			var runs []atc.PipelineRun
+  			Expect(json.NewDecoder(resp.Body).Decode(&runs)).To(Succeed())
+  			Expect(runs[0].Status).To(Equal("awaiting_human"))
+  		})
+  ```
+
+- [ ] Append to `fly/integration/runs_test.go` (pins `fly runs` rendering the value):
+
+  ```go
+  	It("renders awaiting_human runs (PARK-V2)", func() {
+  		path, err := atc.Routes.CreatePathForRoute(atc.ListPipelineRuns,
+  			rata.Params{"team_name": "main", "pipeline_name": "regression-suite"})
+  		Expect(err).NotTo(HaveOccurred())
+
+  		atcServer.AppendHandlers(
+  			ghttp.CombineHandlers(
+  				ghttp.VerifyRequest("GET", path),
+  				ghttp.RespondWithJSONEncoded(http.StatusOK, []atc.PipelineRun{
+  					{Number: 3, Status: "awaiting_human", CreatedAt: 1751600000},
+  				}),
+  			),
+  		)
+
+  		flyCmd := exec.Command(flyPath, "-t", targetName, "runs", "-p", "regression-suite")
+  		sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+  		Expect(err).NotTo(HaveOccurred())
+  		<-sess.Exited
+  		Expect(sess.ExitCode()).To(Equal(0))
+  		Expect(sess.Out).To(gbytes.Say(`3\s+awaiting_human`))
+  	})
+  ```
+
+- [ ] Run both to green (no production change needed — the pass-through already works; if either fails, fix the pass-through, not the spec):
+  ```bash
+  ginkgo --focus="Pipeline Runs API" ./atc/api/ && make test-fly-integration
+  ```
+
+- [ ] Add a failing Elm test to `web/elm/tests/PipelineTests.elm` (same idiom as Task 21's tests):
+
+  ```elm
+  , test "awaiting_human run shows the amber awaiting-human badge" <|
+      \_ ->
+          Common.init "/teams/team/pipelines/pipeline"
+              |> Application.handleCallback
+                  (Callback.PipelineFetched
+                      (Ok
+                          (Data.pipeline "team" 1
+                              |> Data.withName "pipeline"
+                              |> (\p -> { p | template = True })
+                          )
+                      )
+                  )
+              |> Tuple.first
+              |> Application.handleCallback
+                  (Callback.PipelineRunsFetched
+                      (Ok
+                          [ { id = 2
+                            , number = 43
+                            , status = "awaiting_human"
+                            , params = Dict.empty
+                            , createdAt = Time.millisToPosix 0
+                            , completedAt = Nothing
+                            }
+                          ]
+                      )
+                  )
+              |> Tuple.first
+              |> Common.queryView
+              |> Query.find [ class "pipeline-runs" ]
+              |> Query.has [ class "run-status-awaiting-human", text "awaiting human" ]
+  ```
+
+- [ ] Run and see failure:
+  ```bash
+  cd web/elm && elm-test tests/PipelineTests.elm
+  ```
+
+- [ ] Implement in `web/elm/src/Pipeline/Pipeline.elm`: in `viewRun`, replace the status span
+
+  ```elm
+          , Html.span [ class ("run-status-" ++ run.status), style "min-width" "80px" ]
+              [ Html.text run.status ]
+  ```
+  with
+  ```elm
+          , viewRunStatus run
+  ```
+  and add the helper (below `viewRun`):
+  ```elm
+  viewRunStatus : Concourse.PipelineRun -> Html Message
+  viewRunStatus run =
+      if run.status == "awaiting_human" then
+          -- PARK-V2 parked badge: the run waits for a human with zero pods
+          Html.span
+              [ class "run-status-awaiting-human"
+              , style "min-width" "80px"
+              , style "color" "#f5a623" -- amber
+              , style "border" "1px solid #f5a623"
+              , style "border-radius" "2px"
+              , style "padding" "0 4px"
+              , style "font-weight" "700"
+              ]
+              [ Html.text "awaiting human" ]
+
+      else
+          Html.span [ class ("run-status-" ++ run.status), style "min-width" "80px" ]
+              [ Html.text run.status ]
+  ```
+  Also stop the duration column claiming "running" mid-wait — in `runDurationSummary`, change the `Nothing ->` branch to:
+  ```elm
+          Nothing ->
+              if run.status == "awaiting_human" then
+                  "waiting"
+
+              else
+                  "running"
+  ```
+
+- [ ] Run to green, rebuild the committed bundle (go:embed serves committed assets):
+  ```bash
+  cd web/elm && elm-test tests/PipelineTests.elm && elm-test && cd ../.. && yarn run build
+  ```
+
+- [ ] Commit:
+  ```bash
+  git add atc/api/runs_test.go fly/integration/runs_test.go web/elm/ web/public/
+  git commit -m "feat(web): awaiting_human parked badge on run surfaces (PARK-V2)" -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+  ```
+
+---
+
 ## Execution notes
 
 **Full workstream test suite** (PostgreSQL must be running — `pg_isready`):
@@ -4226,6 +5028,7 @@ Never use `--race` (parallel compilation failures per CLAUDE.md). Do not reduce 
 - `pipeline_runs` table (`1773106031`) has a clean `DROP TABLE` down and nothing else references it outside the new factory/component/handlers.
 - The lifecycler is an independent component; disabling it (removing its `RunnableComponent` entry) stops completion/retention without affecting run creation or any existing component.
 - `build.Finish` gained one non-blocking `Notify` — removable independently; polling covers the loss (never notify-only, per the fork's lossy-NOTIFY lesson).
+- **PARK-V2 (Tasks 23–26, 2026-07-10):** migration `1773106032` has a clean down (any `awaiting_human` rows are ended `errored` + `completed_at = now()`, matching the park-expiry semantics); the lifecycler extensions are additive and inert while `--agent-short-park-max=0` — nothing exits parks, so "quiescent run + open park rows" only arises for pods that died mid-park, where `awaiting_human` is strictly better than PARK-V1's lost park. Tasks 24–25 require plan 08's `agent_run_questions` migration (`1773106070`) in the tree; the whole PARK-V2 build is gated on plan 07's §I empirical pin (`TestLiveClaudeParkExitResume`) — red pin means ship with the flag at 0, zero schema waste.
 
 **Known v1 limitations (documented in contracts §7.1):** frozen-check-set pinning can see newer versions from shared scopes for non-`passed:` inputs of late jobs; `keep_last: 0` is not representable (JSON omitempty); a run whose entry-job build creation fails midway stays `running` until TTL retention or manual archive.
 
@@ -4237,3 +5040,4 @@ Never use `--race` (parallel compilation failures per CLAUDE.md). Do not reduce 
 - **2026-07-09 (F26 — reopen detection missed fast-finishing builds):** `CompletedRunsWithNewActivity` matched only `pending`/`started` builds, but the `build.Finish` notify (the only wakeup besides the 10s poll) fires after a build leaves those states — a retrigger that started AND finished inside one polling gap (plan-creation failures Finish without ever starting, buildstarter.go:225) was never observed, leaving the run's terminal status stale forever (violating design decision 4). **Change:** the Task 8 EXISTS predicate is widened with `OR (b.completed AND r.completed_at IS NOT NULL AND b.end_time > r.completed_at)` — self-terminating, since reopen→re-complete stamps a `completed_at` newer than every build `end_time`. Task 9 gains the spec "surfaces fast-finishing retriggers that never linger in pending or started" (finish a retrigger build immediately after `run.Finish`, assert the run surfaces, then reopen→re-complete and assert it stops surfacing). Design decision 4 and §7.1 item 3 (Task 1) amended to state the completed-after-`completed_at` predicate.
 - **2026-07-09 (F27 — frozen-check enqueue lived only in the API handler; latent, contract hygiene):** `enqueueInitialChecks` was implemented on the runserver handler while §7.1 promised checks "at run creation" and later-wave consumers (dispatch, experiments — contracts decision 22) call `db.PipelineRunFactory` in-process; with lidar excluding template pipelines, a factory-created run whose entry job has a get step would pend forever (NULL scope → trivially-passing `ResourcesChecked` → zero versions). Latent today (no planned consumer renders get-step entry jobs) but a §7.1 contract mismatch. **Change:** the enqueue moved into `pipelineRunFactory.CreateRun` (Task 8): `NewPipelineRunFactory` now injects a `CheckFactory` plus a `lager.Logger` (Registrar/Reaper idiom — the §2.3 `CreateRun` signature is frozen without ctx/logger, and the enqueue is best-effort: failures logged, never returned). The Task 16 handler is reduced to a pass-through (`runserver.NewServer(logger, runFactory)`, no CheckFactory, `enqueueInitialChecks` deleted from `runs.go`); all constructor call sites updated (Tasks 8/9/10/11 tests use the db-suite `logger`/`checkFactory` globals; Task 14 wires `dbCheckFactory` from command.go:1103, Task 16 from :902). New Task 8 factory DB spec "enqueues the frozen check set at creation so get-step entry jobs get versions" (template with a get-step entry job; asserts exactly one persisted check build for the instance resource). §7.1 item 2 (Task 1) amended; frozen interface `PipelineRunFactory`/`CreateRun` shapes unchanged.
 - **2026-07-09 (F30-part — `((run_id))` reserved var + id allocation before materialization; co-signed with dispatch + harvest):** §8.1 defines `AGENT_PIPELINE_RUN_ID` as `pipeline_runs.id`, but the only run-scoped var was `((run))` — the per-template run NUMBER, which resets per template and collides across tickets (metrics/questions/reviews/gateway rows would key on colliding numbers while tickets/secrets/principals use the id). **Change (this plan's part):** `CreateRun` (Task 8) allocates `pipeline_runs.id` inside the creation transaction via `SELECT nextval(pg_get_serial_sequence('pipeline_runs','id'))` BEFORE materialization and inserts the row with the explicit id (`RETURNING created_at` only); `atc.MaterializeRunConfig` (Task 6) gains a `runID int` parameter and injects `run_id` as a second reserved static var alongside `run` (precedence over params); the params-schema validator (Task 5) reserves `run_id` next to `run` (new reject assertion). Tests: Task 6 gains the `((run_id))` resolution/precedence spec; Task 8's factory spec interpolates a `run-((run))-id-((run_id))` marker source and asserts it equals `run-1-id-<run.ID()>`. Design decision 7, §7.1 items 5 + new item 9, and the §11 log (Task 1) record the var. The renderer-site switch to `((run_id))` and the harvest `AGENT_PIPELINE_RUN_ID` env fallback are dispatch's (plan 11) and harvest's (plan 09) parts of F30.
+- **2026-07-10 (PARK-V2 seam delta — exit-and-respawn for long human-waits; frozen 2026-07-10; co-signed agent-step + platform-mcp-hitl + pipeline-runs + dispatch + shared contracts; implements FLOWS.md P2.5 recommendations #1–#4):** this plan owns the **run-state machinery**. Past `--agent-short-park-max` (30m default; 0 disables — the rollback hatch) a parked step EXITS (agent-runner exit 86 / checkpoint client exit 3; plan 07) and its build finishes `failed` as a carrier only — no fifth BUILD status; the distinguished end lives at the RUN level. **Changes here:** new non-terminal run status `awaiting_human`, decided pre-freeze per the `concluded` enum lesson — migration `1773106032` (Task 23) widens the `pipeline_runs.status` CHECK and the partial status index to `IN ('running','awaiting_human')`. Task 24 adds the DB vocabulary (`db.PipelineRunAwaitingHuman`), the entry predicate `HasOpenParkQuestions` (open `timeout_policy='park'` rows only — `default`/`fail` self-resolve), `EnterAwaitingHuman` (`completed_at` stays NULL), the expiry selector `AwaitingRunsPastParkTimeout` (oldest-open-question clock; answered-but-unresumed runs are dispatch's business, plan 11), pins that the F26 reopen query's `NotEq('running')` filter admits `awaiting_human` (continuation build → `Reopen` → `running`), and excludes `awaiting_human` from `RunsToArchive`'s `keep_last` leg — the ONE place "treats it exactly as pending" was not already true by construction (the ttl leg keys off `completed_at`, NULL). Task 25 gives the lifecycler the awaiting-human completion branch (quiescent run + open park rows → enter `awaiting_human`, never finish — the open row, not the build status, is the authority; a pod that died parked still resumes) and the `--agent-park-timeout` expiry pass (release rows via `Answer(id, "", "platform")`, finish `errored`, fire §8.4 `event: "run.park_expired"` — additive `Event` field on `notify.Notification`; flag shared with dispatch's principal mint, second consumer; the lifecycler stays the ONLY `pipeline_runs.status` writer). Task 26 is the parked badge's run-page half: API/fly pass the status string through (pinned by specs) and the Elm runs list renders the amber "awaiting human" badge (the ticket-page chip is plan 08's half; derivation only — the TICKET enum is NOT reopened). Charter item 5, design decisions 5 + new 9, contract-surfaces §1.5 bullet, and Task 9/14 notes amended. Sequenced with the PARK-V2 build behind plan 07's §I empirical pin; all changes additive and inert while `--agent-short-park-max=0`.

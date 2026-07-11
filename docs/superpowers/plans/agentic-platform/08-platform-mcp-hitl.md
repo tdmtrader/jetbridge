@@ -2,11 +2,13 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Ship the agent's mid-flight platform surface — `read_ticket`, `list_tasks`, `get_task`, `submit_spec`, `submit_plan`, `update_task_status`, `ask_human` — as the platform-mcp sidecar, with park/resume over a long-poll question API, checkpoint-gate execution on the same primitive, a polling-backed webhook notification channel plus ticket-page banner, contract tests, and a live theborg restart-while-parked proof.
+**Goal:** Ship the agent's mid-flight platform surface — `read_ticket`, `list_tasks`, `get_task`, `submit_spec`, `submit_plan`, `update_task_status`, `ask_human` — as the platform-mcp sidecar, with park/resume over a long-poll question API, checkpoint-gate execution on the same primitive, a polling-backed webhook notification channel plus ticket-page banner, contract tests, and a live theborg restart-while-parked proof. **PARK-V2 (2026-07-10 frozen seam delta):** plus this plan's sidecar/questions halves of exit-and-respawn — the short-park threshold timer with the `flight/park.json` sentinel, checkpoint `202 {"parked": true}`/exit-3, DB-enforced idempotency-by-question (find-or-create with the answered-row resume fast path), the answer-route dispatcher notify, and the "Awaiting human" chip (Tasks 5b, 6b, 9c, 11b, 14c, 17b).
 
 **Read model (default = MCP):** the agent reaches spec/plan ONLY through the platform-mcp read tools (`read_ticket` → envelope + spec; `list_tasks` → the cheap task skeleton; `get_task` → one task's detail). No spec/plan bytes are injected into any agent step by default — the DB stays the single source of truth and nothing is flattened into a monolithic markdown blob. The `files` opt-in (rendered read-only `spec.md`/`plan.md` mounted as the `ticket` artifact) is owned by dispatch's renderer (workflow field `spec_delivery`, wave 4); this plan implements only the MCP read tools, which stay mounted and functional in BOTH delivery modes.
 
 **Architecture:** A new `agent_run_questions` table + factory + four ATC routes (ask / list / get-long-poll / answer) carry the HITL state; the sidecar (`agent/platformmcp`, binary `cmd/platform-mcp`, image `ghcr.io/tdmtrader/mcp-platform`) is an MCP streamable-HTTP server **with SSE progress heartbeats** (Task 9b upgrades the shared `atc/api/mcpserver` in place — mandatory, per the 2026-07-09 SSE seam delta/F13: the claude CLI silently abandons a progress-free buffered tools/call at exactly 60s, so a parked `ask_human` can NEVER deliver its answer without <60s heartbeats) that translates the seven tools into principal-authed calls against ticket-core's routes and the new question routes, parking by blocking the MCP call over a resilient long-poll. The long-poll client treats transport/5xx errors as retry-forever but N consecutive 401/403s as fatal (F31 leg 3), so an expired/revoked principal fails loudly instead of parking forever. The three read tools (`read_ticket`/`list_tasks`/`get_task`) all resolve against ticket-core's `GetAgentTicket` route, which embeds spec + tasks server-side (backed by Store `Get`/`LatestSpec`/`ActivePlan`); the sidecar projects that one payload into the three typed results, dropping tasks from `read_ticket`. Notifications are delivered by a polling RunnableComponent (`agent_notifier`) that POSTs a generic webhook (§8.4) — never notify-only, per the fork's lossy-NOTIFY lesson.
+
+**PARK-V2 layer (2026-07-10 frozen seam delta; amends the 2026-07-09 SSE/park entries WITHOUT retracting them):** the SSE park above is the SHORT-PARK mechanism only. Past `--agent-short-park-max` (default 30m; rendered into the sidecar as `PLATFORM_MCP_SHORT_PARK_MAX_SECONDS`; `0` = never exit — the pure-PARK-V1 rollback hatch) the sidecar signals exit-and-respawn instead of holding the call: for `ask_human` it atomically writes the `flight/park.json` sentinel (temp + rename; the agent-runner's 5s stat loop sees it, SIGTERMs claude, and exits 86 — plan 07's side) and expects the client disconnect; for `/checkpoint` it answers the blocked POST `202 {"parked": true}` and the checkpoint client exits with frozen code 3. In both cases the question row STAYS OPEN — it is the durable representation of the wait and the authority the platform resumes on (never the build status). `ask_human`/`/checkpoint` become idempotent-by-question (DB-enforced find-or-create on `(pipeline_run_id, step_name, kind, question_hash)`, migration `1773106072`), so a continuation build's re-issued call returns the answered row immediately — no park, no SSE wait. The `awaiting_human` run status, the runner watch/exit-86, `agent_run_step_state`, and dispatch's `reconcileAwaitingRuns` are owned by plans 03/07/11; this plan owns only the sidecar/questions halves (Tasks 5b, 6b, 9c, 11b, 14c, 17b).
 
 **Tech Stack:** Go (main module), squirrel/psql + counterfeiter in `atc/db`, `atc/api/mcpserver` for the MCP protocol, plain-Go httptest tests in `agent/*`, Ginkgo in `atc/db`/`atc/api`/`atc/wrappa`, Elm 0.19 (`web/elm`) for the banner, plain-Go `//go:build live` tests against theborg for park/resume.
 
@@ -25,18 +27,19 @@
 | Concrete notification mechanism: ticket-page banner + one real channel, polling-backed | 7, 8, 17 |
 | Contract tests for the platform-mcp interface | 15 |
 | Live theborg test: restart-while-parked | 18 (+ 18b: the mandatory real-CLI >5-minute park pin — the FIRST wave-3 deliverable; gates 10 Task 7 merge) |
+| PARK-V2 sidecar/questions halves (2026-07-10 frozen delta §A/§B/§D/§E/§H): threshold config, `flight/park.json` sentinel, checkpoint 202/exit-3, idempotency-by-question + resume fast paths, answer→dispatcher notify, awaiting-human chip | 5b, 6b, 9c, 11b, 14c, 17b |
 
-Scope-out (must NOT appear in this plan): push/publish/archive mechanics (harvest-step), `request_review`/`ask_agent` (gateway-mcp), rendering checkpoint declarations into pipelines (dispatch's renderer, wave 4).
+Scope-out (must NOT appear in this plan): push/publish/archive mechanics (harvest-step), `request_review`/`ask_agent` (gateway-mcp), rendering checkpoint declarations into pipelines (dispatch's renderer, wave 4); and the PARK-V2 halves owned elsewhere — the agent-runner's sentinel watch/SIGTERM/exit-86, stream-json teeing, and `flight/session.jsonl` capture (agent-step, plan 07), `agent_run_step_state` + continuation replay/resume semantics (agent-step), the `awaiting_human` run status with lifecycler entry/exit and the revised `--agent-park-timeout` wall clock (pipeline-runs, plan 03), and `reconcileAwaitingRuns` + principal/secret re-mint + the continuation build (dispatch, plan 11).
 
 **Assumed landed (waves 1–2, per `00-shared-contracts.md`):**
 - **agent-identity:** `agent_principals` (§1.2), `cap1.` tokens, `auth.CheckAgentPrincipalHandler(handler, rejector, scope)` wrappa tier, the `CheckAgentAuthorizationHandler` main-team wrapper for team-less `/api/v1/agent/*` authorized routes (§4.2 closing paragraph, decision 21), scope vocabulary incl. `tickets:read`, `tickets:write`, `questions:answer` (§4.1).
 - **ticket-core:** ticket tables (§1.7), `agent/api/tickets` types + `tickets.Store` with `Transition` single-writer (§2.1), routes `GetAgentTicket`/`SubmitAgentTicketSpec`/`SubmitAgentTicketPlan`/`UpdateAgentTicketTask` (§4.2), the Elm ticket page with live task list.
 - **agent-step:** `agent/schema` extracted as a nested stdlib-only Go module with `replace` entries in the root and ci-agent `go.mod`s (conventions bullet 2), §5 event constants for the types agent-step emits, `agent_run_metrics` + ingest route, proven sidecar wiring/env contract (§8.1: `ATC_EXTERNAL_URL`, `AGENT_PRINCIPAL_TOKEN`, `AGENT_TICKET_ID`, `PLATFORM_MCP_URL=http://127.0.0.1:7781/mcp`, `PLATFORM_MCP_ASK_TIMEOUT_POLICY`/`_SECONDS`).
 - **dev-mcp:** sidecar image packaging convention + the first CI image-build job as copyable template (§8.5).
-- **pipeline-runs:** the parked-run contract (§1.5): a parked step keeps its build `started`, so a parked run counts as `running`. This plan relies on it by construction — `ask_human` blocks the step's tool call, nothing else needed.
+- **pipeline-runs:** the parked-run contract (§1.5): a parked step keeps its build `started`, so a parked run counts as `running`. This plan relies on it by construction — `ask_human` blocks the step's tool call, nothing else needed. *[AMENDED by the PARK-V2 delta, 2026-07-10: this holds only BELOW `--agent-short-park-max`. Past the threshold the step exits (agent-runner 86 / checkpoint client 3), the build finishes `failed`-as-carrier (§B5 — no fifth build status), and the run enters the non-terminal `awaiting_human` status (pipeline-runs migration `1773106032`, plan 03), keyed off this plan's OPEN park-policy question rows. `--agent-park-timeout` (72h default) is REVISED to bound the `awaiting_human` wall clock — the lifecycler errors a run whose OLDEST open park question exceeds `asked_at + park_timeout`, releasing the rows via `Answer(id, "", "platform")` — rather than bounding a live in-pod park. This plan's sidecar owns only the threshold timer + exit signals; run-state entry/exit is the lifecycler's and resume is dispatch's `reconcileAwaitingRuns` (plan 11 Task 11c).]*
 - **workflow-store:** `hitl:` block in the definition YAML (§6) — consumed indirectly: the renderer (wave 4) turns it into the sidecar env vars this plan reads.
 
-**Contract surfaces this plan PRODUCES** (00-shared-contracts.md sections): §1.9 `agent_run_questions`; §3.2 platform-mcp tool schemas + park/resume protocol; §4.2 rows `AskAgentQuestion`/`GetAgentQuestion`/`AnswerAgentQuestion`; §8.4 notification channel. **CONSUMES:** §1.7/§2.1/§4.2 (ticket routes + Store), §4.1 (principal scopes/handler), §5 (flight-recorder events), §8.1 (env contract), §8.5 (image packaging), §1.5 (parked-run contract).
+**Contract surfaces this plan PRODUCES** (00-shared-contracts.md sections): §1.9 `agent_run_questions` (incl. the PARK-V2 `question_hash` + dedup index, migration `1773106072`); §3.2 platform-mcp tool schemas + park/resume protocol (incl. idempotency-by-question, the `/checkpoint` 202 response, and checkpoint-client exit 3); §4.2 rows `AskAgentQuestion`/`GetAgentQuestion`/`AnswerAgentQuestion` (Ask is find-or-create; Answer fires the dispatcher notify); §8.4 notification channel. **CONSUMES:** §1.7/§2.1/§4.2 (ticket routes + Store), §4.1 (principal scopes/handler), §5 (flight-recorder events), §8.1 (env contract), §8.5 (image packaging), §1.5 (parked-run contract).
 
 **Known contract gaps this plan closes via a signed addendum (Task 1):** the §4.2 route table has no *list* route for a ticket's questions (the banner needs one); `agent_run_questions` needs a `notified_at` column for the polling notifier; the checkpoint "internal endpoint" (§3.2) has no concrete path/CLI shape; the sidecar's event-log path env var is not in §8.1.
 
@@ -80,6 +83,8 @@ ls deploy/Dockerfile.* && grep -rn "mcp-dev" ci/ deploy/ 2>/dev/null
   - §8.1: new row — `PLATFORM_MCP_EVENTS_PATH` | platform | literal | NDJSON event-log path for the sidecar's flight-recorder events (`human.ask`, `human.answer`, `checkpoint.*`); unset = stdout (pod logs).
   - §3.2 timeout resolution detail: when the sidecar resolves a timed-out question it sends `answered_by: "platform-mcp"` (the per-run principal *name* is not in the §8.1 env contract; if dispatch later adds `AGENT_PRINCIPAL_NAME`, the sidecar prefers it).
   - platform-mcp packaging (§8.5 instantiation): source `agent/platformmcp` (main module), binary `cmd/platform-mcp`, image `ghcr.io/tdmtrader/mcp-platform` from `deploy/Dockerfile.platform-mcp`.
+  - §8.1 (PARK-V2 seam delta, 2026-07-10; producer corrected 2026-07-10 follow-up): new row — `PLATFORM_MCP_PARK_PATH` | platform | literal, set by the **agent-step exec** via `ContainerSpec.SidecarEnv["platform"]` (F15; plan 07 Task 26), agent steps only | absolute path of the §B1 park sentinel (`<flight mount>/park.json`); the exec is the producer because only it knows the flight artifact's mount path at container-spec time — dispatch's renderer cannot (F15: sidecar rows for exec-owned steps are populated programmatically by the owning exec; the renderer's only PARK-V2 row is `PLATFORM_MCP_SHORT_PARK_MAX_SECONDS`). The flight volume already reaches sidecars via jetbridge's `buildSidecarContainers` mount inheritance, so the path is valid inside the platform container. Unset = the sidecar never writes a sentinel — the legal checkpoint-pod shape, where the `202` response is the exit signal. (`PLATFORM_MCP_SHORT_PARK_MAX_SECONDS` itself is frozen by the PARK-V2 delta — rendered by dispatch from `--agent-short-park-max`, `0` = never exit; this plan consumes both, Task 9c.)
+  - §1.9/§3.2 (PARK-V2 seam delta, 2026-07-10; decision 31): `ask_human`/`/checkpoint` are idempotent-by-question — `agent_run_questions` gains `question_hash` + UNIQUE partial index `agent_run_questions_dedup (pipeline_run_id, step_name, kind, question_hash) WHERE pipeline_run_id IS NOT NULL` (migration `1773106072`); `AskAgentQuestion` is FIND-OR-CREATE with the hash computed server-side (`hex(sha256(question || '\x00' || options-joined-by-'\x00'))`): an answered row is returned as-is (the resume fast path), an open row is joined. The `ask_human` tool description carries the vary-the-text note. `/checkpoint` gains frozen response `202 {"parked": true}` = parked-past-threshold, and the checkpoint client gains frozen exit code 3 = parked-past-threshold (0/1/2 unchanged). `AnswerAgentQuestion` additionally fires the dispatcher component notify (`agent_dispatcher` channel; polling remains the guaranteed resume path — never notify-only).
   - Landed-seam survey results (recorded at execution time): combined principal-or-main-team wrappa helper name = `<fill — expected `auth.AgentPrincipalOrMainTeamHandler(principalTier, mainTeamTier http.Handler) http.Handler` per ticket-core plan 06; two already-wrapped handler tiers, NOT `(handler, rejector, scope)`>`; principal-tier factory method = `<fill — expected `checkAgentPrincipalHandlerFactory.HandlerFor(delegate, rejector, scope)`>`; main-team tier = `<fill — expected `auth.CheckAgentAuthorizationHandler(handler, rejector)`>`; questions:answer scope constant = `<fill — expected `principals.ScopeQuestionsAnswer`>`; GetAgentTicket response embeds spec/tasks = `<yes/no>`; ticket page Elm module = `<path>`; dev-mcp CI job template lives at `<path/pipeline>`.
 ```
 
@@ -546,6 +551,8 @@ git commit -m "feat(agent): questions domain types, validation, Store + memory s
 package db_test
 
 import (
+	"fmt"
+
 	"github.com/concourse/concourse/agent/api/questions"
 	"github.com/concourse/concourse/atc/db"
 
@@ -560,6 +567,9 @@ var _ = Describe("AgentQuestionsFactory", func() {
 		factory = db.NewAgentQuestionsFactory(dbConn)
 	})
 
+	// Question text varies per ticket: the PARK-V2 §E dedup key
+	// (pipeline_run_id, step_name, kind, question_hash) — Task 5b — excludes
+	// ticket_id, and every row here shares run 42 + step "implement".
 	newQuestion := func(ticketID int) *questions.Question {
 		runID := 42
 		return &questions.Question{
@@ -568,7 +578,7 @@ var _ = Describe("AgentQuestionsFactory", func() {
 			BuildID:       1001,
 			StepName:      "implement",
 			Kind:          questions.KindQuestion,
-			Question:      "ship it?",
+			Question:      fmt.Sprintf("ship it? (ticket %d)", ticketID),
 			Options:       []string{"yes", "no"},
 			TimeoutPolicy: questions.TimeoutPark,
 		}
@@ -582,7 +592,7 @@ var _ = Describe("AgentQuestionsFactory", func() {
 		got, found, err := factory.Get(9001, id)
 		Expect(err).ToNot(HaveOccurred())
 		Expect(found).To(BeTrue())
-		Expect(got.Question).To(Equal("ship it?"))
+		Expect(got.Question).To(Equal("ship it? (ticket 9001)"))
 		Expect(got.Options).To(Equal([]string{"yes", "no"}))
 		Expect(got.StepName).To(Equal("implement"))
 		Expect(*got.PipelineRunID).To(Equal(42))
@@ -617,7 +627,11 @@ var _ = Describe("AgentQuestionsFactory", func() {
 	It("lists open questions and the unnotified backlog", func() {
 		id1, err := factory.Ask(newQuestion(9004))
 		Expect(err).ToNot(HaveOccurred())
-		id2, err := factory.Ask(newQuestion(9004))
+		// Distinct text: a byte-identical second ask would JOIN id1 once
+		// Task 5b's find-or-create lands (same run/step/kind/hash).
+		q2 := newQuestion(9004)
+		q2.Question += " (redux)"
+		id2, err := factory.Ask(q2)
 		Expect(err).ToNot(HaveOccurred())
 		Expect(factory.Answer(9004, id2, "yes", "tdm")).To(Succeed())
 
@@ -1277,6 +1291,353 @@ git commit -m "feat(agent): questions HTTP handler with long-poll get and guarde
 
 ---
 
+### Task 5b: idempotent-by-question — migration 1773106072, server-side `question_hash`, find-or-create Ask (PARK-V2 §E, 2026-07-10)
+
+**Files:**
+- Create: `atc/db/migration/migrations/1773106072_add_question_hash_to_agent_run_questions.up.sql`
+- Create: `atc/db/migration/migrations/1773106072_add_question_hash_to_agent_run_questions.down.sql`
+- Modify: `agent/api/questions/types.go` (`QuestionHash` field, `ComputeQuestionHash`, `Ask` contract doc)
+- Modify: `agent/api/questions/memory_store.go`, `agent/api/questions/handler.go`
+- Modify: `atc/db/agent_questions_factory.go`
+- Test: `agent/api/questions/types_test.go`, `agent/api/questions/handler_test.go`, `atc/db/agent_questions_factory_test.go` (extend)
+
+**Why (PARK-V2 §E, frozen 2026-07-10; decision 31):** a continuation build runs a FRESH sidecar with an empty in-memory `ckOpen` map, so the dedup that makes a re-issued `ask_human` / re-POSTed `/checkpoint` join its original row must be DB-enforced. `Ask` becomes FIND-OR-CREATE on `(pipeline_run_id, step_name, kind, question_hash)`: an existing ANSWERED row is returned as-is — the caller sees `answered_at` set and resolves immediately, the resume fast path consumed by Tasks 11b/14c — and an existing OPEN row is joined (same id; a fresh sidecar parks on it and inherits the ORIGINAL park clock). Rows without a `pipeline_run_id` never dedup (partial-index scope). The key deliberately excludes `ticket_id` (a run belongs to one ticket). The hash is computed SERVER-SIDE by the ask route — client-sent values are overwritten — with the frozen formula `hex(sha256(question || '\x00' || options-joined-by-'\x00'))`; the factory also computes it when empty (defense in depth: run-scoped rows must never collide on `''` under the unique index). Migration and hash-computing factory land in ONE task so the index never coexists with `''`-hash inserts. The route keeps answering 201 for joins — the sidecar inspects the returned row's `answered_at`, not the status code.
+
+- [ ] Write `1773106072_add_question_hash_to_agent_run_questions.up.sql`:
+
+```sql
+ALTER TABLE agent_run_questions ADD COLUMN question_hash TEXT NOT NULL DEFAULT '';
+
+CREATE UNIQUE INDEX agent_run_questions_dedup
+    ON agent_run_questions (pipeline_run_id, step_name, kind, question_hash)
+    WHERE pipeline_run_id IS NOT NULL;
+```
+
+- [ ] Write `1773106072_add_question_hash_to_agent_run_questions.down.sql`:
+
+```sql
+DROP INDEX agent_run_questions_dedup;
+ALTER TABLE agent_run_questions DROP COLUMN question_hash;
+```
+
+- [ ] Verify the migration suite accepts them:
+
+```bash
+ginkgo ./atc/db/migration/
+```
+
+- [ ] Write the failing tests. Append to `agent/api/questions/types_test.go` (add `"crypto/sha256"` and `"encoding/hex"` to its imports):
+
+```go
+func TestComputeQuestionHash(t *testing.T) {
+	// Frozen §E formula: hex(sha256(question || '\x00' || options joined by '\x00')).
+	want := sha256.Sum256([]byte("Which auth flow?\x00legacy\x00oidc"))
+	got := questions.ComputeQuestionHash("Which auth flow?", []string{"legacy", "oidc"})
+	if got != hex.EncodeToString(want[:]) {
+		t.Fatalf("hash mismatch: %s", got)
+	}
+	// No options: the '\x00' separator is still appended (frozen byte layout).
+	wantFree := sha256.Sum256([]byte("why?\x00"))
+	if questions.ComputeQuestionHash("why?", nil) != hex.EncodeToString(wantFree[:]) {
+		t.Fatal("free-text hash must be sha256(question + NUL)")
+	}
+}
+
+// TestAskFindOrCreate (PARK-V2 §E): new → creates; open → joins (same id,
+// still one open row); answered → returned as-is (the resume fast path);
+// different text or a nil pipeline_run_id → a fresh row.
+func TestAskFindOrCreate(t *testing.T) {
+	store := questions.NewMemoryStore()
+	runID := 7
+	newQ := func(text string) *questions.Question {
+		return &questions.Question{
+			TicketID: 42, PipelineRunID: &runID, StepName: "implement",
+			Kind: questions.KindQuestion, Question: text,
+			Options: []string{"legacy", "oidc"},
+		}
+	}
+
+	first, err := store.Ask(newQ("Which auth flow?"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	joined, err := store.Ask(newQ("Which auth flow?"))
+	if err != nil || joined != first {
+		t.Fatalf("expected to join open row %d, got %d (err %v)", first, joined, err)
+	}
+	open, _ := store.OpenForTicket(42)
+	if len(open) != 1 {
+		t.Fatalf("expected exactly 1 open row after the join, got %d", len(open))
+	}
+
+	if err := store.Answer(42, first, "oidc", "tdm"); err != nil {
+		t.Fatal(err)
+	}
+	again, err := store.Ask(newQ("Which auth flow?"))
+	if err != nil || again != first {
+		t.Fatalf("expected the answered row %d back, got %d (err %v)", first, again, err)
+	}
+	got, _, _ := store.Get(42, again)
+	if got.Answer != "oidc" || got.AnsweredAt == 0 {
+		t.Fatalf("expected the answered row as-is, got %+v", got)
+	}
+
+	fresh, err := store.Ask(newQ("Which auth flow? (take 2)"))
+	if err != nil || fresh == first {
+		t.Fatalf("different text must file a fresh row, got %d (err %v)", fresh, err)
+	}
+
+	q := newQ("Which auth flow?")
+	q.PipelineRunID = nil
+	loose, err := store.Ask(q)
+	if err != nil || loose == first {
+		t.Fatalf("nil pipeline_run_id must never dedup, got %d (err %v)", loose, err)
+	}
+}
+```
+
+  Append to `agent/api/questions/handler_test.go`:
+
+```go
+// TestAskRouteIdempotentByQuestion (PARK-V2 §E): the route computes
+// question_hash SERVER-SIDE and Ask is find-or-create — a byte-identical
+// re-ask from a continuation build's fresh sidecar returns the SAME row,
+// already answered, so the resumed agent's re-issued tool call resolves
+// immediately (no park).
+func TestAskRouteIdempotentByQuestion(t *testing.T) {
+	store := questions.NewMemoryStore()
+	h := questions.NewHandler(store)
+
+	ask := func() questions.Question {
+		body := strings.NewReader(`{"question":"proceed?","options":["yes","no"],"pipeline_run_id":7,"step_name":"implement"}`)
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/agent/tickets/12/questions", body)
+		req.Form = url.Values{":ticket_id": {"12"}}
+		w := httptest.NewRecorder()
+		h.AskQuestion(w, req)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("ask: expected 201, got %d: %s", w.Code, w.Body.String())
+		}
+		var q questions.Question
+		if err := json.Unmarshal(w.Body.Bytes(), &q); err != nil {
+			t.Fatal(err)
+		}
+		return q
+	}
+
+	first := ask()
+	if first.QuestionHash == "" {
+		t.Fatal("route must compute question_hash server-side")
+	}
+	if second := ask(); second.ID != first.ID || second.AnsweredAt != 0 {
+		t.Fatalf("expected to join open row %d, got %+v", first.ID, second)
+	}
+	if err := store.Answer(12, first.ID, "yes", "tdm"); err != nil {
+		t.Fatal(err)
+	}
+	resumed := ask()
+	if resumed.ID != first.ID || resumed.Answer != "yes" || resumed.AnsweredAt == 0 {
+		t.Fatalf("expected the answered row immediately, got %+v", resumed)
+	}
+}
+```
+
+- [ ] Run to verify they fail:
+
+```bash
+go test ./agent/api/questions/
+```
+
+Expected failures: `undefined: questions.ComputeQuestionHash`; the find-or-create tests create duplicate rows against the pre-delta stores.
+
+- [ ] Implement the domain side. In `agent/api/questions/types.go`, add `"crypto/sha256"`, `"encoding/hex"`, `"strings"` to the imports, add the field after `Options` in the `Question` struct:
+
+```go
+	QuestionHash   string        `json:"question_hash,omitempty"`
+```
+
+  add next to `ValidateAsk`:
+
+```go
+// ComputeQuestionHash is the frozen PARK-V2 §E dedup hash over the question
+// content: hex(sha256(question || '\x00' || options joined by '\x00')).
+// Computed SERVER-SIDE by the ask route (client-sent values are overwritten);
+// run-scoped rows are unique on (pipeline_run_id, step_name, kind,
+// question_hash) — migration 1773106072.
+func ComputeQuestionHash(question string, options []string) string {
+	sum := sha256.Sum256([]byte(question + "\x00" + strings.Join(options, "\x00")))
+	return hex.EncodeToString(sum[:])
+}
+```
+
+  and replace the `Ask(q *Question) (int, error)` line in the `Store` interface with:
+
+```go
+	// Ask is FIND-OR-CREATE (PARK-V2 §E): when q carries a pipeline_run_id,
+	// an existing row with the same (pipeline_run_id, step_name, kind,
+	// question_hash) is returned instead of inserting — answered or open
+	// alike. Callers detect the resume fast path via the returned row's
+	// answered_at. Implementations compute QuestionHash when empty.
+	Ask(q *Question) (int, error)
+```
+
+- [ ] Replace `MemoryStore.Ask` in `agent/api/questions/memory_store.go`:
+
+```go
+func (m *MemoryStore) Ask(q *Question) (int, error) {
+	if err := q.ValidateAsk(); err != nil {
+		return 0, err
+	}
+	if q.QuestionHash == "" {
+		q.QuestionHash = ComputeQuestionHash(q.Question, q.Options)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if q.PipelineRunID != nil {
+		// FIND-OR-CREATE (PARK-V2 §E): answered or open, the existing row wins.
+		for _, row := range m.rows {
+			if row.PipelineRunID != nil && *row.PipelineRunID == *q.PipelineRunID &&
+				row.StepName == q.StepName && row.Kind == q.Kind &&
+				row.QuestionHash == q.QuestionHash {
+				return row.ID, nil
+			}
+		}
+	}
+	cp := *q
+	cp.ID = m.nextID
+	cp.AskedAt = time.Now().Unix()
+	m.nextID++
+	m.rows[cp.ID] = &cp
+	return cp.ID, nil
+}
+```
+
+- [ ] In `agent/api/questions/handler.go`'s `AskQuestion`, directly after the `q.ValidateAsk()` check:
+
+```go
+	// PARK-V2 §E: the hash is computed server-side — never trusted from the
+	// client — and makes Ask find-or-create for run-scoped questions. Joins
+	// still answer 201; callers read the row's answered_at, not the code.
+	q.QuestionHash = ComputeQuestionHash(q.Question, q.Options)
+```
+
+- [ ] Run to verify the agent side passes:
+
+```bash
+go test ./agent/api/questions/
+```
+
+- [ ] Extend the SQL side. Append to the `atc/db/agent_questions_factory_test.go` Describe block:
+
+```go
+	It("find-or-creates on (pipeline_run_id, step_name, kind, question_hash) — PARK-V2 §E", func() {
+		runID := 777
+		ask := func() (int, *questions.Question) {
+			q := &questions.Question{
+				TicketID: 9005, PipelineRunID: &runID, StepName: "implement",
+				Kind: questions.KindQuestion, Question: "resume me?",
+				Options: []string{"yes", "no"},
+			}
+			id, err := factory.Ask(q)
+			Expect(err).ToNot(HaveOccurred())
+			got, found, err := factory.Get(9005, id)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(found).To(BeTrue())
+			return id, got
+		}
+
+		first, row := ask()
+		Expect(row.QuestionHash).ToNot(BeEmpty())
+
+		joined, _ := ask()
+		Expect(joined).To(Equal(first))
+		open, err := factory.OpenForTicket(9005)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(open).To(HaveLen(1))
+
+		Expect(factory.Answer(9005, first, "yes", "tdm")).To(Succeed())
+		resumed, answeredRow := ask()
+		Expect(resumed).To(Equal(first))
+		Expect(answeredRow.Answer).To(Equal("yes"))
+		Expect(answeredRow.AnsweredAt).To(BeNumerically(">", 0))
+	})
+```
+
+- [ ] Implement in `atc/db/agent_questions_factory.go`: add `"errors"` to the imports, append `q.question_hash` to the `questionColumns` constant (after the `notified_at` line) with `&q.QuestionHash` added last in `scanQuestionRows`'s `Scan`, and replace `Ask` with:
+
+```go
+func (f *agentQuestionsFactory) Ask(q *questions.Question) (int, error) {
+	if err := q.ValidateAsk(); err != nil {
+		return 0, err
+	}
+	if q.QuestionHash == "" {
+		// Defense in depth: the ask route computes this, but EVERY insert must
+		// carry a real hash or run-scoped rows would collide on '' under
+		// agent_run_questions_dedup (migration 1773106072).
+		q.QuestionHash = questions.ComputeQuestionHash(q.Question, q.Options)
+	}
+	optsJSON, err := json.Marshal(q.Options)
+	if err != nil {
+		return 0, err
+	}
+	insert := psql.Insert("agent_run_questions").
+		Columns(
+			"ticket_id", "pipeline_run_id", "build_id", "step_name", "kind",
+			"question", "options", "timeout_policy", "timeout_seconds", "default_answer",
+			"question_hash",
+		).
+		Values(
+			q.TicketID, q.PipelineRunID, q.BuildID, q.StepName, string(q.Kind),
+			q.Question, optsJSON, string(q.TimeoutPolicy), q.TimeoutSeconds, nullableString(q.DefaultAnswer),
+			q.QuestionHash,
+		)
+	if q.PipelineRunID != nil {
+		// FIND-OR-CREATE (PARK-V2 §E): keep the existing row — answered or
+		// open — and return its id. DO NOTHING + re-select is the race-safe
+		// two-step: a concurrent inserter of the same key makes exactly one
+		// row and both callers get its id.
+		insert = insert.Suffix(`ON CONFLICT (pipeline_run_id, step_name, kind, question_hash)
+			WHERE pipeline_run_id IS NOT NULL
+			DO NOTHING
+			RETURNING id`)
+	} else {
+		insert = insert.Suffix("RETURNING id")
+	}
+	var id int
+	err = insert.RunWith(f.conn).QueryRow().Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) && q.PipelineRunID != nil {
+		err = f.conn.QueryRow(
+			`SELECT id FROM agent_run_questions
+			 WHERE pipeline_run_id = $1 AND step_name = $2 AND kind = $3 AND question_hash = $4`,
+			*q.PipelineRunID, q.StepName, string(q.Kind), q.QuestionHash,
+		).Scan(&id)
+	}
+	if err != nil {
+		return 0, err
+	}
+	return id, nil
+}
+```
+
+  (No `go generate` needed: the `questions.Store` method set is unchanged, so the counterfeiter fake stands.)
+
+- [ ] Update the `ask_human` tool description in `agent/platformmcp/tools.go` if Task 10 has already landed at execution time (the Task 10 block in this plan already carries the amended text): the description must end with the §E vary-the-text note.
+
+- [ ] Run to verify pass:
+
+```bash
+go test ./agent/api/questions/ && ginkgo ./atc/db/migration/ && ginkgo ./atc/db/
+```
+
+- [ ] Commit:
+
+```bash
+git add atc/db/migration/migrations/1773106072_* agent/api/questions/ atc/db/agent_questions_factory.go atc/db/agent_questions_factory_test.go
+git commit -m "feat(agent): idempotent-by-question find-or-create + question_hash dedup (PARK-V2 §E, 1773106072)" -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+```
+
+---
+
 ### Task 6: ATC route registration — routes, auth wrappa, archived wrappa, auditor, roles, handler wiring
 
 **Files:**
@@ -1380,6 +1741,117 @@ go build ./atc/... && ginkgo ./atc/wrappa/ && ginkgo ./atc/api/ && ginkgo ./atc/
 ```bash
 git add atc/routes.go atc/wrappa/ atc/auditor/auditor.go atc/api/ atc/atccmd/command.go
 git commit -m "feat(atc): register agent question routes (ask/list/long-poll/answer)" -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+```
+
+---
+
+### Task 6b: AnswerAgentQuestion fires the dispatcher component notify (PARK-V2 §D, 2026-07-10)
+
+**Files:**
+- Modify: `agent/api/questions/handler.go` (`OnAnswer` hook)
+- Modify: `atc/api/handler.go`, `atc/api/api_suite_test.go`, `atc/atccmd/command.go` (wiring)
+- Test: `agent/api/questions/handler_test.go` (extend)
+
+**Why (PARK-V2 §D):** dispatch's `reconcileAwaitingRuns` (plan 11 Task 11c) re-arms a parked run's continuation on its polling pass; the answer route ADDITIONALLY nudges the dispatcher component so resume is prompt instead of waiting out a poll interval. Never notify-only (the fork's lossy-NOTIFY lesson: `handleNotification` silently drops on a full channel) — the notify is best-effort and a lost one only delays resume to the next poll. The wiring lands NOW even though `atc.ComponentAgentDispatcher` is wave-4 (plan 11 Task 13): `pg_notify` on a channel with no listener is a harmless no-op.
+
+- [ ] Write the failing test — append to `agent/api/questions/handler_test.go`:
+
+```go
+// TestAnswerFiresOnAnswerHook (PARK-V2 §D): a SUCCESSFUL answer write fires
+// the hook exactly once (the ATC wires it to the dispatcher component's
+// notify channel so parked-run resume is prompt); rejected writes (validation
+// 400, conflict 409, not-found 404) must NOT fire it — polling remains the
+// only guaranteed path (never notify-only).
+func TestAnswerFiresOnAnswerHook(t *testing.T) {
+	store := questions.NewMemoryStore()
+	h := questions.NewHandler(store)
+	fired := 0
+	h.OnAnswer = func() { fired++ }
+	q := doAsk(t, h)
+
+	answer := func(id int, body string) int {
+		req := httptest.NewRequest(http.MethodPut,
+			fmt.Sprintf("/api/v1/agent/tickets/12/questions/%d/answer", id),
+			strings.NewReader(body))
+		req.Form = url.Values{":ticket_id": {"12"}, ":question_id": {fmt.Sprint(id)}}
+		w := httptest.NewRecorder()
+		h.AnswerQuestion(w, req)
+		return w.Code
+	}
+
+	if code := answer(q.ID, `{"answer":"maybe","answered_by":"tdm"}`); code != http.StatusBadRequest || fired != 0 {
+		t.Fatalf("invalid answer: code=%d fired=%d", code, fired)
+	}
+	if code := answer(q.ID, `{"answer":"yes","answered_by":"tdm"}`); code != http.StatusOK || fired != 1 {
+		t.Fatalf("first answer: code=%d fired=%d", code, fired)
+	}
+	if code := answer(q.ID, `{"answer":"no","answered_by":"late"}`); code != http.StatusConflict || fired != 1 {
+		t.Fatalf("conflict: code=%d fired=%d", code, fired)
+	}
+	if code := answer(424242, `{"answer":"yes","answered_by":"tdm"}`); code != http.StatusNotFound || fired != 1 {
+		t.Fatalf("not-found: code=%d fired=%d", code, fired)
+	}
+}
+```
+
+- [ ] Run to verify it fails (`h.OnAnswer` undefined):
+
+```bash
+go test ./agent/api/questions/
+```
+
+- [ ] Add the hook to the `Handler` struct in `agent/api/questions/handler.go` (after `MaxWait`):
+
+```go
+	// OnAnswer, when non-nil, is invoked after every SUCCESSFUL answer write.
+	// The ATC wires it to the dispatcher component's notify channel (PARK-V2
+	// §D) so an answered park re-arms its continuation promptly; the
+	// dispatcher's polling pass remains the guaranteed path — never
+	// notify-only, per the fork's lossy-NOTIFY lesson.
+	OnAnswer func()
+```
+
+  and in `AnswerQuestion`, directly after the `h.store.Answer` error switch (the success path, before the read-back):
+
+```go
+	if h.OnAnswer != nil {
+		h.OnAnswer()
+	}
+```
+
+- [ ] Wire it through the ATC:
+  - `atc/api/handler.go`: add a param `questionAnswerNotify func(),` directly after `questionsStore questions.Store,` (Task 6's param), and after constructing `questionsServer` set `questionsServer.OnAnswer = questionAnswerNotify` (nil-safe — the handler checks non-nil).
+  - `atc/api/api_suite_test.go`: pass `nil,` after `questions.NewMemoryStore(),`.
+  - `atc/atccmd/command.go`: after `db.NewAgentQuestionsFactory(dbConn),` (Task 6's argument) pass:
+
+```go
+		func() {
+			// PARK-V2 §D: nudge the dispatcher so an answered park resumes
+			// promptly. "agent_dispatcher" is atc.ComponentAgentDispatcher
+			// (plan 11 Task 13, wave 4); until that constant lands, the
+			// string literal notifies an unlistened channel — a harmless
+			// no-op — and is swapped for the constant when plan 11 merges.
+			// Errors are logged, never fatal: polling is the guaranteed
+			// resume path.
+			if err := dbConn.Bus().Notify("agent_dispatcher"); err != nil {
+				logger.Error("failed-to-notify-agent-dispatcher-on-answer", err)
+			}
+		},
+```
+
+  (anchor to the Task 6 call-site edit; the surrounding `dbConn`/`logger` names are the ones already in scope at `api.NewHandler`'s construction — verify against the landed wave-2 file, per the execution-time anchor warning.)
+
+- [ ] Run to verify pass:
+
+```bash
+go test ./agent/api/questions/ && go build ./atc/... && ginkgo ./atc/api/
+```
+
+- [ ] Commit:
+
+```bash
+git add agent/api/questions/handler.go agent/api/questions/handler_test.go atc/api/ atc/atccmd/command.go
+git commit -m "feat(atc): answer route nudges the agent dispatcher for prompt resume (PARK-V2 §D)" -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ```
 
 ---
@@ -3020,6 +3492,135 @@ git commit -m "feat(mcpserver): SSE progress-heartbeat transport mirrored from c
 
 ---
 
+### Task 9c: short-park threshold config — `PLATFORM_MCP_SHORT_PARK_MAX_SECONDS` + `PLATFORM_MCP_PARK_PATH` (PARK-V2 §A/§B1, 2026-07-10)
+
+**Files:**
+- Modify: `agent/platformmcp/config.go`
+- Test: `agent/platformmcp/config_test.go`
+
+**Why (PARK-V2 §A):** the threshold TIMER is owned by the platform sidecar — it starts the park, holds `asked_at`, and already runs the SSE heartbeat ticker — and applies to BOTH `ask_human` parks and `/checkpoint` parks, measured from the row's `asked_at`. `0` = never exit = pure PARK-V1 (the delta's rollback hatch). Bounds-validation mirrors the rest of this file: set-but-invalid or negative is FATAL at startup, never clamped; the existing `park`+0 TIMEOUT-POLICY rule stays legal and orthogonal — the threshold decides WHERE the wait lives (SSE park vs exited step), not whether it resolves. `PLATFORM_MCP_PARK_PATH` is the §B1 sentinel destination; unset = never write, which is the LEGAL checkpoint-pod shape (no flight volume there; the `202` response is that pod's exit signal), so threshold-without-path is NOT a startup error — an `ask_human` crossing without a path instead degrades LOUDLY at crossing time (Task 11b).
+
+- [ ] Write the failing test — append to `agent/platformmcp/config_test.go`:
+
+```go
+// TestConfigFromEnvShortParkMax (PARK-V2 §A): PLATFORM_MCP_SHORT_PARK_MAX_SECONDS
+// is integer seconds, rendered literally by dispatch from --agent-short-park-max;
+// unset or "0" = never exit (pure PARK-V1 — the rollback hatch); negative or
+// garbage is FATAL at startup, never clamped. PLATFORM_MCP_PARK_PATH rides
+// along verbatim, and its absence is legal (checkpoint pods).
+func TestConfigFromEnvShortParkMax(t *testing.T) {
+	base := func() {
+		t.Setenv("ATC_EXTERNAL_URL", "https://concourse.home")
+		t.Setenv("AGENT_PRINCIPAL_TOKEN", "cap1.9.secret")
+		t.Setenv("AGENT_TICKET_ID", "42")
+	}
+
+	base()
+	cfg, err := platformmcp.ConfigFromEnv()
+	if err != nil {
+		t.Fatalf("ConfigFromEnv: %v", err)
+	}
+	if cfg.ShortParkMax != 0 || cfg.ParkPath != "" {
+		t.Fatalf("unset short-park env: expected zero values, got %+v", cfg)
+	}
+
+	base()
+	t.Setenv("PLATFORM_MCP_SHORT_PARK_MAX_SECONDS", "1800")
+	t.Setenv("PLATFORM_MCP_PARK_PATH", "/flight/park.json")
+	cfg, err = platformmcp.ConfigFromEnv()
+	if err != nil {
+		t.Fatalf("ConfigFromEnv: %v", err)
+	}
+	if cfg.ShortParkMax != 30*time.Minute || cfg.ParkPath != "/flight/park.json" {
+		t.Fatalf("expected 30m + /flight/park.json, got %+v", cfg)
+	}
+
+	base()
+	t.Setenv("PLATFORM_MCP_SHORT_PARK_MAX_SECONDS", "0")
+	cfg, err = platformmcp.ConfigFromEnv()
+	if err != nil || cfg.ShortParkMax != 0 {
+		t.Fatalf("explicit 0 must mean never-exit: %v %+v", err, cfg)
+	}
+
+	// Threshold WITHOUT a park path is the legal checkpoint-pod shape.
+	base()
+	t.Setenv("PLATFORM_MCP_SHORT_PARK_MAX_SECONDS", "1800")
+	if _, err := platformmcp.ConfigFromEnv(); err != nil {
+		t.Fatalf("threshold without PLATFORM_MCP_PARK_PATH must be legal (checkpoint pods): %v", err)
+	}
+
+	for _, bad := range []string{"-1", "bogus", "30m"} {
+		base()
+		t.Setenv("PLATFORM_MCP_SHORT_PARK_MAX_SECONDS", bad)
+		if _, err := platformmcp.ConfigFromEnv(); err == nil {
+			t.Fatalf("PLATFORM_MCP_SHORT_PARK_MAX_SECONDS=%q: expected fatal error, got nil", bad)
+		}
+	}
+}
+```
+
+- [ ] Run to verify it fails:
+
+```bash
+go test ./agent/platformmcp/
+```
+
+Expected failure: `cfg.ShortParkMax undefined`.
+
+- [ ] Add the fields to `Config` in `agent/platformmcp/config.go` (after `ProgressInterval`):
+
+```go
+	// ShortParkMax is the PARK-V2 §A exit-and-respawn threshold
+	// (PLATFORM_MCP_SHORT_PARK_MAX_SECONDS, integer seconds — rendered
+	// literally by dispatch from the web flag --agent-short-park-max).
+	// 0 = never exit: every park stays a PARK-V1 SSE park (the delta's
+	// rollback hatch). Applies to BOTH ask_human and /checkpoint parks,
+	// measured from the question row's asked_at.
+	ShortParkMax time.Duration
+	// ParkPath is the §B1 park-sentinel destination (PLATFORM_MCP_PARK_PATH,
+	// Task 1 addendum) — `<flight mount>/park.json` in agent-step pods, set
+	// by the agent-step exec via SidecarEnv (F15; plan 07 Task 26 — only the
+	// exec knows the flight mount path), where the agent-runner's 5s stat
+	// loop watches for it. "" = never write a sentinel: the legal
+	// checkpoint-pod shape (no flight volume; the 202 response is the exit
+	// signal there). An agent-step pod missing this env is an agent-step
+	// exec bug — Task 11b logs the degradation loudly at crossing.
+	ParkPath string
+```
+
+  and the parsing at the end of `ConfigFromEnv` (after the progress-interval block, before `return`):
+
+```go
+	// PARK-V2 §A: bounds-validate like the rest of the env contract — a
+	// set-but-invalid or negative threshold is FATAL at startup, never
+	// clamped. Integer SECONDS, not a Go duration: dispatch renders the
+	// flag's rounded seconds literally.
+	shortParkSecs, err := intEnv("PLATFORM_MCP_SHORT_PARK_MAX_SECONDS")
+	if err != nil {
+		return cfg, err
+	}
+	if shortParkSecs < 0 {
+		return cfg, fmt.Errorf("PLATFORM_MCP_SHORT_PARK_MAX_SECONDS must be >= 0 (0 = never exit-and-respawn), got %d", shortParkSecs)
+	}
+	cfg.ShortParkMax = time.Duration(shortParkSecs) * time.Second
+	cfg.ParkPath = os.Getenv("PLATFORM_MCP_PARK_PATH")
+```
+
+- [ ] Run to verify pass:
+
+```bash
+go test ./agent/platformmcp/
+```
+
+- [ ] Commit:
+
+```bash
+git add agent/platformmcp/config.go agent/platformmcp/config_test.go
+git commit -m "feat(platform-mcp): short-park threshold + park-sentinel path config (PARK-V2 §A/§B1)" -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+```
+
+---
+
 ### Task 10: MCP server assembly + read_ticket / list_tasks / get_task / submit_spec / submit_plan / update_task_status
 
 **Files:**
@@ -3563,8 +4164,10 @@ func (s *Server) registerTools() {
 		}),
 		s.updateTaskStatus)
 
+	// PARK-V2 §E tool-description note (2026-07-10): repeated byte-identical
+	// questions within one step are idempotent — the description must say so.
 	s.mcp.AddTool("ask_human",
-		"Ask the human a question; this call BLOCKS (parks the run) until answered.",
+		"Ask the human a question; this call BLOCKS (parks the run) until answered. Repeated byte-identical questions within one step return the FIRST answer (idempotent-by-question) — vary the question text if you genuinely need a fresh answer.",
 		mcpserver.MustJSON(map[string]any{
 			"type":     "object",
 			"required": []string{"question"},
@@ -4105,6 +4708,330 @@ git commit -m "feat(platform-mcp): ask_human park/resume with park|default|fail 
 
 ---
 
+### Task 11b: ask_human long-park exit — threshold timer, `flight/park.json` sentinel, answered-row fast path (PARK-V2 §B1/§B3/§E, 2026-07-10)
+
+**Files:**
+- Create: `agent/platformmcp/parkexit.go`
+- Modify: `agent/platformmcp/askhuman.go`
+- Test: `agent/platformmcp/parkexit_test.go`
+
+**What happens at a threshold crossing (§B1/§B3):** the sidecar atomically writes the park sentinel — temp file + rename in the SAME directory, so the agent-runner's 5s stat loop can never observe a partial file — with the frozen payload `{"question_id", "kind", "step_name", "asked_at" (RFC3339), "threshold_seconds", "crossed_at" (RFC3339)}`, KEEPS the question row open (it is the durable representation of the wait), and takes no further action: the runner SIGTERMs claude, the blocked MCP `tools/call` connection drops, and `AwaitAnswer` cancels via the request context (already threaded — `GetQuestion` carries `ctx`, and net/http cancels it on client disconnect). The sentinel was chosen over a `GET /park-status` poll because (§B1): zero new HTTP surface, it survives a sidecar crash (the file persists), it rides the ingested flight artifact as free park-exit provenance, and the runner's watch is a trivial stat loop with no liveness coupling.
+
+**Resume fast path (§E):** Task 5b's find-or-create means the continuation's re-issued `ask_human` gets back an ALREADY-ANSWERED row — return the result immediately: no park, no threshold timer, no SSE wait. **Timeout-policy interplay:** `awaitWithPolicy`'s deadline is absolute from the row's `asked_at`, so a `default`/`fail` timeout longer than the threshold still resolves correctly in the respawned step — the fresh sidecar's joined row re-arms from the ORIGINAL `asked_at`, not a fresh clock.
+
+- [ ] Write the failing test `agent/platformmcp/parkexit_test.go`:
+
+```go
+package platformmcp_test
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/concourse/concourse/agent/api/questions"
+	"github.com/concourse/concourse/agent/platformmcp"
+)
+
+// newParkExitServer is newAskServer plus a pipeline run id (the §E dedup key
+// scope), a tiny short-park threshold, and a sentinel path in a temp dir.
+func newParkExitServer(t *testing.T, atcURL string, threshold time.Duration) (*platformmcp.Server, string) {
+	t.Helper()
+	srv, err := platformmcp.NewServer(platformmcp.Config{
+		ATCURL:         atcURL,
+		PrincipalToken: "cap1.9.secret",
+		TicketID:       42,
+		PipelineRunID:  7,
+		BuildID:        1001,
+		StepName:       "implement",
+		TimeoutPolicy:  "park",
+		ListenAddr:     ":0",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.TunePolling(50*time.Millisecond, 20*time.Millisecond)
+	parkPath := filepath.Join(t.TempDir(), "park.json")
+	srv.TuneShortPark(threshold, parkPath)
+	return srv, parkPath
+}
+
+// TestAskHumanWritesParkSentinelAtThreshold (PARK-V2 §B1/§B3): when a park
+// crosses the threshold the sidecar atomically writes flight/park.json with
+// the frozen payload and KEEPS the question row open; the parked call is then
+// unblocked by the CLIENT DISCONNECT (the runner SIGTERMs claude) — and that
+// disconnect must NOT resolve the row: it is the durable representation of
+// the wait.
+func TestAskHumanWritesParkSentinelAtThreshold(t *testing.T) {
+	store := questions.NewMemoryStore()
+	atc := fullStubATC(t, store)
+	srv, parkPath := newParkExitServer(t, atc.URL, 200*time.Millisecond)
+
+	sidecar := httptest.NewServer(srv.Mux())
+	t.Cleanup(sidecar.Close)
+
+	// Park via a real connection so cancelling the request context actually
+	// severs it (the disconnect leg of §B3).
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"ask_human","arguments":{"question":"long wait?"}}}`
+	req, err := http.NewRequestWithContext(ctx, "POST", sidecar.URL+"/mcp", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		resp, err := http.DefaultClient.Do(req)
+		if err == nil {
+			resp.Body.Close()
+		}
+	}()
+
+	// The sentinel appears once the threshold crosses.
+	var raw []byte
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		raw, err = os.ReadFile(parkPath)
+		if err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("park sentinel never appeared")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	var sentinel struct {
+		QuestionID       int    `json:"question_id"`
+		Kind             string `json:"kind"`
+		StepName         string `json:"step_name"`
+		AskedAt          string `json:"asked_at"`
+		ThresholdSeconds int    `json:"threshold_seconds"`
+		CrossedAt        string `json:"crossed_at"`
+	}
+	if err := json.Unmarshal(raw, &sentinel); err != nil {
+		t.Fatalf("park.json is not valid JSON (atomic write violated?): %v: %q", err, raw)
+	}
+	open, _ := store.OpenForTicket(42)
+	if len(open) != 1 {
+		t.Fatalf("expected the question to STAY OPEN at park-exit, got %d open", len(open))
+	}
+	if sentinel.QuestionID != open[0].ID || sentinel.Kind != "question" || sentinel.StepName != "implement" {
+		t.Fatalf("unexpected sentinel: %+v", sentinel)
+	}
+	for _, ts := range []string{sentinel.AskedAt, sentinel.CrossedAt} {
+		if _, err := time.Parse(time.RFC3339, ts); err != nil {
+			t.Fatalf("sentinel timestamp %q is not RFC3339: %v", ts, err)
+		}
+	}
+	if _, err := os.Stat(parkPath + ".tmp"); !os.IsNotExist(err) {
+		t.Fatal("temp file left behind — the write must be tmp + rename")
+	}
+
+	// The runner now kills claude; the connection drops. The parked call must
+	// return WITHOUT resolving the row.
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("parked ask_human did not return on client disconnect")
+	}
+	open, _ = store.OpenForTicket(42)
+	if len(open) != 1 {
+		t.Fatalf("client disconnect must NOT resolve the row; got %d open", len(open))
+	}
+}
+
+// TestAskHumanAnsweredRowFastPath (PARK-V2 §E): the continuation build's
+// re-issued ask_human hits find-or-create, gets the already-answered row, and
+// returns IMMEDIATELY — no park, no SSE wait, no threshold timer.
+func TestAskHumanAnsweredRowFastPath(t *testing.T) {
+	store := questions.NewMemoryStore()
+	atc := fullStubATC(t, store)
+	srv, parkPath := newParkExitServer(t, atc.URL, time.Hour)
+
+	// The row the PREVIOUS execution filed and a human answered while the
+	// step was exited: same (pipeline_run_id, step_name, kind, hash) — the
+	// build id differs and is deliberately NOT part of the key.
+	runID := 7
+	id, err := store.Ask(&questions.Question{
+		TicketID: 42, PipelineRunID: &runID, BuildID: 900, StepName: "implement",
+		Kind: questions.KindQuestion, Question: "resume me?",
+		Options: []string{"go", "stop"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Answer(42, id, "go", "tdm"); err != nil {
+		t.Fatal(err)
+	}
+
+	start := time.Now()
+	result, isErr := callTool(t, srv.Mux(), "ask_human", map[string]any{
+		"question": "resume me?",
+		"options":  []string{"go", "stop"},
+	})
+	if isErr {
+		t.Fatalf("ask_human errored: %s", result)
+	}
+	if !strings.Contains(string(result), `"answer":"go"`) ||
+		!strings.Contains(string(result), `"answered_by":"tdm"`) {
+		t.Fatalf("expected the stored answer immediately, got: %s", result)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("fast path took %s — it must not park", elapsed)
+	}
+	if _, err := os.Stat(parkPath); !os.IsNotExist(err) {
+		t.Fatal("fast path must not arm the park-exit timer / write a sentinel")
+	}
+}
+```
+
+- [ ] Run to verify it fails:
+
+```bash
+go test ./agent/platformmcp/
+```
+
+Expected failures: `undefined: (*platformmcp.Server).TuneShortPark`; the fast-path test parks instead of returning.
+
+- [ ] Write `agent/platformmcp/parkexit.go`:
+
+```go
+package platformmcp
+
+import (
+	"encoding/json"
+	"fmt"
+	"log"
+	"os"
+	"path/filepath"
+	"time"
+
+	"github.com/concourse/concourse/agent/api/questions"
+)
+
+// TuneShortPark overrides the §A threshold and §B1 sentinel path (tests only).
+func (s *Server) TuneShortPark(threshold time.Duration, parkPath string) {
+	s.cfg.ShortParkMax = threshold
+	s.cfg.ParkPath = parkPath
+}
+
+// armParkExit starts the PARK-V2 §A threshold timer for a park on q and
+// returns a stop func the caller MUST defer: an answered park must never fire
+// a stale sentinel. The timer measures from the row's asked_at — a joiner
+// (a dedup'd re-ask) therefore inherits the ORIGINAL park clock, never a
+// fresh one.
+func (s *Server) armParkExit(q *questions.Question) func() {
+	if s.cfg.ShortParkMax <= 0 {
+		return func() {} // 0 = never exit (pure PARK-V1; the rollback hatch)
+	}
+	remaining := time.Until(time.Unix(q.AskedAt, 0).Add(s.cfg.ShortParkMax))
+	if remaining < 0 {
+		remaining = 0
+	}
+	timer := time.AfterFunc(remaining, func() { s.crossParkThreshold(q) })
+	return func() { timer.Stop() }
+}
+
+// crossParkThreshold writes the §B1 sentinel. The question row is NOT touched
+// — it stays open as the durable representation of the wait (§B3); the
+// agent-runner's 5s stat loop sees the file, SIGTERMs claude, and this call's
+// connection drops (AwaitAnswer cancels on the request context). A pod with
+// no PLATFORM_MCP_PARK_PATH — an agent-step-exec bug in an agent-step pod
+// (the exec sets it via SidecarEnv, F15 — plan 07 Task 26); normal in
+// checkpoint pods, which exit via the 202 response instead — degrades LOUDLY
+// to the PARK-V1 SSE park, bounded platform-side by --agent-park-timeout.
+func (s *Server) crossParkThreshold(q *questions.Question) {
+	if s.cfg.ParkPath == "" {
+		log.Printf("park-exit: question %d crossed the %s short-park threshold but PLATFORM_MCP_PARK_PATH is unset — staying on the SSE park (PARK-V1 degradation)", q.ID, s.cfg.ShortParkMax)
+		return
+	}
+	payload := map[string]any{
+		"question_id":       q.ID,
+		"kind":              string(q.Kind),
+		"step_name":         s.cfg.StepName,
+		"asked_at":          time.Unix(q.AskedAt, 0).UTC().Format(time.RFC3339),
+		"threshold_seconds": int(s.cfg.ShortParkMax / time.Second),
+		"crossed_at":        time.Now().UTC().Format(time.RFC3339),
+	}
+	if err := writeSentinelAtomic(s.cfg.ParkPath, payload); err != nil {
+		log.Printf("park-exit: question %d: failed to write park sentinel %s: %s — staying on the SSE park", q.ID, s.cfg.ParkPath, err)
+	}
+}
+
+// writeSentinelAtomic is §B1's write-temp-then-mv: the temp file lives in the
+// SAME directory (same filesystem), so the rename is atomic and the runner's
+// stat loop can never observe a partial file.
+func writeSentinelAtomic(path string, payload map[string]any) error {
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	tmp := filepath.Join(filepath.Dir(path), filepath.Base(path)+".tmp")
+	if err := os.WriteFile(tmp, raw, 0o644); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp)
+		return fmt.Errorf("renaming sentinel into place: %w", err)
+	}
+	return nil
+}
+```
+
+- [ ] Wire it into `agent/platformmcp/askhuman.go`'s `askHuman`. Directly after the `s.events.Emit("human.ask", ...)` call (BEFORE the `progress(...)` line), insert the §E fast path:
+
+```go
+	// PARK-V2 §E resume fast path: find-or-create returned an ALREADY-ANSWERED
+	// row — the continuation's re-issued call gets its answer immediately (no
+	// park, no threshold timer, no SSE wait).
+	if created.AnsweredAt != 0 {
+		s.events.Emit("human.answer", map[string]any{
+			"question_id":  created.ID,
+			"answer":       created.Answer,
+			"answered_by":  created.AnsweredBy,
+			"wait_seconds": created.AnsweredAt - created.AskedAt,
+			"timed_out":    false,
+			"resumed":      true,
+		})
+		return askHumanResult{Answer: created.Answer, AnsweredBy: created.AnsweredBy, TimedOut: false}, nil
+	}
+```
+
+  and directly before the `answered, timedOut, err := s.awaitWithPolicy(...)` call, arm the timer:
+
+```go
+	// PARK-V2 §A/§B1: arm the exit-and-respawn threshold for this park.
+	stopParkExit := s.armParkExit(created)
+	defer stopParkExit()
+```
+
+  (Task 12 later converts the raw `"human.answer"` string to `schema.EventHumanAnswer` along with the other `askhuman.go` call sites — its existing step already covers every `Emit` in that file.)
+
+- [ ] Run to verify pass:
+
+```bash
+go test ./agent/platformmcp/
+```
+
+- [ ] Commit:
+
+```bash
+git add agent/platformmcp/
+git commit -m "feat(platform-mcp): ask_human park-exit sentinel + answered-row fast path (PARK-V2 §B1/§B3/§E)" -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+```
+
+---
+
 ### Task 12: flight-recorder events — schema constants + sidecar event log
 
 **Files:**
@@ -4468,6 +5395,7 @@ Checkpoint gates (§3.2, Task 1 addendum) reuse the ask_human primitive. **Rende
 - **Approve** ⇒ sidecar returns `{"approved": true}` ⇒ client **exits 0** ⇒ TaskStep succeeds ⇒ run continues.
 - **Reject / non-200 / bad response / transport failure after retries / fatal-auth** ⇒ client **exits 1** ⇒ TaskStep fails ⇒ run fails ⇒ dispatch's run-completion reconciler applies the `on_reject` branch (below). The fatal-auth case (sidecar's `AwaitAnswer` hit the consecutive-401/403 limit, D6) additionally carries the frozen stderr line prefix **`principal rejected:`**.
 - **Usage error** (missing `--name` / `PLATFORM_MCP_URL`) ⇒ client **exits 2**.
+- **Parked past `--agent-short-park-max`** *(added by the PARK-V2 delta, 2026-07-10 — Task 14c)* ⇒ sidecar answers the blocked POST **`202 {"parked": true}`** ⇒ client **exits 3** (FROZEN; 0/1/2 unchanged) ⇒ TaskStep fails as the §B5 carrier. The question row STAYS OPEN — it, not the build status, is the authority dispatch's `reconcileAwaitingRuns` resumes on; the continuation TaskStep re-runs the client, whose re-POST joins the answered row (DB dedup, Task 5b) and exits 0/1 immediately.
 
 **`on_reject` mapping (CORRECTED per the 2026-07-09 checkpoint-seam delta/F14 — the branch lives in dispatch's run-completion RECONCILER, plan 11 Task 11b, NOT the renderer):**
 - The renderer emits the IDENTICAL bare failing `atc.TaskStep` for BOTH `on_reject` values — never wrapped in try/on_failure/ensure modifiers. Reject ⇒ client exits 1 ⇒ step fails ⇒ run fails.
@@ -5173,6 +6101,330 @@ go test ./agent/api/questions/ && ginkgo ./atc/db/
 ```bash
 git add agent/api/questions/ atc/db/agent_questions_factory.go atc/db/agent_questions_factory_test.go atc/db/dbfakes/fake_agent_questions_factory.go
 git commit -m "feat(agent): ListByRun store surface + strict checkpoint answer validation for the dispatch reconciler" -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+```
+
+---
+
+### Task 14c: checkpoint long-park exit — 202 `{"parked": true}` at threshold, client exit 3, DB-backed dedup fast path (PARK-V2 §B4/§E, 2026-07-10)
+
+**Files:**
+- Modify: `agent/platformmcp/server.go` (`ckOpen` becomes `map[string]ckReservation`)
+- Modify: `agent/platformmcp/checkpoint.go` (full `handleCheckpoint` replacement)
+- Modify: `cmd/platform-mcp/checkpoint.go` (202 → exit 3)
+- Test: `agent/platformmcp/checkpoint_test.go`, `cmd/platform-mcp/checkpoint_test.go` (extend)
+
+**Why (§B4):** there is no claude in the checkpoint loop, so the exit signal is the HTTP response itself: at the threshold the sidecar answers the blocked POST `202 {"parked": true}` and the client exits with FROZEN code 3 (parked-past-threshold; 0/1/2 unchanged). Exit 3 fails the TaskStep — exactly the §B5 carrier PARK-V2 wants; no TaskStep exec change anywhere. The row stays OPEN. **ckOpen demotion (§E):** the DB unique key `(pipeline_run_id, step_name, kind, question_hash)` is now the dedup AUTHORITY — necessary because a continuation pod runs a FRESH sidecar with an empty map — and `ckOpen` is retained as a same-pod optimization only. **Resume:** the continuation TaskStep re-runs the client; the re-POST's find-or-create returns the ANSWERED row; the handler responds 200 immediately; the client exits 0/1. `AwaitAnswer`'s existing deadline leg doubles as the threshold timer, measured from the row's `asked_at` (a re-POST joins the ORIGINAL park clock). The sentinel is also written when `ParkPath` is set (payload `kind: "checkpoint"`, best-effort flight provenance) — normally unset in checkpoint pods, where the 202 IS the signal.
+
+- [ ] Write the failing sidecar tests — append to `agent/platformmcp/checkpoint_test.go`:
+
+```go
+// TestCheckpointParksPastThreshold (PARK-V2 §B4): with no human answer, the
+// blocked POST gets 202 {"parked": true} once the short-park threshold
+// crosses, and the row STAYS OPEN — the checkpoint client turns this into
+// frozen exit code 3.
+func TestCheckpointParksPastThreshold(t *testing.T) {
+	store := questions.NewMemoryStore()
+	atc := fullStubATC(t, store)
+	srv := newAskServer(t, atc.URL, "park", 0)
+	srv.TuneShortPark(200*time.Millisecond, "")
+
+	start := time.Now()
+	req := httptest.NewRequest("POST", "/checkpoint",
+		strings.NewReader(`{"name": "plan-approval", "description": "Approve the plan"}`))
+	w := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(w, req)
+	if w.Code != 202 {
+		t.Fatalf("expected 202 at threshold, got %d: %s", w.Code, w.Body.String())
+	}
+	var out map[string]bool
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil || !out["parked"] {
+		t.Fatalf("expected {\"parked\": true}, got %s (err %v)", w.Body.String(), err)
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("threshold response took %s", elapsed)
+	}
+	open, _ := store.OpenForTicket(42)
+	if len(open) != 1 {
+		t.Fatalf("the parked checkpoint row must STAY OPEN, got %d open", len(open))
+	}
+}
+
+// TestCheckpointRePostAfterAnswerResolvesImmediately (PARK-V2 §E): the
+// continuation pod's FRESH sidecar (empty ckOpen map) re-POSTs the same
+// checkpoint; the DB-level find-or-create returns the answered row and the
+// response is an immediate 200 — the client exits 0/1 with no park and no
+// second row.
+func TestCheckpointRePostAfterAnswerResolvesImmediately(t *testing.T) {
+	store := questions.NewMemoryStore()
+	atc := fullStubATC(t, store)
+	srv, _ := newParkExitServer(t, atc.URL, time.Hour)
+
+	// The row the PREVIOUS pod's client filed and a human approved while the
+	// step was exited: same (pipeline_run_id, step_name, kind, hash).
+	runID := 7
+	id, err := store.Ask(&questions.Question{
+		TicketID: 42, PipelineRunID: &runID, StepName: "implement",
+		Kind: questions.KindCheckpoint, Question: "Approve the plan",
+		Options: []string{"approve", "reject"}, TimeoutPolicy: questions.TimeoutPark,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Answer(42, id, "approve", "tdm"); err != nil {
+		t.Fatal(err)
+	}
+
+	start := time.Now()
+	req := httptest.NewRequest("POST", "/checkpoint",
+		strings.NewReader(`{"name": "plan-approval", "description": "Approve the plan"}`))
+	w := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("expected immediate 200 on the answered row, got %d: %s", w.Code, w.Body.String())
+	}
+	var out map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &out)
+	if out["approved"] != true || out["answered_by"] != "tdm" {
+		t.Fatalf("unexpected result: %v", out)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("fast path took %s — it must not park", elapsed)
+	}
+	all, _ := store.ListForTicket(42, 50)
+	if len(all) != 1 {
+		t.Fatalf("re-POST must NOT file a second row, got %d", len(all))
+	}
+}
+```
+
+- [ ] Run to verify they fail:
+
+```bash
+go test ./agent/platformmcp/
+```
+
+Expected failures: the threshold test blocks (no 202 branch); the re-POST test files a second row and parks.
+
+- [ ] Change the dedup guard's shape in `agent/platformmcp/server.go` (the Task 14 fields):
+
+```go
+// ckReservation is the same-pod fast path for a repeated checkpoint POST; the
+// cross-pod (continuation) dedup is DB-enforced by agent_run_questions_dedup
+// (PARK-V2 §E — the map is an optimization, never the authority).
+type ckReservation struct {
+	ID      int
+	AskedAt int64
+}
+```
+
+  replace the two struct fields with:
+
+```go
+	ckMu   sync.Mutex               // guards ckOpen
+	ckOpen map[string]ckReservation // checkpoint name -> open row; same-pod optimization only
+```
+
+  and the `NewServer` literal entry with `ckOpen: map[string]ckReservation{}`.
+
+- [ ] Replace `handleCheckpoint` in `agent/platformmcp/checkpoint.go` (add `"time"` to its imports) and add the shared responder:
+
+```go
+// handleCheckpoint is the internal (non-MCP) checkpoint endpoint (§3.2 +
+// Task 1 addendum). It files a kind=checkpoint question and BLOCKS until a
+// human approves or rejects — or, past the PARK-V2 short-park threshold,
+// answers 202 {"parked": true} so the client exits 3 and the step becomes
+// the §B5 carrier. Checkpoints always park — no timeout policy.
+func (s *Server) handleCheckpoint(w http.ResponseWriter, r *http.Request) {
+	var req checkpointRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf("invalid JSON: %s", err), http.StatusBadRequest)
+		return
+	}
+	if req.Name == "" {
+		http.Error(w, "name is required", http.StatusBadRequest)
+		return
+	}
+
+	// Reserve (or join) the open question for this name. Since PARK-V2 §E the
+	// map is a same-pod OPTIMIZATION only — the authority is the DB unique key
+	// (pipeline_run_id, step_name, kind, question_hash): a continuation pod's
+	// fresh sidecar re-POSTs, AskQuestion find-or-creates, and gets the SAME
+	// row back even though its map is empty.
+	s.ckMu.Lock()
+	reservation, inFlight := s.ckOpen[req.Name]
+	if !inFlight {
+		question := req.Description
+		if question == "" {
+			question = fmt.Sprintf("Approve checkpoint %q for ticket %d?", req.Name, s.cfg.TicketID)
+		}
+		q := s.newQuestion(questions.KindCheckpoint, question, []string{"approve", "reject"}, "")
+		q.TimeoutPolicy = questions.TimeoutPark
+		q.TimeoutSeconds = 0
+		created, err := s.client.AskQuestion(r.Context(), q)
+		if err != nil {
+			s.ckMu.Unlock()
+			http.Error(w, fmt.Sprintf("filing checkpoint: %s", err), http.StatusBadGateway)
+			return
+		}
+		if created.AnsweredAt != 0 {
+			// PARK-V2 §E resume fast path: the re-POST joined a row a human
+			// already resolved — return it immediately; no park, no
+			// reservation.
+			s.ckMu.Unlock()
+			s.respondCheckpointResolved(w, created.ID, created.Answer, created.AnsweredBy)
+			return
+		}
+		reservation = ckReservation{ID: created.ID, AskedAt: created.AskedAt}
+		s.ckOpen[req.Name] = reservation
+		s.ckMu.Unlock()
+
+		s.events.Emit(schema.EventCheckpointWait, map[string]any{
+			"question_id": reservation.ID,
+			"checkpoint":  req.Name,
+		})
+	} else {
+		// A POST for this name is already parked on the row; fall through and
+		// await the same row. Only the first filer emits checkpoint.wait.
+		s.ckMu.Unlock()
+	}
+
+	// PARK-V2 §A/§B4: the short-park threshold bounds the blocking response.
+	// AwaitAnswer's deadline leg doubles as the threshold timer, measured
+	// from the row's asked_at — a re-POST joins the ORIGINAL park clock.
+	var parkDeadline *time.Time
+	if s.cfg.ShortParkMax > 0 {
+		d := time.Unix(reservation.AskedAt, 0).Add(s.cfg.ShortParkMax)
+		parkDeadline = &d
+	}
+
+	answered, crossedThreshold, err := s.client.AwaitAnswer(r.Context(), reservation.ID, parkDeadline)
+	if err != nil {
+		// Transport error awaiting the answer: leave the reservation in place
+		// so a client retry re-awaits the same open row rather than re-filing.
+		// A consecutive-401/403 fatal (D6/F31 leg 3) keeps the frozen
+		// "principal rejected:" prefix so the client echoes it and exits 1.
+		if errors.Is(err, ErrPrincipalRejected) {
+			http.Error(w, fmt.Sprintf("principal rejected: awaiting checkpoint: %s", err), http.StatusBadGateway)
+			return
+		}
+		http.Error(w, fmt.Sprintf("awaiting checkpoint: %s", err), http.StatusBadGateway)
+		return
+	}
+	if crossedThreshold {
+		// §B4: answer the blocked POST 202 — the client exits 3 and the
+		// TaskStep fails as the §B5 carrier. The row STAYS OPEN (the durable
+		// representation of the wait) and the reservation is kept so a
+		// same-pod retry re-awaits the same row. Best-effort sentinel for
+		// flight provenance when a flight volume is mounted (normally it is
+		// not in checkpoint pods — the 202 IS the exit signal there).
+		if s.cfg.ParkPath != "" {
+			_ = writeSentinelAtomic(s.cfg.ParkPath, map[string]any{
+				"question_id":       reservation.ID,
+				"kind":              string(questions.KindCheckpoint),
+				"step_name":         s.cfg.StepName,
+				"asked_at":          time.Unix(reservation.AskedAt, 0).UTC().Format(time.RFC3339),
+				"threshold_seconds": int(s.cfg.ShortParkMax / time.Second),
+				"crossed_at":        time.Now().UTC().Format(time.RFC3339),
+			})
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		json.NewEncoder(w).Encode(map[string]bool{"parked": true})
+		return
+	}
+
+	// Resolved: release the name so a later distinct checkpoint files fresh.
+	s.ckMu.Lock()
+	if s.ckOpen[req.Name].ID == reservation.ID {
+		delete(s.ckOpen, req.Name)
+	}
+	s.ckMu.Unlock()
+
+	s.respondCheckpointResolved(w, reservation.ID, answered.Answer, answered.AnsweredBy)
+}
+
+// respondCheckpointResolved emits checkpoint.release and writes the frozen
+// 200 body — shared by the await path and the §E answered-row fast path.
+func (s *Server) respondCheckpointResolved(w http.ResponseWriter, questionID int, answer, answeredBy string) {
+	approved := answer == "approve"
+	s.events.Emit(schema.EventCheckpointRelease, map[string]any{
+		"question_id": questionID,
+		"approved":    approved,
+		"answered_by": answeredBy,
+	})
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(checkpointResponse{
+		Approved: approved, Answer: answer, AnsweredBy: answeredBy,
+	})
+}
+```
+
+- [ ] Run to verify the sidecar side passes:
+
+```bash
+go test ./agent/platformmcp/
+```
+
+- [ ] Write the failing client test — append to `cmd/platform-mcp/checkpoint_test.go`:
+
+```go
+// TestCheckpointClientParkedExit3 (PARK-V2 §B4): 202 {"parked": true} from
+// the sidecar means the park crossed the short-park threshold — the client
+// exits with FROZEN code 3 (parked-past-threshold; 0/1/2 unchanged) so the
+// TaskStep fails as the §B5 carrier while the open question row remains the
+// authority the platform resumes on.
+func TestCheckpointClientParkedExit3(t *testing.T) {
+	sidecar := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		fmt.Fprint(w, `{"parked": true}`)
+	}))
+	defer sidecar.Close()
+	exitErr := runCheckpointClient(t, sidecar.URL, "--name", "plan-approval")
+	if exitErr == nil || exitErr.ExitCode() != 3 {
+		t.Fatalf("expected exit 3 on parked-past-threshold, got %v", exitErr)
+	}
+}
+```
+
+- [ ] Run to verify it fails (the pre-delta client treats 202 as non-200 and exits 1):
+
+```bash
+go test ./cmd/platform-mcp/
+```
+
+- [ ] Add the 202 branch to `runCheckpoint` in `cmd/platform-mcp/checkpoint.go`, directly BEFORE the `if resp.StatusCode != http.StatusOK` check, and extend the doc comment's exit-code list with `3 = parked past --agent-short-park-max (PARK-V2 §B4)`:
+
+```go
+		if resp.StatusCode == http.StatusAccepted {
+			// PARK-V2 §B4: parked past --agent-short-park-max. FROZEN exit
+			// code 3 — the TaskStep fails as the §B5 carrier; the open
+			// question row (not this exit) is what the platform resumes on,
+			// and the continuation's re-POST will join the answered row and
+			// exit 0/1 immediately.
+			var out struct {
+				Parked bool `json:"parked"`
+			}
+			if err := json.NewDecoder(resp.Body).Decode(&out); err != nil || !out.Parked {
+				fmt.Fprintf(os.Stderr, "checkpoint: bad 202 response: %v\n", err)
+				return 1
+			}
+			fmt.Printf("checkpoint %q parked past the short-park threshold; exiting for respawn\n", *name)
+			return 3
+		}
+```
+
+- [ ] Run to verify pass:
+
+```bash
+go test ./agent/platformmcp/ ./cmd/platform-mcp/
+```
+
+- [ ] Commit:
+
+```bash
+git add agent/platformmcp/ cmd/platform-mcp/
+git commit -m "feat(platform-mcp): checkpoint 202/exit-3 past the short-park threshold + DB-dedup fast path (PARK-V2 §B4/§E)" -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ```
 
 ---
@@ -5934,6 +7186,105 @@ git commit -m "feat(web): agent question banner + answer UI on the ticket page" 
 
 ---
 
+### Task 17b: "Awaiting human" state chip on the question banner (PARK-V2 §H, 2026-07-10)
+
+**Files:**
+- Modify: `web/elm/src/AgentTicket/Questions.elm`
+- Modify: ticket-core's ticket page module (the Task 17 integration site)
+- Test: `web/elm/tests/AgentQuestionTests.elm` (extend)
+
+**Why (§H):** NO ticket-state enum change — the ticket stays `running`; parked-ness is DERIVED: "awaiting human" = (run status `awaiting_human` — pipeline-runs §C, plan 03) OR (open `agent_run_questions` rows exist). The Task 17 banner gains an explicit amber "AWAITING HUMAN" state chip driven by that derivation. The banner must now also render in the zero-open-questions window (row answered, continuation not yet running) when the run status alone says `awaiting_human` — so the empty-case condition changes. The run/pipeline-view badge is pipeline-runs' half (plan 03); this chip is the ticket-page half only.
+
+- [ ] Write the failing tests — `view` gains a `Bool` (runAwaitingHuman). Add a shared config helper to `web/elm/tests/AgentQuestionTests.elm`, thread `False` through the four EXISTING `Questions.view` call sites (mechanical: `Questions.view <config> [ q ]` → `Questions.view <config> False [ q ]`), and append:
+
+```elm
+viewConfig : Questions.Config ()
+viewConfig =
+    { draftAnswer = ""
+    , onDraftChanged = \_ -> ()
+    , onSubmit = \_ _ -> ()
+    }
+```
+
+```elm
+        , test "awaiting-human chip renders when open questions exist" <|
+            \_ ->
+                case JD.decodeString AgentQuestion.decoder sampleJson of
+                    Ok q ->
+                        Questions.view viewConfig False [ q ]
+                            |> Query.fromHtml
+                            |> Query.has
+                                [ attribute (Attr.id "agent-awaiting-human-chip")
+                                , text "AWAITING HUMAN"
+                                ]
+
+                    Err err ->
+                        Expect.fail (JD.errorToString err)
+        , test "awaiting-human chip renders on run status alone (answered row, continuation pending)" <|
+            \_ ->
+                Questions.view viewConfig True []
+                    |> Query.fromHtml
+                    |> Query.has [ attribute (Attr.id "agent-awaiting-human-chip") ]
+        , test "nothing renders with no open questions and a run not awaiting" <|
+            \_ ->
+                Questions.view viewConfig False []
+                    |> Query.fromHtml
+                    |> Query.hasNot [ attribute (Attr.id "agent-awaiting-human-chip") ]
+```
+
+- [ ] Run to verify it fails:
+
+```bash
+yarn test
+```
+
+Expected failure: elm-test compile error — `view` has the old 2-argument shape.
+
+- [ ] Change `view` in `web/elm/src/AgentTicket/Questions.elm` and add the chip:
+
+```elm
+view : Config msg -> Bool -> List AgentQuestion -> Html msg
+view config runAwaitingHuman open =
+    if List.isEmpty open && not runAwaitingHuman then
+        text ""
+
+    else
+        div [ class "agent-question-banner", id "agent-question-banner" ]
+            (viewAwaitingChip :: List.map (viewQuestion config) open)
+
+
+{-| viewAwaitingChip is the PARK-V2 §H "Awaiting human" state chip. It renders
+whenever the banner does, because the banner's presence condition IS the §H
+derivation — open park-policy questions OR run status `awaiting_human`. The
+ticket-state enum is deliberately untouched (the ticket stays `running`);
+`running` stops lying on the RUN surfaces, and this chip is the ticket-page
+mirror of that.
+-}
+viewAwaitingChip : Html msg
+viewAwaitingChip =
+    div [ class "agent-awaiting-human-chip", id "agent-awaiting-human-chip" ]
+        [ text "AWAITING HUMAN" ]
+```
+
+  (update the module's `exposing` line only if it enumerates internals — `Config`/`view` remain the public surface; style the chip amber via the `agent-awaiting-human-chip` class next to the banner's existing styles.)
+
+- [ ] Wire the `Bool` in the ticket page module (the Task 17 integration site): `runAwaitingHuman = model.runStatus == Just "awaiting_human"` if the wave-2 page model carries the run status (pipeline-runs plan 03 adds the value to the run-status API and `fly runs`; the exact field name comes from the landed page — execution-time anchor). If the landed page has no run-status field yet, pass `False`: the open-questions half of the derivation still drives the chip through the banner condition, and the run-status half lights up when pipeline-runs' Elm leg gives the page the field.
+
+- [ ] Run to verify pass, plus the production build:
+
+```bash
+yarn test && yarn build-elm
+```
+
+- [ ] Commit:
+
+```bash
+git add web/elm/
+git commit -m "feat(web): awaiting-human state chip on the ticket-page question banner (PARK-V2 §H)" -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+```
+
+---
+
 ### Task 18: live theborg test — restart-while-parked
 
 **Files:**
@@ -6459,7 +7810,7 @@ go test -tags live -run '^TestLiveCLIParkPin$' -v -count=1 -timeout 12m ./agent/
 
 **Live-test requirements (theborg):** `KUBECONFIG=~/.kube/config`, kube-context `theborg` (https://theborg.home:6443), a THROWAWAY namespace via `kubectl create ns` (never `cicd`/`concourse` — live workloads), no pod-security label. Colima/Docker is usually down on this machine, so testcontainers is not an option — theborg is the live target. The Task 18 test cleans up its pod via `cleanupPod` + namespace deletion. The Task 16 docker smoke also needs Docker; when unavailable locally, rely on the theborg CI image job (dev-mcp's template) to build/contract-test/push `ghcr.io/tdmtrader/mcp-platform`, then `fly -t cicd set-pipeline` on concourse.home per the template's instructions.
 
-**Manual end-to-end sanity (post-merge, wave-3 hand-written pipeline):** add the platform sidecar to an `agent:` step (`sidecars: [platform]`, image `ghcr.io/tdmtrader/mcp-platform:<tag>`), set `--agent-notify-webhook-url` to an ntfy topic, have the agent call `ask_human`; verify the run shows `running` while parked (pipeline-runs contract §1.5), the webhook fires within ~10s, the banner renders on the ticket page, answering resumes the step, and a checkpoint step (`platform-mcp checkpoint --name plan-approval`) blocks/exits per the approve/reject buttons.
+**Manual end-to-end sanity (post-merge, wave-3 hand-written pipeline):** add the platform sidecar to an `agent:` step (`sidecars: [platform]`, image `ghcr.io/tdmtrader/mcp-platform:<tag>`), set `--agent-notify-webhook-url` to an ntfy topic, have the agent call `ask_human`; verify the run shows `running` while parked (pipeline-runs contract §1.5), the webhook fires within ~10s, the banner renders on the ticket page, answering resumes the step, and a checkpoint step (`platform-mcp checkpoint --name plan-approval`) blocks/exits per the approve/reject buttons. **PARK-V2 sanity (2026-07-10):** at the 30m `--agent-short-park-max` default a quick manual answer never leaves the SSE path; to exercise the exit half, set the flag to `1m`, let the park cross, and verify the sidecar wrote `flight/park.json` in the agent pod (checkpoint variant: the client logs "parked past the short-park threshold" and exits 3), the run shows `awaiting_human` with the amber chip on ticket + run views, and answering re-arms a continuation whose re-issued call resolves instantly (the §E fast path — `human.answer` with `"resumed": true` in the flight events).
 
 **Seed-prompt convention (default `spec_delivery: mcp`):** the workflow's first agent step prompt instructs the agent to begin by calling `read_ticket` and `list_tasks` (then `get_task` per task as it works). No spec/plan bytes are injected — the read tools are the entry point. Keep this to a one-line prompt convention; the prompt text itself is authored in the workflow definition (workflow-store), not here.
 
@@ -6469,6 +7820,7 @@ go test -tags live -run '^TestLiveCLIParkPin$' -v -count=1 -timeout 12m ./agent/
 - 2026-07-09 (design-review F7 — timeout defense-in-depth; owner: platform-mcp-hitl): added a cross-field check to `ConfigFromEnv` (Task 9, `agent/platformmcp/config.go`) mirroring workflow-store's new validation — a sidecar config with `PLATFORM_MCP_ASK_TIMEOUT_POLICY ∈ {default,fail}` but `PLATFORM_MCP_ASK_TIMEOUT_SECONDS <= 0` now fails loudly at startup (`must be > 0 when ... is %q`) rather than parking indefinitely; `park`+0 stays legal (wait forever). Added `TestConfigFromEnvTimeoutPolicyRequiresPositiveSeconds` to `agent/platformmcp/config_test.go` asserting default/fail+0 error and park+0 succeed. Defense-in-depth: the renderer (wave 4) normally guarantees this, but a hand-set sidecar env must not silently degrade.
 - 2026-07-09 (final review F14 + F28 — checkpoint-seam delta legs owned by platform-mcp-hitl; co-signed dispatch/ticket-core/contracts): **(F14)** the sidecar-POST `/checkpoint` model is now the SINGLE frozen checkpoint mechanism — the Task 1 addendum bullet gained the frozen response codes (200 resolved / 400 bad name / 502 ATC transport error with the reservation kept) and now records that it SUPERSEDES (not merely amends) contracts §3.2's retracted client→ATC wording ("client inserts the row / long-polls the ATC route / reads reject-policy from argv / NOT a sidecar endpoint" — all retracted); corrected "`on_reject: send_back` semantics live in dispatch's renderer" to "live in dispatch's **run-completion reconciler** (plan 11 Task 11b)" in both the addendum bullet and the Task 14 intro (the renderer emits the identical bare failing TaskStep for both values; the reconciler branches on the latest answered checkpoint row after the run completes). Task 14 mechanics (handleCheckpoint + ckOpen dedup + runCheckpoint client, exit 0/1/2, 60x5s retry) are unchanged and now the single frozen model; the Task 14 intro also records the delta §2/§3 sidecar-env seam (renderer-emitted literal env + AGENT_PRINCIPAL_TOKEN secretKeyRef from `agent-run-((run_id))`/`principal-token`, gated by `--kubernetes-sidecar-secret-prefixes`; the CLIENT gets no token). NEW Task 14b adds the delta's two additive surfaces with TDD: `Store.ListByRun(pipelineRunID)` (memory + SQL + fake; newest-first ordering asserted — consumed by the reconciler's `dispatch.QuestionLister`) and answer-route validation for `kind='checkpoint'` rows (answer must be one of the row's options, empty included — tests `TestListByRun`, `TestAnswerCheckpointRejectsNonOptionAnswer`, and a factory It-block). **(F28)** `deploy/Dockerfile.platform-mcp` (Task 16) replaced its distroless final stage with the delta §8 FROZEN `alpine:3.21` stage (nonroot uid 65532, binary at `/usr/local/bin/platform-mcp`, build-time `command -v` smoke for sh/tail/mv/cat/sleep/mkdir/kill, ENTRYPOINT, `MCP_LISTEN_ADDR=:7781`) — the image is BOTH the platform sidecar image and the checkpoint TASK MAIN image, and jetbridge's pause command (`container.go:363`, `sh -c ...`) plus sh-based supervisor (`supervisor.go:35-77`) make a shell mandatory; added the runtime docker smoke for the task-main shape and documented the constraint ("task MAIN images need POSIX sh + tail/mv/cat/sleep/mkdir/kill; distroless is sidecar-only" — normative §8.5 note lives in 00).
 - 2026-07-09 (final review F13 + F31 leg 3 — SSE seam delta D2/D4/D6/D7, platform legs; owner: platform-mcp-hitl): **(D2, new Task 9b — lands BEFORE Task 10 and gates gateway 10 Task 7)** upgraded `atc/api/mcpserver` IN PLACE with a byte-similar MIRRORED port of `ci-agent/devmcp`'s SSE progress path (modules must not require each other): `DefaultHeartbeat = 15s`, `NewServerWithHeartbeat(d)` (d <= 0 → default; `NewServer()` unchanged so ATC callers compile), BREAKING 3-arg `ToolHandler` gaining `progress func(string)` (buffered calls get a no-op; all handler literals updated mechanically via one perl one-liner), `callToolParams` gains `_meta.progressToken`, SSE gating on `Accept: text/event-stream` AND the token, `event: message` frames, coalescing heartbeat ticker (buffered chan 64, non-blocking send, `lastMsg` default `running <tool>`), final JSON-RPC response as the LAST SSE frame; the locked "handler error ⇒ isError=true, never -32602" mapping preserved in BOTH modes; mirrored SSE tests added to `server_test.go` as the anti-drift guard. **(D6, Task 9)** `ATCClient.do` now returns `*StatusError{Method,Path,Code,Body}` for every non-2xx; added `ErrPrincipalRejected` and `AuthFailureLimit` (frozen default 12 ≈ >= 60s at 5s retry, outliving the §1.2 60s verification cache); `AwaitAnswer` counts CONSECUTIVE 401/403 (reset on success or non-auth error) and returns the wrapped fatal at the limit while still retrying transport/5xx forever — the contradicting doc comments were rewritten; three frozen unit tests added (fatal-after-exactly-12-401s, 5xx-never-fatal, alternating-counter-reset); `Config.ProgressInterval` + `PLATFORM_MCP_PROGRESS_INTERVAL` parsing added (unset = 15s default; set-but-invalid/<= 0/> 30s = fatal, never clamped; `TestConfigFromEnvProgressInterval`). **(D4/D6 propagation)** Task 10 constructs via `NewServerWithHeartbeat(cfg.ProgressInterval)` and its `ListenAndServe` sets the frozen server-timeout rule (`WriteTimeout: 0`, `IdleTimeout: 0`, `ReadHeaderTimeout: 5s`); Task 11's `ask_human` is a MUST-stream tool — it calls `progress("parked: waiting for human answer to question <id>")` at park start and surfaces `ErrPrincipalRejected` as a LOUD `principal rejected:`-prefixed tool error (test `TestAskHumanPrincipalRejectedFailsLoudly`); Task 13 gained the binary-level env-validation smoke (`TestServeModeFailsFastOnBadProgressInterval`); Task 14 records the checkpoint SSE EXEMPTION (POST /checkpoint is not an MCP tools/call — no claude CLI in the loop) with its own hardening (no-timeout `http.Client`, D4 mux timeouts, fatal-auth ⇒ exit 1 + `principal rejected:` stderr prefix echoed from the sidecar's 502 body — tests `TestCheckpointClientPrincipalRejected` and the handleCheckpoint `errors.Is` branch); Task 15's kit gained `RunSSEHeartbeats` (>= 2 progress frames spaced < 30s before the final frame on a parked ask_human; self-test `TestPlatformMCPSSEHeartbeats`). **(D7, new Task 18b)** the mandatory real-CLI park pin `agent/platformmcp/live_cli_park_test.go` (`//go:build live`): the REAL `claude` CLI (>= 2.1.77, `--strict-mcp-config`, hermetic `ANTHROPIC_BASE_URL` stub scripting one ask_human then echoing the tool result) parks > 5 minutes (stub ATC answers at t+5m30s); asserts the answer is delivered, "(completed with no output)" never appears, and ~15s heartbeat cadence at the wire (>= 15 frames, every gap < 30s) — declared the FIRST wave-3 deliverable, gating 10 Task 7 merge, and added to Task 19's sweep. Exit codes and `MCP_LISTEN_ADDR`/ports/endpoints unchanged (D8: no image content changes beyond the F28 leg above).
+- 2026-07-10 (PARK-V2 seam delta — exit-and-respawn for long human-waits; sidecar/questions halves owned here; implements FLOWS.md P2.5 #1–#4; co-signed agent-step/pipeline-runs/dispatch/contracts; decisions 30–32; amends but does NOT retract the 2026-07-09 SSE/park entries — Tasks 9b/11/18b all stand as the SHORT-PARK mechanism): past `--agent-short-park-max` (default 30m; `0` = pure PARK-V1, the rollback hatch) a wait stops impersonating a running step. **(§A, new Task 9c)** `Config` gains `ShortParkMax` (`PLATFORM_MCP_SHORT_PARK_MAX_SECONDS`, integer seconds; bounds-validated — negative/garbage fatal at startup, never clamped; 0 legal; the timeout-policy `park`+0 rule untouched and orthogonal) and `ParkPath` (`PLATFORM_MCP_PARK_PATH`, new Task 1 addendum §8.1 row; unset = never write — the legal checkpoint-pod shape, NOT a startup error). The threshold timer is sidecar-owned, measured from the row's `asked_at`, and applies to BOTH park kinds. **(§B1/§B3, new Task 11b)** at an `ask_human` crossing the sidecar atomically writes the frozen `flight/park.json` sentinel (`parkexit.go` `writeSentinelAtomic`: same-dir temp + rename — the runner's 5s stat loop can never see a partial file) with payload `{question_id, kind, step_name, asked_at RFC3339, threshold_seconds, crossed_at RFC3339}`, KEEPS the row open (the durable representation of the wait), and expects the client disconnect — the runner SIGTERMs claude and `AwaitAnswer` cancels on the request context (`TestAskHumanWritesParkSentinelAtThreshold` pins sentinel shape, atomicity, row-stays-open, and disconnect-does-not-resolve); an unset `ParkPath` at an `ask_human` crossing degrades LOUDLY (log line) to the SSE park — PARK-V1 behavior, bounded platform-side by `--agent-park-timeout`, whose semantics the delta REVISES to bounding the `awaiting_human` wall clock (lifecycler-owned, plan 03; recorded in this plan's Context bullet). **(§B4, new Task 14c)** `/checkpoint` at threshold answers the blocked POST `202 {"parked": true}` (`AwaitAnswer`'s deadline leg doubles as the timer; row stays open; reservation kept; best-effort sentinel when a flight volume exists); the checkpoint client gains FROZEN exit code 3 = parked-past-threshold (0/1/2 unchanged; Task 14's exit-code block amended) — exit 3 fails the TaskStep, the §B5 carrier; the authority the platform resumes on is the OPEN question row, never the build status. **(§E, new Task 5b + Task 10 edit)** idempotency-by-question: migration `1773106072` adds `question_hash` + UNIQUE `agent_run_questions_dedup (pipeline_run_id, step_name, kind, question_hash) WHERE pipeline_run_id IS NOT NULL`; `ComputeQuestionHash` is the frozen `hex(sha256(question || '\x00' || options-joined-by-'\x00'))`; the ask route computes the hash SERVER-SIDE and `Store.Ask` becomes race-safe find-or-create (`ON CONFLICT ... DO NOTHING` + re-select; answered row returned as-is = the resume fast path, open row joined — same id, ORIGINAL park clock); Task 4's specs amended in place to vary question text (the key excludes `ticket_id`); `ckOpen` DEMOTED to a same-pod optimization (`ckReservation{ID, AskedAt}`); the `ask_human` tool description gains the vary-the-text note; fast paths pinned by `TestAskFindOrCreate`/`TestAskRouteIdempotentByQuestion`/`TestAskHumanAnsweredRowFastPath`/`TestCheckpointRePostAfterAnswerResolvesImmediately` (the `human.answer` fast-path event carries `"resumed": true`). **(§D, new Task 6b)** `AnswerAgentQuestion` additionally fires the dispatcher component notify (`Handler.OnAnswer` hook → `dbConn.Bus().Notify("agent_dispatcher")`; fired ONLY on a successful write — `TestAnswerFiresOnAnswerHook`; polling remains the guaranteed path, never notify-only; a no-op until plan 11's component lands). **(§H, new Task 17b)** the Task 17 banner gains the derivation-only "AWAITING HUMAN" chip (open questions OR run status `awaiting_human`) — NO ticket enum change, the ticket stays `running`; the banner now renders on run status alone so the answered-row/continuation-pending window stays visible. OWNED ELSEWHERE (scope-out, recorded for cross-reference): `awaiting_human` run status + lifecycler entry/exit/72h expiry (pipeline-runs, migration `1773106032`), the runner sentinel-watch/SIGTERM/exit-86 + `flight/session.jsonl` + stream-json teeing (agent-step plan 07, incl. the gating §I pin `TestLiveClaudeParkExitResume`), `agent_run_step_state` + replay/resume (agent-step, migration `1773106061`), `reconcileAwaitingRuns` + principal/secret re-mint + continuation build (dispatch plan 11 Task 11c). Every leg here is inert at `PLATFORM_MCP_SHORT_PARK_MAX_SECONDS=0` — the delta's zero-schema-waste rollback.
 - 2026-07-08 (consistency fix; owner: platform-mcp-hitl): corrected the `get_task` unknown-ordering error mechanism. The plan claimed an unknown ordering yields a JSON-RPC `-32602` error object, but Task 10's handler returns a plain `fmt.Errorf`, and the shared `atc/api/mcpserver` (already committed) maps every handler error to a `tools/call` result with `isError=true` — it only emits `-32602` for a malformed `tools/call` envelope, never for a handler's returned error (locked in by its committed tests). Reworded the §3.2 read-model addendum bullet (Task 1), the Task 10 intro + `getTask` doc comment, and the Task 10 header amendment (08:78) to state "MCP tool error (`isError=true`)" rather than "JSON-RPC `-32602`". Strengthened the Task 10 and Task 15 unknown-ordering tests to assert the response carries NO top-level JSON-RPC `error` object AND `result.isError=true` (previously they only checked `isErr` truthiness, which passed regardless of mechanism). Matching bullet appended to the contracts §11 amendment log.
 
 **Rollback notes for the risky diffs:**
@@ -6478,4 +7830,5 @@ go test -tags live -run '^TestLiveCLIParkPin$' -v -count=1 -timeout 12m ./agent/
 - *`atc/api/mcpserver` SSE upgrade (Task 9b)* is the one NON-net-new diff in the sidecar range: the 3-arg `ToolHandler` is a breaking in-package signature change (all registrations updated mechanically; `atc/api/handler.go` compiles unchanged). Reverting it alone re-breaks Tasks 10–15 and re-opens F13 — revert the whole Task 9b–15 range together or not at all. Buffered behavior is bit-identical for clients that don't opt in, so ATC's own `/api/v1/mcp` consumers are unaffected either way.
 - *Sidecar/binary/image (Tasks 9–16)* are otherwise net-new packages consumed by nothing in-tree; reverting them cannot break CI pipelines.
 - *Elm (Task 17)*: the banner renders `text ""` with no open questions; if the page integration misbehaves, reverting the page-module hunk while keeping the new modules is safe (they are pure).
-- *Known duplicate-row edge*: a checkpoint client re-POSTing after a client-container restart files a second question row unless the sidecar's per-name dedupe (Task 14) holds; if a stray open checkpoint row appears, answer it via the UI — it is join-key-only data, safe to resolve by hand in `agent_run_questions`.
+- *Known duplicate-row edge*: a checkpoint client re-POSTing after a client-container restart files a second question row unless the sidecar's per-name dedupe (Task 14) holds; if a stray open checkpoint row appears, answer it via the UI — it is join-key-only data, safe to resolve by hand in `agent_run_questions`. *[Superseded 2026-07-10 by Task 5b's DB-enforced dedup: the re-POST joins the same row AT THE DATABASE, across sidecar restarts and continuation pods alike; the by-hand note remains only for deployments predating migration `1773106072`.]*
+- *PARK-V2 legs (Tasks 5b, 6b, 9c, 11b, 14c, 17b)*: all runtime behavior is inert with `PLATFORM_MCP_SHORT_PARK_MAX_SECONDS` unset/`0` — no sentinel, no 202, no exit 3, no `awaiting_human` entry. The find-or-create dedup and the answer-route notify stay active regardless, and are wanted regardless (byte-identical re-asks joining is correct in PARK-V1 too; the notify is a no-op without the wave-4 dispatcher). The escape hatch is the FLAG, not a revert: if plan 07's gating §I empirical pin (`TestLiveClaudeParkExitResume`) goes red, ship with `--agent-short-park-max=0` — pure PARK-V1, zero schema waste.
