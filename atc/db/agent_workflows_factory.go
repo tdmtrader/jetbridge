@@ -150,6 +150,14 @@ func (f *agentWorkflowsFactory) Promote(name string, version int, promotedBy str
 	}
 	defer Rollback(tx)
 
+	// Serialize promotions per name (same key as Import) so concurrent
+	// clear-then-set sequences don't race into a unique violation on
+	// agent_workflow_definitions_live.
+	_, err = tx.Exec(`SELECT pg_advisory_xact_lock(hashtext('agent_workflow_definitions:' || $1))`, name)
+	if err != nil {
+		return err
+	}
+
 	// Clear-then-set inside one tx: the partial unique index
 	// agent_workflow_definitions_live enforces at most one live row per
 	// name at every intermediate statement.

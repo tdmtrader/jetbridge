@@ -2,6 +2,7 @@ package db_test
 
 import (
 	"errors"
+	"sync"
 
 	"github.com/concourse/concourse/agent/workflow"
 	"github.com/concourse/concourse/atc/db"
@@ -147,5 +148,53 @@ steps:
 
 		Expect(factory.Promote("wf-promote", 99, "alice")).To(MatchError(workflow.ErrVersionNotFound))
 		Expect(factory.Promote("wf-nonexistent", 1, "alice")).To(MatchError(workflow.ErrVersionNotFound))
+	})
+
+	It("consistently promotes under concurrent promotion of the same name", func() {
+		_, err := factory.Import("wf-promote-race", defYAML("wf-promote-race", "One."), "alice")
+		Expect(err).ToNot(HaveOccurred())
+		_, err = factory.Import("wf-promote-race", defYAML("wf-promote-race", "Two."), "alice")
+		Expect(err).ToNot(HaveOccurred())
+
+		// enable concurrent use of database. this is set to 1 by default to
+		// ensure methods don't require more than one in a single connection,
+		// which can cause deadlocking as the pool is limited.
+		dbConn.SetMaxOpenConns(2)
+
+		done := make(chan struct{})
+
+		wg := new(sync.WaitGroup)
+		wg.Add(1)
+		go func() {
+			defer GinkgoRecover()
+			defer wg.Done()
+
+			for {
+				select {
+				case <-done:
+					return
+				default:
+					Expect(factory.Promote("wf-promote-race", 1, "alice")).To(Succeed())
+				}
+			}
+		}()
+
+		wg.Add(1)
+		go func() {
+			defer GinkgoRecover()
+			defer close(done)
+			defer wg.Done()
+
+			for i := 0; i < 100; i++ {
+				Expect(factory.Promote("wf-promote-race", 2, "bob")).To(Succeed())
+			}
+		}()
+
+		wg.Wait()
+
+		live, found, err := factory.Live("wf-promote-race")
+		Expect(err).ToNot(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(live.Version).To(BeElementOf(1, 2))
 	})
 })
