@@ -1,8 +1,11 @@
 -- §1.13: dedicated service user that owns the platform Anthropic
 -- credential funding platform-initiated LLM work (harvest judge,
 -- retrospective agent, calibration jobs).
-INSERT INTO users (username, connector, sub)
-VALUES ('platform', 'local', 'agent-platform')
+-- last_login is epoch, not the column default now(): this user never
+-- logs in and must not surface in ListActiveUsersSince windows
+-- (users.last_login is NOT NULL).
+INSERT INTO users (username, connector, sub, last_login)
+VALUES ('platform', 'local', 'agent-platform', to_timestamp(0))
 ON CONFLICT (sub) DO NOTHING;
 
 -- Dashboard view over the append-only ledger: per UTC-day, user, source.
