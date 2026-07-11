@@ -1335,6 +1335,20 @@ func (cmd *RunCommand) backendComponents(
 			),
 			Interval: time.Minute,
 		})
+
+		components = append(components, RunnableComponent{
+			Component: atc.Component{
+				Name: atc.ComponentAgentRunSecretReaper,
+			},
+			Runnable: credentials.NewRunSecretReaper(
+				logger.Session(atc.ComponentAgentRunSecretReaper),
+				k8sClientset,
+				cmd.Kubernetes.Namespace,
+				db.NewAgentRunChecker(dbConn),
+				nil, // PrincipalRevoker: bound by agent-identity's cutover task (Task 1 F22 addendum)
+			),
+			Interval: time.Minute,
+		})
 	}
 
 	if syslogDrainConfigured {

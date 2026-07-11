@@ -23,6 +23,7 @@ const (
 	ComponentK8sWorkerRegistrar            = "k8s_worker_registrar"
 	ComponentK8sWorkerReaper               = "k8s_worker_reaper"
 	ComponentAgentPlatformCredentialSyncer = "agent_platform_credential_syncer"
+	ComponentAgentRunSecretReaper          = "agent_run_secret_reaper"
 	ComponentPipelinePauser                = "pipeline_pauser"
 	ComponentSigningKeyLifecycler          = "signing_key_lifecycler"
 )

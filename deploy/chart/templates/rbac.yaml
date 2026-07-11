@@ -56,6 +56,14 @@ rules:
   - apiGroups: [""]
     resources: ["pods/log"]
     verbs: ["get"]
+  # Agent credential secrets (§8.2): the run-secret attacher and platform
+  # syncer create/update agent-run-*/agent-platform-credential secrets, and
+  # the RunSecretReaper safety net (F22) lists by the concourse/agent-run
+  # label and deletes strays. Namespaced — worker namespace only; the
+  # cluster-wide secrets rule above remains get-only.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "create", "update", "delete"]
   # Read-only PVC access for cache and artifact volume discovery.
   # No create/delete — PVCs are pre-provisioned by operators or hostPath-backed.
   - apiGroups: [""]
