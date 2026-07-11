@@ -26,9 +26,31 @@ type encryptedColumn struct {
 	PrimaryKey string
 }
 
+// existingEncryptedColumns filters encryptedColumns down to tables that
+// exist at the current schema version: a downgrade below the migration
+// that created a table (e.g. 1773106020's agent_user_credentials) drops
+// it, and the post-migration encryption pass must skip it, not fail.
+func (m migrator) existingEncryptedColumns() ([]encryptedColumn, error) {
+	existing := make([]encryptedColumn, 0, len(encryptedColumns))
+	for _, ec := range encryptedColumns {
+		exists, err := checkTableExist(m.db, ec.Table)
+		if err != nil {
+			return nil, err
+		}
+		if exists {
+			existing = append(existing, ec)
+		}
+	}
+	return existing, nil
+}
+
 func (m migrator) encryptPlaintext(key *encryption.Key) error {
 	logger := m.logger.Session("encrypt")
-	for _, ec := range encryptedColumns {
+	columns, err := m.existingEncryptedColumns()
+	if err != nil {
+		return err
+	}
+	for _, ec := range columns {
 		rows, err := m.db.Query(`
 			SELECT ` + ec.PrimaryKey + `, ` + ec.Column + `
 			FROM ` + ec.Table + `
@@ -96,7 +118,11 @@ func (m migrator) encryptPlaintext(key *encryption.Key) error {
 
 func (m migrator) decryptToPlaintext(oldKey *encryption.Key) error {
 	logger := m.logger.Session("decrypt")
-	for _, ec := range encryptedColumns {
+	columns, err := m.existingEncryptedColumns()
+	if err != nil {
+		return err
+	}
+	for _, ec := range columns {
 		rows, err := m.db.Query(`
 			SELECT ` + ec.PrimaryKey + `, nonce, ` + ec.Column + `
 			FROM ` + ec.Table + `
@@ -161,7 +187,11 @@ var ErrEncryptedWithUnknownKey = errors.New("row encrypted with neither old nor 
 
 func (m migrator) encryptWithNewKey(newKey *encryption.Key, oldKey *encryption.Key) error {
 	logger := m.logger.Session("rotate")
-	for _, ec := range encryptedColumns {
+	columns, err := m.existingEncryptedColumns()
+	if err != nil {
+		return err
+	}
+	for _, ec := range columns {
 		rows, err := m.db.Query(`
 			SELECT ` + ec.PrimaryKey + `, nonce, ` + ec.Column + `
 			FROM ` + ec.Table + `

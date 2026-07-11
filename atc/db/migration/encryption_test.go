@@ -122,6 +122,30 @@ var _ = Describe("Encryption", func() {
 		})
 	})
 
+	Context("migrating down past a migration that drops an encrypted table", func() {
+		var (
+			key *encryption.Key
+		)
+
+		BeforeEach(func() {
+			key = createKey("AES256Key-32Characters1234567890")
+		})
+
+		It("skips encrypted tables that no longer exist", func() {
+			migrator := migration.NewMigrator(db, lockFactory)
+
+			err := migrator.Up(key, nil)
+			Expect(err).ToNot(HaveOccurred())
+
+			// 1773106011 predates 1773106020_create_agent_user_credentials,
+			// so the downgrade drops agent_user_credentials; the
+			// post-migration encryption pass must skip the absent table
+			// rather than fail the whole downgrade.
+			err = migrator.Migrate(key, nil, 1773106011)
+			Expect(err).ToNot(HaveOccurred())
+		})
+	})
+
 	Context("starting with partially encrypted DB", func() {
 		var (
 			key1     *encryption.Key
