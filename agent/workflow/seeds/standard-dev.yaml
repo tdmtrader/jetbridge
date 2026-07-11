@@ -1,0 +1,130 @@
+# standard-dev v1 — the five ci-agent phases (ci-agent/phases/{plan,
+# implement,qa,review,fix}.yaml) decomposed into the §6 grammar.
+# Import:  fly agent workflows import agent/workflow/seeds/standard-dev.yaml
+# Promote: fly agent workflows set-live standard-dev 1
+schema_version: 1
+name: standard-dev
+description: plan -> approve -> implement -> qa -> review -> fix; single agent per phase
+
+defaults:
+  model: claude-sonnet-4-5
+  max_turns: 80
+
+budget:
+  ticket_usd: 15.0
+  judge_usd: 1.0
+
+sidecars:
+  dev:
+    image: ghcr.io/tdmtrader/mcp-dev-concourse:0.1.0
+    role: dev
+  platform:
+    image: ghcr.io/tdmtrader/mcp-platform:0.1.0
+    role: platform
+
+prompts:
+  plan: |
+    You are a planning agent. Read the ticket with platform-mcp read_ticket
+    (title: {{.Ticket.Title}}). Explore the repository to understand the
+    affected components, then:
+    1. Write a spec: problem statement, acceptance criteria, and
+       out-of-scope notes. Submit it with platform-mcp submit_spec.
+    2. Decompose the work into small, independently verifiable tasks and
+       submit them with platform-mcp submit_plan.
+    Keep rationale and tradeoffs in the spec body — downstream agents and
+    humans rely on them.
+  implement: |
+    You are an implementation agent working in the workspace repository.
+    Read the approved spec with platform-mcp read_ticket and the task list
+    with platform-mcp list_tasks (call get_task per task for its detail as
+    you reach it). For each task, follow TDD red-green-refactor: write the
+    failing test, make it pass minimally, refactor. After each task, run
+    dev-mcp run_tests with the affected components and mark the task done
+    with platform-mcp update_task_status. Commit after each green task.
+  qa: |
+    You are a QA agent. Read the acceptance criteria with platform-mcp
+    read_ticket and the tasks with platform-mcp list_tasks / get_task, then
+    compare the implementation in the workspace against them. Identify
+    untested behaviors and add meaningful coverage for them. Run dev-mcp
+    run_tests on affected components, then the full suite. Fix any test you
+    added that fails; report (do not fix) production defects you find, in
+    the workspace notes.
+  review: |
+    You are a code-review agent. Read the spec and tasks with platform-mcp
+    read_ticket and list_tasks / get_task, then review the workspace diff
+    against the base branch for correctness bugs, missing coverage, and
+    scope creep relative to that spec. For each finding, verify it by
+    writing or running a test through dev-mcp before reporting. Write
+    findings to review.json in the workspace.
+  fix: |
+    You are a fix agent. Read review.json in the workspace. Apply fixes for
+    verified findings only, one commit per finding, re-running dev-mcp
+    run_tests on affected components after each. Skip findings you can
+    demonstrate are false positives, noting why in the commit trailer.
+
+steps:
+- agent: plan
+  prompt: plan
+  sidecars: [platform]
+  budget_slice_usd: 2.0
+  outputs: [workspace]
+
+- checkpoint: plan-approval
+  on_reject: send_back
+
+- agent: implement
+  prompt: implement
+  sidecars: [dev, platform]
+  budget_slice_usd: 6.0
+  max_turns: 120
+  inputs: [workspace]
+  outputs: [workspace]
+
+- agent: qa
+  prompt: qa
+  sidecars: [dev, platform]
+  budget_slice_usd: 2.0
+  inputs: [workspace]
+  outputs: [workspace]
+
+- agent: review
+  prompt: review
+  sidecars: [dev]
+  budget_slice_usd: 2.0
+  inputs: [workspace]
+  outputs: [workspace]
+
+- agent: fix
+  prompt: fix
+  sidecars: [dev]
+  budget_slice_usd: 3.0
+  inputs: [workspace]
+  outputs: [workspace]
+
+hitl:
+  ask_timeout: park
+  ask_timeout_seconds: 0
+
+gate_policy:
+  gates:
+  - gate: build
+    scope: affected
+  - gate: test
+    scope: affected_then_full
+    timeout: 45m
+  - gate: lint
+    scope: affected
+  on_gate_failure: needs_review
+
+judge:
+  rubric:
+  - name: correctness
+    weight: 3
+    guidance: "Does the change do what the spec's acceptance criteria require?"
+  - name: tests
+    weight: 2
+    guidance: "Are new behaviors covered by meaningful tests?"
+  - name: scope-discipline
+    weight: 1
+    guidance: "Small tractable diff; no drive-by refactors."
+  pass_threshold: 6.5
