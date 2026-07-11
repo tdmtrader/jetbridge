@@ -16,8 +16,8 @@ import (
 
 	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/atc/compression"
-	discoveryv1 "k8s.io/api/discovery/v1"
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
 )
@@ -303,9 +303,9 @@ func makeMultiFileTarball(t *testing.T, entries map[string]string) []byte {
 func TestDaemonSetVolume_StreamOut_SubPath_WithGzip(t *testing.T) {
 	// Daemon returns a tar with multiple files (simulating a full repo).
 	tarData := makeMultiFileTarball(t, map[string]string{
-		"README.md":    "# My Repo",
-		"ci/task.yml":  "platform: linux\n",
-		"src/main.go":  "package main",
+		"README.md":   "# My Repo",
+		"ci/task.yml": "platform: linux\n",
+		"src/main.go": "package main",
 	})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/x-tar")

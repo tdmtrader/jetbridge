@@ -164,10 +164,10 @@ func (b *DaemonSetBackend) BuildFetchInitContainers(handle string, inputs []runt
 
 	return []corev1.Container{
 		{
-			Name:    "fetch-inputs",
-			Image:   helperImage,
-			Command: b.daemonResolveBatchCommand(items),
-			Env:     envVars,
+			Name:            "fetch-inputs",
+			Image:           helperImage,
+			Command:         b.daemonResolveBatchCommand(items),
+			Env:             envVars,
 			VolumeMounts:    allMounts,
 			ImagePullPolicy: corev1.PullIfNotPresent,
 			SecurityContext: &corev1.SecurityContext{

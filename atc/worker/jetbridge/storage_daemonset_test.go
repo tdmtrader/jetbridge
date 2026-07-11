@@ -116,7 +116,7 @@ type testArtifact struct {
 }
 
 func (a *testArtifact) Handle() string { return a.handle }
-func (a *testArtifact) Source() string  { return "worker-1" }
+func (a *testArtifact) Source() string { return "worker-1" }
 func (a *testArtifact) StreamOut(ctx context.Context, path string, enc compression.Compression) (io.ReadCloser, error) {
 	return nil, nil
 }
@@ -644,9 +644,9 @@ func TestDaemonSetBackend_RecordOutputs_TriggersMirrorAfterAlias(t *testing.T) {
 // AND a /mirror call independently.
 func TestDaemonSetBackend_RecordOutputs_MultipleOutputs_TriggersMirrorForEach(t *testing.T) {
 	var (
-		mu          sync.Mutex
+		mu           sync.Mutex
 		registerKeys []string
-		mirrorKeys  []string
+		mirrorKeys   []string
 	)
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {

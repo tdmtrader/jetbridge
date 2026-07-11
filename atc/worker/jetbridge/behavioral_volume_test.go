@@ -682,7 +682,7 @@ type stubArtifactBehavioral struct {
 var _ runtime.Artifact = (*stubArtifactBehavioral)(nil)
 
 func (a *stubArtifactBehavioral) Handle() string { return a.handle }
-func (a *stubArtifactBehavioral) Source() string  { return "test-worker" }
+func (a *stubArtifactBehavioral) Source() string { return "test-worker" }
 func (a *stubArtifactBehavioral) StreamOut(_ context.Context, _ string, _ compression.Compression) (io.ReadCloser, error) {
 	return nil, fmt.Errorf("not implemented")
 }

@@ -28,6 +28,7 @@ import (
 //   - ARTIFACT_DAEMON_PORT (default 7780)
 //   - ARTIFACT_DAEMON_SERVICE (default artifact-daemon)
 //   - ARTIFACT_HELPER_IMAGE (default alpine:latest)
+//
 // setupLiveWorkerWithLocator creates a Worker backed by a real K8s clientset.
 // If locator is non-nil, it is shared across workers (simulating production
 // behavior where a single worker serves all steps in a build). If nil and

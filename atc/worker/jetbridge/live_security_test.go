@@ -54,7 +54,7 @@ func TestLiveResourceLimitsQoS(t *testing.T) {
 
 	cleanupPod(t, clientset, cfg.Namespace, handle)
 
-	cpu := uint64(100)     // 100m = 0.1 CPU
+	cpu := uint64(100)                 // 100m = 0.1 CPU
 	memory := uint64(64 * 1024 * 1024) // 64Mi
 
 	container, _, err := worker.FindOrCreateContainer(

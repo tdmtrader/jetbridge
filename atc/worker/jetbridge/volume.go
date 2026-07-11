@@ -27,8 +27,8 @@ var _ runtime.Volume = (*Volume)(nil)
 // ExecAttrs carries semantic context about an ExecInPod invocation for
 // recording as span attributes on the k8s.spdy.exec trace span.
 type ExecAttrs struct {
-	Purpose        string // e.g. "step-command", "artifact-upload", "cache-upload", "stream-in", "stream-out", "gc-cleanup"
-	ArtifactKey    string // artifact store key, when applicable
+	Purpose         string // e.g. "step-command", "artifact-upload", "cache-upload", "stream-in", "stream-out", "gc-cleanup"
+	ArtifactKey     string // artifact store key, when applicable
 	VolumeMountPath string // volume mount path, when applicable
 }
 
