@@ -98,7 +98,9 @@ func (j *jobFactory) jobsToSchedule(jobIDs []int) (SchedulerJobs, error) {
 			"j.active": true,
 			"j.paused": false,
 			"p.paused": false,
-		})
+		}).
+		// base template pipelines never self-schedule; their run instances do
+		Where(sq.Expr("NOT (p.template AND p.instance_vars IS NULL)"))
 	if len(jobIDs) > 0 {
 		query = query.Where(sq.Eq{"j.id": jobIDs})
 	}
