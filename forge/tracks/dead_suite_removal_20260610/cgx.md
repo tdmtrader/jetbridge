@@ -83,6 +83,22 @@
 
 ## Missing Capabilities
 
+- [2026-06-10] No drift detection between deploy/*.yml and the live pipeline
+  configs on concourse.home. Found during Phase 4: live `jetbridge` pipeline
+  had (a) a stale daemonset name shared with the repo file (self-upgrade
+  failing on every push since the ~June 2 chart rename), and (b) live-only
+  drift (`upgrade-settle-timer` resource + settle step in verify-upgrade that
+  the repo file replaced with rollout-status waits). Patched live surgically
+  (fly get-pipeline → sed name fix → fly set-pipeline -n, preserving drift);
+  repo fixed in 15bade4fe9. Reconciliation of the settle-timer approach is an
+  open user decision. A periodic `fly get-pipeline | diff` check — or a
+  set_pipeline step in the pipeline itself — would catch both classes.
+- [2026-06-10] CI ops gotcha: self-upgrade restarts concourse-web, which kills
+  in-flight builds on other pipelines (k8s-e2e/build-kind-runner/222 errored
+  mid-git-clone). Also: k8s-e2e integration/behavioral are nightly (~22:00,
+  ~22m + ~29m on CI) — for same-day verification, trigger them manually after
+  build-kind-runner.
+
 ---
 
 ## Insights & Suggestions
