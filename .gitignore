@@ -46,3 +46,9 @@ worker/runtime/integration/sample/sample
 # Forge orchestrator logs
 forge/.orchestrator/
 package-lock.json
+
+# local dev cluster state + build artifacts (hack/local-dev-up.sh)
+/.local-cluster/
+/concourse-linux-arm64
+/artifact-daemon-linux-arm64
+/fly-assets/
