@@ -128,6 +128,10 @@ const (
 	GetBuildAgentReviews = "GetBuildAgentReviews"
 	ListTeamAgentReviews = "ListTeamAgentReviews"
 
+	CreateAgentPrincipal = "CreateAgentPrincipal"
+	ListAgentPrincipals  = "ListAgentPrincipals"
+	RevokeAgentPrincipal = "RevokeAgentPrincipal"
+
 	MCPEndpoint = "MCPEndpoint"
 )
 
@@ -260,6 +264,10 @@ var Routes = rata.Routes([]rata.Route{
 	{Path: "/api/v1/agent/reviews", Method: "POST", Name: SubmitAgentReview},
 	{Path: "/api/v1/builds/:build_id/agent-reviews", Method: "GET", Name: GetBuildAgentReviews},
 	{Path: "/api/v1/teams/:team_name/agent-reviews", Method: "GET", Name: ListTeamAgentReviews},
+
+	{Path: "/api/v1/agent/principals", Method: "POST", Name: CreateAgentPrincipal},
+	{Path: "/api/v1/agent/principals", Method: "GET", Name: ListAgentPrincipals},
+	{Path: "/api/v1/agent/principals/:principal_id", Method: "DELETE", Name: RevokeAgentPrincipal},
 
 	{Path: "/api/v1/mcp", Method: "POST", Name: MCPEndpoint},
 

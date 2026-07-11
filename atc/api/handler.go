@@ -9,7 +9,9 @@ import (
 	"code.cloudfoundry.org/lager/v3"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/agent/api/feedback"
+	principalsapi "github.com/concourse/concourse/agent/api/principals"
 	reviewsapi "github.com/concourse/concourse/agent/api/reviews"
+	"github.com/concourse/concourse/atc/api/accessor"
 	"github.com/concourse/concourse/atc/api/artifactserver"
 	"github.com/concourse/concourse/atc/api/buildserver"
 	"github.com/concourse/concourse/atc/api/ccserver"
@@ -89,6 +91,7 @@ func NewHandler(
 	dbPinger infoserver.DBPinger,
 	feedbackStore feedback.Store,
 	reviewsStore reviewsapi.Store,
+	principalsStore principalsapi.Store,
 	agentReviewPublishToken string,
 ) (http.Handler, error) {
 
@@ -136,6 +139,12 @@ func NewHandler(
 			}, true, nil
 		},
 		agentReviewPublishToken,
+	)
+	principalsServer := principalsapi.NewHandler(
+		principalsStore,
+		func(r *http.Request) string {
+			return accessor.GetAccessor(r).Claims().UserName
+		},
 	)
 	if oidcIssuer == "" {
 		oidcIssuer = externalURL
@@ -275,6 +284,10 @@ func NewHandler(
 		atc.SubmitAgentReview:    http.HandlerFunc(reviewsServer.SubmitReview),
 		atc.GetBuildAgentReviews: http.HandlerFunc(reviewsServer.GetByBuild),
 		atc.ListTeamAgentReviews: http.HandlerFunc(reviewsServer.ListByTeam),
+
+		atc.CreateAgentPrincipal: http.HandlerFunc(principalsServer.CreatePrincipal),
+		atc.ListAgentPrincipals:  http.HandlerFunc(principalsServer.ListPrincipals),
+		atc.RevokeAgentPrincipal: http.HandlerFunc(principalsServer.RevokePrincipal),
 	}
 
 	return rata.NewRouter(atc.Routes, wrapper.Wrap(handlers))

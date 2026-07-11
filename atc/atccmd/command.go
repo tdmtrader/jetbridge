@@ -2207,6 +2207,7 @@ func (cmd *RunCommand) constructAPIHandler(
 	checkPipelineAccessHandlerFactory := auth.NewCheckPipelineAccessHandlerFactory(teamFactory)
 	checkBuildReadAccessHandlerFactory := auth.NewCheckBuildReadAccessHandlerFactory(dbBuildFactory)
 	checkBuildWriteAccessHandlerFactory := auth.NewCheckBuildWriteAccessHandlerFactory(dbBuildFactory)
+	agentPrincipalsFactory := db.NewAgentPrincipalsFactory(dbConn)
 	checkWorkerTeamAccessHandlerFactory := auth.NewCheckWorkerTeamAccessHandlerFactory(dbWorkerFactory)
 
 	rejectArchivedHandlerFactory := pipelineserver.NewRejectArchivedHandlerFactory(teamFactory)
@@ -2296,6 +2297,7 @@ func (cmd *RunCommand) constructAPIHandler(
 		dbConn,
 		db.NewAgentFeedbackFactory(dbConn),
 		db.NewAgentReviewsFactory(dbConn),
+		agentPrincipalsFactory,
 		cmd.AgentReviewPublishToken,
 	)
 }
