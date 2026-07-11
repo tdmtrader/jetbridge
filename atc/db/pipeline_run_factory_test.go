@@ -98,6 +98,33 @@ var _ = Describe("PipelineRunFactory", func() {
 		Expect(second.Number()).To(Equal(2))
 	})
 
+	// review finding (2026-07-11): a pipeline instance {name, {"run": N}} can
+	// pre-exist (e.g. a user ran fly set-pipeline with those instance vars).
+	// CreateRun used to call savePipeline with from=0 assuming the instance
+	// never pre-exists; the tx failed and rolled back — INCLUDING the
+	// run-number allocation — so every retry hit the same existing instance
+	// and the template wedged permanently. The allocator must skip past
+	// existing instances instead.
+	It("skips run numbers whose pipeline instance already exists", func() {
+		_, _, err := defaultTeam.SavePipeline(
+			atc.PipelineRef{Name: "run-template", InstanceVars: atc.InstanceVars{"run": 1}},
+			templateConfig, db.ConfigVersion(0), false)
+		Expect(err).ToNot(HaveOccurred())
+
+		run, err := factory.CreateRun(template.ID(), nil, "some-user")
+		Expect(err).ToNot(HaveOccurred())
+		Expect(run.Number()).To(Equal(2))
+
+		instance, found, err := run.InstancePipeline()
+		Expect(err).ToNot(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(instance.InstanceVars()).To(Equal(atc.InstanceVars{"run": float64(2)}))
+
+		second, err := factory.CreateRun(template.ID(), nil, "some-user")
+		Expect(err).ToNot(HaveOccurred())
+		Expect(second.Number()).To(Equal(3))
+	})
+
 	It("rejects invalid params and non-templates", func() {
 		_, err := factory.CreateRun(template.ID(), map[string]any{"bogus": "x"}, "u")
 		Expect(err).To(MatchError(ContainSubstring(`unknown param "bogus"`)))

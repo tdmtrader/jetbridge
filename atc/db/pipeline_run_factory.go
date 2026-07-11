@@ -102,13 +102,40 @@ func (f *pipelineRunFactory) CreateRun(templatePipelineID int, params map[string
 	}
 	defer Rollback(tx)
 
+	// A pipeline instance {name, {"run": N}} may already exist (e.g. a user
+	// ran fly set-pipeline with those instance vars before this run number
+	// was ever allocated). savePipeline below is called with from=0, which
+	// only ever creates: a pre-existing instance fails the tx, and because
+	// the allocator increment rolls back with it, every retry would hit the
+	// same instance — wedging the template permanently. Skip past existing
+	// instances instead; the increments accumulate within the tx, so the
+	// committed last_run_number lands on the first free number.
 	var number int
-	err = tx.QueryRow(
-		`UPDATE pipelines SET last_run_number = last_run_number + 1 WHERE id = $1 RETURNING last_run_number`,
-		templatePipelineID,
-	).Scan(&number)
-	if err != nil {
-		return nil, err
+	for {
+		err = tx.QueryRow(
+			`UPDATE pipelines SET last_run_number = last_run_number + 1 WHERE id = $1 RETURNING last_run_number`,
+			templatePipelineID,
+		).Scan(&number)
+		if err != nil {
+			return nil, err
+		}
+
+		instanceVars, err := json.Marshal(atc.InstanceVars{"run": number})
+		if err != nil {
+			return nil, err
+		}
+
+		var exists bool
+		err = tx.QueryRow(
+			`SELECT EXISTS (SELECT 1 FROM pipelines WHERE team_id = $1 AND name = $2 AND instance_vars = $3::jsonb)`,
+			template.TeamID(), template.Name(), instanceVars,
+		).Scan(&exists)
+		if err != nil {
+			return nil, err
+		}
+		if !exists {
+			break
+		}
 	}
 
 	// F30 (2026-07-09): allocate pipeline_runs.id BEFORE materialization so
@@ -133,7 +160,7 @@ func (f *pipelineRunFactory) CreateRun(templatePipelineID int, params map[string
 		tx,
 		atc.PipelineRef{Name: template.Name(), InstanceVars: atc.InstanceVars{"run": number}},
 		instanceConfig,
-		0,     // fresh instance; run numbers are unique so it never pre-exists
+		0,     // fresh instance; the allocator loop above skipped any pre-existing {"run": N}
 		false, // run instances start unpaused
 		template.TeamID(),
 		nullID, nullID,
