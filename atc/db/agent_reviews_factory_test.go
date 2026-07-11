@@ -57,12 +57,18 @@ var _ = Describe("AgentReviewsFactory", func() {
 
 	It("upserts on (build_id, repo, commit_sha)", func() {
 		Expect(factory.Upsert(rec(102, "main", "p", "r", "c2", 5.0))).To(Succeed())
-		Expect(factory.Upsert(rec(102, "main", "p", "r", "c2", 9.0))).To(Succeed())
+
+		second := rec(102, "main", "p", "r", "c2", 9.0)
+		second.Review = json.RawMessage(`{"schema_version":"1.0.0","resubmitted":true}`)
+		second.SubmittedBy = "itest-reviewer-2"
+		Expect(factory.Upsert(second)).To(Succeed())
 
 		got, err := factory.GetByBuild(102)
 		Expect(err).ToNot(HaveOccurred())
 		Expect(got).To(HaveLen(1))
 		Expect(got[0].Score).To(Equal(9.0))
+		Expect(got[0].Review).To(MatchJSON(`{"schema_version":"1.0.0","resubmitted":true}`))
+		Expect(got[0].SubmittedBy).To(Equal("itest-reviewer-2"))
 	})
 
 	It("lists by team newest first with filters", func() {

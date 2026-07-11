@@ -52,6 +52,7 @@ func (f *agentReviewsFactory) Upsert(rec *reviews.StoredReview) error {
 			agent_model = EXCLUDED.agent_model,
 			duration_seconds = EXCLUDED.duration_seconds,
 			submitted_by = EXCLUDED.submitted_by,
+			review = EXCLUDED.review,
 			updated_at = now()`).
 		RunWith(f.conn).
 		Exec()
