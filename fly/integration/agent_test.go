@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"os/exec"
+	"strings"
 	"time"
 
 	"github.com/concourse/concourse/agent/api/costs"
@@ -30,6 +31,30 @@ var _ = Describe("fly agent", func() {
 
 		It("stores the token and prints the expiry", func() {
 			flyCmd := exec.Command(flyPath, "-t", targetName, "agent", "auth", "--token", "sk-tok")
+			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+			Expect(err).NotTo(HaveOccurred())
+			Eventually(sess).Should(gexec.Exit(0))
+			Expect(sess.Out).To(gbytes.Say("stored your anthropic_oauth credential; expires"))
+		})
+	})
+
+	Describe("agent auth with the token piped to stdin", func() {
+		BeforeEach(func() {
+			atcServer.AppendHandlers(
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("PUT", "/api/v1/agent/user-credentials"),
+					func(w http.ResponseWriter, r *http.Request) {
+						body, _ := io.ReadAll(r.Body)
+						Expect(string(body)).To(ContainSubstring(`"token":"sk-piped"`))
+					},
+					ghttp.RespondWithJSONEncoded(http.StatusOK, map[string]string{"status": "saved"}),
+				),
+			)
+		})
+
+		It("accepts a piped token without a trailing newline", func() {
+			flyCmd := exec.Command(flyPath, "-t", targetName, "agent", "auth")
+			flyCmd.Stdin = strings.NewReader("sk-piped") // no trailing newline: ReadString returns io.EOF WITH the text
 			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
 			Expect(err).NotTo(HaveOccurred())
 			Eventually(sess).Should(gexec.Exit(0))

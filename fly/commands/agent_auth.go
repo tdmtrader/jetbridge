@@ -3,6 +3,7 @@ package commands
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"time"
@@ -48,7 +49,8 @@ func (command *AgentAuthCommand) Execute([]string) error {
 		fmt.Println("and attached (as CLAUDE_CODE_OAUTH_TOKEN) only to agent runs you trigger.")
 		fmt.Print("token: ")
 		line, err := bufio.NewReader(os.Stdin).ReadString('\n')
-		if err != nil {
+		// a piped token without a trailing newline arrives WITH io.EOF
+		if err != nil && !(err == io.EOF && line != "") {
 			return fmt.Errorf("reading token from stdin: %w", err)
 		}
 		token = strings.TrimSpace(line)
