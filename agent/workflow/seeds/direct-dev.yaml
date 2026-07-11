@@ -1,0 +1,65 @@
+# direct-dev v1 — direct one-shot (FLOWS.md "direct-one-shot"): the ticket
+# body IS the spec. One implement step, no submit_spec/submit_plan, no
+# checkpoint; the implicit harvest pushes agent/ticket-N as usual. Shipped
+# as an equal-standing peer of standard-dev (E3) so spec-first stops
+# reading as the default.
+# Import:  fly agent workflows import agent/workflow/seeds/direct-dev.yaml
+# Promote: fly agent workflows set-live direct-dev 1
+schema_version: 1
+name: direct-dev
+description: direct one-shot; the ticket body is the spec; single implement step
+
+defaults:
+  model: claude-sonnet-4-5
+  max_turns: 60
+
+budget:
+  ticket_usd: 3.0
+  judge_usd: 0.5
+
+sidecars:
+  dev:
+    image: ghcr.io/tdmtrader/mcp-dev-concourse:0.1.0
+    role: dev
+  platform:
+    image: ghcr.io/tdmtrader/mcp-platform:0.1.0
+    role: platform
+
+prompts:
+  implement: |
+    You are an implementation agent working in the workspace repository.
+    Read the ticket with platform-mcp read_ticket and implement exactly
+    what the ticket body asks — nothing more. There is no spec and no plan
+    for this ticket: the body is the whole contract, and you do not submit
+    one. Work test-first where behavior changes: write the failing test,
+    make it pass minimally, refactor. Run dev-mcp run_tests with the
+    affected components before you finish, and commit in small, reviewable
+    increments.
+
+steps:
+- agent: implement
+  prompt: implement
+  sidecars: [dev, platform]
+  budget_slice_usd: 2.5
+  outputs: [workspace]
+
+gate_policy:
+  gates:
+  - gate: build
+    scope: affected
+  - gate: test
+    scope: affected_then_full
+  on_gate_failure: needs_review
+
+judge:
+  rubric:
+  - name: body-fidelity
+    weight: 3
+    guidance: "Does the change do exactly what the ticket body asks — no more, no less? The body is the only contract; there is no spec."
+  - name: tests
+    weight: 2
+    guidance: "Are changed behaviors covered by meaningful tests?"
+  - name: scope-discipline
+    weight: 1
+    guidance: "Small tractable diff; no drive-by refactors beyond what the ticket body asks."
+  pass_threshold: 6.5

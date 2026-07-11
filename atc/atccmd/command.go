@@ -2347,6 +2347,7 @@ func (cmd *RunCommand) constructAPIHandler(
 		db.NewAgentUserCredentialsFactory(dbConn),
 		db.NewAgentCostLedgerFactory(dbConn),
 		cmd.AgentDailyBudgetUSD,
+		db.NewAgentWorkflowsFactory(dbConn),
 	)
 }
 

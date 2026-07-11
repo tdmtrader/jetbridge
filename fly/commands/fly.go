@@ -91,7 +91,7 @@ type FlyCommand struct {
 
 	Curl CurlCommand `command:"curl" alias:"c" description:"curl the api"`
 
-	Agent AgentCommand `command:"agent" description:"Agent platform: credentials and costs"`
+	Agent AgentCommand `command:"agent" description:"Agent platform: credentials, costs, and workflows"`
 
 	GetWall   GetWallCommand   `command:"get-wall" alias:"gw" description:"Get the current wall message"`
 	SetWall   SetWallCommand   `command:"set-wall" alias:"sw" description:"Set a wall message"`

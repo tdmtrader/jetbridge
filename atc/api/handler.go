@@ -14,6 +14,8 @@ import (
 	reviewsapi "github.com/concourse/concourse/agent/api/reviews"
 	"github.com/concourse/concourse/agent/budget"
 	"github.com/concourse/concourse/agent/credentials"
+	workflowsapi "github.com/concourse/concourse/agent/api/workflows"
+	"github.com/concourse/concourse/agent/workflow"
 	"github.com/concourse/concourse/atc/api/accessor"
 	"github.com/concourse/concourse/atc/api/artifactserver"
 	"github.com/concourse/concourse/atc/api/buildserver"
@@ -101,6 +103,7 @@ func NewHandler(
 	credentialsBackend credentials.Backend,
 	costLedger budget.Ledger,
 	agentDailyBudgetUSD float64,
+	workflowStore workflow.Store,
 ) (http.Handler, error) {
 
 	absCLIDownloadsDir, err := filepath.Abs(cliDownloadsDir)
@@ -149,6 +152,7 @@ func NewHandler(
 		},
 		agentReviewPublishToken,
 	)
+	workflowsServer := workflowsapi.NewHandler(workflowStore)
 	principalsServer := principalsapi.NewHandler(
 		principalsStore,
 		func(r *http.Request) string {
@@ -316,6 +320,11 @@ func NewHandler(
 		atc.DeleteAgentUserCredential:    http.HandlerFunc(credentialsServer.Delete),
 		atc.GetAgentCostRollup:           http.HandlerFunc(costsServer.GetRollup),
 		atc.SubmitAgentCostRecord:        http.HandlerFunc(costsServer.SubmitRecord),
+		atc.ListAgentWorkflows:          http.HandlerFunc(workflowsServer.List),
+		atc.ListAgentWorkflowVersions:   http.HandlerFunc(workflowsServer.Versions),
+		atc.GetAgentWorkflowVersion:     http.HandlerFunc(workflowsServer.Get),
+		atc.CreateAgentWorkflowVersion:  http.HandlerFunc(workflowsServer.Import),
+		atc.PromoteAgentWorkflowVersion: http.HandlerFunc(workflowsServer.Promote),
 
 		atc.CreateAgentPrincipal: http.HandlerFunc(principalsServer.CreatePrincipal),
 		atc.ListAgentPrincipals:  http.HandlerFunc(principalsServer.ListPrincipals),

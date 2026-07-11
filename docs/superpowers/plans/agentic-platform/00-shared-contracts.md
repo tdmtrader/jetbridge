@@ -198,6 +198,7 @@ CREATE TABLE agent_workflow_definitions (
     created_by   TEXT NOT NULL DEFAULT '',
     created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
     promoted_at  TIMESTAMPTZ,
+    promoted_by  TEXT NOT NULL DEFAULT '',       -- who ran set-live (audit; 2026-07 owner amendment)
     UNIQUE (name, version)
 );
 
@@ -613,6 +614,10 @@ type Definition struct {
 	CreatedAt   int64  `json:"created_at"`
 
 	Config Config `json:"config"` // parsed YAML, §6 grammar
+
+	// RawYAML is the exact stored definition bytes (the hashed provenance
+	// unit). Populated by Get and Live; empty in List/Versions.
+	RawYAML string `json:"raw_yaml,omitempty"`
 }
 
 //counterfeiter:generate . Store
@@ -1862,3 +1867,15 @@ Set by the **owning exec implementation** (agent-step, harvest-step) or by **dis
   pass-through (F27); new reserved var `((run_id))` = `pipeline_runs.id` allocated via
   `nextval` before materialization, reserved param names now `run` AND `run_id` (F30,
   co-signed with dispatch + harvest for the §8.1 `AGENT_PIPELINE_RUN_ID` consumers).
+- 2026-07-08 (workflow-store, owner amendments; affects consumers: dispatch, harvest-step, platform-mcp-hitl, scorecards, process-intel-experiments — additive only):
+  - §1.6: added `promoted_by TEXT NOT NULL DEFAULT ''` so `Store.Promote`'s existing `promotedBy` argument is persisted (the interface already carried it; the DDL had no column).
+  - §2.2: added `Definition.RawYAML` (`json:"raw_yaml,omitempty"`) carrying the exact stored YAML bytes on `Get`/`Live` responses; `List`/`Versions` leave it empty (and leave `config` as a zero object — metadata-only listings).
+  - §4.2 workflow-route HTTP shapes pinned by the owner:
+    - `GET /api/v1/agent/workflows` → 200 `[{"name","description","latest_version","content_hash","live_version","created_at"}]` (`live_version` 0 = none live).
+    - `GET /api/v1/agent/workflows/:workflow_name/versions` → 200 `[Definition]` (metadata only), 404 unknown name.
+    - `GET /api/v1/agent/workflows/:workflow_name/versions/:version` → 200 `Definition` incl. `config` + `raw_yaml`, 404 unknown, 400 non-integer version.
+    - `POST /api/v1/agent/workflows/:workflow_name/versions` — body is the raw definition YAML (any Content-Type, ≤1 MiB) → 200 `Definition` (idempotent on content hash: re-importing identical bytes returns the existing version), 400 on parse/validation/name-mismatch, 413 oversize.
+    - `PUT /api/v1/agent/workflows/:workflow_name/versions/:version/live` → 204, 404 unknown (name, version).
+  - §6 grammar: added the optional top-level `spec_delivery` field (Go `Config.SpecDelivery string`, yaml/json `spec_delivery,omitempty`; values `""`/`mcp`/`files`, empty ⇒ `mcp`; a normal hashed field, write-time validated to reject any other value). This replaces the prior "rendered spec.md/plan.md as env vars `AGENT_SPEC_MD`/`AGENT_PLAN_MD`" design: the DB stays the single source of truth and nothing is flattened by default. Owned by workflow-store (§6), referenced by contracts §6, consumed by dispatch's renderer (11-dispatch) — `mcp` injects no spec/plan bytes (agents read via platform-mcp `read_ticket`/`list_tasks`/`get_task`, implemented by platform-mcp-hitl over ticket-core `Store` methods `Get`/`LatestSpec`/`ActivePlan`); `files` materializes read-only `spec.md`/`plan.md` mounted as the `ticket` artifact. Affects consumers: platform-mcp-hitl, dispatch, workflow-store, ticket-core-consumers.
+  - Slot-shape freeze for wave-3 review: the `checkpoint:` step fields (`on_reject: fail|send_back`), `hitl` block (`ask_timeout: park|default|fail`, `ask_timeout_seconds`), `gate_policy` block (§6.3 YAML grammar — each `gates[]` entry carries `gate`, `scope`, `focus`, `timeout`, and the optional `retries: 0..2` flake-retry key harvest-step consumes; workflow-store validates the `0..2` bound at import and carries `Gate.Retries` through so dispatch's renderer can map it onto `harvest.Gate.Retries`), and `judge` block are stored and write-time validated by workflow-store but INERT until platform-mcp-hitl and harvest-step consume them; those workstreams review these shapes at wave-3 start and any change lands as a new `schema_version`, never a mutation of v1. §6.1's "optional top-level `schemas` map" is realized as `schemas: map[string]string` in `Config`. The optional top-level `spec_delivery` field (`SpecDelivery string`, values `""`/`mcp`/`files`, empty ⇒ `mcp`) is a normal hashed field owned by this grammar and validated at import; it is INERT here (workflow-store never renders) and is consumed by dispatch's renderer to pick the spec/plan read model — `mcp` (default: no spec/plan bytes injected; agents read via platform-mcp `read_ticket`/`list_tasks`/`get_task`) vs `files` (read-only `spec.md`/`plan.md` mounted as the `ticket` artifact).
+  - Wrappa placement note: the five workflow routes land in the existing `auth.CheckAuthorizationHandler` case group (admin-only in effect, per decision 21) with `DefaultRoles` entries in place; agent-identity moves them onto `CheckAgentAuthorizationHandler` together with the existing agent feedback routes.

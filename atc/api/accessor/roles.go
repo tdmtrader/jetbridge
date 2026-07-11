@@ -116,4 +116,10 @@ var DefaultRoles = map[string]string{
 	atc.CreatePipelineRun:       MemberRole,
 	atc.ListPipelineRuns:        ViewerRole,
 	atc.GetPipelineRun:          ViewerRole,
+
+	atc.ListAgentWorkflows:          ViewerRole,
+	atc.ListAgentWorkflowVersions:   ViewerRole,
+	atc.GetAgentWorkflowVersion:     ViewerRole,
+	atc.CreateAgentWorkflowVersion:  MemberRole,
+	atc.PromoteAgentWorkflowVersion: MemberRole,
 }
