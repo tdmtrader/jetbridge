@@ -1,0 +1,390 @@
+package db
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"fmt"
+
+	"code.cloudfoundry.org/lager/v3"
+	"code.cloudfoundry.org/lager/v3/lagerctx"
+	sq "github.com/Masterminds/squirrel"
+	"github.com/concourse/concourse/atc"
+	"github.com/concourse/concourse/atc/db/lock"
+)
+
+// ErrNotATemplate is returned when CreateRun is called on a pipeline that is
+// not a base template (template: true, no instance vars).
+var ErrNotATemplate = errors.New("pipeline is not a template")
+
+// ErrTemplateNotFound is returned when the template pipeline id is unknown.
+var ErrTemplateNotFound = errors.New("template pipeline not found")
+
+var pipelineRunsQuery = psql.Select(
+	"r.id", "r.template_pipeline_id", "r.instance_pipeline_id", "r.number",
+	"r.params", "r.status", "r.created_by", "r.created_at", "r.completed_at",
+	"r.archived",
+).From("pipeline_runs r")
+
+//counterfeiter:generate . PipelineRunFactory
+type PipelineRunFactory interface {
+	// CreateRun validates params against the template's params schema,
+	// allocates the next run number, materializes the instanced pipeline
+	// (instance_vars: {"run": N}), triggers entry jobs, and returns the run.
+	CreateRun(templatePipelineID int, params map[string]any, createdBy string) (PipelineRun, error)
+	GetRun(templatePipelineID, number int) (PipelineRun, bool, error)
+	ListRuns(templatePipelineID int, limit int) ([]PipelineRun, error)
+	RunningRuns() ([]PipelineRun, error)
+	CompletedRunsWithNewActivity() ([]PipelineRun, error)
+	RunsToArchive() ([]PipelineRun, error)
+}
+
+// NewPipelineRunFactory constructs the factory. The CheckFactory is
+// injected (F27, 2026-07-09) because CreateRun itself enqueues the frozen
+// check set — the runs API handler is a pass-through, so in-process
+// consumers (dispatch, experiments) get identical semantics. The logger is
+// injected (Registrar/Reaper idiom) because CreateRun has no ctx/logger
+// parameter (§2.3 frozen signature) and the check enqueue is best-effort:
+// its failures must be logged, never returned.
+func NewPipelineRunFactory(
+	logger lager.Logger,
+	conn DbConn,
+	lockFactory lock.LockFactory,
+	checkFactory CheckFactory,
+) PipelineRunFactory {
+	return &pipelineRunFactory{
+		logger:       logger,
+		conn:         conn,
+		lockFactory:  lockFactory,
+		checkFactory: checkFactory,
+	}
+}
+
+type pipelineRunFactory struct {
+	logger       lager.Logger
+	conn         DbConn
+	lockFactory  lock.LockFactory
+	checkFactory CheckFactory
+}
+
+func (f *pipelineRunFactory) CreateRun(templatePipelineID int, params map[string]any, createdBy string) (PipelineRun, error) {
+	template, found, err := f.pipelineByID(templatePipelineID)
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		return nil, ErrTemplateNotFound
+	}
+	if !template.Template() || template.InstanceVars() != nil {
+		return nil, ErrNotATemplate
+	}
+
+	validated, err := atc.ValidateRunParams(template.ParamsSchema(), params)
+	if err != nil {
+		return nil, err
+	}
+
+	// Relies on Task 7's Config() carrying Template/Params/RunRetention
+	// (F19, 2026-07-09): the returned config is re-saved as the instance, so
+	// a Config() that dropped Template would save instances with
+	// template=false and break lidar exclusion + version pinning. If the
+	// instance.Template() assertion in the factory test fails, fix
+	// db.pipeline.Config() — do NOT force Template=true here.
+	config, err := template.Config()
+	if err != nil {
+		return nil, err
+	}
+
+	tx, err := f.conn.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer Rollback(tx)
+
+	var number int
+	err = tx.QueryRow(
+		`UPDATE pipelines SET last_run_number = last_run_number + 1 WHERE id = $1 RETURNING last_run_number`,
+		templatePipelineID,
+	).Scan(&number)
+	if err != nil {
+		return nil, err
+	}
+
+	// F30 (2026-07-09): allocate pipeline_runs.id BEFORE materialization so
+	// ((run_id)) — the globally-unique id that §8.1 AGENT_PIPELINE_RUN_ID is
+	// defined as — can be interpolated into the instance config. nextval
+	// keeps the SERIAL sequence consistent with the explicit-id insert below.
+	var runID int
+	err = tx.QueryRow(
+		`SELECT nextval(pg_get_serial_sequence('pipeline_runs', 'id'))`,
+	).Scan(&runID)
+	if err != nil {
+		return nil, err
+	}
+
+	instanceConfig, err := atc.MaterializeRunConfig(config, number, runID, validated)
+	if err != nil {
+		return nil, err
+	}
+
+	nullID := sql.NullInt64{Valid: false}
+	instanceID, _, err := savePipeline(
+		tx,
+		atc.PipelineRef{Name: template.Name(), InstanceVars: atc.InstanceVars{"run": number}},
+		instanceConfig,
+		0,     // fresh instance; run numbers are unique so it never pre-exists
+		false, // run instances start unpaused
+		template.TeamID(),
+		nullID, nullID,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	paramsPayload, err := json.Marshal(validated)
+	if err != nil {
+		return nil, err
+	}
+
+	run := newPipelineRun(f.conn, f.lockFactory)
+	run.id = runID
+	run.templatePipelineID = templatePipelineID
+	run.instancePipelineID = sql.NullInt64{Int64: int64(instanceID), Valid: true}
+	run.number = number
+	run.params = validated
+	run.status = PipelineRunRunning
+	run.createdBy = createdBy
+
+	// explicit id: pre-allocated above so ((run_id)) is already baked into
+	// the saved instance config (F30)
+	err = psql.Insert("pipeline_runs").
+		Columns("id", "template_pipeline_id", "instance_pipeline_id", "number", "params", "created_by").
+		Values(runID, templatePipelineID, instanceID, number, paramsPayload, createdBy).
+		Suffix("RETURNING created_at").
+		RunWith(tx).
+		QueryRow().
+		Scan(&run.createdAt)
+	if err != nil {
+		return nil, err
+	}
+
+	err = tx.Commit()
+	if err != nil {
+		return nil, err
+	}
+
+	// Trigger entry jobs (no passed: upstream) as manually-triggered builds.
+	instance, found, err := f.pipelineByID(instanceID)
+	if err != nil {
+		return nil, err
+	}
+	if found {
+		for _, jobName := range instanceConfig.EntryJobs() {
+			job, jobFound, err := instance.Job(jobName)
+			if err != nil {
+				return nil, err
+			}
+			if !jobFound {
+				continue
+			}
+			_, err = job.CreateBuild(createdBy)
+			if err != nil {
+				return nil, fmt.Errorf("triggering entry job %s: %w", jobName, err)
+			}
+		}
+
+		// F27 (2026-07-09): the frozen check set is enqueued HERE, by the
+		// factory, per shared-contracts §7.1 item 2 — not in the API handler.
+		f.enqueueInitialChecks(instance)
+	}
+
+	return run, nil
+}
+
+// enqueueInitialChecks fires one manually-triggered check per resource of
+// the run's instance pipeline — the frozen-check-set pinning model
+// (shared-contracts §7.1). It lives on the factory (F27, 2026-07-09) so
+// in-process consumers (dispatch, experiments) get the frozen check set
+// too: lidar excludes template pipelines, so a factory-created run whose
+// entry job has a get step would otherwise pend forever on an empty
+// version set (NULL scope → trivially-passing ResourcesChecked → zero
+// versions). Best-effort: failures are logged, never fail run creation
+// (fly check-resource remains available).
+func (f *pipelineRunFactory) enqueueInitialChecks(instance Pipeline) {
+	logger := f.logger.Session("enqueue-initial-checks", lager.Data{
+		"pipeline": instance.Name(), "instance-vars": instance.InstanceVars(),
+	})
+
+	resourceTypes, err := instance.ResourceTypes()
+	if err != nil {
+		logger.Error("failed-to-load-instance-resource-types", err)
+		return
+	}
+	resources, err := instance.Resources()
+	if err != nil {
+		logger.Error("failed-to-load-instance-resources", err)
+		return
+	}
+
+	for _, resource := range resources {
+		_, _, err := f.checkFactory.TryCreateCheck(
+			lagerctx.NewContext(context.Background(), logger),
+			resource,
+			resourceTypes,
+			nil,  // from latest
+			true, // manually triggered: skip interval
+			true, // skip interval recursively
+			true, // persist to DB
+		)
+		if err != nil {
+			logger.Error("failed-to-enqueue-initial-check", err, lager.Data{"resource": resource.Name()})
+		}
+	}
+}
+
+func (f *pipelineRunFactory) GetRun(templatePipelineID, number int) (PipelineRun, bool, error) {
+	run := newPipelineRun(f.conn, f.lockFactory)
+	err := scanPipelineRun(run, pipelineRunsQuery.
+		Where(sq.Eq{"r.template_pipeline_id": templatePipelineID, "r.number": number}).
+		RunWith(f.conn).
+		QueryRow())
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	return run, true, nil
+}
+
+func (f *pipelineRunFactory) ListRuns(templatePipelineID int, limit int) ([]PipelineRun, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := pipelineRunsQuery.
+		Where(sq.Eq{"r.template_pipeline_id": templatePipelineID}).
+		OrderBy("r.number DESC").
+		Limit(uint64(limit)).
+		RunWith(f.conn).
+		Query()
+	if err != nil {
+		return nil, err
+	}
+	return f.scanRuns(rows)
+}
+
+func (f *pipelineRunFactory) RunningRuns() ([]PipelineRun, error) {
+	rows, err := pipelineRunsQuery.
+		Where(sq.Eq{"r.status": string(PipelineRunRunning), "r.archived": false}).
+		OrderBy("r.id ASC").
+		RunWith(f.conn).
+		Query()
+	if err != nil {
+		return nil, err
+	}
+	return f.scanRuns(rows)
+}
+
+// CompletedRunsWithNewActivity returns non-running, non-archived runs whose
+// instance pipeline has a pending/started job build — OR a job build that
+// COMPLETED after the run's completed_at (F26, 2026-07-09): the Finish
+// notify (the only wakeup besides the 10s poll) fires after a build leaves
+// pending/started, so a retrigger that starts AND finishes inside one
+// polling gap would otherwise never be observed and the run would keep a
+// stale terminal status forever (plan-creation failures Finish without ever
+// starting — buildstarter.go:225). Self-terminating: reopen clears
+// completed_at (run leaves this query via the status filter) and the
+// re-complete stamps a newer completed_at than every existing end_time.
+func (f *pipelineRunFactory) CompletedRunsWithNewActivity() ([]PipelineRun, error) {
+	rows, err := pipelineRunsQuery.
+		Where(sq.NotEq{"r.status": string(PipelineRunRunning)}).
+		Where(sq.Eq{"r.archived": false}).
+		Where(sq.Expr(`EXISTS (
+			SELECT 1 FROM builds b
+			WHERE b.pipeline_id = r.instance_pipeline_id
+			AND b.job_id IS NOT NULL
+			AND (b.status IN ('pending','started')
+			     OR (b.completed AND r.completed_at IS NOT NULL
+			         AND b.end_time > r.completed_at)))`)).
+		OrderBy("r.id ASC").
+		RunWith(f.conn).
+		Query()
+	if err != nil {
+		return nil, err
+	}
+	return f.scanRuns(rows)
+}
+
+func (f *pipelineRunFactory) RunsToArchive() ([]PipelineRun, error) {
+	rows, err := f.conn.Query(`
+		WITH candidate AS (
+			SELECT r.id,
+			       r.completed_at,
+			       p.run_retention,
+			       ROW_NUMBER() OVER (PARTITION BY r.template_pipeline_id ORDER BY r.number DESC) AS rank
+			FROM pipeline_runs r
+			JOIN pipelines p ON p.id = r.template_pipeline_id
+			WHERE r.archived = false
+			  AND r.status <> 'running'
+			  AND p.run_retention IS NOT NULL
+		)
+		SELECT id FROM candidate
+		WHERE (run_retention ? 'keep_last' AND rank > (run_retention->>'keep_last')::int)
+		   OR (run_retention ? 'ttl_days' AND completed_at IS NOT NULL
+		       AND completed_at < now() - make_interval(days => (run_retention->>'ttl_days')::int))`)
+	if err != nil {
+		return nil, err
+	}
+	defer Close(rows)
+
+	var ids []int
+	for rows.Next() {
+		var id int
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		return nil, nil
+	}
+
+	runRows, err := pipelineRunsQuery.
+		Where(sq.Eq{"r.id": ids}).
+		OrderBy("r.id ASC").
+		RunWith(f.conn).
+		Query()
+	if err != nil {
+		return nil, err
+	}
+	return f.scanRuns(runRows)
+}
+
+func (f *pipelineRunFactory) scanRuns(rows *sql.Rows) ([]PipelineRun, error) {
+	defer Close(rows)
+	var runs []PipelineRun
+	for rows.Next() {
+		run := newPipelineRun(f.conn, f.lockFactory)
+		if err := scanPipelineRun(run, rows); err != nil {
+			return nil, err
+		}
+		runs = append(runs, run)
+	}
+	return runs, nil
+}
+
+func (f *pipelineRunFactory) pipelineByID(id int) (Pipeline, bool, error) {
+	pipeline := newPipeline(f.conn, f.lockFactory)
+	err := scanPipeline(
+		pipeline,
+		pipelinesQuery.Where(sq.Eq{"p.id": id}).RunWith(f.conn).QueryRow(),
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	return pipeline, true, nil
+}
