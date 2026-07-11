@@ -2,6 +2,7 @@ package jobserver
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 
@@ -36,6 +37,12 @@ func (s *Server) CreateJobBuild(pipeline db.Pipeline) http.Handler {
 
 		if !found {
 			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+
+		if pipeline.Template() && pipeline.InstanceVars() == nil {
+			w.WriteHeader(http.StatusConflict)
+			fmt.Fprint(w, `cannot trigger jobs on a template pipeline; use "fly run-pipeline" to create a run`)
 			return
 		}
 

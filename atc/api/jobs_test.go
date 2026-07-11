@@ -1411,6 +1411,20 @@ var _ = Describe("Jobs API", func() {
 					fakePipeline.JobReturns(fakeJob, true, nil)
 				})
 
+				Context("when the pipeline is a base template", func() {
+					BeforeEach(func() {
+						fakePipeline.TemplateReturns(true)
+						fakePipeline.InstanceVarsReturns(nil)
+					})
+
+					It("returns 409 with a pointer to run-pipeline", func() {
+						Expect(response.StatusCode).To(Equal(http.StatusConflict))
+						body, err := io.ReadAll(response.Body)
+						Expect(err).ToNot(HaveOccurred())
+						Expect(string(body)).To(ContainSubstring("fly run-pipeline"))
+					})
+				})
+
 				Context("when manual triggering is disabled", func() {
 					BeforeEach(func() {
 						fakeJob.DisableManualTriggerReturns(true)
