@@ -7,6 +7,27 @@ Newest first.
 
 ## Plan gaps the agents found (leftward candidates)
 
+- **Adding an API route touches SIX places, not four — the plans list ~four.**
+  Dogfooding agent-identity Task 4 (build 525330) failed the gate on
+  `atc/auditor` `TestAuditor` ("all routes are handled and does not panic"):
+  `atc/auditor/auditor.go`'s `ValidateAction` switch panics on any action not
+  explicitly cased, and the three new principal routes weren't added. The agent
+  also independently hit + fixed a second missing touchpoint —
+  `atc/wrappa/reject_archived_wrappa.go`'s exhaustive switch (same panic
+  pattern). Neither is in Task 4's file list; the agent's plan-stated test
+  commands (`ginkgo ./atc/api/ ./atc/wrappa/`) didn't cover `atc/auditor`, so
+  the gate's full `go test` caught what the agent's narrower run missed — the
+  gate doing exactly its job. **The complete add-a-route checklist for this
+  fork:** (1) `atc/routes.go` rata entry, (2) `atc/api/handler.go` name→handler,
+  (3) `atc/wrappa/api_auth_wrappa.go` auth switch, (4) `atc/wrappa/reject_archived_wrappa.go`
+  switch, (5) `atc/auditor/auditor.go` `ValidateAction` switch, (6) `atc/api/accessor/roles.go`
+  DefaultRoles (for authorized routes). → *Leftward fix:* every route-adding
+  task (agent-identity T4, credentials T11/T13, ticket-core, pipeline-runs,
+  costs/credentials handlers, …) must list all six; amend those plans, or add a
+  single `add-a-route` convention note they reference. Note: build 525330's
+  branch did NOT push (gate failed correctly), so Task 4 needs re-dogfooding
+  after the plan is amended.
+
 - **Migration-head bumps must also touch `docs/migration/migrate-preflight.sh`.**
   Dogfooding agent-identity Task 2 (build 525203), the agent found that
   `migrate-preflight.sh` hardcodes its own `JETBRIDGE_VERSION` constant — a

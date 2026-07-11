@@ -898,6 +898,8 @@ Follows the `atc/db/agent_reviews_factory.go` recipe (Store interface in `agent/
 - Create: `agent/api/principals/handler.go`
 - Modify: `atc/routes.go:129` (constants block, after `ListTeamAgentReviews`), `atc/routes.go:262` (routes list, after `ListTeamAgentReviews` entry)
 - Modify: `atc/wrappa/api_auth_wrappa.go:126` (admin case, after `atc.ListSharedForResourceType`)
+- Modify: `atc/wrappa/reject_archived_wrappa.go` — add the three new actions to the pass-through (leave-handler-as-is) admin case; this switch **panics** on any unlisted route (see `ci/dogfood/FINDINGS.md` add-a-route checklist)
+- Modify: `atc/auditor/auditor.go` `ValidateAction` switch — add `atc.CreateAgentPrincipal`, `atc.ListAgentPrincipals`, `atc.RevokeAgentPrincipal` cases; this switch **panics on any unhandled action** and `atc/auditor` `TestAuditor` fails the full test suite otherwise (dogfood build 525330 failed here)
 - Modify: `atc/api/handler.go:91-92` (params), `:139` (server construction), `:277` (handler map)
 - Modify: `atc/api/api_suite_test.go:226` (new `NewHandler` arg)
 - Modify: `atc/atccmd/command.go:2207` (factory construction), `:2298` (new `NewHandler` arg)
