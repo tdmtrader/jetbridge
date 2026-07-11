@@ -1,0 +1,304 @@
+# Dogfood plan-task-runner pipeline (agentic-platform Phase 0 bootstrap).
+#
+# Executes a bounded slice of a writing-plans-format workstream plan
+# (docs/superpowers/plans/agentic-platform/NN-*.md) with an agent running ON
+# jetbridge, then gates, reviews, publishes the review to the build page, and
+# pushes the result as a branch. No Claude Code UI involved.
+#
+# Dispatch (Phase 0 mechanism = one instanced pipeline per plan slice; replaced
+# by `fly run-pipeline` when wave-1 pipeline-runs lands):
+#
+#   ci/dogfood/dispatch.sh docs/superpowers/plans/agentic-platform/03-pipeline-runs.md 3-6
+#
+# set-pipeline vars:
+#   ((plan_file))   repo-relative plan path
+#   ((task_range))  inclusive plan-task range, e.g. "3-6"
+#   ((base_branch)) branch the work is based on (default jetbridge)
+#   ((branch_name)) branch to push, e.g. agent/dogfood-03-pipeline-runs-3-6
+#
+# Credential posture (mirrors the harvest posture from the roadmap): the agent
+# task holds ONLY the Claude credential; the push task is the ONLY task holding
+# the GitHub credential. The review task holds Claude + the publish token.
+
+resources:
+- name: repo
+  type: git
+  source:
+    uri: https://github.com/tdmtrader/jetbridge.git
+    branch: ((base_branch))
+    username: x-access-token
+    password: ((github-pat))
+
+jobs:
+- name: run
+  serial: true
+  plan:
+  # Manual trigger only — dispatched via ci/dogfood/dispatch.sh.
+  - get: repo
+    trigger: false
+    params: {depth: 50}
+
+  # ---------------------------------------------------------------------
+  # 1. Agent executes the plan slice (dogfood-implement phase).
+  #    Holds the Claude credential; does NOT hold any GitHub credential.
+  # ---------------------------------------------------------------------
+  - task: dogfood-implement
+    config:
+      platform: linux
+      rootfs_uri: docker:///golang:1.25-bookworm
+      inputs:
+      - name: repo
+      outputs:
+      - name: worked-repo
+      - name: dogfood-output
+      caches:
+      - path: gopath/pkg/mod
+      - path: gocache
+      params:
+        CLAUDE_TOKEN: ((anthropic-api-key))
+        AGENT_CLI: claude
+        AGENT_MODEL: ((agent-model))
+        PLAN_FILE: ((plan_file))
+        TASK_RANGE: ((task_range))
+        BASE_BRANCH: ((base_branch))
+        # ci-agent phase timeout (main.go TIMEOUT env). A multi-task TDD slice
+        # is much longer than the review phase's default 10m.
+        TIMEOUT: "120m"
+      run:
+        path: sh
+        args:
+        - -exc
+        - |
+          export GOPATH="$(pwd)/gopath"
+          export GOCACHE="$(pwd)/gocache"
+
+          # Route the Claude credential to the right env var so either an
+          # Anthropic API key (sk-ant-api...) or a Claude Code OAuth token
+          # (sk-ant-oat..., from `claude setup-token`) works.
+          case "${CLAUDE_TOKEN:-}" in
+            sk-ant-oat*) export CLAUDE_CODE_OAUTH_TOKEN="$CLAUDE_TOKEN" ;;
+            "")          echo "WARN: no Claude credential set (((anthropic-api-key)) empty)" ;;
+            *)           export ANTHROPIC_API_KEY="$CLAUDE_TOKEN" ;;
+          esac
+
+          echo "=== Installing Node.js and Claude CLI ==="
+          curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+          apt-get install -y --no-install-recommends nodejs
+          npm install -g @anthropic-ai/claude-code
+          claude --version
+
+          echo "=== Building ci-agent ==="
+          cd repo/ci-agent
+          go build -o /usr/local/bin/ci-agent ./cmd/ci-agent/
+          PHASES_DIR="$(pwd)/phases"
+          cd ../..
+
+          echo "=== Preparing working copy ==="
+          cp -a repo/. worked-repo/
+          cd worked-repo
+          git config user.email "dogfood-agent@concourse.home"
+          git config user.name "Concourse Dogfood Agent"
+          # Mark the exact base commit so the review task can diff against it
+          # without needing any other refs at this clone depth. (push-branch
+          # deliberately does NOT rely on this tag — it computes the base from
+          # the pristine `repo` input instead.)
+          git tag -f dogfood-base
+          cd ..
+
+          export REPO_DIR="$(pwd)/worked-repo"
+          export OUTPUT_DIR="$(pwd)/dogfood-output"
+
+          echo "=== Running ci-agent dogfood-implement phase ==="
+          echo "  plan:  ${PLAN_FILE}"
+          echo "  tasks: ${TASK_RANGE}"
+          ci-agent --phase "${PHASES_DIR}/dogfood-implement.yaml"
+
+          echo "=== Dogfood output ==="
+          cat dogfood-output/results.json 2>/dev/null || echo "No results output"
+          cat dogfood-output/dogfood.json 2>/dev/null | head -60 || true
+
+          echo "=== Commits produced ==="
+          cd worked-repo
+          git log --oneline dogfood-base..HEAD
+          git status --short
+
+  # ---------------------------------------------------------------------
+  # 2. Test-quick gate.
+  #    This is the CI equivalent of `make test-quick` (unit + ci-agent). The
+  #    concourse-test-runner image has no local PostgreSQL and no ginkgo, so —
+  #    copying the live unit-tests job's postgres approach exactly — the
+  #    postgres-backed packages are excluded here and remain a HUMAN-RUN local
+  #    gate (`make test-quick` with pg_isready green) before merging the
+  #    pushed branch. See ci/dogfood/README.md.
+  # ---------------------------------------------------------------------
+  - task: test-quick-gate
+    attempts: 2
+    config:
+      platform: linux
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v5
+      inputs:
+      - name: worked-repo
+      run:
+        path: sh
+        args:
+        - -exc
+        - |
+          cd worked-repo
+          echo "=== Verifying full build ==="
+          go build ./cmd/concourse
+          go build ./cmd/artifact-daemon
+          echo ""
+          echo "=== Running unit tests across the full codebase ==="
+          echo "Excluding packages that require external infrastructure"
+          echo ""
+          PACKAGES=$(go list ./... \
+            | grep -v /integration \
+            | grep -v /testflight \
+            | grep -v /topgun \
+            | grep -v /fly/integration \
+            | grep -v /atc/db \
+            | grep -v /atc/gc \
+            | grep -v /atc/postgresrunner \
+            | grep -v /atc/scheduler/algorithm \
+            | grep -v '/atc/worker$' \
+            | grep -v /skymarshal/dexserver \
+            | grep -v /cmd)
+          echo "Testing packages:"
+          echo "$PACKAGES" | head -20
+          echo "... ($(echo "$PACKAGES" | wc -l | tr -d ' ') packages total)"
+          echo ""
+          go test -count=1 -timeout 15m $PACKAGES
+          echo ""
+          echo "=== Running ci-agent module tests ==="
+          cd ci-agent
+          go test ./... -count=1 -timeout 5m
+          echo "=== test-quick gate passed ==="
+
+  # ---------------------------------------------------------------------
+  # 3. Diff-aware agent review of the slice + publish to the build page.
+  #    Diffs against the dogfood-base tag (= the ((base_branch)) commit this
+  #    build got), so the review covers exactly what the agent changed.
+  #    Known accepted exposure: this task runs git inside agent-writable
+  #    worked-repo while holding the (low-value, build-scoped) publish token;
+  #    the GitHub credential is protected by push-branch's pristine-clone push.
+  # ---------------------------------------------------------------------
+  - task: agent-review
+    config:
+      platform: linux
+      rootfs_uri: docker:///golang:1.25-bookworm
+      inputs:
+      - name: worked-repo
+      outputs:
+      - name: review
+      caches:
+      - path: gopath/pkg/mod
+      - path: gocache
+      params:
+        CLAUDE_TOKEN: ((anthropic-api-key))
+        AGENT_CLI: claude
+        AGENT_MODEL: ((agent-model))
+        SCORE_THRESHOLD: "7.0"
+        FAIL_ON_CRITICAL: "false"
+        REVIEW_DIFF_ONLY: "true"
+        BASE_REF: dogfood-base
+        AGENT_REVIEW_PUBLISH_TOKEN: ((agent-review-publish-token))
+      run:
+        path: sh
+        args:
+        - -exc
+        - |
+          export GOPATH="$(pwd)/gopath"
+          export GOCACHE="$(pwd)/gocache"
+
+          # Route the Claude credential to the right env var so either an
+          # Anthropic API key (sk-ant-api...) or a Claude Code OAuth token
+          # (sk-ant-oat..., from `claude setup-token`) works.
+          case "${CLAUDE_TOKEN:-}" in
+            sk-ant-oat*) export CLAUDE_CODE_OAUTH_TOKEN="$CLAUDE_TOKEN" ;;
+            "")          echo "WARN: no Claude credential set (((anthropic-api-key)) empty)" ;;
+            *)           export ANTHROPIC_API_KEY="$CLAUDE_TOKEN" ;;
+          esac
+
+          echo "=== Installing Node.js and Claude CLI ==="
+          curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+          apt-get install -y --no-install-recommends nodejs
+          npm install -g @anthropic-ai/claude-code
+          claude --version
+
+          echo "=== Building ci-agent ==="
+          cd worked-repo/ci-agent
+          go build -o /usr/local/bin/ci-agent ./cmd/ci-agent/
+          PHASES_DIR="$(pwd)/phases"
+          cd ../..
+
+          export REPO_DIR="$(pwd)/worked-repo"
+          export OUTPUT_DIR="$(pwd)/review"
+
+          echo "=== Running ci-agent review phase (diff vs ${BASE_REF}) ==="
+          ci-agent --phase "${PHASES_DIR}/review.yaml"
+
+          echo "=== Review complete ==="
+          echo "Review output:"
+          cat "$OUTPUT_DIR/review.json" | head -50
+
+          set +x
+          has_publish_token=false
+          [ -n "${AGENT_REVIEW_PUBLISH_TOKEN:-}" ] && has_publish_token=true
+          set -x
+          if [ "$has_publish_token" = true ]; then
+            echo ""
+            echo "=== Publishing review to ATC ==="
+            if ci-agent publish --review "$OUTPUT_DIR/review.json"; then
+              echo "Published for build ${BUILD_ID:-unknown}"
+            else
+              echo "WARNING: failed to publish review to ATC (results still available as artifact)"
+            fi
+          else
+            echo "AGENT_REVIEW_PUBLISH_TOKEN not set; skipping publish"
+          fi
+
+  # ---------------------------------------------------------------------
+  # 4. Push the branch. The ONLY task holding the GitHub credential — the
+  #    agent tasks above never see it (harvest posture).
+  #
+  #    SECURITY: never execute git INSIDE worked-repo here. Its .git dir was
+  #    agent-writable in step 1, so an agent-authored .git/hooks/pre-push,
+  #    core.fsmonitor, or credential.helper config entry would run arbitrary
+  #    code in the one task that holds GITHUB_TOKEN. Instead we fetch the
+  #    agent's HEAD into the pristine `repo` clone (a local fetch executes no
+  #    hooks or repo-level config from the source repo) and push from there.
+  #    repo's HEAD IS the base commit, so no dogfood-base tag is needed.
+  # ---------------------------------------------------------------------
+  - task: push-branch
+    config:
+      platform: linux
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v5
+      inputs:
+      - name: repo
+      - name: worked-repo
+      params:
+        GITHUB_TOKEN: ((github-token))
+        BRANCH_NAME: ((branch_name))
+      run:
+        path: sh
+        args:
+        - -exc
+        - |
+          cd repo
+          git fetch ../worked-repo HEAD
+
+          echo "=== Commits to push (base..agent HEAD) ==="
+          COMMITS=$(git rev-list --count HEAD..FETCH_HEAD)
+          git log --oneline HEAD..FETCH_HEAD
+          if [ "$COMMITS" = "0" ]; then
+            echo "FATAL: agent produced no commits; refusing to push ${BRANCH_NAME}"
+            exit 1
+          fi
+
+          # Force-push: re-dispatching the same plan slice replaces the branch.
+          # set +x so the tokenized push URL never lands in build logs.
+          set +x
+          git push -f "https://x-access-token:${GITHUB_TOKEN}@github.com/tdmtrader/jetbridge.git" \
+            "FETCH_HEAD:refs/heads/${BRANCH_NAME}"
+          set -x
+          echo "=== Pushed ${COMMITS} commit(s) to ${BRANCH_NAME} ==="

@@ -1,0 +1,64 @@
+# dogfood-implement: execute a bounded slice of a writing-plans-format workstream
+# plan (docs/superpowers/plans/agentic-platform/NN-*.md) verbatim, inside CI.
+#
+# Unlike the generic `implement` phase (spec.md + plan.md, agent designs tests),
+# this phase's plans already contain COMPLETE TDD steps and code. The agent's
+# job is faithful transcription, not design. Scope is bounded by TASK_RANGE so a
+# single build stays reviewable and its cost stays predictable.
+name: dogfood-implement
+env:
+  repo_dir:
+    var: REPO_DIR
+    required: true
+  output_dir:
+    var: OUTPUT_DIR
+    default: dogfood-output
+  # Repo-relative path to the workstream plan, e.g.
+  # docs/superpowers/plans/agentic-platform/03-pipeline-runs.md
+  plan_file:
+    var: PLAN_FILE
+    required: true
+  # Inclusive task range within the plan, e.g. "3-6" (or a single task, "4").
+  task_range:
+    var: TASK_RANGE
+    required: true
+  # The branch the work is based on; a `dogfood-base` tag marks its commit.
+  base_branch:
+    var: BASE_BRANCH
+    default: jetbridge
+  # Optional extra verification command supplied by the dispatcher when the
+  # plan slice's own test commands are known up front (e.g. "go test ./atc/db/").
+  # Empty means the gate is build-only here; the plan's own per-task test runs
+  # happen inside the agent loop, and the pipeline's test-quick gate task runs
+  # after this phase.
+  plan_test_cmd:
+    var: PLAN_TEST_CMD
+    default: ""
+mcp:
+  - git
+  - test
+  - filesystem
+steps:
+  - name: execute-plan-tasks
+    template: prompts/dogfood/tasks.md
+    # No output_schema: phaserunner never reads Step.OutputSchema (the sibling
+    # phases' schemas/*.json references are equally nonexistent/unenforced).
+    # The output contract (summary_markdown, plan_file, task_range,
+    # tasks_completed[], tasks_skipped[], all_committed) is enforced only by
+    # the prompt's Output-format section in prompts/dogfood/tasks.md.
+    # Bounded gate, deliberately NOT the full suite:
+    #  - `go build ./...` proves the whole module still compiles after the slice.
+    #  - `$plan_test_cmd` re-runs the plan tasks' own stated test commands (the
+    #    only suites the tasks themselves claim to affect).
+    # The full `make test-quick` equivalent runs as a separate pipeline task with
+    # its own image/timeout; running it here would double the wall time and burn
+    # agent-phase timeout on tests the agent cannot see or react to. Postgres-
+    # backed suites (atc/db, atc/gc, ...) are a human-run local gate pre-merge.
+    verify_cmd: 'go build ./... && sh -ec "${plan_test_cmd:-true}"'
+    artifacts:
+      - name: dogfood
+        path: dogfood.json
+        media_type: application/json
+      - name: summary
+        path: summary.md
+        media_type: text/markdown
