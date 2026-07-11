@@ -2799,6 +2799,32 @@ var _ = Describe("params schema validation", func() {
 		Expect(errs).To(ContainElement(ContainSubstring("run_retention is only allowed on template pipelines")))
 	})
 
+	// review finding (2026-07-11): negative retention values were accepted at
+	// set-pipeline time and only misbehaved later in the archival query
+	It("rejects negative run_retention values", func() {
+		errs := validate(atc.Config{
+			Template:     true,
+			RunRetention: &atc.RunRetentionConfig{KeepLast: -1},
+			Jobs:         atc.JobConfigs{validJob},
+		})
+		Expect(errs).To(ContainElement(ContainSubstring("run_retention.keep_last must not be negative")))
+
+		errs = validate(atc.Config{
+			Template:     true,
+			RunRetention: &atc.RunRetentionConfig{TTLDays: -7},
+			Jobs:         atc.JobConfigs{validJob},
+		})
+		Expect(errs).To(ContainElement(ContainSubstring("run_retention.ttl_days must not be negative")))
+
+		errs = validate(atc.Config{
+			Template:     true,
+			RunRetention: &atc.RunRetentionConfig{KeepLast: -2, TTLDays: -3},
+			Jobs:         atc.JobConfigs{validJob},
+		})
+		Expect(errs).To(ContainElement(ContainSubstring("run_retention.keep_last must not be negative")))
+		Expect(errs).To(ContainElement(ContainSubstring("run_retention.ttl_days must not be negative")))
+	})
+
 	It("rejects the reserved names, duplicates, bad types, enums without values, and bad defaults", func() {
 		errs := validate(atc.Config{
 			Template: true,

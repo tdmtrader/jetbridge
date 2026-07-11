@@ -588,6 +588,14 @@ func validateParamsSchema(c atc.Config) error {
 	if c.RunRetention != nil && !c.Template {
 		errorMessages = append(errorMessages, "run_retention is only allowed on template pipelines (set template: true)")
 	}
+	if c.RunRetention != nil {
+		if c.RunRetention.KeepLast < 0 {
+			errorMessages = append(errorMessages, "run_retention.keep_last must not be negative")
+		}
+		if c.RunRetention.TTLDays < 0 {
+			errorMessages = append(errorMessages, "run_retention.ttl_days must not be negative")
+		}
+	}
 
 	seen := map[string]bool{}
 	for i, p := range c.Params {
