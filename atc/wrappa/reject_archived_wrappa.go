@@ -36,7 +36,8 @@ func (rw *RejectArchivedWrappa) Wrap(handlers rata.Handlers) rata.Handlers {
 			atc.PinResourceVersion,
 			atc.UnpinResource,
 			atc.SetPinCommentOnResource,
-			atc.RerunJobBuild:
+			atc.RerunJobBuild,
+			atc.CreatePipelineRun:
 
 			newHandler = rw.handlerFactory.RejectArchived(handler)
 
@@ -137,6 +138,8 @@ func (rw *RejectArchivedWrappa) Wrap(handlers rata.Handlers) rata.Handlers {
 			atc.RevokeAgentPrincipal,
 			atc.CopyResourceVersions,
 			atc.ListDeprecatedScopes,
+			atc.ListPipelineRuns,
+			atc.GetPipelineRun,
 			atc.MCPEndpoint:
 
 		default:

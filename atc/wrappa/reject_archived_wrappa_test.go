@@ -44,6 +44,7 @@ var _ = Describe("RejectArchivedWrappa", func() {
 			atc.UnpinResource,
 			atc.SetPinCommentOnResource,
 			atc.RerunJobBuild,
+			atc.CreatePipelineRun,
 		}
 
 		rejectArchivedLookup := make(map[string]bool)
