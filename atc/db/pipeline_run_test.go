@@ -193,3 +193,92 @@ var _ = Describe("PipelineRun completion", func() {
 		Expect(again).To(BeEmpty())
 	})
 })
+
+var _ = Describe("PipelineRun retention", func() {
+	var factory db.PipelineRunFactory
+
+	makeTemplate := func(name string, retention *atc.RunRetentionConfig) db.Pipeline {
+		config := atc.Config{
+			Template:     true,
+			RunRetention: retention,
+			Jobs: atc.JobConfigs{
+				{Name: "entry", PlanSequence: []atc.Step{
+					{Config: &atc.TaskStep{Name: "t", ConfigPath: "task.yml"}},
+				}},
+			},
+		}
+		template, _, err := defaultTeam.SavePipeline(
+			atc.PipelineRef{Name: name}, config, db.ConfigVersion(0), false)
+		Expect(err).ToNot(HaveOccurred())
+		return template
+	}
+
+	completedRun := func(template db.Pipeline) db.PipelineRun {
+		run, err := factory.CreateRun(template.ID(), nil, "test")
+		Expect(err).ToNot(HaveOccurred())
+		Expect(run.Finish(db.PipelineRunSucceeded)).To(Succeed())
+		return run
+	}
+
+	BeforeEach(func() {
+		factory = db.NewPipelineRunFactory(logger, dbConn, lockFactory, checkFactory)
+	})
+
+	It("selects completed runs beyond keep_last, newest kept", func() {
+		template := makeTemplate("retention-keep-last", &atc.RunRetentionConfig{KeepLast: 2})
+		one := completedRun(template)
+		completedRun(template)
+		completedRun(template)
+
+		toArchive, err := factory.RunsToArchive()
+		Expect(err).ToNot(HaveOccurred())
+		Expect(toArchive).To(HaveLen(1))
+		Expect(toArchive[0].ID()).To(Equal(one.ID()))
+	})
+
+	It("selects completed runs older than ttl_days", func() {
+		template := makeTemplate("retention-ttl", &atc.RunRetentionConfig{TTLDays: 5})
+		old := completedRun(template)
+		completedRun(template)
+
+		_, err := dbConn.Exec(
+			`UPDATE pipeline_runs SET completed_at = now() - interval '10 days' WHERE id = $1`, old.ID())
+		Expect(err).ToNot(HaveOccurred())
+
+		toArchive, err := factory.RunsToArchive()
+		Expect(err).ToNot(HaveOccurred())
+		Expect(toArchive).To(HaveLen(1))
+		Expect(toArchive[0].ID()).To(Equal(old.ID()))
+	})
+
+	It("never selects running runs or templates without retention", func() {
+		noRetention := makeTemplate("retention-none", nil)
+		completedRun(noRetention)
+
+		withRetention := makeTemplate("retention-running", &atc.RunRetentionConfig{KeepLast: 0, TTLDays: 1})
+		_, err := factory.CreateRun(withRetention.ID(), nil, "test") // stays running
+		Expect(err).ToNot(HaveOccurred())
+
+		toArchive, err := factory.RunsToArchive()
+		Expect(err).ToNot(HaveOccurred())
+		Expect(toArchive).To(BeEmpty())
+	})
+
+	It("Archive archives the instance pipeline and the run row", func() {
+		template := makeTemplate("retention-archive", &atc.RunRetentionConfig{KeepLast: 0})
+		run := completedRun(template)
+
+		Expect(run.Archive()).To(Succeed())
+		Expect(run.Archived()).To(BeTrue())
+
+		instance, found, err := run.InstancePipeline()
+		Expect(err).ToNot(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(instance.Archived()).To(BeTrue())
+
+		// archived runs are never re-selected
+		toArchive, err := factory.RunsToArchive()
+		Expect(err).ToNot(HaveOccurred())
+		Expect(toArchive).To(BeEmpty())
+	})
+})
