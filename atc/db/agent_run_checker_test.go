@@ -1,6 +1,8 @@
 package db_test
 
 import (
+	"strings"
+
 	"github.com/concourse/concourse/atc/db"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -57,10 +59,24 @@ var _ = Describe("AgentRunChecker", func() {
 	It("counts awaiting_human runs as active (PARK-V2, contracts §11)", func() {
 		createPipelineRuns()
 
+		// 'awaiting_human' enters the status vocabulary with PARK-V2
+		// migration 1773106032 (plan 03 Task 23, gated on the plan 07 §I
+		// live pin). RunActive already treats it as active per the frozen
+		// contract; skip only the row insert until the constraint allows
+		// it. This skip self-lifts when 1773106032 lands.
+		var constraintDef string
+		err := dbConn.QueryRow(`
+			SELECT pg_get_constraintdef(oid) FROM pg_constraint
+			WHERE conname = 'pipeline_runs_status_check'`).Scan(&constraintDef)
+		Expect(err).ToNot(HaveOccurred())
+		if !strings.Contains(constraintDef, "awaiting_human") {
+			Skip("pipeline_runs status vocabulary predates PARK-V2 migration 1773106032")
+		}
+
 		// The agent-run-<run-id> secret and per-run principal row must
 		// survive the wait for the continuation to re-attach.
 		var parkedID int
-		err := dbConn.QueryRow(`
+		err = dbConn.QueryRow(`
 			INSERT INTO pipeline_runs (template_pipeline_id, number, status)
 			VALUES ($1, 990003, 'awaiting_human') RETURNING id`, defaultPipeline.ID()).Scan(&parkedID)
 		Expect(err).ToNot(HaveOccurred())
