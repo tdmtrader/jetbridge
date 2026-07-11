@@ -94,6 +94,8 @@ type FlyCommand struct {
 	ClearWall ClearWallCommand `command:"clear-wall" alias:"cw" description:"Clear the wall message"`
 
 	Completion CompletionCommand `command:"completion" description:"generate shell completion code"`
+
+	Agent AgentCommand `command:"agent" description:"Agentic platform commands"`
 }
 
 var Fly FlyCommand
