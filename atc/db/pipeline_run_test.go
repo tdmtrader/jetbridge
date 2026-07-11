@@ -127,6 +127,37 @@ var _ = Describe("PipelineRun completion", func() {
 		Expect(status).To(Equal(db.PipelineRunAborted))
 	})
 
+	// review finding (2026-07-11): TOCTOU between CheckComplete and Finish —
+	// a retrigger created AND completed in that window used to get
+	// end_time < completed_at (Finish stamped now() at finish time), so the
+	// F26 reopen predicate (end_time > completed_at) never matched and the
+	// run kept a stale terminal status forever. Finish must stamp
+	// completed_at from CheckComplete's read snapshot so anything that
+	// finishes after the reads is strictly newer.
+	It("reopens runs for retriggers that complete between CheckComplete and Finish", func() {
+		_, err := dbConn.Exec(
+			`UPDATE builds SET status = 'succeeded' WHERE pipeline_id = $1`, instance.ID())
+		Expect(err).ToNot(HaveOccurred())
+		markScheduled(instance.ID())
+
+		// the lifecycler observes the run as complete...
+		status, complete, err := run.CheckComplete()
+		Expect(err).ToNot(HaveOccurred())
+		Expect(complete).To(BeTrue())
+		Expect(status).To(Equal(db.PipelineRunSucceeded))
+
+		// ...a retrigger is created AND finishes inside the window...
+		finishBuild("entry", db.BuildStatusFailed)
+
+		// ...and only then does the lifecycler stamp the run finished
+		Expect(run.Finish(status)).To(Succeed())
+
+		reactivated, err := factory.CompletedRunsWithNewActivity()
+		Expect(err).ToNot(HaveOccurred())
+		Expect(reactivated).To(HaveLen(1))
+		Expect(reactivated[0].ID()).To(Equal(run.ID()))
+	})
+
 	// review finding (2026-07-11): instance_pipeline_id is ON DELETE SET
 	// NULL, and CheckComplete used to report not-complete on the NULLed FK —
 	// so a run whose instance pipeline was destroyed stayed 'running'

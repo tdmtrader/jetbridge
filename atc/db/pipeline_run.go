@@ -63,6 +63,12 @@ type pipelineRun struct {
 	createdAt          time.Time
 	completedAt        sql.NullTime
 	archived           bool
+
+	// completionSnapshot is the DB clock captured by CheckComplete's builds
+	// read. Finish stamps completed_at from it so a retrigger that completes
+	// between CheckComplete and Finish keeps end_time > completed_at and is
+	// caught by the F26 reopen predicate. (review finding, 2026-07-11)
+	completionSnapshot sql.NullTime
 }
 
 func newPipelineRun(conn DbConn, lockFactory lock.LockFactory) *pipelineRun {
@@ -123,17 +129,23 @@ func (r *pipelineRun) CheckComplete() (PipelineRunStatus, bool, error) {
 		return PipelineRunErrored, true, nil
 	}
 
+	// now() rides along with the builds read: it is the read snapshot that
+	// Finish stamps completed_at from, closing the CheckComplete→Finish
+	// TOCTOU window. (review finding, 2026-07-11)
 	var active, total, unscheduled int
+	var snapshot time.Time
 	err := r.conn.QueryRow(`
 		SELECT
 			COUNT(*) FILTER (WHERE b.status IN ('pending','started')),
-			COUNT(*)
+			COUNT(*),
+			now()
 		FROM builds b
 		WHERE b.pipeline_id = $1 AND b.job_id IS NOT NULL`, instanceID).
-		Scan(&active, &total)
+		Scan(&active, &total, &snapshot)
 	if err != nil {
 		return "", false, err
 	}
+	r.completionSnapshot = sql.NullTime{Time: snapshot, Valid: true}
 
 	err = r.conn.QueryRow(`
 		SELECT COUNT(*)
@@ -189,9 +201,17 @@ func runStatusFromBuildStatus(status string) (PipelineRunStatus, int) {
 }
 
 func (r *pipelineRun) Finish(status PipelineRunStatus) error {
+	// Stamp completed_at from CheckComplete's read snapshot when there is
+	// one: a build that completed between CheckComplete and Finish then has
+	// end_time > completed_at, so CompletedRunsWithNewActivity (F26) reopens
+	// the run instead of losing the build. (review finding, 2026-07-11)
+	completedAt := any(sq.Expr("now()"))
+	if r.completionSnapshot.Valid {
+		completedAt = r.completionSnapshot.Time
+	}
 	_, err := psql.Update("pipeline_runs").
 		Set("status", string(status)).
-		Set("completed_at", sq.Expr("now()")).
+		Set("completed_at", completedAt).
 		Where(sq.Eq{"id": r.id}).
 		RunWith(r.conn).
 		Exec()
@@ -211,6 +231,8 @@ func (r *pipelineRun) Reopen() error {
 	if err == nil {
 		r.status = PipelineRunRunning
 		r.completedAt = sql.NullTime{}
+		// a reopened run must be re-observed before it can finish again
+		r.completionSnapshot = sql.NullTime{}
 	}
 	return err
 }
