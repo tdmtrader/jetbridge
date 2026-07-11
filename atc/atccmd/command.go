@@ -902,6 +902,7 @@ func (cmd *RunCommand) constructAPIMembers(
 	gcContainerDestroyer := gc.NewDestroyer(logger, dbContainerRepository, dbVolumeRepository)
 	dbBuildFactory := db.NewBuildFactory(dbConn, lockFactory, cmd.GC.OneOffBuildGracePeriod, cmd.GC.FailedGracePeriod)
 	dbCheckFactory := db.NewCheckFactory(dbConn, lockFactory, secretManager, cmd.varSourcePool, checkBuildsChan, nil)
+	dbPipelineRunFactory := db.NewPipelineRunFactory(logger, dbConn, lockFactory, dbCheckFactory)
 	dbSigningKeyFactory := db.NewSigningKeyFactory(dbConn)
 	dbClock := db.NewClock()
 	dbWall := db.NewWall(dbConn, &dbClock)
@@ -945,6 +946,7 @@ func (cmd *RunCommand) constructAPIMembers(
 		gcContainerDestroyer,
 		dbBuildFactory,
 		dbCheckFactory,
+		dbPipelineRunFactory,
 		dbResourceConfigFactory,
 		userFactory,
 		pool,
@@ -2201,6 +2203,7 @@ func (cmd *RunCommand) constructAPIHandler(
 	gcContainerDestroyer gc.Destroyer,
 	dbBuildFactory db.BuildFactory,
 	dbCheckFactory db.CheckFactory,
+	dbPipelineRunFactory db.PipelineRunFactory,
 	resourceConfigFactory db.ResourceConfigFactory,
 	dbUserFactory db.UserFactory,
 	workerPool worker.Pool,
@@ -2281,6 +2284,7 @@ func (cmd *RunCommand) constructAPIHandler(
 		dbVolumeRepository,
 		dbBuildFactory,
 		dbCheckFactory,
+		dbPipelineRunFactory,
 		resourceConfigFactory,
 		dbUserFactory,
 

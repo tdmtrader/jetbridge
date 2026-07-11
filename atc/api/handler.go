@@ -25,6 +25,7 @@ import (
 	"github.com/concourse/concourse/atc/api/mcpserver"
 	"github.com/concourse/concourse/atc/api/pipelineserver"
 	"github.com/concourse/concourse/atc/api/resourceserver"
+	"github.com/concourse/concourse/atc/api/runserver"
 	"github.com/concourse/concourse/atc/api/resourceserver/versionserver"
 	"github.com/concourse/concourse/atc/api/teamserver"
 	"github.com/concourse/concourse/atc/api/usersserver"
@@ -64,6 +65,7 @@ func NewHandler(
 	volumeRepository db.VolumeRepository,
 	dbBuildFactory db.BuildFactory,
 	dbCheckFactory db.CheckFactory,
+	dbPipelineRunFactory db.PipelineRunFactory,
 	dbResourceConfigFactory db.ResourceConfigFactory,
 	dbUserFactory db.UserFactory,
 
@@ -110,6 +112,7 @@ func NewHandler(
 
 	versionServer := versionserver.NewServer(logger, externalURL)
 	pipelineServer := pipelineserver.NewServer(logger, dbTeamFactory, dbPipelineFactory, externalURL)
+	runServer := runserver.NewServer(logger, dbPipelineRunFactory)
 	configServer := configserver.NewServer(logger, dbTeamFactory, secretManager)
 	ccServer := ccserver.NewServer(logger, dbTeamFactory, externalURL)
 	workerServer := workerserver.NewServer(logger, workerTeamFactory, dbWorkerFactory)
@@ -206,6 +209,10 @@ func NewHandler(
 		atc.ListPipelineBuilds:        pipelineHandlerFactory.HandlerFor(pipelineServer.ListPipelineBuilds),
 		atc.CreatePipelineBuild:       pipelineHandlerFactory.HandlerFor(pipelineServer.CreateBuild),
 		atc.PipelineBadge:             pipelineHandlerFactory.HandlerFor(pipelineServer.PipelineBadge),
+
+		atc.CreatePipelineRun: pipelineHandlerFactory.HandlerFor(runServer.CreateRun),
+		atc.ListPipelineRuns:  pipelineHandlerFactory.HandlerFor(runServer.ListRuns),
+		atc.GetPipelineRun:    pipelineHandlerFactory.HandlerFor(runServer.GetRun),
 
 		atc.ListAllResources:          http.HandlerFunc(resourceServer.ListAllResources),
 		atc.ListSharedForResource:     pipelineHandlerFactory.HandlerFor(resourceServer.ListSharedForResource),
