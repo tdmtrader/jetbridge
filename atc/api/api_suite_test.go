@@ -13,6 +13,7 @@ import (
 	"code.cloudfoundry.org/lager/v3/lagertest"
 
 	"github.com/concourse/concourse/agent/api/feedback"
+	"github.com/concourse/concourse/agent/api/principals"
 	"github.com/concourse/concourse/agent/api/reviews"
 	"github.com/concourse/concourse/atc/api"
 	"github.com/concourse/concourse/atc/api/accessor"
@@ -224,6 +225,7 @@ var _ = BeforeEach(func() {
 		nil,
 		feedback.NewMemoryStore(),
 		reviews.NewMemoryStore(),
+		principals.NewMemoryStore(),
 		"test-agent-review-publish-token",
 	)
 

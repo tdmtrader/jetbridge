@@ -154,7 +154,10 @@ func (a *auditor) ValidateAction(action string) bool {
 		atc.GetAgentReviewFindings,
 		atc.SubmitAgentReview,
 		atc.GetBuildAgentReviews,
-		atc.ListTeamAgentReviews:
+		atc.ListTeamAgentReviews,
+		atc.CreateAgentPrincipal,
+		atc.ListAgentPrincipals,
+		atc.RevokeAgentPrincipal:
 		return a.EnableSystemAuditLog
 	case atc.ListTeams,
 		atc.SetTeam,
