@@ -625,6 +625,91 @@ func TestDaemonSetVolume_StreamOut_HappyPath_PerformsZeroPeerProbes(t *testing.T
 	}
 }
 
+// ---------------------------------------------------------------------------
+// StreamOut daemon discovery when no source node was ever recorded
+// (restart-resume: the in-memory ArtifactLocator is wiped by a web restart)
+// ---------------------------------------------------------------------------
+
+// TestDaemonSetVolume_StreamOut_NoSourceNode_ProbesDaemons is the regression
+// test for the restart-resume sidecar-config failure: after a web restart the
+// ArtifactLocator is empty, so artifacts re-wrapped by the new web carry
+// sourceNode=="". An in-web StreamFile on such an artifact — e.g. an agent
+// step's `sidecars: [{file: task-out/sidecars.yml}]` read during resume,
+// which runs BEFORE the step re-attaches to its supervised process — used to
+// fail instantly with "no source node known", erroring the build while the
+// still-running claude process kept spending unrecorded. With a daemonClient
+// configured, StreamOut must instead probe the live daemons and fetch from
+// the one that still has the artifact (the producer's daemon answers via its
+// registry alias, so this works even on a single-node cluster).
+func TestDaemonSetVolume_StreamOut_NoSourceNode_ProbesDaemons(t *testing.T) {
+	const daemonIP = "10.0.0.7"
+
+	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodHead && r.URL.Path == "/artifacts/steps/h/o":
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodGet && r.URL.Path == "/artifacts/steps/h/o":
+			w.Write([]byte("daemon-served-content"))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer daemon.Close()
+
+	transport := routingTransport{routes: map[string]string{
+		daemonIP + ":7780": daemon.URL,
+	}}
+
+	vol := newPeerFallbackTestRig("node-1", "10.0.0.1", transport, []string{daemonIP})
+	vol.sourceNode = "" // simulated restart: locator had no entry at wrap time
+
+	reader, err := vol.StreamOut(context.Background(), ".", nil)
+	if err != nil {
+		t.Fatalf("expected daemon-probe fallback to succeed with no source node, got: %v", err)
+	}
+	defer reader.Close()
+
+	body, _ := io.ReadAll(reader)
+	if string(body) != "daemon-served-content" {
+		t.Errorf("expected daemon-served-content, got: %q", string(body))
+	}
+}
+
+// TestDaemonSetVolume_StreamOut_NoSourceNode_ProbeMiss pins the error path:
+// no recorded source AND no daemon has the artifact must surface a clear
+// "not found on any daemon" error (not the pre-fix instant "no source node
+// known" bail, and not a raw resolver error for the empty node name).
+func TestDaemonSetVolume_StreamOut_NoSourceNode_ProbeMiss(t *testing.T) {
+	const daemonIP = "10.0.0.7"
+
+	var probeHits int32
+	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead {
+			atomic.AddInt32(&probeHits, 1)
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer daemon.Close()
+
+	transport := routingTransport{routes: map[string]string{
+		daemonIP + ":7780": daemon.URL,
+	}}
+
+	vol := newPeerFallbackTestRig("node-1", "10.0.0.1", transport, []string{daemonIP})
+	vol.sourceNode = ""
+
+	_, err := vol.StreamOut(context.Background(), ".", nil)
+	if err == nil {
+		t.Fatal("expected error when no source is recorded and no daemon has the artifact")
+	}
+	if got := atomic.LoadInt32(&probeHits); got == 0 {
+		t.Errorf("expected daemon probe to be attempted with no source node, got 0 HEAD requests")
+	}
+	if !strings.Contains(err.Error(), "not found on any daemon") {
+		t.Errorf("expected 'not found on any daemon' in error, got: %v", err)
+	}
+}
+
 // rewriteTransport redirects all requests to the test server URL.
 type rewriteTransport struct {
 	url string

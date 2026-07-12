@@ -87,7 +87,17 @@ func (v *DaemonSetVolume) DBVolume() db.CreatedVolume {
 // stream when compression is requested (e.g., Streamer.StreamFile expects
 // gzip-wrapped tar).
 func (v *DaemonSetVolume) StreamOut(ctx context.Context, path string, enc compression.Compression) (io.ReadCloser, error) {
-	if v.sourceNode == "" && v.sourceIP == "" {
+	// An empty source only fails fast when there is no daemonClient to
+	// discover one with. The in-memory ArtifactLocator is wiped by a web
+	// restart, so a restart-resume wraps every pre-restart artifact with
+	// sourceNode=="" — but the producer node's daemon still has the data on
+	// hostPath and answers probes via its registry alias. With a
+	// daemonClient configured, fall through to fetchArtifactWithPeerFallback
+	// which skips the (unknowable) primary and probes every live daemon.
+	// Without this, any in-web StreamFile on such an artifact — e.g. an
+	// agent step's file-sourced sidecar config read during resume — errored
+	// the build instantly even though the data was one probe away.
+	if v.sourceNode == "" && v.sourceIP == "" && v.daemonClient == nil {
 		return nil, fmt.Errorf("DaemonSetVolume.StreamOut: no source node known (key=%s)", v.key)
 	}
 
@@ -254,10 +264,12 @@ func (v *DaemonSetVolume) InitializeTaskCache(ctx context.Context, jobID int, st
 
 // fetchArtifactWithPeerFallback gets the artifact tar from the recorded
 // source node, falling back to a peer daemon when the recorded node is
-// unreachable, has been removed from the cluster, or returns an error
-// (4xx/5xx). Peer fallback only fires when a daemonClient is configured;
-// otherwise the recorded-source error is surfaced verbatim (preserves
-// existing behavior for tests / callers without daemon discovery).
+// unreachable, has been removed from the cluster, returns an error
+// (4xx/5xx), or was never recorded at all (sourceNode=="" after a web
+// restart wiped the locator). Peer fallback only fires when a daemonClient
+// is configured; otherwise the recorded-source error is surfaced verbatim
+// (preserves existing behavior for tests / callers without daemon
+// discovery).
 //
 // The fallback path probes every live daemon for a step copy of the
 // artifact (HEAD /artifacts/steps/{key}), then fetches from the first
@@ -309,6 +321,9 @@ func (v *DaemonSetVolume) fetchArtifactWithPeerFallback(ctx context.Context) (*h
 	defer cancel()
 	peerIP, found, _ := v.daemonClient.ProbeStepArtifact(probeCtx, v.key)
 	if !found {
+		if v.sourceNode == "" {
+			return nil, fmt.Errorf("no source node known and artifact not found on any daemon (key=%s)", v.key)
+		}
 		return nil, fmt.Errorf("artifact not found on node %s or any peer (key=%s)", v.sourceNode, v.key)
 	}
 
@@ -364,6 +379,14 @@ func (v *DaemonSetVolume) daemonURL(ctx context.Context) (string, error) {
 	// If we already have a direct IP (from ProbeResourceCache), use it.
 	if v.sourceIP != "" {
 		return fmt.Sprintf("%s://%s:%d/artifacts/%s", daemonURLScheme(v.config), v.sourceIP, port, v.key), nil
+	}
+
+	// No recorded source node (e.g. the locator was wiped by a web restart
+	// before this volume was wrapped). Error here rather than asking the
+	// NodeIPResolver to resolve "" — fetchArtifactWithPeerFallback treats
+	// this as a failed primary and falls back to probing live daemons.
+	if v.sourceNode == "" {
+		return "", fmt.Errorf("no source node recorded (key=%s)", v.key)
 	}
 
 	if v.nodeIPResolver == nil {
