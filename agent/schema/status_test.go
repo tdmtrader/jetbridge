@@ -18,6 +18,7 @@ func TestThreeWayStatus(t *testing.T) {
 		{"fail", schema.StatusFail, schema.RunStatusFailed, false},
 		{"error", schema.StatusError, schema.RunStatusError, false},
 		{"abstain", schema.StatusAbstain, schema.RunStatusFailed, true},
+		{"parked", schema.StatusParked, schema.RunStatusParked, false},
 		{"unknown", schema.Status("bogus"), schema.RunStatusError, false},
 	}
 	for _, tc := range cases {

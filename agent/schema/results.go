@@ -13,6 +13,12 @@ const (
 	StatusFail    Status = "fail"
 	StatusError   Status = "error"
 	StatusAbstain Status = "abstain"
+	// StatusParked is the PARK-V2 wire status (shared-contracts §1.8,
+	// 2026-07-10 amendment): a park-exit partial ingestion — the step exited
+	// awaiting a human, not an error. ThreeWayStatus maps it to
+	// RunStatusParked so a parked results.json round-trips instead of being
+	// silently rewritten to error.
+	StatusParked Status = "parked"
 )
 
 var validStatuses = map[Status]bool{
@@ -20,6 +26,7 @@ var validStatuses = map[Status]bool{
 	StatusFail:    true,
 	StatusError:   true,
 	StatusAbstain: true,
+	StatusParked:  true,
 }
 
 // Results is the top-level schema for results.json — the structured summary
@@ -51,7 +58,7 @@ func (r *Results) Validate() error {
 		return fmt.Errorf("status is required")
 	}
 	if !validStatuses[r.Status] {
-		return fmt.Errorf("invalid status %q: must be one of pass, fail, error, abstain", r.Status)
+		return fmt.Errorf("invalid status %q: must be one of pass, fail, error, abstain, parked", r.Status)
 	}
 	if r.Summary == "" {
 		return fmt.Errorf("summary is required")
