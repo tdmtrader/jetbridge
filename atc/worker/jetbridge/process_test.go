@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"sync/atomic"
 	"time"
 
@@ -1145,6 +1147,68 @@ var _ = Describe("Process", func() {
 			Expect(pods.Items[0].Name).To(Equal("exec-fail-handle"))
 		})
 	})
+
+	DescribeTable("supervised gates the in-pod supervisor on container type and stdin (F18)",
+		func(cType db.ContainerType, withStdin bool, wantSupervisor bool) {
+			handle := fmt.Sprintf("supervised-%s-stdin-%v", cType, withStdin)
+			fakeExecutor := &fakeExecExecutor{}
+			execWorker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
+			execWorker.SetExecutor(fakeExecutor)
+
+			setupFakeDBContainer(fakeDBWorker, handle)
+
+			c, _, err := execWorker.FindOrCreateContainer(
+				ctx,
+				db.NewFixedHandleContainerOwner(handle),
+				db.ContainerMetadata{Type: cType},
+				runtime.ContainerSpec{
+					TeamID:    1,
+					Dir:       "/workdir",
+					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+					Type:      cType,
+				},
+				delegate,
+			)
+			Expect(err).ToNot(HaveOccurred())
+
+			var stdin io.Reader
+			if withStdin {
+				stdin = bytes.NewBufferString("{}")
+			}
+
+			process, err := c.Run(ctx, runtime.ProcessSpec{
+				Path: "/bin/sh",
+				Args: []string{"-c", "echo hi"},
+			}, runtime.ProcessIO{
+				Stdin:  stdin,
+				Stdout: new(bytes.Buffer),
+				Stderr: new(bytes.Buffer),
+			})
+			Expect(err).ToNot(HaveOccurred())
+
+			pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, handle, metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			pod.Status.Phase = corev1.PodRunning
+			_, err = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			_, err = process.Wait(ctx)
+			Expect(err).ToNot(HaveOccurred())
+
+			Expect(fakeExecutor.execCalls).To(HaveLen(1))
+			command := fakeExecutor.execCalls[0].command
+			if wantSupervisor {
+				expectSupervisedExec(command, `'/bin/sh' '-c' 'echo hi'`)
+			} else {
+				Expect(command).To(Equal([]string{"/bin/sh", "-c", "echo hi"}))
+			}
+		},
+		Entry("task, no stdin → supervised", db.ContainerTypeTask, false, true),
+		Entry("agent, no stdin → supervised", db.ContainerTypeAgent, false, true),
+		Entry("get, no stdin → raw command", db.ContainerTypeGet, false, false),
+		Entry("task with stdin → raw command", db.ContainerTypeTask, true, false),
+		Entry("agent with stdin → raw command", db.ContainerTypeAgent, true, false),
+	)
 
 	Describe("exec-mode pod failure diagnostics", func() {
 		var (

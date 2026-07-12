@@ -98,7 +98,7 @@ var _ = Describe("Integration", func() {
 			Expect(pods.Items).To(HaveLen(1))
 			pod := pods.Items[0]
 			Expect(pod.Spec.Containers[0].Image).To(Equal("ubuntu:22.04"))
-			Expect(pod.Spec.Containers[0].Command).To(Equal([]string{"sh", "-c", "trap 'exit 0' TERM; sleep 86400 & wait"}))
+			Expect(pod.Spec.Containers[0].Command).To(Equal([]string{"sh", "-c", "trap 'exit 0' TERM; while :; do sleep 86400 & wait $!; done"}))
 			Expect(pod.Labels["concourse.ci/worker"]).To(Equal("k8s-worker-1"))
 
 			By("simulating Pod reaching Running state and waiting for exec result")

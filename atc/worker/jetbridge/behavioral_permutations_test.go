@@ -564,7 +564,7 @@ func TestBuildVolumeMounts_SidecarWithCaches(t *testing.T) {
 	c := makeContainer("sidecar-handle", meta, spec, cfg, nil, false)
 	_, mounts := c.buildVolumeMounts()
 
-	sidecars := buildSidecarContainers(spec.Sidecars, mounts, spec.Dir)
+	sidecars := buildSidecarContainers(spec.Sidecars, mounts, spec.Dir, spec.SidecarEnv, spec.SidecarSecretEnv)
 	if len(sidecars) != 1 {
 		t.Fatalf("expected 1 sidecar, got %d", len(sidecars))
 	}
@@ -610,7 +610,7 @@ func TestBuildVolumeMounts_SidecarWithScratch(t *testing.T) {
 	c := makeContainer("scratch-sc-handle", taskMetadata(), spec, cfg, nil, false)
 	_, mounts := c.buildVolumeMounts()
 
-	sidecars := buildSidecarContainers(spec.Sidecars, mounts, spec.Dir)
+	sidecars := buildSidecarContainers(spec.Sidecars, mounts, spec.Dir, spec.SidecarEnv, spec.SidecarSecretEnv)
 	if len(sidecars) != 1 {
 		t.Fatalf("expected 1 sidecar, got %d", len(sidecars))
 	}
@@ -780,7 +780,7 @@ func TestBuildSidecarContainers_GetsAllMountsInDaemonSetMode(t *testing.T) {
 	c := makeContainer("all-mounts-handle", meta, spec, cfg, nil, false)
 	_, mounts := c.buildVolumeMounts()
 
-	sidecars := buildSidecarContainers(spec.Sidecars, mounts, spec.Dir)
+	sidecars := buildSidecarContainers(spec.Sidecars, mounts, spec.Dir, spec.SidecarEnv, spec.SidecarSecretEnv)
 	if len(sidecars) != 1 {
 		t.Fatalf("expected 1 sidecar, got %d", len(sidecars))
 	}

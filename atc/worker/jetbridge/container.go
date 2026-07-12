@@ -358,9 +358,12 @@ func (c *Container) createPod(ctx context.Context, processSpec runtime.ProcessSp
 	return c.clientset.CoreV1().Pods(c.config.Namespace).Create(ctx, pod, metav1.CreateOptions{})
 }
 
-// pauseCommand is the shell command used by pause pods. It sleeps
-// indefinitely and exits cleanly on SIGTERM so the pod can be stopped.
-const pauseCommand = "trap 'exit 0' TERM; sleep 86400 & wait"
+// pauseCommand is the shell command used by pause pods. It idles forever
+// (a looped bounded sleep — busybox sh has no infinite sleep) and exits
+// cleanly on SIGTERM so the pod can be stopped. The loop matters: a bare
+// `sleep 86400` kills the pod 24h after creation, which breaks parked
+// agent steps (ask_human/checkpoint park can exceed 24h).
+const pauseCommand = "trap 'exit 0' TERM; while :; do sleep 86400 & wait $!; done"
 
 // createPausePod creates a Pod that runs indefinitely (pause mode) so that
 // Process.Wait can exec the real command via the PodExecutor with full
@@ -396,7 +399,7 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 
 	env := envVars(c.containerSpec.Env)
 	env = append(env, envVars(processSpec.Env)...)
-	applySecretRefs(env, c.containerSpec.SecretEnv)
+	env = applySecretRefs(env, c.containerSpec.SecretEnv)
 
 	volumes, volumeMounts := c.buildVolumeMounts()
 	resources := buildResourceRequirements(c.containerSpec.Limits)
@@ -436,7 +439,9 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 		},
 	}
 
-	containers = append(containers, buildSidecarContainers(c.containerSpec.Sidecars, volumeMounts, dir)...)
+	containers = append(containers, buildSidecarContainers(
+		c.containerSpec.Sidecars, volumeMounts, dir,
+		c.containerSpec.SidecarEnv, c.containerSpec.SidecarSecretEnv)...)
 
 	// Pause pods trap SIGTERM and exit immediately; 10s is more than
 	// enough grace and avoids the default 30s delay during pod teardown.
@@ -507,7 +512,20 @@ func (c *Container) buildCleanupInitContainer() *corev1.Container {
 // specs. Each sidecar receives the same volume mounts as the main container
 // so it can access inputs, outputs, and caches. Sidecars that do not specify
 // their own WorkingDir inherit defaultDir from the main container.
-func buildSidecarContainers(sidecars []atc.SidecarConfig, mainMounts []corev1.VolumeMount, defaultDir string) []corev1.Container {
+//
+// sidecarEnv and sidecarSecretEnv carry per-sidecar env rows and secret refs
+// keyed by sidecar name (ContainerSpec.SidecarEnv/SidecarSecretEnv). Env
+// ordering is deterministic: YAML-declared literals first (declaration
+// order), then sidecarEnv rows (caller order), then SecretEnv-only appends
+// (sorted by name, via applySecretRefs). Nil maps are no-ops, so existing
+// callers build byte-identical pods.
+func buildSidecarContainers(
+	sidecars []atc.SidecarConfig,
+	mainMounts []corev1.VolumeMount,
+	defaultDir string,
+	sidecarEnv map[string][]string,
+	sidecarSecretEnv map[string]map[string]vars.SecretRef,
+) []corev1.Container {
 	if len(sidecars) == 0 {
 		return nil
 	}
@@ -539,9 +557,13 @@ func buildSidecarContainers(sidecars []atc.SidecarConfig, mainMounts []corev1.Vo
 			},
 		}
 
+		var env []corev1.EnvVar
 		for _, e := range sc.Env {
-			c.Env = append(c.Env, corev1.EnvVar{Name: e.Name, Value: e.Value})
+			env = append(env, corev1.EnvVar{Name: e.Name, Value: e.Value})
 		}
+		env = append(env, envVars(sidecarEnv[sc.Name])...)
+		env = applySecretRefs(env, sidecarSecretEnv[sc.Name])
+		c.Env = env
 
 		for _, p := range sc.Ports {
 			protocol := corev1.ProtocolTCP
@@ -698,26 +720,44 @@ func stripImagePrefix(image string) string {
 	return image
 }
 
-// applySecretRefs replaces literal Value entries with ValueFrom.SecretKeyRef
-// for env vars that have a matching entry in secretEnv. This prevents secret
-// values from appearing in the pod spec.
-func applySecretRefs(envList []corev1.EnvVar, secretEnv map[string]vars.SecretRef) {
+// applySecretRefs converts literal Value entries to ValueFrom.SecretKeyRef
+// for env vars with a matching entry in secretEnv, and APPENDS a
+// secretKeyRef-only EnvVar (in sorted name order, for deterministic pod
+// specs) for secretEnv keys that have no literal entry. This keeps secret
+// values out of the pod spec either way. Returns the (possibly grown) slice.
+func applySecretRefs(envList []corev1.EnvVar, secretEnv map[string]vars.SecretRef) []corev1.EnvVar {
 	if len(secretEnv) == 0 {
-		return
+		return envList
 	}
-	for i := range envList {
-		ref, ok := secretEnv[envList[i].Name]
-		if !ok {
-			continue
-		}
-		envList[i].Value = ""
-		envList[i].ValueFrom = &corev1.EnvVarSource{
+	refFor := func(ref vars.SecretRef) *corev1.EnvVarSource {
+		return &corev1.EnvVarSource{
 			SecretKeyRef: &corev1.SecretKeySelector{
 				LocalObjectReference: corev1.LocalObjectReference{Name: ref.Name},
 				Key:                  ref.Key,
 			},
 		}
 	}
+	seen := map[string]bool{}
+	for i := range envList {
+		ref, ok := secretEnv[envList[i].Name]
+		if !ok {
+			continue
+		}
+		seen[envList[i].Name] = true
+		envList[i].Value = ""
+		envList[i].ValueFrom = refFor(ref)
+	}
+	var missing []string
+	for name := range secretEnv {
+		if !seen[name] {
+			missing = append(missing, name)
+		}
+	}
+	sort.Strings(missing)
+	for _, name := range missing {
+		envList = append(envList, corev1.EnvVar{Name: name, ValueFrom: refFor(secretEnv[name])})
+	}
+	return envList
 }
 
 func envVars(env []string) []corev1.EnvVar {
