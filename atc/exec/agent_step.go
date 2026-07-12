@@ -662,7 +662,14 @@ func (step *AgentStep) ingestFlightRecorder(
 
 	if flightArtifact != nil {
 		// results.json
-		if rc, err := step.streamer.StreamFile(ingestCtx, flightArtifact, "results.json"); err == nil && rc != nil {
+		rc, err := step.streamer.StreamFile(ingestCtx, flightArtifact, "results.json")
+		if err != nil {
+			// A briefly-unavailable artifact daemon degrades this ingestion to a
+			// status=error / "flight recorder output missing" row. Every other
+			// failure in this function is logged; without this the degradation
+			// has zero diagnostics (review finding, 2026-07-12).
+			logger.Error("failed-to-stream-flight-file", err, lager.Data{"file": "results.json"})
+		} else if rc != nil {
 			flightRead = true
 			raw, readErr := io.ReadAll(io.LimitReader(rc, 5<<20))
 			rc.Close()
@@ -681,7 +688,10 @@ func (step *AgentStep) ingestFlightRecorder(
 		}
 
 		// events.ndjson: counts + cost rollup + step.end detection
-		if rc, err := step.streamer.StreamFile(ingestCtx, flightArtifact, "events.ndjson"); err == nil && rc != nil {
+		rc, err = step.streamer.StreamFile(ingestCtx, flightArtifact, "events.ndjson")
+		if err != nil {
+			logger.Error("failed-to-stream-flight-file", err, lager.Data{"file": "events.ndjson"})
+		} else if rc != nil {
 			flightRead = true
 			counts := map[string]int{}
 			sawStepEnd := false

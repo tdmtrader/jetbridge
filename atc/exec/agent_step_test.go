@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 
+	"code.cloudfoundry.org/lager/v3/lagerctx"
+	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/agent/api/metrics/metricsfakes"
 	"github.com/concourse/concourse/agent/budget"
 	"github.com/concourse/concourse/agent/budget/budgetfakes"
@@ -901,6 +903,23 @@ var _ = Describe("AgentStep", func() {
 				rm := fakeMetricsStore.InsertIfAbsentArgsForCall(0)
 				Expect(rm.Status).To(Equal("error"))
 				Expect(rm.Summary).To(ContainSubstring("flight recorder"))
+			})
+
+			// --- review finding (2026-07-12): a StreamFile failure silently
+			// degraded ingestion to a status=error row with zero diagnostics.
+			// Every read failure must be logged, naming the file, like every
+			// other failure in ingestFlightRecorder. ---
+			It("logs a diagnostic naming each unreadable flight file", func() {
+				logger := lagertest.NewTestLogger("agent-step")
+				// The step logs through the context StartSpan returns, so thread
+				// the capturing logger there (the base ctx is otherwise swapped
+				// out and the diagnostic would go to lager's default sink).
+				fakeDelegate.StartSpanReturns(lagerctx.NewContext(ctx, logger), tracing.NoopSpan)
+
+				_, err := step.Run(ctx, state)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(logger.Buffer()).To(gbytes.Say(`failed-to-stream-flight-file.*results\.json`))
+				Expect(logger.Buffer()).To(gbytes.Say(`failed-to-stream-flight-file.*events\.ndjson`))
 			})
 		})
 
