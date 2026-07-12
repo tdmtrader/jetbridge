@@ -43,6 +43,10 @@ type Client interface {
 	// platform=true targets the §1.13 service user's credential (admin only).
 	DeleteAgentUserCredential(kind string, platform bool) error
 	AgentCostRollup(groupBy, since, until string) (costs.RollupResponse, error)
+	// Agent principals are admin-only: minted, listed, and revoked by admins.
+	ListAgentPrincipals() ([]atc.AgentPrincipal, error)
+	CreateAgentPrincipal(spec atc.AgentPrincipalCreateSpec) (atc.AgentPrincipalCreated, error)
+	RevokeAgentPrincipal(id int) error
 }
 
 type client struct {

@@ -135,6 +135,19 @@ type FakeClient struct {
 	clearWallReturnsOnCall map[int]struct {
 		result1 error
 	}
+	CreateAgentPrincipalStub        func(atc.AgentPrincipalCreateSpec) (atc.AgentPrincipalCreated, error)
+	createAgentPrincipalMutex       sync.RWMutex
+	createAgentPrincipalArgsForCall []struct {
+		arg1 atc.AgentPrincipalCreateSpec
+	}
+	createAgentPrincipalReturns struct {
+		result1 atc.AgentPrincipalCreated
+		result2 error
+	}
+	createAgentPrincipalReturnsOnCall map[int]struct {
+		result1 atc.AgentPrincipalCreated
+		result2 error
+	}
 	DeleteAgentUserCredentialStub        func(string, bool) error
 	deleteAgentUserCredentialMutex       sync.RWMutex
 	deleteAgentUserCredentialArgsForCall []struct {
@@ -223,6 +236,18 @@ type FakeClient struct {
 		result1 []atc.User
 		result2 error
 	}
+	ListAgentPrincipalsStub        func() ([]atc.AgentPrincipal, error)
+	listAgentPrincipalsMutex       sync.RWMutex
+	listAgentPrincipalsArgsForCall []struct {
+	}
+	listAgentPrincipalsReturns struct {
+		result1 []atc.AgentPrincipal
+		result2 error
+	}
+	listAgentPrincipalsReturnsOnCall map[int]struct {
+		result1 []atc.AgentPrincipal
+		result2 error
+	}
 	ListAllJobsStub        func() ([]atc.Job, error)
 	listAllJobsMutex       sync.RWMutex
 	listAllJobsArgsForCall []struct {
@@ -283,6 +308,17 @@ type FakeClient struct {
 	listWorkersReturnsOnCall map[int]struct {
 		result1 []atc.Worker
 		result2 error
+	}
+	RevokeAgentPrincipalStub        func(int) error
+	revokeAgentPrincipalMutex       sync.RWMutex
+	revokeAgentPrincipalArgsForCall []struct {
+		arg1 int
+	}
+	revokeAgentPrincipalReturns struct {
+		result1 error
+	}
+	revokeAgentPrincipalReturnsOnCall map[int]struct {
+		result1 error
 	}
 	SaveWorkerStub        func(atc.Worker, *time.Duration) (*atc.Worker, error)
 	saveWorkerMutex       sync.RWMutex
@@ -925,6 +961,70 @@ func (fake *FakeClient) ClearWallReturnsOnCall(i int, result1 error) {
 	}{result1}
 }
 
+func (fake *FakeClient) CreateAgentPrincipal(arg1 atc.AgentPrincipalCreateSpec) (atc.AgentPrincipalCreated, error) {
+	fake.createAgentPrincipalMutex.Lock()
+	ret, specificReturn := fake.createAgentPrincipalReturnsOnCall[len(fake.createAgentPrincipalArgsForCall)]
+	fake.createAgentPrincipalArgsForCall = append(fake.createAgentPrincipalArgsForCall, struct {
+		arg1 atc.AgentPrincipalCreateSpec
+	}{arg1})
+	stub := fake.CreateAgentPrincipalStub
+	fakeReturns := fake.createAgentPrincipalReturns
+	fake.recordInvocation("CreateAgentPrincipal", []interface{}{arg1})
+	fake.createAgentPrincipalMutex.Unlock()
+	if stub != nil {
+		return stub(arg1)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2
+	}
+	return fakeReturns.result1, fakeReturns.result2
+}
+
+func (fake *FakeClient) CreateAgentPrincipalCallCount() int {
+	fake.createAgentPrincipalMutex.RLock()
+	defer fake.createAgentPrincipalMutex.RUnlock()
+	return len(fake.createAgentPrincipalArgsForCall)
+}
+
+func (fake *FakeClient) CreateAgentPrincipalCalls(stub func(atc.AgentPrincipalCreateSpec) (atc.AgentPrincipalCreated, error)) {
+	fake.createAgentPrincipalMutex.Lock()
+	defer fake.createAgentPrincipalMutex.Unlock()
+	fake.CreateAgentPrincipalStub = stub
+}
+
+func (fake *FakeClient) CreateAgentPrincipalArgsForCall(i int) atc.AgentPrincipalCreateSpec {
+	fake.createAgentPrincipalMutex.RLock()
+	defer fake.createAgentPrincipalMutex.RUnlock()
+	argsForCall := fake.createAgentPrincipalArgsForCall[i]
+	return argsForCall.arg1
+}
+
+func (fake *FakeClient) CreateAgentPrincipalReturns(result1 atc.AgentPrincipalCreated, result2 error) {
+	fake.createAgentPrincipalMutex.Lock()
+	defer fake.createAgentPrincipalMutex.Unlock()
+	fake.CreateAgentPrincipalStub = nil
+	fake.createAgentPrincipalReturns = struct {
+		result1 atc.AgentPrincipalCreated
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeClient) CreateAgentPrincipalReturnsOnCall(i int, result1 atc.AgentPrincipalCreated, result2 error) {
+	fake.createAgentPrincipalMutex.Lock()
+	defer fake.createAgentPrincipalMutex.Unlock()
+	fake.CreateAgentPrincipalStub = nil
+	if fake.createAgentPrincipalReturnsOnCall == nil {
+		fake.createAgentPrincipalReturnsOnCall = make(map[int]struct {
+			result1 atc.AgentPrincipalCreated
+			result2 error
+		})
+	}
+	fake.createAgentPrincipalReturnsOnCall[i] = struct {
+		result1 atc.AgentPrincipalCreated
+		result2 error
+	}{result1, result2}
+}
+
 func (fake *FakeClient) DeleteAgentUserCredential(arg1 string, arg2 bool) error {
 	fake.deleteAgentUserCredentialMutex.Lock()
 	ret, specificReturn := fake.deleteAgentUserCredentialReturnsOnCall[len(fake.deleteAgentUserCredentialArgsForCall)]
@@ -1348,6 +1448,62 @@ func (fake *FakeClient) ListActiveUsersSinceReturnsOnCall(i int, result1 []atc.U
 	}{result1, result2}
 }
 
+func (fake *FakeClient) ListAgentPrincipals() ([]atc.AgentPrincipal, error) {
+	fake.listAgentPrincipalsMutex.Lock()
+	ret, specificReturn := fake.listAgentPrincipalsReturnsOnCall[len(fake.listAgentPrincipalsArgsForCall)]
+	fake.listAgentPrincipalsArgsForCall = append(fake.listAgentPrincipalsArgsForCall, struct {
+	}{})
+	stub := fake.ListAgentPrincipalsStub
+	fakeReturns := fake.listAgentPrincipalsReturns
+	fake.recordInvocation("ListAgentPrincipals", []interface{}{})
+	fake.listAgentPrincipalsMutex.Unlock()
+	if stub != nil {
+		return stub()
+	}
+	if specificReturn {
+		return ret.result1, ret.result2
+	}
+	return fakeReturns.result1, fakeReturns.result2
+}
+
+func (fake *FakeClient) ListAgentPrincipalsCallCount() int {
+	fake.listAgentPrincipalsMutex.RLock()
+	defer fake.listAgentPrincipalsMutex.RUnlock()
+	return len(fake.listAgentPrincipalsArgsForCall)
+}
+
+func (fake *FakeClient) ListAgentPrincipalsCalls(stub func() ([]atc.AgentPrincipal, error)) {
+	fake.listAgentPrincipalsMutex.Lock()
+	defer fake.listAgentPrincipalsMutex.Unlock()
+	fake.ListAgentPrincipalsStub = stub
+}
+
+func (fake *FakeClient) ListAgentPrincipalsReturns(result1 []atc.AgentPrincipal, result2 error) {
+	fake.listAgentPrincipalsMutex.Lock()
+	defer fake.listAgentPrincipalsMutex.Unlock()
+	fake.ListAgentPrincipalsStub = nil
+	fake.listAgentPrincipalsReturns = struct {
+		result1 []atc.AgentPrincipal
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeClient) ListAgentPrincipalsReturnsOnCall(i int, result1 []atc.AgentPrincipal, result2 error) {
+	fake.listAgentPrincipalsMutex.Lock()
+	defer fake.listAgentPrincipalsMutex.Unlock()
+	fake.ListAgentPrincipalsStub = nil
+	if fake.listAgentPrincipalsReturnsOnCall == nil {
+		fake.listAgentPrincipalsReturnsOnCall = make(map[int]struct {
+			result1 []atc.AgentPrincipal
+			result2 error
+		})
+	}
+	fake.listAgentPrincipalsReturnsOnCall[i] = struct {
+		result1 []atc.AgentPrincipal
+		result2 error
+	}{result1, result2}
+}
+
 func (fake *FakeClient) ListAllJobs() ([]atc.Job, error) {
 	fake.listAllJobsMutex.Lock()
 	ret, specificReturn := fake.listAllJobsReturnsOnCall[len(fake.listAllJobsArgsForCall)]
@@ -1634,6 +1790,67 @@ func (fake *FakeClient) ListWorkersReturnsOnCall(i int, result1 []atc.Worker, re
 		result1 []atc.Worker
 		result2 error
 	}{result1, result2}
+}
+
+func (fake *FakeClient) RevokeAgentPrincipal(arg1 int) error {
+	fake.revokeAgentPrincipalMutex.Lock()
+	ret, specificReturn := fake.revokeAgentPrincipalReturnsOnCall[len(fake.revokeAgentPrincipalArgsForCall)]
+	fake.revokeAgentPrincipalArgsForCall = append(fake.revokeAgentPrincipalArgsForCall, struct {
+		arg1 int
+	}{arg1})
+	stub := fake.RevokeAgentPrincipalStub
+	fakeReturns := fake.revokeAgentPrincipalReturns
+	fake.recordInvocation("RevokeAgentPrincipal", []interface{}{arg1})
+	fake.revokeAgentPrincipalMutex.Unlock()
+	if stub != nil {
+		return stub(arg1)
+	}
+	if specificReturn {
+		return ret.result1
+	}
+	return fakeReturns.result1
+}
+
+func (fake *FakeClient) RevokeAgentPrincipalCallCount() int {
+	fake.revokeAgentPrincipalMutex.RLock()
+	defer fake.revokeAgentPrincipalMutex.RUnlock()
+	return len(fake.revokeAgentPrincipalArgsForCall)
+}
+
+func (fake *FakeClient) RevokeAgentPrincipalCalls(stub func(int) error) {
+	fake.revokeAgentPrincipalMutex.Lock()
+	defer fake.revokeAgentPrincipalMutex.Unlock()
+	fake.RevokeAgentPrincipalStub = stub
+}
+
+func (fake *FakeClient) RevokeAgentPrincipalArgsForCall(i int) int {
+	fake.revokeAgentPrincipalMutex.RLock()
+	defer fake.revokeAgentPrincipalMutex.RUnlock()
+	argsForCall := fake.revokeAgentPrincipalArgsForCall[i]
+	return argsForCall.arg1
+}
+
+func (fake *FakeClient) RevokeAgentPrincipalReturns(result1 error) {
+	fake.revokeAgentPrincipalMutex.Lock()
+	defer fake.revokeAgentPrincipalMutex.Unlock()
+	fake.RevokeAgentPrincipalStub = nil
+	fake.revokeAgentPrincipalReturns = struct {
+		result1 error
+	}{result1}
+}
+
+func (fake *FakeClient) RevokeAgentPrincipalReturnsOnCall(i int, result1 error) {
+	fake.revokeAgentPrincipalMutex.Lock()
+	defer fake.revokeAgentPrincipalMutex.Unlock()
+	fake.RevokeAgentPrincipalStub = nil
+	if fake.revokeAgentPrincipalReturnsOnCall == nil {
+		fake.revokeAgentPrincipalReturnsOnCall = make(map[int]struct {
+			result1 error
+		})
+	}
+	fake.revokeAgentPrincipalReturnsOnCall[i] = struct {
+		result1 error
+	}{result1}
 }
 
 func (fake *FakeClient) SaveWorker(arg1 atc.Worker, arg2 *time.Duration) (*atc.Worker, error) {
