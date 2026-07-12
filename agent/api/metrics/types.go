@@ -18,16 +18,26 @@ type Store interface {
 	// (BuildID, PlanID) key. Ingestion is idempotent across step retries
 	// and web-restart resumes.
 	Upsert(rm *schema.RunMetrics) error
-	// UpsertReturningInserted is Upsert with a first-insert discriminator:
+	// UpsertReturningInserted is Upsert with a ledger-dedup discriminator:
 	// inserted is true only when the row was newly INSERTed (the
 	// ON CONFLICT (build_id, plan_id) clause did NOT fire), and false on a
-	// resume/retry that updated an existing row. The append-only
-	// agent_cost_ledger has no dedup key of its own (§1.4), so callers that
-	// append a ledger row per ingestion (Task 13) gate that append on this
-	// flag to charge each (build_id, plan_id) exactly once across web-restart
-	// resumes — reusing the metrics table's unique key as the single dedup
-	// authority. Upsert is Upsert(rm) = { _, err := UpsertReturningInserted(rm); return err }.
-	UpsertReturningInserted(rm *schema.RunMetrics) (inserted bool, err error)
+	// resume/retry that updated an existing row. On an update, prev carries
+	// the replaced row's ledger-relevant counters (CostUSD, Usage, Turns),
+	// read atomically with the upsert; it is nil on a fresh insert or when
+	// the write failed. The append-only agent_cost_ledger has no dedup key
+	// of its own (§1.4), so callers that append a ledger row per ingestion
+	// (Task 13) charge rm's full cost on a fresh insert and only the DELTA
+	// (rm.CostUSD - prev.CostUSD) on an update — reusing the metrics table's
+	// unique key as the single dedup authority. A pure first-insert gate is
+	// NOT enough: a severed exec's partial ingestion inserts a zero-cost row
+	// (the runner writes cost.record only after claude exits), and the
+	// resume's full ingestion is an update — its delta is the step's entire
+	// real spend. inserted=false with prev==nil (a lost concurrent-insert
+	// race, or a failed write) is indeterminate: callers skip the append,
+	// preserving "every dollar enters the ledger exactly once" over "at
+	// least once". Upsert is
+	// Upsert(rm) = { _, _, err := UpsertReturningInserted(rm); return err }.
+	UpsertReturningInserted(rm *schema.RunMetrics) (inserted bool, prev *schema.RunMetrics, err error)
 	// InsertIfAbsent writes the row only when no (BuildID, PlanID) row exists
 	// yet (ON CONFLICT (build_id, plan_id) DO NOTHING) and reports whether it
 	// inserted. This is the DEGRADED-ingestion write (finding F24, 2026-07-09):

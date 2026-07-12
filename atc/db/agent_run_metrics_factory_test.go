@@ -32,15 +32,25 @@ var _ = Describe("AgentRunMetricsFactory", func() {
 			EventsArtifact: "vol-1",
 			EventCounts:    map[string]int{"tool.call": 4},
 		}
-		inserted, err := factory.UpsertReturningInserted(rm)
+		inserted, prev, err := factory.UpsertReturningInserted(rm)
 		Expect(err).ToNot(HaveOccurred())
 		Expect(inserted).To(BeTrue()) // first insert on (build_id, plan_id) 42/5f2a
+		Expect(prev).To(BeNil())      // nothing replaced
 
 		rm.Summary = "second"
 		rm.CostUSD = 0.43
-		inserted, err = factory.UpsertReturningInserted(rm)
+		inserted, prev, err = factory.UpsertReturningInserted(rm)
 		Expect(err).ToNot(HaveOccurred())
 		Expect(inserted).To(BeFalse()) // ON CONFLICT fired — resume/retry, not a new row
+		// the replaced row's ledger counters come back so the caller can
+		// append the spend delta (severed-exec finding, 2026-07-11)
+		Expect(prev).ToNot(BeNil())
+		Expect(prev.CostUSD).To(BeNumerically("~", 0.42, 1e-9))
+		Expect(prev.Usage.InputTokens).To(Equal(int64(100)))
+		Expect(prev.Usage.OutputTokens).To(Equal(int64(50)))
+		Expect(prev.Usage.CacheReadInputTokens).To(Equal(int64(3)))
+		Expect(prev.Usage.CacheCreationInputTokens).To(Equal(int64(2)))
+		Expect(prev.Turns).To(Equal(9))
 
 		rows, err := factory.ListByTicket(7)
 		Expect(err).ToNot(HaveOccurred())
@@ -72,7 +82,7 @@ var _ = Describe("AgentRunMetricsFactory", func() {
 			BuildID: 44, PlanID: "bb", StepName: "implement",
 			Status: "ok", Summary: "real ingestion", CostUSD: 0.42, Turns: 9,
 		}
-		inserted, err := factory.UpsertReturningInserted(good)
+		inserted, _, err := factory.UpsertReturningInserted(good)
 		Expect(err).ToNot(HaveOccurred())
 		Expect(inserted).To(BeTrue())
 

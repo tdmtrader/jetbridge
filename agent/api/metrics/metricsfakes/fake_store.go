@@ -59,18 +59,20 @@ type FakeStore struct {
 	upsertReturnsOnCall map[int]struct {
 		result1 error
 	}
-	UpsertReturningInsertedStub        func(*schema.RunMetrics) (bool, error)
+	UpsertReturningInsertedStub        func(*schema.RunMetrics) (bool, *schema.RunMetrics, error)
 	upsertReturningInsertedMutex       sync.RWMutex
 	upsertReturningInsertedArgsForCall []struct {
 		arg1 *schema.RunMetrics
 	}
 	upsertReturningInsertedReturns struct {
 		result1 bool
-		result2 error
+		result2 *schema.RunMetrics
+		result3 error
 	}
 	upsertReturningInsertedReturnsOnCall map[int]struct {
 		result1 bool
-		result2 error
+		result2 *schema.RunMetrics
+		result3 error
 	}
 	invocations      map[string][][]interface{}
 	invocationsMutex sync.RWMutex
@@ -329,7 +331,7 @@ func (fake *FakeStore) UpsertReturnsOnCall(i int, result1 error) {
 	}{result1}
 }
 
-func (fake *FakeStore) UpsertReturningInserted(arg1 *schema.RunMetrics) (bool, error) {
+func (fake *FakeStore) UpsertReturningInserted(arg1 *schema.RunMetrics) (bool, *schema.RunMetrics, error) {
 	fake.upsertReturningInsertedMutex.Lock()
 	ret, specificReturn := fake.upsertReturningInsertedReturnsOnCall[len(fake.upsertReturningInsertedArgsForCall)]
 	fake.upsertReturningInsertedArgsForCall = append(fake.upsertReturningInsertedArgsForCall, struct {
@@ -343,9 +345,9 @@ func (fake *FakeStore) UpsertReturningInserted(arg1 *schema.RunMetrics) (bool, e
 		return stub(arg1)
 	}
 	if specificReturn {
-		return ret.result1, ret.result2
+		return ret.result1, ret.result2, ret.result3
 	}
-	return fakeReturns.result1, fakeReturns.result2
+	return fakeReturns.result1, fakeReturns.result2, fakeReturns.result3
 }
 
 func (fake *FakeStore) UpsertReturningInsertedCallCount() int {
@@ -354,7 +356,7 @@ func (fake *FakeStore) UpsertReturningInsertedCallCount() int {
 	return len(fake.upsertReturningInsertedArgsForCall)
 }
 
-func (fake *FakeStore) UpsertReturningInsertedCalls(stub func(*schema.RunMetrics) (bool, error)) {
+func (fake *FakeStore) UpsertReturningInsertedCalls(stub func(*schema.RunMetrics) (bool, *schema.RunMetrics, error)) {
 	fake.upsertReturningInsertedMutex.Lock()
 	defer fake.upsertReturningInsertedMutex.Unlock()
 	fake.UpsertReturningInsertedStub = stub
@@ -367,30 +369,33 @@ func (fake *FakeStore) UpsertReturningInsertedArgsForCall(i int) *schema.RunMetr
 	return argsForCall.arg1
 }
 
-func (fake *FakeStore) UpsertReturningInsertedReturns(result1 bool, result2 error) {
+func (fake *FakeStore) UpsertReturningInsertedReturns(result1 bool, result2 *schema.RunMetrics, result3 error) {
 	fake.upsertReturningInsertedMutex.Lock()
 	defer fake.upsertReturningInsertedMutex.Unlock()
 	fake.UpsertReturningInsertedStub = nil
 	fake.upsertReturningInsertedReturns = struct {
 		result1 bool
-		result2 error
-	}{result1, result2}
+		result2 *schema.RunMetrics
+		result3 error
+	}{result1, result2, result3}
 }
 
-func (fake *FakeStore) UpsertReturningInsertedReturnsOnCall(i int, result1 bool, result2 error) {
+func (fake *FakeStore) UpsertReturningInsertedReturnsOnCall(i int, result1 bool, result2 *schema.RunMetrics, result3 error) {
 	fake.upsertReturningInsertedMutex.Lock()
 	defer fake.upsertReturningInsertedMutex.Unlock()
 	fake.UpsertReturningInsertedStub = nil
 	if fake.upsertReturningInsertedReturnsOnCall == nil {
 		fake.upsertReturningInsertedReturnsOnCall = make(map[int]struct {
 			result1 bool
-			result2 error
+			result2 *schema.RunMetrics
+			result3 error
 		})
 	}
 	fake.upsertReturningInsertedReturnsOnCall[i] = struct {
 		result1 bool
-		result2 error
-	}{result1, result2}
+		result2 *schema.RunMetrics
+		result3 error
+	}{result1, result2, result3}
 }
 
 func (fake *FakeStore) Invocations() map[string][][]interface{} {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 
+	sq "github.com/Masterminds/squirrel"
 	"github.com/concourse/concourse/agent/api/metrics"
 	// aliased: atc/db already declares a package-level `schema` const (build.go).
 	agentschema "github.com/concourse/concourse/agent/schema"
@@ -29,24 +30,32 @@ type agentRunMetricsFactory struct {
 }
 
 func (f *agentRunMetricsFactory) Upsert(rm *agentschema.RunMetrics) error {
-	_, err := f.UpsertReturningInserted(rm)
+	_, _, err := f.UpsertReturningInserted(rm)
 	return err
 }
 
-// UpsertReturningInserted performs the ON CONFLICT (build_id, plan_id) upsert and
-// reports whether the row was newly inserted. The discriminator is Postgres's
+// UpsertReturningInserted performs the ON CONFLICT (build_id, plan_id) upsert,
+// reports whether the row was newly inserted, and — when a row already existed
+// — returns that previous row's ledger-relevant counters (cost/usage/turns) so
+// the caller can append the spend DELTA to the append-only agent_cost_ledger
+// (§1.4 has no ledger dedup key; a pure first-insert gate loses the step's
+// entire spend when the first ingestion was a severed exec's zero-cost partial
+// and the resume's full ingestion arrives as an update). The previous row is
+// read with FOR UPDATE in the same transaction as the upsert, serializing
+// concurrent ingestions of the same key: the loser blocks until the winner
+// commits and then observes the winner's committed counters, so the same
+// dollar can never be charged twice. The inserted discriminator is Postgres's
 // system column `xmax`: on a fresh INSERT the tuple has no prior version so
 // `xmax = 0`; when the ON CONFLICT DO UPDATE fires, the update replaces an
-// existing tuple and `xmax <> 0`. `RETURNING (xmax = 0) AS inserted` therefore
-// distinguishes a first insert from a resume/retry update in the same statement,
-// with no extra round-trip. Callers gate the append-only ledger write on this
-// flag so a web-restart resume never double-charges (§1.4 has no ledger dedup key).
-func (f *agentRunMetricsFactory) UpsertReturningInserted(rm *agentschema.RunMetrics) (bool, error) {
+// existing tuple and `xmax <> 0`. (When the pre-read sees no row but the
+// insert still loses a concurrent race, inserted=false with prev=nil is
+// returned — indeterminate, and callers skip their ledger append.)
+func (f *agentRunMetricsFactory) UpsertReturningInserted(rm *agentschema.RunMetrics) (bool, *agentschema.RunMetrics, error) {
 	var eventCounts, results any
 	if rm.EventCounts != nil {
 		b, err := json.Marshal(rm.EventCounts)
 		if err != nil {
-			return false, err
+			return false, nil, err
 		}
 		eventCounts = b
 	}
@@ -54,8 +63,32 @@ func (f *agentRunMetricsFactory) UpsertReturningInserted(rm *agentschema.RunMetr
 		results = []byte(rm.Results)
 	}
 
+	tx, err := f.conn.Begin()
+	if err != nil {
+		return false, nil, err
+	}
+	defer Rollback(tx)
+
+	var prev *agentschema.RunMetrics
+	var p agentschema.RunMetrics
+	err = psql.Select("cost_usd", "input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens", "turns").
+		From("agent_run_metrics").
+		Where(sq.Eq{"build_id": rm.BuildID, "plan_id": rm.PlanID}).
+		Suffix("FOR UPDATE").
+		RunWith(tx).
+		QueryRow().
+		Scan(&p.CostUSD, &p.Usage.InputTokens, &p.Usage.OutputTokens, &p.Usage.CacheReadInputTokens, &p.Usage.CacheCreationInputTokens, &p.Turns)
+	switch {
+	case err == nil:
+		prev = &p
+	case errors.Is(err, sql.ErrNoRows):
+		// no prior row — fresh insert below
+	default:
+		return false, nil, err
+	}
+
 	var inserted bool
-	err := psql.Insert("agent_run_metrics").
+	err = psql.Insert("agent_run_metrics").
 		Columns(
 			"ticket_id", "pipeline_run_id", "build_id", "plan_id", "step_name",
 			"workflow_name", "workflow_version", "workflow_hash",
@@ -93,10 +126,17 @@ func (f *agentRunMetricsFactory) UpsertReturningInserted(rm *agentschema.RunMetr
 			events_artifact = EXCLUDED.events_artifact,
 			event_counts = EXCLUDED.event_counts
 		RETURNING (xmax = 0) AS inserted`).
-		RunWith(f.conn).
+		RunWith(tx).
 		QueryRow().
 		Scan(&inserted)
-	return inserted, err
+	if err != nil {
+		return false, nil, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return false, nil, err
+	}
+	return inserted, prev, nil
 }
 
 // InsertIfAbsent is the degraded-ingestion write (finding F24): identical

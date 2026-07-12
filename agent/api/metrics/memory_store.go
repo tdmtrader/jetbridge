@@ -20,21 +20,24 @@ func NewMemoryStore() *MemoryStore {
 }
 
 func (s *MemoryStore) Upsert(rm *schema.RunMetrics) error {
-	_, err := s.UpsertReturningInserted(rm)
+	_, _, err := s.UpsertReturningInserted(rm)
 	return err
 }
 
-func (s *MemoryStore) UpsertReturningInserted(rm *schema.RunMetrics) (bool, error) {
+func (s *MemoryStore) UpsertReturningInserted(rm *schema.RunMetrics) (bool, *schema.RunMetrics, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	key := [2]any{rm.BuildID, rm.PlanID}
-	_, existed := s.rows[key]
-	if !existed {
+	var prev *schema.RunMetrics
+	if old, existed := s.rows[key]; existed {
+		cp := old
+		prev = &cp
+	} else {
 		s.seq++
 		s.ord[key] = s.seq
 	}
 	s.rows[key] = *rm
-	return !existed, nil
+	return prev == nil, prev, nil
 }
 
 func (s *MemoryStore) InsertIfAbsent(rm *schema.RunMetrics) (bool, error) {

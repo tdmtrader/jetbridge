@@ -11,6 +11,7 @@ import (
 	"github.com/concourse/concourse/agent/api/metrics/metricsfakes"
 	"github.com/concourse/concourse/agent/budget"
 	"github.com/concourse/concourse/agent/budget/budgetfakes"
+	"github.com/concourse/concourse/agent/schema"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/exec"
@@ -590,7 +591,7 @@ var _ = Describe("AgentStep", func() {
 			}
 
 			// first ingestion of a (build_id, plan_id) is always a fresh insert
-			fakeMetricsStore.UpsertReturningInsertedReturns(true, nil)
+			fakeMetricsStore.UpsertReturningInsertedReturns(true, nil, nil)
 		})
 
 		It("upserts a RunMetrics row before Run returns", func() {
@@ -658,7 +659,7 @@ var _ = Describe("AgentStep", func() {
 		})
 
 		It("never fails the step when the metrics upsert errors", func() {
-			fakeMetricsStore.UpsertReturningInsertedReturns(false, errors.New("db down"))
+			fakeMetricsStore.UpsertReturningInsertedReturns(false, nil, errors.New("db down"))
 			ok, err := step.Run(ctx, state)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(ok).To(BeTrue())
@@ -720,7 +721,7 @@ var _ = Describe("AgentStep", func() {
 		// nor clobbers the real metrics row ---
 		It("appends the ledger once and never clobbers across two Run invocations (resume)", func() {
 			// First Run: flight data reads fine, fresh insert → ledger append fires.
-			fakeMetricsStore.UpsertReturningInsertedReturns(true, nil)
+			fakeMetricsStore.UpsertReturningInsertedReturns(true, nil, nil)
 			_, err := step.Run(ctx, state)
 			Expect(err).ToNot(HaveOccurred())
 
@@ -739,6 +740,102 @@ var _ = Describe("AgentStep", func() {
 			Expect(fakeMetricsStore.UpsertReturningInsertedCallCount()).To(Equal(1)) // full ingest only on web-1
 			Expect(fakeMetricsStore.InsertIfAbsentCallCount()).To(Equal(1))          // degraded path on web-2
 			Expect(fakeChecker.RecordCallCount()).To(Equal(1))                       // ledger charged ONCE
+		})
+
+		// --- review finding (severed exec, 2026-07-11): a transient exec sever
+		// mid-run makes the flight volume readable (F23 records output locations)
+		// before the runner wrote cost.record/step.end — it only writes them
+		// after claude exits — so the first ingestion INSERTS a zero-cost row.
+		// The step then returns a transient error, RetryErrorStep wraps
+		// Retriable, the tracker re-runs the step, the supervisor resumes the
+		// still-running claude, and the full re-ingestion UPDATES the row
+		// (inserted=false). The pre-fix first-insert-only ledger gate skipped
+		// that update, so the step's ENTIRE spend never reached
+		// agent_cost_ledger and budget admission over-allowed. The delta gate
+		// must charge cost - prev.cost = the full real cost. ---
+		It("charges the full cost on resume after a severed-exec zero-cost partial ingestion", func() {
+			// Run 1: partial flight — events truncated before cost.record and
+			// step.end, results.json not written yet. Zero cost ⇒ row inserted,
+			// nothing to charge.
+			partialEvents := strings.Join(eventLines[:2], "\n") + "\n"
+			fakeStreamer.StreamFileStub = func(ctx context.Context, _ runtime.Artifact, path string) (io.ReadCloser, error) {
+				if err := ctx.Err(); err != nil {
+					return nil, err
+				}
+				if path == "events.ndjson" {
+					return io.NopCloser(strings.NewReader(partialEvents)), nil
+				}
+				return nil, errors.New("results.json not written yet")
+			}
+			fakeMetricsStore.UpsertReturningInsertedReturns(true, nil, nil) // fresh insert
+			_, err := step.Run(ctx, state)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(fakeMetricsStore.UpsertReturningInsertedCallCount()).To(Equal(1))
+			Expect(fakeMetricsStore.UpsertReturningInsertedArgsForCall(0).CostUSD).To(BeZero())
+			Expect(fakeChecker.RecordCallCount()).To(BeZero()) // nothing measured yet
+
+			// Run 2: the tracker re-runs the step, the resumed claude finishes,
+			// and full ingestion reads the real cost. The upsert UPDATES the
+			// zero-cost partial row and returns its counters as prev.
+			fakeStreamer.StreamFileStub = func(ctx context.Context, _ runtime.Artifact, path string) (io.ReadCloser, error) {
+				if err := ctx.Err(); err != nil {
+					return nil, err
+				}
+				switch path {
+				case "results.json":
+					return io.NopCloser(strings.NewReader(resultsJSON)), nil
+				case "events.ndjson":
+					return io.NopCloser(strings.NewReader(strings.Join(eventLines, "\n") + "\n")), nil
+				default:
+					return nil, fmt.Errorf("no fixture for %q", path)
+				}
+			}
+			fakeMetricsStore.UpsertReturningInsertedReturns(false, &schema.RunMetrics{}, nil) // prev = the zero-cost partial
+			_, err = step.Run(ctx, state)
+			Expect(err).ToNot(HaveOccurred())
+
+			Expect(fakeChecker.RecordCallCount()).To(Equal(1)) // the spend reaches the ledger exactly once
+			entry := fakeChecker.RecordArgsForCall(0)
+			Expect(entry.CostUSD).To(BeNumerically("~", 0.42, 1e-9))
+			Expect(entry.InputTokens).To(Equal(int64(100)))
+			Expect(entry.OutputTokens).To(Equal(int64(50)))
+			Expect(entry.Turns).To(Equal(9))
+		})
+
+		It("charges only the delta when a prior partial ingestion already appended spend", func() {
+			// e.g. a sever AFTER the runner flushed cost.record: the partial
+			// ingestion inserted (and appended) 0.30; the resume's full
+			// ingestion reads 0.42 and must append only the difference.
+			fakeMetricsStore.UpsertReturningInsertedReturns(false, &schema.RunMetrics{
+				CostUSD: 0.30,
+				Usage:   schema.Usage{InputTokens: 80, OutputTokens: 40},
+				Turns:   7,
+			}, nil)
+			step.Run(ctx, state)
+			Expect(fakeChecker.RecordCallCount()).To(Equal(1))
+			entry := fakeChecker.RecordArgsForCall(0)
+			Expect(entry.CostUSD).To(BeNumerically("~", 0.12, 1e-9))
+			Expect(entry.InputTokens).To(Equal(int64(20)))
+			Expect(entry.OutputTokens).To(Equal(int64(10)))
+			Expect(entry.Turns).To(Equal(2))
+		})
+
+		It("skips the ledger when a full re-ingestion reads the same cost (web-restart resume)", func() {
+			fakeMetricsStore.UpsertReturningInsertedReturns(false, &schema.RunMetrics{
+				CostUSD: 0.42,
+				Usage:   schema.Usage{InputTokens: 100, OutputTokens: 50},
+				Turns:   9,
+			}, nil)
+			step.Run(ctx, state)
+			Expect(fakeChecker.RecordCallCount()).To(BeZero()) // delta is zero — already charged
+		})
+
+		It("skips the ledger when an update returns no previous counters (lost ingestion race)", func() {
+			// inserted=false with prev=nil is indeterminate: the concurrent
+			// winner charged the ledger, so skipping preserves exactly-once.
+			fakeMetricsStore.UpsertReturningInsertedReturns(false, nil, nil)
+			step.Run(ctx, state)
+			Expect(fakeChecker.RecordCallCount()).To(BeZero())
 		})
 
 		// --- finding F4: timed-out step still records pre-timeout cost + ledger ---

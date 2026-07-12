@@ -645,14 +645,24 @@ func (step *AgentStep) ingestFlightRecorder(
 	}
 
 	// Upsert reports whether THIS ingestion inserted the row (inserted=true) or
-	// updated an existing one (inserted=false, i.e. a web-restart resume: the
-	// whole Step.Run re-executes, re-attaches, and re-ingests). The metrics row
-	// is idempotent under ON CONFLICT (build_id, plan_id), but agent_cost_ledger
-	// is append-only with no dedup key (§1.4) — so the ledger append below is
-	// gated on `inserted` to charge each step exactly once (finding F3). On a
-	// metrics-store error inserted is false, so a failed upsert also skips the
-	// ledger append (we cannot prove first-insert), preserving "every dollar
-	// enters the ledger exactly once" over "at least once".
+	// updated an existing one (inserted=false, i.e. a resume/retry: the whole
+	// Step.Run re-executes, re-attaches, and re-ingests), and on an update also
+	// returns the previous row's ledger-relevant counters. The metrics row is
+	// idempotent under ON CONFLICT (build_id, plan_id), but agent_cost_ledger
+	// is append-only with no dedup key (§1.4) — so the ledger append below
+	// charges the DELTA against what this (build_id, plan_id) already recorded
+	// (finding F3, amended for the severed-exec case): a fresh insert charges
+	// rm's full cost; an update charges cost - prev.cost. Because every append
+	// is itself gated on a positive delta, prev.cost is exactly what earlier
+	// ingestions already appended — in particular a transient exec sever makes
+	// the flight readable (F23) before the runner wrote cost.record (it only
+	// does so after claude exits), so the partial ingestion inserts a ZERO-cost
+	// row and appends nothing, and the resume's full ingestion (an update, so
+	// a first-insert-only gate would skip it and lose the step's entire spend)
+	// still charges the whole real cost. On a metrics-store error, or an
+	// insert that lost a concurrent-ingestion race (inserted=false, prev=nil),
+	// the delta is indeterminate and the append is skipped, preserving "every
+	// dollar enters the ledger exactly once" over "at least once".
 	//
 	// DEGRADED ingestion (finding F24): when no flight data was actually read —
 	// restart-resume with an ephemeral locator, reaped pod, missing mount — rm
@@ -662,9 +672,10 @@ func (step *AgentStep) ingestFlightRecorder(
 	// instead: it lands when no row exists (genuinely crashed agent) and is a
 	// no-op when one does.
 	var inserted bool
+	var prev *schema.RunMetrics
 	var err error
 	if flightRead {
-		inserted, err = step.metricsStore.UpsertReturningInserted(&rm)
+		inserted, prev, err = step.metricsStore.UpsertReturningInserted(&rm)
 	} else {
 		inserted, err = step.metricsStore.InsertIfAbsent(&rm)
 	}
@@ -672,7 +683,20 @@ func (step *AgentStep) ingestFlightRecorder(
 		logger.Error("failed-to-ingest-run-metrics", err)
 	}
 
-	if inserted && step.budgetChecker != nil && rm.CostUSD > 0 {
+	// prevBase is what earlier ingestions of this (build_id, plan_id) already
+	// contributed to the ledger: zero on a fresh insert, the replaced row's
+	// counters on an update. inserted=false with prev==nil leaves ledgerCost
+	// at 0 — indeterminate, skip (see the comment above).
+	var ledgerCost float64
+	var prevBase schema.RunMetrics
+	if inserted {
+		ledgerCost = rm.CostUSD
+	} else if prev != nil {
+		ledgerCost = rm.CostUSD - prev.CostUSD
+		prevBase = *prev
+	}
+
+	if step.budgetChecker != nil && ledgerCost > 0 {
 		entry := budget.LedgerEntry{
 			TicketID:            rm.TicketID,
 			PipelineRunID:       rm.PipelineRunID,
@@ -681,12 +705,12 @@ func (step *AgentStep) ingestFlightRecorder(
 			Source:              budget.SourceAgentStep,
 			Provider:            "anthropic",
 			Model:               rm.Model,
-			InputTokens:         rm.Usage.InputTokens,
-			OutputTokens:        rm.Usage.OutputTokens,
-			CacheReadTokens:     rm.Usage.CacheReadInputTokens,
-			CacheCreationTokens: rm.Usage.CacheCreationInputTokens,
-			Turns:               rm.Turns,
-			CostUSD:             rm.CostUSD,
+			InputTokens:         max(rm.Usage.InputTokens-prevBase.Usage.InputTokens, 0),
+			OutputTokens:        max(rm.Usage.OutputTokens-prevBase.Usage.OutputTokens, 0),
+			CacheReadTokens:     max(rm.Usage.CacheReadInputTokens-prevBase.Usage.CacheReadInputTokens, 0),
+			CacheCreationTokens: max(rm.Usage.CacheCreationInputTokens-prevBase.Usage.CacheCreationInputTokens, 0),
+			Turns:               max(rm.Turns-prevBase.Turns, 0),
+			CostUSD:             ledgerCost,
 		}
 		// Workflow attribution rides metadata->>'workflow' = "<name>@<version>"
 		// — agent_cost_ledger has no workflow column and group_by=workflow
