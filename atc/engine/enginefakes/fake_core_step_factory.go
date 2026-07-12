@@ -11,6 +11,20 @@ import (
 )
 
 type FakeCoreStepFactory struct {
+	AgentStepStub        func(atc.Plan, exec.StepMetadata, db.ContainerMetadata, engine.DelegateFactory) exec.Step
+	agentStepMutex       sync.RWMutex
+	agentStepArgsForCall []struct {
+		arg1 atc.Plan
+		arg2 exec.StepMetadata
+		arg3 db.ContainerMetadata
+		arg4 engine.DelegateFactory
+	}
+	agentStepReturns struct {
+		result1 exec.Step
+	}
+	agentStepReturnsOnCall map[int]struct {
+		result1 exec.Step
+	}
 	ArtifactInputStepStub        func(atc.Plan, db.Build) exec.Step
 	artifactInputStepMutex       sync.RWMutex
 	artifactInputStepArgsForCall []struct {
@@ -133,6 +147,70 @@ type FakeCoreStepFactory struct {
 	}
 	invocations      map[string][][]interface{}
 	invocationsMutex sync.RWMutex
+}
+
+func (fake *FakeCoreStepFactory) AgentStep(arg1 atc.Plan, arg2 exec.StepMetadata, arg3 db.ContainerMetadata, arg4 engine.DelegateFactory) exec.Step {
+	fake.agentStepMutex.Lock()
+	ret, specificReturn := fake.agentStepReturnsOnCall[len(fake.agentStepArgsForCall)]
+	fake.agentStepArgsForCall = append(fake.agentStepArgsForCall, struct {
+		arg1 atc.Plan
+		arg2 exec.StepMetadata
+		arg3 db.ContainerMetadata
+		arg4 engine.DelegateFactory
+	}{arg1, arg2, arg3, arg4})
+	stub := fake.AgentStepStub
+	fakeReturns := fake.agentStepReturns
+	fake.recordInvocation("AgentStep", []interface{}{arg1, arg2, arg3, arg4})
+	fake.agentStepMutex.Unlock()
+	if stub != nil {
+		return stub(arg1, arg2, arg3, arg4)
+	}
+	if specificReturn {
+		return ret.result1
+	}
+	return fakeReturns.result1
+}
+
+func (fake *FakeCoreStepFactory) AgentStepCallCount() int {
+	fake.agentStepMutex.RLock()
+	defer fake.agentStepMutex.RUnlock()
+	return len(fake.agentStepArgsForCall)
+}
+
+func (fake *FakeCoreStepFactory) AgentStepCalls(stub func(atc.Plan, exec.StepMetadata, db.ContainerMetadata, engine.DelegateFactory) exec.Step) {
+	fake.agentStepMutex.Lock()
+	defer fake.agentStepMutex.Unlock()
+	fake.AgentStepStub = stub
+}
+
+func (fake *FakeCoreStepFactory) AgentStepArgsForCall(i int) (atc.Plan, exec.StepMetadata, db.ContainerMetadata, engine.DelegateFactory) {
+	fake.agentStepMutex.RLock()
+	defer fake.agentStepMutex.RUnlock()
+	argsForCall := fake.agentStepArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2, argsForCall.arg3, argsForCall.arg4
+}
+
+func (fake *FakeCoreStepFactory) AgentStepReturns(result1 exec.Step) {
+	fake.agentStepMutex.Lock()
+	defer fake.agentStepMutex.Unlock()
+	fake.AgentStepStub = nil
+	fake.agentStepReturns = struct {
+		result1 exec.Step
+	}{result1}
+}
+
+func (fake *FakeCoreStepFactory) AgentStepReturnsOnCall(i int, result1 exec.Step) {
+	fake.agentStepMutex.Lock()
+	defer fake.agentStepMutex.Unlock()
+	fake.AgentStepStub = nil
+	if fake.agentStepReturnsOnCall == nil {
+		fake.agentStepReturnsOnCall = make(map[int]struct {
+			result1 exec.Step
+		})
+	}
+	fake.agentStepReturnsOnCall[i] = struct {
+		result1 exec.Step
+	}{result1}
 }
 
 func (fake *FakeCoreStepFactory) ArtifactInputStep(arg1 atc.Plan, arg2 db.Build) exec.Step {

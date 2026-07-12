@@ -569,6 +569,33 @@ var _ = Describe("Builder", func() {
 						})
 					})
 
+					Context("that contains an agent step", func() {
+						BeforeEach(func() {
+							expectedPlan = planFactory.NewPlan(atc.AgentPlan{
+								Name:   "write-spec",
+								Prompt: "p",
+							})
+						})
+
+						It("constructs agent step correctly", func() {
+							Expect(fakeCoreStepFactory.AgentStepCallCount()).To(Equal(1))
+							plan, stepMetadata, containerMetadata, _ := fakeCoreStepFactory.AgentStepArgsForCall(0)
+							Expect(plan).To(Equal(expectedPlan))
+							Expect(stepMetadata).To(Equal(expectedMetadataWithoutCreatedBy))
+							Expect(containerMetadata).To(Equal(db.ContainerMetadata{
+								Type:                 db.ContainerTypeAgent,
+								StepName:             "write-spec",
+								PipelineID:           2222,
+								PipelineName:         "some-pipeline",
+								PipelineInstanceVars: "{\"branch\":\"master\"}",
+								JobID:                3333,
+								JobName:              "some-job",
+								BuildID:              4444,
+								BuildName:            "42",
+							}))
+						})
+					})
+
 					Context("that contains a set_pipeline step", func() {
 						BeforeEach(func() {
 							expectedPlan = planFactory.NewPlan(atc.SetPipelinePlan{
