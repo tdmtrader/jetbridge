@@ -2,8 +2,10 @@ package exec
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -14,6 +16,7 @@ import (
 	"code.cloudfoundry.org/lager/v3/lagerctx"
 	"github.com/concourse/concourse/agent/api/metrics"
 	"github.com/concourse/concourse/agent/budget"
+	"github.com/concourse/concourse/agent/schema"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/creds"
 	"github.com/concourse/concourse/atc/db"
@@ -396,6 +399,7 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 
 	oteltrace.SpanFromContext(ctx).AddEvent("step.starting")
 	delegate.Starting(logger)
+	processStart := time.Now()
 	process, err := attachOrRun(
 		ctx,
 		container,
@@ -422,6 +426,14 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 
 	step.registerOutputs(logger, repository, chosenWorker, outputNames, volumeMounts)
 
+	// Synchronous server-side ingestion of the flight recorder — on EVERY
+	// path where the container ran, including DeadlineExceeded and transport
+	// errors, before exit handling returns. The build cannot complete (and
+	// artifact-fabric retention cannot reap the events) until this is done.
+	// ctx here is the timeout-scoped context; ingestFlightRecorder detaches
+	// from it internally (finding F4).
+	step.ingestFlightRecorder(ctx, logger, chosenWorker, volumeMounts, resolvedEnv, time.Since(processStart))
+
 	if runErr != nil {
 		if errors.Is(runErr, context.DeadlineExceeded) {
 			oteltrace.SpanFromContext(ctx).AddEvent("step.errored")
@@ -435,6 +447,216 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 	oteltrace.SpanFromContext(ctx).AddEvent("step.finished")
 	delegate.Finished(logger, ExitStatus(result.ExitStatus))
 	return result.ExitStatus == 0, nil
+}
+
+// ingestFlightRecorder reads flight/results.json and flight/events.ndjson
+// from the registered flight output and upserts an agent_run_metrics row.
+// It runs synchronously before Run returns — the build cannot complete (and
+// artifact-fabric retention cannot reap the events) until ingestion is done.
+// It is tolerant by design: any missing/partial/corrupt input degrades to a
+// status=error row; its own failures are logged, never returned.
+func (step *AgentStep) ingestFlightRecorder(
+	ctx context.Context,
+	logger lager.Logger,
+	wkr runtime.Worker,
+	volumeMounts []runtime.VolumeMount,
+	resolvedEnv map[string]string,
+	wallTime time.Duration,
+) {
+	if step.metricsStore == nil {
+		return
+	}
+
+	// Detach from the step deadline. `ctx` is the timeout-scoped context from
+	// MaybeTimeout; on the DeadlineExceeded path it is already cancelled, and
+	// every StreamFile call threads ctx down to http.NewRequestWithContext,
+	// so both reads below would fail instantly and a timed-out step — the
+	// costliest, most measurement-critical case — would record a bare
+	// status=error row with zero cost/tokens/event_counts and no ledger entry
+	// (finding F4). WithoutCancel keeps the request-scoped values (tracing,
+	// lager) while dropping the deadline; the fresh 30s bound keeps ingestion
+	// (which blocks the build from completing) from hanging on a wedged fabric.
+	ingestCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancel()
+
+	rm := schema.RunMetrics{
+		BuildID:         step.metadata.BuildID,
+		PlanID:          string(step.planID),
+		StepName:        step.plan.Name,
+		WallTimeSeconds: int(wallTime.Seconds()),
+	}
+	if id, ok := envInt(resolvedEnv, "AGENT_TICKET_ID"); ok {
+		rm.TicketID = &id
+	}
+	if id, ok := envInt(resolvedEnv, "AGENT_PIPELINE_RUN_ID"); ok {
+		rm.PipelineRunID = &id
+	}
+	rm.WorkflowName = resolvedEnv["AGENT_WORKFLOW_NAME"]
+	if v, ok := envInt(resolvedEnv, "AGENT_WORKFLOW_VERSION"); ok {
+		rm.WorkflowVersion = &v
+	}
+	rm.WorkflowHash = resolvedEnv["AGENT_WORKFLOW_HASH"]
+
+	flightPath := ensureTrailingSlash(artifactPath(step.containerMetadata.WorkingDirectory, agentFlightArtifact, ""))
+	var flightArtifact runtime.Artifact
+	for _, mount := range volumeMounts {
+		if filepath.Clean(mount.MountPath) == filepath.Clean(flightPath) {
+			flightArtifact = wkr.ArtifactFromVolume(mount.Volume)
+			rm.EventsArtifact = mount.Volume.Handle()
+		}
+	}
+
+	rm.Status = schema.RunStatusError
+	rm.Summary = "flight recorder output missing"
+
+	// flightRead tracks whether ANY flight data was actually read. When it
+	// stays false this is a DEGRADED ingestion (missing mount, ephemeral
+	// locator on a restart-resume, reaped pod) and the write below must go
+	// through InsertIfAbsent so it can never clobber a real row (finding F24).
+	flightRead := false
+
+	if flightArtifact != nil {
+		// results.json
+		if rc, err := step.streamer.StreamFile(ingestCtx, flightArtifact, "results.json"); err == nil && rc != nil {
+			flightRead = true
+			raw, readErr := io.ReadAll(io.LimitReader(rc, 5<<20))
+			rc.Close()
+			var results schema.Results
+			if readErr == nil && json.Unmarshal(raw, &results) == nil && results.Validate() == nil {
+				status, abstained := schema.ThreeWayStatus(results.Status)
+				rm.Status = status
+				rm.Summary = results.Summary
+				rm.Results = json.RawMessage(raw)
+				if abstained {
+					logger.Info("agent-abstained")
+				}
+			} else {
+				rm.Summary = "results.json missing or malformed"
+			}
+		}
+
+		// events.ndjson: counts + cost rollup + step.end detection
+		if rc, err := step.streamer.StreamFile(ingestCtx, flightArtifact, "events.ndjson"); err == nil && rc != nil {
+			flightRead = true
+			counts := map[string]int{}
+			sawStepEnd := false
+			reader := schema.NewEventReader(rc)
+			for {
+				event, err := reader.Read()
+				if err != nil {
+					break // io.EOF or malformed tail — keep partial counts
+				}
+				counts[string(event.Type)]++
+				switch event.Type {
+				case schema.EventCostRecord:
+					var c schema.CostRecordData
+					if json.Unmarshal(event.Data, &c) == nil {
+						rm.Usage.InputTokens += c.InputTokens
+						rm.Usage.OutputTokens += c.OutputTokens
+						rm.Usage.CacheReadInputTokens += c.CacheReadTokens
+						rm.Usage.CacheCreationInputTokens += c.CacheCreationTokens
+						rm.Turns += c.Turns
+						rm.CostUSD += c.CostUSD
+						if c.Model != "" {
+							rm.Model = c.Model
+						}
+					}
+				case schema.EventStepEnd:
+					sawStepEnd = true
+					var e schema.StepEndData
+					if json.Unmarshal(event.Data, &e) == nil && e.WallTimeSeconds > 0 {
+						rm.WallTimeSeconds = e.WallTimeSeconds
+					}
+				}
+			}
+			rc.Close()
+			rm.EventCounts = counts
+			if !sawStepEnd {
+				// crashed agent: a stream missing step.end is defined as error
+				// (shared-contracts §5 ingestion rule)
+				rm.Status = schema.RunStatusError
+				if rm.Summary == "" || rm.Summary == "flight recorder output missing" {
+					rm.Summary = "event stream ended without step.end"
+				}
+			}
+		}
+	}
+
+	// Upsert reports whether THIS ingestion inserted the row (inserted=true) or
+	// updated an existing one (inserted=false, i.e. a web-restart resume: the
+	// whole Step.Run re-executes, re-attaches, and re-ingests). The metrics row
+	// is idempotent under ON CONFLICT (build_id, plan_id), but agent_cost_ledger
+	// is append-only with no dedup key (§1.4) — so the ledger append below is
+	// gated on `inserted` to charge each step exactly once (finding F3). On a
+	// metrics-store error inserted is false, so a failed upsert also skips the
+	// ledger append (we cannot prove first-insert), preserving "every dollar
+	// enters the ledger exactly once" over "at least once".
+	//
+	// DEGRADED ingestion (finding F24): when no flight data was actually read —
+	// restart-resume with an ephemeral locator, reaped pod, missing mount — rm
+	// is a zero-cost status=error shell, and pushing it through the all-columns
+	// DO UPDATE would destroy a real row written by an earlier ingestion
+	// (scorecards and delivery-outcomes read that row). Write it insert-only
+	// instead: it lands when no row exists (genuinely crashed agent) and is a
+	// no-op when one does.
+	var inserted bool
+	var err error
+	if flightRead {
+		inserted, err = step.metricsStore.UpsertReturningInserted(&rm)
+	} else {
+		inserted, err = step.metricsStore.InsertIfAbsent(&rm)
+	}
+	if err != nil {
+		logger.Error("failed-to-ingest-run-metrics", err)
+	}
+
+	if inserted && step.budgetChecker != nil && rm.CostUSD > 0 {
+		entry := budget.LedgerEntry{
+			TicketID:            rm.TicketID,
+			PipelineRunID:       rm.PipelineRunID,
+			BuildID:             rm.BuildID,
+			StepName:            rm.StepName,
+			Source:              budget.SourceAgentStep,
+			Provider:            "anthropic",
+			Model:               rm.Model,
+			InputTokens:         rm.Usage.InputTokens,
+			OutputTokens:        rm.Usage.OutputTokens,
+			CacheReadTokens:     rm.Usage.CacheReadInputTokens,
+			CacheCreationTokens: rm.Usage.CacheCreationInputTokens,
+			Turns:               rm.Turns,
+			CostUSD:             rm.CostUSD,
+		}
+		// Workflow attribution rides metadata->>'workflow' = "<name>@<version>"
+		// — agent_cost_ledger has no workflow column and group_by=workflow
+		// rollups read this key (shared-contracts §4.2 addendum: writers that
+		// know their workflow MUST set it).
+		if rm.WorkflowName != "" {
+			version := 0
+			if rm.WorkflowVersion != nil {
+				version = *rm.WorkflowVersion
+			}
+			if md, mdErr := json.Marshal(map[string]string{
+				"workflow": fmt.Sprintf("%s@%d", rm.WorkflowName, version),
+			}); mdErr == nil {
+				entry.Metadata = md
+			}
+		}
+		if err := step.budgetChecker.Record(entry); err != nil {
+			logger.Error("failed-to-record-cost-ledger", err) // fire-and-forget
+		}
+	}
+}
+
+func envInt(env map[string]string, key string) (int, bool) {
+	v, ok := env[key]
+	if !ok || v == "" {
+		return 0, false
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n <= 0 {
+		return 0, false
+	}
+	return n, true
 }
 
 // outputNames returns the plan's declared outputs plus the implicit "flight"

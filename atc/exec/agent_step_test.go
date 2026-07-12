@@ -2,8 +2,13 @@ package exec_test
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"io"
 	"strconv"
+	"strings"
 
+	"github.com/concourse/concourse/agent/api/metrics/metricsfakes"
 	"github.com/concourse/concourse/agent/budget"
 	"github.com/concourse/concourse/agent/budget/budgetfakes"
 	"github.com/concourse/concourse/atc"
@@ -34,6 +39,7 @@ var _ = Describe("AgentStep", func() {
 		fakeDelegate        *execfakes.FakeTaskDelegate
 		fakeDelegateFactory *execfakes.FakeTaskDelegateFactory
 		fakeChecker         *budgetfakes.FakeChecker
+		fakeMetricsStore    *metricsfakes.FakeStore
 
 		agentPlan  atc.AgentPlan
 		agentImage string
@@ -93,6 +99,7 @@ var _ = Describe("AgentStep", func() {
 		fakeDelegateFactory.TaskDelegateReturns(fakeDelegate)
 
 		fakeChecker = new(budgetfakes.FakeChecker)
+		fakeMetricsStore = new(metricsfakes.FakeStore)
 
 		state = exec.NewRunState(noopStepper, vars.StaticVariables{"branch": "main"})
 		repo = state.ArtifactRepository()
@@ -156,6 +163,7 @@ var _ = Describe("AgentStep", func() {
 			0,
 			agentImage,
 			exec.WithAgentBudgetChecker(fakeChecker),
+			exec.WithAgentMetricsStore(fakeMetricsStore),
 		)
 	})
 
@@ -421,6 +429,226 @@ var _ = Describe("AgentStep", func() {
 
 				_, _, spec, _ := fakePool.FindOrSelectWorkerArgsForCall(0)
 				Expect(spec.Sidecars[0].WorkingDir).To(Equal("/custom"))
+			})
+		})
+	})
+
+	Context("flight-recorder ingestion", func() {
+		var resultsJSON string
+		var eventLines []string
+
+		BeforeEach(func() {
+			resultsJSON = `{"schema_version":"1.0","status":"pass","confidence":1,"summary":"done","artifacts":[]}`
+			eventLines = []string{
+				`{"ts":"2026-07-10T12:00:00Z","event":"step.start","data":{"step_name":"write-spec","build_id":1,"plan_id":"p"}}`,
+				`{"ts":"2026-07-10T12:00:01Z","event":"tool.call","data":{"tool":"run_tests"}}`,
+				`{"ts":"2026-07-10T12:00:02Z","event":"cost.record","data":{"source":"agent_step","provider":"anthropic","model":"m1","input_tokens":100,"output_tokens":50,"cache_read_tokens":1,"cache_creation_tokens":2,"turns":9,"cost_usd":0.42}}`,
+				`{"ts":"2026-07-10T12:01:01Z","event":"step.end","data":{"step_name":"write-spec","status":"ok","summary":"done","wall_time_seconds":61,"cost_usd":0.42,"turns":9}}`,
+			}
+
+			// The stub honors ctx cancellation, matching the production
+			// Streamer (which threads ctx into the HTTP request): the
+			// detached ingestCtx keeps reads live even when the step's
+			// timeout-scoped ctx has expired (finding F4), and the pre-fix
+			// code (threading the expired ctx) fails these specs.
+			fakeStreamer.StreamFileStub = func(ctx context.Context, artifact runtime.Artifact, path string) (io.ReadCloser, error) {
+				if err := ctx.Err(); err != nil {
+					return nil, err
+				}
+				switch path {
+				case "results.json":
+					return io.NopCloser(strings.NewReader(resultsJSON)), nil
+				case "events.ndjson":
+					return io.NopCloser(strings.NewReader(strings.Join(eventLines, "\n") + "\n")), nil
+				default:
+					return nil, fmt.Errorf("no fixture for %q", path)
+				}
+			}
+
+			// first ingestion of a (build_id, plan_id) is always a fresh insert
+			fakeMetricsStore.UpsertReturningInsertedReturns(true, nil)
+		})
+
+		It("upserts a RunMetrics row before Run returns", func() {
+			ok, err := step.Run(ctx, state)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(ok).To(BeTrue())
+			Expect(fakeMetricsStore.UpsertReturningInsertedCallCount()).To(Equal(1))
+			rm := fakeMetricsStore.UpsertReturningInsertedArgsForCall(0)
+			Expect(rm.Status).To(Equal("ok"))
+			Expect(rm.BuildID).To(Equal(stepMetadata.BuildID))
+			Expect(rm.PlanID).To(Equal(string(planID)))
+			Expect(*rm.TicketID).To(Equal(7))
+			Expect(rm.Usage.InputTokens).To(Equal(int64(100)))
+			Expect(rm.Usage.OutputTokens).To(Equal(int64(50)))
+			Expect(rm.Usage.CacheReadInputTokens).To(Equal(int64(1)))
+			Expect(rm.Usage.CacheCreationInputTokens).To(Equal(int64(2)))
+			Expect(rm.Model).To(Equal("m1"))
+			Expect(rm.CostUSD).To(BeNumerically("~", 0.42, 1e-9))
+			Expect(rm.Turns).To(Equal(9))
+			Expect(rm.WallTimeSeconds).To(Equal(61))
+			Expect(rm.StepName).To(Equal("write-spec"))
+			Expect(rm.Summary).To(Equal("done"))
+			Expect(rm.EventCounts).To(HaveKeyWithValue("tool.call", 1))
+			Expect(rm.EventCounts).To(HaveKeyWithValue("step.end", 1))
+			Expect(rm.EventsArtifact).ToNot(BeEmpty())
+			Expect(rm.Results).To(MatchJSON(resultsJSON))
+		})
+
+		Context("when events.ndjson has no step.end", func() {
+			BeforeEach(func() {
+				// events fixture truncated after tool.call
+				eventLines = eventLines[:2]
+			})
+
+			It("records an error row", func() {
+				step.Run(ctx, state)
+				rm := fakeMetricsStore.UpsertReturningInsertedArgsForCall(0)
+				Expect(rm.Status).To(Equal("error"))
+				Expect(rm.EventCounts).To(HaveKeyWithValue("tool.call", 1)) // partial counts kept
+			})
+		})
+
+		Context("when the flight files are missing entirely", func() {
+			BeforeEach(func() {
+				// fakeStreamer returns an error for both files ⇒ no flight data
+				// was read ⇒ DEGRADED ingestion goes through InsertIfAbsent
+				// (F24), never the clobbering upsert. First run, no existing
+				// row ⇒ inserted.
+				fakeStreamer.StreamFileStub = func(context.Context, runtime.Artifact, string) (io.ReadCloser, error) {
+					return nil, errors.New("no locator for volume")
+				}
+				fakeMetricsStore.InsertIfAbsentReturns(true, nil)
+			})
+
+			It("records an error row via InsertIfAbsent", func() {
+				ok, err := step.Run(ctx, state)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(ok).To(BeTrue()) // exit status still drives step success
+				Expect(fakeMetricsStore.UpsertReturningInsertedCallCount()).To(BeZero())
+				Expect(fakeMetricsStore.InsertIfAbsentCallCount()).To(Equal(1))
+				rm := fakeMetricsStore.InsertIfAbsentArgsForCall(0)
+				Expect(rm.Status).To(Equal("error"))
+				Expect(rm.Summary).To(ContainSubstring("flight recorder"))
+			})
+		})
+
+		It("never fails the step when the metrics upsert errors", func() {
+			fakeMetricsStore.UpsertReturningInsertedReturns(false, errors.New("db down"))
+			ok, err := step.Run(ctx, state)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(ok).To(BeTrue())
+			// upsert failure ⇒ inserted=false ⇒ no ledger append (cannot prove first-insert)
+			Expect(fakeChecker.RecordCallCount()).To(Equal(0))
+		})
+
+		It("records a fire-and-forget ledger entry when cost was incurred", func() {
+			step.Run(ctx, state)
+			Expect(fakeChecker.RecordCallCount()).To(Equal(1))
+			entry := fakeChecker.RecordArgsForCall(0)
+			Expect(entry.Source).To(Equal(budget.SourceAgentStep))
+			Expect(entry.Provider).To(Equal("anthropic"))
+			Expect(*entry.TicketID).To(Equal(7))
+			Expect(entry.BuildID).To(Equal(stepMetadata.BuildID))
+			Expect(entry.StepName).To(Equal("write-spec"))
+			Expect(entry.Model).To(Equal("m1"))
+			Expect(entry.InputTokens).To(Equal(int64(100)))
+			Expect(entry.OutputTokens).To(Equal(int64(50)))
+			Expect(entry.Turns).To(Equal(9))
+			Expect(entry.CostUSD).To(BeNumerically("~", 0.42, 1e-9))
+		})
+
+		Context("when results.json reports abstain", func() {
+			BeforeEach(func() {
+				resultsJSON = `{"schema_version":"1.0","status":"abstain","confidence":0.2,"summary":"cannot judge","artifacts":[]}`
+			})
+
+			It("maps abstain results to failed", func() {
+				step.Run(ctx, state)
+				Expect(fakeMetricsStore.UpsertReturningInsertedArgsForCall(0).Status).To(Equal("failed"))
+			})
+		})
+
+		Context("when workflow identity env is present", func() {
+			BeforeEach(func() {
+				agentPlan.Env["AGENT_WORKFLOW_NAME"] = "spec-writer"
+				agentPlan.Env["AGENT_WORKFLOW_VERSION"] = "3"
+				agentPlan.Env["AGENT_WORKFLOW_HASH"] = "abc123"
+			})
+
+			It("tags the metrics row and rides workflow attribution on ledger metadata", func() {
+				// contracts addendum: writers that know their workflow MUST set
+				// {"workflow": "<name>@<version>"} in ledger metadata so
+				// group_by=workflow rollups can attribute spend.
+				step.Run(ctx, state)
+				rm := fakeMetricsStore.UpsertReturningInsertedArgsForCall(0)
+				Expect(rm.WorkflowName).To(Equal("spec-writer"))
+				Expect(*rm.WorkflowVersion).To(Equal(3))
+				Expect(rm.WorkflowHash).To(Equal("abc123"))
+
+				Expect(fakeChecker.RecordCallCount()).To(Equal(1))
+				entry := fakeChecker.RecordArgsForCall(0)
+				Expect(string(entry.Metadata)).To(MatchJSON(`{"workflow":"spec-writer@3"}`))
+			})
+		})
+
+		// --- findings F3 + F24: web-restart resume neither re-charges the ledger
+		// nor clobbers the real metrics row ---
+		It("appends the ledger once and never clobbers across two Run invocations (resume)", func() {
+			// First Run: flight data reads fine, fresh insert → ledger append fires.
+			fakeMetricsStore.UpsertReturningInsertedReturns(true, nil)
+			_, err := step.Run(ctx, state)
+			Expect(err).ToNot(HaveOccurred())
+
+			// Web restart: Step.Run re-executes, re-attaches, re-ingests — but the
+			// in-memory volume locator is gone (artifact_locator.go is ephemeral)
+			// and exitedProcess never re-records outputs, so BOTH StreamFile reads
+			// fail. The degraded re-ingestion must go through InsertIfAbsent
+			// (ON CONFLICT DO NOTHING) so its zero-cost error row cannot destroy
+			// web-1's real row (F24) — and inserted=false skips the ledger (F3).
+			fakeStreamer.StreamFileStub = nil
+			fakeStreamer.StreamFileReturns(nil, errors.New("no locator for volume"))
+			fakeMetricsStore.InsertIfAbsentReturns(false, nil) // row already exists
+			_, err = step.Run(ctx, state)
+			Expect(err).ToNot(HaveOccurred())
+
+			Expect(fakeMetricsStore.UpsertReturningInsertedCallCount()).To(Equal(1)) // full ingest only on web-1
+			Expect(fakeMetricsStore.InsertIfAbsentCallCount()).To(Equal(1))          // degraded path on web-2
+			Expect(fakeChecker.RecordCallCount()).To(Equal(1))                       // ledger charged ONCE
+		})
+
+		// --- finding F4: timed-out step still records pre-timeout cost + ledger ---
+		Context("when the step times out", func() {
+			BeforeEach(func() {
+				// A real (tiny) timeout: MaybeTimeout wraps ctx with a deadline,
+				// the process blocks until it fires and surfaces
+				// context.DeadlineExceeded — so at ingestion time the step ctx is
+				// GENUINELY expired and the ctx-honoring streamer stub above
+				// rejects any read threaded through it. Only the detached
+				// ingestCtx (WithoutCancel) keeps the reads live. The flight
+				// volume stays fully populated — the runner flushed before the
+				// kill. Mutate the harness-registered process definition's stub
+				// in place (runtimetest's WithProcess is copy-on-write; finding
+				// F37).
+				agentPlan.Timeout = "50ms"
+				chosenContainer.ProcessDefs[0].Stub.Call = func(ctx context.Context, _ *runtimetest.Process) (runtime.ProcessResult, error) {
+					<-ctx.Done()
+					return runtime.ProcessResult{}, ctx.Err()
+				}
+			})
+
+			It("still ingests cost/tokens and records the ledger", func() {
+				ok, err := step.Run(ctx, state)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(ok).To(BeFalse()) // timeout ⇒ step not successful
+
+				Expect(fakeMetricsStore.UpsertReturningInsertedCallCount()).To(Equal(1))
+				rm := fakeMetricsStore.UpsertReturningInsertedArgsForCall(0)
+				Expect(rm.CostUSD).To(BeNumerically("~", 0.42, 1e-9)) // pre-timeout cost preserved
+				Expect(rm.Turns).To(Equal(9))
+				Expect(rm.Usage.InputTokens).To(Equal(int64(100)))
+				Expect(rm.EventCounts).To(HaveKeyWithValue("tool.call", 1))
+				Expect(fakeChecker.RecordCallCount()).To(Equal(1)) // ledger entry recorded despite timeout
 			})
 		})
 	})
