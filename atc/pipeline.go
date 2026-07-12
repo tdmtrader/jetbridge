@@ -26,6 +26,7 @@ type Pipeline struct {
 	ParentBuildID int            `json:"parent_build_id,omitempty"`
 	ParentJobID   int            `json:"parent_job_id,omitempty"`
 	LastUpdated   int64          `json:"last_updated,omitempty"`
+	Template      bool           `json:"template,omitempty"`
 }
 
 func (p Pipeline) Ref() PipelineRef {

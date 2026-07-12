@@ -2,6 +2,7 @@ module Message.Callback exposing (Callback(..))
 
 import Browser.Dom
 import Concourse
+import Concourse.Agent
 import Concourse.AgentReview
 import Concourse.Pagination exposing (Page, Paginated)
 import Http
@@ -28,6 +29,7 @@ type Callback
     | JobBuildsFetched (Fetched ( Page, Paginated Concourse.Build ))
     | JobFetched (Fetched Concourse.Job)
     | JobsFetched (Fetched (List Concourse.Job))
+    | PipelineRunsFetched (Fetched (List Concourse.PipelineRun))
     | PipelineFetched (Fetched Concourse.Pipeline)
     | PipelinesFetched (Fetched (List Concourse.Pipeline))
     | PipelineToggled Concourse.PipelineIdentifier (Fetched ())
@@ -68,3 +70,5 @@ type Callback
     | BuildAgentReviewsFetched (Fetched (List Concourse.AgentReview.BuildReview))
     | TeamAgentReviewsFetched (Fetched (List Concourse.AgentReview.Summary))
     | AgentReviewVerdictSubmitted String (Fetched ())
+    | AgentWorkflowsFetched (Fetched (List Concourse.Agent.WorkflowSummary))
+    | AgentCostRollupFetched (Fetched Concourse.Agent.CostRollup)

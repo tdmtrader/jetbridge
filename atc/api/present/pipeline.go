@@ -20,6 +20,7 @@ func Pipeline(savedPipeline db.Pipeline) atc.Pipeline {
 		ParentBuildID: savedPipeline.ParentBuildID(),
 		ParentJobID:   savedPipeline.ParentJobID(),
 		LastUpdated:   savedPipeline.LastUpdated().Unix(),
+		Template:      savedPipeline.Template(),
 	}
 
 	if !savedPipeline.PausedAt().IsZero() {

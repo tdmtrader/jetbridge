@@ -36,6 +36,8 @@ type Endpoint
     | BuildAgentReviews Concourse.BuildId
     | TeamAgentReviews Concourse.TeamName
     | AgentFeedback
+    | AgentWorkflowsList
+    | AgentCostRollup
 
 
 type PipelineEndpoint
@@ -46,6 +48,7 @@ type PipelineEndpoint
     | HidePipeline
     | PipelineJobsList
     | PipelineResourcesList
+    | PipelineRunsList
 
 
 type JobEndpoint
@@ -207,6 +210,12 @@ builder endpoint =
         AgentFeedback ->
             base |> appendPath [ "agent", "feedback" ]
 
+        AgentWorkflowsList ->
+            base |> appendPath [ "agent", "workflows" ]
+
+        AgentCostRollup ->
+            base |> appendPath [ "agent", "costs" ]
+
 
 pipelineEndpoint : PipelineEndpoint -> RouteBuilder
 pipelineEndpoint endpoint =
@@ -231,6 +240,9 @@ pipelineEndpoint endpoint =
 
         PipelineResourcesList ->
             [ "resources" ]
+
+        PipelineRunsList ->
+            [ "runs" ]
     , []
     )
 

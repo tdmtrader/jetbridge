@@ -68,6 +68,12 @@ testEndpoints =
                         |> basePipelineEndpoint
                         |> toPath
                         |> Expect.equal "/api/v1/teams/team/pipelines/pipeline/resources"
+            , test "RunsList" <|
+                \_ ->
+                    E.PipelineRunsList
+                        |> basePipelineEndpoint
+                        |> toPath
+                        |> Expect.equal "/api/v1/teams/team/pipelines/pipeline/runs"
             ]
         , test "Pipeline with instance vars" <|
             \_ ->

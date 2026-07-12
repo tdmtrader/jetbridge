@@ -15,6 +15,7 @@ import Base64
 import Browser.Dom exposing (Viewport, getElement, getViewport, getViewportOf, setViewportOf)
 import Browser.Navigation as Navigation
 import Concourse exposing (DatabaseID, encodeJob, encodePipeline, encodeTeam)
+import Concourse.Agent
 import Concourse.AgentReview
 import Concourse.BuildStatus exposing (BuildStatus)
 import Concourse.Pagination exposing (Page)
@@ -214,6 +215,9 @@ type Effect
     | GetHostname
     | FetchBuildAgentReviews Concourse.BuildId
     | FetchTeamAgentReviews Concourse.TeamName
+    | FetchPipelineRuns Concourse.PipelineIdentifier
+    | FetchAgentWorkflows
+    | FetchAgentCostRollup
     | SubmitAgentReviewVerdict
         { repo : String
         , commitSha : String
@@ -772,6 +776,24 @@ runEffect effect key csrfToken =
                 |> Api.expectJson (Json.Decode.list Concourse.AgentReview.decodeSummary)
                 |> Api.request
                 |> Task.attempt TeamAgentReviewsFetched
+
+        FetchPipelineRuns id ->
+            Api.get (Endpoints.PipelineRunsList |> Endpoints.Pipeline id)
+                |> Api.expectJson (Json.Decode.list Concourse.decodePipelineRun)
+                |> Api.request
+                |> Task.attempt PipelineRunsFetched
+
+        FetchAgentWorkflows ->
+            Api.get Endpoints.AgentWorkflowsList
+                |> Api.expectJson (Json.Decode.list Concourse.Agent.decodeWorkflowSummary)
+                |> Api.request
+                |> Task.attempt AgentWorkflowsFetched
+
+        FetchAgentCostRollup ->
+            Api.get Endpoints.AgentCostRollup
+                |> Api.expectJson Concourse.Agent.decodeCostRollup
+                |> Api.request
+                |> Task.attempt AgentCostRollupFetched
 
         SubmitAgentReviewVerdict params ->
             Api.post Endpoints.AgentFeedback csrfToken
