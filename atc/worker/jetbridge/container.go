@@ -262,6 +262,18 @@ func (c *Container) Attach(ctx context.Context, processID string, io runtime.Pro
 		if statusStr, ok := pod.Annotations[exitStatusAnnotationKey]; ok {
 			status, err := strconv.Atoi(statusStr)
 			if err == nil {
+				// The exit status came from the pod annotation, not memory:
+				// this web process never ran uploadOutputsToArtifactStore for
+				// this container (web restart, or a fresh Container object).
+				// The ArtifactLocator is explicitly ephemeral, so without
+				// re-recording here every output volume would wrap with
+				// sourceNode=="" and any in-web StreamOut (flight-recorder
+				// ingestion, load_var, file-config reads) would fail instantly
+				// even though the producer node's daemon still has the data.
+				// The pod is still around and knows its node — re-publish the
+				// output locations (locator entry + daemon alias, idempotent)
+				// before handing back the exited result.
+				c.republishOutputLocations(ctx, logger, pod.Spec.NodeName)
 				return &exitedProcess{id: processID, result: runtime.ProcessResult{ExitStatus: status}}, nil
 			}
 		}
@@ -273,6 +285,26 @@ func (c *Container) Attach(ctx context.Context, processID string, io runtime.Pro
 	}
 
 	return newProcess(processID, c.podName, c.clientset, c.config, c, io), nil
+}
+
+// republishOutputLocations re-records this container's output artifact
+// locations with the storage backend (in-memory locator entry + daemon
+// alias + best-effort mirror trigger). It is the attach-path counterpart
+// of execProcess.uploadOutputsToArtifactStore: when Attach short-circuits
+// to an exitedProcess from a pod annotation, the normal upload path never
+// runs in this web process, and the ephemeral locator would otherwise
+// have no entry for the outputs. Recording is idempotent — volume handles
+// and daemon keys are deterministic per (handle, spec) — so re-running it
+// for a container whose locations were already recorded is a no-op update.
+func (c *Container) republishOutputLocations(ctx context.Context, logger lager.Logger, nodeName string) {
+	if c.storageBackend == nil || len(c.volumes) == 0 {
+		return
+	}
+	logger.Info("republishing-output-locations", lager.Data{
+		"node":    nodeName,
+		"volumes": len(c.volumes),
+	})
+	c.storageBackend.RecordOutputs(ctx, c.handle, nodeName, c.volumes, c.containerSpec)
 }
 
 func (c *Container) Properties() (map[string]string, error) {

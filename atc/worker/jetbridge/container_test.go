@@ -2368,6 +2368,93 @@ var _ = Describe("Container", func() {
 			})
 		})
 
+		Context("exec-mode: attach after web restart with a DaemonSet backend", func() {
+			// Regression test: a web death between the exit-status annotation
+			// and flight-recorder ingestion means the new web resumes via the
+			// exitedProcess path, which never re-runs
+			// uploadOutputsToArtifactStore. The new web's ArtifactLocator is
+			// ephemeral (empty), so every output volume wrapped via
+			// ArtifactFromVolume got sourceNode=="" and StreamOut failed
+			// instantly — turning a passed agent step into a permanent
+			// status=error / cost=0 metrics row. Attach must re-record the
+			// output locations from the still-existing pod before returning.
+			var (
+				execContainer runtime.Container
+				locator       *jetbridge.ArtifactLocator
+			)
+
+			BeforeEach(func() {
+				// A fresh worker + fresh locator simulates the post-restart
+				// web process: no locator entries survive from the run that
+				// produced the outputs.
+				execWorker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
+				execWorker.SetExecutor(&fakeExecExecutor{})
+				locator = jetbridge.NewArtifactLocator()
+				execWorker.SetArtifactLocator(locator)
+
+				setupFakeDBContainer(fakeDBWorker, "restart-attach-handle")
+
+				var err error
+				execContainer, _, err = execWorker.FindOrCreateContainer(
+					ctx,
+					db.NewFixedHandleContainerOwner("restart-attach-handle"),
+					db.ContainerMetadata{Type: db.ContainerTypeAgent},
+					runtime.ContainerSpec{
+						Type:      db.ContainerTypeAgent,
+						Dir:       "/workdir",
+						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///agent-runner"},
+						Outputs: runtime.OutputPaths{
+							"flight":    "/workdir/flight/",
+							"workspace": "/workdir/workspace/",
+						},
+					},
+					delegate,
+				)
+				Expect(err).ToNot(HaveOccurred())
+
+				// The pod from the previous web's run: exited (annotation
+				// written) and scheduled on a known node.
+				pod := &corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "restart-attach-handle",
+						Namespace: "test-namespace",
+						Annotations: map[string]string{
+							"concourse.ci/exit-status": "0",
+						},
+					},
+					Spec: corev1.PodSpec{
+						NodeName: "node-1",
+						Containers: []corev1.Container{
+							{Name: "main", Image: "agent-runner"},
+						},
+					},
+				}
+				_, err = fakeClientset.CoreV1().Pods("test-namespace").Create(ctx, pod, metav1.CreateOptions{})
+				Expect(err).ToNot(HaveOccurred())
+			})
+
+			It("re-records output locations so post-restart reads can reach the producer node's daemon", func() {
+				process, err := execContainer.Attach(ctx, "agent", runtime.ProcessIO{})
+				Expect(err).ToNot(HaveOccurred())
+
+				result, err := process.Wait(ctx)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(result.ExitStatus).To(Equal(0))
+
+				By("recording the flight output's location in the locator")
+				loc, found := locator.Locate("restart-attach-handle-output-flight")
+				Expect(found).To(BeTrue(), "flight output location must be re-recorded on attach")
+				Expect(loc.NodeName).To(Equal("node-1"))
+				Expect(loc.HostDir).To(Equal("restart-attach-handle/flight"))
+
+				By("recording the declared workspace output's location too")
+				loc, found = locator.Locate("restart-attach-handle-output-workspace")
+				Expect(found).To(BeTrue())
+				Expect(loc.NodeName).To(Equal("node-1"))
+				Expect(loc.HostDir).To(Equal("restart-attach-handle/workspace"))
+			})
+		})
+
 		Context("exec-mode: when executor is set and pod has no exit annotation", func() {
 			var execContainer runtime.Container
 
