@@ -1323,6 +1323,77 @@ var _ = Describe("Process", func() {
 		})
 	})
 
+	Describe("severed-exec output-location recording (F23)", func() {
+		var (
+			fakeExecutor       *fakeExecExecutor
+			fakeStorageBackend *fakeRecordingStorageBackend
+			execWorker         *jetbridge.Worker
+			execContainer      runtime.Container
+		)
+
+		BeforeEach(func() {
+			fakeExecutor = &fakeExecExecutor{}
+			fakeStorageBackend = &fakeRecordingStorageBackend{}
+			execWorker = jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
+			execWorker.SetExecutor(fakeExecutor)
+			execWorker.SetStorageBackend(fakeStorageBackend)
+
+			setupFakeDBContainer(fakeDBWorker, "severed-exec-handle")
+
+			var err error
+			execContainer, _, err = execWorker.FindOrCreateContainer(
+				ctx,
+				db.NewFixedHandleContainerOwner("severed-exec-handle"),
+				db.ContainerMetadata{Type: db.ContainerTypeTask},
+				runtime.ContainerSpec{
+					TeamID:    1,
+					Dir:       "/workdir",
+					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+					Type:      db.ContainerTypeTask,
+					Outputs:   map[string]string{"out": "/workdir/out"},
+				},
+				delegate,
+			)
+			Expect(err).ToNot(HaveOccurred())
+		})
+
+		It("records output locations even when the exec is severed by a transport error (F23)", func() {
+			// A transport-severed exec (e.g. web restart killing the SPDY
+			// stream, or the step deadline expiring) returns through the
+			// non-ExecExitError branch of Wait. That branch must still
+			// record output locations in the artifact store — it is the
+			// ONLY publisher of the output volumes' locator entries, and
+			// without it downstream StreamOut sees sourceNode=="" and
+			// fails instantly.
+			fakeExecutor.execErr = errors.New("error dialing backend: EOF")
+
+			process, err := execContainer.Run(ctx, runtime.ProcessSpec{
+				Path: "/bin/sh",
+				Args: []string{"-c", "echo hi"},
+			}, runtime.ProcessIO{
+				Stdin:  bytes.NewBufferString("{}"),
+				Stdout: new(bytes.Buffer),
+				Stderr: new(bytes.Buffer),
+			})
+			Expect(err).ToNot(HaveOccurred())
+
+			// Set pod to Running so waitForRunning succeeds and the exec runs.
+			pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "severed-exec-handle", metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			pod.Status.Phase = corev1.PodRunning
+			_, err = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			_, err = process.Wait(ctx)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("exec in pod"))
+
+			// The recording is best-effort, not a rescue: the transport
+			// error above stays the caller-visible result.
+			Expect(fakeStorageBackend.RecordOutputsCallCount()).To(Equal(1))
+		})
+	})
+
 	Describe("transient API error handling", func() {
 		It("tolerates a single API error during pollUntilDone", func() {
 			errorClientset := fake.NewSimpleClientset()
@@ -2340,3 +2411,69 @@ var _ = Describe("Pod phase transition spans", func() {
 	})
 
 })
+
+// fakeRecordingStorageBackend is a minimal StorageBackend test double that
+// counts RecordOutputs calls (F23 severed-exec coverage). All other methods
+// return inert values so container orchestration proceeds as with emptyDir
+// volumes.
+type fakeRecordingStorageBackend struct {
+	recordOutputsCalls atomic.Int32
+}
+
+func (f *fakeRecordingStorageBackend) RecordOutputsCallCount() int {
+	return int(f.recordOutputsCalls.Load())
+}
+
+func (f *fakeRecordingStorageBackend) StepVolume(name, handle, subdir string) corev1.Volume {
+	return corev1.Volume{
+		Name:         name,
+		VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+	}
+}
+
+func (f *fakeRecordingStorageBackend) CacheVolume(name string, jobID int, stepName, cachePath string) corev1.Volume {
+	return corev1.Volume{
+		Name:         name,
+		VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+	}
+}
+
+func (f *fakeRecordingStorageBackend) ArtifactStoreVolume(containerType db.ContainerType) *corev1.Volume {
+	return nil
+}
+
+func (f *fakeRecordingStorageBackend) ArtifactStoreVolumeName() string {
+	return "artifact-store"
+}
+
+func (f *fakeRecordingStorageBackend) BuildFetchInitContainers(handle string, inputs []runtime.Input, podVolumes []corev1.Volume, mainMounts []corev1.VolumeMount) []corev1.Container {
+	return nil
+}
+
+func (f *fakeRecordingStorageBackend) BuildCleanupInitContainer(handle string, containerType db.ContainerType, reused bool) *corev1.Container {
+	return nil
+}
+
+func (f *fakeRecordingStorageBackend) BuildAffinity(inputs []runtime.Input) *corev1.Affinity {
+	return nil
+}
+
+func (f *fakeRecordingStorageBackend) RecordOutputs(ctx context.Context, handle, nodeName string, volumes []*jetbridge.Volume, spec runtime.ContainerSpec) {
+	f.recordOutputsCalls.Add(1)
+}
+
+func (f *fakeRecordingStorageBackend) WrapVolumeForArtifact(key, handle, workerName string, dbVolume db.CreatedVolume) runtime.Volume {
+	return nil
+}
+
+func (f *fakeRecordingStorageBackend) WrapVolumeForLookup(ctx context.Context, key, handle, workerName string, dbVolume db.CreatedVolume) runtime.Volume {
+	return nil
+}
+
+func (f *fakeRecordingStorageBackend) RegisterResourceCache(ctx context.Context, cacheID int, volumeHandle, nodeName string) error {
+	return nil
+}
+
+func (f *fakeRecordingStorageBackend) FindResourceCache(ctx context.Context, cacheID int) (string, bool, error) {
+	return "", false, nil
+}
