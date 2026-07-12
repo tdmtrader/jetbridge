@@ -104,9 +104,11 @@ var _ = Describe("AgentStep", func() {
 		fakeChecker = new(budgetfakes.FakeChecker)
 		fakeMetricsStore = new(metricsfakes.FakeStore)
 		fakeRunVerifier = new(execfakes.FakeAgentRunVerifier)
-		// Default: the claimed run belongs to this build's pipeline. Specs
-		// that exercise the cross-run guard override this.
+		// Default: the claimed run belongs to this build's pipeline and the
+		// claimed ticket is dispatched as that run. Specs that exercise the
+		// cross-run / cross-ticket guards override these.
 		fakeRunVerifier.RunBelongsToPipelineReturns(true, nil)
+		fakeRunVerifier.TicketBelongsToRunReturns(true, nil)
 
 		state = exec.NewRunState(noopStepper, vars.StaticVariables{"branch": "main"})
 		repo = state.ArtifactRepository()
@@ -119,8 +121,13 @@ var _ = Describe("AgentStep", func() {
 			BudgetSliceUSD: 2.5,
 			Outputs:        []string{"workspace"},
 			Env: map[string]string{
-				"AGENT_TICKET_ID": "7",
-				"BASE_REF":        "main",
+				// A ticket claim is only honored alongside a run id whose
+				// linkage to the ticket the server can verify (review
+				// finding, 2026-07-11) — renderer-set pipelines always
+				// carry both.
+				"AGENT_TICKET_ID":       "7",
+				"AGENT_PIPELINE_RUN_ID": "42",
+				"BASE_REF":              "main",
 			},
 			Sidecars: []atc.SidecarSource{
 				{Config: &atc.SidecarConfig{Name: "platform", Image: "img:v1"}},
@@ -334,6 +341,130 @@ var _ = Describe("AgentStep", func() {
 		Expect(spec.Env).To(ContainElement("AGENT_BUDGET_SLICE_USD=2.50"))
 	})
 
+	// --- review finding (2026-07-11): budget admission gate entirely skippable ---
+	// AGENT_TICKET_ID is the same attacker-writable plan env as everything else
+	// (F30). Pre-fix, the ONLY admission check was StepSlice(env ticket, slice):
+	// omitting or garbling the key skipped admission entirely, and claiming
+	// SOMEONE ELSE'S ticket id both admitted against the victim's remaining
+	// budget and misattributed this step's spend into their ledger at ingestion.
+	// Ticket identity must be server-verified against the verified run's
+	// linkage (agent_tickets.pipeline_run_id) before it reaches admission,
+	// metrics tagging, or the cost ledger.
+	Describe("server-verified ticket identity", func() {
+		It("verifies the claimed ticket against the verified run before admission", func() {
+			fakeChecker.StepSliceReturns(budget.Remaining{LimitUSD: 2.5, RemainingUSD: 2.5}, nil)
+
+			_, err := step.Run(ctx, state)
+			Expect(err).ToNot(HaveOccurred())
+
+			Expect(fakeRunVerifier.TicketBelongsToRunCallCount()).To(Equal(1))
+			gotTicket, gotRun := fakeRunVerifier.TicketBelongsToRunArgsForCall(0)
+			Expect(gotTicket).To(Equal(7))
+			Expect(gotRun).To(Equal(42))
+
+			Expect(fakeChecker.StepSliceCallCount()).To(Equal(1))
+			ticketID, _ := fakeChecker.StepSliceArgsForCall(0)
+			Expect(ticketID).To(Equal(7))
+		})
+
+		Context("when the claimed ticket is not dispatched as the verified run (someone else's ticket)", func() {
+			BeforeEach(func() {
+				fakeRunVerifier.TicketBelongsToRunReturns(false, nil)
+			})
+
+			It("fails closed: never admits against, runs on, or charges the victim ticket", func() {
+				ok, err := step.Run(ctx, state)
+				Expect(ok).To(BeFalse())
+				Expect(err).To(MatchError(ContainSubstring("refusing to admit against ticket 7")))
+
+				Expect(fakeChecker.StepSliceCallCount()).To(BeZero())
+				Expect(fakePool.FindOrSelectWorkerCallCount()).To(BeZero())
+				// nothing ran ⇒ nothing can be misattributed into the
+				// victim's metrics or ledger
+				Expect(fakeMetricsStore.UpsertReturningInsertedCallCount()).To(BeZero())
+				Expect(fakeMetricsStore.InsertIfAbsentCallCount()).To(BeZero())
+				Expect(fakeChecker.RecordCallCount()).To(BeZero())
+			})
+		})
+
+		Context("when the ticket-linkage check errors", func() {
+			BeforeEach(func() {
+				fakeRunVerifier.TicketBelongsToRunReturns(false, errors.New("db down"))
+			})
+
+			It("fails the step rather than proceeding without verification", func() {
+				ok, err := step.Run(ctx, state)
+				Expect(ok).To(BeFalse())
+				Expect(err).To(MatchError(ContainSubstring("verify ticket 7 linkage to pipeline run 42")))
+				Expect(fakeChecker.StepSliceCallCount()).To(BeZero())
+				Expect(fakePool.FindOrSelectWorkerCallCount()).To(BeZero())
+			})
+		})
+
+		Context("when a ticket is claimed without a pipeline-run id", func() {
+			BeforeEach(func() {
+				delete(agentPlan.Env, "AGENT_PIPELINE_RUN_ID")
+			})
+
+			It("fails closed: the claim has no verifiable run linkage", func() {
+				ok, err := step.Run(ctx, state)
+				Expect(ok).To(BeFalse())
+				Expect(err).To(MatchError(ContainSubstring("requires a verified AGENT_PIPELINE_RUN_ID")))
+				Expect(fakeChecker.StepSliceCallCount()).To(BeZero())
+				Expect(fakePool.FindOrSelectWorkerCallCount()).To(BeZero())
+			})
+		})
+
+		Context("when AGENT_TICKET_ID is non-numeric", func() {
+			BeforeEach(func() {
+				agentPlan.Env["AGENT_TICKET_ID"] = "bogus"
+			})
+
+			It("errors instead of silently skipping admission (the pre-fix bypass)", func() {
+				ok, err := step.Run(ctx, state)
+				Expect(ok).To(BeFalse())
+				Expect(err).To(MatchError(ContainSubstring(`malformed AGENT_TICKET_ID "bogus"`)))
+				Expect(fakeChecker.StepSliceCallCount()).To(BeZero())
+				Expect(fakePool.FindOrSelectWorkerCallCount()).To(BeZero())
+			})
+		})
+
+		Context("when no run verifier is wired", func() {
+			JustBeforeEach(func() {
+				step = exec.NewAgentStep(
+					planID,
+					agentPlan,
+					atc.ContainerLimits{},
+					atc.ContainerLimits{},
+					stepMetadata,
+					containerMetadata,
+					fakePool,
+					fakeStreamer,
+					fakeDelegateFactory,
+					0,
+					agentImage,
+					exec.WithAgentBudgetChecker(fakeChecker),
+					exec.WithAgentMetricsStore(fakeMetricsStore),
+				)
+			})
+
+			It("drops the unverifiable claim: no admission, NULL ticket attribution", func() {
+				ok, err := step.Run(ctx, state)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(ok).To(BeTrue())
+
+				Expect(fakeChecker.StepSliceCallCount()).To(BeZero())
+
+				// degraded ingestion path (no flight fixtures) still runs, but
+				// the unverified ids never reach attribution
+				Expect(fakeMetricsStore.InsertIfAbsentCallCount()).To(Equal(1))
+				rm := fakeMetricsStore.InsertIfAbsentArgsForCall(0)
+				Expect(rm.TicketID).To(BeNil())
+				Expect(rm.PipelineRunID).To(BeNil())
+			})
+		})
+	})
+
 	Context("when a declared input is missing from the artifact repository", func() {
 		BeforeEach(func() {
 			agentPlan.Inputs = []string{"repo"}
@@ -507,15 +638,25 @@ var _ = Describe("AgentStep", func() {
 			})
 		})
 
-		It("emits no run-secret env without a pipeline-run id (pure CI)", func() {
-			// plan.Env carries no AGENT_PIPELINE_RUN_ID
-			_, err := step.Run(ctx, state)
-			Expect(err).ToNot(HaveOccurred())
+		Context("without any ticket/run identity env (pure CI)", func() {
+			BeforeEach(func() {
+				delete(agentPlan.Env, "AGENT_TICKET_ID")
+				delete(agentPlan.Env, "AGENT_PIPELINE_RUN_ID")
+			})
 
-			_, _, spec, _ := fakePool.FindOrSelectWorkerArgsForCall(0)
-			Expect(spec.SidecarSecretEnv).To(BeEmpty())
-			Expect(spec.SecretEnv).ToNot(HaveKey("CLAUDE_CODE_OAUTH_TOKEN"))
-			Expect(spec.SidecarEnv["platform"]).To(ContainElement(HavePrefix("ATC_EXTERNAL_URL=")))
+			It("emits no run-secret env and performs no ticket admission", func() {
+				_, err := step.Run(ctx, state)
+				Expect(err).ToNot(HaveOccurred())
+
+				Expect(fakeRunVerifier.RunBelongsToPipelineCallCount()).To(BeZero())
+				Expect(fakeRunVerifier.TicketBelongsToRunCallCount()).To(BeZero())
+				Expect(fakeChecker.StepSliceCallCount()).To(BeZero())
+
+				_, _, spec, _ := fakePool.FindOrSelectWorkerArgsForCall(0)
+				Expect(spec.SidecarSecretEnv).To(BeEmpty())
+				Expect(spec.SecretEnv).ToNot(HaveKey("CLAUDE_CODE_OAUTH_TOKEN"))
+				Expect(spec.SidecarEnv["platform"]).To(ContainElement(HavePrefix("ATC_EXTERNAL_URL=")))
+			})
 		})
 
 		It("sets each unset MCP sidecar WorkingDir to the workspace mount (F21)", func() {
@@ -604,6 +745,7 @@ var _ = Describe("AgentStep", func() {
 			Expect(rm.BuildID).To(Equal(stepMetadata.BuildID))
 			Expect(rm.PlanID).To(Equal(string(planID)))
 			Expect(*rm.TicketID).To(Equal(7))
+			Expect(*rm.PipelineRunID).To(Equal(42))
 			Expect(rm.Usage.InputTokens).To(Equal(int64(100)))
 			Expect(rm.Usage.OutputTokens).To(Equal(int64(50)))
 			Expect(rm.Usage.CacheReadInputTokens).To(Equal(int64(1)))
@@ -673,7 +815,9 @@ var _ = Describe("AgentStep", func() {
 			entry := fakeChecker.RecordArgsForCall(0)
 			Expect(entry.Source).To(Equal(budget.SourceAgentStep))
 			Expect(entry.Provider).To(Equal("anthropic"))
+			// server-verified identity, never raw plan env (review finding)
 			Expect(*entry.TicketID).To(Equal(7))
+			Expect(*entry.PipelineRunID).To(Equal(42))
 			Expect(entry.BuildID).To(Equal(stepMetadata.BuildID))
 			Expect(entry.StepName).To(Equal("write-spec"))
 			Expect(entry.Model).To(Equal("m1"))

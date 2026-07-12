@@ -42,17 +42,24 @@ const agentFlightArtifact = "flight"
 // ports (shared-contracts §8.1).
 var mcpSidecarPorts = map[string]int{"dev": 7780, "platform": 7781, "gateway": 7782}
 
-// AgentRunVerifier proves, server-side, that a pipeline-run id claimed by
-// plan env actually belongs to the pipeline this build is executing in —
-// i.e. that pipeline_runs row `runID` was materialized as pipeline instance
-// `pipelineID`. AGENT_PIPELINE_RUN_ID arrives via plan env (F30), which is
-// public pipeline YAML: without this check any team's pipeline could claim
-// another run's `agent-run-<id>` secret (§8.2) and exfiltrate its principal
-// and Anthropic tokens through a sidecar named "platform"/"gateway".
+// AgentRunVerifier proves, server-side, that the ticket/run identity claimed
+// by plan env actually belongs to this build. AGENT_PIPELINE_RUN_ID and
+// AGENT_TICKET_ID arrive via plan env (F30), which is public pipeline YAML:
+// without these checks any team's pipeline could claim another run's
+// `agent-run-<id>` secret (§8.2) and exfiltrate its principal and Anthropic
+// tokens through a sidecar named "platform"/"gateway", or claim another
+// ticket's id to admit against — and misattribute this step's spend into —
+// a budget it does not own.
 //
 //counterfeiter:generate . AgentRunVerifier
 type AgentRunVerifier interface {
+	// RunBelongsToPipeline reports whether pipeline_runs row `runID` was
+	// materialized as pipeline instance `pipelineID`.
 	RunBelongsToPipeline(runID, pipelineID int) (bool, error)
+	// TicketBelongsToRun reports whether agent_tickets row `ticketID` is
+	// currently dispatched as pipeline run `runID`
+	// (agent_tickets.pipeline_run_id, contracts §1.7).
+	TicketBelongsToRun(ticketID, runID int) (bool, error)
 }
 
 // AgentStepOption configures optional fields on an AgentStep.
@@ -181,26 +188,89 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 		resolvedEnv[k] = value
 	}
 
+	// ---- Server-verified ticket/run identity ----
+	//
+	// AGENT_PIPELINE_RUN_ID and AGENT_TICKET_ID are carried by plan env
+	// (F30) — attacker-writable pipeline YAML — so neither is EVER trusted
+	// raw. Dispatch bakes ((run_id)) only into the run's own materialized
+	// instance config, so a claimed run is legitimate exactly when its
+	// pipeline_runs.instance_pipeline_id IS this build's pipeline; a claimed
+	// ticket is legitimate exactly when that verified run was dispatched for
+	// it (agent_tickets.pipeline_run_id, §1.7). Only VERIFIED values reach
+	// budget admission, the agent-run-<id> secret name (§8.2), metrics
+	// tagging and the cost ledger. An unverifiable claim fails the step
+	// closed before any pod exists — otherwise any pipeline could claim
+	// someone else's ticket id to admit against the victim's remaining
+	// budget and misattribute this step's spend into their ledger, or claim
+	// another run's id to mount its credentials.
+	runID, _ := strconv.Atoi(resolvedEnv["AGENT_PIPELINE_RUN_ID"])
+	verifiedRunID := 0
+	if runID > 0 {
+		if step.runVerifier == nil {
+			logger.Info("skipping-run-secret-refs", lager.Data{
+				"reason": "no agent run verifier wired; plan env cannot be trusted to name the run secret",
+				"run-id": runID,
+			})
+		} else {
+			owned, err := step.runVerifier.RunBelongsToPipeline(runID, step.metadata.PipelineID)
+			if err != nil {
+				return false, fmt.Errorf("verify pipeline run %d ownership: %w", runID, err)
+			}
+			if !owned {
+				return false, fmt.Errorf("refusing to attach agent-run-%d credentials: pipeline run %d does not belong to this build's pipeline", runID, runID)
+			}
+			verifiedRunID = runID
+		}
+	}
+
+	ticketID := 0
+	if v := resolvedEnv["AGENT_TICKET_ID"]; v != "" {
+		claimed, err := strconv.Atoi(v)
+		if err != nil || claimed <= 0 {
+			return false, fmt.Errorf("malformed AGENT_TICKET_ID %q: must be a positive integer (or empty for a pure-CI agent step)", v)
+		}
+		switch {
+		case step.runVerifier == nil:
+			// Fail closed like the secret refs above: the claim is dropped —
+			// no ticket admission, NULL ticket attribution — so an unverified
+			// value can never reach someone else's budget or ledger.
+			logger.Info("skipping-ticket-identity", lager.Data{
+				"reason":    "no agent run verifier wired; plan env cannot be trusted to claim a ticket",
+				"ticket-id": claimed,
+			})
+		case verifiedRunID == 0:
+			return false, fmt.Errorf("refusing to admit against ticket %d: AGENT_TICKET_ID requires a verified AGENT_PIPELINE_RUN_ID linking the ticket to this build", claimed)
+		default:
+			linked, err := step.runVerifier.TicketBelongsToRun(claimed, verifiedRunID)
+			if err != nil {
+				return false, fmt.Errorf("verify ticket %d linkage to pipeline run %d: %w", claimed, verifiedRunID, err)
+			}
+			if !linked {
+				return false, fmt.Errorf("refusing to admit against ticket %d: not dispatched as pipeline run %d", claimed, verifiedRunID)
+			}
+			ticketID = claimed
+		}
+	}
+
 	// Resolve the budget slice against the ticket's remaining budget. This
 	// is a resolution (min of slice and ticket remaining), NOT a
 	// reservation, and it runs at the start of EVERY execution of the step
 	// — a continuation build re-resolves naturally and, because any
 	// park-exit partial spend was already ledgered, the re-resolved slice
-	// is automatically tighter (PARK-V2 seam delta §D, decision 32).
+	// is automatically tighter (PARK-V2 seam delta §D, decision 32). The
+	// ticket id is the SERVER-VERIFIED one from above, never raw plan env.
 	slice := step.plan.BudgetSliceUSD
-	if step.budgetChecker != nil && slice > 0 {
-		if ticketID, err := strconv.Atoi(resolvedEnv["AGENT_TICKET_ID"]); err == nil && ticketID > 0 {
-			remaining, err := step.budgetChecker.StepSlice(ticketID, slice)
-			if err != nil {
-				logger.Error("failed-to-resolve-budget-slice", err)
-				// keep the configured slice
-			} else if remaining.Exhausted {
-				delegate.Errored(logger, "budget slice exhausted before start")
-				delegate.Finished(logger, ExitStatus(1))
-				return false, nil
-			} else {
-				slice = remaining.RemainingUSD
-			}
+	if step.budgetChecker != nil && slice > 0 && ticketID > 0 {
+		remaining, err := step.budgetChecker.StepSlice(ticketID, slice)
+		if err != nil {
+			logger.Error("failed-to-resolve-budget-slice", err)
+			// keep the configured slice
+		} else if remaining.Exhausted {
+			delegate.Errored(logger, "budget slice exhausted before start")
+			delegate.Finished(logger, ExitStatus(1))
+			return false, nil
+		} else {
+			slice = remaining.RemainingUSD
 		}
 	}
 
@@ -327,35 +397,10 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 	// Main-container and sidecar secret refs derive from the deterministic
 	// §8.2 secret name. No pipeline-run id ⇒ no run-secret refs at all
 	// (pure-CI agent steps route the token through a K8s-secret var source
-	// via BuildSecretEnv above, per §8.1).
-	//
-	// AGENT_PIPELINE_RUN_ID is carried by plan env (F30) — attacker-writable
-	// pipeline YAML — so it is NEVER trusted to name the secret on its own.
-	// Dispatch bakes ((run_id)) only into the run's own materialized instance
-	// config, so the claimed run is legitimate exactly when its
-	// pipeline_runs.instance_pipeline_id IS this build's pipeline; anything
-	// else is a cross-run credential grab (or a hand-copied config) and the
-	// step fails closed before any pod exists. secretRunID stays 0 — and no
-	// refs are injected — unless that ownership check passes.
-	runID, _ := strconv.Atoi(resolvedEnv["AGENT_PIPELINE_RUN_ID"])
-	secretRunID := 0
-	if runID > 0 {
-		if step.runVerifier == nil {
-			logger.Info("skipping-run-secret-refs", lager.Data{
-				"reason": "no agent run verifier wired; plan env cannot be trusted to name the run secret",
-				"run-id": runID,
-			})
-		} else {
-			owned, err := step.runVerifier.RunBelongsToPipeline(runID, step.metadata.PipelineID)
-			if err != nil {
-				return false, fmt.Errorf("verify pipeline run %d ownership: %w", runID, err)
-			}
-			if !owned {
-				return false, fmt.Errorf("refusing to attach agent-run-%d credentials: pipeline run %d does not belong to this build's pipeline", runID, runID)
-			}
-			secretRunID = runID
-		}
-	}
+	// via BuildSecretEnv above, per §8.1). secretRunID is the SERVER-VERIFIED
+	// run id from the identity block above: it stays 0 — and no refs are
+	// injected — unless the ownership check passed.
+	secretRunID := verifiedRunID
 	secretName := "agent-run-" + strconv.Itoa(secretRunID)
 
 	// §8.1 pins CLAUDE_CODE_OAUTH_TOKEN to BOTH the main container and the
@@ -494,7 +539,7 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 	// artifact-fabric retention cannot reap the events) until this is done.
 	// ctx here is the timeout-scoped context; ingestFlightRecorder detaches
 	// from it internally (finding F4).
-	step.ingestFlightRecorder(ctx, logger, chosenWorker, volumeMounts, resolvedEnv, time.Since(processStart))
+	step.ingestFlightRecorder(ctx, logger, chosenWorker, volumeMounts, resolvedEnv, ticketID, verifiedRunID, time.Since(processStart))
 
 	if runErr != nil {
 		if errors.Is(runErr, context.DeadlineExceeded) {
@@ -523,6 +568,8 @@ func (step *AgentStep) ingestFlightRecorder(
 	wkr runtime.Worker,
 	volumeMounts []runtime.VolumeMount,
 	resolvedEnv map[string]string,
+	ticketID int,
+	runID int,
 	wallTime time.Duration,
 ) {
 	if step.metricsStore == nil {
@@ -547,11 +594,15 @@ func (step *AgentStep) ingestFlightRecorder(
 		StepName:        step.plan.Name,
 		WallTimeSeconds: int(wallTime.Seconds()),
 	}
-	if id, ok := envInt(resolvedEnv, "AGENT_TICKET_ID"); ok {
-		rm.TicketID = &id
+	// ticketID/runID are the SERVER-VERIFIED identities from run() — never
+	// raw plan env. A raw claim reaching LedgerEntry.TicketID below would
+	// let any pipeline drain a victim ticket's budget with spend it never
+	// made (review finding, 2026-07-11).
+	if ticketID > 0 {
+		rm.TicketID = &ticketID
 	}
-	if id, ok := envInt(resolvedEnv, "AGENT_PIPELINE_RUN_ID"); ok {
-		rm.PipelineRunID = &id
+	if runID > 0 {
+		rm.PipelineRunID = &runID
 	}
 	rm.WorkflowName = resolvedEnv["AGENT_WORKFLOW_NAME"]
 	if v, ok := envInt(resolvedEnv, "AGENT_WORKFLOW_VERSION"); ok {

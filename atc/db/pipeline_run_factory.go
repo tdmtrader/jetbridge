@@ -47,6 +47,19 @@ type PipelineRunFactory interface {
 	// this build runs in — otherwise any team could mount another run's
 	// principal and Anthropic tokens into a sidecar it named "gateway".
 	RunBelongsToPipeline(runID, pipelineID int) (bool, error)
+
+	// TicketBelongsToRun reports whether agent_tickets row `ticketID` is
+	// currently dispatched as pipeline run `runID`
+	// (agent_tickets.pipeline_run_id, contracts §1.7 — the latest attempt).
+	// The agent-step exec gates budget admission and cost/metrics
+	// attribution on this: AGENT_TICKET_ID arrives via attacker-writable
+	// plan env (F30) just like the run id, so a claimed ticket may only be
+	// admitted against — and charged in agent_cost_ledger — when server-side
+	// linkage proves the verified run was dispatched for it. agent_tickets
+	// is a wave-2 table (ticket-core, migrations 1773106050–59); until it
+	// exists no ticket claim is verifiable and this reports false (fail
+	// closed — there are no legitimate tickets to claim).
+	TicketBelongsToRun(ticketID, runID int) (bool, error)
 }
 
 // NewPipelineRunFactory constructs the factory. The CheckFactory is
@@ -405,6 +418,37 @@ func (f *pipelineRunFactory) RunBelongsToPipeline(runID, pipelineID int) (bool, 
 	err := f.conn.QueryRow(
 		`SELECT EXISTS (SELECT 1 FROM pipeline_runs WHERE id = $1 AND instance_pipeline_id = $2)`,
 		runID, pipelineID,
+	).Scan(&exists)
+	if err != nil {
+		return false, err
+	}
+	return exists, nil
+}
+
+func (f *pipelineRunFactory) TicketBelongsToRun(ticketID, runID int) (bool, error) {
+	if ticketID <= 0 || runID <= 0 {
+		return false, nil
+	}
+
+	// agent_tickets is owned by ticket-core (wave-2 migrations 1773106050–59)
+	// and may not exist yet; cross-aggregate refs are plain int columns with
+	// no SQL FKs (§1.1), so probe for the table first. Absent table ⇒ there
+	// are no tickets, so no claim can be legitimate: fail closed. The probe
+	// is a separate statement because Postgres resolves every relation named
+	// in a query at parse time, even in dead branches.
+	var tableExists bool
+	err := f.conn.QueryRow(`SELECT to_regclass('agent_tickets') IS NOT NULL`).Scan(&tableExists)
+	if err != nil {
+		return false, err
+	}
+	if !tableExists {
+		return false, nil
+	}
+
+	var exists bool
+	err = f.conn.QueryRow(
+		`SELECT EXISTS (SELECT 1 FROM agent_tickets WHERE id = $1 AND pipeline_run_id = $2)`,
+		ticketID, runID,
 	).Scan(&exists)
 	if err != nil {
 		return false, err
