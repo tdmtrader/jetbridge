@@ -168,6 +168,9 @@ breadcrumbs session route =
             Routes.DownloadFly ->
                 ( [ clusterNameBreadcrumb session ], False, False )
 
+            Routes.Agent ->
+                ( [ agentBreadcrumb ], False, False )
+
             _ ->
                 ( [], False, False )
 
@@ -209,6 +212,13 @@ clusterNameBreadcrumb session _ =
     Html.div
         Styles.clusterName
         [ Html.text session.clusterName ]
+
+
+agentBreadcrumb : Bool -> Html Message
+agentBreadcrumb _ =
+    Html.div
+        (id "breadcrumb-agent" :: Styles.clusterName)
+        [ Html.text "agent" ]
 
 
 pipelineBreadcrumbs : Session -> Concourse.Pipeline -> List String -> List (Bool -> Html Message)

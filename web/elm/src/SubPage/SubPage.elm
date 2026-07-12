@@ -297,7 +297,7 @@ handleDelivery session delivery =
         (FlySuccess.handleDelivery delivery)
         (DownloadFly.handleDelivery delivery)
         identity
-        identity
+        (Agent.handleDelivery delivery)
 
 
 update : Session -> Message -> ET Model
