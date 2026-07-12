@@ -904,6 +904,23 @@ func (p *execProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 		}
 		logger.Error("failed-to-exec-in-pod", err)
 		fetchPodFailureContext(ctx, p.clientset, p.config.Namespace, p.podName, p.processIO.Stderr)
+
+		// Best-effort output-location recording (finding F23). This branch is
+		// reached on deadline-severed and transport-severed execs — the step
+		// timeout included — and uploadOutputsToArtifactStore is the ONLY
+		// publisher of the output volumes' locator entries in the DaemonSet
+		// store. Without it, server-side flight-recorder ingestion (and
+		// timed-out task steps' hook inputs) see sourceNode=="" and StreamOut
+		// fails instantly, however the exec layer detaches its read context.
+		// ctx may already be cancelled/expired here, so detach and bound the
+		// call; failures are logged, never returned — the transport error
+		// below stays the caller-visible result.
+		uploadCtx, cancelUpload := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+		if uploadErr := p.uploadOutputsToArtifactStore(uploadCtx); uploadErr != nil {
+			logger.Error("failed-to-record-outputs-after-severed-exec", uploadErr)
+		}
+		cancelUpload()
+
 		spanErr = err
 		return runtime.ProcessResult{}, wrapIfTransient(fmt.Errorf("exec in pod: %w", err))
 	}
