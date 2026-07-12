@@ -2,7 +2,7 @@ package scoring
 
 import (
 	"github.com/concourse/ci-agent/config"
-	"github.com/concourse/ci-agent/schema"
+	"github.com/concourse/concourse/agent/schema"
 )
 
 const baseScore = 10.0

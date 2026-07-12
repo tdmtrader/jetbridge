@@ -11,7 +11,7 @@ import (
 
 	"github.com/concourse/ci-agent/phaseconfig"
 	"github.com/concourse/ci-agent/phaserunner"
-	"github.com/concourse/ci-agent/schema"
+	"github.com/concourse/concourse/agent/schema"
 )
 
 var _ = Describe("Review → Fix → QA Three-Phase Integration", func() {

@@ -17,15 +17,22 @@ var _ = Describe("Event", func() {
 			return schema.Event{
 				Timestamp: "2026-02-09T21:30:00Z",
 				Type:      schema.EventAgentStart,
-				Data: map[string]interface{}{
-					"step":  "review",
-					"model": "claude-sonnet-4-5-20250929",
-				},
+				Data:      json.RawMessage(`{"step":"review","model":"claude-sonnet-4-5-20250929"}`),
 			}
 		}
 	})
 
 	Describe("Validate", func() {
+		It("exposes the merged event-type constants and raw-message data", func() {
+			e := schema.Event{
+				Timestamp: "2026-07-08T12:00:00Z",
+				Type:      schema.EventPlanInputParsed,
+				Data:      json.RawMessage(`{"k":"v"}`),
+			}
+			Expect(e.Validate()).To(Succeed())
+			Expect(string(schema.EventArtifactWritten)).To(Equal("artifact.written"))
+		})
+
 		It("accepts a valid event with all required fields", func() {
 			e := validEvent()
 			Expect(e.Validate()).To(Succeed())
@@ -74,9 +81,15 @@ var _ = Describe("Event", func() {
 			Expect(e.Validate()).To(MatchError(ContainSubstring("data")))
 		})
 
-		It("accepts empty data map", func() {
+		It("rejects empty (zero-length) data", func() {
 			e := validEvent()
-			e.Data = map[string]interface{}{}
+			e.Data = json.RawMessage{}
+			Expect(e.Validate()).To(MatchError(ContainSubstring("data")))
+		})
+
+		It("accepts an empty data object", func() {
+			e := validEvent()
+			e.Data = json.RawMessage(`{}`)
 			Expect(e.Validate()).To(Succeed())
 		})
 
@@ -88,9 +101,13 @@ var _ = Describe("Event", func() {
 				schema.EventSkillEnd,
 				schema.EventToolCall,
 				schema.EventToolResult,
-				schema.EventArtifactWriten,
+				schema.EventArtifactWritten,
 				schema.EventDecision,
 				schema.EventError,
+				schema.EventPlanInputParsed,
+				schema.EventPlanSpecGenerated,
+				schema.EventPlanPlanGenerated,
+				schema.EventPlanConfidenceScored,
 			} {
 				e := validEvent()
 				e.Type = et
@@ -110,10 +127,7 @@ var _ = Describe("Event", func() {
 			original := schema.Event{
 				Timestamp: "2026-02-09T21:30:00Z",
 				Type:      schema.EventToolCall,
-				Data: map[string]interface{}{
-					"tool":        "grep",
-					"duration_ms": float64(42),
-				},
+				Data:      json.RawMessage(`{"tool":"grep","duration_ms":42}`),
 			}
 
 			data, err := json.Marshal(original)
@@ -125,15 +139,14 @@ var _ = Describe("Event", func() {
 
 			Expect(decoded.Timestamp).To(Equal(original.Timestamp))
 			Expect(decoded.Type).To(Equal(original.Type))
-			Expect(decoded.Data).To(HaveKeyWithValue("tool", "grep"))
-			Expect(decoded.Data).To(HaveKeyWithValue("duration_ms", float64(42)))
+			Expect(decoded.Data).To(MatchJSON(`{"tool":"grep","duration_ms":42}`))
 		})
 
 		It("uses correct JSON field names (ts, event, data)", func() {
 			e := schema.Event{
 				Timestamp: "2026-02-09T21:30:00Z",
 				Type:      schema.EventAgentStart,
-				Data:      map[string]interface{}{"step": "review"},
+				Data:      json.RawMessage(`{"step":"review"}`),
 			}
 
 			data, err := json.Marshal(e)
@@ -172,11 +185,7 @@ var _ = Describe("Event", func() {
 			e := schema.Event{
 				Timestamp: "2026-02-09T21:30:00Z",
 				Type:      schema.EventAgentEnd,
-				Data: map[string]interface{}{
-					"status":      "pass",
-					"confidence":  0.92,
-					"duration_ms": float64(18500),
-				},
+				Data:      json.RawMessage(`{"status":"pass","confidence":0.92,"duration_ms":18500}`),
 			}
 
 			data, err := json.Marshal(e)

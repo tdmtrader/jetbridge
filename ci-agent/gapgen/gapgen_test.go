@@ -9,7 +9,7 @@ import (
 
 	"github.com/concourse/ci-agent/gapgen"
 	"github.com/concourse/ci-agent/mapper"
-	"github.com/concourse/ci-agent/schema"
+	"github.com/concourse/concourse/agent/schema"
 	"github.com/concourse/ci-agent/specparser"
 )
 

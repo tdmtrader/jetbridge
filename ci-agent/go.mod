@@ -1,8 +1,9 @@
 module github.com/concourse/ci-agent
 
-go 1.25.1
+go 1.25.6
 
 require (
+	github.com/concourse/concourse/agent/schema v0.0.0
 	github.com/goccy/go-yaml v1.19.2
 	github.com/onsi/ginkgo/v2 v2.28.1
 	github.com/onsi/gomega v1.39.1
@@ -11,6 +12,8 @@ require (
 	go.opentelemetry.io/otel/sdk v1.42.0
 	go.opentelemetry.io/otel/trace v1.42.0
 )
+
+replace github.com/concourse/concourse/agent/schema => ../agent/schema
 
 require (
 	github.com/Masterminds/semver/v3 v3.4.0 // indirect

@@ -3,7 +3,7 @@ package storage
 import (
 	"context"
 
-	"github.com/concourse/ci-agent/schema"
+	"github.com/concourse/concourse/agent/schema"
 )
 
 // Store defines the interface for persisting review outputs.

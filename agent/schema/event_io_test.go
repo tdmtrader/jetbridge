@@ -2,8 +2,10 @@ package schema_test
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
 	"strings"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -24,7 +26,7 @@ var _ = Describe("EventWriter", func() {
 		err := w.Write(schema.Event{
 			Timestamp: "2026-02-09T21:30:00Z",
 			Type:      schema.EventAgentStart,
-			Data:      map[string]interface{}{"step": "review"},
+			Data:      json.RawMessage(`{"step":"review"}`),
 		})
 		Expect(err).NotTo(HaveOccurred())
 
@@ -39,7 +41,7 @@ var _ = Describe("EventWriter", func() {
 			err := w.Write(schema.Event{
 				Timestamp: "2026-02-09T21:30:00Z",
 				Type:      schema.EventToolCall,
-				Data:      map[string]interface{}{"index": float64(i)},
+				Data:      json.RawMessage(`{"index":1}`),
 			})
 			Expect(err).NotTo(HaveOccurred())
 		}
@@ -54,7 +56,7 @@ var _ = Describe("EventWriter", func() {
 		err := w.Write(schema.Event{
 			Timestamp: "2026-02-09T21:30:00Z",
 			Type:      schema.EventAgentEnd,
-			Data:      map[string]interface{}{"status": "pass"},
+			Data:      json.RawMessage(`{"status":"pass"}`),
 		})
 		Expect(err).NotTo(HaveOccurred())
 
@@ -62,13 +64,29 @@ var _ = Describe("EventWriter", func() {
 		Expect(line).To(MatchJSON(`{"ts":"2026-02-09T21:30:00Z","event":"agent.end","data":{"status":"pass"}}`))
 	})
 
+	It("sets a missing timestamp before writing", func() {
+		w := schema.NewEventWriter(buf)
+
+		err := w.Write(schema.Event{
+			Type: schema.EventAgentStart,
+			Data: json.RawMessage(`{}`),
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		var written schema.Event
+		Expect(json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &written)).To(Succeed())
+		Expect(written.Timestamp).NotTo(BeEmpty())
+		_, err = time.Parse(time.RFC3339, written.Timestamp)
+		Expect(err).NotTo(HaveOccurred())
+	})
+
 	It("validates events before writing", func() {
 		w := schema.NewEventWriter(buf)
 
 		err := w.Write(schema.Event{
-			Timestamp: "",
-			Type:      schema.EventAgentStart,
-			Data:      map[string]interface{}{},
+			Timestamp: "2026-02-09T21:30:00Z",
+			Type:      "",
+			Data:      json.RawMessage(`{}`),
 		})
 		Expect(err).To(HaveOccurred())
 		Expect(buf.Len()).To(Equal(0), "invalid event should not be written")
@@ -80,7 +98,7 @@ var _ = Describe("EventWriter", func() {
 		err := w.Write(schema.Event{
 			Timestamp: "2026-02-09T21:30:00Z",
 			Type:      schema.EventAgentStart,
-			Data:      map[string]interface{}{},
+			Data:      json.RawMessage(`{}`),
 		})
 		Expect(err).NotTo(HaveOccurred())
 
@@ -97,7 +115,7 @@ var _ = Describe("EventReader", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(event.Timestamp).To(Equal("2026-02-09T21:30:00Z"))
 		Expect(event.Type).To(Equal(schema.EventAgentStart))
-		Expect(event.Data).To(HaveKeyWithValue("step", "review"))
+		Expect(event.Data).To(MatchJSON(`{"step":"review"}`))
 	})
 
 	It("reads multiple events sequentially", func() {
@@ -191,17 +209,17 @@ var _ = Describe("EventReader", func() {
 			{
 				Timestamp: "2026-02-09T21:30:00Z",
 				Type:      schema.EventAgentStart,
-				Data:      map[string]interface{}{"step": "review"},
+				Data:      json.RawMessage(`{"step":"review"}`),
 			},
 			{
 				Timestamp: "2026-02-09T21:30:05Z",
 				Type:      schema.EventToolCall,
-				Data:      map[string]interface{}{"tool": "grep", "duration_ms": float64(42)},
+				Data:      json.RawMessage(`{"tool":"grep","duration_ms":42}`),
 			},
 			{
 				Timestamp: "2026-02-09T21:30:10Z",
 				Type:      schema.EventAgentEnd,
-				Data:      map[string]interface{}{"status": "pass", "confidence": 0.92},
+				Data:      json.RawMessage(`{"status":"pass","confidence":0.92}`),
 			},
 		}
 

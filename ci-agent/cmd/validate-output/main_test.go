@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/concourse/ci-agent/schema"
+	"github.com/concourse/concourse/agent/schema"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
@@ -164,10 +164,11 @@ var _ = Describe("validate-output", func() {
 
 		It("fails when status is invalid", func() {
 			results := schema.Results{
-				Status:     "bogus",
-				Confidence: 0.5,
-				Summary:    "Plan",
-				Artifacts:  []schema.Artifact{{Name: "a", Path: "a", MediaType: "text/plain"}},
+				SchemaVersion: "1.0",
+				Status:        "bogus",
+				Confidence:    0.5,
+				Summary:       "Plan",
+				Artifacts:     []schema.Artifact{{Name: "a", Path: "a", MediaType: "text/plain"}},
 			}
 			writeJSON(tmpDir, "results.json", results)
 
