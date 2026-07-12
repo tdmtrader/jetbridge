@@ -5,7 +5,8 @@
 test-unit:
 	@echo "==> Running unit tests..."
 	ginkgo -r -p --keep-going --flake-attempts=1 \
-		--skip-package=./integration,testflight,topgun,./worker/integration,./worker/runtime/integration,./worker/baggageclaim,ci-agent,fly/integration,testhelpers/otel
+		--skip-package=./integration,testflight,topgun,./worker/integration,./worker/runtime/integration,./worker/baggageclaim,ci-agent,fly/integration,testhelpers/otel,agent/schema
+	cd agent/schema && go test ./... -count=1
 
 # CI-agent module tests (~2 min)
 # Requires: nothing (self-contained)

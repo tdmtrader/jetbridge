@@ -22,6 +22,7 @@ require (
 	github.com/charmbracelet/bubbles v0.21.0
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
+	github.com/concourse/concourse/agent/schema v0.0.0
 	github.com/concourse/dex v1.12.0
 	github.com/concourse/flag/v2 v2.4.0
 	github.com/concourse/retryhttp v1.3.0
@@ -291,3 +292,5 @@ require (
 	sigs.k8s.io/randfill v1.0.0 // indirect
 	sigs.k8s.io/structured-merge-diff/v6 v6.3.1 // indirect
 )
+
+replace github.com/concourse/concourse/agent/schema => ./agent/schema
