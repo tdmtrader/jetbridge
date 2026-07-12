@@ -42,6 +42,11 @@ const agentFlightArtifact = "flight"
 // ports (shared-contracts §8.1).
 var mcpSidecarPorts = map[string]int{"dev": 7780, "platform": 7781, "gateway": 7782}
 
+// errAgentCostUnderReport marks a suspicious ingestion: the pod-written
+// flight recorder claimed less cost than the web node itself observed on the
+// agent's live stdout stream (review finding, 2026-07-12).
+var errAgentCostUnderReport = errors.New("flight recorder reported less cost than observed on the live stdout stream")
+
 // AgentRunVerifier proves, server-side, that the ticket/run identity claimed
 // by plan env actually belongs to this build. AGENT_PIPELINE_RUN_ID and
 // AGENT_TICKET_ID arrive via plan env (F30), which is public pipeline YAML:
@@ -521,6 +526,15 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 	oteltrace.SpanFromContext(ctx).AddEvent("step.starting")
 	delegate.Starting(logger)
 	processStart := time.Now()
+
+	// Wrap the main-container stdout with the server-side cost observer: the
+	// claude CLI envelope streams through here LIVE, giving ingestion a floor
+	// under the pod-written (attacker-writable) flight recorder cost (review
+	// finding, 2026-07-12 — see agentCostObserver).
+	pio := sidecarProcessIO(delegate, containerSpec.Sidecars)
+	costObserver := newAgentCostObserver(pio.Stdout)
+	pio.Stdout = costObserver
+
 	process, err := attachOrRun(
 		ctx,
 		container,
@@ -537,7 +551,7 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 				},
 			},
 		},
-		sidecarProcessIO(delegate, containerSpec.Sidecars),
+		pio,
 	)
 	if err != nil {
 		return false, err
@@ -553,7 +567,7 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 	// artifact-fabric retention cannot reap the events) until this is done.
 	// ctx here is the timeout-scoped context; ingestFlightRecorder detaches
 	// from it internally (finding F4).
-	step.ingestFlightRecorder(ctx, logger, chosenWorker, volumeMounts, resolvedEnv, ticketID, verifiedRunID, time.Since(processStart))
+	step.ingestFlightRecorder(ctx, logger, chosenWorker, volumeMounts, resolvedEnv, ticketID, verifiedRunID, time.Since(processStart), costObserver.Observed())
 
 	if runErr != nil {
 		if errors.Is(runErr, context.DeadlineExceeded) {
@@ -585,6 +599,7 @@ func (step *AgentStep) ingestFlightRecorder(
 	ticketID int,
 	runID int,
 	wallTime time.Duration,
+	observed observedAgentCost,
 ) {
 	if step.metricsStore == nil {
 		return
@@ -709,6 +724,45 @@ func (step *AgentStep) ingestFlightRecorder(
 		}
 	}
 
+	// The flight recorder is SELF-REPORTED: it is written inside the agent
+	// pod, where claude runs as root with --dangerously-skip-permissions and
+	// AGENT_FLIGHT_DIR in its own env, so a prompt-injected agent (or a leaked
+	// descendant) can truncate/rewrite events.ndjson with cost_usd 0 before
+	// the pod exits. Trusting it wholesale would let the step under-report its
+	// own spend: SpentForTicket understates, and StepSlice admits every
+	// subsequent step of the run/ticket against a falsified ledger (review
+	// finding, 2026-07-12). `observed` is the server-side floor: the same CLI
+	// envelope the runner parses into cost.record, captured by
+	// agentCostObserver as it streamed through the web node LIVE — bytes
+	// already shipped cannot be rewritten at rest, and its per-field-max
+	// semantics mean a forged later zero-cost envelope cannot lower it. Floor
+	// every ledger-relevant counter; on the honest path the two sources carry
+	// the identical float64 round-trip, so the floor is a no-op. An
+	// under-report is recorded loudly as a suspicious ingestion. Limits: an
+	// agent killed before the envelope prints streams nothing (partial-usage
+	// capture is PARK-V2 stream-json teeing work), and a reattach may miss
+	// already-streamed output — in those shapes the floor is zero and flight
+	// data stands alone; admission + turn/timeout caps remain the in-step
+	// levers (§8.1).
+	if observed.CostUSD > rm.CostUSD {
+		logger.Error("flight-recorder-under-reported-cost", errAgentCostUnderReport, lager.Data{
+			"build-id":          rm.BuildID,
+			"plan-id":           rm.PlanID,
+			"step-name":         rm.StepName,
+			"flight-cost-usd":   rm.CostUSD,
+			"observed-cost-usd": observed.CostUSD,
+		})
+		rm.CostUSD = observed.CostUSD
+	}
+	if rm.Model == "" {
+		rm.Model = observed.Model
+	}
+	rm.Usage.InputTokens = max(rm.Usage.InputTokens, observed.InputTokens)
+	rm.Usage.OutputTokens = max(rm.Usage.OutputTokens, observed.OutputTokens)
+	rm.Usage.CacheReadInputTokens = max(rm.Usage.CacheReadInputTokens, observed.CacheReadTokens)
+	rm.Usage.CacheCreationInputTokens = max(rm.Usage.CacheCreationInputTokens, observed.CacheCreationTokens)
+	rm.Turns = max(rm.Turns, observed.Turns)
+
 	// Upsert reports whether THIS ingestion inserted the row (inserted=true) or
 	// updated an existing one (inserted=false, i.e. a resume/retry: the whole
 	// Step.Run re-executes, re-attaches, and re-ingests), and on an update also
@@ -738,11 +792,12 @@ func (step *AgentStep) ingestFlightRecorder(
 	//
 	// DEGRADED ingestion (finding F24): when no flight data was actually read —
 	// restart-resume with an ephemeral locator, reaped pod, missing mount — rm
-	// is a zero-cost status=error shell, and pushing it through the all-columns
-	// DO UPDATE would destroy a real row written by an earlier ingestion
-	// (scorecards and delivery-outcomes read that row). Write it insert-only
-	// instead: it lands when no row exists (genuinely crashed agent) and is a
-	// no-op when one does.
+	// is a status=error shell (zero-cost unless the stdout floor above raised
+	// it), and pushing it through the all-columns DO UPDATE would destroy a
+	// real row written by an earlier ingestion (scorecards and
+	// delivery-outcomes read that row). Write it insert-only instead: it lands
+	// when no row exists (genuinely crashed agent) and is a no-op when one
+	// does.
 	var inserted bool
 	var prev *schema.RunMetrics
 	var err error

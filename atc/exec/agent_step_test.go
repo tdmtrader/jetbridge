@@ -1111,6 +1111,100 @@ var _ = Describe("AgentStep", func() {
 			Expect(fakeChecker.RecordCallCount()).To(BeZero())
 		})
 
+		// --- review finding (self-reported cost, 2026-07-12): the flight
+		// recorder is written inside the agent pod, where claude runs as root —
+		// a prompt-injected agent can rewrite events.ndjson with cost_usd 0
+		// before exit, understating SpentForTicket and loosening StepSlice
+		// admission for every later step. The exec captures the claude CLI
+		// envelope from the LIVE stdout stream and floors ingestion at it. ---
+		Context("server-side cost floor (self-reported flight recorder)", func() {
+			envelope := `{"type":"result","subtype":"success","is_error":false,"result":"done","model":"m1","num_turns":9,"total_cost_usd":0.42,"usage":{"input_tokens":100,"output_tokens":50,"cache_read_input_tokens":1,"cache_creation_input_tokens":2}}`
+
+			BeforeEach(func() {
+				// The agent process streams the envelope over stdout while it
+				// runs — the same bytes agent-runner parses in-pod. Mutate the
+				// harness-registered stub in place (WithProcess is
+				// copy-on-write; finding F37).
+				chosenContainer.ProcessDefs[0].Stub.Do = func(_ context.Context, p *runtimetest.Process) error {
+					fmt.Fprintln(p.Stdout(), envelope)
+					return nil
+				}
+			})
+
+			Context("when the flight recorder under-reports (tampered events.ndjson)", func() {
+				BeforeEach(func() {
+					// The agent zeroed its own cost.record before exit.
+					eventLines[2] = `{"ts":"2026-07-10T12:00:02Z","event":"cost.record","data":{"source":"agent_step","provider":"anthropic","model":"m1","input_tokens":0,"output_tokens":0,"cache_read_tokens":0,"cache_creation_tokens":0,"turns":0,"cost_usd":0}}`
+				})
+
+				It("floors the metrics row and the ledger at the observed stdout envelope", func() {
+					ok, err := step.Run(ctx, state)
+					Expect(err).ToNot(HaveOccurred())
+					Expect(ok).To(BeTrue())
+
+					rm := fakeMetricsStore.UpsertReturningInsertedArgsForCall(0)
+					Expect(rm.CostUSD).To(BeNumerically("~", 0.42, 1e-9))
+					Expect(rm.Usage.InputTokens).To(Equal(int64(100)))
+					Expect(rm.Usage.OutputTokens).To(Equal(int64(50)))
+					Expect(rm.Usage.CacheReadInputTokens).To(Equal(int64(1)))
+					Expect(rm.Usage.CacheCreationInputTokens).To(Equal(int64(2)))
+					Expect(rm.Turns).To(Equal(9))
+
+					// The falsified spend still reaches agent_cost_ledger, so
+					// SpentForTicket stays truthful and the next StepSlice
+					// admission is not loosened — the pre-fix code charged $0.
+					Expect(fakeChecker.RecordCallCount()).To(Equal(1))
+					entry := fakeChecker.RecordArgsForCall(0)
+					Expect(entry.CostUSD).To(BeNumerically("~", 0.42, 1e-9))
+					Expect(entry.InputTokens).To(Equal(int64(100)))
+					Expect(entry.Turns).To(Equal(9))
+				})
+			})
+
+			Context("when the whole flight recorder is unreadable but the envelope streamed", func() {
+				BeforeEach(func() {
+					fakeStreamer.StreamFileStub = nil
+					fakeStreamer.StreamFileReturns(nil, errors.New("no locator for volume"))
+					fakeMetricsStore.InsertIfAbsentReturns(true, nil)
+				})
+
+				It("carries the observed floor on the degraded insert and ledgers it", func() {
+					_, err := step.Run(ctx, state)
+					Expect(err).ToNot(HaveOccurred())
+
+					Expect(fakeMetricsStore.InsertIfAbsentCallCount()).To(Equal(1))
+					rm := fakeMetricsStore.InsertIfAbsentArgsForCall(0)
+					Expect(rm.Status).To(Equal("error")) // still a degraded error row
+					Expect(rm.CostUSD).To(BeNumerically("~", 0.42, 1e-9))
+
+					Expect(fakeChecker.RecordCallCount()).To(Equal(1))
+					Expect(fakeChecker.RecordArgsForCall(0).CostUSD).To(BeNumerically("~", 0.42, 1e-9))
+				})
+			})
+
+			It("charges exactly once when the flight recorder honestly matches the envelope", func() {
+				// The honest path round-trips the identical float64 through the
+				// runner's cost.record, so the floor is a no-op — no double count,
+				// no inflation.
+				_, err := step.Run(ctx, state)
+				Expect(err).ToNot(HaveOccurred())
+
+				rm := fakeMetricsStore.UpsertReturningInsertedArgsForCall(0)
+				Expect(rm.CostUSD).To(BeNumerically("~", 0.42, 1e-9))
+				Expect(fakeChecker.RecordCallCount()).To(Equal(1))
+				Expect(fakeChecker.RecordArgsForCall(0).CostUSD).To(BeNumerically("~", 0.42, 1e-9))
+			})
+
+			It("trusts a flight recorder that reports MORE than the observed floor", func() {
+				// e.g. gateway-external tool spend rolled into cost.record by a
+				// future runner: the floor only ever raises, never caps.
+				eventLines[2] = `{"ts":"2026-07-10T12:00:02Z","event":"cost.record","data":{"source":"agent_step","provider":"anthropic","model":"m1","input_tokens":100,"output_tokens":50,"cache_read_tokens":1,"cache_creation_tokens":2,"turns":9,"cost_usd":0.50}}`
+				_, err := step.Run(ctx, state)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(fakeChecker.RecordArgsForCall(0).CostUSD).To(BeNumerically("~", 0.50, 1e-9))
+			})
+		})
+
 		// --- finding F4: timed-out step still records pre-timeout cost + ledger ---
 		Context("when the step times out", func() {
 			BeforeEach(func() {
