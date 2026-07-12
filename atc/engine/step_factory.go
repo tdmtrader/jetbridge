@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/concourse/concourse/agent/api/metrics"
+	"github.com/concourse/concourse/agent/budget"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/lock"
@@ -30,6 +32,9 @@ type coreStepFactory struct {
 	defaultPutTimeout     time.Duration
 	defaultTaskTimeout    time.Duration
 	imageResolver         imageresolver.Resolver
+	agentStepImage        string
+	agentMetricsStore     metrics.Store
+	agentBudgetChecker    budget.Checker
 }
 
 // CoreStepFactoryOption configures optional fields on coreStepFactory.
@@ -40,6 +45,24 @@ func WithCoreImageResolver(r imageresolver.Resolver) CoreStepFactoryOption {
 	return func(f *coreStepFactory) {
 		f.imageResolver = r
 	}
+}
+
+// WithAgentStepImage sets the main-container image for agent: steps
+// (web flag --agent-step-image).
+func WithAgentStepImage(image string) CoreStepFactoryOption {
+	return func(f *coreStepFactory) { f.agentStepImage = image }
+}
+
+// WithAgentMetricsStore sets the run-metrics store for server-side
+// flight-recorder ingestion.
+func WithAgentMetricsStore(s metrics.Store) CoreStepFactoryOption {
+	return func(f *coreStepFactory) { f.agentMetricsStore = s }
+}
+
+// WithAgentBudgetChecker sets the budget library used for step-slice
+// resolution and fire-and-forget ledger records.
+func WithAgentBudgetChecker(c budget.Checker) CoreStepFactoryOption {
+	return func(f *coreStepFactory) { f.agentBudgetChecker = c }
 }
 
 func NewCoreStepFactory(
@@ -182,6 +205,48 @@ func (factory *coreStepFactory) RunStep(
 		runStep = exec.RetryError(runStep, delegateFactory)
 	}
 	return runStep
+}
+
+func (factory *coreStepFactory) AgentStep(
+	plan atc.Plan,
+	stepMetadata exec.StepMetadata,
+	containerMetadata db.ContainerMetadata,
+	delegateFactory DelegateFactory,
+) exec.Step {
+	sum := sha256.Sum256([]byte(plan.Agent.Name))
+	containerMetadata.WorkingDirectory = filepath.Join("/tmp", "build", fmt.Sprintf("%x", sum[:4]))
+
+	var agentOpts []exec.AgentStepOption
+	if factory.imageResolver != nil {
+		agentOpts = append(agentOpts, exec.WithAgentImageResolver(factory.imageResolver))
+	}
+	if factory.agentMetricsStore != nil {
+		agentOpts = append(agentOpts, exec.WithAgentMetricsStore(factory.agentMetricsStore))
+	}
+	if factory.agentBudgetChecker != nil {
+		agentOpts = append(agentOpts, exec.WithAgentBudgetChecker(factory.agentBudgetChecker))
+	}
+
+	agentStep := exec.NewAgentStep(
+		plan.ID,
+		*plan.Agent,
+		factory.defaultLimits,
+		factory.defaultRequests,
+		stepMetadata,
+		containerMetadata,
+		factory.pool,
+		factory.streamer,
+		delegateFactory,
+		factory.defaultTaskTimeout,
+		factory.agentStepImage,
+		agentOpts...,
+	)
+
+	agentStep = exec.LogError(agentStep, delegateFactory)
+	if atc.EnableBuildRerunWhenWorkerDisappears {
+		agentStep = exec.RetryError(agentStep, delegateFactory)
+	}
+	return agentStep
 }
 
 func (factory *coreStepFactory) TaskStep(

@@ -22,6 +22,7 @@ type CoreStepFactory interface {
 	PutStep(atc.Plan, exec.StepMetadata, db.ContainerMetadata, DelegateFactory) exec.Step
 	TaskStep(atc.Plan, exec.StepMetadata, db.ContainerMetadata, DelegateFactory) exec.Step
 	RunStep(atc.Plan, exec.StepMetadata, db.ContainerMetadata, DelegateFactory) exec.Step
+	AgentStep(atc.Plan, exec.StepMetadata, db.ContainerMetadata, DelegateFactory) exec.Step
 	CheckStep(atc.Plan, exec.StepMetadata, db.ContainerMetadata, DelegateFactory) exec.Step
 	SetPipelineStep(atc.Plan, exec.StepMetadata, DelegateFactory) exec.Step
 	LoadVarStep(atc.Plan, exec.StepMetadata, DelegateFactory) exec.Step
@@ -133,6 +134,10 @@ func (factory *stepperFactory) buildStep(build db.Build, plan atc.Plan) exec.Ste
 
 	if plan.Ensure != nil {
 		return factory.buildEnsureStep(build, plan)
+	}
+
+	if plan.Agent != nil {
+		return factory.buildAgentStep(build, plan)
 	}
 
 	if plan.Run != nil {
@@ -370,6 +375,28 @@ func (factory *stepperFactory) buildRunStep(build db.Build, plan atc.Plan) exec.
 	)
 
 	return factory.coreFactory.RunStep(
+		plan,
+		stepMetadata,
+		containerMetadata,
+		factory.buildDelegateFactory(build, plan),
+	)
+}
+
+func (factory *stepperFactory) buildAgentStep(build db.Build, plan atc.Plan) exec.Step {
+	containerMetadata := factory.containerMetadata(
+		build,
+		db.ContainerTypeAgent,
+		plan.Agent.Name,
+		plan.Attempts,
+	)
+
+	stepMetadata := factory.stepMetadata(
+		build,
+		factory.externalURL,
+		false,
+	)
+
+	return factory.coreFactory.AgentStep(
 		plan,
 		stepMetadata,
 		containerMetadata,
