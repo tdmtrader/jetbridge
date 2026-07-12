@@ -87,6 +87,20 @@ helm upgrade --install concourse "${REPO_ROOT}/deploy/chart" \
   --set artifactDaemon.enabled=true \
   --timeout 5m
 
+# The image tag stays "latest" across rebuilds, so `helm upgrade` sees no
+# spec change and will NOT roll the web/worker pods to the freshly-loaded
+# image — you'd keep running stale code (and stale migrations). Force a
+# rollout so every run reflects the current tree.
+for d in web worker; do
+  dep="concourse-concourse-jetbridge-${d}"
+  if kubectl --kubeconfig "${KUBECONFIG_PATH}" -n "${NAMESPACE}" get deploy "${dep}" >/dev/null 2>&1; then
+    kubectl --kubeconfig "${KUBECONFIG_PATH}" -n "${NAMESPACE}" rollout restart "deploy/${dep}"
+  fi
+done
+
+kubectl --kubeconfig "${KUBECONFIG_PATH}" -n "${NAMESPACE}" \
+  rollout status deploy/concourse-concourse-jetbridge-web --timeout=300s
+
 kubectl --kubeconfig "${KUBECONFIG_PATH}" -n "${NAMESPACE}" \
   wait --for=condition=Ready pod --all --timeout=300s
 
