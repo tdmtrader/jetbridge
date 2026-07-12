@@ -169,6 +169,34 @@ var _ = Describe("EventReader", func() {
 		Expect(events).To(HaveLen(2))
 	})
 
+	It("reads a line larger than the default 64KiB scanner limit", func() {
+		// A single NDJSON event whose payload exceeds bufio.Scanner's default
+		// 64KiB token limit must not abort the stream. Agent-step ingestion
+		// breaks its read loop on any reader error, so an oversized line
+		// mid-stream would otherwise discard every later cost.record and
+		// step.end event — leaving the step status=error even when a valid
+		// step.end followed (review finding, 2026-07-12).
+		big := strings.Repeat("x", 200*1024) // 200 KiB, well past the 64 KiB default
+		input := `{"ts":"2026-02-09T21:30:00Z","event":"tool.call","data":{"tool":"grep","blob":"` + big + `"}}` + "\n" +
+			`{"ts":"2026-02-09T21:30:01Z","event":"agent.end","data":{"status":"pass"}}` + "\n"
+
+		r := schema.NewEventReader(strings.NewReader(input))
+
+		events := []schema.Event{}
+		for {
+			event, err := r.Read()
+			if err == io.EOF {
+				break
+			}
+			Expect(err).NotTo(HaveOccurred())
+			events = append(events, *event)
+		}
+
+		Expect(events).To(HaveLen(2))
+		Expect(events[0].Type).To(Equal(schema.EventToolCall))
+		Expect(events[1].Type).To(Equal(schema.EventAgentEnd))
+	})
+
 	It("returns an error for invalid JSON", func() {
 		input := "not valid json\n"
 		r := schema.NewEventReader(strings.NewReader(input))
