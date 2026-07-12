@@ -702,6 +702,7 @@ var _ = Describe("AgentStep", func() {
 	Context("flight-recorder ingestion", func() {
 		var resultsJSON string
 		var eventLines []string
+		var streamFullFlight func(context.Context, runtime.Artifact, string) (io.ReadCloser, error)
 
 		BeforeEach(func() {
 			resultsJSON = `{"schema_version":"1.0","status":"pass","confidence":1,"summary":"done","artifacts":[]}`
@@ -717,7 +718,7 @@ var _ = Describe("AgentStep", func() {
 			// detached ingestCtx keeps reads live even when the step's
 			// timeout-scoped ctx has expired (finding F4), and the pre-fix
 			// code (threading the expired ctx) fails these specs.
-			fakeStreamer.StreamFileStub = func(ctx context.Context, artifact runtime.Artifact, path string) (io.ReadCloser, error) {
+			streamFullFlight = func(ctx context.Context, artifact runtime.Artifact, path string) (io.ReadCloser, error) {
 				if err := ctx.Err(); err != nil {
 					return nil, err
 				}
@@ -730,6 +731,7 @@ var _ = Describe("AgentStep", func() {
 					return nil, fmt.Errorf("no fixture for %q", path)
 				}
 			}
+			fakeStreamer.StreamFileStub = streamFullFlight
 
 			// first ingestion of a (build_id, plan_id) is always a fresh insert
 			fakeMetricsStore.UpsertReturningInsertedReturns(true, nil, nil)
@@ -921,19 +923,7 @@ var _ = Describe("AgentStep", func() {
 			// Run 2: the tracker re-runs the step, the resumed claude finishes,
 			// and full ingestion reads the real cost. The upsert UPDATES the
 			// zero-cost partial row and returns its counters as prev.
-			fakeStreamer.StreamFileStub = func(ctx context.Context, _ runtime.Artifact, path string) (io.ReadCloser, error) {
-				if err := ctx.Err(); err != nil {
-					return nil, err
-				}
-				switch path {
-				case "results.json":
-					return io.NopCloser(strings.NewReader(resultsJSON)), nil
-				case "events.ndjson":
-					return io.NopCloser(strings.NewReader(strings.Join(eventLines, "\n") + "\n")), nil
-				default:
-					return nil, fmt.Errorf("no fixture for %q", path)
-				}
-			}
+			fakeStreamer.StreamFileStub = streamFullFlight
 			fakeMetricsStore.UpsertReturningInsertedReturns(false, &schema.RunMetrics{}, nil) // prev = the zero-cost partial
 			_, err = step.Run(ctx, state)
 			Expect(err).ToNot(HaveOccurred())
@@ -944,6 +934,76 @@ var _ = Describe("AgentStep", func() {
 			Expect(entry.InputTokens).To(Equal(int64(100)))
 			Expect(entry.OutputTokens).To(Equal(int64(50)))
 			Expect(entry.Turns).To(Equal(9))
+		})
+
+		// --- review finding (degraded first ingestion, 2026-07-12): the
+		// one-and-only first insert of a (build_id, plan_id) can be consumed by
+		// a ZERO-cost write, and a first-insert-only ledger gate would then skip
+		// the healing re-ingestion (an update) too — the step's real spend would
+		// permanently miss agent_cost_ledger even though agent_run_metrics
+		// healed, silently under-counting budget admission. Two shapes: ---
+
+		It("charges the full cost when the first ingestion was fully degraded and a resume heals it", func() {
+			// Run 1: no flight data readable at all (transient artifact-daemon
+			// outage, mTLS hiccup) ⇒ flightRead=false ⇒ the degraded path lands
+			// InsertIfAbsent's zero-cost error row (inserted=true), and there is
+			// nothing to charge yet.
+			fakeStreamer.StreamFileStub = nil
+			fakeStreamer.StreamFileReturns(nil, errors.New("artifact daemon unreachable"))
+			fakeMetricsStore.InsertIfAbsentReturns(true, nil)
+			_, err := step.Run(ctx, state)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(fakeMetricsStore.InsertIfAbsentCallCount()).To(Equal(1))
+			Expect(fakeChecker.RecordCallCount()).To(BeZero()) // nothing measured yet
+
+			// Run 2: a re-ingestion (same-web tracker re-run) reads the full
+			// flight and UPDATES the degraded row; prev carries its zero
+			// counters, so the delta is the entire real spend.
+			fakeStreamer.StreamFileStub = streamFullFlight
+			fakeMetricsStore.UpsertReturningInsertedReturns(false, &schema.RunMetrics{}, nil) // prev = the zero-cost error row
+			_, err = step.Run(ctx, state)
+			Expect(err).ToNot(HaveOccurred())
+
+			Expect(fakeChecker.RecordCallCount()).To(Equal(1)) // the spend reaches the ledger exactly once
+			entry := fakeChecker.RecordArgsForCall(0)
+			Expect(entry.CostUSD).To(BeNumerically("~", 0.42, 1e-9))
+			Expect(entry.InputTokens).To(Equal(int64(100)))
+			Expect(entry.Turns).To(Equal(9))
+		})
+
+		It("charges the full cost when the first ingestion read results.json but the events stream failed", func() {
+			// Run 1: results.json streams fine but the events.ndjson read fails
+			// ⇒ flightRead=true, so the zero-cost row goes through the FULL
+			// upsert (never InsertIfAbsent) and consumes the first insert with
+			// cost 0 — cost only ever comes from events.ndjson.
+			fakeStreamer.StreamFileStub = func(ctx context.Context, _ runtime.Artifact, path string) (io.ReadCloser, error) {
+				if err := ctx.Err(); err != nil {
+					return nil, err
+				}
+				if path == "results.json" {
+					return io.NopCloser(strings.NewReader(resultsJSON)), nil
+				}
+				return nil, errors.New("events stream reset by peer")
+			}
+			fakeMetricsStore.UpsertReturningInsertedReturns(true, nil, nil) // fresh insert
+			_, err := step.Run(ctx, state)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(fakeMetricsStore.InsertIfAbsentCallCount()).To(BeZero()) // partial read is NOT the degraded path
+			Expect(fakeMetricsStore.UpsertReturningInsertedCallCount()).To(Equal(1))
+			Expect(fakeMetricsStore.UpsertReturningInsertedArgsForCall(0).CostUSD).To(BeZero())
+			Expect(fakeChecker.RecordCallCount()).To(BeZero()) // nothing measured yet
+
+			// Run 2: the healing re-ingestion reads events too and UPDATES the
+			// row; prev.cost==0 ⇒ the delta charges the whole real cost.
+			fakeStreamer.StreamFileStub = streamFullFlight
+			fakeMetricsStore.UpsertReturningInsertedReturns(false, &schema.RunMetrics{}, nil) // prev = the zero-cost partial
+			_, err = step.Run(ctx, state)
+			Expect(err).ToNot(HaveOccurred())
+
+			Expect(fakeChecker.RecordCallCount()).To(Equal(1)) // the spend reaches the ledger exactly once
+			entry := fakeChecker.RecordArgsForCall(0)
+			Expect(entry.CostUSD).To(BeNumerically("~", 0.42, 1e-9))
+			Expect(entry.OutputTokens).To(Equal(int64(50)))
 		})
 
 		It("charges only the delta when a prior partial ingestion already appended spend", func() {

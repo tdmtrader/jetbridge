@@ -705,12 +705,19 @@ func (step *AgentStep) ingestFlightRecorder(
 	// (finding F3, amended for the severed-exec case): a fresh insert charges
 	// rm's full cost; an update charges cost - prev.cost. Because every append
 	// is itself gated on a positive delta, prev.cost is exactly what earlier
-	// ingestions already appended — in particular a transient exec sever makes
-	// the flight readable (F23) before the runner wrote cost.record (it only
-	// does so after claude exits), so the partial ingestion inserts a ZERO-cost
-	// row and appends nothing, and the resume's full ingestion (an update, so
-	// a first-insert-only gate would skip it and lose the step's entire spend)
-	// still charges the whole real cost. On a metrics-store error, or an
+	// ingestions already appended. That matters because the one-and-only first
+	// insert can be consumed by a ZERO-cost write in several shapes: a
+	// transient exec sever makes the flight readable (F23) before the runner
+	// wrote cost.record (it only does so after claude exits); a fully DEGRADED
+	// first ingestion (flightRead=false — artifact-daemon outage, mTLS hiccup)
+	// lands InsertIfAbsent's zero-cost error row; or results.json streams fine
+	// while the events.ndjson read fails (flightRead=true, zero-cost full
+	// upsert — cost only ever comes from events). In every shape the later
+	// successful re-ingestion arrives as an UPDATE — a first-insert-only gate
+	// would skip it and the step's entire spend would permanently miss
+	// agent_cost_ledger even though agent_run_metrics healed (review finding,
+	// 2026-07-12) — and the delta prev.cost==0 → cost charges the whole real
+	// amount exactly once. On a metrics-store error, or an
 	// insert that lost a concurrent-ingestion race (inserted=false, prev=nil),
 	// the delta is indeterminate and the append is skipped, preserving "every
 	// dollar enters the ledger exactly once" over "at least once".
