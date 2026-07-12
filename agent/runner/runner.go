@@ -1,0 +1,385 @@
+// Package runner is the deterministic agent-step pod entrypoint: it waits
+// for the declared MCP sidecars to become healthy, invokes the claude CLI,
+// and writes the flight recorder (flight/events.ndjson + flight/results.json).
+package runner
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+
+	schema "github.com/concourse/concourse/agent/schema"
+)
+
+// Sidecar health-check cadence (§8.5: every MCP sidecar exposes GET /healthz).
+var (
+	sidecarHealthInterval = 2 * time.Second
+	sidecarHealthTimeout  = 60 * time.Second
+)
+
+const maxSummaryChars = 500
+
+// Config drives one agent-step execution.
+type Config struct {
+	Prompt       string
+	PromptFile   string
+	Model        string
+	MaxTurns     int
+	OutputSchema string
+	FlightDir    string
+	WorkDir      string
+	StepName     string
+	ClaudePath   string
+	MCPServers   map[string]string
+	Stdout       io.Writer
+	Stderr       io.Writer
+}
+
+var mcpURLPattern = regexp.MustCompile(`^([A-Z]+)_MCP_URL$`)
+
+// FromEnv builds a Config from the §8.1 environment contract set by the
+// agent-step exec. MCP servers are discovered by scanning the environment
+// for variables matching ^([A-Z]+)_MCP_URL$ (DEV_MCP_URL -> key "dev").
+func FromEnv() Config {
+	wd, _ := os.Getwd()
+
+	cfg := Config{
+		Prompt:       os.Getenv("AGENT_PROMPT"),
+		PromptFile:   os.Getenv("AGENT_PROMPT_FILE"),
+		Model:        os.Getenv("AGENT_MODEL"),
+		OutputSchema: os.Getenv("AGENT_OUTPUT_SCHEMA"),
+		FlightDir:    os.Getenv("AGENT_FLIGHT_DIR"),
+		StepName:     os.Getenv("AGENT_STEP_NAME"),
+		WorkDir:      wd,
+		MCPServers:   map[string]string{},
+	}
+
+	if v := os.Getenv("AGENT_MAX_TURNS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.MaxTurns = n
+		}
+	}
+
+	for _, kv := range os.Environ() {
+		name, value, ok := strings.Cut(kv, "=")
+		if !ok || value == "" {
+			continue
+		}
+		if m := mcpURLPattern.FindStringSubmatch(name); m != nil {
+			cfg.MCPServers[strings.ToLower(m[1])] = value
+		}
+	}
+
+	return cfg
+}
+
+// Run executes one agent step: resolve the prompt, wait for sidecars,
+// invoke claude, and write the flight recorder. The returned exit code
+// follows the step contract: 0 = pass, 2 = platform error (including
+// claude CLI errors). A non-nil error means the runner itself broke
+// before the outcome could be recorded.
+func Run(ctx context.Context, cfg Config) (int, error) {
+	start := time.Now()
+
+	stdout := cfg.Stdout
+	if stdout == nil {
+		stdout = os.Stdout
+	}
+	stderr := cfg.Stderr
+	if stderr == nil {
+		stderr = os.Stderr
+	}
+	claudePath := cfg.ClaudePath
+	if claudePath == "" {
+		claudePath = "claude"
+	}
+
+	// 1. Resolve the prompt: inline wins, else artifact-relative file.
+	prompt := cfg.Prompt
+	if prompt == "" && cfg.PromptFile != "" {
+		raw, err := os.ReadFile(filepath.Join(cfg.WorkDir, cfg.PromptFile))
+		if err != nil {
+			return 2, fmt.Errorf("read prompt file: %w", err)
+		}
+		prompt = string(raw)
+	}
+	if prompt == "" {
+		return 2, errors.New("no prompt configured")
+	}
+
+	// Open the flight recorder up-front so every exit path can honor the
+	// contract that the event stream starts with step.start and ends with
+	// step.end.
+	if err := os.MkdirAll(cfg.FlightDir, 0o755); err != nil {
+		return 2, fmt.Errorf("create flight dir: %w", err)
+	}
+	eventsFile, err := os.Create(filepath.Join(cfg.FlightDir, "events.ndjson"))
+	if err != nil {
+		return 2, fmt.Errorf("open events.ndjson: %w", err)
+	}
+	defer eventsFile.Close()
+	events := schema.NewEventWriter(eventsFile)
+
+	writeEvent(events, schema.EventStepStart, schema.StepStartData{
+		StepName: cfg.StepName,
+	})
+
+	// 2. Wait for every declared MCP sidecar to become healthy. A sidecar
+	// that never comes up is a platform error, not an agent failure.
+	if err := waitForSidecars(ctx, cfg.MCPServers); err != nil {
+		writeEvent(events, schema.EventError, map[string]string{"message": err.Error()})
+		writeEvent(events, schema.EventStepEnd, schema.StepEndData{
+			StepName:        cfg.StepName,
+			Status:          schema.RunStatusError,
+			Summary:         err.Error(),
+			WallTimeSeconds: int(time.Since(start).Seconds()),
+		})
+		return 2, nil
+	}
+
+	// 4. Invoke the claude CLI.
+	args := []string{"-p", prompt, "--output-format", "json"}
+	if cfg.Model != "" {
+		args = append(args, "--model", cfg.Model)
+	}
+	if cfg.MaxTurns > 0 {
+		args = append(args, "--max-turns", strconv.Itoa(cfg.MaxTurns))
+	}
+	args = append(args, "--dangerously-skip-permissions")
+
+	if len(cfg.MCPServers) > 0 {
+		mcpConfigPath, err := writeMCPConfig(cfg.MCPServers)
+		if err != nil {
+			return 2, fmt.Errorf("write mcp config: %w", err)
+		}
+		defer os.Remove(mcpConfigPath)
+		args = append(args, "--mcp-config", mcpConfigPath)
+	}
+
+	var buf bytes.Buffer
+	cmd := exec.CommandContext(ctx, claudePath, args...)
+	cmd.Dir = cfg.WorkDir
+	cmd.Stdout = io.MultiWriter(&buf, stdout)
+	cmd.Stderr = stderr
+	runErr := cmd.Run()
+	if runErr != nil {
+		fmt.Fprintf(stderr, "agent-runner: claude: %v\n", runErr)
+	}
+
+	// 5. Parse the last non-empty stdout line as the CLI envelope,
+	// tolerating leading non-JSON output.
+	env, parseErr := parseEnvelope(buf.Bytes())
+
+	writeEvent(events, schema.EventCostRecord, schema.CostRecordData{
+		Source:              "agent_step",
+		Provider:            "anthropic",
+		Model:               env.Model,
+		InputTokens:         env.Usage.InputTokens,
+		OutputTokens:        env.Usage.OutputTokens,
+		CacheReadTokens:     env.Usage.CacheReadInputTokens,
+		CacheCreationTokens: env.Usage.CacheCreationInputTokens,
+		Turns:               env.NumTurns,
+		CostUSD:             env.costUSD(),
+	})
+
+	// 6. Map the outcome onto the results.json wire status.
+	status := schema.StatusPass
+	if runErr != nil || parseErr != nil || env.IsError {
+		status = schema.StatusError
+	}
+	exitCode := 0
+	if status == schema.StatusError {
+		exitCode = 2
+	}
+
+	summary := summaryFromResult(env.Result)
+	if summary == "" {
+		switch {
+		case runErr != nil:
+			summary = runErr.Error()
+		case parseErr != nil:
+			summary = fmt.Sprintf("unparseable claude output: %v", parseErr)
+		default:
+			summary = "(no result)"
+		}
+	}
+	summary = truncate(summary, maxSummaryChars)
+
+	results := schema.Results{
+		SchemaVersion: "1.0",
+		Status:        status,
+		Confidence:    1,
+		Summary:       summary,
+		Artifacts:     []schema.Artifact{},
+	}
+	resultsJSON, err := json.Marshal(results)
+	if err != nil {
+		return 2, fmt.Errorf("marshal results: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(cfg.FlightDir, "results.json"), resultsJSON, 0o644); err != nil {
+		return 2, fmt.Errorf("write results.json: %w", err)
+	}
+
+	// 7. Close out the event stream.
+	threeWay, _ := schema.ThreeWayStatus(status)
+	writeEvent(events, schema.EventStepEnd, schema.StepEndData{
+		StepName:        cfg.StepName,
+		Status:          threeWay,
+		Summary:         summary,
+		WallTimeSeconds: int(time.Since(start).Seconds()),
+		CostUSD:         env.costUSD(),
+		Turns:           env.NumTurns,
+	})
+
+	return exitCode, nil
+}
+
+// waitForSidecars polls GET <url with /mcp replaced by /healthz> for every
+// declared MCP server until each responds 200, checking in deterministic
+// (sorted-name) order.
+func waitForSidecars(ctx context.Context, servers map[string]string) error {
+	names := make([]string, 0, len(servers))
+	for name := range servers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	client := &http.Client{Timeout: sidecarHealthInterval}
+	for _, name := range names {
+		if err := waitHealthy(ctx, client, name, healthzURL(servers[name])); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func healthzURL(mcpURL string) string {
+	return strings.TrimSuffix(mcpURL, "/mcp") + "/healthz"
+}
+
+func waitHealthy(ctx context.Context, client *http.Client, name, url string) error {
+	deadline := time.Now().Add(sidecarHealthTimeout)
+	for {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err == nil {
+			resp, err := client.Do(req)
+			if err == nil {
+				resp.Body.Close()
+				if resp.StatusCode == http.StatusOK {
+					return nil
+				}
+			}
+		}
+
+		if time.Now().After(deadline) {
+			return fmt.Errorf("sidecar %s never became healthy", name)
+		}
+
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("sidecar %s never became healthy", name)
+		case <-time.After(sidecarHealthInterval):
+		}
+	}
+}
+
+// writeMCPConfig writes the claude CLI --mcp-config file mapping each
+// declared sidecar to its HTTP MCP endpoint.
+func writeMCPConfig(servers map[string]string) (string, error) {
+	type serverEntry struct {
+		Type string `json:"type"`
+		URL  string `json:"url"`
+	}
+	entries := make(map[string]serverEntry, len(servers))
+	for name, url := range servers {
+		entries[name] = serverEntry{Type: "http", URL: url}
+	}
+	payload, err := json.Marshal(map[string]any{"mcpServers": entries})
+	if err != nil {
+		return "", err
+	}
+
+	f, err := os.CreateTemp("", "agent-runner-mcp-*.json")
+	if err != nil {
+		return "", err
+	}
+	if _, err := f.Write(payload); err != nil {
+		f.Close()
+		os.Remove(f.Name())
+		return "", err
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(f.Name())
+		return "", err
+	}
+	return f.Name(), nil
+}
+
+// parseEnvelope finds the last non-empty line of the CLI's stdout and
+// parses it as the --output-format json envelope.
+func parseEnvelope(out []byte) (cliEnvelope, error) {
+	var env cliEnvelope
+
+	lines := strings.Split(string(out), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line == "" {
+			continue
+		}
+		if err := json.Unmarshal([]byte(line), &env); err != nil {
+			return cliEnvelope{}, fmt.Errorf("parse CLI envelope: %w", err)
+		}
+		return env, nil
+	}
+	return cliEnvelope{}, errors.New("no CLI output to parse")
+}
+
+// summaryFromResult extracts a human-readable summary from the envelope's
+// result field. The CLI encodes the agent's textual output as a JSON string;
+// unquote it once when possible.
+func summaryFromResult(raw json.RawMessage) string {
+	s := strings.TrimSpace(string(raw))
+	if s == "" || s == "null" {
+		return ""
+	}
+	if s[0] == '"' {
+		var unquoted string
+		if json.Unmarshal(raw, &unquoted) == nil {
+			return unquoted
+		}
+	}
+	return s
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	runes := []rune(s)
+	if len(runes) <= n {
+		return s
+	}
+	return string(runes[:n])
+}
+
+// writeEvent marshals data and appends it to the flight recorder,
+// best-effort: an unwritable event must not abort the run itself.
+func writeEvent(w *schema.EventWriter, t schema.EventType, data any) {
+	raw, err := json.Marshal(data)
+	if err != nil {
+		return
+	}
+	_ = w.Write(schema.Event{Type: t, Data: raw})
+}
