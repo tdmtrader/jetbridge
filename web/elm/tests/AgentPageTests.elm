@@ -3,11 +3,14 @@ module AgentPageTests exposing (all)
 import Application.Application as Application
 import Common
 import Data
+import Expect
 import Http
 import Message.Callback as Callback
+import Message.Message
+import Message.TopLevelMessage as Msgs
 import Test exposing (Test, describe, test)
 import Test.Html.Query as Query
-import Test.Html.Selector exposing (class, containing, text)
+import Test.Html.Selector exposing (class, containing, style, text)
 import Time
 
 
@@ -233,4 +236,59 @@ all =
                     |> Common.queryView
                     |> Query.has
                         [ text "not authorized — the agent principals API is admin-only" ]
+        , test "the mint button shows a disabled minting state after submit" <|
+            \_ ->
+                Common.init "/agent"
+                    |> Application.update
+                        (Msgs.Update <| Message.Message.AgentMintNameChanged "reviewer")
+                    |> Tuple.first
+                    |> Application.update
+                        (Msgs.Update <| Message.Message.AgentMintScopeToggled "reviews:write")
+                    |> Tuple.first
+                    |> Application.update
+                        (Msgs.Update Message.Message.AgentMintSubmitted)
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Query.find [ class "agent-mint-button" ]
+                    |> Expect.all
+                        [ Query.has [ text "minting…" ]
+                        , Query.has [ style "cursor" "not-allowed" ]
+                        ]
+        , test "a revoke failure surfaces in the principals section, not the mint form" <|
+            \_ ->
+                Common.init "/agent"
+                    |> Application.handleCallback
+                        (Callback.AgentPrincipalsFetched (Ok [ samplePrincipal ]))
+                    |> Tuple.first
+                    |> Application.handleCallback
+                        (Callback.AgentPrincipalRevoked Data.httpForbidden)
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Expect.all
+                        [ Query.find [ class "agent-revoke-error" ]
+                            >> Query.has [ text "not authorized — principals are admin-only" ]
+                        , Query.find [ class "agent-mint-form" ]
+                            >> Query.hasNot [ text "not authorized — principals are admin-only" ]
+                        ]
+        , test "a non-numeric expiry shows a hint and disables minting" <|
+            \_ ->
+                Common.init "/agent"
+                    |> Application.update
+                        (Msgs.Update <| Message.Message.AgentMintNameChanged "reviewer")
+                    |> Tuple.first
+                    |> Application.update
+                        (Msgs.Update <| Message.Message.AgentMintScopeToggled "reviews:write")
+                    |> Tuple.first
+                    |> Application.update
+                        (Msgs.Update <| Message.Message.AgentMintExpiresChanged "soon")
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Expect.all
+                        [ Query.has
+                            [ class "agent-mint-expires-hint"
+                            , text "must be a positive number of days; leave blank for no expiry"
+                            ]
+                        , Query.find [ class "agent-mint-button" ]
+                            >> Query.has [ style "cursor" "not-allowed" ]
+                        ]
         ]

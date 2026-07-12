@@ -67,6 +67,8 @@ type alias Model =
         , mintExpiresDays : String
         , mintedToken : Maybe String
         , mintError : Maybe String
+        , minting : Bool
+        , revokeError : Maybe String
         }
 
 
@@ -86,6 +88,8 @@ init =
       , mintExpiresDays = ""
       , mintedToken = Nothing
       , mintError = Nothing
+      , minting = False
+      , revokeError = Nothing
       , isUserMenuExpanded = False
       }
     , [ FetchAgentWorkflows
@@ -132,6 +136,7 @@ handleCallback callback ( model, effects ) =
             -- Surface the one-time token, clear the form, and refetch so the
             -- new principal appears in the table. The refetch does not touch
             -- mintedToken, so the token box survives the next 5s tick.
+            -- Clearing `minting` re-enables the form for the next mint.
             ( { model
                 | mintedToken = Just created.token
                 , mintName = ""
@@ -139,18 +144,24 @@ handleCallback callback ( model, effects ) =
                 , mintScopes = Set.empty
                 , mintExpiresDays = ""
                 , mintError = Nothing
+                , minting = False
               }
             , effects ++ [ FetchAgentPrincipals ]
             )
 
         AgentPrincipalCreated (Err err) ->
-            ( { model | mintError = Just (mutationError "mint" err) }, effects )
+            -- Re-enable the form so the admin can retry after a failed mint.
+            ( { model | mintError = Just (mutationError "mint" err), minting = False }
+            , effects
+            )
 
         AgentPrincipalRevoked (Ok ()) ->
-            ( model, effects ++ [ FetchAgentPrincipals ] )
+            ( { model | revokeError = Nothing }, effects ++ [ FetchAgentPrincipals ] )
 
         AgentPrincipalRevoked (Err err) ->
-            ( { model | mintError = Just (mutationError "revoke" err) }, effects )
+            -- Revoke failures surface next to the principals table (via
+            -- revokeError), not inside the mint form.
+            ( { model | revokeError = Just (mutationError "revoke" err) }, effects )
 
         _ ->
             ( model, effects )
@@ -191,12 +202,35 @@ mutationError verb err =
             "couldn't " ++ verb ++ " principal"
 
 
-{-| The mint button is enabled only with a non-empty name and at least one
-scope selected — the same required-field rule the API enforces.
+{-| The mint button is enabled only with a non-empty name, at least one scope
+selected, and a valid expiry field — the same required-field rule the API
+enforces. A blank expiry is valid (= no expiry); any non-blank value must
+parse to a positive integer number of days.
 -}
 canMint : Model -> Bool
 canMint model =
-    (String.trim model.mintName /= "") && not (Set.isEmpty model.mintScopes)
+    (String.trim model.mintName /= "")
+        && not (Set.isEmpty model.mintScopes)
+        && expiresIsValid model.mintExpiresDays
+
+
+{-| The "expires in N days" field is valid when it is blank (no expiry) or
+parses to a positive integer. Blank, zero, negative, and non-numeric input
+that would silently mean "never expires" are surfaced as invalid instead.
+-}
+expiresIsValid : String -> Bool
+expiresIsValid raw =
+    case String.trim raw of
+        "" ->
+            True
+
+        trimmed ->
+            case String.toInt trimmed of
+                Just days ->
+                    days > 0
+
+                Nothing ->
+                    False
 
 
 update : Message -> ET Model
@@ -223,8 +257,12 @@ update msg ( model, effects ) =
             ( { model | mintExpiresDays = days }, effects )
 
         AgentMintSubmitted ->
-            if canMint model then
-                ( model
+            -- Guard on `minting` as well so a fast double-click can't dispatch
+            -- two CreateAgentPrincipal effects (which would orphan the first
+            -- one's one-time token). `minting` is cleared in the
+            -- AgentPrincipalCreated Ok/Err handlers.
+            if canMint model && not model.minting then
+                ( { model | minting = True }
                 , effects
                     ++ [ CreateAgentPrincipal
                             { name = String.trim model.mintName
@@ -245,7 +283,10 @@ update msg ( model, effects ) =
             ( { model | mintedToken = Nothing }, effects )
 
         AgentPrincipalRevokeClicked principalId ->
-            ( model, effects ++ [ RevokeAgentPrincipal principalId ] )
+            -- Clear any stale revoke error before the new attempt.
+            ( { model | revokeError = Nothing }
+            , effects ++ [ RevokeAgentPrincipal principalId ]
+            )
 
         _ ->
             ( model, effects )
@@ -804,8 +845,22 @@ principalsSection model =
     sectionBlock "Principals"
         ([ mintForm model ]
             ++ mintedTokenBox model
-            ++ [ principalsBody model ]
+            ++ [ revokeErrorLine model, principalsBody model ]
         )
+
+
+{-| Revoke failures render here, in the principals section next to the table —
+not inside the mint form, where a revoke error would be far from the row that
+triggered it and would only be cleared by a successful mint.
+-}
+revokeErrorLine : Model -> Html Message
+revokeErrorLine model =
+    case model.revokeError of
+        Just message ->
+            Html.div [ class "agent-revoke-error" ] [ errorLine message ]
+
+        Nothing ->
+            Html.text ""
 
 
 mintForm : Model -> Html Message
@@ -886,8 +941,8 @@ expiresField val =
         , style "gap" "4px"
         , style "color" mutedColor
         ]
-        [ Html.text "expires in"
-        , Html.input
+        ([ Html.text "expires in"
+         , Html.input
             [ type_ "text"
             , placeholder "N"
             , value val
@@ -898,10 +953,39 @@ expiresField val =
             , style "font-size" "12px"
             , style "background" Colors.background
             , style "color" Colors.text
-            , style "border" ("1px solid " ++ subtleColor)
+            , style "border"
+                ("1px solid "
+                    ++ (if expiresIsValid val then
+                            subtleColor
+
+                        else
+                            amberColor
+                       )
+                )
             ]
             []
-        , Html.text "days (optional)"
+         , Html.text "days (optional)"
+         ]
+            ++ expiresHint val
+        )
+
+
+{-| Inline hint shown only when the expires field has non-blank input that does
+not parse to a positive integer. Without this the field would silently mean
+"never expires", which is a surprising, easy-to-miss failure.
+-}
+expiresHint : String -> List (Html Message)
+expiresHint val =
+    if expiresIsValid val then
+        []
+
+    else
+        [ Html.span
+            [ class "agent-mint-expires-hint"
+            , style "color" amberColor
+            , style "font-size" "11px"
+            ]
+            [ Html.text "must be a positive number of days; leave blank for no expiry" ]
         ]
 
 
@@ -909,7 +993,14 @@ mintButton : Model -> Html Message
 mintButton model =
     let
         enabled =
-            canMint model
+            canMint model && not model.minting
+
+        label =
+            if model.minting then
+                "minting…"
+
+            else
+                "mint"
     in
     Html.button
         [ class "agent-mint-button"
@@ -943,7 +1034,7 @@ mintButton model =
                 subtleColor
             )
         ]
-        [ Html.text "mint" ]
+        [ Html.text label ]
 
 
 mintErrorLine : Model -> Html Message
