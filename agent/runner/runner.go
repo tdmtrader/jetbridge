@@ -45,6 +45,19 @@ type Config struct {
 	MCPServers   map[string]string
 	Stdout       io.Writer
 	Stderr       io.Writer
+
+	// Step identity for the step.start payload (shared-contracts §5):
+	// build_id and plan_id are the correlation key consumers use to join
+	// the event stream back to its agent_run_metrics row, so they are NOT
+	// optional. The remaining fields are the optional ticket/workflow/budget
+	// tags; zero values mean absent (pure-CI step).
+	BuildID         int
+	PlanID          string
+	TicketID        int
+	WorkflowName    string
+	WorkflowVersion int
+	WorkflowHash    string
+	BudgetSliceUSD  float64
 }
 
 var mcpURLPattern = regexp.MustCompile(`^([A-Z]+)_MCP_URL$`)
@@ -64,6 +77,23 @@ func FromEnv() Config {
 		StepName:     os.Getenv("AGENT_STEP_NAME"),
 		WorkDir:      wd,
 		MCPServers:   map[string]string{},
+
+		// §5 step.start identity: BUILD_ID is jetbridge/exec-injected;
+		// AGENT_PLAN_ID is set by the agent-step exec (never public YAML);
+		// AGENT_TICKET_ID and AGENT_WORKFLOW_* arrive via renderer-emitted
+		// plan env, empty for pure-CI steps.
+		PlanID:          os.Getenv("AGENT_PLAN_ID"),
+		BuildID:         envInt("BUILD_ID"),
+		TicketID:        envInt("AGENT_TICKET_ID"),
+		WorkflowName:    os.Getenv("AGENT_WORKFLOW_NAME"),
+		WorkflowVersion: envInt("AGENT_WORKFLOW_VERSION"),
+		WorkflowHash:    os.Getenv("AGENT_WORKFLOW_HASH"),
+	}
+
+	if v := os.Getenv("AGENT_BUDGET_SLICE_USD"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && f > 0 {
+			cfg.BudgetSliceUSD = f
+		}
 	}
 
 	if v := os.Getenv("AGENT_MAX_TURNS"); v != "" {
@@ -83,6 +113,16 @@ func FromEnv() Config {
 	}
 
 	return cfg
+}
+
+// envInt parses name as a positive integer; anything else (unset, empty,
+// malformed, non-positive) means absent and returns 0.
+func envInt(name string) int {
+	n, err := strconv.Atoi(os.Getenv(name))
+	if err != nil || n <= 0 {
+		return 0
+	}
+	return n
 }
 
 // Run executes one agent step: resolve the prompt, wait for sidecars,
@@ -132,9 +172,27 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 	defer eventsFile.Close()
 	events := schema.NewEventWriter(eventsFile)
 
-	writeEvent(events, schema.EventStepStart, schema.StepStartData{
-		StepName: cfg.StepName,
-	})
+	// step.start carries the full §5 identity payload: build_id and plan_id
+	// are the correlation key consumers (scorecards, process-intel drill-down)
+	// use to join this event stream back to its agent_run_metrics row, so
+	// they must never be left zero (review finding, 2026-07-12).
+	startData := schema.StepStartData{
+		StepName:       cfg.StepName,
+		BuildID:        cfg.BuildID,
+		PlanID:         cfg.PlanID,
+		WorkflowName:   cfg.WorkflowName,
+		WorkflowHash:   cfg.WorkflowHash,
+		BudgetSliceUSD: cfg.BudgetSliceUSD,
+	}
+	if cfg.TicketID > 0 {
+		ticketID := cfg.TicketID
+		startData.TicketID = &ticketID
+	}
+	if cfg.WorkflowVersion > 0 {
+		workflowVersion := cfg.WorkflowVersion
+		startData.WorkflowVersion = &workflowVersion
+	}
+	writeEvent(events, schema.EventStepStart, startData)
 
 	// 2. Wait for every declared MCP sidecar to become healthy. A sidecar
 	// that never comes up is a platform error, not an agent failure.

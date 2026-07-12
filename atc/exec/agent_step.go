@@ -282,6 +282,12 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 		env = append(env, k+"="+resolvedEnv[k])
 	}
 	env = append(env, "AGENT_STEP_NAME="+step.plan.Name)
+	// Exec-set identity row (never public YAML, like AGENT_STEP_NAME): the
+	// runner needs the plan id to populate step.start's non-optional plan_id —
+	// (build_id, plan_id) is the §5 correlation key joining the event stream
+	// back to its agent_run_metrics row, and no renderer-emitted env carries
+	// it (review finding, 2026-07-12).
+	env = append(env, "AGENT_PLAN_ID="+string(step.planID))
 	if step.plan.Model != "" {
 		env = append(env, "AGENT_MODEL="+step.plan.Model)
 	}

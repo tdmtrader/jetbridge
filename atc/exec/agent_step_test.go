@@ -218,6 +218,7 @@ var _ = Describe("AgentStep", func() {
 		Expect(spec.Dir).To(Equal("some-artifact-root"))
 		Expect(spec.Env).To(ContainElements(
 			"AGENT_STEP_NAME=write-spec",
+			"AGENT_PLAN_ID=42",
 			"AGENT_PROMPT=do it",
 			"AGENT_MODEL=m1",
 			"AGENT_MAX_TURNS=3",
