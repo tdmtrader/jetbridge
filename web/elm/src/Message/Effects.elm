@@ -218,6 +218,15 @@ type Effect
     | FetchPipelineRuns Concourse.PipelineIdentifier
     | FetchAgentWorkflows
     | FetchAgentCostRollup
+    | FetchAgentCredentials
+    | FetchAgentPrincipals
+    | CreateAgentPrincipal
+        { name : String
+        , description : String
+        , scopes : List String
+        , expiresInDays : Maybe Int
+        }
+    | RevokeAgentPrincipal Int
     | SubmitAgentReviewVerdict
         { repo : String
         , commitSha : String
@@ -795,6 +804,37 @@ runEffect effect key csrfToken =
                 |> Api.request
                 |> Task.attempt AgentCostRollupFetched
 
+        FetchAgentCredentials ->
+            Api.get Endpoints.AgentCredentialsStatus
+                |> Api.expectJson Concourse.Agent.decodeCredentialStatuses
+                |> Api.request
+                |> Task.attempt AgentCredentialsFetched
+
+        FetchAgentPrincipals ->
+            Api.get Endpoints.AgentPrincipalsList
+                |> Api.expectJson Concourse.Agent.decodePrincipals
+                |> Api.request
+                |> Task.attempt AgentPrincipalsFetched
+
+        CreateAgentPrincipal params ->
+            -- expiresInDays is a relative "N days" from the mint form; resolve
+            -- it against the current time so the wire `expires_at` is the
+            -- absolute epoch-seconds the API stores.
+            Time.now
+                |> Task.andThen
+                    (\now ->
+                        Api.post Endpoints.AgentPrincipalsList csrfToken
+                            |> Api.withJsonBody (encodeCreatePrincipal now params)
+                            |> Api.expectJson Concourse.Agent.decodePrincipalCreated
+                            |> Api.request
+                    )
+                |> Task.attempt AgentPrincipalCreated
+
+        RevokeAgentPrincipal principalId ->
+            Api.delete (Endpoints.AgentPrincipal principalId) csrfToken
+                |> Api.request
+                |> Task.attempt AgentPrincipalRevoked
+
         SubmitAgentReviewVerdict params ->
             Api.post Endpoints.AgentFeedback csrfToken
                 |> Api.withJsonBody
@@ -814,6 +854,44 @@ runEffect effect key csrfToken =
                     )
                 |> Api.request
                 |> Task.attempt (AgentReviewVerdictSubmitted params.findingId)
+
+
+encodeCreatePrincipal :
+    Time.Posix
+    ->
+        { name : String
+        , description : String
+        , scopes : List String
+        , expiresInDays : Maybe Int
+        }
+    -> Json.Encode.Value
+encodeCreatePrincipal now params =
+    let
+        nowSeconds =
+            Time.posixToMillis now // 1000
+
+        expiry =
+            case params.expiresInDays of
+                Just days ->
+                    if days > 0 then
+                        [ ( "expires_at"
+                          , Json.Encode.int (nowSeconds + days * 86400)
+                          )
+                        ]
+
+                    else
+                        []
+
+                Nothing ->
+                    []
+    in
+    Json.Encode.object
+        ([ ( "name", Json.Encode.string params.name )
+         , ( "description", Json.Encode.string params.description )
+         , ( "scopes", Json.Encode.list Json.Encode.string params.scopes )
+         ]
+            ++ expiry
+        )
 
 
 pipelinesSectionName : PipelinesSection -> String

@@ -38,6 +38,9 @@ type Endpoint
     | AgentFeedback
     | AgentWorkflowsList
     | AgentCostRollup
+    | AgentCredentialsStatus
+    | AgentPrincipalsList
+    | AgentPrincipal Int
 
 
 type PipelineEndpoint
@@ -215,6 +218,15 @@ builder endpoint =
 
         AgentCostRollup ->
             base |> appendPath [ "agent", "costs" ]
+
+        AgentCredentialsStatus ->
+            base |> appendPath [ "agent", "user-credentials" ]
+
+        AgentPrincipalsList ->
+            base |> appendPath [ "agent", "principals" ]
+
+        AgentPrincipal principalId ->
+            base |> appendPath [ "agent", "principals", String.fromInt principalId ]
 
 
 pipelineEndpoint : PipelineEndpoint -> RouteBuilder

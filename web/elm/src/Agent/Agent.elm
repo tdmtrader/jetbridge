@@ -15,12 +15,13 @@ import Colors
 import Concourse.Agent as Agent
 import EffectTransformer exposing (ET)
 import Html exposing (Html)
-import Html.Attributes exposing (class, id, style)
+import Html.Attributes exposing (checked, class, disabled, id, placeholder, style, type_, value)
+import Html.Events exposing (onClick, onInput)
 import Http
 import Login.Login as Login
 import Message.Callback exposing (Callback(..))
 import Message.Effects exposing (Effect(..))
-import Message.Message exposing (Message)
+import Message.Message exposing (Message(..))
 import Message.Subscription
     exposing
         ( Delivery(..)
@@ -28,10 +29,26 @@ import Message.Subscription
         , Subscription(..)
         )
 import Routes
+import Set exposing (Set)
 import SideBar.SideBar as SideBar
+import Time
 import Tooltip
 import Views.Styles
 import Views.TopBar as TopBar
+
+
+{-| The closed scope vocabulary an admin may grant when minting a principal.
+Mirrors agent/api/principals `ValidScopes`; keep the two in lockstep.
+-}
+mintScopeVocabulary : List String
+mintScopeVocabulary =
+    [ "reviews:write"
+    , "tickets:read"
+    , "tickets:write"
+    , "metrics:write"
+    , "costs:write"
+    , "questions:answer"
+    ]
 
 
 type alias Model =
@@ -40,6 +57,16 @@ type alias Model =
         , costRollup : Maybe Agent.CostRollup
         , workflowsError : Maybe String
         , costError : Maybe String
+        , credentials : Maybe (List Agent.CredentialStatus)
+        , credentialsError : Maybe String
+        , principals : Maybe (List Agent.Principal)
+        , principalsError : Maybe String
+        , mintName : String
+        , mintDescription : String
+        , mintScopes : Set String
+        , mintExpiresDays : String
+        , mintedToken : Maybe String
+        , mintError : Maybe String
         }
 
 
@@ -49,9 +76,23 @@ init =
       , costRollup = Nothing
       , workflowsError = Nothing
       , costError = Nothing
+      , credentials = Nothing
+      , credentialsError = Nothing
+      , principals = Nothing
+      , principalsError = Nothing
+      , mintName = ""
+      , mintDescription = ""
+      , mintScopes = Set.empty
+      , mintExpiresDays = ""
+      , mintedToken = Nothing
+      , mintError = Nothing
       , isUserMenuExpanded = False
       }
-    , [ FetchAgentWorkflows, FetchAgentCostRollup ]
+    , [ FetchAgentWorkflows
+      , FetchAgentCostRollup
+      , FetchAgentCredentials
+      , FetchAgentPrincipals
+      ]
     )
 
 
@@ -75,6 +116,42 @@ handleCallback callback ( model, effects ) =
         AgentCostRollupFetched (Err err) ->
             ( { model | costError = Just (errorMessage "costs" err) }, effects )
 
+        AgentCredentialsFetched (Ok credentials) ->
+            ( { model | credentials = Just credentials, credentialsError = Nothing }, effects )
+
+        AgentCredentialsFetched (Err err) ->
+            ( { model | credentialsError = Just (errorMessage "credentials" err) }, effects )
+
+        AgentPrincipalsFetched (Ok principals) ->
+            ( { model | principals = Just principals, principalsError = Nothing }, effects )
+
+        AgentPrincipalsFetched (Err err) ->
+            ( { model | principalsError = Just (errorMessage "principals" err) }, effects )
+
+        AgentPrincipalCreated (Ok created) ->
+            -- Surface the one-time token, clear the form, and refetch so the
+            -- new principal appears in the table. The refetch does not touch
+            -- mintedToken, so the token box survives the next 5s tick.
+            ( { model
+                | mintedToken = Just created.token
+                , mintName = ""
+                , mintDescription = ""
+                , mintScopes = Set.empty
+                , mintExpiresDays = ""
+                , mintError = Nothing
+              }
+            , effects ++ [ FetchAgentPrincipals ]
+            )
+
+        AgentPrincipalCreated (Err err) ->
+            ( { model | mintError = Just (mutationError "mint" err) }, effects )
+
+        AgentPrincipalRevoked (Ok ()) ->
+            ( model, effects ++ [ FetchAgentPrincipals ] )
+
+        AgentPrincipalRevoked (Err err) ->
+            ( { model | mintError = Just (mutationError "revoke" err) }, effects )
+
         _ ->
             ( model, effects )
 
@@ -97,9 +174,81 @@ errorMessage what err =
             "couldn't load " ++ what
 
 
+{-| Short message for a failed principal mutation (mint/revoke). A 403 is the
+admin-only case; anything else is a generic couldn't-verb message.
+-}
+mutationError : String -> Http.Error -> String
+mutationError verb err =
+    case err of
+        Http.BadStatus { status } ->
+            if status.code == 403 then
+                "not authorized — principals are admin-only"
+
+            else
+                "couldn't " ++ verb ++ " principal"
+
+        _ ->
+            "couldn't " ++ verb ++ " principal"
+
+
+{-| The mint button is enabled only with a non-empty name and at least one
+scope selected — the same required-field rule the API enforces.
+-}
+canMint : Model -> Bool
+canMint model =
+    (String.trim model.mintName /= "") && not (Set.isEmpty model.mintScopes)
+
+
 update : Message -> ET Model
-update _ ( model, effects ) =
-    ( model, effects )
+update msg ( model, effects ) =
+    case msg of
+        AgentMintNameChanged name ->
+            ( { model | mintName = name }, effects )
+
+        AgentMintDescriptionChanged description ->
+            ( { model | mintDescription = description }, effects )
+
+        AgentMintScopeToggled scope ->
+            let
+                scopes =
+                    if Set.member scope model.mintScopes then
+                        Set.remove scope model.mintScopes
+
+                    else
+                        Set.insert scope model.mintScopes
+            in
+            ( { model | mintScopes = scopes }, effects )
+
+        AgentMintExpiresChanged days ->
+            ( { model | mintExpiresDays = days }, effects )
+
+        AgentMintSubmitted ->
+            if canMint model then
+                ( model
+                , effects
+                    ++ [ CreateAgentPrincipal
+                            { name = String.trim model.mintName
+                            , description = String.trim model.mintDescription
+                            , scopes = Set.toList model.mintScopes
+                            , expiresInDays =
+                                model.mintExpiresDays
+                                    |> String.trim
+                                    |> String.toInt
+                            }
+                       ]
+                )
+
+            else
+                ( model, effects )
+
+        AgentMintedTokenDismissed ->
+            ( { model | mintedToken = Nothing }, effects )
+
+        AgentPrincipalRevokeClicked principalId ->
+            ( model, effects ++ [ RevokeAgentPrincipal principalId ] )
+
+        _ ->
+            ( model, effects )
 
 
 tooltip : Model -> a -> Maybe Tooltip.Tooltip
@@ -111,8 +260,16 @@ handleDelivery : Delivery -> ET Model
 handleDelivery delivery ( model, effects ) =
     case delivery of
         ClockTicked FiveSeconds _ ->
+            -- Self-healing refresh. These fetches only replace the fetched
+            -- data (and clear their own errors); they never touch the mint
+            -- form or the one-time token box, so a tick can't wipe them.
             ( model
-            , effects ++ [ FetchAgentWorkflows, FetchAgentCostRollup ]
+            , effects
+                ++ [ FetchAgentWorkflows
+                   , FetchAgentCostRollup
+                   , FetchAgentCredentials
+                   , FetchAgentPrincipals
+                   ]
             )
 
         _ ->
@@ -276,6 +433,8 @@ view session model =
                     [ Html.text "workflows and spend" ]
                 , workflowsSection model
                 , costsSection model
+                , credentialsSection model
+                , principalsSection model
                 ]
             ]
         ]
@@ -494,3 +653,441 @@ costCell align content =
         , style "border-bottom" rowBorder
         ]
         [ Html.text content ]
+
+
+
+-- SHARED TABLE + TIME HELPERS
+
+
+tableHeaderCell : String -> String -> Html Message
+tableHeaderCell align content =
+    Html.th
+        [ style "text-align" align
+        , style "padding" "4px 16px 4px 0"
+        , style "color" mutedColor
+        , style "font-weight" "700"
+        , style "border-bottom" rowBorder
+        ]
+        [ Html.text content ]
+
+
+tableCell : String -> String -> Html Message
+tableCell align content =
+    Html.td
+        [ style "text-align" align
+        , style "padding" "4px 16px 4px 0"
+        , style "border-bottom" rowBorder
+        ]
+        [ Html.text content ]
+
+
+{-| Humanize an optional epoch timestamp as a UTC yyyy-mm-dd date, or "—"
+when absent. Deliberately timezone-independent (UTC) so it is deterministic.
+-}
+formatPosix : Maybe Time.Posix -> String
+formatPosix maybe =
+    case maybe of
+        Nothing ->
+            "—"
+
+        Just posix ->
+            String.fromInt (Time.toYear Time.utc posix)
+                ++ "-"
+                ++ pad2 (monthNumber (Time.toMonth Time.utc posix))
+                ++ "-"
+                ++ pad2 (Time.toDay Time.utc posix)
+
+
+pad2 : Int -> String
+pad2 n =
+    String.padLeft 2 '0' (String.fromInt n)
+
+
+monthNumber : Time.Month -> Int
+monthNumber month =
+    case month of
+        Time.Jan ->
+            1
+
+        Time.Feb ->
+            2
+
+        Time.Mar ->
+            3
+
+        Time.Apr ->
+            4
+
+        Time.May ->
+            5
+
+        Time.Jun ->
+            6
+
+        Time.Jul ->
+            7
+
+        Time.Aug ->
+            8
+
+        Time.Sep ->
+            9
+
+        Time.Oct ->
+            10
+
+        Time.Nov ->
+            11
+
+        Time.Dec ->
+            12
+
+
+
+-- CREDENTIALS SECTION (read-only status)
+
+
+credentialsSection : Model -> Html Message
+credentialsSection model =
+    sectionBlock "Credentials" <|
+        mutedLine "set or rotate with: fly agent auth"
+            :: (case model.credentials of
+                    Nothing ->
+                        case model.credentialsError of
+                            Just message ->
+                                [ errorLine message ]
+
+                            Nothing ->
+                                [ mutedLine "loading…" ]
+
+                    Just [] ->
+                        [ mutedLine "no credentials stored — run: fly agent auth" ]
+
+                    Just creds ->
+                        [ credentialsTable creds ]
+               )
+
+
+credentialsTable : List Agent.CredentialStatus -> Html Message
+credentialsTable creds =
+    Html.table
+        [ class "agent-credentials-table"
+        , style "border-collapse" "collapse"
+        , style "font-family" "monospace"
+        , style "font-size" "12px"
+        , style "color" Colors.text
+        ]
+        (Html.tr []
+            [ tableHeaderCell "left" "kind"
+            , tableHeaderCell "left" "expires"
+            , tableHeaderCell "left" "last verified"
+            ]
+            :: List.map credentialRow creds
+        )
+
+
+credentialRow : Agent.CredentialStatus -> Html Message
+credentialRow c =
+    Html.tr [ class "agent-credential-row" ]
+        [ tableCell "left" c.kind
+        , tableCell "left" (formatPosix c.expiresAt)
+        , tableCell "left" (formatPosix c.lastVerifiedAt)
+        ]
+
+
+
+-- PRINCIPALS SECTION (admin: mint / list / revoke)
+
+
+principalsSection : Model -> Html Message
+principalsSection model =
+    sectionBlock "Principals"
+        ([ mintForm model ]
+            ++ mintedTokenBox model
+            ++ [ principalsBody model ]
+        )
+
+
+mintForm : Model -> Html Message
+mintForm model =
+    Html.div
+        [ class "agent-mint-form"
+        , style "margin" "0 0 12px 0"
+        , style "font-family" "monospace"
+        , style "font-size" "12px"
+        , style "color" Colors.text
+        ]
+        [ Html.div [ style "margin-bottom" "6px" ]
+            [ mintTextField "name" model.mintName AgentMintNameChanged
+            , mintTextField "description (optional)" model.mintDescription AgentMintDescriptionChanged
+            ]
+        , Html.div
+            [ class "agent-mint-scopes"
+            , style "display" "flex"
+            , style "flex-wrap" "wrap"
+            , style "gap" "12px"
+            , style "margin-bottom" "6px"
+            ]
+            (List.map (scopeCheckbox model) mintScopeVocabulary)
+        , Html.div
+            [ style "display" "flex"
+            , style "align-items" "center"
+            , style "gap" "10px"
+            ]
+            [ expiresField model.mintExpiresDays
+            , mintButton model
+            ]
+        , mintErrorLine model
+        ]
+
+
+mintTextField : String -> String -> (String -> Message) -> Html Message
+mintTextField ph val toMsg =
+    Html.input
+        [ type_ "text"
+        , placeholder ph
+        , value val
+        , onInput toMsg
+        , style "margin-right" "8px"
+        , style "padding" "3px 6px"
+        , style "font-family" "monospace"
+        , style "font-size" "12px"
+        , style "background" Colors.background
+        , style "color" Colors.text
+        , style "border" ("1px solid " ++ subtleColor)
+        ]
+        []
+
+
+scopeCheckbox : Model -> String -> Html Message
+scopeCheckbox model scope =
+    Html.label
+        [ class "agent-mint-scope"
+        , style "display" "inline-flex"
+        , style "align-items" "center"
+        , style "gap" "4px"
+        , style "cursor" "pointer"
+        ]
+        [ Html.input
+            [ type_ "checkbox"
+            , checked (Set.member scope model.mintScopes)
+            , onClick (AgentMintScopeToggled scope)
+            ]
+            []
+        , Html.text scope
+        ]
+
+
+expiresField : String -> Html Message
+expiresField val =
+    Html.label
+        [ style "display" "inline-flex"
+        , style "align-items" "center"
+        , style "gap" "4px"
+        , style "color" mutedColor
+        ]
+        [ Html.text "expires in"
+        , Html.input
+            [ type_ "text"
+            , placeholder "N"
+            , value val
+            , onInput AgentMintExpiresChanged
+            , style "width" "48px"
+            , style "padding" "3px 6px"
+            , style "font-family" "monospace"
+            , style "font-size" "12px"
+            , style "background" Colors.background
+            , style "color" Colors.text
+            , style "border" ("1px solid " ++ subtleColor)
+            ]
+            []
+        , Html.text "days (optional)"
+        ]
+
+
+mintButton : Model -> Html Message
+mintButton model =
+    let
+        enabled =
+            canMint model
+    in
+    Html.button
+        [ class "agent-mint-button"
+        , onClick AgentMintSubmitted
+        , disabled (not enabled)
+        , style "padding" "4px 12px"
+        , style "font-family" "monospace"
+        , style "font-size" "12px"
+        , style "font-weight" "700"
+        , style "border" "none"
+        , style "border-radius" "3px"
+        , style "cursor"
+            (if enabled then
+                "pointer"
+
+             else
+                "not-allowed"
+            )
+        , style "background"
+            (if enabled then
+                "#2e4f2e"
+
+             else
+                Colors.background
+            )
+        , style "color"
+            (if enabled then
+                "#9fdf9f"
+
+             else
+                subtleColor
+            )
+        ]
+        [ Html.text "mint" ]
+
+
+mintErrorLine : Model -> Html Message
+mintErrorLine model =
+    case model.mintError of
+        Just message ->
+            errorLine message
+
+        Nothing ->
+            Html.text ""
+
+
+mintedTokenBox : Model -> List (Html Message)
+mintedTokenBox model =
+    case model.mintedToken of
+        Nothing ->
+            []
+
+        Just token ->
+            [ Html.div
+                [ class "agent-minted-token"
+                , style "margin" "0 0 12px 0"
+                , style "padding" "8px 12px"
+                , style "border" ("1px solid " ++ amberColor)
+                , style "border-radius" "3px"
+                , style "background" "#3a3320"
+                , style "font-family" "monospace"
+                , style "font-size" "12px"
+                , style "color" Colors.text
+                ]
+                [ Html.div
+                    [ style "color" amberColor
+                    , style "font-weight" "700"
+                    , style "margin-bottom" "4px"
+                    ]
+                    [ Html.text "token (shown once — copy it now):" ]
+                , Html.div
+                    [ class "agent-minted-token-value"
+                    , style "word-break" "break-all"
+                    ]
+                    [ Html.text token ]
+                , Html.button
+                    [ class "agent-minted-token-dismiss"
+                    , onClick AgentMintedTokenDismissed
+                    , style "margin-top" "6px"
+                    , style "padding" "2px 8px"
+                    , style "font-family" "monospace"
+                    , style "font-size" "11px"
+                    , style "cursor" "pointer"
+                    , style "background" Colors.background
+                    , style "color" mutedColor
+                    , style "border" ("1px solid " ++ subtleColor)
+                    , style "border-radius" "3px"
+                    ]
+                    [ Html.text "dismiss" ]
+                ]
+            ]
+
+
+principalsBody : Model -> Html Message
+principalsBody model =
+    case model.principals of
+        Nothing ->
+            case model.principalsError of
+                Just message ->
+                    errorLine message
+
+                Nothing ->
+                    mutedLine "loading…"
+
+        Just [] ->
+            mutedLine "no principals yet — mint one above"
+
+        Just principals ->
+            principalsTable principals
+
+
+principalsTable : List Agent.Principal -> Html Message
+principalsTable principals =
+    Html.table
+        [ class "agent-principals-table"
+        , style "border-collapse" "collapse"
+        , style "font-family" "monospace"
+        , style "font-size" "12px"
+        , style "color" Colors.text
+        ]
+        (Html.tr []
+            [ tableHeaderCell "left" "name"
+            , tableHeaderCell "left" "scopes"
+            , tableHeaderCell "left" "team"
+            , tableHeaderCell "left" "created"
+            , tableHeaderCell "left" "expires"
+            , tableHeaderCell "left" "last used"
+            , tableHeaderCell "left" ""
+            ]
+            :: List.map principalRow principals
+        )
+
+
+principalRow : Agent.Principal -> Html Message
+principalRow p =
+    let
+        dim =
+            case p.revokedAt of
+                Just _ ->
+                    [ style "opacity" "0.5" ]
+
+                Nothing ->
+                    []
+
+        action =
+            case p.revokedAt of
+                Just revokedAt ->
+                    Html.span
+                        [ class "agent-principal-revoked"
+                        , style "color" subtleColor
+                        ]
+                        [ Html.text ("revoked " ++ formatPosix (Just revokedAt)) ]
+
+                Nothing ->
+                    Html.button
+                        [ class "agent-principal-revoke"
+                        , onClick (AgentPrincipalRevokeClicked p.id)
+                        , style "padding" "2px 8px"
+                        , style "font-family" "monospace"
+                        , style "font-size" "11px"
+                        , style "cursor" "pointer"
+                        , style "background" "#5c2626"
+                        , style "color" "#f0a0a0"
+                        , style "border" "none"
+                        , style "border-radius" "3px"
+                        ]
+                        [ Html.text "revoke" ]
+    in
+    Html.tr (class "agent-principal-row" :: dim)
+        [ tableCell "left" p.name
+        , tableCell "left" (String.join ", " p.scopes)
+        , tableCell "left" p.teamName
+        , tableCell "left" (formatPosix (Just p.createdAt))
+        , tableCell "left" (formatPosix p.expiresAt)
+        , tableCell "left" (formatPosix p.lastUsedAt)
+        , Html.td
+            [ style "padding" "4px 16px 4px 0"
+            , style "border-bottom" rowBorder
+            ]
+            [ action ]
+        ]

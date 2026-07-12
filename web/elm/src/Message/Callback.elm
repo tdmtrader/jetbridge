@@ -72,3 +72,7 @@ type Callback
     | AgentReviewVerdictSubmitted String (Fetched ())
     | AgentWorkflowsFetched (Fetched (List Concourse.Agent.WorkflowSummary))
     | AgentCostRollupFetched (Fetched Concourse.Agent.CostRollup)
+    | AgentCredentialsFetched (Fetched (List Concourse.Agent.CredentialStatus))
+    | AgentPrincipalsFetched (Fetched (List Concourse.Agent.Principal))
+    | AgentPrincipalCreated (Fetched Concourse.Agent.PrincipalCreated)
+    | AgentPrincipalRevoked (Fetched ())

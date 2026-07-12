@@ -67,6 +67,70 @@ sampleRollup =
     }
 
 
+sampleCredential :
+    { kind : String
+    , expiresAt : Maybe Time.Posix
+    , lastVerifiedAt : Maybe Time.Posix
+    , jiraAccountId : String
+    }
+sampleCredential =
+    { kind = "anthropic_oauth"
+    , expiresAt = Just (Time.millisToPosix 0)
+    , lastVerifiedAt = Just (Time.millisToPosix 0)
+    , jiraAccountId = "acct-123"
+    }
+
+
+samplePrincipal :
+    { id : Int
+    , name : String
+    , description : String
+    , tokenPrefix : String
+    , scopes : List String
+    , teamName : String
+    , createdBy : String
+    , createdAt : Time.Posix
+    , expiresAt : Maybe Time.Posix
+    , revokedAt : Maybe Time.Posix
+    , lastUsedAt : Maybe Time.Posix
+    }
+samplePrincipal =
+    { id = 7
+    , name = "itest-reviewer"
+    , description = "integration"
+    , tokenPrefix = "cap1.abcd12"
+    , scopes = [ "reviews:write" ]
+    , teamName = "main"
+    , createdBy = "admin"
+    , createdAt = Time.millisToPosix 0
+    , expiresAt = Nothing
+    , revokedAt = Nothing
+    , lastUsedAt = Nothing
+    }
+
+
+samplePrincipalCreated :
+    { principal :
+        { id : Int
+        , name : String
+        , description : String
+        , tokenPrefix : String
+        , scopes : List String
+        , teamName : String
+        , createdBy : String
+        , createdAt : Time.Posix
+        , expiresAt : Maybe Time.Posix
+        , revokedAt : Maybe Time.Posix
+        , lastUsedAt : Maybe Time.Posix
+        }
+    , token : String
+    }
+samplePrincipalCreated =
+    { principal = samplePrincipal
+    , token = "cap1.xxx"
+    }
+
+
 all : Test
 all =
     describe "agent page"
@@ -130,4 +194,43 @@ all =
                     |> Tuple.first
                     |> Common.queryView
                     |> Query.has [ text "couldn't load costs" ]
+        , test "renders a stored credential's kind" <|
+            \_ ->
+                Common.init "/agent"
+                    |> Application.handleCallback
+                        (Callback.AgentCredentialsFetched (Ok [ sampleCredential ]))
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Query.find [ class "agent-credential-row" ]
+                    |> Query.has [ text "anthropic_oauth" ]
+        , test "renders a principal with its name and a revoke control" <|
+            \_ ->
+                Common.init "/agent"
+                    |> Application.handleCallback
+                        (Callback.AgentPrincipalsFetched (Ok [ samplePrincipal ]))
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Query.find [ class "agent-principal-row" ]
+                    |> Query.has
+                        [ containing [ text "itest-reviewer" ]
+                        , containing [ class "agent-principal-revoke", text "revoke" ]
+                        ]
+        , test "renders the one-time token box after minting" <|
+            \_ ->
+                Common.init "/agent"
+                    |> Application.handleCallback
+                        (Callback.AgentPrincipalCreated (Ok samplePrincipalCreated))
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Query.find [ class "agent-minted-token" ]
+                    |> Query.has [ text "cap1.xxx" ]
+        , test "shows an admin-only message when principals fetch is forbidden" <|
+            \_ ->
+                Common.init "/agent"
+                    |> Application.handleCallback
+                        (Callback.AgentPrincipalsFetched Data.httpForbidden)
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Query.has
+                        [ text "not authorized — the agent principals API is admin-only" ]
         ]
