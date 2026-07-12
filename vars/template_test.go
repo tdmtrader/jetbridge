@@ -411,3 +411,29 @@ dup-key: ((key3))
 		Expect(err.Error()).To(ContainSubstring("fake-err"))
 	})
 })
+
+var _ = Describe("ExtractVarRefs", func() {
+	It("returns nothing for plain strings", func() {
+		Expect(ExtractVarRefs("main")).To(BeEmpty())
+		Expect(ExtractVarRefs("")).To(BeEmpty())
+	})
+
+	It("extracts bare references", func() {
+		Expect(ExtractVarRefs("((run_id))")).To(ConsistOf(
+			Reference{Path: "run_id", Fields: []string{}},
+		))
+	})
+
+	It("extracts source-prefixed references", func() {
+		Expect(ExtractVarRefs("((vault:agent/token))")).To(ConsistOf(
+			Reference{Source: "vault", Path: "agent/token", Fields: []string{}},
+		))
+	})
+
+	It("extracts references embedded in larger strings", func() {
+		Expect(ExtractVarRefs("prefix-((base_ref))-((vault:creds.password))")).To(ConsistOf(
+			Reference{Path: "base_ref", Fields: []string{}},
+			Reference{Source: "vault", Path: "creds", Fields: []string{"password"}},
+		))
+	})
+})

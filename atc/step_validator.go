@@ -3,8 +3,11 @@ package atc
 import (
 	"fmt"
 	"path"
+	"sort"
 	"strings"
 	"time"
+
+	"github.com/concourse/concourse/vars"
 )
 
 // StepValidator is a StepVisitor which validates each step that visits it,
@@ -284,6 +287,27 @@ func (validator *StepValidator) VisitAgent(step *AgentStep) error {
 	for _, output := range step.Outputs {
 		if output == "flight" {
 			validator.recordError("output name 'flight' is reserved for the flight recorder")
+		}
+	}
+
+	// Agent env is static-only (shared-contracts §2.8): values resolve at
+	// render/dispatch time — run materialization interpolates bare refs
+	// like ((run_id)) and params — and the exec never threads them through
+	// runtime var sources (that would land resolved secrets as literal
+	// pod-spec env, violating §8.2's secretKeyRef-only rule). A
+	// ((source:var)) reference names a runtime var source and can never be
+	// resolved statically, so reject it here; bare ((refs)) stay legal in
+	// templates and are enforced as resolved by the exec at run time.
+	envNames := make([]string, 0, len(step.Env))
+	for name := range step.Env {
+		envNames = append(envNames, name)
+	}
+	sort.Strings(envNames)
+	for _, name := range envNames {
+		for _, ref := range vars.ExtractVarRefs(step.Env[name]) {
+			if ref.Source != "" {
+				validator.recordErrorf("env %s references var source %q (((%s))): agent env is static-only and never resolves through runtime var sources", name, ref.Source, ref.String())
+			}
 		}
 	}
 

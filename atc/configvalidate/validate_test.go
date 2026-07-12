@@ -1348,6 +1348,56 @@ var _ = Describe("ValidateConfig", func() {
 				})
 			})
 
+			// --- review finding: agent env is static-only (§2.8) ---
+			// A ((source:var)) reference names a runtime var source; it can
+			// never be resolved at run materialization, and the exec refuses
+			// runtime interpolation (it would land the resolved secret as a
+			// literal pod-spec env var, violating §8.2).
+			Context("when an agent step env references a runtime var source", func() {
+				BeforeEach(func() {
+					job.PlanSequence = append(job.PlanSequence, atc.Step{
+						Config: &atc.AgentStep{
+							Name:   "a",
+							Prompt: "p",
+							Env: map[string]string{
+								"CLAUDE_CODE_OAUTH_TOKEN": "((vault:agent/token))",
+							},
+						},
+					})
+
+					config.Jobs = append(config.Jobs, job)
+				})
+
+				It("returns an error", func() {
+					Expect(errorMessages).To(HaveLen(1))
+					Expect(errorMessages[0]).To(ContainSubstring(`env CLAUDE_CODE_OAUTH_TOKEN references var source "vault"`))
+					Expect(errorMessages[0]).To(ContainSubstring("static-only"))
+				})
+			})
+
+			Context("when an agent step env carries bare template refs", func() {
+				BeforeEach(func() {
+					job.PlanSequence = append(job.PlanSequence, atc.Step{
+						Config: &atc.AgentStep{
+							Name:   "a",
+							Prompt: "p",
+							// legal in templates: resolved to literals by
+							// MaterializeRunConfig at run materialization
+							Env: map[string]string{
+								"AGENT_PIPELINE_RUN_ID": "((run_id))",
+								"BASE_REF":              "((base_ref))",
+							},
+						},
+					})
+
+					config.Jobs = append(config.Jobs, job)
+				})
+
+				It("does not return an error", func() {
+					Expect(errorMessages).To(HaveLen(0))
+				})
+			})
+
 			Context("when an agent step is valid", func() {
 				BeforeEach(func() {
 					job.PlanSequence = append(job.PlanSequence, atc.Step{

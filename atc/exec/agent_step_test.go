@@ -232,18 +232,50 @@ var _ = Describe("AgentStep", func() {
 		Expect(spec.Sidecars).To(HaveLen(1))
 	})
 
-	Context("when plan env carries ((var)) references", func() {
+	// --- review finding: agent env must be static-only (§2.8) ---
+	// The exec used to thread env values through the build's var sources
+	// (creds.NewString(...).Evaluate()), so `env: {TOKEN: ((vault:...))}`
+	// resolved the secret and landed it as a LITERAL pod-spec env var —
+	// readable by anyone with pod read and persisted in etcd, violating
+	// §8.2's secretKeyRef-only rule. Values are copied verbatim now, and a
+	// value still carrying a ((var)) reference fails the step closed.
+	Context("when plan env carries an unresolved ((var)) reference", func() {
 		BeforeEach(func() {
+			// resolvable through the build's var sources (state carries
+			// branch=main) — which is exactly what must NOT happen
 			agentPlan.Env["BASE_REF"] = "((branch))"
 		})
 
-		It("interpolates them through the build's var sources", func() {
-			_, err := step.Run(ctx, state)
-			Expect(err).ToNot(HaveOccurred())
+		It("fails closed instead of interpolating through the build's var sources", func() {
+			ok, err := step.Run(ctx, state)
+			Expect(ok).To(BeFalse())
+			Expect(err).To(MatchError(ContainSubstring("agent env BASE_REF contains unresolved var reference ((branch))")))
+			Expect(err).To(MatchError(ContainSubstring("static-only")))
 
-			_, _, spec, _ := fakePool.FindOrSelectWorkerArgsForCall(0)
-			Expect(spec.Env).To(ContainElement("BASE_REF=main"))
+			// no pod is ever requested, so no resolved value can leak
+			Expect(fakePool.FindOrSelectWorkerCallCount()).To(BeZero())
 		})
+	})
+
+	Context("when plan env references a runtime var source (secret interpolation)", func() {
+		BeforeEach(func() {
+			agentPlan.Env["CLAUDE_CODE_OAUTH_TOKEN"] = "((vault:agent/token))"
+		})
+
+		It("refuses to run rather than land the resolved secret in the pod spec", func() {
+			ok, err := step.Run(ctx, state)
+			Expect(ok).To(BeFalse())
+			Expect(err).To(MatchError(ContainSubstring("agent env CLAUDE_CODE_OAUTH_TOKEN contains unresolved var reference ((vault:")))
+			Expect(fakePool.FindOrSelectWorkerCallCount()).To(BeZero())
+		})
+	})
+
+	It("copies static env values verbatim, never through var sources", func() {
+		_, err := step.Run(ctx, state)
+		Expect(err).ToNot(HaveOccurred())
+
+		_, _, spec, _ := fakePool.FindOrSelectWorkerArgsForCall(0)
+		Expect(spec.Env).To(ContainElement("BASE_REF=main"))
 	})
 
 	Context("when the plan carries a prompt file", func() {
@@ -590,9 +622,10 @@ var _ = Describe("AgentStep", func() {
 
 			// --- review finding: main container never received the token ---
 			// §8.1 pins CLAUDE_CODE_OAUTH_TOKEN to main AND gateway from the
-			// per-run secret. BuildSecretEnv only covers K8s-secret var
-			// sources, so without an explicit ref the main claude CLI has no
-			// token at all on dispatch-rendered runs and fails at auth.
+			// per-run secret — the ONLY token path into an agent pod (env is
+			// static-only and never carries credentials). Without an explicit
+			// ref the main claude CLI has no token at all on
+			// dispatch-rendered runs and fails at auth.
 			It("wires the main container's CLAUDE_CODE_OAUTH_TOKEN from the per-run secret (§8.1)", func() {
 				_, err := step.Run(ctx, state)
 				Expect(err).ToNot(HaveOccurred())

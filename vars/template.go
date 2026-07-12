@@ -148,6 +148,23 @@ func (i interpolator) extractVarNames(value string) []string {
 	return names
 }
 
+// ExtractVarRefs returns the ((var)) interpolation references contained in
+// value — the same syntax the interpolator resolves — parsed into
+// References. A match that fails to parse is still reported (as a bare Path
+// reference), so callers checking "does this string reference any vars?"
+// never get a false negative.
+func ExtractVarRefs(value string) []Reference {
+	var refs []Reference
+	for _, name := range (interpolator{}).extractVarNames(value) {
+		ref, err := ParseReference(name)
+		if err != nil {
+			ref = Reference{Path: name}
+		}
+		refs = append(refs, ref)
+	}
+	return refs
+}
+
 type varsTracker struct {
 	vars Variables
 

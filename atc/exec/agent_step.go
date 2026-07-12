@@ -18,7 +18,6 @@ import (
 	"github.com/concourse/concourse/agent/budget"
 	"github.com/concourse/concourse/agent/schema"
 	"github.com/concourse/concourse/atc"
-	"github.com/concourse/concourse/atc/creds"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/exec/build"
 	"github.com/concourse/concourse/atc/imageresolver"
@@ -176,21 +175,34 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 		return false, errors.New("agent step requires the web node to be started with --agent-step-image")
 	}
 
-	// Interpolate the plan's static env through the build's var sources.
-	// Keys are walked in sorted order so the assembled env is deterministic.
+	// Agent env is STATIC-ONLY (contracts §2.8): the renderer resolves
+	// everything to literal values at render/dispatch time, and run
+	// materialization interpolates ((run))/((run_id))/params into the
+	// instance config before any build exists — so plan env reaches this
+	// exec as literals, copied VERBATIM into the pod. It must never be
+	// threaded through the build's var sources: runtime interpolation here
+	// would let `env: {CLAUDE_CODE_OAUTH_TOKEN: ((vault:agent/token))}`
+	// land the resolved secret as a literal pod-spec env var — readable by
+	// anyone with pod read in the shared worker namespace and persisted in
+	// etcd — violating §8.2's secretKeyRef-only rule (review finding,
+	// 2026-07-12). A value still carrying a ((var)) reference at this point
+	// was not resolved at materialization, meaning it names a runtime var
+	// source (or an undeclared param): fail closed instead of interpolating
+	// it or shipping the raw reference into the pod. Keys are walked in
+	// sorted order so the assembled env is deterministic.
 	envKeys := make([]string, 0, len(step.plan.Env))
 	for k := range step.plan.Env {
 		envKeys = append(envKeys, k)
 	}
 	sort.Strings(envKeys)
 
-	resolvedEnv := make(map[string]string, len(envKeys))
+	planEnv := make(map[string]string, len(envKeys))
 	for _, k := range envKeys {
-		value, err := creds.NewString(state, step.plan.Env[k]).Evaluate()
-		if err != nil {
-			return false, fmt.Errorf("interpolate env %q: %w", k, err)
+		value := step.plan.Env[k]
+		if refs := vars.ExtractVarRefs(value); len(refs) > 0 {
+			return false, fmt.Errorf("agent env %s contains unresolved var reference ((%s)): agent env is static-only (contracts §2.8) — values resolve at render/dispatch time and are never interpolated through runtime var sources", k, refs[0].String())
 		}
-		resolvedEnv[k] = value
+		planEnv[k] = value
 	}
 
 	// ---- Server-verified ticket/run identity ----
@@ -208,7 +220,7 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 	// someone else's ticket id to admit against the victim's remaining
 	// budget and misattribute this step's spend into their ledger, or claim
 	// another run's id to mount its credentials.
-	runID, _ := strconv.Atoi(resolvedEnv["AGENT_PIPELINE_RUN_ID"])
+	runID, _ := strconv.Atoi(planEnv["AGENT_PIPELINE_RUN_ID"])
 	verifiedRunID := 0
 	if runID > 0 {
 		if step.runVerifier == nil {
@@ -229,7 +241,7 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 	}
 
 	ticketID := 0
-	if v := resolvedEnv["AGENT_TICKET_ID"]; v != "" {
+	if v := planEnv["AGENT_TICKET_ID"]; v != "" {
 		claimed, err := strconv.Atoi(v)
 		if err != nil || claimed <= 0 {
 			return false, fmt.Errorf("malformed AGENT_TICKET_ID %q: must be a positive integer (or empty for a pure-CI agent step)", v)
@@ -292,7 +304,7 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 	// §8.1 main-container env contract.
 	env := step.metadata.TaskEnv()
 	for _, k := range envKeys {
-		env = append(env, k+"="+resolvedEnv[k])
+		env = append(env, k+"="+planEnv[k])
 	}
 	env = append(env, "AGENT_STEP_NAME="+step.plan.Name)
 	// Exec-set identity row (never public YAML, like AGENT_STEP_NAME): the
@@ -369,12 +381,6 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 	containerSpec.Limits.MemoryRequest = (*uint64)(requests.Memory)
 	containerSpec.Limits.EphemeralStorageRequest = (*uint64)(requests.EphemeralStorage)
 
-	// For env values that were resolved from a K8s Secrets backend, record
-	// the secret ref so the pod builder emits ValueFrom.SecretKeyRef instead
-	// of a literal (§8.2) — this is how CLAUDE_CODE_OAUTH_TOKEN from a
-	// K8s-secret var source stays out of the pod spec.
-	containerSpec.SecretEnv = BuildSecretEnv(atc.TaskEnv(resolvedEnv), state)
-
 	sidecars, err := loadSidecarConfigs(ctx, logger, repository, step.streamer, step.plan.Sidecars)
 	if err != nil {
 		return false, err
@@ -406,34 +412,31 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 		"ATC_EXTERNAL_URL=" + step.metadata.ExternalURL,
 		"BUILD_ID=" + strconv.Itoa(step.metadata.BuildID),
 	}
-	if v := resolvedEnv["AGENT_TICKET_ID"]; v != "" {
+	if v := planEnv["AGENT_TICKET_ID"]; v != "" {
 		common = append(common, "AGENT_TICKET_ID="+v)
 	}
-	if v := resolvedEnv["AGENT_PIPELINE_RUN_ID"]; v != "" {
+	if v := planEnv["AGENT_PIPELINE_RUN_ID"]; v != "" {
 		common = append(common, "AGENT_PIPELINE_RUN_ID="+v)
 	}
 
 	// Main-container and sidecar secret refs derive from the deterministic
-	// §8.2 secret name. No pipeline-run id ⇒ no run-secret refs at all
-	// (pure-CI agent steps route the token through a K8s-secret var source
-	// via BuildSecretEnv above, per §8.1). secretRunID is the SERVER-VERIFIED
-	// run id from the identity block above: it stays 0 — and no refs are
-	// injected — unless the ownership check passed.
+	// §8.2 secret name. No pipeline-run id ⇒ no run-secret refs at all —
+	// the agent-run-<id> secret is the ONLY token path into an agent pod
+	// (§8.1 routes CLAUDE_CODE_OAUTH_TOKEN exclusively through it; env is
+	// static-only and never carries credentials). secretRunID is the
+	// SERVER-VERIFIED run id from the identity block above: it stays 0 —
+	// and no refs are injected — unless the ownership check passed.
 	secretRunID := verifiedRunID
 	secretName := "agent-run-" + strconv.Itoa(secretRunID)
 
 	// §8.1 pins CLAUDE_CODE_OAUTH_TOKEN to BOTH the main container and the
-	// gateway sidecar from the per-run secret. BuildSecretEnv above only
-	// covers values resolved through a K8s-secret var source — it knows
-	// nothing about the dispatch-created agent-run-<id> secret — so the
-	// main-container ref is set explicitly here. F20 append semantics in
+	// gateway sidecar from the per-run secret. F20 append semantics in
 	// applySecretRefs emit a secretKeyRef-only EnvVar, so no literal env
 	// value is required.
 	if secretRunID > 0 {
-		if containerSpec.SecretEnv == nil {
-			containerSpec.SecretEnv = map[string]vars.SecretRef{}
+		containerSpec.SecretEnv = map[string]vars.SecretRef{
+			"CLAUDE_CODE_OAUTH_TOKEN": {Name: secretName, Key: "anthropic-token"},
 		}
-		containerSpec.SecretEnv["CLAUDE_CODE_OAUTH_TOKEN"] = vars.SecretRef{Name: secretName, Key: "anthropic-token"}
 	}
 
 	// §8.5 CWD convention (F21): sidecar images never hardcode /workspace.
@@ -457,7 +460,7 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 		switch name {
 		case "platform":
 			for _, k := range []string{"PLATFORM_MCP_ASK_TIMEOUT_POLICY", "PLATFORM_MCP_ASK_TIMEOUT_SECONDS"} {
-				if v := resolvedEnv[k]; v != "" {
+				if v := planEnv[k]; v != "" {
 					rows = append(rows, k+"="+v)
 				}
 			}
@@ -567,7 +570,7 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 	// artifact-fabric retention cannot reap the events) until this is done.
 	// ctx here is the timeout-scoped context; ingestFlightRecorder detaches
 	// from it internally (finding F4).
-	step.ingestFlightRecorder(ctx, logger, chosenWorker, volumeMounts, resolvedEnv, ticketID, verifiedRunID, time.Since(processStart), costObserver.Observed())
+	step.ingestFlightRecorder(ctx, logger, chosenWorker, volumeMounts, planEnv, ticketID, verifiedRunID, time.Since(processStart), costObserver.Observed())
 
 	if runErr != nil {
 		if errors.Is(runErr, context.DeadlineExceeded) {
@@ -595,7 +598,7 @@ func (step *AgentStep) ingestFlightRecorder(
 	logger lager.Logger,
 	wkr runtime.Worker,
 	volumeMounts []runtime.VolumeMount,
-	resolvedEnv map[string]string,
+	planEnv map[string]string,
 	ticketID int,
 	runID int,
 	wallTime time.Duration,
@@ -633,11 +636,11 @@ func (step *AgentStep) ingestFlightRecorder(
 	if runID > 0 {
 		rm.PipelineRunID = &runID
 	}
-	rm.WorkflowName = resolvedEnv["AGENT_WORKFLOW_NAME"]
-	if v, ok := envInt(resolvedEnv, "AGENT_WORKFLOW_VERSION"); ok {
+	rm.WorkflowName = planEnv["AGENT_WORKFLOW_NAME"]
+	if v, ok := envInt(planEnv, "AGENT_WORKFLOW_VERSION"); ok {
 		rm.WorkflowVersion = &v
 	}
-	rm.WorkflowHash = resolvedEnv["AGENT_WORKFLOW_HASH"]
+	rm.WorkflowHash = planEnv["AGENT_WORKFLOW_HASH"]
 
 	flightPath := ensureTrailingSlash(artifactPath(step.containerMetadata.WorkingDirectory, agentFlightArtifact, ""))
 	var flightArtifact runtime.Artifact
