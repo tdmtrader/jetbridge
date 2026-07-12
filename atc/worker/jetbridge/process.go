@@ -726,12 +726,18 @@ func (p *execProcess) ID() string {
 }
 
 // supervised reports whether this process should run under the in-pod task
-// supervisor. Only task steps qualify: get/put/check use the stdin/stdout
-// resource protocol, which the supervisor's log-file indirection would break.
+// supervisor. Task and agent steps qualify: get/put/check use the
+// stdin/stdout resource protocol, which the supervisor's log-file
+// indirection would break. Agent steps REQUIRE supervision — web-restart
+// resume (attachOrRun) and the ask_human/checkpoint park protocol are
+// built on the supervisor keeping the process alive across severed exec
+// sessions (shared-contracts §3.2).
 func (p *execProcess) supervised() bool {
-	return p.container != nil &&
-		p.container.metadata.Type == db.ContainerTypeTask &&
-		p.processIO.Stdin == nil
+	if p.container == nil || p.processIO.Stdin != nil {
+		return false
+	}
+	t := p.container.metadata.Type
+	return t == db.ContainerTypeTask || t == db.ContainerTypeAgent
 }
 
 // Wait waits for the pause Pod to reach Running state, streams input

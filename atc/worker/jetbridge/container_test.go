@@ -15,6 +15,7 @@ import (
 	"github.com/concourse/concourse/atc/metric"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
+	"github.com/concourse/concourse/vars"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
@@ -1514,7 +1515,7 @@ var _ = Describe("Container", func() {
 
 			pod := pods.Items[0]
 			By("using the pause command instead of the user command")
-			Expect(pod.Spec.Containers[0].Command).To(Equal([]string{"sh", "-c", "trap 'exit 0' TERM; sleep 86400 & wait"}))
+			Expect(pod.Spec.Containers[0].Command).To(Equal([]string{"sh", "-c", "trap 'exit 0' TERM; while :; do sleep 86400 & wait $!; done"}))
 
 			By("executing the real command via the executor")
 			simulatePodRunning := func(podName string) {
@@ -3183,7 +3184,7 @@ var _ = Describe("Run with sidecar containers", func() {
 
 			By("the main container runs the pause command (not the real command)")
 			Expect(pod.Spec.Containers[0].Name).To(Equal("main"))
-			Expect(pod.Spec.Containers[0].Command).To(Equal([]string{"sh", "-c", "trap 'exit 0' TERM; sleep 86400 & wait"}))
+			Expect(pod.Spec.Containers[0].Command).To(Equal([]string{"sh", "-c", "trap 'exit 0' TERM; while :; do sleep 86400 & wait $!; done"}))
 
 			By("the sidecar is present in the pod")
 			Expect(pod.Spec.Containers).To(HaveLen(2))
@@ -3263,7 +3264,140 @@ var _ = Describe("Run with sidecar containers", func() {
 			Expect(pod.Spec.Containers[4].Image).To(Equal("redis:7"))
 		})
 	})
+
+	Context("per-sidecar env and secret refs (runtime seams, F15)", func() {
+		createdPod := func() corev1.Pod {
+			_, err := container.Run(ctx, runtime.ProcessSpec{
+				Path: "/bin/sh",
+				Args: []string{"-c", "echo hello"},
+			}, runtime.ProcessIO{})
+			Expect(err).ToNot(HaveOccurred())
+
+			pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(pods.Items).To(HaveLen(1))
+			return pods.Items[0]
+		}
+
+		BeforeEach(func() {
+			setupFakeDBContainer(fakeDBWorker, "sidecar-env-handle")
+
+			var err error
+			container, _, err = worker.FindOrCreateContainer(
+				ctx,
+				db.NewFixedHandleContainerOwner("sidecar-env-handle"),
+				db.ContainerMetadata{Type: db.ContainerTypeTask},
+				runtime.ContainerSpec{
+					TeamID:    1,
+					Dir:       "/workdir",
+					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+					Sidecars: []atc.SidecarConfig{
+						{Name: "platform", Image: "mcp-platform:v1"},
+						{Name: "dev", Image: "mcp-dev:v1"},
+					},
+					SidecarEnv: map[string][]string{
+						"platform": {"ATC_EXTERNAL_URL=https://ci.example.com", "AGENT_TICKET_ID=7"},
+					},
+					SidecarSecretEnv: map[string]map[string]vars.SecretRef{
+						"platform": {"AGENT_PRINCIPAL_TOKEN": {Name: "agent-run-42", Key: "principal-token"}},
+					},
+				},
+				delegate,
+			)
+			Expect(err).ToNot(HaveOccurred())
+		})
+
+		It("applies literals then env rows then secret refs to the named sidecar only", func() {
+			pod := createdPod()
+			platform := containerByName(pod, "platform")
+			Expect(platform.Env).To(ContainElements(
+				corev1.EnvVar{Name: "ATC_EXTERNAL_URL", Value: "https://ci.example.com"},
+				corev1.EnvVar{Name: "AGENT_TICKET_ID", Value: "7"},
+			))
+			Expect(platform.Env).To(ContainElement(corev1.EnvVar{
+				Name: "AGENT_PRINCIPAL_TOKEN",
+				ValueFrom: &corev1.EnvVarSource{
+					SecretKeyRef: &corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{Name: "agent-run-42"},
+						Key:                  "principal-token",
+					},
+				},
+			}))
+			// the secret ref never appears as a literal Value
+			for _, e := range platform.Env {
+				if e.Name == "AGENT_PRINCIPAL_TOKEN" {
+					Expect(e.Value).To(BeEmpty())
+				}
+			}
+			// the dev sidecar and the main container carry NONE of these entries
+			for _, c := range []corev1.Container{containerByName(pod, "dev"), containerByName(pod, "main")} {
+				for _, e := range c.Env {
+					Expect(e.Name).ToNot(Or(
+						Equal("ATC_EXTERNAL_URL"), Equal("AGENT_TICKET_ID"), Equal("AGENT_PRINCIPAL_TOKEN")))
+				}
+			}
+		})
+	})
+
+	Context("SecretEnv-only keys (runtime seams, F20)", func() {
+		BeforeEach(func() {
+			setupFakeDBContainer(fakeDBWorker, "secret-only-handle")
+
+			var err error
+			container, _, err = worker.FindOrCreateContainer(
+				ctx,
+				db.NewFixedHandleContainerOwner("secret-only-handle"),
+				db.ContainerMetadata{Type: db.ContainerTypeTask},
+				runtime.ContainerSpec{
+					TeamID:    1,
+					Dir:       "/workdir",
+					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+					SecretEnv: map[string]vars.SecretRef{
+						"CLAUDE_CODE_OAUTH_TOKEN": {Name: "agent-platform-credential", Key: "anthropic-token"},
+					},
+				},
+				delegate,
+			)
+			Expect(err).ToNot(HaveOccurred())
+		})
+
+		It("appends a secretKeyRef-only EnvVar when no literal exists", func() {
+			_, err := container.Run(ctx, runtime.ProcessSpec{
+				Path: "/bin/sh",
+				Args: []string{"-c", "echo hello"},
+			}, runtime.ProcessIO{})
+			Expect(err).ToNot(HaveOccurred())
+
+			pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(pods.Items).To(HaveLen(1))
+
+			main := containerByName(pods.Items[0], "main")
+			var matches []corev1.EnvVar
+			for _, e := range main.Env {
+				if e.Name == "CLAUDE_CODE_OAUTH_TOKEN" {
+					matches = append(matches, e)
+				}
+			}
+			Expect(matches).To(HaveLen(1)) // exactly one — appended, not duplicated
+			Expect(matches[0].Value).To(BeEmpty())
+			Expect(matches[0].ValueFrom.SecretKeyRef.Name).To(Equal("agent-platform-credential"))
+			Expect(matches[0].ValueFrom.SecretKeyRef.Key).To(Equal("anthropic-token"))
+		})
+	})
 })
+
+// containerByName finds a container in the pod spec by name, failing the
+// spec if it is absent.
+func containerByName(pod corev1.Pod, name string) corev1.Container {
+	for _, c := range pod.Spec.Containers {
+		if c.Name == name {
+			return c
+		}
+	}
+	Fail(fmt.Sprintf("container %q not found in pod %q", name, pod.Name))
+	return corev1.Container{}
+}
 
 // ---------------------------------------------------------------
 // End-to-end pipeline integration scenarios
