@@ -67,6 +67,58 @@ var _ = Describe("Plan", func() {
 		})
 	})
 
+	Describe("AgentPlan Public", func() {
+		It("exposes only name and model, redacting prompt, env, budget, and sidecars", func() {
+			plan := atc.Plan{
+				ID: "7/agent",
+				Agent: &atc.AgentPlan{
+					Name:           "reviewer",
+					Model:          "claude-opus-4",
+					Prompt:         "secret prompt text",
+					PromptFile:     "prompts/review.md",
+					MaxTurns:       12,
+					BudgetSliceUSD: 3.50,
+					OutputSchema:   "schema.json",
+					Sidecars:       []atc.SidecarSource{{File: "sidecars/db.yml"}},
+					Inputs:         []string{"repo"},
+					Outputs:        []string{"result"},
+					Env: map[string]string{
+						"AGENT_IDENTITY": "svc-account",
+						"SECRET_TOKEN":   "literal-secret",
+					},
+					Timeout: "10m",
+				},
+			}
+			json := plan.Public()
+			Expect(json).ToNot(BeNil())
+			Expect([]byte(*json)).To(MatchJSON(`{
+				"id": "7/agent",
+				"agent": {
+					"name": "reviewer",
+					"model": "claude-opus-4"
+				}
+			}`))
+		})
+
+		It("omits model when empty", func() {
+			plan := atc.Plan{
+				ID: "7/agent",
+				Agent: &atc.AgentPlan{
+					Name:   "reviewer",
+					Prompt: "secret prompt text",
+				},
+			}
+			json := plan.Public()
+			Expect(json).ToNot(BeNil())
+			Expect([]byte(*json)).To(MatchJSON(`{
+				"id": "7/agent",
+				"agent": {
+					"name": "reviewer"
+				}
+			}`))
+		})
+	})
+
 	Describe("Public", func() {
 		It("returns a sanitized form of the plan", func() {
 			plan := atc.Plan{
