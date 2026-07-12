@@ -1699,6 +1699,22 @@ Set by the **owning exec implementation** (agent-step, harvest-step) or by **dis
 
 **[DECIDED HERE: fixed localhost ports 7780 (dev), 7781 (platform), 7782 (gateway).]** Pods are single-tenant so fixed ports are safe; every sidecar accepts `MCP_LISTEN_ADDR` to override; agents discover via the `*_MCP_URL` vars, never hardcode.
 
+**Agent-step-owned additions (added by agent-step wave-2 plan; consumers: dispatch renderer, gateway):**
+
+| Env var | Container(s) | Source | Meaning |
+|---|---|---|---|
+| `AGENT_PROMPT` | main | literal (from `AgentStep.Prompt`) | inline prompt text; mutually exclusive with `AGENT_PROMPT_FILE` |
+| `AGENT_PROMPT_FILE` | main | literal (from `AgentStep.PromptFile`) | artifact-relative path (`input-name/path.md`) resolved inside the workdir |
+| `AGENT_MODEL` / `AGENT_MAX_TURNS` | main | literal | claude CLI `--model` / `--max-turns` |
+| `AGENT_OUTPUT_SCHEMA` | main | literal | artifact-relative JSON-schema path (optional) |
+| `AGENT_FLIGHT_DIR` | main | literal `<workdir>/flight` | where agent-runner writes results.json + events.ndjson; backed by the implicit `flight` output volume |
+
+- **Implicit `flight` output:** every agent step gets an output volume named `flight` (reserved; a user-declared output named `flight` is a validation error). The exec ingests `flight/results.json` and `flight/events.ndjson` synchronously before the step returns — this is the ingestion-before-artifact-GC guarantee.
+- **Ticket/run identity via env:** the exec copies `AgentStep.Env` verbatim into the pod and *reads back* `AGENT_TICKET_ID`, `AGENT_PIPELINE_RUN_ID`, `AGENT_WORKFLOW_NAME`, `AGENT_WORKFLOW_VERSION`, `AGENT_WORKFLOW_HASH` from it for metrics tagging and budget-slice lookup. The renderer (dispatch) sets these keys; hand-written pipelines may set them too. Absent keys = pure-CI agent step (NULL tags).
+- **MCP URL derivation:** for each sidecar whose `name` is `dev`, `platform`, or `gateway`, the exec sets `DEV_MCP_URL` / `PLATFORM_MCP_URL` / `GATEWAY_MCP_URL` to `http://127.0.0.1:7780|7781|7782/mcp` per the fixed-port decision. Other sidecar names get no URL env.
+- **Main container image:** the `agent:` step config has no image field (per §2.8). The image comes from the web-node flag `--agent-step-image` (`CONCOURSE_AGENT_STEP_IMAGE`); the image must contain the claude CLI and the `agent-runner` entrypoint (image `ghcr.io/tdmtrader/agent-runner`, built per the §8.5 convention with a version tag; also pushed to `registry.home/agent-runner` for theborg). An unset flag makes any `agent:` step error at run time with a clear message.
+- **Main process:** the exec runs `agent-runner` (argv0 only, no args) as process ID `agent` so `attachOrRun` reattaches across web restarts, exactly like the task step's `task` process ID.
+
 ### 8.2 Ephemeral run secret
 
 - **Name:** `agent-run-<pipeline_run_id>` in the jetbridge worker namespace.
@@ -1892,3 +1908,4 @@ Set by the **owning exec implementation** (agent-step, harvest-step) or by **dis
   - **Mirrored implementation, not shared code:** `ci-agent` is a standalone Go module — the root module MUST NOT `require` ci-agent and ci-agent MUST NOT `require` the root. `ci-agent/devmcp` stays the reference server, unchanged; `atc/api/mcpserver` (currently buffered-only) is upgraded IN PLACE with a byte-similar port of `ci-agent/devmcp`'s SSE path (lands as 08 Task 9b, before 08 Task 10 and 10 Task 7), and platform-mcp/gateway build on it. No new shared module is extracted. Drift guard: `atc/api/mcpserver/server_test.go` gains SSE tests mirrored from `ci-agent/devmcp/server_test.go` (04 Task 4) asserting the identical frame shape.
   - **Heartbeat env pattern:** `DEV_MCP_PROGRESS_INTERVAL` generalizes to `<ROLE>_MCP_PROGRESS_INTERVAL` — `DEV_MCP_PROGRESS_INTERVAL` / `PLATFORM_MCP_PROGRESS_INTERVAL` / `GATEWAY_MCP_PROGRESS_INTERVAL` — Go duration syntax, default 15s (`DefaultHeartbeat`, half the §3.1 30s progress bound, 4x margin under the 60s CLI cliff). VALIDATION in all three binaries: a set-but-invalid value, a value <= 0, or a value > 30s is a FATAL startup error — never clamp silently.
   - dev-mcp's TRANSPORT is already compliant (its Task 4 server is the F13 proven-surviving implementation) and its BINARY enforces the same fatal bounds on `DEV_MCP_PROGRESS_INTERVAL` (04 Task 8: set-but-invalid, <= 0, or > 30s exits at startup, mirrored cmd-level test; `devmcp.NewServer`'s `<= 0 → DefaultHeartbeat` fallback is a library convenience for the unset case only — never reachable from a set env var); nothing else in plan 04 changes.
+- 2026-07-08 (agent-step wave-2 plan): §8.1 gains agent-step-owned env vars (`AGENT_PROMPT`, `AGENT_PROMPT_FILE`, `AGENT_MODEL`, `AGENT_MAX_TURNS`, `AGENT_OUTPUT_SCHEMA`, `AGENT_FLIGHT_DIR`), the implicit `flight` output convention, MCP-URL-by-sidecar-name derivation, the `--agent-step-image` web flag, and the `agent-runner` image + `agent` process-ID conventions. Affects: dispatch (renderer emits `AgentStep.Env` incl. identity keys), gateway-mcp (reads `AGENT_BUDGET_SLICE_USD` as already specified). No existing rows changed.

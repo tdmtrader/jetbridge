@@ -138,6 +138,9 @@ const (
 	GetBuildAgentReviews = "GetBuildAgentReviews"
 	ListTeamAgentReviews = "ListTeamAgentReviews"
 
+	SubmitAgentRunMetrics = "SubmitAgentRunMetrics"
+	ListAgentRunMetrics   = "ListAgentRunMetrics"
+
 	ListAgentWorkflows          = "ListAgentWorkflows"
 	ListAgentWorkflowVersions   = "ListAgentWorkflowVersions"
 	GetAgentWorkflowVersion     = "GetAgentWorkflowVersion"
@@ -290,6 +293,9 @@ var Routes = rata.Routes([]rata.Route{
 	{Path: "/api/v1/agent/reviews", Method: "POST", Name: SubmitAgentReview},
 	{Path: "/api/v1/builds/:build_id/agent-reviews", Method: "GET", Name: GetBuildAgentReviews},
 	{Path: "/api/v1/teams/:team_name/agent-reviews", Method: "GET", Name: ListTeamAgentReviews},
+
+	{Path: "/api/v1/agent/metrics", Method: "POST", Name: SubmitAgentRunMetrics},
+	{Path: "/api/v1/agent/tickets/:ticket_id/metrics", Method: "GET", Name: ListAgentRunMetrics},
 
 	{Path: "/api/v1/agent/workflows", Method: "GET", Name: ListAgentWorkflows},
 	{Path: "/api/v1/agent/workflows/:workflow_name/versions", Method: "GET", Name: ListAgentWorkflowVersions},

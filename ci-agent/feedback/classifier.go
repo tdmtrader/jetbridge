@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/concourse/ci-agent/schema"
+	"github.com/concourse/concourse/agent/schema"
 )
 
 type pattern struct {

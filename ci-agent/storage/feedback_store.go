@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/concourse/ci-agent/schema"
+	"github.com/concourse/concourse/agent/schema"
 )
 
 // FeedbackStore defines the interface for persisting feedback records.

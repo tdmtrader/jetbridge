@@ -3,6 +3,7 @@ package schema
 import (
 	"encoding/json"
 	"io"
+	"time"
 )
 
 // EventWriter appends events to an io.Writer as newline-delimited JSON.
@@ -17,9 +18,14 @@ func NewEventWriter(w io.Writer) *EventWriter {
 }
 
 // Write validates the event and appends it as a single JSON line.
+// A missing timestamp is set to the current UTC time before validation.
 // Returns an error if validation fails or writing fails. Invalid events
 // are never written.
 func (ew *EventWriter) Write(e Event) error {
+	if e.Timestamp == "" {
+		e.Timestamp = time.Now().UTC().Format(time.RFC3339)
+	}
+
 	if err := e.Validate(); err != nil {
 		return err
 	}

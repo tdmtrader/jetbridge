@@ -3,7 +3,7 @@ package runner
 import (
 	"fmt"
 
-	"github.com/concourse/ci-agent/schema"
+	"github.com/concourse/concourse/agent/schema"
 )
 
 // AgentFinding is an intermediate type representing what the AI agent produced

@@ -7,7 +7,7 @@ import (
 	. "github.com/onsi/gomega"
 
 	"github.com/concourse/ci-agent/runner"
-	"github.com/concourse/ci-agent/schema"
+	"github.com/concourse/concourse/agent/schema"
 )
 
 var _ = Describe("ClassifyResults", func() {

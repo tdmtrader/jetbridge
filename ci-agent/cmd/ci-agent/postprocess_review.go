@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/concourse/ci-agent/phaseconfig"
-	"github.com/concourse/ci-agent/schema"
+	"github.com/concourse/concourse/agent/schema"
 )
 
 // fillReviewMetadata patches the review artifact's metadata (repo, commit,

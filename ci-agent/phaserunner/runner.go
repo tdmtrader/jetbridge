@@ -18,7 +18,7 @@ import (
 	"github.com/concourse/ci-agent/llm"
 	"github.com/concourse/ci-agent/phaseconfig"
 	"github.com/concourse/ci-agent/provenance"
-	"github.com/concourse/ci-agent/schema"
+	"github.com/concourse/concourse/agent/schema"
 	citracing "github.com/concourse/ci-agent/tracing"
 )
 
@@ -191,7 +191,7 @@ func Run(ctx context.Context, opts Options) (*schema.Results, error) {
 		Name: "events", Path: "events.ndjson", MediaType: "application/x-ndjson",
 	})
 
-	metadata := map[string]string{
+	metadata := map[string]interface{}{
 		"phase": opts.Config.Name,
 	}
 	if prov != nil {
@@ -345,7 +345,7 @@ func emitEvent(ew *schema.EventWriter, eventType schema.EventType, data interfac
 	raw, _ := json.Marshal(data)
 	ew.Write(schema.Event{
 		Timestamp: time.Now().UTC().Format(time.RFC3339),
-		EventType: eventType,
+		Type:      eventType,
 		Data:      raw,
 	})
 }

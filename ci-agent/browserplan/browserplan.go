@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/concourse/ci-agent/schema"
+	"github.com/concourse/concourse/agent/schema"
 	"github.com/concourse/ci-agent/specparser"
 )
 

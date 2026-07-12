@@ -10,22 +10,26 @@ import (
 type EventType string
 
 const (
-	EventAgentStart     EventType = "agent.start"
-	EventAgentEnd       EventType = "agent.end"
-	EventSkillStart     EventType = "skill.start"
-	EventSkillEnd       EventType = "skill.end"
-	EventToolCall       EventType = "tool.call"
-	EventToolResult     EventType = "tool.result"
-	EventArtifactWriten EventType = "artifact.written"
-	EventDecision       EventType = "decision"
-	EventError          EventType = "error"
+	EventAgentStart           EventType = "agent.start"
+	EventAgentEnd             EventType = "agent.end"
+	EventSkillStart           EventType = "skill.start"
+	EventSkillEnd             EventType = "skill.end"
+	EventToolCall             EventType = "tool.call"
+	EventToolResult           EventType = "tool.result"
+	EventArtifactWritten      EventType = "artifact.written"
+	EventDecision             EventType = "decision"
+	EventError                EventType = "error"
+	EventPlanInputParsed      EventType = "plan.input_parsed"
+	EventPlanSpecGenerated    EventType = "plan.spec_generated"
+	EventPlanPlanGenerated    EventType = "plan.plan_generated"
+	EventPlanConfidenceScored EventType = "plan.confidence_scored"
 )
 
 // Event represents a single line in the events.ndjson log.
 type Event struct {
-	Timestamp string                 `json:"ts"`
-	Type      EventType              `json:"event"`
-	Data      map[string]interface{} `json:"data"`
+	Timestamp string          `json:"ts"`
+	Type      EventType       `json:"event"`
+	Data      json.RawMessage `json:"data"`
 }
 
 // Validate checks that all required fields are present and valid.
@@ -39,19 +43,19 @@ func (e *Event) Validate() error {
 	if e.Type == "" {
 		return fmt.Errorf("event type is required")
 	}
-	if e.Data == nil {
+	if len(e.Data) == 0 {
 		return fmt.Errorf("data is required")
 	}
 	return nil
 }
 
 // MarshalJSON implements json.Marshaler. It ensures Data is serialized as
-// an empty object rather than null when the map is nil.
+// an empty object rather than null when it is unset.
 func (e Event) MarshalJSON() ([]byte, error) {
 	type Alias Event
 	a := Alias(e)
-	if a.Data == nil {
-		a.Data = map[string]interface{}{}
+	if len(a.Data) == 0 {
+		a.Data = json.RawMessage(`{}`)
 	}
 	return json.Marshal(a)
 }

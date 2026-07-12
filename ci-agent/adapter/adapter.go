@@ -7,7 +7,7 @@ import (
 
 	"github.com/concourse/ci-agent/config"
 	"github.com/concourse/ci-agent/runner"
-	"github.com/concourse/ci-agent/schema"
+	"github.com/concourse/concourse/agent/schema"
 )
 
 // Adapter defines the interface for dispatching code review to an AI agent.

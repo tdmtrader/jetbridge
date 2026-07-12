@@ -1,7 +1,7 @@
 package scoring
 
 import (
-	"github.com/concourse/ci-agent/schema"
+	"github.com/concourse/concourse/agent/schema"
 )
 
 // ComputeQAScore computes the QA coverage score from requirement results.

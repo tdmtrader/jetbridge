@@ -5,7 +5,7 @@ import (
 	. "github.com/onsi/gomega"
 
 	"github.com/concourse/ci-agent/feedback"
-	"github.com/concourse/ci-agent/schema"
+	"github.com/concourse/concourse/agent/schema"
 )
 
 var _ = Describe("ClassifyVerdict", func() {
