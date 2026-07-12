@@ -159,6 +159,15 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 		claudePath = "claude"
 	}
 
+	// output_schema is plumbed end-to-end (config -> AgentPlan ->
+	// AGENT_OUTPUT_SCHEMA -> Config.OutputSchema) but the runner does not yet
+	// validate the claude result against it. Warn loudly rather than silently
+	// ignore the field, so a user declaring output_schema is not misled into
+	// believing the result is being enforced (review finding, 2026-07-12).
+	if cfg.OutputSchema != "" {
+		fmt.Fprintf(stderr, "agent-runner: warning: output_schema %q is declared but not yet enforced; the claude result is not validated against it\n", cfg.OutputSchema)
+	}
+
 	// 1. Resolve the prompt: inline wins, else artifact-relative file.
 	prompt := cfg.Prompt
 	if prompt == "" && cfg.PromptFile != "" {
