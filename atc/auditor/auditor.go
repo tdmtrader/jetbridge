@@ -170,7 +170,9 @@ func (a *auditor) ValidateAction(action string) bool {
 		atc.PromoteAgentWorkflowVersion,
 		atc.CreateAgentPrincipal,
 		atc.ListAgentPrincipals,
-		atc.RevokeAgentPrincipal:
+		atc.RevokeAgentPrincipal,
+		atc.SubmitAgentRunMetrics,
+		atc.ListAgentRunMetrics:
 		return a.EnableSystemAuditLog
 	case atc.ListTeams,
 		atc.SetTeam,
