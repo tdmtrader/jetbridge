@@ -1329,7 +1329,6 @@ var _ = Describe("Process", func() {
 			fakeExecutor       *fakeExecExecutor
 			fakeStorageBackend *fakeRecordingStorageBackend
 			execWorker         *jetbridge.Worker
-			execContainer      runtime.Container
 		)
 
 		BeforeEach(func() {
@@ -1338,52 +1337,60 @@ var _ = Describe("Process", func() {
 			execWorker = jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
 			execWorker.SetExecutor(fakeExecutor)
 			execWorker.SetStorageBackend(fakeStorageBackend)
+		})
 
-			setupFakeDBContainer(fakeDBWorker, "severed-exec-handle")
+		// makeContainer creates a container of the given type with a single
+		// output volume, wired to the recording storage backend so the
+		// severed-exec output-publication path can be observed.
+		makeContainer := func(handle string, cType db.ContainerType) runtime.Container {
+			setupFakeDBContainer(fakeDBWorker, handle)
 
-			var err error
-			execContainer, _, err = execWorker.FindOrCreateContainer(
+			c, _, err := execWorker.FindOrCreateContainer(
 				ctx,
-				db.NewFixedHandleContainerOwner("severed-exec-handle"),
-				db.ContainerMetadata{Type: db.ContainerTypeTask},
+				db.NewFixedHandleContainerOwner(handle),
+				db.ContainerMetadata{Type: cType},
 				runtime.ContainerSpec{
 					TeamID:    1,
 					Dir:       "/workdir",
 					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
-					Type:      db.ContainerTypeTask,
+					Type:      cType,
 					Outputs:   map[string]string{"out": "/workdir/out"},
 				},
 				delegate,
 			)
 			Expect(err).ToNot(HaveOccurred())
-		})
+			return c
+		}
 
-		It("records output locations even when the exec is severed by a transport error (F23)", func() {
+		// markPodRunning flips the pause pod (created by Run) to Running so
+		// Wait's waitForRunning proceeds to the exec.
+		markPodRunning := func(handle string) {
+			pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, handle, metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			pod.Status.Phase = corev1.PodRunning
+			_, err = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+		}
+
+		It("records output locations for an agent step when the exec is severed by a transport error (F23)", func() {
 			// A transport-severed exec (e.g. web restart killing the SPDY
-			// stream, or the step deadline expiring) returns through the
-			// non-ExecExitError branch of Wait. That branch must still
-			// record output locations in the artifact store — it is the
-			// ONLY publisher of the output volumes' locator entries, and
-			// without it downstream StreamOut sees sourceNode=="" and
-			// fails instantly.
+			// stream) on an AGENT step returns through the non-ExecExitError
+			// branch of Wait. That branch must still record output locations:
+			// it is the ONLY publisher of the output volumes' locator
+			// entries, and without it server-side flight-recorder ingestion
+			// sees sourceNode=="" and StreamOut fails instantly.
+			c := makeContainer("severed-agent-handle", db.ContainerTypeAgent)
 			fakeExecutor.execErr = errors.New("error dialing backend: EOF")
 
-			process, err := execContainer.Run(ctx, runtime.ProcessSpec{
-				Path: "/bin/sh",
-				Args: []string{"-c", "echo hi"},
+			process, err := c.Run(ctx, runtime.ProcessSpec{
+				Path: "agent-runner",
 			}, runtime.ProcessIO{
-				Stdin:  bytes.NewBufferString("{}"),
 				Stdout: new(bytes.Buffer),
 				Stderr: new(bytes.Buffer),
 			})
 			Expect(err).ToNot(HaveOccurred())
 
-			// Set pod to Running so waitForRunning succeeds and the exec runs.
-			pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "severed-exec-handle", metav1.GetOptions{})
-			Expect(err).ToNot(HaveOccurred())
-			pod.Status.Phase = corev1.PodRunning
-			_, err = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
-			Expect(err).ToNot(HaveOccurred())
+			markPodRunning("severed-agent-handle")
 
 			_, err = process.Wait(ctx)
 			Expect(err).To(HaveOccurred())
@@ -1392,6 +1399,81 @@ var _ = Describe("Process", func() {
 			// The recording is best-effort, not a rescue: the transport
 			// error above stays the caller-visible result.
 			Expect(fakeStorageBackend.RecordOutputsCallCount()).To(Equal(1))
+		})
+
+		It("does NOT record output locations for a task step on a severed exec, preserving fail-fast (review 2026-07-12)", func() {
+			// On the severed path the supervised in-pod process is still
+			// running and writing its outputs. Publishing a DaemonSet locator
+			// for a generic task/get step would let an on_failure/on_error
+			// hook StreamOut a half-written artifact with NO error; the
+			// missing locator must keep failing fast instead. Only agent
+			// steps (which need the flight-recorder locator) publish here.
+			c := makeContainer("severed-task-handle", db.ContainerTypeTask)
+			fakeExecutor.execErr = errors.New("error dialing backend: EOF")
+
+			process, err := c.Run(ctx, runtime.ProcessSpec{
+				Path: "/bin/sh",
+				Args: []string{"-c", "echo hi"},
+			}, runtime.ProcessIO{
+				Stdout: new(bytes.Buffer),
+				Stderr: new(bytes.Buffer),
+			})
+			Expect(err).ToNot(HaveOccurred())
+
+			markPodRunning("severed-task-handle")
+
+			_, err = process.Wait(ctx)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("exec in pod"))
+
+			// No locator is published — a torn task artifact must fail fast.
+			Expect(fakeStorageBackend.RecordOutputsCallCount()).To(Equal(0))
+		})
+
+		It("records outputs on a LIVE detached context even after the step deadline expired — WithoutCancel (F23 / review 2026-07-12)", func() {
+			// The motivating deadline-severed case: the step context expires
+			// and cancels, THEN the exec returns the sever error. process.go
+			// detaches via context.WithoutCancel before uploading, so the
+			// upload must run on a LIVE context. If it inherited the expired
+			// step context instead (context.WithTimeout(ctx, …) without the
+			// WithoutCancel), the upload would fail instantly and flight
+			// ingestion would lose its locator again — this spec pins that.
+			c := makeContainer("deadline-agent-handle", db.ContainerTypeAgent)
+
+			waitCtx, waitCancel := context.WithCancel(ctx)
+			defer waitCancel()
+
+			var execCount int32
+			fakeExecutor.execFunc = func() error {
+				// First exec = the supervised run: expire the step context,
+				// THEN return the sever error (deadline-severed ordering).
+				if atomic.AddInt32(&execCount, 1) == 1 {
+					waitCancel()
+					return errors.New("context canceled")
+				}
+				// Later exec = the agent-terminal-kill: succeeds.
+				return nil
+			}
+
+			process, err := c.Run(ctx, runtime.ProcessSpec{
+				Path: "agent-runner",
+			}, runtime.ProcessIO{
+				Stdout: new(bytes.Buffer),
+				Stderr: new(bytes.Buffer),
+			})
+			Expect(err).ToNot(HaveOccurred())
+
+			markPodRunning("deadline-agent-handle")
+
+			_, err = process.Wait(waitCtx)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("exec in pod"))
+
+			// The outer step context was already expired when the upload ran…
+			Expect(waitCtx.Err()).To(HaveOccurred())
+			// …but the upload itself received a LIVE, detached context.
+			Expect(fakeStorageBackend.RecordOutputsCallCount()).To(Equal(1))
+			Expect(fakeStorageBackend.LastRecordCtxLive()).To(BeTrue())
 		})
 	})
 
@@ -2561,10 +2643,23 @@ var _ = Describe("Pod phase transition spans", func() {
 // volumes.
 type fakeRecordingStorageBackend struct {
 	recordOutputsCalls atomic.Int32
+	// lastCtxLive records whether ctx.Err()==nil at the moment RecordOutputs
+	// was last invoked. The severed/timeout path detaches via
+	// context.WithoutCancel before uploading, so even when the step's outer
+	// context has already expired the upload must run on a LIVE context —
+	// otherwise flight ingestion loses its locator again (F23 / review
+	// 2026-07-12).
+	lastCtxLive atomic.Bool
 }
 
 func (f *fakeRecordingStorageBackend) RecordOutputsCallCount() int {
 	return int(f.recordOutputsCalls.Load())
+}
+
+// LastRecordCtxLive reports whether the context passed to the most recent
+// RecordOutputs call was live (ctx.Err()==nil) at call time.
+func (f *fakeRecordingStorageBackend) LastRecordCtxLive() bool {
+	return f.lastCtxLive.Load()
 }
 
 func (f *fakeRecordingStorageBackend) StepVolume(name, handle, subdir string) corev1.Volume {
@@ -2602,6 +2697,7 @@ func (f *fakeRecordingStorageBackend) BuildAffinity(inputs []runtime.Input) *cor
 }
 
 func (f *fakeRecordingStorageBackend) RecordOutputs(ctx context.Context, handle, nodeName string, volumes []*jetbridge.Volume, spec runtime.ContainerSpec) {
+	f.lastCtxLive.Store(ctx.Err() == nil)
 	f.recordOutputsCalls.Add(1)
 }
 

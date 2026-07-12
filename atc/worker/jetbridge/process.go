@@ -914,21 +914,31 @@ func (p *execProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 		// flush lands before ingestion reads it.
 		p.killAgentOnTerminalEnd(ctx, logger)
 
-		// Best-effort output-location recording (finding F23). This branch is
-		// reached on deadline-severed and transport-severed execs — the step
-		// timeout included — and uploadOutputsToArtifactStore is the ONLY
-		// publisher of the output volumes' locator entries in the DaemonSet
-		// store. Without it, server-side flight-recorder ingestion (and
-		// timed-out task steps' hook inputs) see sourceNode=="" and StreamOut
-		// fails instantly, however the exec layer detaches its read context.
-		// ctx may already be cancelled/expired here, so detach and bound the
-		// call; failures are logged, never returned — the transport error
-		// below stays the caller-visible result.
-		uploadCtx, cancelUpload := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
-		if uploadErr := p.uploadOutputsToArtifactStore(uploadCtx); uploadErr != nil {
-			logger.Error("failed-to-record-outputs-after-severed-exec", uploadErr)
+		// Best-effort output-location recording (finding F23), AGENT steps
+		// only (review finding 2026-07-12). This branch is reached on
+		// deadline-severed and transport-severed execs — the step timeout
+		// included — while the supervised in-pod process is still running and
+		// writing its outputs. Only agent containers publish here:
+		// server-side flight-recorder ingestion (and agent hook inputs) read
+		// the output volumes' locator entries, and killAgentOnTerminalEnd
+		// above has already stopped the agent so its final flush has landed.
+		// For a generic task/get step the supervised process is still writing,
+		// so publishing a DaemonSet locator now would let an
+		// on_failure/on_error hook StreamOut a half-written artifact with NO
+		// error — where the missing locator previously failed fast. That
+		// fail-fast on a torn artifact is the intended, safer behavior, so
+		// non-agent types are left unpublished on this path.
+		// uploadOutputsToArtifactStore is the ONLY publisher of those
+		// locators; ctx may already be cancelled/expired here, so detach and
+		// bound the call; failures are logged, never returned — the transport
+		// error below stays the caller-visible result.
+		if p.container != nil && p.container.metadata.Type == db.ContainerTypeAgent {
+			uploadCtx, cancelUpload := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+			if uploadErr := p.uploadOutputsToArtifactStore(uploadCtx); uploadErr != nil {
+				logger.Error("failed-to-record-outputs-after-severed-exec", uploadErr)
+			}
+			cancelUpload()
 		}
-		cancelUpload()
 
 		spanErr = err
 		return runtime.ProcessResult{}, wrapIfTransient(fmt.Errorf("exec in pod: %w", err))
