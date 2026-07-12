@@ -110,6 +110,7 @@ var DefaultRoles = map[string]string{
 	atc.GetAgentFeedbackSummary: ViewerRole,
 	atc.ClassifyAgentVerdict:    MemberRole,
 	atc.GetAgentReviewFindings:  ViewerRole,
+	atc.ListAgentRunMetrics:     ViewerRole,
 	atc.ListTeamAgentReviews:    ViewerRole,
 	atc.GetBuildAgentReviews:    ViewerRole,
 	atc.GetAgentCostRollup:      ViewerRole,

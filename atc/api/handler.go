@@ -11,6 +11,7 @@ import (
 	"github.com/concourse/concourse/agent/api/costs"
 	"github.com/concourse/concourse/agent/api/feedback"
 	principalsapi "github.com/concourse/concourse/agent/api/principals"
+	metricsapi "github.com/concourse/concourse/agent/api/metrics"
 	reviewsapi "github.com/concourse/concourse/agent/api/reviews"
 	"github.com/concourse/concourse/agent/budget"
 	"github.com/concourse/concourse/agent/credentials"
@@ -98,6 +99,7 @@ func NewHandler(
 	dbPinger infoserver.DBPinger,
 	feedbackStore feedback.Store,
 	reviewsStore reviewsapi.Store,
+	metricsStore metricsapi.Store,
 	principalsStore principalsapi.Store,
 	agentReviewPublishToken string,
 	credentialsBackend credentials.Backend,
@@ -152,6 +154,7 @@ func NewHandler(
 		},
 		agentReviewPublishToken,
 	)
+	metricsServer := metricsapi.NewHandler(metricsStore)
 	workflowsServer := workflowsapi.NewHandler(workflowStore)
 	principalsServer := principalsapi.NewHandler(
 		principalsStore,
@@ -314,6 +317,9 @@ func NewHandler(
 		atc.SubmitAgentReview:    http.HandlerFunc(reviewsServer.SubmitReview),
 		atc.GetBuildAgentReviews: http.HandlerFunc(reviewsServer.GetByBuild),
 		atc.ListTeamAgentReviews: http.HandlerFunc(reviewsServer.ListByTeam),
+
+		atc.SubmitAgentRunMetrics: http.HandlerFunc(metricsServer.SubmitMetrics),
+		atc.ListAgentRunMetrics:   http.HandlerFunc(metricsServer.ListByTicket),
 
 		atc.SetAgentUserCredential:       http.HandlerFunc(credentialsServer.Set),
 		atc.GetAgentUserCredentialStatus: http.HandlerFunc(credentialsServer.Status),

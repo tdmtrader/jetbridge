@@ -127,6 +127,13 @@ func (wrappa *APIAuthWrappa) Wrap(handlers rata.Handlers) rata.Handlers {
 			newHandler = wrappa.checkAgentPrincipalHandlerFactory.HandlerForWithLegacyBypass(
 				handler, rejector, principals.ScopeCostsWrite)
 
+		// principal(metrics:write) — 00-shared-contracts.md §4.1/§4.2.
+		// Metrics ingest never had a legacy static token, so this is the
+		// strict tier: cap1 principal token (or admin user) only.
+		case atc.SubmitAgentRunMetrics:
+			newHandler = wrappa.checkAgentPrincipalHandlerFactory.HandlerFor(
+				handler, rejector, principals.ScopeMetricsWrite)
+
 		// admin
 		case atc.GetLogLevel,
 			atc.DestroyTeam,
@@ -205,7 +212,8 @@ func (wrappa *APIAuthWrappa) Wrap(handlers rata.Handlers) rata.Handlers {
 			atc.GetAgentFeedback,
 			atc.GetAgentFeedbackSummary,
 			atc.ClassifyAgentVerdict,
-			atc.GetAgentReviewFindings:
+			atc.GetAgentReviewFindings,
+			atc.ListAgentRunMetrics:
 			newHandler = auth.CheckAgentAuthorizationHandler(handler, rejector)
 
 		// think about it!
