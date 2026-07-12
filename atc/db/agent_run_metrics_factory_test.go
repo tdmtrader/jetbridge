@@ -3,6 +3,7 @@ package db_test
 import (
 	"encoding/json"
 
+	"github.com/concourse/concourse/agent/api/metrics"
 	schema "github.com/concourse/concourse/agent/schema"
 	"github.com/concourse/concourse/atc/db"
 
@@ -74,6 +75,36 @@ var _ = Describe("AgentRunMetricsFactory", func() {
 		Expect(err).ToNot(HaveOccurred())
 		Expect(rows[0].TicketID).To(BeNil())
 		Expect(rows[0].WorkflowVersion).To(BeNil())
+	})
+
+	// --- review finding 2026-07-12: ParseSubmission accepts every status the
+	// contract defines (ok|failed|error|parked), so the real schema must too —
+	// the handler suite runs on MemoryStore, which has no CHECK, so only a
+	// real-DB spec can see a parser/CHECK mismatch. Before migration
+	// 1773106062 a park-exit partial ingestion (PARK-V2 §1.8) violated the
+	// status CHECK here and the row was lost with a 500.
+	It("stores every ParseSubmission-accepted status, including parked (PARK-V2)", func() {
+		for i, status := range []string{
+			schema.RunStatusOK, schema.RunStatusFailed, schema.RunStatusError, schema.RunStatusParked,
+		} {
+			body := []byte(`{"build_id":50,"plan_id":"plan-` + status + `","step_name":"implement","status":"` + status + `"}`)
+			rm, err := metrics.ParseSubmission(body)
+			Expect(err).ToNot(HaveOccurred(), "status %d: %s", i, status)
+
+			inserted, prev, err := factory.UpsertReturningInserted(rm)
+			Expect(err).ToNot(HaveOccurred(), "status %d: %s", i, status)
+			Expect(inserted).To(BeTrue())
+			Expect(prev).To(BeNil())
+		}
+
+		rows, err := factory.GetByBuild(50)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(rows).To(HaveLen(4))
+		statuses := []string{}
+		for _, row := range rows {
+			statuses = append(statuses, row.Status)
+		}
+		Expect(statuses).To(ContainElement(schema.RunStatusParked))
 	})
 
 	// --- finding F24: degraded re-ingestion must never clobber a real row ---
