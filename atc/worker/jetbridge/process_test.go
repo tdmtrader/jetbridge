@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"regexp"
 	"sync/atomic"
 	"time"
 
@@ -1391,6 +1392,148 @@ var _ = Describe("Process", func() {
 			// The recording is best-effort, not a rescue: the transport
 			// error above stays the caller-visible result.
 			Expect(fakeStorageBackend.RecordOutputsCallCount()).To(Equal(1))
+		})
+	})
+
+	Describe("terminal-end agent kill (timed-out/aborted agent step)", func() {
+		var (
+			fakeExecutor *fakeExecExecutor
+			execWorker   *jetbridge.Worker
+		)
+
+		BeforeEach(func() {
+			fakeExecutor = &fakeExecExecutor{}
+			execWorker = jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
+			execWorker.SetExecutor(fakeExecutor)
+		})
+
+		// makeContainer creates a supervised-eligible container of the given
+		// type.
+		makeContainer := func(handle string, cType db.ContainerType) runtime.Container {
+			setupFakeDBContainer(fakeDBWorker, handle)
+
+			c, _, err := execWorker.FindOrCreateContainer(
+				ctx,
+				db.NewFixedHandleContainerOwner(handle),
+				db.ContainerMetadata{Type: cType},
+				runtime.ContainerSpec{
+					TeamID:    1,
+					Dir:       "/workdir",
+					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+					Type:      cType,
+				},
+				delegate,
+			)
+			Expect(err).ToNot(HaveOccurred())
+
+			return c
+		}
+
+		// markPodRunning flips the pause pod (created by Run) to Running so
+		// Wait's waitForRunning proceeds to the exec.
+		markPodRunning := func(handle string) {
+			pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, handle, metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			pod.Status.Phase = corev1.PodRunning
+			_, err = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+		}
+
+		// runSevered starts the process (no stdin → supervised for
+		// task/agent) and severs the exec: the first exec call cancels the
+		// step context and returns a transport error, simulating the SPDY
+		// session dying because the step timed out or the build was aborted.
+		// Later exec calls (the kill) succeed.
+		runSevered := func(handle string, c runtime.Container) error {
+			waitCtx, waitCancel := context.WithCancel(ctx)
+			defer waitCancel()
+
+			var execCount int32
+			fakeExecutor.execFunc = func() error {
+				if atomic.AddInt32(&execCount, 1) == 1 {
+					waitCancel()
+					return errors.New("context canceled")
+				}
+				return nil
+			}
+
+			process, err := c.Run(ctx, runtime.ProcessSpec{
+				Path: "agent-runner",
+			}, runtime.ProcessIO{
+				Stdout: new(bytes.Buffer),
+				Stderr: new(bytes.Buffer),
+			})
+			Expect(err).ToNot(HaveOccurred())
+
+			markPodRunning(handle)
+
+			_, err = process.Wait(waitCtx)
+			return err
+		}
+
+		It("kills the supervised agent process tree when the exec is severed by a dead context", func() {
+			// Without this, the in-pod supervisor (required for web-restart
+			// resume and the park protocol) keeps agent-runner + claude
+			// alive after a step timeout or abort: the abandoned agent keeps
+			// spending unmetered dollars until the GC reaper deletes the
+			// pod, and a retry attempt runs a second agent concurrently
+			// with the survivor (review finding, 2026-07-12).
+			err := runSevered("terminal-kill-agent", makeContainer("terminal-kill-agent", db.ContainerTypeAgent))
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("exec in pod"))
+
+			Expect(fakeExecutor.execCalls).To(HaveLen(2))
+
+			run := fakeExecutor.execCalls[0]
+			expectSupervisedExec(run.command, `'agent-runner'`)
+
+			kill := fakeExecutor.execCalls[1]
+			Expect(kill.attrs.Purpose).To(Equal("agent-terminal-kill"))
+			Expect(kill.containerName).To(Equal("main"))
+			Expect(kill.tty).To(BeFalse())
+			Expect(kill.command).To(HaveLen(3))
+			Expect(kill.command[2]).To(ContainSubstring(`kill -TERM -- "-$pgid"`))
+
+			// The kill must resolve the SAME supervisor state dir as the
+			// run, or it tears down nothing.
+			stateDirOf := func(script string) string {
+				m := regexp.MustCompile(`^S='([^']+)'`).FindStringSubmatch(script)
+				ExpectWithOffset(1, m).To(HaveLen(2), "no state dir in script: %s", script)
+				return m[1]
+			}
+			Expect(stateDirOf(kill.command[2])).To(Equal(stateDirOf(run.command[2])))
+		})
+
+		It("does not kill the agent on a transport sever with a live context (web-restart resume path)", func() {
+			// A transport error with the step context still alive is the
+			// resumable case: the next web re-execs the identical supervisor
+			// command and takes over the still-running agent. Killing here
+			// would break restart resume.
+			c := makeContainer("transport-sever-agent", db.ContainerTypeAgent)
+
+			fakeExecutor.execErr = errors.New("error dialing backend: EOF")
+
+			process, err := c.Run(ctx, runtime.ProcessSpec{
+				Path: "agent-runner",
+			}, runtime.ProcessIO{
+				Stdout: new(bytes.Buffer),
+				Stderr: new(bytes.Buffer),
+			})
+			Expect(err).ToNot(HaveOccurred())
+
+			markPodRunning("transport-sever-agent")
+
+			_, err = process.Wait(ctx)
+			Expect(err).To(HaveOccurred())
+
+			Expect(fakeExecutor.execCalls).To(HaveLen(1))
+		})
+
+		It("leaves timed-out/aborted task steps alone (existing semantics)", func() {
+			err := runSevered("terminal-kill-task", makeContainer("terminal-kill-task", db.ContainerTypeTask))
+			Expect(err).To(HaveOccurred())
+
+			Expect(fakeExecutor.execCalls).To(HaveLen(1))
 		})
 	})
 

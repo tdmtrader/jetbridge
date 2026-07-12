@@ -86,6 +86,43 @@ var _ = Describe("Task exec supervisor", func() {
 		})
 	})
 
+	Describe("supervisorKillCommand", func() {
+		spec := runtime.ProcessSpec{
+			Path: "/bin/sh",
+			Args: []string{"-c", "echo hello && exit 0"},
+		}
+
+		stateDirOf := func(script string) string {
+			return script[:len("S='/tmp/concourse-task-task-xxxxxxxx'")]
+		}
+
+		It("targets the exact state dir of the matching supervisor command", func() {
+			run := supervisorCommand("task", spec)
+			kill := supervisorKillCommand("task", spec, 10)
+			Expect(kill).To(HaveLen(3))
+			Expect(kill[0]).To(Equal("sh"))
+			Expect(kill[1]).To(Equal("-c"))
+			Expect(stateDirOf(kill[2])).To(Equal(stateDirOf(run[2])))
+		})
+
+		It("terminates the runner's whole process group, then escalates to KILL", func() {
+			kill := supervisorKillCommand("task", spec, 10)
+			Expect(kill[2]).To(ContainSubstring(`kill -TERM -- "-$pgid"`))
+			Expect(kill[2]).To(ContainSubstring(`kill -KILL -- "-$pgid"`))
+		})
+
+		It("waits the given grace period between TERM and KILL", func() {
+			kill := supervisorKillCommand("task", spec, 7)
+			Expect(kill[2]).To(ContainSubstring(`[ "$n" -lt 7 ]`))
+		})
+
+		It("is a no-op when the command never started or already exited", func() {
+			kill := supervisorKillCommand("task", spec, 10)
+			Expect(kill[2]).To(ContainSubstring(`[ -n "$pid" ] || exit 0`))
+			Expect(kill[2]).To(ContainSubstring(`kill -0 "$pid" 2>/dev/null || exit 0`))
+		})
+	})
+
 	Describe("shellQuote", func() {
 		It("wraps plain words in single quotes", func() {
 			Expect(shellQuote("hello")).To(Equal("'hello'"))

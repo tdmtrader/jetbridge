@@ -107,6 +107,82 @@ var _ = Describe("Task exec supervisor script execution", func() {
 		Expect(strings.Count(string(logBytes), "one-shot-output")).To(Equal(1))
 	})
 
+	It("terminal-end kill tears down the still-running supervised process tree", func() {
+		// A timed-out/aborted agent step must not leave the supervised
+		// command running (it would keep spending API dollars until the GC
+		// reaper deletes the pod). Start a supervisor whose command would
+		// run for a minute, then run the kill script and verify the tree
+		// dies well before that.
+		spec := runtime.ProcessSpec{
+			Path: "sh",
+			Args: []string{"-c", "sleep 60; echo survived-terminal-end"},
+		}
+		cmd := supervisorCommand(stateID, spec)
+		web := exec.Command(cmd[0], cmd[1], cmd[2])
+		// Mimic the runc tty exec: the supervisor sh runs as a session (and
+		// thus process-group) leader. This also isolates the tree's pgid
+		// from the test runner so the group kill cannot touch ginkgo.
+		web.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+		Expect(web.Start()).To(Succeed())
+		defer func() {
+			_ = web.Process.Kill()
+			_ = web.Wait()
+		}()
+
+		// Wait for the runner subshell to start and record its pid.
+		stateDir := stateDirOf(cmd[2])
+		var runnerPid int
+		Eventually(func() error {
+			pidBytes, err := os.ReadFile(filepath.Join(stateDir, "pid"))
+			if err != nil {
+				return err
+			}
+			_, err = fmt.Sscanf(strings.TrimSpace(string(pidBytes)), "%d", &runnerPid)
+			return err
+		}, "5s", "100ms").Should(Succeed())
+
+		kill := supervisorKillCommand(stateID, spec, 5)
+		out, err := exec.Command(kill[0], kill[1], kill[2]).CombinedOutput()
+		Expect(err).ToNot(HaveOccurred(), "kill script failed: %s", out)
+
+		// The runner subshell is dead (zombies are reaped once the killed
+		// session leader's parent collects them, hence Eventually)...
+		Eventually(func() error {
+			return syscall.Kill(runnerPid, 0)
+		}, "10s", "100ms").Should(MatchError(syscall.ESRCH))
+
+		// ...and no exit code was ever recorded: the command was killed,
+		// not run to completion.
+		_, statErr := os.Stat(filepath.Join(stateDir, "exit"))
+		Expect(statErr).To(HaveOccurred())
+	})
+
+	It("terminal-end kill is a no-op when the command never started", func() {
+		spec := runtime.ProcessSpec{Path: "sh", Args: []string{"-c", "true"}}
+		kill := supervisorKillCommand(stateID, spec, 1)
+		out, err := exec.Command(kill[0], kill[1], kill[2]).CombinedOutput()
+		Expect(err).ToNot(HaveOccurred(), "kill script failed: %s", out)
+	})
+
+	It("terminal-end kill is a no-op after the command completed and preserves replay", func() {
+		out1, code1 := runSupervisor("echo one-and-done; exit 4")
+		Expect(code1).To(Equal(4))
+		Expect(out1).To(ContainSubstring("one-and-done"))
+
+		spec := runtime.ProcessSpec{
+			Path: "sh",
+			Args: []string{"-c", "echo one-and-done; exit 4"},
+		}
+		kill := supervisorKillCommand(stateID, spec, 1)
+		out, err := exec.Command(kill[0], kill[1], kill[2]).CombinedOutput()
+		Expect(err).ToNot(HaveOccurred(), "kill script failed: %s", out)
+
+		// Replay after the no-op kill still works.
+		out2, code2 := runSupervisor("echo one-and-done; exit 4")
+		Expect(code2).To(Equal(4))
+		Expect(out2).To(ContainSubstring("one-and-done"))
+	})
+
 	It("shields the command from SIGHUP so pty teardown cannot kill it", func() {
 		// Send HUP to the runner subshell directly; a HUP-shielded runner
 		// keeps going and records its exit code.

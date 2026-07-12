@@ -905,6 +905,15 @@ func (p *execProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 		logger.Error("failed-to-exec-in-pod", err)
 		fetchPodFailureContext(ctx, p.clientset, p.config.Namespace, p.podName, p.processIO.Stderr)
 
+		// Terminal-end agent kill (review finding 2026-07-12): a cancelled or
+		// expired ctx at exec-failure time means a step timeout, build abort,
+		// or fail_fast sibling cancellation — ends nothing will ever re-attach
+		// to (web-restart drain does NOT cancel step contexts; the tracker
+		// runs builds off context.Background). Kill the supervised agent
+		// before recording outputs so the runner's final flight-recorder
+		// flush lands before ingestion reads it.
+		p.killAgentOnTerminalEnd(ctx, logger)
+
 		// Best-effort output-location recording (finding F23). This branch is
 		// reached on deadline-severed and transport-severed execs — the step
 		// timeout included — and uploadOutputsToArtifactStore is the ONLY
@@ -980,6 +989,58 @@ func (p *execProcess) annotateExitStatus(ctx context.Context, exitCode int) {
 			"exit-code": exitCode,
 		})
 	}
+}
+
+// agentTerminalKillGraceSeconds is how long the in-pod kill script waits for
+// the agent process tree to exit after SIGTERM before escalating to SIGKILL.
+// agent-runner traps SIGTERM: it kills claude, writes the flight recorder
+// (events.ndjson step.end + results.json), and exits — normally well within
+// this window, so ingestion right after Wait returns sees the final files.
+const agentTerminalKillGraceSeconds = 10
+
+// killAgentOnTerminalEnd stops the supervised agent process tree after a
+// terminal end — a severed exec whose ctx is cancelled or expired (step
+// timeout, build abort, fail_fast sibling cancellation). supervised() keeps
+// agent-runner (and claude under it) alive across severed exec sessions so
+// web-restart resume and the park protocol work, but those ends leave ctx
+// un-cancelled: the tracker runs builds off context.Background and a web
+// restart just kills this process. A dead ctx here means nothing will ever
+// re-attach, and until PARK-V2 stream-json teeing lands the runner only
+// writes its cost.record after claude exits — an abandoned agent would keep
+// spending unmetered dollars until the GC reaper deletes the pod, and a
+// retry attempt (`attempts:`) would run a second agent concurrently with the
+// survivor. Task steps are left alone: their timed-out survivors burn CPU,
+// not dollars, and killing them is a behavior change out of scope here.
+// Best-effort on a detached, bounded context (ctx is already dead); failures
+// are logged, never returned.
+func (p *execProcess) killAgentOnTerminalEnd(ctx context.Context, logger lager.Logger) {
+	if ctx.Err() == nil || !p.supervised() || p.container.metadata.Type != db.ContainerTypeAgent {
+		return
+	}
+
+	killCtx, cancel := context.WithTimeout(
+		context.WithoutCancel(ctx),
+		agentTerminalKillGraceSeconds*time.Second+15*time.Second,
+	)
+	defer cancel()
+
+	err := p.executor.ExecInPod(
+		killCtx,
+		p.config.Namespace,
+		p.podName,
+		mainContainerName,
+		supervisorKillCommand(p.id, p.processSpec, agentTerminalKillGraceSeconds),
+		nil,
+		io.Discard,
+		io.Discard,
+		false,
+		ExecAttrs{Purpose: "agent-terminal-kill"},
+	)
+	if err != nil {
+		logger.Error("failed-to-kill-agent-on-terminal-end", err)
+		return
+	}
+	logger.Info("killed-agent-on-terminal-end")
 }
 
 func (p *execProcess) SetTTY(_ runtime.TTYSpec) error {
