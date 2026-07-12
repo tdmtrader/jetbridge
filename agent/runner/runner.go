@@ -29,6 +29,19 @@ var (
 	sidecarHealthTimeout  = 60 * time.Second
 )
 
+// claudeWaitDelay bounds how long cmd.Wait may block on claude's inherited
+// stdout/stderr pipes after claude itself is dead (ctx cancellation) or has
+// exited. Claude routinely leaks descendants (tool-call subprocesses) that
+// inherit the pipe; without this bound cmd.Run blocks until the last one
+// exits. On the terminal-end kill path (step timeout / build abort — the
+// jetbridge exec SIGTERMs the pod's supervised process group, waits a 10s
+// grace, then group-SIGKILLs) a blocked runner is SIGKILLed before it writes
+// step.end/results.json, and the ingested row degrades to the zero-cost,
+// no-step.end error row the kill exists to prevent (review finding,
+// 2026-07-12). Must stay comfortably below that 10s grace and below the §3.2
+// park exit grace (AGENT_PARK_EXIT_GRACE_SECONDS, default 30).
+var claudeWaitDelay = 5 * time.Second
+
 const maxSummaryChars = 500
 
 // Config drives one agent-step execution.
@@ -231,7 +244,16 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 	cmd.Dir = cfg.WorkDir
 	cmd.Stdout = io.MultiWriter(&buf, stdout)
 	cmd.Stderr = stderr
+	cmd.WaitDelay = claudeWaitDelay
 	runErr := cmd.Run()
+	if errors.Is(runErr, exec.ErrWaitDelay) {
+		// ErrWaitDelay is only returned when Wait would otherwise return
+		// nil: claude exited 0 and its envelope (if any) is already in buf —
+		// the error just says a leaked descendant held the stdout pipe past
+		// the drain bound. The envelope is the authoritative outcome; a
+		// missing/garbled one still degrades to status error via parseErr.
+		runErr = nil
+	}
 	if runErr != nil {
 		fmt.Fprintf(stderr, "agent-runner: claude: %v\n", runErr)
 	}

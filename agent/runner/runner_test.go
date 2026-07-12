@@ -1,6 +1,7 @@
 package runner_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -8,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/concourse/concourse/agent/runner"
 	schema "github.com/concourse/concourse/agent/schema"
@@ -177,6 +179,152 @@ func TestFromEnvTreatsMalformedIdentityAsAbsent(t *testing.T) {
 	if cfg.BuildID != 0 || cfg.TicketID != 0 || cfg.WorkflowVersion != 0 || cfg.BudgetSliceUSD != 0 {
 		t.Errorf("malformed identity env should read as absent, got BuildID=%d TicketID=%d WorkflowVersion=%d BudgetSliceUSD=%v",
 			cfg.BuildID, cfg.TicketID, cfg.WorkflowVersion, cfg.BudgetSliceUSD)
+	}
+}
+
+// readEventTypes decodes flight/events.ndjson and returns the event types in
+// order.
+func readEventTypes(t *testing.T, flight string) []schema.EventType {
+	t.Helper()
+	events, err := os.Open(filepath.Join(flight, "events.ndjson"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer events.Close()
+	reader := schema.NewEventReader(events)
+	var types []schema.EventType
+	for {
+		e, err := reader.Read()
+		if err != nil {
+			break
+		}
+		types = append(types, e.Type)
+	}
+	return types
+}
+
+func TestRunFlushesFlightRecorderWhenCanceledMidRun(t *testing.T) {
+	// The terminal-end kill path (step timeout / build abort): the jetbridge
+	// exec SIGTERMs the supervised process group, agent-runner's
+	// NotifyContext cancels ctx, claude is killed — and the runner MUST
+	// still write results.json and close the event stream with step.end
+	// before the 10s kill grace expires in a group SIGKILL, or ingestion
+	// records the zero-cost, no-step.end error row this finding is about
+	// (review finding, 2026-07-12). Claude routinely leaks descendants that
+	// inherit its stdout pipe; without cmd.WaitDelay the runner blocks on
+	// pipe drain until the leaked sleeps below exit (~60s) and never gets
+	// to flush.
+	restore := runner.SetClaudeWaitDelay(500 * time.Millisecond)
+	defer restore()
+
+	dir := t.TempDir()
+	flight := filepath.Join(dir, "flight")
+	os.MkdirAll(flight, 0o755)
+
+	started := filepath.Join(dir, "claude-started")
+	claude := filepath.Join(dir, "claude")
+	script := "#!/bin/sh\n: > '" + started + "'\nsleep 60 &\nsleep 60\n"
+	if err := os.WriteFile(claude, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		// Cancel only once claude is actually running, so the test
+		// exercises the killed-mid-run drain, not a never-started command.
+		deadline := time.Now().Add(10 * time.Second)
+		for time.Now().Before(deadline) {
+			if _, err := os.Stat(started); err == nil {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		cancel()
+	}()
+
+	begin := time.Now()
+	// Buffered IO: the leaked sleeps inherit claude's stdout/stderr, and
+	// routing them at the test binary's own std streams would keep the
+	// `go test` pipe open for their full 60s after the tests finish.
+	exit, err := runner.Run(ctx, runner.Config{
+		Prompt: "p", FlightDir: flight, WorkDir: dir, StepName: "s", ClaudePath: claude,
+		Stdout: new(bytes.Buffer), Stderr: new(bytes.Buffer),
+	})
+	elapsed := time.Since(begin)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if exit != 2 {
+		t.Fatalf("expected exit 2 (error), got %d", exit)
+	}
+	// Without WaitDelay the leaked sleeps hold the stdout pipe for ~60s and
+	// the runner would be group-SIGKILLed long before returning.
+	if elapsed > 20*time.Second {
+		t.Fatalf("run blocked %v on pipe drain after cancellation; must return well within the terminal-kill grace", elapsed)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(flight, "results.json"))
+	if err != nil {
+		t.Fatalf("results.json must be written after a canceled run: %v", err)
+	}
+	var results schema.Results
+	if err := json.Unmarshal(raw, &results); err != nil {
+		t.Fatal(err)
+	}
+	if results.Status != schema.StatusError {
+		t.Fatalf("expected error status, got %s", results.Status)
+	}
+
+	types := readEventTypes(t, flight)
+	if len(types) == 0 || types[0] != schema.EventStepStart {
+		t.Fatalf("event stream must start with step.start, got %v", types)
+	}
+	if types[len(types)-1] != schema.EventStepEnd {
+		t.Fatalf("event stream must end with step.end even when canceled mid-run, got %v", types)
+	}
+}
+
+func TestRunTreatsWaitDelayExpiryAsClaudeOutcome(t *testing.T) {
+	// claude exits 0 with a valid envelope but leaks a descendant holding
+	// the stdout pipe. ErrWaitDelay is returned only when Wait would
+	// otherwise return nil — the envelope is the authoritative outcome, so
+	// the run must still map to pass, not error.
+	restore := runner.SetClaudeWaitDelay(500 * time.Millisecond)
+	defer restore()
+
+	dir := t.TempDir()
+	flight := filepath.Join(dir, "flight")
+	os.MkdirAll(flight, 0o755)
+
+	claude := filepath.Join(dir, "claude")
+	envelope := `{"type":"result","subtype":"success","result":"\"done\"","model":"m1","cost_usd":0.1,"num_turns":1,"is_error":false,"usage":{"input_tokens":10,"output_tokens":5}}`
+	script := "#!/bin/sh\nsleep 60 &\necho '" + envelope + "'\n"
+	if err := os.WriteFile(claude, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	exit, err := runner.Run(context.Background(), runner.Config{
+		Prompt: "p", FlightDir: flight, WorkDir: dir, StepName: "s", ClaudePath: claude,
+		Stdout: new(bytes.Buffer), Stderr: new(bytes.Buffer),
+	})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if exit != 0 {
+		t.Fatalf("expected exit 0 (pass) when only the pipe drain timed out, got %d", exit)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(flight, "results.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var results schema.Results
+	if err := json.Unmarshal(raw, &results); err != nil {
+		t.Fatal(err)
+	}
+	if results.Status != schema.StatusPass {
+		t.Fatalf("expected pass, got %s", results.Status)
 	}
 }
 
