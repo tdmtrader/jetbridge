@@ -5,22 +5,15 @@ import (
 	"encoding/json"
 	"io"
 	"strings"
+	"testing"
 	"time"
 
-	. "github.com/onsi/ginkgo/v2"
-	. "github.com/onsi/gomega"
-
-	"github.com/concourse/concourse/agent/schema"
+	schema "github.com/concourse/concourse/agent/schema"
 )
 
-var _ = Describe("EventWriter", func() {
-	var buf *bytes.Buffer
-
-	BeforeEach(func() {
-		buf = &bytes.Buffer{}
-	})
-
-	It("writes a single event as one JSON line", func() {
+func TestEventWriter(t *testing.T) {
+	t.Run("writes a single event as one JSON line", func(t *testing.T) {
+		buf := &bytes.Buffer{}
 		w := schema.NewEventWriter(buf)
 
 		err := w.Write(schema.Event{
@@ -28,13 +21,14 @@ var _ = Describe("EventWriter", func() {
 			Type:      schema.EventAgentStart,
 			Data:      json.RawMessage(`{"step":"review"}`),
 		})
-		Expect(err).NotTo(HaveOccurred())
+		requireNoErr(t, err)
 
 		lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
-		Expect(lines).To(HaveLen(1))
+		requireLen(t, lines, 1)
 	})
 
-	It("writes multiple events as separate lines", func() {
+	t.Run("writes multiple events as separate lines", func(t *testing.T) {
+		buf := &bytes.Buffer{}
 		w := schema.NewEventWriter(buf)
 
 		for i := 0; i < 3; i++ {
@@ -43,14 +37,15 @@ var _ = Describe("EventWriter", func() {
 				Type:      schema.EventToolCall,
 				Data:      json.RawMessage(`{"index":1}`),
 			})
-			Expect(err).NotTo(HaveOccurred())
+			requireNoErr(t, err)
 		}
 
 		lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
-		Expect(lines).To(HaveLen(3))
+		requireLen(t, lines, 3)
 	})
 
-	It("each line is valid JSON", func() {
+	t.Run("each line is valid JSON", func(t *testing.T) {
+		buf := &bytes.Buffer{}
 		w := schema.NewEventWriter(buf)
 
 		err := w.Write(schema.Event{
@@ -58,29 +53,31 @@ var _ = Describe("EventWriter", func() {
 			Type:      schema.EventAgentEnd,
 			Data:      json.RawMessage(`{"status":"pass"}`),
 		})
-		Expect(err).NotTo(HaveOccurred())
+		requireNoErr(t, err)
 
 		line := strings.TrimSpace(buf.String())
-		Expect(line).To(MatchJSON(`{"ts":"2026-02-09T21:30:00Z","event":"agent.end","data":{"status":"pass"}}`))
+		requireJSONEqual(t, []byte(line), `{"ts":"2026-02-09T21:30:00Z","event":"agent.end","data":{"status":"pass"}}`)
 	})
 
-	It("sets a missing timestamp before writing", func() {
+	t.Run("sets a missing timestamp before writing", func(t *testing.T) {
+		buf := &bytes.Buffer{}
 		w := schema.NewEventWriter(buf)
 
 		err := w.Write(schema.Event{
 			Type: schema.EventAgentStart,
 			Data: json.RawMessage(`{}`),
 		})
-		Expect(err).NotTo(HaveOccurred())
+		requireNoErr(t, err)
 
 		var written schema.Event
-		Expect(json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &written)).To(Succeed())
-		Expect(written.Timestamp).NotTo(BeEmpty())
+		requireNoErr(t, json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &written))
+		requireTrue(t, written.Timestamp != "", "timestamp should be set")
 		_, err = time.Parse(time.RFC3339, written.Timestamp)
-		Expect(err).NotTo(HaveOccurred())
+		requireNoErr(t, err)
 	})
 
-	It("validates events before writing", func() {
+	t.Run("validates events before writing", func(t *testing.T) {
+		buf := &bytes.Buffer{}
 		w := schema.NewEventWriter(buf)
 
 		err := w.Write(schema.Event{
@@ -88,11 +85,12 @@ var _ = Describe("EventWriter", func() {
 			Type:      "",
 			Data:      json.RawMessage(`{}`),
 		})
-		Expect(err).To(HaveOccurred())
-		Expect(buf.Len()).To(Equal(0), "invalid event should not be written")
+		requireErr(t, err)
+		requireEqual(t, buf.Len(), 0, "invalid event should not be written")
 	})
 
-	It("each line ends with a newline", func() {
+	t.Run("each line ends with a newline", func(t *testing.T) {
+		buf := &bytes.Buffer{}
 		w := schema.NewEventWriter(buf)
 
 		err := w.Write(schema.Event{
@@ -100,25 +98,25 @@ var _ = Describe("EventWriter", func() {
 			Type:      schema.EventAgentStart,
 			Data:      json.RawMessage(`{}`),
 		})
-		Expect(err).NotTo(HaveOccurred())
+		requireNoErr(t, err)
 
-		Expect(buf.String()).To(HaveSuffix("\n"))
+		requireTrue(t, strings.HasSuffix(buf.String(), "\n"), "expected trailing newline")
 	})
-})
+}
 
-var _ = Describe("EventReader", func() {
-	It("reads a single event from NDJSON", func() {
+func TestEventReader(t *testing.T) {
+	t.Run("reads a single event from NDJSON", func(t *testing.T) {
 		input := `{"ts":"2026-02-09T21:30:00Z","event":"agent.start","data":{"step":"review"}}` + "\n"
 		r := schema.NewEventReader(strings.NewReader(input))
 
 		event, err := r.Read()
-		Expect(err).NotTo(HaveOccurred())
-		Expect(event.Timestamp).To(Equal("2026-02-09T21:30:00Z"))
-		Expect(event.Type).To(Equal(schema.EventAgentStart))
-		Expect(event.Data).To(MatchJSON(`{"step":"review"}`))
+		requireNoErr(t, err)
+		requireEqual(t, event.Timestamp, "2026-02-09T21:30:00Z")
+		requireEqual(t, event.Type, schema.EventAgentStart)
+		requireJSONEqual(t, event.Data, `{"step":"review"}`)
 	})
 
-	It("reads multiple events sequentially", func() {
+	t.Run("reads multiple events sequentially", func(t *testing.T) {
 		input := strings.Join([]string{
 			`{"ts":"2026-02-09T21:30:00Z","event":"agent.start","data":{"step":"review"}}`,
 			`{"ts":"2026-02-09T21:30:01Z","event":"tool.call","data":{"tool":"grep"}}`,
@@ -133,24 +131,24 @@ var _ = Describe("EventReader", func() {
 			if err == io.EOF {
 				break
 			}
-			Expect(err).NotTo(HaveOccurred())
+			requireNoErr(t, err)
 			events = append(events, *event)
 		}
 
-		Expect(events).To(HaveLen(3))
-		Expect(events[0].Type).To(Equal(schema.EventAgentStart))
-		Expect(events[1].Type).To(Equal(schema.EventToolCall))
-		Expect(events[2].Type).To(Equal(schema.EventAgentEnd))
+		requireLen(t, events, 3)
+		requireEqual(t, events[0].Type, schema.EventAgentStart)
+		requireEqual(t, events[1].Type, schema.EventToolCall)
+		requireEqual(t, events[2].Type, schema.EventAgentEnd)
 	})
 
-	It("returns io.EOF when no more events", func() {
+	t.Run("returns io.EOF when no more events", func(t *testing.T) {
 		r := schema.NewEventReader(strings.NewReader(""))
 
 		_, err := r.Read()
-		Expect(err).To(Equal(io.EOF))
+		requireEqual(t, err, io.EOF)
 	})
 
-	It("skips empty lines", func() {
+	t.Run("skips empty lines", func(t *testing.T) {
 		input := `{"ts":"2026-02-09T21:30:00Z","event":"agent.start","data":{}}` + "\n\n\n" +
 			`{"ts":"2026-02-09T21:30:01Z","event":"agent.end","data":{}}` + "\n"
 
@@ -162,46 +160,46 @@ var _ = Describe("EventReader", func() {
 			if err == io.EOF {
 				break
 			}
-			Expect(err).NotTo(HaveOccurred())
+			requireNoErr(t, err)
 			events = append(events, *event)
 		}
 
-		Expect(events).To(HaveLen(2))
+		requireLen(t, events, 2)
 	})
 
-	It("returns an error for invalid JSON", func() {
+	t.Run("returns an error for invalid JSON", func(t *testing.T) {
 		input := "not valid json\n"
 		r := schema.NewEventReader(strings.NewReader(input))
 
 		_, err := r.Read()
-		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("line 1"))
+		requireErr(t, err)
+		requireContains(t, err.Error(), "line 1")
 	})
 
-	It("validates each event after parsing", func() {
+	t.Run("validates each event after parsing", func(t *testing.T) {
 		input := `{"ts":"","event":"agent.start","data":{}}` + "\n"
 		r := schema.NewEventReader(strings.NewReader(input))
 
 		_, err := r.Read()
-		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("line 1"))
+		requireErr(t, err)
+		requireContains(t, err.Error(), "line 1")
 	})
 
-	It("reports line number on parse error", func() {
+	t.Run("reports line number on parse error", func(t *testing.T) {
 		input := `{"ts":"2026-02-09T21:30:00Z","event":"agent.start","data":{}}` + "\n" +
 			"bad json line\n"
 
 		r := schema.NewEventReader(strings.NewReader(input))
 
 		_, err := r.Read()
-		Expect(err).NotTo(HaveOccurred())
+		requireNoErr(t, err)
 
 		_, err = r.Read()
-		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("line 2"))
+		requireErr(t, err)
+		requireContains(t, err.Error(), "line 2")
 	})
 
-	It("round-trips through EventWriter and EventReader", func() {
+	t.Run("round-trips through EventWriter and EventReader", func(t *testing.T) {
 		var buf bytes.Buffer
 		w := schema.NewEventWriter(&buf)
 
@@ -224,7 +222,7 @@ var _ = Describe("EventReader", func() {
 		}
 
 		for _, e := range original {
-			Expect(w.Write(e)).To(Succeed())
+			requireNoErr(t, w.Write(e))
 		}
 
 		r := schema.NewEventReader(&buf)
@@ -234,14 +232,14 @@ var _ = Describe("EventReader", func() {
 			if err == io.EOF {
 				break
 			}
-			Expect(err).NotTo(HaveOccurred())
+			requireNoErr(t, err)
 			decoded = append(decoded, *event)
 		}
 
-		Expect(decoded).To(HaveLen(3))
+		requireLen(t, decoded, 3)
 		for i, d := range decoded {
-			Expect(d.Timestamp).To(Equal(original[i].Timestamp))
-			Expect(d.Type).To(Equal(original[i].Type))
+			requireEqual(t, d.Timestamp, original[i].Timestamp)
+			requireEqual(t, d.Type, original[i].Type)
 		}
 	})
-})
+}

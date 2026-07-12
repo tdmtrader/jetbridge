@@ -2,139 +2,135 @@ package schema_test
 
 import (
 	"encoding/json"
+	"testing"
 
-	. "github.com/onsi/ginkgo/v2"
-	. "github.com/onsi/gomega"
-
-	"github.com/concourse/concourse/agent/schema"
+	schema "github.com/concourse/concourse/agent/schema"
 )
 
-var _ = Describe("PlanningInput", func() {
-	validInput := func() schema.PlanningInput {
-		return schema.PlanningInput{
-			Title:       "Add user authentication",
-			Description: "Implement JWT-based authentication for the API",
-			Type:        schema.StoryFeature,
-			Priority:    schema.PriorityHigh,
-			Labels:      []string{"security", "api"},
-			AcceptanceCriteria: []string{
-				"Users can log in with email/password",
-				"JWT tokens expire after 24 hours",
-			},
-			Context: &schema.PlanningContext{
-				Repo:         "https://github.com/org/repo.git",
-				Language:     "go",
-				RelatedFiles: []string{"auth/handler.go", "middleware/jwt.go"},
-			},
-		}
+func validPlanningInput() schema.PlanningInput {
+	return schema.PlanningInput{
+		Title:       "Add user authentication",
+		Description: "Implement JWT-based authentication for the API",
+		Type:        schema.StoryFeature,
+		Priority:    schema.PriorityHigh,
+		Labels:      []string{"security", "api"},
+		AcceptanceCriteria: []string{
+			"Users can log in with email/password",
+			"JWT tokens expire after 24 hours",
+		},
+		Context: &schema.PlanningContext{
+			Repo:         "https://github.com/org/repo.git",
+			Language:     "go",
+			RelatedFiles: []string{"auth/handler.go", "middleware/jwt.go"},
+		},
 	}
+}
 
-	Describe("JSON round-trip", func() {
-		It("marshals and unmarshals correctly", func() {
-			input := validInput()
-			data, err := json.Marshal(input)
-			Expect(err).NotTo(HaveOccurred())
+func TestPlanningInputJSONRoundTrip(t *testing.T) {
+	t.Run("marshals and unmarshals correctly", func(t *testing.T) {
+		input := validPlanningInput()
+		data, err := json.Marshal(input)
+		requireNoErr(t, err)
 
-			var decoded schema.PlanningInput
-			Expect(json.Unmarshal(data, &decoded)).To(Succeed())
+		var decoded schema.PlanningInput
+		requireNoErr(t, json.Unmarshal(data, &decoded))
 
-			Expect(decoded.Title).To(Equal("Add user authentication"))
-			Expect(decoded.Type).To(Equal(schema.StoryFeature))
-			Expect(decoded.Priority).To(Equal(schema.PriorityHigh))
-			Expect(decoded.Labels).To(HaveLen(2))
-			Expect(decoded.AcceptanceCriteria).To(HaveLen(2))
-			Expect(decoded.Context.Language).To(Equal("go"))
-			Expect(decoded.Context.RelatedFiles).To(HaveLen(2))
-		})
-
-		It("handles minimal input (title + description only)", func() {
-			input := schema.PlanningInput{
-				Title:       "Simple task",
-				Description: "Do a thing",
-			}
-			data, _ := json.Marshal(input)
-			var decoded schema.PlanningInput
-			Expect(json.Unmarshal(data, &decoded)).To(Succeed())
-			Expect(decoded.Title).To(Equal("Simple task"))
-			Expect(decoded.Context).To(BeNil())
-		})
-
-		It("ignores unknown JSON fields", func() {
-			raw := `{"title":"test","description":"desc","unknown_field":"value"}`
-			var input schema.PlanningInput
-			Expect(json.Unmarshal([]byte(raw), &input)).To(Succeed())
-			Expect(input.Title).To(Equal("test"))
-		})
+		requireEqual(t, decoded.Title, "Add user authentication")
+		requireEqual(t, decoded.Type, schema.StoryFeature)
+		requireEqual(t, decoded.Priority, schema.PriorityHigh)
+		requireLen(t, decoded.Labels, 2)
+		requireLen(t, decoded.AcceptanceCriteria, 2)
+		requireEqual(t, decoded.Context.Language, "go")
+		requireLen(t, decoded.Context.RelatedFiles, 2)
 	})
 
-	Describe("Validate", func() {
-		It("passes for valid input", func() {
-			input := validInput()
-			Expect(input.Validate()).To(Succeed())
-		})
-
-		It("passes for minimal input", func() {
-			input := schema.PlanningInput{
-				Title:       "A task",
-				Description: "Description here",
-			}
-			Expect(input.Validate()).To(Succeed())
-		})
-
-		It("requires title", func() {
-			input := validInput()
-			input.Title = ""
-			Expect(input.Validate()).To(MatchError(ContainSubstring("title")))
-		})
-
-		It("rejects whitespace-only title", func() {
-			input := validInput()
-			input.Title = "   "
-			Expect(input.Validate()).To(MatchError(ContainSubstring("title")))
-		})
-
-		It("requires description", func() {
-			input := validInput()
-			input.Description = ""
-			Expect(input.Validate()).To(MatchError(ContainSubstring("description")))
-		})
-
-		It("rejects whitespace-only description", func() {
-			input := validInput()
-			input.Description = "  \t  "
-			Expect(input.Validate()).To(MatchError(ContainSubstring("description")))
-		})
-
-		It("rejects invalid type", func() {
-			input := validInput()
-			input.Type = "invalid"
-			Expect(input.Validate()).To(MatchError(ContainSubstring("invalid type")))
-		})
-
-		It("rejects invalid priority", func() {
-			input := validInput()
-			input.Priority = "urgent"
-			Expect(input.Validate()).To(MatchError(ContainSubstring("invalid priority")))
-		})
-
-		It("accepts all valid story types", func() {
-			for _, t := range []schema.StoryType{
-				schema.StoryFeature, schema.StoryBug, schema.StoryChore, schema.StorySpike,
-			} {
-				input := validInput()
-				input.Type = t
-				Expect(input.Validate()).To(Succeed())
-			}
-		})
-
-		It("accepts all valid priorities", func() {
-			for _, p := range []schema.Priority{
-				schema.PriorityCritical, schema.PriorityHigh, schema.PriorityMedium, schema.PriorityLow,
-			} {
-				input := validInput()
-				input.Priority = p
-				Expect(input.Validate()).To(Succeed())
-			}
-		})
+	t.Run("handles minimal input (title + description only)", func(t *testing.T) {
+		input := schema.PlanningInput{
+			Title:       "Simple task",
+			Description: "Do a thing",
+		}
+		data, _ := json.Marshal(input)
+		var decoded schema.PlanningInput
+		requireNoErr(t, json.Unmarshal(data, &decoded))
+		requireEqual(t, decoded.Title, "Simple task")
+		requireTrue(t, decoded.Context == nil, "context should be nil")
 	})
-})
+
+	t.Run("ignores unknown JSON fields", func(t *testing.T) {
+		raw := `{"title":"test","description":"desc","unknown_field":"value"}`
+		var input schema.PlanningInput
+		requireNoErr(t, json.Unmarshal([]byte(raw), &input))
+		requireEqual(t, input.Title, "test")
+	})
+}
+
+func TestPlanningInputValidate(t *testing.T) {
+	t.Run("passes for valid input", func(t *testing.T) {
+		input := validPlanningInput()
+		requireNoErr(t, input.Validate())
+	})
+
+	t.Run("passes for minimal input", func(t *testing.T) {
+		input := schema.PlanningInput{
+			Title:       "A task",
+			Description: "Description here",
+		}
+		requireNoErr(t, input.Validate())
+	})
+
+	t.Run("requires title", func(t *testing.T) {
+		input := validPlanningInput()
+		input.Title = ""
+		requireErrContains(t, input.Validate(), "title")
+	})
+
+	t.Run("rejects whitespace-only title", func(t *testing.T) {
+		input := validPlanningInput()
+		input.Title = "   "
+		requireErrContains(t, input.Validate(), "title")
+	})
+
+	t.Run("requires description", func(t *testing.T) {
+		input := validPlanningInput()
+		input.Description = ""
+		requireErrContains(t, input.Validate(), "description")
+	})
+
+	t.Run("rejects whitespace-only description", func(t *testing.T) {
+		input := validPlanningInput()
+		input.Description = "  \t  "
+		requireErrContains(t, input.Validate(), "description")
+	})
+
+	t.Run("rejects invalid type", func(t *testing.T) {
+		input := validPlanningInput()
+		input.Type = "invalid"
+		requireErrContains(t, input.Validate(), "invalid type")
+	})
+
+	t.Run("rejects invalid priority", func(t *testing.T) {
+		input := validPlanningInput()
+		input.Priority = "urgent"
+		requireErrContains(t, input.Validate(), "invalid priority")
+	})
+
+	t.Run("accepts all valid story types", func(t *testing.T) {
+		for _, ty := range []schema.StoryType{
+			schema.StoryFeature, schema.StoryBug, schema.StoryChore, schema.StorySpike,
+		} {
+			input := validPlanningInput()
+			input.Type = ty
+			requireNoErr(t, input.Validate())
+		}
+	})
+
+	t.Run("accepts all valid priorities", func(t *testing.T) {
+		for _, p := range []schema.Priority{
+			schema.PriorityCritical, schema.PriorityHigh, schema.PriorityMedium, schema.PriorityLow,
+		} {
+			input := validPlanningInput()
+			input.Priority = p
+			requireNoErr(t, input.Validate())
+		}
+	})
+}

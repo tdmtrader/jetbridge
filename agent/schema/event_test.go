@@ -2,195 +2,184 @@ package schema_test
 
 import (
 	"encoding/json"
+	"testing"
 
-	. "github.com/onsi/ginkgo/v2"
-	. "github.com/onsi/gomega"
-
-	"github.com/concourse/concourse/agent/schema"
+	schema "github.com/concourse/concourse/agent/schema"
 )
 
-var _ = Describe("Event", func() {
-	var validEvent func() schema.Event
+func validEvent() schema.Event {
+	return schema.Event{
+		Timestamp: "2026-02-09T21:30:00Z",
+		Type:      schema.EventAgentStart,
+		Data:      json.RawMessage(`{"step":"review","model":"claude-sonnet-4-5-20250929"}`),
+	}
+}
 
-	BeforeEach(func() {
-		validEvent = func() schema.Event {
-			return schema.Event{
-				Timestamp: "2026-02-09T21:30:00Z",
-				Type:      schema.EventAgentStart,
-				Data:      json.RawMessage(`{"step":"review","model":"claude-sonnet-4-5-20250929"}`),
-			}
+func TestEventValidate(t *testing.T) {
+	t.Run("exposes the merged event-type constants and raw-message data", func(t *testing.T) {
+		e := schema.Event{
+			Timestamp: "2026-07-08T12:00:00Z",
+			Type:      schema.EventPlanInputParsed,
+			Data:      json.RawMessage(`{"k":"v"}`),
+		}
+		requireNoErr(t, e.Validate())
+		requireEqual(t, string(schema.EventArtifactWritten), "artifact.written")
+	})
+
+	t.Run("accepts a valid event with all required fields", func(t *testing.T) {
+		e := validEvent()
+		requireNoErr(t, e.Validate())
+	})
+
+	t.Run("rejects missing timestamp", func(t *testing.T) {
+		e := validEvent()
+		e.Timestamp = ""
+		requireErrContains(t, e.Validate(), "ts")
+	})
+
+	t.Run("rejects invalid RFC3339 timestamp", func(t *testing.T) {
+		e := validEvent()
+		e.Timestamp = "not-a-timestamp"
+		requireErrContains(t, e.Validate(), "ts")
+	})
+
+	t.Run("rejects a date-only timestamp", func(t *testing.T) {
+		e := validEvent()
+		e.Timestamp = "2026-02-09"
+		requireErrContains(t, e.Validate(), "ts")
+	})
+
+	t.Run("accepts various valid RFC3339 formats", func(t *testing.T) {
+		for _, ts := range []string{
+			"2026-02-09T21:30:00Z",
+			"2026-02-09T21:30:00+00:00",
+			"2026-02-09T21:30:00.123456789Z",
+			"2026-02-09T14:30:00-07:00",
+		} {
+			e := validEvent()
+			e.Timestamp = ts
+			requireNoErr(t, e.Validate(), "expected timestamp %q to be valid", ts)
 		}
 	})
 
-	Describe("Validate", func() {
-		It("exposes the merged event-type constants and raw-message data", func() {
-			e := schema.Event{
-				Timestamp: "2026-07-08T12:00:00Z",
-				Type:      schema.EventPlanInputParsed,
-				Data:      json.RawMessage(`{"k":"v"}`),
-			}
-			Expect(e.Validate()).To(Succeed())
-			Expect(string(schema.EventArtifactWritten)).To(Equal("artifact.written"))
-		})
-
-		It("accepts a valid event with all required fields", func() {
-			e := validEvent()
-			Expect(e.Validate()).To(Succeed())
-		})
-
-		It("rejects missing timestamp", func() {
-			e := validEvent()
-			e.Timestamp = ""
-			Expect(e.Validate()).To(MatchError(ContainSubstring("ts")))
-		})
-
-		It("rejects invalid RFC3339 timestamp", func() {
-			e := validEvent()
-			e.Timestamp = "not-a-timestamp"
-			Expect(e.Validate()).To(MatchError(ContainSubstring("ts")))
-		})
-
-		It("rejects a date-only timestamp", func() {
-			e := validEvent()
-			e.Timestamp = "2026-02-09"
-			Expect(e.Validate()).To(MatchError(ContainSubstring("ts")))
-		})
-
-		It("accepts various valid RFC3339 formats", func() {
-			for _, ts := range []string{
-				"2026-02-09T21:30:00Z",
-				"2026-02-09T21:30:00+00:00",
-				"2026-02-09T21:30:00.123456789Z",
-				"2026-02-09T14:30:00-07:00",
-			} {
-				e := validEvent()
-				e.Timestamp = ts
-				Expect(e.Validate()).To(Succeed(), "expected timestamp %q to be valid", ts)
-			}
-		})
-
-		It("rejects missing event type", func() {
-			e := validEvent()
-			e.Type = ""
-			Expect(e.Validate()).To(MatchError(ContainSubstring("event")))
-		})
-
-		It("rejects nil data", func() {
-			e := validEvent()
-			e.Data = nil
-			Expect(e.Validate()).To(MatchError(ContainSubstring("data")))
-		})
-
-		It("rejects empty (zero-length) data", func() {
-			e := validEvent()
-			e.Data = json.RawMessage{}
-			Expect(e.Validate()).To(MatchError(ContainSubstring("data")))
-		})
-
-		It("accepts an empty data object", func() {
-			e := validEvent()
-			e.Data = json.RawMessage(`{}`)
-			Expect(e.Validate()).To(Succeed())
-		})
-
-		It("accepts all known event types", func() {
-			for _, et := range []schema.EventType{
-				schema.EventAgentStart,
-				schema.EventAgentEnd,
-				schema.EventSkillStart,
-				schema.EventSkillEnd,
-				schema.EventToolCall,
-				schema.EventToolResult,
-				schema.EventArtifactWritten,
-				schema.EventDecision,
-				schema.EventError,
-				schema.EventPlanInputParsed,
-				schema.EventPlanSpecGenerated,
-				schema.EventPlanPlanGenerated,
-				schema.EventPlanConfidenceScored,
-			} {
-				e := validEvent()
-				e.Type = et
-				Expect(e.Validate()).To(Succeed(), "expected event type %q to be valid", et)
-			}
-		})
-
-		It("accepts custom/extensible event types", func() {
-			e := validEvent()
-			e.Type = "review.file_analyzed"
-			Expect(e.Validate()).To(Succeed())
-		})
+	t.Run("rejects missing event type", func(t *testing.T) {
+		e := validEvent()
+		e.Type = ""
+		requireErrContains(t, e.Validate(), "event")
 	})
 
-	Describe("JSON round-trip", func() {
-		It("marshals and unmarshals an Event", func() {
-			original := schema.Event{
-				Timestamp: "2026-02-09T21:30:00Z",
-				Type:      schema.EventToolCall,
-				Data:      json.RawMessage(`{"tool":"grep","duration_ms":42}`),
-			}
-
-			data, err := json.Marshal(original)
-			Expect(err).NotTo(HaveOccurred())
-
-			var decoded schema.Event
-			err = json.Unmarshal(data, &decoded)
-			Expect(err).NotTo(HaveOccurred())
-
-			Expect(decoded.Timestamp).To(Equal(original.Timestamp))
-			Expect(decoded.Type).To(Equal(original.Type))
-			Expect(decoded.Data).To(MatchJSON(`{"tool":"grep","duration_ms":42}`))
-		})
-
-		It("uses correct JSON field names (ts, event, data)", func() {
-			e := schema.Event{
-				Timestamp: "2026-02-09T21:30:00Z",
-				Type:      schema.EventAgentStart,
-				Data:      json.RawMessage(`{"step":"review"}`),
-			}
-
-			data, err := json.Marshal(e)
-			Expect(err).NotTo(HaveOccurred())
-
-			var raw map[string]interface{}
-			err = json.Unmarshal(data, &raw)
-			Expect(err).NotTo(HaveOccurred())
-
-			Expect(raw).To(HaveKey("ts"))
-			Expect(raw).To(HaveKey("event"))
-			Expect(raw).To(HaveKey("data"))
-			Expect(raw).NotTo(HaveKey("timestamp"))
-			Expect(raw).NotTo(HaveKey("type"))
-		})
-
-		It("serializes nil data as empty object", func() {
-			e := schema.Event{
-				Timestamp: "2026-02-09T21:30:00Z",
-				Type:      schema.EventDecision,
-			}
-
-			data, err := json.Marshal(e)
-			Expect(err).NotTo(HaveOccurred())
-
-			var raw map[string]interface{}
-			err = json.Unmarshal(data, &raw)
-			Expect(err).NotTo(HaveOccurred())
-
-			dataField, ok := raw["data"].(map[string]interface{})
-			Expect(ok).To(BeTrue(), "data should be an object")
-			Expect(dataField).To(BeEmpty())
-		})
-
-		It("produces a single JSON line (no embedded newlines)", func() {
-			e := schema.Event{
-				Timestamp: "2026-02-09T21:30:00Z",
-				Type:      schema.EventAgentEnd,
-				Data:      json.RawMessage(`{"status":"pass","confidence":0.92,"duration_ms":18500}`),
-			}
-
-			data, err := json.Marshal(e)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(string(data)).NotTo(ContainSubstring("\n"))
-		})
+	t.Run("rejects nil data", func(t *testing.T) {
+		e := validEvent()
+		e.Data = nil
+		requireErrContains(t, e.Validate(), "data")
 	})
-})
+
+	t.Run("rejects empty (zero-length) data", func(t *testing.T) {
+		e := validEvent()
+		e.Data = json.RawMessage{}
+		requireErrContains(t, e.Validate(), "data")
+	})
+
+	t.Run("accepts an empty data object", func(t *testing.T) {
+		e := validEvent()
+		e.Data = json.RawMessage(`{}`)
+		requireNoErr(t, e.Validate())
+	})
+
+	t.Run("accepts all known event types", func(t *testing.T) {
+		for _, et := range []schema.EventType{
+			schema.EventAgentStart,
+			schema.EventAgentEnd,
+			schema.EventSkillStart,
+			schema.EventSkillEnd,
+			schema.EventToolCall,
+			schema.EventToolResult,
+			schema.EventArtifactWritten,
+			schema.EventDecision,
+			schema.EventError,
+			schema.EventPlanInputParsed,
+			schema.EventPlanSpecGenerated,
+			schema.EventPlanPlanGenerated,
+			schema.EventPlanConfidenceScored,
+		} {
+			e := validEvent()
+			e.Type = et
+			requireNoErr(t, e.Validate(), "expected event type %q to be valid", et)
+		}
+	})
+
+	t.Run("accepts custom/extensible event types", func(t *testing.T) {
+		e := validEvent()
+		e.Type = "review.file_analyzed"
+		requireNoErr(t, e.Validate())
+	})
+}
+
+func TestEventJSONRoundTrip(t *testing.T) {
+	t.Run("marshals and unmarshals an Event", func(t *testing.T) {
+		original := schema.Event{
+			Timestamp: "2026-02-09T21:30:00Z",
+			Type:      schema.EventToolCall,
+			Data:      json.RawMessage(`{"tool":"grep","duration_ms":42}`),
+		}
+
+		data, err := json.Marshal(original)
+		requireNoErr(t, err)
+
+		var decoded schema.Event
+		requireNoErr(t, json.Unmarshal(data, &decoded))
+
+		requireEqual(t, decoded.Timestamp, original.Timestamp)
+		requireEqual(t, decoded.Type, original.Type)
+		requireJSONEqual(t, decoded.Data, `{"tool":"grep","duration_ms":42}`)
+	})
+
+	t.Run("uses correct JSON field names (ts, event, data)", func(t *testing.T) {
+		e := schema.Event{
+			Timestamp: "2026-02-09T21:30:00Z",
+			Type:      schema.EventAgentStart,
+			Data:      json.RawMessage(`{"step":"review"}`),
+		}
+
+		data, err := json.Marshal(e)
+		requireNoErr(t, err)
+
+		var raw map[string]interface{}
+		requireNoErr(t, json.Unmarshal(data, &raw))
+
+		requireHasKey(t, raw, "ts")
+		requireHasKey(t, raw, "event")
+		requireHasKey(t, raw, "data")
+		requireNoKey(t, raw, "timestamp")
+		requireNoKey(t, raw, "type")
+	})
+
+	t.Run("serializes nil data as empty object", func(t *testing.T) {
+		e := schema.Event{
+			Timestamp: "2026-02-09T21:30:00Z",
+			Type:      schema.EventDecision,
+		}
+
+		data, err := json.Marshal(e)
+		requireNoErr(t, err)
+
+		var raw map[string]interface{}
+		requireNoErr(t, json.Unmarshal(data, &raw))
+
+		dataField, ok := raw["data"].(map[string]interface{})
+		requireTrue(t, ok, "data should be an object")
+		requireLen(t, dataField, 0)
+	})
+
+	t.Run("produces a single JSON line (no embedded newlines)", func(t *testing.T) {
+		e := schema.Event{
+			Timestamp: "2026-02-09T21:30:00Z",
+			Type:      schema.EventAgentEnd,
+			Data:      json.RawMessage(`{"status":"pass","confidence":0.92,"duration_ms":18500}`),
+		}
+
+		data, err := json.Marshal(e)
+		requireNoErr(t, err)
+		requireNotContains(t, string(data), "\n")
+	})
+}

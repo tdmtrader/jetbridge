@@ -2,143 +2,133 @@ package schema_test
 
 import (
 	"encoding/json"
-
-	. "github.com/onsi/ginkgo/v2"
-	. "github.com/onsi/gomega"
+	"testing"
 
 	"github.com/concourse/concourse/agent/schema"
 )
 
-var _ = Describe("ReviewOutput", func() {
-	var validReview func() schema.ReviewOutput
+func validReview() schema.ReviewOutput {
+	return schema.ReviewOutput{
+		SchemaVersion: "1.0.0",
+		Metadata: schema.Metadata{
+			Repo:           "github.com/org/repo",
+			Commit:         "abc123",
+			Branch:         "main",
+			Timestamp:      "2026-02-09T17:00:00Z",
+			DurationSec:    45,
+			AgentCLI:       "claude-code",
+			AgentModel:     "claude-opus-4-6",
+			FilesReviewed:  24,
+			TestsGenerated: 8,
+			TestsFailing:   3,
+		},
+		Score: schema.Score{
+			Value:     7.5,
+			Max:       10.0,
+			Pass:      true,
+			Threshold: 7.0,
+			Deductions: []schema.ScoreDeduction{
+				{IssueID: "001", Severity: schema.SeverityHigh, Points: -1.5},
+			},
+		},
+		ProvenIssues: []schema.ProvenIssue{
+			{
+				ID:          "001",
+				Severity:    schema.SeverityHigh,
+				Title:       "Nil pointer on empty config",
+				Description: "LoadConfig returns nil without error.",
+				File:        "config/loader.go",
+				Line:        42,
+				EndLine:     48,
+				TestFile:    "review/tests/001_test.go",
+				TestName:    "TestLoadConfig_EmptyFile",
+				TestOutput:  "panic: nil pointer",
+				Category:    schema.CategoryCorrectness,
+			},
+		},
+		Observations: []schema.Observation{
+			{
+				ID:          "OBS-001",
+				Title:       "High cyclomatic complexity",
+				Description: "Function has 15 branches.",
+				File:        "service/orders.go",
+				Line:        88,
+				Category:    schema.CategoryMaintainability,
+			},
+		},
+		TestSummary: schema.TestSummary{
+			TotalGenerated: 8,
+			Passing:        5,
+			Failing:        3,
+			Error:          0,
+		},
+		Summary: "24 files reviewed. Score: 7.5/10.",
+	}
+}
 
-	BeforeEach(func() {
-		validReview = func() schema.ReviewOutput {
-			return schema.ReviewOutput{
-				SchemaVersion: "1.0.0",
-				Metadata: schema.Metadata{
-					Repo:           "github.com/org/repo",
-					Commit:         "abc123",
-					Branch:         "main",
-					Timestamp:      "2026-02-09T17:00:00Z",
-					DurationSec:    45,
-					AgentCLI:       "claude-code",
-					AgentModel:     "claude-opus-4-6",
-					FilesReviewed:  24,
-					TestsGenerated: 8,
-					TestsFailing:   3,
-				},
-				Score: schema.Score{
-					Value:     7.5,
-					Max:       10.0,
-					Pass:      true,
-					Threshold: 7.0,
-					Deductions: []schema.ScoreDeduction{
-						{IssueID: "001", Severity: schema.SeverityHigh, Points: -1.5},
-					},
-				},
-				ProvenIssues: []schema.ProvenIssue{
-					{
-						ID:          "001",
-						Severity:    schema.SeverityHigh,
-						Title:       "Nil pointer on empty config",
-						Description: "LoadConfig returns nil without error.",
-						File:        "config/loader.go",
-						Line:        42,
-						EndLine:     48,
-						TestFile:    "review/tests/001_test.go",
-						TestName:    "TestLoadConfig_EmptyFile",
-						TestOutput:  "panic: nil pointer",
-						Category:    schema.CategoryCorrectness,
-					},
-				},
-				Observations: []schema.Observation{
-					{
-						ID:          "OBS-001",
-						Title:       "High cyclomatic complexity",
-						Description: "Function has 15 branches.",
-						File:        "service/orders.go",
-						Line:        88,
-						Category:    schema.CategoryMaintainability,
-					},
-				},
-				TestSummary: schema.TestSummary{
-					TotalGenerated: 8,
-					Passing:        5,
-					Failing:        3,
-					Error:          0,
-				},
-				Summary: "24 files reviewed. Score: 7.5/10.",
-			}
+func TestReviewOutputJSONRoundTrip(t *testing.T) {
+	t.Run("marshals and unmarshals a full ReviewOutput", func(t *testing.T) {
+		original := validReview()
+
+		data, err := json.Marshal(original)
+		requireNoErr(t, err)
+
+		var decoded schema.ReviewOutput
+		requireNoErr(t, json.Unmarshal(data, &decoded))
+
+		requireEqual(t, decoded.SchemaVersion, "1.0.0")
+		requireEqual(t, decoded.Metadata.Repo, "github.com/org/repo")
+		requireEqual(t, decoded.Score.Value, 7.5)
+		requireLen(t, decoded.ProvenIssues, 1)
+		requireLen(t, decoded.Observations, 1)
+		requireEqual(t, decoded.TestSummary.TotalGenerated, 8)
+	})
+
+	t.Run("uses correct JSON field names", func(t *testing.T) {
+		r := validReview()
+		data, err := json.Marshal(r)
+		requireNoErr(t, err)
+
+		var raw map[string]interface{}
+		requireNoErr(t, json.Unmarshal(data, &raw))
+
+		for _, key := range []string{
+			"schema_version", "metadata", "score", "proven_issues",
+			"observations", "test_summary", "summary",
+		} {
+			requireHasKey(t, raw, key)
 		}
 	})
+}
 
-	Describe("JSON round-trip", func() {
-		It("marshals and unmarshals a full ReviewOutput", func() {
-			original := validReview()
-
-			data, err := json.Marshal(original)
-			Expect(err).NotTo(HaveOccurred())
-
-			var decoded schema.ReviewOutput
-			err = json.Unmarshal(data, &decoded)
-			Expect(err).NotTo(HaveOccurred())
-
-			Expect(decoded.SchemaVersion).To(Equal("1.0.0"))
-			Expect(decoded.Metadata.Repo).To(Equal("github.com/org/repo"))
-			Expect(decoded.Score.Value).To(Equal(7.5))
-			Expect(decoded.ProvenIssues).To(HaveLen(1))
-			Expect(decoded.Observations).To(HaveLen(1))
-			Expect(decoded.TestSummary.TotalGenerated).To(Equal(8))
-		})
-
-		It("uses correct JSON field names", func() {
-			r := validReview()
-			data, err := json.Marshal(r)
-			Expect(err).NotTo(HaveOccurred())
-
-			var raw map[string]interface{}
-			Expect(json.Unmarshal(data, &raw)).To(Succeed())
-
-			Expect(raw).To(HaveKey("schema_version"))
-			Expect(raw).To(HaveKey("metadata"))
-			Expect(raw).To(HaveKey("score"))
-			Expect(raw).To(HaveKey("proven_issues"))
-			Expect(raw).To(HaveKey("observations"))
-			Expect(raw).To(HaveKey("test_summary"))
-			Expect(raw).To(HaveKey("summary"))
-		})
+func TestReviewOutputValidate(t *testing.T) {
+	t.Run("accepts a valid ReviewOutput", func(t *testing.T) {
+		r := validReview()
+		requireNoErr(t, r.Validate())
 	})
 
-	Describe("Validate", func() {
-		It("accepts a valid ReviewOutput", func() {
-			r := validReview()
-			Expect(r.Validate()).To(Succeed())
-		})
-
-		It("rejects empty schema_version", func() {
-			r := validReview()
-			r.SchemaVersion = ""
-			Expect(r.Validate()).To(MatchError(ContainSubstring("schema_version")))
-		})
-
-		It("rejects empty summary", func() {
-			r := validReview()
-			r.Summary = ""
-			Expect(r.Validate()).To(MatchError(ContainSubstring("summary")))
-		})
+	t.Run("rejects empty schema_version", func(t *testing.T) {
+		r := validReview()
+		r.SchemaVersion = ""
+		requireErrContains(t, r.Validate(), "schema_version")
 	})
-})
 
-var _ = Describe("ProvenIssue", func() {
-	It("requires id, severity, title, file, line, test_file, test_name", func() {
+	t.Run("rejects empty summary", func(t *testing.T) {
+		r := validReview()
+		r.Summary = ""
+		requireErrContains(t, r.Validate(), "summary")
+	})
+}
+
+func TestProvenIssueValidate(t *testing.T) {
+	t.Run("requires id, severity, title, file, line, test_file, test_name", func(t *testing.T) {
 		issue := schema.ProvenIssue{}
 		err := issue.Validate()
-		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("id"))
+		requireErr(t, err)
+		requireContains(t, err.Error(), "id")
 	})
 
-	It("validates all required fields", func() {
+	t.Run("validates all required fields", func(t *testing.T) {
 		for _, tc := range []struct {
 			name  string
 			setup func(*schema.ProvenIssue)
@@ -163,19 +153,18 @@ var _ = Describe("ProvenIssue", func() {
 				Category: schema.CategoryCorrectness,
 			}
 			tc.setup(&issue)
-			Expect(issue.Validate()).To(MatchError(ContainSubstring(tc.field)), "case: %s", tc.name)
+			requireErrContains(t, issue.Validate(), tc.field, "case: %s", tc.name)
 		}
 	})
-})
+}
 
-var _ = Describe("Observation", func() {
-	It("requires id, title, file, line, category", func() {
+func TestObservationValidate(t *testing.T) {
+	t.Run("requires id, title, file, line, category", func(t *testing.T) {
 		obs := schema.Observation{}
-		err := obs.Validate()
-		Expect(err).To(HaveOccurred())
+		requireErr(t, obs.Validate())
 	})
 
-	It("validates all required fields", func() {
+	t.Run("validates all required fields", func(t *testing.T) {
 		for _, tc := range []struct {
 			name  string
 			setup func(*schema.Observation)
@@ -195,54 +184,50 @@ var _ = Describe("Observation", func() {
 				Category: schema.CategoryMaintainability,
 			}
 			tc.setup(&obs)
-			Expect(obs.Validate()).To(MatchError(ContainSubstring(tc.field)), "case: %s", tc.name)
+			requireErrContains(t, obs.Validate(), tc.field, "case: %s", tc.name)
 		}
 	})
-})
+}
 
-var _ = Describe("Score", func() {
-	It("computes pass correctly from value vs threshold", func() {
-		s := schema.Score{Value: 7.5, Max: 10.0, Threshold: 7.0}
-		Expect(s.PassesThreshold()).To(BeTrue())
+func TestScorePassesThreshold(t *testing.T) {
+	s := schema.Score{Value: 7.5, Max: 10.0, Threshold: 7.0}
+	requireTrue(t, s.PassesThreshold())
 
-		s.Value = 6.9
-		Expect(s.PassesThreshold()).To(BeFalse())
+	s.Value = 6.9
+	requireFalse(t, s.PassesThreshold())
 
-		s.Value = 7.0
-		Expect(s.PassesThreshold()).To(BeTrue())
-	})
-})
+	s.Value = 7.0
+	requireTrue(t, s.PassesThreshold())
+}
 
-var _ = Describe("TestSummary", func() {
-	It("has consistent counts (total = passing + failing + error)", func() {
-		ts := schema.TestSummary{TotalGenerated: 10, Passing: 5, Failing: 3, Error: 2}
-		Expect(ts.IsConsistent()).To(BeTrue())
+func TestTestSummaryIsConsistent(t *testing.T) {
+	ts := schema.TestSummary{TotalGenerated: 10, Passing: 5, Failing: 3, Error: 2}
+	requireTrue(t, ts.IsConsistent())
 
-		ts.Passing = 6
-		Expect(ts.IsConsistent()).To(BeFalse())
-	})
-})
+	ts.Passing = 6
+	requireFalse(t, ts.IsConsistent())
+}
 
-var _ = Describe("Severity", func() {
-	It("validates known values", func() {
+func TestSeverityValidate(t *testing.T) {
+	t.Run("validates known values", func(t *testing.T) {
 		for _, s := range []schema.Severity{
 			schema.SeverityCritical,
 			schema.SeverityHigh,
 			schema.SeverityMedium,
 			schema.SeverityLow,
 		} {
-			Expect(s.Validate()).To(Succeed(), "severity %q should be valid", s)
+			requireNoErr(t, s.Validate(), "severity %q should be valid", s)
 		}
 	})
 
-	It("rejects invalid severity", func() {
+	t.Run("rejects invalid severity", func(t *testing.T) {
 		s := schema.Severity("extreme")
-		Expect(s.Validate()).To(MatchError(ContainSubstring("severity")))
+		requireErrContains(t, s.Validate(), "severity")
 	})
-})
+}
 
-var _ = Describe("Category", func() {
-	It("validates known values", func() {
+func TestCategoryValidate(t *testing.T) {
+	t.Run("validates known values", func(t *testing.T) {
 		for _, c := range []schema.Category{
 			schema.CategorySecurity,
 			schema.CategoryCorrectness,
@@ -250,12 +235,12 @@ var _ = Describe("Category", func() {
 			schema.CategoryMaintainability,
 			schema.CategoryTesting,
 		} {
-			Expect(c.Validate()).To(Succeed(), "category %q should be valid", c)
+			requireNoErr(t, c.Validate(), "category %q should be valid", c)
 		}
 	})
 
-	It("rejects invalid category", func() {
+	t.Run("rejects invalid category", func(t *testing.T) {
 		c := schema.Category("aesthetics")
-		Expect(c.Validate()).To(MatchError(ContainSubstring("category")))
+		requireErrContains(t, c.Validate(), "category")
 	})
-})
+}

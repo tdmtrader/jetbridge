@@ -2,315 +2,301 @@ package schema_test
 
 import (
 	"encoding/json"
-
-	. "github.com/onsi/ginkgo/v2"
-	. "github.com/onsi/gomega"
+	"testing"
 
 	"github.com/concourse/concourse/agent/schema"
 )
 
-var _ = Describe("Results", func() {
-	var validResults func() schema.Results
+func validResults() schema.Results {
+	return schema.Results{
+		SchemaVersion: "1.0",
+		Status:        schema.StatusPass,
+		Confidence:    0.92,
+		Summary:       "All checks passed",
+		Artifacts:     []schema.Artifact{},
+	}
+}
 
-	BeforeEach(func() {
-		validResults = func() schema.Results {
-			return schema.Results{
-				SchemaVersion: "1.0",
-				Status:        schema.StatusPass,
-				Confidence:    0.92,
-				Summary:       "All checks passed",
-				Artifacts:     []schema.Artifact{},
-			}
+func TestResultsValidate(t *testing.T) {
+	t.Run("accepts a valid Results with all required fields", func(t *testing.T) {
+		r := validResults()
+		requireNoErr(t, r.Validate())
+	})
+
+	t.Run("rejects missing schema_version", func(t *testing.T) {
+		r := validResults()
+		r.SchemaVersion = ""
+		requireErrContains(t, r.Validate(), "schema_version")
+	})
+
+	t.Run("rejects missing status", func(t *testing.T) {
+		r := validResults()
+		r.Status = ""
+		requireErrContains(t, r.Validate(), "status")
+	})
+
+	t.Run("rejects invalid status value", func(t *testing.T) {
+		r := validResults()
+		r.Status = "unknown"
+		requireErrContains(t, r.Validate(), "status")
+	})
+
+	t.Run("accepts all valid status values", func(t *testing.T) {
+		for _, s := range []schema.Status{
+			schema.StatusPass,
+			schema.StatusFail,
+			schema.StatusError,
+			schema.StatusAbstain,
+		} {
+			r := validResults()
+			r.Status = s
+			requireNoErr(t, r.Validate(), "expected status %q to be valid", s)
 		}
 	})
 
-	Describe("Validate", func() {
-		It("accepts a valid Results with all required fields", func() {
-			r := validResults()
-			Expect(r.Validate()).To(Succeed())
-		})
+	t.Run("rejects missing summary", func(t *testing.T) {
+		r := validResults()
+		r.Summary = ""
+		requireErrContains(t, r.Validate(), "summary")
+	})
 
-		It("rejects missing schema_version", func() {
-			r := validResults()
-			r.SchemaVersion = ""
-			Expect(r.Validate()).To(MatchError(ContainSubstring("schema_version")))
-		})
+	t.Run("rejects confidence below 0.0", func(t *testing.T) {
+		r := validResults()
+		r.Confidence = -0.1
+		requireErrContains(t, r.Validate(), "confidence")
+	})
 
-		It("rejects missing status", func() {
-			r := validResults()
-			r.Status = ""
-			Expect(r.Validate()).To(MatchError(ContainSubstring("status")))
-		})
+	t.Run("rejects confidence above 1.0", func(t *testing.T) {
+		r := validResults()
+		r.Confidence = 1.1
+		requireErrContains(t, r.Validate(), "confidence")
+	})
 
-		It("rejects invalid status value", func() {
-			r := validResults()
-			r.Status = "unknown"
-			Expect(r.Validate()).To(MatchError(ContainSubstring("status")))
-		})
+	t.Run("accepts confidence at 0.0", func(t *testing.T) {
+		r := validResults()
+		r.Confidence = 0.0
+		requireNoErr(t, r.Validate())
+	})
 
-		It("accepts all valid status values", func() {
-			for _, s := range []schema.Status{
-				schema.StatusPass,
-				schema.StatusFail,
-				schema.StatusError,
-				schema.StatusAbstain,
-			} {
-				r := validResults()
-				r.Status = s
-				Expect(r.Validate()).To(Succeed(), "expected status %q to be valid", s)
-			}
-		})
+	t.Run("accepts confidence at 1.0", func(t *testing.T) {
+		r := validResults()
+		r.Confidence = 1.0
+		requireNoErr(t, r.Validate())
+	})
 
-		It("rejects missing summary", func() {
-			r := validResults()
-			r.Summary = ""
-			Expect(r.Validate()).To(MatchError(ContainSubstring("summary")))
-		})
+	t.Run("rejects nil artifacts (must be present, even if empty)", func(t *testing.T) {
+		r := validResults()
+		r.Artifacts = nil
+		requireErrContains(t, r.Validate(), "artifacts")
+	})
 
-		It("rejects confidence below 0.0", func() {
-			r := validResults()
-			r.Confidence = -0.1
-			Expect(r.Validate()).To(MatchError(ContainSubstring("confidence")))
-		})
+	t.Run("accepts an empty artifacts array", func(t *testing.T) {
+		r := validResults()
+		r.Artifacts = []schema.Artifact{}
+		requireNoErr(t, r.Validate())
+	})
 
-		It("rejects confidence above 1.0", func() {
-			r := validResults()
-			r.Confidence = 1.1
-			Expect(r.Validate()).To(MatchError(ContainSubstring("confidence")))
-		})
+	t.Run("rejects an artifact with missing name", func(t *testing.T) {
+		r := validResults()
+		r.Artifacts = []schema.Artifact{{
+			Name:      "",
+			Path:      "out/review.json",
+			MediaType: "application/json",
+		}}
+		requireErrContains(t, r.Validate(), "name")
+	})
 
-		It("accepts confidence at 0.0", func() {
-			r := validResults()
-			r.Confidence = 0.0
-			Expect(r.Validate()).To(Succeed())
-		})
+	t.Run("rejects an artifact with missing path", func(t *testing.T) {
+		r := validResults()
+		r.Artifacts = []schema.Artifact{{
+			Name:      "review",
+			Path:      "",
+			MediaType: "application/json",
+		}}
+		requireErrContains(t, r.Validate(), "path")
+	})
 
-		It("accepts confidence at 1.0", func() {
-			r := validResults()
-			r.Confidence = 1.0
-			Expect(r.Validate()).To(Succeed())
-		})
+	t.Run("rejects an artifact with missing media_type", func(t *testing.T) {
+		r := validResults()
+		r.Artifacts = []schema.Artifact{{
+			Name:      "review",
+			Path:      "out/review.json",
+			MediaType: "",
+		}}
+		requireErrContains(t, r.Validate(), "media_type")
+	})
 
-		It("rejects nil artifacts (must be present, even if empty)", func() {
-			r := validResults()
-			r.Artifacts = nil
-			Expect(r.Validate()).To(MatchError(ContainSubstring("artifacts")))
-		})
-
-		It("accepts an empty artifacts array", func() {
-			r := validResults()
-			r.Artifacts = []schema.Artifact{}
-			Expect(r.Validate()).To(Succeed())
-		})
-
-		It("rejects an artifact with missing name", func() {
-			r := validResults()
-			r.Artifacts = []schema.Artifact{{
-				Name:      "",
-				Path:      "out/review.json",
+	t.Run("accepts valid artifacts", func(t *testing.T) {
+		r := validResults()
+		r.Artifacts = []schema.Artifact{
+			{
+				Name:      "review-comments",
+				Path:      "artifacts/comments.json",
 				MediaType: "application/json",
-			}}
-			Expect(r.Validate()).To(MatchError(ContainSubstring("name")))
-		})
+			},
+			{
+				Name:      "summary",
+				Path:      "artifacts/summary.md",
+				MediaType: "text/markdown",
+			},
+		}
+		requireNoErr(t, r.Validate())
+	})
 
-		It("rejects an artifact with missing path", func() {
-			r := validResults()
-			r.Artifacts = []schema.Artifact{{
-				Name:      "review",
-				Path:      "",
-				MediaType: "application/json",
-			}}
-			Expect(r.Validate()).To(MatchError(ContainSubstring("path")))
-		})
+	t.Run("allows optional metadata", func(t *testing.T) {
+		r := validResults()
+		r.Metadata = map[string]interface{}{
+			"files_reviewed": 42,
+			"issues_found":   3,
+		}
+		requireNoErr(t, r.Validate())
+	})
+}
 
-		It("rejects an artifact with missing media_type", func() {
-			r := validResults()
-			r.Artifacts = []schema.Artifact{{
-				Name:      "review",
-				Path:      "out/review.json",
-				MediaType: "",
-			}}
-			Expect(r.Validate()).To(MatchError(ContainSubstring("media_type")))
-		})
-
-		It("accepts valid artifacts", func() {
-			r := validResults()
-			r.Artifacts = []schema.Artifact{
+func TestResultsJSONRoundTrip(t *testing.T) {
+	t.Run("marshals and unmarshals a full Results", func(t *testing.T) {
+		original := schema.Results{
+			SchemaVersion: "1.0",
+			Status:        schema.StatusPass,
+			Confidence:    0.85,
+			Summary:       "Review complete",
+			Artifacts: []schema.Artifact{
 				{
 					Name:      "review-comments",
 					Path:      "artifacts/comments.json",
 					MediaType: "application/json",
+					Metadata: map[string]interface{}{
+						"count": float64(5),
+					},
 				},
+			},
+			Metadata: map[string]interface{}{
+				"files_reviewed": float64(10),
+			},
+		}
+
+		data, err := json.Marshal(original)
+		requireNoErr(t, err)
+
+		var decoded schema.Results
+		requireNoErr(t, json.Unmarshal(data, &decoded))
+
+		requireEqual(t, decoded.SchemaVersion, original.SchemaVersion)
+		requireEqual(t, decoded.Status, original.Status)
+		requireEqual(t, decoded.Confidence, original.Confidence)
+		requireEqual(t, decoded.Summary, original.Summary)
+		requireLen(t, decoded.Artifacts, 1)
+		requireEqual(t, decoded.Artifacts[0].Name, "review-comments")
+		requireEqual(t, decoded.Artifacts[0].Path, "artifacts/comments.json")
+		requireEqual(t, decoded.Artifacts[0].MediaType, "application/json")
+		requireKeyVal(t, decoded.Metadata, "files_reviewed", float64(10))
+	})
+
+	t.Run("uses correct JSON field names", func(t *testing.T) {
+		r := schema.Results{
+			SchemaVersion: "1.0",
+			Status:        schema.StatusFail,
+			Confidence:    0.3,
+			Summary:       "Issues found",
+			Artifacts: []schema.Artifact{
 				{
-					Name:      "summary",
-					Path:      "artifacts/summary.md",
+					Name:      "report",
+					Path:      "out/report.md",
 					MediaType: "text/markdown",
 				},
-			}
-			Expect(r.Validate()).To(Succeed())
-		})
+			},
+		}
 
-		It("allows optional metadata", func() {
-			r := validResults()
-			r.Metadata = map[string]interface{}{
-				"files_reviewed": 42,
-				"issues_found":   3,
-			}
-			Expect(r.Validate()).To(Succeed())
-		})
+		data, err := json.Marshal(r)
+		requireNoErr(t, err)
+
+		var raw map[string]interface{}
+		requireNoErr(t, json.Unmarshal(data, &raw))
+
+		requireHasKey(t, raw, "schema_version")
+		requireHasKey(t, raw, "status")
+		requireHasKey(t, raw, "confidence")
+		requireHasKey(t, raw, "summary")
+		requireHasKey(t, raw, "artifacts")
 	})
 
-	Describe("JSON round-trip", func() {
-		It("marshals and unmarshals a full Results", func() {
-			original := schema.Results{
-				SchemaVersion: "1.0",
-				Status:        schema.StatusPass,
-				Confidence:    0.85,
-				Summary:       "Review complete",
-				Artifacts: []schema.Artifact{
-					{
-						Name:      "review-comments",
-						Path:      "artifacts/comments.json",
-						MediaType: "application/json",
-						Metadata: map[string]interface{}{
-							"count": float64(5),
-						},
-					},
-				},
-				Metadata: map[string]interface{}{
-					"files_reviewed": float64(10),
-				},
-			}
+	t.Run("serializes nil artifacts as empty array", func(t *testing.T) {
+		r := schema.Results{
+			SchemaVersion: "1.0",
+			Status:        schema.StatusPass,
+			Confidence:    1.0,
+			Summary:       "ok",
+		}
 
-			data, err := json.Marshal(original)
-			Expect(err).NotTo(HaveOccurred())
+		data, err := json.Marshal(r)
+		requireNoErr(t, err)
 
-			var decoded schema.Results
-			err = json.Unmarshal(data, &decoded)
-			Expect(err).NotTo(HaveOccurred())
+		var raw map[string]interface{}
+		requireNoErr(t, json.Unmarshal(data, &raw))
 
-			Expect(decoded.SchemaVersion).To(Equal(original.SchemaVersion))
-			Expect(decoded.Status).To(Equal(original.Status))
-			Expect(decoded.Confidence).To(Equal(original.Confidence))
-			Expect(decoded.Summary).To(Equal(original.Summary))
-			Expect(decoded.Artifacts).To(HaveLen(1))
-			Expect(decoded.Artifacts[0].Name).To(Equal("review-comments"))
-			Expect(decoded.Artifacts[0].Path).To(Equal("artifacts/comments.json"))
-			Expect(decoded.Artifacts[0].MediaType).To(Equal("application/json"))
-			Expect(decoded.Metadata).To(HaveKeyWithValue("files_reviewed", float64(10)))
-		})
-
-		It("uses correct JSON field names", func() {
-			r := schema.Results{
-				SchemaVersion: "1.0",
-				Status:        schema.StatusFail,
-				Confidence:    0.3,
-				Summary:       "Issues found",
-				Artifacts: []schema.Artifact{
-					{
-						Name:      "report",
-						Path:      "out/report.md",
-						MediaType: "text/markdown",
-					},
-				},
-			}
-
-			data, err := json.Marshal(r)
-			Expect(err).NotTo(HaveOccurred())
-
-			var raw map[string]interface{}
-			err = json.Unmarshal(data, &raw)
-			Expect(err).NotTo(HaveOccurred())
-
-			Expect(raw).To(HaveKey("schema_version"))
-			Expect(raw).To(HaveKey("status"))
-			Expect(raw).To(HaveKey("confidence"))
-			Expect(raw).To(HaveKey("summary"))
-			Expect(raw).To(HaveKey("artifacts"))
-		})
-
-		It("serializes nil artifacts as empty array", func() {
-			r := schema.Results{
-				SchemaVersion: "1.0",
-				Status:        schema.StatusPass,
-				Confidence:    1.0,
-				Summary:       "ok",
-			}
-
-			data, err := json.Marshal(r)
-			Expect(err).NotTo(HaveOccurred())
-
-			var raw map[string]interface{}
-			err = json.Unmarshal(data, &raw)
-			Expect(err).NotTo(HaveOccurred())
-
-			artifacts, ok := raw["artifacts"].([]interface{})
-			Expect(ok).To(BeTrue(), "artifacts should be an array")
-			Expect(artifacts).To(BeEmpty())
-		})
-
-		It("omits metadata when nil", func() {
-			r := schema.Results{
-				SchemaVersion: "1.0",
-				Status:        schema.StatusPass,
-				Confidence:    1.0,
-				Summary:       "ok",
-				Artifacts:     []schema.Artifact{},
-			}
-
-			data, err := json.Marshal(r)
-			Expect(err).NotTo(HaveOccurred())
-
-			var raw map[string]interface{}
-			err = json.Unmarshal(data, &raw)
-			Expect(err).NotTo(HaveOccurred())
-
-			Expect(raw).NotTo(HaveKey("metadata"))
-		})
-
-		It("includes metadata when present", func() {
-			r := schema.Results{
-				SchemaVersion: "1.0",
-				Status:        schema.StatusPass,
-				Confidence:    1.0,
-				Summary:       "ok",
-				Artifacts:     []schema.Artifact{},
-				Metadata: map[string]interface{}{
-					"custom_key": "custom_value",
-				},
-			}
-
-			data, err := json.Marshal(r)
-			Expect(err).NotTo(HaveOccurred())
-
-			var raw map[string]interface{}
-			err = json.Unmarshal(data, &raw)
-			Expect(err).NotTo(HaveOccurred())
-
-			Expect(raw).To(HaveKey("metadata"))
-		})
-
-		It("round-trips artifact metadata", func() {
-			original := schema.Artifact{
-				Name:      "test",
-				Path:      "out/test.json",
-				MediaType: "application/json",
-				Metadata: map[string]interface{}{
-					"size_bytes": float64(1024),
-				},
-			}
-
-			data, err := json.Marshal(original)
-			Expect(err).NotTo(HaveOccurred())
-
-			var decoded schema.Artifact
-			err = json.Unmarshal(data, &decoded)
-			Expect(err).NotTo(HaveOccurred())
-
-			Expect(decoded.Name).To(Equal(original.Name))
-			Expect(decoded.Path).To(Equal(original.Path))
-			Expect(decoded.MediaType).To(Equal(original.MediaType))
-			Expect(decoded.Metadata).To(HaveKeyWithValue("size_bytes", float64(1024)))
-		})
+		artifacts, ok := raw["artifacts"].([]interface{})
+		requireTrue(t, ok, "artifacts should be an array")
+		requireLen(t, artifacts, 0)
 	})
-})
+
+	t.Run("omits metadata when nil", func(t *testing.T) {
+		r := schema.Results{
+			SchemaVersion: "1.0",
+			Status:        schema.StatusPass,
+			Confidence:    1.0,
+			Summary:       "ok",
+			Artifacts:     []schema.Artifact{},
+		}
+
+		data, err := json.Marshal(r)
+		requireNoErr(t, err)
+
+		var raw map[string]interface{}
+		requireNoErr(t, json.Unmarshal(data, &raw))
+
+		requireNoKey(t, raw, "metadata")
+	})
+
+	t.Run("includes metadata when present", func(t *testing.T) {
+		r := schema.Results{
+			SchemaVersion: "1.0",
+			Status:        schema.StatusPass,
+			Confidence:    1.0,
+			Summary:       "ok",
+			Artifacts:     []schema.Artifact{},
+			Metadata: map[string]interface{}{
+				"custom_key": "custom_value",
+			},
+		}
+
+		data, err := json.Marshal(r)
+		requireNoErr(t, err)
+
+		var raw map[string]interface{}
+		requireNoErr(t, json.Unmarshal(data, &raw))
+
+		requireHasKey(t, raw, "metadata")
+	})
+
+	t.Run("round-trips artifact metadata", func(t *testing.T) {
+		original := schema.Artifact{
+			Name:      "test",
+			Path:      "out/test.json",
+			MediaType: "application/json",
+			Metadata: map[string]interface{}{
+				"size_bytes": float64(1024),
+			},
+		}
+
+		data, err := json.Marshal(original)
+		requireNoErr(t, err)
+
+		var decoded schema.Artifact
+		requireNoErr(t, json.Unmarshal(data, &decoded))
+
+		requireEqual(t, decoded.Name, original.Name)
+		requireEqual(t, decoded.Path, original.Path)
+		requireEqual(t, decoded.MediaType, original.MediaType)
+		requireKeyVal(t, decoded.Metadata, "size_bytes", float64(1024))
+	})
+}
