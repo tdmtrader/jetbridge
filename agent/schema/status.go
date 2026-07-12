@@ -8,6 +8,10 @@ const (
 	RunStatusOK     = "ok"
 	RunStatusFailed = "failed"
 	RunStatusError  = "error"
+	// RunStatusParked marks a park-exit partial ingestion (§1.8, 2026-07-10
+	// PARK-V2 amendment): the step exited awaiting a human, with best-effort
+	// usage/cost — a defined end, not an error.
+	RunStatusParked = "parked"
 )
 
 // ThreeWayStatus maps a results.json Status onto the three-way taxonomy.
