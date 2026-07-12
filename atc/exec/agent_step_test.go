@@ -1272,5 +1272,70 @@ var _ = Describe("AgentStep", func() {
 				Expect(fakeChecker.RecordCallCount()).To(Equal(1)) // ledger entry recorded despite timeout
 			})
 		})
+
+		// --- review finding (2026-07-12): the failed-agent path — agent-runner
+		// exits 2, results.json says fail — had zero exec-level coverage, so
+		// ingestion-on-failure was unpinned: a mutation gating ingestion on
+		// `result.ExitStatus == 0` kept the whole suite green (the timeout
+		// spec's zero-value ProcessResult also carries ExitStatus 0) while
+		// silently dropping every "agent did badly" metrics row — the rows the
+		// scorecard/budget three-way ok/failed/error taxonomy exists for. ---
+		Context("when the agent fails (agent-runner exits non-zero)", func() {
+			BeforeEach(func() {
+				// Mutate the harness-registered process definition's stub in
+				// place (runtimetest's WithProcess is copy-on-write; finding
+				// F37). Exit 2 is agent-runner's "agent failed" code.
+				chosenContainer.ProcessDefs[0].Stub.ExitStatus = 2
+
+				resultsJSON = `{"schema_version":"1.0","status":"fail","confidence":0.9,"summary":"tests failed","artifacts":[]}`
+				eventLines[3] = `{"ts":"2026-07-10T12:01:01Z","event":"step.end","data":{"step_name":"write-spec","status":"failed","summary":"tests failed","wall_time_seconds":61,"cost_usd":0.42,"turns":9}}`
+			})
+
+			It("fails the step without erroring and still ingests the failed row", func() {
+				ok, err := step.Run(ctx, state)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(ok).To(BeFalse())
+
+				Expect(fakeDelegate.FinishedCallCount()).To(Equal(1))
+				_, exitStatus := fakeDelegate.FinishedArgsForCall(0)
+				Expect(exitStatus).To(Equal(exec.ExitStatus(2)))
+
+				// ingestion is unconditional on exit status: scorecards and
+				// budget admission depend on the failed rows being written
+				Expect(fakeMetricsStore.UpsertReturningInsertedCallCount()).To(Equal(1))
+				rm := fakeMetricsStore.UpsertReturningInsertedArgsForCall(0)
+				Expect(rm.Status).To(Equal("failed"))
+				Expect(rm.Summary).To(Equal("tests failed"))
+				Expect(rm.CostUSD).To(BeNumerically("~", 0.42, 1e-9))
+
+				// the spend was real even though the agent failed
+				Expect(fakeChecker.RecordCallCount()).To(Equal(1))
+				Expect(fakeChecker.RecordArgsForCall(0).CostUSD).To(BeNumerically("~", 0.42, 1e-9))
+			})
+		})
+
+		// Companion to the exit-2 spec: a non-deadline runErr (worker transport
+		// dropped mid-Wait) surfaces the error to the caller, but only AFTER
+		// ingestion — the flight volume may hold real spend that must reach the
+		// metrics row and the ledger before the build errors.
+		Context("when process.Wait returns a transport error", func() {
+			BeforeEach(func() {
+				chosenContainer.ProcessDefs[0].Stub.Err = "worker connection dropped"
+			})
+
+			It("still ingests, then surfaces the error without Finished", func() {
+				ok, err := step.Run(ctx, state)
+				Expect(ok).To(BeFalse())
+				Expect(err).To(MatchError("worker connection dropped"))
+
+				// errored, not finished — no exit status to report
+				Expect(fakeDelegate.FinishedCallCount()).To(BeZero())
+
+				Expect(fakeMetricsStore.UpsertReturningInsertedCallCount()).To(Equal(1))
+				rm := fakeMetricsStore.UpsertReturningInsertedArgsForCall(0)
+				Expect(rm.CostUSD).To(BeNumerically("~", 0.42, 1e-9))
+				Expect(fakeChecker.RecordCallCount()).To(Equal(1))
+			})
+		})
 	})
 })
