@@ -291,50 +291,14 @@ func (step *TaskStep) run(ctx context.Context, state RunState, delegate TaskDele
 		return false, err
 	}
 
-	containerSpec.Sidecars, err = step.loadSidecars(ctx, logger, state.ArtifactRepository())
+	containerSpec.Sidecars, err = loadSidecarConfigs(ctx, logger, state.ArtifactRepository(), step.streamer, step.plan.Sidecars)
 	if err != nil {
 		return false, err
 	}
 
-	// Resolve sidecar image artifact references from the build repository
-	for i, sc := range containerSpec.Sidecars {
-		if sc.ImageArtifact != "" {
-			imageRef, found := state.ArtifactRepository().ImageRefFor(build.ArtifactName(sc.ImageArtifact))
-			if !found {
-				return false, fmt.Errorf("sidecar %q: image_artifact %q not found in artifact repository", sc.Name, sc.ImageArtifact)
-			}
-			containerSpec.Sidecars[i].Image = imageRef
-			containerSpec.Sidecars[i].ImageArtifact = "" // resolved
-		}
-	}
-
-	// Pin sidecar images to digests via OCI registry resolution (best-effort).
-	// If resolution fails (e.g. auth not available for private registries),
-	// fall through to the original tag-based reference and let the kubelet
-	// pull it using pod-level imagePullSecrets.
-	if step.imageResolver != nil {
-		for i, sc := range containerSpec.Sidecars {
-			if sc.Image == "" || sc.ImageArtifact != "" {
-				continue // skip artifact refs (already resolved) or empty
-			}
-			if strings.Contains(sc.Image, "@sha256:") {
-				continue // already pinned
-			}
-			// Strip Concourse-internal prefixes before parsing so that
-			// parseImageRef sees a bare image reference.
-			bare := stripDockerPrefix(sc.Image)
-			repo, tag := parseImageRef(bare)
-			digest, err := step.imageResolver.Resolve(ctx, repo, tag, nil)
-			if err != nil {
-				logger.Info("sidecar-image-resolve-skipped", lager.Data{
-					"sidecar": sc.Name,
-					"image":   sc.Image,
-					"reason":  err.Error(),
-				})
-				continue
-			}
-			containerSpec.Sidecars[i].Image = repo + "@" + digest
-		}
+	err = resolveSidecarImages(ctx, logger, state, step.imageResolver, containerSpec.Sidecars)
+	if err != nil {
+		return false, err
 	}
 
 	// Emit sidecar plan events so the UI can render nested sidecar steps.
@@ -396,7 +360,7 @@ func (step *TaskStep) run(ctx context.Context, state RunState, delegate TaskDele
 				},
 			},
 		},
-		step.buildProcessIO(delegate, containerSpec.Sidecars),
+		sidecarProcessIO(delegate, containerSpec.Sidecars),
 	)
 	if err != nil {
 		return false, err
@@ -615,95 +579,6 @@ type secretRefCollector map[string]vars.SecretRef
 
 func (c secretRefCollector) YieldSecretRef(varPath string, ref vars.SecretRef) {
 	c[varPath] = ref
-}
-
-// buildProcessIO constructs a ProcessIO with per-sidecar writers when sidecars
-// are present. Sidecar writers emit Log events with the sidecar's own plan ID
-// as origin, enabling the UI to show per-sidecar log streams.
-func (step *TaskStep) buildProcessIO(delegate TaskDelegate, sidecars []atc.SidecarConfig) runtime.ProcessIO {
-	pio := runtime.ProcessIO{
-		Stdout: delegate.Stdout(),
-		Stderr: delegate.Stderr(),
-	}
-	if len(sidecars) > 0 {
-		pio.SidecarWriters = make(map[string]io.Writer, len(sidecars))
-		for _, sc := range sidecars {
-			pio.SidecarWriters[sc.Name] = delegate.SidecarWriter(sc.Name)
-		}
-	}
-	return pio
-}
-
-// loadSidecars reads sidecar definition files from the build's artifacts
-// and returns the parsed SidecarConfig entries. Each path follows the same
-// "SOURCE/FILE" convention as the task config file.
-func (step *TaskStep) loadSidecars(ctx context.Context, logger lager.Logger, repo *build.Repository) ([]atc.SidecarConfig, error) {
-	if len(step.plan.Sidecars) == 0 {
-		return nil, nil
-	}
-
-	var all []atc.SidecarConfig
-	seen := make(map[string]bool)
-
-	for _, src := range step.plan.Sidecars {
-		if src.Config != nil {
-			// Inline sidecar config — validate and add directly
-			sc := *src.Config
-			if err := sc.Validate(); err != nil {
-				return nil, fmt.Errorf("inline sidecar: %w", err)
-			}
-			if atc.IsReservedContainerName(sc.Name) {
-				return nil, fmt.Errorf("inline sidecar: reserved container name %q", sc.Name)
-			}
-			if seen[sc.Name] {
-				return nil, fmt.Errorf("inline sidecar: duplicate sidecar name %q", sc.Name)
-			}
-			seen[sc.Name] = true
-			all = append(all, sc)
-			continue
-		}
-
-		sidecarPath := src.File
-		segs := strings.SplitN(sidecarPath, "/", 2)
-		if len(segs) != 2 {
-			return nil, fmt.Errorf("sidecar path '%s' must be in the format SOURCE/FILE", sidecarPath)
-		}
-
-		sourceName := build.ArtifactName(segs[0])
-		filePath := segs[1]
-
-		artifact, _, found := repo.ArtifactFor(sourceName)
-		if !found {
-			return nil, fmt.Errorf("sidecar file '%s': unknown artifact source '%s'", sidecarPath, sourceName)
-		}
-
-		stream, err := step.streamer.StreamFile(lagerctx.NewContext(ctx, logger), artifact, filePath)
-		if err != nil {
-			return nil, fmt.Errorf("sidecar file '%s': %w", sidecarPath, err)
-		}
-		defer stream.Close()
-
-		data, err := io.ReadAll(stream)
-		if err != nil {
-			return nil, fmt.Errorf("sidecar file '%s': %w", sidecarPath, err)
-		}
-
-		configs, err := atc.ParseSidecarConfigs(data)
-		if err != nil {
-			return nil, fmt.Errorf("sidecar file '%s': %w", sidecarPath, err)
-		}
-
-		for _, sc := range configs {
-			if seen[sc.Name] {
-				return nil, fmt.Errorf("sidecar file '%s': duplicate sidecar name %q", sidecarPath, sc.Name)
-			}
-			seen[sc.Name] = true
-		}
-
-		all = append(all, configs...)
-	}
-
-	return all, nil
 }
 
 func (step *TaskStep) workerSpec(config atc.TaskConfig) worker.Spec {
