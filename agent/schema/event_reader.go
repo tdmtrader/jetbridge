@@ -15,10 +15,22 @@ type EventReader struct {
 	line    int
 }
 
+// maxEventLine caps a single NDJSON line at 5 MiB. bufio.Scanner's default
+// 64 KiB token limit is too small for a large event (e.g. a tool.call carrying
+// captured output): the line surfaces bufio.ErrTooLong, and because agent-step
+// ingestion breaks its read loop on any reader error, a single oversized line
+// mid-stream would silently discard every later cost.record and step.end event
+// — leaving the step as status=error even when a valid step.end followed
+// (review finding, 2026-07-12; contract 5 invites other producers to append
+// events).
+const maxEventLine = 5 << 20
+
 // NewEventReader creates an EventReader that reads from r.
 func NewEventReader(r io.Reader) *EventReader {
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxEventLine)
 	return &EventReader{
-		scanner: bufio.NewScanner(r),
+		scanner: scanner,
 	}
 }
 

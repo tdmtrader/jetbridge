@@ -291,9 +291,21 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 			logger.Error("failed-to-resolve-budget-slice", err)
 			// keep the configured slice
 		} else if remaining.Exhausted {
-			delegate.Errored(logger, "budget slice exhausted before start")
-			delegate.Finished(logger, ExitStatus(1))
-			return false, nil
+			// On a FRESH dispatch this fails closed before any pod exists — no
+			// spend against an exhausted ticket. But budget re-resolution runs
+			// on EVERY execution, including a restart-resume where a supervised
+			// agent may already be running in an existing pod. Early-returning
+			// then would orphan that agent: never attached, never killed, never
+			// ingested — its ongoing spend leaks and its cost never reaches the
+			// ledger. Only fail closed when no container yet exists for this
+			// step owner; otherwise fall through to attach + wait + ingest the
+			// already-running agent (review finding, 2026-07-12).
+			if !step.stepContainerExists(logger) {
+				delegate.Errored(logger, "budget slice exhausted before start")
+				delegate.Finished(logger, ExitStatus(1))
+				return false, nil
+			}
+			logger.Info("budget-exhausted-resuming-existing-agent-container", lager.Data{"ticket-id": ticketID})
 		} else if remaining.LimitUSD > 0 {
 			slice = remaining.RemainingUSD
 		}
@@ -662,7 +674,14 @@ func (step *AgentStep) ingestFlightRecorder(
 
 	if flightArtifact != nil {
 		// results.json
-		if rc, err := step.streamer.StreamFile(ingestCtx, flightArtifact, "results.json"); err == nil && rc != nil {
+		rc, err := step.streamer.StreamFile(ingestCtx, flightArtifact, "results.json")
+		if err != nil {
+			// A briefly-unavailable artifact daemon degrades this ingestion to a
+			// status=error / "flight recorder output missing" row. Every other
+			// failure in this function is logged; without this the degradation
+			// has zero diagnostics (review finding, 2026-07-12).
+			logger.Error("failed-to-stream-flight-file", err, lager.Data{"file": "results.json"})
+		} else if rc != nil {
 			flightRead = true
 			raw, readErr := io.ReadAll(io.LimitReader(rc, 5<<20))
 			rc.Close()
@@ -681,7 +700,10 @@ func (step *AgentStep) ingestFlightRecorder(
 		}
 
 		// events.ndjson: counts + cost rollup + step.end detection
-		if rc, err := step.streamer.StreamFile(ingestCtx, flightArtifact, "events.ndjson"); err == nil && rc != nil {
+		rc, err = step.streamer.StreamFile(ingestCtx, flightArtifact, "events.ndjson")
+		if err != nil {
+			logger.Error("failed-to-stream-flight-file", err, lager.Data{"file": "events.ndjson"})
+		} else if rc != nil {
 			flightRead = true
 			counts := map[string]int{}
 			sawStepEnd := false
@@ -861,6 +883,35 @@ func (step *AgentStep) ingestFlightRecorder(
 			logger.Error("failed-to-record-cost-ledger", err) // fire-and-forget
 		}
 	}
+}
+
+// containerExistenceChecker is the optional worker-pool capability (satisfied
+// by the production worker.Pool) to report whether a container already exists
+// for a step owner WITHOUT creating one. Test doubles that do not implement it
+// make stepContainerExists report "no container", preserving the conservative
+// fail-closed behavior on budget exhaustion.
+type containerExistenceChecker interface {
+	FindWorkerForContainer(lager.Logger, db.ContainerOwner, worker.Spec) (runtime.Worker, bool, error)
+}
+
+// stepContainerExists reports whether a container is already running for this
+// step owner — i.e. this execution is a restart-resume, not a fresh dispatch.
+// It is consulted before the budget-exhaustion early-return so a re-resolved
+// Exhausted slice cannot orphan an already-running agent. When the pool cannot
+// answer (test double, or a lookup error) it returns false, keeping the caller
+// on the fail-closed path.
+func (step *AgentStep) stepContainerExists(logger lager.Logger) bool {
+	finder, ok := step.workerPool.(containerExistenceChecker)
+	if !ok {
+		return false
+	}
+	owner := db.NewBuildStepContainerOwner(step.metadata.BuildID, step.planID, step.metadata.TeamID)
+	_, found, err := finder.FindWorkerForContainer(logger, owner, worker.Spec{TeamID: step.metadata.TeamID})
+	if err != nil {
+		logger.Error("failed-to-check-existing-agent-container", err)
+		return false
+	}
+	return found
 }
 
 func envInt(env map[string]string, key string) (int, bool) {
