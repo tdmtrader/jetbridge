@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -342,5 +343,263 @@ func TestRunMapsCLIErrorToErrorStatus(t *testing.T) {
 	}
 	if exit != 2 {
 		t.Fatalf("expected exit 2 (error), got %d", exit)
+	}
+}
+
+// readEvents decodes flight/events.ndjson into the recorded events in order.
+func readEvents(t *testing.T, flight string) []*schema.Event {
+	t.Helper()
+	f, err := os.Open(filepath.Join(flight, "events.ndjson"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	reader := schema.NewEventReader(f)
+	var out []*schema.Event
+	for {
+		e, err := reader.Read()
+		if err != nil {
+			break
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
+func TestRunSidecarFailureIsPlatformError(t *testing.T) {
+	// A declared MCP sidecar that never becomes healthy is a PLATFORM error,
+	// not an agent failure: the runner must exit 2, write an error event plus a
+	// step.end with status=error, AND persist results.json carrying the real
+	// failure reason so ingestion does not degrade the metrics row to the
+	// generic "flight recorder output missing" summary (review finding,
+	// 2026-07-12). The distinction between "sidecar never came up" and "agent
+	// ran and failed" only exists in this path.
+	unhealthy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer unhealthy.Close()
+
+	dir := t.TempDir()
+	flight := filepath.Join(dir, "flight")
+	os.MkdirAll(flight, 0o755)
+
+	// claude must never run when a sidecar is unhealthy; point at a stub that
+	// fails the test if invoked.
+	claude := filepath.Join(dir, "claude")
+	tripwire := filepath.Join(dir, "claude-ran")
+	if err := os.WriteFile(claude, []byte("#!/bin/sh\n: > '"+tripwire+"'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// waitHealthy polls until sidecarHealthTimeout (60s) or ctx.Done; a short
+	// ctx deadline exits the poll via ctx.Done in ~50ms without waiting out the
+	// health timeout.
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	exit, err := runner.Run(ctx, runner.Config{
+		Prompt: "p", FlightDir: flight, WorkDir: dir, StepName: "wire-check", ClaudePath: claude,
+		MCPServers: map[string]string{"platform": unhealthy.URL + "/mcp"},
+		Stdout:     new(bytes.Buffer), Stderr: new(bytes.Buffer),
+	})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if exit != 2 {
+		t.Fatalf("expected exit 2 (platform error), got %d", exit)
+	}
+	if _, err := os.Stat(tripwire); err == nil {
+		t.Fatal("claude was invoked despite an unhealthy sidecar")
+	}
+
+	// results.json must exist with status=error and the real reason, or the
+	// ingested metrics row loses the failure cause (finding 2).
+	raw, err := os.ReadFile(filepath.Join(flight, "results.json"))
+	if err != nil {
+		t.Fatalf("results.json must be written on the sidecar-failure path: %v", err)
+	}
+	var results schema.Results
+	if err := json.Unmarshal(raw, &results); err != nil {
+		t.Fatal(err)
+	}
+	if results.Status != schema.StatusError {
+		t.Fatalf("results.json status = %s, want error", results.Status)
+	}
+	if results.Validate() != nil {
+		t.Fatalf("results.json must satisfy schema.Validate (ingestion requires it): %v", results.Validate())
+	}
+	if !strings.Contains(results.Summary, "never became healthy") {
+		t.Fatalf("results.json summary = %q, want the sidecar-failure reason", results.Summary)
+	}
+
+	// Event stream: step.start, error, step.end(status=error).
+	events := readEvents(t, flight)
+	var types []schema.EventType
+	for _, e := range events {
+		types = append(types, e.Type)
+	}
+	want := []schema.EventType{schema.EventStepStart, schema.EventError, schema.EventStepEnd}
+	if len(types) != 3 || types[0] != want[0] || types[1] != want[1] || types[2] != want[2] {
+		t.Fatalf("expected %v, got %v", want, types)
+	}
+	var end schema.StepEndData
+	if err := json.Unmarshal(events[2].Data, &end); err != nil {
+		t.Fatal(err)
+	}
+	if end.Status != schema.RunStatusError {
+		t.Fatalf("step.end status = %q, want %q", end.Status, schema.RunStatusError)
+	}
+	if !strings.Contains(end.Summary, "never became healthy") {
+		t.Fatalf("step.end summary = %q, want the sidecar-failure reason", end.Summary)
+	}
+}
+
+func TestFromEnvDiscoversMCPServersAndPromptConfig(t *testing.T) {
+	// The §8.1 rows the agent-step exec feeds straight into Run: the
+	// ^([A-Z]+)_MCP_URL$ discovery scan, AGENT_MAX_TURNS parsing, and the
+	// prompt/model/schema/flight-dir keys. None of these were covered.
+	t.Setenv("AGENT_PROMPT", "do the thing")
+	t.Setenv("AGENT_PROMPT_FILE", "repo/prompt.txt")
+	t.Setenv("AGENT_MODEL", "claude-opus-4-8")
+	t.Setenv("AGENT_MAX_TURNS", "12")
+	t.Setenv("AGENT_OUTPUT_SCHEMA", "repo/schemas/spec.json")
+	t.Setenv("AGENT_FLIGHT_DIR", "/work/flight")
+	t.Setenv("DEV_MCP_URL", "http://127.0.0.1:7780/mcp")
+	t.Setenv("PLATFORM_MCP_URL", "http://127.0.0.1:7781/mcp")
+
+	cfg := runner.FromEnv()
+
+	if cfg.Prompt != "do the thing" {
+		t.Errorf("Prompt = %q", cfg.Prompt)
+	}
+	if cfg.PromptFile != "repo/prompt.txt" {
+		t.Errorf("PromptFile = %q", cfg.PromptFile)
+	}
+	if cfg.Model != "claude-opus-4-8" {
+		t.Errorf("Model = %q", cfg.Model)
+	}
+	if cfg.MaxTurns != 12 {
+		t.Errorf("MaxTurns = %d, want 12", cfg.MaxTurns)
+	}
+	if cfg.OutputSchema != "repo/schemas/spec.json" {
+		t.Errorf("OutputSchema = %q", cfg.OutputSchema)
+	}
+	if cfg.FlightDir != "/work/flight" {
+		t.Errorf("FlightDir = %q", cfg.FlightDir)
+	}
+	// Discovery lower-cases the ^([A-Z]+)_MCP_URL$ prefix into the server key.
+	if got := cfg.MCPServers["dev"]; got != "http://127.0.0.1:7780/mcp" {
+		t.Errorf("MCPServers[dev] = %q, want the DEV_MCP_URL value", got)
+	}
+	if got := cfg.MCPServers["platform"]; got != "http://127.0.0.1:7781/mcp" {
+		t.Errorf("MCPServers[platform] = %q, want the PLATFORM_MCP_URL value", got)
+	}
+}
+
+func TestFromEnvMalformedMaxTurnsIsAbsent(t *testing.T) {
+	t.Setenv("AGENT_MAX_TURNS", "lots")
+	if got := runner.FromEnv().MaxTurns; got != 0 {
+		t.Errorf("malformed AGENT_MAX_TURNS should read as 0, got %d", got)
+	}
+}
+
+func TestRunResolvesPromptFromFile(t *testing.T) {
+	// When no inline prompt is set, the runner reads AGENT_PROMPT_FILE relative
+	// to the workdir and passes its contents to claude.
+	dir := t.TempDir()
+	flight := filepath.Join(dir, "flight")
+	os.MkdirAll(flight, 0o755)
+
+	promptText := "hello from the prompt file"
+	if err := os.WriteFile(filepath.Join(dir, "prompt.txt"), []byte(promptText), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Stub claude records its argv so the test can prove the file contents were
+	// passed through as the -p prompt.
+	argsFile := filepath.Join(dir, "claude-args")
+	envelope := `{"type":"result","subtype":"success","result":"\"ok\"","model":"m1","is_error":false}`
+	claude := filepath.Join(dir, "claude")
+	script := "#!/bin/sh\nprintf '%s' \"$*\" > '" + argsFile + "'\necho '" + envelope + "'\n"
+	if err := os.WriteFile(claude, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	exit, err := runner.Run(context.Background(), runner.Config{
+		PromptFile: "prompt.txt", FlightDir: flight, WorkDir: dir, StepName: "s", ClaudePath: claude,
+		Stdout: new(bytes.Buffer), Stderr: new(bytes.Buffer),
+	})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if exit != 0 {
+		t.Fatalf("expected exit 0, got %d", exit)
+	}
+	args, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(args), promptText) {
+		t.Fatalf("claude argv %q did not include the prompt file contents %q", string(args), promptText)
+	}
+}
+
+func TestRunPromptFileMissingIsPlatformError(t *testing.T) {
+	dir := t.TempDir()
+	flight := filepath.Join(dir, "flight")
+	os.MkdirAll(flight, 0o755)
+
+	exit, err := runner.Run(context.Background(), runner.Config{
+		PromptFile: "no-such-file.txt", FlightDir: flight, WorkDir: dir, StepName: "s",
+		Stdout: new(bytes.Buffer), Stderr: new(bytes.Buffer),
+	})
+	if exit != 2 {
+		t.Fatalf("expected exit 2, got %d", exit)
+	}
+	if err == nil || !strings.Contains(err.Error(), "read prompt file") {
+		t.Fatalf("expected a read prompt file error, got %v", err)
+	}
+}
+
+func TestRunNoPromptConfiguredIsPlatformError(t *testing.T) {
+	dir := t.TempDir()
+	flight := filepath.Join(dir, "flight")
+	os.MkdirAll(flight, 0o755)
+
+	exit, err := runner.Run(context.Background(), runner.Config{
+		FlightDir: flight, WorkDir: dir, StepName: "s",
+		Stdout: new(bytes.Buffer), Stderr: new(bytes.Buffer),
+	})
+	if exit != 2 {
+		t.Fatalf("expected exit 2, got %d", exit)
+	}
+	if err == nil || !strings.Contains(err.Error(), "no prompt configured") {
+		t.Fatalf("expected a no-prompt error, got %v", err)
+	}
+}
+
+func TestRunWarnsWhenOutputSchemaUnenforced(t *testing.T) {
+	// output_schema is plumbed end-to-end but not yet enforced; declaring it
+	// must produce a visible warning rather than silently no-op (review
+	// finding, 2026-07-12).
+	dir := t.TempDir()
+	flight := filepath.Join(dir, "flight")
+	os.MkdirAll(flight, 0o755)
+	claude := writeStubClaude(t, dir, `{"type":"result","subtype":"success","result":"\"ok\"","model":"m1","is_error":false}`)
+
+	var stderr bytes.Buffer
+	exit, err := runner.Run(context.Background(), runner.Config{
+		Prompt: "p", OutputSchema: "repo/schemas/spec.json",
+		FlightDir: flight, WorkDir: dir, StepName: "s", ClaudePath: claude,
+		Stdout: new(bytes.Buffer), Stderr: &stderr,
+	})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if exit != 0 {
+		t.Fatalf("expected exit 0, got %d", exit)
+	}
+	if !strings.Contains(stderr.String(), "output_schema") || !strings.Contains(stderr.String(), "not yet enforced") {
+		t.Fatalf("expected an output_schema-not-enforced warning on stderr, got %q", stderr.String())
 	}
 }
