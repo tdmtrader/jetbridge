@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"code.cloudfoundry.org/lager/v3"
 	"code.cloudfoundry.org/lager/v3/lagerctx"
 	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/agent/api/metrics/metricsfakes"
@@ -21,6 +22,7 @@ import (
 	"github.com/concourse/concourse/atc/exec/execfakes"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/runtime/runtimetest"
+	"github.com/concourse/concourse/atc/worker"
 	"github.com/concourse/concourse/tracing"
 	"github.com/concourse/concourse/vars"
 	"github.com/onsi/gomega/gbytes"
@@ -28,6 +30,19 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
+
+// resumeAwarePool decorates the fake pool with the production worker.Pool's
+// FindWorkerForContainer capability, letting the agent step detect an existing
+// container for the step owner on a restart-resume. containerExists controls
+// what that lookup reports.
+type resumeAwarePool struct {
+	*execfakes.FakePool
+	containerExists bool
+}
+
+func (p *resumeAwarePool) FindWorkerForContainer(lager.Logger, db.ContainerOwner, worker.Spec) (runtime.Worker, bool, error) {
+	return nil, p.containerExists, nil
+}
 
 var _ = Describe("AgentStep", func() {
 	var (
@@ -363,6 +378,61 @@ var _ = Describe("AgentStep", func() {
 		Expect(fakeDelegate.FinishedCallCount()).To(Equal(1))
 		_, exitStatus := fakeDelegate.FinishedArgsForCall(0)
 		Expect(exitStatus).To(Equal(exec.ExitStatus(1)))
+	})
+
+	// --- review finding (2026-07-12): budget re-resolution runs at the start
+	// of EVERY execution, including a restart-resume. If StepSlice reports
+	// Exhausted on a resume, the pre-fix early-return fired BEFORE
+	// FindOrSelectWorker/attach — orphaning the supervised agent still running
+	// in the existing pod: never attached, never killed, never ingested, its
+	// spend leaking and never ledgered. The exhaustion early-return must be
+	// gated on there being NO existing container for the step owner. ---
+	Context("when the slice is exhausted on a restart-resume with an existing container", func() {
+		var pool *resumeAwarePool
+
+		JustBeforeEach(func() {
+			// The production worker.Pool answers FindWorkerForContainer; the
+			// fake does not, so this decorated pool models a resume where a
+			// container already exists for the step owner.
+			pool = &resumeAwarePool{FakePool: fakePool, containerExists: true}
+			fakeChecker.StepSliceReturns(budget.Remaining{Exhausted: true}, nil)
+			fakeMetricsStore.InsertIfAbsentReturns(true, nil)
+			step = exec.NewAgentStep(
+				planID,
+				agentPlan,
+				atc.ContainerLimits{},
+				atc.ContainerLimits{},
+				stepMetadata,
+				containerMetadata,
+				pool,
+				fakeStreamer,
+				fakeDelegateFactory,
+				0,
+				agentImage,
+				exec.WithAgentBudgetChecker(fakeChecker),
+				exec.WithAgentMetricsStore(fakeMetricsStore),
+				exec.WithAgentRunVerifier(fakeRunVerifier),
+			)
+		})
+
+		It("does not early-return: attaches, waits, and ingests the running agent", func() {
+			ok, err := step.Run(ctx, state)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(ok).To(BeTrue()) // the resumed agent completed (exit 0)
+
+			// Fell through to the normal path instead of the exhaustion
+			// early-return: worker selected and the process attached/ran.
+			Expect(pool.FindOrSelectWorkerCallCount()).To(Equal(1))
+			Expect(chosenContainer.RunningProcesses()).To(HaveLen(1))
+
+			// The running agent's flight recorder is ingested rather than left
+			// unrecorded, and the premature Errored/Finished(1) never fires.
+			Expect(fakeMetricsStore.InsertIfAbsentCallCount()).To(Equal(1))
+			Expect(fakeDelegate.ErroredCallCount()).To(BeZero())
+			Expect(fakeDelegate.FinishedCallCount()).To(Equal(1))
+			_, exitStatus := fakeDelegate.FinishedArgsForCall(0)
+			Expect(exitStatus).To(Equal(exec.ExitStatus(0)))
+		})
 	})
 
 	It("keeps the configured slice when the budget checker errors", func() {
