@@ -5,32 +5,19 @@ import (
 	"encoding/json"
 	"errors"
 
+	"github.com/concourse/concourse/agent/api/metrics"
 	// aliased: atc/db already declares a package-level `schema` const (build.go).
 	agentschema "github.com/concourse/concourse/agent/schema"
 )
 
 // AgentRunMetricsFactory persists agent run metrics (shared-contracts
-// §1.8/§2.4). It implements agent/api/metrics.Store — the method set below is
-// kept structurally identical to that interface (declared explicitly rather
-// than embedded until the metrics package lands, plan 07 Task 7).
+// §1.8/§2.4). It is exactly agent/api/metrics.Store (Upsert,
+// UpsertReturningInserted, InsertIfAbsent, GetByBuild, ListByTicket) —
+// embedded now that both packages live on the same branch.
 //
 //counterfeiter:generate . AgentRunMetricsFactory
 type AgentRunMetricsFactory interface {
-	// Upsert inserts the row, replacing any existing row with the same
-	// (BuildID, PlanID) key. Ingestion is idempotent across step retries
-	// and web-restart resumes.
-	Upsert(rm *agentschema.RunMetrics) error
-	// UpsertReturningInserted is Upsert with a first-insert discriminator:
-	// inserted is true only when the row was newly INSERTed. Callers gate the
-	// append-only agent_cost_ledger write on this flag (finding F3).
-	UpsertReturningInserted(rm *agentschema.RunMetrics) (inserted bool, err error)
-	// InsertIfAbsent writes the row only when no (BuildID, PlanID) row exists
-	// yet (ON CONFLICT DO NOTHING) — the degraded-ingestion write (finding F24).
-	InsertIfAbsent(rm *agentschema.RunMetrics) (inserted bool, err error)
-	// GetByBuild returns rows for a build, oldest-first.
-	GetByBuild(buildID int) ([]agentschema.RunMetrics, error)
-	// ListByTicket returns rows for a ticket, oldest-first.
-	ListByTicket(ticketID int) ([]agentschema.RunMetrics, error)
+	metrics.Store
 }
 
 func NewAgentRunMetricsFactory(conn DbConn) AgentRunMetricsFactory {

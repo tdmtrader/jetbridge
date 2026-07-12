@@ -14,9 +14,7 @@ var _ = Describe("RunMetrics", func() {
 		ticket := 7
 		rm := schema.RunMetrics{
 			TicketID: &ticket, BuildID: 123, PlanID: "5f2a", StepName: "implement",
-			// "ok" == schema.RunStatusOK (status.go lands with Task 4; the
-			// integrate phase switches this literal to the constant).
-			Status: "ok", Summary: "did the thing", Model: "claude-sonnet-4-5",
+			Status: schema.RunStatusOK, Summary: "did the thing", Model: "claude-sonnet-4-5",
 			Usage: schema.Usage{InputTokens: 100, OutputTokens: 50, CacheReadInputTokens: 10, CacheCreationInputTokens: 5},
 			Turns: 9, WallTimeSeconds: 60, CostUSD: 0.42,
 			Results:        json.RawMessage(`{"schema_version":"1.0","status":"pass"}`),
