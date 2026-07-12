@@ -372,6 +372,118 @@ jobs:
 
           echo "=== Image built and pushed to local registries: v${NEXT_VERSION}-rc (${SHORT_SHA}) ==="
 
+# Builds the agent: step runner image (claude CLI + agent-runner supervisor)
+# from deploy/agent-runner/Dockerfile with the repo as build context.
+# Manual trigger: the image changes rarely (claude-code pin bumps, agent-runner
+# changes) and must not ride the per-commit release chain.
+- name: build-agent-runner-image
+  serial_groups: [pipeline]
+  plan:
+  - get: repo
+    trigger: false
+    params: {depth: 0, fetch_tags: true}
+    passed: [unit-tests]
+  - task: build-and-push-agent-runner
+    privileged: true
+    attempts: 2
+    config:
+      platform: linux
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v5
+      inputs:
+      - name: repo
+      params:
+        GITHUB_TOKEN: ((github-token))
+      run:
+        path: sh
+        args:
+        - -exc
+        - |
+          cd repo
+          git fetch --tags --force origin
+
+          echo "=== Computing version from tags ==="
+          LATEST_TAG=$(git tag -l 'v0.2.*' --sort=-v:refname | grep -v '\-rc' | head -1)
+          VERSION="${LATEST_TAG#v}"
+          MAJOR=$(echo "$VERSION" | cut -d. -f1)
+          MINOR=$(echo "$VERSION" | cut -d. -f2)
+          PATCH=$(echo "$VERSION" | cut -d. -f3)
+          NEXT_VERSION="${MAJOR}.${MINOR}.$((PATCH + 1))"
+
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          echo "Version: ${NEXT_VERSION} (${SHORT_SHA})"
+
+          REGISTRY="registry-docker-registry.cicd.svc.cluster.local:5000"
+          GHCR="ghcr.io/tdmtrader/agent-runner"
+          BUILDER_POD="agent-runner-builder-$$"
+
+          cleanup_builder() { kubectl delete pod -n cicd ${BUILDER_POD} --grace-period=0 --force 2>/dev/null || true; }
+          trap cleanup_builder EXIT
+          kubectl delete pod -n cicd -l app=agent-runner-builder --grace-period=0 --force 2>/dev/null || true
+
+          echo "=== Creating DinD builder pod ==="
+          cat <<PODEOF | kubectl apply -n cicd -f -
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: ${BUILDER_POD}
+            namespace: cicd
+            labels:
+              app: agent-runner-builder
+          spec:
+            containers:
+            - name: dind
+              # Pinned to 26.x (runc 1.1.x). The rolling docker:dind tag moved to
+              # runc >=1.2, whose /proc masking (tmpfs nr_inodes=1) theborg's 5.4
+              # kernel rejects with "can't mask dir /proc/acpi: invalid argument".
+              image: docker:26-dind
+              securityContext:
+                privileged: true
+              env:
+              - name: DOCKER_TLS_CERTDIR
+                value: ""
+              command: ["dockerd", "--host=unix:///var/run/docker.sock", "--insecure-registry=${REGISTRY}", "--insecure-registry=registry.home"]
+          PODEOF
+
+          echo "Waiting for builder pod to be ready..."
+          kubectl wait --for=condition=ready pod/${BUILDER_POD} -n cicd --timeout=120s
+
+          echo "Waiting for Docker daemon..."
+          for i in $(seq 1 30); do
+            if kubectl exec -n cicd ${BUILDER_POD} -- docker info >/dev/null 2>&1; then
+              echo "Docker daemon ready"
+              break
+            fi
+            sleep 2
+          done
+
+          echo "=== Copying build context (repo, sans .git) to builder pod ==="
+          tar czf /tmp/agent-runner-src.tgz --exclude=.git .
+          kubectl exec -n cicd ${BUILDER_POD} -- mkdir -p /tmp/src
+          kubectl cp /tmp/agent-runner-src.tgz cicd/${BUILDER_POD}:/tmp/agent-runner-src.tgz
+          kubectl exec -n cicd ${BUILDER_POD} -- tar xzf /tmp/agent-runner-src.tgz -C /tmp/src
+
+          echo "=== Building agent-runner image ==="
+          kubectl exec -n cicd ${BUILDER_POD} -- \
+            docker build \
+              -t registry.home/agent-runner:latest \
+              -t registry.home/agent-runner:v${NEXT_VERSION} \
+              -t ${GHCR}:latest \
+              -t ${GHCR}:v${NEXT_VERSION} \
+              -f /tmp/src/deploy/agent-runner/Dockerfile /tmp/src
+
+          echo "=== Pushing to local registry ==="
+          kubectl exec -n cicd ${BUILDER_POD} -- docker push registry.home/agent-runner:latest
+          kubectl exec -n cicd ${BUILDER_POD} -- docker push registry.home/agent-runner:v${NEXT_VERSION}
+
+          echo "=== Logging into GHCR ==="
+          echo "${GITHUB_TOKEN}" | kubectl exec -i -n cicd ${BUILDER_POD} -- docker login ghcr.io -u tdmtrader --password-stdin
+
+          echo "=== Pushing to GHCR ==="
+          kubectl exec -n cicd ${BUILDER_POD} -- docker push ${GHCR}:latest
+          kubectl exec -n cicd ${BUILDER_POD} -- docker push ${GHCR}:v${NEXT_VERSION}
+
+          echo "=== agent-runner image built and pushed: v${NEXT_VERSION} (${SHORT_SHA}) ==="
+
 - name: self-upgrade
   serial_groups: [pipeline]
   plan:

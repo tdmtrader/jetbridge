@@ -22,6 +22,7 @@ import (
 	"code.cloudfoundry.org/lager/v3/lagerctx"
 	"github.com/concourse/concourse"
 	"github.com/concourse/concourse/agent/api/principals"
+	"github.com/concourse/concourse/agent/budget"
 	"github.com/concourse/concourse/agent/credentials"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api"
@@ -219,6 +220,8 @@ type RunCommand struct {
 	} `group:"Web Server"`
 
 	AgentReviewPublishToken string `long:"agent-review-publish-token" description:"DEPRECATED: static bearer token accepted for publishing agent review results during the agent-principal dual-accept window. Mint a reviews:write agent principal instead (POST /api/v1/agent/principals). This flag will be removed at the end of the window."`
+
+	AgentStepImage string `long:"agent-step-image" description:"Container image for the agent: step's main container (must contain the claude CLI and agent-runner). Agent steps error at runtime when unset."`
 
 	AgentDailyBudgetUSD float64 `long:"agent-daily-budget-usd" default:"0" description:"Global daily agent LLM spend cap in USD across all agent work, enforced by dispatch admission and reported by the cost rollup API. 0 disables the cap."`
 
@@ -1166,6 +1169,7 @@ func (cmd *RunCommand) backendComponents(
 		rateLimiter,
 		policyChecker,
 		imgResolver,
+		dbConn,
 	)
 
 	// In case that a user configures resource-checking-interval, but forgets to
@@ -2025,7 +2029,20 @@ func (cmd *RunCommand) constructEngine(
 	rateLimiter engine.RateLimiter,
 	policyChecker policy.Checker,
 	resolver imageresolver.Resolver,
+	dbConn db.DbConn,
 ) engine.Engine {
+	// Budget admission + ledger for agent: steps. Same construction as the
+	// costs API handler (atc/api/handler.go): the DB-backed cost ledger with
+	// no per-ticket budget source yet (wave 1 has no tickets table) and the
+	// global daily cap from --agent-daily-budget-usd.
+	agentBudgetChecker := budget.NewChecker(
+		db.NewAgentCostLedgerFactory(dbConn),
+		budget.NoTicketBudgets{},
+		budget.Config{
+			GlobalDailyCapUSD: cmd.AgentDailyBudgetUSD,
+		},
+	)
+
 	return engine.NewEngine(
 		engine.NewStepperFactory(
 			engine.NewCoreStepFactory(
@@ -2043,6 +2060,9 @@ func (cmd *RunCommand) constructEngine(
 				cmd.DefaultPutTimeout,
 				cmd.DefaultTaskTimeout,
 				engine.WithCoreImageResolver(resolver),
+				engine.WithAgentStepImage(cmd.AgentStepImage),
+				engine.WithAgentMetricsStore(db.NewAgentRunMetricsFactory(dbConn)),
+				engine.WithAgentBudgetChecker(agentBudgetChecker),
 			),
 			cmd.ExternalURL.String(),
 			rateLimiter,
