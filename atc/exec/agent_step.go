@@ -42,6 +42,19 @@ const agentFlightArtifact = "flight"
 // ports (shared-contracts §8.1).
 var mcpSidecarPorts = map[string]int{"dev": 7780, "platform": 7781, "gateway": 7782}
 
+// AgentRunVerifier proves, server-side, that a pipeline-run id claimed by
+// plan env actually belongs to the pipeline this build is executing in —
+// i.e. that pipeline_runs row `runID` was materialized as pipeline instance
+// `pipelineID`. AGENT_PIPELINE_RUN_ID arrives via plan env (F30), which is
+// public pipeline YAML: without this check any team's pipeline could claim
+// another run's `agent-run-<id>` secret (§8.2) and exfiltrate its principal
+// and Anthropic tokens through a sidecar named "platform"/"gateway".
+//
+//counterfeiter:generate . AgentRunVerifier
+type AgentRunVerifier interface {
+	RunBelongsToPipeline(runID, pipelineID int) (bool, error)
+}
+
 // AgentStepOption configures optional fields on an AgentStep.
 type AgentStepOption func(*AgentStep)
 
@@ -62,6 +75,12 @@ func WithAgentBudgetChecker(c budget.Checker) AgentStepOption {
 	return func(s *AgentStep) { s.budgetChecker = c }
 }
 
+// WithAgentRunVerifier sets the verifier consulted before any sidecar secret
+// refs are injected. Without it the step fails closed: no refs are ever set.
+func WithAgentRunVerifier(v AgentRunVerifier) AgentStepOption {
+	return func(s *AgentStep) { s.runVerifier = v }
+}
+
 // AgentStep runs the claude CLI (via the agent-runner entrypoint) in a
 // jetbridge pod with declared MCP sidecars, then ingests the flight
 // recorder server-side (shared-contracts §2.8, §5, §8.1).
@@ -80,6 +99,7 @@ type AgentStep struct {
 	imageResolver     imageresolver.Resolver
 	metricsStore      metrics.Store
 	budgetChecker     budget.Checker
+	runVerifier       AgentRunVerifier
 }
 
 func NewAgentStep(
@@ -307,8 +327,35 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 	// Sidecar secret refs derive from the deterministic §8.2 secret name.
 	// No pipeline-run id ⇒ no sidecar secret env (pure-CI agent steps get
 	// sidecars without platform credentials, per §8.1).
+	//
+	// AGENT_PIPELINE_RUN_ID is carried by plan env (F30) — attacker-writable
+	// pipeline YAML — so it is NEVER trusted to name the secret on its own.
+	// Dispatch bakes ((run_id)) only into the run's own materialized instance
+	// config, so the claimed run is legitimate exactly when its
+	// pipeline_runs.instance_pipeline_id IS this build's pipeline; anything
+	// else is a cross-run credential grab (or a hand-copied config) and the
+	// step fails closed before any pod exists. secretRunID stays 0 — and no
+	// refs are injected — unless that ownership check passes.
 	runID, _ := strconv.Atoi(resolvedEnv["AGENT_PIPELINE_RUN_ID"])
-	secretName := "agent-run-" + strconv.Itoa(runID)
+	secretRunID := 0
+	if runID > 0 && sidecarsWantRunSecret(sidecars) {
+		if step.runVerifier == nil {
+			logger.Info("skipping-sidecar-secret-refs", lager.Data{
+				"reason": "no agent run verifier wired; plan env cannot be trusted to name the run secret",
+				"run-id": runID,
+			})
+		} else {
+			owned, err := step.runVerifier.RunBelongsToPipeline(runID, step.metadata.PipelineID)
+			if err != nil {
+				return false, fmt.Errorf("verify pipeline run %d ownership: %w", runID, err)
+			}
+			if !owned {
+				return false, fmt.Errorf("refusing to attach agent-run-%d credentials: pipeline run %d does not belong to this build's pipeline", runID, runID)
+			}
+			secretRunID = runID
+		}
+	}
+	secretName := "agent-run-" + strconv.Itoa(secretRunID)
 
 	// §8.5 CWD convention (F21): sidecar images never hardcode /workspace.
 	// When the plan carries a `workspace` artifact, the owning exec points
@@ -335,7 +382,7 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 					rows = append(rows, k+"="+v)
 				}
 			}
-			if runID > 0 {
+			if secretRunID > 0 {
 				setSidecarSecretRef(&containerSpec, name, "AGENT_PRINCIPAL_TOKEN",
 					vars.SecretRef{Name: secretName, Key: "principal-token"})
 			}
@@ -343,7 +390,7 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 			if slice > 0 {
 				rows = append(rows, "AGENT_BUDGET_SLICE_USD="+strconv.FormatFloat(slice, 'f', 2, 64))
 			}
-			if runID > 0 {
+			if secretRunID > 0 {
 				setSidecarSecretRef(&containerSpec, name, "AGENT_PRINCIPAL_TOKEN",
 					vars.SecretRef{Name: secretName, Key: "principal-token"})
 				setSidecarSecretRef(&containerSpec, name, "CLAUDE_CODE_OAUTH_TOKEN",
@@ -710,6 +757,17 @@ func mergeContainerLimits(override *atc.ContainerLimits, defaults atc.ContainerL
 		}
 	}
 	return merged
+}
+
+// sidecarsWantRunSecret reports whether any declared sidecar would receive
+// agent-run-* secret refs — the "platform"/"gateway" MCP sidecars (§8.1).
+func sidecarsWantRunSecret(sidecars []atc.SidecarConfig) bool {
+	for _, sc := range sidecars {
+		if sc.Name == "platform" || sc.Name == "gateway" {
+			return true
+		}
+	}
+	return false
 }
 
 func setSidecarSecretRef(spec *runtime.ContainerSpec, sidecar, envName string, ref vars.SecretRef) {

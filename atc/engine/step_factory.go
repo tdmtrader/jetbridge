@@ -35,6 +35,7 @@ type coreStepFactory struct {
 	agentStepImage        string
 	agentMetricsStore     metrics.Store
 	agentBudgetChecker    budget.Checker
+	agentRunVerifier      exec.AgentRunVerifier
 }
 
 // CoreStepFactoryOption configures optional fields on coreStepFactory.
@@ -63,6 +64,13 @@ func WithAgentMetricsStore(s metrics.Store) CoreStepFactoryOption {
 // resolution and fire-and-forget ledger records.
 func WithAgentBudgetChecker(c budget.Checker) CoreStepFactoryOption {
 	return func(f *coreStepFactory) { f.agentBudgetChecker = c }
+}
+
+// WithAgentRunVerifier sets the seam that proves a plan-env-claimed
+// pipeline-run id belongs to this build's pipeline before agent-step
+// sidecar secret refs (§8.2) are injected.
+func WithAgentRunVerifier(v exec.AgentRunVerifier) CoreStepFactoryOption {
+	return func(f *coreStepFactory) { f.agentRunVerifier = v }
 }
 
 func NewCoreStepFactory(
@@ -225,6 +233,9 @@ func (factory *coreStepFactory) AgentStep(
 	}
 	if factory.agentBudgetChecker != nil {
 		agentOpts = append(agentOpts, exec.WithAgentBudgetChecker(factory.agentBudgetChecker))
+	}
+	if factory.agentRunVerifier != nil {
+		agentOpts = append(agentOpts, exec.WithAgentRunVerifier(factory.agentRunVerifier))
 	}
 
 	agentStep := exec.NewAgentStep(

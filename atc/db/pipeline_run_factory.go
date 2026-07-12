@@ -38,6 +38,15 @@ type PipelineRunFactory interface {
 	RunningRuns() ([]PipelineRun, error)
 	CompletedRunsWithNewActivity() ([]PipelineRun, error)
 	RunsToArchive() ([]PipelineRun, error)
+
+	// RunBelongsToPipeline reports whether pipeline_runs row `runID` was
+	// materialized as pipeline instance `pipelineID`. The agent-step exec
+	// gates §8.2 credential attachment on this: AGENT_PIPELINE_RUN_ID arrives
+	// via attacker-writable plan env (F30), so a run id may only name the
+	// `agent-run-<id>` secret when its instance pipeline is the very pipeline
+	// this build runs in — otherwise any team could mount another run's
+	// principal and Anthropic tokens into a sidecar it named "gateway".
+	RunBelongsToPipeline(runID, pipelineID int) (bool, error)
 }
 
 // NewPipelineRunFactory constructs the factory. The CheckFactory is
@@ -386,6 +395,21 @@ func (f *pipelineRunFactory) RunsToArchive() ([]PipelineRun, error) {
 		return nil, err
 	}
 	return f.scanRuns(runRows)
+}
+
+func (f *pipelineRunFactory) RunBelongsToPipeline(runID, pipelineID int) (bool, error) {
+	if runID <= 0 || pipelineID <= 0 {
+		return false, nil
+	}
+	var exists bool
+	err := f.conn.QueryRow(
+		`SELECT EXISTS (SELECT 1 FROM pipeline_runs WHERE id = $1 AND instance_pipeline_id = $2)`,
+		runID, pipelineID,
+	).Scan(&exists)
+	if err != nil {
+		return false, err
+	}
+	return exists, nil
 }
 
 func (f *pipelineRunFactory) scanRuns(rows *sql.Rows) ([]PipelineRun, error) {

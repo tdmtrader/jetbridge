@@ -1170,6 +1170,7 @@ func (cmd *RunCommand) backendComponents(
 		policyChecker,
 		imgResolver,
 		dbConn,
+		dbPipelineRunFactory,
 	)
 
 	// In case that a user configures resource-checking-interval, but forgets to
@@ -2030,6 +2031,7 @@ func (cmd *RunCommand) constructEngine(
 	policyChecker policy.Checker,
 	resolver imageresolver.Resolver,
 	dbConn db.DbConn,
+	pipelineRunFactory db.PipelineRunFactory,
 ) engine.Engine {
 	// Budget admission + ledger for agent: steps. Same construction as the
 	// costs API handler (atc/api/handler.go): the DB-backed cost ledger with
@@ -2063,6 +2065,7 @@ func (cmd *RunCommand) constructEngine(
 				engine.WithAgentStepImage(cmd.AgentStepImage),
 				engine.WithAgentMetricsStore(db.NewAgentRunMetricsFactory(dbConn)),
 				engine.WithAgentBudgetChecker(agentBudgetChecker),
+				engine.WithAgentRunVerifier(pipelineRunFactory),
 			),
 			cmd.ExternalURL.String(),
 			rateLimiter,

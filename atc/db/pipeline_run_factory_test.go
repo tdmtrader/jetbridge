@@ -98,6 +98,45 @@ var _ = Describe("PipelineRunFactory", func() {
 		Expect(second.Number()).To(Equal(2))
 	})
 
+	// review finding (2026-07-11): AGENT_PIPELINE_RUN_ID reaches the
+	// agent-step exec via attacker-writable plan env (F30). Before the exec
+	// mounts a run's `agent-run-<id>` secret into an MCP sidecar it gates on
+	// this ownership check — a run id may only name its secret from within its
+	// OWN instance pipeline, never another team's.
+	Describe("RunBelongsToPipeline", func() {
+		It("is true only for the run's own materialized instance pipeline", func() {
+			run, err := factory.CreateRun(template.ID(), nil, "some-user")
+			Expect(err).ToNot(HaveOccurred())
+
+			instanceID, ok := run.InstancePipelineID()
+			Expect(ok).To(BeTrue())
+
+			owned, err := factory.RunBelongsToPipeline(run.ID(), instanceID)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(owned).To(BeTrue())
+
+			// A different pipeline (here the template itself) does not own the run.
+			owned, err = factory.RunBelongsToPipeline(run.ID(), template.ID())
+			Expect(err).ToNot(HaveOccurred())
+			Expect(owned).To(BeFalse())
+
+			// A cross-run grab: some other run's id against this pipeline.
+			owned, err = factory.RunBelongsToPipeline(run.ID()+9999, instanceID)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(owned).To(BeFalse())
+		})
+
+		It("is false for non-positive ids", func() {
+			owned, err := factory.RunBelongsToPipeline(0, 5)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(owned).To(BeFalse())
+
+			owned, err = factory.RunBelongsToPipeline(5, 0)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(owned).To(BeFalse())
+		})
+	})
+
 	// review finding (2026-07-11): a pipeline instance {name, {"run": N}} can
 	// pre-exist (e.g. a user ran fly set-pipeline with those instance vars).
 	// CreateRun used to call savePipeline with from=0 assuming the instance

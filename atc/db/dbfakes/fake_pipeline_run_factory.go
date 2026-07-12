@@ -65,6 +65,20 @@ type FakePipelineRunFactory struct {
 		result1 []db.PipelineRun
 		result2 error
 	}
+	RunBelongsToPipelineStub        func(int, int) (bool, error)
+	runBelongsToPipelineMutex       sync.RWMutex
+	runBelongsToPipelineArgsForCall []struct {
+		arg1 int
+		arg2 int
+	}
+	runBelongsToPipelineReturns struct {
+		result1 bool
+		result2 error
+	}
+	runBelongsToPipelineReturnsOnCall map[int]struct {
+		result1 bool
+		result2 error
+	}
 	RunningRunsStub        func() ([]db.PipelineRun, error)
 	runningRunsMutex       sync.RWMutex
 	runningRunsArgsForCall []struct {
@@ -344,6 +358,71 @@ func (fake *FakePipelineRunFactory) ListRunsReturnsOnCall(i int, result1 []db.Pi
 	}
 	fake.listRunsReturnsOnCall[i] = struct {
 		result1 []db.PipelineRun
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakePipelineRunFactory) RunBelongsToPipeline(arg1 int, arg2 int) (bool, error) {
+	fake.runBelongsToPipelineMutex.Lock()
+	ret, specificReturn := fake.runBelongsToPipelineReturnsOnCall[len(fake.runBelongsToPipelineArgsForCall)]
+	fake.runBelongsToPipelineArgsForCall = append(fake.runBelongsToPipelineArgsForCall, struct {
+		arg1 int
+		arg2 int
+	}{arg1, arg2})
+	stub := fake.RunBelongsToPipelineStub
+	fakeReturns := fake.runBelongsToPipelineReturns
+	fake.recordInvocation("RunBelongsToPipeline", []interface{}{arg1, arg2})
+	fake.runBelongsToPipelineMutex.Unlock()
+	if stub != nil {
+		return stub(arg1, arg2)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2
+	}
+	return fakeReturns.result1, fakeReturns.result2
+}
+
+func (fake *FakePipelineRunFactory) RunBelongsToPipelineCallCount() int {
+	fake.runBelongsToPipelineMutex.RLock()
+	defer fake.runBelongsToPipelineMutex.RUnlock()
+	return len(fake.runBelongsToPipelineArgsForCall)
+}
+
+func (fake *FakePipelineRunFactory) RunBelongsToPipelineCalls(stub func(int, int) (bool, error)) {
+	fake.runBelongsToPipelineMutex.Lock()
+	defer fake.runBelongsToPipelineMutex.Unlock()
+	fake.RunBelongsToPipelineStub = stub
+}
+
+func (fake *FakePipelineRunFactory) RunBelongsToPipelineArgsForCall(i int) (int, int) {
+	fake.runBelongsToPipelineMutex.RLock()
+	defer fake.runBelongsToPipelineMutex.RUnlock()
+	argsForCall := fake.runBelongsToPipelineArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2
+}
+
+func (fake *FakePipelineRunFactory) RunBelongsToPipelineReturns(result1 bool, result2 error) {
+	fake.runBelongsToPipelineMutex.Lock()
+	defer fake.runBelongsToPipelineMutex.Unlock()
+	fake.RunBelongsToPipelineStub = nil
+	fake.runBelongsToPipelineReturns = struct {
+		result1 bool
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakePipelineRunFactory) RunBelongsToPipelineReturnsOnCall(i int, result1 bool, result2 error) {
+	fake.runBelongsToPipelineMutex.Lock()
+	defer fake.runBelongsToPipelineMutex.Unlock()
+	fake.RunBelongsToPipelineStub = nil
+	if fake.runBelongsToPipelineReturnsOnCall == nil {
+		fake.runBelongsToPipelineReturnsOnCall = make(map[int]struct {
+			result1 bool
+			result2 error
+		})
+	}
+	fake.runBelongsToPipelineReturnsOnCall[i] = struct {
+		result1 bool
 		result2 error
 	}{result1, result2}
 }

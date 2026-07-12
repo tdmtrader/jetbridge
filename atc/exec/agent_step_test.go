@@ -40,6 +40,7 @@ var _ = Describe("AgentStep", func() {
 		fakeDelegateFactory *execfakes.FakeTaskDelegateFactory
 		fakeChecker         *budgetfakes.FakeChecker
 		fakeMetricsStore    *metricsfakes.FakeStore
+		fakeRunVerifier     *execfakes.FakeAgentRunVerifier
 
 		agentPlan  atc.AgentPlan
 		agentImage string
@@ -62,6 +63,7 @@ var _ = Describe("AgentStep", func() {
 			TeamID:      123,
 			BuildID:     1234,
 			JobID:       12345,
+			PipelineID:  555,
 			ExternalURL: "http://foo.bar",
 		}
 
@@ -100,6 +102,10 @@ var _ = Describe("AgentStep", func() {
 
 		fakeChecker = new(budgetfakes.FakeChecker)
 		fakeMetricsStore = new(metricsfakes.FakeStore)
+		fakeRunVerifier = new(execfakes.FakeAgentRunVerifier)
+		// Default: the claimed run belongs to this build's pipeline. Specs
+		// that exercise the cross-run guard override this.
+		fakeRunVerifier.RunBelongsToPipelineReturns(true, nil)
 
 		state = exec.NewRunState(noopStepper, vars.StaticVariables{"branch": "main"})
 		repo = state.ArtifactRepository()
@@ -164,6 +170,7 @@ var _ = Describe("AgentStep", func() {
 			agentImage,
 			exec.WithAgentBudgetChecker(fakeChecker),
 			exec.WithAgentMetricsStore(fakeMetricsStore),
+			exec.WithAgentRunVerifier(fakeRunVerifier),
 		)
 	})
 
@@ -357,6 +364,13 @@ var _ = Describe("AgentStep", func() {
 				_, err := step.Run(ctx, state)
 				Expect(err).ToNot(HaveOccurred())
 
+				// The run id claimed by plan env is verified against THIS
+				// build's pipeline before any secret ref is injected (§8.2).
+				Expect(fakeRunVerifier.RunBelongsToPipelineCallCount()).To(Equal(1))
+				gotRunID, gotPipelineID := fakeRunVerifier.RunBelongsToPipelineArgsForCall(0)
+				Expect(gotRunID).To(Equal(42))
+				Expect(gotPipelineID).To(Equal(stepMetadata.PipelineID))
+
 				_, _, spec, _ := fakePool.FindOrSelectWorkerArgsForCall(0)
 				Expect(spec.SidecarEnv["platform"]).To(ContainElements(
 					"ATC_EXTERNAL_URL="+stepMetadata.ExternalURL,
@@ -371,6 +385,64 @@ var _ = Describe("AgentStep", func() {
 					"AGENT_PRINCIPAL_TOKEN", vars.SecretRef{Name: "agent-run-42", Key: "principal-token"}))
 				Expect(spec.SidecarSecretEnv["gateway"]).To(HaveKeyWithValue(
 					"CLAUDE_CODE_OAUTH_TOKEN", vars.SecretRef{Name: "agent-run-42", Key: "anthropic-token"}))
+			})
+
+			// --- review finding: cross-run credential exfiltration ---
+			// AGENT_PIPELINE_RUN_ID is attacker-writable plan YAML (F30). A
+			// pipeline that claims a run id it does not own must NOT be able to
+			// mount that run's agent-run-<id> secret into a sidecar it named
+			// "gateway"/"platform". The step fails closed before any pod exists.
+			Context("when the claimed run id does not belong to this build's pipeline", func() {
+				BeforeEach(func() {
+					fakeRunVerifier.RunBelongsToPipelineReturns(false, nil)
+				})
+
+				It("refuses to run rather than attach another run's credentials", func() {
+					ok, err := step.Run(ctx, state)
+					Expect(ok).To(BeFalse())
+					Expect(err).To(MatchError(ContainSubstring("does not belong to this build's pipeline")))
+					// Fail closed: never reached worker selection, so no pod
+					// could ever reference agent-run-42.
+					Expect(fakePool.FindOrSelectWorkerCallCount()).To(BeZero())
+				})
+			})
+
+			Context("when the run-ownership check errors", func() {
+				BeforeEach(func() {
+					fakeRunVerifier.RunBelongsToPipelineReturns(false, errors.New("db down"))
+				})
+
+				It("fails the step rather than proceeding without verification", func() {
+					ok, err := step.Run(ctx, state)
+					Expect(ok).To(BeFalse())
+					Expect(err).To(MatchError(ContainSubstring("verify pipeline run 42 ownership")))
+					Expect(fakePool.FindOrSelectWorkerCallCount()).To(BeZero())
+				})
+			})
+
+			Context("when no run verifier is wired", func() {
+				It("injects no sidecar secret refs (fails closed)", func() {
+					noVerifierStep := exec.NewAgentStep(
+						planID,
+						agentPlan,
+						atc.ContainerLimits{},
+						atc.ContainerLimits{},
+						stepMetadata,
+						containerMetadata,
+						fakePool,
+						fakeStreamer,
+						fakeDelegateFactory,
+						0,
+						agentImage,
+						exec.WithAgentBudgetChecker(fakeChecker),
+						exec.WithAgentMetricsStore(fakeMetricsStore),
+					)
+					_, err := noVerifierStep.Run(ctx, state)
+					Expect(err).ToNot(HaveOccurred())
+
+					_, _, spec, _ := fakePool.FindOrSelectWorkerArgsForCall(0)
+					Expect(spec.SidecarSecretEnv).To(BeEmpty())
+				})
 			})
 
 			It("keeps the platform token off the main container", func() {
