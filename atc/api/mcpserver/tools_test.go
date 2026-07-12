@@ -2,12 +2,15 @@ package mcpserver_test
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/concourse/concourse/agent/budget"
+	"github.com/concourse/concourse/agent/workflow"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api/mcpserver"
 	"github.com/concourse/concourse/atc/db"
@@ -16,17 +19,23 @@ import (
 
 var _ = Describe("Tools", func() {
 	var (
-		server       *mcpserver.Server
-		teamFactory  *dbfakes.FakeTeamFactory
-		buildFactory *dbfakes.FakeBuildFactory
-		fakeTeam     *dbfakes.FakeTeam
-		fakePipeline *dbfakes.FakePipeline
+		server             *mcpserver.Server
+		teamFactory        *dbfakes.FakeTeamFactory
+		buildFactory       *dbfakes.FakeBuildFactory
+		workflowsFactory   *dbfakes.FakeAgentWorkflowsFactory
+		costLedgerFactory  *dbfakes.FakeAgentCostLedgerFactory
+		pipelineRunFactory *dbfakes.FakePipelineRunFactory
+		fakeTeam           *dbfakes.FakeTeam
+		fakePipeline       *dbfakes.FakePipeline
 	)
 
 	BeforeEach(func() {
 		server = mcpserver.NewServer()
 		teamFactory = new(dbfakes.FakeTeamFactory)
 		buildFactory = new(dbfakes.FakeBuildFactory)
+		workflowsFactory = new(dbfakes.FakeAgentWorkflowsFactory)
+		costLedgerFactory = new(dbfakes.FakeAgentCostLedgerFactory)
+		pipelineRunFactory = new(dbfakes.FakePipelineRunFactory)
 		fakeTeam = new(dbfakes.FakeTeam)
 		fakePipeline = new(dbfakes.FakePipeline)
 
@@ -37,16 +46,16 @@ var _ = Describe("Tools", func() {
 		teamFactory.FindTeamReturns(fakeTeam, true, nil)
 		fakeTeam.PipelinesReturns([]db.Pipeline{fakePipeline}, nil)
 
-		mcpserver.RegisterTools(server, teamFactory, buildFactory, "https://concourse.example.com", "1.0.0")
+		mcpserver.RegisterTools(server, teamFactory, buildFactory, workflowsFactory, costLedgerFactory, pipelineRunFactory, "https://concourse.example.com", "1.0.0")
 	})
 
 	Describe("tools/list", func() {
-		It("returns all 20 tools", func() {
+		It("returns all 25 tools", func() {
 			body := jsonRPCBody("tools/list", 1, nil)
 			resp := doMCP(server, body)
 			result := decodeResult(resp)
 			tools := result["tools"].([]any)
-			Expect(tools).To(HaveLen(20))
+			Expect(tools).To(HaveLen(25))
 
 			names := make([]string, len(tools))
 			for i, t := range tools {
@@ -60,6 +69,8 @@ var _ = Describe("Tools", func() {
 				"list_resources", "list_resource_versions", "check_resource",
 				"get_job", "list_teams", "get_build_plan", "get_info",
 				"list_deprecated_scopes", "copy_resource_versions",
+				"list_agent_workflows", "get_agent_workflow", "agent_cost_rollup",
+				"list_pipeline_runs", "get_pipeline_run",
 			))
 		})
 	})
@@ -384,6 +395,272 @@ var _ = Describe("Tools", func() {
 				"from_scope_id": 99,
 			})
 			Expect(isError).To(BeTrue())
+		})
+	})
+
+	Describe("list_agent_workflows", func() {
+		It("returns workflow summaries with resolved live versions", func() {
+			workflowsFactory.ListReturns([]workflow.Definition{
+				{Name: "standard-dev", Description: "Standard dev flow", Version: 5, ContentHash: "abc123", Live: true, CreatedAt: 1700},
+				{Name: "test-first", Description: "TDD flow", Version: 3, ContentHash: "def456", Live: false, CreatedAt: 1800},
+			}, nil)
+			workflowsFactory.LiveReturns(&workflow.Definition{Name: "test-first", Version: 2}, true, nil)
+
+			result := callTool(server, "list_agent_workflows", map[string]any{})
+			var summaries []map[string]any
+			Expect(json.Unmarshal([]byte(result), &summaries)).To(Succeed())
+			Expect(summaries).To(HaveLen(2))
+
+			Expect(summaries[0]["name"]).To(Equal("standard-dev"))
+			Expect(summaries[0]["latest_version"]).To(BeEquivalentTo(5))
+			Expect(summaries[0]["live_version"]).To(BeEquivalentTo(5))
+			Expect(summaries[0]["content_hash"]).To(Equal("abc123"))
+
+			// second workflow is not live itself; live version resolved via Live()
+			Expect(summaries[1]["name"]).To(Equal("test-first"))
+			Expect(summaries[1]["latest_version"]).To(BeEquivalentTo(3))
+			Expect(summaries[1]["live_version"]).To(BeEquivalentTo(2))
+			Expect(workflowsFactory.LiveCallCount()).To(Equal(1))
+		})
+
+		It("returns error when listing fails", func() {
+			workflowsFactory.ListReturns(nil, errors.New("boom"))
+			_, isError := callToolRaw(server, "list_agent_workflows", map[string]any{})
+			Expect(isError).To(BeTrue())
+		})
+	})
+
+	Describe("get_agent_workflow", func() {
+		It("returns a specific version when requested", func() {
+			workflowsFactory.GetReturns(&workflow.Definition{
+				Name: "standard-dev", Version: 4, ContentHash: "hash4", RawYAML: "name: standard-dev\n",
+			}, true, nil)
+
+			result := callTool(server, "get_agent_workflow", map[string]any{
+				"workflow": "standard-dev",
+				"version":  4,
+			})
+			var def map[string]any
+			Expect(json.Unmarshal([]byte(result), &def)).To(Succeed())
+			Expect(def["name"]).To(Equal("standard-dev"))
+			Expect(def["version"]).To(BeEquivalentTo(4))
+			Expect(def["raw_yaml"]).To(Equal("name: standard-dev\n"))
+
+			name, version := workflowsFactory.GetArgsForCall(0)
+			Expect(name).To(Equal("standard-dev"))
+			Expect(version).To(Equal(4))
+		})
+
+		It("defaults to the live version when no version is given", func() {
+			workflowsFactory.LiveReturns(&workflow.Definition{
+				Name: "standard-dev", Version: 7, Live: true,
+			}, true, nil)
+
+			result := callTool(server, "get_agent_workflow", map[string]any{
+				"workflow": "standard-dev",
+			})
+			var def map[string]any
+			Expect(json.Unmarshal([]byte(result), &def)).To(Succeed())
+			Expect(def["version"]).To(BeEquivalentTo(7))
+			Expect(workflowsFactory.GetCallCount()).To(Equal(0))
+		})
+
+		It("falls back to the latest version when none is live", func() {
+			workflowsFactory.LiveReturns(nil, false, nil)
+			workflowsFactory.VersionsReturns([]workflow.Definition{
+				{Name: "standard-dev", Version: 1},
+				{Name: "standard-dev", Version: 2},
+			}, nil)
+			workflowsFactory.GetReturns(&workflow.Definition{
+				Name: "standard-dev", Version: 2,
+			}, true, nil)
+
+			result := callTool(server, "get_agent_workflow", map[string]any{
+				"workflow": "standard-dev",
+			})
+			var def map[string]any
+			Expect(json.Unmarshal([]byte(result), &def)).To(Succeed())
+			Expect(def["version"]).To(BeEquivalentTo(2))
+
+			name, version := workflowsFactory.GetArgsForCall(0)
+			Expect(name).To(Equal("standard-dev"))
+			Expect(version).To(Equal(2))
+		})
+
+		It("returns a not-found error for an unknown workflow", func() {
+			workflowsFactory.LiveReturns(nil, false, nil)
+			workflowsFactory.VersionsReturns([]workflow.Definition{}, nil)
+
+			result, isError := callToolRaw(server, "get_agent_workflow", map[string]any{
+				"workflow": "nope",
+			})
+			Expect(isError).To(BeTrue())
+			Expect(result).To(ContainSubstring("not found"))
+		})
+
+		It("returns a not-found error for an unknown version", func() {
+			workflowsFactory.GetReturns(nil, false, nil)
+
+			result, isError := callToolRaw(server, "get_agent_workflow", map[string]any{
+				"workflow": "standard-dev",
+				"version":  99,
+			})
+			Expect(isError).To(BeTrue())
+			Expect(result).To(ContainSubstring("not found"))
+		})
+	})
+
+	Describe("agent_cost_rollup", func() {
+		It("rolls up ledger rows and totals them", func() {
+			costLedgerFactory.RollupReturns([]budget.RollupRow{
+				{Key: "2026-07-10", Entries: 3, InputTokens: 100, OutputTokens: 20, Turns: 6, CostUSD: 1.50},
+				{Key: "2026-07-11", Entries: 2, InputTokens: 50, OutputTokens: 10, Turns: 4, CostUSD: 0.50},
+			}, nil)
+
+			result := callTool(server, "agent_cost_rollup", map[string]any{"group_by": "day"})
+			var output map[string]any
+			Expect(json.Unmarshal([]byte(result), &output)).To(Succeed())
+			Expect(output["group_by"]).To(Equal("day"))
+
+			rows := output["rows"].([]any)
+			Expect(rows).To(HaveLen(2))
+
+			summary := output["summary"].(map[string]any)
+			Expect(summary["rows"]).To(BeEquivalentTo(2))
+			Expect(summary["entries"]).To(BeEquivalentTo(5))
+			Expect(summary["input_tokens"]).To(BeEquivalentTo(150))
+			Expect(summary["turns"]).To(BeEquivalentTo(10))
+			Expect(summary["cost_usd"]).To(BeEquivalentTo(2.0))
+
+			groupBy, _, _ := costLedgerFactory.RollupArgsForCall(0)
+			Expect(groupBy).To(Equal("day"))
+		})
+
+		It("defaults group_by to day", func() {
+			costLedgerFactory.RollupReturns([]budget.RollupRow{}, nil)
+
+			result := callTool(server, "agent_cost_rollup", map[string]any{})
+			var output map[string]any
+			Expect(json.Unmarshal([]byte(result), &output)).To(Succeed())
+			Expect(output["group_by"]).To(Equal("day"))
+
+			groupBy, _, _ := costLedgerFactory.RollupArgsForCall(0)
+			Expect(groupBy).To(Equal(budget.GroupByDay))
+		})
+
+		It("rejects an invalid group_by", func() {
+			_, isError := callToolRaw(server, "agent_cost_rollup", map[string]any{"group_by": "bogus"})
+			Expect(isError).To(BeTrue())
+			Expect(costLedgerFactory.RollupCallCount()).To(Equal(0))
+		})
+
+		It("passes an explicit until through to the ledger", func() {
+			costLedgerFactory.RollupReturns([]budget.RollupRow{}, nil)
+
+			callTool(server, "agent_cost_rollup", map[string]any{
+				"group_by": "workflow",
+				"since":    "2026-07-01",
+				"until":    "2026-07-08",
+			})
+			groupBy, since, until := costLedgerFactory.RollupArgsForCall(0)
+			Expect(groupBy).To(Equal("workflow"))
+			Expect(since).To(Equal(time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)))
+			Expect(until).To(Equal(time.Date(2026, 7, 8, 0, 0, 0, 0, time.UTC)))
+		})
+	})
+
+	Describe("list_pipeline_runs", func() {
+		It("returns runs for a template pipeline", func() {
+			fakePipeline.IDReturns(77)
+
+			run := new(dbfakes.FakePipelineRun)
+			run.IDReturns(900)
+			run.NumberReturns(3)
+			run.StatusReturns(db.PipelineRunSucceeded)
+			run.ParamsReturns(map[string]any{"branch": "main"})
+			run.CreatedByReturns("alice")
+			run.CreatedAtReturns(time.Unix(1000, 0))
+			run.CompletedAtReturns(time.Unix(1200, 0), true)
+			pipelineRunFactory.ListRunsReturns([]db.PipelineRun{run}, nil)
+
+			result := callTool(server, "list_pipeline_runs", map[string]any{
+				"team":     "main",
+				"pipeline": "my-pipeline",
+			})
+			var runs []map[string]any
+			Expect(json.Unmarshal([]byte(result), &runs)).To(Succeed())
+			Expect(runs).To(HaveLen(1))
+			Expect(runs[0]["number"]).To(BeEquivalentTo(3))
+			Expect(runs[0]["status"]).To(Equal("succeeded"))
+			Expect(runs[0]["params"].(map[string]any)["branch"]).To(Equal("main"))
+			Expect(runs[0]["completed_at"]).To(BeEquivalentTo(1200))
+
+			templateID, limit := pipelineRunFactory.ListRunsArgsForCall(0)
+			Expect(templateID).To(Equal(77))
+			Expect(limit).To(Equal(100))
+		})
+
+		It("passes a custom limit through", func() {
+			fakePipeline.IDReturns(77)
+			pipelineRunFactory.ListRunsReturns([]db.PipelineRun{}, nil)
+
+			callTool(server, "list_pipeline_runs", map[string]any{
+				"team":     "main",
+				"pipeline": "my-pipeline",
+				"limit":    5,
+			})
+			_, limit := pipelineRunFactory.ListRunsArgsForCall(0)
+			Expect(limit).To(Equal(5))
+		})
+
+		It("returns error for unknown pipeline", func() {
+			fakeTeam.PipelinesReturns([]db.Pipeline{}, nil)
+			_, isError := callToolRaw(server, "list_pipeline_runs", map[string]any{
+				"team":     "main",
+				"pipeline": "ghost",
+			})
+			Expect(isError).To(BeTrue())
+		})
+	})
+
+	Describe("get_pipeline_run", func() {
+		It("returns a single run by number", func() {
+			fakePipeline.IDReturns(77)
+
+			run := new(dbfakes.FakePipelineRun)
+			run.IDReturns(901)
+			run.NumberReturns(4)
+			run.StatusReturns(db.PipelineRunFailed)
+			run.CreatedByReturns("bob")
+			run.CreatedAtReturns(time.Unix(2000, 0))
+			pipelineRunFactory.GetRunReturns(run, true, nil)
+
+			result := callTool(server, "get_pipeline_run", map[string]any{
+				"team":     "main",
+				"pipeline": "my-pipeline",
+				"number":   4,
+			})
+			var out map[string]any
+			Expect(json.Unmarshal([]byte(result), &out)).To(Succeed())
+			Expect(out["number"]).To(BeEquivalentTo(4))
+			Expect(out["status"]).To(Equal("failed"))
+
+			templateID, number := pipelineRunFactory.GetRunArgsForCall(0)
+			Expect(templateID).To(Equal(77))
+			Expect(number).To(Equal(4))
+		})
+
+		It("returns a not-found error for a missing run", func() {
+			fakePipeline.IDReturns(77)
+			pipelineRunFactory.GetRunReturns(nil, false, nil)
+
+			result, isError := callToolRaw(server, "get_pipeline_run", map[string]any{
+				"team":     "main",
+				"pipeline": "my-pipeline",
+				"number":   999,
+			})
+			Expect(isError).To(BeTrue())
+			Expect(result).To(ContainSubstring("not found"))
 		})
 	})
 })

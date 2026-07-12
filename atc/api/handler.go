@@ -178,7 +178,7 @@ func NewHandler(
 	idTokenServer := idtokenserver.NewServer(logger, oidcIssuer, dbSigningKeyFactory)
 
 	mcpServer := mcpserver.NewServer()
-	mcpserver.RegisterTools(mcpServer, dbTeamFactory, dbBuildFactory, externalURL, version)
+	mcpserver.RegisterTools(mcpServer, dbTeamFactory, dbBuildFactory, workflowStore, costLedger, dbPipelineRunFactory, externalURL, version)
 
 	handlers := map[string]http.Handler{
 		atc.GetConfig:  http.HandlerFunc(configServer.GetConfig),

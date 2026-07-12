@@ -4,12 +4,25 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
+
+	"github.com/concourse/concourse/agent/budget"
 	"github.com/concourse/concourse/atc"
+	"github.com/concourse/concourse/atc/api/present"
 	"github.com/concourse/concourse/atc/db"
 )
 
 // RegisterTools registers all MCP tools with the server.
-func RegisterTools(s *Server, teamFactory db.TeamFactory, buildFactory db.BuildFactory, externalURL string, version string) {
+func RegisterTools(
+	s *Server,
+	teamFactory db.TeamFactory,
+	buildFactory db.BuildFactory,
+	workflowsFactory db.AgentWorkflowsFactory,
+	costLedgerFactory db.AgentCostLedgerFactory,
+	pipelineRunFactory db.PipelineRunFactory,
+	externalURL string,
+	version string,
+) {
 	registerListPipelines(s, teamFactory)
 	registerGetPipeline(s, teamFactory)
 	registerSetPipeline(s, teamFactory)
@@ -30,6 +43,11 @@ func RegisterTools(s *Server, teamFactory db.TeamFactory, buildFactory db.BuildF
 	registerGetInfo(s, externalURL, version)
 	registerListDeprecatedScopes(s, teamFactory)
 	registerCopyResourceVersions(s, teamFactory)
+	registerListAgentWorkflows(s, workflowsFactory)
+	registerGetAgentWorkflow(s, workflowsFactory)
+	registerAgentCostRollup(s, costLedgerFactory)
+	registerListPipelineRuns(s, teamFactory, pipelineRunFactory)
+	registerGetPipelineRun(s, teamFactory, pipelineRunFactory)
 }
 
 // --- helpers ---
@@ -1089,6 +1107,326 @@ func registerCopyResourceVersions(s *Server, teamFactory db.TeamFactory) {
 				"from_scope_id":   input.FromScopeID,
 				"message":         fmt.Sprintf("copied %d versions from scope %d", copied, input.FromScopeID),
 			}, nil
+		},
+	)
+}
+
+// --- list_agent_workflows ---
+
+// agentWorkflowSummary mirrors agent/api/workflows.WorkflowSummary: the
+// latest version per workflow name, plus the resolved live version
+// (0 = none). Config/raw YAML are intentionally omitted here — use
+// get_agent_workflow for a single definition's full contents.
+type agentWorkflowSummary struct {
+	Name          string `json:"name"`
+	Description   string `json:"description"`
+	LatestVersion int    `json:"latest_version"`
+	LiveVersion   int    `json:"live_version"`
+	ContentHash   string `json:"content_hash"`
+	CreatedAt     int64  `json:"created_at"`
+}
+
+func registerListAgentWorkflows(s *Server, workflowsFactory db.AgentWorkflowsFactory) {
+	s.AddTool("list_agent_workflows",
+		"List agent workflow definitions (latest version per name) with their live version, content hash, and creation time.",
+		MustJSON(map[string]any{
+			"type":       "object",
+			"properties": map[string]any{},
+		}),
+		func(ctx context.Context, args json.RawMessage) (any, error) {
+			defs, err := workflowsFactory.List()
+			if err != nil {
+				return nil, fmt.Errorf("listing agent workflows: %w", err)
+			}
+			summaries := make([]agentWorkflowSummary, 0, len(defs))
+			for _, d := range defs {
+				summary := agentWorkflowSummary{
+					Name:          d.Name,
+					Description:   d.Description,
+					LatestVersion: d.Version,
+					ContentHash:   d.ContentHash,
+					CreatedAt:     d.CreatedAt,
+				}
+				if d.Live {
+					summary.LiveVersion = d.Version
+				} else {
+					live, found, err := workflowsFactory.Live(d.Name)
+					if err != nil {
+						return nil, fmt.Errorf("resolving live version for %q: %w", d.Name, err)
+					}
+					if found {
+						summary.LiveVersion = live.Version
+					}
+				}
+				summaries = append(summaries, summary)
+			}
+			return summaries, nil
+		},
+	)
+}
+
+// --- get_agent_workflow ---
+
+type getAgentWorkflowInput struct {
+	Workflow string `json:"workflow"`
+	Version  int    `json:"version,omitempty"`
+}
+
+func registerGetAgentWorkflow(s *Server, workflowsFactory db.AgentWorkflowsFactory) {
+	s.AddTool("get_agent_workflow",
+		"Get a single agent workflow definition, including its parsed config and raw YAML. Defaults to the live version, falling back to the latest version when none is promoted.",
+		MustJSON(map[string]any{
+			"type":     "object",
+			"required": []string{"workflow"},
+			"properties": map[string]any{
+				"workflow": map[string]any{"type": "string", "description": "Workflow name"},
+				"version":  map[string]any{"type": "integer", "description": "Specific version to fetch (default: live version, or latest if none is live)"},
+			},
+		}),
+		func(ctx context.Context, args json.RawMessage) (any, error) {
+			var input getAgentWorkflowInput
+			if err := json.Unmarshal(args, &input); err != nil {
+				return nil, fmt.Errorf("invalid arguments: %w", err)
+			}
+
+			if input.Version > 0 {
+				def, found, err := workflowsFactory.Get(input.Workflow, input.Version)
+				if err != nil {
+					return nil, fmt.Errorf("getting workflow %q version %d: %w", input.Workflow, input.Version, err)
+				}
+				if !found {
+					return nil, fmt.Errorf("workflow %q version %d not found", input.Workflow, input.Version)
+				}
+				return def, nil
+			}
+
+			// No version requested: prefer the live version.
+			live, found, err := workflowsFactory.Live(input.Workflow)
+			if err != nil {
+				return nil, fmt.Errorf("resolving live version for %q: %w", input.Workflow, err)
+			}
+			if found {
+				return live, nil
+			}
+
+			// No live version: fall back to the latest (Versions is ordered ascending).
+			versions, err := workflowsFactory.Versions(input.Workflow)
+			if err != nil {
+				return nil, fmt.Errorf("listing versions for %q: %w", input.Workflow, err)
+			}
+			if len(versions) == 0 {
+				return nil, fmt.Errorf("workflow %q not found", input.Workflow)
+			}
+			latest := versions[len(versions)-1].Version
+			def, found, err := workflowsFactory.Get(input.Workflow, latest)
+			if err != nil {
+				return nil, fmt.Errorf("getting workflow %q version %d: %w", input.Workflow, latest, err)
+			}
+			if !found {
+				return nil, fmt.Errorf("workflow %q version %d not found", input.Workflow, latest)
+			}
+			return def, nil
+		},
+	)
+}
+
+// --- agent_cost_rollup ---
+
+type agentCostRollupInput struct {
+	GroupBy string `json:"group_by,omitempty"`
+	Since   string `json:"since,omitempty"`
+	Until   string `json:"until,omitempty"`
+}
+
+// agentCostRollupSummary aggregates the returned rows into totals. Unlike
+// the HTTP costs handler's daily-cap summary (which needs a budget.Checker),
+// this MCP tool only has the ledger, so it summarizes what it read.
+type agentCostRollupSummary struct {
+	Rows         int     `json:"rows"`
+	Entries      int     `json:"entries"`
+	InputTokens  int64   `json:"input_tokens"`
+	OutputTokens int64   `json:"output_tokens"`
+	Turns        int64   `json:"turns"`
+	CostUSD      float64 `json:"cost_usd"`
+}
+
+type agentCostRollupOutput struct {
+	GroupBy string                 `json:"group_by"`
+	Summary agentCostRollupSummary `json:"summary"`
+	Rows    []budget.RollupRow     `json:"rows"`
+}
+
+func registerAgentCostRollup(s *Server, costLedgerFactory db.AgentCostLedgerFactory) {
+	s.AddTool("agent_cost_rollup",
+		"Roll up agent cost-ledger spend grouped by day, user, ticket, or workflow over an optional time window. Returns aggregate totals plus per-group rows.",
+		MustJSON(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"group_by": map[string]any{
+					"type":        "string",
+					"enum":        []string{budget.GroupByDay, budget.GroupByUser, budget.GroupByTicket, budget.GroupByWorkflow},
+					"description": "Grouping dimension (default: day)",
+				},
+				"since": map[string]any{"type": "string", "description": "Start of window, RFC3339 or YYYY-MM-DD (default: 30 days ago)"},
+				"until": map[string]any{"type": "string", "description": "End of window, RFC3339 or YYYY-MM-DD (default: unbounded)"},
+			},
+		}),
+		func(ctx context.Context, args json.RawMessage) (any, error) {
+			var input agentCostRollupInput
+			if len(args) > 0 {
+				if err := json.Unmarshal(args, &input); err != nil {
+					return nil, fmt.Errorf("invalid arguments: %w", err)
+				}
+			}
+
+			groupBy := input.GroupBy
+			if groupBy == "" {
+				groupBy = budget.GroupByDay
+			}
+			if !budget.ValidGroupBy(groupBy) {
+				return nil, fmt.Errorf("group_by must be one of day|user|ticket|workflow, got %q", groupBy)
+			}
+
+			since, err := parseCostTimeParam(input.Since)
+			if err != nil {
+				return nil, fmt.Errorf("invalid since: %w", err)
+			}
+			if since.IsZero() {
+				since = time.Now().Add(-30 * 24 * time.Hour)
+			}
+			until, err := parseCostTimeParam(input.Until)
+			if err != nil {
+				return nil, fmt.Errorf("invalid until: %w", err)
+			}
+
+			rows, err := costLedgerFactory.Rollup(groupBy, since, until)
+			if err != nil {
+				return nil, fmt.Errorf("rolling up agent costs: %w", err)
+			}
+			if rows == nil {
+				rows = []budget.RollupRow{}
+			}
+
+			summary := agentCostRollupSummary{Rows: len(rows)}
+			for _, row := range rows {
+				summary.Entries += row.Entries
+				summary.InputTokens += row.InputTokens
+				summary.OutputTokens += row.OutputTokens
+				summary.Turns += row.Turns
+				summary.CostUSD += row.CostUSD
+			}
+
+			return agentCostRollupOutput{
+				GroupBy: groupBy,
+				Summary: summary,
+				Rows:    rows,
+			}, nil
+		},
+	)
+}
+
+// parseCostTimeParam accepts RFC3339 or YYYY-MM-DD; empty means zero time.
+// Mirrors agent/api/costs.parseTimeParam.
+func parseCostTimeParam(v string) (time.Time, error) {
+	if v == "" {
+		return time.Time{}, nil
+	}
+	if t, err := time.Parse(time.RFC3339, v); err == nil {
+		return t, nil
+	}
+	if t, err := time.Parse("2006-01-02", v); err == nil {
+		return t, nil
+	}
+	return time.Time{}, fmt.Errorf("want RFC3339 or YYYY-MM-DD, got %q", v)
+}
+
+// --- list_pipeline_runs ---
+
+type listPipelineRunsInput struct {
+	Team     string `json:"team"`
+	Pipeline string `json:"pipeline"`
+	Limit    int    `json:"limit,omitempty"`
+}
+
+func registerListPipelineRuns(s *Server, teamFactory db.TeamFactory, pipelineRunFactory db.PipelineRunFactory) {
+	s.AddTool("list_pipeline_runs",
+		"List runs of a template pipeline (most recent first) with their number, status, params, and timestamps.",
+		MustJSON(map[string]any{
+			"type":     "object",
+			"required": []string{"team", "pipeline"},
+			"properties": map[string]any{
+				"team":     map[string]any{"type": "string", "description": "Team name"},
+				"pipeline": map[string]any{"type": "string", "description": "Template pipeline name"},
+				"limit":    map[string]any{"type": "integer", "description": "Max runs to return (default 100)"},
+			},
+		}),
+		func(ctx context.Context, args json.RawMessage) (any, error) {
+			var input listPipelineRunsInput
+			if err := json.Unmarshal(args, &input); err != nil {
+				return nil, fmt.Errorf("invalid arguments: %w", err)
+			}
+			team, err := findTeam(teamFactory, input.Team)
+			if err != nil {
+				return nil, err
+			}
+			pipeline, err := findPipeline(team, input.Pipeline)
+			if err != nil {
+				return nil, err
+			}
+			limit := input.Limit
+			if limit <= 0 {
+				limit = 100
+			}
+			runs, err := pipelineRunFactory.ListRuns(pipeline.ID(), limit)
+			if err != nil {
+				return nil, fmt.Errorf("listing pipeline runs: %w", err)
+			}
+			return present.PipelineRuns(runs), nil
+		},
+	)
+}
+
+// --- get_pipeline_run ---
+
+type getPipelineRunInput struct {
+	Team     string `json:"team"`
+	Pipeline string `json:"pipeline"`
+	Number   int    `json:"number"`
+}
+
+func registerGetPipelineRun(s *Server, teamFactory db.TeamFactory, pipelineRunFactory db.PipelineRunFactory) {
+	s.AddTool("get_pipeline_run",
+		"Get a single run of a template pipeline by its run number.",
+		MustJSON(map[string]any{
+			"type":     "object",
+			"required": []string{"team", "pipeline", "number"},
+			"properties": map[string]any{
+				"team":     map[string]any{"type": "string", "description": "Team name"},
+				"pipeline": map[string]any{"type": "string", "description": "Template pipeline name"},
+				"number":   map[string]any{"type": "integer", "description": "Run number"},
+			},
+		}),
+		func(ctx context.Context, args json.RawMessage) (any, error) {
+			var input getPipelineRunInput
+			if err := json.Unmarshal(args, &input); err != nil {
+				return nil, fmt.Errorf("invalid arguments: %w", err)
+			}
+			team, err := findTeam(teamFactory, input.Team)
+			if err != nil {
+				return nil, err
+			}
+			pipeline, err := findPipeline(team, input.Pipeline)
+			if err != nil {
+				return nil, err
+			}
+			run, found, err := pipelineRunFactory.GetRun(pipeline.ID(), input.Number)
+			if err != nil {
+				return nil, fmt.Errorf("getting pipeline run: %w", err)
+			}
+			if !found {
+				return nil, fmt.Errorf("run %d not found for pipeline %q in team %q", input.Number, input.Pipeline, input.Team)
+			}
+			return present.PipelineRun(run), nil
 		},
 	)
 }
