@@ -387,6 +387,22 @@ var _ = Describe("AgentStep", func() {
 					"CLAUDE_CODE_OAUTH_TOKEN", vars.SecretRef{Name: "agent-run-42", Key: "anthropic-token"}))
 			})
 
+			// --- review finding: main container never received the token ---
+			// §8.1 pins CLAUDE_CODE_OAUTH_TOKEN to main AND gateway from the
+			// per-run secret. BuildSecretEnv only covers K8s-secret var
+			// sources, so without an explicit ref the main claude CLI has no
+			// token at all on dispatch-rendered runs and fails at auth.
+			It("wires the main container's CLAUDE_CODE_OAUTH_TOKEN from the per-run secret (§8.1)", func() {
+				_, err := step.Run(ctx, state)
+				Expect(err).ToNot(HaveOccurred())
+
+				_, _, spec, _ := fakePool.FindOrSelectWorkerArgsForCall(0)
+				Expect(spec.SecretEnv).To(HaveKeyWithValue(
+					"CLAUDE_CODE_OAUTH_TOKEN", vars.SecretRef{Name: "agent-run-42", Key: "anthropic-token"}))
+				// secretKeyRef-only — the token must never appear as a literal.
+				Expect(spec.Env).ToNot(ContainElement(HavePrefix("CLAUDE_CODE_OAUTH_TOKEN=")))
+			})
+
 			// --- review finding: cross-run credential exfiltration ---
 			// AGENT_PIPELINE_RUN_ID is attacker-writable plan YAML (F30). A
 			// pipeline that claims a run id it does not own must NOT be able to
@@ -442,6 +458,7 @@ var _ = Describe("AgentStep", func() {
 
 					_, _, spec, _ := fakePool.FindOrSelectWorkerArgsForCall(0)
 					Expect(spec.SidecarSecretEnv).To(BeEmpty())
+					Expect(spec.SecretEnv).ToNot(HaveKey("CLAUDE_CODE_OAUTH_TOKEN"))
 				})
 			})
 
@@ -455,13 +472,48 @@ var _ = Describe("AgentStep", func() {
 			})
 		})
 
-		It("emits no sidecar secret env without a pipeline-run id (pure CI)", func() {
+		Context("on a platform run with no gateway/platform sidecars", func() {
+			BeforeEach(func() {
+				agentPlan.Env["AGENT_PIPELINE_RUN_ID"] = "42"
+				agentPlan.Sidecars = nil
+			})
+
+			// The main container's need for the token must not be gated on a
+			// sidecar wanting the run secret — a rendered step with no MCP
+			// sidecars still runs claude, which auths via this env var.
+			It("still verifies run ownership and wires the main container token", func() {
+				_, err := step.Run(ctx, state)
+				Expect(err).ToNot(HaveOccurred())
+
+				Expect(fakeRunVerifier.RunBelongsToPipelineCallCount()).To(Equal(1))
+
+				_, _, spec, _ := fakePool.FindOrSelectWorkerArgsForCall(0)
+				Expect(spec.SecretEnv).To(HaveKeyWithValue(
+					"CLAUDE_CODE_OAUTH_TOKEN", vars.SecretRef{Name: "agent-run-42", Key: "anthropic-token"}))
+			})
+
+			Context("when the claimed run id does not belong to this build's pipeline", func() {
+				BeforeEach(func() {
+					fakeRunVerifier.RunBelongsToPipelineReturns(false, nil)
+				})
+
+				It("fails closed even though no sidecar wants the secret", func() {
+					ok, err := step.Run(ctx, state)
+					Expect(ok).To(BeFalse())
+					Expect(err).To(MatchError(ContainSubstring("does not belong to this build's pipeline")))
+					Expect(fakePool.FindOrSelectWorkerCallCount()).To(BeZero())
+				})
+			})
+		})
+
+		It("emits no run-secret env without a pipeline-run id (pure CI)", func() {
 			// plan.Env carries no AGENT_PIPELINE_RUN_ID
 			_, err := step.Run(ctx, state)
 			Expect(err).ToNot(HaveOccurred())
 
 			_, _, spec, _ := fakePool.FindOrSelectWorkerArgsForCall(0)
 			Expect(spec.SidecarSecretEnv).To(BeEmpty())
+			Expect(spec.SecretEnv).ToNot(HaveKey("CLAUDE_CODE_OAUTH_TOKEN"))
 			Expect(spec.SidecarEnv["platform"]).To(ContainElement(HavePrefix("ATC_EXTERNAL_URL=")))
 		})
 

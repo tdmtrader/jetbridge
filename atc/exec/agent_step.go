@@ -324,9 +324,10 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 		common = append(common, "AGENT_PIPELINE_RUN_ID="+v)
 	}
 
-	// Sidecar secret refs derive from the deterministic §8.2 secret name.
-	// No pipeline-run id ⇒ no sidecar secret env (pure-CI agent steps get
-	// sidecars without platform credentials, per §8.1).
+	// Main-container and sidecar secret refs derive from the deterministic
+	// §8.2 secret name. No pipeline-run id ⇒ no run-secret refs at all
+	// (pure-CI agent steps route the token through a K8s-secret var source
+	// via BuildSecretEnv above, per §8.1).
 	//
 	// AGENT_PIPELINE_RUN_ID is carried by plan env (F30) — attacker-writable
 	// pipeline YAML — so it is NEVER trusted to name the secret on its own.
@@ -338,9 +339,9 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 	// refs are injected — unless that ownership check passes.
 	runID, _ := strconv.Atoi(resolvedEnv["AGENT_PIPELINE_RUN_ID"])
 	secretRunID := 0
-	if runID > 0 && sidecarsWantRunSecret(sidecars) {
+	if runID > 0 {
 		if step.runVerifier == nil {
-			logger.Info("skipping-sidecar-secret-refs", lager.Data{
+			logger.Info("skipping-run-secret-refs", lager.Data{
 				"reason": "no agent run verifier wired; plan env cannot be trusted to name the run secret",
 				"run-id": runID,
 			})
@@ -356,6 +357,20 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 		}
 	}
 	secretName := "agent-run-" + strconv.Itoa(secretRunID)
+
+	// §8.1 pins CLAUDE_CODE_OAUTH_TOKEN to BOTH the main container and the
+	// gateway sidecar from the per-run secret. BuildSecretEnv above only
+	// covers values resolved through a K8s-secret var source — it knows
+	// nothing about the dispatch-created agent-run-<id> secret — so the
+	// main-container ref is set explicitly here. F20 append semantics in
+	// applySecretRefs emit a secretKeyRef-only EnvVar, so no literal env
+	// value is required.
+	if secretRunID > 0 {
+		if containerSpec.SecretEnv == nil {
+			containerSpec.SecretEnv = map[string]vars.SecretRef{}
+		}
+		containerSpec.SecretEnv["CLAUDE_CODE_OAUTH_TOKEN"] = vars.SecretRef{Name: secretName, Key: "anthropic-token"}
+	}
 
 	// §8.5 CWD convention (F21): sidecar images never hardcode /workspace.
 	// When the plan carries a `workspace` artifact, the owning exec points
@@ -757,17 +772,6 @@ func mergeContainerLimits(override *atc.ContainerLimits, defaults atc.ContainerL
 		}
 	}
 	return merged
-}
-
-// sidecarsWantRunSecret reports whether any declared sidecar would receive
-// agent-run-* secret refs — the "platform"/"gateway" MCP sidecars (§8.1).
-func sidecarsWantRunSecret(sidecars []atc.SidecarConfig) bool {
-	for _, sc := range sidecars {
-		if sc.Name == "platform" || sc.Name == "gateway" {
-			return true
-		}
-	}
-	return false
 }
 
 func setSidecarSecretRef(spec *runtime.ContainerSpec, sidecar, envName string, ref vars.SecretRef) {
