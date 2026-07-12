@@ -259,8 +259,16 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 	// park-exit partial spend was already ledgered, the re-resolved slice
 	// is automatically tighter (PARK-V2 seam delta §D, decision 32). The
 	// ticket id is the SERVER-VERIFIED one from above, never raw plan env.
+	//
+	// Admission runs for EVERY ticketed step, including slice == 0:
+	// budget_slice_usd 0 means "uncapped within ticket budget" (§2.8), so
+	// the ticket cap still applies — StepSlice(ticket, 0) resolves to the
+	// ticket's own remaining, with Exhausted set when it is spent (review
+	// finding, 2026-07-12). Remaining.LimitUSD == 0 means truly uncapped
+	// (no declared slice AND an uncapped ticket); only then does the step
+	// run with no AGENT_BUDGET_SLICE_USD row.
 	slice := step.plan.BudgetSliceUSD
-	if step.budgetChecker != nil && slice > 0 && ticketID > 0 {
+	if step.budgetChecker != nil && ticketID > 0 {
 		remaining, err := step.budgetChecker.StepSlice(ticketID, slice)
 		if err != nil {
 			logger.Error("failed-to-resolve-budget-slice", err)
@@ -269,7 +277,7 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 			delegate.Errored(logger, "budget slice exhausted before start")
 			delegate.Finished(logger, ExitStatus(1))
 			return false, nil
-		} else {
+		} else if remaining.LimitUSD > 0 {
 			slice = remaining.RemainingUSD
 		}
 	}

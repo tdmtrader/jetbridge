@@ -342,6 +342,74 @@ var _ = Describe("AgentStep", func() {
 		Expect(spec.Env).To(ContainElement("AGENT_BUDGET_SLICE_USD=2.50"))
 	})
 
+	// --- review finding (2026-07-12): steps with no budget_slice_usd bypassed
+	// the ticket-exhaustion admission check. budget_slice_usd 0 means
+	// "uncapped within ticket budget" (§2.8) — the ticket cap still applies —
+	// so admission must run for every ticketed step, not only when slice > 0.
+	// Pre-fix, a step omitting the slice was admitted (and spent) against a
+	// fully exhausted ticket while a sibling WITH a slice was stopped.
+	Context("when the plan declares no budget slice (budget_slice_usd 0)", func() {
+		BeforeEach(func() {
+			agentPlan.BudgetSliceUSD = 0
+		})
+
+		It("still fails without starting when the ticket is exhausted", func() {
+			fakeChecker.StepSliceReturns(budget.Remaining{
+				LimitUSD:     10,
+				SpentUSD:     12,
+				RemainingUSD: -2,
+				Exhausted:    true,
+			}, nil)
+
+			ok, err := step.Run(ctx, state)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(ok).To(BeFalse())
+			Expect(fakePool.FindOrSelectWorkerCallCount()).To(BeZero())
+
+			Expect(fakeChecker.StepSliceCallCount()).To(Equal(1))
+			ticketID, slice := fakeChecker.StepSliceArgsForCall(0)
+			Expect(ticketID).To(Equal(7))
+			Expect(slice).To(BeZero())
+
+			Expect(fakeDelegate.ErroredCallCount()).To(Equal(1))
+			_, message := fakeDelegate.ErroredArgsForCall(0)
+			Expect(message).To(ContainSubstring("budget slice exhausted"))
+			Expect(fakeDelegate.FinishedCallCount()).To(Equal(1))
+			_, exitStatus := fakeDelegate.FinishedArgsForCall(0)
+			Expect(exitStatus).To(Equal(exec.ExitStatus(1)))
+		})
+
+		It("caps the step at a capped ticket's remaining", func() {
+			fakeChecker.StepSliceReturns(budget.Remaining{
+				LimitUSD:     10,
+				SpentUSD:     4,
+				RemainingUSD: 6,
+			}, nil)
+
+			ok, err := step.Run(ctx, state)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(ok).To(BeTrue())
+
+			_, _, spec, _ := fakePool.FindOrSelectWorkerArgsForCall(0)
+			Expect(spec.Env).To(ContainElement("AGENT_BUDGET_SLICE_USD=6.00"))
+		})
+
+		It("emits no slice env when the ticket itself is uncapped", func() {
+			// Remaining.LimitUSD == 0 means truly uncapped: StepSlice(t, 0)
+			// on an uncapped ticket returns only the spend so far.
+			fakeChecker.StepSliceReturns(budget.Remaining{SpentUSD: 4}, nil)
+
+			ok, err := step.Run(ctx, state)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(ok).To(BeTrue())
+
+			Expect(fakeChecker.StepSliceCallCount()).To(Equal(1))
+
+			_, _, spec, _ := fakePool.FindOrSelectWorkerArgsForCall(0)
+			Expect(spec.Env).ToNot(ContainElement(HavePrefix("AGENT_BUDGET_SLICE_USD=")))
+		})
+	})
+
 	// --- review finding (2026-07-11): budget admission gate entirely skippable ---
 	// AGENT_TICKET_ID is the same attacker-writable plan env as everything else
 	// (F30). Pre-fix, the ONLY admission check was StepSlice(env ticket, slice):
