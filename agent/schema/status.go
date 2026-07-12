@@ -16,7 +16,9 @@ const (
 
 // ThreeWayStatus maps a results.json Status onto the three-way taxonomy.
 // abstain maps to failed with abstained=true so callers can record
-// `"abstained": true` metadata. Unknown values map to error.
+// `"abstained": true` metadata. parked maps to parked (PARK-V2, §1.8) so a
+// park-exit ingestion is not silently rewritten to error. Unknown values map
+// to error.
 func ThreeWayStatus(s Status) (status string, abstained bool) {
 	switch s {
 	case StatusPass:
@@ -27,6 +29,8 @@ func ThreeWayStatus(s Status) (status string, abstained bool) {
 		return RunStatusError, false
 	case StatusAbstain:
 		return RunStatusFailed, true
+	case StatusParked:
+		return RunStatusParked, false
 	default:
 		return RunStatusError, false
 	}
