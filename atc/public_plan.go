@@ -18,6 +18,7 @@ func (plan *Plan) Public() *json.RawMessage {
 		Check          *json.RawMessage `json:"check,omitempty"`
 		Task           *json.RawMessage `json:"task,omitempty"`
 		Run            *json.RawMessage `json:"run,omitempty"`
+		Agent          *json.RawMessage `json:"agent,omitempty"`
 		SetPipeline    *json.RawMessage `json:"set_pipeline,omitempty"`
 		LoadVar        *json.RawMessage `json:"load_var,omitempty"`
 		OnAbort        *json.RawMessage `json:"on_abort,omitempty"`
@@ -66,6 +67,10 @@ func (plan *Plan) Public() *json.RawMessage {
 
 	if plan.Run != nil {
 		public.Run = plan.Run.Public()
+	}
+
+	if plan.Agent != nil {
+		public.Agent = plan.Agent.Public()
 	}
 
 	if plan.SetPipeline != nil {
@@ -307,6 +312,16 @@ func (plan RunPlan) Public() *json.RawMessage {
 		Message:    plan.Message,
 		Type:       plan.Type,
 		Privileged: plan.Privileged,
+	})
+}
+
+func (plan AgentPlan) Public() *json.RawMessage {
+	return enc(struct {
+		Name  string `json:"name"`
+		Model string `json:"model,omitempty"`
+	}{
+		Name:  plan.Name,
+		Model: plan.Model,
 	})
 }
 

@@ -275,6 +275,55 @@ var factoryTests = []StepTest{
 		},
 	},
 	{
+		Title: "agent step",
+
+		ConfigYAML: `
+			agent: write-spec
+			prompt: |
+			  Read the ticket, explore the repo, submit a spec.
+			model: claude-sonnet-4-5
+			max_turns: 80
+			budget_slice_usd: 2.5
+			output_schema: repo/schemas/spec.json
+			sidecars:
+			- name: platform
+			  image: ghcr.io/tdmtrader/mcp-platform:v1.0.0
+			inputs: [repo]
+			outputs: [workspace]
+			env: {BASE_REF: main}
+			timeout: 1h
+		`,
+
+		StepConfig: &atc.AgentStep{
+			Name:           "write-spec",
+			Prompt:         "Read the ticket, explore the repo, submit a spec.\n",
+			Model:          "claude-sonnet-4-5",
+			MaxTurns:       80,
+			BudgetSliceUSD: 2.5,
+			OutputSchema:   "repo/schemas/spec.json",
+			Sidecars: []atc.SidecarSource{
+				{Config: &atc.SidecarConfig{Name: "platform", Image: "ghcr.io/tdmtrader/mcp-platform:v1.0.0"}},
+			},
+			Inputs:  []string{"repo"},
+			Outputs: []string{"workspace"},
+			Env:     map[string]string{"BASE_REF": "main"},
+			Timeout: "1h",
+		},
+	},
+	{
+		Title: "agent step with prompt file",
+
+		ConfigYAML: `
+			agent: implement
+			prompt_file: repo/prompts/implement.md
+		`,
+
+		StepConfig: &atc.AgentStep{
+			Name:       "implement",
+			PromptFile: "repo/prompts/implement.md",
+		},
+	},
+	{
 		Title: "set_pipeline step",
 
 		ConfigYAML: `

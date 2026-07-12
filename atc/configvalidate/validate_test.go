@@ -1252,6 +1252,123 @@ var _ = Describe("ValidateConfig", func() {
 				})
 			})
 
+			Context("when an agent step has no prompt", func() {
+				BeforeEach(func() {
+					job.PlanSequence = append(job.PlanSequence, atc.Step{
+						Config: &atc.AgentStep{Name: "write-spec"},
+					})
+
+					config.Jobs = append(config.Jobs, job)
+				})
+
+				It("returns an error", func() {
+					Expect(errorMessages).To(HaveLen(1))
+					Expect(errorMessages[0]).To(ContainSubstring("must specify either `prompt:` or `prompt_file:`"))
+				})
+			})
+
+			Context("when an agent step has both prompt and prompt_file", func() {
+				BeforeEach(func() {
+					job.PlanSequence = append(job.PlanSequence, atc.Step{
+						Config: &atc.AgentStep{Name: "write-spec", Prompt: "p", PromptFile: "repo/p.md"},
+					})
+
+					config.Jobs = append(config.Jobs, job)
+				})
+
+				It("returns an error", func() {
+					Expect(errorMessages).To(HaveLen(1))
+					Expect(errorMessages[0]).To(ContainSubstring("must specify one of `prompt:` or `prompt_file:`, not both"))
+				})
+			})
+
+			Context("when an agent step declares a reserved flight output", func() {
+				BeforeEach(func() {
+					job.PlanSequence = append(job.PlanSequence, atc.Step{
+						Config: &atc.AgentStep{Name: "a", Prompt: "p", Outputs: []string{"flight"}},
+					})
+
+					config.Jobs = append(config.Jobs, job)
+				})
+
+				It("returns an error", func() {
+					Expect(errorMessages).To(HaveLen(1))
+					Expect(errorMessages[0]).To(ContainSubstring("reserved for the flight recorder"))
+				})
+			})
+
+			Context("when an agent step has a negative budget slice", func() {
+				BeforeEach(func() {
+					job.PlanSequence = append(job.PlanSequence, atc.Step{
+						Config: &atc.AgentStep{Name: "a", Prompt: "p", BudgetSliceUSD: -1},
+					})
+
+					config.Jobs = append(config.Jobs, job)
+				})
+
+				It("returns an error", func() {
+					Expect(errorMessages).To(HaveLen(1))
+					Expect(errorMessages[0]).To(ContainSubstring("budget_slice_usd must not be negative"))
+				})
+			})
+
+			Context("when an agent step has negative max_turns", func() {
+				BeforeEach(func() {
+					job.PlanSequence = append(job.PlanSequence, atc.Step{
+						Config: &atc.AgentStep{Name: "a", Prompt: "p", MaxTurns: -1},
+					})
+
+					config.Jobs = append(config.Jobs, job)
+				})
+
+				It("returns an error", func() {
+					Expect(errorMessages).To(HaveLen(1))
+					Expect(errorMessages[0]).To(ContainSubstring("max_turns must not be negative"))
+				})
+			})
+
+			Context("when an agent step sidecar uses a reserved name", func() {
+				BeforeEach(func() {
+					job.PlanSequence = append(job.PlanSequence, atc.Step{
+						Config: &atc.AgentStep{
+							Name:   "a",
+							Prompt: "p",
+							Sidecars: []atc.SidecarSource{
+								{Config: &atc.SidecarConfig{Name: "main", Image: "redis:7"}},
+							},
+						},
+					})
+
+					config.Jobs = append(config.Jobs, job)
+				})
+
+				It("returns an error", func() {
+					Expect(errorMessages).To(HaveLen(1))
+					Expect(errorMessages[0]).To(ContainSubstring("reserved container name"))
+				})
+			})
+
+			Context("when an agent step is valid", func() {
+				BeforeEach(func() {
+					job.PlanSequence = append(job.PlanSequence, atc.Step{
+						Config: &atc.AgentStep{
+							Name:    "write-spec",
+							Prompt:  "do the thing",
+							Outputs: []string{"workspace"},
+							Sidecars: []atc.SidecarSource{
+								{Config: &atc.SidecarConfig{Name: "platform", Image: "ghcr.io/tdmtrader/mcp-platform:v1"}},
+							},
+						},
+					})
+
+					config.Jobs = append(config.Jobs, job)
+				})
+
+				It("does not return an error", func() {
+					Expect(errorMessages).To(HaveLen(0))
+				})
+			})
+
 			Context("when skip_download is set on a registry-image resource", func() {
 				BeforeEach(func() {
 					config.Resources = append(config.Resources, atc.ResourceConfig{

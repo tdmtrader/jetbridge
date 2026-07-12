@@ -253,6 +253,57 @@ func (validator *StepValidator) VisitRun(step *RunStep) error {
 	return nil
 }
 
+func (validator *StepValidator) VisitAgent(step *AgentStep) error {
+	validator.pushContextf(".agent(%s)", step.Name)
+	defer validator.popContext()
+
+	warning, err := ValidateIdentifier(step.Name, validator.context...)
+	if err != nil {
+		validator.recordError(err.Error())
+	}
+	if warning != nil {
+		validator.recordWarning(*warning)
+	}
+
+	if step.Prompt == "" && step.PromptFile == "" {
+		validator.recordError("must specify either `prompt:` or `prompt_file:`")
+	}
+
+	if step.Prompt != "" && step.PromptFile != "" {
+		validator.recordError("must specify one of `prompt:` or `prompt_file:`, not both")
+	}
+
+	if step.BudgetSliceUSD < 0 {
+		validator.recordError("budget_slice_usd must not be negative")
+	}
+
+	if step.MaxTurns < 0 {
+		validator.recordError("max_turns must not be negative")
+	}
+
+	for _, output := range step.Outputs {
+		if output == "flight" {
+			validator.recordError("output name 'flight' is reserved for the flight recorder")
+		}
+	}
+
+	for i, src := range step.Sidecars {
+		if src.Config == nil {
+			continue // file references are validated at runtime
+		}
+		validator.pushContextf(".sidecars[%d]", i)
+		if err := src.Config.Validate(); err != nil {
+			validator.recordError(err.Error())
+		}
+		if IsReservedContainerName(src.Config.Name) {
+			validator.recordErrorf("reserved container name %q", src.Config.Name)
+		}
+		validator.popContext()
+	}
+
+	return nil
+}
+
 func (validator *StepValidator) VisitSetPipeline(step *SetPipelineStep) error {
 	validator.pushContextf(".set_pipeline(%s)", step.Name)
 	defer validator.popContext()

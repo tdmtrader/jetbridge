@@ -102,6 +102,27 @@ func (visitor *planVisitor) VisitRun(step *atc.RunStep) error {
 	return nil
 }
 
+func (visitor *planVisitor) VisitAgent(step *atc.AgentStep) error {
+	visitor.plan = visitor.planFactory.NewPlan(atc.AgentPlan{
+		Name:           step.Name,
+		Prompt:         step.Prompt,
+		PromptFile:     step.PromptFile,
+		Model:          step.Model,
+		MaxTurns:       step.MaxTurns,
+		BudgetSliceUSD: step.BudgetSliceUSD,
+		OutputSchema:   step.OutputSchema,
+		Sidecars:       step.Sidecars,
+		Inputs:         step.Inputs,
+		Outputs:        step.Outputs,
+		Env:            step.Env,
+		Timeout:        step.Timeout,
+		Limits:         step.Limits,
+		Requests:       step.Requests,
+	})
+
+	return nil
+}
+
 func (visitor *planVisitor) VisitGet(step *atc.GetStep) error {
 	resourceName := step.Resource
 	if resourceName == "" {

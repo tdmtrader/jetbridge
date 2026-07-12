@@ -192,6 +192,7 @@ type StepVisitor interface {
 	VisitGet(*GetStep) error
 	VisitPut(*PutStep) error
 	VisitRun(*RunStep) error
+	VisitAgent(*AgentStep) error
 	VisitSetPipeline(*SetPipelineStep) error
 	VisitLoadVar(*LoadVarStep) error
 	VisitTry(*TryStep) error
@@ -249,6 +250,10 @@ var StepPrecedence = []StepDetector{
 	{
 		Key: "attempts",
 		New: func() StepConfig { return &RetryStep{} },
+	},
+	{
+		Key: "agent",
+		New: func() StepConfig { return &AgentStep{} },
 	},
 	{
 		Key: "run",
@@ -382,6 +387,31 @@ type RunStep struct {
 
 func (step *RunStep) Visit(v StepVisitor) error {
 	return v.VisitRun(step)
+}
+
+// AgentStep runs the claude CLI in a jetbridge pod with declared MCP
+// sidecars (shared-contracts §2.8). The renderer resolves everything from
+// the workflow definition into literal values here; the step implementation
+// never reads workflow tables.
+type AgentStep struct {
+	Name           string            `json:"agent"`
+	Prompt         string            `json:"prompt,omitempty"`
+	PromptFile     string            `json:"prompt_file,omitempty"`
+	Model          string            `json:"model,omitempty"`
+	MaxTurns       int               `json:"max_turns,omitempty"`
+	BudgetSliceUSD float64           `json:"budget_slice_usd,omitempty"`
+	OutputSchema   string            `json:"output_schema,omitempty"`
+	Sidecars       []SidecarSource   `json:"sidecars,omitempty"`
+	Inputs         []string          `json:"inputs,omitempty"`
+	Outputs        []string          `json:"outputs,omitempty"`
+	Env            map[string]string `json:"env,omitempty"`
+	Timeout        string            `json:"timeout,omitempty"`
+	Limits         *ContainerLimits  `json:"container_limits,omitempty"`
+	Requests       *ContainerLimits  `json:"container_requests,omitempty"`
+}
+
+func (step *AgentStep) Visit(v StepVisitor) error {
+	return v.VisitAgent(step)
 }
 
 type SetPipelineStep struct {

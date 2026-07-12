@@ -1538,6 +1538,34 @@ var factoryTests = []PlannerTest{
 		Err: builds.UnknownPrototypeError{Prototype: "bogus-prototype"},
 	},
 	{
+		Title: "agent step",
+
+		Config: &atc.AgentStep{
+			Name:           "write-spec",
+			Prompt:         "do it",
+			Model:          "claude-sonnet-4-5",
+			MaxTurns:       80,
+			BudgetSliceUSD: 2.5,
+			Inputs:         []string{"repo"},
+			Outputs:        []string{"workspace"},
+			Env:            map[string]string{"AGENT_TICKET_ID": "7"},
+		},
+
+		PlanJSON: `{
+			"id": "(unique)",
+			"agent": {
+				"name": "write-spec",
+				"prompt": "do it",
+				"model": "claude-sonnet-4-5",
+				"max_turns": 80,
+				"budget_slice_usd": 2.5,
+				"inputs": ["repo"],
+				"outputs": ["workspace"],
+				"env": {"AGENT_TICKET_ID": "7"}
+			}
+		}`,
+	},
+	{
 		Title: "set_pipeline step",
 
 		Config: &atc.SetPipelineStep{

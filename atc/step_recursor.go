@@ -20,6 +20,9 @@ type StepRecursor struct {
 	// OnRun will be invoked for any *RunStep present in the StepConfig.
 	OnRun func(*RunStep) error
 
+	// OnAgent will be invoked for any *AgentStep present in the StepConfig.
+	OnAgent func(*AgentStep) error
+
 	// OnSetPipeline will be invoked for any *SetPipelineStep present in the StepConfig.
 	OnSetPipeline func(*SetPipelineStep) error
 
@@ -58,6 +61,15 @@ func (recursor StepRecursor) VisitPut(step *PutStep) error {
 func (recursor StepRecursor) VisitRun(step *RunStep) error {
 	if recursor.OnRun != nil {
 		return recursor.OnRun(step)
+	}
+
+	return nil
+}
+
+// VisitAgent calls the OnAgent hook if configured.
+func (recursor StepRecursor) VisitAgent(step *AgentStep) error {
+	if recursor.OnAgent != nil {
+		return recursor.OnAgent(step)
 	}
 
 	return nil
