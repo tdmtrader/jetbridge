@@ -210,11 +210,19 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 	// 2. Wait for every declared MCP sidecar to become healthy. A sidecar
 	// that never comes up is a platform error, not an agent failure.
 	if err := waitForSidecars(ctx, cfg.MCPServers); err != nil {
+		summary := truncate(err.Error(), maxSummaryChars)
 		writeEvent(events, schema.EventError, map[string]string{"message": err.Error()})
+		// Persist results.json too. Server-side ingestion reads step.end only
+		// for WallTimeSeconds — never its Status/Summary — and falls back to
+		// results.json for the run's status/summary; without this write the
+		// metrics row degrades to the generic "flight recorder output missing"
+		// summary and the real sidecar-failure reason never surfaces (review
+		// finding, 2026-07-12).
+		writeResults(cfg.FlightDir, schema.StatusError, summary)
 		writeEvent(events, schema.EventStepEnd, schema.StepEndData{
 			StepName:        cfg.StepName,
 			Status:          schema.RunStatusError,
-			Summary:         err.Error(),
+			Summary:         summary,
 			WallTimeSeconds: int(time.Since(start).Seconds()),
 		})
 		return 2, nil
@@ -452,6 +460,26 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return string(runes[:n])
+}
+
+// writeResults persists a minimal, valid results.json for an early-exit path
+// (e.g. sidecar-health failure) so ingestion can read the real Status/Summary
+// instead of degrading to "flight recorder output missing". Best-effort: the
+// step.end event is the primary contract, so a failed write must not change
+// the runner's exit code.
+func writeResults(flightDir string, status schema.Status, summary string) {
+	results := schema.Results{
+		SchemaVersion: "1.0",
+		Status:        status,
+		Confidence:    1,
+		Summary:       summary,
+		Artifacts:     []schema.Artifact{},
+	}
+	raw, err := json.Marshal(results)
+	if err != nil {
+		return
+	}
+	_ = os.WriteFile(filepath.Join(flightDir, "results.json"), raw, 0o644)
 }
 
 // writeEvent marshals data and appends it to the flight recorder,
