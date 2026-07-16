@@ -916,6 +916,30 @@ var _ = Describe("AgentStep", func() {
 					// secretKeyRef-only: never a literal env value.
 					Expect(spec.Env).ToNot(ContainElement(HavePrefix("CLAUDE_CODE_OAUTH_TOKEN=")))
 				})
+
+				// §8.1 routes the token to "main, gateway" on the pure-CI
+				// fallback too — the gateway makes its own model calls, so a
+				// token-less gateway sidecar fails auth on every subagent
+				// call. No principal token, though: that only exists in the
+				// per-run agent-run-<id> secret.
+				Context("with a gateway sidecar declared", func() {
+					BeforeEach(func() {
+						agentPlan.Sidecars = []atc.SidecarSource{
+							{Config: &atc.SidecarConfig{Name: "platform", Image: "img:v1"}},
+							{Config: &atc.SidecarConfig{Name: "gateway", Image: "img:v2"}},
+						}
+					})
+
+					It("wires the gateway sidecar's CLAUDE_CODE_OAUTH_TOKEN from the platform secret (§8.1)", func() {
+						_, err := platformStep.Run(ctx, state)
+						Expect(err).ToNot(HaveOccurred())
+
+						_, _, spec, _ := fakePool.FindOrSelectWorkerArgsForCall(0)
+						Expect(spec.SidecarSecretEnv["gateway"]).To(HaveKeyWithValue(
+							"CLAUDE_CODE_OAUTH_TOKEN", vars.SecretRef{Name: "platform-agent-token", Key: "anthropic-token"}))
+						Expect(spec.SidecarSecretEnv["gateway"]).ToNot(HaveKey("AGENT_PRINCIPAL_TOKEN"))
+					})
+				})
 			})
 		})
 

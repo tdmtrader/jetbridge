@@ -526,6 +526,13 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 					vars.SecretRef{Name: secretName, Key: "principal-token"})
 				setSidecarSecretRef(&containerSpec, name, "CLAUDE_CODE_OAUTH_TOKEN",
 					vars.SecretRef{Name: secretName, Key: "anthropic-token"})
+			} else if step.platformTokenSecret != "" {
+				// Pure-CI fallback (§8.1): the gateway makes its own model
+				// calls, so it needs the same platform token as the main
+				// container. No principal token — that exists only in the
+				// per-run agent-run-<id> secret.
+				setSidecarSecretRef(&containerSpec, name, "CLAUDE_CODE_OAUTH_TOKEN",
+					vars.SecretRef{Name: step.platformTokenSecret, Key: "anthropic-token"})
 			}
 			// case "dev": common+identity only
 		}
