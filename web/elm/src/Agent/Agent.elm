@@ -300,10 +300,13 @@ tooltip _ _ =
 handleDelivery : Delivery -> ET Model
 handleDelivery delivery ( model, effects ) =
     case delivery of
-        ClockTicked FiveSeconds _ ->
+        ClockTicked OneMinute _ ->
             -- Self-healing refresh. These fetches only replace the fetched
             -- data (and clear their own errors); they never touch the mint
             -- form or the one-time token box, so a tick can't wipe them.
+            -- One minute is plenty: this is near-static admin data (the cost
+            -- rollup alone is a 30-day ledger aggregation), and mutations
+            -- (mint/revoke/promote) already refetch explicitly.
             ( model
             , effects
                 ++ [ FetchAgentWorkflows
@@ -319,7 +322,7 @@ handleDelivery delivery ( model, effects ) =
 
 subscriptions : List Subscription
 subscriptions =
-    [ OnClockTick FiveSeconds ]
+    [ OnClockTick OneMinute ]
 
 
 

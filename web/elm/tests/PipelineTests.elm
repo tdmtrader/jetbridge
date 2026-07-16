@@ -911,7 +911,21 @@ all =
                     , completedAt = Just (Time.millisToPosix 5000)
                     }
             in
-            [ test "template pipeline renders runs list with number and status" <|
+            [ test "template pipeline fetch chains a runs fetch" <|
+                \_ ->
+                    Common.init "/teams/team/pipelines/pipeline"
+                        |> Application.handleCallback
+                            (Callback.PipelineFetched (Ok templatePipeline))
+                        |> Tuple.second
+                        |> Common.contains (Effects.FetchPipelineRuns Data.pipelineId)
+            , test "non-template pipeline fetch does not fetch runs" <|
+                \_ ->
+                    Common.init "/teams/team/pipelines/pipeline"
+                        |> Application.handleCallback
+                            (Callback.PipelineFetched (Ok nonTemplatePipeline))
+                        |> Tuple.second
+                        |> Common.notContains (Effects.FetchPipelineRuns Data.pipelineId)
+            , test "template pipeline renders runs list with number and status" <|
                 \_ ->
                     Common.init "/teams/team/pipelines/pipeline"
                         |> Application.handleCallback

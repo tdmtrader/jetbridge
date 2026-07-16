@@ -39,7 +39,9 @@ type Store interface {
 	Import(name string, rawYAML []byte, createdBy string) (*Definition, error) // idempotent on hash
 	Get(name string, version int) (*Definition, bool, error)
 	Live(name string) (*Definition, bool, error)
-	List() ([]Definition, error) // latest version per name + live marker
+	Latest(name string) (*Definition, bool, error) // highest version, live or not
+	List() ([]Definition, error)                   // latest version per name + live marker
+	LiveVersions() (map[string]int, error)         // name -> live version, one query for all names
 	Versions(name string) ([]Definition, error)
 	Promote(name string, version int, promotedBy string) error // atomically swaps the live flag
 }

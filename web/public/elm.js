@@ -10329,35 +10329,48 @@ var $author$project$Api$Endpoints$pipeline = function (id) {
 		$author$project$Api$Endpoints$base);
 };
 var $author$project$Api$Endpoints$pipelineEndpoint = function (endpoint) {
-	return _Utils_Tuple2(
-		function () {
-			switch (endpoint) {
-				case 0:
-					return _List_Nil;
-				case 1:
-					return _List_fromArray(
-						['pause']);
-				case 2:
-					return _List_fromArray(
-						['unpause']);
-				case 3:
-					return _List_fromArray(
-						['expose']);
-				case 4:
-					return _List_fromArray(
-						['hide']);
-				case 5:
-					return _List_fromArray(
-						['jobs']);
-				case 6:
-					return _List_fromArray(
-						['resources']);
-				default:
-					return _List_fromArray(
-						['runs']);
-			}
-		}(),
-		_List_Nil);
+	switch (endpoint) {
+		case 0:
+			return _Utils_Tuple2(_List_Nil, _List_Nil);
+		case 1:
+			return _Utils_Tuple2(
+				_List_fromArray(
+					['pause']),
+				_List_Nil);
+		case 2:
+			return _Utils_Tuple2(
+				_List_fromArray(
+					['unpause']),
+				_List_Nil);
+		case 3:
+			return _Utils_Tuple2(
+				_List_fromArray(
+					['expose']),
+				_List_Nil);
+		case 4:
+			return _Utils_Tuple2(
+				_List_fromArray(
+					['hide']),
+				_List_Nil);
+		case 5:
+			return _Utils_Tuple2(
+				_List_fromArray(
+					['jobs']),
+				_List_Nil);
+		case 6:
+			return _Utils_Tuple2(
+				_List_fromArray(
+					['resources']),
+				_List_Nil);
+		default:
+			return _Utils_Tuple2(
+				_List_fromArray(
+					['runs']),
+				_List_fromArray(
+					[
+						A2($elm$url$Url$Builder$int, 'limit', 25)
+					]));
+	}
 };
 var $author$project$Api$Endpoints$resource = function (id) {
 	return A2(
@@ -14810,9 +14823,10 @@ var $author$project$Message$Subscription$OnMouse = {$: 1};
 var $author$project$Message$Subscription$OnMouseUp = {$: 2};
 var $author$project$Message$Subscription$OnNonHrefLinkClicked = {$: 7};
 var $author$project$Message$Subscription$OnWindowResize = {$: 5};
+var $author$project$Message$Subscription$OneMinute = 2;
 var $author$project$Agent$Agent$subscriptions = _List_fromArray(
 	[
-		$author$project$Message$Subscription$OnClockTick(1)
+		$author$project$Message$Subscription$OnClockTick(2)
 	]);
 var $author$project$AgentReviews$AgentReviews$subscriptions = _List_Nil;
 var $author$project$Message$Subscription$FromEventSource = function (a) {
@@ -14892,7 +14906,6 @@ var $author$project$NotFound$NotFound$subscriptions = _List_fromArray(
 	[
 		$author$project$Message$Subscription$OnClockTick(1)
 	]);
-var $author$project$Message$Subscription$OneMinute = 2;
 var $author$project$Pipeline$Pipeline$subscriptions = _List_fromArray(
 	[
 		$author$project$Message$Subscription$OnClockTick(2),
@@ -22836,7 +22849,7 @@ var $author$project$Agent$Agent$handleDelivery = F2(
 	function (delivery, _v0) {
 		var model = _v0.a;
 		var effects = _v0.b;
-		if ((delivery.$ === 4) && (delivery.a === 1)) {
+		if ((delivery.$ === 4) && (delivery.a === 2)) {
 			var _v2 = delivery.a;
 			return _Utils_Tuple2(
 				model,

@@ -40,6 +40,21 @@ type FakeAgentWorkflowsFactory struct {
 		result1 *workflow.Definition
 		result2 error
 	}
+	LatestStub        func(string) (*workflow.Definition, bool, error)
+	latestMutex       sync.RWMutex
+	latestArgsForCall []struct {
+		arg1 string
+	}
+	latestReturns struct {
+		result1 *workflow.Definition
+		result2 bool
+		result3 error
+	}
+	latestReturnsOnCall map[int]struct {
+		result1 *workflow.Definition
+		result2 bool
+		result3 error
+	}
 	ListStub        func() ([]workflow.Definition, error)
 	listMutex       sync.RWMutex
 	listArgsForCall []struct {
@@ -66,6 +81,18 @@ type FakeAgentWorkflowsFactory struct {
 		result1 *workflow.Definition
 		result2 bool
 		result3 error
+	}
+	LiveVersionsStub        func() (map[string]int, error)
+	liveVersionsMutex       sync.RWMutex
+	liveVersionsArgsForCall []struct {
+	}
+	liveVersionsReturns struct {
+		result1 map[string]int
+		result2 error
+	}
+	liveVersionsReturnsOnCall map[int]struct {
+		result1 map[string]int
+		result2 error
 	}
 	PromoteStub        func(string, int, string) error
 	promoteMutex       sync.RWMutex
@@ -236,6 +263,73 @@ func (fake *FakeAgentWorkflowsFactory) ImportReturnsOnCall(i int, result1 *workf
 	}{result1, result2}
 }
 
+func (fake *FakeAgentWorkflowsFactory) Latest(arg1 string) (*workflow.Definition, bool, error) {
+	fake.latestMutex.Lock()
+	ret, specificReturn := fake.latestReturnsOnCall[len(fake.latestArgsForCall)]
+	fake.latestArgsForCall = append(fake.latestArgsForCall, struct {
+		arg1 string
+	}{arg1})
+	stub := fake.LatestStub
+	fakeReturns := fake.latestReturns
+	fake.recordInvocation("Latest", []interface{}{arg1})
+	fake.latestMutex.Unlock()
+	if stub != nil {
+		return stub(arg1)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2, ret.result3
+	}
+	return fakeReturns.result1, fakeReturns.result2, fakeReturns.result3
+}
+
+func (fake *FakeAgentWorkflowsFactory) LatestCallCount() int {
+	fake.latestMutex.RLock()
+	defer fake.latestMutex.RUnlock()
+	return len(fake.latestArgsForCall)
+}
+
+func (fake *FakeAgentWorkflowsFactory) LatestCalls(stub func(string) (*workflow.Definition, bool, error)) {
+	fake.latestMutex.Lock()
+	defer fake.latestMutex.Unlock()
+	fake.LatestStub = stub
+}
+
+func (fake *FakeAgentWorkflowsFactory) LatestArgsForCall(i int) string {
+	fake.latestMutex.RLock()
+	defer fake.latestMutex.RUnlock()
+	argsForCall := fake.latestArgsForCall[i]
+	return argsForCall.arg1
+}
+
+func (fake *FakeAgentWorkflowsFactory) LatestReturns(result1 *workflow.Definition, result2 bool, result3 error) {
+	fake.latestMutex.Lock()
+	defer fake.latestMutex.Unlock()
+	fake.LatestStub = nil
+	fake.latestReturns = struct {
+		result1 *workflow.Definition
+		result2 bool
+		result3 error
+	}{result1, result2, result3}
+}
+
+func (fake *FakeAgentWorkflowsFactory) LatestReturnsOnCall(i int, result1 *workflow.Definition, result2 bool, result3 error) {
+	fake.latestMutex.Lock()
+	defer fake.latestMutex.Unlock()
+	fake.LatestStub = nil
+	if fake.latestReturnsOnCall == nil {
+		fake.latestReturnsOnCall = make(map[int]struct {
+			result1 *workflow.Definition
+			result2 bool
+			result3 error
+		})
+	}
+	fake.latestReturnsOnCall[i] = struct {
+		result1 *workflow.Definition
+		result2 bool
+		result3 error
+	}{result1, result2, result3}
+}
+
 func (fake *FakeAgentWorkflowsFactory) List() ([]workflow.Definition, error) {
 	fake.listMutex.Lock()
 	ret, specificReturn := fake.listReturnsOnCall[len(fake.listArgsForCall)]
@@ -357,6 +451,62 @@ func (fake *FakeAgentWorkflowsFactory) LiveReturnsOnCall(i int, result1 *workflo
 		result2 bool
 		result3 error
 	}{result1, result2, result3}
+}
+
+func (fake *FakeAgentWorkflowsFactory) LiveVersions() (map[string]int, error) {
+	fake.liveVersionsMutex.Lock()
+	ret, specificReturn := fake.liveVersionsReturnsOnCall[len(fake.liveVersionsArgsForCall)]
+	fake.liveVersionsArgsForCall = append(fake.liveVersionsArgsForCall, struct {
+	}{})
+	stub := fake.LiveVersionsStub
+	fakeReturns := fake.liveVersionsReturns
+	fake.recordInvocation("LiveVersions", []interface{}{})
+	fake.liveVersionsMutex.Unlock()
+	if stub != nil {
+		return stub()
+	}
+	if specificReturn {
+		return ret.result1, ret.result2
+	}
+	return fakeReturns.result1, fakeReturns.result2
+}
+
+func (fake *FakeAgentWorkflowsFactory) LiveVersionsCallCount() int {
+	fake.liveVersionsMutex.RLock()
+	defer fake.liveVersionsMutex.RUnlock()
+	return len(fake.liveVersionsArgsForCall)
+}
+
+func (fake *FakeAgentWorkflowsFactory) LiveVersionsCalls(stub func() (map[string]int, error)) {
+	fake.liveVersionsMutex.Lock()
+	defer fake.liveVersionsMutex.Unlock()
+	fake.LiveVersionsStub = stub
+}
+
+func (fake *FakeAgentWorkflowsFactory) LiveVersionsReturns(result1 map[string]int, result2 error) {
+	fake.liveVersionsMutex.Lock()
+	defer fake.liveVersionsMutex.Unlock()
+	fake.LiveVersionsStub = nil
+	fake.liveVersionsReturns = struct {
+		result1 map[string]int
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeAgentWorkflowsFactory) LiveVersionsReturnsOnCall(i int, result1 map[string]int, result2 error) {
+	fake.liveVersionsMutex.Lock()
+	defer fake.liveVersionsMutex.Unlock()
+	fake.LiveVersionsStub = nil
+	if fake.liveVersionsReturnsOnCall == nil {
+		fake.liveVersionsReturnsOnCall = make(map[int]struct {
+			result1 map[string]int
+			result2 error
+		})
+	}
+	fake.liveVersionsReturnsOnCall[i] = struct {
+		result1 map[string]int
+		result2 error
+	}{result1, result2}
 }
 
 func (fake *FakeAgentWorkflowsFactory) Promote(arg1 string, arg2 int, arg3 string) error {

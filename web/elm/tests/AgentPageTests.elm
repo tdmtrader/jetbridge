@@ -6,7 +6,9 @@ import Data
 import Expect
 import Http
 import Message.Callback as Callback
+import Message.Effects as Effects
 import Message.Message
+import Message.Subscription as Subscription exposing (Delivery(..), Interval(..))
 import Message.TopLevelMessage as Msgs
 import Test exposing (Test, describe, test)
 import Test.Html.Query as Query
@@ -372,5 +374,38 @@ all =
                             ]
                         , Query.find [ class "agent-mint-button" ]
                             >> Query.has [ style "cursor" "not-allowed" ]
+                        ]
+        , test "subscribes to the one minute clock" <|
+            \_ ->
+                Common.init "/agent"
+                    |> Application.subscriptions
+                    |> Common.contains (Subscription.OnClockTick OneMinute)
+        , test "on one minute timer, refetches workflows, costs, credentials, and principals" <|
+            \_ ->
+                Common.init "/agent"
+                    |> Application.update
+                        (Msgs.DeliveryReceived
+                            (ClockTicked OneMinute <| Time.millisToPosix 0)
+                        )
+                    |> Tuple.second
+                    |> Expect.all
+                        [ Common.contains Effects.FetchAgentWorkflows
+                        , Common.contains Effects.FetchAgentCostRollup
+                        , Common.contains Effects.FetchAgentCredentials
+                        , Common.contains Effects.FetchAgentPrincipals
+                        ]
+        , test "on five second timer, does not refetch agent data" <|
+            \_ ->
+                Common.init "/agent"
+                    |> Application.update
+                        (Msgs.DeliveryReceived
+                            (ClockTicked FiveSeconds <| Time.millisToPosix 0)
+                        )
+                    |> Tuple.second
+                    |> Expect.all
+                        [ Common.notContains Effects.FetchAgentWorkflows
+                        , Common.notContains Effects.FetchAgentCostRollup
+                        , Common.notContains Effects.FetchAgentCredentials
+                        , Common.notContains Effects.FetchAgentPrincipals
                         ]
         ]

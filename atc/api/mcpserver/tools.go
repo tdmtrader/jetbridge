@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/concourse/concourse/agent/api/costs"
+	"github.com/concourse/concourse/agent/api/workflows"
 	"github.com/concourse/concourse/agent/budget"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api/present"
@@ -1113,19 +1115,6 @@ func registerCopyResourceVersions(s *Server, teamFactory db.TeamFactory) {
 
 // --- list_agent_workflows ---
 
-// agentWorkflowSummary mirrors agent/api/workflows.WorkflowSummary: the
-// latest version per workflow name, plus the resolved live version
-// (0 = none). Config/raw YAML are intentionally omitted here — use
-// get_agent_workflow for a single definition's full contents.
-type agentWorkflowSummary struct {
-	Name          string `json:"name"`
-	Description   string `json:"description"`
-	LatestVersion int    `json:"latest_version"`
-	LiveVersion   int    `json:"live_version"`
-	ContentHash   string `json:"content_hash"`
-	CreatedAt     int64  `json:"created_at"`
-}
-
 func registerListAgentWorkflows(s *Server, workflowsFactory db.AgentWorkflowsFactory) {
 	s.AddTool("list_agent_workflows",
 		"List agent workflow definitions (latest version per name) with their live version, content hash, and creation time.",
@@ -1134,31 +1123,12 @@ func registerListAgentWorkflows(s *Server, workflowsFactory db.AgentWorkflowsFac
 			"properties": map[string]any{},
 		}),
 		func(ctx context.Context, args json.RawMessage) (any, error) {
-			defs, err := workflowsFactory.List()
+			// Single implementation shared with GET /api/v1/agent/workflows —
+			// the two surfaces must stay field-identical (and both cost two
+			// metadata queries, never a per-name YAML fetch).
+			summaries, err := workflows.Summarize(workflowsFactory)
 			if err != nil {
 				return nil, fmt.Errorf("listing agent workflows: %w", err)
-			}
-			summaries := make([]agentWorkflowSummary, 0, len(defs))
-			for _, d := range defs {
-				summary := agentWorkflowSummary{
-					Name:          d.Name,
-					Description:   d.Description,
-					LatestVersion: d.Version,
-					ContentHash:   d.ContentHash,
-					CreatedAt:     d.CreatedAt,
-				}
-				if d.Live {
-					summary.LiveVersion = d.Version
-				} else {
-					live, found, err := workflowsFactory.Live(d.Name)
-					if err != nil {
-						return nil, fmt.Errorf("resolving live version for %q: %w", d.Name, err)
-					}
-					if found {
-						summary.LiveVersion = live.Version
-					}
-				}
-				summaries = append(summaries, summary)
 			}
 			return summaries, nil
 		},
@@ -1209,21 +1179,13 @@ func registerGetAgentWorkflow(s *Server, workflowsFactory db.AgentWorkflowsFacto
 				return live, nil
 			}
 
-			// No live version: fall back to the latest (Versions is ordered ascending).
-			versions, err := workflowsFactory.Versions(input.Workflow)
+			// No live version: fall back to the latest in a single lookup.
+			def, found, err := workflowsFactory.Latest(input.Workflow)
 			if err != nil {
-				return nil, fmt.Errorf("listing versions for %q: %w", input.Workflow, err)
-			}
-			if len(versions) == 0 {
-				return nil, fmt.Errorf("workflow %q not found", input.Workflow)
-			}
-			latest := versions[len(versions)-1].Version
-			def, found, err := workflowsFactory.Get(input.Workflow, latest)
-			if err != nil {
-				return nil, fmt.Errorf("getting workflow %q version %d: %w", input.Workflow, latest, err)
+				return nil, fmt.Errorf("getting latest version of workflow %q: %w", input.Workflow, err)
 			}
 			if !found {
-				return nil, fmt.Errorf("workflow %q version %d not found", input.Workflow, latest)
+				return nil, fmt.Errorf("workflow %q not found", input.Workflow)
 			}
 			return def, nil
 		},
@@ -1287,14 +1249,14 @@ func registerAgentCostRollup(s *Server, costLedgerFactory db.AgentCostLedgerFact
 				return nil, fmt.Errorf("group_by must be one of day|user|ticket|workflow, got %q", groupBy)
 			}
 
-			since, err := parseCostTimeParam(input.Since)
+			since, err := costs.ParseTimeParam(input.Since)
 			if err != nil {
 				return nil, fmt.Errorf("invalid since: %w", err)
 			}
 			if since.IsZero() {
 				since = time.Now().Add(-30 * 24 * time.Hour)
 			}
-			until, err := parseCostTimeParam(input.Until)
+			until, err := costs.ParseTimeParam(input.Until)
 			if err != nil {
 				return nil, fmt.Errorf("invalid until: %w", err)
 			}
@@ -1323,21 +1285,6 @@ func registerAgentCostRollup(s *Server, costLedgerFactory db.AgentCostLedgerFact
 			}, nil
 		},
 	)
-}
-
-// parseCostTimeParam accepts RFC3339 or YYYY-MM-DD; empty means zero time.
-// Mirrors agent/api/costs.parseTimeParam.
-func parseCostTimeParam(v string) (time.Time, error) {
-	if v == "" {
-		return time.Time{}, nil
-	}
-	if t, err := time.Parse(time.RFC3339, v); err == nil {
-		return t, nil
-	}
-	if t, err := time.Parse("2006-01-02", v); err == nil {
-		return t, nil
-	}
-	return time.Time{}, fmt.Errorf("want RFC3339 or YYYY-MM-DD, got %q", v)
 }
 
 // --- list_pipeline_runs ---
@@ -1430,4 +1377,3 @@ func registerGetPipelineRun(s *Server, teamFactory db.TeamFactory, pipelineRunFa
 		},
 	)
 }
-

@@ -94,6 +94,32 @@ func (f *agentWorkflowsFactory) Live(name string) (*workflow.Definition, bool, e
 	return f.getOne(`name = $1 AND live`, name)
 }
 
+func (f *agentWorkflowsFactory) Latest(name string) (*workflow.Definition, bool, error) {
+	return f.getOne(`name = $1 ORDER BY version DESC LIMIT 1`, name)
+}
+
+// LiveVersions resolves every workflow's live version in ONE metadata query —
+// list consumers previously called Live(name) per non-live-latest name, each
+// dragging and parsing the full definition YAML just to read a version number.
+func (f *agentWorkflowsFactory) LiveVersions() (map[string]int, error) {
+	rows, err := f.conn.Query(`SELECT name, version FROM agent_workflow_definitions WHERE live`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := map[string]int{}
+	for rows.Next() {
+		var name string
+		var version int
+		if err := rows.Scan(&name, &version); err != nil {
+			return nil, err
+		}
+		out[name] = version
+	}
+	return out, rows.Err()
+}
+
 func (f *agentWorkflowsFactory) getOne(where string, args ...any) (*workflow.Definition, bool, error) {
 	var def workflow.Definition
 	err := f.conn.QueryRow(`

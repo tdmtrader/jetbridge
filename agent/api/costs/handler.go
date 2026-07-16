@@ -111,7 +111,7 @@ func (h *Handler) GetRollup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	since, err := parseTimeParam(r.URL.Query().Get("since"))
+	since, err := ParseTimeParam(r.URL.Query().Get("since"))
 	if err != nil {
 		http.Error(w, "invalid since: "+err.Error(), http.StatusBadRequest)
 		return
@@ -119,7 +119,7 @@ func (h *Handler) GetRollup(w http.ResponseWriter, r *http.Request) {
 	if since.IsZero() {
 		since = time.Now().Add(-30 * 24 * time.Hour)
 	}
-	until, err := parseTimeParam(r.URL.Query().Get("until"))
+	until, err := ParseTimeParam(r.URL.Query().Get("until"))
 	if err != nil {
 		http.Error(w, "invalid until: "+err.Error(), http.StatusBadRequest)
 		return
@@ -149,8 +149,10 @@ func (h *Handler) GetRollup(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
-// parseTimeParam accepts RFC3339 or YYYY-MM-DD; empty means zero time.
-func parseTimeParam(v string) (time.Time, error) {
+// ParseTimeParam accepts RFC3339 or YYYY-MM-DD; empty means zero time.
+// Exported so the agent_cost_rollup MCP tool accepts the identical syntax as
+// GET /api/v1/agent/costs — the two surfaces must not drift.
+func ParseTimeParam(v string) (time.Time, error) {
 	if v == "" {
 		return time.Time{}, nil
 	}

@@ -404,7 +404,10 @@ var _ = Describe("Tools", func() {
 				{Name: "standard-dev", Description: "Standard dev flow", Version: 5, ContentHash: "abc123", Live: true, CreatedAt: 1700},
 				{Name: "test-first", Description: "TDD flow", Version: 3, ContentHash: "def456", Live: false, CreatedAt: 1800},
 			}, nil)
-			workflowsFactory.LiveReturns(&workflow.Definition{Name: "test-first", Version: 2}, true, nil)
+			workflowsFactory.LiveVersionsReturns(map[string]int{
+				"standard-dev": 5,
+				"test-first":   2,
+			}, nil)
 
 			result := callTool(server, "list_agent_workflows", map[string]any{})
 			var summaries []map[string]any
@@ -420,7 +423,10 @@ var _ = Describe("Tools", func() {
 			Expect(summaries[1]["name"]).To(Equal("test-first"))
 			Expect(summaries[1]["latest_version"]).To(BeEquivalentTo(3))
 			Expect(summaries[1]["live_version"]).To(BeEquivalentTo(2))
-			Expect(workflowsFactory.LiveCallCount()).To(Equal(1))
+			// live versions resolve via ONE LiveVersions lookup, never a
+			// per-name Live() fetch of the full definition
+			Expect(workflowsFactory.LiveVersionsCallCount()).To(Equal(1))
+			Expect(workflowsFactory.LiveCallCount()).To(BeZero())
 		})
 
 		It("returns error when listing fails", func() {
@@ -467,11 +473,7 @@ var _ = Describe("Tools", func() {
 
 		It("falls back to the latest version when none is live", func() {
 			workflowsFactory.LiveReturns(nil, false, nil)
-			workflowsFactory.VersionsReturns([]workflow.Definition{
-				{Name: "standard-dev", Version: 1},
-				{Name: "standard-dev", Version: 2},
-			}, nil)
-			workflowsFactory.GetReturns(&workflow.Definition{
+			workflowsFactory.LatestReturns(&workflow.Definition{
 				Name: "standard-dev", Version: 2,
 			}, true, nil)
 
@@ -482,14 +484,15 @@ var _ = Describe("Tools", func() {
 			Expect(json.Unmarshal([]byte(result), &def)).To(Succeed())
 			Expect(def["version"]).To(BeEquivalentTo(2))
 
-			name, version := workflowsFactory.GetArgsForCall(0)
-			Expect(name).To(Equal("standard-dev"))
-			Expect(version).To(Equal(2))
+			// one lookup, not a full Versions scan plus a point Get
+			Expect(workflowsFactory.LatestArgsForCall(0)).To(Equal("standard-dev"))
+			Expect(workflowsFactory.VersionsCallCount()).To(BeZero())
+			Expect(workflowsFactory.GetCallCount()).To(BeZero())
 		})
 
 		It("returns a not-found error for an unknown workflow", func() {
 			workflowsFactory.LiveReturns(nil, false, nil)
-			workflowsFactory.VersionsReturns([]workflow.Definition{}, nil)
+			workflowsFactory.LatestReturns(nil, false, nil)
 
 			result, isError := callToolRaw(server, "get_agent_workflow", map[string]any{
 				"workflow": "nope",

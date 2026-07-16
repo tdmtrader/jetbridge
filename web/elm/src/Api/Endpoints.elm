@@ -231,32 +231,33 @@ builder endpoint =
 
 pipelineEndpoint : PipelineEndpoint -> RouteBuilder
 pipelineEndpoint endpoint =
-    ( case endpoint of
+    case endpoint of
         BasePipeline ->
-            []
+            ( [], [] )
 
         PausePipeline ->
-            [ "pause" ]
+            ( [ "pause" ], [] )
 
         UnpausePipeline ->
-            [ "unpause" ]
+            ( [ "unpause" ], [] )
 
         ExposePipeline ->
-            [ "expose" ]
+            ( [ "expose" ], [] )
 
         HidePipeline ->
-            [ "hide" ]
+            ( [ "hide" ], [] )
 
         PipelineJobsList ->
-            [ "jobs" ]
+            ( [ "jobs" ], [] )
 
         PipelineResourcesList ->
-            [ "resources" ]
+            ( [ "resources" ], [] )
 
         PipelineRunsList ->
-            [ "runs" ]
-    , []
-    )
+            -- template runs are refetched every 5s alongside the pipeline and
+            -- each row ships its full params JSONB, so cap the page size
+            -- instead of taking the server default of 100
+            ( [ "runs" ], [ Url.Builder.int "limit" 25 ] )
 
 
 jobEndpoint : JobEndpoint -> RouteBuilder

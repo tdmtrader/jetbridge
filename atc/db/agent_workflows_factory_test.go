@@ -110,6 +110,30 @@ steps:
 		Expect(byName["wf-list-b"].Version).To(Equal(1))
 	})
 
+	It("returns all live versions in one lookup, and the latest version per name", func() {
+		_, err := factory.Import("wf-lv-a", defYAML("wf-lv-a", "A one."), "alice")
+		Expect(err).ToNot(HaveOccurred())
+		Expect(factory.Promote("wf-lv-a", 1, "alice")).To(Succeed())
+		_, err = factory.Import("wf-lv-a", defYAML("wf-lv-a", "A two."), "alice")
+		Expect(err).ToNot(HaveOccurred())
+		_, err = factory.Import("wf-lv-b", defYAML("wf-lv-b", "B one."), "alice")
+		Expect(err).ToNot(HaveOccurred())
+
+		live, err := factory.LiveVersions()
+		Expect(err).ToNot(HaveOccurred())
+		Expect(live).To(HaveKeyWithValue("wf-lv-a", 1)) // live stays at 1 after v2 import
+		Expect(live).ToNot(HaveKey("wf-lv-b"))          // never promoted
+
+		latest, found, err := factory.Latest("wf-lv-a")
+		Expect(err).ToNot(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(latest.Version).To(Equal(2))
+
+		_, found, err = factory.Latest("wf-nonexistent")
+		Expect(err).ToNot(HaveOccurred())
+		Expect(found).To(BeFalse())
+	})
+
 	It("returns all versions ascending", func() {
 		_, err := factory.Import("wf-vers", defYAML("wf-vers", "One."), "alice")
 		Expect(err).ToNot(HaveOccurred())
