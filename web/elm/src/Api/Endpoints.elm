@@ -35,6 +35,13 @@ type Endpoint
     | InstanceGroup Concourse.InstanceGroupIdentifier InstanceGroupEndpoint
     | BuildAgentReviews Concourse.BuildId
     | TeamAgentReviews Concourse.TeamName
+    | AgentMetrics
+    | AgentCosts
+    | AgentWorkflows
+    | AgentPrincipals
+    | AgentPrincipal Int
+    | AgentCredentials
+    | AgentWorkflowLive String Int
     | AgentFeedback
 
 
@@ -206,6 +213,29 @@ builder endpoint =
 
         AgentFeedback ->
             base |> appendPath [ "agent", "feedback" ]
+
+        AgentMetrics ->
+            base |> appendPath [ "agent", "metrics" ]
+
+        AgentCosts ->
+            base |> appendPath [ "agent", "costs" ]
+
+        AgentWorkflows ->
+            base |> appendPath [ "agent", "workflows" ]
+
+        AgentPrincipals ->
+            base |> appendPath [ "agent", "principals" ]
+
+        AgentPrincipal principalId ->
+            base |> appendPath [ "agent", "principals", String.fromInt principalId ]
+
+        AgentCredentials ->
+            base |> appendPath [ "agent", "user-credentials" ]
+
+        AgentWorkflowLive name version ->
+            base
+                |> appendPath
+                    [ "agent", "workflows", name, "versions", String.fromInt version, "live" ]
 
 
 pipelineEndpoint : PipelineEndpoint -> RouteBuilder

@@ -738,9 +738,12 @@ func (step *AgentStep) ingestFlightRecorder(
 			}
 			rc.Close()
 			rm.EventCounts = counts
-			if !sawStepEnd {
+			if !sawStepEnd && rm.Status != schema.RunStatusParked {
 				// crashed agent: a stream missing step.end is defined as error
-				// (shared-contracts §5 ingestion rule)
+				// (shared-contracts §5 ingestion rule). A park-exit is the
+				// sanctioned exception (§3.2): its stream ends with step.park,
+				// not step.end, so a parked results.json must NOT be rewritten
+				// to error here (review finding F#11, 2026-07-12).
 				rm.Status = schema.RunStatusError
 				if rm.Summary == "" || rm.Summary == "flight recorder output missing" {
 					rm.Summary = "event stream ended without step.end"

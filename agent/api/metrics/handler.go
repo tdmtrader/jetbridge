@@ -39,6 +39,25 @@ func (h *Handler) SubmitMetrics(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusCreated)
 }
 
+// ListRecent handles GET /api/v1/agent/metrics?limit=N — the most-recent agent
+// run metrics across all tickets/builds, newest-first (operator dashboard).
+func (h *Handler) ListRecent(w http.ResponseWriter, r *http.Request) {
+	limit := 0
+	if v := r.URL.Query().Get("limit"); v != "" {
+		limit, _ = strconv.Atoi(v) // invalid/absent → 0 → store applies its default
+	}
+	rows, err := h.store.ListRecent(limit)
+	if err != nil {
+		http.Error(w, "failed to list metrics", http.StatusInternalServerError)
+		return
+	}
+	if rows == nil {
+		rows = []schema.RunMetrics{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(rows)
+}
+
 // ListByTicket handles GET /api/v1/agent/tickets/:ticket_id/metrics.
 func (h *Handler) ListByTicket(w http.ResponseWriter, r *http.Request) {
 	ticketID, err := strconv.Atoi(r.FormValue(":ticket_id"))

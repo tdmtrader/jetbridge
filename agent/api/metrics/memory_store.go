@@ -63,6 +63,18 @@ func (s *MemoryStore) ListByTicket(ticketID int) ([]schema.RunMetrics, error) {
 	})
 }
 
+func (s *MemoryStore) ListRecent(limit int) ([]schema.RunMetrics, error) {
+	all, _ := s.list(func(schema.RunMetrics) bool { return true })
+	// list() returns oldest-first; reverse to newest-first.
+	for i, j := 0, len(all)-1; i < j; i, j = i+1, j-1 {
+		all[i], all[j] = all[j], all[i]
+	}
+	if limit > 0 && limit < len(all) {
+		all = all[:limit]
+	}
+	return all, nil
+}
+
 func (s *MemoryStore) list(match func(schema.RunMetrics) bool) ([]schema.RunMetrics, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

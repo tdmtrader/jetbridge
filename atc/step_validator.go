@@ -311,6 +311,7 @@ func (validator *StepValidator) VisitAgent(step *AgentStep) error {
 		}
 	}
 
+	seenSidecars := map[string]bool{}
 	for i, src := range step.Sidecars {
 		if src.Config == nil {
 			continue // file references are validated at runtime
@@ -322,6 +323,12 @@ func (validator *StepValidator) VisitAgent(step *AgentStep) error {
 		if IsReservedContainerName(src.Config.Name) {
 			validator.recordErrorf("reserved container name %q", src.Config.Name)
 		}
+		// Mirror the runtime guarantee (loadSidecarConfigs) at config time so a
+		// duplicate name fails `fly set-pipeline`, not the build.
+		if seenSidecars[src.Config.Name] {
+			validator.recordErrorf("duplicate sidecar name %q", src.Config.Name)
+		}
+		seenSidecars[src.Config.Name] = true
 		validator.popContext()
 	}
 

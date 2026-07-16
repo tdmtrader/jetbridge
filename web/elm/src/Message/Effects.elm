@@ -15,6 +15,7 @@ import Base64
 import Browser.Dom exposing (Viewport, getElement, getViewport, getViewportOf, setViewportOf)
 import Browser.Navigation as Navigation
 import Concourse exposing (DatabaseID, encodeJob, encodePipeline, encodeTeam)
+import Concourse.Agent
 import Concourse.AgentReview
 import Concourse.BuildStatus exposing (BuildStatus)
 import Concourse.Pagination exposing (Page)
@@ -222,6 +223,13 @@ type Effect
         , notes : String
         , reviewer : String
         }
+    | FetchAgentRunMetrics
+    | FetchAgentCosts
+    | FetchAgentWorkflows
+    | FetchAgentPrincipals
+    | FetchAgentCredentials
+    | RevokeAgentPrincipal Int
+    | PromoteAgentWorkflow String Int
 
 
 type alias VersionId =
@@ -792,6 +800,46 @@ runEffect effect key csrfToken =
                     )
                 |> Api.request
                 |> Task.attempt (AgentReviewVerdictSubmitted params.findingId)
+
+        FetchAgentRunMetrics ->
+            Api.get Endpoints.AgentMetrics
+                |> Api.expectJson (Json.Decode.list Concourse.Agent.decodeRunMetric)
+                |> Api.request
+                |> Task.attempt AgentRunMetricsFetched
+
+        FetchAgentCosts ->
+            Api.get Endpoints.AgentCosts
+                |> Api.expectJson Concourse.Agent.decodeCostRollup
+                |> Api.request
+                |> Task.attempt AgentCostsFetched
+
+        FetchAgentWorkflows ->
+            Api.get Endpoints.AgentWorkflows
+                |> Api.expectJson (Json.Decode.list Concourse.Agent.decodeWorkflow)
+                |> Api.request
+                |> Task.attempt AgentWorkflowsFetched
+
+        FetchAgentPrincipals ->
+            Api.get Endpoints.AgentPrincipals
+                |> Api.expectJson (Json.Decode.list Concourse.Agent.decodePrincipal)
+                |> Api.request
+                |> Task.attempt AgentPrincipalsFetched
+
+        FetchAgentCredentials ->
+            Api.get Endpoints.AgentCredentials
+                |> Api.expectJson (Json.Decode.list Concourse.Agent.decodeCredential)
+                |> Api.request
+                |> Task.attempt AgentCredentialsFetched
+
+        RevokeAgentPrincipal principalId ->
+            Api.delete (Endpoints.AgentPrincipal principalId) csrfToken
+                |> Api.request
+                |> Task.attempt (AgentPrincipalRevoked principalId)
+
+        PromoteAgentWorkflow name version ->
+            Api.put (Endpoints.AgentWorkflowLive name version) csrfToken
+                |> Api.request
+                |> Task.attempt (AgentWorkflowPromoted name version)
 
 
 pipelinesSectionName : PipelinesSection -> String

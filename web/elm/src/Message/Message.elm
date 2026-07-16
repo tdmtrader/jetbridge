@@ -55,6 +55,9 @@ type Message
         , reviewer : String
         }
     | AgentReviewNoteChanged String String
+      -- Agent operator dashboard
+    | AgentRevokePrincipalClicked Int
+    | AgentPromoteWorkflowClicked String Int
       -- common
     | Hover (Maybe DomID)
     | Click DomID

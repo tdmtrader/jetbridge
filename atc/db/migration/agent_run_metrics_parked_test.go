@@ -11,7 +11,7 @@ import (
 // ingestion 500s and the row is lost.
 var _ = Describe("Agent run metrics parked status", func() {
 	const preMigrationVersion = 1773106060
-	const postMigrationVersion = 1773106062
+	const postMigrationVersion = 1773106061
 
 	Context("Up", func() {
 		It("widens the status CHECK to 'parked' and backfills session_id on existing rows", func() {

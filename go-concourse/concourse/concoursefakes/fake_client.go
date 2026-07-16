@@ -9,6 +9,7 @@ import (
 
 	"github.com/concourse/concourse/agent/api/costs"
 	"github.com/concourse/concourse/agent/credentials"
+	"github.com/concourse/concourse/agent/schema"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/go-concourse/concourse"
 )
@@ -38,6 +39,19 @@ type FakeClient struct {
 	}
 	agentCostRollupReturnsOnCall map[int]struct {
 		result1 costs.RollupResponse
+		result2 error
+	}
+	AgentRunMetricsStub        func(int) ([]schema.RunMetrics, error)
+	agentRunMetricsMutex       sync.RWMutex
+	agentRunMetricsArgsForCall []struct {
+		arg1 int
+	}
+	agentRunMetricsReturns struct {
+		result1 []schema.RunMetrics
+		result2 error
+	}
+	agentRunMetricsReturnsOnCall map[int]struct {
+		result1 []schema.RunMetrics
 		result2 error
 	}
 	AgentUserCredentialStatusStub        func() ([]credentials.Credential, error)
@@ -480,6 +494,70 @@ func (fake *FakeClient) AgentCostRollupReturnsOnCall(i int, result1 costs.Rollup
 	}
 	fake.agentCostRollupReturnsOnCall[i] = struct {
 		result1 costs.RollupResponse
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeClient) AgentRunMetrics(arg1 int) ([]schema.RunMetrics, error) {
+	fake.agentRunMetricsMutex.Lock()
+	ret, specificReturn := fake.agentRunMetricsReturnsOnCall[len(fake.agentRunMetricsArgsForCall)]
+	fake.agentRunMetricsArgsForCall = append(fake.agentRunMetricsArgsForCall, struct {
+		arg1 int
+	}{arg1})
+	stub := fake.AgentRunMetricsStub
+	fakeReturns := fake.agentRunMetricsReturns
+	fake.recordInvocation("AgentRunMetrics", []interface{}{arg1})
+	fake.agentRunMetricsMutex.Unlock()
+	if stub != nil {
+		return stub(arg1)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2
+	}
+	return fakeReturns.result1, fakeReturns.result2
+}
+
+func (fake *FakeClient) AgentRunMetricsCallCount() int {
+	fake.agentRunMetricsMutex.RLock()
+	defer fake.agentRunMetricsMutex.RUnlock()
+	return len(fake.agentRunMetricsArgsForCall)
+}
+
+func (fake *FakeClient) AgentRunMetricsCalls(stub func(int) ([]schema.RunMetrics, error)) {
+	fake.agentRunMetricsMutex.Lock()
+	defer fake.agentRunMetricsMutex.Unlock()
+	fake.AgentRunMetricsStub = stub
+}
+
+func (fake *FakeClient) AgentRunMetricsArgsForCall(i int) int {
+	fake.agentRunMetricsMutex.RLock()
+	defer fake.agentRunMetricsMutex.RUnlock()
+	argsForCall := fake.agentRunMetricsArgsForCall[i]
+	return argsForCall.arg1
+}
+
+func (fake *FakeClient) AgentRunMetricsReturns(result1 []schema.RunMetrics, result2 error) {
+	fake.agentRunMetricsMutex.Lock()
+	defer fake.agentRunMetricsMutex.Unlock()
+	fake.AgentRunMetricsStub = nil
+	fake.agentRunMetricsReturns = struct {
+		result1 []schema.RunMetrics
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeClient) AgentRunMetricsReturnsOnCall(i int, result1 []schema.RunMetrics, result2 error) {
+	fake.agentRunMetricsMutex.Lock()
+	defer fake.agentRunMetricsMutex.Unlock()
+	fake.AgentRunMetricsStub = nil
+	if fake.agentRunMetricsReturnsOnCall == nil {
+		fake.agentRunMetricsReturnsOnCall = make(map[int]struct {
+			result1 []schema.RunMetrics
+			result2 error
+		})
+	}
+	fake.agentRunMetricsReturnsOnCall[i] = struct {
+		result1 []schema.RunMetrics
 		result2 error
 	}{result1, result2}
 }

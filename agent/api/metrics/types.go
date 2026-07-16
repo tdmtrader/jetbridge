@@ -51,6 +51,10 @@ type Store interface {
 	GetByBuild(buildID int) ([]schema.RunMetrics, error)
 	// ListByTicket returns rows for a ticket, oldest-first.
 	ListByTicket(ticketID int) ([]schema.RunMetrics, error)
+	// ListRecent returns the most-recent rows across all tickets/builds,
+	// newest-first, bounded by limit (a non-positive or oversized limit falls
+	// back to a sane default). Powers the operator dashboard's recent-runs view.
+	ListRecent(limit int) ([]schema.RunMetrics, error)
 }
 
 // ParseSubmission validates a POST /api/v1/agent/metrics body.

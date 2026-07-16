@@ -878,11 +878,11 @@ func (p *execProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 	case <-time.After(5 * time.Second):
 	}
 
-	// NOTE: The pause Pod is intentionally NOT deleted on normal completion.
-	// Pod cleanup is handled by the GC system (reaper), which enables
-	// fly hijack to exec into the still-running pod for debugging.
-	// However, on context cancellation (abort), the pod is deleted immediately
-	// since the build is being abandoned.
+	// NOTE: The pause Pod is intentionally NOT deleted here — neither on normal
+	// completion nor on abort/cancellation. Pod cleanup is owned by the GC
+	// system (reaper), which also enables fly hijack to exec into a
+	// still-running pod for debugging; and the pod must outlive this call so
+	// killAgentOnTerminalEnd (below, terminal-ctx path) can exec into it.
 
 	if err != nil {
 		var exitErr *ExecExitError
@@ -917,17 +917,22 @@ func (p *execProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 		// Best-effort output-location recording (finding F23), AGENT steps
 		// only (review finding 2026-07-12). This branch is reached on
 		// deadline-severed and transport-severed execs — the step timeout
-		// included — while the supervised in-pod process is still running and
-		// writing its outputs. Only agent containers publish here:
-		// server-side flight-recorder ingestion (and agent hook inputs) read
-		// the output volumes' locator entries, and killAgentOnTerminalEnd
-		// above has already stopped the agent so its final flush has landed.
-		// For a generic task/get step the supervised process is still writing,
-		// so publishing a DaemonSet locator now would let an
-		// on_failure/on_error hook StreamOut a half-written artifact with NO
-		// error — where the missing locator previously failed fast. That
-		// fail-fast on a torn artifact is the intended, safer behavior, so
-		// non-agent types are left unpublished on this path.
+		// included. Only agent containers publish here: server-side
+		// flight-recorder ingestion (and agent hook inputs) read the output
+		// volumes' locator entries. On a TERMINAL-ctx sever (timeout/abort)
+		// killAgentOnTerminalEnd above has already stopped the agent, so its
+		// final flush has landed before we publish. On a LIVE-ctx transport
+		// sever the kill is a no-op and the agent keeps running, but publishing
+		// is still safe: the transport error is wrapped transient (below), so
+		// the engine retries and runs NO on_failure/on_error hooks against these
+		// locators, and the resume re-publishes them idempotently (a later full
+		// ingestion heals any partial metrics row). For a generic task/get step
+		// the supervised process is still writing, so publishing a DaemonSet
+		// locator now would let an on_failure/on_error hook StreamOut a
+		// half-written artifact with NO error — where the missing locator
+		// previously failed fast. That fail-fast on a torn artifact is the
+		// intended, safer behavior, so non-agent types are left unpublished on
+		// this path.
 		// uploadOutputsToArtifactStore is the ONLY publisher of those
 		// locators; ctx may already be cancelled/expired here, so detach and
 		// bound the call; failures are logged, never returned — the transport

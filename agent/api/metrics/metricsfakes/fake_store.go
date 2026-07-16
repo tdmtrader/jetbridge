@@ -48,6 +48,19 @@ type FakeStore struct {
 		result1 []schema.RunMetrics
 		result2 error
 	}
+	ListRecentStub        func(int) ([]schema.RunMetrics, error)
+	listRecentMutex       sync.RWMutex
+	listRecentArgsForCall []struct {
+		arg1 int
+	}
+	listRecentReturns struct {
+		result1 []schema.RunMetrics
+		result2 error
+	}
+	listRecentReturnsOnCall map[int]struct {
+		result1 []schema.RunMetrics
+		result2 error
+	}
 	UpsertStub        func(*schema.RunMetrics) error
 	upsertMutex       sync.RWMutex
 	upsertArgsForCall []struct {
@@ -265,6 +278,70 @@ func (fake *FakeStore) ListByTicketReturnsOnCall(i int, result1 []schema.RunMetr
 		})
 	}
 	fake.listByTicketReturnsOnCall[i] = struct {
+		result1 []schema.RunMetrics
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeStore) ListRecent(arg1 int) ([]schema.RunMetrics, error) {
+	fake.listRecentMutex.Lock()
+	ret, specificReturn := fake.listRecentReturnsOnCall[len(fake.listRecentArgsForCall)]
+	fake.listRecentArgsForCall = append(fake.listRecentArgsForCall, struct {
+		arg1 int
+	}{arg1})
+	stub := fake.ListRecentStub
+	fakeReturns := fake.listRecentReturns
+	fake.recordInvocation("ListRecent", []interface{}{arg1})
+	fake.listRecentMutex.Unlock()
+	if stub != nil {
+		return stub(arg1)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2
+	}
+	return fakeReturns.result1, fakeReturns.result2
+}
+
+func (fake *FakeStore) ListRecentCallCount() int {
+	fake.listRecentMutex.RLock()
+	defer fake.listRecentMutex.RUnlock()
+	return len(fake.listRecentArgsForCall)
+}
+
+func (fake *FakeStore) ListRecentCalls(stub func(int) ([]schema.RunMetrics, error)) {
+	fake.listRecentMutex.Lock()
+	defer fake.listRecentMutex.Unlock()
+	fake.ListRecentStub = stub
+}
+
+func (fake *FakeStore) ListRecentArgsForCall(i int) int {
+	fake.listRecentMutex.RLock()
+	defer fake.listRecentMutex.RUnlock()
+	argsForCall := fake.listRecentArgsForCall[i]
+	return argsForCall.arg1
+}
+
+func (fake *FakeStore) ListRecentReturns(result1 []schema.RunMetrics, result2 error) {
+	fake.listRecentMutex.Lock()
+	defer fake.listRecentMutex.Unlock()
+	fake.ListRecentStub = nil
+	fake.listRecentReturns = struct {
+		result1 []schema.RunMetrics
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeStore) ListRecentReturnsOnCall(i int, result1 []schema.RunMetrics, result2 error) {
+	fake.listRecentMutex.Lock()
+	defer fake.listRecentMutex.Unlock()
+	fake.ListRecentStub = nil
+	if fake.listRecentReturnsOnCall == nil {
+		fake.listRecentReturnsOnCall = make(map[int]struct {
+			result1 []schema.RunMetrics
+			result2 error
+		})
+	}
+	fake.listRecentReturnsOnCall[i] = struct {
 		result1 []schema.RunMetrics
 		result2 error
 	}{result1, result2}

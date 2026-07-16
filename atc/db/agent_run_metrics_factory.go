@@ -105,6 +105,22 @@ func (f *agentRunMetricsFactory) UpsertReturningInserted(rm *agentschema.RunMetr
 			rm.Turns, rm.WallTimeSeconds, rm.CostUSD,
 			results, rm.EventsArtifact, eventCounts,
 		).
+		// The DO UPDATE is NON-REGRESSING (review finding F#1/F#4,
+		// 2026-07-12). A web-restart resume re-ingests the same (build_id,
+		// plan_id); if that resume reads the flight recorder only partially (a
+		// transient daemon/exec sever between the results.json and events.ndjson
+		// reads) the incoming row carries a LOWER cost, a status forced to
+		// 'error' (no step.end), and blank results/counts. An unconditional
+		// overwrite would (a) corrupt the scorecards/delivery-outcomes row
+		// downward and (b) — because the caller derives the append-only ledger
+		// delta from the previous row's counters (§1.4 has no ledger dedup key)
+		// — let a subsequent full resume re-charge the whole cost, double-
+		// counting into agent_cost_ledger, violating "re-resolution can only
+		// shrink, never double-count". So: ledger-relevant counters are
+		// monotonic (GREATEST), an incoming 'error' never downgrades a real end
+		// status (and its summary rides with it), and never blank a column that
+		// once held real data. Stable-by-construction columns (identity,
+		// workflow tags) are copied verbatim.
 		Suffix(`ON CONFLICT (build_id, plan_id) DO UPDATE SET
 			ticket_id = EXCLUDED.ticket_id,
 			pipeline_run_id = EXCLUDED.pipeline_run_id,
@@ -112,19 +128,21 @@ func (f *agentRunMetricsFactory) UpsertReturningInserted(rm *agentschema.RunMetr
 			workflow_name = EXCLUDED.workflow_name,
 			workflow_version = EXCLUDED.workflow_version,
 			workflow_hash = EXCLUDED.workflow_hash,
-			status = EXCLUDED.status,
-			summary = EXCLUDED.summary,
-			model = EXCLUDED.model,
-			input_tokens = EXCLUDED.input_tokens,
-			output_tokens = EXCLUDED.output_tokens,
-			cache_read_tokens = EXCLUDED.cache_read_tokens,
-			cache_creation_tokens = EXCLUDED.cache_creation_tokens,
-			turns = EXCLUDED.turns,
-			wall_time_seconds = EXCLUDED.wall_time_seconds,
-			cost_usd = EXCLUDED.cost_usd,
-			results = EXCLUDED.results,
-			events_artifact = EXCLUDED.events_artifact,
-			event_counts = EXCLUDED.event_counts
+			status = CASE WHEN agent_run_metrics.status <> 'error' AND EXCLUDED.status = 'error'
+			              THEN agent_run_metrics.status ELSE EXCLUDED.status END,
+			summary = CASE WHEN agent_run_metrics.status <> 'error' AND EXCLUDED.status = 'error'
+			               THEN agent_run_metrics.summary ELSE EXCLUDED.summary END,
+			model = COALESCE(NULLIF(EXCLUDED.model, ''), agent_run_metrics.model),
+			input_tokens = GREATEST(agent_run_metrics.input_tokens, EXCLUDED.input_tokens),
+			output_tokens = GREATEST(agent_run_metrics.output_tokens, EXCLUDED.output_tokens),
+			cache_read_tokens = GREATEST(agent_run_metrics.cache_read_tokens, EXCLUDED.cache_read_tokens),
+			cache_creation_tokens = GREATEST(agent_run_metrics.cache_creation_tokens, EXCLUDED.cache_creation_tokens),
+			turns = GREATEST(agent_run_metrics.turns, EXCLUDED.turns),
+			wall_time_seconds = GREATEST(agent_run_metrics.wall_time_seconds, EXCLUDED.wall_time_seconds),
+			cost_usd = GREATEST(agent_run_metrics.cost_usd, EXCLUDED.cost_usd),
+			results = COALESCE(EXCLUDED.results, agent_run_metrics.results),
+			events_artifact = COALESCE(NULLIF(EXCLUDED.events_artifact, ''), agent_run_metrics.events_artifact),
+			event_counts = COALESCE(NULLIF(EXCLUDED.event_counts, '{}'::jsonb), agent_run_metrics.event_counts)
 		RETURNING (xmax = 0) AS inserted`).
 		RunWith(tx).
 		QueryRow().
@@ -209,6 +227,27 @@ func (f *agentRunMetricsFactory) ListByTicket(ticketID int) ([]agentschema.RunMe
 	rows, err := f.conn.Query(
 		`SELECT `+runMetricsColumns+` FROM agent_run_metrics m
 		 WHERE m.ticket_id = $1 ORDER BY m.created_at ASC, m.id ASC`, ticketID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanRunMetricsRows(rows)
+}
+
+// defaultRecentLimit / maxRecentLimit bound ListRecent so an unbounded or
+// hostile ?limit= can never scan the whole table.
+const (
+	defaultRecentLimit = 100
+	maxRecentLimit     = 500
+)
+
+func (f *agentRunMetricsFactory) ListRecent(limit int) ([]agentschema.RunMetrics, error) {
+	if limit <= 0 || limit > maxRecentLimit {
+		limit = defaultRecentLimit
+	}
+	rows, err := f.conn.Query(
+		`SELECT `+runMetricsColumns+` FROM agent_run_metrics m
+		 ORDER BY m.created_at DESC, m.id DESC LIMIT $1`, limit)
 	if err != nil {
 		return nil, err
 	}

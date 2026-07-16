@@ -7,16 +7,16 @@ import (
 
 	"code.cloudfoundry.org/clock"
 	"code.cloudfoundry.org/lager/v3"
-	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/agent/api/costs"
 	"github.com/concourse/concourse/agent/api/feedback"
-	principalsapi "github.com/concourse/concourse/agent/api/principals"
 	metricsapi "github.com/concourse/concourse/agent/api/metrics"
+	principalsapi "github.com/concourse/concourse/agent/api/principals"
 	reviewsapi "github.com/concourse/concourse/agent/api/reviews"
+	workflowsapi "github.com/concourse/concourse/agent/api/workflows"
 	"github.com/concourse/concourse/agent/budget"
 	"github.com/concourse/concourse/agent/credentials"
-	workflowsapi "github.com/concourse/concourse/agent/api/workflows"
 	"github.com/concourse/concourse/agent/workflow"
+	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api/accessor"
 	"github.com/concourse/concourse/atc/api/artifactserver"
 	"github.com/concourse/concourse/atc/api/buildserver"
@@ -31,8 +31,8 @@ import (
 	"github.com/concourse/concourse/atc/api/mcpserver"
 	"github.com/concourse/concourse/atc/api/pipelineserver"
 	"github.com/concourse/concourse/atc/api/resourceserver"
-	"github.com/concourse/concourse/atc/api/runserver"
 	"github.com/concourse/concourse/atc/api/resourceserver/versionserver"
+	"github.com/concourse/concourse/atc/api/runserver"
 	"github.com/concourse/concourse/atc/api/teamserver"
 	"github.com/concourse/concourse/atc/api/usersserver"
 	"github.com/concourse/concourse/atc/api/volumeserver"
@@ -318,19 +318,20 @@ func NewHandler(
 		atc.GetBuildAgentReviews: http.HandlerFunc(reviewsServer.GetByBuild),
 		atc.ListTeamAgentReviews: http.HandlerFunc(reviewsServer.ListByTeam),
 
-		atc.SubmitAgentRunMetrics: http.HandlerFunc(metricsServer.SubmitMetrics),
-		atc.ListAgentRunMetrics:   http.HandlerFunc(metricsServer.ListByTicket),
+		atc.SubmitAgentRunMetrics:     http.HandlerFunc(metricsServer.SubmitMetrics),
+		atc.ListAgentRunMetrics:       http.HandlerFunc(metricsServer.ListByTicket),
+		atc.ListRecentAgentRunMetrics: http.HandlerFunc(metricsServer.ListRecent),
 
 		atc.SetAgentUserCredential:       http.HandlerFunc(credentialsServer.Set),
 		atc.GetAgentUserCredentialStatus: http.HandlerFunc(credentialsServer.Status),
 		atc.DeleteAgentUserCredential:    http.HandlerFunc(credentialsServer.Delete),
 		atc.GetAgentCostRollup:           http.HandlerFunc(costsServer.GetRollup),
 		atc.SubmitAgentCostRecord:        http.HandlerFunc(costsServer.SubmitRecord),
-		atc.ListAgentWorkflows:          http.HandlerFunc(workflowsServer.List),
-		atc.ListAgentWorkflowVersions:   http.HandlerFunc(workflowsServer.Versions),
-		atc.GetAgentWorkflowVersion:     http.HandlerFunc(workflowsServer.Get),
-		atc.CreateAgentWorkflowVersion:  http.HandlerFunc(workflowsServer.Import),
-		atc.PromoteAgentWorkflowVersion: http.HandlerFunc(workflowsServer.Promote),
+		atc.ListAgentWorkflows:           http.HandlerFunc(workflowsServer.List),
+		atc.ListAgentWorkflowVersions:    http.HandlerFunc(workflowsServer.Versions),
+		atc.GetAgentWorkflowVersion:      http.HandlerFunc(workflowsServer.Get),
+		atc.CreateAgentWorkflowVersion:   http.HandlerFunc(workflowsServer.Import),
+		atc.PromoteAgentWorkflowVersion:  http.HandlerFunc(workflowsServer.Promote),
 
 		atc.CreateAgentPrincipal: http.HandlerFunc(principalsServer.CreatePrincipal),
 		atc.ListAgentPrincipals:  http.HandlerFunc(principalsServer.ListPrincipals),

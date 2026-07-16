@@ -952,6 +952,26 @@ var _ = Describe("AgentStep", func() {
 			})
 		})
 
+		// review finding 2026-07-12 (F#9/F#11): a park-exit stream ends with
+		// step.park, not step.end (contracts §3.2), so sawStepEnd is false. The
+		// !sawStepEnd "crashed agent → error" override must NOT rewrite a parked
+		// results.json to error — that silently defeats the parked status the
+		// three-way taxonomy and migration 1773106061 were widened for. This
+		// exercises the exec ingest layer that actually calls ThreeWayStatus.
+		Context("when results.json is parked and the stream has no step.end", func() {
+			BeforeEach(func() {
+				resultsJSON = `{"schema_version":"1.0","status":"parked","confidence":1,"summary":"awaiting human","artifacts":[]}`
+				eventLines = eventLines[:3] // step.start, tool.call, cost.record — no step.end
+			})
+
+			It("records a parked row, not error", func() {
+				step.Run(ctx, state)
+				rm := fakeMetricsStore.UpsertReturningInsertedArgsForCall(0)
+				Expect(rm.Status).To(Equal("parked"))
+				Expect(rm.Summary).To(Equal("awaiting human"))
+			})
+		})
+
 		Context("when the flight files are missing entirely", func() {
 			BeforeEach(func() {
 				// fakeStreamer returns an error for both files ⇒ no flight data

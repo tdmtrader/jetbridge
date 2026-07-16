@@ -1353,6 +1353,32 @@ var _ = Describe("ValidateConfig", func() {
 			// never be resolved at run materialization, and the exec refuses
 			// runtime interpolation (it would land the resolved secret as a
 			// literal pod-spec env var, violating §8.2).
+			Context("when an agent step declares duplicate inline sidecar names", func() {
+				// review finding 2026-07-12: duplicate inline sidecar names are
+				// rejected at runtime (loadSidecarConfigs) but must also be
+				// caught at config-validation time so `fly set-pipeline` fails,
+				// not the build.
+				BeforeEach(func() {
+					job.PlanSequence = append(job.PlanSequence, atc.Step{
+						Config: &atc.AgentStep{
+							Name:   "a",
+							Prompt: "p",
+							Sidecars: []atc.SidecarSource{
+								{Config: &atc.SidecarConfig{Name: "helper", Image: "redis:7"}},
+								{Config: &atc.SidecarConfig{Name: "helper", Image: "redis:8"}},
+							},
+						},
+					})
+
+					config.Jobs = append(config.Jobs, job)
+				})
+
+				It("returns an error", func() {
+					Expect(errorMessages).To(HaveLen(1))
+					Expect(errorMessages[0]).To(ContainSubstring("duplicate sidecar name"))
+				})
+			})
+
 			Context("when an agent step env references a runtime var source", func() {
 				BeforeEach(func() {
 					job.PlanSequence = append(job.PlanSequence, atc.Step{

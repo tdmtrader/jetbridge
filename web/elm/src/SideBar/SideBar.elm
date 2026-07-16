@@ -18,7 +18,7 @@ import EffectTransformer exposing (ET)
 import Favorites
 import HoverState
 import Html exposing (Html)
-import Html.Attributes exposing (id)
+import Html.Attributes exposing (href, id, style)
 import Html.Events exposing (onClick, onMouseDown, onMouseEnter, onMouseLeave)
 import List.Extra
 import Message.Callback exposing (Callback(..))
@@ -236,7 +236,8 @@ view model currentPipeline =
             (id "side-bar" :: Styles.sideBar newState)
             -- I'd love to use the curPipeline function instead of passing it in to view,
             -- but that doesn't work for OneOffBuilds that point to a JobBuild
-            (favoritedPipelinesSection model currentPipeline
+            (agentPlatformLink
+                ++ favoritedPipelinesSection model currentPipeline
                 ++ allPipelinesSection model currentPipeline
                 ++ [ Html.div
                         (Styles.sideBarHandle newState
@@ -338,6 +339,23 @@ tooltip model =
 
         _ ->
             Nothing
+
+
+agentPlatformLink : List (Html Message)
+agentPlatformLink =
+    [ Html.a
+        [ id "sidebar-agent-platform"
+        , href (Routes.toString (Routes.Agent { teamName = "main" }))
+        , style "display" "flex"
+        , style "align-items" "center"
+        , style "padding" "10px 16px"
+        , style "color" "#e6e7e8"
+        , style "text-decoration" "none"
+        , style "font-weight" "700"
+        , style "border-bottom" "1px solid #3d3c3c"
+        ]
+        [ Html.text "Agent platform" ]
+    ]
 
 
 allPipelinesSection : Model m -> Maybe (PipelineScoped a) -> List (Html Message)

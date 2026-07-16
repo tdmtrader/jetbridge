@@ -1,5 +1,6 @@
 module Api exposing
     ( Request
+    , delete
     , expectJson
     , get
     , ignoreResponse
@@ -81,6 +82,17 @@ post endpoint csrfToken =
 put : Endpoint -> Concourse.CSRFToken -> Request ()
 put endpoint csrfToken =
     { method = "PUT"
+    , headers = [ Http.header Concourse.csrfTokenHeaderName csrfToken ]
+    , endpoint = endpoint
+    , query = []
+    , body = Http.emptyBody
+    , expect = ignoreResponse
+    }
+
+
+delete : Endpoint -> Concourse.CSRFToken -> Request ()
+delete endpoint csrfToken =
+    { method = "DELETE"
     , headers = [ Http.header Concourse.csrfTokenHeaderName csrfToken ]
     , endpoint = endpoint
     , query = []

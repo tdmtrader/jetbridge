@@ -122,11 +122,11 @@ const (
 	GetOpenIDConfiguration = "GetOpenIDConfiguration"
 	GetSigningKeys         = "GetSigningKeys"
 
-	SubmitAgentFeedback      = "SubmitAgentFeedback"
-	GetAgentFeedback         = "GetAgentFeedback"
-	GetAgentFeedbackSummary  = "GetAgentFeedbackSummary"
-	ClassifyAgentVerdict     = "ClassifyAgentVerdict"
-	GetAgentReviewFindings   = "GetAgentReviewFindings"
+	SubmitAgentFeedback     = "SubmitAgentFeedback"
+	GetAgentFeedback        = "GetAgentFeedback"
+	GetAgentFeedbackSummary = "GetAgentFeedbackSummary"
+	ClassifyAgentVerdict    = "ClassifyAgentVerdict"
+	GetAgentReviewFindings  = "GetAgentReviewFindings"
 
 	SetAgentUserCredential       = "SetAgentUserCredential"
 	GetAgentUserCredentialStatus = "GetAgentUserCredentialStatus"
@@ -138,8 +138,9 @@ const (
 	GetBuildAgentReviews = "GetBuildAgentReviews"
 	ListTeamAgentReviews = "ListTeamAgentReviews"
 
-	SubmitAgentRunMetrics = "SubmitAgentRunMetrics"
-	ListAgentRunMetrics   = "ListAgentRunMetrics"
+	SubmitAgentRunMetrics     = "SubmitAgentRunMetrics"
+	ListAgentRunMetrics       = "ListAgentRunMetrics"
+	ListRecentAgentRunMetrics = "ListRecentAgentRunMetrics"
 
 	ListAgentWorkflows          = "ListAgentWorkflows"
 	ListAgentWorkflowVersions   = "ListAgentWorkflowVersions"
@@ -295,6 +296,7 @@ var Routes = rata.Routes([]rata.Route{
 	{Path: "/api/v1/teams/:team_name/agent-reviews", Method: "GET", Name: ListTeamAgentReviews},
 
 	{Path: "/api/v1/agent/metrics", Method: "POST", Name: SubmitAgentRunMetrics},
+	{Path: "/api/v1/agent/metrics", Method: "GET", Name: ListRecentAgentRunMetrics},
 	{Path: "/api/v1/agent/tickets/:ticket_id/metrics", Method: "GET", Name: ListAgentRunMetrics},
 
 	{Path: "/api/v1/agent/workflows", Method: "GET", Name: ListAgentWorkflows},

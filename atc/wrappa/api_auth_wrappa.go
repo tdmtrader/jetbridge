@@ -213,7 +213,8 @@ func (wrappa *APIAuthWrappa) Wrap(handlers rata.Handlers) rata.Handlers {
 			atc.GetAgentFeedbackSummary,
 			atc.ClassifyAgentVerdict,
 			atc.GetAgentReviewFindings,
-			atc.ListAgentRunMetrics:
+			atc.ListAgentRunMetrics,
+			atc.ListRecentAgentRunMetrics:
 			newHandler = auth.CheckAgentAuthorizationHandler(handler, rejector)
 
 		// think about it!

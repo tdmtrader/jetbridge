@@ -2,6 +2,7 @@ module Message.Callback exposing (Callback(..))
 
 import Browser.Dom
 import Concourse
+import Concourse.Agent
 import Concourse.AgentReview
 import Concourse.Pagination exposing (Page, Paginated)
 import Http
@@ -68,3 +69,10 @@ type Callback
     | BuildAgentReviewsFetched (Fetched (List Concourse.AgentReview.BuildReview))
     | TeamAgentReviewsFetched (Fetched (List Concourse.AgentReview.Summary))
     | AgentReviewVerdictSubmitted String (Fetched ())
+    | AgentRunMetricsFetched (Fetched (List Concourse.Agent.RunMetric))
+    | AgentCostsFetched (Fetched Concourse.Agent.CostRollup)
+    | AgentWorkflowsFetched (Fetched (List Concourse.Agent.Workflow))
+    | AgentPrincipalsFetched (Fetched (List Concourse.Agent.Principal))
+    | AgentCredentialsFetched (Fetched (List Concourse.Agent.Credential))
+    | AgentPrincipalRevoked Int (Fetched ())
+    | AgentWorkflowPromoted String Int (Fetched ())
