@@ -107,8 +107,12 @@ var _ = Describe("Task exec supervisor", func() {
 
 		It("terminates the runner's whole process group, then escalates to KILL", func() {
 			kill := supervisorKillCommand("task", spec, 10)
-			Expect(kill[2]).To(ContainSubstring(`kill -TERM -- "-$pgid"`))
-			Expect(kill[2]).To(ContainSubstring(`kill -KILL -- "-$pgid"`))
+			// No `--` separator: dash and busybox builtin kills reject it
+			// before a negative pid, silently no-opping the teardown.
+			Expect(kill[2]).To(ContainSubstring(`kill -TERM "-$pgid"`))
+			Expect(kill[2]).To(ContainSubstring(`kill -KILL "-$pgid"`))
+			Expect(kill[2]).ToNot(ContainSubstring(`kill -TERM -- `))
+			Expect(kill[2]).ToNot(ContainSubstring(`kill -KILL -- `))
 		})
 
 		It("waits the given grace period between TERM and KILL", func() {

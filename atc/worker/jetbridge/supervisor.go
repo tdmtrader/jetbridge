@@ -99,6 +99,10 @@ func supervisorCommand(processID string, spec runtime.ProcessSpec) []string {
 // command never started or already finished. Like the supervisor script it
 // needs only POSIX sh built-ins plus cat/sed/cut/sleep (busybox-compatible);
 // `ps -o pgid=` is a fallback for /proc-less environments (test hosts).
+// Group kills use `kill -SIG "-$pgid"` with NO `--` separator: the dash and
+// busybox builtin kills reject `--` before a negative pid ("Illegal number:
+// -"), which would silently no-op the teardown; the separator-less form
+// parses on dash, busybox, and bash alike.
 const supervisorKillScriptTemplate = `S=__STATE_DIR__
 pid="$(cat "$S/pid" 2>/dev/null)"
 [ -n "$pid" ] || exit 0
@@ -112,13 +116,13 @@ if [ -z "$pgid" ]; then
   kill -TERM "$pid" 2>/dev/null
   exit 0
 fi
-kill -TERM -- "-$pgid" 2>/dev/null
+kill -TERM "-$pgid" 2>/dev/null
 n=0
-while [ "$n" -lt __GRACE_SECONDS__ ] && kill -0 -- "-$pgid" 2>/dev/null; do
+while [ "$n" -lt __GRACE_SECONDS__ ] && kill -0 "-$pgid" 2>/dev/null; do
   sleep 1
   n=$((n+1))
 done
-kill -0 -- "-$pgid" 2>/dev/null && kill -KILL -- "-$pgid" 2>/dev/null
+kill -0 "-$pgid" 2>/dev/null && kill -KILL "-$pgid" 2>/dev/null
 exit 0`
 
 // supervisorKillCommand returns the sh invocation that kills the supervised

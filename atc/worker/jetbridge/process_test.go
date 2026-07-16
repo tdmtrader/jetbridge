@@ -1574,7 +1574,7 @@ var _ = Describe("Process", func() {
 			Expect(kill.containerName).To(Equal("main"))
 			Expect(kill.tty).To(BeFalse())
 			Expect(kill.command).To(HaveLen(3))
-			Expect(kill.command[2]).To(ContainSubstring(`kill -TERM -- "-$pgid"`))
+			Expect(kill.command[2]).To(ContainSubstring(`kill -TERM "-$pgid"`))
 
 			// The kill must resolve the SAME supervisor state dir as the
 			// run, or it tears down nothing.
