@@ -416,6 +416,12 @@ var _ = Describe("AgentStep", func() {
 		})
 
 		It("does not early-return: attaches, waits, and ingests the running agent", func() {
+			// Model the genuinely-running agent of a restart-resume: the
+			// process is already live in the container, so the step ATTACHES
+			// to it (the exhausted-resume path must never Run a new one).
+			_, err := chosenContainer.Run(context.Background(), agentProcessSpec, runtime.ProcessIO{})
+			Expect(err).ToNot(HaveOccurred())
+
 			ok, err := step.Run(ctx, state)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(ok).To(BeTrue()) // the resumed agent completed (exit 0)
@@ -432,6 +438,29 @@ var _ = Describe("AgentStep", func() {
 			Expect(fakeDelegate.FinishedCallCount()).To(Equal(1))
 			_, exitStatus := fakeDelegate.FinishedArgsForCall(0)
 			Expect(exitStatus).To(Equal(exec.ExitStatus(0)))
+		})
+
+		It("fails closed when no prior agent process is attachable, instead of starting a new one", func() {
+			// The container DB row exists (stepContainerExists is satisfied by
+			// any row state — the pod is created lazily in Run), but nothing is
+			// attachable: the web node restarted before the pod ran, or the pod
+			// was reaped. Falling through to attachOrRun's Run() fallback here
+			// would launch a BRAND-NEW agent and spend the full configured
+			// slice against a ticket that is already exhausted.
+			ok, err := step.Run(ctx, state)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(ok).To(BeFalse())
+
+			// No new agent process was started against the exhausted ticket.
+			Expect(chosenContainer.RunningProcesses()).To(BeEmpty())
+
+			Expect(fakeDelegate.ErroredCallCount()).To(Equal(1))
+			_, message := fakeDelegate.ErroredArgsForCall(0)
+			Expect(message).To(ContainSubstring("budget slice exhausted"))
+
+			Expect(fakeDelegate.FinishedCallCount()).To(Equal(1))
+			_, exitStatus := fakeDelegate.FinishedArgsForCall(0)
+			Expect(exitStatus).To(Equal(exec.ExitStatus(1)))
 		})
 	})
 
@@ -478,6 +507,28 @@ var _ = Describe("AgentStep", func() {
 			Expect(fakeDelegate.ErroredCallCount()).To(Equal(1))
 			_, message := fakeDelegate.ErroredArgsForCall(0)
 			Expect(message).To(ContainSubstring("budget slice exhausted"))
+			Expect(fakeDelegate.FinishedCallCount()).To(Equal(1))
+			_, exitStatus := fakeDelegate.FinishedArgsForCall(0)
+			Expect(exitStatus).To(Equal(exec.ExitStatus(1)))
+		})
+
+		It("fails closed when the budget checker errors, instead of dispatching uncapped", func() {
+			// A sliceless step's ONLY cap is the ticket's resolved remaining.
+			// A step WITH a configured slice degrades to that slice when the
+			// checker errors (acceptable: still capped) — but degrading a
+			// sliceless step means dispatching with NO cap at all against a
+			// ticket whose state is unknown, the exact bypass the sliceless
+			// admission check exists to prevent.
+			fakeChecker.StepSliceReturns(budget.Remaining{}, context.DeadlineExceeded)
+
+			ok, err := step.Run(ctx, state)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(ok).To(BeFalse())
+			Expect(fakePool.FindOrSelectWorkerCallCount()).To(BeZero())
+
+			Expect(fakeDelegate.ErroredCallCount()).To(Equal(1))
+			_, message := fakeDelegate.ErroredArgsForCall(0)
+			Expect(message).To(ContainSubstring("failed to resolve ticket budget"))
 			Expect(fakeDelegate.FinishedCallCount()).To(Equal(1))
 			_, exitStatus := fakeDelegate.FinishedArgsForCall(0)
 			Expect(exitStatus).To(Equal(exec.ExitStatus(1)))
@@ -949,6 +1000,34 @@ var _ = Describe("AgentStep", func() {
 				rm := fakeMetricsStore.UpsertReturningInsertedArgsForCall(0)
 				Expect(rm.Status).To(Equal("error"))
 				Expect(rm.EventCounts).To(HaveKeyWithValue("tool.call", 1)) // partial counts kept
+			})
+		})
+
+		// review finding 2026-07-16: one oversized NDJSON line must not poison
+		// the rest of the stream — the cost.record and step.end that FOLLOW it
+		// are ledger- and status-relevant. The reader skips the giant line and
+		// resyncs; ingestion keeps reading.
+		Context("when events.ndjson has an oversized line mid-stream", func() {
+			BeforeEach(func() {
+				oversized := `{"ts":"2026-07-10T12:00:01Z","event":"tool.call","data":{"blob":"` +
+					strings.Repeat("x", 5<<20) + `"}}`
+				eventLines = []string{
+					eventLines[0], // step.start
+					oversized,
+					eventLines[2], // cost.record
+					eventLines[3], // step.end
+				}
+			})
+
+			It("still ingests the cost.record and step.end after the giant line", func() {
+				ok, err := step.Run(ctx, state)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(ok).To(BeTrue())
+
+				rm := fakeMetricsStore.UpsertReturningInsertedArgsForCall(0)
+				Expect(rm.Status).To(Equal("ok")) // step.end WAS seen
+				Expect(rm.CostUSD).To(BeNumerically("~", 0.42, 1e-9))
+				Expect(rm.EventCounts).To(HaveKeyWithValue("step.end", 1))
 			})
 		})
 

@@ -285,11 +285,23 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 	// (no declared slice AND an uncapped ticket); only then does the step
 	// run with no AGENT_BUDGET_SLICE_USD row.
 	slice := step.plan.BudgetSliceUSD
+	attachOnly := false
 	if step.budgetChecker != nil && ticketID > 0 {
 		remaining, err := step.budgetChecker.StepSlice(ticketID, slice)
 		if err != nil {
 			logger.Error("failed-to-resolve-budget-slice", err)
-			// keep the configured slice
+			if slice == 0 {
+				// A sliceless step's only cap is the ticket's resolved
+				// remaining; "keep the configured slice" here would mean
+				// dispatching with NO cap at all against a ticket whose
+				// state is unknown — the sliceless-admission bypass again,
+				// now via a transient checker error (review finding,
+				// 2026-07-16). Fail closed; the scheduler retries the build.
+				delegate.Errored(logger, "failed to resolve ticket budget for uncapped step")
+				delegate.Finished(logger, ExitStatus(1))
+				return false, nil
+			}
+			// keep the configured slice: degraded but still capped
 		} else if remaining.Exhausted {
 			// On a FRESH dispatch this fails closed before any pod exists — no
 			// spend against an exhausted ticket. But budget re-resolution runs
@@ -305,6 +317,14 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 				delegate.Finished(logger, ExitStatus(1))
 				return false, nil
 			}
+			// A container row proves only that dispatch got as far as
+			// FindOrCreateContainer — the pod is created lazily in Run(), so
+			// the row can exist with no attachable process (web restarted
+			// before the pod ran, pod reaped/evicted). This execution may
+			// therefore ONLY attach: falling through to attachOrRun's Run()
+			// fallback would start a brand-new agent and spend the full slice
+			// against the exhausted ticket (review finding, 2026-07-16).
+			attachOnly = true
 			logger.Info("budget-exhausted-resuming-existing-agent-container", lager.Data{"ticket-id": ticketID})
 		} else if remaining.LimitUSD > 0 {
 			slice = remaining.RemainingUSD
@@ -550,26 +570,37 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 	costObserver := newAgentCostObserver(pio.Stdout)
 	pio.Stdout = costObserver
 
-	process, err := attachOrRun(
-		ctx,
-		container,
-		runtime.ProcessSpec{
-			ID:   agentProcessID,
-			Path: "agent-runner",
-			Dir:  workdir,
-			// Guardian sets the default TTY window size to width: 80, height: 24,
-			// which creates ANSI control sequences that do not work with other window sizes
-			TTY: &runtime.TTYSpec{
-				WindowSize: runtime.WindowSize{
-					Columns: 500,
-					Rows:    500,
-				},
+	agentSpec := runtime.ProcessSpec{
+		ID:   agentProcessID,
+		Path: "agent-runner",
+		Dir:  workdir,
+		// Guardian sets the default TTY window size to width: 80, height: 24,
+		// which creates ANSI control sequences that do not work with other window sizes
+		TTY: &runtime.TTYSpec{
+			WindowSize: runtime.WindowSize{
+				Columns: 500,
+				Rows:    500,
 			},
 		},
-		pio,
-	)
-	if err != nil {
-		return false, err
+	}
+	var process runtime.Process
+	if attachOnly {
+		// Exhausted-ticket resume: attach to the already-running (or already-
+		// exited) agent so it is waited on and ingested — but never start a
+		// new one. An exited pod still attaches (its exit annotation yields
+		// an exited process), so ingestion is preserved on that path.
+		process, err = container.Attach(ctx, agentProcessID, pio)
+		if err != nil {
+			logger.Info("budget-exhausted-prior-agent-not-attachable", lager.Data{"error": err.Error()})
+			delegate.Errored(logger, "budget slice exhausted before start; prior agent process not attachable, refusing to start a new one")
+			delegate.Finished(logger, ExitStatus(1))
+			return false, nil
+		}
+	} else {
+		process, err = attachOrRun(ctx, container, agentSpec, pio)
+		if err != nil {
+			return false, err
+		}
 	}
 
 	result, runErr := process.Wait(ctx)
@@ -711,7 +742,14 @@ func (step *AgentStep) ingestFlightRecorder(
 			for {
 				event, err := reader.Read()
 				if err != nil {
-					break // io.EOF or malformed tail — keep partial counts
+					if !errors.Is(err, io.EOF) {
+						// Mid-stream failure (torn read, malformed tail):
+						// partial counts are kept, but say so — a silent break
+						// misattributes the resulting status=error to the
+						// agent (review finding, 2026-07-16).
+						logger.Error("flight-events-read-truncated", err)
+					}
+					break
 				}
 				counts[string(event.Type)]++
 				switch event.Type {
@@ -737,6 +775,9 @@ func (step *AgentStep) ingestFlightRecorder(
 				}
 			}
 			rc.Close()
+			if n := reader.Skipped(); n > 0 {
+				logger.Info("flight-events-skipped-oversized-lines", lager.Data{"count": n})
+			}
 			rm.EventCounts = counts
 			if !sawStepEnd && rm.Status != schema.RunStatusParked {
 				// crashed agent: a stream missing step.end is defined as error
@@ -897,8 +938,18 @@ type containerExistenceChecker interface {
 	FindWorkerForContainer(lager.Logger, db.ContainerOwner, worker.Spec) (runtime.Worker, bool, error)
 }
 
-// stepContainerExists reports whether a container is already running for this
+// Compile-time pin: the production pool must keep satisfying the optional
+// interface. Without this, a signature drift in worker.Pool would silently
+// flip the type assertion in stepContainerExists to false in production —
+// re-orphaning agents on budget-exhausted resume with no compile or test
+// signal (review finding, 2026-07-16).
+var _ containerExistenceChecker = worker.Pool{}
+
+// stepContainerExists reports whether a container ROW already exists for this
 // step owner — i.e. this execution is a restart-resume, not a fresh dispatch.
+// A row proves only that dispatch reached FindOrCreateContainer, NOT that an
+// agent process is running (the pod is created lazily in Run) — which is why
+// the exhausted-resume caller is attach-only.
 // It is consulted before the budget-exhaustion early-return so a re-resolved
 // Exhausted slice cannot orphan an already-running agent. When the pool cannot
 // answer (test double, or a lookup error) it returns false, keeping the caller

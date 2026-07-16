@@ -148,6 +148,54 @@ func TestEventReader(t *testing.T) {
 		requireEqual(t, err, io.EOF)
 	})
 
+	t.Run("skips an oversized line and keeps reading later events", func(t *testing.T) {
+		// One >5MiB line (e.g. a tool.call carrying captured output, or a
+		// foreign producer per contract §5) must not kill the stream: the
+		// cost.record and step.end that follow are ledger- and
+		// status-relevant (review finding, 2026-07-16).
+		oversized := `{"ts":"2026-02-09T21:30:01Z","event":"tool.call","data":{"blob":"` +
+			strings.Repeat("x", 5<<20) + `"}}`
+		input := strings.Join([]string{
+			`{"ts":"2026-02-09T21:30:00Z","event":"agent.start","data":{"step":"review"}}`,
+			oversized,
+			`{"ts":"2026-02-09T21:30:02Z","event":"cost.record","data":{"cost_usd":1.5}}`,
+			`{"ts":"2026-02-09T21:30:03Z","event":"step.end","data":{"status":"ok"}}`,
+		}, "\n") + "\n"
+
+		r := schema.NewEventReader(strings.NewReader(input))
+
+		events := []schema.Event{}
+		for {
+			event, err := r.Read()
+			if err == io.EOF {
+				break
+			}
+			requireNoErr(t, err)
+			events = append(events, *event)
+		}
+
+		requireLen(t, events, 3)
+		requireEqual(t, events[0].Type, schema.EventAgentStart)
+		requireEqual(t, events[1].Type, schema.EventCostRecord)
+		requireEqual(t, events[2].Type, schema.EventStepEnd)
+		requireEqual(t, r.Skipped(), 1)
+	})
+
+	t.Run("skips an oversized unterminated final line", func(t *testing.T) {
+		input := `{"ts":"2026-02-09T21:30:00Z","event":"agent.start","data":{}}` + "\n" +
+			strings.Repeat("y", (5<<20)+1) // torn giant tail, no newline
+
+		r := schema.NewEventReader(strings.NewReader(input))
+
+		event, err := r.Read()
+		requireNoErr(t, err)
+		requireEqual(t, event.Type, schema.EventAgentStart)
+
+		_, err = r.Read()
+		requireEqual(t, err, io.EOF)
+		requireEqual(t, r.Skipped(), 1)
+	})
+
 	t.Run("skips empty lines", func(t *testing.T) {
 		input := `{"ts":"2026-02-09T21:30:00Z","event":"agent.start","data":{}}` + "\n\n\n" +
 			`{"ts":"2026-02-09T21:30:01Z","event":"agent.end","data":{}}` + "\n"
