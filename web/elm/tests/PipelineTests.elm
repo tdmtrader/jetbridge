@@ -931,7 +931,7 @@ all =
                         |> Tuple.first
                         |> Common.queryView
                         |> Query.hasNot [ class "pipeline-runs" ]
-            , test "awaiting_human run renders amber badge" <|
+            , test "awaiting_human run renders the shared attention AgentBadge" <|
                 \_ ->
                     Common.init "/teams/team/pipelines/pipeline"
                         |> Application.handleCallback
@@ -943,8 +943,28 @@ all =
                         |> Common.queryView
                         |> Query.find [ class "pipeline-runs" ]
                         |> Query.has
-                            [ class "run-status-awaiting-human"
-                            , text "awaiting human"
+                            [ class "agent-badge"
+                            , class "agent-badge--attention"
+                            , class "agent-badge--pulse"
+                            , text "Waiting on you"
+                            ]
+            , test "failed run renders through the shared AgentBadge" <|
+                \_ ->
+                    Common.init "/teams/team/pipelines/pipeline"
+                        |> Application.handleCallback
+                            (Callback.PipelineFetched (Ok templatePipeline))
+                        |> Tuple.first
+                        |> Application.handleCallback
+                            (Callback.PipelineRunsFetched
+                                (Ok [ { awaitingRun | status = "failed" } ])
+                            )
+                        |> Tuple.first
+                        |> Common.queryView
+                        |> Query.find [ class "pipeline-runs" ]
+                        |> Query.has
+                            [ class "agent-badge"
+                            , class "agent-badge--bad"
+                            , text "Failed"
                             ]
             , test "run duration zero-pads seconds to two digits" <|
                 \_ ->

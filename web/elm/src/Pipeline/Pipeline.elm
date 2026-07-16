@@ -13,6 +13,7 @@ module Pipeline.Pipeline exposing
     , view
     )
 
+import AgentBadge
 import Application.Models exposing (Session)
 import Colors
 import Concourse
@@ -982,22 +983,18 @@ viewRun run =
 
 viewRunStatus : Concourse.PipelineRun -> Html Message
 viewRunStatus run =
-    if run.status == "awaiting_human" then
-        Html.span
-            [ class "run-status-awaiting-human"
-            , style "color" "#f5a623"
-            , style "border" "1px solid #f5a623"
-            , style "border-radius" "2px"
-            , style "padding" "0 4px"
-            , style "font-weight" "700"
-            , style "min-width" "80px"
-            ]
-            [ Html.text "awaiting human" ]
+    -- Every status the AgentBadge vocabulary knows renders through the shared
+    -- badge, so runs look the same here as everywhere else agent statuses
+    -- appear. Tokens outside that vocabulary (e.g. "succeeded") fall back to a
+    -- plain status-classed span.
+    case AgentBadge.fromApiToken run.status of
+        Just status ->
+            AgentBadge.view status
 
-    else
-        Html.span
-            [ class ("run-status-" ++ run.status) ]
-            [ Html.text run.status ]
+        Nothing ->
+            Html.span
+                [ class ("run-status-" ++ run.status) ]
+                [ Html.text run.status ]
 
 
 runParamsSummary : Dict String Concourse.JsonValue -> String

@@ -418,6 +418,22 @@ errorLine content =
         [ Html.text content ]
 
 
+{-| A visible warning shown above a section's content when a poll fails after
+data has already loaded. Without it a broken refresh is invisible — the stale
+data keeps rendering forever with no hint that it stopped updating.
+-}
+staleDataWarning : Maybe String -> List (Html Message)
+staleDataWarning maybeError =
+    case maybeError of
+        Just message ->
+            [ Html.div [ class "agent-section-stale" ]
+                [ errorLine ("refresh failed — showing stale data: " ++ message) ]
+            ]
+
+        Nothing ->
+            []
+
+
 pill : String -> { bg : String, fg : String } -> String -> Html Message
 pill className { bg, fg } labelText =
     Html.span
@@ -498,10 +514,12 @@ workflowsSection model =
                         [ mutedLine "loading…" ]
 
             Just [] ->
-                [ mutedLine "no workflow definitions — import one with: fly agent workflows import" ]
+                staleDataWarning model.workflowsError
+                    ++ [ mutedLine "no workflow definitions — import one with: fly agent workflows import" ]
 
             Just workflows ->
-                [ Html.div [ class "agent-workflows" ] (List.map workflowRow workflows) ]
+                staleDataWarning model.workflowsError
+                    ++ [ Html.div [ class "agent-workflows" ] (List.map workflowRow workflows) ]
 
 
 workflowRow : Agent.WorkflowSummary -> Html Message
@@ -591,9 +609,10 @@ costsSection model =
                         [ mutedLine "loading…" ]
 
             Just rollup ->
-                [ costSummaryLine rollup.summary
-                , costTable rollup.rows
-                ]
+                staleDataWarning model.costError
+                    ++ [ costSummaryLine rollup.summary
+                       , costTable rollup.rows
+                       ]
 
 
 costSummaryLine : Agent.CostSummary -> Html Message
@@ -655,45 +674,23 @@ costTable rows =
 costHeaderRow : Html Message
 costHeaderRow =
     Html.tr []
-        [ costHeaderCell "left" "day"
-        , costHeaderCell "right" "entries"
-        , costHeaderCell "right" "tokens (in+out)"
-        , costHeaderCell "right" "turns"
-        , costHeaderCell "right" "cost"
+        [ tableHeaderCell "left" "day"
+        , tableHeaderCell "right" "entries"
+        , tableHeaderCell "right" "tokens (in+out)"
+        , tableHeaderCell "right" "turns"
+        , tableHeaderCell "right" "cost"
         ]
-
-
-costHeaderCell : String -> String -> Html Message
-costHeaderCell align content =
-    Html.th
-        [ style "text-align" align
-        , style "padding" "4px 16px 4px 0"
-        , style "color" mutedColor
-        , style "font-weight" "700"
-        , style "border-bottom" rowBorder
-        ]
-        [ Html.text content ]
 
 
 costRow : Agent.CostRow -> Html Message
 costRow r =
     Html.tr [ class "agent-cost-row" ]
-        [ costCell "left" r.key
-        , costCell "right" (String.fromInt r.entries)
-        , costCell "right" (String.fromInt r.inputTokens ++ "+" ++ String.fromInt r.outputTokens)
-        , costCell "right" (String.fromInt r.turns)
-        , costCell "right" ("$" ++ formatUsd r.costUsd)
+        [ tableCell "left" r.key
+        , tableCell "right" (String.fromInt r.entries)
+        , tableCell "right" (String.fromInt r.inputTokens ++ "+" ++ String.fromInt r.outputTokens)
+        , tableCell "right" (String.fromInt r.turns)
+        , tableCell "right" ("$" ++ formatUsd r.costUsd)
         ]
-
-
-costCell : String -> String -> Html Message
-costCell align content =
-    Html.td
-        [ style "text-align" align
-        , style "padding" "4px 16px 4px 0"
-        , style "border-bottom" rowBorder
-        ]
-        [ Html.text content ]
 
 
 
@@ -802,10 +799,12 @@ credentialsSection model =
                                 [ mutedLine "loading…" ]
 
                     Just [] ->
-                        [ mutedLine "no credentials stored — run: fly agent auth" ]
+                        staleDataWarning model.credentialsError
+                            ++ [ mutedLine "no credentials stored — run: fly agent auth" ]
 
                     Just creds ->
-                        [ credentialsTable creds ]
+                        staleDataWarning model.credentialsError
+                            ++ [ credentialsTable creds ]
                )
 
 
@@ -845,7 +844,8 @@ principalsSection model =
     sectionBlock "Principals"
         ([ mintForm model ]
             ++ mintedTokenBox model
-            ++ [ revokeErrorLine model, principalsBody model ]
+            ++ [ revokeErrorLine model ]
+            ++ principalsBody model
         )
 
 
@@ -1094,22 +1094,24 @@ mintedTokenBox model =
             ]
 
 
-principalsBody : Model -> Html Message
+principalsBody : Model -> List (Html Message)
 principalsBody model =
     case model.principals of
         Nothing ->
             case model.principalsError of
                 Just message ->
-                    errorLine message
+                    [ errorLine message ]
 
                 Nothing ->
-                    mutedLine "loading…"
+                    [ mutedLine "loading…" ]
 
         Just [] ->
-            mutedLine "no principals yet — mint one above"
+            staleDataWarning model.principalsError
+                ++ [ mutedLine "no principals yet — mint one above" ]
 
         Just principals ->
-            principalsTable principals
+            staleDataWarning model.principalsError
+                ++ [ principalsTable principals ]
 
 
 principalsTable : List Agent.Principal -> Html Message

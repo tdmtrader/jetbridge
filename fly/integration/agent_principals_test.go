@@ -97,6 +97,28 @@ var _ = Describe("fly agent principals", func() {
 		})
 	})
 
+	Describe("mint with a non-positive expiry", func() {
+		It("rejects an explicit zero expiry client-side, before any API call", func() {
+			flyCmd := exec.Command(flyPath, "-t", targetName, "agent", "principals", "mint",
+				"--name", "zero-bot", "--scope", "reviews:write", "--expires-in", "0s")
+			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+			Expect(err).NotTo(HaveOccurred())
+			<-sess.Exited
+			Expect(sess.ExitCode()).NotTo(Equal(0))
+			Expect(sess.Err).To(gbytes.Say(`--expires-in must be a positive duration`))
+		})
+
+		It("rejects a negative expiry client-side, before any API call", func() {
+			flyCmd := exec.Command(flyPath, "-t", targetName, "agent", "principals", "mint",
+				"--name", "negative-bot", "--scope", "reviews:write", "--expires-in", "-1h")
+			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+			Expect(err).NotTo(HaveOccurred())
+			<-sess.Exited
+			Expect(sess.ExitCode()).NotTo(Equal(0))
+			Expect(sess.Err).To(gbytes.Say(`--expires-in must be a positive duration`))
+		})
+	})
+
 	Describe("mint with an invalid scope", func() {
 		It("rejects the scope client-side, before any API call", func() {
 			flyCmd := exec.Command(flyPath, "-t", targetName, "agent", "principals", "mint",

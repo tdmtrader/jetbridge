@@ -78,12 +78,12 @@ func (command *AgentPrincipalsListCommand) Execute([]string) error {
 }
 
 type AgentPrincipalsMintCommand struct {
-	Name        string        `long:"name" required:"true" description:"Principal name (unique)"`
-	Description string        `long:"description" description:"What this principal is for"`
-	Scopes      []string      `long:"scope" required:"true" description:"Scope to grant; repeatable. One of: reviews:write, tickets:read, tickets:write, metrics:write, costs:write, questions:answer"`
-	Team        string        `long:"team" default:"main" description:"Team the principal belongs to"`
-	ExpiresIn   time.Duration `long:"expires-in" description:"Optional lifetime, e.g. 720h. Omit for a non-expiring principal."`
-	Json        bool          `long:"json" description:"Print the created principal, including the one-time token, as JSON"`
+	Name        string         `long:"name" required:"true" description:"Principal name (unique)"`
+	Description string         `long:"description" description:"What this principal is for"`
+	Scopes      []string       `long:"scope" required:"true" description:"Scope to grant; repeatable. One of: reviews:write, tickets:read, tickets:write, metrics:write, costs:write, questions:answer"`
+	Team        string         `long:"team" default:"main" description:"Team the principal belongs to"`
+	ExpiresIn   *time.Duration `long:"expires-in" description:"Optional lifetime, e.g. 720h. Omit for a non-expiring principal."`
+	Json        bool           `long:"json" description:"Print the created principal, including the one-time token, as JSON"`
 }
 
 func (command *AgentPrincipalsMintCommand) Execute([]string) error {
@@ -100,6 +100,14 @@ func (command *AgentPrincipalsMintCommand) Execute([]string) error {
 			strings.Join(invalid, ", "), strings.Join(sortedScopes(), ", "))
 	}
 
+	// An explicit zero or negative expiry would silently mint a
+	// never-expiring principal; reject it loudly instead. A pointer field
+	// distinguishes "flag omitted" (nil, meaning no expiry) from an explicit
+	// non-positive value.
+	if command.ExpiresIn != nil && *command.ExpiresIn <= 0 {
+		return errors.New("--expires-in must be a positive duration")
+	}
+
 	target, err := loadAgentTarget()
 	if err != nil {
 		return err
@@ -111,8 +119,8 @@ func (command *AgentPrincipalsMintCommand) Execute([]string) error {
 		Scopes:      command.Scopes,
 		TeamName:    command.Team,
 	}
-	if command.ExpiresIn > 0 {
-		exp := time.Now().Add(command.ExpiresIn).Unix()
+	if command.ExpiresIn != nil {
+		exp := time.Now().Add(*command.ExpiresIn).Unix()
 		spec.ExpiresAt = &exp
 	}
 

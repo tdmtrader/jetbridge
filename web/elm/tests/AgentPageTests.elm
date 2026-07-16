@@ -270,6 +270,88 @@ all =
                         , Query.find [ class "agent-mint-form" ]
                             >> Query.hasNot [ text "not authorized — principals are admin-only" ]
                         ]
+        , test "a workflows poll failure after a load shows a stale-data warning and keeps the data" <|
+            \_ ->
+                Common.init "/agent"
+                    |> Application.handleCallback
+                        (Callback.AgentWorkflowsFetched (Ok [ sampleWorkflow ]))
+                    |> Tuple.first
+                    |> Application.handleCallback
+                        (Callback.AgentWorkflowsFetched (Err Http.NetworkError))
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Expect.all
+                        [ Query.has
+                            [ class "agent-section-stale"
+                            , text "refresh failed — showing stale data: couldn't load workflows"
+                            ]
+                        , Query.has [ class "agent-workflow-row", containing [ text "standard-dev" ] ]
+                        ]
+        , test "a costs poll failure after a load shows a stale-data warning and keeps the data" <|
+            \_ ->
+                Common.init "/agent"
+                    |> Application.handleCallback
+                        (Callback.AgentCostRollupFetched (Ok sampleRollup))
+                    |> Tuple.first
+                    |> Application.handleCallback
+                        (Callback.AgentCostRollupFetched (Err Http.NetworkError))
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Expect.all
+                        [ Query.has
+                            [ class "agent-section-stale"
+                            , text "refresh failed — showing stale data: couldn't load costs"
+                            ]
+                        , Query.has [ class "agent-cost-row", containing [ text "$3.50" ] ]
+                        ]
+        , test "a credentials poll failure after a load shows a stale-data warning and keeps the data" <|
+            \_ ->
+                Common.init "/agent"
+                    |> Application.handleCallback
+                        (Callback.AgentCredentialsFetched (Ok [ sampleCredential ]))
+                    |> Tuple.first
+                    |> Application.handleCallback
+                        (Callback.AgentCredentialsFetched (Err Http.NetworkError))
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Expect.all
+                        [ Query.has
+                            [ class "agent-section-stale"
+                            , text "refresh failed — showing stale data: couldn't load credentials"
+                            ]
+                        , Query.has [ class "agent-credential-row", containing [ text "anthropic_oauth" ] ]
+                        ]
+        , test "a principals poll failure after a load shows a stale-data warning and keeps the data" <|
+            \_ ->
+                Common.init "/agent"
+                    |> Application.handleCallback
+                        (Callback.AgentPrincipalsFetched (Ok [ samplePrincipal ]))
+                    |> Tuple.first
+                    |> Application.handleCallback
+                        (Callback.AgentPrincipalsFetched (Err Http.NetworkError))
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Expect.all
+                        [ Query.has
+                            [ class "agent-section-stale"
+                            , text "refresh failed — showing stale data: couldn't load principals"
+                            ]
+                        , Query.has [ class "agent-principal-row", containing [ text "itest-reviewer" ] ]
+                        ]
+        , test "a successful refetch clears the stale-data warning" <|
+            \_ ->
+                Common.init "/agent"
+                    |> Application.handleCallback
+                        (Callback.AgentWorkflowsFetched (Ok [ sampleWorkflow ]))
+                    |> Tuple.first
+                    |> Application.handleCallback
+                        (Callback.AgentWorkflowsFetched (Err Http.NetworkError))
+                    |> Tuple.first
+                    |> Application.handleCallback
+                        (Callback.AgentWorkflowsFetched (Ok [ sampleWorkflow ]))
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Query.hasNot [ class "agent-section-stale" ]
         , test "a non-numeric expiry shows a hint and disables minting" <|
             \_ ->
                 Common.init "/agent"
