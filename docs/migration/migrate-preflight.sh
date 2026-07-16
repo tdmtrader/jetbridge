@@ -25,8 +25,11 @@ v8.0.0:1765921815
 v8.0.1:1765921815
 "
 
-# JetBridge target version
-JETBRIDGE_VERSION=1773106062
+# JetBridge target version. MUST equal jetbridgeHeadMigration in
+# atc/db/migration/legacy_upgrade_test.go (which fails loudly if the constant
+# drifts from the embedded migrations). Keep the two in lockstep — the parked
+# migration was renumbered 1773106062 → 1773106061.
+JETBRIDGE_VERSION=1773106061
 
 # Minimum supported source version (v6.x)
 MIN_SUPPORTED_VERSION=1601993582

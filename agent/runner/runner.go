@@ -288,7 +288,7 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 		CacheReadTokens:     env.Usage.CacheReadInputTokens,
 		CacheCreationTokens: env.Usage.CacheCreationInputTokens,
 		Turns:               env.NumTurns,
-		CostUSD:             env.costUSD(),
+		CostUSD:             env.ResolvedCostUSD(),
 	})
 
 	// 6. Map the outcome onto the results.json wire status.
@@ -336,7 +336,7 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 		Status:          threeWay,
 		Summary:         summary,
 		WallTimeSeconds: int(time.Since(start).Seconds()),
-		CostUSD:         env.costUSD(),
+		CostUSD:         env.ResolvedCostUSD(),
 		Turns:           env.NumTurns,
 	})
 
@@ -426,8 +426,8 @@ func writeMCPConfig(servers map[string]string) (string, error) {
 
 // parseEnvelope finds the last non-empty line of the CLI's stdout and
 // parses it as the --output-format json envelope.
-func parseEnvelope(out []byte) (cliEnvelope, error) {
-	var env cliEnvelope
+func parseEnvelope(out []byte) (schema.CLIEnvelope, error) {
+	var env schema.CLIEnvelope
 
 	lines := strings.Split(string(out), "\n")
 	for i := len(lines) - 1; i >= 0; i-- {
@@ -436,11 +436,11 @@ func parseEnvelope(out []byte) (cliEnvelope, error) {
 			continue
 		}
 		if err := json.Unmarshal([]byte(line), &env); err != nil {
-			return cliEnvelope{}, fmt.Errorf("parse CLI envelope: %w", err)
+			return schema.CLIEnvelope{}, fmt.Errorf("parse CLI envelope: %w", err)
 		}
 		return env, nil
 	}
-	return cliEnvelope{}, errors.New("no CLI output to parse")
+	return schema.CLIEnvelope{}, errors.New("no CLI output to parse")
 }
 
 // summaryFromResult extracts a human-readable summary from the envelope's

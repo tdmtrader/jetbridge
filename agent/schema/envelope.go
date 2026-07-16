@@ -1,10 +1,14 @@
-package runner
+package schema
 
 import "encoding/json"
 
-// cliEnvelope is the claude CLI --output-format json envelope
-// (parity with ci-agent/llm/result.go, plus total_cost_usd for newer CLIs).
-type cliEnvelope struct {
+// CLIEnvelope is the claude CLI --output-format json result envelope. It is
+// parsed in two places that MUST agree on the same bytes: the in-pod runner
+// (agent/runner) turns it into the flight recorder's cost.record, and the
+// web-side cost observer (atc/exec) reads it off the live stdout stream as an
+// anti-tamper cost floor. Keep it in one place so a CLI field rename can never
+// silently zero one side's cost reading.
+type CLIEnvelope struct {
 	Type         string          `json:"type"`
 	Subtype      string          `json:"subtype"`
 	Result       json.RawMessage `json:"result"`
@@ -21,7 +25,9 @@ type cliEnvelope struct {
 	} `json:"usage"`
 }
 
-func (e cliEnvelope) costUSD() float64 {
+// ResolvedCostUSD prefers total_cost_usd (reported by newer CLIs) and falls
+// back to cost_usd.
+func (e CLIEnvelope) ResolvedCostUSD() float64 {
 	if e.TotalCostUSD > 0 {
 		return e.TotalCostUSD
 	}

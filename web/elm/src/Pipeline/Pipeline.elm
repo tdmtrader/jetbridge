@@ -13,11 +13,13 @@ module Pipeline.Pipeline exposing
     , view
     )
 
+import AgentBadge
 import Application.Models exposing (Session)
 import Colors
 import Concourse
 import Concourse.BuildStatus exposing (BuildStatus(..))
 import DateFormat
+import Dict exposing (Dict)
 import EffectTransformer exposing (ET)
 import Favorites
 import HoverState
@@ -34,6 +36,7 @@ import Html.Attributes
         )
 import Html.Events exposing (onMouseEnter, onMouseLeave)
 import Http
+import Json.Encode
 import Keyboard
 import Login.Login as Login
 import Message.Callback exposing (Callback(..))
@@ -78,6 +81,7 @@ type alias Model =
         , hideLegendCounter : Float
         , isToggleLoading : Bool
         , pinMenuExpanded : Bool
+        , runs : Maybe (List Concourse.PipelineRun)
         }
 
 
@@ -106,6 +110,7 @@ init flags =
             , selectedGroups = flags.selectedGroups
             , isUserMenuExpanded = False
             , pinMenuExpanded = False
+            , runs = Nothing
             }
     in
     ( model
@@ -177,6 +182,13 @@ handleCallback callback ( model, effects ) =
             let
                 locator =
                     Concourse.toPipelineId pipeline
+
+                runEffects =
+                    if pipeline.template then
+                        [ FetchPipelineRuns locator ]
+
+                    else
+                        []
             in
             ( { model
                 | pipeline = RemoteData.Success pipeline
@@ -186,6 +198,7 @@ handleCallback callback ( model, effects ) =
                 ++ [ FetchJobs locator
                    , FetchResources locator
                    ]
+                ++ runEffects
             )
 
         PipelineFetched (Err err) ->
@@ -220,6 +233,12 @@ handleCallback callback ( model, effects ) =
 
         PipelineToggled _ (Err _) ->
             ( { model | isToggleLoading = False }, effects )
+
+        PipelineRunsFetched (Ok runs) ->
+            ( { model | runs = Just runs }, effects )
+
+        PipelineRunsFetched (Err _) ->
+            ( model, effects )
 
         JobsFetched (Ok fetchedJobs) ->
             renderIfNeeded
@@ -585,6 +604,7 @@ viewSubPage session model =
         , style "flex-grow" "1"
         ]
         [ viewGroupsBar session model
+        , viewRuns model
         , Html.div
             [ class "pipeline-content" ]
             [ Html.div
@@ -913,3 +933,121 @@ formatDate =
         , DateFormat.text " "
         , DateFormat.amPmUppercase
         ]
+
+
+viewRuns : Model -> Html Message
+viewRuns model =
+    case ( model.pipeline, model.runs ) of
+        ( RemoteData.Success pipeline, Just runs ) ->
+            if pipeline.template then
+                Html.div
+                    [ class "pipeline-runs"
+                    , style "background-color" Colors.frame
+                    , style "color" Colors.text
+                    , style "padding" "10px"
+                    ]
+                    (Html.div
+                        [ style "font-weight" "700"
+                        , style "margin-bottom" "5px"
+                        ]
+                        [ Html.text "runs" ]
+                        :: List.map viewRun runs
+                    )
+
+            else
+                Html.text ""
+
+        _ ->
+            Html.text ""
+
+
+viewRun : Concourse.PipelineRun -> Html Message
+viewRun run =
+    Html.div
+        [ class "pipeline-run-row"
+        , style "display" "flex"
+        , style "align-items" "center"
+        ]
+        [ Html.span
+            [ style "margin-right" "10px" ]
+            [ Html.text ("#" ++ String.fromInt run.number) ]
+        , viewRunStatus run
+        , Html.span
+            [ style "margin-left" "10px" ]
+            [ Html.text (runParamsSummary run.params) ]
+        , Html.span
+            [ style "margin-left" "10px" ]
+            [ Html.text (runDurationSummary run) ]
+        ]
+
+
+viewRunStatus : Concourse.PipelineRun -> Html Message
+viewRunStatus run =
+    -- Every status the AgentBadge vocabulary knows renders through the shared
+    -- badge, so runs look the same here as everywhere else agent statuses
+    -- appear. Tokens outside that vocabulary (e.g. "succeeded") fall back to a
+    -- plain status-classed span.
+    case AgentBadge.fromApiToken run.status of
+        Just status ->
+            AgentBadge.view status
+
+        Nothing ->
+            Html.span
+                [ class ("run-status-" ++ run.status) ]
+                [ Html.text run.status ]
+
+
+runParamsSummary : Dict String Concourse.JsonValue -> String
+runParamsSummary params =
+    params
+        |> Dict.toList
+        |> List.map (\( k, v ) -> k ++ "=" ++ jsonValueToString v)
+        |> String.join ", "
+
+
+jsonValueToString : Concourse.JsonValue -> String
+jsonValueToString v =
+    case v of
+        Concourse.JsonString s ->
+            s
+
+        _ ->
+            Json.Encode.encode 0 (Concourse.encodeJsonValue v)
+
+
+runDurationSummary : Concourse.PipelineRun -> String
+runDurationSummary run =
+    case run.completedAt of
+        Nothing ->
+            if run.status == "awaiting_human" then
+                "waiting"
+
+            else
+                "running"
+
+        Just completedAt ->
+            let
+                deltaMillis =
+                    Time.posixToMillis completedAt - Time.posixToMillis run.createdAt
+
+                totalSeconds =
+                    if deltaMillis <= 0 then
+                        0
+
+                    else
+                        deltaMillis // 1000
+
+                minutes =
+                    totalSeconds // 60
+
+                seconds =
+                    modBy 60 totalSeconds
+
+                secondsStr =
+                    if seconds < 10 then
+                        "0" ++ String.fromInt seconds
+
+                    else
+                        String.fromInt seconds
+            in
+            String.fromInt minutes ++ "m" ++ secondsStr ++ "s"

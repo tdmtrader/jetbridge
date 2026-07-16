@@ -192,6 +192,7 @@ pipeline team id =
     , lastUpdatedAt = Time.millisToPosix 0
     , backgroundImage = Maybe.Nothing
     , backgroundFilter = Maybe.Nothing
+    , template = False
     }
 
 

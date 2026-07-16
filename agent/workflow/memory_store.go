@@ -87,6 +87,34 @@ func (m *MemoryStore) Live(name string) (*Definition, bool, error) {
 	return nil, false, nil
 }
 
+func (m *MemoryStore) Latest(name string) (*Definition, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var latest *Definition
+	for _, d := range m.defs {
+		if d.Name == name && (latest == nil || d.Version > latest.Version) {
+			latest = d
+		}
+	}
+	if latest == nil {
+		return nil, false, nil
+	}
+	cp := *latest
+	return &cp, true, nil
+}
+
+func (m *MemoryStore) LiveVersions() (map[string]int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := map[string]int{}
+	for _, d := range m.defs {
+		if d.Live {
+			out[d.Name] = d.Version
+		}
+	}
+	return out, nil
+}
+
 func (m *MemoryStore) List() ([]Definition, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

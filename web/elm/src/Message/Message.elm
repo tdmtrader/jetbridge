@@ -55,9 +55,14 @@ type Message
         , reviewer : String
         }
     | AgentReviewNoteChanged String String
-      -- Agent operator dashboard
-    | AgentRevokePrincipalClicked Int
-    | AgentPromoteWorkflowClicked String Int
+      -- Agent operator page (principal mint form)
+    | AgentMintNameChanged String
+    | AgentMintDescriptionChanged String
+    | AgentMintScopeToggled String
+    | AgentMintExpiresChanged String
+    | AgentMintSubmitted
+    | AgentMintedTokenDismissed
+    | AgentPrincipalRevokeClicked Int
       -- common
     | Hover (Maybe DomID)
     | Click DomID

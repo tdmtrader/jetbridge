@@ -215,6 +215,19 @@ type Effect
     | GetHostname
     | FetchBuildAgentReviews Concourse.BuildId
     | FetchTeamAgentReviews Concourse.TeamName
+    | FetchPipelineRuns Concourse.PipelineIdentifier
+    | FetchAgentRunMetrics
+    | FetchAgentWorkflows
+    | FetchAgentCostRollup
+    | FetchAgentCredentials
+    | FetchAgentPrincipals
+    | CreateAgentPrincipal
+        { name : String
+        , description : String
+        , scopes : List String
+        , expiresInDays : Maybe Int
+        }
+    | RevokeAgentPrincipal Int
     | SubmitAgentReviewVerdict
         { repo : String
         , commitSha : String
@@ -223,13 +236,6 @@ type Effect
         , notes : String
         , reviewer : String
         }
-    | FetchAgentRunMetrics
-    | FetchAgentCosts
-    | FetchAgentWorkflows
-    | FetchAgentPrincipals
-    | FetchAgentCredentials
-    | RevokeAgentPrincipal Int
-    | PromoteAgentWorkflow String Int
 
 
 type alias VersionId =
@@ -781,6 +787,61 @@ runEffect effect key csrfToken =
                 |> Api.request
                 |> Task.attempt TeamAgentReviewsFetched
 
+        FetchPipelineRuns id ->
+            Api.get (Endpoints.PipelineRunsList |> Endpoints.Pipeline id)
+                |> Api.expectJson (Json.Decode.list Concourse.decodePipelineRun)
+                |> Api.request
+                |> Task.attempt PipelineRunsFetched
+
+        FetchAgentRunMetrics ->
+            Api.get Endpoints.AgentMetrics
+                |> Api.expectJson (Json.Decode.list Concourse.Agent.decodeRunMetric)
+                |> Api.request
+                |> Task.attempt AgentRunMetricsFetched
+
+        FetchAgentWorkflows ->
+            Api.get Endpoints.AgentWorkflowsList
+                |> Api.expectJson (Json.Decode.list Concourse.Agent.decodeWorkflowSummary)
+                |> Api.request
+                |> Task.attempt AgentWorkflowsFetched
+
+        FetchAgentCostRollup ->
+            Api.get Endpoints.AgentCostRollup
+                |> Api.expectJson Concourse.Agent.decodeCostRollup
+                |> Api.request
+                |> Task.attempt AgentCostRollupFetched
+
+        FetchAgentCredentials ->
+            Api.get Endpoints.AgentCredentialsStatus
+                |> Api.expectJson Concourse.Agent.decodeCredentialStatuses
+                |> Api.request
+                |> Task.attempt AgentCredentialsFetched
+
+        FetchAgentPrincipals ->
+            Api.get Endpoints.AgentPrincipalsList
+                |> Api.expectJson Concourse.Agent.decodePrincipals
+                |> Api.request
+                |> Task.attempt AgentPrincipalsFetched
+
+        CreateAgentPrincipal params ->
+            -- expiresInDays is a relative "N days" from the mint form; resolve
+            -- it against the current time so the wire `expires_at` is the
+            -- absolute epoch-seconds the API stores.
+            Time.now
+                |> Task.andThen
+                    (\now ->
+                        Api.post Endpoints.AgentPrincipalsList csrfToken
+                            |> Api.withJsonBody (encodeCreatePrincipal now params)
+                            |> Api.expectJson Concourse.Agent.decodePrincipalCreated
+                            |> Api.request
+                    )
+                |> Task.attempt AgentPrincipalCreated
+
+        RevokeAgentPrincipal principalId ->
+            Api.delete (Endpoints.AgentPrincipal principalId) csrfToken
+                |> Api.request
+                |> Task.attempt AgentPrincipalRevoked
+
         SubmitAgentReviewVerdict params ->
             Api.post Endpoints.AgentFeedback csrfToken
                 |> Api.withJsonBody
@@ -801,45 +862,43 @@ runEffect effect key csrfToken =
                 |> Api.request
                 |> Task.attempt (AgentReviewVerdictSubmitted params.findingId)
 
-        FetchAgentRunMetrics ->
-            Api.get Endpoints.AgentMetrics
-                |> Api.expectJson (Json.Decode.list Concourse.Agent.decodeRunMetric)
-                |> Api.request
-                |> Task.attempt AgentRunMetricsFetched
 
-        FetchAgentCosts ->
-            Api.get Endpoints.AgentCosts
-                |> Api.expectJson Concourse.Agent.decodeCostRollup
-                |> Api.request
-                |> Task.attempt AgentCostsFetched
+encodeCreatePrincipal :
+    Time.Posix
+    ->
+        { name : String
+        , description : String
+        , scopes : List String
+        , expiresInDays : Maybe Int
+        }
+    -> Json.Encode.Value
+encodeCreatePrincipal now params =
+    let
+        nowSeconds =
+            Time.posixToMillis now // 1000
 
-        FetchAgentWorkflows ->
-            Api.get Endpoints.AgentWorkflows
-                |> Api.expectJson (Json.Decode.list Concourse.Agent.decodeWorkflow)
-                |> Api.request
-                |> Task.attempt AgentWorkflowsFetched
+        expiry =
+            case params.expiresInDays of
+                Just days ->
+                    if days > 0 then
+                        [ ( "expires_at"
+                          , Json.Encode.int (nowSeconds + days * 86400)
+                          )
+                        ]
 
-        FetchAgentPrincipals ->
-            Api.get Endpoints.AgentPrincipals
-                |> Api.expectJson (Json.Decode.list Concourse.Agent.decodePrincipal)
-                |> Api.request
-                |> Task.attempt AgentPrincipalsFetched
+                    else
+                        []
 
-        FetchAgentCredentials ->
-            Api.get Endpoints.AgentCredentials
-                |> Api.expectJson (Json.Decode.list Concourse.Agent.decodeCredential)
-                |> Api.request
-                |> Task.attempt AgentCredentialsFetched
-
-        RevokeAgentPrincipal principalId ->
-            Api.delete (Endpoints.AgentPrincipal principalId) csrfToken
-                |> Api.request
-                |> Task.attempt (AgentPrincipalRevoked principalId)
-
-        PromoteAgentWorkflow name version ->
-            Api.put (Endpoints.AgentWorkflowLive name version) csrfToken
-                |> Api.request
-                |> Task.attempt (AgentWorkflowPromoted name version)
+                Nothing ->
+                    []
+    in
+    Json.Encode.object
+        ([ ( "name", Json.Encode.string params.name )
+         , ( "description", Json.Encode.string params.description )
+         , ( "scopes", Json.Encode.list Json.Encode.string params.scopes )
+         ]
+            ++ expiry
+        )
 
 
 pipelinesSectionName : PipelinesSection -> String

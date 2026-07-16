@@ -68,6 +68,12 @@ testEndpoints =
                         |> basePipelineEndpoint
                         |> toPath
                         |> Expect.equal "/api/v1/teams/team/pipelines/pipeline/resources"
+            , test "RunsList caps the page size" <|
+                \_ ->
+                    E.PipelineRunsList
+                        |> basePipelineEndpoint
+                        |> toPath
+                        |> Expect.equal "/api/v1/teams/team/pipelines/pipeline/runs?limit=25"
             ]
         , test "Pipeline with instance vars" <|
             \_ ->

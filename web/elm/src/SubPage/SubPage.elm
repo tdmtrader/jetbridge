@@ -135,8 +135,8 @@ init session route =
             AgentReviews.init { teamName = teamName }
                 |> Tuple.mapFirst AgentReviewsModel
 
-        Routes.Agent { teamName } ->
-            Agent.init { teamName = teamName }
+        Routes.Agent ->
+            Agent.init
                 |> Tuple.mapFirst AgentModel
 
 

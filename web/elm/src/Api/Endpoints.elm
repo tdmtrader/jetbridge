@@ -35,14 +35,13 @@ type Endpoint
     | InstanceGroup Concourse.InstanceGroupIdentifier InstanceGroupEndpoint
     | BuildAgentReviews Concourse.BuildId
     | TeamAgentReviews Concourse.TeamName
-    | AgentMetrics
-    | AgentCosts
-    | AgentWorkflows
-    | AgentPrincipals
-    | AgentPrincipal Int
-    | AgentCredentials
-    | AgentWorkflowLive String Int
     | AgentFeedback
+    | AgentMetrics
+    | AgentWorkflowsList
+    | AgentCostRollup
+    | AgentCredentialsStatus
+    | AgentPrincipalsList
+    | AgentPrincipal Int
 
 
 type PipelineEndpoint
@@ -53,6 +52,7 @@ type PipelineEndpoint
     | HidePipeline
     | PipelineJobsList
     | PipelineResourcesList
+    | PipelineRunsList
 
 
 type JobEndpoint
@@ -217,52 +217,51 @@ builder endpoint =
         AgentMetrics ->
             base |> appendPath [ "agent", "metrics" ]
 
-        AgentCosts ->
-            base |> appendPath [ "agent", "costs" ]
-
-        AgentWorkflows ->
+        AgentWorkflowsList ->
             base |> appendPath [ "agent", "workflows" ]
 
-        AgentPrincipals ->
+        AgentCostRollup ->
+            base |> appendPath [ "agent", "costs" ]
+
+        AgentCredentialsStatus ->
+            base |> appendPath [ "agent", "user-credentials" ]
+
+        AgentPrincipalsList ->
             base |> appendPath [ "agent", "principals" ]
 
         AgentPrincipal principalId ->
             base |> appendPath [ "agent", "principals", String.fromInt principalId ]
 
-        AgentCredentials ->
-            base |> appendPath [ "agent", "user-credentials" ]
-
-        AgentWorkflowLive name version ->
-            base
-                |> appendPath
-                    [ "agent", "workflows", name, "versions", String.fromInt version, "live" ]
-
 
 pipelineEndpoint : PipelineEndpoint -> RouteBuilder
 pipelineEndpoint endpoint =
-    ( case endpoint of
+    case endpoint of
         BasePipeline ->
-            []
+            ( [], [] )
 
         PausePipeline ->
-            [ "pause" ]
+            ( [ "pause" ], [] )
 
         UnpausePipeline ->
-            [ "unpause" ]
+            ( [ "unpause" ], [] )
 
         ExposePipeline ->
-            [ "expose" ]
+            ( [ "expose" ], [] )
 
         HidePipeline ->
-            [ "hide" ]
+            ( [ "hide" ], [] )
 
         PipelineJobsList ->
-            [ "jobs" ]
+            ( [ "jobs" ], [] )
 
         PipelineResourcesList ->
-            [ "resources" ]
-    , []
-    )
+            ( [ "resources" ], [] )
+
+        PipelineRunsList ->
+            -- template runs are refetched every 5s alongside the pipeline and
+            -- each row ships its full params JSONB, so cap the page size
+            -- instead of taking the server default of 100
+            ( [ "runs" ], [ Url.Builder.int "limit" 25 ] )
 
 
 jobEndpoint : JobEndpoint -> RouteBuilder

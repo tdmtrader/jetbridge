@@ -47,6 +47,21 @@ if ! colima status >/dev/null 2>&1; then
 fi
 docker ps >/dev/null
 
+echo "==> 1.5/6 Building web assets (yarn build) — REQUIRED before go:embed"
+# web/handler.go embeds web/public into the concourse binary at go build
+# time (//go:embed public). Any Elm/CSS/JS change that is not rebuilt into
+# web/public BEFORE the cross-compile below silently does not ship — the
+# binary keeps the stale bundle. Set LOCAL_DEV_SKIP_WEB=1 to skip when you
+# know the committed web/public is already current (backend-only rebuilds).
+cd "${REPO_ROOT}"
+if [ "${LOCAL_DEV_SKIP_WEB:-0}" = "1" ]; then
+  echo "    LOCAL_DEV_SKIP_WEB=1 — using committed web/public as-is"
+else
+  corepack enable >/dev/null 2>&1 || true
+  yarn install --immutable
+  yarn build   # regenerates web/public/{main.css,elm.js,elm.min.js,bundle.js,*.bundle.js}
+fi
+
 echo "==> 2/6 Cross-compiling linux/arm64 binaries"
 cd "${REPO_ROOT}"
 CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build \

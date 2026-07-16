@@ -108,4 +108,22 @@ var _ = Describe("agentCostObserver", func() {
 		write(`{"type":"result","model":"m1","cost_usd":0.07,"num_turns":2,"usage":{"input_tokens":10,"output_tokens":5}}` + "\n")
 		Expect(observer.Observed().CostUSD).To(BeNumerically("~", 0.07, 1e-9))
 	})
+
+	It("tees a large non-envelope log line through unchanged without raising the floor", func() {
+		// Ordinary agent output (a cat'd artifact, a base64 blob) can be a
+		// multi-MB single line whose first non-space byte is not '{' — it can
+		// never be an envelope, so it must pass through verbatim and never
+		// raise the floor. (It is also not buffered, but that is a memory
+		// property; teeing + zero floor is the observable contract.)
+		bigLog := strings.Repeat("z", (5<<20)+123) + "\n"
+		write(bigLog)
+		write(envelope + "\n")
+		Expect(string(dst.Contents())).To(Equal(bigLog + envelope + "\n"))
+		Expect(observer.Observed().CostUSD).To(BeNumerically("~", 0.42, 1e-9))
+	})
+
+	It("still parses an envelope on a line with leading whitespace", func() {
+		write("   " + envelope + "\n")
+		Expect(observer.Observed().CostUSD).To(BeNumerically("~", 0.42, 1e-9))
+	})
 })

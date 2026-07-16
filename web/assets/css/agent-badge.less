@@ -1,0 +1,46 @@
+@import (reference) "_vars.less";
+
+/* AgentBadge (web/elm/src/AgentBadge.elm) — shared status badge for agentic
+ * pipeline runs. The Elm module emits agent-badge + one tone modifier
+ * (+ --pulse for in-flight states); every tone the module can produce is
+ * styled here. */
+
+.agent-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  border: 1px solid @grey-primary;
+  border-radius: 10px;
+  color: @grey-primary;
+  font-size: 12px;
+  line-height: 16px;
+  white-space: nowrap;
+}
+
+.agent-badge__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: none;
+}
+
+.agent-badge--neutral   { color: @grey-primary;  border-color: @grey-primary; }
+.agent-badge--info      { color: @blue-primary;  border-color: @blue-primary; }
+.agent-badge--active    { color: @yellow;        border-color: @yellow; }
+.agent-badge--attention { color: @amber-primary; border-color: @amber-primary; }
+.agent-badge--good      { color: @green-primary; border-color: @green-primary; }
+.agent-badge--good-muted { color: @green-secondary; border-color: @green-secondary; }
+.agent-badge--warn      { color: @red-primary;   border-color: @red-primary; }
+.agent-badge--calm      { color: @blue-secondary; border-color: @blue-secondary; }
+
+.agent-badge--pulse .agent-badge__dot {
+  animation: agent-badge-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes agent-badge-pulse {
+  0%   { opacity: 1; }
+  50%  { opacity: 0.25; }
+  100% { opacity: 1; }
+}

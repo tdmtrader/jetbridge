@@ -86,6 +86,15 @@ func WithAgentBudgetChecker(c budget.Checker) AgentStepOption {
 	return func(s *AgentStep) { s.budgetChecker = c }
 }
 
+// WithAgentPlatformTokenSecret sets the name of an operator-configured K8s
+// secret holding a platform-level Anthropic token (key "anthropic-token").
+// It is the pure-CI token path (§8.1): agent steps with no verified
+// pipeline-run id wire CLAUDE_CODE_OAUTH_TOKEN from it as a secretKeyRef.
+// The per-run agent-run-<id> secret always takes precedence.
+func WithAgentPlatformTokenSecret(name string) AgentStepOption {
+	return func(s *AgentStep) { s.platformTokenSecret = name }
+}
+
 // WithAgentRunVerifier sets the verifier consulted before any sidecar secret
 // refs are injected. Without it the step fails closed: no refs are ever set.
 func WithAgentRunVerifier(v AgentRunVerifier) AgentStepOption {
@@ -96,21 +105,22 @@ func WithAgentRunVerifier(v AgentRunVerifier) AgentStepOption {
 // jetbridge pod with declared MCP sidecars, then ingests the flight
 // recorder server-side (shared-contracts §2.8, §5, §8.1).
 type AgentStep struct {
-	planID            atc.PlanID
-	plan              atc.AgentPlan
-	defaultLimits     atc.ContainerLimits
-	defaultRequests   atc.ContainerLimits
-	metadata          StepMetadata
-	containerMetadata db.ContainerMetadata
-	workerPool        Pool
-	streamer          Streamer
-	delegateFactory   TaskDelegateFactory
-	defaultTimeout    time.Duration
-	agentImage        string
-	imageResolver     imageresolver.Resolver
-	metricsStore      metrics.Store
-	budgetChecker     budget.Checker
-	runVerifier       AgentRunVerifier
+	planID              atc.PlanID
+	plan                atc.AgentPlan
+	defaultLimits       atc.ContainerLimits
+	defaultRequests     atc.ContainerLimits
+	metadata            StepMetadata
+	containerMetadata   db.ContainerMetadata
+	workerPool          Pool
+	streamer            Streamer
+	delegateFactory     TaskDelegateFactory
+	defaultTimeout      time.Duration
+	agentImage          string
+	imageResolver       imageresolver.Resolver
+	metricsStore        metrics.Store
+	budgetChecker       budget.Checker
+	runVerifier         AgentRunVerifier
+	platformTokenSecret string
 }
 
 func NewAgentStep(
@@ -468,6 +478,13 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 	if secretRunID > 0 {
 		containerSpec.SecretEnv = map[string]vars.SecretRef{
 			"CLAUDE_CODE_OAUTH_TOKEN": {Name: secretName, Key: "anthropic-token"},
+		}
+	} else if step.platformTokenSecret != "" {
+		// Pure-CI token path (§8.1): no per-run secret exists, so fall back to
+		// the operator-configured platform secret. Same secretKeyRef-only
+		// contract — the token never lands in pipeline YAML or literal env.
+		containerSpec.SecretEnv = map[string]vars.SecretRef{
+			"CLAUDE_CODE_OAUTH_TOKEN": {Name: step.platformTokenSecret, Key: "anthropic-token"},
 		}
 	}
 

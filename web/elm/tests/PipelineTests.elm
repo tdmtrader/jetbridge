@@ -10,6 +10,7 @@ import Concourse
 import Concourse.BuildStatus as BuildStatus
 import DashboardTests exposing (iconSelector)
 import Data
+import Dict
 import Expect exposing (..)
 import Html.Attributes as Attr
 import Json.Encode
@@ -861,6 +862,160 @@ all =
                                     ]
                                 )
                 ]
+            ]
+        , describe "pipeline runs" <|
+            let
+                templatePipeline =
+                    let
+                        p =
+                            Data.pipeline "team" 1 |> Data.withName "pipeline"
+                    in
+                    { p | template = True }
+
+                nonTemplatePipeline =
+                    Data.pipeline "team" 1 |> Data.withName "pipeline"
+
+                succeededRun =
+                    { id = 1
+                    , number = 42
+                    , status = "succeeded"
+                    , params = Dict.empty
+                    , createdAt = Time.millisToPosix 0
+                    , completedAt = Just (Time.millisToPosix 65000)
+                    }
+
+                awaitingRun =
+                    { id = 2
+                    , number = 7
+                    , status = "awaiting_human"
+                    , params = Dict.empty
+                    , createdAt = Time.millisToPosix 0
+                    , completedAt = Nothing
+                    }
+
+                skewedRun =
+                    { id = 3
+                    , number = 8
+                    , status = "succeeded"
+                    , params = Dict.empty
+                    , createdAt = Time.millisToPosix 5000
+                    , completedAt = Just (Time.millisToPosix 0)
+                    }
+
+                stringParamRun =
+                    { id = 4
+                    , number = 9
+                    , status = "succeeded"
+                    , params = Dict.fromList [ ( "greeting", Concourse.JsonString "\"hi\"" ) ]
+                    , createdAt = Time.millisToPosix 0
+                    , completedAt = Just (Time.millisToPosix 5000)
+                    }
+            in
+            [ test "template pipeline fetch chains a runs fetch" <|
+                \_ ->
+                    Common.init "/teams/team/pipelines/pipeline"
+                        |> Application.handleCallback
+                            (Callback.PipelineFetched (Ok templatePipeline))
+                        |> Tuple.second
+                        |> Common.contains (Effects.FetchPipelineRuns Data.pipelineId)
+            , test "non-template pipeline fetch does not fetch runs" <|
+                \_ ->
+                    Common.init "/teams/team/pipelines/pipeline"
+                        |> Application.handleCallback
+                            (Callback.PipelineFetched (Ok nonTemplatePipeline))
+                        |> Tuple.second
+                        |> Common.notContains (Effects.FetchPipelineRuns Data.pipelineId)
+            , test "template pipeline renders runs list with number and status" <|
+                \_ ->
+                    Common.init "/teams/team/pipelines/pipeline"
+                        |> Application.handleCallback
+                            (Callback.PipelineFetched (Ok templatePipeline))
+                        |> Tuple.first
+                        |> Application.handleCallback
+                            (Callback.PipelineRunsFetched (Ok [ succeededRun ]))
+                        |> Tuple.first
+                        |> Common.queryView
+                        |> Query.find [ class "pipeline-runs" ]
+                        |> Query.has [ text "#42", text "succeeded" ]
+            , test "non-template pipeline does not render runs list" <|
+                \_ ->
+                    Common.init "/teams/team/pipelines/pipeline"
+                        |> Application.handleCallback
+                            (Callback.PipelineFetched (Ok nonTemplatePipeline))
+                        |> Tuple.first
+                        |> Common.queryView
+                        |> Query.hasNot [ class "pipeline-runs" ]
+            , test "awaiting_human run renders the shared attention AgentBadge" <|
+                \_ ->
+                    Common.init "/teams/team/pipelines/pipeline"
+                        |> Application.handleCallback
+                            (Callback.PipelineFetched (Ok templatePipeline))
+                        |> Tuple.first
+                        |> Application.handleCallback
+                            (Callback.PipelineRunsFetched (Ok [ awaitingRun ]))
+                        |> Tuple.first
+                        |> Common.queryView
+                        |> Query.find [ class "pipeline-runs" ]
+                        |> Query.has
+                            [ class "agent-badge"
+                            , class "agent-badge--attention"
+                            , class "agent-badge--pulse"
+                            , text "Waiting on you"
+                            ]
+            , test "failed run renders through the shared AgentBadge" <|
+                \_ ->
+                    Common.init "/teams/team/pipelines/pipeline"
+                        |> Application.handleCallback
+                            (Callback.PipelineFetched (Ok templatePipeline))
+                        |> Tuple.first
+                        |> Application.handleCallback
+                            (Callback.PipelineRunsFetched
+                                (Ok [ { awaitingRun | status = "failed" } ])
+                            )
+                        |> Tuple.first
+                        |> Common.queryView
+                        |> Query.find [ class "pipeline-runs" ]
+                        |> Query.has
+                            [ class "agent-badge"
+                            , class "agent-badge--bad"
+                            , text "Failed"
+                            ]
+            , test "run duration zero-pads seconds to two digits" <|
+                \_ ->
+                    Common.init "/teams/team/pipelines/pipeline"
+                        |> Application.handleCallback
+                            (Callback.PipelineFetched (Ok templatePipeline))
+                        |> Tuple.first
+                        |> Application.handleCallback
+                            (Callback.PipelineRunsFetched (Ok [ succeededRun ]))
+                        |> Tuple.first
+                        |> Common.queryView
+                        |> Query.find [ class "pipeline-runs" ]
+                        |> Query.has [ text "1m05s" ]
+            , test "run duration clamps negative (clock-skewed) interval to zero" <|
+                \_ ->
+                    Common.init "/teams/team/pipelines/pipeline"
+                        |> Application.handleCallback
+                            (Callback.PipelineFetched (Ok templatePipeline))
+                        |> Tuple.first
+                        |> Application.handleCallback
+                            (Callback.PipelineRunsFetched (Ok [ skewedRun ]))
+                        |> Tuple.first
+                        |> Common.queryView
+                        |> Query.find [ class "pipeline-runs" ]
+                        |> Query.has [ text "0m00s" ]
+            , test "string run params render without escape mangling" <|
+                \_ ->
+                    Common.init "/teams/team/pipelines/pipeline"
+                        |> Application.handleCallback
+                            (Callback.PipelineFetched (Ok templatePipeline))
+                        |> Tuple.first
+                        |> Application.handleCallback
+                            (Callback.PipelineRunsFetched (Ok [ stringParamRun ]))
+                        |> Tuple.first
+                        |> Common.queryView
+                        |> Query.find [ class "pipeline-runs" ]
+                        |> Query.has [ text "greeting=\"hi\"" ]
             ]
         ]
 

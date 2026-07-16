@@ -882,6 +882,67 @@ var _ = Describe("AgentStep", func() {
 				Expect(spec.SecretEnv).ToNot(HaveKey("CLAUDE_CODE_OAUTH_TOKEN"))
 				Expect(spec.SidecarEnv["platform"]).To(ContainElement(HavePrefix("ATC_EXTERNAL_URL=")))
 			})
+
+			// --- pure-CI token path (§8.1) ---
+			// A pure-CI agent step has no agent-run-<id> secret, but §8.1 still
+			// supports it as a first-class concept. When the operator configures
+			// a platform-level agent secret (web flag), the step wires
+			// CLAUDE_CODE_OAUTH_TOKEN to it as a secretKeyRef — the token never
+			// touches pipeline YAML or the pod's literal env.
+			Context("with a platform-level agent secret configured", func() {
+				var platformStep exec.Step
+
+				JustBeforeEach(func() {
+					platformStep = exec.NewAgentStep(
+						planID, agentPlan,
+						atc.ContainerLimits{}, atc.ContainerLimits{},
+						stepMetadata, containerMetadata,
+						fakePool, fakeStreamer, fakeDelegateFactory,
+						0, agentImage,
+						exec.WithAgentBudgetChecker(fakeChecker),
+						exec.WithAgentMetricsStore(fakeMetricsStore),
+						exec.WithAgentRunVerifier(fakeRunVerifier),
+						exec.WithAgentPlatformTokenSecret("platform-agent-token"),
+					)
+				})
+
+				It("wires CLAUDE_CODE_OAUTH_TOKEN from the platform secret as a secretKeyRef", func() {
+					_, err := platformStep.Run(ctx, state)
+					Expect(err).ToNot(HaveOccurred())
+
+					_, _, spec, _ := fakePool.FindOrSelectWorkerArgsForCall(0)
+					Expect(spec.SecretEnv).To(HaveKeyWithValue(
+						"CLAUDE_CODE_OAUTH_TOKEN", vars.SecretRef{Name: "platform-agent-token", Key: "anthropic-token"}))
+					// secretKeyRef-only: never a literal env value.
+					Expect(spec.Env).ToNot(ContainElement(HavePrefix("CLAUDE_CODE_OAUTH_TOKEN=")))
+				})
+			})
+		})
+
+		Context("on a platform RUN with a platform-level secret also configured", func() {
+			BeforeEach(func() {
+				agentPlan.Env["AGENT_PIPELINE_RUN_ID"] = "42"
+			})
+
+			It("prefers the per-run secret over the platform fallback", func() {
+				runStep := exec.NewAgentStep(
+					planID, agentPlan,
+					atc.ContainerLimits{}, atc.ContainerLimits{},
+					stepMetadata, containerMetadata,
+					fakePool, fakeStreamer, fakeDelegateFactory,
+					0, agentImage,
+					exec.WithAgentBudgetChecker(fakeChecker),
+					exec.WithAgentMetricsStore(fakeMetricsStore),
+					exec.WithAgentRunVerifier(fakeRunVerifier),
+					exec.WithAgentPlatformTokenSecret("platform-agent-token"),
+				)
+				_, err := runStep.Run(ctx, state)
+				Expect(err).ToNot(HaveOccurred())
+
+				_, _, spec, _ := fakePool.FindOrSelectWorkerArgsForCall(0)
+				Expect(spec.SecretEnv).To(HaveKeyWithValue(
+					"CLAUDE_CODE_OAUTH_TOKEN", vars.SecretRef{Name: "agent-run-42", Key: "anthropic-token"}))
+			})
 		})
 
 		It("sets each unset MCP sidecar WorkingDir to the workspace mount (F21)", func() {

@@ -10,19 +10,27 @@ module Agent.Agent exposing
     , view
     )
 
+import AgentBadge
 import Application.Models exposing (Session)
+import Colors
 import Concourse.Agent as Agent
-import Dict
 import EffectTransformer exposing (ET)
 import Html exposing (Html)
-import Html.Attributes exposing (class, disabled, id, style, title)
-import Html.Events exposing (onClick)
+import Html.Attributes exposing (checked, class, disabled, id, placeholder, style, type_, value)
+import Html.Events exposing (onClick, onInput)
+import Http
 import Login.Login as Login
 import Message.Callback exposing (Callback(..))
 import Message.Effects exposing (Effect(..))
 import Message.Message exposing (Message(..))
-import Message.Subscription exposing (Delivery(..), Interval(..), Subscription(..))
+import Message.Subscription
+    exposing
+        ( Delivery(..)
+        , Interval(..)
+        , Subscription(..)
+        )
 import Routes
+import Set exposing (Set)
 import SideBar.SideBar as SideBar
 import Time
 import Tooltip
@@ -30,123 +38,270 @@ import Views.Styles
 import Views.TopBar as TopBar
 
 
+{-| The closed scope vocabulary an admin may grant when minting a principal.
+Mirrors agent/api/principals `ValidScopes`; keep the two in lockstep.
+-}
+mintScopeVocabulary : List String
+mintScopeVocabulary =
+    [ "reviews:write"
+    , "tickets:read"
+    , "tickets:write"
+    , "metrics:write"
+    , "costs:write"
+    , "questions:answer"
+    ]
+
+
 type alias Model =
     Login.Model
-        { teamName : String
-        , now : Time.Posix
-        , runs : List Agent.RunMetric
-        , runsError : Bool
-        , costs : Maybe Agent.CostRollup
-        , costsError : Bool
-        , workflows : List Agent.Workflow
-        , workflowsError : Bool
-        , principals : List Agent.Principal
-        , principalsError : Bool
-        , credentials : List Agent.Credential
-        , credentialsError : Bool
+        { runs : Maybe (List Agent.RunMetric)
+        , runsError : Maybe String
+        , workflows : Maybe (List Agent.WorkflowSummary)
+        , costRollup : Maybe Agent.CostRollup
+        , workflowsError : Maybe String
+        , costError : Maybe String
+        , credentials : Maybe (List Agent.CredentialStatus)
+        , credentialsError : Maybe String
+        , principals : Maybe (List Agent.Principal)
+        , principalsError : Maybe String
+        , mintName : String
+        , mintDescription : String
+        , mintScopes : Set String
+        , mintExpiresDays : String
+        , mintedToken : Maybe String
+        , mintError : Maybe String
+        , minting : Bool
+        , revokeError : Maybe String
         }
 
 
-init : { teamName : String } -> ( Model, List Effect )
-init { teamName } =
-    ( { teamName = teamName
-      , now = Time.millisToPosix 0
-      , runs = []
-      , runsError = False
-      , costs = Nothing
-      , costsError = False
-      , workflows = []
-      , workflowsError = False
-      , principals = []
-      , principalsError = False
-      , credentials = []
-      , credentialsError = False
+init : ( Model, List Effect )
+init =
+    ( { runs = Nothing
+      , runsError = Nothing
+      , workflows = Nothing
+      , costRollup = Nothing
+      , workflowsError = Nothing
+      , costError = Nothing
+      , credentials = Nothing
+      , credentialsError = Nothing
+      , principals = Nothing
+      , principalsError = Nothing
+      , mintName = ""
+      , mintDescription = ""
+      , mintScopes = Set.empty
+      , mintExpiresDays = ""
+      , mintedToken = Nothing
+      , mintError = Nothing
+      , minting = False
+      , revokeError = Nothing
       , isUserMenuExpanded = False
       }
     , [ FetchAgentRunMetrics
-      , FetchAgentCosts
       , FetchAgentWorkflows
-      , FetchAgentPrincipals
+      , FetchAgentCostRollup
       , FetchAgentCredentials
+      , FetchAgentPrincipals
       ]
     )
 
 
 documentTitle : String
 documentTitle =
-    "Agent platform"
+    "Agent"
 
 
 handleCallback : Callback -> ET Model
 handleCallback callback ( model, effects ) =
     case callback of
         AgentRunMetricsFetched (Ok runs) ->
-            ( { model | runs = runs, runsError = False }, effects )
+            ( { model | runs = Just runs, runsError = Nothing }, effects )
 
-        AgentRunMetricsFetched (Err _) ->
-            ( { model | runsError = True }, effects )
+        AgentRunMetricsFetched (Err err) ->
+            ( { model | runsError = Just (errorMessage "runs" err) }, effects )
 
-        AgentCostsFetched (Ok costs) ->
-            ( { model | costs = Just costs, costsError = False }, effects )
+        AgentWorkflowsFetched (Ok workflows) ->
+            ( { model | workflows = Just workflows, workflowsError = Nothing }, effects )
 
-        AgentCostsFetched (Err _) ->
-            ( { model | costsError = True }, effects )
+        AgentWorkflowsFetched (Err err) ->
+            ( { model | workflowsError = Just (errorMessage "workflows" err) }, effects )
 
-        AgentWorkflowsFetched (Ok ws) ->
-            ( { model | workflows = ws, workflowsError = False }, effects )
+        AgentCostRollupFetched (Ok costRollup) ->
+            ( { model | costRollup = Just costRollup, costError = Nothing }, effects )
 
-        AgentWorkflowsFetched (Err _) ->
-            ( { model | workflowsError = True }, effects )
+        AgentCostRollupFetched (Err err) ->
+            ( { model | costError = Just (errorMessage "costs" err) }, effects )
 
-        AgentPrincipalsFetched (Ok ps) ->
-            ( { model | principals = ps, principalsError = False }, effects )
+        AgentCredentialsFetched (Ok credentials) ->
+            ( { model | credentials = Just credentials, credentialsError = Nothing }, effects )
 
-        AgentPrincipalsFetched (Err _) ->
-            ( { model | principalsError = True }, effects )
+        AgentCredentialsFetched (Err err) ->
+            ( { model | credentialsError = Just (errorMessage "credentials" err) }, effects )
 
-        AgentCredentialsFetched (Ok cs) ->
-            ( { model | credentials = cs, credentialsError = False }, effects )
+        AgentPrincipalsFetched (Ok principals) ->
+            ( { model | principals = Just principals, principalsError = Nothing }, effects )
 
-        AgentCredentialsFetched (Err _) ->
-            ( { model | credentialsError = True }, effects )
+        AgentPrincipalsFetched (Err err) ->
+            ( { model | principalsError = Just (errorMessage "principals" err) }, effects )
 
-        AgentPrincipalRevoked _ (Ok ()) ->
-            -- re-fetch so the row shows its revoked state authoritatively
-            ( model, effects ++ [ FetchAgentPrincipals ] )
+        AgentPrincipalCreated (Ok created) ->
+            -- Surface the one-time token, clear the form, and refetch so the
+            -- new principal appears in the table. The refetch does not touch
+            -- mintedToken, so the token box survives the next 5s tick.
+            -- Clearing `minting` re-enables the form for the next mint.
+            ( { model
+                | mintedToken = Just created.token
+                , mintName = ""
+                , mintDescription = ""
+                , mintScopes = Set.empty
+                , mintExpiresDays = ""
+                , mintError = Nothing
+                , minting = False
+              }
+            , effects ++ [ FetchAgentPrincipals ]
+            )
 
-        AgentWorkflowPromoted _ _ (Ok ()) ->
-            ( model, effects ++ [ FetchAgentWorkflows ] )
+        AgentPrincipalCreated (Err err) ->
+            -- Re-enable the form so the admin can retry after a failed mint.
+            ( { model | mintError = Just (mutationError "mint" err), minting = False }
+            , effects
+            )
+
+        AgentPrincipalRevoked (Ok ()) ->
+            ( { model | revokeError = Nothing }, effects ++ [ FetchAgentPrincipals ] )
+
+        AgentPrincipalRevoked (Err err) ->
+            -- Revoke failures surface next to the principals table (via
+            -- revokeError), not inside the mint form.
+            ( { model | revokeError = Just (mutationError "revoke" err) }, effects )
 
         _ ->
             ( model, effects )
+
+
+{-| Turn an Http.Error into a short human message. A 403 on these admin-only
+endpoints is the common case (non-admin users), so it gets a specific note;
+everything else falls back to a generic "couldn't load …".
+-}
+errorMessage : String -> Http.Error -> String
+errorMessage what err =
+    case err of
+        Http.BadStatus { status } ->
+            if status.code == 403 then
+                "not authorized — the agent " ++ what ++ " API is admin-only"
+
+            else
+                "couldn't load " ++ what
+
+        _ ->
+            "couldn't load " ++ what
+
+
+{-| Short message for a failed principal mutation (mint/revoke). A 403 is the
+admin-only case; anything else is a generic couldn't-verb message.
+-}
+mutationError : String -> Http.Error -> String
+mutationError verb err =
+    case err of
+        Http.BadStatus { status } ->
+            if status.code == 403 then
+                "not authorized — principals are admin-only"
+
+            else
+                "couldn't " ++ verb ++ " principal"
+
+        _ ->
+            "couldn't " ++ verb ++ " principal"
+
+
+{-| The mint button is enabled only with a non-empty name, at least one scope
+selected, and a valid expiry field — the same required-field rule the API
+enforces. A blank expiry is valid (= no expiry); any non-blank value must
+parse to a positive integer number of days.
+-}
+canMint : Model -> Bool
+canMint model =
+    (String.trim model.mintName /= "")
+        && not (Set.isEmpty model.mintScopes)
+        && expiresIsValid model.mintExpiresDays
+
+
+{-| The "expires in N days" field is valid when it is blank (no expiry) or
+parses to a positive integer. Blank, zero, negative, and non-numeric input
+that would silently mean "never expires" are surfaced as invalid instead.
+-}
+expiresIsValid : String -> Bool
+expiresIsValid raw =
+    case String.trim raw of
+        "" ->
+            True
+
+        trimmed ->
+            case String.toInt trimmed of
+                Just days ->
+                    days > 0
+
+                Nothing ->
+                    False
 
 
 update : Message -> ET Model
 update msg ( model, effects ) =
     case msg of
-        AgentRevokePrincipalClicked principalId ->
-            ( model, effects ++ [ RevokeAgentPrincipal principalId ] )
+        AgentMintNameChanged name ->
+            ( { model | mintName = name }, effects )
 
-        AgentPromoteWorkflowClicked name version ->
-            ( model, effects ++ [ PromoteAgentWorkflow name version ] )
+        AgentMintDescriptionChanged description ->
+            ( { model | mintDescription = description }, effects )
+
+        AgentMintScopeToggled scope ->
+            let
+                scopes =
+                    if Set.member scope model.mintScopes then
+                        Set.remove scope model.mintScopes
+
+                    else
+                        Set.insert scope model.mintScopes
+            in
+            ( { model | mintScopes = scopes }, effects )
+
+        AgentMintExpiresChanged days ->
+            ( { model | mintExpiresDays = days }, effects )
+
+        AgentMintSubmitted ->
+            -- Guard on `minting` as well so a fast double-click can't dispatch
+            -- two CreateAgentPrincipal effects (which would orphan the first
+            -- one's one-time token). `minting` is cleared in the
+            -- AgentPrincipalCreated Ok/Err handlers.
+            if canMint model && not model.minting then
+                ( { model | minting = True }
+                , effects
+                    ++ [ CreateAgentPrincipal
+                            { name = String.trim model.mintName
+                            , description = String.trim model.mintDescription
+                            , scopes = Set.toList model.mintScopes
+                            , expiresInDays =
+                                model.mintExpiresDays
+                                    |> String.trim
+                                    |> String.toInt
+                            }
+                       ]
+                )
+
+            else
+                ( model, effects )
+
+        AgentMintedTokenDismissed ->
+            ( { model | mintedToken = Nothing }, effects )
+
+        AgentPrincipalRevokeClicked principalId ->
+            -- Clear any stale revoke error before the new attempt.
+            ( { model | revokeError = Nothing }
+            , effects ++ [ RevokeAgentPrincipal principalId ]
+            )
 
         _ ->
             ( model, effects )
-
-
-handleDelivery : Delivery -> ET Model
-handleDelivery delivery ( model, effects ) =
-    case delivery of
-        ClockTicked _ time ->
-            ( { model | now = time }, effects )
-
-        _ ->
-            ( model, effects )
-
-
-subscriptions : List Subscription
-subscriptions =
-    [ OnClockTick FiveSeconds ]
 
 
 tooltip : Model -> a -> Maybe Tooltip.Tooltip
@@ -154,15 +309,171 @@ tooltip _ _ =
     Nothing
 
 
+handleDelivery : Delivery -> ET Model
+handleDelivery delivery ( model, effects ) =
+    case delivery of
+        ClockTicked OneMinute _ ->
+            -- Self-healing refresh. These fetches only replace the fetched
+            -- data (and clear their own errors); they never touch the mint
+            -- form or the one-time token box, so a tick can't wipe them.
+            -- One minute is plenty: this is near-static admin data (the cost
+            -- rollup alone is a 30-day ledger aggregation), and mutations
+            -- (mint/revoke/promote) already refetch explicitly.
+            ( model
+            , effects
+                ++ [ FetchAgentRunMetrics
+                   , FetchAgentWorkflows
+                   , FetchAgentCostRollup
+                   , FetchAgentCredentials
+                   , FetchAgentPrincipals
+                   ]
+            )
 
--- VIEW ------------------------------------------------------------------------
+        _ ->
+            ( model, effects )
+
+
+subscriptions : List Subscription
+subscriptions =
+    [ OnClockTick OneMinute ]
+
+
+
+-- COLORS / STYLE HELPERS
+
+
+mutedColor : String
+mutedColor =
+    "#b0b0b0"
+
+
+subtleColor : String
+subtleColor =
+    "#7a7a7a"
+
+
+rowBorder : String
+rowBorder =
+    "1px solid " ++ Colors.background
+
+
+amberColor : String
+amberColor =
+    "#e0a44e"
+
+
+{-| Round a dollar amount to two decimals via integer cents so the display
+never leaks floating-point noise (e.g. 0.1 + 0.2).
+-}
+formatUsd : Float -> String
+formatUsd amount =
+    let
+        cents =
+            round (amount * 100)
+
+        sign =
+            if cents < 0 then
+                "-"
+
+            else
+                ""
+
+        absCents =
+            abs cents
+
+        dollars =
+            absCents // 100
+
+        remainder =
+            modBy 100 absCents
+
+        fraction =
+            if remainder < 10 then
+                "0" ++ String.fromInt remainder
+
+            else
+                String.fromInt remainder
+    in
+    sign ++ String.fromInt dollars ++ "." ++ fraction
+
+
+sectionBlock : String -> List (Html Message) -> Html Message
+sectionBlock title children =
+    Html.div
+        [ style "margin-top" "24px" ]
+        (Html.h2
+            [ style "font-size" "15px"
+            , style "margin" "0 0 8px 0"
+            , style "color" Colors.text
+            ]
+            [ Html.text title ]
+            :: children
+        )
+
+
+mutedLine : String -> Html Message
+mutedLine content =
+    Html.p
+        [ style "color" mutedColor
+        , style "font-family" "monospace"
+        , style "font-size" "12px"
+        , style "margin" "4px 0"
+        ]
+        [ Html.text content ]
+
+
+errorLine : String -> Html Message
+errorLine content =
+    Html.p
+        [ class "agent-section-error"
+        , style "color" amberColor
+        , style "font-family" "monospace"
+        , style "font-size" "12px"
+        , style "margin" "4px 0"
+        ]
+        [ Html.text content ]
+
+
+{-| A visible warning shown above a section's content when a poll fails after
+data has already loaded. Without it a broken refresh is invisible — the stale
+data keeps rendering forever with no hint that it stopped updating.
+-}
+staleDataWarning : Maybe String -> List (Html Message)
+staleDataWarning maybeError =
+    case maybeError of
+        Just message ->
+            [ Html.div [ class "agent-section-stale" ]
+                [ errorLine ("refresh failed — showing stale data: " ++ message) ]
+            ]
+
+        Nothing ->
+            []
+
+
+pill : String -> { bg : String, fg : String } -> String -> Html Message
+pill className { bg, fg } labelText =
+    Html.span
+        [ class className
+        , style "margin-left" "8px"
+        , style "padding" "1px 8px"
+        , style "border-radius" "3px"
+        , style "font-size" "11px"
+        , style "font-weight" "700"
+        , style "background" bg
+        , style "color" fg
+        ]
+        [ Html.text labelText ]
+
+
+
+-- VIEW
 
 
 view : Session -> Model -> Html Message
 view session model =
     let
         route =
-            Routes.Agent { teamName = model.teamName }
+            Routes.Agent
     in
     Html.div
         (id "page-including-top-bar" :: Views.Styles.pageIncludingTopBar)
@@ -179,248 +490,145 @@ view session model =
             (id "page-below-top-bar" :: Views.Styles.pageBelowTopBar route)
             [ SideBar.view session Nothing
             , Html.div
-                [ id "agent-dashboard"
-                , style "padding" "20px 24px"
-                , style "width" "100%"
-                , style "overflow-y" "auto"
-                , style "color" "#e6e7e8"
-                ]
+                [ style "padding" "16px", style "width" "100%" ]
                 [ Html.h1
-                    [ style "font-size" "20px", style "font-weight" "700", style "margin-bottom" "4px" ]
-                    [ Html.text "Agent platform" ]
+                    [ style "font-size" "18px"
+                    , style "margin" "0"
+                    , style "color" Colors.text
+                    ]
+                    [ Html.text "Agent" ]
                 , Html.p
-                    [ style "color" "#9b9b9b", style "margin-bottom" "20px", style "font-size" "13px" ]
-                    [ Html.text "Runs, cost, workflow versions, principals, and credentials for agentic work." ]
-                , costSummaryView model
-                , sectionView "Recent agent runs"
-                    model.runsError
-                    (List.isEmpty model.runs)
-                    "No agent runs recorded yet."
-                    (runsTable model)
-                , sectionView "Spend by day"
-                    model.costsError
-                    (model.costs == Nothing || List.isEmpty (costsRows model))
-                    "No cost entries yet."
-                    (costsTable model)
-                , sectionView "Workflow definitions"
-                    model.workflowsError
-                    (List.isEmpty model.workflows)
-                    "No workflow definitions imported."
-                    (workflowsTable model)
-                , sectionView "Principals"
-                    model.principalsError
-                    (List.isEmpty model.principals)
-                    "No agent principals."
-                    (principalsTable model)
-                , sectionView "User credentials"
-                    model.credentialsError
-                    (List.isEmpty model.credentials)
-                    "No vaulted credentials."
-                    (credentialsTable model)
+                    [ style "color" mutedColor
+                    , style "font-family" "monospace"
+                    , style "font-size" "12px"
+                    , style "margin" "4px 0 0 0"
+                    ]
+                    [ Html.text "workflows and spend" ]
+                , runsSection model
+                , workflowsSection model
+                , costsSection model
+                , credentialsSection model
+                , principalsSection model
                 ]
             ]
         ]
 
 
 
--- shared building blocks ------------------------------------------------------
+-- RUNS SECTION
 
 
-card : List (Html Message) -> Html Message
-card children =
-    Html.div
-        [ style "background" "#2e2c2c"
-        , style "border" "1px solid #3d3c3c"
-        , style "border-radius" "4px"
-        , style "margin-bottom" "20px"
-        , style "overflow-x" "auto"
-        ]
-        children
+runsSection : Model -> Html Message
+runsSection model =
+    sectionBlock "Recent runs" <|
+        case model.runs of
+            Nothing ->
+                case model.runsError of
+                    Just message ->
+                        [ errorLine message ]
+
+                    Nothing ->
+                        [ mutedLine "loading…" ]
+
+            Just [] ->
+                staleDataWarning model.runsError
+                    ++ [ mutedLine "no agent runs recorded yet" ]
+
+            Just runs ->
+                staleDataWarning model.runsError
+                    ++ [ runsTable runs ]
 
 
-sectionView : String -> Bool -> Bool -> String -> Html Message -> Html Message
-sectionView heading hasError isEmpty emptyText body =
-    Html.div [ style "margin-bottom" "24px" ]
-        [ Html.h2
-            [ style "font-size" "14px"
-            , style "font-weight" "700"
-            , style "text-transform" "uppercase"
-            , style "letter-spacing" "0.06em"
-            , style "color" "#c8c8c8"
-            , style "margin-bottom" "8px"
-            ]
-            [ Html.text heading ]
-        , if hasError then
-            Html.p [ style "color" "#f0a0a0", style "font-size" "13px" ]
-                [ Html.text ("Couldn't load " ++ String.toLower heading ++ ".") ]
-
-          else if isEmpty then
-            Html.p [ style "color" "#8a8a8a", style "font-size" "13px" ] [ Html.text emptyText ]
-
-          else
-            card [ body ]
-        ]
-
-
-th : String -> Html Message
-th label =
-    Html.th
-        [ style "text-align" "left"
-        , style "padding" "8px 12px"
-        , style "font-size" "11px"
-        , style "text-transform" "uppercase"
-        , style "letter-spacing" "0.05em"
-        , style "color" "#8a8a8a"
-        , style "border-bottom" "1px solid #3d3c3c"
-        , style "white-space" "nowrap"
-        ]
-        [ Html.text label ]
-
-
-td : List (Html.Attribute Message) -> List (Html Message) -> Html Message
-td attrs children =
-    Html.td
-        ([ style "padding" "8px 12px"
-         , style "font-size" "13px"
-         , style "border-bottom" "1px solid #363535"
-         , style "white-space" "nowrap"
-         ]
-            ++ attrs
-        )
-        children
-
-
-tableEl : List (Html Message) -> List (Html Message) -> Html Message
-tableEl headers rows =
+runsTable : List Agent.RunMetric -> Html Message
+runsTable runs =
     Html.table
-        [ style "width" "100%"
+        [ class "agent-runs-table"
         , style "border-collapse" "collapse"
-        , style "font-variant-numeric" "tabular-nums"
+        , style "font-family" "monospace"
+        , style "font-size" "12px"
+        , style "color" Colors.text
         ]
-        [ Html.thead [] [ Html.tr [] headers ]
-        , Html.tbody [] rows
-        ]
+        (runsHeaderRow :: List.map runRow runs)
 
 
-badge : String -> String -> Html Message
-badge bg label =
-    Html.span
-        [ style "background" bg
-        , style "color" "#fff"
-        , style "padding" "1px 7px"
-        , style "border-radius" "3px"
-        , style "font-size" "11px"
-        , style "font-weight" "700"
-        , style "text-transform" "uppercase"
-        , style "letter-spacing" "0.03em"
-        ]
-        [ Html.text label ]
-
-
-
--- cost summary ----------------------------------------------------------------
-
-
-costSummaryView : Model -> Html Message
-costSummaryView model =
-    case model.costs of
-        Nothing ->
-            Html.text ""
-
-        Just c ->
-            let
-                stat label value sub =
-                    Html.div
-                        [ style "flex" "1"
-                        , style "min-width" "150px"
-                        , style "padding" "14px 18px"
-                        , style "border-right" "1px solid #3d3c3c"
-                        ]
-                        [ Html.div [ style "font-size" "11px", style "text-transform" "uppercase", style "letter-spacing" "0.05em", style "color" "#8a8a8a" ] [ Html.text label ]
-                        , Html.div [ style "font-size" "22px", style "font-weight" "700", style "margin-top" "4px" ] [ Html.text value ]
-                        , Html.div [ style "font-size" "11px", style "color" "#8a8a8a", style "margin-top" "2px" ] [ Html.text sub ]
-                        ]
-            in
-            Html.div
-                [ style "display" "flex"
-                , style "flex-wrap" "wrap"
-                , style "background" "#2e2c2c"
-                , style "border" "1px solid #3d3c3c"
-                , style "border-radius" "4px"
-                , style "margin-bottom" "24px"
-                ]
-                [ stat "Spent today" (usd c.summary.dailySpentUsd) "across all agent sources"
-                , stat "Daily cap"
-                    (if c.summary.dailyCapUsd > 0 then
-                        usd c.summary.dailyCapUsd
-
-                     else
-                        "none"
-                    )
-                    (if c.summary.dailyExhausted then
-                        "exhausted"
-
-                     else if c.summary.dailyCapUsd > 0 then
-                        usd c.summary.dailyRemainingUsd ++ " remaining"
-
-                     else
-                        "uncapped"
-                    )
-                , stat "Runs recorded" (String.fromInt (List.length model.runs)) "most recent shown below"
-                , stat "Workflows" (String.fromInt (List.length model.workflows)) "definitions"
-                ]
-
-
-
--- runs ------------------------------------------------------------------------
-
-
-runsTable : Model -> Html Message
-runsTable model =
-    tableEl
-        [ th "Step", th "Workflow", th "Status", th "Cost", th "Tokens (in/out)", th "Turns", th "Wall", th "Ticket", th "When" ]
-        (List.map (runRow model.now) model.runs)
-
-
-runRow : Time.Posix -> Agent.RunMetric -> Html Message
-runRow now r =
+runsHeaderRow : Html Message
+runsHeaderRow =
     Html.tr []
-        [ td [ style "font-weight" "600" ]
-            [ Html.text r.stepName
-            , Html.div [ style "font-size" "11px", style "color" "#8a8a8a", style "white-space" "normal", style "max-width" "320px" ] [ Html.text r.summary ]
-            ]
-        , td [] [ Html.text (workflowRef r.workflowName r.workflowVersion) ]
-        , td [] [ statusBadge r.status ]
-        , td [ style "text-align" "right" ] [ Html.text (usd r.costUsd) ]
-        , td [] [ Html.text (tokens r.usage.inputTokens ++ " / " ++ tokens r.usage.outputTokens) ]
-        , td [ style "text-align" "right" ] [ Html.text (String.fromInt r.turns) ]
-        , td [] [ Html.text (walltime r.wallTimeSeconds) ]
-        , td [ style "color" "#9b9b9b" ] [ Html.text (ticketRef r) ]
-        , td [ style "color" "#9b9b9b", title (String.fromInt r.createdAt) ] [ Html.text (relativeAge now r.createdAt) ]
+        [ tableHeaderCell "left" "step"
+        , tableHeaderCell "left" "workflow"
+        , tableHeaderCell "left" "status"
+        , tableHeaderCell "right" "cost"
+        , tableHeaderCell "right" "tokens (in+out)"
+        , tableHeaderCell "right" "turns"
+        , tableHeaderCell "left" "ticket"
+        , tableHeaderCell "left" "when"
         ]
 
 
-statusBadge : String -> Html Message
-statusBadge status =
-    badge (statusColor status) status
+runRow : Agent.RunMetric -> Html Message
+runRow r =
+    Html.tr [ class "agent-run-row" ]
+        [ runStepCell r
+        , tableCell "left" (workflowRef r.workflowName r.workflowVersion)
+        , runStatusCell r.status
+        , tableCell "right" ("$" ++ formatUsd r.costUsd)
+        , tableCell "right" (String.fromInt r.usage.inputTokens ++ "+" ++ String.fromInt r.usage.outputTokens)
+        , tableCell "right" (String.fromInt r.turns)
+        , tableCell "left" (ticketRef r)
+        , tableCell "left" (formatPosix (Just (secondsToPosix r.createdAt)))
+        ]
 
 
-statusColor : String -> String
-statusColor status =
-    case status of
-        "ok" ->
-            "#11825b"
+{-| The step name plus a muted one-line summary underneath it — omitted when
+the summary is empty so the row does not carry a blank subtext line.
+-}
+runStepCell : Agent.RunMetric -> Html Message
+runStepCell r =
+    Html.td
+        [ style "text-align" "left"
+        , style "padding" "4px 16px 4px 0"
+        , style "border-bottom" rowBorder
+        ]
+        (Html.div
+            [ style "font-weight" "700", style "color" Colors.text ]
+            [ Html.text r.stepName ]
+            :: (if r.summary == "" then
+                    []
 
-        "failed" ->
-            "#c78f28"
+                else
+                    [ Html.div
+                        [ style "font-size" "11px"
+                        , style "color" mutedColor
+                        , style "max-width" "320px"
+                        ]
+                        [ Html.text r.summary ]
+                    ]
+               )
+        )
 
-        "parked" ->
-            "#3a6ea5"
 
-        _ ->
-            "#a5433a"
+{-| Render an agent_run_metrics status ("ok"/"failed"/"parked"/"error") as an
+AgentBadge; fall back to the raw string for any status the badge doesn't know.
+-}
+runStatusCell : String -> Html Message
+runStatusCell status =
+    Html.td
+        [ style "text-align" "left"
+        , style "padding" "4px 16px 4px 0"
+        , style "border-bottom" rowBorder
+        ]
+        [ case AgentBadge.fromRunStatus status of
+            Just badgeStatus ->
+                AgentBadge.view badgeStatus
+
+            Nothing ->
+                Html.text status
+        ]
 
 
+{-| "name@version", or just the name when the version is unknown, or "—" when
+there is no workflow at all (an ad-hoc / CI run).
+-}
 workflowRef : String -> Maybe Int -> String
 workflowRef name version =
     case ( name, version ) of
@@ -434,6 +642,7 @@ workflowRef name version =
             n
 
 
+{-| "#N" for a ticket-backed run, or "CI" when there is no ticket. -}
 ticketRef : Agent.RunMetric -> String
 ticketRef r =
     case r.ticketId of
@@ -444,305 +653,695 @@ ticketRef r =
             "CI"
 
 
-
--- spend by day ----------------------------------------------------------------
-
-
-costsRows : Model -> List Agent.CostRow
-costsRows model =
-    model.costs |> Maybe.map .rows |> Maybe.withDefault []
+secondsToPosix : Int -> Time.Posix
+secondsToPosix seconds =
+    Time.millisToPosix (seconds * 1000)
 
 
-costsTable : Model -> Html Message
-costsTable model =
-    tableEl
-        [ th "Day", th "Entries", th "Tokens (in/out)", th "Turns", th "Cost" ]
-        (List.map costRow (costsRows model))
+
+-- WORKFLOWS SECTION
+
+
+workflowsSection : Model -> Html Message
+workflowsSection model =
+    sectionBlock "Workflows" <|
+        case model.workflows of
+            Nothing ->
+                case model.workflowsError of
+                    Just message ->
+                        [ errorLine message ]
+
+                    Nothing ->
+                        [ mutedLine "loading…" ]
+
+            Just [] ->
+                staleDataWarning model.workflowsError
+                    ++ [ mutedLine "no workflow definitions — import one with: fly agent workflows import" ]
+
+            Just workflows ->
+                staleDataWarning model.workflowsError
+                    ++ [ Html.div [ class "agent-workflows" ] (List.map workflowRow workflows) ]
+
+
+workflowRow : Agent.WorkflowSummary -> Html Message
+workflowRow w =
+    Html.div
+        [ class "agent-workflow-row"
+        , style "display" "flex"
+        , style "align-items" "baseline"
+        , style "gap" "12px"
+        , style "padding" "8px 0"
+        , style "border-bottom" rowBorder
+        ]
+        [ Html.div [ style "flex" "1", style "min-width" "0" ]
+            [ Html.div []
+                (Html.span
+                    [ style "font-weight" "700", style "color" Colors.text ]
+                    [ Html.text w.name ]
+                    :: workflowPills w
+                )
+            , Html.div
+                [ style "font-size" "12px", style "color" mutedColor ]
+                [ Html.text w.description ]
+            ]
+        , Html.div
+            [ style "font-family" "monospace"
+            , style "font-size" "12px"
+            , style "color" subtleColor
+            , style "text-align" "right"
+            , style "white-space" "nowrap"
+            ]
+            [ liveVersionLine w
+            , Html.div [] [ Html.text ("latest v" ++ String.fromInt w.latestVersion) ]
+            , Html.div [] [ Html.text ("#" ++ String.left 12 w.contentHash) ]
+            ]
+        ]
+
+
+workflowPills : Agent.WorkflowSummary -> List (Html Message)
+workflowPills w =
+    let
+        livePill =
+            if w.liveVersion > 0 then
+                [ pill "agent-workflow-live"
+                    { bg = "#2e4f2e", fg = "#9fdf9f" }
+                    "live"
+                ]
+
+            else
+                []
+
+        candidatePill =
+            if w.latestVersion > w.liveVersion then
+                [ pill "agent-workflow-candidate"
+                    { bg = Colors.background, fg = mutedColor }
+                    ("candidate v" ++ String.fromInt w.latestVersion)
+                ]
+
+            else
+                []
+    in
+    livePill ++ candidatePill
+
+
+liveVersionLine : Agent.WorkflowSummary -> Html Message
+liveVersionLine w =
+    if w.liveVersion == 0 then
+        Html.div [ style "color" subtleColor ] [ Html.text "no live version" ]
+
+    else
+        Html.div [] [ Html.text ("v" ++ String.fromInt w.liveVersion ++ " live") ]
+
+
+
+-- COSTS SECTION
+
+
+costsSection : Model -> Html Message
+costsSection model =
+    sectionBlock "Costs" <|
+        case model.costRollup of
+            Nothing ->
+                case model.costError of
+                    Just message ->
+                        [ errorLine message ]
+
+                    Nothing ->
+                        [ mutedLine "loading…" ]
+
+            Just rollup ->
+                staleDataWarning model.costError
+                    ++ [ costSummaryLine rollup.summary
+                       , costTable rollup.rows
+                       ]
+
+
+costSummaryLine : Agent.CostSummary -> Html Message
+costSummaryLine summary =
+    let
+        spent =
+            "today: $" ++ formatUsd summary.dailySpentUsd ++ " spent"
+
+        cap =
+            if summary.dailyCapUsd > 0 then
+                " / $"
+                    ++ formatUsd summary.dailyCapUsd
+                    ++ " cap ($"
+                    ++ formatUsd summary.dailyRemainingUsd
+                    ++ " left)"
+
+            else
+                ""
+
+        exhausted =
+            if summary.dailyExhausted then
+                [ Html.span
+                    [ class "agent-budget-exhausted"
+                    , style "margin-left" "8px"
+                    , style "color" amberColor
+                    , style "font-weight" "700"
+                    ]
+                    [ Html.text "budget exhausted" ]
+                ]
+
+            else
+                []
+    in
+    Html.div
+        [ style "margin" "0 0 12px 0"
+        , style "font-family" "monospace"
+        , style "font-size" "12px"
+        , style "color" Colors.text
+        ]
+        (Html.span [] [ Html.text (spent ++ cap) ] :: exhausted)
+
+
+costTable : List Agent.CostRow -> Html Message
+costTable rows =
+    if List.isEmpty rows then
+        mutedLine "no cost records yet"
+
+    else
+        Html.table
+            [ class "agent-costs-table"
+            , style "border-collapse" "collapse"
+            , style "font-family" "monospace"
+            , style "font-size" "12px"
+            , style "color" Colors.text
+            ]
+            (costHeaderRow :: List.map costRow rows)
+
+
+costHeaderRow : Html Message
+costHeaderRow =
+    Html.tr []
+        [ tableHeaderCell "left" "day"
+        , tableHeaderCell "right" "entries"
+        , tableHeaderCell "right" "tokens (in+out)"
+        , tableHeaderCell "right" "turns"
+        , tableHeaderCell "right" "cost"
+        ]
 
 
 costRow : Agent.CostRow -> Html Message
-costRow c =
-    Html.tr []
-        [ td [ style "font-weight" "600" ] [ Html.text c.key ]
-        , td [ style "text-align" "right" ] [ Html.text (String.fromInt c.entries) ]
-        , td [] [ Html.text (tokens c.inputTokens ++ " / " ++ tokens c.outputTokens) ]
-        , td [ style "text-align" "right" ] [ Html.text (String.fromInt c.turns) ]
-        , td [ style "text-align" "right", style "font-weight" "600" ] [ Html.text (usd c.costUsd) ]
+costRow r =
+    Html.tr [ class "agent-cost-row" ]
+        [ tableCell "left" r.key
+        , tableCell "right" (String.fromInt r.entries)
+        , tableCell "right" (String.fromInt r.inputTokens ++ "+" ++ String.fromInt r.outputTokens)
+        , tableCell "right" (String.fromInt r.turns)
+        , tableCell "right" ("$" ++ formatUsd r.costUsd)
         ]
 
 
 
--- workflows -------------------------------------------------------------------
+-- SHARED TABLE + TIME HELPERS
 
 
-workflowsTable : Model -> Html Message
-workflowsTable model =
-    tableEl
-        [ th "Name", th "Live", th "Latest", th "Hash", th "Description", th "Action" ]
-        (List.map workflowRow model.workflows)
+tableHeaderCell : String -> String -> Html Message
+tableHeaderCell align content =
+    Html.th
+        [ style "text-align" align
+        , style "padding" "4px 16px 4px 0"
+        , style "color" mutedColor
+        , style "font-weight" "700"
+        , style "border-bottom" rowBorder
+        ]
+        [ Html.text content ]
 
 
-workflowRow : Agent.Workflow -> Html Message
-workflowRow w =
-    let
-        liveCell =
-            case w.liveVersion of
-                Just v ->
-                    badge "#11825b" ("v" ++ String.fromInt v)
+tableCell : String -> String -> Html Message
+tableCell align content =
+    Html.td
+        [ style "text-align" align
+        , style "padding" "4px 16px 4px 0"
+        , style "border-bottom" rowBorder
+        ]
+        [ Html.text content ]
 
-                Nothing ->
-                    Html.span [ style "color" "#8a8a8a" ] [ Html.text "none" ]
 
-        canPromote =
-            w.liveVersion /= Just w.latestVersion && w.latestVersion > 0
-    in
-    Html.tr []
-        [ td [ style "font-weight" "600" ] [ Html.text w.name ]
-        , td [] [ liveCell ]
-        , td [] [ Html.text ("v" ++ String.fromInt w.latestVersion) ]
-        , td [ style "font-family" "monospace", style "color" "#9b9b9b", style "font-size" "12px" ] [ Html.text (shortHash w.contentHash) ]
-        , td [ style "white-space" "normal", style "max-width" "360px", style "color" "#c8c8c8" ] [ Html.text w.description ]
-        , td []
-            [ if canPromote then
-                actionButton "Promote latest" (AgentPromoteWorkflowClicked w.name w.latestVersion)
+{-| Humanize an optional epoch timestamp as a UTC yyyy-mm-dd date, or "—"
+when absent. Deliberately timezone-independent (UTC) so it is deterministic.
+-}
+formatPosix : Maybe Time.Posix -> String
+formatPosix maybe =
+    case maybe of
+        Nothing ->
+            "—"
 
-              else
-                Html.span [ style "color" "#6a6a6a", style "font-size" "12px" ] [ Html.text "live" ]
+        Just posix ->
+            String.fromInt (Time.toYear Time.utc posix)
+                ++ "-"
+                ++ pad2 (monthNumber (Time.toMonth Time.utc posix))
+                ++ "-"
+                ++ pad2 (Time.toDay Time.utc posix)
+
+
+pad2 : Int -> String
+pad2 n =
+    String.padLeft 2 '0' (String.fromInt n)
+
+
+monthNumber : Time.Month -> Int
+monthNumber month =
+    case month of
+        Time.Jan ->
+            1
+
+        Time.Feb ->
+            2
+
+        Time.Mar ->
+            3
+
+        Time.Apr ->
+            4
+
+        Time.May ->
+            5
+
+        Time.Jun ->
+            6
+
+        Time.Jul ->
+            7
+
+        Time.Aug ->
+            8
+
+        Time.Sep ->
+            9
+
+        Time.Oct ->
+            10
+
+        Time.Nov ->
+            11
+
+        Time.Dec ->
+            12
+
+
+
+-- CREDENTIALS SECTION (read-only status)
+
+
+credentialsSection : Model -> Html Message
+credentialsSection model =
+    sectionBlock "Credentials" <|
+        mutedLine "set or rotate with: fly agent auth"
+            :: (case model.credentials of
+                    Nothing ->
+                        case model.credentialsError of
+                            Just message ->
+                                [ errorLine message ]
+
+                            Nothing ->
+                                [ mutedLine "loading…" ]
+
+                    Just [] ->
+                        staleDataWarning model.credentialsError
+                            ++ [ mutedLine "no credentials stored — run: fly agent auth" ]
+
+                    Just creds ->
+                        staleDataWarning model.credentialsError
+                            ++ [ credentialsTable creds ]
+               )
+
+
+credentialsTable : List Agent.CredentialStatus -> Html Message
+credentialsTable creds =
+    Html.table
+        [ class "agent-credentials-table"
+        , style "border-collapse" "collapse"
+        , style "font-family" "monospace"
+        , style "font-size" "12px"
+        , style "color" Colors.text
+        ]
+        (Html.tr []
+            [ tableHeaderCell "left" "kind"
+            , tableHeaderCell "left" "expires"
+            , tableHeaderCell "left" "last verified"
             ]
+            :: List.map credentialRow creds
+        )
+
+
+credentialRow : Agent.CredentialStatus -> Html Message
+credentialRow c =
+    Html.tr [ class "agent-credential-row" ]
+        [ tableCell "left" c.kind
+        , tableCell "left" (formatPosix c.expiresAt)
+        , tableCell "left" (formatPosix c.lastVerifiedAt)
         ]
 
 
-shortHash : String -> String
-shortHash h =
-    String.left 12 h
+
+-- PRINCIPALS SECTION (admin: mint / list / revoke)
 
 
-
--- principals ------------------------------------------------------------------
-
-
-principalsTable : Model -> Html Message
-principalsTable model =
-    tableEl
-        [ th "Name", th "Scopes", th "Prefix", th "Status", th "Last used", th "Action" ]
-        (List.map (principalRow model.now) model.principals)
-
-
-principalRow : Time.Posix -> Agent.Principal -> Html Message
-principalRow now p =
-    let
-        active =
-            Agent.principalActive now p
-    in
-    Html.tr []
-        [ td [ style "font-weight" "600" ]
-            [ Html.text p.name
-            , Html.div [ style "font-size" "11px", style "color" "#8a8a8a", style "white-space" "normal", style "max-width" "280px" ] [ Html.text p.description ]
-            ]
-        , td [ style "white-space" "normal", style "max-width" "220px" ]
-            [ Html.text
-                (if List.isEmpty p.scopes then
-                    "—"
-
-                 else
-                    String.join ", " p.scopes
-                )
-            ]
-        , td [ style "font-family" "monospace", style "color" "#9b9b9b", style "font-size" "12px" ]
-            [ Html.text
-                (if p.tokenPrefix == "" then
-                    "—"
-
-                 else
-                    p.tokenPrefix
-                )
-            ]
-        , td [] [ principalStatus now p ]
-        , td [ style "color" "#9b9b9b" ] [ Html.text (maybeAge now p.lastUsedAt) ]
-        , td []
-            [ if active then
-                actionButton "Revoke" (AgentRevokePrincipalClicked p.id)
-
-              else
-                Html.span [ style "color" "#6a6a6a", style "font-size" "12px" ] [ Html.text "—" ]
-            ]
-        ]
+principalsSection : Model -> Html Message
+principalsSection model =
+    sectionBlock "Principals"
+        ([ mintForm model ]
+            ++ mintedTokenBox model
+            ++ [ revokeErrorLine model ]
+            ++ principalsBody model
+        )
 
 
-principalStatus : Time.Posix -> Agent.Principal -> Html Message
-principalStatus now p =
-    case p.revokedAt of
-        Just _ ->
-            badge "#6a6a6a" "revoked"
+{-| Revoke failures render here, in the principals section next to the table —
+not inside the mint form, where a revoke error would be far from the row that
+triggered it and would only be cleared by a successful mint.
+-}
+revokeErrorLine : Model -> Html Message
+revokeErrorLine model =
+    case model.revokeError of
+        Just message ->
+            Html.div [ class "agent-revoke-error" ] [ errorLine message ]
 
         Nothing ->
-            case p.expiresAt of
-                Nothing ->
-                    badge "#11825b" "active"
-
-                Just e ->
-                    let
-                        secs =
-                            e - (Time.posixToMillis now // 1000)
-                    in
-                    if secs <= 0 then
-                        badge "#a5433a" "expired"
-
-                    else if secs < 86400 then
-                        Html.span [ title ("expires in " ++ humanizeDuration secs) ] [ badge "#c78f28" "expiring" ]
-
-                    else
-                        Html.span [ title ("expires in " ++ humanizeDuration secs) ] [ badge "#11825b" "active" ]
+            Html.text ""
 
 
-
--- credentials -----------------------------------------------------------------
-
-
-credentialsTable : Model -> Html Message
-credentialsTable model =
-    tableEl
-        [ th "User", th "Kind", th "Expires", th "Last verified" ]
-        (List.map (credentialRow model.now) model.credentials)
-
-
-credentialRow : Time.Posix -> Agent.Credential -> Html Message
-credentialRow now c =
-    Html.tr []
-        [ td [ style "font-weight" "600" ] [ Html.text c.userName ]
-        , td [] [ Html.text c.kind ]
-        , td [] [ expiryCell now c.expiresAt ]
-        , td [ style "color" "#9b9b9b" ] [ Html.text (maybeAge now c.lastVerifiedAt) ]
+mintForm : Model -> Html Message
+mintForm model =
+    Html.div
+        [ class "agent-mint-form"
+        , style "margin" "0 0 12px 0"
+        , style "font-family" "monospace"
+        , style "font-size" "12px"
+        , style "color" Colors.text
+        ]
+        [ Html.div [ style "margin-bottom" "6px" ]
+            [ mintTextField "name" model.mintName AgentMintNameChanged
+            , mintTextField "description (optional)" model.mintDescription AgentMintDescriptionChanged
+            ]
+        , Html.div
+            [ class "agent-mint-scopes"
+            , style "display" "flex"
+            , style "flex-wrap" "wrap"
+            , style "gap" "12px"
+            , style "margin-bottom" "6px"
+            ]
+            (List.map (scopeCheckbox model) mintScopeVocabulary)
+        , Html.div
+            [ style "display" "flex"
+            , style "align-items" "center"
+            , style "gap" "10px"
+            ]
+            [ expiresField model.mintExpiresDays
+            , mintButton model
+            ]
+        , mintErrorLine model
         ]
 
 
-expiryCell : Time.Posix -> Maybe Int -> Html Message
-expiryCell now maybeExpiry =
-    case maybeExpiry of
-        Nothing ->
-            Html.span [ style "color" "#8a8a8a" ] [ Html.text "no expiry" ]
+mintTextField : String -> String -> (String -> Message) -> Html Message
+mintTextField ph val toMsg =
+    Html.input
+        [ type_ "text"
+        , placeholder ph
+        , value val
+        , onInput toMsg
+        , style "margin-right" "8px"
+        , style "padding" "3px 6px"
+        , style "font-family" "monospace"
+        , style "font-size" "12px"
+        , style "background" Colors.background
+        , style "color" Colors.text
+        , style "border" ("1px solid " ++ subtleColor)
+        ]
+        []
 
-        Just e ->
-            let
-                secs =
-                    e - (Time.posixToMillis now // 1000)
-            in
-            if secs <= 0 then
-                badge "#a5433a" "expired"
 
-            else if secs < 3 * 86400 then
-                Html.span [ style "color" "#c78f28" ] [ Html.text ("in " ++ humanizeDuration secs) ]
+scopeCheckbox : Model -> String -> Html Message
+scopeCheckbox model scope =
+    Html.label
+        [ class "agent-mint-scope"
+        , style "display" "inline-flex"
+        , style "align-items" "center"
+        , style "gap" "4px"
+        , style "cursor" "pointer"
+        ]
+        [ Html.input
+            [ type_ "checkbox"
+            , checked (Set.member scope model.mintScopes)
+            , onClick (AgentMintScopeToggled scope)
+            ]
+            []
+        , Html.text scope
+        ]
+
+
+expiresField : String -> Html Message
+expiresField val =
+    Html.label
+        [ style "display" "inline-flex"
+        , style "align-items" "center"
+        , style "gap" "4px"
+        , style "color" mutedColor
+        ]
+        ([ Html.text "expires in"
+         , Html.input
+            [ type_ "text"
+            , placeholder "N"
+            , value val
+            , onInput AgentMintExpiresChanged
+            , style "width" "48px"
+            , style "padding" "3px 6px"
+            , style "font-family" "monospace"
+            , style "font-size" "12px"
+            , style "background" Colors.background
+            , style "color" Colors.text
+            , style "border"
+                ("1px solid "
+                    ++ (if expiresIsValid val then
+                            subtleColor
+
+                        else
+                            amberColor
+                       )
+                )
+            ]
+            []
+         , Html.text "days (optional)"
+         ]
+            ++ expiresHint val
+        )
+
+
+{-| Inline hint shown only when the expires field has non-blank input that does
+not parse to a positive integer. Without this the field would silently mean
+"never expires", which is a surprising, easy-to-miss failure.
+-}
+expiresHint : String -> List (Html Message)
+expiresHint val =
+    if expiresIsValid val then
+        []
+
+    else
+        [ Html.span
+            [ class "agent-mint-expires-hint"
+            , style "color" amberColor
+            , style "font-size" "11px"
+            ]
+            [ Html.text "must be a positive number of days; leave blank for no expiry" ]
+        ]
+
+
+mintButton : Model -> Html Message
+mintButton model =
+    let
+        enabled =
+            canMint model && not model.minting
+
+        label =
+            if model.minting then
+                "minting…"
 
             else
-                Html.span [ style "color" "#c8c8c8" ] [ Html.text ("in " ++ humanizeDuration secs) ]
-
-
-
--- action button ---------------------------------------------------------------
-
-
-actionButton : String -> Message -> Html Message
-actionButton label msg =
+                "mint"
+    in
     Html.button
-        [ onClick msg
-        , disabled False
-        , style "background" "transparent"
-        , style "border" "1px solid #5a5a5a"
-        , style "color" "#d8d8d8"
-        , style "padding" "3px 10px"
-        , style "border-radius" "3px"
+        [ class "agent-mint-button"
+        , onClick AgentMintSubmitted
+        , disabled (not enabled)
+        , style "padding" "4px 12px"
+        , style "font-family" "monospace"
         , style "font-size" "12px"
-        , style "cursor" "pointer"
+        , style "font-weight" "700"
+        , style "border" "none"
+        , style "border-radius" "3px"
+        , style "cursor"
+            (if enabled then
+                "pointer"
+
+             else
+                "not-allowed"
+            )
+        , style "background"
+            (if enabled then
+                "#2e4f2e"
+
+             else
+                Colors.background
+            )
+        , style "color"
+            (if enabled then
+                "#9fdf9f"
+
+             else
+                subtleColor
+            )
         ]
         [ Html.text label ]
 
 
-
--- formatting helpers ----------------------------------------------------------
-
-
-usd : Float -> String
-usd x =
-    let
-        cents =
-            round (x * 100)
-
-        dollars =
-            cents // 100
-
-        c =
-            remainderBy 100 (abs cents)
-    in
-    "$" ++ String.fromInt dollars ++ "." ++ String.padLeft 2 '0' (String.fromInt c)
-
-
-tokens : Int -> String
-tokens n =
-    if n >= 1000000 then
-        String.fromInt (n // 1000000) ++ "." ++ String.left 1 (String.padLeft 2 '0' (String.fromInt (remainderBy 1000000 n // 10000))) ++ "M"
-
-    else if n >= 1000 then
-        String.fromInt (n // 1000) ++ "k"
-
-    else
-        String.fromInt n
-
-
-walltime : Int -> String
-walltime secs =
-    if secs <= 0 then
-        "—"
-
-    else if secs < 60 then
-        String.fromInt secs ++ "s"
-
-    else
-        String.fromInt (secs // 60) ++ "m" ++ String.padLeft 2 '0' (String.fromInt (remainderBy 60 secs)) ++ "s"
-
-
-relativeAge : Time.Posix -> Int -> String
-relativeAge now unixSecs =
-    if unixSecs <= 0 then
-        "—"
-
-    else
-        let
-            secs =
-                (Time.posixToMillis now // 1000) - unixSecs
-        in
-        if secs < 0 then
-            "just now"
-
-        else if secs < 60 then
-            String.fromInt secs ++ "s ago"
-
-        else if secs < 3600 then
-            String.fromInt (secs // 60) ++ "m ago"
-
-        else if secs < 86400 then
-            String.fromInt (secs // 3600) ++ "h ago"
-
-        else
-            String.fromInt (secs // 86400) ++ "d ago"
-
-
-maybeAge : Time.Posix -> Maybe Int -> String
-maybeAge now m =
-    case m of
-        Just t ->
-            relativeAge now t
+mintErrorLine : Model -> Html Message
+mintErrorLine model =
+    case model.mintError of
+        Just message ->
+            errorLine message
 
         Nothing ->
-            "never"
+            Html.text ""
 
 
-humanizeDuration : Int -> String
-humanizeDuration secs =
-    if secs < 3600 then
-        String.fromInt (secs // 60) ++ "m"
+mintedTokenBox : Model -> List (Html Message)
+mintedTokenBox model =
+    case model.mintedToken of
+        Nothing ->
+            []
 
-    else if secs < 86400 then
-        String.fromInt (secs // 3600) ++ "h"
+        Just token ->
+            [ Html.div
+                [ class "agent-minted-token"
+                , style "margin" "0 0 12px 0"
+                , style "padding" "8px 12px"
+                , style "border" ("1px solid " ++ amberColor)
+                , style "border-radius" "3px"
+                , style "background" "#3a3320"
+                , style "font-family" "monospace"
+                , style "font-size" "12px"
+                , style "color" Colors.text
+                ]
+                [ Html.div
+                    [ style "color" amberColor
+                    , style "font-weight" "700"
+                    , style "margin-bottom" "4px"
+                    ]
+                    [ Html.text "token (shown once — copy it now):" ]
+                , Html.div
+                    [ class "agent-minted-token-value"
+                    , style "word-break" "break-all"
+                    ]
+                    [ Html.text token ]
+                , Html.button
+                    [ class "agent-minted-token-dismiss"
+                    , onClick AgentMintedTokenDismissed
+                    , style "margin-top" "6px"
+                    , style "padding" "2px 8px"
+                    , style "font-family" "monospace"
+                    , style "font-size" "11px"
+                    , style "cursor" "pointer"
+                    , style "background" Colors.background
+                    , style "color" mutedColor
+                    , style "border" ("1px solid " ++ subtleColor)
+                    , style "border-radius" "3px"
+                    ]
+                    [ Html.text "dismiss" ]
+                ]
+            ]
 
-    else
-        String.fromInt (secs // 86400) ++ "d"
+
+principalsBody : Model -> List (Html Message)
+principalsBody model =
+    case model.principals of
+        Nothing ->
+            case model.principalsError of
+                Just message ->
+                    [ errorLine message ]
+
+                Nothing ->
+                    [ mutedLine "loading…" ]
+
+        Just [] ->
+            staleDataWarning model.principalsError
+                ++ [ mutedLine "no principals yet — mint one above" ]
+
+        Just principals ->
+            staleDataWarning model.principalsError
+                ++ [ principalsTable principals ]
+
+
+principalsTable : List Agent.Principal -> Html Message
+principalsTable principals =
+    Html.table
+        [ class "agent-principals-table"
+        , style "border-collapse" "collapse"
+        , style "font-family" "monospace"
+        , style "font-size" "12px"
+        , style "color" Colors.text
+        ]
+        (Html.tr []
+            [ tableHeaderCell "left" "name"
+            , tableHeaderCell "left" "scopes"
+            , tableHeaderCell "left" "team"
+            , tableHeaderCell "left" "created"
+            , tableHeaderCell "left" "expires"
+            , tableHeaderCell "left" "last used"
+            , tableHeaderCell "left" ""
+            ]
+            :: List.map principalRow principals
+        )
+
+
+principalRow : Agent.Principal -> Html Message
+principalRow p =
+    let
+        dim =
+            case p.revokedAt of
+                Just _ ->
+                    [ style "opacity" "0.5" ]
+
+                Nothing ->
+                    []
+
+        action =
+            case p.revokedAt of
+                Just revokedAt ->
+                    Html.span
+                        [ class "agent-principal-revoked"
+                        , style "color" subtleColor
+                        ]
+                        [ Html.text ("revoked " ++ formatPosix (Just revokedAt)) ]
+
+                Nothing ->
+                    Html.button
+                        [ class "agent-principal-revoke"
+                        , onClick (AgentPrincipalRevokeClicked p.id)
+                        , style "padding" "2px 8px"
+                        , style "font-family" "monospace"
+                        , style "font-size" "11px"
+                        , style "cursor" "pointer"
+                        , style "background" "#5c2626"
+                        , style "color" "#f0a0a0"
+                        , style "border" "none"
+                        , style "border-radius" "3px"
+                        ]
+                        [ Html.text "revoke" ]
+    in
+    Html.tr (class "agent-principal-row" :: dim)
+        [ tableCell "left" p.name
+        , tableCell "left" (String.join ", " p.scopes)
+        , tableCell "left" p.teamName
+        , tableCell "left" (formatPosix (Just p.createdAt))
+        , tableCell "left" (formatPosix p.expiresAt)
+        , tableCell "left" (formatPosix p.lastUsedAt)
+        , Html.td
+            [ style "padding" "4px 16px 4px 0"
+            , style "border-bottom" rowBorder
+            ]
+            [ action ]
+        ]

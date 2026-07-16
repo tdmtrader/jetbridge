@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"io"
 	"sync"
+
+	"github.com/concourse/concourse/agent/schema"
 )
 
 // maxObservedEnvelopeLineBytes bounds the observer's line buffer. The claude
@@ -25,31 +27,6 @@ type observedAgentCost struct {
 	CacheCreationTokens int64
 	Turns               int
 	CostUSD             float64
-}
-
-// stdoutEnvelope mirrors the ledger-relevant subset of the claude CLI
-// --output-format json envelope (parity with agent/runner/envelope.go, which
-// parses the SAME bytes in-pod to produce the flight recorder's cost.record).
-type stdoutEnvelope struct {
-	Type         string  `json:"type"`
-	Model        string  `json:"model"`
-	CostUSD      float64 `json:"cost_usd"`
-	TotalCostUSD float64 `json:"total_cost_usd"`
-	NumTurns     int     `json:"num_turns"`
-	Usage        struct {
-		InputTokens              int64 `json:"input_tokens"`
-		OutputTokens             int64 `json:"output_tokens"`
-		CacheReadInputTokens     int64 `json:"cache_read_input_tokens"`
-		CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
-	} `json:"usage"`
-}
-
-func (e stdoutEnvelope) costUSD() float64 {
-	// Same preference the runner applies: newer CLIs report total_cost_usd.
-	if e.TotalCostUSD > 0 {
-		return e.TotalCostUSD
-	}
-	return e.CostUSD
 }
 
 // agentCostObserver tees the agent process's stdout to dst unchanged while
@@ -86,9 +63,18 @@ type agentCostObserver struct {
 
 	mu       sync.Mutex
 	line     []byte
+	decided  bool // seen the first non-whitespace byte of the current line
+	skip     bool // current line can't be an envelope (first non-ws byte != '{')
 	overflow bool
 	observed observedAgentCost
 }
+
+// retainedLineCap caps the buffer capacity carried between lines. Envelope
+// lines can legitimately reach maxObservedEnvelopeLineBytes, but holding that
+// grown backing array for the whole step (o.line[:0] keeps capacity) would
+// pin megabytes per concurrent agent step on the web node; release anything
+// larger than this back to GC.
+const retainedLineCap = 64 << 10
 
 func newAgentCostObserver(dst io.Writer) *agentCostObserver {
 	return &agentCostObserver{dst: dst}
@@ -112,27 +98,59 @@ func (o *agentCostObserver) scan(p []byte) {
 			return
 		}
 		o.buffer(p[:i])
-		if !o.overflow {
+		if !o.overflow && !o.skip {
 			o.parseLine(o.line)
 		}
-		o.line = o.line[:0]
-		o.overflow = false
+		o.resetLine()
 		p = p[i+1:]
 	}
 }
 
-// buffer appends chunk to the pending line, discarding the whole line once
-// it exceeds the bound (fail open — see maxObservedEnvelopeLineBytes).
+// buffer appends chunk to the pending line. Two early exits keep ordinary
+// (non-envelope) output from being copied into web-node memory: a line whose
+// first non-whitespace byte is not '{' can never be an envelope, so once
+// decided it is skipped without buffering; and a line past the size bound is
+// dropped un-parsed (fail open — see maxObservedEnvelopeLineBytes).
 func (o *agentCostObserver) buffer(chunk []byte) {
-	if o.overflow {
+	if o.overflow || o.skip {
 		return
 	}
+	if !o.decided {
+		// Skip leading whitespace (envelopes may be indented; TrimSpace would
+		// drop it anyway) until the first content byte decides the line.
+		for len(chunk) > 0 {
+			c := chunk[0]
+			if c == ' ' || c == '\t' || c == '\r' {
+				chunk = chunk[1:]
+				continue
+			}
+			o.decided = true
+			o.skip = c != '{'
+			break
+		}
+		if !o.decided || o.skip {
+			return
+		}
+	}
 	if len(o.line)+len(chunk) > maxObservedEnvelopeLineBytes {
-		o.line = o.line[:0]
 		o.overflow = true
+		o.line = o.line[:0]
 		return
 	}
 	o.line = append(o.line, chunk...)
+}
+
+// resetLine clears per-line state, releasing an over-grown backing array so a
+// single large envelope line does not pin memory for the step's lifetime.
+func (o *agentCostObserver) resetLine() {
+	if cap(o.line) > retainedLineCap {
+		o.line = nil
+	} else {
+		o.line = o.line[:0]
+	}
+	o.decided = false
+	o.skip = false
+	o.overflow = false
 }
 
 func (o *agentCostObserver) parseLine(line []byte) {
@@ -142,11 +160,11 @@ func (o *agentCostObserver) parseLine(line []byte) {
 	if len(line) == 0 || line[0] != '{' {
 		return
 	}
-	var env stdoutEnvelope
+	var env schema.CLIEnvelope
 	if json.Unmarshal(line, &env) != nil || env.Type != "result" {
 		return
 	}
-	if cost := env.costUSD(); cost > o.observed.CostUSD {
+	if cost := env.ResolvedCostUSD(); cost > o.observed.CostUSD {
 		o.observed.CostUSD = cost
 		if env.Model != "" {
 			o.observed.Model = env.Model

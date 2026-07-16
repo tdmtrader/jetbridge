@@ -345,7 +345,7 @@ agentPlatformLink : List (Html Message)
 agentPlatformLink =
     [ Html.a
         [ id "sidebar-agent-platform"
-        , href (Routes.toString (Routes.Agent { teamName = "main" }))
+        , href (Routes.toString Routes.Agent)
         , style "display" "flex"
         , style "align-items" "center"
         , style "padding" "10px 16px"

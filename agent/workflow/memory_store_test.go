@@ -139,3 +139,60 @@ func TestMemoryStoreListReturnsLatestPerName(t *testing.T) {
 		t.Errorf("list[1] = %+v", list[1])
 	}
 }
+
+func TestMemoryStoreLiveVersions(t *testing.T) {
+	s := workflow.NewMemoryStore()
+
+	// wf-a: v1 promoted, then v2 imported (live stays at 1).
+	if _, err := s.Import("wf-a", defYAML("wf-a", "One."), "alice"); err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	if err := s.Promote("wf-a", 1, "alice"); err != nil {
+		t.Fatalf("promote: %v", err)
+	}
+	if _, err := s.Import("wf-a", defYAML("wf-a", "Two."), "alice"); err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	// wf-b: never promoted.
+	if _, err := s.Import("wf-b", defYAML("wf-b", "B."), "bob"); err != nil {
+		t.Fatalf("import: %v", err)
+	}
+
+	live, err := s.LiveVersions()
+	if err != nil {
+		t.Fatalf("live versions: %v", err)
+	}
+	if got, want := live["wf-a"], 1; got != want {
+		t.Errorf("wf-a live = %d, want %d", got, want)
+	}
+	if _, ok := live["wf-b"]; ok {
+		t.Errorf("wf-b should have no live version, got %d", live["wf-b"])
+	}
+}
+
+func TestMemoryStoreLatest(t *testing.T) {
+	s := workflow.NewMemoryStore()
+
+	if _, err := s.Import("wf", defYAML("wf", "One."), "alice"); err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	if _, err := s.Import("wf", defYAML("wf", "Two."), "alice"); err != nil {
+		t.Fatalf("import: %v", err)
+	}
+
+	def, found, err := s.Latest("wf")
+	if err != nil || !found {
+		t.Fatalf("latest: found=%v err=%v", found, err)
+	}
+	if def.Version != 2 {
+		t.Errorf("latest version = %d, want 2", def.Version)
+	}
+
+	_, found, err = s.Latest("nope")
+	if err != nil {
+		t.Fatalf("latest unknown: %v", err)
+	}
+	if found {
+		t.Error("unknown workflow reported found")
+	}
+}

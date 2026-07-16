@@ -42,6 +42,7 @@ module Concourse exposing
     , PipelineGrouping(..)
     , PipelineIdentifier
     , PipelineName
+    , PipelineRun
     , Resource
     , ResourceIdentifier
     , Team
@@ -68,6 +69,7 @@ module Concourse exposing
     , decodeJsonValue
     , decodeMetadata
     , decodePipeline
+    , decodePipelineRun
     , decodeResource
     , decodeTeam
     , decodeUser
@@ -1158,6 +1160,17 @@ type alias Pipeline =
     , lastUpdatedAt : Time.Posix
     , backgroundImage : Maybe String
     , backgroundFilter : Maybe String
+    , template : Bool
+    }
+
+
+type alias PipelineRun =
+    { id : Int
+    , number : Int
+    , status : String
+    , params : Dict String JsonValue
+    , createdAt : Time.Posix
+    , completedAt : Maybe Time.Posix
     }
 
 
@@ -1205,6 +1218,18 @@ decodePipeline =
         |> andMap (Json.Decode.field "last_updated" (Json.Decode.map dateFromSeconds Json.Decode.int))
         |> andMap (Json.Decode.maybe (Json.Decode.at [ "display", "background_image" ] Json.Decode.string))
         |> andMap (Json.Decode.maybe (Json.Decode.at [ "display", "background_filter" ] Json.Decode.string))
+        |> andMap (defaultTo False <| Json.Decode.field "template" Json.Decode.bool)
+
+
+decodePipelineRun : Json.Decode.Decoder PipelineRun
+decodePipelineRun =
+    Json.Decode.succeed PipelineRun
+        |> andMap (Json.Decode.field "id" Json.Decode.int)
+        |> andMap (defaultTo 0 <| Json.Decode.field "number" Json.Decode.int)
+        |> andMap (defaultTo "" <| Json.Decode.field "status" Json.Decode.string)
+        |> andMap (defaultTo Dict.empty <| Json.Decode.field "params" (Json.Decode.dict decodeJsonValue))
+        |> andMap (Json.Decode.field "created_at" (Json.Decode.map dateFromSeconds Json.Decode.int))
+        |> andMap (Json.Decode.maybe (Json.Decode.field "completed_at" (Json.Decode.map dateFromSeconds Json.Decode.int)))
 
 
 encodePipelineGroup : PipelineGroup -> Json.Encode.Value

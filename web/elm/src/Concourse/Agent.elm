@@ -2,23 +2,101 @@ module Concourse.Agent exposing
     ( CostRollup
     , CostRow
     , CostSummary
-    , Credential
+    , CredentialStatus
     , Principal
+    , PrincipalCreated
     , RunMetric
     , Usage
-    , Workflow
+    , WorkflowSummary
     , decodeCostRollup
-    , decodeCredential
-    , decodePrincipal
+    , decodeCredentialStatuses
+    , decodePrincipalCreated
+    , decodePrincipals
     , decodeRunMetric
-    , decodeWorkflow
-    , principalActive
+    , decodeWorkflowSummary
     )
 
 import Dict exposing (Dict)
 import Json.Decode
 import Json.Decode.Extra exposing (andMap)
 import Time
+
+
+type alias WorkflowSummary =
+    { name : String
+    , description : String
+    , latestVersion : Int
+    , contentHash : String
+    , liveVersion : Int
+    , createdAt : Time.Posix
+    }
+
+
+type alias CostSummary =
+    { dailyCapUsd : Float
+    , dailySpentUsd : Float
+    , dailyRemainingUsd : Float
+    , dailyExhausted : Bool
+    }
+
+
+type alias CostRow =
+    { key : String
+    , entries : Int
+    , inputTokens : Int
+    , outputTokens : Int
+    , turns : Int
+    , costUsd : Float
+    }
+
+
+type alias CostRollup =
+    { groupBy : String
+    , summary : CostSummary
+    , rows : List CostRow
+    }
+
+
+{-| Read-only status of a stored agent credential. The wire type never
+carries the secret itself — secrets are set out-of-band via
+`fly agent auth`. `expires_at` / `last_verified_at` are epoch-seconds and
+omitted (→ absent → Nothing) when unknown; `jira_account_id` is omitted
+when empty (→ "").
+-}
+type alias CredentialStatus =
+    { kind : String
+    , expiresAt : Maybe Time.Posix
+    , lastVerifiedAt : Maybe Time.Posix
+    , jiraAccountId : String
+    }
+
+
+{-| One agent\_principals row. `expires_at` / `revoked_at` / `last_used_at`
+are omitempty epoch-seconds on the wire, so they decode to Nothing when
+absent. The token material is never included in the list/GET shape.
+-}
+type alias Principal =
+    { id : Int
+    , name : String
+    , description : String
+    , tokenPrefix : String
+    , scopes : List String
+    , teamName : String
+    , createdBy : String
+    , createdAt : Time.Posix
+    , expiresAt : Maybe Time.Posix
+    , revokedAt : Maybe Time.Posix
+    , lastUsedAt : Maybe Time.Posix
+    }
+
+
+{-| The POST /agent/principals response: a Principal (its fields inlined at
+the top level) plus the one-time `token` secret, surfaced exactly once.
+-}
+type alias PrincipalCreated =
+    { principal : Principal
+    , token : String
+    }
 
 
 defaultTo : a -> Json.Decode.Decoder a -> Json.Decode.Decoder a
@@ -30,6 +108,19 @@ optionalInt : String -> Json.Decode.Decoder (Maybe Int)
 optionalInt name =
     Json.Decode.maybe (Json.Decode.field name Json.Decode.int)
 
+
+dateFromSeconds : Int -> Time.Posix
+dateFromSeconds =
+    Time.millisToPosix << (*) 1000
+
+
+{-| Decode an omitempty epoch-seconds field into a Maybe Posix: absent (or
+otherwise unreadable) → Nothing, present int → Just.
+-}
+optionalPosix : String -> Json.Decode.Decoder (Maybe Time.Posix)
+optionalPosix fieldName =
+    Json.Decode.maybe
+        (Json.Decode.field fieldName (Json.Decode.map dateFromSeconds Json.Decode.int))
 
 
 -- Agent run metrics (a single agent-step execution) ---------------------------
@@ -94,32 +185,18 @@ decodeRunMetric =
 
 
 
--- Cost rollup (GET /api/v1/agent/costs) ---------------------------------------
+-- Workflow definitions --------------------------------------------------------
 
 
-type alias CostSummary =
-    { dailyCapUsd : Float
-    , dailySpentUsd : Float
-    , dailyRemainingUsd : Float
-    , dailyExhausted : Bool
-    }
-
-
-type alias CostRow =
-    { key : String
-    , entries : Int
-    , inputTokens : Int
-    , outputTokens : Int
-    , turns : Int
-    , costUsd : Float
-    }
-
-
-type alias CostRollup =
-    { groupBy : String
-    , summary : CostSummary
-    , rows : List CostRow
-    }
+decodeWorkflowSummary : Json.Decode.Decoder WorkflowSummary
+decodeWorkflowSummary =
+    Json.Decode.succeed WorkflowSummary
+        |> andMap (defaultTo "" <| Json.Decode.field "name" Json.Decode.string)
+        |> andMap (defaultTo "" <| Json.Decode.field "description" Json.Decode.string)
+        |> andMap (defaultTo 0 <| Json.Decode.field "latest_version" Json.Decode.int)
+        |> andMap (defaultTo "" <| Json.Decode.field "content_hash" Json.Decode.string)
+        |> andMap (defaultTo 0 <| Json.Decode.field "live_version" Json.Decode.int)
+        |> andMap (defaultTo (dateFromSeconds 0) <| Json.Decode.field "created_at" (Json.Decode.map dateFromSeconds Json.Decode.int))
 
 
 decodeCostSummary : Json.Decode.Decoder CostSummary
@@ -134,7 +211,7 @@ decodeCostSummary =
 decodeCostRow : Json.Decode.Decoder CostRow
 decodeCostRow =
     Json.Decode.succeed CostRow
-        |> andMap (Json.Decode.field "key" Json.Decode.string)
+        |> andMap (defaultTo "" <| Json.Decode.field "key" Json.Decode.string)
         |> andMap (defaultTo 0 <| Json.Decode.field "entries" Json.Decode.int)
         |> andMap (defaultTo 0 <| Json.Decode.field "input_tokens" Json.Decode.int)
         |> andMap (defaultTo 0 <| Json.Decode.field "output_tokens" Json.Decode.int)
@@ -142,113 +219,75 @@ decodeCostRow =
         |> andMap (defaultTo 0 <| Json.Decode.field "cost_usd" Json.Decode.float)
 
 
+emptyCostSummary : CostSummary
+emptyCostSummary =
+    { dailyCapUsd = 0
+    , dailySpentUsd = 0
+    , dailyRemainingUsd = 0
+    , dailyExhausted = False
+    }
+
+
 decodeCostRollup : Json.Decode.Decoder CostRollup
 decodeCostRollup =
     Json.Decode.succeed CostRollup
         |> andMap (defaultTo "day" <| Json.Decode.field "group_by" Json.Decode.string)
-        |> andMap (Json.Decode.field "summary" decodeCostSummary)
-        |> andMap (defaultTo [] <| Json.Decode.field "rows" (Json.Decode.list decodeCostRow))
+        |> andMap (defaultTo emptyCostSummary <| Json.Decode.field "summary" decodeCostSummary)
+        |> andMap
+            (Json.Decode.map (Maybe.withDefault [])
+                (Json.Decode.field "rows" (Json.Decode.nullable (Json.Decode.list decodeCostRow)))
+                |> defaultTo []
+            )
 
 
-
--- Workflow definitions (GET /api/v1/agent/workflows) --------------------------
-
-
-type alias Workflow =
-    { name : String
-    , description : String
-    , latestVersion : Int
-    , contentHash : String
-    , liveVersion : Maybe Int
-    , createdAt : Int
-    }
+decodeCredentialStatus : Json.Decode.Decoder CredentialStatus
+decodeCredentialStatus =
+    Json.Decode.succeed CredentialStatus
+        |> andMap (defaultTo "" <| Json.Decode.field "kind" Json.Decode.string)
+        |> andMap (optionalPosix "expires_at")
+        |> andMap (optionalPosix "last_verified_at")
+        |> andMap (defaultTo "" <| Json.Decode.field "jira_account_id" Json.Decode.string)
 
 
-decodeWorkflow : Json.Decode.Decoder Workflow
-decodeWorkflow =
-    Json.Decode.succeed Workflow
-        |> andMap (Json.Decode.field "name" Json.Decode.string)
-        |> andMap (defaultTo "" <| Json.Decode.field "description" Json.Decode.string)
-        |> andMap (defaultTo 0 <| Json.Decode.field "latest_version" Json.Decode.int)
-        |> andMap (defaultTo "" <| Json.Decode.field "content_hash" Json.Decode.string)
-        |> andMap (optionalInt "live_version")
-        |> andMap (defaultTo 0 <| Json.Decode.field "created_at" Json.Decode.int)
-
-
-
--- Principals (GET /api/v1/agent/principals) -----------------------------------
-
-
-type alias Principal =
-    { id : Int
-    , name : String
-    , description : String
-    , tokenPrefix : String
-    , scopes : List String
-    , teamName : String
-    , createdBy : String
-    , createdAt : Int
-    , expiresAt : Maybe Int
-    , revokedAt : Maybe Int
-    , lastUsedAt : Maybe Int
-    }
+{-| Decode the credential-status list. Tolerates a null top-level array
+(handler may encode nil) by defaulting to [].
+-}
+decodeCredentialStatuses : Json.Decode.Decoder (List CredentialStatus)
+decodeCredentialStatuses =
+    Json.Decode.nullable (Json.Decode.list decodeCredentialStatus)
+        |> Json.Decode.map (Maybe.withDefault [])
 
 
 decodePrincipal : Json.Decode.Decoder Principal
 decodePrincipal =
     Json.Decode.succeed Principal
-        |> andMap (Json.Decode.field "id" Json.Decode.int)
-        |> andMap (Json.Decode.field "name" Json.Decode.string)
+        |> andMap (defaultTo 0 <| Json.Decode.field "id" Json.Decode.int)
+        |> andMap (defaultTo "" <| Json.Decode.field "name" Json.Decode.string)
         |> andMap (defaultTo "" <| Json.Decode.field "description" Json.Decode.string)
         |> andMap (defaultTo "" <| Json.Decode.field "token_prefix" Json.Decode.string)
         |> andMap (defaultTo [] <| Json.Decode.field "scopes" (Json.Decode.list Json.Decode.string))
         |> andMap (defaultTo "" <| Json.Decode.field "team_name" Json.Decode.string)
         |> andMap (defaultTo "" <| Json.Decode.field "created_by" Json.Decode.string)
-        |> andMap (defaultTo 0 <| Json.Decode.field "created_at" Json.Decode.int)
-        |> andMap (optionalInt "expires_at")
-        |> andMap (optionalInt "revoked_at")
-        |> andMap (optionalInt "last_used_at")
+        |> andMap (defaultTo (dateFromSeconds 0) <| Json.Decode.field "created_at" (Json.Decode.map dateFromSeconds Json.Decode.int))
+        |> andMap (optionalPosix "expires_at")
+        |> andMap (optionalPosix "revoked_at")
+        |> andMap (optionalPosix "last_used_at")
 
 
-{-| A principal is active when it has not been revoked and is not past expiry.
+{-| Decode the principals list. Tolerates a null top-level array (handler
+encodes nil for the empty case) by defaulting to [].
 -}
-principalActive : Time.Posix -> Principal -> Bool
-principalActive now p =
-    let
-        nowSecs =
-            Time.posixToMillis now // 1000
-    in
-    case p.revokedAt of
-        Just _ ->
-            False
-
-        Nothing ->
-            case p.expiresAt of
-                Just e ->
-                    e > nowSecs
-
-                Nothing ->
-                    True
+decodePrincipals : Json.Decode.Decoder (List Principal)
+decodePrincipals =
+    Json.Decode.nullable (Json.Decode.list decodePrincipal)
+        |> Json.Decode.map (Maybe.withDefault [])
 
 
-
--- User credential status (GET /api/v1/agent/user-credentials) -----------------
-
-
-type alias Credential =
-    { userId : Int
-    , userName : String
-    , kind : String
-    , expiresAt : Maybe Int
-    , lastVerifiedAt : Maybe Int
-    }
-
-
-decodeCredential : Json.Decode.Decoder Credential
-decodeCredential =
-    Json.Decode.succeed Credential
-        |> andMap (defaultTo 0 <| Json.Decode.field "user_id" Json.Decode.int)
-        |> andMap (defaultTo "" <| Json.Decode.field "user_name" Json.Decode.string)
-        |> andMap (Json.Decode.field "kind" Json.Decode.string)
-        |> andMap (optionalInt "expires_at")
-        |> andMap (optionalInt "last_verified_at")
+{-| The POST response inlines the Principal fields and adds `token`, so
+decode the Principal from the same object plus the one-time token.
+-}
+decodePrincipalCreated : Json.Decode.Decoder PrincipalCreated
+decodePrincipalCreated =
+    Json.Decode.map2 PrincipalCreated
+        decodePrincipal
+        (defaultTo "" <| Json.Decode.field "token" Json.Decode.string)

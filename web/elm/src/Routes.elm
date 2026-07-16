@@ -59,7 +59,7 @@ type Route
     | Causality { id : Concourse.VersionedResourceIdentifier, direction : Concourse.CausalityDirection, version : Maybe Concourse.Version, groups : List String }
     | DownloadFly
     | AgentReviews { teamName : String }
-    | Agent { teamName : String }
+    | Agent
 
 
 type SearchType
@@ -321,8 +321,7 @@ agentReviews =
 
 agent : Parser ((b -> Route) -> a) a
 agent =
-    map (\teamName -> always <| Agent { teamName = teamName })
-        (s "teams" </> string </> s "agent")
+    map (always <| Agent) (s "agent")
 
 
 causality : Parser ((InstanceVars -> Route) -> a) a
@@ -606,8 +605,8 @@ toString route =
             ( [ "teams", teamName, "agent-reviews" ], [] )
                 |> RouteBuilder.build
 
-        Agent { teamName } ->
-            ( [ "teams", teamName, "agent" ], [] )
+        Agent ->
+            ( [ "agent" ], [] )
                 |> RouteBuilder.build
 
 
@@ -720,7 +719,7 @@ getGroups route =
         AgentReviews _ ->
             []
 
-        Agent _ ->
+        Agent ->
             []
 
 
@@ -757,5 +756,5 @@ withGroups groups route =
         AgentReviews _ ->
             route
 
-        Agent _ ->
+        Agent ->
             route

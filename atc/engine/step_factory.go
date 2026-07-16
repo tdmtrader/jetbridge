@@ -36,6 +36,7 @@ type coreStepFactory struct {
 	agentMetricsStore     metrics.Store
 	agentBudgetChecker    budget.Checker
 	agentRunVerifier      exec.AgentRunVerifier
+	agentPlatformToken    string
 }
 
 // CoreStepFactoryOption configures optional fields on coreStepFactory.
@@ -71,6 +72,12 @@ func WithAgentBudgetChecker(c budget.Checker) CoreStepFactoryOption {
 // sidecar secret refs (§8.2) are injected.
 func WithAgentRunVerifier(v exec.AgentRunVerifier) CoreStepFactoryOption {
 	return func(f *coreStepFactory) { f.agentRunVerifier = v }
+}
+
+// WithAgentPlatformTokenSecret sets the K8s secret name providing the
+// pure-CI Anthropic token (web flag --agent-platform-token-secret).
+func WithAgentPlatformTokenSecret(name string) CoreStepFactoryOption {
+	return func(f *coreStepFactory) { f.agentPlatformToken = name }
 }
 
 func NewCoreStepFactory(
@@ -236,6 +243,9 @@ func (factory *coreStepFactory) AgentStep(
 	}
 	if factory.agentRunVerifier != nil {
 		agentOpts = append(agentOpts, exec.WithAgentRunVerifier(factory.agentRunVerifier))
+	}
+	if factory.agentPlatformToken != "" {
+		agentOpts = append(agentOpts, exec.WithAgentPlatformTokenSecret(factory.agentPlatformToken))
 	}
 
 	agentStep := exec.NewAgentStep(

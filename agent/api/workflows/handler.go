@@ -51,35 +51,41 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	json.NewEncoder(w).Encode(v)
 }
 
-// List handles GET /api/v1/agent/workflows.
-func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
-	defs, err := h.store.List()
+// Summarize builds the workflow-list view: the latest version per name with
+// its resolved live version. It is the single implementation behind both the
+// HTTP List handler and the list_agent_workflows MCP tool, and costs exactly
+// two metadata queries regardless of workflow count (previously each
+// non-live-latest name triggered a Live() lookup that fetched and parsed the
+// full definition YAML just to read a version number).
+func Summarize(store workflow.Store) ([]WorkflowSummary, error) {
+	defs, err := store.List()
 	if err != nil {
-		http.Error(w, "failed to list workflows", http.StatusInternalServerError)
-		return
+		return nil, err
+	}
+	liveVersions, err := store.LiveVersions()
+	if err != nil {
+		return nil, err
 	}
 	summaries := []WorkflowSummary{}
 	for _, d := range defs {
-		s := WorkflowSummary{
+		summaries = append(summaries, WorkflowSummary{
 			Name:          d.Name,
 			Description:   d.Description,
 			LatestVersion: d.Version,
 			ContentHash:   d.ContentHash,
+			LiveVersion:   liveVersions[d.Name], // 0 = no live version
 			CreatedAt:     d.CreatedAt,
-		}
-		if d.Live {
-			s.LiveVersion = d.Version
-		} else {
-			live, found, err := h.store.Live(d.Name)
-			if err != nil {
-				http.Error(w, "failed to resolve live version", http.StatusInternalServerError)
-				return
-			}
-			if found {
-				s.LiveVersion = live.Version
-			}
-		}
-		summaries = append(summaries, s)
+		})
+	}
+	return summaries, nil
+}
+
+// List handles GET /api/v1/agent/workflows.
+func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
+	summaries, err := Summarize(h.store)
+	if err != nil {
+		http.Error(w, "failed to list workflows", http.StatusInternalServerError)
+		return
 	}
 	writeJSON(w, http.StatusOK, summaries)
 }
