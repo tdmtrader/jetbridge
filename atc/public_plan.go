@@ -325,6 +325,18 @@ func (plan AgentPlan) Public() *json.RawMessage {
 	})
 }
 
+func (plan HarvestPlan) Public() *json.RawMessage {
+	return enc(struct {
+		Name   string `json:"name"`
+		Repo   string `json:"repo"`
+		Branch string `json:"branch,omitempty"`
+	}{
+		Name:   plan.Name,
+		Repo:   plan.Repo,
+		Branch: plan.Branch,
+	})
+}
+
 func (plan SetPipelinePlan) Public() *json.RawMessage {
 	return enc(struct {
 		Name         string       `json:"name"`
