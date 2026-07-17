@@ -127,6 +127,94 @@ jobs:
             echo "AGENT_REVIEW_PUBLISH_TOKEN not set; skipping publish"
           fi
 
+# Native agent-review job (Task 19 dual-run): the same review phase as
+# agent-review above, but through the first-class `agent:` step instead of
+# the build-from-source ci-agent shell task. Dual-runs alongside agent-review
+# until 5 runs verify parity, then the shell job retires.
+# Token path: pure-CI platform secret (web --agent-platform-token-secret →
+# secretKeyRef agent-platform-token/anthropic-token in the cicd namespace).
+# Agent env is static-only by contract — no credentials ride env.
+- name: agent-review-native
+  plan:
+  - get: repo
+    trigger: false
+    params: {depth: 25}
+  - agent: review
+    prompt: |
+      You are a code review agent. Analyze the repository at repo for real defects (not style issues).
+
+      Only review files changed in diff against base ref: main
+      Use `git diff main...HEAD --name-only` to determine changed files.
+
+      For each concern:
+      1. Write a failing Go test that proves the defect
+      2. Classify severity by what the test demonstrates
+
+      Write a JSON object with this structure to review/review.json:
+      {
+        "schema_version": "1.0.0",
+        "proven_issues": [
+          {
+            "id": "ISS-001",
+            "severity": "critical|high|medium|low",
+            "title": "short description",
+            "description": "detailed explanation",
+            "file": "path/to/file.go",
+            "line": 42,
+            "category": "security|correctness|performance|maintainability|testing",
+            "test_code": "package ...\n\nimport \"testing\"\n\nfunc TestXxx(t *testing.T) { ... }",
+            "test_file": "path/to/file_test.go",
+            "test_name": "TestXxx"
+          }
+        ],
+        "observations": [
+          {
+            "id": "OBS-001",
+            "title": "short description",
+            "file": "path/to/file.go",
+            "line": 42,
+            "category": "security|correctness|performance|maintainability|testing"
+          }
+        ],
+        "score": {
+          "value": 8.5,
+          "max": 10.0,
+          "pass": true,
+          "threshold": 7.0
+        }
+      }
+
+      If a concern cannot be proven with a test, include it in observations, not proven_issues.
+      Run any generated tests to verify they actually fail against the current code before reporting.
+    model: ((agent-model))
+    max_turns: 50
+    inputs: [repo]
+    outputs: [review]
+    env:
+      BASE_REF: main
+      REVIEW_DIFF_ONLY: "true"
+    timeout: 30m
+  - task: publish-review
+    config:
+      platform: linux
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v5
+      inputs:
+      - name: review
+      params:
+        AGENT_REVIEW_PUBLISH_TOKEN: ((agent-review-publish-token))
+      run:
+        path: sh
+        args:
+        - -ec
+        - |
+          echo "=== Publishing review to ATC ==="
+          curl -sf -X POST \
+            -H "Authorization: Bearer ${AGENT_REVIEW_PUBLISH_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d "{\"build_id\": ${BUILD_ID}, \"review\": $(cat review/review.json)}" \
+            "http://concourse-web.cicd.svc.cluster.local:8080/api/v1/agent/reviews"
+          echo "Published for build ${BUILD_ID}"
+
 - name: unit-tests
   serial_groups: [pipeline]
   plan:
