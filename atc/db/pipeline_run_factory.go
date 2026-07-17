@@ -56,9 +56,9 @@ type PipelineRunFactory interface {
 	// plan env (F30) just like the run id, so a claimed ticket may only be
 	// admitted against — and charged in agent_cost_ledger — when server-side
 	// linkage proves the verified run was dispatched for it. agent_tickets
-	// is a wave-2 table (ticket-core, migrations 1773106050–59); until it
-	// exists no ticket claim is verifiable and this reports false (fail
-	// closed — there are no legitimate tickets to claim).
+	// landed with ticket-core (migration 1773106062); on a DB that has not
+	// migrated (or was downgraded) no ticket claim is verifiable and this
+	// reports false (fail closed — there are no legitimate tickets to claim).
 	TicketBelongsToRun(ticketID, runID int) (bool, error)
 }
 
@@ -430,12 +430,13 @@ func (f *pipelineRunFactory) TicketBelongsToRun(ticketID, runID int) (bool, erro
 		return false, nil
 	}
 
-	// agent_tickets is owned by ticket-core (wave-2 migrations 1773106050–59)
-	// and may not exist yet; cross-aggregate refs are plain int columns with
-	// no SQL FKs (§1.1), so probe for the table first. Absent table ⇒ there
-	// are no tickets, so no claim can be legitimate: fail closed. The probe
-	// is a separate statement because Postgres resolves every relation named
-	// in a query at parse time, even in dead branches.
+	// agent_tickets is owned by ticket-core (migration 1773106062) and may
+	// be absent on a not-yet-migrated or downgraded DB; cross-aggregate refs
+	// are plain int columns with no SQL FKs (§1.1), so probe for the table
+	// first. Absent table ⇒ there are no tickets, so no claim can be
+	// legitimate: fail closed. The probe is a separate statement because
+	// Postgres resolves every relation named in a query at parse time, even
+	// in dead branches.
 	var tableExists bool
 	err := f.conn.QueryRow(`SELECT to_regclass('agent_tickets') IS NOT NULL`).Scan(&tableExists)
 	if err != nil {
