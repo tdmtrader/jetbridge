@@ -55,6 +55,35 @@ func (client *client) CreateAgentTicket(req tickets.CreateRequest) (tickets.Tick
 	return created, err
 }
 
+func (client *client) TransitionAgentTicket(id int, req tickets.TransitionRequest) (tickets.Ticket, error) {
+	buffer := &bytes.Buffer{}
+	if err := json.NewEncoder(buffer).Encode(req); err != nil {
+		return tickets.Ticket{}, err
+	}
+
+	var updated tickets.Ticket
+	err := client.connection.Send(internal.Request{
+		RequestName: atc.TransitionAgentTicket,
+		Params:      rata.Params{"ticket_id": strconv.Itoa(id)},
+		Body:        buffer,
+		Header:      http.Header{"Content-Type": []string{"application/json"}},
+	}, &internal.Response{
+		Result: &updated,
+	})
+	return updated, err
+}
+
+func (client *client) DispatchAgentTicket(id int) (tickets.DispatchResponse, error) {
+	var res tickets.DispatchResponse
+	err := client.connection.Send(internal.Request{
+		RequestName: atc.DispatchAgentTicket,
+		Params:      rata.Params{"ticket_id": strconv.Itoa(id)},
+	}, &internal.Response{
+		Result: &res,
+	})
+	return res, err
+}
+
 func (client *client) GetAgentTicket(id int) (tickets.TicketDetail, bool, error) {
 	var detail tickets.TicketDetail
 	err := client.connection.Send(internal.Request{

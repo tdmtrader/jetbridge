@@ -188,6 +188,19 @@ type FakeClient struct {
 	deleteAgentUserCredentialReturnsOnCall map[int]struct {
 		result1 error
 	}
+	DispatchAgentTicketStub        func(int) (tickets.DispatchResponse, error)
+	dispatchAgentTicketMutex       sync.RWMutex
+	dispatchAgentTicketArgsForCall []struct {
+		arg1 int
+	}
+	dispatchAgentTicketReturns struct {
+		result1 tickets.DispatchResponse
+		result2 error
+	}
+	dispatchAgentTicketReturnsOnCall map[int]struct {
+		result1 tickets.DispatchResponse
+		result2 error
+	}
 	FindTeamStub        func(string) (concourse.Team, error)
 	findTeamMutex       sync.RWMutex
 	findTeamArgsForCall []struct {
@@ -422,6 +435,20 @@ type FakeClient struct {
 	}
 	teamReturnsOnCall map[int]struct {
 		result1 concourse.Team
+	}
+	TransitionAgentTicketStub        func(int, tickets.TransitionRequest) (tickets.Ticket, error)
+	transitionAgentTicketMutex       sync.RWMutex
+	transitionAgentTicketArgsForCall []struct {
+		arg1 int
+		arg2 tickets.TransitionRequest
+	}
+	transitionAgentTicketReturns struct {
+		result1 tickets.Ticket
+		result2 error
+	}
+	transitionAgentTicketReturnsOnCall map[int]struct {
+		result1 tickets.Ticket
+		result2 error
 	}
 	URLStub        func() string
 	uRLMutex       sync.RWMutex
@@ -1269,6 +1296,70 @@ func (fake *FakeClient) DeleteAgentUserCredentialReturnsOnCall(i int, result1 er
 	fake.deleteAgentUserCredentialReturnsOnCall[i] = struct {
 		result1 error
 	}{result1}
+}
+
+func (fake *FakeClient) DispatchAgentTicket(arg1 int) (tickets.DispatchResponse, error) {
+	fake.dispatchAgentTicketMutex.Lock()
+	ret, specificReturn := fake.dispatchAgentTicketReturnsOnCall[len(fake.dispatchAgentTicketArgsForCall)]
+	fake.dispatchAgentTicketArgsForCall = append(fake.dispatchAgentTicketArgsForCall, struct {
+		arg1 int
+	}{arg1})
+	stub := fake.DispatchAgentTicketStub
+	fakeReturns := fake.dispatchAgentTicketReturns
+	fake.recordInvocation("DispatchAgentTicket", []interface{}{arg1})
+	fake.dispatchAgentTicketMutex.Unlock()
+	if stub != nil {
+		return stub(arg1)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2
+	}
+	return fakeReturns.result1, fakeReturns.result2
+}
+
+func (fake *FakeClient) DispatchAgentTicketCallCount() int {
+	fake.dispatchAgentTicketMutex.RLock()
+	defer fake.dispatchAgentTicketMutex.RUnlock()
+	return len(fake.dispatchAgentTicketArgsForCall)
+}
+
+func (fake *FakeClient) DispatchAgentTicketCalls(stub func(int) (tickets.DispatchResponse, error)) {
+	fake.dispatchAgentTicketMutex.Lock()
+	defer fake.dispatchAgentTicketMutex.Unlock()
+	fake.DispatchAgentTicketStub = stub
+}
+
+func (fake *FakeClient) DispatchAgentTicketArgsForCall(i int) int {
+	fake.dispatchAgentTicketMutex.RLock()
+	defer fake.dispatchAgentTicketMutex.RUnlock()
+	argsForCall := fake.dispatchAgentTicketArgsForCall[i]
+	return argsForCall.arg1
+}
+
+func (fake *FakeClient) DispatchAgentTicketReturns(result1 tickets.DispatchResponse, result2 error) {
+	fake.dispatchAgentTicketMutex.Lock()
+	defer fake.dispatchAgentTicketMutex.Unlock()
+	fake.DispatchAgentTicketStub = nil
+	fake.dispatchAgentTicketReturns = struct {
+		result1 tickets.DispatchResponse
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeClient) DispatchAgentTicketReturnsOnCall(i int, result1 tickets.DispatchResponse, result2 error) {
+	fake.dispatchAgentTicketMutex.Lock()
+	defer fake.dispatchAgentTicketMutex.Unlock()
+	fake.DispatchAgentTicketStub = nil
+	if fake.dispatchAgentTicketReturnsOnCall == nil {
+		fake.dispatchAgentTicketReturnsOnCall = make(map[int]struct {
+			result1 tickets.DispatchResponse
+			result2 error
+		})
+	}
+	fake.dispatchAgentTicketReturnsOnCall[i] = struct {
+		result1 tickets.DispatchResponse
+		result2 error
+	}{result1, result2}
 }
 
 func (fake *FakeClient) FindTeam(arg1 string) (concourse.Team, error) {
@@ -2414,6 +2505,71 @@ func (fake *FakeClient) TeamReturnsOnCall(i int, result1 concourse.Team) {
 	fake.teamReturnsOnCall[i] = struct {
 		result1 concourse.Team
 	}{result1}
+}
+
+func (fake *FakeClient) TransitionAgentTicket(arg1 int, arg2 tickets.TransitionRequest) (tickets.Ticket, error) {
+	fake.transitionAgentTicketMutex.Lock()
+	ret, specificReturn := fake.transitionAgentTicketReturnsOnCall[len(fake.transitionAgentTicketArgsForCall)]
+	fake.transitionAgentTicketArgsForCall = append(fake.transitionAgentTicketArgsForCall, struct {
+		arg1 int
+		arg2 tickets.TransitionRequest
+	}{arg1, arg2})
+	stub := fake.TransitionAgentTicketStub
+	fakeReturns := fake.transitionAgentTicketReturns
+	fake.recordInvocation("TransitionAgentTicket", []interface{}{arg1, arg2})
+	fake.transitionAgentTicketMutex.Unlock()
+	if stub != nil {
+		return stub(arg1, arg2)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2
+	}
+	return fakeReturns.result1, fakeReturns.result2
+}
+
+func (fake *FakeClient) TransitionAgentTicketCallCount() int {
+	fake.transitionAgentTicketMutex.RLock()
+	defer fake.transitionAgentTicketMutex.RUnlock()
+	return len(fake.transitionAgentTicketArgsForCall)
+}
+
+func (fake *FakeClient) TransitionAgentTicketCalls(stub func(int, tickets.TransitionRequest) (tickets.Ticket, error)) {
+	fake.transitionAgentTicketMutex.Lock()
+	defer fake.transitionAgentTicketMutex.Unlock()
+	fake.TransitionAgentTicketStub = stub
+}
+
+func (fake *FakeClient) TransitionAgentTicketArgsForCall(i int) (int, tickets.TransitionRequest) {
+	fake.transitionAgentTicketMutex.RLock()
+	defer fake.transitionAgentTicketMutex.RUnlock()
+	argsForCall := fake.transitionAgentTicketArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2
+}
+
+func (fake *FakeClient) TransitionAgentTicketReturns(result1 tickets.Ticket, result2 error) {
+	fake.transitionAgentTicketMutex.Lock()
+	defer fake.transitionAgentTicketMutex.Unlock()
+	fake.TransitionAgentTicketStub = nil
+	fake.transitionAgentTicketReturns = struct {
+		result1 tickets.Ticket
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeClient) TransitionAgentTicketReturnsOnCall(i int, result1 tickets.Ticket, result2 error) {
+	fake.transitionAgentTicketMutex.Lock()
+	defer fake.transitionAgentTicketMutex.Unlock()
+	fake.TransitionAgentTicketStub = nil
+	if fake.transitionAgentTicketReturnsOnCall == nil {
+		fake.transitionAgentTicketReturnsOnCall = make(map[int]struct {
+			result1 tickets.Ticket
+			result2 error
+		})
+	}
+	fake.transitionAgentTicketReturnsOnCall[i] = struct {
+		result1 tickets.Ticket
+		result2 error
+	}{result1, result2}
 }
 
 func (fake *FakeClient) URL() string {

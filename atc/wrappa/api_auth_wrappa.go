@@ -216,7 +216,11 @@ func (wrappa *APIAuthWrappa) Wrap(handlers rata.Handlers) rata.Handlers {
 			atc.PromoteAgentWorkflowVersion,
 			atc.GetAgentCostRollup,
 			atc.ListAgentTickets,
-			atc.UpdateAgentTicket:
+			atc.UpdateAgentTicket,
+			// DispatchAgentTicket is deliberately human-only (no principal
+			// tier): the manual trigger IS the budget gate while budget
+			// admission is deferred (manual-dispatch slice, 2026-07-17).
+			atc.DispatchAgentTicket:
 			newHandler = auth.CheckAgentAuthorizationHandler(handler, rejector)
 
 		// combined tier: agent principal (tickets:write) OR authorized

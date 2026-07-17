@@ -56,6 +56,7 @@ Source of truth for tiers: 00-shared-contracts.md §4.1/§4.2.
 | TransitionAgentTicket | PUT /api/v1/agent/tickets/:ticket_id/state | authorized member (main); also principal | tickets:write | ticket-core | live (ticket-core) |
 | SubmitAgentTicketSpec / SubmitAgentTicketPlan | POST /api/v1/agent/tickets/:ticket_id/{spec,plan} | principal; also authorized member (main) | tickets:write | ticket-core | live (ticket-core) |
 | UpdateAgentTicketTask | PUT /api/v1/agent/tickets/:ticket_id/tasks/:ordering | principal | tickets:write | ticket-core | live (ticket-core) |
+| DispatchAgentTicket | POST /api/v1/agent/tickets/:ticket_id/dispatch | authorized member (main) — deliberately NO principal tier (manual trigger is the budget gate while admission is deferred) | — | dispatch (manual slice) | live (manual-dispatch slice) |
 | SubmitAgentRunMetrics | POST /api/v1/agent/metrics | principal | metrics:write | agent-step | planned (wave 2) |
 | ListAgentRunMetrics | GET /api/v1/agent/tickets/:ticket_id/metrics | authorized viewer (main) | — | agent-step | planned (wave 2) |
 | AskAgentQuestion | POST /api/v1/agent/tickets/:ticket_id/questions | principal | tickets:write | platform-mcp-hitl | planned (wave 3) |

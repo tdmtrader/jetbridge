@@ -96,4 +96,46 @@ var _ = Describe("Agent Tickets", func() {
 			})
 		})
 	})
+
+	Describe("TransitionAgentTicket", func() {
+		BeforeEach(func() {
+			atcServer.AppendHandlers(
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("PUT", "/api/v1/agent/tickets/7/state"),
+					ghttp.VerifyJSON(`{"from":"draft","to":"queued"}`),
+					ghttp.RespondWithJSONEncoded(http.StatusOK, tickets.Ticket{
+						ID: 7, State: tickets.StateQueued,
+					}),
+				),
+			)
+		})
+
+		It("puts the transition and decodes the updated ticket", func() {
+			updated, err := client.TransitionAgentTicket(7, tickets.TransitionRequest{
+				From: tickets.StateDraft, To: tickets.StateQueued,
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(updated.State).To(Equal(tickets.StateQueued))
+		})
+	})
+
+	Describe("DispatchAgentTicket", func() {
+		BeforeEach(func() {
+			atcServer.AppendHandlers(
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("POST", "/api/v1/agent/tickets/7/dispatch"),
+					ghttp.RespondWithJSONEncoded(http.StatusCreated, tickets.DispatchResponse{
+						RunID: 321, PipelineName: "agent-ticket-7",
+					}),
+				),
+			)
+		})
+
+		It("posts the dispatch and decodes the run", func() {
+			res, err := client.DispatchAgentTicket(7)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res.RunID).To(Equal(321))
+			Expect(res.PipelineName).To(Equal("agent-ticket-7"))
+		})
+	})
 })

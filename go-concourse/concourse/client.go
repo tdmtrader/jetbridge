@@ -49,6 +49,8 @@ type Client interface {
 	ListAgentTickets(filter tickets.ListFilter) ([]tickets.Ticket, error)
 	CreateAgentTicket(req tickets.CreateRequest) (tickets.Ticket, error)
 	GetAgentTicket(id int) (tickets.TicketDetail, bool, error)
+	TransitionAgentTicket(id int, req tickets.TransitionRequest) (tickets.Ticket, error)
+	DispatchAgentTicket(id int) (tickets.DispatchResponse, error)
 	// Agent principals are admin-only: minted, listed, and revoked by admins.
 	ListAgentPrincipals() ([]atc.AgentPrincipal, error)
 	CreateAgentPrincipal(spec atc.AgentPrincipalCreateSpec) (atc.AgentPrincipalCreated, error)

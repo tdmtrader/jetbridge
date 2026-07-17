@@ -22,6 +22,7 @@ func TestTicketRoutesRegistered(t *testing.T) {
 		{atc.SubmitAgentTicketSpec, "POST", "/api/v1/agent/tickets/:ticket_id/spec"},
 		{atc.SubmitAgentTicketPlan, "POST", "/api/v1/agent/tickets/:ticket_id/plan"},
 		{atc.UpdateAgentTicketTask, "PUT", "/api/v1/agent/tickets/:ticket_id/tasks/:ordering"},
+		{atc.DispatchAgentTicket, "POST", "/api/v1/agent/tickets/:ticket_id/dispatch"},
 	}
 
 	for _, rr := range required {

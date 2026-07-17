@@ -108,6 +108,9 @@ func NewHandler(
 	costLedger budget.Ledger,
 	agentDailyBudgetUSD float64,
 	workflowStore workflow.Store,
+	// agentDispatchHandler serves DispatchAgentTicket (built in
+	// atccmd/command.go from dispatch.Deps; a stub in the test suite).
+	agentDispatchHandler http.Handler,
 ) (http.Handler, error) {
 
 	absCLIDownloadsDir, err := filepath.Abs(cliDownloadsDir)
@@ -335,6 +338,7 @@ func NewHandler(
 		atc.SubmitAgentTicketSpec: http.HandlerFunc(ticketsServer.SubmitSpec),
 		atc.SubmitAgentTicketPlan: http.HandlerFunc(ticketsServer.SubmitPlan),
 		atc.UpdateAgentTicketTask: http.HandlerFunc(ticketsServer.UpdateTask),
+		atc.DispatchAgentTicket:   agentDispatchHandler,
 
 		atc.SetAgentUserCredential:       http.HandlerFunc(credentialsServer.Set),
 		atc.GetAgentUserCredentialStatus: http.HandlerFunc(credentialsServer.Status),

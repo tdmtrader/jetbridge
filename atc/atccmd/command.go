@@ -24,6 +24,7 @@ import (
 	"github.com/concourse/concourse/agent/api/principals"
 	"github.com/concourse/concourse/agent/budget"
 	"github.com/concourse/concourse/agent/credentials"
+	"github.com/concourse/concourse/agent/dispatch"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api"
 	"github.com/concourse/concourse/atc/api/accessor"
@@ -222,6 +223,8 @@ type RunCommand struct {
 	AgentReviewPublishToken string `long:"agent-review-publish-token" description:"DEPRECATED: static bearer token accepted for publishing agent review results during the agent-principal dual-accept window. Mint a reviews:write agent principal instead (POST /api/v1/agent/principals). This flag will be removed at the end of the window."`
 
 	AgentStepImage string `long:"agent-step-image" description:"Container image for the agent: step's main container (must contain the claude CLI and agent-runner). Agent steps error at runtime when unset."`
+
+	AgentRepoBaseURL string `long:"agent-repo-base-url" default:"https://github.com" description:"Base URL prefixed to a ticket's repo slug when dispatch renders the run's git resource (manual-dispatch slice; anonymous clones only until harvest's git-cred machinery lands)."`
 
 	AgentPlatformTokenSecret string `long:"agent-platform-token-secret" description:"Name of a K8s secret (key 'anthropic-token') providing the Anthropic token for pure-CI agent steps that have no per-run agent-run-<id> secret. The per-run secret always takes precedence. Unset means pure-CI agent steps have no token path."`
 
@@ -2376,6 +2379,16 @@ func (cmd *RunCommand) constructAPIHandler(
 		db.NewAgentCostLedgerFactory(dbConn),
 		cmd.AgentDailyBudgetUSD,
 		db.NewAgentWorkflowsFactory(dbConn),
+		dispatch.NewHTTPHandler(dispatch.Deps{
+			Tickets:        db.NewAgentTicketsFactory(dbConn),
+			Workflows:      db.NewAgentWorkflowsFactory(dbConn),
+			Templates:      dispatch.NewTeamTemplateSaver(teamFactory, atc.DefaultTeamName),
+			Runs:           dbPipelineRunFactory,
+			ATCExternalURL: cmd.ExternalURL.String(),
+			RepoBaseURL:    cmd.AgentRepoBaseURL,
+		}, func(r *http.Request) string {
+			return accessor.GetAccessor(r).Claims().UserName
+		}),
 	)
 }
 

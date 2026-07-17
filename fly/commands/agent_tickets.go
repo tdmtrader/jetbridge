@@ -12,9 +12,12 @@ import (
 )
 
 type AgentTicketsCommand struct {
-	List   AgentTicketsListCommand   `command:"list" description:"List agent tickets"`
-	Create AgentTicketsCreateCommand `command:"create" description:"File a new agent ticket (state: draft)"`
-	Show   AgentTicketsShowCommand   `command:"show" description:"Show one ticket with its spec and plan"`
+	List       AgentTicketsListCommand       `command:"list" description:"List agent tickets"`
+	Create     AgentTicketsCreateCommand     `command:"create" description:"File a new agent ticket (state: draft)"`
+	Show       AgentTicketsShowCommand       `command:"show" description:"Show one ticket with its spec and plan"`
+	Queue      AgentTicketsQueueCommand      `command:"queue" description:"Queue a draft ticket for dispatch"`
+	Transition AgentTicketsTransitionCommand `command:"transition" description:"Move a ticket along the lifecycle (single-writer state machine)"`
+	Dispatch   AgentTicketsDispatchCommand   `command:"dispatch" description:"Dispatch a queued ticket as a pipeline run (manual trigger)"`
 }
 
 type AgentTicketsListCommand struct {
@@ -101,6 +104,80 @@ func (command *AgentTicketsCreateCommand) Execute([]string) error {
 		return err
 	}
 	fmt.Printf("created ticket #%d (%s)\n", created.ID, created.State)
+	return nil
+}
+
+type AgentTicketsQueueCommand struct {
+	ID int `long:"id" required:"true" description:"Ticket id"`
+}
+
+func (command *AgentTicketsQueueCommand) Execute([]string) error {
+	target, err := rc.LoadTarget(Fly.Target, Fly.Verbose)
+	if err != nil {
+		return err
+	}
+	if err := target.Validate(); err != nil {
+		return err
+	}
+
+	updated, err := target.Client().TransitionAgentTicket(command.ID, tickets.TransitionRequest{
+		From: tickets.StateDraft, To: tickets.StateQueued,
+	})
+	if err != nil {
+		return err
+	}
+	fmt.Printf("ticket #%d is now %s\n", updated.ID, updated.State)
+	return nil
+}
+
+type AgentTicketsTransitionCommand struct {
+	ID          int    `long:"id" required:"true" description:"Ticket id"`
+	From        string `long:"from" required:"true" description:"Expected current state (optimistic concurrency guard)"`
+	To          string `long:"to" required:"true" description:"Target state"`
+	Branch      string `long:"branch" description:"Branch to record (needs_review transitions)"`
+	ErrorDetail string `long:"error-detail" description:"Error detail to record (errored transitions)"`
+}
+
+func (command *AgentTicketsTransitionCommand) Execute([]string) error {
+	target, err := rc.LoadTarget(Fly.Target, Fly.Verbose)
+	if err != nil {
+		return err
+	}
+	if err := target.Validate(); err != nil {
+		return err
+	}
+
+	updated, err := target.Client().TransitionAgentTicket(command.ID, tickets.TransitionRequest{
+		From:        tickets.State(command.From),
+		To:          tickets.State(command.To),
+		Branch:      command.Branch,
+		ErrorDetail: command.ErrorDetail,
+	})
+	if err != nil {
+		return err
+	}
+	fmt.Printf("ticket #%d is now %s\n", updated.ID, updated.State)
+	return nil
+}
+
+type AgentTicketsDispatchCommand struct {
+	ID int `long:"id" required:"true" description:"Ticket id (must be queued)"`
+}
+
+func (command *AgentTicketsDispatchCommand) Execute([]string) error {
+	target, err := rc.LoadTarget(Fly.Target, Fly.Verbose)
+	if err != nil {
+		return err
+	}
+	if err := target.Validate(); err != nil {
+		return err
+	}
+
+	res, err := target.Client().DispatchAgentTicket(command.ID)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("dispatched ticket #%d as run %d (pipeline %s)\n", command.ID, res.RunID, res.PipelineName)
 	return nil
 }
 

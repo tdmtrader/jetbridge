@@ -277,3 +277,11 @@ type TaskStatusRequest struct {
 	Status TaskStatus `json:"status"`
 	Note   string     `json:"note,omitempty"`
 }
+
+// DispatchResponse is the DispatchAgentTicket 201 body (manual-dispatch
+// slice, 2026-07-17): the created pipeline run and the per-ticket
+// template pipeline it materialized from.
+type DispatchResponse struct {
+	RunID        int    `json:"run_id"`
+	PipelineName string `json:"pipeline_name"`
+}

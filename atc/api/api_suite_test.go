@@ -245,6 +245,9 @@ var _ = BeforeEach(func() {
 		budget.NewMemoryLedger(),
 		0,
 		workflow.NewMemoryStore(),
+		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNotImplemented) // dispatch handler stub
+		}),
 	)
 
 	Expect(err).NotTo(HaveOccurred())

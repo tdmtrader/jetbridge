@@ -134,4 +134,5 @@ var DefaultRoles = map[string]string{
 	atc.TransitionAgentTicket: MemberRole,
 	atc.SubmitAgentTicketSpec: MemberRole,
 	atc.SubmitAgentTicketPlan: MemberRole,
+	atc.DispatchAgentTicket:   MemberRole,
 }
