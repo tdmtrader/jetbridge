@@ -145,3 +145,38 @@ func TestParseRejectsMalformedYAML(t *testing.T) {
 		t.Fatal("expected error for malformed YAML")
 	}
 }
+
+func TestParseAllowsRendererReservedInputs(t *testing.T) {
+	// "repo" (the ticket's git checkout) and "ticket" (the spec.md/plan.md
+	// files-delivery artifact) are provided by dispatch's renderer, not by
+	// earlier steps (manual-dispatch slice addendum, 2026-07-17).
+	yaml := `schema_version: 1
+name: smoke
+spec_delivery: files
+prompts:
+  do: "Do it."
+steps:
+- agent: implement
+  prompt: do
+  inputs: [repo, ticket]
+  outputs: [workspace]
+`
+	if _, err := workflow.Parse([]byte(yaml)); err != nil {
+		t.Fatalf("renderer-reserved inputs must parse: %v", err)
+	}
+
+	unknown := `schema_version: 1
+name: smoke
+spec_delivery: files
+prompts:
+  do: "Do it."
+steps:
+- agent: implement
+  prompt: do
+  inputs: [mystery]
+  outputs: [workspace]
+`
+	if _, err := workflow.Parse([]byte(unknown)); err == nil {
+		t.Fatal("unknown inputs must still be rejected")
+	}
+}

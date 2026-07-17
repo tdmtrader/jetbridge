@@ -106,7 +106,11 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("workflow: at least one step is required")
 	}
 	seen := map[string]bool{}
-	produced := map[string]bool{}
+	// "repo" and "ticket" are renderer-provided reserved artifacts: the
+	// ticket's git checkout and the spec.md/plan.md files-delivery input
+	// (dispatch manual-dispatch slice addendum, 2026-07-17). Steps may
+	// consume them without an earlier producer.
+	produced := map[string]bool{"repo": true, "ticket": true}
 	for i, s := range c.Steps {
 		isAgent := s.Agent != ""
 		isCheckpoint := s.Checkpoint != ""
