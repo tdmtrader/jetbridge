@@ -11,8 +11,11 @@ package dispatch
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
+	"text/template"
 
 	"github.com/concourse/concourse/agent/api/tickets"
 	"github.com/concourse/concourse/agent/workflow"
@@ -58,9 +61,13 @@ func RenderAgentStep(in RenderInput, step workflow.Step) (atc.AgentStep, error) 
 	if step.Prompt == "" {
 		return atc.AgentStep{}, fmt.Errorf("agent step %q has no prompt key", step.Agent)
 	}
-	prompt, ok := in.Workflow.Prompts[step.Prompt]
+	promptTemplate, ok := in.Workflow.Prompts[step.Prompt]
 	if !ok {
 		return atc.AgentStep{}, fmt.Errorf("agent step %q references unknown prompt %q", step.Agent, step.Prompt)
+	}
+	prompt, err := renderPrompt(step.Prompt, promptTemplate, in)
+	if err != nil {
+		return atc.AgentStep{}, fmt.Errorf("agent step %q: %w", step.Agent, err)
 	}
 
 	schema := ""
@@ -178,6 +185,56 @@ func Render(in RenderInput) (atc.Config, error) {
 		}}
 	}
 	return cfg, nil
+}
+
+// renderPrompt executes a §6.2 prompt template against the frozen
+// {Ticket, Spec, Tasks, Params} render context. The import gate
+// (workflow.Parse) validates every prompt against the spec-less ground
+// state with TOLERANT maps — unknown envelope fields render "<no
+// value>", only a .Spec nil-deref blocks import — so the real context
+// keeps the same semantics: JSON-shaped maps (snake_case keys), .Spec
+// nil until a spec exists. Params is empty in v0 (run params arrive
+// with the Dispatcher loop).
+func renderPrompt(key, body string, in RenderInput) (string, error) {
+	tmpl, err := template.New(key).Parse(body)
+	if err != nil {
+		return "", fmt.Errorf("prompt %q: %w", key, err)
+	}
+
+	ctx := struct {
+		Ticket map[string]any
+		Spec   map[string]any
+		Tasks  []map[string]any
+		Params map[string]any
+	}{
+		Ticket: toJSONMap(in.Ticket),
+		Tasks:  []map[string]any{},
+		Params: map[string]any{},
+	}
+	if in.Spec != nil {
+		ctx.Spec = toJSONMap(*in.Spec)
+	}
+	for _, task := range in.PlanTasks {
+		ctx.Tasks = append(ctx.Tasks, toJSONMap(task))
+	}
+
+	var out strings.Builder
+	if err := tmpl.Execute(&out, ctx); err != nil {
+		return "", fmt.Errorf("prompt %q: %w", key, err)
+	}
+	return out.String(), nil
+}
+
+func toJSONMap(v any) map[string]any {
+	payload, err := json.Marshal(v)
+	if err != nil {
+		return map[string]any{}
+	}
+	m := map[string]any{}
+	if err := json.Unmarshal(payload, &m); err != nil {
+		return map[string]any{}
+	}
+	return m
 }
 
 // writeTicketTask emits the task step materializing the "ticket"

@@ -82,6 +82,44 @@ func TestRenderAgentStepResolvesPromptDefaultsAndIdentityEnv(t *testing.T) {
 	}
 }
 
+func TestRenderAgentStepExecutesPromptTemplates(t *testing.T) {
+	// §6.2: prompts are Go text/templates rendered against the frozen
+	// {Ticket, Spec, Tasks, Params} context. The import gate validates
+	// with tolerant maps (unknown fields render "<no value>", only a
+	// .Spec nil-deref blocks import) — the real context mirrors that:
+	// JSON-shaped maps, snake_case keys.
+	in := renderInput()
+	in.Workflow.Prompts["do"] = "Work ticket #{{.Ticket.id}}: {{.Ticket.title}}.{{if .Spec}} Spec: {{.Spec.title}}.{{end}}{{range .Tasks}} [{{.title}}]{{end}}"
+
+	got, err := dispatch.RenderAgentStep(in, in.Workflow.Steps[0])
+	if err != nil {
+		t.Fatalf("RenderAgentStep: %v", err)
+	}
+	if got.Prompt != "Work ticket #42: fix X." {
+		t.Errorf("spec-less render = %q", got.Prompt)
+	}
+
+	in.Spec = &tickets.Spec{Version: 1, Title: "the spec", Body: "b"}
+	in.PlanTasks = []tickets.Task{{PlanVersion: 1, Ordering: 1, Title: "one", Status: tickets.TaskPending}}
+	got, err = dispatch.RenderAgentStep(in, in.Workflow.Steps[0])
+	if err != nil {
+		t.Fatalf("RenderAgentStep with spec: %v", err)
+	}
+	if got.Prompt != "Work ticket #42: fix X. Spec: the spec. [one]" {
+		t.Errorf("spec-ful render = %q", got.Prompt)
+	}
+
+	// unknown envelope fields are tolerant, matching the import gate
+	in.Workflow.Prompts["do"] = "x{{.Ticket.mystery}}y"
+	got, err = dispatch.RenderAgentStep(in, in.Workflow.Steps[0])
+	if err != nil {
+		t.Fatalf("unknown field must not error: %v", err)
+	}
+	if got.Prompt != "x<no value>y" {
+		t.Errorf("tolerant render = %q", got.Prompt)
+	}
+}
+
 func TestRenderAgentStepStepOverridesBeatDefaults(t *testing.T) {
 	in := renderInput()
 	step := in.Workflow.Steps[0]
