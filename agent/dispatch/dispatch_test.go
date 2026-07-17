@@ -1,17 +1,41 @@
 package dispatch_test
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"testing"
 
+	"github.com/concourse/concourse/agent/api/principals"
 	"github.com/concourse/concourse/agent/api/tickets"
+	"github.com/concourse/concourse/agent/credentials"
+	"github.com/concourse/concourse/agent/credentials/credentialsfakes"
 	"github.com/concourse/concourse/agent/dispatch"
 	"github.com/concourse/concourse/agent/workflow"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbfakes"
 )
+
+// fakeBackend implements the two Backend calls dispatch makes:
+// platform-user resolution and credential decryption.
+type fakeBackend struct {
+	credentials.Backend
+	platformUserID int
+	creds          map[int]map[string]*credentials.Credential
+}
+
+func (f *fakeBackend) UserBySub(sub string) (int, string, bool, error) {
+	if sub == credentials.PlatformUserSub {
+		return f.platformUserID, credentials.PlatformUserName, true, nil
+	}
+	return 0, "", false, nil
+}
+
+func (f *fakeBackend) Resolve(userID int, kind string) (*credentials.Credential, bool, error) {
+	cred, ok := f.creds[userID][kind]
+	return cred, ok, nil
+}
 
 type fakeWorkflows struct {
 	byName map[string]*workflow.Definition
@@ -74,6 +98,14 @@ func dispatchDeps(t *testing.T) (dispatch.Deps, *tickets.MemoryStore, *fakeSaver
 		Workflows:      &fakeWorkflows{byName: map[string]*workflow.Definition{"smoke": smokeDefinition()}},
 		Templates:      saver,
 		Runs:           runs,
+		Principals:     principals.NewMemoryStore(),
+		Credentials: &fakeBackend{
+			platformUserID: 9,
+			creds: map[int]map[string]*credentials.Credential{
+				9: {credentials.KindAnthropicOAuth: {Kind: credentials.KindAnthropicOAuth, Token: "platform-tok"}},
+			},
+		},
+		Secrets:        new(credentialsfakes.FakeSecretAttacher),
 		ATCExternalURL: "http://concourse.home",
 		RepoBaseURL:    "https://github.com",
 	}
@@ -100,7 +132,7 @@ func TestDispatchOneHappyPath(t *testing.T) {
 	deps, store, saver, runs := dispatchDeps(t)
 	id := queuedTicket(t, store, "smoke")
 
-	res, err := dispatch.DispatchOne(deps, id, "admin")
+	res, err := dispatch.DispatchOne(context.Background(), deps, id, "admin")
 	if err != nil {
 		t.Fatalf("DispatchOne: %v", err)
 	}
@@ -124,6 +156,50 @@ func TestDispatchOneHappyPath(t *testing.T) {
 	if got.WorkflowVersion == nil || *got.WorkflowVersion != 3 {
 		t.Errorf("live workflow version must be frozen onto the ticket at dispatch, got %+v", got.WorkflowVersion)
 	}
+
+	// §8.2: the run secret is the ONLY token path into a ticketed agent
+	// pod — dispatch must attach agent-run-<id> before the step's pod
+	// can start (live finding: CreateContainerConfigError without it).
+	att := deps.Secrets.(*credentialsfakes.FakeSecretAttacher)
+	if att.AttachCallCount() != 1 {
+		t.Fatalf("Attach calls = %d, want 1", att.AttachCallCount())
+	}
+	_, runID, cred, principalToken := att.AttachArgsForCall(0)
+	if runID != 555 || cred == nil || cred.Token != "platform-tok" {
+		t.Errorf("Attach args: runID=%d cred=%+v", runID, cred)
+	}
+	if principalToken == "" {
+		t.Error("a per-run principal token must be minted into the secret")
+	}
+}
+
+func TestDispatchOneAttachFailureLeavesTicketQueued(t *testing.T) {
+	deps, store, _, _ := dispatchDeps(t)
+	id := queuedTicket(t, store, "smoke")
+	deps.Secrets.(*credentialsfakes.FakeSecretAttacher).AttachReturns("", errors.New("k8s down"))
+
+	if _, err := dispatch.DispatchOne(context.Background(), deps, id, "admin"); err == nil {
+		t.Fatal("attach failure must surface")
+	}
+	got, _, _ := store.Get(id)
+	if got.State != tickets.StateQueued {
+		t.Errorf("ticket must stay queued for a retry, state = %s", got.State)
+	}
+}
+
+func TestDispatchOneNoCredentialFailsBeforeTransition(t *testing.T) {
+	deps, store, _, _ := dispatchDeps(t)
+	id := queuedTicket(t, store, "smoke")
+	deps.Credentials.(*fakeBackend).creds = map[int]map[string]*credentials.Credential{}
+
+	_, err := dispatch.DispatchOne(context.Background(), deps, id, "admin")
+	if err == nil {
+		t.Fatal("missing vaulted credential must surface")
+	}
+	got, _, _ := store.Get(id)
+	if got.State != tickets.StateQueued {
+		t.Errorf("ticket must stay queued, state = %s", got.State)
+	}
 }
 
 func TestDispatchOnePinnedVersion(t *testing.T) {
@@ -132,7 +208,7 @@ func TestDispatchOnePinnedVersion(t *testing.T) {
 	pin := 3
 	store.Update(id, tickets.Update{WorkflowVersion: &pin})
 
-	if _, err := dispatch.DispatchOne(deps, id, "admin"); err != nil {
+	if _, err := dispatch.DispatchOne(context.Background(), deps, id, "admin"); err != nil {
 		t.Fatalf("pinned dispatch: %v", err)
 	}
 
@@ -140,7 +216,7 @@ func TestDispatchOnePinnedVersion(t *testing.T) {
 	id2 := queuedTicket(t, store2, "smoke")
 	missing := 9
 	store2.Update(id2, tickets.Update{WorkflowVersion: &missing})
-	if _, err := dispatch.DispatchOne(deps2, id2, "admin"); !errors.Is(err, dispatch.ErrWorkflowNotFound) {
+	if _, err := dispatch.DispatchOne(context.Background(), deps2, id2, "admin"); !errors.Is(err, dispatch.ErrWorkflowNotFound) {
 		t.Errorf("missing pinned version: got %v, want ErrWorkflowNotFound", err)
 	}
 }
@@ -148,22 +224,22 @@ func TestDispatchOnePinnedVersion(t *testing.T) {
 func TestDispatchOneRefusals(t *testing.T) {
 	deps, store, _, _ := dispatchDeps(t)
 
-	if _, err := dispatch.DispatchOne(deps, 999, "admin"); !errors.Is(err, tickets.ErrTicketNotFound) {
+	if _, err := dispatch.DispatchOne(context.Background(), deps, 999, "admin"); !errors.Is(err, tickets.ErrTicketNotFound) {
 		t.Errorf("missing ticket: got %v", err)
 	}
 
 	draft, _ := store.Create(&tickets.Ticket{Title: "d", Repo: "r", WorkflowName: "smoke"})
-	if _, err := dispatch.DispatchOne(deps, draft, "admin"); !errors.Is(err, dispatch.ErrNotQueued) {
+	if _, err := dispatch.DispatchOne(context.Background(), deps, draft, "admin"); !errors.Is(err, dispatch.ErrNotQueued) {
 		t.Errorf("draft ticket: got %v, want ErrNotQueued", err)
 	}
 
 	noWF := queuedTicket(t, store, "")
-	if _, err := dispatch.DispatchOne(deps, noWF, "admin"); !errors.Is(err, dispatch.ErrNoWorkflow) {
+	if _, err := dispatch.DispatchOne(context.Background(), deps, noWF, "admin"); !errors.Is(err, dispatch.ErrNoWorkflow) {
 		t.Errorf("no workflow name: got %v, want ErrNoWorkflow", err)
 	}
 
 	unknown := queuedTicket(t, store, "nope")
-	if _, err := dispatch.DispatchOne(deps, unknown, "admin"); !errors.Is(err, dispatch.ErrWorkflowNotFound) {
+	if _, err := dispatch.DispatchOne(context.Background(), deps, unknown, "admin"); !errors.Is(err, dispatch.ErrWorkflowNotFound) {
 		t.Errorf("unknown workflow: got %v, want ErrWorkflowNotFound", err)
 	}
 }
@@ -173,7 +249,7 @@ func TestDispatchOneRunCreationFailureLeavesTicketQueued(t *testing.T) {
 	id := queuedTicket(t, store, "smoke")
 	runs.CreateRunReturns(nil, errors.New("boom"))
 
-	if _, err := dispatch.DispatchOne(deps, id, "admin"); err == nil {
+	if _, err := dispatch.DispatchOne(context.Background(), deps, id, "admin"); err == nil {
 		t.Fatal("run-creation failure must surface")
 	}
 	got, _, _ := store.Get(id)

@@ -23,7 +23,7 @@ func NewHTTPHandler(deps Deps, userName func(*http.Request) string) http.Handler
 			return
 		}
 
-		res, err := DispatchOne(deps, id, userName(r))
+		res, err := DispatchOne(r.Context(), deps, id, userName(r))
 		switch {
 		case errors.Is(err, tickets.ErrTicketNotFound):
 			http.Error(w, "ticket not found", http.StatusNotFound)

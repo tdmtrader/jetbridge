@@ -1,10 +1,14 @@
 package dispatch
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"time"
 
+	"github.com/concourse/concourse/agent/api/principals"
 	"github.com/concourse/concourse/agent/api/tickets"
+	"github.com/concourse/concourse/agent/credentials"
 	"github.com/concourse/concourse/agent/workflow"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
@@ -46,6 +50,15 @@ type Deps struct {
 	Templates TemplateSaver
 	Runs      RunCreator
 
+	// The §8.2 run-credential leg: the exec mounts CLAUDE_CODE_OAUTH_TOKEN
+	// exclusively from the agent-run-<id> secret on ticketed runs, so
+	// dispatch must mint a per-run principal, resolve a vaulted Anthropic
+	// credential, and Attach the secret before the step's pod starts.
+	// Secrets == nil skips the leg (unit/DB tests without a cluster).
+	Principals  principals.Store
+	Credentials credentials.Backend
+	Secrets     credentials.SecretAttacher
+
 	ATCExternalURL string
 	RepoBaseURL    string
 }
@@ -57,15 +70,17 @@ type Result struct {
 
 // DispatchOne is the dispatcher core: claim a QUEUED ticket, resolve
 // and freeze its workflow definition, render the template pipeline,
-// persist it as agent-ticket-<id>, create the pipeline run, and move
-// the ticket queued→running through the single-writer Transition.
+// persist it as agent-ticket-<id>, create the pipeline run, attach the
+// agent-run-<id> credential secret, and move the ticket queued→running
+// through the single-writer Transition.
 //
 // v0 (manual-dispatch slice): invoked by the DispatchAgentTicket route
 // only — a human pulling the trigger IS the budget gate while budget
 // admission is deferred. Plan 11's Dispatcher loop later wraps exactly
 // this function. Failures before the transition leave the ticket
-// queued, so a retry is always safe.
-func DispatchOne(deps Deps, ticketID int, dispatchedBy string) (Result, error) {
+// queued, so a retry is always safe (Attach is idempotent per run id;
+// an orphaned run from a failed attempt just errors harmlessly).
+func DispatchOne(ctx context.Context, deps Deps, ticketID int, dispatchedBy string) (Result, error) {
 	t, found, err := deps.Tickets.Get(ticketID)
 	if err != nil {
 		return Result{}, err
@@ -143,6 +158,12 @@ func DispatchOne(deps Deps, ticketID int, dispatchedBy string) (Result, error) {
 	}
 	runID := run.ID()
 
+	if deps.Secrets != nil {
+		if err := attachRunSecret(ctx, deps, t, runID); err != nil {
+			return Result{}, fmt.Errorf("attach run %d credential secret: %w", runID, err)
+		}
+	}
+
 	if err := deps.Tickets.Transition(ticketID, tickets.StateQueued, tickets.StateRunning,
 		tickets.TransitionMeta{PipelineRunID: &runID}); err != nil {
 		// The run exists but the ticket did not move (raced or store
@@ -151,6 +172,84 @@ func DispatchOne(deps Deps, ticketID int, dispatchedBy string) (Result, error) {
 	}
 
 	return Result{RunID: runID, PipelineName: pipelineName}, nil
+}
+
+// attachRunSecret creates the §8.2 agent-run-<runID> secret: a vaulted
+// Anthropic credential (the ticket's triggering user when resolvable,
+// else the §1.13 platform service user — the same funding path
+// PlatformSecretSyncer maintains) plus a freshly-minted per-run
+// principal token (name run-<id>, 24h expiry; consumed by the
+// platform/gateway sidecars once wave 3 lands, inert until then).
+func attachRunSecret(ctx context.Context, deps Deps, t *tickets.Ticket, runID int) error {
+	cred, err := resolveRunCredential(deps, t)
+	if err != nil {
+		return err
+	}
+
+	principalToken := ""
+	if deps.Principals != nil {
+		expires := time.Now().Add(24 * time.Hour).Unix()
+		_, token, err := deps.Principals.Create(principals.CreateSpec{
+			Name:        fmt.Sprintf("run-%d", runID),
+			Description: fmt.Sprintf("per-run principal for pipeline run %d (ticket %d)", runID, t.ID),
+			Scopes: []string{
+				principals.ScopeTicketsRead,
+				principals.ScopeTicketsWrite,
+				principals.ScopeMetricsWrite,
+				principals.ScopeCostsWrite,
+			},
+			CreatedBy: "dispatch",
+			ExpiresAt: &expires,
+		})
+		if err != nil {
+			return fmt.Errorf("mint run principal: %w", err)
+		}
+		principalToken = token
+	}
+
+	if _, err := deps.Secrets.Attach(ctx, runID, cred, principalToken); err != nil {
+		return err
+	}
+	return nil
+}
+
+// resolveRunCredential picks the vaulted Anthropic credential funding
+// this run: the ticket's triggering user's row when user_id is resolved
+// (full user resolution is the Dispatcher loop's job), falling back to
+// the §1.13 platform service user. OAuth wins over API key, matching
+// PlatformSecretSyncer.
+func resolveRunCredential(deps Deps, t *tickets.Ticket) (*credentials.Credential, error) {
+	kinds := []string{credentials.KindAnthropicOAuth, credentials.KindAnthropicAPIKey}
+
+	if t.UserID != nil {
+		for _, kind := range kinds {
+			cred, found, err := deps.Credentials.Resolve(*t.UserID, kind)
+			if err != nil {
+				return nil, err
+			}
+			if found {
+				return cred, nil
+			}
+		}
+	}
+
+	platformID, _, found, err := deps.Credentials.UserBySub(credentials.PlatformUserSub)
+	if err != nil {
+		return nil, err
+	}
+	if found {
+		for _, kind := range kinds {
+			cred, credFound, err := deps.Credentials.Resolve(platformID, kind)
+			if err != nil {
+				return nil, err
+			}
+			if credFound {
+				return cred, nil
+			}
+		}
+	}
+
+	return nil, fmt.Errorf("no vaulted Anthropic credential for ticket %d (user or platform): run `fly agent auth` or `fly agent auth --platform`", t.ID)
 }
 
 // NewTeamTemplateSaver returns the db-backed TemplateSaver: templates

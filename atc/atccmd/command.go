@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"code.cloudfoundry.org/clock"
@@ -123,6 +124,12 @@ type RunCommand struct {
 	// k8sArtifactLocator is shared between the Reaper and Worker factory
 	// for DaemonSet mode. Created in backendComponents, used in constructPool.
 	k8sArtifactLocator *jetbridge.ArtifactLocator
+
+	// agentRunSecretAttacher bridges dispatch's API handler (constructed
+	// before the K8s clientset exists) to the real attacher bound in the
+	// K8s components block. Unbound, every Attach fails loudly — dispatch
+	// requires the jetbridge runtime.
+	agentRunSecretAttacher *lazySecretAttacher
 
 	BindIP   flag.IP `long:"bind-ip"   default:"0.0.0.0" description:"IP address on which to listen for web traffic."`
 	BindPort uint16  `long:"bind-port" default:"8080"    description:"Port on which to listen for HTTP traffic."`
@@ -1356,6 +1363,11 @@ func (cmd *RunCommand) backendComponents(
 			Interval: time.Minute,
 		})
 
+		if cmd.agentRunSecretAttacher == nil {
+			cmd.agentRunSecretAttacher = &lazySecretAttacher{}
+		}
+		cmd.agentRunSecretAttacher.bind(credentials.NewK8sSecretAttacher(k8sClientset, cmd.Kubernetes.Namespace))
+
 		components = append(components, RunnableComponent{
 			Component: atc.Component{
 				Name: atc.ComponentAgentRunSecretReaper,
@@ -2384,12 +2396,56 @@ func (cmd *RunCommand) constructAPIHandler(
 			Workflows:      db.NewAgentWorkflowsFactory(dbConn),
 			Templates:      dispatch.NewTeamTemplateSaver(teamFactory, atc.DefaultTeamName),
 			Runs:           dbPipelineRunFactory,
+			Principals:     agentPrincipalsFactory,
+			Credentials:    db.NewAgentUserCredentialsFactory(dbConn),
+			Secrets:        cmd.agentRunSecrets(),
 			ATCExternalURL: cmd.ExternalURL.String(),
 			RepoBaseURL:    cmd.AgentRepoBaseURL,
 		}, func(r *http.Request) string {
 			return accessor.GetAccessor(r).Claims().UserName
 		}),
 	)
+}
+
+// agentRunSecrets lazily initializes the shared attacher bridge (the
+// API handler and the K8s components block race on construction order).
+func (cmd *RunCommand) agentRunSecrets() *lazySecretAttacher {
+	if cmd.agentRunSecretAttacher == nil {
+		cmd.agentRunSecretAttacher = &lazySecretAttacher{}
+	}
+	return cmd.agentRunSecretAttacher
+}
+
+// lazySecretAttacher defers to the K8s-backed attacher once it exists.
+type lazySecretAttacher struct {
+	mu    sync.RWMutex
+	inner credentials.SecretAttacher
+}
+
+func (l *lazySecretAttacher) bind(inner credentials.SecretAttacher) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.inner = inner
+}
+
+func (l *lazySecretAttacher) Attach(ctx context.Context, runID int, cred *credentials.Credential, principalToken string) (string, error) {
+	l.mu.RLock()
+	inner := l.inner
+	l.mu.RUnlock()
+	if inner == nil {
+		return "", errors.New("agent run secrets require the kubernetes runtime (no clientset configured)")
+	}
+	return inner.Attach(ctx, runID, cred, principalToken)
+}
+
+func (l *lazySecretAttacher) Cleanup(ctx context.Context, runID int) error {
+	l.mu.RLock()
+	inner := l.inner
+	l.mu.RUnlock()
+	if inner == nil {
+		return nil
+	}
+	return inner.Cleanup(ctx, runID)
 }
 
 type tlsRedirectHandler struct {

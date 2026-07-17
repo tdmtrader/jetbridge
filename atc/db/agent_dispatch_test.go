@@ -1,6 +1,7 @@
 package db_test
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/concourse/concourse/agent/api/tickets"
@@ -61,7 +62,7 @@ var _ = Describe("dispatching a ticket end-to-end", func() {
 		Expect(ticketsFactory.Transition(ticketID, tickets.StateDraft, tickets.StateQueued,
 			tickets.TransitionMeta{})).To(Succeed())
 
-		res, err := dispatch.DispatchOne(deps, ticketID, "admin")
+		res, err := dispatch.DispatchOne(context.Background(), deps, ticketID, "admin")
 		Expect(err).ToNot(HaveOccurred())
 		Expect(res.RunID).To(BeNumerically(">", 0))
 		Expect(res.PipelineName).To(Equal(fmt.Sprintf("agent-ticket-%d", ticketID)))
@@ -86,12 +87,12 @@ var _ = Describe("dispatching a ticket end-to-end", func() {
 
 		// dispatching again while running is refused; a second dispatch
 		// after a manual requeue re-renders in place (SavePipeline update)
-		_, err = dispatch.DispatchOne(deps, ticketID, "admin")
+		_, err = dispatch.DispatchOne(context.Background(), deps, ticketID, "admin")
 		Expect(err).To(MatchError(dispatch.ErrNotQueued))
 
 		Expect(ticketsFactory.Transition(ticketID, tickets.StateRunning, tickets.StateQueued,
 			tickets.TransitionMeta{})).To(Succeed())
-		res2, err := dispatch.DispatchOne(deps, ticketID, "admin")
+		res2, err := dispatch.DispatchOne(context.Background(), deps, ticketID, "admin")
 		Expect(err).ToNot(HaveOccurred())
 		Expect(res2.RunID).ToNot(Equal(res.RunID))
 
