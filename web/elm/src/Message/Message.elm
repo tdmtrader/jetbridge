@@ -46,6 +46,7 @@ type Message
       -- Agent Review
     | ToggleAgentReviewPanel
     | ToggleAgentReviewFinding String
+    | ToggleAgentReviewFindingBody String
     | ToggleAgentReviewObservations
     | AgentReviewVerdictClicked
         { repo : String
@@ -55,6 +56,8 @@ type Message
         , reviewer : String
         }
     | AgentReviewNoteChanged String String
+    | AgentReviewsUnevaluatedToggled Bool
+    | AgentReviewsPipelineFilterChanged String
       -- Agent operator page (principal mint form)
     | AgentMintNameChanged String
     | AgentMintDescriptionChanged String
@@ -63,6 +66,19 @@ type Message
     | AgentMintSubmitted
     | AgentMintedTokenDismissed
     | AgentPrincipalRevokeClicked Int
+    | AgentPrincipalsShowEphemeralToggled
+      -- Agent Ticket page (edit + disposition)
+    | ClickAgentTicketEdit
+    | AgentTicketTitleChanged String
+    | AgentTicketBodyChanged String
+    | AgentTicketBudgetChanged String
+    | ClickAgentTicketSave
+    | ClickAgentTicketCancel
+    | AgentTicketTabClicked String
+    | ClickAgentTicketTransition String
+    | ClickAgentTicketDispatch
+    | ConfirmAgentTicketDispatch
+    | CancelAgentTicketDispatch
       -- common
     | Hover (Maybe DomID)
     | Click DomID

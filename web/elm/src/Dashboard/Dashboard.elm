@@ -10,9 +10,11 @@ module Dashboard.Dashboard exposing
     , view
     )
 
+import AgentBadge
 import Application.Models exposing (Session)
 import Colors
 import Concourse exposing (hyphenNotation)
+import Concourse.AgentTicket
 import Concourse.BuildStatus
 import Dashboard.DashboardPreview as DashboardPreview
 import Dashboard.Drag as Drag
@@ -131,6 +133,8 @@ init f =
       , scrollTop = 0
       , pipelineJobs = Dict.empty
       , effectsToRetry = []
+      , agentTickets = []
+      , agentTicketCosts = Dict.empty
       }
     , [ FetchAllTeams
       , PinTeamNames Message.Effects.stickyHeaderConfig
@@ -142,6 +146,8 @@ init f =
       , LoadCachedPipelines
       , LoadCachedTeams
       , GetViewportOf Dashboard
+      , FetchAgentTickets
+      , FetchAgentTicketCosts
       ]
     )
 
@@ -476,6 +482,25 @@ handleCallback callback ( model, effects ) =
             , effects
             )
 
+        AgentTicketsFetched (Ok tickets) ->
+            ( { model | agentTickets = tickets }, effects )
+
+        AgentTicketsFetched (Err _) ->
+            ( model, effects )
+
+        AgentCostRollupFetched (Ok rollup) ->
+            ( { model
+                | agentTicketCosts =
+                    rollup.rows
+                        |> List.map (\row -> ( row.key, row.costUsd ))
+                        |> Dict.fromList
+              }
+            , effects
+            )
+
+        AgentCostRollupFetched (Err _) ->
+            ( model, effects )
+
         _ ->
             ( model, effects )
     )
@@ -519,6 +544,10 @@ handleDeliveryBody delivery ( model, effects ) =
     case delivery of
         ClockTicked OneSecond time ->
             ( { model | now = Just time, effectsToRetry = [] }, model.effectsToRetry )
+
+        ClockTicked FiveSeconds _ ->
+            -- Refresh the agent-ticket strip on the dashboard's existing cadence.
+            ( model, effects ++ [ FetchAgentTickets, FetchAgentTicketCosts ] )
 
         WindowResized _ _ ->
             ( model, effects ++ [ GetViewportOf Dashboard ] )
@@ -1182,16 +1211,18 @@ dashboardView session model =
                 :: onMouseLeave (Hover Nothing)
                 :: Styles.content model.highDensity
             )
-            (case model.pipelines of
-                Nothing ->
-                    [ loadingView ]
+            (agentTicketStrip model
+                :: (case model.pipelines of
+                        Nothing ->
+                            [ loadingView ]
 
-                Just pipelines ->
-                    if pipelines |> Dict.values |> List.all List.isEmpty then
-                        welcomeCard session :: dashboardCardsView session model
+                        Just pipelines ->
+                            if pipelines |> Dict.values |> List.all List.isEmpty then
+                                welcomeCard session :: dashboardCardsView session model
 
-                    else
-                        Html.text "" :: dashboardCardsView session model
+                            else
+                                Html.text "" :: dashboardCardsView session model
+                   )
             )
 
 
@@ -1200,6 +1231,140 @@ loadingView =
     Html.div
         (class "loading" :: Styles.loadingView)
         [ Spinner.spinner { sizePx = 36, margin = "0" } ]
+
+
+{-| A compact strip surfacing the agent tickets that need human attention
+(needs\_review first) right on the dashboard, each linking to its detail page
+with a state badge, title, and today's cost. Reuses the existing ticket-list
+and cost-rollup endpoints — renders nothing when there are no active tickets,
+so non-agent clusters see no change.
+-}
+agentTicketStrip : Model -> Html Message
+agentTicketStrip model =
+    let
+        active =
+            model.agentTickets
+                |> List.filter (\t -> List.member t.state agentActiveStates)
+                |> List.sortBy (\t -> ( agentStateOrder t.state, negate t.createdAt ))
+    in
+    if List.isEmpty active then
+        Html.text ""
+
+    else
+        Html.div
+            [ id "agent-ticket-strip"
+            , style "display" "flex"
+            , style "flex-wrap" "wrap"
+            , style "align-items" "center"
+            , style "gap" "8px"
+            , style "padding" "8px 12px"
+            , style "margin" "0 0 8px 0"
+            , style "border-bottom" "1px solid #2d3a48"
+            , style "background" "#1b222b"
+            ]
+            (Html.a
+                [ href (Routes.toString Routes.AgentTickets)
+                , style "color" "#9aa39b"
+                , style "font-weight" "700"
+                , style "text-decoration" "none"
+                , style "font-size" "13px"
+                ]
+                [ Html.text "agent tickets" ]
+                :: List.map (agentTicketChip model.agentTicketCosts) (List.take 8 active)
+            )
+
+
+agentActiveStates : List String
+agentActiveStates =
+    [ "needs_review", "sent_back", "running", "queued" ]
+
+
+agentStateOrder : String -> Int
+agentStateOrder state =
+    case state of
+        "needs_review" ->
+            0
+
+        "sent_back" ->
+            1
+
+        "running" ->
+            2
+
+        "queued" ->
+            3
+
+        _ ->
+            4
+
+
+agentTicketChip : Dict String Float -> Concourse.AgentTicket.Ticket -> Html Message
+agentTicketChip costs t =
+    Html.a
+        [ class "agent-ticket-chip"
+        , href (Routes.toString (Routes.AgentTicket { id = t.id }))
+        , style "display" "flex"
+        , style "align-items" "center"
+        , style "gap" "6px"
+        , style "padding" "3px 8px"
+        , style "border" "1px solid #2d3a48"
+        , style "border-radius" "3px"
+        , style "color" "inherit"
+        , style "text-decoration" "none"
+        , style "font-size" "12px"
+        , style "max-width" "260px"
+        ]
+        [ case AgentBadge.fromApiToken t.state of
+            Just status ->
+                AgentBadge.view status
+
+            Nothing ->
+                Html.text t.state
+        , Html.span
+            [ style "overflow" "hidden"
+            , style "text-overflow" "ellipsis"
+            , style "white-space" "nowrap"
+            ]
+            [ Html.text ("#" ++ String.fromInt t.id ++ " " ++ t.title) ]
+        , Html.span
+            [ style "font-family" "monospace", style "color" "#b0b0b0" ]
+            [ Html.text (agentCostLabel costs t.id) ]
+        ]
+
+
+agentCostLabel : Dict String Float -> Int -> String
+agentCostLabel costs ticketId =
+    case Dict.get (String.fromInt ticketId) costs of
+        Just cost ->
+            "$" ++ agentFormatUsd cost
+
+        Nothing ->
+            ""
+
+
+agentFormatUsd : Float -> String
+agentFormatUsd amount =
+    let
+        cents =
+            round (amount * 100)
+
+        absCents =
+            abs cents
+
+        dollars =
+            absCents // 100
+
+        remainder =
+            modBy 100 absCents
+
+        fraction =
+            if remainder < 10 then
+                "0" ++ String.fromInt remainder
+
+            else
+                String.fromInt remainder
+    in
+    String.fromInt dollars ++ "." ++ fraction
 
 
 welcomeCard :

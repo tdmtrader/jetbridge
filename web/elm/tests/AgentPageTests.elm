@@ -5,6 +5,7 @@ import Common
 import Data
 import Dict
 import Expect
+import Html.Attributes as Attr
 import Http
 import Message.Callback as Callback
 import Message.Effects as Effects
@@ -13,7 +14,7 @@ import Message.Subscription as Subscription exposing (Delivery(..), Interval(..)
 import Message.TopLevelMessage as Msgs
 import Test exposing (Test, describe, test)
 import Test.Html.Query as Query
-import Test.Html.Selector exposing (class, containing, style, text)
+import Test.Html.Selector exposing (attribute, class, containing, style, tag, text)
 import Time
 
 
@@ -137,6 +138,10 @@ samplePrincipalCreated =
     }
 
 
+ephemeralPrincipal =
+    { samplePrincipal | id = 8, name = "run-123" }
+
+
 sampleRun :
     { ticketId : Maybe Int
     , pipelineRunId : Maybe Int
@@ -222,6 +227,19 @@ all =
                             ]
                         , Query.has [ class "agent-run-row", containing [ text "review-diff" ] ]
                         ]
+        , test "links a ticket-backed run back to its ticket" <|
+            \_ ->
+                Common.init "/agent"
+                    |> Application.handleCallback
+                        (Callback.AgentRunMetricsFetched (Ok [ sampleRun ]))
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Query.find [ class "agent-run-row" ]
+                    |> Query.has
+                        [ tag "a"
+                        , attribute (Attr.href "/agent-tickets/42")
+                        , containing [ text "#42" ]
+                        ]
         , test "renders a workflow name with a live indicator" <|
             \_ ->
                 Common.init "/agent"
@@ -260,6 +278,14 @@ all =
                     |> Tuple.first
                     |> Common.queryView
                     |> Query.has [ text "today: $12.34 spent / $20.00 cap ($7.66 left)" ]
+        , test "renders a daily-cap gauge when a cap is configured" <|
+            \_ ->
+                Common.init "/agent"
+                    |> Application.handleCallback
+                        (Callback.AgentCostRollupFetched (Ok sampleRollup))
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Query.has [ class "agent-daily-cap-gauge" ]
         , test "shows an admin-only message when workflows fetch is forbidden" <|
             \_ ->
                 Common.init "/agent"
@@ -307,6 +333,29 @@ all =
                     |> Common.queryView
                     |> Query.find [ class "agent-minted-token" ]
                     |> Query.has [ text "cap1.xxx" ]
+        , test "folds ephemeral run principals behind a toggle, keeping durable ones visible" <|
+            \_ ->
+                Common.init "/agent"
+                    |> Application.handleCallback
+                        (Callback.AgentPrincipalsFetched (Ok [ samplePrincipal, ephemeralPrincipal ]))
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Expect.all
+                        [ Query.has [ class "agent-principal-row", containing [ text "itest-reviewer" ] ]
+                        , Query.hasNot [ containing [ text "run-123" ] ]
+                        , Query.has [ class "agent-ephemeral-toggle", containing [ text "1 ephemeral run principal" ] ]
+                        ]
+        , test "expanding the toggle reveals the ephemeral run principals" <|
+            \_ ->
+                Common.init "/agent"
+                    |> Application.handleCallback
+                        (Callback.AgentPrincipalsFetched (Ok [ samplePrincipal, ephemeralPrincipal ]))
+                    |> Tuple.first
+                    |> Application.update
+                        (Msgs.Update Message.Message.AgentPrincipalsShowEphemeralToggled)
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Query.has [ class "agent-principal-row", containing [ text "run-123" ] ]
         , test "shows an admin-only message when principals fetch is forbidden" <|
             \_ ->
                 Common.init "/agent"

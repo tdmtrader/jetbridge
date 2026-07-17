@@ -17,6 +17,7 @@ import Browser.Navigation as Navigation
 import Concourse exposing (DatabaseID, encodeJob, encodePipeline, encodeTeam)
 import Concourse.Agent
 import Concourse.AgentReview
+import Concourse.AgentTicket
 import Concourse.BuildStatus exposing (BuildStatus)
 import Concourse.Pagination exposing (Page)
 import Json.Decode
@@ -53,6 +54,7 @@ import Set exposing (Set)
 import SideBar.State exposing (SideBarState, encodeSideBarState)
 import Task
 import Time
+import Url.Builder
 import Views.Styles
 
 
@@ -236,6 +238,14 @@ type Effect
         , notes : String
         , reviewer : String
         }
+    | FetchAgentTickets
+    | FetchAgentTicket Int
+    | SaveAgentTicket { id : Int, title : String, body : String, budgetUsd : Maybe Float }
+    | TransitionAgentTicket { id : Int, from : String, to : String }
+    | DispatchAgentTicket Int
+    | UpdateAgentTicketTask { id : Int, ordering : Int, status : String, note : String }
+    | FetchAgentTicketMetrics Int
+    | FetchAgentTicketCosts
 
 
 type alias VersionId =
@@ -861,6 +871,91 @@ runEffect effect key csrfToken =
                     )
                 |> Api.request
                 |> Task.attempt (AgentReviewVerdictSubmitted params.findingId)
+
+        FetchAgentTickets ->
+            Api.get Endpoints.AgentTicketsList
+                |> Api.expectJson (Json.Decode.list Concourse.AgentTicket.decodeTicket)
+                |> Api.request
+                |> Task.attempt AgentTicketsFetched
+
+        FetchAgentTicket ticketId ->
+            Api.get (Endpoints.AgentTicket ticketId)
+                |> Api.expectJson Concourse.AgentTicket.decodeDetail
+                |> Api.request
+                |> Task.attempt AgentTicketFetched
+
+        SaveAgentTicket params ->
+            Api.put (Endpoints.AgentTicket params.id) csrfToken
+                |> Api.withJsonBody (encodeTicketUpdate params)
+                |> Api.request
+                |> Task.attempt (AgentTicketSaved params.id)
+
+        TransitionAgentTicket params ->
+            Api.put (Endpoints.AgentTicketState params.id) csrfToken
+                |> Api.withJsonBody
+                    (Json.Encode.object
+                        [ ( "from", Json.Encode.string params.from )
+                        , ( "to", Json.Encode.string params.to )
+                        ]
+                    )
+                |> Api.request
+                |> Task.attempt (AgentTicketTransitioned params.id)
+
+        DispatchAgentTicket ticketId ->
+            Api.post (Endpoints.AgentTicketDispatch ticketId) csrfToken
+                |> Api.expectJson Concourse.AgentTicket.decodeDispatchResult
+                |> Api.request
+                |> Task.attempt (AgentTicketDispatched ticketId)
+
+        UpdateAgentTicketTask params ->
+            Api.put (Endpoints.AgentTicketTask params.id params.ordering) csrfToken
+                |> Api.withJsonBody (encodeTaskStatus params)
+                |> Api.request
+                |> Task.attempt (AgentTicketTaskUpdated params.id)
+
+        FetchAgentTicketMetrics ticketId ->
+            Api.get (Endpoints.AgentTicketMetrics ticketId)
+                |> Api.expectJson (Json.Decode.list Concourse.Agent.decodeRunMetric)
+                |> Api.request
+                |> Task.attempt (AgentTicketMetricsFetched ticketId)
+
+        FetchAgentTicketCosts ->
+            let
+                base =
+                    Api.get Endpoints.AgentCostRollup
+            in
+            { base | query = [ Url.Builder.string "group_by" "ticket" ] }
+                |> Api.expectJson Concourse.Agent.decodeCostRollup
+                |> Api.request
+                |> Task.attempt AgentCostRollupFetched
+
+
+encodeTicketUpdate : { id : Int, title : String, body : String, budgetUsd : Maybe Float } -> Json.Encode.Value
+encodeTicketUpdate params =
+    Json.Encode.object
+        (( "title", Json.Encode.string params.title )
+            :: ( "body", Json.Encode.string params.body )
+            :: (case params.budgetUsd of
+                    Just b ->
+                        [ ( "budget_usd", Json.Encode.float b ) ]
+
+                    Nothing ->
+                        []
+               )
+        )
+
+
+encodeTaskStatus : { id : Int, ordering : Int, status : String, note : String } -> Json.Encode.Value
+encodeTaskStatus params =
+    Json.Encode.object
+        (( "status", Json.Encode.string params.status )
+            :: (if params.note == "" then
+                    []
+
+                else
+                    [ ( "note", Json.Encode.string params.note ) ]
+               )
+        )
 
 
 encodeCreatePrincipal :

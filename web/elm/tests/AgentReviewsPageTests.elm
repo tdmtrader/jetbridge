@@ -3,8 +3,11 @@ module AgentReviewsPageTests exposing (all)
 import Application.Application as Application
 import Common
 import Data
+import Expect
 import Message.Callback as Callback
 import Message.Effects as Effects
+import Message.Message
+import Message.TopLevelMessage as Msgs
 import Test exposing (Test, describe, test)
 import Test.Html.Query as Query
 import Test.Html.Selector exposing (class, containing, text)
@@ -12,12 +15,27 @@ import Url
 
 
 sampleSummary =
-    { buildId = 42, buildName = "3", teamName = "main", pipelineName = "cs", jobName = "ar"
-    , repo = "concourse", commitSha = "abc123def456", branch = "jetbridge"
-    , score = 7.5, maxScore = 10, pass = True
-    , provenCount = 2, observationCount = 3, summary = "stuff"
-    , createdAt = 0, evaluatedCount = 1
+    { buildId = 42
+    , buildName = "3"
+    , teamName = "main"
+    , pipelineName = "cs"
+    , jobName = "ar"
+    , repo = "concourse"
+    , commitSha = "abc123def456"
+    , branch = "jetbridge"
+    , score = 7.5
+    , maxScore = 10
+    , pass = True
+    , provenCount = 2
+    , observationCount = 3
+    , summary = "stuff"
+    , createdAt = 0
+    , evaluatedCount = 1
     }
+
+
+otherSummary =
+    { sampleSummary | buildId = 43, pipelineName = "other", evaluatedCount = 5 }
 
 
 initTeamAgentReviews : ( Application.Model, List Effects.Effect )
@@ -69,4 +87,37 @@ all =
                     |> Tuple.first
                     |> Common.queryView
                     |> Query.has [ containing [ text "No agent reviews yet." ] ]
+        , test "renders the filter controls when reviews are present" <|
+            \_ ->
+                Common.init "/teams/main/agent-reviews"
+                    |> Application.handleCallback
+                        (Callback.TeamAgentReviewsFetched (Ok [ sampleSummary ]))
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Query.has [ class "agent-reviews-pipeline-filter" ]
+        , test "the pipeline filter narrows the visible rows" <|
+            \_ ->
+                Common.init "/teams/main/agent-reviews"
+                    |> Application.handleCallback
+                        (Callback.TeamAgentReviewsFetched (Ok [ sampleSummary, otherSummary ]))
+                    |> Tuple.first
+                    |> Application.update
+                        (Msgs.Update <| Message.Message.AgentReviewsPipelineFilterChanged "cs")
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Expect.all
+                        [ Query.has [ containing [ text "cs / ar" ] ]
+                        , Query.hasNot [ containing [ text "other / ar" ] ]
+                        ]
+        , test "shows a no-match notice when the filter excludes everything" <|
+            \_ ->
+                Common.init "/teams/main/agent-reviews"
+                    |> Application.handleCallback
+                        (Callback.TeamAgentReviewsFetched (Ok [ sampleSummary ]))
+                    |> Tuple.first
+                    |> Application.update
+                        (Msgs.Update <| Message.Message.AgentReviewsPipelineFilterChanged "zzz")
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Query.has [ containing [ text "No reviews match this filter." ] ]
         ]

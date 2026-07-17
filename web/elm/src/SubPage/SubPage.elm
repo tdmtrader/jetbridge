@@ -13,6 +13,8 @@ module SubPage.SubPage exposing
 
 import Agent.Agent as Agent
 import AgentReviews.AgentReviews as AgentReviews
+import AgentTickets.AgentTicket as AgentTicket
+import AgentTickets.AgentTickets as AgentTickets
 import Application.Models exposing (Session)
 import Build.Build as Build
 import Build.Header.Models
@@ -55,6 +57,8 @@ type Model
     | DownloadFlyModel DownloadFly.Model.Model
     | AgentReviewsModel AgentReviews.Model
     | AgentModel Agent.Model
+    | AgentTicketsModel AgentTickets.Model
+    | AgentTicketModel AgentTicket.Model
 
 
 init : Session -> Routes.Route -> ( Model, List Effect )
@@ -139,6 +143,14 @@ init session route =
             Agent.init
                 |> Tuple.mapFirst AgentModel
 
+        Routes.AgentTickets ->
+            AgentTickets.init
+                |> Tuple.mapFirst AgentTicketsModel
+
+        Routes.AgentTicket { id } ->
+            AgentTicket.init { id = id }
+                |> Tuple.mapFirst AgentTicketModel
+
 
 handleNotFound : Session -> ET Model
 handleNotFound session ( model, effects ) =
@@ -188,8 +200,10 @@ genericUpdate :
     -> ET DownloadFly.Model.Model
     -> ET AgentReviews.Model
     -> ET Agent.Model
+    -> ET AgentTickets.Model
+    -> ET AgentTicket.Model
     -> ET Model
-genericUpdate fBuild fJob fRes fPipe fDash fCaus fNF fFS dFly fAR fAgent ( model, effects ) =
+genericUpdate fBuild fJob fRes fPipe fDash fCaus fNF fFS dFly fAR fAgent fATs fAT ( model, effects ) =
     case model of
         BuildModel buildModel ->
             fBuild ( buildModel, effects )
@@ -235,6 +249,14 @@ genericUpdate fBuild fJob fRes fPipe fDash fCaus fNF fFS dFly fAR fAgent ( model
             fAgent ( agentModel, effects )
                 |> Tuple.mapFirst AgentModel
 
+        AgentTicketsModel agentTicketsModel ->
+            fATs ( agentTicketsModel, effects )
+                |> Tuple.mapFirst AgentTicketsModel
+
+        AgentTicketModel agentTicketModel ->
+            fAT ( agentTicketModel, effects )
+                |> Tuple.mapFirst AgentTicketModel
+
 
 handleCallback : Callback -> Session -> ET Model
 handleCallback callback session =
@@ -250,9 +272,13 @@ handleCallback callback session =
         identity
         (AgentReviews.handleCallback callback)
         (Agent.handleCallback callback)
+        (AgentTickets.handleCallback callback)
+        (AgentTicket.handleCallback callback)
         >> (case callback of
                 LoggedOut (Ok ()) ->
                     genericUpdate
+                        handleLoggedOut
+                        handleLoggedOut
                         handleLoggedOut
                         handleLoggedOut
                         handleLoggedOut
@@ -298,6 +324,8 @@ handleDelivery session delivery =
         (DownloadFly.handleDelivery delivery)
         identity
         (Agent.handleDelivery delivery)
+        (AgentTickets.handleDelivery delivery)
+        (AgentTicket.handleDelivery delivery)
 
 
 update : Session -> Message -> ET Model
@@ -314,6 +342,8 @@ update session msg =
         (Login.update msg >> DownloadFly.update msg)
         (Login.update msg >> AgentReviews.update msg)
         (Login.update msg >> Agent.update msg)
+        (Login.update msg >> AgentTickets.update msg)
+        (Login.update msg >> AgentTicket.update msg)
         >> (case msg of
                 GoToRoute route ->
                     handleGoToRoute route
@@ -423,6 +453,8 @@ urlUpdateValid routes =
         identity
         identity
         identity
+        identity
+        identity
 
 
 view : Session -> Model -> ( String, Html Message )
@@ -478,6 +510,16 @@ view ({ userState } as session) mdl =
             , AgentReviews.view session model
             )
 
+        AgentTicketsModel model ->
+            ( AgentTickets.documentTitle
+            , AgentTickets.view session model
+            )
+
+        AgentTicketModel model ->
+            ( AgentTicket.documentTitle model
+            , AgentTicket.view session model
+            )
+
         AgentModel model ->
             ( Agent.documentTitle
             , Agent.view session model
@@ -520,6 +562,12 @@ tooltip mdl =
         AgentModel model ->
             Agent.tooltip model
 
+        AgentTicketsModel model ->
+            AgentTickets.tooltip model
+
+        AgentTicketModel model ->
+            AgentTicket.tooltip model
+
 
 subscriptions : Model -> List Subscription
 subscriptions mdl =
@@ -556,3 +604,9 @@ subscriptions mdl =
 
         AgentModel _ ->
             Agent.subscriptions
+
+        AgentTicketsModel _ ->
+            AgentTickets.subscriptions
+
+        AgentTicketModel _ ->
+            AgentTicket.subscriptions

@@ -296,4 +296,16 @@ all =
                                 , groups = []
                                 }
                         )
+        , test "agent tickets queue" <|
+            \_ ->
+                ("http://example.com" ++ Routes.toString Routes.AgentTickets)
+                    |> Url.fromString
+                    |> Maybe.andThen Routes.parsePath
+                    |> Expect.equal (Just Routes.AgentTickets)
+        , test "agent ticket detail roundtrip" <|
+            \_ ->
+                ("http://example.com" ++ Routes.toString (Routes.AgentTicket { id = 12 }))
+                    |> Url.fromString
+                    |> Maybe.andThen Routes.parsePath
+                    |> Expect.equal (Just <| Routes.AgentTicket { id = 12 })
         ]

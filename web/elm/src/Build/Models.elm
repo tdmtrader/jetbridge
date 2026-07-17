@@ -42,6 +42,7 @@ type alias Model =
                 , showObservations : Bool
                 , agentReviewNotes : Dict String String
                 , verdictErrors : Set String
+                , expandedDescriptions : Set String
                 }
             )
         )

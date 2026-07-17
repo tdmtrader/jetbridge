@@ -951,7 +951,7 @@ viewRuns model =
                         , style "margin-bottom" "5px"
                         ]
                         [ Html.text "runs" ]
-                        :: List.map viewRun runs
+                        :: List.map (viewRun pipeline) runs
                     )
 
             else
@@ -961,15 +961,27 @@ viewRuns model =
             Html.text ""
 
 
-viewRun : Concourse.PipelineRun -> Html Message
-viewRun run =
+viewRun : Concourse.Pipeline -> Concourse.PipelineRun -> Html Message
+viewRun pipeline run =
+    let
+        runInstance =
+            { pipeline
+                | instanceVars =
+                    Dict.singleton "run" (Concourse.JsonNumber (toFloat run.number))
+            }
+    in
     Html.div
         [ class "pipeline-run-row"
         , style "display" "flex"
         , style "align-items" "center"
         ]
-        [ Html.span
-            [ style "margin-right" "10px" ]
+        [ Html.a
+            [ class "pipeline-run-link"
+            , Html.Attributes.href (Routes.toString (Routes.pipelineRoute runInstance []))
+            , style "margin-right" "10px"
+            , style "color" Colors.text
+            , style "text-decoration" "underline"
+            ]
             [ Html.text ("#" ++ String.fromInt run.number) ]
         , viewRunStatus run
         , Html.span

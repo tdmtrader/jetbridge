@@ -57,6 +57,7 @@ type TeamFilter
     = Team StringFilter
     | Pipeline PipelineFilter
     | InstanceGroup StringFilter
+    | AgentOwned
 
 
 type PipelineFilter
@@ -147,6 +148,11 @@ runFilter jobs existingJobs f =
                 )
                 >> Dict.filter (\_ groups -> not <| List.isEmpty groups)
 
+        AgentOwned ->
+            Dict.map
+                (\_ pipelines -> List.filter (isAgentPipeline >> negater) pipelines)
+                >> Dict.filter (\_ pipelines -> not <| List.isEmpty pipelines)
+
 
 pipelineFilter :
     PipelineFilter
@@ -183,6 +189,15 @@ pipelineFilter pf jobs existingJobs pipeline =
 
                 IncompleteStatus _ ->
                     False
+
+
+{-| Agent-owned pipelines follow the `agent-ticket-<id>` naming convention that
+the dispatch renderer emits. Matching on the name (rather than the `template`
+flag) catches both the base template and its per-run instances.
+-}
+isAgentPipeline : Pipeline -> Bool
+isAgentPipeline p =
+    String.startsWith "agent-ticket-" p.name
 
 
 stringMatches : StringFilter -> String -> Bool
@@ -237,8 +252,18 @@ teamFilter =
         [ backtrackable (keyedStringFilter "team" |> map Team)
         , backtrackable (keyedStringFilter "group" |> map InstanceGroup)
         , backtrackable statusFilter
+        , backtrackable agentFilter
         , succeed (Name >> Pipeline) |= parseString
         ]
+
+
+agentFilter : Parser TeamFilter
+agentFilter =
+    succeed AgentOwned
+        |. keyword "is"
+        |. symbol ":"
+        |. spaces
+        |. keyword "agent"
 
 
 parseString : Parser StringFilter
@@ -383,6 +408,9 @@ suggestions pipelines query =
                         |> Dict.keys
                         |> List.take 10
                         |> List.map (\v -> "team:" ++ quoted v)
+
+                AgentOwned ->
+                    []
 
         prefix =
             if negated then
