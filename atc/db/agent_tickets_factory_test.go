@@ -319,6 +319,38 @@ var _ = Describe("AgentTicketsFactory", func() {
 			Expect(err).To(MatchError(tickets.ErrTicketNotFound))
 		})
 
+		It("UpdateActiveTask atomically targets the newest plan and writes status+note together", func() {
+			_, err := factory.UpdateActiveTask(id, 1, tickets.TaskDone, "")
+			Expect(err).To(MatchError(tickets.ErrNoActivePlan))
+
+			_, err = factory.SubmitPlan(id, []tickets.Task{{Title: "old"}})
+			Expect(err).ToNot(HaveOccurred())
+			_, err = factory.SubmitPlan(id, []tickets.Task{{Title: "one", Detail: "d"}, {Title: "two"}})
+			Expect(err).ToNot(HaveOccurred())
+
+			pv, err := factory.UpdateActiveTask(id, 1, tickets.TaskInProgress, "note")
+			Expect(err).ToNot(HaveOccurred())
+			Expect(pv).To(Equal(2)) // the active plan, never a superseded version
+
+			active, err := factory.ActivePlan(id)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(active[0].Status).To(Equal(tickets.TaskInProgress))
+			Expect(active[0].Detail).To(Equal("d\n\n> note")) // status+note in one tx
+
+			// empty note leaves detail untouched
+			pv, err = factory.UpdateActiveTask(id, 1, tickets.TaskDone, "")
+			Expect(err).ToNot(HaveOccurred())
+			Expect(pv).To(Equal(2))
+			active, _ = factory.ActivePlan(id)
+			Expect(active[0].Status).To(Equal(tickets.TaskDone))
+			Expect(active[0].Detail).To(Equal("d\n\n> note"))
+
+			_, err = factory.UpdateActiveTask(id, 99, tickets.TaskDone, "")
+			Expect(err).To(MatchError(tickets.ErrTaskNotFound))
+			_, err = factory.UpdateActiveTask(313131, 1, tickets.TaskDone, "")
+			Expect(err).To(MatchError(tickets.ErrTicketNotFound))
+		})
+
 		It("updates task status and appends notes as blockquotes", func() {
 			_, err := factory.SubmitPlan(id, []tickets.Task{{Title: "one"}})
 			Expect(err).ToNot(HaveOccurred())

@@ -449,6 +449,58 @@ func (f *agentTicketsFactory) UpdateTaskStatus(ticketID int, planVersion, orderi
 	return nil
 }
 
+// UpdateActiveTask atomically applies a status update (plus optional
+// note append) to the ACTIVE plan's task. Resolving the active
+// plan_version and writing against it happen inside one transaction
+// holding the ticket's FOR UPDATE row lock — the same lock SubmitPlan
+// takes to allocate versions — so a concurrent plan replacement can
+// never slip between the read and the write (the TOCTOU lost-update
+// found by agent-review-native #7, 2026-07-17).
+func (f *agentTicketsFactory) UpdateActiveTask(ticketID, ordering int, status tickets.TaskStatus, note string) (int, error) {
+	tx, err := f.conn.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer Rollback(tx)
+
+	if err := lockTicket(tx, ticketID); err != nil {
+		return 0, err
+	}
+
+	var planVersion int
+	err = tx.QueryRow(
+		`SELECT COALESCE(MAX(plan_version), 0) FROM agent_ticket_tasks WHERE ticket_id = $1`,
+		ticketID).Scan(&planVersion)
+	if err != nil {
+		return 0, err
+	}
+	if planVersion == 0 {
+		return 0, tickets.ErrNoActivePlan
+	}
+
+	res, err := tx.Exec(
+		`UPDATE agent_ticket_tasks
+		 SET status = $1,
+		     detail = CASE WHEN $2 = '' THEN detail
+		                   WHEN detail = '' THEN '> ' || $2
+		                   ELSE detail || E'\n\n> ' || $2 END,
+		     updated_at = now()
+		 WHERE ticket_id = $3 AND plan_version = $4 AND ordering = $5`,
+		string(status), note, ticketID, planVersion, ordering)
+	if err != nil {
+		return 0, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	if n == 0 {
+		return 0, tickets.ErrTaskNotFound
+	}
+
+	return planVersion, tx.Commit()
+}
+
 // AppendTaskNote appends the §3.2 update_task_status note as a markdown
 // blockquote on the task's detail (ticket-core contract addendum).
 func (f *agentTicketsFactory) AppendTaskNote(ticketID int, planVersion, ordering int, note string) error {

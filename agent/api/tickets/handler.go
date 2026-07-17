@@ -98,6 +98,10 @@ func (h *Handler) CreateTicket(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "origin 'jira' arrives with the phase-2 sync component", http.StatusBadRequest)
 		return
 	}
+	if req.BudgetUSD != nil && *req.BudgetUSD < 0 {
+		http.Error(w, "budget_usd must not be negative", http.StatusBadRequest)
+		return
+	}
 
 	name, isPrincipal := h.writer(r)
 	if isPrincipal && origin != "retrospective" {
@@ -214,6 +218,10 @@ func (h *Handler) UpdateTicket(w http.ResponseWriter, r *http.Request) {
 	if req.Title == nil && req.Body == nil && req.BudgetUSD == nil &&
 		req.WorkflowName == nil && req.WorkflowVersion == nil && req.TargetBranch == nil {
 		http.Error(w, "no fields to update", http.StatusBadRequest)
+		return
+	}
+	if req.BudgetUSD != nil && *req.BudgetUSD < 0 {
+		http.Error(w, "budget_usd must not be negative", http.StatusBadRequest)
 		return
 	}
 	err := h.store.Update(id, Update{
@@ -369,30 +377,24 @@ func (h *Handler) UpdateTask(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid status", http.StatusBadRequest)
 		return
 	}
-	active, err := h.store.ActivePlan(id)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	// One atomic store operation: resolving the active plan version and
+	// writing against it must not straddle a concurrent SubmitPlan, or
+	// the update silently lands on a superseded version (native review
+	// #7 finding — TOCTOU lost update).
+	_, err = h.store.UpdateActiveTask(id, ordering, req.Status, req.Note)
+	switch {
+	case errors.Is(err, ErrTicketNotFound):
+		http.Error(w, "ticket not found", http.StatusNotFound)
 		return
-	}
-	if len(active) == 0 {
+	case errors.Is(err, ErrNoActivePlan):
 		http.Error(w, ErrNoActivePlan.Error(), http.StatusNotFound)
 		return
-	}
-	planVersion := active[0].PlanVersion
-	err = h.store.UpdateTaskStatus(id, planVersion, ordering, req.Status)
-	if errors.Is(err, ErrTaskNotFound) {
+	case errors.Is(err, ErrTaskNotFound):
 		http.Error(w, "plan task not found", http.StatusNotFound)
 		return
-	}
-	if err != nil {
+	case err != nil:
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
-	}
-	if req.Note != "" {
-		if err := h.store.AppendTaskNote(id, planVersion, ordering, req.Note); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }

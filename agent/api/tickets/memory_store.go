@@ -241,6 +241,40 @@ func (m *MemoryStore) UpdateTaskStatus(ticketID int, planVersion, ordering int, 
 	return ErrTaskNotFound
 }
 
+// UpdateActiveTask resolves the active plan version and writes under
+// the same lock — no TOCTOU window with SubmitPlan (see Store docs).
+func (m *MemoryStore) UpdateActiveTask(ticketID, ordering int, status TaskStatus, note string) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.byID[ticketID]; !ok {
+		return 0, ErrTicketNotFound
+	}
+	maxVersion := 0
+	for _, t := range m.tasks[ticketID] {
+		if t.PlanVersion > maxVersion {
+			maxVersion = t.PlanVersion
+		}
+	}
+	if maxVersion == 0 {
+		return 0, ErrNoActivePlan
+	}
+	for i, t := range m.tasks[ticketID] {
+		if t.PlanVersion == maxVersion && t.Ordering == ordering {
+			m.tasks[ticketID][i].Status = status
+			if note != "" {
+				if t.Detail == "" {
+					m.tasks[ticketID][i].Detail = "> " + note
+				} else {
+					m.tasks[ticketID][i].Detail = t.Detail + "\n\n> " + note
+				}
+			}
+			m.tasks[ticketID][i].UpdatedAt = time.Now().Unix()
+			return maxVersion, nil
+		}
+	}
+	return 0, ErrTaskNotFound
+}
+
 func (m *MemoryStore) AppendTaskNote(ticketID int, planVersion, ordering int, note string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

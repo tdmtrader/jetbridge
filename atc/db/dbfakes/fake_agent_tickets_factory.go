@@ -146,6 +146,22 @@ type FakeAgentTicketsFactory struct {
 	updateReturnsOnCall map[int]struct {
 		result1 error
 	}
+	UpdateActiveTaskStub        func(int, int, tickets.TaskStatus, string) (int, error)
+	updateActiveTaskMutex       sync.RWMutex
+	updateActiveTaskArgsForCall []struct {
+		arg1 int
+		arg2 int
+		arg3 tickets.TaskStatus
+		arg4 string
+	}
+	updateActiveTaskReturns struct {
+		result1 int
+		result2 error
+	}
+	updateActiveTaskReturnsOnCall map[int]struct {
+		result1 int
+		result2 error
+	}
 	UpdateTaskStatusStub        func(int, int, int, tickets.TaskStatus) error
 	updateTaskStatusMutex       sync.RWMutex
 	updateTaskStatusArgsForCall []struct {
@@ -813,6 +829,73 @@ func (fake *FakeAgentTicketsFactory) UpdateReturnsOnCall(i int, result1 error) {
 	fake.updateReturnsOnCall[i] = struct {
 		result1 error
 	}{result1}
+}
+
+func (fake *FakeAgentTicketsFactory) UpdateActiveTask(arg1 int, arg2 int, arg3 tickets.TaskStatus, arg4 string) (int, error) {
+	fake.updateActiveTaskMutex.Lock()
+	ret, specificReturn := fake.updateActiveTaskReturnsOnCall[len(fake.updateActiveTaskArgsForCall)]
+	fake.updateActiveTaskArgsForCall = append(fake.updateActiveTaskArgsForCall, struct {
+		arg1 int
+		arg2 int
+		arg3 tickets.TaskStatus
+		arg4 string
+	}{arg1, arg2, arg3, arg4})
+	stub := fake.UpdateActiveTaskStub
+	fakeReturns := fake.updateActiveTaskReturns
+	fake.recordInvocation("UpdateActiveTask", []interface{}{arg1, arg2, arg3, arg4})
+	fake.updateActiveTaskMutex.Unlock()
+	if stub != nil {
+		return stub(arg1, arg2, arg3, arg4)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2
+	}
+	return fakeReturns.result1, fakeReturns.result2
+}
+
+func (fake *FakeAgentTicketsFactory) UpdateActiveTaskCallCount() int {
+	fake.updateActiveTaskMutex.RLock()
+	defer fake.updateActiveTaskMutex.RUnlock()
+	return len(fake.updateActiveTaskArgsForCall)
+}
+
+func (fake *FakeAgentTicketsFactory) UpdateActiveTaskCalls(stub func(int, int, tickets.TaskStatus, string) (int, error)) {
+	fake.updateActiveTaskMutex.Lock()
+	defer fake.updateActiveTaskMutex.Unlock()
+	fake.UpdateActiveTaskStub = stub
+}
+
+func (fake *FakeAgentTicketsFactory) UpdateActiveTaskArgsForCall(i int) (int, int, tickets.TaskStatus, string) {
+	fake.updateActiveTaskMutex.RLock()
+	defer fake.updateActiveTaskMutex.RUnlock()
+	argsForCall := fake.updateActiveTaskArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2, argsForCall.arg3, argsForCall.arg4
+}
+
+func (fake *FakeAgentTicketsFactory) UpdateActiveTaskReturns(result1 int, result2 error) {
+	fake.updateActiveTaskMutex.Lock()
+	defer fake.updateActiveTaskMutex.Unlock()
+	fake.UpdateActiveTaskStub = nil
+	fake.updateActiveTaskReturns = struct {
+		result1 int
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeAgentTicketsFactory) UpdateActiveTaskReturnsOnCall(i int, result1 int, result2 error) {
+	fake.updateActiveTaskMutex.Lock()
+	defer fake.updateActiveTaskMutex.Unlock()
+	fake.UpdateActiveTaskStub = nil
+	if fake.updateActiveTaskReturnsOnCall == nil {
+		fake.updateActiveTaskReturnsOnCall = make(map[int]struct {
+			result1 int
+			result2 error
+		})
+	}
+	fake.updateActiveTaskReturnsOnCall[i] = struct {
+		result1 int
+		result2 error
+	}{result1, result2}
 }
 
 func (fake *FakeAgentTicketsFactory) UpdateTaskStatus(arg1 int, arg2 int, arg3 int, arg4 tickets.TaskStatus) error {

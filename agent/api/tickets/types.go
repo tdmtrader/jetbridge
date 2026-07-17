@@ -212,6 +212,13 @@ type Store interface {
 	SubmitPlan(ticketID int, tasks []Task) (planVersion int, err error)
 	UpdateTaskStatus(ticketID int, planVersion, ordering int, status TaskStatus) error
 	AppendTaskNote(ticketID int, planVersion, ordering int, note string) error
+	// UpdateActiveTask atomically resolves the ACTIVE plan version and
+	// applies the status update (plus optional note append) to it in one
+	// store operation, serialized against SubmitPlan — the fix for the
+	// read-version-then-write TOCTOU that silently lost updates to a
+	// superseded plan (agent-review-native #7 finding, 2026-07-17;
+	// additive contract amendment). Returns the plan version written.
+	UpdateActiveTask(ticketID, ordering int, status TaskStatus, note string) (planVersion int, err error)
 	ActivePlan(ticketID int) ([]Task, error)
 	LatestSpec(ticketID int) (*Spec, bool, error)
 }
