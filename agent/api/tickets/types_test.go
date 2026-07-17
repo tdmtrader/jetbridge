@@ -1,0 +1,104 @@
+package tickets_test
+
+import (
+	"testing"
+
+	"github.com/concourse/concourse/agent/api/tickets"
+)
+
+func TestValidTransitionMatrix(t *testing.T) {
+	allowed := []struct{ from, to tickets.State }{
+		{tickets.StateDraft, tickets.StateQueued},
+		{tickets.StateDraft, tickets.StateAbandoned},
+		{tickets.StateQueued, tickets.StateRunning},
+		{tickets.StateQueued, tickets.StateDraft},
+		{tickets.StateQueued, tickets.StateAbandoned},
+		// running→queued: retryable platform error OR rejected send_back
+		// checkpoint re-dispatch (attempt_count++). TWO legitimate callers —
+		// dispatch's retry path AND dispatch's run-completion reconciler
+		// (checkpoint-seam delta §6, 2026-07-09). Do not narrow this edge.
+		{tickets.StateRunning, tickets.StateQueued},
+		// running→needs_review: TWO writers — harvest (primary, 09) and
+		// dispatch's run-completion reconciler (backup/safety net). Do not
+		// narrow this edge either.
+		{tickets.StateRunning, tickets.StateNeedsReview},
+		{tickets.StateRunning, tickets.StateFailed},
+		{tickets.StateRunning, tickets.StateErrored},
+		{tickets.StateNeedsReview, tickets.StateMerged},
+		{tickets.StateNeedsReview, tickets.StateMergedWithFixes},
+		{tickets.StateNeedsReview, tickets.StateSentBack},
+		{tickets.StateNeedsReview, tickets.StateAbandoned},
+		// needs_review→concluded: TERMINAL positive sibling of abandoned —
+		// "run finished, human reviewed, no merge intended" (spike/research
+		// flows; FLOWS.md §3 spike-research, §4 state-enum decision).
+		// Explicit human disposition ONLY; added pre-freeze (2026-07-09) so
+		// the frozen enum never needs a later migration.
+		{tickets.StateNeedsReview, tickets.StateConcluded},
+		{tickets.StateNeedsReview, tickets.StateQueued},
+		{tickets.StateSentBack, tickets.StateQueued},
+		{tickets.StateFailed, tickets.StateQueued},
+		{tickets.StateErrored, tickets.StateQueued},
+	}
+	for _, tr := range allowed {
+		if !tickets.ValidTransition(tr.from, tr.to) {
+			t.Errorf("ValidTransition(%s, %s) = false, want true", tr.from, tr.to)
+		}
+	}
+
+	forbidden := []struct{ from, to tickets.State }{
+		{tickets.StateDraft, tickets.StateRunning},       // must queue first
+		{tickets.StateDraft, tickets.StateDraft},         // self-transition
+		{tickets.StateQueued, tickets.StateNeedsReview},  // must run first
+		{tickets.StateRunning, tickets.StateDraft},
+		{tickets.StateRunning, tickets.StateMerged},
+		{tickets.StateMerged, tickets.StateQueued},       // merged is terminal
+		{tickets.StateMergedWithFixes, tickets.StateQueued},
+		{tickets.StateAbandoned, tickets.StateQueued},    // abandoned is terminal
+		{tickets.StateNeedsReview, tickets.StateRunning}, // re-dispatch goes via queued
+		{tickets.StateDraft, tickets.StateConcluded},     // concluding requires a reviewed run
+		{tickets.StateRunning, tickets.StateConcluded},   // must land in needs_review first
+		{tickets.StateConcluded, tickets.StateQueued},    // concluded is terminal — no exits
+	}
+	for _, tr := range forbidden {
+		if tickets.ValidTransition(tr.from, tr.to) {
+			t.Errorf("ValidTransition(%s, %s) = true, want false", tr.from, tr.to)
+		}
+	}
+}
+
+func TestValidStateOriginTaskStatus(t *testing.T) {
+	for _, s := range []tickets.State{
+		tickets.StateDraft, tickets.StateQueued, tickets.StateRunning,
+		tickets.StateNeedsReview, tickets.StateMerged, tickets.StateMergedWithFixes,
+		tickets.StateSentBack, tickets.StateAbandoned, tickets.StateConcluded,
+		tickets.StateFailed, tickets.StateErrored,
+	} {
+		if !tickets.ValidState(s) {
+			t.Errorf("ValidState(%q) = false, want true", s)
+		}
+	}
+	if tickets.ValidState("open") || tickets.ValidState("") {
+		t.Error("ValidState accepted an unknown state")
+	}
+
+	for _, o := range []string{"web", "fly", "jira", "retrospective"} {
+		if !tickets.ValidOrigin(o) {
+			t.Errorf("ValidOrigin(%q) = false, want true", o)
+		}
+	}
+	if tickets.ValidOrigin("email") || tickets.ValidOrigin("") {
+		t.Error("ValidOrigin accepted an unknown origin")
+	}
+
+	for _, s := range []tickets.TaskStatus{
+		tickets.TaskPending, tickets.TaskInProgress, tickets.TaskDone,
+		tickets.TaskSkipped, tickets.TaskBlocked,
+	} {
+		if !tickets.ValidTaskStatus(s) {
+			t.Errorf("ValidTaskStatus(%q) = false, want true", s)
+		}
+	}
+	if tickets.ValidTaskStatus("started") {
+		t.Error("ValidTaskStatus accepted an unknown status")
+	}
+}
