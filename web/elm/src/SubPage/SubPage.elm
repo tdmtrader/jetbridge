@@ -13,6 +13,7 @@ module SubPage.SubPage exposing
 
 import Agent.Agent as Agent
 import AgentReviews.AgentReviews as AgentReviews
+import AgentTickets.AgentTicket as AgentTicket
 import AgentTickets.AgentTickets as AgentTickets
 import Application.Models exposing (Session)
 import Build.Build as Build
@@ -57,6 +58,7 @@ type Model
     | AgentReviewsModel AgentReviews.Model
     | AgentModel Agent.Model
     | AgentTicketsModel AgentTickets.Model
+    | AgentTicketModel AgentTicket.Model
 
 
 init : Session -> Routes.Route -> ( Model, List Effect )
@@ -145,10 +147,9 @@ init session route =
             AgentTickets.init
                 |> Tuple.mapFirst AgentTicketsModel
 
-        Routes.AgentTicket _ ->
-            -- placeholder until the ticket detail page lands (Wave B / Step 5)
-            NotFound.init { notFoundImgSrc = session.notFoundImgSrc, route = session.route }
-                |> Tuple.mapFirst NotFoundModel
+        Routes.AgentTicket { id } ->
+            AgentTicket.init { id = id }
+                |> Tuple.mapFirst AgentTicketModel
 
 
 handleNotFound : Session -> ET Model
@@ -200,8 +201,9 @@ genericUpdate :
     -> ET AgentReviews.Model
     -> ET Agent.Model
     -> ET AgentTickets.Model
+    -> ET AgentTicket.Model
     -> ET Model
-genericUpdate fBuild fJob fRes fPipe fDash fCaus fNF fFS dFly fAR fAgent fATs ( model, effects ) =
+genericUpdate fBuild fJob fRes fPipe fDash fCaus fNF fFS dFly fAR fAgent fATs fAT ( model, effects ) =
     case model of
         BuildModel buildModel ->
             fBuild ( buildModel, effects )
@@ -251,6 +253,10 @@ genericUpdate fBuild fJob fRes fPipe fDash fCaus fNF fFS dFly fAR fAgent fATs ( 
             fATs ( agentTicketsModel, effects )
                 |> Tuple.mapFirst AgentTicketsModel
 
+        AgentTicketModel agentTicketModel ->
+            fAT ( agentTicketModel, effects )
+                |> Tuple.mapFirst AgentTicketModel
+
 
 handleCallback : Callback -> Session -> ET Model
 handleCallback callback session =
@@ -267,9 +273,11 @@ handleCallback callback session =
         (AgentReviews.handleCallback callback)
         (Agent.handleCallback callback)
         (AgentTickets.handleCallback callback)
+        (AgentTicket.handleCallback callback)
         >> (case callback of
                 LoggedOut (Ok ()) ->
                     genericUpdate
+                        handleLoggedOut
                         handleLoggedOut
                         handleLoggedOut
                         handleLoggedOut
@@ -317,6 +325,7 @@ handleDelivery session delivery =
         identity
         (Agent.handleDelivery delivery)
         (AgentTickets.handleDelivery delivery)
+        (AgentTicket.handleDelivery delivery)
 
 
 update : Session -> Message -> ET Model
@@ -334,6 +343,7 @@ update session msg =
         (Login.update msg >> AgentReviews.update msg)
         (Login.update msg >> Agent.update msg)
         (Login.update msg >> AgentTickets.update msg)
+        (Login.update msg >> AgentTicket.update msg)
         >> (case msg of
                 GoToRoute route ->
                     handleGoToRoute route
@@ -444,6 +454,7 @@ urlUpdateValid routes =
         identity
         identity
         identity
+        identity
 
 
 view : Session -> Model -> ( String, Html Message )
@@ -504,6 +515,11 @@ view ({ userState } as session) mdl =
             , AgentTickets.view session model
             )
 
+        AgentTicketModel model ->
+            ( AgentTicket.documentTitle model
+            , AgentTicket.view session model
+            )
+
         AgentModel model ->
             ( Agent.documentTitle
             , Agent.view session model
@@ -549,6 +565,9 @@ tooltip mdl =
         AgentTicketsModel model ->
             AgentTickets.tooltip model
 
+        AgentTicketModel model ->
+            AgentTicket.tooltip model
+
 
 subscriptions : Model -> List Subscription
 subscriptions mdl =
@@ -588,3 +607,6 @@ subscriptions mdl =
 
         AgentTicketsModel _ ->
             AgentTickets.subscriptions
+
+        AgentTicketModel _ ->
+            AgentTicket.subscriptions
