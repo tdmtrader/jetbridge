@@ -140,6 +140,84 @@ var _ = Describe("fly agent tickets", func() {
 			Expect(sess.ExitCode()).To(Equal(0))
 			Expect(sess.Out).To(gbytes.Say("ticket #7 is now concluded"))
 		})
+
+		It("defaults --from to the ticket's current server state", func() {
+			atcServer.AppendHandlers(
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("GET", "/api/v1/agent/tickets/7"),
+					ghttp.RespondWithJSONEncoded(200, tickets.TicketDetail{
+						Ticket: tickets.Ticket{ID: 7, State: tickets.StateRunning},
+					}),
+				),
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("PUT", "/api/v1/agent/tickets/7/state"),
+					ghttp.VerifyJSON(`{"from":"running","to":"needs_review"}`),
+					ghttp.RespondWithJSONEncoded(200, tickets.Ticket{ID: 7, State: tickets.StateNeedsReview}),
+				),
+			)
+
+			flyCmd := exec.Command(flyPath, "-t", targetName, "agent", "tickets", "transition",
+				"--id", "7", "--to", "needs_review")
+			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+			Expect(err).NotTo(HaveOccurred())
+			<-sess.Exited
+			Expect(sess.ExitCode()).To(Equal(0))
+			Expect(sess.Out).To(gbytes.Say("ticket #7 is now needs_review"))
+		})
+	})
+
+	Describe("close", func() {
+		It("walks a running ticket to a terminal disposition, re-checking state between hops", func() {
+			atcServer.AppendHandlers(
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("GET", "/api/v1/agent/tickets/7"),
+					ghttp.RespondWithJSONEncoded(200, tickets.TicketDetail{
+						Ticket: tickets.Ticket{ID: 7, State: tickets.StateRunning},
+					}),
+				),
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("PUT", "/api/v1/agent/tickets/7/state"),
+					ghttp.VerifyJSON(`{"from":"running","to":"needs_review"}`),
+					ghttp.RespondWithJSONEncoded(200, tickets.Ticket{ID: 7, State: tickets.StateNeedsReview}),
+				),
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("PUT", "/api/v1/agent/tickets/7/state"),
+					ghttp.VerifyJSON(`{"from":"needs_review","to":"concluded"}`),
+					ghttp.RespondWithJSONEncoded(200, tickets.Ticket{ID: 7, State: tickets.StateConcluded}),
+				),
+			)
+
+			flyCmd := exec.Command(flyPath, "-t", targetName, "agent", "tickets", "close", "--id", "7")
+			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+			Expect(err).NotTo(HaveOccurred())
+			<-sess.Exited
+			Expect(sess.ExitCode()).To(Equal(0))
+			Expect(sess.Out).To(gbytes.Say("ticket #7 is now concluded"))
+		})
+
+		It("skips the needs_review hop when the ticket is already there", func() {
+			atcServer.AppendHandlers(
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("GET", "/api/v1/agent/tickets/7"),
+					ghttp.RespondWithJSONEncoded(200, tickets.TicketDetail{
+						Ticket: tickets.Ticket{ID: 7, State: tickets.StateNeedsReview},
+					}),
+				),
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("PUT", "/api/v1/agent/tickets/7/state"),
+					ghttp.VerifyJSON(`{"from":"needs_review","to":"abandoned"}`),
+					ghttp.RespondWithJSONEncoded(200, tickets.Ticket{ID: 7, State: tickets.StateAbandoned}),
+				),
+			)
+
+			flyCmd := exec.Command(flyPath, "-t", targetName, "agent", "tickets", "close",
+				"--id", "7", "--disposition", "abandoned")
+			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+			Expect(err).NotTo(HaveOccurred())
+			<-sess.Exited
+			Expect(sess.ExitCode()).To(Equal(0))
+			Expect(sess.Out).To(gbytes.Say("ticket #7 is now abandoned"))
+		})
 	})
 
 	Describe("dispatch", func() {
@@ -159,6 +237,59 @@ var _ = Describe("fly agent tickets", func() {
 			<-sess.Exited
 			Expect(sess.ExitCode()).To(Equal(0))
 			Expect(sess.Out).To(gbytes.Say(`dispatched ticket #7 as run 321 \(pipeline agent-ticket-7\)`))
+		})
+	})
+
+	Describe("create --dispatch", func() {
+		It("creates, queues, and dispatches in one command", func() {
+			atcServer.AppendHandlers(
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("POST", "/api/v1/agent/tickets"),
+					ghttp.RespondWithJSONEncoded(201, tickets.Ticket{ID: 9, State: tickets.StateDraft}),
+				),
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("PUT", "/api/v1/agent/tickets/9/state"),
+					ghttp.VerifyJSON(`{"from":"draft","to":"queued"}`),
+					ghttp.RespondWithJSONEncoded(200, tickets.Ticket{ID: 9, State: tickets.StateQueued}),
+				),
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("POST", "/api/v1/agent/tickets/9/dispatch"),
+					ghttp.RespondWithJSONEncoded(201, tickets.DispatchResponse{RunID: 5, PipelineName: "agent-ticket-9"}),
+				),
+			)
+
+			flyCmd := exec.Command(flyPath, "-t", targetName, "agent", "tickets", "create",
+				"--title", "one shot", "--repo", "tdmtrader/concourse", "--workflow", "analyze", "--dispatch")
+			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+			Expect(err).NotTo(HaveOccurred())
+			<-sess.Exited
+			Expect(sess.ExitCode()).To(Equal(0))
+			Expect(sess.Out).To(gbytes.Say("created ticket #9"))
+			Expect(sess.Out).To(gbytes.Say("queued"))
+			Expect(sess.Out).To(gbytes.Say(`dispatched ticket #9 as run 5`))
+		})
+	})
+
+	Describe("show surfaces the run", func() {
+		It("prints the pipeline and a watch hint when the ticket has a run", func() {
+			runID := 42
+			atcServer.AppendHandlers(
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("GET", "/api/v1/agent/tickets/7"),
+					ghttp.RespondWithJSONEncoded(200, tickets.TicketDetail{
+						Ticket: tickets.Ticket{ID: 7, Title: "t", State: tickets.StateRunning,
+							Origin: "fly", Repo: "r", TargetBranch: "main", PipelineRunID: &runID},
+					}),
+				),
+			)
+
+			flyCmd := exec.Command(flyPath, "-t", targetName, "agent", "tickets", "show", "--id", "7")
+			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+			Expect(err).NotTo(HaveOccurred())
+			<-sess.Exited
+			Expect(sess.ExitCode()).To(Equal(0))
+			Expect(sess.Out).To(gbytes.Say(`run: agent-ticket-7`))
+			Expect(sess.Out).To(gbytes.Say(`fly .* agent tickets watch --id 7`))
 		})
 	})
 })
