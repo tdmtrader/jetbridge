@@ -259,6 +259,11 @@ func (step *HarvestStep) run(ctx context.Context, state RunState, delegate TaskD
 			delegate.Errored(logger, TimeoutLogMessage)
 			return false, nil
 		}
+		// Process-level failures (pod died, exec stream broke, binary
+		// missing) never reach the exit-taxonomy switch — without this
+		// the ticket silently stays `running` with a dead run (live
+		// finding, ticket #12's first harvest attempt).
+		step.transitionTicket(ctx, logger, "errored", "", "harvest process failed: "+runErr.Error())
 		return false, runErr
 	}
 
