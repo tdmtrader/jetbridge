@@ -343,9 +343,16 @@ tooltip model =
 
 agentPlatformLink : List (Html Message)
 agentPlatformLink =
-    [ Html.a
-        [ id "sidebar-agent-platform"
-        , href (Routes.toString Routes.Agent)
+    [ agentNavLink "sidebar-agent-platform" Routes.Agent "Agent platform"
+    , agentNavLink "sidebar-agent-tickets" Routes.AgentTickets "Ticket queue"
+    ]
+
+
+agentNavLink : String -> Routes.Route -> String -> Html Message
+agentNavLink elementId route text =
+    Html.a
+        [ id elementId
+        , href (Routes.toString route)
         , style "display" "flex"
         , style "align-items" "center"
         , style "padding" "10px 16px"
@@ -354,8 +361,7 @@ agentPlatformLink =
         , style "font-weight" "700"
         , style "border-bottom" "1px solid #3d3c3c"
         ]
-        [ Html.text "Agent platform" ]
-    ]
+        [ Html.text text ]
 
 
 allPipelinesSection : Model m -> Maybe (PipelineScoped a) -> List (Html Message)
