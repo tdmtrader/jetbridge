@@ -111,4 +111,124 @@ var _ = Describe("AgentTicketsFactory", func() {
 		Expect(factory.Update(424242, tickets.Update{Title: &title})).
 			To(MatchError(tickets.ErrTicketNotFound))
 	})
+
+	Describe("Transition (the single writer)", func() {
+		var id int
+
+		BeforeEach(func() {
+			var err error
+			id, err = factory.Create(newTicket("lifecycle", "tdmtrader/concourse"))
+			Expect(err).ToNot(HaveOccurred())
+		})
+
+		It("walks draft→queued→running→needs_review→merged recording side effects", func() {
+			Expect(factory.Transition(id, tickets.StateDraft, tickets.StateQueued,
+				tickets.TransitionMeta{})).To(Succeed())
+			var queuedAt sql.NullTime
+			Expect(dbConn.QueryRow(`SELECT queued_at FROM agent_tickets WHERE id = $1`, id).
+				Scan(&queuedAt)).To(Succeed())
+			Expect(queuedAt.Valid).To(BeTrue())
+
+			runID := 42
+			Expect(factory.Transition(id, tickets.StateQueued, tickets.StateRunning,
+				tickets.TransitionMeta{PipelineRunID: &runID})).To(Succeed())
+			got, _, err := factory.Get(id)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(*got.PipelineRunID).To(Equal(42))
+			var dispatchedAt sql.NullTime
+			Expect(dbConn.QueryRow(`SELECT dispatched_at FROM agent_tickets WHERE id = $1`, id).
+				Scan(&dispatchedAt)).To(Succeed())
+			Expect(dispatchedAt.Valid).To(BeTrue())
+
+			Expect(factory.Transition(id, tickets.StateRunning, tickets.StateNeedsReview,
+				tickets.TransitionMeta{Branch: "agent/ticket-7"})).To(Succeed())
+			got, _, _ = factory.Get(id)
+			Expect(got.Branch).To(Equal("agent/ticket-7"))
+			Expect(got.CompletedAt).To(BeZero()) // needs_review is not terminal
+
+			Expect(factory.Transition(id, tickets.StateNeedsReview, tickets.StateMerged,
+				tickets.TransitionMeta{})).To(Succeed())
+			got, _, _ = factory.Get(id)
+			Expect(got.State).To(Equal(tickets.StateMerged))
+			Expect(got.CompletedAt).To(BeNumerically(">", 0))
+		})
+
+		It("stamps completed_at on needs_review→concluded (spike disposition, terminal)", func() {
+			Expect(factory.Transition(id, tickets.StateDraft, tickets.StateQueued,
+				tickets.TransitionMeta{})).To(Succeed())
+			Expect(factory.Transition(id, tickets.StateQueued, tickets.StateRunning,
+				tickets.TransitionMeta{})).To(Succeed())
+			Expect(factory.Transition(id, tickets.StateRunning, tickets.StateNeedsReview,
+				tickets.TransitionMeta{})).To(Succeed())
+
+			// needs_review → concluded: explicit human disposition — "run
+			// finished, human reviewed, no merge intended" (FLOWS.md §3
+			// spike-research). Positive sibling of abandoned; TERMINAL.
+			Expect(factory.Transition(id, tickets.StateNeedsReview, tickets.StateConcluded,
+				tickets.TransitionMeta{})).To(Succeed())
+			got, _, _ := factory.Get(id)
+			Expect(got.State).To(Equal(tickets.StateConcluded))
+			Expect(got.CompletedAt).To(BeNumerically(">", 0))
+
+			// No exits: concluded tickets never re-enter the queue.
+			Expect(factory.Transition(id, tickets.StateConcluded, tickets.StateQueued,
+				tickets.TransitionMeta{})).To(MatchError(tickets.ErrInvalidTransition))
+		})
+
+		It("records error_detail on errored, clears completed_at on requeue, and counts attempts", func() {
+			Expect(factory.Transition(id, tickets.StateDraft, tickets.StateQueued,
+				tickets.TransitionMeta{})).To(Succeed())
+			Expect(factory.Transition(id, tickets.StateQueued, tickets.StateRunning,
+				tickets.TransitionMeta{})).To(Succeed())
+			Expect(factory.Transition(id, tickets.StateRunning, tickets.StateErrored,
+				tickets.TransitionMeta{ErrorDetail: "web node died"})).To(Succeed())
+
+			got, _, _ := factory.Get(id)
+			Expect(got.ErrorDetail).To(Equal("web node died"))
+			Expect(got.CompletedAt).To(BeNumerically(">", 0))
+			Expect(got.AttemptCount).To(BeZero()) // errored, not requeued
+
+			Expect(factory.Transition(id, tickets.StateErrored, tickets.StateQueued,
+				tickets.TransitionMeta{})).To(Succeed())
+			got, _, _ = factory.Get(id)
+			Expect(got.CompletedAt).To(BeZero()) // cleared on requeue
+
+			Expect(factory.Transition(id, tickets.StateQueued, tickets.StateRunning,
+				tickets.TransitionMeta{})).To(Succeed())
+			// running→queued (retryable platform error OR rejected send_back
+			// checkpoint re-dispatch; attempt_count++). Second legitimate
+			// caller: dispatch's run-completion reconciler (checkpoint-seam
+			// delta §6, 2026-07-09), which requeues with TransitionMeta{}
+			// exactly as below — these side-effect assertions are its
+			// contract; do not narrow them.
+			Expect(factory.Transition(id, tickets.StateRunning, tickets.StateQueued,
+				tickets.TransitionMeta{})).To(Succeed())
+			got, _, _ = factory.Get(id)
+			Expect(got.AttemptCount).To(Equal(1)) // running→queued increments
+			Expect(got.CompletedAt).To(BeZero())  // stays cleared for re-dispatch
+			var requeuedAt sql.NullTime
+			Expect(dbConn.QueryRow(`SELECT queued_at FROM agent_tickets WHERE id = $1`, id).
+				Scan(&requeuedAt)).To(Succeed())
+			Expect(requeuedAt.Valid).To(BeTrue()) // queued_at re-stamped
+		})
+
+		It("rejects illegal edges without touching the row", func() {
+			Expect(factory.Transition(id, tickets.StateDraft, tickets.StateMerged,
+				tickets.TransitionMeta{})).To(MatchError(tickets.ErrInvalidTransition))
+			got, _, _ := factory.Get(id)
+			Expect(got.State).To(Equal(tickets.StateDraft))
+		})
+
+		It("returns ErrStaleTransition when the from-state no longer matches", func() {
+			Expect(factory.Transition(id, tickets.StateDraft, tickets.StateQueued,
+				tickets.TransitionMeta{})).To(Succeed())
+			Expect(factory.Transition(id, tickets.StateDraft, tickets.StateQueued,
+				tickets.TransitionMeta{})).To(MatchError(tickets.ErrStaleTransition))
+		})
+
+		It("returns ErrTicketNotFound for a missing ticket", func() {
+			Expect(factory.Transition(987654, tickets.StateDraft, tickets.StateQueued,
+				tickets.TransitionMeta{})).To(MatchError(tickets.ErrTicketNotFound))
+		})
+	})
 })

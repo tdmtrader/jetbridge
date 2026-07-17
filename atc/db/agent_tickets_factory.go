@@ -204,9 +204,72 @@ func (f *agentTicketsFactory) Update(id int, upd tickets.Update) error {
 	return nil
 }
 
-// Transition is implemented in Task 5 (single-writer state machine).
+// Transition is THE single writer of agent_tickets.state
+// (00-shared-contracts.md §2.1). It validates the edge against the
+// §1.7 state machine, then updates guarded by the expected `from`
+// state (optimistic concurrency): a concurrent writer that moved the
+// ticket first makes this call return ErrStaleTransition instead of
+// silently double-applying. Side effects per the ticket-core contract
+// addendum.
 func (f *agentTicketsFactory) Transition(id int, from, to tickets.State, meta tickets.TransitionMeta) error {
-	return errors.New("agentTicketsFactory.Transition: not yet implemented (plan task 5)")
+	if !tickets.ValidTransition(from, to) {
+		return tickets.ErrInvalidTransition
+	}
+
+	q := psql.Update("agent_tickets").
+		Set("state", string(to)).
+		Set("updated_at", sq.Expr("now()")).
+		Where(sq.Eq{"id": id, "state": string(from)})
+
+	switch to {
+	case tickets.StateDraft: // unqueue
+		q = q.Set("queued_at", nil)
+	case tickets.StateQueued:
+		q = q.Set("queued_at", sq.Expr("now()")).
+			Set("completed_at", nil)
+		if from == tickets.StateRunning {
+			// running → queued (retryable platform error OR rejected
+			// send_back checkpoint re-dispatch; attempt_count++) — called
+			// by dispatch's retry path and its run-completion reconciler.
+			q = q.Set("attempt_count", sq.Expr("attempt_count + 1"))
+		}
+	case tickets.StateRunning:
+		q = q.Set("dispatched_at", sq.Expr("now()"))
+		if meta.PipelineRunID != nil {
+			q = q.Set("pipeline_run_id", *meta.PipelineRunID)
+		}
+	case tickets.StateNeedsReview:
+		if meta.Branch != "" {
+			q = q.Set("branch", meta.Branch)
+		}
+	case tickets.StateMerged, tickets.StateMergedWithFixes, tickets.StateSentBack,
+		tickets.StateAbandoned, tickets.StateConcluded, tickets.StateFailed, tickets.StateErrored:
+		q = q.Set("completed_at", sq.Expr("now()"))
+		if to == tickets.StateErrored {
+			q = q.Set("error_detail", meta.ErrorDetail)
+		}
+	}
+
+	res, err := q.RunWith(f.conn).Exec()
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		// Distinguish "ticket gone" from "state moved under us".
+		_, found, err := f.Get(id)
+		if err != nil {
+			return err
+		}
+		if !found {
+			return tickets.ErrTicketNotFound
+		}
+		return tickets.ErrStaleTransition
+	}
+	return nil
 }
 
 // The spec/plan family is implemented in Task 6.
