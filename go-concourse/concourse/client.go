@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/concourse/concourse/agent/api/costs"
+	"github.com/concourse/concourse/agent/api/tickets"
 	"github.com/concourse/concourse/agent/credentials"
 	agentschema "github.com/concourse/concourse/agent/schema"
 	"github.com/concourse/concourse/atc"
@@ -45,6 +46,9 @@ type Client interface {
 	DeleteAgentUserCredential(kind string, platform bool) error
 	AgentCostRollup(groupBy, since, until string) (costs.RollupResponse, error)
 	AgentRunMetrics(limit int) ([]agentschema.RunMetrics, error)
+	ListAgentTickets(filter tickets.ListFilter) ([]tickets.Ticket, error)
+	CreateAgentTicket(req tickets.CreateRequest) (tickets.Ticket, error)
+	GetAgentTicket(id int) (tickets.TicketDetail, bool, error)
 	// Agent principals are admin-only: minted, listed, and revoked by admins.
 	ListAgentPrincipals() ([]atc.AgentPrincipal, error)
 	CreateAgentPrincipal(spec atc.AgentPrincipalCreateSpec) (atc.AgentPrincipalCreated, error)

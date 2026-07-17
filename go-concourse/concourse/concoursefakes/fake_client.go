@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/concourse/concourse/agent/api/costs"
+	"github.com/concourse/concourse/agent/api/tickets"
 	"github.com/concourse/concourse/agent/credentials"
 	"github.com/concourse/concourse/agent/schema"
 	"github.com/concourse/concourse/atc"
@@ -162,6 +163,19 @@ type FakeClient struct {
 		result1 atc.AgentPrincipalCreated
 		result2 error
 	}
+	CreateAgentTicketStub        func(tickets.CreateRequest) (tickets.Ticket, error)
+	createAgentTicketMutex       sync.RWMutex
+	createAgentTicketArgsForCall []struct {
+		arg1 tickets.CreateRequest
+	}
+	createAgentTicketReturns struct {
+		result1 tickets.Ticket
+		result2 error
+	}
+	createAgentTicketReturnsOnCall map[int]struct {
+		result1 tickets.Ticket
+		result2 error
+	}
 	DeleteAgentUserCredentialStub        func(string, bool) error
 	deleteAgentUserCredentialMutex       sync.RWMutex
 	deleteAgentUserCredentialArgsForCall []struct {
@@ -186,6 +200,21 @@ type FakeClient struct {
 	findTeamReturnsOnCall map[int]struct {
 		result1 concourse.Team
 		result2 error
+	}
+	GetAgentTicketStub        func(int) (tickets.TicketDetail, bool, error)
+	getAgentTicketMutex       sync.RWMutex
+	getAgentTicketArgsForCall []struct {
+		arg1 int
+	}
+	getAgentTicketReturns struct {
+		result1 tickets.TicketDetail
+		result2 bool
+		result3 error
+	}
+	getAgentTicketReturnsOnCall map[int]struct {
+		result1 tickets.TicketDetail
+		result2 bool
+		result3 error
 	}
 	GetCLIReaderStub        func(string, string) (io.ReadCloser, http.Header, error)
 	getCLIReaderMutex       sync.RWMutex
@@ -260,6 +289,19 @@ type FakeClient struct {
 	}
 	listAgentPrincipalsReturnsOnCall map[int]struct {
 		result1 []atc.AgentPrincipal
+		result2 error
+	}
+	ListAgentTicketsStub        func(tickets.ListFilter) ([]tickets.Ticket, error)
+	listAgentTicketsMutex       sync.RWMutex
+	listAgentTicketsArgsForCall []struct {
+		arg1 tickets.ListFilter
+	}
+	listAgentTicketsReturns struct {
+		result1 []tickets.Ticket
+		result2 error
+	}
+	listAgentTicketsReturnsOnCall map[int]struct {
+		result1 []tickets.Ticket
 		result2 error
 	}
 	ListAllJobsStub        func() ([]atc.Job, error)
@@ -1103,6 +1145,70 @@ func (fake *FakeClient) CreateAgentPrincipalReturnsOnCall(i int, result1 atc.Age
 	}{result1, result2}
 }
 
+func (fake *FakeClient) CreateAgentTicket(arg1 tickets.CreateRequest) (tickets.Ticket, error) {
+	fake.createAgentTicketMutex.Lock()
+	ret, specificReturn := fake.createAgentTicketReturnsOnCall[len(fake.createAgentTicketArgsForCall)]
+	fake.createAgentTicketArgsForCall = append(fake.createAgentTicketArgsForCall, struct {
+		arg1 tickets.CreateRequest
+	}{arg1})
+	stub := fake.CreateAgentTicketStub
+	fakeReturns := fake.createAgentTicketReturns
+	fake.recordInvocation("CreateAgentTicket", []interface{}{arg1})
+	fake.createAgentTicketMutex.Unlock()
+	if stub != nil {
+		return stub(arg1)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2
+	}
+	return fakeReturns.result1, fakeReturns.result2
+}
+
+func (fake *FakeClient) CreateAgentTicketCallCount() int {
+	fake.createAgentTicketMutex.RLock()
+	defer fake.createAgentTicketMutex.RUnlock()
+	return len(fake.createAgentTicketArgsForCall)
+}
+
+func (fake *FakeClient) CreateAgentTicketCalls(stub func(tickets.CreateRequest) (tickets.Ticket, error)) {
+	fake.createAgentTicketMutex.Lock()
+	defer fake.createAgentTicketMutex.Unlock()
+	fake.CreateAgentTicketStub = stub
+}
+
+func (fake *FakeClient) CreateAgentTicketArgsForCall(i int) tickets.CreateRequest {
+	fake.createAgentTicketMutex.RLock()
+	defer fake.createAgentTicketMutex.RUnlock()
+	argsForCall := fake.createAgentTicketArgsForCall[i]
+	return argsForCall.arg1
+}
+
+func (fake *FakeClient) CreateAgentTicketReturns(result1 tickets.Ticket, result2 error) {
+	fake.createAgentTicketMutex.Lock()
+	defer fake.createAgentTicketMutex.Unlock()
+	fake.CreateAgentTicketStub = nil
+	fake.createAgentTicketReturns = struct {
+		result1 tickets.Ticket
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeClient) CreateAgentTicketReturnsOnCall(i int, result1 tickets.Ticket, result2 error) {
+	fake.createAgentTicketMutex.Lock()
+	defer fake.createAgentTicketMutex.Unlock()
+	fake.CreateAgentTicketStub = nil
+	if fake.createAgentTicketReturnsOnCall == nil {
+		fake.createAgentTicketReturnsOnCall = make(map[int]struct {
+			result1 tickets.Ticket
+			result2 error
+		})
+	}
+	fake.createAgentTicketReturnsOnCall[i] = struct {
+		result1 tickets.Ticket
+		result2 error
+	}{result1, result2}
+}
+
 func (fake *FakeClient) DeleteAgentUserCredential(arg1 string, arg2 bool) error {
 	fake.deleteAgentUserCredentialMutex.Lock()
 	ret, specificReturn := fake.deleteAgentUserCredentialReturnsOnCall[len(fake.deleteAgentUserCredentialArgsForCall)]
@@ -1227,6 +1333,73 @@ func (fake *FakeClient) FindTeamReturnsOnCall(i int, result1 concourse.Team, res
 		result1 concourse.Team
 		result2 error
 	}{result1, result2}
+}
+
+func (fake *FakeClient) GetAgentTicket(arg1 int) (tickets.TicketDetail, bool, error) {
+	fake.getAgentTicketMutex.Lock()
+	ret, specificReturn := fake.getAgentTicketReturnsOnCall[len(fake.getAgentTicketArgsForCall)]
+	fake.getAgentTicketArgsForCall = append(fake.getAgentTicketArgsForCall, struct {
+		arg1 int
+	}{arg1})
+	stub := fake.GetAgentTicketStub
+	fakeReturns := fake.getAgentTicketReturns
+	fake.recordInvocation("GetAgentTicket", []interface{}{arg1})
+	fake.getAgentTicketMutex.Unlock()
+	if stub != nil {
+		return stub(arg1)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2, ret.result3
+	}
+	return fakeReturns.result1, fakeReturns.result2, fakeReturns.result3
+}
+
+func (fake *FakeClient) GetAgentTicketCallCount() int {
+	fake.getAgentTicketMutex.RLock()
+	defer fake.getAgentTicketMutex.RUnlock()
+	return len(fake.getAgentTicketArgsForCall)
+}
+
+func (fake *FakeClient) GetAgentTicketCalls(stub func(int) (tickets.TicketDetail, bool, error)) {
+	fake.getAgentTicketMutex.Lock()
+	defer fake.getAgentTicketMutex.Unlock()
+	fake.GetAgentTicketStub = stub
+}
+
+func (fake *FakeClient) GetAgentTicketArgsForCall(i int) int {
+	fake.getAgentTicketMutex.RLock()
+	defer fake.getAgentTicketMutex.RUnlock()
+	argsForCall := fake.getAgentTicketArgsForCall[i]
+	return argsForCall.arg1
+}
+
+func (fake *FakeClient) GetAgentTicketReturns(result1 tickets.TicketDetail, result2 bool, result3 error) {
+	fake.getAgentTicketMutex.Lock()
+	defer fake.getAgentTicketMutex.Unlock()
+	fake.GetAgentTicketStub = nil
+	fake.getAgentTicketReturns = struct {
+		result1 tickets.TicketDetail
+		result2 bool
+		result3 error
+	}{result1, result2, result3}
+}
+
+func (fake *FakeClient) GetAgentTicketReturnsOnCall(i int, result1 tickets.TicketDetail, result2 bool, result3 error) {
+	fake.getAgentTicketMutex.Lock()
+	defer fake.getAgentTicketMutex.Unlock()
+	fake.GetAgentTicketStub = nil
+	if fake.getAgentTicketReturnsOnCall == nil {
+		fake.getAgentTicketReturnsOnCall = make(map[int]struct {
+			result1 tickets.TicketDetail
+			result2 bool
+			result3 error
+		})
+	}
+	fake.getAgentTicketReturnsOnCall[i] = struct {
+		result1 tickets.TicketDetail
+		result2 bool
+		result3 error
+	}{result1, result2, result3}
 }
 
 func (fake *FakeClient) GetCLIReader(arg1 string, arg2 string) (io.ReadCloser, http.Header, error) {
@@ -1578,6 +1751,70 @@ func (fake *FakeClient) ListAgentPrincipalsReturnsOnCall(i int, result1 []atc.Ag
 	}
 	fake.listAgentPrincipalsReturnsOnCall[i] = struct {
 		result1 []atc.AgentPrincipal
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeClient) ListAgentTickets(arg1 tickets.ListFilter) ([]tickets.Ticket, error) {
+	fake.listAgentTicketsMutex.Lock()
+	ret, specificReturn := fake.listAgentTicketsReturnsOnCall[len(fake.listAgentTicketsArgsForCall)]
+	fake.listAgentTicketsArgsForCall = append(fake.listAgentTicketsArgsForCall, struct {
+		arg1 tickets.ListFilter
+	}{arg1})
+	stub := fake.ListAgentTicketsStub
+	fakeReturns := fake.listAgentTicketsReturns
+	fake.recordInvocation("ListAgentTickets", []interface{}{arg1})
+	fake.listAgentTicketsMutex.Unlock()
+	if stub != nil {
+		return stub(arg1)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2
+	}
+	return fakeReturns.result1, fakeReturns.result2
+}
+
+func (fake *FakeClient) ListAgentTicketsCallCount() int {
+	fake.listAgentTicketsMutex.RLock()
+	defer fake.listAgentTicketsMutex.RUnlock()
+	return len(fake.listAgentTicketsArgsForCall)
+}
+
+func (fake *FakeClient) ListAgentTicketsCalls(stub func(tickets.ListFilter) ([]tickets.Ticket, error)) {
+	fake.listAgentTicketsMutex.Lock()
+	defer fake.listAgentTicketsMutex.Unlock()
+	fake.ListAgentTicketsStub = stub
+}
+
+func (fake *FakeClient) ListAgentTicketsArgsForCall(i int) tickets.ListFilter {
+	fake.listAgentTicketsMutex.RLock()
+	defer fake.listAgentTicketsMutex.RUnlock()
+	argsForCall := fake.listAgentTicketsArgsForCall[i]
+	return argsForCall.arg1
+}
+
+func (fake *FakeClient) ListAgentTicketsReturns(result1 []tickets.Ticket, result2 error) {
+	fake.listAgentTicketsMutex.Lock()
+	defer fake.listAgentTicketsMutex.Unlock()
+	fake.ListAgentTicketsStub = nil
+	fake.listAgentTicketsReturns = struct {
+		result1 []tickets.Ticket
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeClient) ListAgentTicketsReturnsOnCall(i int, result1 []tickets.Ticket, result2 error) {
+	fake.listAgentTicketsMutex.Lock()
+	defer fake.listAgentTicketsMutex.Unlock()
+	fake.ListAgentTicketsStub = nil
+	if fake.listAgentTicketsReturnsOnCall == nil {
+		fake.listAgentTicketsReturnsOnCall = make(map[int]struct {
+			result1 []tickets.Ticket
+			result2 error
+		})
+	}
+	fake.listAgentTicketsReturnsOnCall[i] = struct {
+		result1 []tickets.Ticket
 		result2 error
 	}{result1, result2}
 }

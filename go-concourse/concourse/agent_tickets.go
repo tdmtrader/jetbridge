@@ -1,0 +1,74 @@
+package concourse
+
+import (
+	"bytes"
+	"encoding/json"
+	"net/http"
+	"net/url"
+	"strconv"
+
+	"github.com/concourse/concourse/agent/api/tickets"
+	"github.com/concourse/concourse/atc"
+	"github.com/concourse/concourse/go-concourse/concourse/internal"
+	"github.com/tedsuo/rata"
+)
+
+func (client *client) ListAgentTickets(filter tickets.ListFilter) ([]tickets.Ticket, error) {
+	query := url.Values{}
+	if filter.State != "" {
+		query.Set("state", string(filter.State))
+	}
+	if filter.Repo != "" {
+		query.Set("repo", filter.Repo)
+	}
+	if filter.Origin != "" {
+		query.Set("origin", filter.Origin)
+	}
+	if filter.Limit > 0 {
+		query.Set("limit", strconv.Itoa(filter.Limit))
+	}
+
+	var result []tickets.Ticket
+	err := client.connection.Send(internal.Request{
+		RequestName: atc.ListAgentTickets,
+		Query:       query,
+	}, &internal.Response{
+		Result: &result,
+	})
+	return result, err
+}
+
+func (client *client) CreateAgentTicket(req tickets.CreateRequest) (tickets.Ticket, error) {
+	buffer := &bytes.Buffer{}
+	if err := json.NewEncoder(buffer).Encode(req); err != nil {
+		return tickets.Ticket{}, err
+	}
+
+	var created tickets.Ticket
+	err := client.connection.Send(internal.Request{
+		RequestName: atc.CreateAgentTicket,
+		Body:        buffer,
+		Header:      http.Header{"Content-Type": []string{"application/json"}},
+	}, &internal.Response{
+		Result: &created,
+	})
+	return created, err
+}
+
+func (client *client) GetAgentTicket(id int) (tickets.TicketDetail, bool, error) {
+	var detail tickets.TicketDetail
+	err := client.connection.Send(internal.Request{
+		RequestName: atc.GetAgentTicket,
+		Params:      rata.Params{"ticket_id": strconv.Itoa(id)},
+	}, &internal.Response{
+		Result: &detail,
+	})
+	switch err.(type) {
+	case nil:
+		return detail, true, nil
+	case internal.ResourceNotFoundError:
+		return detail, false, nil
+	default:
+		return detail, false, err
+	}
+}
