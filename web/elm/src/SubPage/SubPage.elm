@@ -13,6 +13,7 @@ module SubPage.SubPage exposing
 
 import Agent.Agent as Agent
 import AgentReviews.AgentReviews as AgentReviews
+import AgentTickets.AgentTickets as AgentTickets
 import Application.Models exposing (Session)
 import Build.Build as Build
 import Build.Header.Models
@@ -55,6 +56,7 @@ type Model
     | DownloadFlyModel DownloadFly.Model.Model
     | AgentReviewsModel AgentReviews.Model
     | AgentModel Agent.Model
+    | AgentTicketsModel AgentTickets.Model
 
 
 init : Session -> Routes.Route -> ( Model, List Effect )
@@ -140,9 +142,8 @@ init session route =
                 |> Tuple.mapFirst AgentModel
 
         Routes.AgentTickets ->
-            -- placeholder until the ticket queue page lands (Wave B / Step 6)
-            NotFound.init { notFoundImgSrc = session.notFoundImgSrc, route = session.route }
-                |> Tuple.mapFirst NotFoundModel
+            AgentTickets.init
+                |> Tuple.mapFirst AgentTicketsModel
 
         Routes.AgentTicket _ ->
             -- placeholder until the ticket detail page lands (Wave B / Step 5)
@@ -198,8 +199,9 @@ genericUpdate :
     -> ET DownloadFly.Model.Model
     -> ET AgentReviews.Model
     -> ET Agent.Model
+    -> ET AgentTickets.Model
     -> ET Model
-genericUpdate fBuild fJob fRes fPipe fDash fCaus fNF fFS dFly fAR fAgent ( model, effects ) =
+genericUpdate fBuild fJob fRes fPipe fDash fCaus fNF fFS dFly fAR fAgent fATs ( model, effects ) =
     case model of
         BuildModel buildModel ->
             fBuild ( buildModel, effects )
@@ -245,6 +247,10 @@ genericUpdate fBuild fJob fRes fPipe fDash fCaus fNF fFS dFly fAR fAgent ( model
             fAgent ( agentModel, effects )
                 |> Tuple.mapFirst AgentModel
 
+        AgentTicketsModel agentTicketsModel ->
+            fATs ( agentTicketsModel, effects )
+                |> Tuple.mapFirst AgentTicketsModel
+
 
 handleCallback : Callback -> Session -> ET Model
 handleCallback callback session =
@@ -260,9 +266,11 @@ handleCallback callback session =
         identity
         (AgentReviews.handleCallback callback)
         (Agent.handleCallback callback)
+        (AgentTickets.handleCallback callback)
         >> (case callback of
                 LoggedOut (Ok ()) ->
                     genericUpdate
+                        handleLoggedOut
                         handleLoggedOut
                         handleLoggedOut
                         handleLoggedOut
@@ -308,6 +316,7 @@ handleDelivery session delivery =
         (DownloadFly.handleDelivery delivery)
         identity
         (Agent.handleDelivery delivery)
+        (AgentTickets.handleDelivery delivery)
 
 
 update : Session -> Message -> ET Model
@@ -324,6 +333,7 @@ update session msg =
         (Login.update msg >> DownloadFly.update msg)
         (Login.update msg >> AgentReviews.update msg)
         (Login.update msg >> Agent.update msg)
+        (Login.update msg >> AgentTickets.update msg)
         >> (case msg of
                 GoToRoute route ->
                     handleGoToRoute route
@@ -433,6 +443,7 @@ urlUpdateValid routes =
         identity
         identity
         identity
+        identity
 
 
 view : Session -> Model -> ( String, Html Message )
@@ -488,6 +499,11 @@ view ({ userState } as session) mdl =
             , AgentReviews.view session model
             )
 
+        AgentTicketsModel model ->
+            ( AgentTickets.documentTitle
+            , AgentTickets.view session model
+            )
+
         AgentModel model ->
             ( Agent.documentTitle
             , Agent.view session model
@@ -530,6 +546,9 @@ tooltip mdl =
         AgentModel model ->
             Agent.tooltip model
 
+        AgentTicketsModel model ->
+            AgentTickets.tooltip model
+
 
 subscriptions : Model -> List Subscription
 subscriptions mdl =
@@ -566,3 +585,6 @@ subscriptions mdl =
 
         AgentModel _ ->
             Agent.subscriptions
+
+        AgentTicketsModel _ ->
+            AgentTickets.subscriptions

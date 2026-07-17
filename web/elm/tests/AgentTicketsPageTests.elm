@@ -1,0 +1,115 @@
+module AgentTicketsPageTests exposing (all)
+
+import Application.Application as Application
+import Common
+import Concourse.AgentTicket as AgentTicket
+import Data
+import Expect
+import Json.Decode
+import Message.Callback as Callback
+import Message.Effects as Effects
+import Test exposing (Test, describe, test)
+import Test.Html.Query as Query
+import Test.Html.Selector exposing (class, containing, text)
+import Url
+
+
+ticketsFrom : String -> List AgentTicket.Ticket
+ticketsFrom json =
+    Json.Decode.decodeString (Json.Decode.list AgentTicket.decodeTicket) json
+        |> Result.withDefault []
+
+
+sampleTickets : List AgentTicket.Ticket
+sampleTickets =
+    ticketsFrom
+        """
+        [ { "id": 12, "title": "ship fly archives", "state": "needs_review", "workflow_name": "develop", "created_at": 200 }
+        , { "id": 7, "title": "gap analysis", "state": "running", "workflow_name": "analyze", "created_at": 100 }
+        ]
+        """
+
+
+costRollup : Callback.Callback
+costRollup =
+    Callback.AgentCostRollupFetched
+        (Ok
+            { groupBy = "ticket"
+            , summary =
+                { dailyCapUsd = 0
+                , dailySpentUsd = 0
+                , dailyRemainingUsd = 0
+                , dailyExhausted = False
+                }
+            , rows =
+                [ { key = "12", entries = 1, inputTokens = 0, outputTokens = 0, turns = 0, costUsd = 0.18 } ]
+            }
+        )
+
+
+initAgentTickets : ( Application.Model, List Effects.Effect )
+initAgentTickets =
+    Application.init Data.flags
+        { protocol = Url.Http
+        , host = ""
+        , port_ = Nothing
+        , path = "/agent-tickets"
+        , query = Nothing
+        , fragment = Nothing
+        }
+
+
+all : Test
+all =
+    describe "ticket queue page"
+        [ test "decodes the sample ticket fixtures" <|
+            \_ ->
+                List.length sampleTickets
+                    |> Expect.equal 2
+        , test "fetches tickets and costs on load" <|
+            \_ ->
+                initAgentTickets
+                    |> Tuple.second
+                    |> Expect.all
+                        [ Common.contains Effects.FetchAgentTickets
+                        , Common.contains Effects.FetchAgentTicketCosts
+                        ]
+        , test "renders a ticket row with id, title and workflow" <|
+            \_ ->
+                Common.init "/agent-tickets"
+                    |> Application.handleCallback (Callback.AgentTicketsFetched (Ok sampleTickets))
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Query.findAll [ class "agent-ticket-row" ]
+                    |> Query.first
+                    |> Query.has
+                        [ containing [ text "#12" ]
+                        , containing [ text "ship fly archives" ]
+                        , containing [ text "develop" ]
+                        ]
+        , test "joins per-ticket cost into the matching row" <|
+            \_ ->
+                Common.init "/agent-tickets"
+                    |> Application.handleCallback (Callback.AgentTicketsFetched (Ok sampleTickets))
+                    |> Tuple.first
+                    |> Application.handleCallback costRollup
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Query.findAll [ class "agent-ticket-row" ]
+                    |> Query.first
+                    |> Query.has [ containing [ text "$0.18" ] ]
+        , test "shows an empty-state notice when there are no tickets" <|
+            \_ ->
+                Common.init "/agent-tickets"
+                    |> Application.handleCallback (Callback.AgentTicketsFetched (Ok []))
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Query.has [ text "No tickets yet." ]
+        , test "shows an error notice when tickets fail to load" <|
+            \_ ->
+                Common.init "/agent-tickets"
+                    |> Application.handleCallback (Callback.AgentTicketsFetched Data.httpUnauthorized)
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Query.has [ text "Couldn't load tickets." ]
+        ]

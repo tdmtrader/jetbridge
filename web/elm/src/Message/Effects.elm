@@ -54,6 +54,7 @@ import Set exposing (Set)
 import SideBar.State exposing (SideBarState, encodeSideBarState)
 import Task
 import Time
+import Url.Builder
 import Views.Styles
 
 
@@ -244,6 +245,7 @@ type Effect
     | DispatchAgentTicket Int
     | UpdateAgentTicketTask { id : Int, ordering : Int, status : String, note : String }
     | FetchAgentTicketMetrics Int
+    | FetchAgentTicketCosts
 
 
 type alias VersionId =
@@ -916,6 +918,16 @@ runEffect effect key csrfToken =
                 |> Api.expectJson (Json.Decode.list Concourse.Agent.decodeRunMetric)
                 |> Api.request
                 |> Task.attempt (AgentTicketMetricsFetched ticketId)
+
+        FetchAgentTicketCosts ->
+            let
+                base =
+                    Api.get Endpoints.AgentCostRollup
+            in
+            { base | query = [ Url.Builder.string "group_by" "ticket" ] }
+                |> Api.expectJson Concourse.Agent.decodeCostRollup
+                |> Api.request
+                |> Task.attempt AgentCostRollupFetched
 
 
 encodeTicketUpdate : { id : Int, title : String, body : String, budgetUsd : Maybe Float } -> Json.Encode.Value
