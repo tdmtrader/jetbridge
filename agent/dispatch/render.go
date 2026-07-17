@@ -183,6 +183,32 @@ func Render(in RenderInput) (atc.Config, error) {
 		plan = append(plan, atc.Step{Config: &cp})
 	}
 
+	// Terminal harvest (§2.8.1): deliver the committed workspace as the
+	// stable agent/ticket-<id> branch. The workspace artifact is
+	// guaranteed by the import gate (a workflow must produce
+	// "workspace"); identity travels as env because a Go renderer cannot
+	// place ((run_id)) in the int pipeline_run_id field (F30). v0 emits
+	// no gates/judge/dev_mcp — those workflows are refused above.
+	if in.Ticket.ID > 0 {
+		plan = append(plan, atc.Step{Config: &atc.HarvestStep{
+			Name:         "harvest",
+			Workspace:    "workspace",
+			Repo:         in.Ticket.Repo,
+			TargetBranch: in.Ticket.TargetBranch,
+			TicketID:     in.Ticket.ID,
+			Branch:       fmt.Sprintf("agent/ticket-%d", in.Ticket.ID),
+			Push:         true,
+			Env: map[string]string{
+				"AGENT_TICKET_ID":        strconv.Itoa(in.Ticket.ID),
+				"AGENT_PIPELINE_RUN_ID":  "((run_id))",
+				"AGENT_WORKFLOW_NAME":    in.WorkflowName,
+				"AGENT_WORKFLOW_VERSION": strconv.Itoa(in.WorkflowVersion),
+				"AGENT_WORKFLOW_HASH":    in.WorkflowHash,
+				"ATC_EXTERNAL_URL":       in.ATCExternalURL,
+			},
+		}})
+	}
+
 	cfg := atc.Config{
 		Template: true,
 		Jobs: atc.JobConfigs{{

@@ -206,8 +206,8 @@ func TestRenderProducesValidTemplateConfig(t *testing.T) {
 		t.Fatalf("want one entry job 'run', got %+v", cfg.Jobs)
 	}
 	plan := cfg.Jobs[0].PlanSequence
-	if len(plan) != 3 {
-		t.Fatalf("plan length = %d, want 3 (get repo, write-ticket, agent)", len(plan))
+	if len(plan) != 4 {
+		t.Fatalf("plan length = %d, want 4 (get repo, write-ticket, agent, harvest)", len(plan))
 	}
 	get, ok := plan[0].Config.(*atc.GetStep)
 	if !ok || get.Name != "repo" || get.Trigger {
@@ -232,6 +232,22 @@ func TestRenderProducesValidTemplateConfig(t *testing.T) {
 		t.Errorf("plan[2] = %+v, want the agent step", plan[2].Config)
 	}
 
+	// the terminal harvest step delivers the committed workspace: push to
+	// the stable agent/ticket-<id> branch, identity via env (F30 — the
+	// run id travels as ((run_id)), never the int field)
+	hv, ok := plan[3].Config.(*atc.HarvestStep)
+	if !ok || hv.Name != "harvest" {
+		t.Fatalf("plan[3] = %+v, want the terminal harvest step", plan[3].Config)
+	}
+	if hv.Workspace != "workspace" || hv.Repo != "tdmtrader/jetbridge" ||
+		hv.TargetBranch != "main" || hv.TicketID != 42 ||
+		hv.Branch != "agent/ticket-42" || !hv.Push {
+		t.Errorf("harvest step wrong: %+v", hv)
+	}
+	if hv.Env["AGENT_PIPELINE_RUN_ID"] != "((run_id))" || hv.Env["AGENT_TICKET_ID"] != "42" {
+		t.Errorf("harvest identity env wrong: %+v", hv.Env)
+	}
+
 	// deterministic: identical input, identical bytes
 	a, _ := json.Marshal(cfg)
 	cfg2, _ := dispatch.Render(in)
@@ -252,8 +268,8 @@ func TestRenderWithoutRepoOrTicketInputs(t *testing.T) {
 	if len(cfg.Resources) != 0 {
 		t.Errorf("no repo input declared, but resources rendered: %+v", cfg.Resources)
 	}
-	if len(cfg.Jobs[0].PlanSequence) != 1 {
-		t.Errorf("plan should be just the agent step, got %d entries", len(cfg.Jobs[0].PlanSequence))
+	if len(cfg.Jobs[0].PlanSequence) != 2 {
+		t.Errorf("plan should be agent + terminal harvest, got %d entries", len(cfg.Jobs[0].PlanSequence))
 	}
 }
 
@@ -334,7 +350,7 @@ func TestRenderAllowsPriorStepOutputsAsInputs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Render: %v", err)
 	}
-	if len(cfg.Jobs[0].PlanSequence) != 3 { // write-ticket + 2 agent steps
-		t.Errorf("plan length = %d, want 3", len(cfg.Jobs[0].PlanSequence))
+	if len(cfg.Jobs[0].PlanSequence) != 4 { // write-ticket + 2 agent steps + harvest
+		t.Errorf("plan length = %d, want 4", len(cfg.Jobs[0].PlanSequence))
 	}
 }
