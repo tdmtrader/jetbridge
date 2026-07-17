@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"strconv"
 
@@ -272,27 +273,201 @@ func (f *agentTicketsFactory) Transition(id int, from, to tickets.State, meta ti
 	return nil
 }
 
-// The spec/plan family is implemented in Task 6.
+func emptyIfNilStrings(s []string) []string {
+	if s == nil {
+		return []string{}
+	}
+	return s
+}
+
+func emptyIfNilLinks(l []tickets.Link) []tickets.Link {
+	if l == nil {
+		return []tickets.Link{}
+	}
+	return l
+}
+
+// lockTicket takes a FOR UPDATE row lock on the ticket inside tx so
+// concurrent spec/plan submissions serialize their version allocation.
+func lockTicket(tx Tx, ticketID int) error {
+	var one int
+	err := tx.QueryRow(`SELECT 1 FROM agent_tickets WHERE id = $1 FOR UPDATE`, ticketID).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return tickets.ErrTicketNotFound
+	}
+	return err
+}
+
 func (f *agentTicketsFactory) SubmitSpec(ticketID int, spec tickets.Spec) (int, error) {
-	return 0, errors.New("agentTicketsFactory.SubmitSpec: not yet implemented (plan task 6)")
-}
+	criteria, err := json.Marshal(emptyIfNilStrings(spec.AcceptanceCriteria))
+	if err != nil {
+		return 0, err
+	}
+	links, err := json.Marshal(emptyIfNilLinks(spec.Links))
+	if err != nil {
+		return 0, err
+	}
 
-func (f *agentTicketsFactory) SubmitPlan(ticketID int, ts []tickets.Task) (int, error) {
-	return 0, errors.New("agentTicketsFactory.SubmitPlan: not yet implemented (plan task 6)")
-}
+	tx, err := f.conn.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer Rollback(tx)
 
-func (f *agentTicketsFactory) UpdateTaskStatus(ticketID int, planVersion, ordering int, status tickets.TaskStatus) error {
-	return errors.New("agentTicketsFactory.UpdateTaskStatus: not yet implemented (plan task 6)")
-}
+	if err := lockTicket(tx, ticketID); err != nil {
+		return 0, err
+	}
 
-func (f *agentTicketsFactory) AppendTaskNote(ticketID int, planVersion, ordering int, note string) error {
-	return errors.New("agentTicketsFactory.AppendTaskNote: not yet implemented (plan task 6)")
-}
+	var version int
+	err = tx.QueryRow(
+		`SELECT COALESCE(MAX(version), 0) + 1 FROM agent_ticket_specs WHERE ticket_id = $1`,
+		ticketID).Scan(&version)
+	if err != nil {
+		return 0, err
+	}
 
-func (f *agentTicketsFactory) ActivePlan(ticketID int) ([]tickets.Task, error) {
-	return nil, errors.New("agentTicketsFactory.ActivePlan: not yet implemented (plan task 6)")
+	_, err = tx.Exec(
+		`INSERT INTO agent_ticket_specs
+			(ticket_id, version, title, body, acceptance_criteria, links, submitted_by)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		ticketID, version, spec.Title, spec.Body, criteria, links, spec.SubmittedBy)
+	if err != nil {
+		return 0, err
+	}
+
+	return version, tx.Commit()
 }
 
 func (f *agentTicketsFactory) LatestSpec(ticketID int) (*tickets.Spec, bool, error) {
-	return nil, false, errors.New("agentTicketsFactory.LatestSpec: not yet implemented (plan task 6)")
+	var s tickets.Spec
+	var criteria, links []byte
+	err := f.conn.QueryRow(
+		`SELECT id, ticket_id, version, title, body, acceptance_criteria, links, submitted_by,
+			EXTRACT(EPOCH FROM created_at)::bigint
+		 FROM agent_ticket_specs
+		 WHERE ticket_id = $1
+		 ORDER BY version DESC
+		 LIMIT 1`, ticketID).
+		Scan(&s.ID, &s.TicketID, &s.Version, &s.Title, &s.Body, &criteria, &links,
+			&s.SubmittedBy, &s.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	if err := json.Unmarshal(criteria, &s.AcceptanceCriteria); err != nil {
+		return nil, false, err
+	}
+	if err := json.Unmarshal(links, &s.Links); err != nil {
+		return nil, false, err
+	}
+	return &s, true, nil
+}
+
+// SubmitPlan replaces the active plan: new plan_version, orderings 1..N
+// as given (contracts §3.2 submit_plan). Old versions are retained for
+// process intelligence (§1.7).
+func (f *agentTicketsFactory) SubmitPlan(ticketID int, ts []tickets.Task) (int, error) {
+	tx, err := f.conn.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer Rollback(tx)
+
+	if err := lockTicket(tx, ticketID); err != nil {
+		return 0, err
+	}
+
+	var planVersion int
+	err = tx.QueryRow(
+		`SELECT COALESCE(MAX(plan_version), 0) + 1 FROM agent_ticket_tasks WHERE ticket_id = $1`,
+		ticketID).Scan(&planVersion)
+	if err != nil {
+		return 0, err
+	}
+
+	for i, task := range ts {
+		status := task.Status
+		if status == "" {
+			status = tickets.TaskPending
+		}
+		_, err = tx.Exec(
+			`INSERT INTO agent_ticket_tasks
+				(ticket_id, plan_version, ordering, title, detail, status)
+			 VALUES ($1, $2, $3, $4, $5, $6)`,
+			ticketID, planVersion, i+1, task.Title, task.Detail, string(status))
+		if err != nil {
+			return 0, err
+		}
+	}
+
+	return planVersion, tx.Commit()
+}
+
+func (f *agentTicketsFactory) ActivePlan(ticketID int) ([]tickets.Task, error) {
+	rows, err := f.conn.Query(
+		`SELECT id, ticket_id, plan_version, ordering, title, detail, status,
+			EXTRACT(EPOCH FROM updated_at)::bigint
+		 FROM agent_ticket_tasks
+		 WHERE ticket_id = $1
+		   AND plan_version = (SELECT COALESCE(MAX(plan_version), 0)
+		                       FROM agent_ticket_tasks WHERE ticket_id = $1)
+		 ORDER BY ordering ASC`, ticketID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []tickets.Task{}
+	for rows.Next() {
+		var t tickets.Task
+		if err := rows.Scan(&t.ID, &t.TicketID, &t.PlanVersion, &t.Ordering,
+			&t.Title, &t.Detail, &t.Status, &t.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+func (f *agentTicketsFactory) UpdateTaskStatus(ticketID int, planVersion, ordering int, status tickets.TaskStatus) error {
+	res, err := f.conn.Exec(
+		`UPDATE agent_ticket_tasks SET status = $1, updated_at = now()
+		 WHERE ticket_id = $2 AND plan_version = $3 AND ordering = $4`,
+		string(status), ticketID, planVersion, ordering)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return tickets.ErrTaskNotFound
+	}
+	return nil
+}
+
+// AppendTaskNote appends the §3.2 update_task_status note as a markdown
+// blockquote on the task's detail (ticket-core contract addendum).
+func (f *agentTicketsFactory) AppendTaskNote(ticketID int, planVersion, ordering int, note string) error {
+	res, err := f.conn.Exec(
+		`UPDATE agent_ticket_tasks
+		 SET detail = CASE WHEN detail = '' THEN '> ' || $1
+		                   ELSE detail || E'\n\n> ' || $1 END,
+		     updated_at = now()
+		 WHERE ticket_id = $2 AND plan_version = $3 AND ordering = $4`,
+		note, ticketID, planVersion, ordering)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return tickets.ErrTaskNotFound
+	}
+	return nil
 }

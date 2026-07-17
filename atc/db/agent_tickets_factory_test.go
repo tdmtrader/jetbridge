@@ -231,4 +231,112 @@ var _ = Describe("AgentTicketsFactory", func() {
 				tickets.TransitionMeta{})).To(MatchError(tickets.ErrTicketNotFound))
 		})
 	})
+
+	Describe("specs and plans", func() {
+		var id int
+
+		BeforeEach(func() {
+			var err error
+			id, err = factory.Create(newTicket("spec'd", "tdmtrader/concourse"))
+			Expect(err).ToNot(HaveOccurred())
+		})
+
+		It("versions specs, keeps old rows, and returns the latest", func() {
+			v, err := factory.SubmitSpec(id, tickets.Spec{
+				Title: "spec", Body: "prose",
+				AcceptanceCriteria: []string{"tests pass"},
+				Links:              []tickets.Link{{Title: "design", URL: "https://x"}},
+				SubmittedBy:        "run-42-platform",
+			})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(v).To(Equal(1))
+
+			v, err = factory.SubmitSpec(id, tickets.Spec{Title: "spec2", Body: "prose2"})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(v).To(Equal(2))
+
+			latest, found, err := factory.LatestSpec(id)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(latest.Version).To(Equal(2))
+			Expect(latest.Title).To(Equal("spec2"))
+			Expect(latest.AcceptanceCriteria).To(BeEmpty())
+			Expect(latest.Links).To(BeEmpty())
+			Expect(latest.CreatedAt).To(BeNumerically(">", 0))
+
+			var count int
+			Expect(dbConn.QueryRow(`SELECT COUNT(*) FROM agent_ticket_specs WHERE ticket_id = $1`, id).
+				Scan(&count)).To(Succeed())
+			Expect(count).To(Equal(2)) // v1 retained for process intelligence
+		})
+
+		It("round-trips acceptance criteria and links JSON", func() {
+			_, err := factory.SubmitSpec(id, tickets.Spec{
+				Title: "spec", Body: "prose",
+				AcceptanceCriteria: []string{"a", "b"},
+				Links:              []tickets.Link{{Title: "l1", URL: "u1"}, {Title: "l2", URL: "u2"}},
+			})
+			Expect(err).ToNot(HaveOccurred())
+
+			latest, _, err := factory.LatestSpec(id)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(latest.AcceptanceCriteria).To(Equal([]string{"a", "b"}))
+			Expect(latest.Links).To(Equal([]tickets.Link{{Title: "l1", URL: "u1"}, {Title: "l2", URL: "u2"}}))
+		})
+
+		It("LatestSpec is found=false without specs; SubmitSpec 404s a missing ticket", func() {
+			_, found, err := factory.LatestSpec(id)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(found).To(BeFalse())
+
+			_, err = factory.SubmitSpec(313131, tickets.Spec{Title: "t", Body: "b"})
+			Expect(err).To(MatchError(tickets.ErrTicketNotFound))
+		})
+
+		It("replaces the active plan by bumping plan_version", func() {
+			pv, err := factory.SubmitPlan(id, []tickets.Task{{Title: "one"}, {Title: "two", Detail: "d"}})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(pv).To(Equal(1))
+
+			pv, err = factory.SubmitPlan(id, []tickets.Task{{Title: "redone"}})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(pv).To(Equal(2))
+
+			active, err := factory.ActivePlan(id)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(active).To(HaveLen(1))
+			Expect(active[0].Title).To(Equal("redone"))
+			Expect(active[0].Ordering).To(Equal(1))
+			Expect(active[0].PlanVersion).To(Equal(2))
+			Expect(active[0].Status).To(Equal(tickets.TaskPending))
+
+			var total int
+			Expect(dbConn.QueryRow(`SELECT COUNT(*) FROM agent_ticket_tasks WHERE ticket_id = $1`, id).
+				Scan(&total)).To(Succeed())
+			Expect(total).To(Equal(3)) // v1's two tasks retained
+
+			_, err = factory.SubmitPlan(313131, []tickets.Task{{Title: "x"}})
+			Expect(err).To(MatchError(tickets.ErrTicketNotFound))
+		})
+
+		It("updates task status and appends notes as blockquotes", func() {
+			_, err := factory.SubmitPlan(id, []tickets.Task{{Title: "one"}})
+			Expect(err).ToNot(HaveOccurred())
+
+			Expect(factory.UpdateTaskStatus(id, 1, 1, tickets.TaskInProgress)).To(Succeed())
+			Expect(factory.AppendTaskNote(id, 1, 1, "halfway")).To(Succeed())
+			Expect(factory.AppendTaskNote(id, 1, 1, "done now")).To(Succeed())
+
+			active, err := factory.ActivePlan(id)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(active[0].Status).To(Equal(tickets.TaskInProgress))
+			Expect(active[0].Detail).To(Equal("> halfway\n\n> done now"))
+			Expect(active[0].UpdatedAt).To(BeNumerically(">", 0))
+
+			Expect(factory.UpdateTaskStatus(id, 1, 99, tickets.TaskDone)).
+				To(MatchError(tickets.ErrTaskNotFound))
+			Expect(factory.AppendTaskNote(id, 9, 1, "x")).
+				To(MatchError(tickets.ErrTaskNotFound))
+		})
+	})
 })
