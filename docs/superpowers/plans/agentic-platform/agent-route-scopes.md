@@ -49,13 +49,13 @@ Source of truth for tiers: 00-shared-contracts.md §4.1/§4.2.
 | SubmitAgentCostRecord | POST /api/v1/agent/costs | principal | costs:write | credentials-and-budgets | planned (wave 1) |
 | ListAgentWorkflows / ListAgentWorkflowVersions / GetAgentWorkflowVersion | GET /api/v1/agent/workflows[...] | authorized viewer (main) | — | workflow-store | planned (wave 1) |
 | CreateAgentWorkflowVersion / PromoteAgentWorkflowVersion | POST/PUT /api/v1/agent/workflows[...] | authorized member (main) | — | workflow-store | planned (wave 1) |
-| ListAgentTickets | GET /api/v1/agent/tickets | authorized viewer (main) | — | ticket-core | planned (wave 2) |
-| CreateAgentTicket | POST /api/v1/agent/tickets | authorized member (main); also principal | tickets:write (origin: retrospective only) | ticket-core | planned (wave 2) |
-| GetAgentTicket | GET /api/v1/agent/tickets/:ticket_id | authorized viewer (main); also principal | tickets:read | ticket-core | planned (wave 2) |
-| UpdateAgentTicket | PUT /api/v1/agent/tickets/:ticket_id | authorized member (main) | — | ticket-core | planned (wave 2) |
-| TransitionAgentTicket | PUT /api/v1/agent/tickets/:ticket_id/state | authorized member (main); also principal | tickets:write | ticket-core | planned (wave 2) |
-| SubmitAgentTicketSpec / SubmitAgentTicketPlan | POST /api/v1/agent/tickets/:ticket_id/{spec,plan} | principal; also authorized member (main) | tickets:write | ticket-core | planned (wave 2) |
-| UpdateAgentTicketTask | PUT /api/v1/agent/tickets/:ticket_id/tasks/:ordering | principal | tickets:write | ticket-core | planned (wave 2) |
+| ListAgentTickets | GET /api/v1/agent/tickets | authorized viewer (main) | — | ticket-core | live (ticket-core) |
+| CreateAgentTicket | POST /api/v1/agent/tickets | authorized member (main); also principal | tickets:write (origin: retrospective only) | ticket-core | live (ticket-core) |
+| GetAgentTicket | GET /api/v1/agent/tickets/:ticket_id | authorized viewer (main); also principal | tickets:read | ticket-core | live (ticket-core) |
+| UpdateAgentTicket | PUT /api/v1/agent/tickets/:ticket_id | authorized member (main) | — | ticket-core | live (ticket-core) |
+| TransitionAgentTicket | PUT /api/v1/agent/tickets/:ticket_id/state | authorized member (main); also principal | tickets:write | ticket-core | live (ticket-core) |
+| SubmitAgentTicketSpec / SubmitAgentTicketPlan | POST /api/v1/agent/tickets/:ticket_id/{spec,plan} | principal; also authorized member (main) | tickets:write | ticket-core | live (ticket-core) |
+| UpdateAgentTicketTask | PUT /api/v1/agent/tickets/:ticket_id/tasks/:ordering | principal | tickets:write | ticket-core | live (ticket-core) |
 | SubmitAgentRunMetrics | POST /api/v1/agent/metrics | principal | metrics:write | agent-step | planned (wave 2) |
 | ListAgentRunMetrics | GET /api/v1/agent/tickets/:ticket_id/metrics | authorized viewer (main) | — | agent-step | planned (wave 2) |
 | AskAgentQuestion | POST /api/v1/agent/tickets/:ticket_id/questions | principal | tickets:write | platform-mcp-hitl | planned (wave 3) |

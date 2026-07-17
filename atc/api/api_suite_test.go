@@ -16,6 +16,7 @@ import (
 	"github.com/concourse/concourse/agent/api/metrics"
 	"github.com/concourse/concourse/agent/api/principals"
 	"github.com/concourse/concourse/agent/api/reviews"
+	"github.com/concourse/concourse/agent/api/tickets"
 	"github.com/concourse/concourse/agent/budget"
 	"github.com/concourse/concourse/agent/credentials"
 	"github.com/concourse/concourse/agent/workflow"
@@ -237,6 +238,7 @@ var _ = BeforeEach(func() {
 		feedback.NewMemoryStore(),
 		reviews.NewMemoryStore(),
 		metrics.NewMemoryStore(),
+		tickets.NewMemoryStore(),
 		principalsStore,
 		"test-agent-review-publish-token",
 		credentials.NewMemoryBackend(),

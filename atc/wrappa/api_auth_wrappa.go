@@ -214,8 +214,33 @@ func (wrappa *APIAuthWrappa) Wrap(handlers rata.Handlers) rata.Handlers {
 			atc.GetAgentWorkflowVersion,
 			atc.CreateAgentWorkflowVersion,
 			atc.PromoteAgentWorkflowVersion,
-			atc.GetAgentCostRollup:
+			atc.GetAgentCostRollup,
+			atc.ListAgentTickets,
+			atc.UpdateAgentTicket:
 			newHandler = auth.CheckAgentAuthorizationHandler(handler, rejector)
+
+		// combined tier: agent principal (tickets:write) OR authorized
+		// main-team member — 00-shared-contracts.md §4.2 + ticket-core addendum
+		case atc.CreateAgentTicket,
+			atc.TransitionAgentTicket,
+			atc.SubmitAgentTicketSpec,
+			atc.SubmitAgentTicketPlan:
+			newHandler = auth.AgentPrincipalOrMainTeamHandler(
+				wrappa.checkAgentPrincipalHandlerFactory.HandlerFor(handler, rejector, principals.ScopeTicketsWrite),
+				auth.CheckAgentAuthorizationHandler(handler, rejector),
+			)
+
+		// combined tier: agent principal (tickets:read) OR authorized
+		// main-team viewer
+		case atc.GetAgentTicket:
+			newHandler = auth.AgentPrincipalOrMainTeamHandler(
+				wrappa.checkAgentPrincipalHandlerFactory.HandlerFor(handler, rejector, principals.ScopeTicketsRead),
+				auth.CheckAgentAuthorizationHandler(handler, rejector),
+			)
+
+		// principal-only: the platform-mcp sidecar's task ticker
+		case atc.UpdateAgentTicketTask:
+			newHandler = wrappa.checkAgentPrincipalHandlerFactory.HandlerFor(handler, rejector, principals.ScopeTicketsWrite)
 
 		// think about it!
 		default:

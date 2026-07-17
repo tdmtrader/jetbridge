@@ -173,7 +173,15 @@ func (a *auditor) ValidateAction(action string) bool {
 		atc.RevokeAgentPrincipal,
 		atc.SubmitAgentRunMetrics,
 		atc.ListAgentRunMetrics,
-		atc.ListRecentAgentRunMetrics:
+		atc.ListRecentAgentRunMetrics,
+		atc.ListAgentTickets,
+		atc.CreateAgentTicket,
+		atc.GetAgentTicket,
+		atc.UpdateAgentTicket,
+		atc.TransitionAgentTicket,
+		atc.SubmitAgentTicketSpec,
+		atc.SubmitAgentTicketPlan,
+		atc.UpdateAgentTicketTask:
 		return a.EnableSystemAuditLog
 	case atc.ListTeams,
 		atc.SetTeam,

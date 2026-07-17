@@ -12,6 +12,7 @@ import (
 	metricsapi "github.com/concourse/concourse/agent/api/metrics"
 	principalsapi "github.com/concourse/concourse/agent/api/principals"
 	reviewsapi "github.com/concourse/concourse/agent/api/reviews"
+	ticketsapi "github.com/concourse/concourse/agent/api/tickets"
 	workflowsapi "github.com/concourse/concourse/agent/api/workflows"
 	"github.com/concourse/concourse/agent/budget"
 	"github.com/concourse/concourse/agent/credentials"
@@ -100,6 +101,7 @@ func NewHandler(
 	feedbackStore feedback.Store,
 	reviewsStore reviewsapi.Store,
 	metricsStore metricsapi.Store,
+	ticketsStore ticketsapi.Store,
 	principalsStore principalsapi.Store,
 	agentReviewPublishToken string,
 	credentialsBackend credentials.Backend,
@@ -155,6 +157,9 @@ func NewHandler(
 		agentReviewPublishToken,
 	)
 	metricsServer := metricsapi.NewHandler(metricsStore)
+	ticketsServer := ticketsapi.NewHandler(ticketsStore, func(r *http.Request) string {
+		return accessor.GetAccessor(r).Claims().UserName
+	})
 	workflowsServer := workflowsapi.NewHandler(workflowStore)
 	principalsServer := principalsapi.NewHandler(
 		principalsStore,
@@ -321,6 +326,15 @@ func NewHandler(
 		atc.SubmitAgentRunMetrics:     http.HandlerFunc(metricsServer.SubmitMetrics),
 		atc.ListAgentRunMetrics:       http.HandlerFunc(metricsServer.ListByTicket),
 		atc.ListRecentAgentRunMetrics: http.HandlerFunc(metricsServer.ListRecent),
+
+		atc.ListAgentTickets:      http.HandlerFunc(ticketsServer.ListTickets),
+		atc.CreateAgentTicket:     http.HandlerFunc(ticketsServer.CreateTicket),
+		atc.GetAgentTicket:        http.HandlerFunc(ticketsServer.GetTicket),
+		atc.UpdateAgentTicket:     http.HandlerFunc(ticketsServer.UpdateTicket),
+		atc.TransitionAgentTicket: http.HandlerFunc(ticketsServer.TransitionTicket),
+		atc.SubmitAgentTicketSpec: http.HandlerFunc(ticketsServer.SubmitSpec),
+		atc.SubmitAgentTicketPlan: http.HandlerFunc(ticketsServer.SubmitPlan),
+		atc.UpdateAgentTicketTask: http.HandlerFunc(ticketsServer.UpdateTask),
 
 		atc.SetAgentUserCredential:       http.HandlerFunc(credentialsServer.Set),
 		atc.GetAgentUserCredentialStatus: http.HandlerFunc(credentialsServer.Status),

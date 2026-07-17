@@ -2369,6 +2369,7 @@ func (cmd *RunCommand) constructAPIHandler(
 		db.NewAgentFeedbackFactory(dbConn),
 		db.NewAgentReviewsFactory(dbConn),
 		db.NewAgentRunMetricsFactory(dbConn),
+		db.NewAgentTicketsFactory(dbConn),
 		agentPrincipalsFactory,
 		cmd.AgentReviewPublishToken,
 		db.NewAgentUserCredentialsFactory(dbConn),
