@@ -557,7 +557,7 @@ type RunMetrics struct {
 
 DDL exactly per §1.8. Migration numbers come from the agent-step block 1773106060–69.
 
-> **Amended 2026-07-10 (PARK-V2 seam delta §B6/§F).** The `status` CHECK below is widened to include `'parked'` and the table gains a `session_id` column by the additive migration `1773106061` (Task 21) — do NOT edit this migration in place. Task 8's factory column lists (upsert + scan) must include `session_id` once Task 21 lands (one-line extensions, covered by the factory suite). The agent-step block also owns `1773106062` (`agent_run_step_state`, Task 25).
+> **Amended 2026-07-10 (PARK-V2 seam delta §B6/§F).** The `status` CHECK below is widened to include `'parked'` and the table gains a `session_id` column by the additive migration `1773106061` (Task 21) — do NOT edit this migration in place. Task 8's factory column lists (upsert + scan) must include `session_id` once Task 21 lands (one-line extensions, covered by the factory suite). The agent-step block also owns `1773106065` (`agent_run_step_state`, Task 25).
 
 **Files:**
 - Create: `atc/db/migration/migrations/1773106060_create_agent_run_metrics.up.sql`
@@ -3721,7 +3721,7 @@ Accommodation #2's schema half (delta §F) plus the PARK-V2 env rows this plan o
 - **Exit-code registry:** agent-runner exit `86` = awaiting-human park-exit (frozen); checkpoint client exit `3` = parked-past-threshold (owned by 08).
 ```
 
-  and log in §11 (recording the delta as a whole — the §8.1/§5 legs were pre-applied, this task lands the flight-output block): `- 2026-07-10 (agent-step, PARK-V2 seam delta): §8.1 gains AGENT_PARK_EXIT_GRACE_SECONDS / AGENT_STREAM_LOG_MAX_LINE_BYTES / AGENT_SESSION_ID / AGENT_SESSION_FILE; flight output gains session.jsonl + park.json + the flight-prev reserved name; §5 gains step.park/step.resume + the parked ingestion exception; §1.8 status CHECK gains 'parked' + session_id column (migration 1773106061); §1.14 agent_run_step_state (migration 1773106062). Consumers: dispatch renderer (continuation env), platform-mcp (park.json shape), scorecards (parked rows + (pipeline_run_id, step_name) cost aggregation note per decision 32).`
+  and log in §11 (recording the delta as a whole — the §8.1/§5 legs were pre-applied, this task lands the flight-output block): `- 2026-07-10 (agent-step, PARK-V2 seam delta): §8.1 gains AGENT_PARK_EXIT_GRACE_SECONDS / AGENT_STREAM_LOG_MAX_LINE_BYTES / AGENT_SESSION_ID / AGENT_SESSION_FILE; flight output gains session.jsonl + park.json + the flight-prev reserved name; §5 gains step.park/step.resume + the parked ingestion exception; §1.8 status CHECK gains 'parked' + session_id column (migration 1773106061); §1.14 agent_run_step_state (migration 1773106065). Consumers: dispatch renderer (continuation env), platform-mcp (park.json shape), scorecards (parked rows + (pipeline_run_id, step_name) cost aggregation note per decision 32).`
 - [ ] Extend `agent/schema/status_test.go` (new entry in the existing table) and `agent/schema/results_test.go` (parked round-trip):
 
 ```go
@@ -4249,19 +4249,19 @@ func watchPark(ctx context.Context, done <-chan struct{}, flightDir string, proc
 
 ---
 
-### Task 25: Migration 1773106062 — `agent_run_step_state` + `db.AgentRunStepStateFactory`
+### Task 25: Migration 1773106065 — `agent_run_step_state` + `db.AgentRunStepStateFactory`
 
 Contracts §1.14 (delta §B6), DDL verbatim. The durable per-logical-step record the continuation build consults: `state='completed'` rows short-circuit-replay, `state='awaiting_human'` rows resume. Additive and inert at `--agent-short-park-max=0` (the table only gains rows once Task 26 lands) — lands regardless of the pin.
 
 **Files:**
-- Create: `atc/db/migration/migrations/1773106062_create_agent_run_step_state.up.sql` / `.down.sql`
+- Create: `atc/db/migration/migrations/1773106065_create_agent_run_step_state.up.sql` / `.down.sql`
 - Create: `atc/db/agent_run_step_state_factory.go`
 - Create: `atc/db/dbfakes/fake_agent_run_step_state_factory.go` (counterfeiter)
 - Test: `atc/db/agent_run_step_state_factory_test.go`
 
 **Steps:**
 
-- [ ] Write `1773106062_create_agent_run_step_state.up.sql` (delta §B6 verbatim):
+- [ ] Write `1773106065_create_agent_run_step_state.up.sql` (delta §B6 verbatim):
 
 ```sql
 CREATE TABLE agent_run_step_state (
@@ -4373,7 +4373,7 @@ func (f *agentRunStepStateFactory) Find(pipelineRunID int, stepName string) (Age
   (`QuestionID *int` scans NULL directly; if the suite's `Scan` balks, use `sql.NullInt64` internally — match whatever `agent_reviews_factory` does for its nullable columns.)
 - [ ] Regenerate fakes: `go generate ./atc/db/...`
 - [ ] Run `ginkgo ./atc/db/migration/ && ginkgo --focus="AgentRunStepState" ./atc/db/` — expect pass.
-- [ ] Commit: `git add atc/db && git commit -m "feat(db): agent_run_step_state table + factory (migration 1773106062, PARK-V2 sB6)"`
+- [ ] Commit: `git add atc/db && git commit -m "feat(db): agent_run_step_state table + factory (migration 1773106065, PARK-V2 sB6)"`
 
 ---
 
@@ -4646,7 +4646,7 @@ Tasks 21–23 and 25 land regardless of the pin (additive; inert at `--agent-sho
   - **Task 22 (new, accommodation #2)** — `ci-agent/llm/result.go` `CallResult` gains `SessionID` (populated from the envelope field parsed at :51 and previously discarded); ci-agent's `step.end` payload gains `session_id`.
   - **Task 23 (new, accommodation #1, delta §G)** — agent-runner switches to `--output-format stream-json` teed line-by-line to stdout (`fly watch` = live transcript) with the 16KiB tee-only truncation guard (parser always sees full lines); the stream is parsed for best-effort usage accumulation + the terminal `result` event as THE envelope (never required — pin P3); session JSONL copied to `flight/session.jsonl` at EVERY exit; `results.json` gains `session_id`. Supersedes Task 15's `--output-format json` + last-line parse.
   - **Task 24 (new, GATED, delta §B2/§D)** — runner park-exit path: 5s `flight/park.json` stat watcher → SIGTERM claude → `AGENT_PARK_EXIT_GRACE_SECONDS` (30) → SIGKILL → partial `cost.record` + terminal `step.park` (no `step.end`) → `results.json` status `parked` + session_id → exit **86**; resume mode: `AGENT_SESSION_ID`/`AGENT_SESSION_FILE` install the transcript under `~/.claude/projects/<cwd-slug>/` and invoke `claude -p --resume <id>` with the frozen `ContinuationPrompt`, leading `step.resume` event.
-  - **Task 25 (new, delta §B6)** — migration `1773106062` `agent_run_step_state` (contracts §1.14, UNIQUE (pipeline_run_id, step_name)) + `db.AgentRunStepStateFactory` (Upsert/Find) + fake.
+  - **Task 25 (new, delta §B6)** — migration `1773106065` `agent_run_step_state` (contracts §1.14, UNIQUE (pipeline_run_id, step_name)) + `db.AgentRunStepStateFactory` (Upsert/Find) + fake.
   - **Task 26 (new, GATED, delta §B5/§B6/§D)** — exec.AgentStep: exit-86 distinguished end (no fifth build status — build fails as CARRIER; the triple is exit 86 + additive `atc/event.AwaitingHuman` build event + the step-state row; the platform's authority stays the open question row); outputs registered + parked partial ingestion (status `parked`, session_id, ledger via the normal F3 gate) + `awaiting_human` step-state upsert with artifact handles; continuation consult keyed (pipeline_run_id, step_name) — `completed` ⇒ zero-cost short-circuit replay by handle restore (REQUIRED: overnight plan-approval parks are the common case), `awaiting_human` ⇒ restore workspace + `flight-prev` inputs and set session env, absent ⇒ cold; `completed` upsert at every normal end; `StepSlice` re-resolved at every execution start (decision 32 — resolution not reservation; park-exit partial spend already ledgered makes it self-tightening; P5-cumulative caveat flagged inline); `TaskDelegate` gains `AwaitingHuman(logger, questionID, sessionID)`; validator reserves `flight-prev`. *(Follow-up 2026-07-10 — `PLATFORM_MCP_PARK_PATH` producer assigned:)* the frozen delta's §B1 sentinel-path env had NO producer — plan 11's renderer emits only `PLATFORM_MCP_SHORT_PARK_MAX_SECONDS` and cannot know the flight mount path at render time, and 08's Task 1 addendum wrongly attributed the row to the renderer, so every `ask_human` long-park would have degraded LOUDLY to the SSE park (the ask_human half of PARK-V2 never activating). Per F15 (sidecar rows for exec-owned steps are populated programmatically by the owning exec), Task 26 now appends `PLATFORM_MCP_PARK_PATH=<flight mount>/park.json` to `ContainerSpec.SidecarEnv["platform"]` in the Task 12 step-7 assembly (agent steps only; checkpoint pods stay unset = never write); co-signed edits: 08's addendum row + `Config.ParkPath` comments corrected, 00 §8.1 gains the row.
   - **Task 27 (new, GATED, delta §B6)** — continuation-pin: `GetOrphanedVolumes` (volume_repository.go:542) excludes volumes whose handles appear in `agent_run_step_state.artifacts` of runs in (`running`,`awaiting_human`) — one DB-side predicate pins both the volume and its DaemonSet fabric locator (the jetbridge reaper only acts on `destroying` volumes); dissolves at terminal run status, bounded by `--agent-park-timeout` (72h).
   - **Inline notes** added to Tasks 4/6/12/13/15 so already-landed baseline code is amended (never re-implemented) by the PARK-V2 tasks; execution notes gain the PARK-V2 ordering + rollback paragraphs.
