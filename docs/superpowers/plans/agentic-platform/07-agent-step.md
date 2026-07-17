@@ -3235,6 +3235,12 @@ kubectl delete ns jetbridge-agent-step-test
   Expect both tests green; paste the pass output into the commit message body.
 - [ ] Commit: `git add atc/worker/jetbridge && git commit -m "test(jetbridge): live sidecar-MCP wiring and agent-process resume proofs on theborg"`
 
+**EXECUTED 2026-07-16 — all three tests green on theborg (ns jetbridge-agent-step-test, deleted after).** Two adjustments to the spec above, made at execution time:
+1. *The resume test cannot sever web1's session in-process.* A context-cancel sever is a TERMINAL end for agent containers — `killAgentOnTerminalEnd` (added post-plan by the fix11 severed-exec work) correctly tears the tree down, so the task-test's `cancel()` recipe makes the agent test fail with a legitimate restart. A transport-layer kill can't be injected either (client-go's SPDY path ignores `rest.Config.Dial`). The test instead ABANDONS web1's session mid-command — indistinguishable from a dead web from the pod's side — and proves web2's idempotent takeover (one `started`, real exit code, F23 flight readability before re-attach). The genuinely-severed session remains covered by `TestLiveTaskResume` and the process_test transport-sever specs.
+2. *Added `TestLiveAgentTerminalEndKill`* (not in the plan): proves the dead-context sever tears down the supervised tree in a real busybox pod (`RUNNER-DEAD`/`NO-EXIT` in ~3s). This is the live guard for the group-kill script, whose first iteration (`kill -TERM -- "-$pgid"`) was a silent no-op under dash/busybox builtin kills — caught by CI the same day.
+
+Pass output: `TestLiveAgentSidecarMCPWiring` 14.9s, `TestLiveAgentProcessResume` 23.9s (exit=7, `started` ×1), `TestLiveAgentTerminalEndKill` 3.1s.
+
 ---
 
 ### Task 19: Cutover — native agent-review job with dual-running verification
