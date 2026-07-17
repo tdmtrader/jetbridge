@@ -144,56 +144,52 @@ var _ = Describe("PipelineRunFactory", func() {
 	// check: a claimed ticket counts only when the (already-verified) run was
 	// dispatched for it (agent_tickets.pipeline_run_id, contracts §1.7).
 	Describe("TicketBelongsToRun", func() {
-		It("fails closed while ticket-core's agent_tickets table does not exist (wave 2)", func() {
-			// no tickets can exist yet, so no claim can be legitimate
+		It("fails closed when the agent_tickets table is absent (pre-ticket-core DB / downgrade window)", func() {
+			// ticket-core's migrations landed at 1773106062-64, so the table
+			// exists at HEAD; the to_regclass probe still guards DBs that have
+			// not migrated (or were downgraded). Simulate one.
+			_, err := dbConn.Exec(`DROP TABLE agent_tickets CASCADE`)
+			Expect(err).ToNot(HaveOccurred())
+
 			linked, err := factory.TicketBelongsToRun(7, 42)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(linked).To(BeFalse())
 		})
 
-		Context("once the agent_tickets table exists", func() {
-			BeforeEach(func() {
-				// ticket-core's migrations (1773106050-59) have not landed in
-				// this wave; simulate the §1.7 columns the check reads.
-				_, err := dbConn.Exec(`CREATE TABLE agent_tickets (id SERIAL PRIMARY KEY, pipeline_run_id INTEGER)`)
-				Expect(err).ToNot(HaveOccurred())
-			})
+		It("is true only for the run the ticket is currently dispatched as", func() {
+			run, err := factory.CreateRun(template.ID(), nil, "some-user")
+			Expect(err).ToNot(HaveOccurred())
 
-			It("is true only for the run the ticket is currently dispatched as", func() {
-				run, err := factory.CreateRun(template.ID(), nil, "some-user")
-				Expect(err).ToNot(HaveOccurred())
+			_, err = dbConn.Exec(`INSERT INTO agent_tickets (id, title, repo, pipeline_run_id) VALUES (7, 't', 'r', $1)`, run.ID())
+			Expect(err).ToNot(HaveOccurred())
 
-				_, err = dbConn.Exec(`INSERT INTO agent_tickets (id, pipeline_run_id) VALUES (7, $1)`, run.ID())
-				Expect(err).ToNot(HaveOccurred())
+			linked, err := factory.TicketBelongsToRun(7, run.ID())
+			Expect(err).ToNot(HaveOccurred())
+			Expect(linked).To(BeTrue())
 
-				linked, err := factory.TicketBelongsToRun(7, run.ID())
-				Expect(err).ToNot(HaveOccurred())
-				Expect(linked).To(BeTrue())
+			// someone else's ticket, dispatched as a different run: a step
+			// claiming it must never admit against its budget
+			_, err = dbConn.Exec(`INSERT INTO agent_tickets (id, title, repo, pipeline_run_id) VALUES (8, 't', 'r', $1)`, run.ID()+9999)
+			Expect(err).ToNot(HaveOccurred())
 
-				// someone else's ticket, dispatched as a different run: a step
-				// claiming it must never admit against its budget
-				_, err = dbConn.Exec(`INSERT INTO agent_tickets (id, pipeline_run_id) VALUES (8, $1)`, run.ID()+9999)
-				Expect(err).ToNot(HaveOccurred())
+			linked, err = factory.TicketBelongsToRun(8, run.ID())
+			Expect(err).ToNot(HaveOccurred())
+			Expect(linked).To(BeFalse())
 
-				linked, err = factory.TicketBelongsToRun(8, run.ID())
-				Expect(err).ToNot(HaveOccurred())
-				Expect(linked).To(BeFalse())
+			// a ticket that does not exist at all
+			linked, err = factory.TicketBelongsToRun(999, run.ID())
+			Expect(err).ToNot(HaveOccurred())
+			Expect(linked).To(BeFalse())
+		})
 
-				// a ticket that does not exist at all
-				linked, err = factory.TicketBelongsToRun(999, run.ID())
-				Expect(err).ToNot(HaveOccurred())
-				Expect(linked).To(BeFalse())
-			})
+		It("is false for non-positive ids", func() {
+			linked, err := factory.TicketBelongsToRun(0, 5)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(linked).To(BeFalse())
 
-			It("is false for non-positive ids", func() {
-				linked, err := factory.TicketBelongsToRun(0, 5)
-				Expect(err).ToNot(HaveOccurred())
-				Expect(linked).To(BeFalse())
-
-				linked, err = factory.TicketBelongsToRun(5, 0)
-				Expect(err).ToNot(HaveOccurred())
-				Expect(linked).To(BeFalse())
-			})
+			linked, err = factory.TicketBelongsToRun(5, 0)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(linked).To(BeFalse())
 		})
 	})
 

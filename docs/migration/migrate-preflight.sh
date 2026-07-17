@@ -28,8 +28,9 @@ v8.0.1:1765921815
 # JetBridge target version. MUST equal jetbridgeHeadMigration in
 # atc/db/migration/legacy_upgrade_test.go (which fails loudly if the constant
 # drifts from the embedded migrations). Keep the two in lockstep — the parked
-# migration was renumbered 1773106062 → 1773106061.
-JETBRIDGE_VERSION=1773106061
+# migration was renumbered 1773106062 → 1773106061, and the ticket-core
+# tables landed at 1773106062-64 (renumbered from 1773106050-52).
+JETBRIDGE_VERSION=1773106064
 
 # Minimum supported source version (v6.x)
 MIN_SUPPORTED_VERSION=1601993582
