@@ -8,6 +8,7 @@ module Dashboard.Models exposing
     )
 
 import Concourse
+import Concourse.AgentTicket
 import Dashboard.Group.Models as GroupModels
 import Dict exposing (Dict)
 import FetchResult exposing (FetchResult)
@@ -43,6 +44,8 @@ type alias Model =
             , scrollTop : Float
             , pipelineJobs : Dict Concourse.DatabaseID (List Concourse.JobName)
             , effectsToRetry : List Effect
+            , agentTickets : List Concourse.AgentTicket.Ticket
+            , agentTicketCosts : Dict String Float
             }
         )
 
