@@ -63,6 +63,18 @@ type Message
     | AgentMintSubmitted
     | AgentMintedTokenDismissed
     | AgentPrincipalRevokeClicked Int
+      -- Agent Ticket page (edit + disposition)
+    | ClickAgentTicketEdit
+    | AgentTicketTitleChanged String
+    | AgentTicketBodyChanged String
+    | AgentTicketBudgetChanged String
+    | ClickAgentTicketSave
+    | ClickAgentTicketCancel
+    | AgentTicketTabClicked String
+    | ClickAgentTicketTransition String
+    | ClickAgentTicketDispatch
+    | ConfirmAgentTicketDispatch
+    | CancelAgentTicketDispatch
       -- common
     | Hover (Maybe DomID)
     | Click DomID

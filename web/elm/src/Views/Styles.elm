@@ -143,6 +143,18 @@ pageBelowTopBar route =
                     , style "display" "flex"
                     , style "height" "100%"
                     ]
+
+                Routes.AgentTickets ->
+                    [ style "box-sizing" "border-box"
+                    , style "display" "flex"
+                    , style "height" "100%"
+                    ]
+
+                Routes.AgentTicket _ ->
+                    [ style "box-sizing" "border-box"
+                    , style "display" "flex"
+                    , style "height" "100%"
+                    ]
            )
 
 

@@ -60,6 +60,8 @@ type Route
     | DownloadFly
     | AgentReviews { teamName : String }
     | Agent
+    | AgentTickets
+    | AgentTicket { id : Int }
 
 
 type SearchType
@@ -324,6 +326,16 @@ agent =
     map (always <| Agent) (s "agent")
 
 
+agentTicket : Parser ((b -> Route) -> a) a
+agentTicket =
+    map (\id -> always <| AgentTicket { id = id }) (s "agent-tickets" </> int)
+
+
+agentTickets : Parser ((b -> Route) -> a) a
+agentTickets =
+    map (always <| AgentTickets) (s "agent-tickets")
+
+
 causality : Parser ((InstanceVars -> Route) -> a) a
 causality =
     let
@@ -491,6 +503,8 @@ sitemap =
         , dashboard
         , agentReviews
         , agent
+        , agentTicket
+        , agentTickets
         , pipeline
         , build
         , oneOffBuild
@@ -609,6 +623,14 @@ toString route =
             ( [ "agent" ], [] )
                 |> RouteBuilder.build
 
+        AgentTickets ->
+            ( [ "agent-tickets" ], [] )
+                |> RouteBuilder.build
+
+        AgentTicket { id } ->
+            ( [ "agent-tickets", String.fromInt id ], [] )
+                |> RouteBuilder.build
+
 
 parsePath : Url.Url -> Maybe Route
 parsePath url =
@@ -722,6 +744,12 @@ getGroups route =
         Agent ->
             []
 
+        AgentTickets ->
+            []
+
+        AgentTicket _ ->
+            []
+
 
 withGroups : List String -> Route -> Route
 withGroups groups route =
@@ -757,4 +785,10 @@ withGroups groups route =
             route
 
         Agent ->
+            route
+
+        AgentTickets ->
+            route
+
+        AgentTicket _ ->
             route

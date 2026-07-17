@@ -139,6 +139,16 @@ init session route =
             Agent.init
                 |> Tuple.mapFirst AgentModel
 
+        Routes.AgentTickets ->
+            -- placeholder until the ticket queue page lands (Wave B / Step 6)
+            NotFound.init { notFoundImgSrc = session.notFoundImgSrc, route = session.route }
+                |> Tuple.mapFirst NotFoundModel
+
+        Routes.AgentTicket _ ->
+            -- placeholder until the ticket detail page lands (Wave B / Step 5)
+            NotFound.init { notFoundImgSrc = session.notFoundImgSrc, route = session.route }
+                |> Tuple.mapFirst NotFoundModel
+
 
 handleNotFound : Session -> ET Model
 handleNotFound session ( model, effects ) =

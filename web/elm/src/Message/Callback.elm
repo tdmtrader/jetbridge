@@ -4,6 +4,7 @@ import Browser.Dom
 import Concourse
 import Concourse.Agent
 import Concourse.AgentReview
+import Concourse.AgentTicket
 import Concourse.Pagination exposing (Page, Paginated)
 import Http
 import Message.Message
@@ -77,3 +78,10 @@ type Callback
     | AgentPrincipalsFetched (Fetched (List Concourse.Agent.Principal))
     | AgentPrincipalCreated (Fetched Concourse.Agent.PrincipalCreated)
     | AgentPrincipalRevoked (Fetched ())
+    | AgentTicketsFetched (Fetched (List Concourse.AgentTicket.Ticket))
+    | AgentTicketFetched (Fetched Concourse.AgentTicket.Detail)
+    | AgentTicketSaved Int (Fetched ())
+    | AgentTicketTransitioned Int (Fetched ())
+    | AgentTicketDispatched Int (Fetched Concourse.AgentTicket.DispatchResult)
+    | AgentTicketTaskUpdated Int (Fetched ())
+    | AgentTicketMetricsFetched Int (Fetched (List Concourse.Agent.RunMetric))

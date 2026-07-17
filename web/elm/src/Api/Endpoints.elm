@@ -42,6 +42,12 @@ type Endpoint
     | AgentCredentialsStatus
     | AgentPrincipalsList
     | AgentPrincipal Int
+    | AgentTicketsList
+    | AgentTicket Int
+    | AgentTicketState Int
+    | AgentTicketDispatch Int
+    | AgentTicketTask Int Int
+    | AgentTicketMetrics Int
 
 
 type PipelineEndpoint
@@ -231,6 +237,24 @@ builder endpoint =
 
         AgentPrincipal principalId ->
             base |> appendPath [ "agent", "principals", String.fromInt principalId ]
+
+        AgentTicketsList ->
+            base |> appendPath [ "agent", "tickets" ]
+
+        AgentTicket ticketId ->
+            base |> appendPath [ "agent", "tickets", String.fromInt ticketId ]
+
+        AgentTicketState ticketId ->
+            base |> appendPath [ "agent", "tickets", String.fromInt ticketId, "state" ]
+
+        AgentTicketDispatch ticketId ->
+            base |> appendPath [ "agent", "tickets", String.fromInt ticketId, "dispatch" ]
+
+        AgentTicketTask ticketId ordering ->
+            base |> appendPath [ "agent", "tickets", String.fromInt ticketId, "tasks", String.fromInt ordering ]
+
+        AgentTicketMetrics ticketId ->
+            base |> appendPath [ "agent", "tickets", String.fromInt ticketId, "metrics" ]
 
 
 pipelineEndpoint : PipelineEndpoint -> RouteBuilder

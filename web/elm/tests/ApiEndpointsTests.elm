@@ -302,6 +302,38 @@ testEndpoints =
                 Logout
                     |> toPath
                     |> Expect.equal "/sky/logout"
+        , describe "AgentTickets"
+            [ test "list" <|
+                \_ ->
+                    AgentTicketsList
+                        |> toPath
+                        |> Expect.equal "/api/v1/agent/tickets"
+            , test "get" <|
+                \_ ->
+                    AgentTicket 12
+                        |> toPath
+                        |> Expect.equal "/api/v1/agent/tickets/12"
+            , test "state" <|
+                \_ ->
+                    AgentTicketState 12
+                        |> toPath
+                        |> Expect.equal "/api/v1/agent/tickets/12/state"
+            , test "dispatch" <|
+                \_ ->
+                    AgentTicketDispatch 12
+                        |> toPath
+                        |> Expect.equal "/api/v1/agent/tickets/12/dispatch"
+            , test "task" <|
+                \_ ->
+                    AgentTicketTask 12 3
+                        |> toPath
+                        |> Expect.equal "/api/v1/agent/tickets/12/tasks/3"
+            , test "metrics" <|
+                \_ ->
+                    AgentTicketMetrics 12
+                        |> toPath
+                        |> Expect.equal "/api/v1/agent/tickets/12/metrics"
+            ]
         ]
 
 
