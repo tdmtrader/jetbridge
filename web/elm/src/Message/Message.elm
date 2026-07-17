@@ -46,6 +46,7 @@ type Message
       -- Agent Review
     | ToggleAgentReviewPanel
     | ToggleAgentReviewFinding String
+    | ToggleAgentReviewFindingBody String
     | ToggleAgentReviewObservations
     | AgentReviewVerdictClicked
         { repo : String

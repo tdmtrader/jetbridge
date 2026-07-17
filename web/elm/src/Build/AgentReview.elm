@@ -3,7 +3,7 @@ module Build.AgentReview exposing (view)
 import Concourse.AgentReview as AgentReview exposing (BuildReview, Finding)
 import Dict exposing (Dict)
 import Html exposing (Html)
-import Html.Attributes exposing (class, id, placeholder, style, value)
+import Html.Attributes exposing (attribute, class, href, id, placeholder, rel, style, target, type_, value)
 import Html.Events exposing (onClick, onInput)
 import Message.Message exposing (Message(..))
 import Set exposing (Set)
@@ -18,7 +18,34 @@ type alias PanelState a =
         , showObservations : Bool
         , agentReviewNotes : Dict String String
         , verdictErrors : Set String
+        , expandedDescriptions : Set String
     }
+
+
+{-| Reset a `<button>`'s user-agent chrome so it can carry arbitrary layout
+while staying a real, keyboard-focusable, screen-reader-announced control.
+Deliberately does NOT set `outline: none` — the focus ring must remain.
+-}
+buttonReset : List (Html.Attribute Message)
+buttonReset =
+    [ type_ "button"
+    , style "background" "transparent"
+    , style "border" "none"
+    , style "margin" "0"
+    , style "font-family" "inherit"
+    , style "font-size" "inherit"
+    , style "color" "inherit"
+    , style "text-align" "left"
+    ]
+
+
+boolAttr : Bool -> String
+boolAttr b =
+    if b then
+        "true"
+
+    else
+        "false"
 
 
 view : String -> PanelState a -> Html Message
@@ -56,15 +83,19 @@ summaryBar review expanded =
         s =
             review.info
     in
-    Html.div
-        [ class "agent-review-summary"
-        , style "display" "flex"
-        , style "align-items" "center"
-        , style "gap" "12px"
-        , style "padding" "8px 12px"
-        , style "cursor" "pointer"
-        , onClick ToggleAgentReviewPanel
-        ]
+    Html.button
+        (buttonReset
+            ++ [ class "agent-review-summary"
+               , attribute "aria-expanded" (boolAttr expanded)
+               , style "display" "flex"
+               , style "align-items" "center"
+               , style "gap" "12px"
+               , style "padding" "8px 12px"
+               , style "width" "100%"
+               , style "cursor" "pointer"
+               , onClick ToggleAgentReviewPanel
+               ]
+        )
         [ Html.span [ style "font-weight" "700" ] [ Html.text "agent review" ]
         , scoreBadge s
         , Html.span [ style "color" "#b0b0b0" ]
@@ -83,7 +114,15 @@ summaryBar review expanded =
                     ++ String.fromInt review.findingCount
                 )
             ]
-        , Html.span [] [ Html.text (if expanded then "▾" else "▸") ]
+        , Html.span []
+            [ Html.text
+                (if expanded then
+                    "▾"
+
+                 else
+                    "▸"
+                )
+            ]
         ]
 
 
@@ -92,8 +131,20 @@ scoreBadge s =
     Html.span
         [ style "padding" "2px 8px"
         , style "font-weight" "700"
-        , style "background" (if s.pass then "#2e4f2e" else "#5c2626")
-        , style "color" (if s.pass then "#9fdf9f" else "#f0a0a0")
+        , style "background"
+            (if s.pass then
+                "#2e4f2e"
+
+             else
+                "#5c2626"
+            )
+        , style "color"
+            (if s.pass then
+                "#9fdf9f"
+
+             else
+                "#f0a0a0"
+            )
         ]
         [ Html.text (String.fromFloat s.score ++ " / " ++ String.fromFloat s.maxScore) ]
 
@@ -114,18 +165,26 @@ observationsSection reviewer review model =
         []
 
     else
-        Html.div
-            [ class "agent-review-observations-toggle"
-            , style "padding" "8px 0"
-            , style "cursor" "pointer"
-            , style "color" "#b0b0b0"
-            , onClick ToggleAgentReviewObservations
-            ]
+        Html.button
+            (buttonReset
+                ++ [ class "agent-review-observations-toggle"
+                   , attribute "aria-expanded" (boolAttr model.showObservations)
+                   , style "padding" "8px 0"
+                   , style "cursor" "pointer"
+                   , style "color" "#b0b0b0"
+                   , onClick ToggleAgentReviewObservations
+                   ]
+            )
             [ Html.text
                 ("observations ("
                     ++ String.fromInt (List.length review.observations)
                     ++ ") — advisory, no failing test "
-                    ++ (if model.showObservations then "▾" else "▸")
+                    ++ (if model.showObservations then
+                            "▾"
+
+                        else
+                            "▸"
+                       )
                 )
             ]
             :: (if model.showObservations then
@@ -146,29 +205,38 @@ findingCard reviewer review isProven model finding =
             Dict.get finding.id review.feedback
     in
     Html.div
-        [ class "agent-review-finding"
-        , style "border" "1px solid #3d3c3c"
-        , style "margin-bottom" "8px"
-        , style "padding" "8px 12px"
-        ]
+        (findingAnchor finding
+            ++ [ class "agent-review-finding"
+               , style "border" "1px solid #3d3c3c"
+               , style "margin-bottom" "8px"
+               , style "padding" "8px 12px"
+               ]
+        )
         ([ Html.div
             [ style "display" "flex"
             , style "align-items" "center"
             , style "gap" "8px"
-            , style "cursor" "pointer"
-            , onClick (ToggleAgentReviewFinding finding.id)
             ]
-            [ severityBadge finding.severity
-            , Html.span [ style "font-weight" "700" ] [ Html.text finding.title ]
-            , Html.span
-                [ style "margin-left" "auto", style "font-family" "monospace", style "color" "#7a7a7a" ]
-                [ Html.text (finding.file ++ ":" ++ String.fromInt finding.line) ]
+            [ Html.button
+                (buttonReset
+                    ++ [ class "agent-review-finding-toggle"
+                       , attribute "aria-expanded" (boolAttr expanded)
+                       , style "display" "flex"
+                       , style "align-items" "center"
+                       , style "gap" "8px"
+                       , style "flex" "1"
+                       , style "cursor" "pointer"
+                       , onClick (ToggleAgentReviewFinding finding.id)
+                       ]
+                )
+                [ severityBadge finding.severity
+                , Html.span [ style "font-weight" "700" ] [ Html.text finding.title ]
+                ]
+            , fileRef review.info finding
             ]
          ]
             ++ (if expanded then
-                    [ Html.p [ style "color" "#b0b0b0", style "margin" "8px 0" ]
-                        [ Html.text finding.description ]
-                    ]
+                    descriptionBlock model finding
                         ++ testEvidence finding
                         ++ [ verdictRow reviewer review finding recorded model ]
 
@@ -176,6 +244,115 @@ findingCard reviewer review isProven model finding =
                     []
                )
         )
+
+
+{-| A stable anchor so a review comment can deep-link straight to one finding.
+Guarded on a non-empty id — a blank id would collide across findings.
+-}
+findingAnchor : Finding -> List (Html.Attribute Message)
+findingAnchor finding =
+    if finding.id == "" then
+        []
+
+    else
+        [ id ("agent-review-finding-" ++ finding.id) ]
+
+
+{-| The <file:line> reference, rendered as a real link to the blob at the reviewed
+sha when the repo URL is usable, otherwise as plain monospace text. Sibling of —
+never nested inside — the header toggle button, so the two are independent
+controls for assistive tech.
+-}
+fileRef : AgentReview.Summary -> Finding -> Html Message
+fileRef info finding =
+    if finding.file == "" then
+        Html.text ""
+
+    else
+        let
+            label =
+                finding.file ++ ":" ++ String.fromInt finding.line
+        in
+        case AgentReview.repoBlobUrl info.repo info.commitSha finding.file finding.line of
+            Just url ->
+                Html.a
+                    [ href url
+                    , target "_blank"
+                    , rel "noopener noreferrer"
+                    , style "margin-left" "auto"
+                    , style "font-family" "monospace"
+                    , style "color" "#7a9ac0"
+                    , style "text-decoration" "none"
+                    ]
+                    [ Html.text label ]
+
+            Nothing ->
+                Html.span
+                    [ style "margin-left" "auto"
+                    , style "font-family" "monospace"
+                    , style "color" "#7a7a7a"
+                    ]
+                    [ Html.text label ]
+
+
+{-| The finding description, line-clamped when long with a show-more/less toggle
+so a wall of agent prose never dominates the panel.
+-}
+descriptionBlock : PanelState a -> Finding -> List (Html Message)
+descriptionBlock model finding =
+    if finding.description == "" then
+        []
+
+    else
+        let
+            expanded =
+                Set.member finding.id model.expandedDescriptions
+        in
+        Html.p
+            (style "color" "#b0b0b0" :: style "margin" "8px 0" :: clampStyles expanded)
+            [ Html.text finding.description ]
+            :: (if isLong finding.description then
+                    [ Html.button
+                        (buttonReset
+                            ++ [ class "agent-review-description-toggle"
+                               , attribute "aria-expanded" (boolAttr expanded)
+                               , style "color" "#7a7a7a"
+                               , style "font-size" "12px"
+                               , style "cursor" "pointer"
+                               , onClick (ToggleAgentReviewFindingBody finding.id)
+                               ]
+                        )
+                        [ Html.text
+                            (if expanded then
+                                "show less"
+
+                             else
+                                "show more"
+                            )
+                        ]
+                    ]
+
+                else
+                    []
+               )
+
+
+isLong : String -> Bool
+isLong s =
+    String.length s > 220
+
+
+clampStyles : Bool -> List (Html.Attribute Message)
+clampStyles expanded =
+    if expanded then
+        []
+
+    else
+        [ style "display" "-webkit-box"
+        , style "-webkit-line-clamp" "4"
+        , style "-webkit-box-orient" "vertical"
+        , style "overflow" "hidden"
+        ]
 
 
 severityBadge : String -> Html Message
@@ -245,23 +422,38 @@ verdictRow reviewer review finding recorded model =
                             selected =
                                 recorded |> Maybe.map (.verdict >> (==) verdict) |> Maybe.withDefault False
                         in
-                        Html.span
-                            [ style "padding" "4px 10px"
-                            , style "font-size" "12px"
-                            , style "cursor" "pointer"
-                            , style "border-right" "1px solid #555"
-                            , style "background" (if selected then "#e0e0e0" else "transparent")
-                            , style "color" (if selected then "#141313" else "#b0b0b0")
-                            , onClick
-                                (AgentReviewVerdictClicked
-                                    { repo = review.info.repo
-                                    , commitSha = review.info.commitSha
-                                    , findingId = finding.id
-                                    , verdict = verdict
-                                    , reviewer = reviewer
-                                    }
-                                )
-                            ]
+                        Html.button
+                            (buttonReset
+                                ++ [ attribute "aria-pressed" (boolAttr selected)
+                                   , style "padding" "4px 10px"
+                                   , style "font-size" "12px"
+                                   , style "cursor" "pointer"
+                                   , style "border-right" "1px solid #555"
+                                   , style "background"
+                                        (if selected then
+                                            "#e0e0e0"
+
+                                         else
+                                            "transparent"
+                                        )
+                                   , style "color"
+                                        (if selected then
+                                            "#141313"
+
+                                         else
+                                            "#b0b0b0"
+                                        )
+                                   , onClick
+                                        (AgentReviewVerdictClicked
+                                            { repo = review.info.repo
+                                            , commitSha = review.info.commitSha
+                                            , findingId = finding.id
+                                            , verdict = verdict
+                                            , reviewer = reviewer
+                                            }
+                                        )
+                                   ]
+                            )
                             [ Html.text (AgentReview.verdictLabel verdict) ]
                     )
             )

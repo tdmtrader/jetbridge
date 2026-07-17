@@ -6,6 +6,7 @@ module Concourse.AgentReview exposing
     , allVerdicts
     , decodeBuildReview
     , decodeSummary
+    , repoBlobUrl
     , verdictLabel
     )
 
@@ -77,6 +78,36 @@ allVerdicts =
 verdictLabel : String -> String
 verdictLabel verdict =
     String.replace "_" " " verdict
+
+
+{-| Build a GitHub-style blob URL for a finding's file at the reviewed sha.
+The review's `repo` is a full clone URL (e.g. <https://github.com/org/repo.git>);
+strip the trailing `.git` and append `/blob/<sha>/<file>#L<line>`. Returns
+Nothing for empty or non-http repos so the caller falls back to plain text
+rather than emitting a broken link.
+-}
+repoBlobUrl : String -> String -> String -> Int -> Maybe String
+repoBlobUrl repo sha file line =
+    if not (String.startsWith "http" repo) || sha == "" || file == "" then
+        Nothing
+
+    else
+        let
+            base =
+                if String.endsWith ".git" repo then
+                    String.dropRight 4 repo
+
+                else
+                    repo
+
+            anchor =
+                if line > 0 then
+                    "#L" ++ String.fromInt line
+
+                else
+                    ""
+        in
+        Just (base ++ "/blob/" ++ sha ++ "/" ++ file ++ anchor)
 
 
 defaultTo : a -> Json.Decode.Decoder a -> Json.Decode.Decoder a

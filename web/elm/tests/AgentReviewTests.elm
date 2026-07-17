@@ -55,4 +55,23 @@ all =
                     |> Json.Decode.decodeString AgentReview.decodeSummary
                     |> Result.map .pass
                     |> Expect.equal (Ok False)
+        , test "repoBlobUrl builds a blob link from a full clone URL" <|
+            \_ ->
+                AgentReview.repoBlobUrl "https://github.com/org/repo.git" "abc123" "a/b.go" 10
+                    |> Expect.equal (Just "https://github.com/org/repo/blob/abc123/a/b.go#L10")
+        , test "repoBlobUrl omits the line anchor when line is zero" <|
+            \_ ->
+                AgentReview.repoBlobUrl "https://github.com/org/repo" "abc123" "a/b.go" 0
+                    |> Expect.equal (Just "https://github.com/org/repo/blob/abc123/a/b.go")
+        , test "repoBlobUrl returns Nothing for a bare (non-URL) repo name" <|
+            \_ ->
+                AgentReview.repoBlobUrl "concourse" "abc123" "a.go" 10
+                    |> Expect.equal Nothing
+        , test "repoBlobUrl returns Nothing when the sha or file is missing" <|
+            \_ ->
+                Expect.all
+                    [ \_ -> AgentReview.repoBlobUrl "https://github.com/org/repo.git" "" "a.go" 10 |> Expect.equal Nothing
+                    , \_ -> AgentReview.repoBlobUrl "https://github.com/org/repo.git" "abc123" "" 10 |> Expect.equal Nothing
+                    ]
+                    ()
         ]

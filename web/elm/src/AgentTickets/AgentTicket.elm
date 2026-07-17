@@ -76,6 +76,7 @@ type alias Model =
         , showObservations : Bool
         , agentReviewNotes : Dict String String
         , verdictErrors : Set String
+        , expandedDescriptions : Set String
         }
 
 
@@ -101,6 +102,7 @@ init { id } =
       , showObservations = False
       , agentReviewNotes = Dict.empty
       , verdictErrors = Set.empty
+      , expandedDescriptions = Set.empty
       , isUserMenuExpanded = False
       }
     , [ FetchAgentTicket id, FetchAgentTicketMetrics id ]
@@ -276,6 +278,9 @@ update msg ( model, effects ) =
 
         ToggleAgentReviewObservations ->
             ( { model | showObservations = not model.showObservations }, effects )
+
+        ToggleAgentReviewFindingBody findingId ->
+            ( { model | expandedDescriptions = toggleSet findingId model.expandedDescriptions }, effects )
 
         AgentReviewVerdictClicked params ->
             ( model

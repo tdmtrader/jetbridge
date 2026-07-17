@@ -137,6 +137,7 @@ init flags =
           , showObservations = False
           , agentReviewNotes = Dict.empty
           , verdictErrors = Set.empty
+          , expandedDescriptions = Set.empty
           }
         , [ GetCurrentTime
           , GetCurrentTimeZone
@@ -530,6 +531,18 @@ update msg ( model, effects ) =
         ToggleAgentReviewObservations ->
             ( { model | showObservations = not model.showObservations }, effects )
 
+        ToggleAgentReviewFindingBody findingId ->
+            ( { model
+                | expandedDescriptions =
+                    if Set.member findingId model.expandedDescriptions then
+                        Set.remove findingId model.expandedDescriptions
+
+                    else
+                        Set.insert findingId model.expandedDescriptions
+              }
+            , effects
+            )
+
         AgentReviewVerdictClicked params ->
             ( model
             , effects
@@ -876,6 +889,7 @@ body :
             , showObservations : Bool
             , agentReviewNotes : Dict String String
             , verdictErrors : Set String
+            , expandedDescriptions : Set String
         }
     -> Html Message
 body session ({ prep, output, authorized, showHelp } as params) =
