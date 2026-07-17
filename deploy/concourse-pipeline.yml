@@ -186,7 +186,12 @@ jobs:
 
       If a concern cannot be proven with a test, include it in observations, not proven_issues.
       Run any generated tests to verify they actually fail against the current code before reporting.
-    model: ((agent-model))
+    # Inline, not ((agent-model)): agent-step fields are plan-static by
+    # contract — ((vars)) resolve at dispatch/materialization time (wave-4),
+    # and a plain CI job has no materializer, so a var ref reaches the API
+    # literally (dual-run #1 failed exactly this way). Model names are not
+    # secrets; keep in lockstep with the agent-model secret used by dispatch.
+    model: claude-sonnet-5
     max_turns: 50
     inputs: [repo]
     outputs: [review]
