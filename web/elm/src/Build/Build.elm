@@ -861,11 +861,81 @@ viewBuildPage session model =
             , style "overflow" "hidden"
             ]
             [ Header.view session model
+            , ticketContextBar model
             , body session model
             ]
 
     else
         LoadingIndicator.view
+
+
+{-| When a build belongs to an `agent-ticket-<id>` pipeline, show a slim
+provenance bar linking back to the originating ticket and attributing the run.
+Detection is purely from the pipeline name + instance vars the build already
+carries — no server round-trip. Renders nothing for ordinary builds.
+-}
+ticketContextBar : { a | job : Maybe Concourse.JobIdentifier, createdBy : Concourse.BuildCreatedBy } -> Html Message
+ticketContextBar { job, createdBy } =
+    case job |> Maybe.andThen agentTicketId of
+        Nothing ->
+            Html.text ""
+
+        Just ticketId ->
+            let
+                runLabel =
+                    job
+                        |> Maybe.map (.pipelineInstanceVars >> Concourse.hyphenNotation)
+                        |> Maybe.withDefault ""
+                        |> (\s ->
+                                if s == "" then
+                                    ""
+
+                                else
+                                    " · " ++ s
+                           )
+
+                attribution =
+                    case createdBy of
+                        Just who ->
+                            " · dispatched by " ++ who
+
+                        Nothing ->
+                            ""
+            in
+            Html.div
+                [ id "build-ticket-context"
+                , style "display" "flex"
+                , style "align-items" "center"
+                , style "gap" "6px"
+                , style "padding" "6px 12px"
+                , style "background" "#1b222b"
+                , style "border-bottom" "1px solid #2d3a48"
+                , style "color" "#9aa39b"
+                , style "font-size" "13px"
+                ]
+                [ Html.text "part of"
+                , Html.a
+                    [ href (Routes.toString (Routes.AgentTicket { id = ticketId }))
+                    , style "color" "#7a9ac0"
+                    , style "text-decoration" "none"
+                    , style "font-weight" "700"
+                    ]
+                    [ Html.text ("agent ticket #" ++ String.fromInt ticketId) ]
+                , Html.text (runLabel ++ attribution)
+                ]
+
+
+{-| Parse the ticket id out of an `agent-ticket-<id>` pipeline name.
+-}
+agentTicketId : Concourse.JobIdentifier -> Maybe Int
+agentTicketId job =
+    if String.startsWith "agent-ticket-" job.pipelineName then
+        job.pipelineName
+            |> String.dropLeft (String.length "agent-ticket-")
+            |> String.toInt
+
+    else
+        Nothing
 
 
 body :
