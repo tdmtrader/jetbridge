@@ -13,7 +13,8 @@ import Application.Models exposing (Session)
 import Concourse.AgentReview as AgentReview
 import EffectTransformer exposing (ET)
 import Html exposing (Html)
-import Html.Attributes exposing (class, href, id, style)
+import Html.Attributes exposing (checked, class, href, id, placeholder, style, type_, value)
+import Html.Events exposing (onCheck, onInput)
 import Login.Login as Login
 import Message.Callback exposing (Callback(..))
 import Message.Effects exposing (Effect(..))
@@ -32,6 +33,8 @@ type alias Model =
         , reviews : List AgentReview.Summary
         , loaded : Bool
         , loadError : Bool
+        , unevaluatedFirst : Bool
+        , pipelineFilter : String
         }
 
 
@@ -41,6 +44,8 @@ init { teamName } =
       , reviews = []
       , loaded = False
       , loadError = False
+      , unevaluatedFirst = False
+      , pipelineFilter = ""
       , isUserMenuExpanded = False
       }
     , [ FetchTeamAgentReviews teamName ]
@@ -66,8 +71,16 @@ handleCallback callback ( model, effects ) =
 
 
 update : Message -> ET Model
-update _ ( model, effects ) =
-    ( model, effects )
+update msg ( model, effects ) =
+    case msg of
+        AgentReviewsUnevaluatedToggled on ->
+            ( { model | unevaluatedFirst = on }, effects )
+
+        AgentReviewsPipelineFilterChanged f ->
+            ( { model | pipelineFilter = f }, effects )
+
+        _ ->
+            ( model, effects )
 
 
 tooltip : Model -> a -> Maybe Tooltip.Tooltip
@@ -104,16 +117,106 @@ view session model =
                 [ style "padding" "16px", style "width" "100%" ]
                 [ Html.h1 [ style "font-size" "18px" ]
                     [ Html.text ("Agent reviews — " ++ model.teamName) ]
-                , if model.loadError then
-                    Html.p [ style "color" "#f0a0a0" ] [ Html.text "Couldn't load agent reviews." ]
-
-                  else if model.loaded && List.isEmpty model.reviews then
-                    Html.p [ style "color" "#b0b0b0" ] [ Html.text "No agent reviews yet." ]
-
-                  else
-                    Html.div [] (List.map reviewRow model.reviews)
+                , content model
                 ]
             ]
+        ]
+
+
+content : Model -> Html Message
+content model =
+    if model.loadError then
+        Html.p [ style "color" "#f0a0a0" ] [ Html.text "Couldn't load agent reviews." ]
+
+    else if model.loaded && List.isEmpty model.reviews then
+        Html.p [ style "color" "#b0b0b0" ] [ Html.text "No agent reviews yet." ]
+
+    else
+        let
+            visible =
+                visibleReviews model
+        in
+        Html.div []
+            [ filterBar model
+            , if List.isEmpty visible then
+                Html.p [ style "color" "#b0b0b0" ] [ Html.text "No reviews match this filter." ]
+
+              else
+                Html.div [] (List.map reviewRow visible)
+            ]
+
+
+{-| Client-side filters over the already-fetched reviews: an optional
+pipeline-name substring filter, then (when toggled) a stable sort that floats
+reviews with unevaluated findings to the top. No server round-trip — all the
+data is already in `model.reviews`.
+-}
+visibleReviews : Model -> List AgentReview.Summary
+visibleReviews model =
+    model.reviews
+        |> List.filter (pipelineMatches model.pipelineFilter)
+        |> (if model.unevaluatedFirst then
+                List.sortBy
+                    (\s ->
+                        if isUnevaluated s then
+                            0
+
+                        else
+                            1
+                    )
+
+            else
+                identity
+           )
+
+
+pipelineMatches : String -> AgentReview.Summary -> Bool
+pipelineMatches filter s =
+    (filter == "")
+        || String.contains (String.toLower filter) (String.toLower s.pipelineName)
+
+
+isUnevaluated : AgentReview.Summary -> Bool
+isUnevaluated s =
+    s.evaluatedCount < s.provenCount + s.observationCount
+
+
+filterBar : Model -> Html Message
+filterBar model =
+    Html.div
+        [ style "display" "flex"
+        , style "align-items" "center"
+        , style "gap" "16px"
+        , style "margin" "8px 0 12px"
+        ]
+        [ Html.label
+            [ style "display" "flex"
+            , style "align-items" "center"
+            , style "gap" "6px"
+            , style "color" "#b0b0b0"
+            , style "font-size" "13px"
+            , style "cursor" "pointer"
+            ]
+            [ Html.input
+                [ type_ "checkbox"
+                , checked model.unevaluatedFirst
+                , onCheck AgentReviewsUnevaluatedToggled
+                ]
+                []
+            , Html.text "Unevaluated first"
+            ]
+        , Html.input
+            [ type_ "text"
+            , class "agent-reviews-pipeline-filter"
+            , placeholder "filter by pipeline"
+            , value model.pipelineFilter
+            , onInput AgentReviewsPipelineFilterChanged
+            , style "background" "#141313"
+            , style "color" "#e0e0e0"
+            , style "border" "1px solid #3d3c3c"
+            , style "padding" "4px 8px"
+            ]
+            []
         ]
 
 

@@ -56,6 +56,8 @@ type Message
         , reviewer : String
         }
     | AgentReviewNoteChanged String String
+    | AgentReviewsUnevaluatedToggled Bool
+    | AgentReviewsPipelineFilterChanged String
       -- Agent operator page (principal mint form)
     | AgentMintNameChanged String
     | AgentMintDescriptionChanged String
