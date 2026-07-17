@@ -456,6 +456,32 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 	}
 	initContainers = append(initContainers, artifactInits...)
 
+	// SecretMounts land on the MAIN container only (§8.3) — sidecar
+	// containers below receive the original volumeMounts slice and can
+	// never see the mounted secret.
+	mainMounts := volumeMounts
+	if len(c.containerSpec.SecretMounts) > 0 {
+		mainMounts = append([]corev1.VolumeMount{}, volumeMounts...)
+		mode := int32(0400)
+		for i, sm := range c.containerSpec.SecretMounts {
+			name := fmt.Sprintf("secret-mount-%d", i)
+			volumes = append(volumes, corev1.Volume{
+				Name: name,
+				VolumeSource: corev1.VolumeSource{
+					Secret: &corev1.SecretVolumeSource{
+						SecretName:  sm.SecretName,
+						DefaultMode: &mode,
+					},
+				},
+			})
+			mainMounts = append(mainMounts, corev1.VolumeMount{
+				Name:      name,
+				MountPath: sm.MountPath,
+				ReadOnly:  true,
+			})
+		}
+	}
+
 	containers := []corev1.Container{
 		{
 			Name:            mainContainerName,
@@ -464,7 +490,7 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 			Args:            args,
 			WorkingDir:      dir,
 			Env:             env,
-			VolumeMounts:    volumeMounts,
+			VolumeMounts:    mainMounts,
 			Resources:       resources,
 			SecurityContext: buildContainerSecurityContext(privileged),
 			ImagePullPolicy: corev1.PullIfNotPresent,

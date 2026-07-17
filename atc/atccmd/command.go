@@ -2084,6 +2084,7 @@ func (cmd *RunCommand) constructEngine(
 				engine.WithAgentMetricsStore(db.NewAgentRunMetricsFactory(dbConn)),
 				engine.WithAgentBudgetChecker(agentBudgetChecker),
 				engine.WithAgentRunVerifier(pipelineRunFactory),
+				engine.WithAgentTicketsStore(db.NewAgentTicketsFactory(dbConn)),
 			),
 			cmd.ExternalURL.String(),
 			rateLimiter,

@@ -3472,6 +3472,75 @@ var _ = Describe("Run with sidecar containers", func() {
 			Expect(matches[0].ValueFrom.SecretKeyRef.Key).To(Equal("anthropic-token"))
 		})
 	})
+
+	Context("SecretMounts (§8.3 harvest git credentials)", func() {
+		BeforeEach(func() {
+			setupFakeDBContainer(fakeDBWorker, "secret-mount-handle")
+
+			var err error
+			container, _, err = worker.FindOrCreateContainer(
+				ctx,
+				db.NewFixedHandleContainerOwner("secret-mount-handle"),
+				db.ContainerMetadata{Type: db.ContainerTypeTask},
+				runtime.ContainerSpec{
+					TeamID:    1,
+					Dir:       "/workdir",
+					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+					SecretMounts: []runtime.SecretMount{
+						{SecretName: "agent-harvest-git-tdmtrader-jetbridge", MountPath: "/var/run/agent/git"},
+					},
+					Sidecars: []atc.SidecarConfig{
+						{Name: "dev", Image: "docker:///dev-mcp"},
+					},
+				},
+				delegate,
+			)
+			Expect(err).ToNot(HaveOccurred())
+		})
+
+		It("mounts the secret read-only on the main container ONLY", func() {
+			_, err := container.Run(ctx, runtime.ProcessSpec{
+				Path: "/bin/sh",
+				Args: []string{"-c", "echo hello"},
+			}, runtime.ProcessIO{})
+			Expect(err).ToNot(HaveOccurred())
+
+			pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(pods.Items).To(HaveLen(1))
+			pod := pods.Items[0]
+
+			var secretVol *corev1.Volume
+			for i, v := range pod.Spec.Volumes {
+				if v.Secret != nil && v.Secret.SecretName == "agent-harvest-git-tdmtrader-jetbridge" {
+					secretVol = &pod.Spec.Volumes[i]
+				}
+			}
+			Expect(secretVol).ToNot(BeNil(), "secret volume must exist on the pod")
+
+			main := containerByName(pod, "main")
+			var mainHas bool
+			for _, m := range main.VolumeMounts {
+				if m.Name == secretVol.Name {
+					mainHas = true
+					Expect(m.MountPath).To(Equal("/var/run/agent/git"))
+					Expect(m.ReadOnly).To(BeTrue())
+				}
+			}
+			Expect(mainHas).To(BeTrue(), "main container must mount the secret")
+
+			// sidecars NEVER receive the secret mount (§8.3)
+			for _, c := range pod.Spec.Containers {
+				if c.Name == "main" {
+					continue
+				}
+				for _, m := range c.VolumeMounts {
+					Expect(m.Name).ToNot(Equal(secretVol.Name),
+						"sidecar %q must not mount the git-credential secret", c.Name)
+				}
+			}
+		})
+	})
 })
 
 // containerByName finds a container in the pod spec by name, failing the

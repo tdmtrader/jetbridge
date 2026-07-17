@@ -141,6 +141,11 @@ type ContainerSpec struct {
 	// in the pod spec instead of literal values, so the secret never appears
 	// in the pod spec.
 	SecretEnv map[string]vars.SecretRef
+
+	// SecretMounts mounts whole K8s Secrets read-only at fixed paths on
+	// the MAIN container only — sidecars never receive them (§8.3, the
+	// harvest git-credential contract).
+	SecretMounts []SecretMount
 	// Type is the type of step the Container is for (e.g. task, get, etc.).
 	Type db.ContainerType
 
@@ -306,6 +311,13 @@ type Process interface {
 // ProcessResult is the result of executing a Process.
 type ProcessResult struct {
 	ExitStatus int
+}
+
+// SecretMount is a whole-secret read-only volume mount (main container
+// only; see ContainerSpec.SecretMounts).
+type SecretMount struct {
+	SecretName string
+	MountPath  string
 }
 
 // Input represents a Volume (typically from a build artifact) to mount to the

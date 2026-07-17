@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/concourse/concourse/agent/api/metrics"
+	"github.com/concourse/concourse/agent/api/tickets"
 	"github.com/concourse/concourse/agent/budget"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
@@ -37,6 +38,7 @@ type coreStepFactory struct {
 	agentBudgetChecker    budget.Checker
 	agentRunVerifier      exec.AgentRunVerifier
 	agentPlatformToken    string
+	agentTicketsStore     tickets.Store
 }
 
 // CoreStepFactoryOption configures optional fields on coreStepFactory.
@@ -53,6 +55,12 @@ func WithCoreImageResolver(r imageresolver.Resolver) CoreStepFactoryOption {
 // (web flag --agent-step-image).
 func WithAgentStepImage(image string) CoreStepFactoryOption {
 	return func(f *coreStepFactory) { f.agentStepImage = image }
+}
+
+// WithAgentTicketsStore wires the single-writer ticket store so the
+// harvest step can transition tickets after the runner exits.
+func WithAgentTicketsStore(s tickets.Store) CoreStepFactoryOption {
+	return func(f *coreStepFactory) { f.agentTicketsStore = s }
 }
 
 // WithAgentMetricsStore sets the run-metrics store for server-side
@@ -268,6 +276,42 @@ func (factory *coreStepFactory) AgentStep(
 		agentStep = exec.RetryError(agentStep, delegateFactory)
 	}
 	return agentStep
+}
+
+func (factory *coreStepFactory) HarvestStep(
+	plan atc.Plan,
+	stepMetadata exec.StepMetadata,
+	containerMetadata db.ContainerMetadata,
+	delegateFactory DelegateFactory,
+) exec.Step {
+	sum := sha256.Sum256([]byte(plan.Harvest.Name))
+	containerMetadata.WorkingDirectory = filepath.Join("/tmp", "build", fmt.Sprintf("%x", sum[:4]))
+
+	var harvestOpts []exec.HarvestStepOption
+	if factory.agentTicketsStore != nil {
+		harvestOpts = append(harvestOpts, exec.WithHarvestTicketsStore(factory.agentTicketsStore))
+	}
+	if factory.agentRunVerifier != nil {
+		harvestOpts = append(harvestOpts, exec.WithHarvestRunVerifier(factory.agentRunVerifier))
+	}
+
+	harvestStep := exec.NewHarvestStep(
+		plan.ID,
+		*plan.Harvest,
+		stepMetadata,
+		containerMetadata,
+		factory.pool,
+		delegateFactory,
+		factory.defaultTaskTimeout,
+		factory.agentStepImage,
+		harvestOpts...,
+	)
+
+	harvestStep = exec.LogError(harvestStep, delegateFactory)
+	if atc.EnableBuildRerunWhenWorkerDisappears {
+		harvestStep = exec.RetryError(harvestStep, delegateFactory)
+	}
+	return harvestStep
 }
 
 func (factory *coreStepFactory) TaskStep(
