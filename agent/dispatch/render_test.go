@@ -1,0 +1,263 @@
+package dispatch_test
+
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+
+	"github.com/concourse/concourse/agent/api/tickets"
+	"github.com/concourse/concourse/agent/dispatch"
+	"github.com/concourse/concourse/agent/workflow"
+	"github.com/concourse/concourse/atc"
+	"github.com/concourse/concourse/atc/configvalidate"
+)
+
+func renderInput() dispatch.RenderInput {
+	version := 3
+	return dispatch.RenderInput{
+		Workflow: workflow.Config{
+			Name:         "smoke",
+			SpecDelivery: "files",
+			Defaults:     workflow.Defaults{Model: "claude-sonnet-5", MaxTurns: 80},
+			Prompts: map[string]string{
+				"do": "Do the thing described in ticket/spec.md.",
+			},
+			Schemas: map[string]string{
+				"result": `{"type":"object"}`,
+			},
+			Steps: []workflow.Step{
+				{Agent: "implement", Prompt: "do", BudgetSliceUSD: 2.0,
+					Inputs: []string{"repo", "ticket"}, Outputs: []string{"workspace"}},
+			},
+		},
+		WorkflowName:    "smoke",
+		WorkflowVersion: 3,
+		WorkflowHash:    "abc123",
+		Ticket: tickets.Ticket{
+			ID: 42, Title: "fix X", Body: "details", Origin: "fly",
+			Repo: "tdmtrader/jetbridge", TargetBranch: "main",
+			WorkflowName: "smoke", WorkflowVersion: &version,
+		},
+		ATCExternalURL: "http://concourse.home",
+		RepoBaseURL:    "https://github.com",
+	}
+}
+
+func TestRenderAgentStepResolvesPromptDefaultsAndIdentityEnv(t *testing.T) {
+	in := renderInput()
+	step := in.Workflow.Steps[0]
+
+	got, err := dispatch.RenderAgentStep(in, step)
+	if err != nil {
+		t.Fatalf("RenderAgentStep: %v", err)
+	}
+	if got.Name != "implement" {
+		t.Errorf("name = %q", got.Name)
+	}
+	if got.Prompt != "Do the thing described in ticket/spec.md." {
+		t.Errorf("prompt not inlined: %q", got.Prompt)
+	}
+	if got.Model != "claude-sonnet-5" || got.MaxTurns != 80 {
+		t.Errorf("defaults not applied: model=%q turns=%d", got.Model, got.MaxTurns)
+	}
+	if got.BudgetSliceUSD != 2.0 {
+		t.Errorf("budget slice = %v", got.BudgetSliceUSD)
+	}
+	if got.Env["AGENT_TICKET_ID"] != "42" ||
+		got.Env["AGENT_WORKFLOW_NAME"] != "smoke" ||
+		got.Env["AGENT_WORKFLOW_VERSION"] != "3" ||
+		got.Env["AGENT_WORKFLOW_HASH"] != "abc123" ||
+		got.Env["AGENT_BUDGET_SLICE_USD"] != "2" ||
+		got.Env["ATC_EXTERNAL_URL"] != "http://concourse.home" {
+		t.Errorf("identity/provenance env wrong: %+v", got.Env)
+	}
+	// F30: the run id is the ((run_id)) reserved var — pipeline_runs.id,
+	// interpolated at CreateRun materialization, NOT the per-template
+	// ((run)) number.
+	if got.Env["AGENT_PIPELINE_RUN_ID"] != "((run_id))" {
+		t.Errorf("AGENT_PIPELINE_RUN_ID = %q, want ((run_id))", got.Env["AGENT_PIPELINE_RUN_ID"])
+	}
+	if len(got.Inputs) != 2 || len(got.Outputs) != 1 || got.Outputs[0] != "workspace" {
+		t.Errorf("inputs/outputs wrong: %+v / %+v", got.Inputs, got.Outputs)
+	}
+}
+
+func TestRenderAgentStepStepOverridesBeatDefaults(t *testing.T) {
+	in := renderInput()
+	step := in.Workflow.Steps[0]
+	step.Model = "claude-fable-5"
+	step.MaxTurns = 10
+	step.OutputSchema = "result"
+
+	got, err := dispatch.RenderAgentStep(in, step)
+	if err != nil {
+		t.Fatalf("RenderAgentStep: %v", err)
+	}
+	if got.Model != "claude-fable-5" || got.MaxTurns != 10 {
+		t.Errorf("overrides lost: model=%q turns=%d", got.Model, got.MaxTurns)
+	}
+	if got.OutputSchema != `{"type":"object"}` {
+		t.Errorf("output schema not inlined from Schemas: %q", got.OutputSchema)
+	}
+}
+
+func TestRenderAgentStepV0Refusals(t *testing.T) {
+	in := renderInput()
+
+	missing := in.Workflow.Steps[0]
+	missing.Prompt = "nope"
+	if _, err := dispatch.RenderAgentStep(in, missing); err == nil {
+		t.Error("missing prompt key must error")
+	}
+
+	noPrompt := in.Workflow.Steps[0]
+	noPrompt.Prompt = ""
+	if _, err := dispatch.RenderAgentStep(in, noPrompt); err == nil {
+		t.Error("empty prompt key must error")
+	}
+
+	badSchema := in.Workflow.Steps[0]
+	badSchema.OutputSchema = "nope"
+	if _, err := dispatch.RenderAgentStep(in, badSchema); err == nil {
+		t.Error("missing schema key must error")
+	}
+
+	// v0 refusals: wave-3 surfaces are not deployed — fail loudly at
+	// render time instead of producing a run that cannot execute.
+	sidecars := in.Workflow.Steps[0]
+	sidecars.Sidecars = []string{"platform"}
+	if _, err := dispatch.RenderAgentStep(in, sidecars); err == nil {
+		t.Error("sidecar refs must error in v0 (wave-3 images not deployed)")
+	}
+
+	checkpoint := in.Workflow.Steps[0]
+	checkpoint.Checkpoint = "review the spec"
+	if _, err := dispatch.RenderAgentStep(in, checkpoint); err == nil {
+		t.Error("checkpoints must error in v0 (platform-mcp not deployed)")
+	}
+}
+
+func TestRenderProducesValidTemplateConfig(t *testing.T) {
+	in := renderInput()
+	spec := &tickets.Spec{Version: 1, Title: "the spec", Body: "spec body"}
+	in.Spec = spec
+	in.PlanTasks = []tickets.Task{{PlanVersion: 1, Ordering: 1, Title: "one", Status: tickets.TaskPending}}
+
+	cfg, err := dispatch.Render(in)
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+
+	if !cfg.Template {
+		t.Error("rendered config must be a template pipeline")
+	}
+	warnings, errs := configvalidate.Validate(cfg)
+	if len(errs) > 0 {
+		t.Fatalf("configvalidate errors: %v (warnings %v)", errs, warnings)
+	}
+
+	if len(cfg.Resources) != 1 || cfg.Resources[0].Name != "repo" || cfg.Resources[0].Type != "git" {
+		t.Fatalf("repo resource wrong: %+v", cfg.Resources)
+	}
+	if cfg.Resources[0].Source["uri"] != "https://github.com/tdmtrader/jetbridge.git" ||
+		cfg.Resources[0].Source["branch"] != "main" {
+		t.Errorf("repo source wrong: %+v", cfg.Resources[0].Source)
+	}
+
+	if len(cfg.Jobs) != 1 || cfg.Jobs[0].Name != "run" {
+		t.Fatalf("want one entry job 'run', got %+v", cfg.Jobs)
+	}
+	plan := cfg.Jobs[0].PlanSequence
+	if len(plan) != 3 {
+		t.Fatalf("plan length = %d, want 3 (get repo, write-ticket, agent)", len(plan))
+	}
+	get, ok := plan[0].Config.(*atc.GetStep)
+	if !ok || get.Name != "repo" || get.Trigger {
+		t.Errorf("plan[0] = %+v, want untriggered get repo", plan[0].Config)
+	}
+	task, ok := plan[1].Config.(*atc.TaskStep)
+	if !ok || task.Name != "write-ticket" {
+		t.Fatalf("plan[1] = %+v, want write-ticket task", plan[1].Config)
+	}
+	if task.Config == nil || len(task.Config.Outputs) != 1 || task.Config.Outputs[0].Name != "ticket" {
+		t.Errorf("write-ticket outputs wrong: %+v", task.Config)
+	}
+	// the materialized spec.md/plan.md travel base64-encoded inside the
+	// task script (quoting-safe, deterministic)
+	script := strings.Join(task.Config.Run.Args, "\n")
+	if !strings.Contains(script, "spec.md") || !strings.Contains(script, "plan.md") ||
+		!strings.Contains(script, "base64") {
+		t.Errorf("write-ticket script does not materialize spec.md/plan.md via base64: %q", script)
+	}
+	agent, ok := plan[2].Config.(*atc.AgentStep)
+	if !ok || agent.Name != "implement" {
+		t.Errorf("plan[2] = %+v, want the agent step", plan[2].Config)
+	}
+
+	// deterministic: identical input, identical bytes
+	a, _ := json.Marshal(cfg)
+	cfg2, _ := dispatch.Render(in)
+	b, _ := json.Marshal(cfg2)
+	if string(a) != string(b) {
+		t.Error("render is not deterministic")
+	}
+}
+
+func TestRenderWithoutRepoOrTicketInputs(t *testing.T) {
+	in := renderInput()
+	in.Workflow.Steps[0].Inputs = nil
+
+	cfg, err := dispatch.Render(in)
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	if len(cfg.Resources) != 0 {
+		t.Errorf("no repo input declared, but resources rendered: %+v", cfg.Resources)
+	}
+	if len(cfg.Jobs[0].PlanSequence) != 1 {
+		t.Errorf("plan should be just the agent step, got %d entries", len(cfg.Jobs[0].PlanSequence))
+	}
+}
+
+func TestRenderV0Refusals(t *testing.T) {
+	mcp := renderInput()
+	mcp.Workflow.SpecDelivery = "mcp"
+	if _, err := dispatch.Render(mcp); err == nil {
+		t.Error("spec_delivery mcp must error in v0 (platform-mcp not deployed)")
+	}
+
+	defaulted := renderInput()
+	defaulted.Workflow.SpecDelivery = ""
+	if _, err := dispatch.Render(defaulted); err == nil {
+		t.Error("empty spec_delivery defaults to mcp per §6 and must error in v0")
+	}
+
+	empty := renderInput()
+	empty.Workflow.Steps = nil
+	if _, err := dispatch.Render(empty); err == nil {
+		t.Error("a workflow with no steps must error")
+	}
+
+	unknownInput := renderInput()
+	unknownInput.Workflow.Steps[0].Inputs = []string{"mystery"}
+	if _, err := dispatch.Render(unknownInput); err == nil {
+		t.Error("an input that is neither repo, ticket, nor a prior step's output must error")
+	}
+}
+
+func TestRenderAllowsPriorStepOutputsAsInputs(t *testing.T) {
+	in := renderInput()
+	in.Workflow.Prompts["review"] = "Review the workspace."
+	in.Workflow.Steps = []workflow.Step{
+		{Agent: "implement", Prompt: "do", Inputs: []string{"ticket"}, Outputs: []string{"workspace"}},
+		{Agent: "review", Prompt: "review", Inputs: []string{"workspace"}},
+	}
+
+	cfg, err := dispatch.Render(in)
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	if len(cfg.Jobs[0].PlanSequence) != 3 { // write-ticket + 2 agent steps
+		t.Errorf("plan length = %d, want 3", len(cfg.Jobs[0].PlanSequence))
+	}
+}
