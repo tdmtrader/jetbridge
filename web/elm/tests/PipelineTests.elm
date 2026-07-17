@@ -937,6 +937,19 @@ all =
                         |> Common.queryView
                         |> Query.find [ class "pipeline-runs" ]
                         |> Query.has [ text "#42", text "succeeded" ]
+            , test "run number links to the instanced pipeline" <|
+                \_ ->
+                    Common.init "/teams/team/pipelines/pipeline"
+                        |> Application.handleCallback
+                            (Callback.PipelineFetched (Ok templatePipeline))
+                        |> Tuple.first
+                        |> Application.handleCallback
+                            (Callback.PipelineRunsFetched (Ok [ succeededRun ]))
+                        |> Tuple.first
+                        |> Common.queryView
+                        |> Query.find [ class "pipeline-run-link" ]
+                        |> Query.has
+                            [ attribute (Attr.href "/teams/team/pipelines/pipeline?vars.run=42") ]
             , test "non-template pipeline does not render runs list" <|
                 \_ ->
                     Common.init "/teams/team/pipelines/pipeline"
