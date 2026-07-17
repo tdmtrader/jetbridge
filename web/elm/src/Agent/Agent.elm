@@ -794,6 +794,7 @@ costsSection model =
             Just rollup ->
                 staleDataWarning model.costError
                     ++ [ costSummaryLine rollup.summary
+                       , dailyCapGauge rollup.summary
                        , costTable rollup.rows
                        ]
 
@@ -836,6 +837,42 @@ costSummaryLine summary =
         , style "color" Colors.text
         ]
         (Html.span [] [ Html.text (spent ++ cap) ] :: exhausted)
+
+
+{-| A slim gauge of today's spend against the daily cap, mirroring the ticket
+budget bar. Rendered only when a cap is configured; turns amber once the cap is
+exhausted. Complements — does not replace — the exact-text summary line above.
+-}
+dailyCapGauge : Agent.CostSummary -> Html Message
+dailyCapGauge summary =
+    if summary.dailyCapUsd <= 0 then
+        Html.text ""
+
+    else
+        let
+            pct =
+                min 100 (summary.dailySpentUsd / summary.dailyCapUsd * 100)
+        in
+        Html.div
+            [ class "agent-daily-cap-gauge"
+            , style "max-width" "320px"
+            , style "margin" "0 0 12px 0"
+            , style "height" "6px"
+            , style "background" "#3d3c3c"
+            ]
+            [ Html.div
+                [ style "height" "6px"
+                , style "width" (String.fromFloat pct ++ "%")
+                , style "background"
+                    (if summary.dailyExhausted then
+                        amberColor
+
+                     else
+                        "#7aa37a"
+                    )
+                ]
+                []
+            ]
 
 
 costTable : List Agent.CostRow -> Html Message

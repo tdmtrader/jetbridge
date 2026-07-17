@@ -278,6 +278,14 @@ all =
                     |> Tuple.first
                     |> Common.queryView
                     |> Query.has [ text "today: $12.34 spent / $20.00 cap ($7.66 left)" ]
+        , test "renders a daily-cap gauge when a cap is configured" <|
+            \_ ->
+                Common.init "/agent"
+                    |> Application.handleCallback
+                        (Callback.AgentCostRollupFetched (Ok sampleRollup))
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Query.has [ class "agent-daily-cap-gauge" ]
         , test "shows an admin-only message when workflows fetch is forbidden" <|
             \_ ->
                 Common.init "/agent"
