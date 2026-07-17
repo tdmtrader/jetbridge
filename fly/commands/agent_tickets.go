@@ -10,6 +10,7 @@ import (
 	"github.com/concourse/concourse/fly/eventstream"
 	"github.com/concourse/concourse/fly/rc"
 	"github.com/concourse/concourse/fly/ui"
+	"github.com/concourse/concourse/go-concourse/concourse"
 	"github.com/fatih/color"
 )
 
@@ -292,9 +293,13 @@ type AgentTicketsWatchCommand struct {
 	Timestamp bool `long:"timestamps" description:"Print with local timestamps"`
 }
 
-// Execute follows the dispatched run's build events. The run lives on the
-// main team as pipeline agent-ticket-<id>, job run (agent/dispatch); this
-// reuses the same GetBuild + BuildEvents path as `fly watch`.
+// Execute follows the dispatched run's build events. Dispatch renders the
+// ticket into a TEMPLATE pipeline agent-ticket-<id> and CreateRun
+// materializes a per-run INSTANCE of it (instance var run:<n>); the entry
+// job "run" builds on that instance, never on the bare template. The
+// ticket row carries the global pipeline_runs.id, not the per-template
+// instance number, so we resolve the latest matching build by scanning
+// the team's builds (newest-first) for pipeline agent-ticket-<id>.
 func (command *AgentTicketsWatchCommand) Execute([]string) error {
 	target, err := rc.LoadTarget(Fly.Target, Fly.Verbose)
 	if err != nil {
@@ -306,14 +311,31 @@ func (command *AgentTicketsWatchCommand) Execute([]string) error {
 
 	client := target.Client()
 	team := client.Team(atc.DefaultTeamName)
+	pipelineName := ticketPipelineName(command.ID)
 
-	build, err := GetBuild(client, team, "run", "",
-		atc.PipelineRef{Name: ticketPipelineName(command.ID)})
-	if err != nil {
-		return err
+	buildID := 0
+	page := concourse.Page{Limit: 100}
+	for buildID == 0 {
+		builds, pagination, err := team.Builds(page)
+		if err != nil {
+			return err
+		}
+		for _, b := range builds {
+			if b.PipelineName == pipelineName && b.JobName == "run" {
+				buildID = b.ID
+				break
+			}
+		}
+		if buildID != 0 || pagination.Next == nil {
+			break
+		}
+		page = *pagination.Next
+	}
+	if buildID == 0 {
+		return fmt.Errorf("no dispatched run found for ticket %d (pipeline %s) — has it been dispatched?", command.ID, pipelineName)
 	}
 
-	eventSource, err := client.BuildEvents(strconv.Itoa(build.ID))
+	eventSource, err := client.BuildEvents(strconv.Itoa(buildID))
 	if err != nil {
 		return err
 	}

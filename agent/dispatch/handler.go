@@ -31,7 +31,7 @@ func NewHTTPHandler(deps Deps, userName func(*http.Request) string) http.Handler
 		case errors.Is(err, ErrNotQueued), errors.Is(err, tickets.ErrStaleTransition):
 			http.Error(w, err.Error(), http.StatusConflict)
 			return
-		case errors.Is(err, ErrNoWorkflow), errors.Is(err, ErrWorkflowNotFound):
+		case errors.Is(err, ErrNoWorkflow), errors.Is(err, ErrWorkflowNotFound), errors.Is(err, ErrRenderRefused):
 			http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 			return
 		case err != nil:

@@ -10,6 +10,7 @@ import (
 
 	"github.com/concourse/concourse/agent/api/tickets"
 	"github.com/concourse/concourse/agent/dispatch"
+	"github.com/concourse/concourse/agent/workflow"
 )
 
 func dispatchRequest(id string) *http.Request {
@@ -74,6 +75,23 @@ func TestDispatchHandlerErrorMapping(t *testing.T) {
 	h.ServeHTTP(rec, dispatchRequest(itoa(id)))
 	if rec.Code != http.StatusUnprocessableEntity {
 		t.Errorf("unknown workflow = %d, want 422", rec.Code)
+	}
+
+	// render refusal (v0-unenforceable workflow) -> 422, not 500
+	deps.Workflows.(*fakeWorkflows).byName["judged"] = &workflow.Definition{
+		Name: "judged", Version: 1, Live: true,
+		Config: workflow.Config{
+			Name: "judged", SpecDelivery: "files",
+			Prompts: map[string]string{"do": "x"},
+			Judge:   &workflow.Judge{Rubric: []workflow.RubricDimension{{Name: "c", Weight: 1}}, PassThreshold: 6},
+			Steps:   []workflow.Step{{Agent: "a", Prompt: "do", Inputs: []string{"ticket"}, Outputs: []string{"workspace"}}},
+		},
+	}
+	id = queuedTicket(t, store, "judged")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, dispatchRequest(itoa(id)))
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Errorf("render refusal = %d, want 422", rec.Code)
 	}
 
 	// bad param -> 400

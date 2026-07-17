@@ -24,6 +24,11 @@ var (
 	// ErrWorkflowNotFound: the named definition (or pinned version) does
 	// not exist in the workflow store.
 	ErrWorkflowNotFound = errors.New("workflow definition not found")
+	// ErrRenderRefused: the resolved workflow cannot be rendered in v0
+	// (declared-but-unenforced policy blocks, sidecars, checkpoints, mcp
+	// delivery). A client error — the workflow is malformed for v0, not a
+	// server fault — so the route maps it to 422, not 500.
+	ErrRenderRefused = errors.New("workflow cannot be dispatched in v0")
 )
 
 // WorkflowResolver is the subset of workflow.Store dispatch reads.
@@ -143,7 +148,7 @@ func DispatchOne(ctx context.Context, deps Deps, ticketID int, dispatchedBy stri
 		RepoBaseURL:     deps.RepoBaseURL,
 	})
 	if err != nil {
-		return Result{}, fmt.Errorf("render workflow %s v%d for ticket %d: %w", def.Name, def.Version, ticketID, err)
+		return Result{}, fmt.Errorf("%w: render %s v%d for ticket %d: %s", ErrRenderRefused, def.Name, def.Version, ticketID, err)
 	}
 
 	pipelineName := fmt.Sprintf("agent-ticket-%d", ticketID)

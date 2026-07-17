@@ -1,9 +1,11 @@
 package integration_test
 
 import (
+	"net/http"
 	"os/exec"
 
 	"github.com/concourse/concourse/agent/api/tickets"
+	"github.com/concourse/concourse/atc"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/onsi/gomega/gbytes"
@@ -267,6 +269,36 @@ var _ = Describe("fly agent tickets", func() {
 			Expect(sess.Out).To(gbytes.Say("created ticket #9"))
 			Expect(sess.Out).To(gbytes.Say("queued"))
 			Expect(sess.Out).To(gbytes.Say(`dispatched ticket #9 as run 5`))
+		})
+	})
+
+	Describe("watch", func() {
+		It("resolves the ticket's instance-pipeline build and streams its events", func() {
+			atcServer.AppendHandlers(
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("GET", "/api/v1/teams/main/builds"),
+					ghttp.RespondWithJSONEncoded(200, []atc.Build{
+						{ID: 99, PipelineName: "agent-ticket-7", JobName: "run", Name: "1"},
+						{ID: 40, PipelineName: "something-else", JobName: "run", Name: "3"},
+					}),
+				),
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("GET", "/api/v1/builds/99/events"),
+					func(w http.ResponseWriter, r *http.Request) {
+						flusher := w.(http.Flusher)
+						w.Header().Add("Content-Type", "text/event-stream; charset=utf-8")
+						w.WriteHeader(http.StatusOK)
+						w.Write([]byte("id: 0\nevent: end\ndata: \n\n"))
+						flusher.Flush()
+					},
+				),
+			)
+
+			flyCmd := exec.Command(flyPath, "-t", targetName, "agent", "tickets", "watch", "--id", "7")
+			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+			Expect(err).NotTo(HaveOccurred())
+			<-sess.Exited
+			Expect(sess.ExitCode()).To(Equal(0))
 		})
 	})
 
