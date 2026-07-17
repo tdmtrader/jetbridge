@@ -401,13 +401,17 @@ type AgentStep struct {
 	MaxTurns       int               `json:"max_turns,omitempty"`
 	BudgetSliceUSD float64           `json:"budget_slice_usd,omitempty"`
 	OutputSchema   string            `json:"output_schema,omitempty"`
-	Sidecars       []SidecarSource   `json:"sidecars,omitempty"`
-	Inputs         []string          `json:"inputs,omitempty"`
-	Outputs        []string          `json:"outputs,omitempty"`
-	Env            map[string]string `json:"env,omitempty"`
-	Timeout        string            `json:"timeout,omitempty"`
-	Limits         *ContainerLimits  `json:"container_limits,omitempty"`
-	Requests       *ContainerLimits  `json:"container_requests,omitempty"`
+	Sidecars []SidecarSource `json:"sidecars,omitempty"`
+	Inputs   []string        `json:"inputs,omitempty"`
+	Outputs  []string        `json:"outputs,omitempty"`
+	// Env is TaskEnv (underlying map[string]string) so numeric values —
+	// e.g. the ((run_id)) reserved var interpolated into
+	// AGENT_PIPELINE_RUN_ID by CreateRun materialization (F30) — coerce
+	// to strings instead of failing the instance-config unmarshal.
+	Env      TaskEnv          `json:"env,omitempty"`
+	Timeout  string           `json:"timeout,omitempty"`
+	Limits   *ContainerLimits `json:"container_limits,omitempty"`
+	Requests *ContainerLimits `json:"container_requests,omitempty"`
 }
 
 func (step *AgentStep) Visit(v StepVisitor) error {
