@@ -150,7 +150,10 @@ jobs:
       1. Write a failing Go test that proves the defect
       2. Classify severity by what the test demonstrates
 
-      Write a JSON object with this structure to review/review.json:
+      Write a JSON object to the file review.json inside the directory named by the
+      AGENT_OUTPUT_REVIEW environment variable (an absolute path — resolve it with
+      `echo "$AGENT_OUTPUT_REVIEW"` first; do NOT write it under repo/ or any
+      cwd-relative path). The JSON structure:
       {
         "schema_version": "1.0.0",
         "proven_issues": [

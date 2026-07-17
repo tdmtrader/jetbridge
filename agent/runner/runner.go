@@ -269,6 +269,17 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 	// context kills claude directly by pid (and the pod GC reaper bounds the
 	// escape window if agent-runner itself is SIGKILLed first).
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// Cancellation tears down claude's WHOLE detached group, not just its
+	// pid: claude routinely leaks tool subprocesses, and with Setpgid the
+	// supervisor's terminal-end group kill can no longer reach them — the
+	// shared pgid this replaced used to be the safety net (native review
+	// finding, agent-review-native #3).
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return nil
+		}
+		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
 	cmd.Dir = cfg.WorkDir
 	cmd.Stdout = io.MultiWriter(&buf, stdout)
 	cmd.Stderr = stderr

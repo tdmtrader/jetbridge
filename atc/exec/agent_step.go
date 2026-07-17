@@ -370,6 +370,14 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 		env = append(env, "AGENT_PROMPT_FILE="+step.plan.PromptFile)
 	}
 	env = append(env, "AGENT_FLIGHT_DIR="+artifactPath(workdir, agentFlightArtifact, ""))
+	// §8.1: export every declared output's absolute in-pod path
+	// (AGENT_OUTPUT_<NAME>, uppercased, dashes to underscores) so prompts
+	// can target outputs deterministically. Without this the agent can only
+	// guess cwd-relative paths — the first live dual-run wrote its review
+	// into the repo INPUT after cd'ing there, and the output shipped empty.
+	for _, name := range step.plan.Outputs {
+		env = append(env, "AGENT_OUTPUT_"+strings.ToUpper(strings.ReplaceAll(name, "-", "_"))+"="+artifactPath(workdir, name, ""))
+	}
 	if slice > 0 {
 		env = append(env, "AGENT_BUDGET_SLICE_USD="+strconv.FormatFloat(slice, 'f', 2, 64))
 	}

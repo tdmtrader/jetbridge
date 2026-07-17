@@ -650,3 +650,67 @@ func TestClaudeRunsInItsOwnProcessGroup(t *testing.T) {
 		t.Fatalf("claude ran in the runner's process group (%d) — a pty HUP on a severed exec kills it despite the supervisor shield", claudePgid)
 	}
 }
+
+// Native review finding (jetbridge/agent-review-native #3): Setpgid detached
+// claude — and everything claude forks — from the supervisor's process
+// group, so the terminal-end group kill can no longer reach claude's leaked
+// tool subprocesses. agent-runner must therefore tear down claude's WHOLE
+// group on cancellation, not just claude's pid; the shared-pgid safety net
+// it replaced used to cover exactly this.
+func TestCancellationKillsClaudesDescendants(t *testing.T) {
+	restore := runner.SetClaudeWaitDelay(500 * time.Millisecond)
+	defer restore()
+
+	dir := t.TempDir()
+	flight := filepath.Join(dir, "flight")
+	os.MkdirAll(flight, 0o755)
+
+	grandchildPid := filepath.Join(dir, "grandchild-pid")
+	claude := filepath.Join(dir, "claude")
+	// The stub forks a long-lived background child (a "leaked tool
+	// subprocess"), records its pid, then blocks like a busy claude.
+	script := "#!/bin/sh\nsleep 60 >/dev/null 2>&1 &\necho $! > '" + grandchildPid + "'\nsleep 60\n"
+	if err := os.WriteFile(claude, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		deadline := time.Now().Add(10 * time.Second)
+		for time.Now().Before(deadline) {
+			if _, err := os.Stat(grandchildPid); err == nil {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		cancel()
+	}()
+
+	_, err := runner.Run(ctx, runner.Config{
+		Prompt: "p", FlightDir: flight, WorkDir: dir, StepName: "s", ClaudePath: claude,
+		Stdout: new(bytes.Buffer), Stderr: new(bytes.Buffer),
+	})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	raw, err := os.ReadFile(grandchildPid)
+	if err != nil {
+		t.Fatalf("stub never recorded grandchild pid: %v", err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+	if err != nil {
+		t.Fatalf("parsing grandchild pid %q: %v", raw, err)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if syscall.Kill(pid, 0) != nil {
+			return // grandchild dead — group teardown worked
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	syscall.Kill(pid, syscall.SIGKILL) // don't leak it past the test
+	t.Fatalf("claude's leaked descendant (pid %d) survived cancellation — group kill missing", pid)
+}

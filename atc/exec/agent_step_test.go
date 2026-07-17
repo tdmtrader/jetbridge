@@ -244,6 +244,12 @@ var _ = Describe("AgentStep", func() {
 			"PLATFORM_MCP_URL=http://127.0.0.1:7781/mcp",
 		))
 		Expect(spec.Env).To(ContainElement(HavePrefix("AGENT_FLIGHT_DIR=")))
+		// §8.1: every declared output's absolute in-pod path, so prompts
+		// can target outputs deterministically instead of guessing
+		// cwd-relative paths (dual-run finding: claude cd'd into the repo
+		// input and wrote review.json there, so the output artifact
+		// shipped empty). Name mangling: uppercase, dashes to underscores.
+		Expect(spec.Env).To(ContainElement("AGENT_OUTPUT_WORKSPACE=some-artifact-root/workspace"))
 		Expect(spec.Outputs).To(HaveKey("workspace"))
 		Expect(spec.Outputs).To(HaveKey("flight"))
 		Expect(spec.Sidecars).To(HaveLen(1))
