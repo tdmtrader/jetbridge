@@ -1332,6 +1332,26 @@ var _ = Describe("ValidateConfig", func() {
 				})
 			})
 
+			// Native review finding (agent-review-native #6): a name like
+			// "schema=x" mangles to "SCHEMA=X" — it dodges the equality
+			// guard, and the '=' splices into the pod env as a second
+			// assignment, clobbering AGENT_OUTPUT_SCHEMA anyway. Outputs
+			// must stay within an env-safe charset.
+			Context("when an agent step output name contains env-unsafe characters", func() {
+				BeforeEach(func() {
+					job.PlanSequence = append(job.PlanSequence, atc.Step{
+						Config: &atc.AgentStep{Name: "a", Prompt: "p", Outputs: []string{"schema=x"}},
+					})
+
+					config.Jobs = append(config.Jobs, job)
+				})
+
+				It("returns an error", func() {
+					Expect(errorMessages).To(HaveLen(1))
+					Expect(errorMessages[0]).To(ContainSubstring("must contain only"))
+				})
+			})
+
 			Context("when an agent step has a negative budget slice", func() {
 				BeforeEach(func() {
 					job.PlanSequence = append(job.PlanSequence, atc.Step{

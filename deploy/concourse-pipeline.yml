@@ -48,89 +48,11 @@ jobs:
                  ./skymarshal/token/... ./skymarshal/skyserver/...
           echo "=== Vet passed ==="
 
-- name: agent-review
-  plan:
-  - get: repo
-    trigger: false
-    params: {depth: 25}
-  - task: run-agent-review
-    config:
-      platform: linux
-      rootfs_uri: docker:///golang:1.25-bookworm
-      inputs:
-      - name: repo
-      outputs:
-      - name: review
-      caches:
-      - path: gopath/pkg/mod
-      - path: gocache
-      params:
-        CLAUDE_TOKEN: ((anthropic-api-key))
-        AGENT_CLI: claude
-        AGENT_MODEL: ((agent-model))
-        SCORE_THRESHOLD: "7.0"
-        FAIL_ON_CRITICAL: "false"
-        REVIEW_DIFF_ONLY: "true"
-        BASE_REF: main
-        AGENT_REVIEW_PUBLISH_TOKEN: ((agent-review-publish-token))
-      run:
-        path: sh
-        args:
-        - -exc
-        - |
-          export GOPATH="$(pwd)/gopath"
-          export GOCACHE="$(pwd)/gocache"
-
-          # Route the Claude credential to the right env var so either an
-          # Anthropic API key (sk-ant-api...) or a Claude Code OAuth token
-          # (sk-ant-oat..., from `claude setup-token`) works.
-          case "${CLAUDE_TOKEN:-}" in
-            sk-ant-oat*) export CLAUDE_CODE_OAUTH_TOKEN="$CLAUDE_TOKEN" ;;
-            "")          echo "WARN: no Claude credential set (((anthropic-api-key)) empty)" ;;
-            *)           export ANTHROPIC_API_KEY="$CLAUDE_TOKEN" ;;
-          esac
-
-          echo "=== Installing Node.js and Claude CLI ==="
-          curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
-          apt-get install -y --no-install-recommends nodejs
-          npm install -g @anthropic-ai/claude-code
-          claude --version
-
-          echo "=== Building ci-agent ==="
-          cd repo/ci-agent
-          go build -o /usr/local/bin/ci-agent ./cmd/ci-agent/
-          cd ../..
-
-          export REPO_DIR="$(pwd)/repo"
-          export OUTPUT_DIR="$(pwd)/review"
-
-          echo "=== Running ci-agent review phase ==="
-          ci-agent --phase "$(pwd)/repo/ci-agent/phases/review.yaml"
-
-          echo "=== Review complete ==="
-          echo "Review output:"
-          cat "$OUTPUT_DIR/review.json" | head -50
-
-          set +x
-          has_publish_token=false
-          [ -n "${AGENT_REVIEW_PUBLISH_TOKEN:-}" ] && has_publish_token=true
-          set -x
-          if [ "$has_publish_token" = true ]; then
-            echo ""
-            echo "=== Publishing review to ATC ==="
-            if ci-agent publish --review "$OUTPUT_DIR/review.json"; then
-              echo "Published for build ${BUILD_ID:-unknown}"
-            else
-              echo "WARNING: failed to publish review to ATC (results still available as artifact)"
-            fi
-          else
-            echo "AGENT_REVIEW_PUBLISH_TOKEN not set; skipping publish"
-          fi
-
-# Native agent-review job (Task 19 dual-run): the same review phase as
-# agent-review above, but through the first-class `agent:` step instead of
-# the build-from-source ci-agent shell task. Dual-runs alongside agent-review
-# until 5 runs verify parity, then the shell job retires.
+# Native agent-review job (Task 19, cut over 2026-07-17): the review phase
+# through the first-class `agent:` step. Replaced the build-from-source
+# ci-agent shell job after the dual-run campaign proved mechanism parity
+# (run/review/publish/metering all green in agent-review-native #6; the
+# retired job's history holds the dual-run record).
 # Token path: pure-CI platform secret (web --agent-platform-token-secret →
 # secretKeyRef agent-platform-token/anthropic-token in the cicd namespace).
 # Agent env is static-only by contract — no credentials ride env.

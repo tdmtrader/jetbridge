@@ -3,12 +3,18 @@ package atc
 import (
 	"fmt"
 	"path"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/concourse/concourse/vars"
 )
+
+// agentOutputNamePattern bounds agent-step output names to characters that
+// survive the AGENT_OUTPUT_<NAME> env-row mangling without splicing into the
+// pod environment.
+var agentOutputNamePattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 
 // StepValidator is a StepVisitor which validates each step that visits it,
 // collecting warnings and errors as it goes.
@@ -292,6 +298,14 @@ func (validator *StepValidator) VisitAgent(step *AgentStep) error {
 	for _, output := range step.Outputs {
 		if output == "flight" {
 			validator.recordError("output name 'flight' is reserved for the flight recorder")
+			continue
+		}
+		// Env-safe charset only: characters like '=' would splice a second
+		// assignment into the pod env row and clobber an unrelated variable
+		// regardless of the collision guards below (native review finding,
+		// agent-review-native #6).
+		if !agentOutputNamePattern.MatchString(output) {
+			validator.recordErrorf("output name %q must contain only letters, digits, '-' and '_'", output)
 			continue
 		}
 		mangled := strings.ToUpper(strings.ReplaceAll(output, "-", "_"))
