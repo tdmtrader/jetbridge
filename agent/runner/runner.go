@@ -18,6 +18,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	schema "github.com/concourse/concourse/agent/schema"
@@ -258,6 +259,16 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 
 	var buf bytes.Buffer
 	cmd := exec.CommandContext(ctx, claudePath, args...)
+	// Own process group: a severed exec session tears down the pod's pty and
+	// the kernel HUPs the pty's FOREGROUND group. The supervisor's
+	// `trap '' HUP` shield only protects processes that keep the inherited
+	// ignore — claude (Node) installs its own SIGHUP handling and dies with
+	// the pty, killing the run a web restart should have resumed. Outside
+	// the foreground group the HUP never reaches it. Terminal-end teardown
+	// still works: the group TERM reaches agent-runner, whose cancelled
+	// context kills claude directly by pid (and the pod GC reaper bounds the
+	// escape window if agent-runner itself is SIGKILLed first).
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Dir = cfg.WorkDir
 	cmd.Stdout = io.MultiWriter(&buf, stdout)
 	cmd.Stderr = stderr

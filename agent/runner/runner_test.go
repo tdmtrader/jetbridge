@@ -8,7 +8,9 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -601,5 +603,50 @@ func TestRunWarnsWhenOutputSchemaUnenforced(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "output_schema") || !strings.Contains(stderr.String(), "not yet enforced") {
 		t.Fatalf("expected an output_schema-not-enforced warning on stderr, got %q", stderr.String())
+	}
+}
+
+// A severed exec session tears down the pod's pty, and the kernel HUPs the
+// pty's FOREGROUND process group. The supervisor's `trap ” HUP` shield only
+// protects processes that keep the inherited ignore — claude (Node) installs
+// its own SIGHUP handling, so it dies with the pty unless it runs outside
+// the foreground group entirely. Terminal-end teardown is unaffected: the
+// group TERM still reaches agent-runner, whose cancelled context kills
+// claude directly (its own child, by pid).
+func TestClaudeRunsInItsOwnProcessGroup(t *testing.T) {
+	dir := t.TempDir()
+	flight := filepath.Join(dir, "flight")
+	os.MkdirAll(flight, 0o755)
+
+	pgidFile := filepath.Join(dir, "claude-pgid")
+	claude := filepath.Join(dir, "claude")
+	script := "#!/bin/sh\n" +
+		"ps -o pgid= -p $$ | tr -d ' ' > " + pgidFile + "\n" +
+		`echo '{"type":"result","subtype":"success","result":"\"ok\"","is_error":false}'` + "\n"
+	if err := os.WriteFile(claude, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	exit, err := runner.Run(context.Background(), runner.Config{
+		Prompt: "p", FlightDir: flight, WorkDir: dir, StepName: "s", ClaudePath: claude,
+		Stdout: new(bytes.Buffer), Stderr: new(bytes.Buffer),
+	})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if exit != 0 {
+		t.Fatalf("expected exit 0, got %d", exit)
+	}
+
+	raw, err := os.ReadFile(pgidFile)
+	if err != nil {
+		t.Fatalf("stub claude never recorded its pgid: %v", err)
+	}
+	claudePgid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+	if err != nil {
+		t.Fatalf("parsing recorded pgid %q: %v", raw, err)
+	}
+	if claudePgid == syscall.Getpgrp() {
+		t.Fatalf("claude ran in the runner's process group (%d) — a pty HUP on a severed exec kills it despite the supervisor shield", claudePgid)
 	}
 }
