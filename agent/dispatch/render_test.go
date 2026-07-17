@@ -283,6 +283,45 @@ func TestRenderV0Refusals(t *testing.T) {
 	}
 }
 
+func TestRenderRefusesDeclaredButUnenforcedPolicyBlocks(t *testing.T) {
+	// Ticket #5 finding #1 (highest blast radius): gate_policy/hitl/judge
+	// validate at import and get content-hashed as authoritative, but v0
+	// rendering never reads them — a workflow author would believe gating
+	// / HITL / judge scoring is active when it is silently absent. Refuse
+	// at render time, matching the sidecar/checkpoint loud-fail pattern
+	// (harvest-step, wave 3, is the enforcing consumer).
+	cases := []struct {
+		name  string
+		mutate func(*dispatch.RenderInput)
+	}{
+		{"gate_policy", func(in *dispatch.RenderInput) {
+			in.Workflow.GatePolicy = workflow.GatePolicy{
+				Gates: []workflow.Gate{{Gate: "test", Scope: "affected"}}, OnGateFailure: "needs_review",
+			}
+		}},
+		{"hitl", func(in *dispatch.RenderInput) {
+			in.Workflow.HITL = workflow.HITL{AskTimeout: "park"}
+		}},
+		{"judge", func(in *dispatch.RenderInput) {
+			in.Workflow.Judge = &workflow.Judge{
+				Rubric: []workflow.RubricDimension{{Name: "correctness", Weight: 1}}, PassThreshold: 6.5,
+			}
+		}},
+	}
+	for _, tc := range cases {
+		in := renderInput()
+		tc.mutate(&in)
+		if _, err := dispatch.Render(in); err == nil {
+			t.Errorf("%s: Render must refuse a declared-but-unenforced %s block in v0", tc.name, tc.name)
+		}
+	}
+
+	// an all-empty policy surface still renders (the common case)
+	if _, err := dispatch.Render(renderInput()); err != nil {
+		t.Errorf("policy-free workflow must still render: %v", err)
+	}
+}
+
 func TestRenderAllowsPriorStepOutputsAsInputs(t *testing.T) {
 	in := renderInput()
 	in.Workflow.Prompts["review"] = "Review the workspace."

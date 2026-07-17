@@ -131,6 +131,22 @@ func Render(in RenderInput) (atc.Config, error) {
 	if len(in.Workflow.Steps) == 0 {
 		return atc.Config{}, fmt.Errorf("workflow %q has no steps", in.WorkflowName)
 	}
+	// Refuse declared-but-unenforced policy blocks (dogfood ticket #5,
+	// highest-blast-radius finding): gate_policy/hitl/judge validate at
+	// import and get content-hashed as authoritative, but v0 rendering
+	// has no consumer for them (harvest-step owns gates+judge, platform-
+	// mcp-hitl owns HITL — both wave 3). Silently dropping them would let
+	// an author believe gating/HITL/judge scoring is active when it is
+	// absent. Fail loudly at render time, matching sidecars/checkpoints.
+	if len(in.Workflow.GatePolicy.Gates) > 0 || in.Workflow.GatePolicy.OnGateFailure != "" {
+		return atc.Config{}, fmt.Errorf("workflow %q declares a gate_policy: v0 manual dispatch cannot enforce gates (harvest-step, wave 3) — remove the block or wait for harvest", in.WorkflowName)
+	}
+	if in.Workflow.HITL.AskTimeout != "" || in.Workflow.HITL.AskTimeoutSeconds != 0 {
+		return atc.Config{}, fmt.Errorf("workflow %q declares an hitl block: v0 manual dispatch has no human-in-the-loop pause (platform-mcp-hitl, wave 3) — remove the block or wait for platform-mcp", in.WorkflowName)
+	}
+	if in.Workflow.Judge != nil {
+		return atc.Config{}, fmt.Errorf("workflow %q declares a judge rubric: v0 manual dispatch does not score with a judge (harvest-step, wave 3) — remove the block or wait for harvest", in.WorkflowName)
+	}
 
 	needsRepo, needsTicket := false, false
 	available := map[string]bool{}
