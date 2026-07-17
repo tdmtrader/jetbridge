@@ -16,7 +16,7 @@ import Colors
 import Concourse.Agent as Agent
 import EffectTransformer exposing (ET)
 import Html exposing (Html)
-import Html.Attributes exposing (checked, class, disabled, id, placeholder, style, type_, value)
+import Html.Attributes exposing (checked, class, disabled, href, id, placeholder, style, title, type_, value)
 import Html.Events exposing (onClick, onInput)
 import Http
 import Login.Login as Login
@@ -72,6 +72,7 @@ type alias Model =
         , mintError : Maybe String
         , minting : Bool
         , revokeError : Maybe String
+        , showEphemeralPrincipals : Bool
         }
 
 
@@ -95,6 +96,7 @@ init =
       , mintError = Nothing
       , minting = False
       , revokeError = Nothing
+      , showEphemeralPrincipals = False
       , isUserMenuExpanded = False
       }
     , [ FetchAgentRunMetrics
@@ -299,6 +301,9 @@ update msg ( model, effects ) =
             ( { model | revokeError = Nothing }
             , effects ++ [ RevokeAgentPrincipal principalId ]
             )
+
+        AgentPrincipalsShowEphemeralToggled ->
+            ( { model | showEphemeralPrincipals = not model.showEphemeralPrincipals }, effects )
 
         _ ->
             ( model, effects )
@@ -574,7 +579,7 @@ runRow r =
         , tableCell "right" ("$" ++ formatUsd r.costUsd)
         , tableCell "right" (String.fromInt r.usage.inputTokens ++ "+" ++ String.fromInt r.usage.outputTokens)
         , tableCell "right" (String.fromInt r.turns)
-        , tableCell "left" (ticketRef r)
+        , ticketRefCell r
         , tableCell "left" (formatPosix (Just (secondsToPosix r.createdAt)))
         ]
 
@@ -600,6 +605,10 @@ runStepCell r =
                         [ style "font-size" "11px"
                         , style "color" mutedColor
                         , style "max-width" "320px"
+                        , style "white-space" "nowrap"
+                        , style "overflow" "hidden"
+                        , style "text-overflow" "ellipsis"
+                        , title r.summary
                         ]
                         [ Html.text r.summary ]
                     ]
@@ -607,7 +616,7 @@ runStepCell r =
         )
 
 
-{-| Render an agent_run_metrics status ("ok"/"failed"/"parked"/"error") as an
+{-| Render an agent\_run\_metrics status ("ok"/"failed"/"parked"/"error") as an
 AgentBadge; fall back to the raw string for any status the badge doesn't know.
 -}
 runStatusCell : String -> Html Message
@@ -642,15 +651,28 @@ workflowRef name version =
             n
 
 
-{-| "#N" for a ticket-backed run, or "CI" when there is no ticket. -}
-ticketRef : Agent.RunMetric -> String
-ticketRef r =
-    case r.ticketId of
-        Just t ->
-            "#" ++ String.fromInt t
+{-| A linked "#N" back to the originating ticket for a ticket-backed run, or a
+plain "CI" when there is no ticket.
+-}
+ticketRefCell : Agent.RunMetric -> Html Message
+ticketRefCell r =
+    Html.td
+        [ style "text-align" "left"
+        , style "padding" "4px 16px 4px 0"
+        , style "border-bottom" rowBorder
+        ]
+        [ case r.ticketId of
+            Just t ->
+                Html.a
+                    [ href (Routes.toString (Routes.AgentTicket { id = t }))
+                    , style "color" "#7a9ac0"
+                    , style "text-decoration" "none"
+                    ]
+                    [ Html.text ("#" ++ String.fromInt t) ]
 
-        Nothing ->
-            "CI"
+            Nothing ->
+                Html.text "CI"
+        ]
 
 
 secondsToPosix : Int -> Time.Posix
@@ -1271,8 +1293,76 @@ principalsBody model =
                 ++ [ mutedLine "no principals yet — mint one above" ]
 
         Just principals ->
+            let
+                ( ephemeral, durable ) =
+                    List.partition isEphemeralPrincipal principals
+            in
             staleDataWarning model.principalsError
-                ++ [ principalsTable principals ]
+                ++ (if List.isEmpty durable then
+                        [ mutedLine "no durable principals — mint one above" ]
+
+                    else
+                        [ principalsTable durable ]
+                   )
+                ++ ephemeralPrincipals model ephemeral
+
+
+{-| Per-run agent tokens are named `run-<id>` and are minted/revoked
+automatically for every dispatch, so they flood the principals table. Fold them
+behind a collapsed toggle, leaving the durable (human/service) principals in the
+main table.
+-}
+isEphemeralPrincipal : Agent.Principal -> Bool
+isEphemeralPrincipal p =
+    case String.split "-" p.name of
+        [ "run", n ] ->
+            String.toInt n /= Nothing
+
+        _ ->
+            False
+
+
+ephemeralPrincipals : Model -> List Agent.Principal -> List (Html Message)
+ephemeralPrincipals model ephemeral =
+    if List.isEmpty ephemeral then
+        []
+
+    else
+        Html.button
+            [ class "agent-ephemeral-toggle"
+            , onClick AgentPrincipalsShowEphemeralToggled
+            , style "background" "transparent"
+            , style "border" "none"
+            , style "color" subtleColor
+            , style "font-family" "monospace"
+            , style "font-size" "12px"
+            , style "cursor" "pointer"
+            , style "padding" "8px 0"
+            , style "text-align" "left"
+            ]
+            [ Html.text
+                ((if model.showEphemeralPrincipals then
+                    "▾ hide "
+
+                  else
+                    "▸ show "
+                 )
+                    ++ String.fromInt (List.length ephemeral)
+                    ++ " ephemeral run "
+                    ++ (if List.length ephemeral == 1 then
+                            "principal"
+
+                        else
+                            "principals"
+                       )
+                )
+            ]
+            :: (if model.showEphemeralPrincipals then
+                    [ principalsTable ephemeral ]
+
+                else
+                    []
+               )
 
 
 principalsTable : List Agent.Principal -> Html Message
