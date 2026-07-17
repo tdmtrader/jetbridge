@@ -1297,6 +1297,41 @@ var _ = Describe("ValidateConfig", func() {
 				})
 			})
 
+			// Native review findings (agent-review-native #5): the exec
+			// exports AGENT_OUTPUT_<NAME> per output (uppercased, -→_), so
+			// an output named "schema" clobbers the load-bearing
+			// AGENT_OUTPUT_SCHEMA row, and names differing only in -/_ or
+			// case collide after mangling, silently dropping one path.
+			Context("when an agent step declares an output that collides with AGENT_OUTPUT_SCHEMA", func() {
+				BeforeEach(func() {
+					job.PlanSequence = append(job.PlanSequence, atc.Step{
+						Config: &atc.AgentStep{Name: "a", Prompt: "p", Outputs: []string{"schema"}},
+					})
+
+					config.Jobs = append(config.Jobs, job)
+				})
+
+				It("returns an error", func() {
+					Expect(errorMessages).To(HaveLen(1))
+					Expect(errorMessages[0]).To(ContainSubstring("collides with the reserved AGENT_OUTPUT_SCHEMA"))
+				})
+			})
+
+			Context("when two agent step outputs collide after env-name mangling", func() {
+				BeforeEach(func() {
+					job.PlanSequence = append(job.PlanSequence, atc.Step{
+						Config: &atc.AgentStep{Name: "a", Prompt: "p", Outputs: []string{"foo-bar", "foo_bar"}},
+					})
+
+					config.Jobs = append(config.Jobs, job)
+				})
+
+				It("returns an error", func() {
+					Expect(errorMessages).To(HaveLen(1))
+					Expect(errorMessages[0]).To(ContainSubstring("collide after AGENT_OUTPUT env-name mangling"))
+				})
+			})
+
 			Context("when an agent step has a negative budget slice", func() {
 				BeforeEach(func() {
 					job.PlanSequence = append(job.PlanSequence, atc.Step{

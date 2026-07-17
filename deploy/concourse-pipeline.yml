@@ -184,8 +184,16 @@ jobs:
           "max": 10.0,
           "pass": true,
           "threshold": 7.0
+        },
+        "metadata": {
+          "repo": "jetbridge",
+          "commit": "<the full SHA from `git -C repo rev-parse HEAD`>"
         }
       }
+
+      The metadata object is REQUIRED — the publish API rejects a review without
+      metadata.repo and metadata.commit. Fill metadata.commit with the actual
+      HEAD SHA of the repo input.
 
       If a concern cannot be proven with a test, include it in observations, not proven_issues.
       Run any generated tests to verify they actually fail against the current code before reporting.
@@ -195,7 +203,10 @@ jobs:
     # literally (dual-run #1 failed exactly this way). Model names are not
     # secrets; keep in lockstep with the agent-model secret used by dispatch.
     model: claude-sonnet-5
-    max_turns: 50
+    # The successful dual-run #2 review needed 141 turns; 50 (the plan
+    # template's guess) hit error_max_turns before review.json was written.
+    # The 30m step timeout and per-run cost visibility are the real bounds.
+    max_turns: 200
     inputs: [repo]
     outputs: [review]
     env:
@@ -216,11 +227,15 @@ jobs:
         - -ec
         - |
           echo "=== Publishing review to ATC ==="
-          curl -sf -X POST \
+          # -sS without -f: print the response body on failure instead of
+          # swallowing it (a silent -f hid a 400 for two dual-runs).
+          code=$(curl -sS -o /tmp/publish-resp -w '%{http_code}' -X POST \
             -H "Authorization: Bearer ${AGENT_REVIEW_PUBLISH_TOKEN}" \
             -H "Content-Type: application/json" \
             -d "{\"build_id\": ${BUILD_ID}, \"review\": $(cat review/review.json)}" \
-            "http://concourse-web.cicd.svc.cluster.local:8080/api/v1/agent/reviews"
+            "http://concourse-web.cicd.svc.cluster.local:8080/api/v1/agent/reviews")
+          cat /tmp/publish-resp; echo
+          [ "$code" -ge 200 ] && [ "$code" -lt 300 ] || { echo "publish failed with HTTP ${code}"; exit 1; }
           echo "Published for build ${BUILD_ID}"
 
 - name: unit-tests

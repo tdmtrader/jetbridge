@@ -284,10 +284,26 @@ func (validator *StepValidator) VisitAgent(step *AgentStep) error {
 		validator.recordError("max_turns must not be negative")
 	}
 
+	// The exec exports AGENT_OUTPUT_<NAME> (uppercased, -→_) per declared
+	// output, so names must stay distinct AFTER mangling and must not
+	// reproduce the load-bearing AGENT_OUTPUT_SCHEMA row (native review
+	// findings, agent-review-native #5).
+	seenOutputEnv := map[string]string{}
 	for _, output := range step.Outputs {
 		if output == "flight" {
 			validator.recordError("output name 'flight' is reserved for the flight recorder")
+			continue
 		}
+		mangled := strings.ToUpper(strings.ReplaceAll(output, "-", "_"))
+		if mangled == "SCHEMA" {
+			validator.recordErrorf("output name %q collides with the reserved AGENT_OUTPUT_SCHEMA env var", output)
+			continue
+		}
+		if prev, ok := seenOutputEnv[mangled]; ok {
+			validator.recordErrorf("output names %q and %q collide after AGENT_OUTPUT env-name mangling (both become AGENT_OUTPUT_%s)", prev, output, mangled)
+			continue
+		}
+		seenOutputEnv[mangled] = output
 	}
 
 	// Agent env is static-only (shared-contracts §2.8): values resolve at
