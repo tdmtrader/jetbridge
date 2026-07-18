@@ -54,6 +54,11 @@ type GateResultData struct {
 	DurationSeconds float64 `json:"duration_seconds"`
 	Summary         string  `json:"summary"`
 	LogArtifact     string  `json:"log_artifact,omitempty"`
+	// Attempt/Flaky surface the §6.3 flake stance (2026-07-17 harvest
+	// addendum): a pass on attempt N>1 is ok + flaky:true — flakiness is
+	// surfaced, never hidden. Omitted on first-attempt results.
+	Attempt int  `json:"attempt,omitempty"`
+	Flaky   bool `json:"flaky,omitempty"`
 }
 
 type SubagentCallData struct {

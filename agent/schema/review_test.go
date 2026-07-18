@@ -244,3 +244,12 @@ func TestCategoryValidate(t *testing.T) {
 		requireErrContains(t, c.Validate(), "category")
 	})
 }
+
+func TestGateAndJudgeCategoriesAreValid(t *testing.T) {
+	if err := schema.CategoryGate.Validate(); err != nil {
+		t.Fatalf("gate category: %v", err)
+	}
+	if err := schema.CategoryJudge.Validate(); err != nil {
+		t.Fatalf("judge category: %v", err)
+	}
+}
