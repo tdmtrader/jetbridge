@@ -18,6 +18,7 @@ import (
 	"text/template"
 
 	"github.com/concourse/concourse/agent/api/tickets"
+	"github.com/concourse/concourse/agent/harvest"
 	"github.com/concourse/concourse/agent/workflow"
 	"github.com/concourse/concourse/atc"
 )
@@ -133,12 +134,24 @@ func Render(in RenderInput) (atc.Config, error) {
 	}
 	// Refuse declared-but-unenforced policy blocks (dogfood ticket #5,
 	// highest-blast-radius finding): gate_policy/hitl/judge validate at
-	// import and get content-hashed as authoritative, but v0 rendering
-	// has no consumer for them (harvest-step owns gates+judge, platform-
-	// mcp-hitl owns HITL — both wave 3). Silently dropping them would let
-	// an author believe gating/HITL/judge scoring is active when it is
-	// absent. Fail loudly at render time, matching sidecars/checkpoints.
-	if len(in.Workflow.GatePolicy.Gates) > 0 || in.Workflow.GatePolicy.OnGateFailure != "" {
+	// import and get content-hashed as authoritative, but rendering must
+	// have an enforcing consumer or an author would believe gating/HITL/
+	// judge scoring is active when it is absent. Fail loudly at render
+	// time, matching sidecars/checkpoints. Relaxed (ticket #14, v0.5):
+	// harvest-runner now enforces gate_policy pre-push when every gate's
+	// scope is "full" (its in-pod fixed command map) — affected/
+	// affected_then_full still need dev-mcp (full harvest-step
+	// workstream, wave 3) and stay refused, as does any on_gate_failure
+	// other than the only v1 value.
+	gatesEnforceable := true
+	for _, g := range in.Workflow.GatePolicy.Gates {
+		if g.Scope != "full" {
+			gatesEnforceable = false
+			break
+		}
+	}
+	onGateFailureOK := in.Workflow.GatePolicy.OnGateFailure == "" || in.Workflow.GatePolicy.OnGateFailure == "needs_review"
+	if !gatesEnforceable || !onGateFailureOK {
 		return atc.Config{}, fmt.Errorf("workflow %q declares a gate_policy: v0 manual dispatch cannot enforce gates (harvest-step, wave 3) — remove the block or wait for harvest", in.WorkflowName)
 	}
 	if in.Workflow.HITL.AskTimeout != "" || in.Workflow.HITL.AskTimeoutSeconds != 0 {
@@ -187,8 +200,10 @@ func Render(in RenderInput) (atc.Config, error) {
 	// stable agent/ticket-<id> branch. The workspace artifact is
 	// guaranteed by the import gate (a workflow must produce
 	// "workspace"); identity travels as env because a Go renderer cannot
-	// place ((run_id)) in the int pipeline_run_id field (F30). v0 emits
-	// no gates/judge/dev_mcp — those workflows are refused above.
+	// place ((run_id)) in the int pipeline_run_id field (F30). A
+	// full-scope gate_policy rides along (harvest-runner enforces it
+	// pre-push); judge/dev_mcp are never emitted — those workflows are
+	// refused above.
 	if in.Ticket.ID > 0 {
 		plan = append(plan, atc.Step{Config: &atc.HarvestStep{
 			Name:         "harvest",
@@ -198,6 +213,7 @@ func Render(in RenderInput) (atc.Config, error) {
 			TicketID:     in.Ticket.ID,
 			Branch:       fmt.Sprintf("agent/ticket-%d", in.Ticket.ID),
 			Push:         true,
+			GatePolicy:   harvestGatePolicy(in.Workflow.GatePolicy),
 			Env: map[string]string{
 				"AGENT_TICKET_ID":        strconv.Itoa(in.Ticket.ID),
 				"AGENT_PIPELINE_RUN_ID":  "((run_id))",
@@ -265,6 +281,23 @@ func renderPrompt(key, body string, in RenderInput) (string, error) {
 		return "", fmt.Errorf("prompt %q: %w", key, err)
 	}
 	return out.String(), nil
+}
+
+// harvestGatePolicy converts the workflow-YAML gate_policy grammar
+// (agent/workflow.GatePolicy, validated at import) into the executable
+// shape harvest-runner interprets (agent/harvest.GatePolicy). Callers
+// must only pass a policy Render has already verified is enforceable
+// (every gate scope "full") — the conversion itself is a plain field
+// copy, no further validation.
+func harvestGatePolicy(p workflow.GatePolicy) harvest.GatePolicy {
+	gates := make([]harvest.Gate, len(p.Gates))
+	for i, g := range p.Gates {
+		gates[i] = harvest.Gate{
+			Gate: g.Gate, Scope: g.Scope, Focus: g.Focus,
+			Timeout: g.Timeout, Retries: g.Retries,
+		}
+	}
+	return harvest.GatePolicy{Gates: gates, OnGateFailure: p.OnGateFailure}
 }
 
 func toJSONMap(v any) map[string]any {

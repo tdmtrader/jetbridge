@@ -10,27 +10,31 @@ import (
 	"strings"
 )
 
-// Results is the §2.8.1 results.json payload (v0 subset: no gates, no
-// judge — those configs are refused, never skipped).
+// Results is the §2.8.1 results.json payload (v0.5 subset: gates run
+// pre-push per §6.3; judge is still refused, never skipped).
 type Results struct {
 	Status   string          `json:"status"` // pass | fail | error
 	Metadata ResultsMetadata `json:"metadata"`
 }
 
 type ResultsMetadata struct {
-	PushedBranch string `json:"pushed_branch,omitempty"`
-	HeadSHA      string `json:"head_sha,omitempty"`
-	Detail       string `json:"detail,omitempty"`
+	PushedBranch string        `json:"pushed_branch,omitempty"`
+	HeadSHA      string        `json:"head_sha,omitempty"`
+	Detail       string        `json:"detail,omitempty"`
+	Gates        []GateOutcome `json:"gates,omitempty"`
 }
 
-// Run executes the harvest v0 flow against workspaceDir: refuse
+// Run executes the harvest v0.5 flow against workspaceDir: refuse
 // unenforceable config (exit 2), verify the workspace is a committed
 // git tree (F33: dirty ⇒ fail, exit 1, nothing pushed, nothing
-// auto-discarded), then push-by-sha with --force-with-lease to the
-// stable ticket branch (exit taxonomy per §2.8.1: 0 pass, 1 fail,
-// 2 platform error). credsDir holds the mounted agent-harvest-git-<slug>
-// secret files (`token`, optional `username`); empty credsDir pushes
-// with the remote's own auth (file:// remotes in tests).
+// auto-discarded), run the §6.3 gate policy (any declared gates),
+// then — only if every gate passed — push-by-sha with
+// --force-with-lease to the stable ticket branch (exit taxonomy per
+// §2.8.1: 0 pass, 1 fail, 2 platform error; a failed gate is a "fail"
+// with no push, an errored gate is an "error" with no push).
+// credsDir holds the mounted agent-harvest-git-<slug> secret files
+// (`token`, optional `username`); empty credsDir pushes with the
+// remote's own auth (file:// remotes in tests).
 func Run(cfg Config, workspaceDir, credsDir string, out io.Writer) int {
 	emit := func(status, detail string, meta ResultsMetadata) int {
 		meta.Detail = detail
@@ -45,13 +49,13 @@ func Run(cfg Config, workspaceDir, credsDir string, out io.Writer) int {
 		}
 	}
 
-	// v0 refusals — these blocks validated at import and MUST NOT be
-	// silently skipped (the dogfood ticket #5 pattern).
-	if len(cfg.GatePolicy.Gates) > 0 || cfg.GatePolicy.OnGateFailure != "" {
-		return emit("error", "gate_policy declared but harvest v0 has no gate engine (full harvest-step workstream)", ResultsMetadata{})
-	}
+	// v0.5 refusal — judge is still the full harvest-step workstream
+	// (wave 3); this block validated at import and MUST NOT be
+	// silently skipped (the dogfood ticket #5 pattern). gate_policy is
+	// handled below: v0.5 runs it (scope "full" only) rather than
+	// refusing it outright.
 	if cfg.Judge != nil {
-		return emit("error", "judge declared but harvest v0 has no judge (full harvest-step workstream)", ResultsMetadata{})
+		return emit("error", "judge declared but harvest v0.5 has no judge (full harvest-step workstream)", ResultsMetadata{})
 	}
 	if cfg.Push && cfg.Branch == "" {
 		return emit("error", "push requires a branch", ResultsMetadata{})
@@ -86,6 +90,30 @@ func Run(cfg Config, workspaceDir, credsDir string, out io.Writer) int {
 	}
 
 	meta := ResultsMetadata{HeadSHA: head}
+
+	// Gates slot between the cleanliness check and the push (§6.3):
+	// needs_review must arrive pre-verified. Any failed gate blocks the
+	// push with exit 1 (fail); any errored gate (unenforceable scope,
+	// unknown gate name, tooling fault) blocks it with exit 2 (error) —
+	// neither is silent, both land in Metadata.Gates.
+	if len(cfg.GatePolicy.Gates) > 0 {
+		outcomes, gatesErr := RunGates(cfg.GatePolicy, workspaceDir)
+		meta.Gates = outcomes
+		if gatesErr != nil {
+			return emit("error", "gate engine failure: "+gatesErr.Error(), meta)
+		}
+		for _, o := range outcomes {
+			switch o.Status {
+			case "ok":
+				continue
+			case "failed":
+				return emit("fail", fmt.Sprintf("gate %q failed — nothing pushed:\n%s", o.Gate, o.Detail), meta)
+			default: // "error"
+				return emit("error", fmt.Sprintf("gate %q errored: %s", o.Gate, o.Detail), meta)
+			}
+		}
+	}
+
 	if !cfg.Push {
 		return emit("pass", "", meta)
 	}
