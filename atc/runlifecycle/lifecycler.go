@@ -10,8 +10,15 @@ import (
 
 // Lifecycler is the pipeline_run_lifecycler RunnableComponent: it completes
 // quiescent runs with a worst-of aggregate status, reopens completed runs
-// that gained new builds (retriggers), and archives runs past their
-// template's retention policy via the existing pipeline-archival machinery.
+// that gained new builds (retriggers), archives runs past their template's
+// retention policy via the existing pipeline-archival machinery, and
+// archives the runs and templates of terminally-disposed agent tickets (C3,
+// UI audit 2026-07-17) — dead dashboard cards otherwise. Archiving lives
+// here, not in a ticket-transition hook, so it catches every Transition
+// writer (HTTP, dispatch, harvest, future reconcilers), survives web
+// restarts between transition and archive, and can never block or fail a
+// transition; terminal states have no outgoing edges, so it never races a
+// requeue.
 type Lifecycler struct {
 	runFactory db.PipelineRunFactory
 }
@@ -69,6 +76,32 @@ func (l *Lifecycler) Run(ctx context.Context) error {
 			continue
 		}
 		logger.Info("run-archived", lager.Data{"run-id": run.ID()})
+	}
+
+	ticketRuns, err := l.runFactory.RunsForTerminalTickets()
+	if err != nil {
+		logger.Error("failed-to-list-terminal-ticket-runs", err)
+		return err
+	}
+	for _, run := range ticketRuns {
+		if err := run.Archive(); err != nil {
+			logger.Error("failed-to-archive-terminal-ticket-run", err, lager.Data{"run-id": run.ID()})
+			continue
+		}
+		logger.Info("run-archived-terminal-ticket", lager.Data{"run-id": run.ID()})
+	}
+
+	templates, err := l.runFactory.TemplatesForTerminalTickets()
+	if err != nil {
+		logger.Error("failed-to-list-terminal-ticket-templates", err)
+		return err
+	}
+	for _, pipeline := range templates {
+		if err := pipeline.Archive(); err != nil {
+			logger.Error("failed-to-archive-terminal-ticket-template", err, lager.Data{"pipeline-id": pipeline.ID(), "pipeline-name": pipeline.Name()})
+			continue
+		}
+		logger.Info("template-archived-terminal-ticket", lager.Data{"pipeline-id": pipeline.ID(), "pipeline-name": pipeline.Name()})
 	}
 
 	return nil

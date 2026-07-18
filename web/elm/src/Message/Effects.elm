@@ -216,6 +216,7 @@ type Effect
     | LoadFavoritedInstanceGroups
     | GetHostname
     | FetchBuildAgentReviews Concourse.BuildId
+    | FetchBuildAgentMetrics Concourse.BuildId
     | FetchTeamAgentReviews Concourse.TeamName
     | FetchPipelineRuns Concourse.PipelineIdentifier
     | FetchAgentRunMetrics
@@ -791,6 +792,12 @@ runEffect effect key csrfToken =
                 |> Api.expectJson (Json.Decode.list Concourse.AgentReview.decodeBuildReview)
                 |> Api.request
                 |> Task.attempt BuildAgentReviewsFetched
+
+        FetchBuildAgentMetrics buildId ->
+            Api.get (Endpoints.BuildAgentMetrics buildId)
+                |> Api.expectJson (Json.Decode.list Concourse.Agent.decodeRunMetric)
+                |> Api.request
+                |> Task.attempt BuildAgentMetricsFetched
 
         FetchTeamAgentReviews teamName ->
             Api.get (Endpoints.TeamAgentReviews teamName)

@@ -193,6 +193,190 @@ var _ = Describe("PipelineRunFactory", func() {
 		})
 	})
 
+	// C3 (UI audit 2026-07-17): once a ticket reaches a terminal state its
+	// agent-ticket-<id> pipelines are dead dashboard cards. The lifecycler
+	// archives them via these two selections.
+	Describe("RunsForTerminalTickets / TemplatesForTerminalTickets", func() {
+		// The linkage only trusts the dispatch naming convention: the
+		// ticket's own `agent-ticket-<id>` template on the main team.
+		// pipeline_run_id is caller-writable (F30), so anything else —
+		// including the suite's shared `run-template` fixture — must never
+		// be selected for archival.
+		var ticketTemplate db.Pipeline
+
+		BeforeEach(func() {
+			mainTeam, found, err := teamFactory.FindTeam(atc.DefaultTeamName)
+			Expect(err).ToNot(HaveOccurred())
+			if !found {
+				mainTeam, err = teamFactory.CreateTeam(atc.Team{Name: atc.DefaultTeamName})
+				Expect(err).ToNot(HaveOccurred())
+			}
+			ticketTemplate, _, err = mainTeam.SavePipeline(
+				atc.PipelineRef{Name: "agent-ticket-7"}, templateConfig, db.ConfigVersion(0), false)
+			Expect(err).ToNot(HaveOccurred())
+		})
+
+		runIDs := func(runs []db.PipelineRun) []int {
+			ids := []int{}
+			for _, r := range runs {
+				ids = append(ids, r.ID())
+			}
+			return ids
+		}
+
+		pipelineIDs := func(pipelines []db.Pipeline) []int {
+			ids := []int{}
+			for _, p := range pipelines {
+				ids = append(ids, p.ID())
+			}
+			return ids
+		}
+
+		It("no-ops when the agent_tickets table is absent (pre-ticket-core DB / downgrade window)", func() {
+			_, err := dbConn.Exec(`DROP TABLE agent_tickets CASCADE`)
+			Expect(err).ToNot(HaveOccurred())
+
+			runs, err := factory.RunsForTerminalTickets()
+			Expect(err).ToNot(HaveOccurred())
+			Expect(runs).To(BeEmpty())
+
+			templates, err := factory.TemplatesForTerminalTickets()
+			Expect(err).ToNot(HaveOccurred())
+			Expect(templates).To(BeEmpty())
+		})
+
+		It("selects every attempt's run plus the base template, exactly while the ticket is terminal", func() {
+			// two attempts = two run instances of the same template
+			first, err := factory.CreateRun(ticketTemplate.ID(), nil, "some-user")
+			Expect(err).ToNot(HaveOccurred())
+			Expect(first.Finish(db.PipelineRunSucceeded)).To(Succeed())
+
+			second, err := factory.CreateRun(ticketTemplate.ID(), nil, "some-user")
+			Expect(err).ToNot(HaveOccurred())
+			Expect(second.Finish(db.PipelineRunFailed)).To(Succeed())
+
+			// latest attempt is what the ticket links (contracts §1.7)
+			_, err = dbConn.Exec(
+				`INSERT INTO agent_tickets (id, title, repo, pipeline_run_id) VALUES (7, 't', 'r', $1)`,
+				second.ID())
+			Expect(err).ToNot(HaveOccurred())
+
+			// every live state keeps the pipelines alone
+			for _, state := range []string{"draft", "queued", "running", "needs_review", "sent_back", "failed", "errored"} {
+				_, err = dbConn.Exec(`UPDATE agent_tickets SET state = $1 WHERE id = 7`, state)
+				Expect(err).ToNot(HaveOccurred())
+
+				runs, err := factory.RunsForTerminalTickets()
+				Expect(err).ToNot(HaveOccurred())
+				Expect(runs).To(BeEmpty(), "state %s must not archive runs", state)
+
+				templates, err := factory.TemplatesForTerminalTickets()
+				Expect(err).ToNot(HaveOccurred())
+				Expect(templates).To(BeEmpty(), "state %s must not archive the template", state)
+			}
+
+			// every terminal state selects BOTH attempts' runs and the template
+			for _, state := range []string{"merged", "merged_with_fixes", "abandoned", "concluded"} {
+				_, err = dbConn.Exec(`UPDATE agent_tickets SET state = $1 WHERE id = 7`, state)
+				Expect(err).ToNot(HaveOccurred())
+
+				runs, err := factory.RunsForTerminalTickets()
+				Expect(err).ToNot(HaveOccurred())
+				Expect(runIDs(runs)).To(ConsistOf(first.ID(), second.ID()), "state %s", state)
+
+				templates, err := factory.TemplatesForTerminalTickets()
+				Expect(err).ToNot(HaveOccurred())
+				Expect(pipelineIDs(templates)).To(ConsistOf(ticketTemplate.ID()), "state %s", state)
+			}
+
+			// archiving converges to steady-state empty selections
+			runs, err := factory.RunsForTerminalTickets()
+			Expect(err).ToNot(HaveOccurred())
+			for _, run := range runs {
+				Expect(run.Archive()).To(Succeed())
+			}
+			templates, err := factory.TemplatesForTerminalTickets()
+			Expect(err).ToNot(HaveOccurred())
+			for _, p := range templates {
+				Expect(p.Archive()).To(Succeed())
+			}
+
+			runs, err = factory.RunsForTerminalTickets()
+			Expect(err).ToNot(HaveOccurred())
+			Expect(runs).To(BeEmpty())
+
+			templates, err = factory.TemplatesForTerminalTickets()
+			Expect(err).ToNot(HaveOccurred())
+			Expect(templates).To(BeEmpty())
+		})
+
+		It("holds back both the run and the template while the run is still aggregate-running", func() {
+			run, err := factory.CreateRun(ticketTemplate.ID(), nil, "some-user")
+			Expect(err).ToNot(HaveOccurred())
+			// deliberately NOT finished: status stays 'running'
+
+			_, err = dbConn.Exec(
+				`INSERT INTO agent_tickets (id, title, repo, state, pipeline_run_id) VALUES (7, 't', 'r', 'merged', $1)`,
+				run.ID())
+			Expect(err).ToNot(HaveOccurred())
+
+			runs, err := factory.RunsForTerminalTickets()
+			Expect(err).ToNot(HaveOccurred())
+			Expect(runs).To(BeEmpty())
+
+			templates, err := factory.TemplatesForTerminalTickets()
+			Expect(err).ToNot(HaveOccurred())
+			Expect(templates).To(BeEmpty())
+
+			// once the Finish pass completes the run, the whole group goes
+			Expect(run.Finish(db.PipelineRunSucceeded)).To(Succeed())
+
+			runs, err = factory.RunsForTerminalTickets()
+			Expect(err).ToNot(HaveOccurred())
+			Expect(runIDs(runs)).To(ConsistOf(run.ID()))
+
+			templates, err = factory.TemplatesForTerminalTickets()
+			Expect(err).ToNot(HaveOccurred())
+			Expect(pipelineIDs(templates)).To(ConsistOf(ticketTemplate.ID()))
+		})
+
+		It("never selects a pipeline that is not the ticket's own agent-ticket template (poisoned pipeline_run_id, F30)", func() {
+			// a caller-writable pipeline_run_id pointed at a run of some
+			// unrelated template — here the suite's shared run-template on
+			// another team — must never mark that victim for archival
+			victim, err := factory.CreateRun(template.ID(), nil, "some-user")
+			Expect(err).ToNot(HaveOccurred())
+			Expect(victim.Finish(db.PipelineRunSucceeded)).To(Succeed())
+
+			_, err = dbConn.Exec(
+				`INSERT INTO agent_tickets (id, title, repo, state, pipeline_run_id) VALUES (7, 't', 'r', 'abandoned', $1)`,
+				victim.ID())
+			Expect(err).ToNot(HaveOccurred())
+
+			runs, err := factory.RunsForTerminalTickets()
+			Expect(err).ToNot(HaveOccurred())
+			Expect(runs).To(BeEmpty())
+
+			templates, err := factory.TemplatesForTerminalTickets()
+			Expect(err).ToNot(HaveOccurred())
+			Expect(templates).To(BeEmpty())
+		})
+
+		It("ignores terminal tickets that were never dispatched (no pipeline_run_id linkage)", func() {
+			_, err := dbConn.Exec(
+				`INSERT INTO agent_tickets (id, title, repo, state) VALUES (7, 't', 'r', 'abandoned')`)
+			Expect(err).ToNot(HaveOccurred())
+
+			runs, err := factory.RunsForTerminalTickets()
+			Expect(err).ToNot(HaveOccurred())
+			Expect(runs).To(BeEmpty())
+
+			templates, err := factory.TemplatesForTerminalTickets()
+			Expect(err).ToNot(HaveOccurred())
+			Expect(templates).To(BeEmpty())
+		})
+	})
+
 	// review finding (2026-07-11): a pipeline instance {name, {"run": N}} can
 	// pre-exist (e.g. a user ran fly set-pipeline with those instance vars).
 	// CreateRun used to call savePipeline with from=0 assuming the instance

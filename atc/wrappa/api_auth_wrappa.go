@@ -45,7 +45,8 @@ func (wrappa *APIAuthWrappa) Wrap(handlers rata.Handlers) rata.Handlers {
 		// pipeline is public or authorized
 		case atc.GetBuild,
 			atc.BuildResources,
-			atc.GetBuildAgentReviews:
+			atc.GetBuildAgentReviews,
+			atc.ListBuildAgentRunMetrics:
 			newHandler = wrappa.checkBuildReadAccessHandlerFactory.AnyJobHandler(handler, rejector)
 
 		// pipeline and job are public or authorized

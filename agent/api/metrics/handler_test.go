@@ -53,6 +53,76 @@ func TestSubmitAndListByTicket(t *testing.T) {
 	}
 }
 
+func TestListByBuild(t *testing.T) {
+	store := metrics.NewMemoryStore()
+	h := metrics.NewHandler(store)
+
+	for _, body := range []string{
+		`{"build_id":9,"plan_id":"abc","step_name":"implement","status":"ok","ticket_id":7,"cost_usd":0.5}`,
+		`{"build_id":9,"plan_id":"def","step_name":"review","status":"ok","ticket_id":7,"cost_usd":0.25}`,
+		`{"build_id":10,"plan_id":"abc","step_name":"implement","status":"ok","ticket_id":7,"cost_usd":1.0}`,
+	} {
+		rec := httptest.NewRecorder()
+		h.SubmitMetrics(rec, httptest.NewRequest("POST", "/api/v1/agent/metrics", strings.NewReader(body)))
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+		}
+	}
+
+	req := httptest.NewRequest("GET", "/api/v1/builds/9/agent-metrics", nil)
+	req.Form = map[string][]string{":build_id": {"9"}}
+	rec := httptest.NewRecorder()
+	h.ListByBuild(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var rows []schema.RunMetrics
+	if err := json.NewDecoder(rec.Body).Decode(&rows); err != nil {
+		t.Fatalf("decode list body: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("expected exactly 2 rows for build 9, got %d", len(rows))
+	}
+	for _, row := range rows {
+		if row.BuildID != 9 {
+			t.Fatalf("expected only build 9 rows, got build %d", row.BuildID)
+		}
+	}
+}
+
+func TestListByBuildEmptyIsJSONArray(t *testing.T) {
+	h := metrics.NewHandler(metrics.NewMemoryStore())
+	req := httptest.NewRequest("GET", "/api/v1/builds/42/agent-metrics", nil)
+	req.Form = map[string][]string{":build_id": {"42"}}
+	rec := httptest.NewRecorder()
+	h.ListByBuild(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if body := strings.TrimSpace(rec.Body.String()); body != "[]" {
+		t.Fatalf("expected empty JSON array, got %q", body)
+	}
+}
+
+func TestListByBuildRejectsInvalidBuildID(t *testing.T) {
+	h := metrics.NewHandler(metrics.NewMemoryStore())
+	for _, tc := range []struct{ name, id string }{
+		{"missing", ""},
+		{"non-numeric", "abc"},
+		{"non-positive", "0"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", "/api/v1/builds/x/agent-metrics", nil)
+			req.Form = map[string][]string{":build_id": {tc.id}}
+			rec := httptest.NewRecorder()
+			h.ListByBuild(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400 for build_id %q, got %d", tc.id, rec.Code)
+			}
+		})
+	}
+}
+
 func TestSubmitRejectsBadPayload(t *testing.T) {
 	h := metrics.NewHandler(metrics.NewMemoryStore())
 	rec := httptest.NewRecorder()
@@ -97,6 +167,14 @@ func TestStoreErrorsSurfaceAs500(t *testing.T) {
 	h.ListByTicket(rec, req)
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("list: expected 500 on store error, got %d", rec.Code)
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest("GET", "/api/v1/builds/9/agent-metrics", nil)
+	req.Form = map[string][]string{":build_id": {"9"}}
+	h.ListByBuild(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("list-by-build: expected 500 on store error, got %d", rec.Code)
 	}
 }
 

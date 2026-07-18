@@ -174,6 +174,7 @@ func (a *auditor) ValidateAction(action string) bool {
 		atc.SubmitAgentRunMetrics,
 		atc.ListAgentRunMetrics,
 		atc.ListRecentAgentRunMetrics,
+		atc.ListBuildAgentRunMetrics,
 		atc.ListAgentTickets,
 		atc.CreateAgentTicket,
 		atc.GetAgentTicket,

@@ -27,6 +27,7 @@ import Build.StepTree.Models as STModels
 import Build.StepTree.StepTree as StepTree
 import Build.Styles as Styles
 import Concourse
+import Concourse.Agent
 import Concourse.AgentReview
 import Concourse.BuildStatus exposing (BuildStatus(..))
 import DateFormat
@@ -131,6 +132,8 @@ init flags =
           , reapTime = Nothing
           , createdBy = Nothing
           , agentReviews = []
+          , agentRunMetrics = []
+          , agentFetchedBuildId = Nothing
           , agentReviewLoadError = False
           , agentReviewPanelExpanded = True
           , expandedFindings = Set.empty
@@ -185,6 +188,7 @@ changeToBuild { highlight, pageType, fromBuildPage } ( model, effects ) =
             , output = Empty
             , autoScroll = True
             , highlight = highlight
+            , agentRunMetrics = []
           }
         , case pageType of
             OneOffBuildPage buildId ->
@@ -327,6 +331,17 @@ handleCallback action ( model, effects ) =
             -- of breaking the page.
             ( { model | agentReviewLoadError = True }, effects )
 
+        BuildAgentMetricsFetched (Ok rows) ->
+            -- The callback carries no build id, so a slow response for the
+            -- previous build can land after an in-app switch; each row
+            -- carries its build id, so keep only the current build's.
+            ( { model | agentRunMetrics = List.filter (\r -> r.buildId == model.id) rows }, effects )
+
+        BuildAgentMetricsFetched (Err _) ->
+            -- The cost chip is best-effort provenance; a fetch error just
+            -- leaves it hidden.
+            ( model, effects )
+
         AgentReviewVerdictSubmitted findingId (Ok ()) ->
             ( { model | verdictErrors = Set.remove findingId model.verdictErrors }
             , effects ++ [ FetchBuildAgentReviews model.id ]
@@ -411,11 +426,25 @@ handleDelivery session delivery ( model, effects ) =
             case ( model.hasLoadedYet, buildStatus ) of
                 ( True, Just ( status, _ ) ) ->
                     ( newModel
-                    , if Concourse.BuildStatus.isRunning model.status then
+                    , (if Concourse.BuildStatus.isRunning model.status then
                         newEffects ++ [ SetFavIcon (Just status) ]
 
-                      else
+                       else
                         newEffects
+                      )
+                        ++ (if
+                                Concourse.BuildStatus.isRunning model.status
+                                    && not (Concourse.BuildStatus.isRunning status)
+                            then
+                                -- agent steps ingest their metrics as they
+                                -- complete, so a build watched live holds the
+                                -- page-load snapshot; refresh the spend chip
+                                -- once the build finishes.
+                                [ FetchBuildAgentMetrics model.id ]
+
+                            else
+                                []
+                           )
                     )
 
                 _ ->
@@ -648,6 +677,9 @@ updateOutput updater ( model, effects ) =
 handleBuildFetched : Concourse.Build -> ET Model
 handleBuildFetched build ( model, effects ) =
     let
+        agentRefetch =
+            model.agentFetchedBuildId /= Just build.id
+
         withBuild =
             { model
                 | reapTime = build.reapTime
@@ -657,6 +689,25 @@ handleBuildFetched build ( model, effects ) =
 
                     else
                         Empty
+                , agentFetchedBuildId = Just build.id
+                , agentRunMetrics =
+                    if agentRefetch then
+                        []
+
+                    else
+                        model.agentRunMetrics
+                , agentReviews =
+                    if agentRefetch then
+                        []
+
+                    else
+                        model.agentReviews
+                , agentReviewLoadError =
+                    if agentRefetch then
+                        False
+
+                    else
+                        model.agentReviewLoadError
             }
 
         fetchJobAndHistory =
@@ -670,13 +721,18 @@ handleBuildFetched build ( model, effects ) =
                     []
 
         fetchAgentReviews =
-            -- Only fetch once per build: either this is the first fetch for a
-            -- build we haven't loaded yet, or we're switching to a different
-            -- build id. Without this guard, handleBuildFetched fires on every
-            -- poll while a build is running and would re-request reviews
-            -- continuously.
-            if not model.hasLoadedYet || build.id /= model.id then
-                [ FetchBuildAgentReviews build.id ]
+            -- Fetch agent reviews/metrics once per build id, clearing the
+            -- previous build's rows when the id changes. model.id can't
+            -- serve as the guard: Header.changeToBuild stamps it with the
+            -- target build BEFORE that build's BuildFetched arrives, so an
+            -- id-comparison guard never fires on in-app build switches and
+            -- the previous build's reviews and spend would stick. Tracking
+            -- the id we last fetched for survives the switch and still
+            -- suppresses the 1s pending-poll spam.
+            if agentRefetch then
+                [ FetchBuildAgentReviews build.id
+                , FetchBuildAgentMetrics build.id
+                ]
 
             else
                 []
@@ -872,13 +928,69 @@ viewBuildPage session model =
 {-| When a build belongs to an `agent-ticket-<id>` pipeline, show a slim
 provenance bar linking back to the originating ticket and attributing the run.
 Detection is purely from the pipeline name + instance vars the build already
-carries — no server round-trip. Renders nothing for ordinary builds.
+carries — no server round-trip. A build with recorded agent spend but no
+ticket context (e.g. a CI build running review steps) still gets the bar,
+reduced to just the cost chip. Renders nothing for ordinary builds.
 -}
-ticketContextBar : { a | job : Maybe Concourse.JobIdentifier, createdBy : Concourse.BuildCreatedBy } -> Html Message
-ticketContextBar { job, createdBy } =
+ticketContextBar :
+    { a
+        | job : Maybe Concourse.JobIdentifier
+        , createdBy : Concourse.BuildCreatedBy
+        , agentRunMetrics : List Concourse.Agent.RunMetric
+    }
+    -> Html Message
+ticketContextBar { job, createdBy, agentRunMetrics } =
+    let
+        totalCost =
+            agentRunMetrics |> List.map .costUsd |> List.sum
+
+        costChip =
+            if totalCost > 0 then
+                [ Html.span
+                    [ id "build-agent-cost"
+                    , style "margin-left" "auto"
+                    , style "font-family" "monospace"
+                    , style "color" "#b0b0b0"
+                    ]
+                    [ Html.text
+                        ("agent spend $"
+                            ++ formatUsd totalCost
+                            ++ " · "
+                            ++ String.fromInt (List.length agentRunMetrics)
+                            ++ (if List.length agentRunMetrics == 1 then
+                                    " run"
+
+                                else
+                                    " runs"
+                               )
+                        )
+                    ]
+                ]
+
+            else
+                []
+
+        bar barId children =
+            Html.div
+                [ id barId
+                , style "display" "flex"
+                , style "align-items" "center"
+                , style "gap" "6px"
+                , style "padding" "6px 12px"
+                , style "background" "#1b222b"
+                , style "border-bottom" "1px solid #2d3a48"
+                , style "color" "#9aa39b"
+                , style "font-size" "13px"
+                ]
+                children
+    in
     case job |> Maybe.andThen agentTicketId of
         Nothing ->
-            Html.text ""
+            if List.isEmpty costChip then
+                Html.text ""
+
+            else
+                bar "build-agent-cost-bar" costChip
 
         Just ticketId ->
             let
@@ -902,27 +1014,53 @@ ticketContextBar { job, createdBy } =
                         Nothing ->
                             ""
             in
-            Html.div
-                [ id "build-ticket-context"
-                , style "display" "flex"
-                , style "align-items" "center"
-                , style "gap" "6px"
-                , style "padding" "6px 12px"
-                , style "background" "#1b222b"
-                , style "border-bottom" "1px solid #2d3a48"
-                , style "color" "#9aa39b"
-                , style "font-size" "13px"
-                ]
-                [ Html.text "part of"
-                , Html.a
+            bar "build-ticket-context"
+                ([ Html.text "part of"
+                 , Html.a
                     [ href (Routes.toString (Routes.AgentTicket { id = ticketId }))
                     , style "color" "#7a9ac0"
                     , style "text-decoration" "none"
                     , style "font-weight" "700"
                     ]
                     [ Html.text ("agent ticket #" ++ String.fromInt ticketId) ]
-                , Html.text (runLabel ++ attribution)
-                ]
+                 , Html.text (runLabel ++ attribution)
+                 ]
+                    ++ costChip
+                )
+
+
+{-| Same rendering as the other agent surfaces: cents-precision dollars.
+-}
+formatUsd : Float -> String
+formatUsd amount =
+    let
+        cents =
+            round (amount * 100)
+
+        absCents =
+            abs cents
+
+        dollars =
+            absCents // 100
+
+        remainder =
+            modBy 100 absCents
+
+        fraction =
+            if remainder < 10 then
+                "0" ++ String.fromInt remainder
+
+            else
+                String.fromInt remainder
+
+        sign =
+            if cents < 0 then
+                "-"
+
+            else
+                ""
+    in
+    sign ++ String.fromInt dollars ++ "." ++ fraction
 
 
 {-| Parse the ticket id out of an `agent-ticket-<id>` pipeline name.

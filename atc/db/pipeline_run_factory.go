@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"code.cloudfoundry.org/lager/v3"
 	"code.cloudfoundry.org/lager/v3/lagerctx"
 	sq "github.com/Masterminds/squirrel"
+	"github.com/concourse/concourse/agent/api/tickets"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db/lock"
 )
@@ -60,6 +62,26 @@ type PipelineRunFactory interface {
 	// migrated (or was downgraded) no ticket claim is verifiable and this
 	// reports false (fail closed — there are no legitimate tickets to claim).
 	TicketBelongsToRun(ticketID, runID int) (bool, error)
+
+	// RunsForTerminalTickets returns unarchived, no-longer-running runs
+	// whose template pipeline belongs to a terminally-disposed agent ticket
+	// (C3, UI audit 2026-07-17). Scoped by template rather than the latest
+	// attempt: a requeued ticket leaves one run instance per attempt and
+	// every one of them is a dead dashboard card once the ticket is
+	// terminal. The linkage is pinned to the ticket's own
+	// `agent-ticket-<id>` template on the main team — pipeline_run_id is
+	// caller-writable (F30) and archival is destructive, so an unpinned
+	// join would archive arbitrary victim pipelines. Still-running runs are
+	// held back so the lifecycler's Finish pass completes them first; both
+	// return empty on a pre-ticket-core DB.
+	RunsForTerminalTickets() ([]PipelineRun, error)
+
+	// TemplatesForTerminalTickets returns the unarchived base template
+	// pipelines (template = true, no instance vars) of terminally-disposed
+	// agent tickets, held back while any of their runs is still
+	// aggregate-running. Without this the permanently-gray template card
+	// keeps rendering after every run instance is archived.
+	TemplatesForTerminalTickets() ([]Pipeline, error)
 }
 
 // NewPipelineRunFactory constructs the factory. The CheckFactory is
@@ -430,15 +452,9 @@ func (f *pipelineRunFactory) TicketBelongsToRun(ticketID, runID int) (bool, erro
 		return false, nil
 	}
 
-	// agent_tickets is owned by ticket-core (migration 1773106062) and may
-	// be absent on a not-yet-migrated or downgraded DB; cross-aggregate refs
-	// are plain int columns with no SQL FKs (§1.1), so probe for the table
-	// first. Absent table ⇒ there are no tickets, so no claim can be
-	// legitimate: fail closed. The probe is a separate statement because
-	// Postgres resolves every relation named in a query at parse time, even
-	// in dead branches.
-	var tableExists bool
-	err := f.conn.QueryRow(`SELECT to_regclass('agent_tickets') IS NOT NULL`).Scan(&tableExists)
+	// Absent table ⇒ there are no tickets, so no claim can be legitimate:
+	// fail closed.
+	tableExists, err := f.agentTicketsTableExists()
 	if err != nil {
 		return false, err
 	}
@@ -455,6 +471,102 @@ func (f *pipelineRunFactory) TicketBelongsToRun(ticketID, runID int) (bool, erro
 		return false, err
 	}
 	return exists, nil
+}
+
+// agentTicketsTableExists probes for ticket-core's table (migration
+// 1773106062), which may be absent on a not-yet-migrated or downgraded DB;
+// cross-aggregate refs are plain int columns with no SQL FKs (§1.1). The
+// probe is a separate statement because Postgres resolves every relation
+// named in a query at parse time, even in dead branches.
+func (f *pipelineRunFactory) agentTicketsTableExists() (bool, error) {
+	var tableExists bool
+	err := f.conn.QueryRow(`SELECT to_regclass('agent_tickets') IS NOT NULL`).Scan(&tableExists)
+	return tableExists, err
+}
+
+// terminalTicketLinkage is the shared subquery: template pipeline ids
+// reachable from a terminal ticket through its dispatched run
+// (agent_tickets.pipeline_run_id → pipeline_runs.template_pipeline_id).
+// The linkage additionally requires the template to be the ticket's OWN
+// `agent-ticket-<id>` pipeline on the main team (the dispatch naming
+// convention, agent/dispatch/dispatch.go). pipeline_run_id is
+// caller-writable through PUT .../state (same F30 id class that
+// TicketBelongsToRun exists for), and this is a DESTRUCTIVE consumer — an
+// unconstrained join would let a tickets:write principal point a ticket at
+// an arbitrary victim run and have the lifecycler archive that victim's
+// template, re-archiving it every tick forever. With the name+team pin, a
+// poisoned run id can at worst archive the ticket's own pipelines, which
+// is what happens at terminal anyway.
+func terminalTicketLinkage() (string, []any) {
+	states := tickets.TerminalStates()
+	marks := make([]string, len(states))
+	args := make([]any, len(states))
+	for i, s := range states {
+		marks[i] = "?"
+		args[i] = string(s)
+	}
+	args = append(args, atc.DefaultTeamName)
+	return fmt.Sprintf(`(
+		SELECT r0.template_pipeline_id
+		FROM agent_tickets t
+		JOIN pipeline_runs r0 ON r0.id = t.pipeline_run_id
+		JOIN pipelines p0 ON p0.id = r0.template_pipeline_id
+		JOIN teams tm0 ON tm0.id = p0.team_id
+		WHERE t.state IN (%s)
+		  AND p0.name = 'agent-ticket-' || t.id::text
+		  AND tm0.name = ?)`, strings.Join(marks, ",")), args
+}
+
+func (f *pipelineRunFactory) RunsForTerminalTickets() ([]PipelineRun, error) {
+	tableExists, err := f.agentTicketsTableExists()
+	if err != nil {
+		return nil, err
+	}
+	if !tableExists {
+		return nil, nil
+	}
+
+	linkage, args := terminalTicketLinkage()
+	rows, err := pipelineRunsQuery.
+		Where(sq.Eq{"r.archived": false}).
+		Where(sq.NotEq{"r.status": string(PipelineRunRunning)}).
+		Where(sq.Expr("r.template_pipeline_id IN "+linkage, args...)).
+		OrderBy("r.id ASC").
+		RunWith(f.conn).
+		Query()
+	if err != nil {
+		return nil, err
+	}
+	return f.scanRuns(rows)
+}
+
+func (f *pipelineRunFactory) TemplatesForTerminalTickets() ([]Pipeline, error) {
+	tableExists, err := f.agentTicketsTableExists()
+	if err != nil {
+		return nil, err
+	}
+	if !tableExists {
+		return nil, nil
+	}
+
+	linkage, args := terminalTicketLinkage()
+	rows, err := pipelinesQuery.
+		Where(sq.Eq{"p.archived": false, "p.template": true}).
+		Where(sq.Expr("p.instance_vars IS NULL")).
+		Where(sq.Expr("p.id IN "+linkage, args...)).
+		// same hold-back as the runs pass: while any run of the template
+		// is still aggregate-running, leave the template so the group
+		// converges as one once the Finish pass completes the run.
+		Where(sq.Expr(`NOT EXISTS (
+			SELECT 1 FROM pipeline_runs r1
+			WHERE r1.template_pipeline_id = p.id AND r1.status = 'running')`)).
+		OrderBy("p.id ASC").
+		RunWith(f.conn).
+		Query()
+	if err != nil {
+		return nil, err
+	}
+	return scanPipelines(f.conn, f.lockFactory, rows)
 }
 
 func (f *pipelineRunFactory) scanRuns(rows *sql.Rows) ([]PipelineRun, error) {
