@@ -301,16 +301,19 @@ func TestRenderV0Refusals(t *testing.T) {
 
 func TestRenderRefusesDeclaredButUnenforcedPolicyBlocks(t *testing.T) {
 	// Ticket #5 finding #1 (highest blast radius): gate_policy/hitl/judge
-	// validate at import and get content-hashed as authoritative, but v0
-	// rendering never reads them — a workflow author would believe gating
-	// / HITL / judge scoring is active when it is silently absent. Refuse
-	// at render time, matching the sidecar/checkpoint loud-fail pattern
-	// (harvest-step, wave 3, is the enforcing consumer).
+	// validate at import and get content-hashed as authoritative, but
+	// rendering must have an enforcing consumer or a workflow author
+	// would believe gating/HITL/judge scoring is active when it is
+	// silently absent. Refuse at render time, matching the sidecar/
+	// checkpoint loud-fail pattern. Ticket #14 boundary: harvest-runner
+	// now enforces full-scope gate_policy pre-push, so ONLY that shape
+	// renders — affected-scope gates, hitl, and judge (no v0.5 enforcing
+	// consumer) still refuse.
 	cases := []struct {
-		name  string
+		name   string
 		mutate func(*dispatch.RenderInput)
 	}{
-		{"gate_policy", func(in *dispatch.RenderInput) {
+		{"gate_policy_affected_scope", func(in *dispatch.RenderInput) {
 			in.Workflow.GatePolicy = workflow.GatePolicy{
 				Gates: []workflow.Gate{{Gate: "test", Scope: "affected"}}, OnGateFailure: "needs_review",
 			}
@@ -328,13 +331,36 @@ func TestRenderRefusesDeclaredButUnenforcedPolicyBlocks(t *testing.T) {
 		in := renderInput()
 		tc.mutate(&in)
 		if _, err := dispatch.Render(in); err == nil {
-			t.Errorf("%s: Render must refuse a declared-but-unenforced %s block in v0", tc.name, tc.name)
+			t.Errorf("%s: Render must refuse a declared-but-unenforced %s block", tc.name, tc.name)
 		}
 	}
 
 	// an all-empty policy surface still renders (the common case)
 	if _, err := dispatch.Render(renderInput()); err != nil {
 		t.Errorf("policy-free workflow must still render: %v", err)
+	}
+
+	// full-scope gate_policy is enforceable by harvest-runner (ticket
+	// #14, v0.5) and MUST render, carrying the converted policy onto the
+	// terminal harvest step.
+	in := renderInput()
+	in.Workflow.GatePolicy = workflow.GatePolicy{
+		Gates: []workflow.Gate{
+			{Gate: "build", Scope: "full"},
+			{Gate: "test", Scope: "full", Retries: 1, Timeout: "10m"},
+		},
+		OnGateFailure: "needs_review",
+	}
+	cfg, err := dispatch.Render(in)
+	if err != nil {
+		t.Fatalf("full-scope gate_policy must render: %v", err)
+	}
+	harvestStep := cfg.Jobs[0].PlanSequence[len(cfg.Jobs[0].PlanSequence)-1].Config.(*atc.HarvestStep)
+	if len(harvestStep.GatePolicy.Gates) != 2 || harvestStep.GatePolicy.OnGateFailure != "needs_review" {
+		t.Errorf("harvest step gate_policy = %+v, want the workflow's full-scope gates carried through", harvestStep.GatePolicy)
+	}
+	if harvestStep.GatePolicy.Gates[1].Retries != 1 || harvestStep.GatePolicy.Gates[1].Timeout != "10m" {
+		t.Errorf("harvest step gate 1 = %+v, want retries/timeout preserved", harvestStep.GatePolicy.Gates[1])
 	}
 }
 

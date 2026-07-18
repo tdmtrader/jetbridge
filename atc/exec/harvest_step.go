@@ -115,16 +115,22 @@ func (step *HarvestStep) run(ctx context.Context, state RunState, delegate TaskD
 		return false, errors.New("harvest step requires the web node to be started with --agent-step-image")
 	}
 
-	// v0 refusals: fail closed on config the runner cannot enforce (the
-	// dogfood ticket #5 pattern — never a silent skip).
-	if len(step.plan.GatePolicy.Gates) > 0 || step.plan.GatePolicy.OnGateFailure != "" {
-		return false, errors.New("harvest v0 has no gate engine: remove gate_policy (full harvest-step workstream, wave 3)")
+	// v0.5 refusals: fail closed on config the runner cannot enforce (the
+	// dogfood ticket #5 pattern — never a silent skip). Gates are now
+	// admitted when every gate's scope is "full" (the v0.5 in-pod fixed
+	// command map, enforced by harvest-runner before push); any other
+	// scope still needs dev-mcp (full harvest-step workstream, wave 3)
+	// and is refused here rather than surfacing mid-run.
+	for _, g := range step.plan.GatePolicy.Gates {
+		if g.Scope != "full" {
+			return false, fmt.Errorf("harvest gate %q has scope %q: v0.5 only enforces scope \"full\" in-pod — remove the gate or wait for dev-mcp (full harvest-step workstream, wave 3)", g.Gate, g.Scope)
+		}
 	}
 	if step.plan.Judge != nil {
-		return false, errors.New("harvest v0 has no judge: remove the judge block (full harvest-step workstream, wave 3)")
+		return false, errors.New("harvest v0.5 has no judge: remove the judge block (full harvest-step workstream, wave 3)")
 	}
 	if step.plan.DevMCP != nil {
-		return false, errors.New("harvest v0 runs no gates, so dev_mcp has no consumer: remove it")
+		return false, errors.New("harvest v0.5 runs no dev-mcp-backed gates, so dev_mcp has no consumer: remove it")
 	}
 	if step.plan.Push && step.plan.Branch == "" {
 		return false, errors.New("harvest push requires a branch")
@@ -159,6 +165,7 @@ func (step *HarvestStep) run(ctx context.Context, state RunState, delegate TaskD
 		PipelineRunID: runID,
 		Branch:        step.plan.Branch,
 		Push:          step.plan.Push,
+		GatePolicy:    step.plan.GatePolicy,
 	}
 	cfgPayload, err := json.Marshal(cfg)
 	if err != nil {
