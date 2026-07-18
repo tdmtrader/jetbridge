@@ -378,6 +378,19 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 	for _, name := range step.plan.Outputs {
 		env = append(env, "AGENT_OUTPUT_"+strings.ToUpper(strings.ReplaceAll(name, "-", "_"))+"="+artifactPath(workdir, name, ""))
 	}
+	// Source-format layers (design 2026-07-17 §4): resolved text travels
+	// like AGENT_PROMPT; skill CONTENT travels via the "skills" input
+	// artifact, so only the selected names and the mount path go here.
+	if step.plan.SystemPrompt != "" {
+		env = append(env, "AGENT_SYSTEM_PROMPT="+step.plan.SystemPrompt)
+	}
+	if step.plan.Context != "" {
+		env = append(env, "AGENT_CONTEXT="+step.plan.Context)
+	}
+	if len(step.plan.Skills) > 0 {
+		env = append(env, "AGENT_SKILLS="+strings.Join(step.plan.Skills, ","))
+		env = append(env, "AGENT_SKILLS_DIR="+artifactPath(workdir, "skills", ""))
+	}
 	if slice > 0 {
 		env = append(env, "AGENT_BUDGET_SLICE_USD="+strconv.FormatFloat(slice, 'f', 2, 64))
 	}

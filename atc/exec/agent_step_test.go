@@ -255,6 +255,32 @@ var _ = Describe("AgentStep", func() {
 		Expect(spec.Sidecars).To(HaveLen(1))
 	})
 
+	Context("with source-format layers on the plan", func() {
+		BeforeEach(func() {
+			agentPlan.SystemPrompt = "be careful"
+			agentPlan.Context = "## context/x.md\n\nbody\n"
+			agentPlan.Skills = []string{"tdd", "extra"}
+			// Deliberately NOT in agentPlan.Inputs: the env rows derive
+			// from plan.Skills alone; the renderer owns adding the
+			// "skills" input in production, and an unmounted input here
+			// would fail the run with MissingInputsError.
+		})
+
+		It("exports them as §8.1 env", func() {
+			ok, err := step.Run(ctx, state)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(ok).To(BeTrue())
+
+			_, _, spec, _ := fakePool.FindOrSelectWorkerArgsForCall(0)
+			Expect(spec.Env).To(ContainElements(
+				"AGENT_SYSTEM_PROMPT=be careful",
+				"AGENT_CONTEXT=## context/x.md\n\nbody\n",
+				"AGENT_SKILLS=tdd,extra",
+			))
+			Expect(spec.Env).To(ContainElement("AGENT_SKILLS_DIR=some-artifact-root/skills"))
+		})
+	})
+
 	// --- review finding: agent env must be static-only (§2.8) ---
 	// The exec used to thread env values through the build's var sources
 	// (creds.NewString(...).Evaluate()), so `env: {TOKEN: ((vault:...))}`
