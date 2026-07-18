@@ -38,6 +38,7 @@ type alias Model =
                 , reapTime : Maybe Time.Posix
                 , agentReviews : List Concourse.AgentReview.BuildReview
                 , agentRunMetrics : List Concourse.Agent.RunMetric
+                , agentFetchedBuildId : Maybe Int
                 , agentReviewLoadError : Bool
                 , agentReviewPanelExpanded : Bool
                 , expandedFindings : Set String

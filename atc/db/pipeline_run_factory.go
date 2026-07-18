@@ -68,14 +68,19 @@ type PipelineRunFactory interface {
 	// (C3, UI audit 2026-07-17). Scoped by template rather than the latest
 	// attempt: a requeued ticket leaves one run instance per attempt and
 	// every one of them is a dead dashboard card once the ticket is
-	// terminal. Still-running runs are held back so the lifecycler's Finish
-	// pass completes them first; both return empty on a pre-ticket-core DB.
+	// terminal. The linkage is pinned to the ticket's own
+	// `agent-ticket-<id>` template on the main team — pipeline_run_id is
+	// caller-writable (F30) and archival is destructive, so an unpinned
+	// join would archive arbitrary victim pipelines. Still-running runs are
+	// held back so the lifecycler's Finish pass completes them first; both
+	// return empty on a pre-ticket-core DB.
 	RunsForTerminalTickets() ([]PipelineRun, error)
 
 	// TemplatesForTerminalTickets returns the unarchived base template
 	// pipelines (template = true, no instance vars) of terminally-disposed
-	// agent tickets. Without this the permanently-gray template card keeps
-	// rendering after every run instance is archived.
+	// agent tickets, held back while any of their runs is still
+	// aggregate-running. Without this the permanently-gray template card
+	// keeps rendering after every run instance is archived.
 	TemplatesForTerminalTickets() ([]Pipeline, error)
 }
 
@@ -482,6 +487,16 @@ func (f *pipelineRunFactory) agentTicketsTableExists() (bool, error) {
 // terminalTicketLinkage is the shared subquery: template pipeline ids
 // reachable from a terminal ticket through its dispatched run
 // (agent_tickets.pipeline_run_id → pipeline_runs.template_pipeline_id).
+// The linkage additionally requires the template to be the ticket's OWN
+// `agent-ticket-<id>` pipeline on the main team (the dispatch naming
+// convention, agent/dispatch/dispatch.go). pipeline_run_id is
+// caller-writable through PUT .../state (same F30 id class that
+// TicketBelongsToRun exists for), and this is a DESTRUCTIVE consumer — an
+// unconstrained join would let a tickets:write principal point a ticket at
+// an arbitrary victim run and have the lifecycler archive that victim's
+// template, re-archiving it every tick forever. With the name+team pin, a
+// poisoned run id can at worst archive the ticket's own pipelines, which
+// is what happens at terminal anyway.
 func terminalTicketLinkage() (string, []any) {
 	states := tickets.TerminalStates()
 	marks := make([]string, len(states))
@@ -490,11 +505,16 @@ func terminalTicketLinkage() (string, []any) {
 		marks[i] = "?"
 		args[i] = string(s)
 	}
+	args = append(args, atc.DefaultTeamName)
 	return fmt.Sprintf(`(
 		SELECT r0.template_pipeline_id
 		FROM agent_tickets t
 		JOIN pipeline_runs r0 ON r0.id = t.pipeline_run_id
-		WHERE t.state IN (%s))`, strings.Join(marks, ",")), args
+		JOIN pipelines p0 ON p0.id = r0.template_pipeline_id
+		JOIN teams tm0 ON tm0.id = p0.team_id
+		WHERE t.state IN (%s)
+		  AND p0.name = 'agent-ticket-' || t.id::text
+		  AND tm0.name = ?)`, strings.Join(marks, ",")), args
 }
 
 func (f *pipelineRunFactory) RunsForTerminalTickets() ([]PipelineRun, error) {
@@ -534,6 +554,12 @@ func (f *pipelineRunFactory) TemplatesForTerminalTickets() ([]Pipeline, error) {
 		Where(sq.Eq{"p.archived": false, "p.template": true}).
 		Where(sq.Expr("p.instance_vars IS NULL")).
 		Where(sq.Expr("p.id IN "+linkage, args...)).
+		// same hold-back as the runs pass: while any run of the template
+		// is still aggregate-running, leave the template so the group
+		// converges as one once the Finish pass completes the run.
+		Where(sq.Expr(`NOT EXISTS (
+			SELECT 1 FROM pipeline_runs r1
+			WHERE r1.template_pipeline_id = p.id AND r1.status = 'running')`)).
 		OrderBy("p.id ASC").
 		RunWith(f.conn).
 		Query()
