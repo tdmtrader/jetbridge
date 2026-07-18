@@ -302,6 +302,16 @@ Two slices:
   pipeline published; proven with a live dispatch of a skill-bearing
   workflow on theborg.
 
+**Both slices LANDED (2026-07-18, agent-runner v0.2.167 / jetbridge
+v0.2.167).** Live proof: `skills-smoke` v1 (source dir
+`deploy/workflows/skills-smoke/`, hash `b04e01bec7f1`, identical
+fly-side and server-side) → ticket #15 dispatched → run ok ($0.12,
+9 turns) — summary opened `CONTEXT-SEEN` (context injection), ended
+`SKILL-MARKER-OK` (skill materialized and followed), terse per the
+system prompt; harvest pushed `agent/ticket-15` whose single commit
+added `SKILLS_SMOKE.md` = `SKILL-MARKER-OK` exactly; ticket concluded,
+branch deleted.
+
 ## 9. Testing
 
 - Grammar/compile: table-driven parse+validate tests in `agent/workflow`
