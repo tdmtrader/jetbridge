@@ -31,7 +31,7 @@ func TestMemoryStoreImportAssignsMonotonicVersions(t *testing.T) {
 	if v1.Version != 1 || v1.Name != "wf" || v1.CreatedBy != "alice" {
 		t.Errorf("v1 = %+v", v1)
 	}
-	if v1.ContentHash != workflow.Hash(defYAML("wf", "Do the work.")) {
+	if v1.ContentHash != (workflow.Manifest{"workflow.yml": string(defYAML("wf", "Do the work."))}).Hash() {
 		t.Errorf("hash mismatch: %s", v1.ContentHash)
 	}
 
@@ -194,5 +194,56 @@ func TestMemoryStoreLatest(t *testing.T) {
 	}
 	if found {
 		t.Error("unknown workflow reported found")
+	}
+}
+
+func TestMemoryStoreImportManifest(t *testing.T) {
+	store := workflow.NewMemoryStore()
+
+	m := v2Manifest() // from compile_test.go
+	def, err := store.ImportManifest("dev", m, "alice")
+	if err != nil {
+		t.Fatalf("import manifest: %v", err)
+	}
+	if def.ContentHash != m.Hash() {
+		t.Fatalf("hash must be the canonical-manifest hash: %s vs %s", def.ContentHash, m.Hash())
+	}
+	if def.RawYAML != m["workflow.yml"] {
+		t.Fatal("RawYAML must be the manifest's workflow.yml")
+	}
+	if def.Config.SkillFiles["skills/tdd/SKILL.md"] == "" {
+		t.Fatal("stored Config must be compiled (skill trees resolved)")
+	}
+
+	again, err := store.ImportManifest("dev", m, "bob")
+	if err != nil || again.Version != def.Version {
+		t.Fatalf("expected idempotent hit, got v%d err %v", again.Version, err)
+	}
+
+	got, found, err := store.Get("dev", def.Version)
+	if err != nil || !found {
+		t.Fatalf("get: %v %v", found, err)
+	}
+	if got.SourceManifest["prompts/implement.md"] == "" {
+		t.Fatal("Get must return the source manifest")
+	}
+
+	// Import(raw) is the single-file degenerate case: same hash scheme.
+	raw := []byte(validV1YAML())
+	viaRaw, err := store.Import("v1", raw, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantHash := workflow.Manifest{"workflow.yml": string(raw)}.Hash()
+	if viaRaw.ContentHash != wantHash {
+		t.Fatalf("raw import must wrap into a single-file manifest: %s vs %s", viaRaw.ContentHash, wantHash)
+	}
+
+	// Metadata listings stay lean.
+	list, _ := store.List()
+	for _, d := range list {
+		if d.RawYAML != "" || len(d.SourceManifest) != 0 {
+			t.Fatal("List must not carry RawYAML/SourceManifest")
+		}
 	}
 }

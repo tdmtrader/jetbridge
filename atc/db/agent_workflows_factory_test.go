@@ -38,7 +38,7 @@ steps:
 		Expect(v1.Version).To(Equal(1))
 		Expect(v1.ID).To(BeNumerically(">", 0))
 		Expect(v1.Name).To(Equal("wf-import"))
-		Expect(v1.ContentHash).To(Equal(workflow.Hash(defYAML("wf-import", "One."))))
+		Expect(v1.ContentHash).To(Equal(workflow.Manifest{"workflow.yml": string(defYAML("wf-import", "One."))}.Hash()))
 		Expect(v1.Description).To(Equal("test definition"))
 		Expect(v1.CreatedBy).To(Equal("alice"))
 		Expect(v1.CreatedAt).To(BeNumerically(">", 0))

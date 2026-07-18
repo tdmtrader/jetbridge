@@ -25,14 +25,21 @@ const workflowMetaColumns = `id, name, version, content_hash, live, description,
 	EXTRACT(EPOCH FROM created_at)::bigint`
 
 func (f *agentWorkflowsFactory) Import(name string, rawYAML []byte, createdBy string) (*workflow.Definition, error) {
-	cfg, err := workflow.Parse(rawYAML)
+	return f.ImportManifest(name, workflow.Manifest{"workflow.yml": string(rawYAML)}, createdBy)
+}
+
+// ImportManifest — interim (Task 5): manifest-hash identity and compile,
+// but the manifest itself is not yet persisted (source_manifest column
+// arrives with migration 1773106066 in Task 6).
+func (f *agentWorkflowsFactory) ImportManifest(name string, src workflow.Manifest, createdBy string) (*workflow.Definition, error) {
+	cfg, err := workflow.Compile(src)
 	if err != nil {
 		return nil, workflow.InvalidDefinitionError{Err: err}
 	}
 	if cfg.Name != name {
 		return nil, workflow.InvalidDefinitionError{Err: fmt.Errorf("definition name %q does not match import name %q", cfg.Name, name)}
 	}
-	hash := workflow.Hash(rawYAML)
+	hash := src.Hash()
 
 	tx, err := f.conn.Begin()
 	if err != nil {
@@ -71,7 +78,7 @@ func (f *agentWorkflowsFactory) Import(name string, rawYAML []byte, createdBy st
 		SELECT $1, COALESCE(MAX(version), 0) + 1, $2, $3, $4, $5
 		FROM agent_workflow_definitions WHERE name = $1
 		RETURNING id, version, EXTRACT(EPOCH FROM created_at)::bigint`,
-		name, hash, string(rawYAML), cfg.Description, createdBy,
+		name, hash, src["workflow.yml"], cfg.Description, createdBy,
 	).Scan(&def.ID, &def.Version, &def.CreatedAt)
 	if err != nil {
 		return nil, err
@@ -81,7 +88,7 @@ func (f *agentWorkflowsFactory) Import(name string, rawYAML []byte, createdBy st
 	def.ContentHash = hash
 	def.Description = cfg.Description
 	def.CreatedBy = createdBy
-	def.RawYAML = string(rawYAML)
+	def.RawYAML = src["workflow.yml"]
 	def.Config = *cfg
 	return &def, tx.Commit()
 }

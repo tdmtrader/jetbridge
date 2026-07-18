@@ -20,14 +20,18 @@ func NewMemoryStore() *MemoryStore {
 }
 
 func (m *MemoryStore) Import(name string, rawYAML []byte, createdBy string) (*Definition, error) {
-	cfg, err := Parse(rawYAML)
+	return m.ImportManifest(name, Manifest{"workflow.yml": string(rawYAML)}, createdBy)
+}
+
+func (m *MemoryStore) ImportManifest(name string, src Manifest, createdBy string) (*Definition, error) {
+	cfg, err := Compile(src)
 	if err != nil {
 		return nil, InvalidDefinitionError{Err: err}
 	}
 	if cfg.Name != name {
 		return nil, InvalidDefinitionError{Err: fmt.Errorf("definition name %q does not match import name %q", cfg.Name, name)}
 	}
-	hash := Hash(rawYAML)
+	hash := src.Hash()
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -46,17 +50,22 @@ func (m *MemoryStore) Import(name string, rawYAML []byte, createdBy string) (*De
 		}
 	}
 
+	stored := Manifest{}
+	for p, c := range src {
+		stored[p] = c
+	}
 	m.nextID++
 	def := &Definition{
-		ID:          m.nextID,
-		Name:        name,
-		Version:     maxVersion + 1,
-		ContentHash: hash,
-		Description: cfg.Description,
-		CreatedBy:   createdBy,
-		CreatedAt:   time.Now().Unix(),
-		Config:      *cfg,
-		RawYAML:     string(rawYAML),
+		ID:             m.nextID,
+		Name:           name,
+		Version:        maxVersion + 1,
+		ContentHash:    hash,
+		Description:    cfg.Description,
+		CreatedBy:      createdBy,
+		CreatedAt:      time.Now().Unix(),
+		Config:         *cfg,
+		RawYAML:        src["workflow.yml"],
+		SourceManifest: stored,
 	}
 	m.defs = append(m.defs, def)
 	cp := *def
@@ -128,6 +137,7 @@ func (m *MemoryStore) List() ([]Definition, error) {
 	for _, d := range latest {
 		cp := *d
 		cp.RawYAML = "" // metadata-only listing
+		cp.SourceManifest = nil
 		out = append(out, cp)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
@@ -142,6 +152,7 @@ func (m *MemoryStore) Versions(name string) ([]Definition, error) {
 		if d.Name == name {
 			cp := *d
 			cp.RawYAML = ""
+			cp.SourceManifest = nil
 			out = append(out, cp)
 		}
 	}
