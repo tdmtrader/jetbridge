@@ -57,16 +57,30 @@ func ValidTransition(from, to State) bool {
 	return false
 }
 
+// TerminalStates returns the states with no outgoing edges in
+// validTransitions: the ticket is done and nothing will ever run for it
+// again. The pipeline-run lifecycler archives a ticket's pipelines once it
+// lands in one of these (C3), so adding a state here hides its dashboard
+// cards for good.
+func TerminalStates() []State {
+	return []State{StateMerged, StateMergedWithFixes, StateAbandoned, StateConcluded}
+}
+
+func IsTerminal(s State) bool {
+	for _, t := range TerminalStates() {
+		if t == s {
+			return true
+		}
+	}
+	return false
+}
+
 func ValidState(s State) bool {
 	if _, ok := validTransitions[s]; ok {
 		return true
 	}
 	// terminal states have no outgoing edges but are still valid
-	switch s {
-	case StateMerged, StateMergedWithFixes, StateAbandoned, StateConcluded:
-		return true
-	}
-	return false
+	return IsTerminal(s)
 }
 
 func ValidOrigin(o string) bool {

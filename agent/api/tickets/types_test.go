@@ -46,12 +46,12 @@ func TestValidTransitionMatrix(t *testing.T) {
 	}
 
 	forbidden := []struct{ from, to tickets.State }{
-		{tickets.StateDraft, tickets.StateRunning},       // must queue first
-		{tickets.StateDraft, tickets.StateDraft},         // self-transition
-		{tickets.StateQueued, tickets.StateNeedsReview},  // must run first
+		{tickets.StateDraft, tickets.StateRunning},      // must queue first
+		{tickets.StateDraft, tickets.StateDraft},        // self-transition
+		{tickets.StateQueued, tickets.StateNeedsReview}, // must run first
 		{tickets.StateRunning, tickets.StateDraft},
 		{tickets.StateRunning, tickets.StateMerged},
-		{tickets.StateMerged, tickets.StateQueued},       // merged is terminal
+		{tickets.StateMerged, tickets.StateQueued}, // merged is terminal
 		{tickets.StateMergedWithFixes, tickets.StateQueued},
 		{tickets.StateAbandoned, tickets.StateQueued},    // abandoned is terminal
 		{tickets.StateNeedsReview, tickets.StateRunning}, // re-dispatch goes via queued
@@ -100,5 +100,45 @@ func TestValidStateOriginTaskStatus(t *testing.T) {
 	}
 	if tickets.ValidTaskStatus("started") {
 		t.Error("ValidTaskStatus accepted an unknown status")
+	}
+}
+
+func TestTerminalStates(t *testing.T) {
+	// The terminal set is exactly the valid states with no outgoing edges:
+	// nothing will ever run for the ticket again, so the lifecycler may
+	// archive its pipelines. Pin both directions so a state-machine edit
+	// that adds or removes an exit keeps the set honest.
+	terminal := map[tickets.State]bool{}
+	for _, s := range tickets.TerminalStates() {
+		terminal[s] = true
+		if !tickets.IsTerminal(s) {
+			t.Errorf("IsTerminal(%q) = false for a member of TerminalStates", s)
+		}
+		if !tickets.ValidState(s) {
+			t.Errorf("terminal state %q is not a valid state", s)
+		}
+	}
+
+	want := []tickets.State{
+		tickets.StateMerged, tickets.StateMergedWithFixes,
+		tickets.StateAbandoned, tickets.StateConcluded,
+	}
+	if len(terminal) != len(want) {
+		t.Fatalf("TerminalStates() = %v, want exactly %v", tickets.TerminalStates(), want)
+	}
+	for _, s := range want {
+		if !terminal[s] {
+			t.Errorf("TerminalStates() missing %q", s)
+		}
+	}
+
+	for _, s := range []tickets.State{
+		tickets.StateDraft, tickets.StateQueued, tickets.StateRunning,
+		tickets.StateNeedsReview, tickets.StateSentBack,
+		tickets.StateFailed, tickets.StateErrored,
+	} {
+		if tickets.IsTerminal(s) {
+			t.Errorf("IsTerminal(%q) = true for a state with outgoing edges", s)
+		}
 	}
 }
