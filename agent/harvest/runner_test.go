@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/concourse/concourse/agent/harvest"
+	schema "github.com/concourse/concourse/agent/schema"
 )
 
 func git(t *testing.T, dir string, args ...string) string {
@@ -51,17 +52,43 @@ func workspaceWithRemote(t *testing.T) (workspace, remote string) {
 	return workspace, remote
 }
 
-func runHarvest(t *testing.T, cfg harvest.Config, workspace string) (int, harvest.Results, string) {
+func runHarvest(t *testing.T, cfg harvest.Config, workspace string) (int, schema.Results, string) {
 	t.Helper()
 	var out bytes.Buffer
-	code := harvest.Run(cfg, workspace, "", &out)
-	var res harvest.Results
+	code := harvest.Run(cfg, workspace, "", "", &out)
+	var res schema.Results
 	if out.Len() > 0 {
 		if err := json.Unmarshal(out.Bytes(), &res); err != nil {
 			t.Fatalf("results not JSON: %v\n%s", err, out.String())
 		}
 	}
 	return code, res, out.String()
+}
+
+// metaString reads one string metadata key (absent = "") from the
+// schema.Results metadata map.
+func metaString(res schema.Results, key string) string {
+	s, _ := res.Metadata[key].(string)
+	return s
+}
+
+// metaGates re-decodes results metadata "gates" into []harvest.GateOutcome
+// (the byte-compatible GateOutcome JSON shape inside the metadata map).
+func metaGates(t *testing.T, res schema.Results) []harvest.GateOutcome {
+	t.Helper()
+	raw, ok := res.Metadata["gates"]
+	if !ok {
+		return nil
+	}
+	data, err := json.Marshal(raw)
+	if err != nil {
+		t.Fatalf("re-marshal gates metadata: %v", err)
+	}
+	var gates []harvest.GateOutcome
+	if err := json.Unmarshal(data, &gates); err != nil {
+		t.Fatalf("gates metadata: %v\n%s", err, data)
+	}
+	return gates
 }
 
 func TestRunPushesCommittedWorkBySha(t *testing.T) {
@@ -76,7 +103,7 @@ func TestRunPushesCommittedWorkBySha(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit = %d, output: %s", code, raw)
 	}
-	if res.Status != "pass" || res.Metadata.PushedBranch != "agent/ticket-42" || res.Metadata.HeadSHA != head {
+	if res.Status != "pass" || metaString(res, "pushed_branch") != "agent/ticket-42" || metaString(res, "head_sha") != head {
 		t.Errorf("results = %+v", res)
 	}
 
@@ -122,7 +149,7 @@ func TestRunDirtyWorktreeFailsWithoutPushing(t *testing.T) {
 	if code != 1 {
 		t.Fatalf("dirty tree exit = %d, want 1 (F33: agent failure, never auto-discarded)", code)
 	}
-	if res.Status != "fail" || !strings.Contains(res.Metadata.Detail, "workspace-dirty") {
+	if res.Status != "fail" || !strings.Contains(metaString(res, "detail"), "workspace-dirty") {
 		t.Errorf("results = %+v", res)
 	}
 
@@ -146,11 +173,12 @@ func TestRunNonRepoWorkspaceFails(t *testing.T) {
 	}
 }
 
-func TestRunRefusesNonFullScopeGatesAndJudgeInV0(t *testing.T) {
-	// v0.5 boundary (loud, never silent): the in-pod gate engine only
+func TestRunRefusesNonFullScopeGatesAndInvalidJudge(t *testing.T) {
+	// Loud, never silent boundaries: the in-pod gate engine only
 	// enforces scope "full" — affected/affected_then_full still error
-	// (dev-mcp, the wave-3 executor, isn't wired yet) — and judge is
-	// still fully refused (out of scope for this slice).
+	// (dev-mcp, the wave-3 executor, isn't wired yet) — and a declared
+	// judge config the runner could not execute faithfully is refused
+	// at admission (the judge itself now executes; see flight_test.go).
 	workspace, _ := workspaceWithRemote(t)
 
 	gated := harvest.Config{
@@ -163,7 +191,7 @@ func TestRunRefusesNonFullScopeGatesAndJudgeInV0(t *testing.T) {
 
 	judged := harvest.Config{
 		StepName: "h", Workspace: "workspace", Repo: "r", TicketID: 1, Branch: "agent/ticket-1",
-		Judge: &harvest.JudgeConfig{Rubric: []harvest.RubricDimension{{Name: "c", Weight: 1}}, PassThreshold: 6},
+		Judge: &harvest.JudgeConfig{Rubric: nil, PassThreshold: 6}, // empty rubric: unexecutable
 	}
 	if code, res, _ := runHarvest(t, judged, workspace); code != 2 || res.Status != "error" {
 		t.Errorf("judge: exit %d results %+v, want 2/error", code, res)
@@ -207,13 +235,14 @@ func TestRunGatesPassPushesTheBranch(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0 (gates pass): %s", code, raw)
 	}
-	if res.Status != "pass" || res.Metadata.PushedBranch != "agent/ticket-1" {
+	if res.Status != "pass" || metaString(res, "pushed_branch") != "agent/ticket-1" {
 		t.Errorf("results = %+v", res)
 	}
-	if len(res.Metadata.Gates) != 2 {
-		t.Fatalf("gate outcomes = %+v, want 2", res.Metadata.Gates)
+	gates := metaGates(t, res)
+	if len(gates) != 2 {
+		t.Fatalf("gate outcomes = %+v, want 2", gates)
 	}
-	for _, g := range res.Metadata.Gates {
+	for _, g := range gates {
 		if g.Status != "ok" {
 			t.Errorf("gate %s: status = %q, want ok", g.Gate, g.Status)
 		}
@@ -247,11 +276,11 @@ func TestRunGatesFailBlocksThePush(t *testing.T) {
 	if res.Status != "fail" {
 		t.Errorf("results = %+v", res)
 	}
-	if len(res.Metadata.Gates) != 1 || res.Metadata.Gates[0].Status != "failed" {
-		t.Errorf("gate outcomes = %+v, want one failed gate", res.Metadata.Gates)
+	if gates := metaGates(t, res); len(gates) != 1 || gates[0].Status != "failed" {
+		t.Errorf("gate outcomes = %+v, want one failed gate", gates)
 	}
-	if res.Metadata.PushedBranch != "" {
-		t.Errorf("pushed branch = %q, want empty — a failed gate must not push", res.Metadata.PushedBranch)
+	if pushed := metaString(res, "pushed_branch"); pushed != "" {
+		t.Errorf("pushed branch = %q, want empty — a failed gate must not push", pushed)
 	}
 
 	cmd := exec.Command("git", "rev-parse", "refs/heads/agent/ticket-1")
@@ -278,11 +307,11 @@ func TestRunGateErrorExitsPlatformError(t *testing.T) {
 	if res.Status != "error" {
 		t.Errorf("results = %+v", res)
 	}
-	if len(res.Metadata.Gates) != 1 || res.Metadata.Gates[0].Status != "error" {
-		t.Errorf("gate outcomes = %+v, want one errored gate", res.Metadata.Gates)
+	if gates := metaGates(t, res); len(gates) != 1 || gates[0].Status != "error" {
+		t.Errorf("gate outcomes = %+v, want one errored gate", gates)
 	}
-	if res.Metadata.PushedBranch != "" {
-		t.Errorf("pushed branch = %q, want empty — an errored gate must not push", res.Metadata.PushedBranch)
+	if pushed := metaString(res, "pushed_branch"); pushed != "" {
+		t.Errorf("pushed branch = %q, want empty — an errored gate must not push", pushed)
 	}
 
 	cmd := exec.Command("git", "rev-parse", "refs/heads/agent/ticket-1")
@@ -296,7 +325,7 @@ func TestRunPushFalseVerifiesOnly(t *testing.T) {
 	workspace, remote := workspaceWithRemote(t)
 	cfg := harvest.Config{StepName: "h", Workspace: "workspace", Repo: "r", TicketID: 7}
 	code, res, _ := runHarvest(t, cfg, workspace)
-	if code != 0 || res.Status != "pass" || res.Metadata.PushedBranch != "" {
+	if code != 0 || res.Status != "pass" || metaString(res, "pushed_branch") != "" {
 		t.Errorf("verify-only: exit %d results %+v", code, res)
 	}
 	cmd := exec.Command("git", "rev-parse", "refs/heads/agent/ticket-7")

@@ -39,5 +39,5 @@ func main() {
 		credsDir = "/var/run/agent/git"
 	}
 
-	os.Exit(harvest.Run(cfg, workspaceDir, credsDir, os.Stdout))
+	os.Exit(harvest.Run(cfg, workspaceDir, credsDir, os.Getenv("AGENT_FLIGHT_DIR"), os.Stdout))
 }

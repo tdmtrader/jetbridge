@@ -3,11 +3,14 @@ package harvest
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
 	"time"
+
+	schema "github.com/concourse/concourse/agent/schema"
 )
 
 // GateOutcome is the per-gate result of RunGates (§6.3, v0.5 slice).
@@ -47,10 +50,14 @@ const defaultGateTimeout = 30 * time.Minute
 // (errors are never retried); a gate that passes on a retry is
 // recorded ok with Flaky:true and Attempt:N — flakiness is surfaced,
 // never hidden.
-func RunGates(policy GatePolicy, workspaceDir string) ([]GateOutcome, error) {
+//
+// events (nil-tolerant: nil = no flight dir) receives live gate.start /
+// gate.result events per attempt (§6.3: flakiness surfaced); emission
+// failures never break gate control flow.
+func RunGates(policy GatePolicy, workspaceDir string, events *schema.EventWriter) ([]GateOutcome, error) {
 	outcomes := make([]GateOutcome, 0, len(policy.Gates))
 	for _, gate := range policy.Gates {
-		outcome := runGate(gate, workspaceDir)
+		outcome := runGate(gate, workspaceDir, events)
 		outcomes = append(outcomes, outcome)
 		if outcome.Status != "ok" {
 			break
@@ -59,7 +66,7 @@ func RunGates(policy GatePolicy, workspaceDir string) ([]GateOutcome, error) {
 	return outcomes, nil
 }
 
-func runGate(gate Gate, workspaceDir string) GateOutcome {
+func runGate(gate Gate, workspaceDir string, events *schema.EventWriter) GateOutcome {
 	if gate.Scope != "full" {
 		return GateOutcome{
 			Gate: gate.Gate, Scope: gate.Scope, Status: "error", Attempt: 1,
@@ -94,16 +101,26 @@ func runGate(gate Gate, workspaceDir string) GateOutcome {
 
 	var last GateOutcome
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		emitEvent(events, schema.EventGateStart, schema.GateStartData{
+			Gate: gate.Gate, Scope: gate.Scope,
+		})
 		start := time.Now()
 		status, detail := execGate(args, workspaceDir, timeout)
 		last = GateOutcome{
 			Gate: gate.Gate, Scope: gate.Scope, Status: status,
 			Attempt: attempt, DurationSeconds: time.Since(start).Seconds(), Detail: detail,
 		}
+		if status == "ok" && attempt > 1 {
+			last.Flaky = true
+		}
+		// Every attempt gets a result event (§6.3: flakiness surfaced).
+		emitEvent(events, schema.EventGateResult, schema.GateResultData{
+			Gate: gate.Gate, Scope: gate.Scope, Status: status,
+			DurationSeconds: last.DurationSeconds,
+			Summary:         truncate(detail, 4096),
+			Attempt:         attempt, Flaky: last.Flaky,
+		})
 		if status == "ok" {
-			if attempt > 1 {
-				last.Flaky = true
-			}
 			return last
 		}
 		if status == "error" {
@@ -113,6 +130,27 @@ func runGate(gate Gate, workspaceDir string) GateOutcome {
 		// status == "failed": failed-only retries continue the loop.
 	}
 	return last
+}
+
+// emitEvent writes one event to a nil-tolerant writer; marshal or write
+// failures are ignored — the recorder must never break control flow.
+func emitEvent(events *schema.EventWriter, t schema.EventType, payload any) {
+	if events == nil {
+		return
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+	_ = events.Write(schema.Event{Type: t, Data: data})
+}
+
+// truncate caps s at n bytes.
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n]
 }
 
 // execGate runs one gate command to completion (or timeout), returning
