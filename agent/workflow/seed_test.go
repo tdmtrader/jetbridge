@@ -244,3 +244,55 @@ func TestSeedTestFirstDevValidates(t *testing.T) {
 
 	assertMCPPromptCoherence(t, cfg)
 }
+
+// TestSeedDevelopFlavorsValidate covers the two manual-dispatch dev seeds
+// (develop, develop-fable) that run live on concourse.home. Both carry the
+// resolve-once workspace protocol: ticket #16's agent (build 567384)
+// re-expanded $AGENT_OUTPUT_WORKSPACE per shell call, one expansion came up
+// empty, and the protocol cp copied the repo checkout onto "/". The seeds
+// must keep pinning the literal-path discipline, not per-call expansion.
+func TestSeedDevelopFlavorsValidate(t *testing.T) {
+	for _, seed := range []struct {
+		file, name string
+	}{
+		{"seeds/develop.yaml", "develop"},
+		{"seeds/develop-fable.yaml", "develop-fable"},
+	} {
+		raw, err := os.ReadFile(seed.file)
+		if err != nil {
+			t.Fatalf("read seed: %v", err)
+		}
+		cfg, err := workflow.Parse(raw)
+		if err != nil {
+			t.Fatalf("%s must validate: %v", seed.file, err)
+		}
+		if cfg.Name != seed.name {
+			t.Errorf("%s Name = %q", seed.file, cfg.Name)
+		}
+		// v0 manual dispatch renders spec_delivery: files only.
+		if cfg.SpecDelivery != "files" {
+			t.Errorf("%s spec_delivery = %q, want files", seed.file, cfg.SpecDelivery)
+		}
+		// The import gate guarantees a workspace-producing step; keep the
+		// seed shaped so the terminal harvest has something to push.
+		producesWorkspace := false
+		for _, s := range cfg.Steps {
+			for _, out := range s.Outputs {
+				if out == "workspace" {
+					producesWorkspace = true
+				}
+			}
+		}
+		if !producesWorkspace {
+			t.Errorf("%s must declare a step producing the workspace output", seed.file)
+		}
+		// Resolve-once protocol: the prompt must point at the runner's
+		// "# Step outputs" literal block and forbid re-expansion.
+		prompt := cfg.Prompts["do"]
+		for _, want := range []string{"# Step outputs", "ONCE", "NEVER"} {
+			if !strings.Contains(prompt, want) {
+				t.Errorf("%s prompt lost the resolve-once workspace protocol (missing %q)", seed.file, want)
+			}
+		}
+	}
+}
