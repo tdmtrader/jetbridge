@@ -121,9 +121,3 @@ func (d *Dispatcher) dispatchQueued(ctx context.Context, logger lager.Logger) er
 	}
 	return nil
 }
-
-// reconcileCompletedRuns is implemented in reconcile.go (Task 6 of the
-// dispatch-remainder plan). Stub keeps this slice shippable on its own.
-func (d *Dispatcher) reconcileCompletedRuns(ctx context.Context, logger lager.Logger) error {
-	return nil
-}
