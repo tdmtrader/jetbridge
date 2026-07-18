@@ -519,11 +519,11 @@ function _Debug_crash_UNUSED(identifier, fact1, fact2, fact3, fact4)
 
 function _Debug_regionToString(region)
 {
-	if (region.kr.ja === region.hO.ja)
+	if (region.kX.ge === region.im.ge)
 	{
-		return 'on line ' + region.kr.ja;
+		return 'on line ' + region.kX.ge;
 	}
-	return 'on lines ' + region.kr.ja + ' through ' + region.hO.ja;
+	return 'on lines ' + region.kX.ge + ' through ' + region.im.ge;
 }
 
 
@@ -1857,9 +1857,9 @@ var _Platform_worker = F4(function(impl, flagDecoder, debugMetadata, args)
 	return _Platform_initialize(
 		flagDecoder,
 		args,
-		impl.iE,
-		impl.k_,
-		impl.kz,
+		impl.i8,
+		impl.lu,
+		impl.k3,
 		function() { return function() {} }
 	);
 });
@@ -2719,9 +2719,9 @@ var _VirtualDom_mapEventTuple = F2(function(func, tuple)
 var _VirtualDom_mapEventRecord = F2(function(func, record)
 {
 	return {
-		jf: func(record.jf),
-		b6: record.b6,
-		b$: record.b$
+		jK: func(record.jK),
+		cf: record.cf,
+		b7: record.b7
 	}
 });
 
@@ -2989,11 +2989,11 @@ function _VirtualDom_makeCallback(eventNode, initialHandler)
 		// 3 = Custom
 
 		var value = result.a;
-		var message = !tag ? value : tag < 3 ? value.a : value.jf;
-		var stopPropagation = tag == 1 ? value.b : tag == 3 && value.b6;
+		var message = !tag ? value : tag < 3 ? value.a : value.jK;
+		var stopPropagation = tag == 1 ? value.b : tag == 3 && value.cf;
 		var currentEventNode = (
 			stopPropagation && event.stopPropagation(),
-			(tag == 2 ? value.b : tag == 3 && value.b$) && event.preventDefault(),
+			(tag == 2 ? value.b : tag == 3 && value.b7) && event.preventDefault(),
 			eventNode
 		);
 		var tagger;
@@ -3943,11 +3943,11 @@ var _Browser_element = _Debugger_element || F4(function(impl, flagDecoder, debug
 	return _Platform_initialize(
 		flagDecoder,
 		args,
-		impl.iE,
-		impl.k_,
-		impl.kz,
+		impl.i8,
+		impl.lu,
+		impl.k3,
 		function(sendToApp, initialModel) {
-			var view = impl.k6;
+			var view = impl.lC;
 			/**/
 			var domNode = args['node'];
 			//*/
@@ -3979,12 +3979,12 @@ var _Browser_document = _Debugger_document || F4(function(impl, flagDecoder, deb
 	return _Platform_initialize(
 		flagDecoder,
 		args,
-		impl.iE,
-		impl.k_,
-		impl.kz,
+		impl.i8,
+		impl.lu,
+		impl.k3,
 		function(sendToApp, initialModel) {
-			var divertHrefToApp = impl.ea && impl.ea(sendToApp)
-			var view = impl.k6;
+			var divertHrefToApp = impl.eI && impl.eI(sendToApp)
+			var view = impl.lC;
 			var title = _VirtualDom_doc.title;
 			var bodyNode = _VirtualDom_doc.body;
 			var currNode = _VirtualDom_virtualize(bodyNode);
@@ -3992,12 +3992,12 @@ var _Browser_document = _Debugger_document || F4(function(impl, flagDecoder, deb
 			{
 				_VirtualDom_divertHrefToApp = divertHrefToApp;
 				var doc = view(model);
-				var nextNode = _VirtualDom_node('body')(_List_Nil)(doc.W);
+				var nextNode = _VirtualDom_node('body')(_List_Nil)(doc.bL);
 				var patches = _VirtualDom_diff(currNode, nextNode);
 				bodyNode = _VirtualDom_applyPatches(bodyNode, currNode, patches, sendToApp);
 				currNode = nextNode;
 				_VirtualDom_divertHrefToApp = 0;
-				(title !== doc.kN) && (_VirtualDom_doc.title = title = doc.kN);
+				(title !== doc.ck) && (_VirtualDom_doc.title = title = doc.ck);
 			});
 		}
 	);
@@ -4053,12 +4053,12 @@ function _Browser_makeAnimator(model, draw)
 
 function _Browser_application(impl)
 {
-	var onUrlChange = impl.jz;
-	var onUrlRequest = impl.jA;
+	var onUrlChange = impl.j2;
+	var onUrlRequest = impl.j3;
 	var key = function() { key.a(onUrlChange(_Browser_getUrl())); };
 
 	return _Browser_document({
-		ea: function(sendToApp)
+		eI: function(sendToApp)
 		{
 			key.a = sendToApp;
 			_Browser_window.addEventListener('popstate', key);
@@ -4074,9 +4074,9 @@ function _Browser_application(impl)
 					var next = $elm$url$Url$fromString(href).a;
 					sendToApp(onUrlRequest(
 						(next
-							&& curr.jU === next.jU
-							&& curr.iu === next.iu
-							&& curr.jP.a === next.jP.a
+							&& curr.kn === next.kn
+							&& curr.i$ === next.i$
+							&& curr.ki.a === next.ki.a
 						)
 							? $elm$browser$Browser$Internal(next)
 							: $elm$browser$Browser$External(href)
@@ -4084,13 +4084,13 @@ function _Browser_application(impl)
 				}
 			});
 		},
-		iE: function(flags)
+		i8: function(flags)
 		{
-			return A3(impl.iE, flags, _Browser_getUrl(), key);
+			return A3(impl.i8, flags, _Browser_getUrl(), key);
 		},
-		k6: impl.k6,
-		k_: impl.k_,
-		kz: impl.kz
+		lC: impl.lC,
+		lu: impl.lu,
+		k3: impl.k3
 	});
 }
 
@@ -4156,17 +4156,17 @@ var _Browser_decodeEvent = F2(function(decoder, event)
 function _Browser_visibilityInfo()
 {
 	return (typeof _VirtualDom_doc.hidden !== 'undefined')
-		? { ip: 'hidden', hb: 'visibilitychange' }
+		? { iW: 'hidden', hO: 'visibilitychange' }
 		:
 	(typeof _VirtualDom_doc.mozHidden !== 'undefined')
-		? { ip: 'mozHidden', hb: 'mozvisibilitychange' }
+		? { iW: 'mozHidden', hO: 'mozvisibilitychange' }
 		:
 	(typeof _VirtualDom_doc.msHidden !== 'undefined')
-		? { ip: 'msHidden', hb: 'msvisibilitychange' }
+		? { iW: 'msHidden', hO: 'msvisibilitychange' }
 		:
 	(typeof _VirtualDom_doc.webkitHidden !== 'undefined')
-		? { ip: 'webkitHidden', hb: 'webkitvisibilitychange' }
-		: { ip: 'hidden', hb: 'visibilitychange' };
+		? { iW: 'webkitHidden', hO: 'webkitvisibilitychange' }
+		: { iW: 'hidden', hO: 'visibilitychange' };
 }
 
 
@@ -4247,12 +4247,12 @@ var _Browser_call = F2(function(functionName, id)
 function _Browser_getViewport()
 {
 	return {
-		ka: _Browser_getScene(),
-		k7: {
-			ak: _Browser_window.pageXOffset,
-			lf: _Browser_window.pageYOffset,
-			gK: _Browser_doc.documentElement.clientWidth,
-			bS: _Browser_doc.documentElement.clientHeight
+		kF: _Browser_getScene(),
+		lD: {
+			am: _Browser_window.pageXOffset,
+			lL: _Browser_window.pageYOffset,
+			hn: _Browser_doc.documentElement.clientWidth,
+			b_: _Browser_doc.documentElement.clientHeight
 		}
 	};
 }
@@ -4262,8 +4262,8 @@ function _Browser_getScene()
 	var body = _Browser_doc.body;
 	var elem = _Browser_doc.documentElement;
 	return {
-		gK: Math.max(body.scrollWidth, body.offsetWidth, elem.scrollWidth, elem.offsetWidth, elem.clientWidth),
-		bS: Math.max(body.scrollHeight, body.offsetHeight, elem.scrollHeight, elem.offsetHeight, elem.clientHeight)
+		hn: Math.max(body.scrollWidth, body.offsetWidth, elem.scrollWidth, elem.offsetWidth, elem.clientWidth),
+		b_: Math.max(body.scrollHeight, body.offsetHeight, elem.scrollHeight, elem.offsetHeight, elem.clientHeight)
 	};
 }
 
@@ -4286,15 +4286,15 @@ function _Browser_getViewportOf(id)
 	return _Browser_withNode(id, function(node)
 	{
 		return {
-			ka: {
-				gK: node.scrollWidth,
-				bS: node.scrollHeight
+			kF: {
+				hn: node.scrollWidth,
+				b_: node.scrollHeight
 			},
-			k7: {
-				ak: node.scrollLeft,
-				lf: node.scrollTop,
-				gK: node.clientWidth,
-				bS: node.clientHeight
+			lD: {
+				am: node.scrollLeft,
+				lL: node.scrollTop,
+				hn: node.clientWidth,
+				b_: node.clientHeight
 			}
 		};
 	});
@@ -4324,18 +4324,18 @@ function _Browser_getElement(id)
 		var x = _Browser_window.pageXOffset;
 		var y = _Browser_window.pageYOffset;
 		return {
-			ka: _Browser_getScene(),
-			k7: {
-				ak: x,
-				lf: y,
-				gK: _Browser_doc.documentElement.clientWidth,
-				bS: _Browser_doc.documentElement.clientHeight
+			kF: _Browser_getScene(),
+			lD: {
+				am: x,
+				lL: y,
+				hn: _Browser_doc.documentElement.clientWidth,
+				b_: _Browser_doc.documentElement.clientHeight
 			},
-			hL: {
-				ak: x + rect.left,
-				lf: y + rect.top,
-				gK: rect.width,
-				bS: rect.height
+			ij: {
+				am: x + rect.left,
+				lL: y + rect.top,
+				hn: rect.width,
+				b_: rect.height
 			}
 		};
 	});
@@ -4390,21 +4390,21 @@ var _Http_toTask = F2(function(request, maybeProgress)
 			callback(_Scheduler_fail($elm$http$Http$Timeout));
 		});
 		xhr.addEventListener('load', function() {
-			callback(_Http_handleResponse(xhr, request.an.a));
+			callback(_Http_handleResponse(xhr, request.ap.a));
 		});
 
 		try
 		{
-			xhr.open(request.ac, request.k$, true);
+			xhr.open(request.ad, request.lw, true);
 		}
 		catch (e)
 		{
-			return callback(_Scheduler_fail($elm$http$Http$BadUrl(request.k$)));
+			return callback(_Scheduler_fail($elm$http$Http$BadUrl(request.lw)));
 		}
 
 		_Http_configureRequest(xhr, request);
 
-		var body = request.W;
+		var body = request.bL;
 		xhr.send($elm$http$Http$Internal$isStringBody(body)
 			? (xhr.setRequestHeader('Content-Type', body.a), body.b)
 			: body.a
@@ -4427,8 +4427,8 @@ function _Http_configureProgress(xhr, maybeProgress)
 			return;
 		}
 		_Scheduler_rawSpawn(maybeProgress.a({
-			g3: event.loaded,
-			g4: event.total
+			hG: event.loaded,
+			hH: event.total
 		}));
 	});
 }
@@ -4440,10 +4440,10 @@ function _Http_configureRequest(xhr, request)
 		xhr.setRequestHeader(headers.a.a, headers.a.b);
 	}
 
-	xhr.responseType = request.an.b;
-	xhr.withCredentials = request.lb;
+	xhr.responseType = request.ap.b;
+	xhr.withCredentials = request.lH;
 
-	$elm$core$Maybe$isJust(request.kM) && (xhr.timeout = request.kM.a);
+	$elm$core$Maybe$isJust(request.lh) && (xhr.timeout = request.lh.a);
 }
 
 
@@ -4475,10 +4475,10 @@ function _Http_handleResponse(xhr, responseToResult)
 function _Http_toResponse(xhr)
 {
 	return {
-		k$: xhr.responseURL,
-		ek: { eM: xhr.status, jf: xhr.statusText },
+		lw: xhr.responseURL,
+		eT: { fj: xhr.status, jK: xhr.statusText },
 		ab: _Http_parseHeaders(xhr.getAllResponseHeaders()),
-		W: xhr.response
+		bL: xhr.response
 	};
 }
 
@@ -5293,7 +5293,7 @@ var $elm$url$Url$Http = 0;
 var $elm$url$Url$Https = 1;
 var $elm$url$Url$Url = F6(
 	function (protocol, host, port_, path, query, fragment) {
-		return {ig: fragment, iu: host, jH: path, jP: port_, jU: protocol, av: query};
+		return {iN: fragment, i$: host, kb: path, ki: port_, kn: protocol, aw: query};
 	});
 var $elm$core$String$contains = _String_contains;
 var $elm$core$String$length = _String_length;
@@ -5615,6 +5615,49 @@ var $author$project$Message$Callback$AgentReviewVerdictSubmitted = F2(
 var $author$project$Message$Callback$AgentRunMetricsFetched = function (a) {
 	return {$: 49, a: a};
 };
+var $author$project$Api$Endpoints$AgentTicket = function (a) {
+	return {$: 27, a: a};
+};
+var $author$project$Api$Endpoints$AgentTicketDispatch = function (a) {
+	return {$: 29, a: a};
+};
+var $author$project$Message$Callback$AgentTicketDispatched = F2(
+	function (a, b) {
+		return {$: 60, a: a, b: b};
+	});
+var $author$project$Message$Callback$AgentTicketFetched = function (a) {
+	return {$: 57, a: a};
+};
+var $author$project$Api$Endpoints$AgentTicketMetrics = function (a) {
+	return {$: 31, a: a};
+};
+var $author$project$Message$Callback$AgentTicketMetricsFetched = F2(
+	function (a, b) {
+		return {$: 62, a: a, b: b};
+	});
+var $author$project$Message$Callback$AgentTicketSaved = F2(
+	function (a, b) {
+		return {$: 58, a: a, b: b};
+	});
+var $author$project$Api$Endpoints$AgentTicketState = function (a) {
+	return {$: 28, a: a};
+};
+var $author$project$Api$Endpoints$AgentTicketTask = F2(
+	function (a, b) {
+		return {$: 30, a: a, b: b};
+	});
+var $author$project$Message$Callback$AgentTicketTaskUpdated = F2(
+	function (a, b) {
+		return {$: 61, a: a, b: b};
+	});
+var $author$project$Message$Callback$AgentTicketTransitioned = F2(
+	function (a, b) {
+		return {$: 59, a: a, b: b};
+	});
+var $author$project$Message$Callback$AgentTicketsFetched = function (a) {
+	return {$: 56, a: a};
+};
+var $author$project$Api$Endpoints$AgentTicketsList = {$: 26};
 var $author$project$Message$Callback$AgentWorkflowsFetched = function (a) {
 	return {$: 50, a: a};
 };
@@ -5890,15 +5933,15 @@ var $author$project$Message$Effects$closeEventStream = _Platform_outgoingPort(
 	});
 var $author$project$Concourse$Build = F9(
 	function (id, name, teamName, job, status, duration, comment, reapTime, createdBy) {
-		return {a3: comment, hr: createdBy, dh: duration, iz: id, ap: job, dQ: name, b1: reapTime, ek: status, kD: teamName};
+		return {a4: comment, fo: createdBy, dJ: duration, f_: id, ac: job, cT: name, b9: reapTime, eT: status, k8: teamName};
 	});
 var $author$project$Concourse$BuildDuration = F2(
 	function (startedAt, finishedAt) {
-		return {e9: finishedAt, gu: startedAt};
+		return {fL: finishedAt, g6: startedAt};
 	});
 var $author$project$Concourse$JobIdentifier = F4(
 	function (teamName, pipelineName, pipelineInstanceVars, jobName) {
-		return {i0: jobName, f2: pipelineInstanceVars, jL: pipelineName, kD: teamName};
+		return {jw: jobName, ew: pipelineInstanceVars, gH: pipelineName, k8: teamName};
 	});
 var $elm_community$json_extra$Json$Decode$Extra$andMap = $elm$json$Json$Decode$map2($elm$core$Basics$apR);
 var $elm$time$Time$Posix = $elm$core$Basics$identity;
@@ -6216,15 +6259,15 @@ var $elm$json$Json$Decode$at = F2(
 	});
 var $author$project$Concourse$AcrossPlan = F2(
 	function (vars, steps) {
-		return {kv: steps, cd: vars};
+		return {k_: steps, cp: vars};
 	});
 var $author$project$Concourse$AcrossSubstep = F2(
 	function (values, step) {
-		return {C: step, k3: values};
+		return {C: step, lA: values};
 	});
 var $author$project$Concourse$BuildPlan = F2(
 	function (id, step) {
-		return {iz: id, C: step};
+		return {f_: id, C: step};
 	});
 var $author$project$Concourse$BuildStepAcross = function (a) {
 	return {$: 11, a: a};
@@ -6280,7 +6323,7 @@ var $author$project$Concourse$HookedPlan = F2(
 	});
 var $author$project$Concourse$ImageBuildPlans = F2(
 	function (check, get) {
-		return {hd: check, ii: get};
+		return {hQ: check, iP: get};
 	});
 var $elm$json$Json$Decode$array = _Json_decodeArray;
 var $author$project$Concourse$BuildStepSetPipeline = F3(
@@ -6923,7 +6966,7 @@ var $author$project$Concourse$decodeBuildPlanResponse = A2(
 	$author$project$Concourse$decodeBuildPlan);
 var $author$project$Concourse$BuildPrep = F6(
 	function (pausedPipeline, pausedJob, maxRunningBuilds, inputs, inputsSatisfied, missingInputReasons) {
-		return {iJ: inputs, iK: inputsSatisfied, jd: maxRunningBuilds, jj: missingInputReasons, jI: pausedJob, jJ: pausedPipeline};
+		return {jd: inputs, je: inputsSatisfied, jI: maxRunningBuilds, jO: missingInputReasons, kc: pausedJob, kd: pausedPipeline};
 	});
 var $author$project$Concourse$BuildPrepStatusBlocking = 1;
 var $author$project$Concourse$BuildPrepStatusNotBlocking = 2;
@@ -6978,11 +7021,11 @@ var $author$project$Concourse$decodeBuildPrep = A2(
 						$elm$json$Json$Decode$succeed($author$project$Concourse$BuildPrep)))))));
 var $author$project$Concourse$BuildResources = F2(
 	function (inputs, outputs) {
-		return {iJ: inputs, cC: outputs};
+		return {jd: inputs, cV: outputs};
 	});
 var $author$project$Concourse$BuildResourcesInput = F3(
 	function (name, version, firstOccurrence) {
-		return {$8: firstOccurrence, dQ: name, er: version};
+		return {iM: firstOccurrence, cT: name, eZ: version};
 	});
 var $author$project$Concourse$decodeResourcesInput = A2(
 	$elm_community$json_extra$Json$Decode$Extra$andMap,
@@ -6996,7 +7039,7 @@ var $author$project$Concourse$decodeResourcesInput = A2(
 			$elm$json$Json$Decode$succeed($author$project$Concourse$BuildResourcesInput))));
 var $author$project$Concourse$BuildResourcesOutput = F2(
 	function (name, version) {
-		return {dQ: name, er: version};
+		return {cT: name, eZ: version};
 	});
 var $author$project$Concourse$decodeResourcesOutput = A2(
 	$elm_community$json_extra$Json$Decode$Extra$andMap,
@@ -7023,11 +7066,11 @@ var $author$project$Concourse$decodeBuildResources = A2(
 		$elm$json$Json$Decode$succeed($author$project$Concourse$BuildResources)));
 var $author$project$Concourse$AgentReview$BuildReview = F5(
 	function (info, provenIssues, observations, feedback, findingCount) {
-		return {h5: feedback, ic: findingCount, dD: info, dV: observations, jV: provenIssues};
+		return {iE: feedback, iK: findingCount, cI: info, eo: observations, ko: provenIssues};
 	});
 var $author$project$Concourse$AgentReview$FindingFeedback = F3(
 	function (verdict, notes, reviewer) {
-		return {jw: notes, j5: reviewer, gI: verdict};
+		return {j$: notes, gW: reviewer, hl: verdict};
 	});
 var $author$project$Concourse$AgentReview$defaultTo = function (_default) {
 	return A2(
@@ -7054,7 +7097,7 @@ var $author$project$Concourse$AgentReview$decodeFeedback = A2(
 			$elm$json$Json$Decode$succeed($author$project$Concourse$AgentReview$FindingFeedback))));
 var $author$project$Concourse$AgentReview$Finding = F9(
 	function (id, severity, title, description, file, line, category, testName, testOutput) {
-		return {ha: category, eZ: description, h7: file, iz: id, ja: line, kk: severity, kG: testName, gA: testOutput, kN: title};
+		return {hN: category, fy: description, dU: file, f_: id, ge: line, kP: severity, lb: testName, hd: testOutput, ck: title};
 	});
 var $author$project$Concourse$AgentReview$decodeFinding = A2(
 	$elm_community$json_extra$Json$Decode$Extra$andMap,
@@ -7127,7 +7170,7 @@ var $author$project$Concourse$AgentReview$Summary = function (buildId) {
 													return function (summary) {
 														return function (createdAt) {
 															return function (evaluatedCount) {
-																return {g_: branch, g0: buildId, g1: buildName, hk: commitSha, eQ: createdAt, hR: evaluatedCount, i0: jobName, je: maxScore, fP: observationCount, fU: pass, jL: pipelineName, f7: provenCount, gb: repo, kb: score, el: summary, kD: teamName};
+																return {hB: branch, hD: buildId, hE: buildName, hX: commitSha, fn: createdAt, fF: evaluatedCount, jw: jobName, jJ: maxScore, en: observationCount, gx: pass, gH: pipelineName, ez: provenCount, gP: repo, kG: score, cg: summary, k8: teamName};
 															};
 														};
 													};
@@ -7244,11 +7287,11 @@ var $author$project$Concourse$AgentReview$decodeBuildReview = A2(
 					$elm$json$Json$Decode$succeed($author$project$Concourse$AgentReview$BuildReview))))));
 var $author$project$Concourse$Causality = F4(
 	function (jobs, builds, resources, resourceVersions) {
-		return {eL: builds, i1: jobs, gg: resourceVersions, j2: resources};
+		return {fi: builds, jx: jobs, gU: resourceVersions, kx: resources};
 	});
 var $author$project$Concourse$CausalityBuild = F5(
 	function (id, name, jobId, status, resourceVersionIds) {
-		return {iz: id, fv: jobId, dQ: name, gf: resourceVersionIds, ek: status};
+		return {f_: id, f6: jobId, cT: name, gT: resourceVersionIds, eT: status};
 	});
 var $author$project$Concourse$decodeCausalityBuild = A2(
 	$elm_community$json_extra$Json$Decode$Extra$andMap,
@@ -7274,7 +7317,7 @@ var $author$project$Concourse$decodeCausalityBuild = A2(
 					$elm$json$Json$Decode$succeed($author$project$Concourse$CausalityBuild))))));
 var $author$project$Concourse$CausalityJob = F3(
 	function (id, name, buildIds) {
-		return {eI: buildIds, iz: id, dQ: name};
+		return {ff: buildIds, f_: id, cT: name};
 	});
 var $author$project$Concourse$decodeCausalityJob = A2(
 	$elm_community$json_extra$Json$Decode$Extra$andMap,
@@ -7294,7 +7337,7 @@ var $author$project$Concourse$decodeCausalityJob = A2(
 			$elm$json$Json$Decode$succeed($author$project$Concourse$CausalityJob))));
 var $author$project$Concourse$CausalityResource = F3(
 	function (id, name, resourceVersionIds) {
-		return {iz: id, dQ: name, gf: resourceVersionIds};
+		return {f_: id, cT: name, gT: resourceVersionIds};
 	});
 var $author$project$Concourse$decodeCausalityResource = A2(
 	$elm_community$json_extra$Json$Decode$Extra$andMap,
@@ -7314,7 +7357,7 @@ var $author$project$Concourse$decodeCausalityResource = A2(
 			$elm$json$Json$Decode$succeed($author$project$Concourse$CausalityResource))));
 var $author$project$Concourse$CausalityResourceVersion = F4(
 	function (id, version, resourceId, buildIds) {
-		return {eI: buildIds, iz: id, ge: resourceId, er: version};
+		return {ff: buildIds, f_: id, gS: resourceId, eZ: version};
 	});
 var $author$project$Concourse$decodeCausalityResourceVersion = A2(
 	$elm_community$json_extra$Json$Decode$Extra$andMap,
@@ -7362,11 +7405,11 @@ var $author$project$Concourse$decodeCausality = A2(
 				$elm$json$Json$Decode$succeed($author$project$Concourse$Causality)))));
 var $author$project$Concourse$Agent$CostRollup = F3(
 	function (groupBy, summary, rows) {
-		return {ik: groupBy, j9: rows, el: summary};
+		return {iR: groupBy, kD: rows, cg: summary};
 	});
 var $author$project$Concourse$Agent$CostRow = F6(
 	function (key, entries, inputTokens, outputTokens, turns, costUsd) {
-		return {eP: costUsd, hP: entries, fr: inputTokens, i2: key, fS: outputTokens, gG: turns};
+		return {fm: costUsd, $9: entries, f2: inputTokens, jy: key, gv: outputTokens, hj: turns};
 	});
 var $author$project$Concourse$Agent$defaultTo = function (_default) {
 	return A2(
@@ -7414,7 +7457,7 @@ var $author$project$Concourse$Agent$decodeCostRow = A2(
 						$elm$json$Json$Decode$succeed($author$project$Concourse$Agent$CostRow)))))));
 var $author$project$Concourse$Agent$CostSummary = F4(
 	function (dailyCapUsd, dailySpentUsd, dailyRemainingUsd, dailyExhausted) {
-		return {eS: dailyCapUsd, hv: dailyExhausted, hw: dailyRemainingUsd, hx: dailySpentUsd};
+		return {cA: dailyCapUsd, fq: dailyExhausted, h5: dailyRemainingUsd, fr: dailySpentUsd};
 	});
 var $author$project$Concourse$Agent$decodeCostSummary = A2(
 	$elm_community$json_extra$Json$Decode$Extra$andMap,
@@ -7441,7 +7484,7 @@ var $author$project$Concourse$Agent$decodeCostSummary = A2(
 					0,
 					A2($elm$json$Json$Decode$field, 'daily_cap_usd', $elm$json$Json$Decode$float)),
 				$elm$json$Json$Decode$succeed($author$project$Concourse$Agent$CostSummary)))));
-var $author$project$Concourse$Agent$emptyCostSummary = {eS: 0, hv: false, hw: 0, hx: 0};
+var $author$project$Concourse$Agent$emptyCostSummary = {cA: 0, fq: false, h5: 0, fr: 0};
 var $elm$json$Json$Decode$null = _Json_decodeNull;
 var $elm$json$Json$Decode$nullable = function (decoder) {
 	return $elm$json$Json$Decode$oneOf(
@@ -7479,7 +7522,7 @@ var $author$project$Concourse$Agent$decodeCostRollup = A2(
 			$elm$json$Json$Decode$succeed($author$project$Concourse$Agent$CostRollup))));
 var $author$project$Concourse$Agent$CredentialStatus = F4(
 	function (kind, expiresAt, lastVerifiedAt, jiraAccountId) {
-		return {e6: expiresAt, i$: jiraAccountId, i3: kind, i5: lastVerifiedAt};
+		return {fI: expiresAt, jv: jiraAccountId, jz: kind, jB: lastVerifiedAt};
 	});
 var $author$project$Concourse$Agent$dateFromSeconds = A2(
 	$elm$core$Basics$composeL,
@@ -7516,9 +7559,275 @@ var $author$project$Concourse$Agent$decodeCredentialStatuses = A2(
 	$elm$core$Maybe$withDefault(_List_Nil),
 	$elm$json$Json$Decode$nullable(
 		$elm$json$Json$Decode$list($author$project$Concourse$Agent$decodeCredentialStatus)));
+var $author$project$Concourse$AgentTicket$Detail = F3(
+	function (ticket, spec, tasks) {
+		return {kV: spec, hc: tasks, al: ticket};
+	});
+var $author$project$Concourse$AgentTicket$Spec = F7(
+	function (id, version, title, body, acceptanceCriteria, submittedBy, createdAt) {
+		return {e1: acceptanceCriteria, bL: body, fn: createdAt, f_: id, k2: submittedBy, ck: title, eZ: version};
+	});
+var $author$project$Concourse$AgentTicket$defaultTo = function (_default) {
+	return A2(
+		$elm$core$Basics$composeR,
+		$elm$json$Json$Decode$maybe,
+		$elm$json$Json$Decode$map(
+			$elm$core$Maybe$withDefault(_default)));
+};
+var $author$project$Concourse$AgentTicket$decodeSpec = A2(
+	$elm_community$json_extra$Json$Decode$Extra$andMap,
+	A2(
+		$author$project$Concourse$AgentTicket$defaultTo,
+		0,
+		A2($elm$json$Json$Decode$field, 'created_at', $elm$json$Json$Decode$int)),
+	A2(
+		$elm_community$json_extra$Json$Decode$Extra$andMap,
+		A2(
+			$author$project$Concourse$AgentTicket$defaultTo,
+			'',
+			A2($elm$json$Json$Decode$field, 'submitted_by', $elm$json$Json$Decode$string)),
+		A2(
+			$elm_community$json_extra$Json$Decode$Extra$andMap,
+			A2(
+				$author$project$Concourse$AgentTicket$defaultTo,
+				_List_Nil,
+				A2(
+					$elm$json$Json$Decode$field,
+					'acceptance_criteria',
+					$elm$json$Json$Decode$list($elm$json$Json$Decode$string))),
+			A2(
+				$elm_community$json_extra$Json$Decode$Extra$andMap,
+				A2(
+					$author$project$Concourse$AgentTicket$defaultTo,
+					'',
+					A2($elm$json$Json$Decode$field, 'body', $elm$json$Json$Decode$string)),
+				A2(
+					$elm_community$json_extra$Json$Decode$Extra$andMap,
+					A2(
+						$author$project$Concourse$AgentTicket$defaultTo,
+						'',
+						A2($elm$json$Json$Decode$field, 'title', $elm$json$Json$Decode$string)),
+					A2(
+						$elm_community$json_extra$Json$Decode$Extra$andMap,
+						A2(
+							$author$project$Concourse$AgentTicket$defaultTo,
+							0,
+							A2($elm$json$Json$Decode$field, 'version', $elm$json$Json$Decode$int)),
+						A2(
+							$elm_community$json_extra$Json$Decode$Extra$andMap,
+							A2(
+								$author$project$Concourse$AgentTicket$defaultTo,
+								0,
+								A2($elm$json$Json$Decode$field, 'id', $elm$json$Json$Decode$int)),
+							$elm$json$Json$Decode$succeed($author$project$Concourse$AgentTicket$Spec))))))));
+var $author$project$Concourse$AgentTicket$Task = F4(
+	function (ordering, title, detail, status) {
+		return {bQ: detail, gu: ordering, eT: status, ck: title};
+	});
+var $author$project$Concourse$AgentTicket$decodeTask = A2(
+	$elm_community$json_extra$Json$Decode$Extra$andMap,
+	A2(
+		$author$project$Concourse$AgentTicket$defaultTo,
+		'',
+		A2($elm$json$Json$Decode$field, 'status', $elm$json$Json$Decode$string)),
+	A2(
+		$elm_community$json_extra$Json$Decode$Extra$andMap,
+		A2(
+			$author$project$Concourse$AgentTicket$defaultTo,
+			'',
+			A2($elm$json$Json$Decode$field, 'detail', $elm$json$Json$Decode$string)),
+		A2(
+			$elm_community$json_extra$Json$Decode$Extra$andMap,
+			A2(
+				$author$project$Concourse$AgentTicket$defaultTo,
+				'',
+				A2($elm$json$Json$Decode$field, 'title', $elm$json$Json$Decode$string)),
+			A2(
+				$elm_community$json_extra$Json$Decode$Extra$andMap,
+				A2(
+					$author$project$Concourse$AgentTicket$defaultTo,
+					0,
+					A2($elm$json$Json$Decode$field, 'ordering', $elm$json$Json$Decode$int)),
+				$elm$json$Json$Decode$succeed($author$project$Concourse$AgentTicket$Task)))));
+var $author$project$Concourse$AgentTicket$Ticket = function (id) {
+	return function (title) {
+		return function (body) {
+			return function (state) {
+				return function (origin) {
+					return function (repo) {
+						return function (targetBranch) {
+							return function (workflowName) {
+								return function (budgetUsd) {
+									return function (userName) {
+										return function (branch) {
+											return function (createdAt) {
+												return function (updatedAt) {
+													return function (workflowVersion) {
+														return function (pipelineRunId) {
+															return function (attemptCount) {
+																return function (errorDetail) {
+																	return function (completedAt) {
+																		return {hw: attemptCount, bL: body, hB: branch, dz: budgetUsd, hY: completedAt, fn: createdAt, ip: errorDetail, f_: id, j6: origin, kf: pipelineRunId, gP: repo, dg: state, k7: targetBranch, ck: title, lv: updatedAt, lx: userName, lI: workflowName, lJ: workflowVersion};
+																	};
+																};
+															};
+														};
+													};
+												};
+											};
+										};
+									};
+								};
+							};
+						};
+					};
+				};
+			};
+		};
+	};
+};
+var $author$project$Concourse$AgentTicket$optionalInt = function (name) {
+	return $elm$json$Json$Decode$maybe(
+		A2($elm$json$Json$Decode$field, name, $elm$json$Json$Decode$int));
+};
+var $author$project$Concourse$AgentTicket$decodeTicket = A2(
+	$elm_community$json_extra$Json$Decode$Extra$andMap,
+	$author$project$Concourse$AgentTicket$optionalInt('completed_at'),
+	A2(
+		$elm_community$json_extra$Json$Decode$Extra$andMap,
+		A2(
+			$author$project$Concourse$AgentTicket$defaultTo,
+			'',
+			A2($elm$json$Json$Decode$field, 'error_detail', $elm$json$Json$Decode$string)),
+		A2(
+			$elm_community$json_extra$Json$Decode$Extra$andMap,
+			A2(
+				$author$project$Concourse$AgentTicket$defaultTo,
+				0,
+				A2($elm$json$Json$Decode$field, 'attempt_count', $elm$json$Json$Decode$int)),
+			A2(
+				$elm_community$json_extra$Json$Decode$Extra$andMap,
+				$author$project$Concourse$AgentTicket$optionalInt('pipeline_run_id'),
+				A2(
+					$elm_community$json_extra$Json$Decode$Extra$andMap,
+					$author$project$Concourse$AgentTicket$optionalInt('workflow_version'),
+					A2(
+						$elm_community$json_extra$Json$Decode$Extra$andMap,
+						A2(
+							$author$project$Concourse$AgentTicket$defaultTo,
+							0,
+							A2($elm$json$Json$Decode$field, 'updated_at', $elm$json$Json$Decode$int)),
+						A2(
+							$elm_community$json_extra$Json$Decode$Extra$andMap,
+							A2(
+								$author$project$Concourse$AgentTicket$defaultTo,
+								0,
+								A2($elm$json$Json$Decode$field, 'created_at', $elm$json$Json$Decode$int)),
+							A2(
+								$elm_community$json_extra$Json$Decode$Extra$andMap,
+								A2(
+									$author$project$Concourse$AgentTicket$defaultTo,
+									'',
+									A2($elm$json$Json$Decode$field, 'branch', $elm$json$Json$Decode$string)),
+								A2(
+									$elm_community$json_extra$Json$Decode$Extra$andMap,
+									A2(
+										$author$project$Concourse$AgentTicket$defaultTo,
+										'',
+										A2($elm$json$Json$Decode$field, 'user_name', $elm$json$Json$Decode$string)),
+									A2(
+										$elm_community$json_extra$Json$Decode$Extra$andMap,
+										$elm$json$Json$Decode$maybe(
+											A2($elm$json$Json$Decode$field, 'budget_usd', $elm$json$Json$Decode$float)),
+										A2(
+											$elm_community$json_extra$Json$Decode$Extra$andMap,
+											A2(
+												$author$project$Concourse$AgentTicket$defaultTo,
+												'',
+												A2($elm$json$Json$Decode$field, 'workflow_name', $elm$json$Json$Decode$string)),
+											A2(
+												$elm_community$json_extra$Json$Decode$Extra$andMap,
+												A2(
+													$author$project$Concourse$AgentTicket$defaultTo,
+													'',
+													A2($elm$json$Json$Decode$field, 'target_branch', $elm$json$Json$Decode$string)),
+												A2(
+													$elm_community$json_extra$Json$Decode$Extra$andMap,
+													A2(
+														$author$project$Concourse$AgentTicket$defaultTo,
+														'',
+														A2($elm$json$Json$Decode$field, 'repo', $elm$json$Json$Decode$string)),
+													A2(
+														$elm_community$json_extra$Json$Decode$Extra$andMap,
+														A2(
+															$author$project$Concourse$AgentTicket$defaultTo,
+															'',
+															A2($elm$json$Json$Decode$field, 'origin', $elm$json$Json$Decode$string)),
+														A2(
+															$elm_community$json_extra$Json$Decode$Extra$andMap,
+															A2(
+																$author$project$Concourse$AgentTicket$defaultTo,
+																'',
+																A2($elm$json$Json$Decode$field, 'state', $elm$json$Json$Decode$string)),
+															A2(
+																$elm_community$json_extra$Json$Decode$Extra$andMap,
+																A2(
+																	$author$project$Concourse$AgentTicket$defaultTo,
+																	'',
+																	A2($elm$json$Json$Decode$field, 'body', $elm$json$Json$Decode$string)),
+																A2(
+																	$elm_community$json_extra$Json$Decode$Extra$andMap,
+																	A2(
+																		$author$project$Concourse$AgentTicket$defaultTo,
+																		'',
+																		A2($elm$json$Json$Decode$field, 'title', $elm$json$Json$Decode$string)),
+																	A2(
+																		$elm_community$json_extra$Json$Decode$Extra$andMap,
+																		A2($elm$json$Json$Decode$field, 'id', $elm$json$Json$Decode$int),
+																		$elm$json$Json$Decode$succeed($author$project$Concourse$AgentTicket$Ticket)))))))))))))))))));
+var $author$project$Concourse$AgentTicket$decodeDetail = A2(
+	$elm_community$json_extra$Json$Decode$Extra$andMap,
+	A2(
+		$author$project$Concourse$AgentTicket$defaultTo,
+		_List_Nil,
+		A2(
+			$elm$json$Json$Decode$field,
+			'tasks',
+			$elm$json$Json$Decode$list($author$project$Concourse$AgentTicket$decodeTask))),
+	A2(
+		$elm_community$json_extra$Json$Decode$Extra$andMap,
+		A2(
+			$elm$json$Json$Decode$map,
+			$elm$core$Maybe$withDefault($elm$core$Maybe$Nothing),
+			$elm$json$Json$Decode$maybe(
+				A2(
+					$elm$json$Json$Decode$field,
+					'spec',
+					$elm$json$Json$Decode$nullable($author$project$Concourse$AgentTicket$decodeSpec)))),
+		A2(
+			$elm_community$json_extra$Json$Decode$Extra$andMap,
+			A2($elm$json$Json$Decode$field, 'ticket', $author$project$Concourse$AgentTicket$decodeTicket),
+			$elm$json$Json$Decode$succeed($author$project$Concourse$AgentTicket$Detail))));
+var $author$project$Concourse$AgentTicket$DispatchResult = F2(
+	function (runId, pipelineName) {
+		return {gH: pipelineName, kE: runId};
+	});
+var $author$project$Concourse$AgentTicket$decodeDispatchResult = A2(
+	$elm_community$json_extra$Json$Decode$Extra$andMap,
+	A2(
+		$author$project$Concourse$AgentTicket$defaultTo,
+		'',
+		A2($elm$json$Json$Decode$field, 'pipeline_name', $elm$json$Json$Decode$string)),
+	A2(
+		$elm_community$json_extra$Json$Decode$Extra$andMap,
+		A2(
+			$author$project$Concourse$AgentTicket$defaultTo,
+			0,
+			A2($elm$json$Json$Decode$field, 'run_id', $elm$json$Json$Decode$int)),
+		$elm$json$Json$Decode$succeed($author$project$Concourse$AgentTicket$DispatchResult)));
 var $author$project$Concourse$ClusterInfo = F4(
 	function (version, clusterName, jetbridgeVersion, concourseVersion) {
-		return {c9: clusterName, db: concourseVersion, dK: jetbridgeVersion, er: version};
+		return {dB: clusterName, dD: concourseVersion, ed: jetbridgeVersion, eZ: version};
 	});
 var $author$project$Concourse$decodeInfo = A2(
 	$elm_community$json_extra$Json$Decode$Extra$andMap,
@@ -7557,7 +7866,7 @@ var $author$project$Concourse$Job = function (name) {
 												return function (inputs) {
 													return function (outputs) {
 														return function (groups) {
-															return {df: disableManualTrigger, fa: finishedBuild, dt: groups, iJ: inputs, dQ: name, fM: nextBuild, cC: outputs, cE: paused, fW: pausedAt, fX: pausedBy, cF: pipelineId, f2: pipelineInstanceVars, jL: pipelineName, kD: teamName, gE: transitionBuild};
+															return {dH: disableManualTrigger, fM: finishedBuild, dZ: groups, jd: inputs, cT: name, go: nextBuild, cV: outputs, cX: paused, gz: pausedAt, gA: pausedBy, cZ: pipelineId, ew: pipelineInstanceVars, gH: pipelineName, k8: teamName, hh: transitionBuild};
 														};
 													};
 												};
@@ -7575,7 +7884,7 @@ var $author$project$Concourse$Job = function (name) {
 };
 var $author$project$Concourse$JobInput = F4(
 	function (name, resource, passed, trigger) {
-		return {dQ: name, fV: passed, cJ: resource, gF: trigger};
+		return {cT: name, gy: passed, c1: resource, hi: trigger};
 	});
 var $author$project$Concourse$decodeJobInput = A2(
 	$elm_community$json_extra$Json$Decode$Extra$andMap,
@@ -7601,7 +7910,7 @@ var $author$project$Concourse$decodeJobInput = A2(
 				$elm$json$Json$Decode$succeed($author$project$Concourse$JobInput)))));
 var $author$project$Concourse$JobOutput = F2(
 	function (name, resource) {
-		return {dQ: name, cJ: resource};
+		return {cT: name, c1: resource};
 	});
 var $author$project$Concourse$decodeJobOutput = A2(
 	$elm_community$json_extra$Json$Decode$Extra$andMap,
@@ -7705,7 +8014,7 @@ var $author$project$Concourse$Pipeline = function (id) {
 											return function (backgroundImage) {
 												return function (backgroundFilter) {
 													return function (template) {
-														return {gS: archived, eC: backgroundFilter, eD: backgroundImage, dt: groups, iz: id, bT: instanceVars, fB: lastUpdatedAt, dQ: name, cE: paused, fW: pausedAt, fX: pausedBy, f8: _public, kD: teamName, kF: template};
+														return {hs: archived, e9: backgroundFilter, fa: backgroundImage, dZ: groups, f_: id, b$: instanceVars, gc: lastUpdatedAt, cT: name, cX: paused, gz: pausedAt, gA: pausedBy, gM: _public, k8: teamName, la: template};
 													};
 												};
 											};
@@ -7722,7 +8031,7 @@ var $author$project$Concourse$Pipeline = function (id) {
 };
 var $author$project$Concourse$PipelineGroup = F3(
 	function (name, jobs, resources) {
-		return {i1: jobs, dQ: name, j2: resources};
+		return {jx: jobs, cT: name, kx: resources};
 	});
 var $author$project$Concourse$decodePipelineGroup = A2(
 	$elm_community$json_extra$Json$Decode$Extra$andMap,
@@ -7821,7 +8130,7 @@ var $author$project$Concourse$decodePipeline = A2(
 														$elm$json$Json$Decode$succeed($author$project$Concourse$Pipeline)))))))))))))));
 var $author$project$Concourse$PipelineRun = F6(
 	function (id, number, status, params, createdAt, completedAt) {
-		return {hl: completedAt, eQ: createdAt, iz: id, jx: number, jG: params, ek: status};
+		return {hY: completedAt, fn: createdAt, f_: id, j0: number, ka: params, eT: status};
 	});
 var $author$project$Concourse$decodePipelineRun = A2(
 	$elm_community$json_extra$Json$Decode$Extra$andMap,
@@ -7863,7 +8172,7 @@ var $author$project$Concourse$decodePipelineRun = A2(
 						$elm$json$Json$Decode$succeed($author$project$Concourse$PipelineRun)))))));
 var $author$project$Concourse$Agent$PrincipalCreated = F2(
 	function (principal, token) {
-		return {jS: principal, kU: token};
+		return {kl: principal, lo: token};
 	});
 var $author$project$Concourse$Agent$Principal = function (id) {
 	return function (name) {
@@ -7876,7 +8185,7 @@ var $author$project$Concourse$Agent$Principal = function (id) {
 								return function (expiresAt) {
 									return function (revokedAt) {
 										return function (lastUsedAt) {
-											return {eQ: createdAt, hr: createdBy, eZ: description, e6: expiresAt, iz: id, i4: lastUsedAt, dQ: name, gi: revokedAt, gk: scopes, kD: teamName, kV: tokenPrefix};
+											return {fn: createdAt, fo: createdBy, fy: description, fI: expiresAt, f_: id, jA: lastUsedAt, cT: name, gX: revokedAt, gZ: scopes, k8: teamName, lp: tokenPrefix};
 										};
 									};
 								};
@@ -7976,7 +8285,7 @@ var $author$project$Concourse$Resource = function (teamName) {
 								return function (pinnedInConfig) {
 									return function (pinComment) {
 										return function (build) {
-											return {eH: build, fn: icon, fA: lastChecked, dQ: name, f_: pinComment, f$: pinnedInConfig, f1: pinnedVersion, cF: pipelineId, f2: pipelineInstanceVars, jL: pipelineName, kD: teamName};
+											return {fe: build, fZ: icon, gb: lastChecked, cT: name, gD: pinComment, gE: pinnedInConfig, gG: pinnedVersion, cZ: pipelineId, ew: pipelineInstanceVars, gH: pipelineName, k8: teamName};
 										};
 									};
 								};
@@ -8052,7 +8361,7 @@ var $author$project$Concourse$Agent$RunMetric = function (ticketId) {
 													return function (costUsd) {
 														return function (eventCounts) {
 															return function (createdAt) {
-																return {g0: buildId, eP: costUsd, eQ: createdAt, hS: eventCounts, jk: model, jM: pipelineRunId, jO: planId, ek: status, ku: stepName, el: summary, kL: ticketId, gG: turns, gH: usage, k8: wallTimeSeconds, lc: workflowName, ld: workflowVersion};
+																return {hD: buildId, fm: costUsd, fn: createdAt, iq: eventCounts, jP: model, kf: pipelineRunId, kh: planId, eT: status, kZ: stepName, cg: summary, lg: ticketId, hj: turns, hk: usage, lE: wallTimeSeconds, lI: workflowName, lJ: workflowVersion};
 															};
 														};
 													};
@@ -8071,7 +8380,7 @@ var $author$project$Concourse$Agent$RunMetric = function (ticketId) {
 };
 var $author$project$Concourse$Agent$Usage = F4(
 	function (inputTokens, outputTokens, cacheReadInputTokens, cacheCreationInputTokens) {
-		return {g5: cacheCreationInputTokens, g6: cacheReadInputTokens, fr: inputTokens, fS: outputTokens};
+		return {hI: cacheCreationInputTokens, hJ: cacheReadInputTokens, f2: inputTokens, gv: outputTokens};
 	});
 var $author$project$Concourse$Agent$decodeUsage = A2(
 	$elm_community$json_extra$Json$Decode$Extra$andMap,
@@ -8186,7 +8495,7 @@ var $author$project$Concourse$Agent$decodeRunMetric = A2(
 																$elm$json$Json$Decode$succeed($author$project$Concourse$Agent$RunMetric)))))))))))))))));
 var $author$project$Concourse$Team = F2(
 	function (id, name) {
-		return {iz: id, dQ: name};
+		return {f_: id, cT: name};
 	});
 var $author$project$Concourse$decodeTeam = A2(
 	$elm_community$json_extra$Json$Decode$Extra$andMap,
@@ -8197,7 +8506,7 @@ var $author$project$Concourse$decodeTeam = A2(
 		$elm$json$Json$Decode$succeed($author$project$Concourse$Team)));
 var $author$project$Concourse$User = F7(
 	function (id, userName, name, email, isAdmin, teams, displayUserId) {
-		return {hE: displayUserId, hM: email, iz: id, iM: isAdmin, dQ: name, kE: teams, k0: userName};
+		return {ic: displayUserId, ik: email, f_: id, jg: isAdmin, cT: name, k9: teams, lx: userName};
 	});
 var $author$project$Concourse$decodeUser = A2(
 	$elm_community$json_extra$Json$Decode$Extra$andMap,
@@ -8227,11 +8536,11 @@ var $author$project$Concourse$decodeUser = A2(
 							$elm$json$Json$Decode$succeed($author$project$Concourse$User))))))));
 var $author$project$Concourse$VersionedResource = F4(
 	function (id, version, metadata, enabled) {
-		return {hN: enabled, iz: id, jg: metadata, er: version};
+		return {il: enabled, f_: id, jL: metadata, eZ: version};
 	});
 var $author$project$Concourse$MetadataField = F2(
 	function (name, value) {
-		return {dQ: name, k2: value};
+		return {cT: name, lz: value};
 	});
 var $author$project$Concourse$decodeMetadataField = A2(
 	$elm_community$json_extra$Json$Decode$Extra$andMap,
@@ -8259,7 +8568,7 @@ var $author$project$Concourse$decodeVersionedResource = A2(
 				$elm$json$Json$Decode$succeed($author$project$Concourse$VersionedResource)))));
 var $author$project$Concourse$Wall = F2(
 	function (message, ttl) {
-		return {jf: message, kZ: ttl};
+		return {jK: message, lt: ttl};
 	});
 var $author$project$Concourse$decodeWall = A2(
 	$elm_community$json_extra$Json$Decode$Extra$andMap,
@@ -8276,7 +8585,7 @@ var $author$project$Concourse$decodeWall = A2(
 		$elm$json$Json$Decode$succeed($author$project$Concourse$Wall)));
 var $author$project$Concourse$Agent$WorkflowSummary = F6(
 	function (name, description, latestVersion, contentHash, liveVersion, createdAt) {
-		return {ho: contentHash, eQ: createdAt, eZ: description, dL: latestVersion, cw: liveVersion, dQ: name};
+		return {h$: contentHash, fn: createdAt, fy: description, ee: latestVersion, cO: liveVersion, cT: name};
 	});
 var $author$project$Concourse$Agent$decodeWorkflowSummary = A2(
 	$elm_community$json_extra$Json$Decode$Extra$andMap,
@@ -8777,19 +9086,19 @@ var $author$project$Api$ignoreResponse = $elm$http$Http$expectStringResponse(
 var $author$project$Api$delete = F2(
 	function (endpoint, csrfToken) {
 		return {
-			W: $elm$http$Http$emptyBody,
-			am: endpoint,
-			an: $author$project$Api$ignoreResponse,
+			bL: $elm$http$Http$emptyBody,
+			ao: endpoint,
+			ap: $author$project$Api$ignoreResponse,
 			ab: _List_fromArray(
 				[
 					A2($elm$http$Http$header, $author$project$Concourse$csrfTokenHeaderName, csrfToken)
 				]),
-			ac: 'DELETE',
-			av: _List_Nil
+			ad: 'DELETE',
+			aw: _List_Nil
 		};
 	});
 var $author$project$Message$Storage$deleteFromCache = _Platform_outgoingPort('deleteFromCache', $elm$json$Json$Encode$string);
-var $author$project$Concourse$emptyBuildResources = {iJ: _List_Nil, cC: _List_Nil};
+var $author$project$Concourse$emptyBuildResources = {jd: _List_Nil, cV: _List_Nil};
 var $elm$json$Json$Encode$int = _Json_wrap;
 var $elm$json$Json$Encode$list = F2(
 	function (func, entries) {
@@ -8821,7 +9130,7 @@ var $author$project$Message$Effects$encodeCreatePrincipal = F2(
 	function (now, params) {
 		var nowSeconds = ($elm$time$Time$posixToMillis(now) / 1000) | 0;
 		var expiry = function () {
-			var _v0 = params.h$;
+			var _v0 = params.iy;
 			if (!_v0.$) {
 				var days = _v0.a;
 				return (days > 0) ? _List_fromArray(
@@ -8840,19 +9149,19 @@ var $author$project$Message$Effects$encodeCreatePrincipal = F2(
 					[
 						_Utils_Tuple2(
 						'name',
-						$elm$json$Json$Encode$string(params.dQ)),
+						$elm$json$Json$Encode$string(params.cT)),
 						_Utils_Tuple2(
 						'description',
-						$elm$json$Json$Encode$string(params.eZ)),
+						$elm$json$Json$Encode$string(params.fy)),
 						_Utils_Tuple2(
 						'scopes',
-						A2($elm$json$Json$Encode$list, $elm$json$Json$Encode$string, params.gk))
+						A2($elm$json$Json$Encode$list, $elm$json$Json$Encode$string, params.gZ))
 					]),
 				expiry));
 	});
 var $author$project$Concourse$encodeInstanceGroupId = function (_v0) {
-	var teamName = _v0.kD;
-	var name = _v0.dQ;
+	var teamName = _v0.k8;
+	var name = _v0.cT;
 	return $elm$json$Json$Encode$object(
 		_List_fromArray(
 			[
@@ -8911,16 +9220,16 @@ var $author$project$Concourse$encodeJobInput = function (jobInput) {
 			[
 				_Utils_Tuple2(
 				'name',
-				$elm$json$Json$Encode$string(jobInput.dQ)),
+				$elm$json$Json$Encode$string(jobInput.cT)),
 				_Utils_Tuple2(
 				'resource',
-				$elm$json$Json$Encode$string(jobInput.cJ)),
+				$elm$json$Json$Encode$string(jobInput.c1)),
 				_Utils_Tuple2(
 				'passed',
-				A2($elm$json$Json$Encode$list, $elm$json$Json$Encode$string, jobInput.fV)),
+				A2($elm$json$Json$Encode$list, $elm$json$Json$Encode$string, jobInput.gy)),
 				_Utils_Tuple2(
 				'trigger',
-				$elm$json$Json$Encode$bool(jobInput.gF))
+				$elm$json$Json$Encode$bool(jobInput.hi))
 			]));
 };
 var $author$project$Concourse$encodeJobOutput = function (jobOutput) {
@@ -8929,10 +9238,10 @@ var $author$project$Concourse$encodeJobOutput = function (jobOutput) {
 			[
 				_Utils_Tuple2(
 				'name',
-				$elm$json$Json$Encode$string(jobOutput.dQ)),
+				$elm$json$Json$Encode$string(jobOutput.cT)),
 				_Utils_Tuple2(
 				'resource',
-				$elm$json$Json$Encode$string(jobOutput.cJ))
+				$elm$json$Json$Encode$string(jobOutput.c1))
 			]));
 };
 var $author$project$Concourse$BuildStatus$show = function (status) {
@@ -9005,15 +9314,15 @@ var $author$project$Concourse$encodeBuild = function (build) {
 					$elm$core$Maybe$Just(
 					_Utils_Tuple2(
 						'id',
-						$elm$json$Json$Encode$int(build.iz))),
+						$elm$json$Json$Encode$int(build.f_))),
 					$elm$core$Maybe$Just(
 					_Utils_Tuple2(
 						'name',
-						$elm$json$Json$Encode$string(build.dQ))),
+						$elm$json$Json$Encode$string(build.cT))),
 					$elm$core$Maybe$Just(
 					_Utils_Tuple2(
 						'team_name',
-						$elm$json$Json$Encode$string(build.kD))),
+						$elm$json$Json$Encode$string(build.k8))),
 					A3(
 					$author$project$Concourse$optionalField,
 					'pipeline_name',
@@ -9021,9 +9330,9 @@ var $author$project$Concourse$encodeBuild = function (build) {
 					A2(
 						$elm$core$Maybe$map,
 						function ($) {
-							return $.jL;
+							return $.gH;
 						},
-						build.ap)),
+						build.ac)),
 					A3(
 					$author$project$Concourse$optionalField,
 					'pipeline_instance_vars',
@@ -9031,9 +9340,9 @@ var $author$project$Concourse$encodeBuild = function (build) {
 					A2(
 						$elm$core$Maybe$map,
 						function ($) {
-							return $.f2;
+							return $.ew;
 						},
-						build.ap)),
+						build.ac)),
 					A3(
 					$author$project$Concourse$optionalField,
 					'job_name',
@@ -9041,33 +9350,33 @@ var $author$project$Concourse$encodeBuild = function (build) {
 					A2(
 						$elm$core$Maybe$map,
 						function ($) {
-							return $.i0;
+							return $.jw;
 						},
-						build.ap)),
+						build.ac)),
 					$elm$core$Maybe$Just(
 					_Utils_Tuple2(
 						'status',
-						$author$project$Concourse$BuildStatus$encodeBuildStatus(build.ek))),
+						$author$project$Concourse$BuildStatus$encodeBuildStatus(build.eT))),
 					A3(
 					$author$project$Concourse$optionalField,
 					'start_time',
 					A2($elm$core$Basics$composeR, $author$project$Concourse$secondsFromDate, $elm$json$Json$Encode$int),
-					build.dh.gu),
+					build.dJ.g6),
 					A3(
 					$author$project$Concourse$optionalField,
 					'end_time',
 					A2($elm$core$Basics$composeR, $author$project$Concourse$secondsFromDate, $elm$json$Json$Encode$int),
-					build.dh.e9),
+					build.dJ.fL),
 					$elm$core$Maybe$Just(
 					_Utils_Tuple2(
 						'comment',
-						$elm$json$Json$Encode$string(build.a3))),
+						$elm$json$Json$Encode$string(build.a4))),
 					A3(
 					$author$project$Concourse$optionalField,
 					'reap_time',
 					A2($elm$core$Basics$composeR, $author$project$Concourse$secondsFromDate, $elm$json$Json$Encode$int),
-					build.b1),
-					A3($author$project$Concourse$optionalField, 'created_by', $elm$json$Json$Encode$string, build.hr)
+					build.b9),
+					A3($author$project$Concourse$optionalField, 'created_by', $elm$json$Json$Encode$string, build.fo)
 				])));
 };
 var $author$project$Concourse$encodeMaybeBuild = function (maybeBuild) {
@@ -9084,43 +9393,43 @@ var $author$project$Concourse$encodeJob = function (job) {
 			[
 				_Utils_Tuple2(
 				'name',
-				$elm$json$Json$Encode$string(job.dQ)),
+				$elm$json$Json$Encode$string(job.cT)),
 				_Utils_Tuple2(
 				'pipeline_id',
-				$elm$json$Json$Encode$int(job.cF)),
+				$elm$json$Json$Encode$int(job.cZ)),
 				_Utils_Tuple2(
 				'pipeline_name',
-				$elm$json$Json$Encode$string(job.jL)),
+				$elm$json$Json$Encode$string(job.gH)),
 				_Utils_Tuple2(
 				'pipeline_instance_vars',
-				$author$project$Concourse$encodeInstanceVars(job.f2)),
+				$author$project$Concourse$encodeInstanceVars(job.ew)),
 				_Utils_Tuple2(
 				'team_name',
-				$elm$json$Json$Encode$string(job.kD)),
+				$elm$json$Json$Encode$string(job.k8)),
 				_Utils_Tuple2(
 				'next_build',
-				$author$project$Concourse$encodeMaybeBuild(job.fM)),
+				$author$project$Concourse$encodeMaybeBuild(job.go)),
 				_Utils_Tuple2(
 				'finished_build',
-				$author$project$Concourse$encodeMaybeBuild(job.fa)),
+				$author$project$Concourse$encodeMaybeBuild(job.fM)),
 				_Utils_Tuple2(
 				'transition_build',
-				$author$project$Concourse$encodeMaybeBuild(job.gE)),
+				$author$project$Concourse$encodeMaybeBuild(job.hh)),
 				_Utils_Tuple2(
 				'paused',
-				$elm$json$Json$Encode$bool(job.cE)),
+				$elm$json$Json$Encode$bool(job.cX)),
 				_Utils_Tuple2(
 				'disable_manual_trigger',
-				$elm$json$Json$Encode$bool(job.df)),
+				$elm$json$Json$Encode$bool(job.dH)),
 				_Utils_Tuple2(
 				'inputs',
-				A2($elm$json$Json$Encode$list, $author$project$Concourse$encodeJobInput, job.iJ)),
+				A2($elm$json$Json$Encode$list, $author$project$Concourse$encodeJobInput, job.jd)),
 				_Utils_Tuple2(
 				'outputs',
-				A2($elm$json$Json$Encode$list, $author$project$Concourse$encodeJobOutput, job.cC)),
+				A2($elm$json$Json$Encode$list, $author$project$Concourse$encodeJobOutput, job.cV)),
 				_Utils_Tuple2(
 				'groups',
-				A2($elm$json$Json$Encode$list, $elm$json$Json$Encode$string, job.dt))
+				A2($elm$json$Json$Encode$list, $elm$json$Json$Encode$string, job.dZ))
 			]));
 };
 var $author$project$Concourse$encodePipelineGroup = function (pipelineGroup) {
@@ -9129,13 +9438,13 @@ var $author$project$Concourse$encodePipelineGroup = function (pipelineGroup) {
 			[
 				_Utils_Tuple2(
 				'name',
-				$elm$json$Json$Encode$string(pipelineGroup.dQ)),
+				$elm$json$Json$Encode$string(pipelineGroup.cT)),
 				_Utils_Tuple2(
 				'jobs',
-				A2($elm$json$Json$Encode$list, $elm$json$Json$Encode$string, pipelineGroup.i1)),
+				A2($elm$json$Json$Encode$list, $elm$json$Json$Encode$string, pipelineGroup.jx)),
 				_Utils_Tuple2(
 				'resources',
-				A2($elm$json$Json$Encode$list, $elm$json$Json$Encode$string, pipelineGroup.j2))
+				A2($elm$json$Json$Encode$list, $elm$json$Json$Encode$string, pipelineGroup.kx))
 			]));
 };
 var $elm_community$json_extra$Json$Encode$Extra$maybe = function (encoder) {
@@ -9150,31 +9459,31 @@ var $author$project$Concourse$encodePipeline = function (pipeline) {
 			[
 				_Utils_Tuple2(
 				'id',
-				$elm$json$Json$Encode$int(pipeline.iz)),
+				$elm$json$Json$Encode$int(pipeline.f_)),
 				_Utils_Tuple2(
 				'name',
-				$elm$json$Json$Encode$string(pipeline.dQ)),
+				$elm$json$Json$Encode$string(pipeline.cT)),
 				_Utils_Tuple2(
 				'instance_vars',
-				$author$project$Concourse$encodeInstanceVars(pipeline.bT)),
+				$author$project$Concourse$encodeInstanceVars(pipeline.b$)),
 				_Utils_Tuple2(
 				'paused',
-				$elm$json$Json$Encode$bool(pipeline.cE)),
+				$elm$json$Json$Encode$bool(pipeline.cX)),
 				_Utils_Tuple2(
 				'archived',
-				$elm$json$Json$Encode$bool(pipeline.gS)),
+				$elm$json$Json$Encode$bool(pipeline.hs)),
 				_Utils_Tuple2(
 				'public',
-				$elm$json$Json$Encode$bool(pipeline.f8)),
+				$elm$json$Json$Encode$bool(pipeline.gM)),
 				_Utils_Tuple2(
 				'team_name',
-				$elm$json$Json$Encode$string(pipeline.kD)),
+				$elm$json$Json$Encode$string(pipeline.k8)),
 				_Utils_Tuple2(
 				'groups',
-				A2($elm$json$Json$Encode$list, $author$project$Concourse$encodePipelineGroup, pipeline.dt)),
+				A2($elm$json$Json$Encode$list, $author$project$Concourse$encodePipelineGroup, pipeline.dZ)),
 				_Utils_Tuple2(
 				'last_updated',
-				A2($elm$core$Basics$composeR, $author$project$Concourse$secondsFromDate, $elm$json$Json$Encode$int)(pipeline.fB)),
+				A2($elm$core$Basics$composeR, $author$project$Concourse$secondsFromDate, $elm$json$Json$Encode$int)(pipeline.gc)),
 				_Utils_Tuple2(
 				'display',
 				$elm$json$Json$Encode$object(
@@ -9182,10 +9491,10 @@ var $author$project$Concourse$encodePipeline = function (pipeline) {
 						[
 							_Utils_Tuple2(
 							'background_image',
-							A2($elm_community$json_extra$Json$Encode$Extra$maybe, $elm$json$Json$Encode$string, pipeline.eD)),
+							A2($elm_community$json_extra$Json$Encode$Extra$maybe, $elm$json$Json$Encode$string, pipeline.fa)),
 							_Utils_Tuple2(
 							'background_filter',
-							A2($elm_community$json_extra$Json$Encode$Extra$maybe, $elm$json$Json$Encode$string, pipeline.eC))
+							A2($elm_community$json_extra$Json$Encode$Extra$maybe, $elm$json$Json$Encode$string, pipeline.e9))
 						])))
 			]));
 };
@@ -9241,39 +9550,39 @@ var $author$project$Concourse$encodeResource = function (r) {
 					$elm$core$Maybe$Just(
 					_Utils_Tuple2(
 						'team_name',
-						$elm$json$Json$Encode$string(r.kD))),
+						$elm$json$Json$Encode$string(r.k8))),
 					$elm$core$Maybe$Just(
 					_Utils_Tuple2(
 						'pipeline_id',
-						$elm$json$Json$Encode$int(r.cF))),
+						$elm$json$Json$Encode$int(r.cZ))),
 					$elm$core$Maybe$Just(
 					_Utils_Tuple2(
 						'pipeline_name',
-						$elm$json$Json$Encode$string(r.jL))),
+						$elm$json$Json$Encode$string(r.gH))),
 					$elm$core$Maybe$Just(
 					_Utils_Tuple2(
 						'pipeline_instance_vars',
-						$author$project$Concourse$encodeInstanceVars(r.f2))),
+						$author$project$Concourse$encodeInstanceVars(r.ew))),
 					$elm$core$Maybe$Just(
 					_Utils_Tuple2(
 						'name',
-						$elm$json$Json$Encode$string(r.dQ))),
-					A3($author$project$Concourse$optionalField, 'icon', $elm$json$Json$Encode$string, r.fn),
+						$elm$json$Json$Encode$string(r.cT))),
+					A3($author$project$Concourse$optionalField, 'icon', $elm$json$Json$Encode$string, r.fZ),
 					A3(
 					$author$project$Concourse$optionalField,
 					'last_checked',
 					A2($elm$core$Basics$composeR, $author$project$Concourse$secondsFromDate, $elm$json$Json$Encode$int),
-					r.fA),
-					A3($author$project$Concourse$optionalField, 'pinned_version', $author$project$Concourse$encodeVersion, r.f1),
+					r.gb),
+					A3($author$project$Concourse$optionalField, 'pinned_version', $author$project$Concourse$encodeVersion, r.gG),
 					$elm$core$Maybe$Just(
 					_Utils_Tuple2(
 						'pinned_in_config',
-						$elm$json$Json$Encode$bool(r.f$))),
-					A3($author$project$Concourse$optionalField, 'pin_comment', $elm$json$Json$Encode$string, r.f_),
+						$elm$json$Json$Encode$bool(r.gE))),
+					A3($author$project$Concourse$optionalField, 'pin_comment', $elm$json$Json$Encode$string, r.gD),
 					$elm$core$Maybe$Just(
 					_Utils_Tuple2(
 						'build',
-						$author$project$Concourse$encodeMaybeBuild(r.eH)))
+						$author$project$Concourse$encodeMaybeBuild(r.fe)))
 				])));
 };
 var $author$project$SideBar$State$encodeSideBarState = function (state) {
@@ -9282,11 +9591,25 @@ var $author$project$SideBar$State$encodeSideBarState = function (state) {
 			[
 				_Utils_Tuple2(
 				'is_open',
-				$elm$json$Json$Encode$bool(state.iT)),
+				$elm$json$Json$Encode$bool(state.jn)),
 				_Utils_Tuple2(
 				'width',
-				$elm$json$Json$Encode$float(state.gK))
+				$elm$json$Json$Encode$float(state.hn))
 			]));
+};
+var $author$project$Message$Effects$encodeTaskStatus = function (params) {
+	return $elm$json$Json$Encode$object(
+		A2(
+			$elm$core$List$cons,
+			_Utils_Tuple2(
+				'status',
+				$elm$json$Json$Encode$string(params.eT)),
+			(params.gp === '') ? _List_Nil : _List_fromArray(
+				[
+					_Utils_Tuple2(
+					'note',
+					$elm$json$Json$Encode$string(params.gp))
+				])));
 };
 var $author$project$Concourse$encodeTeam = function (team) {
 	return $elm$json$Json$Encode$object(
@@ -9294,17 +9617,44 @@ var $author$project$Concourse$encodeTeam = function (team) {
 			[
 				_Utils_Tuple2(
 				'id',
-				$elm$json$Json$Encode$int(team.iz)),
+				$elm$json$Json$Encode$int(team.f_)),
 				_Utils_Tuple2(
 				'name',
-				$elm$json$Json$Encode$string(team.dQ))
+				$elm$json$Json$Encode$string(team.cT))
 			]));
+};
+var $author$project$Message$Effects$encodeTicketUpdate = function (params) {
+	return $elm$json$Json$Encode$object(
+		A2(
+			$elm$core$List$cons,
+			_Utils_Tuple2(
+				'title',
+				$elm$json$Json$Encode$string(params.ck)),
+			A2(
+				$elm$core$List$cons,
+				_Utils_Tuple2(
+					'body',
+					$elm$json$Json$Encode$string(params.bL)),
+				function () {
+					var _v0 = params.dz;
+					if (!_v0.$) {
+						var b = _v0.a;
+						return _List_fromArray(
+							[
+								_Utils_Tuple2(
+								'budget_usd',
+								$elm$json$Json$Encode$float(b))
+							]);
+					} else {
+						return _List_Nil;
+					}
+				}())));
 };
 var $elm$json$Json$Decode$decodeString = _Json_runOnString;
 var $elm$http$Http$expectJson = function (decoder) {
 	return $elm$http$Http$expectStringResponse(
 		function (response) {
-			var _v0 = A2($elm$json$Json$Decode$decodeString, decoder, response.W);
+			var _v0 = A2($elm$json$Json$Decode$decodeString, decoder, response.bL);
 			if (_v0.$ === 1) {
 				var decodeError = _v0.a;
 				return $elm$core$Result$Err(
@@ -9318,19 +9668,19 @@ var $elm$http$Http$expectJson = function (decoder) {
 var $author$project$Api$expectJson = F2(
 	function (decoder, r) {
 		return {
-			W: r.W,
-			am: r.am,
-			an: $elm$http$Http$expectJson(decoder),
+			bL: r.bL,
+			ao: r.ao,
+			ap: $elm$http$Http$expectJson(decoder),
 			ab: r.ab,
-			ac: r.ac,
-			av: r.av
+			ad: r.ad,
+			aw: r.aw
 		};
 	});
 var $author$project$Message$Storage$favoritedInstanceGroupsKey = 'favorited_instance_groups';
 var $author$project$Message$Storage$favoritedPipelinesKey = 'favorited_pipelines';
 var $elm$browser$Browser$Dom$focus = _Browser_call('focus');
 var $author$project$Api$get = function (endpoint) {
-	return {W: $elm$http$Http$emptyBody, am: endpoint, an: $author$project$Api$ignoreResponse, ab: _List_Nil, ac: 'GET', av: _List_Nil};
+	return {bL: $elm$http$Http$emptyBody, ao: endpoint, ap: $author$project$Api$ignoreResponse, ab: _List_Nil, ad: 'GET', aw: _List_Nil};
 };
 var $elm$browser$Browser$Dom$getElement = _Browser_getElement;
 var $author$project$Message$Effects$getHostname = _Platform_outgoingPort(
@@ -9374,10 +9724,10 @@ var $author$project$Message$Effects$openEventStream = _Platform_outgoingPort(
 				[
 					_Utils_Tuple2(
 					'eventTypes',
-					$elm$json$Json$Encode$list($elm$json$Json$Encode$string)($.hV)),
+					$elm$json$Json$Encode$list($elm$json$Json$Encode$string)($.it)),
 					_Utils_Tuple2(
 					'url',
-					$elm$json$Json$Encode$string($.k$))
+					$elm$json$Json$Encode$string($.lw))
 				]));
 	});
 var $elm$url$Url$Builder$QueryParameter = F2(
@@ -9394,8 +9744,8 @@ var $elm$url$Url$Builder$int = F2(
 	});
 var $author$project$Api$Pagination$params = function (p) {
 	if (!p.$) {
-		var direction = p.a.e0;
-		var limit = p.a.fC;
+		var direction = p.a.fB;
+		var limit = p.a.gd;
 		return _Utils_ap(
 			function () {
 				switch (direction.$) {
@@ -9502,7 +9852,7 @@ var $elm$parser$Parser$Advanced$chompWhileHelp = F5(
 					$elm$parser$Parser$Advanced$Good,
 					_Utils_cmp(s0.f, offset) < 0,
 					0,
-					{hg: col, k: s0.k, o: s0.o, f: offset, cM: row, b: s0.b});
+					{hT: col, k: s0.k, o: s0.o, f: offset, c4: row, b: s0.b});
 			} else {
 				if (_Utils_eq(newOffset, -2)) {
 					var $temp$isGood = isGood,
@@ -9534,7 +9884,7 @@ var $elm$parser$Parser$Advanced$chompWhileHelp = F5(
 	});
 var $elm$parser$Parser$Advanced$chompWhile = function (isGood) {
 	return function (s) {
-		return A5($elm$parser$Parser$Advanced$chompWhileHelp, isGood, s.f, s.cM, s.hg, s);
+		return A5($elm$parser$Parser$Advanced$chompWhileHelp, isGood, s.f, s.c4, s.hT, s);
 	};
 };
 var $elm$parser$Parser$chompWhile = $elm$parser$Parser$Advanced$chompWhile;
@@ -9621,7 +9971,7 @@ var $elm$parser$Parser$Advanced$AddRight = F2(
 	});
 var $elm$parser$Parser$Advanced$DeadEnd = F4(
 	function (row, col, problem, contextStack) {
-		return {hg: col, hp: contextStack, jT: problem, cM: row};
+		return {hT: col, h0: contextStack, km: problem, c4: row};
 	});
 var $elm$parser$Parser$Advanced$Empty = {$: 0};
 var $elm$parser$Parser$Advanced$fromState = F2(
@@ -9629,7 +9979,7 @@ var $elm$parser$Parser$Advanced$fromState = F2(
 		return A2(
 			$elm$parser$Parser$Advanced$AddRight,
 			$elm$parser$Parser$Advanced$Empty,
-			A4($elm$parser$Parser$Advanced$DeadEnd, s.cM, s.hg, x, s.k));
+			A4($elm$parser$Parser$Advanced$DeadEnd, s.c4, s.hT, x, s.k));
 	});
 var $elm$parser$Parser$Advanced$isSubString = _Parser_isSubString;
 var $elm$core$Basics$not = _Basics_not;
@@ -9638,7 +9988,7 @@ var $elm$parser$Parser$Advanced$keyword = function (_v0) {
 	var expecting = _v0.b;
 	var progress = !$elm$core$String$isEmpty(kwd);
 	return function (s) {
-		var _v1 = A5($elm$parser$Parser$Advanced$isSubString, kwd, s.f, s.cM, s.hg, s.b);
+		var _v1 = A5($elm$parser$Parser$Advanced$isSubString, kwd, s.f, s.c4, s.hT, s.b);
 		var newOffset = _v1.a;
 		var newRow = _v1.b;
 		var newCol = _v1.c;
@@ -9655,7 +10005,7 @@ var $elm$parser$Parser$Advanced$keyword = function (_v0) {
 			$elm$parser$Parser$Advanced$Good,
 			progress,
 			0,
-			{hg: newCol, k: s.k, o: s.o, f: newOffset, cM: newRow, b: s.b});
+			{hT: newCol, k: s.k, o: s.o, f: newOffset, c4: newRow, b: s.b});
 	};
 };
 var $elm$parser$Parser$keyword = function (kwd) {
@@ -9749,7 +10099,7 @@ var $elm_community$maybe_extra$Maybe$Extra$orElse = F2(
 	});
 var $elm$url$Url$Parser$State = F5(
 	function (visited, unvisited, params, frag, value) {
-		return {aS: frag, jG: params, aK: unvisited, k2: value, a$: visited};
+		return {aT: frag, ka: params, aL: unvisited, lz: value, a0: visited};
 	});
 var $elm$url$Url$Parser$getFirstMatch = function (states) {
 	getFirstMatch:
@@ -9759,12 +10109,12 @@ var $elm$url$Url$Parser$getFirstMatch = function (states) {
 		} else {
 			var state = states.a;
 			var rest = states.b;
-			var _v1 = state.aK;
+			var _v1 = state.aL;
 			if (!_v1.b) {
-				return $elm$core$Maybe$Just(state.k2);
+				return $elm$core$Maybe$Just(state.lz);
 			} else {
 				if ((_v1.a === '') && (!_v1.b.b)) {
-					return $elm$core$Maybe$Just(state.k2);
+					return $elm$core$Maybe$Just(state.lz);
 				} else {
 					var $temp$states = rest;
 					states = $temp$states;
@@ -9861,20 +10211,20 @@ var $elm$url$Url$Parser$parse = F2(
 				A5(
 					$elm$url$Url$Parser$State,
 					_List_Nil,
-					$elm$url$Url$Parser$preparePath(url.jH),
-					$elm$url$Url$Parser$prepareQuery(url.av),
-					url.ig,
+					$elm$url$Url$Parser$preparePath(url.kb),
+					$elm$url$Url$Parser$prepareQuery(url.aw),
+					url.iN,
 					$elm$core$Basics$identity)));
 	});
 var $elm$url$Url$Parser$Parser = $elm$core$Basics$identity;
 var $elm$url$Url$Parser$query = function (_v0) {
 	var queryParser = _v0;
 	return function (_v1) {
-		var visited = _v1.a$;
-		var unvisited = _v1.aK;
-		var params = _v1.jG;
-		var frag = _v1.aS;
-		var value = _v1.k2;
+		var visited = _v1.a0;
+		var unvisited = _v1.aL;
+		var params = _v1.ka;
+		var frag = _v1.aT;
+		var value = _v1.lz;
 		return _List_fromArray(
 			[
 				A5(
@@ -9903,7 +10253,7 @@ var $author$project$Api$Pagination$parsePage = function (url) {
 					function (u) {
 						return _Utils_update(
 							u,
-							{jH: ''});
+							{kb: ''});
 					},
 					$elm$url$Url$fromString(url))));
 	};
@@ -9914,8 +10264,8 @@ var $author$project$Api$Pagination$parsePage = function (url) {
 			$elm$core$Maybe$map(
 				function (n) {
 					return {
-						e0: dir(n),
-						fC: A2(
+						fB: dir(n),
+						gd: A2(
 							$elm$core$Maybe$withDefault,
 							0,
 							tryParam('limit'))
@@ -9947,7 +10297,7 @@ var $elm$parser$Parser$Advanced$token = function (_v0) {
 	var expecting = _v0.b;
 	var progress = !$elm$core$String$isEmpty(str);
 	return function (s) {
-		var _v1 = A5($elm$parser$Parser$Advanced$isSubString, str, s.f, s.cM, s.hg, s.b);
+		var _v1 = A5($elm$parser$Parser$Advanced$isSubString, str, s.f, s.c4, s.hT, s.b);
 		var newOffset = _v1.a;
 		var newRow = _v1.b;
 		var newCol = _v1.c;
@@ -9958,7 +10308,7 @@ var $elm$parser$Parser$Advanced$token = function (_v0) {
 			$elm$parser$Parser$Advanced$Good,
 			progress,
 			0,
-			{hg: newCol, k: s.k, o: s.o, f: newOffset, cM: newRow, b: s.b});
+			{hT: newCol, k: s.k, o: s.o, f: newOffset, c4: newRow, b: s.b});
 	};
 };
 var $elm$parser$Parser$Advanced$symbol = $elm$parser$Parser$Advanced$token;
@@ -10016,7 +10366,7 @@ var $author$project$Api$Pagination$pagination = function () {
 					$elm$parser$Parser$succeed(
 						F2(
 							function (p, n) {
-								return {bW: n, b0: p};
+								return {b2: n, b8: p};
 							})),
 					A2(
 						$elm$parser$Parser$ignorer,
@@ -10033,7 +10383,7 @@ var $author$project$Api$Pagination$pagination = function () {
 					$elm$parser$Parser$succeed(
 						F2(
 							function (n, p) {
-								return {bW: n, b0: p};
+								return {b2: n, b8: p};
 							})),
 					A2(
 						$elm$parser$Parser$ignorer,
@@ -10047,24 +10397,24 @@ var $author$project$Api$Pagination$pagination = function () {
 				$elm$parser$Parser$keeper,
 				$elm$parser$Parser$succeed(
 					function (p) {
-						return {bW: $elm$core$Maybe$Nothing, b0: p};
+						return {b2: $elm$core$Maybe$Nothing, b8: p};
 					}),
 				entry($author$project$Api$Pagination$previousRel)),
 				A2(
 				$elm$parser$Parser$keeper,
 				$elm$parser$Parser$succeed(
 					function (n) {
-						return {bW: n, b0: $elm$core$Maybe$Nothing};
+						return {b2: n, b8: $elm$core$Maybe$Nothing};
 					}),
 				entry($author$project$Api$Pagination$nextRel))
 			]));
 }();
 var $elm$parser$Parser$DeadEnd = F3(
 	function (row, col, problem) {
-		return {hg: col, jT: problem, cM: row};
+		return {hT: col, km: problem, c4: row};
 	});
 var $elm$parser$Parser$problemToDeadEnd = function (p) {
-	return A3($elm$parser$Parser$DeadEnd, p.cM, p.hg, p.jT);
+	return A3($elm$parser$Parser$DeadEnd, p.c4, p.hT, p.km);
 };
 var $elm$parser$Parser$Advanced$bagToList = F2(
 	function (bag, list) {
@@ -10096,7 +10446,7 @@ var $elm$parser$Parser$Advanced$run = F2(
 	function (_v0, src) {
 		var parse = _v0;
 		var _v1 = parse(
-			{hg: 1, k: _List_Nil, o: 1, f: 0, cM: 1, b: src});
+			{hT: 1, k: _List_Nil, o: 1, f: 0, c4: 1, b: src});
 		if (!_v1.$) {
 			var value = _v1.b;
 			return $elm$core$Result$Ok(value);
@@ -10160,15 +10510,15 @@ var $author$project$Api$Pagination$parseLinks = A2(
 							$elm$parser$Parser$run($author$project$Api$Pagination$pagination),
 							$elm$core$Result$toMaybe)),
 					$elm$core$Maybe$withDefault(
-						{bW: $elm$core$Maybe$Nothing, b0: $elm$core$Maybe$Nothing}))))));
+						{b2: $elm$core$Maybe$Nothing, b8: $elm$core$Maybe$Nothing}))))));
 var $author$project$Api$Pagination$parsePagination = F2(
 	function (decoder, response) {
 		return A2(
 			$elm$core$Result$map,
 			function (content) {
 				return {
-					hn: content,
-					jF: $author$project$Api$Pagination$parseLinks(response)
+					h_: content,
+					j9: $author$project$Api$Pagination$parseLinks(response)
 				};
 			},
 			A2(
@@ -10177,18 +10527,18 @@ var $author$project$Api$Pagination$parsePagination = F2(
 				A2(
 					$elm$json$Json$Decode$decodeString,
 					$elm$json$Json$Decode$list(decoder),
-					response.W)));
+					response.bL)));
 	});
 var $author$project$Api$paginatedGet = F4(
 	function (endpoint, page, additionalQueries, decoder) {
 		return {
-			W: $elm$http$Http$emptyBody,
-			am: endpoint,
-			an: $elm$http$Http$expectStringResponse(
+			bL: $elm$http$Http$emptyBody,
+			ao: endpoint,
+			ap: $elm$http$Http$expectStringResponse(
 				$author$project$Api$Pagination$parsePagination(decoder)),
 			ab: _List_Nil,
-			ac: 'GET',
-			av: _Utils_ap(
+			ad: 'GET',
+			aw: _Utils_ap(
 				$author$project$Api$Pagination$params(page),
 				additionalQueries)
 		};
@@ -10201,49 +10551,49 @@ var $author$project$Message$Effects$pinTeamNames = _Platform_outgoingPort(
 				[
 					_Utils_Tuple2(
 					'pageBodyClass',
-					$elm$json$Json$Encode$string($.jE)),
+					$elm$json$Json$Encode$string($.j8)),
 					_Utils_Tuple2(
 					'pageHeaderHeight',
-					$elm$json$Json$Encode$float($.d_)),
+					$elm$json$Json$Encode$float($.et)),
 					_Utils_Tuple2(
 					'sectionBodyClass',
-					$elm$json$Json$Encode$string($.kg)),
+					$elm$json$Json$Encode$string($.kL)),
 					_Utils_Tuple2(
 					'sectionClass',
-					$elm$json$Json$Encode$string($.d9)),
+					$elm$json$Json$Encode$string($.eH)),
 					_Utils_Tuple2(
 					'sectionHeaderClass',
-					$elm$json$Json$Encode$string($.kh))
+					$elm$json$Json$Encode$string($.kM))
 				]));
 	});
 var $author$project$Message$Storage$pipelinesKey = 'pipelines';
 var $author$project$Api$post = F2(
 	function (endpoint, csrfToken) {
 		return {
-			W: $elm$http$Http$emptyBody,
-			am: endpoint,
-			an: $author$project$Api$ignoreResponse,
+			bL: $elm$http$Http$emptyBody,
+			ao: endpoint,
+			ap: $author$project$Api$ignoreResponse,
 			ab: _List_fromArray(
 				[
 					A2($elm$http$Http$header, $author$project$Concourse$csrfTokenHeaderName, csrfToken)
 				]),
-			ac: 'POST',
-			av: _List_Nil
+			ad: 'POST',
+			aw: _List_Nil
 		};
 	});
 var $elm$browser$Browser$Navigation$pushUrl = _Browser_pushUrl;
 var $author$project$Api$put = F2(
 	function (endpoint, csrfToken) {
 		return {
-			W: $elm$http$Http$emptyBody,
-			am: endpoint,
-			an: $author$project$Api$ignoreResponse,
+			bL: $elm$http$Http$emptyBody,
+			ao: endpoint,
+			ap: $author$project$Api$ignoreResponse,
 			ab: _List_fromArray(
 				[
 					A2($elm$http$Http$header, $author$project$Concourse$csrfTokenHeaderName, csrfToken)
 				]),
-			ac: 'PUT',
-			av: _List_Nil
+			ad: 'PUT',
+			aw: _List_Nil
 		};
 	});
 var $author$project$Message$Effects$rawHttpRequest = _Platform_outgoingPort('rawHttpRequest', $elm$json$Json$Encode$string);
@@ -10413,7 +10763,7 @@ var $author$project$DotNotation$flattenHelper = F3(
 		} else {
 			return _List_fromArray(
 				[
-					{bO: fields, jH: path, k2: value}
+					{bW: fields, kb: path, lz: value}
 				]);
 		}
 	});
@@ -10437,9 +10787,9 @@ var $author$project$DotNotation$quoteIfNeeded = function (s) {
 	return A2($elm$core$String$all, $author$project$DotNotation$isValidPathSegmentChar, s) ? s : ('\"' + (s + '\"'));
 };
 var $author$project$DotNotation$serialize = function (_v0) {
-	var path = _v0.jH;
-	var fields = _v0.bO;
-	var value = _v0.k2;
+	var path = _v0.kb;
+	var fields = _v0.bW;
+	var value = _v0.lz;
 	var v = A2(
 		$elm$json$Json$Encode$encode,
 		0,
@@ -10463,7 +10813,7 @@ var $elm$url$Url$Builder$string = F2(
 var $author$project$RouteBuilder$pipeline = function (id) {
 	return _Utils_Tuple2(
 		_List_fromArray(
-			['teams', id.kD, 'pipelines', id.jL]),
+			['teams', id.k8, 'pipelines', id.gH]),
 		A2(
 			$elm$core$List$map,
 			function (_var) {
@@ -10472,7 +10822,7 @@ var $author$project$RouteBuilder$pipeline = function (id) {
 				var v = _v0.b;
 				return A2($elm$url$Url$Builder$string, 'vars.' + k, v);
 			},
-			$author$project$DotNotation$flatten(id.f2)));
+			$author$project$DotNotation$flatten(id.ew)));
 };
 var $author$project$Api$Endpoints$pipeline = function (id) {
 	return A2(
@@ -10528,7 +10878,7 @@ var $author$project$Api$Endpoints$resource = function (id) {
 	return A2(
 		$author$project$RouteBuilder$appendPath,
 		_List_fromArray(
-			['resources', id.j1]),
+			['resources', id.kw]),
 		$author$project$Api$Endpoints$pipeline(id));
 };
 var $author$project$Api$Endpoints$resourceEndpoint = function (endpoint) {
@@ -10627,14 +10977,14 @@ var $author$project$Api$Endpoints$builder = function (endpoint) {
 				A2(
 					$author$project$RouteBuilder$appendPath,
 					_List_fromArray(
-						['jobs', id.i0]),
+						['jobs', id.jw]),
 					$author$project$Api$Endpoints$pipeline(id)));
 		case 4:
 			var id = endpoint.a;
 			return A2(
 				$author$project$RouteBuilder$appendPath,
 				_List_fromArray(
-					['jobs', id.i0, 'builds', id.g1]),
+					['jobs', id.jw, 'builds', id.hE]),
 				$author$project$Api$Endpoints$pipeline(id));
 		case 5:
 			var id = endpoint.a;
@@ -10674,7 +11024,7 @@ var $author$project$Api$Endpoints$builder = function (endpoint) {
 					_List_fromArray(
 						[
 							'versions',
-							$elm$core$String$fromInt(id.k5)
+							$elm$core$String$fromInt(id.lB)
 						]),
 					$author$project$Api$Endpoints$resource(id)));
 		case 9:
@@ -10725,8 +11075,8 @@ var $author$project$Api$Endpoints$builder = function (endpoint) {
 					['logout']),
 				$author$project$Api$Endpoints$baseSky);
 		case 16:
-			var teamName = endpoint.a.kD;
-			var name = endpoint.a.dQ;
+			var teamName = endpoint.a.k8;
+			var name = endpoint.a.cT;
 			var subEndpoint = endpoint.b;
 			return A2(
 				$author$project$RouteBuilder$append,
@@ -10794,7 +11144,7 @@ var $author$project$Api$Endpoints$builder = function (endpoint) {
 				_List_fromArray(
 					['agent', 'principals']),
 				$author$project$Api$Endpoints$base);
-		default:
+		case 25:
 			var principalId = endpoint.a;
 			return A2(
 				$author$project$RouteBuilder$appendPath,
@@ -10803,6 +11153,73 @@ var $author$project$Api$Endpoints$builder = function (endpoint) {
 						'agent',
 						'principals',
 						$elm$core$String$fromInt(principalId)
+					]),
+				$author$project$Api$Endpoints$base);
+		case 26:
+			return A2(
+				$author$project$RouteBuilder$appendPath,
+				_List_fromArray(
+					['agent', 'tickets']),
+				$author$project$Api$Endpoints$base);
+		case 27:
+			var ticketId = endpoint.a;
+			return A2(
+				$author$project$RouteBuilder$appendPath,
+				_List_fromArray(
+					[
+						'agent',
+						'tickets',
+						$elm$core$String$fromInt(ticketId)
+					]),
+				$author$project$Api$Endpoints$base);
+		case 28:
+			var ticketId = endpoint.a;
+			return A2(
+				$author$project$RouteBuilder$appendPath,
+				_List_fromArray(
+					[
+						'agent',
+						'tickets',
+						$elm$core$String$fromInt(ticketId),
+						'state'
+					]),
+				$author$project$Api$Endpoints$base);
+		case 29:
+			var ticketId = endpoint.a;
+			return A2(
+				$author$project$RouteBuilder$appendPath,
+				_List_fromArray(
+					[
+						'agent',
+						'tickets',
+						$elm$core$String$fromInt(ticketId),
+						'dispatch'
+					]),
+				$author$project$Api$Endpoints$base);
+		case 30:
+			var ticketId = endpoint.a;
+			var ordering = endpoint.b;
+			return A2(
+				$author$project$RouteBuilder$appendPath,
+				_List_fromArray(
+					[
+						'agent',
+						'tickets',
+						$elm$core$String$fromInt(ticketId),
+						'tasks',
+						$elm$core$String$fromInt(ordering)
+					]),
+				$author$project$Api$Endpoints$base);
+		default:
+			var ticketId = endpoint.a;
+			return A2(
+				$author$project$RouteBuilder$appendPath,
+				_List_fromArray(
+					[
+						'agent',
+						'tickets',
+						$elm$core$String$fromInt(ticketId),
+						'metrics'
 					]),
 				$author$project$Api$Endpoints$base);
 	}
@@ -10820,22 +11237,22 @@ var $elm$http$Http$toTask = function (_v0) {
 	return A2(_Http_toTask, request_, $elm$core$Maybe$Nothing);
 };
 var $author$project$Api$request = function (_v0) {
-	var endpoint = _v0.am;
-	var method = _v0.ac;
+	var endpoint = _v0.ao;
+	var method = _v0.ad;
 	var headers = _v0.ab;
-	var body = _v0.W;
-	var expect = _v0.an;
-	var query = _v0.av;
+	var body = _v0.bL;
+	var expect = _v0.ap;
+	var query = _v0.aw;
 	return $elm$http$Http$toTask(
 		$elm$http$Http$request(
 			{
-				W: body,
-				an: expect,
+				bL: body,
+				ap: expect,
 				ab: headers,
-				ac: method,
-				kM: $elm$core$Maybe$Nothing,
-				k$: A2($author$project$Api$Endpoints$toString, query, endpoint),
-				lb: false
+				ad: method,
+				lh: $elm$core$Maybe$Nothing,
+				lw: A2($author$project$Api$Endpoints$toString, query, endpoint),
+				lH: false
 			}));
 };
 var $author$project$Message$Effects$requestLoginRedirect = _Platform_outgoingPort('requestLoginRedirect', $elm$json$Json$Encode$string);
@@ -10927,12 +11344,12 @@ var $author$project$Message$Effects$scroll = F2(
 						A2(
 							$elm$core$Basics$composeR,
 							function ($) {
-								return $.k7;
+								return $.lD;
 							},
 							A2(
 								$elm$core$Basics$composeR,
 								function ($) {
-									return $.lf;
+									return $.lL;
 								},
 								$elm$core$Basics$add(60)))));
 			case 2:
@@ -10948,12 +11365,12 @@ var $author$project$Message$Effects$scroll = F2(
 						A2(
 							$elm$core$Basics$composeR,
 							function ($) {
-								return $.k7;
+								return $.lD;
 							},
 							A2(
 								$elm$core$Basics$composeR,
 								function ($) {
-									return $.lf;
+									return $.lL;
 								},
 								$elm$core$Basics$add(-60)))));
 			case 3:
@@ -10969,10 +11386,10 @@ var $author$project$Message$Effects$scroll = F2(
 						A2(
 							$elm$core$Basics$composeR,
 							function ($) {
-								return $.ka;
+								return $.kF;
 							},
 							function ($) {
-								return $.bS;
+								return $.b_;
 							})));
 			case 4:
 				var delta = direction.a;
@@ -10987,12 +11404,12 @@ var $author$project$Message$Effects$scroll = F2(
 						A2(
 							$elm$core$Basics$composeR,
 							function ($) {
-								return $.k7;
+								return $.lD;
 							},
 							A2(
 								$elm$core$Basics$composeR,
 								function ($) {
-									return $.ak;
+									return $.am;
 								},
 								$elm$core$Basics$add(-delta))),
 						$elm$core$Basics$always(0)));
@@ -11282,8 +11699,8 @@ var $author$project$Message$Effects$toHtmlID = function (domId) {
 			return $author$project$Message$Effects$pipelinesSectionName(section) + ('_' + ($author$project$Message$Effects$encodePipelineId(p) + '_favorite'));
 		case 30:
 			var section = domId.a;
-			var teamName = domId.b.kD;
-			var name = domId.b.dQ;
+			var teamName = domId.b.k8;
+			var name = domId.b.cT;
 			return $author$project$Message$Effects$pipelinesSectionName(section) + ('_' + ($truqu$elm_base64$Base64$encode(teamName) + ('_' + ($truqu$elm_base64$Base64$encode(name) + '_favorite'))));
 		case 31:
 			var section = domId.a;
@@ -11392,10 +11809,10 @@ var $author$project$Message$Effects$toHtmlID = function (domId) {
 			return 'edit-button';
 		case 20:
 			var id = domId.a;
-			return 'pin-button_' + $elm$core$String$fromInt(id.k5);
+			return 'pin-button_' + $elm$core$String$fromInt(id.lB);
 		case 55:
 			var id = domId.a;
-			return 'version-toggle_' + $elm$core$String$fromInt(id.k5);
+			return 'version-toggle_' + $elm$core$String$fromInt(id.lB);
 		case 21:
 			return 'pin-bar';
 		case 8:
@@ -11409,10 +11826,10 @@ var $author$project$Message$Effects$toHtmlID = function (domId) {
 			return 'previous-page';
 		case 69:
 			var id = domId.a;
-			return 'view-all-inputs-' + $elm$core$String$fromInt(id.k5);
+			return 'view-all-inputs-' + $elm$core$String$fromInt(id.lB);
 		case 70:
 			var id = domId.a;
-			return 'view-all-outputs' + $elm$core$String$fromInt(id.k5);
+			return 'view-all-outputs' + $elm$core$String$fromInt(id.lB);
 		default:
 			return '';
 	}
@@ -11456,9 +11873,9 @@ var $author$project$Assets$toPath = function (asset) {
 				_List_fromArray(
 					['baseline-visibility' + (imageName + '.svg')]));
 		case 6:
-			var isFavorited = asset.a.iQ;
-			var isHovered = asset.a.iS;
-			var isSideBar = asset.a.iV;
+			var isFavorited = asset.a.jk;
+			var isHovered = asset.a.jm;
+			var isSideBar = asset.a.jp;
 			var imageName = isFavorited ? '-filled' : (isHovered ? '-unfilled-white' : (isSideBar ? '-unfilled-bright' : '-unfilled'));
 			return _Utils_ap(
 				basePath,
@@ -11797,7 +12214,7 @@ var $author$project$Api$withJsonBody = F2(
 		return _Utils_update(
 			r,
 			{
-				W: $elm$http$Http$jsonBody(value)
+				bL: $elm$http$Http$jsonBody(value)
 			});
 	});
 var $author$project$Message$Effects$runEffect = F3(
@@ -11874,7 +12291,7 @@ var $author$project$Message$Effects$runEffect = F3(
 					A2(
 						$elm$core$Task$map,
 						function (b) {
-							return $elm$core$List$head(b.hn);
+							return $elm$core$List$head(b.h_);
 						},
 						$author$project$Api$request(
 							A4(
@@ -12298,7 +12715,7 @@ var $author$project$Message$Effects$runEffect = F3(
 				var instanceVars = effect.b;
 				return A2(
 					$elm$core$Task$attempt,
-					$author$project$Message$Callback$PipelinesOrdered(id.kD),
+					$author$project$Message$Callback$PipelinesOrdered(id.k8),
 					$author$project$Api$request(
 						A2(
 							$author$project$Api$withJsonBody,
@@ -12548,7 +12965,7 @@ var $author$project$Message$Effects$runEffect = F3(
 								var teamName = _v3.a;
 								var name = _v3.b;
 								return $author$project$Concourse$encodeInstanceGroupId(
-									{dQ: name, kD: teamName});
+									{cT: name, k8: teamName});
 							},
 							igs)));
 			case 86:
@@ -12691,11 +13108,11 @@ var $author$project$Message$Effects$runEffect = F3(
 							$author$project$Api$delete,
 							$author$project$Api$Endpoints$AgentPrincipal(principalId),
 							csrfToken)));
-			default:
+			case 98:
 				var params = effect.a;
 				return A2(
 					$elm$core$Task$attempt,
-					$author$project$Message$Callback$AgentReviewVerdictSubmitted(params.id),
+					$author$project$Message$Callback$AgentReviewVerdictSubmitted(params.dV),
 					$author$project$Api$request(
 						A2(
 							$author$project$Api$withJsonBody,
@@ -12709,28 +13126,137 @@ var $author$project$Message$Effects$runEffect = F3(
 												[
 													_Utils_Tuple2(
 													'repo',
-													$elm$json$Json$Encode$string(params.gb)),
+													$elm$json$Json$Encode$string(params.gP)),
 													_Utils_Tuple2(
 													'commit',
-													$elm$json$Json$Encode$string(params.hk))
+													$elm$json$Json$Encode$string(params.hX))
 												]))),
 										_Utils_Tuple2(
 										'finding_id',
-										$elm$json$Json$Encode$string(params.id)),
+										$elm$json$Json$Encode$string(params.dV)),
 										_Utils_Tuple2(
 										'verdict',
-										$elm$json$Json$Encode$string(params.gI)),
+										$elm$json$Json$Encode$string(params.hl)),
 										_Utils_Tuple2(
 										'notes',
-										$elm$json$Json$Encode$string(params.jw)),
+										$elm$json$Json$Encode$string(params.j$)),
 										_Utils_Tuple2(
 										'reviewer',
-										$elm$json$Json$Encode$string(params.j5)),
+										$elm$json$Json$Encode$string(params.gW)),
 										_Utils_Tuple2(
 										'source',
 										$elm$json$Json$Encode$string('interactive'))
 									])),
 							A2($author$project$Api$post, $author$project$Api$Endpoints$AgentFeedback, csrfToken))));
+			case 99:
+				return A2(
+					$elm$core$Task$attempt,
+					$author$project$Message$Callback$AgentTicketsFetched,
+					$author$project$Api$request(
+						A2(
+							$author$project$Api$expectJson,
+							$elm$json$Json$Decode$list($author$project$Concourse$AgentTicket$decodeTicket),
+							$author$project$Api$get($author$project$Api$Endpoints$AgentTicketsList))));
+			case 100:
+				var ticketId = effect.a;
+				return A2(
+					$elm$core$Task$attempt,
+					$author$project$Message$Callback$AgentTicketFetched,
+					$author$project$Api$request(
+						A2(
+							$author$project$Api$expectJson,
+							$author$project$Concourse$AgentTicket$decodeDetail,
+							$author$project$Api$get(
+								$author$project$Api$Endpoints$AgentTicket(ticketId)))));
+			case 101:
+				var params = effect.a;
+				return A2(
+					$elm$core$Task$attempt,
+					$author$project$Message$Callback$AgentTicketSaved(params.f_),
+					$author$project$Api$request(
+						A2(
+							$author$project$Api$withJsonBody,
+							$author$project$Message$Effects$encodeTicketUpdate(params),
+							A2(
+								$author$project$Api$put,
+								$author$project$Api$Endpoints$AgentTicket(params.f_),
+								csrfToken))));
+			case 102:
+				var params = effect.a;
+				return A2(
+					$elm$core$Task$attempt,
+					$author$project$Message$Callback$AgentTicketTransitioned(params.f_),
+					$author$project$Api$request(
+						A2(
+							$author$project$Api$withJsonBody,
+							$elm$json$Json$Encode$object(
+								_List_fromArray(
+									[
+										_Utils_Tuple2(
+										'from',
+										$elm$json$Json$Encode$string(params.iO)),
+										_Utils_Tuple2(
+										'to',
+										$elm$json$Json$Encode$string(params.li))
+									])),
+							A2(
+								$author$project$Api$put,
+								$author$project$Api$Endpoints$AgentTicketState(params.f_),
+								csrfToken))));
+			case 103:
+				var ticketId = effect.a;
+				return A2(
+					$elm$core$Task$attempt,
+					$author$project$Message$Callback$AgentTicketDispatched(ticketId),
+					$author$project$Api$request(
+						A2(
+							$author$project$Api$expectJson,
+							$author$project$Concourse$AgentTicket$decodeDispatchResult,
+							A2(
+								$author$project$Api$post,
+								$author$project$Api$Endpoints$AgentTicketDispatch(ticketId),
+								csrfToken))));
+			case 104:
+				var params = effect.a;
+				return A2(
+					$elm$core$Task$attempt,
+					$author$project$Message$Callback$AgentTicketTaskUpdated(params.f_),
+					$author$project$Api$request(
+						A2(
+							$author$project$Api$withJsonBody,
+							$author$project$Message$Effects$encodeTaskStatus(params),
+							A2(
+								$author$project$Api$put,
+								A2($author$project$Api$Endpoints$AgentTicketTask, params.f_, params.gu),
+								csrfToken))));
+			case 105:
+				var ticketId = effect.a;
+				return A2(
+					$elm$core$Task$attempt,
+					$author$project$Message$Callback$AgentTicketMetricsFetched(ticketId),
+					$author$project$Api$request(
+						A2(
+							$author$project$Api$expectJson,
+							$elm$json$Json$Decode$list($author$project$Concourse$Agent$decodeRunMetric),
+							$author$project$Api$get(
+								$author$project$Api$Endpoints$AgentTicketMetrics(ticketId)))));
+			default:
+				var base = $author$project$Api$get($author$project$Api$Endpoints$AgentCostRollup);
+				return A2(
+					$elm$core$Task$attempt,
+					$author$project$Message$Callback$AgentCostRollupFetched,
+					$author$project$Api$request(
+						A2(
+							$author$project$Api$expectJson,
+							$author$project$Concourse$Agent$decodeCostRollup,
+							_Utils_update(
+								base,
+								{
+									aw: _List_fromArray(
+										[
+											A2($elm$url$Url$Builder$string, 'group_by', 'ticket')
+										])
+								}))));
 		}
 	});
 var $author$project$Main$effectToCmd = F3(
@@ -12748,7 +13274,7 @@ var $author$project$Main$effectsToCmd = function (_v0) {
 		$elm$core$Platform$Cmd$batch(
 			A2(
 				$elm$core$List$map,
-				A2($author$project$Main$effectToCmd, model.jk.c.a5, model.i2),
+				A2($author$project$Main$effectToCmd, model.jP.c.a6, model.jy),
 				effs)));
 };
 var $author$project$Routes$Dashboard = function (a) {
@@ -12783,6 +13309,12 @@ var $author$project$SubPage$SubPage$AgentModel = function (a) {
 };
 var $author$project$SubPage$SubPage$AgentReviewsModel = function (a) {
 	return {$: 9, a: a};
+};
+var $author$project$SubPage$SubPage$AgentTicketModel = function (a) {
+	return {$: 12, a: a};
+};
+var $author$project$SubPage$SubPage$AgentTicketsModel = function (a) {
+	return {$: 11, a: a};
 };
 var $author$project$SubPage$SubPage$BuildModel = function (a) {
 	return {$: 0, a: a};
@@ -12823,21 +13355,44 @@ var $author$project$Message$Effects$FetchAgentPrincipals = {$: 95};
 var $author$project$Message$Effects$FetchAgentRunMetrics = {$: 91};
 var $author$project$Message$Effects$FetchAgentWorkflows = {$: 92};
 var $author$project$Agent$Agent$init = _Utils_Tuple2(
-	{bL: $elm$core$Maybe$Nothing, dc: $elm$core$Maybe$Nothing, dd: $elm$core$Maybe$Nothing, a4: $elm$core$Maybe$Nothing, iZ: false, bV: '', cz: $elm$core$Maybe$Nothing, bl: '', bm: '', at: $elm$core$Set$empty, cA: $elm$core$Maybe$Nothing, aV: false, d2: $elm$core$Maybe$Nothing, bs: $elm$core$Maybe$Nothing, b4: $elm$core$Maybe$Nothing, d7: $elm$core$Maybe$Nothing, bu: $elm$core$Maybe$Nothing, eu: $elm$core$Maybe$Nothing, bC: $elm$core$Maybe$Nothing},
+	{bO: $elm$core$Maybe$Nothing, dE: $elm$core$Maybe$Nothing, dF: $elm$core$Maybe$Nothing, a5: $elm$core$Maybe$Nothing, jt: false, b1: '', cR: $elm$core$Maybe$Nothing, bn: '', bo: '', au: $elm$core$Set$empty, cS: $elm$core$Maybe$Nothing, aW: false, ey: $elm$core$Maybe$Nothing, bu: $elm$core$Maybe$Nothing, cc: $elm$core$Maybe$Nothing, eF: $elm$core$Maybe$Nothing, bw: $elm$core$Maybe$Nothing, ce: false, e0: $elm$core$Maybe$Nothing, bE: $elm$core$Maybe$Nothing},
 	_List_fromArray(
 		[$author$project$Message$Effects$FetchAgentRunMetrics, $author$project$Message$Effects$FetchAgentWorkflows, $author$project$Message$Effects$FetchAgentCostRollup, $author$project$Message$Effects$FetchAgentCredentials, $author$project$Message$Effects$FetchAgentPrincipals]));
 var $author$project$Message$Effects$FetchTeamAgentReviews = function (a) {
 	return {$: 89, a: a};
 };
 var $author$project$AgentReviews$AgentReviews$init = function (_v0) {
-	var teamName = _v0.kD;
+	var teamName = _v0.k8;
 	return _Utils_Tuple2(
-		{iZ: false, dO: false, cx: false, cL: _List_Nil, kD: teamName},
+		{jt: false, eh: false, cP: false, cY: '', c3: _List_Nil, k8: teamName, $7: false},
 		_List_fromArray(
 			[
 				$author$project$Message$Effects$FetchTeamAgentReviews(teamName)
 			]));
 };
+var $author$project$Message$Effects$FetchAgentTicket = function (a) {
+	return {$: 100, a: a};
+};
+var $author$project$Message$Effects$FetchAgentTicketMetrics = function (a) {
+	return {$: 105, a: a};
+};
+var $author$project$AgentTickets$AgentTicket$SpecTab = 0;
+var $author$project$AgentTickets$AgentTicket$init = function (_v0) {
+	var id = _v0.f_;
+	return _Utils_Tuple2(
+		{W: $elm$core$Maybe$Nothing, cs: 0, ds: false, ct: $elm$core$Dict$empty, dt: false, e3: _List_Nil, bQ: $elm$core$Maybe$Nothing, bR: false, bS: '', bT: '', bU: '', ba: false, dN: $elm$core$Set$empty, dO: $elm$core$Set$empty, jt: false, eh: false, cP: false, eA: $elm$core$Maybe$Nothing, c7: _List_Nil, eJ: false, lg: id, cq: $elm$core$Set$empty},
+		_List_fromArray(
+			[
+				$author$project$Message$Effects$FetchAgentTicket(id),
+				$author$project$Message$Effects$FetchAgentTicketMetrics(id)
+			]));
+};
+var $author$project$Message$Effects$FetchAgentTicketCosts = {$: 106};
+var $author$project$Message$Effects$FetchAgentTickets = {$: 99};
+var $author$project$AgentTickets$AgentTickets$init = _Utils_Tuple2(
+	{cy: $elm$core$Dict$empty, jt: false, eh: false, cP: false, ci: _List_Nil},
+	_List_fromArray(
+		[$author$project$Message$Effects$FetchAgentTickets, $author$project$Message$Effects$FetchAgentTicketCosts]));
 var $author$project$Build$Header$Models$Empty = {$: 0};
 var $author$project$Message$Effects$FetchAllPipelines = {$: 27};
 var $author$project$Message$Effects$GetCurrentTime = {$: 30};
@@ -12869,19 +13424,19 @@ var $author$project$Message$Effects$SyncTextareaHeight = function (a) {
 var $author$project$Views$CommentBar$Viewing = function (a) {
 	return {$: 0, a: a};
 };
-var $author$project$Views$CommentBar$defaultStyle = {di: 'rgba(255, 255, 255, 0.1)', es: 'transparent'};
+var $author$project$Views$CommentBar$defaultStyle = {dK: 'rgba(255, 255, 255, 0.1)', e_: 'transparent'};
 var $author$project$Message$Message$CommentBar = function (a) {
 	return {$: 1, a: a};
 };
 var $author$project$Views$CommentBar$getTextareaID = function (model) {
-	return $author$project$Message$Message$CommentBar(model.iz);
+	return $author$project$Message$Message$CommentBar(model.f_);
 };
 var $author$project$Build$Header$Header$initBuildCommentBar = function (content) {
 	var model = {
-		iz: $author$project$Message$Message$BuildComment,
-		kt: $elm$core$String$isEmpty(content) ? $author$project$Views$CommentBar$Editing(
-			{g7: content, hn: content}) : $author$project$Views$CommentBar$Viewing(content),
-		kw: $author$project$Views$CommentBar$defaultStyle
+		f_: $author$project$Message$Message$BuildComment,
+		dg: $elm$core$String$isEmpty(content) ? $author$project$Views$CommentBar$Editing(
+			{hK: content, h_: content}) : $author$project$Views$CommentBar$Viewing(content),
+		k$: $author$project$Views$CommentBar$defaultStyle
 	};
 	var id = $author$project$Views$CommentBar$getTextareaID(model);
 	return _Utils_Tuple2(
@@ -12890,7 +13445,7 @@ var $author$project$Build$Header$Header$initBuildCommentBar = function (content)
 			$elm$core$List$cons,
 			$author$project$Message$Effects$SyncTextareaHeight(id),
 			function () {
-				var _v0 = model.kt;
+				var _v0 = model.dg;
 				if (_v0.$ === 1) {
 					return _List_fromArray(
 						[
@@ -12915,12 +13470,12 @@ var $author$project$Build$Header$Header$changeToBuild = F2(
 					$elm$core$Maybe$map,
 					function (b) {
 						var _v2 = function () {
-							if ($elm$core$String$isEmpty(b.a3)) {
+							if ($elm$core$String$isEmpty(b.a4)) {
 								return _Utils_Tuple2(
-									$author$project$Build$Header$Models$Hidden(b.a3),
+									$author$project$Build$Header$Models$Hidden(b.a4),
 									_List_Nil);
 							} else {
-								var _v3 = $author$project$Build$Header$Header$initBuildCommentBar(b.a3);
+								var _v3 = $author$project$Build$Header$Header$initBuildCommentBar(b.a4);
 								var cb = _v3.a;
 								var effs = _v3.b;
 								return _Utils_Tuple2(
@@ -12932,7 +13487,7 @@ var $author$project$Build$Header$Header$changeToBuild = F2(
 						var initEffects = _v2.b;
 						var updatedModel = _Utils_update(
 							model,
-							{a3: commentBar, hr: b.hr, dh: b.dh, iz: b.iz, dQ: b.dQ, ek: b.ek});
+							{a4: commentBar, fo: b.fo, dJ: b.dJ, f_: b.f_, cT: b.cT, eT: b.eT});
 						return _Utils_Tuple2(
 							updatedModel,
 							_Utils_ap(effects, initEffects));
@@ -12942,24 +13497,24 @@ var $author$project$Build$Header$Header$changeToBuild = F2(
 						A2(
 							$elm$core$Basics$composeR,
 							function ($) {
-								return $.dQ;
+								return $.cT;
 							},
-							$elm$core$Basics$eq(buildID.g1)),
-						model.it)));
+							$elm$core$Basics$eq(buildID.hE)),
+						model.i_)));
 		} else {
 			return _Utils_Tuple2(model, effects);
 		}
 	});
 var $author$project$Build$Build$changeToBuild = F2(
 	function (_v0, _v1) {
-		var highlight = _v0.is;
-		var pageType = _v0.cD;
-		var fromBuildPage = _v0.fd;
+		var highlight = _v0.iZ;
+		var pageType = _v0.cW;
+		var fromBuildPage = _v0.fP;
 		var model = _v1.a;
 		var effects = _v1.b;
 		var newModel = _Utils_update(
 			model,
-			{bp: pageType});
+			{br: pageType});
 		return A2(
 			$author$project$Build$Header$Header$changeToBuild,
 			pageType,
@@ -12968,7 +13523,7 @@ var $author$project$Build$Build$changeToBuild = F2(
 				$elm$core$Maybe$Just(pageType)) ? _Utils_Tuple2(newModel, effects) : _Utils_Tuple2(
 				_Utils_update(
 					newModel,
-					{bH: true, is: highlight, N: $author$project$Build$Header$Models$Empty, br: $elm$core$Maybe$Nothing}),
+					{bJ: true, iZ: highlight, N: $author$project$Build$Header$Models$Empty, bt: $elm$core$Maybe$Nothing}),
 				function () {
 					if (!pageType.$) {
 						var buildId = pageType.a;
@@ -12997,50 +13552,51 @@ var $author$project$Build$Build$init = function (flags) {
 		flags,
 		_Utils_Tuple2(
 			{
-				gP: false,
-				gQ: $elm$core$Dict$empty,
-				ew: true,
-				gR: _List_Nil,
-				bG: true,
-				bH: true,
-				a3: $author$project$Build$Header$Models$Hidden(''),
-				hr: $elm$core$Maybe$Nothing,
-				df: false,
-				dh: {e9: $elm$core$Maybe$Nothing, gu: $elm$core$Maybe$Nothing},
-				hY: $elm$core$Set$empty,
-				h6: false,
-				aA: false,
-				is: flags.is,
-				it: _List_Nil,
-				iz: 0,
-				ct: false,
-				iY: false,
-				iZ: false,
-				ap: $elm$core$Maybe$Nothing,
-				dQ: function () {
-					var _v0 = flags.cD;
+				ds: false,
+				ct: $elm$core$Dict$empty,
+				dt: true,
+				e3: _List_Nil,
+				bI: true,
+				bJ: true,
+				a4: $author$project$Build$Header$Models$Hidden(''),
+				fo: $elm$core$Maybe$Nothing,
+				dH: false,
+				dJ: {fL: $elm$core$Maybe$Nothing, g6: $elm$core$Maybe$Nothing},
+				dN: $elm$core$Set$empty,
+				dO: $elm$core$Set$empty,
+				iF: false,
+				aB: false,
+				iZ: flags.iZ,
+				i_: _List_Nil,
+				f_: 0,
+				cL: false,
+				js: false,
+				jt: false,
+				ac: $elm$core$Maybe$Nothing,
+				cT: function () {
+					var _v0 = flags.cW;
 					if (!_v0.$) {
 						var id = _v0.a;
 						return $elm$core$String$fromInt(id);
 					} else {
-						var buildName = _v0.a.g1;
+						var buildName = _v0.a.hE;
 						return buildName;
 					}
 				}(),
-				bW: $elm$core$Maybe$Nothing,
-				dT: false,
-				fN: $elm$core$Maybe$Nothing,
+				b2: $elm$core$Maybe$Nothing,
+				el: false,
+				gq: $elm$core$Maybe$Nothing,
 				N: $author$project$Build$Header$Models$Empty,
-				bp: flags.cD,
-				br: $elm$core$Maybe$Nothing,
-				jR: $elm$core$Maybe$Nothing,
-				b1: $elm$core$Maybe$Nothing,
-				ke: false,
-				kl: false,
-				gp: false,
-				gq: false,
-				ek: 0,
-				k4: $elm$core$Set$empty
+				br: flags.cW,
+				bt: $elm$core$Maybe$Nothing,
+				kk: $elm$core$Maybe$Nothing,
+				b9: $elm$core$Maybe$Nothing,
+				kJ: false,
+				kQ: false,
+				g2: false,
+				eJ: false,
+				eT: 0,
+				cq: $elm$core$Set$empty
 			},
 			_List_fromArray(
 				[$author$project$Message$Effects$GetCurrentTime, $author$project$Message$Effects$GetCurrentTimeZone, $author$project$Message$Effects$FetchAllPipelines])));
@@ -13060,7 +13616,7 @@ var $elm_community$intdict$IntDict$empty = $elm_community$intdict$IntDict$Empty;
 var $elm_community$graph$Graph$empty = $elm_community$intdict$IntDict$empty;
 var $author$project$Causality$Causality$init = function (flags) {
 	var fetchCausality = function () {
-		var _v0 = flags.e0;
+		var _v0 = flags.fB;
 		if (!_v0) {
 			return $author$project$Message$Effects$FetchDownstreamCausality(flags.V);
 		} else {
@@ -13069,16 +13625,16 @@ var $author$project$Causality$Causality$init = function (flags) {
 	}();
 	return _Utils_Tuple2(
 		{
-			e0: flags.e0,
-			dn: $elm$core$Maybe$Nothing,
-			$7: $elm$core$Maybe$Nothing,
-			bQ: $elm_community$graph$Graph$empty,
-			iZ: false,
-			aW: $elm$core$Result$Ok(0),
-			jY: $elm$core$Maybe$Nothing,
-			jZ: $elm$core$Maybe$Nothing,
-			j_: $elm$core$Maybe$Nothing,
-			j$: $elm$core$Maybe$Nothing,
+			fB: flags.fB,
+			dR: $elm$core$Maybe$Nothing,
+			dS: $elm$core$Maybe$Nothing,
+			bY: $elm_community$graph$Graph$empty,
+			jt: false,
+			aX: $elm$core$Result$Ok(0),
+			kr: $elm$core$Maybe$Nothing,
+			ks: $elm$core$Maybe$Nothing,
+			kt: $elm$core$Maybe$Nothing,
+			ku: $elm$core$Maybe$Nothing,
 			V: flags.V
 		},
 		_List_fromArray(
@@ -13115,39 +13671,41 @@ var $author$project$Routes$extractQuery = function (route) {
 	}
 };
 var $author$project$Views$Styles$pageHeaderHeight = 54;
-var $author$project$Message$Effects$stickyHeaderConfig = {jE: 'dashboard', d_: $author$project$Views$Styles$pageHeaderHeight, kg: 'dashboard-team-pipelines', d9: 'dashboard-team-group', kh: 'dashboard-team-header'};
+var $author$project$Message$Effects$stickyHeaderConfig = {j8: 'dashboard', et: $author$project$Views$Styles$pageHeaderHeight, kL: 'dashboard-team-pipelines', eH: 'dashboard-team-group', kM: 'dashboard-team-header'};
 var $author$project$Dashboard$Dashboard$init = function (f) {
 	return _Utils_Tuple2(
 		{
-			hy: f.hy,
+			du: $elm$core$Dict$empty,
+			dv: _List_Nil,
+			h6: f.h6,
 			I: $author$project$Dashboard$Models$NotDragging,
 			X: $author$project$Dashboard$Models$NotDropping,
-			e3: $author$project$Dashboard$Models$Hidden,
-			a9: _List_Nil,
-			fl: false,
-			iq: 0,
-			ao: _Utils_eq(f.kf, $author$project$Routes$HighDensity),
-			dF: false,
-			dG: false,
-			dH: false,
-			dI: false,
-			iZ: false,
-			i1: $author$project$FetchResult$None,
-			aq: $elm$core$Maybe$Nothing,
-			fN: $elm$core$Maybe$Nothing,
-			aH: $elm$core$Dict$empty,
-			ah: $elm$core$Dict$empty,
-			jN: $elm$core$Maybe$Nothing,
-			cG: $elm$core$Maybe$Nothing,
-			aI: $elm$core$Set$empty,
-			av: $author$project$Routes$extractQuery(f.kf),
-			cK: $elm$core$Maybe$Nothing,
-			kd: 0,
-			gp: false,
-			kE: $author$project$FetchResult$None,
-			cY: $elm$core$Maybe$Nothing,
-			bA: 0,
-			bB: 0
+			fE: $author$project$Dashboard$Models$Hidden,
+			bb: _List_Nil,
+			fX: false,
+			iX: 0,
+			aq: _Utils_eq(f.kK, $author$project$Routes$HighDensity),
+			d8: false,
+			d9: false,
+			ea: false,
+			eb: false,
+			jt: false,
+			jx: $author$project$FetchResult$None,
+			ar: $elm$core$Maybe$Nothing,
+			gq: $elm$core$Maybe$Nothing,
+			aI: $elm$core$Dict$empty,
+			ai: $elm$core$Dict$empty,
+			kg: $elm$core$Maybe$Nothing,
+			c_: $elm$core$Maybe$Nothing,
+			aJ: $elm$core$Set$empty,
+			aw: $author$project$Routes$extractQuery(f.kK),
+			c2: $elm$core$Maybe$Nothing,
+			kI: 0,
+			g2: false,
+			k9: $author$project$FetchResult$None,
+			di: $elm$core$Maybe$Nothing,
+			bC: 0,
+			bD: 0
 		},
 		_List_fromArray(
 			[
@@ -13160,14 +13718,16 @@ var $author$project$Dashboard$Dashboard$init = function (f) {
 				$author$project$Message$Effects$LoadCachedJobs,
 				$author$project$Message$Effects$LoadCachedPipelines,
 				$author$project$Message$Effects$LoadCachedTeams,
-				$author$project$Message$Effects$GetViewportOf($author$project$Message$Message$Dashboard)
+				$author$project$Message$Effects$GetViewportOf($author$project$Message$Message$Dashboard),
+				$author$project$Message$Effects$FetchAgentTickets,
+				$author$project$Message$Effects$FetchAgentTicketCosts
 			]));
 };
 var $author$project$DownloadFly$Model$None = 0;
 var $author$project$DownloadFly$DownloadFly$defaultHostname = 'https://CONCOURSE-URL';
 var $author$project$DownloadFly$DownloadFly$init = function (route) {
 	return _Utils_Tuple2(
-		{du: $author$project$DownloadFly$DownloadFly$defaultHostname, iZ: false, d5: route, cS: 0},
+		{d_: $author$project$DownloadFly$DownloadFly$defaultHostname, jt: false, eD: route, db: 0},
 		_List_Nil);
 };
 var $author$project$FlySuccess$Models$InputUnhovered = 0;
@@ -13180,18 +13740,18 @@ var $author$project$Message$Effects$SendTokenToFly = F2(
 var $author$project$FlySuccess$Models$Success = 1;
 var $author$project$FlySuccess$Models$Unhovered = 0;
 var $author$project$FlySuccess$FlySuccess$init = function (_v0) {
-	var authToken = _v0.c5;
-	var flyPort = _v0.dq;
-	var noop = _v0.jv;
+	var authToken = _v0.dw;
+	var flyPort = _v0.dW;
+	var noop = _v0.j_;
 	return _Utils_Tuple2(
 		{
-			c5: authToken,
-			aQ: 0,
-			ci: 0,
-			dq: flyPort,
-			iZ: false,
-			bv: 0,
-			aY: function () {
+			dw: authToken,
+			aR: 0,
+			cx: 0,
+			dW: flyPort,
+			jt: false,
+			bx: 0,
+			aZ: function () {
 				var _v1 = _Utils_Tuple2(noop, flyPort);
 				if (!_v1.a) {
 					if (!_v1.b.$) {
@@ -13228,24 +13788,24 @@ var $author$project$Message$Effects$FetchJobBuilds = F2(
 var $krisajenkins$remotedata$RemoteData$Loading = {$: 1};
 var $author$project$Concourse$Pagination$ToMostRecent = {$: 2};
 var $author$project$Job$Job$pageLimit = 100;
-var $author$project$Job$Job$startingPage = {e0: $author$project$Concourse$Pagination$ToMostRecent, fC: $author$project$Job$Job$pageLimit};
+var $author$project$Job$Job$startingPage = {fB: $author$project$Concourse$Pagination$ToMostRecent, gd: $author$project$Job$Job$pageLimit};
 var $author$project$Job$Job$init = function (flags) {
-	var page = A2($elm$core$Maybe$withDefault, $author$project$Job$Job$startingPage, flags.d$);
+	var page = A2($elm$core$Maybe$withDefault, $author$project$Job$Job$startingPage, flags.eu);
 	var model = {
-		ax: $krisajenkins$remotedata$RemoteData$Loading,
-		cj: page,
-		iZ: false,
-		ap: $krisajenkins$remotedata$RemoteData$NotAsked,
-		u: flags.fv,
-		fN: $elm$time$Time$millisToPosix(0),
-		d0: false
+		ay: $krisajenkins$remotedata$RemoteData$Loading,
+		cz: page,
+		jt: false,
+		ac: $krisajenkins$remotedata$RemoteData$NotAsked,
+		u: flags.f6,
+		gq: $elm$time$Time$millisToPosix(0),
+		ev: false
 	};
 	return _Utils_Tuple2(
 		model,
 		_List_fromArray(
 			[
-				$author$project$Message$Effects$FetchJob(flags.fv),
-				A2($author$project$Message$Effects$FetchJobBuilds, flags.fv, page),
+				$author$project$Message$Effects$FetchJob(flags.f6),
+				A2($author$project$Message$Effects$FetchJobBuilds, flags.f6, page),
 				$author$project$Message$Effects$GetCurrentTime,
 				$author$project$Message$Effects$GetCurrentTimeZone,
 				$author$project$Message$Effects$FetchAllPipelines
@@ -13253,7 +13813,7 @@ var $author$project$Job$Job$init = function (flags) {
 };
 var $author$project$NotFound$NotFound$init = function (flags) {
 	return _Utils_Tuple2(
-		{iZ: false, dU: flags.dU, d5: flags.d5},
+		{jt: false, em: flags.em, eD: flags.eD},
 		_List_Nil);
 };
 var $author$project$Message$Effects$FetchPipeline = function (a) {
@@ -13261,12 +13821,12 @@ var $author$project$Message$Effects$FetchPipeline = function (a) {
 };
 var $author$project$Message$Effects$ResetPipelineFocus = {$: 38};
 var $author$project$Pipeline$Pipeline$init = function (flags) {
-	var model = {_: false, bN: $elm$core$Maybe$Nothing, e7: $elm$core$Maybe$Nothing, ir: false, bd: 0, fu: false, iZ: false, bq: false, ag: $krisajenkins$remotedata$RemoteData$NotAsked, jK: flags.jK, jZ: $elm$core$Maybe$Nothing, j$: $elm$core$Maybe$Nothing, d7: $elm$core$Maybe$Nothing, P: flags.P, ep: flags.ep};
+	var model = {_: false, bV: $elm$core$Maybe$Nothing, fJ: $elm$core$Maybe$Nothing, iY: false, bf: 0, f5: false, jt: false, bs: false, ah: $krisajenkins$remotedata$RemoteData$NotAsked, ke: flags.ke, ks: $elm$core$Maybe$Nothing, ku: $elm$core$Maybe$Nothing, eF: $elm$core$Maybe$Nothing, P: flags.P, eX: flags.eX};
 	return _Utils_Tuple2(
 		model,
 		_List_fromArray(
 			[
-				$author$project$Message$Effects$FetchPipeline(flags.jK),
+				$author$project$Message$Effects$FetchPipeline(flags.ke),
 				$author$project$Message$Effects$ResetPipelineFocus,
 				$author$project$Message$Effects$FetchAllPipelines,
 				$author$project$Message$Effects$GetCurrentTimeZone
@@ -13289,46 +13849,46 @@ var $author$project$Resource$Models$NotChecking = {$: 2};
 var $author$project$Pinned$NotPinned = {$: 0};
 var $author$project$Message$Message$ResourceCommentTextarea = {$: 15};
 var $author$project$Resource$Resource$pageLimit = 100;
-var $author$project$Resource$Resource$startingPage = {e0: $author$project$Concourse$Pagination$ToMostRecent, fC: $author$project$Resource$Resource$pageLimit};
+var $author$project$Resource$Resource$startingPage = {fB: $author$project$Concourse$Pagination$ToMostRecent, gd: $author$project$Resource$Resource$pageLimit};
 var $author$project$Resource$Resource$init = function (flags) {
-	var page = A2($elm$core$Maybe$withDefault, $author$project$Resource$Resource$startingPage, flags.d$);
+	var page = A2($elm$core$Maybe$withDefault, $author$project$Resource$Resource$startingPage, flags.eu);
 	var model = {
-		bG: true,
-		eH: $elm$core$Maybe$Nothing,
-		aN: $author$project$Resource$Models$NotChecking,
-		cj: page,
-		is: $author$project$Routes$HighlightNothing,
-		be: flags.be,
-		fn: $elm$core$Maybe$Nothing,
-		cs: false,
-		iZ: false,
-		fA: $elm$core$Maybe$Nothing,
-		fN: $elm$core$Maybe$Nothing,
+		bI: true,
+		fe: $elm$core$Maybe$Nothing,
+		aO: $author$project$Resource$Models$NotChecking,
+		cz: page,
+		iZ: $author$project$Routes$HighlightNothing,
+		bg: flags.bg,
+		fZ: $elm$core$Maybe$Nothing,
+		cK: false,
+		jt: false,
+		gb: $elm$core$Maybe$Nothing,
+		gq: $elm$core$Maybe$Nothing,
 		N: $elm$core$Maybe$Nothing,
-		aW: $elm$core$Result$Err(0),
-		bZ: false,
-		f1: $author$project$Pinned$NotPinned,
-		g: flags.ge,
-		c_: false,
+		aX: $elm$core$Result$Err(0),
+		b5: false,
+		gG: $author$project$Pinned$NotPinned,
+		g: flags.gS,
+		dk: false,
 		x: {
-			hn: _List_Nil,
-			jF: {bW: $elm$core$Maybe$Nothing, b0: $elm$core$Maybe$Nothing}
+			h_: _List_Nil,
+			j9: {b2: $elm$core$Maybe$Nothing, b8: $elm$core$Maybe$Nothing}
 		}
 	};
 	var fetchVersionedResource = function () {
-		var _v0 = flags.be;
+		var _v0 = flags.bg;
 		if (!_v0.$) {
 			var v = _v0.a;
-			return A2($author$project$Message$Effects$FetchVersionedResourceId, flags.ge, v);
+			return A2($author$project$Message$Effects$FetchVersionedResourceId, flags.gS, v);
 		} else {
-			return A2($author$project$Message$Effects$FetchVersionedResources, flags.ge, page);
+			return A2($author$project$Message$Effects$FetchVersionedResources, flags.gS, page);
 		}
 	}();
 	return _Utils_Tuple2(
 		model,
 		_List_fromArray(
 			[
-				$author$project$Message$Effects$FetchResource(flags.ge),
+				$author$project$Message$Effects$FetchResource(flags.gS),
 				fetchVersionedResource,
 				$author$project$Message$Effects$GetCurrentTimeZone,
 				$author$project$Message$Effects$FetchAllPipelines,
@@ -13347,62 +13907,62 @@ var $author$project$SubPage$SubPage$init = F2(
 	function (session, route) {
 		switch (route.$) {
 			case 0:
-				var id = route.a.iz;
-				var highlight = route.a.is;
+				var id = route.a.f_;
+				var highlight = route.a.iZ;
 				return A2(
 					$elm$core$Tuple$mapFirst,
 					$author$project$SubPage$SubPage$BuildModel,
 					$author$project$Build$Build$init(
 						{
-							fd: $elm$core$Maybe$Nothing,
-							is: highlight,
-							cD: $author$project$Build$Header$Models$JobBuildPage(id)
+							fP: $elm$core$Maybe$Nothing,
+							iZ: highlight,
+							cW: $author$project$Build$Header$Models$JobBuildPage(id)
 						}));
 			case 3:
-				var id = route.a.iz;
-				var highlight = route.a.is;
+				var id = route.a.f_;
+				var highlight = route.a.iZ;
 				return A2(
 					$elm$core$Tuple$mapFirst,
 					$author$project$SubPage$SubPage$BuildModel,
 					$author$project$Build$Build$init(
 						{
-							fd: $elm$core$Maybe$Nothing,
-							is: highlight,
-							cD: $author$project$Build$Header$Models$OneOffBuildPage(id)
+							fP: $elm$core$Maybe$Nothing,
+							iZ: highlight,
+							cW: $author$project$Build$Header$Models$OneOffBuildPage(id)
 						}));
 			case 1:
-				var id = route.a.iz;
-				var page = route.a.bp;
-				var version = route.a.er;
+				var id = route.a.f_;
+				var page = route.a.br;
+				var version = route.a.eZ;
 				return A2(
 					$elm$core$Tuple$mapFirst,
 					$author$project$SubPage$SubPage$ResourceModel,
 					$author$project$Resource$Resource$init(
-						{be: version, d$: page, ge: id}));
+						{bg: version, eu: page, gS: id}));
 			case 2:
-				var id = route.a.iz;
-				var page = route.a.bp;
+				var id = route.a.f_;
+				var page = route.a.br;
 				return A2(
 					$elm$core$Tuple$mapFirst,
 					$author$project$SubPage$SubPage$JobModel,
 					$author$project$Job$Job$init(
-						{fv: id, d$: page}));
+						{f6: id, eu: page}));
 			case 4:
-				var id = route.a.iz;
-				var groups = route.a.dt;
+				var id = route.a.f_;
+				var groups = route.a.dZ;
 				return A2(
 					$elm$core$Tuple$mapFirst,
 					$author$project$SubPage$SubPage$PipelineModel,
 					$author$project$Pipeline$Pipeline$init(
-						{jK: id, P: groups, ep: session.ep}));
+						{ke: id, P: groups, eX: session.eX}));
 			case 5:
-				var searchType = route.a.kf;
-				var dashboardView = route.a.hy;
+				var searchType = route.a.kK;
+				var dashboardView = route.a.h6;
 				return A2(
 					$elm$core$Tuple$mapFirst,
 					$author$project$SubPage$SubPage$DashboardModel,
 					$author$project$Dashboard$Dashboard$init(
-						{hy: dashboardView, kf: searchType}));
+						{h6: dashboardView, kK: searchType}));
 			case 6:
 				var noop = route.a;
 				var flyPort = route.b;
@@ -13410,33 +13970,42 @@ var $author$project$SubPage$SubPage$init = F2(
 					$elm$core$Tuple$mapFirst,
 					$author$project$SubPage$SubPage$FlySuccessModel,
 					$author$project$FlySuccess$FlySuccess$init(
-						{c5: session.c5, dq: flyPort, jv: noop}));
+						{dw: session.dw, dW: flyPort, j_: noop}));
 			case 8:
 				return A2(
 					$elm$core$Tuple$mapFirst,
 					$author$project$SubPage$SubPage$DownloadFlyModel,
-					$author$project$DownloadFly$DownloadFly$init(session.d5));
+					$author$project$DownloadFly$DownloadFly$init(session.eD));
 			case 7:
-				var id = route.a.iz;
-				var direction = route.a.e0;
-				return session.dm.gh ? A2(
+				var id = route.a.f_;
+				var direction = route.a.fB;
+				return session.dQ.gV ? A2(
 					$elm$core$Tuple$mapFirst,
 					$author$project$SubPage$SubPage$CausalityModel,
 					$author$project$Causality$Causality$init(
-						{e0: direction, V: id})) : A2(
+						{fB: direction, V: id})) : A2(
 					$elm$core$Tuple$mapFirst,
 					$author$project$SubPage$SubPage$NotFoundModel,
 					$author$project$NotFound$NotFound$init(
-						{dU: session.dU, d5: session.d5}));
+						{em: session.em, eD: session.eD}));
 			case 9:
-				var teamName = route.a.kD;
+				var teamName = route.a.k8;
 				return A2(
 					$elm$core$Tuple$mapFirst,
 					$author$project$SubPage$SubPage$AgentReviewsModel,
 					$author$project$AgentReviews$AgentReviews$init(
-						{kD: teamName}));
-			default:
+						{k8: teamName}));
+			case 10:
 				return A2($elm$core$Tuple$mapFirst, $author$project$SubPage$SubPage$AgentModel, $author$project$Agent$Agent$init);
+			case 11:
+				return A2($elm$core$Tuple$mapFirst, $author$project$SubPage$SubPage$AgentTicketsModel, $author$project$AgentTickets$AgentTickets$init);
+			default:
+				var id = route.a.f_;
+				return A2(
+					$elm$core$Tuple$mapFirst,
+					$author$project$SubPage$SubPage$AgentTicketModel,
+					$author$project$AgentTickets$AgentTicket$init(
+						{f_: id}));
 		}
 	});
 var $author$project$DotNotation$constructValue = F2(
@@ -13462,9 +14031,9 @@ var $author$project$DotNotation$constructValue = F2(
 		}
 	});
 var $author$project$DotNotation$upsert = function (_v0) {
-	var path = _v0.jH;
-	var fields = _v0.bO;
-	var value = _v0.k2;
+	var path = _v0.kb;
+	var fields = _v0.bW;
+	var value = _v0.lz;
 	return A2(
 		$elm$core$Dict$update,
 		path,
@@ -13482,7 +14051,7 @@ var $author$project$DotNotation$upsert = function (_v0) {
 								$elm$core$Dict$toList(
 									A2(
 										$author$project$DotNotation$upsert,
-										{bO: rest, jH: field, k2: value},
+										{bW: rest, kb: field, lz: value},
 										$elm$core$Dict$fromList(kvPairs))))));
 				} else {
 					return $elm$core$Maybe$Just(value);
@@ -13548,7 +14117,7 @@ var $author$project$DotNotation$problemToString = function (p) {
 	}
 };
 var $author$project$DotNotation$deadEndToString = function (deadend) {
-	return $author$project$DotNotation$problemToString(deadend.jT) + (' at row ' + ($elm$core$String$fromInt(deadend.cM) + (', col ' + $elm$core$String$fromInt(deadend.hg))));
+	return $author$project$DotNotation$problemToString(deadend.km) + (' at row ' + ($elm$core$String$fromInt(deadend.c4) + (', col ' + $elm$core$String$fromInt(deadend.hT))));
 };
 var $elm$core$List$intersperse = F2(
 	function (sep, xs) {
@@ -13577,7 +14146,7 @@ var $author$project$DotNotation$deadEndsToString = function (deadEnds) {
 };
 var $author$project$DotNotation$DotNotation = F3(
 	function (path, fields, value) {
-		return {bO: fields, jH: path, k2: value};
+		return {bW: fields, kb: path, lz: value};
 	});
 var $elm$parser$Parser$Forbidden = 0;
 var $elm$parser$Parser$Advanced$andThen = F2(
@@ -13687,7 +14256,7 @@ var $elm$parser$Parser$Advanced$chompUntil = function (_v0) {
 	var str = _v0.a;
 	var expecting = _v0.b;
 	return function (s) {
-		var _v1 = A5($elm$parser$Parser$Advanced$findSubString, str, s.f, s.cM, s.hg, s.b);
+		var _v1 = A5($elm$parser$Parser$Advanced$findSubString, str, s.f, s.c4, s.hT, s.b);
 		var newOffset = _v1.a;
 		var newRow = _v1.b;
 		var newCol = _v1.c;
@@ -13698,7 +14267,7 @@ var $elm$parser$Parser$Advanced$chompUntil = function (_v0) {
 			$elm$parser$Parser$Advanced$Good,
 			_Utils_cmp(s.f, newOffset) < 0,
 			0,
-			{hg: newCol, k: s.k, o: s.o, f: newOffset, cM: newRow, b: s.b});
+			{hT: newCol, k: s.k, o: s.o, f: newOffset, c4: newRow, b: s.b});
 	};
 };
 var $elm$parser$Parser$Expecting = function (a) {
@@ -13942,17 +14511,17 @@ var $elm$parser$Parser$Advanced$sequenceEnd = F5(
 var $elm$parser$Parser$Advanced$sequence = function (i) {
 	return A2(
 		$elm$parser$Parser$Advanced$skip,
-		$elm$parser$Parser$Advanced$token(i.kr),
+		$elm$parser$Parser$Advanced$token(i.kX),
 		A2(
 			$elm$parser$Parser$Advanced$skip,
-			i.kp,
+			i.kU,
 			A5(
 				$elm$parser$Parser$Advanced$sequenceEnd,
-				$elm$parser$Parser$Advanced$token(i.hO),
-				i.kp,
-				i.i_,
-				$elm$parser$Parser$Advanced$token(i.kj),
-				i.kX)));
+				$elm$parser$Parser$Advanced$token(i.im),
+				i.kU,
+				i.ju,
+				$elm$parser$Parser$Advanced$token(i.kO),
+				i.lr)));
 };
 var $elm$parser$Parser$Advanced$Forbidden = 0;
 var $elm$parser$Parser$Advanced$Mandatory = 2;
@@ -13970,12 +14539,12 @@ var $elm$parser$Parser$toAdvancedTrailing = function (trailing) {
 var $elm$parser$Parser$sequence = function (i) {
 	return $elm$parser$Parser$Advanced$sequence(
 		{
-			hO: $elm$parser$Parser$toToken(i.hO),
-			i_: i.i_,
-			kj: $elm$parser$Parser$toToken(i.kj),
-			kp: i.kp,
-			kr: $elm$parser$Parser$toToken(i.kr),
-			kX: $elm$parser$Parser$toAdvancedTrailing(i.kX)
+			im: $elm$parser$Parser$toToken(i.im),
+			ju: i.ju,
+			kO: $elm$parser$Parser$toToken(i.kO),
+			kU: i.kU,
+			kX: $elm$parser$Parser$toToken(i.kX),
+			lr: $elm$parser$Parser$toAdvancedTrailing(i.lr)
 		});
 };
 var $author$project$DotNotation$parser = A2(
@@ -13994,7 +14563,7 @@ var $author$project$DotNotation$parser = A2(
 					$elm$core$Basics$always(_List_Nil),
 					$elm$parser$Parser$symbol('=')),
 					$elm$parser$Parser$sequence(
-					{hO: '=', i_: $author$project$DotNotation$pathSegment, kj: '.', kp: $elm$parser$Parser$spaces, kr: '.', kX: 0})
+					{im: '=', ju: $author$project$DotNotation$pathSegment, kO: '.', kU: $elm$parser$Parser$spaces, kX: '.', lr: 0})
 				]))),
 	$author$project$DotNotation$jsonValue);
 var $author$project$DotNotation$parse = A2(
@@ -14004,11 +14573,11 @@ var $author$project$DotNotation$parse = A2(
 var $author$project$Routes$Agent = {$: 10};
 var $elm$url$Url$Parser$mapState = F2(
 	function (func, _v0) {
-		var visited = _v0.a$;
-		var unvisited = _v0.aK;
-		var params = _v0.jG;
-		var frag = _v0.aS;
-		var value = _v0.k2;
+		var visited = _v0.a0;
+		var unvisited = _v0.aL;
+		var params = _v0.ka;
+		var frag = _v0.aT;
+		var value = _v0.lz;
 		return A5(
 			$elm$url$Url$Parser$State,
 			visited,
@@ -14021,11 +14590,11 @@ var $elm$url$Url$Parser$map = F2(
 	function (subValue, _v0) {
 		var parseArg = _v0;
 		return function (_v1) {
-			var visited = _v1.a$;
-			var unvisited = _v1.aK;
-			var params = _v1.jG;
-			var frag = _v1.aS;
-			var value = _v1.k2;
+			var visited = _v1.a0;
+			var unvisited = _v1.aL;
+			var params = _v1.ka;
+			var frag = _v1.aT;
+			var value = _v1.lz;
 			return A2(
 				$elm$core$List$map,
 				$elm$url$Url$Parser$mapState(value),
@@ -14035,11 +14604,11 @@ var $elm$url$Url$Parser$map = F2(
 	});
 var $elm$url$Url$Parser$s = function (str) {
 	return function (_v0) {
-		var visited = _v0.a$;
-		var unvisited = _v0.aK;
-		var params = _v0.jG;
-		var frag = _v0.aS;
-		var value = _v0.k2;
+		var visited = _v0.a0;
+		var unvisited = _v0.aL;
+		var params = _v0.ka;
+		var frag = _v0.aT;
+		var value = _v0.lz;
 		if (!unvisited.b) {
 			return _List_Nil;
 		} else {
@@ -14079,11 +14648,11 @@ var $elm$url$Url$Parser$slash = F2(
 var $elm$url$Url$Parser$custom = F2(
 	function (tipe, stringToSomething) {
 		return function (_v0) {
-			var visited = _v0.a$;
-			var unvisited = _v0.aK;
-			var params = _v0.jG;
-			var frag = _v0.aS;
-			var value = _v0.k2;
+			var visited = _v0.a0;
+			var unvisited = _v0.aL;
+			var params = _v0.ka;
+			var frag = _v0.aT;
+			var value = _v0.lz;
 			if (!unvisited.b) {
 				return _List_Nil;
 			} else {
@@ -14114,7 +14683,7 @@ var $author$project$Routes$agentReviews = A2(
 	function (teamName) {
 		return $elm$core$Basics$always(
 			$author$project$Routes$AgentReviews(
-				{kD: teamName}));
+				{k8: teamName}));
 	},
 	A2(
 		$elm$url$Url$Parser$slash,
@@ -14123,16 +14692,36 @@ var $author$project$Routes$agentReviews = A2(
 			$elm$url$Url$Parser$slash,
 			$elm$url$Url$Parser$string,
 			$elm$url$Url$Parser$s('agent-reviews'))));
+var $author$project$Routes$AgentTicket = function (a) {
+	return {$: 12, a: a};
+};
+var $elm$url$Url$Parser$int = A2($elm$url$Url$Parser$custom, 'NUMBER', $elm$core$String$toInt);
+var $author$project$Routes$agentTicket = A2(
+	$elm$url$Url$Parser$map,
+	function (id) {
+		return $elm$core$Basics$always(
+			$author$project$Routes$AgentTicket(
+				{f_: id}));
+	},
+	A2(
+		$elm$url$Url$Parser$slash,
+		$elm$url$Url$Parser$s('agent-tickets'),
+		$elm$url$Url$Parser$int));
+var $author$project$Routes$AgentTickets = {$: 11};
+var $author$project$Routes$agentTickets = A2(
+	$elm$url$Url$Parser$map,
+	$elm$core$Basics$always($author$project$Routes$AgentTickets),
+	$elm$url$Url$Parser$s('agent-tickets'));
 var $author$project$Routes$Build = function (a) {
 	return {$: 0, a: a};
 };
 var $elm$url$Url$Parser$fragment = function (toFrag) {
 	return function (_v0) {
-		var visited = _v0.a$;
-		var unvisited = _v0.aK;
-		var params = _v0.jG;
-		var frag = _v0.aS;
-		var value = _v0.k2;
+		var visited = _v0.a0;
+		var unvisited = _v0.aL;
+		var params = _v0.ka;
+		var frag = _v0.aT;
+		var value = _v0.lz;
 		return _List_fromArray(
 			[
 				A5(
@@ -14213,7 +14802,7 @@ var $author$project$Routes$pipelineIdentifier = A2(
 	$elm$url$Url$Parser$map,
 	F2(
 		function (t, p) {
-			return {jL: p, kD: t};
+			return {gH: p, k8: t};
 		}),
 	A2(
 		$elm$url$Url$Parser$slash,
@@ -14228,14 +14817,14 @@ var $author$project$Routes$pipelineIdentifier = A2(
 var $author$project$Routes$build = function () {
 	var buildHelper = F4(
 		function (_v0, jobName, buildName, h) {
-			var teamName = _v0.kD;
-			var pipelineName = _v0.jL;
+			var teamName = _v0.k8;
+			var pipelineName = _v0.gH;
 			return function (iv) {
 				return $author$project$Routes$Build(
 					{
-						dt: _List_Nil,
-						is: h,
-						iz: {g1: buildName, i0: jobName, f2: iv, jL: pipelineName, kD: teamName}
+						dZ: _List_Nil,
+						iZ: h,
+						f_: {hE: buildName, jw: jobName, ew: iv, gH: pipelineName, k8: teamName}
 					});
 			};
 		});
@@ -14262,7 +14851,6 @@ var $author$project$Routes$build = function () {
 var $author$project$Routes$Causality = function (a) {
 	return {$: 7, a: a};
 };
-var $elm$url$Url$Parser$int = A2($elm$url$Url$Parser$custom, 'NUMBER', $elm$core$String$toInt);
 var $elm$url$Url$Parser$oneOf = function (parsers) {
 	return function (state) {
 		return A2(
@@ -14277,15 +14865,15 @@ var $elm$url$Url$Parser$oneOf = function (parsers) {
 var $author$project$Routes$causality = function () {
 	var causalityHelper = F4(
 		function (direction, _v0, resourceName, versionId) {
-			var teamName = _v0.kD;
-			var pipelineName = _v0.jL;
+			var teamName = _v0.k8;
+			var pipelineName = _v0.gH;
 			return function (iv) {
 				return $author$project$Routes$Causality(
 					{
-						e0: direction,
-						dt: _List_Nil,
-						iz: {f2: iv, jL: pipelineName, j1: resourceName, kD: teamName, k5: versionId},
-						er: $elm$core$Maybe$Nothing
+						fB: direction,
+						dZ: _List_Nil,
+						f_: {ew: iv, gH: pipelineName, kw: resourceName, k8: teamName, lB: versionId},
+						eZ: $elm$core$Maybe$Nothing
 					});
 			};
 		});
@@ -14410,7 +14998,7 @@ var $author$project$Routes$dashboard = A2(
 		function (st, view) {
 			return $elm$core$Basics$always(
 				$author$project$Routes$Dashboard(
-					{hy: view, kf: st}));
+					{h6: view, kK: st}));
 		}),
 	A2(
 		$elm$url$Url$Parser$questionMark,
@@ -14476,8 +15064,8 @@ var $author$project$Routes$parsePage = F3(
 					var l = _v0.c.a;
 					return $elm$core$Maybe$Just(
 						{
-							e0: $author$project$Concourse$Pagination$To(t),
-							fC: l
+							fB: $author$project$Concourse$Pagination$To(t),
+							gd: l
 						});
 				} else {
 					break _v0$2;
@@ -14489,8 +15077,8 @@ var $author$project$Routes$parsePage = F3(
 					var l = _v0.c.a;
 					return $elm$core$Maybe$Just(
 						{
-							e0: $author$project$Concourse$Pagination$From(f),
-							fC: l
+							fB: $author$project$Concourse$Pagination$From(f),
+							gd: l
 						});
 				} else {
 					break _v0$2;
@@ -14502,14 +15090,14 @@ var $author$project$Routes$parsePage = F3(
 var $author$project$Routes$job = function () {
 	var jobHelper = F5(
 		function (_v0, jobName, from, to, limit) {
-			var teamName = _v0.kD;
-			var pipelineName = _v0.jL;
+			var teamName = _v0.k8;
+			var pipelineName = _v0.gH;
 			return function (iv) {
 				return $author$project$Routes$Job(
 					{
-						dt: _List_Nil,
-						iz: {i0: jobName, f2: iv, jL: pipelineName, kD: teamName},
-						bp: A3($author$project$Routes$parsePage, from, to, limit)
+						dZ: _List_Nil,
+						f_: {jw: jobName, ew: iv, gH: pipelineName, k8: teamName},
+						br: A3($author$project$Routes$parsePage, from, to, limit)
 					});
 			};
 		});
@@ -14542,7 +15130,7 @@ var $author$project$Routes$oneOffBuild = A2(
 		function (b, h) {
 			return $elm$core$Basics$always(
 				$author$project$Routes$OneOffBuild(
-					{is: h, iz: b}));
+					{iZ: h, f_: b}));
 		}),
 	A2(
 		$elm$url$Url$Parser$slash,
@@ -14558,13 +15146,13 @@ var $author$project$Routes$pipeline = A2(
 	$elm$url$Url$Parser$map,
 	F2(
 		function (_v0, g) {
-			var teamName = _v0.kD;
-			var pipelineName = _v0.jL;
+			var teamName = _v0.k8;
+			var pipelineName = _v0.gH;
 			return function (iv) {
 				return $author$project$Routes$Pipeline(
 					{
-						dt: g,
-						iz: {f2: iv, jL: pipelineName, kD: teamName}
+						dZ: g,
+						f_: {ew: iv, gH: pipelineName, k8: teamName}
 					});
 			};
 		}),
@@ -14621,15 +15209,15 @@ var $author$project$Routes$resourceVersion = function (key) {
 var $author$project$Routes$resource = function () {
 	var resourceHelper = F6(
 		function (_v0, resourceName, from, to, limit, version) {
-			var teamName = _v0.kD;
-			var pipelineName = _v0.jL;
+			var teamName = _v0.k8;
+			var pipelineName = _v0.gH;
 			return function (iv) {
 				return $author$project$Routes$Resource(
 					{
-						dt: _List_Nil,
-						iz: {f2: iv, jL: pipelineName, j1: resourceName, kD: teamName},
-						bp: A3($author$project$Routes$parsePage, from, to, limit),
-						er: version
+						dZ: _List_Nil,
+						f_: {ew: iv, gH: pipelineName, kw: resourceName, k8: teamName},
+						br: A3($author$project$Routes$parsePage, from, to, limit),
+						eZ: version
 					});
 			};
 		});
@@ -14658,7 +15246,7 @@ var $author$project$Routes$resource = function () {
 }();
 var $author$project$Routes$sitemap = $elm$url$Url$Parser$oneOf(
 	_List_fromArray(
-		[$author$project$Routes$resource, $author$project$Routes$job, $author$project$Routes$dashboard, $author$project$Routes$agentReviews, $author$project$Routes$agent, $author$project$Routes$pipeline, $author$project$Routes$build, $author$project$Routes$oneOffBuild, $author$project$Routes$flySuccess, $author$project$Routes$causality, $author$project$Routes$downloadFly]));
+		[$author$project$Routes$resource, $author$project$Routes$job, $author$project$Routes$dashboard, $author$project$Routes$agentReviews, $author$project$Routes$agent, $author$project$Routes$agentTicket, $author$project$Routes$agentTickets, $author$project$Routes$pipeline, $author$project$Routes$build, $author$project$Routes$oneOffBuild, $author$project$Routes$flySuccess, $author$project$Routes$causality, $author$project$Routes$downloadFly]));
 var $author$project$Routes$toDict = function (j) {
 	if ((!j.$) && (j.a.$ === 2)) {
 		var kvs = j.a.a;
@@ -14687,7 +15275,7 @@ var $author$project$Routes$parsePath = function (url) {
 							A2(
 								$elm$core$String$split,
 								'&',
-								A2($elm$core$Maybe$withDefault, '', url.av))))))));
+								A2($elm$core$Maybe$withDefault, '', url.aw))))))));
 	return A2(
 		$elm$core$Maybe$map,
 		function (deferredRoute) {
@@ -14729,19 +15317,19 @@ var $elm_community$maybe_extra$Maybe$Extra$toList = function (m) {
 var $author$project$Routes$toString = function (route) {
 	switch (route.$) {
 		case 0:
-			var id = route.a.iz;
-			var highlight = route.a.is;
+			var id = route.a.f_;
+			var highlight = route.a.iZ;
 			return _Utils_ap(
 				$author$project$RouteBuilder$build(
 					A2(
 						$author$project$RouteBuilder$appendPath,
 						_List_fromArray(
-							['jobs', id.i0, 'builds', id.g1]),
+							['jobs', id.jw, 'builds', id.hE]),
 						$author$project$Routes$pipelineIdBuilder(id))),
 				$author$project$Routes$showHighlight(highlight));
 		case 2:
-			var id = route.a.iz;
-			var page = route.a.bp;
+			var id = route.a.f_;
+			var page = route.a.br;
 			return $author$project$RouteBuilder$build(
 				A2(
 					$author$project$RouteBuilder$appendQuery,
@@ -14749,12 +15337,12 @@ var $author$project$Routes$toString = function (route) {
 					A2(
 						$author$project$RouteBuilder$appendPath,
 						_List_fromArray(
-							['jobs', id.i0]),
+							['jobs', id.jw]),
 						$author$project$Routes$pipelineIdBuilder(id))));
 		case 1:
-			var id = route.a.iz;
-			var page = route.a.bp;
-			var version = route.a.er;
+			var id = route.a.f_;
+			var page = route.a.br;
+			var version = route.a.eZ;
 			return $author$project$RouteBuilder$build(
 				A2(
 					$author$project$RouteBuilder$appendQuery,
@@ -14766,11 +15354,11 @@ var $author$project$Routes$toString = function (route) {
 						A2(
 							$author$project$RouteBuilder$appendPath,
 							_List_fromArray(
-								['resources', id.j1]),
+								['resources', id.kw]),
 							$author$project$Routes$pipelineIdBuilder(id)))));
 		case 3:
-			var id = route.a.iz;
-			var highlight = route.a.is;
+			var id = route.a.f_;
+			var highlight = route.a.iZ;
 			return _Utils_ap(
 				$author$project$RouteBuilder$build(
 					_Utils_Tuple2(
@@ -14782,8 +15370,8 @@ var $author$project$Routes$toString = function (route) {
 						_List_Nil)),
 				$author$project$Routes$showHighlight(highlight));
 		case 4:
-			var id = route.a.iz;
-			var groups = route.a.dt;
+			var id = route.a.f_;
+			var groups = route.a.dZ;
 			return $author$project$RouteBuilder$build(
 				A2(
 					$author$project$RouteBuilder$appendQuery,
@@ -14793,8 +15381,8 @@ var $author$project$Routes$toString = function (route) {
 						groups),
 					$author$project$Routes$pipelineIdBuilder(id)));
 		case 5:
-			var searchType = route.a.kf;
-			var dashboardView = route.a.hy;
+			var searchType = route.a.kK;
+			var dashboardView = route.a.h6;
 			return $author$project$RouteBuilder$build(
 				A2(
 					$author$project$RouteBuilder$appendQuery,
@@ -14858,8 +15446,8 @@ var $author$project$Routes$toString = function (route) {
 								['fly_success']),
 							_List_Nil))));
 		case 7:
-			var id = route.a.iz;
-			var direction = route.a.e0;
+			var id = route.a.f_;
+			var direction = route.a.fB;
 			var path = function () {
 				if (!direction) {
 					return 'downstream';
@@ -14877,12 +15465,12 @@ var $author$project$Routes$toString = function (route) {
 						_List_fromArray(
 							[
 								'causality',
-								$elm$core$String$fromInt(id.k5)
+								$elm$core$String$fromInt(id.lB)
 							]),
 						A2(
 							$author$project$RouteBuilder$appendPath,
 							_List_fromArray(
-								['resources', id.j1]),
+								['resources', id.kw]),
 							$author$project$Routes$pipelineIdBuilder(id)))));
 		case 8:
 			return $author$project$RouteBuilder$build(
@@ -14891,17 +15479,33 @@ var $author$project$Routes$toString = function (route) {
 						['download-fly']),
 					_List_Nil));
 		case 9:
-			var teamName = route.a.kD;
+			var teamName = route.a.k8;
 			return $author$project$RouteBuilder$build(
 				_Utils_Tuple2(
 					_List_fromArray(
 						['teams', teamName, 'agent-reviews']),
 					_List_Nil));
-		default:
+		case 10:
 			return $author$project$RouteBuilder$build(
 				_Utils_Tuple2(
 					_List_fromArray(
 						['agent']),
+					_List_Nil));
+		case 11:
+			return $author$project$RouteBuilder$build(
+				_Utils_Tuple2(
+					_List_fromArray(
+						['agent-tickets']),
+					_List_Nil));
+		default:
+			var id = route.a.f_;
+			return $author$project$RouteBuilder$build(
+				_Utils_Tuple2(
+					_List_fromArray(
+						[
+							'agent-tickets',
+							$elm$core$String$fromInt(id)
+						]),
 					_List_Nil));
 	}
 };
@@ -14912,45 +15516,45 @@ var $author$project$Application$Application$init = F2(
 			$elm$core$Maybe$withDefault,
 			$author$project$Routes$Dashboard(
 				{
-					hy: 0,
-					kf: $author$project$Routes$Normal('')
+					h6: 0,
+					kK: $author$project$Routes$Normal('')
 				}),
 			$author$project$Routes$parsePath(url));
 		var session = {
-			c5: flags.c5,
-			c9: '',
-			hi: $elm$core$Set$empty,
-			db: '',
-			a5: flags.a5,
-			dg: false,
-			hZ: $elm$core$Set$empty,
-			h3: $elm$core$Set$empty,
-			h4: $elm$core$Set$empty,
-			dm: flags.dm,
-			dv: $author$project$HoverState$NoHover,
-			dK: '',
-			dU: flags.dU,
-			d1: flags.d1,
-			jN: $krisajenkins$remotedata$RemoteData$NotAsked,
-			d5: route,
-			d8: 1,
-			km: {iT: false, gK: 275},
-			gB: $elm$time$Time$utc,
-			ep: flags.ep,
-			k1: $author$project$UserState$UserStateUnknown,
-			er: ''
+			dw: flags.dw,
+			dB: '',
+			hV: $elm$core$Set$empty,
+			dD: '',
+			a6: flags.a6,
+			dI: false,
+			iw: $elm$core$Set$empty,
+			iC: $elm$core$Set$empty,
+			iD: $elm$core$Set$empty,
+			dQ: flags.dQ,
+			d$: $author$project$HoverState$NoHover,
+			ed: '',
+			em: flags.em,
+			ex: flags.ex,
+			kg: $krisajenkins$remotedata$RemoteData$NotAsked,
+			eD: route,
+			eG: 1,
+			kR: {jn: false, hn: 275},
+			he: $elm$time$Time$utc,
+			eX: flags.eX,
+			ly: $author$project$UserState$UserStateUnknown,
+			eZ: ''
 		};
-		var handleTokenEffect = (flags.a5 === '') ? _List_fromArray(
+		var handleTokenEffect = (flags.a6 === '') ? _List_fromArray(
 			[$author$project$Message$Effects$LoadToken]) : _List_fromArray(
 			[
-				$author$project$Message$Effects$SaveToken(flags.a5),
+				$author$project$Message$Effects$SaveToken(flags.a6),
 				$author$project$Message$Effects$ModifyUrl(
 				$author$project$Routes$toString(route))
 			]);
 		var _v0 = A2($author$project$SubPage$SubPage$init, session, route);
 		var subModel = _v0.a;
 		var subEffects = _v0.b;
-		var model = {c: session, z: subModel, c4: $elm$core$Maybe$Nothing};
+		var model = {c: session, z: subModel, dr: $elm$core$Maybe$Nothing};
 		return _Utils_Tuple2(
 			model,
 			_Utils_ap(
@@ -14965,7 +15569,7 @@ var $author$project$Main$init = F3(
 		var effects = _v0.b;
 		return $author$project$Main$effectsToCmd(
 			_Utils_Tuple2(
-				{i2: key, jk: model},
+				{jy: key, jP: model},
 				effects));
 	});
 var $author$project$Message$Subscription$RouteChanged = function (a) {
@@ -14997,6 +15601,14 @@ var $author$project$Agent$Agent$subscriptions = _List_fromArray(
 		$author$project$Message$Subscription$OnClockTick(2)
 	]);
 var $author$project$AgentReviews$AgentReviews$subscriptions = _List_Nil;
+var $author$project$AgentTickets$AgentTicket$subscriptions = _List_fromArray(
+	[
+		$author$project$Message$Subscription$OnClockTick(2)
+	]);
+var $author$project$AgentTickets$AgentTickets$subscriptions = _List_fromArray(
+	[
+		$author$project$Message$Subscription$OnClockTick(2)
+	]);
 var $author$project$Message$Subscription$FromEventSource = function (a) {
 	return {$: 6, a: a};
 };
@@ -15020,7 +15632,7 @@ var $author$project$Build$Build$subscriptions = function (model) {
 	var buildEventsUrl = A2(
 		$elm$core$Maybe$andThen,
 		function ($) {
-			return $.hU;
+			return $.is;
 		},
 		$author$project$Build$Models$toMaybe(model.N));
 	return _Utils_ap(
@@ -15087,7 +15699,7 @@ var $author$project$Resource$Resource$subscriptions = function (model) {
 	var buildEventsUrl = A2(
 		$elm$core$Maybe$andThen,
 		function ($) {
-			return $.hU;
+			return $.is;
 		},
 		model.N);
 	return _Utils_ap(
@@ -15139,8 +15751,12 @@ var $author$project$SubPage$SubPage$subscriptions = function (mdl) {
 			return $author$project$Causality$Causality$subscriptions;
 		case 9:
 			return $author$project$AgentReviews$AgentReviews$subscriptions;
-		default:
+		case 10:
 			return $author$project$Agent$Agent$subscriptions;
+		case 11:
+			return $author$project$AgentTickets$AgentTickets$subscriptions;
+		default:
+			return $author$project$AgentTickets$AgentTicket$subscriptions;
 	}
 };
 var $author$project$Application$Application$subscriptions = function (model) {
@@ -15154,7 +15770,7 @@ var $author$project$Application$Application$subscriptions = function (model) {
 				$author$project$Message$Subscription$OnClockTick(1)
 			]),
 		_Utils_ap(
-			model.c.dg ? _List_fromArray(
+			model.c.dI ? _List_fromArray(
 				[$author$project$Message$Subscription$OnMouse, $author$project$Message$Subscription$OnMouseUp]) : _List_Nil,
 			$author$project$SubPage$SubPage$subscriptions(model.z)));
 };
@@ -15195,7 +15811,7 @@ var $author$project$Message$Subscription$WindowResized = F2(
 	});
 var $author$project$Build$StepTree$Models$BuildEventEnvelope = F2(
 	function (data, url) {
-		return {eT: data, k$: url};
+		return {fs: data, lw: url};
 	});
 var $author$project$Build$StepTree$Models$End = {$: 25};
 var $author$project$Build$StepTree$Models$NetworkError = {$: 27};
@@ -15306,7 +15922,7 @@ var $author$project$Build$StepTree$Models$Error = F3(
 	});
 var $author$project$Build$StepTree$Models$Origin = F2(
 	function (source, id) {
-		return {iz: id, ko: source};
+		return {f_: id, kT: source};
 	});
 var $author$project$Concourse$BuildEvents$decodeOrigin = A3(
 	$elm$json$Json$Decode$map2,
@@ -15744,7 +16360,7 @@ var $author$project$Message$Subscription$decodeHttpResponse = function (value) {
 };
 var $author$project$Keyboard$KeyEvent = F4(
 	function (ctrlKey, shiftKey, metaKey, code) {
-		return {eM: code, eR: ctrlKey, fF: metaKey, go: shiftKey};
+		return {fj: code, fp: ctrlKey, gh: metaKey, g1: shiftKey};
 	});
 var $author$project$Keyboard$A = 0;
 var $author$project$Keyboard$ArrowDown = 11;
@@ -15811,7 +16427,7 @@ var $author$project$Keyboard$decodeKeyEvent = A5(
 	A2($elm$json$Json$Decode$field, 'code', $author$project$Keyboard$decodeKeyCode));
 var $author$project$Message$Subscription$Position = F2(
 	function (x, y) {
-		return {ak: x, lf: y};
+		return {am: x, lL: y};
 	});
 var $author$project$Message$Subscription$decodePosition = A3(
 	$elm$json$Json$Decode$map2,
@@ -15842,7 +16458,7 @@ var $author$project$Message$Subscription$TokenReceived = function (a) {
 };
 var $author$project$Concourse$InstanceGroupIdentifier = F2(
 	function (teamName, name) {
-		return {dQ: name, kD: teamName};
+		return {cT: name, k8: teamName};
 	});
 var $author$project$Concourse$decodeInstanceGroupId = A2(
 	$elm_community$json_extra$Json$Decode$Extra$andMap,
@@ -15853,7 +16469,7 @@ var $author$project$Concourse$decodeInstanceGroupId = A2(
 		$elm$json$Json$Decode$succeed($author$project$Concourse$InstanceGroupIdentifier)));
 var $author$project$SideBar$State$SideBarState = F2(
 	function (isOpen, width) {
-		return {iT: isOpen, gK: width};
+		return {jn: isOpen, hn: width};
 	});
 var $author$project$SideBar$State$decodeSideBarState = A2(
 	$elm_community$json_extra$Json$Decode$Extra$andMap,
@@ -15903,8 +16519,8 @@ var $author$project$Message$Subscription$decodeStorageResponse = function (_v0) 
 				$elm$core$Basics$composeR,
 				$elm$core$List$map(
 					function (_v1) {
-						var teamName = _v1.kD;
-						var name = _v1.dQ;
+						var teamName = _v1.k8;
+						var name = _v1.cT;
 						return _Utils_Tuple2(teamName, name);
 					}),
 				$elm$core$Set$fromList),
@@ -15918,7 +16534,7 @@ var $elm$time$Time$Every = F2(
 	});
 var $elm$time$Time$State = F2(
 	function (taggers, processes) {
-		return {f6: processes, gz: taggers};
+		return {gL: processes, hb: taggers};
 	});
 var $elm$time$Time$init = $elm$core$Task$succeed(
 	A2($elm$time$Time$State, $elm$core$Dict$empty, $elm$core$Dict$empty));
@@ -16032,7 +16648,7 @@ var $elm$time$Time$spawnHelp = F3(
 	});
 var $elm$time$Time$onEffects = F3(
 	function (router, subs, _v0) {
-		var processes = _v0.f6;
+		var processes = _v0.gL;
 		var rightStep = F3(
 			function (_v6, id, _v7) {
 				var spawns = _v7.a;
@@ -16098,7 +16714,7 @@ var $elm$time$Time$onEffects = F3(
 	});
 var $elm$time$Time$onSelfMsg = F3(
 	function (router, interval, state) {
-		var _v0 = A2($elm$core$Dict$get, interval, state.gz);
+		var _v0 = A2($elm$core$Dict$get, interval, state.hb);
 		if (_v0.$ === 1) {
 			return $elm$core$Task$succeed(state);
 		} else {
@@ -16158,7 +16774,7 @@ var $elm$browser$Browser$Events$MySub = F3(
 	});
 var $elm$browser$Browser$Events$State = F2(
 	function (subs, pids) {
-		return {fZ: pids, gw: subs};
+		return {gC: pids, g8: subs};
 	});
 var $elm$browser$Browser$Events$init = $elm$core$Task$succeed(
 	A2($elm$browser$Browser$Events$State, _List_Nil, $elm$core$Dict$empty));
@@ -16180,7 +16796,7 @@ var $elm$browser$Browser$Events$addKey = function (sub) {
 };
 var $elm$browser$Browser$Events$Event = F2(
 	function (key, event) {
-		return {e4: event, i2: key};
+		return {fG: event, jy: key};
 	});
 var $elm$browser$Browser$Events$spawn = F3(
 	function (router, key, _v0) {
@@ -16254,7 +16870,7 @@ var $elm$browser$Browser$Events$onEffects = F3(
 			stepLeft,
 			stepBoth,
 			stepRight,
-			state.fZ,
+			state.gC,
 			$elm$core$Dict$fromList(newSubs),
 			_Utils_Tuple3(_List_Nil, $elm$core$Dict$empty, _List_Nil));
 		var deadPids = _v0.a;
@@ -16282,8 +16898,8 @@ var $elm$browser$Browser$Events$onEffects = F3(
 	});
 var $elm$browser$Browser$Events$onSelfMsg = F3(
 	function (router, _v0, state) {
-		var key = _v0.i2;
-		var event = _v0.e4;
+		var key = _v0.jy;
+		var event = _v0.fG;
 		var toMessage = function (_v2) {
 			var subKey = _v2.a;
 			var _v3 = _v2.b;
@@ -16292,7 +16908,7 @@ var $elm$browser$Browser$Events$onSelfMsg = F3(
 			var decoder = _v3.c;
 			return _Utils_eq(subKey, key) ? A2(_Browser_decodeEvent, decoder, event) : $elm$core$Maybe$Nothing;
 		};
-		var messages = A2($elm$core$List$filterMap, toMessage, state.gw);
+		var messages = A2($elm$core$List$filterMap, toMessage, state.g8);
 		return A2(
 			$elm$core$Task$andThen,
 			function (_v1) {
@@ -16442,7 +17058,7 @@ var $author$project$Message$Subscription$runSubscription = function (s) {
 		case 7:
 			return $author$project$Message$Subscription$newUrl(
 				function (path) {
-					var url = {ig: $elm$core$Maybe$Nothing, iu: '', jH: path, jP: $elm$core$Maybe$Nothing, jU: 0, av: $elm$core$Maybe$Nothing};
+					var url = {iN: $elm$core$Maybe$Nothing, i$: '', kb: path, ki: $elm$core$Maybe$Nothing, kn: 0, aw: $elm$core$Maybe$Nothing};
 					var _v1 = $author$project$Routes$parsePath(url);
 					if (!_v1.$) {
 						return $author$project$Message$Subscription$UrlRequest(
@@ -16475,7 +17091,7 @@ var $author$project$Main$subscriptionsToSub = A2(
 		$elm$core$Platform$Sub$batch,
 		$elm$core$Platform$Sub$map($author$project$Message$TopLevelMessage$DeliveryReceived)));
 var $author$project$Message$Message$Hover = function (a) {
-	return {$: 31, a: a};
+	return {$: 46, a: a};
 };
 var $author$project$HoverState$Hovered = function (a) {
 	return {$: 1, a: a};
@@ -16495,8 +17111,8 @@ var $author$project$Application$Application$redirectToLoginIfNecessary = F2(
 		var model = _v0.a;
 		var effects = _v0.b;
 		if (err.$ === 3) {
-			var status = err.a.ek;
-			return (status.eM === 401) ? _Utils_Tuple2(
+			var status = err.a.eT;
+			return (status.fj === 401) ? _Utils_Tuple2(
 				model,
 				_Utils_ap(
 					effects,
@@ -16511,31 +17127,31 @@ var $krisajenkins$remotedata$RemoteData$Success = function (a) {
 };
 var $author$project$SideBar$SideBar$byPipelineId = F2(
 	function (pipelineId, p) {
-		return _Utils_eq(p.dQ, pipelineId.jL) && (_Utils_eq(p.kD, pipelineId.kD) && _Utils_eq(p.bT, pipelineId.f2));
+		return _Utils_eq(p.cT, pipelineId.gH) && (_Utils_eq(p.k8, pipelineId.k8) && _Utils_eq(p.b$, pipelineId.ew));
 	});
 var $author$project$SideBar$SideBar$curPipeline = F2(
 	function (pipelines, route) {
 		switch (route.$) {
 			case 0:
-				var id = route.a.iz;
+				var id = route.a.f_;
 				return A2(
 					$elm_community$list_extra$List$Extra$find,
 					$author$project$SideBar$SideBar$byPipelineId(id),
 					pipelines);
 			case 1:
-				var id = route.a.iz;
+				var id = route.a.f_;
 				return A2(
 					$elm_community$list_extra$List$Extra$find,
 					$author$project$SideBar$SideBar$byPipelineId(id),
 					pipelines);
 			case 2:
-				var id = route.a.iz;
+				var id = route.a.f_;
 				return A2(
 					$elm_community$list_extra$List$Extra$find,
 					$author$project$SideBar$SideBar$byPipelineId(id),
 					pipelines);
 			case 4:
-				var id = route.a.iz;
+				var id = route.a.f_;
 				return A2(
 					$elm_community$list_extra$List$Extra$find,
 					$author$project$SideBar$SideBar$byPipelineId(id),
@@ -16577,10 +17193,10 @@ var $author$project$SideBar$SideBar$updatePipeline = F3(
 		return _Utils_update(
 			model,
 			{
-				jN: A2(
+				kg: A2(
 					$krisajenkins$remotedata$RemoteData$map,
 					A2($elm_community$list_extra$List$Extra$updateIf, predicate, updater),
-					model.jN)
+					model.kg)
 			});
 	});
 var $author$project$SideBar$SideBar$handleCallback = F2(
@@ -16597,19 +17213,19 @@ var $author$project$SideBar$SideBar$handleCallback = F2(
 							_Utils_update(
 								model,
 								{
-									hZ: function () {
+									iw: function () {
 										var _v2 = _Utils_Tuple2(
-											model.jN,
-											A2($author$project$SideBar$SideBar$curPipeline, pipelines, model.d5));
+											model.kg,
+											A2($author$project$SideBar$SideBar$curPipeline, pipelines, model.eD));
 										if ((!_v2.a.$) && (!_v2.b.$)) {
 											var _v3 = _v2.a;
-											var teamName = _v2.b.a.kD;
-											return A2($elm$core$Set$insert, teamName, model.hZ);
+											var teamName = _v2.b.a.k8;
+											return A2($elm$core$Set$insert, teamName, model.iw);
 										} else {
-											return model.hZ;
+											return model.iw;
 										}
 									}(),
-									jN: $krisajenkins$remotedata$RemoteData$Success(pipelines)
+									kg: $krisajenkins$remotedata$RemoteData$Success(pipelines)
 								}),
 							effects);
 					} else {
@@ -16622,13 +17238,13 @@ var $author$project$SideBar$SideBar$handleCallback = F2(
 							_Utils_update(
 								model,
 								{
-									hZ: function () {
-										var _v4 = _Utils_Tuple3(model.d5, build.ap, build);
+									iw: function () {
+										var _v4 = _Utils_Tuple3(model.eD, build.ac, build);
 										if ((_v4.a.$ === 3) && (!_v4.b.$)) {
-											var teamName = _v4.c.kD;
-											return A2($elm$core$Set$insert, teamName, model.hZ);
+											var teamName = _v4.c.k8;
+											return A2($elm$core$Set$insert, teamName, model.iw);
 										} else {
-											return model.hZ;
+											return model.iw;
 										}
 									}()
 								}),
@@ -16647,7 +17263,7 @@ var $author$project$SideBar$SideBar$handleCallback = F2(
 									function (p) {
 										return _Utils_update(
 											p,
-											{f8: false});
+											{gM: false});
 									},
 									$author$project$SideBar$SideBar$byPipelineId(id),
 									model),
@@ -16665,7 +17281,7 @@ var $author$project$SideBar$SideBar$handleCallback = F2(
 									function (p) {
 										return _Utils_update(
 											p,
-											{f8: true});
+											{gM: true});
 									},
 									$author$project$SideBar$SideBar$byPipelineId(id),
 									model),
@@ -16731,16 +17347,16 @@ var $author$project$Tooltip$handleCallback = F2(
 			switch (callback.$) {
 				case 44:
 					if (!callback.b.$) {
-						var scene = callback.b.a.ka;
-						var viewport = callback.b.a.k7;
-						var _v2 = model.dv;
+						var scene = callback.b.a.kF;
+						var viewport = callback.b.a.lD;
+						var _v2 = model.d$;
 						if (_v2.$ === 1) {
 							var domID = _v2.a;
-							return (($author$project$Tooltip$policy(domID) === 1) && (_Utils_cmp(viewport.gK, scene.gK) > -1)) ? _Utils_Tuple2(model, effects) : _Utils_Tuple2(
+							return (($author$project$Tooltip$policy(domID) === 1) && (_Utils_cmp(viewport.hn, scene.hn) > -1)) ? _Utils_Tuple2(model, effects) : _Utils_Tuple2(
 								_Utils_update(
 									model,
 									{
-										dv: $author$project$HoverState$TooltipPending(domID)
+										d$: $author$project$HoverState$TooltipPending(domID)
 									}),
 								_Utils_ap(
 									effects,
@@ -16757,14 +17373,14 @@ var $author$project$Tooltip$handleCallback = F2(
 				case 45:
 					if (!callback.a.$) {
 						var element = callback.a.a;
-						var _v3 = model.dv;
+						var _v3 = model.d$;
 						if (_v3.$ === 2) {
 							var domID = _v3.a;
 							return _Utils_Tuple2(
 								_Utils_update(
 									model,
 									{
-										dv: A2($author$project$HoverState$Tooltip, domID, element)
+										d$: A2($author$project$HoverState$Tooltip, domID, element)
 									}),
 								effects);
 						} else {
@@ -16809,88 +17425,106 @@ var $author$project$SubPage$SubPage$genericUpdate = function (fBuild) {
 								return function (dFly) {
 									return function (fAR) {
 										return function (fAgent) {
-											return function (_v0) {
-												var model = _v0.a;
-												var effects = _v0.b;
-												switch (model.$) {
-													case 0:
-														var buildModel = model.a;
-														return A2(
-															$elm$core$Tuple$mapFirst,
-															$author$project$SubPage$SubPage$BuildModel,
-															fBuild(
-																_Utils_Tuple2(buildModel, effects)));
-													case 1:
-														var jobModel = model.a;
-														return A2(
-															$elm$core$Tuple$mapFirst,
-															$author$project$SubPage$SubPage$JobModel,
-															fJob(
-																_Utils_Tuple2(jobModel, effects)));
-													case 3:
-														var pipelineModel = model.a;
-														return A2(
-															$elm$core$Tuple$mapFirst,
-															$author$project$SubPage$SubPage$PipelineModel,
-															fPipe(
-																_Utils_Tuple2(pipelineModel, effects)));
-													case 2:
-														var resourceModel = model.a;
-														return A2(
-															$elm$core$Tuple$mapFirst,
-															$author$project$SubPage$SubPage$ResourceModel,
-															fRes(
-																_Utils_Tuple2(resourceModel, effects)));
-													case 5:
-														var dashboardModel = model.a;
-														return A2(
-															$elm$core$Tuple$mapFirst,
-															$author$project$SubPage$SubPage$DashboardModel,
-															fDash(
-																_Utils_Tuple2(dashboardModel, effects)));
-													case 7:
-														var causalityModel = model.a;
-														return A2(
-															$elm$core$Tuple$mapFirst,
-															$author$project$SubPage$SubPage$CausalityModel,
-															fCaus(
-																_Utils_Tuple2(causalityModel, effects)));
-													case 6:
-														var flySuccessModel = model.a;
-														return A2(
-															$elm$core$Tuple$mapFirst,
-															$author$project$SubPage$SubPage$FlySuccessModel,
-															fFS(
-																_Utils_Tuple2(flySuccessModel, effects)));
-													case 4:
-														var notFoundModel = model.a;
-														return A2(
-															$elm$core$Tuple$mapFirst,
-															$author$project$SubPage$SubPage$NotFoundModel,
-															fNF(
-																_Utils_Tuple2(notFoundModel, effects)));
-													case 8:
-														var downloadFlyModel = model.a;
-														return A2(
-															$elm$core$Tuple$mapFirst,
-															$author$project$SubPage$SubPage$DownloadFlyModel,
-															dFly(
-																_Utils_Tuple2(downloadFlyModel, effects)));
-													case 9:
-														var agentReviewsModel = model.a;
-														return A2(
-															$elm$core$Tuple$mapFirst,
-															$author$project$SubPage$SubPage$AgentReviewsModel,
-															fAR(
-																_Utils_Tuple2(agentReviewsModel, effects)));
-													default:
-														var agentModel = model.a;
-														return A2(
-															$elm$core$Tuple$mapFirst,
-															$author$project$SubPage$SubPage$AgentModel,
-															fAgent(
-																_Utils_Tuple2(agentModel, effects)));
-												}
+											return function (fATs) {
+												return function (fAT) {
+													return function (_v0) {
+														var model = _v0.a;
+														var effects = _v0.b;
+														switch (model.$) {
+															case 0:
+																var buildModel = model.a;
+																return A2(
+																	$elm$core$Tuple$mapFirst,
+																	$author$project$SubPage$SubPage$BuildModel,
+																	fBuild(
+																		_Utils_Tuple2(buildModel, effects)));
+															case 1:
+																var jobModel = model.a;
+																return A2(
+																	$elm$core$Tuple$mapFirst,
+																	$author$project$SubPage$SubPage$JobModel,
+																	fJob(
+																		_Utils_Tuple2(jobModel, effects)));
+															case 3:
+																var pipelineModel = model.a;
+																return A2(
+																	$elm$core$Tuple$mapFirst,
+																	$author$project$SubPage$SubPage$PipelineModel,
+																	fPipe(
+																		_Utils_Tuple2(pipelineModel, effects)));
+															case 2:
+																var resourceModel = model.a;
+																return A2(
+																	$elm$core$Tuple$mapFirst,
+																	$author$project$SubPage$SubPage$ResourceModel,
+																	fRes(
+																		_Utils_Tuple2(resourceModel, effects)));
+															case 5:
+																var dashboardModel = model.a;
+																return A2(
+																	$elm$core$Tuple$mapFirst,
+																	$author$project$SubPage$SubPage$DashboardModel,
+																	fDash(
+																		_Utils_Tuple2(dashboardModel, effects)));
+															case 7:
+																var causalityModel = model.a;
+																return A2(
+																	$elm$core$Tuple$mapFirst,
+																	$author$project$SubPage$SubPage$CausalityModel,
+																	fCaus(
+																		_Utils_Tuple2(causalityModel, effects)));
+															case 6:
+																var flySuccessModel = model.a;
+																return A2(
+																	$elm$core$Tuple$mapFirst,
+																	$author$project$SubPage$SubPage$FlySuccessModel,
+																	fFS(
+																		_Utils_Tuple2(flySuccessModel, effects)));
+															case 4:
+																var notFoundModel = model.a;
+																return A2(
+																	$elm$core$Tuple$mapFirst,
+																	$author$project$SubPage$SubPage$NotFoundModel,
+																	fNF(
+																		_Utils_Tuple2(notFoundModel, effects)));
+															case 8:
+																var downloadFlyModel = model.a;
+																return A2(
+																	$elm$core$Tuple$mapFirst,
+																	$author$project$SubPage$SubPage$DownloadFlyModel,
+																	dFly(
+																		_Utils_Tuple2(downloadFlyModel, effects)));
+															case 9:
+																var agentReviewsModel = model.a;
+																return A2(
+																	$elm$core$Tuple$mapFirst,
+																	$author$project$SubPage$SubPage$AgentReviewsModel,
+																	fAR(
+																		_Utils_Tuple2(agentReviewsModel, effects)));
+															case 10:
+																var agentModel = model.a;
+																return A2(
+																	$elm$core$Tuple$mapFirst,
+																	$author$project$SubPage$SubPage$AgentModel,
+																	fAgent(
+																		_Utils_Tuple2(agentModel, effects)));
+															case 11:
+																var agentTicketsModel = model.a;
+																return A2(
+																	$elm$core$Tuple$mapFirst,
+																	$author$project$SubPage$SubPage$AgentTicketsModel,
+																	fATs(
+																		_Utils_Tuple2(agentTicketsModel, effects)));
+															default:
+																var agentTicketModel = model.a;
+																return A2(
+																	$elm$core$Tuple$mapFirst,
+																	$author$project$SubPage$SubPage$AgentTicketModel,
+																	fAT(
+																		_Utils_Tuple2(agentTicketModel, effects)));
+														}
+													};
+												};
 											};
 										};
 									};
@@ -16906,8 +17540,8 @@ var $author$project$SubPage$SubPage$genericUpdate = function (fBuild) {
 var $author$project$Agent$Agent$errorMessage = F2(
 	function (what, err) {
 		if (err.$ === 3) {
-			var status = err.a.ek;
-			return (status.eM === 403) ? ('not authorized — the agent ' + (what + ' API is admin-only')) : ('couldn\'t load ' + what);
+			var status = err.a.eT;
+			return (status.fj === 403) ? ('not authorized — the agent ' + (what + ' API is admin-only')) : ('couldn\'t load ' + what);
 		} else {
 			return 'couldn\'t load ' + what;
 		}
@@ -16915,8 +17549,8 @@ var $author$project$Agent$Agent$errorMessage = F2(
 var $author$project$Agent$Agent$mutationError = F2(
 	function (verb, err) {
 		if (err.$ === 3) {
-			var status = err.a.ek;
-			return (status.eM === 403) ? 'not authorized — principals are admin-only' : ('couldn\'t ' + (verb + ' principal'));
+			var status = err.a.eT;
+			return (status.fj === 403) ? 'not authorized — principals are admin-only' : ('couldn\'t ' + (verb + ' principal'));
 		} else {
 			return 'couldn\'t ' + (verb + ' principal');
 		}
@@ -16933,8 +17567,8 @@ var $author$project$Agent$Agent$handleCallback = F2(
 						_Utils_update(
 							model,
 							{
-								d7: $elm$core$Maybe$Just(runs),
-								bu: $elm$core$Maybe$Nothing
+								eF: $elm$core$Maybe$Just(runs),
+								bw: $elm$core$Maybe$Nothing
 							}),
 						effects);
 				} else {
@@ -16943,7 +17577,7 @@ var $author$project$Agent$Agent$handleCallback = F2(
 						_Utils_update(
 							model,
 							{
-								bu: $elm$core$Maybe$Just(
+								bw: $elm$core$Maybe$Just(
 									A2($author$project$Agent$Agent$errorMessage, 'runs', err))
 							}),
 						effects);
@@ -16955,8 +17589,8 @@ var $author$project$Agent$Agent$handleCallback = F2(
 						_Utils_update(
 							model,
 							{
-								eu: $elm$core$Maybe$Just(workflows),
-								bC: $elm$core$Maybe$Nothing
+								e0: $elm$core$Maybe$Just(workflows),
+								bE: $elm$core$Maybe$Nothing
 							}),
 						effects);
 				} else {
@@ -16965,7 +17599,7 @@ var $author$project$Agent$Agent$handleCallback = F2(
 						_Utils_update(
 							model,
 							{
-								bC: $elm$core$Maybe$Just(
+								bE: $elm$core$Maybe$Just(
 									A2($author$project$Agent$Agent$errorMessage, 'workflows', err))
 							}),
 						effects);
@@ -16977,8 +17611,8 @@ var $author$project$Agent$Agent$handleCallback = F2(
 						_Utils_update(
 							model,
 							{
-								bL: $elm$core$Maybe$Nothing,
-								dc: $elm$core$Maybe$Just(costRollup)
+								bO: $elm$core$Maybe$Nothing,
+								dE: $elm$core$Maybe$Just(costRollup)
 							}),
 						effects);
 				} else {
@@ -16987,7 +17621,7 @@ var $author$project$Agent$Agent$handleCallback = F2(
 						_Utils_update(
 							model,
 							{
-								bL: $elm$core$Maybe$Just(
+								bO: $elm$core$Maybe$Just(
 									A2($author$project$Agent$Agent$errorMessage, 'costs', err))
 							}),
 						effects);
@@ -16999,8 +17633,8 @@ var $author$project$Agent$Agent$handleCallback = F2(
 						_Utils_update(
 							model,
 							{
-								dd: $elm$core$Maybe$Just(credentials),
-								a4: $elm$core$Maybe$Nothing
+								dF: $elm$core$Maybe$Just(credentials),
+								a5: $elm$core$Maybe$Nothing
 							}),
 						effects);
 				} else {
@@ -17009,7 +17643,7 @@ var $author$project$Agent$Agent$handleCallback = F2(
 						_Utils_update(
 							model,
 							{
-								a4: $elm$core$Maybe$Just(
+								a5: $elm$core$Maybe$Just(
 									A2($author$project$Agent$Agent$errorMessage, 'credentials', err))
 							}),
 						effects);
@@ -17021,8 +17655,8 @@ var $author$project$Agent$Agent$handleCallback = F2(
 						_Utils_update(
 							model,
 							{
-								d2: $elm$core$Maybe$Just(principals),
-								bs: $elm$core$Maybe$Nothing
+								ey: $elm$core$Maybe$Just(principals),
+								bu: $elm$core$Maybe$Nothing
 							}),
 						effects);
 				} else {
@@ -17031,7 +17665,7 @@ var $author$project$Agent$Agent$handleCallback = F2(
 						_Utils_update(
 							model,
 							{
-								bs: $elm$core$Maybe$Just(
+								bu: $elm$core$Maybe$Just(
 									A2($author$project$Agent$Agent$errorMessage, 'principals', err))
 							}),
 						effects);
@@ -17043,13 +17677,13 @@ var $author$project$Agent$Agent$handleCallback = F2(
 						_Utils_update(
 							model,
 							{
-								bV: '',
-								cz: $elm$core$Maybe$Nothing,
-								bl: '',
-								bm: '',
-								at: $elm$core$Set$empty,
-								cA: $elm$core$Maybe$Just(created.kU),
-								aV: false
+								b1: '',
+								cR: $elm$core$Maybe$Nothing,
+								bn: '',
+								bo: '',
+								au: $elm$core$Set$empty,
+								cS: $elm$core$Maybe$Just(created.lo),
+								aW: false
 							}),
 						_Utils_ap(
 							effects,
@@ -17061,9 +17695,9 @@ var $author$project$Agent$Agent$handleCallback = F2(
 						_Utils_update(
 							model,
 							{
-								cz: $elm$core$Maybe$Just(
+								cR: $elm$core$Maybe$Just(
 									A2($author$project$Agent$Agent$mutationError, 'mint', err)),
-								aV: false
+								aW: false
 							}),
 						effects);
 				}
@@ -17072,7 +17706,7 @@ var $author$project$Agent$Agent$handleCallback = F2(
 					return _Utils_Tuple2(
 						_Utils_update(
 							model,
-							{b4: $elm$core$Maybe$Nothing}),
+							{cc: $elm$core$Maybe$Nothing}),
 						_Utils_ap(
 							effects,
 							_List_fromArray(
@@ -17083,7 +17717,7 @@ var $author$project$Agent$Agent$handleCallback = F2(
 						_Utils_update(
 							model,
 							{
-								b4: $elm$core$Maybe$Just(
+								cc: $elm$core$Maybe$Just(
 									A2($author$project$Agent$Agent$mutationError, 'revoke', err))
 							}),
 						effects);
@@ -17102,24 +17736,264 @@ var $author$project$AgentReviews$AgentReviews$handleCallback = F2(
 				return _Utils_Tuple2(
 					_Utils_update(
 						model,
-						{cx: true, cL: reviews}),
+						{cP: true, c3: reviews}),
 					effects);
 			} else {
 				return _Utils_Tuple2(
 					_Utils_update(
 						model,
-						{dO: true, cx: true}),
+						{eh: true, cP: true}),
 					effects);
 			}
 		} else {
 			return _Utils_Tuple2(model, effects);
 		}
 	});
-var $author$project$Api$Endpoints$BuildEventStream = 5;
-var $author$project$Build$Header$Models$Cancelled = {$: 1};
 var $author$project$Message$Effects$FetchBuildAgentReviews = function (a) {
 	return {$: 88, a: a};
 };
+var $elm$core$String$fromFloat = _String_fromNumber;
+var $elm$core$List$maximum = function (list) {
+	if (list.b) {
+		var x = list.a;
+		var xs = list.b;
+		return $elm$core$Maybe$Just(
+			A3($elm$core$List$foldl, $elm$core$Basics$max, x, xs));
+	} else {
+		return $elm$core$Maybe$Nothing;
+	}
+};
+var $elm$core$Set$remove = F2(
+	function (key, _v0) {
+		var dict = _v0;
+		return A2($elm$core$Dict$remove, key, dict);
+	});
+var $author$project$AgentTickets$AgentTicket$handleCallback = F2(
+	function (callback, _v0) {
+		var model = _v0.a;
+		var effects = _v0.b;
+		switch (callback.$) {
+			case 57:
+				if (!callback.a.$) {
+					var detail = callback.a.a;
+					return _Utils_Tuple2(
+						_Utils_update(
+							model,
+							{
+								bQ: $elm$core$Maybe$Just(detail),
+								bS: detail.al.bL,
+								bT: A2(
+									$elm$core$Maybe$withDefault,
+									'',
+									A2($elm$core$Maybe$map, $elm$core$String$fromFloat, detail.al.dz)),
+								bU: detail.al.ck,
+								eh: false,
+								cP: true
+							}),
+						effects);
+				} else {
+					return _Utils_Tuple2(
+						_Utils_update(
+							model,
+							{eh: true, cP: true}),
+						effects);
+				}
+			case 62:
+				if (!callback.b.$) {
+					var metrics = callback.b.a;
+					var latestBuild = $elm$core$List$maximum(
+						A2(
+							$elm$core$List$map,
+							function ($) {
+								return $.hD;
+							},
+							metrics));
+					return _Utils_Tuple2(
+						_Utils_update(
+							model,
+							{eA: latestBuild, c7: metrics}),
+						function () {
+							if (!latestBuild.$) {
+								var b = latestBuild.a;
+								return _Utils_ap(
+									effects,
+									_List_fromArray(
+										[
+											$author$project$Message$Effects$FetchBuildAgentReviews(b)
+										]));
+							} else {
+								return effects;
+							}
+						}());
+				} else {
+					return _Utils_Tuple2(model, effects);
+				}
+			case 58:
+				if (!callback.b.$) {
+					return _Utils_Tuple2(
+						_Utils_update(
+							model,
+							{W: $elm$core$Maybe$Nothing, ba: false}),
+						_Utils_ap(
+							effects,
+							_List_fromArray(
+								[
+									$author$project$Message$Effects$FetchAgentTicket(model.lg)
+								])));
+				} else {
+					return _Utils_Tuple2(
+						_Utils_update(
+							model,
+							{
+								W: $elm$core$Maybe$Just('Couldn\'t save changes.')
+							}),
+						effects);
+				}
+			case 59:
+				if (!callback.b.$) {
+					return _Utils_Tuple2(
+						_Utils_update(
+							model,
+							{W: $elm$core$Maybe$Nothing}),
+						_Utils_ap(
+							effects,
+							_List_fromArray(
+								[
+									$author$project$Message$Effects$FetchAgentTicket(model.lg)
+								])));
+				} else {
+					return _Utils_Tuple2(
+						_Utils_update(
+							model,
+							{
+								W: $elm$core$Maybe$Just('Transition rejected — the ticket state may have changed. Refreshing…')
+							}),
+						_Utils_ap(
+							effects,
+							_List_fromArray(
+								[
+									$author$project$Message$Effects$FetchAgentTicket(model.lg)
+								])));
+				}
+			case 60:
+				if (!callback.b.$) {
+					return _Utils_Tuple2(
+						_Utils_update(
+							model,
+							{W: $elm$core$Maybe$Nothing}),
+						_Utils_ap(
+							effects,
+							_List_fromArray(
+								[
+									$author$project$Message$Effects$FetchAgentTicket(model.lg),
+									$author$project$Message$Effects$FetchAgentTicketMetrics(model.lg)
+								])));
+				} else {
+					return _Utils_Tuple2(
+						_Utils_update(
+							model,
+							{
+								W: $elm$core$Maybe$Just('Dispatch failed.')
+							}),
+						effects);
+				}
+			case 46:
+				if (!callback.a.$) {
+					var reviews = callback.a.a;
+					return _Utils_Tuple2(
+						_Utils_update(
+							model,
+							{ds: false, e3: reviews}),
+						effects);
+				} else {
+					return _Utils_Tuple2(
+						_Utils_update(
+							model,
+							{ds: true}),
+						effects);
+				}
+			case 48:
+				if (!callback.b.$) {
+					var findingId = callback.a;
+					return _Utils_Tuple2(
+						_Utils_update(
+							model,
+							{
+								cq: A2($elm$core$Set$remove, findingId, model.cq)
+							}),
+						_Utils_ap(
+							effects,
+							A2(
+								$elm$core$Maybe$withDefault,
+								_List_Nil,
+								A2(
+									$elm$core$Maybe$map,
+									function (b) {
+										return _List_fromArray(
+											[
+												$author$project$Message$Effects$FetchBuildAgentReviews(b)
+											]);
+									},
+									model.eA))));
+				} else {
+					var findingId = callback.a;
+					return _Utils_Tuple2(
+						_Utils_update(
+							model,
+							{
+								cq: A2($elm$core$Set$insert, findingId, model.cq)
+							}),
+						effects);
+				}
+			default:
+				return _Utils_Tuple2(model, effects);
+		}
+	});
+var $author$project$AgentTickets$AgentTickets$handleCallback = F2(
+	function (callback, _v0) {
+		var model = _v0.a;
+		var effects = _v0.b;
+		switch (callback.$) {
+			case 56:
+				if (!callback.a.$) {
+					var tickets = callback.a.a;
+					return _Utils_Tuple2(
+						_Utils_update(
+							model,
+							{eh: false, cP: true, ci: tickets}),
+						effects);
+				} else {
+					return _Utils_Tuple2(
+						_Utils_update(
+							model,
+							{eh: true, cP: true}),
+						effects);
+				}
+			case 51:
+				if (!callback.a.$) {
+					var rollup = callback.a.a;
+					return _Utils_Tuple2(
+						_Utils_update(
+							model,
+							{
+								cy: $elm$core$Dict$fromList(
+									A2(
+										$elm$core$List$map,
+										function (row) {
+											return _Utils_Tuple2(row.jy, row.fm);
+										},
+										rollup.kD))
+							}),
+						effects);
+				} else {
+					return _Utils_Tuple2(model, effects);
+				}
+			default:
+				return _Utils_Tuple2(model, effects);
+		}
+	});
+var $author$project$Api$Endpoints$BuildEventStream = 5;
+var $author$project$Build$Header$Models$Cancelled = {$: 1};
 var $author$project$Message$Effects$OpenBuildEventStream = function (a) {
 	return {$: 59, a: a};
 };
@@ -17170,28 +18044,28 @@ var $author$project$Concourse$BuildStatus$isRunning = function (status) {
 };
 var $author$project$Build$Output$Output$init = F2(
 	function (highlight, build) {
-		var outputState = $author$project$Concourse$BuildStatus$isRunning(build.ek) ? 1 : 0;
-		var fetch = (!_Utils_eq(build.ap, $elm$core$Maybe$Nothing)) ? _List_fromArray(
+		var outputState = $author$project$Concourse$BuildStatus$isRunning(build.eT) ? 1 : 0;
+		var fetch = (!_Utils_eq(build.ac, $elm$core$Maybe$Nothing)) ? _List_fromArray(
 			[
-				$author$project$Message$Effects$FetchBuildPlanAndResources(build.iz)
+				$author$project$Message$Effects$FetchBuildPlanAndResources(build.f_)
 			]) : _List_fromArray(
 			[
-				$author$project$Message$Effects$FetchBuildPlan(build.iz)
+				$author$project$Message$Effects$FetchBuildPlan(build.f_)
 			]);
 		var buildId = A2(
 			$elm$core$Maybe$map,
 			function (job) {
-				return {g1: build.dQ, i0: job.i0, f2: job.f2, jL: job.jL, kD: build.kD};
+				return {hE: build.cT, jw: job.jw, ew: job.ew, gH: job.gH, k8: build.k8};
 			},
-			build.ap);
-		var model = {g0: buildId, hT: false, hU: $elm$core$Maybe$Nothing, is: highlight, kt: outputState, kv: $elm$core$Maybe$Nothing};
+			build.ac);
+		var model = {hD: buildId, ir: false, is: $elm$core$Maybe$Nothing, iZ: highlight, dg: outputState, k_: $elm$core$Maybe$Nothing};
 		return _Utils_Tuple2(model, fetch);
 	});
 var $author$project$Build$Build$initBuildOutput = F2(
 	function (build, _v0) {
 		var model = _v0.a;
 		var effects = _v0.b;
-		var _v1 = A2($author$project$Build$Output$Output$init, model.is, build);
+		var _v1 = A2($author$project$Build$Output$Output$init, model.iZ, build);
 		var output = _v1.a;
 		var outputCmd = _v1.b;
 		return _Utils_Tuple2(
@@ -17216,11 +18090,11 @@ var $author$project$Build$Build$handleBuildFetched = F2(
 		var withBuild = _Utils_update(
 			model,
 			{
-				N: model.aA ? model.N : $author$project$Build$Header$Models$Empty,
-				b1: build.b1
+				N: model.aB ? model.N : $author$project$Build$Header$Models$Empty,
+				b9: build.b9
 			});
 		var fetchJobAndHistory = function () {
-			var _v5 = _Utils_Tuple2(model.ap, build.ap);
+			var _v5 = _Utils_Tuple2(model.ac, build.ac);
 			if ((_v5.a.$ === 1) && (!_v5.b.$)) {
 				var _v6 = _v5.a;
 				var buildJob = _v5.b.a;
@@ -17233,20 +18107,20 @@ var $author$project$Build$Build$handleBuildFetched = F2(
 				return _List_Nil;
 			}
 		}();
-		var fetchAgentReviews = ((!model.aA) || (!_Utils_eq(build.iz, model.iz))) ? _List_fromArray(
+		var fetchAgentReviews = ((!model.aB) || (!_Utils_eq(build.f_, model.f_))) ? _List_fromArray(
 			[
-				$author$project$Message$Effects$FetchBuildAgentReviews(build.iz)
+				$author$project$Message$Effects$FetchBuildAgentReviews(build.f_)
 			]) : _List_Nil;
 		var _v1 = function () {
-			if (!build.ek) {
+			if (!build.eT) {
 				return _Utils_Tuple2(
 					withBuild,
 					_Utils_ap(
 						effects,
-						$author$project$Build$Build$pollUntilStarted(build.iz)));
+						$author$project$Build$Build$pollUntilStarted(build.f_)));
 			} else {
-				if (_Utils_eq(build.b1, $elm$core$Maybe$Nothing)) {
-					var _v2 = model.br;
+				if (_Utils_eq(build.b9, $elm$core$Maybe$Nothing)) {
+					var _v2 = model.bt;
 					if (_v2.$ === 1) {
 						return A2(
 							$author$project$Build$Build$initBuildOutput,
@@ -17265,7 +18139,7 @@ var $author$project$Build$Build$handleBuildFetched = F2(
 								newEffects,
 								_List_fromArray(
 									[
-										A2($author$project$Message$Effects$FetchBuildPrep, 1000, build.iz)
+										A2($author$project$Message$Effects$FetchBuildPrep, 1000, build.f_)
 									])));
 					}
 				} else {
@@ -17275,7 +18149,7 @@ var $author$project$Build$Build$handleBuildFetched = F2(
 		}();
 		var newModel = _v1.a;
 		var cmd = _v1.b;
-		return ((!model.aA) || _Utils_eq(build.iz, model.iz)) ? _Utils_Tuple2(
+		return ((!model.aB) || _Utils_eq(build.f_, model.f_)) ? _Utils_Tuple2(
 			newModel,
 			_Utils_ap(
 				cmd,
@@ -17286,7 +18160,7 @@ var $author$project$Build$Build$handleBuildFetched = F2(
 						A2(
 							$elm$core$List$cons,
 							$author$project$Message$Effects$SetFavIcon(
-								$elm$core$Maybe$Just(build.ek)),
+								$elm$core$Maybe$Just(build.eT)),
 							A2(
 								$elm$core$Maybe$withDefault,
 								_List_fromArray(
@@ -17296,7 +18170,7 @@ var $author$project$Build$Build$handleBuildFetched = F2(
 								A2(
 									$elm$core$Maybe$map,
 									function (commentBar) {
-										var _v4 = commentBar.kt;
+										var _v4 = commentBar.dg;
 										if (_v4.$ === 1) {
 											return _List_Nil;
 										} else {
@@ -17306,7 +18180,7 @@ var $author$project$Build$Build$handleBuildFetched = F2(
 												]);
 										}
 									},
-									$author$project$Build$Header$Models$commentBarIsVisible(model.a3)))))))) : _Utils_Tuple2(model, effects);
+									$author$project$Build$Header$Models$commentBarIsVisible(model.a4)))))))) : _Utils_Tuple2(model, effects);
 	});
 var $author$project$Build$Build$handleBuildPrepFetched = F2(
 	function (buildPrep, _v0) {
@@ -17316,7 +18190,7 @@ var $author$project$Build$Build$handleBuildPrepFetched = F2(
 			_Utils_update(
 				model,
 				{
-					br: $elm$core$Maybe$Just(buildPrep)
+					bt: $elm$core$Maybe$Just(buildPrep)
 				}),
 			effects);
 	});
@@ -17358,13 +18232,13 @@ var $author$project$Routes$buildRoute = F3(
 			var j = jobId.a;
 			return $author$project$Routes$Build(
 				{
-					dt: _List_Nil,
-					is: $author$project$Routes$HighlightNothing,
-					iz: {g1: name, i0: j.i0, f2: j.f2, jL: j.jL, kD: j.kD}
+					dZ: _List_Nil,
+					iZ: $author$project$Routes$HighlightNothing,
+					f_: {hE: name, jw: j.jw, ew: j.ew, gH: j.gH, k8: j.k8}
 				});
 		} else {
 			return $author$project$Routes$OneOffBuild(
-				{is: $author$project$Routes$HighlightNothing, iz: id});
+				{iZ: $author$project$Routes$HighlightNothing, f_: id});
 		}
 	});
 var $author$project$Views$CommentBar$Saving = function (a) {
@@ -17375,8 +18249,8 @@ var $author$project$Views$CommentBar$setCachedContent = F2(
 		return _Utils_update(
 			model,
 			{
-				kt: function () {
-					var _v0 = model.kt;
+				dg: function () {
+					var _v0 = model.dg;
 					switch (_v0.$) {
 						case 0:
 							return $author$project$Views$CommentBar$Viewing(content);
@@ -17385,13 +18259,13 @@ var $author$project$Views$CommentBar$setCachedContent = F2(
 							return $author$project$Views$CommentBar$Editing(
 								_Utils_update(
 									state,
-									{g7: content}));
+									{hK: content}));
 						default:
 							var state = _v0.a;
 							return $author$project$Views$CommentBar$Saving(
 								_Utils_update(
 									state,
-									{g7: content}));
+									{hK: content}));
 					}
 				}()
 			});
@@ -17408,15 +18282,15 @@ var $author$project$Build$Header$Header$handleBuildFetched = F2(
 	function (b, _v0) {
 		var model = _v0.a;
 		var effects = _v0.b;
-		if ((!model.aA) || _Utils_eq(model.iz, b.iz)) {
+		if ((!model.aB) || _Utils_eq(model.f_, b.f_)) {
 			var _v1 = function () {
-				if (!model.aA) {
-					if ($elm$core$String$isEmpty(b.a3)) {
+				if (!model.aB) {
+					if ($elm$core$String$isEmpty(b.a4)) {
 						return _Utils_Tuple2(
-							$author$project$Build$Header$Models$Hidden(b.a3),
+							$author$project$Build$Header$Models$Hidden(b.a4),
 							_List_Nil);
 					} else {
-						var _v2 = $author$project$Build$Header$Header$initBuildCommentBar(b.a3);
+						var _v2 = $author$project$Build$Header$Header$initBuildCommentBar(b.a4);
 						var initCommentBar = _v2.a;
 						var effs = _v2.b;
 						return _Utils_Tuple2(
@@ -17424,16 +18298,16 @@ var $author$project$Build$Header$Header$handleBuildFetched = F2(
 							effs);
 					}
 				} else {
-					var _v3 = model.a3;
+					var _v3 = model.a4;
 					if (!_v3.$) {
 						return _Utils_Tuple2(
-							$author$project$Build$Header$Models$Hidden(b.a3),
+							$author$project$Build$Header$Models$Hidden(b.a4),
 							_List_Nil);
 					} else {
 						var c = _v3.a;
 						return _Utils_Tuple2(
 							$author$project$Build$Header$Models$Visible(
-								A2($author$project$Views$CommentBar$setCachedContent, b.a3, c)),
+								A2($author$project$Views$CommentBar$setCachedContent, b.a4, c)),
 							_List_Nil);
 					}
 				}
@@ -17444,25 +18318,25 @@ var $author$project$Build$Header$Header$handleBuildFetched = F2(
 				_Utils_update(
 					model,
 					{
-						a3: commentBar,
-						hr: b.hr,
-						dh: b.dh,
-						h6: true,
-						aA: true,
-						it: A3(
+						a4: commentBar,
+						fo: b.fo,
+						dJ: b.dJ,
+						iF: true,
+						aB: true,
+						i_: A3(
 							$elm_community$list_extra$List$Extra$setIf,
 							A2(
 								$elm$core$Basics$composeR,
 								function ($) {
-									return $.iz;
+									return $.f_;
 								},
-								$elm$core$Basics$eq(b.iz)),
-							{a3: b.a3, hr: b.hr, dh: b.dh, iz: b.iz, dQ: b.dQ, ek: b.ek},
-							model.it),
-						iz: b.iz,
-						ap: b.ap,
-						dQ: b.dQ,
-						ek: b.ek
+								$elm$core$Basics$eq(b.f_)),
+							{a4: b.a4, fo: b.fo, dJ: b.dJ, f_: b.f_, cT: b.cT, eT: b.eT},
+							model.i_),
+						f_: b.f_,
+						ac: b.ac,
+						cT: b.cT,
+						eT: b.eT
 					}),
 				_Utils_ap(effects, commentBarEffects));
 		} else {
@@ -17473,23 +18347,23 @@ var $author$project$Message$Effects$CheckIsVisible = function (a) {
 	return {$: 61, a: a};
 };
 var $author$project$Views$CommentBar$getContent = function (model) {
-	var _v0 = model.kt;
+	var _v0 = model.dg;
 	switch (_v0.$) {
 		case 0:
 			var content = _v0.a;
 			return content;
 		case 1:
-			var content = _v0.a.hn;
+			var content = _v0.a.h_;
 			return content;
 		default:
-			var content = _v0.a.hn;
+			var content = _v0.a.h_;
 			return content;
 	}
 };
 var $author$project$Build$Header$Header$historyItem = function (model) {
 	return {
-		a3: function () {
-			var _v0 = model.a3;
+		a4: function () {
+			var _v0 = model.a4;
 			if (!_v0.$) {
 				var comment = _v0.a;
 				return comment;
@@ -17498,11 +18372,11 @@ var $author$project$Build$Header$Header$historyItem = function (model) {
 				return $author$project$Views$CommentBar$getContent(commentBar);
 			}
 		}(),
-		hr: model.hr,
-		dh: model.dh,
-		iz: model.iz,
-		dQ: model.dQ,
-		ek: model.ek
+		fo: model.fo,
+		dJ: model.dJ,
+		f_: model.f_,
+		cT: model.cT,
+		eT: model.eT
 	};
 };
 var $elm$core$List$any = F2(
@@ -17542,40 +18416,40 @@ var $author$project$Build$Header$Header$handleHistoryFetched = F2(
 		var newModel = _Utils_update(
 			model,
 			{
-				h6: false,
-				it: _Utils_ap(
-					model.it,
+				iF: false,
+				i_: _Utils_ap(
+					model.i_,
 					A2(
 						$elm$core$List$map,
 						function (b) {
-							return {a3: b.a3, hr: b.hr, dh: b.dh, iz: b.iz, dQ: b.dQ, ek: b.ek};
+							return {a4: b.a4, fo: b.fo, dJ: b.dJ, f_: b.f_, cT: b.cT, eT: b.eT};
 						},
-						history.hn)),
-				bW: history.jF.bW
+						history.h_)),
+				b2: history.j9.b2
 			});
-		var _v1 = model.ap;
+		var _v1 = model.ac;
 		if (!_v1.$) {
 			var job = _v1.a;
 			return A2(
 				$elm$core$List$member,
 				$author$project$Build$Header$Header$historyItem(model),
-				newModel.it) ? _Utils_Tuple2(
+				newModel.i_) ? _Utils_Tuple2(
 				newModel,
 				_Utils_ap(
 					effects,
 					_List_fromArray(
 						[
 							$author$project$Message$Effects$CheckIsVisible(
-							$elm$core$String$fromInt(model.iz))
+							$elm$core$String$fromInt(model.f_))
 						]))) : _Utils_Tuple2(
 				_Utils_update(
 					newModel,
-					{h6: true}),
+					{iF: true}),
 				_Utils_ap(
 					effects,
 					_List_fromArray(
 						[
-							A2($author$project$Message$Effects$FetchBuildHistory, job, history.jF.bW)
+							A2($author$project$Message$Effects$FetchBuildHistory, job, history.j9.b2)
 						])));
 		} else {
 			return _Utils_Tuple2(newModel, effects);
@@ -17610,8 +18484,8 @@ var $author$project$Views$CommentBar$saveCallback = F2(
 		return _Utils_update(
 			model,
 			{
-				kt: function () {
-					var _v1 = _Utils_Tuple2(result, model.kt);
+				dg: function () {
+					var _v1 = _Utils_Tuple2(result, model.dg);
 					if (_v1.a) {
 						switch (_v1.b.$) {
 							case 0:
@@ -17621,7 +18495,7 @@ var $author$project$Views$CommentBar$saveCallback = F2(
 								return $author$project$Views$CommentBar$Editing(
 									_Utils_update(
 										state,
-										{g7: content}));
+										{hK: content}));
 							default:
 								return $author$project$Views$CommentBar$Viewing(content);
 						}
@@ -17661,11 +18535,11 @@ var $author$project$Build$Header$Header$handleCallback = F2(
 					var result = callback.c;
 					var savedSuccessfully = $elm_community$maybe_extra$Maybe$Extra$isJust(
 						$elm$core$Result$toMaybe(result));
-					var updatedComment = _Utils_eq(model.iz, id) ? _Utils_update(
+					var updatedComment = _Utils_eq(model.f_, id) ? _Utils_update(
 						model,
 						{
-							a3: function () {
-								var _v2 = model.a3;
+							a4: function () {
+								var _v2 = model.a4;
 								if (!_v2.$) {
 									return $author$project$Build$Header$Models$Hidden(savedComment);
 								} else {
@@ -17681,20 +18555,20 @@ var $author$project$Build$Header$Header$handleCallback = F2(
 					var updatedHistory = _Utils_update(
 						updatedComment,
 						{
-							it: A3(
+							i_: A3(
 								$elm_community$list_extra$List$Extra$updateIf,
 								A2(
 									$elm$core$Basics$composeR,
 									function ($) {
-										return $.iz;
+										return $.f_;
 									},
 									$elm$core$Basics$eq(id)),
 								function (b) {
 									return _Utils_update(
 										b,
-										{a3: savedComment});
+										{a4: savedComment});
 								},
-								model.it)
+								model.i_)
 						});
 					return _Utils_Tuple2(updatedHistory, effects);
 				case 3:
@@ -17704,7 +18578,7 @@ var $author$project$Build$Header$Header$handleCallback = F2(
 							_Utils_update(
 								model,
 								{
-									it: $elm$core$List$reverse(
+									i_: $elm$core$List$reverse(
 										A2(
 											$elm$core$List$sortWith,
 											F2(
@@ -17728,13 +18602,13 @@ var $author$project$Build$Header$Header$handleCallback = F2(
 																		return x;
 																	}
 																}),
-															$author$project$Build$Header$Header$buildName(n.dQ),
-															$author$project$Build$Header$Header$buildName(m.dQ)));
+															$author$project$Build$Header$Header$buildName(n.cT),
+															$author$project$Build$Header$Header$buildName(m.cT)));
 												}),
 											A2(
 												$elm$core$List$cons,
-												{a3: b.a3, hr: b.hr, dh: b.dh, iz: b.iz, dQ: b.dQ, ek: b.ek},
-												model.it)))
+												{a4: b.a4, fo: b.fo, dJ: b.dJ, f_: b.f_, cT: b.cT, eT: b.eT},
+												model.i_)))
 								}),
 							_Utils_ap(
 								effects,
@@ -17742,7 +18616,7 @@ var $author$project$Build$Header$Header$handleCallback = F2(
 									[
 										$author$project$Message$Effects$NavigateTo(
 										$author$project$Routes$toString(
-											A3($author$project$Routes$buildRoute, b.iz, b.dQ, model.ap)))
+											A3($author$project$Routes$buildRoute, b.f_, b.cT, model.ac)))
 									])));
 					} else {
 						break _v1$5;
@@ -17758,7 +18632,7 @@ var $author$project$Build$Header$Header$handleCallback = F2(
 						return _Utils_Tuple2(
 							_Utils_update(
 								model,
-								{h6: false}),
+								{iF: false}),
 							effects);
 					}
 				default:
@@ -17841,39 +18715,39 @@ var $vito$elm_ansi$Ansi$Log$Cooked = 1;
 var $author$project$Build$StepTree$Models$StepStatePending = 0;
 var $vito$elm_ansi$Ansi$Log$init = function (ldisc) {
 	return {
-		a6: _List_Nil,
-		a7: $elm$core$Maybe$Nothing,
-		dN: ldisc,
-		fD: $elm$core$Array$empty,
-		cI: {eN: 0, cM: 0},
-		b2: '',
-		cQ: $elm$core$Maybe$Nothing,
-		kw: {gW: $elm$core$Maybe$Nothing, cg: false, a0: false, cm: false, bP: $elm$core$Maybe$Nothing, co: false, cp: false, bU: false, cu: false, c1: false}
+		a7: _List_Nil,
+		a8: $elm$core$Maybe$Nothing,
+		eg: ldisc,
+		gf: $elm$core$Array$empty,
+		c0: {fk: 0, c4: 0},
+		ca: '',
+		c9: $elm$core$Maybe$Nothing,
+		k$: {hx: $elm$core$Maybe$Nothing, cv: false, a1: false, cD: false, bX: $elm$core$Maybe$Nothing, cF: false, cG: false, b0: false, cM: false, dn: false}
 	};
 };
 var $author$project$Build$StepTree$StepTree$constructStep = function (_v0) {
-	var id = _v0.iz;
+	var id = _v0.f_;
 	var step = _v0.C;
 	return {
-		eJ: step,
-		hc: false,
-		hQ: $elm$core$Maybe$Nothing,
-		hX: false,
-		dl: $elm$core$Dict$empty,
-		e8: $elm$core$Maybe$Nothing,
-		iz: id,
-		iA: $elm$core$Maybe$Nothing,
-		iB: $elm$core$Maybe$Nothing,
-		iF: false,
-		iG: $elm$core$Maybe$Nothing,
-		dP: $vito$elm_ansi$Ansi$Log$init(1),
-		jg: _List_Nil,
-		kn: _List_Nil,
-		kr: $elm$core$Maybe$Nothing,
-		kt: 0,
-		gx: $author$project$Build$StepTree$Models$Auto,
-		gC: $elm$core$Dict$empty,
-		er: $elm$core$Maybe$Nothing
+		fg: step,
+		hP: false,
+		io: $elm$core$Maybe$Nothing,
+		iv: false,
+		dP: $elm$core$Dict$empty,
+		fK: $elm$core$Maybe$Nothing,
+		f_: id,
+		i4: $elm$core$Maybe$Nothing,
+		i5: $elm$core$Maybe$Nothing,
+		i9: false,
+		ja: $elm$core$Maybe$Nothing,
+		ei: $vito$elm_ansi$Ansi$Log$init(1),
+		jL: _List_Nil,
+		kS: _List_Nil,
+		kX: $elm$core$Maybe$Nothing,
+		dg: 0,
+		g9: $author$project$Build$StepTree$Models$Auto,
+		hf: $elm$core$Dict$empty,
+		eZ: $elm$core$Maybe$Nothing
 	};
 };
 var $elm$core$Array$fromListHelp = F3(
@@ -17932,8 +18806,8 @@ var $author$project$Concourse$mapBuildPlan = F2(
 						if (imagePlans.$ === 1) {
 							return _List_Nil;
 						} else {
-							var check = imagePlans.a.hd;
-							var get = imagePlans.a.ii;
+							var check = imagePlans.a.hQ;
+							var get = imagePlans.a.iP;
 							return _Utils_ap(
 								A2($author$project$Concourse$mapBuildPlan, fn, check),
 								A2($author$project$Concourse$mapBuildPlan, fn, get));
@@ -17943,8 +18817,8 @@ var $author$project$Concourse$mapBuildPlan = F2(
 						if (imagePlans.$ === 1) {
 							return _List_Nil;
 						} else {
-							var check = imagePlans.a.hd;
-							var get = imagePlans.a.ii;
+							var check = imagePlans.a.hQ;
+							var get = imagePlans.a.iP;
 							return _Utils_ap(
 								A2($author$project$Concourse$mapBuildPlan, fn, check),
 								A2($author$project$Concourse$mapBuildPlan, fn, get));
@@ -17954,8 +18828,8 @@ var $author$project$Concourse$mapBuildPlan = F2(
 						if (imagePlans.$ === 1) {
 							return _List_Nil;
 						} else {
-							var check = imagePlans.a.hd;
-							var get = imagePlans.a.ii;
+							var check = imagePlans.a.hQ;
+							var get = imagePlans.a.iP;
 							return _Utils_ap(
 								A2($author$project$Concourse$mapBuildPlan, fn, check),
 								A2($author$project$Concourse$mapBuildPlan, fn, get));
@@ -17977,7 +18851,7 @@ var $author$project$Concourse$mapBuildPlan = F2(
 							$author$project$Concourse$mapBuildPlan(fn),
 							$elm$core$Array$toList(plans));
 					case 11:
-						var steps = _v0.a.kv;
+						var steps = _v0.a.k_;
 						return A2(
 							$elm$core$List$concatMap,
 							$author$project$Concourse$mapBuildPlan(fn),
@@ -18045,7 +18919,7 @@ var $author$project$Build$StepTree$StepTree$expand = F3(
 		return _Utils_update(
 			step,
 			{
-				hX: function () {
+				iv: function () {
 					switch (hl.$) {
 						case 0:
 							return false;
@@ -18057,7 +18931,7 @@ var $author$project$Build$StepTree$StepTree$expand = F3(
 								A2(
 									$author$project$Concourse$mapBuildPlan,
 									function ($) {
-										return $.iz;
+										return $.f_;
 									},
 									plan));
 						default:
@@ -18068,7 +18942,7 @@ var $author$project$Build$StepTree$StepTree$expand = F3(
 								A2(
 									$author$project$Concourse$mapBuildPlan,
 									function ($) {
-										return $.iz;
+										return $.f_;
 									},
 									plan));
 					}
@@ -18082,14 +18956,14 @@ var $elm$core$Dict$singleton = F2(
 var $author$project$Build$StepTree$StepTree$initBottom = F6(
 	function (buildId, hl, resources, plan, construct, step) {
 		return {
-			g0: buildId,
-			is: hl,
-			j2: resources,
-			kv: A2(
+			hD: buildId,
+			iZ: hl,
+			kx: resources,
+			k_: A2(
 				$elm$core$Dict$singleton,
-				plan.iz,
+				plan.f_,
 				A3($author$project$Build$StepTree$StepTree$expand, plan, hl, step)),
-			kY: construct(plan.iz)
+			ls: construct(plan.f_)
 		};
 	});
 var $elm$core$Elm$JsArray$map = _JsArray_map;
@@ -18125,7 +18999,7 @@ var $author$project$Build$StepTree$StepTree$planContainsID = F2(
 			A2(
 				$author$project$Concourse$mapBuildPlan,
 				function ($) {
-					return $.iz;
+					return $.f_;
 				},
 				plan));
 	});
@@ -18149,8 +19023,8 @@ var $author$project$Build$StepTree$StepTree$isFirstOccurrence = F2(
 			if (!resources.b) {
 				return false;
 			} else {
-				var name = resources.a.dQ;
-				var firstOccurrence = resources.a.$8;
+				var name = resources.a.cT;
+				var firstOccurrence = resources.a.iM;
 				var rest = resources.b;
 				if (_Utils_eq(name, step)) {
 					return firstOccurrence;
@@ -18169,8 +19043,8 @@ var $author$project$Build$StepTree$StepTree$setupGetStep = F4(
 		return _Utils_update(
 			step,
 			{
-				hc: A2($author$project$Build$StepTree$StepTree$isFirstOccurrence, resources.iJ, name),
-				er: version
+				hP: A2($author$project$Build$StepTree$StepTree$isFirstOccurrence, resources.jd, name),
+				eZ: version
 			});
 	});
 var $author$project$Build$StepTree$Models$Manual = function (a) {
@@ -18232,11 +19106,11 @@ var $author$project$Build$StepTree$Models$updateAt = F3(
 		return _Utils_update(
 			model,
 			{
-				kv: A3(
+				k_: A3(
 					$elm$core$Dict$update,
 					id,
 					$elm$core$Maybe$map(update),
-					model.kv)
+					model.k_)
 			});
 	});
 var $author$project$Build$StepTree$StepTree$init = F4(
@@ -18251,7 +19125,7 @@ var $author$project$Build$StepTree$StepTree$init = F4(
 				return A4(
 					$author$project$Build$StepTree$StepTree$setImagePlans,
 					buildId,
-					step.iz,
+					step.f_,
 					imagePlans,
 					A6($author$project$Build$StepTree$StepTree$initBottom, buildId, hl, resources, plan, $author$project$Build$StepTree$Models$Check, step));
 			case 5:
@@ -18261,7 +19135,7 @@ var $author$project$Build$StepTree$StepTree$init = F4(
 				return A4(
 					$author$project$Build$StepTree$StepTree$setImagePlans,
 					buildId,
-					step.iz,
+					step.f_,
 					imagePlans,
 					A6(
 						$author$project$Build$StepTree$StepTree$initBottom,
@@ -18278,7 +19152,7 @@ var $author$project$Build$StepTree$StepTree$init = F4(
 				return A4(
 					$author$project$Build$StepTree$StepTree$setImagePlans,
 					buildId,
-					step.iz,
+					step.f_,
 					imagePlans,
 					A6($author$project$Build$StepTree$StepTree$initBottom, buildId, hl, resources, plan, $author$project$Build$StepTree$Models$Put, step));
 			case 3:
@@ -18291,10 +19165,10 @@ var $author$project$Build$StepTree$StepTree$init = F4(
 				return A6($author$project$Build$StepTree$StepTree$initBottom, buildId, hl, resources, plan, $author$project$Build$StepTree$Models$LoadVar, step);
 			case 9:
 				var plans = _v3.a;
-				return A7($author$project$Build$StepTree$StepTree$initMultiStep, buildId, hl, resources, plan.iz, $author$project$Build$StepTree$Models$Aggregate, plans, $elm$core$Maybe$Nothing);
+				return A7($author$project$Build$StepTree$StepTree$initMultiStep, buildId, hl, resources, plan.f_, $author$project$Build$StepTree$Models$Aggregate, plans, $elm$core$Maybe$Nothing);
 			case 10:
 				var plans = _v3.a;
-				return A7($author$project$Build$StepTree$StepTree$initMultiStep, buildId, hl, resources, plan.iz, $author$project$Build$StepTree$Models$InParallel, plans, $elm$core$Maybe$Nothing);
+				return A7($author$project$Build$StepTree$StepTree$initMultiStep, buildId, hl, resources, plan.f_, $author$project$Build$StepTree$Models$InParallel, plans, $elm$core$Maybe$Nothing);
 			case 12:
 				var plans = _v3.a;
 				return A7(
@@ -18302,17 +19176,17 @@ var $author$project$Build$StepTree$StepTree$init = F4(
 					buildId,
 					hl,
 					resources,
-					plan.iz,
-					$author$project$Build$StepTree$Models$Do(plan.iz),
+					plan.f_,
+					$author$project$Build$StepTree$Models$Do(plan.f_),
 					plans,
 					$elm$core$Maybe$Just(step));
 			case 11:
-				var vars = _v3.a.cd;
-				var steps = _v3.a.kv;
+				var vars = _v3.a.cp;
+				var steps = _v3.a.k_;
 				var values = A2(
 					$elm$core$List$map,
 					function ($) {
-						return $.k3;
+						return $.lA;
 					},
 					steps);
 				var plans = A2(
@@ -18340,11 +19214,11 @@ var $author$project$Build$StepTree$StepTree$init = F4(
 						function (plan_) {
 							return A2(
 								$author$project$Build$StepTree$Models$updateAt,
-								plan_.iz,
+								plan_.f_,
 								function (s) {
 									return _Utils_update(
 										s,
-										{hX: true});
+										{iv: true});
 								});
 						},
 						model,
@@ -18355,16 +19229,16 @@ var $author$project$Build$StepTree$StepTree$init = F4(
 						buildId,
 						hl,
 						resources,
-						plan.iz,
-						A3($author$project$Build$StepTree$Models$Across, plan.iz, vars, values),
+						plan.f_,
+						A3($author$project$Build$StepTree$Models$Across, plan.f_, vars, values),
 						$elm$core$Array$fromList(plans),
 						$elm$core$Maybe$Just(
 							function (s) {
 								return _Utils_update(
 									s,
 									{
-										hX: !$elm$core$Dict$isEmpty(expandedHeaders),
-										dl: expandedHeaders
+										iv: !$elm$core$Dict$isEmpty(expandedHeaders),
+										dP: expandedHeaders
 									});
 							}(step))));
 			case 19:
@@ -18374,15 +19248,15 @@ var $author$project$Build$StepTree$StepTree$init = F4(
 					buildId,
 					hl,
 					resources,
-					plan.iz,
-					$author$project$Build$StepTree$Models$Retry(plan.iz),
+					plan.f_,
+					$author$project$Build$StepTree$Models$Retry(plan.f_),
 					plans,
 					$elm$core$Maybe$Just(
 						function (s) {
 							return _Utils_update(
 								s,
 								{
-									gx: A2(
+									g9: A2(
 										$author$project$Build$StepTree$StepTree$startingTab,
 										hl,
 										$elm$core$Array$toList(plans))
@@ -18418,12 +19292,12 @@ var $author$project$Build$StepTree$StepTree$initHookedStep = F5(
 		var stepModel = A4($author$project$Build$StepTree$StepTree$init, buildId, hl, resources, hookedPlan.C);
 		var hookModel = A4($author$project$Build$StepTree$StepTree$init, buildId, hl, resources, hookedPlan.B);
 		return {
-			g0: buildId,
-			is: hl,
-			j2: resources,
-			kv: A2($elm$core$Dict$union, stepModel.kv, hookModel.kv),
-			kY: create(
-				{B: hookModel.kY, C: stepModel.kY})
+			hD: buildId,
+			iZ: hl,
+			kx: resources,
+			k_: A2($elm$core$Dict$union, stepModel.k_, hookModel.k_),
+			ls: create(
+				{B: hookModel.ls, C: stepModel.ls})
 		};
 	});
 var $author$project$Build$StepTree$StepTree$initMultiStep = F7(
@@ -18443,46 +19317,46 @@ var $author$project$Build$StepTree$StepTree$initMultiStep = F7(
 		var trees = A2(
 			$elm$core$Array$map,
 			function ($) {
-				return $.kY;
+				return $.ls;
 			},
 			inited);
 		return {
-			g0: buildId,
-			is: hl,
-			j2: resources,
-			kv: A3(
+			hD: buildId,
+			iZ: hl,
+			kx: resources,
+			k_: A3(
 				$elm$core$Array$foldr,
 				$elm$core$Dict$union,
 				selfFoci,
 				A2(
 					$elm$core$Array$map,
 					function ($) {
-						return $.kv;
+						return $.k_;
 					},
 					inited)),
-			kY: constructor(trees)
+			ls: constructor(trees)
 		};
 	});
 var $author$project$Build$StepTree$StepTree$initWrappedStep = F5(
 	function (buildId, hl, resources, create, plan) {
 		var _v1 = A4($author$project$Build$StepTree$StepTree$init, buildId, hl, resources, plan);
-		var tree = _v1.kY;
-		var steps = _v1.kv;
+		var tree = _v1.ls;
+		var steps = _v1.k_;
 		return {
-			g0: buildId,
-			is: hl,
-			j2: resources,
-			kv: steps,
-			kY: create(tree)
+			hD: buildId,
+			iZ: hl,
+			kx: resources,
+			k_: steps,
+			ls: create(tree)
 		};
 	});
 var $author$project$Build$StepTree$StepTree$setImageCheck = F4(
 	function (buildId, stepId, subPlan, model) {
-		var sub = A4($author$project$Build$StepTree$StepTree$init, buildId, model.is, model.j2, subPlan);
+		var sub = A4($author$project$Build$StepTree$StepTree$init, buildId, model.iZ, model.kx, subPlan);
 		return _Utils_update(
 			model,
 			{
-				kv: A3(
+				k_: A3(
 					$elm$core$Dict$update,
 					stepId,
 					$elm$core$Maybe$map(
@@ -18490,19 +19364,19 @@ var $author$project$Build$StepTree$StepTree$setImageCheck = F4(
 							return _Utils_update(
 								step,
 								{
-									iA: $elm$core$Maybe$Just(sub.kY)
+									i4: $elm$core$Maybe$Just(sub.ls)
 								});
 						}),
-					A2($elm$core$Dict$union, sub.kv, model.kv))
+					A2($elm$core$Dict$union, sub.k_, model.k_))
 			});
 	});
 var $author$project$Build$StepTree$StepTree$setImageGet = F4(
 	function (buildId, stepId, subPlan, model) {
-		var sub = A4($author$project$Build$StepTree$StepTree$init, buildId, model.is, model.j2, subPlan);
+		var sub = A4($author$project$Build$StepTree$StepTree$init, buildId, model.iZ, model.kx, subPlan);
 		return _Utils_update(
 			model,
 			{
-				kv: A3(
+				k_: A3(
 					$elm$core$Dict$update,
 					stepId,
 					$elm$core$Maybe$map(
@@ -18510,10 +19384,10 @@ var $author$project$Build$StepTree$StepTree$setImageGet = F4(
 							return _Utils_update(
 								step,
 								{
-									iB: $elm$core$Maybe$Just(sub.kY)
+									i5: $elm$core$Maybe$Just(sub.ls)
 								});
 						}),
-					A2($elm$core$Dict$union, sub.kv, model.kv))
+					A2($elm$core$Dict$union, sub.k_, model.k_))
 			});
 	});
 var $author$project$Build$StepTree$StepTree$setImagePlans = F4(
@@ -18521,8 +19395,8 @@ var $author$project$Build$StepTree$StepTree$setImagePlans = F4(
 		if (imagePlans.$ === 1) {
 			return model;
 		} else {
-			var check = imagePlans.a.hd;
-			var get = imagePlans.a.ii;
+			var check = imagePlans.a.hQ;
+			var get = imagePlans.a.iP;
 			return A4(
 				$author$project$Build$StepTree$StepTree$setImageGet,
 				buildId,
@@ -18543,16 +19417,11 @@ var $author$project$Build$Output$Output$planAndResourcesFetched = F3(
 			_Utils_update(
 				model,
 				{
-					hU: $elm$core$Maybe$Just(url),
-					kv: $elm$core$Maybe$Just(
-						A4($author$project$Build$StepTree$StepTree$init, model.g0, model.is, resources, plan))
+					is: $elm$core$Maybe$Just(url),
+					k_: $elm$core$Maybe$Just(
+						A4($author$project$Build$StepTree$StepTree$init, model.hD, model.iZ, resources, plan))
 				}),
 			_List_Nil);
-	});
-var $elm$core$Set$remove = F2(
-	function (key, _v0) {
-		var dict = _v0;
-		return A2($elm$core$Dict$remove, key, dict);
 	});
 var $author$project$Build$Build$updateOutput = F2(
 	function (updater, _v0) {
@@ -18597,16 +19466,16 @@ var $author$project$Build$Build$handleCallback = F2(
 							} else {
 								var err = action.a.a;
 								if (err.$ === 3) {
-									var status = err.a.ek;
-									return (status.eM === 401) ? _Utils_Tuple2(
+									var status = err.a.eT;
+									return (status.fj === 401) ? _Utils_Tuple2(
 										model,
 										_Utils_ap(
 											effects,
 											_List_fromArray(
-												[$author$project$Message$Effects$RedirectToLogin]))) : ((status.eM === 404) ? _Utils_Tuple2(
+												[$author$project$Message$Effects$RedirectToLogin]))) : ((status.fj === 404) ? _Utils_Tuple2(
 										_Utils_update(
 											model,
-											{dT: true, br: $elm$core$Maybe$Nothing}),
+											{el: true, bt: $elm$core$Maybe$Nothing}),
 										effects) : _Utils_Tuple2(model, effects));
 								} else {
 									return _Utils_Tuple2(model, effects);
@@ -18622,18 +19491,18 @@ var $author$project$Build$Build$handleCallback = F2(
 							if (!action.b.$) {
 								var buildId = action.a;
 								var buildPrep = action.b.a;
-								return _Utils_eq(buildId, model.iz) ? A2(
+								return _Utils_eq(buildId, model.f_) ? A2(
 									$author$project$Build$Build$handleBuildPrepFetched,
 									buildPrep,
 									_Utils_Tuple2(model, effects)) : _Utils_Tuple2(model, effects);
 							} else {
 								var err = action.b.a;
 								if (err.$ === 3) {
-									var status = err.a.ek;
-									return (status.eM === 401) ? _Utils_Tuple2(
+									var status = err.a.eT;
+									return (status.fj === 401) ? _Utils_Tuple2(
 										_Utils_update(
 											model,
-											{bG: false}),
+											{bI: false}),
 										effects) : _Utils_Tuple2(model, effects);
 								} else {
 									return _Utils_Tuple2(model, effects);
@@ -18654,9 +19523,9 @@ var $author$project$Build$Build$handleCallback = F2(
 												[
 													$author$project$Message$Effects$OpenBuildEventStream(
 													{
-														hV: _List_fromArray(
+														it: _List_fromArray(
 															['end', 'event']),
-														k$: A2(
+														lw: A2(
 															$author$project$Api$Endpoints$toString,
 															_List_Nil,
 															A2($author$project$Api$Endpoints$Build, buildId, 5))
@@ -18666,16 +19535,16 @@ var $author$project$Build$Build$handleCallback = F2(
 							} else {
 								var err = action.b.a;
 								if (err.$ === 3) {
-									var status = err.a.ek;
-									var isAborted = model.ek === 5;
-									return ((status.eM === 404) && isAborted) ? _Utils_Tuple2(
+									var status = err.a.eT;
+									var isAborted = model.eT === 5;
+									return ((status.fj === 404) && isAborted) ? _Utils_Tuple2(
 										_Utils_update(
 											model,
 											{N: $author$project$Build$Header$Models$Cancelled}),
-										effects) : ((status.eM === 401) ? _Utils_Tuple2(
+										effects) : ((status.fj === 401) ? _Utils_Tuple2(
 										_Utils_update(
 											model,
-											{bG: false}),
+											{bI: false}),
 										effects) : _Utils_Tuple2(model, effects));
 								} else {
 									return _Utils_Tuple2(model, effects);
@@ -18687,7 +19556,7 @@ var $author$project$Build$Build$handleCallback = F2(
 								return _Utils_Tuple2(
 									_Utils_update(
 										model,
-										{df: job.df}),
+										{dH: job.dH}),
 									effects);
 							} else {
 								return _Utils_Tuple2(model, effects);
@@ -18698,13 +19567,13 @@ var $author$project$Build$Build$handleCallback = F2(
 								return _Utils_Tuple2(
 									_Utils_update(
 										model,
-										{gP: false, gR: reviews}),
+										{ds: false, e3: reviews}),
 									effects);
 							} else {
 								return _Utils_Tuple2(
 									_Utils_update(
 										model,
-										{gP: true}),
+										{ds: true}),
 									effects);
 							}
 						case 48:
@@ -18714,13 +19583,13 @@ var $author$project$Build$Build$handleCallback = F2(
 									_Utils_update(
 										model,
 										{
-											k4: A2($elm$core$Set$remove, findingId, model.k4)
+											cq: A2($elm$core$Set$remove, findingId, model.cq)
 										}),
 									_Utils_ap(
 										effects,
 										_List_fromArray(
 											[
-												$author$project$Message$Effects$FetchBuildAgentReviews(model.iz)
+												$author$project$Message$Effects$FetchBuildAgentReviews(model.f_)
 											])));
 							} else {
 								var findingId = action.a;
@@ -18728,7 +19597,7 @@ var $author$project$Build$Build$handleCallback = F2(
 									_Utils_update(
 										model,
 										{
-											k4: A2($elm$core$Set$insert, findingId, model.k4)
+											cq: A2($elm$core$Set$insert, findingId, model.cq)
 										}),
 									effects);
 							}
@@ -18747,7 +19616,7 @@ var $author$project$Message$Effects$RenderCausality = function (a) {
 var $author$project$Causality$Causality$TooManyNodes = 1;
 var $elm_community$graph$Graph$Edge = F3(
 	function (from, to, label) {
-		return {ih: from, fy: label, kO: to};
+		return {iO: from, f9: label, li: to};
 	});
 var $author$project$Causality$Causality$Job = F2(
 	function (a, b) {
@@ -18755,7 +19624,7 @@ var $author$project$Causality$Causality$Job = F2(
 	});
 var $elm_community$graph$Graph$Node = F2(
 	function (id, label) {
-		return {iz: id, fy: label};
+		return {f_: id, f9: label};
 	});
 var $author$project$Causality$Causality$Resource = F2(
 	function (a, b) {
@@ -18763,7 +19632,7 @@ var $author$project$Causality$Causality$Resource = F2(
 	});
 var $elm_community$graph$Graph$NodeContext = F3(
 	function (node, incoming, outgoing) {
-		return {n: incoming, jn: node, m: outgoing};
+		return {n: incoming, jS: node, m: outgoing};
 	});
 var $elm_community$intdict$IntDict$Inner = function (a) {
 	return {$: 2, a: a};
@@ -18776,7 +19645,7 @@ var $elm_community$intdict$IntDict$size = function (dict) {
 			return 1;
 		default:
 			var i = dict.a;
-			return i.eb;
+			return i.eK;
 	}
 };
 var $elm_community$intdict$IntDict$inner = F3(
@@ -18792,10 +19661,10 @@ var $elm_community$intdict$IntDict$inner = F3(
 			} else {
 				return $elm_community$intdict$IntDict$Inner(
 					{
-						dM: l,
+						ef: l,
 						l: p,
-						d3: r,
-						eb: $elm_community$intdict$IntDict$size(l) + $elm_community$intdict$IntDict$size(r)
+						eB: r,
+						eK: $elm_community$intdict$IntDict$size(l) + $elm_community$intdict$IntDict$size(r)
 					});
 			}
 		}
@@ -18821,7 +19690,7 @@ var $elm_community$intdict$IntDict$isBranchingBitSet = function (p) {
 		$elm$core$Bitwise$xor($elm_community$intdict$IntDict$signBit),
 		A2(
 			$elm$core$Basics$composeR,
-			$elm$core$Bitwise$and(p.a1),
+			$elm$core$Bitwise$and(p.a2),
 			$elm$core$Basics$neq(0)));
 };
 var $elm_community$intdict$IntDict$higherBitMask = function (branchingBit) {
@@ -18832,7 +19701,7 @@ var $elm_community$intdict$IntDict$lcp = F2(
 		var branchingBit = $elm_community$intdict$IntDict$highestBitSet(x ^ y);
 		var mask = $elm_community$intdict$IntDict$higherBitMask(branchingBit);
 		var prefixBits = x & mask;
-		return {a1: branchingBit, ai: prefixBits};
+		return {a2: branchingBit, aj: prefixBits};
 	});
 var $elm_community$intdict$IntDict$Leaf = function (a) {
 	return {$: 1, a: a};
@@ -18840,13 +19709,13 @@ var $elm_community$intdict$IntDict$Leaf = function (a) {
 var $elm_community$intdict$IntDict$leaf = F2(
 	function (k, v) {
 		return $elm_community$intdict$IntDict$Leaf(
-			{i2: k, k2: v});
+			{jy: k, lz: v});
 	});
 var $elm_community$intdict$IntDict$prefixMatches = F2(
 	function (p, n) {
 		return _Utils_eq(
-			n & $elm_community$intdict$IntDict$higherBitMask(p.a1),
-			p.ai);
+			n & $elm_community$intdict$IntDict$higherBitMask(p.a2),
+			p.aj);
 	});
 var $elm_community$intdict$IntDict$update = F3(
 	function (key, alter, dict) {
@@ -18873,29 +19742,29 @@ var $elm_community$intdict$IntDict$update = F3(
 				return alteredNode($elm$core$Maybe$Nothing);
 			case 1:
 				var l = dict.a;
-				return _Utils_eq(l.i2, key) ? alteredNode(
-					$elm$core$Maybe$Just(l.k2)) : A2(
+				return _Utils_eq(l.jy, key) ? alteredNode(
+					$elm$core$Maybe$Just(l.lz)) : A2(
 					join,
 					_Utils_Tuple2(
 						key,
 						alteredNode($elm$core$Maybe$Nothing)),
-					_Utils_Tuple2(l.i2, dict));
+					_Utils_Tuple2(l.jy, dict));
 			default:
 				var i = dict.a;
 				return A2($elm_community$intdict$IntDict$prefixMatches, i.l, key) ? (A2($elm_community$intdict$IntDict$isBranchingBitSet, i.l, key) ? A3(
 					$elm_community$intdict$IntDict$inner,
 					i.l,
-					i.dM,
-					A3($elm_community$intdict$IntDict$update, key, alter, i.d3)) : A3(
+					i.ef,
+					A3($elm_community$intdict$IntDict$update, key, alter, i.eB)) : A3(
 					$elm_community$intdict$IntDict$inner,
 					i.l,
-					A3($elm_community$intdict$IntDict$update, key, alter, i.dM),
-					i.d3)) : A2(
+					A3($elm_community$intdict$IntDict$update, key, alter, i.ef),
+					i.eB)) : A2(
 					join,
 					_Utils_Tuple2(
 						key,
 						alteredNode($elm$core$Maybe$Nothing)),
-					_Utils_Tuple2(i.l.ai, dict));
+					_Utils_Tuple2(i.l.aj, dict));
 		}
 	});
 var $elm_community$intdict$IntDict$insert = F3(
@@ -18916,7 +19785,7 @@ var $elm_community$intdict$IntDict$get = F2(
 					return $elm$core$Maybe$Nothing;
 				case 1:
 					var l = dict.a;
-					return _Utils_eq(l.i2, key) ? $elm$core$Maybe$Just(l.k2) : $elm$core$Maybe$Nothing;
+					return _Utils_eq(l.jy, key) ? $elm$core$Maybe$Just(l.lz) : $elm$core$Maybe$Nothing;
 				default:
 					var i = dict.a;
 					if (!A2($elm_community$intdict$IntDict$prefixMatches, i.l, key)) {
@@ -18924,13 +19793,13 @@ var $elm_community$intdict$IntDict$get = F2(
 					} else {
 						if (A2($elm_community$intdict$IntDict$isBranchingBitSet, i.l, key)) {
 							var $temp$key = key,
-								$temp$dict = i.d3;
+								$temp$dict = i.eB;
 							key = $temp$key;
 							dict = $temp$dict;
 							continue get;
 						} else {
 							var $temp$key = key,
-								$temp$dict = i.dM;
+								$temp$dict = i.ef;
 							key = $temp$key;
 							dict = $temp$dict;
 							continue get;
@@ -18955,7 +19824,7 @@ var $elm_community$graph$Graph$fromNodesAndEdges = F2(
 			function (n) {
 				return A2(
 					$elm_community$intdict$IntDict$insert,
-					n.iz,
+					n.f_,
 					A3($elm_community$graph$Graph$NodeContext, n, $elm_community$intdict$IntDict$empty, $elm_community$intdict$IntDict$empty));
 			},
 			$elm_community$intdict$IntDict$empty,
@@ -18966,29 +19835,29 @@ var $elm_community$graph$Graph$fromNodesAndEdges = F2(
 					return _Utils_update(
 						ctx,
 						{
-							m: A3($elm_community$intdict$IntDict$insert, edge.kO, edge.fy, ctx.m)
+							m: A3($elm_community$intdict$IntDict$insert, edge.li, edge.f9, ctx.m)
 						});
 				};
 				var updateIncoming = function (ctx) {
 					return _Utils_update(
 						ctx,
 						{
-							n: A3($elm_community$intdict$IntDict$insert, edge.ih, edge.fy, ctx.n)
+							n: A3($elm_community$intdict$IntDict$insert, edge.iO, edge.f9, ctx.n)
 						});
 				};
 				return A3(
 					$elm_community$intdict$IntDict$update,
-					edge.kO,
+					edge.li,
 					$elm$core$Maybe$map(updateIncoming),
 					A3(
 						$elm_community$intdict$IntDict$update,
-						edge.ih,
+						edge.iO,
 						$elm$core$Maybe$map(updateOutgoing),
 						rep));
 			});
 		var addEdgeIfValid = F2(
 			function (edge, rep) {
-				return (A2($elm_community$intdict$IntDict$member, edge.ih, rep) && A2($elm_community$intdict$IntDict$member, edge.kO, rep)) ? A2(addEdge, edge, rep) : rep;
+				return (A2($elm_community$intdict$IntDict$member, edge.iO, rep) && A2($elm_community$intdict$IntDict$member, edge.li, rep)) ? A2(addEdge, edge, rep) : rep;
 			});
 		return A3($elm$core$List$foldl, addEdgeIfValid, nodeRep, edges_);
 	});
@@ -18999,9 +19868,9 @@ var $author$project$Causality$Causality$constructGraph = F2(
 			$elm$core$Dict$fromList,
 			$elm$core$List$map(
 				function (thing) {
-					return _Utils_Tuple2(thing.iz, thing);
+					return _Utils_Tuple2(thing.f_, thing);
 				}));
-		var resourceVersions = idPairs(causality.gg);
+		var resourceVersions = idPairs(causality.gU);
 		var jobEdges = A2(
 			$elm$core$List$concatMap,
 			function (build) {
@@ -19009,20 +19878,20 @@ var $author$project$Causality$Causality$constructGraph = F2(
 					$elm$core$List$map,
 					function (vId) {
 						return _Utils_Tuple2(
-							-build.fv,
+							-build.f6,
 							A2(
 								$elm$core$Maybe$withDefault,
 								0,
 								A2(
 									$elm$core$Maybe$map,
 									function ($) {
-										return $.ge;
+										return $.gS;
 									},
 									A2($elm$core$Dict$get, vId, resourceVersions))));
 					},
-					build.gf);
+					build.gT);
 			},
-			causality.eL);
+			causality.fi);
 		var fetchIds = F2(
 			function (fn, dict) {
 				return A2(
@@ -19034,53 +19903,53 @@ var $author$project$Causality$Causality$constructGraph = F2(
 					$elm$core$List$map(fn));
 			});
 		var convertVersion = function (_v4) {
-			var id = _v4.iz;
-			var version = _v4.er;
-			return {iz: id, er: version};
+			var id = _v4.f_;
+			var version = _v4.eZ;
+			return {f_: id, eZ: version};
 		};
 		var resourceNodes = A2(
 			$elm$core$List$map,
 			function (resource) {
 				return A2(
 					$elm_community$graph$Graph$Node,
-					resource.iz,
+					resource.f_,
 					A2(
 						$author$project$Causality$Causality$Resource,
-						resource.dQ,
+						resource.cT,
 						$elm$core$List$reverse(
 							A2(
 								$elm$core$List$sortBy,
 								function ($) {
-									return $.iz;
+									return $.f_;
 								},
-								A3(fetchIds, convertVersion, resourceVersions, resource.gf)))));
+								A3(fetchIds, convertVersion, resourceVersions, resource.gT)))));
 			},
-			causality.j2);
+			causality.kx);
 		var convertBuild = function (_v3) {
-			var id = _v3.iz;
-			var name = _v3.dQ;
-			var status = _v3.ek;
-			return {iz: id, dQ: name, ek: status};
+			var id = _v3.f_;
+			var name = _v3.cT;
+			var status = _v3.eT;
+			return {f_: id, cT: name, eT: status};
 		};
-		var builds = idPairs(causality.eL);
+		var builds = idPairs(causality.fi);
 		var jobNodes = A2(
 			$elm$core$List$map,
 			function (job) {
 				return A2(
 					$elm_community$graph$Graph$Node,
-					-job.iz,
+					-job.f_,
 					A2(
 						$author$project$Causality$Causality$Job,
-						job.dQ,
+						job.cT,
 						$elm$core$List$reverse(
 							A2(
 								$elm$core$List$sortBy,
 								function ($) {
-									return $.dQ;
+									return $.cT;
 								},
-								A3(fetchIds, convertBuild, builds, job.eI)))));
+								A3(fetchIds, convertBuild, builds, job.ff)))));
 			},
-			causality.i1);
+			causality.jx);
 		var nodes = _Utils_ap(resourceNodes, jobNodes);
 		var resourceEdges = A2(
 			$elm$core$List$concatMap,
@@ -19089,20 +19958,20 @@ var $author$project$Causality$Causality$constructGraph = F2(
 					$elm$core$List$map,
 					function (bId) {
 						return _Utils_Tuple2(
-							version.ge,
+							version.gS,
 							A2(
 								$elm$core$Maybe$withDefault,
 								0,
 								A2(
 									$elm$core$Maybe$map,
 									function (b) {
-										return -b.fv;
+										return -b.f6;
 									},
 									A2($elm$core$Dict$get, bId, builds))));
 					},
-					version.eI);
+					version.ff);
 			},
-			causality.gg);
+			causality.gU);
 		var pairs = _Utils_ap(resourceEdges, jobEdges);
 		var edges = function () {
 			if (!direction) {
@@ -19224,12 +20093,12 @@ var $elm_community$intdict$IntDict$foldl = F3(
 					return acc;
 				case 1:
 					var l = dict.a;
-					return A3(f, l.i2, l.k2, acc);
+					return A3(f, l.jy, l.lz, acc);
 				default:
 					var i = dict.a;
 					var $temp$f = f,
-						$temp$acc = A3($elm_community$intdict$IntDict$foldl, f, acc, i.dM),
-						$temp$dict = i.d3;
+						$temp$acc = A3($elm_community$intdict$IntDict$foldl, f, acc, i.ef),
+						$temp$dict = i.eB;
 					f = $temp$f;
 					acc = $temp$acc;
 					dict = $temp$dict;
@@ -19253,7 +20122,7 @@ var $elm_community$graph$Graph$edges = function (graph) {
 				F2(
 					function (node2, e) {
 						return $elm$core$List$cons(
-							{ih: node1, fy: e, kO: node2});
+							{iO: node1, f9: e, li: node2});
 					}),
 				ctx.m);
 		});
@@ -19272,12 +20141,12 @@ var $elm_community$intdict$IntDict$foldr = F3(
 					return acc;
 				case 1:
 					var l = dict.a;
-					return A3(f, l.i2, l.k2, acc);
+					return A3(f, l.jy, l.lz, acc);
 				default:
 					var i = dict.a;
 					var $temp$f = f,
-						$temp$acc = A3($elm_community$intdict$IntDict$foldr, f, acc, i.d3),
-						$temp$dict = i.dM;
+						$temp$acc = A3($elm_community$intdict$IntDict$foldr, f, acc, i.eB),
+						$temp$dict = i.ef;
 					f = $temp$f;
 					acc = $temp$acc;
 					dict = $temp$dict;
@@ -19303,7 +20172,7 @@ var $elm_community$graph$Graph$nodes = A2(
 		$elm_community$intdict$IntDict$values,
 		$elm$core$List$map(
 			function ($) {
-				return $.jn;
+				return $.jS;
 			})));
 var $author$project$Causality$DOT$outputWithStylesAndAttributes = F4(
 	function (styles, nodeAttrs, edgeAttrs, graph) {
@@ -19335,14 +20204,14 @@ var $author$project$Causality$DOT$outputWithStylesAndAttributes = F4(
 		var edges = function () {
 			var compareEdge = F2(
 				function (a, b) {
-					var _v1 = A2($elm$core$Basics$compare, a.ih, b.ih);
+					var _v1 = A2($elm$core$Basics$compare, a.iO, b.iO);
 					switch (_v1) {
 						case 0:
 							return 0;
 						case 2:
 							return 2;
 						default:
-							return A2($elm$core$Basics$compare, a.kO, b.kO);
+							return A2($elm$core$Basics$compare, a.li, b.li);
 					}
 				});
 			return A2(
@@ -19366,16 +20235,16 @@ var $author$project$Causality$DOT$outputWithStylesAndAttributes = F4(
 			return $elm$core$Dict$isEmpty(d) ? '' : (' [' + (attrAssocs(d) + ']'));
 		};
 		var edge = function (e) {
-			return '  ' + ($elm$core$String$fromInt(e.ih) + (' -> ' + ($elm$core$String$fromInt(e.kO) + makeAttrs(
-				edgeAttrs(e.fy)))));
+			return '  ' + ($elm$core$String$fromInt(e.iO) + (' -> ' + ($elm$core$String$fromInt(e.li) + makeAttrs(
+				edgeAttrs(e.f9)))));
 		};
 		var edgesString = A2(
 			$elm$core$String$join,
 			'\n',
 			A2($elm$core$List$map, edge, edges));
 		var node = function (n) {
-			return '  ' + ($elm$core$String$fromInt(n.iz) + makeAttrs(
-				nodeAttrs(n.fy)));
+			return '  ' + ($elm$core$String$fromInt(n.f_) + makeAttrs(
+				nodeAttrs(n.f9)));
 		};
 		var nodesString = A2(
 			$elm$core$String$join,
@@ -19387,10 +20256,10 @@ var $author$project$Causality$DOT$outputWithStylesAndAttributes = F4(
 			_List_fromArray(
 				[
 					'digraph G {',
-					'  rankdir=' + rankDirToString(styles.jW),
-					'  graph [' + (styles.bQ + ']'),
-					'  node [' + (styles.jn + ']'),
-					'  edge [' + (styles.hJ + ']'),
+					'  rankdir=' + rankDirToString(styles.kp),
+					'  graph [' + (styles.bY + ']'),
+					'  node [' + (styles.jS + ']'),
+					'  edge [' + (styles.ih + ']'),
 					'',
 					edgesString,
 					'',
@@ -19402,10 +20271,10 @@ var $author$project$Routes$resourceRoute = F2(
 	function (r, v) {
 		return $author$project$Routes$Resource(
 			{
-				dt: _List_Nil,
-				iz: {f2: r.f2, jL: r.jL, j1: r.j1, kD: r.kD},
-				bp: $elm$core$Maybe$Nothing,
-				er: v
+				dZ: _List_Nil,
+				f_: {ew: r.ew, gH: r.gH, kw: r.kw, k8: r.k8},
+				br: $elm$core$Maybe$Nothing,
+				eZ: v
 			});
 	});
 var $author$project$ColorValues$white = '#FFFFFF';
@@ -19421,18 +20290,18 @@ var $author$project$Causality$Causality$graphvizDotNotation = function (model) {
 				])) + ('>' + (A2($elm$core$String$join, '', body) + '</TABLE>')));
 	};
 	var styles = {
-		hJ: $author$project$Causality$Causality$attributes(
+		ih: $author$project$Causality$Causality$attributes(
 			_List_fromArray(
 				[
 					_Utils_Tuple2('color', $author$project$ColorValues$grey50),
 					_Utils_Tuple2('penwidth', '2.0')
 				])),
-		bQ: $author$project$Causality$Causality$attributes(
+		bY: $author$project$Causality$Causality$attributes(
 			_List_fromArray(
 				[
 					_Utils_Tuple2('bgcolor', 'transparent')
 				])),
-		jn: $author$project$Causality$Causality$attributes(
+		jS: $author$project$Causality$Causality$attributes(
 			_List_fromArray(
 				[
 					_Utils_Tuple2('color', $author$project$ColorValues$grey100),
@@ -19441,7 +20310,7 @@ var $author$project$Causality$Causality$graphvizDotNotation = function (model) {
 					_Utils_Tuple2('fontname', 'Courier'),
 					_Utils_Tuple2('fontcolor', $author$project$Colors$white)
 				])),
-		jW: 1
+		kp: 1
 	};
 	var row = F2(
 		function (attrs, body) {
@@ -19451,9 +20320,9 @@ var $author$project$Causality$Causality$graphvizDotNotation = function (model) {
 		return $elm$core$Dict$empty;
 	};
 	var _v0 = model.V;
-	var teamName = _v0.kD;
-	var pipelineName = _v0.jL;
-	var pipelineInstanceVars = _v0.f2;
+	var teamName = _v0.k8;
+	var pipelineName = _v0.gH;
+	var pipelineInstanceVars = _v0.ew;
 	var jobLabel = F2(
 		function (name, builds) {
 			return table(
@@ -19466,10 +20335,10 @@ var $author$project$Causality$Causality$graphvizDotNotation = function (model) {
 					A2(
 						$elm$core$List$map,
 						function (b) {
-							var build = {g1: b.dQ, i0: name, f2: pipelineInstanceVars, jL: pipelineName, kD: teamName};
+							var build = {hE: b.cT, jw: name, ew: pipelineInstanceVars, gH: pipelineName, k8: teamName};
 							var link = $author$project$Routes$toString(
 								$author$project$Routes$Build(
-									{dt: _List_Nil, is: $author$project$Routes$HighlightNothing, iz: build}));
+									{dZ: _List_Nil, iZ: $author$project$Routes$HighlightNothing, f_: build}));
 							return A2(
 								row,
 								$author$project$Causality$Causality$attributes(
@@ -19478,9 +20347,9 @@ var $author$project$Causality$Causality$graphvizDotNotation = function (model) {
 											_Utils_Tuple2('HREF', link),
 											_Utils_Tuple2(
 											'BGCOLOR',
-											A2($author$project$Colors$buildStatusColor, true, b.ek))
+											A2($author$project$Colors$buildStatusColor, true, b.eT))
 										])),
-								'#' + b.dQ);
+								'#' + b.cT);
 						},
 						builds)));
 		});
@@ -19496,7 +20365,7 @@ var $author$project$Causality$Causality$graphvizDotNotation = function (model) {
 					A2(
 						$elm$core$List$map,
 						function (_v2) {
-							var version = _v2.er;
+							var version = _v2.eZ;
 							var versionStr = A2(
 								$elm$core$String$join,
 								'<BR/>',
@@ -19507,7 +20376,7 @@ var $author$project$Causality$Causality$graphvizDotNotation = function (model) {
 											($elm$core$String$length(s) > 40) ? (A2($elm$core$String$left, 38, s) + '…') : s);
 									},
 									$author$project$Concourse$versionQuery(version)));
-							var resource = {f2: pipelineInstanceVars, jL: pipelineName, j1: name, kD: teamName};
+							var resource = {ew: pipelineInstanceVars, gH: pipelineName, kw: name, k8: teamName};
 							var link = $author$project$Routes$toString(
 								A2(
 									$author$project$Routes$resourceRoute,
@@ -19584,29 +20453,29 @@ var $author$project$Causality$Causality$handleCallback = F2(
 					if (callback.a.$ === 1) {
 						var err = callback.a.a;
 						if (err.$ === 3) {
-							var status = err.a.ek;
-							return (status.eM === 401) ? _Utils_Tuple2(
+							var status = err.a.eT;
+							return (status.fj === 401) ? _Utils_Tuple2(
 								model,
 								_Utils_ap(
 									effects,
 									_List_fromArray(
-										[$author$project$Message$Effects$RedirectToLogin]))) : ((status.eM === 422) ? _Utils_Tuple2(
+										[$author$project$Message$Effects$RedirectToLogin]))) : ((status.fj === 422) ? _Utils_Tuple2(
 								_Utils_update(
 									model,
 									{
-										aW: $elm$core$Result$Err(1)
+										aX: $elm$core$Result$Err(1)
 									}),
-								effects) : ((status.eM === 403) ? _Utils_Tuple2(
+								effects) : ((status.fj === 403) ? _Utils_Tuple2(
 								_Utils_update(
 									model,
 									{
-										aW: $elm$core$Result$Err(0)
+										aX: $elm$core$Result$Err(0)
 									}),
-								effects) : ((status.eM === 404) ? _Utils_Tuple2(
+								effects) : ((status.fj === 404) ? _Utils_Tuple2(
 								_Utils_update(
 									model,
 									{
-										aW: $elm$core$Result$Err(0)
+										aX: $elm$core$Result$Err(0)
 									}),
 								effects) : _Utils_Tuple2(model, effects))));
 						} else {
@@ -19621,21 +20490,21 @@ var $author$project$Causality$Causality$handleCallback = F2(
 								var c = causality.a;
 								return A2($author$project$Causality$Causality$constructGraph, direction, c);
 							} else {
-								return model.bQ;
+								return model.bY;
 							}
 						}();
 						return $elm_community$graph$Graph$isEmpty(graph) ? _Utils_Tuple2(
 							_Utils_update(
 								model,
 								{
-									dn: causality,
-									bQ: graph,
-									aW: $elm$core$Result$Err(2)
+									dR: causality,
+									bY: graph,
+									aX: $elm$core$Result$Err(2)
 								}),
 							effects) : _Utils_Tuple2(
 							_Utils_update(
 								model,
-								{dn: causality, bQ: graph}),
+								{dR: causality, bY: graph}),
 							_Utils_ap(
 								effects,
 								_List_fromArray(
@@ -19651,7 +20520,7 @@ var $author$project$Causality$Causality$handleCallback = F2(
 							_Utils_update(
 								model,
 								{
-									$7: $elm$core$Maybe$Just(vr)
+									dS: $elm$core$Maybe$Just(vr)
 								}),
 							effects);
 					} else {
@@ -19706,14 +20575,14 @@ var $author$project$Dashboard$Dashboard$buffers = _List_fromArray(
 			},
 			$elm$core$Basics$neq($author$project$Dashboard$Models$NotDragging)),
 		{
-			ii: function (m) {
-				return m.dI;
+			iP: function (m) {
+				return m.eb;
 			},
-			cT: F2(
+			dc: F2(
 				function (f, m) {
 					return _Utils_update(
 						m,
-						{dI: f});
+						{eb: f});
 				})
 		}),
 		A4(
@@ -19733,14 +20602,14 @@ var $author$project$Dashboard$Dashboard$buffers = _List_fromArray(
 			},
 			$elm$core$Basics$neq($author$project$Dashboard$Models$NotDragging)),
 		{
-			ii: function (m) {
-				return m.dH;
+			iP: function (m) {
+				return m.ea;
 			},
-			cT: F2(
+			dc: F2(
 				function (f, m) {
 					return _Utils_update(
 						m,
-						{dH: f});
+						{ea: f});
 				})
 		}),
 		A4(
@@ -19755,18 +20624,18 @@ var $author$project$Dashboard$Dashboard$buffers = _List_fromArray(
 		},
 		function (model) {
 			return (!_Utils_eq(model.I, $author$project$Dashboard$Models$NotDragging)) || _Utils_eq(
-				model.aq,
+				model.ar,
 				$elm$core$Maybe$Just(1));
 		},
 		{
-			ii: function (m) {
-				return m.dF;
+			iP: function (m) {
+				return m.d8;
 			},
-			cT: F2(
+			dc: F2(
 				function (f, m) {
 					return _Utils_update(
 						m,
-						{dF: f});
+						{d8: f});
 				})
 		}),
 		A4(
@@ -19786,14 +20655,14 @@ var $author$project$Dashboard$Dashboard$buffers = _List_fromArray(
 			},
 			$elm$core$Basics$neq($author$project$Dashboard$Models$NotDragging)),
 		{
-			ii: function (m) {
-				return m.dG;
+			iP: function (m) {
+				return m.d9;
 			},
-			cT: F2(
+			dc: F2(
 				function (f, m) {
 					return _Utils_update(
 						m,
-						{dG: f});
+						{d9: f});
 				})
 		})
 	]);
@@ -19870,7 +20739,7 @@ var $author$project$Dashboard$RequestBuffer$handleCallbackSingle = F3(
 		var model = _v1.a;
 		var effects = _v1.b;
 		return _Utils_Tuple2(
-			callbackMatcher(callback) ? A2(shouldFire.cT, true, model) : model,
+			callbackMatcher(callback) ? A2(shouldFire.dc, true, model) : model,
 			effects);
 	});
 var $author$project$Dashboard$RequestBuffer$handleCallback = function (callback) {
@@ -19963,22 +20832,12 @@ var $author$project$Dashboard$Dashboard$pipelinesChangedFrom = F2(
 						function (x) {
 							return _Utils_update(
 								x,
-								{gt: true});
+								{g5: true});
 						}))));
 		return !_Utils_eq(
 			project(ps),
 			project(qs));
 	});
-var $elm$core$List$maximum = function (list) {
-	if (list.b) {
-		var x = list.a;
-		var xs = list.b;
-		return $elm$core$Maybe$Just(
-			A3($elm$core$List$foldl, $elm$core$Basics$max, x, xs));
-	} else {
-		return $elm$core$Maybe$Nothing;
-	}
-};
 var $author$project$Dashboard$DashboardPreview$jobDepths = F3(
 	function (calculations, depths, jobs) {
 		jobDepths:
@@ -19991,9 +20850,9 @@ var $author$project$Dashboard$DashboardPreview$jobDepths = F3(
 				var dependencies = A2(
 					$elm$core$List$concatMap,
 					function ($) {
-						return $.fV;
+						return $.gy;
 					},
-					job.iJ);
+					job.jd);
 				var values = A2(
 					$elm$core$List$filterMap,
 					function (jobName) {
@@ -20001,8 +20860,8 @@ var $author$project$Dashboard$DashboardPreview$jobDepths = F3(
 					},
 					dependencies);
 				var _new = {
-					eq: $elm$core$List$length(otherJobs),
-					k2: A2(
+					eY: $elm$core$List$length(otherJobs),
+					lz: A2(
 						$elm$core$Maybe$withDefault,
 						0,
 						A2(
@@ -20016,22 +20875,22 @@ var $author$project$Dashboard$DashboardPreview$jobDepths = F3(
 					A2(
 						$elm$core$Maybe$map,
 						function (oldCalc) {
-							return _Utils_cmp(oldCalc.eq, _new.eq) < 1;
+							return _Utils_cmp(oldCalc.eY, _new.eY) < 1;
 						},
-						A2($elm$core$Dict$get, job.dQ, calculations)));
+						A2($elm$core$Dict$get, job.cT, calculations)));
 				var totalConfidence = _Utils_eq(
 					$elm$core$List$length(values),
 					$elm$core$List$length(dependencies));
 				if (totalConfidence || neverGonnaGetBetter) {
-					var $temp$calculations = A2($elm$core$Dict$remove, job.dQ, calculations),
-						$temp$depths = A3($elm$core$Dict$insert, job.dQ, _new.k2, depths),
+					var $temp$calculations = A2($elm$core$Dict$remove, job.cT, calculations),
+						$temp$depths = A3($elm$core$Dict$insert, job.cT, _new.lz, depths),
 						$temp$jobs = otherJobs;
 					calculations = $temp$calculations;
 					depths = $temp$depths;
 					jobs = $temp$jobs;
 					continue jobDepths;
 				} else {
-					var $temp$calculations = A3($elm$core$Dict$insert, job.dQ, _new, calculations),
+					var $temp$calculations = A3($elm$core$Dict$insert, job.cT, _new, calculations),
 						$temp$depths = depths,
 						$temp$jobs = _Utils_ap(
 						otherJobs,
@@ -20094,7 +20953,7 @@ var $author$project$Dashboard$DashboardPreview$groupByRank = function (jobs) {
 				$elm$core$List$filter,
 				function (j) {
 					return _Utils_eq(
-						A2($elm$core$Dict$get, j.dQ, depths),
+						A2($elm$core$Dict$get, j.cT, depths),
 						$elm$core$Maybe$Just(d));
 				},
 				jobs);
@@ -20123,29 +20982,29 @@ var $author$project$FetchResult$withDefault = function (_default) {
 };
 var $author$project$Dashboard$Dashboard$precomputeJobMetadata = function (model) {
 	var allJobs = $elm$core$Dict$values(
-		A2($author$project$FetchResult$withDefault, $elm$core$Dict$empty, model.i1));
+		A2($author$project$FetchResult$withDefault, $elm$core$Dict$empty, model.jx));
 	var pipelineJobs = A2(
 		$author$project$Dashboard$Dashboard$groupBy,
 		function (j) {
-			return j.cF;
+			return j.cZ;
 		},
 		allJobs);
 	return _Utils_update(
 		model,
 		{
-			aH: A2(
+			aI: A2(
 				$elm$core$Dict$map,
 				F2(
 					function (_v0, jobs) {
 						return A2(
 							$elm$core$List$map,
 							function ($) {
-								return $.dQ;
+								return $.cT;
 							},
 							jobs);
 					}),
 				pipelineJobs),
-			ah: A2(
+			ai: A2(
 				$elm$core$Dict$map,
 				F2(
 					function (_v1, jobs) {
@@ -20153,7 +21012,7 @@ var $author$project$Dashboard$Dashboard$precomputeJobMetadata = function (model)
 							$elm$core$List$map,
 							$elm$core$List$map(
 								function ($) {
-									return $.dQ;
+									return $.cT;
 								}),
 							$author$project$Dashboard$DashboardPreview$groupByRank(jobs));
 					}),
@@ -20162,26 +21021,26 @@ var $author$project$Dashboard$Dashboard$precomputeJobMetadata = function (model)
 };
 var $author$project$Dashboard$Dashboard$toDashboardPipeline = F3(
 	function (isStale, jobsDisabled, p) {
-		return {gS: p.gS, iz: p.iz, bT: p.bT, fu: false, bi: false, fw: jobsDisabled, dQ: p.dQ, cE: p.cE, f8: p.f8, gt: isStale, kD: p.kD};
+		return {hs: p.hs, f_: p.f_, b$: p.b$, f5: false, bk: false, f7: jobsDisabled, cT: p.cT, cX: p.cX, gM: p.gM, g5: isStale, k8: p.k8};
 	});
 var $author$project$Dashboard$Dashboard$updatePipeline = F3(
 	function (updater, pipelineId, model) {
 		return _Utils_update(
 			model,
 			{
-				jN: A2(
+				kg: A2(
 					$elm$core$Maybe$map,
 					A2(
 						$elm$core$Dict$update,
-						pipelineId.kD,
+						pipelineId.k8,
 						$elm$core$Maybe$map(
 							A2(
 								$elm_community$list_extra$List$Extra$updateIf,
 								function (p) {
-									return _Utils_eq(p.dQ, pipelineId.jL) && _Utils_eq(p.bT, pipelineId.f2);
+									return _Utils_eq(p.cT, pipelineId.gH) && _Utils_eq(p.b$, pipelineId.ew);
 								},
 								updater))),
-					model.jN)
+					model.kg)
 			});
 	});
 var $author$project$Dashboard$Dashboard$handleCallback = F2(
@@ -20193,7 +21052,7 @@ var $author$project$Dashboard$Dashboard$handleCallback = F2(
 			callback,
 			$author$project$Dashboard$Dashboard$buffers,
 			function () {
-				_v1$17:
+				_v1$21:
 				while (true) {
 					switch (callback.$) {
 						case 31:
@@ -20202,7 +21061,7 @@ var $author$project$Dashboard$Dashboard$handleCallback = F2(
 									_Utils_update(
 										model,
 										{
-											cY: $elm$core$Maybe$Just(0)
+											di: $elm$core$Maybe$Just(0)
 										}),
 									effects);
 							} else {
@@ -20211,10 +21070,10 @@ var $author$project$Dashboard$Dashboard$handleCallback = F2(
 								return _Utils_Tuple2(
 									_Utils_update(
 										model,
-										{kE: newTeams, cY: $elm$core$Maybe$Nothing}),
+										{k9: newTeams, di: $elm$core$Maybe$Nothing}),
 									_Utils_ap(
 										effects,
-										A2($author$project$FetchResult$changedFrom, model.kE, newTeams) ? _List_fromArray(
+										A2($author$project$FetchResult$changedFrom, model.k9, newTeams) ? _List_fromArray(
 											[
 												$author$project$Message$Effects$SaveCachedTeams(teams)
 											]) : _List_Nil));
@@ -20225,7 +21084,7 @@ var $author$project$Dashboard$Dashboard$handleCallback = F2(
 								var removeBuild = function (job) {
 									return _Utils_update(
 										job,
-										{fa: $elm$core$Maybe$Nothing, fM: $elm$core$Maybe$Nothing, gE: $elm$core$Maybe$Nothing});
+										{fM: $elm$core$Maybe$Nothing, go: $elm$core$Maybe$Nothing, hh: $elm$core$Maybe$Nothing});
 								};
 								var newJobs = $author$project$FetchResult$Fetched(
 									$elm$core$Dict$fromList(
@@ -20233,13 +21092,13 @@ var $author$project$Dashboard$Dashboard$handleCallback = F2(
 											$elm$core$List$map,
 											function (job) {
 												return _Utils_Tuple2(
-													_Utils_Tuple2(job.cF, job.dQ),
+													_Utils_Tuple2(job.cZ, job.cT),
 													job);
 											},
 											allJobsInEntireCluster)));
 								var newModel = _Utils_update(
 									model,
-									{i1: newJobs, aq: $elm$core$Maybe$Nothing});
+									{jx: newJobs, ar: $elm$core$Maybe$Nothing});
 								var mapToJobIds = function (jobsResult) {
 									return A2(
 										$author$project$FetchResult$map,
@@ -20251,7 +21110,7 @@ var $author$project$Dashboard$Dashboard$handleCallback = F2(
 								};
 								return A2(
 									$author$project$FetchResult$changedFrom,
-									mapToJobIds(model.i1),
+									mapToJobIds(model.jx),
 									mapToJobIds(newJobs)) ? _Utils_Tuple2(
 									$author$project$Dashboard$Dashboard$precomputeJobMetadata(newModel),
 									_Utils_ap(
@@ -20264,17 +21123,17 @@ var $author$project$Dashboard$Dashboard$handleCallback = F2(
 							} else {
 								var err = callback.a.a;
 								if (err.$ === 3) {
-									var status = err.a.ek;
-									var _v3 = status.eM;
+									var status = err.a.eT;
+									var _v3 = status.fj;
 									switch (_v3) {
 										case 501:
 											return _Utils_Tuple2(
 												_Utils_update(
 													model,
 													{
-														i1: $author$project$FetchResult$Fetched($elm$core$Dict$empty),
-														aq: $elm$core$Maybe$Just(1),
-														jN: A2(
+														jx: $author$project$FetchResult$Fetched($elm$core$Dict$empty),
+														ar: $elm$core$Maybe$Just(1),
+														kg: A2(
 															$elm$core$Maybe$map,
 															$elm$core$Dict$map(
 																F2(
@@ -20284,11 +21143,11 @@ var $author$project$Dashboard$Dashboard$handleCallback = F2(
 																			function (p) {
 																				return _Utils_update(
 																					p,
-																					{fw: true});
+																					{f7: true});
 																			},
 																			l);
 																	})),
-															model.jN)
+															model.kg)
 													}),
 												_Utils_ap(
 													effects,
@@ -20299,9 +21158,9 @@ var $author$project$Dashboard$Dashboard$handleCallback = F2(
 												_Utils_update(
 													model,
 													{
-														a9: _Utils_ap(
-															model.a9,
-															A2($elm$core$List$member, $author$project$Message$Effects$FetchAllJobs, model.a9) ? _List_Nil : _List_fromArray(
+														bb: _Utils_ap(
+															model.bb,
+															A2($elm$core$List$member, $author$project$Message$Effects$FetchAllJobs, model.bb) ? _List_Nil : _List_fromArray(
 																[$author$project$Message$Effects$FetchAllJobs]))
 													}),
 												effects);
@@ -20310,7 +21169,7 @@ var $author$project$Dashboard$Dashboard$handleCallback = F2(
 												_Utils_update(
 													model,
 													{
-														aq: $elm$core$Maybe$Just(0)
+														ar: $elm$core$Maybe$Just(0)
 													}),
 												effects);
 									}
@@ -20319,7 +21178,7 @@ var $author$project$Dashboard$Dashboard$handleCallback = F2(
 										_Utils_update(
 											model,
 											{
-												aq: $elm$core$Maybe$Just(0)
+												ar: $elm$core$Maybe$Just(0)
 											}),
 										effects);
 								}
@@ -20328,11 +21187,11 @@ var $author$project$Dashboard$Dashboard$handleCallback = F2(
 							if (!callback.a.$) {
 								var resources = callback.a.a;
 								var failingToCheck = function (_v6) {
-									var build = _v6.eH;
+									var build = _v6.fe;
 									if (build.$ === 1) {
 										return false;
 									} else {
-										var status = build.a.ek;
+										var status = build.a.eT;
 										return $author$project$Concourse$BuildStatus$isBad(status);
 									}
 								};
@@ -20340,14 +21199,14 @@ var $author$project$Dashboard$Dashboard$handleCallback = F2(
 									_Utils_update(
 										model,
 										{
-											aI: $elm$core$Set$fromList(
+											aJ: $elm$core$Set$fromList(
 												A2(
 													$elm$core$List$map,
 													function (r) {
-														return r.cF;
+														return r.cZ;
 													},
 													A2($elm$core$List$filter, failingToCheck, resources))),
-											cK: $elm$core$Maybe$Nothing
+											c2: $elm$core$Maybe$Nothing
 										}),
 									effects);
 							} else {
@@ -20355,7 +21214,7 @@ var $author$project$Dashboard$Dashboard$handleCallback = F2(
 									_Utils_update(
 										model,
 										{
-											cK: $elm$core$Maybe$Just(0)
+											c2: $elm$core$Maybe$Just(0)
 										}),
 									effects);
 							}
@@ -20366,7 +21225,7 @@ var $author$project$Dashboard$Dashboard$handleCallback = F2(
 									A2(
 										$author$project$Dashboard$Dashboard$groupBy,
 										function ($) {
-											return $.kD;
+											return $.k8;
 										},
 										A2(
 											$elm$core$List$map,
@@ -20374,13 +21233,13 @@ var $author$project$Dashboard$Dashboard$handleCallback = F2(
 												$author$project$Dashboard$Dashboard$toDashboardPipeline,
 												false,
 												_Utils_eq(
-													model.aq,
+													model.ar,
 													$elm$core$Maybe$Just(1))),
 											allPipelinesInEntireCluster)));
 								return _Utils_Tuple2(
 									_Utils_update(
 										model,
-										{jN: newPipelines, cG: $elm$core$Maybe$Nothing}),
+										{kg: newPipelines, c_: $elm$core$Maybe$Nothing}),
 									_Utils_ap(
 										effects,
 										A2(
@@ -20391,7 +21250,7 @@ var $author$project$Dashboard$Dashboard$handleCallback = F2(
 													[
 														$author$project$Message$Effects$ModifyUrl('/')
 													]) : _List_Nil,
-												A2($author$project$Dashboard$Dashboard$pipelinesChangedFrom, model.jN, newPipelines) ? _List_fromArray(
+												A2($author$project$Dashboard$Dashboard$pipelinesChangedFrom, model.kg, newPipelines) ? _List_fromArray(
 													[
 														$author$project$Message$Effects$SaveCachedPipelines(allPipelinesInEntireCluster)
 													]) : _List_Nil))));
@@ -20400,7 +21259,7 @@ var $author$project$Dashboard$Dashboard$handleCallback = F2(
 									_Utils_update(
 										model,
 										{
-											cG: $elm$core$Maybe$Just(0)
+											c_: $elm$core$Maybe$Just(0)
 										}),
 									effects);
 							}
@@ -20432,8 +21291,8 @@ var $author$project$Dashboard$Dashboard$handleCallback = F2(
 												$author$project$Routes$toString(
 													$author$project$Routes$Dashboard(
 														{
-															hy: model.hy,
-															kf: model.ao ? $author$project$Routes$HighDensity : $author$project$Routes$Normal('')
+															h6: model.h6,
+															kK: model.aq ? $author$project$Routes$HighDensity : $author$project$Routes$Normal('')
 														}))),
 												$author$project$Message$Effects$FetchAllTeams,
 												$author$project$Message$Effects$FetchAllResources,
@@ -20444,7 +21303,7 @@ var $author$project$Dashboard$Dashboard$handleCallback = F2(
 												$author$project$Message$Effects$DeleteCachedTeams
 											])));
 							} else {
-								break _v1$17;
+								break _v1$21;
 							}
 						case 11:
 							if (!callback.b.$) {
@@ -20455,7 +21314,7 @@ var $author$project$Dashboard$Dashboard$handleCallback = F2(
 										_List_fromArray(
 											[$author$project$Message$Effects$FetchAllPipelines])));
 							} else {
-								break _v1$17;
+								break _v1$21;
 							}
 						case 42:
 							if (callback.a === 1) {
@@ -20468,7 +21327,7 @@ var $author$project$Dashboard$Dashboard$handleCallback = F2(
 											function (p) {
 												return _Utils_update(
 													p,
-													{bi: false, f8: false});
+													{bk: false, gM: false});
 											},
 											pipelineId,
 											model),
@@ -20482,7 +21341,7 @@ var $author$project$Dashboard$Dashboard$handleCallback = F2(
 											function (p) {
 												return _Utils_update(
 													p,
-													{bi: false, f8: true});
+													{bk: false, gM: true});
 											},
 											pipelineId,
 											model),
@@ -20498,7 +21357,7 @@ var $author$project$Dashboard$Dashboard$handleCallback = F2(
 											function (p) {
 												return _Utils_update(
 													p,
-													{bi: false, f8: true});
+													{bk: false, gM: true});
 											},
 											pipelineId,
 											model),
@@ -20512,7 +21371,7 @@ var $author$project$Dashboard$Dashboard$handleCallback = F2(
 											function (p) {
 												return _Utils_update(
 													p,
-													{bi: false, f8: false});
+													{bk: false, gM: false});
 											},
 											pipelineId,
 											model),
@@ -20526,20 +21385,50 @@ var $author$project$Dashboard$Dashboard$handleCallback = F2(
 								return _Utils_Tuple2(
 									_Utils_update(
 										model,
-										{kd: viewport.k7.lf, bA: viewport.k7.bS, bB: viewport.k7.gK}),
+										{kI: viewport.lD.lL, bC: viewport.lD.b_, bD: viewport.lD.hn}),
 									effects);
 							} else {
-								break _v1$17;
+								break _v1$21;
+							}
+						case 56:
+							if (!callback.a.$) {
+								var tickets = callback.a.a;
+								return _Utils_Tuple2(
+									_Utils_update(
+										model,
+										{dv: tickets}),
+									effects);
+							} else {
+								return _Utils_Tuple2(model, effects);
+							}
+						case 51:
+							if (!callback.a.$) {
+								var rollup = callback.a.a;
+								return _Utils_Tuple2(
+									_Utils_update(
+										model,
+										{
+											du: $elm$core$Dict$fromList(
+												A2(
+													$elm$core$List$map,
+													function (row) {
+														return _Utils_Tuple2(row.jy, row.fm);
+													},
+													rollup.kD))
+										}),
+									effects);
+							} else {
+								return _Utils_Tuple2(model, effects);
 							}
 						default:
-							break _v1$17;
+							break _v1$21;
 					}
 				}
 				return _Utils_Tuple2(model, effects);
 			}());
 	});
 var $author$project$Concourse$Pagination$isPreviousPage = function (p) {
-	var _v0 = p.e0;
+	var _v0 = p.fB;
 	if (!_v0.$) {
 		return true;
 	} else {
@@ -20549,25 +21438,25 @@ var $author$project$Concourse$Pagination$isPreviousPage = function (p) {
 var $author$project$Job$Job$permalink = function (builds) {
 	var _v0 = $elm$core$List$head(builds);
 	if (_v0.$ === 1) {
-		return {e0: $author$project$Concourse$Pagination$ToMostRecent, fC: $author$project$Job$Job$pageLimit};
+		return {fB: $author$project$Concourse$Pagination$ToMostRecent, gd: $author$project$Job$Job$pageLimit};
 	} else {
 		var build = _v0.a;
 		return {
-			e0: $author$project$Concourse$Pagination$To(build.iz),
-			fC: $elm$core$List$length(builds)
+			fB: $author$project$Concourse$Pagination$To(build.f_),
+			gd: $elm$core$List$length(builds)
 		};
 	}
 };
 var $author$project$Job$Job$paginatedMap = F2(
 	function (promoter, pagA) {
 		return {
-			hn: A2($elm$core$List$map, promoter, pagA.hn),
-			jF: pagA.jF
+			h_: A2($elm$core$List$map, promoter, pagA.h_),
+			j9: pagA.j9
 		};
 	});
 var $author$project$Job$Job$existingBuild = F2(
 	function (build, buildWithResources) {
-		return _Utils_eq(build, buildWithResources.eH);
+		return _Utils_eq(build, buildWithResources.fe);
 	});
 var $author$project$Job$Job$setResourcesToOld = F2(
 	function (existingBuildWithResource, newBwr) {
@@ -20577,20 +21466,20 @@ var $author$project$Job$Job$setResourcesToOld = F2(
 			var buildWithResources = existingBuildWithResource.a;
 			return _Utils_update(
 				newBwr,
-				{j2: buildWithResources.j2});
+				{kx: buildWithResources.kx});
 		}
 	});
 var $author$project$Job$Job$promoteBuild = F2(
 	function (model, build) {
-		var newBwr = {eH: build, j2: $elm$core$Maybe$Nothing};
+		var newBwr = {fe: build, kx: $elm$core$Maybe$Nothing};
 		var existingBuildWithResource = function () {
-			var _v0 = model.ax;
+			var _v0 = model.ay;
 			if (_v0.$ === 3) {
 				var bwrs = _v0.a;
 				return A2(
 					$elm_community$list_extra$List$Extra$find,
 					$author$project$Job$Job$existingBuild(build),
-					bwrs.hn);
+					bwrs.h_);
 			} else {
 				return $elm$core$Maybe$Nothing;
 			}
@@ -20608,27 +21497,27 @@ var $author$project$Message$Effects$FetchBuildResources = function (a) {
 	return {$: 9, a: a};
 };
 var $author$project$Job$Job$isRunning = function (build) {
-	return $author$project$Concourse$BuildStatus$isRunning(build.ek);
+	return $author$project$Concourse$BuildStatus$isRunning(build.eT);
 };
 var $author$project$Job$Job$updateResourcesIfNeeded = function (bwr) {
 	var _v0 = _Utils_Tuple2(
-		bwr.j2,
-		$author$project$Job$Job$isRunning(bwr.eH));
+		bwr.kx,
+		$author$project$Job$Job$isRunning(bwr.fe));
 	if ((!_v0.a.$) && (!_v0.b)) {
 		return $elm$core$Maybe$Nothing;
 	} else {
 		return $elm$core$Maybe$Just(
-			$author$project$Message$Effects$FetchBuildResources(bwr.eH.iz));
+			$author$project$Message$Effects$FetchBuildResources(bwr.fe.f_));
 	}
 };
 var $author$project$Job$Job$handleJobBuildsFetched = F3(
 	function (requestedPage, paginatedBuilds, _v0) {
 		var model = _v0.a;
 		var effects = _v0.b;
-		var newPage = $author$project$Job$Job$permalink(paginatedBuilds.hn);
+		var newPage = $author$project$Job$Job$permalink(paginatedBuilds.h_);
 		var newBWRs = A2($author$project$Job$Job$setExistingResources, paginatedBuilds, model);
 		return ($author$project$Concourse$Pagination$isPreviousPage(requestedPage) && (_Utils_cmp(
-			$elm$core$List$length(paginatedBuilds.hn),
+			$elm$core$List$length(paginatedBuilds.h_),
 			$author$project$Job$Job$pageLimit) < 0)) ? _Utils_Tuple2(
 			model,
 			_Utils_ap(
@@ -20640,25 +21529,25 @@ var $author$project$Job$Job$handleJobBuildsFetched = F3(
 						$author$project$Routes$toString(
 							$author$project$Routes$Job(
 								{
-									dt: _List_Nil,
-									iz: model.u,
-									bp: $elm$core$Maybe$Just($author$project$Job$Job$startingPage)
+									dZ: _List_Nil,
+									f_: model.u,
+									br: $elm$core$Maybe$Just($author$project$Job$Job$startingPage)
 								})))
 					]))) : _Utils_Tuple2(
 			_Utils_update(
 				model,
 				{
-					ax: $krisajenkins$remotedata$RemoteData$Success(newBWRs),
-					cj: newPage
+					ay: $krisajenkins$remotedata$RemoteData$Success(newBWRs),
+					cz: newPage
 				}),
 			_Utils_ap(
 				effects,
-				A2($elm$core$List$filterMap, $author$project$Job$Job$updateResourcesIfNeeded, newBWRs.hn)));
+				A2($elm$core$List$filterMap, $author$project$Job$Job$updateResourcesIfNeeded, newBWRs.h_)));
 	});
 var $author$project$Job$Job$redirectToLoginIfNecessary = function (err) {
 	if (err.$ === 3) {
-		var status = err.a.ek;
-		return (status.eM === 401) ? _List_fromArray(
+		var status = err.a.eT;
+		return (status.fj === 401) ? _List_fromArray(
 			[$author$project$Message$Effects$RedirectToLogin]) : _List_Nil;
 	} else {
 		return _List_Nil;
@@ -20677,7 +21566,7 @@ var $author$project$Job$Job$handleCallback = F2(
 						return _Utils_Tuple2(
 							model,
 							function () {
-								var _v2 = build.ap;
+								var _v2 = build.ac;
 								if (_v2.$ === 1) {
 									return effects;
 								} else {
@@ -20690,9 +21579,9 @@ var $author$project$Job$Job$handleCallback = F2(
 												$author$project$Routes$toString(
 													$author$project$Routes$Build(
 														{
-															dt: _List_Nil,
-															is: $author$project$Routes$HighlightNothing,
-															iz: {g1: build.dQ, i0: job.i0, f2: job.f2, jL: job.jL, kD: job.kD}
+															dZ: _List_Nil,
+															iZ: $author$project$Routes$HighlightNothing,
+															f_: {hE: build.cT, jw: job.jw, ew: job.ew, gH: job.gH, k8: job.k8}
 														})))
 											]));
 								}
@@ -20720,18 +21609,18 @@ var $author$project$Job$Job$handleCallback = F2(
 							_Utils_update(
 								model,
 								{
-									ap: $krisajenkins$remotedata$RemoteData$Success(job)
+									ac: $krisajenkins$remotedata$RemoteData$Success(job)
 								}),
 							effects);
 					} else {
 						var err = callback.a.a;
 						if (err.$ === 3) {
-							var status = err.a.ek;
-							return (status.eM === 404) ? _Utils_Tuple2(
+							var status = err.a.eT;
+							return (status.fj === 404) ? _Utils_Tuple2(
 								_Utils_update(
 									model,
 									{
-										ap: $krisajenkins$remotedata$RemoteData$Failure(err)
+										ac: $krisajenkins$remotedata$RemoteData$Failure(err)
 									}),
 								effects) : _Utils_Tuple2(
 								model,
@@ -20747,30 +21636,30 @@ var $author$project$Job$Job$handleCallback = F2(
 						var _v5 = callback.a.a;
 						var id = _v5.a;
 						var buildResources = _v5.b;
-						var _v6 = model.ax;
+						var _v6 = model.ay;
 						if (_v6.$ === 3) {
-							var content = _v6.a.hn;
-							var pagination = _v6.a.jF;
+							var content = _v6.a.h_;
+							var pagination = _v6.a.j9;
 							return _Utils_Tuple2(
 								_Utils_update(
 									model,
 									{
-										ax: $krisajenkins$remotedata$RemoteData$Success(
+										ay: $krisajenkins$remotedata$RemoteData$Success(
 											{
-												hn: A3(
+												h_: A3(
 													$elm_community$list_extra$List$Extra$updateIf,
 													function (bwr) {
-														return _Utils_eq(bwr.eH.iz, id);
+														return _Utils_eq(bwr.fe.f_, id);
 													},
 													function (bwr) {
 														return _Utils_update(
 															bwr,
 															{
-																j2: $elm$core$Maybe$Just(buildResources)
+																kx: $elm$core$Maybe$Just(buildResources)
 															});
 													},
 													content),
-												jF: pagination
+												j9: pagination
 											})
 									}),
 								effects);
@@ -20785,7 +21674,7 @@ var $author$project$Job$Job$handleCallback = F2(
 						return _Utils_Tuple2(
 							_Utils_update(
 								model,
-								{d0: false}),
+								{ev: false}),
 							_Utils_ap(
 								effects,
 								_List_fromArray(
@@ -20800,7 +21689,7 @@ var $author$project$Job$Job$handleCallback = F2(
 					return _Utils_Tuple2(
 						_Utils_update(
 							model,
-							{fN: now}),
+							{gq: now}),
 						effects);
 				default:
 					break _v1$8;
@@ -20843,13 +21732,13 @@ var $author$project$Pipeline$Pipeline$activeGroups = function (model) {
 				$elm$core$Basics$composeL,
 				$elm$core$List$head,
 				function ($) {
-					return $.dt;
+					return $.dZ;
 				}),
-			$krisajenkins$remotedata$RemoteData$toMaybe(model.ag)));
+			$krisajenkins$remotedata$RemoteData$toMaybe(model.ah)));
 	if ((!_v0.a.b) && (!_v0.b.$)) {
 		var firstGroup = _v0.b.a;
 		return _List_fromArray(
-			[firstGroup.dQ]);
+			[firstGroup.cT]);
 	} else {
 		var groups = _v0.a;
 		return groups;
@@ -20878,7 +21767,7 @@ var $author$project$Pipeline$Pipeline$anyIntersect = F2(
 	});
 var $author$project$Pipeline$Pipeline$jobAppearsInGroups = F2(
 	function (groupNames, job) {
-		return A2($author$project$Pipeline$Pipeline$anyIntersect, job.dt, groupNames);
+		return A2($author$project$Pipeline$Pipeline$anyIntersect, job.dZ, groupNames);
 	});
 var $author$project$Pipeline$Pipeline$filterJobs = F2(
 	function (model, jobs) {
@@ -20891,13 +21780,13 @@ var $author$project$Pipeline$Pipeline$filterJobs = F2(
 var $author$project$Pipeline$Pipeline$renderIfNeeded = function (_v0) {
 	var model = _v0.a;
 	var effects = _v0.b;
-	var _v1 = _Utils_Tuple2(model.e7, model.bN);
+	var _v1 = _Utils_Tuple2(model.fJ, model.bV);
 	if ((!_v1.a.$) && (!_v1.b.$)) {
 		var fetchedResources = _v1.a.a;
 		var fetchedJobs = _v1.b.a;
 		var filteredFetchedJobs = $elm$core$List$isEmpty(
 			$author$project$Pipeline$Pipeline$activeGroups(model)) ? fetchedJobs : A2($author$project$Pipeline$Pipeline$filterJobs, model, fetchedJobs);
-		var _v2 = _Utils_Tuple2(model.j$, model.jZ);
+		var _v2 = _Utils_Tuple2(model.ku, model.ks);
 		if ((!_v2.a.$) && (!_v2.b.$)) {
 			var renderedResources = _v2.a.a;
 			var renderedJobs = _v2.b.a;
@@ -20905,8 +21794,8 @@ var $author$project$Pipeline$Pipeline$renderIfNeeded = function (_v0) {
 				_Utils_update(
 					model,
 					{
-						jZ: $elm$core$Maybe$Just(filteredFetchedJobs),
-						j$: $elm$core$Maybe$Just(fetchedResources)
+						ks: $elm$core$Maybe$Just(filteredFetchedJobs),
+						ku: $elm$core$Maybe$Just(fetchedResources)
 					}),
 				_Utils_ap(
 					effects,
@@ -20919,8 +21808,8 @@ var $author$project$Pipeline$Pipeline$renderIfNeeded = function (_v0) {
 				_Utils_update(
 					model,
 					{
-						jZ: $elm$core$Maybe$Just(filteredFetchedJobs),
-						j$: $elm$core$Maybe$Just(fetchedResources)
+						ks: $elm$core$Maybe$Just(filteredFetchedJobs),
+						ku: $elm$core$Maybe$Just(fetchedResources)
 					}),
 				_Utils_ap(
 					effects,
@@ -20934,14 +21823,14 @@ var $author$project$Pipeline$Pipeline$renderIfNeeded = function (_v0) {
 	}
 };
 var $author$project$Concourse$toPipelineId = function (p) {
-	return {f2: p.bT, jL: p.dQ, kD: p.kD};
+	return {ew: p.b$, gH: p.cT, k8: p.k8};
 };
 var $author$project$Pipeline$Pipeline$handleCallback = F2(
 	function (callback, _v0) {
 		var model = _v0.a;
 		var effects = _v0.b;
 		var redirectToLoginIfUnauthenticated = function (status) {
-			return (status.eM === 401) ? _List_fromArray(
+			return (status.fj === 401) ? _List_fromArray(
 				[$author$project$Message$Effects$RedirectToLogin]) : _List_Nil;
 		};
 		_v1$13:
@@ -20951,7 +21840,7 @@ var $author$project$Pipeline$Pipeline$handleCallback = F2(
 					if (!callback.a.$) {
 						var pipeline = callback.a.a;
 						var locator = $author$project$Concourse$toPipelineId(pipeline);
-						var runEffects = pipeline.kF ? _List_fromArray(
+						var runEffects = pipeline.la ? _List_fromArray(
 							[
 								$author$project$Message$Effects$FetchPipelineRuns(locator)
 							]) : _List_Nil;
@@ -20959,8 +21848,8 @@ var $author$project$Pipeline$Pipeline$handleCallback = F2(
 							_Utils_update(
 								model,
 								{
-									ag: $krisajenkins$remotedata$RemoteData$Success(pipeline),
-									jK: locator
+									ah: $krisajenkins$remotedata$RemoteData$Success(pipeline),
+									ke: locator
 								}),
 							_Utils_ap(
 								effects,
@@ -20974,12 +21863,12 @@ var $author$project$Pipeline$Pipeline$handleCallback = F2(
 					} else {
 						var err = callback.a.a;
 						if (err.$ === 3) {
-							var status = err.a.ek;
-							return (status.eM === 404) ? _Utils_Tuple2(
+							var status = err.a.eT;
+							return (status.fj === 404) ? _Utils_Tuple2(
 								_Utils_update(
 									model,
 									{
-										ag: $krisajenkins$remotedata$RemoteData$Failure(err)
+										ah: $krisajenkins$remotedata$RemoteData$Failure(err)
 									}),
 								effects) : _Utils_Tuple2(
 								model,
@@ -21001,27 +21890,27 @@ var $author$project$Pipeline$Pipeline$handleCallback = F2(
 							_Utils_update(
 								model,
 								{
-									fu: false,
-									ag: A2(
+									f5: false,
+									ah: A2(
 										$krisajenkins$remotedata$RemoteData$map,
 										function (p) {
 											return _Utils_update(
 												p,
-												{cE: !p.cE});
+												{cX: !p.cX});
 										},
-										model.ag)
+										model.ah)
 								}),
 							_Utils_ap(
 								effects,
 								_List_fromArray(
 									[
-										$author$project$Message$Effects$FetchPipeline(model.jK)
+										$author$project$Message$Effects$FetchPipeline(model.ke)
 									])));
 					} else {
 						return _Utils_Tuple2(
 							_Utils_update(
 								model,
-								{fu: false}),
+								{f5: false}),
 							effects);
 					}
 				case 8:
@@ -21031,7 +21920,7 @@ var $author$project$Pipeline$Pipeline$handleCallback = F2(
 							_Utils_update(
 								model,
 								{
-									d7: $elm$core$Maybe$Just(runs)
+									eF: $elm$core$Maybe$Just(runs)
 								}),
 							effects);
 					} else {
@@ -21046,13 +21935,13 @@ var $author$project$Pipeline$Pipeline$handleCallback = F2(
 									model,
 									{
 										_: false,
-										bN: $elm$core$Maybe$Just(fetchedJobs)
+										bV: $elm$core$Maybe$Just(fetchedJobs)
 									}),
 								effects));
 					} else {
 						var err = callback.a.a;
 						if (err.$ === 3) {
-							var status = err.a.ek;
+							var status = err.a.eT;
 							return _Utils_Tuple2(
 								model,
 								_Utils_ap(
@@ -21063,7 +21952,7 @@ var $author$project$Pipeline$Pipeline$handleCallback = F2(
 								_Utils_Tuple2(
 									_Utils_update(
 										model,
-										{_: true, bN: $elm$core$Maybe$Nothing}),
+										{_: true, bV: $elm$core$Maybe$Nothing}),
 									effects));
 						}
 					}
@@ -21076,13 +21965,13 @@ var $author$project$Pipeline$Pipeline$handleCallback = F2(
 									model,
 									{
 										_: false,
-										e7: $elm$core$Maybe$Just(fetchedResources)
+										fJ: $elm$core$Maybe$Just(fetchedResources)
 									}),
 								effects));
 					} else {
 						var err = callback.a.a;
 						if (err.$ === 3) {
-							var status = err.a.ek;
+							var status = err.a.eT;
 							return _Utils_Tuple2(
 								model,
 								_Utils_ap(
@@ -21093,7 +21982,7 @@ var $author$project$Pipeline$Pipeline$handleCallback = F2(
 								_Utils_Tuple2(
 									_Utils_update(
 										model,
-										{_: true, e7: $elm$core$Maybe$Nothing}),
+										{_: true, fJ: $elm$core$Maybe$Nothing}),
 									effects));
 						}
 					}
@@ -21158,7 +22047,7 @@ var $ryan_haskell$date_format$DateFormat$DayOfMonthNumber = {$: 5};
 var $ryan_haskell$date_format$DateFormat$dayOfMonthNumber = $ryan_haskell$date_format$DateFormat$DayOfMonthNumber;
 var $ryan_haskell$date_format$DateFormat$Language$Language = F6(
 	function (toMonthName, toMonthAbbreviation, toWeekdayName, toWeekdayAbbreviation, toAmPm, toOrdinalSuffix) {
-		return {kP: toAmPm, kQ: toMonthAbbreviation, kR: toMonthName, by: toOrdinalSuffix, kS: toWeekdayAbbreviation, kT: toWeekdayName};
+		return {lj: toAmPm, lk: toMonthAbbreviation, ll: toMonthName, bA: toOrdinalSuffix, lm: toWeekdayAbbreviation, ln: toWeekdayName};
 	});
 var $ryan_haskell$date_format$DateFormat$Language$toEnglishAmPm = function (hour) {
 	return (hour > 11) ? 'pm' : 'am';
@@ -21260,7 +22149,7 @@ var $elm$time$Time$toAdjustedMinutesHelp = F3(
 			} else {
 				var era = eras.a;
 				var olderEras = eras.b;
-				if (_Utils_cmp(era.kr, posixMinutes) < 0) {
+				if (_Utils_cmp(era.kX, posixMinutes) < 0) {
 					return posixMinutes + era.f;
 				} else {
 					var $temp$defaultOffset = defaultOffset,
@@ -21299,7 +22188,7 @@ var $elm$time$Time$toHour = F2(
 	});
 var $ryan_haskell$date_format$DateFormat$amPm = F3(
 	function (language, zone, posix) {
-		return language.kP(
+		return language.lj(
 			A2($elm$time$Time$toHour, zone, posix));
 	});
 var $elm$time$Time$toCivil = function (minutes) {
@@ -21312,15 +22201,15 @@ var $elm$time$Time$toCivil = function (minutes) {
 	var month = mp + ((mp < 10) ? 3 : (-9));
 	var year = yearOfEra + (era * 400);
 	return {
-		eV: (dayOfYear - ((((153 * mp) + 2) / 5) | 0)) + 1,
-		fH: month,
-		gM: year + ((month <= 2) ? 1 : 0)
+		fu: (dayOfYear - ((((153 * mp) + 2) / 5) | 0)) + 1,
+		gj: month,
+		hp: year + ((month <= 2) ? 1 : 0)
 	};
 };
 var $elm$time$Time$toDay = F2(
 	function (zone, time) {
 		return $elm$time$Time$toCivil(
-			A2($elm$time$Time$toAdjustedMinutes, zone, time)).eV;
+			A2($elm$time$Time$toAdjustedMinutes, zone, time)).fu;
 	});
 var $ryan_haskell$date_format$DateFormat$dayOfMonth = $elm$time$Time$toDay;
 var $elm$time$Time$Sun = 6;
@@ -21433,7 +22322,7 @@ var $ryan_haskell$date_format$DateFormat$months = _List_fromArray(
 var $elm$time$Time$toMonth = F2(
 	function (zone, time) {
 		var _v0 = $elm$time$Time$toCivil(
-			A2($elm$time$Time$toAdjustedMinutes, zone, time)).fH;
+			A2($elm$time$Time$toAdjustedMinutes, zone, time)).gj;
 		switch (_v0) {
 			case 1:
 				return 0;
@@ -21625,7 +22514,7 @@ var $elm$core$List$take = F2(
 var $elm$time$Time$toYear = F2(
 	function (zone, time) {
 		return $elm$time$Time$toCivil(
-			A2($elm$time$Time$toAdjustedMinutes, zone, time)).gM;
+			A2($elm$time$Time$toAdjustedMinutes, zone, time)).hp;
 	});
 var $ryan_haskell$date_format$DateFormat$dayOfYear = F2(
 	function (zone, posix) {
@@ -21725,7 +22614,7 @@ var $ryan_haskell$date_format$DateFormat$piece = F4(
 				return function (num) {
 					return _Utils_ap(
 						$elm$core$String$fromInt(num),
-						language.by(num));
+						language.bA(num));
 				}(
 					A2($ryan_haskell$date_format$DateFormat$monthNumber_, zone, posix));
 			case 2:
@@ -21734,10 +22623,10 @@ var $ryan_haskell$date_format$DateFormat$piece = F4(
 					2,
 					A2($ryan_haskell$date_format$DateFormat$monthNumber_, zone, posix));
 			case 3:
-				return language.kQ(
+				return language.lk(
 					A2($elm$time$Time$toMonth, zone, posix));
 			case 4:
-				return language.kR(
+				return language.ll(
 					A2($elm$time$Time$toMonth, zone, posix));
 			case 17:
 				return $elm$core$String$fromInt(
@@ -21746,7 +22635,7 @@ var $ryan_haskell$date_format$DateFormat$piece = F4(
 				return function (num) {
 					return _Utils_ap(
 						$elm$core$String$fromInt(num),
-						language.by(num));
+						language.bA(num));
 				}(
 					1 + A2($ryan_haskell$date_format$DateFormat$quarter, zone, posix));
 			case 5:
@@ -21756,7 +22645,7 @@ var $ryan_haskell$date_format$DateFormat$piece = F4(
 				return function (num) {
 					return _Utils_ap(
 						$elm$core$String$fromInt(num),
-						language.by(num));
+						language.bA(num));
 				}(
 					A2($ryan_haskell$date_format$DateFormat$dayOfMonth, zone, posix));
 			case 7:
@@ -21771,7 +22660,7 @@ var $ryan_haskell$date_format$DateFormat$piece = F4(
 				return function (num) {
 					return _Utils_ap(
 						$elm$core$String$fromInt(num),
-						language.by(num));
+						language.bA(num));
 				}(
 					A2($ryan_haskell$date_format$DateFormat$dayOfYear, zone, posix));
 			case 10:
@@ -21786,14 +22675,14 @@ var $ryan_haskell$date_format$DateFormat$piece = F4(
 				return function (num) {
 					return _Utils_ap(
 						$elm$core$String$fromInt(num),
-						language.by(num));
+						language.bA(num));
 				}(
 					A2($ryan_haskell$date_format$DateFormat$dayOfWeek, zone, posix));
 			case 13:
-				return language.kS(
+				return language.lm(
 					A2($elm$time$Time$toWeekday, zone, posix));
 			case 14:
-				return language.kT(
+				return language.ln(
 					A2($elm$time$Time$toWeekday, zone, posix));
 			case 19:
 				return $elm$core$String$fromInt(
@@ -21802,7 +22691,7 @@ var $ryan_haskell$date_format$DateFormat$piece = F4(
 				return function (num) {
 					return _Utils_ap(
 						$elm$core$String$fromInt(num),
-						language.by(num));
+						language.bA(num));
 				}(
 					A2($ryan_haskell$date_format$DateFormat$weekOfYear, zone, posix));
 			case 21:
@@ -21932,26 +22821,26 @@ var $author$project$Resource$Resource$initBuild = F2(
 				A2(
 					$elm$core$Maybe$map,
 					function ($) {
-						return $.iz;
+						return $.f_;
 					},
-					model.eH),
-				$elm$core$Maybe$Just(build.iz))) {
+					model.fe),
+				$elm$core$Maybe$Just(build.f_))) {
 				return _Utils_Tuple2(
 					_Utils_update(
 						model,
 						{
-							eH: $elm$core$Maybe$Just(build)
+							fe: $elm$core$Maybe$Just(build)
 						}),
 					effects);
 			} else {
-				var _v2 = A2($author$project$Build$Output$Output$init, model.is, build);
+				var _v2 = A2($author$project$Build$Output$Output$init, model.iZ, build);
 				var output = _v2.a;
 				var outputCmd = _v2.b;
 				return _Utils_Tuple2(
 					_Utils_update(
 						model,
 						{
-							eH: $elm$core$Maybe$Just(build),
+							fe: $elm$core$Maybe$Just(build),
 							N: $elm$core$Maybe$Just(output)
 						}),
 					_Utils_ap(
@@ -21972,12 +22861,12 @@ var $author$project$Pinned$quitUnpinning = function (resourcePinState) {
 };
 var $author$project$Concourse$toVersionedResourceId = F2(
 	function (_v0, _v1) {
-		var teamName = _v0.kD;
-		var pipelineName = _v0.jL;
-		var pipelineInstanceVars = _v0.f2;
-		var resourceName = _v0.j1;
-		var id = _v1.iz;
-		return {f2: pipelineInstanceVars, jL: pipelineName, j1: resourceName, kD: teamName, k5: id};
+		var teamName = _v0.k8;
+		var pipelineName = _v0.gH;
+		var pipelineInstanceVars = _v0.ew;
+		var resourceName = _v0.kw;
+		var id = _v1.f_;
+		return {ew: pipelineInstanceVars, gH: pipelineName, kw: resourceName, k8: teamName, lB: id};
 	});
 var $author$project$Resource$Resource$updateOutput = F2(
 	function (updater, _v0) {
@@ -22010,16 +22899,16 @@ var $author$project$Pinned$UnpinningFrom = F2(
 	});
 var $author$project$Resource$Resource$updatePinnedVersion = F2(
 	function (resource, model) {
-		var _v0 = _Utils_Tuple2(resource.f1, resource.f$);
+		var _v0 = _Utils_Tuple2(resource.gG, resource.gE);
 		if (_v0.a.$ === 1) {
 			var _v1 = _v0.a;
-			var _v2 = model.f1;
+			var _v2 = model.gG;
 			if (_v2.$ === 1) {
 				return model;
 			} else {
 				return _Utils_update(
 					model,
-					{f1: $author$project$Pinned$NotPinned});
+					{gG: $author$project$Pinned$NotPinned});
 			}
 		} else {
 			if (_v0.b) {
@@ -22027,28 +22916,28 @@ var $author$project$Resource$Resource$updatePinnedVersion = F2(
 				return _Utils_update(
 					model,
 					{
-						f1: $author$project$Pinned$PinnedStaticallyTo(v)
+						gG: $author$project$Pinned$PinnedStaticallyTo(v)
 					});
 			} else {
 				var newVersion = _v0.a.a;
-				var pristineComment = A2($elm$core$Maybe$withDefault, '', resource.f_);
-				var _v3 = model.f1;
+				var pristineComment = A2($elm$core$Maybe$withDefault, '', resource.gD);
+				var _v3 = model.gG;
 				switch (_v3.$) {
 					case 3:
 						var c = _v3.a;
 						return _Utils_update(
 							model,
 							{
-								f1: A2($author$project$Pinned$UnpinningFrom, c, newVersion)
+								gG: A2($author$project$Pinned$UnpinningFrom, c, newVersion)
 							});
 					case 2:
-						var comment = _v3.a.a3;
+						var comment = _v3.a.a4;
 						return _Utils_update(
 							model,
 							{
-								f1: A2(
+								gG: A2(
 									$author$project$Pinned$PinnedDynamicallyTo,
-									{a3: comment, f4: pristineComment},
+									{a4: comment, gJ: pristineComment},
 									newVersion)
 							});
 					case 5:
@@ -22056,18 +22945,18 @@ var $author$project$Resource$Resource$updatePinnedVersion = F2(
 						return _Utils_eq(v, newVersion) ? model : _Utils_update(
 							model,
 							{
-								f1: A2(
+								gG: A2(
 									$author$project$Pinned$PinnedDynamicallyTo,
-									{a3: pristineComment, f4: pristineComment},
+									{a4: pristineComment, gJ: pristineComment},
 									newVersion)
 							});
 					default:
 						return _Utils_update(
 							model,
 							{
-								f1: A2(
+								gG: A2(
 									$author$project$Pinned$PinnedDynamicallyTo,
-									{a3: pristineComment, f4: pristineComment},
+									{a4: pristineComment, gJ: pristineComment},
 									newVersion)
 							});
 				}
@@ -22082,29 +22971,29 @@ var $author$project$Resource$Resource$updateVersion = F3(
 			A2(
 				$elm$core$Basics$composeR,
 				function ($) {
-					return $.iz;
+					return $.f_;
 				},
 				$elm$core$Basics$eq(versionID)),
 			updateFunc,
-			model.x.hn);
+			model.x.h_);
 		return _Utils_update(
 			model,
 			{
 				x: _Utils_update(
 					resourceVersions,
-					{hn: newVersionsContent})
+					{h_: newVersionsContent})
 			});
 	});
 var $author$project$Login$Login$userDisplayName = function (user) {
 	return A2(
 		$elm$core$Maybe$withDefault,
-		user.iz,
+		user.f_,
 		$elm$core$List$head(
 			A2(
 				$elm$core$List$filter,
 				A2($elm$core$Basics$composeL, $elm$core$Basics$not, $elm$core$String$isEmpty),
 				_List_fromArray(
-					[user.hE, user.k0, user.dQ, user.hM]))));
+					[user.ic, user.lx, user.cT, user.ik]))));
 };
 var $author$project$Resource$Resource$handleCallback = F3(
 	function (callback, session, _v0) {
@@ -22118,7 +23007,7 @@ var $author$project$Resource$Resource$handleCallback = F3(
 						var resource = callback.a.a;
 						return A2(
 							$author$project$Resource$Resource$initBuild,
-							resource.eH,
+							resource.fe,
 							_Utils_Tuple2(
 								A2(
 									$author$project$Resource$Resource$updatePinnedVersion,
@@ -22126,13 +23015,13 @@ var $author$project$Resource$Resource$handleCallback = F3(
 									_Utils_update(
 										model,
 										{
-											aN: function () {
-												var _v2 = resource.eH;
+											aO: function () {
+												var _v2 = resource.fe;
 												if (_v2.$ === 1) {
 													return $author$project$Resource$Models$NotChecking;
 												} else {
-													var id = _v2.a.iz;
-													var status = _v2.a.ek;
+													var id = _v2.a.f_;
+													var status = _v2.a.eT;
 													switch (status) {
 														case 2:
 															return $author$project$Resource$Models$NotChecking;
@@ -22143,16 +23032,16 @@ var $author$project$Resource$Resource$handleCallback = F3(
 													}
 												}
 											}(),
-											fn: resource.fn,
-											fA: resource.fA,
-											aW: $elm$core$Result$Ok(0),
-											g: {f2: resource.f2, jL: resource.jL, j1: resource.dQ, kD: resource.kD}
+											fZ: resource.fZ,
+											gb: resource.gb,
+											aX: $elm$core$Result$Ok(0),
+											g: {ew: resource.ew, gH: resource.gH, kw: resource.cT, k8: resource.k8}
 										})),
 								_Utils_ap(
 									effects,
 									_Utils_ap(
 										function () {
-											var _v4 = resource.fn;
+											var _v4 = resource.fZ;
 											if (!_v4.$) {
 												var icon = _v4.a;
 												return _List_fromArray(
@@ -22170,17 +23059,17 @@ var $author$project$Resource$Resource$handleCallback = F3(
 					} else {
 						var err = callback.a.a;
 						if (err.$ === 3) {
-							var status = err.a.ek;
-							return (status.eM === 401) ? _Utils_Tuple2(
+							var status = err.a.eT;
+							return (status.fj === 401) ? _Utils_Tuple2(
 								model,
 								_Utils_ap(
 									effects,
 									_List_fromArray(
-										[$author$project$Message$Effects$RedirectToLogin]))) : ((status.eM === 404) ? _Utils_Tuple2(
+										[$author$project$Message$Effects$RedirectToLogin]))) : ((status.fj === 404) ? _Utils_Tuple2(
 								_Utils_update(
 									model,
 									{
-										aW: $elm$core$Result$Err(1)
+										aX: $elm$core$Result$Err(1)
 									}),
 								effects) : _Utils_Tuple2(model, effects));
 						} else {
@@ -22197,8 +23086,8 @@ var $author$project$Resource$Resource$handleCallback = F3(
 							if (!versionedResource.$) {
 								var vr = versionedResource.a;
 								return {
-									e0: $author$project$Concourse$Pagination$To(vr.iz),
-									fC: model.cj.fC
+									fB: $author$project$Concourse$Pagination$To(vr.f_),
+									gd: model.cz.gd
 								};
 							} else {
 								return $author$project$Resource$Resource$startingPage;
@@ -22207,7 +23096,7 @@ var $author$project$Resource$Resource$handleCallback = F3(
 						return _Utils_Tuple2(
 							_Utils_update(
 								model,
-								{cj: page}),
+								{cz: page}),
 							_Utils_ap(
 								effects,
 								_Utils_ap(
@@ -22238,14 +23127,14 @@ var $author$project$Resource$Resource$handleCallback = F3(
 						var requestedPage = _v8.a;
 						var paginated = _v8.b;
 						var resourceVersions = {
-							hn: A2(
+							h_: A2(
 								$elm$core$List$map,
 								function (vr) {
 									var expanded = function () {
-										var _v10 = model.be;
+										var _v10 = model.bg;
 										if (!_v10.$) {
 											var v = _v10.a;
-											return _Utils_eq(vr.er, v);
+											return _Utils_eq(vr.eZ, v);
 										} else {
 											return false;
 										}
@@ -22253,42 +23142,42 @@ var $author$project$Resource$Resource$handleCallback = F3(
 									var existingVersion = A2(
 										$elm_community$list_extra$List$Extra$find,
 										function (v) {
-											return _Utils_eq(v.iz.k5, vr.iz);
+											return _Utils_eq(v.f_.lB, vr.f_);
 										},
-										model.x.hn);
-									var enabledStateAccordingToServer = vr.hN ? 0 : 2;
+										model.x.h_);
+									var enabledStateAccordingToServer = vr.il ? 0 : 2;
 									if (!existingVersion.$) {
 										var ev = existingVersion.a;
 										return _Utils_update(
 											ev,
 											{
-												hN: (ev.hN === 1) ? 1 : enabledStateAccordingToServer
+												il: (ev.il === 1) ? 1 : enabledStateAccordingToServer
 											});
 									} else {
 										return {
-											hN: enabledStateAccordingToServer,
-											hX: expanded,
-											iz: {f2: model.g.f2, jL: model.g.jL, j1: model.g.j1, kD: model.g.kD, k5: vr.iz},
-											iI: _List_Nil,
-											jg: vr.jg,
-											jD: _List_Nil,
-											er: vr.er
+											il: enabledStateAccordingToServer,
+											iv: expanded,
+											f_: {ew: model.g.ew, gH: model.g.gH, kw: model.g.kw, k8: model.g.k8, lB: vr.f_},
+											jc: _List_Nil,
+											jL: vr.jL,
+											j7: _List_Nil,
+											eZ: vr.eZ
 										};
 									}
 								},
-								paginated.hn),
-							jF: paginated.jF
+								paginated.h_),
+							j9: paginated.j9
 						};
 						var newModel = F2(
 							function (newPage, newEffects) {
 								return _Utils_Tuple2(
 									_Utils_update(
 										model,
-										{cj: newPage, x: resourceVersions}),
+										{cz: newPage, x: resourceVersions}),
 									newEffects);
 							});
 						return ($author$project$Concourse$Pagination$isPreviousPage(requestedPage) && (_Utils_cmp(
-							$elm$core$List$length(resourceVersions.hn),
+							$elm$core$List$length(resourceVersions.h_),
 							$author$project$Resource$Resource$pageLimit) < 0)) ? A2(
 							newModel,
 							$author$project$Resource$Resource$startingPage,
@@ -22301,12 +23190,12 @@ var $author$project$Resource$Resource$handleCallback = F3(
 										$author$project$Routes$toString(
 											$author$project$Routes$Resource(
 												{
-													dt: _List_Nil,
-													iz: model.g,
-													bp: $elm$core$Maybe$Just($author$project$Resource$Resource$startingPage),
-													er: $elm$core$Maybe$Nothing
+													dZ: _List_Nil,
+													f_: model.g,
+													br: $elm$core$Maybe$Just($author$project$Resource$Resource$startingPage),
+													eZ: $elm$core$Maybe$Nothing
 												})))
-									]))) : (A2($author$project$Concourse$Pagination$equal, model.cj, requestedPage) ? A2(newModel, requestedPage, effects) : _Utils_Tuple2(model, effects));
+									]))) : (A2($author$project$Concourse$Pagination$equal, model.cz, requestedPage) ? A2(newModel, requestedPage, effects) : _Utils_Tuple2(model, effects));
 					} else {
 						break _v1$16;
 					}
@@ -22322,7 +23211,7 @@ var $author$project$Resource$Resource$handleCallback = F3(
 								function (v) {
 									return _Utils_update(
 										v,
-										{iI: builds});
+										{jc: builds});
 								},
 								model),
 							effects);
@@ -22341,7 +23230,7 @@ var $author$project$Resource$Resource$handleCallback = F3(
 								function (v) {
 									return _Utils_update(
 										v,
-										{jD: builds});
+										{j7: builds});
 								},
 								model),
 							effects);
@@ -22350,12 +23239,12 @@ var $author$project$Resource$Resource$handleCallback = F3(
 					}
 				case 26:
 					if (!callback.a.$) {
-						var _v13 = _Utils_Tuple2(session.k1, model.fN);
+						var _v13 = _Utils_Tuple2(session.ly, model.gq);
 						if ((!_v13.a.$) && (!_v13.b.$)) {
 							var user = _v13.a.a;
 							var time = _v13.b.a;
 							var pinningTo = function () {
-								var _v14 = model.f1;
+								var _v14 = model.gG;
 								switch (_v14.$) {
 									case 1:
 										var pt = _v14.a;
@@ -22367,31 +23256,31 @@ var $author$project$Resource$Resource$handleCallback = F3(
 										return $elm$core$Maybe$Nothing;
 								}
 							}();
-							var commentText = 'pinned by ' + ($author$project$Login$Login$userDisplayName(user) + (' on ' + A2($author$project$Resource$Resource$formatDate, session.gB, time)));
+							var commentText = 'pinned by ' + ($author$project$Login$Login$userDisplayName(user) + (' on ' + A2($author$project$Resource$Resource$formatDate, session.he, time)));
 							return _Utils_Tuple2(
 								_Utils_update(
 									model,
 									{
-										f1: A2(
+										gG: A2(
 											$elm$core$Maybe$withDefault,
 											$author$project$Pinned$NotPinned,
 											A2(
 												$elm$core$Maybe$map,
 												$author$project$Pinned$PinnedDynamicallyTo(
-													{a3: commentText, f4: ''}),
+													{a4: commentText, gJ: ''}),
 												A2(
 													$elm$core$Maybe$map,
 													function ($) {
-														return $.er;
+														return $.eZ;
 													},
 													A2(
 														$elm_community$list_extra$List$Extra$find,
 														function (v) {
 															return _Utils_eq(
-																$elm$core$Maybe$Just(v.iz),
+																$elm$core$Maybe$Just(v.f_),
 																pinningTo);
 														},
-														model.x.hn))))
+														model.x.h_))))
 									}),
 								_Utils_ap(
 									effects,
@@ -22406,7 +23295,7 @@ var $author$project$Resource$Resource$handleCallback = F3(
 						return _Utils_Tuple2(
 							_Utils_update(
 								model,
-								{f1: $author$project$Pinned$NotPinned}),
+								{gG: $author$project$Pinned$NotPinned}),
 							effects);
 					}
 				case 27:
@@ -22414,7 +23303,7 @@ var $author$project$Resource$Resource$handleCallback = F3(
 						return _Utils_Tuple2(
 							_Utils_update(
 								model,
-								{f1: $author$project$Pinned$NotPinned}),
+								{gG: $author$project$Pinned$NotPinned}),
 							_Utils_ap(
 								effects,
 								_List_fromArray(
@@ -22426,7 +23315,7 @@ var $author$project$Resource$Resource$handleCallback = F3(
 							_Utils_update(
 								model,
 								{
-									f1: $author$project$Pinned$quitUnpinning(model.f1)
+									gG: $author$project$Pinned$quitUnpinning(model.gG)
 								}),
 							effects);
 					}
@@ -22461,7 +23350,7 @@ var $author$project$Resource$Resource$handleCallback = F3(
 							function (v) {
 								return _Utils_update(
 									v,
-									{hN: newEnabledState});
+									{il: newEnabledState});
 							},
 							model),
 						effects);
@@ -22477,10 +23366,10 @@ var $author$project$Resource$Resource$handleCallback = F3(
 									])));
 					} else {
 						if (callback.a.a.$ === 3) {
-							var status = callback.a.a.a.ek;
+							var status = callback.a.a.a.eT;
 							return _Utils_Tuple2(
 								model,
-								(status.eM === 401) ? _Utils_ap(
+								(status.fj === 401) ? _Utils_ap(
 									effects,
 									_List_fromArray(
 										[$author$project$Message$Effects$RedirectToLogin])) : effects);
@@ -22494,19 +23383,19 @@ var $author$project$Resource$Resource$handleCallback = F3(
 						_Utils_update(
 							model,
 							{
-								cs: !_Utils_eq(
+								cK: !_Utils_eq(
 									result,
 									$elm$core$Result$Ok(0)),
-								bZ: false,
-								f1: function () {
-									var _v20 = _Utils_Tuple2(result, model.f1);
+								b5: false,
+								gG: function () {
+									var _v20 = _Utils_Tuple2(result, model.gG);
 									if ((!_v20.a.$) && (_v20.b.$ === 2)) {
 										var _v21 = _v20.b;
-										var comment = _v21.a.a3;
+										var comment = _v21.a.a4;
 										var v = _v21.b;
 										return A2(
 											$author$project$Pinned$PinnedDynamicallyTo,
-											{a3: comment, f4: comment},
+											{a4: comment, gJ: comment},
 											v);
 									} else {
 										var pv = _v20.b;
@@ -22536,9 +23425,9 @@ var $author$project$Resource$Resource$handleCallback = F3(
 										[
 											$author$project$Message$Effects$OpenBuildEventStream(
 											{
-												hV: _List_fromArray(
+												it: _List_fromArray(
 													['end', 'event']),
-												k$: A2(
+												lw: A2(
 													$author$project$Api$Endpoints$toString,
 													_List_Nil,
 													A2($author$project$Api$Endpoints$Build, buildId, 5))
@@ -22547,11 +23436,11 @@ var $author$project$Resource$Resource$handleCallback = F3(
 					} else {
 						var err = callback.b.a;
 						if (err.$ === 3) {
-							var status = err.a.ek;
-							return ((status.eM === 401) || (status.eM === 403)) ? _Utils_Tuple2(
+							var status = err.a.eT;
+							return ((status.fj === 401) || (status.fj === 403)) ? _Utils_Tuple2(
 								_Utils_update(
 									model,
-									{bG: false}),
+									{bI: false}),
 								effects) : _Utils_Tuple2(model, effects);
 						} else {
 							return _Utils_Tuple2(model, effects);
@@ -22569,7 +23458,7 @@ var $author$project$SubPage$SubPage$handleLoggedOut = function (_v0) {
 	return _Utils_Tuple2(
 		_Utils_update(
 			m,
-			{iZ: false}),
+			{jt: false}),
 		_Utils_ap(
 			effs,
 			_List_fromArray(
@@ -22578,8 +23467,8 @@ var $author$project$SubPage$SubPage$handleLoggedOut = function (_v0) {
 					$author$project$Routes$toString(
 						$author$project$Routes$Dashboard(
 							{
-								hy: 0,
-								kf: $author$project$Routes$Normal('')
+								h6: 0,
+								kK: $author$project$Routes$Normal('')
 							})))
 				])));
 };
@@ -22595,10 +23484,12 @@ var $author$project$SubPage$SubPage$handleCallback = F2(
 				$author$project$Dashboard$Dashboard$handleCallback(callback))(
 				$author$project$Causality$Causality$handleCallback(callback))($elm$core$Basics$identity)($elm$core$Basics$identity)($elm$core$Basics$identity)(
 				$author$project$AgentReviews$AgentReviews$handleCallback(callback))(
-				$author$project$Agent$Agent$handleCallback(callback)),
+				$author$project$Agent$Agent$handleCallback(callback))(
+				$author$project$AgentTickets$AgentTickets$handleCallback(callback))(
+				$author$project$AgentTickets$AgentTicket$handleCallback(callback)),
 			function () {
 				if ((callback.$ === 34) && (!callback.a.$)) {
-					return $author$project$SubPage$SubPage$genericUpdate($author$project$SubPage$SubPage$handleLoggedOut)($author$project$SubPage$SubPage$handleLoggedOut)($author$project$SubPage$SubPage$handleLoggedOut)($author$project$SubPage$SubPage$handleLoggedOut)($author$project$SubPage$SubPage$handleLoggedOut)($author$project$SubPage$SubPage$handleLoggedOut)($author$project$SubPage$SubPage$handleLoggedOut)($author$project$SubPage$SubPage$handleLoggedOut)($author$project$SubPage$SubPage$handleLoggedOut)($author$project$SubPage$SubPage$handleLoggedOut)($author$project$SubPage$SubPage$handleLoggedOut);
+					return $author$project$SubPage$SubPage$genericUpdate($author$project$SubPage$SubPage$handleLoggedOut)($author$project$SubPage$SubPage$handleLoggedOut)($author$project$SubPage$SubPage$handleLoggedOut)($author$project$SubPage$SubPage$handleLoggedOut)($author$project$SubPage$SubPage$handleLoggedOut)($author$project$SubPage$SubPage$handleLoggedOut)($author$project$SubPage$SubPage$handleLoggedOut)($author$project$SubPage$SubPage$handleLoggedOut)($author$project$SubPage$SubPage$handleLoggedOut)($author$project$SubPage$SubPage$handleLoggedOut)($author$project$SubPage$SubPage$handleLoggedOut)($author$project$SubPage$SubPage$handleLoggedOut)($author$project$SubPage$SubPage$handleLoggedOut);
 				} else {
 					return $elm$core$Basics$identity;
 				}
@@ -22607,10 +23498,10 @@ var $author$project$SubPage$SubPage$handleCallback = F2(
 var $author$project$UpdateMsg$AOK = 1;
 var $author$project$UpdateMsg$NotFound = 0;
 var $author$project$Build$Build$getUpdateMessage = function (model) {
-	return model.dT ? 0 : 1;
+	return model.el ? 0 : 1;
 };
 var $author$project$Causality$Causality$getUpdateMessage = function (model) {
-	var _v0 = model.aW;
+	var _v0 = model.aX;
 	if (_v0.$ === 1) {
 		if (!_v0.a) {
 			var _v1 = _v0.a;
@@ -22623,7 +23514,7 @@ var $author$project$Causality$Causality$getUpdateMessage = function (model) {
 	}
 };
 var $author$project$Job$Job$getUpdateMessage = function (model) {
-	var _v0 = model.ap;
+	var _v0 = model.ac;
 	if (_v0.$ === 2) {
 		return 0;
 	} else {
@@ -22631,7 +23522,7 @@ var $author$project$Job$Job$getUpdateMessage = function (model) {
 	}
 };
 var $author$project$Pipeline$Pipeline$getUpdateMessage = function (model) {
-	var _v0 = model.ag;
+	var _v0 = model.ah;
 	if (_v0.$ === 2) {
 		return 0;
 	} else {
@@ -22640,7 +23531,7 @@ var $author$project$Pipeline$Pipeline$getUpdateMessage = function (model) {
 };
 var $author$project$Resource$Resource$getUpdateMessage = function (model) {
 	return _Utils_eq(
-		model.aW,
+		model.aX,
 		$elm$core$Result$Err(1)) ? 0 : 1;
 };
 var $author$project$SubPage$SubPage$getUpdateMessage = function (model) {
@@ -22671,7 +23562,7 @@ var $author$project$SubPage$SubPage$handleNotFound = F2(
 		var _v1 = $author$project$SubPage$SubPage$getUpdateMessage(model);
 		if (!_v1) {
 			var _v2 = $author$project$NotFound$NotFound$init(
-				{dU: session.dU, d5: session.d5});
+				{em: session.em, eD: session.eD});
 			var newModel = _v2.a;
 			var newEffects = _v2.b;
 			return _Utils_Tuple2(
@@ -22798,7 +23689,7 @@ var $author$project$Application$Application$handleCallback = F2(
 						var session = model.c;
 						var newSession = _Utils_update(
 							session,
-							{k1: $author$project$UserState$UserStateLoggedOut});
+							{ly: $author$project$UserState$UserStateLoggedOut});
 						return A2(
 							$author$project$Application$Application$subpageHandleCallback,
 							callback,
@@ -22816,7 +23707,7 @@ var $author$project$Application$Application$handleCallback = F2(
 						var session = model.c;
 						var newSession = _Utils_update(
 							session,
-							{k1: $author$project$UserState$UserStateLoggedOut});
+							{ly: $author$project$UserState$UserStateLoggedOut});
 						return A2(
 							$author$project$Application$Application$redirectToLoginIfNecessary,
 							err,
@@ -22838,7 +23729,7 @@ var $author$project$Application$Application$handleCallback = F2(
 						var newSession = _Utils_update(
 							session,
 							{
-								k1: $author$project$UserState$UserStateLoggedIn(user)
+								ly: $author$project$UserState$UserStateLoggedIn(user)
 							});
 						return A2(
 							$author$project$Application$Application$subpageHandleCallback,
@@ -22852,7 +23743,7 @@ var $author$project$Application$Application$handleCallback = F2(
 						var session = model.c;
 						var newSession = _Utils_update(
 							session,
-							{k1: $author$project$UserState$UserStateLoggedOut});
+							{ly: $author$project$UserState$UserStateLoggedOut});
 						return A2(
 							$author$project$Application$Application$subpageHandleCallback,
 							callback,
@@ -22864,14 +23755,14 @@ var $author$project$Application$Application$handleCallback = F2(
 					}
 				case 20:
 					if (!callback.a.$) {
-						var clusterName = callback.a.a.c9;
-						var version = callback.a.a.er;
-						var jetbridgeVersion = callback.a.a.dK;
-						var concourseVersion = callback.a.a.db;
+						var clusterName = callback.a.a.dB;
+						var version = callback.a.a.eZ;
+						var jetbridgeVersion = callback.a.a.ed;
+						var concourseVersion = callback.a.a.dD;
 						var session = model.c;
 						var newSession = _Utils_update(
 							session,
-							{c9: clusterName, db: concourseVersion, dK: jetbridgeVersion, er: version});
+							{dB: clusterName, dD: concourseVersion, ed: jetbridgeVersion, eZ: version});
 						return A2(
 							$author$project$Application$Application$subpageHandleCallback,
 							callback,
@@ -22889,7 +23780,7 @@ var $author$project$Application$Application$handleCallback = F2(
 					var newSession = _Utils_update(
 						session,
 						{
-							d8: $author$project$ScreenSize$fromWindowSize(viewport.k7.gK)
+							eG: $author$project$ScreenSize$fromWindowSize(viewport.lD.hn)
 						});
 					return A2(
 						$author$project$Application$Application$subpageHandleCallback,
@@ -22908,20 +23799,20 @@ var $author$project$Application$Application$handleCallback = F2(
 							{
 								c: _Utils_update(
 									session,
-									{gB: zone})
+									{he: zone})
 							}),
 						_List_Nil);
 				case 21:
 					if (!callback.a.$) {
 						var wall = callback.a.a;
 						var newMsg = function () {
-							var trimmed = $elm$core$String$trim(wall.jf);
+							var trimmed = $elm$core$String$trim(wall.jK);
 							return (trimmed === '') ? $elm$core$Maybe$Nothing : $elm$core$Maybe$Just(trimmed);
 						}();
 						return _Utils_Tuple2(
 							_Utils_update(
 								model,
-								{c4: newMsg}),
+								{dr: newMsg}),
 							_List_Nil);
 					} else {
 						return _Utils_Tuple2(model, _List_Nil);
@@ -22951,7 +23842,7 @@ var $author$project$Favorites$handleDelivery = F2(
 						return _Utils_Tuple2(
 							_Utils_update(
 								model,
-								{h4: pipelines}),
+								{iD: pipelines}),
 							effects);
 					} else {
 						break _v1$2;
@@ -22962,7 +23853,7 @@ var $author$project$Favorites$handleDelivery = F2(
 						return _Utils_Tuple2(
 							_Utils_update(
 								model,
-								{h3: groups}),
+								{iC: groups}),
 							effects);
 					} else {
 						break _v1$2;
@@ -22989,22 +23880,22 @@ var $author$project$SideBar$SideBar$handleDeliverySidebar = F2(
 						return _Utils_Tuple2(
 							_Utils_update(
 								model,
-								{km: state}),
+								{kR: state}),
 							effects);
 					} else {
 						break _v1$3;
 					}
 				case 2:
 					var pos = delivery.a;
-					if (model.dg) {
-						var oldState = model.km;
+					if (model.dI) {
+						var oldState = model.kR;
 						var newState = _Utils_update(
 							oldState,
-							{gK: pos.ak});
+							{hn: pos.am});
 						return _Utils_Tuple2(
 							_Utils_update(
 								model,
-								{km: newState}),
+								{kR: newState}),
 							_Utils_ap(
 								effects,
 								_List_fromArray(
@@ -23018,10 +23909,10 @@ var $author$project$SideBar$SideBar$handleDeliverySidebar = F2(
 					return _Utils_Tuple2(
 						_Utils_update(
 							model,
-							{dg: false}),
-						model.dg ? _List_fromArray(
+							{dI: false}),
+						model.dI ? _List_fromArray(
 							[
-								$author$project$Message$Effects$SaveSideBarState(model.km)
+								$author$project$Message$Effects$SaveSideBarState(model.kR)
 							]) : _List_Nil);
 				default:
 					break _v1$3;
@@ -23051,6 +23942,41 @@ var $author$project$Agent$Agent$handleDelivery = F2(
 			return _Utils_Tuple2(model, effects);
 		}
 	});
+var $author$project$AgentTickets$AgentTicket$handleDelivery = F2(
+	function (delivery, _v0) {
+		var model = _v0.a;
+		var effects = _v0.b;
+		if ((delivery.$ === 4) && (delivery.a === 2)) {
+			var _v2 = delivery.a;
+			return _Utils_Tuple2(
+				model,
+				_Utils_ap(
+					effects,
+					_List_fromArray(
+						[
+							$author$project$Message$Effects$FetchAgentTicket(model.lg),
+							$author$project$Message$Effects$FetchAgentTicketMetrics(model.lg)
+						])));
+		} else {
+			return _Utils_Tuple2(model, effects);
+		}
+	});
+var $author$project$AgentTickets$AgentTickets$handleDelivery = F2(
+	function (delivery, _v0) {
+		var model = _v0.a;
+		var effects = _v0.b;
+		if ((delivery.$ === 4) && (delivery.a === 2)) {
+			var _v2 = delivery.a;
+			return _Utils_Tuple2(
+				model,
+				_Utils_ap(
+					effects,
+					_List_fromArray(
+						[$author$project$Message$Effects$FetchAgentTickets, $author$project$Message$Effects$FetchAgentTicketCosts])));
+		} else {
+			return _Utils_Tuple2(model, effects);
+		}
+	});
 var $author$project$Message$Effects$Scroll = F2(
 	function (a, b) {
 		return {$: 57, a: a, b: b};
@@ -23065,7 +23991,7 @@ var $author$project$Build$Build$ScrollToID = function (a) {
 };
 var $author$project$Build$Build$ScrollWindow = {$: 0};
 var $author$project$Build$Build$getScrollBehavior = function (model) {
-	var _v0 = model.is;
+	var _v0 = model.iZ;
 	switch (_v0.$) {
 		case 1:
 			var stepID = _v0.a;
@@ -23079,9 +24005,9 @@ var $author$project$Build$Build$getScrollBehavior = function (model) {
 			return (_Utils_cmp(beginning, end) < 1) ? $author$project$Build$Build$ScrollToID(
 				stepID + (':' + $elm$core$String$fromInt(beginning))) : $author$project$Build$Build$NoScroll;
 		default:
-			if (model.bH) {
-				if (model.aA) {
-					var _v1 = model.ek;
+			if (model.bJ) {
+				if (model.aB) {
+					var _v1 = model.eT;
 					switch (_v1) {
 						case 2:
 							return $author$project$Build$Build$NoScroll;
@@ -23139,23 +24065,23 @@ var $author$project$Build$Header$Header$handleDelivery = F2(
 								A2(
 									$elm$core$Maybe$map,
 									function ($) {
-										return $.iz;
+										return $.f_;
 									},
-									$elm_community$list_extra$List$Extra$last(model.it)))));
-					var hasNextPage = !_Utils_eq(model.bW, $elm$core$Maybe$Nothing);
-					var needsToFetchMorePages = (!model.h6) && (lastBuildVisible && hasNextPage);
-					var _v3 = model.ap;
+									$elm_community$list_extra$List$Extra$last(model.i_)))));
+					var hasNextPage = !_Utils_eq(model.b2, $elm$core$Maybe$Nothing);
+					var needsToFetchMorePages = (!model.iF) && (lastBuildVisible && hasNextPage);
+					var _v3 = model.ac;
 					if (!_v3.$) {
 						var job = _v3.a;
 						return needsToFetchMorePages ? _Utils_Tuple2(
 							_Utils_update(
 								model,
-								{h6: true}),
+								{iF: true}),
 							_Utils_ap(
 								effects,
 								_List_fromArray(
 									[
-										A2($author$project$Message$Effects$FetchBuildHistory, job, model.bW)
+										A2($author$project$Message$Effects$FetchBuildHistory, job, model.b2)
 									]))) : _Utils_Tuple2(model, effects);
 					} else {
 						return _Utils_Tuple2(model, effects);
@@ -23164,13 +24090,13 @@ var $author$project$Build$Header$Header$handleDelivery = F2(
 					var _v4 = delivery.a;
 					var id = _v4.a;
 					var currentBuildInvisible = _Utils_eq(
-						$elm$core$String$fromInt(model.iz),
+						$elm$core$String$fromInt(model.f_),
 						id);
-					var shouldScroll = currentBuildInvisible && (!model.ke);
+					var shouldScroll = currentBuildInvisible && (!model.kJ);
 					return _Utils_Tuple2(
 						shouldScroll ? _Utils_update(
 							model,
-							{ke: true}) : model,
+							{kJ: true}) : model,
 						_Utils_ap(
 							effects,
 							shouldScroll ? _List_fromArray(
@@ -23191,35 +24117,35 @@ var $author$project$Build$Header$Header$handleDelivery = F2(
 						function (_v7) {
 							var status = _v7.a;
 							var date = _v7.b;
-							var newStatus = $author$project$Concourse$BuildStatus$isRunning(model.ek) ? status : model.ek;
+							var newStatus = $author$project$Concourse$BuildStatus$isRunning(model.eT) ? status : model.eT;
 							var newDuration = function () {
-								var dur = model.dh;
+								var dur = model.dJ;
 								return _Utils_update(
 									dur,
 									{
-										e9: $author$project$Concourse$BuildStatus$isRunning(status) ? dur.e9 : $elm$core$Maybe$Just(date)
+										fL: $author$project$Concourse$BuildStatus$isRunning(status) ? dur.fL : $elm$core$Maybe$Just(date)
 									});
 							}();
 							return _Utils_Tuple2(
 								_Utils_update(
 									model,
 									{
-										dh: newDuration,
-										it: A3(
+										dJ: newDuration,
+										i_: A3(
 											$elm_community$list_extra$List$Extra$updateIf,
 											A2(
 												$elm$core$Basics$composeR,
 												function ($) {
-													return $.iz;
+													return $.f_;
 												},
-												$elm$core$Basics$eq(model.iz)),
+												$elm$core$Basics$eq(model.f_)),
 											function (item) {
 												return _Utils_update(
 													item,
-													{dh: newDuration, ek: newStatus});
+													{dJ: newDuration, eT: newStatus});
 											},
-											model.it),
-										ek: newStatus
+											model.i_),
+										eT: newStatus
 									}),
 								effects);
 						},
@@ -23230,7 +24156,7 @@ var $author$project$Build$Header$Header$handleDelivery = F2(
 								$elm$core$Maybe$map,
 								$elm$core$List$filterMap(
 									function (_v5) {
-										var data = _v5.eT;
+										var data = _v5.fs;
 										if (!data.$) {
 											var status = data.a;
 											var date = data.b;
@@ -23246,13 +24172,13 @@ var $author$project$Build$Header$Header$handleDelivery = F2(
 										A2(
 											$elm$core$Basics$composeR,
 											function ($) {
-												return $.k$;
+												return $.lw;
 											},
 											$elm$core$String$endsWith(
 												A2(
 													$author$project$Api$Endpoints$toString,
 													_List_Nil,
-													A2($author$project$Api$Endpoints$Build, model.iz, 5))))),
+													A2($author$project$Api$Endpoints$Build, model.f_, 5))))),
 									$elm$core$Result$toMaybe(result))))));
 			default:
 				return _Utils_Tuple2(model, effects);
@@ -23272,12 +24198,12 @@ var $author$project$Message$ScrollDirection$ToTop = {$: 0};
 var $author$project$Message$ScrollDirection$Up = {$: 2};
 var $author$project$Build$Shortcuts$bodyId = 'build-body';
 var $author$project$Keyboard$hasControlModifier = function (keyEvent) {
-	return keyEvent.eR || keyEvent.fF;
+	return keyEvent.fp || keyEvent.gh;
 };
 var $author$project$Build$Shortcuts$historyItem = function (model) {
 	return {
-		a3: function () {
-			var _v0 = model.a3;
+		a4: function () {
+			var _v0 = model.a4;
 			if (!_v0.$) {
 				var comment = _v0.a;
 				return comment;
@@ -23286,11 +24212,11 @@ var $author$project$Build$Shortcuts$historyItem = function (model) {
 				return $author$project$Views$CommentBar$getContent(comment);
 			}
 		}(),
-		hr: model.hr,
-		dh: model.dh,
-		iz: model.iz,
-		dQ: model.dQ,
-		ek: model.ek
+		fo: model.fo,
+		dJ: model.dJ,
+		f_: model.f_,
+		cT: model.cT,
+		eT: model.eT
 	};
 };
 var $author$project$Build$Shortcuts$nextHistoryItem = F2(
@@ -23344,25 +24270,25 @@ var $author$project$Build$Shortcuts$handleKeyPressed = F2(
 		var model = _v0.a;
 		var effects = _v0.b;
 		var newModel = function () {
-			var _v15 = _Utils_Tuple3(model.jR, keyEvent.go, keyEvent.eM);
+			var _v15 = _Utils_Tuple3(model.kk, keyEvent.g1, keyEvent.fj);
 			if (((_v15.a.$ === 1) && (!_v15.b)) && (_v15.c === 3)) {
 				var _v16 = _v15.a;
 				var _v17 = _v15.c;
 				return _Utils_update(
 					model,
 					{
-						jR: $elm$core$Maybe$Just(keyEvent)
+						kk: $elm$core$Maybe$Just(keyEvent)
 					});
 			} else {
 				return _Utils_update(
 					model,
-					{jR: $elm$core$Maybe$Nothing});
+					{kk: $elm$core$Maybe$Nothing});
 			}
 		}();
 		if ($author$project$Keyboard$hasControlModifier(keyEvent)) {
 			return _Utils_Tuple2(newModel, effects);
 		} else {
-			var _v1 = _Utils_Tuple2(keyEvent.eM, keyEvent.go);
+			var _v1 = _Utils_Tuple2(keyEvent.fj, keyEvent.g1);
 			_v1$11:
 			while (true) {
 				if (!_v1.b) {
@@ -23389,29 +24315,29 @@ var $author$project$Build$Shortcuts$handleKeyPressed = F2(
 								A2(
 									$elm$core$Maybe$map,
 									function ($) {
-										return $.eM;
+										return $.fj;
 									},
-									model.jR),
+									model.kk),
 								$elm$core$Maybe$Just(3)) ? _Utils_Tuple2(
 								_Utils_update(
 									newModel,
-									{bH: false}),
+									{bJ: false}),
 								_List_fromArray(
 									[
 										A2($author$project$Message$Effects$Scroll, $author$project$Message$ScrollDirection$ToTop, $author$project$Build$Shortcuts$bodyId)
 									])) : _Utils_Tuple2(newModel, effects);
 						case 13:
 							var _v7 = _v1.a;
-							return model.gp ? _Utils_Tuple2(
+							return model.g2 ? _Utils_Tuple2(
 								_Utils_update(
 									newModel,
-									{gp: false}),
+									{g2: false}),
 								effects) : _Utils_Tuple2(newModel, effects);
 						case 4:
 							var _v8 = _v1.a;
 							var _v9 = A2(
 								$author$project$Build$Shortcuts$nextHistoryItem,
-								model.it,
+								model.i_,
 								$author$project$Build$Shortcuts$historyItem(model));
 							if (!_v9.$) {
 								var item = _v9.a;
@@ -23423,7 +24349,7 @@ var $author$project$Build$Shortcuts$handleKeyPressed = F2(
 											[
 												$author$project$Message$Effects$NavigateTo(
 												$author$project$Routes$toString(
-													A3($author$project$Routes$buildRoute, item.iz, item.dQ, newModel.ap)))
+													A3($author$project$Routes$buildRoute, item.f_, item.cT, newModel.ac)))
 											])));
 							} else {
 								return _Utils_Tuple2(newModel, effects);
@@ -23432,7 +24358,7 @@ var $author$project$Build$Shortcuts$handleKeyPressed = F2(
 							var _v10 = _v1.a;
 							var _v11 = A2(
 								$author$project$Build$Shortcuts$prevHistoryItem,
-								newModel.it,
+								newModel.i_,
 								$author$project$Build$Shortcuts$historyItem(newModel));
 							if (!_v11.$) {
 								var item = _v11.a;
@@ -23444,7 +24370,7 @@ var $author$project$Build$Shortcuts$handleKeyPressed = F2(
 											[
 												$author$project$Message$Effects$NavigateTo(
 												$author$project$Routes$toString(
-													A3($author$project$Routes$buildRoute, item.iz, item.dQ, newModel.ap)))
+													A3($author$project$Routes$buildRoute, item.f_, item.cT, newModel.ac)))
 											])));
 							} else {
 								return _Utils_Tuple2(newModel, effects);
@@ -23459,7 +24385,7 @@ var $author$project$Build$Shortcuts$handleKeyPressed = F2(
 							return _Utils_Tuple2(
 								_Utils_update(
 									newModel,
-									{bH: true}),
+									{bJ: true}),
 								_List_fromArray(
 									[
 										A2($author$project$Message$Effects$Scroll, $author$project$Message$ScrollDirection$ToBottom, $author$project$Build$Shortcuts$bodyId)
@@ -23469,11 +24395,11 @@ var $author$project$Build$Shortcuts$handleKeyPressed = F2(
 							return _Utils_Tuple2(
 								_Utils_update(
 									newModel,
-									{gp: !newModel.gp}),
+									{g2: !newModel.g2}),
 								effects);
 						case 1:
 							var _v12 = _v1.a;
-							return (!newModel.iY) ? A2(
+							return (!newModel.js) ? A2(
 								$elm$core$Maybe$withDefault,
 								$elm$core$Basics$identity,
 								A2(
@@ -23482,11 +24408,11 @@ var $author$project$Build$Shortcuts$handleKeyPressed = F2(
 										$elm$core$Basics$composeR,
 										$author$project$Message$Effects$DoTriggerBuild,
 										A2($elm$core$Basics$composeR, $elm$core$List$cons, $elm$core$Tuple$mapSecond)),
-									newModel.ap))(
+									newModel.ac))(
 								_Utils_Tuple2(
 									_Utils_update(
 										newModel,
-										{iY: true}),
+										{js: true}),
 									effects)) : _Utils_Tuple2(newModel, effects);
 						case 2:
 							var _v13 = _v1.a;
@@ -23494,24 +24420,24 @@ var $author$project$Build$Shortcuts$handleKeyPressed = F2(
 								newModel,
 								_Utils_ap(
 									effects,
-									$author$project$Concourse$BuildStatus$isRunning(newModel.ek) ? _List_Nil : $elm_community$maybe_extra$Maybe$Extra$toList(
+									$author$project$Concourse$BuildStatus$isRunning(newModel.eT) ? _List_Nil : $elm_community$maybe_extra$Maybe$Extra$toList(
 										A2(
 											$elm$core$Maybe$map,
 											function (j) {
 												return $author$project$Message$Effects$RerunJobBuild(
-													{g1: newModel.dQ, i0: j.i0, f2: j.f2, jL: j.jL, kD: j.kD});
+													{hE: newModel.cT, jw: j.jw, ew: j.ew, gH: j.gH, k8: j.k8});
 											},
-											newModel.ap))));
+											newModel.ac))));
 						case 0:
 							var _v14 = _v1.a;
 							return _Utils_eq(
 								$elm$core$Maybe$Just(
 									$author$project$Build$Shortcuts$historyItem(newModel)),
-								$elm$core$List$head(newModel.it)) ? _Utils_Tuple2(
+								$elm$core$List$head(newModel.i_)) ? _Utils_Tuple2(
 								newModel,
 								A2(
 									$elm$core$List$cons,
-									$author$project$Message$Effects$DoAbortBuild(newModel.iz),
+									$author$project$Message$Effects$DoAbortBuild(newModel.f_),
 									effects)) : _Utils_Tuple2(newModel, effects);
 						default:
 							break _v1$11;
@@ -23534,12 +24460,12 @@ var $author$project$Build$Shortcuts$handleDelivery = F2(
 					_Utils_Tuple2(model, effects));
 			case 1:
 				var keyEvent = delivery.a;
-				var _v2 = keyEvent.eM;
+				var _v2 = keyEvent.fj;
 				if (_v2 === 1) {
 					return _Utils_Tuple2(
 						_Utils_update(
 							model,
-							{iY: false}),
+							{js: false}),
 						effects);
 				} else {
 					return _Utils_Tuple2(model, effects);
@@ -23559,7 +24485,7 @@ var $author$project$Tooltip$handleDelivery = F3(
 				_Utils_ap(
 					effects,
 					function () {
-						var _v3 = session.dv;
+						var _v3 = session.d$;
 						if (_v3.$ === 1) {
 							var domID = _v3.a;
 							return _List_fromArray(
@@ -23592,7 +24518,7 @@ var $author$project$Build$Build$handleDeliveryCommentBar = F2(
 	function (delivery, _v0) {
 		var model = _v0.a;
 		var effects = _v0.b;
-		var _v1 = model.a3;
+		var _v1 = model.a4;
 		if (!_v1.$) {
 			return _Utils_Tuple2(model, effects);
 		} else {
@@ -23604,7 +24530,7 @@ var $author$project$Build$Build$handleDeliveryCommentBar = F2(
 				_Utils_update(
 					model,
 					{
-						a3: $author$project$Build$Header$Models$Visible(updatedCommentBar)
+						a4: $author$project$Build$Header$Models$Visible(updatedCommentBar)
 					}),
 				_Utils_ap(effects, updatedEffects));
 		}
@@ -23616,11 +24542,11 @@ var $elm$core$Array$length = function (_v0) {
 };
 var $vito$elm_ansi$Ansi$Log$Chunk = F4(
 	function (text, style, linkParams, linkUrl) {
-		return {aC: linkParams, aD: linkUrl, kw: style, kH: text};
+		return {aD: linkParams, aE: linkUrl, k$: style, lc: text};
 	});
 var $vito$elm_ansi$Ansi$Log$CursorPosition = F2(
 	function (row, column) {
-		return {eN: column, cM: row};
+		return {fk: column, c4: row};
 	});
 var $vito$elm_ansi$Ansi$Print = function (a) {
 	return {$: 0, a: a};
@@ -23630,13 +24556,13 @@ var $vito$elm_ansi$Ansi$Log$chunkLen = A2(
 	$elm$core$Basics$composeL,
 	$elm$core$String$length,
 	function ($) {
-		return $.kH;
+		return $.lc;
 	});
 var $vito$elm_ansi$Ansi$Log$moveCursor = F3(
 	function (r, c, pos) {
 		return _Utils_update(
 			pos,
-			{eN: pos.eN + c, cM: pos.cM + r});
+			{fk: pos.fk + c, c4: pos.c4 + r});
 	});
 var $elm$core$Bitwise$shiftRightBy = _Bitwise_shiftRightBy;
 var $elm$core$String$repeatHelp = F3(
@@ -23680,7 +24606,7 @@ var $vito$elm_ansi$Ansi$Log$dropRight = F2(
 							_Utils_update(
 								c,
 								{
-									kH: A2($elm$core$String$dropRight, n, c.kH)
+									lc: A2($elm$core$String$dropRight, n, c.lc)
 								}),
 							cs),
 						llen - n);
@@ -23889,52 +24815,52 @@ var $vito$elm_ansi$Ansi$Log$updateStyle = F2(
 				var mc = action.a;
 				return _Utils_update(
 					style,
-					{bP: mc});
+					{bX: mc});
 			case 3:
 				var mc = action.a;
 				return _Utils_update(
 					style,
-					{gW: mc});
+					{hx: mc});
 			case 9:
 				var b = action.a;
 				return _Utils_update(
 					style,
-					{bU: b});
+					{b0: b});
 			case 4:
 				var b = action.a;
 				return _Utils_update(
 					style,
-					{a0: b});
+					{a1: b});
 			case 5:
 				var b = action.a;
 				return _Utils_update(
 					style,
-					{cm: b});
+					{cD: b});
 			case 6:
 				var b = action.a;
 				return _Utils_update(
 					style,
-					{cu: b});
+					{cM: b});
 			case 7:
 				var b = action.a;
 				return _Utils_update(
 					style,
-					{c1: b});
+					{dn: b});
 			case 8:
 				var b = action.a;
 				return _Utils_update(
 					style,
-					{cg: b});
+					{cv: b});
 			case 10:
 				var b = action.a;
 				return _Utils_update(
 					style,
-					{co: b});
+					{cF: b});
 			case 11:
 				var b = action.a;
 				return _Utils_update(
 					style,
-					{cp: b});
+					{cG: b});
 			default:
 				return style;
 		}
@@ -23956,13 +24882,13 @@ var $vito$elm_ansi$Ansi$Log$addChunk = F2(
 				var c = _v1.a;
 				var cs = _v1.b;
 				var llen = line.b;
-				return (_Utils_eq(c.kw, chunk.kw) && (_Utils_eq(c.aD, chunk.aD) && _Utils_eq(c.aC, chunk.aC))) ? _Utils_Tuple2(
+				return (_Utils_eq(c.k$, chunk.k$) && (_Utils_eq(c.aE, chunk.aE) && _Utils_eq(c.aD, chunk.aD))) ? _Utils_Tuple2(
 					A2(
 						$elm$core$List$cons,
 						_Utils_update(
 							c,
 							{
-								kH: A2($elm$core$String$append, c.kH, chunk.kH)
+								lc: A2($elm$core$String$append, c.lc, chunk.lc)
 							}),
 						cs),
 					llen + clen) : _Utils_Tuple2(
@@ -23977,10 +24903,10 @@ var $vito$elm_ansi$Ansi$Log$addChunk = F2(
 var $vito$elm_ansi$Ansi$Log$spacing = F4(
 	function (style, params, url, len) {
 		return {
-			aC: params,
-			aD: url,
-			kw: style,
-			kH: A2($elm$core$String$repeat, len, ' ')
+			aD: params,
+			aE: url,
+			k$: style,
+			lc: A2($elm$core$String$repeat, len, ' ')
 		};
 	});
 var $vito$elm_ansi$Ansi$Log$takeRight = F2(
@@ -24008,10 +24934,10 @@ var $vito$elm_ansi$Ansi$Log$takeRight = F2(
 						_Utils_update(
 						c,
 						{
-							aC: c.aC,
 							aD: c.aD,
-							kw: c.kw,
-							kH: A2($elm$core$String$right, n, c.kH)
+							aE: c.aE,
+							k$: c.k$,
+							lc: A2($elm$core$String$right, n, c.lc)
 						})
 					]),
 				n));
@@ -24031,7 +24957,7 @@ var $vito$elm_ansi$Ansi$Log$writeChunk = F3(
 					chunk,
 					A2(
 						$vito$elm_ansi$Ansi$Log$addChunk,
-						A4($vito$elm_ansi$Ansi$Log$spacing, chunk.kw, chunk.aC, chunk.aD, pos - len),
+						A4($vito$elm_ansi$Ansi$Log$spacing, chunk.k$, chunk.aD, chunk.aE, pos - len),
 						line));
 			} else {
 				var appended = A2(
@@ -24051,41 +24977,41 @@ var $vito$elm_ansi$Ansi$Log$handleAction = F2(
 		switch (action.$) {
 			case 0:
 				var s = action.a;
-				var chunk = A4($vito$elm_ansi$Ansi$Log$Chunk, s, model.kw, model.a6, model.a7);
-				var updatedChunk = A2($vito$elm_ansi$Ansi$Log$writeChunk, model.cI.eN, chunk);
+				var chunk = A4($vito$elm_ansi$Ansi$Log$Chunk, s, model.k$, model.a7, model.a8);
+				var updatedChunk = A2($vito$elm_ansi$Ansi$Log$writeChunk, model.c0.fk, chunk);
 				return _Utils_update(
 					model,
 					{
-						fD: A3($vito$elm_ansi$Ansi$Log$updateLine, model.cI.cM, updatedChunk, model.fD),
-						cI: A3(
+						gf: A3($vito$elm_ansi$Ansi$Log$updateLine, model.c0.c4, updatedChunk, model.gf),
+						c0: A3(
 							$vito$elm_ansi$Ansi$Log$moveCursor,
 							0,
 							$vito$elm_ansi$Ansi$Log$chunkLen(chunk),
-							model.cI)
+							model.c0)
 					});
 			case 13:
 				return _Utils_update(
 					model,
 					{
-						cI: A2($vito$elm_ansi$Ansi$Log$CursorPosition, model.cI.cM, 0)
+						c0: A2($vito$elm_ansi$Ansi$Log$CursorPosition, model.c0.c4, 0)
 					});
 			case 12:
 				return A2(
 					$vito$elm_ansi$Ansi$Log$handleAction,
 					$vito$elm_ansi$Ansi$Print(''),
 					function () {
-						var _v1 = model.dN;
+						var _v1 = model.eg;
 						if (!_v1) {
 							return _Utils_update(
 								model,
 								{
-									cI: A3($vito$elm_ansi$Ansi$Log$moveCursor, 1, 0, model.cI)
+									c0: A3($vito$elm_ansi$Ansi$Log$moveCursor, 1, 0, model.c0)
 								});
 						} else {
 							return _Utils_update(
 								model,
 								{
-									cI: A2($vito$elm_ansi$Ansi$Log$CursorPosition, model.cI.cM + 1, 0)
+									c0: A2($vito$elm_ansi$Ansi$Log$CursorPosition, model.c0.c4 + 1, 0)
 								});
 						}
 					}());
@@ -24093,34 +25019,34 @@ var $vito$elm_ansi$Ansi$Log$handleAction = F2(
 				var s = action.a;
 				return _Utils_update(
 					model,
-					{b2: s});
+					{ca: s});
 			case 14:
 				var num = action.a;
 				return _Utils_update(
 					model,
 					{
-						cI: A3($vito$elm_ansi$Ansi$Log$moveCursor, -num, 0, model.cI)
+						c0: A3($vito$elm_ansi$Ansi$Log$moveCursor, -num, 0, model.c0)
 					});
 			case 15:
 				var num = action.a;
 				return _Utils_update(
 					model,
 					{
-						cI: A3($vito$elm_ansi$Ansi$Log$moveCursor, num, 0, model.cI)
+						c0: A3($vito$elm_ansi$Ansi$Log$moveCursor, num, 0, model.c0)
 					});
 			case 16:
 				var num = action.a;
 				return _Utils_update(
 					model,
 					{
-						cI: A3($vito$elm_ansi$Ansi$Log$moveCursor, 0, num, model.cI)
+						c0: A3($vito$elm_ansi$Ansi$Log$moveCursor, 0, num, model.c0)
 					});
 			case 17:
 				var num = action.a;
 				return _Utils_update(
 					model,
 					{
-						cI: A3($vito$elm_ansi$Ansi$Log$moveCursor, 0, -num, model.cI)
+						c0: A3($vito$elm_ansi$Ansi$Log$moveCursor, 0, -num, model.c0)
 					});
 			case 18:
 				var row = action.a;
@@ -24128,26 +25054,26 @@ var $vito$elm_ansi$Ansi$Log$handleAction = F2(
 				return _Utils_update(
 					model,
 					{
-						cI: A2($vito$elm_ansi$Ansi$Log$CursorPosition, row - 1, col - 1)
+						c0: A2($vito$elm_ansi$Ansi$Log$CursorPosition, row - 1, col - 1)
 					});
 			case 19:
 				var col = action.a;
 				return _Utils_update(
 					model,
 					{
-						cI: A2($vito$elm_ansi$Ansi$Log$CursorPosition, model.cI.cM, col)
+						c0: A2($vito$elm_ansi$Ansi$Log$CursorPosition, model.c0.c4, col)
 					});
 			case 22:
 				return _Utils_update(
 					model,
 					{
-						cQ: $elm$core$Maybe$Just(model.cI)
+						c9: $elm$core$Maybe$Just(model.c0)
 					});
 			case 23:
 				return _Utils_update(
 					model,
 					{
-						cI: A2($elm$core$Maybe$withDefault, model.cI, model.cQ)
+						c0: A2($elm$core$Maybe$withDefault, model.c0, model.c9)
 					});
 			case 21:
 				var mode = action.a;
@@ -24155,32 +25081,32 @@ var $vito$elm_ansi$Ansi$Log$handleAction = F2(
 					case 0:
 						var chunk = A4(
 							$vito$elm_ansi$Ansi$Log$Chunk,
-							A2($elm$core$String$repeat, model.cI.eN, ' '),
-							model.kw,
-							model.a6,
-							model.a7);
+							A2($elm$core$String$repeat, model.c0.fk, ' '),
+							model.k$,
+							model.a7,
+							model.a8);
 						var updatedChunk = A2($vito$elm_ansi$Ansi$Log$writeChunk, 0, chunk);
 						return _Utils_update(
 							model,
 							{
-								fD: A3($vito$elm_ansi$Ansi$Log$updateLine, model.cI.cM, updatedChunk, model.fD)
+								gf: A3($vito$elm_ansi$Ansi$Log$updateLine, model.c0.c4, updatedChunk, model.gf)
 							});
 					case 1:
-						var updater = $vito$elm_ansi$Ansi$Log$takeLeft(model.cI.eN);
+						var updater = $vito$elm_ansi$Ansi$Log$takeLeft(model.c0.fk);
 						return _Utils_update(
 							model,
 							{
-								fD: A3($vito$elm_ansi$Ansi$Log$updateLine, model.cI.cM, updater, model.fD)
+								gf: A3($vito$elm_ansi$Ansi$Log$updateLine, model.c0.c4, updater, model.gf)
 							});
 					default:
 						return _Utils_update(
 							model,
 							{
-								fD: A3(
+								gf: A3(
 									$vito$elm_ansi$Ansi$Log$updateLine,
-									model.cI.cM,
+									model.c0.c4,
 									$elm$core$Basics$always($vito$elm_ansi$Ansi$Log$blankLine),
-									model.fD)
+									model.gf)
 							});
 				}
 			case 24:
@@ -24189,18 +25115,18 @@ var $vito$elm_ansi$Ansi$Log$handleAction = F2(
 				return _Utils_update(
 					model,
 					{
-						a6: params,
-						a7: $elm$core$Maybe$Just(url)
+						a7: params,
+						a8: $elm$core$Maybe$Just(url)
 					});
 			case 25:
 				return _Utils_update(
 					model,
-					{a6: _List_Nil, a7: $elm$core$Maybe$Nothing});
+					{a7: _List_Nil, a8: $elm$core$Maybe$Nothing});
 			default:
 				return _Utils_update(
 					model,
 					{
-						kw: A2($vito$elm_ansi$Ansi$Log$updateStyle, action, model.kw)
+						k$: A2($vito$elm_ansi$Ansi$Log$updateStyle, action, model.k$)
 					});
 		}
 	});
@@ -25377,9 +26303,9 @@ var $vito$elm_ansi$Ansi$Log$update = F2(
 			$vito$elm_ansi$Ansi$parseInto,
 			_Utils_update(
 				model,
-				{b2: ''}),
+				{ca: ''}),
 			$vito$elm_ansi$Ansi$Log$handleAction,
-			_Utils_ap(model.b2, str));
+			_Utils_ap(model.ca, str));
 	});
 var $author$project$Build$Output$Output$appendStepLog = F3(
 	function (output, mtime, step) {
@@ -25395,20 +26321,20 @@ var $author$project$Build$Output$Output$appendStepLog = F3(
 			A2(
 				$vito$elm_ansi$Ansi$Log$update,
 				output,
-				$vito$elm_ansi$Ansi$Log$init(1)).fD);
-		var newLog = A2($vito$elm_ansi$Ansi$Log$update, output, step.dP);
+				$vito$elm_ansi$Ansi$Log$init(1)).gf);
+		var newLog = A2($vito$elm_ansi$Ansi$Log$update, output, step.ei);
 		var lastLineNo = A2(
 			$elm$core$Basics$max,
-			$elm$core$Array$length(step.dP.fD),
+			$elm$core$Array$length(step.ei.gf),
 			1);
 		var newTimestamps = A3(
 			$elm$core$List$foldl,
 			setLineTimestamp,
-			step.gC,
+			step.hf,
 			A2($elm$core$List$range, lastLineNo, (lastLineNo + outputLineCount) - 1));
 		return _Utils_update(
 			step,
-			{dP: newLog, gC: newTimestamps});
+			{ei: newLog, hf: newTimestamps});
 	});
 var $author$project$Build$StepTree$Models$StepStateFailed = 5;
 var $author$project$Build$StepTree$Models$StepStateSucceeded = 4;
@@ -25416,13 +26342,13 @@ var $author$project$Build$Output$Output$setStepFinish = F2(
 	function (mtime, step) {
 		return _Utils_update(
 			step,
-			{e8: mtime});
+			{fK: mtime});
 	});
 var $author$project$Build$Output$Output$setStepState = F2(
 	function (state, step) {
 		return _Utils_update(
 			step,
-			{kt: state});
+			{dg: state});
 	});
 var $author$project$Build$Output$Output$finishStep = F3(
 	function (succeeded, mtime, step) {
@@ -25436,7 +26362,7 @@ var $author$project$Build$StepTree$Models$StepStateCancelled = 3;
 var $author$project$Build$StepTree$Models$StepStateInterrupted = 2;
 var $author$project$Build$StepTree$StepTree$finishStep = function (step) {
 	var newState = function () {
-		var _v0 = step.kt;
+		var _v0 = step.dg;
 		switch (_v0) {
 			case 1:
 				return 2;
@@ -25449,16 +26375,16 @@ var $author$project$Build$StepTree$StepTree$finishStep = function (step) {
 	}();
 	return _Utils_update(
 		step,
-		{kt: newState});
+		{dg: newState});
 };
 var $author$project$Build$StepTree$StepTree$finished = function (model) {
 	return _Utils_update(
 		model,
 		{
-			kv: A2(
+			k_: A2(
 				$elm$core$Dict$map,
 				$elm$core$Basics$always($author$project$Build$StepTree$StepTree$finishStep),
-				model.kv)
+				model.k_)
 		});
 };
 var $author$project$Build$StepTree$Models$updateTreeNodeAt = F3(
@@ -25599,38 +26525,38 @@ var $author$project$Build$StepTree$Models$updateTreeNodeAt = F3(
 	});
 var $author$project$Build$StepTree$StepTree$setAcrossSubsteps = F4(
 	function (buildId, stepId, substeps, model) {
-		var _v0 = A2($elm$core$Dict$get, stepId, model.kv);
+		var _v0 = A2($elm$core$Dict$get, stepId, model.k_);
 		if (!_v0.$) {
 			var oldStep = _v0.a;
-			var _v1 = oldStep.eJ;
+			var _v1 = oldStep.fg;
 			if (_v1.$ === 11) {
-				var vars = _v1.a.cd;
+				var vars = _v1.a.cp;
 				var newAcrossStep = $author$project$Concourse$BuildStepAcross(
-					{kv: substeps, cd: vars});
+					{k_: substeps, cp: vars});
 				var newAcrossModel = A4(
 					$author$project$Build$StepTree$StepTree$init,
 					buildId,
-					model.is,
-					model.j2,
-					{iz: stepId, C: newAcrossStep});
+					model.iZ,
+					model.kx,
+					{f_: stepId, C: newAcrossStep});
 				return _Utils_update(
 					model,
 					{
-						kv: A3(
+						k_: A3(
 							$elm$core$Dict$update,
 							stepId,
 							$elm$core$Maybe$map(
 								function (newStep) {
 									return _Utils_update(
 										oldStep,
-										{eJ: newStep.eJ, hX: newStep.hX || oldStep.hX, dl: newStep.dl});
+										{fg: newStep.fg, iv: newStep.iv || oldStep.iv, dP: newStep.dP});
 								}),
-							A2($elm$core$Dict$union, newAcrossModel.kv, model.kv)),
-						kY: A3(
+							A2($elm$core$Dict$union, newAcrossModel.k_, model.k_)),
+						ls: A3(
 							$author$project$Build$StepTree$Models$updateTreeNodeAt,
 							stepId,
-							$elm$core$Basics$always(newAcrossModel.kY),
-							model.kY)
+							$elm$core$Basics$always(newAcrossModel.ls),
+							model.ls)
 					});
 			} else {
 				return model;
@@ -25645,7 +26571,7 @@ var $author$project$Build$Output$Output$setStepInitialize = F2(
 		return _Utils_update(
 			step,
 			{
-				iG: $elm$core$Maybe$Just(time)
+				ja: $elm$core$Maybe$Just(time)
 			});
 	});
 var $author$project$Build$Output$Output$setInitialize = F2(
@@ -25660,8 +26586,8 @@ var $author$project$Build$Output$Output$setResourceInfo = F3(
 		return _Utils_update(
 			step,
 			{
-				jg: metadata,
-				er: $elm$core$Maybe$Just(version)
+				jL: metadata,
+				eZ: $elm$core$Maybe$Just(version)
 			});
 	});
 var $author$project$Build$Output$Output$setRunning = $author$project$Build$Output$Output$setStepState(1);
@@ -25669,15 +26595,15 @@ var $author$project$Build$Output$Output$setSetPipelineChanged = F2(
 	function (changed, step) {
 		return _Utils_update(
 			step,
-			{hc: changed});
+			{hP: changed});
 	});
 var $author$project$Build$StepTree$StepTree$setSidecar = F4(
 	function (buildId, stepId, subPlan, model) {
-		var sub = A4($author$project$Build$StepTree$StepTree$init, buildId, model.is, model.j2, subPlan);
+		var sub = A4($author$project$Build$StepTree$StepTree$init, buildId, model.iZ, model.kx, subPlan);
 		return _Utils_update(
 			model,
 			{
-				kv: A3(
+				k_: A3(
 					$elm$core$Dict$update,
 					stepId,
 					$elm$core$Maybe$map(
@@ -25685,13 +26611,13 @@ var $author$project$Build$StepTree$StepTree$setSidecar = F4(
 							return _Utils_update(
 								step,
 								{
-									kn: _Utils_ap(
-										step.kn,
+									kS: _Utils_ap(
+										step.kS,
 										_List_fromArray(
-											[sub.kY]))
+											[sub.ls]))
 								});
 						}),
-					A2($elm$core$Dict$union, sub.kv, model.kv))
+					A2($elm$core$Dict$union, sub.k_, model.k_))
 			});
 	});
 var $author$project$Build$Output$Output$setStepStart = F2(
@@ -25699,7 +26625,7 @@ var $author$project$Build$Output$Output$setStepStart = F2(
 		return _Utils_update(
 			step,
 			{
-				kr: $elm$core$Maybe$Just(time)
+				kX: $elm$core$Maybe$Just(time)
 			});
 	});
 var $author$project$Build$Output$Output$setStart = F2(
@@ -25715,9 +26641,9 @@ var $author$project$Build$Output$Output$setStepError = F3(
 		return _Utils_update(
 			step,
 			{
-				hQ: $elm$core$Maybe$Just(message),
-				e8: $elm$core$Maybe$Just(time),
-				kt: 6
+				io: $elm$core$Maybe$Just(message),
+				fK: $elm$core$Maybe$Just(time),
+				dg: 6
 			});
 	});
 var $author$project$Build$Output$Output$updateStep = F3(
@@ -25725,10 +26651,10 @@ var $author$project$Build$Output$Output$updateStep = F3(
 		return _Utils_update(
 			model,
 			{
-				kv: A2(
+				k_: A2(
 					$elm$core$Maybe$map,
 					A2($author$project$Build$StepTree$Models$updateAt, id, update),
-					model.kv)
+					model.k_)
 			});
 	});
 var $author$project$Build$Output$Output$handleEvent = F2(
@@ -25740,7 +26666,7 @@ var $author$project$Build$Output$Output$handleEvent = F2(
 				return _Utils_Tuple2(
 					_Utils_update(
 						model,
-						{hT: true}),
+						{ir: true}),
 					effects);
 			case 15:
 				var origin = event.a;
@@ -25749,7 +26675,7 @@ var $author$project$Build$Output$Output$handleEvent = F2(
 				return _Utils_Tuple2(
 					A3(
 						$author$project$Build$Output$Output$updateStep,
-						origin.iz,
+						origin.f_,
 						A2(
 							$elm$core$Basics$composeL,
 							$author$project$Build$Output$Output$setRunning,
@@ -25762,7 +26688,7 @@ var $author$project$Build$Output$Output$handleEvent = F2(
 				return _Utils_Tuple2(
 					A3(
 						$author$project$Build$Output$Output$updateStep,
-						origin.iz,
+						origin.f_,
 						A2(
 							$elm$core$Basics$composeL,
 							$author$project$Build$Output$Output$setRunning,
@@ -25776,7 +26702,7 @@ var $author$project$Build$Output$Output$handleEvent = F2(
 				return _Utils_Tuple2(
 					A3(
 						$author$project$Build$Output$Output$updateStep,
-						origin.iz,
+						origin.f_,
 						A2(
 							$elm$core$Basics$composeL,
 							$author$project$Build$Output$Output$setRunning,
@@ -25791,7 +26717,7 @@ var $author$project$Build$Output$Output$handleEvent = F2(
 				return _Utils_Tuple2(
 					A3(
 						$author$project$Build$Output$Output$updateStep,
-						origin.iz,
+						origin.f_,
 						A2(
 							$elm$core$Basics$composeL,
 							$author$project$Build$Output$Output$setRunning,
@@ -25805,7 +26731,7 @@ var $author$project$Build$Output$Output$handleEvent = F2(
 				return _Utils_Tuple2(
 					A3(
 						$author$project$Build$Output$Output$updateStep,
-						origin.iz,
+						origin.f_,
 						A2(
 							$elm$core$Basics$composeL,
 							$author$project$Build$Output$Output$setRunning,
@@ -25819,7 +26745,7 @@ var $author$project$Build$Output$Output$handleEvent = F2(
 				return _Utils_Tuple2(
 					A3(
 						$author$project$Build$Output$Output$updateStep,
-						origin.iz,
+						origin.f_,
 						A2($author$project$Build$Output$Output$setStepError, message, time),
 						model),
 					effects);
@@ -25829,7 +26755,7 @@ var $author$project$Build$Output$Output$handleEvent = F2(
 				return _Utils_Tuple2(
 					A3(
 						$author$project$Build$Output$Output$updateStep,
-						origin.iz,
+						origin.f_,
 						$author$project$Build$Output$Output$setInitialize(time),
 						model),
 					effects);
@@ -25839,7 +26765,7 @@ var $author$project$Build$Output$Output$handleEvent = F2(
 				return _Utils_Tuple2(
 					A3(
 						$author$project$Build$Output$Output$updateStep,
-						origin.iz,
+						origin.f_,
 						$author$project$Build$Output$Output$setInitialize(time),
 						model),
 					effects);
@@ -25849,7 +26775,7 @@ var $author$project$Build$Output$Output$handleEvent = F2(
 				return _Utils_Tuple2(
 					A3(
 						$author$project$Build$Output$Output$updateStep,
-						origin.iz,
+						origin.f_,
 						$author$project$Build$Output$Output$setStart(time),
 						model),
 					effects);
@@ -25860,7 +26786,7 @@ var $author$project$Build$Output$Output$handleEvent = F2(
 				return _Utils_Tuple2(
 					A3(
 						$author$project$Build$Output$Output$updateStep,
-						origin.iz,
+						origin.f_,
 						A2(
 							$author$project$Build$Output$Output$finishStep,
 							!exitStatus,
@@ -25873,7 +26799,7 @@ var $author$project$Build$Output$Output$handleEvent = F2(
 				return _Utils_Tuple2(
 					A3(
 						$author$project$Build$Output$Output$updateStep,
-						origin.iz,
+						origin.f_,
 						$author$project$Build$Output$Output$setInitialize(time),
 						model),
 					effects);
@@ -25883,7 +26809,7 @@ var $author$project$Build$Output$Output$handleEvent = F2(
 				return _Utils_Tuple2(
 					A3(
 						$author$project$Build$Output$Output$updateStep,
-						origin.iz,
+						origin.f_,
 						$author$project$Build$Output$Output$setStart(time),
 						model),
 					effects);
@@ -25894,7 +26820,7 @@ var $author$project$Build$Output$Output$handleEvent = F2(
 				return _Utils_Tuple2(
 					A3(
 						$author$project$Build$Output$Output$updateStep,
-						origin.iz,
+						origin.f_,
 						A2(
 							$author$project$Build$Output$Output$finishStep,
 							succeeded,
@@ -25907,7 +26833,7 @@ var $author$project$Build$Output$Output$handleEvent = F2(
 				return _Utils_Tuple2(
 					A3(
 						$author$project$Build$Output$Output$updateStep,
-						origin.iz,
+						origin.f_,
 						$author$project$Build$Output$Output$setInitialize(time),
 						model),
 					effects);
@@ -25917,7 +26843,7 @@ var $author$project$Build$Output$Output$handleEvent = F2(
 				return _Utils_Tuple2(
 					A3(
 						$author$project$Build$Output$Output$updateStep,
-						origin.iz,
+						origin.f_,
 						$author$project$Build$Output$Output$setStart(time),
 						model),
 					effects);
@@ -25930,7 +26856,7 @@ var $author$project$Build$Output$Output$handleEvent = F2(
 				return _Utils_Tuple2(
 					A3(
 						$author$project$Build$Output$Output$updateStep,
-						origin.iz,
+						origin.f_,
 						A2(
 							$elm$core$Basics$composeL,
 							A2($author$project$Build$Output$Output$finishStep, !exitStatus, time),
@@ -25943,7 +26869,7 @@ var $author$project$Build$Output$Output$handleEvent = F2(
 				return _Utils_Tuple2(
 					A3(
 						$author$project$Build$Output$Output$updateStep,
-						origin.iz,
+						origin.f_,
 						$author$project$Build$Output$Output$setInitialize(time),
 						model),
 					effects);
@@ -25953,7 +26879,7 @@ var $author$project$Build$Output$Output$handleEvent = F2(
 				return _Utils_Tuple2(
 					A3(
 						$author$project$Build$Output$Output$updateStep,
-						origin.iz,
+						origin.f_,
 						$author$project$Build$Output$Output$setStart(time),
 						model),
 					effects);
@@ -25966,7 +26892,7 @@ var $author$project$Build$Output$Output$handleEvent = F2(
 				return _Utils_Tuple2(
 					A3(
 						$author$project$Build$Output$Output$updateStep,
-						origin.iz,
+						origin.f_,
 						A2(
 							$elm$core$Basics$composeL,
 							A2($author$project$Build$Output$Output$finishStep, !exitStatus, time),
@@ -25979,7 +26905,7 @@ var $author$project$Build$Output$Output$handleEvent = F2(
 				return _Utils_Tuple2(
 					A3(
 						$author$project$Build$Output$Output$updateStep,
-						origin.iz,
+						origin.f_,
 						$author$project$Build$Output$Output$setSetPipelineChanged(changed),
 						model),
 					effects);
@@ -25990,69 +26916,69 @@ var $author$project$Build$Output$Output$handleEvent = F2(
 					function (st) {
 						return $author$project$Concourse$BuildStatus$isRunning(status) ? st : $author$project$Build$StepTree$StepTree$finished(st);
 					},
-					model.kv);
+					model.k_);
 				return _Utils_Tuple2(
 					_Utils_update(
 						model,
-						{kv: newSt}),
+						{k_: newSt}),
 					effects);
 			case 21:
-				var id = event.a.iz;
+				var id = event.a.f_;
 				var plan = event.b;
 				return _Utils_Tuple2(
 					_Utils_update(
 						model,
 						{
-							kv: A2(
+							k_: A2(
 								$elm$core$Maybe$map,
-								A3($author$project$Build$StepTree$StepTree$setImageCheck, model.g0, id, plan),
-								model.kv)
+								A3($author$project$Build$StepTree$StepTree$setImageCheck, model.hD, id, plan),
+								model.k_)
 						}),
 					effects);
 			case 22:
-				var id = event.a.iz;
+				var id = event.a.f_;
 				var plan = event.b;
 				return _Utils_Tuple2(
 					_Utils_update(
 						model,
 						{
-							kv: A2(
+							k_: A2(
 								$elm$core$Maybe$map,
-								A3($author$project$Build$StepTree$StepTree$setImageGet, model.g0, id, plan),
-								model.kv)
+								A3($author$project$Build$StepTree$StepTree$setImageGet, model.hD, id, plan),
+								model.k_)
 						}),
 					effects);
 			case 23:
-				var id = event.a.iz;
+				var id = event.a.f_;
 				var plan = event.b;
 				return _Utils_Tuple2(
 					_Utils_update(
 						model,
 						{
-							kv: A2(
+							k_: A2(
 								$elm$core$Maybe$map,
-								A3($author$project$Build$StepTree$StepTree$setSidecar, model.g0, id, plan),
-								model.kv)
+								A3($author$project$Build$StepTree$StepTree$setSidecar, model.hD, id, plan),
+								model.k_)
 						}),
 					effects);
 			case 24:
-				var id = event.a.iz;
+				var id = event.a.f_;
 				var substeps = event.b;
 				return _Utils_Tuple2(
 					_Utils_update(
 						model,
 						{
-							kv: A2(
+							k_: A2(
 								$elm$core$Maybe$map,
-								A3($author$project$Build$StepTree$StepTree$setAcrossSubsteps, model.g0, id, substeps),
-								model.kv)
+								A3($author$project$Build$StepTree$StepTree$setAcrossSubsteps, model.hD, id, substeps),
+								model.k_)
 						}),
 					effects);
 			case 25:
 				return _Utils_Tuple2(
 					_Utils_update(
 						model,
-						{hU: $elm$core$Maybe$Nothing, kt: 2}),
+						{is: $elm$core$Maybe$Nothing, dg: 2}),
 					effects);
 			default:
 				return _Utils_Tuple2(model, effects);
@@ -26060,8 +26986,8 @@ var $author$project$Build$Output$Output$handleEvent = F2(
 	});
 var $author$project$Build$Output$Output$handleEnvelope = F2(
 	function (_v0, _v1) {
-		var url = _v0.k$;
-		var data = _v0.eT;
+		var url = _v0.lw;
+		var data = _v0.fs;
 		var model = _v1.a;
 		var effects = _v1.b;
 		return A2(
@@ -26072,7 +26998,7 @@ var $author$project$Build$Output$Output$handleEnvelope = F2(
 				function (p) {
 					return A2($elm$core$String$endsWith, p, url);
 				},
-				model.hU)) ? A2(
+				model.is)) ? A2(
 			$author$project$Build$Output$Output$handleEvent,
 			data,
 			_Utils_Tuple2(model, effects)) : _Utils_Tuple2(model, effects);
@@ -26115,7 +27041,7 @@ var $author$project$Build$Build$handleDelivery = F3(
 													_Utils_update(
 														model,
 														{
-															fN: $elm$core$Maybe$Just(time)
+															gq: $elm$core$Maybe$Just(time)
 														}),
 													effects);
 											case 1:
@@ -26147,7 +27073,7 @@ var $author$project$Build$Build$handleDelivery = F3(
 													A2(
 														$elm$core$Basics$composeR,
 														function ($) {
-															return $.hT;
+															return $.ir;
 														},
 														$elm$core$Basics$not),
 													$author$project$Build$Models$toMaybe(model.N)));
@@ -26155,7 +27081,7 @@ var $author$project$Build$Build$handleDelivery = F3(
 												A2(
 													$elm$core$List$filterMap,
 													function (_v8) {
-														var data = _v8.eT;
+														var data = _v8.fs;
 														if (!data.$) {
 															var status = data.a;
 															var date = data.b;
@@ -26176,13 +27102,13 @@ var $author$project$Build$Build$handleDelivery = F3(
 														A2(
 															$elm$core$List$map,
 															function ($) {
-																return $.eT;
+																return $.fs;
 															},
 															envelopes))) {
 														return _Utils_Tuple2(
 															_Utils_update(
 																model,
-																{bG: false}),
+																{bI: false}),
 															effects);
 													} else {
 														var _v5 = $author$project$Build$Build$getScrollBehavior(model);
@@ -26201,7 +27127,7 @@ var $author$project$Build$Build$handleDelivery = F3(
 																return _Utils_Tuple2(
 																	_Utils_update(
 																		model,
-																		{bH: false, is: $author$project$Routes$HighlightNothing, ct: true}),
+																		{bJ: false, iZ: $author$project$Routes$HighlightNothing, cL: true}),
 																	_Utils_ap(
 																		effects,
 																		_List_fromArray(
@@ -26218,13 +27144,13 @@ var $author$project$Build$Build$handleDelivery = F3(
 												}());
 											var newModel = _v4.a;
 											var newEffects = _v4.b;
-											var _v6 = _Utils_Tuple2(model.aA, buildStatus);
+											var _v6 = _Utils_Tuple2(model.aB, buildStatus);
 											if (_v6.a && (!_v6.b.$)) {
 												var _v7 = _v6.b.a;
 												var status = _v7.a;
 												return _Utils_Tuple2(
 													newModel,
-													$author$project$Concourse$BuildStatus$isRunning(model.ek) ? _Utils_ap(
+													$author$project$Concourse$BuildStatus$isRunning(model.eT) ? _Utils_ap(
 														newEffects,
 														_List_fromArray(
 															[
@@ -26241,7 +27167,7 @@ var $author$project$Build$Build$handleDelivery = F3(
 										return _Utils_Tuple2(
 											_Utils_update(
 												model,
-												{ct: false}),
+												{cL: false}),
 											effects);
 									default:
 										break _v1$5;
@@ -26265,41 +27191,41 @@ var $author$project$Dashboard$Footer$handleDelivery = F2(
 			switch (delivery.$) {
 				case 0:
 					var keyEvent = delivery.a;
-					var _v2 = keyEvent.eM;
+					var _v2 = keyEvent.fj;
 					if (_v2 === 9) {
-						return (keyEvent.go && _Utils_eq(model.e3, $author$project$Dashboard$Models$Hidden)) ? _Utils_Tuple2(
+						return (keyEvent.g1 && _Utils_eq(model.fE, $author$project$Dashboard$Models$Hidden)) ? _Utils_Tuple2(
 							_Utils_update(
 								model,
 								{
-									gp: A2(
+									g2: A2(
 										$elm$core$List$all,
 										$elm$core$List$isEmpty,
 										$elm$core$Dict$values(
-											A2($elm$core$Maybe$withDefault, $elm$core$Dict$empty, model.jN))) ? false : (!model.gp)
+											A2($elm$core$Maybe$withDefault, $elm$core$Dict$empty, model.kg))) ? false : (!model.g2)
 								}),
 							effects) : _Utils_Tuple2(model, effects);
 					} else {
 						return _Utils_Tuple2(
 							_Utils_update(
 								model,
-								{fl: false, iq: 0}),
+								{fX: false, iX: 0}),
 							effects);
 					}
 				case 2:
 					return _Utils_Tuple2(
 						_Utils_update(
 							model,
-							{fl: false, iq: 0}),
+							{fX: false, iX: 0}),
 						effects);
 				case 4:
 					if (!delivery.a) {
 						var _v3 = delivery.a;
 						return _Utils_Tuple2(
-							(model.iq > 8) ? _Utils_update(
+							(model.iX > 8) ? _Utils_update(
 								model,
-								{fl: true}) : _Utils_update(
+								{fX: true}) : _Utils_update(
 								model,
-								{iq: model.iq + 1}),
+								{iX: model.iX + 1}),
 							effects);
 					} else {
 						break _v1$3;
@@ -26320,8 +27246,8 @@ var $author$project$Dashboard$RequestBuffer$handleDeliverySingle = F3(
 		if ((delivery.$ === 4) && (delivery.a === 1)) {
 			var _v3 = delivery.a;
 			return _Utils_Tuple2(
-				isPaused(model) ? A2(shouldFire.cT, true, model) : A2(shouldFire.cT, false, model),
-				(shouldFire.ii(model) && (!isPaused(model))) ? A2($elm$core$List$cons, effect, effects) : effects);
+				isPaused(model) ? A2(shouldFire.dc, true, model) : A2(shouldFire.dc, false, model),
+				(shouldFire.iP(model) && (!isPaused(model))) ? A2($elm$core$List$cons, effect, effects) : effects);
 		} else {
 			return _Utils_Tuple2(model, effects);
 		}
@@ -26427,7 +27353,7 @@ var $elm$parser$Parser$Advanced$end = function (x) {
 var $elm$parser$Parser$end = $elm$parser$Parser$Advanced$end($elm$parser$Parser$ExpectingEnd);
 var $author$project$Dashboard$Filter$Filter = F2(
 	function (negate, teamFilter) {
-		return {dR: negate, cX: teamFilter};
+		return {ej: negate, dh: teamFilter};
 	});
 var $author$project$Dashboard$Filter$InstanceGroup = function (a) {
 	return {$: 2, a: a};
@@ -26441,6 +27367,20 @@ var $author$project$Dashboard$Filter$Pipeline = function (a) {
 var $author$project$Dashboard$Filter$Team = function (a) {
 	return {$: 0, a: a};
 };
+var $author$project$Dashboard$Filter$AgentOwned = {$: 3};
+var $author$project$Dashboard$Filter$agentFilter = A2(
+	$elm$parser$Parser$ignorer,
+	A2(
+		$elm$parser$Parser$ignorer,
+		A2(
+			$elm$parser$Parser$ignorer,
+			A2(
+				$elm$parser$Parser$ignorer,
+				$elm$parser$Parser$succeed($author$project$Dashboard$Filter$AgentOwned),
+				$elm$parser$Parser$keyword('is')),
+			$elm$parser$Parser$symbol(':')),
+		$elm$parser$Parser$spaces),
+	$elm$parser$Parser$keyword('agent'));
 var $author$project$Dashboard$Filter$Fuzzy = function (a) {
 	return {$: 0, a: a};
 };
@@ -26452,7 +27392,7 @@ var $author$project$Dashboard$Filter$StartsWith = function (a) {
 };
 var $elm$parser$Parser$Advanced$chompUntilEndOr = function (str) {
 	return function (s) {
-		var _v0 = A5(_Parser_findSubString, str, s.f, s.cM, s.hg, s.b);
+		var _v0 = A5(_Parser_findSubString, str, s.f, s.c4, s.hT, s.b);
 		var newOffset = _v0.a;
 		var newRow = _v0.b;
 		var newCol = _v0.c;
@@ -26461,7 +27401,7 @@ var $elm$parser$Parser$Advanced$chompUntilEndOr = function (str) {
 			$elm$parser$Parser$Advanced$Good,
 			_Utils_cmp(s.f, adjustedOffset) < 0,
 			0,
-			{hg: newCol, k: s.k, o: s.o, f: adjustedOffset, cM: newRow, b: s.b});
+			{hT: newCol, k: s.k, o: s.o, f: adjustedOffset, c4: newRow, b: s.b});
 	};
 };
 var $elm$parser$Parser$chompUntilEndOr = $elm$parser$Parser$Advanced$chompUntilEndOr;
@@ -26618,6 +27558,7 @@ var $author$project$Dashboard$Filter$teamFilter = $elm$parser$Parser$oneOf(
 				$author$project$Dashboard$Filter$InstanceGroup,
 				$author$project$Dashboard$Filter$keyedStringFilter('group'))),
 			$elm$parser$Parser$backtrackable($author$project$Dashboard$Filter$statusFilter),
+			$elm$parser$Parser$backtrackable($author$project$Dashboard$Filter$agentFilter),
 			A2(
 			$elm$parser$Parser$keeper,
 			$elm$parser$Parser$succeed(
@@ -26715,14 +27656,14 @@ var $elm$core$Set$member = F2(
 	});
 var $author$project$Favorites$isPipelineFavorited = F2(
 	function (_v0, _v1) {
-		var favoritedPipelines = _v0.h4;
-		var id = _v1.iz;
+		var favoritedPipelines = _v0.iD;
+		var id = _v1.f_;
 		return A2($elm$core$Set$member, id, favoritedPipelines);
 	});
 var $author$project$Dashboard$Filter$prefilter = F3(
 	function (session, view, p) {
 		if (!view) {
-			return (!p.gS) || A2($author$project$Favorites$isPipelineFavorited, session, p);
+			return (!p.hs) || A2($author$project$Favorites$isPipelineFavorited, session, p);
 		} else {
 			return true;
 		}
@@ -26809,7 +27750,7 @@ var $author$project$Concourse$isInstanceGroup = function (pipelines) {
 	if (pipelines.b) {
 		var p = pipelines.a;
 		var ps = pipelines.b;
-		return !($elm$core$List$isEmpty(ps) && $elm$core$Dict$isEmpty(p.bT));
+		return !($elm$core$List$isEmpty(ps) && $elm$core$Dict$isEmpty(p.b$));
 	} else {
 		return false;
 	}
@@ -26818,7 +27759,7 @@ var $author$project$Concourse$groupPipelinesWithinTeam = A2(
 	$elm$core$Basics$composeR,
 	$elm_community$list_extra$List$Extra$gatherEqualsBy(
 		function ($) {
-			return $.dQ;
+			return $.cT;
 		}),
 	$elm$core$List$map(
 		function (_v0) {
@@ -26827,6 +27768,9 @@ var $author$project$Concourse$groupPipelinesWithinTeam = A2(
 			return $author$project$Concourse$isInstanceGroup(
 				A2($elm$core$List$cons, p, ps)) ? A2($author$project$Concourse$InstanceGroup, p, ps) : $author$project$Concourse$RegularPipeline(p);
 		}));
+var $author$project$Dashboard$Filter$isAgentPipeline = function (p) {
+	return A2($elm$core$String$startsWith, 'agent-ticket-', p.cT);
+};
 var $author$project$Concourse$PipelineStatus$equal = F2(
 	function (ps1, ps2) {
 		var _v0 = _Utils_Tuple2(ps1, ps2);
@@ -26883,7 +27827,6 @@ var $author$project$Concourse$PipelineStatus$equal = F2(
 		}
 		return false;
 	});
-var $elm$core$String$fromFloat = _String_fromNumber;
 var $author$project$Concourse$flattenJson = F2(
 	function (key, val) {
 		switch (val.$) {
@@ -26950,10 +27893,10 @@ var $author$project$Concourse$PipelineStatus$Since = function (a) {
 	return {$: 1, a: a};
 };
 var $author$project$Dashboard$Pipeline$jobStatus = function (job) {
-	var _v0 = job.fa;
+	var _v0 = job.fM;
 	if (!_v0.$) {
 		var build = _v0.a;
-		return build.ek;
+		return build.eT;
 	} else {
 		return 0;
 	}
@@ -27026,29 +27969,29 @@ var $author$project$Concourse$BuildStatus$ordering = $matthewsj$elm_ordering$Ord
 var $author$project$Dashboard$Pipeline$transition = A2(
 	$elm$core$Basics$composeR,
 	function ($) {
-		return $.gE;
+		return $.hh;
 	},
 	$elm$core$Maybe$andThen(
 		A2(
 			$elm$core$Basics$composeR,
 			function ($) {
-				return $.dh;
+				return $.dJ;
 			},
 			function ($) {
-				return $.e9;
+				return $.fL;
 			})));
 var $author$project$Dashboard$Pipeline$pipelineStatus = F2(
 	function (jobs, pipeline) {
-		if (pipeline.gS) {
+		if (pipeline.hs) {
 			return $author$project$Concourse$PipelineStatus$PipelineStatusArchived;
 		} else {
-			if (pipeline.cE) {
+			if (pipeline.cX) {
 				return $author$project$Concourse$PipelineStatus$PipelineStatusPaused;
 			} else {
 				var unpausedJobs = A2(
 					$elm$core$List$filter,
 					function (job) {
-						return !job.cE;
+						return !job.cX;
 					},
 					jobs);
 				var mostImportantJobStatus = $elm$core$List$head(
@@ -27065,7 +28008,7 @@ var $author$project$Dashboard$Pipeline$pipelineStatus = F2(
 				var isRunning = A2(
 					$elm$core$List$any,
 					function (job) {
-						return !_Utils_eq(job.fM, $elm$core$Maybe$Nothing);
+						return !_Utils_eq(job.go, $elm$core$Maybe$Nothing);
 					},
 					jobs);
 				var firstNonSuccess = $elm$core$List$head(
@@ -27225,13 +28168,13 @@ var $author$project$Dashboard$Filter$pipelineFilter = F4(
 			function (j) {
 				return A2(
 					$elm$core$Dict$get,
-					_Utils_Tuple2(pipeline.iz, j),
+					_Utils_Tuple2(pipeline.f_, j),
 					jobs);
 			},
 			A2(
 				$elm$core$Maybe$withDefault,
 				_List_Nil,
-				A2($elm$core$Dict$get, pipeline.iz, existingJobs)));
+				A2($elm$core$Dict$get, pipeline.f_, existingJobs)));
 		if (!pf.$) {
 			var sf = pf.a;
 			var instanceVarValues = A2(
@@ -27244,11 +28187,11 @@ var $author$project$Dashboard$Filter$pipelineFilter = F4(
 						var v = _v1.b;
 						return A2($author$project$Concourse$flattenJson, k, v);
 					},
-					$elm$core$Dict$toList(pipeline.bT)));
+					$elm$core$Dict$toList(pipeline.b$)));
 			return A2(
 				$elm$core$List$any,
 				$author$project$Dashboard$Filter$stringMatches(sf),
-				A2($elm$core$List$cons, pipeline.dQ, instanceVarValues));
+				A2($elm$core$List$cons, pipeline.cT, instanceVarValues));
 		} else {
 			var sf = pf.a;
 			switch (sf.$) {
@@ -27268,8 +28211,8 @@ var $author$project$Dashboard$Filter$pipelineFilter = F4(
 	});
 var $author$project$Dashboard$Filter$runFilter = F3(
 	function (jobs, existingJobs, f) {
-		var negater = f.dR ? $elm$core$Basics$not : $elm$core$Basics$identity;
-		var _v0 = f.cX;
+		var negater = f.ej ? $elm$core$Basics$not : $elm$core$Basics$identity;
+		var _v0 = f.dh;
 		switch (_v0.$) {
 			case 0:
 				var sf = _v0.a;
@@ -27299,7 +28242,7 @@ var $author$project$Dashboard$Filter$runFilter = F3(
 							function (_v3, pipelines) {
 								return !$elm$core$List$isEmpty(pipelines);
 							})));
-			default:
+			case 2:
 				var sf = _v0.a;
 				return A2(
 					$elm$core$Basics$composeR,
@@ -27328,7 +28271,7 @@ var $author$project$Dashboard$Filter$runFilter = F3(
 											A2(
 												$elm$core$Basics$composeR,
 												function ($) {
-													return $.dQ;
+													return $.cT;
 												},
 												A2(
 													$elm$core$Basics$composeR,
@@ -27340,16 +28283,32 @@ var $author$project$Dashboard$Filter$runFilter = F3(
 							function (_v6, groups) {
 								return !$elm$core$List$isEmpty(groups);
 							})));
+			default:
+				return A2(
+					$elm$core$Basics$composeR,
+					$elm$core$Dict$map(
+						F2(
+							function (_v7, pipelines) {
+								return A2(
+									$elm$core$List$filter,
+									A2($elm$core$Basics$composeR, $author$project$Dashboard$Filter$isAgentPipeline, negater),
+									pipelines);
+							})),
+					$elm$core$Dict$filter(
+						F2(
+							function (_v8, pipelines) {
+								return !$elm$core$List$isEmpty(pipelines);
+							})));
 		}
 	});
 var $author$project$Dashboard$Filter$filterTeams = F2(
 	function (session, _v0) {
-		var pipelineJobs = _v0.aH;
-		var jobs = _v0.i1;
-		var query = _v0.av;
-		var teams = _v0.kE;
-		var pipelines = _v0.jN;
-		var dashboardView = _v0.hy;
+		var pipelineJobs = _v0.aI;
+		var jobs = _v0.jx;
+		var query = _v0.aw;
+		var teams = _v0.k9;
+		var pipelines = _v0.kg;
+		var dashboardView = _v0.h6;
 		var teamsToFilter = A2(
 			$elm$core$Dict$map,
 			F2(
@@ -27366,7 +28325,7 @@ var $author$project$Dashboard$Filter$filterTeams = F2(
 					A2(
 						$elm$core$List$map,
 						function (t) {
-							return _Utils_Tuple2(t.dQ, _List_Nil);
+							return _Utils_Tuple2(t.cT, _List_Nil);
 						},
 						A2($author$project$FetchResult$withDefault, _List_Nil, teams)))));
 		return A3(
@@ -27414,11 +28373,11 @@ var $author$project$Dashboard$SearchBar$screenResize = F2(
 			case 1:
 				return _Utils_update(
 					model,
-					{e3: $author$project$Dashboard$Models$Hidden});
+					{fE: $author$project$Dashboard$Models$Hidden});
 			case 2:
 				return _Utils_update(
 					model,
-					{e3: $author$project$Dashboard$Models$Hidden});
+					{fE: $author$project$Dashboard$Models$Hidden});
 			default:
 				return model;
 		}
@@ -27426,7 +28385,7 @@ var $author$project$Dashboard$SearchBar$screenResize = F2(
 var $author$project$Dashboard$SearchBar$searchInputId = 'search-input-field';
 var $author$project$Dashboard$Filter$Suggestion = F2(
 	function (prev, cur) {
-		return {ht: cur, jQ: prev};
+		return {h3: cur, kj: prev};
 	});
 var $author$project$Dashboard$Filter$filterTypes = _List_fromArray(
 	['status', 'team', 'group']);
@@ -27453,7 +28412,7 @@ var $author$project$Dashboard$Filter$suggestions = F2(
 			A2(
 				$elm$core$Maybe$map,
 				function (f) {
-					return _Utils_Tuple2(f.cX, f.dR);
+					return _Utils_Tuple2(f.dh, f.ej);
 				},
 				A2(
 					$elm$core$Maybe$map,
@@ -27513,12 +28472,12 @@ var $author$project$Dashboard$Filter$suggestions = F2(
 								A2(
 									$elm$core$List$map,
 									function ($) {
-										return $.dQ;
+										return $.cT;
 									},
 									$elm$core$List$concat(
 										$elm$core$Dict$values(pipelines)))));
 					}
-				default:
+				case 0:
 					if (curFilter.a.$ === 1) {
 						return _List_Nil;
 					} else {
@@ -27532,6 +28491,8 @@ var $author$project$Dashboard$Filter$suggestions = F2(
 								10,
 								$elm$core$Dict$keys(pipelines)));
 					}
+				default:
+					return _List_Nil;
 			}
 		}();
 		var prefix = negated ? $elm$core$List$map(
@@ -27558,15 +28519,15 @@ var $author$project$Dashboard$SearchBar$handleDelivery = F3(
 				var options = A2(
 					$author$project$Dashboard$Filter$suggestions,
 					A2($author$project$Dashboard$Filter$filterTeams, session, model),
-					model.av);
-				var _v2 = keyEvent.eM;
+					model.aw);
+				var _v2 = keyEvent.fj;
 				switch (_v2) {
 					case 10:
 						return _Utils_Tuple2(
 							_Utils_update(
 								model,
 								{
-									e3: A2($author$project$Dashboard$SearchBar$arrowUp, options, model.e3)
+									fE: A2($author$project$Dashboard$SearchBar$arrowUp, options, model.fE)
 								}),
 							effects);
 					case 11:
@@ -27574,22 +28535,22 @@ var $author$project$Dashboard$SearchBar$handleDelivery = F3(
 							_Utils_update(
 								model,
 								{
-									e3: A2($author$project$Dashboard$SearchBar$arrowDown, options, model.e3)
+									fE: A2($author$project$Dashboard$SearchBar$arrowDown, options, model.fE)
 								}),
 							effects);
 					case 12:
-						var _v3 = model.e3;
+						var _v3 = model.fE;
 						if (_v3.$ === 1) {
 							if (!_v3.a.$) {
 								var idx = _v3.a.a;
 								var selectedItem = A2(
 									$elm$core$Maybe$withDefault,
-									model.av,
+									model.aw,
 									A2(
 										$elm$core$Maybe$map,
 										function (_v4) {
-											var prev = _v4.jQ;
-											var cur = _v4.ht;
+											var prev = _v4.kj;
+											var cur = _v4.h3;
 											return _Utils_ap(prev, cur);
 										},
 										A2($elm_community$list_extra$List$Extra$getAt, idx, options)));
@@ -27597,8 +28558,8 @@ var $author$project$Dashboard$SearchBar$handleDelivery = F3(
 									_Utils_update(
 										model,
 										{
-											e3: $author$project$Dashboard$Models$Shown($elm$core$Maybe$Nothing),
-											av: selectedItem
+											fE: $author$project$Dashboard$Models$Shown($elm$core$Maybe$Nothing),
+											aw: selectedItem
 										}),
 									_List_fromArray(
 										[
@@ -27606,8 +28567,8 @@ var $author$project$Dashboard$SearchBar$handleDelivery = F3(
 											$author$project$Routes$toString(
 												$author$project$Routes$Dashboard(
 													{
-														hy: model.hy,
-														kf: $author$project$Routes$Normal(selectedItem)
+														h6: model.h6,
+														kK: $author$project$Routes$Normal(selectedItem)
 													})))
 										]));
 							} else {
@@ -27629,7 +28590,7 @@ var $author$project$Dashboard$SearchBar$handleDelivery = F3(
 					case 9:
 						return _Utils_Tuple2(
 							model,
-							keyEvent.go ? effects : _Utils_ap(
+							keyEvent.g1 ? effects : _Utils_ap(
 								effects,
 								_List_fromArray(
 									[
@@ -27646,23 +28607,32 @@ var $author$project$Dashboard$Dashboard$handleDeliveryBody = F2(
 	function (delivery, _v0) {
 		var model = _v0.a;
 		var effects = _v0.b;
-		_v1$6:
+		_v1$7:
 		while (true) {
 			switch (delivery.$) {
 				case 4:
-					if (!delivery.a) {
-						var _v2 = delivery.a;
-						var time = delivery.b;
-						return _Utils_Tuple2(
-							_Utils_update(
+					switch (delivery.a) {
+						case 0:
+							var _v2 = delivery.a;
+							var time = delivery.b;
+							return _Utils_Tuple2(
+								_Utils_update(
+									model,
+									{
+										bb: _List_Nil,
+										gq: $elm$core$Maybe$Just(time)
+									}),
+								model.bb);
+						case 1:
+							var _v3 = delivery.a;
+							return _Utils_Tuple2(
 								model,
-								{
-									a9: _List_Nil,
-									fN: $elm$core$Maybe$Just(time)
-								}),
-							model.a9);
-					} else {
-						break _v1$6;
+								_Utils_ap(
+									effects,
+									_List_fromArray(
+										[$author$project$Message$Effects$FetchAgentTickets, $author$project$Message$Effects$FetchAgentTicketCosts])));
+						default:
+							break _v1$7;
 					}
 				case 5:
 					return _Utils_Tuple2(
@@ -27685,15 +28655,15 @@ var $author$project$Dashboard$Dashboard$handleDeliveryBody = F2(
 				case 15:
 					if (!delivery.a.$) {
 						var pipelines = delivery.a.a;
-						return _Utils_eq(model.jN, $elm$core$Maybe$Nothing) ? _Utils_Tuple2(
+						return _Utils_eq(model.kg, $elm$core$Maybe$Nothing) ? _Utils_Tuple2(
 							_Utils_update(
 								model,
 								{
-									jN: $elm$core$Maybe$Just(
+									kg: $elm$core$Maybe$Just(
 										A2(
 											$author$project$Dashboard$Dashboard$groupBy,
 											function ($) {
-												return $.kD;
+												return $.k8;
 											},
 											A2(
 												$elm$core$List$map,
@@ -27701,13 +28671,13 @@ var $author$project$Dashboard$Dashboard$handleDeliveryBody = F2(
 													$author$project$Dashboard$Dashboard$toDashboardPipeline,
 													true,
 													_Utils_eq(
-														model.aq,
+														model.ar,
 														$elm$core$Maybe$Just(1))),
 												pipelines)))
 								}),
 							effects) : _Utils_Tuple2(model, effects);
 					} else {
-						break _v1$6;
+						break _v1$7;
 					}
 				case 14:
 					if (!delivery.a.$) {
@@ -27718,7 +28688,7 @@ var $author$project$Dashboard$Dashboard$handleDeliveryBody = F2(
 									$elm$core$List$map,
 									function (job) {
 										return _Utils_Tuple2(
-											_Utils_Tuple2(job.cF, job.dQ),
+											_Utils_Tuple2(job.cZ, job.cT),
 											job);
 									},
 									jobs)));
@@ -27733,30 +28703,30 @@ var $author$project$Dashboard$Dashboard$handleDeliveryBody = F2(
 						};
 						return A2(
 							$author$project$FetchResult$changedFrom,
-							mapToJobIds(model.i1),
+							mapToJobIds(model.jx),
 							mapToJobIds(newJobs)) ? _Utils_Tuple2(
 							$author$project$Dashboard$Dashboard$precomputeJobMetadata(
 								_Utils_update(
 									model,
-									{i1: newJobs})),
+									{jx: newJobs})),
 							effects) : _Utils_Tuple2(model, effects);
 					} else {
-						break _v1$6;
+						break _v1$7;
 					}
 				case 16:
 					if (!delivery.a.$) {
 						var teams = delivery.a.a;
 						var newTeams = $author$project$FetchResult$Cached(teams);
-						return A2($author$project$FetchResult$changedFrom, model.kE, newTeams) ? _Utils_Tuple2(
+						return A2($author$project$FetchResult$changedFrom, model.k9, newTeams) ? _Utils_Tuple2(
 							_Utils_update(
 								model,
-								{kE: newTeams}),
+								{k9: newTeams}),
 							effects) : _Utils_Tuple2(model, effects);
 					} else {
-						break _v1$6;
+						break _v1$7;
 					}
 				default:
-					break _v1$6;
+					break _v1$7;
 			}
 		}
 		return _Utils_Tuple2(model, effects);
@@ -27783,7 +28753,7 @@ var $author$project$DownloadFly$DownloadFly$handleDelivery = F2(
 			return _Utils_Tuple2(
 				_Utils_update(
 					model,
-					{du: hostname}),
+					{d_: hostname}),
 				effects);
 		} else {
 			return _Utils_Tuple2(model, effects);
@@ -27804,21 +28774,21 @@ var $author$project$FlySuccess$FlySuccess$handleDelivery = F2(
 						return _Utils_Tuple2(
 							_Utils_update(
 								model,
-								{aY: 1}),
+								{aZ: 1}),
 							effects);
 					case 2:
 						var _v3 = delivery.a;
 						return _Utils_Tuple2(
 							_Utils_update(
 								model,
-								{aY: 2}),
+								{aZ: 2}),
 							effects);
 					case 3:
 						var _v4 = delivery.a;
 						return _Utils_Tuple2(
 							_Utils_update(
 								model,
-								{aY: 3}),
+								{aZ: 3}),
 							effects);
 					default:
 						break _v1$3;
@@ -27843,7 +28813,7 @@ var $author$project$Job$Job$handleDelivery = F2(
 						return _Utils_Tuple2(
 							_Utils_update(
 								model,
-								{fN: time}),
+								{gq: time}),
 							effects);
 					case 1:
 						var _v3 = delivery.a;
@@ -27853,7 +28823,7 @@ var $author$project$Job$Job$handleDelivery = F2(
 								effects,
 								_List_fromArray(
 									[
-										A2($author$project$Message$Effects$FetchJobBuilds, model.u, model.cj),
+										A2($author$project$Message$Effects$FetchJobBuilds, model.u, model.cz),
 										$author$project$Message$Effects$FetchJob(model.u),
 										$author$project$Message$Effects$FetchAllPipelines
 									])));
@@ -27894,8 +28864,8 @@ var $author$project$Pipeline$Pipeline$handleDelivery = F2(
 				return _Utils_Tuple2(
 					_Utils_update(
 						model,
-						{ir: false, bd: 0}),
-					(keyEvent.eM === 8) ? _Utils_ap(
+						{iY: false, bf: 0}),
+					(keyEvent.fj === 8) ? _Utils_ap(
 						effects,
 						_List_fromArray(
 							[$author$project$Message$Effects$ResetPipelineFocus])) : effects);
@@ -27903,20 +28873,20 @@ var $author$project$Pipeline$Pipeline$handleDelivery = F2(
 				return _Utils_Tuple2(
 					_Utils_update(
 						model,
-						{ir: false, bd: 0}),
+						{iY: false, bf: 0}),
 					effects);
 			case 4:
 				switch (delivery.a) {
 					case 0:
 						var _v2 = delivery.a;
-						return (_Utils_cmp(model.bd + $author$project$Pipeline$Pipeline$timeUntilHiddenCheckInterval, $author$project$Pipeline$Pipeline$timeUntilHidden) > 0) ? _Utils_Tuple2(
+						return (_Utils_cmp(model.bf + $author$project$Pipeline$Pipeline$timeUntilHiddenCheckInterval, $author$project$Pipeline$Pipeline$timeUntilHidden) > 0) ? _Utils_Tuple2(
 							_Utils_update(
 								model,
-								{ir: true}),
+								{iY: true}),
 							effects) : _Utils_Tuple2(
 							_Utils_update(
 								model,
-								{bd: model.bd + $author$project$Pipeline$Pipeline$timeUntilHiddenCheckInterval}),
+								{bf: model.bf + $author$project$Pipeline$Pipeline$timeUntilHiddenCheckInterval}),
 							effects);
 					case 1:
 						var _v3 = delivery.a;
@@ -27926,7 +28896,7 @@ var $author$project$Pipeline$Pipeline$handleDelivery = F2(
 								effects,
 								_List_fromArray(
 									[
-										$author$project$Message$Effects$FetchPipeline(model.jK),
+										$author$project$Message$Effects$FetchPipeline(model.ke),
 										$author$project$Message$Effects$FetchAllPipelines
 									])));
 					default:
@@ -27951,16 +28921,16 @@ var $author$project$Resource$Resource$fetchDataForExpandedVersions = function (m
 		function (v) {
 			return _List_fromArray(
 				[
-					$author$project$Message$Effects$FetchInputTo(v.iz),
-					$author$project$Message$Effects$FetchOutputOf(v.iz)
+					$author$project$Message$Effects$FetchInputTo(v.f_),
+					$author$project$Message$Effects$FetchOutputOf(v.f_)
 				]);
 		},
 		A2(
 			$elm$core$List$filter,
 			function ($) {
-				return $.hX;
+				return $.iv;
 			},
-			model.x.hn));
+			model.x.h_));
 };
 var $author$project$Resource$Resource$handleDelivery = F3(
 	function (session, delivery, _v0) {
@@ -27976,12 +28946,12 @@ var $author$project$Resource$Resource$handleDelivery = F3(
 					switch (delivery.$) {
 						case 0:
 							var keyEvent = delivery.a;
-							return ((keyEvent.eM === 12) && ($author$project$Keyboard$hasControlModifier(keyEvent) && model.c_)) ? _Utils_Tuple2(
+							return ((keyEvent.fj === 12) && ($author$project$Keyboard$hasControlModifier(keyEvent) && model.dk)) ? _Utils_Tuple2(
 								model,
 								function () {
-									var _v2 = model.f1;
+									var _v2 = model.gG;
 									if (_v2.$ === 2) {
-										var comment = _v2.a.a3;
+										var comment = _v2.a.a4;
 										return _Utils_ap(
 											effects,
 											_List_fromArray(
@@ -28001,10 +28971,10 @@ var $author$project$Resource$Resource$handleDelivery = F3(
 										_Utils_update(
 											model,
 											{
-												fN: $elm$core$Maybe$Just(time)
+												gq: $elm$core$Maybe$Just(time)
 											}),
 										function () {
-											var _v4 = session.dv;
+											var _v4 = session.d$;
 											if ((_v4.$ === 1) && (_v4.a.$ === 17)) {
 												var stepID = _v4.a.a;
 												return _List_fromArray(
@@ -28026,7 +28996,7 @@ var $author$project$Resource$Resource$handleDelivery = F3(
 												_List_fromArray(
 													[
 														$author$project$Message$Effects$FetchResource(model.g),
-														A2($author$project$Message$Effects$FetchVersionedResources, model.g, model.cj),
+														A2($author$project$Message$Effects$FetchVersionedResources, model.g, model.cz),
 														$author$project$Message$Effects$FetchAllPipelines
 													]),
 												$author$project$Resource$Resource$fetchDataForExpandedVersions(model))));
@@ -28048,7 +29018,7 @@ var $author$project$Resource$Resource$handleDelivery = F3(
 								var ended = A2(
 									$elm$core$List$any,
 									function (_v6) {
-										var data = _v6.eT;
+										var data = _v6.fs;
 										return _Utils_eq(data, $author$project$Build$StepTree$Models$End);
 									},
 									envelopes);
@@ -28062,7 +29032,7 @@ var $author$project$Resource$Resource$handleDelivery = F3(
 											ended ? _List_fromArray(
 												[
 													$author$project$Message$Effects$FetchResource(model.g),
-													A2($author$project$Message$Effects$FetchVersionedResources, model.g, model.cj)
+													A2($author$project$Message$Effects$FetchVersionedResources, model.g, model.cz)
 												]) : _List_Nil)));
 							} else {
 								break _v1$5;
@@ -28086,7 +29056,9 @@ var $author$project$SubPage$SubPage$handleDelivery = F2(
 			$author$project$NotFound$NotFound$handleDelivery(delivery))(
 			$author$project$FlySuccess$FlySuccess$handleDelivery(delivery))(
 			$author$project$DownloadFly$DownloadFly$handleDelivery(delivery))($elm$core$Basics$identity)(
-			$author$project$Agent$Agent$handleDelivery(delivery));
+			$author$project$Agent$Agent$handleDelivery(delivery))(
+			$author$project$AgentTickets$AgentTickets$handleDelivery(delivery))(
+			$author$project$AgentTickets$AgentTicket$handleDelivery(delivery));
 	});
 var $author$project$Message$Effects$LoadExternal = function (a) {
 	return {$: 42, a: a};
@@ -28113,7 +29085,7 @@ var $elm$url$Url$addPrefixed = F3(
 	});
 var $elm$url$Url$toString = function (url) {
 	var http = function () {
-		var _v0 = url.jU;
+		var _v0 = url.kn;
 		if (!_v0) {
 			return 'http://';
 		} else {
@@ -28123,34 +29095,34 @@ var $elm$url$Url$toString = function (url) {
 	return A3(
 		$elm$url$Url$addPrefixed,
 		'#',
-		url.ig,
+		url.iN,
 		A3(
 			$elm$url$Url$addPrefixed,
 			'?',
-			url.av,
+			url.aw,
 			_Utils_ap(
 				A2(
 					$elm$url$Url$addPort,
-					url.jP,
-					_Utils_ap(http, url.iu)),
-				url.jH)));
+					url.ki,
+					_Utils_ap(http, url.i$)),
+				url.kb)));
 };
 var $author$project$Routes$getGroups = function (route) {
 	switch (route.$) {
 		case 0:
-			var groups = route.a.dt;
+			var groups = route.a.dZ;
 			return groups;
 		case 1:
-			var groups = route.a.dt;
+			var groups = route.a.dZ;
 			return groups;
 		case 2:
-			var groups = route.a.dt;
+			var groups = route.a.dZ;
 			return groups;
 		case 4:
-			var groups = route.a.dt;
+			var groups = route.a.dZ;
 			return groups;
 		case 7:
-			var groups = route.a.dt;
+			var groups = route.a.dZ;
 			return groups;
 		case 3:
 			return _List_Nil;
@@ -28161,6 +29133,10 @@ var $author$project$Routes$getGroups = function (route) {
 		case 8:
 			return _List_Nil;
 		case 9:
+			return _List_Nil;
+		case 10:
+			return _List_Nil;
+		case 11:
 			return _List_Nil;
 		default:
 			return _List_Nil;
@@ -28215,7 +29191,7 @@ var $author$project$Dashboard$Filter$isViewingInstanceGroups = function (query) 
 	return A2(
 		$elm$core$List$any,
 		function (f) {
-			var _v0 = f.cX;
+			var _v0 = f.dh;
 			if (_v0.$ === 2) {
 				return true;
 			} else {
@@ -28231,16 +29207,16 @@ var $author$project$Dashboard$Dashboard$changeRoute = F2(
 	function (f, _v0) {
 		var model = _v0.a;
 		var effects = _v0.b;
-		var wasViewingInstanceGroup = $author$project$Dashboard$Filter$isViewingInstanceGroups(model.av);
-		var newQuery = $author$project$Routes$extractQuery(f.kf);
+		var wasViewingInstanceGroup = $author$project$Dashboard$Filter$isViewingInstanceGroups(model.aw);
+		var newQuery = $author$project$Routes$extractQuery(f.kK);
 		var isViewingInstanceGroup = $author$project$Dashboard$Filter$isViewingInstanceGroups(newQuery);
 		return _Utils_Tuple2(
 			_Utils_update(
 				model,
 				{
-					hy: f.hy,
-					ao: _Utils_eq(f.kf, $author$project$Routes$HighDensity),
-					av: newQuery
+					h6: f.h6,
+					aq: _Utils_eq(f.kK, $author$project$Routes$HighDensity),
+					aw: newQuery
 				}),
 			_Utils_ap(
 				effects,
@@ -28256,11 +29232,11 @@ var $author$project$Job$Job$changeToJob = F2(
 	function (flags, _v0) {
 		var model = _v0.a;
 		var effects = _v0.b;
-		var page = A2($elm$core$Maybe$withDefault, $author$project$Job$Job$startingPage, flags.d$);
+		var page = A2($elm$core$Maybe$withDefault, $author$project$Job$Job$startingPage, flags.eu);
 		return _Utils_Tuple2(
 			_Utils_update(
 				model,
-				{ax: $krisajenkins$remotedata$RemoteData$Loading, cj: page}),
+				{ay: $krisajenkins$remotedata$RemoteData$Loading, cz: page}),
 			_Utils_ap(
 				effects,
 				_List_fromArray(
@@ -28270,11 +29246,11 @@ var $author$project$Job$Job$changeToJob = F2(
 	});
 var $author$project$Pipeline$Pipeline$changeToPipelineAndGroups = F2(
 	function (_v0, _v1) {
-		var pipelineLocator = _v0.jK;
+		var pipelineLocator = _v0.ke;
 		var selectedGroups = _v0.P;
 		var model = _v1.a;
 		var effects = _v1.b;
-		if (_Utils_eq(model.jK, pipelineLocator)) {
+		if (_Utils_eq(model.ke, pipelineLocator)) {
 			var _v2 = $author$project$Pipeline$Pipeline$renderIfNeeded(
 				_Utils_Tuple2(
 					_Utils_update(
@@ -28293,7 +29269,7 @@ var $author$project$Pipeline$Pipeline$changeToPipelineAndGroups = F2(
 							[$author$project$Message$Effects$ResetPipelineFocus]))));
 		} else {
 			var _v3 = $author$project$Pipeline$Pipeline$init(
-				{jK: pipelineLocator, P: selectedGroups, ep: model.ep});
+				{ke: pipelineLocator, P: selectedGroups, eX: model.eX});
 			var newModel = _v3.a;
 			var newEffects = _v3.b;
 			return _Utils_Tuple2(
@@ -28305,9 +29281,9 @@ var $author$project$Resource$Resource$changeToResource = F2(
 	function (flags, _v0) {
 		var model = _v0.a;
 		var effects = _v0.b;
-		var page = A2($elm$core$Maybe$withDefault, $author$project$Resource$Resource$startingPage, flags.d$);
+		var page = A2($elm$core$Maybe$withDefault, $author$project$Resource$Resource$startingPage, flags.eu);
 		var fetchVersionedResource = function () {
-			var _v1 = flags.be;
+			var _v1 = flags.bg;
 			if (!_v1.$) {
 				var v = _v1.a;
 				return A2($author$project$Message$Effects$FetchVersionedResourceId, model.g, v);
@@ -28319,10 +29295,10 @@ var $author$project$Resource$Resource$changeToResource = F2(
 			_Utils_update(
 				model,
 				{
-					cj: page,
+					cz: page,
 					x: {
-						hn: _List_Nil,
-						jF: {bW: $elm$core$Maybe$Nothing, b0: $elm$core$Maybe$Nothing}
+						h_: _List_Nil,
+						j9: {b2: $elm$core$Maybe$Nothing, b8: $elm$core$Maybe$Nothing}
 					}
 				}),
 			_Utils_ap(
@@ -28346,84 +29322,84 @@ var $author$project$Causality$Causality$changeToVersionedResource = F2(
 var $author$project$SubPage$SubPage$urlUpdateValid = function (routes) {
 	return $author$project$SubPage$SubPage$genericUpdate(
 		function () {
-			var _v0 = routes.kO;
+			var _v0 = routes.li;
 			switch (_v0.$) {
 				case 0:
-					var id = _v0.a.iz;
-					var highlight = _v0.a.is;
+					var id = _v0.a.f_;
+					var highlight = _v0.a.iZ;
 					return $author$project$Build$Build$changeToBuild(
 						{
-							fd: function () {
-								var _v1 = routes.ih;
+							fP: function () {
+								var _v1 = routes.iO;
 								if (!_v1.$) {
 									var params = _v1.a;
 									return $elm$core$Maybe$Just(
-										$author$project$Build$Header$Models$JobBuildPage(params.iz));
+										$author$project$Build$Header$Models$JobBuildPage(params.f_));
 								} else {
 									return $elm$core$Maybe$Nothing;
 								}
 							}(),
-							is: highlight,
-							cD: $author$project$Build$Header$Models$JobBuildPage(id)
+							iZ: highlight,
+							cW: $author$project$Build$Header$Models$JobBuildPage(id)
 						});
 				case 3:
-					var id = _v0.a.iz;
-					var highlight = _v0.a.is;
+					var id = _v0.a.f_;
+					var highlight = _v0.a.iZ;
 					return $author$project$Build$Build$changeToBuild(
 						{
-							fd: function () {
-								var _v2 = routes.ih;
+							fP: function () {
+								var _v2 = routes.iO;
 								if (_v2.$ === 3) {
 									var params = _v2.a;
 									return $elm$core$Maybe$Just(
-										$author$project$Build$Header$Models$OneOffBuildPage(params.iz));
+										$author$project$Build$Header$Models$OneOffBuildPage(params.f_));
 								} else {
 									return $elm$core$Maybe$Nothing;
 								}
 							}(),
-							is: highlight,
-							cD: $author$project$Build$Header$Models$OneOffBuildPage(id)
+							iZ: highlight,
+							cW: $author$project$Build$Header$Models$OneOffBuildPage(id)
 						});
 				default:
 					return $elm$core$Basics$identity;
 			}
 		}())(
 		function () {
-			var _v3 = routes.kO;
+			var _v3 = routes.li;
 			if (_v3.$ === 2) {
-				var id = _v3.a.iz;
-				var page = _v3.a.bp;
+				var id = _v3.a.f_;
+				var page = _v3.a.br;
 				return $author$project$Job$Job$changeToJob(
-					{fv: id, d$: page});
+					{f6: id, eu: page});
 			} else {
 				return $elm$core$Basics$identity;
 			}
 		}())(
 		function () {
-			var _v4 = routes.kO;
+			var _v4 = routes.li;
 			if (_v4.$ === 1) {
-				var id = _v4.a.iz;
-				var page = _v4.a.bp;
-				var version = _v4.a.er;
+				var id = _v4.a.f_;
+				var page = _v4.a.br;
+				var version = _v4.a.eZ;
 				return $author$project$Resource$Resource$changeToResource(
-					{be: version, d$: page, ge: id});
+					{bg: version, eu: page, gS: id});
 			} else {
 				return $elm$core$Basics$identity;
 			}
 		}())(
 		function () {
-			var _v5 = routes.kO;
+			var _v5 = routes.li;
 			if (_v5.$ === 4) {
-				var id = _v5.a.iz;
-				var groups = _v5.a.dt;
+				var id = _v5.a.f_;
+				var groups = _v5.a.dZ;
 				return $author$project$Pipeline$Pipeline$changeToPipelineAndGroups(
-					{jK: id, P: groups});
+					{ke: id, P: groups});
 			} else {
 				return $elm$core$Basics$identity;
 			}
 		}())(
 		function () {
-			var _v6 = routes.kO;
+			var _v6 = routes.li;
 			if (_v6.$ === 5) {
 				var f = _v6.a;
 				return $author$project$Dashboard$Dashboard$changeRoute(f);
@@ -28432,20 +29408,20 @@ var $author$project$SubPage$SubPage$urlUpdateValid = function (routes) {
 			}
 		}())(
 		function () {
-			var _v7 = routes.kO;
+			var _v7 = routes.li;
 			if (_v7.$ === 7) {
-				var id = _v7.a.iz;
-				var direction = _v7.a.e0;
+				var id = _v7.a.f_;
+				var direction = _v7.a.fB;
 				return $author$project$Causality$Causality$changeToVersionedResource(
-					{e0: direction, V: id});
+					{fB: direction, V: id});
 			} else {
 				return $elm$core$Basics$identity;
 			}
-		}())($elm$core$Basics$identity)($elm$core$Basics$identity)($elm$core$Basics$identity)($elm$core$Basics$identity)($elm$core$Basics$identity);
+		}())($elm$core$Basics$identity)($elm$core$Basics$identity)($elm$core$Basics$identity)($elm$core$Basics$identity)($elm$core$Basics$identity)($elm$core$Basics$identity)($elm$core$Basics$identity);
 };
 var $author$project$SubPage$SubPage$urlUpdate = F2(
 	function (session, routes) {
-		var _v0 = _Utils_Tuple2(session.dm.gh, routes.kO);
+		var _v0 = _Utils_Tuple2(session.dQ.gV, routes.li);
 		if ((!_v0.a) && (_v0.b.$ === 7)) {
 			return $author$project$SubPage$SubPage$handleNotFound(session);
 		} else {
@@ -28460,31 +29436,31 @@ var $author$project$Routes$withGroups = F2(
 				return $author$project$Routes$Build(
 					_Utils_update(
 						params,
-						{dt: groups}));
+						{dZ: groups}));
 			case 1:
 				var params = route.a;
 				return $author$project$Routes$Resource(
 					_Utils_update(
 						params,
-						{dt: groups}));
+						{dZ: groups}));
 			case 2:
 				var params = route.a;
 				return $author$project$Routes$Job(
 					_Utils_update(
 						params,
-						{dt: groups}));
+						{dZ: groups}));
 			case 4:
 				var params = route.a;
 				return $author$project$Routes$Pipeline(
 					_Utils_update(
 						params,
-						{dt: groups}));
+						{dZ: groups}));
 			case 7:
 				var params = route.a;
 				return $author$project$Routes$Causality(
 					_Utils_update(
 						params,
-						{dt: groups}));
+						{dZ: groups}));
 			case 3:
 				return route;
 			case 5:
@@ -28495,6 +29471,10 @@ var $author$project$Routes$withGroups = F2(
 				return route;
 			case 9:
 				return route;
+			case 10:
+				return route;
+			case 11:
+				return route;
 			default:
 				return route;
 		}
@@ -28502,7 +29482,7 @@ var $author$project$Routes$withGroups = F2(
 var $author$project$Application$Application$urlUpdate = F2(
 	function (route, model) {
 		var oldSession = model.c;
-		var oldRoute = model.c.d5;
+		var oldRoute = model.c.eD;
 		var newRoute = function () {
 			if (route.$ === 4) {
 				return route;
@@ -28515,11 +29495,11 @@ var $author$project$Application$Application$urlUpdate = F2(
 		}();
 		var newSession = _Utils_update(
 			oldSession,
-			{dv: $author$project$HoverState$NoHover, d5: newRoute});
+			{d$: $author$project$HoverState$NoHover, eD: newRoute});
 		var _v0 = _Utils_eq(newRoute, oldRoute) ? _Utils_Tuple2(model.z, _List_Nil) : (A2($author$project$Application$Application$routeMatchesModel, newRoute, model) ? A3(
 			$author$project$SubPage$SubPage$urlUpdate,
 			model.c,
-			{ih: oldRoute, kO: newRoute},
+			{iO: oldRoute, li: newRoute},
 			_Utils_Tuple2(model.z, _List_Nil)) : A2($author$project$SubPage$SubPage$init, model.c, newRoute));
 		var newSubmodel = _v0.a;
 		var subEffects = _v0.b;
@@ -28553,7 +29533,7 @@ var $author$project$Application$Application$handleDeliveryForApplication = F2(
 						var session = model.c;
 						var newSession = _Utils_update(
 							session,
-							{a5: tokenValue});
+							{a6: tokenValue});
 						return _Utils_Tuple2(
 							_Utils_update(
 								model,
@@ -28571,7 +29551,7 @@ var $author$project$Application$Application$handleDeliveryForApplication = F2(
 					var newSession = _Utils_update(
 						session,
 						{
-							d8: $author$project$ScreenSize$fromWindowSize(width)
+							eG: $author$project$ScreenSize$fromWindowSize(width)
 						});
 					return _Utils_Tuple2(
 						_Utils_update(
@@ -28667,8 +29647,8 @@ var $author$project$Message$Effects$SaveFavoritedPipelines = function (a) {
 	return {$: 83, a: a};
 };
 var $author$project$Favorites$instanceGroupKey = function (_v0) {
-	var teamName = _v0.kD;
-	var name = _v0.dQ;
+	var teamName = _v0.k8;
+	var name = _v0.cT;
 	return _Utils_Tuple2(teamName, name);
 };
 var $author$project$Favorites$update = F2(
@@ -28683,22 +29663,22 @@ var $author$project$Favorites$update = F2(
 			var favoritedInstanceGroups = A2(
 				toggle,
 				$author$project$Favorites$instanceGroupKey(ig),
-				model.h3);
+				model.iC);
 			return _Utils_Tuple2(
 				_Utils_update(
 					model,
-					{h3: favoritedInstanceGroups}),
+					{iC: favoritedInstanceGroups}),
 				_List_fromArray(
 					[
 						$author$project$Message$Effects$SaveFavoritedInstanceGroups(favoritedInstanceGroups)
 					]));
 		};
 		var toggleFavoritePipeline = function (pipelineID) {
-			var favoritedPipelines = A2(toggle, pipelineID, model.h4);
+			var favoritedPipelines = A2(toggle, pipelineID, model.iD);
 			return _Utils_Tuple2(
 				_Utils_update(
 					model,
-					{h4: favoritedPipelines}),
+					{iD: favoritedPipelines}),
 				_List_fromArray(
 					[
 						$author$project$Message$Effects$SaveFavoritedPipelines(favoritedPipelines)
@@ -28706,7 +29686,7 @@ var $author$project$Favorites$update = F2(
 		};
 		_v1$5:
 		while (true) {
-			if (message.$ === 32) {
+			if (message.$ === 47) {
 				switch (message.a.$) {
 					case 65:
 						var pipelineID = message.a.a;
@@ -28743,18 +29723,18 @@ var $author$project$SideBar$SideBar$updateSidebar = F2(
 		_v0$4:
 		while (true) {
 			switch (message.$) {
-				case 32:
+				case 47:
 					switch (message.a.$) {
 						case 59:
 							var _v1 = message.a;
-							var oldState = model.km;
+							var oldState = model.kR;
 							var newState = _Utils_update(
 								oldState,
-								{iT: !oldState.iT});
+								{jn: !oldState.jn});
 							return _Utils_Tuple2(
 								_Utils_update(
 									model,
-									{km: newState}),
+									{kR: newState}),
 								_List_fromArray(
 									[
 										$author$project$Message$Effects$SaveSideBarState(newState)
@@ -28768,7 +29748,7 @@ var $author$project$SideBar$SideBar$updateSidebar = F2(
 									_Utils_update(
 										model,
 										{
-											hZ: A2(toggle, teamName, model.hZ)
+											iw: A2(toggle, teamName, model.iw)
 										}),
 									_List_Nil);
 							} else {
@@ -28776,7 +29756,7 @@ var $author$project$SideBar$SideBar$updateSidebar = F2(
 									_Utils_update(
 										model,
 										{
-											hi: A2(toggle, teamName, model.hi)
+											hV: A2(toggle, teamName, model.hV)
 										}),
 									_List_Nil);
 							}
@@ -28785,12 +29765,12 @@ var $author$project$SideBar$SideBar$updateSidebar = F2(
 							return _Utils_Tuple2(
 								_Utils_update(
 									model,
-									{dg: true}),
+									{dI: true}),
 								_List_Nil);
 						default:
 							break _v0$4;
 					}
-				case 31:
+				case 46:
 					if (!message.a.$) {
 						var domID = message.a.a;
 						return _Utils_Tuple2(
@@ -28855,95 +29835,326 @@ var $elm$core$Set$isEmpty = function (_v0) {
 	return $elm$core$Dict$isEmpty(dict);
 };
 var $author$project$Agent$Agent$canMint = function (model) {
-	return ($elm$core$String$trim(model.bm) !== '') && ((!$elm$core$Set$isEmpty(model.at)) && $author$project$Agent$Agent$expiresIsValid(model.bl));
+	return ($elm$core$String$trim(model.bo) !== '') && ((!$elm$core$Set$isEmpty(model.au)) && $author$project$Agent$Agent$expiresIsValid(model.bn));
 };
 var $author$project$Agent$Agent$update = F2(
 	function (msg, _v0) {
 		var model = _v0.a;
 		var effects = _v0.b;
 		switch (msg.$) {
-			case 24:
+			case 27:
 				var name = msg.a;
 				return _Utils_Tuple2(
 					_Utils_update(
 						model,
-						{bm: name}),
+						{bo: name}),
 					effects);
-			case 25:
+			case 28:
 				var description = msg.a;
 				return _Utils_Tuple2(
 					_Utils_update(
 						model,
-						{bV: description}),
+						{b1: description}),
 					effects);
-			case 26:
+			case 29:
 				var scope = msg.a;
-				var scopes = A2($elm$core$Set$member, scope, model.at) ? A2($elm$core$Set$remove, scope, model.at) : A2($elm$core$Set$insert, scope, model.at);
+				var scopes = A2($elm$core$Set$member, scope, model.au) ? A2($elm$core$Set$remove, scope, model.au) : A2($elm$core$Set$insert, scope, model.au);
 				return _Utils_Tuple2(
 					_Utils_update(
 						model,
-						{at: scopes}),
+						{au: scopes}),
 					effects);
-			case 27:
+			case 30:
 				var days = msg.a;
 				return _Utils_Tuple2(
 					_Utils_update(
 						model,
-						{bl: days}),
+						{bn: days}),
 					effects);
-			case 28:
-				return ($author$project$Agent$Agent$canMint(model) && (!model.aV)) ? _Utils_Tuple2(
+			case 31:
+				return ($author$project$Agent$Agent$canMint(model) && (!model.aW)) ? _Utils_Tuple2(
 					_Utils_update(
 						model,
-						{aV: true}),
+						{aW: true}),
 					_Utils_ap(
 						effects,
 						_List_fromArray(
 							[
 								$author$project$Message$Effects$CreateAgentPrincipal(
 								{
-									eZ: $elm$core$String$trim(model.bV),
-									h$: $elm$core$String$toInt(
-										$elm$core$String$trim(model.bl)),
-									dQ: $elm$core$String$trim(model.bm),
-									gk: $elm$core$Set$toList(model.at)
+									fy: $elm$core$String$trim(model.b1),
+									iy: $elm$core$String$toInt(
+										$elm$core$String$trim(model.bn)),
+									cT: $elm$core$String$trim(model.bo),
+									gZ: $elm$core$Set$toList(model.au)
 								})
 							]))) : _Utils_Tuple2(model, effects);
-			case 29:
+			case 32:
 				return _Utils_Tuple2(
 					_Utils_update(
 						model,
-						{cA: $elm$core$Maybe$Nothing}),
+						{cS: $elm$core$Maybe$Nothing}),
 					effects);
-			case 30:
+			case 33:
 				var principalId = msg.a;
 				return _Utils_Tuple2(
 					_Utils_update(
 						model,
-						{b4: $elm$core$Maybe$Nothing}),
+						{cc: $elm$core$Maybe$Nothing}),
 					_Utils_ap(
 						effects,
 						_List_fromArray(
 							[
 								$author$project$Message$Effects$RevokeAgentPrincipal(principalId)
 							])));
+			case 34:
+				return _Utils_Tuple2(
+					_Utils_update(
+						model,
+						{ce: !model.ce}),
+					effects);
 			default:
 				return _Utils_Tuple2(model, effects);
 		}
 	});
 var $author$project$AgentReviews$AgentReviews$update = F2(
+	function (msg, _v0) {
+		var model = _v0.a;
+		var effects = _v0.b;
+		switch (msg.$) {
+			case 25:
+				var on = msg.a;
+				return _Utils_Tuple2(
+					_Utils_update(
+						model,
+						{$7: on}),
+					effects);
+			case 26:
+				var f = msg.a;
+				return _Utils_Tuple2(
+					_Utils_update(
+						model,
+						{cY: f}),
+					effects);
+			default:
+				return _Utils_Tuple2(model, effects);
+		}
+	});
+var $author$project$Message$Effects$DispatchAgentTicket = function (a) {
+	return {$: 103, a: a};
+};
+var $author$project$Message$Effects$SaveAgentTicket = function (a) {
+	return {$: 101, a: a};
+};
+var $author$project$Message$Effects$SubmitAgentReviewVerdict = function (a) {
+	return {$: 98, a: a};
+};
+var $author$project$Message$Effects$TransitionAgentTicket = function (a) {
+	return {$: 102, a: a};
+};
+var $elm$core$String$toFloat = _String_toFloat;
+var $author$project$AgentTickets$AgentTicket$parseBudget = function (raw) {
+	var _v0 = $elm$core$String$trim(raw);
+	if (_v0 === '') {
+		return $elm$core$Maybe$Nothing;
+	} else {
+		var trimmed = _v0;
+		return $elm$core$String$toFloat(trimmed);
+	}
+};
+var $author$project$AgentTickets$AgentTicket$PlanTab = 1;
+var $author$project$AgentTickets$AgentTicket$tabFromString = function (tab) {
+	if (tab === 'plan') {
+		return 1;
+	} else {
+		return 0;
+	}
+};
+var $author$project$AgentTickets$AgentTicket$toggleSet = F2(
+	function (x, set) {
+		return A2($elm$core$Set$member, x, set) ? A2($elm$core$Set$remove, x, set) : A2($elm$core$Set$insert, x, set);
+	});
+var $author$project$AgentTickets$AgentTicket$update = F2(
+	function (msg, _v0) {
+		var model = _v0.a;
+		var effects = _v0.b;
+		switch (msg.$) {
+			case 41:
+				var tab = msg.a;
+				return _Utils_Tuple2(
+					_Utils_update(
+						model,
+						{
+							cs: $author$project$AgentTickets$AgentTicket$tabFromString(tab)
+						}),
+					effects);
+			case 35:
+				return _Utils_Tuple2(
+					_Utils_update(
+						model,
+						{W: $elm$core$Maybe$Nothing, ba: true}),
+					effects);
+			case 36:
+				var v = msg.a;
+				return _Utils_Tuple2(
+					_Utils_update(
+						model,
+						{bU: v}),
+					effects);
+			case 37:
+				var v = msg.a;
+				return _Utils_Tuple2(
+					_Utils_update(
+						model,
+						{bS: v}),
+					effects);
+			case 38:
+				var v = msg.a;
+				return _Utils_Tuple2(
+					_Utils_update(
+						model,
+						{bT: v}),
+					effects);
+			case 40:
+				return _Utils_Tuple2(
+					_Utils_update(
+						model,
+						{ba: false}),
+					effects);
+			case 39:
+				return _Utils_Tuple2(
+					model,
+					_Utils_ap(
+						effects,
+						_List_fromArray(
+							[
+								$author$project$Message$Effects$SaveAgentTicket(
+								{
+									bL: model.bS,
+									dz: $author$project$AgentTickets$AgentTicket$parseBudget(model.bT),
+									f_: model.lg,
+									ck: model.bU
+								})
+							])));
+			case 42:
+				var to = msg.a;
+				return _Utils_Tuple2(
+					_Utils_update(
+						model,
+						{W: $elm$core$Maybe$Nothing}),
+					function () {
+						var _v2 = model.bQ;
+						if (!_v2.$) {
+							var d = _v2.a;
+							return _Utils_ap(
+								effects,
+								_List_fromArray(
+									[
+										$author$project$Message$Effects$TransitionAgentTicket(
+										{iO: d.al.dg, f_: model.lg, li: to})
+									]));
+						} else {
+							return effects;
+						}
+					}());
+			case 43:
+				return _Utils_Tuple2(
+					_Utils_update(
+						model,
+						{W: $elm$core$Maybe$Nothing, bR: true}),
+					effects);
+			case 44:
+				return _Utils_Tuple2(
+					_Utils_update(
+						model,
+						{bR: false}),
+					_Utils_ap(
+						effects,
+						_List_fromArray(
+							[
+								$author$project$Message$Effects$DispatchAgentTicket(model.lg)
+							])));
+			case 45:
+				return _Utils_Tuple2(
+					_Utils_update(
+						model,
+						{bR: false}),
+					effects);
+			case 19:
+				return _Utils_Tuple2(
+					_Utils_update(
+						model,
+						{dt: !model.dt}),
+					effects);
+			case 20:
+				var findingId = msg.a;
+				return _Utils_Tuple2(
+					_Utils_update(
+						model,
+						{
+							dO: A2($author$project$AgentTickets$AgentTicket$toggleSet, findingId, model.dO)
+						}),
+					effects);
+			case 22:
+				return _Utils_Tuple2(
+					_Utils_update(
+						model,
+						{eJ: !model.eJ}),
+					effects);
+			case 21:
+				var findingId = msg.a;
+				return _Utils_Tuple2(
+					_Utils_update(
+						model,
+						{
+							dN: A2($author$project$AgentTickets$AgentTicket$toggleSet, findingId, model.dN)
+						}),
+					effects);
+			case 23:
+				var params = msg.a;
+				return _Utils_Tuple2(
+					model,
+					_Utils_ap(
+						effects,
+						_List_fromArray(
+							[
+								$author$project$Message$Effects$SubmitAgentReviewVerdict(
+								{
+									hX: params.hX,
+									dV: params.dV,
+									j$: A2(
+										$elm$core$Maybe$withDefault,
+										'',
+										A2($elm$core$Dict$get, params.dV, model.ct)),
+									gP: params.gP,
+									gW: params.gW,
+									hl: params.hl
+								})
+							])));
+			case 24:
+				var findingId = msg.a;
+				var note = msg.b;
+				return _Utils_Tuple2(
+					_Utils_update(
+						model,
+						{
+							ct: A3($elm$core$Dict$insert, findingId, note, model.ct)
+						}),
+					effects);
+			default:
+				return _Utils_Tuple2(model, effects);
+		}
+	});
+var $author$project$AgentTickets$AgentTickets$update = F2(
 	function (_v0, _v1) {
 		var model = _v1.a;
 		var effects = _v1.b;
 		return _Utils_Tuple2(model, effects);
 	});
-var $author$project$Message$Effects$SubmitAgentReviewVerdict = function (a) {
-	return {$: 98, a: a};
-};
 var $author$project$Build$StepTree$StepTree$extendHighlight = F3(
 	function (id, line, root) {
 		var hl = function () {
-			var _v0 = root.is;
+			var _v0 = root.iZ;
 			switch (_v0.$) {
 				case 0:
 					return A2($author$project$Routes$HighlightLine, id, line);
@@ -28960,7 +30171,7 @@ var $author$project$Build$StepTree$StepTree$extendHighlight = F3(
 		return _Utils_Tuple2(
 			_Utils_update(
 				root,
-				{is: hl}),
+				{iZ: hl}),
 			_List_fromArray(
 				[
 					$author$project$Message$Effects$ModifyUrl(
@@ -28969,7 +30180,7 @@ var $author$project$Build$StepTree$StepTree$extendHighlight = F3(
 	});
 var $author$project$Build$Output$Output$handleStepTreeMsg = F2(
 	function (action, model) {
-		var _v0 = model.kv;
+		var _v0 = model.k_;
 		if (!_v0.$) {
 			var st = _v0.a;
 			var _v1 = action(st);
@@ -28979,7 +30190,7 @@ var $author$project$Build$Output$Output$handleStepTreeMsg = F2(
 				_Utils_update(
 					model,
 					{
-						kv: $elm$core$Maybe$Just(newModel)
+						k_: $elm$core$Maybe$Just(newModel)
 					}),
 				effects);
 		} else {
@@ -28992,7 +30203,7 @@ var $author$project$Build$StepTree$StepTree$setHighlight = F3(
 		return _Utils_Tuple2(
 			_Utils_update(
 				root,
-				{is: hl}),
+				{iZ: hl}),
 			_List_fromArray(
 				[
 					$author$project$Message$Effects$ModifyUrl(
@@ -29004,7 +30215,7 @@ var $author$project$Build$StepTree$Models$focusTabbed = F2(
 		return _Utils_update(
 			step,
 			{
-				gx: $author$project$Build$StepTree$Models$Manual(tab)
+				g9: $author$project$Build$StepTree$Models$Manual(tab)
 			});
 	});
 var $author$project$Build$StepTree$StepTree$switchTab = F3(
@@ -29026,7 +30237,7 @@ var $author$project$Build$StepTree$StepTree$toggleStep = F2(
 				function (step) {
 					return _Utils_update(
 						step,
-						{hX: !step.hX});
+						{iv: !step.iv});
 				},
 				root),
 			_List_Nil);
@@ -29040,7 +30251,7 @@ var $author$project$Build$StepTree$StepTree$toggleStepInitialization = F2(
 				function (step) {
 					return _Utils_update(
 						step,
-						{iF: !step.iF});
+						{i9: !step.i9});
 				},
 				root),
 			_List_Nil);
@@ -29050,14 +30261,14 @@ var $author$project$Build$StepTree$Models$toggleSubHeaderExpanded = F2(
 		return _Utils_update(
 			step,
 			{
-				dl: A3(
+				dP: A3(
 					$elm$core$Dict$update,
 					idx,
 					A2(
 						$elm$core$Basics$composeL,
 						A2($elm$core$Basics$composeL, $elm$core$Maybe$Just, $elm$core$Basics$not),
 						$elm$core$Maybe$withDefault(false)),
-					step.dl)
+					step.dP)
 			});
 	});
 var $author$project$Build$StepTree$StepTree$toggleStepSubHeader = F3(
@@ -29083,7 +30294,7 @@ var $author$project$Build$Header$Header$update = F2(
 				case 10:
 					var event = msg.a;
 					var scrollFactor = function () {
-						var _v3 = event.hC;
+						var _v3 = event.ia;
 						switch (_v3) {
 							case 0:
 								return 1;
@@ -29093,27 +30304,27 @@ var $author$project$Build$Header$Header$update = F2(
 								return 800;
 						}
 					}();
-					var scroll = (!event.eY) ? _List_fromArray(
+					var scroll = (!event.fx) ? _List_fromArray(
 						[
 							A2(
 							$author$project$Message$Effects$Scroll,
-							$author$project$Message$ScrollDirection$Sideways(event.hD * scrollFactor),
+							$author$project$Message$ScrollDirection$Sideways(event.ib * scrollFactor),
 							$author$project$Build$Header$Header$historyId)
 						]) : _List_fromArray(
 						[
 							A2(
 							$author$project$Message$Effects$Scroll,
-							$author$project$Message$ScrollDirection$Sideways((-event.eY) * scrollFactor),
+							$author$project$Message$ScrollDirection$Sideways((-event.fx) * scrollFactor),
 							$author$project$Build$Header$Header$historyId)
 						]);
 					var checkVisibility = function () {
-						var _v2 = $elm_community$list_extra$List$Extra$last(model.it);
+						var _v2 = $elm_community$list_extra$List$Extra$last(model.i_);
 						if (!_v2.$) {
 							var b = _v2.a;
 							return _List_fromArray(
 								[
 									$author$project$Message$Effects$CheckIsVisible(
-									$elm$core$String$fromInt(b.iz))
+									$elm$core$String$fromInt(b.f_))
 								]);
 						} else {
 							return _List_Nil;
@@ -29124,7 +30335,7 @@ var $author$project$Build$Header$Header$update = F2(
 						_Utils_ap(
 							effects,
 							_Utils_ap(scroll, checkVisibility)));
-				case 32:
+				case 47:
 					switch (msg.a.$) {
 						case 7:
 							var _v4 = msg.a;
@@ -29137,12 +30348,12 @@ var $author$project$Build$Header$Header$update = F2(
 											$elm$core$Maybe$map,
 											function (j) {
 												return $author$project$Message$Effects$RerunJobBuild(
-													{g1: model.dQ, i0: j.i0, f2: j.f2, jL: j.jL, kD: j.kD});
+													{hE: model.cT, jw: j.jw, ew: j.ew, gH: j.gH, k8: j.k8});
 											},
-											model.ap))));
+											model.ac))));
 						case 4:
 							var _v5 = msg.a;
-							var _v6 = model.a3;
+							var _v6 = model.a4;
 							if (!_v6.$) {
 								var comment = _v6.a;
 								var _v7 = $author$project$Build$Header$Header$initBuildCommentBar(comment);
@@ -29152,7 +30363,7 @@ var $author$project$Build$Header$Header$update = F2(
 									_Utils_update(
 										model,
 										{
-											a3: $author$project$Build$Header$Models$Visible(updatedCommentBar)
+											a4: $author$project$Build$Header$Models$Visible(updatedCommentBar)
 										}),
 									_Utils_ap(effects, updatedEffects));
 							} else {
@@ -29161,7 +30372,7 @@ var $author$project$Build$Header$Header$update = F2(
 									_Utils_update(
 										model,
 										{
-											a3: $author$project$Build$Header$Models$Hidden(
+											a4: $author$project$Build$Header$Models$Hidden(
 												$author$project$Views$CommentBar$getContent(commentBar))
 										}),
 									effects);
@@ -29184,22 +30395,22 @@ var $author$project$Views$CommentBar$update = F3(
 		_v0$2:
 		while (true) {
 			switch (msg.$) {
-				case 32:
+				case 47:
 					if (msg.a.$ === 2) {
 						var _v1 = msg.a;
 						var kind = _v1.a;
 						var id = _v1.b;
-						if (_Utils_eq(model.iz, id)) {
+						if (_Utils_eq(model.f_, id)) {
 							if (!kind) {
-								var _v3 = model.kt;
+								var _v3 = model.dg;
 								if (!_v3.$) {
 									var content = _v3.a;
 									return _Utils_Tuple2(
 										_Utils_update(
 											model,
 											{
-												kt: $author$project$Views$CommentBar$Editing(
-													{g7: content, hn: content})
+												dg: $author$project$Views$CommentBar$Editing(
+													{hK: content, h_: content})
 											}),
 										_List_fromArray(
 											[
@@ -29211,23 +30422,23 @@ var $author$project$Views$CommentBar$update = F3(
 									return _Utils_Tuple2(model, _List_Nil);
 								}
 							} else {
-								var _v4 = model.kt;
+								var _v4 = model.dg;
 								if (_v4.$ === 1) {
 									var state = _v4.a;
-									return (!_Utils_eq(state.hn, state.g7)) ? _Utils_Tuple2(
+									return (!_Utils_eq(state.h_, state.hK)) ? _Utils_Tuple2(
 										_Utils_update(
 											model,
 											{
-												kt: $author$project$Views$CommentBar$Saving(state)
+												dg: $author$project$Views$CommentBar$Saving(state)
 											}),
 										_List_fromArray(
 											[
-												saveComment(state.hn)
+												saveComment(state.h_)
 											])) : _Utils_Tuple2(
 										_Utils_update(
 											model,
 											{
-												kt: $author$project$Views$CommentBar$Viewing(state.hn)
+												dg: $author$project$Views$CommentBar$Viewing(state.h_)
 											}),
 										_List_Nil);
 								} else {
@@ -29243,18 +30454,18 @@ var $author$project$Views$CommentBar$update = F3(
 				case 14:
 					var id = msg.a;
 					var content = msg.b;
-					if (_Utils_eq(model.iz, id)) {
-						var _v5 = model.kt;
+					if (_Utils_eq(model.f_, id)) {
+						var _v5 = model.dg;
 						if (_v5.$ === 1) {
 							var state = _v5.a;
 							return _Utils_Tuple2(
 								_Utils_update(
 									model,
 									{
-										kt: $author$project$Views$CommentBar$Editing(
+										dg: $author$project$Views$CommentBar$Editing(
 											_Utils_update(
 												state,
-												{hn: content}))
+												{h_: content}))
 									}),
 								_List_fromArray(
 									[
@@ -29277,7 +30488,7 @@ var $author$project$Build$Build$updateCommentBar = F2(
 	function (msg, _v0) {
 		var model = _v0.a;
 		var effects = _v0.b;
-		var _v1 = model.a3;
+		var _v1 = model.a4;
 		if (!_v1.$) {
 			return _Utils_Tuple2(model, effects);
 		} else {
@@ -29286,7 +30497,7 @@ var $author$project$Build$Build$updateCommentBar = F2(
 				$author$project$Views$CommentBar$update,
 				msg,
 				function (content) {
-					return A2($author$project$Message$Effects$SetBuildComment, model.iz, content);
+					return A2($author$project$Message$Effects$SetBuildComment, model.f_, content);
 				},
 				commentBar);
 			var updatedCommentBar = _v2.a;
@@ -29295,7 +30506,7 @@ var $author$project$Build$Build$updateCommentBar = F2(
 				_Utils_update(
 					model,
 					{
-						a3: $author$project$Build$Header$Models$Visible(updatedCommentBar)
+						a4: $author$project$Build$Header$Models$Visible(updatedCommentBar)
 					}),
 				_Utils_ap(effects, updatedEffects));
 		}
@@ -29311,10 +30522,10 @@ var $author$project$Build$Build$update = F2(
 				$author$project$Build$Header$Header$update,
 				msg,
 				function () {
-					_v1$16:
+					_v1$17:
 					while (true) {
 						switch (msg.$) {
-							case 32:
+							case 47:
 								switch (msg.a.$) {
 									case 56:
 										var _v2 = msg.a;
@@ -29328,7 +30539,7 @@ var $author$project$Build$Build$update = F2(
 													[
 														$author$project$Message$Effects$NavigateTo(
 														$author$project$Routes$toString(
-															A3($author$project$Routes$buildRoute, id, name, model.ap)))
+															A3($author$project$Routes$buildRoute, id, name, model.ac)))
 													])));
 									case 5:
 										var _v3 = msg.a;
@@ -29341,7 +30552,7 @@ var $author$project$Build$Build$update = F2(
 													$elm$core$Basics$composeR,
 													$author$project$Message$Effects$DoTriggerBuild,
 													A2($elm$core$Basics$composeR, $elm$core$List$cons, $elm$core$Tuple$mapSecond)),
-												model.ap))(
+												model.ac))(
 											_Utils_Tuple2(model, effects));
 									case 6:
 										var _v4 = msg.a;
@@ -29349,7 +30560,7 @@ var $author$project$Build$Build$update = F2(
 											model,
 											A2(
 												$elm$core$List$cons,
-												$author$project$Message$Effects$DoAbortBuild(model.iz),
+												$author$project$Message$Effects$DoAbortBuild(model.f_),
 												effects));
 									case 42:
 										var id = msg.a.a;
@@ -29399,7 +30610,7 @@ var $author$project$Build$Build$update = F2(
 												A2($author$project$Build$StepTree$StepTree$switchTab, id, tab)),
 											_Utils_Tuple2(model, effects));
 									default:
-										break _v1$16;
+										break _v1$17;
 								}
 							case 12:
 								var id = msg.a;
@@ -29417,7 +30628,7 @@ var $author$project$Build$Build$update = F2(
 									$author$project$Build$Output$Output$handleStepTreeMsg(
 										A2($author$project$Build$StepTree$StepTree$extendHighlight, id, line)),
 									_Utils_Tuple2(model, effects));
-							case 33:
+							case 48:
 								var route = msg.a;
 								return _Utils_Tuple2(
 									model,
@@ -29428,20 +30639,20 @@ var $author$project$Build$Build$update = F2(
 												$author$project$Message$Effects$NavigateTo(
 												$author$project$Routes$toString(route))
 											])));
-							case 34:
-								var scrollHeight = msg.a.kc;
-								var scrollTop = msg.a.kd;
-								var clientHeight = msg.a.hf;
+							case 49:
+								var scrollHeight = msg.a.kH;
+								var scrollTop = msg.a.kI;
+								var clientHeight = msg.a.hS;
 								return _Utils_Tuple2(
 									_Utils_update(
 										model,
-										{bH: ((scrollHeight - (scrollTop + clientHeight)) <= 1) && (!model.ct)}),
+										{bJ: ((scrollHeight - (scrollTop + clientHeight)) <= 1) && (!model.cL)}),
 									effects);
 							case 19:
 								return _Utils_Tuple2(
 									_Utils_update(
 										model,
-										{ew: !model.ew}),
+										{dt: !model.dt}),
 									effects);
 							case 20:
 								var findingId = msg.a;
@@ -29449,16 +30660,25 @@ var $author$project$Build$Build$update = F2(
 									_Utils_update(
 										model,
 										{
-											hY: A2($elm$core$Set$member, findingId, model.hY) ? A2($elm$core$Set$remove, findingId, model.hY) : A2($elm$core$Set$insert, findingId, model.hY)
+											dO: A2($elm$core$Set$member, findingId, model.dO) ? A2($elm$core$Set$remove, findingId, model.dO) : A2($elm$core$Set$insert, findingId, model.dO)
 										}),
 									effects);
-							case 21:
+							case 22:
 								return _Utils_Tuple2(
 									_Utils_update(
 										model,
-										{gq: !model.gq}),
+										{eJ: !model.eJ}),
 									effects);
-							case 22:
+							case 21:
+								var findingId = msg.a;
+								return _Utils_Tuple2(
+									_Utils_update(
+										model,
+										{
+											dN: A2($elm$core$Set$member, findingId, model.dN) ? A2($elm$core$Set$remove, findingId, model.dN) : A2($elm$core$Set$insert, findingId, model.dN)
+										}),
+									effects);
+							case 23:
 								var params = msg.a;
 								return _Utils_Tuple2(
 									model,
@@ -29468,29 +30688,29 @@ var $author$project$Build$Build$update = F2(
 											[
 												$author$project$Message$Effects$SubmitAgentReviewVerdict(
 												{
-													hk: params.hk,
-													id: params.id,
-													jw: A2(
+													hX: params.hX,
+													dV: params.dV,
+													j$: A2(
 														$elm$core$Maybe$withDefault,
 														'',
-														A2($elm$core$Dict$get, params.id, model.gQ)),
-													gb: params.gb,
-													j5: params.j5,
-													gI: params.gI
+														A2($elm$core$Dict$get, params.dV, model.ct)),
+													gP: params.gP,
+													gW: params.gW,
+													hl: params.hl
 												})
 											])));
-							case 23:
+							case 24:
 								var findingId = msg.a;
 								var note = msg.b;
 								return _Utils_Tuple2(
 									_Utils_update(
 										model,
 										{
-											gQ: A3($elm$core$Dict$insert, findingId, note, model.gQ)
+											ct: A3($elm$core$Dict$insert, findingId, note, model.ct)
 										}),
 									effects);
 							default:
-								break _v1$16;
+								break _v1$17;
 						}
 					}
 					return _Utils_Tuple2(model, effects);
@@ -29506,16 +30726,16 @@ var $author$project$Dashboard$SearchBar$showSearchInput = F2(
 	function (session, _v0) {
 		var model = _v0.a;
 		var effects = _v0.b;
-		if (model.ao) {
+		if (model.aq) {
 			return _Utils_Tuple2(model, effects);
 		} else {
-			var isMobile = !session.d8;
-			var isDropDownHidden = _Utils_eq(model.e3, $author$project$Dashboard$Models$Hidden);
-			return (isDropDownHidden && (isMobile && (model.av === ''))) ? _Utils_Tuple2(
+			var isMobile = !session.eG;
+			var isDropDownHidden = _Utils_eq(model.fE, $author$project$Dashboard$Models$Hidden);
+			return (isDropDownHidden && (isMobile && (model.aw === ''))) ? _Utils_Tuple2(
 				_Utils_update(
 					model,
 					{
-						e3: $author$project$Dashboard$Models$Shown($elm$core$Maybe$Nothing)
+						fE: $author$project$Dashboard$Models$Shown($elm$core$Maybe$Nothing)
 					}),
 				_Utils_ap(
 					effects,
@@ -29532,7 +30752,7 @@ var $author$project$Dashboard$SearchBar$update = F3(
 		_v1$5:
 		while (true) {
 			switch (msg.$) {
-				case 32:
+				case 47:
 					switch (msg.a.$) {
 						case 46:
 							var _v2 = msg.a;
@@ -29545,7 +30765,7 @@ var $author$project$Dashboard$SearchBar$update = F3(
 							return _Utils_Tuple2(
 								_Utils_update(
 									model,
-									{av: ''}),
+									{aw: ''}),
 								_Utils_ap(
 									effects,
 									_List_fromArray(
@@ -29555,8 +30775,8 @@ var $author$project$Dashboard$SearchBar$update = F3(
 											$author$project$Routes$toString(
 												$author$project$Routes$Dashboard(
 													{
-														hy: model.hy,
-														kf: $author$project$Routes$Normal('')
+														h6: model.h6,
+														kK: $author$project$Routes$Normal('')
 													})))
 										])));
 						default:
@@ -29567,7 +30787,7 @@ var $author$project$Dashboard$SearchBar$update = F3(
 					return _Utils_Tuple2(
 						_Utils_update(
 							model,
-							{av: query}),
+							{aw: query}),
 						_Utils_ap(
 							effects,
 							_List_fromArray(
@@ -29577,8 +30797,8 @@ var $author$project$Dashboard$SearchBar$update = F3(
 									$author$project$Routes$toString(
 										$author$project$Routes$Dashboard(
 											{
-												hy: model.hy,
-												kf: $author$project$Routes$Normal(query)
+												h6: model.h6,
+												kK: $author$project$Routes$Normal(query)
 											})))
 								])));
 				case 1:
@@ -29586,14 +30806,14 @@ var $author$project$Dashboard$SearchBar$update = F3(
 						_Utils_update(
 							model,
 							{
-								e3: $author$project$Dashboard$Models$Shown($elm$core$Maybe$Nothing)
+								fE: $author$project$Dashboard$Models$Shown($elm$core$Maybe$Nothing)
 							}),
 						effects);
 				case 2:
 					return _Utils_Tuple2(
 						_Utils_update(
 							model,
-							{e3: $author$project$Dashboard$Models$Hidden}),
+							{fE: $author$project$Dashboard$Models$Hidden}),
 						effects);
 				default:
 					break _v1$5;
@@ -29635,7 +30855,7 @@ var $author$project$SideBar$SideBar$byDatabaseId = function (id) {
 	return A2(
 		$elm$core$Basics$composeR,
 		function ($) {
-			return $.iz;
+			return $.f_;
 		},
 		$elm$core$Basics$eq(id));
 };
@@ -29643,26 +30863,26 @@ var $author$project$Dashboard$Group$Models$cardName = function (c) {
 	switch (c.$) {
 		case 0:
 			var p = c.a;
-			return p.dQ;
+			return p.cT;
 		case 1:
 			var p = c.a;
-			return p.dQ;
+			return p.cT;
 		default:
 			var p = c.a;
-			return p.dQ;
+			return p.cT;
 	}
 };
 var $author$project$Dashboard$Group$Models$cardTeamName = function (c) {
 	switch (c.$) {
 		case 0:
 			var p = c.a;
-			return p.kD;
+			return p.k8;
 		case 1:
 			var p = c.a;
-			return p.kD;
+			return p.k8;
 		default:
 			var p = c.a;
-			return p.kD;
+			return p.k8;
 	}
 };
 var $author$project$Dashboard$Drag$insertAt = F3(
@@ -29707,13 +30927,13 @@ var $author$project$Dashboard$Group$Models$cardIdentifier = function (c) {
 	switch (c.$) {
 		case 0:
 			var p = c.a;
-			return $elm$core$String$fromInt(p.iz);
+			return $elm$core$String$fromInt(p.f_);
 		case 1:
 			var p = c.a;
-			return $elm$core$String$fromInt(p.iz);
+			return $elm$core$String$fromInt(p.f_);
 		default:
 			var p = c.a;
-			return p.kD + ('/' + p.dQ);
+			return p.k8 + ('/' + p.cT);
 	}
 };
 var $elm$core$Tuple$pair = F2(
@@ -29770,7 +30990,7 @@ var $author$project$Dashboard$Group$Models$groupCardsWithinTeam = A2(
 		}));
 var $author$project$SideBar$SideBar$lookupPipeline = F2(
 	function (predicate, _v0) {
-		var pipelines = _v0.jN;
+		var pipelines = _v0.kg;
 		if (pipelines.$ === 3) {
 			var ps = pipelines.a;
 			return A2($elm_community$list_extra$List$Extra$find, predicate, ps);
@@ -29780,20 +31000,20 @@ var $author$project$SideBar$SideBar$lookupPipeline = F2(
 	});
 var $author$project$Dashboard$Dashboard$toConcoursePipeline = function (p) {
 	return {
-		gS: p.gS,
-		eC: $elm$core$Maybe$Nothing,
-		eD: $elm$core$Maybe$Nothing,
-		dt: _List_Nil,
-		iz: p.iz,
-		bT: p.bT,
-		fB: $elm$time$Time$millisToPosix(0),
-		dQ: p.dQ,
-		cE: p.cE,
-		fW: $elm$core$Maybe$Nothing,
-		fX: $elm$core$Maybe$Nothing,
-		f8: p.f8,
-		kD: p.kD,
-		kF: false
+		hs: p.hs,
+		e9: $elm$core$Maybe$Nothing,
+		fa: $elm$core$Maybe$Nothing,
+		dZ: _List_Nil,
+		f_: p.f_,
+		b$: p.b$,
+		gc: $elm$time$Time$millisToPosix(0),
+		cT: p.cT,
+		cX: p.cX,
+		gz: $elm$core$Maybe$Nothing,
+		gA: $elm$core$Maybe$Nothing,
+		gM: p.gM,
+		k8: p.k8,
+		la: false
 	};
 };
 var $author$project$Dashboard$Group$Models$ungroupCards = $elm$core$List$concatMap(
@@ -29872,31 +31092,31 @@ var $author$project$Dashboard$Dashboard$updateBody = F3(
 									A2(
 										$elm$core$Maybe$andThen,
 										$elm$core$Dict$get(teamName),
-										model.jN))));
+										model.kg))));
 						var teamPipelines = $author$project$Dashboard$Group$Models$ungroupCards(teamCards);
 						var pipelines = A3(
 							$elm$core$Dict$update,
 							teamName,
 							$elm$core$Basics$always(
 								$elm$core$Maybe$Just(teamPipelines)),
-							A2($elm$core$Maybe$withDefault, $elm$core$Dict$empty, model.jN));
+							A2($elm$core$Maybe$withDefault, $elm$core$Dict$empty, model.kg));
 						var request = function () {
 							if (viewingInstanceGroups) {
 								var instanceGroupName = $author$project$Dashboard$Group$Models$cardName(card);
 								return A2(
 									$author$project$Message$Effects$SendOrderPipelinesWithinGroupRequest,
-									{dQ: instanceGroupName, kD: teamName},
+									{cT: instanceGroupName, k8: teamName},
 									A2(
 										$elm$core$List$map,
 										function ($) {
-											return $.bT;
+											return $.b$;
 										},
 										A2(
 											$elm$core$List$filter,
 											A2(
 												$elm$core$Basics$composeR,
 												function ($) {
-													return $.dQ;
+													return $.cT;
 												},
 												$elm$core$Basics$eq(instanceGroupName)),
 											teamPipelines)));
@@ -29913,7 +31133,7 @@ var $author$project$Dashboard$Dashboard$updateBody = F3(
 								{
 									I: $author$project$Dashboard$Models$NotDragging,
 									X: $author$project$Dashboard$Models$DroppingWhileApiRequestInFlight(teamName),
-									jN: $elm$core$Maybe$Just(pipelines)
+									kg: $elm$core$Maybe$Just(pipelines)
 								}),
 							_Utils_ap(
 								effects,
@@ -29934,14 +31154,14 @@ var $author$project$Dashboard$Dashboard$updateBody = F3(
 								{I: $author$project$Dashboard$Models$NotDragging, X: $author$project$Dashboard$Models$NotDropping}),
 							effects);
 					}
-				case 32:
+				case 47:
 					switch (msg.a.$) {
 						case 49:
 							var _v6 = msg.a;
 							return _Utils_Tuple2(
 								_Utils_update(
 									model,
-									{i1: $author$project$FetchResult$None, jN: $elm$core$Maybe$Nothing, kE: $author$project$FetchResult$None}),
+									{jx: $author$project$FetchResult$None, kg: $elm$core$Maybe$Nothing, k9: $author$project$FetchResult$None}),
 								effects);
 						case 31:
 							var _v7 = msg.a;
@@ -29959,7 +31179,7 @@ var $author$project$Dashboard$Dashboard$updateBody = F3(
 										function (p) {
 											return _Utils_update(
 												p,
-												{fu: true});
+												{f5: true});
 										},
 										pipelineId,
 										model),
@@ -29967,7 +31187,7 @@ var $author$project$Dashboard$Dashboard$updateBody = F3(
 										effects,
 										_List_fromArray(
 											[
-												A2($author$project$Message$Effects$SendTogglePipelineRequest, pipelineId, pipeline.cE)
+												A2($author$project$Message$Effects$SendTogglePipelineRequest, pipelineId, pipeline.cX)
 											])));
 							} else {
 								return _Utils_Tuple2(model, effects);
@@ -29988,7 +31208,7 @@ var $author$project$Dashboard$Dashboard$updateBody = F3(
 										function (p) {
 											return _Utils_update(
 												p,
-												{bi: true});
+												{bk: true});
 										},
 										pipelineId,
 										model),
@@ -29996,7 +31216,7 @@ var $author$project$Dashboard$Dashboard$updateBody = F3(
 										effects,
 										_List_fromArray(
 											[
-												pipeline.f8 ? A2($author$project$Message$Effects$ChangeVisibility, 1, pipelineId) : A2($author$project$Message$Effects$ChangeVisibility, 0, pipelineId)
+												pipeline.gM ? A2($author$project$Message$Effects$ChangeVisibility, 1, pipelineId) : A2($author$project$Message$Effects$ChangeVisibility, 0, pipelineId)
 											])));
 							} else {
 								return _Utils_Tuple2(model, effects);
@@ -30014,12 +31234,12 @@ var $author$project$Dashboard$Dashboard$updateBody = F3(
 						default:
 							break _v1$8;
 					}
-				case 34:
+				case 49:
 					var scrollState = msg.a;
 					return _Utils_Tuple2(
 						_Utils_update(
 							model,
-							{kd: scrollState.kd}),
+							{kI: scrollState.kI}),
 						effects);
 				default:
 					break _v1$8;
@@ -30067,7 +31287,7 @@ var $author$project$DownloadFly$DownloadFly$update = F2(
 					_Utils_update(
 						model,
 						{
-							cS: $author$project$DownloadFly$Model$valueToPlatform(platform)
+							db: $author$project$DownloadFly$Model$valueToPlatform(platform)
 						}),
 					effects);
 			case 18:
@@ -30096,7 +31316,7 @@ var $author$project$FlySuccess$FlySuccess$update = F2(
 		_v1$5:
 		while (true) {
 			switch (msg.$) {
-				case 31:
+				case 46:
 					if (!msg.a.$) {
 						switch (msg.a.a.$) {
 							case 37:
@@ -30105,7 +31325,7 @@ var $author$project$FlySuccess$FlySuccess$update = F2(
 									_Utils_update(
 										model,
 										{
-											aQ: A2($author$project$FlySuccess$Models$hover, true, model.aQ)
+											aR: A2($author$project$FlySuccess$Models$hover, true, model.aR)
 										}),
 									effects);
 							case 38:
@@ -30114,7 +31334,7 @@ var $author$project$FlySuccess$FlySuccess$update = F2(
 									_Utils_update(
 										model,
 										{
-											bv: A2($author$project$FlySuccess$Models$hover, true, model.bv)
+											bx: A2($author$project$FlySuccess$Models$hover, true, model.bx)
 										}),
 									effects);
 							case 39:
@@ -30122,7 +31342,7 @@ var $author$project$FlySuccess$FlySuccess$update = F2(
 								return _Utils_Tuple2(
 									_Utils_update(
 										model,
-										{ci: 1}),
+										{cx: 1}),
 									effects);
 							default:
 								break _v1$5;
@@ -30133,19 +31353,19 @@ var $author$project$FlySuccess$FlySuccess$update = F2(
 							_Utils_update(
 								model,
 								{
-									aQ: A2($author$project$FlySuccess$Models$hover, false, model.aQ),
-									ci: 0,
-									bv: A2($author$project$FlySuccess$Models$hover, false, model.bv)
+									aR: A2($author$project$FlySuccess$Models$hover, false, model.aR),
+									cx: 0,
+									bx: A2($author$project$FlySuccess$Models$hover, false, model.bx)
 								}),
 							effects);
 					}
-				case 32:
+				case 47:
 					if (msg.a.$ === 37) {
 						var _v6 = msg.a;
 						return _Utils_Tuple2(
 							_Utils_update(
 								model,
-								{aQ: 2}),
+								{aR: 2}),
 							effects);
 					} else {
 						break _v1$5;
@@ -30168,7 +31388,7 @@ var $author$project$Job$Job$update = F2(
 		var effects = _v0.b;
 		_v1$2:
 		while (true) {
-			if (action.$ === 32) {
+			if (action.$ === 47) {
 				switch (action.a.$) {
 					case 5:
 						var _v2 = action.a;
@@ -30182,7 +31402,7 @@ var $author$project$Job$Job$update = F2(
 									])));
 					case 0:
 						var _v3 = action.a;
-						var _v4 = $krisajenkins$remotedata$RemoteData$toMaybe(model.ap);
+						var _v4 = $krisajenkins$remotedata$RemoteData$toMaybe(model.ac);
 						if (_v4.$ === 1) {
 							return _Utils_Tuple2(model, effects);
 						} else {
@@ -30191,13 +31411,13 @@ var $author$project$Job$Job$update = F2(
 								_Utils_update(
 									model,
 									{
-										ap: $krisajenkins$remotedata$RemoteData$Success(
+										ac: $krisajenkins$remotedata$RemoteData$Success(
 											_Utils_update(
 												j,
-												{cE: !j.cE})),
-										d0: true
+												{cX: !j.cX})),
+										ev: true
 									}),
-								j.cE ? _Utils_ap(
+								j.cX ? _Utils_ap(
 									effects,
 									_List_fromArray(
 										[
@@ -30225,7 +31445,7 @@ var $author$project$Login$Login$update = F2(
 		var effects = _v0.b;
 		_v1$3:
 		while (true) {
-			if (msg.$ === 32) {
+			if (msg.$ === 47) {
 				switch (msg.a.$) {
 					case 48:
 						var _v2 = msg.a;
@@ -30248,7 +31468,7 @@ var $author$project$Login$Login$update = F2(
 						return _Utils_Tuple2(
 							_Utils_update(
 								model,
-								{iZ: !model.iZ}),
+								{jt: !model.jt}),
 							effects);
 					default:
 						break _v1$3;
@@ -30263,18 +31483,18 @@ var $author$project$Pipeline$Pipeline$getNextUrl = F2(
 	function (newGroups, model) {
 		return $author$project$Routes$toString(
 			$author$project$Routes$Pipeline(
-				{dt: newGroups, iz: model.jK}));
+				{dZ: newGroups, f_: model.ke}));
 	});
 var $author$project$Pipeline$Pipeline$getDefaultSelectedGroups = function (pipeline) {
 	if (pipeline.$ === 3) {
 		var p = pipeline.a;
-		var _v1 = $elm$core$List$head(p.dt);
+		var _v1 = $elm$core$List$head(p.dZ);
 		if (_v1.$ === 1) {
 			return _List_Nil;
 		} else {
 			var first = _v1.a;
 			return _List_fromArray(
-				[first.dQ]);
+				[first.cT]);
 		}
 	} else {
 		return _List_Nil;
@@ -30282,24 +31502,24 @@ var $author$project$Pipeline$Pipeline$getDefaultSelectedGroups = function (pipel
 };
 var $author$project$Pipeline$Pipeline$toggleGroup = F3(
 	function (grp, names, mpipeline) {
-		return A2($elm$core$List$member, grp.dQ, names) ? A2(
+		return A2($elm$core$List$member, grp.cT, names) ? A2(
 			$elm$core$List$filter,
-			$elm$core$Basics$neq(grp.dQ),
+			$elm$core$Basics$neq(grp.cT),
 			names) : ($elm$core$List$isEmpty(names) ? A2(
 			$elm$core$List$cons,
-			grp.dQ,
-			$author$project$Pipeline$Pipeline$getDefaultSelectedGroups(mpipeline)) : A2($elm$core$List$cons, grp.dQ, names));
+			grp.cT,
+			$author$project$Pipeline$Pipeline$getDefaultSelectedGroups(mpipeline)) : A2($elm$core$List$cons, grp.cT, names));
 	});
 var $author$project$Pipeline$PinMenu$PinMenu$update = F2(
 	function (message, _v0) {
 		var model = _v0.a;
 		var effects = _v0.b;
-		if ((message.$ === 32) && (message.a.$ === 33)) {
+		if ((message.$ === 47) && (message.a.$ === 33)) {
 			var _v2 = message.a;
 			return _Utils_Tuple2(
 				_Utils_update(
 					model,
-					{bq: !model.bq}),
+					{bs: !model.bs}),
 				effects);
 		} else {
 			return _Utils_Tuple2(model, effects);
@@ -30327,24 +31547,24 @@ var $author$project$Pipeline$Pipeline$update = F2(
 											$author$project$Message$Effects$NavigateTo(
 											A2(
 												$author$project$Pipeline$Pipeline$getNextUrl,
-												A3($author$project$Pipeline$Pipeline$toggleGroup, group, model.P, model.ag),
+												A3($author$project$Pipeline$Pipeline$toggleGroup, group, model.P, model.ah),
 												model))
 										])));
-						case 32:
+						case 47:
 							if (msg.a.$ === 35) {
 								var pipelineIdentifier = msg.a.a;
 								var paused = A2(
 									$krisajenkins$remotedata$RemoteData$map,
 									function ($) {
-										return $.cE;
+										return $.cX;
 									},
-									model.ag);
+									model.ah);
 								if (paused.$ === 3) {
 									var p = paused.a;
 									return _Utils_Tuple2(
 										_Utils_update(
 											model,
-											{fu: true}),
+											{f5: true}),
 										_Utils_ap(
 											effects,
 											_List_fromArray(
@@ -30421,13 +31641,13 @@ var $author$project$Resource$Resource$update = F2(
 				case 7:
 					var input = msg.a;
 					var newPinnedVersion = function () {
-						var _v11 = model.f1;
+						var _v11 = model.gG;
 						if (_v11.$ === 2) {
-							var pristineComment = _v11.a.f4;
+							var pristineComment = _v11.a.gJ;
 							var v = _v11.b;
 							return A2(
 								$author$project$Pinned$PinnedDynamicallyTo,
-								{a3: input, f4: pristineComment},
+								{a4: input, gJ: pristineComment},
 								v);
 						} else {
 							var x = _v11;
@@ -30437,21 +31657,21 @@ var $author$project$Resource$Resource$update = F2(
 					return _Utils_Tuple2(
 						_Utils_update(
 							model,
-							{f1: newPinnedVersion}),
+							{gG: newPinnedVersion}),
 						_Utils_ap(
 							effects,
 							_List_fromArray(
 								[
 									$author$project$Message$Effects$SyncTextareaHeight($author$project$Message$Message$ResourceCommentTextarea)
 								])));
-				case 32:
+				case 47:
 					switch (msg.a.$) {
 						case 53:
 							var page = msg.a.a;
 							return _Utils_Tuple2(
 								_Utils_update(
 									model,
-									{cj: page}),
+									{cz: page}),
 								_Utils_ap(
 									effects,
 									_List_fromArray(
@@ -30461,10 +31681,10 @@ var $author$project$Resource$Resource$update = F2(
 											$author$project$Routes$toString(
 												$author$project$Routes$Resource(
 													{
-														dt: _List_Nil,
-														iz: model.g,
-														bp: $elm$core$Maybe$Just(page),
-														er: $elm$core$Maybe$Nothing
+														dZ: _List_Nil,
+														f_: model.g,
+														br: $elm$core$Maybe$Just(page),
+														eZ: $elm$core$Maybe$Nothing
 													})))
 										])));
 						case 54:
@@ -30474,14 +31694,14 @@ var $author$project$Resource$Resource$update = F2(
 								A2(
 									$elm$core$Basics$composeR,
 									function ($) {
-										return $.iz;
+										return $.f_;
 									},
 									$elm$core$Basics$eq(versionID)),
-								model.x.hn);
+								model.x.h_);
 							var newExpandedState = function () {
 								if (!version.$) {
 									var v = version.a;
-									return !v.hX;
+									return !v.iv;
 								} else {
 									return false;
 								}
@@ -30493,7 +31713,7 @@ var $author$project$Resource$Resource$update = F2(
 									function (v) {
 										return _Utils_update(
 											v,
-											{hX: newExpandedState});
+											{iv: newExpandedState});
 									},
 									model),
 								newExpandedState ? _Utils_ap(
@@ -30508,10 +31728,10 @@ var $author$project$Resource$Resource$update = F2(
 							var version = A2(
 								$elm_community$list_extra$List$Extra$find,
 								function (v) {
-									return _Utils_eq(v.iz, versionID);
+									return _Utils_eq(v.f_, versionID);
 								},
-								model.x.hn);
-							var _v3 = model.f1;
+								model.x.h_);
+							var _v3 = model.gG;
 							switch (_v3.$) {
 								case 2:
 									var v = _v3.b;
@@ -30521,11 +31741,11 @@ var $author$project$Resource$Resource$update = F2(
 										A2(
 											$elm$core$Maybe$map,
 											function (vn) {
-												return _Utils_eq(vn.er, v) ? _Utils_Tuple2(
+												return _Utils_eq(vn.eZ, v) ? _Utils_Tuple2(
 													_Utils_update(
 														model,
 														{
-															f1: $author$project$Pinned$startUnpinning(model.f1)
+															gG: $author$project$Pinned$startUnpinning(model.gG)
 														}),
 													_Utils_ap(
 														effects,
@@ -30536,13 +31756,13 @@ var $author$project$Resource$Resource$update = F2(
 													_Utils_update(
 														model,
 														{
-															f1: A2($author$project$Pinned$startPinningTo, versionID, model.f1)
+															gG: A2($author$project$Pinned$startPinningTo, versionID, model.gG)
 														}),
 													_Utils_ap(
 														effects,
 														_List_fromArray(
 															[
-																$author$project$Message$Effects$DoPinVersion(vn.iz)
+																$author$project$Message$Effects$DoPinVersion(vn.f_)
 															])));
 											},
 											version));
@@ -30551,7 +31771,7 @@ var $author$project$Resource$Resource$update = F2(
 										_Utils_update(
 											model,
 											{
-												f1: A2($author$project$Pinned$startPinningTo, versionID, model.f1)
+												gG: A2($author$project$Pinned$startPinningTo, versionID, model.gG)
 											}),
 										function () {
 											if (!version.$) {
@@ -30570,13 +31790,13 @@ var $author$project$Resource$Resource$update = F2(
 							}
 						case 18:
 							var _v5 = msg.a;
-							var _v6 = model.f1;
+							var _v6 = model.gG;
 							if (_v6.$ === 2) {
 								return _Utils_Tuple2(
 									_Utils_update(
 										model,
 										{
-											f1: $author$project$Pinned$startUnpinning(model.f1)
+											gG: $author$project$Pinned$startUnpinning(model.gG)
 										}),
 									_Utils_ap(
 										effects,
@@ -30592,17 +31812,17 @@ var $author$project$Resource$Resource$update = F2(
 							var enabledState = A2(
 								$elm$core$Maybe$map,
 								function ($) {
-									return $.hN;
+									return $.il;
 								},
 								A2(
 									$elm_community$list_extra$List$Extra$find,
 									A2(
 										$elm$core$Basics$composeR,
 										function ($) {
-											return $.iz;
+											return $.f_;
 										},
 										$elm$core$Basics$eq(versionID)),
-									model.x.hn));
+									model.x.h_));
 							_v7$2:
 							while (true) {
 								if (!enabledState.$) {
@@ -30616,7 +31836,7 @@ var $author$project$Resource$Resource$update = F2(
 													function (v) {
 														return _Utils_update(
 															v,
-															{hN: 1});
+															{il: 1});
 													},
 													model),
 												_Utils_ap(
@@ -30634,7 +31854,7 @@ var $author$project$Resource$Resource$update = F2(
 													function (v) {
 														return _Utils_update(
 															v,
-															{hN: 1});
+															{il: 1});
 													},
 													model),
 												_Utils_ap(
@@ -30656,7 +31876,7 @@ var $author$project$Resource$Resource$update = F2(
 							return isAuthorized ? _Utils_Tuple2(
 								_Utils_update(
 									model,
-									{aN: $author$project$Resource$Models$CheckPending}),
+									{aO: $author$project$Resource$Models$CheckPending}),
 								_Utils_ap(
 									effects,
 									_List_fromArray(
@@ -30673,7 +31893,7 @@ var $author$project$Resource$Resource$update = F2(
 							return _Utils_Tuple2(
 								_Utils_update(
 									model,
-									{cs: true}),
+									{cK: true}),
 								_Utils_ap(
 									effects,
 									_List_fromArray(
@@ -30702,19 +31922,19 @@ var $author$project$Resource$Resource$update = F2(
 											[$author$project$Message$Effects$SyncStickyBuildLogHeaders]))));
 						case 14:
 							var _v12 = msg.a;
-							var _v13 = model.f1;
+							var _v13 = model.gG;
 							if (_v13.$ === 2) {
 								var commentState = _v13.a;
-								var commentChanged = !_Utils_eq(commentState.a3, commentState.f4);
+								var commentChanged = !_Utils_eq(commentState.a4, commentState.gJ);
 								return commentChanged ? _Utils_Tuple2(
 									_Utils_update(
 										model,
-										{bZ: true}),
+										{b5: true}),
 									_Utils_ap(
 										effects,
 										_List_fromArray(
 											[
-												A2($author$project$Message$Effects$SetPinComment, model.g, commentState.a3)
+												A2($author$project$Message$Effects$SetPinComment, model.g, commentState.a4)
 											]))) : _Utils_Tuple2(model, effects);
 							} else {
 								return _Utils_Tuple2(model, effects);
@@ -30726,13 +31946,13 @@ var $author$project$Resource$Resource$update = F2(
 					return _Utils_Tuple2(
 						_Utils_update(
 							model,
-							{c_: true}),
+							{dk: true}),
 						effects);
 				case 9:
 					return _Utils_Tuple2(
 						_Utils_update(
 							model,
-							{c_: false}),
+							{dk: false}),
 						effects);
 				default:
 					break _v1$13;
@@ -30785,9 +32005,17 @@ var $author$project$SubPage$SubPage$update = F2(
 				A2(
 					$elm$core$Basics$composeR,
 					$author$project$Login$Login$update(msg),
-					$author$project$Agent$Agent$update(msg))),
+					$author$project$Agent$Agent$update(msg)))(
+				A2(
+					$elm$core$Basics$composeR,
+					$author$project$Login$Login$update(msg),
+					$author$project$AgentTickets$AgentTickets$update(msg)))(
+				A2(
+					$elm$core$Basics$composeR,
+					$author$project$Login$Login$update(msg),
+					$author$project$AgentTickets$AgentTicket$update(msg))),
 			function () {
-				if (msg.$ === 33) {
+				if (msg.$ === 48) {
 					var route = msg.a;
 					return $author$project$SubPage$SubPage$handleGoToRoute(route);
 				} else {
@@ -30799,7 +32027,7 @@ var $author$project$Application$Application$update = F2(
 	function (msg, model) {
 		switch (msg.$) {
 			case 0:
-				if (msg.a.$ === 31) {
+				if (msg.a.$ === 46) {
 					var hovered = msg.a.a;
 					var session = model.c;
 					var newHovered = function () {
@@ -30822,7 +32050,7 @@ var $author$project$Application$Application$update = F2(
 						$author$project$Message$Message$Hover(hovered),
 						_Utils_update(
 							session,
-							{dv: newHovered}));
+							{d$: newHovered}));
 					var newSession = _v2.a;
 					var sideBarEffects = _v2.b;
 					return _Utils_Tuple2(
@@ -30861,14 +32089,14 @@ var $author$project$Application$Application$update = F2(
 	});
 var $author$project$Main$update = F2(
 	function (msg, model) {
-		var _v0 = A2($author$project$Application$Application$update, msg, model.jk);
+		var _v0 = A2($author$project$Application$Application$update, msg, model.jP);
 		var appModel = _v0.a;
 		var effects = _v0.b;
 		return $author$project$Main$effectsToCmd(
 			_Utils_Tuple2(
 				_Utils_update(
 					model,
-					{jk: appModel}),
+					{jP: appModel}),
 				effects));
 	});
 var $author$project$Message$TopLevelMessage$Update = function (a) {
@@ -30908,20 +32136,20 @@ var $author$project$Tooltip$Right = function (a) {
 };
 var $author$project$SideBar$SideBar$isPipelineVisible = F2(
 	function (session, p) {
-		return (!p.gS) || A2($author$project$Favorites$isPipelineFavorited, session, p);
+		return (!p.hs) || A2($author$project$Favorites$isPipelineFavorited, session, p);
 	});
 var $author$project$SideBar$SideBar$visiblePipelines = function (model) {
 	return A2(
 		$elm$core$List$filter,
 		$author$project$SideBar$SideBar$isPipelineVisible(model),
-		A2($krisajenkins$remotedata$RemoteData$withDefault, _List_Nil, model.jN));
+		A2($krisajenkins$remotedata$RemoteData$withDefault, _List_Nil, model.kg));
 };
 var $author$project$SideBar$SideBar$hasVisiblePipelines = A2(
 	$elm$core$Basics$composeR,
 	$author$project$SideBar$SideBar$visiblePipelines,
 	A2($elm$core$Basics$composeR, $elm$core$List$isEmpty, $elm$core$Basics$not));
 var $author$project$SideBar$Pipeline$instancedPipelineText = function (p) {
-	return $elm$core$Dict$isEmpty(p.bT) ? '{}' : A2(
+	return $elm$core$Dict$isEmpty(p.b$) ? '{}' : A2(
 		$elm$core$String$join,
 		',',
 		A2(
@@ -30938,10 +32166,10 @@ var $author$project$SideBar$Pipeline$instancedPipelineText = function (p) {
 					},
 					A2($author$project$Concourse$flattenJson, k, v));
 			},
-			$elm$core$Dict$toList(p.bT)));
+			$elm$core$Dict$toList(p.b$)));
 };
 var $author$project$SideBar$Pipeline$regularPipelineText = function (p) {
-	return p.dQ;
+	return p.cT;
 };
 var $author$project$SideBar$Styles$starPadding = 10;
 var $author$project$SideBar$Styles$starWidth = 18;
@@ -30969,7 +32197,7 @@ var $author$project$SideBar$Styles$tooltipOffset = 3;
 var $author$project$SideBar$SideBar$tooltip = function (model) {
 	var isSideBarClickable = $author$project$SideBar$SideBar$hasVisiblePipelines(model);
 	var beyondStarOffset = (($author$project$SideBar$Styles$tooltipArrowSize + ($author$project$SideBar$Styles$starPadding * 2)) + $author$project$SideBar$Styles$starWidth) - $author$project$SideBar$Styles$tooltipOffset;
-	var _v0 = model.dv;
+	var _v0 = model.d$;
 	_v0$5:
 	while (true) {
 		if (_v0.$ === 3) {
@@ -30979,13 +32207,13 @@ var $author$project$SideBar$SideBar$tooltip = function (model) {
 					var teamName = _v1.b;
 					return $elm$core$Maybe$Just(
 						{
-							ez: $elm$core$Maybe$Just($author$project$SideBar$Styles$tooltipArrowSize),
-							eA: {
-								ey: $author$project$Tooltip$Middle(2 * $author$project$SideBar$Styles$tooltipArrowSize),
-								e0: $author$project$Tooltip$Right($author$project$SideBar$Styles$tooltipArrowSize - $author$project$SideBar$Styles$tooltipOffset)
+							e6: $elm$core$Maybe$Just($author$project$SideBar$Styles$tooltipArrowSize),
+							e7: {
+								e5: $author$project$Tooltip$Middle(2 * $author$project$SideBar$Styles$tooltipArrowSize),
+								fB: $author$project$Tooltip$Right($author$project$SideBar$Styles$tooltipArrowSize - $author$project$SideBar$Styles$tooltipOffset)
 							},
-							W: $elm$html$Html$text(teamName),
-							eO: $elm$core$Maybe$Just($author$project$SideBar$Styles$tooltipBody)
+							bL: $elm$html$Html$text(teamName),
+							fl: $elm$core$Maybe$Just($author$project$SideBar$Styles$tooltipBody)
 						});
 				case 62:
 					var _v2 = _v0.a;
@@ -30994,14 +32222,14 @@ var $author$project$SideBar$SideBar$tooltip = function (model) {
 						$elm$core$Maybe$map,
 						function (p) {
 							return {
-								ez: $elm$core$Maybe$Just($author$project$SideBar$Styles$tooltipArrowSize),
-								eA: {
-									ey: $author$project$Tooltip$Middle(2 * $author$project$SideBar$Styles$tooltipArrowSize),
-									e0: $author$project$Tooltip$Right(beyondStarOffset)
+								e6: $elm$core$Maybe$Just($author$project$SideBar$Styles$tooltipArrowSize),
+								e7: {
+									e5: $author$project$Tooltip$Middle(2 * $author$project$SideBar$Styles$tooltipArrowSize),
+									fB: $author$project$Tooltip$Right(beyondStarOffset)
 								},
-								W: $elm$html$Html$text(
+								bL: $elm$html$Html$text(
 									$author$project$SideBar$Pipeline$regularPipelineText(p)),
-								eO: $elm$core$Maybe$Just($author$project$SideBar$Styles$tooltipBody)
+								fl: $elm$core$Maybe$Just($author$project$SideBar$Styles$tooltipBody)
 							};
 						},
 						A2(
@@ -31015,14 +32243,14 @@ var $author$project$SideBar$SideBar$tooltip = function (model) {
 						$elm$core$Maybe$map,
 						function (p) {
 							return {
-								ez: $elm$core$Maybe$Just($author$project$SideBar$Styles$tooltipArrowSize),
-								eA: {
-									ey: $author$project$Tooltip$Middle(2 * $author$project$SideBar$Styles$tooltipArrowSize),
-									e0: $author$project$Tooltip$Right(beyondStarOffset)
+								e6: $elm$core$Maybe$Just($author$project$SideBar$Styles$tooltipArrowSize),
+								e7: {
+									e5: $author$project$Tooltip$Middle(2 * $author$project$SideBar$Styles$tooltipArrowSize),
+									fB: $author$project$Tooltip$Right(beyondStarOffset)
 								},
-								W: $elm$html$Html$text(
+								bL: $elm$html$Html$text(
 									$author$project$SideBar$Pipeline$instancedPipelineText(p)),
-								eO: $elm$core$Maybe$Just($author$project$SideBar$Styles$tooltipBody)
+								fl: $elm$core$Maybe$Just($author$project$SideBar$Styles$tooltipBody)
 							};
 						},
 						A2(
@@ -31034,26 +32262,26 @@ var $author$project$SideBar$SideBar$tooltip = function (model) {
 					var name = _v4.c;
 					return $elm$core$Maybe$Just(
 						{
-							ez: $elm$core$Maybe$Just($author$project$SideBar$Styles$tooltipArrowSize),
-							eA: {
-								ey: $author$project$Tooltip$Middle(2 * $author$project$SideBar$Styles$tooltipArrowSize),
-								e0: $author$project$Tooltip$Right(beyondStarOffset)
+							e6: $elm$core$Maybe$Just($author$project$SideBar$Styles$tooltipArrowSize),
+							e7: {
+								e5: $author$project$Tooltip$Middle(2 * $author$project$SideBar$Styles$tooltipArrowSize),
+								fB: $author$project$Tooltip$Right(beyondStarOffset)
 							},
-							W: $elm$html$Html$text(name),
-							eO: $elm$core$Maybe$Just($author$project$SideBar$Styles$tooltipBody)
+							bL: $elm$html$Html$text(name),
+							fl: $elm$core$Maybe$Just($author$project$SideBar$Styles$tooltipBody)
 						});
 				case 59:
 					var _v5 = _v0.a;
-					var text = (!isSideBarClickable) ? 'no visible pipelines' : (model.km.iT ? 'hide sidebar' : 'show sidebar');
+					var text = (!isSideBarClickable) ? 'no visible pipelines' : (model.kR.jn ? 'hide sidebar' : 'show sidebar');
 					return $elm$core$Maybe$Just(
 						{
-							ez: $elm$core$Maybe$Just(5),
-							eA: {
-								ey: $author$project$Tooltip$Middle(2 * $author$project$SideBar$Styles$tooltipArrowSize),
-								e0: $author$project$Tooltip$Bottom
+							e6: $elm$core$Maybe$Just(5),
+							e7: {
+								e5: $author$project$Tooltip$Middle(2 * $author$project$SideBar$Styles$tooltipArrowSize),
+								fB: $author$project$Tooltip$Bottom
 							},
-							W: $elm$html$Html$text(text),
-							eO: $elm$core$Maybe$Just($author$project$SideBar$Styles$tooltipBody)
+							bL: $elm$html$Html$text(text),
+							fl: $elm$core$Maybe$Just($author$project$SideBar$Styles$tooltipBody)
 						});
 				default:
 					break _v0$5;
@@ -31072,14 +32300,22 @@ var $author$project$AgentReviews$AgentReviews$tooltip = F2(
 	function (_v0, _v1) {
 		return $elm$core$Maybe$Nothing;
 	});
+var $author$project$AgentTickets$AgentTicket$tooltip = F2(
+	function (_v0, _v1) {
+		return $elm$core$Maybe$Nothing;
+	});
+var $author$project$AgentTickets$AgentTickets$tooltip = F2(
+	function (_v0, _v1) {
+		return $elm$core$Maybe$Nothing;
+	});
 var $author$project$Tooltip$Start = {$: 0};
 var $author$project$Tooltip$End = {$: 2};
 var $author$project$Build$Header$Header$buttonTooltip = function (text) {
 	return {
-		ez: $elm$core$Maybe$Just(5),
-		eA: {ey: $author$project$Tooltip$End, e0: $author$project$Tooltip$Bottom},
-		W: $elm$html$Html$text(text),
-		eO: $elm$core$Maybe$Nothing
+		e6: $elm$core$Maybe$Just(5),
+		e7: {e5: $author$project$Tooltip$End, fB: $author$project$Tooltip$Bottom},
+		bL: $elm$html$Html$text(text),
+		fl: $elm$core$Maybe$Nothing
 	};
 };
 var $author$project$Tooltip$defaultTooltipStyle = A2(
@@ -31090,24 +32326,24 @@ var $elm$core$String$lines = _String_lines;
 var $author$project$Build$Header$Views$tooltip = function (username) {
 	return $elm$core$Maybe$Just(
 		{
-			ez: $elm$core$Maybe$Just(5),
-			eA: {ey: $author$project$Tooltip$Start, e0: $author$project$Tooltip$Bottom},
-			W: $elm$html$Html$text(username),
-			eO: $elm$core$Maybe$Nothing
+			e6: $elm$core$Maybe$Just(5),
+			e7: {e5: $author$project$Tooltip$Start, fB: $author$project$Tooltip$Bottom},
+			bL: $elm$html$Html$text(username),
+			fl: $elm$core$Maybe$Nothing
 		});
 };
 var $author$project$Login$Login$tooltip = function (username) {
 	return $elm$core$Maybe$Just(
 		{
-			ez: $elm$core$Maybe$Just(5),
-			eA: {ey: $author$project$Tooltip$End, e0: $author$project$Tooltip$Bottom},
-			W: $elm$html$Html$text(username),
-			eO: $elm$core$Maybe$Nothing
+			e6: $elm$core$Maybe$Just(5),
+			e7: {e5: $author$project$Tooltip$End, fB: $author$project$Tooltip$Bottom},
+			bL: $elm$html$Html$text(username),
+			fl: $elm$core$Maybe$Nothing
 		});
 };
 var $author$project$Build$Header$Header$tooltip = F2(
 	function (model, session) {
-		var _v0 = session.dv;
+		var _v0 = session.d$;
 		_v0$8:
 		while (true) {
 			if (_v0.$ === 3) {
@@ -31116,13 +32352,13 @@ var $author$project$Build$Header$Header$tooltip = F2(
 						var _v1 = _v0.a;
 						return $elm$core$Maybe$Just(
 							$author$project$Build$Header$Header$buttonTooltip(
-								model.df ? 'manual triggering disabled in job config' : 'trigger a new build'));
+								model.dH ? 'manual triggering disabled in job config' : 'trigger a new build'));
 					case 4:
 						var _v2 = _v0.a;
 						return $elm$core$Maybe$Just(
 							$author$project$Build$Header$Header$buttonTooltip(
 								function () {
-									var _v3 = model.a3;
+									var _v3 = model.a4;
 									if (!_v3.$) {
 										var comment = _v3.a;
 										return $elm$core$String$isEmpty(comment) ? 'add build comment' : 'show build comment';
@@ -31148,15 +32384,15 @@ var $author$project$Build$Header$Header$tooltip = F2(
 						return A2(
 							$elm$core$Maybe$andThen,
 							function (b) {
-								var lines = $elm$core$String$lines(b.a3);
-								return $elm$core$String$isEmpty(b.a3) ? $elm$core$Maybe$Nothing : A2(
+								var lines = $elm$core$String$lines(b.a4);
+								return $elm$core$String$isEmpty(b.a4) ? $elm$core$Maybe$Nothing : A2(
 									$elm$core$Maybe$map,
 									function (text) {
 										return {
-											ez: $elm$core$Maybe$Nothing,
-											eA: {ey: $author$project$Tooltip$Start, e0: $author$project$Tooltip$Bottom},
-											W: $elm$html$Html$text(text),
-											eO: $elm$core$Maybe$Just(
+											e6: $elm$core$Maybe$Nothing,
+											e7: {e5: $author$project$Tooltip$Start, fB: $author$project$Tooltip$Bottom},
+											bL: $elm$html$Html$text(text),
+											fl: $elm$core$Maybe$Just(
 												_Utils_ap(
 													_List_fromArray(
 														[
@@ -31174,9 +32410,9 @@ var $author$project$Build$Header$Header$tooltip = F2(
 								A2(
 									$elm$core$List$filter,
 									function (b) {
-										return _Utils_eq(b.iz, id);
+										return _Utils_eq(b.f_, id);
 									},
-									model.it)));
+									model.i_)));
 					case 51:
 						var username = _v0.a.a;
 						return $author$project$Login$Login$tooltip(username);
@@ -31306,14 +32542,14 @@ var $author$project$Views$DictView$view = F2(
 				$elm$core$Dict$toList(dict)));
 	});
 var $author$project$Build$StepTree$StepTree$stepDurationTooltip = function (_v0) {
-	var state = _v0.kt;
-	var initialize = _v0.iG;
-	var start = _v0.kr;
-	var finish = _v0.e8;
+	var state = _v0.dg;
+	var initialize = _v0.ja;
+	var start = _v0.kX;
+	var finish = _v0.fK;
 	return {
-		ez: $elm$core$Maybe$Just(5),
-		eA: {ey: $author$project$Tooltip$End, e0: $author$project$Tooltip$Top},
-		W: A2(
+		e6: $elm$core$Maybe$Just(5),
+		e7: {e5: $author$project$Tooltip$End, fB: $author$project$Tooltip$Top},
+		bL: A2(
 			$elm$html$Html$div,
 			$author$project$Build$Styles$durationTooltip,
 			_List_fromArray(
@@ -31347,12 +32583,12 @@ var $author$project$Build$StepTree$StepTree$stepDurationTooltip = function (_v0)
 					}
 				}()
 				])),
-		eO: $elm$core$Maybe$Nothing
+		fl: $elm$core$Maybe$Nothing
 	};
 };
 var $author$project$Build$StepTree$StepTree$tooltip = F2(
 	function (model, _v0) {
-		var hovered = _v0.dv;
+		var hovered = _v0.d$;
 		_v1$4:
 		while (true) {
 			if (hovered.$ === 3) {
@@ -31362,53 +32598,53 @@ var $author$project$Build$StepTree$StepTree$tooltip = F2(
 						var text = _v2.b;
 						return $elm$core$Maybe$Just(
 							{
-								ez: $elm$core$Maybe$Just(5),
-								eA: {ey: $author$project$Tooltip$Start, e0: $author$project$Tooltip$Top},
-								W: A2(
+								e6: $elm$core$Maybe$Just(5),
+								e7: {e5: $author$project$Tooltip$Start, fB: $author$project$Tooltip$Top},
+								bL: A2(
 									$elm$html$Html$div,
 									$author$project$Build$Styles$changedStepTooltip,
 									_List_fromArray(
 										[
 											$elm$html$Html$text(text)
 										])),
-								eO: $elm$core$Maybe$Nothing
+								fl: $elm$core$Maybe$Nothing
 							});
 					case 44:
 						return $elm$core$Maybe$Just(
 							{
-								ez: $elm$core$Maybe$Just(5),
-								eA: {ey: $author$project$Tooltip$End, e0: $author$project$Tooltip$Top},
-								W: A2(
+								e6: $elm$core$Maybe$Just(5),
+								e7: {e5: $author$project$Tooltip$End, fB: $author$project$Tooltip$Top},
+								bL: A2(
 									$elm$html$Html$div,
 									$author$project$Build$Styles$changedStepTooltip,
 									_List_fromArray(
 										[
 											$elm$html$Html$text('image fetching')
 										])),
-								eO: $elm$core$Maybe$Nothing
+								fl: $elm$core$Maybe$Nothing
 							});
 					case 17:
 						var id = hovered.a.a;
 						return A2(
 							$elm$core$Maybe$map,
 							$author$project$Build$StepTree$StepTree$stepDurationTooltip,
-							A2($elm$core$Dict$get, id, model.kv));
+							A2($elm$core$Dict$get, id, model.k_));
 					case 45:
 						return $elm$core$Maybe$Just(
 							{
-								ez: $elm$core$Maybe$Just(5),
-								eA: {
-									ey: $author$project$Tooltip$Middle(150),
-									e0: $author$project$Tooltip$Top
+								e6: $elm$core$Maybe$Just(5),
+								e7: {
+									e5: $author$project$Tooltip$Middle(150),
+									fB: $author$project$Tooltip$Top
 								},
-								W: A2(
+								bL: A2(
 									$elm$html$Html$div,
 									$author$project$Build$Styles$changedStepTooltip,
 									_List_fromArray(
 										[
 											$elm$html$Html$text('view in resources page')
 										])),
-								eO: $elm$core$Maybe$Nothing
+								fl: $elm$core$Maybe$Nothing
 							});
 					default:
 						break _v1$4;
@@ -31446,7 +32682,7 @@ var $author$project$Build$Build$tooltip = F2(
 					A2(
 						$elm$core$Maybe$andThen,
 						function ($) {
-							return $.kv;
+							return $.k_;
 						},
 						$author$project$Build$Models$toMaybe(model.N))),
 					A2($author$project$Build$Header$Header$tooltip, model, session)
@@ -31484,7 +32720,7 @@ var $author$project$Concourse$hyphenNotation = function (vars) {
 };
 var $author$project$Favorites$isInstanceGroupFavorited = F2(
 	function (_v0, ig) {
-		var favoritedInstanceGroups = _v0.h3;
+		var favoritedInstanceGroups = _v0.iC;
 		return A2(
 			$elm$core$Set$member,
 			$author$project$Favorites$instanceGroupKey(ig),
@@ -31493,7 +32729,7 @@ var $author$project$Favorites$isInstanceGroupFavorited = F2(
 var $author$project$Dashboard$Styles$jobPreviewTooltip = $author$project$Dashboard$Styles$cardTooltip;
 var $author$project$Dashboard$Styles$pipelinePreviewTooltip = $author$project$Dashboard$Styles$cardTooltip;
 var $author$project$Dashboard$Dashboard$tooltip = function (session) {
-	var _v0 = session.dv;
+	var _v0 = session.d$;
 	_v0$14:
 	while (true) {
 		if (_v0.$ === 3) {
@@ -31502,10 +32738,10 @@ var $author$project$Dashboard$Dashboard$tooltip = function (session) {
 					var _v1 = _v0.a;
 					return $elm$core$Maybe$Just(
 						{
-							ez: $elm$core$Maybe$Nothing,
-							eA: {ey: $author$project$Tooltip$Start, e0: $author$project$Tooltip$Top},
-							W: $elm$html$Html$text('automatic job monitoring disabled'),
-							eO: $elm$core$Maybe$Nothing
+							e6: $elm$core$Maybe$Nothing,
+							e7: {e5: $author$project$Tooltip$Start, fB: $author$project$Tooltip$Top},
+							bL: $elm$html$Html$text('automatic job monitoring disabled'),
+							fl: $elm$core$Maybe$Nothing
 						});
 				case 36:
 					var _v2 = _v0.a;
@@ -31514,11 +32750,11 @@ var $author$project$Dashboard$Dashboard$tooltip = function (session) {
 						$elm$core$Maybe$map,
 						function (p) {
 							return {
-								ez: $elm$core$Maybe$Just(5),
-								eA: {ey: $author$project$Tooltip$End, e0: $author$project$Tooltip$Bottom},
-								W: $elm$html$Html$text(
-									p.f8 ? 'hide pipeline' : 'expose pipeline'),
-								eO: $elm$core$Maybe$Nothing
+								e6: $elm$core$Maybe$Just(5),
+								e7: {e5: $author$project$Tooltip$End, fB: $author$project$Tooltip$Bottom},
+								bL: $elm$html$Html$text(
+									p.gM ? 'hide pipeline' : 'expose pipeline'),
+								fl: $elm$core$Maybe$Nothing
 							};
 						},
 						A2(
@@ -31531,14 +32767,14 @@ var $author$project$Dashboard$Dashboard$tooltip = function (session) {
 					var isFavorited = A2(
 						$author$project$Favorites$isPipelineFavorited,
 						session,
-						{iz: id});
+						{f_: id});
 					return $elm$core$Maybe$Just(
 						{
-							ez: $elm$core$Maybe$Just(5),
-							eA: {ey: $author$project$Tooltip$End, e0: $author$project$Tooltip$Bottom},
-							W: $elm$html$Html$text(
+							e6: $elm$core$Maybe$Just(5),
+							e7: {e5: $author$project$Tooltip$End, fB: $author$project$Tooltip$Bottom},
+							bL: $elm$html$Html$text(
 								isFavorited ? 'unfavorite pipeline' : 'favorite pipeline'),
-							eO: $elm$core$Maybe$Nothing
+							fl: $elm$core$Maybe$Nothing
 						});
 				case 30:
 					var _v4 = _v0.a;
@@ -31546,11 +32782,11 @@ var $author$project$Dashboard$Dashboard$tooltip = function (session) {
 					var isFavorited = A2($author$project$Favorites$isInstanceGroupFavorited, session, id);
 					return $elm$core$Maybe$Just(
 						{
-							ez: $elm$core$Maybe$Just(5),
-							eA: {ey: $author$project$Tooltip$End, e0: $author$project$Tooltip$Bottom},
-							W: $elm$html$Html$text(
+							e6: $elm$core$Maybe$Just(5),
+							e7: {e5: $author$project$Tooltip$End, fB: $author$project$Tooltip$Bottom},
+							bL: $elm$html$Html$text(
 								isFavorited ? 'unfavorite instance group' : 'favorite instance group'),
-							eO: $elm$core$Maybe$Nothing
+							fl: $elm$core$Maybe$Nothing
 						});
 				case 31:
 					var _v5 = _v0.a;
@@ -31559,11 +32795,11 @@ var $author$project$Dashboard$Dashboard$tooltip = function (session) {
 						$elm$core$Maybe$map,
 						function (p) {
 							return {
-								ez: $elm$core$Maybe$Just(5),
-								eA: {ey: $author$project$Tooltip$End, e0: $author$project$Tooltip$Bottom},
-								W: $elm$html$Html$text(
-									p.cE ? 'unpause pipeline' : 'pause pipeline'),
-								eO: $elm$core$Maybe$Nothing
+								e6: $elm$core$Maybe$Just(5),
+								e7: {e5: $author$project$Tooltip$End, fB: $author$project$Tooltip$Bottom},
+								bL: $elm$html$Html$text(
+									p.cX ? 'unpause pipeline' : 'pause pipeline'),
+								fl: $elm$core$Maybe$Nothing
 							};
 						},
 						A2(
@@ -31575,13 +32811,13 @@ var $author$project$Dashboard$Dashboard$tooltip = function (session) {
 					var jobName = _v6.c;
 					return $elm$core$Maybe$Just(
 						{
-							ez: $elm$core$Maybe$Just(15),
-							eA: {
-								ey: $author$project$Tooltip$Middle(30),
-								e0: $author$project$Tooltip$Right(0)
+							e6: $elm$core$Maybe$Just(15),
+							e7: {
+								e5: $author$project$Tooltip$Middle(30),
+								fB: $author$project$Tooltip$Right(0)
 							},
-							W: $elm$html$Html$text(jobName),
-							eO: $elm$core$Maybe$Just($author$project$Dashboard$Styles$jobPreviewTooltip)
+							bL: $elm$html$Html$text(jobName),
+							fl: $elm$core$Maybe$Just($author$project$Dashboard$Styles$jobPreviewTooltip)
 						});
 				case 58:
 					var _v7 = _v0.a;
@@ -31590,14 +32826,14 @@ var $author$project$Dashboard$Dashboard$tooltip = function (session) {
 						$elm$core$Maybe$map,
 						function (p) {
 							return {
-								ez: $elm$core$Maybe$Just(15),
-								eA: {
-									ey: $author$project$Tooltip$Middle(30),
-									e0: $author$project$Tooltip$Right(0)
+								e6: $elm$core$Maybe$Just(15),
+								e7: {
+									e5: $author$project$Tooltip$Middle(30),
+									fB: $author$project$Tooltip$Right(0)
 								},
-								W: $elm$html$Html$text(
-									$author$project$Concourse$hyphenNotation(p.bT)),
-								eO: $elm$core$Maybe$Just($author$project$Dashboard$Styles$pipelinePreviewTooltip)
+								bL: $elm$html$Html$text(
+									$author$project$Concourse$hyphenNotation(p.b$)),
+								fl: $elm$core$Maybe$Just($author$project$Dashboard$Styles$pipelinePreviewTooltip)
 							};
 						},
 						A2(
@@ -31611,13 +32847,13 @@ var $author$project$Dashboard$Dashboard$tooltip = function (session) {
 						$elm$core$Maybe$map,
 						function (p) {
 							return {
-								ez: $elm$core$Maybe$Just(15),
-								eA: {
-									ey: $author$project$Tooltip$Middle(30),
-									e0: $author$project$Tooltip$Right(0)
+								e6: $elm$core$Maybe$Just(15),
+								e7: {
+									e5: $author$project$Tooltip$Middle(30),
+									fB: $author$project$Tooltip$Right(0)
 								},
-								W: $elm$html$Html$text(p.dQ),
-								eO: $elm$core$Maybe$Just($author$project$Dashboard$Styles$cardTooltip)
+								bL: $elm$html$Html$text(p.cT),
+								fl: $elm$core$Maybe$Just($author$project$Dashboard$Styles$cardTooltip)
 							};
 						},
 						A2(
@@ -31630,13 +32866,13 @@ var $author$project$Dashboard$Dashboard$tooltip = function (session) {
 						$elm$core$Maybe$map,
 						function (p) {
 							return {
-								ez: $elm$core$Maybe$Just(15),
-								eA: {
-									ey: $author$project$Tooltip$Middle(30),
-									e0: $author$project$Tooltip$Right(0)
+								e6: $elm$core$Maybe$Just(15),
+								e7: {
+									e5: $author$project$Tooltip$Middle(30),
+									fB: $author$project$Tooltip$Right(0)
 								},
-								W: $elm$html$Html$text(p.dQ),
-								eO: $elm$core$Maybe$Just($author$project$Dashboard$Styles$cardTooltip)
+								bL: $elm$html$Html$text(p.cT),
+								fl: $elm$core$Maybe$Just($author$project$Dashboard$Styles$cardTooltip)
 							};
 						},
 						A2(
@@ -31648,26 +32884,26 @@ var $author$project$Dashboard$Dashboard$tooltip = function (session) {
 					var groupName = _v9.c;
 					return $elm$core$Maybe$Just(
 						{
-							ez: $elm$core$Maybe$Just(15),
-							eA: {
-								ey: $author$project$Tooltip$Middle(30),
-								e0: $author$project$Tooltip$Right(0)
+							e6: $elm$core$Maybe$Just(15),
+							e7: {
+								e5: $author$project$Tooltip$Middle(30),
+								fB: $author$project$Tooltip$Right(0)
 							},
-							W: $elm$html$Html$text(groupName),
-							eO: $elm$core$Maybe$Just($author$project$Dashboard$Styles$cardTooltip)
+							bL: $elm$html$Html$text(groupName),
+							fl: $elm$core$Maybe$Just($author$project$Dashboard$Styles$cardTooltip)
 						});
 				case 25:
 					var _v10 = _v0.a;
 					var groupName = _v10.b;
 					return $elm$core$Maybe$Just(
 						{
-							ez: $elm$core$Maybe$Just(15),
-							eA: {
-								ey: $author$project$Tooltip$Middle(30),
-								e0: $author$project$Tooltip$Right(0)
+							e6: $elm$core$Maybe$Just(15),
+							e7: {
+								e5: $author$project$Tooltip$Middle(30),
+								fB: $author$project$Tooltip$Right(0)
 							},
-							W: $elm$html$Html$text(groupName),
-							eO: $elm$core$Maybe$Just($author$project$Dashboard$Styles$cardTooltip)
+							bL: $elm$html$Html$text(groupName),
+							fl: $elm$core$Maybe$Just($author$project$Dashboard$Styles$cardTooltip)
 						});
 				case 26:
 					var _v11 = _v0.a;
@@ -31675,25 +32911,25 @@ var $author$project$Dashboard$Dashboard$tooltip = function (session) {
 					var value = _v11.d;
 					return $elm$core$Maybe$Just(
 						{
-							ez: $elm$core$Maybe$Just(15),
-							eA: {
-								ey: $author$project$Tooltip$Middle(30),
-								e0: $author$project$Tooltip$Right(0)
+							e6: $elm$core$Maybe$Just(15),
+							e7: {
+								e5: $author$project$Tooltip$Middle(30),
+								fB: $author$project$Tooltip$Right(0)
 							},
-							W: $elm$html$Html$text(key + (': ' + value)),
-							eO: $elm$core$Maybe$Just($author$project$Dashboard$Styles$cardTooltip)
+							bL: $elm$html$Html$text(key + (': ' + value)),
+							fl: $elm$core$Maybe$Just($author$project$Dashboard$Styles$cardTooltip)
 						});
 				case 27:
 					var _v12 = _v0.a;
 					var vars = _v12.c;
 					return $elm$core$Maybe$Just(
 						{
-							ez: $elm$core$Maybe$Just(15),
-							eA: {
-								ey: $author$project$Tooltip$Middle(30),
-								e0: $author$project$Tooltip$Right(0)
+							e6: $elm$core$Maybe$Just(15),
+							e7: {
+								e5: $author$project$Tooltip$Middle(30),
+								fB: $author$project$Tooltip$Right(0)
 							},
-							W: $elm$html$Html$text(
+							bL: $elm$html$Html$text(
 								A2(
 									$elm$core$String$join,
 									', ',
@@ -31712,7 +32948,7 @@ var $author$project$Dashboard$Dashboard$tooltip = function (session) {
 												return A2($author$project$Concourse$flattenJson, k, v);
 											},
 											$elm$core$Dict$toList(vars))))),
-							eO: $elm$core$Maybe$Just($author$project$Dashboard$Styles$cardTooltip)
+							fl: $elm$core$Maybe$Just($author$project$Dashboard$Styles$cardTooltip)
 						});
 				case 51:
 					var username = _v0.a.a;
@@ -31737,8 +32973,8 @@ var $author$project$FlySuccess$FlySuccess$tooltip = F2(
 var $author$project$Job$Job$tooltip = F2(
 	function (model, session) {
 		var _v0 = _Utils_Tuple2(
-			$krisajenkins$remotedata$RemoteData$toMaybe(model.ap),
-			session.dv);
+			$krisajenkins$remotedata$RemoteData$toMaybe(model.ac),
+			session.d$);
 		_v0$6:
 		while (true) {
 			if (_v0.b.$ === 3) {
@@ -31750,11 +32986,11 @@ var $author$project$Job$Job$tooltip = F2(
 							var _v2 = _v1.a;
 							return $elm$core$Maybe$Just(
 								{
-									ez: $elm$core$Maybe$Just(5),
-									eA: {ey: $author$project$Tooltip$End, e0: $author$project$Tooltip$Bottom},
-									W: $elm$html$Html$text(
-										job.df ? 'manual triggering disabled in job config' : 'trigger a new build'),
-									eO: $elm$core$Maybe$Nothing
+									e6: $elm$core$Maybe$Just(5),
+									e7: {e5: $author$project$Tooltip$End, fB: $author$project$Tooltip$Bottom},
+									bL: $elm$html$Html$text(
+										job.dH ? 'manual triggering disabled in job config' : 'trigger a new build'),
+									fl: $elm$core$Maybe$Nothing
 								});
 						} else {
 							break _v0$6;
@@ -31766,11 +33002,11 @@ var $author$project$Job$Job$tooltip = F2(
 							var _v4 = _v3.a;
 							return $elm$core$Maybe$Just(
 								{
-									ez: $elm$core$Maybe$Just(5),
-									eA: {ey: $author$project$Tooltip$Start, e0: $author$project$Tooltip$Bottom},
-									W: $elm$html$Html$text(
-										job.cE ? 'unpause job' : 'pause job'),
-									eO: $elm$core$Maybe$Nothing
+									e6: $elm$core$Maybe$Just(5),
+									e7: {e5: $author$project$Tooltip$Start, fB: $author$project$Tooltip$Bottom},
+									bL: $elm$html$Html$text(
+										job.cX ? 'unpause job' : 'pause job'),
+									fl: $elm$core$Maybe$Nothing
 								});
 						} else {
 							break _v0$6;
@@ -31780,30 +33016,30 @@ var $author$project$Job$Job$tooltip = F2(
 						var buildName = _v5.a.a;
 						return $elm$core$Maybe$Just(
 							{
-								ez: $elm$core$Maybe$Nothing,
-								eA: {ey: $author$project$Tooltip$Start, e0: $author$project$Tooltip$Bottom},
-								W: $elm$html$Html$text('view build #' + buildName),
-								eO: $elm$core$Maybe$Nothing
+								e6: $elm$core$Maybe$Nothing,
+								e7: {e5: $author$project$Tooltip$Start, fB: $author$project$Tooltip$Bottom},
+								bL: $elm$html$Html$text('view build #' + buildName),
+								fl: $elm$core$Maybe$Nothing
 							});
 					case 11:
 						var _v6 = _v0.b;
 						var _v7 = _v6.a;
 						return $elm$core$Maybe$Just(
 							{
-								ez: $elm$core$Maybe$Just(5),
-								eA: {ey: $author$project$Tooltip$End, e0: $author$project$Tooltip$Bottom},
-								W: $elm$html$Html$text('view next page'),
-								eO: $elm$core$Maybe$Nothing
+								e6: $elm$core$Maybe$Just(5),
+								e7: {e5: $author$project$Tooltip$End, fB: $author$project$Tooltip$Bottom},
+								bL: $elm$html$Html$text('view next page'),
+								fl: $elm$core$Maybe$Nothing
 							});
 					case 10:
 						var _v8 = _v0.b;
 						var _v9 = _v8.a;
 						return $elm$core$Maybe$Just(
 							{
-								ez: $elm$core$Maybe$Just(5),
-								eA: {ey: $author$project$Tooltip$End, e0: $author$project$Tooltip$Bottom},
-								W: $elm$html$Html$text('view previous page'),
-								eO: $elm$core$Maybe$Nothing
+								e6: $elm$core$Maybe$Just(5),
+								e7: {e5: $author$project$Tooltip$End, fB: $author$project$Tooltip$Bottom},
+								bL: $elm$html$Html$text('view previous page'),
+								fl: $elm$core$Maybe$Nothing
 							});
 					case 51:
 						var _v10 = _v0.b;
@@ -31846,14 +33082,14 @@ var $author$project$Pipeline$Pipeline$isPaused = function (p) {
 		A2(
 			$krisajenkins$remotedata$RemoteData$map,
 			function ($) {
-				return $.cE;
+				return $.cX;
 			},
 			p));
 };
 var $author$project$Pipeline$Pipeline$lastUpdatedAt = function (pipeline) {
 	if (pipeline.$ === 3) {
 		var p = pipeline.a;
-		return $elm$core$Maybe$Just(p.fB);
+		return $elm$core$Maybe$Just(p.gc);
 	} else {
 		return $elm$core$Maybe$Nothing;
 	}
@@ -31869,26 +33105,26 @@ var $author$project$Pipeline$PinMenu$PinMenu$getPinnedResources = function (fetc
 				return A2(
 					$elm$core$Maybe$map,
 					function (v) {
-						return _Utils_Tuple2(r.dQ, v);
+						return _Utils_Tuple2(r.cT, v);
 					},
-					r.f1);
+					r.gG);
 			},
 			resources);
 	}
 };
 var $author$project$Pipeline$PinMenu$PinMenu$tooltip = F2(
 	function (model, session) {
-		var _v0 = session.dv;
+		var _v0 = session.d$;
 		if ((_v0.$ === 3) && (_v0.a.$ === 33)) {
 			var _v1 = _v0.a;
-			var pinnedResources = $author$project$Pipeline$PinMenu$PinMenu$getPinnedResources(model.e7);
-			return model.bq ? $elm$core$Maybe$Nothing : $elm$core$Maybe$Just(
+			var pinnedResources = $author$project$Pipeline$PinMenu$PinMenu$getPinnedResources(model.fJ);
+			return model.bs ? $elm$core$Maybe$Nothing : $elm$core$Maybe$Just(
 				{
-					ez: $elm$core$Maybe$Just(5),
-					eA: {ey: $author$project$Tooltip$End, e0: $author$project$Tooltip$Bottom},
-					W: $elm$html$Html$text(
+					e6: $elm$core$Maybe$Just(5),
+					e7: {e5: $author$project$Tooltip$End, fB: $author$project$Tooltip$Bottom},
+					bL: $elm$html$Html$text(
 						$elm$core$List$isEmpty(pinnedResources) ? 'no pinned resources' : 'view pinned resources'),
-					eO: $elm$core$Maybe$Nothing
+					fl: $elm$core$Maybe$Nothing
 				});
 		} else {
 			return $elm$core$Maybe$Nothing;
@@ -31896,22 +33132,22 @@ var $author$project$Pipeline$PinMenu$PinMenu$tooltip = F2(
 	});
 var $author$project$Pipeline$Pipeline$tooltip = F2(
 	function (model, session) {
-		var _v0 = session.dv;
+		var _v0 = session.d$;
 		_v0$4:
 		while (true) {
 			if (_v0.$ === 3) {
 				switch (_v0.a.$) {
 					case 32:
-						var _v1 = $author$project$Pipeline$Pipeline$lastUpdatedAt(model.ag);
+						var _v1 = $author$project$Pipeline$Pipeline$lastUpdatedAt(model.ah);
 						if (!_v1.$) {
 							var time = _v1.a;
 							return $elm$core$Maybe$Just(
 								{
-									ez: $elm$core$Maybe$Just(5),
-									eA: {ey: $author$project$Tooltip$Start, e0: $author$project$Tooltip$Bottom},
-									W: $elm$html$Html$text(
-										'pipeline last updated on ' + A2($author$project$Pipeline$Pipeline$formatDate, session.gB, time)),
-									eO: $elm$core$Maybe$Nothing
+									e6: $elm$core$Maybe$Just(5),
+									e7: {e5: $author$project$Tooltip$Start, fB: $author$project$Tooltip$Bottom},
+									bL: $elm$html$Html$text(
+										'pipeline last updated on ' + A2($author$project$Pipeline$Pipeline$formatDate, session.he, time)),
+									fl: $elm$core$Maybe$Nothing
 								});
 						} else {
 							return $elm$core$Maybe$Nothing;
@@ -31923,23 +33159,23 @@ var $author$project$Pipeline$Pipeline$tooltip = F2(
 							A2(
 								$krisajenkins$remotedata$RemoteData$map,
 								$author$project$Favorites$isPipelineFavorited(session),
-								model.ag));
+								model.ah));
 						return $elm$core$Maybe$Just(
 							{
-								ez: $elm$core$Maybe$Just(5),
-								eA: {ey: $author$project$Tooltip$End, e0: $author$project$Tooltip$Bottom},
-								W: $elm$html$Html$text(
+								e6: $elm$core$Maybe$Just(5),
+								e7: {e5: $author$project$Tooltip$End, fB: $author$project$Tooltip$Bottom},
+								bL: $elm$html$Html$text(
 									isFavorited ? 'unfavorite pipeline' : 'favorite pipeline'),
-								eO: $elm$core$Maybe$Nothing
+								fl: $elm$core$Maybe$Nothing
 							});
 					case 35:
 						return $elm$core$Maybe$Just(
 							{
-								ez: $elm$core$Maybe$Just(5),
-								eA: {ey: $author$project$Tooltip$End, e0: $author$project$Tooltip$Bottom},
-								W: $elm$html$Html$text(
-									$author$project$Pipeline$Pipeline$isPaused(model.ag) ? 'unpause pipeline' : 'pause pipeline'),
-								eO: $elm$core$Maybe$Nothing
+								e6: $elm$core$Maybe$Just(5),
+								e7: {e5: $author$project$Tooltip$End, fB: $author$project$Tooltip$Bottom},
+								bL: $elm$html$Html$text(
+									$author$project$Pipeline$Pipeline$isPaused(model.ah) ? 'unpause pipeline' : 'pause pipeline'),
+								fl: $elm$core$Maybe$Nothing
 							});
 					case 51:
 						var username = _v0.a.a;
@@ -31987,21 +33223,21 @@ var $author$project$Resource$Resource$versions = function (model) {
 		$elm$core$List$map,
 		function (v) {
 			return {
-				hN: v.hN,
-				hX: v.hX,
-				iz: v.iz,
-				iI: v.iI,
-				jg: v.jg,
-				jD: v.jD,
-				au: A3($author$project$Pinned$pinState, v.er, v.iz, model.f1),
-				er: v.er
+				il: v.il,
+				iv: v.iv,
+				f_: v.f_,
+				jc: v.jc,
+				jL: v.jL,
+				j7: v.j7,
+				av: A3($author$project$Pinned$pinState, v.eZ, v.f_, model.gG),
+				eZ: v.eZ
 			};
 		},
-		model.x.hn);
+		model.x.h_);
 };
 var $author$project$Resource$Resource$tooltip = F2(
 	function (model, session) {
-		var _v0 = session.dv;
+		var _v0 = session.d$;
 		_v0$11:
 		while (true) {
 			if (_v0.$ === 3) {
@@ -32009,39 +33245,39 @@ var $author$project$Resource$Resource$tooltip = F2(
 					case 12:
 						return $elm$core$Maybe$Just(
 							{
-								ez: $elm$core$Maybe$Just(5),
-								eA: {ey: $author$project$Tooltip$Start, e0: $author$project$Tooltip$Bottom},
-								W: $elm$html$Html$text('trigger manual check'),
-								eO: $elm$core$Maybe$Nothing
+								e6: $elm$core$Maybe$Just(5),
+								e7: {e5: $author$project$Tooltip$Start, fB: $author$project$Tooltip$Bottom},
+								bL: $elm$html$Html$text('trigger manual check'),
+								fl: $elm$core$Maybe$Nothing
 							});
 					case 18:
 						var _v1 = _v0.a;
 						return $elm$core$Maybe$Just(
 							{
-								ez: $elm$core$Maybe$Just(5),
-								eA: {ey: $author$project$Tooltip$Start, e0: $author$project$Tooltip$Bottom},
-								W: $elm$html$Html$text('unpin version'),
-								eO: $elm$core$Maybe$Nothing
+								e6: $elm$core$Maybe$Just(5),
+								e7: {e5: $author$project$Tooltip$Start, fB: $author$project$Tooltip$Bottom},
+								bL: $elm$html$Html$text('unpin version'),
+								fl: $elm$core$Maybe$Nothing
 							});
 					case 13:
 						var _v2 = _v0.a;
 						return $elm$core$Maybe$Just(
 							{
-								ez: $elm$core$Maybe$Just(5),
-								eA: {ey: $author$project$Tooltip$End, e0: $author$project$Tooltip$Bottom},
-								W: $elm$html$Html$text('edit pin comment'),
-								eO: $elm$core$Maybe$Nothing
+								e6: $elm$core$Maybe$Just(5),
+								e7: {e5: $author$project$Tooltip$End, fB: $author$project$Tooltip$Bottom},
+								bL: $elm$html$Html$text('edit pin comment'),
+								fl: $elm$core$Maybe$Nothing
 							});
 					case 20:
 						var id = _v0.a.a;
 						var version = A2(
 							$elm_community$list_extra$List$Extra$find,
 							function (v) {
-								return _Utils_eq(v.iz, id);
+								return _Utils_eq(v.f_, id);
 							},
-							model.x.hn);
+							model.x.h_);
 						var isStatic = function () {
-							var _v5 = model.f1;
+							var _v5 = model.gG;
 							if (_v5.$ === 4) {
 								return true;
 							} else {
@@ -32049,45 +33285,45 @@ var $author$project$Resource$Resource$tooltip = F2(
 							}
 						}();
 						var isPinnedDynamically = function () {
-							var _v3 = _Utils_Tuple2(version, model.f1);
+							var _v3 = _Utils_Tuple2(version, model.gG);
 							if ((!_v3.a.$) && (_v3.b.$ === 2)) {
 								var cur = _v3.a.a;
 								var _v4 = _v3.b;
 								var v = _v4.b;
-								return _Utils_eq(cur.er, v);
+								return _Utils_eq(cur.eZ, v);
 							} else {
 								return false;
 							}
 						}();
 						return $elm$core$Maybe$Just(
 							{
-								ez: $elm$core$Maybe$Just(5),
-								eA: {ey: $author$project$Tooltip$Start, e0: $author$project$Tooltip$Bottom},
-								W: $elm$html$Html$text(
+								e6: $elm$core$Maybe$Just(5),
+								e7: {e5: $author$project$Tooltip$Start, fB: $author$project$Tooltip$Bottom},
+								bL: $elm$html$Html$text(
 									isStatic ? 'version is pinned in the pipeline config' : (isPinnedDynamically ? 'unpin version' : 'pin version')),
-								eO: $elm$core$Maybe$Nothing
+								fl: $elm$core$Maybe$Nothing
 							});
 					case 55:
 						var id = _v0.a.a;
 						var enabled = A2(
 							$elm$core$Maybe$map,
 							function ($) {
-								return $.hN;
+								return $.il;
 							},
 							A2(
 								$elm_community$list_extra$List$Extra$find,
 								function (v) {
-									return _Utils_eq(v.iz, id);
+									return _Utils_eq(v.f_, id);
 								},
 								$author$project$Resource$Resource$versions(model)));
 						return A2(
 							$elm$core$Maybe$map,
 							function (text) {
 								return {
-									ez: $elm$core$Maybe$Just(5),
-									eA: {ey: $author$project$Tooltip$Start, e0: $author$project$Tooltip$Bottom},
-									W: $elm$html$Html$text(text),
-									eO: $elm$core$Maybe$Nothing
+									e6: $elm$core$Maybe$Just(5),
+									e7: {e5: $author$project$Tooltip$Start, fB: $author$project$Tooltip$Bottom},
+									bL: $elm$html$Html$text(text),
+									fl: $elm$core$Maybe$Nothing
 								};
 							},
 							function () {
@@ -32112,14 +33348,14 @@ var $author$project$Resource$Resource$tooltip = F2(
 							}());
 					case 21:
 						var _v9 = _v0.a;
-						var _v10 = model.f1;
+						var _v10 = model.gG;
 						if (_v10.$ === 4) {
 							return $elm$core$Maybe$Just(
 								{
-									ez: $elm$core$Maybe$Nothing,
-									eA: {ey: $author$project$Tooltip$Start, e0: $author$project$Tooltip$Bottom},
-									W: $elm$html$Html$text('version is pinned in the pipeline config'),
-									eO: $elm$core$Maybe$Nothing
+									e6: $elm$core$Maybe$Nothing,
+									e7: {e5: $author$project$Tooltip$Start, fB: $author$project$Tooltip$Bottom},
+									bL: $elm$html$Html$text('version is pinned in the pipeline config'),
+									fl: $elm$core$Maybe$Nothing
 								});
 						} else {
 							return $elm$core$Maybe$Nothing;
@@ -32128,35 +33364,35 @@ var $author$project$Resource$Resource$tooltip = F2(
 						var _v11 = _v0.a;
 						return $elm$core$Maybe$Just(
 							{
-								ez: $elm$core$Maybe$Just(5),
-								eA: {ey: $author$project$Tooltip$End, e0: $author$project$Tooltip$Bottom},
-								W: $elm$html$Html$text('view next page'),
-								eO: $elm$core$Maybe$Nothing
+								e6: $elm$core$Maybe$Just(5),
+								e7: {e5: $author$project$Tooltip$End, fB: $author$project$Tooltip$Bottom},
+								bL: $elm$html$Html$text('view next page'),
+								fl: $elm$core$Maybe$Nothing
 							});
 					case 10:
 						var _v12 = _v0.a;
 						return $elm$core$Maybe$Just(
 							{
-								ez: $elm$core$Maybe$Just(5),
-								eA: {ey: $author$project$Tooltip$End, e0: $author$project$Tooltip$Bottom},
-								W: $elm$html$Html$text('view previous page'),
-								eO: $elm$core$Maybe$Nothing
+								e6: $elm$core$Maybe$Just(5),
+								e7: {e5: $author$project$Tooltip$End, fB: $author$project$Tooltip$Bottom},
+								bL: $elm$html$Html$text('view previous page'),
+								fl: $elm$core$Maybe$Nothing
 							});
 					case 69:
 						return $elm$core$Maybe$Just(
 							{
-								ez: $elm$core$Maybe$Just(5),
-								eA: {ey: $author$project$Tooltip$End, e0: $author$project$Tooltip$Bottom},
-								W: $elm$html$Html$text('view all downstream builds and resources'),
-								eO: $elm$core$Maybe$Nothing
+								e6: $elm$core$Maybe$Just(5),
+								e7: {e5: $author$project$Tooltip$End, fB: $author$project$Tooltip$Bottom},
+								bL: $elm$html$Html$text('view all downstream builds and resources'),
+								fl: $elm$core$Maybe$Nothing
 							});
 					case 70:
 						return $elm$core$Maybe$Just(
 							{
-								ez: $elm$core$Maybe$Just(5),
-								eA: {ey: $author$project$Tooltip$End, e0: $author$project$Tooltip$Bottom},
-								W: $elm$html$Html$text('view all upstream builds and resources'),
-								eO: $elm$core$Maybe$Nothing
+								e6: $elm$core$Maybe$Just(5),
+								e7: {e5: $author$project$Tooltip$End, fB: $author$project$Tooltip$Bottom},
+								bL: $elm$html$Html$text('view all upstream builds and resources'),
+								fl: $elm$core$Maybe$Nothing
 							});
 					case 51:
 						var username = _v0.a.a;
@@ -32176,7 +33412,7 @@ var $author$project$Resource$Resource$tooltip = F2(
 			A2(
 				$elm$core$Maybe$andThen,
 				function ($) {
-					return $.kv;
+					return $.k_;
 				},
 				model.N));
 	});
@@ -32211,23 +33447,39 @@ var $author$project$SubPage$SubPage$tooltip = function (mdl) {
 		case 9:
 			var model = mdl.a;
 			return $author$project$AgentReviews$AgentReviews$tooltip(model);
-		default:
+		case 10:
 			var model = mdl.a;
 			return $author$project$Agent$Agent$tooltip(model);
+		case 11:
+			var model = mdl.a;
+			return $author$project$AgentTickets$AgentTickets$tooltip(model);
+		default:
+			var model = mdl.a;
+			return $author$project$AgentTickets$AgentTicket$tooltip(model);
 	}
 };
 var $author$project$Agent$Agent$documentTitle = 'Agent';
 var $author$project$AgentReviews$AgentReviews$documentTitle = 'Agent reviews';
+var $author$project$AgentTickets$AgentTicket$documentTitle = function (model) {
+	var _v0 = model.bQ;
+	if (!_v0.$) {
+		var d = _v0.a;
+		return '#' + ($elm$core$String$fromInt(model.lg) + (' ' + d.al.ck));
+	} else {
+		return 'Ticket #' + $elm$core$String$fromInt(model.lg);
+	}
+};
+var $author$project$AgentTickets$AgentTickets$documentTitle = 'Ticket queue';
 var $author$project$Build$Build$extractTitle = function (model) {
-	var _v0 = _Utils_Tuple3(model.aA, model.ap, model.bp);
+	var _v0 = _Utils_Tuple3(model.aB, model.ac, model.br);
 	_v0$0:
 	while (true) {
 		if (_v0.c.$ === 1) {
 			if (_v0.a && (!_v0.b.$)) {
 				break _v0$0;
 			} else {
-				var jobName = _v0.c.a.i0;
-				var buildName = _v0.c.a.g1;
+				var jobName = _v0.c.a.jw;
+				var buildName = _v0.c.a.hE;
 				return jobName + (' #' + buildName);
 			}
 		} else {
@@ -32239,25 +33491,25 @@ var $author$project$Build$Build$extractTitle = function (model) {
 			}
 		}
 	}
-	var jobName = _v0.b.a.i0;
-	return jobName + (' #' + model.dQ);
+	var jobName = _v0.b.a.jw;
+	return jobName + (' #' + model.cT);
 };
 var $author$project$Build$Build$documentTitle = $author$project$Build$Build$extractTitle;
 var $author$project$Causality$Causality$documentTitle = function (model) {
-	return model.V.j1;
+	return model.V.kw;
 };
 var $author$project$Dashboard$Dashboard$documentTitle = 'Dashboard';
 var $author$project$DownloadFly$DownloadFly$documentTitle = 'Download fly CLI';
 var $author$project$FlySuccess$FlySuccess$documentTitle = 'Fly Login';
 var $author$project$Job$Job$documentTitle = function (model) {
-	return model.u.i0;
+	return model.u.jw;
 };
 var $author$project$NotFound$NotFound$documentTitle = 'Not Found';
 var $author$project$Pipeline$Pipeline$documentTitle = function (model) {
-	return model.jK.jL;
+	return model.ke.gH;
 };
 var $author$project$Resource$Resource$documentTitle = function (model) {
-	return model.g.j1;
+	return model.g.kw;
 };
 var $elm$html$Html$a = _VirtualDom_node('a');
 var $author$project$Views$Styles$clusterName = _List_fromArray(
@@ -32363,9 +33615,9 @@ var $author$project$Assets$backgroundImage = function (maybeAsset) {
 	}
 };
 var $author$project$Views$Styles$breadcrumbComponent = function (_v0) {
-	var component = _v0.hm;
-	var widthPx = _v0.la;
-	var heightPx = _v0.io;
+	var component = _v0.hZ;
+	var widthPx = _v0.lG;
+	var heightPx = _v0.iV;
 	return _List_fromArray(
 		[
 			A2(
@@ -32403,8 +33655,8 @@ var $author$project$Views$Styles$ellipsedText = _List_fromArray(
 	]);
 var $author$project$Views$TopBar$breadcrumbComponent = F2(
 	function (isLastBreadcrumb, _v0) {
-		var name = _v0.dQ;
-		var icon = _v0.fn;
+		var name = _v0.cT;
+		var icon = _v0.fZ;
 		return _List_fromArray(
 			[
 				A2(
@@ -32429,11 +33681,11 @@ var $elm$html$Html$Attributes$href = function (url) {
 		_VirtualDom_noJavaScriptUri(url));
 };
 var $author$project$Concourse$resourceIdFromVersionedResourceId = function (_v0) {
-	var teamName = _v0.kD;
-	var pipelineName = _v0.jL;
-	var pipelineInstanceVars = _v0.f2;
-	var resourceName = _v0.j1;
-	return {f2: pipelineInstanceVars, jL: pipelineName, j1: resourceName, kD: teamName};
+	var teamName = _v0.k8;
+	var pipelineName = _v0.gH;
+	var pipelineInstanceVars = _v0.ew;
+	var resourceName = _v0.kw;
+	return {ew: pipelineInstanceVars, gH: pipelineName, kw: resourceName, k8: teamName};
 };
 var $author$project$Views$TopBar$causalityBreadCrumb = F4(
 	function (rv, direction, version, isLastBreadcrumb) {
@@ -32466,8 +33718,8 @@ var $author$project$Views$TopBar$causalityBreadCrumb = F4(
 				$author$project$Views$TopBar$breadcrumbComponent,
 				isLastBreadcrumb,
 				{
-					fn: {hm: component, io: 17, la: 32},
-					dQ: name
+					fZ: {hZ: component, iV: 17, lG: 32},
+					cT: name
 				}));
 	});
 var $author$project$Views$TopBar$clusterNameBreadcrumb = F2(
@@ -32477,7 +33729,7 @@ var $author$project$Views$TopBar$clusterNameBreadcrumb = F2(
 			$author$project$Views$Styles$clusterName,
 			_List_fromArray(
 				[
-					$elm$html$Html$text(session.c9)
+					$elm$html$Html$text(session.dB)
 				]));
 	});
 var $author$project$Assets$ConcourseLogoWhite = {$: 14};
@@ -32512,16 +33764,16 @@ var $author$project$Views$TopBar$jobBreadcrumb = F2(
 				$author$project$Views$TopBar$breadcrumbComponent,
 				isLastBreadcrumb,
 				{
-					fn: {hm: 1, io: 17, la: 32},
-					dQ: jobName
+					fZ: {hZ: 1, iV: 17, lG: 32},
+					cT: jobName
 				}));
 	});
 var $author$project$Dashboard$FilterBuilder$quoted = function (s) {
 	return '\"' + (s + '\"');
 };
 var $author$project$Dashboard$FilterBuilder$instanceGroupFilter = function (_v0) {
-	var teamName = _v0.kD;
-	var name = _v0.dQ;
+	var teamName = _v0.k8;
+	var name = _v0.cT;
 	return 'team:' + ($author$project$Dashboard$FilterBuilder$quoted(teamName) + (' group:' + $author$project$Dashboard$FilterBuilder$quoted(name)));
 };
 var $author$project$Assets$PipelineComponent = 0;
@@ -32582,20 +33834,20 @@ var $author$project$Routes$pipelineRoute = F2(
 	function (p, groups) {
 		return $author$project$Routes$Pipeline(
 			{
-				dt: groups,
-				iz: $author$project$Concourse$toPipelineId(p)
+				dZ: groups,
+				f_: $author$project$Concourse$toPipelineId(p)
 			});
 	});
 var $elm$html$Html$span = _VirtualDom_node('span');
 var $author$project$Views$TopBar$pipelineBreadcrumb = F4(
 	function (inInstanceGroup, pipeline, groups, isLastBreadcrumb) {
-		var text = inInstanceGroup ? $author$project$Concourse$hyphenNotation(pipeline.bT) : A2($author$project$Views$TopBar$pipelineNameView, pipeline.dQ, pipeline.gS);
+		var text = inInstanceGroup ? $author$project$Concourse$hyphenNotation(pipeline.b$) : A2($author$project$Views$TopBar$pipelineNameView, pipeline.cT, pipeline.hs);
 		var nameHtml = isLastBreadcrumb ? A2(
 			$elm$html$Html$div,
 			_Utils_ap(
 				$author$project$Views$Styles$ellipsedText,
 				$author$project$Tooltip$hoverAttrs(
-					$author$project$Message$Message$TopBarPipelineName(pipeline.iz))),
+					$author$project$Message$Message$TopBarPipelineName(pipeline.f_))),
 			_List_fromArray(
 				[
 					$elm$html$Html$text(
@@ -32603,7 +33855,7 @@ var $author$project$Views$TopBar$pipelineBreadcrumb = F4(
 				])) : A2(
 			$elm$html$Html$span,
 			$author$project$Tooltip$hoverAttrs(
-				$author$project$Message$Message$TopBarPipelineName(pipeline.iz)),
+				$author$project$Message$Message$TopBarPipelineName(pipeline.f_)),
 			_List_fromArray(
 				[
 					$elm$html$Html$text(
@@ -32625,7 +33877,7 @@ var $author$project$Views$TopBar$pipelineBreadcrumb = F4(
 					A2(
 					$elm$html$Html$div,
 					$author$project$Views$Styles$breadcrumbComponent(
-						{hm: 0, io: 16, la: 28}),
+						{hZ: 0, iV: 16, lG: 28}),
 					_List_Nil),
 					nameHtml
 				]));
@@ -32675,9 +33927,9 @@ var $author$project$Views$TopBar$pipelineBreadcrumbs = F3(
 			A2(
 				$elm$core$List$filter,
 				function (p) {
-					return _Utils_eq(p.dQ, pipeline.dQ) && _Utils_eq(p.kD, pipeline.kD);
+					return _Utils_eq(p.cT, pipeline.cT) && _Utils_eq(p.k8, pipeline.k8);
 				},
-				A2($krisajenkins$remotedata$RemoteData$withDefault, _List_Nil, session.jN)));
+				A2($krisajenkins$remotedata$RemoteData$withDefault, _List_Nil, session.kg)));
 		var instanceGroupBreadcrumb = function (isLastBreadcrumb) {
 			return A2(
 				$elm$html$Html$a,
@@ -32690,8 +33942,8 @@ var $author$project$Views$TopBar$pipelineBreadcrumbs = F3(
 							$author$project$Routes$toString(
 								$author$project$Routes$Dashboard(
 									{
-										hy: 0,
-										kf: $author$project$Routes$Normal(
+										h6: 0,
+										kK: $author$project$Routes$Normal(
 											$author$project$Dashboard$FilterBuilder$instanceGroupFilter(pipeline))
 									}))),
 						A2($author$project$Views$Styles$breadcrumbItem, true, isLastBreadcrumb))),
@@ -32702,7 +33954,7 @@ var $author$project$Views$TopBar$pipelineBreadcrumbs = F3(
 						$author$project$ColorValues$white,
 						$elm$core$List$length(pipelineGroup)),
 						$elm$html$Html$text(
-						A2($author$project$Views$TopBar$pipelineNameView, pipeline.dQ, pipeline.gS))
+						A2($author$project$Views$TopBar$pipelineNameView, pipeline.cT, pipeline.hs))
 					]));
 		};
 		var inInstanceGroup = $author$project$Concourse$isInstanceGroup(pipelineGroup);
@@ -32732,8 +33984,8 @@ var $author$project$Views$TopBar$resourceBreadcrumb = F2(
 				$author$project$Views$TopBar$breadcrumbComponent,
 				isLastBreadcrumb,
 				{
-					fn: {hm: 2, io: 17, la: 32},
-					dQ: resource.j1
+					fZ: {hZ: 2, iV: 17, lG: 32},
+					cT: resource.kw
 				}));
 	});
 var $author$project$Views$TopBar$breadcrumbs = F2(
@@ -32784,7 +34036,7 @@ var $author$project$Views$TopBar$breadcrumbs = F2(
 			function () {
 				switch (route.$) {
 					case 4:
-						var id = route.a.iz;
+						var id = route.a.f_;
 						var _v1 = A2(
 							$author$project$SideBar$SideBar$lookupPipeline,
 							$author$project$SideBar$SideBar$byPipelineId(id),
@@ -32795,12 +34047,12 @@ var $author$project$Views$TopBar$breadcrumbs = F2(
 							var pipeline = _v1.a;
 							return _Utils_Tuple3(
 								A3($author$project$Views$TopBar$pipelineBreadcrumbs, session, pipeline, _List_Nil),
-								pipeline.cE,
-								pipeline.gS);
+								pipeline.cX,
+								pipeline.hs);
 						}
 					case 0:
-						var id = route.a.iz;
-						var groups = route.a.dt;
+						var id = route.a.f_;
+						var groups = route.a.dZ;
 						var _v2 = A2(
 							$author$project$SideBar$SideBar$lookupPipeline,
 							$author$project$SideBar$SideBar$byPipelineId(id),
@@ -32815,14 +34067,14 @@ var $author$project$Views$TopBar$breadcrumbs = F2(
 									_List_fromArray(
 										[
 											$author$project$Views$TopBar$breadcrumbSeparator,
-											$author$project$Views$TopBar$jobBreadcrumb(id.i0)
+											$author$project$Views$TopBar$jobBreadcrumb(id.jw)
 										])),
-								pipeline.cE,
-								pipeline.gS);
+								pipeline.cX,
+								pipeline.hs);
 						}
 					case 1:
-						var id = route.a.iz;
-						var groups = route.a.dt;
+						var id = route.a.f_;
+						var groups = route.a.dZ;
 						var _v3 = A2(
 							$author$project$SideBar$SideBar$lookupPipeline,
 							$author$project$SideBar$SideBar$byPipelineId(id),
@@ -32839,12 +34091,12 @@ var $author$project$Views$TopBar$breadcrumbs = F2(
 											$author$project$Views$TopBar$breadcrumbSeparator,
 											$author$project$Views$TopBar$resourceBreadcrumb(id)
 										])),
-								pipeline.cE,
-								pipeline.gS);
+								pipeline.cX,
+								pipeline.hs);
 						}
 					case 2:
-						var id = route.a.iz;
-						var groups = route.a.dt;
+						var id = route.a.f_;
+						var groups = route.a.dZ;
 						var _v4 = A2(
 							$author$project$SideBar$SideBar$lookupPipeline,
 							$author$project$SideBar$SideBar$byPipelineId(id),
@@ -32859,10 +34111,10 @@ var $author$project$Views$TopBar$breadcrumbs = F2(
 									_List_fromArray(
 										[
 											$author$project$Views$TopBar$breadcrumbSeparator,
-											$author$project$Views$TopBar$jobBreadcrumb(id.i0)
+											$author$project$Views$TopBar$jobBreadcrumb(id.jw)
 										])),
-								pipeline.cE,
-								pipeline.gS);
+								pipeline.cX,
+								pipeline.hs);
 						}
 					case 5:
 						return _Utils_Tuple3(
@@ -32873,10 +34125,10 @@ var $author$project$Views$TopBar$breadcrumbs = F2(
 							false,
 							false);
 					case 7:
-						var id = route.a.iz;
-						var direction = route.a.e0;
-						var version = route.a.er;
-						var groups = route.a.dt;
+						var id = route.a.f_;
+						var direction = route.a.fB;
+						var version = route.a.eZ;
+						var groups = route.a.dZ;
 						var _v5 = A2(
 							$author$project$SideBar$SideBar$lookupPipeline,
 							$author$project$SideBar$SideBar$byPipelineId(id),
@@ -32900,8 +34152,8 @@ var $author$project$Views$TopBar$breadcrumbs = F2(
 											direction,
 											A2($elm$core$Maybe$withDefault, $elm$core$Dict$empty, version))
 										])),
-								pipeline.cE,
-								pipeline.gS);
+								pipeline.cX,
+								pipeline.hs);
 						}
 					case 8:
 						return _Utils_Tuple3(
@@ -32937,8 +34189,8 @@ var $author$project$Agent$Agent$formatUsd = function (amount) {
 };
 var $author$project$Colors$text = '#e6e7e8';
 var $author$project$Agent$Agent$costSummaryLine = function (summary) {
-	var spent = 'today: $' + ($author$project$Agent$Agent$formatUsd(summary.hx) + ' spent');
-	var exhausted = summary.hv ? _List_fromArray(
+	var spent = 'today: $' + ($author$project$Agent$Agent$formatUsd(summary.fr) + ' spent');
+	var exhausted = summary.fq ? _List_fromArray(
 		[
 			A2(
 			$elm$html$Html$span,
@@ -32954,7 +34206,7 @@ var $author$project$Agent$Agent$costSummaryLine = function (summary) {
 					$elm$html$Html$text('budget exhausted')
 				]))
 		]) : _List_Nil;
-	var cap = (summary.eS > 0) ? (' / $' + ($author$project$Agent$Agent$formatUsd(summary.eS) + (' cap ($' + ($author$project$Agent$Agent$formatUsd(summary.hw) + ' left)')))) : '';
+	var cap = (summary.cA > 0) ? (' / $' + ($author$project$Agent$Agent$formatUsd(summary.cA) + (' cap ($' + ($author$project$Agent$Agent$formatUsd(summary.h5) + ' left)')))) : '';
 	return A2(
 		$elm$html$Html$div,
 		_List_fromArray(
@@ -33031,23 +34283,23 @@ var $author$project$Agent$Agent$costRow = function (r) {
 			]),
 		_List_fromArray(
 			[
-				A2($author$project$Agent$Agent$tableCell, 'left', r.i2),
+				A2($author$project$Agent$Agent$tableCell, 'left', r.jy),
 				A2(
 				$author$project$Agent$Agent$tableCell,
 				'right',
-				$elm$core$String$fromInt(r.hP)),
+				$elm$core$String$fromInt(r.$9)),
 				A2(
 				$author$project$Agent$Agent$tableCell,
 				'right',
-				$elm$core$String$fromInt(r.fr) + ('+' + $elm$core$String$fromInt(r.fS))),
+				$elm$core$String$fromInt(r.f2) + ('+' + $elm$core$String$fromInt(r.gv))),
 				A2(
 				$author$project$Agent$Agent$tableCell,
 				'right',
-				$elm$core$String$fromInt(r.gG)),
+				$elm$core$String$fromInt(r.hj)),
 				A2(
 				$author$project$Agent$Agent$tableCell,
 				'right',
-				'$' + $author$project$Agent$Agent$formatUsd(r.eP))
+				'$' + $author$project$Agent$Agent$formatUsd(r.fm))
 			]));
 };
 var $elm$html$Html$p = _VirtualDom_node('p');
@@ -33081,6 +34333,45 @@ var $author$project$Agent$Agent$costTable = function (rows) {
 			$elm$core$List$cons,
 			$author$project$Agent$Agent$costHeaderRow,
 			A2($elm$core$List$map, $author$project$Agent$Agent$costRow, rows)));
+};
+var $elm$core$Basics$min = F2(
+	function (x, y) {
+		return (_Utils_cmp(x, y) < 0) ? x : y;
+	});
+var $author$project$Agent$Agent$dailyCapGauge = function (summary) {
+	if (summary.cA <= 0) {
+		return $elm$html$Html$text('');
+	} else {
+		var pct = A2($elm$core$Basics$min, 100, (summary.fr / summary.cA) * 100);
+		return A2(
+			$elm$html$Html$div,
+			_List_fromArray(
+				[
+					$elm$html$Html$Attributes$class('agent-daily-cap-gauge'),
+					A2($elm$html$Html$Attributes$style, 'max-width', '320px'),
+					A2($elm$html$Html$Attributes$style, 'margin', '0 0 12px 0'),
+					A2($elm$html$Html$Attributes$style, 'height', '6px'),
+					A2($elm$html$Html$Attributes$style, 'background', '#3d3c3c')
+				]),
+			_List_fromArray(
+				[
+					A2(
+					$elm$html$Html$div,
+					_List_fromArray(
+						[
+							A2($elm$html$Html$Attributes$style, 'height', '6px'),
+							A2(
+							$elm$html$Html$Attributes$style,
+							'width',
+							$elm$core$String$fromFloat(pct) + '%'),
+							A2(
+							$elm$html$Html$Attributes$style,
+							'background',
+							summary.fq ? $author$project$Agent$Agent$amberColor : '#7aa37a')
+						]),
+					_List_Nil)
+				]));
+	}
 };
 var $author$project$Agent$Agent$errorLine = function (content) {
 	return A2(
@@ -33148,9 +34439,9 @@ var $author$project$Agent$Agent$costsSection = function (model) {
 		$author$project$Agent$Agent$sectionBlock,
 		'Costs',
 		function () {
-			var _v0 = model.dc;
+			var _v0 = model.dE;
 			if (_v0.$ === 1) {
-				var _v1 = model.bL;
+				var _v1 = model.bO;
 				if (!_v1.$) {
 					var message = _v1.a;
 					return _List_fromArray(
@@ -33166,11 +34457,12 @@ var $author$project$Agent$Agent$costsSection = function (model) {
 			} else {
 				var rollup = _v0.a;
 				return _Utils_ap(
-					$author$project$Agent$Agent$staleDataWarning(model.bL),
+					$author$project$Agent$Agent$staleDataWarning(model.bO),
 					_List_fromArray(
 						[
-							$author$project$Agent$Agent$costSummaryLine(rollup.el),
-							$author$project$Agent$Agent$costTable(rollup.j9)
+							$author$project$Agent$Agent$costSummaryLine(rollup.cg),
+							$author$project$Agent$Agent$dailyCapGauge(rollup.cg),
+							$author$project$Agent$Agent$costTable(rollup.kD)
 						]));
 			}
 		}());
@@ -33240,15 +34532,15 @@ var $author$project$Agent$Agent$credentialRow = function (c) {
 			]),
 		_List_fromArray(
 			[
-				A2($author$project$Agent$Agent$tableCell, 'left', c.i3),
+				A2($author$project$Agent$Agent$tableCell, 'left', c.jz),
 				A2(
 				$author$project$Agent$Agent$tableCell,
 				'left',
-				$author$project$Agent$Agent$formatPosix(c.e6)),
+				$author$project$Agent$Agent$formatPosix(c.fI)),
 				A2(
 				$author$project$Agent$Agent$tableCell,
 				'left',
-				$author$project$Agent$Agent$formatPosix(c.i5))
+				$author$project$Agent$Agent$formatPosix(c.jB))
 			]));
 };
 var $author$project$Agent$Agent$credentialsTable = function (creds) {
@@ -33283,9 +34575,9 @@ var $author$project$Agent$Agent$credentialsSection = function (model) {
 			$elm$core$List$cons,
 			$author$project$Agent$Agent$mutedLine('set or rotate with: fly agent auth'),
 			function () {
-				var _v0 = model.dd;
+				var _v0 = model.dF;
 				if (_v0.$ === 1) {
-					var _v1 = model.a4;
+					var _v1 = model.a5;
 					if (!_v1.$) {
 						var message = _v1.a;
 						return _List_fromArray(
@@ -33301,7 +34593,7 @@ var $author$project$Agent$Agent$credentialsSection = function (model) {
 				} else {
 					if (!_v0.a.b) {
 						return _Utils_ap(
-							$author$project$Agent$Agent$staleDataWarning(model.a4),
+							$author$project$Agent$Agent$staleDataWarning(model.a5),
 							_List_fromArray(
 								[
 									$author$project$Agent$Agent$mutedLine('no credentials stored — run: fly agent auth')
@@ -33309,7 +34601,7 @@ var $author$project$Agent$Agent$credentialsSection = function (model) {
 					} else {
 						var creds = _v0.a;
 						return _Utils_ap(
-							$author$project$Agent$Agent$staleDataWarning(model.a4),
+							$author$project$Agent$Agent$staleDataWarning(model.a5),
 							_List_fromArray(
 								[
 									$author$project$Agent$Agent$credentialsTable(creds)
@@ -33394,6 +34686,20 @@ var $author$project$Views$Styles$pageBelowTopBar = function (route) {
 							A2($elm$html$Html$Attributes$style, 'display', 'flex'),
 							A2($elm$html$Html$Attributes$style, 'height', '100%')
 						]);
+				case 10:
+					return _List_fromArray(
+						[
+							A2($elm$html$Html$Attributes$style, 'box-sizing', 'border-box'),
+							A2($elm$html$Html$Attributes$style, 'display', 'flex'),
+							A2($elm$html$Html$Attributes$style, 'height', '100%')
+						]);
+				case 11:
+					return _List_fromArray(
+						[
+							A2($elm$html$Html$Attributes$style, 'box-sizing', 'border-box'),
+							A2($elm$html$Html$Attributes$style, 'display', 'flex'),
+							A2($elm$html$Html$Attributes$style, 'height', '100%')
+						]);
 				default:
 					return _List_fromArray(
 						[
@@ -33409,13 +34715,13 @@ var $author$project$Views$Styles$pageIncludingTopBar = _List_fromArray(
 		A2($elm$html$Html$Attributes$style, 'height', '100%')
 	]);
 var $author$project$Message$Message$AgentMintDescriptionChanged = function (a) {
-	return {$: 25, a: a};
+	return {$: 28, a: a};
 };
 var $author$project$Message$Message$AgentMintNameChanged = function (a) {
-	return {$: 24, a: a};
+	return {$: 27, a: a};
 };
 var $author$project$Message$Message$AgentMintExpiresChanged = function (a) {
-	return {$: 27, a: a};
+	return {$: 30, a: a};
 };
 var $author$project$Agent$Agent$expiresHint = function (val) {
 	return $author$project$Agent$Agent$expiresIsValid(val) ? _List_Nil : _List_fromArray(
@@ -33495,7 +34801,7 @@ var $author$project$Agent$Agent$expiresField = function (val) {
 				]),
 			$author$project$Agent$Agent$expiresHint(val)));
 };
-var $author$project$Message$Message$AgentMintSubmitted = {$: 28};
+var $author$project$Message$Message$AgentMintSubmitted = {$: 31};
 var $elm$html$Html$button = _VirtualDom_node('button');
 var $elm$html$Html$Attributes$boolProperty = F2(
 	function (key, bool) {
@@ -33512,8 +34818,8 @@ var $elm$html$Html$Events$onClick = function (msg) {
 		$elm$json$Json$Decode$succeed(msg));
 };
 var $author$project$Agent$Agent$mintButton = function (model) {
-	var label = model.aV ? 'minting…' : 'mint';
-	var enabled = $author$project$Agent$Agent$canMint(model) && (!model.aV);
+	var label = model.aW ? 'minting…' : 'mint';
+	var enabled = $author$project$Agent$Agent$canMint(model) && (!model.aW);
 	return A2(
 		$elm$html$Html$button,
 		_List_fromArray(
@@ -33546,7 +34852,7 @@ var $author$project$Agent$Agent$mintButton = function (model) {
 			]));
 };
 var $author$project$Agent$Agent$mintErrorLine = function (model) {
-	var _v0 = model.cz;
+	var _v0 = model.cR;
 	if (!_v0.$) {
 		var message = _v0.a;
 		return $author$project$Agent$Agent$errorLine(message);
@@ -33577,7 +34883,7 @@ var $author$project$Agent$Agent$mintTextField = F3(
 			_List_Nil);
 	});
 var $author$project$Message$Message$AgentMintScopeToggled = function (a) {
-	return {$: 26, a: a};
+	return {$: 29, a: a};
 };
 var $elm$html$Html$Attributes$checked = $elm$html$Html$Attributes$boolProperty('checked');
 var $author$project$Agent$Agent$scopeCheckbox = F2(
@@ -33600,7 +34906,7 @@ var $author$project$Agent$Agent$scopeCheckbox = F2(
 						[
 							$elm$html$Html$Attributes$type_('checkbox'),
 							$elm$html$Html$Attributes$checked(
-							A2($elm$core$Set$member, scope, model.at)),
+							A2($elm$core$Set$member, scope, model.au)),
 							$elm$html$Html$Events$onClick(
 							$author$project$Message$Message$AgentMintScopeToggled(scope))
 						]),
@@ -33629,8 +34935,8 @@ var $author$project$Agent$Agent$mintForm = function (model) {
 					]),
 				_List_fromArray(
 					[
-						A3($author$project$Agent$Agent$mintTextField, 'name', model.bm, $author$project$Message$Message$AgentMintNameChanged),
-						A3($author$project$Agent$Agent$mintTextField, 'description (optional)', model.bV, $author$project$Message$Message$AgentMintDescriptionChanged)
+						A3($author$project$Agent$Agent$mintTextField, 'name', model.bo, $author$project$Message$Message$AgentMintNameChanged),
+						A3($author$project$Agent$Agent$mintTextField, 'description (optional)', model.b1, $author$project$Message$Message$AgentMintDescriptionChanged)
 					])),
 				A2(
 				$elm$html$Html$div,
@@ -33656,15 +34962,15 @@ var $author$project$Agent$Agent$mintForm = function (model) {
 					]),
 				_List_fromArray(
 					[
-						$author$project$Agent$Agent$expiresField(model.bl),
+						$author$project$Agent$Agent$expiresField(model.bn),
 						$author$project$Agent$Agent$mintButton(model)
 					])),
 				$author$project$Agent$Agent$mintErrorLine(model)
 			]));
 };
-var $author$project$Message$Message$AgentMintedTokenDismissed = {$: 29};
+var $author$project$Message$Message$AgentMintedTokenDismissed = {$: 32};
 var $author$project$Agent$Agent$mintedTokenBox = function (model) {
-	var _v0 = model.cA;
+	var _v0 = model.cS;
 	if (_v0.$ === 1) {
 		return _List_Nil;
 	} else {
@@ -33734,12 +35040,13 @@ var $author$project$Agent$Agent$mintedTokenBox = function (model) {
 			]);
 	}
 };
+var $author$project$Message$Message$AgentPrincipalsShowEphemeralToggled = {$: 34};
 var $author$project$Message$Message$AgentPrincipalRevokeClicked = function (a) {
-	return {$: 30, a: a};
+	return {$: 33, a: a};
 };
 var $author$project$Agent$Agent$principalRow = function (p) {
 	var dim = function () {
-		var _v1 = p.gi;
+		var _v1 = p.gX;
 		if (!_v1.$) {
 			return _List_fromArray(
 				[
@@ -33750,7 +35057,7 @@ var $author$project$Agent$Agent$principalRow = function (p) {
 		}
 	}();
 	var action = function () {
-		var _v0 = p.gi;
+		var _v0 = p.gX;
 		if (!_v0.$) {
 			var revokedAt = _v0.a;
 			return A2(
@@ -33773,7 +35080,7 @@ var $author$project$Agent$Agent$principalRow = function (p) {
 					[
 						$elm$html$Html$Attributes$class('agent-principal-revoke'),
 						$elm$html$Html$Events$onClick(
-						$author$project$Message$Message$AgentPrincipalRevokeClicked(p.iz)),
+						$author$project$Message$Message$AgentPrincipalRevokeClicked(p.f_)),
 						A2($elm$html$Html$Attributes$style, 'padding', '2px 8px'),
 						A2($elm$html$Html$Attributes$style, 'font-family', 'monospace'),
 						A2($elm$html$Html$Attributes$style, 'font-size', '11px'),
@@ -33797,25 +35104,25 @@ var $author$project$Agent$Agent$principalRow = function (p) {
 			dim),
 		_List_fromArray(
 			[
-				A2($author$project$Agent$Agent$tableCell, 'left', p.dQ),
+				A2($author$project$Agent$Agent$tableCell, 'left', p.cT),
 				A2(
 				$author$project$Agent$Agent$tableCell,
 				'left',
-				A2($elm$core$String$join, ', ', p.gk)),
-				A2($author$project$Agent$Agent$tableCell, 'left', p.kD),
+				A2($elm$core$String$join, ', ', p.gZ)),
+				A2($author$project$Agent$Agent$tableCell, 'left', p.k8),
 				A2(
 				$author$project$Agent$Agent$tableCell,
 				'left',
 				$author$project$Agent$Agent$formatPosix(
-					$elm$core$Maybe$Just(p.eQ))),
+					$elm$core$Maybe$Just(p.fn))),
 				A2(
 				$author$project$Agent$Agent$tableCell,
 				'left',
-				$author$project$Agent$Agent$formatPosix(p.e6)),
+				$author$project$Agent$Agent$formatPosix(p.fI)),
 				A2(
 				$author$project$Agent$Agent$tableCell,
 				'left',
-				$author$project$Agent$Agent$formatPosix(p.i4)),
+				$author$project$Agent$Agent$formatPosix(p.jA)),
 				A2(
 				$elm$html$Html$td,
 				_List_fromArray(
@@ -33855,10 +35162,52 @@ var $author$project$Agent$Agent$principalsTable = function (principals) {
 					])),
 			A2($elm$core$List$map, $author$project$Agent$Agent$principalRow, principals)));
 };
+var $author$project$Agent$Agent$ephemeralPrincipals = F2(
+	function (model, ephemeral) {
+		return $elm$core$List$isEmpty(ephemeral) ? _List_Nil : A2(
+			$elm$core$List$cons,
+			A2(
+				$elm$html$Html$button,
+				_List_fromArray(
+					[
+						$elm$html$Html$Attributes$class('agent-ephemeral-toggle'),
+						$elm$html$Html$Events$onClick($author$project$Message$Message$AgentPrincipalsShowEphemeralToggled),
+						A2($elm$html$Html$Attributes$style, 'background', 'transparent'),
+						A2($elm$html$Html$Attributes$style, 'border', 'none'),
+						A2($elm$html$Html$Attributes$style, 'color', $author$project$Agent$Agent$subtleColor),
+						A2($elm$html$Html$Attributes$style, 'font-family', 'monospace'),
+						A2($elm$html$Html$Attributes$style, 'font-size', '12px'),
+						A2($elm$html$Html$Attributes$style, 'cursor', 'pointer'),
+						A2($elm$html$Html$Attributes$style, 'padding', '8px 0'),
+						A2($elm$html$Html$Attributes$style, 'text-align', 'left')
+					]),
+				_List_fromArray(
+					[
+						$elm$html$Html$text(
+						(model.ce ? '▾ hide ' : '▸ show ') + ($elm$core$String$fromInt(
+							$elm$core$List$length(ephemeral)) + (' ephemeral run ' + (($elm$core$List$length(ephemeral) === 1) ? 'principal' : 'principals'))))
+					])),
+			model.ce ? _List_fromArray(
+				[
+					$author$project$Agent$Agent$principalsTable(ephemeral)
+				]) : _List_Nil);
+	});
+var $author$project$Agent$Agent$isEphemeralPrincipal = function (p) {
+	var _v0 = A2($elm$core$String$split, '-', p.cT);
+	if (((_v0.b && (_v0.a === 'run')) && _v0.b.b) && (!_v0.b.b.b)) {
+		var _v1 = _v0.b;
+		var n = _v1.a;
+		return !_Utils_eq(
+			$elm$core$String$toInt(n),
+			$elm$core$Maybe$Nothing);
+	} else {
+		return false;
+	}
+};
 var $author$project$Agent$Agent$principalsBody = function (model) {
-	var _v0 = model.d2;
+	var _v0 = model.ey;
 	if (_v0.$ === 1) {
-		var _v1 = model.bs;
+		var _v1 = model.bu;
 		if (!_v1.$) {
 			var message = _v1.a;
 			return _List_fromArray(
@@ -33874,24 +35223,32 @@ var $author$project$Agent$Agent$principalsBody = function (model) {
 	} else {
 		if (!_v0.a.b) {
 			return _Utils_ap(
-				$author$project$Agent$Agent$staleDataWarning(model.bs),
+				$author$project$Agent$Agent$staleDataWarning(model.bu),
 				_List_fromArray(
 					[
 						$author$project$Agent$Agent$mutedLine('no principals yet — mint one above')
 					]));
 		} else {
 			var principals = _v0.a;
+			var _v2 = A2($elm$core$List$partition, $author$project$Agent$Agent$isEphemeralPrincipal, principals);
+			var ephemeral = _v2.a;
+			var durable = _v2.b;
 			return _Utils_ap(
-				$author$project$Agent$Agent$staleDataWarning(model.bs),
-				_List_fromArray(
-					[
-						$author$project$Agent$Agent$principalsTable(principals)
-					]));
+				$author$project$Agent$Agent$staleDataWarning(model.bu),
+				_Utils_ap(
+					$elm$core$List$isEmpty(durable) ? _List_fromArray(
+						[
+							$author$project$Agent$Agent$mutedLine('no durable principals — mint one above')
+						]) : _List_fromArray(
+						[
+							$author$project$Agent$Agent$principalsTable(durable)
+						]),
+					A2($author$project$Agent$Agent$ephemeralPrincipals, model, ephemeral)));
 		}
 	}
 };
 var $author$project$Agent$Agent$revokeErrorLine = function (model) {
-	var _v0 = model.b4;
+	var _v0 = model.cc;
 	if (!_v0.$) {
 		var message = _v0.a;
 		return A2(
@@ -34102,6 +35459,7 @@ var $author$project$Agent$Agent$runStatusCell = function (status) {
 			}()
 			]));
 };
+var $elm$html$Html$Attributes$title = $elm$html$Html$Attributes$stringProperty('title');
 var $author$project$Agent$Agent$runStepCell = function (r) {
 	return A2(
 		$elm$html$Html$td,
@@ -34122,9 +35480,9 @@ var $author$project$Agent$Agent$runStepCell = function (r) {
 					]),
 				_List_fromArray(
 					[
-						$elm$html$Html$text(r.ku)
+						$elm$html$Html$text(r.kZ)
 					])),
-			(r.el === '') ? _List_Nil : _List_fromArray(
+			(r.cg === '') ? _List_Nil : _List_fromArray(
 				[
 					A2(
 					$elm$html$Html$div,
@@ -34132,25 +35490,57 @@ var $author$project$Agent$Agent$runStepCell = function (r) {
 						[
 							A2($elm$html$Html$Attributes$style, 'font-size', '11px'),
 							A2($elm$html$Html$Attributes$style, 'color', $author$project$Agent$Agent$mutedColor),
-							A2($elm$html$Html$Attributes$style, 'max-width', '320px')
+							A2($elm$html$Html$Attributes$style, 'max-width', '320px'),
+							A2($elm$html$Html$Attributes$style, 'white-space', 'nowrap'),
+							A2($elm$html$Html$Attributes$style, 'overflow', 'hidden'),
+							A2($elm$html$Html$Attributes$style, 'text-overflow', 'ellipsis'),
+							$elm$html$Html$Attributes$title(r.cg)
 						]),
 					_List_fromArray(
 						[
-							$elm$html$Html$text(r.el)
+							$elm$html$Html$text(r.cg)
 						]))
 				])));
 };
 var $author$project$Agent$Agent$secondsToPosix = function (seconds) {
 	return $elm$time$Time$millisToPosix(seconds * 1000);
 };
-var $author$project$Agent$Agent$ticketRef = function (r) {
-	var _v0 = r.kL;
-	if (!_v0.$) {
-		var t = _v0.a;
-		return '#' + $elm$core$String$fromInt(t);
-	} else {
-		return 'CI';
-	}
+var $author$project$Agent$Agent$ticketRefCell = function (r) {
+	return A2(
+		$elm$html$Html$td,
+		_List_fromArray(
+			[
+				A2($elm$html$Html$Attributes$style, 'text-align', 'left'),
+				A2($elm$html$Html$Attributes$style, 'padding', '4px 16px 4px 0'),
+				A2($elm$html$Html$Attributes$style, 'border-bottom', $author$project$Agent$Agent$rowBorder)
+			]),
+		_List_fromArray(
+			[
+				function () {
+				var _v0 = r.lg;
+				if (!_v0.$) {
+					var t = _v0.a;
+					return A2(
+						$elm$html$Html$a,
+						_List_fromArray(
+							[
+								$elm$html$Html$Attributes$href(
+								$author$project$Routes$toString(
+									$author$project$Routes$AgentTicket(
+										{f_: t}))),
+								A2($elm$html$Html$Attributes$style, 'color', '#7a9ac0'),
+								A2($elm$html$Html$Attributes$style, 'text-decoration', 'none')
+							]),
+						_List_fromArray(
+							[
+								$elm$html$Html$text(
+								'#' + $elm$core$String$fromInt(t))
+							]));
+				} else {
+					return $elm$html$Html$text('CI');
+				}
+			}()
+			]));
 };
 var $author$project$Agent$Agent$workflowRef = F2(
 	function (name, version) {
@@ -34190,30 +35580,27 @@ var $author$project$Agent$Agent$runRow = function (r) {
 				A2(
 				$author$project$Agent$Agent$tableCell,
 				'left',
-				A2($author$project$Agent$Agent$workflowRef, r.lc, r.ld)),
-				$author$project$Agent$Agent$runStatusCell(r.ek),
+				A2($author$project$Agent$Agent$workflowRef, r.lI, r.lJ)),
+				$author$project$Agent$Agent$runStatusCell(r.eT),
 				A2(
 				$author$project$Agent$Agent$tableCell,
 				'right',
-				'$' + $author$project$Agent$Agent$formatUsd(r.eP)),
+				'$' + $author$project$Agent$Agent$formatUsd(r.fm)),
 				A2(
 				$author$project$Agent$Agent$tableCell,
 				'right',
-				$elm$core$String$fromInt(r.gH.fr) + ('+' + $elm$core$String$fromInt(r.gH.fS))),
+				$elm$core$String$fromInt(r.hk.f2) + ('+' + $elm$core$String$fromInt(r.hk.gv))),
 				A2(
 				$author$project$Agent$Agent$tableCell,
 				'right',
-				$elm$core$String$fromInt(r.gG)),
-				A2(
-				$author$project$Agent$Agent$tableCell,
-				'left',
-				$author$project$Agent$Agent$ticketRef(r)),
+				$elm$core$String$fromInt(r.hj)),
+				$author$project$Agent$Agent$ticketRefCell(r),
 				A2(
 				$author$project$Agent$Agent$tableCell,
 				'left',
 				$author$project$Agent$Agent$formatPosix(
 					$elm$core$Maybe$Just(
-						$author$project$Agent$Agent$secondsToPosix(r.eQ))))
+						$author$project$Agent$Agent$secondsToPosix(r.fn))))
 			]));
 };
 var $author$project$Agent$Agent$runsHeaderRow = A2(
@@ -34251,9 +35638,9 @@ var $author$project$Agent$Agent$runsSection = function (model) {
 		$author$project$Agent$Agent$sectionBlock,
 		'Recent runs',
 		function () {
-			var _v0 = model.d7;
+			var _v0 = model.eF;
 			if (_v0.$ === 1) {
-				var _v1 = model.bu;
+				var _v1 = model.bw;
 				if (!_v1.$) {
 					var message = _v1.a;
 					return _List_fromArray(
@@ -34269,7 +35656,7 @@ var $author$project$Agent$Agent$runsSection = function (model) {
 			} else {
 				if (!_v0.a.b) {
 					return _Utils_ap(
-						$author$project$Agent$Agent$staleDataWarning(model.bu),
+						$author$project$Agent$Agent$staleDataWarning(model.bw),
 						_List_fromArray(
 							[
 								$author$project$Agent$Agent$mutedLine('no agent runs recorded yet')
@@ -34277,7 +35664,7 @@ var $author$project$Agent$Agent$runsSection = function (model) {
 				} else {
 					var runs = _v0.a;
 					return _Utils_ap(
-						$author$project$Agent$Agent$staleDataWarning(model.bu),
+						$author$project$Agent$Agent$staleDataWarning(model.bw),
 						_List_fromArray(
 							[
 								$author$project$Agent$Agent$runsTable(runs)
@@ -34287,7 +35674,7 @@ var $author$project$Agent$Agent$runsSection = function (model) {
 		}());
 };
 var $author$project$Message$Message$Click = function (a) {
-	return {$: 32, a: a};
+	return {$: 47, a: a};
 };
 var $author$project$Message$Message$SideBarIcon = {$: 59};
 var $author$project$Assets$SideBarIconClosedGrey = {$: 39};
@@ -34296,8 +35683,8 @@ var $author$project$Assets$SideBarIconOpenedGrey = {$: 40};
 var $author$project$Assets$SideBarIconOpenedWhite = {$: 42};
 var $author$project$Views$Icon$icon = F2(
 	function (_v0, attrs) {
-		var sizePx = _v0.cW;
-		var image = _v0.fo;
+		var sizePx = _v0.df;
+		var image = _v0.f$;
 		return A2(
 			$elm$html$Html$div,
 			_Utils_ap(
@@ -34371,12 +35758,12 @@ var $author$project$SideBar$Styles$sideBarMenu = function (isClickable) {
 		]);
 };
 var $author$project$SideBar$SideBar$sideBarIcon = function (model) {
-	if (!model.d8) {
+	if (!model.eG) {
 		return $elm$html$Html$text('');
 	} else {
 		var isSideBarClickable = $author$project$SideBar$SideBar$hasVisiblePipelines(model);
-		var isOpen = model.km.iT;
-		var isHovered = A2($author$project$HoverState$isHovered, $author$project$Message$Message$SideBarIcon, model.dv);
+		var isOpen = model.kR.jn;
+		var isHovered = A2($author$project$HoverState$isHovered, $author$project$Message$Message$SideBarIcon, model.d$);
 		var assetSideBarIcon = (!isSideBarClickable) ? $author$project$Assets$SideBarIconOpenedGrey : ((isOpen && isHovered) ? $author$project$Assets$SideBarIconClosedWhite : ((isOpen && (!isHovered)) ? $author$project$Assets$SideBarIconClosedGrey : (((!isOpen) && isHovered) ? $author$project$Assets$SideBarIconOpenedWhite : $author$project$Assets$SideBarIconOpenedGrey)));
 		return A2(
 			$elm$html$Html$div,
@@ -34403,7 +35790,7 @@ var $author$project$SideBar$SideBar$sideBarIcon = function (model) {
 				[
 					A2(
 					$author$project$Views$Icon$icon,
-					{fo: assetSideBarIcon, cW: 22},
+					{f$: assetSideBarIcon, df: 22},
 					_List_Nil)
 				]));
 	}
@@ -34584,30 +35971,35 @@ var $author$project$Login$Login$view = F2(
 				$elm$core$List$cons,
 				$elm$html$Html$Attributes$id('login-component'),
 				$author$project$Login$Styles$loginComponent),
-			A2($author$project$Login$Login$viewLoginState, userState, model.iZ));
+			A2($author$project$Login$Login$viewLoginState, userState, model.jt));
 	});
 var $author$project$Message$Message$SideBarResizeHandle = {$: 60};
+var $author$project$SideBar$SideBar$agentNavLink = F3(
+	function (elementId, route, text) {
+		return A2(
+			$elm$html$Html$a,
+			_List_fromArray(
+				[
+					$elm$html$Html$Attributes$id(elementId),
+					$elm$html$Html$Attributes$href(
+					$author$project$Routes$toString(route)),
+					A2($elm$html$Html$Attributes$style, 'display', 'flex'),
+					A2($elm$html$Html$Attributes$style, 'align-items', 'center'),
+					A2($elm$html$Html$Attributes$style, 'padding', '10px 16px'),
+					A2($elm$html$Html$Attributes$style, 'color', '#e6e7e8'),
+					A2($elm$html$Html$Attributes$style, 'text-decoration', 'none'),
+					A2($elm$html$Html$Attributes$style, 'font-weight', '700'),
+					A2($elm$html$Html$Attributes$style, 'border-bottom', '1px solid #3d3c3c')
+				]),
+			_List_fromArray(
+				[
+					$elm$html$Html$text(text)
+				]));
+	});
 var $author$project$SideBar$SideBar$agentPlatformLink = _List_fromArray(
 	[
-		A2(
-		$elm$html$Html$a,
-		_List_fromArray(
-			[
-				$elm$html$Html$Attributes$id('sidebar-agent-platform'),
-				$elm$html$Html$Attributes$href(
-				$author$project$Routes$toString($author$project$Routes$Agent)),
-				A2($elm$html$Html$Attributes$style, 'display', 'flex'),
-				A2($elm$html$Html$Attributes$style, 'align-items', 'center'),
-				A2($elm$html$Html$Attributes$style, 'padding', '10px 16px'),
-				A2($elm$html$Html$Attributes$style, 'color', '#e6e7e8'),
-				A2($elm$html$Html$Attributes$style, 'text-decoration', 'none'),
-				A2($elm$html$Html$Attributes$style, 'font-weight', '700'),
-				A2($elm$html$Html$Attributes$style, 'border-bottom', '1px solid #3d3c3c')
-			]),
-		_List_fromArray(
-			[
-				$elm$html$Html$text('Agent platform')
-			]))
+		A3($author$project$SideBar$SideBar$agentNavLink, 'sidebar-agent-platform', $author$project$Routes$Agent, 'Agent platform'),
+		A3($author$project$SideBar$SideBar$agentNavLink, 'sidebar-agent-tickets', $author$project$Routes$AgentTickets, 'Ticket queue')
 	]);
 var $author$project$SideBar$Team$InstanceGroup = F2(
 	function (a, b) {
@@ -34668,20 +36060,20 @@ var $author$project$Message$Message$SideBarInstanceGroup = F3(
 		return {$: 64, a: a, b: b, c: c};
 	});
 var $author$project$Concourse$toInstanceGroupId = function (_v0) {
-	var teamName = _v0.kD;
-	var name = _v0.dQ;
-	return {dQ: name, kD: teamName};
+	var teamName = _v0.k8;
+	var name = _v0.cT;
+	return {cT: name, k8: teamName};
 };
 var $author$project$SideBar$InstanceGroup$instanceGroup = F3(
 	function (params, p, ps) {
 		var isCurrent = function () {
-			var _v0 = params.hu;
+			var _v0 = params.h4;
 			if (!_v0.$) {
 				var cp = _v0.a;
 				return A2(
 					$elm$core$List$any,
 					function (pipeline) {
-						return _Utils_eq(cp.jL, pipeline.dQ) && _Utils_eq(cp.kD, pipeline.kD);
+						return _Utils_eq(cp.gH, pipeline.cT) && _Utils_eq(cp.k8, pipeline.k8);
 					},
 					A2($elm$core$List$cons, p, ps));
 			} else {
@@ -34692,33 +36084,33 @@ var $author$project$SideBar$InstanceGroup$instanceGroup = F3(
 		var isFavorited = A2($author$project$Favorites$isInstanceGroupFavorited, params, id);
 		var domID = A3(
 			$author$project$Message$Message$SideBarInstanceGroup,
-			params.iR ? 0 : 1,
-			p.kD,
-			p.dQ);
-		var isHovered = A2($author$project$HoverState$isHovered, domID, params.dv);
+			params.jl ? 0 : 1,
+			p.k8,
+			p.cT);
+		var isHovered = A2($author$project$HoverState$isHovered, domID, params.d$);
 		var color = isHovered ? 2 : (isCurrent ? 1 : 0);
 		return {
-			gW: isCurrent ? 0 : (isHovered ? 1 : 2),
-			c6: {
-				aO: color,
-				hq: $elm$core$List$length(
+			hx: isCurrent ? 0 : (isHovered ? 1 : 2),
+			dx: {
+				aP: color,
+				h1: $elm$core$List$length(
 					A2($elm$core$List$cons, p, ps))
 			},
-			hG: domID,
-			ix: $author$project$Routes$toString(
+			ie: domID,
+			i2: $author$project$Routes$toString(
 				$author$project$Routes$Dashboard(
 					{
-						hy: 0,
-						kf: $author$project$Routes$Normal(
+						h6: 0,
+						kK: $author$project$Routes$Normal(
 							$author$project$Dashboard$FilterBuilder$instanceGroupFilter(p))
 					})),
-			iz: id,
-			dQ: {
-				aO: color,
-				kH: p.dQ,
-				k9: isCurrent ? 1 : 0
+			f_: id,
+			cT: {
+				aP: color,
+				lc: p.cT,
+				lF: isCurrent ? 1 : 0
 			},
-			kq: {h9: isFavorited, iN: isHovered || isCurrent}
+			kW: {iH: isFavorited, jh: isHovered || isCurrent}
 		};
 	});
 var $author$project$Assets$ArchivedPipelineIcon = {$: 12};
@@ -34744,10 +36136,10 @@ var $author$project$SideBar$Pipeline$pipeline = F3(
 		var pipelineId = $author$project$Concourse$toPipelineId(p);
 		var isFavorited = A2($author$project$Favorites$isPipelineFavorited, params, p);
 		var isCurrent = function () {
-			var _v0 = params.hu;
+			var _v0 = params.h4;
 			if (!_v0.$) {
 				var cp = _v0.a;
-				return _Utils_eq(cp.jL, p.dQ) && (_Utils_eq(cp.kD, p.kD) && _Utils_eq(cp.f2, p.bT));
+				return _Utils_eq(cp.gH, p.cT) && (_Utils_eq(cp.k8, p.k8) && _Utils_eq(cp.ew, p.b$));
 			} else {
 				return false;
 			}
@@ -34755,25 +36147,25 @@ var $author$project$SideBar$Pipeline$pipeline = F3(
 		var domIDFn = isInstancedPipeline ? $author$project$Message$Message$SideBarInstancedPipeline : $author$project$Message$Message$SideBarPipeline;
 		var domID = A2(
 			domIDFn,
-			params.iR ? 0 : 1,
-			p.iz);
-		var isHovered = A2($author$project$HoverState$isHovered, domID, params.dv);
+			params.jl ? 0 : 1,
+			p.f_);
+		var isHovered = A2($author$project$HoverState$isHovered, domID, params.d$);
 		return {
-			gW: isCurrent ? 0 : (isHovered ? 1 : 2),
-			hz: p.iz,
-			hG: domID,
-			ix: $author$project$Routes$toString(
+			hx: isCurrent ? 0 : (isHovered ? 1 : 2),
+			h7: p.f_,
+			ie: domID,
+			i2: $author$project$Routes$toString(
 				$author$project$Routes$Pipeline(
-					{dt: _List_Nil, iz: pipelineId})),
-			fn: p.gS ? $author$project$SideBar$Views$AssetIcon($author$project$Assets$ArchivedPipelineIcon) : (isInstancedPipeline ? $author$project$SideBar$Views$TextIcon('/') : $author$project$SideBar$Views$AssetIcon(
+					{dZ: _List_Nil, f_: pipelineId})),
+			fZ: p.hs ? $author$project$SideBar$Views$AssetIcon($author$project$Assets$ArchivedPipelineIcon) : (isInstancedPipeline ? $author$project$SideBar$Views$TextIcon('/') : $author$project$SideBar$Views$AssetIcon(
 				isHovered ? $author$project$Assets$PipelineIconWhite : (isCurrent ? $author$project$Assets$PipelineIconLightGrey : $author$project$Assets$PipelineIconGrey))),
-			iz: pipelineId,
-			dQ: {
-				aO: isHovered ? 2 : (isCurrent ? 1 : 0),
-				kH: isInstancedPipeline ? $author$project$SideBar$Pipeline$instancedPipelineText(p) : $author$project$SideBar$Pipeline$regularPipelineText(p),
-				k9: (isCurrent || isHovered) ? 1 : 0
+			f_: pipelineId,
+			cT: {
+				aP: isHovered ? 2 : (isCurrent ? 1 : 0),
+				lc: isInstancedPipeline ? $author$project$SideBar$Pipeline$instancedPipelineText(p) : $author$project$SideBar$Pipeline$regularPipelineText(p),
+				lF: (isCurrent || isHovered) ? 1 : 0
 			},
-			kq: {h9: isFavorited, iN: isHovered || isCurrent}
+			kW: {iH: isFavorited, jh: isHovered || isCurrent}
 		};
 	});
 var $author$project$SideBar$Pipeline$instancedPipeline = $author$project$SideBar$Pipeline$pipeline(true);
@@ -34784,24 +36176,24 @@ var $author$project$SideBar$Team$team = F2(
 			A2(
 				$elm$core$Maybe$map,
 				function ($) {
-					return $.kD;
+					return $.k8;
 				},
-				params.hu),
-			$elm$core$Maybe$Just(t.dQ));
+				params.h4),
+			$elm$core$Maybe$Just(t.cT));
 		var domID = A2(
 			$author$project$Message$Message$SideBarTeam,
-			params.iR ? 0 : 1,
-			t.dQ);
-		var isHovered = A2($author$project$HoverState$isHovered, domID, params.dv);
+			params.jl ? 0 : 1,
+			t.cT);
+		var isHovered = A2($author$project$HoverState$isHovered, domID, params.d$);
 		return {
-			gW: isHovered ? 1 : 2,
-			hh: {
-				gV: t.ft ? $author$project$Assets$MinusIcon : $author$project$Assets$PlusIcon,
-				fR: 2
+			hx: isHovered ? 1 : 2,
+			hU: {
+				hv: t.f4 ? $author$project$Assets$MinusIcon : $author$project$Assets$PlusIcon,
+				gt: 2
 			},
-			fn: (isHovered || isCurrent) ? 2 : 1,
-			ft: t.ft,
-			jb: A2(
+			fZ: (isHovered || isCurrent) ? 2 : 1,
+			f4: t.f4,
+			jG: A2(
 				$elm$core$List$map,
 				function (g) {
 					switch (g.$) {
@@ -34820,19 +36212,19 @@ var $author$project$SideBar$Team$team = F2(
 								A3($author$project$SideBar$InstanceGroup$instanceGroup, params, p, ps));
 					}
 				},
-				params.jN),
-			dQ: {
-				aO: (isHovered || isCurrent) ? 2 : 1,
-				hG: domID,
-				kH: t.dQ
+				params.kg),
+			cT: {
+				aP: (isHovered || isCurrent) ? 2 : 1,
+				ie: domID,
+				lc: t.cT
 			}
 		};
 	});
 var $author$project$SideBar$Styles$collapseIcon = function (_v0) {
-	var asset = _v0.gV;
+	var asset = _v0.hv;
 	return A2(
 		$author$project$Views$Icon$icon,
-		{fo: asset, cW: 10},
+		{f$: asset, df: 10},
 		_List_fromArray(
 			[
 				A2($elm$html$Html$Attributes$style, 'margin-left', '10px'),
@@ -34869,7 +36261,7 @@ var $author$project$SideBar$Styles$backgroundAttr = function (background) {
 		}());
 };
 var $author$project$SideBar$Styles$teamHeader = function (_v0) {
-	var background = _v0.gW;
+	var background = _v0.hx;
 	return _List_fromArray(
 		[
 			A2($elm$html$Html$Attributes$style, 'display', 'flex'),
@@ -34881,7 +36273,7 @@ var $author$project$SideBar$Styles$teamHeader = function (_v0) {
 var $author$project$Assets$PeopleIcon = {$: 43};
 var $author$project$SideBar$Styles$teamIcon = A2(
 	$author$project$Views$Icon$icon,
-	{fo: $author$project$Assets$PeopleIcon, cW: 18},
+	{f$: $author$project$Assets$PeopleIcon, df: 18},
 	_List_fromArray(
 		[
 			A2($elm$html$Html$Attributes$style, 'margin-left', '8px'),
@@ -34909,7 +36301,7 @@ var $author$project$SideBar$Styles$genericColorAttr = F2(
 	});
 var $author$project$SideBar$Styles$colorAttr = $author$project$SideBar$Styles$genericColorAttr('color');
 var $author$project$SideBar$Styles$teamName = function (_v0) {
-	var color = _v0.aO;
+	var color = _v0.aP;
 	return _List_fromArray(
 		[
 			A2($elm$html$Html$Attributes$style, 'font-size', '14px'),
@@ -34939,7 +36331,7 @@ var $author$project$SideBar$Styles$favoriteIcon = function (fav) {
 			$author$project$Assets$backgroundImage(
 				$elm$core$Maybe$Just(
 					$author$project$Assets$FavoritedToggleIcon(
-						{iQ: fav.h9, iS: fav.iN, iV: true})))),
+						{jk: fav.iH, jm: fav.jh, jp: true})))),
 			A2($elm$html$Html$Attributes$style, 'background-repeat', 'no-repeat'),
 			A2($elm$html$Html$Attributes$style, 'background-position', '50% 50%'),
 			A2(
@@ -34962,7 +36354,7 @@ var $author$project$SideBar$Styles$favoriteIcon = function (fav) {
 		]);
 };
 var $author$project$SideBar$Styles$pipeline = function (_v0) {
-	var background = _v0.gW;
+	var background = _v0.hx;
 	return _List_fromArray(
 		[
 			A2($elm$html$Html$Attributes$style, 'display', 'flex'),
@@ -34974,8 +36366,8 @@ var $author$project$SideBar$Styles$pipeline = function (_v0) {
 var $author$project$SideBar$Styles$instanceGroup = $author$project$SideBar$Styles$pipeline;
 var $author$project$SideBar$Styles$backgroundColorAttr = $author$project$SideBar$Styles$genericColorAttr('background-color');
 var $author$project$SideBar$Styles$instanceGroupBadge = function (_v0) {
-	var count = _v0.hq;
-	var color = _v0.aO;
+	var count = _v0.h1;
+	var color = _v0.aP;
 	var _v1 = (count > 99) ? _Utils_Tuple2('99+', '10px') : _Utils_Tuple2(
 		$elm$core$String$fromInt(count),
 		'12px');
@@ -35074,9 +36466,9 @@ var $author$project$StrictEvents$onLeftClickCapturing = F4(
 								$elm$json$Json$Decode$map,
 								function (x) {
 									return {
-										jf: msg(x),
-										b$: preventDefault,
-										b6: stopPropagation
+										jK: msg(x),
+										b7: preventDefault,
+										cf: stopPropagation
 									};
 								},
 								captured);
@@ -35094,8 +36486,8 @@ var $author$project$StrictEvents$onLeftClickStopPropagation = function (msg) {
 		$elm$core$Basics$always(msg));
 };
 var $author$project$SideBar$Styles$pipelineName = function (_v0) {
-	var color = _v0.aO;
-	var weight = _v0.k9;
+	var color = _v0.aP;
+	var weight = _v0.lF;
 	return _List_fromArray(
 		[
 			A2($elm$html$Html$Attributes$style, 'font-size', '14px'),
@@ -35116,36 +36508,36 @@ var $author$project$SideBar$Views$viewInstanceGroup = function (ig) {
 			$author$project$SideBar$Styles$instanceGroup(ig),
 			_List_fromArray(
 				[
-					$elm$html$Html$Attributes$href(ig.ix),
+					$elm$html$Html$Attributes$href(ig.i2),
 					$elm$html$Html$Events$onMouseEnter(
 					$author$project$Message$Message$Hover(
-						$elm$core$Maybe$Just(ig.hG))),
+						$elm$core$Maybe$Just(ig.ie))),
 					$elm$html$Html$Events$onMouseLeave(
 					$author$project$Message$Message$Hover($elm$core$Maybe$Nothing))
 				])),
 		_List_fromArray(
 			[
-				$author$project$SideBar$Styles$instanceGroupBadge(ig.c6),
+				$author$project$SideBar$Styles$instanceGroupBadge(ig.dx),
 				A2(
 				$elm$html$Html$div,
 				A2(
 					$elm$core$List$cons,
 					$elm$html$Html$Attributes$id(
-						$author$project$Message$Effects$toHtmlID(ig.hG)),
-					$author$project$SideBar$Styles$pipelineName(ig.dQ)),
+						$author$project$Message$Effects$toHtmlID(ig.ie)),
+					$author$project$SideBar$Styles$pipelineName(ig.cT)),
 				_List_fromArray(
 					[
-						$elm$html$Html$text(ig.dQ.kH)
+						$elm$html$Html$text(ig.cT.lc)
 					])),
 				A2(
 				$elm$html$Html$div,
 				_Utils_ap(
-					$author$project$SideBar$Styles$favoriteIcon(ig.kq),
+					$author$project$SideBar$Styles$favoriteIcon(ig.kW),
 					_List_fromArray(
 						[
 							$author$project$StrictEvents$onLeftClickStopPropagation(
 							$author$project$Message$Message$Click(
-								$author$project$Message$Message$SideBarInstanceGroupFavoritedIcon(ig.iz)))
+								$author$project$Message$Message$SideBarInstanceGroupFavoritedIcon(ig.f_)))
 						])),
 				_List_Nil)
 			]));
@@ -35188,17 +36580,17 @@ var $author$project$SideBar$Views$viewPipeline = function (p) {
 			$author$project$SideBar$Styles$pipeline(p),
 			_List_fromArray(
 				[
-					$elm$html$Html$Attributes$href(p.ix),
+					$elm$html$Html$Attributes$href(p.i2),
 					$elm$html$Html$Events$onMouseEnter(
 					$author$project$Message$Message$Hover(
-						$elm$core$Maybe$Just(p.hG))),
+						$elm$core$Maybe$Just(p.ie))),
 					$elm$html$Html$Events$onMouseLeave(
 					$author$project$Message$Message$Hover($elm$core$Maybe$Nothing))
 				])),
 		_List_fromArray(
 			[
 				function () {
-				var _v0 = p.fn;
+				var _v0 = p.fZ;
 				if (!_v0.$) {
 					var asset = _v0.a;
 					return A2(
@@ -35221,21 +36613,21 @@ var $author$project$SideBar$Views$viewPipeline = function (p) {
 				A2(
 					$elm$core$List$cons,
 					$elm$html$Html$Attributes$id(
-						$author$project$Message$Effects$toHtmlID(p.hG)),
-					$author$project$SideBar$Styles$pipelineName(p.dQ)),
+						$author$project$Message$Effects$toHtmlID(p.ie)),
+					$author$project$SideBar$Styles$pipelineName(p.cT)),
 				_List_fromArray(
 					[
-						$elm$html$Html$text(p.dQ.kH)
+						$elm$html$Html$text(p.cT.lc)
 					])),
 				A2(
 				$elm$html$Html$div,
 				_Utils_ap(
-					$author$project$SideBar$Styles$favoriteIcon(p.kq),
+					$author$project$SideBar$Styles$favoriteIcon(p.kW),
 					_List_fromArray(
 						[
 							$author$project$StrictEvents$onLeftClickStopPropagation(
 							$author$project$Message$Message$Click(
-								$author$project$Message$Message$SideBarPipelineFavoritedIcon(p.hz)))
+								$author$project$Message$Message$SideBarPipelineFavoritedIcon(p.h7)))
 						])),
 				_List_Nil)
 			]));
@@ -35265,35 +36657,35 @@ var $author$project$SideBar$Views$viewTeam = function (team) {
 					_List_fromArray(
 						[
 							$elm$html$Html$Events$onClick(
-							$author$project$Message$Message$Click(team.dQ.hG)),
+							$author$project$Message$Message$Click(team.cT.ie)),
 							$elm$html$Html$Events$onMouseEnter(
 							$author$project$Message$Message$Hover(
-								$elm$core$Maybe$Just(team.dQ.hG))),
+								$elm$core$Maybe$Just(team.cT.ie))),
 							$elm$html$Html$Events$onMouseLeave(
 							$author$project$Message$Message$Hover($elm$core$Maybe$Nothing))
 						])),
 				_List_fromArray(
 					[
-						$author$project$SideBar$Styles$collapseIcon(team.hh),
+						$author$project$SideBar$Styles$collapseIcon(team.hU),
 						$author$project$SideBar$Styles$teamIcon,
 						A2(
 						$elm$html$Html$div,
 						_Utils_ap(
-							$author$project$SideBar$Styles$teamName(team.dQ),
+							$author$project$SideBar$Styles$teamName(team.cT),
 							_List_fromArray(
 								[
 									$elm$html$Html$Attributes$id(
-									$author$project$Message$Effects$toHtmlID(team.dQ.hG))
+									$author$project$Message$Effects$toHtmlID(team.cT.ie))
 								])),
 						_List_fromArray(
 							[
-								$elm$html$Html$text(team.dQ.kH)
+								$elm$html$Html$text(team.cT.lc)
 							]))
 					])),
-				team.ft ? A2(
+				team.f4 ? A2(
 				$elm$html$Html$div,
 				$author$project$SideBar$Styles$column,
-				A2($elm$core$List$map, $author$project$SideBar$Views$viewListItem, team.jb)) : $elm$html$Html$text('')
+				A2($elm$core$List$map, $author$project$SideBar$Views$viewListItem, team.jG)) : $elm$html$Html$text('')
 			]));
 };
 var $author$project$SideBar$SideBar$allPipelinesSection = F2(
@@ -35310,7 +36702,7 @@ var $author$project$SideBar$SideBar$allPipelinesSection = F2(
 					var p = _v1.a;
 					var ps = _v1.b;
 					return _Utils_Tuple2(
-						p.kD,
+						p.k8,
 						A2(
 							$elm$core$List$map,
 							function (g) {
@@ -35329,7 +36721,7 @@ var $author$project$SideBar$SideBar$allPipelinesSection = F2(
 				A2(
 					$elm_community$list_extra$List$Extra$gatherEqualsBy,
 					function ($) {
-						return $.kD;
+						return $.k8;
 					},
 					$author$project$SideBar$SideBar$visiblePipelines(model))));
 		return _List_fromArray(
@@ -35355,10 +36747,10 @@ var $author$project$SideBar$SideBar$allPipelinesSection = F2(
 						return $author$project$SideBar$Views$viewTeam(
 							A2(
 								$author$project$SideBar$Team$team,
-								{hu: currentPipeline, h3: model.h3, h4: model.h4, dv: model.dv, iR: false, jN: pipelines},
+								{h4: currentPipeline, iC: model.iC, iD: model.iD, d$: model.d$, jl: false, kg: pipelines},
 								{
-									ft: A2($elm$core$Set$member, teamName, model.hZ),
-									dQ: teamName
+									f4: A2($elm$core$Set$member, teamName, model.iw),
+									cT: teamName
 								}));
 					},
 					pipelinesByTeam))
@@ -35424,14 +36816,14 @@ var $author$project$SideBar$SideBar$favoritedPipelinesSection = F2(
 					var p = _v1.a;
 					var ps = _v1.b;
 					return _Utils_Tuple2(
-						p.kD,
+						p.k8,
 						extractTeamFavorites(
 							A2($elm$core$List$cons, p, ps)));
 				},
 				A2(
 					$elm_community$list_extra$List$Extra$gatherEqualsBy,
 					function ($) {
-						return $.kD;
+						return $.k8;
 					},
 					$author$project$SideBar$SideBar$visiblePipelines(model))));
 		return $elm$core$List$isEmpty(favoritedPipelinesByTeam) ? _List_Nil : _List_fromArray(
@@ -35457,10 +36849,10 @@ var $author$project$SideBar$SideBar$favoritedPipelinesSection = F2(
 						return $author$project$SideBar$Views$viewTeam(
 							A2(
 								$author$project$SideBar$Team$team,
-								{hu: currentPipeline, h3: model.h3, h4: model.h4, dv: model.dv, iR: true, jN: pipelines},
+								{h4: currentPipeline, iC: model.iC, iD: model.iD, d$: model.d$, jl: true, kg: pipelines},
 								{
-									ft: !A2($elm$core$Set$member, teamName, model.hi),
-									dQ: teamName
+									f4: !A2($elm$core$Set$member, teamName, model.hV),
+									cT: teamName
 								}));
 					},
 					favoritedPipelinesByTeam)),
@@ -35475,7 +36867,7 @@ var $elm$html$Html$Events$onMouseDown = function (msg) {
 };
 var $author$project$Colors$sideBarBackground = $author$project$ColorValues$grey90;
 var $author$project$SideBar$Styles$sideBar = function (_v0) {
-	var width = _v0.gK;
+	var width = _v0.hn;
 	return _List_fromArray(
 		[
 			A2($elm$html$Html$Attributes$style, 'border-right', '1px solid ' + $author$project$Colors$border),
@@ -35494,7 +36886,7 @@ var $author$project$SideBar$Styles$sideBar = function (_v0) {
 		]);
 };
 var $author$project$SideBar$Styles$sideBarHandle = function (_v0) {
-	var width = _v0.gK;
+	var width = _v0.hn;
 	return _List_fromArray(
 		[
 			A2($elm$html$Html$Attributes$style, 'position', 'fixed'),
@@ -35511,12 +36903,12 @@ var $author$project$SideBar$Styles$sideBarHandle = function (_v0) {
 };
 var $author$project$SideBar$SideBar$view = F2(
 	function (model, currentPipeline) {
-		if (model.km.iT && ($author$project$SideBar$SideBar$hasVisiblePipelines(model) && (!(!model.d8)))) {
-			var oldState = model.km;
+		if (model.kR.jn && ($author$project$SideBar$SideBar$hasVisiblePipelines(model) && (!(!model.eG)))) {
+			var oldState = model.kR;
 			var newState = _Utils_update(
 				oldState,
 				{
-					gK: A3($elm$core$Basics$clamp, 100, 600, oldState.gK)
+					hn: A3($elm$core$Basics$clamp, 100, 600, oldState.hn)
 				});
 			return A2(
 				$elm$html$Html$div,
@@ -35548,7 +36940,7 @@ var $author$project$SideBar$SideBar$view = F2(
 		}
 	});
 var $author$project$Agent$Agent$liveVersionLine = function (w) {
-	return (!w.cw) ? A2(
+	return (!w.cO) ? A2(
 		$elm$html$Html$div,
 		_List_fromArray(
 			[
@@ -35563,13 +36955,13 @@ var $author$project$Agent$Agent$liveVersionLine = function (w) {
 		_List_fromArray(
 			[
 				$elm$html$Html$text(
-				'v' + ($elm$core$String$fromInt(w.cw) + ' live'))
+				'v' + ($elm$core$String$fromInt(w.cO) + ' live'))
 			]));
 };
 var $author$project$Agent$Agent$pill = F3(
 	function (className, _v0, labelText) {
-		var bg = _v0.c7;
-		var fg = _v0.dp;
+		var bg = _v0.dy;
+		var fg = _v0.dT;
 		return A2(
 			$elm$html$Html$span,
 			_List_fromArray(
@@ -35589,21 +36981,21 @@ var $author$project$Agent$Agent$pill = F3(
 				]));
 	});
 var $author$project$Agent$Agent$workflowPills = function (w) {
-	var livePill = (w.cw > 0) ? _List_fromArray(
+	var livePill = (w.cO > 0) ? _List_fromArray(
 		[
 			A3(
 			$author$project$Agent$Agent$pill,
 			'agent-workflow-live',
-			{c7: '#2e4f2e', dp: '#9fdf9f'},
+			{dy: '#2e4f2e', dT: '#9fdf9f'},
 			'live')
 		]) : _List_Nil;
-	var candidatePill = (_Utils_cmp(w.dL, w.cw) > 0) ? _List_fromArray(
+	var candidatePill = (_Utils_cmp(w.ee, w.cO) > 0) ? _List_fromArray(
 		[
 			A3(
 			$author$project$Agent$Agent$pill,
 			'agent-workflow-candidate',
-			{c7: $author$project$Colors$background, dp: $author$project$Agent$Agent$mutedColor},
-			'candidate v' + $elm$core$String$fromInt(w.dL))
+			{dy: $author$project$Colors$background, dT: $author$project$Agent$Agent$mutedColor},
+			'candidate v' + $elm$core$String$fromInt(w.ee))
 		]) : _List_Nil;
 	return _Utils_ap(livePill, candidatePill);
 };
@@ -35644,7 +37036,7 @@ var $author$project$Agent$Agent$workflowRow = function (w) {
 									]),
 								_List_fromArray(
 									[
-										$elm$html$Html$text(w.dQ)
+										$elm$html$Html$text(w.cT)
 									])),
 							$author$project$Agent$Agent$workflowPills(w))),
 						A2(
@@ -35656,7 +37048,7 @@ var $author$project$Agent$Agent$workflowRow = function (w) {
 							]),
 						_List_fromArray(
 							[
-								$elm$html$Html$text(w.eZ)
+								$elm$html$Html$text(w.fy)
 							]))
 					])),
 				A2(
@@ -35678,7 +37070,7 @@ var $author$project$Agent$Agent$workflowRow = function (w) {
 						_List_fromArray(
 							[
 								$elm$html$Html$text(
-								'latest v' + $elm$core$String$fromInt(w.dL))
+								'latest v' + $elm$core$String$fromInt(w.ee))
 							])),
 						A2(
 						$elm$html$Html$div,
@@ -35686,7 +37078,7 @@ var $author$project$Agent$Agent$workflowRow = function (w) {
 						_List_fromArray(
 							[
 								$elm$html$Html$text(
-								'#' + A2($elm$core$String$left, 12, w.ho))
+								'#' + A2($elm$core$String$left, 12, w.h$))
 							]))
 					]))
 			]));
@@ -35696,9 +37088,9 @@ var $author$project$Agent$Agent$workflowsSection = function (model) {
 		$author$project$Agent$Agent$sectionBlock,
 		'Workflows',
 		function () {
-			var _v0 = model.eu;
+			var _v0 = model.e0;
 			if (_v0.$ === 1) {
-				var _v1 = model.bC;
+				var _v1 = model.bE;
 				if (!_v1.$) {
 					var message = _v1.a;
 					return _List_fromArray(
@@ -35714,7 +37106,7 @@ var $author$project$Agent$Agent$workflowsSection = function (model) {
 			} else {
 				if (!_v0.a.b) {
 					return _Utils_ap(
-						$author$project$Agent$Agent$staleDataWarning(model.bC),
+						$author$project$Agent$Agent$staleDataWarning(model.bE),
 						_List_fromArray(
 							[
 								$author$project$Agent$Agent$mutedLine('no workflow definitions — import one with: fly agent workflows import')
@@ -35722,7 +37114,7 @@ var $author$project$Agent$Agent$workflowsSection = function (model) {
 				} else {
 					var workflows = _v0.a;
 					return _Utils_ap(
-						$author$project$Agent$Agent$staleDataWarning(model.bC),
+						$author$project$Agent$Agent$staleDataWarning(model.bE),
 						_List_fromArray(
 							[
 								A2(
@@ -35767,7 +37159,7 @@ var $author$project$Agent$Agent$view = F2(
 								$elm$core$List$cons,
 								$author$project$SideBar$SideBar$sideBarIcon(session),
 								A2($author$project$Views$TopBar$breadcrumbs, session, route))),
-							A2($author$project$Login$Login$view, session.k1, model)
+							A2($author$project$Login$Login$view, session.ly, model)
 						])),
 					A2(
 					$elm$html$Html$div,
@@ -35821,6 +37213,76 @@ var $author$project$Agent$Agent$view = F2(
 						]))
 				]));
 	});
+var $author$project$Message$Message$AgentReviewsPipelineFilterChanged = function (a) {
+	return {$: 26, a: a};
+};
+var $author$project$Message$Message$AgentReviewsUnevaluatedToggled = function (a) {
+	return {$: 25, a: a};
+};
+var $elm$html$Html$Events$targetChecked = A2(
+	$elm$json$Json$Decode$at,
+	_List_fromArray(
+		['target', 'checked']),
+	$elm$json$Json$Decode$bool);
+var $elm$html$Html$Events$onCheck = function (tagger) {
+	return A2(
+		$elm$html$Html$Events$on,
+		'change',
+		A2($elm$json$Json$Decode$map, tagger, $elm$html$Html$Events$targetChecked));
+};
+var $author$project$AgentReviews$AgentReviews$filterBar = function (model) {
+	return A2(
+		$elm$html$Html$div,
+		_List_fromArray(
+			[
+				A2($elm$html$Html$Attributes$style, 'display', 'flex'),
+				A2($elm$html$Html$Attributes$style, 'align-items', 'center'),
+				A2($elm$html$Html$Attributes$style, 'gap', '16px'),
+				A2($elm$html$Html$Attributes$style, 'margin', '8px 0 12px')
+			]),
+		_List_fromArray(
+			[
+				A2(
+				$elm$html$Html$label,
+				_List_fromArray(
+					[
+						A2($elm$html$Html$Attributes$style, 'display', 'flex'),
+						A2($elm$html$Html$Attributes$style, 'align-items', 'center'),
+						A2($elm$html$Html$Attributes$style, 'gap', '6px'),
+						A2($elm$html$Html$Attributes$style, 'color', '#b0b0b0'),
+						A2($elm$html$Html$Attributes$style, 'font-size', '13px'),
+						A2($elm$html$Html$Attributes$style, 'cursor', 'pointer')
+					]),
+				_List_fromArray(
+					[
+						A2(
+						$elm$html$Html$input,
+						_List_fromArray(
+							[
+								$elm$html$Html$Attributes$type_('checkbox'),
+								$elm$html$Html$Attributes$checked(model.$7),
+								$elm$html$Html$Events$onCheck($author$project$Message$Message$AgentReviewsUnevaluatedToggled)
+							]),
+						_List_Nil),
+						$elm$html$Html$text('Unevaluated first')
+					])),
+				A2(
+				$elm$html$Html$input,
+				_List_fromArray(
+					[
+						$elm$html$Html$Attributes$type_('text'),
+						$elm$html$Html$Attributes$class('agent-reviews-pipeline-filter'),
+						$elm$html$Html$Attributes$placeholder('filter by pipeline'),
+						$elm$html$Html$Attributes$value(model.cY),
+						$elm$html$Html$Events$onInput($author$project$Message$Message$AgentReviewsPipelineFilterChanged),
+						A2($elm$html$Html$Attributes$style, 'background', '#141313'),
+						A2($elm$html$Html$Attributes$style, 'color', '#e0e0e0'),
+						A2($elm$html$Html$Attributes$style, 'border', '1px solid #3d3c3c'),
+						A2($elm$html$Html$Attributes$style, 'padding', '4px 8px')
+					]),
+				_List_Nil)
+			]));
+};
 var $author$project$AgentReviews$AgentReviews$reviewRow = function (s) {
 	return A2(
 		$elm$html$Html$a,
@@ -35830,7 +37292,7 @@ var $author$project$AgentReviews$AgentReviews$reviewRow = function (s) {
 				$elm$html$Html$Attributes$href(
 				$author$project$Routes$toString(
 					$author$project$Routes$OneOffBuild(
-						{is: $author$project$Routes$HighlightNothing, iz: s.g0}))),
+						{iZ: $author$project$Routes$HighlightNothing, f_: s.hD}))),
 				A2($elm$html$Html$Attributes$style, 'display', 'flex'),
 				A2($elm$html$Html$Attributes$style, 'align-items', 'center'),
 				A2($elm$html$Html$Attributes$style, 'gap', '12px'),
@@ -35850,16 +37312,16 @@ var $author$project$AgentReviews$AgentReviews$reviewRow = function (s) {
 						A2(
 						$elm$html$Html$Attributes$style,
 						'background',
-						s.fU ? '#2e4f2e' : '#5c2626'),
+						s.gx ? '#2e4f2e' : '#5c2626'),
 						A2(
 						$elm$html$Html$Attributes$style,
 						'color',
-						s.fU ? '#9fdf9f' : '#f0a0a0')
+						s.gx ? '#9fdf9f' : '#f0a0a0')
 					]),
 				_List_fromArray(
 					[
 						$elm$html$Html$text(
-						$elm$core$String$fromFloat(s.kb))
+						$elm$core$String$fromFloat(s.kG))
 					])),
 				A2(
 				$elm$html$Html$div,
@@ -35871,7 +37333,7 @@ var $author$project$AgentReviews$AgentReviews$reviewRow = function (s) {
 						_List_Nil,
 						_List_fromArray(
 							[
-								$elm$html$Html$text(s.jL + (' / ' + (s.i0 + (' #' + s.g1))))
+								$elm$html$Html$text(s.gH + (' / ' + (s.jw + (' #' + s.hE))))
 							])),
 						A2(
 						$elm$html$Html$div,
@@ -35884,7 +37346,7 @@ var $author$project$AgentReviews$AgentReviews$reviewRow = function (s) {
 						_List_fromArray(
 							[
 								$elm$html$Html$text(
-								s.g_ + (' @ ' + (A2($elm$core$String$left, 7, s.hk) + (' · ' + ($elm$core$String$fromInt(s.f7) + (' issues · ' + ($elm$core$String$fromInt(s.fP) + ' obs')))))))
+								s.hB + (' @ ' + (A2($elm$core$String$left, 7, s.hX) + (' · ' + ($elm$core$String$fromInt(s.ez) + (' issues · ' + ($elm$core$String$fromInt(s.en) + ' obs')))))))
 							]))
 					])),
 				A2(
@@ -35897,14 +37359,83 @@ var $author$project$AgentReviews$AgentReviews$reviewRow = function (s) {
 				_List_fromArray(
 					[
 						$elm$html$Html$text(
-						'evaluated ' + ($elm$core$String$fromInt(s.hR) + ('/' + $elm$core$String$fromInt(s.f7 + s.fP))))
+						'evaluated ' + ($elm$core$String$fromInt(s.fF) + ('/' + $elm$core$String$fromInt(s.ez + s.en))))
 					]))
 			]));
+};
+var $author$project$AgentReviews$AgentReviews$isUnevaluated = function (s) {
+	return _Utils_cmp(s.fF, s.ez + s.en) < 0;
+};
+var $author$project$AgentReviews$AgentReviews$pipelineMatches = F2(
+	function (filter, s) {
+		return (filter === '') || A2(
+			$elm$core$String$contains,
+			$elm$core$String$toLower(filter),
+			$elm$core$String$toLower(s.gH));
+	});
+var $author$project$AgentReviews$AgentReviews$visibleReviews = function (model) {
+	return (model.$7 ? $elm$core$List$sortBy(
+		function (s) {
+			return $author$project$AgentReviews$AgentReviews$isUnevaluated(s) ? 0 : 1;
+		}) : $elm$core$Basics$identity)(
+		A2(
+			$elm$core$List$filter,
+			$author$project$AgentReviews$AgentReviews$pipelineMatches(model.cY),
+			model.c3));
+};
+var $author$project$AgentReviews$AgentReviews$content = function (model) {
+	if (model.eh) {
+		return A2(
+			$elm$html$Html$p,
+			_List_fromArray(
+				[
+					A2($elm$html$Html$Attributes$style, 'color', '#f0a0a0')
+				]),
+			_List_fromArray(
+				[
+					$elm$html$Html$text('Couldn\'t load agent reviews.')
+				]));
+	} else {
+		if (model.cP && $elm$core$List$isEmpty(model.c3)) {
+			return A2(
+				$elm$html$Html$p,
+				_List_fromArray(
+					[
+						A2($elm$html$Html$Attributes$style, 'color', '#b0b0b0')
+					]),
+				_List_fromArray(
+					[
+						$elm$html$Html$text('No agent reviews yet.')
+					]));
+		} else {
+			var visible = $author$project$AgentReviews$AgentReviews$visibleReviews(model);
+			return A2(
+				$elm$html$Html$div,
+				_List_Nil,
+				_List_fromArray(
+					[
+						$author$project$AgentReviews$AgentReviews$filterBar(model),
+						$elm$core$List$isEmpty(visible) ? A2(
+						$elm$html$Html$p,
+						_List_fromArray(
+							[
+								A2($elm$html$Html$Attributes$style, 'color', '#b0b0b0')
+							]),
+						_List_fromArray(
+							[
+								$elm$html$Html$text('No reviews match this filter.')
+							])) : A2(
+						$elm$html$Html$div,
+						_List_Nil,
+						A2($elm$core$List$map, $author$project$AgentReviews$AgentReviews$reviewRow, visible))
+					]));
+		}
+	}
 };
 var $author$project$AgentReviews$AgentReviews$view = F2(
 	function (session, model) {
 		var route = $author$project$Routes$AgentReviews(
-			{kD: model.kD});
+			{k8: model.k8});
 		return A2(
 			$elm$html$Html$div,
 			A2(
@@ -35932,7 +37463,7 @@ var $author$project$AgentReviews$AgentReviews$view = F2(
 								$elm$core$List$cons,
 								$author$project$SideBar$SideBar$sideBarIcon(session),
 								A2($author$project$Views$TopBar$breadcrumbs, session, route))),
-							A2($author$project$Login$Login$view, session.k1, model)
+							A2($author$project$Login$Login$view, session.ly, model)
 						])),
 					A2(
 					$elm$html$Html$div,
@@ -35960,37 +37491,1774 @@ var $author$project$AgentReviews$AgentReviews$view = F2(
 										]),
 									_List_fromArray(
 										[
-											$elm$html$Html$text('Agent reviews — ' + model.kD)
+											$elm$html$Html$text('Agent reviews — ' + model.k8)
 										])),
-									model.dO ? A2(
-									$elm$html$Html$p,
+									$author$project$AgentReviews$AgentReviews$content(model)
+								]))
+						]))
+				]));
+	});
+var $author$project$AgentTickets$AgentTicket$actionErrorBanner = function (model) {
+	var _v0 = model.W;
+	if (!_v0.$) {
+		var err = _v0.a;
+		return A2(
+			$elm$html$Html$p,
+			_List_fromArray(
+				[
+					A2($elm$html$Html$Attributes$style, 'color', '#f0a0a0'),
+					A2($elm$html$Html$Attributes$style, 'background', '#2a1c1c'),
+					A2($elm$html$Html$Attributes$style, 'padding', '6px 10px'),
+					A2($elm$html$Html$Attributes$style, 'margin', '8px 0')
+				]),
+			_List_fromArray(
+				[
+					$elm$html$Html$text(err)
+				]));
+	} else {
+		return $elm$html$Html$text('');
+	}
+};
+var $author$project$AgentTickets$AgentTicket$formatUsd = function (amount) {
+	var cents = $elm$core$Basics$round(amount * 100);
+	var absCents = $elm$core$Basics$abs(cents);
+	var dollars = (absCents / 100) | 0;
+	var remainder = A2($elm$core$Basics$modBy, 100, absCents);
+	var fraction = (remainder < 10) ? ('0' + $elm$core$String$fromInt(remainder)) : $elm$core$String$fromInt(remainder);
+	return $elm$core$String$fromInt(dollars) + ('.' + fraction);
+};
+var $author$project$AgentTickets$AgentTicket$budgetBar = F2(
+	function (ticket, metrics) {
+		var spent = $elm$core$List$sum(
+			A2(
+				$elm$core$List$map,
+				function ($) {
+					return $.fm;
+				},
+				metrics));
+		var _v0 = ticket.dz;
+		if (!_v0.$) {
+			var budget = _v0.a;
+			var pct = (budget <= 0) ? 0 : A2($elm$core$Basics$min, 100, (spent / budget) * 100);
+			var overBudget = _Utils_cmp(spent, budget) > 0;
+			return A2(
+				$elm$html$Html$div,
+				_List_fromArray(
+					[
+						A2($elm$html$Html$Attributes$style, 'margin', '10px 0')
+					]),
+				_List_fromArray(
+					[
+						A2(
+						$elm$html$Html$div,
+						_List_fromArray(
+							[
+								A2($elm$html$Html$Attributes$style, 'display', 'flex'),
+								A2($elm$html$Html$Attributes$style, 'justify-content', 'space-between'),
+								A2($elm$html$Html$Attributes$style, 'font-size', '12px'),
+								A2($elm$html$Html$Attributes$style, 'color', '#9aa39b'),
+								A2($elm$html$Html$Attributes$style, 'margin-bottom', '4px')
+							]),
+						_List_fromArray(
+							[
+								$elm$html$Html$text('budget'),
+								$elm$html$Html$text(
+								'$' + ($author$project$AgentTickets$AgentTicket$formatUsd(spent) + (' / $' + $author$project$AgentTickets$AgentTicket$formatUsd(budget))))
+							])),
+						A2(
+						$elm$html$Html$div,
+						_List_fromArray(
+							[
+								A2($elm$html$Html$Attributes$style, 'height', '6px'),
+								A2($elm$html$Html$Attributes$style, 'background', '#3d3c3c'),
+								A2($elm$html$Html$Attributes$style, 'width', '100%')
+							]),
+						_List_fromArray(
+							[
+								A2(
+								$elm$html$Html$div,
+								_List_fromArray(
+									[
+										A2($elm$html$Html$Attributes$style, 'height', '6px'),
+										A2(
+										$elm$html$Html$Attributes$style,
+										'width',
+										$elm$core$String$fromFloat(pct) + '%'),
+										A2(
+										$elm$html$Html$Attributes$style,
+										'background',
+										overBudget ? '#f0a0a0' : '#7aa37a')
+									]),
+								_List_Nil)
+							]))
+					]));
+		} else {
+			return (spent > 0) ? A2(
+				$elm$html$Html$div,
+				_List_fromArray(
+					[
+						A2($elm$html$Html$Attributes$style, 'font-size', '12px'),
+						A2($elm$html$Html$Attributes$style, 'color', '#9aa39b'),
+						A2($elm$html$Html$Attributes$style, 'margin', '10px 0')
+					]),
+				_List_fromArray(
+					[
+						$elm$html$Html$text(
+						'spent $' + ($author$project$AgentTickets$AgentTicket$formatUsd(spent) + ' · no budget set'))
+					])) : $elm$html$Html$text('');
+		}
+	});
+var $author$project$Message$Message$AgentTicketBodyChanged = function (a) {
+	return {$: 37, a: a};
+};
+var $author$project$Message$Message$AgentTicketBudgetChanged = function (a) {
+	return {$: 38, a: a};
+};
+var $author$project$Message$Message$AgentTicketTitleChanged = function (a) {
+	return {$: 36, a: a};
+};
+var $author$project$Message$Message$ClickAgentTicketCancel = {$: 40};
+var $author$project$Message$Message$ClickAgentTicketSave = {$: 39};
+var $author$project$AgentTickets$AgentTicket$actionButton = F3(
+	function (kind, msg, label) {
+		var _v0 = (kind === 'primary') ? _Utils_Tuple2('#2e4f2e', '#cfe8cf') : _Utils_Tuple2('#2a2929', '#d0d0d0');
+		var bg = _v0.a;
+		var fg = _v0.b;
+		return A2(
+			$elm$html$Html$button,
+			_List_fromArray(
+				[
+					$elm$html$Html$Attributes$type_('button'),
+					$elm$html$Html$Events$onClick(msg),
+					A2($elm$html$Html$Attributes$style, 'background', bg),
+					A2($elm$html$Html$Attributes$style, 'color', fg),
+					A2($elm$html$Html$Attributes$style, 'border', '1px solid #3d3c3c'),
+					A2($elm$html$Html$Attributes$style, 'padding', '5px 12px'),
+					A2($elm$html$Html$Attributes$style, 'cursor', 'pointer'),
+					A2($elm$html$Html$Attributes$style, 'font-size', '13px')
+				]),
+			_List_fromArray(
+				[
+					$elm$html$Html$text(label)
+				]));
+	});
+var $author$project$AgentTickets$AgentTicket$formLabel = function (txt) {
+	return A2(
+		$elm$html$Html$div,
+		_List_fromArray(
+			[
+				A2($elm$html$Html$Attributes$style, 'font-size', '11px'),
+				A2($elm$html$Html$Attributes$style, 'text-transform', 'uppercase'),
+				A2($elm$html$Html$Attributes$style, 'letter-spacing', '0.08em'),
+				A2($elm$html$Html$Attributes$style, 'color', '#9aa39b'),
+				A2($elm$html$Html$Attributes$style, 'margin', '8px 0 4px')
+			]),
+		_List_fromArray(
+			[
+				$elm$html$Html$text(txt)
+			]));
+};
+var $author$project$AgentTickets$AgentTicket$inputStyles = _List_fromArray(
+	[
+		A2($elm$html$Html$Attributes$style, 'width', '100%'),
+		A2($elm$html$Html$Attributes$style, 'background', '#141313'),
+		A2($elm$html$Html$Attributes$style, 'color', '#e0e0e0'),
+		A2($elm$html$Html$Attributes$style, 'border', '1px solid #3d3c3c'),
+		A2($elm$html$Html$Attributes$style, 'padding', '6px 8px'),
+		A2($elm$html$Html$Attributes$style, 'box-sizing', 'border-box')
+	]);
+var $elm$html$Html$textarea = _VirtualDom_node('textarea');
+var $author$project$AgentTickets$AgentTicket$editForm = function (model) {
+	return (!model.ba) ? $elm$html$Html$text('') : A2(
+		$elm$html$Html$div,
+		_List_fromArray(
+			[
+				A2($elm$html$Html$Attributes$style, 'border', '1px solid #3d3c3c'),
+				A2($elm$html$Html$Attributes$style, 'padding', '12px'),
+				A2($elm$html$Html$Attributes$style, 'margin', '10px 0'),
+				A2($elm$html$Html$Attributes$style, 'background', '#1e1d1d')
+			]),
+		_List_fromArray(
+			[
+				$author$project$AgentTickets$AgentTicket$formLabel('title'),
+				A2(
+				$elm$html$Html$input,
+				A2(
+					$elm$core$List$cons,
+					$elm$html$Html$Attributes$value(model.bU),
+					A2(
+						$elm$core$List$cons,
+						$elm$html$Html$Events$onInput($author$project$Message$Message$AgentTicketTitleChanged),
+						$author$project$AgentTickets$AgentTicket$inputStyles)),
+				_List_Nil),
+				$author$project$AgentTickets$AgentTicket$formLabel('body'),
+				A2(
+				$elm$html$Html$textarea,
+				A2(
+					$elm$core$List$cons,
+					$elm$html$Html$Attributes$value(model.bS),
+					A2(
+						$elm$core$List$cons,
+						$elm$html$Html$Events$onInput($author$project$Message$Message$AgentTicketBodyChanged),
+						A2(
+							$elm$core$List$cons,
+							A2($elm$html$Html$Attributes$style, 'min-height', '120px'),
+							$author$project$AgentTickets$AgentTicket$inputStyles))),
+				_List_Nil),
+				$author$project$AgentTickets$AgentTicket$formLabel('budget (USD)'),
+				A2(
+				$elm$html$Html$input,
+				A2(
+					$elm$core$List$cons,
+					$elm$html$Html$Attributes$value(model.bT),
+					A2(
+						$elm$core$List$cons,
+						$elm$html$Html$Attributes$placeholder('e.g. 5.00'),
+						A2(
+							$elm$core$List$cons,
+							$elm$html$Html$Events$onInput($author$project$Message$Message$AgentTicketBudgetChanged),
+							$author$project$AgentTickets$AgentTicket$inputStyles))),
+				_List_Nil),
+				A2(
+				$elm$html$Html$div,
+				_List_fromArray(
+					[
+						A2($elm$html$Html$Attributes$style, 'display', 'flex'),
+						A2($elm$html$Html$Attributes$style, 'gap', '8px'),
+						A2($elm$html$Html$Attributes$style, 'margin-top', '10px')
+					]),
+				_List_fromArray(
+					[
+						A3($author$project$AgentTickets$AgentTicket$actionButton, 'primary', $author$project$Message$Message$ClickAgentTicketSave, 'Save'),
+						A3($author$project$AgentTickets$AgentTicket$actionButton, 'secondary', $author$project$Message$Message$ClickAgentTicketCancel, 'Cancel')
+					]))
+			]));
+};
+var $author$project$Message$Message$ClickAgentTicketEdit = {$: 35};
+var $author$project$AgentBadge$Abandoned = {$: 9};
+var $author$project$AgentBadge$Concluded = {$: 8};
+var $author$project$AgentBadge$Draft = {$: 0};
+var $author$project$AgentBadge$Merged = {$: 5};
+var $author$project$AgentBadge$MergedWithFixes = {$: 6};
+var $author$project$AgentBadge$NeedsReview = {$: 4};
+var $author$project$AgentBadge$Queued = {$: 1};
+var $author$project$AgentBadge$Running = function (a) {
+	return {$: 2, a: a};
+};
+var $author$project$AgentBadge$SentBack = {$: 7};
+var $author$project$AgentBadge$fromApiToken = function (token) {
+	switch (token) {
+		case 'draft':
+			return $elm$core$Maybe$Just($author$project$AgentBadge$Draft);
+		case 'queued':
+			return $elm$core$Maybe$Just($author$project$AgentBadge$Queued);
+		case 'running':
+			return $elm$core$Maybe$Just(
+				$author$project$AgentBadge$Running($elm$core$Maybe$Nothing));
+		case 'awaiting_human':
+			return $elm$core$Maybe$Just($author$project$AgentBadge$AwaitingHuman);
+		case 'needs_review':
+			return $elm$core$Maybe$Just($author$project$AgentBadge$NeedsReview);
+		case 'merged':
+			return $elm$core$Maybe$Just($author$project$AgentBadge$Merged);
+		case 'merged_with_fixes':
+			return $elm$core$Maybe$Just($author$project$AgentBadge$MergedWithFixes);
+		case 'sent_back':
+			return $elm$core$Maybe$Just($author$project$AgentBadge$SentBack);
+		case 'concluded':
+			return $elm$core$Maybe$Just($author$project$AgentBadge$Concluded);
+		case 'abandoned':
+			return $elm$core$Maybe$Just($author$project$AgentBadge$Abandoned);
+		case 'failed':
+			return $elm$core$Maybe$Just($author$project$AgentBadge$Failed);
+		case 'errored':
+			return $elm$core$Maybe$Just($author$project$AgentBadge$Errored);
+		default:
+			return $elm$core$Maybe$Nothing;
+	}
+};
+var $author$project$AgentTickets$AgentTicket$stateBadge = function (state) {
+	var _v0 = $author$project$AgentBadge$fromApiToken(state);
+	if (!_v0.$) {
+		var status = _v0.a;
+		return $author$project$AgentBadge$view(status);
+	} else {
+		return A2(
+			$elm$html$Html$span,
+			_List_fromArray(
+				[
+					A2($elm$html$Html$Attributes$style, 'color', '#b0b0b0')
+				]),
+			_List_fromArray(
+				[
+					$elm$html$Html$text(state)
+				]));
+	}
+};
+var $author$project$AgentTickets$AgentTicket$header = F2(
+	function (model, ticket) {
+		return A2(
+			$elm$html$Html$div,
+			_List_fromArray(
+				[
+					A2($elm$html$Html$Attributes$style, 'display', 'flex'),
+					A2($elm$html$Html$Attributes$style, 'align-items', 'center'),
+					A2($elm$html$Html$Attributes$style, 'gap', '12px'),
+					A2($elm$html$Html$Attributes$style, 'margin-bottom', '4px')
+				]),
+			_List_fromArray(
+				[
+					A2(
+					$elm$html$Html$span,
+					_List_fromArray(
+						[
+							A2($elm$html$Html$Attributes$style, 'font-family', 'monospace'),
+							A2($elm$html$Html$Attributes$style, 'color', '#9aa39b')
+						]),
+					_List_fromArray(
+						[
+							$elm$html$Html$text(
+							'#' + $elm$core$String$fromInt(ticket.f_))
+						])),
+					$author$project$AgentTickets$AgentTicket$stateBadge(ticket.dg),
+					A2(
+					$elm$html$Html$h1,
+					_List_fromArray(
+						[
+							A2($elm$html$Html$Attributes$style, 'font-size', '18px'),
+							A2($elm$html$Html$Attributes$style, 'margin', '0'),
+							A2($elm$html$Html$Attributes$style, 'flex', '1')
+						]),
+					_List_fromArray(
+						[
+							$elm$html$Html$text(ticket.ck)
+						])),
+					model.ba ? $elm$html$Html$text('') : A3($author$project$AgentTickets$AgentTicket$actionButton, 'secondary', $author$project$Message$Message$ClickAgentTicketEdit, 'Edit')
+				]));
+	});
+var $author$project$Message$Message$CancelAgentTicketDispatch = {$: 45};
+var $author$project$Message$Message$ClickAgentTicketDispatch = {$: 43};
+var $author$project$Message$Message$ClickAgentTicketTransition = function (a) {
+	return {$: 42, a: a};
+};
+var $author$project$Message$Message$ConfirmAgentTicketDispatch = {$: 44};
+var $author$project$AgentTickets$AgentTicket$canDispatch = function (state) {
+	return state === 'queued';
+};
+var $author$project$AgentTickets$AgentTicket$transitionTargets = function (state) {
+	switch (state) {
+		case 'needs_review':
+			return _List_fromArray(
+				[
+					_Utils_Tuple2('merged', 'Merge'),
+					_Utils_Tuple2('merged_with_fixes', 'Merge with fixes'),
+					_Utils_Tuple2('sent_back', 'Send back'),
+					_Utils_Tuple2('concluded', 'Conclude'),
+					_Utils_Tuple2('abandoned', 'Abandon')
+				]);
+		case 'draft':
+			return _List_fromArray(
+				[
+					_Utils_Tuple2('queued', 'Queue'),
+					_Utils_Tuple2('abandoned', 'Abandon')
+				]);
+		case 'queued':
+			return _List_fromArray(
+				[
+					_Utils_Tuple2('draft', 'Unqueue'),
+					_Utils_Tuple2('abandoned', 'Abandon')
+				]);
+		case 'sent_back':
+			return _List_fromArray(
+				[
+					_Utils_Tuple2('queued', 'Re-queue')
+				]);
+		case 'failed':
+			return _List_fromArray(
+				[
+					_Utils_Tuple2('queued', 'Retry')
+				]);
+		case 'errored':
+			return _List_fromArray(
+				[
+					_Utils_Tuple2('queued', 'Retry')
+				]);
+		default:
+			return _List_Nil;
+	}
+};
+var $author$project$AgentTickets$AgentTicket$lifecycleBar = F2(
+	function (model, ticket) {
+		var transitions = $author$project$AgentTickets$AgentTicket$transitionTargets(ticket.dg);
+		var transitionButtons = A2(
+			$elm$core$List$map,
+			function (_v0) {
+				var to = _v0.a;
+				var label = _v0.b;
+				return A3(
+					$author$project$AgentTickets$AgentTicket$actionButton,
+					'secondary',
+					$author$project$Message$Message$ClickAgentTicketTransition(to),
+					label);
+			},
+			transitions);
+		var dispatchControls = $author$project$AgentTickets$AgentTicket$canDispatch(ticket.dg) ? (model.bR ? _List_fromArray(
+			[
+				A2(
+				$elm$html$Html$span,
+				_List_fromArray(
+					[
+						A2($elm$html$Html$Attributes$style, 'color', '#b0b0b0')
+					]),
+				_List_fromArray(
+					[
+						$elm$html$Html$text('Dispatch a run now?')
+					])),
+				A3($author$project$AgentTickets$AgentTicket$actionButton, 'primary', $author$project$Message$Message$ConfirmAgentTicketDispatch, 'Confirm dispatch'),
+				A3($author$project$AgentTickets$AgentTicket$actionButton, 'secondary', $author$project$Message$Message$CancelAgentTicketDispatch, 'Cancel')
+			]) : _List_fromArray(
+			[
+				A3($author$project$AgentTickets$AgentTicket$actionButton, 'primary', $author$project$Message$Message$ClickAgentTicketDispatch, 'Dispatch run')
+			])) : _List_Nil;
+		return ($elm$core$List$isEmpty(dispatchControls) && $elm$core$List$isEmpty(transitionButtons)) ? $elm$html$Html$text('') : A2(
+			$elm$html$Html$div,
+			_List_fromArray(
+				[
+					A2($elm$html$Html$Attributes$style, 'display', 'flex'),
+					A2($elm$html$Html$Attributes$style, 'flex-wrap', 'wrap'),
+					A2($elm$html$Html$Attributes$style, 'align-items', 'center'),
+					A2($elm$html$Html$Attributes$style, 'gap', '8px'),
+					A2($elm$html$Html$Attributes$style, 'margin', '10px 0')
+				]),
+			_Utils_ap(dispatchControls, transitionButtons));
+	});
+var $author$project$AgentTickets$AgentTicket$reviewerName = function (session) {
+	var _v0 = session.ly;
+	if (!_v0.$) {
+		var user = _v0.a;
+		return user.lx;
+	} else {
+		return 'anonymous';
+	}
+};
+var $author$project$AgentTickets$AgentTicket$runRow = F2(
+	function (metrics, buildId) {
+		var forBuild = A2(
+			$elm$core$List$filter,
+			function (m) {
+				return _Utils_eq(m.hD, buildId);
+			},
+			metrics);
+		var status = A2(
+			$elm$core$Maybe$withDefault,
+			'',
+			A2(
+				$elm$core$Maybe$map,
+				function ($) {
+					return $.eT;
+				},
+				$elm$core$List$head(forBuild)));
+		var cost = $elm$core$List$sum(
+			A2(
+				$elm$core$List$map,
+				function ($) {
+					return $.fm;
+				},
+				forBuild));
+		return A2(
+			$elm$html$Html$div,
+			_List_fromArray(
+				[
+					A2($elm$html$Html$Attributes$style, 'display', 'flex'),
+					A2($elm$html$Html$Attributes$style, 'align-items', 'center'),
+					A2($elm$html$Html$Attributes$style, 'gap', '10px'),
+					A2($elm$html$Html$Attributes$style, 'padding', '4px 0'),
+					A2($elm$html$Html$Attributes$style, 'border-bottom', '1px solid #2a2929')
+				]),
+			_List_fromArray(
+				[
+					A2(
+					$elm$html$Html$span,
+					_List_fromArray(
+						[
+							A2($elm$html$Html$Attributes$style, 'font-family', 'monospace'),
+							A2($elm$html$Html$Attributes$style, 'color', '#9aa39b'),
+							A2($elm$html$Html$Attributes$style, 'min-width', '80px')
+						]),
+					_List_fromArray(
+						[
+							$elm$html$Html$text(
+							'build ' + $elm$core$String$fromInt(buildId))
+						])),
+					A2(
+					$elm$html$Html$span,
+					_List_fromArray(
+						[
+							A2($elm$html$Html$Attributes$style, 'color', '#b0b0b0'),
+							A2($elm$html$Html$Attributes$style, 'flex', '1'),
+							A2($elm$html$Html$Attributes$style, 'font-size', '12px')
+						]),
+					_List_fromArray(
+						[
+							$elm$html$Html$text(status)
+						])),
+					A2(
+					$elm$html$Html$span,
+					_List_fromArray(
+						[
+							A2($elm$html$Html$Attributes$style, 'font-family', 'monospace'),
+							A2($elm$html$Html$Attributes$style, 'color', '#b0b0b0')
+						]),
+					_List_fromArray(
+						[
+							$elm$html$Html$text(
+							'$' + $author$project$AgentTickets$AgentTicket$formatUsd(cost))
+						]))
+				]));
+	});
+var $author$project$AgentTickets$AgentTicket$unique = function (xs) {
+	return A3(
+		$elm$core$List$foldl,
+		F2(
+			function (x, acc) {
+				return A2($elm$core$List$member, x, acc) ? acc : _Utils_ap(
+					acc,
+					_List_fromArray(
+						[x]));
+			}),
+		_List_Nil,
+		xs);
+};
+var $author$project$AgentTickets$AgentTicket$runHistory = function (metrics) {
+	if ($elm$core$List$isEmpty(metrics)) {
+		return $elm$html$Html$text('');
+	} else {
+		var builds = A2(
+			$elm$core$List$sortBy,
+			$elm$core$Basics$negate,
+			$author$project$AgentTickets$AgentTicket$unique(
+				A2(
+					$elm$core$List$map,
+					function ($) {
+						return $.hD;
+					},
+					metrics)));
+		return A2(
+			$elm$html$Html$div,
+			_List_fromArray(
+				[
+					A2($elm$html$Html$Attributes$style, 'margin', '12px 0')
+				]),
+			A2(
+				$elm$core$List$cons,
+				$author$project$AgentTickets$AgentTicket$formLabel('runs'),
+				A2(
+					$elm$core$List$map,
+					$author$project$AgentTickets$AgentTicket$runRow(metrics),
+					builds)));
+	}
+};
+var $author$project$AgentTickets$AgentTicket$prose = function (body) {
+	return A2(
+		$elm$html$Html$div,
+		_List_fromArray(
+			[
+				A2($elm$html$Html$Attributes$style, 'white-space', 'pre-wrap'),
+				A2($elm$html$Html$Attributes$style, 'color', '#d0d0d0'),
+				A2($elm$html$Html$Attributes$style, 'line-height', '1.5')
+			]),
+		_List_fromArray(
+			[
+				$elm$html$Html$text(body)
+			]));
+};
+var $author$project$AgentTickets$AgentTicket$planView = function (detail) {
+	return $elm$core$List$isEmpty(detail.hc) ? A2(
+		$elm$html$Html$p,
+		_List_fromArray(
+			[
+				A2($elm$html$Html$Attributes$style, 'color', '#9aa39b')
+			]),
+		_List_fromArray(
+			[
+				$elm$html$Html$text('No plan yet.')
+			])) : $author$project$AgentTickets$AgentTicket$prose(detail.al.bL);
+};
+var $elm$html$Html$ul = _VirtualDom_node('ul');
+var $author$project$AgentTickets$AgentTicket$specView = function (detail) {
+	var _v0 = detail.kV;
+	if (!_v0.$) {
+		var spec = _v0.a;
+		return A2(
+			$elm$html$Html$div,
+			_List_Nil,
+			_List_fromArray(
+				[
+					$author$project$AgentTickets$AgentTicket$prose(spec.bL),
+					$elm$core$List$isEmpty(spec.e1) ? $elm$html$Html$text('') : A2(
+					$elm$html$Html$div,
+					_List_Nil,
+					_List_fromArray(
+						[
+							$author$project$AgentTickets$AgentTicket$formLabel('acceptance criteria'),
+							A2(
+							$elm$html$Html$ul,
+							_List_fromArray(
+								[
+									A2($elm$html$Html$Attributes$style, 'margin', '4px 0'),
+									A2($elm$html$Html$Attributes$style, 'padding-left', '20px')
+								]),
+							A2(
+								$elm$core$List$map,
+								function (c) {
+									return A2(
+										$elm$html$Html$li,
+										_List_fromArray(
+											[
+												A2($elm$html$Html$Attributes$style, 'color', '#b0b0b0')
+											]),
+										_List_fromArray(
+											[
+												$elm$html$Html$text(c)
+											]));
+								},
+								spec.e1))
+						]))
+				]));
+	} else {
+		return A2(
+			$elm$html$Html$div,
+			_List_Nil,
+			_List_fromArray(
+				[
+					A2(
+					$elm$html$Html$p,
+					_List_fromArray(
+						[
+							A2($elm$html$Html$Attributes$style, 'color', '#9aa39b')
+						]),
+					_List_fromArray(
+						[
+							$elm$html$Html$text('No spec submitted yet.')
+						])),
+					$author$project$AgentTickets$AgentTicket$prose(detail.al.bL)
+				]));
+	}
+};
+var $author$project$AgentTickets$AgentTicket$tabContent = F2(
+	function (model, detail) {
+		return A2(
+			$elm$html$Html$div,
+			_List_fromArray(
+				[
+					A2($elm$html$Html$Attributes$style, 'padding', '12px 0')
+				]),
+			_List_fromArray(
+				[
+					function () {
+					var _v0 = model.cs;
+					if (!_v0) {
+						return $author$project$AgentTickets$AgentTicket$specView(detail);
+					} else {
+						return $author$project$AgentTickets$AgentTicket$planView(detail);
+					}
+				}()
+				]));
+	});
+var $author$project$Message$Message$AgentTicketTabClicked = function (a) {
+	return {$: 41, a: a};
+};
+var $author$project$AgentTickets$AgentTicket$tabButton = F4(
+	function (model, tab, token, label) {
+		var active = _Utils_eq(model.cs, tab);
+		return A2(
+			$elm$html$Html$div,
+			_List_fromArray(
+				[
+					$elm$html$Html$Attributes$class('agent-ticket-tab'),
+					A2($elm$html$Html$Attributes$style, 'padding', '6px 14px'),
+					A2($elm$html$Html$Attributes$style, 'cursor', 'pointer'),
+					A2(
+					$elm$html$Html$Attributes$style,
+					'border-bottom',
+					active ? '2px solid #7aa37a' : '2px solid transparent'),
+					A2(
+					$elm$html$Html$Attributes$style,
+					'color',
+					active ? '#e0e0e0' : '#9aa39b'),
+					$elm$html$Html$Events$onClick(
+					$author$project$Message$Message$AgentTicketTabClicked(token))
+				]),
+			_List_fromArray(
+				[
+					$elm$html$Html$text(label)
+				]));
+	});
+var $author$project$AgentTickets$AgentTicket$tabsBar = function (model) {
+	return A2(
+		$elm$html$Html$div,
+		_List_fromArray(
+			[
+				A2($elm$html$Html$Attributes$style, 'display', 'flex'),
+				A2($elm$html$Html$Attributes$style, 'gap', '0'),
+				A2($elm$html$Html$Attributes$style, 'border-bottom', '1px solid #3d3c3c'),
+				A2($elm$html$Html$Attributes$style, 'margin', '16px 0 0')
+			]),
+		_List_fromArray(
+			[
+				A4($author$project$AgentTickets$AgentTicket$tabButton, model, 0, 'spec', 'Spec'),
+				A4($author$project$AgentTickets$AgentTicket$tabButton, model, 1, 'plan', 'Plan')
+			]));
+};
+var $author$project$AgentTickets$AgentTicket$taskStatusColor = function (status) {
+	switch (status) {
+		case 'done':
+			return '#7aa37a';
+		case 'in_progress':
+			return '#d0c07a';
+		case 'failed':
+			return '#f0a0a0';
+		default:
+			return '#9aa39b';
+	}
+};
+var $author$project$AgentTickets$AgentTicket$taskRow = function (task) {
+	return A2(
+		$elm$html$Html$div,
+		_List_fromArray(
+			[
+				A2($elm$html$Html$Attributes$style, 'display', 'flex'),
+				A2($elm$html$Html$Attributes$style, 'align-items', 'baseline'),
+				A2($elm$html$Html$Attributes$style, 'gap', '10px'),
+				A2($elm$html$Html$Attributes$style, 'padding', '4px 0'),
+				A2($elm$html$Html$Attributes$style, 'border-bottom', '1px solid #2a2929')
+			]),
+		_List_fromArray(
+			[
+				A2(
+				$elm$html$Html$span,
+				_List_fromArray(
+					[
+						A2($elm$html$Html$Attributes$style, 'font-family', 'monospace'),
+						A2($elm$html$Html$Attributes$style, 'color', '#7a7a7a'),
+						A2($elm$html$Html$Attributes$style, 'min-width', '24px')
+					]),
+				_List_fromArray(
+					[
+						$elm$html$Html$text(
+						$elm$core$String$fromInt(task.gu))
+					])),
+				A2(
+				$elm$html$Html$span,
+				_List_fromArray(
+					[
+						A2(
+						$elm$html$Html$Attributes$style,
+						'color',
+						$author$project$AgentTickets$AgentTicket$taskStatusColor(task.eT)),
+						A2($elm$html$Html$Attributes$style, 'min-width', '80px'),
+						A2($elm$html$Html$Attributes$style, 'font-size', '12px')
+					]),
+				_List_fromArray(
+					[
+						$elm$html$Html$text(task.eT)
+					])),
+				A2(
+				$elm$html$Html$span,
+				_List_fromArray(
+					[
+						A2($elm$html$Html$Attributes$style, 'flex', '1'),
+						A2($elm$html$Html$Attributes$style, 'color', '#d0d0d0')
+					]),
+				_List_fromArray(
+					[
+						$elm$html$Html$text(task.ck)
+					]))
+			]));
+};
+var $author$project$AgentTickets$AgentTicket$taskList = function (tasks) {
+	return $elm$core$List$isEmpty(tasks) ? $elm$html$Html$text('') : A2(
+		$elm$html$Html$div,
+		_List_fromArray(
+			[
+				A2($elm$html$Html$Attributes$style, 'margin', '12px 0')
+			]),
+		A2(
+			$elm$core$List$cons,
+			$author$project$AgentTickets$AgentTicket$formLabel('tasks'),
+			A2(
+				$elm$core$List$map,
+				$author$project$AgentTickets$AgentTicket$taskRow,
+				A2(
+					$elm$core$List$sortBy,
+					function ($) {
+						return $.gu;
+					},
+					tasks))));
+};
+var $author$project$Message$Message$ToggleAgentReviewFinding = function (a) {
+	return {$: 20, a: a};
+};
+var $author$project$Build$AgentReview$boolAttr = function (b) {
+	return b ? 'true' : 'false';
+};
+var $author$project$Build$AgentReview$buttonReset = _List_fromArray(
+	[
+		$elm$html$Html$Attributes$type_('button'),
+		A2($elm$html$Html$Attributes$style, 'background', 'transparent'),
+		A2($elm$html$Html$Attributes$style, 'border', 'none'),
+		A2($elm$html$Html$Attributes$style, 'margin', '0'),
+		A2($elm$html$Html$Attributes$style, 'font-family', 'inherit'),
+		A2($elm$html$Html$Attributes$style, 'font-size', 'inherit'),
+		A2($elm$html$Html$Attributes$style, 'color', 'inherit'),
+		A2($elm$html$Html$Attributes$style, 'text-align', 'left')
+	]);
+var $author$project$Message$Message$ToggleAgentReviewFindingBody = function (a) {
+	return {$: 21, a: a};
+};
+var $author$project$Build$AgentReview$clampStyles = function (expanded) {
+	return expanded ? _List_Nil : _List_fromArray(
+		[
+			A2($elm$html$Html$Attributes$style, 'display', '-webkit-box'),
+			A2($elm$html$Html$Attributes$style, '-webkit-line-clamp', '4'),
+			A2($elm$html$Html$Attributes$style, '-webkit-box-orient', 'vertical'),
+			A2($elm$html$Html$Attributes$style, 'overflow', 'hidden')
+		]);
+};
+var $author$project$Build$AgentReview$isLong = function (s) {
+	return $elm$core$String$length(s) > 220;
+};
+var $author$project$Build$AgentReview$descriptionBlock = F2(
+	function (model, finding) {
+		if (finding.fy === '') {
+			return _List_Nil;
+		} else {
+			var expanded = A2($elm$core$Set$member, finding.f_, model.dN);
+			return A2(
+				$elm$core$List$cons,
+				A2(
+					$elm$html$Html$p,
+					A2(
+						$elm$core$List$cons,
+						A2($elm$html$Html$Attributes$style, 'color', '#b0b0b0'),
+						A2(
+							$elm$core$List$cons,
+							A2($elm$html$Html$Attributes$style, 'margin', '8px 0'),
+							$author$project$Build$AgentReview$clampStyles(expanded))),
+					_List_fromArray(
+						[
+							$elm$html$Html$text(finding.fy)
+						])),
+				$author$project$Build$AgentReview$isLong(finding.fy) ? _List_fromArray(
+					[
+						A2(
+						$elm$html$Html$button,
+						_Utils_ap(
+							$author$project$Build$AgentReview$buttonReset,
+							_List_fromArray(
+								[
+									$elm$html$Html$Attributes$class('agent-review-description-toggle'),
+									A2(
+									$elm$html$Html$Attributes$attribute,
+									'aria-expanded',
+									$author$project$Build$AgentReview$boolAttr(expanded)),
+									A2($elm$html$Html$Attributes$style, 'color', '#7a7a7a'),
+									A2($elm$html$Html$Attributes$style, 'font-size', '12px'),
+									A2($elm$html$Html$Attributes$style, 'cursor', 'pointer'),
+									$elm$html$Html$Events$onClick(
+									$author$project$Message$Message$ToggleAgentReviewFindingBody(finding.f_))
+								])),
+						_List_fromArray(
+							[
+								$elm$html$Html$text(
+								expanded ? 'show less' : 'show more')
+							]))
+					]) : _List_Nil);
+		}
+	});
+var $elm$html$Html$Attributes$rel = _VirtualDom_attribute('rel');
+var $author$project$Concourse$AgentReview$repoBlobUrl = F4(
+	function (repo, sha, file, line) {
+		if ((!A2($elm$core$String$startsWith, 'http', repo)) || ((sha === '') || (file === ''))) {
+			return $elm$core$Maybe$Nothing;
+		} else {
+			var base = A2($elm$core$String$endsWith, '.git', repo) ? A2($elm$core$String$dropRight, 4, repo) : repo;
+			var anchor = (line > 0) ? ('#L' + $elm$core$String$fromInt(line)) : '';
+			return $elm$core$Maybe$Just(base + ('/blob/' + (sha + ('/' + (file + anchor)))));
+		}
+	});
+var $elm$html$Html$Attributes$target = $elm$html$Html$Attributes$stringProperty('target');
+var $author$project$Build$AgentReview$fileRef = F2(
+	function (info, finding) {
+		if (finding.dU === '') {
+			return $elm$html$Html$text('');
+		} else {
+			var label = finding.dU + (':' + $elm$core$String$fromInt(finding.ge));
+			var _v0 = A4($author$project$Concourse$AgentReview$repoBlobUrl, info.gP, info.hX, finding.dU, finding.ge);
+			if (!_v0.$) {
+				var url = _v0.a;
+				return A2(
+					$elm$html$Html$a,
+					_List_fromArray(
+						[
+							$elm$html$Html$Attributes$href(url),
+							$elm$html$Html$Attributes$target('_blank'),
+							$elm$html$Html$Attributes$rel('noopener noreferrer'),
+							A2($elm$html$Html$Attributes$style, 'margin-left', 'auto'),
+							A2($elm$html$Html$Attributes$style, 'font-family', 'monospace'),
+							A2($elm$html$Html$Attributes$style, 'color', '#7a9ac0'),
+							A2($elm$html$Html$Attributes$style, 'text-decoration', 'none')
+						]),
+					_List_fromArray(
+						[
+							$elm$html$Html$text(label)
+						]));
+			} else {
+				return A2(
+					$elm$html$Html$span,
+					_List_fromArray(
+						[
+							A2($elm$html$Html$Attributes$style, 'margin-left', 'auto'),
+							A2($elm$html$Html$Attributes$style, 'font-family', 'monospace'),
+							A2($elm$html$Html$Attributes$style, 'color', '#7a7a7a')
+						]),
+					_List_fromArray(
+						[
+							$elm$html$Html$text(label)
+						]));
+			}
+		}
+	});
+var $author$project$Build$AgentReview$findingAnchor = function (finding) {
+	return (finding.f_ === '') ? _List_Nil : _List_fromArray(
+		[
+			$elm$html$Html$Attributes$id('agent-review-finding-' + finding.f_)
+		]);
+};
+var $author$project$Build$AgentReview$severityBadge = function (severity) {
+	var _v0 = function () {
+		switch (severity) {
+			case 'critical':
+				return _Utils_Tuple2('#5c2626', '#f0a0a0');
+			case 'high':
+				return _Utils_Tuple2('#5c2626', '#f0a0a0');
+			case 'medium':
+				return _Utils_Tuple2('#5c4a26', '#f0d0a0');
+			default:
+				return _Utils_Tuple2('#3d3c3c', '#b0b0b0');
+		}
+	}();
+	var bg = _v0.a;
+	var fg = _v0.b;
+	return (severity === '') ? $elm$html$Html$text('') : A2(
+		$elm$html$Html$span,
+		_List_fromArray(
+			[
+				A2($elm$html$Html$Attributes$style, 'background', bg),
+				A2($elm$html$Html$Attributes$style, 'color', fg),
+				A2($elm$html$Html$Attributes$style, 'padding', '1px 6px'),
+				A2($elm$html$Html$Attributes$style, 'font-size', '12px')
+			]),
+		_List_fromArray(
+			[
+				$elm$html$Html$text(severity)
+			]));
+};
+var $elm$html$Html$pre = _VirtualDom_node('pre');
+var $author$project$Build$AgentReview$testEvidence = function (finding) {
+	return (finding.hd === '') ? _List_Nil : _List_fromArray(
+		[
+			A2(
+			$elm$html$Html$pre,
+			_List_fromArray(
+				[
+					A2($elm$html$Html$Attributes$style, 'background', '#141313'),
+					A2($elm$html$Html$Attributes$style, 'padding', '8px'),
+					A2($elm$html$Html$Attributes$style, 'font-size', '12px'),
+					A2($elm$html$Html$Attributes$style, 'overflow-x', 'auto')
+				]),
+			_List_fromArray(
+				[
+					$elm$html$Html$text(finding.hd)
+				]))
+		]);
+};
+var $author$project$Message$Message$AgentReviewNoteChanged = F2(
+	function (a, b) {
+		return {$: 24, a: a, b: b};
+	});
+var $author$project$Message$Message$AgentReviewVerdictClicked = function (a) {
+	return {$: 23, a: a};
+};
+var $author$project$Concourse$AgentReview$allVerdicts = _List_fromArray(
+	['accurate', 'false_positive', 'noisy', 'overly_strict', 'partially_correct', 'missed_context']);
+var $author$project$Concourse$AgentReview$verdictLabel = function (verdict) {
+	return A3($elm$core$String$replace, '_', ' ', verdict);
+};
+var $author$project$Build$AgentReview$verdictRow = F5(
+	function (reviewer, review, finding, recorded, model) {
+		return A2(
+			$elm$html$Html$div,
+			_List_Nil,
+			_List_fromArray(
+				[
+					A2(
+					$elm$html$Html$div,
+					_List_fromArray(
+						[
+							$elm$html$Html$Attributes$class('agent-review-verdicts'),
+							A2($elm$html$Html$Attributes$style, 'display', 'flex'),
+							A2($elm$html$Html$Attributes$style, 'align-items', 'center'),
+							A2($elm$html$Html$Attributes$style, 'gap', '0'),
+							A2($elm$html$Html$Attributes$style, 'margin-top', '8px'),
+							A2($elm$html$Html$Attributes$style, 'border', '1px solid #555'),
+							A2($elm$html$Html$Attributes$style, 'width', 'fit-content')
+						]),
+					A2(
+						$elm$core$List$map,
+						function (verdict) {
+							var selected = A2(
+								$elm$core$Maybe$withDefault,
+								false,
+								A2(
+									$elm$core$Maybe$map,
+									A2(
+										$elm$core$Basics$composeR,
+										function ($) {
+											return $.hl;
+										},
+										$elm$core$Basics$eq(verdict)),
+									recorded));
+							return A2(
+								$elm$html$Html$button,
+								_Utils_ap(
+									$author$project$Build$AgentReview$buttonReset,
 									_List_fromArray(
 										[
-											A2($elm$html$Html$Attributes$style, 'color', '#f0a0a0')
+											A2(
+											$elm$html$Html$Attributes$attribute,
+											'aria-pressed',
+											$author$project$Build$AgentReview$boolAttr(selected)),
+											A2($elm$html$Html$Attributes$style, 'padding', '4px 10px'),
+											A2($elm$html$Html$Attributes$style, 'font-size', '12px'),
+											A2($elm$html$Html$Attributes$style, 'cursor', 'pointer'),
+											A2($elm$html$Html$Attributes$style, 'border-right', '1px solid #555'),
+											A2(
+											$elm$html$Html$Attributes$style,
+											'background',
+											selected ? '#e0e0e0' : 'transparent'),
+											A2(
+											$elm$html$Html$Attributes$style,
+											'color',
+											selected ? '#141313' : '#b0b0b0'),
+											$elm$html$Html$Events$onClick(
+											$author$project$Message$Message$AgentReviewVerdictClicked(
+												{hX: review.cI.hX, dV: finding.f_, gP: review.cI.gP, gW: reviewer, hl: verdict}))
+										])),
+								_List_fromArray(
+									[
+										$elm$html$Html$text(
+										$author$project$Concourse$AgentReview$verdictLabel(verdict))
+									]));
+						},
+						$author$project$Concourse$AgentReview$allVerdicts)),
+					A2(
+					$elm$html$Html$input,
+					_List_fromArray(
+						[
+							$elm$html$Html$Attributes$placeholder('Add a note about this verdict'),
+							$elm$html$Html$Attributes$value(
+							A2(
+								$elm$core$Maybe$withDefault,
+								'',
+								A2($elm$core$Dict$get, finding.f_, model.ct))),
+							$elm$html$Html$Events$onInput(
+							$author$project$Message$Message$AgentReviewNoteChanged(finding.f_)),
+							A2($elm$html$Html$Attributes$style, 'width', '100%'),
+							A2($elm$html$Html$Attributes$style, 'margin-top', '6px'),
+							A2($elm$html$Html$Attributes$style, 'background', '#141313'),
+							A2($elm$html$Html$Attributes$style, 'color', '#e0e0e0'),
+							A2($elm$html$Html$Attributes$style, 'border', '1px solid #3d3c3c'),
+							A2($elm$html$Html$Attributes$style, 'padding', '4px 8px')
+						]),
+					_List_Nil),
+					A2($elm$core$Set$member, finding.f_, model.cq) ? A2(
+					$elm$html$Html$p,
+					_List_fromArray(
+						[
+							A2($elm$html$Html$Attributes$style, 'color', '#f0a0a0'),
+							A2($elm$html$Html$Attributes$style, 'font-size', '12px'),
+							A2($elm$html$Html$Attributes$style, 'margin', '4px 0 0')
+						]),
+					_List_fromArray(
+						[
+							$elm$html$Html$text('Couldn\'t save verdict. Click a verdict to retry.')
+						])) : $elm$html$Html$text('')
+				]));
+	});
+var $author$project$Build$AgentReview$findingCard = F5(
+	function (reviewer, review, isProven, model, finding) {
+		var recorded = A2($elm$core$Dict$get, finding.f_, review.iE);
+		var expanded = isProven || A2($elm$core$Set$member, finding.f_, model.dO);
+		return A2(
+			$elm$html$Html$div,
+			_Utils_ap(
+				$author$project$Build$AgentReview$findingAnchor(finding),
+				_List_fromArray(
+					[
+						$elm$html$Html$Attributes$class('agent-review-finding'),
+						A2($elm$html$Html$Attributes$style, 'border', '1px solid #3d3c3c'),
+						A2($elm$html$Html$Attributes$style, 'margin-bottom', '8px'),
+						A2($elm$html$Html$Attributes$style, 'padding', '8px 12px')
+					])),
+			_Utils_ap(
+				_List_fromArray(
+					[
+						A2(
+						$elm$html$Html$div,
+						_List_fromArray(
+							[
+								A2($elm$html$Html$Attributes$style, 'display', 'flex'),
+								A2($elm$html$Html$Attributes$style, 'align-items', 'center'),
+								A2($elm$html$Html$Attributes$style, 'gap', '8px')
+							]),
+						_List_fromArray(
+							[
+								A2(
+								$elm$html$Html$button,
+								_Utils_ap(
+									$author$project$Build$AgentReview$buttonReset,
+									_List_fromArray(
+										[
+											$elm$html$Html$Attributes$class('agent-review-finding-toggle'),
+											A2(
+											$elm$html$Html$Attributes$attribute,
+											'aria-expanded',
+											$author$project$Build$AgentReview$boolAttr(expanded)),
+											A2($elm$html$Html$Attributes$style, 'display', 'flex'),
+											A2($elm$html$Html$Attributes$style, 'align-items', 'center'),
+											A2($elm$html$Html$Attributes$style, 'gap', '8px'),
+											A2($elm$html$Html$Attributes$style, 'flex', '1'),
+											A2($elm$html$Html$Attributes$style, 'cursor', 'pointer'),
+											$elm$html$Html$Events$onClick(
+											$author$project$Message$Message$ToggleAgentReviewFinding(finding.f_))
+										])),
+								_List_fromArray(
+									[
+										$author$project$Build$AgentReview$severityBadge(finding.kP),
+										A2(
+										$elm$html$Html$span,
+										_List_fromArray(
+											[
+												A2($elm$html$Html$Attributes$style, 'font-weight', '700')
+											]),
+										_List_fromArray(
+											[
+												$elm$html$Html$text(finding.ck)
+											]))
+									])),
+								A2($author$project$Build$AgentReview$fileRef, review.cI, finding)
+							]))
+					]),
+				expanded ? _Utils_ap(
+					A2($author$project$Build$AgentReview$descriptionBlock, model, finding),
+					_Utils_ap(
+						$author$project$Build$AgentReview$testEvidence(finding),
+						_List_fromArray(
+							[
+								A5($author$project$Build$AgentReview$verdictRow, reviewer, review, finding, recorded, model)
+							]))) : _List_Nil));
+	});
+var $author$project$Message$Message$ToggleAgentReviewObservations = {$: 22};
+var $author$project$Build$AgentReview$observationsSection = F3(
+	function (reviewer, review, model) {
+		return $elm$core$List$isEmpty(review.eo) ? _List_Nil : A2(
+			$elm$core$List$cons,
+			A2(
+				$elm$html$Html$button,
+				_Utils_ap(
+					$author$project$Build$AgentReview$buttonReset,
+					_List_fromArray(
+						[
+							$elm$html$Html$Attributes$class('agent-review-observations-toggle'),
+							A2(
+							$elm$html$Html$Attributes$attribute,
+							'aria-expanded',
+							$author$project$Build$AgentReview$boolAttr(model.eJ)),
+							A2($elm$html$Html$Attributes$style, 'padding', '8px 0'),
+							A2($elm$html$Html$Attributes$style, 'cursor', 'pointer'),
+							A2($elm$html$Html$Attributes$style, 'color', '#b0b0b0'),
+							$elm$html$Html$Events$onClick($author$project$Message$Message$ToggleAgentReviewObservations)
+						])),
+				_List_fromArray(
+					[
+						$elm$html$Html$text(
+						'observations (' + ($elm$core$String$fromInt(
+							$elm$core$List$length(review.eo)) + (') — advisory, no failing test ' + (model.eJ ? '▾' : '▸'))))
+					])),
+			model.eJ ? A2(
+				$elm$core$List$map,
+				A4($author$project$Build$AgentReview$findingCard, reviewer, review, false, model),
+				review.eo) : _List_Nil);
+	});
+var $author$project$Build$AgentReview$panelBody = F3(
+	function (reviewer, review, model) {
+		return A2(
+			$elm$html$Html$div,
+			_List_fromArray(
+				[
+					A2($elm$html$Html$Attributes$style, 'padding', '8px 12px')
+				]),
+			_Utils_ap(
+				A2(
+					$elm$core$List$map,
+					A4($author$project$Build$AgentReview$findingCard, reviewer, review, true, model),
+					review.ko),
+				A3($author$project$Build$AgentReview$observationsSection, reviewer, review, model)));
+	});
+var $author$project$Message$Message$ToggleAgentReviewPanel = {$: 19};
+var $author$project$Build$AgentReview$scoreBadge = function (s) {
+	return A2(
+		$elm$html$Html$span,
+		_List_fromArray(
+			[
+				A2($elm$html$Html$Attributes$style, 'padding', '2px 8px'),
+				A2($elm$html$Html$Attributes$style, 'font-weight', '700'),
+				A2(
+				$elm$html$Html$Attributes$style,
+				'background',
+				s.gx ? '#2e4f2e' : '#5c2626'),
+				A2(
+				$elm$html$Html$Attributes$style,
+				'color',
+				s.gx ? '#9fdf9f' : '#f0a0a0')
+			]),
+		_List_fromArray(
+			[
+				$elm$html$Html$text(
+				$elm$core$String$fromFloat(s.kG) + (' / ' + $elm$core$String$fromFloat(s.jJ)))
+			]));
+};
+var $author$project$Build$AgentReview$summaryBar = F2(
+	function (review, expanded) {
+		var s = review.cI;
+		return A2(
+			$elm$html$Html$button,
+			_Utils_ap(
+				$author$project$Build$AgentReview$buttonReset,
+				_List_fromArray(
+					[
+						$elm$html$Html$Attributes$class('agent-review-summary'),
+						A2(
+						$elm$html$Html$Attributes$attribute,
+						'aria-expanded',
+						$author$project$Build$AgentReview$boolAttr(expanded)),
+						A2($elm$html$Html$Attributes$style, 'display', 'flex'),
+						A2($elm$html$Html$Attributes$style, 'align-items', 'center'),
+						A2($elm$html$Html$Attributes$style, 'gap', '12px'),
+						A2($elm$html$Html$Attributes$style, 'padding', '8px 12px'),
+						A2($elm$html$Html$Attributes$style, 'width', '100%'),
+						A2($elm$html$Html$Attributes$style, 'cursor', 'pointer'),
+						$elm$html$Html$Events$onClick($author$project$Message$Message$ToggleAgentReviewPanel)
+					])),
+			_List_fromArray(
+				[
+					A2(
+					$elm$html$Html$span,
+					_List_fromArray(
+						[
+							A2($elm$html$Html$Attributes$style, 'font-weight', '700')
+						]),
+					_List_fromArray(
+						[
+							$elm$html$Html$text('agent review')
+						])),
+					$author$project$Build$AgentReview$scoreBadge(s),
+					A2(
+					$elm$html$Html$span,
+					_List_fromArray(
+						[
+							A2($elm$html$Html$Attributes$style, 'color', '#b0b0b0')
+						]),
+					_List_fromArray(
+						[
+							$elm$html$Html$text(
+							$elm$core$String$fromInt(s.ez) + (' proven · ' + ($elm$core$String$fromInt(s.en) + ' observations')))
+						])),
+					A2(
+					$elm$html$Html$span,
+					_List_fromArray(
+						[
+							A2($elm$html$Html$Attributes$style, 'margin-left', 'auto'),
+							A2($elm$html$Html$Attributes$style, 'color', '#7a7a7a')
+						]),
+					_List_fromArray(
+						[
+							$elm$html$Html$text(
+							'evaluated ' + ($elm$core$String$fromInt(s.fF) + (' of ' + $elm$core$String$fromInt(review.iK))))
+						])),
+					A2(
+					$elm$html$Html$span,
+					_List_Nil,
+					_List_fromArray(
+						[
+							$elm$html$Html$text(
+							expanded ? '▾' : '▸')
+						]))
+				]));
+	});
+var $author$project$Build$AgentReview$view = F2(
+	function (reviewer, model) {
+		var _v0 = model.e3;
+		if (!_v0.b) {
+			return model.ds ? A2(
+				$elm$html$Html$p,
+				_List_fromArray(
+					[
+						A2($elm$html$Html$Attributes$style, 'margin', '8px 12px'),
+						A2($elm$html$Html$Attributes$style, 'color', '#7a7a7a'),
+						A2($elm$html$Html$Attributes$style, 'font-size', '12px')
+					]),
+				_List_fromArray(
+					[
+						$elm$html$Html$text('Couldn\'t load agent review.')
+					])) : $elm$html$Html$text('');
+		} else {
+			var review = _v0.a;
+			return A2(
+				$elm$html$Html$div,
+				_List_fromArray(
+					[
+						$elm$html$Html$Attributes$id('agent-review-panel'),
+						A2($elm$html$Html$Attributes$style, 'margin', '8px'),
+						A2($elm$html$Html$Attributes$style, 'border', '1px solid #3d3c3c'),
+						A2($elm$html$Html$Attributes$style, 'background', '#1e1d1d')
+					]),
+				A2(
+					$elm$core$List$cons,
+					A2($author$project$Build$AgentReview$summaryBar, review, model.dt),
+					model.dt ? _List_fromArray(
+						[
+							A3($author$project$Build$AgentReview$panelBody, reviewer, review, model)
+						]) : _List_Nil));
+		}
+	});
+var $author$project$AgentTickets$AgentTicket$content = F2(
+	function (session, model) {
+		if (model.eh) {
+			return A2(
+				$elm$html$Html$p,
+				_List_fromArray(
+					[
+						A2($elm$html$Html$Attributes$style, 'color', '#f0a0a0')
+					]),
+				_List_fromArray(
+					[
+						$elm$html$Html$text('Couldn\'t load ticket.')
+					]));
+		} else {
+			var _v0 = model.bQ;
+			if (_v0.$ === 1) {
+				return A2(
+					$elm$html$Html$p,
+					_List_fromArray(
+						[
+							A2($elm$html$Html$Attributes$style, 'color', '#b0b0b0')
+						]),
+					_List_fromArray(
+						[
+							$elm$html$Html$text('Loading…')
+						]));
+			} else {
+				var detail = _v0.a;
+				return A2(
+					$elm$html$Html$div,
+					_List_Nil,
+					_List_fromArray(
+						[
+							A2($author$project$AgentTickets$AgentTicket$header, model, detail.al),
+							$author$project$AgentTickets$AgentTicket$actionErrorBanner(model),
+							A2($author$project$AgentTickets$AgentTicket$lifecycleBar, model, detail.al),
+							A2($author$project$AgentTickets$AgentTicket$budgetBar, detail.al, model.c7),
+							$author$project$AgentTickets$AgentTicket$editForm(model),
+							A2(
+							$elm$html$Html$div,
+							_List_fromArray(
+								[
+									$elm$html$Html$Attributes$id('ticket-hitl-slot')
+								]),
+							_List_Nil),
+							$author$project$AgentTickets$AgentTicket$tabsBar(model),
+							A2($author$project$AgentTickets$AgentTicket$tabContent, model, detail),
+							$author$project$AgentTickets$AgentTicket$taskList(detail.hc),
+							$author$project$AgentTickets$AgentTicket$runHistory(model.c7),
+							A2(
+							$author$project$Build$AgentReview$view,
+							$author$project$AgentTickets$AgentTicket$reviewerName(session),
+							model)
+						]));
+			}
+		}
+	});
+var $author$project$AgentTickets$AgentTicket$view = F2(
+	function (session, model) {
+		var route = $author$project$Routes$AgentTicket(
+			{f_: model.lg});
+		return A2(
+			$elm$html$Html$div,
+			A2(
+				$elm$core$List$cons,
+				$elm$html$Html$Attributes$id('page-including-top-bar'),
+				$author$project$Views$Styles$pageIncludingTopBar),
+			_List_fromArray(
+				[
+					A2(
+					$elm$html$Html$div,
+					A2(
+						$elm$core$List$cons,
+						$elm$html$Html$Attributes$id('top-bar-app'),
+						$author$project$Views$Styles$topBar(false)),
+					_List_fromArray(
+						[
+							A2(
+							$elm$html$Html$div,
+							_List_fromArray(
+								[
+									A2($elm$html$Html$Attributes$style, 'display', 'flex'),
+									A2($elm$html$Html$Attributes$style, 'align-items', 'center')
+								]),
+							A2(
+								$elm$core$List$cons,
+								$author$project$SideBar$SideBar$sideBarIcon(session),
+								A2($author$project$Views$TopBar$breadcrumbs, session, route))),
+							A2($author$project$Login$Login$view, session.ly, model)
+						])),
+					A2(
+					$elm$html$Html$div,
+					A2(
+						$elm$core$List$cons,
+						$elm$html$Html$Attributes$id('page-below-top-bar'),
+						$author$project$Views$Styles$pageBelowTopBar(route)),
+					_List_fromArray(
+						[
+							A2($author$project$SideBar$SideBar$view, session, $elm$core$Maybe$Nothing),
+							A2(
+							$elm$html$Html$div,
+							_List_fromArray(
+								[
+									A2($elm$html$Html$Attributes$style, 'padding', '16px'),
+									A2($elm$html$Html$Attributes$style, 'width', '100%'),
+									A2($elm$html$Html$Attributes$style, 'max-width', '900px')
+								]),
+							_List_fromArray(
+								[
+									A2($author$project$AgentTickets$AgentTicket$content, session, model)
+								]))
+						]))
+				]));
+	});
+var $author$project$AgentTickets$AgentTickets$sectionBlock = F2(
+	function (title, rows) {
+		return A2(
+			$elm$html$Html$div,
+			_List_fromArray(
+				[
+					A2($elm$html$Html$Attributes$style, 'margin-top', '20px')
+				]),
+			A2(
+				$elm$core$List$cons,
+				A2(
+					$elm$html$Html$h2,
+					_List_fromArray(
+						[
+							A2($elm$html$Html$Attributes$style, 'font-size', '13px'),
+							A2($elm$html$Html$Attributes$style, 'text-transform', 'uppercase'),
+							A2($elm$html$Html$Attributes$style, 'letter-spacing', '0.08em'),
+							A2($elm$html$Html$Attributes$style, 'color', '#9aa39b'),
+							A2($elm$html$Html$Attributes$style, 'margin', '0 0 6px 0')
+						]),
+					_List_fromArray(
+						[
+							$elm$html$Html$text(title)
+						])),
+				rows));
+	});
+var $author$project$AgentTickets$AgentTickets$sortByRecent = $elm$core$List$sortBy(
+	function (t) {
+		return -t.fn;
+	});
+var $author$project$AgentTickets$AgentTickets$formatUsd = function (amount) {
+	var cents = $elm$core$Basics$round(amount * 100);
+	var absCents = $elm$core$Basics$abs(cents);
+	var dollars = (absCents / 100) | 0;
+	var remainder = A2($elm$core$Basics$modBy, 100, absCents);
+	var fraction = (remainder < 10) ? ('0' + $elm$core$String$fromInt(remainder)) : $elm$core$String$fromInt(remainder);
+	return $elm$core$String$fromInt(dollars) + ('.' + fraction);
+};
+var $author$project$AgentTickets$AgentTickets$costLabel = F2(
+	function (costs, ticketId) {
+		var _v0 = A2(
+			$elm$core$Dict$get,
+			$elm$core$String$fromInt(ticketId),
+			costs);
+		if (!_v0.$) {
+			var cost = _v0.a;
+			return '$' + $author$project$AgentTickets$AgentTickets$formatUsd(cost);
+		} else {
+			return '—';
+		}
+	});
+var $author$project$AgentTickets$AgentTickets$ticketRow = F2(
+	function (costs, t) {
+		return A2(
+			$elm$html$Html$a,
+			_List_fromArray(
+				[
+					$elm$html$Html$Attributes$class('agent-ticket-row'),
+					$elm$html$Html$Attributes$href(
+					$author$project$Routes$toString(
+						$author$project$Routes$AgentTicket(
+							{f_: t.f_}))),
+					A2($elm$html$Html$Attributes$style, 'display', 'flex'),
+					A2($elm$html$Html$Attributes$style, 'align-items', 'center'),
+					A2($elm$html$Html$Attributes$style, 'gap', '12px'),
+					A2($elm$html$Html$Attributes$style, 'padding', '8px 12px'),
+					A2($elm$html$Html$Attributes$style, 'border-bottom', '1px solid #3d3c3c'),
+					A2($elm$html$Html$Attributes$style, 'color', 'inherit'),
+					A2($elm$html$Html$Attributes$style, 'text-decoration', 'none')
+				]),
+			_List_fromArray(
+				[
+					A2(
+					$elm$html$Html$span,
+					_List_fromArray(
+						[
+							A2($elm$html$Html$Attributes$style, 'font-family', 'monospace'),
+							A2($elm$html$Html$Attributes$style, 'color', '#9aa39b'),
+							A2($elm$html$Html$Attributes$style, 'min-width', '40px')
+						]),
+					_List_fromArray(
+						[
+							$elm$html$Html$text(
+							'#' + $elm$core$String$fromInt(t.f_))
+						])),
+					function () {
+					var _v0 = $author$project$AgentBadge$fromApiToken(t.dg);
+					if (!_v0.$) {
+						var status = _v0.a;
+						return $author$project$AgentBadge$view(status);
+					} else {
+						return A2(
+							$elm$html$Html$span,
+							_List_fromArray(
+								[
+									A2($elm$html$Html$Attributes$style, 'color', '#b0b0b0')
+								]),
+							_List_fromArray(
+								[
+									$elm$html$Html$text(t.dg)
+								]));
+					}
+				}(),
+					A2(
+					$elm$html$Html$span,
+					_List_fromArray(
+						[
+							A2($elm$html$Html$Attributes$style, 'flex', '1'),
+							A2($elm$html$Html$Attributes$style, 'overflow', 'hidden'),
+							A2($elm$html$Html$Attributes$style, 'text-overflow', 'ellipsis'),
+							A2($elm$html$Html$Attributes$style, 'white-space', 'nowrap')
+						]),
+					_List_fromArray(
+						[
+							$elm$html$Html$text(t.ck)
+						])),
+					A2(
+					$elm$html$Html$span,
+					_List_fromArray(
+						[
+							A2($elm$html$Html$Attributes$style, 'font-family', 'monospace'),
+							A2($elm$html$Html$Attributes$style, 'font-size', '12px'),
+							A2($elm$html$Html$Attributes$style, 'color', '#7a7a7a')
+						]),
+					_List_fromArray(
+						[
+							$elm$html$Html$text(t.lI)
+						])),
+					A2(
+					$elm$html$Html$span,
+					_List_fromArray(
+						[
+							A2($elm$html$Html$Attributes$style, 'font-family', 'monospace'),
+							A2($elm$html$Html$Attributes$style, 'color', '#b0b0b0'),
+							A2($elm$html$Html$Attributes$style, 'min-width', '60px'),
+							A2($elm$html$Html$Attributes$style, 'text-align', 'right')
+						]),
+					_List_fromArray(
+						[
+							$elm$html$Html$text(
+							A2($author$project$AgentTickets$AgentTickets$costLabel, costs, t.f_))
+						]))
+				]));
+	});
+var $author$project$AgentTickets$AgentTickets$leftoverSection = F2(
+	function (costs, tickets) {
+		return $elm$core$List$isEmpty(tickets) ? _List_Nil : _List_fromArray(
+			[
+				A2(
+				$author$project$AgentTickets$AgentTickets$sectionBlock,
+				'other',
+				A2(
+					$elm$core$List$map,
+					$author$project$AgentTickets$AgentTickets$ticketRow(costs),
+					$author$project$AgentTickets$AgentTickets$sortByRecent(tickets)))
+			]);
+	});
+var $author$project$AgentTickets$AgentTickets$sectionOrder = _List_fromArray(
+	['needs_review', 'awaiting_human', 'running', 'queued', 'draft', 'sent_back', 'failed', 'errored', 'merged', 'merged_with_fixes', 'concluded', 'abandoned']);
+var $author$project$AgentTickets$AgentTickets$sectionLabel = function (state) {
+	var _v0 = $author$project$AgentBadge$fromApiToken(state);
+	if (!_v0.$) {
+		var status = _v0.a;
+		return $author$project$AgentBadge$label(status);
+	} else {
+		return state;
+	}
+};
+var $author$project$AgentTickets$AgentTickets$sectionView = F3(
+	function (costs, tickets, state) {
+		var _v0 = A2(
+			$elm$core$List$filter,
+			function (t) {
+				return _Utils_eq(t.dg, state);
+			},
+			tickets);
+		if (!_v0.b) {
+			return $elm$core$Maybe$Nothing;
+		} else {
+			var matching = _v0;
+			return $elm$core$Maybe$Just(
+				A2(
+					$author$project$AgentTickets$AgentTickets$sectionBlock,
+					$author$project$AgentTickets$AgentTickets$sectionLabel(state),
+					A2(
+						$elm$core$List$map,
+						$author$project$AgentTickets$AgentTickets$ticketRow(costs),
+						$author$project$AgentTickets$AgentTickets$sortByRecent(matching))));
+		}
+	});
+var $author$project$AgentTickets$AgentTickets$content = function (model) {
+	if (model.eh) {
+		return A2(
+			$elm$html$Html$p,
+			_List_fromArray(
+				[
+					A2($elm$html$Html$Attributes$style, 'color', '#f0a0a0')
+				]),
+			_List_fromArray(
+				[
+					$elm$html$Html$text('Couldn\'t load tickets.')
+				]));
+	} else {
+		if (model.cP && $elm$core$List$isEmpty(model.ci)) {
+			return A2(
+				$elm$html$Html$p,
+				_List_fromArray(
+					[
+						A2($elm$html$Html$Attributes$style, 'color', '#b0b0b0')
+					]),
+				_List_fromArray(
+					[
+						$elm$html$Html$text('No tickets yet.')
+					]));
+		} else {
+			var leftover = A2(
+				$elm$core$List$filter,
+				function (t) {
+					return !A2($elm$core$List$member, t.dg, $author$project$AgentTickets$AgentTickets$sectionOrder);
+				},
+				model.ci);
+			var knownSections = A2(
+				$elm$core$List$filterMap,
+				A2($author$project$AgentTickets$AgentTickets$sectionView, model.cy, model.ci),
+				$author$project$AgentTickets$AgentTickets$sectionOrder);
+			return A2(
+				$elm$html$Html$div,
+				_List_Nil,
+				_Utils_ap(
+					knownSections,
+					A2($author$project$AgentTickets$AgentTickets$leftoverSection, model.cy, leftover)));
+		}
+	}
+};
+var $author$project$AgentTickets$AgentTickets$view = F2(
+	function (session, model) {
+		var route = $author$project$Routes$AgentTickets;
+		return A2(
+			$elm$html$Html$div,
+			A2(
+				$elm$core$List$cons,
+				$elm$html$Html$Attributes$id('page-including-top-bar'),
+				$author$project$Views$Styles$pageIncludingTopBar),
+			_List_fromArray(
+				[
+					A2(
+					$elm$html$Html$div,
+					A2(
+						$elm$core$List$cons,
+						$elm$html$Html$Attributes$id('top-bar-app'),
+						$author$project$Views$Styles$topBar(false)),
+					_List_fromArray(
+						[
+							A2(
+							$elm$html$Html$div,
+							_List_fromArray(
+								[
+									A2($elm$html$Html$Attributes$style, 'display', 'flex'),
+									A2($elm$html$Html$Attributes$style, 'align-items', 'center')
+								]),
+							A2(
+								$elm$core$List$cons,
+								$author$project$SideBar$SideBar$sideBarIcon(session),
+								A2($author$project$Views$TopBar$breadcrumbs, session, route))),
+							A2($author$project$Login$Login$view, session.ly, model)
+						])),
+					A2(
+					$elm$html$Html$div,
+					A2(
+						$elm$core$List$cons,
+						$elm$html$Html$Attributes$id('page-below-top-bar'),
+						$author$project$Views$Styles$pageBelowTopBar(route)),
+					_List_fromArray(
+						[
+							A2($author$project$SideBar$SideBar$view, session, $elm$core$Maybe$Nothing),
+							A2(
+							$elm$html$Html$div,
+							_List_fromArray(
+								[
+									A2($elm$html$Html$Attributes$style, 'padding', '16px'),
+									A2($elm$html$Html$Attributes$style, 'width', '100%')
+								]),
+							_List_fromArray(
+								[
+									A2(
+									$elm$html$Html$h1,
+									_List_fromArray(
+										[
+											A2($elm$html$Html$Attributes$style, 'font-size', '18px')
 										]),
 									_List_fromArray(
 										[
-											$elm$html$Html$text('Couldn\'t load agent reviews.')
-										])) : ((model.cx && $elm$core$List$isEmpty(model.cL)) ? A2(
-									$elm$html$Html$p,
-									_List_fromArray(
-										[
-											A2($elm$html$Html$Attributes$style, 'color', '#b0b0b0')
-										]),
-									_List_fromArray(
-										[
-											$elm$html$Html$text('No agent reviews yet.')
-										])) : A2(
-									$elm$html$Html$div,
-									_List_Nil,
-									A2($elm$core$List$map, $author$project$AgentReviews$AgentReviews$reviewRow, model.cL)))
+											$elm$html$Html$text('Ticket queue')
+										])),
+									$author$project$AgentTickets$AgentTickets$content(model)
 								]))
 						]))
 				]));
 	});
 var $author$project$Build$Build$breadcrumbs = F2(
 	function (session, model) {
-		var _v0 = _Utils_Tuple2(model.ap, model.bp);
+		var _v0 = _Utils_Tuple2(model.ac, model.br);
 		if (!_v0.a.$) {
 			var jobId = _v0.a.a;
 			return A2(
@@ -35998,9 +39266,9 @@ var $author$project$Build$Build$breadcrumbs = F2(
 				session,
 				$author$project$Routes$Job(
 					{
-						dt: $author$project$Routes$getGroups(session.d5),
-						iz: jobId,
-						bp: $elm$core$Maybe$Nothing
+						dZ: $author$project$Routes$getGroups(session.eD),
+						f_: jobId,
+						br: $elm$core$Maybe$Nothing
 					}));
 		} else {
 			if (_v0.b.$ === 1) {
@@ -36010,9 +39278,9 @@ var $author$project$Build$Build$breadcrumbs = F2(
 					session,
 					$author$project$Routes$Build(
 						{
-							dt: $author$project$Routes$getGroups(session.d5),
-							is: model.is,
-							iz: buildId
+							dZ: $author$project$Routes$getGroups(session.eD),
+							iZ: model.iZ,
+							f_: buildId
 						}));
 			} else {
 				return _List_fromArray(
@@ -36023,7 +39291,7 @@ var $author$project$Build$Build$breadcrumbs = F2(
 		}
 	});
 var $author$project$Message$Message$Scrolled = function (a) {
-	return {$: 34, a: a};
+	return {$: 49, a: a};
 };
 var $author$project$Build$Styles$body = _List_fromArray(
 	[
@@ -36075,43 +39343,43 @@ var $author$project$Build$Shortcuts$keyboardHelp = function (showHelp) {
 	var shortcuts = _List_fromArray(
 		[
 			{
-			eZ: 'previous/next build',
-			ar: _List_fromArray(
+			fy: 'previous/next build',
+			as: _List_fromArray(
 				['h', 'l'])
 		},
 			{
-			eZ: 'scroll down/up',
-			ar: _List_fromArray(
+			fy: 'scroll down/up',
+			as: _List_fromArray(
 				['j', 'k'])
 		},
 			{
-			eZ: 'trigger a new build',
-			ar: _List_fromArray(
+			fy: 'trigger a new build',
+			as: _List_fromArray(
 				['T'])
 		},
 			{
-			eZ: 'rerun the current build',
-			ar: _List_fromArray(
+			fy: 'rerun the current build',
+			as: _List_fromArray(
 				['R'])
 		},
 			{
-			eZ: 'abort build',
-			ar: _List_fromArray(
+			fy: 'abort build',
+			as: _List_fromArray(
 				['A'])
 		},
 			{
-			eZ: 'scroll to the top',
-			ar: _List_fromArray(
+			fy: 'scroll to the top',
+			as: _List_fromArray(
 				['gg'])
 		},
 			{
-			eZ: 'scroll to the bottom',
-			ar: _List_fromArray(
+			fy: 'scroll to the bottom',
+			as: _List_fromArray(
 				['G'])
 		},
 			{
-			eZ: 'hide/show help',
-			ar: _List_fromArray(
+			fy: 'hide/show help',
+			as: _List_fromArray(
 				['?'])
 		}
 		]);
@@ -36142,8 +39410,8 @@ var $author$project$Build$Shortcuts$keyboardHelp = function (showHelp) {
 						[
 							$elm$html$Html$Attributes$class('keys')
 						]),
-					A2($elm$core$List$map, keySpan, shortcut.ar)),
-					$elm$html$Html$text(shortcut.eZ)
+					A2($elm$core$List$map, keySpan, shortcut.as)),
+					$elm$html$Html$text(shortcut.fy)
 				]));
 	};
 	return A2(
@@ -36175,7 +39443,7 @@ var $elm$virtual_dom$VirtualDom$lazy3 = _VirtualDom_lazy3;
 var $elm$html$Html$Lazy$lazy3 = $elm$virtual_dom$VirtualDom$lazy3;
 var $author$project$StrictEvents$ScrollState = F3(
 	function (scrollHeight, scrollTop, clientHeight) {
-		return {hf: clientHeight, kc: scrollHeight, kd: scrollTop};
+		return {hS: clientHeight, kH: scrollHeight, kI: scrollTop};
 	});
 var $author$project$StrictEvents$decodeScrollEvent = A4(
 	$elm$json$Json$Decode$map3,
@@ -36202,10 +39470,10 @@ var $author$project$StrictEvents$onScroll = function (cons) {
 		A2($elm$json$Json$Decode$map, cons, $author$project$StrictEvents$decodeScrollEvent));
 };
 var $author$project$Build$Build$reviewerName = function (session) {
-	var _v0 = session.k1;
+	var _v0 = session.ly;
 	if (!_v0.$) {
 		var user = _v0.a;
-		return user.k0;
+		return user.lx;
 	} else {
 		return 'anonymous';
 	}
@@ -36241,8 +39509,8 @@ var $elm_community$maybe_extra$Maybe$Extra$or = F2(
 	});
 var $author$project$Build$Build$tombstone = F2(
 	function (timeZone, model) {
-		var maybeBirthDate = A2($elm_community$maybe_extra$Maybe$Extra$or, model.dh.gu, model.dh.e9);
-		var _v0 = _Utils_Tuple2(maybeBirthDate, model.b1);
+		var maybeBirthDate = A2($elm_community$maybe_extra$Maybe$Extra$or, model.dJ.g6, model.dJ.fL);
+		var _v0 = _Utils_Tuple2(maybeBirthDate, model.b9);
 		if ((!_v0.a.$) && (!_v0.b.$)) {
 			var birthDate = _v0.a.a;
 			var reapTime = _v0.b.a;
@@ -36281,9 +39549,9 @@ var $author$project$Build$Build$tombstone = F2(
 										A2(
 											$elm$core$Maybe$map,
 											function ($) {
-												return $.i0;
+												return $.jw;
 											},
-											model.ap)))
+											model.ac)))
 								])),
 							A2(
 							$elm$html$Html$div,
@@ -36293,7 +39561,7 @@ var $author$project$Build$Build$tombstone = F2(
 								]),
 							_List_fromArray(
 								[
-									$elm$html$Html$text('build #' + model.dQ)
+									$elm$html$Html$text('build #' + model.cT)
 								])),
 							A2(
 							$elm$html$Html$div,
@@ -36316,7 +39584,7 @@ var $author$project$Build$Build$tombstone = F2(
 								[
 									$elm$html$Html$text(
 									function () {
-										var _v1 = model.ek;
+										var _v1 = model.eT;
 										switch (_v1) {
 											case 2:
 												return 'It passed, and now it has passed on.';
@@ -36355,402 +39623,6 @@ var $author$project$Build$Build$tombstone = F2(
 				]);
 		} else {
 			return _List_Nil;
-		}
-	});
-var $author$project$Message$Message$ToggleAgentReviewFinding = function (a) {
-	return {$: 20, a: a};
-};
-var $author$project$Build$AgentReview$severityBadge = function (severity) {
-	var _v0 = function () {
-		switch (severity) {
-			case 'critical':
-				return _Utils_Tuple2('#5c2626', '#f0a0a0');
-			case 'high':
-				return _Utils_Tuple2('#5c2626', '#f0a0a0');
-			case 'medium':
-				return _Utils_Tuple2('#5c4a26', '#f0d0a0');
-			default:
-				return _Utils_Tuple2('#3d3c3c', '#b0b0b0');
-		}
-	}();
-	var bg = _v0.a;
-	var fg = _v0.b;
-	return (severity === '') ? $elm$html$Html$text('') : A2(
-		$elm$html$Html$span,
-		_List_fromArray(
-			[
-				A2($elm$html$Html$Attributes$style, 'background', bg),
-				A2($elm$html$Html$Attributes$style, 'color', fg),
-				A2($elm$html$Html$Attributes$style, 'padding', '1px 6px'),
-				A2($elm$html$Html$Attributes$style, 'font-size', '12px')
-			]),
-		_List_fromArray(
-			[
-				$elm$html$Html$text(severity)
-			]));
-};
-var $elm$html$Html$pre = _VirtualDom_node('pre');
-var $author$project$Build$AgentReview$testEvidence = function (finding) {
-	return (finding.gA === '') ? _List_Nil : _List_fromArray(
-		[
-			A2(
-			$elm$html$Html$pre,
-			_List_fromArray(
-				[
-					A2($elm$html$Html$Attributes$style, 'background', '#141313'),
-					A2($elm$html$Html$Attributes$style, 'padding', '8px'),
-					A2($elm$html$Html$Attributes$style, 'font-size', '12px'),
-					A2($elm$html$Html$Attributes$style, 'overflow-x', 'auto')
-				]),
-			_List_fromArray(
-				[
-					$elm$html$Html$text(finding.gA)
-				]))
-		]);
-};
-var $author$project$Message$Message$AgentReviewNoteChanged = F2(
-	function (a, b) {
-		return {$: 23, a: a, b: b};
-	});
-var $author$project$Message$Message$AgentReviewVerdictClicked = function (a) {
-	return {$: 22, a: a};
-};
-var $author$project$Concourse$AgentReview$allVerdicts = _List_fromArray(
-	['accurate', 'false_positive', 'noisy', 'overly_strict', 'partially_correct', 'missed_context']);
-var $author$project$Concourse$AgentReview$verdictLabel = function (verdict) {
-	return A3($elm$core$String$replace, '_', ' ', verdict);
-};
-var $author$project$Build$AgentReview$verdictRow = F5(
-	function (reviewer, review, finding, recorded, model) {
-		return A2(
-			$elm$html$Html$div,
-			_List_Nil,
-			_List_fromArray(
-				[
-					A2(
-					$elm$html$Html$div,
-					_List_fromArray(
-						[
-							$elm$html$Html$Attributes$class('agent-review-verdicts'),
-							A2($elm$html$Html$Attributes$style, 'display', 'flex'),
-							A2($elm$html$Html$Attributes$style, 'align-items', 'center'),
-							A2($elm$html$Html$Attributes$style, 'gap', '0'),
-							A2($elm$html$Html$Attributes$style, 'margin-top', '8px'),
-							A2($elm$html$Html$Attributes$style, 'border', '1px solid #555'),
-							A2($elm$html$Html$Attributes$style, 'width', 'fit-content')
-						]),
-					A2(
-						$elm$core$List$map,
-						function (verdict) {
-							var selected = A2(
-								$elm$core$Maybe$withDefault,
-								false,
-								A2(
-									$elm$core$Maybe$map,
-									A2(
-										$elm$core$Basics$composeR,
-										function ($) {
-											return $.gI;
-										},
-										$elm$core$Basics$eq(verdict)),
-									recorded));
-							return A2(
-								$elm$html$Html$span,
-								_List_fromArray(
-									[
-										A2($elm$html$Html$Attributes$style, 'padding', '4px 10px'),
-										A2($elm$html$Html$Attributes$style, 'font-size', '12px'),
-										A2($elm$html$Html$Attributes$style, 'cursor', 'pointer'),
-										A2($elm$html$Html$Attributes$style, 'border-right', '1px solid #555'),
-										A2(
-										$elm$html$Html$Attributes$style,
-										'background',
-										selected ? '#e0e0e0' : 'transparent'),
-										A2(
-										$elm$html$Html$Attributes$style,
-										'color',
-										selected ? '#141313' : '#b0b0b0'),
-										$elm$html$Html$Events$onClick(
-										$author$project$Message$Message$AgentReviewVerdictClicked(
-											{hk: review.dD.hk, id: finding.iz, gb: review.dD.gb, j5: reviewer, gI: verdict}))
-									]),
-								_List_fromArray(
-									[
-										$elm$html$Html$text(
-										$author$project$Concourse$AgentReview$verdictLabel(verdict))
-									]));
-						},
-						$author$project$Concourse$AgentReview$allVerdicts)),
-					A2(
-					$elm$html$Html$input,
-					_List_fromArray(
-						[
-							$elm$html$Html$Attributes$placeholder('Add a note about this verdict'),
-							$elm$html$Html$Attributes$value(
-							A2(
-								$elm$core$Maybe$withDefault,
-								'',
-								A2($elm$core$Dict$get, finding.iz, model.gQ))),
-							$elm$html$Html$Events$onInput(
-							$author$project$Message$Message$AgentReviewNoteChanged(finding.iz)),
-							A2($elm$html$Html$Attributes$style, 'width', '100%'),
-							A2($elm$html$Html$Attributes$style, 'margin-top', '6px'),
-							A2($elm$html$Html$Attributes$style, 'background', '#141313'),
-							A2($elm$html$Html$Attributes$style, 'color', '#e0e0e0'),
-							A2($elm$html$Html$Attributes$style, 'border', '1px solid #3d3c3c'),
-							A2($elm$html$Html$Attributes$style, 'padding', '4px 8px')
-						]),
-					_List_Nil),
-					A2($elm$core$Set$member, finding.iz, model.k4) ? A2(
-					$elm$html$Html$p,
-					_List_fromArray(
-						[
-							A2($elm$html$Html$Attributes$style, 'color', '#f0a0a0'),
-							A2($elm$html$Html$Attributes$style, 'font-size', '12px'),
-							A2($elm$html$Html$Attributes$style, 'margin', '4px 0 0')
-						]),
-					_List_fromArray(
-						[
-							$elm$html$Html$text('Couldn\'t save verdict. Click a verdict to retry.')
-						])) : $elm$html$Html$text('')
-				]));
-	});
-var $author$project$Build$AgentReview$findingCard = F5(
-	function (reviewer, review, isProven, model, finding) {
-		var recorded = A2($elm$core$Dict$get, finding.iz, review.h5);
-		var expanded = isProven || A2($elm$core$Set$member, finding.iz, model.hY);
-		return A2(
-			$elm$html$Html$div,
-			_List_fromArray(
-				[
-					$elm$html$Html$Attributes$class('agent-review-finding'),
-					A2($elm$html$Html$Attributes$style, 'border', '1px solid #3d3c3c'),
-					A2($elm$html$Html$Attributes$style, 'margin-bottom', '8px'),
-					A2($elm$html$Html$Attributes$style, 'padding', '8px 12px')
-				]),
-			_Utils_ap(
-				_List_fromArray(
-					[
-						A2(
-						$elm$html$Html$div,
-						_List_fromArray(
-							[
-								A2($elm$html$Html$Attributes$style, 'display', 'flex'),
-								A2($elm$html$Html$Attributes$style, 'align-items', 'center'),
-								A2($elm$html$Html$Attributes$style, 'gap', '8px'),
-								A2($elm$html$Html$Attributes$style, 'cursor', 'pointer'),
-								$elm$html$Html$Events$onClick(
-								$author$project$Message$Message$ToggleAgentReviewFinding(finding.iz))
-							]),
-						_List_fromArray(
-							[
-								$author$project$Build$AgentReview$severityBadge(finding.kk),
-								A2(
-								$elm$html$Html$span,
-								_List_fromArray(
-									[
-										A2($elm$html$Html$Attributes$style, 'font-weight', '700')
-									]),
-								_List_fromArray(
-									[
-										$elm$html$Html$text(finding.kN)
-									])),
-								A2(
-								$elm$html$Html$span,
-								_List_fromArray(
-									[
-										A2($elm$html$Html$Attributes$style, 'margin-left', 'auto'),
-										A2($elm$html$Html$Attributes$style, 'font-family', 'monospace'),
-										A2($elm$html$Html$Attributes$style, 'color', '#7a7a7a')
-									]),
-								_List_fromArray(
-									[
-										$elm$html$Html$text(
-										finding.h7 + (':' + $elm$core$String$fromInt(finding.ja)))
-									]))
-							]))
-					]),
-				expanded ? _Utils_ap(
-					_List_fromArray(
-						[
-							A2(
-							$elm$html$Html$p,
-							_List_fromArray(
-								[
-									A2($elm$html$Html$Attributes$style, 'color', '#b0b0b0'),
-									A2($elm$html$Html$Attributes$style, 'margin', '8px 0')
-								]),
-							_List_fromArray(
-								[
-									$elm$html$Html$text(finding.eZ)
-								]))
-						]),
-					_Utils_ap(
-						$author$project$Build$AgentReview$testEvidence(finding),
-						_List_fromArray(
-							[
-								A5($author$project$Build$AgentReview$verdictRow, reviewer, review, finding, recorded, model)
-							]))) : _List_Nil));
-	});
-var $author$project$Message$Message$ToggleAgentReviewObservations = {$: 21};
-var $author$project$Build$AgentReview$observationsSection = F3(
-	function (reviewer, review, model) {
-		return $elm$core$List$isEmpty(review.dV) ? _List_Nil : A2(
-			$elm$core$List$cons,
-			A2(
-				$elm$html$Html$div,
-				_List_fromArray(
-					[
-						$elm$html$Html$Attributes$class('agent-review-observations-toggle'),
-						A2($elm$html$Html$Attributes$style, 'padding', '8px 0'),
-						A2($elm$html$Html$Attributes$style, 'cursor', 'pointer'),
-						A2($elm$html$Html$Attributes$style, 'color', '#b0b0b0'),
-						$elm$html$Html$Events$onClick($author$project$Message$Message$ToggleAgentReviewObservations)
-					]),
-				_List_fromArray(
-					[
-						$elm$html$Html$text(
-						'observations (' + ($elm$core$String$fromInt(
-							$elm$core$List$length(review.dV)) + (') — advisory, no failing test ' + (model.gq ? '▾' : '▸'))))
-					])),
-			model.gq ? A2(
-				$elm$core$List$map,
-				A4($author$project$Build$AgentReview$findingCard, reviewer, review, false, model),
-				review.dV) : _List_Nil);
-	});
-var $author$project$Build$AgentReview$panelBody = F3(
-	function (reviewer, review, model) {
-		return A2(
-			$elm$html$Html$div,
-			_List_fromArray(
-				[
-					A2($elm$html$Html$Attributes$style, 'padding', '8px 12px')
-				]),
-			_Utils_ap(
-				A2(
-					$elm$core$List$map,
-					A4($author$project$Build$AgentReview$findingCard, reviewer, review, true, model),
-					review.jV),
-				A3($author$project$Build$AgentReview$observationsSection, reviewer, review, model)));
-	});
-var $author$project$Message$Message$ToggleAgentReviewPanel = {$: 19};
-var $author$project$Build$AgentReview$scoreBadge = function (s) {
-	return A2(
-		$elm$html$Html$span,
-		_List_fromArray(
-			[
-				A2($elm$html$Html$Attributes$style, 'padding', '2px 8px'),
-				A2($elm$html$Html$Attributes$style, 'font-weight', '700'),
-				A2(
-				$elm$html$Html$Attributes$style,
-				'background',
-				s.fU ? '#2e4f2e' : '#5c2626'),
-				A2(
-				$elm$html$Html$Attributes$style,
-				'color',
-				s.fU ? '#9fdf9f' : '#f0a0a0')
-			]),
-		_List_fromArray(
-			[
-				$elm$html$Html$text(
-				$elm$core$String$fromFloat(s.kb) + (' / ' + $elm$core$String$fromFloat(s.je)))
-			]));
-};
-var $author$project$Build$AgentReview$summaryBar = F2(
-	function (review, expanded) {
-		var s = review.dD;
-		return A2(
-			$elm$html$Html$div,
-			_List_fromArray(
-				[
-					$elm$html$Html$Attributes$class('agent-review-summary'),
-					A2($elm$html$Html$Attributes$style, 'display', 'flex'),
-					A2($elm$html$Html$Attributes$style, 'align-items', 'center'),
-					A2($elm$html$Html$Attributes$style, 'gap', '12px'),
-					A2($elm$html$Html$Attributes$style, 'padding', '8px 12px'),
-					A2($elm$html$Html$Attributes$style, 'cursor', 'pointer'),
-					$elm$html$Html$Events$onClick($author$project$Message$Message$ToggleAgentReviewPanel)
-				]),
-			_List_fromArray(
-				[
-					A2(
-					$elm$html$Html$span,
-					_List_fromArray(
-						[
-							A2($elm$html$Html$Attributes$style, 'font-weight', '700')
-						]),
-					_List_fromArray(
-						[
-							$elm$html$Html$text('agent review')
-						])),
-					$author$project$Build$AgentReview$scoreBadge(s),
-					A2(
-					$elm$html$Html$span,
-					_List_fromArray(
-						[
-							A2($elm$html$Html$Attributes$style, 'color', '#b0b0b0')
-						]),
-					_List_fromArray(
-						[
-							$elm$html$Html$text(
-							$elm$core$String$fromInt(s.f7) + (' proven · ' + ($elm$core$String$fromInt(s.fP) + ' observations')))
-						])),
-					A2(
-					$elm$html$Html$span,
-					_List_fromArray(
-						[
-							A2($elm$html$Html$Attributes$style, 'margin-left', 'auto'),
-							A2($elm$html$Html$Attributes$style, 'color', '#7a7a7a')
-						]),
-					_List_fromArray(
-						[
-							$elm$html$Html$text(
-							'evaluated ' + ($elm$core$String$fromInt(s.hR) + (' of ' + $elm$core$String$fromInt(review.ic))))
-						])),
-					A2(
-					$elm$html$Html$span,
-					_List_Nil,
-					_List_fromArray(
-						[
-							$elm$html$Html$text(
-							expanded ? '▾' : '▸')
-						]))
-				]));
-	});
-var $author$project$Build$AgentReview$view = F2(
-	function (reviewer, model) {
-		var _v0 = model.gR;
-		if (!_v0.b) {
-			return model.gP ? A2(
-				$elm$html$Html$p,
-				_List_fromArray(
-					[
-						A2($elm$html$Html$Attributes$style, 'margin', '8px 12px'),
-						A2($elm$html$Html$Attributes$style, 'color', '#7a7a7a'),
-						A2($elm$html$Html$Attributes$style, 'font-size', '12px')
-					]),
-				_List_fromArray(
-					[
-						$elm$html$Html$text('Couldn\'t load agent review.')
-					])) : $elm$html$Html$text('');
-		} else {
-			var review = _v0.a;
-			return A2(
-				$elm$html$Html$div,
-				_List_fromArray(
-					[
-						$elm$html$Html$Attributes$id('agent-review-panel'),
-						A2($elm$html$Html$Attributes$style, 'margin', '8px'),
-						A2($elm$html$Html$Attributes$style, 'border', '1px solid #3d3c3c'),
-						A2($elm$html$Html$Attributes$style, 'background', '#1e1d1d')
-					]),
-				A2(
-					$elm$core$List$cons,
-					A2($author$project$Build$AgentReview$summaryBar, review, model.ew),
-					model.ew ? _List_fromArray(
-						[
-							A3($author$project$Build$AgentReview$panelBody, reviewer, review, model)
-						]) : _List_Nil));
 		}
 	});
 var $author$project$Assets$PassportOfficerIcon = {$: 13};
@@ -36825,7 +39697,7 @@ var $author$project$Message$Message$StepSubHeader = F2(
 	});
 var $author$project$Build$StepTree$StepTree$assumeStep = F3(
 	function (model, stepId, f) {
-		var _v0 = A2($elm$core$Dict$get, stepId, model.kv);
+		var _v0 = A2($elm$core$Dict$get, stepId, model.k_);
 		if (_v0.$ === 1) {
 			return $elm$html$Html$text('');
 		} else {
@@ -37041,7 +39913,7 @@ var $author$project$Build$StepTree$Models$activeTreeSteps = F2(
 			A2(
 				$elm$core$List$map,
 				function (id) {
-					return A2($elm$core$Dict$get, id, model.kv);
+					return A2($elm$core$Dict$get, id, model.k_);
 				},
 				A2($author$project$Build$StepTree$Models$activeStepIds, model, stepTree)));
 	});
@@ -37051,13 +39923,13 @@ var $author$project$Build$StepTree$Models$mostSevereStepState = F2(
 			$elm$core$List$foldl,
 			F2(
 				function (step, state) {
-					var _v0 = step.eJ;
+					var _v0 = step.fg;
 					if (_v0.$ === 12) {
 						return state;
 					} else {
-						var _v1 = A2($author$project$Build$StepTree$Models$stepStateOrdering, step.kt, state);
+						var _v1 = A2($author$project$Build$StepTree$Models$stepStateOrdering, step.dg, state);
 						if (!_v1) {
-							return step.kt;
+							return step.dg;
 						} else {
 							return state;
 						}
@@ -37073,7 +39945,7 @@ var $author$project$Build$StepTree$Models$treeIsActive = F2(
 			A2(
 				$elm$core$Basics$composeR,
 				function ($) {
-					return $.kt;
+					return $.dg;
 				},
 				$author$project$Build$StepTree$Models$isActive),
 			A2($author$project$Build$StepTree$Models$activeTreeSteps, model, stepTree));
@@ -37176,7 +40048,7 @@ var $author$project$Build$StepTree$StepTree$stepName = function (header) {
 			var name = header.a;
 			return $elm$core$Maybe$Just(name);
 		case 11:
-			var vars = header.a.cd;
+			var vars = header.a.cp;
 			return $elm$core$Maybe$Just(
 				A2($elm$core$String$join, ', ', vars));
 		case 12:
@@ -37206,7 +40078,6 @@ var $author$project$Build$StepTree$StepTree$stepName = function (header) {
 			return $elm$core$Maybe$Just(name);
 	}
 };
-var $elm$html$Html$ul = _VirtualDom_node('ul');
 var $author$project$Assets$CogsIcon = {$: 16};
 var $author$project$Message$Message$StepInitialization = function (a) {
 	return {$: 44, a: a};
@@ -37226,7 +40097,7 @@ var $author$project$Build$Styles$initializationToggle = function (expanded) {
 		]);
 };
 var $author$project$Build$StepTree$StepTree$viewInitializationToggle = function (step) {
-	var domId = $author$project$Message$Message$StepInitialization(step.iz);
+	var domId = $author$project$Message$Message$StepInitialization(step.f_);
 	return A2(
 		$elm$html$Html$h3,
 		_Utils_ap(
@@ -37242,12 +40113,12 @@ var $author$project$Build$StepTree$StepTree$viewInitializationToggle = function 
 					$elm$html$Html$Attributes$id(
 					$author$project$Message$Effects$toHtmlID(domId))
 				]),
-			$author$project$Build$Styles$initializationToggle(step.iF)),
+			$author$project$Build$Styles$initializationToggle(step.i9)),
 		_List_fromArray(
 			[
 				A2(
 				$author$project$Views$Icon$icon,
-				{fo: $author$project$Assets$CogsIcon, cW: 14},
+				{f$: $author$project$Assets$CogsIcon, df: 14},
 				_List_fromArray(
 					[
 						A2($elm$html$Html$Attributes$style, 'background-size', 'contain')
@@ -37396,42 +40267,41 @@ var $vito$elm_ansi$Ansi$Log$styleAttributes = function (style) {
 	var fgStyles = A3(
 		$vito$elm_ansi$Ansi$Log$colorStyles,
 		true,
-		style.a0,
-		(!style.bU) ? style.bP : style.gW);
+		style.a1,
+		(!style.b0) ? style.bX : style.hx);
 	var bgStyles = A3(
 		$vito$elm_ansi$Ansi$Log$colorStyles,
 		false,
-		style.a0,
-		(!style.bU) ? style.gW : style.bP);
+		style.a1,
+		(!style.b0) ? style.hx : style.bX);
 	return _Utils_ap(
 		_List_fromArray(
 			[
 				A2(
 				$elm$html$Html$Attributes$style,
 				'font-weight',
-				style.a0 ? 'bold' : 'normal'),
+				style.a1 ? 'bold' : 'normal'),
 				A2(
 				$elm$html$Html$Attributes$style,
 				'text-decoration',
-				style.c1 ? 'underline' : 'none'),
+				style.dn ? 'underline' : 'none'),
 				A2(
 				$elm$html$Html$Attributes$style,
 				'font-style',
-				style.cu ? 'italic' : 'normal'),
+				style.cM ? 'italic' : 'normal'),
 				$elm$html$Html$Attributes$classList(
 				_List_fromArray(
 					[
-						_Utils_Tuple2('ansi-blink', style.cg),
-						_Utils_Tuple2('ansi-faint', style.cm),
-						_Utils_Tuple2('ansi-Fraktur', style.co),
-						_Utils_Tuple2('ansi-framed', style.cp)
+						_Utils_Tuple2('ansi-blink', style.cv),
+						_Utils_Tuple2('ansi-faint', style.cD),
+						_Utils_Tuple2('ansi-Fraktur', style.cF),
+						_Utils_Tuple2('ansi-framed', style.cG)
 					]))
 			]),
 		_Utils_ap(fgStyles, bgStyles));
 };
-var $elm$html$Html$Attributes$target = $elm$html$Html$Attributes$stringProperty('target');
 var $vito$elm_ansi$Ansi$Log$viewChunk = function (chunk) {
-	var _v0 = chunk.aD;
+	var _v0 = chunk.aE;
 	if (!_v0.$) {
 		var url = _v0.a;
 		return A2(
@@ -37450,21 +40320,21 @@ var $vito$elm_ansi$Ansi$Log$viewChunk = function (chunk) {
 								A2(
 									$elm$core$List$any,
 									$elm$core$String$startsWith('id='),
-									chunk.aC))
+									chunk.aD))
 							]))
 					]),
-				$vito$elm_ansi$Ansi$Log$styleAttributes(chunk.kw)),
+				$vito$elm_ansi$Ansi$Log$styleAttributes(chunk.k$)),
 			_List_fromArray(
 				[
-					$elm$html$Html$text(chunk.kH)
+					$elm$html$Html$text(chunk.lc)
 				]));
 	} else {
 		return A2(
 			$elm$html$Html$span,
-			$vito$elm_ansi$Ansi$Log$styleAttributes(chunk.kw),
+			$vito$elm_ansi$Ansi$Log$styleAttributes(chunk.k$),
 			_List_fromArray(
 				[
-					$elm$html$Html$text(chunk.kH)
+					$elm$html$Html$text(chunk.lc)
 				]));
 	}
 };
@@ -37539,7 +40409,7 @@ var $author$project$StrictEvents$onLeftClickOrShiftLeftClick = F2(
 											return A2(
 												$elm$json$Json$Decode$map,
 												function (x) {
-													return {jf: x, b$: true, b6: false};
+													return {jK: x, b7: true, cf: false};
 												},
 												A2($author$project$StrictEvents$determineClickMsg, msg, shiftMsg));
 										},
@@ -37552,10 +40422,10 @@ var $author$project$StrictEvents$onLeftClickOrShiftLeftClick = F2(
 				$author$project$StrictEvents$assertLeftButton));
 	});
 var $author$project$Build$StepTree$StepTree$viewTimestamp = function (_v0) {
-	var id = _v0.iz;
-	var lineNo = _v0.cv;
-	var date = _v0.eU;
-	var timeZone = _v0.gB;
+	var id = _v0.f_;
+	var lineNo = _v0.cN;
+	var date = _v0.ft;
+	var timeZone = _v0.he;
 	return A2(
 		$elm$html$Html$a,
 		_List_fromArray(
@@ -37608,12 +40478,12 @@ var $author$project$Build$StepTree$StepTree$viewTimestamp = function (_v0) {
 			]));
 };
 var $author$project$Build$StepTree$StepTree$viewTimestampedLine = function (_v0) {
-	var timestamps = _v0.gC;
-	var highlight = _v0.is;
-	var id = _v0.iz;
-	var lineNo = _v0.cv;
-	var line = _v0.ja;
-	var timeZone = _v0.gB;
+	var timestamps = _v0.hf;
+	var highlight = _v0.iZ;
+	var id = _v0.f_;
+	var lineNo = _v0.cN;
+	var line = _v0.ge;
+	var timeZone = _v0.he;
 	var ts = A2($elm$core$Dict$get, lineNo, timestamps);
 	var highlighted = function () {
 		switch (highlight.$) {
@@ -37646,20 +40516,20 @@ var $author$project$Build$StepTree$StepTree$viewTimestampedLine = function (_v0)
 		_List_fromArray(
 			[
 				$author$project$Build$StepTree$StepTree$viewTimestamp(
-				{eU: ts, iz: id, cv: lineNo, gB: timeZone}),
+				{ft: ts, f_: id, cN: lineNo, he: timeZone}),
 				$author$project$Build$StepTree$StepTree$viewLine(line)
 			]));
 };
 var $author$project$Build$StepTree$StepTree$viewLogs = F5(
 	function (_v0, timestamps, hl, timeZone, id) {
-		var lines = _v0.fD;
+		var lines = _v0.gf;
 		return $elm$core$Array$toList(
 			A2(
 				$elm$core$Array$indexedMap,
 				F2(
 					function (idx, line) {
 						return $author$project$Build$StepTree$StepTree$viewTimestampedLine(
-							{is: hl, iz: id, ja: line, cv: idx + 1, gB: timeZone, gC: timestamps});
+							{iZ: hl, f_: id, ge: line, cN: idx + 1, he: timeZone, hf: timestamps});
 					}),
 				lines));
 	});
@@ -37715,8 +40585,8 @@ var $author$project$Build$StepTree$StepTree$viewMetadata = function (meta) {
 		}
 	};
 	var tr = function (_v0) {
-		var name = _v0.dQ;
-		var value = _v0.k2;
+		var name = _v0.cT;
+		var value = _v0.lz;
 		return A2(
 			$elm$html$Html$tr,
 			_List_Nil,
@@ -37751,9 +40621,9 @@ var $author$project$Views$Styles$fontWeightDefault = '700';
 var $author$project$Colors$paginationHover = '#504b4b';
 var $author$project$Colors$retryTabText = '#f5f5f5';
 var $author$project$Build$Styles$tab = function (_v0) {
-	var isHovered = _v0.iS;
-	var isCurrent = _v0.iO;
-	var isStarted = _v0.iW;
+	var isHovered = _v0.jm;
+	var isCurrent = _v0.ji;
+	var isStarted = _v0.jq;
 	return _List_fromArray(
 		[
 			A2($elm$html$Html$Attributes$style, 'display', 'inline-block'),
@@ -37774,7 +40644,7 @@ var $author$project$Build$Styles$tab = function (_v0) {
 };
 var $author$project$Build$StepTree$StepTree$viewRetryTab = F6(
 	function (_v0, model, stepId, activeTab, tab, step) {
-		var hovered = _v0.dv;
+		var hovered = _v0.d$;
 		var label = $elm$core$String$fromInt(tab + 1);
 		var current = _Utils_eq(activeTab, tab);
 		var active = A2($author$project$Build$StepTree$Models$treeIsActive, model, step);
@@ -37801,12 +40671,12 @@ var $author$project$Build$StepTree$StepTree$viewRetryTab = F6(
 					]),
 				$author$project$Build$Styles$tab(
 					{
-						iO: current,
-						iS: A2(
+						ji: current,
+						jm: A2(
 							$author$project$HoverState$isHovered,
 							A2($author$project$Message$Message$StepTab, stepId, tab),
 							hovered),
-						iW: active
+						jq: active
 					})),
 			_List_fromArray(
 				[
@@ -37871,7 +40741,7 @@ var $author$project$Build$StepTree$StepTree$viewStepHeader = function (step) {
 					]),
 				_List_fromArray(
 					[
-						A4($author$project$Build$StepTree$StepTree$viewStepHeaderLabel, label, changedTooltip, step.hc, step.iz),
+						A4($author$project$Build$StepTree$StepTree$viewStepHeaderLabel, label, changedTooltip, step.hP, step.f_),
 						A2(
 						$elm$html$Html$h3,
 						_List_fromArray(
@@ -37892,7 +40762,7 @@ var $author$project$Build$StepTree$StepTree$viewStepHeader = function (step) {
 						$elm$html$Html$text(name)
 					]));
 		});
-	var _v0 = step.eJ;
+	var _v0 = step.fg;
 	switch (_v0.$) {
 		case 0:
 			var name = _v0.a;
@@ -37984,7 +40854,7 @@ var $author$project$Build$StepTree$StepTree$viewStepHeader = function (step) {
 			var name = _v0.a;
 			return A3(simpleHeader, 'put:', $elm$core$Maybe$Nothing, name);
 		case 11:
-			var vars = _v0.a.cd;
+			var vars = _v0.a.cp;
 			return A3(
 				simpleHeader,
 				'across:',
@@ -38024,9 +40894,9 @@ var $author$project$Assets$InterruptedIcon = {$: 21};
 var $author$project$Assets$PendingIcon = {$: 20};
 var $author$project$Assets$SuccessCheckIcon = {$: 23};
 var $author$project$Views$Spinner$hoverableSpinner = function (_v0) {
-	var sizePx = _v0.cW;
-	var margin = _v0.fE;
-	var hoverable = _v0.iw;
+	var sizePx = _v0.df;
+	var margin = _v0.gg;
+	var hoverable = _v0.i1;
 	return A2(
 		$elm$html$Html$div,
 		_Utils_ap(
@@ -38143,10 +41013,10 @@ var $author$project$Views$Spinner$hoverableSpinner = function (_v0) {
 			]));
 };
 var $author$project$Views$Spinner$spinner = function (_v0) {
-	var sizePx = _v0.cW;
-	var margin = _v0.fE;
+	var sizePx = _v0.df;
+	var margin = _v0.gg;
 	return $author$project$Views$Spinner$hoverableSpinner(
-		{iw: $elm$core$Maybe$Nothing, fE: margin, cW: sizePx});
+		{i1: $elm$core$Maybe$Nothing, gg: margin, df: sizePx});
 };
 var $author$project$Build$Styles$stepStatusIcon = _List_fromArray(
 	[
@@ -38180,11 +41050,11 @@ var $author$project$Build$StepTree$StepTree$viewStepState = F2(
 		switch (state) {
 			case 1:
 				return $author$project$Views$Spinner$spinner(
-					{fE: '0px', cW: 14});
+					{gg: '0px', df: 14});
 			case 0:
 				return A2(
 					$author$project$Views$Icon$icon,
-					{fo: $author$project$Assets$PendingIcon, cW: 14},
+					{f$: $author$project$Assets$PendingIcon, df: 14},
 					A2(
 						$elm$core$List$cons,
 						A2($elm$html$Html$Attributes$attribute, 'data-step-state', 'pending'),
@@ -38192,7 +41062,7 @@ var $author$project$Build$StepTree$StepTree$viewStepState = F2(
 			case 2:
 				return A2(
 					$author$project$Views$Icon$icon,
-					{fo: $author$project$Assets$InterruptedIcon, cW: 14},
+					{f$: $author$project$Assets$InterruptedIcon, df: 14},
 					A2(
 						$elm$core$List$cons,
 						A2($elm$html$Html$Attributes$attribute, 'data-step-state', 'interrupted'),
@@ -38200,7 +41070,7 @@ var $author$project$Build$StepTree$StepTree$viewStepState = F2(
 			case 3:
 				return A2(
 					$author$project$Views$Icon$icon,
-					{fo: $author$project$Assets$CancelledIcon, cW: 14},
+					{f$: $author$project$Assets$CancelledIcon, df: 14},
 					A2(
 						$elm$core$List$cons,
 						A2($elm$html$Html$Attributes$attribute, 'data-step-state', 'cancelled'),
@@ -38208,7 +41078,7 @@ var $author$project$Build$StepTree$StepTree$viewStepState = F2(
 			case 4:
 				return A2(
 					$author$project$Views$Icon$icon,
-					{fo: $author$project$Assets$SuccessCheckIcon, cW: 14},
+					{f$: $author$project$Assets$SuccessCheckIcon, df: 14},
 					A2(
 						$elm$core$List$cons,
 						A2($elm$html$Html$Attributes$attribute, 'data-step-state', 'succeeded'),
@@ -38216,7 +41086,7 @@ var $author$project$Build$StepTree$StepTree$viewStepState = F2(
 			case 5:
 				return A2(
 					$author$project$Views$Icon$icon,
-					{fo: $author$project$Assets$FailureTimesIcon, cW: 14},
+					{f$: $author$project$Assets$FailureTimesIcon, df: 14},
 					A2(
 						$elm$core$List$cons,
 						A2($elm$html$Html$Attributes$attribute, 'data-step-state', 'failed'),
@@ -38224,7 +41094,7 @@ var $author$project$Build$StepTree$StepTree$viewStepState = F2(
 			default:
 				return A2(
 					$author$project$Views$Icon$icon,
-					{fo: $author$project$Assets$ExclamationTriangleIcon, cW: 14},
+					{f$: $author$project$Assets$ExclamationTriangleIcon, df: 14},
 					A2(
 						$elm$core$List$cons,
 						A2($elm$html$Html$Attributes$attribute, 'data-step-state', 'errored'),
@@ -38239,9 +41109,9 @@ var $author$project$Message$Message$StepVersion = function (a) {
 };
 var $author$project$Build$StepTree$StepTree$viewVersion = F3(
 	function (step, pipelineId, name) {
-		var domId = $author$project$Message$Message$StepVersion(step.iz);
+		var domId = $author$project$Message$Message$StepVersion(step.f_);
 		var viewVersionContainer = function () {
-			var _v1 = _Utils_Tuple3(step.er, pipelineId, name);
+			var _v1 = _Utils_Tuple3(step.eZ, pipelineId, name);
 			if (((!_v1.a.$) && (!_v1.b.$)) && (!_v1.c.$)) {
 				var version = _v1.a.a;
 				var pid = _v1.b.a;
@@ -38253,10 +41123,10 @@ var $author$project$Build$StepTree$StepTree$viewVersion = F3(
 							$author$project$Routes$toString(
 								$author$project$Routes$Resource(
 									{
-										dt: _List_Nil,
-										iz: {f2: pid.f2, jL: pid.jL, j1: resource, kD: pid.kD},
-										bp: $elm$core$Maybe$Nothing,
-										er: $elm$core$Maybe$Just(version)
+										dZ: _List_Nil,
+										f_: {ew: pid.ew, gH: pid.gH, kw: resource, k8: pid.k8},
+										br: $elm$core$Maybe$Nothing,
+										eZ: $elm$core$Maybe$Just(version)
 									}))),
 							$elm$html$Html$Events$onMouseLeave(
 							$author$project$Message$Message$Hover($elm$core$Maybe$Nothing)),
@@ -38270,7 +41140,7 @@ var $author$project$Build$StepTree$StepTree$viewVersion = F3(
 				return $elm$html$Html$div(_List_Nil);
 			}
 		}();
-		var _v0 = step.er;
+		var _v0 = step.eZ;
 		if (!_v0.$) {
 			var version = _v0.a;
 			return viewVersionContainer(
@@ -38437,10 +41307,10 @@ var $author$project$Build$StepTree$StepTree$viewStepWithBody = F5(
 							_Utils_Tuple2('build-step', true),
 							_Utils_Tuple2(
 							'inactive',
-							!$author$project$Build$StepTree$Models$isActive(step.kt))
+							!$author$project$Build$StepTree$Models$isActive(step.dg))
 						])),
 				function () {
-					var _v9 = $author$project$Build$StepTree$StepTree$stepName(step.eJ);
+					var _v9 = $author$project$Build$StepTree$StepTree$stepName(step.fg);
 					if (!_v9.$) {
 						var name = _v9.a;
 						return _List_fromArray(
@@ -38461,14 +41331,14 @@ var $author$project$Build$StepTree$StepTree$viewStepWithBody = F5(
 								$elm$html$Html$Attributes$class('header'),
 								$elm$html$Html$Events$onClick(
 								$author$project$Message$Message$Click(
-									$author$project$Message$Message$StepHeader(step.iz))),
+									$author$project$Message$Message$StepHeader(step.f_))),
 								A2(
 								$elm$html$Html$Attributes$style,
 								'z-index',
 								$elm$core$String$fromInt(
 									A2($elm$core$Basics$max, $author$project$Build$StepTree$StepTree$maxDepth - depth, 1)))
 							]),
-						$author$project$Build$Styles$stepHeader(step.kt)),
+						$author$project$Build$Styles$stepHeader(step.dg)),
 					_List_fromArray(
 						[
 							$author$project$Build$StepTree$StepTree$viewStepHeader(step),
@@ -38483,10 +41353,10 @@ var $author$project$Build$StepTree$StepTree$viewStepWithBody = F5(
 									A3(
 									$author$project$Build$StepTree$StepTree$viewVersion,
 									step,
-									model.g0,
-									$author$project$Build$StepTree$StepTree$resourceName(step.eJ)),
+									model.hD,
+									$author$project$Build$StepTree$StepTree$resourceName(step.fg)),
 									function () {
-									var _v10 = A2($elm_community$maybe_extra$Maybe$Extra$or, step.iA, step.iB);
+									var _v10 = A2($elm_community$maybe_extra$Maybe$Extra$or, step.i4, step.i5);
 									if (!_v10.$) {
 										return $author$project$Build$StepTree$StepTree$viewInitializationToggle(step);
 									} else {
@@ -38495,11 +41365,11 @@ var $author$project$Build$StepTree$StepTree$viewStepWithBody = F5(
 								}(),
 									A2(
 									$author$project$Build$StepTree$StepTree$viewStepState,
-									step.kt,
-									$elm$core$Maybe$Just(step.iz))
+									step.dg,
+									$elm$core$Maybe$Just(step.f_))
 								]))
 						])),
-					step.iF ? A2(
+					step.i9 ? A2(
 					$elm$html$Html$div,
 					A2(
 						$elm$core$List$cons,
@@ -38508,7 +41378,7 @@ var $author$project$Build$StepTree$StepTree$viewStepWithBody = F5(
 					_List_fromArray(
 						[
 							function () {
-							var _v11 = step.iA;
+							var _v11 = step.i4;
 							if (!_v11.$) {
 								var subTree = _v11.a;
 								return A2(
@@ -38526,7 +41396,7 @@ var $author$project$Build$StepTree$StepTree$viewStepWithBody = F5(
 							}
 						}(),
 							function () {
-							var _v12 = step.iB;
+							var _v12 = step.i5;
 							if (!_v12.$) {
 								var subTree = _v12.a;
 								return A2(
@@ -38544,7 +41414,7 @@ var $author$project$Build$StepTree$StepTree$viewStepWithBody = F5(
 							}
 						}()
 						])) : $elm$html$Html$text(''),
-					step.hX ? A2(
+					step.iv ? A2(
 					$elm$html$Html$div,
 					_List_fromArray(
 						[
@@ -38554,16 +41424,16 @@ var $author$project$Build$StepTree$StepTree$viewStepWithBody = F5(
 					_Utils_ap(
 						_List_fromArray(
 							[
-								$author$project$Build$StepTree$StepTree$viewMetadata(step.jg),
+								$author$project$Build$StepTree$StepTree$viewMetadata(step.jL),
 								A2(
 								$elm$html$Html$pre,
 								_List_fromArray(
 									[
 										$elm$html$Html$Attributes$class('timestamped-logs')
 									]),
-								A5($author$project$Build$StepTree$StepTree$viewLogs, step.dP, step.gC, model.is, session.gB, step.iz)),
+								A5($author$project$Build$StepTree$StepTree$viewLogs, step.ei, step.hf, model.iZ, session.he, step.f_)),
 								function () {
-								var _v13 = step.hQ;
+								var _v13 = step.io;
 								if (_v13.$ === 1) {
 									return A2($elm$html$Html$span, _List_Nil, _List_Nil);
 								} else {
@@ -38588,7 +41458,7 @@ var $author$project$Build$StepTree$StepTree$viewStepWithBody = F5(
 							}()
 							]),
 						body)) : $elm$html$Html$text(''),
-					(step.hX && (!$elm$core$List$isEmpty(step.kn))) ? A2(
+					(step.iv && (!$elm$core$List$isEmpty(step.kS))) ? A2(
 					$elm$html$Html$div,
 					A2(
 						$elm$core$List$cons,
@@ -38608,7 +41478,7 @@ var $author$project$Build$StepTree$StepTree$viewStepWithBody = F5(
 										A4($author$project$Build$StepTree$StepTree$viewTree, session, model, subTree, depth + 1)
 									]));
 						},
-						step.kn)) : $elm$html$Html$text('')
+						step.kS)) : $elm$html$Html$text('')
 				]));
 	});
 var $author$project$Build$StepTree$StepTree$viewTree = F4(
@@ -38681,7 +41551,7 @@ var $author$project$Build$StepTree$StepTree$viewTree = F4(
 											var expanded_ = _v3.b;
 											var substep = _v3.c;
 											var keyVals = A3($elm$core$List$map2, $elm$core$Tuple$pair, vars, vals_);
-											return A8($author$project$Build$StepTree$StepTree$viewAcrossStepSubHeader, model, session, step.iz, i, keyVals, expanded_, depth + 1, substep);
+											return A8($author$project$Build$StepTree$StepTree$viewAcrossStepSubHeader, model, session, step.f_, i, keyVals, expanded_, depth + 1, substep);
 										}),
 									A2(
 										$elm$core$List$filterMap,
@@ -38711,10 +41581,10 @@ var $author$project$Build$StepTree$StepTree$viewTree = F4(
 																A2(
 																	$elm$core$Basics$composeR,
 																	function ($) {
-																		return $.dl;
+																		return $.dP;
 																	},
 																	$elm$core$Dict$get(i)),
-																A2($elm$core$Dict$get, stepId, model.kv))),
+																A2($elm$core$Dict$get, stepId, model.k_))),
 														A2($elm$core$Array$get, i, substeps));
 												}),
 											vals))));
@@ -38727,7 +41597,7 @@ var $author$project$Build$StepTree$StepTree$viewTree = F4(
 						model,
 						stepId,
 						function (_v4) {
-							var tabFocus = _v4.gx;
+							var tabFocus = _v4.g9;
 							var activeTab = function () {
 								if (tabFocus.$ === 1) {
 									var i = tabFocus.a;
@@ -38818,12 +41688,12 @@ var $author$project$Build$StepTree$StepTree$viewTree = F4(
 						A2(
 							$elm$core$List$cons,
 							function () {
-								var _v7 = A2($elm$core$Dict$get, stepId, model.kv);
+								var _v7 = A2($elm$core$Dict$get, stepId, model.k_);
 								if (_v7.$ === 1) {
 									return $elm$html$Html$text('');
 								} else {
 									var step = _v7.a;
-									var _v8 = step.hQ;
+									var _v8 = step.io;
 									if (_v8.$ === 1) {
 										return A2($elm$html$Html$span, _List_Nil, _List_Nil);
 									} else {
@@ -38880,7 +41750,7 @@ var $author$project$Build$StepTree$StepTree$viewTree = F4(
 	});
 var $author$project$Build$StepTree$StepTree$view = F2(
 	function (session, model) {
-		return A4($author$project$Build$StepTree$StepTree$viewTree, session, model, model.kY, 0);
+		return A4($author$project$Build$StepTree$StepTree$viewTree, session, model, model.ls, 0);
 	});
 var $author$project$Views$LoadingIndicator$view = A2(
 	$elm$html$Html$div,
@@ -38901,7 +41771,7 @@ var $author$project$Views$LoadingIndicator$view = A2(
 			_List_fromArray(
 				[
 					$author$project$Views$Spinner$spinner(
-					{fE: '0 7px', cW: 14}),
+					{gg: '0 7px', df: 14}),
 					A2(
 					$elm$html$Html$h3,
 					_List_Nil,
@@ -38943,8 +41813,8 @@ var $author$project$Build$Output$Output$viewStepTree = F3(
 	});
 var $author$project$Build$Output$Output$view = F2(
 	function (session, _v0) {
-		var steps = _v0.kv;
-		var state = _v0.kt;
+		var steps = _v0.k_;
+		var state = _v0.dg;
 		return A2(
 			$elm$html$Html$div,
 			_List_fromArray(
@@ -38963,7 +41833,7 @@ var $author$project$Build$Build$viewBuildOutput = F3(
 				var o = output.a;
 				return A2(
 					$author$project$Build$Output$Output$view,
-					{dv: hovered, gB: timeZone},
+					{d$: hovered, he: timeZone},
 					o);
 			case 1:
 				return A2(
@@ -39001,7 +41871,6 @@ var $author$project$Build$Build$viewBuildPrepDetails = function (details) {
 			$elm$core$Dict$toList(details)));
 };
 var $author$project$Assets$NotBlockingCheckIcon = {$: 18};
-var $elm$html$Html$Attributes$title = $elm$html$Html$Attributes$stringProperty('title');
 var $author$project$Build$Build$viewBuildPrepStatus = function (status) {
 	switch (status) {
 		case 0:
@@ -39014,7 +41883,7 @@ var $author$project$Build$Build$viewBuildPrepStatus = function (status) {
 				_List_fromArray(
 					[
 						$author$project$Views$Spinner$spinner(
-						{fE: '0 8px 0 0', cW: 12})
+						{gg: '0 8px 0 0', df: 12})
 					]));
 		case 1:
 			return A2(
@@ -39026,12 +41895,12 @@ var $author$project$Build$Build$viewBuildPrepStatus = function (status) {
 				_List_fromArray(
 					[
 						$author$project$Views$Spinner$spinner(
-						{fE: '0 8px 0 0', cW: 12})
+						{gg: '0 8px 0 0', df: 12})
 					]));
 		default:
 			return A2(
 				$author$project$Views$Icon$icon,
-				{fo: $author$project$Assets$NotBlockingCheckIcon, cW: 12},
+				{f$: $author$project$Assets$NotBlockingCheckIcon, df: 12},
 				_List_fromArray(
 					[
 						A2($elm$html$Html$Attributes$style, 'margin-right', '8px'),
@@ -39110,7 +41979,7 @@ var $author$project$Build$Build$viewBuildPrep = function (buildPrep) {
 						[
 							A2(
 							$author$project$Views$Icon$icon,
-							{fo: $author$project$Assets$CogsIcon, cW: 14},
+							{f$: $author$project$Assets$CogsIcon, df: 14},
 							_List_fromArray(
 								[
 									A2($elm$html$Html$Attributes$style, 'margin', '7px'),
@@ -39140,15 +42009,15 @@ var $author$project$Build$Build$viewBuildPrep = function (buildPrep) {
 							_Utils_ap(
 								_List_fromArray(
 									[
-										A3($author$project$Build$Build$viewBuildPrepLi, 'checking pipeline is not paused', prep.jJ, $elm$core$Dict$empty),
-										A3($author$project$Build$Build$viewBuildPrepLi, 'checking job is not paused', prep.jI, $elm$core$Dict$empty)
+										A3($author$project$Build$Build$viewBuildPrepLi, 'checking pipeline is not paused', prep.kd, $elm$core$Dict$empty),
+										A3($author$project$Build$Build$viewBuildPrepLi, 'checking job is not paused', prep.kc, $elm$core$Dict$empty)
 									]),
 								_Utils_ap(
-									$author$project$Build$Build$viewBuildPrepInputs(prep.iJ),
+									$author$project$Build$Build$viewBuildPrepInputs(prep.jd),
 									_List_fromArray(
 										[
-											A3($author$project$Build$Build$viewBuildPrepLi, 'waiting for a suitable set of input versions', prep.iK, prep.jj),
-											A3($author$project$Build$Build$viewBuildPrepLi, 'checking max-in-flight is not reached', prep.jd, $elm$core$Dict$empty)
+											A3($author$project$Build$Build$viewBuildPrepLi, 'waiting for a suitable set of input versions', prep.je, prep.jO),
+											A3($author$project$Build$Build$viewBuildPrepLi, 'checking max-in-flight is not reached', prep.jI, $elm$core$Dict$empty)
 										]))))
 						]))
 				]));
@@ -39158,10 +42027,10 @@ var $author$project$Build$Build$viewBuildPrep = function (buildPrep) {
 };
 var $author$project$Build$Build$body = F2(
 	function (session, params) {
-		var prep = params.br;
+		var prep = params.bt;
 		var output = params.N;
-		var authorized = params.bG;
-		var showHelp = params.gp;
+		var authorized = params.bI;
+		var showHelp = params.g2;
 		return A2(
 			$elm$html$Html$div,
 			_Utils_ap(
@@ -39184,14 +42053,91 @@ var $author$project$Build$Build$body = F2(
 						A4(
 						$elm$html$Html$Lazy$lazy3,
 						$author$project$Build$Build$viewBuildOutput,
-						session.gB,
-						$author$project$Build$Output$Output$filterHoverState(session.dv),
+						session.he,
+						$author$project$Build$Output$Output$filterHoverState(session.d$),
 						output),
 						$author$project$Build$Shortcuts$keyboardHelp(showHelp)
 					]),
-				A2($author$project$Build$Build$tombstone, session.gB, params)) : _List_fromArray(
+				A2($author$project$Build$Build$tombstone, session.he, params)) : _List_fromArray(
 				[$author$project$Views$NotAuthorized$view]));
 	});
+var $author$project$Build$Build$agentTicketId = function (job) {
+	return A2($elm$core$String$startsWith, 'agent-ticket-', job.gH) ? $elm$core$String$toInt(
+		A2(
+			$elm$core$String$dropLeft,
+			$elm$core$String$length('agent-ticket-'),
+			job.gH)) : $elm$core$Maybe$Nothing;
+};
+var $author$project$Build$Build$ticketContextBar = function (_v0) {
+	var job = _v0.ac;
+	var createdBy = _v0.fo;
+	var _v1 = A2($elm$core$Maybe$andThen, $author$project$Build$Build$agentTicketId, job);
+	if (_v1.$ === 1) {
+		return $elm$html$Html$text('');
+	} else {
+		var ticketId = _v1.a;
+		var runLabel = function (s) {
+			return (s === '') ? '' : (' · ' + s);
+		}(
+			A2(
+				$elm$core$Maybe$withDefault,
+				'',
+				A2(
+					$elm$core$Maybe$map,
+					A2(
+						$elm$core$Basics$composeR,
+						function ($) {
+							return $.ew;
+						},
+						$author$project$Concourse$hyphenNotation),
+					job)));
+		var attribution = function () {
+			if (!createdBy.$) {
+				var who = createdBy.a;
+				return ' · dispatched by ' + who;
+			} else {
+				return '';
+			}
+		}();
+		return A2(
+			$elm$html$Html$div,
+			_List_fromArray(
+				[
+					$elm$html$Html$Attributes$id('build-ticket-context'),
+					A2($elm$html$Html$Attributes$style, 'display', 'flex'),
+					A2($elm$html$Html$Attributes$style, 'align-items', 'center'),
+					A2($elm$html$Html$Attributes$style, 'gap', '6px'),
+					A2($elm$html$Html$Attributes$style, 'padding', '6px 12px'),
+					A2($elm$html$Html$Attributes$style, 'background', '#1b222b'),
+					A2($elm$html$Html$Attributes$style, 'border-bottom', '1px solid #2d3a48'),
+					A2($elm$html$Html$Attributes$style, 'color', '#9aa39b'),
+					A2($elm$html$Html$Attributes$style, 'font-size', '13px')
+				]),
+			_List_fromArray(
+				[
+					$elm$html$Html$text('part of'),
+					A2(
+					$elm$html$Html$a,
+					_List_fromArray(
+						[
+							$elm$html$Html$Attributes$href(
+							$author$project$Routes$toString(
+								$author$project$Routes$AgentTicket(
+									{f_: ticketId}))),
+							A2($elm$html$Html$Attributes$style, 'color', '#7a9ac0'),
+							A2($elm$html$Html$Attributes$style, 'text-decoration', 'none'),
+							A2($elm$html$Html$Attributes$style, 'font-weight', '700')
+						]),
+					_List_fromArray(
+						[
+							$elm$html$Html$text(
+							'agent ticket #' + $elm$core$String$fromInt(ticketId))
+						])),
+					$elm$html$Html$text(
+					_Utils_ap(runLabel, attribution))
+				]));
+	}
+};
 var $author$project$Build$Header$Views$Abort = 0;
 var $author$project$Message$Message$AbortBuildButton = {$: 6};
 var $author$project$Build$Header$Views$Button = function (a) {
@@ -39322,7 +42268,7 @@ var $author$project$Build$Header$Header$timestamp = F3(
 	});
 var $author$project$Build$Header$Header$duration = F2(
 	function (session, model) {
-		var _v0 = _Utils_Tuple2(model.dh.gu, model.dh.e9);
+		var _v0 = _Utils_Tuple2(model.dJ.g6, model.dJ.fL);
 		if (_v0.a.$ === 1) {
 			if (_v0.b.$ === 1) {
 				var _v1 = _v0.a;
@@ -39332,36 +42278,36 @@ var $author$project$Build$Header$Header$duration = F2(
 				var _v3 = _v0.a;
 				var finished = _v0.b.a;
 				return $author$project$Build$Header$Views$Cancelled(
-					A3($author$project$Build$Header$Header$timestamp, session.gB, model.fN, finished));
+					A3($author$project$Build$Header$Header$timestamp, session.he, model.gq, finished));
 			}
 		} else {
 			if (_v0.b.$ === 1) {
 				var started = _v0.a.a;
 				var _v4 = _v0.b;
 				return $author$project$Build$Header$Views$Running(
-					A3($author$project$Build$Header$Header$timestamp, session.gB, model.fN, started));
+					A3($author$project$Build$Header$Header$timestamp, session.he, model.gq, started));
 			} else {
 				var started = _v0.a.a;
 				var finished = _v0.b.a;
 				return $author$project$Build$Header$Views$Finished(
 					{
-						dh: $author$project$Build$Header$Header$timespan(
+						dJ: $author$project$Build$Header$Header$timespan(
 							A2($author$project$Duration$between, started, finished)),
-						ie: A3($author$project$Build$Header$Header$timestamp, session.gB, model.fN, finished),
-						ks: A3($author$project$Build$Header$Header$timestamp, session.gB, model.fN, started)
+						iL: A3($author$project$Build$Header$Header$timestamp, session.he, model.gq, finished),
+						kY: A3($author$project$Build$Header$Header$timestamp, session.he, model.gq, started)
 					});
 			}
 		}
 	});
 var $author$project$UserState$isMember = function (_v0) {
-	var teamName = _v0.kD;
-	var userState = _v0.k1;
+	var teamName = _v0.k8;
+	var userState = _v0.ly;
 	if (!userState.$) {
 		var user = userState.a;
-		if (user.iM) {
+		if (user.jg) {
 			return true;
 		} else {
-			var _v2 = A2($elm$core$Dict$get, teamName, user.kE);
+			var _v2 = A2($elm$core$Dict$get, teamName, user.k9);
 			if (!_v2.$) {
 				var roles = _v2.a;
 				return A2($elm$core$List$member, 'pipeline-operator', roles) || (A2($elm$core$List$member, 'member', roles) || A2($elm$core$List$member, 'owner', roles));
@@ -39378,20 +42324,20 @@ var $author$project$Build$Header$Header$tabs = function (model) {
 		$elm$core$List$map,
 		function (b) {
 			return {
-				gW: b.ek,
-				il: !$elm$core$String$isEmpty(b.a3),
-				ix: A3($author$project$Routes$buildRoute, b.iz, b.dQ, model.ap),
-				iz: b.iz,
-				iO: _Utils_eq(b.iz, model.iz),
-				dQ: b.dQ
+				hx: b.eT,
+				iS: !$elm$core$String$isEmpty(b.a4),
+				i2: A3($author$project$Routes$buildRoute, b.f_, b.cT, model.ac),
+				f_: b.f_,
+				ji: _Utils_eq(b.f_, model.f_),
+				cT: b.cT
 			};
 		},
-		model.it);
+		model.i_);
 };
 var $author$project$Build$Header$Header$header = F2(
 	function (session, model) {
 		var archived = function () {
-			var _v2 = model.ap;
+			var _v2 = model.ac;
 			if (!_v2.$) {
 				var jobID = _v2.a;
 				return A2(
@@ -39400,7 +42346,7 @@ var $author$project$Build$Header$Header$header = F2(
 					A2(
 						$elm$core$Maybe$map,
 						function ($) {
-							return $.gS;
+							return $.hs;
 						},
 						A2(
 							$author$project$SideBar$SideBar$lookupPipeline,
@@ -39411,43 +42357,43 @@ var $author$project$Build$Header$Header$header = F2(
 			}
 		}();
 		return {
-			bI: model.ek,
-			a3: (!model.bG) ? $elm$core$Maybe$Nothing : A2(
+			bK: model.eT,
+			a4: (!model.bI) ? $elm$core$Maybe$Nothing : A2(
 				$elm$core$Maybe$map,
 				function (c) {
 					return _Utils_Tuple2(
 						c,
 						{
-							hK: function () {
-								var _v0 = model.ap;
+							ii: function () {
+								var _v0 = model.ac;
 								if (_v0.$ === 1) {
 									return false;
 								} else {
 									var job = _v0.a;
 									return $author$project$UserState$isMember(
-										{kD: job.kD, k1: session.k1});
+										{k8: job.k8, ly: session.ly});
 								}
 							}(),
-							iv: session.dv
+							i0: session.d$
 						});
 				},
-				$author$project$Build$Header$Models$commentBarIsVisible(model.a3)),
-			i9: _List_fromArray(
+				$author$project$Build$Header$Models$commentBarIsVisible(model.a4)),
+			jF: _List_fromArray(
 				[
-					A3($author$project$Build$Header$Views$Title, model.dQ, model.ap, model.hr),
+					A3($author$project$Build$Header$Views$Title, model.cT, model.ac, model.fo),
 					$author$project$Build$Header$Views$Duration(
 					A2($author$project$Build$Header$Header$duration, session, model))
 				]),
-			j8: _Utils_ap(
-				model.bG ? _List_fromArray(
+			kC: _Utils_ap(
+				model.bI ? _List_fromArray(
 					[
 						$author$project$Build$Header$Views$Button(
 						$elm$core$Maybe$Just(
 							{
-								bI: model.ek,
-								cf: function () {
-									var isHovered = A2($author$project$HoverState$isHovered, $author$project$Message$Message$ToggleBuildCommentButton, session.dv);
-									var _v1 = _Utils_Tuple2(model.a3, isHovered);
+								bK: model.eT,
+								cu: function () {
+									var isHovered = A2($author$project$HoverState$isHovered, $author$project$Message$Message$ToggleBuildCommentButton, session.d$);
+									var _v1 = _Utils_Tuple2(model.a4, isHovered);
 									if (!_v1.a.$) {
 										if (!_v1.b) {
 											return 0;
@@ -39462,31 +42408,31 @@ var $author$project$Build$Header$Header$header = F2(
 										}
 									}
 								}(),
-								cr: true,
-								c0: 1
+								cJ: true,
+								dm: 1
 							}))
 					]) : _List_Nil,
 				archived ? _List_Nil : _List_fromArray(
 					[
 						$author$project$Build$Header$Views$Button(
 						function () {
-							if ($author$project$Concourse$BuildStatus$isRunning(model.ek)) {
+							if ($author$project$Concourse$BuildStatus$isRunning(model.eT)) {
 								return $elm$core$Maybe$Just(
 									{
-										bI: 3,
-										cf: A2($author$project$HoverState$isHovered, $author$project$Message$Message$AbortBuildButton, session.dv) ? 1 : 0,
-										cr: true,
-										c0: 0
+										bK: 3,
+										cu: A2($author$project$HoverState$isHovered, $author$project$Message$Message$AbortBuildButton, session.d$) ? 1 : 0,
+										cJ: true,
+										dm: 0
 									});
 							} else {
-								if (!_Utils_eq(model.ap, $elm$core$Maybe$Nothing)) {
-									var isHovered = A2($author$project$HoverState$isHovered, $author$project$Message$Message$RerunBuildButton, session.dv);
+								if (!_Utils_eq(model.ac, $elm$core$Maybe$Nothing)) {
+									var isHovered = A2($author$project$HoverState$isHovered, $author$project$Message$Message$RerunBuildButton, session.d$);
 									return $elm$core$Maybe$Just(
 										{
-											bI: model.ek,
-											cf: isHovered ? 1 : 0,
-											cr: true,
-											c0: 3
+											bK: model.eT,
+											cu: isHovered ? 1 : 0,
+											cJ: true,
+											dm: 3
 										});
 								} else {
 									return $elm$core$Maybe$Nothing;
@@ -39495,21 +42441,21 @@ var $author$project$Build$Header$Header$header = F2(
 						}()),
 						$author$project$Build$Header$Views$Button(
 						function () {
-							if (!_Utils_eq(model.ap, $elm$core$Maybe$Nothing)) {
-								var isHovered = A2($author$project$HoverState$isHovered, $author$project$Message$Message$TriggerBuildButton, session.dv);
+							if (!_Utils_eq(model.ac, $elm$core$Maybe$Nothing)) {
+								var isHovered = A2($author$project$HoverState$isHovered, $author$project$Message$Message$TriggerBuildButton, session.d$);
 								return $elm$core$Maybe$Just(
 									{
-										bI: model.ek,
-										cf: isHovered ? 1 : 0,
-										cr: !model.df,
-										c0: 2
+										bK: model.eT,
+										cu: isHovered ? 1 : 0,
+										cJ: !model.dH,
+										dm: 2
 									});
 							} else {
 								return $elm$core$Maybe$Nothing;
 							}
 						}())
 					])),
-			kB: $author$project$Build$Header$Header$tabs(model)
+			k5: $author$project$Build$Header$Header$tabs(model)
 		};
 	});
 var $author$project$Build$Styles$header = function (status) {
@@ -39564,7 +42510,7 @@ var $author$project$Message$Message$EditCommentBar = F2(
 var $author$project$Message$Message$FocusCommentBar = function (a) {
 	return {$: 15, a: a};
 };
-var $author$project$Message$Message$NoOp = {$: 35};
+var $author$project$Message$Message$NoOp = {$: 50};
 var $author$project$Views$Styles$fontFamilyDefault = 'Inconsolata,monospace';
 var $author$project$Views$Styles$defaultFont = _List_fromArray(
 	[
@@ -39606,10 +42552,9 @@ var $elm$html$Html$Events$onFocus = function (msg) {
 		$elm$json$Json$Decode$succeed(msg));
 };
 var $elm$html$Html$Attributes$readonly = $elm$html$Html$Attributes$boolProperty('readOnly');
-var $elm$html$Html$textarea = _VirtualDom_node('textarea');
 var $author$project$Views$CommentBar$commentTextarea = function (model) {
 	var isReadOnly = function () {
-		var _v0 = model.kt;
+		var _v0 = model.dg;
 		if (_v0.$ === 1) {
 			return false;
 		} else {
@@ -39627,18 +42572,18 @@ var $author$project$Views$CommentBar$commentTextarea = function (model) {
 					$elm$html$Html$Attributes$value(
 					$author$project$Views$CommentBar$getContent(model)),
 					$elm$html$Html$Events$onInput(
-					$author$project$Message$Message$EditCommentBar(model.iz)),
+					$author$project$Message$Message$EditCommentBar(model.f_)),
 					$elm$html$Html$Events$onFocus(
-					$author$project$Message$Message$FocusCommentBar(model.iz)),
+					$author$project$Message$Message$FocusCommentBar(model.f_)),
 					$elm$html$Html$Events$onBlur(
-					$author$project$Message$Message$BlurCommentBar(model.iz)),
+					$author$project$Message$Message$BlurCommentBar(model.f_)),
 					A2(
 					$elm$html$Html$Events$stopPropagationOn,
 					'keydown',
 					$elm$json$Json$Decode$succeed(
 						_Utils_Tuple2($author$project$Message$Message$NoOp, true))),
 					$elm$html$Html$Attributes$readonly(isReadOnly),
-					isReadOnly ? A2($elm$html$Html$Attributes$style, 'background-color', model.kw.es) : A2($elm$html$Html$Attributes$style, 'background-color', model.kw.di)
+					isReadOnly ? A2($elm$html$Html$Attributes$style, 'background-color', model.k$.e_) : A2($elm$html$Html$Attributes$style, 'background-color', model.k$.dK)
 				]),
 			$author$project$Views$Styles$commentBarTextarea),
 		_List_Nil);
@@ -39661,10 +42606,10 @@ var $author$project$Colors$pinTools = '#2e2c2c';
 var $author$project$Colors$sectionHeader = '#1e1d1d';
 var $author$project$Views$CommentBar$editButton = F2(
 	function (model, state) {
-		var htmlID = A2($author$project$Message$Message$CommentBarButton, 0, model.iz);
+		var htmlID = A2($author$project$Message$Message$CommentBarButton, 0, model.f_);
 		return A2(
 			$author$project$Views$Icon$icon,
-			{fo: $author$project$Assets$PencilIcon, cW: 16},
+			{f$: $author$project$Assets$PencilIcon, df: 16},
 			_Utils_ap(
 				_List_fromArray(
 					[
@@ -39677,7 +42622,7 @@ var $author$project$Views$CommentBar$editButton = F2(
 						$author$project$Message$Message$Hover($elm$core$Maybe$Nothing)),
 						$elm$html$Html$Events$onClick(
 						$author$project$Message$Message$Click(htmlID)),
-						A2($author$project$HoverState$isHovered, htmlID, state.iv) ? A2($elm$html$Html$Attributes$style, 'background-color', $author$project$Colors$sectionHeader) : A2($elm$html$Html$Attributes$style, 'background-color', $author$project$Colors$pinTools)
+						A2($author$project$HoverState$isHovered, htmlID, state.i0) ? A2($elm$html$Html$Attributes$style, 'background-color', $author$project$Colors$sectionHeader) : A2($elm$html$Html$Attributes$style, 'background-color', $author$project$Colors$pinTools)
 					]),
 				$author$project$Views$Styles$commentBarEditButton));
 	});
@@ -39703,7 +42648,7 @@ var $author$project$Views$CommentBar$loadingButton = A2(
 	_List_fromArray(
 		[
 			$author$project$Views$Spinner$spinner(
-			{fE: '0', cW: 12})
+			{gg: '0', df: 12})
 		]));
 var $author$project$Message$Message$Save = 1;
 var $author$project$Views$CommentBar$saveButton = F2(
@@ -39711,7 +42656,7 @@ var $author$project$Views$CommentBar$saveButton = F2(
 		return A2(
 			$elm$html$Html$button,
 			function () {
-				var htmlID = A2($author$project$Message$Message$CommentBarButton, 1, model.iz);
+				var htmlID = A2($author$project$Message$Message$CommentBarButton, 1, model.f_);
 				return _Utils_ap(
 					_List_fromArray(
 						[
@@ -39726,7 +42671,7 @@ var $author$project$Views$CommentBar$saveButton = F2(
 							$author$project$Message$Message$Click(htmlID)),
 							A2($elm$html$Html$Attributes$style, 'color', $author$project$Colors$text),
 							A2($elm$html$Html$Attributes$style, 'cursor', 'pointer'),
-							A2($author$project$HoverState$isHovered, htmlID, state.iv) ? A2($elm$html$Html$Attributes$style, 'background-color', $author$project$Colors$frame) : A2($elm$html$Html$Attributes$style, 'background-color', 'transparent')
+							A2($author$project$HoverState$isHovered, htmlID, state.i0) ? A2($elm$html$Html$Attributes$style, 'background-color', $author$project$Colors$frame) : A2($elm$html$Html$Attributes$style, 'background-color', 'transparent')
 						]),
 					$author$project$Views$Styles$commentBarTextButton);
 			}(),
@@ -39750,7 +42695,7 @@ var $author$project$Views$CommentBar$view = F3(
 				$elm$core$List$cons,
 				A2(
 					$author$project$Views$Icon$icon,
-					{fo: $author$project$Assets$MessageIcon, cW: 16},
+					{f$: $author$project$Assets$MessageIcon, df: 16},
 					_List_fromArray(
 						[
 							A2($elm$html$Html$Attributes$style, 'margin', '10px'),
@@ -39758,7 +42703,7 @@ var $author$project$Views$CommentBar$view = F3(
 							A2($elm$html$Html$Attributes$style, 'background-size', 'contain'),
 							A2($elm$html$Html$Attributes$style, 'background-origin', 'content-box')
 						])),
-				state.hK ? _List_fromArray(
+				state.ii ? _List_fromArray(
 					[
 						$author$project$Views$CommentBar$commentTextarea(model),
 						A2(
@@ -39770,7 +42715,7 @@ var $author$project$Views$CommentBar$view = F3(
 								A2($elm$html$Html$Attributes$style, 'justify-content', 'flex-end')
 							]),
 						function () {
-							var _v0 = model.kt;
+							var _v0 = model.dg;
 							switch (_v0.$) {
 								case 0:
 									return _List_fromArray(
@@ -39851,9 +42796,9 @@ var $author$project$Dashboard$Styles$withStripes = F2(
 		return 'repeating-linear-gradient(-115deg,' + (thinColor + (' 0px,' + (thickColor + (' 1px,' + (thickColor + (' 10px,' + (thinColor + (' 11px,' + (thinColor + ' 16px)')))))))));
 	});
 var $author$project$Dashboard$Styles$striped = function (_v0) {
-	var pipelineRunningKeyframes = _v0.d1;
-	var thickColor = _v0.kJ;
-	var thinColor = _v0.kK;
+	var pipelineRunningKeyframes = _v0.ex;
+	var thickColor = _v0.le;
+	var thinColor = _v0.lf;
 	return _List_fromArray(
 		[
 			A2(
@@ -39867,7 +42812,7 @@ var $author$project$Dashboard$Styles$striped = function (_v0) {
 var $author$project$Build$Styles$buildTabBackground = F2(
 	function (isCurrent, status) {
 		var startedBackground = $author$project$Dashboard$Styles$striped(
-			{d1: 'pipeline-running', kJ: $author$project$Colors$startedFaded, kK: $author$project$Colors$started});
+			{ex: 'pipeline-running', le: $author$project$Colors$startedFaded, lf: $author$project$Colors$started});
 		if (isCurrent) {
 			switch (status) {
 				case 1:
@@ -40018,10 +42963,10 @@ var $author$project$Build$Header$Views$viewBuildTab = F2(
 					$elm$core$List$cons,
 					$elm$html$Html$Attributes$id(
 						$author$project$Message$Effects$toHtmlID(
-							A2($author$project$Message$Message$BuildTab, tab.iz, tab.dQ))),
-					A3($author$project$Build$Styles$historyItem, backgroundColor, tab.iO, tab.gW))),
+							A2($author$project$Message$Message$BuildTab, tab.f_, tab.cT))),
+					A3($author$project$Build$Styles$historyItem, backgroundColor, tab.ji, tab.hx))),
 			_Utils_ap(
-				tab.il ? _List_fromArray(
+				tab.iS ? _List_fromArray(
 					[
 						A2(
 						$elm$html$Html$div,
@@ -40037,22 +42982,22 @@ var $author$project$Build$Header$Views$viewBuildTab = F2(
 								A2(
 								$elm$html$Html$Attributes$style,
 								'color',
-								A2($author$project$Colors$buildTabTextColor, tab.iO, tab.gW)),
+								A2($author$project$Colors$buildTabTextColor, tab.ji, tab.hx)),
 								$author$project$StrictEvents$onLeftClick(
 								$author$project$Message$Message$Click(
-									A2($author$project$Message$Message$BuildTab, tab.iz, tab.dQ))),
+									A2($author$project$Message$Message$BuildTab, tab.f_, tab.cT))),
 								$elm$html$Html$Events$onMouseEnter(
 								$author$project$Message$Message$Hover(
 									$elm$core$Maybe$Just(
-										A2($author$project$Message$Message$BuildTab, tab.iz, tab.dQ)))),
+										A2($author$project$Message$Message$BuildTab, tab.f_, tab.cT)))),
 								$elm$html$Html$Events$onMouseLeave(
 								$author$project$Message$Message$Hover($elm$core$Maybe$Nothing)),
 								$elm$html$Html$Attributes$href(
-								$author$project$Routes$toString(tab.ix))
+								$author$project$Routes$toString(tab.i2))
 							]),
 						_List_fromArray(
 							[
-								$elm$html$Html$text(tab.dQ)
+								$elm$html$Html$text(tab.cT)
 							]))
 					])));
 	});
@@ -40073,7 +43018,7 @@ var $author$project$Build$Header$Views$lazyViewHistory = function (backgroundCol
 };
 var $author$project$StrictEvents$WheelEvent = F3(
 	function (deltaX, deltaY, deltaMode) {
-		return {hC: deltaMode, eY: deltaX, hD: deltaY};
+		return {ia: deltaMode, fx: deltaX, ib: deltaY};
 	});
 var $author$project$StrictEvents$DeltaModeLine = 1;
 var $author$project$StrictEvents$DeltaModePage = 2;
@@ -40108,9 +43053,9 @@ var $author$project$StrictEvents$onWheel = function (cons) {
 			$elm$json$Json$Decode$map,
 			function (x) {
 				return {
-					jf: cons(x),
-					b$: true,
-					b6: false
+					jK: cons(x),
+					b7: true,
+					cf: false
 				};
 			},
 			$author$project$StrictEvents$decodeWheelEvent));
@@ -40147,10 +43092,10 @@ var $author$project$Assets$CircleOutlineIcon = function (a) {
 };
 var $author$project$Assets$RerunIcon = {$: 19};
 var $author$project$Build$Header$Views$viewButton = function (_v0) {
-	var type_ = _v0.c0;
-	var backgroundColor = _v0.bI;
-	var backgroundShade = _v0.cf;
-	var isClickable = _v0.cr;
+	var type_ = _v0.dm;
+	var backgroundColor = _v0.bK;
+	var backgroundShade = _v0.cu;
+	var isClickable = _v0.cJ;
 	var styles = _List_fromArray(
 		[
 			A2($elm$html$Html$Attributes$style, 'padding', '16px'),
@@ -40240,7 +43185,7 @@ var $author$project$Build$Header$Views$viewButton = function (_v0) {
 			[
 				A2(
 				$author$project$Views$Icon$icon,
-				{fo: image, cW: 28},
+				{f$: image, df: 28},
 				_List_Nil)
 			]));
 };
@@ -40425,8 +43370,8 @@ var $author$project$Build$Header$Views$viewDuration = F2(
 													]))
 											]);
 									default:
-										var started = buildDuration.a.ks;
-										var finished = buildDuration.a.ie;
+										var started = buildDuration.a.kY;
+										var finished = buildDuration.a.iL;
 										return _List_fromArray(
 											[
 												A2(
@@ -40474,7 +43419,7 @@ var $author$project$Build$Header$Views$viewDuration = F2(
 								]),
 							function () {
 								if (buildDuration.$ === 3) {
-									var duration = buildDuration.a.dh;
+									var duration = buildDuration.a.dJ;
 									return _List_fromArray(
 										[
 											A2(
@@ -40578,7 +43523,7 @@ var $author$project$Build$Header$Views$viewTitle = F4(
 							$elm$html$Html$Attributes$href(
 							$author$project$Routes$toString(
 								$author$project$Routes$Job(
-									{dt: _List_Nil, iz: jid, bp: $elm$core$Maybe$Nothing}))),
+									{dZ: _List_Nil, f_: jid, br: $elm$core$Maybe$Nothing}))),
 							$elm$html$Html$Events$onMouseEnter(
 							$author$project$Message$Message$Hover(
 								$elm$core$Maybe$Just($author$project$Message$Message$JobName))),
@@ -40599,7 +43544,7 @@ var $author$project$Build$Header$Views$viewTitle = F4(
 								]),
 							_List_fromArray(
 								[
-									$elm$html$Html$text(jid.i0)
+									$elm$html$Html$text(jid.jw)
 								])),
 							A2(
 							$elm$html$Html$span,
@@ -40668,7 +43613,7 @@ var $author$project$Build$Header$Views$viewHeader = function (header) {
 								$elm$html$Html$Attributes$id('build-header'),
 								$elm$html$Html$Attributes$class('build-header')
 							]),
-						$author$project$Build$Styles$header(header.bI)),
+						$author$project$Build$Styles$header(header.bK)),
 					_List_fromArray(
 						[
 							A2(
@@ -40679,8 +43624,8 @@ var $author$project$Build$Header$Views$viewHeader = function (header) {
 								]),
 							A2(
 								$elm$core$List$map,
-								$author$project$Build$Header$Views$viewWidget(header.bI),
-								header.i9)),
+								$author$project$Build$Header$Views$viewWidget(header.bK),
+								header.jF)),
 							A2(
 							$elm$html$Html$div,
 							_List_fromArray(
@@ -40689,13 +43634,13 @@ var $author$project$Build$Header$Views$viewHeader = function (header) {
 								]),
 							A2(
 								$elm$core$List$map,
-								$author$project$Build$Header$Views$viewWidget(header.bI),
-								header.j8))
+								$author$project$Build$Header$Views$viewWidget(header.bK),
+								header.kC))
 						])),
-					A2($author$project$Build$Header$Views$viewHistory, header.bI, header.kB)
+					A2($author$project$Build$Header$Views$viewHistory, header.bK, header.k5)
 				]),
 			function () {
-				var _v0 = header.a3;
+				var _v0 = header.a4;
 				if (_v0.$ === 1) {
 					return _List_Nil;
 				} else {
@@ -40709,7 +43654,7 @@ var $author$project$Build$Header$Views$viewHeader = function (header) {
 							_List_fromArray(
 								[
 									$elm$html$Html$Attributes$id(
-									$author$project$Message$Effects$toHtmlID(model.iz)),
+									$author$project$Message$Effects$toHtmlID(model.f_)),
 									A2($elm$html$Html$Attributes$style, 'display', 'flex')
 								]),
 							_List_fromArray(
@@ -40748,12 +43693,12 @@ var $author$project$Build$Header$Header$view = F2(
 	});
 var $author$project$Build$Build$viewBuildPage = F2(
 	function (session, model) {
-		return model.aA ? A2(
+		return model.aB ? A2(
 			$elm$html$Html$div,
 			_List_fromArray(
 				[
 					$elm$html$Html$Attributes$class('with-fixed-header'),
-					A2($elm$html$Html$Attributes$attribute, 'data-build-name', model.dQ),
+					A2($elm$html$Html$Attributes$attribute, 'data-build-name', model.cT),
 					A2($elm$html$Html$Attributes$style, 'flex-grow', '1'),
 					A2($elm$html$Html$Attributes$style, 'display', 'flex'),
 					A2($elm$html$Html$Attributes$style, 'flex-direction', 'column'),
@@ -40762,21 +43707,22 @@ var $author$project$Build$Build$viewBuildPage = F2(
 			_List_fromArray(
 				[
 					A2($author$project$Build$Header$Header$view, session, model),
+					$author$project$Build$Build$ticketContextBar(model),
 					A2($author$project$Build$Build$body, session, model)
 				])) : $author$project$Views$LoadingIndicator$view;
 	});
 var $author$project$Build$Build$view = F2(
 	function (session, model) {
 		var route = function () {
-			var _v0 = model.bp;
+			var _v0 = model.br;
 			if (!_v0.$) {
 				var buildId = _v0.a;
 				return $author$project$Routes$OneOffBuild(
-					{is: model.is, iz: buildId});
+					{iZ: model.iZ, f_: buildId});
 			} else {
 				var buildId = _v0.a;
 				return $author$project$Routes$Build(
-					{dt: _List_Nil, is: model.is, iz: buildId});
+					{dZ: _List_Nil, iZ: model.iZ, f_: buildId});
 			}
 		}();
 		return A2(
@@ -40800,7 +43746,7 @@ var $author$project$Build$Build$view = F2(
 							A2($author$project$Build$Build$breadcrumbs, session, model),
 							_List_fromArray(
 								[
-									A2($author$project$Login$Login$view, session.k1, model)
+									A2($author$project$Login$Login$view, session.ly, model)
 								])))),
 					A2(
 					$elm$html$Html$div,
@@ -40816,9 +43762,9 @@ var $author$project$Build$Build$view = F2(
 							A2(
 								$elm$core$Maybe$map,
 								function (j) {
-									return {f2: j.f2, jL: j.jL, kD: j.kD};
+									return {ew: j.ew, gH: j.gH, k8: j.k8};
 								},
-								model.ap)),
+								model.ac)),
 							A2($author$project$Build$Build$viewBuildPage, session, model)
 						]))
 				]));
@@ -40827,7 +43773,7 @@ var $elm$svg$Svg$Attributes$class = _VirtualDom_attribute('class');
 var $elm$svg$Svg$trustedNode = _VirtualDom_nodeNS('http://www.w3.org/2000/svg');
 var $elm$svg$Svg$svg = $elm$svg$Svg$trustedNode('svg');
 var $author$project$Causality$Causality$viewGraph = function (model) {
-	var _v0 = model.aW;
+	var _v0 = model.aX;
 	_v0$2:
 	while (true) {
 		if (_v0.$ === 1) {
@@ -40957,15 +43903,15 @@ var $author$project$Causality$Causality$view = F2(
 	function (session, model) {
 		var route = $author$project$Routes$Causality(
 			{
-				e0: model.e0,
-				dt: $author$project$Routes$getGroups(session.d5),
-				iz: model.V,
-				er: A2(
+				fB: model.fB,
+				dZ: $author$project$Routes$getGroups(session.eD),
+				f_: model.V,
+				eZ: A2(
 					$elm$core$Maybe$map,
 					function ($) {
-						return $.er;
+						return $.eZ;
 					},
-					model.$7)
+					model.dS)
 			});
 		return A2(
 			$elm$html$Html$div,
@@ -40988,7 +43934,7 @@ var $author$project$Causality$Causality$view = F2(
 							A2($author$project$Views$TopBar$breadcrumbs, session, route),
 							_List_fromArray(
 								[
-									A2($author$project$Login$Login$view, session.k1, model)
+									A2($author$project$Login$Login$view, session.ly, model)
 								])))),
 					A2(
 					$elm$html$Html$div,
@@ -41002,11 +43948,158 @@ var $author$project$Causality$Causality$view = F2(
 							$author$project$SideBar$SideBar$view,
 							session,
 							$elm$core$Maybe$Just(
-								{f2: model.V.f2, jL: model.V.jL, kD: model.V.kD})),
+								{ew: model.V.ew, gH: model.V.gH, k8: model.V.k8})),
 							$author$project$Causality$Causality$viewGraph(model)
 						]))
 				]));
 	});
+var $author$project$Dashboard$Dashboard$agentActiveStates = _List_fromArray(
+	['needs_review', 'sent_back', 'running', 'queued']);
+var $author$project$Dashboard$Dashboard$agentStateOrder = function (state) {
+	switch (state) {
+		case 'needs_review':
+			return 0;
+		case 'sent_back':
+			return 1;
+		case 'running':
+			return 2;
+		case 'queued':
+			return 3;
+		default:
+			return 4;
+	}
+};
+var $author$project$Dashboard$Dashboard$agentFormatUsd = function (amount) {
+	var cents = $elm$core$Basics$round(amount * 100);
+	var absCents = $elm$core$Basics$abs(cents);
+	var dollars = (absCents / 100) | 0;
+	var remainder = A2($elm$core$Basics$modBy, 100, absCents);
+	var fraction = (remainder < 10) ? ('0' + $elm$core$String$fromInt(remainder)) : $elm$core$String$fromInt(remainder);
+	return $elm$core$String$fromInt(dollars) + ('.' + fraction);
+};
+var $author$project$Dashboard$Dashboard$agentCostLabel = F2(
+	function (costs, ticketId) {
+		var _v0 = A2(
+			$elm$core$Dict$get,
+			$elm$core$String$fromInt(ticketId),
+			costs);
+		if (!_v0.$) {
+			var cost = _v0.a;
+			return '$' + $author$project$Dashboard$Dashboard$agentFormatUsd(cost);
+		} else {
+			return '';
+		}
+	});
+var $author$project$Dashboard$Dashboard$agentTicketChip = F2(
+	function (costs, t) {
+		return A2(
+			$elm$html$Html$a,
+			_List_fromArray(
+				[
+					$elm$html$Html$Attributes$class('agent-ticket-chip'),
+					$elm$html$Html$Attributes$href(
+					$author$project$Routes$toString(
+						$author$project$Routes$AgentTicket(
+							{f_: t.f_}))),
+					A2($elm$html$Html$Attributes$style, 'display', 'flex'),
+					A2($elm$html$Html$Attributes$style, 'align-items', 'center'),
+					A2($elm$html$Html$Attributes$style, 'gap', '6px'),
+					A2($elm$html$Html$Attributes$style, 'padding', '3px 8px'),
+					A2($elm$html$Html$Attributes$style, 'border', '1px solid #2d3a48'),
+					A2($elm$html$Html$Attributes$style, 'border-radius', '3px'),
+					A2($elm$html$Html$Attributes$style, 'color', 'inherit'),
+					A2($elm$html$Html$Attributes$style, 'text-decoration', 'none'),
+					A2($elm$html$Html$Attributes$style, 'font-size', '12px'),
+					A2($elm$html$Html$Attributes$style, 'max-width', '260px')
+				]),
+			_List_fromArray(
+				[
+					function () {
+					var _v0 = $author$project$AgentBadge$fromApiToken(t.dg);
+					if (!_v0.$) {
+						var status = _v0.a;
+						return $author$project$AgentBadge$view(status);
+					} else {
+						return $elm$html$Html$text(t.dg);
+					}
+				}(),
+					A2(
+					$elm$html$Html$span,
+					_List_fromArray(
+						[
+							A2($elm$html$Html$Attributes$style, 'overflow', 'hidden'),
+							A2($elm$html$Html$Attributes$style, 'text-overflow', 'ellipsis'),
+							A2($elm$html$Html$Attributes$style, 'white-space', 'nowrap')
+						]),
+					_List_fromArray(
+						[
+							$elm$html$Html$text(
+							'#' + ($elm$core$String$fromInt(t.f_) + (' ' + t.ck)))
+						])),
+					A2(
+					$elm$html$Html$span,
+					_List_fromArray(
+						[
+							A2($elm$html$Html$Attributes$style, 'font-family', 'monospace'),
+							A2($elm$html$Html$Attributes$style, 'color', '#b0b0b0')
+						]),
+					_List_fromArray(
+						[
+							$elm$html$Html$text(
+							A2($author$project$Dashboard$Dashboard$agentCostLabel, costs, t.f_))
+						]))
+				]));
+	});
+var $author$project$Dashboard$Dashboard$agentTicketStrip = function (model) {
+	var active = A2(
+		$elm$core$List$sortBy,
+		function (t) {
+			return _Utils_Tuple2(
+				$author$project$Dashboard$Dashboard$agentStateOrder(t.dg),
+				-t.fn);
+		},
+		A2(
+			$elm$core$List$filter,
+			function (t) {
+				return A2($elm$core$List$member, t.dg, $author$project$Dashboard$Dashboard$agentActiveStates);
+			},
+			model.dv));
+	return $elm$core$List$isEmpty(active) ? $elm$html$Html$text('') : A2(
+		$elm$html$Html$div,
+		_List_fromArray(
+			[
+				$elm$html$Html$Attributes$id('agent-ticket-strip'),
+				A2($elm$html$Html$Attributes$style, 'display', 'flex'),
+				A2($elm$html$Html$Attributes$style, 'flex-wrap', 'wrap'),
+				A2($elm$html$Html$Attributes$style, 'align-items', 'center'),
+				A2($elm$html$Html$Attributes$style, 'gap', '8px'),
+				A2($elm$html$Html$Attributes$style, 'padding', '8px 12px'),
+				A2($elm$html$Html$Attributes$style, 'margin', '0 0 8px 0'),
+				A2($elm$html$Html$Attributes$style, 'border-bottom', '1px solid #2d3a48'),
+				A2($elm$html$Html$Attributes$style, 'background', '#1b222b')
+			]),
+		A2(
+			$elm$core$List$cons,
+			A2(
+				$elm$html$Html$a,
+				_List_fromArray(
+					[
+						$elm$html$Html$Attributes$href(
+						$author$project$Routes$toString($author$project$Routes$AgentTickets)),
+						A2($elm$html$Html$Attributes$style, 'color', '#9aa39b'),
+						A2($elm$html$Html$Attributes$style, 'font-weight', '700'),
+						A2($elm$html$Html$Attributes$style, 'text-decoration', 'none'),
+						A2($elm$html$Html$Attributes$style, 'font-size', '13px')
+					]),
+				_List_fromArray(
+					[
+						$elm$html$Html$text('agent tickets')
+					])),
+			A2(
+				$elm$core$List$map,
+				$author$project$Dashboard$Dashboard$agentTicketChip(model.du),
+				A2($elm$core$List$take, 8, active))));
+};
 var $author$project$Dashboard$Styles$content = function (highDensity) {
 	return _List_fromArray(
 		[
@@ -41053,12 +44146,12 @@ var $author$project$Dashboard$Grid$Constants$cardHeaderHeight = function (numRow
 var $author$project$Dashboard$Grid$Constants$cardBodyHeight = 268 - $author$project$Dashboard$Grid$Constants$cardHeaderHeight(1);
 var $author$project$Dashboard$Grid$cardBounds = F4(
 	function (_v0, y, elem, headerHeight) {
-		var colGap = _v0.da;
-		var rowGap = _v0.cN;
-		var offsetX = _v0.dW;
-		var offsetY = _v0.dX;
+		var colGap = _v0.dC;
+		var rowGap = _v0.c5;
+		var offsetX = _v0.ep;
+		var offsetY = _v0.eq;
 		var colWidth = $author$project$Dashboard$Grid$Constants$cardWidth + colGap;
-		return {bS: (headerHeight + ($author$project$Dashboard$Grid$Constants$cardBodyHeight * elem.gs)) + (rowGap * (elem.gs - 1)), gK: ($author$project$Dashboard$Grid$Constants$cardWidth * elem.ej) + (colGap * (elem.ej - 1)), ak: ((elem.eN - 1) * colWidth) + offsetX, lf: y + offsetY};
+		return {b_: (headerHeight + ($author$project$Dashboard$Grid$Constants$cardBodyHeight * elem.g4)) + (rowGap * (elem.g4 - 1)), hn: ($author$project$Dashboard$Grid$Constants$cardWidth * elem.eS) + (colGap * (elem.eS - 1)), am: ((elem.fk - 1) * colWidth) + offsetX, lL: y + offsetY};
 	});
 var $author$project$Dashboard$Grid$Layout$countToSpan = function (count) {
 	return (count > 24) ? 3 : ((count > 12) ? 2 : 1);
@@ -41087,7 +44180,7 @@ var $author$project$Dashboard$Grid$cardSizes = function (pipelineLayers) {
 					A2(
 						$elm$core$Maybe$withDefault,
 						_List_Nil,
-						A2($elm$core$Dict$get, pipeline.iz, pipelineLayers)));
+						A2($elm$core$Dict$get, pipeline.f_, pipelineLayers)));
 			};
 			switch (card.$) {
 				case 0:
@@ -41140,26 +44233,26 @@ var $author$project$Dashboard$Grid$Layout$layout = F2(
 					function (_v0, _v1) {
 						var w = _v0.a;
 						var h = _v0.b;
-						var cards = _v1.aM;
-						var column = _v1.eN;
-						var row = _v1.cM;
-						var rowHeight = _v1.d6;
+						var cards = _v1.aN;
+						var column = _v1.fk;
+						var row = _v1.c4;
+						var rowHeight = _v1.eE;
 						var breaksRow = (_Utils_cmp(column + w, numColumns + 1) > 0) && (column !== 1);
 						var newColumn = breaksRow ? 1 : column;
 						var newRow = breaksRow ? (row + rowHeight) : row;
 						var newRowHeight = breaksRow ? h : A2($elm$core$Basics$max, rowHeight, h);
 						return {
-							aM: A2(
+							aN: A2(
 								$elm$core$List$cons,
-								{eN: newColumn, cM: newRow, ej: w, gs: h},
+								{fk: newColumn, c4: newRow, eS: w, g4: h},
 								cards),
-							eN: newColumn + w,
-							cM: newRow,
-							d6: newRowHeight
+							fk: newColumn + w,
+							c4: newRow,
+							eE: newRowHeight
 						};
 					}),
-				{aM: _List_Nil, eN: 1, cM: 1, d6: 1},
-				cardSizes).aM);
+				{aN: _List_Nil, fk: 1, c4: 1, eE: 1},
+				cardSizes).aN);
 	});
 var $author$project$Dashboard$Grid$maxBy = F3(
 	function (fn, first, rest) {
@@ -41226,13 +44319,13 @@ var $author$project$Dashboard$Pipeline$headerRows = F4(
 					_Utils_ap(
 						$author$project$Dashboard$Styles$pipelineName,
 						$author$project$Tooltip$hoverAttrs(
-							A2($author$project$Message$Message$PipelineCardName, section, pipeline.iz)))),
+							A2($author$project$Message$Message$PipelineCardName, section, pipeline.f_)))),
 				_List_fromArray(
 					[
-						$elm$html$Html$text(pipeline.dQ)
+						$elm$html$Html$text(pipeline.cT)
 					]))
 			]);
-		var instanceVarRows = (!inInstanceGroup) ? _List_Nil : ($elm$core$Dict$isEmpty(pipeline.bT) ? _List_fromArray(
+		var instanceVarRows = (!inInstanceGroup) ? _List_Nil : ($elm$core$Dict$isEmpty(pipeline.b$) ? _List_fromArray(
 			[
 				A2(
 				$elm$html$Html$div,
@@ -41254,7 +44347,7 @@ var $author$project$Dashboard$Pipeline$headerRows = F4(
 						_Utils_ap(
 							$author$project$Dashboard$Styles$instanceVar,
 							$author$project$Tooltip$hoverAttrs(
-								A4($author$project$Message$Message$PipelineCardInstanceVar, section, pipeline.iz, k, v)))),
+								A4($author$project$Message$Message$PipelineCardInstanceVar, section, pipeline.f_, k, v)))),
 					_List_fromArray(
 						[
 							A2(
@@ -41277,7 +44370,7 @@ var $author$project$Dashboard$Pipeline$headerRows = F4(
 					var v = _v0.b;
 					return A2($author$project$Concourse$flattenJson, k, v);
 				},
-				$elm$core$Dict$toList(pipeline.bT))) : _List_fromArray(
+				$elm$core$Dict$toList(pipeline.b$))) : _List_fromArray(
 			[
 				A2(
 				$elm$html$Html$div,
@@ -41287,7 +44380,7 @@ var $author$project$Dashboard$Pipeline$headerRows = F4(
 					_Utils_ap(
 						$author$project$Dashboard$Styles$instanceVar,
 						$author$project$Tooltip$hoverAttrs(
-							A3($author$project$Message$Message$PipelineCardInstanceVars, section, pipeline.iz, pipeline.bT)))),
+							A3($author$project$Message$Message$PipelineCardInstanceVars, section, pipeline.f_, pipeline.b$)))),
 				A2(
 					$elm$core$List$map,
 					function (_v3) {
@@ -41318,7 +44411,7 @@ var $author$project$Dashboard$Pipeline$headerRows = F4(
 							var v = _v2.b;
 							return A2($author$project$Concourse$flattenJson, k, v);
 						},
-						$elm$core$Dict$toList(pipeline.bT))))
+						$elm$core$Dict$toList(pipeline.b$))))
 			])));
 		return _Utils_ap(nameRow, instanceVarRows);
 	});
@@ -41343,11 +44436,11 @@ var $author$project$Dashboard$Grid$computeCards = F4(
 		var numColumns = A2(
 			$elm$core$Basics$max,
 			1,
-			$elm$core$Basics$floor(params.bB / ($author$project$Dashboard$Grid$Constants$cardWidth + $author$project$Dashboard$Grid$Constants$padding)));
+			$elm$core$Basics$floor(params.bD / ($author$project$Dashboard$Grid$Constants$cardWidth + $author$project$Dashboard$Grid$Constants$padding)));
 		var gridElements = A2(
 			$author$project$Dashboard$Grid$Layout$layout,
 			numColumns,
-			A2($author$project$Dashboard$Grid$cardSizes, params.ah, cards));
+			A2($author$project$Dashboard$Grid$cardSizes, params.ai, cards));
 		return A3(
 			$elm$core$List$foldl,
 			F2(
@@ -41359,22 +44452,22 @@ var $author$project$Dashboard$Grid$computeCards = F4(
 							$author$project$Dashboard$Grid$maxBy,
 							A2(
 								$elm$core$Basics$composeL,
-								A2($author$project$Dashboard$Grid$numHeaderRows, section, params.c3),
+								A2($author$project$Dashboard$Grid$numHeaderRows, section, params.dq),
 								function ($) {
-									return $.ay;
+									return $.az;
 								}),
 							first,
 							rest));
 					var curCards = A2(
 						$elm$core$List$map,
 						function (_v2) {
-							var card = _v2.ay;
+							var card = _v2.az;
 							var gridElement = _v2.aa;
 							return {
-								t: A4($author$project$Dashboard$Grid$cardBounds, config, state.bz, gridElement, headerHeight),
-								ay: card,
+								t: A4($author$project$Dashboard$Grid$cardBounds, config, state.bB, gridElement, headerHeight),
+								az: card,
 								aa: gridElement,
-								fj: headerHeight
+								fV: headerHeight
 							};
 						},
 						A2($elm$core$List$cons, first, rest));
@@ -41386,28 +44479,28 @@ var $author$project$Dashboard$Grid$computeCards = F4(
 								$elm$core$List$map,
 								function (_v1) {
 									var bounds = _v1.t;
-									return bounds.bS + config.cN;
+									return bounds.b_ + config.c5;
 								},
 								curCards)));
 					return _Utils_update(
 						state,
 						{
-							al: _Utils_ap(state.al, curCards),
-							bz: state.bz + curRowHeight
+							an: _Utils_ap(state.an, curCards),
+							bB: state.bB + curRowHeight
 						});
 				}),
-			{al: _List_Nil, fO: numColumns, bz: 0},
+			{an: _List_Nil, gr: numColumns, bB: 0},
 			A2(
 				$elm_community$list_extra$List$Extra$groupWhile,
 				F2(
 					function (a, b) {
-						return _Utils_eq(a.aa.cM, b.aa.cM);
+						return _Utils_eq(a.aa.c4, b.aa.c4);
 					}),
 				A3(
 					$elm$core$List$map2,
 					F2(
 						function (gridElement, card) {
-							return {ay: card, aa: gridElement};
+							return {az: card, aa: gridElement};
 						}),
 					gridElements,
 					cards)));
@@ -41416,22 +44509,22 @@ var $author$project$Dashboard$Grid$Constants$groupHeaderLineHeight = 25;
 var $author$project$Dashboard$Grid$Constants$groupHeaderHeight = $author$project$Dashboard$Grid$Constants$padding + $author$project$Dashboard$Grid$Constants$groupHeaderLineHeight;
 var $author$project$Dashboard$Grid$isVisible = F2(
 	function (_v0, _v1) {
-		var viewportHeight = _v0.bA;
-		var scrollTop = _v0.kd;
+		var viewportHeight = _v0.bC;
+		var scrollTop = _v0.kI;
 		var bounds = _v1.t;
 		var leeway = 100;
-		return (_Utils_cmp(bounds.lf + bounds.bS, scrollTop - leeway) > -1) && (_Utils_cmp(bounds.lf, (scrollTop + viewportHeight) + leeway) < 1);
+		return (_Utils_cmp(bounds.lL + bounds.b_, scrollTop - leeway) > -1) && (_Utils_cmp(bounds.lL, (scrollTop + viewportHeight) + leeway) < 1);
 	});
 var $author$project$Dashboard$Grid$computeFavoritesLayout = F2(
 	function (params, cards) {
 		var result = A4(
 			$author$project$Dashboard$Grid$computeCards,
-			{da: $author$project$Dashboard$Grid$Constants$padding, dW: $author$project$Dashboard$Grid$Constants$padding, dX: $author$project$Dashboard$Grid$Constants$groupHeaderHeight, cN: $author$project$Dashboard$Grid$Constants$groupHeaderHeight + $author$project$Dashboard$Grid$Constants$padding},
+			{dC: $author$project$Dashboard$Grid$Constants$padding, ep: $author$project$Dashboard$Grid$Constants$padding, eq: $author$project$Dashboard$Grid$Constants$groupHeaderHeight, c5: $author$project$Dashboard$Grid$Constants$groupHeaderHeight + $author$project$Dashboard$Grid$Constants$padding},
 			0,
 			params,
 			cards);
 		var headers = function () {
-			var cardHeader = $author$project$Dashboard$Grid$composeHeader(params.c3);
+			var cardHeader = $author$project$Dashboard$Grid$composeHeader(params.dq);
 			return A3(
 				$elm$core$List$foldl,
 				F2(
@@ -41440,7 +44533,7 @@ var $author$project$Dashboard$Grid$computeFavoritesLayout = F2(
 						var last = _v2.b;
 						var prevHeader = _v3.a;
 						var headers_ = _v3.b;
-						var curHeader = cardHeader(first.ay);
+						var curHeader = cardHeader(first.az);
 						var header = function () {
 							if (prevHeader.$ === 1) {
 								return curHeader;
@@ -41454,8 +44547,8 @@ var $author$project$Dashboard$Grid$computeFavoritesLayout = F2(
 							A2(
 								$elm$core$List$cons,
 								{
-									t: {bS: $author$project$Dashboard$Grid$Constants$groupHeaderHeight, gK: (last.t.ak + $author$project$Dashboard$Grid$Constants$cardWidth) - first.t.ak, ak: first.t.ak, lf: first.t.lf - $author$project$Dashboard$Grid$Constants$groupHeaderHeight},
-									cq: header
+									t: {b_: $author$project$Dashboard$Grid$Constants$groupHeaderHeight, hn: (last.t.am + $author$project$Dashboard$Grid$Constants$cardWidth) - first.t.am, am: first.t.am, lL: first.t.lL - $author$project$Dashboard$Grid$Constants$groupHeaderHeight},
+									cH: header
 								},
 								headers_));
 					}),
@@ -41482,31 +44575,27 @@ var $author$project$Dashboard$Grid$computeFavoritesLayout = F2(
 						F2(
 							function (c1, c2) {
 								return _Utils_eq(
-									cardHeader(c1.ay),
-									cardHeader(c2.ay)) && _Utils_eq(c1.t.lf, c2.t.lf);
+									cardHeader(c1.az),
+									cardHeader(c2.az)) && _Utils_eq(c1.t.lL, c2.t.lL);
 							}),
-						result.al))).b;
+						result.an))).b;
 		}();
 		return {
-			aM: A2(
+			aN: A2(
 				$elm$core$List$filter,
 				$author$project$Dashboard$Grid$isVisible(params),
-				result.al),
+				result.an),
 			ab: A2(
 				$elm$core$List$filter,
 				$author$project$Dashboard$Grid$isVisible(params),
 				headers),
-			bS: result.bz
+			b_: result.bB
 		};
 	});
 var $author$project$Message$Message$Before = function (a) {
 	return {$: 0, a: a};
 };
 var $author$project$Message$Message$End = {$: 1};
-var $elm$core$Basics$min = F2(
-	function (x, y) {
-		return (_Utils_cmp(x, y) < 0) ? x : y;
-	});
 var $author$project$Dashboard$Drag$reverseIndices = F2(
 	function (length, _v0) {
 		var from = _v0.a;
@@ -41520,7 +44609,7 @@ var $author$project$Dashboard$Grid$computeLayout = F3(
 		var dropAreaBounds = function (bounds) {
 			return _Utils_update(
 				bounds,
-				{gK: bounds.gK + $author$project$Dashboard$Grid$Constants$padding, ak: bounds.ak - $author$project$Dashboard$Grid$Constants$padding});
+				{hn: bounds.hn + $author$project$Dashboard$Grid$Constants$padding, am: bounds.am - $author$project$Dashboard$Grid$Constants$padding});
 		};
 		var dragIndices = function () {
 			var _v8 = _Utils_Tuple2(params.I, params.X);
@@ -41546,7 +44635,7 @@ var $author$project$Dashboard$Grid$computeLayout = F3(
 		}();
 		var result = A4(
 			$author$project$Dashboard$Grid$computeCards,
-			{da: $author$project$Dashboard$Grid$Constants$padding, dW: $author$project$Dashboard$Grid$Constants$padding, dX: 0, cN: $author$project$Dashboard$Grid$Constants$padding},
+			{dC: $author$project$Dashboard$Grid$Constants$padding, ep: $author$project$Dashboard$Grid$Constants$padding, eq: 0, c5: $author$project$Dashboard$Grid$Constants$padding},
 			1,
 			params,
 			orderedCards);
@@ -41560,16 +44649,16 @@ var $author$project$Dashboard$Grid$computeLayout = F3(
 				}(
 					A2(
 						$author$project$Dashboard$Drag$reverseIndices,
-						$elm$core$List$length(result.al),
+						$elm$core$List$length(result.an),
 						idxs));
 			} else {
 				return $elm$core$Basics$identity;
 			}
-		}()(result.al);
+		}()(result.an);
 		var boundsToRightOf = function (otherBounds) {
 			return _Utils_update(
 				otherBounds,
-				{bS: otherBounds.bS, gK: $author$project$Dashboard$Grid$Constants$cardWidth + $author$project$Dashboard$Grid$Constants$padding, ak: otherBounds.ak + otherBounds.gK, lf: otherBounds.lf});
+				{b_: otherBounds.b_, hn: $author$project$Dashboard$Grid$Constants$cardWidth + $author$project$Dashboard$Grid$Constants$padding, am: otherBounds.am + otherBounds.hn, lL: otherBounds.lL});
 		};
 		var cardDropAreas = $elm$core$List$reverse(
 			A3(
@@ -41585,32 +44674,32 @@ var $author$project$Dashboard$Grid$computeLayout = F3(
 						var curBounds = function () {
 							if (!prevDropArea.$) {
 								var prev = prevDropArea.a;
-								return ((_Utils_cmp(prev.aa.cM, gridElement.cM) < 0) && (_Utils_cmp(prev.aa.eN + prev.aa.ej, result.fO) < 1)) ? boundsToRightOf(prev.t) : dropAreaBounds(bounds);
+								return ((_Utils_cmp(prev.aa.c4, gridElement.c4) < 0) && (_Utils_cmp(prev.aa.fk + prev.aa.eS, result.gr) < 1)) ? boundsToRightOf(prev.t) : dropAreaBounds(bounds);
 							} else {
 								return dropAreaBounds(bounds);
 							}
 						}();
 						var curDropArea = {
 							t: curBounds,
-							eo: $author$project$Message$Message$Before(origCard)
+							eW: $author$project$Message$Message$Before(origCard)
 						};
 						return _Utils_Tuple2(
 							A2($elm$core$List$cons, curDropArea, dropAreas),
 							$elm$core$Maybe$Just(curCard));
 					}),
 				_Utils_Tuple2(_List_Nil, $elm$core$Maybe$Nothing),
-				A3($elm$core$List$map2, $elm$core$Tuple$pair, cards, result.al)).a);
+				A3($elm$core$List$map2, $elm$core$Tuple$pair, cards, result.an)).a);
 		var allDropAreas = _Utils_ap(
 			cardDropAreas,
 			function () {
-				var _v0 = $elm_community$list_extra$List$Extra$last(result.al);
+				var _v0 = $elm_community$list_extra$List$Extra$last(result.an);
 				if (!_v0.$) {
 					var bounds = _v0.a.t;
 					return _List_fromArray(
 						[
 							{
 							t: boundsToRightOf(bounds),
-							eo: $author$project$Message$Message$End
+							eW: $author$project$Message$Message$End
 						}
 						]);
 				} else {
@@ -41618,15 +44707,15 @@ var $author$project$Dashboard$Grid$computeLayout = F3(
 				}
 			}());
 		return {
-			aM: A2(
+			aN: A2(
 				$elm$core$List$filter,
 				$author$project$Dashboard$Grid$isVisible(params),
 				cardsWithOriginalOrder),
-			e2: A2(
+			fD: A2(
 				$elm$core$List$filter,
 				$author$project$Dashboard$Grid$isVisible(params),
 				allDropAreas),
-			bS: $elm$core$List$isEmpty(cards) ? (($author$project$Dashboard$Grid$Constants$cardHeaderHeight(1) + $author$project$Dashboard$Grid$Constants$cardBodyHeight) + $author$project$Dashboard$Grid$Constants$padding) : result.bz
+			b_: $elm$core$List$isEmpty(cards) ? (($author$project$Dashboard$Grid$Constants$cardHeaderHeight(1) + $author$project$Dashboard$Grid$Constants$cardBodyHeight) + $author$project$Dashboard$Grid$Constants$padding) : result.bB
 		};
 	});
 var $author$project$Message$Message$InstanceGroupCardNameHD = F2(
@@ -41659,15 +44748,15 @@ var $author$project$Dashboard$Styles$instanceGroupCardNameHd = _List_fromArray(
 		A2($elm$html$Html$Attributes$style, 'text-overflow', 'ellipsis')
 	]);
 var $author$project$Dashboard$InstanceGroup$instanceGroupRoute = function (_v0) {
-	var pipeline = _v0.ag;
-	var dashboardView = _v0.hy;
-	var query = _v0.av;
+	var pipeline = _v0.ah;
+	var dashboardView = _v0.h6;
+	var query = _v0.aw;
 	var instanceGroupQuery = $author$project$Dashboard$FilterBuilder$instanceGroupFilter(pipeline);
 	var newQuery = (query !== '') ? (query + (' ' + instanceGroupQuery)) : instanceGroupQuery;
 	return $author$project$Routes$Dashboard(
 		{
-			hy: dashboardView,
-			kf: $author$project$Routes$Normal(newQuery)
+			h6: dashboardView,
+			kK: $author$project$Routes$Normal(newQuery)
 		});
 };
 var $author$project$Colors$resourceError = '#e67e22';
@@ -41682,23 +44771,23 @@ var $author$project$Dashboard$Styles$resourceErrorTriangle = _List_fromArray(
 		A2($elm$html$Html$Attributes$style, 'border-left', '30px solid transparent')
 	]);
 var $author$project$Dashboard$InstanceGroup$hdCardView = function (_v0) {
-	var pipeline = _v0.ag;
-	var pipelines = _v0.jN;
-	var resourceError = _v0.b3;
-	var dashboardView = _v0.hy;
-	var query = _v0.av;
+	var pipeline = _v0.ah;
+	var pipelines = _v0.kg;
+	var resourceError = _v0.cb;
+	var dashboardView = _v0.h6;
+	var query = _v0.aw;
 	return A2(
 		$elm$html$Html$a,
 		_Utils_ap(
 			_List_fromArray(
 				[
 					$elm$html$Html$Attributes$class('card'),
-					A2($elm$html$Html$Attributes$attribute, 'data-pipeline-name', pipeline.dQ),
-					A2($elm$html$Html$Attributes$attribute, 'data-team-name', pipeline.kD),
+					A2($elm$html$Html$Attributes$attribute, 'data-pipeline-name', pipeline.cT),
+					A2($elm$html$Html$Attributes$attribute, 'data-team-name', pipeline.k8),
 					$elm$html$Html$Attributes$href(
 					$author$project$Routes$toString(
 						$author$project$Dashboard$InstanceGroup$instanceGroupRoute(
-							{hy: dashboardView, ag: pipeline, av: query})))
+							{h6: dashboardView, ah: pipeline, aw: query})))
 				]),
 			$author$project$Dashboard$Styles$instanceGroupCardHd),
 		_Utils_ap(
@@ -41722,10 +44811,10 @@ var $author$project$Dashboard$InstanceGroup$hdCardView = function (_v0) {
 								_Utils_ap(
 									$author$project$Dashboard$Styles$instanceGroupCardNameHd,
 									$author$project$Tooltip$hoverAttrs(
-										A2($author$project$Message$Message$InstanceGroupCardNameHD, pipeline.kD, pipeline.dQ)))),
+										A2($author$project$Message$Message$InstanceGroupCardNameHD, pipeline.k8, pipeline.cT)))),
 							_List_fromArray(
 								[
-									$elm$html$Html$text(pipeline.dQ)
+									$elm$html$Html$text(pipeline.cT)
 								]))
 						]))
 				]),
@@ -41791,11 +44880,11 @@ var $author$project$Dashboard$Styles$solid = function (color) {
 var $author$project$Dashboard$Styles$texture = F3(
 	function (pipelineRunningKeyframes, isRunning, color) {
 		return isRunning ? $author$project$Dashboard$Styles$striped(
-			{d1: pipelineRunningKeyframes, kJ: $author$project$Colors$card, kK: color}) : $author$project$Dashboard$Styles$solid(color);
+			{ex: pipelineRunningKeyframes, le: $author$project$Colors$card, lf: color}) : $author$project$Dashboard$Styles$solid(color);
 	});
 var $author$project$Dashboard$Styles$pipelineCardBannerHd = function (_v0) {
-	var status = _v0.ek;
-	var pipelineRunningKeyframes = _v0.d1;
+	var status = _v0.eT;
+	var pipelineRunningKeyframes = _v0.ex;
 	var isRunning = $author$project$Concourse$PipelineStatus$isRunning(status);
 	var color = A2($author$project$Colors$statusColor, true, status);
 	return A2(
@@ -41847,14 +44936,14 @@ var $author$project$Dashboard$Styles$pipelineCardHd = function (status) {
 };
 var $author$project$Dashboard$Pipeline$hdPipelineView = F2(
 	function (_v0, _v1) {
-		var pipelineRunningKeyframes = _v0.d1;
-		var pipeline = _v1.ag;
-		var resourceError = _v1.b3;
-		var existingJobs = _v1.dk;
-		var bannerStyle = pipeline.gt ? $author$project$Dashboard$Styles$pipelineCardBannerStaleHd : (pipeline.gS ? $author$project$Dashboard$Styles$pipelineCardBannerArchivedHd : $author$project$Dashboard$Styles$pipelineCardBannerHd(
+		var pipelineRunningKeyframes = _v0.ex;
+		var pipeline = _v1.ah;
+		var resourceError = _v1.cb;
+		var existingJobs = _v1.dM;
+		var bannerStyle = pipeline.g5 ? $author$project$Dashboard$Styles$pipelineCardBannerStaleHd : (pipeline.hs ? $author$project$Dashboard$Styles$pipelineCardBannerArchivedHd : $author$project$Dashboard$Styles$pipelineCardBannerHd(
 			{
-				d1: pipelineRunningKeyframes,
-				ek: A2($author$project$Dashboard$Pipeline$pipelineStatus, existingJobs, pipeline)
+				ex: pipelineRunningKeyframes,
+				eT: A2($author$project$Dashboard$Pipeline$pipelineStatus, existingJobs, pipeline)
 			}));
 		return A2(
 			$elm$html$Html$a,
@@ -41862,8 +44951,8 @@ var $author$project$Dashboard$Pipeline$hdPipelineView = F2(
 				_List_fromArray(
 					[
 						$elm$html$Html$Attributes$class('card'),
-						A2($elm$html$Html$Attributes$attribute, 'data-pipeline-name', pipeline.dQ),
-						A2($elm$html$Html$Attributes$attribute, 'data-team-name', pipeline.kD),
+						A2($elm$html$Html$Attributes$attribute, 'data-pipeline-name', pipeline.cT),
+						A2($elm$html$Html$Attributes$attribute, 'data-team-name', pipeline.k8),
 						$elm$html$Html$Attributes$href(
 						$author$project$Routes$toString(
 							A2($author$project$Routes$pipelineRoute, pipeline, _List_Nil)))
@@ -41888,10 +44977,10 @@ var $author$project$Dashboard$Pipeline$hdPipelineView = F2(
 							_Utils_ap(
 								$author$project$Dashboard$Styles$pipelineCardBodyHd,
 								$author$project$Tooltip$hoverAttrs(
-									$author$project$Message$Message$PipelineCardNameHD(pipeline.iz)))),
+									$author$project$Message$Message$PipelineCardNameHD(pipeline.f_)))),
 						_List_fromArray(
 							[
-								$elm$html$Html$text(pipeline.dQ)
+								$elm$html$Html$text(pipeline.cT)
 							]))
 					]),
 				resourceError ? _List_fromArray(
@@ -41978,11 +45067,11 @@ var $author$project$Dashboard$Group$Tag$tag = F2(
 						A2(
 							$elm$core$Maybe$withDefault,
 							_List_Nil,
-							A2($elm$core$Dict$get, teamName, user.kE))))));
+							A2($elm$core$Dict$get, teamName, user.k9))))));
 	});
 var $author$project$Dashboard$Group$tag = F2(
 	function (_v0, teamName) {
-		var userState = _v0.k1;
+		var userState = _v0.ly;
 		if (!userState.$) {
 			var user = userState.a;
 			return A2($author$project$Dashboard$Group$Tag$tag, user, teamName);
@@ -42036,14 +45125,14 @@ var $author$project$Dashboard$Group$Tag$view = F2(
 	});
 var $author$project$Dashboard$Group$hdView = F3(
 	function (_v0, session, _v1) {
-		var pipelinesWithResourceErrors = _v0.aI;
-		var pipelineJobs = _v0.aH;
-		var jobs = _v0.i1;
-		var dashboardView = _v0.hy;
-		var query = _v0.av;
-		var teamName = _v1.kD;
-		var cards = _v1.aM;
-		var header = _v1.cq;
+		var pipelinesWithResourceErrors = _v0.aJ;
+		var pipelineJobs = _v0.aI;
+		var jobs = _v0.jx;
+		var dashboardView = _v0.h6;
+		var query = _v0.aw;
+		var teamName = _v1.k8;
+		var cards = _v1.aN;
+		var header = _v1.cH;
 		var teamPipelines = $elm$core$List$isEmpty(cards) ? _List_fromArray(
 			[$author$project$Dashboard$Group$pipelineNotSetView]) : A2(
 			$elm$core$List$map,
@@ -42055,20 +45144,20 @@ var $author$project$Dashboard$Group$hdView = F3(
 							$author$project$Dashboard$Pipeline$hdPipelineView,
 							session,
 							{
-								dk: A2(
+								dM: A2(
 									$elm$core$List$filterMap,
 									function (j) {
 										return A2(
 											$elm$core$Dict$get,
-											_Utils_Tuple2(p.iz, j),
+											_Utils_Tuple2(p.f_, j),
 											jobs);
 									},
 									A2(
 										$elm$core$Maybe$withDefault,
 										_List_Nil,
-										A2($elm$core$Dict$get, p.iz, pipelineJobs))),
-								ag: p,
-								b3: A2($elm$core$Set$member, p.iz, pipelinesWithResourceErrors)
+										A2($elm$core$Dict$get, p.f_, pipelineJobs))),
+								ah: p,
+								cb: A2($elm$core$Set$member, p.f_, pipelinesWithResourceErrors)
 							});
 					case 1:
 						var p = card.a;
@@ -42076,34 +45165,34 @@ var $author$project$Dashboard$Group$hdView = F3(
 							$author$project$Dashboard$Pipeline$hdPipelineView,
 							session,
 							{
-								dk: A2(
+								dM: A2(
 									$elm$core$List$filterMap,
 									function (j) {
 										return A2(
 											$elm$core$Dict$get,
-											_Utils_Tuple2(p.iz, j),
+											_Utils_Tuple2(p.f_, j),
 											jobs);
 									},
 									A2(
 										$elm$core$Maybe$withDefault,
 										_List_Nil,
-										A2($elm$core$Dict$get, p.iz, pipelineJobs))),
-								ag: p,
-								b3: A2($elm$core$Set$member, p.iz, pipelinesWithResourceErrors)
+										A2($elm$core$Dict$get, p.f_, pipelineJobs))),
+								ah: p,
+								cb: A2($elm$core$Set$member, p.f_, pipelinesWithResourceErrors)
 							});
 					default:
 						var p = card.a;
 						var ps = card.b;
 						return $author$project$Dashboard$InstanceGroup$hdCardView(
 							{
-								hy: dashboardView,
-								ag: p,
-								jN: ps,
-								av: query,
-								b3: A2(
+								h6: dashboardView,
+								ah: p,
+								kg: ps,
+								aw: query,
+								cb: A2(
 									$elm$core$List$any,
 									function (pipeline) {
-										return A2($elm$core$Set$member, pipeline.iz, pipelinesWithResourceErrors);
+										return A2($elm$core$Set$member, pipeline.f_, pipelinesWithResourceErrors);
 									},
 									A2($elm$core$List$cons, p, ps))
 							});
@@ -42252,9 +45341,9 @@ var $author$project$Dashboard$Styles$instanceGroupCardPipelineBox = F3(
 				]),
 			isRunning ? $author$project$Dashboard$Styles$striped(
 				{
-					d1: pipelineRunningKeyframes,
-					kJ: A2($author$project$Colors$statusColor, false, status),
-					kK: A2($author$project$Colors$statusColor, true, status)
+					ex: pipelineRunningKeyframes,
+					le: A2($author$project$Colors$statusColor, false, status),
+					lf: A2($author$project$Colors$statusColor, true, status)
 				}) : _List_Nil);
 	});
 var $elm$core$Basics$sqrt = _Basics_sqrt;
@@ -42268,26 +45357,26 @@ var $author$project$Dashboard$InstanceGroup$bodyView = F5(
 				function (jobName) {
 					return A2(
 						$elm$core$Dict$get,
-						_Utils_Tuple2(p.iz, jobName),
+						_Utils_Tuple2(p.f_, jobName),
 						jobs);
 				},
 				A2(
 					$elm$core$Maybe$withDefault,
 					_List_Nil,
-					A2($elm$core$Dict$get, p.iz, pipelineJobs)));
+					A2($elm$core$Dict$get, p.f_, pipelineJobs)));
 			return A2(
 				$elm$html$Html$div,
 				_Utils_ap(
 					A3(
 						$author$project$Dashboard$Styles$instanceGroupCardPipelineBox,
-						session.d1,
+						session.ex,
 						A2(
 							$author$project$HoverState$isHovered,
-							A2($author$project$Message$Message$PipelinePreview, section, p.iz),
-							session.dv),
+							A2($author$project$Message$Message$PipelinePreview, section, p.f_),
+							session.d$),
 						A2($author$project$Dashboard$Pipeline$pipelineStatus, curPipelineJobs, p)),
 					$author$project$Tooltip$hoverAttrs(
-						A2($author$project$Message$Message$PipelinePreview, section, p.iz))),
+						A2($author$project$Message$Message$PipelinePreview, section, p.f_))),
 				_List_fromArray(
 					[
 						A2(
@@ -42375,9 +45464,9 @@ var $author$project$Views$FavoritedIcon$view = F2(
 		return A2(
 			$author$project$Views$Icon$icon,
 			{
-				fo: $author$project$Assets$FavoritedToggleIcon(
-					{iQ: params.iQ, iS: params.iS, iV: params.iV}),
-				cW: 20
+				f$: $author$project$Assets$FavoritedToggleIcon(
+					{jk: params.jk, jm: params.jm, jp: params.jp}),
+				df: 20
 			},
 			_Utils_ap(
 				_List_fromArray(
@@ -42385,14 +45474,14 @@ var $author$project$Views$FavoritedIcon$view = F2(
 						A2($elm$html$Html$Attributes$style, 'cursor', 'pointer'),
 						A2($elm$html$Html$Attributes$style, 'background-size', 'contain'),
 						$elm$html$Html$Events$onClick(
-						$author$project$Message$Message$Click(params.hG)),
+						$author$project$Message$Message$Click(params.ie)),
 						$elm$html$Html$Events$onMouseEnter(
 						$author$project$Message$Message$Hover(
-							$elm$core$Maybe$Just(params.hG))),
+							$elm$core$Maybe$Just(params.ie))),
 						$elm$html$Html$Events$onMouseLeave(
 						$author$project$Message$Message$Hover($elm$core$Maybe$Nothing)),
 						$elm$html$Html$Attributes$id(
-						$author$project$Message$Effects$toHtmlID(params.hG))
+						$author$project$Message$Effects$toHtmlID(params.ie))
 					]),
 				attrs));
 	});
@@ -42403,10 +45492,10 @@ var $author$project$Dashboard$InstanceGroup$footerView = F3(
 		var favoritedIcon = A2(
 			$author$project$Views$FavoritedIcon$view,
 			{
-				hG: domID,
-				iQ: A2($author$project$Favorites$isInstanceGroupFavorited, session, groupID),
-				iS: A2($author$project$HoverState$isHovered, domID, session.dv),
-				iV: false
+				ie: domID,
+				jk: A2($author$project$Favorites$isInstanceGroupFavorited, session, groupID),
+				jm: A2($author$project$HoverState$isHovered, domID, session.d$),
+				jp: false
 			},
 			_List_Nil);
 		return A2(
@@ -42459,7 +45548,7 @@ var $author$project$Dashboard$InstanceGroup$headerView = F7(
 					$elm$html$Html$Attributes$href(
 					$author$project$Routes$toString(
 						$author$project$Dashboard$InstanceGroup$instanceGroupRoute(
-							{hy: dashboardView, ag: pipeline, av: query}))),
+							{h6: dashboardView, ah: pipeline, aw: query}))),
 					$elm$html$Html$Attributes$draggable('false')
 				]),
 			_List_fromArray(
@@ -42480,7 +45569,7 @@ var $author$project$Dashboard$InstanceGroup$headerView = F7(
 								_Utils_ap(
 									$author$project$Dashboard$Styles$instanceGroupName,
 									$author$project$Tooltip$hoverAttrs(
-										A3($author$project$Message$Message$InstanceGroupCardName, section, pipeline.kD, pipeline.dQ)))),
+										A3($author$project$Message$Message$InstanceGroupCardName, section, pipeline.k8, pipeline.cT)))),
 							_List_fromArray(
 								[
 									A2(
@@ -42488,7 +45577,7 @@ var $author$project$Dashboard$InstanceGroup$headerView = F7(
 									$author$project$ColorValues$grey20,
 									$elm$core$List$length(
 										A2($elm$core$List$cons, pipeline, pipelines))),
-									$elm$html$Html$text(pipeline.dQ)
+									$elm$html$Html$text(pipeline.cT)
 								])),
 							A2(
 							$elm$html$Html$div,
@@ -42519,25 +45608,25 @@ var $author$project$Dashboard$Styles$instanceGroupCardBanner = _List_fromArray(
 	]);
 var $author$project$Dashboard$InstanceGroup$cardView = F2(
 	function (session, _v0) {
-		var pipeline = _v0.ag;
-		var pipelines = _v0.jN;
-		var resourceError = _v0.b3;
-		var pipelineJobs = _v0.aH;
-		var jobs = _v0.i1;
-		var section = _v0.gm;
-		var dashboardView = _v0.hy;
-		var query = _v0.av;
-		var headerHeight = _v0.fj;
+		var pipeline = _v0.ah;
+		var pipelines = _v0.kg;
+		var resourceError = _v0.cb;
+		var pipelineJobs = _v0.aI;
+		var jobs = _v0.jx;
+		var section = _v0.g$;
+		var dashboardView = _v0.h6;
+		var query = _v0.aw;
+		var headerHeight = _v0.fV;
 		return A2(
 			$elm$html$Html$div,
 			_Utils_ap(
 				$author$project$Dashboard$Styles$instanceGroupCard,
 				_Utils_ap(
-					((section === 1) && (!pipeline.gt)) ? _List_fromArray(
+					((section === 1) && (!pipeline.g5)) ? _List_fromArray(
 						[
 							A2($elm$html$Html$Attributes$style, 'cursor', 'move')
 						]) : _List_Nil,
-					pipeline.gt ? _List_fromArray(
+					pipeline.g5 ? _List_fromArray(
 						[
 							A2($elm$html$Html$Attributes$style, 'opacity', '0.45')
 						]) : _List_Nil)),
@@ -42564,7 +45653,7 @@ var $author$project$Dashboard$InstanceGroup$cardView = F2(
 var $author$project$Dashboard$Group$instanceGroupCardView = F6(
 	function (session, params, section, _v0, p, ps) {
 		var bounds = _v0.t;
-		var headerHeight = _v0.fj;
+		var headerHeight = _v0.fV;
 		return A2(
 			$elm$html$Html$div,
 			_Utils_ap(
@@ -42575,15 +45664,15 @@ var $author$project$Dashboard$Group$instanceGroupCardView = F6(
 						A2(
 						$elm$html$Html$Attributes$style,
 						'transform',
-						'translate(' + ($elm$core$String$fromFloat(bounds.ak) + ('px,' + ($elm$core$String$fromFloat(bounds.lf) + 'px)')))),
+						'translate(' + ($elm$core$String$fromFloat(bounds.am) + ('px,' + ($elm$core$String$fromFloat(bounds.lL) + 'px)')))),
 						A2(
 						$elm$html$Html$Attributes$style,
 						'width',
-						$elm$core$String$fromFloat(bounds.gK) + 'px'),
+						$elm$core$String$fromFloat(bounds.hn) + 'px'),
 						A2(
 						$elm$html$Html$Attributes$style,
 						'height',
-						$elm$core$String$fromFloat(bounds.bS) + 'px')
+						$elm$core$String$fromFloat(bounds.b_) + 'px')
 					]),
 				(!_Utils_eq(params.I, $author$project$Dashboard$Models$NotDragging)) ? _List_fromArray(
 					[
@@ -42601,7 +45690,7 @@ var $author$project$Dashboard$Group$instanceGroupCardView = F6(
 								A2($elm$html$Html$Attributes$style, 'height', '100%')
 							]),
 						_Utils_ap(
-							((section === 1) && (!p.gt)) ? _List_fromArray(
+							((section === 1) && (!p.g5)) ? _List_fromArray(
 								[
 									A2($elm$html$Html$Attributes$attribute, 'ondragstart', 'event.dataTransfer.setData(\'text/plain\', \'\');'),
 									$elm$html$Html$Attributes$draggable('true'),
@@ -42636,7 +45725,7 @@ var $author$project$Dashboard$Group$instanceGroupCardView = F6(
 								}(),
 								_Utils_eq(
 									params.X,
-									$author$project$Dashboard$Models$DroppingWhileApiRequestInFlight(p.kD)) ? _List_fromArray(
+									$author$project$Dashboard$Models$DroppingWhileApiRequestInFlight(p.k8)) ? _List_fromArray(
 									[
 										A2($elm$html$Html$Attributes$style, 'opacity', '0.45'),
 										A2($elm$html$Html$Attributes$style, 'pointer-events', 'none')
@@ -42650,20 +45739,20 @@ var $author$project$Dashboard$Group$instanceGroupCardView = F6(
 							$author$project$Dashboard$InstanceGroup$cardView,
 							session,
 							{
-								hy: params.hy,
-								fj: headerHeight,
-								i1: params.i1,
-								ag: p,
-								aH: params.aH,
-								jN: ps,
-								av: params.av,
-								b3: A2(
+								h6: params.h6,
+								fV: headerHeight,
+								jx: params.jx,
+								ah: p,
+								aI: params.aI,
+								kg: ps,
+								aw: params.aw,
+								cb: A2(
 									$elm$core$List$any,
 									function (pipeline) {
-										return A2($elm$core$Set$member, pipeline.iz, params.aI);
+										return A2($elm$core$Set$member, pipeline.f_, params.aJ);
 									},
 									A2($elm$core$List$cons, p, ps)),
-								gm: section
+								g$: section
 							})
 						]))
 				]));
@@ -42699,7 +45788,7 @@ var $author$project$Dashboard$Styles$jobPreview = F2(
 					A2($elm$html$Html$Attributes$style, 'margin', '2px')
 				]),
 			function () {
-				if (job.cE) {
+				if (job.cX) {
 					return _List_fromArray(
 						[
 							A2(
@@ -42708,22 +45797,22 @@ var $author$project$Dashboard$Styles$jobPreview = F2(
 							A2($author$project$Colors$statusColor, !isHovered, $author$project$Concourse$PipelineStatus$PipelineStatusPaused))
 						]);
 				} else {
-					var isRunning = !_Utils_eq(job.fM, $elm$core$Maybe$Nothing);
+					var isRunning = !_Utils_eq(job.go, $elm$core$Maybe$Nothing);
 					var finishedBuildStatus = A2(
 						$elm$core$Maybe$withDefault,
 						0,
 						A2(
 							$elm$core$Maybe$map,
 							function ($) {
-								return $.ek;
+								return $.eT;
 							},
-							job.fa));
+							job.fM));
 					var color = A2($author$project$Colors$buildStatusColor, !isHovered, finishedBuildStatus);
 					return isRunning ? $author$project$Dashboard$Styles$striped(
 						{
-							d1: 'pipeline-running',
-							kJ: A2($author$project$Colors$buildStatusColor, false, finishedBuildStatus),
-							kK: A2($author$project$Colors$buildStatusColor, true, finishedBuildStatus)
+							ex: 'pipeline-running',
+							le: A2($author$project$Colors$buildStatusColor, false, finishedBuildStatus),
+							lf: A2($author$project$Colors$buildStatusColor, true, finishedBuildStatus)
 						}) : $author$project$Dashboard$Styles$solid(color);
 				}
 			}());
@@ -42735,21 +45824,21 @@ var $author$project$Dashboard$Styles$jobPreviewLink = _List_fromArray(
 var $author$project$Routes$jobRoute = function (j) {
 	return $author$project$Routes$Job(
 		{
-			dt: _List_Nil,
-			iz: {i0: j.dQ, f2: j.f2, jL: j.jL, kD: j.kD},
-			bp: $elm$core$Maybe$Nothing
+			dZ: _List_Nil,
+			f_: {jw: j.cT, ew: j.ew, gH: j.gH, k8: j.k8},
+			br: $elm$core$Maybe$Nothing
 		});
 };
 var $author$project$Dashboard$DashboardPreview$viewJob = F3(
 	function (section, hovered, job) {
-		var latestBuild = _Utils_eq(job.fM, $elm$core$Maybe$Nothing) ? job.fa : job.fM;
-		var domId = A3($author$project$Message$Message$JobPreview, section, job.cF, job.dQ);
+		var latestBuild = _Utils_eq(job.go, $elm$core$Maybe$Nothing) ? job.fM : job.go;
+		var domId = A3($author$project$Message$Message$JobPreview, section, job.cZ, job.cT);
 		var buildRoute = function () {
 			if (latestBuild.$ === 1) {
 				return $author$project$Routes$jobRoute(job);
 			} else {
 				var build = latestBuild.a;
-				return A3($author$project$Routes$buildRoute, build.iz, build.dQ, build.ap);
+				return A3($author$project$Routes$buildRoute, build.f_, build.cT, build.ac);
 			}
 		}();
 		return A2(
@@ -43038,31 +46127,31 @@ var $author$project$Dashboard$Pipeline$pipelineStatusView = F4(
 					A2($elm$html$Html$Attributes$style, 'display', 'flex'),
 					$elm$html$Html$Attributes$class('pipeline-status')
 				]),
-			pipeline.gS ? _List_Nil : _List_fromArray(
+			pipeline.hs ? _List_Nil : _List_fromArray(
 				[
 					function () {
-					if (pipeline.fw) {
+					if (pipeline.f7) {
 						return A2(
 							$author$project$Views$Icon$icon,
-							{fo: $author$project$Assets$PipelineStatusIconJobsDisabled, cW: 20},
+							{f$: $author$project$Assets$PipelineStatusIconJobsDisabled, df: 20},
 							_Utils_ap(
 								_List_fromArray(
 									[
 										A2($elm$html$Html$Attributes$style, 'opacity', '0.5'),
 										$elm$html$Html$Attributes$id(
 										$author$project$Message$Effects$toHtmlID(
-											A2($author$project$Message$Message$PipelineStatusIcon, section, pipeline.iz))),
+											A2($author$project$Message$Message$PipelineStatusIcon, section, pipeline.f_))),
 										$elm$html$Html$Events$onMouseEnter(
 										$author$project$Message$Message$Hover(
 											$elm$core$Maybe$Just(
-												A2($author$project$Message$Message$PipelineStatusIcon, section, pipeline.iz))))
+												A2($author$project$Message$Message$PipelineStatusIcon, section, pipeline.f_))))
 									]),
 								$author$project$Dashboard$Styles$pipelineStatusIcon));
 					} else {
-						if (pipeline.gt) {
+						if (pipeline.g5) {
 							return A2(
 								$author$project$Views$Icon$icon,
-								{fo: $author$project$Assets$PipelineStatusIconStale, cW: 20},
+								{f$: $author$project$Assets$PipelineStatusIconStale, df: 20},
 								$author$project$Dashboard$Styles$pipelineStatusIcon);
 						} else {
 							var _v0 = $author$project$Assets$pipelineStatusIcon(status);
@@ -43070,7 +46159,7 @@ var $author$project$Dashboard$Pipeline$pipelineStatusView = F4(
 								var asset = _v0.a;
 								return A2(
 									$author$project$Views$Icon$icon,
-									{fo: asset, cW: 20},
+									{f$: asset, df: 20},
 									$author$project$Dashboard$Styles$pipelineStatusIcon);
 							} else {
 								return $elm$html$Html$text('');
@@ -43078,7 +46167,7 @@ var $author$project$Dashboard$Pipeline$pipelineStatusView = F4(
 						}
 					}
 				}(),
-					pipeline.fw ? A2(
+					pipeline.f7 ? A2(
 					$elm$html$Html$div,
 					A2(
 						$elm$core$List$cons,
@@ -43087,7 +46176,7 @@ var $author$project$Dashboard$Pipeline$pipelineStatusView = F4(
 					_List_fromArray(
 						[
 							$elm$html$Html$text('no data')
-						])) : (pipeline.gt ? A2(
+						])) : (pipeline.g5 ? A2(
 					$elm$html$Html$div,
 					A2(
 						$elm$core$List$cons,
@@ -43109,8 +46198,8 @@ var $author$project$Views$Styles$pauseToggle = function (margin) {
 		]);
 };
 var $author$project$Views$Styles$pauseToggleIcon = function (_v0) {
-	var isHovered = _v0.iS;
-	var isClickable = _v0.cr;
+	var isHovered = _v0.jm;
+	var isClickable = _v0.cJ;
 	return _List_fromArray(
 		[
 			A2(
@@ -43147,43 +46236,43 @@ var $author$project$Views$Styles$pauseToggleTooltip = function (ttp) {
 		]);
 };
 var $author$project$Views$PauseToggle$view = function (params) {
-	var isClickable = $author$project$UserState$isAnonymous(params.k1) || $author$project$UserState$isMember(
-		{kD: params.ag.kD, k1: params.k1});
-	return params.fu ? $author$project$Views$Spinner$spinner(
-		{fE: params.fE, cW: 20}) : A2(
+	var isClickable = $author$project$UserState$isAnonymous(params.ly) || $author$project$UserState$isMember(
+		{k8: params.ah.k8, ly: params.ly});
+	return params.f5 ? $author$project$Views$Spinner$spinner(
+		{gg: params.gg, df: 20}) : A2(
 		$elm$html$Html$div,
 		_Utils_ap(
-			$author$project$Views$Styles$pauseToggle(params.fE),
+			$author$project$Views$Styles$pauseToggle(params.gg),
 			_Utils_ap(
 				_List_fromArray(
 					[
 						$elm$html$Html$Events$onMouseEnter(
 						$author$project$Message$Message$Hover(
-							$elm$core$Maybe$Just(params.hG))),
+							$elm$core$Maybe$Just(params.ie))),
 						$elm$html$Html$Events$onMouseLeave(
 						$author$project$Message$Message$Hover($elm$core$Maybe$Nothing)),
 						$elm$html$Html$Attributes$class('pause-toggle'),
 						$elm$html$Html$Attributes$id(
-						$author$project$Message$Effects$toHtmlID(params.hG))
+						$author$project$Message$Effects$toHtmlID(params.ie))
 					]),
 				isClickable ? _List_fromArray(
 					[
 						$elm$html$Html$Events$onClick(
-						$author$project$Message$Message$Click(params.hG))
+						$author$project$Message$Message$Click(params.ie))
 					]) : _List_Nil)),
 		_List_fromArray(
 			[
 				A2(
 				$author$project$Views$Icon$icon,
 				{
-					fo: params.iU ? $author$project$Assets$PlayIcon : $author$project$Assets$PauseIcon,
-					cW: 20
+					f$: params.jo ? $author$project$Assets$PlayIcon : $author$project$Assets$PauseIcon,
+					df: 20
 				},
 				$author$project$Views$Styles$pauseToggleIcon(
-					{cr: isClickable, iS: isClickable && params.iX})),
-				(params.iX && (!isClickable)) ? A2(
+					{cJ: isClickable, jm: isClickable && params.jr})),
+				(params.jr && (!isClickable)) ? A2(
 				$elm$html$Html$div,
-				$author$project$Views$Styles$pauseToggleTooltip(params.kW),
+				$author$project$Views$Styles$pauseToggleTooltip(params.lq),
 				_List_fromArray(
 					[
 						$elm$html$Html$text('not authorized')
@@ -43194,9 +46283,9 @@ var $author$project$Assets$VisibilityToggleIcon = function (a) {
 	return {$: 5, a: a};
 };
 var $author$project$Dashboard$Styles$visibilityToggle = function (_v0) {
-	var _public = _v0.f8;
-	var isClickable = _v0.cr;
-	var isHovered = _v0.iS;
+	var _public = _v0.gM;
+	var isClickable = _v0.cJ;
+	var isHovered = _v0.jm;
 	return _List_fromArray(
 		[
 			A2(
@@ -43222,23 +46311,23 @@ var $author$project$Dashboard$Styles$visibilityToggle = function (_v0) {
 		]);
 };
 var $author$project$Dashboard$Pipeline$visibilityView = function (_v0) {
-	var _public = _v0.f8;
-	var pipelineId = _v0.cF;
-	var isClickable = _v0.cr;
-	var isHovered = _v0.iS;
-	var isVisibilityLoading = _v0.bi;
-	var section = _v0.gm;
+	var _public = _v0.gM;
+	var pipelineId = _v0.cZ;
+	var isClickable = _v0.cJ;
+	var isHovered = _v0.jm;
+	var isVisibilityLoading = _v0.bk;
+	var section = _v0.g$;
 	return isVisibilityLoading ? $author$project$Views$Spinner$hoverableSpinner(
 		{
-			iw: $elm$core$Maybe$Just(
+			i1: $elm$core$Maybe$Just(
 				A2($author$project$Message$Message$VisibilityButton, section, pipelineId)),
-			fE: '0',
-			cW: 20
+			gg: '0',
+			df: 20
 		}) : A2(
 		$elm$html$Html$div,
 		_Utils_ap(
 			$author$project$Dashboard$Styles$visibilityToggle(
-				{cr: isClickable, iS: isHovered, f8: _public}),
+				{cJ: isClickable, jm: isHovered, gM: _public}),
 			_Utils_ap(
 				_List_fromArray(
 					[
@@ -43264,16 +46353,16 @@ var $author$project$Dashboard$Pipeline$footerView = F6(
 	function (session, pipeline, section, now, hovered, existingJobs) {
 		var visibilityButton = $author$project$Dashboard$Pipeline$visibilityView(
 			{
-				cr: $author$project$UserState$isAnonymous(session.k1) || $author$project$UserState$isMember(
-					{kD: pipeline.kD, k1: session.k1}),
-				iS: A2(
+				cJ: $author$project$UserState$isAnonymous(session.ly) || $author$project$UserState$isMember(
+					{k8: pipeline.k8, ly: session.ly}),
+				jm: A2(
 					$author$project$HoverState$isHovered,
-					A2($author$project$Message$Message$VisibilityButton, section, pipeline.iz),
+					A2($author$project$Message$Message$VisibilityButton, section, pipeline.f_),
 					hovered),
-				bi: pipeline.bi,
-				cF: pipeline.iz,
-				f8: pipeline.f8,
-				gm: section
+				bk: pipeline.bk,
+				cZ: pipeline.f_,
+				gM: pipeline.gM,
+				g$: section
 			});
 		var status = A2($author$project$Dashboard$Pipeline$pipelineStatus, existingJobs, pipeline);
 		var spacer = A2(
@@ -43286,28 +46375,28 @@ var $author$project$Dashboard$Pipeline$footerView = F6(
 		var pipelineId = $author$project$Concourse$toPipelineId(pipeline);
 		var pauseToggle = $author$project$Views$PauseToggle$view(
 			{
-				hG: A2($author$project$Message$Message$PipelineCardPauseToggle, section, pipeline.iz),
-				iU: _Utils_eq(status, $author$project$Concourse$PipelineStatus$PipelineStatusPaused),
-				iX: A2(
+				ie: A2($author$project$Message$Message$PipelineCardPauseToggle, section, pipeline.f_),
+				jo: _Utils_eq(status, $author$project$Concourse$PipelineStatus$PipelineStatusPaused),
+				jr: A2(
 					$author$project$HoverState$isHovered,
-					A2($author$project$Message$Message$PipelineCardPauseToggle, section, pipeline.iz),
+					A2($author$project$Message$Message$PipelineCardPauseToggle, section, pipeline.f_),
 					hovered),
-				fu: pipeline.fu,
-				fE: '0',
-				ag: pipelineId,
-				kW: 0,
-				k1: session.k1
+				f5: pipeline.f5,
+				gg: '0',
+				ah: pipelineId,
+				lq: 0,
+				ly: session.ly
 			});
 		var favoritedIcon = A2(
 			$author$project$Views$FavoritedIcon$view,
 			{
-				hG: A2($author$project$Message$Message$PipelineCardFavoritedIcon, section, pipeline.iz),
-				iQ: A2($author$project$Favorites$isPipelineFavorited, session, pipeline),
-				iS: A2(
+				ie: A2($author$project$Message$Message$PipelineCardFavoritedIcon, section, pipeline.f_),
+				jk: A2($author$project$Favorites$isPipelineFavorited, session, pipeline),
+				jm: A2(
 					$author$project$HoverState$isHovered,
-					A2($author$project$Message$Message$PipelineCardFavoritedIcon, section, pipeline.iz),
+					A2($author$project$Message$Message$PipelineCardFavoritedIcon, section, pipeline.f_),
 					hovered),
-				iV: false
+				jp: false
 			},
 			_List_Nil);
 		return A2(
@@ -43328,7 +46417,7 @@ var $author$project$Dashboard$Pipeline$footerView = F6(
 					A2(
 						$elm$core$List$intersperse,
 						spacer,
-						pipeline.gS ? _List_fromArray(
+						pipeline.hs ? _List_fromArray(
 							[visibilityButton, favoritedIcon]) : _List_fromArray(
 							[pauseToggle, visibilityButton, favoritedIcon])))
 				]));
@@ -43384,8 +46473,8 @@ var $author$project$Dashboard$Pipeline$headerView = F6(
 				]));
 	});
 var $author$project$Dashboard$Styles$pipelineCardBanner = function (_v0) {
-	var status = _v0.ek;
-	var pipelineRunningKeyframes = _v0.d1;
+	var status = _v0.eT;
+	var pipelineRunningKeyframes = _v0.ex;
 	var isRunning = $author$project$Concourse$PipelineStatus$isRunning(status);
 	var color = A2($author$project$Colors$statusColor, true, status);
 	return A2(
@@ -43429,31 +46518,31 @@ var $author$project$Dashboard$Pipeline$previewPlaceholder = A2(
 		]));
 var $author$project$Dashboard$Pipeline$pipelineView = F2(
 	function (session, _v0) {
-		var now = _v0.fN;
-		var pipeline = _v0.ag;
-		var hovered = _v0.dv;
-		var resourceError = _v0.b3;
-		var existingJobs = _v0.dk;
-		var layers = _v0.i6;
-		var section = _v0.gm;
-		var headerHeight = _v0.fj;
-		var viewingInstanceGroups = _v0.c3;
-		var inInstanceGroup = _v0.bg;
-		var bannerStyle = pipeline.gt ? $author$project$Dashboard$Styles$pipelineCardBannerStale : (pipeline.gS ? $author$project$Dashboard$Styles$pipelineCardBannerArchived : $author$project$Dashboard$Styles$pipelineCardBanner(
+		var now = _v0.gq;
+		var pipeline = _v0.ah;
+		var hovered = _v0.d$;
+		var resourceError = _v0.cb;
+		var existingJobs = _v0.dM;
+		var layers = _v0.jC;
+		var section = _v0.g$;
+		var headerHeight = _v0.fV;
+		var viewingInstanceGroups = _v0.dq;
+		var inInstanceGroup = _v0.bi;
+		var bannerStyle = pipeline.g5 ? $author$project$Dashboard$Styles$pipelineCardBannerStale : (pipeline.hs ? $author$project$Dashboard$Styles$pipelineCardBannerArchived : $author$project$Dashboard$Styles$pipelineCardBanner(
 			{
-				d1: session.d1,
-				ek: A2($author$project$Dashboard$Pipeline$pipelineStatus, existingJobs, pipeline)
+				ex: session.ex,
+				eT: A2($author$project$Dashboard$Pipeline$pipelineStatus, existingJobs, pipeline)
 			}));
 		return A2(
 			$elm$html$Html$div,
 			_Utils_ap(
 				$author$project$Dashboard$Styles$pipelineCard,
 				_Utils_ap(
-					((section === 1) && (!pipeline.gt)) ? _List_fromArray(
+					((section === 1) && (!pipeline.g5)) ? _List_fromArray(
 						[
 							A2($elm$html$Html$Attributes$style, 'cursor', 'move')
 						]) : _List_Nil,
-					pipeline.gt ? _List_fromArray(
+					pipeline.g5 ? _List_fromArray(
 						[
 							A2($elm$html$Html$Attributes$style, 'opacity', '0.45')
 						]) : _List_Nil)),
@@ -43467,16 +46556,16 @@ var $author$project$Dashboard$Pipeline$pipelineView = F2(
 						bannerStyle),
 					_List_Nil),
 					A6($author$project$Dashboard$Pipeline$headerView, section, pipeline, resourceError, headerHeight, viewingInstanceGroups, inInstanceGroup),
-					(pipeline.fw || pipeline.gS) ? $author$project$Dashboard$Pipeline$previewPlaceholder : A3($author$project$Dashboard$Pipeline$bodyView, section, hovered, layers),
+					(pipeline.f7 || pipeline.hs) ? $author$project$Dashboard$Pipeline$previewPlaceholder : A3($author$project$Dashboard$Pipeline$bodyView, section, hovered, layers),
 					A6($author$project$Dashboard$Pipeline$footerView, session, pipeline, section, now, hovered, existingJobs)
 				]));
 	});
 var $author$project$Dashboard$Group$pipelineCardView = F5(
 	function (session, params, section, _v0, teamName) {
 		var bounds = _v0.t;
-		var headerHeight = _v0.fj;
-		var pipeline = _v0.ag;
-		var inInstanceGroup = _v0.bg;
+		var headerHeight = _v0.fV;
+		var pipeline = _v0.ah;
+		var inInstanceGroup = _v0.bi;
 		var card = inInstanceGroup ? $author$project$Dashboard$Group$Models$InstancedPipelineCard(pipeline) : $author$project$Dashboard$Group$Models$PipelineCard(pipeline);
 		return A2(
 			$elm$html$Html$div,
@@ -43488,15 +46577,15 @@ var $author$project$Dashboard$Group$pipelineCardView = F5(
 						A2(
 						$elm$html$Html$Attributes$style,
 						'transform',
-						'translate(' + ($elm$core$String$fromFloat(bounds.ak) + ('px,' + ($elm$core$String$fromFloat(bounds.lf) + 'px)')))),
+						'translate(' + ($elm$core$String$fromFloat(bounds.am) + ('px,' + ($elm$core$String$fromFloat(bounds.lL) + 'px)')))),
 						A2(
 						$elm$html$Html$Attributes$style,
 						'width',
-						$elm$core$String$fromFloat(bounds.gK) + 'px'),
+						$elm$core$String$fromFloat(bounds.hn) + 'px'),
 						A2(
 						$elm$html$Html$Attributes$style,
 						'height',
-						$elm$core$String$fromFloat(bounds.bS) + 'px')
+						$elm$core$String$fromFloat(bounds.b_) + 'px')
 					]),
 				(!_Utils_eq(params.I, $author$project$Dashboard$Models$NotDragging)) ? _List_fromArray(
 					[
@@ -43512,10 +46601,10 @@ var $author$project$Dashboard$Group$pipelineCardView = F5(
 								$elm$html$Html$Attributes$class('card pipeline-card'),
 								A2($elm$html$Html$Attributes$style, 'width', '100%'),
 								A2($elm$html$Html$Attributes$style, 'height', '100%'),
-								A2($elm$html$Html$Attributes$attribute, 'data-pipeline-name', pipeline.dQ)
+								A2($elm$html$Html$Attributes$attribute, 'data-pipeline-name', pipeline.cT)
 							]),
 						_Utils_ap(
-							((section === 1) && (!pipeline.gt)) ? _List_fromArray(
+							((section === 1) && (!pipeline.g5)) ? _List_fromArray(
 								[
 									A2($elm$html$Html$Attributes$attribute, 'ondragstart', 'event.dataTransfer.setData(\'text/plain\', \'\');'),
 									$elm$html$Html$Attributes$draggable('true'),
@@ -43562,39 +46651,39 @@ var $author$project$Dashboard$Group$pipelineCardView = F5(
 							$author$project$Dashboard$Pipeline$pipelineView,
 							session,
 							{
-								dk: A2(
+								dM: A2(
 									$elm$core$List$filterMap,
 									function (j) {
 										return A2(
 											$elm$core$Dict$get,
-											_Utils_Tuple2(pipeline.iz, j),
-											params.i1);
+											_Utils_Tuple2(pipeline.f_, j),
+											params.jx);
 									},
 									A2(
 										$elm$core$Maybe$withDefault,
 										_List_Nil,
-										A2($elm$core$Dict$get, pipeline.iz, params.aH))),
-								fj: headerHeight,
-								dv: session.dv,
-								bg: inInstanceGroup,
-								i6: A2(
+										A2($elm$core$Dict$get, pipeline.f_, params.aI))),
+								fV: headerHeight,
+								d$: session.d$,
+								bi: inInstanceGroup,
+								jC: A2(
 									$elm$core$List$map,
 									$elm$core$List$filterMap(
 										function (j) {
 											return A2(
 												$elm$core$Dict$get,
-												_Utils_Tuple2(pipeline.iz, j),
-												params.i1);
+												_Utils_Tuple2(pipeline.f_, j),
+												params.jx);
 										}),
 									A2(
 										$elm$core$Maybe$withDefault,
 										_List_Nil,
-										A2($elm$core$Dict$get, pipeline.iz, params.ah))),
-								fN: params.fN,
-								ag: pipeline,
-								b3: A2($elm$core$Set$member, pipeline.iz, params.aI),
-								gm: section,
-								c3: params.c3
+										A2($elm$core$Dict$get, pipeline.f_, params.ai))),
+								gq: params.gq,
+								ah: pipeline,
+								cb: A2($elm$core$Set$member, pipeline.f_, params.aJ),
+								g$: section,
+								dq: params.dq
 							})
 						]))
 				]));
@@ -43614,10 +46703,10 @@ var $elm$html$Html$Events$preventDefaultOn = F2(
 	});
 var $author$project$Dashboard$Group$pipelineDropAreaView = F4(
 	function (dragState, name, _v0, target) {
-		var x = _v0.ak;
-		var y = _v0.lf;
-		var width = _v0.gK;
-		var height = _v0.bS;
+		var x = _v0.am;
+		var y = _v0.lL;
+		var width = _v0.hn;
+		var height = _v0.b_;
 		var active = function () {
 			if (dragState.$ === 1) {
 				var card = dragState.a;
@@ -43732,18 +46821,18 @@ var $author$project$Dashboard$Pipeline$pipelineNotSetView = A2(
 		]));
 var $author$project$Dashboard$Group$view = F3(
 	function (session, params, _v0) {
-		var header = _v0.cq;
-		var teamName = _v0.kD;
-		var cards = _v0.aM;
+		var header = _v0.cH;
+		var teamName = _v0.k8;
+		var cards = _v0.aN;
 		var groupId = header;
 		var dropAreaViews = A2(
 			$elm$core$List$map,
 			function (_v3) {
 				var bounds = _v3.t;
-				var target = _v3.eo;
+				var target = _v3.eW;
 				return A4($author$project$Dashboard$Group$pipelineDropAreaView, params.I, teamName, bounds, target);
 			},
-			params.e2);
+			params.fD);
 		var cardViews = $elm$core$List$isEmpty(cards) ? _List_fromArray(
 			[
 				_Utils_Tuple2('not-set', $author$project$Dashboard$Pipeline$pipelineNotSetView)
@@ -43751,14 +46840,14 @@ var $author$project$Dashboard$Group$view = F3(
 			$elm$core$List$map,
 			function (_v1) {
 				var bounds = _v1.t;
-				var headerHeight = _v1.fj;
-				var card = _v1.ay;
+				var headerHeight = _v1.fV;
+				var card = _v1.az;
 				switch (card.$) {
 					case 0:
 						var pipeline = card.a;
 						return function (html) {
 							return _Utils_Tuple2(
-								$elm$core$String$fromInt(pipeline.iz),
+								$elm$core$String$fromInt(pipeline.f_),
 								html);
 						}(
 							A5(
@@ -43766,13 +46855,13 @@ var $author$project$Dashboard$Group$view = F3(
 								session,
 								params,
 								1,
-								{t: bounds, fj: headerHeight, bg: false, ag: pipeline},
+								{t: bounds, fV: headerHeight, bi: false, ah: pipeline},
 								teamName));
 					case 1:
 						var pipeline = card.a;
 						return function (html) {
 							return _Utils_Tuple2(
-								$elm$core$String$fromInt(pipeline.iz),
+								$elm$core$String$fromInt(pipeline.f_),
 								html);
 						}(
 							A5(
@@ -43780,20 +46869,20 @@ var $author$project$Dashboard$Group$view = F3(
 								session,
 								params,
 								1,
-								{t: bounds, fj: headerHeight, bg: true, ag: pipeline},
+								{t: bounds, fV: headerHeight, bi: true, ah: pipeline},
 								teamName));
 					default:
 						var p = card.a;
 						var ps = card.b;
 						return function (html) {
-							return _Utils_Tuple2(p.dQ, html);
+							return _Utils_Tuple2(p.cT, html);
 						}(
 							A6(
 								$author$project$Dashboard$Group$instanceGroupCardView,
 								session,
 								params,
 								1,
-								{t: bounds, fj: headerHeight},
+								{t: bounds, fV: headerHeight},
 								p,
 								ps));
 				}
@@ -43823,7 +46912,7 @@ var $author$project$Dashboard$Group$view = F3(
 							$elm$core$String$fromInt($author$project$Dashboard$Grid$Constants$padding) + 'px'),
 							$elm$html$Html$Attributes$class(
 							function ($) {
-								return $.kh;
+								return $.kM;
 							}($author$project$Message$Effects$stickyHeaderConfig))
 						]),
 					A2(
@@ -43850,7 +46939,7 @@ var $author$project$Dashboard$Group$view = F3(
 								$author$project$Dashboard$Models$DroppingWhileApiRequestInFlight(teamName)) ? _List_fromArray(
 								[
 									$author$project$Views$Spinner$spinner(
-									{fE: '0 0 0 10px', cW: 20})
+									{gg: '0 0 0 10px', df: 20})
 								]) : _List_Nil))),
 					A3(
 					$elm$html$Html$Keyed$node,
@@ -43859,13 +46948,13 @@ var $author$project$Dashboard$Group$view = F3(
 						[
 							$elm$html$Html$Attributes$class(
 							function ($) {
-								return $.kg;
+								return $.kL;
 							}($author$project$Message$Effects$stickyHeaderConfig)),
 							A2($elm$html$Html$Attributes$style, 'position', 'relative'),
 							A2(
 							$elm$html$Html$Attributes$style,
 							'height',
-							$elm$core$String$fromFloat(params.fi) + 'px')
+							$elm$core$String$fromFloat(params.fU) + 'px')
 						]),
 					_Utils_ap(
 						cardViews,
@@ -43885,10 +46974,10 @@ var $author$project$Dashboard$Group$view = F3(
 	});
 var $author$project$Dashboard$Group$headerView = F2(
 	function (_v0, header) {
-		var x = _v0.ak;
-		var y = _v0.lf;
-		var width = _v0.gK;
-		var height = _v0.bS;
+		var x = _v0.am;
+		var y = _v0.lL;
+		var width = _v0.hn;
+		var height = _v0.b_;
 		return A2(
 			$elm$html$Html$div,
 			_List_fromArray(
@@ -43925,7 +47014,7 @@ var $author$project$Dashboard$Group$viewFavoritePipelines = F4(
 			$elm$core$List$map,
 			function (_v2) {
 				var bounds = _v2.t;
-				var header = _v2.cq;
+				var header = _v2.cH;
 				return A2($author$project$Dashboard$Group$headerView, bounds, header);
 			},
 			headers);
@@ -43933,14 +47022,14 @@ var $author$project$Dashboard$Group$viewFavoritePipelines = F4(
 			$elm$core$List$map,
 			function (_v0) {
 				var bounds = _v0.t;
-				var card = _v0.ay;
-				var headerHeight = _v0.fj;
+				var card = _v0.az;
+				var headerHeight = _v0.fV;
 				switch (card.$) {
 					case 0:
 						var pipeline = card.a;
 						return function (html) {
 							return _Utils_Tuple2(
-								$elm$core$String$fromInt(pipeline.iz),
+								$elm$core$String$fromInt(pipeline.f_),
 								html);
 						}(
 							A5(
@@ -43948,13 +47037,13 @@ var $author$project$Dashboard$Group$viewFavoritePipelines = F4(
 								session,
 								params,
 								0,
-								{t: bounds, fj: headerHeight, bg: false, ag: pipeline},
-								pipeline.kD));
+								{t: bounds, fV: headerHeight, bi: false, ah: pipeline},
+								pipeline.k8));
 					case 1:
 						var pipeline = card.a;
 						return function (html) {
 							return _Utils_Tuple2(
-								$elm$core$String$fromInt(pipeline.iz),
+								$elm$core$String$fromInt(pipeline.f_),
 								html);
 						}(
 							A5(
@@ -43962,20 +47051,20 @@ var $author$project$Dashboard$Group$viewFavoritePipelines = F4(
 								session,
 								params,
 								0,
-								{t: bounds, fj: headerHeight, bg: true, ag: pipeline},
-								pipeline.kD));
+								{t: bounds, fV: headerHeight, bi: true, ah: pipeline},
+								pipeline.k8));
 					default:
 						var p = card.a;
 						var ps = card.b;
 						return function (html) {
-							return _Utils_Tuple2(p.dQ, html);
+							return _Utils_Tuple2(p.cT, html);
 						}(
 							A6(
 								$author$project$Dashboard$Group$instanceGroupCardView,
 								session,
 								params,
 								0,
-								{t: bounds, fj: headerHeight},
+								{t: bounds, fV: headerHeight},
 								p,
 								ps));
 				}
@@ -43991,7 +47080,7 @@ var $author$project$Dashboard$Group$viewFavoritePipelines = F4(
 					A2(
 					$elm$html$Html$Attributes$style,
 					'height',
-					$elm$core$String$fromFloat(params.fi) + 'px')
+					$elm$core$String$fromFloat(params.fU) + 'px')
 				]),
 			_Utils_ap(
 				cardViews,
@@ -44011,10 +47100,10 @@ var $author$project$Dashboard$Group$viewFavoritePipelines = F4(
 	});
 var $author$project$Dashboard$Dashboard$cardsView = F3(
 	function (session, params, teamCards) {
-		var viewingInstanceGroups = $author$project$Dashboard$Filter$isViewingInstanceGroups(params.av);
-		var jobs = A2($author$project$FetchResult$withDefault, $elm$core$Dict$empty, params.i1);
+		var viewingInstanceGroups = $author$project$Dashboard$Filter$isViewingInstanceGroups(params.aw);
+		var jobs = A2($author$project$FetchResult$withDefault, $elm$core$Dict$empty, params.jx);
 		var _v0 = function () {
-			if (params.ao) {
+			if (params.aq) {
 				return _Utils_Tuple2(_List_Nil, 0);
 			} else {
 				var favoritedCards = A2(
@@ -44050,7 +47139,7 @@ var $author$project$Dashboard$Dashboard$cardsView = F3(
 					A2(
 						$elm$core$List$concatMap,
 						function ($) {
-							return $.aM;
+							return $.aN;
 						},
 						teamCards));
 				var allPipelinesHeader = A2(
@@ -44072,10 +47161,10 @@ var $author$project$Dashboard$Dashboard$cardsView = F3(
 						var offset = $author$project$Dashboard$Grid$Constants$sectionHeaderHeight;
 						var layout = A2(
 							$author$project$Dashboard$Grid$computeFavoritesLayout,
-							{ah: params.ah, kd: params.kd - offset, c3: viewingInstanceGroups, bA: params.bA, bB: params.bB},
+							{ai: params.ai, kI: params.kI - offset, dq: viewingInstanceGroups, bC: params.bC, bD: params.bD},
 							favoritedCards);
 						return function (html) {
-							return _Utils_Tuple2(html, layout.bS + (2 * $author$project$Dashboard$Grid$Constants$sectionHeaderHeight));
+							return _Utils_Tuple2(html, layout.b_ + (2 * $author$project$Dashboard$Grid$Constants$sectionHeaderHeight));
 						}(
 							_List_fromArray(
 								[
@@ -44089,9 +47178,9 @@ var $author$project$Dashboard$Dashboard$cardsView = F3(
 									A4(
 									$author$project$Dashboard$Group$viewFavoritePipelines,
 									session,
-									{hy: params.hy, I: $author$project$Dashboard$Models$NotDragging, X: $author$project$Dashboard$Models$NotDropping, fi: layout.bS, i1: jobs, fN: params.fN, aH: params.aH, ah: params.ah, aI: params.aI, av: params.av, c3: viewingInstanceGroups},
+									{h6: params.h6, I: $author$project$Dashboard$Models$NotDragging, X: $author$project$Dashboard$Models$NotDropping, fU: layout.b_, jx: jobs, gq: params.gq, aI: params.aI, ai: params.ai, aJ: params.aJ, aw: params.aw, dq: viewingInstanceGroups},
 									layout.ab,
-									layout.aM),
+									layout.aN),
 									$author$project$Views$Styles$separator(0),
 									allPipelinesHeader
 								]));
@@ -44101,43 +47190,43 @@ var $author$project$Dashboard$Dashboard$cardsView = F3(
 		}();
 		var headerView = _v0.a;
 		var offsetHeight = _v0.b;
-		var groupViews = (params.ao ? $elm$core$List$concatMap(
+		var groupViews = (params.aq ? $elm$core$List$concatMap(
 			A2(
 				$author$project$Dashboard$Group$hdView,
-				{hy: params.hy, i1: jobs, aH: params.aH, aI: params.aI, av: params.av},
+				{h6: params.h6, jx: jobs, aI: params.aI, aJ: params.aJ, aw: params.aw},
 				session)) : A2(
 			$elm$core$Basics$composeR,
 			A2(
 				$elm$core$List$foldl,
 				F2(
 					function (_v2, _v3) {
-						var header = _v2.cq;
-						var teamName = _v2.kD;
-						var cards = _v2.aM;
+						var header = _v2.cH;
+						var teamName = _v2.k8;
+						var cards = _v2.aN;
 						var htmlList = _v3.a;
 						var totalOffset = _v3.b;
 						var startingOffset = totalOffset + $author$project$Dashboard$Grid$Constants$groupHeaderHeight;
 						var layout = A3(
 							$author$project$Dashboard$Grid$computeLayout,
-							{I: params.I, X: params.X, ah: params.ah, kd: params.kd - startingOffset, c3: viewingInstanceGroups, bA: params.bA, bB: params.bB},
+							{I: params.I, X: params.X, ai: params.ai, kI: params.kI - startingOffset, dq: viewingInstanceGroups, bC: params.bC, bD: params.bD},
 							teamName,
 							cards);
 						return function (html) {
 							return _Utils_Tuple2(
 								A2($elm$core$List$cons, html, htmlList),
-								startingOffset + layout.bS);
+								startingOffset + layout.b_);
 						}(
 							A3(
 								$author$project$Dashboard$Group$view,
 								session,
-								{hy: params.hy, I: params.I, e2: layout.e2, X: params.X, fi: layout.bS, i1: jobs, fN: params.fN, aH: params.aH, ah: params.ah, aI: params.aI, av: params.av, c3: viewingInstanceGroups},
-								{aM: layout.aM, cq: header, kD: teamName}));
+								{h6: params.h6, I: params.I, fD: layout.fD, X: params.X, fU: layout.b_, jx: jobs, gq: params.gq, aI: params.aI, ai: params.ai, aJ: params.aJ, aw: params.aw, dq: viewingInstanceGroups},
+								{aN: layout.aN, cH: header, k8: teamName}));
 					}),
 				_Utils_Tuple2(_List_Nil, offsetHeight)),
 			A2($elm$core$Basics$composeR, $elm$core$Tuple$first, $elm$core$List$reverse)))(teamCards);
-		return ((!_Utils_eq(params.jN, $elm$core$Maybe$Nothing)) && ($elm$core$List$isEmpty(groupViews) && (!$elm$core$String$isEmpty(params.av)))) ? _List_fromArray(
+		return ((!_Utils_eq(params.kg, $elm$core$Maybe$Nothing)) && ($elm$core$List$isEmpty(groupViews) && (!$elm$core$String$isEmpty(params.aw)))) ? _List_fromArray(
 			[
-				$author$project$Dashboard$Dashboard$noResultsView(params.av)
+				$author$project$Dashboard$Dashboard$noResultsView(params.aw)
 			]) : _Utils_ap(headerView, groupViews);
 	});
 var $matthewsj$elm_ordering$Ordering$breakTiesWith = F4(
@@ -44183,18 +47272,18 @@ var $author$project$Dashboard$Dashboard$instanceGroupCardsView = F2(
 						var p = _v1.a;
 						var ps = _v1.b;
 						return {
-							aM: A2(
+							aN: A2(
 								$elm$core$List$map,
 								$author$project$Dashboard$Group$Models$InstancedPipelineCard,
 								A2($elm$core$List$cons, p, ps)),
-							cq: team + (' / ' + p.dQ),
-							kD: team
+							cH: team + (' / ' + p.cT),
+							k8: team
 						};
 					},
 					A2(
 						$elm_community$list_extra$List$Extra$gatherEqualsBy,
 						function ($) {
-							return $.dQ;
+							return $.cT;
 						},
 						teamPipelines));
 			},
@@ -44217,9 +47306,9 @@ var $author$project$Dashboard$Dashboard$regularCardsView = F2(
 				var team = _v0.a;
 				var teamPipelines = _v0.b;
 				return {
-					aM: $author$project$Dashboard$Group$Models$groupCardsWithinTeam(teamPipelines),
-					cq: team,
-					kD: team
+					aN: $author$project$Dashboard$Group$Models$groupCardsWithinTeam(teamPipelines),
+					cH: team,
+					k8: team
 				};
 			},
 			filteredPipelinesByTeam);
@@ -44227,7 +47316,7 @@ var $author$project$Dashboard$Dashboard$regularCardsView = F2(
 	});
 var $author$project$Dashboard$Dashboard$dashboardCardsView = F2(
 	function (session, model) {
-		return $author$project$Dashboard$Filter$isViewingInstanceGroups(model.av) ? A2($author$project$Dashboard$Dashboard$instanceGroupCardsView, session, model) : A2($author$project$Dashboard$Dashboard$regularCardsView, session, model);
+		return $author$project$Dashboard$Filter$isViewingInstanceGroups(model.aw) ? A2($author$project$Dashboard$Dashboard$instanceGroupCardsView, session, model) : A2($author$project$Dashboard$Dashboard$regularCardsView, session, model);
 	});
 var $author$project$Dashboard$Styles$loadingView = _List_fromArray(
 	[
@@ -44246,17 +47335,17 @@ var $author$project$Dashboard$Dashboard$loadingView = A2(
 	_List_fromArray(
 		[
 			$author$project$Views$Spinner$spinner(
-			{fE: '0', cW: 36})
+			{gg: '0', df: 36})
 		]));
 var $author$project$Dashboard$Dashboard$showTurbulence = function (model) {
 	return _Utils_eq(
-		model.aq,
+		model.ar,
 		$elm$core$Maybe$Just(0)) || (_Utils_eq(
-		model.cY,
+		model.di,
 		$elm$core$Maybe$Just(0)) || (_Utils_eq(
-		model.cK,
+		model.c2,
 		$elm$core$Maybe$Just(0)) || _Utils_eq(
-		model.cG,
+		model.c_,
 		$elm$core$Maybe$Just(0))));
 };
 var $author$project$Dashboard$Dashboard$turbulenceView = function (path) {
@@ -44434,7 +47523,7 @@ var $author$project$Dashboard$Dashboard$welcomeCard = function (session) {
 									$elm$html$Html$text($author$project$Dashboard$Text$setPipelineInstructions)
 								]))
 						]),
-					$author$project$Dashboard$Dashboard$loginInstruction(session.k1))),
+					$author$project$Dashboard$Dashboard$loginInstruction(session.ly))),
 				A2(
 				$elm$html$Html$pre,
 				$author$project$Dashboard$Styles$asciiArt,
@@ -44446,13 +47535,13 @@ var $author$project$Dashboard$Dashboard$welcomeCard = function (session) {
 };
 var $author$project$Dashboard$Dashboard$dashboardView = F2(
 	function (session, model) {
-		return $author$project$Dashboard$Dashboard$showTurbulence(model) ? $author$project$Dashboard$Dashboard$turbulenceView(session.ep) : A2(
+		return $author$project$Dashboard$Dashboard$showTurbulence(model) ? $author$project$Dashboard$Dashboard$turbulenceView(session.eX) : A2(
 			$elm$html$Html$div,
 			A2(
 				$elm$core$List$cons,
 				$elm$html$Html$Attributes$class(
 					function ($) {
-						return $.jE;
+						return $.j8;
 					}($author$project$Message$Effects$stickyHeaderConfig)),
 				A2(
 					$elm$core$List$cons,
@@ -44470,26 +47559,29 @@ var $author$project$Dashboard$Dashboard$dashboardView = F2(
 								$elm$core$List$cons,
 								$elm$html$Html$Events$onMouseLeave(
 									$author$project$Message$Message$Hover($elm$core$Maybe$Nothing)),
-								$author$project$Dashboard$Styles$content(model.ao)))))),
-			function () {
-				var _v0 = model.jN;
-				if (_v0.$ === 1) {
-					return _List_fromArray(
-						[$author$project$Dashboard$Dashboard$loadingView]);
-				} else {
-					var pipelines = _v0.a;
-					return A2(
-						$elm$core$List$all,
-						$elm$core$List$isEmpty,
-						$elm$core$Dict$values(pipelines)) ? A2(
-						$elm$core$List$cons,
-						$author$project$Dashboard$Dashboard$welcomeCard(session),
-						A2($author$project$Dashboard$Dashboard$dashboardCardsView, session, model)) : A2(
-						$elm$core$List$cons,
-						$elm$html$Html$text(''),
-						A2($author$project$Dashboard$Dashboard$dashboardCardsView, session, model));
-				}
-			}());
+								$author$project$Dashboard$Styles$content(model.aq)))))),
+			A2(
+				$elm$core$List$cons,
+				$author$project$Dashboard$Dashboard$agentTicketStrip(model),
+				function () {
+					var _v0 = model.kg;
+					if (_v0.$ === 1) {
+						return _List_fromArray(
+							[$author$project$Dashboard$Dashboard$loadingView]);
+					} else {
+						var pipelines = _v0.a;
+						return A2(
+							$elm$core$List$all,
+							$elm$core$List$isEmpty,
+							$elm$core$Dict$values(pipelines)) ? A2(
+							$elm$core$List$cons,
+							$author$project$Dashboard$Dashboard$welcomeCard(session),
+							A2($author$project$Dashboard$Dashboard$dashboardCardsView, session, model)) : A2(
+							$elm$core$List$cons,
+							$elm$html$Html$text(''),
+							A2($author$project$Dashboard$Dashboard$dashboardCardsView, session, model));
+					}
+				}()));
 	});
 var $author$project$Views$Toggle$Left = 0;
 var $author$project$Colors$showArchivedButtonBorder = $author$project$ColorValues$grey90;
@@ -44503,12 +47595,12 @@ var $author$project$Assets$ToggleSwitch = function (a) {
 	return {$: 4, a: a};
 };
 var $author$project$Views$Toggle$toggleSwitch = function (_v0) {
-	var ariaLabel = _v0.gU;
-	var hrefRoute = _v0.iy;
-	var text = _v0.kH;
-	var textDirection = _v0.kI;
-	var styles = _v0.kx;
-	var on = _v0.jy;
+	var ariaLabel = _v0.hu;
+	var hrefRoute = _v0.i3;
+	var text = _v0.lc;
+	var textDirection = _v0.ld;
+	var styles = _v0.k0;
+	var on = _v0.j1;
 	var textElem = $elm$html$Html$text(text);
 	var iconElem = A2(
 		$elm$html$Html$div,
@@ -44559,24 +47651,24 @@ var $author$project$Views$Toggle$toggleSwitch = function (_v0) {
 			[iconElem, textElem]));
 };
 var $author$project$Dashboard$Dashboard$showArchivedToggleView = function (model) {
-	var on = model.hy === 1;
+	var on = model.h6 === 1;
 	var noPipelines = A2(
 		$elm$core$List$all,
 		$elm$core$List$isEmpty,
 		$elm$core$Dict$values(
-			A2($elm$core$Maybe$withDefault, $elm$core$Dict$empty, model.jN)));
+			A2($elm$core$Maybe$withDefault, $elm$core$Dict$empty, model.kg)));
 	return noPipelines ? $elm$html$Html$text('') : $author$project$Views$Toggle$toggleSwitch(
 		{
-			gU: 'Toggle whether archived pipelines are displayed',
-			iy: $author$project$Routes$Dashboard(
+			hu: 'Toggle whether archived pipelines are displayed',
+			i3: $author$project$Routes$Dashboard(
 				{
-					hy: on ? 0 : 1,
-					kf: model.ao ? $author$project$Routes$HighDensity : $author$project$Routes$Normal(model.av)
+					h6: on ? 0 : 1,
+					kK: model.aq ? $author$project$Routes$HighDensity : $author$project$Routes$Normal(model.aw)
 				}),
-			jy: on,
-			kx: $author$project$Dashboard$Styles$showArchivedToggle,
-			kH: 'show archived',
-			kI: 0
+			j1: on,
+			k0: $author$project$Dashboard$Styles$showArchivedToggle,
+			lc: 'show archived',
+			ld: 0
 		});
 };
 var $author$project$Dashboard$Styles$topBarContent = _List_fromArray(
@@ -44696,7 +47788,7 @@ var $author$project$Dashboard$Styles$searchInput = F2(
 			widthStyles);
 	});
 var $author$project$Dashboard$Styles$showSearchContainer = function (_v0) {
-	var highDensity = _v0.ao;
+	var highDensity = _v0.aq;
 	var flexLayout = highDensity ? _List_Nil : _List_fromArray(
 		[
 			A2($elm$html$Html$Attributes$style, 'align-items', 'flex-start')
@@ -44763,7 +47855,7 @@ var $author$project$Dashboard$Styles$dropdownItem = F2(
 	});
 var $author$project$Dashboard$SearchBar$viewDropdownItems = F2(
 	function (session, model) {
-		var _v0 = model.e3;
+		var _v0 = model.fE;
 		if (!_v0.$) {
 			return _List_Nil;
 		} else {
@@ -44771,8 +47863,8 @@ var $author$project$Dashboard$SearchBar$viewDropdownItems = F2(
 			var filteredTeams = A2($author$project$Dashboard$Filter$filterTeams, session, model);
 			var dropdownItem = F2(
 				function (idx, _v1) {
-					var prev = _v1.jQ;
-					var cur = _v1.ht;
+					var prev = _v1.kj;
+					var cur = _v1.h3;
 					return A2(
 						$elm$html$Html$li,
 						A2(
@@ -44785,7 +47877,7 @@ var $author$project$Dashboard$SearchBar$viewDropdownItems = F2(
 								_Utils_eq(
 									$elm$core$Maybe$Just(idx),
 									selectedIdx),
-								$elm$core$String$length(model.av) > 0)),
+								$elm$core$String$length(model.aw) > 0)),
 						_List_fromArray(
 							[
 								$elm$html$Html$text(cur)
@@ -44798,25 +47890,25 @@ var $author$project$Dashboard$SearchBar$viewDropdownItems = F2(
 					A2(
 						$elm$core$List$cons,
 						$elm$html$Html$Attributes$id('search-dropdown'),
-						$author$project$Dashboard$Styles$dropdownContainer(session.d8)),
+						$author$project$Dashboard$Styles$dropdownContainer(session.eG)),
 					A2(
 						$elm$core$List$indexedMap,
 						dropdownItem,
-						A2($author$project$Dashboard$Filter$suggestions, filteredTeams, model.av)))
+						A2($author$project$Dashboard$Filter$suggestions, filteredTeams, model.aw)))
 				]);
 		}
 	});
 var $author$project$Dashboard$SearchBar$view = F2(
 	function (session, params) {
-		var query = params.av;
-		var dropdown = params.e3;
-		var pipelines = params.jN;
+		var query = params.aw;
+		var dropdown = params.fE;
+		var pipelines = params.kg;
 		var noPipelines = A2(
 			$elm$core$List$all,
 			$elm$core$List$isEmpty,
 			$elm$core$Dict$values(
 				A2($elm$core$Maybe$withDefault, $elm$core$Dict$empty, pipelines)));
-		var isMobile = !session.d8;
+		var isMobile = !session.eG;
 		var isDropDownHidden = _Utils_eq(dropdown, $author$project$Dashboard$Models$Hidden);
 		var clearSearchButton = ($elm$core$String$length(query) > 0) ? _List_fromArray(
 			[
@@ -44835,7 +47927,7 @@ var $author$project$Dashboard$SearchBar$view = F2(
 		return noPipelines ? $elm$html$Html$text('') : ((isDropDownHidden && (isMobile && (query === ''))) ? A2(
 			$elm$html$Html$div,
 			$author$project$Dashboard$Styles$showSearchContainer(
-				{ao: params.ao, d8: session.d8}),
+				{aq: params.aq, eG: session.eG}),
 			_List_fromArray(
 				[
 					A2(
@@ -44854,7 +47946,7 @@ var $author$project$Dashboard$SearchBar$view = F2(
 			A2(
 				$elm$core$List$cons,
 				$elm$html$Html$Attributes$id('search-container'),
-				$author$project$Dashboard$Styles$searchContainer(session.d8)),
+				$author$project$Dashboard$Styles$searchContainer(session.eG)),
 			A2(
 				$elm$core$List$cons,
 				A2(
@@ -44872,7 +47964,7 @@ var $author$project$Dashboard$SearchBar$view = F2(
 							]),
 						A2(
 							$author$project$Dashboard$Styles$searchInput,
-							session.d8,
+							session.eG,
 							$elm$core$String$length(query) > 0)),
 					_List_Nil),
 				_Utils_ap(
@@ -44899,14 +47991,14 @@ var $author$project$Dashboard$Dashboard$topBar = F2(
 					A2(
 						$elm$core$List$cons,
 						$author$project$SideBar$SideBar$sideBarIcon(session),
-						A2($author$project$Views$TopBar$breadcrumbs, session, session.d5))),
+						A2($author$project$Views$TopBar$breadcrumbs, session, session.eD))),
 				function () {
-					var isMobile = !session.d8;
-					var isDropDownHidden = _Utils_eq(model.e3, $author$project$Dashboard$Models$Hidden);
-					return ((!model.ao) && (isMobile && ((!isDropDownHidden) || (model.av !== '')))) ? _List_fromArray(
+					var isMobile = !session.eG;
+					var isDropDownHidden = _Utils_eq(model.fE, $author$project$Dashboard$Models$Hidden);
+					return ((!model.aq) && (isMobile && ((!isDropDownHidden) || (model.aw !== '')))) ? _List_fromArray(
 						[
 							A2($author$project$Dashboard$SearchBar$view, session, model)
-						]) : ((!model.ao) ? _List_fromArray(
+						]) : ((!model.aq) ? _List_fromArray(
 						[
 							$author$project$Dashboard$Dashboard$topBarContent(
 							_List_fromArray(
@@ -44914,12 +48006,12 @@ var $author$project$Dashboard$Dashboard$topBar = F2(
 									A2($author$project$Dashboard$SearchBar$view, session, model)
 								])),
 							$author$project$Dashboard$Dashboard$showArchivedToggleView(model),
-							A2($author$project$Login$Login$view, session.k1, model)
+							A2($author$project$Login$Login$view, session.ly, model)
 						]) : _List_fromArray(
 						[
 							$author$project$Dashboard$Dashboard$topBarContent(_List_Nil),
 							$author$project$Dashboard$Dashboard$showArchivedToggleView(model),
-							A2($author$project$Login$Login$view, session.k1, model)
+							A2($author$project$Login$Login$view, session.ly, model)
 						]));
 				}()));
 	});
@@ -44966,11 +48058,10 @@ var $author$project$Dashboard$Styles$info = _List_fromArray(
 		A2($elm$html$Html$Attributes$style, 'color', $author$project$Colors$bottomBarText),
 		A2($elm$html$Html$Attributes$style, 'font-size', '1.25em')
 	]);
-var $elm$html$Html$Attributes$rel = _VirtualDom_attribute('rel');
 var $author$project$Dashboard$Footer$concourseInfo = function (_v0) {
-	var version = _v0.er;
-	var jetbridgeVersion = _v0.dK;
-	var concourseVersion = _v0.db;
+	var version = _v0.eZ;
+	var jetbridgeVersion = _v0.ed;
+	var concourseVersion = _v0.dD;
 	return A2(
 		$elm$html$Html$div,
 		A2(
@@ -45033,7 +48124,7 @@ var $author$project$Dashboard$Footer$concourseInfo = function (_v0) {
 			]));
 };
 var $author$project$Dashboard$Footer$hideLegend = function (_v0) {
-	var pipelines = _v0.jN;
+	var pipelines = _v0.kg;
 	return A2(
 		$elm$core$List$all,
 		$elm$core$List$isEmpty,
@@ -45042,8 +48133,8 @@ var $author$project$Dashboard$Footer$hideLegend = function (_v0) {
 };
 var $author$project$Colors$infoBarBackground = $author$project$ColorValues$grey100;
 var $author$project$Dashboard$Styles$infoBar = function (_v0) {
-	var hideLegend = _v0.ir;
-	var screenSize = _v0.d8;
+	var hideLegend = _v0.iY;
+	var screenSize = _v0.eG;
 	return _Utils_ap(
 		_List_fromArray(
 			[
@@ -45122,7 +48213,7 @@ var $author$project$Dashboard$Footer$legendItem = function (status) {
 					var asset = _v0.a;
 					return A2(
 						$author$project$Views$Icon$icon,
-						{fo: asset, cW: 20},
+						{f$: asset, df: 20},
 						$author$project$Dashboard$Styles$pipelineStatusIcon);
 				} else {
 					return $elm$html$Html$text('');
@@ -45182,20 +48273,20 @@ var $author$project$Dashboard$Styles$highDensityToggle = _List_fromArray(
 		A2($elm$html$Html$Attributes$style, 'text-transform', 'uppercase')
 	]);
 var $author$project$Dashboard$Footer$toggleView = function (_v0) {
-	var highDensity = _v0.ao;
-	var dashboardView = _v0.hy;
+	var highDensity = _v0.aq;
+	var dashboardView = _v0.h6;
 	return $author$project$Views$Toggle$toggleSwitch(
 		{
-			gU: 'Toggle high-density view',
-			iy: $author$project$Routes$Dashboard(
+			hu: 'Toggle high-density view',
+			i3: $author$project$Routes$Dashboard(
 				{
-					hy: dashboardView,
-					kf: highDensity ? $author$project$Routes$Normal('') : $author$project$Routes$HighDensity
+					h6: dashboardView,
+					kK: highDensity ? $author$project$Routes$Normal('') : $author$project$Routes$HighDensity
 				}),
-			jy: highDensity,
-			kx: $author$project$Dashboard$Styles$highDensityToggle,
-			kH: 'high-density',
-			kI: 1
+			j1: highDensity,
+			k0: $author$project$Dashboard$Styles$highDensityToggle,
+			lc: 'high-density',
+			ld: 1
 		});
 };
 var $author$project$Dashboard$Footer$legend = F2(
@@ -45224,7 +48315,7 @@ var $author$project$Dashboard$Footer$legend = F2(
 							[
 								A2(
 								$author$project$Views$Icon$icon,
-								{fo: $author$project$Assets$RunningLegend, cW: 20},
+								{f$: $author$project$Assets$RunningLegend, df: 20},
 								_List_Nil),
 								A2(
 								$elm$html$Html$div,
@@ -45246,8 +48337,8 @@ var $author$project$Dashboard$Footer$legend = F2(
 									$author$project$Concourse$PipelineStatus$PipelineStatusAborted($author$project$Concourse$PipelineStatus$Running),
 									$author$project$Concourse$PipelineStatus$PipelineStatusSucceeded($author$project$Concourse$PipelineStatus$Running)
 								])),
-						$author$project$Dashboard$Filter$isViewingInstanceGroups(model.av) ? _List_Nil : _Utils_ap(
-							$author$project$Dashboard$Footer$legendSeparator(session.d8),
+						$author$project$Dashboard$Filter$isViewingInstanceGroups(model.aw) ? _List_Nil : _Utils_ap(
+							$author$project$Dashboard$Footer$legendSeparator(session.eG),
 							_List_fromArray(
 								[
 									$author$project$Dashboard$Footer$toggleView(model)
@@ -45262,8 +48353,8 @@ var $author$project$Dashboard$Footer$infoBar = F2(
 				$elm$html$Html$Attributes$id('dashboard-info'),
 				$author$project$Dashboard$Styles$infoBar(
 					{
-						ir: $author$project$Dashboard$Footer$hideLegend(model),
-						d8: session.d8
+						iY: $author$project$Dashboard$Footer$hideLegend(model),
+						eG: session.eG
 					})),
 			_List_fromArray(
 				[
@@ -45351,7 +48442,7 @@ var $author$project$Dashboard$Footer$keyboardHelp = A2(
 		]));
 var $author$project$Dashboard$Footer$view = F2(
 	function (session, model) {
-		return model.gp ? $author$project$Dashboard$Footer$keyboardHelp : ((!model.fl) ? A2($author$project$Dashboard$Footer$infoBar, session, model) : $elm$html$Html$text(''));
+		return model.g2 ? $author$project$Dashboard$Footer$keyboardHelp : ((!model.fX) ? A2($author$project$Dashboard$Footer$infoBar, session, model) : $elm$html$Html$text(''));
 	});
 var $author$project$Dashboard$Dashboard$view = F2(
 	function (session, model) {
@@ -45376,7 +48467,7 @@ var $author$project$Dashboard$Dashboard$view = F2(
 							A2(
 							$elm$html$Html$Attributes$style,
 							'padding-bottom',
-							(model.gp || model.fl) ? '0' : '50px')
+							(model.g2 || model.fX) ? '0' : '50px')
 						]),
 					_List_fromArray(
 						[
@@ -45611,8 +48702,8 @@ var $author$project$DownloadFly$DownloadFly$view = F2(
 							A2(
 								$elm$core$List$cons,
 								$author$project$SideBar$SideBar$sideBarIcon(session),
-								A2($author$project$Views$TopBar$breadcrumbs, session, model.d5))),
-							A2($author$project$Login$Login$view, session.k1, model)
+								A2($author$project$Views$TopBar$breadcrumbs, session, model.eD))),
+							A2($author$project$Login$Login$view, session.ly, model)
 						])),
 					A2(
 					$elm$html$Html$div,
@@ -45720,7 +48811,7 @@ var $author$project$DownloadFly$DownloadFly$view = F2(
 															$author$project$DownloadFly$Model$platformText(5)
 														]))
 												])),
-											(!(!model.cS)) ? A2($author$project$DownloadFly$DownloadFly$installSteps, model.cS, model.du) : $elm$html$Html$text('')
+											(!(!model.db)) ? A2($author$project$DownloadFly$DownloadFly$installSteps, model.db, model.d_) : $elm$html$Html$text('')
 										]))
 								]))
 						]))
@@ -45769,8 +48860,8 @@ var $author$project$FlySuccess$Text$copyTokenButton = function (buttonState) {
 	return $author$project$FlySuccess$Models$isClicked(buttonState) ? 'token copied' : 'copy token to clipboard';
 };
 var $author$project$FlySuccess$FlySuccess$copyTokenButton = function (_v0) {
-	var authToken = _v0.c5;
-	var copyTokenButtonState = _v0.aQ;
+	var authToken = _v0.dw;
+	var copyTokenButtonState = _v0.aR;
 	return A2(
 		$elm$html$Html$span,
 		_Utils_ap(
@@ -45791,7 +48882,7 @@ var $author$project$FlySuccess$FlySuccess$copyTokenButton = function (_v0) {
 			[
 				A2(
 				$author$project$Views$Icon$icon,
-				{fo: $author$project$Assets$ClippyIcon, cW: 20},
+				{f$: $author$project$Assets$ClippyIcon, df: 20},
 				_List_fromArray(
 					[
 						$elm$html$Html$Attributes$id('copy-icon'),
@@ -45825,8 +48916,8 @@ var $author$project$FlySuccess$Styles$paragraph = _List_fromArray(
 		A2($elm$html$Html$Attributes$style, 'margin', '5px 0')
 	]);
 var $author$project$FlySuccess$FlySuccess$paragraph = function (_v0) {
-	var identifier = _v0.dw;
-	var lines = _v0.fD;
+	var identifier = _v0.d0;
+	var lines = _v0.gf;
 	return A2(
 		$elm$html$Html$p,
 		A2(
@@ -45860,9 +48951,9 @@ var $author$project$FlySuccess$Text$secondParagraph = function (error) {
 var $author$project$Message$Message$SendTokenButton = {$: 38};
 var $author$project$FlySuccess$Text$sendTokenButton = 'send token to fly directly';
 var $author$project$FlySuccess$FlySuccess$sendTokenButton = function (_v0) {
-	var sendTokenButtonState = _v0.bv;
-	var flyPort = _v0.dq;
-	var authToken = _v0.c5;
+	var sendTokenButtonState = _v0.bx;
+	var flyPort = _v0.dW;
+	var authToken = _v0.dw;
 	return A2(
 		$elm$html$Html$a,
 		_Utils_ap(
@@ -45920,8 +49011,8 @@ var $author$project$FlySuccess$Styles$input = function (inputState) {
 		]);
 };
 var $author$project$FlySuccess$FlySuccess$tokenTextBox = function (_v0) {
-	var copyTokenInputState = _v0.ci;
-	var authToken = _v0.c5;
+	var copyTokenInputState = _v0.cx;
+	var authToken = _v0.dw;
 	return A2(
 		$elm$html$Html$label,
 		_List_Nil,
@@ -45948,15 +49039,15 @@ var $author$project$FlySuccess$FlySuccess$tokenTextBox = function (_v0) {
 var $author$project$FlySuccess$FlySuccess$body = function (model) {
 	var p2 = $author$project$FlySuccess$FlySuccess$paragraph(
 		{
-			dw: 'second-paragraph',
-			fD: $author$project$FlySuccess$Text$secondParagraph(model.aY)
+			d0: 'second-paragraph',
+			gf: $author$project$FlySuccess$Text$secondParagraph(model.aZ)
 		});
 	var p1 = $author$project$FlySuccess$FlySuccess$paragraph(
 		{
-			dw: 'first-paragraph',
-			fD: $author$project$FlySuccess$Text$firstParagraph(model.aY)
+			d0: 'first-paragraph',
+			gf: $author$project$FlySuccess$Text$firstParagraph(model.aZ)
 		});
-	var _v0 = model.aY;
+	var _v0 = model.aZ;
 	switch (_v0) {
 		case 0:
 			return _List_fromArray(
@@ -46100,7 +49191,7 @@ var $author$project$Job$Job$headerBuildStatus = function (finishedBuild) {
 		return 0;
 	} else {
 		var build = finishedBuild.a;
-		return build.ek;
+		return build.eT;
 	}
 };
 var $author$project$Job$Styles$icon = function (hovered) {
@@ -46119,7 +49210,7 @@ var $author$project$Job$Job$isPaused = function (j) {
 		A2(
 			$krisajenkins$remotedata$RemoteData$map,
 			function ($) {
-				return $.cE;
+				return $.cX;
 			},
 			j));
 };
@@ -46153,13 +49244,13 @@ var $author$project$Views$TopBar$formatDate = $ryan_haskell$date_format$DateForm
 			$ryan_haskell$date_format$DateFormat$amPmUppercase
 		]));
 var $author$project$Views$TopBar$pausedText = function (p) {
-	if (p.cE) {
-		var _v0 = _Utils_Tuple2(p.fX, p.fW);
+	if (p.cX) {
+		var _v0 = _Utils_Tuple2(p.gA, p.gz);
 		if (!_v0.a.$) {
 			if (!_v0.b.$) {
 				var by = _v0.a.a;
 				var at = _v0.b.a;
-				return 'paused by ' + (by + (' on ' + A2($author$project$Views$TopBar$formatDate, p.gB, at)));
+				return 'paused by ' + (by + (' on ' + A2($author$project$Views$TopBar$formatDate, p.he, at)));
 			} else {
 				var by = _v0.a.a;
 				var _v1 = _v0.b;
@@ -46169,7 +49260,7 @@ var $author$project$Views$TopBar$pausedText = function (p) {
 			if (!_v0.b.$) {
 				var _v2 = _v0.a;
 				var at = _v0.b.a;
-				return 'paused on ' + A2($author$project$Views$TopBar$formatDate, p.gB, at);
+				return 'paused on ' + A2($author$project$Views$TopBar$formatDate, p.he, at);
 			} else {
 				var _v3 = _v0.a;
 				var _v4 = _v0.b;
@@ -46196,7 +49287,7 @@ var $author$project$Views$TopBar$paused = function (p) {
 var $author$project$Job$Job$pausedAt = function (job) {
 	if (job.$ === 3) {
 		var j = job.a;
-		return j.fW;
+		return j.gz;
 	} else {
 		return $elm$core$Maybe$Nothing;
 	}
@@ -46204,7 +49295,7 @@ var $author$project$Job$Job$pausedAt = function (job) {
 var $author$project$Job$Job$pausedBy = function (job) {
 	if (job.$ === 3) {
 		var j = job.a;
-		return j.fX;
+		return j.gA;
 	} else {
 		return $elm$core$Maybe$Nothing;
 	}
@@ -46236,8 +49327,8 @@ var $author$project$Job$Styles$triggerButton = F3(
 	});
 var $author$project$Views$BuildDuration$labeledDate = F3(
 	function (_v0, now, date) {
-		var label = _v0.fy;
-		var timeZone = _v0.gB;
+		var label = _v0.f9;
+		var timeZone = _v0.he;
 		var verboseDate = A3(
 			$ryan_haskell$date_format$DateFormat$format,
 			_List_fromArray(
@@ -46396,7 +49487,7 @@ var $author$project$Views$BuildDuration$view = F3(
 					$elm$html$Html$Attributes$class('dictionary build-duration')
 				]),
 			function () {
-				var _v0 = _Utils_Tuple2(duration.gu, duration.e9);
+				var _v0 = _Utils_Tuple2(duration.g6, duration.fL);
 				if (_v0.a.$ === 1) {
 					if (_v0.b.$ === 1) {
 						var _v1 = _v0.a;
@@ -46412,7 +49503,7 @@ var $author$project$Views$BuildDuration$view = F3(
 							[
 								A3(
 								$author$project$Views$BuildDuration$labeledDate,
-								{fy: 'finished', gB: timeZone},
+								{f9: 'finished', he: timeZone},
 								now,
 								finishedAt)
 							]);
@@ -46425,7 +49516,7 @@ var $author$project$Views$BuildDuration$view = F3(
 							[
 								A3(
 								$author$project$Views$BuildDuration$labeledDate,
-								{fy: 'started', gB: timeZone},
+								{f9: 'started', he: timeZone},
 								now,
 								startedAt)
 							]);
@@ -46437,12 +49528,12 @@ var $author$project$Views$BuildDuration$view = F3(
 							[
 								A3(
 								$author$project$Views$BuildDuration$labeledDate,
-								{fy: 'started', gB: timeZone},
+								{f9: 'started', he: timeZone},
 								now,
 								startedAt),
 								A3(
 								$author$project$Views$BuildDuration$labeledDate,
-								{fy: 'finished', gB: timeZone},
+								{f9: 'finished', he: timeZone},
 								now,
 								finishedAt),
 								A2($author$project$Views$BuildDuration$labeledDuration, 'duration', durationElmIssue)
@@ -46452,25 +49543,25 @@ var $author$project$Views$BuildDuration$view = F3(
 			}());
 	});
 var $author$project$Message$Message$GoToRoute = function (a) {
-	return {$: 33, a: a};
+	return {$: 48, a: a};
 };
 var $author$project$Message$Message$JobBuildLink = function (a) {
 	return {$: 9, a: a};
 };
 var $author$project$Job$Job$viewBuildHeader = function (b) {
-	var domID = $author$project$Message$Message$JobBuildLink(b.dQ);
+	var domID = $author$project$Message$Message$JobBuildLink(b.cT);
 	return A2(
 		$elm$html$Html$a,
 		_List_fromArray(
 			[
 				$elm$html$Html$Attributes$class(
-				$author$project$Concourse$BuildStatus$show(b.ek)),
+				$author$project$Concourse$BuildStatus$show(b.eT)),
 				$author$project$StrictEvents$onLeftClick(
 				$author$project$Message$Message$GoToRoute(
-					A3($author$project$Routes$buildRoute, b.iz, b.dQ, b.ap))),
+					A3($author$project$Routes$buildRoute, b.f_, b.cT, b.ac))),
 				$elm$html$Html$Attributes$href(
 				$author$project$Routes$toString(
-					A3($author$project$Routes$buildRoute, b.iz, b.dQ, b.ap))),
+					A3($author$project$Routes$buildRoute, b.f_, b.cT, b.ac))),
 				$elm$html$Html$Events$onMouseEnter(
 				$author$project$Message$Message$Hover(
 					$elm$core$Maybe$Just(domID))),
@@ -46481,7 +49572,7 @@ var $author$project$Job$Job$viewBuildHeader = function (b) {
 			]),
 		_List_fromArray(
 			[
-				$elm$html$Html$text('#' + b.dQ)
+				$elm$html$Html$text('#' + b.cT)
 			]));
 };
 var $author$project$Assets$DownArrow = {$: 36};
@@ -46523,7 +49614,7 @@ var $author$project$Job$Job$viewBuildInputs = function (bi) {
 					]),
 				_List_fromArray(
 					[
-						$elm$html$Html$text(bi.dQ)
+						$elm$html$Html$text(bi.cT)
 					])),
 				A2(
 				$elm$html$Html$td,
@@ -46533,7 +49624,7 @@ var $author$project$Job$Job$viewBuildInputs = function (bi) {
 					]),
 				_List_fromArray(
 					[
-						$author$project$Job$Job$viewVersion(bi.er)
+						$author$project$Job$Job$viewVersion(bi.eZ)
 					]))
 			]));
 };
@@ -46554,7 +49645,7 @@ var $author$project$Job$Job$viewBuildOutputs = function (bo) {
 					]),
 				_List_fromArray(
 					[
-						$elm$html$Html$text(bo.dQ)
+						$elm$html$Html$text(bo.cT)
 					])),
 				A2(
 				$elm$html$Html$td,
@@ -46564,13 +49655,13 @@ var $author$project$Job$Job$viewBuildOutputs = function (bo) {
 					]),
 				_List_fromArray(
 					[
-						$author$project$Job$Job$viewVersion(bo.er)
+						$author$project$Job$Job$viewVersion(bo.eZ)
 					]))
 			]));
 };
 var $author$project$Job$Job$viewBuildResources = function (buildWithResources) {
 	var outputsTable = function () {
-		var _v1 = buildWithResources.j2;
+		var _v1 = buildWithResources.kx;
 		if (_v1.$ === 1) {
 			return $author$project$Views$LoadingIndicator$view;
 		} else {
@@ -46581,11 +49672,11 @@ var $author$project$Job$Job$viewBuildResources = function (buildWithResources) {
 					[
 						$elm$html$Html$Attributes$class('build-resources')
 					]),
-				A2($elm$core$List$map, $author$project$Job$Job$viewBuildOutputs, resources.cC));
+				A2($elm$core$List$map, $author$project$Job$Job$viewBuildOutputs, resources.cV));
 		}
 	}();
 	var inputsTable = function () {
-		var _v0 = buildWithResources.j2;
+		var _v0 = buildWithResources.kx;
 		if (_v0.$ === 1) {
 			return $author$project$Views$LoadingIndicator$view;
 		} else {
@@ -46596,7 +49687,7 @@ var $author$project$Job$Job$viewBuildResources = function (buildWithResources) {
 					[
 						$elm$html$Html$Attributes$class('build-resources')
 					]),
-				A2($elm$core$List$map, $author$project$Job$Job$viewBuildInputs, resources.iJ));
+				A2($elm$core$List$map, $author$project$Job$Job$viewBuildInputs, resources.jd));
 		}
 	}();
 	return _List_fromArray(
@@ -46616,7 +49707,7 @@ var $author$project$Job$Job$viewBuildResources = function (buildWithResources) {
 						[
 							A2(
 							$author$project$Views$Icon$icon,
-							{fo: $author$project$Assets$DownArrow, cW: 12},
+							{f$: $author$project$Assets$DownArrow, df: 12},
 							$author$project$Job$Styles$buildResourceIcon),
 							$elm$html$Html$text('inputs')
 						])),
@@ -46637,7 +49728,7 @@ var $author$project$Job$Job$viewBuildResources = function (buildWithResources) {
 						[
 							A2(
 							$author$project$Views$Icon$icon,
-							{fo: $author$project$Assets$UpArrow, cW: 12},
+							{f$: $author$project$Assets$UpArrow, df: 12},
 							$author$project$Job$Styles$buildResourceIcon),
 							$elm$html$Html$text('outputs')
 						])),
@@ -46657,7 +49748,7 @@ var $author$project$Job$Job$viewBuildWithResources = F3(
 				var buildResourcesView = $author$project$Job$Job$viewBuildResources(bwr);
 				return _List_fromArray(
 					[
-						$author$project$Job$Job$viewBuildHeader(bwr.eH),
+						$author$project$Job$Job$viewBuildHeader(bwr.fe),
 						A2(
 						$elm$html$Html$div,
 						_List_fromArray(
@@ -46666,7 +49757,7 @@ var $author$project$Job$Job$viewBuildWithResources = F3(
 							]),
 						A2(
 							$elm$core$List$cons,
-							A3($author$project$Views$BuildDuration$view, session.gB, bwr.eH.dh, model.fN),
+							A3($author$project$Views$BuildDuration$view, session.he, bwr.fe.dJ, model.gq),
 							buildResourcesView))
 					]);
 			}());
@@ -46683,8 +49774,8 @@ var $author$project$Concourse$Pagination$chevronContainer = _List_fromArray(
 var $author$project$Assets$ChevronLeft = {$: 2};
 var $author$project$Concourse$Pagination$chevron = F2(
 	function (asset, _v0) {
-		var enabled = _v0.hN;
-		var hovered = _v0.dv;
+		var enabled = _v0.il;
+		var hovered = _v0.d$;
 		return _Utils_ap(
 			_List_fromArray(
 				[
@@ -46723,13 +49814,13 @@ var $author$project$Job$Job$viewPaginationBar = F2(
 					A2($elm$html$Html$Attributes$style, 'align-items', 'stretch')
 				]),
 			function () {
-				var _v0 = model.ax;
+				var _v0 = model.ay;
 				if (_v0.$ === 3) {
-					var pagination = _v0.a.jF;
+					var pagination = _v0.a.j9;
 					return _List_fromArray(
 						[
 							function () {
-							var _v1 = pagination.b0;
+							var _v1 = pagination.b8;
 							if (_v1.$ === 1) {
 								return A2(
 									$elm$html$Html$div,
@@ -46739,16 +49830,16 @@ var $author$project$Job$Job$viewPaginationBar = F2(
 											A2(
 											$elm$html$Html$div,
 											$author$project$Concourse$Pagination$chevronLeft(
-												{hN: false, dv: false}),
+												{il: false, d$: false}),
 											_List_Nil)
 										]));
 							} else {
 								var page = _v1.a;
 								var jobRoute = $author$project$Routes$Job(
 									{
-										dt: _List_Nil,
-										iz: model.u,
-										bp: $elm$core$Maybe$Just(page)
+										dZ: _List_Nil,
+										f_: model.u,
+										br: $elm$core$Maybe$Just(page)
 									});
 								return A2(
 									$elm$html$Html$div,
@@ -46779,15 +49870,15 @@ var $author$project$Job$Job$viewPaginationBar = F2(
 													]),
 												$author$project$Concourse$Pagination$chevronLeft(
 													{
-														hN: true,
-														dv: A2($author$project$HoverState$isHovered, $author$project$Message$Message$PreviousPageButton, session.dv)
+														il: true,
+														d$: A2($author$project$HoverState$isHovered, $author$project$Message$Message$PreviousPageButton, session.d$)
 													})),
 											_List_Nil)
 										]));
 							}
 						}(),
 							function () {
-							var _v2 = pagination.bW;
+							var _v2 = pagination.b2;
 							if (_v2.$ === 1) {
 								return A2(
 									$elm$html$Html$div,
@@ -46797,16 +49888,16 @@ var $author$project$Job$Job$viewPaginationBar = F2(
 											A2(
 											$elm$html$Html$div,
 											$author$project$Concourse$Pagination$chevronRight(
-												{hN: false, dv: false}),
+												{il: false, d$: false}),
 											_List_Nil)
 										]));
 							} else {
 								var page = _v2.a;
 								var jobRoute = $author$project$Routes$Job(
 									{
-										dt: _List_Nil,
-										iz: model.u,
-										bp: $elm$core$Maybe$Just(page)
+										dZ: _List_Nil,
+										f_: model.u,
+										br: $elm$core$Maybe$Just(page)
 									});
 								return A2(
 									$elm$html$Html$div,
@@ -46837,8 +49928,8 @@ var $author$project$Job$Job$viewPaginationBar = F2(
 													]),
 												$author$project$Concourse$Pagination$chevronRight(
 													{
-														hN: true,
-														dv: A2($author$project$HoverState$isHovered, $author$project$Message$Message$NextPageButton, session.dv)
+														il: true,
+														d$: A2($author$project$HoverState$isHovered, $author$project$Message$Message$NextPageButton, session.d$)
 													})),
 											_List_Nil)
 										]));
@@ -46856,7 +49947,7 @@ var $author$project$Job$Job$viewPaginationBar = F2(
 									A2(
 									$elm$html$Html$div,
 									$author$project$Concourse$Pagination$chevronLeft(
-										{hN: false, dv: false}),
+										{il: false, d$: false}),
 									_List_Nil)
 								])),
 							A2(
@@ -46867,7 +49958,7 @@ var $author$project$Job$Job$viewPaginationBar = F2(
 									A2(
 									$elm$html$Html$div,
 									$author$project$Concourse$Pagination$chevronRight(
-										{hN: false, dv: false}),
+										{il: false, d$: false}),
 									_List_Nil)
 								]))
 						]);
@@ -46882,7 +49973,7 @@ var $author$project$Job$Job$viewMainJobsSection = F2(
 			A2(
 				$elm$core$Maybe$map,
 				function ($) {
-					return $.gS;
+					return $.hs;
 				},
 				A2(
 					$author$project$SideBar$SideBar$lookupPipeline,
@@ -46900,13 +49991,13 @@ var $author$project$Job$Job$viewMainJobsSection = F2(
 			_List_fromArray(
 				[
 					function () {
-					var _v0 = $krisajenkins$remotedata$RemoteData$toMaybe(model.ap);
+					var _v0 = $krisajenkins$remotedata$RemoteData$toMaybe(model.ac);
 					if (_v0.$ === 1) {
 						return $author$project$Views$LoadingIndicator$view;
 					} else {
 						var job = _v0.a;
-						var triggerHovered = A2($author$project$HoverState$isHovered, $author$project$Message$Message$TriggerBuildButton, session.dv);
-						var toggleHovered = A2($author$project$HoverState$isHovered, $author$project$Message$Message$ToggleJobButton, session.dv);
+						var triggerHovered = A2($author$project$HoverState$isHovered, $author$project$Message$Message$TriggerBuildButton, session.d$);
+						var toggleHovered = A2($author$project$HoverState$isHovered, $author$project$Message$Message$ToggleJobButton, session.d$);
 						return A2(
 							$elm$html$Html$div,
 							_List_fromArray(
@@ -46928,7 +50019,7 @@ var $author$project$Job$Job$viewMainJobsSection = F2(
 											A2(
 												$author$project$Colors$buildStatusColor,
 												true,
-												$author$project$Job$Job$headerBuildStatus(job.fa)))
+												$author$project$Job$Job$headerBuildStatus(job.fM)))
 										]),
 									_List_fromArray(
 										[
@@ -46960,15 +50051,15 @@ var $author$project$Job$Job$viewMainJobsSection = F2(
 															$author$project$Job$Styles$triggerButton,
 															false,
 															toggleHovered,
-															$author$project$Job$Job$headerBuildStatus(job.fa))),
+															$author$project$Job$Job$headerBuildStatus(job.fM))),
 													_List_fromArray(
 														[
 															A2(
 															$author$project$Views$Icon$icon,
 															{
-																fo: $author$project$Assets$CircleOutlineIcon(
-																	job.cE ? 0 : 1),
-																cW: 40
+																f$: $author$project$Assets$CircleOutlineIcon(
+																	job.cX ? 0 : 1),
+																df: 40
 															},
 															$author$project$Job$Styles$icon(toggleHovered))
 														])),
@@ -46985,16 +50076,16 @@ var $author$project$Job$Job$viewMainJobsSection = F2(
 																]),
 															_List_fromArray(
 																[
-																	$elm$html$Html$text(job.dQ)
+																	$elm$html$Html$text(job.cT)
 																]))
 														]))
 												])),
 											$author$project$Views$TopBar$paused(
 											{
-												cE: $author$project$Job$Job$isPaused(model.ap),
-												fW: $author$project$Job$Job$pausedAt(model.ap),
-												fX: $author$project$Job$Job$pausedBy(model.ap),
-												gB: session.gB
+												cX: $author$project$Job$Job$isPaused(model.ac),
+												gz: $author$project$Job$Job$pausedAt(model.ac),
+												gA: $author$project$Job$Job$pausedBy(model.ac),
+												he: session.he
 											}),
 											archived ? $elm$html$Html$text('') : A2(
 											$elm$html$Html$button,
@@ -47016,18 +50107,18 @@ var $author$project$Job$Job$viewMainJobsSection = F2(
 													]),
 												A3(
 													$author$project$Job$Styles$triggerButton,
-													job.df,
+													job.dH,
 													triggerHovered,
-													$author$project$Job$Job$headerBuildStatus(job.fa))),
+													$author$project$Job$Job$headerBuildStatus(job.fM))),
 											_List_fromArray(
 												[
 													A2(
 													$author$project$Views$Icon$icon,
 													{
-														fo: $author$project$Assets$CircleOutlineIcon(2),
-														cW: 40
+														f$: $author$project$Assets$CircleOutlineIcon(2),
+														df: 40
 													},
-													$author$project$Job$Styles$icon(triggerHovered && (!job.df)))
+													$author$project$Job$Styles$icon(triggerHovered && (!job.dH)))
 												]))
 										])),
 									A2(
@@ -47059,15 +50150,15 @@ var $author$project$Job$Job$viewMainJobsSection = F2(
 					}
 				}(),
 					function () {
-					var _v1 = model.ax;
+					var _v1 = model.ay;
 					if (_v1.$ === 3) {
-						var content = _v1.a.hn;
+						var content = _v1.a.h_;
 						return $elm$core$List$isEmpty(content) ? A2(
 							$elm$html$Html$div,
 							$author$project$Job$Styles$noBuildsMessage,
 							_List_fromArray(
 								[
-									$elm$html$Html$text('no builds for job \"' + (model.u.i0 + '\"'))
+									$elm$html$Html$text('no builds for job \"' + (model.u.jw + '\"'))
 								])) : A2(
 							$elm$html$Html$div,
 							_List_fromArray(
@@ -47114,24 +50205,24 @@ var $author$project$Job$Job$view = F2(
 						$elm$core$List$cons,
 						$author$project$SideBar$SideBar$sideBarIcon(session),
 						_Utils_ap(
-							A2($author$project$Views$TopBar$breadcrumbs, session, session.d5),
+							A2($author$project$Views$TopBar$breadcrumbs, session, session.eD),
 							_List_fromArray(
 								[
-									A2($author$project$Login$Login$view, session.k1, model)
+									A2($author$project$Login$Login$view, session.ly, model)
 								])))),
 					A2(
 					$elm$html$Html$div,
 					A2(
 						$elm$core$List$cons,
 						$elm$html$Html$Attributes$id('page-below-top-bar'),
-						$author$project$Views$Styles$pageBelowTopBar(session.d5)),
+						$author$project$Views$Styles$pageBelowTopBar(session.eD)),
 					_List_fromArray(
 						[
 							A2(
 							$author$project$SideBar$SideBar$view,
 							session,
 							$elm$core$Maybe$Just(
-								{f2: model.u.f2, jL: model.u.jL, kD: model.u.kD})),
+								{ew: model.u.ew, gH: model.u.gH, k8: model.u.k8})),
 							A2($author$project$Job$Job$viewMainJobsSection, session, model)
 						]))
 				]));
@@ -47156,17 +50247,17 @@ var $author$project$NotFound$NotFound$view = F2(
 						$elm$core$List$cons,
 						$author$project$SideBar$SideBar$sideBarIcon(session),
 						_Utils_ap(
-							A2($author$project$Views$TopBar$breadcrumbs, session, model.d5),
+							A2($author$project$Views$TopBar$breadcrumbs, session, model.eD),
 							_List_fromArray(
 								[
-									A2($author$project$Login$Login$view, session.k1, model)
+									A2($author$project$Login$Login$view, session.ly, model)
 								])))),
 					A2(
 					$elm$html$Html$div,
 					A2(
 						$elm$core$List$cons,
 						$elm$html$Html$Attributes$id('page-below-top-bar'),
-						$author$project$Views$Styles$pageBelowTopBar(model.d5)),
+						$author$project$Views$Styles$pageBelowTopBar(model.eD)),
 					_List_fromArray(
 						[
 							A2($author$project$SideBar$SideBar$view, session, $elm$core$Maybe$Nothing),
@@ -47202,7 +50293,7 @@ var $author$project$NotFound$NotFound$view = F2(
 									$elm$html$Html$img,
 									_List_fromArray(
 										[
-											$elm$html$Html$Attributes$src(model.dU)
+											$elm$html$Html$Attributes$src(model.em)
 										]),
 									_List_Nil),
 									A2(
@@ -47250,7 +50341,7 @@ var $author$project$Pipeline$Pipeline$getPipelineId = function (p) {
 		A2(
 			$krisajenkins$remotedata$RemoteData$map,
 			function ($) {
-				return $.iz;
+				return $.f_;
 			},
 			p));
 };
@@ -47261,7 +50352,7 @@ var $author$project$Pipeline$Pipeline$isArchived = function (p) {
 		A2(
 			$krisajenkins$remotedata$RemoteData$map,
 			function ($) {
-				return $.gS;
+				return $.hs;
 			},
 			p));
 };
@@ -47273,7 +50364,7 @@ var $author$project$Pipeline$Styles$pauseToggle = _List_fromArray(
 var $author$project$Pipeline$Pipeline$pausedAt = function (pipeline) {
 	if (pipeline.$ === 3) {
 		var p = pipeline.a;
-		return p.fW;
+		return p.gz;
 	} else {
 		return $elm$core$Maybe$Nothing;
 	}
@@ -47281,7 +50372,7 @@ var $author$project$Pipeline$Pipeline$pausedAt = function (pipeline) {
 var $author$project$Pipeline$Pipeline$pausedBy = function (pipeline) {
 	if (pipeline.$ === 3) {
 		var p = pipeline.a;
-		return p.fX;
+		return p.gA;
 	} else {
 		return $elm$core$Maybe$Nothing;
 	}
@@ -47308,67 +50399,67 @@ var $author$project$Colors$pinMenuHover = $author$project$ColorValues$grey100;
 var $author$project$Colors$pinned = '#5c3bd1';
 var $author$project$Pipeline$PinMenu$PinMenu$pinMenu = F2(
 	function (_v0, model) {
-		var hovered = _v0.dv;
-		var pipeline = model.jK;
-		var pinnedResources = $author$project$Pipeline$PinMenu$PinMenu$getPinnedResources(model.e7);
+		var hovered = _v0.d$;
+		var pipeline = model.ke;
+		var pinnedResources = $author$project$Pipeline$PinMenu$PinMenu$getPinnedResources(model.fJ);
 		var pinCount = $elm$core$List$length(pinnedResources);
 		var isHovered = _Utils_eq(
 			hovered,
 			$author$project$HoverState$Hovered($author$project$Message$Message$TopBarPinIcon));
 		var hasPinnedResources = pinCount > 0;
 		return {
-			gW: model.bq ? 1 : 0,
-			c6: hasPinnedResources ? $elm$core$Maybe$Just(
+			hx: model.bs ? 1 : 0,
+			dx: hasPinnedResources ? $elm$core$Maybe$Just(
 				{
-					aO: $author$project$Colors$pinned,
-					e$: 15,
-					cI: A2(
+					aP: $author$project$Colors$pinned,
+					fA: 15,
+					c0: A2(
 						$author$project$Pipeline$PinMenu$Views$TopRight,
 						$author$project$Pipeline$PinMenu$Views$Px(10),
 						$author$project$Pipeline$PinMenu$Views$Px(10)),
-					kH: $elm$core$String$fromInt(pinCount)
+					lc: $elm$core$String$fromInt(pinCount)
 				}) : $elm$core$Maybe$Nothing,
-			c8: hasPinnedResources,
-			e3: model.bq ? $elm$core$Maybe$Just(
+			dA: hasPinnedResources,
+			fE: model.bs ? $elm$core$Maybe$Just(
 				{
-					dJ: A2(
+					ec: A2(
 						$elm$core$List$map,
 						function (_v1) {
 							var resourceName = _v1.a;
 							var pinnedVersion = _v1.b;
 							return {
-								gW: _Utils_eq(
+								hx: _Utils_eq(
 									hovered,
 									$author$project$HoverState$Hovered(
 										$author$project$Message$Message$PinMenuDropDown(resourceName))) ? $author$project$Colors$pinMenuHover : $author$project$Colors$pinMenuBackground,
-								iw: true,
-								dZ: $author$project$Message$Message$GoToRoute(
+								i1: true,
+								es: $author$project$Message$Message$GoToRoute(
 									$author$project$Routes$Resource(
 										{
-											dt: _List_Nil,
-											iz: {f2: pipeline.f2, jL: pipeline.jL, j1: resourceName, kD: pipeline.kD},
-											bp: $elm$core$Maybe$Nothing,
-											er: $elm$core$Maybe$Nothing
+											dZ: _List_Nil,
+											f_: {ew: pipeline.ew, gH: pipeline.gH, kw: resourceName, k8: pipeline.k8},
+											br: $elm$core$Maybe$Nothing,
+											eZ: $elm$core$Maybe$Nothing
 										})),
-								fT: 10,
-								em: A2(
+								gw: 10,
+								eU: A2(
 									$elm$core$List$map,
 									function (_v2) {
 										var k = _v2.a;
 										var v = _v2.b;
-										return {aO: $author$project$Colors$text, dM: k, d3: v};
+										return {aP: $author$project$Colors$text, ef: k, eB: v};
 									},
 									$elm$core$Dict$toList(pinnedVersion)),
-								kN: {aO: $author$project$Colors$text, hn: resourceName, fc: $author$project$Views$Styles$fontWeightDefault}
+								ck: {aP: $author$project$Colors$text, h_: resourceName, fO: $author$project$Views$Styles$fontWeightDefault}
 							};
 						},
 						pinnedResources),
-					cI: A2(
+					c0: A2(
 						$author$project$Pipeline$PinMenu$Views$TopRight,
 						$author$project$Pipeline$PinMenu$Views$Percent(100),
 						$author$project$Pipeline$PinMenu$Views$Percent(0))
 				}) : $elm$core$Maybe$Nothing,
-			fR: (hasPinnedResources && (isHovered || model.bq)) ? 2 : (hasPinnedResources ? 1 : 0)
+			gt: (hasPinnedResources && (isHovered || model.bs)) ? 2 : (hasPinnedResources ? 1 : 0)
 		};
 	});
 var $author$project$Assets$PinIconWhite = {$: 8};
@@ -47388,7 +50479,7 @@ var $author$project$SideBar$Styles$opacityAttr = function (opacity) {
 		}());
 };
 var $author$project$Pipeline$PinMenu$Styles$pinIcon = function (_v0) {
-	var opacity = _v0.fR;
+	var opacity = _v0.gt;
 	return _List_fromArray(
 		[
 			A2(
@@ -47406,8 +50497,8 @@ var $author$project$Pipeline$PinMenu$Styles$pinIcon = function (_v0) {
 		]);
 };
 var $author$project$Pipeline$PinMenu$Styles$pinIconBackground = function (_v0) {
-	var background = _v0.gW;
-	var clickable = _v0.c8;
+	var background = _v0.hx;
+	var clickable = _v0.dA;
 	return _List_fromArray(
 		[
 			A2($elm$html$Html$Attributes$style, 'position', 'relative'),
@@ -47434,9 +50525,9 @@ var $author$project$Pipeline$PinMenu$Styles$pinIconBackground = function (_v0) {
 		]);
 };
 var $author$project$Pipeline$PinMenu$Styles$pinBadge = function (_v0) {
-	var color = _v0.aO;
-	var diameterPx = _v0.e$;
-	var position = _v0.cI;
+	var color = _v0.aP;
+	var diameterPx = _v0.fA;
+	var position = _v0.c0;
 	var top = position.a;
 	var right = position.b;
 	return _List_fromArray(
@@ -47495,13 +50586,13 @@ var $author$project$Pipeline$PinMenu$PinMenu$viewBadge = function (badge) {
 				_List_Nil,
 				_List_fromArray(
 					[
-						$elm$html$Html$text(badge.kH)
+						$elm$html$Html$text(badge.lc)
 					]))
 			]));
 };
 var $author$project$Colors$pinIconHover = '#1e1d1d';
 var $author$project$Pipeline$PinMenu$Styles$pinIconDropdown = function (_v0) {
-	var position = _v0.cI;
+	var position = _v0.c0;
 	var top = position.a;
 	var right = position.b;
 	return _List_fromArray(
@@ -47540,8 +50631,8 @@ var $author$project$Pipeline$PinMenu$Styles$pinIconDropdown = function (_v0) {
 		]);
 };
 var $author$project$Pipeline$PinMenu$Styles$pinIconDropdownItem = function (_v0) {
-	var paddingPx = _v0.fT;
-	var background = _v0.gW;
+	var paddingPx = _v0.gw;
+	var background = _v0.hx;
 	return _List_fromArray(
 		[
 			A2(
@@ -47557,9 +50648,9 @@ var $author$project$Pipeline$PinMenu$Styles$pinIconDropdownItem = function (_v0)
 		]);
 };
 var $author$project$Pipeline$PinMenu$PinMenu$viewTableRow = function (_v0) {
-	var left = _v0.dM;
-	var right = _v0.d3;
-	var color = _v0.aO;
+	var left = _v0.ef;
+	var right = _v0.eB;
+	var color = _v0.aP;
 	return A2(
 		$elm$html$Html$tr,
 		_List_fromArray(
@@ -47585,8 +50676,8 @@ var $author$project$Pipeline$PinMenu$PinMenu$viewTableRow = function (_v0) {
 			]));
 };
 var $author$project$Pipeline$PinMenu$Styles$title = function (_v0) {
-	var fontWeight = _v0.fc;
-	var color = _v0.aO;
+	var fontWeight = _v0.fO;
+	var color = _v0.aP;
 	return _List_fromArray(
 		[
 			A2($elm$html$Html$Attributes$style, 'font-weight', fontWeight),
@@ -47599,7 +50690,7 @@ var $author$project$Pipeline$PinMenu$PinMenu$viewTitle = function (title) {
 		$author$project$Pipeline$PinMenu$Styles$title(title),
 		_List_fromArray(
 			[
-				$elm$html$Html$text(title.hn)
+				$elm$html$Html$text(title.h_)
 			]));
 };
 var $author$project$Pipeline$PinMenu$PinMenu$viewDropdownItem = function (item) {
@@ -47607,32 +50698,32 @@ var $author$project$Pipeline$PinMenu$PinMenu$viewDropdownItem = function (item) 
 		$elm$html$Html$li,
 		A2(
 			$elm$core$List$cons,
-			$elm$html$Html$Events$onClick(item.dZ),
+			$elm$html$Html$Events$onClick(item.es),
 			_Utils_ap(
-				item.iw ? _List_fromArray(
+				item.i1 ? _List_fromArray(
 					[
 						$elm$html$Html$Events$onMouseEnter(
 						$author$project$Message$Message$Hover(
 							$elm$core$Maybe$Just(
-								$author$project$Message$Message$PinMenuDropDown(item.kN.hn)))),
+								$author$project$Message$Message$PinMenuDropDown(item.ck.h_)))),
 						$elm$html$Html$Events$onMouseLeave(
 						$author$project$Message$Message$Hover($elm$core$Maybe$Nothing))
 					]) : _List_Nil,
 				$author$project$Pipeline$PinMenu$Styles$pinIconDropdownItem(item))),
 		_List_fromArray(
 			[
-				$author$project$Pipeline$PinMenu$PinMenu$viewTitle(item.kN),
+				$author$project$Pipeline$PinMenu$PinMenu$viewTitle(item.ck),
 				A2(
 				$elm$html$Html$table,
 				_List_Nil,
-				A2($elm$core$List$map, $author$project$Pipeline$PinMenu$PinMenu$viewTableRow, item.em))
+				A2($elm$core$List$map, $author$project$Pipeline$PinMenu$PinMenu$viewTableRow, item.eU))
 			]));
 };
 var $author$project$Pipeline$PinMenu$PinMenu$viewDropdown = function (dropdown) {
 	return A2(
 		$elm$html$Html$ul,
 		$author$project$Pipeline$PinMenu$Styles$pinIconDropdown(dropdown),
-		A2($elm$core$List$map, $author$project$Pipeline$PinMenu$PinMenu$viewDropdownItem, dropdown.dJ));
+		A2($elm$core$List$map, $author$project$Pipeline$PinMenu$PinMenu$viewDropdownItem, dropdown.ec));
 };
 var $author$project$Pipeline$PinMenu$PinMenu$viewView = function (view) {
 	return A2(
@@ -47658,7 +50749,7 @@ var $author$project$Pipeline$PinMenu$PinMenu$viewView = function (view) {
 							_Utils_Tuple2(
 							$elm$html$Html$Events$onClick(
 								$author$project$Message$Message$Click($author$project$Message$Message$TopBarPinIcon)),
-							view.c8)
+							view.dA)
 						]))),
 			$author$project$Pipeline$PinMenu$Styles$pinIconBackground(view)),
 		A2(
@@ -47676,8 +50767,8 @@ var $author$project$Pipeline$PinMenu$PinMenu$viewView = function (view) {
 				$elm$core$Basics$identity,
 				_List_fromArray(
 					[
-						A2($elm$core$Maybe$map, $author$project$Pipeline$PinMenu$PinMenu$viewBadge, view.c6),
-						A2($elm$core$Maybe$map, $author$project$Pipeline$PinMenu$PinMenu$viewDropdown, view.e3)
+						A2($elm$core$Maybe$map, $author$project$Pipeline$PinMenu$PinMenu$viewBadge, view.dx),
+						A2($elm$core$Maybe$map, $author$project$Pipeline$PinMenu$PinMenu$viewDropdown, view.fE)
 					]))));
 };
 var $author$project$Pipeline$PinMenu$PinMenu$viewPinMenu = F2(
@@ -47686,8 +50777,8 @@ var $author$project$Pipeline$PinMenu$PinMenu$viewPinMenu = F2(
 			A2($author$project$Pipeline$PinMenu$PinMenu$pinMenu, session, m));
 	});
 var $author$project$Pipeline$Styles$pipelineBackground = function (_v0) {
-	var image = _v0.fo;
-	var filter = _v0.ia;
+	var image = _v0.f$;
+	var filter = _v0.iI;
 	return _List_fromArray(
 		[
 			A2($elm$html$Html$Attributes$style, 'background-image', 'url(\"' + (image + '\")')),
@@ -47713,9 +50804,9 @@ var $author$project$Pipeline$Pipeline$backgroundImage = function (pipeline) {
 				$elm$core$Maybe$map,
 				function (img) {
 					return $author$project$Pipeline$Styles$pipelineBackground(
-						{ia: p.eC, fo: img});
+						{iI: p.e9, f$: img});
 				},
-				p.eD));
+				p.fa));
 	} else {
 		return _List_Nil;
 	}
@@ -47764,7 +50855,7 @@ var $author$project$Pipeline$Styles$groupsBar = _List_fromArray(
 		A2($elm$html$Html$Attributes$style, 'padding', '5px')
 	]);
 var $author$project$Pipeline$Pipeline$selectedGroupsOrDefault = function (model) {
-	return $elm$core$List$isEmpty(model.P) ? $author$project$Pipeline$Pipeline$getDefaultSelectedGroups(model.ag) : model.P;
+	return $elm$core$List$isEmpty(model.P) ? $author$project$Pipeline$Pipeline$getDefaultSelectedGroups(model.ah) : model.P;
 };
 var $author$project$Message$Message$JobGroup = function (a) {
 	return {$: 40, a: a};
@@ -47777,10 +50868,10 @@ var $author$project$Colors$groupBorderHovered = '#fff2';
 var $author$project$Colors$groupBorderSelected = '#979797';
 var $author$project$Colors$groupBorderUnselected = '#2b2a2a';
 var $author$project$Pipeline$Styles$groupItem = function (_v0) {
-	var selected = _v0.ki;
-	var hovered = _v0.dv;
-	var hasFailedJob = _v0.$9;
-	var hasErroredJob = _v0.im;
+	var selected = _v0.kN;
+	var hovered = _v0.d$;
+	var hasFailedJob = _v0.iU;
+	var hasErroredJob = _v0.iT;
 	return _Utils_ap(
 		_List_fromArray(
 			[
@@ -47815,10 +50906,10 @@ var $author$project$Pipeline$Styles$groupItem = function (_v0) {
 };
 var $author$project$Pipeline$Pipeline$jobHasStatus = F2(
 	function (status, job) {
-		var _v0 = job.fa;
+		var _v0 = job.fM;
 		if (!_v0.$) {
 			var build = _v0.a;
-			return _Utils_eq(build.ek, status);
+			return _Utils_eq(build.eT, status);
 		} else {
 			return false;
 		}
@@ -47841,7 +50932,7 @@ var $author$project$StrictEvents$onShiftLeftClick = function (msg) {
 				return A2(
 					$elm$json$Json$Decode$map,
 					function (_v1) {
-						return {jf: msg, b$: true, b6: false};
+						return {jK: msg, b7: true, cf: false};
 					},
 					$author$project$StrictEvents$assert('shiftKey'));
 			},
@@ -47850,20 +50941,20 @@ var $author$project$StrictEvents$onShiftLeftClick = function (msg) {
 var $author$project$Pipeline$Pipeline$viewGroup = F3(
 	function (_v0, idx, grp) {
 		var selectedGroups = _v0.P;
-		var pipelineLocator = _v0.jK;
-		var hovered = _v0.dv;
-		var jobs = _v0.i1;
+		var pipelineLocator = _v0.ke;
+		var hovered = _v0.d$;
+		var jobs = _v0.jx;
 		var url = $author$project$Routes$toString(
 			$author$project$Routes$Pipeline(
 				{
-					dt: _List_fromArray(
-						[grp.dQ]),
-					iz: pipelineLocator
+					dZ: _List_fromArray(
+						[grp.cT]),
+					f_: pipelineLocator
 				}));
 		var groupJobs = A2(
 			$elm$core$List$filter,
 			function (job) {
-				return A2($elm$core$List$member, grp.dQ, job.dt);
+				return A2($elm$core$List$member, grp.cT, job.dZ);
 			},
 			jobs);
 		var _v1 = A3(
@@ -47897,36 +50988,36 @@ var $author$project$Pipeline$Pipeline$viewGroup = F3(
 					]),
 				$author$project$Pipeline$Styles$groupItem(
 					{
-						im: hasErroredJob,
-						$9: hasFailedJob,
-						dv: A2(
+						iT: hasErroredJob,
+						iU: hasFailedJob,
+						d$: A2(
 							$author$project$HoverState$isHovered,
 							$author$project$Message$Message$JobGroup(idx),
 							hovered),
-						ki: A2($elm$core$List$member, grp.dQ, selectedGroups)
+						kN: A2($elm$core$List$member, grp.cT, selectedGroups)
 					})),
 			_List_fromArray(
 				[
-					$elm$html$Html$text(grp.dQ)
+					$elm$html$Html$text(grp.cT)
 				]));
 	});
 var $author$project$Pipeline$Pipeline$viewGroupsBar = F2(
 	function (session, model) {
-		var jobs = A2($elm$core$Maybe$withDefault, _List_Nil, model.bN);
+		var jobs = A2($elm$core$Maybe$withDefault, _List_Nil, model.bV);
 		var groupList = function () {
-			var _v0 = model.ag;
+			var _v0 = model.ah;
 			if (_v0.$ === 3) {
 				var pipeline = _v0.a;
 				return A2(
 					$elm$core$List$indexedMap,
 					$author$project$Pipeline$Pipeline$viewGroup(
 						{
-							dv: session.dv,
-							i1: jobs,
-							jK: model.jK,
+							d$: session.d$,
+							jx: jobs,
+							ke: model.ke,
 							P: $author$project$Pipeline$Pipeline$selectedGroupsOrDefault(model)
 						}),
-					pipeline.dt);
+					pipeline.dZ);
 			} else {
 				return _List_Nil;
 			}
@@ -47940,12 +51031,12 @@ var $author$project$Pipeline$Pipeline$viewGroupsBar = F2(
 			groupList);
 	});
 var $author$project$Pipeline$Pipeline$runDurationSummary = function (run) {
-	var _v0 = run.hl;
+	var _v0 = run.hY;
 	if (_v0.$ === 1) {
-		return (run.ek === 'awaiting_human') ? 'waiting' : 'running';
+		return (run.eT === 'awaiting_human') ? 'waiting' : 'running';
 	} else {
 		var completedAt = _v0.a;
-		var deltaMillis = $elm$time$Time$posixToMillis(completedAt) - $elm$time$Time$posixToMillis(run.eQ);
+		var deltaMillis = $elm$time$Time$posixToMillis(completedAt) - $elm$time$Time$posixToMillis(run.fn);
 		var totalSeconds = (deltaMillis <= 0) ? 0 : ((deltaMillis / 1000) | 0);
 		var minutes = (totalSeconds / 60) | 0;
 		var seconds = A2($elm$core$Basics$modBy, 60, totalSeconds);
@@ -47977,50 +51068,8 @@ var $author$project$Pipeline$Pipeline$runParamsSummary = function (params) {
 			},
 			$elm$core$Dict$toList(params)));
 };
-var $author$project$AgentBadge$Abandoned = {$: 9};
-var $author$project$AgentBadge$Concluded = {$: 8};
-var $author$project$AgentBadge$Draft = {$: 0};
-var $author$project$AgentBadge$Merged = {$: 5};
-var $author$project$AgentBadge$MergedWithFixes = {$: 6};
-var $author$project$AgentBadge$NeedsReview = {$: 4};
-var $author$project$AgentBadge$Queued = {$: 1};
-var $author$project$AgentBadge$Running = function (a) {
-	return {$: 2, a: a};
-};
-var $author$project$AgentBadge$SentBack = {$: 7};
-var $author$project$AgentBadge$fromApiToken = function (token) {
-	switch (token) {
-		case 'draft':
-			return $elm$core$Maybe$Just($author$project$AgentBadge$Draft);
-		case 'queued':
-			return $elm$core$Maybe$Just($author$project$AgentBadge$Queued);
-		case 'running':
-			return $elm$core$Maybe$Just(
-				$author$project$AgentBadge$Running($elm$core$Maybe$Nothing));
-		case 'awaiting_human':
-			return $elm$core$Maybe$Just($author$project$AgentBadge$AwaitingHuman);
-		case 'needs_review':
-			return $elm$core$Maybe$Just($author$project$AgentBadge$NeedsReview);
-		case 'merged':
-			return $elm$core$Maybe$Just($author$project$AgentBadge$Merged);
-		case 'merged_with_fixes':
-			return $elm$core$Maybe$Just($author$project$AgentBadge$MergedWithFixes);
-		case 'sent_back':
-			return $elm$core$Maybe$Just($author$project$AgentBadge$SentBack);
-		case 'concluded':
-			return $elm$core$Maybe$Just($author$project$AgentBadge$Concluded);
-		case 'abandoned':
-			return $elm$core$Maybe$Just($author$project$AgentBadge$Abandoned);
-		case 'failed':
-			return $elm$core$Maybe$Just($author$project$AgentBadge$Failed);
-		case 'errored':
-			return $elm$core$Maybe$Just($author$project$AgentBadge$Errored);
-		default:
-			return $elm$core$Maybe$Nothing;
-	}
-};
 var $author$project$Pipeline$Pipeline$viewRunStatus = function (run) {
-	var _v0 = $author$project$AgentBadge$fromApiToken(run.ek);
+	var _v0 = $author$project$AgentBadge$fromApiToken(run.eT);
 	if (!_v0.$) {
 		var status = _v0.a;
 		return $author$project$AgentBadge$view(status);
@@ -48029,67 +51078,82 @@ var $author$project$Pipeline$Pipeline$viewRunStatus = function (run) {
 			$elm$html$Html$span,
 			_List_fromArray(
 				[
-					$elm$html$Html$Attributes$class('run-status-' + run.ek)
+					$elm$html$Html$Attributes$class('run-status-' + run.eT)
 				]),
 			_List_fromArray(
 				[
-					$elm$html$Html$text(run.ek)
+					$elm$html$Html$text(run.eT)
 				]));
 	}
 };
-var $author$project$Pipeline$Pipeline$viewRun = function (run) {
-	return A2(
-		$elm$html$Html$div,
-		_List_fromArray(
-			[
-				$elm$html$Html$Attributes$class('pipeline-run-row'),
-				A2($elm$html$Html$Attributes$style, 'display', 'flex'),
-				A2($elm$html$Html$Attributes$style, 'align-items', 'center')
-			]),
-		_List_fromArray(
-			[
-				A2(
-				$elm$html$Html$span,
-				_List_fromArray(
-					[
-						A2($elm$html$Html$Attributes$style, 'margin-right', '10px')
-					]),
-				_List_fromArray(
-					[
-						$elm$html$Html$text(
-						'#' + $elm$core$String$fromInt(run.jx))
-					])),
-				$author$project$Pipeline$Pipeline$viewRunStatus(run),
-				A2(
-				$elm$html$Html$span,
-				_List_fromArray(
-					[
-						A2($elm$html$Html$Attributes$style, 'margin-left', '10px')
-					]),
-				_List_fromArray(
-					[
-						$elm$html$Html$text(
-						$author$project$Pipeline$Pipeline$runParamsSummary(run.jG))
-					])),
-				A2(
-				$elm$html$Html$span,
-				_List_fromArray(
-					[
-						A2($elm$html$Html$Attributes$style, 'margin-left', '10px')
-					]),
-				_List_fromArray(
-					[
-						$elm$html$Html$text(
-						$author$project$Pipeline$Pipeline$runDurationSummary(run))
-					]))
-			]));
-};
+var $author$project$Pipeline$Pipeline$viewRun = F2(
+	function (pipeline, run) {
+		var runInstance = _Utils_update(
+			pipeline,
+			{
+				b$: A2(
+					$elm$core$Dict$singleton,
+					'run',
+					$author$project$Concourse$JsonNumber(run.j0))
+			});
+		return A2(
+			$elm$html$Html$div,
+			_List_fromArray(
+				[
+					$elm$html$Html$Attributes$class('pipeline-run-row'),
+					A2($elm$html$Html$Attributes$style, 'display', 'flex'),
+					A2($elm$html$Html$Attributes$style, 'align-items', 'center')
+				]),
+			_List_fromArray(
+				[
+					A2(
+					$elm$html$Html$a,
+					_List_fromArray(
+						[
+							$elm$html$Html$Attributes$class('pipeline-run-link'),
+							$elm$html$Html$Attributes$href(
+							$author$project$Routes$toString(
+								A2($author$project$Routes$pipelineRoute, runInstance, _List_Nil))),
+							A2($elm$html$Html$Attributes$style, 'margin-right', '10px'),
+							A2($elm$html$Html$Attributes$style, 'color', $author$project$Colors$text),
+							A2($elm$html$Html$Attributes$style, 'text-decoration', 'underline')
+						]),
+					_List_fromArray(
+						[
+							$elm$html$Html$text(
+							'#' + $elm$core$String$fromInt(run.j0))
+						])),
+					$author$project$Pipeline$Pipeline$viewRunStatus(run),
+					A2(
+					$elm$html$Html$span,
+					_List_fromArray(
+						[
+							A2($elm$html$Html$Attributes$style, 'margin-left', '10px')
+						]),
+					_List_fromArray(
+						[
+							$elm$html$Html$text(
+							$author$project$Pipeline$Pipeline$runParamsSummary(run.ka))
+						])),
+					A2(
+					$elm$html$Html$span,
+					_List_fromArray(
+						[
+							A2($elm$html$Html$Attributes$style, 'margin-left', '10px')
+						]),
+					_List_fromArray(
+						[
+							$elm$html$Html$text(
+							$author$project$Pipeline$Pipeline$runDurationSummary(run))
+						]))
+				]));
+	});
 var $author$project$Pipeline$Pipeline$viewRuns = function (model) {
-	var _v0 = _Utils_Tuple2(model.ag, model.d7);
+	var _v0 = _Utils_Tuple2(model.ah, model.eF);
 	if ((_v0.a.$ === 3) && (!_v0.b.$)) {
 		var pipeline = _v0.a.a;
 		var runs = _v0.b.a;
-		return pipeline.kF ? A2(
+		return pipeline.la ? A2(
 			$elm$html$Html$div,
 			_List_fromArray(
 				[
@@ -48111,7 +51175,10 @@ var $author$project$Pipeline$Pipeline$viewRuns = function (model) {
 						[
 							$elm$html$Html$text('runs')
 						])),
-				A2($elm$core$List$map, $author$project$Pipeline$Pipeline$viewRun, runs))) : $elm$html$Html$text('');
+				A2(
+					$elm$core$List$map,
+					$author$project$Pipeline$Pipeline$viewRun(pipeline),
+					runs))) : $elm$html$Html$text('');
 	} else {
 		return $elm$html$Html$text('');
 	}
@@ -48145,7 +51212,7 @@ var $author$project$Pipeline$Pipeline$viewSubPage = F2(
 							A2(
 								$elm$core$List$cons,
 								$elm$html$Html$Attributes$id('pipeline-background'),
-								$author$project$Pipeline$Pipeline$backgroundImage(model.ag)),
+								$author$project$Pipeline$Pipeline$backgroundImage(model.ah)),
 							_List_Nil),
 							A2(
 							$elm$svg$Svg$svg,
@@ -48174,7 +51241,7 @@ var $author$project$Pipeline$Pipeline$viewSubPage = F2(
 											$elm$html$Html$img,
 											_List_fromArray(
 												[
-													$elm$html$Html$Attributes$src(model.ep),
+													$elm$html$Html$Attributes$src(model.eX),
 													$elm$html$Html$Attributes$class('seatbelt')
 												]),
 											_List_Nil),
@@ -48194,7 +51261,7 @@ var $author$project$Pipeline$Pipeline$viewSubPage = F2(
 											_List_Nil)
 										]))
 								])),
-							model.ir ? $elm$html$Html$text('') : A2(
+							model.iY ? $elm$html$Html$text('') : A2(
 							$elm$html$Html$dl,
 							_List_fromArray(
 								[
@@ -48430,7 +51497,7 @@ var $author$project$Pipeline$Pipeline$viewSubPage = F2(
 												[
 													$elm$html$Html$Attributes$class('label')
 												]),
-											(session.dK !== '') ? _List_fromArray(
+											(session.ed !== '') ? _List_fromArray(
 												[
 													$elm$html$Html$text('JetBridge '),
 													A2(
@@ -48441,9 +51508,9 @@ var $author$project$Pipeline$Pipeline$viewSubPage = F2(
 														]),
 													_List_fromArray(
 														[
-															$elm$html$Html$text(session.dK)
+															$elm$html$Html$text(session.ed)
 														])),
-													$elm$html$Html$text(' (Concourse ' + (session.db + ')'))
+													$elm$html$Html$text(' (Concourse ' + (session.dD + ')'))
 												]) : _List_fromArray(
 												[
 													$elm$html$Html$text('version: '),
@@ -48456,7 +51523,7 @@ var $author$project$Pipeline$Pipeline$viewSubPage = F2(
 														]),
 													_List_fromArray(
 														[
-															$elm$html$Html$text(session.er)
+															$elm$html$Html$text(session.eZ)
 														]))
 												]))
 										]))
@@ -48467,8 +51534,8 @@ var $author$project$Pipeline$Pipeline$viewSubPage = F2(
 var $author$project$Pipeline$Pipeline$view = F2(
 	function (session, model) {
 		var route = $author$project$Routes$Pipeline(
-			{dt: model.P, iz: model.jK});
-		var displayPaused = $author$project$Pipeline$Pipeline$isPaused(model.ag) && (!$author$project$Pipeline$Pipeline$isArchived(model.ag));
+			{dZ: model.P, f_: model.ke});
+		var displayPaused = $author$project$Pipeline$Pipeline$isPaused(model.ah) && (!$author$project$Pipeline$Pipeline$isArchived(model.ah));
 		return A2(
 			$elm$html$Html$div,
 			_List_fromArray(
@@ -48498,12 +51565,12 @@ var $author$project$Pipeline$Pipeline$view = F2(
 									A2($author$project$Views$TopBar$breadcrumbs, session, route),
 									_List_fromArray(
 										[
-											$author$project$Pipeline$Pipeline$isArchived(model.ag) ? $elm$html$Html$text('') : $author$project$Views$TopBar$paused(
+											$author$project$Pipeline$Pipeline$isArchived(model.ah) ? $elm$html$Html$text('') : $author$project$Views$TopBar$paused(
 											{
-												cE: displayPaused,
-												fW: $author$project$Pipeline$Pipeline$pausedAt(model.ag),
-												fX: $author$project$Pipeline$Pipeline$pausedBy(model.ag),
-												gB: session.gB
+												cX: displayPaused,
+												gz: $author$project$Pipeline$Pipeline$pausedAt(model.ah),
+												gA: $author$project$Pipeline$Pipeline$pausedBy(model.ah),
+												he: session.he
 											}),
 											A2($author$project$Pipeline$PinMenu$PinMenu$viewPinMenu, session, model),
 											A2(
@@ -48514,48 +51581,48 @@ var $author$project$Pipeline$Pipeline$view = F2(
 													A2(
 													$author$project$Views$FavoritedIcon$view,
 													{
-														hG: $author$project$Message$Message$TopBarFavoritedIcon(
-															$author$project$Pipeline$Pipeline$getPipelineId(model.ag)),
-														iQ: A2(
+														ie: $author$project$Message$Message$TopBarFavoritedIcon(
+															$author$project$Pipeline$Pipeline$getPipelineId(model.ah)),
+														jk: A2(
 															$krisajenkins$remotedata$RemoteData$withDefault,
 															false,
 															A2(
 																$krisajenkins$remotedata$RemoteData$map,
 																$author$project$Favorites$isPipelineFavorited(session),
-																model.ag)),
-														iS: A2(
+																model.ah)),
+														jm: A2(
 															$author$project$HoverState$isHovered,
 															$author$project$Message$Message$TopBarFavoritedIcon(
-																$author$project$Pipeline$Pipeline$getPipelineId(model.ag)),
-															session.dv),
-														iV: false
+																$author$project$Pipeline$Pipeline$getPipelineId(model.ah)),
+															session.d$),
+														jp: false
 													},
 													_List_fromArray(
 														[
 															A2($elm$html$Html$Attributes$style, 'margin', '17px')
 														]))
 												])),
-											$author$project$Pipeline$Pipeline$isArchived(model.ag) ? $elm$html$Html$text('') : A2(
+											$author$project$Pipeline$Pipeline$isArchived(model.ah) ? $elm$html$Html$text('') : A2(
 											$elm$html$Html$div,
 											$author$project$Pipeline$Styles$pauseToggle,
 											_List_fromArray(
 												[
 													$author$project$Views$PauseToggle$view(
 													{
-														hG: $author$project$Message$Message$TopBarPauseToggle(model.jK),
-														iU: $author$project$Pipeline$Pipeline$isPaused(model.ag),
-														iX: A2(
+														ie: $author$project$Message$Message$TopBarPauseToggle(model.ke),
+														jo: $author$project$Pipeline$Pipeline$isPaused(model.ah),
+														jr: A2(
 															$author$project$HoverState$isHovered,
-															$author$project$Message$Message$TopBarPauseToggle(model.jK),
-															session.dv),
-														fu: model.fu,
-														fE: '17px',
-														ag: model.jK,
-														kW: 1,
-														k1: session.k1
+															$author$project$Message$Message$TopBarPauseToggle(model.ke),
+															session.d$),
+														f5: model.f5,
+														gg: '17px',
+														ah: model.ke,
+														lq: 1,
+														ly: session.ly
 													})
 												])),
-											A2($author$project$Login$Login$view, session.k1, model)
+											A2($author$project$Login$Login$view, session.ly, model)
 										])))),
 							A2(
 							$elm$html$Html$div,
@@ -48568,7 +51635,7 @@ var $author$project$Pipeline$Pipeline$view = F2(
 									A2(
 									$author$project$SideBar$SideBar$view,
 									session,
-									$elm$core$Maybe$Just(model.jK)),
+									$elm$core$Maybe$Just(model.ke)),
 									A2($author$project$Pipeline$Pipeline$viewSubPage, session, model)
 								]))
 						]))
@@ -48619,9 +51686,9 @@ var $author$project$Resource$Styles$checkButtonIcon = function (isHighlighted) {
 		]);
 };
 var $author$project$Resource$Resource$checkButton = function (params) {
-	var hovered = params.dv;
-	var userState = params.k1;
-	var checkStatus = params.aN;
+	var hovered = params.d$;
+	var userState = params.ly;
+	var checkStatus = params.aO;
 	var isMember = $author$project$UserState$isMember(params);
 	var isHovered = A2(
 		$author$project$HoverState$isHovered,
@@ -48667,7 +51734,7 @@ var $author$project$Resource$Resource$checkButton = function (params) {
 			[
 				A2(
 				$author$project$Views$Icon$icon,
-				{fo: $author$project$Assets$RefreshIcon, cW: 20},
+				{f$: $author$project$Assets$RefreshIcon, df: 20},
 				$author$project$Resource$Styles$checkButtonIcon(isHighlighted))
 			]));
 };
@@ -48687,28 +51754,28 @@ var $author$project$Resource$Resource$viewBuildOutput = F3(
 			var o = output.a;
 			return A2(
 				$author$project$Build$Output$Output$view,
-				{dv: hovered, gB: timeZone},
+				{d$: hovered, he: timeZone},
 				o);
 		} else {
 			return A2($elm$html$Html$div, _List_Nil, _List_Nil);
 		}
 	});
 var $author$project$Resource$Resource$checkSection = function (model) {
-	var checkStatus = model.aN;
-	var build = model.eH;
+	var checkStatus = model.aO;
+	var build = model.fe;
 	var spinner = $author$project$Views$Spinner$spinner(
-		{fE: '7px', cW: 14});
+		{gg: '7px', df: 14});
 	var icon = function (image) {
 		return A2(
 			$author$project$Views$Icon$icon,
-			{fo: image, cW: 28},
+			{f$: image, df: 28},
 			$author$project$Resource$Styles$checkStatusIcon);
 	};
 	var _v0 = function () {
 		var _v1 = A2(
 			$elm$core$Maybe$map,
 			function ($) {
-				return $.ek;
+				return $.eT;
 			},
 			build);
 		if (_v1.$ === 1) {
@@ -48781,11 +51848,11 @@ var $author$project$Resource$Resource$checkSection = function (model) {
 				$author$project$Resource$Styles$checkStatus,
 				_List_fromArray(
 					[
-						(model.bG && (!_Utils_eq(model.N, $elm$core$Maybe$Nothing))) ? A4(
+						(model.bI && (!_Utils_eq(model.N, $elm$core$Maybe$Nothing))) ? A4(
 						$elm$html$Html$Lazy$lazy3,
 						$author$project$Resource$Resource$viewBuildOutput,
-						model.gB,
-						$author$project$Build$Output$Output$filterHoverState(model.dv),
+						model.he,
+						$author$project$Build$Output$Output$filterHoverState(model.d$),
 						model.N) : statusBar
 					]))
 			]));
@@ -48806,7 +51873,7 @@ var $author$project$Resource$Resource$isPipelineArchived = F2(
 			A2(
 				$elm$core$Maybe$map,
 				function ($) {
-					return $.gS;
+					return $.hs;
 				},
 				A2(
 					$author$project$SideBar$SideBar$lookupPipeline,
@@ -48890,7 +51957,7 @@ var $author$project$Resource$Styles$editButton = function (isHovered) {
 var $author$project$Resource$Resource$editButton = function (session) {
 	return A2(
 		$author$project$Views$Icon$icon,
-		{fo: $author$project$Assets$PencilIcon, cW: 16},
+		{f$: $author$project$Assets$PencilIcon, df: 16},
 		_Utils_ap(
 			_List_fromArray(
 				[
@@ -48905,7 +51972,7 @@ var $author$project$Resource$Resource$editButton = function (session) {
 					$author$project$Message$Message$Click($author$project$Message$Message$EditButton))
 				]),
 			$author$project$Resource$Styles$editButton(
-				A2($author$project$HoverState$isHovered, $author$project$Message$Message$EditButton, session.dv))));
+				A2($author$project$HoverState$isHovered, $author$project$Message$Message$EditButton, session.d$))));
 };
 var $author$project$Resource$Styles$editSaveWrapper = _List_fromArray(
 	[
@@ -48915,9 +51982,9 @@ var $author$project$Resource$Styles$editSaveWrapper = _List_fromArray(
 	]);
 var $author$project$Message$Message$SaveCommentButton = {$: 14};
 var $author$project$Resource$Styles$commentSaveButton = function (_v0) {
-	var commentChanged = _v0.hj;
-	var isHovered = _v0.iS;
-	var pinCommentLoading = _v0.bZ;
+	var commentChanged = _v0.hW;
+	var isHovered = _v0.jm;
+	var pinCommentLoading = _v0.b5;
 	return _Utils_ap(
 		_List_fromArray(
 			[
@@ -48949,7 +52016,7 @@ var $author$project$Resource$Resource$saveButton = F3(
 		return A2(
 			$elm$html$Html$button,
 			function () {
-				var commentChanged = !_Utils_eq(commentState.a3, commentState.f4);
+				var commentChanged = !_Utils_eq(commentState.a4, commentState.gJ);
 				return _Utils_ap(
 					_List_fromArray(
 						[
@@ -48964,15 +52031,15 @@ var $author$project$Resource$Resource$saveButton = F3(
 						]),
 					$author$project$Resource$Styles$commentSaveButton(
 						{
-							hj: commentChanged,
-							iS: A2($author$project$HoverState$isHovered, $author$project$Message$Message$SaveCommentButton, hovered),
-							bZ: pinCommentLoading
+							hW: commentChanged,
+							jm: A2($author$project$HoverState$isHovered, $author$project$Message$Message$SaveCommentButton, hovered),
+							b5: pinCommentLoading
 						}));
 			}(),
 			pinCommentLoading ? _List_fromArray(
 				[
 					$author$project$Views$Spinner$spinner(
-					{fE: '0', cW: 12})
+					{gg: '0', df: 12})
 				]) : _List_fromArray(
 				[
 					$elm$html$Html$text('save')
@@ -48981,9 +52048,9 @@ var $author$project$Resource$Resource$saveButton = F3(
 var $author$project$Resource$Resource$commentBar = F2(
 	function (session, _v0) {
 		var resourceIdentifier = _v0.g;
-		var pinnedVersion = _v0.f1;
-		var pinCommentLoading = _v0.bZ;
-		var isEditing = _v0.cs;
+		var pinnedVersion = _v0.gG;
+		var pinCommentLoading = _v0.b5;
+		var isEditing = _v0.cK;
 		if (pinnedVersion.$ === 2) {
 			var commentState = pinnedVersion.a;
 			return A2(
@@ -49004,10 +52071,10 @@ var $author$project$Resource$Resource$commentBar = F2(
 							$elm$core$List$cons,
 							A2(
 								$author$project$Views$Icon$icon,
-								{fo: $author$project$Assets$MessageIcon, cW: 16},
+								{f$: $author$project$Assets$MessageIcon, df: 16},
 								$author$project$Resource$Styles$commentBarMessageIcon),
 							($author$project$UserState$isMember(
-								{kD: resourceIdentifier.kD, k1: session.k1}) && (!A2($author$project$Resource$Resource$isPipelineArchived, session, resourceIdentifier))) ? _List_fromArray(
+								{k8: resourceIdentifier.k8, ly: session.ly}) && (!A2($author$project$Resource$Resource$isPipelineArchived, session, resourceIdentifier))) ? _List_fromArray(
 								[
 									A2(
 									$elm$html$Html$textarea,
@@ -49016,7 +52083,7 @@ var $author$project$Resource$Resource$commentBar = F2(
 											[
 												$elm$html$Html$Attributes$id(
 												$author$project$Message$Effects$toHtmlID($author$project$Message$Message$ResourceCommentTextarea)),
-												$elm$html$Html$Attributes$value(commentState.a3),
+												$elm$html$Html$Attributes$value(commentState.a4),
 												$elm$html$Html$Events$onInput($author$project$Message$Message$EditComment),
 												$elm$html$Html$Events$onFocus($author$project$Message$Message$FocusTextArea),
 												$elm$html$Html$Events$onBlur($author$project$Message$Message$BlurTextArea),
@@ -49035,7 +52102,7 @@ var $author$project$Resource$Resource$commentBar = F2(
 											$author$project$Resource$Resource$editButton(session)
 										]) : _List_fromArray(
 										[
-											A3($author$project$Resource$Resource$saveButton, commentState, pinCommentLoading, session.dv)
+											A3($author$project$Resource$Resource$saveButton, commentState, pinCommentLoading, session.d$)
 										]))
 								]) : _List_fromArray(
 								[
@@ -49044,7 +52111,7 @@ var $author$project$Resource$Resource$commentBar = F2(
 									$author$project$Resource$Styles$commentText,
 									_List_fromArray(
 										[
-											$elm$html$Html$text(commentState.f4)
+											$elm$html$Html$text(commentState.gJ)
 										]))
 								])))
 					]));
@@ -49072,8 +52139,8 @@ var $author$project$Resource$Styles$pinBarViewVersion = _List_fromArray(
 		A2($elm$html$Html$Attributes$style, 'margin', '8px 8px 8px 0')
 	]);
 var $author$project$Resource$Styles$pinIcon = function (_v0) {
-	var clickable = _v0.c8;
-	var hover = _v0.iv;
+	var clickable = _v0.dA;
+	var hover = _v0.i0;
 	var cursorType = clickable ? 'pointer' : 'default';
 	var backgroundColor = hover ? $author$project$Colors$pinIconHover : 'transparent';
 	return _List_fromArray(
@@ -49112,7 +52179,7 @@ var $author$project$Resource$Resource$viewVersion = F2(
 	});
 var $author$project$Resource$Resource$pinBar = F2(
 	function (session, _v0) {
-		var pinnedVersion = _v0.f1;
+		var pinnedVersion = _v0.gG;
 		var resourceIdentifier = _v0.g;
 		var pinBarVersion = $author$project$Pinned$stable(pinnedVersion);
 		var isPinnedStatically = function () {
@@ -49161,8 +52228,8 @@ var $author$project$Resource$Resource$pinBar = F2(
 				A2(
 					$author$project$Views$Icon$icon,
 					{
-						fo: $elm_community$maybe_extra$Maybe$Extra$isJust(pinBarVersion) ? $author$project$Assets$PinIconWhite : $author$project$Assets$PinIconGrey,
-						cW: 14
+						f$: $elm_community$maybe_extra$Maybe$Extra$isJust(pinBarVersion) ? $author$project$Assets$PinIconWhite : $author$project$Assets$PinIconGrey,
+						df: 14
 					},
 					_Utils_ap(
 						attrList(
@@ -49188,8 +52255,8 @@ var $author$project$Resource$Resource$pinBar = F2(
 								])),
 						$author$project$Resource$Styles$pinIcon(
 							{
-								c8: isPinnedDynamically && (!archived),
-								iv: A2($author$project$HoverState$isHovered, $author$project$Message$Message$PinIcon, session.dv)
+								dA: isPinnedDynamically && (!archived),
+								i0: A2($author$project$HoverState$isHovered, $author$project$Message$Message$PinIcon, session.d$)
 							}))),
 				function () {
 					if (!pinBarVersion.$) {
@@ -49218,7 +52285,7 @@ var $author$project$Resource$Styles$pinTools = function (isPinned) {
 };
 var $author$project$Resource$Resource$pinTools = F2(
 	function (session, model) {
-		var pinBarVersion = $author$project$Pinned$stable(model.f1);
+		var pinBarVersion = $author$project$Pinned$stable(model.gG);
 		return A2(
 			$elm$html$Html$div,
 			A2(
@@ -49247,8 +52314,8 @@ var $author$project$Resource$Styles$borderColor = function (pinnedState) {
 	}
 };
 var $author$project$Resource$Styles$enabledCheckbox = function (_v0) {
-	var enabled = _v0.hN;
-	var pinState = _v0.au;
+	var enabled = _v0.il;
+	var pinState = _v0.av;
 	return _List_fromArray(
 		[
 			A2($elm$html$Html$Attributes$style, 'margin-right', '5px'),
@@ -49291,8 +52358,8 @@ var $elm$html$Html$Events$onMouseOver = function (msg) {
 		$elm$json$Json$Decode$succeed(msg));
 };
 var $author$project$Resource$Resource$viewEnabledCheckbox = function (params) {
-	var enabled = params.hN;
-	var id = params.iz;
+	var enabled = params.il;
+	var id = params.f_;
 	var eventHandlers = _Utils_ap(
 		_List_fromArray(
 			[
@@ -49344,7 +52411,7 @@ var $author$project$Resource$Resource$viewEnabledCheckbox = function (params) {
 					return _List_fromArray(
 						[
 							$author$project$Views$Spinner$spinner(
-							{fE: '6.25px', cW: 12.5})
+							{gg: '6.25px', df: 12.5})
 						]);
 				default:
 					return _List_Nil;
@@ -49401,8 +52468,8 @@ var $author$project$Resource$Styles$pinButton = function (pinState) {
 		]);
 };
 var $author$project$Resource$Resource$viewPinButton = function (_v0) {
-	var versionID = _v0.k5;
-	var pinState = _v0.au;
+	var versionID = _v0.lB;
+	var pinState = _v0.av;
 	var eventHandlers = _Utils_ap(
 		_List_fromArray(
 			[
@@ -49470,7 +52537,7 @@ var $author$project$Resource$Resource$viewPinButton = function (_v0) {
 				return _List_fromArray(
 					[
 						$author$project$Views$Spinner$spinner(
-						{fE: '6.25px', cW: 12.5})
+						{gg: '6.25px', df: 12.5})
 					]);
 			} else {
 				return _List_Nil;
@@ -49481,12 +52548,12 @@ var $author$project$Resource$Resource$listToMap = function (builds) {
 	var insertBuild = F2(
 		function (build, dict) {
 			var jobName = function () {
-				var _v1 = build.ap;
+				var _v1 = build.ac;
 				if (_v1.$ === 1) {
 					return '';
 				} else {
 					var job = _v1.a;
-					return job.i0;
+					return job.jw;
 				}
 			}();
 			var oldList = A2($elm$core$Dict$get, jobName, dict);
@@ -49509,33 +52576,33 @@ var $author$project$Resource$Resource$listToMap = function (builds) {
 var $author$project$Resource$Resource$viewBuildsByJob = F2(
 	function (buildDict, jobName) {
 		var oneBuildToLi = function (build) {
-			var _v1 = build.ap;
+			var _v1 = build.ac;
 			if (_v1.$ === 1) {
 				return A2(
 					$elm$html$Html$li,
 					_List_fromArray(
 						[
 							$elm$html$Html$Attributes$class(
-							$author$project$Concourse$BuildStatus$show(build.ek))
+							$author$project$Concourse$BuildStatus$show(build.eT))
 						]),
 					_List_fromArray(
 						[
-							$elm$html$Html$text('#' + build.dQ)
+							$elm$html$Html$text('#' + build.cT)
 						]));
 			} else {
 				var job = _v1.a;
 				var link = $author$project$Routes$Build(
 					{
-						dt: _List_Nil,
-						is: $author$project$Routes$HighlightNothing,
-						iz: {g1: build.dQ, i0: job.i0, f2: job.f2, jL: job.jL, kD: job.kD}
+						dZ: _List_Nil,
+						iZ: $author$project$Routes$HighlightNothing,
+						f_: {hE: build.cT, jw: job.jw, ew: job.ew, gH: job.gH, k8: job.k8}
 					});
 				return A2(
 					$elm$html$Html$li,
 					_List_fromArray(
 						[
 							$elm$html$Html$Attributes$class(
-							$author$project$Concourse$BuildStatus$show(build.ek))
+							$author$project$Concourse$BuildStatus$show(build.eT))
 						]),
 					_List_fromArray(
 						[
@@ -49550,7 +52617,7 @@ var $author$project$Resource$Resource$viewBuildsByJob = F2(
 								]),
 							_List_fromArray(
 								[
-									$elm$html$Html$text('#' + build.dQ)
+									$elm$html$Html$text('#' + build.cT)
 								]))
 						]));
 			}
@@ -49605,7 +52672,7 @@ var $author$project$Resource$Styles$causalityButton = _List_fromArray(
 var $author$project$Resource$Resource$viewCausalityButton = F3(
 	function (enabled, dir, versionId) {
 		var link = $author$project$Routes$Causality(
-			{e0: dir, dt: _List_Nil, iz: versionId, er: $elm$core$Maybe$Nothing});
+			{fB: dir, dZ: _List_Nil, f_: versionId, eZ: $elm$core$Maybe$Nothing});
 		var _v0 = function () {
 			if (!dir) {
 				return _Utils_Tuple2(
@@ -49693,7 +52760,7 @@ var $author$project$Resource$Resource$viewMetadataField = function (field) {
 			_List_Nil,
 			_List_fromArray(
 				[
-					$elm$html$Html$text(field.dQ)
+					$elm$html$Html$text(field.cT)
 				])),
 			A2(
 			$elm$html$Html$dd,
@@ -49708,7 +52775,7 @@ var $author$project$Resource$Resource$viewMetadataField = function (field) {
 						]),
 					_List_fromArray(
 						[
-							$elm$html$Html$text(field.k2)
+							$elm$html$Html$text(field.lz)
 						]))
 				]))
 		]);
@@ -49723,11 +52790,11 @@ var $author$project$Resource$Resource$viewMetadata = function (metadata) {
 		A2($elm$core$List$concatMap, $author$project$Resource$Resource$viewMetadataField, metadata));
 };
 var $author$project$Resource$Resource$viewVersionBody = function (_v0) {
-	var inputTo = _v0.iI;
-	var outputOf = _v0.jD;
+	var inputTo = _v0.jc;
+	var outputOf = _v0.j7;
 	var versionId = _v0.V;
-	var metadata = _v0.jg;
-	var causalityEnabled = _v0.ch;
+	var metadata = _v0.jL;
+	var causalityEnabled = _v0.cw;
 	return A2(
 		$elm$html$Html$div,
 		_List_fromArray(
@@ -49780,9 +52847,9 @@ var $author$project$Resource$Styles$versionHeader = function (pinnedState) {
 		]);
 };
 var $author$project$Resource$Resource$viewVersionHeader = function (_v0) {
-	var id = _v0.iz;
-	var version = _v0.er;
-	var pinnedState = _v0.f0;
+	var id = _v0.f_;
+	var version = _v0.eZ;
+	var pinnedState = _v0.gF;
 	return A2(
 		$elm$html$Html$div,
 		A2(
@@ -49797,13 +52864,13 @@ var $author$project$Resource$Resource$viewVersionHeader = function (_v0) {
 			]));
 };
 var $author$project$Resource$Resource$viewVersionedResource = function (_v0) {
-	var version = _v0.er;
-	var archived = _v0.gS;
-	var causalityEnabled = _v0.ch;
+	var version = _v0.eZ;
+	var archived = _v0.hs;
+	var causalityEnabled = _v0.cw;
 	return A2(
 		$elm$html$Html$li,
 		function () {
-			var _v1 = _Utils_Tuple2(version.au, version.hN);
+			var _v1 = _Utils_Tuple2(version.av, version.il);
 			switch (_v1.a) {
 				case 4:
 					var _v2 = _v1.a;
@@ -49842,19 +52909,19 @@ var $author$project$Resource$Resource$viewVersionedResource = function (_v0) {
 					archived ? _List_Nil : _List_fromArray(
 						[
 							$author$project$Resource$Resource$viewEnabledCheckbox(
-							{hN: version.hN, iz: version.iz, au: version.au}),
+							{il: version.il, f_: version.f_, av: version.av}),
 							$author$project$Resource$Resource$viewPinButton(
-							{au: version.au, k5: version.iz})
+							{av: version.av, lB: version.f_})
 						]),
 					_List_fromArray(
 						[
 							$author$project$Resource$Resource$viewVersionHeader(
-							{iz: version.iz, f0: version.au, er: version.er})
+							{f_: version.f_, gF: version.av, eZ: version.eZ})
 						]))),
-			version.hX ? _List_fromArray(
+			version.iv ? _List_fromArray(
 				[
 					$author$project$Resource$Resource$viewVersionBody(
-					{ch: causalityEnabled, iI: version.iI, jg: version.jg, jD: version.jD, V: version.iz})
+					{cw: causalityEnabled, jc: version.jc, jL: version.jL, j7: version.j7, V: version.f_})
 				]) : _List_Nil));
 };
 var $author$project$Resource$Resource$viewVersionedResources = F2(
@@ -49870,13 +52937,13 @@ var $author$project$Resource$Resource$viewVersionedResources = F2(
 				$elm$core$List$map,
 				function (v) {
 					return $author$project$Resource$Resource$viewVersionedResource(
-						{gS: archived, ch: session.dm.gh, er: v});
+						{hs: archived, cw: session.dQ.gV, eZ: v});
 				},
 				$author$project$Resource$Resource$versions(model)));
 	});
 var $author$project$Resource$Resource$body = F2(
 	function (session, model) {
-		var sectionModel = {bG: model.bG, eH: model.eH, aN: model.aN, dv: session.dv, N: model.N, kD: model.g.kD, gB: session.gB, k1: session.k1};
+		var sectionModel = {bI: model.bI, fe: model.fe, aO: model.aO, d$: session.d$, N: model.N, k8: model.g.k8, he: session.he, ly: session.ly};
 		var archived = A2($author$project$Resource$Resource$isPipelineArchived, session, model.g);
 		return A2(
 			$elm$html$Html$div,
@@ -49885,7 +52952,7 @@ var $author$project$Resource$Resource$body = F2(
 				$elm$html$Html$Attributes$id('body'),
 				$author$project$Resource$Styles$body),
 			_Utils_ap(
-				_Utils_eq(model.f1, $author$project$Pinned$NotPinned) ? (archived ? _List_Nil : _List_fromArray(
+				_Utils_eq(model.gG, $author$project$Pinned$NotPinned) ? (archived ? _List_Nil : _List_fromArray(
 					[
 						$author$project$Resource$Resource$checkSection(sectionModel)
 					])) : _List_fromArray(
@@ -49934,9 +53001,9 @@ var $author$project$Resource$Styles$pagination = _List_fromArray(
 	]);
 var $author$project$Resource$Resource$paginationMenu = F2(
 	function (_v0, model) {
-		var hovered = _v0.dv;
+		var hovered = _v0.d$;
 		var previousButtonEventHandler = function () {
-			var _v4 = model.x.jF.b0;
+			var _v4 = model.x.j9.b8;
 			if (_v4.$ === 1) {
 				return _List_Nil;
 			} else {
@@ -49950,14 +53017,14 @@ var $author$project$Resource$Resource$paginationMenu = F2(
 			}
 		}();
 		var nextButtonEventHandler = function () {
-			var _v3 = model.x.jF.bW;
+			var _v3 = model.x.j9.b2;
 			if (_v3.$ === 1) {
 				return _List_Nil;
 			} else {
 				var np = _v3.a;
 				var updatedPage = _Utils_update(
 					np,
-					{fC: 100});
+					{gd: 100});
 				return _List_fromArray(
 					[
 						$elm$html$Html$Events$onClick(
@@ -49975,7 +53042,7 @@ var $author$project$Resource$Resource$paginationMenu = F2(
 			_List_fromArray(
 				[
 					function () {
-					var _v1 = model.x.jF.b0;
+					var _v1 = model.x.j9.b8;
 					if (_v1.$ === 1) {
 						return A2(
 							$elm$html$Html$div,
@@ -49985,7 +53052,7 @@ var $author$project$Resource$Resource$paginationMenu = F2(
 									A2(
 									$elm$html$Html$div,
 									$author$project$Concourse$Pagination$chevronLeft(
-										{hN: false, dv: false}),
+										{il: false, d$: false}),
 									_List_Nil)
 								]));
 					} else {
@@ -50013,10 +53080,10 @@ var $author$project$Resource$Resource$paginationMenu = F2(
 												$author$project$Routes$toString(
 													$author$project$Routes$Resource(
 														{
-															dt: _List_Nil,
-															iz: model.g,
-															bp: $elm$core$Maybe$Just(page),
-															er: $elm$core$Maybe$Nothing
+															dZ: _List_Nil,
+															f_: model.g,
+															br: $elm$core$Maybe$Just(page),
+															eZ: $elm$core$Maybe$Nothing
 														}))),
 												A2($elm$html$Html$Attributes$attribute, 'aria-label', 'Previous Page'),
 												$elm$html$Html$Attributes$id(
@@ -50024,15 +53091,15 @@ var $author$project$Resource$Resource$paginationMenu = F2(
 											]),
 										$author$project$Concourse$Pagination$chevronLeft(
 											{
-												hN: true,
-												dv: A2($author$project$HoverState$isHovered, $author$project$Message$Message$PreviousPageButton, hovered)
+												il: true,
+												d$: A2($author$project$HoverState$isHovered, $author$project$Message$Message$PreviousPageButton, hovered)
 											})),
 									_List_Nil)
 								]));
 					}
 				}(),
 					function () {
-					var _v2 = model.x.jF.bW;
+					var _v2 = model.x.j9.b2;
 					if (_v2.$ === 1) {
 						return A2(
 							$elm$html$Html$div,
@@ -50042,7 +53109,7 @@ var $author$project$Resource$Resource$paginationMenu = F2(
 									A2(
 									$elm$html$Html$div,
 									$author$project$Concourse$Pagination$chevronRight(
-										{hN: false, dv: false}),
+										{il: false, d$: false}),
 									_List_Nil)
 								]));
 					} else {
@@ -50070,10 +53137,10 @@ var $author$project$Resource$Resource$paginationMenu = F2(
 												$author$project$Routes$toString(
 													$author$project$Routes$Resource(
 														{
-															dt: _List_Nil,
-															iz: model.g,
-															bp: $elm$core$Maybe$Just(page),
-															er: $elm$core$Maybe$Nothing
+															dZ: _List_Nil,
+															f_: model.g,
+															br: $elm$core$Maybe$Just(page),
+															eZ: $elm$core$Maybe$Nothing
 														}))),
 												A2($elm$html$Html$Attributes$attribute, 'aria-label', 'Next Page'),
 												$elm$html$Html$Attributes$id(
@@ -50081,8 +53148,8 @@ var $author$project$Resource$Resource$paginationMenu = F2(
 											]),
 										$author$project$Concourse$Pagination$chevronRight(
 											{
-												hN: true,
-												dv: A2($author$project$HoverState$isHovered, $author$project$Message$Message$NextPageButton, hovered)
+												il: true,
+												d$: A2($author$project$HoverState$isHovered, $author$project$Message$Message$NextPageButton, hovered)
 											})),
 									_List_Nil)
 								]));
@@ -50145,7 +53212,7 @@ var $elm$svg$Svg$Attributes$xlinkHref = function (value) {
 var $author$project$Resource$Resource$header = F2(
 	function (session, model) {
 		var iconView = function () {
-			var _v1 = model.fn;
+			var _v1 = model.fZ;
 			if (!_v1.$) {
 				var icon = _v1.a;
 				return A2(
@@ -50174,11 +53241,11 @@ var $author$project$Resource$Resource$header = F2(
 		}();
 		var archived = A2($author$project$Resource$Resource$isPipelineArchived, session, model.g);
 		var lastCheckedView = function () {
-			var _v0 = _Utils_Tuple3(model.fN, model.fA, archived);
+			var _v0 = _Utils_Tuple3(model.gq, model.gb, archived);
 			if (((!_v0.a.$) && (!_v0.b.$)) && (!_v0.c)) {
 				var now = _v0.a.a;
 				var date = _v0.b.a;
-				return A3($author$project$Resource$Resource$viewLastChecked, session.gB, now, date);
+				return A3($author$project$Resource$Resource$viewLastChecked, session.he, now, date);
 			} else {
 				return $elm$html$Html$text('');
 			}
@@ -50197,7 +53264,7 @@ var $author$project$Resource$Resource$header = F2(
 					_List_fromArray(
 						[
 							iconView,
-							$elm$html$Html$text(model.g.j1)
+							$elm$html$Html$text(model.g.kw)
 						])),
 					A2(
 					$elm$html$Html$div,
@@ -50211,10 +53278,10 @@ var $author$project$Resource$Resource$view = F2(
 	function (session, model) {
 		var route = $author$project$Routes$Resource(
 			{
-				dt: $author$project$Routes$getGroups(session.d5),
-				iz: model.g,
-				bp: $elm$core$Maybe$Nothing,
-				er: $elm$core$Maybe$Nothing
+				dZ: $author$project$Routes$getGroups(session.eD),
+				f_: model.g,
+				br: $elm$core$Maybe$Nothing,
+				eZ: $elm$core$Maybe$Nothing
 			});
 		return A2(
 			$elm$html$Html$div,
@@ -50237,7 +53304,7 @@ var $author$project$Resource$Resource$view = F2(
 							A2($author$project$Views$TopBar$breadcrumbs, session, route),
 							_List_fromArray(
 								[
-									A2($author$project$Login$Login$view, session.k1, model)
+									A2($author$project$Login$Login$view, session.ly, model)
 								])))),
 					A2(
 					$elm$html$Html$div,
@@ -50251,9 +53318,9 @@ var $author$project$Resource$Resource$view = F2(
 							$author$project$SideBar$SideBar$view,
 							session,
 							$elm$core$Maybe$Just(
-								{f2: model.g.f2, jL: model.g.jL, kD: model.g.kD})),
+								{ew: model.g.ew, gH: model.g.gH, k8: model.g.k8})),
 							_Utils_eq(
-							model.aW,
+							model.aX,
 							$elm$core$Result$Err(0)) ? $elm$html$Html$text('') : A2(
 							$elm$html$Html$div,
 							_List_fromArray(
@@ -50272,7 +53339,7 @@ var $author$project$Resource$Resource$view = F2(
 	});
 var $author$project$SubPage$SubPage$view = F2(
 	function (session, mdl) {
-		var userState = session.k1;
+		var userState = session.ly;
 		switch (mdl.$) {
 			case 0:
 				var model = mdl.a;
@@ -50324,6 +53391,16 @@ var $author$project$SubPage$SubPage$view = F2(
 				return _Utils_Tuple2(
 					$author$project$AgentReviews$AgentReviews$documentTitle,
 					A2($author$project$AgentReviews$AgentReviews$view, session, model));
+			case 11:
+				var model = mdl.a;
+				return _Utils_Tuple2(
+					$author$project$AgentTickets$AgentTickets$documentTitle,
+					A2($author$project$AgentTickets$AgentTickets$view, session, model));
+			case 12:
+				var model = mdl.a;
+				return _Utils_Tuple2(
+					$author$project$AgentTickets$AgentTicket$documentTitle(model),
+					A2($author$project$AgentTickets$AgentTicket$view, session, model));
 			default:
 				var model = mdl.a;
 				return _Utils_Tuple2(
@@ -50333,10 +53410,10 @@ var $author$project$SubPage$SubPage$view = F2(
 	});
 var $author$project$Tooltip$position = F2(
 	function (_v0, _v1) {
-		var direction = _v0.e0;
-		var alignment = _v0.ey;
-		var element = _v1.hL;
-		var viewport = _v1.k7;
+		var direction = _v0.fB;
+		var alignment = _v0.e5;
+		var element = _v1.ij;
+		var viewport = _v1.lD;
 		var target = element;
 		var vertical = function () {
 			var _v13 = _Utils_Tuple2(direction, alignment);
@@ -50348,7 +53425,7 @@ var $author$project$Tooltip$position = F2(
 							A2(
 							$elm$html$Html$Attributes$style,
 							'bottom',
-							$elm$core$String$fromFloat(viewport.bS - target.lf) + 'px')
+							$elm$core$String$fromFloat(viewport.b_ - target.lL) + 'px')
 						]);
 				case 1:
 					switch (_v13.b.$) {
@@ -50359,7 +53436,7 @@ var $author$project$Tooltip$position = F2(
 									A2(
 									$elm$html$Html$Attributes$style,
 									'top',
-									$elm$core$String$fromFloat(target.lf) + 'px')
+									$elm$core$String$fromFloat(target.lL) + 'px')
 								]);
 						case 1:
 							var height = _v13.b.a;
@@ -50368,7 +53445,7 @@ var $author$project$Tooltip$position = F2(
 									A2(
 									$elm$html$Html$Attributes$style,
 									'top',
-									$elm$core$String$fromFloat(target.lf + ((target.bS - height) / 2)) + 'px')
+									$elm$core$String$fromFloat(target.lL + ((target.b_ - height) / 2)) + 'px')
 								]);
 						default:
 							var _v16 = _v13.b;
@@ -50377,7 +53454,7 @@ var $author$project$Tooltip$position = F2(
 									A2(
 									$elm$html$Html$Attributes$style,
 									'bottom',
-									$elm$core$String$fromFloat((viewport.bS - target.lf) - target.bS) + 'px')
+									$elm$core$String$fromFloat((viewport.b_ - target.lL) - target.b_) + 'px')
 								]);
 					}
 				default:
@@ -50387,7 +53464,7 @@ var $author$project$Tooltip$position = F2(
 							A2(
 							$elm$html$Html$Attributes$style,
 							'top',
-							$elm$core$String$fromFloat((target.lf + target.bS) + 8) + 'px')
+							$elm$core$String$fromFloat((target.lL + target.b_) + 8) + 'px')
 						]);
 			}
 		}();
@@ -50404,7 +53481,7 @@ var $author$project$Tooltip$position = F2(
 									A2(
 									$elm$html$Html$Attributes$style,
 									'left',
-									$elm$core$String$fromFloat(target.ak) + 'px')
+									$elm$core$String$fromFloat(target.am) + 'px')
 								]);
 						case 1:
 							var _v5 = _v2.a;
@@ -50414,7 +53491,7 @@ var $author$project$Tooltip$position = F2(
 									A2(
 									$elm$html$Html$Attributes$style,
 									'left',
-									$elm$core$String$fromFloat(target.ak + ((target.gK - width) / 2)) + 'px')
+									$elm$core$String$fromFloat(target.am + ((target.hn - width) / 2)) + 'px')
 								]);
 						default:
 							var _v6 = _v2.a;
@@ -50424,7 +53501,7 @@ var $author$project$Tooltip$position = F2(
 									A2(
 									$elm$html$Html$Attributes$style,
 									'right',
-									$elm$core$String$fromFloat((viewport.gK - target.ak) - target.gK) + 'px')
+									$elm$core$String$fromFloat((viewport.hn - target.am) - target.hn) + 'px')
 								]);
 					}
 				case 1:
@@ -50434,7 +53511,7 @@ var $author$project$Tooltip$position = F2(
 							A2(
 							$elm$html$Html$Attributes$style,
 							'left',
-							$elm$core$String$fromFloat((target.ak + target.gK) + offset) + 'px')
+							$elm$core$String$fromFloat((target.am + target.hn) + offset) + 'px')
 						]);
 				default:
 					switch (_v2.b.$) {
@@ -50446,7 +53523,7 @@ var $author$project$Tooltip$position = F2(
 									A2(
 									$elm$html$Html$Attributes$style,
 									'left',
-									$elm$core$String$fromFloat(target.ak) + 'px')
+									$elm$core$String$fromFloat(target.am) + 'px')
 								]);
 						case 1:
 							var _v10 = _v2.a;
@@ -50456,7 +53533,7 @@ var $author$project$Tooltip$position = F2(
 									A2(
 									$elm$html$Html$Attributes$style,
 									'left',
-									$elm$core$String$fromFloat(target.ak + ((target.gK - width) / 2)) + 'px')
+									$elm$core$String$fromFloat(target.am + ((target.hn - width) / 2)) + 'px')
 								]);
 						default:
 							var _v11 = _v2.a;
@@ -50466,7 +53543,7 @@ var $author$project$Tooltip$position = F2(
 									A2(
 									$elm$html$Html$Attributes$style,
 									'right',
-									$elm$core$String$fromFloat((viewport.gK - target.ak) - target.gK) + 'px')
+									$elm$core$String$fromFloat((viewport.hn - target.am) - target.hn) + 'px')
 								]);
 					}
 			}
@@ -50481,7 +53558,7 @@ var $author$project$Tooltip$position = F2(
 	});
 var $author$project$Tooltip$arrowView = F3(
 	function (_v0, target, size) {
-		var direction = _v0.e0;
+		var direction = _v0.fB;
 		var color = $author$project$Colors$tooltipBackground;
 		return A2(
 			$elm$html$Html$div,
@@ -50553,19 +53630,19 @@ var $author$project$Tooltip$arrowView = F3(
 				A2(
 					$author$project$Tooltip$position,
 					{
-						ey: $author$project$Tooltip$Middle(2 * size),
-						e0: direction
+						e5: $author$project$Tooltip$Middle(2 * size),
+						fB: direction
 					},
 					target)),
 			_List_Nil);
 	});
 var $author$project$Tooltip$view = F2(
 	function (_v0, _v1) {
-		var hovered = _v0.dv;
-		var body = _v1.W;
-		var attachPosition = _v1.eA;
-		var arrow = _v1.ez;
-		var containerAttrs = _v1.eO;
+		var hovered = _v0.d$;
+		var body = _v1.bL;
+		var attachPosition = _v1.e7;
+		var arrow = _v1.e6;
+		var containerAttrs = _v1.fl;
 		var _v2 = _Utils_Tuple2(hovered, arrow);
 		if (_v2.a.$ === 3) {
 			var _v3 = _v2.a;
@@ -50678,7 +53755,7 @@ var $author$project$Application$Application$view = function (model) {
 	var title = _v0.a;
 	var body = _v0.b;
 	return {
-		W: A2(
+		bL: A2(
 			$elm$core$List$map,
 			$elm$html$Html$map($author$project$Message$TopLevelMessage$Update),
 			_List_fromArray(
@@ -50698,7 +53775,7 @@ var $author$project$Application$Application$view = function (model) {
 						$author$project$Tooltip$view(model.c),
 						$author$project$SideBar$SideBar$tooltip(model.c))),
 					function () {
-					var _v1 = model.c4;
+					var _v1 = model.dr;
 					if (!_v1.$) {
 						var msg = _v1.a;
 						return A2(
@@ -50721,29 +53798,29 @@ var $author$project$Application$Application$view = function (model) {
 								$elm$html$Html$Attributes$id('page-wrapper'),
 								A2($elm$html$Html$Attributes$style, 'height', '100%')
 							]),
-						model.c.dg ? $author$project$Application$Styles$disableInteraction : _List_Nil),
+						model.c.dI ? $author$project$Application$Styles$disableInteraction : _List_Nil),
 					_List_fromArray(
 						[body]))
 				])),
-		kN: title + ' - Concourse'
+		ck: title + ' - Concourse'
 	};
 };
 var $author$project$Main$view = function (model) {
-	return $author$project$Application$Application$view(model.jk);
+	return $author$project$Application$Application$view(model.jP);
 };
 var $author$project$Main$main = $elm$browser$Browser$application(
 	{
-		iE: $author$project$Main$init,
-		jz: $author$project$Application$Application$locationMsg,
-		jA: A2($elm$core$Basics$composeR, $author$project$Message$Subscription$UrlRequest, $author$project$Message$TopLevelMessage$DeliveryReceived),
-		kz: A2(
+		i8: $author$project$Main$init,
+		j2: $author$project$Application$Application$locationMsg,
+		j3: A2($elm$core$Basics$composeR, $author$project$Message$Subscription$UrlRequest, $author$project$Message$TopLevelMessage$DeliveryReceived),
+		k3: A2(
 			$elm$core$Basics$composeR,
 			function ($) {
-				return $.jk;
+				return $.jP;
 			},
 			A2($elm$core$Basics$composeR, $author$project$Application$Application$subscriptions, $author$project$Main$subscriptionsToSub)),
-		k_: $author$project$Main$update,
-		k6: $author$project$Main$view
+		lu: $author$project$Main$update,
+		lC: $author$project$Main$view
 	});
 _Platform_export({'Main':{'init':$author$project$Main$main(
 	A2(
@@ -50765,7 +53842,7 @@ _Platform_export({'Main':{'init':$author$project$Main$main(
 												$elm$json$Json$Decode$andThen,
 												function (authToken) {
 													return $elm$json$Json$Decode$succeed(
-														{c5: authToken, a5: csrfToken, dm: featureFlags, dU: notFoundImgSrc, d1: pipelineRunningKeyframes, ep: turbulenceImgSrc});
+														{dw: authToken, a6: csrfToken, dQ: featureFlags, em: notFoundImgSrc, ex: pipelineRunningKeyframes, eX: turbulenceImgSrc});
 												},
 												A2($elm$json$Json$Decode$field, 'authToken', $elm$json$Json$Decode$string));
 										},
@@ -50784,7 +53861,7 @@ _Platform_export({'Main':{'init':$author$project$Main$main(
 														$elm$json$Json$Decode$andThen,
 														function (build_rerun) {
 															return $elm$json$Json$Decode$succeed(
-																{eK: build_rerun, fh: global_resources, gh: resource_causality});
+																{fh: build_rerun, fT: global_resources, gV: resource_causality});
 														},
 														A2($elm$json$Json$Decode$field, 'build_rerun', $elm$json$Json$Decode$bool));
 												},
