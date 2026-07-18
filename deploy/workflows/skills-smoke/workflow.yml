@@ -1,0 +1,24 @@
+schema_version: 2
+name: skills-smoke
+description: slice-b smoke — proves skills/system-prompt/context materialize
+spec_delivery: files
+
+defaults:
+  model: claude-sonnet-5
+  max_turns: 12
+
+budget:
+  ticket_usd: 1.0
+
+skills: [marker]
+system_prompt_file: system/base.md
+context: [context/note.md]
+
+prompt_files:
+  work: prompts/work.md
+
+steps:
+- agent: work
+  prompt: work
+  inputs: [repo, ticket]
+  outputs: [workspace]
