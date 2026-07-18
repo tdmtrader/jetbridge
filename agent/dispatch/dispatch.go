@@ -8,6 +8,7 @@ import (
 
 	"github.com/concourse/concourse/agent/api/principals"
 	"github.com/concourse/concourse/agent/api/tickets"
+	"github.com/concourse/concourse/agent/budget"
 	"github.com/concourse/concourse/agent/credentials"
 	"github.com/concourse/concourse/agent/workflow"
 	"github.com/concourse/concourse/atc"
@@ -29,6 +30,11 @@ var (
 	// delivery). A client error — the workflow is malformed for v0, not a
 	// server fault — so the route maps it to 422, not 500.
 	ErrRenderRefused = errors.New("workflow cannot be dispatched in v0")
+	// ErrBudgetExhausted: admission refused — the ticket or the global
+	// daily cap has no headroom (§2.7). The ticket STAYS QUEUED; the
+	// loop logs it as deferred and the route maps it to 409. Never a
+	// ticket-state transition: budgets recover (midnight, raised cap).
+	ErrBudgetExhausted = errors.New("budget exhausted; dispatch deferred")
 )
 
 // WorkflowResolver is the subset of workflow.Store dispatch reads.
@@ -54,6 +60,11 @@ type Deps struct {
 	Workflows WorkflowResolver
 	Templates TemplateSaver
 	Runs      RunCreator
+
+	// Budget, when non-nil, gates admission per §2.7: TicketRemaining +
+	// GlobalDailyRemaining are consulted BEFORE any side effect beyond
+	// the version freeze. nil skips admission (tests; pre-budget wiring).
+	Budget budget.Checker
 
 	// The §8.2 run-credential leg: the exec mounts CLAUDE_CODE_OAUTH_TOKEN
 	// exclusively from the agent-run-<id> secret on ticketed runs, so
@@ -98,6 +109,23 @@ func DispatchOne(ctx context.Context, deps Deps, ticketID int, dispatchedBy stri
 	}
 	if t.WorkflowName == "" {
 		return Result{}, ErrNoWorkflow
+	}
+
+	if deps.Budget != nil {
+		tr, err := deps.Budget.TicketRemaining(ticketID)
+		if err != nil {
+			return Result{}, fmt.Errorf("budget admission for ticket %d: %w", ticketID, err)
+		}
+		if tr.Exhausted {
+			return Result{}, fmt.Errorf("%w: ticket %d spent $%.2f of $%.2f", ErrBudgetExhausted, ticketID, tr.SpentUSD, tr.LimitUSD)
+		}
+		gr, err := deps.Budget.GlobalDailyRemaining()
+		if err != nil {
+			return Result{}, fmt.Errorf("budget admission (global daily): %w", err)
+		}
+		if gr.Exhausted {
+			return Result{}, fmt.Errorf("%w: global daily cap spent $%.2f of $%.2f", ErrBudgetExhausted, gr.SpentUSD, gr.LimitUSD)
+		}
 	}
 
 	var def *workflow.Definition

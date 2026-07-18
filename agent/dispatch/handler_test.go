@@ -6,9 +6,12 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/concourse/concourse/agent/api/tickets"
+	"github.com/concourse/concourse/agent/budget"
+	"github.com/concourse/concourse/agent/budget/budgetfakes"
 	"github.com/concourse/concourse/agent/dispatch"
 	"github.com/concourse/concourse/agent/workflow"
 )
@@ -99,6 +102,29 @@ func TestDispatchHandlerErrorMapping(t *testing.T) {
 	h.ServeHTTP(rec, dispatchRequest("zero"))
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("bad id = %d, want 400", rec.Code)
+	}
+}
+
+func TestDispatchHandlerBudgetExhaustedMapsTo409(t *testing.T) {
+	deps, store, _, _ := dispatchDeps(t)
+	checker := new(budgetfakes.FakeChecker)
+	checker.TicketRemainingReturns(budget.Remaining{LimitUSD: 5, SpentUSD: 6, RemainingUSD: -1, Exhausted: true}, nil)
+	deps.Budget = checker
+	id := queuedTicket(t, store, "smoke")
+	h := dispatch.NewHTTPHandler(deps, func(*http.Request) string { return "tdm" })
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, dispatchRequest(itoa(id)))
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("budget exhausted = %d, want 409 (body %s)", rec.Code, rec.Body)
+	}
+	if !strings.Contains(rec.Body.String(), "budget exhausted") {
+		t.Errorf("body must name the deferral, got %q", rec.Body.String())
+	}
+
+	got, _, _ := store.Get(id)
+	if got.State != tickets.StateQueued {
+		t.Errorf("over-cap ticket must stay queued, state = %s", got.State)
 	}
 }
 

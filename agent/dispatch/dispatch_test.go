@@ -8,6 +8,8 @@ import (
 
 	"github.com/concourse/concourse/agent/api/principals"
 	"github.com/concourse/concourse/agent/api/tickets"
+	"github.com/concourse/concourse/agent/budget"
+	"github.com/concourse/concourse/agent/budget/budgetfakes"
 	"github.com/concourse/concourse/agent/credentials"
 	"github.com/concourse/concourse/agent/credentials/credentialsfakes"
 	"github.com/concourse/concourse/agent/dispatch"
@@ -255,6 +257,72 @@ func TestDispatchOneRunCreationFailureLeavesTicketQueued(t *testing.T) {
 	got, _, _ := store.Get(id)
 	if got.State != tickets.StateQueued {
 		t.Errorf("ticket must stay queued for a retry, state = %s", got.State)
+	}
+}
+
+func TestDispatchOneDefersWhenTicketBudgetExhausted(t *testing.T) {
+	deps, store, _, runs := dispatchDeps(t)
+	checker := new(budgetfakes.FakeChecker)
+	checker.TicketRemainingReturns(budget.Remaining{LimitUSD: 5, SpentUSD: 6, RemainingUSD: -1, Exhausted: true}, nil)
+	deps.Budget = checker
+	id := queuedTicket(t, store, "smoke")
+
+	_, err := dispatch.DispatchOne(context.Background(), deps, id, "loop")
+	if !errors.Is(err, dispatch.ErrBudgetExhausted) {
+		t.Fatalf("want ErrBudgetExhausted, got %v", err)
+	}
+	if runs.CreateRunCallCount() != 0 {
+		t.Error("over-cap admission must run BEFORE CreateRun")
+	}
+	got, _, _ := store.Get(id)
+	if got.State != tickets.StateQueued {
+		t.Errorf("over-cap ticket must STAY queued (never failed), state=%s", got.State)
+	}
+}
+
+func TestDispatchOneDefersWhenGlobalDailyCapExhausted(t *testing.T) {
+	deps, store, _, runs := dispatchDeps(t)
+	checker := new(budgetfakes.FakeChecker)
+	checker.TicketRemainingReturns(budget.Remaining{}, nil) // uncapped ticket
+	checker.GlobalDailyRemainingReturns(budget.Remaining{LimitUSD: 50, SpentUSD: 50, Exhausted: true}, nil)
+	deps.Budget = checker
+	id := queuedTicket(t, store, "smoke")
+
+	_, err := dispatch.DispatchOne(context.Background(), deps, id, "loop")
+	if !errors.Is(err, dispatch.ErrBudgetExhausted) {
+		t.Fatalf("want ErrBudgetExhausted, got %v", err)
+	}
+	if runs.CreateRunCallCount() != 0 {
+		t.Error("daily-cap admission must run BEFORE CreateRun")
+	}
+	got, _, _ := store.Get(id)
+	if got.State != tickets.StateQueued {
+		t.Errorf("daily-capped ticket must stay queued, state=%s", got.State)
+	}
+}
+
+func TestDispatchOneBudgetCheckerErrorIsPlatformFaultNotDeferral(t *testing.T) {
+	deps, store, _, _ := dispatchDeps(t)
+	checker := new(budgetfakes.FakeChecker)
+	checker.TicketRemainingReturns(budget.Remaining{}, errors.New("ledger down"))
+	deps.Budget = checker
+	id := queuedTicket(t, store, "smoke")
+
+	_, err := dispatch.DispatchOne(context.Background(), deps, id, "loop")
+	if err == nil || errors.Is(err, dispatch.ErrBudgetExhausted) {
+		t.Fatalf("checker error must surface as a platform fault, got %v", err)
+	}
+	got, _, _ := store.Get(id)
+	if got.State != tickets.StateQueued {
+		t.Errorf("platform fault leaves ticket queued, state=%s", got.State)
+	}
+}
+
+func TestDispatchOneNilBudgetSkipsAdmission(t *testing.T) {
+	deps, store, _, _ := dispatchDeps(t) // deps.Budget nil
+	id := queuedTicket(t, store, "smoke")
+	if _, err := dispatch.DispatchOne(context.Background(), deps, id, "admin"); err != nil {
+		t.Fatalf("nil Budget must preserve landed behavior: %v", err)
 	}
 }
 
