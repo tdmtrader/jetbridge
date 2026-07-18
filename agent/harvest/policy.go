@@ -7,6 +7,9 @@
 package harvest
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -40,6 +43,41 @@ type RubricDimension struct {
 	Name     string  `json:"name"`
 	Weight   float64 `json:"weight"`
 	Guidance string  `json:"guidance"`
+}
+
+// Validate rejects a judge config the runner could not execute
+// faithfully (§6.4.1). Mirrors agent/workflow's import-time checks so a
+// hand-authored harvest step gets the same fail-closed treatment.
+func (j JudgeConfig) Validate() error {
+	if len(j.Rubric) == 0 {
+		return fmt.Errorf("judge: rubric must have at least one dimension")
+	}
+	seen := map[string]bool{}
+	for _, d := range j.Rubric {
+		if d.Name == "" {
+			return fmt.Errorf("judge: rubric dimension name is required")
+		}
+		if seen[d.Name] {
+			return fmt.Errorf("judge: duplicate rubric dimension %q", d.Name)
+		}
+		seen[d.Name] = true
+		if d.Weight <= 0 {
+			return fmt.Errorf("judge: rubric dimension %q weight must be > 0", d.Name)
+		}
+	}
+	if j.PassThreshold < 0 || j.PassThreshold > 10 {
+		return fmt.Errorf("judge: pass_threshold must be within 0-10, got %g", j.PassThreshold)
+	}
+	return nil
+}
+
+// RubricHash is the judge.score correlation key (§6.4.1): sha256 hex of
+// the rubric's canonical JSON. Dimension order is semantic (it is the
+// prompt order), so reordering changes the hash.
+func (j JudgeConfig) RubricHash() string {
+	payload, _ := json.Marshal(j.Rubric)
+	sum := sha256.Sum256(payload)
+	return hex.EncodeToString(sum[:])
 }
 
 // Config is the HARVEST_CONFIG payload — the frozen execution contract

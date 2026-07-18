@@ -55,3 +55,45 @@ func TestConfigJSONShape(t *testing.T) {
 		t.Errorf("round-trip mismatch: %+v != %+v", back, cfg)
 	}
 }
+
+func TestJudgeConfigValidate(t *testing.T) {
+	valid := harvest.JudgeConfig{
+		Rubric:        []harvest.RubricDimension{{Name: "correctness", Weight: 3, Guidance: "works"}},
+		PassThreshold: 6.5,
+	}
+	if err := valid.Validate(); err != nil {
+		t.Fatalf("valid config rejected: %v", err)
+	}
+
+	cases := map[string]harvest.JudgeConfig{
+		"empty rubric":    {PassThreshold: 5},
+		"unnamed dim":     {Rubric: []harvest.RubricDimension{{Weight: 1}}, PassThreshold: 5},
+		"duplicate dim":   {Rubric: []harvest.RubricDimension{{Name: "a", Weight: 1}, {Name: "a", Weight: 1}}, PassThreshold: 5},
+		"non-positive wt": {Rubric: []harvest.RubricDimension{{Name: "a", Weight: 0}}, PassThreshold: 5},
+		"threshold > 10":  {Rubric: []harvest.RubricDimension{{Name: "a", Weight: 1}}, PassThreshold: 11},
+		"threshold < 0":   {Rubric: []harvest.RubricDimension{{Name: "a", Weight: 1}}, PassThreshold: -1},
+	}
+	for name, cfg := range cases {
+		if err := cfg.Validate(); err == nil {
+			t.Errorf("%s: expected validation error", name)
+		}
+	}
+}
+
+func TestRubricHashDeterministicAndOrderSensitive(t *testing.T) {
+	a := harvest.JudgeConfig{Rubric: []harvest.RubricDimension{
+		{Name: "x", Weight: 1, Guidance: "g"}, {Name: "y", Weight: 2, Guidance: "h"},
+	}}
+	b := harvest.JudgeConfig{Rubric: []harvest.RubricDimension{
+		{Name: "y", Weight: 2, Guidance: "h"}, {Name: "x", Weight: 1, Guidance: "g"},
+	}}
+	if a.RubricHash() == "" || len(a.RubricHash()) != 64 {
+		t.Fatalf("hash must be sha256 hex: %q", a.RubricHash())
+	}
+	if a.RubricHash() != a.RubricHash() {
+		t.Fatal("hash must be deterministic")
+	}
+	if a.RubricHash() == b.RubricHash() {
+		t.Fatal("dimension order is semantic (prompt order) - hash must differ")
+	}
+}
