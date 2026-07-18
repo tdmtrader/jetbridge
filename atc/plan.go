@@ -420,6 +420,9 @@ type AgentPlan struct {
 	MaxTurns       int               `json:"max_turns,omitempty"`
 	BudgetSliceUSD float64           `json:"budget_slice_usd,omitempty"`
 	OutputSchema   string            `json:"output_schema,omitempty"`
+	SystemPrompt   string            `json:"system_prompt,omitempty"`
+	Context        string            `json:"context,omitempty"`
+	Skills         []string          `json:"skills,omitempty"`
 	Sidecars       []SidecarSource   `json:"sidecars,omitempty"`
 	Inputs         []string          `json:"inputs,omitempty"`
 	Outputs        []string          `json:"outputs,omitempty"`

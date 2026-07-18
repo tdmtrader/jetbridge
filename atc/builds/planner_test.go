@@ -1549,6 +1549,9 @@ var factoryTests = []PlannerTest{
 			Inputs:         []string{"repo"},
 			Outputs:        []string{"workspace"},
 			Env:            map[string]string{"AGENT_TICKET_ID": "7"},
+			SystemPrompt:   "be careful",
+			Context:        "## context/x.md\n\nbody\n",
+			Skills:         []string{"tdd", "extra"},
 		},
 
 		PlanJSON: `{
@@ -1561,7 +1564,10 @@ var factoryTests = []PlannerTest{
 				"budget_slice_usd": 2.5,
 				"inputs": ["repo"],
 				"outputs": ["workspace"],
-				"env": {"AGENT_TICKET_ID": "7"}
+				"env": {"AGENT_TICKET_ID": "7"},
+				"system_prompt": "be careful",
+				"context": "## context/x.md\n\nbody\n",
+				"skills": ["tdd", "extra"]
 			}
 		}`,
 	},

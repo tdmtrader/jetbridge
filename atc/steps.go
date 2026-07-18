@@ -401,13 +401,24 @@ func (step *RunStep) Visit(v StepVisitor) error {
 // the workflow definition into literal values here; the step implementation
 // never reads workflow tables.
 type AgentStep struct {
-	Name           string            `json:"agent"`
-	Prompt         string            `json:"prompt,omitempty"`
-	PromptFile     string            `json:"prompt_file,omitempty"`
-	Model          string            `json:"model,omitempty"`
-	MaxTurns       int               `json:"max_turns,omitempty"`
-	BudgetSliceUSD float64           `json:"budget_slice_usd,omitempty"`
-	OutputSchema   string            `json:"output_schema,omitempty"`
+	Name           string  `json:"agent"`
+	Prompt         string  `json:"prompt,omitempty"`
+	PromptFile     string  `json:"prompt_file,omitempty"`
+	Model          string  `json:"model,omitempty"`
+	MaxTurns       int     `json:"max_turns,omitempty"`
+	BudgetSliceUSD float64 `json:"budget_slice_usd,omitempty"`
+	OutputSchema   string  `json:"output_schema,omitempty"`
+
+	// Source-format layers (design 2026-07-17 §4), renderer-resolved to
+	// literal values like Prompt: SystemPrompt is appended to the
+	// runner's baseline system prompt; Context is a pre-concatenated
+	// session-start block; Skills names select subtrees of the "skills"
+	// input artifact for materialization into the agent's project
+	// skill directory.
+	SystemPrompt string   `json:"system_prompt,omitempty"`
+	Context      string   `json:"context,omitempty"`
+	Skills       []string `json:"skills,omitempty"`
+
 	Sidecars []SidecarSource `json:"sidecars,omitempty"`
 	Inputs   []string        `json:"inputs,omitempty"`
 	Outputs  []string        `json:"outputs,omitempty"`
