@@ -160,6 +160,14 @@ func Render(in RenderInput) (atc.Config, error) {
 	if in.Workflow.Judge != nil {
 		return atc.Config{}, fmt.Errorf("workflow %q declares a judge rubric: v0 manual dispatch does not score with a judge (harvest-step, wave 3) — remove the block or wait for harvest", in.WorkflowName)
 	}
+	// Refuse source-format surfaces until slice (b) materializes them
+	// (design 2026-07-17 §4): skills/system-prompt/context validate at
+	// import and are content-hashed as authoritative, so rendering
+	// without materialization would silently drop authored behavior —
+	// same refuse-don't-drop rule as sidecars and gate_policy above.
+	if field := in.Workflow.SourceFormatField(); field != "" {
+		return atc.Config{}, fmt.Errorf("workflow %q declares %s: v0 render does not materialize source-format surfaces (slice b) — remove them or wait for materialization", in.WorkflowName, field)
+	}
 
 	needsRepo, needsTicket := false, false
 	available := map[string]bool{}

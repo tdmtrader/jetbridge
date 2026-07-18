@@ -380,3 +380,27 @@ func TestRenderAllowsPriorStepOutputsAsInputs(t *testing.T) {
 		t.Errorf("plan length = %d, want 4", len(cfg.Jobs[0].PlanSequence))
 	}
 }
+
+func TestRenderRefusesSourceFormatSurfaces(t *testing.T) {
+	in := renderInput()
+	in.Workflow.SchemaVersion = 2
+	in.Workflow.Skills = []string{"tdd"}
+	if _, err := dispatch.Render(in); err == nil || !strings.Contains(err.Error(), "slice b") {
+		t.Fatalf("workflow-level skills must refuse: %v", err)
+	}
+
+	in = renderInput()
+	in.Workflow.SchemaVersion = 2
+	in.Workflow.Steps[0].SystemPrompt = "step system prompt"
+	if _, err := dispatch.Render(in); err == nil {
+		t.Fatal("step-level system_prompt must refuse")
+	}
+
+	in = renderInput()
+	in.Workflow.SchemaVersion = 2
+	in.Workflow.ContextFiles = map[string]string{"context/x.md": "body"}
+	in.Workflow.Context = []string{"context/x.md"}
+	if _, err := dispatch.Render(in); err == nil {
+		t.Fatal("context must refuse")
+	}
+}
