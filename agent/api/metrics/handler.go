@@ -58,6 +58,25 @@ func (h *Handler) ListRecent(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(rows)
 }
 
+// ListByBuild handles GET /api/v1/builds/:build_id/agent-metrics.
+func (h *Handler) ListByBuild(w http.ResponseWriter, r *http.Request) {
+	buildID, err := strconv.Atoi(r.FormValue(":build_id"))
+	if err != nil || buildID <= 0 {
+		http.Error(w, "invalid build_id", http.StatusBadRequest)
+		return
+	}
+	rows, err := h.store.GetByBuild(buildID)
+	if err != nil {
+		http.Error(w, "failed to list metrics", http.StatusInternalServerError)
+		return
+	}
+	if rows == nil {
+		rows = []schema.RunMetrics{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(rows)
+}
+
 // ListByTicket handles GET /api/v1/agent/tickets/:ticket_id/metrics.
 func (h *Handler) ListByTicket(w http.ResponseWriter, r *http.Request) {
 	ticketID, err := strconv.Atoi(r.FormValue(":ticket_id"))

@@ -329,6 +329,7 @@ func NewHandler(
 		atc.SubmitAgentRunMetrics:     http.HandlerFunc(metricsServer.SubmitMetrics),
 		atc.ListAgentRunMetrics:       http.HandlerFunc(metricsServer.ListByTicket),
 		atc.ListRecentAgentRunMetrics: http.HandlerFunc(metricsServer.ListRecent),
+		atc.ListBuildAgentRunMetrics:  http.HandlerFunc(metricsServer.ListByBuild),
 
 		atc.ListAgentTickets:      http.HandlerFunc(ticketsServer.ListTickets),
 		atc.CreateAgentTicket:     http.HandlerFunc(ticketsServer.CreateTicket),

@@ -141,6 +141,7 @@ const (
 	SubmitAgentRunMetrics     = "SubmitAgentRunMetrics"
 	ListAgentRunMetrics       = "ListAgentRunMetrics"
 	ListRecentAgentRunMetrics = "ListRecentAgentRunMetrics"
+	ListBuildAgentRunMetrics  = "ListBuildAgentRunMetrics"
 
 	ListAgentTickets      = "ListAgentTickets"
 	CreateAgentTicket     = "CreateAgentTicket"
@@ -308,6 +309,7 @@ var Routes = rata.Routes([]rata.Route{
 	{Path: "/api/v1/agent/metrics", Method: "POST", Name: SubmitAgentRunMetrics},
 	{Path: "/api/v1/agent/metrics", Method: "GET", Name: ListRecentAgentRunMetrics},
 	{Path: "/api/v1/agent/tickets/:ticket_id/metrics", Method: "GET", Name: ListAgentRunMetrics},
+	{Path: "/api/v1/builds/:build_id/agent-metrics", Method: "GET", Name: ListBuildAgentRunMetrics},
 
 	{Path: "/api/v1/agent/tickets", Method: "GET", Name: ListAgentTickets},
 	{Path: "/api/v1/agent/tickets", Method: "POST", Name: CreateAgentTicket},
