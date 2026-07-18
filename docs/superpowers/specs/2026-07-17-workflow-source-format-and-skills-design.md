@@ -85,8 +85,11 @@ schema_version: 2            # documents using any new field declare 2
 
 # -- prompts: file references as an alternative to inline strings
 prompts:
-  implement:
-    file: prompts/implement.md    # mutually exclusive with an inline string
+  review: |
+    Inline prompts keep working.
+prompt_files:
+  implement: prompts/implement.md    # inlined into prompts at import; a key
+                                     # may not appear in both maps
 
 # -- skills: workflow-global set; names resolve to skills/<name>/ in this dir
 skills: [tdd, concourse-idioms]
@@ -178,7 +181,7 @@ Server-side compile (fly packages, the server compiles):
 
 1. **Validate** the manifest (paths, caps, UTF-8), parse `workflow.yml`,
    eager-validate the grammar (phaseconfig-style, as today). Every
-   `prompts.*.file`, `system_prompt_file`, `context[]`, and `skills[]`
+   `prompt_files`, `system_prompt_file`, `context[]`, and `skills[]`
    reference must resolve to files present in the manifest; a skill is the
    whole tree under `skills/<name>/` and must contain
    `skills/<name>/SKILL.md`. Unreferenced files (a README, design notes) are
@@ -186,7 +189,7 @@ Server-side compile (fly packages, the server compiles):
    mints a new version. Fly excludes hidden files/dirs at packaging so
    junk (`.DS_Store`, `.git`) never reaches the manifest. Errors cite source
    paths (`prompts/implement.md`, `workflow.yml: skills[1]`).
-2. **Compile** the `Definition`: inline `file:` prompt references, resolve
+2. **Compile** the `Definition`: inline `prompt_files` references, resolve
    the system-prompt and context layers per step, record the skill file
    trees. The compiled Definition is what the renderer consumes; the render
    path does not read the manifest.
@@ -324,3 +327,10 @@ Two slices:
   (user objected to tar; manifest recommended, accepted 2026-07-17).
 - System prompt append-at-workflow / replace-at-step; context additive
   (recommended in design, unobjected).
+- Grammar realization: `prompt_files` sibling map instead of a
+  string-or-object union under `prompts:` (implementation, slice (a) —
+  additive, keeps every existing Prompts consumer untouched; a key may
+  not appear in both maps).
+- Migration landed as 1773106066, vacating the 1773106065 PARK-V2
+  reservation — PARK-V2 renumbers above the deployed head at landing
+  (ticket-core precedent; noted in migrate-preflight.sh).
