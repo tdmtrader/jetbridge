@@ -55,6 +55,20 @@ type ToolDef struct {
 type callToolParams struct {
 	Name      string          `json:"name"`
 	Arguments json.RawMessage `json:"arguments,omitempty"`
+	// Meta carries the MCP progress opt-in: a client that wants SSE progress
+	// sends params._meta.progressToken; it is echoed verbatim in every
+	// notifications/progress frame (04 Task 1 wire spec).
+	Meta *struct {
+		ProgressToken json.RawMessage `json:"progressToken"`
+	} `json:"_meta,omitempty"`
+}
+
+// jsonRPCNotification is a server-initiated message (no id) — the
+// notifications/progress frames on the SSE path.
+type jsonRPCNotification struct {
+	JSONRPC string `json:"jsonrpc"`
+	Method  string `json:"method"`
+	Params  any    `json:"params,omitempty"`
 }
 
 type callToolResult struct {
