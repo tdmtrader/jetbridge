@@ -221,4 +221,66 @@ steps:
 		Expect(found).To(BeTrue())
 		Expect(live.Version).To(BeElementOf(1, 2))
 	})
+
+	Describe("manifest imports", func() {
+		manifest := func(name string) workflow.Manifest {
+			return workflow.Manifest{
+				"workflow.yml": `schema_version: 2
+name: ` + name + `
+description: manifest test
+skills: [tdd]
+context: [context/conventions.md]
+system_prompt_file: system/base.md
+prompt_files:
+  work: prompts/work.md
+steps:
+- agent: work
+  prompt: work
+  outputs: [workspace]
+`,
+				"prompts/work.md":        "Do the work.",
+				"system/base.md":         "base system prompt",
+				"context/conventions.md": "conventions",
+				"skills/tdd/SKILL.md":    "# tdd",
+				"skills/tdd/refs/red.md": "red-green",
+			}
+		}
+
+		It("imports, compiles on read, and is idempotent on the manifest hash", func() {
+			src := manifest("wf-manifest")
+			v1, err := factory.ImportManifest("wf-manifest", src, "alice")
+			Expect(err).ToNot(HaveOccurred())
+			Expect(v1.Version).To(Equal(1))
+			Expect(v1.ContentHash).To(Equal(src.Hash()))
+
+			again, err := factory.ImportManifest("wf-manifest", src, "bob")
+			Expect(err).ToNot(HaveOccurred())
+			Expect(again.Version).To(Equal(1))
+
+			got, found, err := factory.Get("wf-manifest", 1)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(got.RawYAML).To(Equal(src["workflow.yml"]))
+			Expect(got.SourceManifest["skills/tdd/refs/red.md"]).To(Equal("red-green"))
+			Expect(got.Config.SystemPrompt).To(Equal("base system prompt"))
+			Expect(got.Config.SkillFiles).To(HaveKey("skills/tdd/SKILL.md"))
+			Expect(got.Config.ContextFiles["context/conventions.md"]).To(Equal("conventions"))
+		})
+
+		It("reads legacy rows (no source_manifest) via the Parse path", func() {
+			raw := defYAML("wf-legacy", "Legacy.")
+			// Simulate a pre-slice row: definition only, NULL manifest.
+			_, err := dbConn.Exec(`
+				INSERT INTO agent_workflow_definitions
+					(name, version, content_hash, definition, description, created_by)
+				VALUES ('wf-legacy', 1, 'legacyhash', $1, 'legacy', 'alice')`, string(raw))
+			Expect(err).ToNot(HaveOccurred())
+
+			got, found, err := factory.Get("wf-legacy", 1)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(got.Config.Name).To(Equal("wf-legacy"))
+			Expect(got.SourceManifest).To(BeEmpty())
+		})
+	})
 })

@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -28,9 +29,10 @@ func (f *agentWorkflowsFactory) Import(name string, rawYAML []byte, createdBy st
 	return f.ImportManifest(name, workflow.Manifest{"workflow.yml": string(rawYAML)}, createdBy)
 }
 
-// ImportManifest — interim (Task 5): manifest-hash identity and compile,
-// but the manifest itself is not yet persisted (source_manifest column
-// arrives with migration 1773106066 in Task 6).
+// ImportManifest compiles and stores a source tree (design 2026-07-17
+// §3): the compiled Config is rebuilt on read from the stored canonical
+// manifest, so there is exactly one persisted source of truth per row.
+// Idempotent on the canonical-manifest hash.
 func (f *agentWorkflowsFactory) ImportManifest(name string, src workflow.Manifest, createdBy string) (*workflow.Definition, error) {
 	cfg, err := workflow.Compile(src)
 	if err != nil {
@@ -56,16 +58,18 @@ func (f *agentWorkflowsFactory) ImportManifest(name string, src workflow.Manifes
 
 	var def workflow.Definition
 	err = tx.QueryRow(`
-		SELECT `+workflowMetaColumns+`, definition
+		SELECT `+workflowMetaColumns+`
 		FROM agent_workflow_definitions
 		WHERE name = $1 AND content_hash = $2`,
 		name, hash,
 	).Scan(&def.ID, &def.Name, &def.Version, &def.ContentHash, &def.Live,
-		&def.Description, &def.CreatedBy, &def.CreatedAt, &def.RawYAML)
+		&def.Description, &def.CreatedBy, &def.CreatedAt)
 	if err == nil {
-		// Idempotent on hash: byte-identical YAML returns the existing
+		// Idempotent on hash: byte-identical source returns the existing
 		// version untouched (contracts §1.6).
 		def.Config = *cfg
+		def.RawYAML = src["workflow.yml"]
+		def.SourceManifest = src
 		return &def, tx.Commit()
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
@@ -74,11 +78,11 @@ func (f *agentWorkflowsFactory) ImportManifest(name string, src workflow.Manifes
 
 	err = tx.QueryRow(`
 		INSERT INTO agent_workflow_definitions
-			(name, version, content_hash, definition, description, created_by)
-		SELECT $1, COALESCE(MAX(version), 0) + 1, $2, $3, $4, $5
+			(name, version, content_hash, definition, source_manifest, description, created_by)
+		SELECT $1, COALESCE(MAX(version), 0) + 1, $2, $3, $4::jsonb, $5, $6
 		FROM agent_workflow_definitions WHERE name = $1
 		RETURNING id, version, EXTRACT(EPOCH FROM created_at)::bigint`,
-		name, hash, src["workflow.yml"], cfg.Description, createdBy,
+		name, hash, src["workflow.yml"], string(src.Canonical()), cfg.Description, createdBy,
 	).Scan(&def.ID, &def.Version, &def.CreatedAt)
 	if err != nil {
 		return nil, err
@@ -89,6 +93,7 @@ func (f *agentWorkflowsFactory) ImportManifest(name string, src workflow.Manifes
 	def.Description = cfg.Description
 	def.CreatedBy = createdBy
 	def.RawYAML = src["workflow.yml"]
+	def.SourceManifest = src
 	def.Config = *cfg
 	return &def, tx.Commit()
 }
@@ -129,18 +134,35 @@ func (f *agentWorkflowsFactory) LiveVersions() (map[string]int, error) {
 
 func (f *agentWorkflowsFactory) getOne(where string, args ...any) (*workflow.Definition, bool, error) {
 	var def workflow.Definition
+	var manifestJSON sql.NullString
 	err := f.conn.QueryRow(`
-		SELECT `+workflowMetaColumns+`, definition
+		SELECT `+workflowMetaColumns+`, definition, source_manifest
 		FROM agent_workflow_definitions
 		WHERE `+where, args...,
 	).Scan(&def.ID, &def.Name, &def.Version, &def.ContentHash, &def.Live,
-		&def.Description, &def.CreatedBy, &def.CreatedAt, &def.RawYAML)
+		&def.Description, &def.CreatedBy, &def.CreatedAt, &def.RawYAML, &manifestJSON)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, false, nil
 	}
 	if err != nil {
 		return nil, false, err
 	}
+	if manifestJSON.Valid {
+		var src workflow.Manifest
+		if err := json.Unmarshal([]byte(manifestJSON.String), &src); err != nil {
+			return nil, false, fmt.Errorf("stored manifest %s/v%d no longer parses: %w", def.Name, def.Version, err)
+		}
+		cfg, err := workflow.Compile(src)
+		if err != nil {
+			// Rows are compiled at import; a failure here means the stored
+			// manifest was corrupted out-of-band.
+			return nil, false, fmt.Errorf("stored manifest %s/v%d no longer compiles: %w", def.Name, def.Version, err)
+		}
+		def.Config = *cfg
+		def.SourceManifest = src
+		return &def, true, nil
+	}
+	// Legacy pre-manifest row: the definition column is the whole source.
 	cfg, err := workflow.Parse([]byte(def.RawYAML))
 	if err != nil {
 		// Rows are validated at import; a parse failure here means the
