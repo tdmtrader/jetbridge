@@ -52,13 +52,20 @@ type Config struct {
 	Model        string
 	MaxTurns     int
 	OutputSchema string
-	FlightDir    string
-	WorkDir      string
-	StepName     string
-	ClaudePath   string
-	MCPServers   map[string]string
-	Stdout       io.Writer
-	Stderr       io.Writer
+
+	// Source-format layers (design 2026-07-17 §4).
+	SystemPrompt string   // appended to claude's baseline via --append-system-prompt
+	Context      string   // pre-concatenated block, injected at session start (prompt prefix)
+	Skills       []string // skill names to materialize from SkillsDir
+	SkillsDir    string   // mount path of the "skills" input artifact
+
+	FlightDir  string
+	WorkDir    string
+	StepName   string
+	ClaudePath string
+	MCPServers map[string]string
+	Stdout     io.Writer
+	Stderr     io.Writer
 
 	// Step identity for the step.start payload (shared-contracts §5):
 	// build_id and plan_id are the correlation key consumers use to join
@@ -87,6 +94,9 @@ func FromEnv() Config {
 		PromptFile:   os.Getenv("AGENT_PROMPT_FILE"),
 		Model:        os.Getenv("AGENT_MODEL"),
 		OutputSchema: os.Getenv("AGENT_OUTPUT_SCHEMA"),
+		SystemPrompt: os.Getenv("AGENT_SYSTEM_PROMPT"),
+		Context:      os.Getenv("AGENT_CONTEXT"),
+		SkillsDir:    os.Getenv("AGENT_SKILLS_DIR"),
 		FlightDir:    os.Getenv("AGENT_FLIGHT_DIR"),
 		StepName:     os.Getenv("AGENT_STEP_NAME"),
 		WorkDir:      wd,
@@ -114,6 +124,10 @@ func FromEnv() Config {
 		if n, err := strconv.Atoi(v); err == nil {
 			cfg.MaxTurns = n
 		}
+	}
+
+	if v := os.Getenv("AGENT_SKILLS"); v != "" {
+		cfg.Skills = strings.Split(v, ",")
 	}
 
 	for _, kv := range os.Environ() {
@@ -182,6 +196,37 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 		return 2, errors.New("no prompt configured")
 	}
 
+	// Materialize the step's selected skills from the mounted "skills"
+	// artifact into <workdir>/.claude/skills — claude's CWD is WorkDir,
+	// so these are its project skills; the workspace repo's git tree is
+	// untouched (design 2026-07-17 §4). A missing skill means the
+	// renderer and runner disagree about the artifact — platform error.
+	for _, name := range cfg.Skills {
+		src := filepath.Join(cfg.SkillsDir, name)
+		if _, err := os.Stat(src); err != nil {
+			return 2, fmt.Errorf("skill %q not present in skills artifact %s: %w", name, cfg.SkillsDir, err)
+		}
+		dst := filepath.Join(cfg.WorkDir, ".claude", "skills", name)
+		if _, err := os.Stat(dst); err == nil {
+			fmt.Fprintf(stderr, "agent-runner: overwriting existing project skill %q with the workflow's copy\n", name)
+			if err := os.RemoveAll(dst); err != nil {
+				return 2, fmt.Errorf("replace project skill %q: %w", name, err)
+			}
+		}
+		if err := os.MkdirAll(dst, 0o755); err != nil {
+			return 2, fmt.Errorf("create skill dir %q: %w", name, err)
+		}
+		if err := os.CopyFS(dst, os.DirFS(src)); err != nil {
+			return 2, fmt.Errorf("materialize skill %q: %w", name, err)
+		}
+	}
+
+	// Session-start context (design §4): superpowers-style injection,
+	// done platform-side — the block precedes the step prompt.
+	if cfg.Context != "" {
+		prompt = "# Workflow context\n\n" + cfg.Context + "\n\n---\n\n" + prompt
+	}
+
 	// Open the flight recorder up-front so every exit path can honor the
 	// contract that the event stream starts with step.start and ends with
 	// step.end.
@@ -245,6 +290,9 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 	}
 	if cfg.MaxTurns > 0 {
 		args = append(args, "--max-turns", strconv.Itoa(cfg.MaxTurns))
+	}
+	if cfg.SystemPrompt != "" {
+		args = append(args, "--append-system-prompt", cfg.SystemPrompt)
 	}
 	args = append(args, "--dangerously-skip-permissions")
 

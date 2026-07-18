@@ -714,3 +714,117 @@ func TestCancellationKillsClaudesDescendants(t *testing.T) {
 	syscall.Kill(pid, syscall.SIGKILL) // don't leak it past the test
 	t.Fatalf("claude's leaked descendant (pid %d) survived cancellation — group kill missing", pid)
 }
+
+// writeRecordingStubClaude is writeStubClaude plus an args.txt capture so
+// tests can assert the exact CLI invocation. Args are NUL-separated —
+// the prompt arg is multi-line, so newline separation would split it.
+func writeRecordingStubClaude(t *testing.T, dir, envelope string) (claudePath, argsPath string) {
+	t.Helper()
+	claudePath = filepath.Join(dir, "claude")
+	argsPath = filepath.Join(dir, "args.txt")
+	script := "#!/bin/sh\nprintf '%s\\0' \"$@\" > " + argsPath + "\necho '" + envelope + "'\n"
+	if err := os.WriteFile(claudePath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return claudePath, argsPath
+}
+
+const okEnvelope = `{"type":"result","subtype":"success","result":"\"done\"","model":"m1","cost_usd":0.01,"num_turns":1,"is_error":false,"usage":{"input_tokens":1,"output_tokens":1}}`
+
+func TestRunAppendsSystemPromptAndPrependsContext(t *testing.T) {
+	dir := t.TempDir()
+	flight := filepath.Join(dir, "flight")
+	os.MkdirAll(flight, 0o755)
+	claude, argsPath := writeRecordingStubClaude(t, dir, okEnvelope)
+
+	exit, err := runner.Run(context.Background(), runner.Config{
+		Prompt:       "do it",
+		SystemPrompt: "be careful",
+		Context:      "## context/x.md\n\nbody\n",
+		FlightDir:    flight, WorkDir: dir, StepName: "s", ClaudePath: claude,
+	})
+	if err != nil || exit != 0 {
+		t.Fatalf("run: exit %d err %v", exit, err)
+	}
+
+	raw, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := strings.Split(strings.TrimRight(string(raw), "\x00"), "\x00")
+
+	// -p <prompt>: context block prepended, original prompt at the end.
+	promptIdx := -1
+	for i, a := range args {
+		if a == "-p" {
+			promptIdx = i + 1
+		}
+	}
+	if promptIdx < 0 || promptIdx >= len(args) {
+		t.Fatalf("no -p arg captured: %v", args)
+	}
+	prompt := args[promptIdx]
+	if !strings.HasPrefix(prompt, "# Workflow context") || !strings.Contains(prompt, "## context/x.md") || !strings.HasSuffix(prompt, "do it") {
+		t.Fatalf("context not prepended: %q", prompt)
+	}
+
+	// --append-system-prompt <value>
+	sysIdx := -1
+	for i, a := range args {
+		if a == "--append-system-prompt" {
+			sysIdx = i + 1
+		}
+	}
+	if sysIdx < 0 || args[sysIdx] != "be careful" {
+		t.Fatalf("system prompt not appended: %v", args)
+	}
+}
+
+func TestRunMaterializesSkills(t *testing.T) {
+	dir := t.TempDir()
+	flight := filepath.Join(dir, "flight")
+	os.MkdirAll(flight, 0o755)
+	claude, _ := writeRecordingStubClaude(t, dir, okEnvelope)
+
+	skillsDir := filepath.Join(dir, "skills")
+	for _, f := range []string{"tdd/SKILL.md", "tdd/refs/a.md", "extra/SKILL.md", "unselected/SKILL.md"} {
+		full := filepath.Join(skillsDir, f)
+		os.MkdirAll(filepath.Dir(full), 0o755)
+		os.WriteFile(full, []byte("# "+f), 0o644)
+	}
+
+	exit, err := runner.Run(context.Background(), runner.Config{
+		Prompt: "p", FlightDir: flight, WorkDir: dir, StepName: "s", ClaudePath: claude,
+		Skills: []string{"tdd", "extra"}, SkillsDir: skillsDir,
+	})
+	if err != nil || exit != 0 {
+		t.Fatalf("run: exit %d err %v", exit, err)
+	}
+
+	for _, want := range []string{"tdd/SKILL.md", "tdd/refs/a.md", "extra/SKILL.md"} {
+		if _, err := os.Stat(filepath.Join(dir, ".claude", "skills", want)); err != nil {
+			t.Errorf("skill file not materialized: %s (%v)", want, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".claude", "skills", "unselected")); err == nil {
+		t.Error("unselected skill must not be materialized")
+	}
+}
+
+func TestRunFailsOnMissingSkill(t *testing.T) {
+	dir := t.TempDir()
+	flight := filepath.Join(dir, "flight")
+	os.MkdirAll(flight, 0o755)
+	claude, argsPath := writeRecordingStubClaude(t, dir, okEnvelope)
+
+	exit, _ := runner.Run(context.Background(), runner.Config{
+		Prompt: "p", FlightDir: flight, WorkDir: dir, StepName: "s", ClaudePath: claude,
+		Skills: []string{"ghost"}, SkillsDir: filepath.Join(dir, "skills"),
+	})
+	if exit != 2 {
+		t.Fatalf("missing skill must be a platform error (exit 2), got %d", exit)
+	}
+	if _, err := os.Stat(argsPath); err == nil {
+		t.Fatal("claude must not run when a skill is missing")
+	}
+}
