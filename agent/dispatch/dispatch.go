@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"time"
 
+	"code.cloudfoundry.org/lager/v3"
+	"code.cloudfoundry.org/lager/v3/lagerctx"
+
 	"github.com/concourse/concourse/agent/api/principals"
 	"github.com/concourse/concourse/agent/api/tickets"
 	"github.com/concourse/concourse/agent/budget"
@@ -74,6 +77,10 @@ type Deps struct {
 	Principals  principals.Store
 	Credentials credentials.Backend
 	Secrets     credentials.SecretAttacher
+
+	// SecretLabels, when non-nil, adds the concourse/ticket label after a
+	// successful Attach. Best-effort: failures are logged, never fatal.
+	SecretLabels RunSecretLabeler
 
 	ATCExternalURL string
 	RepoBaseURL    string
@@ -242,6 +249,14 @@ func attachRunSecret(ctx context.Context, deps Deps, t *tickets.Ticket, runID in
 
 	if _, err := deps.Secrets.Attach(ctx, runID, cred, principalToken); err != nil {
 		return err
+	}
+
+	if deps.SecretLabels != nil && t.ID > 0 {
+		if err := deps.SecretLabels.Label(ctx, runID, t.ID); err != nil {
+			// Best-effort by contract (§2.8.2): operator filtering only.
+			lagerctx.FromContext(ctx).Session("attach-run-secret").Error("failed-to-label-run-secret", err,
+				lager.Data{"run": runID, "ticket": t.ID})
+		}
 	}
 	return nil
 }
