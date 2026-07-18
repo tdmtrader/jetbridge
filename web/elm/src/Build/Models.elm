@@ -7,6 +7,7 @@ module Build.Models exposing
 import Build.Header.Models exposing (BuildPageType(..), CommentBarVisibility, CurrentOutput(..), HistoryItem)
 import Build.Output.Models exposing (OutputModel)
 import Concourse
+import Concourse.Agent
 import Concourse.AgentReview
 import Concourse.BuildStatus as BuildStatus
 import Dict exposing (Dict)
@@ -36,6 +37,7 @@ type alias Model =
                 , notFound : Bool
                 , reapTime : Maybe Time.Posix
                 , agentReviews : List Concourse.AgentReview.BuildReview
+                , agentRunMetrics : List Concourse.Agent.RunMetric
                 , agentReviewLoadError : Bool
                 , agentReviewPanelExpanded : Bool
                 , expandedFindings : Set String

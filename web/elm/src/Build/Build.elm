@@ -27,6 +27,7 @@ import Build.StepTree.Models as STModels
 import Build.StepTree.StepTree as StepTree
 import Build.Styles as Styles
 import Concourse
+import Concourse.Agent
 import Concourse.AgentReview
 import Concourse.BuildStatus exposing (BuildStatus(..))
 import DateFormat
@@ -131,6 +132,7 @@ init flags =
           , reapTime = Nothing
           , createdBy = Nothing
           , agentReviews = []
+          , agentRunMetrics = []
           , agentReviewLoadError = False
           , agentReviewPanelExpanded = True
           , expandedFindings = Set.empty
@@ -326,6 +328,14 @@ handleCallback action ( model, effects ) =
             -- nothing; an API error renders a quiet one-line notice instead
             -- of breaking the page.
             ( { model | agentReviewLoadError = True }, effects )
+
+        BuildAgentMetricsFetched (Ok rows) ->
+            ( { model | agentRunMetrics = rows }, effects )
+
+        BuildAgentMetricsFetched (Err _) ->
+            -- The cost chip is best-effort provenance; a fetch error just
+            -- leaves it hidden.
+            ( model, effects )
 
         AgentReviewVerdictSubmitted findingId (Ok ()) ->
             ( { model | verdictErrors = Set.remove findingId model.verdictErrors }
@@ -676,7 +686,9 @@ handleBuildFetched build ( model, effects ) =
             -- poll while a build is running and would re-request reviews
             -- continuously.
             if not model.hasLoadedYet || build.id /= model.id then
-                [ FetchBuildAgentReviews build.id ]
+                [ FetchBuildAgentReviews build.id
+                , FetchBuildAgentMetrics build.id
+                ]
 
             else
                 []
@@ -872,13 +884,69 @@ viewBuildPage session model =
 {-| When a build belongs to an `agent-ticket-<id>` pipeline, show a slim
 provenance bar linking back to the originating ticket and attributing the run.
 Detection is purely from the pipeline name + instance vars the build already
-carries — no server round-trip. Renders nothing for ordinary builds.
+carries — no server round-trip. A build with recorded agent spend but no
+ticket context (e.g. a CI build running review steps) still gets the bar,
+reduced to just the cost chip. Renders nothing for ordinary builds.
 -}
-ticketContextBar : { a | job : Maybe Concourse.JobIdentifier, createdBy : Concourse.BuildCreatedBy } -> Html Message
-ticketContextBar { job, createdBy } =
+ticketContextBar :
+    { a
+        | job : Maybe Concourse.JobIdentifier
+        , createdBy : Concourse.BuildCreatedBy
+        , agentRunMetrics : List Concourse.Agent.RunMetric
+    }
+    -> Html Message
+ticketContextBar { job, createdBy, agentRunMetrics } =
+    let
+        totalCost =
+            agentRunMetrics |> List.map .costUsd |> List.sum
+
+        costChip =
+            if totalCost > 0 then
+                [ Html.span
+                    [ id "build-agent-cost"
+                    , style "margin-left" "auto"
+                    , style "font-family" "monospace"
+                    , style "color" "#b0b0b0"
+                    ]
+                    [ Html.text
+                        ("agent spend $"
+                            ++ formatUsd totalCost
+                            ++ " · "
+                            ++ String.fromInt (List.length agentRunMetrics)
+                            ++ (if List.length agentRunMetrics == 1 then
+                                    " run"
+
+                                else
+                                    " runs"
+                               )
+                        )
+                    ]
+                ]
+
+            else
+                []
+
+        bar barId children =
+            Html.div
+                [ id barId
+                , style "display" "flex"
+                , style "align-items" "center"
+                , style "gap" "6px"
+                , style "padding" "6px 12px"
+                , style "background" "#1b222b"
+                , style "border-bottom" "1px solid #2d3a48"
+                , style "color" "#9aa39b"
+                , style "font-size" "13px"
+                ]
+                children
+    in
     case job |> Maybe.andThen agentTicketId of
         Nothing ->
-            Html.text ""
+            if List.isEmpty costChip then
+                Html.text ""
+
+            else
+                bar "build-agent-cost-bar" costChip
 
         Just ticketId ->
             let
@@ -902,27 +970,53 @@ ticketContextBar { job, createdBy } =
                         Nothing ->
                             ""
             in
-            Html.div
-                [ id "build-ticket-context"
-                , style "display" "flex"
-                , style "align-items" "center"
-                , style "gap" "6px"
-                , style "padding" "6px 12px"
-                , style "background" "#1b222b"
-                , style "border-bottom" "1px solid #2d3a48"
-                , style "color" "#9aa39b"
-                , style "font-size" "13px"
-                ]
-                [ Html.text "part of"
-                , Html.a
+            bar "build-ticket-context"
+                ([ Html.text "part of"
+                 , Html.a
                     [ href (Routes.toString (Routes.AgentTicket { id = ticketId }))
                     , style "color" "#7a9ac0"
                     , style "text-decoration" "none"
                     , style "font-weight" "700"
                     ]
                     [ Html.text ("agent ticket #" ++ String.fromInt ticketId) ]
-                , Html.text (runLabel ++ attribution)
-                ]
+                 , Html.text (runLabel ++ attribution)
+                 ]
+                    ++ costChip
+                )
+
+
+{-| Same rendering as the other agent surfaces: cents-precision dollars.
+-}
+formatUsd : Float -> String
+formatUsd amount =
+    let
+        cents =
+            round (amount * 100)
+
+        absCents =
+            abs cents
+
+        dollars =
+            absCents // 100
+
+        remainder =
+            modBy 100 absCents
+
+        fraction =
+            if remainder < 10 then
+                "0" ++ String.fromInt remainder
+
+            else
+                String.fromInt remainder
+
+        sign =
+            if cents < 0 then
+                "-"
+
+            else
+                ""
+    in
+    sign ++ String.fromInt dollars ++ "." ++ fraction
 
 
 {-| Parse the ticket id out of an `agent-ticket-<id>` pipeline name.
