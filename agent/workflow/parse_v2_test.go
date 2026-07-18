@@ -108,3 +108,11 @@ func TestParseV2Rejections(t *testing.T) {
 		}
 	}
 }
+
+func TestParseAllowsExplicitSkillsInput(t *testing.T) {
+	doc := strings.Replace(v2YAML, "  context: [context/tdd.md]\n  outputs: [workspace]",
+		"  context: [context/tdd.md]\n  inputs: [skills]\n  outputs: [workspace]", 1)
+	if _, err := workflow.Parse([]byte(doc)); err != nil {
+		t.Fatalf("skills is a renderer-provided reserved input: %v", err)
+	}
+}

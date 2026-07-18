@@ -13,6 +13,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"text/template"
@@ -100,6 +102,23 @@ func RenderAgentStep(in RenderInput, step workflow.Step) (atc.AgentStep, error) 
 		env["AGENT_BUDGET_SLICE_USD"] = strconv.FormatFloat(step.BudgetSliceUSD, 'f', -1, 64)
 	}
 
+	// Source-format layers (design 2026-07-17 §4): resolve the step's
+	// effective values and make sure the "skills" artifact rides along
+	// whenever the step has a non-empty effective set.
+	skills := effectiveSkills(in.Workflow, step)
+	inputs := step.Inputs
+	if len(skills) > 0 {
+		has := false
+		for _, name := range inputs {
+			if name == "skills" {
+				has = true
+			}
+		}
+		if !has {
+			inputs = append(append([]string{}, inputs...), "skills")
+		}
+	}
+
 	return atc.AgentStep{
 		Name:           step.Agent,
 		Prompt:         prompt,
@@ -107,7 +126,10 @@ func RenderAgentStep(in RenderInput, step workflow.Step) (atc.AgentStep, error) 
 		MaxTurns:       maxTurns,
 		BudgetSliceUSD: step.BudgetSliceUSD,
 		OutputSchema:   schema,
-		Inputs:         step.Inputs,
+		SystemPrompt:   effectiveSystemPrompt(in.Workflow, step),
+		Context:        effectiveContext(in.Workflow, step),
+		Skills:         skills,
+		Inputs:         inputs,
 		Outputs:        step.Outputs,
 		Env:            env,
 	}, nil
@@ -160,14 +182,6 @@ func Render(in RenderInput) (atc.Config, error) {
 	if in.Workflow.Judge != nil {
 		return atc.Config{}, fmt.Errorf("workflow %q declares a judge rubric: v0 manual dispatch does not score with a judge (harvest-step, wave 3) — remove the block or wait for harvest", in.WorkflowName)
 	}
-	// Refuse source-format surfaces until slice (b) materializes them
-	// (design 2026-07-17 §4): skills/system-prompt/context validate at
-	// import and are content-hashed as authoritative, so rendering
-	// without materialization would silently drop authored behavior —
-	// same refuse-don't-drop rule as sidecars and gate_policy above.
-	if field := in.Workflow.SourceFormatField(); field != "" {
-		return atc.Config{}, fmt.Errorf("workflow %q declares %s: v0 render does not materialize source-format surfaces (slice b) — remove them or wait for materialization", in.WorkflowName, field)
-	}
 
 	needsRepo, needsTicket := false, false
 	available := map[string]bool{}
@@ -178,6 +192,10 @@ func Render(in RenderInput) (atc.Config, error) {
 				needsRepo = true
 			case input == "ticket":
 				needsTicket = true
+			case input == "skills":
+				if len(in.Workflow.SkillFiles) == 0 {
+					return atc.Config{}, fmt.Errorf("agent step %q consumes the skills artifact but the workflow references no skills", step.Agent)
+				}
 			case available[input]:
 			default:
 				return atc.Config{}, fmt.Errorf("agent step %q input %q is neither repo, ticket, nor a prior step's output", step.Agent, input)
@@ -194,6 +212,13 @@ func Render(in RenderInput) (atc.Config, error) {
 	}
 	if needsTicket {
 		plan = append(plan, atc.Step{Config: writeTicketTask(in)})
+	}
+	if len(in.Workflow.SkillFiles) > 0 {
+		task, err := writeSkillsTask(in.Workflow)
+		if err != nil {
+			return atc.Config{}, err
+		}
+		plan = append(plan, atc.Step{Config: task})
 	}
 	for _, step := range in.Workflow.Steps {
 		agentStep, err := RenderAgentStep(in, step)
@@ -289,6 +314,99 @@ func renderPrompt(key, body string, in RenderInput) (string, error) {
 		return "", fmt.Errorf("prompt %q: %w", key, err)
 	}
 	return out.String(), nil
+}
+
+// maxSkillsRenderBytes bounds the base64 write-skills task payload. The
+// spec's escape hatch for larger sets is an authenticated
+// fetch-by-version endpoint (design 2026-07-17 §4) — refuse loudly
+// until someone needs it.
+const maxSkillsRenderBytes = 512 << 10
+
+// effectiveSkills is the step's materialization set: workflow-global
+// then step-additional, first occurrence wins (design §1 semantics —
+// additive, never replacing).
+func effectiveSkills(wf workflow.Config, step workflow.Step) []string {
+	seen := map[string]bool{}
+	out := []string{}
+	for _, name := range append(append([]string{}, wf.Skills...), step.Skills...) {
+		if !seen[name] {
+			seen[name] = true
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+// effectiveContext assembles the session-start block: workflow-global
+// files then step additions, each under a "## <path>" header, deduped
+// on path.
+func effectiveContext(wf workflow.Config, step workflow.Step) string {
+	seen := map[string]bool{}
+	var b strings.Builder
+	for _, path := range append(append([]string{}, wf.Context...), step.Context...) {
+		if seen[path] {
+			continue
+		}
+		seen[path] = true
+		fmt.Fprintf(&b, "## %s\n\n%s\n\n", path, wf.ContextFiles[path])
+	}
+	return b.String()
+}
+
+// effectiveSystemPrompt: the step layer replaces the workflow layer
+// (never the runner baseline — the runner appends whichever value wins).
+func effectiveSystemPrompt(wf workflow.Config, step workflow.Step) string {
+	if step.SystemPrompt != "" {
+		return step.SystemPrompt
+	}
+	return wf.SystemPrompt
+}
+
+// writeSkillsTask materializes the union of referenced skill trees as
+// the "skills" artifact — same base64-through-busybox mechanism as
+// writeTicketTask, one write per file. SkillFiles keys are manifest
+// paths ("skills/tdd/SKILL.md"); inside the artifact the leading
+// "skills/" segment is dropped so the runner sees <name>/SKILL.md.
+func writeSkillsTask(wf workflow.Config) (*atc.TaskStep, error) {
+	total := 0
+	for _, content := range wf.SkillFiles {
+		total += len(content)
+	}
+	if total > maxSkillsRenderBytes {
+		return nil, fmt.Errorf("workflow skill files total %d bytes (max %d for base64 materialization; larger sets need the fetch-by-version endpoint, design §4)", total, maxSkillsRenderBytes)
+	}
+
+	paths := make([]string, 0, len(wf.SkillFiles))
+	for path := range wf.SkillFiles {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+
+	var script strings.Builder
+	script.WriteString("set -eu\n")
+	for _, path := range paths {
+		rel := strings.TrimPrefix(path, "skills/")
+		encoded := base64.StdEncoding.EncodeToString([]byte(wf.SkillFiles[path]))
+		fmt.Fprintf(&script, "mkdir -p \"skills/%s\"\n", filepath.Dir(rel))
+		fmt.Fprintf(&script, "echo %s | base64 -d > \"skills/%s\"\n", encoded, rel)
+	}
+	script.WriteString("find skills -type f | head -50\n")
+
+	return &atc.TaskStep{
+		Name: "write-skills",
+		Config: &atc.TaskConfig{
+			Platform: "linux",
+			ImageResource: &atc.ImageResource{
+				Type:   "registry-image",
+				Source: atc.Source{"repository": "busybox"},
+			},
+			Outputs: []atc.TaskOutputConfig{{Name: "skills"}},
+			Run: atc.TaskRunConfig{
+				Path: "sh",
+				Args: []string{"-ec", script.String()},
+			},
+		},
+	}, nil
 }
 
 // harvestGatePolicy converts the workflow-YAML gate_policy grammar

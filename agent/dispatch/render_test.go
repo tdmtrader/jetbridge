@@ -381,26 +381,112 @@ func TestRenderAllowsPriorStepOutputsAsInputs(t *testing.T) {
 	}
 }
 
-func TestRenderRefusesSourceFormatSurfaces(t *testing.T) {
+// sourceFormatInput returns a renderInput whose workflow uses every
+// source-format surface, as the compiled Config (slice a) would deliver
+// it: *_file references already resolved, SkillFiles/ContextFiles
+// populated.
+func sourceFormatInput() dispatch.RenderInput {
 	in := renderInput()
 	in.Workflow.SchemaVersion = 2
+	in.Workflow.SystemPrompt = "workflow system prompt"
 	in.Workflow.Skills = []string{"tdd"}
-	if _, err := dispatch.Render(in); err == nil || !strings.Contains(err.Error(), "slice b") {
-		t.Fatalf("workflow-level skills must refuse: %v", err)
+	in.Workflow.Context = []string{"context/conventions.md"}
+	in.Workflow.ContextFiles = map[string]string{
+		"context/conventions.md": "conventions body",
+		"context/step.md":        "step body",
 	}
-
-	in = renderInput()
-	in.Workflow.SchemaVersion = 2
+	in.Workflow.SkillFiles = map[string]string{
+		"skills/tdd/SKILL.md":   "# tdd",
+		"skills/tdd/refs/a.md":  "supporting",
+		"skills/extra/SKILL.md": "# extra",
+	}
+	in.Workflow.Steps[0].Skills = []string{"extra"}
 	in.Workflow.Steps[0].SystemPrompt = "step system prompt"
-	if _, err := dispatch.Render(in); err == nil {
-		t.Fatal("step-level system_prompt must refuse")
+	in.Workflow.Steps[0].Context = []string{"context/step.md"}
+	return in
+}
+
+func TestRenderSourceFormatSurfaces(t *testing.T) {
+	cfg, err := dispatch.Render(sourceFormatInput())
+	if err != nil {
+		t.Fatalf("render: %v", err)
 	}
 
-	in = renderInput()
-	in.Workflow.SchemaVersion = 2
-	in.Workflow.ContextFiles = map[string]string{"context/x.md": "body"}
-	in.Workflow.Context = []string{"context/x.md"}
-	if _, err := dispatch.Render(in); err == nil {
-		t.Fatal("context must refuse")
+	plan := cfg.Jobs[0].PlanSequence
+
+	// A write-skills task materializes the union of referenced skill
+	// trees as the "skills" artifact, before the agent steps.
+	var writeSkills *atc.TaskStep
+	agentIdx, taskIdx := -1, -1
+	var agent *atc.AgentStep
+	for i, s := range plan {
+		if ts, ok := s.Config.(*atc.TaskStep); ok && ts.Name == "write-skills" {
+			writeSkills, taskIdx = ts, i
+		}
+		if as, ok := s.Config.(*atc.AgentStep); ok && agent == nil {
+			agent, agentIdx = as, i
+		}
+	}
+	if writeSkills == nil {
+		t.Fatal("no write-skills task emitted")
+	}
+	if taskIdx > agentIdx {
+		t.Fatal("write-skills must precede the agent steps")
+	}
+	script := writeSkills.Config.Run.Args[1]
+	for _, frag := range []string{"tdd/SKILL.md", "tdd/refs/a.md", "extra/SKILL.md"} {
+		if !strings.Contains(script, frag) {
+			t.Errorf("write-skills script missing %s", frag)
+		}
+	}
+	if len(writeSkills.Config.Outputs) != 1 || writeSkills.Config.Outputs[0].Name != "skills" {
+		t.Fatalf("write-skills must output the skills artifact: %+v", writeSkills.Config.Outputs)
+	}
+
+	// The agent step carries the resolved layers and the skills input.
+	if agent.SystemPrompt != "step system prompt" {
+		t.Errorf("step system prompt must replace the workflow layer: %q", agent.SystemPrompt)
+	}
+	if !strings.Contains(agent.Context, "## context/conventions.md") || !strings.Contains(agent.Context, "## context/step.md") ||
+		!strings.Contains(agent.Context, "conventions body") {
+		t.Errorf("context block not assembled: %q", agent.Context)
+	}
+	if len(agent.Skills) != 2 || agent.Skills[0] != "tdd" || agent.Skills[1] != "extra" {
+		t.Errorf("effective skills = %v", agent.Skills)
+	}
+	hasSkillsInput := false
+	for _, name := range agent.Inputs {
+		if name == "skills" {
+			hasSkillsInput = true
+		}
+	}
+	if !hasSkillsInput {
+		t.Errorf("agent step must consume the skills artifact: %v", agent.Inputs)
+	}
+}
+
+func TestRenderWorkflowSystemPromptFallback(t *testing.T) {
+	in := sourceFormatInput()
+	in.Workflow.Steps[0].SystemPrompt = ""
+	cfg, err := dispatch.Render(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range cfg.Jobs[0].PlanSequence {
+		if as, ok := s.Config.(*atc.AgentStep); ok {
+			if as.SystemPrompt != "workflow system prompt" {
+				t.Fatalf("workflow system prompt must apply when the step has none: %q", as.SystemPrompt)
+			}
+			return
+		}
+	}
+	t.Fatal("no agent step")
+}
+
+func TestRenderRefusesOversizeSkills(t *testing.T) {
+	in := sourceFormatInput()
+	in.Workflow.SkillFiles["skills/tdd/big.md"] = strings.Repeat("a", 600_000)
+	if _, err := dispatch.Render(in); err == nil || !strings.Contains(err.Error(), "skill") {
+		t.Fatalf("oversize skill set must refuse at render: %v", err)
 	}
 }
