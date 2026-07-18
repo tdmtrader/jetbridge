@@ -36,6 +36,8 @@ const (
 	CategoryPerformance     Category = "performance"
 	CategoryMaintainability Category = "maintainability"
 	CategoryTesting         Category = "testing"
+	CategoryGate            Category = "gate"  // objectively-proven gate failure (§6.4.1)
+	CategoryJudge           Category = "judge" // judge-cited advisory finding (§6.4.1)
 )
 
 var validCategories = map[Category]bool{
@@ -44,12 +46,14 @@ var validCategories = map[Category]bool{
 	CategoryPerformance:     true,
 	CategoryMaintainability: true,
 	CategoryTesting:         true,
+	CategoryGate:            true,
+	CategoryJudge:           true,
 }
 
 // Validate checks that the category is a known value.
 func (c Category) Validate() error {
 	if !validCategories[c] {
-		return fmt.Errorf("invalid category %q: must be one of security, correctness, performance, maintainability, testing", c)
+		return fmt.Errorf("invalid category %q: must be one of security, correctness, performance, maintainability, testing, gate, judge", c)
 	}
 	return nil
 }
