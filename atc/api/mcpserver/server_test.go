@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -107,7 +110,7 @@ var _ = Describe("Server", func() {
 
 		It("handles tools/call for a registered tool", func() {
 			server.AddTool("echo", "Echoes input", json.RawMessage(`{"type":"object"}`),
-				func(ctx context.Context, args json.RawMessage) (any, error) {
+				func(ctx context.Context, args json.RawMessage, _ func(string)) (any, error) {
 					return map[string]string{"echoed": string(args)}, nil
 				},
 			)
@@ -141,7 +144,7 @@ var _ = Describe("Server", func() {
 
 		It("returns error result when tool handler errors", func() {
 			server.AddTool("fail", "Always fails", json.RawMessage(`{"type":"object"}`),
-				func(ctx context.Context, args json.RawMessage) (any, error) {
+				func(ctx context.Context, args json.RawMessage, _ func(string)) (any, error) {
 					return nil, io.ErrUnexpectedEOF
 				},
 			)
@@ -156,7 +159,7 @@ var _ = Describe("Server", func() {
 
 		It("handles tools/list with registered tools", func() {
 			server.AddTool("my_tool", "Does things", json.RawMessage(`{"type":"object","properties":{"x":{"type":"string"}}}`),
-				func(ctx context.Context, args json.RawMessage) (any, error) {
+				func(ctx context.Context, args json.RawMessage, _ func(string)) (any, error) {
 					return nil, nil
 				},
 			)
@@ -178,6 +181,99 @@ var _ = Describe("Server", func() {
 			server.ServeHTTP(w, req)
 			Expect(w.Result().StatusCode).To(Equal(http.StatusMethodNotAllowed))
 		})
+	})
+})
+
+var _ = Describe("SSE progress streaming (mirrored from ci-agent/devmcp/server_test.go — 04 Task 4 wire spec)", func() {
+	newSSEServer := func(heartbeat time.Duration, handler mcpserver.ToolHandler) *httptest.Server {
+		s := mcpserver.NewServerWithHeartbeat(heartbeat)
+		s.AddTool("echo", "echoes back", json.RawMessage(`{"type":"object"}`), handler)
+		ts := httptest.NewServer(s)
+		DeferCleanup(ts.Close)
+		return ts
+	}
+
+	sseCall := func(url string) (*http.Response, error) {
+		req, err := http.NewRequest(http.MethodPost, url, strings.NewReader(
+			`{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"echo","arguments":{},"_meta":{"progressToken":"tok-1"}}}`))
+		Expect(err).NotTo(HaveOccurred())
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "text/event-stream")
+		return http.DefaultClient.Do(req)
+	}
+
+	It("streams progress notifications over SSE and ends with the final response frame", func() {
+		ts := newSSEServer(50*time.Millisecond, func(_ context.Context, _ json.RawMessage, progress func(string)) (any, error) {
+			progress("halfway there")
+			time.Sleep(150 * time.Millisecond)
+			return map[string]any{"status": "ok"}, nil
+		})
+
+		resp, err := sseCall(ts.URL)
+		Expect(err).NotTo(HaveOccurred())
+		defer resp.Body.Close()
+		Expect(resp.Header.Get("Content-Type")).To(Equal("text/event-stream"))
+
+		body, err := io.ReadAll(resp.Body)
+		Expect(err).NotTo(HaveOccurred())
+		frames := string(body)
+		Expect(frames).To(ContainSubstring("event: message"))
+		Expect(frames).To(ContainSubstring(`"notifications/progress"`))
+		Expect(frames).To(ContainSubstring(`"tok-1"`))
+		Expect(frames).To(ContainSubstring("halfway there"))
+		// The final JSON-RPC response is the LAST SSE frame. The tool result
+		// JSON rides embedded (escaped) in the content block's text field —
+		// the frozen buffered-path mapping.
+		Expect(frames).To(ContainSubstring(`"id":7`))
+		lastFrame := frames[strings.LastIndex(frames, "event: message"):]
+		Expect(lastFrame).To(ContainSubstring(`\"status\":\"ok\"`))
+	})
+
+	It("emits heartbeats even when the handler produces no progress output", func() {
+		ts := newSSEServer(30*time.Millisecond, func(_ context.Context, _ json.RawMessage, _ func(string)) (any, error) {
+			time.Sleep(120 * time.Millisecond)
+			return map[string]any{"status": "ok"}, nil
+		})
+		resp, err := sseCall(ts.URL)
+		Expect(err).NotTo(HaveOccurred())
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		Expect(err).NotTo(HaveOccurred())
+		// >= 2 heartbeat frames with the default "running <tool>" message.
+		Expect(strings.Count(string(body), `"running echo"`)).To(BeNumerically(">=", 2))
+	})
+
+	It("stays buffered JSON when the client does not opt in", func() {
+		ts := newSSEServer(30*time.Millisecond, func(_ context.Context, _ json.RawMessage, progress func(string)) (any, error) {
+			progress("dropped on the buffered path")
+			return map[string]any{"status": "ok"}, nil
+		})
+		// No Accept: text/event-stream, no _meta.progressToken.
+		resp, err := http.Post(ts.URL, "application/json", strings.NewReader(
+			`{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"echo","arguments":{}}}`))
+		Expect(err).NotTo(HaveOccurred())
+		defer resp.Body.Close()
+		Expect(resp.Header.Get("Content-Type")).To(ContainSubstring("application/json"))
+		body, err := io.ReadAll(resp.Body)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(string(body)).NotTo(ContainSubstring("notifications/progress"))
+		// Result JSON is embedded (escaped) in the content block's text field.
+		Expect(string(body)).To(ContainSubstring(`\"status\":\"ok\"`))
+	})
+
+	It("carries handler errors as isError=true in the final SSE frame — never -32602", func() {
+		ts := newSSEServer(30*time.Millisecond, func(_ context.Context, _ json.RawMessage, _ func(string)) (any, error) {
+			return nil, fmt.Errorf("kaboom")
+		})
+		resp, err := sseCall(ts.URL)
+		Expect(err).NotTo(HaveOccurred())
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		Expect(err).NotTo(HaveOccurred())
+		frames := string(body)
+		Expect(frames).To(ContainSubstring(`"isError":true`))
+		Expect(frames).To(ContainSubstring("kaboom"))
+		Expect(frames).NotTo(ContainSubstring(`-32602`))
 	})
 })
 

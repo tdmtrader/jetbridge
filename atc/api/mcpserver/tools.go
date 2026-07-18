@@ -151,7 +151,7 @@ func registerListPipelines(s *Server, teamFactory db.TeamFactory) {
 				"team": map[string]any{"type": "string", "description": "Team name"},
 			},
 		}),
-		func(ctx context.Context, args json.RawMessage) (any, error) {
+		func(ctx context.Context, args json.RawMessage, _ func(string)) (any, error) {
 			var input listPipelinesInput
 			if len(args) > 0 {
 				if err := json.Unmarshal(args, &input); err != nil {
@@ -205,7 +205,7 @@ func registerGetPipeline(s *Server, teamFactory db.TeamFactory) {
 				"pipeline": map[string]any{"type": "string", "description": "Pipeline name"},
 			},
 		}),
-		func(ctx context.Context, args json.RawMessage) (any, error) {
+		func(ctx context.Context, args json.RawMessage, _ func(string)) (any, error) {
 			var input getPipelineInput
 			if err := json.Unmarshal(args, &input); err != nil {
 				return nil, fmt.Errorf("invalid arguments: %w", err)
@@ -254,7 +254,7 @@ func registerSetPipeline(s *Server, teamFactory db.TeamFactory) {
 				"config":   map[string]any{"type": "string", "description": "Pipeline configuration as JSON"},
 			},
 		}),
-		func(ctx context.Context, args json.RawMessage) (any, error) {
+		func(ctx context.Context, args json.RawMessage, _ func(string)) (any, error) {
 			var input setPipelineInput
 			if err := json.Unmarshal(args, &input); err != nil {
 				return nil, fmt.Errorf("invalid arguments: %w", err)
@@ -300,7 +300,7 @@ func registerPausePipeline(s *Server, teamFactory db.TeamFactory) {
 				"pipeline": map[string]any{"type": "string", "description": "Pipeline name"},
 			},
 		}),
-		func(ctx context.Context, args json.RawMessage) (any, error) {
+		func(ctx context.Context, args json.RawMessage, _ func(string)) (any, error) {
 			var input teamPipelineInput
 			if err := json.Unmarshal(args, &input); err != nil {
 				return nil, fmt.Errorf("invalid arguments: %w", err)
@@ -334,7 +334,7 @@ func registerUnpausePipeline(s *Server, teamFactory db.TeamFactory) {
 				"pipeline": map[string]any{"type": "string", "description": "Pipeline name"},
 			},
 		}),
-		func(ctx context.Context, args json.RawMessage) (any, error) {
+		func(ctx context.Context, args json.RawMessage, _ func(string)) (any, error) {
 			var input teamPipelineInput
 			if err := json.Unmarshal(args, &input); err != nil {
 				return nil, fmt.Errorf("invalid arguments: %w", err)
@@ -382,7 +382,7 @@ func registerListJobs(s *Server, teamFactory db.TeamFactory) {
 				"pipeline": map[string]any{"type": "string", "description": "Pipeline name"},
 			},
 		}),
-		func(ctx context.Context, args json.RawMessage) (any, error) {
+		func(ctx context.Context, args json.RawMessage, _ func(string)) (any, error) {
 			var input listJobsInput
 			if err := json.Unmarshal(args, &input); err != nil {
 				return nil, fmt.Errorf("invalid arguments: %w", err)
@@ -435,7 +435,7 @@ func registerListBuilds(s *Server, teamFactory db.TeamFactory) {
 				"limit":    map[string]any{"type": "integer", "description": "Max builds to return (default 10)"},
 			},
 		}),
-		func(ctx context.Context, args json.RawMessage) (any, error) {
+		func(ctx context.Context, args json.RawMessage, _ func(string)) (any, error) {
 			var input listBuildsInput
 			if err := json.Unmarshal(args, &input); err != nil {
 				return nil, fmt.Errorf("invalid arguments: %w", err)
@@ -485,7 +485,7 @@ func registerGetBuild(s *Server, buildFactory db.BuildFactory) {
 				"build_id": map[string]any{"type": "integer", "description": "Build ID"},
 			},
 		}),
-		func(ctx context.Context, args json.RawMessage) (any, error) {
+		func(ctx context.Context, args json.RawMessage, _ func(string)) (any, error) {
 			var input getBuildInput
 			if err := json.Unmarshal(args, &input); err != nil {
 				return nil, fmt.Errorf("invalid arguments: %w", err)
@@ -522,7 +522,7 @@ func registerGetBuildLog(s *Server, buildFactory db.BuildFactory) {
 				"build_id": map[string]any{"type": "integer", "description": "Build ID"},
 			},
 		}),
-		func(ctx context.Context, args json.RawMessage) (any, error) {
+		func(ctx context.Context, args json.RawMessage, _ func(string)) (any, error) {
 			var input getBuildLogInput
 			if err := json.Unmarshal(args, &input); err != nil {
 				return nil, fmt.Errorf("invalid arguments: %w", err)
@@ -586,7 +586,7 @@ func registerTriggerJob(s *Server, teamFactory db.TeamFactory, externalURL strin
 				"job":      map[string]any{"type": "string", "description": "Job name"},
 			},
 		}),
-		func(ctx context.Context, args json.RawMessage) (any, error) {
+		func(ctx context.Context, args json.RawMessage, _ func(string)) (any, error) {
 			var input triggerJobInput
 			if err := json.Unmarshal(args, &input); err != nil {
 				return nil, fmt.Errorf("invalid arguments: %w", err)
@@ -634,7 +634,7 @@ func registerAbortBuild(s *Server, buildFactory db.BuildFactory) {
 				"build_id": map[string]any{"type": "integer", "description": "Build ID to abort"},
 			},
 		}),
-		func(ctx context.Context, args json.RawMessage) (any, error) {
+		func(ctx context.Context, args json.RawMessage, _ func(string)) (any, error) {
 			var input abortBuildInput
 			if err := json.Unmarshal(args, &input); err != nil {
 				return nil, fmt.Errorf("invalid arguments: %w", err)
@@ -679,7 +679,7 @@ func registerListResources(s *Server, teamFactory db.TeamFactory) {
 				"pipeline": map[string]any{"type": "string", "description": "Pipeline name"},
 			},
 		}),
-		func(ctx context.Context, args json.RawMessage) (any, error) {
+		func(ctx context.Context, args json.RawMessage, _ func(string)) (any, error) {
 			var input listResourcesInput
 			if err := json.Unmarshal(args, &input); err != nil {
 				return nil, fmt.Errorf("invalid arguments: %w", err)
@@ -732,7 +732,7 @@ func registerListResourceVersions(s *Server, teamFactory db.TeamFactory) {
 				"limit":    map[string]any{"type": "integer", "description": "Max versions to return (default 10)"},
 			},
 		}),
-		func(ctx context.Context, args json.RawMessage) (any, error) {
+		func(ctx context.Context, args json.RawMessage, _ func(string)) (any, error) {
 			var input listResourceVersionsInput
 			if err := json.Unmarshal(args, &input); err != nil {
 				return nil, fmt.Errorf("invalid arguments: %w", err)
@@ -785,7 +785,7 @@ func registerCheckResource(s *Server, teamFactory db.TeamFactory) {
 				"resource": map[string]any{"type": "string", "description": "Resource name"},
 			},
 		}),
-		func(ctx context.Context, args json.RawMessage) (any, error) {
+		func(ctx context.Context, args json.RawMessage, _ func(string)) (any, error) {
 			var input checkResourceInput
 			if err := json.Unmarshal(args, &input); err != nil {
 				return nil, fmt.Errorf("invalid arguments: %w", err)
@@ -842,7 +842,7 @@ func registerGetJob(s *Server, teamFactory db.TeamFactory) {
 				"job":      map[string]any{"type": "string", "description": "Job name"},
 			},
 		}),
-		func(ctx context.Context, args json.RawMessage) (any, error) {
+		func(ctx context.Context, args json.RawMessage, _ func(string)) (any, error) {
 			var input getJobInput
 			if err := json.Unmarshal(args, &input); err != nil {
 				return nil, fmt.Errorf("invalid arguments: %w", err)
@@ -899,7 +899,7 @@ func registerListTeams(s *Server, teamFactory db.TeamFactory) {
 			"type":       "object",
 			"properties": map[string]any{},
 		}),
-		func(ctx context.Context, args json.RawMessage) (any, error) {
+		func(ctx context.Context, args json.RawMessage, _ func(string)) (any, error) {
 			teams, err := teamFactory.GetTeams()
 			if err != nil {
 				return nil, fmt.Errorf("listing teams: %w", err)
@@ -932,7 +932,7 @@ func registerGetBuildPlan(s *Server, buildFactory db.BuildFactory) {
 				"build_id": map[string]any{"type": "integer", "description": "Build ID"},
 			},
 		}),
-		func(ctx context.Context, args json.RawMessage) (any, error) {
+		func(ctx context.Context, args json.RawMessage, _ func(string)) (any, error) {
 			var input getBuildPlanInput
 			if err := json.Unmarshal(args, &input); err != nil {
 				return nil, fmt.Errorf("invalid arguments: %w", err)
@@ -967,7 +967,7 @@ func registerGetInfo(s *Server, externalURL string, version string) {
 			"type":       "object",
 			"properties": map[string]any{},
 		}),
-		func(ctx context.Context, args json.RawMessage) (any, error) {
+		func(ctx context.Context, args json.RawMessage, _ func(string)) (any, error) {
 			return getInfoOutput{
 				Version: version,
 				URL:     externalURL,
@@ -1002,7 +1002,7 @@ func registerListDeprecatedScopes(s *Server, teamFactory db.TeamFactory) {
 				"resource": map[string]any{"type": "string", "description": "Resource name"},
 			},
 		}),
-		func(ctx context.Context, args json.RawMessage) (any, error) {
+		func(ctx context.Context, args json.RawMessage, _ func(string)) (any, error) {
 			var input listDeprecatedScopesInput
 			if err := json.Unmarshal(args, &input); err != nil {
 				return nil, fmt.Errorf("invalid arguments: %w", err)
@@ -1061,7 +1061,7 @@ func registerCopyResourceVersions(s *Server, teamFactory db.TeamFactory) {
 				"from_scope_id": map[string]any{"type": "integer", "description": "ID of the deprecated scope to copy versions from (get from list_deprecated_scopes)"},
 			},
 		}),
-		func(ctx context.Context, args json.RawMessage) (any, error) {
+		func(ctx context.Context, args json.RawMessage, _ func(string)) (any, error) {
 			var input copyResourceVersionsInput
 			if err := json.Unmarshal(args, &input); err != nil {
 				return nil, fmt.Errorf("invalid arguments: %w", err)
@@ -1122,7 +1122,7 @@ func registerListAgentWorkflows(s *Server, workflowsFactory db.AgentWorkflowsFac
 			"type":       "object",
 			"properties": map[string]any{},
 		}),
-		func(ctx context.Context, args json.RawMessage) (any, error) {
+		func(ctx context.Context, args json.RawMessage, _ func(string)) (any, error) {
 			// Single implementation shared with GET /api/v1/agent/workflows —
 			// the two surfaces must stay field-identical (and both cost two
 			// metadata queries, never a per-name YAML fetch).
@@ -1153,7 +1153,7 @@ func registerGetAgentWorkflow(s *Server, workflowsFactory db.AgentWorkflowsFacto
 				"version":  map[string]any{"type": "integer", "description": "Specific version to fetch (default: live version, or latest if none is live)"},
 			},
 		}),
-		func(ctx context.Context, args json.RawMessage) (any, error) {
+		func(ctx context.Context, args json.RawMessage, _ func(string)) (any, error) {
 			var input getAgentWorkflowInput
 			if err := json.Unmarshal(args, &input); err != nil {
 				return nil, fmt.Errorf("invalid arguments: %w", err)
@@ -1233,7 +1233,7 @@ func registerAgentCostRollup(s *Server, costLedgerFactory db.AgentCostLedgerFact
 				"until": map[string]any{"type": "string", "description": "End of window, RFC3339 or YYYY-MM-DD (default: unbounded)"},
 			},
 		}),
-		func(ctx context.Context, args json.RawMessage) (any, error) {
+		func(ctx context.Context, args json.RawMessage, _ func(string)) (any, error) {
 			var input agentCostRollupInput
 			if len(args) > 0 {
 				if err := json.Unmarshal(args, &input); err != nil {
@@ -1307,7 +1307,7 @@ func registerListPipelineRuns(s *Server, teamFactory db.TeamFactory, pipelineRun
 				"limit":    map[string]any{"type": "integer", "description": "Max runs to return (default 100)"},
 			},
 		}),
-		func(ctx context.Context, args json.RawMessage) (any, error) {
+		func(ctx context.Context, args json.RawMessage, _ func(string)) (any, error) {
 			var input listPipelineRunsInput
 			if err := json.Unmarshal(args, &input); err != nil {
 				return nil, fmt.Errorf("invalid arguments: %w", err)
@@ -1353,7 +1353,7 @@ func registerGetPipelineRun(s *Server, teamFactory db.TeamFactory, pipelineRunFa
 				"number":   map[string]any{"type": "integer", "description": "Run number"},
 			},
 		}),
-		func(ctx context.Context, args json.RawMessage) (any, error) {
+		func(ctx context.Context, args json.RawMessage, _ func(string)) (any, error) {
 			var input getPipelineRunInput
 			if err := json.Unmarshal(args, &input); err != nil {
 				return nil, fmt.Errorf("invalid arguments: %w", err)
