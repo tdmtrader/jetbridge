@@ -63,4 +63,34 @@ all =
                 Json.Decode.decodeString AT.decodeDispatchResult
                     """{ "run_id": 42, "pipeline_name": "agent-ticket-12" }"""
                     |> Expect.equal (Ok { runId = 42, pipelineName = "agent-ticket-12" })
+        , test "repoWebUrl resolves a bare GitHub slug" <|
+            \_ ->
+                AT.repoWebUrl "tdmtrader/jetbridge"
+                    |> Expect.equal (Just "https://github.com/tdmtrader/jetbridge")
+        , test "repoWebUrl strips .git from a full clone URL" <|
+            \_ ->
+                AT.repoWebUrl "https://github.com/tdmtrader/jetbridge.git"
+                    |> Expect.equal (Just "https://github.com/tdmtrader/jetbridge")
+        , test "repoWebUrl converts an SSH remote" <|
+            \_ ->
+                AT.repoWebUrl "git@github.com:tdmtrader/jetbridge.git"
+                    |> Expect.equal (Just "https://github.com/tdmtrader/jetbridge")
+        , test "repoWebUrl refuses a bare name it cannot resolve" <|
+            \_ ->
+                AT.repoWebUrl "jetbridge"
+                    |> Expect.equal Nothing
+        , test "compareUrl builds the target...branch diff link" <|
+            \_ ->
+                Json.Decode.decodeString AT.decodeDetail detailJson
+                    |> Result.toMaybe
+                    |> Maybe.andThen (\d -> AT.compareUrl d.ticket)
+                    |> Expect.equal
+                        (Just "https://github.com/concourse/concourse/compare/main...agent/ticket-12")
+        , test "compareUrl is Nothing without a harvest branch" <|
+            \_ ->
+                Json.Decode.decodeString AT.decodeTicket
+                    """{ "id": 2, "repo": "tdmtrader/jetbridge", "target_branch": "main", "state": "queued" }"""
+                    |> Result.toMaybe
+                    |> Maybe.andThen AT.compareUrl
+                    |> Expect.equal Nothing
         ]

@@ -175,7 +175,45 @@ content model =
                 model.tickets
                     |> List.filter (\t -> not (List.member t.state sectionOrder))
         in
-        Html.div [] (knownSections ++ leftoverSection model.costByTicket leftover)
+        Html.div []
+            (knownSections
+                ++ leftoverSection model.costByTicket leftover
+                ++ unattributedFooter model.costByTicket
+            )
+
+
+{-| Spend the cost rollup reports outside any ticket (per-push CI reviews,
+platform runs — the rollup's empty-string key). Without this line the queue
+page silently under-reports what the platform actually costs.
+-}
+unattributedFooter : Dict String Float -> List (Html Message)
+unattributedFooter costs =
+    case Dict.get "" costs of
+        Just cost ->
+            if cost > 0 then
+                [ Html.div
+                    [ id "unattributed-cost"
+                    , style "display" "flex"
+                    , style "gap" "12px"
+                    , style "margin-top" "24px"
+                    , style "padding" "8px 12px"
+                    , style "border-top" "1px solid #3d3c3c"
+                    , style "font-family" "monospace"
+                    , style "font-size" "12px"
+                    , style "color" "#9aa39b"
+                    ]
+                    [ Html.span [ style "flex" "1" ]
+                        [ Html.text "unattributed (no ticket: CI reviews, platform runs, all time)" ]
+                    , Html.span [ style "color" "#b0b0b0" ]
+                        [ Html.text ("$" ++ formatUsd cost) ]
+                    ]
+                ]
+
+            else
+                []
+
+        Nothing ->
+            []
 
 
 leftoverSection : Dict String Float -> List AgentTicket.Ticket -> List (Html Message)
@@ -260,6 +298,17 @@ ticketRow costs t =
             , style "white-space" "nowrap"
             ]
             [ Html.text t.title ]
+        , if t.branch == "" then
+            Html.text ""
+
+          else
+            Html.span
+                [ class "agent-ticket-branch"
+                , style "font-family" "monospace"
+                , style "font-size" "12px"
+                , style "color" "#7aa37a"
+                ]
+                [ Html.text t.branch ]
         , Html.span
             [ style "font-family" "monospace", style "font-size" "12px", style "color" "#7a7a7a" ]
             [ Html.text t.workflowName ]

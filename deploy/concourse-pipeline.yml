@@ -108,14 +108,15 @@ jobs:
           "threshold": 7.0
         },
         "metadata": {
-          "repo": "jetbridge",
+          "repo": "<the clone URL from `git -C repo config --get remote.origin.url`>",
           "commit": "<the full SHA from `git -C repo rev-parse HEAD`>"
         }
       }
 
       The metadata object is REQUIRED — the publish API rejects a review without
       metadata.repo and metadata.commit. Fill metadata.commit with the actual
-      HEAD SHA of the repo input.
+      HEAD SHA of the repo input. Fill metadata.repo with the full remote URL
+      (not a bare name): the web UI builds clickable file:line links from it.
 
       If a concern cannot be proven with a test, include it in observations, not proven_issues.
       Run any generated tests to verify they actually fail against the current code before reporting.

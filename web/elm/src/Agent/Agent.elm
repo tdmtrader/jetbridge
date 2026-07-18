@@ -62,6 +62,8 @@ type alias Model =
         , costError : Maybe String
         , credentials : Maybe (List Agent.CredentialStatus)
         , credentialsError : Maybe String
+        , platformCredentials : Maybe (List Agent.CredentialStatus)
+        , unattributedUsd : Maybe Float
         , principals : Maybe (List Agent.Principal)
         , principalsError : Maybe String
         , mintName : String
@@ -86,6 +88,8 @@ init =
       , costError = Nothing
       , credentials = Nothing
       , credentialsError = Nothing
+      , platformCredentials = Nothing
+      , unattributedUsd = Nothing
       , principals = Nothing
       , principalsError = Nothing
       , mintName = ""
@@ -102,7 +106,9 @@ init =
     , [ FetchAgentRunMetrics
       , FetchAgentWorkflows
       , FetchAgentCostRollup
+      , FetchAgentTicketCosts
       , FetchAgentCredentials
+      , FetchAgentPlatformCredentials
       , FetchAgentPrincipals
       ]
     )
@@ -129,7 +135,23 @@ handleCallback callback ( model, effects ) =
             ( { model | workflowsError = Just (errorMessage "workflows" err) }, effects )
 
         AgentCostRollupFetched (Ok costRollup) ->
-            ( { model | costRollup = Just costRollup, costError = Nothing }, effects )
+            -- The console fires both the by-day rollup (the Costs table) and
+            -- the by-ticket rollup (for the unattributed bucket); they share
+            -- one callback and are told apart by the response's group_by.
+            if costRollup.groupBy == "ticket" then
+                ( { model
+                    | unattributedUsd =
+                        costRollup.rows
+                            |> List.filter (\row -> row.key == "")
+                            |> List.map .costUsd
+                            |> List.sum
+                            |> Just
+                  }
+                , effects
+                )
+
+            else
+                ( { model | costRollup = Just costRollup, costError = Nothing }, effects )
 
         AgentCostRollupFetched (Err err) ->
             ( { model | costError = Just (errorMessage "costs" err) }, effects )
@@ -139,6 +161,13 @@ handleCallback callback ( model, effects ) =
 
         AgentCredentialsFetched (Err err) ->
             ( { model | credentialsError = Just (errorMessage "credentials" err) }, effects )
+
+        AgentPlatformCredentialsFetched (Ok credentials) ->
+            ( { model | platformCredentials = Just credentials }, effects )
+
+        AgentPlatformCredentialsFetched (Err _) ->
+            -- Non-admins get a 403 here; the platform row is simply omitted.
+            ( { model | platformCredentials = Nothing }, effects )
 
         AgentPrincipalsFetched (Ok principals) ->
             ( { model | principals = Just principals, principalsError = Nothing }, effects )
@@ -329,7 +358,9 @@ handleDelivery delivery ( model, effects ) =
                 ++ [ FetchAgentRunMetrics
                    , FetchAgentWorkflows
                    , FetchAgentCostRollup
+                   , FetchAgentTicketCosts
                    , FetchAgentCredentials
+                   , FetchAgentPlatformCredentials
                    , FetchAgentPrincipals
                    ]
             )
@@ -796,6 +827,7 @@ costsSection model =
                     ++ [ costSummaryLine rollup.summary
                        , dailyCapGauge rollup.summary
                        , costTable rollup.rows
+                       , unattributedLine model.unattributedUsd
                        ]
 
 
@@ -803,7 +835,7 @@ costSummaryLine : Agent.CostSummary -> Html Message
 costSummaryLine summary =
     let
         spent =
-            "today: $" ++ formatUsd summary.dailySpentUsd ++ " spent"
+            "today (UTC): $" ++ formatUsd summary.dailySpentUsd ++ " spent"
 
         cap =
             if summary.dailyCapUsd > 0 then
@@ -846,7 +878,16 @@ exhausted. Complements — does not replace — the exact-text summary line abov
 dailyCapGauge : Agent.CostSummary -> Html Message
 dailyCapGauge summary =
     if summary.dailyCapUsd <= 0 then
-        Html.text ""
+        -- An uncapped ledger deserves an explicit statement, not silence:
+        -- otherwise "no gauge" is indistinguishable from "under the cap".
+        Html.div
+            [ class "agent-daily-cap-none"
+            , style "margin" "0 0 12px 0"
+            , style "font-family" "monospace"
+            , style "font-size" "12px"
+            , style "color" subtleColor
+            ]
+            [ Html.text "no daily cap set — spend is unbounded (web flag: --agent-daily-budget-usd)" ]
 
     else
         let
@@ -875,6 +916,31 @@ dailyCapGauge summary =
             ]
 
 
+{-| Spend the by-ticket rollup reports under no ticket at all (the CI review
+runs, harvest pushes, platform housekeeping — the rollup's empty-string key).
+It is a large share of real spend and would otherwise appear nowhere.
+-}
+unattributedLine : Maybe Float -> Html Message
+unattributedLine maybeUsd =
+    case maybeUsd of
+        Just usd ->
+            if usd > 0 then
+                Html.div
+                    [ class "agent-unattributed-cost"
+                    , style "margin" "8px 0 0 0"
+                    , style "font-family" "monospace"
+                    , style "font-size" "12px"
+                    , style "color" mutedColor
+                    ]
+                    [ Html.text ("unattributed (no ticket, all time): $" ++ formatUsd usd) ]
+
+            else
+                Html.text ""
+
+        Nothing ->
+            Html.text ""
+
+
 costTable : List Agent.CostRow -> Html Message
 costTable rows =
     if List.isEmpty rows then
@@ -894,7 +960,7 @@ costTable rows =
 costHeaderRow : Html Message
 costHeaderRow =
     Html.tr []
-        [ tableHeaderCell "left" "day"
+        [ tableHeaderCell "left" "day (UTC)"
         , tableHeaderCell "right" "entries"
         , tableHeaderCell "right" "tokens (in+out)"
         , tableHeaderCell "right" "turns"
@@ -939,8 +1005,10 @@ tableCell align content =
         [ Html.text content ]
 
 
-{-| Humanize an optional epoch timestamp as a UTC yyyy-mm-dd date, or "—"
-when absent. Deliberately timezone-independent (UTC) so it is deterministic.
+{-| Humanize an optional epoch timestamp as a UTC yyyy-mm-dd hh:mm, or "—"
+when absent. Deliberately timezone-independent (UTC) so it is deterministic;
+the minutes matter on an ops console where "which of today's runs came first"
+is a real question.
 -}
 formatPosix : Maybe Time.Posix -> String
 formatPosix maybe =
@@ -954,6 +1022,10 @@ formatPosix maybe =
                 ++ pad2 (monthNumber (Time.toMonth Time.utc posix))
                 ++ "-"
                 ++ pad2 (Time.toDay Time.utc posix)
+                ++ " "
+                ++ pad2 (Time.toHour Time.utc posix)
+                ++ ":"
+                ++ pad2 (Time.toMinute Time.utc posix)
 
 
 pad2 : Int -> String
@@ -1008,7 +1080,8 @@ monthNumber month =
 credentialsSection : Model -> Html Message
 credentialsSection model =
     sectionBlock "Credentials" <|
-        mutedLine "set or rotate with: fly agent auth"
+        platformCredentialsBlock model.platformCredentials
+            ++ mutedLine "set or rotate with: fly agent auth"
             :: (case model.credentials of
                     Nothing ->
                         case model.credentialsError of
@@ -1026,6 +1099,41 @@ credentialsSection model =
                         staleDataWarning model.credentialsError
                             ++ [ credentialsTable creds ]
                )
+
+
+{-| The vaulted platform credential dispatched runs actually authenticate
+with. Fetched with `?user=platform` (admin-only; a 403 hides the block), so
+the section no longer claims "no credentials stored" while dispatch works.
+-}
+platformCredentialsBlock : Maybe (List Agent.CredentialStatus) -> List (Html Message)
+platformCredentialsBlock maybeCreds =
+    case maybeCreds of
+        Just (cred :: rest) ->
+            [ Html.div
+                [ class "agent-platform-credential"
+                , style "font-family" "monospace"
+                , style "font-size" "12px"
+                , style "color" Colors.text
+                , style "margin" "0 0 8px 0"
+                ]
+                (List.map
+                    (\c ->
+                        Html.div []
+                            [ Html.text
+                                ("platform: "
+                                    ++ c.kind
+                                    ++ " (expires "
+                                    ++ formatPosix c.expiresAt
+                                    ++ ") — used by dispatched runs"
+                                )
+                            ]
+                    )
+                    (cred :: rest)
+                )
+            ]
+
+        _ ->
+            []
 
 
 credentialsTable : List Agent.CredentialStatus -> Html Message

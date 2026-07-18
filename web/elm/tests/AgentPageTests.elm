@@ -277,7 +277,7 @@ all =
                         (Callback.AgentCostRollupFetched (Ok sampleRollup))
                     |> Tuple.first
                     |> Common.queryView
-                    |> Query.has [ text "today: $12.34 spent / $20.00 cap ($7.66 left)" ]
+                    |> Query.has [ text "today (UTC): $12.34 spent / $20.00 cap ($7.66 left)" ]
         , test "renders a daily-cap gauge when a cap is configured" <|
             \_ ->
                 Common.init "/agent"
@@ -286,6 +286,90 @@ all =
                     |> Tuple.first
                     |> Common.queryView
                     |> Query.has [ class "agent-daily-cap-gauge" ]
+        , test "states that spend is unbounded when no daily cap is set" <|
+            \_ ->
+                Common.init "/agent"
+                    |> Application.handleCallback
+                        (Callback.AgentCostRollupFetched
+                            (Ok
+                                { sampleRollup
+                                    | summary =
+                                        { dailyCapUsd = 0
+                                        , dailySpentUsd = 12.34
+                                        , dailyRemainingUsd = 0
+                                        , dailyExhausted = False
+                                        }
+                                }
+                            )
+                        )
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Query.has [ class "agent-daily-cap-none" ]
+        , test "surfaces the unattributed bucket from the by-ticket rollup" <|
+            \_ ->
+                Common.init "/agent"
+                    |> Application.handleCallback
+                        (Callback.AgentCostRollupFetched (Ok sampleRollup))
+                    |> Tuple.first
+                    |> Application.handleCallback
+                        (Callback.AgentCostRollupFetched
+                            (Ok
+                                { sampleRollup
+                                    | groupBy = "ticket"
+                                    , rows =
+                                        [ { key = ""
+                                          , entries = 5
+                                          , inputTokens = 10
+                                          , outputTokens = 20
+                                          , turns = 30
+                                          , costUsd = 11.08
+                                          }
+                                        , { key = "12"
+                                          , entries = 1
+                                          , inputTokens = 1
+                                          , outputTokens = 2
+                                          , turns = 3
+                                          , costUsd = 0.4
+                                          }
+                                        ]
+                                }
+                            )
+                        )
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Query.has [ text "unattributed (no ticket, all time): $11.08" ]
+        , test "the by-ticket rollup does not clobber the by-day cost table" <|
+            \_ ->
+                Common.init "/agent"
+                    |> Application.handleCallback
+                        (Callback.AgentCostRollupFetched (Ok sampleRollup))
+                    |> Tuple.first
+                    |> Application.handleCallback
+                        (Callback.AgentCostRollupFetched
+                            (Ok { sampleRollup | groupBy = "ticket", rows = [] })
+                        )
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Query.find [ class "agent-cost-row" ]
+                    |> Query.has [ containing [ text "$3.50" ] ]
+        , test "shows the platform credential dispatched runs authenticate with" <|
+            \_ ->
+                Common.init "/agent"
+                    |> Application.handleCallback
+                        (Callback.AgentPlatformCredentialsFetched
+                            (Ok
+                                [ { kind = "anthropic_oauth"
+                                  , expiresAt = Nothing
+                                  , lastVerifiedAt = Nothing
+                                  , jiraAccountId = ""
+                                  }
+                                ]
+                            )
+                        )
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Query.find [ class "agent-platform-credential" ]
+                    |> Query.has [ text "platform: anthropic_oauth" ]
         , test "shows an admin-only message when workflows fetch is forbidden" <|
             \_ ->
                 Common.init "/agent"

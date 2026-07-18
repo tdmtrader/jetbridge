@@ -30,7 +30,7 @@ import Concourse.AgentTicket as AgentTicket
 import Dict exposing (Dict)
 import EffectTransformer exposing (ET)
 import Html exposing (Html)
-import Html.Attributes exposing (class, id, placeholder, style, value)
+import Html.Attributes exposing (class, href, id, placeholder, style, value)
 import Html.Events exposing (onClick, onInput)
 import Login.Login as Login
 import Message.Callback exposing (Callback(..))
@@ -357,6 +357,7 @@ content session model =
             Just detail ->
                 Html.div []
                     [ header model detail.ticket
+                    , provenanceLine detail.ticket
                     , actionErrorBanner model
                     , lifecycleBar model detail.ticket
                     , budgetBar detail.ticket model.runMetrics
@@ -387,6 +388,59 @@ header model ticket =
           else
             actionButton "secondary" ClickAgentTicketEdit "Edit"
         ]
+
+
+{-| Where this ticket's work lives: the repo, and — once a harvest branch
+exists — a direct link to the diff a reviewer needs. The compare link is the
+primary affordance for `needs_review`; it degrades to plain text when the
+repo field can't be resolved to a web URL.
+-}
+provenanceLine : AgentTicket.Ticket -> Html Message
+provenanceLine ticket =
+    if ticket.repo == "" && ticket.branch == "" then
+        Html.text ""
+
+    else
+        let
+            linkStyle =
+                [ style "color" "#7aa37a", style "text-decoration" "none" ]
+
+            repoPart =
+                case AgentTicket.repoWebUrl ticket.repo of
+                    Just url ->
+                        [ Html.a (href url :: linkStyle) [ Html.text ticket.repo ] ]
+
+                    Nothing ->
+                        if ticket.repo == "" then
+                            []
+
+                        else
+                            [ Html.text ticket.repo ]
+
+            branchPart =
+                if ticket.branch == "" then
+                    []
+
+                else
+                    case AgentTicket.compareUrl ticket of
+                        Just url ->
+                            [ Html.text (" · branch " ++ ticket.branch ++ " — ")
+                            , Html.a
+                                (class "agent-ticket-compare-link" :: href url :: linkStyle)
+                                [ Html.text ("review diff vs " ++ ticket.targetBranch) ]
+                            ]
+
+                        Nothing ->
+                            [ Html.text (" · branch " ++ ticket.branch) ]
+        in
+        Html.div
+            [ id "ticket-provenance"
+            , style "font-family" "monospace"
+            , style "font-size" "12px"
+            , style "color" "#9aa39b"
+            , style "margin" "2px 0 8px 0"
+            ]
+            (repoPart ++ branchPart)
 
 
 stateBadge : String -> Html Message
@@ -753,9 +807,18 @@ runRow metrics buildId =
         status =
             forBuild |> List.head |> Maybe.map .status |> Maybe.withDefault ""
     in
-    Html.div
-        [ style "display" "flex", style "align-items" "center", style "gap" "10px", style "padding" "4px 0", style "border-bottom" "1px solid #2a2929" ]
-        [ Html.span [ style "font-family" "monospace", style "color" "#9aa39b", style "min-width" "80px" ]
+    Html.a
+        [ class "agent-ticket-run-row"
+        , href (Routes.toString (Routes.OneOffBuild { id = buildId, highlight = Routes.HighlightNothing }))
+        , style "display" "flex"
+        , style "align-items" "center"
+        , style "gap" "10px"
+        , style "padding" "4px 0"
+        , style "border-bottom" "1px solid #2a2929"
+        , style "color" "inherit"
+        , style "text-decoration" "none"
+        ]
+        [ Html.span [ style "font-family" "monospace", style "color" "#7aa37a", style "min-width" "80px" ]
             [ Html.text ("build " ++ String.fromInt buildId) ]
         , Html.span [ style "color" "#b0b0b0", style "flex" "1", style "font-size" "12px" ] [ Html.text status ]
         , Html.span [ style "font-family" "monospace", style "color" "#b0b0b0" ] [ Html.text ("$" ++ formatUsd cost) ]

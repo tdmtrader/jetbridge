@@ -222,6 +222,7 @@ type Effect
     | FetchAgentWorkflows
     | FetchAgentCostRollup
     | FetchAgentCredentials
+    | FetchAgentPlatformCredentials
     | FetchAgentPrincipals
     | CreateAgentPrincipal
         { name : String
@@ -826,6 +827,16 @@ runEffect effect key csrfToken =
                 |> Api.expectJson Concourse.Agent.decodeCredentialStatuses
                 |> Api.request
                 |> Task.attempt AgentCredentialsFetched
+
+        FetchAgentPlatformCredentials ->
+            let
+                base =
+                    Api.get Endpoints.AgentCredentialsStatus
+            in
+            { base | query = [ Url.Builder.string "user" "platform" ] }
+                |> Api.expectJson Concourse.Agent.decodeCredentialStatuses
+                |> Api.request
+                |> Task.attempt AgentPlatformCredentialsFetched
 
         FetchAgentPrincipals ->
             Api.get Endpoints.AgentPrincipalsList

@@ -1312,7 +1312,8 @@ agentTicketChip costs t =
         , style "color" "inherit"
         , style "text-decoration" "none"
         , style "font-size" "12px"
-        , style "max-width" "260px"
+        , style "max-width" "460px"
+        , Html.Attributes.title t.title
         ]
         [ case AgentBadge.fromApiToken t.state of
             Just status ->

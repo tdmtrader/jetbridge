@@ -112,4 +112,49 @@ all =
                     |> Tuple.first
                     |> Common.queryView
                     |> Query.has [ text "Couldn't load tickets." ]
+        , test "shows the branch on rows that have a harvest branch" <|
+            \_ ->
+                Common.init "/agent-tickets"
+                    |> Application.handleCallback
+                        (Callback.AgentTicketsFetched
+                            (Ok
+                                (ticketsFrom
+                                    """
+                                    [ { "id": 12, "title": "ship fly archives", "state": "needs_review"
+                                      , "workflow_name": "develop", "created_at": 200, "branch": "agent/ticket-12" }
+                                    ]
+                                    """
+                                )
+                            )
+                        )
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Query.find [ class "agent-ticket-branch" ]
+                    |> Query.has [ text "agent/ticket-12" ]
+        , test "surfaces unattributed spend as a footer line" <|
+            \_ ->
+                Common.init "/agent-tickets"
+                    |> Application.handleCallback (Callback.AgentTicketsFetched (Ok sampleTickets))
+                    |> Tuple.first
+                    |> Application.handleCallback
+                        (Callback.AgentCostRollupFetched
+                            (Ok
+                                { groupBy = "ticket"
+                                , summary =
+                                    { dailyCapUsd = 0
+                                    , dailySpentUsd = 0
+                                    , dailyRemainingUsd = 0
+                                    , dailyExhausted = False
+                                    }
+                                , rows =
+                                    [ { key = "", entries = 5, inputTokens = 0, outputTokens = 0, turns = 0, costUsd = 11.08 }
+                                    , { key = "12", entries = 1, inputTokens = 0, outputTokens = 0, turns = 0, costUsd = 0.18 }
+                                    ]
+                                }
+                            )
+                        )
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Query.find [ Test.Html.Selector.id "unattributed-cost" ]
+                    |> Query.has [ containing [ text "$11.08" ] ]
         ]

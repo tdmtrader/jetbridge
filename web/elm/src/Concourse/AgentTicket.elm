@@ -4,11 +4,13 @@ module Concourse.AgentTicket exposing
     , Spec
     , Task
     , Ticket
+    , compareUrl
     , decodeDetail
     , decodeDispatchResult
     , decodeSpec
     , decodeTask
     , decodeTicket
+    , repoWebUrl
     )
 
 {-| Client-side view of the agent-ticket API (agent/api/tickets/types.go).
@@ -151,3 +153,60 @@ decodeDispatchResult =
     Json.Decode.succeed DispatchResult
         |> andMap (defaultTo 0 <| Json.Decode.field "run_id" Json.Decode.int)
         |> andMap (defaultTo "" <| Json.Decode.field "pipeline_name" Json.Decode.string)
+
+
+{-| Normalize the ticket's `repo` field to a browsable web URL. The field
+arrives in three shapes: a full clone URL (`https://host/org/name.git`), an
+SSH form (`git@host:org/name.git`), or a bare GitHub slug (`org/name` — what
+`fly agent tickets create` records today). Anything else yields Nothing so
+callers fall back to plain text instead of a broken link.
+-}
+repoWebUrl : String -> Maybe String
+repoWebUrl repo =
+    let
+        stripGit url =
+            if String.endsWith ".git" url then
+                String.dropRight 4 url
+
+            else
+                url
+    in
+    if String.startsWith "http://" repo || String.startsWith "https://" repo then
+        Just (stripGit repo)
+
+    else if String.startsWith "git@" repo then
+        case String.split ":" (String.dropLeft 4 repo) of
+            [ host, path ] ->
+                Just (stripGit ("https://" ++ host ++ "/" ++ path))
+
+            _ ->
+                Nothing
+
+    else
+        case String.split "/" repo of
+            [ org, name ] ->
+                if org /= "" && name /= "" && not (String.contains " " repo) then
+                    Just (stripGit ("https://github.com/" ++ org ++ "/" ++ name))
+
+                else
+                    Nothing
+
+            _ ->
+                Nothing
+
+
+{-| GitHub-style compare URL between the ticket's target branch and its
+harvest branch — the diff a human reviews before merging. Nothing when either
+branch is unknown or the repo can't be resolved to a web URL.
+-}
+compareUrl : Ticket -> Maybe String
+compareUrl ticket =
+    if ticket.branch == "" || ticket.targetBranch == "" then
+        Nothing
+
+    else
+        repoWebUrl ticket.repo
+            |> Maybe.map
+                (\base ->
+                    base ++ "/compare/" ++ ticket.targetBranch ++ "..." ++ ticket.branch
+                )
