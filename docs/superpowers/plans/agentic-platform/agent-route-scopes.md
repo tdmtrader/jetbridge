@@ -40,7 +40,7 @@ Source of truth for tiers: 00-shared-contracts.md §4.1/§4.2.
 | GetAgentFeedbackSummary | GET /api/v1/agent/feedback/summary | authorized viewer (main) | — | existing | live (same move) |
 | ClassifyAgentVerdict | POST /api/v1/agent/feedback/classify | authorized member (main) | — | existing | live (same move) |
 | GetAgentReviewFindings | GET /api/v1/agent/reviews/:commit/findings | authorized viewer (main) | — | existing | live (same move) |
-| GetBuildAgentReviews | GET /api/v1/builds/:build_id/agent-reviews | build-read access | — | existing | live (unchanged) |
+| GetBuildAgentReviews | GET /api/v1/builds/:build_id/agent-reviews | build-read, BuildEvents tier (pipeline AND job public, or team) | — | existing | live (2026-07-18: moved off the pipeline-only AnyJobHandler tier — findings are content-bearing like build logs) |
 | ListTeamAgentReviews | GET /api/v1/teams/:team_name/agent-reviews | authorized viewer (:team_name) | — | existing | live (unchanged) |
 | SetAgentUserCredential | PUT /api/v1/agent/user-credentials | authenticated (self only) | — | credentials-and-budgets | planned (wave 1) |
 | GetAgentUserCredentialStatus | GET /api/v1/agent/user-credentials | authenticated (self only) | — | credentials-and-budgets | planned (wave 1) |
@@ -59,6 +59,7 @@ Source of truth for tiers: 00-shared-contracts.md §4.1/§4.2.
 | DispatchAgentTicket | POST /api/v1/agent/tickets/:ticket_id/dispatch | authorized member (main) — deliberately NO principal tier (manual trigger is the budget gate while admission is deferred) | — | dispatch (manual slice) | live (manual-dispatch slice) |
 | SubmitAgentRunMetrics | POST /api/v1/agent/metrics | principal | metrics:write | agent-step | planned (wave 2) |
 | ListAgentRunMetrics | GET /api/v1/agent/tickets/:ticket_id/metrics | authorized viewer (main) | — | agent-step | planned (wave 2) |
+| ListBuildAgentRunMetrics | GET /api/v1/builds/:build_id/agent-metrics | build-read, BuildEvents tier (pipeline AND job public, or team) | — | agent-step (D1) | live (2026-07-18: same tier as GetBuildAgentReviews — run Summary/Results are content-bearing) |
 | AskAgentQuestion | POST /api/v1/agent/tickets/:ticket_id/questions | principal | tickets:write | platform-mcp-hitl | planned (wave 3) |
 | GetAgentQuestion | GET /api/v1/agent/tickets/:ticket_id/questions/:question_id | principal; also authorized viewer (main) | tickets:read | platform-mcp-hitl | planned (wave 3) |
 | AnswerAgentQuestion | PUT /api/v1/agent/tickets/:ticket_id/questions/:question_id/answer | authorized member (main); also principal | questions:answer (timeout resolution only) | platform-mcp-hitl | planned (wave 3) |
