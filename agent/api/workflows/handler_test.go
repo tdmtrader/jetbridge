@@ -182,3 +182,64 @@ func TestPromote(t *testing.T) {
 		t.Errorf("unknown version status = %d, want 404", w.Code)
 	}
 }
+
+func jsonRequest(path string, params url.Values, body string) *http.Request {
+	r := request("POST", path, params, body)
+	r.Header.Set("Content-Type", "application/json")
+	return r
+}
+
+const manifestBody = `{"files": {
+  "workflow.yml": "schema_version: 2\nname: wf\ndescription: manifest import\nskills: [tdd]\nprompt_files:\n  work: prompts/work.md\nsteps:\n- agent: work\n  prompt: work\n  outputs: [workspace]\n",
+  "prompts/work.md": "Do the work.",
+  "skills/tdd/SKILL.md": "# tdd"
+}}`
+
+func TestImportManifestBody(t *testing.T) {
+	h, _ := newHandler(t)
+
+	w := httptest.NewRecorder()
+	h.Import(w, jsonRequest("/api/v1/agent/workflows/wf/versions",
+		url.Values{":workflow_name": {"wf"}}, manifestBody))
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var def workflow.Definition
+	if err := json.Unmarshal(w.Body.Bytes(), &def); err != nil {
+		t.Fatal(err)
+	}
+	if def.Version != 1 || def.Config.SkillFiles["skills/tdd/SKILL.md"] == "" {
+		t.Fatalf("manifest not compiled: %+v", def)
+	}
+}
+
+func TestImportManifestBodyRejections(t *testing.T) {
+	h, _ := newHandler(t)
+
+	cases := map[string]struct {
+		body string
+		code int
+	}{
+		"malformed json":     {"{not json", http.StatusBadRequest},
+		"empty files":        {`{"files": {}}`, http.StatusBadRequest},
+		"missing skill file": {`{"files": {"workflow.yml": "schema_version: 2\nname: wf\nskills: [ghost]\nprompts:\n  work: w\nsteps:\n- agent: work\n  prompt: work\n  outputs: [workspace]\n"}}`, http.StatusBadRequest},
+	}
+	for name, tc := range cases {
+		w := httptest.NewRecorder()
+		h.Import(w, jsonRequest("/api/v1/agent/workflows/wf/versions",
+			url.Values{":workflow_name": {"wf"}}, tc.body))
+		if w.Code != tc.code {
+			t.Errorf("%s: expected %d, got %d: %s", name, tc.code, w.Code, w.Body.String())
+		}
+	}
+}
+
+func TestImportRawYAMLStillWorks(t *testing.T) {
+	h, _ := newHandler(t)
+	w := httptest.NewRecorder()
+	h.Import(w, request("POST", "/api/v1/agent/workflows/wf/versions",
+		url.Values{":workflow_name": {"wf"}}, validYAML))
+	if w.Code != http.StatusOK {
+		t.Fatalf("raw path regressed: %d %s", w.Code, w.Body.String())
+	}
+}

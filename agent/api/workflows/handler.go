@@ -6,12 +6,17 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/concourse/concourse/agent/workflow"
 	"github.com/concourse/concourse/atc/api/accessor"
 )
 
 const maxDefinitionBytes = 1 << 20 // 1 MiB
+
+// maxManifestRequestBytes bounds the JSON manifest envelope: 10 MiB of
+// content (workflow.MaxManifestBytes) plus JSON-encoding overhead.
+const maxManifestRequestBytes = 12 << 20
 
 // Handler serves the agent workflow-definition API (contracts §4.2:
 // ListAgentWorkflows, ListAgentWorkflowVersions, GetAgentWorkflowVersion,
@@ -126,11 +131,49 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 }
 
 // Import handles POST /api/v1/agent/workflows/:workflow_name/versions.
-// The request body is the raw definition YAML; the response is the
-// stored Definition (200 both for a new version and an idempotent
+// An application/json body is a source manifest ({"files": {path:
+// content}}, design 2026-07-17 §2); any other Content-Type is the raw
+// definition YAML — the single-file degenerate case. The response is
+// the stored Definition (200 both for a new version and an idempotent
 // content-hash hit).
 func (h *Handler) Import(w http.ResponseWriter, r *http.Request) {
 	name := r.FormValue(":workflow_name")
+
+	if strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
+		raw, err := io.ReadAll(io.LimitReader(r.Body, maxManifestRequestBytes+1))
+		if err != nil {
+			http.Error(w, "failed to read request body", http.StatusBadRequest)
+			return
+		}
+		if len(raw) > maxManifestRequestBytes {
+			http.Error(w, "manifest exceeds 12 MiB", http.StatusRequestEntityTooLarge)
+			return
+		}
+		var body struct {
+			Files workflow.Manifest `json:"files"`
+		}
+		if err := json.Unmarshal(raw, &body); err != nil {
+			http.Error(w, "malformed manifest body: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		if len(body.Files) == 0 {
+			http.Error(w, `manifest body must carry a non-empty "files" map`, http.StatusBadRequest)
+			return
+		}
+		def, err := h.store.ImportManifest(name, body.Files, requestUser(r))
+		if err != nil {
+			var inv workflow.InvalidDefinitionError
+			if errors.As(err, &inv) {
+				http.Error(w, inv.Error(), http.StatusBadRequest)
+				return
+			}
+			http.Error(w, "failed to import workflow", http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, http.StatusOK, def)
+		return
+	}
+
 	raw, err := io.ReadAll(io.LimitReader(r.Body, maxDefinitionBytes+1))
 	if err != nil {
 		http.Error(w, "failed to read request body", http.StatusBadRequest)
