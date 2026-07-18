@@ -37,9 +37,16 @@ type workflowSummary struct {
 }
 
 func agentAPIRequest(target rc.Target, method, path string, body io.Reader) (*http.Response, error) {
+	return agentAPIRequestWithType(target, method, path, "", body)
+}
+
+func agentAPIRequestWithType(target rc.Target, method, path, contentType string, body io.Reader) (*http.Response, error) {
 	req, err := http.NewRequest(method, target.URL()+path, body)
 	if err != nil {
 		return nil, err
+	}
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
 	}
 	// target.Client().HTTPClient() carries the target's auth transport.
 	return target.Client().HTTPClient().Do(req)
@@ -165,13 +172,22 @@ func (command *WorkflowsShowCommand) Execute([]string) error {
 	}
 	fmt.Fprintf(os.Stderr, "# %s version %d  hash %s  live=%v\n", def.Name, def.Version, def.ContentHash, def.Live)
 	fmt.Print(def.RawYAML)
+	// Manifest-backed definitions get a source summary (per-file sizes)
+	// instead of a tree dump; stderr keeps stdout pipeable YAML.
+	if len(def.SourceManifest) > 1 {
+		fmt.Fprintf(os.Stderr, "# source files (%d):\n", len(def.SourceManifest))
+		for _, p := range def.SourceManifest.Paths() {
+			fmt.Fprintf(os.Stderr, "#   %-48s %7d bytes\n", p, len(def.SourceManifest[p]))
+		}
+	}
 	return nil
 }
 
 type WorkflowsImportCommand struct {
 	Args struct {
-		File string `positional-arg-name:"FILE" required:"true" description:"Path to the workflow definition YAML"`
+		Path string `positional-arg-name:"PATH" required:"true" description:"Workflow definition YAML file, a workflow source directory, or a directory of workflow directories"`
 	} `positional-args:"yes"`
+	SetLive bool `long:"set-live" description:"Promote each imported version live immediately (auto-promote deploy pipelines; manual set-live stays the default)"`
 }
 
 func (command *WorkflowsImportCommand) Execute([]string) error {
@@ -180,7 +196,64 @@ func (command *WorkflowsImportCommand) Execute([]string) error {
 		return err
 	}
 
-	raw, err := os.ReadFile(command.Args.File)
+	info, err := os.Stat(command.Args.Path)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return importWorkflowFile(target, command.Args.Path, command.SetLive)
+	}
+
+	dirs, err := workflow.DiscoverWorkflowDirs(command.Args.Path)
+	if err != nil {
+		return err
+	}
+	// Each import is independent and idempotent: a failure leaves the
+	// others in place and a re-run converges (design 2026-07-17 §5).
+	for _, dir := range dirs {
+		if err := importWorkflowDir(target, dir, command.SetLive); err != nil {
+			return fmt.Errorf("%s: %w", dir, err)
+		}
+	}
+	return nil
+}
+
+func importWorkflowDir(target rc.Target, dir string, setLive bool) error {
+	m, err := workflow.ManifestFromDir(dir)
+	if err != nil {
+		return err
+	}
+	// Compile client-side first: same validation the server runs, but
+	// the error message points at local files.
+	cfg, err := workflow.Compile(m)
+	if err != nil {
+		return err
+	}
+
+	payload, err := json.Marshal(map[string]any{"files": m})
+	if err != nil {
+		return err
+	}
+	resp, err := agentAPIRequestWithType(target, "POST",
+		"/api/v1/agent/workflows/"+url.PathEscape(cfg.Name)+"/versions",
+		"application/json", bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	var def workflow.Definition
+	if err := decodeOrError(resp, &def); err != nil {
+		return err
+	}
+	fmt.Printf("imported %s version %d (hash %.12s)\n", def.Name, def.Version, def.ContentHash)
+
+	if setLive {
+		return setLiveVersion(target, def.Name, def.Version)
+	}
+	return nil
+}
+
+func importWorkflowFile(target rc.Target, path string, setLive bool) error {
+	raw, err := os.ReadFile(path)
 	if err != nil {
 		return err
 	}
@@ -188,7 +261,7 @@ func (command *WorkflowsImportCommand) Execute([]string) error {
 	// error message points at the local file.
 	cfg, err := workflow.Parse(raw)
 	if err != nil {
-		return fmt.Errorf("%s: %w", command.Args.File, err)
+		return fmt.Errorf("%s: %w", path, err)
 	}
 
 	resp, err := agentAPIRequest(target, "POST",
@@ -200,8 +273,24 @@ func (command *WorkflowsImportCommand) Execute([]string) error {
 	if err := decodeOrError(resp, &def); err != nil {
 		return err
 	}
-
 	fmt.Printf("imported %s version %d (hash %.12s)\n", def.Name, def.Version, def.ContentHash)
+
+	if setLive {
+		return setLiveVersion(target, def.Name, def.Version)
+	}
+	return nil
+}
+
+func setLiveVersion(target rc.Target, name string, version int) error {
+	resp, err := agentAPIRequest(target, "PUT",
+		"/api/v1/agent/workflows/"+url.PathEscape(name)+"/versions/"+strconv.Itoa(version)+"/live", nil)
+	if err != nil {
+		return err
+	}
+	if err := decodeOrError(resp, nil); err != nil {
+		return err
+	}
+	fmt.Printf("workflow %s version %d is now live\n", name, version)
 	return nil
 }
 
@@ -217,16 +306,5 @@ func (command *WorkflowsSetLiveCommand) Execute([]string) error {
 	if err != nil {
 		return err
 	}
-
-	resp, err := agentAPIRequest(target, "PUT",
-		"/api/v1/agent/workflows/"+url.PathEscape(command.Args.Name)+"/versions/"+strconv.Itoa(command.Args.Version)+"/live", nil)
-	if err != nil {
-		return err
-	}
-	if err := decodeOrError(resp, nil); err != nil {
-		return err
-	}
-
-	fmt.Printf("workflow %s version %d is now live\n", command.Args.Name, command.Args.Version)
-	return nil
+	return setLiveVersion(target, command.Args.Name, command.Args.Version)
 }

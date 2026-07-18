@@ -154,4 +154,59 @@ var _ = Describe("fly agent workflows", func() {
 			Expect(sess.Err).To(gbytes.Say(`unknown workflow version`))
 		})
 	})
+
+	Describe("import from a directory", func() {
+		var srcDir string
+		const dirWorkflowYAML = "schema_version: 2\nname: dev\ndescription: dir import\nskills: [tdd]\nprompt_files:\n  work: prompts/work.md\nsteps:\n- agent: work\n  prompt: work\n  outputs: [workspace]\n"
+
+		BeforeEach(func() {
+			srcDir = GinkgoT().TempDir()
+			Expect(os.MkdirAll(filepath.Join(srcDir, "prompts"), 0o755)).To(Succeed())
+			Expect(os.MkdirAll(filepath.Join(srcDir, "skills", "tdd"), 0o755)).To(Succeed())
+			Expect(os.WriteFile(filepath.Join(srcDir, "workflow.yml"), []byte(dirWorkflowYAML), 0o644)).To(Succeed())
+			Expect(os.WriteFile(filepath.Join(srcDir, "prompts", "work.md"), []byte("Do the work."), 0o644)).To(Succeed())
+			Expect(os.WriteFile(filepath.Join(srcDir, "skills", "tdd", "SKILL.md"), []byte("# tdd"), 0o644)).To(Succeed())
+			// hidden junk must be excluded from the posted manifest
+			Expect(os.WriteFile(filepath.Join(srcDir, ".DS_Store"), []byte("junk"), 0o644)).To(Succeed())
+
+			atcServer.AppendHandlers(
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("POST", "/api/v1/agent/workflows/dev/versions"),
+					ghttp.VerifyContentType("application/json"),
+					ghttp.VerifyJSONRepresenting(map[string]any{"files": map[string]any{
+						"workflow.yml":        dirWorkflowYAML,
+						"prompts/work.md":     "Do the work.",
+						"skills/tdd/SKILL.md": "# tdd",
+					}}),
+					ghttp.RespondWithJSONEncoded(http.StatusOK, workflow.Definition{
+						Name: "dev", Version: 4, ContentHash: "deadbeefdeadbeef",
+					}),
+				),
+			)
+		})
+
+		It("packages the directory as a manifest and posts it", func() {
+			flyCmd := exec.Command(flyPath, "-t", targetName, "agent", "workflows", "import", srcDir)
+			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+			Expect(err).NotTo(HaveOccurred())
+			<-sess.Exited
+			Expect(sess.ExitCode()).To(Equal(0))
+			Expect(sess.Out).To(gbytes.Say(`imported dev version 4`))
+		})
+
+		It("promotes with --set-live", func() {
+			atcServer.AppendHandlers(
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("PUT", "/api/v1/agent/workflows/dev/versions/4/live"),
+					ghttp.RespondWith(http.StatusNoContent, nil),
+				),
+			)
+			flyCmd := exec.Command(flyPath, "-t", targetName, "agent", "workflows", "import", srcDir, "--set-live")
+			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+			Expect(err).NotTo(HaveOccurred())
+			<-sess.Exited
+			Expect(sess.ExitCode()).To(Equal(0))
+			Expect(sess.Out).To(gbytes.Say(`workflow dev version 4 is now live`))
+		})
+	})
 })
