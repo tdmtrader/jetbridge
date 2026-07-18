@@ -811,6 +811,87 @@ func TestRunMaterializesSkills(t *testing.T) {
 	}
 }
 
+func TestFromEnvDiscoversOutputPaths(t *testing.T) {
+	// The §8.1 AGENT_OUTPUT_<NAME> rows are exec-set literal paths. The
+	// runner picks them up so Run can inline them into the prompt;
+	// AGENT_OUTPUT_SCHEMA is the reserved schema-path row, not an output.
+	t.Setenv("AGENT_OUTPUT_WORKSPACE", "/work/workspace")
+	t.Setenv("AGENT_OUTPUT_MY_DOCS", "/work/my-docs")
+	t.Setenv("AGENT_OUTPUT_SCHEMA", "repo/schemas/spec.json")
+
+	cfg := runner.FromEnv()
+
+	if got := cfg.OutputPaths["AGENT_OUTPUT_WORKSPACE"]; got != "/work/workspace" {
+		t.Errorf("OutputPaths[AGENT_OUTPUT_WORKSPACE] = %q, want /work/workspace", got)
+	}
+	if got := cfg.OutputPaths["AGENT_OUTPUT_MY_DOCS"]; got != "/work/my-docs" {
+		t.Errorf("OutputPaths[AGENT_OUTPUT_MY_DOCS] = %q, want /work/my-docs", got)
+	}
+	if _, ok := cfg.OutputPaths["AGENT_OUTPUT_SCHEMA"]; ok {
+		t.Error("AGENT_OUTPUT_SCHEMA is the schema path, must not be treated as an output")
+	}
+}
+
+func TestRunInjectsOutputPathLiteralsIntoPrompt(t *testing.T) {
+	// Regression for ticket #16 (build 567384): the develop-fable prompt had
+	// the agent expand $AGENT_OUTPUT_WORKSPACE in every shell call; one
+	// expansion came up empty and `cp -a repo/. "$AGENT_OUTPUT_WORKSPACE/"`
+	// copied the checkout into "/". The runner now bakes the literal paths
+	// into the prompt (between the workflow-context block and the step
+	// prompt) so agents never depend on per-shell-call env expansion.
+	dir := t.TempDir()
+	flight := filepath.Join(dir, "flight")
+	os.MkdirAll(flight, 0o755)
+	claude, argsPath := writeRecordingStubClaude(t, dir, okEnvelope)
+
+	exit, err := runner.Run(context.Background(), runner.Config{
+		Prompt:  "do it",
+		Context: "## context/x.md\n\nbody\n",
+		OutputPaths: map[string]string{
+			"AGENT_OUTPUT_WORKSPACE": "/tmp/build/abc/workspace",
+			"AGENT_OUTPUT_REVIEW":    "/tmp/build/abc/review",
+		},
+		FlightDir: flight, WorkDir: dir, StepName: "s", ClaudePath: claude,
+	})
+	if err != nil || exit != 0 {
+		t.Fatalf("run: exit %d err %v", exit, err)
+	}
+
+	raw, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := strings.Split(strings.TrimRight(string(raw), "\x00"), "\x00")
+	promptIdx := -1
+	for i, a := range args {
+		if a == "-p" {
+			promptIdx = i + 1
+		}
+	}
+	if promptIdx < 0 || promptIdx >= len(args) {
+		t.Fatalf("no -p arg captured: %v", args)
+	}
+	prompt := args[promptIdx]
+
+	for _, want := range []string{
+		"$AGENT_OUTPUT_REVIEW = /tmp/build/abc/review",
+		"$AGENT_OUTPUT_WORKSPACE = /tmp/build/abc/workspace",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt missing output literal %q:\n%s", want, prompt)
+		}
+	}
+
+	// Layering: workflow context stays outermost, outputs block precedes
+	// the step prompt.
+	ctxIdx := strings.Index(prompt, "# Workflow context")
+	outIdx := strings.Index(prompt, "# Step outputs")
+	stepIdx := strings.Index(prompt, "do it")
+	if ctxIdx != 0 || outIdx < ctxIdx || stepIdx < outIdx || !strings.HasSuffix(prompt, "do it") {
+		t.Fatalf("prompt layering wrong (ctx %d, outputs %d, step %d):\n%s", ctxIdx, outIdx, stepIdx, prompt)
+	}
+}
+
 func TestRunFailsOnMissingSkill(t *testing.T) {
 	dir := t.TempDir()
 	flight := filepath.Join(dir, "flight")

@@ -67,6 +67,15 @@ type Config struct {
 	Stdout     io.Writer
 	Stderr     io.Writer
 
+	// OutputPaths maps each §8.1 AGENT_OUTPUT_<NAME> env var (its full
+	// name, AGENT_OUTPUT_SCHEMA excluded — that row is the schema path,
+	// not an output) to its exec-set literal path. Run surfaces these in
+	// the prompt so agents work with literal paths instead of expanding
+	// the env var per shell call — ticket #16's agent (build 567384) had
+	// "$AGENT_OUTPUT_WORKSPACE" expand empty mid-session and cp'd the
+	// repo checkout into "/".
+	OutputPaths map[string]string
+
 	// Step identity for the step.start payload (shared-contracts §5):
 	// build_id and plan_id are the correlation key consumers use to join
 	// the event stream back to its agent_run_metrics row, so they are NOT
@@ -81,7 +90,10 @@ type Config struct {
 	BudgetSliceUSD  float64
 }
 
-var mcpURLPattern = regexp.MustCompile(`^([A-Z]+)_MCP_URL$`)
+var (
+	mcpURLPattern    = regexp.MustCompile(`^([A-Z]+)_MCP_URL$`)
+	outputEnvPattern = regexp.MustCompile(`^AGENT_OUTPUT_[A-Z0-9_]+$`)
+)
 
 // FromEnv builds a Config from the §8.1 environment contract set by the
 // agent-step exec. MCP servers are discovered by scanning the environment
@@ -101,6 +113,7 @@ func FromEnv() Config {
 		StepName:     os.Getenv("AGENT_STEP_NAME"),
 		WorkDir:      wd,
 		MCPServers:   map[string]string{},
+		OutputPaths:  map[string]string{},
 
 		// §5 step.start identity: BUILD_ID is jetbridge/exec-injected;
 		// AGENT_PLAN_ID is set by the agent-step exec (never public YAML);
@@ -137,6 +150,9 @@ func FromEnv() Config {
 		}
 		if m := mcpURLPattern.FindStringSubmatch(name); m != nil {
 			cfg.MCPServers[strings.ToLower(m[1])] = value
+		}
+		if name != "AGENT_OUTPUT_SCHEMA" && outputEnvPattern.MatchString(name) {
+			cfg.OutputPaths[name] = value
 		}
 	}
 
@@ -219,6 +235,27 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 		if err := os.CopyFS(dst, os.DirFS(src)); err != nil {
 			return 2, fmt.Errorf("materialize skill %q: %w", name, err)
 		}
+	}
+
+	// Resolved output paths: surface the §8.1 AGENT_OUTPUT_<NAME> literals
+	// in the prompt itself, right above the step prompt that references
+	// them. Prompts told agents to expand the env var per shell call;
+	// ticket #16's agent (build 567384) had one such expansion come up
+	// empty and `cp -a repo/. "$AGENT_OUTPUT_WORKSPACE/"` ran against "/".
+	// A literal in the transcript cannot regress that way.
+	if len(cfg.OutputPaths) > 0 {
+		names := make([]string, 0, len(cfg.OutputPaths))
+		for name := range cfg.OutputPaths {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		var b strings.Builder
+		b.WriteString("# Step outputs (platform-resolved absolute paths)\n\n")
+		for _, name := range names {
+			fmt.Fprintf(&b, "$%s = %s\n", name, cfg.OutputPaths[name])
+		}
+		b.WriteString("\nUse these literal paths in commands; do not depend on the env vars expanding in every shell call.\n")
+		prompt = b.String() + "\n---\n\n" + prompt
 	}
 
 	// Session-start context (design §4): superpowers-style injection,
