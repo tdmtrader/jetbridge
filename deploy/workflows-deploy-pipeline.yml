@@ -1,0 +1,46 @@
+# Example: continuous deployment for workflow definitions (design
+# 2026-07-17 §6 — pipelines-that-deploy; this is an EXAMPLE, not a
+# platform component). Point `workflows-repo` at a repo containing one
+# or more workflow source directories (each with a workflow.yml), set
+# it with `fly set-pipeline`, and every merge imports new versions.
+# Auto-promotion is the pipeline author's policy: keep --set-live for
+# merge-implies-promote, drop it to promote manually with
+# `fly agent workflows set-live`.
+#
+# Required vars/secrets:
+#   ((workflows-repo-uri))    git URI of the workflows repo
+#   ((concourse-url))         external URL of this Concourse
+#   ((concourse-username))    local user for fly login
+#   ((concourse-password))
+resources:
+- name: workflows-repo
+  type: git
+  source:
+    uri: ((workflows-repo-uri))
+    branch: main
+
+jobs:
+- name: deploy-workflows
+  plan:
+  - get: workflows-repo
+    trigger: true
+  - task: import
+    config:
+      platform: linux
+      image_resource:
+        type: registry-image
+        source: {repository: concourse/concourse}
+      inputs:
+      - name: workflows-repo
+      params:
+        CONCOURSE_URL: ((concourse-url))
+        CONCOURSE_USERNAME: ((concourse-username))
+        CONCOURSE_PASSWORD: ((concourse-password))
+      run:
+        path: sh
+        args:
+        - -ec
+        - |
+          fly -t deploy login -c "$CONCOURSE_URL" \
+            -u "$CONCOURSE_USERNAME" -p "$CONCOURSE_PASSWORD"
+          fly -t deploy agent workflows import workflows-repo/ --set-live
