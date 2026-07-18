@@ -44,16 +44,19 @@ func (wrappa *APIAuthWrappa) Wrap(handlers rata.Handlers) rata.Handlers {
 		switch name {
 		// pipeline is public or authorized
 		case atc.GetBuild,
-			atc.BuildResources,
-			atc.GetBuildAgentReviews,
-			atc.ListBuildAgentRunMetrics:
+			atc.BuildResources:
 			newHandler = wrappa.checkBuildReadAccessHandlerFactory.AnyJobHandler(handler, rejector)
 
-		// pipeline and job are public or authorized
+		// pipeline and job are public or authorized — agent reviews and
+		// run metrics carry content-bearing output (findings, run
+		// Summary/Results), so they follow the BuildEvents tier rather
+		// than the pipeline-only tier
 		case atc.GetBuildPreparation,
 			atc.BuildEvents,
 			atc.GetBuildPlan,
-			atc.ListBuildArtifacts:
+			atc.ListBuildArtifacts,
+			atc.GetBuildAgentReviews,
+			atc.ListBuildAgentRunMetrics:
 			newHandler = wrappa.checkBuildReadAccessHandlerFactory.CheckIfPrivateJobHandler(handler, rejector)
 
 			// resource belongs to authorized team

@@ -159,6 +159,100 @@ var _ = Describe("APIAuthWrappa", func() {
 				})
 			})
 
+			// GetBuildAgentReviews and ListBuildAgentRunMetrics carry
+			// content-bearing run output (review findings, run
+			// Summary/Results), so they ride the same tier as
+			// BuildEvents: pipeline AND job public, or team access —
+			// not the pipeline-only AnyJobHandler tier.
+			Describe("build-scoped agent routes", func() {
+				var (
+					fakeJob *dbfakes.FakeJob
+				)
+
+				BeforeEach(func() {
+					build := new(dbfakes.FakeBuildForAPI)
+					fakePipeline := new(dbfakes.FakePipeline)
+					fakeJob = new(dbfakes.FakeJob)
+
+					build.PipelineIDReturns(41)
+					build.PipelineReturns(fakePipeline, true, nil)
+					build.AllAssociatedTeamNamesReturns([]string{"some-team"})
+					build.JobIDReturns(43)
+					build.JobNameReturns("some-job")
+					fakePipeline.PublicReturns(true)
+					fakePipeline.JobReturns(fakeJob, true, nil)
+					fakeBuildFactory.BuildForAPIReturns(build, true, nil)
+
+					delegate := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						delegateHit = true
+						w.WriteHeader(http.StatusOK)
+					})
+
+					wrapped = wrappa.NewAPIAuthWrappa(
+						fakeCheckPipelineAccessHandlerFactory,
+						fakeCheckBuildReadAccessHandlerFactory,
+						fakeCheckBuildWriteAccessHandlerFactory,
+						fakeCheckWorkerTeamAccessHandlerFactory,
+						auth.NewCheckAgentPrincipalHandlerFactory(principals.NewVerifier(store)),
+					).Wrap(rata.Handlers{
+						atc.GetBuildAgentReviews:     delegate,
+						atc.ListBuildAgentRunMetrics: delegate,
+					})
+				})
+
+				serveBuild := func(routeName string) *http.Response {
+					server := httptest.NewServer(accessor.NewHandler(
+						lagertest.NewTestLogger("api-auth-wrappa"),
+						"some-action",
+						wrapped[routeName],
+						fakeAccessor,
+						new(auditorfakes.FakeAuditor),
+						map[string]string{},
+					))
+					defer server.Close()
+
+					req, err := http.NewRequest("GET", server.URL+"?:build_id=55", nil)
+					Expect(err).NotTo(HaveOccurred())
+					resp, err := http.DefaultClient.Do(req)
+					Expect(err).NotTo(HaveOccurred())
+					return resp
+				}
+
+				for _, routeName := range []string{atc.GetBuildAgentReviews, atc.ListBuildAgentRunMetrics} {
+					routeName := routeName
+
+					Describe(routeName, func() {
+						It("401s anonymous requests when the job is private, even on a public pipeline", func() {
+							fakeaccess.IsAuthenticatedReturns(false)
+							fakeJob.PublicReturns(false)
+
+							resp := serveBuild(routeName)
+							Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized))
+							Expect(delegateHit).To(BeFalse())
+						})
+
+						It("admits anonymous requests when the pipeline and job are both public", func() {
+							fakeaccess.IsAuthenticatedReturns(false)
+							fakeJob.PublicReturns(true)
+
+							resp := serveBuild(routeName)
+							Expect(resp.StatusCode).To(Equal(http.StatusOK))
+							Expect(delegateHit).To(BeTrue())
+						})
+
+						It("admits team members regardless of job visibility", func() {
+							fakeaccess.IsAuthenticatedReturns(true)
+							fakeaccess.IsAuthorizedReturns(true)
+							fakeJob.PublicReturns(false)
+
+							resp := serveBuild(routeName)
+							Expect(resp.StatusCode).To(Equal(http.StatusOK))
+							Expect(delegateHit).To(BeTrue())
+						})
+					})
+				}
+			})
+
 			Describe("ListAgentRunMetrics", func() {
 				It("401s unauthenticated requests", func() {
 					fakeaccess.IsAuthenticatedReturns(false)
