@@ -151,7 +151,17 @@ func TestRunFlightGateFailureEvidence(t *testing.T) {
 		t.Fatalf("gate events missing: %v", types)
 	}
 	raw, _ := os.ReadFile(filepath.Join(flight, "review.json"))
-	if !strings.Contains(string(raw), `"gate-test"`) || !strings.Contains(string(raw), `"category":"gate"`) {
+	var ev harvest.Evidence
+	if err := json.Unmarshal(raw, &ev); err != nil {
+		t.Fatalf("evidence unmarshal: %v", err)
+	}
+	proven := false
+	for _, iss := range ev.ProvenIssues {
+		if iss.ID == "gate-test" && iss.Category == "gate" {
+			proven = true
+		}
+	}
+	if !proven {
 		t.Fatalf("gate proven issue missing: %s", raw)
 	}
 }
@@ -202,7 +212,17 @@ func TestRunJudgePassRecordedAndPushed(t *testing.T) {
 		t.Fatalf("judge events missing: %v", types)
 	}
 	raw, _ := os.ReadFile(filepath.Join(flight, "review.json"))
-	if !strings.Contains(string(raw), `"judge-correctness-1"`) || !strings.Contains(string(raw), `"category":"judge"`) {
+	var ev harvest.Evidence
+	if err := json.Unmarshal(raw, &ev); err != nil {
+		t.Fatalf("evidence unmarshal: %v", err)
+	}
+	observed := false
+	for _, iss := range ev.Observations {
+		if iss.ID == "judge-correctness-1" && iss.Category == "judge" {
+			observed = true
+		}
+	}
+	if !observed {
 		t.Fatalf("judge observation missing: %s", raw)
 	}
 }
