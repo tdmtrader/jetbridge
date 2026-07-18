@@ -22,7 +22,7 @@ func TestValidateRejects(t *testing.T) {
 		yaml    string
 		wantErr string
 	}{
-		{"wrong schema_version", mutate(t, "schema_version: 1", "schema_version: 2"), "schema_version must be 1"},
+		{"wrong schema_version", mutate(t, "schema_version: 1", "schema_version: 3"), "schema_version must be 1 or 2"},
 		{"missing name", mutate(t, "name: standard-dev", "name: \"\""), "name is required"},
 		{"bad spec_delivery", mutate(t, "name: standard-dev", "name: standard-dev\nspec_delivery: telepathy"), "spec_delivery must be mcp or files"},
 		{"step with both agent and checkpoint", mutate(t, "- checkpoint: plan-approval", "- checkpoint: plan-approval\n  agent: sneaky\n  prompt: spec"), "exactly one of"},

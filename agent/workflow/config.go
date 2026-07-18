@@ -1,5 +1,7 @@
 package workflow
 
+import "fmt"
+
 // Config is the parsed form of the workflow-definition YAML
 // (docs/superpowers/plans/agentic-platform/00-shared-contracts.md §6,
 // schema_version 1). Grammar decisions: §6.1 (linear agent/checkpoint
@@ -24,6 +26,25 @@ type Config struct {
 	HITL         HITL               `yaml:"hitl,omitempty" json:"hitl,omitempty"`
 	GatePolicy   GatePolicy         `yaml:"gate_policy,omitempty" json:"gate_policy,omitempty"`
 	Judge        *Judge             `yaml:"judge,omitempty" json:"judge,omitempty"`
+
+	// schema_version 2 source-format fields (design 2026-07-17 §1).
+	// PromptFiles maps a prompt key to a manifest path; Compile inlines
+	// the content into Prompts. skills/ names resolve to skills/<name>/
+	// trees; Context paths resolve into ContextFiles. SystemPrompt is
+	// appended to the runner's baseline (steps replace the workflow
+	// layer, never the baseline).
+	PromptFiles      map[string]string `yaml:"prompt_files,omitempty" json:"prompt_files,omitempty"`
+	Skills           []string          `yaml:"skills,omitempty" json:"skills,omitempty"`
+	SystemPrompt     string            `yaml:"system_prompt,omitempty" json:"system_prompt,omitempty"`
+	SystemPromptFile string            `yaml:"system_prompt_file,omitempty" json:"system_prompt_file,omitempty"`
+	Context          []string          `yaml:"context,omitempty" json:"context,omitempty"`
+
+	// Compile-populated resolutions (never authorable in YAML):
+	// context path -> content, and skill file path -> content for every
+	// referenced skill's tree. The compiled Config is self-contained —
+	// the render path never reads the manifest (design §3).
+	ContextFiles map[string]string `yaml:"-" json:"context_files,omitempty"`
+	SkillFiles   map[string]string `yaml:"-" json:"skill_files,omitempty"`
 }
 
 // Defaults apply to every agent step unless the step overrides them.
@@ -58,6 +79,14 @@ type Step struct {
 	Inputs         []string `yaml:"inputs,omitempty" json:"inputs,omitempty"`
 	Outputs        []string `yaml:"outputs,omitempty" json:"outputs,omitempty"`
 	OutputSchema   string   `yaml:"output_schema,omitempty" json:"output_schema,omitempty"` // key into Schemas
+
+	// schema_version 2 source-format fields: additive skills/context on
+	// top of the workflow-global sets; step system_prompt REPLACES the
+	// workflow-level layer (not the runner baseline).
+	Skills           []string `yaml:"skills,omitempty" json:"skills,omitempty"`
+	SystemPrompt     string   `yaml:"system_prompt,omitempty" json:"system_prompt,omitempty"`
+	SystemPromptFile string   `yaml:"system_prompt_file,omitempty" json:"system_prompt_file,omitempty"`
+	Context          []string `yaml:"context,omitempty" json:"context,omitempty"`
 
 	// checkpoint fields (declared-but-inert until platform-mcp-hitl, wave 3)
 	Checkpoint string `yaml:"checkpoint,omitempty" json:"checkpoint,omitempty"`
@@ -100,4 +129,36 @@ type RubricDimension struct {
 	Name     string  `yaml:"name" json:"name"`
 	Weight   float64 `yaml:"weight" json:"weight"`
 	Guidance string  `yaml:"guidance,omitempty" json:"guidance,omitempty"`
+}
+
+// SourceFormatField names the first schema_version-2 source-format
+// field in use, or "". Two consumers: the v1 schema gate in Validate,
+// and dispatch's v0 render refusal (slice (b) materializes these;
+// until then rendering them would silently drop authored behavior).
+func (c *Config) SourceFormatField() string {
+	switch {
+	case len(c.PromptFiles) > 0:
+		return "prompt_files"
+	case len(c.Skills) > 0:
+		return "skills"
+	case c.SystemPrompt != "" || c.SystemPromptFile != "":
+		return "system_prompt"
+	case len(c.Context) > 0:
+		return "context"
+	}
+	for _, s := range c.Steps {
+		name := s.Agent
+		if name == "" {
+			name = s.Checkpoint
+		}
+		switch {
+		case len(s.Skills) > 0:
+			return fmt.Sprintf("step %q skills", name)
+		case s.SystemPrompt != "" || s.SystemPromptFile != "":
+			return fmt.Sprintf("step %q system_prompt", name)
+		case len(s.Context) > 0:
+			return fmt.Sprintf("step %q context", name)
+		}
+	}
+	return ""
 }

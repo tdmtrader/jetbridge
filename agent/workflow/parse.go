@@ -17,6 +17,23 @@ func Parse(raw []byte) (*Config, error) {
 	if err := yaml.Unmarshal(raw, &cfg); err != nil {
 		return nil, fmt.Errorf("parse workflow definition: %w", err)
 	}
+	// Hooks are deferred (design 2026-07-17): reject the key rather than
+	// silently ignoring it — an author must never believe hook behavior
+	// is active when nothing runs it.
+	var probe struct {
+		Hooks any              `yaml:"hooks"`
+		Steps []map[string]any `yaml:"steps"`
+	}
+	if err := yaml.Unmarshal(raw, &probe); err == nil {
+		if probe.Hooks != nil {
+			return nil, fmt.Errorf("workflow: hooks are not supported (deferred, design 2026-07-17); remove the hooks key")
+		}
+		for i, s := range probe.Steps {
+			if _, ok := s["hooks"]; ok {
+				return nil, fmt.Errorf("workflow: step %d: hooks are not supported (deferred, design 2026-07-17); remove the hooks key", i)
+			}
+		}
+	}
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
@@ -50,8 +67,13 @@ var nilRenderContext = struct {
 // Validate checks the §6 grammar rules. Unknown YAML keys are ignored
 // (forward compatibility); known keys are strictly checked.
 func (c *Config) Validate() error {
-	if c.SchemaVersion != 1 {
-		return fmt.Errorf("workflow: schema_version must be 1, got %d", c.SchemaVersion)
+	if c.SchemaVersion != 1 && c.SchemaVersion != 2 {
+		return fmt.Errorf("workflow: schema_version must be 1 or 2, got %d", c.SchemaVersion)
+	}
+	if c.SchemaVersion == 1 {
+		if field := c.SourceFormatField(); field != "" {
+			return fmt.Errorf("workflow: %s requires schema_version: 2", field)
+		}
 	}
 	if c.Name == "" {
 		return fmt.Errorf("workflow: name is required")
@@ -89,16 +111,28 @@ func (c *Config) Validate() error {
 	}
 
 	for key, body := range c.Prompts {
-		tmpl, err := template.New(key).Parse(body)
-		if err != nil {
-			return fmt.Errorf("workflow: prompt %q: invalid Go text/template: %w", key, err)
+		if err := validatePromptTemplate(key, body); err != nil {
+			return err
 		}
-		// E2b (contracts §6.2 nil-safety, 2026-07-09): execute the template
-		// against the spec-less context every dispatch render sees, so a bare
-		// `.Spec.<field>` deref fails HERE with a clear error instead of
-		// failing the dispatch of every ticket that runs this definition.
-		if err := tmpl.Execute(io.Discard, nilRenderContext); err != nil {
-			return fmt.Errorf("workflow: prompt %q: does not render against a spec-less ticket (.Spec is nil and .Tasks is empty at every dispatch render — guard with {{if .Spec}} or read via platform-mcp read_ticket/list_tasks): %w", key, err)
+	}
+
+	for key, path := range c.PromptFiles {
+		if _, dup := c.Prompts[key]; dup {
+			return fmt.Errorf("workflow: prompt %q is defined both inline (prompts) and as a file (prompt_files)", key)
+		}
+		if path == "" {
+			return fmt.Errorf("workflow: prompt_files %q: path is required", key)
+		}
+	}
+	if c.SystemPrompt != "" && c.SystemPromptFile != "" {
+		return fmt.Errorf("workflow: system_prompt and system_prompt_file are mutually exclusive")
+	}
+	if err := validateSkillList("skills", c.Skills); err != nil {
+		return err
+	}
+	for i, p := range c.Context {
+		if p == "" {
+			return fmt.Errorf("workflow: context[%d]: path is required", i)
 		}
 	}
 
@@ -125,7 +159,9 @@ func (c *Config) Validate() error {
 			if s.Prompt == "" {
 				return fmt.Errorf("workflow: agent step %q: prompt is required", s.Agent)
 			}
-			if _, ok := c.Prompts[s.Prompt]; !ok {
+			_, inline := c.Prompts[s.Prompt]
+			_, fromFile := c.PromptFiles[s.Prompt]
+			if !inline && !fromFile {
 				return fmt.Errorf("workflow: agent step %q: unknown prompt %q", s.Agent, s.Prompt)
 			}
 			for _, name := range s.Sidecars {
@@ -155,6 +191,17 @@ func (c *Config) Validate() error {
 			if s.OnReject != "" {
 				return fmt.Errorf("workflow: agent step %q: on_reject is a checkpoint-only field", s.Agent)
 			}
+			if s.SystemPrompt != "" && s.SystemPromptFile != "" {
+				return fmt.Errorf("workflow: agent step %q: system_prompt and system_prompt_file are mutually exclusive", s.Agent)
+			}
+			if err := validateSkillList(fmt.Sprintf("agent step %q skills", s.Agent), s.Skills); err != nil {
+				return err
+			}
+			for i, p := range s.Context {
+				if p == "" {
+					return fmt.Errorf("workflow: agent step %q: context[%d]: path is required", s.Agent, i)
+				}
+			}
 		} else {
 			if seen[s.Checkpoint] {
 				return fmt.Errorf("workflow: step %d: duplicate step name %q", i, s.Checkpoint)
@@ -166,7 +213,8 @@ func (c *Config) Validate() error {
 				return fmt.Errorf("workflow: checkpoint %q: on_reject must be fail or send_back, got %q", s.Checkpoint, s.OnReject)
 			}
 			if s.Prompt != "" || len(s.Sidecars) > 0 || s.BudgetSliceUSD != 0 || s.Model != "" ||
-				s.MaxTurns != 0 || len(s.Inputs) > 0 || len(s.Outputs) > 0 || s.OutputSchema != "" {
+				s.MaxTurns != 0 || len(s.Inputs) > 0 || len(s.Outputs) > 0 || s.OutputSchema != "" ||
+				len(s.Skills) > 0 || s.SystemPrompt != "" || s.SystemPromptFile != "" || len(s.Context) > 0 {
 				return fmt.Errorf("workflow: checkpoint %q: agent-step fields are not allowed on a checkpoint", s.Checkpoint)
 			}
 			// E6b (FLOWS S5, 2026-07-09): import mirror of dispatch's F36
@@ -224,6 +272,51 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("workflow: gate_policy.on_gate_failure must be needs_review (only v1 value), got %q", c.GatePolicy.OnGateFailure)
 	}
 
+	if err := c.validateJudge(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// validatePromptTemplate is the §6.2 import gate for one prompt body:
+// it must parse as a Go text/template and render against the spec-less
+// dispatch ground state. Shared by Validate (inline prompts) and
+// Compile (prompt_files content, validated after resolution).
+//
+// E2b (contracts §6.2 nil-safety, 2026-07-09): executing against the
+// spec-less context every dispatch render sees means a bare
+// `.Spec.<field>` deref fails HERE with a clear error instead of
+// failing the dispatch of every ticket that runs this definition.
+func validatePromptTemplate(key, body string) error {
+	tmpl, err := template.New(key).Parse(body)
+	if err != nil {
+		return fmt.Errorf("workflow: prompt %q: invalid Go text/template: %w", key, err)
+	}
+	if err := tmpl.Execute(io.Discard, nilRenderContext); err != nil {
+		return fmt.Errorf("workflow: prompt %q: does not render against a spec-less ticket (.Spec is nil and .Tasks is empty at every dispatch render — guard with {{if .Spec}} or read via platform-mcp read_ticket/list_tasks): %w", key, err)
+	}
+	return nil
+}
+
+func validateSkillList(where string, names []string) error {
+	seen := map[string]bool{}
+	for _, n := range names {
+		if n == "" {
+			return fmt.Errorf("workflow: %s: skill name is required", where)
+		}
+		if strings.ContainsAny(n, `/\`) || strings.HasPrefix(n, ".") {
+			return fmt.Errorf("workflow: %s: skill name %q must be a bare directory name under skills/", where, n)
+		}
+		if seen[n] {
+			return fmt.Errorf("workflow: %s: duplicate skill %q", where, n)
+		}
+		seen[n] = true
+	}
+	return nil
+}
+
+func (c *Config) validateJudge() error {
 	if c.Judge != nil {
 		if len(c.Judge.Rubric) == 0 {
 			return fmt.Errorf("workflow: judge.rubric must have at least one dimension")
