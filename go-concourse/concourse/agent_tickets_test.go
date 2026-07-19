@@ -3,6 +3,7 @@ package concourse_test
 import (
 	"net/http"
 
+	"github.com/concourse/concourse/agent/api/outcomes"
 	"github.com/concourse/concourse/agent/api/tickets"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -116,6 +117,82 @@ var _ = Describe("Agent Tickets", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(updated.State).To(Equal(tickets.StateQueued))
+		})
+	})
+
+	Describe("SetAgentTicketDisposition", func() {
+		BeforeEach(func() {
+			atcServer.AppendHandlers(
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("PUT", "/api/v1/agent/tickets/12/disposition"),
+					ghttp.VerifyJSON(`{"disposition":"sent_back","reason":"incomplete","notes":"missing tests"}`),
+					ghttp.RespondWithJSONEncoded(http.StatusOK, outcomes.Outcome{
+						TicketID:          12,
+						MergeState:        outcomes.ClosedUnmerged,
+						Disposition:       outcomes.DispositionSentBack,
+						DispositionReason: "incomplete",
+						DispositionNotes:  "missing tests",
+						DisposedBy:        "tdm",
+					}),
+				),
+			)
+		})
+
+		It("puts the disposition and decodes the outcome", func() {
+			outcome, err := client.SetAgentTicketDisposition(12, outcomes.DispositionRequestFor(
+				outcomes.DispositionSentBack, "incomplete", "missing tests",
+			))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(outcome.TicketID).To(Equal(12))
+			Expect(outcome.MergeState).To(Equal(outcomes.ClosedUnmerged))
+			Expect(outcome.Disposition).To(Equal(outcomes.DispositionSentBack))
+			Expect(outcome.DispositionReason).To(Equal("incomplete"))
+			Expect(outcome.DisposedBy).To(Equal("tdm"))
+		})
+	})
+
+	Describe("GetAgentTicketOutcome", func() {
+		Context("when the outcome exists", func() {
+			BeforeEach(func() {
+				atcServer.AppendHandlers(
+					ghttp.CombineHandlers(
+						ghttp.VerifyRequest("GET", "/api/v1/agent/tickets/12/outcome"),
+						ghttp.RespondWithJSONEncoded(http.StatusOK, outcomes.Outcome{
+							TicketID:   12,
+							Repo:       "tdmtrader/concourse",
+							Branch:     "agent/ticket-12",
+							MergeState: outcomes.Merged,
+							MergedSha:  "abc123",
+						}),
+					),
+				)
+			})
+
+			It("returns the outcome and found=true", func() {
+				outcome, found, err := client.GetAgentTicketOutcome(12)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(found).To(BeTrue())
+				Expect(outcome.TicketID).To(Equal(12))
+				Expect(outcome.MergeState).To(Equal(outcomes.Merged))
+				Expect(outcome.MergedSha).To(Equal("abc123"))
+			})
+		})
+
+		Context("when there is no outcome row", func() {
+			BeforeEach(func() {
+				atcServer.AppendHandlers(
+					ghttp.CombineHandlers(
+						ghttp.VerifyRequest("GET", "/api/v1/agent/tickets/99/outcome"),
+						ghttp.RespondWith(http.StatusNotFound, ""),
+					),
+				)
+			})
+
+			It("returns found=false without an error", func() {
+				_, found, err := client.GetAgentTicketOutcome(99)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(found).To(BeFalse())
+			})
 		})
 	})
 

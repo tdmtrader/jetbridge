@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"strconv"
 
+	"github.com/concourse/concourse/agent/api/outcomes"
 	"github.com/concourse/concourse/agent/api/tickets"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/go-concourse/concourse/internal"
@@ -71,6 +72,42 @@ func (client *client) TransitionAgentTicket(id int, req tickets.TransitionReques
 		Result: &updated,
 	})
 	return updated, err
+}
+
+func (client *client) SetAgentTicketDisposition(id int, req outcomes.DispositionRequest) (outcomes.Outcome, error) {
+	buffer := &bytes.Buffer{}
+	if err := json.NewEncoder(buffer).Encode(req); err != nil {
+		return outcomes.Outcome{}, err
+	}
+
+	var outcome outcomes.Outcome
+	err := client.connection.Send(internal.Request{
+		RequestName: atc.SetAgentTicketDisposition,
+		Params:      rata.Params{"ticket_id": strconv.Itoa(id)},
+		Body:        buffer,
+		Header:      http.Header{"Content-Type": []string{"application/json"}},
+	}, &internal.Response{
+		Result: &outcome,
+	})
+	return outcome, err
+}
+
+func (client *client) GetAgentTicketOutcome(id int) (outcomes.Outcome, bool, error) {
+	var outcome outcomes.Outcome
+	err := client.connection.Send(internal.Request{
+		RequestName: atc.GetAgentTicketOutcome,
+		Params:      rata.Params{"ticket_id": strconv.Itoa(id)},
+	}, &internal.Response{
+		Result: &outcome,
+	})
+	switch err.(type) {
+	case nil:
+		return outcome, true, nil
+	case internal.ResourceNotFoundError:
+		return outcome, false, nil
+	default:
+		return outcome, false, err
+	}
 }
 
 func (client *client) DispatchAgentTicket(id int) (tickets.DispatchResponse, error) {

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/concourse/concourse/agent/api/costs"
+	"github.com/concourse/concourse/agent/api/outcomes"
 	"github.com/concourse/concourse/agent/api/tickets"
 	"github.com/concourse/concourse/agent/credentials"
 	"github.com/concourse/concourse/agent/schema"
@@ -229,6 +230,21 @@ type FakeClient struct {
 		result2 bool
 		result3 error
 	}
+	GetAgentTicketOutcomeStub        func(int) (outcomes.Outcome, bool, error)
+	getAgentTicketOutcomeMutex       sync.RWMutex
+	getAgentTicketOutcomeArgsForCall []struct {
+		arg1 int
+	}
+	getAgentTicketOutcomeReturns struct {
+		result1 outcomes.Outcome
+		result2 bool
+		result3 error
+	}
+	getAgentTicketOutcomeReturnsOnCall map[int]struct {
+		result1 outcomes.Outcome
+		result2 bool
+		result3 error
+	}
 	GetCLIReaderStub        func(string, string) (io.ReadCloser, http.Header, error)
 	getCLIReaderMutex       sync.RWMutex
 	getCLIReaderArgsForCall []struct {
@@ -401,6 +417,20 @@ type FakeClient struct {
 	}
 	saveWorkerReturnsOnCall map[int]struct {
 		result1 *atc.Worker
+		result2 error
+	}
+	SetAgentTicketDispositionStub        func(int, outcomes.DispositionRequest) (outcomes.Outcome, error)
+	setAgentTicketDispositionMutex       sync.RWMutex
+	setAgentTicketDispositionArgsForCall []struct {
+		arg1 int
+		arg2 outcomes.DispositionRequest
+	}
+	setAgentTicketDispositionReturns struct {
+		result1 outcomes.Outcome
+		result2 error
+	}
+	setAgentTicketDispositionReturnsOnCall map[int]struct {
+		result1 outcomes.Outcome
 		result2 error
 	}
 	SetAgentUserCredentialStub        func(credentials.PutRequest) error
@@ -1493,6 +1523,73 @@ func (fake *FakeClient) GetAgentTicketReturnsOnCall(i int, result1 tickets.Ticke
 	}{result1, result2, result3}
 }
 
+func (fake *FakeClient) GetAgentTicketOutcome(arg1 int) (outcomes.Outcome, bool, error) {
+	fake.getAgentTicketOutcomeMutex.Lock()
+	ret, specificReturn := fake.getAgentTicketOutcomeReturnsOnCall[len(fake.getAgentTicketOutcomeArgsForCall)]
+	fake.getAgentTicketOutcomeArgsForCall = append(fake.getAgentTicketOutcomeArgsForCall, struct {
+		arg1 int
+	}{arg1})
+	stub := fake.GetAgentTicketOutcomeStub
+	fakeReturns := fake.getAgentTicketOutcomeReturns
+	fake.recordInvocation("GetAgentTicketOutcome", []interface{}{arg1})
+	fake.getAgentTicketOutcomeMutex.Unlock()
+	if stub != nil {
+		return stub(arg1)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2, ret.result3
+	}
+	return fakeReturns.result1, fakeReturns.result2, fakeReturns.result3
+}
+
+func (fake *FakeClient) GetAgentTicketOutcomeCallCount() int {
+	fake.getAgentTicketOutcomeMutex.RLock()
+	defer fake.getAgentTicketOutcomeMutex.RUnlock()
+	return len(fake.getAgentTicketOutcomeArgsForCall)
+}
+
+func (fake *FakeClient) GetAgentTicketOutcomeCalls(stub func(int) (outcomes.Outcome, bool, error)) {
+	fake.getAgentTicketOutcomeMutex.Lock()
+	defer fake.getAgentTicketOutcomeMutex.Unlock()
+	fake.GetAgentTicketOutcomeStub = stub
+}
+
+func (fake *FakeClient) GetAgentTicketOutcomeArgsForCall(i int) int {
+	fake.getAgentTicketOutcomeMutex.RLock()
+	defer fake.getAgentTicketOutcomeMutex.RUnlock()
+	argsForCall := fake.getAgentTicketOutcomeArgsForCall[i]
+	return argsForCall.arg1
+}
+
+func (fake *FakeClient) GetAgentTicketOutcomeReturns(result1 outcomes.Outcome, result2 bool, result3 error) {
+	fake.getAgentTicketOutcomeMutex.Lock()
+	defer fake.getAgentTicketOutcomeMutex.Unlock()
+	fake.GetAgentTicketOutcomeStub = nil
+	fake.getAgentTicketOutcomeReturns = struct {
+		result1 outcomes.Outcome
+		result2 bool
+		result3 error
+	}{result1, result2, result3}
+}
+
+func (fake *FakeClient) GetAgentTicketOutcomeReturnsOnCall(i int, result1 outcomes.Outcome, result2 bool, result3 error) {
+	fake.getAgentTicketOutcomeMutex.Lock()
+	defer fake.getAgentTicketOutcomeMutex.Unlock()
+	fake.GetAgentTicketOutcomeStub = nil
+	if fake.getAgentTicketOutcomeReturnsOnCall == nil {
+		fake.getAgentTicketOutcomeReturnsOnCall = make(map[int]struct {
+			result1 outcomes.Outcome
+			result2 bool
+			result3 error
+		})
+	}
+	fake.getAgentTicketOutcomeReturnsOnCall[i] = struct {
+		result1 outcomes.Outcome
+		result2 bool
+		result3 error
+	}{result1, result2, result3}
+}
+
 func (fake *FakeClient) GetCLIReader(arg1 string, arg2 string) (io.ReadCloser, http.Header, error) {
 	fake.getCLIReaderMutex.Lock()
 	ret, specificReturn := fake.getCLIReaderReturnsOnCall[len(fake.getCLIReaderArgsForCall)]
@@ -2320,6 +2417,71 @@ func (fake *FakeClient) SaveWorkerReturnsOnCall(i int, result1 *atc.Worker, resu
 	}
 	fake.saveWorkerReturnsOnCall[i] = struct {
 		result1 *atc.Worker
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeClient) SetAgentTicketDisposition(arg1 int, arg2 outcomes.DispositionRequest) (outcomes.Outcome, error) {
+	fake.setAgentTicketDispositionMutex.Lock()
+	ret, specificReturn := fake.setAgentTicketDispositionReturnsOnCall[len(fake.setAgentTicketDispositionArgsForCall)]
+	fake.setAgentTicketDispositionArgsForCall = append(fake.setAgentTicketDispositionArgsForCall, struct {
+		arg1 int
+		arg2 outcomes.DispositionRequest
+	}{arg1, arg2})
+	stub := fake.SetAgentTicketDispositionStub
+	fakeReturns := fake.setAgentTicketDispositionReturns
+	fake.recordInvocation("SetAgentTicketDisposition", []interface{}{arg1, arg2})
+	fake.setAgentTicketDispositionMutex.Unlock()
+	if stub != nil {
+		return stub(arg1, arg2)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2
+	}
+	return fakeReturns.result1, fakeReturns.result2
+}
+
+func (fake *FakeClient) SetAgentTicketDispositionCallCount() int {
+	fake.setAgentTicketDispositionMutex.RLock()
+	defer fake.setAgentTicketDispositionMutex.RUnlock()
+	return len(fake.setAgentTicketDispositionArgsForCall)
+}
+
+func (fake *FakeClient) SetAgentTicketDispositionCalls(stub func(int, outcomes.DispositionRequest) (outcomes.Outcome, error)) {
+	fake.setAgentTicketDispositionMutex.Lock()
+	defer fake.setAgentTicketDispositionMutex.Unlock()
+	fake.SetAgentTicketDispositionStub = stub
+}
+
+func (fake *FakeClient) SetAgentTicketDispositionArgsForCall(i int) (int, outcomes.DispositionRequest) {
+	fake.setAgentTicketDispositionMutex.RLock()
+	defer fake.setAgentTicketDispositionMutex.RUnlock()
+	argsForCall := fake.setAgentTicketDispositionArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2
+}
+
+func (fake *FakeClient) SetAgentTicketDispositionReturns(result1 outcomes.Outcome, result2 error) {
+	fake.setAgentTicketDispositionMutex.Lock()
+	defer fake.setAgentTicketDispositionMutex.Unlock()
+	fake.SetAgentTicketDispositionStub = nil
+	fake.setAgentTicketDispositionReturns = struct {
+		result1 outcomes.Outcome
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeClient) SetAgentTicketDispositionReturnsOnCall(i int, result1 outcomes.Outcome, result2 error) {
+	fake.setAgentTicketDispositionMutex.Lock()
+	defer fake.setAgentTicketDispositionMutex.Unlock()
+	fake.SetAgentTicketDispositionStub = nil
+	if fake.setAgentTicketDispositionReturnsOnCall == nil {
+		fake.setAgentTicketDispositionReturnsOnCall = make(map[int]struct {
+			result1 outcomes.Outcome
+			result2 error
+		})
+	}
+	fake.setAgentTicketDispositionReturnsOnCall[i] = struct {
+		result1 outcomes.Outcome
 		result2 error
 	}{result1, result2}
 }
