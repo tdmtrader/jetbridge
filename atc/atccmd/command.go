@@ -2437,6 +2437,7 @@ func (cmd *RunCommand) constructAPIHandler(
 		cmd.AgentDailyBudgetUSD,
 		dispatch.NewTicketBudgets(db.NewAgentTicketsFactory(dbConn), db.NewAgentWorkflowsFactory(dbConn)),
 		db.NewAgentOutcomesFactory(dbConn),
+		nil, // outcomeDiffProvider: wired by the C5 outcome-watcher flag group (--agent-outcome-git-dir master switch)
 		db.NewAgentWorkflowsFactory(dbConn),
 		dispatch.NewHTTPHandler(dispatch.Deps{
 			Tickets:        db.NewAgentTicketsFactory(dbConn),

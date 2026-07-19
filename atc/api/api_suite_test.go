@@ -247,6 +247,7 @@ var _ = BeforeEach(func() {
 		0,
 		budget.NoTicketBudgets{},
 		outcomes.NewMemoryStore(),
+		nil, // outcomeDiffProvider: diff API disabled (no mirror cache in the suite)
 		workflow.NewMemoryStore(),
 		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusNotImplemented) // dispatch handler stub
