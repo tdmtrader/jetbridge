@@ -14,6 +14,7 @@ import AgentBadge
 import Application.Models exposing (Session)
 import Colors
 import Concourse.Agent as Agent
+import DateFormat
 import EffectTransformer exposing (ET)
 import Html exposing (Html)
 import Html.Attributes exposing (checked, class, disabled, href, id, placeholder, style, title, type_, value)
@@ -1135,11 +1136,11 @@ tableCell align content =
         [ Html.text content ]
 
 
-{-| Humanize an optional epoch timestamp as a yyyy-mm-dd hh:mm in the viewer's
-own time zone (from `session.timeZone`), or "—" when absent. Showing local time
-is what an operator expects for "which of today's runs came first"; the minutes
-matter on an ops console. The server-aggregated cost buckets stay labelled as
-UTC days separately.
+{-| Humanize an optional timestamp as a compact absolute time in the viewer's
+own time zone (from `session.timeZone`), e.g. "Jul 18, 2026 14:30", or "—"
+when absent. Showing local time is what an operator expects for "which of
+today's runs came first"; the minutes matter on an ops console. The
+server-aggregated cost buckets stay labelled as UTC days separately.
 -}
 formatPosix : Time.Zone -> Maybe Time.Posix -> String
 formatPosix zone maybe =
@@ -1148,60 +1149,19 @@ formatPosix zone maybe =
             "—"
 
         Just posix ->
-            String.fromInt (Time.toYear zone posix)
-                ++ "-"
-                ++ pad2 (monthNumber (Time.toMonth zone posix))
-                ++ "-"
-                ++ pad2 (Time.toDay zone posix)
-                ++ " "
-                ++ pad2 (Time.toHour zone posix)
-                ++ ":"
-                ++ pad2 (Time.toMinute zone posix)
-
-
-pad2 : Int -> String
-pad2 n =
-    String.padLeft 2 '0' (String.fromInt n)
-
-
-monthNumber : Time.Month -> Int
-monthNumber month =
-    case month of
-        Time.Jan ->
-            1
-
-        Time.Feb ->
-            2
-
-        Time.Mar ->
-            3
-
-        Time.Apr ->
-            4
-
-        Time.May ->
-            5
-
-        Time.Jun ->
-            6
-
-        Time.Jul ->
-            7
-
-        Time.Aug ->
-            8
-
-        Time.Sep ->
-            9
-
-        Time.Oct ->
-            10
-
-        Time.Nov ->
-            11
-
-        Time.Dec ->
-            12
+            DateFormat.format
+                [ DateFormat.monthNameAbbreviated
+                , DateFormat.text " "
+                , DateFormat.dayOfMonthNumber
+                , DateFormat.text ", "
+                , DateFormat.yearNumber
+                , DateFormat.text " "
+                , DateFormat.hourMilitaryFixed
+                , DateFormat.text ":"
+                , DateFormat.minuteFixed
+                ]
+                zone
+                posix
 
 
 

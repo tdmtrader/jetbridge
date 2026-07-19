@@ -27,6 +27,7 @@ import Build.AgentReview
 import Concourse.Agent
 import Concourse.AgentReview
 import Concourse.AgentTicket as AgentTicket
+import DateFormat
 import Dict exposing (Dict)
 import EffectTransformer exposing (ET)
 import Html exposing (Html)
@@ -1319,62 +1320,19 @@ page has a zone but no live "now" clock to diff against.
 -}
 formatTimestamp : Time.Zone -> Int -> String
 formatTimestamp zone epochSeconds =
-    let
-        posix =
-            Time.millisToPosix (epochSeconds * 1000)
-
-        pad n =
-            String.padLeft 2 '0' (String.fromInt n)
-    in
-    monthAbbr (Time.toMonth zone posix)
-        ++ " "
-        ++ String.fromInt (Time.toDay zone posix)
-        ++ ", "
-        ++ String.fromInt (Time.toYear zone posix)
-        ++ " "
-        ++ pad (Time.toHour zone posix)
-        ++ ":"
-        ++ pad (Time.toMinute zone posix)
-
-
-monthAbbr : Time.Month -> String
-monthAbbr month =
-    case month of
-        Time.Jan ->
-            "Jan"
-
-        Time.Feb ->
-            "Feb"
-
-        Time.Mar ->
-            "Mar"
-
-        Time.Apr ->
-            "Apr"
-
-        Time.May ->
-            "May"
-
-        Time.Jun ->
-            "Jun"
-
-        Time.Jul ->
-            "Jul"
-
-        Time.Aug ->
-            "Aug"
-
-        Time.Sep ->
-            "Sep"
-
-        Time.Oct ->
-            "Oct"
-
-        Time.Nov ->
-            "Nov"
-
-        Time.Dec ->
-            "Dec"
+    DateFormat.format
+        [ DateFormat.monthNameAbbreviated
+        , DateFormat.text " "
+        , DateFormat.dayOfMonthNumber
+        , DateFormat.text ", "
+        , DateFormat.yearNumber
+        , DateFormat.text " "
+        , DateFormat.hourMilitaryFixed
+        , DateFormat.text ":"
+        , DateFormat.minuteFixed
+        ]
+        zone
+        (Time.millisToPosix (epochSeconds * 1000))
 
 
 formatUsd : Float -> String

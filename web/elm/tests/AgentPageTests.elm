@@ -212,6 +212,17 @@ all =
                         [ containing [ text "review-diff" ]
                         , containing [ class "agent-badge", text "Failed" ]
                         ]
+        , test "run rows show created-at in the app-wide date format" <|
+            \_ ->
+                Common.init "/agent"
+                    |> Application.handleCallback
+                        (Callback.AgentRunMetricsFetched
+                            (Ok [ { sampleRun | createdAt = 1784385000 } ])
+                        )
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Query.find [ class "agent-run-row" ]
+                    |> Query.has [ containing [ text "Jul 18, 2026 14:30" ] ]
         , test "a runs poll failure after a load shows a stale-data warning and keeps the data" <|
             \_ ->
                 Common.init "/agent"

@@ -14,7 +14,7 @@ import Message.Message
 import Message.TopLevelMessage as Msgs
 import Test exposing (Test, describe, test)
 import Test.Html.Query as Query
-import Test.Html.Selector exposing (attribute, class, containing, tag, text)
+import Test.Html.Selector exposing (attribute, class, containing, id, tag, text)
 import Url
 
 
@@ -100,6 +100,21 @@ all =
                                 , containing [ text "Plan" ]
                                 , containing [ text "spec body" ]
                                 ]
+                    )
+        , test "shows the created timestamp in the app-wide date format" <|
+            \_ ->
+                withDetail sampleDetailJson
+                    (\d ->
+                        let
+                            ticket =
+                                d.ticket
+                        in
+                        renderWith "/agent-tickets/12"
+                            (Callback.AgentTicketFetched
+                                (Ok { d | ticket = { ticket | createdAt = 1784385000 } })
+                            )
+                            |> Query.find [ id "ticket-timestamps" ]
+                            |> Query.has [ text "created Jul 18, 2026 14:30" ]
                     )
         , test "offers merge / send-back transitions for a needs_review ticket" <|
             \_ ->
