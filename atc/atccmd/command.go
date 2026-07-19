@@ -2476,6 +2476,7 @@ func (cmd *RunCommand) constructAPIHandler(
 		agentPrincipalsFactory,
 		cmd.AgentReviewPublishToken,
 		db.NewAgentUserCredentialsFactory(dbConn),
+		cmd.AgentStepImage,
 		db.NewAgentCostLedgerFactory(dbConn),
 		cmd.AgentDailyBudgetUSD,
 		dispatch.NewTicketBudgets(db.NewAgentTicketsFactory(dbConn), db.NewAgentWorkflowsFactory(dbConn)),

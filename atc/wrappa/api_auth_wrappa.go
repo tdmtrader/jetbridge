@@ -93,6 +93,7 @@ func (wrappa *APIAuthWrappa) Wrap(handlers rata.Handlers) rata.Handlers {
 			atc.SetAgentUserCredential,
 			atc.GetAgentUserCredentialStatus,
 			atc.DeleteAgentUserCredential,
+			atc.GetAgentPlatformInfo,
 			atc.MCPEndpoint:
 			newHandler = auth.CheckAuthenticationHandler(handler, rejector)
 

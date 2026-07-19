@@ -106,6 +106,9 @@ func NewHandler(
 	principalsStore principalsapi.Store,
 	agentReviewPublishToken string,
 	credentialsBackend credentials.Backend,
+	// agentStepImage is the configured --agent-step-image value; the
+	// platform-info endpoint derives image-version skew from it (#45).
+	agentStepImage string,
 	costLedger budget.Ledger,
 	agentDailyBudgetUSD float64,
 	ticketBudgets budget.TicketBudgets,
@@ -190,6 +193,10 @@ func NewHandler(
 		}
 		return claims.Sub, name, acc.IsAdmin(), claims.Sub != ""
 	})
+	// Ticket #45 (runner-image skew visibility): the platform facts served
+	// beside the /agent page's credentials/platform section. `version` is
+	// concourse.Version at build time — the web binary the image can lag.
+	platformInfoServer := credentials.PlatformInfoHandler(credentials.NewPlatformInfo(agentStepImage, version))
 	costChecker := budget.NewChecker(costLedger, ticketBudgets, budget.Config{
 		GlobalDailyCapUSD: agentDailyBudgetUSD,
 	})
@@ -359,6 +366,7 @@ func NewHandler(
 		atc.SetAgentUserCredential:       http.HandlerFunc(credentialsServer.Set),
 		atc.GetAgentUserCredentialStatus: http.HandlerFunc(credentialsServer.Status),
 		atc.DeleteAgentUserCredential:    http.HandlerFunc(credentialsServer.Delete),
+		atc.GetAgentPlatformInfo:         platformInfoServer,
 		atc.GetAgentCostRollup:           http.HandlerFunc(costsServer.GetRollup),
 		atc.SubmitAgentCostRecord:        http.HandlerFunc(costsServer.SubmitRecord),
 		atc.ListAgentWorkflows:           http.HandlerFunc(workflowsServer.List),
