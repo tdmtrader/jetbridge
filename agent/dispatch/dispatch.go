@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"code.cloudfoundry.org/lager/v3"
@@ -87,6 +88,10 @@ type Deps struct {
 	// (platform-funded, as before).
 	Users UserLookup
 	Secrets     credentials.SecretAttacher
+
+	// RunTimeout bounds the per-run principal token (§2.8.2: expires_at =
+	// now + --agent-run-timeout). Zero preserves the pre-flag 24h default.
+	RunTimeout time.Duration
 
 	// SecretLabels, when non-nil, adds the concourse/ticket label after a
 	// successful Attach. Best-effort: failures are logged, never fatal.
@@ -256,15 +261,22 @@ func attachRunSecret(ctx context.Context, deps Deps, t *tickets.Ticket, runID in
 
 	principalToken := ""
 	if deps.Principals != nil {
-		expires := time.Now().Add(24 * time.Hour).Unix()
+		timeout := deps.RunTimeout
+		if timeout <= 0 {
+			timeout = 24 * time.Hour // pre-flag default, kept for zero-value Deps
+		}
+		expires := time.Now().Add(timeout).Unix()
 		_, token, err := deps.Principals.Create(principals.CreateSpec{
-			Name:        fmt.Sprintf("run-%d", runID),
+			// §2.8.2 name — identical to the secret name so the reaper's
+			// RevokeByName(RunSecretName(runID)) adapter finds it.
+			Name:        credentials.RunSecretName(runID),
 			Description: fmt.Sprintf("per-run principal for pipeline run %d (ticket %d)", runID, t.ID),
 			Scopes: []string{
 				principals.ScopeTicketsRead,
 				principals.ScopeTicketsWrite,
 				principals.ScopeMetricsWrite,
 				principals.ScopeCostsWrite,
+				principals.ScopeQuestionsAnswer, // wave-3 platform-mcp; additive now (tokens are immutable)
 			},
 			CreatedBy: "dispatch",
 			ExpiresAt: &expires,
@@ -296,6 +308,21 @@ func attachRunSecret(ctx context.Context, deps Deps, t *tickets.Ticket, runID in
 // PlatformSecretSyncer.
 func resolveRunCredential(deps Deps, t *tickets.Ticket) (*credentials.Credential, error) {
 	kinds := []string{credentials.KindAnthropicOAuth, credentials.KindAnthropicAPIKey}
+	now := time.Now().Unix()
+	var expiredOwners []string
+
+	usable := func(cred *credentials.Credential) bool {
+		if cred.ExpiresAt > 0 && cred.ExpiresAt <= now {
+			owner := cred.UserName
+			if owner == "" {
+				owner = fmt.Sprintf("user %d", cred.UserID)
+			}
+			expiredOwners = append(expiredOwners, fmt.Sprintf("%s (%s, expired %s)",
+				owner, cred.Kind, time.Unix(cred.ExpiresAt, 0).UTC().Format(time.RFC3339)))
+			return false
+		}
+		return true
+	}
 
 	if t.UserID != nil {
 		for _, kind := range kinds {
@@ -303,7 +330,7 @@ func resolveRunCredential(deps Deps, t *tickets.Ticket) (*credentials.Credential
 			if err != nil {
 				return nil, err
 			}
-			if found {
+			if found && usable(cred) {
 				return cred, nil
 			}
 		}
@@ -319,12 +346,16 @@ func resolveRunCredential(deps Deps, t *tickets.Ticket) (*credentials.Credential
 			if err != nil {
 				return nil, err
 			}
-			if credFound {
+			if credFound && usable(cred) {
 				return cred, nil
 			}
 		}
 	}
 
+	if len(expiredOwners) > 0 {
+		return nil, fmt.Errorf("no usable Anthropic credential for ticket %d — expired: %s; re-vault with `fly agent auth` (or `--platform`)",
+			t.ID, strings.Join(expiredOwners, "; "))
+	}
 	return nil, fmt.Errorf("no vaulted Anthropic credential for ticket %d (user or platform): run `fly agent auth` or `fly agent auth --platform`", t.ID)
 }
 

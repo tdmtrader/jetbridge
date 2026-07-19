@@ -1,6 +1,9 @@
 package dispatch_test
 
 import (
+	"strings"
+	"time"
+
 	"context"
 	"errors"
 	"fmt"
@@ -96,11 +99,11 @@ func dispatchDeps(t *testing.T) (dispatch.Deps, *tickets.MemoryStore, *fakeSaver
 	runs.CreateRunReturns(run, nil)
 
 	deps := dispatch.Deps{
-		Tickets:        store,
-		Workflows:      &fakeWorkflows{byName: map[string]*workflow.Definition{"smoke": smokeDefinition()}},
-		Templates:      saver,
-		Runs:           runs,
-		Principals:     principals.NewMemoryStore(),
+		Tickets:    store,
+		Workflows:  &fakeWorkflows{byName: map[string]*workflow.Definition{"smoke": smokeDefinition()}},
+		Templates:  saver,
+		Runs:       runs,
+		Principals: principals.NewMemoryStore(),
 		Credentials: &fakeBackend{
 			platformUserID: 9,
 			creds: map[int]map[string]*credentials.Credential{
@@ -379,5 +382,102 @@ func TestDispatchOneUnknownUserFallsBackToPlatform(t *testing.T) {
 	got, _, _ := store.Get(id)
 	if got.UserID != nil {
 		t.Errorf("unresolvable user leaves user_id NULL, got %v", got.UserID)
+	}
+}
+
+func principalByName(t *testing.T, store *principals.MemoryStore, name string) principals.Principal {
+	t.Helper()
+	list, err := store.List()
+	if err != nil {
+		t.Fatalf("list principals: %v", err)
+	}
+	for _, p := range list {
+		if p.Name == name {
+			return p
+		}
+	}
+	t.Fatalf("no principal named %q in %d principals", name, len(list))
+	return principals.Principal{}
+}
+
+func TestAttachMintsContractShapedPrincipal(t *testing.T) {
+	deps, store, _, _ := dispatchDeps(t)
+	deps.RunTimeout = 6 * time.Hour
+	pstore := principals.NewMemoryStore()
+	deps.Principals = pstore
+	id := queuedTicket(t, store, "smoke")
+
+	before := time.Now()
+	if _, err := dispatch.DispatchOne(context.Background(), deps, id, "loop"); err != nil {
+		t.Fatalf("DispatchOne: %v", err)
+	}
+	// Run id 555 comes from dispatchDeps' FakePipelineRun.
+	p := principalByName(t, pstore, "agent-run-555")
+	wantScopes := map[string]bool{
+		principals.ScopeTicketsRead: true, principals.ScopeTicketsWrite: true,
+		principals.ScopeMetricsWrite: true, principals.ScopeCostsWrite: true,
+		principals.ScopeQuestionsAnswer: true,
+	}
+	if len(p.Scopes) != len(wantScopes) {
+		t.Errorf("want 5 scopes incl. questions:answer, got %v", p.Scopes)
+	}
+	for _, s := range p.Scopes {
+		if !wantScopes[s] {
+			t.Errorf("unexpected scope %q", s)
+		}
+	}
+	if p.ExpiresAt == nil {
+		t.Fatal("expiry must be set")
+	}
+	lo := before.Add(6*time.Hour - time.Minute).Unix()
+	hi := before.Add(6*time.Hour + time.Minute).Unix()
+	if *p.ExpiresAt < lo || *p.ExpiresAt > hi {
+		t.Errorf("expiry must be now+RunTimeout (6h), got %d not in [%d,%d]", *p.ExpiresAt, lo, hi)
+	}
+}
+
+func TestResolveRunCredentialSkipsExpiredNamingOwner(t *testing.T) {
+	deps, store, _, _ := dispatchDeps(t)
+	deps.Users = fakeUserLookup{ids: map[string]int{"tdm": 42}}
+	expired := time.Now().Add(-time.Hour).Unix()
+	deps.Credentials = &fakeBackend{
+		platformUserID: 9,
+		creds: map[int]map[string]*credentials.Credential{
+			// user cred expired; platform cred valid → platform funds the run
+			42: {credentials.KindAnthropicOAuth: {UserID: 42, UserName: "tdm", Kind: credentials.KindAnthropicOAuth, Token: "stale", ExpiresAt: expired}},
+			9:  {credentials.KindAnthropicOAuth: {UserID: 9, Kind: credentials.KindAnthropicOAuth, Token: "platform-tok"}},
+		},
+	}
+	attacher := new(credentialsfakes.FakeSecretAttacher)
+	deps.Secrets = attacher
+	id := queuedTicket(t, store, "smoke")
+
+	if _, err := dispatch.DispatchOne(context.Background(), deps, id, "loop"); err != nil {
+		t.Fatalf("expired user cred must fall back to platform: %v", err)
+	}
+	_, _, cred, _ := attacher.AttachArgsForCall(0)
+	if cred.Token != "platform-tok" {
+		t.Errorf("expected platform fallback past expired user cred, got %q", cred.Token)
+	}
+}
+
+func TestResolveRunCredentialAllExpiredErrorsWithOwner(t *testing.T) {
+	deps, store, _, _ := dispatchDeps(t)
+	expired := time.Now().Add(-time.Hour).Unix()
+	deps.Credentials = &fakeBackend{
+		platformUserID: 9,
+		creds: map[int]map[string]*credentials.Credential{
+			9: {credentials.KindAnthropicOAuth: {UserID: 9, UserName: "platform", Kind: credentials.KindAnthropicOAuth, Token: "stale", ExpiresAt: expired}},
+		},
+	}
+	id := queuedTicket(t, store, "smoke")
+
+	_, err := dispatch.DispatchOne(context.Background(), deps, id, "loop")
+	if err == nil || !strings.Contains(err.Error(), "expired") || !strings.Contains(err.Error(), "platform") {
+		t.Fatalf("all-expired must error naming the owner, got %v", err)
+	}
+	got, _, _ := store.Get(id)
+	if got.State != tickets.StateQueued {
+		t.Errorf("credential failure is pre-transition: ticket stays queued, got %s", got.State)
 	}
 }
