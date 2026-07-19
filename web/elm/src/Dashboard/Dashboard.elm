@@ -1276,26 +1276,35 @@ agentTicketStrip model =
 
 agentActiveStates : List String
 agentActiveStates =
-    [ "needs_review", "sent_back", "running", "queued" ]
+    [ "needs_review", "errored", "failed", "sent_back", "running", "queued" ]
 
 
 agentStateOrder : String -> Int
 agentStateOrder state =
+    -- Attention-first: needs_review is the human queue, and errored/failed are
+    -- the things that broke — rank them together at the top so they survive the
+    -- `List.take` cap on the strip and never get pushed off by running/queued.
     case state of
         "needs_review" ->
             0
 
-        "sent_back" ->
+        "errored" ->
             1
 
-        "running" ->
+        "failed" ->
             2
 
-        "queued" ->
+        "sent_back" ->
             3
 
-        _ ->
+        "running" ->
             4
+
+        "queued" ->
+            5
+
+        _ ->
+            6
 
 
 agentTicketChip : Dict String Float -> Concourse.AgentTicket.Ticket -> Html Message

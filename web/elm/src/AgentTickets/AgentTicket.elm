@@ -212,8 +212,10 @@ handleCallback callback ( model, effects ) =
 handleDelivery : Delivery -> ET Model
 handleDelivery delivery ( model, effects ) =
     case delivery of
-        ClockTicked OneMinute _ ->
-            -- Self-healing refresh; only replaces fetched data.
+        ClockTicked FiveSeconds _ ->
+            -- U11: live-update on the dashboard's 5s cadence so state, spend and
+            -- runs stay current (a page was showing "Running" ~20 min after the
+            -- ticket errored). Only replaces fetched data.
             ( model, effects ++ [ FetchAgentTicket model.ticketId, FetchAgentTicketMetrics model.ticketId ] )
 
         _ ->
@@ -322,7 +324,7 @@ tooltip _ _ =
 
 subscriptions : List Subscription
 subscriptions =
-    [ OnClockTick OneMinute ]
+    [ OnClockTick FiveSeconds ]
 
 
 

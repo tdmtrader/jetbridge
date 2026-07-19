@@ -81,6 +81,9 @@ type Message
     | ClickAgentTicketDispatch
     | ConfirmAgentTicketDispatch
     | CancelAgentTicketDispatch
+      -- Agent Ticket queue page (client-side filter + sort)
+    | AgentTicketsFilterChanged String
+    | AgentTicketsSortToggled
       -- common
     | Hover (Maybe DomID)
     | Click DomID

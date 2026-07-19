@@ -32,6 +32,11 @@ mergedTickets =
     ticketsFrom """[ { "id": 5, "title": "already done", "state": "merged", "created_at": 1 } ]"""
 
 
+erroredTickets : List AgentTicket.Ticket
+erroredTickets =
+    ticketsFrom """[ { "id": 8, "title": "blew up", "state": "errored", "created_at": 300 } ]"""
+
+
 costRollup : Callback.Callback
 costRollup =
     Callback.AgentCostRollupFetched
@@ -104,4 +109,16 @@ all =
                     |> Tuple.first
                     |> Common.queryView
                     |> Query.hasNot [ id "agent-ticket-strip" ]
+        , test "surfaces an errored ticket as a chip (U9)" <|
+            \_ ->
+                load
+                    |> Application.handleCallback (Callback.AgentTicketsFetched (Ok erroredTickets))
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Query.find [ id "agent-ticket-strip" ]
+                    |> Query.has
+                        [ tag "a"
+                        , attribute (Attr.href "/agent-tickets/8")
+                        , containing [ text "#8 blew up" ]
+                        ]
         ]
