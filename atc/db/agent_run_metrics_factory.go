@@ -210,11 +210,18 @@ const runMetricsColumns = `m.ticket_id, m.pipeline_run_id, m.build_id, m.plan_id
 	m.input_tokens, m.output_tokens, m.cache_read_tokens, m.cache_creation_tokens,
 	m.turns, m.wall_time_seconds, m.cost_usd,
 	m.results, m.events_artifact, m.event_counts,
-	EXTRACT(EPOCH FROM m.created_at)::bigint`
+	EXTRACT(EPOCH FROM m.created_at)::bigint,
+	b.status`
+
+// runMetricsFrom joins the builds table so each metric row carries the
+// server-derived build status (U3). LEFT JOIN so a metric whose build row is
+// absent still returns (build_status scans as empty).
+const runMetricsFrom = ` FROM agent_run_metrics m
+	 LEFT JOIN builds b ON b.id = m.build_id`
 
 func (f *agentRunMetricsFactory) GetByBuild(buildID int) ([]agentschema.RunMetrics, error) {
 	rows, err := f.conn.Query(
-		`SELECT `+runMetricsColumns+` FROM agent_run_metrics m
+		`SELECT `+runMetricsColumns+runMetricsFrom+`
 		 WHERE m.build_id = $1 ORDER BY m.created_at ASC, m.id ASC`, buildID)
 	if err != nil {
 		return nil, err
@@ -225,7 +232,7 @@ func (f *agentRunMetricsFactory) GetByBuild(buildID int) ([]agentschema.RunMetri
 
 func (f *agentRunMetricsFactory) ListByTicket(ticketID int) ([]agentschema.RunMetrics, error) {
 	rows, err := f.conn.Query(
-		`SELECT `+runMetricsColumns+` FROM agent_run_metrics m
+		`SELECT `+runMetricsColumns+runMetricsFrom+`
 		 WHERE m.ticket_id = $1 ORDER BY m.created_at ASC, m.id ASC`, ticketID)
 	if err != nil {
 		return nil, err
@@ -246,7 +253,7 @@ func (f *agentRunMetricsFactory) ListRecent(limit int) ([]agentschema.RunMetrics
 		limit = defaultRecentLimit
 	}
 	rows, err := f.conn.Query(
-		`SELECT `+runMetricsColumns+` FROM agent_run_metrics m
+		`SELECT `+runMetricsColumns+runMetricsFrom+`
 		 ORDER BY m.created_at DESC, m.id DESC LIMIT $1`, limit)
 	if err != nil {
 		return nil, err
@@ -260,6 +267,7 @@ func scanRunMetricsRows(rows *sql.Rows) ([]agentschema.RunMetrics, error) {
 	for rows.Next() {
 		var rm agentschema.RunMetrics
 		var resultsPayload, eventCounts []byte
+		var buildStatus sql.NullString
 		err := rows.Scan(
 			&rm.TicketID, &rm.PipelineRunID, &rm.BuildID, &rm.PlanID, &rm.StepName,
 			&rm.WorkflowName, &rm.WorkflowVersion, &rm.WorkflowHash,
@@ -268,10 +276,12 @@ func scanRunMetricsRows(rows *sql.Rows) ([]agentschema.RunMetrics, error) {
 			&rm.Turns, &rm.WallTimeSeconds, &rm.CostUSD,
 			&resultsPayload, &rm.EventsArtifact, &eventCounts,
 			&rm.CreatedAt,
+			&buildStatus,
 		)
 		if err != nil {
 			return nil, err
 		}
+		rm.BuildStatus = buildStatus.String
 		if len(resultsPayload) > 0 {
 			rm.Results = json.RawMessage(resultsPayload)
 		}

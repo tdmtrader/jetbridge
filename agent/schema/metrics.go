@@ -23,7 +23,13 @@ type RunMetrics struct {
 	WorkflowName    string          `json:"workflow_name,omitempty"`
 	WorkflowVersion *int            `json:"workflow_version,omitempty"`
 	WorkflowHash    string          `json:"workflow_hash,omitempty"`
-	Status          string          `json:"status"` // ok | failed | error
+	Status          string          `json:"status"` // ok | failed | error — the AGENT STEP exit status
+	// BuildStatus is the status of the pipeline build the step ran in
+	// (pending|started|succeeded|failed|errored|aborted). It is derived
+	// server-side by joining the builds table on read and is never accepted
+	// from the ingesting client; display surfaces render this as the run
+	// truth so a green step status can never mask a failed build (U3).
+	BuildStatus     string          `json:"build_status,omitempty"`
 	Summary         string          `json:"summary"`
 	Model           string          `json:"model"`
 	Usage           Usage           `json:"usage"`
