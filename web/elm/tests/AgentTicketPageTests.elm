@@ -228,6 +228,70 @@ all =
                                 , attribute (Html.Attributes.href "/builds/561978")
                                 ]
                     )
+        , test "run history shows one row per build, newest first, with per-build cost and final summary" <|
+            \_ ->
+                let
+                    metric buildId planId cost summary =
+                        { ticketId = Just 12
+                        , pipelineRunId = Just 2
+                        , buildId = buildId
+                        , planId = planId
+                        , stepName = "implement"
+                        , workflowName = "develop"
+                        , workflowVersion = Just 1
+                        , status = "ok"
+                        , buildStatus = "succeeded"
+                        , outcome = ""
+                        , summary = summary
+                        , model = ""
+                        , usage =
+                            { inputTokens = 0
+                            , outputTokens = 0
+                            , cacheReadInputTokens = 0
+                            , cacheCreationInputTokens = 0
+                            }
+                        , turns = 1
+                        , wallTimeSeconds = 1
+                        , costUsd = cost
+                        , eventCounts = Dict.empty
+                        , createdAt = 100
+                        }
+                in
+                withDetail sampleDetailJson
+                    (\d ->
+                        Common.init "/agent-tickets/12"
+                            |> Application.handleCallback (Callback.AgentTicketFetched (Ok d))
+                            |> Tuple.first
+                            |> Application.handleCallback
+                                (Callback.AgentTicketMetricsFetched 12
+                                    (Ok
+                                        -- rows arrive created_at ASC: build 100's
+                                        -- two steps, then build 200's single step
+                                        [ metric 100 "p1" 0.25 "agent self-report"
+                                        , metric 100 "p2" 0.25 "harvest verdict"
+                                        , metric 200 "p3" 1.5 "newest run verdict"
+                                        ]
+                                    )
+                                )
+                            |> Tuple.first
+                            |> Common.queryView
+                            |> Query.findAll [ class "agent-ticket-run-row" ]
+                            |> Expect.all
+                                [ Query.count (Expect.equal 2)
+                                , Query.index 0
+                                    >> Expect.all
+                                        [ Query.has [ text "build 200" ]
+                                        , Query.has [ text "newest run verdict" ]
+                                        , Query.has [ text "$1.50" ]
+                                        ]
+                                , Query.index 1
+                                    >> Expect.all
+                                        [ Query.has [ text "build 100" ]
+                                        , Query.has [ text "harvest verdict" ]
+                                        , Query.has [ text "$0.50" ]
+                                        ]
+                                ]
+                    )
         , test "a periodic self-heal refetch does not clobber an open edit form" <|
             \_ ->
                 withDetail sampleDetailJson

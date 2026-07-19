@@ -33,6 +33,7 @@ import EffectTransformer exposing (ET)
 import Html exposing (Html)
 import Html.Attributes exposing (attribute, class, href, id, placeholder, style, value)
 import Html.Events exposing (on, onClick, onInput)
+import Html.Lazy
 import Json.Decode
 import Login.Login as Login
 import Message.Callback exposing (Callback(..))
@@ -61,6 +62,7 @@ type alias Model =
         { ticketId : Int
         , detail : Maybe AgentTicket.Detail
         , runMetrics : List Concourse.Agent.RunMetric
+        , runMetricsByBuild : Dict Int (List Concourse.Agent.RunMetric)
         , reviewBuildId : Maybe Int
         , activeTab : Tab
         , loaded : Bool
@@ -91,6 +93,7 @@ init { id } =
     ( { ticketId = id
       , detail = Nothing
       , runMetrics = []
+      , runMetricsByBuild = Dict.empty
       , reviewBuildId = Nothing
       , activeTab = SpecTab
       , loaded = False
@@ -129,13 +132,29 @@ documentTitle model =
 handleCallback : Callback -> ET Model
 handleCallback callback ( model, effects ) =
     case callback of
-        AgentTicketFetched (Ok detail) ->
+        AgentTicketFetched (Ok fresh) ->
             -- Only replace fetched data. The edit buffers are deliberately
             -- not written here: they are seeded when the user clicks Edit
             -- (see ClickAgentTicketEdit), so the 5s self-heal refetch cannot
             -- silently revert unsaved typing — a guard this callback once
             -- forgot, clobbering an open edit every few seconds.
             let
+                -- Keep the previously installed record when the refetch decoded
+                -- identical data: Html.Lazy compares arguments by reference, so
+                -- installing an equal-but-fresh record every 5s would defeat
+                -- every lazy view below.
+                detail =
+                    case model.detail of
+                        Just old ->
+                            if old == fresh then
+                                old
+
+                            else
+                                fresh
+
+                        Nothing ->
+                            fresh
+
                 stateChanged =
                     model.detail
                         |> Maybe.map (\old -> old.ticket.state /= detail.ticket.state)
@@ -184,12 +203,22 @@ handleCallback callback ( model, effects ) =
         AgentTicketFetched (Err _) ->
             ( { model | loaded = True, loadError = True }, effects )
 
-        AgentTicketMetricsFetched _ (Ok metrics) ->
+        AgentTicketMetricsFetched _ (Ok fresh) ->
             let
+                -- Reference-preserved like the detail refetch above, and the
+                -- by-build grouping the run history renders from is computed
+                -- once per change instead of on every render.
+                ( metrics, metricsByBuild ) =
+                    if fresh == model.runMetrics then
+                        ( model.runMetrics, model.runMetricsByBuild )
+
+                    else
+                        ( fresh, groupMetricsByBuild fresh )
+
                 latestBuild =
                     metrics |> List.map .buildId |> List.maximum
             in
-            ( { model | runMetrics = metrics, reviewBuildId = latestBuild }
+            ( { model | runMetrics = metrics, runMetricsByBuild = metricsByBuild, reviewBuildId = latestBuild }
             , case latestBuild of
                 Just b ->
                     effects ++ [ FetchBuildAgentReviews b ]
@@ -476,14 +505,18 @@ content session model =
                         , actionErrorBanner model
                         ]
 
+                    -- The heavy sub-views render lazily: their arguments are
+                    -- reference-stable across the 5s self-heal refetch (see
+                    -- handleCallback), so a tick that changed nothing skips
+                    -- them entirely.
                     rest =
-                        [ budgetBar ticket model.runMetrics
+                        [ Html.Lazy.lazy2 budgetBar ticket model.runMetrics
                         , editForm model ticket
                         , Html.div [ id "ticket-hitl-slot" ] []
                         , tabsBar model
-                        , tabContent model detail
-                        , taskList detail.tasks
-                        , runHistory model.runMetrics
+                        , Html.Lazy.lazy2 tabContent model.activeTab detail
+                        , Html.Lazy.lazy taskList detail.tasks
+                        , Html.Lazy.lazy runHistory model.runMetricsByBuild
                         ]
                 in
                 Html.div []
@@ -491,7 +524,7 @@ content session model =
                         -- U6: keep the evidence (digest + review card) beside the
                         -- decision (the disposition bar) so a reviewer sees both.
                         top
-                            ++ [ reviewDigest ticket model.runMetrics
+                            ++ [ Html.Lazy.lazy2 reviewDigest ticket model.runMetrics
                                , lifecycleBar model ticket
                                , reviewCard
                                ]
@@ -1036,10 +1069,14 @@ onActivationKey msg =
         )
 
 
-tabContent : Model -> AgentTicket.Detail -> Html Message
-tabContent model detail =
+{-| Takes the active tab rather than the whole model so the caller can wrap it
+in Html.Lazy: both arguments are reference-stable when nothing changed, where
+the model record is rebuilt by every update.
+-}
+tabContent : Tab -> AgentTicket.Detail -> Html Message
+tabContent activeTab detail =
     Html.div [ style "padding" "12px 0" ]
-        [ case model.activeTab of
+        [ case activeTab of
             SpecTab ->
                 specView detail
 
@@ -1087,10 +1124,12 @@ planView detail =
 
 {-| Render the ticket/spec body as light prose (paragraphs, inline `code` and
 **bold**) via the shared Views.Prose renderer — no markdown dependency.
+Lazy on the body string, so the full-text tokenization re-runs only when the
+text itself changes, not on every 5s-refetch render.
 -}
 prose : String -> Html Message
 prose =
-    Views.Prose.view
+    Html.Lazy.lazy Views.Prose.view
 
 
 taskList : List AgentTicket.Task -> Html Message
@@ -1134,32 +1173,30 @@ taskStatusColor status =
 
 
 {-| Per-run cost, aggregated from the step-level run metrics by build id.
+Renders from the by-build grouping computed once per metrics fetch —
+grouping or filtering here would re-scan every metric row for every run row
+on every render.
 -}
-runHistory : List Concourse.Agent.RunMetric -> Html Message
-runHistory metrics =
-    if List.isEmpty metrics then
+runHistory : Dict Int (List Concourse.Agent.RunMetric) -> Html Message
+runHistory metricsByBuild =
+    if Dict.isEmpty metricsByBuild then
         Html.text ""
 
     else
-        let
-            builds =
-                metrics
-                    |> List.map .buildId
-                    |> unique
-                    |> List.sortBy negate
-        in
         Html.div [ style "margin" "12px 0" ]
             (formLabel "runs"
-                :: List.map (runRow metrics) builds
+                :: (metricsByBuild
+                        |> Dict.toList
+                        -- keys ascend; newest build renders first
+                        |> List.reverse
+                        |> List.map runRow
+                   )
             )
 
 
-runRow : List Concourse.Agent.RunMetric -> Int -> Html Message
-runRow metrics buildId =
+runRow : ( Int, List Concourse.Agent.RunMetric ) -> Html Message
+runRow ( buildId, forBuild ) =
     let
-        forBuild =
-            List.filter (\m -> m.buildId == buildId) metrics
-
         cost =
             forBuild |> List.map .costUsd |> List.sum
 
@@ -1282,18 +1319,19 @@ toggleSet x set =
         Set.insert x set
 
 
-unique : List comparable -> List comparable
-unique xs =
-    xs
+{-| Group the step-level metric rows by build id, preserving each build's
+created_at-ASC row order (the status/summary logic depends on it).
+-}
+groupMetricsByBuild : List Concourse.Agent.RunMetric -> Dict Int (List Concourse.Agent.RunMetric)
+groupMetricsByBuild metrics =
+    metrics
         |> List.foldl
-            (\x acc ->
-                if List.member x acc then
-                    acc
-
-                else
-                    acc ++ [ x ]
+            (\m ->
+                Dict.update m.buildId
+                    (\rows -> Just (m :: Maybe.withDefault [] rows))
             )
-            []
+            Dict.empty
+        |> Dict.map (\_ -> List.reverse)
 
 
 {-| The last non-empty summary of a build's metric rows (rows arrive
