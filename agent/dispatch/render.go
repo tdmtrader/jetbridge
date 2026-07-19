@@ -7,6 +7,12 @@
 // terminal steps, PARK-V2 env, budget admission, and the autonomous
 // Dispatcher loop are wave-3/4 surfaces and are refused loudly at
 // render time rather than emitting runs that cannot execute.
+//
+// Hand-dispatch (plan 11 Task 15 remainder, 2026-07-17): the wave-3
+// hand-written template pipeline is retired — hand-dispatch is
+// `fly agent tickets dispatch` (or the DispatchAgentTicket route), and
+// the autonomous loop is the SAME DispatchOne call driven by the
+// agent_dispatcher component under --agent-dispatcher-enabled.
 package dispatch
 
 import (
