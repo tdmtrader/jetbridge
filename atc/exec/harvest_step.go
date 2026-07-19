@@ -25,6 +25,8 @@ import (
 
 const harvestProcessID = "harvest"
 
+const harvestFlightArtifact = "flight"
+
 type HarvestStepOption func(*HarvestStep)
 
 // WithHarvestTicketsStore wires the single-writer ticket store so the
@@ -37,6 +39,14 @@ func WithHarvestTicketsStore(s tickets.Store) HarvestStepOption {
 // WithHarvestRunVerifier wires the same server-side linkage gate the
 // agent step uses: a plan-carried ticket id transitions ONLY when the
 // (verified) pipeline run was dispatched for it.
+// WithHarvestPlatformTokenSecret names the long-lived §8.2 platform
+// credential secret (key anthropic-token) funding the judge. The judge
+// NEVER uses the per-run agent-run-<id> user token — precedence is the
+// OPPOSITE of agent steps (§2.8.1/§8.3).
+func WithHarvestPlatformTokenSecret(name string) HarvestStepOption {
+	return func(h *HarvestStep) { h.platformTokenSecret = name }
+}
+
 func WithHarvestRunVerifier(v AgentRunVerifier) HarvestStepOption {
 	return func(h *HarvestStep) { h.runVerifier = v }
 }
@@ -47,16 +57,17 @@ func WithHarvestRunVerifier(v AgentRunVerifier) HarvestStepOption {
 // the full harvest-step workstream; plans declaring them are refused
 // here, never silently skipped.
 type HarvestStep struct {
-	planID            atc.PlanID
-	plan              atc.HarvestPlan
-	metadata          StepMetadata
-	containerMetadata db.ContainerMetadata
-	workerPool        Pool
-	delegateFactory   TaskDelegateFactory
-	defaultTimeout    time.Duration
-	agentImage        string
-	ticketsStore      tickets.Store
-	runVerifier       AgentRunVerifier
+	planID              atc.PlanID
+	plan                atc.HarvestPlan
+	metadata            StepMetadata
+	containerMetadata   db.ContainerMetadata
+	workerPool          Pool
+	delegateFactory     TaskDelegateFactory
+	defaultTimeout      time.Duration
+	agentImage          string
+	ticketsStore        tickets.Store
+	platformTokenSecret string
+	runVerifier         AgentRunVerifier
 }
 
 func NewHarvestStep(
@@ -127,7 +138,12 @@ func (step *HarvestStep) run(ctx context.Context, state RunState, delegate TaskD
 		}
 	}
 	if step.plan.Judge != nil {
-		return false, errors.New("harvest v0.5 has no judge: remove the judge block (full harvest-step workstream, wave 3)")
+		if err := step.plan.Judge.Validate(); err != nil {
+			return false, fmt.Errorf("harvest judge config invalid: %w", err)
+		}
+		if step.platformTokenSecret == "" {
+			return false, errors.New("harvest judge requires the web node to be started with --agent-platform-token-secret (the §8.2 platform credential; the judge never uses per-run user tokens)")
+		}
 	}
 	if step.plan.DevMCP != nil {
 		return false, errors.New("harvest v0.5 runs no dev-mcp-backed gates, so dev_mcp has no consumer: remove it")
@@ -166,6 +182,7 @@ func (step *HarvestStep) run(ctx context.Context, state RunState, delegate TaskD
 		Branch:        step.plan.Branch,
 		Push:          step.plan.Push,
 		GatePolicy:    step.plan.GatePolicy,
+		Judge:         step.plan.Judge,
 	}
 	cfgPayload, err := json.Marshal(cfg)
 	if err != nil {
@@ -179,6 +196,8 @@ func (step *HarvestStep) run(ctx context.Context, state RunState, delegate TaskD
 	env = append(env,
 		"HARVEST_CONFIG="+string(cfgPayload),
 		"HARVEST_WORKSPACE_DIR="+artifactPath(workdir, step.plan.Workspace, ""),
+		"AGENT_FLIGHT_DIR="+artifactPath(workdir, harvestFlightArtifact, ""),
+		"AGENT_PLAN_ID="+string(step.planID),
 	)
 
 	containerSpec := runtime.ContainerSpec{
@@ -192,6 +211,10 @@ func (step *HarvestStep) run(ctx context.Context, state RunState, delegate TaskD
 		Type:      step.containerMetadata.Type,
 
 		Dir: workdir,
+
+		// The flight dir rides an output artifact so evidence survives the
+		// pod (Task 12 ingests it via the artifact streamer).
+		Outputs: runtime.OutputPaths{harvestFlightArtifact: ensureTrailingSlash(artifactPath(workdir, harvestFlightArtifact, ""))},
 	}
 
 	if step.plan.Push {
@@ -202,6 +225,14 @@ func (step *HarvestStep) run(ctx context.Context, state RunState, delegate TaskD
 			MountPath:  "/var/run/agent/git",
 		}}
 		containerSpec.Env = append(containerSpec.Env, "HARVEST_CREDS_DIR=/var/run/agent/git")
+	}
+
+	if step.plan.Judge != nil {
+		// §8.2/§8.3: PLATFORM credential only, secretKeyRef-only —
+		// jetbridge applySecretRefs APPENDS the EnvVar (F20, landed).
+		containerSpec.SecretEnv = map[string]vars.SecretRef{
+			"CLAUDE_CODE_OAUTH_TOKEN": {Name: step.platformTokenSecret, Key: "anthropic-token"},
+		}
 	}
 
 	repository := state.ArtifactRepository()

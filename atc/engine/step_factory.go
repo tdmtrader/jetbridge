@@ -294,6 +294,9 @@ func (factory *coreStepFactory) HarvestStep(
 	if factory.agentRunVerifier != nil {
 		harvestOpts = append(harvestOpts, exec.WithHarvestRunVerifier(factory.agentRunVerifier))
 	}
+	if factory.agentPlatformToken != "" {
+		harvestOpts = append(harvestOpts, exec.WithHarvestPlatformTokenSecret(factory.agentPlatformToken))
+	}
 
 	harvestStep := exec.NewHarvestStep(
 		plan.ID,
