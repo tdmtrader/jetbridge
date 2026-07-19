@@ -7,6 +7,7 @@ styled. Everything is emitted as Elm text nodes and styled spans, so there is
 no raw-HTML injection.
 -}
 
+import Colors
 import Html exposing (Html)
 import Html.Attributes exposing (style)
 
@@ -14,7 +15,7 @@ import Html.Attributes exposing (style)
 view : String -> Html msg
 view body =
     Html.div
-        [ style "color" "#d0d0d0", style "line-height" "1.5" ]
+        [ style "color" Colors.proseText, style "line-height" "1.5" ]
         (body
             |> splitParagraphs
             |> List.map paragraph
@@ -58,29 +59,38 @@ inlines text =
         |> List.concatMap segmentToHtml
 
 
-{-| Split on backticks into alternating plain/code segments. Only treats the
-runs as code when the backticks are balanced (an odd number of parts); an
-unbalanced backtick is left as literal plain text.
+{-| Split `text` on `delimiter` into alternating parts: parts at odd indices
+sat between a delimiter pair and get `styled`, the rest get `plain`. Only
+applies when the delimiters are balanced (an odd number of parts); otherwise
+the whole text is a single `plain` part, so an unbalanced delimiter is left
+as literal text.
 -}
-splitCode : String -> List Segment
-splitCode text =
+balancedSplit : String -> (String -> a) -> (String -> a) -> String -> List a
+balancedSplit delimiter styled plain text =
     let
         parts =
-            String.split "`" text
+            String.split delimiter text
     in
     if modBy 2 (List.length parts) == 1 then
         parts
             |> List.indexedMap
                 (\i part ->
                     if modBy 2 i == 1 then
-                        Code part
+                        styled part
 
                     else
-                        Plain part
+                        plain part
                 )
 
     else
-        [ Plain text ]
+        [ plain text ]
+
+
+{-| Split on backticks into alternating plain/code segments.
+-}
+splitCode : String -> List Segment
+splitCode =
+    balancedSplit "`" Code Plain
 
 
 segmentToHtml : Segment -> List (Html msg)
@@ -89,7 +99,7 @@ segmentToHtml segment =
         Code c ->
             [ Html.code
                 [ style "font-family" "monospace"
-                , style "background" "#2a2929"
+                , style "background" Colors.proseCodeBackground
                 , style "padding" "0 3px"
                 , style "border-radius" "2px"
                 ]
@@ -100,29 +110,17 @@ segmentToHtml segment =
             bolds p
 
 
-{-| Style \*\*bold\*\* runs within a plain-text segment. Only when the double
-asterisks are balanced; otherwise the text is left literal.
+{-| Style \*\*bold\*\* runs within a plain-text segment.
 -}
 bolds : String -> List (Html msg)
-bolds text =
-    let
-        parts =
-            String.split "**" text
-    in
-    if modBy 2 (List.length parts) == 1 then
-        parts
-            |> List.indexedMap
-                (\i part ->
-                    if modBy 2 i == 1 then
-                        Html.strong
-                            [ style "font-weight" "700"
-                            , style "color" "#e8e8e8"
-                            ]
-                            [ Html.text part ]
+bolds =
+    balancedSplit "**" boldSpan Html.text
 
-                    else
-                        Html.text part
-                )
 
-    else
-        [ Html.text text ]
+boldSpan : String -> Html msg
+boldSpan part =
+    Html.strong
+        [ style "font-weight" "700"
+        , style "color" Colors.proseBoldText
+        ]
+        [ Html.text part ]

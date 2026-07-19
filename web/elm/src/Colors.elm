@@ -57,6 +57,9 @@ module Colors exposing
     , pinMenuHover
     , pinTools
     , pinned
+    , proseBoldText
+    , proseCodeBackground
+    , proseText
     , resourceError
     , retryTabText
     , secondaryTopBar
@@ -772,3 +775,22 @@ sideBarTextBright =
 welcomeCardText : String
 welcomeCardText =
     ColorValues.grey30
+
+
+
+-----
+
+
+proseText : String
+proseText =
+    "#d0d0d0"
+
+
+proseCodeBackground : String
+proseCodeBackground =
+    "#2a2929"
+
+
+proseBoldText : String
+proseBoldText =
+    "#e8e8e8"
