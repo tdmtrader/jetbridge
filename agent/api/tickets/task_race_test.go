@@ -37,7 +37,7 @@ func (s *planSwapStore) ActivePlan(id int) ([]tickets.Task, error) {
 func TestUpdateTaskAppliesToCurrentlyActivePlan(t *testing.T) {
 	mem := tickets.NewMemoryStore()
 	store := &planSwapStore{MemoryStore: mem}
-	h := tickets.NewHandler(store, func(*http.Request) string { return "tdm" })
+	h := tickets.NewHandler(store, func(*http.Request) string { return "tdm" }, nil)
 
 	id, _ := mem.Create(&tickets.Ticket{Title: "t", Repo: "r"})
 	mem.SubmitPlan(id, []tickets.Task{{Title: "one"}, {Title: "two"}})

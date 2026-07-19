@@ -98,6 +98,82 @@ func TestFillReviewMetadataBackfillsEmptyFields(t *testing.T) {
 	}
 }
 
+func TestFillReviewMetadataSynthesizesIdsForIdlessFindings(t *testing.T) {
+	repoDir := initGitRepo(t)
+	outputDir := t.TempDir()
+	cfg := reviewConfig()
+
+	// Two proven issues and one observation with no id. The review UI keys
+	// per-finding triage state (expansion, note, verdict) on the id, so two
+	// id-less findings would collide onto "" and misattribute human feedback.
+	// Postprocess must give each finding a distinct, non-empty id.
+	raw := `{"schema_version":"1.0.0","metadata":{"repo":"r","commit":"c"},` +
+		`"proven_issues":[` +
+		`{"severity":"high","title":"first","file":"a.go","line":1,"test_file":"a_test.go","test_name":"T1","category":"correctness"},` +
+		`{"severity":"high","title":"second","file":"b.go","line":2,"test_file":"b_test.go","test_name":"T2","category":"correctness"}` +
+		`],"observations":[` +
+		`{"title":"obs","file":"c.go","line":3,"category":"testing"}` +
+		`],"score":{"value":9,"max":10,"pass":true},"summary":"has findings"}`
+	if err := os.WriteFile(filepath.Join(outputDir, "review.json"), []byte(raw), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := fillReviewMetadata(cfg, outputDir, repoDir, "claude", "claude-sonnet-5", time.Second); err != nil {
+		t.Fatalf("fillReviewMetadata: %v", err)
+	}
+
+	patched, _ := os.ReadFile(filepath.Join(outputDir, "review.json"))
+	var got map[string]any
+	if err := json.Unmarshal(patched, &got); err != nil {
+		t.Fatal(err)
+	}
+
+	ids := map[string]bool{}
+	collect := func(key string) {
+		for _, f := range got[key].([]any) {
+			id, _ := f.(map[string]any)["id"].(string)
+			if id == "" {
+				t.Errorf("%s finding still has an empty id after postprocess", key)
+			}
+			if ids[id] {
+				t.Errorf("duplicate synthesized id %q across findings", id)
+			}
+			ids[id] = true
+		}
+	}
+	collect("proven_issues")
+	collect("observations")
+
+	if len(ids) != 3 {
+		t.Errorf("expected 3 distinct finding ids, got %d: %v", len(ids), ids)
+	}
+}
+
+func TestFillReviewMetadataKeepsExistingFindingIds(t *testing.T) {
+	repoDir := initGitRepo(t)
+	outputDir := t.TempDir()
+	cfg := reviewConfig()
+
+	raw := `{"schema_version":"1.0.0","metadata":{"repo":"r","commit":"c"},` +
+		`"proven_issues":[{"id":"PI-7","severity":"high","title":"t","file":"a.go","line":1,"test_file":"a_test.go","test_name":"T","category":"correctness"}],` +
+		`"observations":[],"score":{"value":9,"max":10,"pass":true},"summary":"one"}`
+	if err := os.WriteFile(filepath.Join(outputDir, "review.json"), []byte(raw), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := fillReviewMetadata(cfg, outputDir, repoDir, "claude", "", time.Second); err != nil {
+		t.Fatalf("fillReviewMetadata: %v", err)
+	}
+
+	patched, _ := os.ReadFile(filepath.Join(outputDir, "review.json"))
+	var got map[string]any
+	json.Unmarshal(patched, &got)
+	first := got["proven_issues"].([]any)[0].(map[string]any)
+	if first["id"] != "PI-7" {
+		t.Errorf("id = %v, want PI-7 (existing ids must be preserved)", first["id"])
+	}
+}
+
 func TestFillReviewMetadataDoesNotOverwriteExisting(t *testing.T) {
 	repoDir := initGitRepo(t)
 	outputDir := t.TempDir()

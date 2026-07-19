@@ -317,21 +317,32 @@ update msg ( model, effects ) =
             ( { model | expandedDescriptions = toggleSet findingId model.expandedDescriptions }, effects )
 
         AgentReviewVerdictClicked params ->
-            ( model
-            , effects
-                ++ [ SubmitAgentReviewVerdict
-                        { repo = params.repo
-                        , commitSha = params.commitSha
-                        , findingId = params.findingId
-                        , verdict = params.verdict
-                        , notes = Dict.get params.findingId model.agentReviewNotes |> Maybe.withDefault ""
-                        , reviewer = params.reviewer
-                        }
-                   ]
-            )
+            -- A blank findingId can't disambiguate one finding from another, so
+            -- a verdict keyed on it would misattribute human triage feedback.
+            -- The card renders blank-id findings read-only, but guard here too.
+            if params.findingId == "" then
+                ( model, effects )
+
+            else
+                ( model
+                , effects
+                    ++ [ SubmitAgentReviewVerdict
+                            { repo = params.repo
+                            , commitSha = params.commitSha
+                            , findingId = params.findingId
+                            , verdict = params.verdict
+                            , notes = Dict.get params.findingId model.agentReviewNotes |> Maybe.withDefault ""
+                            , reviewer = params.reviewer
+                            }
+                       ]
+                )
 
         AgentReviewNoteChanged findingId note ->
-            ( { model | agentReviewNotes = Dict.insert findingId note model.agentReviewNotes }, effects )
+            if findingId == "" then
+                ( model, effects )
+
+            else
+                ( { model | agentReviewNotes = Dict.insert findingId note model.agentReviewNotes }, effects )
 
         _ ->
             ( model, effects )

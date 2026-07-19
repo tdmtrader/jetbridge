@@ -2,6 +2,7 @@ package tickets_test
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -14,7 +15,7 @@ import (
 
 func newTestHandler(username string) (*tickets.Handler, *tickets.MemoryStore) {
 	store := tickets.NewMemoryStore()
-	h := tickets.NewHandler(store, func(*http.Request) string { return username })
+	h := tickets.NewHandler(store, func(*http.Request) string { return username }, nil)
 	return h, store
 }
 
@@ -221,6 +222,80 @@ func TestTransitionTicket(t *testing.T) {
 	}
 	if got, _, _ := store.Get(1); got.State != tickets.StateQueued {
 		t.Errorf("state = %s, want queued", got.State)
+	}
+}
+
+// F30 hardening (2026-07-18): pipeline_run_id in the transition body is
+// attacker-writable by any tickets:write principal or main-team member,
+// and it poisons display surfaces plus any future consumer that trusts
+// agent_tickets.pipeline_run_id. The handler must only record a run id
+// the injected RunForTicketFunc proves belongs to the ticket's own
+// agent-ticket-<id> pipeline — and must fail closed when no checker is
+// wired at all.
+func TestTransitionPipelineRunIDValidation(t *testing.T) {
+	newHandler := func(check tickets.RunForTicketFunc) (*tickets.Handler, *tickets.MemoryStore) {
+		store := tickets.NewMemoryStore()
+		h := tickets.NewHandler(store, func(*http.Request) string { return "tdm" }, check)
+		store.Create(&tickets.Ticket{Title: "t", Repo: "r"})
+		store.Transition(1, tickets.StateDraft, tickets.StateQueued, tickets.TransitionMeta{})
+		return h, store
+	}
+
+	transition := func(h *tickets.Handler, body string) *httptest.ResponseRecorder {
+		req := withParams(httptest.NewRequest("PUT", "/api/v1/agent/tickets/1/state",
+			strings.NewReader(body)), url.Values{":ticket_id": {"1"}})
+		rec := httptest.NewRecorder()
+		h.TransitionTicket(rec, req)
+		return rec
+	}
+
+	// checker says the run is not the ticket's → 422, ticket must not move
+	h, store := newHandler(func(int, int) (bool, error) { return false, nil })
+	rec := transition(h, `{"from":"queued","to":"running","pipeline_run_id":99}`)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Errorf("mismatched run id = %d body %s, want 422", rec.Code, rec.Body)
+	}
+	if got, _, _ := store.Get(1); got.State != tickets.StateQueued || got.PipelineRunID != nil {
+		t.Errorf("ticket after rejected transition = %+v", got)
+	}
+
+	// checker confirms ownership → transition proceeds and records the id
+	var gotTicket, gotRun int
+	h, store = newHandler(func(ticketID, runID int) (bool, error) {
+		gotTicket, gotRun = ticketID, runID
+		return true, nil
+	})
+	rec = transition(h, `{"from":"queued","to":"running","pipeline_run_id":42}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("owned run id = %d body %s, want 200", rec.Code, rec.Body)
+	}
+	if gotTicket != 1 || gotRun != 42 {
+		t.Errorf("checker saw (%d, %d), want (1, 42)", gotTicket, gotRun)
+	}
+	if got, _, _ := store.Get(1); got.PipelineRunID == nil || *got.PipelineRunID != 42 {
+		t.Errorf("ticket after accepted transition = %+v", got)
+	}
+
+	// checker failure → 500, not silently accepted
+	h, _ = newHandler(func(int, int) (bool, error) { return false, errors.New("db down") })
+	rec = transition(h, `{"from":"queued","to":"running","pipeline_run_id":42}`)
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("checker error = %d, want 500", rec.Code)
+	}
+
+	// no checker wired → fail closed on any pipeline_run_id
+	h, _ = newHandler(nil)
+	rec = transition(h, `{"from":"queued","to":"running","pipeline_run_id":42}`)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Errorf("nil checker = %d, want 422", rec.Code)
+	}
+
+	// a body without pipeline_run_id never consults the checker
+	called := false
+	h, _ = newHandler(func(int, int) (bool, error) { called = true; return false, nil })
+	rec = transition(h, `{"from":"queued","to":"running"}`)
+	if rec.Code != http.StatusOK || called {
+		t.Errorf("plain transition = %d (checker called: %v), want 200 without a check", rec.Code, called)
 	}
 }
 

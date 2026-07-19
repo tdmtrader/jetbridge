@@ -94,6 +94,20 @@ type FakePipelineRunFactory struct {
 		result1 bool
 		result2 error
 	}
+	RunBelongsToTicketTemplateStub        func(int, int) (bool, error)
+	runBelongsToTicketTemplateMutex       sync.RWMutex
+	runBelongsToTicketTemplateArgsForCall []struct {
+		arg1 int
+		arg2 int
+	}
+	runBelongsToTicketTemplateReturns struct {
+		result1 bool
+		result2 error
+	}
+	runBelongsToTicketTemplateReturnsOnCall map[int]struct {
+		result1 bool
+		result2 error
+	}
 	RunningRunsStub        func() ([]db.PipelineRun, error)
 	runningRunsMutex       sync.RWMutex
 	runningRunsArgsForCall []struct {
@@ -542,6 +556,71 @@ func (fake *FakePipelineRunFactory) RunBelongsToPipelineReturnsOnCall(i int, res
 		})
 	}
 	fake.runBelongsToPipelineReturnsOnCall[i] = struct {
+		result1 bool
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakePipelineRunFactory) RunBelongsToTicketTemplate(arg1 int, arg2 int) (bool, error) {
+	fake.runBelongsToTicketTemplateMutex.Lock()
+	ret, specificReturn := fake.runBelongsToTicketTemplateReturnsOnCall[len(fake.runBelongsToTicketTemplateArgsForCall)]
+	fake.runBelongsToTicketTemplateArgsForCall = append(fake.runBelongsToTicketTemplateArgsForCall, struct {
+		arg1 int
+		arg2 int
+	}{arg1, arg2})
+	stub := fake.RunBelongsToTicketTemplateStub
+	fakeReturns := fake.runBelongsToTicketTemplateReturns
+	fake.recordInvocation("RunBelongsToTicketTemplate", []interface{}{arg1, arg2})
+	fake.runBelongsToTicketTemplateMutex.Unlock()
+	if stub != nil {
+		return stub(arg1, arg2)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2
+	}
+	return fakeReturns.result1, fakeReturns.result2
+}
+
+func (fake *FakePipelineRunFactory) RunBelongsToTicketTemplateCallCount() int {
+	fake.runBelongsToTicketTemplateMutex.RLock()
+	defer fake.runBelongsToTicketTemplateMutex.RUnlock()
+	return len(fake.runBelongsToTicketTemplateArgsForCall)
+}
+
+func (fake *FakePipelineRunFactory) RunBelongsToTicketTemplateCalls(stub func(int, int) (bool, error)) {
+	fake.runBelongsToTicketTemplateMutex.Lock()
+	defer fake.runBelongsToTicketTemplateMutex.Unlock()
+	fake.RunBelongsToTicketTemplateStub = stub
+}
+
+func (fake *FakePipelineRunFactory) RunBelongsToTicketTemplateArgsForCall(i int) (int, int) {
+	fake.runBelongsToTicketTemplateMutex.RLock()
+	defer fake.runBelongsToTicketTemplateMutex.RUnlock()
+	argsForCall := fake.runBelongsToTicketTemplateArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2
+}
+
+func (fake *FakePipelineRunFactory) RunBelongsToTicketTemplateReturns(result1 bool, result2 error) {
+	fake.runBelongsToTicketTemplateMutex.Lock()
+	defer fake.runBelongsToTicketTemplateMutex.Unlock()
+	fake.RunBelongsToTicketTemplateStub = nil
+	fake.runBelongsToTicketTemplateReturns = struct {
+		result1 bool
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakePipelineRunFactory) RunBelongsToTicketTemplateReturnsOnCall(i int, result1 bool, result2 error) {
+	fake.runBelongsToTicketTemplateMutex.Lock()
+	defer fake.runBelongsToTicketTemplateMutex.Unlock()
+	fake.RunBelongsToTicketTemplateStub = nil
+	if fake.runBelongsToTicketTemplateReturnsOnCall == nil {
+		fake.runBelongsToTicketTemplateReturnsOnCall = make(map[int]struct {
+			result1 bool
+			result2 error
+		})
+	}
+	fake.runBelongsToTicketTemplateReturnsOnCall[i] = struct {
 		result1 bool
 		result2 error
 	}{result1, result2}

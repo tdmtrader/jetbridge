@@ -209,6 +209,77 @@ var _ = Describe("PipelineRunFactory", func() {
 		})
 	})
 
+	// F30 hardening (2026-07-18): agent_tickets.pipeline_run_id is
+	// attacker-writable through PUT .../tickets/:id/state. The transition
+	// API gates HTTP-supplied run ids on this check — a run id may only be
+	// recorded when it names a run of the ticket's OWN agent-ticket-<id>
+	// template on the main team (the dispatch naming convention).
+	Describe("RunBelongsToTicketTemplate", func() {
+		var ticketTemplate db.Pipeline
+
+		BeforeEach(func() {
+			mainTeam, found, err := teamFactory.FindTeam(atc.DefaultTeamName)
+			Expect(err).ToNot(HaveOccurred())
+			if !found {
+				mainTeam, err = teamFactory.CreateTeam(atc.Team{Name: atc.DefaultTeamName})
+				Expect(err).ToNot(HaveOccurred())
+			}
+			ticketTemplate, _, err = mainTeam.SavePipeline(
+				atc.PipelineRef{Name: "agent-ticket-7"}, templateConfig, db.ConfigVersion(0), false)
+			Expect(err).ToNot(HaveOccurred())
+		})
+
+		It("is true only for runs of the ticket's own agent-ticket-<id> template", func() {
+			run, err := factory.CreateRun(ticketTemplate.ID(), nil, "some-user")
+			Expect(err).ToNot(HaveOccurred())
+
+			owned, err := factory.RunBelongsToTicketTemplate(7, run.ID())
+			Expect(err).ToNot(HaveOccurred())
+			Expect(owned).To(BeTrue())
+
+			// someone else's ticket pointing at this run
+			owned, err = factory.RunBelongsToTicketTemplate(8, run.ID())
+			Expect(err).ToNot(HaveOccurred())
+			Expect(owned).To(BeFalse())
+
+			// a victim run from an unrelated template (the suite's shared
+			// run-template fixture on default-team)
+			victim, err := factory.CreateRun(template.ID(), nil, "some-user")
+			Expect(err).ToNot(HaveOccurred())
+			owned, err = factory.RunBelongsToTicketTemplate(7, victim.ID())
+			Expect(err).ToNot(HaveOccurred())
+			Expect(owned).To(BeFalse())
+
+			// a run id that does not exist at all
+			owned, err = factory.RunBelongsToTicketTemplate(7, run.ID()+9999)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(owned).To(BeFalse())
+		})
+
+		It("does not trust a same-named template on another team", func() {
+			imposter, _, err := defaultTeam.SavePipeline(
+				atc.PipelineRef{Name: "agent-ticket-7"}, templateConfig, db.ConfigVersion(0), false)
+			Expect(err).ToNot(HaveOccurred())
+
+			run, err := factory.CreateRun(imposter.ID(), nil, "some-user")
+			Expect(err).ToNot(HaveOccurred())
+
+			owned, err := factory.RunBelongsToTicketTemplate(7, run.ID())
+			Expect(err).ToNot(HaveOccurred())
+			Expect(owned).To(BeFalse())
+		})
+
+		It("is false for non-positive ids", func() {
+			owned, err := factory.RunBelongsToTicketTemplate(0, 5)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(owned).To(BeFalse())
+
+			owned, err = factory.RunBelongsToTicketTemplate(5, 0)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(owned).To(BeFalse())
+		})
+	})
+
 	// C3 (UI audit 2026-07-17): once a ticket reaches a terminal state its
 	// agent-ticket-<id> pipelines are dead dashboard cards. The lifecycler
 	// archives them via these two selections.
