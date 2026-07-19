@@ -100,6 +100,11 @@ func (d *Dispatcher) dispatchQueued(ctx context.Context, logger lager.Logger) er
 		switch {
 		case err == nil:
 			logger.Info("dispatched", lager.Data{"ticket": t.ID, "run": res.RunID, "pipeline": res.PipelineName})
+			// Advisory only (ticket #46): vocabulary that has triggered
+			// CLI usage-policy false refusals. Never blocks a dispatch.
+			for _, warning := range res.Warnings {
+				logger.Info("spec-lint", lager.Data{"ticket": t.ID, "warning": warning})
+			}
 		case errors.Is(err, ErrBudgetExhausted):
 			// §2.7: over-cap stays QUEUED, never failed. Re-admitted next
 			// pass — headroom returns at local midnight or on a raised cap.

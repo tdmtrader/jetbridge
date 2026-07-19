@@ -7,6 +7,7 @@ import (
 
 	"github.com/concourse/concourse/agent/api/outcomes"
 	"github.com/concourse/concourse/agent/api/tickets"
+	"github.com/concourse/concourse/agent/dispatch"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/fly/eventstream"
 	"github.com/concourse/concourse/fly/rc"
@@ -31,6 +32,16 @@ type AgentTicketsCommand struct {
 // renders a ticket into (agent/dispatch/dispatch.go). The entry job is
 // always "run".
 func ticketPipelineName(id int) string { return fmt.Sprintf("agent-ticket-%d", id) }
+
+// printSpecLintWarnings surfaces advisory spec-lint findings (ticket #46:
+// vocabulary known to trigger claude CLI usage-policy false refusals) on
+// stderr, one "spec-lint:" line each. Purely informational — callers never
+// alter their exit code or flow on them.
+func printSpecLintWarnings(warnings []string) {
+	for _, w := range warnings {
+		fmt.Fprintf(os.Stderr, "spec-lint: %s\n", w)
+	}
+}
 
 type AgentTicketsListCommand struct {
 	State  string `long:"state" description:"Filter by lifecycle state (draft, queued, running, needs_review, merged, merged_with_fixes, sent_back, abandoned, concluded, failed, errored)"`
@@ -168,6 +179,10 @@ func (command *AgentTicketsQueueCommand) Execute([]string) error {
 		return err
 	}
 	fmt.Printf("ticket #%d is now %s\n", updated.ID, updated.State)
+	// Client-side advisory lint at queue time (ticket #46): the queue
+	// transition response carries the ticket prose, so warn here before
+	// any dollars are spent. Never affects the exit code.
+	printSpecLintWarnings(dispatch.SpecLint(updated.Title, updated.Body))
 	return nil
 }
 
@@ -236,6 +251,9 @@ func (command *AgentTicketsDispatchCommand) Execute([]string) error {
 		return err
 	}
 	fmt.Printf("dispatched ticket #%d as run %d (pipeline %s)\n", command.ID, res.RunID, res.PipelineName)
+	// Server-computed advisory lint (ticket #46) rides the dispatch
+	// response; surface it without touching the exit code.
+	printSpecLintWarnings(res.Warnings)
 	return nil
 }
 
