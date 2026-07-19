@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"os/exec"
 
+	"github.com/concourse/concourse/agent/api/outcomes"
 	"github.com/concourse/concourse/agent/api/tickets"
 	"github.com/concourse/concourse/atc"
 	. "github.com/onsi/ginkgo/v2"
@@ -169,7 +170,7 @@ var _ = Describe("fly agent tickets", func() {
 	})
 
 	Describe("close", func() {
-		It("walks a running ticket to a terminal disposition, re-checking state between hops", func() {
+		It("walks a running ticket through needs_review, closing via the disposition route with the default reason", func() {
 			atcServer.AppendHandlers(
 				ghttp.CombineHandlers(
 					ghttp.VerifyRequest("GET", "/api/v1/agent/tickets/7"),
@@ -183,9 +184,12 @@ var _ = Describe("fly agent tickets", func() {
 					ghttp.RespondWithJSONEncoded(200, tickets.Ticket{ID: 7, State: tickets.StateNeedsReview}),
 				),
 				ghttp.CombineHandlers(
-					ghttp.VerifyRequest("PUT", "/api/v1/agent/tickets/7/state"),
-					ghttp.VerifyJSON(`{"from":"needs_review","to":"concluded"}`),
-					ghttp.RespondWithJSONEncoded(200, tickets.Ticket{ID: 7, State: tickets.StateConcluded}),
+					ghttp.VerifyRequest("PUT", "/api/v1/agent/tickets/7/disposition"),
+					ghttp.VerifyJSON(`{"disposition":"concluded","reason":"research_complete"}`),
+					ghttp.RespondWithJSONEncoded(200, outcomes.Outcome{
+						TicketID: 7, MergeState: outcomes.MergeConcluded,
+						Disposition: outcomes.DispositionConcluded, DispositionReason: "research_complete",
+					}),
 				),
 			)
 
@@ -197,7 +201,7 @@ var _ = Describe("fly agent tickets", func() {
 			Expect(sess.Out).To(gbytes.Say("ticket #7 is now concluded"))
 		})
 
-		It("skips the needs_review hop when the ticket is already there", func() {
+		It("skips the needs_review hop when the ticket is already there, defaulting the reason to other", func() {
 			atcServer.AppendHandlers(
 				ghttp.CombineHandlers(
 					ghttp.VerifyRequest("GET", "/api/v1/agent/tickets/7"),
@@ -206,9 +210,12 @@ var _ = Describe("fly agent tickets", func() {
 					}),
 				),
 				ghttp.CombineHandlers(
-					ghttp.VerifyRequest("PUT", "/api/v1/agent/tickets/7/state"),
-					ghttp.VerifyJSON(`{"from":"needs_review","to":"abandoned"}`),
-					ghttp.RespondWithJSONEncoded(200, tickets.Ticket{ID: 7, State: tickets.StateAbandoned}),
+					ghttp.VerifyRequest("PUT", "/api/v1/agent/tickets/7/disposition"),
+					ghttp.VerifyJSON(`{"disposition":"abandoned","reason":"other"}`),
+					ghttp.RespondWithJSONEncoded(200, outcomes.Outcome{
+						TicketID: 7, MergeState: outcomes.ClosedUnmerged,
+						Disposition: outcomes.DispositionAbandoned, DispositionReason: "other",
+					}),
 				),
 			)
 
@@ -219,6 +226,140 @@ var _ = Describe("fly agent tickets", func() {
 			<-sess.Exited
 			Expect(sess.ExitCode()).To(Equal(0))
 			Expect(sess.Out).To(gbytes.Say("ticket #7 is now abandoned"))
+		})
+
+		It("sends an explicit --reason/--notes through the disposition route", func() {
+			atcServer.AppendHandlers(
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("GET", "/api/v1/agent/tickets/7"),
+					ghttp.RespondWithJSONEncoded(200, tickets.TicketDetail{
+						Ticket: tickets.Ticket{ID: 7, State: tickets.StateNeedsReview},
+					}),
+				),
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("PUT", "/api/v1/agent/tickets/7/disposition"),
+					ghttp.VerifyJSON(`{"disposition":"sent_back","reason":"incomplete","notes":"missing tests"}`),
+					ghttp.RespondWithJSONEncoded(200, outcomes.Outcome{
+						TicketID: 7, MergeState: outcomes.ClosedUnmerged,
+						Disposition: outcomes.DispositionSentBack, DispositionReason: "incomplete",
+					}),
+				),
+			)
+
+			flyCmd := exec.Command(flyPath, "-t", targetName, "agent", "tickets", "close",
+				"--id", "7", "--disposition", "sent_back", "--reason", "incomplete", "--notes", "missing tests")
+			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+			Expect(err).NotTo(HaveOccurred())
+			<-sess.Exited
+			Expect(sess.ExitCode()).To(Equal(0))
+			Expect(sess.Out).To(gbytes.Say("ticket #7 is now sent_back"))
+		})
+
+		It("keeps the raw transition for the merged manual override", func() {
+			atcServer.AppendHandlers(
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("GET", "/api/v1/agent/tickets/7"),
+					ghttp.RespondWithJSONEncoded(200, tickets.TicketDetail{
+						Ticket: tickets.Ticket{ID: 7, State: tickets.StateNeedsReview},
+					}),
+				),
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("PUT", "/api/v1/agent/tickets/7/state"),
+					ghttp.VerifyJSON(`{"from":"needs_review","to":"merged"}`),
+					ghttp.RespondWithJSONEncoded(200, tickets.Ticket{ID: 7, State: tickets.StateMerged}),
+				),
+			)
+
+			flyCmd := exec.Command(flyPath, "-t", targetName, "agent", "tickets", "close",
+				"--id", "7", "--disposition", "merged")
+			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+			Expect(err).NotTo(HaveOccurred())
+			<-sess.Exited
+			Expect(sess.ExitCode()).To(Equal(0))
+			Expect(sess.Out).To(gbytes.Say("ticket #7 is now merged"))
+		})
+	})
+
+	Describe("dispose", func() {
+		for _, tc := range []struct {
+			disposition string
+			reason      string
+			mergeState  outcomes.MergeState
+		}{
+			{disposition: "sent_back", reason: "wrong_approach", mergeState: outcomes.ClosedUnmerged},
+			{disposition: "abandoned", reason: "not_needed", mergeState: outcomes.ClosedUnmerged},
+			{disposition: "concluded", reason: "research_complete", mergeState: outcomes.MergeConcluded},
+		} {
+			tc := tc
+			It("puts the "+tc.disposition+" disposition and prints the outcome", func() {
+				atcServer.AppendHandlers(
+					ghttp.CombineHandlers(
+						ghttp.VerifyRequest("PUT", "/api/v1/agent/tickets/12/disposition"),
+						ghttp.VerifyJSON(`{"disposition":"`+tc.disposition+`","reason":"`+tc.reason+`"}`),
+						ghttp.RespondWithJSONEncoded(200, outcomes.Outcome{
+							TicketID: 12, MergeState: tc.mergeState,
+							Disposition: tc.disposition, DispositionReason: tc.reason,
+						}),
+					),
+				)
+
+				flyCmd := exec.Command(flyPath, "-t", targetName, "agent", "tickets", "dispose",
+					"--id", "12", "--disposition", tc.disposition, "--reason", tc.reason)
+				sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+				Expect(err).NotTo(HaveOccurred())
+				<-sess.Exited
+				Expect(sess.ExitCode()).To(Equal(0))
+				Expect(sess.Out).To(gbytes.Say(`ticket #12 disposed: ` + tc.disposition + ` \(` + string(tc.mergeState) + `\)`))
+			})
+		}
+
+		It("sends notes when given", func() {
+			atcServer.AppendHandlers(
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("PUT", "/api/v1/agent/tickets/12/disposition"),
+					ghttp.VerifyJSON(`{"disposition":"sent_back","reason":"defective","notes":"breaks CI"}`),
+					ghttp.RespondWithJSONEncoded(200, outcomes.Outcome{
+						TicketID: 12, MergeState: outcomes.ClosedUnmerged,
+						Disposition: outcomes.DispositionSentBack, DispositionReason: "defective",
+					}),
+				),
+			)
+
+			flyCmd := exec.Command(flyPath, "-t", targetName, "agent", "tickets", "dispose",
+				"--id", "12", "--disposition", "sent_back", "--reason", "defective", "--notes", "breaks CI")
+			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+			Expect(err).NotTo(HaveOccurred())
+			<-sess.Exited
+			Expect(sess.ExitCode()).To(Equal(0))
+			Expect(sess.Out).To(gbytes.Say(`ticket #12 disposed: sent_back`))
+		})
+
+		It("surfaces the server's taxonomy rejection when --reason is omitted", func() {
+			atcServer.AppendHandlers(
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("PUT", "/api/v1/agent/tickets/12/disposition"),
+					ghttp.VerifyJSON(`{"disposition":"sent_back","reason":""}`),
+					ghttp.RespondWith(400, "reason must be one of the disposition taxonomy values"),
+				),
+			)
+
+			flyCmd := exec.Command(flyPath, "-t", targetName, "agent", "tickets", "dispose",
+				"--id", "12", "--disposition", "sent_back")
+			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+			Expect(err).NotTo(HaveOccurred())
+			<-sess.Exited
+			Expect(sess.ExitCode()).To(Equal(1))
+			Expect(sess.Err).To(gbytes.Say("reason must be one of the disposition taxonomy values"))
+		})
+
+		It("rejects a disposition outside the terminal trio client-side", func() {
+			flyCmd := exec.Command(flyPath, "-t", targetName, "agent", "tickets", "dispose",
+				"--id", "12", "--disposition", "merged", "--reason", "other")
+			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+			Expect(err).NotTo(HaveOccurred())
+			<-sess.Exited
+			Expect(sess.ExitCode()).To(Equal(1))
+			Expect(sess.Err).To(gbytes.Say("disposition"))
 		})
 	})
 
