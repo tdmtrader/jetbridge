@@ -2051,12 +2051,14 @@ func (cmd *RunCommand) constructEngine(
 	pipelineRunFactory db.PipelineRunFactory,
 ) engine.Engine {
 	// Budget admission + ledger for agent: steps. Same construction as the
-	// costs API handler (atc/api/handler.go): the DB-backed cost ledger with
-	// no per-ticket budget source yet (wave 1 has no tickets table) and the
-	// global daily cap from --agent-daily-budget-usd.
+	// costs API handler (atc/api/handler.go): the DB-backed cost ledger,
+	// REAL per-ticket budgets (tickets.budget_usd ?? frozen-workflow
+	// default — dispatch remainder 2026-07-17; NoTicketBudgets stays in
+	// the budget package for tests/rollback), and the global daily cap
+	// from --agent-daily-budget-usd.
 	agentBudgetChecker := budget.NewChecker(
 		db.NewAgentCostLedgerFactory(dbConn),
-		budget.NoTicketBudgets{},
+		dispatch.NewTicketBudgets(db.NewAgentTicketsFactory(dbConn), db.NewAgentWorkflowsFactory(dbConn)),
 		budget.Config{
 			GlobalDailyCapUSD: cmd.AgentDailyBudgetUSD,
 		},
@@ -2391,6 +2393,7 @@ func (cmd *RunCommand) constructAPIHandler(
 		db.NewAgentUserCredentialsFactory(dbConn),
 		db.NewAgentCostLedgerFactory(dbConn),
 		cmd.AgentDailyBudgetUSD,
+		dispatch.NewTicketBudgets(db.NewAgentTicketsFactory(dbConn), db.NewAgentWorkflowsFactory(dbConn)),
 		db.NewAgentWorkflowsFactory(dbConn),
 		dispatch.NewHTTPHandler(dispatch.Deps{
 			Tickets:        db.NewAgentTicketsFactory(dbConn),

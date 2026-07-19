@@ -107,6 +107,7 @@ func NewHandler(
 	credentialsBackend credentials.Backend,
 	costLedger budget.Ledger,
 	agentDailyBudgetUSD float64,
+	ticketBudgets budget.TicketBudgets,
 	workflowStore workflow.Store,
 	// agentDispatchHandler serves DispatchAgentTicket (built in
 	// atccmd/command.go from dispatch.Deps; a stub in the test suite).
@@ -179,7 +180,7 @@ func NewHandler(
 		}
 		return claims.Sub, name, acc.IsAdmin(), claims.Sub != ""
 	})
-	costChecker := budget.NewChecker(costLedger, budget.NoTicketBudgets{}, budget.Config{
+	costChecker := budget.NewChecker(costLedger, ticketBudgets, budget.Config{
 		GlobalDailyCapUSD: agentDailyBudgetUSD,
 	})
 	costsServer := costs.NewHandler(costLedger, costChecker, agentReviewPublishToken)

@@ -244,6 +244,7 @@ var _ = BeforeEach(func() {
 		credentials.NewMemoryBackend(),
 		budget.NewMemoryLedger(),
 		0,
+		budget.NoTicketBudgets{},
 		workflow.NewMemoryStore(),
 		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusNotImplemented) // dispatch handler stub
