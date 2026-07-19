@@ -36,6 +36,11 @@ type PipelineRunFactory interface {
 	// (instance_vars: {"run": N}), triggers entry jobs, and returns the run.
 	CreateRun(templatePipelineID int, params map[string]any, createdBy string) (PipelineRun, error)
 	GetRun(templatePipelineID, number int) (PipelineRun, bool, error)
+	// GetRunByID fetches a run by its global pipeline_runs.id (additive,
+	// 2026-07-09 checkpoint seam delta §6 — consumed by dispatch's
+	// run-completion reconciler, which holds run ids from
+	// tickets.pipeline_run_id).
+	GetRunByID(id int) (PipelineRun, bool, error)
 	ListRuns(templatePipelineID int, limit int) ([]PipelineRun, error)
 	RunningRuns() ([]PipelineRun, error)
 	CompletedRunsWithNewActivity() ([]PipelineRun, error)
@@ -318,6 +323,21 @@ func (f *pipelineRunFactory) GetRun(templatePipelineID, number int) (PipelineRun
 	run := newPipelineRun(f.conn, f.lockFactory)
 	err := scanPipelineRun(run, pipelineRunsQuery.
 		Where(sq.Eq{"r.template_pipeline_id": templatePipelineID, "r.number": number}).
+		RunWith(f.conn).
+		QueryRow())
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	return run, true, nil
+}
+
+func (f *pipelineRunFactory) GetRunByID(id int) (PipelineRun, bool, error) {
+	run := newPipelineRun(f.conn, f.lockFactory)
+	err := scanPipelineRun(run, pipelineRunsQuery.
+		Where(sq.Eq{"r.id": id}).
 		RunWith(f.conn).
 		QueryRow())
 	if errors.Is(err, sql.ErrNoRows) {

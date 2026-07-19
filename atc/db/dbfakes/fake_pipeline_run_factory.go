@@ -51,6 +51,21 @@ type FakePipelineRunFactory struct {
 		result2 bool
 		result3 error
 	}
+	GetRunByIDStub        func(int) (db.PipelineRun, bool, error)
+	getRunByIDMutex       sync.RWMutex
+	getRunByIDArgsForCall []struct {
+		arg1 int
+	}
+	getRunByIDReturns struct {
+		result1 db.PipelineRun
+		result2 bool
+		result3 error
+	}
+	getRunByIDReturnsOnCall map[int]struct {
+		result1 db.PipelineRun
+		result2 bool
+		result3 error
+	}
 	ListRunsStub        func(int, int) ([]db.PipelineRun, error)
 	listRunsMutex       sync.RWMutex
 	listRunsArgsForCall []struct {
@@ -329,6 +344,73 @@ func (fake *FakePipelineRunFactory) GetRunReturnsOnCall(i int, result1 db.Pipeli
 		})
 	}
 	fake.getRunReturnsOnCall[i] = struct {
+		result1 db.PipelineRun
+		result2 bool
+		result3 error
+	}{result1, result2, result3}
+}
+
+func (fake *FakePipelineRunFactory) GetRunByID(arg1 int) (db.PipelineRun, bool, error) {
+	fake.getRunByIDMutex.Lock()
+	ret, specificReturn := fake.getRunByIDReturnsOnCall[len(fake.getRunByIDArgsForCall)]
+	fake.getRunByIDArgsForCall = append(fake.getRunByIDArgsForCall, struct {
+		arg1 int
+	}{arg1})
+	stub := fake.GetRunByIDStub
+	fakeReturns := fake.getRunByIDReturns
+	fake.recordInvocation("GetRunByID", []interface{}{arg1})
+	fake.getRunByIDMutex.Unlock()
+	if stub != nil {
+		return stub(arg1)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2, ret.result3
+	}
+	return fakeReturns.result1, fakeReturns.result2, fakeReturns.result3
+}
+
+func (fake *FakePipelineRunFactory) GetRunByIDCallCount() int {
+	fake.getRunByIDMutex.RLock()
+	defer fake.getRunByIDMutex.RUnlock()
+	return len(fake.getRunByIDArgsForCall)
+}
+
+func (fake *FakePipelineRunFactory) GetRunByIDCalls(stub func(int) (db.PipelineRun, bool, error)) {
+	fake.getRunByIDMutex.Lock()
+	defer fake.getRunByIDMutex.Unlock()
+	fake.GetRunByIDStub = stub
+}
+
+func (fake *FakePipelineRunFactory) GetRunByIDArgsForCall(i int) int {
+	fake.getRunByIDMutex.RLock()
+	defer fake.getRunByIDMutex.RUnlock()
+	argsForCall := fake.getRunByIDArgsForCall[i]
+	return argsForCall.arg1
+}
+
+func (fake *FakePipelineRunFactory) GetRunByIDReturns(result1 db.PipelineRun, result2 bool, result3 error) {
+	fake.getRunByIDMutex.Lock()
+	defer fake.getRunByIDMutex.Unlock()
+	fake.GetRunByIDStub = nil
+	fake.getRunByIDReturns = struct {
+		result1 db.PipelineRun
+		result2 bool
+		result3 error
+	}{result1, result2, result3}
+}
+
+func (fake *FakePipelineRunFactory) GetRunByIDReturnsOnCall(i int, result1 db.PipelineRun, result2 bool, result3 error) {
+	fake.getRunByIDMutex.Lock()
+	defer fake.getRunByIDMutex.Unlock()
+	fake.GetRunByIDStub = nil
+	if fake.getRunByIDReturnsOnCall == nil {
+		fake.getRunByIDReturnsOnCall = make(map[int]struct {
+			result1 db.PipelineRun
+			result2 bool
+			result3 error
+		})
+	}
+	fake.getRunByIDReturnsOnCall[i] = struct {
 		result1 db.PipelineRun
 		result2 bool
 		result3 error

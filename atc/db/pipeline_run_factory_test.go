@@ -137,6 +137,22 @@ var _ = Describe("PipelineRunFactory", func() {
 		})
 	})
 
+	Describe("GetRunByID", func() {
+		It("gets a run by its global id (additive for dispatch's reconciler, 2026-07-09)", func() {
+			run, err := factory.CreateRun(template.ID(), nil, "some-user")
+			Expect(err).ToNot(HaveOccurred())
+
+			got, found, err := factory.GetRunByID(run.ID())
+			Expect(err).ToNot(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(got.Number()).To(Equal(run.Number()))
+
+			_, found, err = factory.GetRunByID(999999)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(found).To(BeFalse())
+		})
+	})
+
 	// review finding (2026-07-11): AGENT_TICKET_ID reaches the agent-step exec
 	// via the same attacker-writable plan env as the run id (F30). Before the
 	// exec admits a step against a ticket's budget — or attributes its spend
