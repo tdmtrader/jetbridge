@@ -2126,6 +2126,8 @@ func (cmd *RunCommand) constructEngine(
 				engine.WithAgentBudgetChecker(agentBudgetChecker),
 				engine.WithAgentRunVerifier(pipelineRunFactory),
 				engine.WithAgentTicketsStore(db.NewAgentTicketsFactory(dbConn)),
+				engine.WithAgentReviewsStore(db.NewAgentReviewsFactory(dbConn)),
+				engine.WithAgentPlatformUserResolver(db.NewAgentUserCredentialsFactory(dbConn)),
 			),
 			cmd.ExternalURL.String(),
 			rateLimiter,

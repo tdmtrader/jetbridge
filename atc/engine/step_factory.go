@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/concourse/concourse/agent/api/metrics"
+	"github.com/concourse/concourse/agent/api/reviews"
 	"github.com/concourse/concourse/agent/api/tickets"
 	"github.com/concourse/concourse/agent/budget"
 	"github.com/concourse/concourse/atc"
@@ -39,6 +40,8 @@ type coreStepFactory struct {
 	agentRunVerifier      exec.AgentRunVerifier
 	agentPlatformToken    string
 	agentTicketsStore     tickets.Store
+	agentReviewsStore     reviews.Store
+	platformUserResolver  exec.PlatformUserResolver
 }
 
 // CoreStepFactoryOption configures optional fields on coreStepFactory.
@@ -67,6 +70,19 @@ func WithAgentTicketsStore(s tickets.Store) CoreStepFactoryOption {
 // flight-recorder ingestion.
 func WithAgentMetricsStore(s metrics.Store) CoreStepFactoryOption {
 	return func(f *coreStepFactory) { f.agentMetricsStore = s }
+}
+
+// WithAgentReviewsStore sets the store the harvest step upserts judged
+// review.json evidence into (agent_reviews) during server-side flight
+// ingestion.
+func WithAgentReviewsStore(s reviews.Store) CoreStepFactoryOption {
+	return func(f *coreStepFactory) { f.agentReviewsStore = s }
+}
+
+// WithAgentPlatformUserResolver sets the §1.13 platform-user lookup
+// (UserBySub) so harvest_judge ledger rows carry platform attribution.
+func WithAgentPlatformUserResolver(r exec.PlatformUserResolver) CoreStepFactoryOption {
+	return func(f *coreStepFactory) { f.platformUserResolver = r }
 }
 
 // WithAgentBudgetChecker sets the budget library used for step-slice
@@ -287,7 +303,9 @@ func (factory *coreStepFactory) HarvestStep(
 	sum := sha256.Sum256([]byte(plan.Harvest.Name))
 	containerMetadata.WorkingDirectory = filepath.Join("/tmp", "build", fmt.Sprintf("%x", sum[:4]))
 
-	var harvestOpts []exec.HarvestStepOption
+	// The streamer rides unconditionally: ingestion is nil-guarded on the
+	// metrics store, not the streamer.
+	harvestOpts := []exec.HarvestStepOption{exec.WithHarvestStreamer(factory.streamer)}
 	if factory.agentTicketsStore != nil {
 		harvestOpts = append(harvestOpts, exec.WithHarvestTicketsStore(factory.agentTicketsStore))
 	}
@@ -296,6 +314,18 @@ func (factory *coreStepFactory) HarvestStep(
 	}
 	if factory.agentPlatformToken != "" {
 		harvestOpts = append(harvestOpts, exec.WithHarvestPlatformTokenSecret(factory.agentPlatformToken))
+	}
+	if factory.agentMetricsStore != nil {
+		harvestOpts = append(harvestOpts, exec.WithHarvestMetricsStore(factory.agentMetricsStore))
+	}
+	if factory.agentReviewsStore != nil {
+		harvestOpts = append(harvestOpts, exec.WithHarvestReviewsStore(factory.agentReviewsStore))
+	}
+	if factory.agentBudgetChecker != nil {
+		harvestOpts = append(harvestOpts, exec.WithHarvestBudgetRecorder(factory.agentBudgetChecker))
+	}
+	if factory.platformUserResolver != nil {
+		harvestOpts = append(harvestOpts, exec.WithHarvestPlatformUserResolver(factory.platformUserResolver))
 	}
 
 	harvestStep := exec.NewHarvestStep(
