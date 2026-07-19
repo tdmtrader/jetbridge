@@ -97,6 +97,10 @@ var _ = Describe("gitcheck.Mirror", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(mp.Merged).To(BeTrue())
 		Expect(mp.TipAtMerge).To(Equal(pushed)) // fast-forward: tip == pushed
+
+		// BranchHead: present ref resolves to a sha; absent ref is "" (not an error)
+		Expect(m.BranchHead("agent/ticket-1")).To(Equal(pushed))
+		Expect(m.BranchHead("no/such/branch")).To(BeEmpty())
 	})
 
 	It("computes the human-touch delta excluding bot commits, first-parent", func() {
