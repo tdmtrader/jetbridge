@@ -182,6 +182,15 @@ init buildId hl resources plan =
         Concourse.BuildStepSidecar _ ->
             step |> initBottom buildId hl resources plan Sidecar
 
+        Concourse.BuildStepAgent _ ->
+            step |> initBottom buildId hl resources plan Agent
+
+        Concourse.BuildStepHarvest _ ->
+            step |> initBottom buildId hl resources plan Harvest
+
+        Concourse.BuildStepUnknown _ ->
+            step |> initBottom buildId hl resources plan Unknown
+
 
 setImagePlans : Maybe Concourse.JobBuildIdentifier -> StepID -> Maybe Concourse.ImageBuildPlans -> StepTreeModel -> StepTreeModel
 setImagePlans buildId stepId imagePlans model =
@@ -616,6 +625,15 @@ viewTree session model tree depth =
             viewStep model session depth stepId
 
         Sidecar stepId ->
+            viewStep model session depth stepId
+
+        Agent stepId ->
+            viewStep model session depth stepId
+
+        Harvest stepId ->
+            viewStep model session depth stepId
+
+        Unknown stepId ->
             viewStep model session depth stepId
 
         Try subTree ->
@@ -1361,6 +1379,15 @@ viewStepHeader step =
         Concourse.BuildStepSidecar name ->
             simpleHeader "sidecar:" Nothing name
 
+        Concourse.BuildStepAgent name ->
+            simpleHeader "agent:" Nothing name
+
+        Concourse.BuildStepHarvest name ->
+            simpleHeader "harvest:" Nothing name
+
+        Concourse.BuildStepUnknown name ->
+            simpleHeader "step:" Nothing name
+
 
 stepName : Concourse.BuildStep -> Maybe String
 stepName header =
@@ -1429,6 +1456,15 @@ stepName header =
             Nothing
 
         Concourse.BuildStepSidecar name ->
+            Just name
+
+        Concourse.BuildStepAgent name ->
+            Just name
+
+        Concourse.BuildStepHarvest name ->
+            Just name
+
+        Concourse.BuildStepUnknown name ->
             Just name
 
 
