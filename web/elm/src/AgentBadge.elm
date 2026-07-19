@@ -264,49 +264,66 @@ fromRunStatus status =
             Nothing
 
 
-{-| runOutcome derives the DISPLAY truth for a finished run. The pipeline
-build status (server-derived) wins over the agent step status (U3): a step
-that exited "ok" inside a build that failed is Failed, and a step that exited
-"ok" in a build that succeeded but produced no result summary is NoOutput —
-never a green OK on a build that did not deliver. Falls back to the step
-status when the build status is absent (e.g. a metric that predates the final
-build state, or a still-running build).
+{-| runOutcome derives the DISPLAY truth for a run, fusing the server-derived
+pipeline build status with the agent step's own status (U3). The precedence is
+"worst truth wins":
+
+1.  A terminally-bad BUILD is final — failed/errored/aborted render as such
+    even if the metric row still says "parked" (an abort-while-parked leaves
+    the parked row behind forever; it must not pulse "Waiting on you" for a
+    dead run).
+2.  Otherwise parked beats everything: the build deliberately stays "started"
+    while a HITL checkpoint waits, and a merely-open (or even succeeded)
+    build must not hide that the operator is needed.
+3.  Otherwise a step-reported failure ("error"/"failed") is never masked — not
+    by a succeeded build (attempts/try can fail an agent step inside a green
+    build) and not by a still-open one (the row lands at step end, so a dead
+    run would otherwise show Running until the build closes, indefinitely for
+    wedged builds).
+4.  Only then does the build status speak: succeeded is a green OK only with a
+    result in hand (else NoOutput — never a green OK on a run that did not
+    deliver), started/pending render Running, and an absent build status
+    falls back to the step status alone.
 -}
 runOutcome : { buildStatus : String, runStatus : String, hasResult : Bool } -> Maybe Status
 runOutcome { buildStatus, runStatus, hasResult } =
-    -- A parked run is blocked awaiting a human (HITL checkpoint). Its build
-    -- deliberately stays "started" until the run continues, so parked must be
-    -- checked BEFORE the build status — otherwise "started" would render it as
-    -- Running and hide that it needs the operator's input.
-    if runStatus == "parked" then
-        Just AwaitingHuman
+    case buildStatus of
+        "failed" ->
+            Just Failed
 
-    else
-        case buildStatus of
-            "failed" ->
-                Just Failed
+        "errored" ->
+            Just Errored
 
-            "errored" ->
+        "aborted" ->
+            Just Aborted
+
+        _ ->
+            if runStatus == "parked" then
+                Just AwaitingHuman
+
+            else if runStatus == "error" then
                 Just Errored
 
-            "aborted" ->
-                Just Aborted
+            else if runStatus == "failed" then
+                Just Failed
 
-            "succeeded" ->
-                if hasResult then
-                    Just Succeeded
+            else
+                case buildStatus of
+                    "succeeded" ->
+                        if hasResult then
+                            Just Succeeded
 
-                else
-                    Just NoOutput
+                        else
+                            Just NoOutput
 
-            "started" ->
-                Just (Running Nothing)
+                    "started" ->
+                        Just (Running Nothing)
 
-            "pending" ->
-                Just (Running Nothing)
+                    "pending" ->
+                        Just (Running Nothing)
 
-            _ ->
-                fromRunStatus runStatus
+                    _ ->
+                        fromRunStatus runStatus
 
 
 toneClass : Tone -> String

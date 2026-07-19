@@ -115,14 +115,19 @@ handleCallback callback ( model, effects ) =
 handleDelivery : Delivery -> ET Model
 handleDelivery delivery ( model, effects ) =
     case delivery of
-        ClockTicked OneSecond time ->
-            -- U11: track a live "now" so elapsed-time on rows keeps ticking.
-            ( { model | now = Just time }, effects )
-
-        ClockTicked FiveSeconds _ ->
+        ClockTicked FiveSeconds time ->
             -- U11: live-update the queue on the dashboard's 5s cadence so state
-            -- and spend never go stale. Only replaces fetched data.
-            ( model, effects ++ [ FetchAgentTickets, FetchAgentTicketCosts ] )
+            -- never goes stale, and advance "now" for the elapsed-time labels
+            -- on the same beat (a dedicated OneSecond tick re-filtered and
+            -- re-sorted the whole queue every second just to move "N ago"
+            -- labels the refetch redraws anyway). Only replaces fetched data.
+            ( { model | now = Just time }, effects ++ [ FetchAgentTickets ] )
+
+        ClockTicked OneMinute _ ->
+            -- The cost rollup is a whole-window ledger aggregation — far too
+            -- heavy to run 12x/minute per open tab for numbers that move at
+            -- run granularity. Refresh it on the minute like the /agent page.
+            ( model, effects ++ [ FetchAgentTicketCosts ] )
 
         _ ->
             ( model, effects )
@@ -148,7 +153,7 @@ tooltip _ _ =
 
 subscriptions : List Subscription
 subscriptions =
-    [ OnClockTick OneSecond, OnClockTick FiveSeconds ]
+    [ OnClockTick FiveSeconds, OnClockTick OneMinute ]
 
 
 view : Session -> Model -> Html Message

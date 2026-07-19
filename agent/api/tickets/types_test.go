@@ -38,6 +38,11 @@ func TestValidTransitionMatrix(t *testing.T) {
 		{tickets.StateSentBack, tickets.StateQueued},
 		{tickets.StateFailed, tickets.StateQueued},
 		{tickets.StateErrored, tickets.StateQueued},
+		// failed/errored→abandoned: human write-off of a dead ticket. The
+		// only other exit is a PAID re-dispatch, so without this edge dead
+		// tickets pile up in every active listing forever.
+		{tickets.StateFailed, tickets.StateAbandoned},
+		{tickets.StateErrored, tickets.StateAbandoned},
 	}
 	for _, tr := range allowed {
 		if !tickets.ValidTransition(tr.from, tr.to) {

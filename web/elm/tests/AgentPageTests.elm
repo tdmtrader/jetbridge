@@ -258,8 +258,9 @@ all =
                         (Callback.AgentRunMetricsFetched (Ok [ sampleRun ]))
                     |> Tuple.first
                     |> Application.update
-                        -- keyed by build id (stable across the 5s refetch), not the row ordinal
-                        (Msgs.Update (Message.Message.AgentRunExpandToggled 100))
+                        -- keyed by build id + plan id (stable across the 5s
+                        -- refetch, unique across sibling step rows of a build)
+                        (Msgs.Update (Message.Message.AgentRunExpandToggled "100:plan-abc"))
                     |> Tuple.first
                     |> Common.queryView
                     |> Query.find [ class "agent-run-row" ]

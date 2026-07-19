@@ -38,14 +38,18 @@ const (
 //   - needs_review → concluded — TERMINAL, explicit human disposition
 //     ONLY: "run finished, human reviewed, no merge intended"
 //     (spike/research flows; FLOWS.md §3). Positive sibling of abandoned.
+//   - failed/errored → abandoned — human disposition of a dead ticket.
+//     Without this edge the ONLY exit from failed/errored is a paid
+//     re-dispatch, so dead tickets accumulate forever in every "active"
+//     listing (dashboard strip, queue) with no way to write them off.
 var validTransitions = map[State][]State{
 	StateDraft:       {StateQueued, StateAbandoned},
 	StateQueued:      {StateRunning, StateDraft, StateAbandoned},
 	StateRunning:     {StateQueued, StateNeedsReview, StateFailed, StateErrored},
 	StateNeedsReview: {StateMerged, StateMergedWithFixes, StateSentBack, StateAbandoned, StateConcluded, StateQueued},
 	StateSentBack:    {StateQueued},
-	StateFailed:      {StateQueued},
-	StateErrored:     {StateQueued},
+	StateFailed:      {StateQueued, StateAbandoned},
+	StateErrored:     {StateQueued, StateAbandoned},
 }
 
 func ValidTransition(from, to State) bool {

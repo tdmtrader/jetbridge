@@ -42,7 +42,7 @@ type alias Model =
                 , agentReviewLoadError : Bool
                 , agentReviewPanelExpanded : Bool
                 , expandedFindings : Set String
-                , showObservations : Bool
+                , showObservations : Maybe Bool
                 , agentReviewNotes : Dict String String
                 , verdictErrors : Set String
                 , expandedDescriptions : Set String

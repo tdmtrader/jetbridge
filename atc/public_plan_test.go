@@ -1,6 +1,10 @@
 package atc_test
 
 import (
+	"encoding/json"
+	"reflect"
+	"strings"
+
 	"github.com/concourse/concourse/atc"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -8,6 +12,36 @@ import (
 )
 
 var _ = Describe("Plan", func() {
+	Describe("Public exhaustiveness", func() {
+		// Public() is a hand-maintained mirror of atc.Plan. A step type
+		// missing from it serializes as a typeless {"id": ...} object, which
+		// the web UI can only render as an anonymous fallback step (this is
+		// exactly how the harvest step went missing from the build page).
+		It("serializes every step pointer field of Plan under its JSON key", func() {
+			planType := reflect.TypeOf(atc.Plan{})
+			for i := 0; i < planType.NumField(); i++ {
+				field := planType.Field(i)
+				if field.Type.Kind() != reflect.Ptr {
+					continue
+				}
+				tag := strings.Split(field.Tag.Get("json"), ",")[0]
+				Expect(tag).ToNot(BeEmpty(), "step field %q needs a json tag", field.Name)
+
+				plan := atc.Plan{ID: "1"}
+				reflect.ValueOf(&plan).Elem().Field(i).Set(reflect.New(field.Type.Elem()))
+
+				public := plan.Public()
+				Expect(public).ToNot(BeNil())
+
+				var decoded map[string]json.RawMessage
+				Expect(json.Unmarshal([]byte(*public), &decoded)).To(Succeed())
+				Expect(decoded).To(HaveKey(tag),
+					"atc.Plan field %q (json %q) is dropped by Plan.Public() — add a case for it so the build page can render the step",
+					field.Name, tag)
+			}
+		})
+	})
+
 	Describe("SidecarPlanID", func() {
 		It("derives a plan ID from the parent and sidecar name", func() {
 			id := atc.SidecarPlanID("42", "cloud-sql-proxy")

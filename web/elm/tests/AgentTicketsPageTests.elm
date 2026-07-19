@@ -135,7 +135,7 @@ all =
                     |> Common.queryView
                     |> Query.find [ class "agent-ticket-branch" ]
                     |> Query.has [ text "agent/ticket-12" ]
-        , test "live-updates: refetches tickets and costs on the five second tick" <|
+        , test "live-updates: refetches tickets on the five second tick, but not the heavy cost rollup" <|
             \_ ->
                 Common.init "/agent-tickets"
                     |> Application.update
@@ -143,8 +143,17 @@ all =
                     |> Tuple.second
                     |> Expect.all
                         [ Common.contains Effects.FetchAgentTickets
-                        , Common.contains Effects.FetchAgentTicketCosts
+                        , Common.notContains Effects.FetchAgentTicketCosts
                         ]
+        , test "live-updates: refreshes the cost rollup on the minute tick" <|
+            \_ ->
+                -- the rollup is a whole-window ledger aggregation; 5s polling
+                -- would run it 720x/hour per open tab for run-granularity data
+                Common.init "/agent-tickets"
+                    |> Application.update
+                        (Msgs.DeliveryReceived (ClockTicked OneMinute <| Time.millisToPosix 0))
+                    |> Tuple.second
+                    |> Common.contains Effects.FetchAgentTicketCosts
         , test "client-side filter narrows the visible rows by title" <|
             \_ ->
                 Common.init "/agent-tickets"

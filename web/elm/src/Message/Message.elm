@@ -47,7 +47,7 @@ type Message
     | ToggleAgentReviewPanel
     | ToggleAgentReviewFinding String
     | ToggleAgentReviewFindingBody String
-    | ToggleAgentReviewObservations
+    | ToggleAgentReviewObservations Bool
     | AgentReviewVerdictClicked
         { repo : String
         , commitSha : String
@@ -67,7 +67,8 @@ type Message
     | AgentMintedTokenDismissed
     | AgentPrincipalRevokeClicked Int
     | AgentPrincipalsShowEphemeralToggled
-    | AgentRunExpandToggled Int
+    | AgentRunExpandToggled String
+    | AgentSectionNavClicked String
       -- Agent Ticket page (edit + disposition)
     | ClickAgentTicketEdit
     | AgentTicketTitleChanged String

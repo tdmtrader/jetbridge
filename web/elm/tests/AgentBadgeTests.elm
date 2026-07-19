@@ -130,5 +130,31 @@ all =
                 \_ ->
                     runOutcome { buildStatus = "succeeded", runStatus = "parked", hasResult = True }
                         |> Expect.equal (Just AwaitingHuman)
+            , test "a parked run whose build was ABORTED shows Aborted, not Waiting on you" <|
+                \_ ->
+                    -- abort-while-parked leaves the metric row parked forever;
+                    -- the dead run must not keep asking for the operator.
+                    runOutcome { buildStatus = "aborted", runStatus = "parked", hasResult = False }
+                        |> Expect.equal (Just Aborted)
+            , test "a parked run whose build ERRORED shows Errored, not Waiting on you" <|
+                \_ ->
+                    runOutcome { buildStatus = "errored", runStatus = "parked", hasResult = False }
+                        |> Expect.equal (Just Errored)
+            , test "a step that reported error inside a SUCCEEDED build is Errored, never a green OK" <|
+                \_ ->
+                    -- attempts:/try can fail an agent step inside a build that
+                    -- still succeeds; the run's own failure must not be masked.
+                    runOutcome { buildStatus = "succeeded", runStatus = "error", hasResult = True }
+                        |> Expect.equal (Just Errored)
+            , test "a step that reported failed inside a SUCCEEDED build is Failed" <|
+                \_ ->
+                    runOutcome { buildStatus = "succeeded", runStatus = "failed", hasResult = True }
+                        |> Expect.equal (Just Failed)
+            , test "a step that reported error while its build is still open is Errored, not Running" <|
+                \_ ->
+                    -- the metric row lands at step end; hooks or a wedged build
+                    -- can hold the build open long after the run died.
+                    runOutcome { buildStatus = "started", runStatus = "error", hasResult = False }
+                        |> Expect.equal (Just Errored)
             ]
         ]

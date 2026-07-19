@@ -15,7 +15,7 @@ type alias PanelState a =
         , agentReviewLoadError : Bool
         , agentReviewPanelExpanded : Bool
         , expandedFindings : Set String
-        , showObservations : Bool
+        , showObservations : Maybe Bool
         , agentReviewNotes : Dict String String
         , verdictErrors : Set String
         , expandedDescriptions : Set String
@@ -172,10 +172,12 @@ observationsSection reviewer review model =
     else
         let
             -- A short list is worth reading, so it opens by default; a long
-            -- one stays folded. The toggle simply flips whichever default
-            -- applies, so `showObservations` still means "user overrode it".
+            -- one stays folded. A user click records an ABSOLUTE choice
+            -- (Just open/closed) rather than "flip the default": reviews
+            -- refetch while the page is open, and a count crossing the
+            -- threshold must not invert what the user chose.
             open =
-                Basics.xor model.showObservations (count <= 5)
+                model.showObservations |> Maybe.withDefault (count <= 5)
         in
         Html.button
             (buttonReset
@@ -188,7 +190,7 @@ observationsSection reviewer review model =
                    , style "width" "100%"
                    , style "cursor" "pointer"
                    , style "color" "#b0b0b0"
-                   , onClick ToggleAgentReviewObservations
+                   , onClick (ToggleAgentReviewObservations (not open))
                    ]
             )
             [ Html.span [ style "font-size" "12px" ]

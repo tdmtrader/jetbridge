@@ -20,6 +20,7 @@ import Concourse.BuildStatus exposing (BuildStatus(..))
 import DashboardTests exposing (iconSelector)
 import Dict
 import Expect
+import Json.Decode
 import Json.Encode
 import Message.Callback as Callback
 import Message.Effects as Effects
@@ -37,7 +38,27 @@ import Views.Styles
 all : Test
 all =
     describe "build steps"
-        [ describe "get step metadata"
+        [ describe "unknown step decode fallback"
+            [ test "labels an unrecognized step with its nested name" <|
+                \_ ->
+                    """{"id":"1","fancy_step":{"name":"deploy"}}"""
+                        |> Json.Decode.decodeString Concourse.decodeBuildPlan
+                        |> Result.map .step
+                        |> Expect.equal (Ok (Concourse.BuildStepUnknown "deploy"))
+            , test "labels an unrecognized step with its type key when it has no name" <|
+                \_ ->
+                    """{"id":"1","fancy_step":{}}"""
+                        |> Json.Decode.decodeString Concourse.decodeBuildPlan
+                        |> Result.map .step
+                        |> Expect.equal (Ok (Concourse.BuildStepUnknown "fancy_step"))
+            , test "falls back to a generic label for a bare typeless step" <|
+                \_ ->
+                    """{"id":"1"}"""
+                        |> Json.Decode.decodeString Concourse.decodeBuildPlan
+                        |> Result.map .step
+                        |> Expect.equal (Ok (Concourse.BuildStepUnknown "step"))
+            ]
+        , describe "get step metadata"
             [ test "has a table that left aligns text in cells" <|
                 given iVisitABuildWithAGetStep
                     >> given theGetStepIsExpanded

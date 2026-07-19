@@ -23,6 +23,7 @@ import Login.Login as Login
 import Message.Callback exposing (Callback(..))
 import Message.Effects exposing (Effect(..))
 import Message.Message exposing (Message(..))
+import Message.ScrollDirection as ScrollDirection
 import Message.Subscription
     exposing
         ( Delivery(..)
@@ -76,7 +77,7 @@ type alias Model =
         , minting : Bool
         , revokeError : Maybe String
         , showEphemeralPrincipals : Bool
-        , expandedRuns : Set Int
+        , expandedRuns : Set String
         }
 
 
@@ -337,9 +338,15 @@ update msg ( model, effects ) =
         AgentPrincipalsShowEphemeralToggled ->
             ( { model | showEphemeralPrincipals = not model.showEphemeralPrincipals }, effects )
 
+        AgentSectionNavClicked anchorId ->
+            ( model, effects ++ [ Scroll (ScrollDirection.ToId anchorId) agentContentId ] )
+
         AgentRunExpandToggled rowKey ->
             -- Toggle a single ledger row between its one-line summary and the
-            -- full run summary. Keyed by the row's ordinal in the fetched list.
+            -- full run summary. Keyed by build id + plan id (see runKey): a
+            -- build carries one metric row per step (agent + harvest), so the
+            -- build id alone would toggle sibling rows together, and an
+            -- ordinal would jump when the 5s refetch prepends a newer run.
             let
                 expanded =
                     if Set.member rowKey model.expandedRuns then
@@ -542,7 +549,15 @@ view session model =
             (id "page-below-top-bar" :: Views.Styles.pageBelowTopBar route)
             [ SideBar.view session Nothing
             , Html.div
-                [ style "padding" "16px", style "width" "100%" ]
+                -- The console's own scroll container (like the build page's
+                -- body): the section nav jumps by setting its scrollTop via
+                -- the scrollToId port, which needs a scrolling parent by id.
+                [ id agentContentId
+                , style "padding" "16px"
+                , style "width" "100%"
+                , style "box-sizing" "border-box"
+                , style "overflow-y" "auto"
+                ]
                 [ Html.h1
                     [ style "font-size" "18px"
                     , style "margin" "0"
@@ -571,8 +586,16 @@ view session model =
 -- SECTION NAV
 
 
+agentContentId : String
+agentContentId =
+    "agent-content"
+
+
 {-| A slim in-page nav strip so the long single-column console can be jumped
-around without scroll-hunting. Each entry anchors to a section's `id`. -}
+around without scroll-hunting. Each entry scrolls to a section's `id` via the
+`scrollToId` port — a plain `#fragment` href is dead here: `Browser.application`
+intercepts every internal link click and re-navigates through `Routes`, which
+carries no fragment for this page, so the browser never performs the jump. -}
 sectionNav : Html Message
 sectionNav =
     Html.div
@@ -596,10 +619,15 @@ sectionNav =
 
 navLink : ( String, String ) -> Html Message
 navLink ( anchorId, label ) =
-    Html.a
-        [ href ("#" ++ anchorId)
+    Html.button
+        [ onClick (AgentSectionNavClicked anchorId)
+        , type_ "button"
+        , style "background" "transparent"
+        , style "border" "none"
+        , style "padding" "0"
+        , style "font" "inherit"
         , style "color" "#7a9ac0"
-        , style "text-decoration" "none"
+        , style "cursor" "pointer"
         ]
         [ Html.text label ]
 
@@ -631,7 +659,7 @@ runsSection zone model =
                        ]
 
 
-runsTable : Time.Zone -> Set Int -> List Agent.RunMetric -> Html Message
+runsTable : Time.Zone -> Set String -> List Agent.RunMetric -> Html Message
 runsTable zone expandedRuns runs =
     Html.table
         [ class "agent-runs-table"
@@ -640,7 +668,7 @@ runsTable zone expandedRuns runs =
         , style "font-size" "12px"
         , style "color" Colors.text
         ]
-        (runsHeaderRow :: List.map (\r -> runRow zone expandedRuns r.buildId r) runs)
+        (runsHeaderRow :: List.map (runRow zone expandedRuns) runs)
 
 
 runsHeaderRow : Html Message
@@ -657,10 +685,19 @@ runsHeaderRow =
         ]
 
 
-runRow : Time.Zone -> Set Int -> Int -> Agent.RunMetric -> Html Message
-runRow zone expandedRuns rowKey r =
+{-| Stable identity for a ledger row. (build id, plan id) is the metrics
+table's unique key — a build id alone is shared by sibling step rows of the
+same build, and a list ordinal changes when the refetch prepends a newer run.
+-}
+runKey : Agent.RunMetric -> String
+runKey r =
+    String.fromInt r.buildId ++ ":" ++ r.planId
+
+
+runRow : Time.Zone -> Set String -> Agent.RunMetric -> Html Message
+runRow zone expandedRuns r =
     Html.tr [ class "agent-run-row" ]
-        [ runStepCell expandedRuns rowKey r
+        [ runStepCell expandedRuns r
         , tableCell "left" (workflowRef r.workflowName r.workflowVersion)
         , runStatusCell r
         , tableCell "right" ("$" ++ formatUsd r.costUsd)
@@ -674,12 +711,15 @@ runRow zone expandedRuns rowKey r =
 {-| The step name plus its summary underneath it — omitted when the summary is
 empty so the row does not carry a blank subtext line. The summary is
 click-to-expand: collapsed it is a truncated one-liner; expanded it renders the
-full run summary as prose (`AgentRunExpandToggled`, keyed by build id so the
+full run summary as prose (`AgentRunExpandToggled`, keyed by `runKey` so the
 expanded row stays put when a 5s refetch prepends a newer run).
 -}
-runStepCell : Set Int -> Int -> Agent.RunMetric -> Html Message
-runStepCell expandedRuns rowKey r =
+runStepCell : Set String -> Agent.RunMetric -> Html Message
+runStepCell expandedRuns r =
     let
+        rowKey =
+            runKey r
+
         expanded =
             Set.member rowKey expandedRuns
 

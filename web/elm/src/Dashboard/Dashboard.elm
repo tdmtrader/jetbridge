@@ -1246,6 +1246,17 @@ agentTicketStrip model =
             model.agentTickets
                 |> List.filter (\t -> List.member t.state agentActiveStates)
                 |> List.sortBy (\t -> ( agentStateOrder t.state, negate t.createdAt ))
+
+        -- Attention states rank first but must not monopolize the strip: a
+        -- backlog of undispositioned needs_review/errored tickets would
+        -- otherwise fill all 8 slots and hide every RUNNING/QUEUED ticket —
+        -- the things actually moving. Cap attention chips at 6 so live work
+        -- always keeps at least two slots (the queue page shows everything).
+        shown =
+            (List.take 6 (List.filter (\t -> agentStateOrder t.state <= 3) active)
+                ++ List.filter (\t -> agentStateOrder t.state > 3) active
+            )
+                |> List.take 8
     in
     if List.isEmpty active then
         Html.text ""
@@ -1270,7 +1281,7 @@ agentTicketStrip model =
                 , style "font-size" "13px"
                 ]
                 [ Html.text "agent tickets" ]
-                :: List.map (agentTicketChip model.agentTicketCosts) (List.take 8 active)
+                :: List.map (agentTicketChip model.agentTicketCosts) shown
             )
 
 

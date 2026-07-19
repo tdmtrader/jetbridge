@@ -768,13 +768,31 @@ decodeBuildStepHarvest =
         |> andMap (Json.Decode.field "name" Json.Decode.string)
 
 
+{-| Public-plan steps are shaped `{"id": …, "<type>": {…, "name": …}}`, so an
+unrecognized step's identity lives under its unknown type key — label it with
+the nested name when present, else the type key itself, so the degraded row
+reads "deploy" or "fancy_step" instead of an anonymous "step".
+-}
 decodeBuildStepUnknown : Json.Decode.Decoder BuildStep
 decodeBuildStepUnknown =
     Json.Decode.map BuildStepUnknown
-        (Json.Decode.oneOf
-            [ Json.Decode.field "name" Json.Decode.string
-            , Json.Decode.succeed "step"
-            ]
+        (Json.Decode.keyValuePairs Json.Decode.value
+            |> Json.Decode.map
+                (\pairs ->
+                    pairs
+                        |> List.filter (\( key, _ ) -> key /= "id" && key /= "attempts")
+                        |> List.head
+                        |> Maybe.map
+                            (\( key, value ) ->
+                                case Json.Decode.decodeValue (Json.Decode.field "name" Json.Decode.string) value of
+                                    Ok name ->
+                                        name
+
+                                    Err _ ->
+                                        key
+                            )
+                        |> Maybe.withDefault "step"
+                )
         )
 
 

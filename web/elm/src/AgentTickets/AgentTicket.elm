@@ -77,7 +77,7 @@ type alias Model =
         , agentReviewLoadError : Bool
         , agentReviewPanelExpanded : Bool
         , expandedFindings : Set String
-        , showObservations : Bool
+        , showObservations : Maybe Bool
         , agentReviewNotes : Dict String String
         , verdictErrors : Set String
         , expandedDescriptions : Set String
@@ -104,7 +104,7 @@ init { id } =
       , agentReviewLoadError = False
       , agentReviewPanelExpanded = False
       , expandedFindings = Set.empty
-      , showObservations = False
+      , showObservations = Nothing
       , agentReviewNotes = Dict.empty
       , verdictErrors = Set.empty
       , expandedDescriptions = Set.empty
@@ -133,24 +133,65 @@ handleCallback callback ( model, effects ) =
             -- refetch would otherwise silently revert their unsaved typing every
             -- few seconds, and a tick just before Save would persist the reverted
             -- server values as a no-op that looks successful).
+            let
+                stateChanged =
+                    model.detail
+                        |> Maybe.map (\old -> old.ticket.state /= detail.ticket.state)
+                        |> Maybe.withDefault False
+
+                -- The edit form is suppressed for terminal states, so if the
+                -- ticket goes terminal under an open edit the form would
+                -- silently vanish with `editing` stuck True and no Cancel left
+                -- to reach — exit the edit explicitly and say why.
+                editKilledByTerminal =
+                    model.editing && isTerminal detail.ticket.state
+
+                stillEditing =
+                    model.editing && not editKilledByTerminal
+            in
             ( { model
                 | detail = Just detail
                 , loaded = True
                 , loadError = False
+
+                -- An armed-but-unconfirmed transition (or dispatch) was a
+                -- decision about the PREVIOUS state; if the state changed
+                -- underneath it, disarm so the user re-decides against the
+                -- fresh state. (Confirm racing ahead of this refetch is safe:
+                -- it posts the old state as `from`, which the server's CAS
+                -- rejects with a 409.)
+                , pendingTransition =
+                    if stateChanged then
+                        Nothing
+
+                    else
+                        model.pendingTransition
+                , dispatchConfirm = model.dispatchConfirm && not stateChanged
+                , editing = stillEditing
+                , actionError =
+                    if editKilledByTerminal then
+                        Just
+                            ("Ticket moved to \""
+                                ++ detail.ticket.state
+                                ++ "\" while you were editing — unsaved changes were discarded."
+                            )
+
+                    else
+                        model.actionError
                 , editTitle =
-                    if model.editing then
+                    if stillEditing then
                         model.editTitle
 
                     else
                         detail.ticket.title
                 , editBody =
-                    if model.editing then
+                    if stillEditing then
                         model.editBody
 
                     else
                         detail.ticket.body
                 , editBudget =
-                    if model.editing then
+                    if stillEditing then
                         model.editBudget
 
                     else
@@ -235,8 +276,22 @@ handleDelivery delivery ( model, effects ) =
         ClockTicked FiveSeconds _ ->
             -- U11: live-update on the dashboard's 5s cadence so state, spend and
             -- runs stay current (a page was showing "Running" ~20 min after the
-            -- ticket errored). Only replaces fetched data.
-            ( model, effects ++ [ FetchAgentTicket model.ticketId, FetchAgentTicketMetrics model.ticketId ] )
+            -- ticket errored). Only replaces fetched data. Once the ticket is
+            -- terminal nothing can change server-side (no dispatch, frozen
+            -- runs/costs), so stop polling instead of refetching identical
+            -- bytes for the life of the tab; keep polling while detail is
+            -- still unknown.
+            let
+                settled =
+                    model.detail
+                        |> Maybe.map (\d -> isTerminal d.ticket.state)
+                        |> Maybe.withDefault False
+            in
+            if settled then
+                ( model, effects )
+
+            else
+                ( model, effects ++ [ FetchAgentTicket model.ticketId, FetchAgentTicketMetrics model.ticketId ] )
 
         _ ->
             ( model, effects )
@@ -310,8 +365,8 @@ update msg ( model, effects ) =
         ToggleAgentReviewFinding findingId ->
             ( { model | expandedFindings = toggleSet findingId model.expandedFindings }, effects )
 
-        ToggleAgentReviewObservations ->
-            ( { model | showObservations = not model.showObservations }, effects )
+        ToggleAgentReviewObservations open ->
+            ( { model | showObservations = Just open }, effects )
 
         ToggleAgentReviewFindingBody findingId ->
             ( { model | expandedDescriptions = toggleSet findingId model.expandedDescriptions }, effects )
@@ -710,10 +765,10 @@ transitionTargets state =
             [ ( "queued", "Re-queue" ) ]
 
         "failed" ->
-            [ ( "queued", "Retry" ) ]
+            [ ( "queued", "Retry" ), ( "abandoned", "Abandon" ) ]
 
         "errored" ->
-            [ ( "queued", "Retry" ) ]
+            [ ( "queued", "Retry" ), ( "abandoned", "Abandon" ) ]
 
         _ ->
             []
@@ -781,21 +836,14 @@ reviewDigest ticket metrics =
         latestBuild =
             metrics |> List.map .buildId |> List.maximum
 
+        -- Rows are created_at ASC, so the LAST non-empty summary is the final
+        -- step's verdict (harvest/judge), not the agent's own first words.
         latestSummary =
             case latestBuild of
                 Just b ->
                     metrics
                         |> List.filter (\m -> m.buildId == b)
-                        |> List.filterMap
-                            (\m ->
-                                if m.summary == "" then
-                                    Nothing
-
-                                else
-                                    Just m.summary
-                            )
-                        |> List.head
-                        |> Maybe.withDefault ""
+                        |> lastNonEmptySummary
 
                 Nothing ->
                     ""
@@ -1109,27 +1157,33 @@ runRow metrics buildId =
         cost =
             forBuild |> List.map .costUsd |> List.sum
 
+        -- Rows arrive created_at ASC, one per step (agent, then harvest…), so
+        -- the run's effective status is the LATEST step's — except a parked
+        -- row anywhere wins, or a mid-build HITL park on a later step would
+        -- hide behind an earlier step's "ok" and render as merely Running.
         runStatus =
-            forBuild |> List.head |> Maybe.map .status |> Maybe.withDefault ""
+            case List.filter (\m -> m.status == "parked") forBuild of
+                parked :: _ ->
+                    parked.status
 
+                [] ->
+                    forBuild
+                        |> List.reverse
+                        |> List.head
+                        |> Maybe.map .status
+                        |> Maybe.withDefault ""
+
+        -- The joined build status is identical on every row of the build.
         buildStatus =
             forBuild |> List.head |> Maybe.map .buildStatus |> Maybe.withDefault ""
 
-        hasResult =
-            List.any (\m -> m.summary /= "") forBuild
-
+        -- The delivered result is the LAST step's non-empty summary (the
+        -- harvest/judge verdict), not the first step's self-report.
         summary =
-            forBuild
-                |> List.filterMap
-                    (\m ->
-                        if m.summary == "" then
-                            Nothing
+            lastNonEmptySummary forBuild
 
-                        else
-                            Just m.summary
-                    )
-                |> List.head
-                |> Maybe.withDefault ""
+        hasResult =
+            summary /= ""
 
         -- U2/U3: the build status wins over the step status for display truth.
         statusView =
@@ -1228,6 +1282,25 @@ unique xs =
                     acc ++ [ x ]
             )
             []
+
+
+{-| The last non-empty summary of a build's metric rows (rows arrive
+created_at ASC): the final step's verdict, not the first step's self-report.
+-}
+lastNonEmptySummary : List Concourse.Agent.RunMetric -> String
+lastNonEmptySummary rows =
+    rows
+        |> List.filterMap
+            (\m ->
+                if m.summary == "" then
+                    Nothing
+
+                else
+                    Just m.summary
+            )
+        |> List.reverse
+        |> List.head
+        |> Maybe.withDefault ""
 
 
 reviewerName : Session -> String
