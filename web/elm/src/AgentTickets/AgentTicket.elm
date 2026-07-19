@@ -30,8 +30,9 @@ import Concourse.AgentTicket as AgentTicket
 import Dict exposing (Dict)
 import EffectTransformer exposing (ET)
 import Html exposing (Html)
-import Html.Attributes exposing (class, href, id, placeholder, style, value)
-import Html.Events exposing (onClick, onInput)
+import Html.Attributes exposing (attribute, class, href, id, placeholder, style, value)
+import Html.Events exposing (on, onClick, onInput)
+import Json.Decode
 import Login.Login as Login
 import Message.Callback exposing (Callback(..))
 import Message.Effects exposing (Effect(..))
@@ -40,6 +41,7 @@ import Message.Subscription exposing (Delivery(..), Interval(..), Subscription(.
 import Routes
 import Set exposing (Set)
 import SideBar.SideBar as SideBar
+import Time
 import Tooltip
 import UserState
 import Views.Styles
@@ -66,6 +68,7 @@ type alias Model =
         , editBody : String
         , editBudget : String
         , dispatchConfirm : Bool
+        , pendingTransition : Maybe String
 
         -- Review panel state — structurally satisfies Build.AgentReview.PanelState
         -- so the panel view can be reused unchanged.
@@ -95,6 +98,7 @@ init { id } =
       , editBody = ""
       , editBudget = ""
       , dispatchConfirm = False
+      , pendingTransition = Nothing
       , agentReviews = []
       , agentReviewLoadError = False
       , agentReviewPanelExpanded = False
@@ -250,14 +254,22 @@ update msg ( model, effects ) =
             )
 
         ClickAgentTicketTransition to ->
-            ( { model | actionError = Nothing }
-            , case model.detail of
-                Just d ->
+            -- Two-step confirm: first click arms the disposition (naming the
+            -- action), a second click commits it. Mirrors the dispatch confirm.
+            ( { model | pendingTransition = Just to, actionError = Nothing }, effects )
+
+        ConfirmAgentTicketTransition ->
+            ( { model | pendingTransition = Nothing, actionError = Nothing }
+            , case ( model.detail, model.pendingTransition ) of
+                ( Just d, Just to ) ->
                     effects ++ [ TransitionAgentTicket { id = model.ticketId, from = d.ticket.state, to = to } ]
 
-                Nothing ->
+                _ ->
                     effects
             )
+
+        CancelAgentTicketTransition ->
+            ( { model | pendingTransition = Nothing }, effects )
 
         ClickAgentTicketDispatch ->
             ( { model | dispatchConfirm = True, actionError = Nothing }, effects )
@@ -355,34 +367,69 @@ content session model =
                 Html.p [ style "color" "#b0b0b0" ] [ Html.text "Loading…" ]
 
             Just detail ->
+                let
+                    ticket =
+                        detail.ticket
+
+                    reviewCard =
+                        Build.AgentReview.view (reviewerName session) model
+
+                    top =
+                        [ header model ticket
+                        , provenanceLine ticket
+                        , provenanceTimestamps session.timeZone ticket
+                        , errorNotice ticket
+                        , actionErrorBanner model
+                        ]
+
+                    rest =
+                        [ budgetBar ticket model.runMetrics
+                        , editForm model ticket
+                        , Html.div [ id "ticket-hitl-slot" ] []
+                        , tabsBar model
+                        , tabContent model detail
+                        , taskList detail.tasks
+                        , runHistory model.runMetrics
+                        ]
+                in
                 Html.div []
-                    [ header model detail.ticket
-                    , provenanceLine detail.ticket
-                    , actionErrorBanner model
-                    , lifecycleBar model detail.ticket
-                    , budgetBar detail.ticket model.runMetrics
-                    , editForm model
-                    , Html.div [ id "ticket-hitl-slot" ] []
-                    , tabsBar model
-                    , tabContent model detail
-                    , taskList detail.tasks
-                    , runHistory model.runMetrics
-                    , Build.AgentReview.view (reviewerName session) model
-                    ]
+                    (if ticket.state == "needs_review" then
+                        -- U6: keep the evidence (digest + review card) beside the
+                        -- decision (the disposition bar) so a reviewer sees both.
+                        top
+                            ++ [ reviewDigest ticket model.runMetrics
+                               , lifecycleBar model ticket
+                               , reviewCard
+                               ]
+                            ++ rest
+
+                     else
+                        top
+                            ++ [ lifecycleBar model ticket ]
+                            ++ rest
+                            ++ [ reviewCard ]
+                    )
 
 
 header : Model -> AgentTicket.Ticket -> Html Message
 header model ticket =
     Html.div
-        [ style "display" "flex", style "align-items" "center", style "gap" "12px", style "margin-bottom" "4px" ]
+        [ style "display" "flex", style "align-items" "flex-start", style "gap" "12px", style "margin-bottom" "4px" ]
         [ Html.span
-            [ style "font-family" "monospace", style "color" "#9aa39b" ]
+            [ style "font-family" "monospace", style "color" "#9aa39b", style "flex-shrink" "0", style "padding-top" "3px" ]
             [ Html.text ("#" ++ String.fromInt ticket.id) ]
-        , stateBadge ticket.state
+        , Html.span [ style "flex-shrink" "0", style "padding-top" "1px" ] [ stateBadge ticket.state ]
         , Html.h1
-            [ style "font-size" "18px", style "margin" "0", style "flex" "1" ]
+            [ style "font-size" "18px"
+            , style "margin" "0"
+            , style "flex" "1"
+            , style "min-width" "0"
+            , style "text-align" "left"
+            , style "overflow-wrap" "anywhere"
+            , style "word-break" "break-word"
+            ]
             [ Html.text ticket.title ]
-        , if model.editing then
+        , if model.editing || isTerminal ticket.state then
             Html.text ""
 
           else
@@ -443,6 +490,74 @@ provenanceLine ticket =
             (repoPart ++ branchPart)
 
 
+{-| Created / updated / completed provenance. The epoch-seconds fields ride on
+every ticket but were rendered nowhere; surface them as a small absolute-time
+line (UTC-offset by the viewer's zone). Updated is suppressed when it matches
+created, and completed only shows once the ticket has finished.
+-}
+provenanceTimestamps : Time.Zone -> AgentTicket.Ticket -> Html Message
+provenanceTimestamps zone ticket =
+    let
+        parts =
+            List.filterMap identity
+                [ if ticket.createdAt > 0 then
+                    Just ("created " ++ formatTimestamp zone ticket.createdAt)
+
+                  else
+                    Nothing
+                , if ticket.updatedAt > 0 && ticket.updatedAt /= ticket.createdAt then
+                    Just ("updated " ++ formatTimestamp zone ticket.updatedAt)
+
+                  else
+                    Nothing
+                , ticket.completedAt
+                    |> Maybe.map (\c -> "completed " ++ formatTimestamp zone c)
+                ]
+    in
+    if List.isEmpty parts then
+        Html.text ""
+
+    else
+        Html.div
+            [ id "ticket-timestamps"
+            , style "font-size" "11px"
+            , style "color" "#7a7a7a"
+            , style "margin" "0 0 8px 0"
+            ]
+            [ Html.text (String.join " · " parts) ]
+
+
+{-| U4: when a run errored the server records the failure text on the ticket
+(`error_detail`), but it was never shown. Surface it prominently, right above
+the Retry action, so the reviewer knows what to fix before re-queueing.
+-}
+errorNotice : AgentTicket.Ticket -> Html Message
+errorNotice ticket =
+    if ticket.errorDetail == "" then
+        Html.text ""
+
+    else
+        Html.div
+            [ id "ticket-error-detail"
+            , style "border" "1px solid #7a3a3a"
+            , style "background" "#2a1c1c"
+            , style "color" "#f0a0a0"
+            , style "padding" "10px 12px"
+            , style "margin" "10px 0"
+            ]
+            [ Html.div
+                [ style "font-weight" "bold", style "font-size" "12px", style "margin-bottom" "4px" ]
+                [ Html.text "Run error" ]
+            , Html.div
+                [ style "white-space" "pre-wrap"
+                , style "font-family" "monospace"
+                , style "font-size" "12px"
+                , style "line-height" "1.4"
+                ]
+                [ Html.text ticket.errorDetail ]
+            ]
+
+
 stateBadge : String -> Html Message
 stateBadge state =
     case AgentBadge.fromApiToken state of
@@ -490,8 +605,24 @@ lifecycleBar model ticket =
                 []
 
         transitionButtons =
-            transitions
-                |> List.map (\( to, label ) -> actionButton "secondary" (ClickAgentTicketTransition to) label)
+            case model.pendingTransition of
+                Just to ->
+                    let
+                        pendingLabel =
+                            transitions
+                                |> List.filter (\( t, _ ) -> t == to)
+                                |> List.head
+                                |> Maybe.map Tuple.second
+                                |> Maybe.withDefault to
+                    in
+                    [ Html.span [ style "color" "#b0b0b0" ] [ Html.text (pendingLabel ++ " this ticket?") ]
+                    , actionButton "primary" ConfirmAgentTicketTransition ("Confirm " ++ String.toLower pendingLabel)
+                    , actionButton "secondary" CancelAgentTicketTransition "Cancel"
+                    ]
+
+                Nothing ->
+                    transitions
+                        |> List.map (\( to, label ) -> actionButton "secondary" (ClickAgentTicketTransition to) label)
     in
     if List.isEmpty dispatchControls && List.isEmpty transitionButtons then
         Html.text ""
@@ -505,6 +636,17 @@ lifecycleBar model ticket =
 canDispatch : String -> Bool
 canDispatch state =
     state == "queued"
+
+
+{-| U21: terminal states have no outgoing human transition (see the doc on
+`transitionTargets`), so editing them is meaningless — the Edit affordance and
+the edit form are both suppressed. `sent_back` is deliberately excluded: it is
+re-queueable, and the author is expected to revise before re-queueing.
+-}
+isTerminal : String -> Bool
+isTerminal state =
+    List.member state
+        [ "merged", "merged_with_fixes", "concluded", "abandoned" ]
 
 
 {-| The transitions a human may drive from a given state, as (target, label).
@@ -596,9 +738,103 @@ budgetBar ticket metrics =
                 Html.text ""
 
 
-editForm : Model -> Html Message
-editForm model =
-    if not model.editing then
+{-| U6: a compact evidence digest shown beside the disposition bar for a
+`needs_review` ticket — the latest run's one-line summary, a direct diff link,
+and spend-vs-budget — so the reviewer decides with the facts in view.
+-}
+reviewDigest : AgentTicket.Ticket -> List Concourse.Agent.RunMetric -> Html Message
+reviewDigest ticket metrics =
+    let
+        latestBuild =
+            metrics |> List.map .buildId |> List.maximum
+
+        latestSummary =
+            case latestBuild of
+                Just b ->
+                    metrics
+                        |> List.filter (\m -> m.buildId == b)
+                        |> List.filterMap
+                            (\m ->
+                                if m.summary == "" then
+                                    Nothing
+
+                                else
+                                    Just m.summary
+                            )
+                        |> List.head
+                        |> Maybe.withDefault ""
+
+                Nothing ->
+                    ""
+
+        summaryRow =
+            if latestSummary == "" then
+                Html.text ""
+
+            else
+                Html.div
+                    [ style "color" "#d0d0d0", style "line-height" "1.4", style "margin-bottom" "6px" ]
+                    [ Html.span [ style "color" "#9aa39b" ] [ Html.text "latest run — " ]
+                    , Html.text latestSummary
+                    ]
+
+        factsRow =
+            Html.div
+                [ style "display" "flex", style "flex-wrap" "wrap", style "gap" "12px", style "align-items" "center", style "font-size" "12px" ]
+                (digestCompareLink ticket
+                    ++ [ Html.span [ style "color" "#9aa39b" ] [ Html.text (costBudgetText ticket metrics) ] ]
+                )
+    in
+    Html.div
+        [ id "ticket-review-digest"
+        , style "border" "1px solid #3d3c3c"
+        , style "background" "#1b201b"
+        , style "padding" "10px 12px"
+        , style "margin" "10px 0"
+        ]
+        [ summaryRow, factsRow ]
+
+
+{-| The diff link for the digest. Kept on its own class so the primary compare
+affordance in the provenance line stays the single `agent-ticket-compare-link`.
+-}
+digestCompareLink : AgentTicket.Ticket -> List (Html Message)
+digestCompareLink ticket =
+    case AgentTicket.compareUrl ticket of
+        Just url ->
+            [ Html.a
+                [ class "agent-ticket-digest-compare-link"
+                , href url
+                , style "color" "#7aa37a"
+                , style "text-decoration" "none"
+                ]
+                [ Html.text ("review diff vs " ++ ticket.targetBranch) ]
+            ]
+
+        Nothing ->
+            []
+
+
+{-| Spend against the ticket's budget, always well-spaced (U19b): "$X spent /
+$Y budget", or just "$X spent" when no budget is set.
+-}
+costBudgetText : AgentTicket.Ticket -> List Concourse.Agent.RunMetric -> String
+costBudgetText ticket metrics =
+    let
+        spent =
+            metrics |> List.map .costUsd |> List.sum
+    in
+    case ticket.budgetUsd of
+        Just budget ->
+            "$" ++ formatUsd spent ++ " spent / $" ++ formatUsd budget ++ " budget"
+
+        Nothing ->
+            "$" ++ formatUsd spent ++ " spent"
+
+
+editForm : Model -> AgentTicket.Ticket -> Html Message
+editForm model ticket =
+    if not model.editing || isTerminal ticket.state then
         Html.text ""
 
     else
@@ -645,7 +881,12 @@ inputStyles =
 tabsBar : Model -> Html Message
 tabsBar model =
     Html.div
-        [ style "display" "flex", style "gap" "0", style "border-bottom" "1px solid #3d3c3c", style "margin" "16px 0 0" ]
+        [ attribute "role" "tablist"
+        , style "display" "flex"
+        , style "gap" "0"
+        , style "border-bottom" "1px solid #3d3c3c"
+        , style "margin" "16px 0 0"
+        ]
         [ tabButton model SpecTab "spec" "Spec"
         , tabButton model PlanTab "plan" "Plan"
         ]
@@ -659,6 +900,15 @@ tabButton model tab token label =
     in
     Html.div
         [ class "agent-ticket-tab"
+        , attribute "role" "tab"
+        , attribute "aria-selected"
+            (if active then
+                "true"
+
+             else
+                "false"
+            )
+        , attribute "tabindex" "0"
         , style "padding" "6px 14px"
         , style "cursor" "pointer"
         , style "border-bottom"
@@ -676,8 +926,27 @@ tabButton model tab token label =
                 "#9aa39b"
             )
         , onClick (AgentTicketTabClicked token)
+        , onActivationKey (AgentTicketTabClicked token)
         ]
         [ Html.text label ]
+
+
+{-| Enter / Space activates a `role="tab"` (or any keyboard-operable) control,
+firing the same message a click would.
+-}
+onActivationKey : Message -> Html.Attribute Message
+onActivationKey msg =
+    on "keydown"
+        (Html.Events.keyCode
+            |> Json.Decode.andThen
+                (\code ->
+                    if code == 13 || code == 32 then
+                        Json.Decode.succeed msg
+
+                    else
+                        Json.Decode.fail "not an activation key"
+                )
+        )
 
 
 tabContent : Model -> AgentTicket.Detail -> Html Message
@@ -710,10 +979,14 @@ specView detail =
                 ]
 
         Nothing ->
-            Html.div []
-                [ Html.p [ style "color" "#9aa39b" ] [ Html.text "No spec submitted yet." ]
-                , prose detail.ticket.body
-                ]
+            -- U18b: with no formal spec, promote the ticket body as the spec
+            -- content instead of stacking an empty-state notice above it. The
+            -- notice only shows when there is genuinely nothing to read.
+            if String.trim detail.ticket.body == "" then
+                Html.p [ style "color" "#9aa39b" ] [ Html.text "No spec submitted yet." ]
+
+            else
+                prose detail.ticket.body
 
 
 planView : AgentTicket.Detail -> Html Message
@@ -804,8 +1077,36 @@ runRow metrics buildId =
         cost =
             forBuild |> List.map .costUsd |> List.sum
 
-        status =
+        runStatus =
             forBuild |> List.head |> Maybe.map .status |> Maybe.withDefault ""
+
+        buildStatus =
+            forBuild |> List.head |> Maybe.map .buildStatus |> Maybe.withDefault ""
+
+        hasResult =
+            List.any (\m -> m.summary /= "") forBuild
+
+        summary =
+            forBuild
+                |> List.filterMap
+                    (\m ->
+                        if m.summary == "" then
+                            Nothing
+
+                        else
+                            Just m.summary
+                    )
+                |> List.head
+                |> Maybe.withDefault ""
+
+        -- U2/U3: the build status wins over the step status for display truth.
+        statusView =
+            case AgentBadge.runOutcome { buildStatus = buildStatus, runStatus = runStatus, hasResult = hasResult } of
+                Just s ->
+                    AgentBadge.view s
+
+                Nothing ->
+                    Html.span [ style "color" "#b0b0b0", style "font-size" "12px" ] [ Html.text runStatus ]
     in
     Html.a
         [ class "agent-ticket-run-row"
@@ -813,15 +1114,17 @@ runRow metrics buildId =
         , style "display" "flex"
         , style "align-items" "center"
         , style "gap" "10px"
-        , style "padding" "4px 0"
+        , style "padding" "6px 0"
         , style "border-bottom" "1px solid #2a2929"
         , style "color" "inherit"
         , style "text-decoration" "none"
         ]
-        [ Html.span [ style "font-family" "monospace", style "color" "#7aa37a", style "min-width" "80px" ]
+        [ Html.span [ style "font-family" "monospace", style "color" "#7aa37a", style "min-width" "80px", style "flex-shrink" "0" ]
             [ Html.text ("build " ++ String.fromInt buildId) ]
-        , Html.span [ style "color" "#b0b0b0", style "flex" "1", style "font-size" "12px" ] [ Html.text status ]
-        , Html.span [ style "font-family" "monospace", style "color" "#b0b0b0" ] [ Html.text ("$" ++ formatUsd cost) ]
+        , Html.span [ style "flex-shrink" "0" ] [ statusView ]
+        , Html.span [ style "color" "#9aa39b", style "flex" "1", style "min-width" "0", style "font-size" "12px", style "overflow" "hidden", style "text-overflow" "ellipsis", style "white-space" "nowrap" ]
+            [ Html.text summary ]
+        , Html.span [ style "font-family" "monospace", style "color" "#b0b0b0", style "flex-shrink" "0" ] [ Html.text ("$" ++ formatUsd cost) ]
         ]
 
 
@@ -903,6 +1206,70 @@ reviewerName session =
 
         _ ->
             "anonymous"
+
+
+{-| Format an epoch-seconds timestamp as a compact absolute time in the
+viewer's zone, e.g. "Jul 18, 2026 14:30". Absolute (not relative) because the
+page has a zone but no live "now" clock to diff against.
+-}
+formatTimestamp : Time.Zone -> Int -> String
+formatTimestamp zone epochSeconds =
+    let
+        posix =
+            Time.millisToPosix (epochSeconds * 1000)
+
+        pad n =
+            String.padLeft 2 '0' (String.fromInt n)
+    in
+    monthAbbr (Time.toMonth zone posix)
+        ++ " "
+        ++ String.fromInt (Time.toDay zone posix)
+        ++ ", "
+        ++ String.fromInt (Time.toYear zone posix)
+        ++ " "
+        ++ pad (Time.toHour zone posix)
+        ++ ":"
+        ++ pad (Time.toMinute zone posix)
+
+
+monthAbbr : Time.Month -> String
+monthAbbr month =
+    case month of
+        Time.Jan ->
+            "Jan"
+
+        Time.Feb ->
+            "Feb"
+
+        Time.Mar ->
+            "Mar"
+
+        Time.Apr ->
+            "Apr"
+
+        Time.May ->
+            "May"
+
+        Time.Jun ->
+            "Jun"
+
+        Time.Jul ->
+            "Jul"
+
+        Time.Aug ->
+            "Aug"
+
+        Time.Sep ->
+            "Sep"
+
+        Time.Oct ->
+            "Oct"
+
+        Time.Nov ->
+            "Nov"
+
+        Time.Dec ->
+            "Dec"
 
 
 formatUsd : Float -> String

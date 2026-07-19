@@ -158,6 +158,7 @@ all =
                                           , workflowName = "develop"
                                           , workflowVersion = Just 1
                                           , status = "ok"
+                                          , buildStatus = "succeeded"
                                           , summary = ""
                                           , model = ""
                                           , usage =

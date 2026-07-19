@@ -76,6 +76,8 @@ type Message
     | ClickAgentTicketCancel
     | AgentTicketTabClicked String
     | ClickAgentTicketTransition String
+    | ConfirmAgentTicketTransition
+    | CancelAgentTicketTransition
     | ClickAgentTicketDispatch
     | ConfirmAgentTicketDispatch
     | CancelAgentTicketDispatch

@@ -151,6 +151,7 @@ sampleRun :
     , workflowName : String
     , workflowVersion : Maybe Int
     , status : String
+    , buildStatus : String
     , summary : String
     , model : String
     , usage :
@@ -174,6 +175,7 @@ sampleRun =
     , workflowName = "standard-dev"
     , workflowVersion = Just 2
     , status = "failed"
+    , buildStatus = "failed"
     , summary = "one finding"
     , model = "claude"
     , usage =
