@@ -128,3 +128,60 @@ func TestConfigFromEnvProgressInterval(t *testing.T) {
 		}
 	}
 }
+
+// TestConfigFromEnvShortParkMax (PARK-V2 §A): PLATFORM_MCP_SHORT_PARK_MAX_SECONDS
+// is integer seconds, rendered literally by dispatch from --agent-short-park-max;
+// unset or "0" = never exit (pure PARK-V1 — the rollback hatch); negative or
+// garbage is FATAL at startup, never clamped. PLATFORM_MCP_PARK_PATH rides
+// along verbatim, and its absence is legal (checkpoint pods).
+func TestConfigFromEnvShortParkMax(t *testing.T) {
+	base := func() {
+		t.Setenv("ATC_EXTERNAL_URL", "https://concourse.home")
+		t.Setenv("AGENT_PRINCIPAL_TOKEN", "cap1.9.secret")
+		t.Setenv("AGENT_TICKET_ID", "42")
+		t.Setenv("PLATFORM_MCP_SHORT_PARK_MAX_SECONDS", "")
+		t.Setenv("PLATFORM_MCP_PARK_PATH", "")
+	}
+
+	base()
+	cfg, err := platformmcp.ConfigFromEnv()
+	if err != nil {
+		t.Fatalf("ConfigFromEnv: %v", err)
+	}
+	if cfg.ShortParkMax != 0 || cfg.ParkPath != "" {
+		t.Fatalf("unset short-park env: expected zero values, got %+v", cfg)
+	}
+
+	base()
+	t.Setenv("PLATFORM_MCP_SHORT_PARK_MAX_SECONDS", "1800")
+	t.Setenv("PLATFORM_MCP_PARK_PATH", "/flight/park.json")
+	cfg, err = platformmcp.ConfigFromEnv()
+	if err != nil {
+		t.Fatalf("ConfigFromEnv: %v", err)
+	}
+	if cfg.ShortParkMax != 30*time.Minute || cfg.ParkPath != "/flight/park.json" {
+		t.Fatalf("expected 30m + /flight/park.json, got %+v", cfg)
+	}
+
+	base()
+	t.Setenv("PLATFORM_MCP_SHORT_PARK_MAX_SECONDS", "0")
+	cfg, err = platformmcp.ConfigFromEnv()
+	if err != nil || cfg.ShortParkMax != 0 {
+		t.Fatalf("explicit 0 must mean never-exit: %v %+v", err, cfg)
+	}
+
+	// Threshold WITHOUT a park path is the legal checkpoint-pod shape.
+	base()
+	t.Setenv("PLATFORM_MCP_SHORT_PARK_MAX_SECONDS", "1800")
+	if _, err := platformmcp.ConfigFromEnv(); err != nil {
+		t.Fatalf("threshold without PLATFORM_MCP_PARK_PATH must be legal (checkpoint pods): %v", err)
+	}
+
+	for _, bad := range []string{"-1", "bogus", "30m"} {
+		base()
+		t.Setenv("PLATFORM_MCP_SHORT_PARK_MAX_SECONDS", bad)
+		if _, err := platformmcp.ConfigFromEnv(); err == nil {
+			t.Fatalf("PLATFORM_MCP_SHORT_PARK_MAX_SECONDS=%q: expected fatal error, got nil", bad)
+		}
+	}
+}

@@ -65,9 +65,27 @@ func (s *Server) askHuman(ctx context.Context, args json.RawMessage, progress fu
 		"question":    in.Question,
 		"options":     in.Options,
 	})
+	// PARK-V2 §E resume fast path: find-or-create returned an ALREADY-ANSWERED
+	// row — the continuation's re-issued call gets its answer immediately (no
+	// park, no threshold timer, no SSE wait).
+	if created.AnsweredAt != 0 {
+		s.events.Emit("human.answer", map[string]any{
+			"question_id":  created.ID,
+			"answer":       created.Answer,
+			"answered_by":  created.AnsweredBy,
+			"wait_seconds": created.AnsweredAt - created.AskedAt,
+			"timed_out":    false,
+			"resumed":      true,
+		})
+		return askHumanResult{Answer: created.Answer, AnsweredBy: created.AnsweredBy, TimedOut: false}, nil
+	}
 	// Park-start progress line (D4): emitted once here, repeated by the SSE
 	// heartbeat ticker for the whole park.
 	progress(fmt.Sprintf("parked: waiting for human answer to question %d", created.ID))
+
+	// PARK-V2 §A/§B1: arm the exit-and-respawn threshold for this park.
+	stopParkExit := s.armParkExit(created)
+	defer stopParkExit()
 
 	answered, timedOut, err := s.awaitWithPolicy(ctx, created.ID, created.AskedAt, in.Default)
 	if err != nil {
