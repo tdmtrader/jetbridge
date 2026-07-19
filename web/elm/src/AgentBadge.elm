@@ -274,31 +274,39 @@ build state, or a still-running build).
 -}
 runOutcome : { buildStatus : String, runStatus : String, hasResult : Bool } -> Maybe Status
 runOutcome { buildStatus, runStatus, hasResult } =
-    case buildStatus of
-        "failed" ->
-            Just Failed
+    -- A parked run is blocked awaiting a human (HITL checkpoint). Its build
+    -- deliberately stays "started" until the run continues, so parked must be
+    -- checked BEFORE the build status — otherwise "started" would render it as
+    -- Running and hide that it needs the operator's input.
+    if runStatus == "parked" then
+        Just AwaitingHuman
 
-        "errored" ->
-            Just Errored
+    else
+        case buildStatus of
+            "failed" ->
+                Just Failed
 
-        "aborted" ->
-            Just Aborted
+            "errored" ->
+                Just Errored
 
-        "succeeded" ->
-            if hasResult then
-                Just Succeeded
+            "aborted" ->
+                Just Aborted
 
-            else
-                Just NoOutput
+            "succeeded" ->
+                if hasResult then
+                    Just Succeeded
 
-        "started" ->
-            Just (Running Nothing)
+                else
+                    Just NoOutput
 
-        "pending" ->
-            Just (Running Nothing)
+            "started" ->
+                Just (Running Nothing)
 
-        _ ->
-            fromRunStatus runStatus
+            "pending" ->
+                Just (Running Nothing)
+
+            _ ->
+                fromRunStatus runStatus
 
 
 toneClass : Tone -> String

@@ -119,5 +119,16 @@ all =
                 \_ ->
                     runOutcome { buildStatus = "started", runStatus = "ok", hasResult = False }
                         |> Expect.equal (Just (Running Nothing))
+            , test "a PARKED run shows Waiting on you even though its build is still 'started'" <|
+                \_ ->
+                    -- A HITL checkpoint parks the run and keeps its build in
+                    -- 'started'; parked must win over the build status or the
+                    -- operator can't see the run is blocked on them.
+                    runOutcome { buildStatus = "started", runStatus = "parked", hasResult = True }
+                        |> Expect.equal (Just AwaitingHuman)
+            , test "a parked run whose build later succeeded still shows Waiting on you, not OK" <|
+                \_ ->
+                    runOutcome { buildStatus = "succeeded", runStatus = "parked", hasResult = True }
+                        |> Expect.equal (Just AwaitingHuman)
             ]
         ]

@@ -128,16 +128,35 @@ handleCallback : Callback -> ET Model
 handleCallback callback ( model, effects ) =
     case callback of
         AgentTicketFetched (Ok detail) ->
+            -- The 5s self-heal refetch must not clobber an open edit form: when
+            -- the user is editing, leave the edit buffers untouched (a periodic
+            -- refetch would otherwise silently revert their unsaved typing every
+            -- few seconds, and a tick just before Save would persist the reverted
+            -- server values as a no-op that looks successful).
             ( { model
                 | detail = Just detail
                 , loaded = True
                 , loadError = False
-                , editTitle = detail.ticket.title
-                , editBody = detail.ticket.body
+                , editTitle =
+                    if model.editing then
+                        model.editTitle
+
+                    else
+                        detail.ticket.title
+                , editBody =
+                    if model.editing then
+                        model.editBody
+
+                    else
+                        detail.ticket.body
                 , editBudget =
-                    detail.ticket.budgetUsd
-                        |> Maybe.map String.fromFloat
-                        |> Maybe.withDefault ""
+                    if model.editing then
+                        model.editBudget
+
+                    else
+                        detail.ticket.budgetUsd
+                            |> Maybe.map String.fromFloat
+                            |> Maybe.withDefault ""
               }
             , effects
             )

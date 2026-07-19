@@ -258,7 +258,8 @@ all =
                         (Callback.AgentRunMetricsFetched (Ok [ sampleRun ]))
                     |> Tuple.first
                     |> Application.update
-                        (Msgs.Update (Message.Message.AgentRunExpandToggled 0))
+                        -- keyed by build id (stable across the 5s refetch), not the row ordinal
+                        (Msgs.Update (Message.Message.AgentRunExpandToggled 100))
                     |> Tuple.first
                     |> Common.queryView
                     |> Query.find [ class "agent-run-row" ]

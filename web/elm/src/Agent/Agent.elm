@@ -640,7 +640,7 @@ runsTable zone expandedRuns runs =
         , style "font-size" "12px"
         , style "color" Colors.text
         ]
-        (runsHeaderRow :: List.indexedMap (runRow zone expandedRuns) runs)
+        (runsHeaderRow :: List.map (\r -> runRow zone expandedRuns r.buildId r) runs)
 
 
 runsHeaderRow : Html Message
@@ -674,7 +674,8 @@ runRow zone expandedRuns rowKey r =
 {-| The step name plus its summary underneath it — omitted when the summary is
 empty so the row does not carry a blank subtext line. The summary is
 click-to-expand: collapsed it is a truncated one-liner; expanded it renders the
-full run summary as prose (`AgentRunExpandToggled`, keyed by the row ordinal).
+full run summary as prose (`AgentRunExpandToggled`, keyed by build id so the
+expanded row stays put when a 5s refetch prepends a newer run).
 -}
 runStepCell : Set Int -> Int -> Agent.RunMetric -> Html Message
 runStepCell expandedRuns rowKey r =
