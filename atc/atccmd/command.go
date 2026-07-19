@@ -237,6 +237,10 @@ type RunCommand struct {
 
 	AgentDailyBudgetUSD float64 `long:"agent-daily-budget-usd" default:"0" description:"Global daily agent LLM spend cap in USD across all agent work, enforced by dispatch admission and reported by the cost rollup API. 0 disables the cap."`
 
+	AgentDispatcherEnabled     bool          `long:"agent-dispatcher-enabled" description:"Run the autonomous agent-ticket dispatcher loop (Kubernetes runtime only). When off, tickets dispatch only via the manual route/fly."`
+	AgentDispatcherMaxAttempts int           `long:"agent-dispatcher-max-attempts" default:"3" description:"Max automatic re-dispatches per ticket (reconciler send_back requeues); past the cap the ticket errors. 0 = uncapped."`
+	AgentRunTimeout            time.Duration `long:"agent-run-timeout" default:"6h" description:"Per-run agent principal token expiry (contracts §2.8.2). The run secret itself is collected by the run-secret reaper on run completion."`
+
 	LogDBQueries   bool `long:"log-db-queries" description:"Log database queries."`
 	LogClusterName bool `long:"log-cluster-name" description:"Log cluster name."`
 
@@ -1381,6 +1385,41 @@ func (cmd *RunCommand) backendComponents(
 			),
 			Interval: time.Minute,
 		})
+
+		if cmd.AgentDispatcherEnabled {
+			dispatcherDeps := dispatch.Deps{
+				Tickets:     db.NewAgentTicketsFactory(dbConn),
+				Workflows:   db.NewAgentWorkflowsFactory(dbConn),
+				Templates:   dispatch.NewTeamTemplateSaver(teamFactory, atc.DefaultTeamName),
+				Runs:        dbPipelineRunFactory,
+				Principals:  db.NewAgentPrincipalsFactory(dbConn),
+				Credentials: db.NewAgentUserCredentialsFactory(dbConn),
+				Secrets:     cmd.agentRunSecrets(), // the ONE shared lazy attacher (bound just above)
+				Users:       db.NewAgentUserLookup(dbConn),
+				Budget: budget.NewChecker(
+					db.NewAgentCostLedgerFactory(dbConn),
+					dispatch.NewTicketBudgets(db.NewAgentTicketsFactory(dbConn), db.NewAgentWorkflowsFactory(dbConn)),
+					budget.Config{GlobalDailyCapUSD: cmd.AgentDailyBudgetUSD},
+				),
+				SecretLabels:   dispatch.NewK8sRunSecretLabeler(k8sClientset, cmd.Kubernetes.Namespace),
+				RunTimeout:     cmd.AgentRunTimeout,
+				ATCExternalURL: cmd.ExternalURL.String(),
+				RepoBaseURL:    cmd.AgentRepoBaseURL,
+			}
+			components = append(components, RunnableComponent{
+				Component: atc.Component{
+					Name: atc.ComponentAgentDispatcher,
+				},
+				Runnable: dispatch.NewDispatcher(dispatcherDeps, dispatch.LoopConfig{
+					RunReader:   dbPipelineRunFactory,
+					Questions:   nil, // plan 08's checkpoint seam; checkpoints are render-refused until it lands
+					MaxAttempts: cmd.AgentDispatcherMaxAttempts,
+				}),
+				// Interval deliberately omitted: defaultComponentInterval (10s)
+				// polling — agent_tickets has no NOTIFY trigger (recorded
+				// decision, dispatch-remainder plan §5).
+			})
+		}
 	}
 
 	if syslogDrainConfigured {
@@ -2403,6 +2442,13 @@ func (cmd *RunCommand) constructAPIHandler(
 			Principals:     agentPrincipalsFactory,
 			Credentials:    db.NewAgentUserCredentialsFactory(dbConn),
 			Secrets:        cmd.agentRunSecrets(),
+			Users:          db.NewAgentUserLookup(dbConn),
+			Budget: budget.NewChecker(
+				db.NewAgentCostLedgerFactory(dbConn),
+				dispatch.NewTicketBudgets(db.NewAgentTicketsFactory(dbConn), db.NewAgentWorkflowsFactory(dbConn)),
+				budget.Config{GlobalDailyCapUSD: cmd.AgentDailyBudgetUSD},
+			),
+			RunTimeout:     cmd.AgentRunTimeout,
 			ATCExternalURL: cmd.ExternalURL.String(),
 			RepoBaseURL:    cmd.AgentRepoBaseURL,
 		}, func(r *http.Request) string {
