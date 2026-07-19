@@ -44,6 +44,7 @@ import SideBar.SideBar as SideBar
 import Time
 import Tooltip
 import UserState
+import Views.Prose
 import Views.Styles
 import Views.TopBar as TopBar
 
@@ -1000,13 +1001,12 @@ planView detail =
         prose detail.ticket.body
 
 
-{-| Preserve author line breaks without pulling in a markdown dependency.
+{-| Render the ticket/spec body as light prose (paragraphs, inline `code` and
+**bold**) via the shared Views.Prose renderer — no markdown dependency.
 -}
 prose : String -> Html Message
-prose body =
-    Html.div
-        [ style "white-space" "pre-wrap", style "color" "#d0d0d0", style "line-height" "1.5" ]
-        [ Html.text body ]
+prose =
+    Views.Prose.view
 
 
 taskList : List AgentTicket.Task -> Html Message

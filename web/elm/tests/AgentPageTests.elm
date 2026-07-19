@@ -242,6 +242,27 @@ all =
                         , attribute (Attr.href "/agent-tickets/42")
                         , containing [ text "#42" ]
                         ]
+        , test "a collapsed ledger row shows the truncated one-line summary" <|
+            \_ ->
+                Common.init "/agent"
+                    |> Application.handleCallback
+                        (Callback.AgentRunMetricsFetched (Ok [ sampleRun ]))
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Query.find [ class "agent-run-row" ]
+                    |> Query.has [ class "agent-run-summary", containing [ text "one finding" ] ]
+        , test "expanding a ledger row reveals the full run summary" <|
+            \_ ->
+                Common.init "/agent"
+                    |> Application.handleCallback
+                        (Callback.AgentRunMetricsFetched (Ok [ sampleRun ]))
+                    |> Tuple.first
+                    |> Application.update
+                        (Msgs.Update (Message.Message.AgentRunExpandToggled 0))
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Query.find [ class "agent-run-row" ]
+                    |> Query.has [ class "agent-run-summary-full", containing [ text "one finding" ] ]
         , test "renders a workflow name with a live indicator" <|
             \_ ->
                 Common.init "/agent"
@@ -279,7 +300,7 @@ all =
                         (Callback.AgentCostRollupFetched (Ok sampleRollup))
                     |> Tuple.first
                     |> Common.queryView
-                    |> Query.has [ text "today (UTC): $12.34 spent / $20.00 cap ($7.66 left)" ]
+                    |> Query.has [ text "today (UTC day): $12.34 spent / $20.00 cap ($7.66 left)" ]
         , test "renders a daily-cap gauge when a cap is configured" <|
             \_ ->
                 Common.init "/agent"
@@ -370,8 +391,11 @@ all =
                         )
                     |> Tuple.first
                     |> Common.queryView
-                    |> Query.find [ class "agent-platform-credential" ]
-                    |> Query.has [ text "platform: anthropic_oauth" ]
+                    |> Expect.all
+                        [ Query.has [ text "Platform credential (used by dispatched runs)" ]
+                        , Query.find [ class "agent-platform-credential" ]
+                            >> Query.has [ text "anthropic_oauth" ]
+                        ]
         , test "shows an admin-only message when workflows fetch is forbidden" <|
             \_ ->
                 Common.init "/agent"
