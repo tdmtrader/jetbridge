@@ -229,9 +229,11 @@ func (wrappa *APIAuthWrappa) Wrap(handlers rata.Handlers) rata.Handlers {
 			// (§4.2: authorized member, NO principal path): a principal
 			// tier would let an agent dispose its own ticket past the
 			// human review gate (delivery-outcomes decision D-3).
-			// GetAgentTicketOutcome is plain authorized viewer.
+			// GetAgentTicketOutcome and GetAgentTicketDiff are plain
+			// authorized viewer.
 			atc.SetAgentTicketDisposition,
-			atc.GetAgentTicketOutcome:
+			atc.GetAgentTicketOutcome,
+			atc.GetAgentTicketDiff:
 			newHandler = auth.CheckAgentAuthorizationHandler(handler, rejector)
 
 		// combined tier: agent principal (tickets:write) OR authorized

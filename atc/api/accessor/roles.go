@@ -142,4 +142,5 @@ var DefaultRoles = map[string]string{
 	// the wrappa — the human review gate (decision D-3).
 	atc.SetAgentTicketDisposition: MemberRole,
 	atc.GetAgentTicketOutcome:     ViewerRole,
+	atc.GetAgentTicketDiff:        ViewerRole,
 }

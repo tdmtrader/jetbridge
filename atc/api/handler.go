@@ -110,6 +110,10 @@ func NewHandler(
 	agentDailyBudgetUSD float64,
 	ticketBudgets budget.TicketBudgets,
 	outcomesStore outcomesapi.Store,
+	// outcomeDiffProvider backs GetAgentTicketDiff: the outcome watcher's
+	// shared MirrorCache when --agent-outcome-git-dir is set, a true nil
+	// interface otherwise (master switch off → the diff API 404s).
+	outcomeDiffProvider outcomesapi.MirrorProvider,
 	workflowStore workflow.Store,
 	// agentDispatchHandler serves DispatchAgentTicket (built in
 	// atccmd/command.go from dispatch.Deps; a stub in the test suite).
@@ -169,6 +173,7 @@ func NewHandler(
 	outcomesServer := outcomesapi.NewHandler(outcomesStore, ticketsStore, func(r *http.Request) string {
 		return accessor.GetAccessor(r).Claims().UserName
 	})
+	outcomeDiffServer := outcomesapi.NewDiffHandler(outcomesStore, outcomeDiffProvider)
 	workflowsServer := workflowsapi.NewHandler(workflowStore)
 	principalsServer := principalsapi.NewHandler(
 		principalsStore,
@@ -349,6 +354,7 @@ func NewHandler(
 
 		atc.SetAgentTicketDisposition: http.HandlerFunc(outcomesServer.SetDisposition),
 		atc.GetAgentTicketOutcome:     http.HandlerFunc(outcomesServer.GetOutcome),
+		atc.GetAgentTicketDiff:        http.HandlerFunc(outcomeDiffServer.GetDiff),
 
 		atc.SetAgentUserCredential:       http.HandlerFunc(credentialsServer.Set),
 		atc.GetAgentUserCredentialStatus: http.HandlerFunc(credentialsServer.Status),

@@ -110,6 +110,13 @@ var _ = Describe("Audit", func() {
 				Expect(logs).To(HaveLen(1))
 				Expect(logs[0].Data["action"]).To(Equal(atc.GetAgentTicketOutcome))
 			})
+
+			It("audits GetAgentTicketDiff as a system action", func() {
+				aud.Audit(atc.GetAgentTicketDiff, userName, req)
+				logs := logger.Logs()
+				Expect(logs).To(HaveLen(1))
+				Expect(logs[0].Data["action"]).To(Equal(atc.GetAgentTicketDiff))
+			})
 		})
 
 		Context("when EnableSystemAuditLog is false", func() {
@@ -117,9 +124,10 @@ var _ = Describe("Audit", func() {
 				EnableSystemAuditLog = false
 			})
 
-			It("does not log either action", func() {
+			It("does not log any of the actions", func() {
 				aud.Audit(atc.SetAgentTicketDisposition, userName, req)
 				aud.Audit(atc.GetAgentTicketOutcome, userName, req)
+				aud.Audit(atc.GetAgentTicketDiff, userName, req)
 				Expect(logger.Logs()).To(BeEmpty())
 			})
 		})

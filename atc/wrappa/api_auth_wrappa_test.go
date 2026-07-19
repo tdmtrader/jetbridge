@@ -278,6 +278,7 @@ var _ = Describe("APIAuthWrappa", func() {
 					).Wrap(rata.Handlers{
 						atc.SetAgentTicketDisposition: delegate,
 						atc.GetAgentTicketOutcome:     delegate,
+						atc.GetAgentTicketDiff:        delegate,
 						atc.TransitionAgentTicket:     delegate,
 					})
 				})
@@ -343,6 +344,50 @@ var _ = Describe("APIAuthWrappa", func() {
 						resp := serve(atc.GetAgentTicketOutcome, "")
 						Expect(resp.StatusCode).To(Equal(http.StatusOK))
 						Expect(delegateHit).To(BeTrue())
+					})
+				})
+
+				// GetAgentTicketDiff rides the same plain team-less tier as
+				// GetAgentTicketOutcome (authorized viewer via DefaultRoles),
+				// NOT the principal combined-tier block.
+				Describe("GetAgentTicketDiff", func() {
+					It("401s unauthenticated requests", func() {
+						fakeaccess.IsAuthenticatedReturns(false)
+
+						resp := serve(atc.GetAgentTicketDiff, "")
+						Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized))
+						Expect(delegateHit).To(BeFalse())
+					})
+
+					It("REJECTS a bare tickets:read agent-principal token (no principal path)", func() {
+						_, token, err := store.Create(principals.CreateSpec{
+							Name: "ticket-reader", Scopes: []string{principals.ScopeTicketsRead},
+						})
+						Expect(err).NotTo(HaveOccurred())
+						fakeaccess.IsAuthenticatedReturns(false)
+
+						resp := serve(atc.GetAgentTicketDiff, "Bearer "+token)
+						Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized))
+						Expect(delegateHit).To(BeFalse())
+					})
+
+					It("403s authenticated users not authorized on the main team", func() {
+						fakeaccess.IsAuthenticatedReturns(true)
+						fakeaccess.IsAuthorizedReturns(false)
+
+						resp := serve(atc.GetAgentTicketDiff, "")
+						Expect(resp.StatusCode).To(Equal(http.StatusForbidden))
+						Expect(delegateHit).To(BeFalse())
+					})
+
+					It("admits main-team-authorized users", func() {
+						fakeaccess.IsAuthenticatedReturns(true)
+						fakeaccess.IsAuthorizedReturns(true)
+
+						resp := serve(atc.GetAgentTicketDiff, "")
+						Expect(resp.StatusCode).To(Equal(http.StatusOK))
+						Expect(delegateHit).To(BeTrue())
+						Expect(fakeaccess.IsAuthorizedArgsForCall(0)).To(Equal(atc.DefaultTeamName))
 					})
 				})
 			})
