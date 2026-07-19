@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -57,11 +58,57 @@ func fillReviewMetadata(cfg *phaseconfig.Config, outputDir, repoDir, agentCLI, a
 		review.Metadata.DurationSec = int(duration.Seconds())
 	}
 
+	synthesizeFindingIDs(&review)
+
 	patched, err := json.MarshalIndent(&review, "", "  ")
 	if err != nil {
 		return err
 	}
 	return os.WriteFile(artifactPath, patched, 0644)
+}
+
+// synthesizeFindingIDs assigns a stable, non-empty id to any proven issue or
+// observation the model emitted without one. The review UI keys per-finding
+// triage state (expansion, note box, and the recorded verdict) on the id, so
+// two id-less findings would collide onto "" — expanding one expands both, and
+// a verdict click posts findingId="" that can't disambiguate them, collapsing
+// two distinct human verdicts into one last-write-wins record. Guaranteeing an
+// id here, at generation, keeps every finding independently triageable rather
+// than merely hidden. Existing ids are never touched.
+func synthesizeFindingIDs(review *schema.ReviewOutput) {
+	seen := map[string]bool{}
+	for _, p := range review.ProvenIssues {
+		if p.ID != "" {
+			seen[p.ID] = true
+		}
+	}
+	for _, o := range review.Observations {
+		if o.ID != "" {
+			seen[o.ID] = true
+		}
+	}
+
+	// unique returns candidate, or candidate with a suffix bumped until it no
+	// longer collides with a real or already-synthesized id.
+	unique := func(candidate string) string {
+		id := candidate
+		for i := 2; seen[id]; i++ {
+			id = fmt.Sprintf("%s-%d", candidate, i)
+		}
+		seen[id] = true
+		return id
+	}
+
+	for i := range review.ProvenIssues {
+		if review.ProvenIssues[i].ID == "" {
+			review.ProvenIssues[i].ID = unique(fmt.Sprintf("proven-%d", i+1))
+		}
+	}
+	for i := range review.Observations {
+		if review.Observations[i].ID == "" {
+			review.Observations[i].ID = unique(fmt.Sprintf("observation-%d", i+1))
+		}
+	}
 }
 
 // findReviewArtifactPath locates the "review" artifact declared by the

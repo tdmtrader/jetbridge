@@ -198,8 +198,17 @@ observationsSection reviewer review model =
 findingCard : String -> BuildReview -> Bool -> PanelState a -> Finding -> Html Message
 findingCard reviewer review isProven model finding =
     let
+        -- A blank id can't key interactive state without colliding with every
+        -- other blank-id finding, so such findings are rendered read-only: no
+        -- expand toggle, no note box, no verdict buttons. `findingAnchor`
+        -- already guards the deep-link anchor on the same condition.
+        interactive =
+            finding.id /= ""
+
+        -- Non-interactive findings have no toggle to reveal their body, so show
+        -- it read-only rather than hiding it. Proven issues are always open.
         expanded =
-            isProven || Set.member finding.id model.expandedFindings
+            isProven || not interactive || Set.member finding.id model.expandedFindings
 
         recorded =
             Dict.get finding.id review.feedback
@@ -217,33 +226,62 @@ findingCard reviewer review isProven model finding =
             , style "align-items" "center"
             , style "gap" "8px"
             ]
-            [ Html.button
-                (buttonReset
-                    ++ [ class "agent-review-finding-toggle"
-                       , attribute "aria-expanded" (boolAttr expanded)
-                       , style "display" "flex"
-                       , style "align-items" "center"
-                       , style "gap" "8px"
-                       , style "flex" "1"
-                       , style "cursor" "pointer"
-                       , onClick (ToggleAgentReviewFinding finding.id)
-                       ]
-                )
-                [ severityBadge finding.severity
-                , Html.span [ style "font-weight" "700" ] [ Html.text finding.title ]
-                ]
+            [ findingHeader interactive expanded finding
             , fileRef review.info finding
             ]
          ]
             ++ (if expanded then
-                    descriptionBlock model finding
+                    descriptionBlock interactive model finding
                         ++ testEvidence finding
-                        ++ [ verdictRow reviewer review finding recorded model ]
+                        ++ (if interactive then
+                                [ verdictRow reviewer review finding recorded model ]
+
+                            else
+                                []
+                           )
 
                 else
                     []
                )
         )
+
+
+{-| The finding's severity + title. When the finding is interactive it is the
+expand/collapse toggle button; a blank-id finding renders the same content as
+inert text so no interactive state is keyed on "".
+-}
+findingHeader : Bool -> Bool -> Finding -> Html Message
+findingHeader interactive expanded finding =
+    let
+        content =
+            [ severityBadge finding.severity
+            , Html.span [ style "font-weight" "700" ] [ Html.text finding.title ]
+            ]
+    in
+    if interactive then
+        Html.button
+            (buttonReset
+                ++ [ class "agent-review-finding-toggle"
+                   , attribute "aria-expanded" (boolAttr expanded)
+                   , style "display" "flex"
+                   , style "align-items" "center"
+                   , style "gap" "8px"
+                   , style "flex" "1"
+                   , style "cursor" "pointer"
+                   , onClick (ToggleAgentReviewFinding finding.id)
+                   ]
+            )
+            content
+
+    else
+        Html.div
+            [ class "agent-review-finding-title"
+            , style "display" "flex"
+            , style "align-items" "center"
+            , style "gap" "8px"
+            , style "flex" "1"
+            ]
+            content
 
 
 {-| A stable anchor so a review comment can deep-link straight to one finding.
@@ -296,22 +334,24 @@ fileRef info finding =
 
 
 {-| The finding description, line-clamped when long with a show-more/less toggle
-so a wall of agent prose never dominates the panel.
+so a wall of agent prose never dominates the panel. A blank-id finding is
+non-interactive — its clamp state can't be keyed without colliding — so it is
+shown in full with no toggle.
 -}
-descriptionBlock : PanelState a -> Finding -> List (Html Message)
-descriptionBlock model finding =
+descriptionBlock : Bool -> PanelState a -> Finding -> List (Html Message)
+descriptionBlock interactive model finding =
     if finding.description == "" then
         []
 
     else
         let
             expanded =
-                Set.member finding.id model.expandedDescriptions
+                not interactive || Set.member finding.id model.expandedDescriptions
         in
         Html.p
             (style "color" "#b0b0b0" :: style "margin" "8px 0" :: clampStyles expanded)
             [ Html.text finding.description ]
-            :: (if isLong finding.description then
+            :: (if interactive && isLong finding.description then
                     [ Html.button
                         (buttonReset
                             ++ [ class "agent-review-description-toggle"

@@ -74,6 +74,43 @@ linkedReview =
     }
 
 
+idlessFinding : String -> AgentReview.Finding
+idlessFinding title =
+    { id = ""
+    , severity = "high"
+    , title = title
+    , description = "boom"
+    , file = "a.go"
+    , line = 10
+    , category = "correctness"
+    , testName = "TestNil"
+    , testOutput = "FAIL"
+    }
+
+
+{-| Two findings with no id — the read path tolerates partial decodes, so id can
+be "". If the card kept interactive state keyed on the (shared) empty id, a
+verdict click would post findingId="" and two distinct human verdicts would
+collapse to one record. Render such findings read-only instead.
+-}
+idlessReview : AgentReview.BuildReview
+idlessReview =
+    { sampleReview
+        | provenIssues = [ idlessFinding "first idless bug", idlessFinding "second idless bug" ]
+        , findingCount = 2
+    }
+
+
+idlessObservationsReview : AgentReview.BuildReview
+idlessObservationsReview =
+    { sampleReview
+        | provenIssues = []
+        , observations =
+            [ { id = "", severity = "", title = "idless obs", description = "advisory prose", file = "c.go", line = 3, category = "testing", testName = "", testOutput = "" } ]
+        , findingCount = 1
+    }
+
+
 all : Test
 all =
     describe "build page agent review panel"
@@ -116,6 +153,37 @@ all =
                         (AgentReview.allVerdicts
                             |> List.map (\v -> Query.has [ containing [ text (AgentReview.verdictLabel v) ] ])
                         )
+        , test "renders id-less findings read-only so their interactive state can't collide" <|
+            \_ ->
+                Common.init "/builds/1"
+                    |> withBuildLoaded
+                    |> Application.handleCallback (Callback.BuildAgentReviewsFetched (Ok [ idlessReview ]))
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Query.find [ id "agent-review-panel" ]
+                    |> Expect.all
+                        [ Query.has [ containing [ text "first idless bug" ] ]
+                        , Query.has [ containing [ text "second idless bug" ] ]
+                        , Query.hasNot [ class "agent-review-verdicts" ]
+                        , Query.hasNot [ tag "input" ]
+                        , Query.hasNot [ class "agent-review-finding-toggle" ]
+                        ]
+        , test "id-less observations show their body read-only, no controls" <|
+            \_ ->
+                Common.init "/builds/1"
+                    |> withBuildLoaded
+                    |> Application.handleCallback (Callback.BuildAgentReviewsFetched (Ok [ idlessObservationsReview ]))
+                    |> Tuple.first
+                    |> Application.update (Msgs.Update Message.Message.ToggleAgentReviewObservations)
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Query.find [ id "agent-review-panel" ]
+                    |> Expect.all
+                        [ Query.has [ containing [ text "idless obs" ] ]
+                        , Query.has [ containing [ text "advisory prose" ] ]
+                        , Query.hasNot [ class "agent-review-verdicts" ]
+                        , Query.hasNot [ class "agent-review-finding-toggle" ]
+                        ]
         , test "renders a quiet notice when the agent review fails to load" <|
             \_ ->
                 Common.init "/builds/1"
@@ -193,6 +261,33 @@ all =
                     |> click
                     |> Tuple.second
                     |> Common.contains submit
+        , test "a verdict click with an empty findingId is dropped, never submitted" <|
+            \_ ->
+                Common.init "/builds/1"
+                    |> withBuildLoaded
+                    |> Application.handleCallback (Callback.BuildAgentReviewsFetched (Ok [ idlessReview ]))
+                    |> Tuple.first
+                    |> Application.update
+                        (Msgs.Update <|
+                            Message.Message.AgentReviewVerdictClicked
+                                { repo = "concourse"
+                                , commitSha = "abc123def"
+                                , findingId = ""
+                                , verdict = "accurate"
+                                , reviewer = "anonymous"
+                                }
+                        )
+                    |> Tuple.second
+                    |> Common.notContains
+                        (Effects.SubmitAgentReviewVerdict
+                            { repo = "concourse"
+                            , commitSha = "abc123def"
+                            , findingId = ""
+                            , verdict = "accurate"
+                            , notes = ""
+                            , reviewer = "anonymous"
+                            }
+                        )
         , test "the summary bar is a real button exposing its expanded state" <|
             \_ ->
                 Common.init "/builds/1"
