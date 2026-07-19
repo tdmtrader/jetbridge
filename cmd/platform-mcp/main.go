@@ -31,11 +31,3 @@ func main() {
 		os.Exit(1)
 	}
 }
-
-// runCheckpoint is a placeholder until the checkpoint-gate task (remainder
-// Task 18) lands the real client — its tests fail against this body, so it
-// cannot survive that task.
-func runCheckpoint([]string) int {
-	fmt.Fprintln(os.Stderr, "platform-mcp: checkpoint mode lands with the checkpoint-gate task")
-	return 2
-}

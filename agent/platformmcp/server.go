@@ -2,6 +2,7 @@ package platformmcp
 
 import (
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/concourse/concourse/atc/api/mcpserver"
@@ -17,6 +18,17 @@ type Server struct {
 	events *EventLog
 	mcp    *mcpserver.Server
 	mux    *http.ServeMux
+
+	ckMu   sync.Mutex               // guards ckOpen
+	ckOpen map[string]ckReservation // checkpoint name -> open row; same-pod optimization only
+}
+
+// ckReservation is the same-pod fast path for a repeated checkpoint POST; the
+// cross-pod (continuation) dedup is DB-enforced by agent_run_questions_dedup
+// (PARK-V2 §E — the map is an optimization, never the authority).
+type ckReservation struct {
+	ID      int
+	AskedAt int64
 }
 
 func NewServer(cfg Config) (*Server, error) {
@@ -31,8 +43,9 @@ func NewServer(cfg Config) (*Server, error) {
 		// SSE heartbeat interval from PLATFORM_MCP_PROGRESS_INTERVAL; 0 =
 		// mcpserver.DefaultHeartbeat (15s). The SSE-upgraded server keeps a
 		// parked ask_human alive past the claude CLI's 60s abandonment (F13).
-		mcp: mcpserver.NewServerWithHeartbeat(cfg.ProgressInterval),
-		mux: http.NewServeMux(),
+		mcp:    mcpserver.NewServerWithHeartbeat(cfg.ProgressInterval),
+		mux:    http.NewServeMux(),
+		ckOpen: map[string]ckReservation{},
 	}
 	s.registerTools()
 	s.mux.Handle("/mcp", s.mcp)
@@ -59,12 +72,4 @@ func (s *Server) ListenAndServe() error {
 		IdleTimeout:       0,
 	}
 	return srv.ListenAndServe()
-}
-
-// Temporary in-order bridge: replaced by the checkpoint-endpoint task
-// (handleCheckpoint) — remainder Task 18; the placeholder does not survive
-// its owning task's tests.
-
-func (s *Server) handleCheckpoint(w http.ResponseWriter, r *http.Request) {
-	http.Error(w, "checkpoint endpoint lands with the checkpoint-gate task", http.StatusNotImplemented)
 }
