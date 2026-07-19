@@ -47,6 +47,11 @@ type Store interface {
 	// successful ingestion. inserted=false means a row already existed and
 	// nothing was written.
 	InsertIfAbsent(rm *schema.RunMetrics) (inserted bool, err error)
+	// The list methods return rows with the server-derived display fields
+	// populated: BuildStatus (builds join) and Outcome (schema.RunMetrics
+	// DeriveOutcome — the U3 build/step fusion), so no API consumer has to
+	// re-derive the display truth.
+	//
 	// GetByBuild returns rows for a build, oldest-first.
 	GetByBuild(buildID int) ([]schema.RunMetrics, error)
 	// ListByTicket returns rows for a ticket, oldest-first.
@@ -77,8 +82,9 @@ func ParseSubmission(body []byte) (*schema.RunMetrics, error) {
 	default:
 		return nil, fmt.Errorf("status must be one of ok|failed|error|parked")
 	}
-	// BuildStatus is server-derived (joined from the builds table on read);
-	// never trust a client-supplied value on the ingest path.
+	// BuildStatus and Outcome are server-derived (builds join + U3 fusion,
+	// applied on read); never trust a client-supplied value on the ingest path.
 	rm.BuildStatus = ""
+	rm.Outcome = ""
 	return &rm, nil
 }

@@ -5,6 +5,7 @@ import (
 	"os"
 	"strconv"
 
+	agentschema "github.com/concourse/concourse/agent/schema"
 	"github.com/concourse/concourse/fly/commands/internal/displayhelpers"
 	"github.com/concourse/concourse/fly/rc"
 	"github.com/concourse/concourse/fly/ui"
@@ -52,10 +53,23 @@ func (command *AgentRunsCommand) Execute([]string) error {
 		if r.TicketID != nil {
 			ticket = "#" + strconv.Itoa(*r.TicketID)
 		}
+		// U3 display truth: render the server-fused outcome, never the raw
+		// step status — a green step inside a failed build must not show
+		// "ok". Pre-outcome servers omit the field; derive the same fusion
+		// locally. If even that is underivable (unknown vocabulary), fall
+		// back to the raw step status, uncolored.
+		outcome := r.Outcome
+		if outcome == "" {
+			outcome = r.DeriveOutcome()
+		}
+		statusCell := ui.TableCell{Contents: r.Status}
+		if outcome != "" {
+			statusCell = ui.TableCell{Contents: outcome, Color: agentOutcomeColor(outcome)}
+		}
 		table.Data = append(table.Data, ui.TableRow{
 			{Contents: r.StepName},
 			{Contents: workflow},
-			{Contents: r.Status, Color: agentStatusColor(r.Status)},
+			statusCell,
 			{Contents: fmt.Sprintf("$%.2f", r.CostUSD)},
 			{Contents: fmt.Sprintf("%d/%d", r.Usage.InputTokens, r.Usage.OutputTokens)},
 			{Contents: strconv.Itoa(r.Turns)},
@@ -65,16 +79,25 @@ func (command *AgentRunsCommand) Execute([]string) error {
 	return table.Render(os.Stdout, Fly.PrintTableHeaders)
 }
 
-func agentStatusColor(status string) *color.Color {
-	switch status {
-	case "ok":
-		return color.New(color.FgGreen)
-	case "failed":
+// agentOutcomeColor colors the fused outcome with fly's build-status
+// conventions, plus the agent-specific states: blue for parked (waiting on a
+// human) and warn-yellow for no_output (green build that delivered nothing).
+func agentOutcomeColor(outcome string) *color.Color {
+	switch outcome {
+	case agentschema.RunOutcomeOK:
+		return ui.SucceededColor
+	case agentschema.RunOutcomeNoOutput:
 		return color.New(color.FgYellow)
-	case "parked":
+	case agentschema.RunOutcomeRunning:
+		return ui.StartedColor
+	case agentschema.RunOutcomeParked:
 		return color.New(color.FgBlue)
-	case "error":
-		return color.New(color.FgRed)
+	case agentschema.RunOutcomeFailed:
+		return ui.FailedColor
+	case agentschema.RunOutcomeErrored:
+		return ui.ErroredColor
+	case agentschema.RunOutcomeAborted:
+		return ui.AbortedColor
 	default:
 		return nil
 	}

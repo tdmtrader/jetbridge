@@ -2,7 +2,9 @@ module AgentBadge exposing
     ( Status(..)
     , Tone(..)
     , description
+    , displayOutcome
     , fromApiToken
+    , fromOutcomeToken
     , fromRunStatus
     , label
     , runOutcome
@@ -242,7 +244,7 @@ fromApiToken token =
             Nothing
 
 
-{-| fromRunStatus maps an agent_run_metrics status ("ok"/"failed"/"parked"/
+{-| fromRunStatus maps an agent\_run\_metrics status ("ok"/"failed"/"parked"/
 "error") to a badge. A parked run is awaiting a human, so it reuses that tone.
 -}
 fromRunStatus : String -> Maybe Status
@@ -284,6 +286,7 @@ pipeline build status with the agent step's own status (U3). The precedence is
     result in hand (else NoOutput — never a green OK on a run that did not
     deliver), started/pending render Running, and an absent build status
     falls back to the step status alone.
+
 -}
 runOutcome : { buildStatus : String, runStatus : String, hasResult : Bool } -> Maybe Status
 runOutcome { buildStatus, runStatus, hasResult } =
@@ -324,6 +327,54 @@ runOutcome { buildStatus, runStatus, hasResult } =
 
                     _ ->
                         fromRunStatus runStatus
+
+
+{-| fromOutcomeToken maps the server-derived `outcome` wire field (the same
+U3 fusion, computed once in agent/schema DeriveOutcome) to a badge. Unknown
+tokens — an older server that omits the field, or a newer one with new
+vocabulary — yield Nothing so the caller can fall back to the local fusion.
+-}
+fromOutcomeToken : String -> Maybe Status
+fromOutcomeToken token =
+    case token of
+        "ok" ->
+            Just Succeeded
+
+        "no_output" ->
+            Just NoOutput
+
+        "running" ->
+            Just (Running Nothing)
+
+        "parked" ->
+            Just AwaitingHuman
+
+        "failed" ->
+            Just Failed
+
+        "errored" ->
+            Just Errored
+
+        "aborted" ->
+            Just Aborted
+
+        _ ->
+            Nothing
+
+
+{-| displayOutcome renders a run's display truth: the server-derived outcome
+when present (the rule then lives in exactly one place, agent/schema
+DeriveOutcome), falling back to the local runOutcome fusion for servers that
+predate the field.
+-}
+displayOutcome : { outcome : String, buildStatus : String, runStatus : String, hasResult : Bool } -> Maybe Status
+displayOutcome { outcome, buildStatus, runStatus, hasResult } =
+    case fromOutcomeToken outcome of
+        Just status ->
+            Just status
+
+        Nothing ->
+            runOutcome { buildStatus = buildStatus, runStatus = runStatus, hasResult = hasResult }
 
 
 toneClass : Tone -> String

@@ -1192,6 +1192,12 @@ runRow metrics buildId =
             summary /= ""
 
         -- U2/U3: the build status wins over the step status for display truth.
+        -- The per-ROW server `outcome` field is deliberately not used here:
+        -- this view collapses N step rows into ONE build-level verdict
+        -- (parked-anywhere, last step's status, last delivered summary), so
+        -- the last row's own fusion could lie — e.g. "no output" when an
+        -- earlier step delivered. The precedence rule itself is still shared:
+        -- runOutcome mirrors the server's agent/schema DeriveOutcome.
         statusView =
             case AgentBadge.runOutcome { buildStatus = buildStatus, runStatus = runStatus, hasResult = hasResult } of
                 Just s ->

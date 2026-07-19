@@ -189,3 +189,36 @@ func (errStore) InsertIfAbsent(*schema.RunMetrics) (bool, error) { return false,
 func (errStore) GetByBuild(int) ([]schema.RunMetrics, error)     { return nil, errors.New("boom") }
 func (errStore) ListByTicket(int) ([]schema.RunMetrics, error)   { return nil, errors.New("boom") }
 func (errStore) ListRecent(int) ([]schema.RunMetrics, error)     { return nil, errors.New("boom") }
+
+func TestListCarriesDerivedOutcome(t *testing.T) {
+	store := metrics.NewMemoryStore()
+	h := metrics.NewHandler(store)
+
+	// The exact truth split U3 kills: a green step inside a failed build.
+	// Ingestion never accepts build_status, so seed the store directly the
+	// way the DB factory materializes a read (builds-join sets BuildStatus).
+	if err := store.Upsert(&schema.RunMetrics{
+		BuildID: 41, PlanID: "p1", StepName: "implement",
+		Status: schema.RunStatusOK, Summary: "agent reported ok",
+		BuildStatus: "failed",
+	}); err != nil {
+		t.Fatalf("seed store: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	h.ListRecent(rec, httptest.NewRequest("GET", "/api/v1/agent/metrics", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if body := rec.Body.String(); !strings.Contains(body, `"outcome":"failed"`) {
+		t.Fatalf("expected the fused outcome on the wire, got %s", body)
+	}
+
+	var rows []schema.RunMetrics
+	if err := json.NewDecoder(strings.NewReader(rec.Body.String())).Decode(&rows); err != nil {
+		t.Fatalf("decode list body: %v", err)
+	}
+	if len(rows) != 1 || rows[0].Outcome != schema.RunOutcomeFailed {
+		t.Fatalf("expected one row with outcome failed, got %+v", rows)
+	}
+}

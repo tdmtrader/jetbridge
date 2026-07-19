@@ -92,6 +92,9 @@ func (s *MemoryStore) list(match func(schema.RunMetrics) bool) ([]schema.RunMetr
 	out := make([]schema.RunMetrics, len(entries))
 	for i, e := range entries {
 		out[i] = e.rm
+		// mirror the DB factory's read path: rows leave the store with the
+		// U3 fusion applied
+		out[i].Outcome = out[i].DeriveOutcome()
 	}
 	return out, nil
 }

@@ -25,6 +25,18 @@ func TestParseSubmissionRequiresBuildAndPlan(t *testing.T) {
 	}
 }
 
+func TestParseSubmissionStripsServerDerivedFields(t *testing.T) {
+	// build_status and outcome are derived on read (builds join + U3 fusion);
+	// a client-supplied value must never survive ingestion.
+	rm, err := metrics.ParseSubmission([]byte(`{"build_id":1,"plan_id":"a","step_name":"s","status":"ok","build_status":"succeeded","outcome":"ok"}`))
+	if err != nil {
+		t.Fatalf("expected valid submission, got %v", err)
+	}
+	if rm.BuildStatus != "" || rm.Outcome != "" {
+		t.Fatalf("server-derived fields must be stripped on ingest, got build_status=%q outcome=%q", rm.BuildStatus, rm.Outcome)
+	}
+}
+
 func TestParseSubmissionAcceptsParked(t *testing.T) {
 	// PARK-V2 (shared-contracts §1.8, 2026-07-10 amendment): 'parked' is a
 	// valid DB/API status — the park-exit partial ingestion writes it.

@@ -202,6 +202,7 @@ all =
                                           , workflowVersion = Just 1
                                           , status = "ok"
                                           , buildStatus = "succeeded"
+                                          , outcome = "no_output"
                                           , summary = ""
                                           , model = ""
                                           , usage =

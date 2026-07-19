@@ -123,6 +123,7 @@ optionalPosix fieldName =
         (Json.Decode.field fieldName (Json.Decode.map dateFromSeconds Json.Decode.int))
 
 
+
 -- Agent run metrics (a single agent-step execution) ---------------------------
 
 
@@ -144,6 +145,7 @@ type alias RunMetric =
     , workflowVersion : Maybe Int
     , status : String
     , buildStatus : String
+    , outcome : String
     , summary : String
     , model : String
     , usage : Usage
@@ -176,6 +178,9 @@ decodeRunMetric =
         |> andMap (optionalInt "workflow_version")
         |> andMap (Json.Decode.field "status" Json.Decode.string)
         |> andMap (defaultTo "" <| Json.Decode.field "build_status" Json.Decode.string)
+        -- server-derived U3 fusion of build_status + status; absent ("") on
+        -- servers that predate it, so views fall back to the local fusion
+        |> andMap (defaultTo "" <| Json.Decode.field "outcome" Json.Decode.string)
         |> andMap (defaultTo "" <| Json.Decode.field "summary" Json.Decode.string)
         |> andMap (defaultTo "" <| Json.Decode.field "model" Json.Decode.string)
         |> andMap (defaultTo (Usage 0 0 0 0) <| Json.Decode.field "usage" decodeUsage)

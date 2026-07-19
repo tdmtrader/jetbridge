@@ -773,11 +773,13 @@ runStepCell expandedRuns r =
         )
 
 
-{-| Render the run's DISPLAY truth as an AgentBadge. The pipeline build status
-wins over the agent step status (U3), so a step that exited "ok" inside a
-failed build shows Failed, and an "ok" step that delivered no summary shows
-"No output" — never a green OK on a build that did not deliver. Falls back to
-the raw step status only when the badge can derive nothing.
+{-| Render the run's DISPLAY truth as an AgentBadge. The server-derived
+`outcome` field carries the fused verdict (build status wins over step status,
+U3), so a step that exited "ok" inside a failed build shows Failed, and an
+"ok" step that delivered nothing shows "No output" — never a green OK on a
+build that did not deliver. Servers that predate the field send no outcome;
+the same fusion is then derived locally. Falls back to the raw step status
+only when the badge can derive nothing.
 -}
 runStatusCell : Agent.RunMetric -> Html Message
 runStatusCell r =
@@ -786,7 +788,7 @@ runStatusCell r =
         , style "padding" "4px 16px 4px 0"
         , style "border-bottom" rowBorder
         ]
-        [ case AgentBadge.runOutcome { buildStatus = r.buildStatus, runStatus = r.status, hasResult = r.summary /= "" } of
+        [ case AgentBadge.displayOutcome { outcome = r.outcome, buildStatus = r.buildStatus, runStatus = r.status, hasResult = r.summary /= "" } of
             Just badgeStatus ->
                 AgentBadge.view badgeStatus
 

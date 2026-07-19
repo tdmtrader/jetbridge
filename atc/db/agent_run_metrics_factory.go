@@ -285,6 +285,9 @@ func scanRunMetricsRows(rows *sql.Rows) ([]agentschema.RunMetrics, error) {
 		if len(resultsPayload) > 0 {
 			rm.Results = json.RawMessage(resultsPayload)
 		}
+		// fuse build + step status here, where BuildStatus materializes, so
+		// every read carries the U3 display truth (needs Results set first)
+		rm.Outcome = rm.DeriveOutcome()
 		if len(eventCounts) > 0 {
 			if err := json.Unmarshal(eventCounts, &rm.EventCounts); err != nil {
 				return nil, err

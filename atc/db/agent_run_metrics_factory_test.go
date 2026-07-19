@@ -83,8 +83,10 @@ var _ = Describe("AgentRunMetricsFactory", func() {
 		rows, err := factory.GetByBuild(build.ID())
 		Expect(err).ToNot(HaveOccurred())
 		Expect(rows).To(HaveLen(1))
-		Expect(rows[0].Status).To(Equal("ok"))            // agent step exit
-		Expect(rows[0].BuildStatus).To(Equal("failed"))   // the build truth
+		Expect(rows[0].Status).To(Equal("ok"))          // agent step exit
+		Expect(rows[0].BuildStatus).To(Equal("failed")) // the build truth
+		// and the read path fuses them, so no surface re-derives the rule
+		Expect(rows[0].Outcome).To(Equal(schema.RunOutcomeFailed))
 	})
 
 	It("leaves BuildStatus empty when the metric references no real build", func() {
@@ -95,6 +97,43 @@ var _ = Describe("AgentRunMetricsFactory", func() {
 		Expect(err).ToNot(HaveOccurred())
 		Expect(rows).To(HaveLen(1))
 		Expect(rows[0].BuildStatus).To(Equal("")) // LEFT JOIN, no match
+		// no build truth to fuse — the outcome is the step's own word
+		Expect(rows[0].Outcome).To(Equal(schema.RunOutcomeOK))
+	})
+
+	It("derives the outcome across the succeeded/open build matrix (U3)", func() {
+		greenBuild, err := defaultTeam.CreateOneOffBuild()
+		Expect(err).ToNot(HaveOccurred())
+		Expect(greenBuild.Finish(db.BuildStatusSucceeded)).To(Succeed())
+
+		// green build, delivered summary → ok
+		Expect(factory.Upsert(&schema.RunMetrics{
+			BuildID: greenBuild.ID(), PlanID: "p1", StepName: "implement",
+			Status: "ok", Summary: "delivered",
+		})).To(Succeed())
+		// green build, nothing delivered → no_output, never a green verdict
+		Expect(factory.Upsert(&schema.RunMetrics{
+			BuildID: greenBuild.ID(), PlanID: "p2", StepName: "harvest",
+			Status: "ok",
+		})).To(Succeed())
+
+		rows, err := factory.GetByBuild(greenBuild.ID())
+		Expect(err).ToNot(HaveOccurred())
+		Expect(rows).To(HaveLen(2))
+		Expect(rows[0].Outcome).To(Equal(schema.RunOutcomeOK))
+		Expect(rows[1].Outcome).To(Equal(schema.RunOutcomeNoOutput))
+
+		// parked under a still-open build → parked (HITL checkpoint visible)
+		openBuild, err := defaultTeam.CreateOneOffBuild()
+		Expect(err).ToNot(HaveOccurred())
+		Expect(factory.Upsert(&schema.RunMetrics{
+			BuildID: openBuild.ID(), PlanID: "p1", StepName: "implement",
+			Status: "parked",
+		})).To(Succeed())
+		rows, err = factory.GetByBuild(openBuild.ID())
+		Expect(err).ToNot(HaveOccurred())
+		Expect(rows).To(HaveLen(1))
+		Expect(rows[0].Outcome).To(Equal(schema.RunOutcomeParked))
 	})
 
 	It("stores NULL ticket/workflow tags for pure-CI steps", func() {

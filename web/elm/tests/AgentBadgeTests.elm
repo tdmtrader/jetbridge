@@ -1,6 +1,6 @@
 module AgentBadgeTests exposing (all)
 
-import AgentBadge exposing (Status(..), Tone(..), description, fromApiToken, fromRunStatus, label, runOutcome, tone)
+import AgentBadge exposing (Status(..), Tone(..), description, displayOutcome, fromApiToken, fromOutcomeToken, fromRunStatus, label, runOutcome, tone)
 import Expect
 import Test exposing (Test, describe, test)
 
@@ -156,5 +156,34 @@ all =
                     -- can hold the build open long after the run died.
                     runOutcome { buildStatus = "started", runStatus = "error", hasResult = False }
                         |> Expect.equal (Just Errored)
+            ]
+        , describe "displayOutcome — the server-derived outcome wins when present"
+            [ test "fromOutcomeToken maps every server outcome token to its badge" <|
+                \_ ->
+                    [ "ok", "no_output", "running", "parked", "failed", "errored", "aborted" ]
+                        |> List.map fromOutcomeToken
+                        |> Expect.equal
+                            [ Just Succeeded
+                            , Just NoOutput
+                            , Just (Running Nothing)
+                            , Just AwaitingHuman
+                            , Just Failed
+                            , Just Errored
+                            , Just Aborted
+                            ]
+            , test "prefers the server outcome over the locally-fused fields" <|
+                \_ ->
+                    -- deliberately contradictory fallback fields prove the
+                    -- token was used: the local fusion would say Succeeded
+                    displayOutcome { outcome = "failed", buildStatus = "succeeded", runStatus = "ok", hasResult = True }
+                        |> Expect.equal (Just Failed)
+            , test "falls back to the local fusion when the server sent no outcome (old server)" <|
+                \_ ->
+                    displayOutcome { outcome = "", buildStatus = "failed", runStatus = "ok", hasResult = True }
+                        |> Expect.equal (Just Failed)
+            , test "falls back to the local fusion on an unknown token (newer server)" <|
+                \_ ->
+                    displayOutcome { outcome = "quantum_flux", buildStatus = "succeeded", runStatus = "ok", hasResult = True }
+                        |> Expect.equal (Just Succeeded)
             ]
         ]

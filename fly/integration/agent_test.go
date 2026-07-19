@@ -11,6 +11,7 @@ import (
 	"github.com/concourse/concourse/agent/api/costs"
 	"github.com/concourse/concourse/agent/budget"
 	"github.com/concourse/concourse/agent/credentials"
+	agentschema "github.com/concourse/concourse/agent/schema"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/onsi/gomega/gbytes"
@@ -127,6 +128,48 @@ var _ = Describe("fly agent", func() {
 			Eventually(sess).Should(gexec.Exit(0))
 			Expect(sess.Out).To(gbytes.Say("2026-07-08"))
 			Expect(sess.Out).To(gbytes.Say(`daily cap \$50\.00`))
+		})
+	})
+
+	Describe("agent runs", func() {
+		BeforeEach(func() {
+			three := 3
+			atcServer.AppendHandlers(
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("GET", "/api/v1/agent/metrics", "limit=50"),
+					ghttp.RespondWithJSONEncoded(http.StatusOK, []agentschema.RunMetrics{
+						{
+							// the U3 truth split: a green step inside a failed
+							// build — the server-fused outcome must win
+							BuildID: 1, PlanID: "p1", StepName: "implement",
+							WorkflowName: "develop", WorkflowVersion: &three,
+							Status: "ok", BuildStatus: "failed", Outcome: "failed",
+							Summary: "agent reported ok", CostUSD: 1.25,
+						},
+						{
+							// a pre-outcome server: build_status but no outcome
+							// — fly derives the same fusion locally
+							BuildID: 2, PlanID: "p2", StepName: "harvest",
+							Status: "ok", BuildStatus: "failed",
+						},
+						{
+							// no build truth at all — the step's own word stands
+							BuildID: 3, PlanID: "p3", StepName: "review",
+							Status: "ok",
+						},
+					}),
+				),
+			)
+		})
+
+		It("renders the fused outcome, never a green step status inside a failed build", func() {
+			flyCmd := exec.Command(flyPath, "-t", targetName, "agent", "runs")
+			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+			Expect(err).NotTo(HaveOccurred())
+			Eventually(sess).Should(gexec.Exit(0))
+			Expect(sess.Out).To(gbytes.Say(`implement\s+develop@3\s+failed`))
+			Expect(sess.Out).To(gbytes.Say(`harvest\s+failed`))
+			Expect(sess.Out).To(gbytes.Say(`review\s+ok`))
 		})
 	})
 

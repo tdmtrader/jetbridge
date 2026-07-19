@@ -152,6 +152,7 @@ sampleRun :
     , workflowVersion : Maybe Int
     , status : String
     , buildStatus : String
+    , outcome : String
     , summary : String
     , model : String
     , usage :
@@ -176,6 +177,7 @@ sampleRun =
     , workflowVersion = Just 2
     , status = "failed"
     , buildStatus = "failed"
+    , outcome = "failed"
     , summary = "one finding"
     , model = "claude"
     , usage =
