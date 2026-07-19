@@ -18,6 +18,7 @@ import EffectTransformer exposing (ET)
 import Html exposing (Html)
 import Html.Attributes exposing (checked, class, disabled, href, id, placeholder, style, title, type_, value)
 import Html.Events exposing (onClick, onInput)
+import Html.Lazy
 import Http
 import Login.Login as Login
 import Message.Callback exposing (Callback(..))
@@ -126,8 +127,20 @@ documentTitle =
 handleCallback : Callback -> ET Model
 handleCallback callback ( model, effects ) =
     case callback of
-        AgentRunMetricsFetched (Ok runs) ->
-            ( { model | runs = Just runs, runsError = Nothing }, effects )
+        AgentRunMetricsFetched (Ok fresh) ->
+            ( { model
+                | runs =
+                    -- Keep the old list when the refetch decoded identical
+                    -- data, so the lazy runs table below skips its render.
+                    if model.runs == Just fresh then
+                        model.runs
+
+                    else
+                        Just fresh
+                , runsError = Nothing
+              }
+            , effects
+            )
 
         AgentRunMetricsFetched (Err err) ->
             ( { model | runsError = Just (errorMessage "runs" err) }, effects )
@@ -655,7 +668,12 @@ runsSection zone model =
             Just runs ->
                 staleDataWarning model.runsError
                     ++ [ mutedLine "showing the newest 100 runs (capped server-side, most recent first)"
-                       , runsTable zone model.expandedRuns runs
+
+                       -- Lazy so mint-form keystrokes (which rebuild the whole
+                       -- model, and with it this page) stop re-rendering the
+                       -- 100-row table; all three arguments are reference-
+                       -- stable until the data actually changes.
+                       , Html.Lazy.lazy3 runsTable zone model.expandedRuns runs
                        ]
 
 
@@ -736,7 +754,7 @@ runStepCell expandedRuns r =
                     , style "cursor" "pointer"
                     , title "click to collapse"
                     ]
-                    [ Views.Prose.view r.summary ]
+                    [ Html.Lazy.lazy Views.Prose.view r.summary ]
                 ]
 
             else

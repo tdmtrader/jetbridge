@@ -89,8 +89,22 @@ documentTitle =
 handleCallback : Callback -> ET Model
 handleCallback callback ( model, effects ) =
     case callback of
-        AgentTicketsFetched (Ok tickets) ->
-            ( { model | tickets = tickets, loaded = True, loadError = False }, effects )
+        AgentTicketsFetched (Ok fresh) ->
+            ( { model
+                | tickets =
+                    -- Keep the old list when the 5s refetch decoded identical
+                    -- data, so reference-equality checks (Html.Lazy) stay
+                    -- viable downstream instead of being defeated every poll.
+                    if fresh == model.tickets then
+                        model.tickets
+
+                    else
+                        fresh
+                , loaded = True
+                , loadError = False
+              }
+            , effects
+            )
 
         AgentTicketsFetched (Err _) ->
             ( { model | loaded = True, loadError = True }, effects )
@@ -198,12 +212,20 @@ content model =
             visible =
                 List.filter (matchesFilter model.filter) model.tickets
 
+            -- One pass over the visible tickets; sectionView used to re-filter
+            -- the whole list once per section (13 passes per render, and the
+            -- page re-renders on every 5s refetch).
+            byState =
+                groupByState visible
+
             knownSections =
-                List.filterMap (sectionView model visible) sectionOrder
+                List.filterMap (sectionView model byState) sectionOrder
 
             leftover =
-                visible
-                    |> List.filter (\t -> not (List.member t.state sectionOrder))
+                byState
+                    |> Dict.toList
+                    |> List.filter (\( state, _ ) -> not (List.member state sectionOrder))
+                    |> List.concatMap Tuple.second
 
             body =
                 if List.isEmpty visible then
@@ -341,14 +363,29 @@ leftoverSection model tickets =
         [ sectionBlock (withCount "other" tickets) (List.map (ticketRow model) (sortTickets model.sortByWait tickets)) ]
 
 
-sectionView : Model -> List AgentTicket.Ticket -> String -> Maybe (Html Message)
-sectionView model tickets state =
-    case List.filter (\t -> t.state == state) tickets of
-        [] ->
+sectionView : Model -> Dict String (List AgentTicket.Ticket) -> String -> Maybe (Html Message)
+sectionView model byState state =
+    case Dict.get state byState of
+        Nothing ->
             Nothing
 
-        matching ->
+        Just matching ->
             Just (sectionBlock (withCount (sectionLabel state) matching) (List.map (ticketRow model) (sortTickets model.sortByWait matching)))
+
+
+{-| Group the visible tickets by lifecycle state, preserving within-state
+order (the section sort is stable, so ties keep their fetched order).
+-}
+groupByState : List AgentTicket.Ticket -> Dict String (List AgentTicket.Ticket)
+groupByState tickets =
+    tickets
+        |> List.foldl
+            (\t ->
+                Dict.update t.state
+                    (\group -> Just (t :: Maybe.withDefault [] group))
+            )
+            Dict.empty
+        |> Dict.map (\_ -> List.reverse)
 
 
 {-| U10: append a per-section count, e.g. "needs review (2)" (uppercased by CSS).
