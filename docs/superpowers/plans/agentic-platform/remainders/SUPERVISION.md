@@ -180,3 +180,40 @@ reduce exploration turns.
    The agent noticed, cleaned up, and used the literal path. File as a ticket.
 
 (notes appended as runs complete)
+
+## Batch 2 (post-native-unblock): tickets #28+
+
+| # | Ticket | Slice | State | Cost/turns | Fidelity |
+|---|---|---|---|---|---|
+| 28 | outcomes B1-B3 | delivery B | **B1+B2 merged** (d2154827e1); B3 split out | $5.49 / 140 (cap) | **faithful incl. security tier + pinning spec** |
+
+Ticket #28 repeated the #21 capacity pattern: 140-turn cap hit mid-B3 with B1+B2
+COMMITTED — the harvest dirty listing showed only fly/go-concourse files, so recovery
+via the artifact daemon kept $5.49 of work (B1 handler with transition-first ordering,
+B2 six-touchpoint wiring with the security-critical wrappa placement done RIGHT: plain
+authorized block, principal path refused, tier-pinning spec creating a real
+tickets:write token and asserting rejection). Lesson reinforced: "sized ≈ ticket #14"
+underestimates six-touchpoint + spec-heavy slices — split route-wiring bundles from
+CLI/client bundles at authoring time. Milestone-commit pacing SAVED the work this time
+(vs #21's total loss).
+
+## Batch 2 final table (post-native-unblock, all merged)
+
+| # | Slice | Cost/turns | Note |
+|---|---|---|---|
+| 28 | outcomes B1+B2 | $5.49/140cap | recovered; security tier + pinning spec correct |
+| 31 | outcomes B3 (fly dispose/close) | $1.62/112 | D-3 writer migration complete |
+| 32 | judge F ingestion | $7.04/319 | all 5 trust/money pins verified |
+| 33 | outcomes B4 seeding | $2.17/133 | transition-first ordering + comment |
+| 34 | gitcheck C1+C2 | $1.12/93 | honesty note + frozen heuristics |
+| 35 | watcher C3+C4-handler | $6.40/140cap | recovered; BranchHead = defensible extension |
+| 36 | C4-wiring + C5 | $2.88/220 | viewer tier correct |
+| 37 | sidecar T11+T13 | $2.50/134 | frozen retry contract verbatim |
+| 38 | ask_human T14+T15 | $2.80/165 | sentinel-only-when-configured |
+| 39 | T16+T17 (+T12 pre-landed) | $1.22/113 | agent detected the overlap itself |
+| 40 | checkpoint kit T18+T20+T21 | $4.54/273 | correct-when-activated, inert |
+
+Batch 2: 11 dispatched, 11 merged (2 via workspace recovery), ~$37.8, zero rework at
+review. Sizing lesson held: every two-commit-scoped ticket cleared the cap; every
+3+-task bundle hit it. Combined batches 1+2: ~19 loop tickets merged, ~$54, plus the
+native session. The five-plan loop-able scope is COMPLETE.
