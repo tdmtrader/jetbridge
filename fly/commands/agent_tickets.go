@@ -5,6 +5,7 @@ import (
 	"os"
 	"strconv"
 
+	"github.com/concourse/concourse/agent/api/outcomes"
 	"github.com/concourse/concourse/agent/api/tickets"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/fly/eventstream"
@@ -23,6 +24,7 @@ type AgentTicketsCommand struct {
 	Dispatch   AgentTicketsDispatchCommand   `command:"dispatch" description:"Dispatch a queued ticket as a pipeline run (manual trigger)"`
 	Watch      AgentTicketsWatchCommand      `command:"watch" description:"Follow the build events of a ticket's dispatched run"`
 	Close      AgentTicketsCloseCommand      `command:"close" description:"Close a reviewed ticket to a terminal disposition (default: concluded)"`
+	Dispose    AgentTicketsDisposeCommand    `command:"dispose" description:"Record a terminal disposition (with reason taxonomy) on a reviewed ticket"`
 }
 
 // ticketPipelineName is the deterministic template-pipeline name dispatch
@@ -351,6 +353,8 @@ type AgentTicketsCloseCommand struct {
 	ID          int    `long:"id" required:"true" description:"Ticket id"`
 	Disposition string `long:"disposition" default:"concluded" description:"Terminal disposition from needs_review (concluded, merged, merged_with_fixes, sent_back, abandoned)"`
 	Branch      string `long:"branch" description:"Branch to record on the needs_review hop"`
+	Reason      string `long:"reason" choice:"wrong_approach" choice:"incomplete" choice:"defective" choice:"superseded" choice:"not_needed" choice:"style" choice:"research_complete" choice:"other" description:"Reason taxonomy (§1.11) for sent_back/abandoned/concluded (default: research_complete for concluded, other otherwise)"`
+	Notes       string `long:"notes" description:"Free-text notes for sent_back/abandoned/concluded"`
 }
 
 // Execute closes a reviewed ticket to a terminal state. A running ticket
@@ -360,6 +364,13 @@ type AgentTicketsCloseCommand struct {
 // (harvest and the run-completion reconciler, contracts §2.1) — the
 // server's from-guard stays the sole authority, so a concurrent mover
 // surfaces as a 409, not a silent overwrite.
+//
+// The terminal hop for sent_back/abandoned/concluded goes through the
+// disposition route (§1.11.1 writer reconciliation, D-3) so the outcome
+// row records the taxonomy/notes/disposed_by attribution; the server
+// walks the lifecycle edge itself. merged/merged_with_fixes stay raw
+// transitions — the manual override remains legal and the outcome
+// watcher independently detects the real git merge.
 func (command *AgentTicketsCloseCommand) Execute([]string) error {
 	target, err := rc.LoadTarget(Fly.Target, Fly.Verbose)
 	if err != nil {
@@ -380,6 +391,7 @@ func (command *AgentTicketsCloseCommand) Execute([]string) error {
 	state := detail.Ticket.State
 
 	if state == tickets.StateRunning {
+		// The first hop is not a disposition; it stays a raw transition.
 		updated, err := client.TransitionAgentTicket(command.ID, tickets.TransitionRequest{
 			From: tickets.StateRunning, To: tickets.StateNeedsReview, Branch: command.Branch,
 		})
@@ -394,6 +406,27 @@ func (command *AgentTicketsCloseCommand) Execute([]string) error {
 		return fmt.Errorf("ticket %d is %s; close only acts on running or needs_review tickets", command.ID, state)
 	}
 
+	if outcomes.ValidDisposition(command.Disposition) {
+		reason := command.Reason
+		if reason == "" {
+			// The server's taxonomy validation stays authoritative; these
+			// are just sensible defaults for the flag-less close flow.
+			if command.Disposition == outcomes.DispositionConcluded {
+				reason = "research_complete"
+			} else {
+				reason = "other"
+			}
+		}
+		outcome, err := client.SetAgentTicketDisposition(command.ID, outcomes.DispositionRequestFor(
+			command.Disposition, reason, command.Notes,
+		))
+		if err != nil {
+			return err
+		}
+		fmt.Printf("ticket #%d is now %s\n", command.ID, outcome.Disposition)
+		return nil
+	}
+
 	updated, err := client.TransitionAgentTicket(command.ID, tickets.TransitionRequest{
 		From: tickets.StateNeedsReview, To: tickets.State(command.Disposition), Branch: command.Branch,
 	})
@@ -401,5 +434,35 @@ func (command *AgentTicketsCloseCommand) Execute([]string) error {
 		return err
 	}
 	fmt.Printf("ticket #%d is now %s\n", updated.ID, updated.State)
+	return nil
+}
+
+type AgentTicketsDisposeCommand struct {
+	ID          int    `long:"id" required:"true" description:"Ticket id"`
+	Disposition string `long:"disposition" required:"true" choice:"sent_back" choice:"abandoned" choice:"concluded" description:"Terminal disposition"`
+	Reason      string `long:"reason" choice:"wrong_approach" choice:"incomplete" choice:"defective" choice:"superseded" choice:"not_needed" choice:"style" choice:"research_complete" choice:"other" description:"Reason taxonomy (§1.11)"`
+	Notes       string `long:"notes" description:"Free-text notes"`
+}
+
+// Execute records a human's terminal verdict through the disposition
+// route: the server walks the needs_review→<disposition> lifecycle edge
+// AND stamps the outcome row (taxonomy, notes, disposed_by) in one call.
+// Reason validation is the server's; an omitted --reason surfaces its 400.
+func (command *AgentTicketsDisposeCommand) Execute([]string) error {
+	target, err := rc.LoadTarget(Fly.Target, Fly.Verbose)
+	if err != nil {
+		return err
+	}
+	if err := target.Validate(); err != nil {
+		return err
+	}
+
+	outcome, err := target.Client().SetAgentTicketDisposition(command.ID, outcomes.DispositionRequestFor(
+		command.Disposition, command.Reason, command.Notes,
+	))
+	if err != nil {
+		return err
+	}
+	fmt.Printf("ticket #%d disposed: %s (%s)\n", command.ID, outcome.Disposition, outcome.MergeState)
 	return nil
 }
