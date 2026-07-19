@@ -28,6 +28,13 @@ type Config struct {
 	// 0 = unset = mcpserver.DefaultHeartbeat (15s). Set values must be
 	// > 0 and <= 30s — never clamped, always fatal at startup.
 	ProgressInterval time.Duration
+	// ShortParkMax is the PARK-V2 §A exit-and-respawn threshold
+	// (PLATFORM_MCP_SHORT_PARK_MAX_SECONDS, integer seconds — rendered
+	// literally by dispatch from the web flag --agent-short-park-max).
+	// 0 = never exit: every park stays a PARK-V1 SSE park (the delta's
+	// rollback hatch). Applies to BOTH ask_human and /checkpoint parks,
+	// measured from the question row's asked_at.
+	ShortParkMax time.Duration
 	// ParkPath is the §B1 park-sentinel destination (PLATFORM_MCP_PARK_PATH,
 	// Task 1 addendum) — `<flight mount>/park.json` in agent-step pods, set
 	// by the agent-step exec via SidecarEnv (F15; plan 07 Task 26 — only the
@@ -104,6 +111,20 @@ func ConfigFromEnv() (Config, error) {
 		}
 		cfg.ProgressInterval = d
 	}
+	// PARK-V2 §A: bounds-validate like the rest of the env contract — a
+	// set-but-invalid or negative threshold is FATAL at startup, never
+	// clamped. Integer SECONDS, not a Go duration: dispatch renders the
+	// flag's rounded seconds literally. Threshold WITHOUT a park path is
+	// legal (checkpoint pods) — an ask_human crossing without a path
+	// degrades loudly at crossing time instead.
+	shortParkSecs, err := intEnv("PLATFORM_MCP_SHORT_PARK_MAX_SECONDS")
+	if err != nil {
+		return cfg, err
+	}
+	if shortParkSecs < 0 {
+		return cfg, fmt.Errorf("PLATFORM_MCP_SHORT_PARK_MAX_SECONDS must be >= 0 (0 = never exit-and-respawn), got %d", shortParkSecs)
+	}
+	cfg.ShortParkMax = time.Duration(shortParkSecs) * time.Second
 	return cfg, nil
 }
 

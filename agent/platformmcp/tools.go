@@ -12,9 +12,8 @@ var taskStatuses = map[string]bool{
 	"pending": true, "in_progress": true, "done": true, "skipped": true, "blocked": true,
 }
 
-// registerTools registers the six ticket/task tools (§3.2 schemas, verbatim).
-// ask_human is deliberately NOT registered here — it lands with the ask_human
-// park/resume tasks (ticket #37 delta over plan 08 Task 10).
+// registerTools registers the seven tools (§3.2 schemas, verbatim): the six
+// ticket/task tools plus ask_human (park/resume — ticket #38, T14).
 func (s *Server) registerTools() {
 	s.mcp.AddTool("read_ticket",
 		"Read this run's ticket: envelope and latest spec (call list_tasks / get_task for the plan).",
@@ -102,6 +101,22 @@ func (s *Server) registerTools() {
 			"additionalProperties": false,
 		}),
 		s.updateTaskStatus)
+
+	// PARK-V2 §E tool-description note (2026-07-10): repeated byte-identical
+	// questions within one step are idempotent — the description must say so.
+	s.mcp.AddTool("ask_human",
+		"Ask the human a question; this call BLOCKS (parks the run) until answered. Repeated byte-identical questions within one step return the FIRST answer (idempotent-by-question) — vary the question text if you genuinely need a fresh answer.",
+		mcpserver.MustJSON(map[string]any{
+			"type":     "object",
+			"required": []string{"question"},
+			"properties": map[string]any{
+				"question": map[string]any{"type": "string", "description": "markdown; include enough context to answer without reading the transcript"},
+				"options":  map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "optional multiple choice; empty = free text"},
+				"default":  map[string]any{"type": "string", "description": "answer used if the question times out under timeout_policy=default"},
+			},
+			"additionalProperties": false,
+		}),
+		s.askHuman)
 }
 
 // readTicket returns envelope + spec ONLY — tasks are deliberately dropped from

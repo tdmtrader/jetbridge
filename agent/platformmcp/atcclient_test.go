@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -34,15 +35,36 @@ func newStubQuestionStore() *stubQuestionStore {
 	return &stubQuestionStore{rows: map[int]*platformmcp.Question{}}
 }
 
+// Ask is FIND-OR-CREATE, mirroring the §E DB-enforced idempotency-by-question
+// (migration 1773106072): rows dedup on (pipeline_run_id, step_name, kind,
+// question_hash) — the build id is deliberately NOT part of the key, and rows
+// without a pipeline_run_id never dedup. An answered row is returned as-is
+// (the resume fast path); an open row is joined.
 func (s *stubQuestionStore) Ask(q *platformmcp.Question) *platformmcp.Question {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if q.PipelineRunID != nil {
+		for _, row := range s.rows {
+			if row.PipelineRunID != nil && *row.PipelineRunID == *q.PipelineRunID &&
+				row.StepName == q.StepName && row.Kind == q.Kind &&
+				questionDedupKey(row) == questionDedupKey(q) {
+				copied := *row
+				return &copied
+			}
+		}
+	}
 	s.nextID++
 	q.ID = s.nextID
 	q.AskedAt = time.Now().Unix()
 	s.rows[q.ID] = q
 	copied := *q
 	return &copied
+}
+
+// questionDedupKey stands in for the server-side question_hash
+// (sha256(question || '\x00' || options-joined-by-'\x00')).
+func questionDedupKey(q *platformmcp.Question) string {
+	return q.Question + "\x00" + strings.Join(q.Options, "\x00")
 }
 
 func (s *stubQuestionStore) Get(id int) (platformmcp.Question, bool) {

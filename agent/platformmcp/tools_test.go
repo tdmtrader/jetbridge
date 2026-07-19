@@ -106,9 +106,9 @@ func newTestServer(t *testing.T, atcURL string) *platformmcp.Server {
 	return srv
 }
 
-// Ticket #37 delta over plan 08 Task 10: ask_human is the NEXT ticket
-// (T14-15) — exactly the six ticket/task tools are registered here.
-func TestToolsListExposesExactlySixTools(t *testing.T) {
+// Ticket #38 (T14) lands ask_human on top of ticket #37's six ticket/task
+// tools — exactly the seven §3.2 tools are registered, ask_human last.
+func TestToolsListExposesExactlySevenTools(t *testing.T) {
 	atc, _ := stubTicketATC(t)
 	srv := newTestServer(t, atc.URL)
 
@@ -130,7 +130,7 @@ func TestToolsListExposesExactlySixTools(t *testing.T) {
 	for _, tool := range resp.Result.Tools {
 		names = append(names, tool.Name)
 	}
-	want := []string{"read_ticket", "list_tasks", "get_task", "submit_spec", "submit_plan", "update_task_status"}
+	want := []string{"read_ticket", "list_tasks", "get_task", "submit_spec", "submit_plan", "update_task_status", "ask_human"}
 	if fmt.Sprint(names) != fmt.Sprint(want) {
 		t.Fatalf("tools = %v, want %v", names, want)
 	}
