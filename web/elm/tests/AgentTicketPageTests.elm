@@ -11,10 +11,12 @@ import Json.Decode
 import Message.Callback as Callback
 import Message.Effects as Effects
 import Message.Message
+import Message.Subscription exposing (Delivery(..), Interval(..))
 import Message.TopLevelMessage as Msgs
 import Test exposing (Test, describe, test)
 import Test.Html.Query as Query
 import Test.Html.Selector exposing (attribute, class, containing, id, tag, text)
+import Time
 import Url
 
 
@@ -37,6 +39,30 @@ queuedDetailJson : String
 queuedDetailJson =
     """
     { "ticket": { "id": 9, "title": "queued work", "state": "queued", "workflow_name": "develop", "created_at": 50 }
+    , "spec": null
+    , "tasks": []
+    }
+    """
+
+
+runningDetailJson : String
+runningDetailJson =
+    """
+    { "ticket": { "id": 9, "title": "queued work", "state": "running", "workflow_name": "develop", "created_at": 50 }
+    , "spec": null
+    , "tasks": []
+    }
+    """
+
+
+mergedDetailJson : String
+mergedDetailJson =
+    """
+    { "ticket":
+        { "id": 12, "title": "ship fly archives", "state": "merged"
+        , "workflow_name": "develop", "body": "do the thing", "budget_usd": 5.0
+        , "created_at": 200
+        }
     , "spec": null
     , "tasks": []
     }
@@ -219,6 +245,136 @@ all =
                             |> Query.has
                                 [ tag "textarea"
                                 , attribute (Html.Attributes.value "MY UNSAVED EDIT")
+                                ]
+                    )
+        , test "saving after a mid-edit refetch posts the typed values, not the server's" <|
+            \_ ->
+                withDetail sampleDetailJson
+                    (\d ->
+                        Common.init "/agent-tickets/12"
+                            |> Application.handleCallback (Callback.AgentTicketFetched (Ok d))
+                            |> Tuple.first
+                            |> Application.update (Msgs.Update Message.Message.ClickAgentTicketEdit)
+                            |> Tuple.first
+                            |> Application.update (Msgs.Update (Message.Message.AgentTicketBodyChanged "MY UNSAVED EDIT"))
+                            |> Tuple.first
+                            |> Application.handleCallback (Callback.AgentTicketFetched (Ok d))
+                            |> Tuple.first
+                            |> Application.update (Msgs.Update Message.Message.ClickAgentTicketSave)
+                            |> Tuple.second
+                            |> Common.contains
+                                (Effects.SaveAgentTicket
+                                    { id = 12
+                                    , title = "ship fly archives"
+                                    , body = "MY UNSAVED EDIT"
+                                    , budgetUsd = Just 5
+                                    }
+                                )
+                    )
+        , test "clicking Edit opens the form seeded with the current ticket values" <|
+            \_ ->
+                withDetail sampleDetailJson
+                    (\d ->
+                        Common.init "/agent-tickets/12"
+                            |> Application.handleCallback (Callback.AgentTicketFetched (Ok d))
+                            |> Tuple.first
+                            |> Application.update (Msgs.Update Message.Message.ClickAgentTicketEdit)
+                            |> Tuple.first
+                            |> Common.queryView
+                            |> Expect.all
+                                [ Query.has [ tag "input", attribute (Html.Attributes.value "ship fly archives") ]
+                                , Query.has [ tag "textarea", attribute (Html.Attributes.value "do the thing") ]
+                                , Query.has [ tag "input", attribute (Html.Attributes.value "5") ]
+                                ]
+                    )
+        , test "a ticket going terminal mid-edit closes the form and says why" <|
+            \_ ->
+                withDetail sampleDetailJson
+                    (\d ->
+                        withDetail mergedDetailJson
+                            (\merged ->
+                                Common.init "/agent-tickets/12"
+                                    |> Application.handleCallback (Callback.AgentTicketFetched (Ok d))
+                                    |> Tuple.first
+                                    |> Application.update (Msgs.Update Message.Message.ClickAgentTicketEdit)
+                                    |> Tuple.first
+                                    |> Application.update (Msgs.Update (Message.Message.AgentTicketBodyChanged "MY UNSAVED EDIT"))
+                                    |> Tuple.first
+                                    |> Application.handleCallback (Callback.AgentTicketFetched (Ok merged))
+                                    |> Tuple.first
+                                    |> Common.queryView
+                                    |> Expect.all
+                                        [ Query.hasNot [ tag "textarea" ]
+                                        , Query.has [ text "unsaved changes were discarded" ]
+                                        ]
+                            )
+                    )
+        , test "a state change under an armed transition disarms the confirm" <|
+            \_ ->
+                withDetail queuedDetailJson
+                    (\queued ->
+                        withDetail runningDetailJson
+                            (\running ->
+                                Common.init "/agent-tickets/12"
+                                    |> Application.handleCallback (Callback.AgentTicketFetched (Ok queued))
+                                    |> Tuple.first
+                                    |> Application.update (Msgs.Update (Message.Message.ClickAgentTicketTransition "abandoned"))
+                                    |> Tuple.first
+                                    |> Application.handleCallback (Callback.AgentTicketFetched (Ok running))
+                                    |> Tuple.first
+                                    |> Common.queryView
+                                    |> Query.hasNot [ text "Confirm abandon" ]
+                            )
+                    )
+        , test "a same-state refetch leaves an armed transition armed" <|
+            \_ ->
+                withDetail queuedDetailJson
+                    (\queued ->
+                        Common.init "/agent-tickets/12"
+                            |> Application.handleCallback (Callback.AgentTicketFetched (Ok queued))
+                            |> Tuple.first
+                            |> Application.update (Msgs.Update (Message.Message.ClickAgentTicketTransition "abandoned"))
+                            |> Tuple.first
+                            |> Application.handleCallback (Callback.AgentTicketFetched (Ok queued))
+                            |> Tuple.first
+                            |> Common.queryView
+                            |> Query.has [ text "Confirm abandon" ]
+                    )
+        , test "the 5s tick refetches the ticket and metrics while it can still change" <|
+            \_ ->
+                withDetail sampleDetailJson
+                    (\d ->
+                        Common.init "/agent-tickets/12"
+                            |> Application.handleCallback (Callback.AgentTicketFetched (Ok d))
+                            |> Tuple.first
+                            |> Application.update
+                                (Msgs.DeliveryReceived (ClockTicked FiveSeconds <| Time.millisToPosix 0))
+                            |> Tuple.second
+                            |> Expect.all
+                                [ Common.contains (Effects.FetchAgentTicket 12)
+                                , Common.contains (Effects.FetchAgentTicketMetrics 12)
+                                ]
+                    )
+        , test "the 5s tick keeps polling while the ticket hasn't loaded yet" <|
+            \_ ->
+                Common.init "/agent-tickets/12"
+                    |> Application.update
+                        (Msgs.DeliveryReceived (ClockTicked FiveSeconds <| Time.millisToPosix 0))
+                    |> Tuple.second
+                    |> Common.contains (Effects.FetchAgentTicket 12)
+        , test "the 5s tick stops refetching once the ticket is terminal" <|
+            \_ ->
+                withDetail mergedDetailJson
+                    (\merged ->
+                        Common.init "/agent-tickets/12"
+                            |> Application.handleCallback (Callback.AgentTicketFetched (Ok merged))
+                            |> Tuple.first
+                            |> Application.update
+                                (Msgs.DeliveryReceived (ClockTicked FiveSeconds <| Time.millisToPosix 0))
+                            |> Tuple.second
+                            |> Expect.all
+                                [ Common.notContains (Effects.FetchAgentTicket 12)
+                                , Common.notContains (Effects.FetchAgentTicketMetrics 12)
                                 ]
                     )
         ]

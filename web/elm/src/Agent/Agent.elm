@@ -27,10 +27,11 @@ import Message.Message exposing (Message(..))
 import Message.ScrollDirection as ScrollDirection
 import Message.Subscription
     exposing
-        ( Delivery(..)
+        ( Delivery
         , Interval(..)
-        , Subscription(..)
+        , Subscription
         )
+import Polling
 import Routes
 import Set exposing (Set)
 import SideBar.SideBar as SideBar
@@ -367,35 +368,37 @@ tooltip _ _ =
     Nothing
 
 
-handleDelivery : Delivery -> ET Model
-handleDelivery delivery ( model, effects ) =
-    case delivery of
-        ClockTicked OneMinute _ ->
-            -- Self-healing refresh. These fetches only replace the fetched
-            -- data (and clear their own errors); they never touch the mint
-            -- form or the one-time token box, so a tick can't wipe them.
-            -- One minute is plenty: this is near-static admin data (the cost
-            -- rollup alone is a 30-day ledger aggregation), and mutations
-            -- (mint/revoke/promote) already refetch explicitly.
-            ( model
-            , effects
-                ++ [ FetchAgentRunMetrics
-                   , FetchAgentWorkflows
-                   , FetchAgentCostRollup
-                   , FetchAgentTicketCosts
-                   , FetchAgentCredentials
-                   , FetchAgentPlatformCredentials
-                   , FetchAgentPrincipals
-                   ]
-            )
+{-| Self-healing refresh. These fetches only replace the fetched data (and
+clear their own errors); the mint form and the one-time token box live
+outside the poll, so a tick can't wipe them. One minute is plenty: this is
+near-static admin data (the cost rollup alone is a 30-day ledger
+aggregation), and mutations (mint/revoke/promote) already refetch explicitly.
+-}
+polls : List (Polling.Poll Model)
+polls =
+    [ { interval = OneMinute
+      , fetch =
+            \_ ->
+                [ FetchAgentRunMetrics
+                , FetchAgentWorkflows
+                , FetchAgentCostRollup
+                , FetchAgentTicketCosts
+                , FetchAgentCredentials
+                , FetchAgentPlatformCredentials
+                , FetchAgentPrincipals
+                ]
+      }
+    ]
 
-        _ ->
-            ( model, effects )
+
+handleDelivery : Delivery -> ET Model
+handleDelivery =
+    Polling.handleDelivery polls
 
 
 subscriptions : List Subscription
 subscriptions =
-    [ OnClockTick OneMinute ]
+    Polling.subscriptions polls
 
 
 
@@ -596,7 +599,8 @@ agentContentId =
 around without scroll-hunting. Each entry scrolls to a section's `id` via the
 `scrollToId` port — a plain `#fragment` href is dead here: `Browser.application`
 intercepts every internal link click and re-navigates through `Routes`, which
-carries no fragment for this page, so the browser never performs the jump. -}
+carries no fragment for this page, so the browser never performs the jump.
+-}
 sectionNav : Html Message
 sectionNav =
     Html.div
@@ -1290,7 +1294,8 @@ credentialRow zone c =
 
 principalsSection : Time.Zone -> Model -> Html Message
 principalsSection zone model =
-    sectionBlock "agent-principals" "Principals"
+    sectionBlock "agent-principals"
+        "Principals"
         (mintFence model
             :: revokeErrorLine model
             :: principalsBody zone model
@@ -1299,7 +1304,8 @@ principalsSection zone model =
 
 {-| Fence the privileged mint form inside its own bordered, labelled box so it
 is unmistakably a credential-issuing control and does not read as just another
-read-only panel sitting under the spend tables (U15). -}
+read-only panel sitting under the spend tables (U15).
+-}
 mintFence : Model -> Html Message
 mintFence model =
     Html.div
