@@ -85,7 +85,7 @@ func TestMemoryStoreEnsureRefreshesOnlyOpenRows(t *testing.T) {
 	if err := s.Ensure(&outcomes.Outcome{TicketID: 9, Repo: "r", Branch: "agent/ticket-9", PushedSha: "q1"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SetDisposition(9, outcomes.DispositionInput{Disposition: outcomes.DispositionAbandoned, Reason: "wont_do", By: "u"}); err != nil {
+	if err := s.SetDisposition(9, outcomes.DispositionInput{Disposition: outcomes.DispositionAbandoned, Reason: "not_needed", By: "u"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Ensure(&outcomes.Outcome{TicketID: 9, Repo: "r", Branch: "agent/ticket-9", PushedSha: "q2"}); err != nil {
