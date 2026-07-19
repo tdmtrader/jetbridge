@@ -165,6 +165,8 @@ func Render(in RenderInput) (atc.Config, error) {
 	// import and get content-hashed as authoritative, but rendering must
 	// have an enforcing consumer or an author would believe gating/HITL/
 	// judge scoring is active when it is absent. Fail loudly at render
+	// time. Relaxed further (judge-evidence Slice E): the judge now
+	// RENDERS onto the terminal harvest step and harvest executes it.
 	// time, matching sidecars/checkpoints. Relaxed (ticket #14, v0.5):
 	// harvest-runner now enforces gate_policy pre-push when every gate's
 	// scope is "full" (its in-pod fixed command map) — affected/
@@ -184,9 +186,6 @@ func Render(in RenderInput) (atc.Config, error) {
 	}
 	if in.Workflow.HITL.AskTimeout != "" || in.Workflow.HITL.AskTimeoutSeconds != 0 {
 		return atc.Config{}, fmt.Errorf("workflow %q declares an hitl block: v0 manual dispatch has no human-in-the-loop pause (platform-mcp-hitl, wave 3) — remove the block or wait for platform-mcp", in.WorkflowName)
-	}
-	if in.Workflow.Judge != nil {
-		return atc.Config{}, fmt.Errorf("workflow %q declares a judge rubric: v0 manual dispatch does not score with a judge (harvest-step, wave 3) — remove the block or wait for harvest", in.WorkflowName)
 	}
 
 	needsRepo, needsTicket := false, false
@@ -241,8 +240,9 @@ func Render(in RenderInput) (atc.Config, error) {
 	// "workspace"); identity travels as env because a Go renderer cannot
 	// place ((run_id)) in the int pipeline_run_id field (F30). A
 	// full-scope gate_policy rides along (harvest-runner enforces it
-	// pre-push); judge/dev_mcp are never emitted — those workflows are
-	// refused above.
+	// pre-push); the judge is emitted when the workflow declares one
+	// (judge-evidence Slice E — harvest executes it advisory); only
+	// dev_mcp is still refused above.
 	if in.Ticket.ID > 0 {
 		plan = append(plan, atc.Step{Config: &atc.HarvestStep{
 			Name:         "harvest",
@@ -253,6 +253,7 @@ func Render(in RenderInput) (atc.Config, error) {
 			Branch:       fmt.Sprintf("agent/ticket-%d", in.Ticket.ID),
 			Push:         true,
 			GatePolicy:   harvestGatePolicy(in.Workflow.GatePolicy),
+			Judge:        harvestJudge(in.Workflow.Judge, in.Workflow.Defaults.Model, in.Workflow.Budget.JudgeUSD),
 			Env: map[string]string{
 				"AGENT_TICKET_ID":        strconv.Itoa(in.Ticket.ID),
 				"AGENT_PIPELINE_RUN_ID":  "((run_id))",
@@ -421,6 +422,24 @@ func writeSkillsTask(wf workflow.Config) (*atc.TaskStep, error) {
 // must only pass a policy Render has already verified is enforceable
 // (every gate scope "full") — the conversion itself is a plain field
 // copy, no further validation.
+// harvestJudge converts the workflow judge block (validated at import)
+// into the executable §6.4 shape. Model defaults to the workflow's
+// default model; the budget cap comes from budget.judge_usd (§6) — both
+// resolved at render time per the §2.8 render-time-resolution rule.
+func harvestJudge(j *workflow.Judge, defaultModel string, budgetUSD float64) *harvest.JudgeConfig {
+	if j == nil {
+		return nil
+	}
+	rubric := make([]harvest.RubricDimension, len(j.Rubric))
+	for i, d := range j.Rubric {
+		rubric[i] = harvest.RubricDimension{Name: d.Name, Weight: d.Weight, Guidance: d.Guidance}
+	}
+	return &harvest.JudgeConfig{
+		Rubric: rubric, PassThreshold: j.PassThreshold,
+		Model: defaultModel, BudgetUSD: budgetUSD,
+	}
+}
+
 func harvestGatePolicy(p workflow.GatePolicy) harvest.GatePolicy {
 	gates := make([]harvest.Gate, len(p.Gates))
 	for i, g := range p.Gates {

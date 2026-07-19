@@ -307,8 +307,9 @@ func TestRenderRefusesDeclaredButUnenforcedPolicyBlocks(t *testing.T) {
 	// silently absent. Refuse at render time, matching the sidecar/
 	// checkpoint loud-fail pattern. Ticket #14 boundary: harvest-runner
 	// now enforces full-scope gate_policy pre-push, so ONLY that shape
-	// renders — affected-scope gates, hitl, and judge (no v0.5 enforcing
-	// consumer) still refuse.
+	// renders. Judge-evidence Slice E: the judge now renders too
+	// (harvest executes it advisory — see TestRenderEmitsJudgeOntoHarvest)
+	// — affected-scope gates and hitl still refuse.
 	cases := []struct {
 		name   string
 		mutate func(*dispatch.RenderInput)
@@ -320,11 +321,6 @@ func TestRenderRefusesDeclaredButUnenforcedPolicyBlocks(t *testing.T) {
 		}},
 		{"hitl", func(in *dispatch.RenderInput) {
 			in.Workflow.HITL = workflow.HITL{AskTimeout: "park"}
-		}},
-		{"judge", func(in *dispatch.RenderInput) {
-			in.Workflow.Judge = &workflow.Judge{
-				Rubric: []workflow.RubricDimension{{Name: "correctness", Weight: 1}}, PassThreshold: 6.5,
-			}
 		}},
 	}
 	for _, tc := range cases {
@@ -488,5 +484,48 @@ func TestRenderRefusesOversizeSkills(t *testing.T) {
 	in.Workflow.SkillFiles["skills/tdd/big.md"] = strings.Repeat("a", 600_000)
 	if _, err := dispatch.Render(in); err == nil || !strings.Contains(err.Error(), "skill") {
 		t.Fatalf("oversize skill set must refuse at render: %v", err)
+	}
+}
+
+func TestRenderEmitsJudgeOntoHarvest(t *testing.T) {
+	in := renderInput()
+	in.Workflow.Judge = &workflow.Judge{
+		Rubric:        []workflow.RubricDimension{{Name: "correctness", Weight: 2, Guidance: "works"}},
+		PassThreshold: 7,
+	}
+	in.Workflow.Defaults.Model = "claude-sonnet-4-5"
+	in.Workflow.Budget.JudgeUSD = 1.5
+
+	cfg, err := dispatch.Render(in)
+	if err != nil {
+		t.Fatalf("judge workflows must now render: %v", err)
+	}
+	steps := cfg.Jobs[0].PlanSequence
+	last, ok := steps[len(steps)-1].Config.(*atc.HarvestStep)
+	if !ok {
+		t.Fatalf("terminal step is not harvest: %T", steps[len(steps)-1].Config)
+	}
+	if last.Judge == nil {
+		t.Fatal("judge not emitted onto the harvest step")
+	}
+	if last.Judge.PassThreshold != 7 || len(last.Judge.Rubric) != 1 ||
+		last.Judge.Rubric[0].Name != "correctness" || last.Judge.Rubric[0].Weight != 2 {
+		t.Fatalf("judge mis-converted: %+v", last.Judge)
+	}
+	if last.Judge.Model != "claude-sonnet-4-5" || last.Judge.BudgetUSD != 1.5 {
+		t.Fatalf("model/budget defaults not applied: %+v", last.Judge)
+	}
+}
+
+func TestRenderJudgelessWorkflowEmitsNoJudge(t *testing.T) {
+	in := renderInput()
+	cfg, err := dispatch.Render(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	steps := cfg.Jobs[0].PlanSequence
+	last := steps[len(steps)-1].Config.(*atc.HarvestStep)
+	if last.Judge != nil {
+		t.Fatal("no judge block, no judge emission")
 	}
 }

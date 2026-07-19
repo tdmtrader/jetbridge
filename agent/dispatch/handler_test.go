@@ -81,16 +81,18 @@ func TestDispatchHandlerErrorMapping(t *testing.T) {
 	}
 
 	// render refusal (v0-unenforceable workflow) -> 422, not 500
-	deps.Workflows.(*fakeWorkflows).byName["judged"] = &workflow.Definition{
-		Name: "judged", Version: 1, Live: true,
+	// judge renders now (judge-evidence Slice E) — hitl remains the
+	// canonical still-refused surface for this mapping test.
+	deps.Workflows.(*fakeWorkflows).byName["parked"] = &workflow.Definition{
+		Name: "parked", Version: 1, Live: true,
 		Config: workflow.Config{
-			Name: "judged", SpecDelivery: "files",
+			Name: "parked", SpecDelivery: "files",
 			Prompts: map[string]string{"do": "x"},
-			Judge:   &workflow.Judge{Rubric: []workflow.RubricDimension{{Name: "c", Weight: 1}}, PassThreshold: 6},
+			HITL:    workflow.HITL{AskTimeout: "park"},
 			Steps:   []workflow.Step{{Agent: "a", Prompt: "do", Inputs: []string{"ticket"}, Outputs: []string{"workspace"}}},
 		},
 	}
-	id = queuedTicket(t, store, "judged")
+	id = queuedTicket(t, store, "parked")
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, dispatchRequest(itoa(id)))
 	if rec.Code != http.StatusUnprocessableEntity {
