@@ -68,6 +68,24 @@ func TestCheckpointClientRequiresName(t *testing.T) {
 	}
 }
 
+// TestCheckpointClientParkedExit3 (PARK-V2 §B4): 202 {"parked": true} from
+// the sidecar means the park crossed the short-park threshold — the client
+// exits with FROZEN code 3 (parked-past-threshold; 0/1/2 unchanged) so the
+// TaskStep fails as the §B5 carrier while the open question row remains the
+// authority the platform resumes on.
+func TestCheckpointClientParkedExit3(t *testing.T) {
+	sidecar := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		fmt.Fprint(w, `{"parked": true}`)
+	}))
+	defer sidecar.Close()
+	exitErr := runCheckpointClient(t, sidecar.URL, "--name", "plan-approval")
+	if exitErr == nil || exitErr.ExitCode() != 3 {
+		t.Fatalf("expected exit 3 on parked-past-threshold, got %v", exitErr)
+	}
+}
+
 // TestCheckpointClientPrincipalRejected (D6/F31 leg 3): when the sidecar's
 // AwaitAnswer hits the consecutive-401/403 limit it answers 502 with a
 // "principal rejected:"-prefixed body; the client must exit 1 (frozen code)

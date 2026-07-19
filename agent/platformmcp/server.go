@@ -19,8 +19,16 @@ type Server struct {
 	mcp    *mcpserver.Server
 	mux    *http.ServeMux
 
-	ckMu   sync.Mutex     // guards ckOpen
-	ckOpen map[string]int // checkpoint name -> open question id, this process lifetime
+	ckMu   sync.Mutex               // guards ckOpen
+	ckOpen map[string]ckReservation // checkpoint name -> open row; same-pod optimization only
+}
+
+// ckReservation is the same-pod fast path for a repeated checkpoint POST; the
+// cross-pod (continuation) dedup is DB-enforced by agent_run_questions_dedup
+// (PARK-V2 §E — the map is an optimization, never the authority).
+type ckReservation struct {
+	ID      int
+	AskedAt int64
 }
 
 func NewServer(cfg Config) (*Server, error) {
@@ -37,7 +45,7 @@ func NewServer(cfg Config) (*Server, error) {
 		// parked ask_human alive past the claude CLI's 60s abandonment (F13).
 		mcp:    mcpserver.NewServerWithHeartbeat(cfg.ProgressInterval),
 		mux:    http.NewServeMux(),
-		ckOpen: map[string]int{},
+		ckOpen: map[string]ckReservation{},
 	}
 	s.registerTools()
 	s.mux.Handle("/mcp", s.mcp)

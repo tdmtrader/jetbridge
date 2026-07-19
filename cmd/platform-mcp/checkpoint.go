@@ -17,7 +17,8 @@ import (
 // deltas, 2026-07-09): 0 = approved; 1 = rejected OR non-200 OR bad response
 // OR retries exhausted (a sidecar fatal-auth arrives as a 502 whose body
 // carries the frozen "principal rejected:" prefix — echoed verbatim to
-// stderr); 2 = usage error. Transport errors before a response are retried
+// stderr); 2 = usage error; 3 = parked past --agent-short-park-max
+// (PARK-V2 §B4). Transport errors before a response are retried
 // 60 x 5s (the sidecar may still be starting; §8.5 readiness ordering).
 // The http.Client MUST have no global timeout (D4): this call blocks for the
 // entire park — checkpoints are exempt from the SSE mandate (no claude CLI in
@@ -55,6 +56,22 @@ func runCheckpoint(args []string) int {
 			continue
 		}
 		defer resp.Body.Close()
+		if resp.StatusCode == http.StatusAccepted {
+			// PARK-V2 §B4: parked past --agent-short-park-max. FROZEN exit
+			// code 3 — the TaskStep fails as the §B5 carrier; the open
+			// question row (not this exit) is what the platform resumes on,
+			// and the continuation's re-POST will join the answered row and
+			// exit 0/1 immediately.
+			var out struct {
+				Parked bool `json:"parked"`
+			}
+			if err := json.NewDecoder(resp.Body).Decode(&out); err != nil || !out.Parked {
+				fmt.Fprintf(os.Stderr, "checkpoint: bad 202 response: %v\n", err)
+				return 1
+			}
+			fmt.Printf("checkpoint %q parked past the short-park threshold; exiting for respawn\n", *name)
+			return 3
+		}
 		if resp.StatusCode != http.StatusOK {
 			// Echo the sidecar's error body verbatim — the fatal-auth path's
 			// "principal rejected:" prefix must reach the step log (D6).

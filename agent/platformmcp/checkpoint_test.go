@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/concourse/concourse/agent/platformmcp"
 )
 
 func checkpointRoundTrip(t *testing.T, answer string) (map[string]any, *stubQuestionStore) {
@@ -127,6 +129,81 @@ func TestCheckpointConcurrentDedup(t *testing.T) {
 	}
 	if maxOpen > 1 {
 		t.Fatalf("dedup guard failed: %d rows open simultaneously", maxOpen)
+	}
+}
+
+// TestCheckpointParksPastThreshold (PARK-V2 §B4): with no human answer, the
+// blocked POST gets 202 {"parked": true} once the short-park threshold
+// crosses, and the row STAYS OPEN — the checkpoint client turns this into
+// frozen exit code 3.
+func TestCheckpointParksPastThreshold(t *testing.T) {
+	store := newStubQuestionStore()
+	atc := fullStubATC(t, store)
+	srv := newAskServer(t, atc.URL, "park", 0)
+	srv.TuneShortPark(200*time.Millisecond, "")
+
+	start := time.Now()
+	req := httptest.NewRequest("POST", "/checkpoint",
+		strings.NewReader(`{"name": "plan-approval", "description": "Approve the plan"}`))
+	w := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(w, req)
+	if w.Code != 202 {
+		t.Fatalf("expected 202 at threshold, got %d: %s", w.Code, w.Body.String())
+	}
+	var out map[string]bool
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil || !out["parked"] {
+		t.Fatalf("expected {\"parked\": true}, got %s (err %v)", w.Body.String(), err)
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("threshold response took %s", elapsed)
+	}
+	open := store.OpenForTicket(42)
+	if len(open) != 1 {
+		t.Fatalf("the parked checkpoint row must STAY OPEN, got %d open", len(open))
+	}
+}
+
+// TestCheckpointRePostAfterAnswerResolvesImmediately (PARK-V2 §E): the
+// continuation pod's FRESH sidecar (empty ckOpen map) re-POSTs the same
+// checkpoint; the DB-level find-or-create returns the answered row and the
+// response is an immediate 200 — the client exits 0/1 with no park and no
+// second row.
+func TestCheckpointRePostAfterAnswerResolvesImmediately(t *testing.T) {
+	store := newStubQuestionStore()
+	atc := fullStubATC(t, store)
+	srv, _ := newParkExitServer(t, atc.URL, time.Hour)
+
+	// The row the PREVIOUS pod's client filed and a human approved while the
+	// step was exited: same (pipeline_run_id, step_name, kind, hash).
+	runID := 7
+	seeded := store.Ask(&platformmcp.Question{
+		TicketID: 42, PipelineRunID: &runID, StepName: "implement",
+		Kind: "checkpoint", Question: "Approve the plan",
+		Options: []string{"approve", "reject"}, TimeoutPolicy: "park",
+	})
+	if err := store.Answer(42, seeded.ID, "approve", "tdm"); err != nil {
+		t.Fatal(err)
+	}
+
+	start := time.Now()
+	req := httptest.NewRequest("POST", "/checkpoint",
+		strings.NewReader(`{"name": "plan-approval", "description": "Approve the plan"}`))
+	w := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("expected immediate 200 on the answered row, got %d: %s", w.Code, w.Body.String())
+	}
+	var out map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &out)
+	if out["approved"] != true || out["answered_by"] != "tdm" {
+		t.Fatalf("unexpected result: %v", out)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("fast path took %s — it must not park", elapsed)
+	}
+	all := store.ListForTicket(42, 50)
+	if len(all) != 1 {
+		t.Fatalf("re-POST must NOT file a second row, got %d", len(all))
 	}
 }
 
