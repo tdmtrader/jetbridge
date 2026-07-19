@@ -84,7 +84,11 @@ type StoredReview struct {
 	AgentModel       string          `json:"agent_model"`
 	DurationSeconds  int             `json:"duration_seconds"`
 	Review           json.RawMessage `json:"review,omitempty"`
-	CreatedAt        int64           `json:"created_at"`
+	// TicketID / PipelineRunID link harvest-published evidence to a ticket
+	// and a pipeline run (shared-contracts §1.10). nil = plain CI review.
+	TicketID      *int  `json:"ticket_id,omitempty"`
+	PipelineRunID *int  `json:"pipeline_run_id,omitempty"`
+	CreatedAt     int64 `json:"created_at"`
 	// EvaluatedCount is filled by the DB store's feedback join, not by
 	// ToStoredReview or MemoryStore.Upsert.
 	EvaluatedCount int `json:"evaluated_count"`
@@ -136,4 +140,7 @@ type Store interface {
 	// (created descending) — ListFilter.Limit therefore keeps the
 	// newest N.
 	ListByTeam(team string, filter ListFilter) ([]StoredReview, error)
+	// ListByTicket returns records linked to the ticket ordered oldest-first
+	// (created ascending).
+	ListByTicket(ticketID int) ([]StoredReview, error)
 }

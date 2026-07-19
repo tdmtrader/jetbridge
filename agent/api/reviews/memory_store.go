@@ -1,6 +1,7 @@
 package reviews
 
 import (
+	"sort"
 	"sync"
 	"time"
 )
@@ -43,6 +44,22 @@ func (m *MemoryStore) GetByBuild(buildID int) ([]StoredReview, error) {
 		}
 	}
 	return results, nil
+}
+
+// ListByTicket returns records whose TicketID matches, oldest-first
+// (BuildID ascending as the in-memory proxy for created-ascending).
+func (m *MemoryStore) ListByTicket(ticketID int) ([]StoredReview, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	var out []StoredReview
+	for _, rec := range m.records {
+		if rec.TicketID != nil && *rec.TicketID == ticketID {
+			out = append(out, *rec)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].BuildID < out[j].BuildID })
+	return out, nil
 }
 
 func (m *MemoryStore) ListByTeam(team string, filter ListFilter) ([]StoredReview, error) {

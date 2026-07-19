@@ -2,6 +2,7 @@ package reviews_test
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/concourse/concourse/agent/api/reviews"
@@ -176,5 +177,48 @@ func TestMemoryStoreCopiesOnUpsert(t *testing.T) {
 	}
 	if got[0].CreatedAt == 0 {
 		t.Error("CreatedAt not defaulted on upsert")
+	}
+}
+
+func TestStoredReviewTicketLinkageMarshalling(t *testing.T) {
+	tid, prid := 42, 7
+	rec := reviews.StoredReview{BuildID: 1, Repo: "o/r", CommitSha: "abc",
+		TicketID: &tid, PipelineRunID: &prid}
+	data, err := json.Marshal(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"ticket_id":42`) || !strings.Contains(string(data), `"pipeline_run_id":7`) {
+		t.Errorf("linkage fields must marshal when set, got %s", data)
+	}
+
+	bare, err := json.Marshal(reviews.StoredReview{BuildID: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(bare), "ticket_id") || strings.Contains(string(bare), "pipeline_run_id") {
+		t.Errorf("nil linkage must omit both fields, got %s", bare)
+	}
+}
+
+func TestMemoryStoreListByTicketOldestFirst(t *testing.T) {
+	store := reviews.NewMemoryStore()
+	tid := 42
+	for _, rec := range []*reviews.StoredReview{
+		{BuildID: 2, Repo: "o/r", CommitSha: "b", TicketID: &tid},
+		{BuildID: 1, Repo: "o/r", CommitSha: "a", TicketID: &tid},
+		{BuildID: 3, Repo: "o/r", CommitSha: "c"}, // unlinked: excluded
+	} {
+		if err := store.Upsert(rec); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, err := store.ListByTicket(42)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].BuildID != 1 || got[1].BuildID != 2 {
+		t.Fatalf("want linked reviews oldest-first [1 2], got %+v", got)
 	}
 }
