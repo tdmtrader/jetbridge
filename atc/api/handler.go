@@ -169,7 +169,7 @@ func NewHandler(
 	metricsServer := metricsapi.NewHandler(metricsStore)
 	ticketsServer := ticketsapi.NewHandler(ticketsStore, func(r *http.Request) string {
 		return accessor.GetAccessor(r).Claims().UserName
-	})
+	}, dbPipelineRunFactory.RunBelongsToTicketTemplate)
 	outcomesServer := outcomesapi.NewHandler(outcomesStore, ticketsStore, func(r *http.Request) string {
 		return accessor.GetAccessor(r).Claims().UserName
 	})

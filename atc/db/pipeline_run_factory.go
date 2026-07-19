@@ -68,6 +68,18 @@ type PipelineRunFactory interface {
 	// reports false (fail closed — there are no legitimate tickets to claim).
 	TicketBelongsToRun(ticketID, runID int) (bool, error)
 
+	// RunBelongsToTicketTemplate reports whether pipeline_runs row `runID`
+	// was materialized from ticket `ticketID`'s OWN `agent-ticket-<id>`
+	// template pipeline on the main team (the dispatch naming convention,
+	// agent/dispatch/dispatch.go). The ticket transition API gates
+	// agent_tickets.pipeline_run_id writes on this: the field arrives
+	// attacker-writable through PUT .../state (F30 id class) and feeds
+	// display surfaces plus any future consumer, so an HTTP caller may only
+	// record a run id that provably names one of the ticket's own runs.
+	// Dispatch's in-process Transition (which just created the run from
+	// that very template) is not routed through this check.
+	RunBelongsToTicketTemplate(ticketID, runID int) (bool, error)
+
 	// RunsForTerminalTickets returns unarchived, no-longer-running runs
 	// whose template pipeline belongs to a terminally-disposed agent ticket
 	// (C3, UI audit 2026-07-17). Scoped by template rather than the latest
@@ -460,6 +472,28 @@ func (f *pipelineRunFactory) RunBelongsToPipeline(runID, pipelineID int) (bool, 
 	err := f.conn.QueryRow(
 		`SELECT EXISTS (SELECT 1 FROM pipeline_runs WHERE id = $1 AND instance_pipeline_id = $2)`,
 		runID, pipelineID,
+	).Scan(&exists)
+	if err != nil {
+		return false, err
+	}
+	return exists, nil
+}
+
+func (f *pipelineRunFactory) RunBelongsToTicketTemplate(ticketID, runID int) (bool, error) {
+	if ticketID <= 0 || runID <= 0 {
+		return false, nil
+	}
+	var exists bool
+	err := f.conn.QueryRow(
+		`SELECT EXISTS (
+			SELECT 1
+			FROM pipeline_runs r
+			JOIN pipelines p ON p.id = r.template_pipeline_id
+			JOIN teams tm ON tm.id = p.team_id
+			WHERE r.id = $1
+			  AND p.name = $2
+			  AND tm.name = $3)`,
+		runID, fmt.Sprintf("agent-ticket-%d", ticketID), atc.DefaultTeamName,
 	).Scan(&exists)
 	if err != nil {
 		return false, err

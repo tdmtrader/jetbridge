@@ -3,6 +3,7 @@ package tickets
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -17,16 +18,24 @@ import (
 // accessor.GetAccessor(r).Claims().UserName.
 type UserNameFunc func(r *http.Request) string
 
+// RunForTicketFunc reports whether pipeline run runID was materialized
+// from ticket ticketID's own agent-ticket-<id> template pipeline on the
+// main team (the dispatch naming convention). Injected for the same
+// import-cycle reason as UserNameFunc; atc/api/handler.go wires
+// db.PipelineRunFactory.RunBelongsToTicketTemplate.
+type RunForTicketFunc func(ticketID, runID int) (bool, error)
+
 // Handler serves the eight /api/v1/agent/tickets* routes. Auth is
 // enforced by the wrappa tiers (00-shared-contracts.md §4.2); this
 // handler only reads WHO the verified writer is.
 type Handler struct {
-	store    Store
-	userName UserNameFunc
+	store        Store
+	userName     UserNameFunc
+	runForTicket RunForTicketFunc
 }
 
-func NewHandler(store Store, userName UserNameFunc) *Handler {
-	return &Handler{store: store, userName: userName}
+func NewHandler(store Store, userName UserNameFunc, runForTicket RunForTicketFunc) *Handler {
+	return &Handler{store: store, userName: userName, runForTicket: runForTicket}
 }
 
 // writer returns (name, isPrincipal): the verified agent principal's
@@ -260,6 +269,30 @@ func (h *Handler) TransitionTicket(w http.ResponseWriter, r *http.Request) {
 	if !ValidState(req.From) || !ValidState(req.To) {
 		http.Error(w, "invalid state", http.StatusBadRequest)
 		return
+	}
+	// pipeline_run_id arrives attacker-writable (F30 id class) and feeds
+	// display surfaces plus every consumer that trusts
+	// agent_tickets.pipeline_run_id, so an HTTP caller may only record a
+	// run id that provably names a run of THIS ticket's own
+	// agent-ticket-<id> pipeline. Fail closed when no checker is wired.
+	// (Dispatch, the legitimate writer, calls Store.Transition in-process
+	// with the run it just created and never passes through here.)
+	if req.PipelineRunID != nil {
+		if h.runForTicket == nil {
+			http.Error(w, "pipeline_run_id cannot be verified on this server", http.StatusUnprocessableEntity)
+			return
+		}
+		owned, err := h.runForTicket(id, *req.PipelineRunID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if !owned {
+			http.Error(w,
+				fmt.Sprintf("pipeline_run_id %d is not a run of this ticket's agent-ticket-%d pipeline", *req.PipelineRunID, id),
+				http.StatusUnprocessableEntity)
+			return
+		}
 	}
 	err := h.store.Transition(id, req.From, req.To, TransitionMeta{
 		PipelineRunID: req.PipelineRunID,
