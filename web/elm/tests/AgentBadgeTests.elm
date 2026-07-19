@@ -1,6 +1,6 @@
 module AgentBadgeTests exposing (all)
 
-import AgentBadge exposing (Status(..), Tone(..), fromApiToken, fromRunStatus, label, tone)
+import AgentBadge exposing (Status(..), Tone(..), fromApiToken, fromRunStatus, label, runOutcome, tone)
 import Expect
 import Test exposing (Test, describe, test)
 
@@ -20,7 +20,9 @@ allStatuses =
     , Abandoned
     , Failed
     , Errored
+    , Aborted
     , Succeeded
+    , NoOutput
     ]
 
 
@@ -78,4 +80,38 @@ all =
             \_ ->
                 tone Succeeded
                     |> Expect.equal Good
+        , describe "runOutcome — build truth wins over step status (U3)"
+            [ test "a step that exited ok inside a FAILED build shows Failed, not OK" <|
+                \_ ->
+                    runOutcome { buildStatus = "failed", runStatus = "ok", hasResult = True }
+                        |> Expect.equal (Just Failed)
+            , test "an errored build shows Errored regardless of step status" <|
+                \_ ->
+                    runOutcome { buildStatus = "errored", runStatus = "ok", hasResult = True }
+                        |> Expect.equal (Just Errored)
+            , test "an aborted build shows Aborted" <|
+                \_ ->
+                    runOutcome { buildStatus = "aborted", runStatus = "ok", hasResult = True }
+                        |> Expect.equal (Just Aborted)
+            , test "a succeeded build that delivered a result is OK" <|
+                \_ ->
+                    runOutcome { buildStatus = "succeeded", runStatus = "ok", hasResult = True }
+                        |> Expect.equal (Just Succeeded)
+            , test "a succeeded build with NO result is No output, never a green OK" <|
+                \_ ->
+                    runOutcome { buildStatus = "succeeded", runStatus = "ok", hasResult = False }
+                        |> Expect.equal (Just NoOutput)
+            , test "No output is Warn-toned, not Good" <|
+                \_ ->
+                    tone NoOutput
+                        |> Expect.notEqual Good
+            , test "falls back to the step status when the build status is absent" <|
+                \_ ->
+                    runOutcome { buildStatus = "", runStatus = "failed", hasResult = True }
+                        |> Expect.equal (Just Failed)
+            , test "a still-running build shows Running" <|
+                \_ ->
+                    runOutcome { buildStatus = "started", runStatus = "ok", hasResult = False }
+                        |> Expect.equal (Just (Running Nothing))
+            ]
         ]

@@ -143,6 +143,7 @@ type alias RunMetric =
     , workflowName : String
     , workflowVersion : Maybe Int
     , status : String
+    , buildStatus : String
     , summary : String
     , model : String
     , usage : Usage
@@ -174,6 +175,7 @@ decodeRunMetric =
         |> andMap (defaultTo "" <| Json.Decode.field "workflow_name" Json.Decode.string)
         |> andMap (optionalInt "workflow_version")
         |> andMap (Json.Decode.field "status" Json.Decode.string)
+        |> andMap (defaultTo "" <| Json.Decode.field "build_status" Json.Decode.string)
         |> andMap (defaultTo "" <| Json.Decode.field "summary" Json.Decode.string)
         |> andMap (defaultTo "" <| Json.Decode.field "model" Json.Decode.string)
         |> andMap (defaultTo (Usage 0 0 0 0) <| Json.Decode.field "usage" decodeUsage)

@@ -4,6 +4,7 @@ module AgentBadge exposing
     , fromApiToken
     , fromRunStatus
     , label
+    , runOutcome
     , tone
     , view
     )
@@ -25,7 +26,9 @@ type Status
     | Abandoned
     | Failed
     | Errored
+    | Aborted
     | Succeeded
+    | NoOutput
 
 
 type Tone
@@ -83,8 +86,14 @@ label status =
         Errored ->
             "Errored"
 
+        Aborted ->
+            "Aborted"
+
         Succeeded ->
             "OK"
+
+        NoOutput ->
+            "No output"
 
 
 tone : Status -> Tone
@@ -126,8 +135,14 @@ tone status =
         Errored ->
             Error
 
+        Aborted ->
+            Neutral
+
         Succeeded ->
             Good
+
+        NoOutput ->
+            Warn
 
 
 fromApiToken : String -> Maybe Status
@@ -193,6 +208,43 @@ fromRunStatus status =
 
         _ ->
             Nothing
+
+
+{-| runOutcome derives the DISPLAY truth for a finished run. The pipeline
+build status (server-derived) wins over the agent step status (U3): a step
+that exited "ok" inside a build that failed is Failed, and a step that exited
+"ok" in a build that succeeded but produced no result summary is NoOutput —
+never a green OK on a build that did not deliver. Falls back to the step
+status when the build status is absent (e.g. a metric that predates the final
+build state, or a still-running build).
+-}
+runOutcome : { buildStatus : String, runStatus : String, hasResult : Bool } -> Maybe Status
+runOutcome { buildStatus, runStatus, hasResult } =
+    case buildStatus of
+        "failed" ->
+            Just Failed
+
+        "errored" ->
+            Just Errored
+
+        "aborted" ->
+            Just Aborted
+
+        "succeeded" ->
+            if hasResult then
+                Just Succeeded
+
+            else
+                Just NoOutput
+
+        "started" ->
+            Just (Running Nothing)
+
+        "pending" ->
+            Just (Running Nothing)
+
+        _ ->
+            fromRunStatus runStatus
 
 
 toneClass : Tone -> String

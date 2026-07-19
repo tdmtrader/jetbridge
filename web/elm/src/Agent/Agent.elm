@@ -606,7 +606,7 @@ runRow r =
     Html.tr [ class "agent-run-row" ]
         [ runStepCell r
         , tableCell "left" (workflowRef r.workflowName r.workflowVersion)
-        , runStatusCell r.status
+        , runStatusCell r
         , tableCell "right" ("$" ++ formatUsd r.costUsd)
         , tableCell "right" (String.fromInt r.usage.inputTokens ++ "+" ++ String.fromInt r.usage.outputTokens)
         , tableCell "right" (String.fromInt r.turns)
@@ -647,22 +647,25 @@ runStepCell r =
         )
 
 
-{-| Render an agent\_run\_metrics status ("ok"/"failed"/"parked"/"error") as an
-AgentBadge; fall back to the raw string for any status the badge doesn't know.
+{-| Render the run's DISPLAY truth as an AgentBadge. The pipeline build status
+wins over the agent step status (U3), so a step that exited "ok" inside a
+failed build shows Failed, and an "ok" step that delivered no summary shows
+"No output" — never a green OK on a build that did not deliver. Falls back to
+the raw step status only when the badge can derive nothing.
 -}
-runStatusCell : String -> Html Message
-runStatusCell status =
+runStatusCell : Agent.RunMetric -> Html Message
+runStatusCell r =
     Html.td
         [ style "text-align" "left"
         , style "padding" "4px 16px 4px 0"
         , style "border-bottom" rowBorder
         ]
-        [ case AgentBadge.fromRunStatus status of
+        [ case AgentBadge.runOutcome { buildStatus = r.buildStatus, runStatus = r.status, hasResult = r.summary /= "" } of
             Just badgeStatus ->
                 AgentBadge.view badgeStatus
 
             Nothing ->
-                Html.text status
+                Html.text r.status
         ]
 
 
