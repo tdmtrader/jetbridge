@@ -10,6 +10,7 @@ import (
 	"github.com/concourse/concourse/agent/api/costs"
 	"github.com/concourse/concourse/agent/api/feedback"
 	metricsapi "github.com/concourse/concourse/agent/api/metrics"
+	outcomesapi "github.com/concourse/concourse/agent/api/outcomes"
 	principalsapi "github.com/concourse/concourse/agent/api/principals"
 	reviewsapi "github.com/concourse/concourse/agent/api/reviews"
 	ticketsapi "github.com/concourse/concourse/agent/api/tickets"
@@ -108,6 +109,7 @@ func NewHandler(
 	costLedger budget.Ledger,
 	agentDailyBudgetUSD float64,
 	ticketBudgets budget.TicketBudgets,
+	outcomesStore outcomesapi.Store,
 	workflowStore workflow.Store,
 	// agentDispatchHandler serves DispatchAgentTicket (built in
 	// atccmd/command.go from dispatch.Deps; a stub in the test suite).
@@ -162,6 +164,9 @@ func NewHandler(
 	)
 	metricsServer := metricsapi.NewHandler(metricsStore)
 	ticketsServer := ticketsapi.NewHandler(ticketsStore, func(r *http.Request) string {
+		return accessor.GetAccessor(r).Claims().UserName
+	})
+	outcomesServer := outcomesapi.NewHandler(outcomesStore, ticketsStore, func(r *http.Request) string {
 		return accessor.GetAccessor(r).Claims().UserName
 	})
 	workflowsServer := workflowsapi.NewHandler(workflowStore)
@@ -341,6 +346,9 @@ func NewHandler(
 		atc.SubmitAgentTicketPlan: http.HandlerFunc(ticketsServer.SubmitPlan),
 		atc.UpdateAgentTicketTask: http.HandlerFunc(ticketsServer.UpdateTask),
 		atc.DispatchAgentTicket:   agentDispatchHandler,
+
+		atc.SetAgentTicketDisposition: http.HandlerFunc(outcomesServer.SetDisposition),
+		atc.GetAgentTicketOutcome:     http.HandlerFunc(outcomesServer.GetOutcome),
 
 		atc.SetAgentUserCredential:       http.HandlerFunc(credentialsServer.Set),
 		atc.GetAgentUserCredentialStatus: http.HandlerFunc(credentialsServer.Status),

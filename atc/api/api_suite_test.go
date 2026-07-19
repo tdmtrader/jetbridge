@@ -14,6 +14,7 @@ import (
 
 	"github.com/concourse/concourse/agent/api/feedback"
 	"github.com/concourse/concourse/agent/api/metrics"
+	"github.com/concourse/concourse/agent/api/outcomes"
 	"github.com/concourse/concourse/agent/api/principals"
 	"github.com/concourse/concourse/agent/api/reviews"
 	"github.com/concourse/concourse/agent/api/tickets"
@@ -245,6 +246,7 @@ var _ = BeforeEach(func() {
 		budget.NewMemoryLedger(),
 		0,
 		budget.NoTicketBudgets{},
+		outcomes.NewMemoryStore(),
 		workflow.NewMemoryStore(),
 		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusNotImplemented) // dispatch handler stub

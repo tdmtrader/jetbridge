@@ -253,6 +253,100 @@ var _ = Describe("APIAuthWrappa", func() {
 				}
 			})
 
+			// Delivery-outcomes tier pinning (§4.2 + decision D-3). The
+			// no-panic loop and the auditor/reject-archived switches only
+			// prove the routes resolve to SOME handler, not the
+			// semantically-correct tier: SetAgentTicketDisposition is
+			// plain authorized-member with NO principal path — wiring it
+			// through AgentPrincipalOrMainTeamHandler would let an agent
+			// holding tickets:write dispose its own ticket past the human
+			// review gate. These specs pin the tier by contrast with
+			// TransitionAgentTicket, which DOES accept a principal token.
+			Describe("delivery-outcomes route tiers", func() {
+				BeforeEach(func() {
+					delegate := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						delegateHit = true
+						w.WriteHeader(http.StatusOK)
+					})
+
+					wrapped = wrappa.NewAPIAuthWrappa(
+						fakeCheckPipelineAccessHandlerFactory,
+						fakeCheckBuildReadAccessHandlerFactory,
+						fakeCheckBuildWriteAccessHandlerFactory,
+						fakeCheckWorkerTeamAccessHandlerFactory,
+						auth.NewCheckAgentPrincipalHandlerFactory(principals.NewVerifier(store)),
+					).Wrap(rata.Handlers{
+						atc.SetAgentTicketDisposition: delegate,
+						atc.GetAgentTicketOutcome:     delegate,
+						atc.TransitionAgentTicket:     delegate,
+					})
+				})
+
+				Describe("SetAgentTicketDisposition", func() {
+					It("REJECTS a bare tickets:write agent-principal token (no principal path)", func() {
+						_, token, err := store.Create(principals.CreateSpec{
+							Name: "ticket-writer", Scopes: []string{principals.ScopeTicketsWrite},
+						})
+						Expect(err).NotTo(HaveOccurred())
+						fakeaccess.IsAuthenticatedReturns(false)
+
+						resp := serve(atc.SetAgentTicketDisposition, "Bearer "+token)
+						Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized))
+						Expect(delegateHit).To(BeFalse())
+					})
+
+					It("contrast: TransitionAgentTicket accepts the same bare tickets:write principal token", func() {
+						_, token, err := store.Create(principals.CreateSpec{
+							Name: "ticket-writer", Scopes: []string{principals.ScopeTicketsWrite},
+						})
+						Expect(err).NotTo(HaveOccurred())
+						fakeaccess.IsAuthenticatedReturns(false)
+
+						resp := serve(atc.TransitionAgentTicket, "Bearer "+token)
+						Expect(resp.StatusCode).To(Equal(http.StatusOK))
+						Expect(delegateHit).To(BeTrue())
+					})
+
+					It("403s authenticated users not authorized on the main team", func() {
+						fakeaccess.IsAuthenticatedReturns(true)
+						fakeaccess.IsAuthorizedReturns(false)
+
+						resp := serve(atc.SetAgentTicketDisposition, "")
+						Expect(resp.StatusCode).To(Equal(http.StatusForbidden))
+						Expect(delegateHit).To(BeFalse())
+					})
+
+					It("admits main-team-authorized humans", func() {
+						fakeaccess.IsAuthenticatedReturns(true)
+						fakeaccess.IsAuthorizedReturns(true)
+
+						resp := serve(atc.SetAgentTicketDisposition, "")
+						Expect(resp.StatusCode).To(Equal(http.StatusOK))
+						Expect(delegateHit).To(BeTrue())
+						Expect(fakeaccess.IsAuthorizedArgsForCall(0)).To(Equal(atc.DefaultTeamName))
+					})
+				})
+
+				Describe("GetAgentTicketOutcome", func() {
+					It("401s unauthenticated requests", func() {
+						fakeaccess.IsAuthenticatedReturns(false)
+
+						resp := serve(atc.GetAgentTicketOutcome, "")
+						Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized))
+						Expect(delegateHit).To(BeFalse())
+					})
+
+					It("admits main-team-authorized users", func() {
+						fakeaccess.IsAuthenticatedReturns(true)
+						fakeaccess.IsAuthorizedReturns(true)
+
+						resp := serve(atc.GetAgentTicketOutcome, "")
+						Expect(resp.StatusCode).To(Equal(http.StatusOK))
+						Expect(delegateHit).To(BeTrue())
+					})
+				})
+			})
+
 			Describe("ListAgentRunMetrics", func() {
 				It("401s unauthenticated requests", func() {
 					fakeaccess.IsAuthenticatedReturns(false)

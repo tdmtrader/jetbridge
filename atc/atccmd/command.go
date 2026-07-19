@@ -2433,6 +2433,7 @@ func (cmd *RunCommand) constructAPIHandler(
 		db.NewAgentCostLedgerFactory(dbConn),
 		cmd.AgentDailyBudgetUSD,
 		dispatch.NewTicketBudgets(db.NewAgentTicketsFactory(dbConn), db.NewAgentWorkflowsFactory(dbConn)),
+		db.NewAgentOutcomesFactory(dbConn),
 		db.NewAgentWorkflowsFactory(dbConn),
 		dispatch.NewHTTPHandler(dispatch.Deps{
 			Tickets:        db.NewAgentTicketsFactory(dbConn),
