@@ -40,6 +40,7 @@ runMetricFor buildId cost =
     , workflowName = "standard-dev"
     , workflowVersion = Nothing
     , status = "ok"
+    , buildStatus = ""
     , summary = ""
     , model = "claude"
     , usage =

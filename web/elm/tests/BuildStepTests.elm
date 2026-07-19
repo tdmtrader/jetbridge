@@ -20,6 +20,7 @@ import Concourse.BuildStatus exposing (BuildStatus(..))
 import DashboardTests exposing (iconSelector)
 import Dict
 import Expect
+import Json.Decode
 import Json.Encode
 import Message.Callback as Callback
 import Message.Effects as Effects
@@ -37,7 +38,27 @@ import Views.Styles
 all : Test
 all =
     describe "build steps"
-        [ describe "get step metadata"
+        [ describe "unknown step decode fallback"
+            [ test "labels an unrecognized step with its nested name" <|
+                \_ ->
+                    """{"id":"1","fancy_step":{"name":"deploy"}}"""
+                        |> Json.Decode.decodeString Concourse.decodeBuildPlan
+                        |> Result.map .step
+                        |> Expect.equal (Ok (Concourse.BuildStepUnknown "deploy"))
+            , test "labels an unrecognized step with its type key when it has no name" <|
+                \_ ->
+                    """{"id":"1","fancy_step":{}}"""
+                        |> Json.Decode.decodeString Concourse.decodeBuildPlan
+                        |> Result.map .step
+                        |> Expect.equal (Ok (Concourse.BuildStepUnknown "fancy_step"))
+            , test "falls back to a generic label for a bare typeless step" <|
+                \_ ->
+                    """{"id":"1"}"""
+                        |> Json.Decode.decodeString Concourse.decodeBuildPlan
+                        |> Result.map .step
+                        |> Expect.equal (Ok (Concourse.BuildStepUnknown "step"))
+            ]
+        , describe "get step metadata"
             [ test "has a table that left aligns text in cells" <|
                 given iVisitABuildWithAGetStep
                     >> given theGetStepIsExpanded
@@ -465,6 +486,27 @@ all =
                     >> given theLoadVarStepIsExpanded
                     >> when iAmLookingAtTheStepBody
                     >> then_ iSeeTheLoadVarName
+            ]
+        , describe "agent step (U1)"
+            [ test "renders the build page with an agent: header instead of blanking" <|
+                given iVisitABuildWithAnAgentStep
+                    >> then_ (iSeeText "agent:")
+            , test "shows the agent step name" <|
+                given iVisitABuildWithAnAgentStep
+                    >> then_ (iSeeText "implement")
+            ]
+        , describe "harvest step (U1)"
+            [ test "renders a harvest: header" <|
+                given iVisitABuildWithAHarvestStep
+                    >> then_ (iSeeText "harvest:")
+            , test "shows the harvest step name" <|
+                given iVisitABuildWithAHarvestStep
+                    >> then_ (iSeeText "push-branch")
+            ]
+        , describe "unknown step fallback (U1 durability)"
+            [ test "an unrecognized step type still renders with a step: header instead of blanking the page" <|
+                given iVisitABuildWithAnUnknownStep
+                    >> then_ (iSeeText "step:")
             ]
         ]
 
@@ -1037,6 +1079,63 @@ thePlanContainsALoadVarStep =
                     , { inputs = []
                       , outputs = []
                       }
+                    )
+            )
+
+
+iVisitABuildWithAnAgentStep =
+    iOpenTheBuildPage
+        >> myBrowserFetchedTheBuild
+        >> thePlanContainsAnAgentStep
+
+
+thePlanContainsAnAgentStep =
+    Tuple.first
+        >> Application.handleCallback
+            (Callback.PlanAndResourcesFetched 1 <|
+                Ok
+                    ( { id = "agentStepId"
+                      , step = Concourse.BuildStepAgent "implement"
+                      }
+                    , { inputs = [], outputs = [] }
+                    )
+            )
+
+
+iVisitABuildWithAHarvestStep =
+    iOpenTheBuildPage
+        >> myBrowserFetchedTheBuild
+        >> thePlanContainsAHarvestStep
+
+
+thePlanContainsAHarvestStep =
+    Tuple.first
+        >> Application.handleCallback
+            (Callback.PlanAndResourcesFetched 1 <|
+                Ok
+                    ( { id = "harvestStepId"
+                      , step = Concourse.BuildStepHarvest "push-branch"
+                      }
+                    , { inputs = [], outputs = [] }
+                    )
+            )
+
+
+iVisitABuildWithAnUnknownStep =
+    iOpenTheBuildPage
+        >> myBrowserFetchedTheBuild
+        >> thePlanContainsAnUnknownStep
+
+
+thePlanContainsAnUnknownStep =
+    Tuple.first
+        >> Application.handleCallback
+            (Callback.PlanAndResourcesFetched 1 <|
+                Ok
+                    ( { id = "unknownStepId"
+                      , step = Concourse.BuildStepUnknown "mystery"
+                      }
+                    , { inputs = [], outputs = [] }
                     )
             )
 

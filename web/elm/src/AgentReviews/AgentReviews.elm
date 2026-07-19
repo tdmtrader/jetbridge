@@ -270,10 +270,11 @@ reviewRow s =
             ]
         , Html.span [ style "margin-left" "auto", style "color" "#b0b0b0" ]
             [ Html.text
-                ("evaluated "
+                ("your feedback: "
                     ++ String.fromInt s.evaluatedCount
-                    ++ "/"
+                    ++ " of "
                     ++ String.fromInt (s.provenCount + s.observationCount)
+                    ++ " verdicts"
                 )
             ]
         ]

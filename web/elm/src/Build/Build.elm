@@ -137,7 +137,7 @@ init flags =
           , agentReviewLoadError = False
           , agentReviewPanelExpanded = True
           , expandedFindings = Set.empty
-          , showObservations = False
+          , showObservations = Nothing
           , agentReviewNotes = Dict.empty
           , verdictErrors = Set.empty
           , expandedDescriptions = Set.empty
@@ -557,8 +557,8 @@ update msg ( model, effects ) =
             , effects
             )
 
-        ToggleAgentReviewObservations ->
-            ( { model | showObservations = not model.showObservations }, effects )
+        ToggleAgentReviewObservations open ->
+            ( { model | showObservations = Just open }, effects )
 
         ToggleAgentReviewFindingBody findingId ->
             ( { model
@@ -1105,7 +1105,7 @@ body :
             , agentReviewLoadError : Bool
             , agentReviewPanelExpanded : Bool
             , expandedFindings : Set String
-            , showObservations : Bool
+            , showObservations : Maybe Bool
             , agentReviewNotes : Dict String String
             , verdictErrors : Set String
             , expandedDescriptions : Set String

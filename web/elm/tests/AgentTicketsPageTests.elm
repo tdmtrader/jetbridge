@@ -8,9 +8,13 @@ import Expect
 import Json.Decode
 import Message.Callback as Callback
 import Message.Effects as Effects
+import Message.Message as Message
+import Message.Subscription exposing (Delivery(..), Interval(..))
+import Message.TopLevelMessage as Msgs
 import Test exposing (Test, describe, test)
 import Test.Html.Query as Query
 import Test.Html.Selector exposing (class, containing, text)
+import Time
 import Url
 
 
@@ -131,6 +135,59 @@ all =
                     |> Common.queryView
                     |> Query.find [ class "agent-ticket-branch" ]
                     |> Query.has [ text "agent/ticket-12" ]
+        , test "live-updates: refetches tickets on the five second tick, but not the heavy cost rollup" <|
+            \_ ->
+                Common.init "/agent-tickets"
+                    |> Application.update
+                        (Msgs.DeliveryReceived (ClockTicked FiveSeconds <| Time.millisToPosix 0))
+                    |> Tuple.second
+                    |> Expect.all
+                        [ Common.contains Effects.FetchAgentTickets
+                        , Common.notContains Effects.FetchAgentTicketCosts
+                        ]
+        , test "live-updates: refreshes the cost rollup on the minute tick" <|
+            \_ ->
+                -- the rollup is a whole-window ledger aggregation; 5s polling
+                -- would run it 720x/hour per open tab for run-granularity data
+                Common.init "/agent-tickets"
+                    |> Application.update
+                        (Msgs.DeliveryReceived (ClockTicked OneMinute <| Time.millisToPosix 0))
+                    |> Tuple.second
+                    |> Common.contains Effects.FetchAgentTicketCosts
+        , test "client-side filter narrows the visible rows by title" <|
+            \_ ->
+                Common.init "/agent-tickets"
+                    |> Application.handleCallback (Callback.AgentTicketsFetched (Ok sampleTickets))
+                    |> Tuple.first
+                    |> Application.update (Msgs.Update (Message.AgentTicketsFilterChanged "gap"))
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Query.findAll [ class "agent-ticket-row" ]
+                    |> Query.count (Expect.equal 1)
+        , test "enriches a row with author, attempt count and workflow version" <|
+            \_ ->
+                Common.init "/agent-tickets"
+                    |> Application.handleCallback
+                        (Callback.AgentTicketsFetched
+                            (Ok
+                                (ticketsFrom
+                                    """
+                                    [ { "id": 3, "title": "ret, again", "state": "running"
+                                      , "workflow_name": "develop", "workflow_version": 2
+                                      , "user_name": "alice", "attempt_count": 2, "created_at": 100 }
+                                    ]
+                                    """
+                                )
+                            )
+                        )
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Query.find [ class "agent-ticket-row" ]
+                    |> Query.has
+                        [ containing [ text "alice" ]
+                        , containing [ text "attempt 2" ]
+                        , containing [ text "develop v2" ]
+                        ]
         , test "surfaces unattributed spend as a footer line" <|
             \_ ->
                 Common.init "/agent-tickets"

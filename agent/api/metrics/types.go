@@ -77,5 +77,8 @@ func ParseSubmission(body []byte) (*schema.RunMetrics, error) {
 	default:
 		return nil, fmt.Errorf("status must be one of ok|failed|error|parked")
 	}
+	// BuildStatus is server-derived (joined from the builds table on read);
+	// never trust a client-supplied value on the ingest path.
+	rm.BuildStatus = ""
 	return &rm, nil
 }

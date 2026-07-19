@@ -46,3 +46,44 @@
   50%  { opacity: 0.25; }
   100% { opacity: 1; }
 }
+
+/* U23 — mobile queue rows (AgentTickets.AgentTickets). The rows lay out with
+ * inline flex styles; on narrow screens the title gets truncated to a few
+ * characters and the branch/workflow columns squeeze the cost column off-screen.
+ * Let the title wrap to its own full-width line and stay visible, keep the cost
+ * visible, and drop the two lowest-value columns (branch + workflow). These
+ * override inline styles, so `!important` is required. */
+@media (max-width: 560px) {
+  .agent-ticket-row {
+    flex-wrap: wrap;
+    gap: 8px !important;
+  }
+
+  /* Title takes its own line and wraps in full instead of ellipsis-truncating. */
+  .agent-ticket-main {
+    flex-basis: 100% !important;
+    order: 2;
+  }
+
+  .agent-ticket-title {
+    white-space: normal !important;
+    overflow: visible !important;
+    text-overflow: clip !important;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  /* Branch + workflow are the least-critical columns on a phone — hide them so
+   * the id, badge and cost stay on the first line. */
+  .agent-ticket-branch,
+  .agent-ticket-workflow {
+    display: none !important;
+  }
+
+  /* Keep the spend visible and let it size to content rather than reserving a
+   * fixed min-width that pushes it out of view. */
+  .agent-ticket-cost {
+    min-width: 0 !important;
+    order: 1;
+  }
+}

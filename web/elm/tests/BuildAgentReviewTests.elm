@@ -170,11 +170,11 @@ all =
                         ]
         , test "id-less observations show their body read-only, no controls" <|
             \_ ->
+                -- a short observation list (≤5) opens by default, so no
+                -- toggle is needed to reveal the body
                 Common.init "/builds/1"
                     |> withBuildLoaded
                     |> Application.handleCallback (Callback.BuildAgentReviewsFetched (Ok [ idlessObservationsReview ]))
-                    |> Tuple.first
-                    |> Application.update (Msgs.Update Message.Message.ToggleAgentReviewObservations)
                     |> Tuple.first
                     |> Common.queryView
                     |> Query.find [ id "agent-review-panel" ]

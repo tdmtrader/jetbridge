@@ -19,6 +19,7 @@ func (plan *Plan) Public() *json.RawMessage {
 		Task           *json.RawMessage `json:"task,omitempty"`
 		Run            *json.RawMessage `json:"run,omitempty"`
 		Agent          *json.RawMessage `json:"agent,omitempty"`
+		Harvest        *json.RawMessage `json:"harvest,omitempty"`
 		SetPipeline    *json.RawMessage `json:"set_pipeline,omitempty"`
 		LoadVar        *json.RawMessage `json:"load_var,omitempty"`
 		OnAbort        *json.RawMessage `json:"on_abort,omitempty"`
@@ -71,6 +72,10 @@ func (plan *Plan) Public() *json.RawMessage {
 
 	if plan.Agent != nil {
 		public.Agent = plan.Agent.Public()
+	}
+
+	if plan.Harvest != nil {
+		public.Harvest = plan.Harvest.Public()
 	}
 
 	if plan.SetPipeline != nil {

@@ -1,6 +1,6 @@
 module AgentBadgeTests exposing (all)
 
-import AgentBadge exposing (Status(..), Tone(..), fromApiToken, fromRunStatus, label, tone)
+import AgentBadge exposing (Status(..), Tone(..), description, fromApiToken, fromRunStatus, label, runOutcome, tone)
 import Expect
 import Test exposing (Test, describe, test)
 
@@ -20,7 +20,9 @@ allStatuses =
     , Abandoned
     , Failed
     , Errored
+    , Aborted
     , Succeeded
+    , NoOutput
     ]
 
 
@@ -50,6 +52,12 @@ all =
                     |> List.map label
                     |> List.all (\l -> not (String.isEmpty l) && not (String.contains "_" l))
                     |> Expect.equal True
+        , test "every status has a non-empty description" <|
+            \_ ->
+                allStatuses
+                    |> List.map description
+                    |> List.all (not << String.isEmpty)
+                    |> Expect.equal True
         , test "NeedsReview and AwaitingHuman both map to Attention" <|
             \_ ->
                 ( tone NeedsReview, tone AwaitingHuman )
@@ -78,4 +86,75 @@ all =
             \_ ->
                 tone Succeeded
                     |> Expect.equal Good
+        , describe "runOutcome — build truth wins over step status (U3)"
+            [ test "a step that exited ok inside a FAILED build shows Failed, not OK" <|
+                \_ ->
+                    runOutcome { buildStatus = "failed", runStatus = "ok", hasResult = True }
+                        |> Expect.equal (Just Failed)
+            , test "an errored build shows Errored regardless of step status" <|
+                \_ ->
+                    runOutcome { buildStatus = "errored", runStatus = "ok", hasResult = True }
+                        |> Expect.equal (Just Errored)
+            , test "an aborted build shows Aborted" <|
+                \_ ->
+                    runOutcome { buildStatus = "aborted", runStatus = "ok", hasResult = True }
+                        |> Expect.equal (Just Aborted)
+            , test "a succeeded build that delivered a result is OK" <|
+                \_ ->
+                    runOutcome { buildStatus = "succeeded", runStatus = "ok", hasResult = True }
+                        |> Expect.equal (Just Succeeded)
+            , test "a succeeded build with NO result is No output, never a green OK" <|
+                \_ ->
+                    runOutcome { buildStatus = "succeeded", runStatus = "ok", hasResult = False }
+                        |> Expect.equal (Just NoOutput)
+            , test "No output is Warn-toned, not Good" <|
+                \_ ->
+                    tone NoOutput
+                        |> Expect.notEqual Good
+            , test "falls back to the step status when the build status is absent" <|
+                \_ ->
+                    runOutcome { buildStatus = "", runStatus = "failed", hasResult = True }
+                        |> Expect.equal (Just Failed)
+            , test "a still-running build shows Running" <|
+                \_ ->
+                    runOutcome { buildStatus = "started", runStatus = "ok", hasResult = False }
+                        |> Expect.equal (Just (Running Nothing))
+            , test "a PARKED run shows Waiting on you even though its build is still 'started'" <|
+                \_ ->
+                    -- A HITL checkpoint parks the run and keeps its build in
+                    -- 'started'; parked must win over the build status or the
+                    -- operator can't see the run is blocked on them.
+                    runOutcome { buildStatus = "started", runStatus = "parked", hasResult = True }
+                        |> Expect.equal (Just AwaitingHuman)
+            , test "a parked run whose build later succeeded still shows Waiting on you, not OK" <|
+                \_ ->
+                    runOutcome { buildStatus = "succeeded", runStatus = "parked", hasResult = True }
+                        |> Expect.equal (Just AwaitingHuman)
+            , test "a parked run whose build was ABORTED shows Aborted, not Waiting on you" <|
+                \_ ->
+                    -- abort-while-parked leaves the metric row parked forever;
+                    -- the dead run must not keep asking for the operator.
+                    runOutcome { buildStatus = "aborted", runStatus = "parked", hasResult = False }
+                        |> Expect.equal (Just Aborted)
+            , test "a parked run whose build ERRORED shows Errored, not Waiting on you" <|
+                \_ ->
+                    runOutcome { buildStatus = "errored", runStatus = "parked", hasResult = False }
+                        |> Expect.equal (Just Errored)
+            , test "a step that reported error inside a SUCCEEDED build is Errored, never a green OK" <|
+                \_ ->
+                    -- attempts:/try can fail an agent step inside a build that
+                    -- still succeeds; the run's own failure must not be masked.
+                    runOutcome { buildStatus = "succeeded", runStatus = "error", hasResult = True }
+                        |> Expect.equal (Just Errored)
+            , test "a step that reported failed inside a SUCCEEDED build is Failed" <|
+                \_ ->
+                    runOutcome { buildStatus = "succeeded", runStatus = "failed", hasResult = True }
+                        |> Expect.equal (Just Failed)
+            , test "a step that reported error while its build is still open is Errored, not Running" <|
+                \_ ->
+                    -- the metric row lands at step end; hooks or a wedged build
+                    -- can hold the build open long after the run died.
+                    runOutcome { buildStatus = "started", runStatus = "error", hasResult = False }
+                        |> Expect.equal (Just Errored)
+            ]
         ]

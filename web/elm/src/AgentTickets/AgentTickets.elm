@@ -14,9 +14,11 @@ import AgentBadge
 import Application.Models exposing (Session)
 import Concourse.AgentTicket as AgentTicket
 import Dict exposing (Dict)
+import Duration
 import EffectTransformer exposing (ET)
 import Html exposing (Html)
-import Html.Attributes exposing (class, href, id, style)
+import Html.Attributes exposing (class, href, id, placeholder, style, type_, value)
+import Html.Events exposing (onClick, onInput)
 import Login.Login as Login
 import Message.Callback exposing (Callback(..))
 import Message.Effects exposing (Effect(..))
@@ -24,6 +26,7 @@ import Message.Message exposing (Message(..))
 import Message.Subscription exposing (Delivery(..), Interval(..), Subscription(..))
 import Routes
 import SideBar.SideBar as SideBar
+import Time
 import Tooltip
 import Views.Styles
 import Views.TopBar as TopBar
@@ -35,6 +38,9 @@ type alias Model =
         , costByTicket : Dict String Float
         , loaded : Bool
         , loadError : Bool
+        , now : Maybe Time.Posix
+        , filter : String
+        , sortByWait : Bool
         }
 
 
@@ -66,6 +72,9 @@ init =
       , costByTicket = Dict.empty
       , loaded = False
       , loadError = False
+      , now = Nothing
+      , filter = ""
+      , sortByWait = False
       , isUserMenuExpanded = False
       }
     , [ FetchAgentTickets, FetchAgentTicketCosts ]
@@ -106,17 +115,35 @@ handleCallback callback ( model, effects ) =
 handleDelivery : Delivery -> ET Model
 handleDelivery delivery ( model, effects ) =
     case delivery of
+        ClockTicked FiveSeconds time ->
+            -- U11: live-update the queue on the dashboard's 5s cadence so state
+            -- never goes stale, and advance "now" for the elapsed-time labels
+            -- on the same beat (a dedicated OneSecond tick re-filtered and
+            -- re-sorted the whole queue every second just to move "N ago"
+            -- labels the refetch redraws anyway). Only replaces fetched data.
+            ( { model | now = Just time }, effects ++ [ FetchAgentTickets ] )
+
         ClockTicked OneMinute _ ->
-            -- Self-healing refresh; only replaces fetched data.
-            ( model, effects ++ [ FetchAgentTickets, FetchAgentTicketCosts ] )
+            -- The cost rollup is a whole-window ledger aggregation — far too
+            -- heavy to run 12x/minute per open tab for numbers that move at
+            -- run granularity. Refresh it on the minute like the /agent page.
+            ( model, effects ++ [ FetchAgentTicketCosts ] )
 
         _ ->
             ( model, effects )
 
 
 update : Message -> ET Model
-update _ ( model, effects ) =
-    ( model, effects )
+update msg ( model, effects ) =
+    case msg of
+        AgentTicketsFilterChanged v ->
+            ( { model | filter = v }, effects )
+
+        AgentTicketsSortToggled ->
+            ( { model | sortByWait = not model.sortByWait }, effects )
+
+        _ ->
+            ( model, effects )
 
 
 tooltip : Model -> a -> Maybe Tooltip.Tooltip
@@ -126,7 +153,7 @@ tooltip _ _ =
 
 subscriptions : List Subscription
 subscriptions =
-    [ OnClockTick OneMinute ]
+    [ OnClockTick FiveSeconds, OnClockTick OneMinute ]
 
 
 view : Session -> Model -> Html Message
@@ -168,18 +195,107 @@ content model =
 
     else
         let
+            visible =
+                List.filter (matchesFilter model.filter) model.tickets
+
             knownSections =
-                List.filterMap (sectionView model.costByTicket model.tickets) sectionOrder
+                List.filterMap (sectionView model visible) sectionOrder
 
             leftover =
-                model.tickets
+                visible
                     |> List.filter (\t -> not (List.member t.state sectionOrder))
+
+            body =
+                if List.isEmpty visible then
+                    [ Html.p
+                        [ style "color" "#b0b0b0", style "margin-top" "16px" ]
+                        [ Html.text "No tickets match the filter." ]
+                    ]
+
+                else
+                    knownSections ++ leftoverSection model leftover
         in
         Html.div []
-            (knownSections
-                ++ leftoverSection model.costByTicket leftover
+            (controlsBar model
+                :: body
                 ++ unattributedFooter model.costByTicket
             )
+
+
+{-| U10: client-side title filter — a case-insensitive substring match over the
+ticket title, id and author. An empty filter matches everything.
+-}
+matchesFilter : String -> AgentTicket.Ticket -> Bool
+matchesFilter raw t =
+    case String.trim (String.toLower raw) of
+        "" ->
+            True
+
+        needle ->
+            let
+                haystack =
+                    String.toLower
+                        (t.title
+                            ++ " #"
+                            ++ String.fromInt t.id
+                            ++ " "
+                            ++ t.userName
+                        )
+            in
+            String.contains needle haystack
+
+
+{-| U10: a lightweight filter/sort bar. The text box narrows the list by title;
+the sort toggle flips between newest-first (default) and longest-waiting-first
+so a reviewer can surface the tickets that have been queued the longest.
+-}
+controlsBar : Model -> Html Message
+controlsBar model =
+    Html.div
+        [ id "agent-ticket-controls"
+        , style "display" "flex"
+        , style "flex-wrap" "wrap"
+        , style "align-items" "center"
+        , style "gap" "8px"
+        , style "margin" "8px 0 4px 0"
+        ]
+        [ Html.input
+            [ class "agent-ticket-filter"
+            , type_ "text"
+            , placeholder "filter by title…"
+            , value model.filter
+            , onInput AgentTicketsFilterChanged
+            , style "background" "#141313"
+            , style "color" "#e0e0e0"
+            , style "border" "1px solid #3d3c3c"
+            , style "padding" "5px 8px"
+            , style "font-size" "13px"
+            , style "flex" "1"
+            , style "min-width" "160px"
+            , style "box-sizing" "border-box"
+            ]
+            []
+        , Html.button
+            [ class "agent-ticket-sort"
+            , type_ "button"
+            , onClick AgentTicketsSortToggled
+            , style "background" "#2a2929"
+            , style "color" "#d0d0d0"
+            , style "border" "1px solid #3d3c3c"
+            , style "padding" "5px 12px"
+            , style "cursor" "pointer"
+            , style "font-size" "13px"
+            , style "white-space" "nowrap"
+            ]
+            [ Html.text
+                (if model.sortByWait then
+                    "sort: longest waiting"
+
+                 else
+                    "sort: newest"
+                )
+            ]
+        ]
 
 
 {-| Spend the cost rollup reports outside any ticket (per-push CI reviews,
@@ -216,28 +332,40 @@ unattributedFooter costs =
             []
 
 
-leftoverSection : Dict String Float -> List AgentTicket.Ticket -> List (Html Message)
-leftoverSection costs tickets =
+leftoverSection : Model -> List AgentTicket.Ticket -> List (Html Message)
+leftoverSection model tickets =
     if List.isEmpty tickets then
         []
 
     else
-        [ sectionBlock "other" (List.map (ticketRow costs) (sortByRecent tickets)) ]
+        [ sectionBlock (withCount "other" tickets) (List.map (ticketRow model) (sortTickets model.sortByWait tickets)) ]
 
 
-sectionView : Dict String Float -> List AgentTicket.Ticket -> String -> Maybe (Html Message)
-sectionView costs tickets state =
+sectionView : Model -> List AgentTicket.Ticket -> String -> Maybe (Html Message)
+sectionView model tickets state =
     case List.filter (\t -> t.state == state) tickets of
         [] ->
             Nothing
 
         matching ->
-            Just (sectionBlock (sectionLabel state) (List.map (ticketRow costs) (sortByRecent matching)))
+            Just (sectionBlock (withCount (sectionLabel state) matching) (List.map (ticketRow model) (sortTickets model.sortByWait matching)))
 
 
-sortByRecent : List AgentTicket.Ticket -> List AgentTicket.Ticket
-sortByRecent =
-    List.sortBy (\t -> negate t.createdAt)
+{-| U10: append a per-section count, e.g. "needs review (2)" (uppercased by CSS).
+-}
+withCount : String -> List a -> String
+withCount label xs =
+    label ++ " (" ++ String.fromInt (List.length xs) ++ ")"
+
+
+sortTickets : Bool -> List AgentTicket.Ticket -> List AgentTicket.Ticket
+sortTickets sortByWait =
+    if sortByWait then
+        -- Oldest first: the ticket that has waited longest floats to the top.
+        List.sortBy .createdAt
+
+    else
+        List.sortBy (\t -> negate t.createdAt)
 
 
 sectionLabel : String -> String
@@ -266,8 +394,8 @@ sectionBlock title rows =
         )
 
 
-ticketRow : Dict String Float -> AgentTicket.Ticket -> Html Message
-ticketRow costs t =
+ticketRow : Model -> AgentTicket.Ticket -> Html Message
+ticketRow model t =
     Html.a
         [ class "agent-ticket-row"
         , href (Routes.toString (Routes.AgentTicket { id = t.id }))
@@ -291,13 +419,23 @@ ticketRow costs t =
 
             Nothing ->
                 Html.span [ style "color" "#b0b0b0" ] [ Html.text t.state ]
-        , Html.span
-            [ style "flex" "1"
-            , style "overflow" "hidden"
-            , style "text-overflow" "ellipsis"
-            , style "white-space" "nowrap"
+        , Html.div
+            [ class "agent-ticket-main"
+            , style "flex" "1"
+            , style "min-width" "0"
+            , style "display" "flex"
+            , style "flex-direction" "column"
+            , style "gap" "2px"
             ]
-            [ Html.text t.title ]
+            [ Html.span
+                [ class "agent-ticket-title"
+                , style "overflow" "hidden"
+                , style "text-overflow" "ellipsis"
+                , style "white-space" "nowrap"
+                ]
+                [ Html.text t.title ]
+            , metaLine model t
+            ]
         , if t.branch == "" then
             Html.text ""
 
@@ -309,13 +447,100 @@ ticketRow costs t =
                 , style "color" "#7aa37a"
                 ]
                 [ Html.text t.branch ]
+        , if t.workflowName == "" then
+            Html.text ""
+
+          else
+            Html.span
+                [ class "agent-ticket-workflow"
+                , style "font-family" "monospace"
+                , style "font-size" "12px"
+                , style "color" "#7a7a7a"
+                ]
+                [ Html.text (workflowLabel t) ]
         , Html.span
-            [ style "font-family" "monospace", style "font-size" "12px", style "color" "#7a7a7a" ]
-            [ Html.text t.workflowName ]
-        , Html.span
-            [ style "font-family" "monospace", style "color" "#b0b0b0", style "min-width" "60px", style "text-align" "right" ]
-            [ Html.text (costLabel costs t.id) ]
+            [ class "agent-ticket-cost"
+            , style "font-family" "monospace"
+            , style "color" "#b0b0b0"
+            , style "min-width" "60px"
+            , style "text-align" "right"
+            ]
+            [ Html.text (costLabel model.costByTicket t.id) ]
         ]
+
+
+{-| U10: a compact secondary line under the title carrying the fields already on
+the decoded ticket — author, retry count (only when the ticket has been retried),
+and how long it has been waiting (needs the live `now` clock from U11).
+-}
+metaLine : Model -> AgentTicket.Ticket -> Html Message
+metaLine model t =
+    let
+        parts =
+            List.filterMap identity
+                [ if t.userName == "" then
+                    Nothing
+
+                  else
+                    Just t.userName
+                , if t.attemptCount > 1 then
+                    Just ("attempt " ++ String.fromInt t.attemptCount)
+
+                  else
+                    Nothing
+                , elapsedLabel model.now t.createdAt
+                ]
+    in
+    if List.isEmpty parts then
+        Html.text ""
+
+    else
+        Html.span
+            [ class "agent-ticket-meta"
+            , style "font-size" "11px"
+            , style "color" "#7a7a7a"
+            , style "overflow" "hidden"
+            , style "text-overflow" "ellipsis"
+            , style "white-space" "nowrap"
+            ]
+            [ Html.text (String.join " · " parts) ]
+
+
+{-| Workflow name, with its pinned version appended when the ticket froze one.
+-}
+workflowLabel : AgentTicket.Ticket -> String
+workflowLabel t =
+    case t.workflowVersion of
+        Just v ->
+            t.workflowName ++ " v" ++ String.fromInt v
+
+        Nothing ->
+            t.workflowName
+
+
+{-| Relative "N ago" from the ticket's creation epoch to the live clock. Nothing
+when the clock hasn't ticked yet or the timestamp is unknown / in the future.
+-}
+elapsedLabel : Maybe Time.Posix -> Int -> Maybe String
+elapsedLabel maybeNow createdAt =
+    case maybeNow of
+        Just now ->
+            if createdAt > 0 then
+                let
+                    elapsed =
+                        Duration.between (Time.millisToPosix (createdAt * 1000)) now
+                in
+                if elapsed >= 0 then
+                    Just (Duration.format elapsed ++ " ago")
+
+                else
+                    Nothing
+
+            else
+                Nothing
+
+        Nothing ->
+            Nothing
 
 
 costLabel : Dict String Float -> Int -> String

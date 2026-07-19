@@ -475,6 +475,15 @@ mapBuildPlan fn plan =
 
                 BuildStepSidecar _ ->
                     []
+
+                BuildStepAgent _ ->
+                    []
+
+                BuildStepHarvest _ ->
+                    []
+
+                BuildStepUnknown _ ->
+                    []
            )
 
 
@@ -515,6 +524,9 @@ type BuildStep
     | BuildStepRetry (Array BuildPlan)
     | BuildStepTimeout BuildPlan
     | BuildStepSidecar StepName
+    | BuildStepAgent StepName
+    | BuildStepHarvest StepName
+    | BuildStepUnknown StepName
 
 
 type alias HookedPlan =
@@ -718,6 +730,16 @@ decodeBuildPlan =
                     lazy (\_ -> decodeBuildStepAcross)
                 , Json.Decode.field "sidecar" <|
                     lazy (\_ -> decodeBuildStepSidecar)
+                , Json.Decode.field "agent" <|
+                    lazy (\_ -> decodeBuildStepAgent)
+                , Json.Decode.field "harvest" <|
+                    lazy (\_ -> decodeBuildStepHarvest)
+
+                -- Durable fallback: any step type this client does not yet
+                -- recognize decodes to an "unknown" leaf instead of failing
+                -- the whole plan decode (which previously blanked the build
+                -- page). Keep this LAST — it always succeeds.
+                , lazy (\_ -> decodeBuildStepUnknown)
                 ]
             )
 
@@ -732,6 +754,46 @@ decodeBuildStepSidecar : Json.Decode.Decoder BuildStep
 decodeBuildStepSidecar =
     Json.Decode.succeed BuildStepSidecar
         |> andMap (Json.Decode.field "name" Json.Decode.string)
+
+
+decodeBuildStepAgent : Json.Decode.Decoder BuildStep
+decodeBuildStepAgent =
+    Json.Decode.succeed BuildStepAgent
+        |> andMap (Json.Decode.field "name" Json.Decode.string)
+
+
+decodeBuildStepHarvest : Json.Decode.Decoder BuildStep
+decodeBuildStepHarvest =
+    Json.Decode.succeed BuildStepHarvest
+        |> andMap (Json.Decode.field "name" Json.Decode.string)
+
+
+{-| Public-plan steps are shaped `{"id": …, "<type>": {…, "name": …}}`, so an
+unrecognized step's identity lives under its unknown type key — label it with
+the nested name when present, else the type key itself, so the degraded row
+reads "deploy" or "fancy_step" instead of an anonymous "step".
+-}
+decodeBuildStepUnknown : Json.Decode.Decoder BuildStep
+decodeBuildStepUnknown =
+    Json.Decode.map BuildStepUnknown
+        (Json.Decode.keyValuePairs Json.Decode.value
+            |> Json.Decode.map
+                (\pairs ->
+                    pairs
+                        |> List.filter (\( key, _ ) -> key /= "id" && key /= "attempts")
+                        |> List.head
+                        |> Maybe.map
+                            (\( key, value ) ->
+                                case Json.Decode.decodeValue (Json.Decode.field "name" Json.Decode.string) value of
+                                    Ok name ->
+                                        name
+
+                                    Err _ ->
+                                        key
+                            )
+                        |> Maybe.withDefault "step"
+                )
+        )
 
 
 decodeBuildStepArtifactInput : Json.Decode.Decoder BuildStep

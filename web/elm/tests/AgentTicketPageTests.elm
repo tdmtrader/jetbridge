@@ -10,6 +10,8 @@ import Html.Attributes
 import Json.Decode
 import Message.Callback as Callback
 import Message.Effects as Effects
+import Message.Message
+import Message.TopLevelMessage as Msgs
 import Test exposing (Test, describe, test)
 import Test.Html.Query as Query
 import Test.Html.Selector exposing (attribute, class, containing, tag, text)
@@ -158,6 +160,7 @@ all =
                                           , workflowName = "develop"
                                           , workflowVersion = Just 1
                                           , status = "ok"
+                                          , buildStatus = "succeeded"
                                           , summary = ""
                                           , model = ""
                                           , usage =
@@ -181,6 +184,26 @@ all =
                             |> Query.has
                                 [ tag "a"
                                 , attribute (Html.Attributes.href "/builds/561978")
+                                ]
+                    )
+        , test "a periodic self-heal refetch does not clobber an open edit form" <|
+            \_ ->
+                withDetail sampleDetailJson
+                    (\d ->
+                        Common.init "/agent-tickets/12"
+                            |> Application.handleCallback (Callback.AgentTicketFetched (Ok d))
+                            |> Tuple.first
+                            |> Application.update (Msgs.Update Message.Message.ClickAgentTicketEdit)
+                            |> Tuple.first
+                            |> Application.update (Msgs.Update (Message.Message.AgentTicketBodyChanged "MY UNSAVED EDIT"))
+                            |> Tuple.first
+                            -- the 5s refetch lands while the user is still editing:
+                            |> Application.handleCallback (Callback.AgentTicketFetched (Ok d))
+                            |> Tuple.first
+                            |> Common.queryView
+                            |> Query.has
+                                [ tag "textarea"
+                                , attribute (Html.Attributes.value "MY UNSAVED EDIT")
                                 ]
                     )
         ]

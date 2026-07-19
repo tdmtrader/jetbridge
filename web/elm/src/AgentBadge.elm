@@ -1,15 +1,17 @@
 module AgentBadge exposing
     ( Status(..)
     , Tone(..)
+    , description
     , fromApiToken
     , fromRunStatus
     , label
+    , runOutcome
     , tone
     , view
     )
 
 import Html exposing (Html)
-import Html.Attributes exposing (class)
+import Html.Attributes exposing (class, title)
 
 
 type Status
@@ -25,7 +27,9 @@ type Status
     | Abandoned
     | Failed
     | Errored
+    | Aborted
     | Succeeded
+    | NoOutput
 
 
 type Tone
@@ -83,8 +87,67 @@ label status =
         Errored ->
             "Errored"
 
+        Aborted ->
+            "Aborted"
+
         Succeeded ->
             "OK"
+
+        NoOutput ->
+            "No output"
+
+
+{-| A one-line, plain-English gloss for each status, surfaced as the badge's
+hover `title` so the terminal states (Merged / Concluded / Abandoned, …) carry
+their meaning in the UI instead of only in docs.
+-}
+description : Status -> String
+description status =
+    case status of
+        Draft ->
+            "Not queued yet — still being drafted"
+
+        Queued ->
+            "Waiting for an agent to pick it up"
+
+        Running _ ->
+            "An agent is working on it now"
+
+        AwaitingHuman ->
+            "Paused — waiting on your input"
+
+        NeedsReview ->
+            "Work is ready for your review"
+
+        Merged ->
+            "Branch merged to the target branch"
+
+        MergedWithFixes ->
+            "Merged after manual fixes on top"
+
+        SentBack ->
+            "Returned to the agent for changes"
+
+        Concluded ->
+            "Closed without merging (e.g. analysis-only)"
+
+        Abandoned ->
+            "Dropped without delivery"
+
+        Failed ->
+            "The run failed"
+
+        Errored ->
+            "The run hit an unexpected error"
+
+        Aborted ->
+            "The run was aborted"
+
+        Succeeded ->
+            "Completed successfully"
+
+        NoOutput ->
+            "Finished but produced no result"
 
 
 tone : Status -> Tone
@@ -126,8 +189,14 @@ tone status =
         Errored ->
             Error
 
+        Aborted ->
+            Neutral
+
         Succeeded ->
             Good
+
+        NoOutput ->
+            Warn
 
 
 fromApiToken : String -> Maybe Status
@@ -195,6 +264,68 @@ fromRunStatus status =
             Nothing
 
 
+{-| runOutcome derives the DISPLAY truth for a run, fusing the server-derived
+pipeline build status with the agent step's own status (U3). The precedence is
+"worst truth wins":
+
+1.  A terminally-bad BUILD is final — failed/errored/aborted render as such
+    even if the metric row still says "parked" (an abort-while-parked leaves
+    the parked row behind forever; it must not pulse "Waiting on you" for a
+    dead run).
+2.  Otherwise parked beats everything: the build deliberately stays "started"
+    while a HITL checkpoint waits, and a merely-open (or even succeeded)
+    build must not hide that the operator is needed.
+3.  Otherwise a step-reported failure ("error"/"failed") is never masked — not
+    by a succeeded build (attempts/try can fail an agent step inside a green
+    build) and not by a still-open one (the row lands at step end, so a dead
+    run would otherwise show Running until the build closes, indefinitely for
+    wedged builds).
+4.  Only then does the build status speak: succeeded is a green OK only with a
+    result in hand (else NoOutput — never a green OK on a run that did not
+    deliver), started/pending render Running, and an absent build status
+    falls back to the step status alone.
+-}
+runOutcome : { buildStatus : String, runStatus : String, hasResult : Bool } -> Maybe Status
+runOutcome { buildStatus, runStatus, hasResult } =
+    case buildStatus of
+        "failed" ->
+            Just Failed
+
+        "errored" ->
+            Just Errored
+
+        "aborted" ->
+            Just Aborted
+
+        _ ->
+            if runStatus == "parked" then
+                Just AwaitingHuman
+
+            else if runStatus == "error" then
+                Just Errored
+
+            else if runStatus == "failed" then
+                Just Failed
+
+            else
+                case buildStatus of
+                    "succeeded" ->
+                        if hasResult then
+                            Just Succeeded
+
+                        else
+                            Just NoOutput
+
+                    "started" ->
+                        Just (Running Nothing)
+
+                    "pending" ->
+                        Just (Running Nothing)
+
+                    _ ->
+                        fromRunStatus runStatus
+
+
 toneClass : Tone -> String
 toneClass t =
     case t of
@@ -256,7 +387,7 @@ view status =
                    )
     in
     Html.span
-        (List.map class classes)
+        (title (description status) :: List.map class classes)
         [ Html.span [ class "agent-badge__dot" ] []
         , Html.text (label status)
         ]

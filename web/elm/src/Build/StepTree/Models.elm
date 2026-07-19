@@ -67,6 +67,9 @@ type StepTree
     | Try StepTree
     | Timeout StepTree
     | Sidecar StepID
+    | Agent StepID
+    | Harvest StepID
+    | Unknown StepID
 
 
 type alias HookedStep =
@@ -294,6 +297,15 @@ activeStepIds model tree =
         Sidecar stepId ->
             [ stepId ]
 
+        Agent stepId ->
+            [ stepId ]
+
+        Harvest stepId ->
+            [ stepId ]
+
+        Unknown stepId ->
+            [ stepId ]
+
         Aggregate trees ->
             List.concatMap (activeStepIds model) (Array.toList trees)
 
@@ -375,6 +387,15 @@ updateTreeNodeAt id fn tree =
             updateSelf stepId
 
         Sidecar stepId ->
+            updateSelf stepId
+
+        Agent stepId ->
+            updateSelf stepId
+
+        Harvest stepId ->
+            updateSelf stepId
+
+        Unknown stepId ->
             updateSelf stepId
 
         Aggregate trees ->

@@ -47,7 +47,7 @@ type Message
     | ToggleAgentReviewPanel
     | ToggleAgentReviewFinding String
     | ToggleAgentReviewFindingBody String
-    | ToggleAgentReviewObservations
+    | ToggleAgentReviewObservations Bool
     | AgentReviewVerdictClicked
         { repo : String
         , commitSha : String
@@ -67,6 +67,8 @@ type Message
     | AgentMintedTokenDismissed
     | AgentPrincipalRevokeClicked Int
     | AgentPrincipalsShowEphemeralToggled
+    | AgentRunExpandToggled String
+    | AgentSectionNavClicked String
       -- Agent Ticket page (edit + disposition)
     | ClickAgentTicketEdit
     | AgentTicketTitleChanged String
@@ -76,9 +78,14 @@ type Message
     | ClickAgentTicketCancel
     | AgentTicketTabClicked String
     | ClickAgentTicketTransition String
+    | ConfirmAgentTicketTransition
+    | CancelAgentTicketTransition
     | ClickAgentTicketDispatch
     | ConfirmAgentTicketDispatch
     | CancelAgentTicketDispatch
+      -- Agent Ticket queue page (client-side filter + sort)
+    | AgentTicketsFilterChanged String
+    | AgentTicketsSortToggled
       -- common
     | Hover (Maybe DomID)
     | Click DomID

@@ -67,6 +67,36 @@ var _ = Describe("AgentRunMetricsFactory", func() {
 		Expect(byBuild).To(HaveLen(1))
 	})
 
+	It("joins the pipeline build status onto each run metric (U3 display truth)", func() {
+		// The U3 lie: an agent STEP can exit "ok" while the pipeline BUILD
+		// it ran in failed. The read path must expose the build status so
+		// display surfaces stop rendering a green "ok" on a failed build.
+		build, err := defaultTeam.CreateOneOffBuild()
+		Expect(err).ToNot(HaveOccurred())
+		Expect(build.Finish(db.BuildStatusFailed)).To(Succeed())
+
+		Expect(factory.Upsert(&schema.RunMetrics{
+			BuildID: build.ID(), PlanID: "p1", StepName: "implement",
+			Status: "ok", Summary: "agent reported ok",
+		})).To(Succeed())
+
+		rows, err := factory.GetByBuild(build.ID())
+		Expect(err).ToNot(HaveOccurred())
+		Expect(rows).To(HaveLen(1))
+		Expect(rows[0].Status).To(Equal("ok"))            // agent step exit
+		Expect(rows[0].BuildStatus).To(Equal("failed"))   // the build truth
+	})
+
+	It("leaves BuildStatus empty when the metric references no real build", func() {
+		Expect(factory.Upsert(&schema.RunMetrics{
+			BuildID: 999123, PlanID: "orphan", StepName: "s", Status: "ok", Summary: "x",
+		})).To(Succeed())
+		rows, err := factory.GetByBuild(999123)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(rows).To(HaveLen(1))
+		Expect(rows[0].BuildStatus).To(Equal("")) // LEFT JOIN, no match
+	})
+
 	It("stores NULL ticket/workflow tags for pure-CI steps", func() {
 		Expect(factory.Upsert(&schema.RunMetrics{
 			BuildID: 43, PlanID: "aa", StepName: "s", Status: "error", Summary: "crashed",

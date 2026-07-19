@@ -23,6 +23,7 @@ import Login.Login as Login
 import Message.Callback exposing (Callback(..))
 import Message.Effects exposing (Effect(..))
 import Message.Message exposing (Message(..))
+import Message.ScrollDirection as ScrollDirection
 import Message.Subscription
     exposing
         ( Delivery(..)
@@ -34,6 +35,7 @@ import Set exposing (Set)
 import SideBar.SideBar as SideBar
 import Time
 import Tooltip
+import Views.Prose
 import Views.Styles
 import Views.TopBar as TopBar
 
@@ -75,6 +77,7 @@ type alias Model =
         , minting : Bool
         , revokeError : Maybe String
         , showEphemeralPrincipals : Bool
+        , expandedRuns : Set String
         }
 
 
@@ -101,6 +104,7 @@ init =
       , minting = False
       , revokeError = Nothing
       , showEphemeralPrincipals = False
+      , expandedRuns = Set.empty
       , isUserMenuExpanded = False
       }
     , [ FetchAgentRunMetrics
@@ -334,6 +338,25 @@ update msg ( model, effects ) =
         AgentPrincipalsShowEphemeralToggled ->
             ( { model | showEphemeralPrincipals = not model.showEphemeralPrincipals }, effects )
 
+        AgentSectionNavClicked anchorId ->
+            ( model, effects ++ [ Scroll (ScrollDirection.ToId anchorId) agentContentId ] )
+
+        AgentRunExpandToggled rowKey ->
+            -- Toggle a single ledger row between its one-line summary and the
+            -- full run summary. Keyed by build id + plan id (see runKey): a
+            -- build carries one metric row per step (agent + harvest), so the
+            -- build id alone would toggle sibling rows together, and an
+            -- ordinal would jump when the 5s refetch prepends a newer run.
+            let
+                expanded =
+                    if Set.member rowKey model.expandedRuns then
+                        Set.remove rowKey model.expandedRuns
+
+                    else
+                        Set.insert rowKey model.expandedRuns
+            in
+            ( { model | expandedRuns = expanded }, effects )
+
         _ ->
             ( model, effects )
 
@@ -433,10 +456,10 @@ formatUsd amount =
     sign ++ String.fromInt dollars ++ "." ++ fraction
 
 
-sectionBlock : String -> List (Html Message) -> Html Message
-sectionBlock title children =
+sectionBlock : String -> String -> List (Html Message) -> Html Message
+sectionBlock anchorId title children =
     Html.div
-        [ style "margin-top" "24px" ]
+        [ id anchorId, style "margin-top" "24px" ]
         (Html.h2
             [ style "font-size" "15px"
             , style "margin" "0 0 8px 0"
@@ -526,7 +549,15 @@ view session model =
             (id "page-below-top-bar" :: Views.Styles.pageBelowTopBar route)
             [ SideBar.view session Nothing
             , Html.div
-                [ style "padding" "16px", style "width" "100%" ]
+                -- The console's own scroll container (like the build page's
+                -- body): the section nav jumps by setting its scrollTop via
+                -- the scrollToId port, which needs a scrolling parent by id.
+                [ id agentContentId
+                , style "padding" "16px"
+                , style "width" "100%"
+                , style "box-sizing" "border-box"
+                , style "overflow-y" "auto"
+                ]
                 [ Html.h1
                     [ style "font-size" "18px"
                     , style "margin" "0"
@@ -540,23 +571,74 @@ view session model =
                     , style "margin" "4px 0 0 0"
                     ]
                     [ Html.text "workflows and spend" ]
-                , runsSection model
+                , sectionNav
+                , runsSection session.timeZone model
                 , workflowsSection model
                 , costsSection model
-                , credentialsSection model
-                , principalsSection model
+                , credentialsSection session.timeZone model
+                , principalsSection session.timeZone model
                 ]
             ]
         ]
 
 
 
+-- SECTION NAV
+
+
+agentContentId : String
+agentContentId =
+    "agent-content"
+
+
+{-| A slim in-page nav strip so the long single-column console can be jumped
+around without scroll-hunting. Each entry scrolls to a section's `id` via the
+`scrollToId` port — a plain `#fragment` href is dead here: `Browser.application`
+intercepts every internal link click and re-navigates through `Routes`, which
+carries no fragment for this page, so the browser never performs the jump. -}
+sectionNav : Html Message
+sectionNav =
+    Html.div
+        [ class "agent-section-nav"
+        , style "display" "flex"
+        , style "flex-wrap" "wrap"
+        , style "gap" "12px"
+        , style "margin" "12px 0 0 0"
+        , style "font-family" "monospace"
+        , style "font-size" "12px"
+        ]
+        (List.map navLink
+            [ ( "agent-runs", "runs" )
+            , ( "agent-workflows", "workflows" )
+            , ( "agent-costs", "costs" )
+            , ( "agent-credentials", "credentials" )
+            , ( "agent-principals", "principals" )
+            ]
+        )
+
+
+navLink : ( String, String ) -> Html Message
+navLink ( anchorId, label ) =
+    Html.button
+        [ onClick (AgentSectionNavClicked anchorId)
+        , type_ "button"
+        , style "background" "transparent"
+        , style "border" "none"
+        , style "padding" "0"
+        , style "font" "inherit"
+        , style "color" "#7a9ac0"
+        , style "cursor" "pointer"
+        ]
+        [ Html.text label ]
+
+
+
 -- RUNS SECTION
 
 
-runsSection : Model -> Html Message
-runsSection model =
-    sectionBlock "Recent runs" <|
+runsSection : Time.Zone -> Model -> Html Message
+runsSection zone model =
+    sectionBlock "agent-runs" "Recent runs" <|
         case model.runs of
             Nothing ->
                 case model.runsError of
@@ -572,11 +654,13 @@ runsSection model =
 
             Just runs ->
                 staleDataWarning model.runsError
-                    ++ [ runsTable runs ]
+                    ++ [ mutedLine "showing the newest 100 runs (capped server-side, most recent first)"
+                       , runsTable zone model.expandedRuns runs
+                       ]
 
 
-runsTable : List Agent.RunMetric -> Html Message
-runsTable runs =
+runsTable : Time.Zone -> Set String -> List Agent.RunMetric -> Html Message
+runsTable zone expandedRuns runs =
     Html.table
         [ class "agent-runs-table"
         , style "border-collapse" "collapse"
@@ -584,7 +668,7 @@ runsTable runs =
         , style "font-size" "12px"
         , style "color" Colors.text
         ]
-        (runsHeaderRow :: List.map runRow runs)
+        (runsHeaderRow :: List.map (runRow zone expandedRuns) runs)
 
 
 runsHeaderRow : Html Message
@@ -597,72 +681,112 @@ runsHeaderRow =
         , tableHeaderCell "right" "tokens (in+out)"
         , tableHeaderCell "right" "turns"
         , tableHeaderCell "left" "ticket"
-        , tableHeaderCell "left" "when"
+        , tableHeaderCell "left" "when (local)"
         ]
 
 
-runRow : Agent.RunMetric -> Html Message
-runRow r =
+{-| Stable identity for a ledger row. (build id, plan id) is the metrics
+table's unique key — a build id alone is shared by sibling step rows of the
+same build, and a list ordinal changes when the refetch prepends a newer run.
+-}
+runKey : Agent.RunMetric -> String
+runKey r =
+    String.fromInt r.buildId ++ ":" ++ r.planId
+
+
+runRow : Time.Zone -> Set String -> Agent.RunMetric -> Html Message
+runRow zone expandedRuns r =
     Html.tr [ class "agent-run-row" ]
-        [ runStepCell r
+        [ runStepCell expandedRuns r
         , tableCell "left" (workflowRef r.workflowName r.workflowVersion)
-        , runStatusCell r.status
+        , runStatusCell r
         , tableCell "right" ("$" ++ formatUsd r.costUsd)
         , tableCell "right" (String.fromInt r.usage.inputTokens ++ "+" ++ String.fromInt r.usage.outputTokens)
         , tableCell "right" (String.fromInt r.turns)
         , ticketRefCell r
-        , tableCell "left" (formatPosix (Just (secondsToPosix r.createdAt)))
+        , tableCell "left" (formatPosix zone (Just (secondsToPosix r.createdAt)))
         ]
 
 
-{-| The step name plus a muted one-line summary underneath it — omitted when
-the summary is empty so the row does not carry a blank subtext line.
+{-| The step name plus its summary underneath it — omitted when the summary is
+empty so the row does not carry a blank subtext line. The summary is
+click-to-expand: collapsed it is a truncated one-liner; expanded it renders the
+full run summary as prose (`AgentRunExpandToggled`, keyed by `runKey` so the
+expanded row stays put when a 5s refetch prepends a newer run).
 -}
-runStepCell : Agent.RunMetric -> Html Message
-runStepCell r =
+runStepCell : Set String -> Agent.RunMetric -> Html Message
+runStepCell expandedRuns r =
+    let
+        rowKey =
+            runKey r
+
+        expanded =
+            Set.member rowKey expandedRuns
+
+        summaryBlock =
+            if r.summary == "" then
+                []
+
+            else if expanded then
+                [ Html.div
+                    [ class "agent-run-summary-full"
+                    , onClick (AgentRunExpandToggled rowKey)
+                    , style "max-width" "480px"
+                    , style "margin-top" "2px"
+                    , style "cursor" "pointer"
+                    , title "click to collapse"
+                    ]
+                    [ Views.Prose.view r.summary ]
+                ]
+
+            else
+                [ Html.div
+                    [ class "agent-run-summary"
+                    , onClick (AgentRunExpandToggled rowKey)
+                    , style "font-size" "11px"
+                    , style "color" mutedColor
+                    , style "max-width" "320px"
+                    , style "white-space" "nowrap"
+                    , style "overflow" "hidden"
+                    , style "text-overflow" "ellipsis"
+                    , style "cursor" "pointer"
+                    , title r.summary
+                    ]
+                    [ Html.text ("▸ " ++ r.summary) ]
+                ]
+    in
     Html.td
         [ style "text-align" "left"
         , style "padding" "4px 16px 4px 0"
         , style "border-bottom" rowBorder
+        , style "vertical-align" "top"
         ]
         (Html.div
             [ style "font-weight" "700", style "color" Colors.text ]
             [ Html.text r.stepName ]
-            :: (if r.summary == "" then
-                    []
-
-                else
-                    [ Html.div
-                        [ style "font-size" "11px"
-                        , style "color" mutedColor
-                        , style "max-width" "320px"
-                        , style "white-space" "nowrap"
-                        , style "overflow" "hidden"
-                        , style "text-overflow" "ellipsis"
-                        , title r.summary
-                        ]
-                        [ Html.text r.summary ]
-                    ]
-               )
+            :: summaryBlock
         )
 
 
-{-| Render an agent\_run\_metrics status ("ok"/"failed"/"parked"/"error") as an
-AgentBadge; fall back to the raw string for any status the badge doesn't know.
+{-| Render the run's DISPLAY truth as an AgentBadge. The pipeline build status
+wins over the agent step status (U3), so a step that exited "ok" inside a
+failed build shows Failed, and an "ok" step that delivered no summary shows
+"No output" — never a green OK on a build that did not deliver. Falls back to
+the raw step status only when the badge can derive nothing.
 -}
-runStatusCell : String -> Html Message
-runStatusCell status =
+runStatusCell : Agent.RunMetric -> Html Message
+runStatusCell r =
     Html.td
         [ style "text-align" "left"
         , style "padding" "4px 16px 4px 0"
         , style "border-bottom" rowBorder
         ]
-        [ case AgentBadge.fromRunStatus status of
+        [ case AgentBadge.runOutcome { buildStatus = r.buildStatus, runStatus = r.status, hasResult = r.summary /= "" } of
             Just badgeStatus ->
                 AgentBadge.view badgeStatus
 
             Nothing ->
-                Html.text status
+                Html.text r.status
         ]
 
 
@@ -696,13 +820,19 @@ ticketRefCell r =
             Just t ->
                 Html.a
                     [ href (Routes.toString (Routes.AgentTicket { id = t }))
+                    , title ("Agent ticket #" ++ String.fromInt t)
                     , style "color" "#7a9ac0"
                     , style "text-decoration" "none"
                     ]
                     [ Html.text ("#" ++ String.fromInt t) ]
 
             Nothing ->
-                Html.text "CI"
+                Html.span
+                    [ title "Continuous-integration review run — not tied to an agent ticket"
+                    , style "color" subtleColor
+                    , style "cursor" "help"
+                    ]
+                    [ Html.text "CI" ]
         ]
 
 
@@ -717,7 +847,7 @@ secondsToPosix seconds =
 
 workflowsSection : Model -> Html Message
 workflowsSection model =
-    sectionBlock "Workflows" <|
+    sectionBlock "agent-workflows" "Workflows" <|
         case model.workflows of
             Nothing ->
                 case model.workflowsError of
@@ -812,7 +942,7 @@ liveVersionLine w =
 
 costsSection : Model -> Html Message
 costsSection model =
-    sectionBlock "Costs" <|
+    sectionBlock "agent-costs" "Costs" <|
         case model.costRollup of
             Nothing ->
                 case model.costError of
@@ -835,7 +965,7 @@ costSummaryLine : Agent.CostSummary -> Html Message
 costSummaryLine summary =
     let
         spent =
-            "today (UTC): $" ++ formatUsd summary.dailySpentUsd ++ " spent"
+            "today (UTC day): $" ++ formatUsd summary.dailySpentUsd ++ " spent"
 
         cap =
             if summary.dailyCapUsd > 0 then
@@ -1005,27 +1135,28 @@ tableCell align content =
         [ Html.text content ]
 
 
-{-| Humanize an optional epoch timestamp as a UTC yyyy-mm-dd hh:mm, or "—"
-when absent. Deliberately timezone-independent (UTC) so it is deterministic;
-the minutes matter on an ops console where "which of today's runs came first"
-is a real question.
+{-| Humanize an optional epoch timestamp as a yyyy-mm-dd hh:mm in the viewer's
+own time zone (from `session.timeZone`), or "—" when absent. Showing local time
+is what an operator expects for "which of today's runs came first"; the minutes
+matter on an ops console. The server-aggregated cost buckets stay labelled as
+UTC days separately.
 -}
-formatPosix : Maybe Time.Posix -> String
-formatPosix maybe =
+formatPosix : Time.Zone -> Maybe Time.Posix -> String
+formatPosix zone maybe =
     case maybe of
         Nothing ->
             "—"
 
         Just posix ->
-            String.fromInt (Time.toYear Time.utc posix)
+            String.fromInt (Time.toYear zone posix)
                 ++ "-"
-                ++ pad2 (monthNumber (Time.toMonth Time.utc posix))
+                ++ pad2 (monthNumber (Time.toMonth zone posix))
                 ++ "-"
-                ++ pad2 (Time.toDay Time.utc posix)
+                ++ pad2 (Time.toDay zone posix)
                 ++ " "
-                ++ pad2 (Time.toHour Time.utc posix)
+                ++ pad2 (Time.toHour zone posix)
                 ++ ":"
-                ++ pad2 (Time.toMinute Time.utc posix)
+                ++ pad2 (Time.toMinute zone posix)
 
 
 pad2 : Int -> String
@@ -1077,39 +1208,43 @@ monthNumber month =
 -- CREDENTIALS SECTION (read-only status)
 
 
-credentialsSection : Model -> Html Message
-credentialsSection model =
-    sectionBlock "Credentials" <|
-        platformCredentialsBlock model.platformCredentials
-            ++ mutedLine "set or rotate with: fly agent auth"
-            :: (case model.credentials of
-                    Nothing ->
-                        case model.credentialsError of
-                            Just message ->
-                                [ errorLine message ]
+credentialsSection : Time.Zone -> Model -> Html Message
+credentialsSection zone model =
+    -- Two distinct slots, each behind its own labelled sub-header (U17): the
+    -- vaulted PLATFORM credential dispatched runs authenticate with, and the
+    -- viewer's OWN interactive credential. Keeping them apart stops an empty
+    -- personal slot from reading as "the platform auth is missing".
+    sectionBlock "agent-credentials" "Credentials" <|
+        platformCredentialsBlock zone model.platformCredentials
+            ++ personalCredentialsBlock zone model
 
-                            Nothing ->
-                                [ mutedLine "loading…" ]
 
-                    Just [] ->
-                        staleDataWarning model.credentialsError
-                            ++ [ mutedLine "no credentials stored — run: fly agent auth" ]
-
-                    Just creds ->
-                        staleDataWarning model.credentialsError
-                            ++ [ credentialsTable creds ]
-               )
+{-| A bold, muted sub-header naming one of the two credential slots so the
+platform slot and the personal slot can never be mistaken for one another.
+-}
+credentialSlotLabel : String -> Html Message
+credentialSlotLabel labelText =
+    Html.div
+        [ style "color" mutedColor
+        , style "font-family" "monospace"
+        , style "font-size" "12px"
+        , style "font-weight" "700"
+        , style "margin" "10px 0 2px 0"
+        ]
+        [ Html.text labelText ]
 
 
 {-| The vaulted platform credential dispatched runs actually authenticate
 with. Fetched with `?user=platform` (admin-only; a 403 hides the block), so
 the section no longer claims "no credentials stored" while dispatch works.
+Rendered under its own "Platform credential" header.
 -}
-platformCredentialsBlock : Maybe (List Agent.CredentialStatus) -> List (Html Message)
-platformCredentialsBlock maybeCreds =
+platformCredentialsBlock : Time.Zone -> Maybe (List Agent.CredentialStatus) -> List (Html Message)
+platformCredentialsBlock zone maybeCreds =
     case maybeCreds of
         Just (cred :: rest) ->
-            [ Html.div
+            [ credentialSlotLabel "Platform credential (used by dispatched runs)"
+            , Html.div
                 [ class "agent-platform-credential"
                 , style "font-family" "monospace"
                 , style "font-size" "12px"
@@ -1120,11 +1255,10 @@ platformCredentialsBlock maybeCreds =
                     (\c ->
                         Html.div []
                             [ Html.text
-                                ("platform: "
-                                    ++ c.kind
+                                (c.kind
                                     ++ " (expires "
-                                    ++ formatPosix c.expiresAt
-                                    ++ ") — used by dispatched runs"
+                                    ++ formatPosix zone c.expiresAt
+                                    ++ ") — active"
                                 )
                             ]
                     )
@@ -1136,8 +1270,35 @@ platformCredentialsBlock maybeCreds =
             []
 
 
-credentialsTable : List Agent.CredentialStatus -> Html Message
-credentialsTable creds =
+{-| The viewer's own credential, set via `fly agent auth`. Kept under its own
+header so an empty personal slot reads as "you have no personal credential",
+not "the platform auth is missing" (U17).
+-}
+personalCredentialsBlock : Time.Zone -> Model -> List (Html Message)
+personalCredentialsBlock zone model =
+    credentialSlotLabel "Your credential (interactive fly login)"
+        :: mutedLine "set or rotate with: fly agent auth"
+        :: (case model.credentials of
+                Nothing ->
+                    case model.credentialsError of
+                        Just message ->
+                            [ errorLine message ]
+
+                        Nothing ->
+                            [ mutedLine "loading…" ]
+
+                Just [] ->
+                    staleDataWarning model.credentialsError
+                        ++ [ mutedLine "no personal credential stored — run: fly agent auth" ]
+
+                Just creds ->
+                    staleDataWarning model.credentialsError
+                        ++ [ credentialsTable zone creds ]
+           )
+
+
+credentialsTable : Time.Zone -> List Agent.CredentialStatus -> Html Message
+credentialsTable zone creds =
     Html.table
         [ class "agent-credentials-table"
         , style "border-collapse" "collapse"
@@ -1150,16 +1311,16 @@ credentialsTable creds =
             , tableHeaderCell "left" "expires"
             , tableHeaderCell "left" "last verified"
             ]
-            :: List.map credentialRow creds
+            :: List.map (credentialRow zone) creds
         )
 
 
-credentialRow : Agent.CredentialStatus -> Html Message
-credentialRow c =
+credentialRow : Time.Zone -> Agent.CredentialStatus -> Html Message
+credentialRow zone c =
     Html.tr [ class "agent-credential-row" ]
         [ tableCell "left" c.kind
-        , tableCell "left" (formatPosix c.expiresAt)
-        , tableCell "left" (formatPosix c.lastVerifiedAt)
+        , tableCell "left" (formatPosix zone c.expiresAt)
+        , tableCell "left" (formatPosix zone c.lastVerifiedAt)
         ]
 
 
@@ -1167,13 +1328,37 @@ credentialRow c =
 -- PRINCIPALS SECTION (admin: mint / list / revoke)
 
 
-principalsSection : Model -> Html Message
-principalsSection model =
-    sectionBlock "Principals"
-        ([ mintForm model ]
-            ++ mintedTokenBox model
-            ++ [ revokeErrorLine model ]
-            ++ principalsBody model
+principalsSection : Time.Zone -> Model -> Html Message
+principalsSection zone model =
+    sectionBlock "agent-principals" "Principals"
+        (mintFence model
+            :: revokeErrorLine model
+            :: principalsBody zone model
+        )
+
+
+{-| Fence the privileged mint form inside its own bordered, labelled box so it
+is unmistakably a credential-issuing control and does not read as just another
+read-only panel sitting under the spend tables (U15). -}
+mintFence : Model -> Html Message
+mintFence model =
+    Html.div
+        [ class "agent-mint-fence"
+        , style "border" ("1px solid " ++ amberColor)
+        , style "border-radius" "4px"
+        , style "padding" "10px 12px"
+        , style "margin" "4px 0 12px 0"
+        ]
+        (Html.div
+            [ style "color" amberColor
+            , style "font-family" "monospace"
+            , style "font-size" "12px"
+            , style "font-weight" "700"
+            , style "margin-bottom" "8px"
+            ]
+            [ Html.text "Mint a principal — issues a privileged API credential" ]
+            :: mintForm model
+            :: mintedTokenBox model
         )
 
 
@@ -1422,8 +1607,8 @@ mintedTokenBox model =
             ]
 
 
-principalsBody : Model -> List (Html Message)
-principalsBody model =
+principalsBody : Time.Zone -> Model -> List (Html Message)
+principalsBody zone model =
     case model.principals of
         Nothing ->
             case model.principalsError of
@@ -1447,9 +1632,9 @@ principalsBody model =
                         [ mutedLine "no durable principals — mint one above" ]
 
                     else
-                        [ principalsTable durable ]
+                        [ principalsTable zone durable ]
                    )
-                ++ ephemeralPrincipals model ephemeral
+                ++ ephemeralPrincipals zone model ephemeral
 
 
 {-| Per-run agent tokens are named `run-<id>` and are minted/revoked
@@ -1467,8 +1652,8 @@ isEphemeralPrincipal p =
             False
 
 
-ephemeralPrincipals : Model -> List Agent.Principal -> List (Html Message)
-ephemeralPrincipals model ephemeral =
+ephemeralPrincipals : Time.Zone -> Model -> List Agent.Principal -> List (Html Message)
+ephemeralPrincipals zone model ephemeral =
     if List.isEmpty ephemeral then
         []
 
@@ -1503,15 +1688,15 @@ ephemeralPrincipals model ephemeral =
                 )
             ]
             :: (if model.showEphemeralPrincipals then
-                    [ principalsTable ephemeral ]
+                    [ principalsTable zone ephemeral ]
 
                 else
                     []
                )
 
 
-principalsTable : List Agent.Principal -> Html Message
-principalsTable principals =
+principalsTable : Time.Zone -> List Agent.Principal -> Html Message
+principalsTable zone principals =
     Html.table
         [ class "agent-principals-table"
         , style "border-collapse" "collapse"
@@ -1528,12 +1713,12 @@ principalsTable principals =
             , tableHeaderCell "left" "last used"
             , tableHeaderCell "left" ""
             ]
-            :: List.map principalRow principals
+            :: List.map (principalRow zone) principals
         )
 
 
-principalRow : Agent.Principal -> Html Message
-principalRow p =
+principalRow : Time.Zone -> Agent.Principal -> Html Message
+principalRow zone p =
     let
         dim =
             case p.revokedAt of
@@ -1550,7 +1735,7 @@ principalRow p =
                         [ class "agent-principal-revoked"
                         , style "color" subtleColor
                         ]
-                        [ Html.text ("revoked " ++ formatPosix (Just revokedAt)) ]
+                        [ Html.text ("revoked " ++ formatPosix zone (Just revokedAt)) ]
 
                 Nothing ->
                     Html.button
@@ -1571,9 +1756,9 @@ principalRow p =
         [ tableCell "left" p.name
         , tableCell "left" (String.join ", " p.scopes)
         , tableCell "left" p.teamName
-        , tableCell "left" (formatPosix (Just p.createdAt))
-        , tableCell "left" (formatPosix p.expiresAt)
-        , tableCell "left" (formatPosix p.lastUsedAt)
+        , tableCell "left" (formatPosix zone (Just p.createdAt))
+        , tableCell "left" (formatPosix zone p.expiresAt)
+        , tableCell "left" (formatPosix zone p.lastUsedAt)
         , Html.td
             [ style "padding" "4px 16px 4px 0"
             , style "border-bottom" rowBorder
