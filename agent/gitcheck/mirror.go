@@ -77,6 +77,20 @@ func (m *Mirror) IsAncestor(sha, branch string) (bool, error) {
 	return false, fmt.Errorf("is-ancestor: %w", err)
 }
 
+// BranchHead returns the remote head of branch, or "" (not an error) when
+// the ref is absent — the outcome watcher's fallback pushed_sha source.
+func (m *Mirror) BranchHead(branch string) (string, error) {
+	cmd := m.command(m.dir, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch)
+	out, err := cmd.Output()
+	if err != nil {
+		if ee, ok := err.(*exec.ExitError); ok && ee.ExitCode() == 1 {
+			return "", nil // ref absent — the caller treats this as "no fallback"
+		}
+		return "", fmt.Errorf("branch-head %s: %w", branch, err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
 // MergePoint describes how pushedSha landed on the target branch.
 type MergePoint struct {
 	Merged        bool
