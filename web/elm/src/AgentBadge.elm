@@ -1,6 +1,7 @@
 module AgentBadge exposing
     ( Status(..)
     , Tone(..)
+    , description
     , fromApiToken
     , fromRunStatus
     , label
@@ -10,7 +11,7 @@ module AgentBadge exposing
     )
 
 import Html exposing (Html)
-import Html.Attributes exposing (class)
+import Html.Attributes exposing (class, title)
 
 
 type Status
@@ -94,6 +95,59 @@ label status =
 
         NoOutput ->
             "No output"
+
+
+{-| A one-line, plain-English gloss for each status, surfaced as the badge's
+hover `title` so the terminal states (Merged / Concluded / Abandoned, …) carry
+their meaning in the UI instead of only in docs.
+-}
+description : Status -> String
+description status =
+    case status of
+        Draft ->
+            "Not queued yet — still being drafted"
+
+        Queued ->
+            "Waiting for an agent to pick it up"
+
+        Running _ ->
+            "An agent is working on it now"
+
+        AwaitingHuman ->
+            "Paused — waiting on your input"
+
+        NeedsReview ->
+            "Work is ready for your review"
+
+        Merged ->
+            "Branch merged to the target branch"
+
+        MergedWithFixes ->
+            "Merged after manual fixes on top"
+
+        SentBack ->
+            "Returned to the agent for changes"
+
+        Concluded ->
+            "Closed without merging (e.g. analysis-only)"
+
+        Abandoned ->
+            "Dropped without delivery"
+
+        Failed ->
+            "The run failed"
+
+        Errored ->
+            "The run hit an unexpected error"
+
+        Aborted ->
+            "The run was aborted"
+
+        Succeeded ->
+            "Completed successfully"
+
+        NoOutput ->
+            "Finished but produced no result"
 
 
 tone : Status -> Tone
@@ -308,7 +362,7 @@ view status =
                    )
     in
     Html.span
-        (List.map class classes)
+        (title (description status) :: List.map class classes)
         [ Html.span [ class "agent-badge__dot" ] []
         , Html.text (label status)
         ]

@@ -1,6 +1,6 @@
 module AgentBadgeTests exposing (all)
 
-import AgentBadge exposing (Status(..), Tone(..), fromApiToken, fromRunStatus, label, runOutcome, tone)
+import AgentBadge exposing (Status(..), Tone(..), description, fromApiToken, fromRunStatus, label, runOutcome, tone)
 import Expect
 import Test exposing (Test, describe, test)
 
@@ -51,6 +51,12 @@ all =
                 allStatuses
                     |> List.map label
                     |> List.all (\l -> not (String.isEmpty l) && not (String.contains "_" l))
+                    |> Expect.equal True
+        , test "every status has a non-empty description" <|
+            \_ ->
+                allStatuses
+                    |> List.map description
+                    |> List.all (not << String.isEmpty)
                     |> Expect.equal True
         , test "NeedsReview and AwaitingHuman both map to Attention" <|
             \_ ->

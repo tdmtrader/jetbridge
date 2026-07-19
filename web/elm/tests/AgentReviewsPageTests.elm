@@ -69,7 +69,7 @@ all =
                     |> Query.has
                         [ containing [ text "7.5" ]
                         , containing [ text "cs / ar" ]
-                        , containing [ text "evaluated 1/5" ]
+                        , containing [ text "your feedback: 1 of 5 verdicts" ]
                         ]
         , test "renders an error notice when reviews fail to load" <|
             \_ ->

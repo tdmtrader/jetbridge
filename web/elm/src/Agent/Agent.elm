@@ -779,13 +779,19 @@ ticketRefCell r =
             Just t ->
                 Html.a
                     [ href (Routes.toString (Routes.AgentTicket { id = t }))
+                    , title ("Agent ticket #" ++ String.fromInt t)
                     , style "color" "#7a9ac0"
                     , style "text-decoration" "none"
                     ]
                     [ Html.text ("#" ++ String.fromInt t) ]
 
             Nothing ->
-                Html.text "CI"
+                Html.span
+                    [ title "Continuous-integration review run — not tied to an agent ticket"
+                    , style "color" subtleColor
+                    , style "cursor" "help"
+                    ]
+                    [ Html.text "CI" ]
         ]
 
 

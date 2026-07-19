@@ -108,10 +108,11 @@ summaryBar review expanded =
             ]
         , Html.span [ style "margin-left" "auto", style "color" "#7a7a7a" ]
             [ Html.text
-                ("evaluated "
+                ("your feedback: "
                     ++ String.fromInt s.evaluatedCount
                     ++ " of "
                     ++ String.fromInt review.findingCount
+                    ++ " verdicts"
                 )
             ]
         , Html.span []
@@ -161,33 +162,59 @@ panelBody reviewer review model =
 
 observationsSection : String -> BuildReview -> PanelState a -> List (Html Message)
 observationsSection reviewer review model =
-    if List.isEmpty review.observations then
+    let
+        count =
+            List.length review.observations
+    in
+    if count == 0 then
         []
 
     else
+        let
+            -- A short list is worth reading, so it opens by default; a long
+            -- one stays folded. The toggle simply flips whichever default
+            -- applies, so `showObservations` still means "user overrode it".
+            open =
+                Basics.xor model.showObservations (count <= 5)
+        in
         Html.button
             (buttonReset
                 ++ [ class "agent-review-observations-toggle"
-                   , attribute "aria-expanded" (boolAttr model.showObservations)
+                   , attribute "aria-expanded" (boolAttr open)
+                   , style "display" "flex"
+                   , style "align-items" "center"
+                   , style "gap" "8px"
                    , style "padding" "8px 0"
+                   , style "width" "100%"
                    , style "cursor" "pointer"
                    , style "color" "#b0b0b0"
                    , onClick ToggleAgentReviewObservations
                    ]
             )
-            [ Html.text
-                ("observations ("
-                    ++ String.fromInt (List.length review.observations)
-                    ++ ") — advisory, no failing test "
-                    ++ (if model.showObservations then
-                            "▾"
+            [ Html.span [ style "font-size" "12px" ]
+                [ Html.text
+                    (if open then
+                        "▾"
 
-                        else
-                            "▸"
-                       )
-                )
+                     else
+                        "▸"
+                    )
+                ]
+            , Html.span [ style "font-weight" "700" ]
+                [ Html.text
+                    (String.fromInt count
+                        ++ (if count == 1 then
+                                " observation"
+
+                            else
+                                " observations"
+                           )
+                    )
+                ]
+            , Html.span [ style "color" "#7a7a7a", style "font-size" "12px" ]
+                [ Html.text "advisory — no failing test" ]
             ]
-            :: (if model.showObservations then
+            :: (if open then
                     review.observations |> List.map (findingCard reviewer review False model)
 
                 else
