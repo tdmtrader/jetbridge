@@ -856,9 +856,57 @@ type HarvestStep struct {
 
 **Render-time-resolution rule (binding):** the renderer resolves *everything* from the workflow definition into literal values in these structs. The agent/harvest step implementations **never read `agent_workflow_definitions`** — a rendered pipeline is self-contained and reproducible from its config alone. Ticket/run identity reaches the step via env vars (§8.1), not by lookup.
 
-### 2.8.1 Harvest push addendum (2026-07-09, F32) — co-signed harvest-step + ticket-core
+### 2.8.1 Harvest terminal-step schema — owner: **harvest-step** (addendum, 2026-07-08; frozen for dispatch's renderer; body merged 2026-07-17 — RECONCILIATION: the v0/v0.5/judge code landed first, this body text catches up)
 
-The harvest step's push to the stable ticket branch is pinned as:
+The executable form of §2.8's `HarvestStep` sketch. Additive deltas from the sketch: `target_branch` (gate-diff base + `affected_components` input), `dev_mcp` (the repo's dev-mcp sidecar — §2.8 gave the step no way to reach a dev-mcp server; **declared, refused until the dev-mcp executor swap**), `pipeline_run_id` (evidence linkage; renderer emits it, hand-written pipelines may omit), `env` (renderer-emitted §8.1 identity rows — added 2026-07-09, F30: a Go renderer cannot place `((run_id))` in the int `pipeline_run_id` field, so identity travels as env exactly as it does on agent steps), and package-qualified policy/judge types (§6.3 places them in `agent/harvest`).
+
+```go
+// atc/steps.go — parse key "harvest", registered before "run" in StepPrecedence
+type HarvestStep struct {
+	Name          string               `json:"harvest"`
+	Workspace     string               `json:"workspace"`                 // input artifact containing committed work
+	Repo          string               `json:"repo"`                      // canonical slug (joins agent_reviews.repo)
+	TargetBranch  string               `json:"target_branch,omitempty"`   // default "main"
+	TicketID      int                  `json:"ticket_id,omitempty"`       // 0 = no ticket (pure-CI use)
+	PipelineRunID int                  `json:"pipeline_run_id,omitempty"` // 0 = unknown (hand-dispatched)
+	Branch        string               `json:"branch,omitempty"`          // e.g. agent/ticket-42
+	Push          bool                 `json:"push,omitempty"`            // requires branch
+	Env           map[string]string    `json:"env,omitempty"`             // renderer-emitted §8.1 identity/provenance rows (2026-07-09, F30)
+	DevMCP        *SidecarSource       `json:"dev_mcp,omitempty"`         // repo's dev-mcp image; required when gates declared (refused until the executor swap)
+	GatePolicy    harvest.GatePolicy   `json:"gate_policy"`               // §6.3
+	Judge         *harvest.JudgeConfig `json:"judge,omitempty"`           // §6.4; nil = no judge
+	Timeout       string               `json:"timeout,omitempty"`
+}
+```
+
+`atc.HarvestPlan` mirrors these fields 1:1 (plus `Name`). `JudgeConfig` (previously referenced but undefined):
+
+```go
+// agent/harvest/policy.go
+type JudgeConfig struct {
+	Rubric        []RubricDimension `json:"rubric"`
+	PassThreshold float64           `json:"pass_threshold"`       // 0–10 weighted total (§6 judge block)
+	Model         string            `json:"model,omitempty"`
+	BudgetUSD     float64           `json:"budget_usd,omitempty"` // §6 budget.judge_usd; 0 = uncapped
+}
+type RubricDimension struct {
+	Name     string  `json:"name"`
+	Weight   float64 `json:"weight"`
+	Guidance string  `json:"guidance"`
+}
+```
+
+**Execution contract [DECIDED HERE]:**
+- Main container image = the `--agent-step-image` image (it gains a `harvest-runner` binary; git + claude CLI already present). Process: path `harvest-runner`, well-known process ID `harvest` (resumable via attachOrRun).
+- Env (extends §8.1): `HARVEST_CONFIG` = JSON of `agent/harvest.Config` (step_name/workspace/repo/target_branch/ticket_id/pipeline_run_id/branch/push/gate_policy/judge); `AGENT_FLIGHT_DIR`; `AGENT_TICKET_ID` (when > 0); `DEV_MCP_URL=http://127.0.0.1:7780/mcp` (when `dev_mcp` declared). Judge-configured pods additionally get `CLAUDE_CODE_OAUTH_TOKEN` via `secretKeyRef` from `agent-platform-credential`/`anthropic-token` (§8.2) — never the per-run user token. The token key is `SecretEnv`-only (no literal counterpart): jetbridge `applySecretRefs` APPENDS the secretKeyRef EnvVar (§8.2 Consumption, 2026-07-09, F20 — landed by agent-step Task 11B). *(2026-07-09, F30)* The exec var-interpolates `HarvestStep.Env` rows and copies them into the pod env; **run-id fallback (binding, §7/§8.1):** when `pipeline_run_id` is 0 (the renderer leaves it 0 — see the schema note), the exec resolves the effective run id from the `AGENT_PIPELINE_RUN_ID` env row and uses it everywhere the run id flows (HARVEST_CONFIG, pod env, metrics/evidence linkage).
+- Git credentials (§8.3): secret `agent-harvest-git-<slug>` (`harvest.GitCredSecretName(repo)`: lowercase, non-alphanumerics → `-`) volume-mounted read-only at `/var/run/agent/git/` on the **main container only**, only when `push: true`. Seam: `runtime.ContainerSpec.SecretMounts []runtime.SecretMount{SecretName, MountPath}`; jetbridge mounts these exclusively on the main container — sidecars never receive them.
+- Sidecar readiness (F34, corrected 2026-07-17): harvest-runner performs the same 2s-interval/60s-bound `GET /healthz` wait agent-runner uses (extraction into a shared `agent/devmcp` helper lands with the dev-mcp executor swap); a never-healthy sidecar is exit 2.
+- Exit taxonomy: 0 = gates ok, 1 = gates failed, 2 = platform error. `results.json` status `pass/fail/error` respectively; `metadata` carries `{"gates": [GateOutcome…], "judge": {…}|null, "judge_error": "…", "pushed_branch": "…", "head_sha": "…", "base_sha": "…"}`.
+- Worktree cleanliness *(2026-07-09, F33)*: immediately after resolving the head sha, the runner checks `git status --porcelain`; ANY output ⇒ the finding is recorded in the evidence payload (proven issue `workspace-dirty`) and the run returns status **fail** (exit 1 → `needs_review`) — no gates run, nothing is judged, nothing is pushed. Rationale: gates verify the working tree while push delivers committed HEAD, so a dirty tree lets green evidence attach to a branch that would fail those gates. A dirty tree is the AGENT's failure, not a platform fault, and is NEVER auto-discarded (`git clean -fdx` would delete gitignored build caches).
+- Flight-dir outputs: `events.ndjson` (`step.start/gate.start/gate.result/judge.score/cost.record/push.done/step.end`, §5), `results.json`, `manifest.json` (patch manifest: `{"repo","branch","base_sha","head_sha","commits":[{"sha","author","subject"}],"files":[{"path","added","deleted"}]}`; `push.done.manifest_artifact = "manifest.json"`), `review.json` (evidence payload, §6.4.1). **[D3, 2026-07-17]** `results.json` is `agent/schema.Results` (`schema_version: "1.0"`, `status: pass|fail|error`, `summary` non-empty, `artifacts: []`, `metadata` map carrying `pushed_branch`, `head_sha`, `base_sha`, `detail`, `gates` (GateOutcome array, the landed v0.5 JSON shape: `gate/scope/status/attempt/flaky/duration_seconds/detail`), `judge`, `judge_error`). STDOUT mirrors the identical document — the v0.5 local `{status, metadata{...}}` stdout shape is superseded; no machine consumer reads stdout (verified: the exec keys off the exit code only), so this is a build-log-only change.
+- Server-side (exec, synchronous before the step returns): `agent_run_metrics` upsert; `agent_reviews` upsert with `ticket_id`/`pipeline_run_id` (§1.10) and `submitted_by = 'harvest'`; `agent_cost_ledger` record with `source='harvest_judge'` (fire-and-forget); ticket transition (`running→needs_review` on ok/failed with `branch` set on ok, `running→errored` with `error_detail` on error) — skipped when `ticket_id = 0`.
+
+**Push pin (2026-07-09, F32) — co-signed harvest-step + ticket-core.** The harvest step's push to the stable ticket branch is pinned as:
 
 ```
 git push --force-with-lease=refs/heads/agent/ticket-<n> origin <sha>:refs/heads/agent/ticket-<n>
@@ -1542,14 +1590,26 @@ type Gate struct {
 	Scope   string `json:"scope"`   // affected | full | affected_then_full
 	Focus   string `json:"focus,omitempty"`
 	Timeout string `json:"timeout,omitempty"` // per-gate; default 30m
+	Retries int    `json:"retries,omitempty"` // 0–2; failed-only re-runs (flake stance below)
 }
 ```
+
+**Flake/retry stance [DECIDED HERE — harvest-step, agreed with workflow-store as YAML-grammar owner]:** retries are opt-in per gate (`retries: 0..2`, default 0). Only `failed` results are retried — `error` (tooling broke) is never retried, and a gate that exhausts retries keeps `failed`. A gate that passes on a retry is recorded `ok` **with `flaky: true` and `attempt: N`** on its `gate.result` event and in the evidence payload — flakiness is surfaced, never hidden. The §6 workflow YAML `gate_policy.gates[]` entries accept the same optional `retries` key.
 
 Semantics: gates run in order via the dev-mcp Go client; `affected` resolves components with `affected_components(git diff --name-only <target>...HEAD)`; empty affected-set falls back to `full` for that gate; first `failed`/`error` gate stops the sequence (`error` marks the ticket `errored`, not `failed`).
 
 ### 6.4 Judge rubric → six-verdict mapping — owner: **harvest-step**; sign-off consumers: delivery-outcomes, scorecards, process-intel-experiments
 
 The judge scores the rubric dimensions (schema-constrained JSON output, `judge.score` event §5). The rubric is **not** findings-shaped; the mapping to the six-verdict feedback taxonomy (`accurate, false_positive, noisy, overly_strict, partially_correct, missed_context` — `ci-agent/schema/feedback.go`, moving to `agent/schema`) applies to the judge's optional per-dimension **cited issues**: each cited issue is written as a review finding into `agent_reviews.review` (existing findings shape) with `finding_type: "judge"`, making it feedback-eligible in the existing `agent_feedback` UI. Human verdicts on judge findings then calibrate the judge exactly like reviewer findings. Ticket-level dispositions stay in `agent_outcomes` (§1.11) — verdicts are per-finding, dispositions are per-ticket; the two are never conflated.
+
+### 6.4.1 Judge execution + finding conventions — owner: **harvest-step** (addendum 2026-07-08, body landed 2026-07-17; sign-off: delivery-outcomes, scorecards, process-intel-experiments)
+
+- The judge is a **single schema-constrained claude CLI call** made by platform code (`agent/harvest/judge.go`, ci-agent `llm.Client` style), funded by the platform credential (§1.13), capped by `JudgeConfig.BudgetUSD` (post-hoc: overage is logged + recorded in the ledger — a single call cannot be pre-metered), working dir = the workspace, prompt = rubric dimensions + guidance + truncated `git diff <base>..<head>`.
+- Verdict JSON (the judge's required output): `{"dimensions":[{"name","score" (0–10),"rationale","issues":[{"title","description","file","line"}]}]}` — one entry per rubric dimension, validated by name. Weighted total = `Σ(score·weight)/Σ(weight)`; `pass = total ≥ pass_threshold`. Emitted as the `judge.score` event (§5) with `rubric_hash` = sha256 of the rubric's canonical JSON.
+- **Cited issues → findings:** each issue becomes an entry in the evidence payload's `observations` array (existing findings shape, §agent/api/reviews) with `id: "judge-<dimension>-<n>"` and `category: "judge"`. Failing gates become `proven_issues` entries with `id: "gate-<gate>[-<component>]"`, `category: "gate"` (they are objectively proven). Feedback on judge findings is submitted with `finding_type: "judge"` (delivery-outcomes wires the UI), flowing into the existing six-verdict calibration loop unchanged.
+- Evidence payload (`review.json`, upserted into `agent_reviews.review`): the existing `ReviewPayload` JSON shape (`schema_version: "harvest/1"`, `metadata{repo, commit, branch, agent_model, duration_seconds}`, `score{value, max, pass}`, `proven_issues`, `observations`, `summary`) **plus** `gates` (GateOutcome array — the landed v0.5 field spellings `gate/scope/status/attempt/flaky/duration_seconds/detail`; plan 09's `attempts`/`summary`/`output_tail` sketch is superseded) and `judge` (`{rubric_hash, dimensions, total, max_total, pass}`) keys — consumers ignore unknown keys. `score.value` = judge total when the judge ran, else 10/0 for gates ok/failed; `score.pass` = gates ok AND (no judge OR judge pass OR judge errored). Harvest evidence upserts record `submitted_by = 'harvest'`.
+- `agent_reviews` upsert semantics with linkage (§1.10): `ticket_id`/`pipeline_run_id` update via `COALESCE(EXCLUDED.x, agent_reviews.x)` so a later NULL-linkage CI publish on the same `(build_id, repo, commit_sha)` key never erases linkage.
+- Shared-schema delta: `agent/schema` gains additive `GateResultData.attempt`/`flaky` keys AND `Category` constants `gate`/`judge` (§5 producers-may-add rule — additive vocabulary for consumers validating through `schema.Category`; NOT an enforcement gate on harvest's own path, which uses a bare-string `EvidenceIssue.Category` and never calls `Category.Validate()`).
 
 ---
 
@@ -1943,3 +2003,4 @@ Set by the **owning exec implementation** (agent-step, harvest-step) or by **dis
   (d) `db.PipelineRunFactory` gains additive `GetRunByID(id)` (reconciler read path; mirrors GetRun).
   (e) §2.8.2 principal drift RESOLVED in the contract's favor: minted name is now `agent-run-<run-id>` (= `credentials.RunSecretName`; fixes the reaper's revoke-by-name path), scopes gain `questions:answer` (5 total), expiry = now + `--agent-run-timeout` (new flag, 6h default; the landed hardcoded 24h remains the zero-value fallback). Secret NAME unchanged (exec-consumed). `concourse/ticket` label applied best-effort via `dispatch.RunSecretLabeler` (K8s strategic-merge patch; loop wiring only — the route path has no clientset and skips it for now).
   (f) component: `atc.ComponentAgentDispatcher`, K8s-gated, OFF by default behind `--agent-dispatcher-enabled`, POLLING-ONLY at the 10s default (agent_tickets has NO NOTIFY trigger; none added — zero migrations; deployed head is 1773106066 (the workflow-source `agent_workflow_source_manifest` column), so a future trigger must take 1773106067+; the PARK-V2-reserved 1773106065 is now stranded below head and renumbers up at its own land time, with the C2 dual-constant bump). Reconciler ships with the F17 checkpoint branches DORMANT behind a nil `QuestionLister` seam local to agent/dispatch (`CheckpointRow` projection); plan 08 supplies the adapter. Harvest remains the primary writer of running→needs_review; stale = benign (two-writers recorded).
+- 2026-07-17 (harvest-step body reconciliation — judge+evidence slice A/B; the v0/v0.5/judge-engine code landed first, the §2.8.1/§6.3/§6.4.1 body text now catches up): merged §2.8.1 (executable HarvestStep schema; F32 push pin folded in as its closing paragraph; F33 cleanliness; F30 env fallback; F34 sentence corrected — no shared `agent/devmcp.WaitHealthy` helper exists, harvest-runner's own 2s/60s healthz wait is the pin until the dev-mcp executor swap extracts it; D3 results.json = `agent/schema.Results` with the metadata-map keys, stdout mirrors it, no machine consumer reads stdout); §6.3 `Gate.Retries` + the failed-only/flaky-surfaced stance (matches the LANDED v0.5 engine); §6.4.1 judge execution + finding conventions (categories gate/judge additive in agent/schema; evidence `submitted_by='harvest'`; GateOutcome landed spellings supersede plan-09's sketch). Migration 1773106080 LANDED (agent_reviews/agent_feedback ticket linkage, §1.10 SQL verbatim, C2 dual bump 1773106066→1773106080; platform-mcp-hitl's reserved 1773106070–79 block is now below the version pointer and renumbers above head at ITS land time — ticket-core precedent, accepted in its plan). `reviews.Store` gains `ListByTicket` (oldest-first); factories implement linkage COALESCE upserts + feedback ticket backfill.
