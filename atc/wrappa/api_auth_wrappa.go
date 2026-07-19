@@ -224,7 +224,14 @@ func (wrappa *APIAuthWrappa) Wrap(handlers rata.Handlers) rata.Handlers {
 			// DispatchAgentTicket is deliberately human-only (no principal
 			// tier): the manual trigger IS the budget gate while budget
 			// admission is deferred (manual-dispatch slice, 2026-07-17).
-			atc.DispatchAgentTicket:
+			atc.DispatchAgentTicket,
+			// SetAgentTicketDisposition is deliberately human-only too
+			// (§4.2: authorized member, NO principal path): a principal
+			// tier would let an agent dispose its own ticket past the
+			// human review gate (delivery-outcomes decision D-3).
+			// GetAgentTicketOutcome is plain authorized viewer.
+			atc.SetAgentTicketDisposition,
+			atc.GetAgentTicketOutcome:
 			newHandler = auth.CheckAgentAuthorizationHandler(handler, rejector)
 
 		// combined tier: agent principal (tickets:write) OR authorized

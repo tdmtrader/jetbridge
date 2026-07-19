@@ -63,8 +63,8 @@ Source of truth for tiers: 00-shared-contracts.md §4.1/§4.2.
 | AskAgentQuestion | POST /api/v1/agent/tickets/:ticket_id/questions | principal | tickets:write | platform-mcp-hitl | planned (wave 3) |
 | GetAgentQuestion | GET /api/v1/agent/tickets/:ticket_id/questions/:question_id | principal; also authorized viewer (main) | tickets:read | platform-mcp-hitl | planned (wave 3) |
 | AnswerAgentQuestion | PUT /api/v1/agent/tickets/:ticket_id/questions/:question_id/answer | authorized member (main); also principal | questions:answer (timeout resolution only) | platform-mcp-hitl | planned (wave 3) |
-| SetAgentTicketDisposition | PUT /api/v1/agent/tickets/:ticket_id/disposition | authorized member (main) | — | delivery-outcomes | planned (wave 4) |
-| GetAgentTicketOutcome | GET /api/v1/agent/tickets/:ticket_id/outcome | authorized viewer (main) | — | delivery-outcomes | planned (wave 4) |
+| SetAgentTicketDisposition | PUT /api/v1/agent/tickets/:ticket_id/disposition | authorized member (main) — deliberately NO principal tier (an agent must not dispose its own ticket past the human review gate; delivery-outcomes D-3) | — | delivery-outcomes | live (delivery-outcomes slice B) |
+| GetAgentTicketOutcome | GET /api/v1/agent/tickets/:ticket_id/outcome | authorized viewer (main) | — | delivery-outcomes | live (delivery-outcomes slice B) |
 | GetAgentWorkflowScorecard | GET /api/v1/agent/workflows/:workflow_name/scorecard | authorized viewer (main) | — | scorecards | planned (wave 4) |
 | ListAgentBenchmarkCases / CreateAgentBenchmarkCase | GET/POST /api/v1/agent/benchmarks | authorized viewer/member (main) | — | process-intel-experiments | planned (wave 5) |
 | CreateAgentExperiment / GetAgentExperiment | POST/GET /api/v1/agent/experiments[...] | authorized member/viewer (main) | — | process-intel-experiments | planned (wave 5) |
