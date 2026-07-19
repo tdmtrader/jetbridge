@@ -30,12 +30,14 @@ func (f *agentReviewsFactory) Upsert(rec *reviews.StoredReview) error {
 			"repo", "commit_sha", "branch",
 			"score", "max_score", "pass", "proven_count", "observation_count",
 			"summary", "agent_model", "duration_seconds", "submitted_by", "review",
+			"ticket_id", "pipeline_run_id",
 		).
 		Values(
 			rec.BuildID, rec.BuildName, rec.TeamName, rec.PipelineName, rec.JobName,
 			rec.Repo, rec.CommitSha, rec.Branch,
 			rec.Score, rec.MaxScore, rec.Pass, rec.ProvenCount, rec.ObservationCount,
 			rec.Summary, rec.AgentModel, rec.DurationSeconds, rec.SubmittedBy, []byte(rec.Review),
+			rec.TicketID, rec.PipelineRunID,
 		).
 		Suffix(`ON CONFLICT (build_id, repo, commit_sha) DO UPDATE SET
 			build_name = EXCLUDED.build_name,
@@ -53,6 +55,8 @@ func (f *agentReviewsFactory) Upsert(rec *reviews.StoredReview) error {
 			duration_seconds = EXCLUDED.duration_seconds,
 			submitted_by = EXCLUDED.submitted_by,
 			review = EXCLUDED.review,
+			ticket_id = COALESCE(EXCLUDED.ticket_id, agent_reviews.ticket_id),
+			pipeline_run_id = COALESCE(EXCLUDED.pipeline_run_id, agent_reviews.pipeline_run_id),
 			updated_at = now()`).
 		RunWith(f.conn).
 		Exec()
@@ -65,7 +69,8 @@ const reviewColumns = `r.build_id, r.build_name, r.team_name, r.pipeline_name, r
 	r.summary, r.agent_model, r.duration_seconds, r.submitted_by,
 	EXTRACT(EPOCH FROM r.created_at)::bigint,
 	(SELECT COUNT(DISTINCT fb.finding_id) FROM agent_feedback fb
-	  WHERE fb.repo = r.repo AND fb.commit_sha = r.commit_sha)`
+	  WHERE fb.repo = r.repo AND fb.commit_sha = r.commit_sha),
+	r.ticket_id, r.pipeline_run_id`
 
 func (f *agentReviewsFactory) GetByBuild(buildID int) ([]reviews.StoredReview, error) {
 	rows, err := f.conn.Query(
@@ -106,6 +111,19 @@ func (f *agentReviewsFactory) ListByTeam(team string, filter reviews.ListFilter)
 	return scanReviewRows(rows, false)
 }
 
+func (f *agentReviewsFactory) ListByTicket(ticketID int) ([]reviews.StoredReview, error) {
+	rows, err := f.conn.Query(
+		`SELECT `+reviewColumns+`
+		 FROM agent_reviews r WHERE r.ticket_id = $1 ORDER BY r.created_at ASC, r.id ASC`,
+		ticketID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanReviewRows(rows, false)
+}
+
 func scanReviewRows(rows *sql.Rows, withPayload bool) ([]reviews.StoredReview, error) {
 	results := []reviews.StoredReview{}
 	for rows.Next() {
@@ -117,6 +135,7 @@ func scanReviewRows(rows *sql.Rows, withPayload bool) ([]reviews.StoredReview, e
 			&rec.Score, &rec.MaxScore, &rec.Pass, &rec.ProvenCount, &rec.ObservationCount,
 			&rec.Summary, &rec.AgentModel, &rec.DurationSeconds, &rec.SubmittedBy,
 			&rec.CreatedAt, &rec.EvaluatedCount,
+			&rec.TicketID, &rec.PipelineRunID,
 		}
 		if withPayload {
 			dest = append(dest, &payload)

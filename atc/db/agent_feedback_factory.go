@@ -31,11 +31,15 @@ func (f *agentFeedbackFactory) Save(rec *feedback.StoredFeedback) error {
 			"repo", "commit_sha", "finding_id", "finding_type",
 			"finding_snapshot", "verdict", "confidence", "notes",
 			"reviewer", "source",
+			"ticket_id",
 		).
 		Values(
 			rec.ReviewRef.Repo, rec.ReviewRef.Commit, rec.FindingID, rec.FindingType,
 			snapshotBytes, rec.Verdict, rec.Confidence, rec.Notes,
 			rec.Reviewer, rec.Source,
+			sq.Expr(`(SELECT ticket_id FROM agent_reviews
+			          WHERE repo = ? AND commit_sha = ?
+			          ORDER BY id DESC LIMIT 1)`, rec.ReviewRef.Repo, rec.ReviewRef.Commit),
 		).
 		Suffix(`ON CONFLICT (repo, commit_sha, finding_id, reviewer) DO UPDATE SET
 			verdict = EXCLUDED.verdict,
@@ -44,6 +48,7 @@ func (f *agentFeedbackFactory) Save(rec *feedback.StoredFeedback) error {
 			finding_snapshot = EXCLUDED.finding_snapshot,
 			finding_type = EXCLUDED.finding_type,
 			source = EXCLUDED.source,
+			ticket_id = COALESCE(EXCLUDED.ticket_id, agent_feedback.ticket_id),
 			updated_at = now()`).
 		RunWith(f.conn).
 		Exec()

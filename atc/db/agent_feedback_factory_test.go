@@ -1,7 +1,9 @@
 package db_test
 
 import (
+	"database/sql"
 	"encoding/json"
+	"github.com/concourse/concourse/agent/api/reviews"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -132,5 +134,33 @@ var _ = Describe("AgentFeedbackFactory", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(len(results)).To(BeNumerically(">=", 2))
 		})
+	})
+})
+
+var _ = Describe("AgentFeedbackFactory ticket backfill", func() {
+	var factory db.AgentFeedbackFactory
+
+	BeforeEach(func() {
+		factory = db.NewAgentFeedbackFactory(dbConn)
+	})
+
+	It("backfills ticket_id from the linked review on Save", func() {
+		tid := 42
+		Expect(db.NewAgentReviewsFactory(dbConn).Upsert(&reviews.StoredReview{
+			BuildID: 301, Repo: "o/r", CommitSha: "ddd", TeamName: "main",
+			Review: json.RawMessage(`{}`), TicketID: &tid,
+		})).To(Succeed())
+
+		rec := feedbackRecord("o/r", "ddd", "judge-correctness-1", "accurate", "human")
+		rec.FindingType = "judge"
+		Expect(factory.Save(&rec)).To(Succeed())
+
+		var got sql.NullInt64
+		err := dbConn.QueryRow(
+			`SELECT ticket_id FROM agent_feedback WHERE repo = 'o/r' AND commit_sha = 'ddd' AND finding_id = 'judge-correctness-1'`,
+		).Scan(&got)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(got.Valid).To(BeTrue())
+		Expect(got.Int64).To(Equal(int64(42)))
 	})
 })

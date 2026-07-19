@@ -140,3 +140,54 @@ func feedbackRecord(repo, commit, findingID, verdict, reviewer string) feedback.
 		FindingID: findingID, Verdict: verdict, Reviewer: reviewer,
 	}
 }
+
+var _ = Describe("AgentReviewsFactory ticket linkage", func() {
+	var factory db.AgentReviewsFactory
+
+	BeforeEach(func() {
+		factory = db.NewAgentReviewsFactory(dbConn)
+	})
+
+	It("persists ticket_id/pipeline_run_id and lists by ticket oldest-first", func() {
+		tid, prid := 42, 7
+		err := factory.Upsert(&reviews.StoredReview{
+			BuildID: 201, Repo: "o/r", CommitSha: "aaa", TeamName: "main",
+			Review: json.RawMessage(`{}`), TicketID: &tid, PipelineRunID: &prid,
+		})
+		Expect(err).ToNot(HaveOccurred())
+		err = factory.Upsert(&reviews.StoredReview{
+			BuildID: 202, Repo: "o/r", CommitSha: "bbb", TeamName: "main",
+			Review: json.RawMessage(`{}`), TicketID: &tid,
+		})
+		Expect(err).ToNot(HaveOccurred())
+
+		got, err := factory.ListByTicket(42)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(got).To(HaveLen(2))
+		Expect(got[0].BuildID).To(Equal(201))
+		Expect(*got[0].TicketID).To(Equal(42))
+		Expect(*got[0].PipelineRunID).To(Equal(7))
+		Expect(got[1].PipelineRunID).To(BeNil())
+	})
+
+	It("preserves linkage when a NULL-linkage upsert hits the same key", func() {
+		tid := 42
+		Expect(factory.Upsert(&reviews.StoredReview{
+			BuildID: 203, Repo: "o/r", CommitSha: "ccc", TeamName: "main",
+			Review: json.RawMessage(`{}`), TicketID: &tid,
+		})).To(Succeed())
+		// same (build_id, repo, commit_sha) key, no linkage — the CI path
+		Expect(factory.Upsert(&reviews.StoredReview{
+			BuildID: 203, Repo: "o/r", CommitSha: "ccc", TeamName: "main",
+			Review: json.RawMessage(`{}`),
+		})).To(Succeed())
+
+		got, err := factory.ListByTicket(42)
+		Expect(err).ToNot(HaveOccurred())
+		var builds []int
+		for _, r := range got {
+			builds = append(builds, r.BuildID)
+		}
+		Expect(builds).To(ContainElement(203), "COALESCE must preserve linkage past a NULL upsert")
+	})
+})

@@ -36,6 +36,19 @@ type FakeAgentReviewsFactory struct {
 		result1 []reviews.StoredReview
 		result2 error
 	}
+	ListByTicketStub        func(int) ([]reviews.StoredReview, error)
+	listByTicketMutex       sync.RWMutex
+	listByTicketArgsForCall []struct {
+		arg1 int
+	}
+	listByTicketReturns struct {
+		result1 []reviews.StoredReview
+		result2 error
+	}
+	listByTicketReturnsOnCall map[int]struct {
+		result1 []reviews.StoredReview
+		result2 error
+	}
 	UpsertStub        func(*reviews.StoredReview) error
 	upsertMutex       sync.RWMutex
 	upsertArgsForCall []struct {
@@ -175,6 +188,70 @@ func (fake *FakeAgentReviewsFactory) ListByTeamReturnsOnCall(i int, result1 []re
 		})
 	}
 	fake.listByTeamReturnsOnCall[i] = struct {
+		result1 []reviews.StoredReview
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeAgentReviewsFactory) ListByTicket(arg1 int) ([]reviews.StoredReview, error) {
+	fake.listByTicketMutex.Lock()
+	ret, specificReturn := fake.listByTicketReturnsOnCall[len(fake.listByTicketArgsForCall)]
+	fake.listByTicketArgsForCall = append(fake.listByTicketArgsForCall, struct {
+		arg1 int
+	}{arg1})
+	stub := fake.ListByTicketStub
+	fakeReturns := fake.listByTicketReturns
+	fake.recordInvocation("ListByTicket", []interface{}{arg1})
+	fake.listByTicketMutex.Unlock()
+	if stub != nil {
+		return stub(arg1)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2
+	}
+	return fakeReturns.result1, fakeReturns.result2
+}
+
+func (fake *FakeAgentReviewsFactory) ListByTicketCallCount() int {
+	fake.listByTicketMutex.RLock()
+	defer fake.listByTicketMutex.RUnlock()
+	return len(fake.listByTicketArgsForCall)
+}
+
+func (fake *FakeAgentReviewsFactory) ListByTicketCalls(stub func(int) ([]reviews.StoredReview, error)) {
+	fake.listByTicketMutex.Lock()
+	defer fake.listByTicketMutex.Unlock()
+	fake.ListByTicketStub = stub
+}
+
+func (fake *FakeAgentReviewsFactory) ListByTicketArgsForCall(i int) int {
+	fake.listByTicketMutex.RLock()
+	defer fake.listByTicketMutex.RUnlock()
+	argsForCall := fake.listByTicketArgsForCall[i]
+	return argsForCall.arg1
+}
+
+func (fake *FakeAgentReviewsFactory) ListByTicketReturns(result1 []reviews.StoredReview, result2 error) {
+	fake.listByTicketMutex.Lock()
+	defer fake.listByTicketMutex.Unlock()
+	fake.ListByTicketStub = nil
+	fake.listByTicketReturns = struct {
+		result1 []reviews.StoredReview
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeAgentReviewsFactory) ListByTicketReturnsOnCall(i int, result1 []reviews.StoredReview, result2 error) {
+	fake.listByTicketMutex.Lock()
+	defer fake.listByTicketMutex.Unlock()
+	fake.ListByTicketStub = nil
+	if fake.listByTicketReturnsOnCall == nil {
+		fake.listByTicketReturnsOnCall = make(map[int]struct {
+			result1 []reviews.StoredReview
+			result2 error
+		})
+	}
+	fake.listByTicketReturnsOnCall[i] = struct {
 		result1 []reviews.StoredReview
 		result2 error
 	}{result1, result2}
