@@ -14,6 +14,7 @@ import AgentBadge
 import Application.Models exposing (Session)
 import Colors
 import Concourse.Agent as Agent
+import DateFormat
 import EffectTransformer exposing (ET)
 import Html exposing (Html)
 import Html.Attributes exposing (checked, class, disabled, href, id, placeholder, style, title, type_, value)
@@ -27,10 +28,11 @@ import Message.Message exposing (Message(..))
 import Message.ScrollDirection as ScrollDirection
 import Message.Subscription
     exposing
-        ( Delivery(..)
+        ( Delivery
         , Interval(..)
-        , Subscription(..)
+        , Subscription
         )
+import Polling
 import Routes
 import Set exposing (Set)
 import SideBar.SideBar as SideBar
@@ -379,35 +381,37 @@ tooltip _ _ =
     Nothing
 
 
-handleDelivery : Delivery -> ET Model
-handleDelivery delivery ( model, effects ) =
-    case delivery of
-        ClockTicked OneMinute _ ->
-            -- Self-healing refresh. These fetches only replace the fetched
-            -- data (and clear their own errors); they never touch the mint
-            -- form or the one-time token box, so a tick can't wipe them.
-            -- One minute is plenty: this is near-static admin data (the cost
-            -- rollup alone is a 30-day ledger aggregation), and mutations
-            -- (mint/revoke/promote) already refetch explicitly.
-            ( model
-            , effects
-                ++ [ FetchAgentRunMetrics
-                   , FetchAgentWorkflows
-                   , FetchAgentCostRollup
-                   , FetchAgentTicketCosts
-                   , FetchAgentCredentials
-                   , FetchAgentPlatformCredentials
-                   , FetchAgentPrincipals
-                   ]
-            )
+{-| Self-healing refresh. These fetches only replace the fetched data (and
+clear their own errors); the mint form and the one-time token box live
+outside the poll, so a tick can't wipe them. One minute is plenty: this is
+near-static admin data (the cost rollup alone is a 30-day ledger
+aggregation), and mutations (mint/revoke/promote) already refetch explicitly.
+-}
+polls : List (Polling.Poll Model)
+polls =
+    [ { interval = OneMinute
+      , fetch =
+            \_ ->
+                [ FetchAgentRunMetrics
+                , FetchAgentWorkflows
+                , FetchAgentCostRollup
+                , FetchAgentTicketCosts
+                , FetchAgentCredentials
+                , FetchAgentPlatformCredentials
+                , FetchAgentPrincipals
+                ]
+      }
+    ]
 
-        _ ->
-            ( model, effects )
+
+handleDelivery : Delivery -> ET Model
+handleDelivery =
+    Polling.handleDelivery polls
 
 
 subscriptions : List Subscription
 subscriptions =
-    [ OnClockTick OneMinute ]
+    Polling.subscriptions polls
 
 
 
@@ -608,7 +612,8 @@ agentContentId =
 around without scroll-hunting. Each entry scrolls to a section's `id` via the
 `scrollToId` port — a plain `#fragment` href is dead here: `Browser.application`
 intercepts every internal link click and re-navigates through `Routes`, which
-carries no fragment for this page, so the browser never performs the jump. -}
+carries no fragment for this page, so the browser never performs the jump.
+-}
 sectionNav : Html Message
 sectionNav =
     Html.div
@@ -1153,11 +1158,11 @@ tableCell align content =
         [ Html.text content ]
 
 
-{-| Humanize an optional epoch timestamp as a yyyy-mm-dd hh:mm in the viewer's
-own time zone (from `session.timeZone`), or "—" when absent. Showing local time
-is what an operator expects for "which of today's runs came first"; the minutes
-matter on an ops console. The server-aggregated cost buckets stay labelled as
-UTC days separately.
+{-| Humanize an optional timestamp as a compact absolute time in the viewer's
+own time zone (from `session.timeZone`), e.g. "Jul 18, 2026 14:30", or "—"
+when absent. Showing local time is what an operator expects for "which of
+today's runs came first"; the minutes matter on an ops console. The
+server-aggregated cost buckets stay labelled as UTC days separately.
 -}
 formatPosix : Time.Zone -> Maybe Time.Posix -> String
 formatPosix zone maybe =
@@ -1166,60 +1171,19 @@ formatPosix zone maybe =
             "—"
 
         Just posix ->
-            String.fromInt (Time.toYear zone posix)
-                ++ "-"
-                ++ pad2 (monthNumber (Time.toMonth zone posix))
-                ++ "-"
-                ++ pad2 (Time.toDay zone posix)
-                ++ " "
-                ++ pad2 (Time.toHour zone posix)
-                ++ ":"
-                ++ pad2 (Time.toMinute zone posix)
-
-
-pad2 : Int -> String
-pad2 n =
-    String.padLeft 2 '0' (String.fromInt n)
-
-
-monthNumber : Time.Month -> Int
-monthNumber month =
-    case month of
-        Time.Jan ->
-            1
-
-        Time.Feb ->
-            2
-
-        Time.Mar ->
-            3
-
-        Time.Apr ->
-            4
-
-        Time.May ->
-            5
-
-        Time.Jun ->
-            6
-
-        Time.Jul ->
-            7
-
-        Time.Aug ->
-            8
-
-        Time.Sep ->
-            9
-
-        Time.Oct ->
-            10
-
-        Time.Nov ->
-            11
-
-        Time.Dec ->
-            12
+            DateFormat.format
+                [ DateFormat.monthNameAbbreviated
+                , DateFormat.text " "
+                , DateFormat.dayOfMonthNumber
+                , DateFormat.text ", "
+                , DateFormat.yearNumber
+                , DateFormat.text " "
+                , DateFormat.hourMilitaryFixed
+                , DateFormat.text ":"
+                , DateFormat.minuteFixed
+                ]
+                zone
+                posix
 
 
 
@@ -1348,7 +1312,8 @@ credentialRow zone c =
 
 principalsSection : Time.Zone -> Model -> Html Message
 principalsSection zone model =
-    sectionBlock "agent-principals" "Principals"
+    sectionBlock "agent-principals"
+        "Principals"
         (mintFence model
             :: revokeErrorLine model
             :: principalsBody zone model
@@ -1357,7 +1322,8 @@ principalsSection zone model =
 
 {-| Fence the privileged mint form inside its own bordered, labelled box so it
 is unmistakably a credential-issuing control and does not read as just another
-read-only panel sitting under the spend tables (U15). -}
+read-only panel sitting under the spend tables (U15).
+-}
 mintFence : Model -> Html Message
 mintFence model =
     Html.div

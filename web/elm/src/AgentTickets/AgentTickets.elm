@@ -23,7 +23,8 @@ import Login.Login as Login
 import Message.Callback exposing (Callback(..))
 import Message.Effects exposing (Effect(..))
 import Message.Message exposing (Message(..))
-import Message.Subscription exposing (Delivery(..), Interval(..), Subscription(..))
+import Message.Subscription exposing (Delivery(..), Interval(..), Subscription)
+import Polling
 import Routes
 import SideBar.SideBar as SideBar
 import Time
@@ -126,22 +127,34 @@ handleCallback callback ( model, effects ) =
             ( model, effects )
 
 
+polls : List (Polling.Poll Model)
+polls =
+    [ -- U11: live-update the queue on the dashboard's 5s cadence so state
+      -- never goes stale.
+      { interval = FiveSeconds, fetch = \_ -> [ FetchAgentTickets ] }
+    , -- The cost rollup is a whole-window ledger aggregation — far too
+      -- heavy to run 12x/minute per open tab for numbers that move at
+      -- run granularity. Refresh it on the minute like the /agent page.
+      { interval = OneMinute, fetch = \_ -> [ FetchAgentTicketCosts ] }
+    ]
+
+
 handleDelivery : Delivery -> ET Model
-handleDelivery delivery ( model, effects ) =
+handleDelivery delivery =
+    advanceNow delivery >> Polling.handleDelivery polls delivery
+
+
+{-| Advance "now" for the elapsed-time labels on the same beat as the 5s
+refetch (a dedicated OneSecond tick used to re-filter and re-sort the whole
+queue every second just to move "N ago" labels the refetch redraws anyway).
+This is the page's one model write on a clock tick, kept out of `polls` so
+polling stays fetch-only.
+-}
+advanceNow : Delivery -> ET Model
+advanceNow delivery ( model, effects ) =
     case delivery of
         ClockTicked FiveSeconds time ->
-            -- U11: live-update the queue on the dashboard's 5s cadence so state
-            -- never goes stale, and advance "now" for the elapsed-time labels
-            -- on the same beat (a dedicated OneSecond tick re-filtered and
-            -- re-sorted the whole queue every second just to move "N ago"
-            -- labels the refetch redraws anyway). Only replaces fetched data.
-            ( { model | now = Just time }, effects ++ [ FetchAgentTickets ] )
-
-        ClockTicked OneMinute _ ->
-            -- The cost rollup is a whole-window ledger aggregation — far too
-            -- heavy to run 12x/minute per open tab for numbers that move at
-            -- run granularity. Refresh it on the minute like the /agent page.
-            ( model, effects ++ [ FetchAgentTicketCosts ] )
+            ( { model | now = Just time }, effects )
 
         _ ->
             ( model, effects )
@@ -167,7 +180,7 @@ tooltip _ _ =
 
 subscriptions : List Subscription
 subscriptions =
-    [ OnClockTick FiveSeconds, OnClockTick OneMinute ]
+    Polling.subscriptions polls
 
 
 view : Session -> Model -> Html Message

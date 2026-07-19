@@ -27,6 +27,7 @@ import Build.AgentReview
 import Concourse.Agent
 import Concourse.AgentReview
 import Concourse.AgentTicket as AgentTicket
+import DateFormat
 import Dict exposing (Dict)
 import EffectTransformer exposing (ET)
 import Html exposing (Html)
@@ -38,7 +39,8 @@ import Login.Login as Login
 import Message.Callback exposing (Callback(..))
 import Message.Effects exposing (Effect(..))
 import Message.Message exposing (Message(..))
-import Message.Subscription exposing (Delivery(..), Interval(..), Subscription(..))
+import Message.Subscription exposing (Delivery, Interval(..), Subscription)
+import Polling
 import Routes
 import Set exposing (Set)
 import SideBar.SideBar as SideBar
@@ -131,11 +133,11 @@ handleCallback : Callback -> ET Model
 handleCallback callback ( model, effects ) =
     case callback of
         AgentTicketFetched (Ok fresh) ->
-            -- The 5s self-heal refetch must not clobber an open edit form: when
-            -- the user is editing, leave the edit buffers untouched (a periodic
-            -- refetch would otherwise silently revert their unsaved typing every
-            -- few seconds, and a tick just before Save would persist the reverted
-            -- server values as a no-op that looks successful).
+            -- Only replace fetched data. The edit buffers are deliberately
+            -- not written here: they are seeded when the user clicks Edit
+            -- (see ClickAgentTicketEdit), so the 5s self-heal refetch cannot
+            -- silently revert unsaved typing — a guard this callback once
+            -- forgot, clobbering an open edit every few seconds.
             let
                 -- Keep the previously installed record when the refetch decoded
                 -- identical data: Html.Lazy compares arguments by reference, so
@@ -164,9 +166,6 @@ handleCallback callback ( model, effects ) =
                 -- to reach — exit the edit explicitly and say why.
                 editKilledByTerminal =
                     model.editing && isTerminal detail.ticket.state
-
-                stillEditing =
-                    model.editing && not editKilledByTerminal
             in
             ( { model
                 | detail = Just detail
@@ -186,7 +185,7 @@ handleCallback callback ( model, effects ) =
                     else
                         model.pendingTransition
                 , dispatchConfirm = model.dispatchConfirm && not stateChanged
-                , editing = stillEditing
+                , editing = model.editing && not editKilledByTerminal
                 , actionError =
                     if editKilledByTerminal then
                         Just
@@ -197,26 +196,6 @@ handleCallback callback ( model, effects ) =
 
                     else
                         model.actionError
-                , editTitle =
-                    if stillEditing then
-                        model.editTitle
-
-                    else
-                        detail.ticket.title
-                , editBody =
-                    if stillEditing then
-                        model.editBody
-
-                    else
-                        detail.ticket.body
-                , editBudget =
-                    if stillEditing then
-                        model.editBudget
-
-                    else
-                        detail.ticket.budgetUsd
-                            |> Maybe.map String.fromFloat
-                            |> Maybe.withDefault ""
               }
             , effects
             )
@@ -299,31 +278,35 @@ handleCallback callback ( model, effects ) =
             ( model, effects )
 
 
+{-| U11: live-update on the dashboard's 5s cadence so state, spend and runs
+stay current (a page was showing "Running" ~20 min after the ticket errored).
+Once the ticket is terminal nothing can change server-side (no dispatch,
+frozen runs/costs), so stop polling instead of refetching identical bytes
+for the life of the tab; keep polling while detail is still unknown.
+-}
+polls : List (Polling.Poll Model)
+polls =
+    [ { interval = FiveSeconds
+      , fetch =
+            \model ->
+                let
+                    settled =
+                        model.detail
+                            |> Maybe.map (\d -> isTerminal d.ticket.state)
+                            |> Maybe.withDefault False
+                in
+                if settled then
+                    []
+
+                else
+                    [ FetchAgentTicket model.ticketId, FetchAgentTicketMetrics model.ticketId ]
+      }
+    ]
+
+
 handleDelivery : Delivery -> ET Model
-handleDelivery delivery ( model, effects ) =
-    case delivery of
-        ClockTicked FiveSeconds _ ->
-            -- U11: live-update on the dashboard's 5s cadence so state, spend and
-            -- runs stay current (a page was showing "Running" ~20 min after the
-            -- ticket errored). Only replaces fetched data. Once the ticket is
-            -- terminal nothing can change server-side (no dispatch, frozen
-            -- runs/costs), so stop polling instead of refetching identical
-            -- bytes for the life of the tab; keep polling while detail is
-            -- still unknown.
-            let
-                settled =
-                    model.detail
-                        |> Maybe.map (\d -> isTerminal d.ticket.state)
-                        |> Maybe.withDefault False
-            in
-            if settled then
-                ( model, effects )
-
-            else
-                ( model, effects ++ [ FetchAgentTicket model.ticketId, FetchAgentTicketMetrics model.ticketId ] )
-
-        _ ->
-            ( model, effects )
+handleDelivery =
+    Polling.handleDelivery polls
 
 
 update : Message -> ET Model
@@ -333,7 +316,30 @@ update msg ( model, effects ) =
             ( { model | activeTab = tabFromString tab }, effects )
 
         ClickAgentTicketEdit ->
-            ( { model | editing = True, actionError = Nothing }, effects )
+            -- Entering edit seeds the buffers from the last-fetched ticket,
+            -- once. The fetch callback never writes them (see
+            -- AgentTicketFetched), so a future ticket field can't
+            -- reintroduce the refetch-clobbers-typing bug by forgetting an
+            -- `if editing` guard.
+            case model.detail of
+                Just { ticket } ->
+                    ( { model
+                        | editing = True
+                        , actionError = Nothing
+                        , editTitle = ticket.title
+                        , editBody = ticket.body
+                        , editBudget =
+                            ticket.budgetUsd
+                                |> Maybe.map String.fromFloat
+                                |> Maybe.withDefault ""
+                      }
+                    , effects
+                    )
+
+                Nothing ->
+                    -- Nothing fetched yet, nothing to edit (the Edit button
+                    -- only renders once the detail is loaded).
+                    ( model, effects )
 
         AgentTicketTitleChanged v ->
             ( { model | editTitle = v }, effects )
@@ -439,7 +445,7 @@ tooltip _ _ =
 
 subscriptions : List Subscription
 subscriptions =
-    [ OnClockTick FiveSeconds ]
+    Polling.subscriptions polls
 
 
 
@@ -1323,7 +1329,7 @@ groupMetricsByBuild metrics =
 
 
 {-| The last non-empty summary of a build's metric rows (rows arrive
-created_at ASC): the final step's verdict, not the first step's self-report.
+created\_at ASC): the final step's verdict, not the first step's self-report.
 -}
 lastNonEmptySummary : List Concourse.Agent.RunMetric -> String
 lastNonEmptySummary rows =
@@ -1357,62 +1363,19 @@ page has a zone but no live "now" clock to diff against.
 -}
 formatTimestamp : Time.Zone -> Int -> String
 formatTimestamp zone epochSeconds =
-    let
-        posix =
-            Time.millisToPosix (epochSeconds * 1000)
-
-        pad n =
-            String.padLeft 2 '0' (String.fromInt n)
-    in
-    monthAbbr (Time.toMonth zone posix)
-        ++ " "
-        ++ String.fromInt (Time.toDay zone posix)
-        ++ ", "
-        ++ String.fromInt (Time.toYear zone posix)
-        ++ " "
-        ++ pad (Time.toHour zone posix)
-        ++ ":"
-        ++ pad (Time.toMinute zone posix)
-
-
-monthAbbr : Time.Month -> String
-monthAbbr month =
-    case month of
-        Time.Jan ->
-            "Jan"
-
-        Time.Feb ->
-            "Feb"
-
-        Time.Mar ->
-            "Mar"
-
-        Time.Apr ->
-            "Apr"
-
-        Time.May ->
-            "May"
-
-        Time.Jun ->
-            "Jun"
-
-        Time.Jul ->
-            "Jul"
-
-        Time.Aug ->
-            "Aug"
-
-        Time.Sep ->
-            "Sep"
-
-        Time.Oct ->
-            "Oct"
-
-        Time.Nov ->
-            "Nov"
-
-        Time.Dec ->
-            "Dec"
+    DateFormat.format
+        [ DateFormat.monthNameAbbreviated
+        , DateFormat.text " "
+        , DateFormat.dayOfMonthNumber
+        , DateFormat.text ", "
+        , DateFormat.yearNumber
+        , DateFormat.text " "
+        , DateFormat.hourMilitaryFixed
+        , DateFormat.text ":"
+        , DateFormat.minuteFixed
+        ]
+        zone
+        (Time.millisToPosix (epochSeconds * 1000))
 
 
 formatUsd : Float -> String
