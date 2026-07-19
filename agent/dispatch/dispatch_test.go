@@ -327,3 +327,57 @@ func TestDispatchOneNilBudgetSkipsAdmission(t *testing.T) {
 }
 
 var _ dispatch.RunCreator = db.PipelineRunFactory(nil)
+
+type fakeUserLookup struct{ ids map[string]int }
+
+func (f fakeUserLookup) FindByUsername(name string) (int, bool, error) {
+	id, ok := f.ids[name]
+	return id, ok, nil
+}
+
+func TestDispatchOneResolvesAndPersistsUserID(t *testing.T) {
+	deps, store, _, _ := dispatchDeps(t)
+	deps.Users = fakeUserLookup{ids: map[string]int{"tdm": 42}}
+	// Give user 42 a vaulted credential so user-first resolution is provable.
+	deps.Credentials = &fakeBackend{
+		platformUserID: 9,
+		creds: map[int]map[string]*credentials.Credential{
+			9:  {credentials.KindAnthropicOAuth: {UserID: 9, Kind: credentials.KindAnthropicOAuth, Token: "platform-tok"}},
+			42: {credentials.KindAnthropicOAuth: {UserID: 42, UserName: "tdm", Kind: credentials.KindAnthropicOAuth, Token: "tdm-tok"}},
+		},
+	}
+	attacher := new(credentialsfakes.FakeSecretAttacher)
+	deps.Secrets = attacher
+	id := queuedTicket(t, store, "smoke") // UserName "tdm", UserID nil
+
+	if _, err := dispatch.DispatchOne(context.Background(), deps, id, "loop"); err != nil {
+		t.Fatalf("DispatchOne: %v", err)
+	}
+	got, _, _ := store.Get(id)
+	if got.UserID == nil || *got.UserID != 42 {
+		t.Fatalf("user_id must be resolved+persisted at dispatch, got %v", got.UserID)
+	}
+	if attacher.AttachCallCount() != 1 {
+		t.Fatal("expected one Attach")
+	}
+	_, _, cred, _ := attacher.AttachArgsForCall(0)
+	if cred.Token != "tdm-tok" {
+		t.Errorf("user-first credential must fund the run once user_id resolves, got token %q", cred.Token)
+	}
+}
+
+func TestDispatchOneUnknownUserFallsBackToPlatform(t *testing.T) {
+	deps, store, _, _ := dispatchDeps(t)
+	deps.Users = fakeUserLookup{ids: map[string]int{}} // "tdm" not found
+	attacher := new(credentialsfakes.FakeSecretAttacher)
+	deps.Secrets = attacher
+	id := queuedTicket(t, store, "smoke")
+
+	if _, err := dispatch.DispatchOne(context.Background(), deps, id, "loop"); err != nil {
+		t.Fatalf("unknown user must not block dispatch (platform funds it): %v", err)
+	}
+	got, _, _ := store.Get(id)
+	if got.UserID != nil {
+		t.Errorf("unresolvable user leaves user_id NULL, got %v", got.UserID)
+	}
+}

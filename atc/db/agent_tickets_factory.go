@@ -187,6 +187,9 @@ func (f *agentTicketsFactory) Update(id int, upd tickets.Update) error {
 	if upd.WorkflowVersion != nil {
 		q = q.Set("workflow_version", *upd.WorkflowVersion)
 	}
+	if upd.UserID != nil {
+		q = q.Set("user_id", *upd.UserID)
+	}
 	if upd.TargetBranch != nil {
 		q = q.Set("target_branch", *upd.TargetBranch)
 	}

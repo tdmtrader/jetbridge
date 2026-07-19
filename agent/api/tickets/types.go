@@ -198,6 +198,11 @@ type Update struct {
 	WorkflowName    *string
 	WorkflowVersion *int
 	TargetBranch    *string
+	// UserID resolves the triggering user (co-signed dispatch remainder,
+	// 2026-07-17): dispatch looks up users.id from UserName at dispatch
+	// time and records it here — the wave-4 leg the create handler's
+	// comment promised. Additive; nil = leave unchanged.
+	UserID *int
 }
 
 // TransitionMeta carries the side-band values a transition records.

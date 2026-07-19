@@ -40,6 +40,11 @@ var (
 	ErrBudgetExhausted = errors.New("budget exhausted; dispatch deferred")
 )
 
+// UserLookup resolves users.id from a username (db.NewAgentUserLookup).
+type UserLookup interface {
+	FindByUsername(username string) (int, bool, error)
+}
+
 // WorkflowResolver is the subset of workflow.Store dispatch reads.
 type WorkflowResolver interface {
 	Live(name string) (*workflow.Definition, bool, error)
@@ -76,6 +81,11 @@ type Deps struct {
 	// Secrets == nil skips the leg (unit/DB tests without a cluster).
 	Principals  principals.Store
 	Credentials credentials.Backend
+
+	// Users, when non-nil, resolves the ticket's triggering user id at
+	// dispatch (the create handler records only the username). nil skips
+	// (platform-funded, as before).
+	Users UserLookup
 	Secrets     credentials.SecretAttacher
 
 	// SecretLabels, when non-nil, adds the concourse/ticket label after a
@@ -159,6 +169,24 @@ func DispatchOne(ctx context.Context, deps Deps, ticketID int, dispatchedBy stri
 		v := def.Version
 		if err := deps.Tickets.Update(ticketID, tickets.Update{WorkflowVersion: &v}); err != nil {
 			return Result{}, fmt.Errorf("freeze workflow version: %w", err)
+		}
+	}
+
+	// Resolve the triggering user's id (the wave-4 leg ticket-core left to
+	// dispatch): user-first credential funding and spend attribution key
+	// on agent_tickets.user_id, which nothing populated before this.
+	// Unresolvable username → platform-funded (found=false is not an
+	// error); store faults ARE errors (ticket stays queued, retried).
+	if t.UserID == nil && t.UserName != "" && deps.Users != nil {
+		uid, found, err := deps.Users.FindByUsername(t.UserName)
+		if err != nil {
+			return Result{}, fmt.Errorf("resolve user %q: %w", t.UserName, err)
+		}
+		if found {
+			if err := deps.Tickets.Update(ticketID, tickets.Update{UserID: &uid}); err != nil {
+				return Result{}, fmt.Errorf("record user id: %w", err)
+			}
+			t.UserID = &uid
 		}
 	}
 

@@ -95,6 +95,10 @@ func (m *MemoryStore) Update(id int, upd Update) error {
 		v := *upd.BudgetUSD
 		t.BudgetUSD = &v
 	}
+	if upd.UserID != nil {
+		v := *upd.UserID
+		t.UserID = &v
+	}
 	if upd.WorkflowName != nil {
 		t.WorkflowName = *upd.WorkflowName
 	}

@@ -27,6 +27,20 @@ var _ = Describe("AgentTicketsFactory", func() {
 		}
 	}
 
+	It("updates user_id via the non-state writer (dispatch user resolution, 2026-07-17)", func() {
+		id, err := factory.Create(newTicket("user-id round trip", "tdmtrader/concourse"))
+		Expect(err).ToNot(HaveOccurred())
+
+		uid := 4242
+		Expect(factory.Update(id, tickets.Update{UserID: &uid})).To(Succeed())
+
+		got, found, err := factory.Get(id)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(got.UserID).ToNot(BeNil())
+		Expect(*got.UserID).To(Equal(4242))
+	})
+
 	It("creates a draft ticket and round-trips every column", func() {
 		id, err := factory.Create(newTicket("fix flaky spec", "tdmtrader/concourse"))
 		Expect(err).ToNot(HaveOccurred())
