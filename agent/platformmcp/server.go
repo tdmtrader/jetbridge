@@ -61,18 +61,9 @@ func (s *Server) ListenAndServe() error {
 	return srv.ListenAndServe()
 }
 
-// Temporary in-order bridge: replaced by the flight-recorder events task
-// (EventLog) / the checkpoint-endpoint task (handleCheckpoint) — remainder
-// Tasks 16 and 18; neither placeholder survives its owning task's tests.
-
-type EventLog struct{}
-
-func NewEventLog(string) (*EventLog, error) { return &EventLog{}, nil }
-
-// Emit is a no-op until the flight-recorder task. Call sites pass untyped
-// string constants, so they compile unchanged against its schema.EventType
-// signature.
-func (l *EventLog) Emit(eventType string, data map[string]interface{}) {}
+// Temporary in-order bridge: replaced by the checkpoint-endpoint task
+// (handleCheckpoint) — remainder Task 18; the placeholder does not survive
+// its owning task's tests.
 
 func (s *Server) handleCheckpoint(w http.ResponseWriter, r *http.Request) {
 	http.Error(w, "checkpoint endpoint lands with the checkpoint-gate task", http.StatusNotImplemented)

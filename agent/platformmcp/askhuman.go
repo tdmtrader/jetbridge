@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/concourse/concourse/agent/schema"
 )
 
 // TunePolling shortens the client long-poll and retry intervals (tests only).
@@ -59,7 +61,7 @@ func (s *Server) askHuman(ctx context.Context, args json.RawMessage, progress fu
 	if err != nil {
 		return nil, fmt.Errorf("filing question: %w", err)
 	}
-	s.events.Emit("human.ask", map[string]any{
+	s.events.Emit(schema.EventHumanAsk, map[string]any{
 		"question_id": created.ID,
 		"kind":        "question",
 		"question":    in.Question,
@@ -69,7 +71,7 @@ func (s *Server) askHuman(ctx context.Context, args json.RawMessage, progress fu
 	// row — the continuation's re-issued call gets its answer immediately (no
 	// park, no threshold timer, no SSE wait).
 	if created.AnsweredAt != 0 {
-		s.events.Emit("human.answer", map[string]any{
+		s.events.Emit(schema.EventHumanAnswer, map[string]any{
 			"question_id":  created.ID,
 			"answer":       created.Answer,
 			"answered_by":  created.AnsweredBy,
@@ -97,7 +99,7 @@ func (s *Server) askHuman(ctx context.Context, args json.RawMessage, progress fu
 		return nil, err
 	}
 	waitSeconds := time.Now().Unix() - created.AskedAt
-	s.events.Emit("human.answer", map[string]any{
+	s.events.Emit(schema.EventHumanAnswer, map[string]any{
 		"question_id":  created.ID,
 		"answer":       answered.Answer,
 		"answered_by":  answered.AnsweredBy,
