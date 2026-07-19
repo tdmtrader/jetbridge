@@ -2127,6 +2127,7 @@ func (cmd *RunCommand) constructEngine(
 				engine.WithAgentRunVerifier(pipelineRunFactory),
 				engine.WithAgentTicketsStore(db.NewAgentTicketsFactory(dbConn)),
 				engine.WithAgentReviewsStore(db.NewAgentReviewsFactory(dbConn)),
+				engine.WithAgentOutcomesStore(db.NewAgentOutcomesFactory(dbConn)),
 				engine.WithAgentPlatformUserResolver(db.NewAgentUserCredentialsFactory(dbConn)),
 			),
 			cmd.ExternalURL.String(),

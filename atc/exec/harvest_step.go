@@ -13,6 +13,7 @@ import (
 	"code.cloudfoundry.org/lager/v3"
 	"code.cloudfoundry.org/lager/v3/lagerctx"
 	"github.com/concourse/concourse/agent/api/metrics"
+	"github.com/concourse/concourse/agent/api/outcomes"
 	"github.com/concourse/concourse/agent/api/reviews"
 	"github.com/concourse/concourse/agent/api/tickets"
 	"github.com/concourse/concourse/agent/budget"
@@ -80,6 +81,15 @@ func WithHarvestReviewsStore(r reviews.Store) HarvestStepOption {
 	return func(h *HarvestStep) { h.reviewsStore = r }
 }
 
+// WithHarvestOutcomesStore wires delivery-outcomes' store so a
+// successful push seeds the agent_outcomes row with the runner's
+// authoritative shas (§1.11.1: harvest is the primary outcome-row
+// creator; the outcome watcher's branch-head fallback covers rows
+// harvest could not seed). nil disables seeding — never fatal.
+func WithHarvestOutcomesStore(s outcomes.Store) HarvestStepOption {
+	return func(h *HarvestStep) { h.outcomesStore = s }
+}
+
 // WithHarvestBudgetRecorder sets the budget library used for the
 // fire-and-forget harvest_judge ledger append.
 func WithHarvestBudgetRecorder(c budget.Checker) HarvestStepOption {
@@ -123,6 +133,7 @@ type HarvestStep struct {
 	streamer             Streamer
 	metricsStore         metrics.Store
 	reviewsStore         reviews.Store
+	outcomesStore        outcomes.Store
 	budgetChecker        budget.Checker
 	platformUserResolver PlatformUserResolver
 }
@@ -354,8 +365,9 @@ func (step *HarvestStep) run(ctx context.Context, state RunState, delegate TaskD
 	// path where the container ran, including DeadlineExceeded and process
 	// failures, BEFORE exit handling returns (mirrors AgentStep). ctx here
 	// is the timeout-scoped context; ingestAndRecord detaches from it
-	// internally (finding F4).
-	step.ingestAndRecord(ctx, logger, chosenWorker, volumeMounts, time.Since(processStart))
+	// internally (finding F4). The validated results document (nil when
+	// missing/malformed) feeds the exit-0 outcome seeding below.
+	results := step.ingestAndRecord(ctx, logger, chosenWorker, volumeMounts, time.Since(processStart))
 
 	if runErr != nil {
 		if errors.Is(runErr, context.DeadlineExceeded) {
@@ -380,6 +392,11 @@ func (step *HarvestStep) run(ctx context.Context, state RunState, delegate TaskD
 			branch = step.plan.Branch
 		}
 		step.transitionTicket(ctx, logger, "needs_review", branch, "")
+		if branch != "" {
+			// AFTER the transition — that ordering is load-bearing
+			// (§1.11.1: the row must never precede the lifecycle edge).
+			step.seedOutcome(logger, results, branch)
+		}
 	case 1:
 		step.transitionTicket(ctx, logger, "needs_review", "", "")
 	default:
@@ -452,6 +469,54 @@ func (step *HarvestStep) transitionTicket(ctx context.Context, logger lager.Logg
 	}
 }
 
+// seedOutcome creates/refreshes the agent_outcomes row with the runner's
+// authoritative shas at push time (§1.11.1 primary path; the outcome
+// watcher's branch-head fallback covers rows harvest could not seed).
+// It runs AFTER transitionTicket — transition-first ordering is
+// load-bearing — and only for server-verified ticket claims (plan env is
+// attacker-writable YAML). res is the run-report ingestAndRecord parsed
+// off the flight volume; nil (missing/malformed results.json) still
+// seeds the row — it anchors created_at — just with empty shas.
+// Failures are logged, never fatal, never affect the step result.
+func (step *HarvestStep) seedOutcome(logger lager.Logger, res *schema.Results, branch string) {
+	if step.outcomesStore == nil {
+		return
+	}
+	ticketID, _ := step.verifiedIDs(logger)
+	if ticketID == 0 {
+		// never seed on an unverified claim
+		return
+	}
+	var pushed, base string
+	if res != nil {
+		// schema.Results.Metadata is a map (judge-evidence Task 9) — the
+		// shas are map keys, not struct fields.
+		pushed = metaString(res.Metadata, "head_sha")
+		base = metaString(res.Metadata, "base_sha")
+	}
+	err := step.outcomesStore.Ensure(&outcomes.Outcome{
+		TicketID:  ticketID,
+		Repo:      step.plan.Repo,
+		Branch:    branch,
+		PushedSha: pushed,
+		BaseSha:   base,
+	})
+	if err != nil {
+		logger.Error("failed-to-seed-outcome", err, lager.Data{"ticket-id": ticketID})
+		return
+	}
+	logger.Info("outcome-seeded", lager.Data{"ticket-id": ticketID, "pushed-sha": pushed, "base-sha": base})
+}
+
+// metaString pulls a string value out of schema.Results' interface-typed
+// metadata map ("" when absent or not a string).
+func metaString(m map[string]interface{}, key string) string {
+	if s, ok := m[key].(string); ok {
+		return s
+	}
+	return ""
+}
+
 // ingestAndRecord reads flight/results.json, flight/events.ndjson and
 // flight/review.json from the registered flight output and records an
 // agent_run_metrics row, an agent_reviews evidence row, and a
@@ -459,6 +524,9 @@ func (step *HarvestStep) transitionTicket(ctx context.Context, logger lager.Logg
 // returns, on every path where the container ran (including timeouts).
 // It is tolerant by design: missing/partial/corrupt input degrades to a
 // status=error metrics row; its own failures are logged, never returned.
+// It returns the validated results document (nil when it never parsed)
+// so the exit-0 push path can seed the outcome row with the runner's
+// authoritative shas (Task B4) without a second flight read.
 //
 // Trust boundary (plan D9): unlike agent reviews — which reach the DB
 // through the principal-authenticated HTTP path — the review.json here
@@ -473,10 +541,15 @@ func (step *HarvestStep) ingestAndRecord(
 	wkr runtime.Worker,
 	volumeMounts []runtime.VolumeMount,
 	wallTime time.Duration,
-) {
+) *schema.Results {
 	if step.metricsStore == nil {
-		return
+		return nil
 	}
+
+	// parsedResults is the validated run-report threaded back to the
+	// caller for outcome seeding; everything below is byte-identical
+	// ingestion behavior.
+	var parsedResults *schema.Results
 
 	ticketID, runID := step.verifiedIDs(logger)
 
@@ -543,6 +616,7 @@ func (step *HarvestStep) ingestAndRecord(
 			rc.Close()
 			var results schema.Results
 			if readErr == nil && json.Unmarshal(raw, &results) == nil && results.Validate() == nil {
+				parsedResults = &results
 				status, abstained := schema.ThreeWayStatus(results.Status)
 				rm.Status = status
 				rm.Summary = results.Summary
@@ -745,4 +819,6 @@ func (step *HarvestStep) ingestAndRecord(
 			logger.Error("failed-to-record-cost-ledger", err) // fire-and-forget
 		}
 	}
+
+	return parsedResults
 }

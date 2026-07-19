@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/concourse/concourse/agent/api/metrics"
+	"github.com/concourse/concourse/agent/api/outcomes"
 	"github.com/concourse/concourse/agent/api/reviews"
 	"github.com/concourse/concourse/agent/api/tickets"
 	"github.com/concourse/concourse/agent/budget"
@@ -41,6 +42,7 @@ type coreStepFactory struct {
 	agentPlatformToken    string
 	agentTicketsStore     tickets.Store
 	agentReviewsStore     reviews.Store
+	agentOutcomesStore    outcomes.Store
 	platformUserResolver  exec.PlatformUserResolver
 }
 
@@ -77,6 +79,13 @@ func WithAgentMetricsStore(s metrics.Store) CoreStepFactoryOption {
 // ingestion.
 func WithAgentReviewsStore(s reviews.Store) CoreStepFactoryOption {
 	return func(f *coreStepFactory) { f.agentReviewsStore = s }
+}
+
+// WithAgentOutcomesStore sets the delivery-outcomes store the harvest
+// step seeds the agent_outcomes row into (authoritative pushed/base
+// shas) after a successful push.
+func WithAgentOutcomesStore(s outcomes.Store) CoreStepFactoryOption {
+	return func(f *coreStepFactory) { f.agentOutcomesStore = s }
 }
 
 // WithAgentPlatformUserResolver sets the §1.13 platform-user lookup
@@ -320,6 +329,9 @@ func (factory *coreStepFactory) HarvestStep(
 	}
 	if factory.agentReviewsStore != nil {
 		harvestOpts = append(harvestOpts, exec.WithHarvestReviewsStore(factory.agentReviewsStore))
+	}
+	if factory.agentOutcomesStore != nil {
+		harvestOpts = append(harvestOpts, exec.WithHarvestOutcomesStore(factory.agentOutcomesStore))
 	}
 	if factory.agentBudgetChecker != nil {
 		harvestOpts = append(harvestOpts, exec.WithHarvestBudgetRecorder(factory.agentBudgetChecker))

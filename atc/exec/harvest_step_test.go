@@ -9,6 +9,8 @@ import (
 	"strings"
 
 	"github.com/concourse/concourse/agent/api/metrics/metricsfakes"
+	"github.com/concourse/concourse/agent/api/outcomes"
+	"github.com/concourse/concourse/agent/api/outcomes/outcomesfakes"
 	"github.com/concourse/concourse/agent/api/reviews"
 	"github.com/concourse/concourse/agent/api/tickets"
 	"github.com/concourse/concourse/agent/budget"
@@ -598,6 +600,161 @@ var _ = Describe("HarvestStep", func() {
 			Expect(recs[0].TicketID).To(BeNil())
 			Expect(recs[0].PipelineRunID).To(BeNil())
 			Expect(recs[0].SubmittedBy).To(Equal("harvest"))
+		})
+	})
+
+	Describe("outcome seeding at push time (Task B4)", func() {
+		var (
+			fakeStreamer     *execfakes.FakeStreamer
+			fakeMetricsStore *metricsfakes.FakeStore
+			outcomesStore    *outcomes.MemoryStore
+
+			resultsJSON string
+		)
+
+		BeforeEach(func() {
+			fakeStreamer = new(execfakes.FakeStreamer)
+			fakeMetricsStore = new(metricsfakes.FakeStore)
+			outcomesStore = outcomes.NewMemoryStore()
+
+			// The runner's §2.8.1 results document — the shas ride the
+			// schema.Results metadata MAP (judge-evidence Task 9 shape).
+			resultsJSON = `{"schema_version":"1.0","status":"pass","confidence":1,"summary":"pushed agent/ticket-42","artifacts":[],"metadata":{"pushed_branch":"agent/ticket-42","head_sha":"abc123","base_sha":"def456"}}`
+			fakeStreamer.StreamFileStub = func(ctx context.Context, _ runtime.Artifact, path string) (io.ReadCloser, error) {
+				if err := ctx.Err(); err != nil {
+					return nil, err
+				}
+				if path == "results.json" {
+					return io.NopCloser(strings.NewReader(resultsJSON)), nil
+				}
+				return nil, fmt.Errorf("no fixture for %q", path)
+			}
+			fakeMetricsStore.UpsertReturningInsertedReturns(true, nil, nil)
+		})
+
+		judgeless := func() atc.HarvestPlan {
+			p := harvestPlan
+			p.Judge = nil
+			return p
+		}
+
+		seedingOpts := func(store outcomes.Store) []exec.HarvestStepOption {
+			return []exec.HarvestStepOption{
+				exec.WithHarvestRunVerifier(fakeRunVerifier),
+				exec.WithHarvestStreamer(fakeStreamer),
+				exec.WithHarvestMetricsStore(fakeMetricsStore),
+				exec.WithHarvestOutcomesStore(store),
+			}
+		}
+
+		It("seeds the outcome row with the run-report shas and the plan's repo/branch on exit 0 + push", func() {
+			step := newStep(judgeless(), seedingOpts(outcomesStore)...)
+			ok, err := step.Run(ctx, state)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(ok).To(BeTrue())
+
+			row, found, err := outcomesStore.Get(42)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(found).To(BeTrue())
+			// Repo/Branch are pinned from the PLAN; the shas are the
+			// runner's authoritative head/base from results metadata.
+			Expect(row.Repo).To(Equal("tdmtrader/concourse"))
+			Expect(row.Branch).To(Equal("agent/ticket-42"))
+			Expect(row.PushedSha).To(Equal("abc123"))
+			Expect(row.BaseSha).To(Equal("def456"))
+			Expect(row.MergeState).To(Equal(outcomes.MergeOpen))
+		})
+
+		It("still seeds the row (empty shas) when no parseable results document exists", func() {
+			// A runner OOM after push but before the results flush leaves no
+			// shas — the row is still created (it anchors created_at; the
+			// watcher's branch-head fallback supplies the shas later).
+			resultsJSON = "not json"
+			step := newStep(judgeless(), seedingOpts(outcomesStore)...)
+			ok, err := step.Run(ctx, state)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(ok).To(BeTrue())
+
+			row, found, err := outcomesStore.Get(42)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(row.Branch).To(Equal("agent/ticket-42"))
+			Expect(row.PushedSha).To(BeEmpty())
+			Expect(row.BaseSha).To(BeEmpty())
+		})
+
+		It("seeds nothing on exit 1 (no push happened)", func() {
+			exitStatus = 1
+			step := newStep(judgeless(), seedingOpts(outcomesStore)...)
+			ok, err := step.Run(ctx, state)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(ok).To(BeFalse())
+
+			_, found, err := outcomesStore.Get(42)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(found).To(BeFalse())
+		})
+
+		It("seeds nothing when the plan does not push", func() {
+			p := judgeless()
+			p.Push = false
+			step := newStep(p, seedingOpts(outcomesStore)...)
+			ok, err := step.Run(ctx, state)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(ok).To(BeTrue())
+
+			_, found, err := outcomesStore.Get(42)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(found).To(BeFalse())
+		})
+
+		It("never seeds on an unverified ticket claim", func() {
+			// Plan env is attacker-writable YAML — a raw TicketID claim must
+			// not create an outcome row for a ticket this run never owned.
+			fakeRunVerifier.TicketBelongsToRunReturns(false, nil)
+			step := newStep(judgeless(), seedingOpts(outcomesStore)...)
+			ok, err := step.Run(ctx, state)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(ok).To(BeTrue())
+
+			_, found, err := outcomesStore.Get(42)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(found).To(BeFalse())
+		})
+
+		It("transitions the ticket BEFORE seeding, and a failing store never fails the step", func() {
+			id, err := ticketsStore.Create(&tickets.Ticket{
+				Title: "t", Body: "b", Origin: "fly", Repo: "tdmtrader/concourse",
+			})
+			Expect(err).ToNot(HaveOccurred())
+			runID := 7
+			Expect(ticketsStore.Transition(id, tickets.StateDraft, tickets.StateQueued, tickets.TransitionMeta{})).To(Succeed())
+			Expect(ticketsStore.Transition(id, tickets.StateQueued, tickets.StateRunning, tickets.TransitionMeta{PipelineRunID: &runID})).To(Succeed())
+
+			// The failing wrapper doubles as the call-order probe: at Ensure
+			// time the ticket must ALREADY be in needs_review
+			// (transition-first ordering is load-bearing, §1.11.1).
+			fakeOutcomes := new(outcomesfakes.FakeStore)
+			var stateAtEnsure tickets.State
+			fakeOutcomes.EnsureStub = func(*outcomes.Outcome) error {
+				got, found, getErr := ticketsStore.Get(id)
+				Expect(getErr).ToNot(HaveOccurred())
+				Expect(found).To(BeTrue())
+				stateAtEnsure = got.State
+				return errors.New("outcomes db down")
+			}
+
+			p := judgeless()
+			p.TicketID = id
+			step := newStep(p, append(seedingOpts(fakeOutcomes),
+				exec.WithHarvestTicketsStore(ticketsStore),
+			)...)
+			ok, err := step.Run(ctx, state)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(ok).To(BeTrue()) // seeding failure is logged, never fatal
+
+			Expect(fakeOutcomes.EnsureCallCount()).To(Equal(1))
+			Expect(stateAtEnsure).To(Equal(tickets.StateNeedsReview))
 		})
 	})
 })
