@@ -1,5 +1,6 @@
 module ApiEndpointsTests exposing (testEndpoints, testToString)
 
+import Api
 import Api.Endpoints as E exposing (Endpoint(..), toString)
 import Concourse exposing (JsonValue(..))
 import Data
@@ -333,6 +334,20 @@ testEndpoints =
                     AgentTicketMetrics 12
                         |> toPath
                         |> Expect.equal "/api/v1/agent/tickets/12/metrics"
+            , test "run events" <|
+                \_ ->
+                    AgentTicketRunEvents 12 4567
+                        |> toPath
+                        |> Expect.equal "/api/v1/agent/tickets/12/runs/4567/transcript"
+            , test "expectString transforms a Request into a Request String" <|
+                \_ ->
+                    let
+                        req : Api.Request String
+                        req =
+                            Api.get (AgentTicketRunEvents 1 2)
+                                |> Api.expectString
+                    in
+                    Expect.equal req.method "GET"
             ]
         , describe "AgentDispatcher"
             [ test "dispatcher control endpoint" <|

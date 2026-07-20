@@ -50,6 +50,7 @@ type Endpoint
     | AgentTicketDispatch Int
     | AgentTicketTask Int Int
     | AgentTicketMetrics Int
+    | AgentTicketRunEvents Int Int
 
 
 type PipelineEndpoint
@@ -263,6 +264,9 @@ builder endpoint =
 
         AgentTicketMetrics ticketId ->
             base |> appendPath [ "agent", "tickets", String.fromInt ticketId, "metrics" ]
+
+        AgentTicketRunEvents ticketId buildId ->
+            base |> appendPath [ "agent", "tickets", String.fromInt ticketId, "runs", String.fromInt buildId, "transcript" ]
 
 
 pipelineEndpoint : PipelineEndpoint -> RouteBuilder
