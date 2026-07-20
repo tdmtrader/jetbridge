@@ -344,3 +344,55 @@ var _ = Describe("AgentRunMetricsFactory", func() {
 		Expect(len(all)).To(BeNumerically(">=", 3))
 	})
 })
+
+// createBuildWithStatus creates a real one-off build under the suite's
+// defaultTeam and finishes it with the given terminal status, returning its
+// id. WorkflowStats LEFT JOINs builds for success truth, so the fixture needs
+// a REAL builds row (a fabricated BuildID like the attribution test's 424242
+// would never match the join). Mirrors the CreateOneOffBuild + Finish path the
+// existing specs in this file already use.
+func createBuildWithStatus(status db.BuildStatus) int {
+	build, err := defaultTeam.CreateOneOffBuild()
+	Expect(err).ToNot(HaveOccurred())
+	Expect(build.Finish(status)).To(Succeed())
+	return build.ID()
+}
+
+var _ = Describe("AgentRunMetricsFactory WorkflowStats", func() {
+	var factory db.AgentRunMetricsFactory
+
+	BeforeEach(func() {
+		factory = db.NewAgentRunMetricsFactory(dbConn)
+	})
+
+	insert := func(buildID int, plan string, ver int, ticket int, status string, cost float64, turns int) {
+		v := ver
+		tk := ticket
+		Expect(factory.Upsert(&schema.RunMetrics{
+			BuildID: buildID, PlanID: plan, StepName: "s", TicketID: &tk,
+			WorkflowName: "wf-stats", WorkflowVersion: &v,
+			Status: status, CostUSD: cost, Turns: turns,
+		})).To(Succeed())
+	}
+
+	It("aggregates per version by distinct build, joining build status for success", func() {
+		// Two builds on v3: one whose build row is 'succeeded', one 'failed'.
+		b1 := createBuildWithStatus(db.BuildStatusSucceeded)
+		b2 := createBuildWithStatus(db.BuildStatusFailed)
+		insert(b1, "p1", 3, 100, "ok", 1.50, 5)
+		insert(b1, "p2", 3, 100, "ok", 0.50, 3) // 2 steps, same build → 1 run
+		insert(b2, "p1", 3, 101, "failed", 2.00, 8)
+
+		stats, err := factory.WorkflowStats("wf-stats")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(stats).To(HaveLen(1))
+
+		s := stats[0]
+		Expect(*s.Version).To(Equal(3))
+		Expect(s.Runs).To(Equal(2))          // distinct builds
+		Expect(s.Tickets).To(Equal(2))       // distinct tickets
+		Expect(s.SucceededRuns).To(Equal(1)) // only b1 succeeded
+		Expect(s.TotalCostUSD).To(BeNumerically("~", 4.00, 1e-6))
+		Expect(s.TotalTurns).To(Equal(16))
+	})
+})

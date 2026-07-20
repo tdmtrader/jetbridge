@@ -87,6 +87,19 @@ type FakeAgentRunMetricsFactory struct {
 		result2 *schema.RunMetrics
 		result3 error
 	}
+	WorkflowStatsStub        func(string) ([]schema.WorkflowVersionStats, error)
+	workflowStatsMutex       sync.RWMutex
+	workflowStatsArgsForCall []struct {
+		arg1 string
+	}
+	workflowStatsReturns struct {
+		result1 []schema.WorkflowVersionStats
+		result2 error
+	}
+	workflowStatsReturnsOnCall map[int]struct {
+		result1 []schema.WorkflowVersionStats
+		result2 error
+	}
 	invocations      map[string][][]interface{}
 	invocationsMutex sync.RWMutex
 }
@@ -473,6 +486,70 @@ func (fake *FakeAgentRunMetricsFactory) UpsertReturningInsertedReturnsOnCall(i i
 		result2 *schema.RunMetrics
 		result3 error
 	}{result1, result2, result3}
+}
+
+func (fake *FakeAgentRunMetricsFactory) WorkflowStats(arg1 string) ([]schema.WorkflowVersionStats, error) {
+	fake.workflowStatsMutex.Lock()
+	ret, specificReturn := fake.workflowStatsReturnsOnCall[len(fake.workflowStatsArgsForCall)]
+	fake.workflowStatsArgsForCall = append(fake.workflowStatsArgsForCall, struct {
+		arg1 string
+	}{arg1})
+	stub := fake.WorkflowStatsStub
+	fakeReturns := fake.workflowStatsReturns
+	fake.recordInvocation("WorkflowStats", []interface{}{arg1})
+	fake.workflowStatsMutex.Unlock()
+	if stub != nil {
+		return stub(arg1)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2
+	}
+	return fakeReturns.result1, fakeReturns.result2
+}
+
+func (fake *FakeAgentRunMetricsFactory) WorkflowStatsCallCount() int {
+	fake.workflowStatsMutex.RLock()
+	defer fake.workflowStatsMutex.RUnlock()
+	return len(fake.workflowStatsArgsForCall)
+}
+
+func (fake *FakeAgentRunMetricsFactory) WorkflowStatsCalls(stub func(string) ([]schema.WorkflowVersionStats, error)) {
+	fake.workflowStatsMutex.Lock()
+	defer fake.workflowStatsMutex.Unlock()
+	fake.WorkflowStatsStub = stub
+}
+
+func (fake *FakeAgentRunMetricsFactory) WorkflowStatsArgsForCall(i int) string {
+	fake.workflowStatsMutex.RLock()
+	defer fake.workflowStatsMutex.RUnlock()
+	argsForCall := fake.workflowStatsArgsForCall[i]
+	return argsForCall.arg1
+}
+
+func (fake *FakeAgentRunMetricsFactory) WorkflowStatsReturns(result1 []schema.WorkflowVersionStats, result2 error) {
+	fake.workflowStatsMutex.Lock()
+	defer fake.workflowStatsMutex.Unlock()
+	fake.WorkflowStatsStub = nil
+	fake.workflowStatsReturns = struct {
+		result1 []schema.WorkflowVersionStats
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeAgentRunMetricsFactory) WorkflowStatsReturnsOnCall(i int, result1 []schema.WorkflowVersionStats, result2 error) {
+	fake.workflowStatsMutex.Lock()
+	defer fake.workflowStatsMutex.Unlock()
+	fake.WorkflowStatsStub = nil
+	if fake.workflowStatsReturnsOnCall == nil {
+		fake.workflowStatsReturnsOnCall = make(map[int]struct {
+			result1 []schema.WorkflowVersionStats
+			result2 error
+		})
+	}
+	fake.workflowStatsReturnsOnCall[i] = struct {
+		result1 []schema.WorkflowVersionStats
+		result2 error
+	}{result1, result2}
 }
 
 func (fake *FakeAgentRunMetricsFactory) Invocations() map[string][][]interface{} {

@@ -60,6 +60,12 @@ type Store interface {
 	// newest-first, bounded by limit (a non-positive or oversized limit falls
 	// back to a sane default). Powers the operator dashboard's recent-runs view.
 	ListRecent(limit int) ([]schema.RunMetrics, error)
+	// WorkflowStats returns one aggregation row per distinct workflow_version
+	// for the named workflow, newest version first (NULL version last). The
+	// "run" unit is a distinct build_id; success is counted from the joined
+	// builds.status = 'succeeded'. Rows carry only the raw counters — callers
+	// call schema.WorkflowVersionStats.WithDerived for the ratios.
+	WorkflowStats(workflowName string) ([]schema.WorkflowVersionStats, error)
 }
 
 // ParseSubmission validates a POST /api/v1/agent/metrics body.
