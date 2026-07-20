@@ -307,4 +307,8 @@ type TaskStatusRequest struct {
 type DispatchResponse struct {
 	RunID        int    `json:"run_id"`
 	PipelineName string `json:"pipeline_name"`
+	// Warnings carries advisory spec-lint findings (ticket #46:
+	// vocabulary known to trigger CLI usage-policy false refusals).
+	// Additive and omitempty — never a dispatch blocker.
+	Warnings []string `json:"warnings,omitempty"`
 }

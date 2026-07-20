@@ -44,6 +44,58 @@ func TestDispatchHandlerHappyPath(t *testing.T) {
 	}
 }
 
+// TestDispatchHandlerSpecLintWarningsAdditive: the warnings field is
+// ADVISORY and ADDITIVE (ticket #46) — present when the spec prose
+// matches the false-refusal vocabulary table, entirely absent (omitempty)
+// when clean, and never changes the 201 or the dispatched state.
+func TestDispatchHandlerSpecLintWarningsAdditive(t *testing.T) {
+	deps, store, _, _ := dispatchDeps(t)
+	h := dispatch.NewHTTPHandler(deps, func(*http.Request) string { return "tdm" })
+
+	// clean spec: no warnings key at all (additive omitempty)
+	cleanID := queuedTicket(t, store, "smoke")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, dispatchRequest(itoa(cleanID)))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("clean dispatch = %d body %s", rec.Code, rec.Body)
+	}
+	if strings.Contains(rec.Body.String(), "warnings") {
+		t.Errorf("clean spec must omit the warnings key, got %s", rec.Body)
+	}
+
+	// lint-hitting spec: warnings ride the same 201
+	hitID, err := store.Create(&tickets.Ticket{
+		Title: "wire the flight recorder", Body: "record everything", Origin: "fly",
+		Repo: "tdmtrader/jetbridge", TargetBranch: "main",
+		WorkflowName: "smoke", UserName: "tdm", CreatedBy: "tdm",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Transition(hitID, tickets.StateDraft, tickets.StateQueued, tickets.TransitionMeta{}); err != nil {
+		t.Fatal(err)
+	}
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, dispatchRequest(itoa(hitID)))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("lint hit must NOT block: code = %d body %s", rec.Code, rec.Body)
+	}
+	var resp tickets.DispatchResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Warnings) == 0 {
+		t.Fatalf("flight-recorder prose must warn, body %s", rec.Body)
+	}
+	if !strings.Contains(resp.Warnings[0], "flight recorder") {
+		t.Errorf("warning must name the matched phrase, got %q", resp.Warnings[0])
+	}
+	got, _, _ := store.Get(hitID)
+	if got.State != tickets.StateRunning {
+		t.Errorf("warned ticket must still dispatch, state = %s", got.State)
+	}
+}
+
 func TestDispatchHandlerErrorMapping(t *testing.T) {
 	deps, store, _, _ := dispatchDeps(t)
 
