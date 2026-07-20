@@ -159,6 +159,12 @@ var _ = Describe("fly agent", func() {
 						},
 					}),
 				),
+				// a pre-#45 server: no platform-info endpoint — the skew
+				// probe must fail silently, never the listing
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("GET", "/api/v1/agent/platform-info"),
+					ghttp.RespondWith(http.StatusNotFound, "not found"),
+				),
 			)
 		})
 
@@ -170,6 +176,38 @@ var _ = Describe("fly agent", func() {
 			Expect(sess.Out).To(gbytes.Say(`implement\s+develop@3\s+failed`))
 			Expect(sess.Out).To(gbytes.Say(`harvest\s+failed`))
 			Expect(sess.Out).To(gbytes.Say(`review\s+ok`))
+			Expect(string(sess.Err.Contents())).NotTo(ContainSubstring("lags web"))
+		})
+	})
+
+	Describe("agent runs with a lagging agent step image", func() {
+		BeforeEach(func() {
+			atcServer.AppendHandlers(
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("GET", "/api/v1/agent/metrics", "limit=50"),
+					ghttp.RespondWithJSONEncoded(http.StatusOK, []agentschema.RunMetrics{
+						{BuildID: 1, PlanID: "p1", StepName: "implement", WorkflowName: "develop", Status: "ok"},
+					}),
+				),
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("GET", "/api/v1/agent/platform-info"),
+					ghttp.RespondWithJSONEncoded(http.StatusOK, credentials.PlatformInfo{
+						AgentStepImage:    "registry.home/agent-runner:v0.2.167",
+						WebVersion:        "0.2.195",
+						ImageVersionKnown: true,
+						ImageVersionSkew:  true,
+					}),
+				),
+			)
+		})
+
+		It("prints the ticket #45 skew advisory on stderr before the table", func() {
+			flyCmd := exec.Command(flyPath, "-t", targetName, "agent", "runs")
+			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+			Expect(err).NotTo(HaveOccurred())
+			Eventually(sess).Should(gexec.Exit(0))
+			Expect(sess.Err).To(gbytes.Say(`note: agent step image v0\.2\.167 lags web 0\.2\.195 - rebuild build-agent-runner-image \+ bump home-infra`))
+			Expect(sess.Out).To(gbytes.Say(`implement\s+develop\s+ok`))
 		})
 	})
 

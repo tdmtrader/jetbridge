@@ -50,6 +50,31 @@ var _ = Describe("Agent user credentials", func() {
 		})
 	})
 
+	Describe("AgentPlatformInfo", func() {
+		BeforeEach(func() {
+			atcServer.AppendHandlers(
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("GET", "/api/v1/agent/platform-info"),
+					ghttp.RespondWithJSONEncoded(http.StatusOK, credentials.PlatformInfo{
+						AgentStepImage:    "registry.home/agent-runner:v0.2.167",
+						WebVersion:        "0.2.195",
+						ImageVersionKnown: true,
+						ImageVersionSkew:  true,
+					}),
+				),
+			)
+		})
+
+		It("returns the platform facts including the skew flag", func() {
+			info, err := client.AgentPlatformInfo()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(info.AgentStepImage).To(Equal("registry.home/agent-runner:v0.2.167"))
+			Expect(info.WebVersion).To(Equal("0.2.195"))
+			Expect(info.ImageVersionKnown).To(BeTrue())
+			Expect(info.ImageVersionSkew).To(BeTrue())
+		})
+	})
+
 	Describe("DeleteAgentUserCredential", func() {
 		BeforeEach(func() {
 			atcServer.AppendHandlers(
