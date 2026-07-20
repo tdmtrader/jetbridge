@@ -60,10 +60,10 @@ sectionOrder =
     , "awaiting_human"
     , "running"
     , "queued"
+    , "errored"
     , "draft"
     , "sent_back"
     , "failed"
-    , "errored"
     , "merged"
     , "merged_with_fixes"
     , "concluded"
@@ -624,7 +624,7 @@ leftoverSection model tickets =
         []
 
     else
-        [ sectionBlock (withCount "other" tickets) (List.map (ticketRow model) (sortTickets model.sortByWait tickets)) ]
+        [ sectionBlock (sectionHeader model.costByTicket "other" tickets) (List.map (ticketRow model) (sortTickets model.sortByWait tickets)) ]
 
 
 sectionView : Model -> Dict String (List AgentTicket.Ticket) -> String -> Maybe (Html Message)
@@ -634,7 +634,7 @@ sectionView model byState state =
             Nothing
 
         Just matching ->
-            Just (sectionBlock (withCount (sectionLabel state) matching) (List.map (ticketRow model) (sortTickets model.sortByWait matching)))
+            Just (sectionBlock (sectionHeader model.costByTicket (sectionLabel state) matching) (List.map (ticketRow model) (sortTickets model.sortByWait matching)))
 
 
 {-| Group the visible tickets by lifecycle state, preserving within-state
@@ -657,6 +657,25 @@ groupByState tickets =
 withCount : String -> List a -> String
 withCount label xs =
     label ++ " (" ++ String.fromInt (List.length xs) ++ ")"
+
+
+{-| W-8: a section header carrying the count plus a spend rollup summed from the
+per-ticket costs the rows already display, e.g. "merged (20) · $43.10". Sections
+with no spend data (or zero spend) fall back to just the count, as before.
+-}
+sectionHeader : Dict String Float -> String -> List AgentTicket.Ticket -> String
+sectionHeader costs label tickets =
+    let
+        spend =
+            tickets
+                |> List.filterMap (\t -> Dict.get (String.fromInt t.id) costs)
+                |> List.sum
+    in
+    if spend > 0 then
+        withCount label tickets ++ " · $" ++ formatUsd spend
+
+    else
+        withCount label tickets
 
 
 sortTickets : Bool -> List AgentTicket.Ticket -> List AgentTicket.Ticket
