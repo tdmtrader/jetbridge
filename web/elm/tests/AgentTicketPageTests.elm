@@ -69,6 +69,21 @@ mergedDetailJson =
     """
 
 
+erroredDetailJson : String
+erroredDetailJson =
+    """
+    { "ticket":
+        { "id": 12, "title": "ship fly archives", "state": "errored"
+        , "workflow_name": "develop", "body": "do the thing"
+        , "created_at": 200, "completed_at": 300
+        , "error_detail": "runner crashed: boom"
+        }
+    , "spec": null
+    , "tasks": []
+    }
+    """
+
+
 withDetail : String -> (AgentTicket.Detail -> Expect.Expectation) -> Expect.Expectation
 withDetail json f =
     case Json.Decode.decodeString AgentTicket.decodeDetail json of
@@ -280,16 +295,67 @@ all =
                                 [ Query.count (Expect.equal 2)
                                 , Query.index 0
                                     >> Expect.all
-                                        [ Query.has [ text "build 200" ]
+                                        -- newest build renders first: attempt 2,
+                                        -- linking to build 200
+                                        [ Query.has [ text "attempt 2" ]
+                                        , Query.has [ attribute (Html.Attributes.href "/builds/200") ]
                                         , Query.has [ text "newest run verdict" ]
                                         , Query.has [ text "$1.50" ]
+                                        , Query.hasNot [ text "build 200" ]
                                         ]
                                 , Query.index 1
                                     >> Expect.all
-                                        [ Query.has [ text "build 100" ]
+                                        [ Query.has [ text "attempt 1" ]
+                                        , Query.has [ attribute (Html.Attributes.href "/builds/100") ]
                                         , Query.has [ text "harvest verdict" ]
                                         , Query.has [ text "$0.50" ]
                                         ]
+                                ]
+                    )
+        , test "a run row shows an attempt number and links to its build page (build number is not a visible label)" <|
+            \_ ->
+                withDetail sampleDetailJson
+                    (\d ->
+                        Common.init "/agent-tickets/12"
+                            |> Application.handleCallback (Callback.AgentTicketFetched (Ok d))
+                            |> Tuple.first
+                            |> Application.handleCallback
+                                (Callback.AgentTicketMetricsFetched 12
+                                    (Ok
+                                        [ { ticketId = Just 12
+                                          , pipelineRunId = Just 2
+                                          , buildId = 561978
+                                          , planId = "plan-xyz"
+                                          , stepName = "implement"
+                                          , workflowName = "develop"
+                                          , workflowVersion = Just 1
+                                          , status = "ok"
+                                          , buildStatus = "succeeded"
+                                          , outcome = ""
+                                          , summary = "did the work"
+                                          , model = ""
+                                          , usage =
+                                                { inputTokens = 0
+                                                , outputTokens = 0
+                                                , cacheReadInputTokens = 0
+                                                , cacheCreationInputTokens = 0
+                                                }
+                                          , turns = 1
+                                          , wallTimeSeconds = 1
+                                          , costUsd = 0.21
+                                          , eventCounts = Dict.empty
+                                          , createdAt = 100
+                                          }
+                                        ]
+                                    )
+                                )
+                            |> Tuple.first
+                            |> Common.queryView
+                            |> Query.find [ class "agent-ticket-run-row" ]
+                            |> Expect.all
+                                [ Query.has [ text "attempt 1" ]
+                                , Query.has [ attribute (Html.Attributes.href "/builds/561978") ]
+                                , Query.hasNot [ text "build 561978" ]
                                 ]
                     )
         , test "a periodic self-heal refetch does not clobber an open edit form" <|
@@ -427,6 +493,61 @@ all =
                         (Msgs.DeliveryReceived (ClockTicked FiveSeconds <| Time.millisToPosix 0))
                     |> Tuple.second
                     |> Common.contains (Effects.FetchAgentTicket 12)
+        , test "the errored run-error box links to the failing run's build page" <|
+            \_ ->
+                withDetail erroredDetailJson
+                    (\d ->
+                        Common.init "/agent-tickets/12"
+                            |> Application.handleCallback (Callback.AgentTicketFetched (Ok d))
+                            |> Tuple.first
+                            |> Application.handleCallback
+                                (Callback.AgentTicketMetricsFetched 12
+                                    (Ok
+                                        [ { ticketId = Just 12
+                                          , pipelineRunId = Just 2
+                                          , buildId = 700
+                                          , planId = "plan-xyz"
+                                          , stepName = "implement"
+                                          , workflowName = "develop"
+                                          , workflowVersion = Just 1
+                                          , status = "errored"
+                                          , buildStatus = "errored"
+                                          , outcome = ""
+                                          , summary = ""
+                                          , model = ""
+                                          , usage =
+                                                { inputTokens = 0
+                                                , outputTokens = 0
+                                                , cacheReadInputTokens = 0
+                                                , cacheCreationInputTokens = 0
+                                                }
+                                          , turns = 1
+                                          , wallTimeSeconds = 1
+                                          , costUsd = 0.1
+                                          , eventCounts = Dict.empty
+                                          , createdAt = 100
+                                          }
+                                        ]
+                                    )
+                                )
+                            |> Tuple.first
+                            |> Common.queryView
+                            |> Query.find [ id "ticket-error-detail" ]
+                            |> Query.find [ class "agent-ticket-error-build-link" ]
+                            |> Query.has
+                                [ tag "a"
+                                , attribute (Html.Attributes.href "/builds/700")
+                                , text "Run error"
+                                ]
+                    )
+        , test "an errored ticket's finish timestamp reads 'ended', not 'completed'" <|
+            \_ ->
+                withDetail erroredDetailJson
+                    (\d ->
+                        renderWith "/agent-tickets/12" (Callback.AgentTicketFetched (Ok d))
+                            |> Query.find [ id "ticket-timestamps" ]
+                            |> Query.has [ text "created Jan 1, 1970 00:03 · ended Jan 1, 1970 00:05" ]
+                    )
         , test "the 5s tick stops refetching once the ticket is terminal" <|
             \_ ->
                 withDetail mergedDetailJson
