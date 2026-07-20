@@ -53,6 +53,33 @@ Newest first.
   rule below). File migration-bearing tickets with an explicit "claim the next free slot
   above the current head; do not hard-code a number from a stale plan doc" instruction.
 
+- **`fly agent workflows import` validates the gate vocabulary CLIENT-SIDE, and
+  `fly sync` is broken — so an out-of-date local fly cannot import a workflow that
+  uses a just-shipped gate.** Importing `develop-elm` (which declares `- gate: elm-build`)
+  from a local fly v0.2.195 failed with `gate must be build|test|lint, got "elm-build"`
+  even though the deployed web (6d4b4811ff) already accepts it — fly parses the YAML
+  itself before POSTing. `fly -t home sync` then 500s: the web image does not ship
+  `fly-assets/fly-*.tgz`. → *Workaround:* build fly from the target commit locally
+  (`go build -o /tmp/fly ./fly`) and import with that. → *Leftward fix:* either make
+  workflow import server-validated only, or bundle the fly assets in the release image so
+  `fly sync` works.
+
+- **Enabling front-end tickets took THREE new pieces, not one.** WF-2 shipped the
+  `elm-build` gate + `elm` in the runner image, but making a UI ticket actually
+  loop-buildable also needed: (1) `uglify-js` in the runner image (the agent runs
+  `hack/build-web.sh` = `elm make` + `uglifyjs`; WF-2 deliberately omitted uglify because
+  the *gate* only needs `elm make`); (2) a `develop-elm` workflow whose gate_policy adds
+  `elm-build` AND whose prompt tells the agent to regenerate + commit `elm.min.js`; (3) a
+  separate `develop-gated` workflow for BACKEND tickets, because the prompt is per-workflow
+  — a front-end prompt ("work in web/elm, rebuild the bundle") is actively wrong for a Go
+  ticket, and the base `develop` workflow has NO gate at all while `develop-fable` is
+  fable-only. → *Signal:* "add a gate" and "add a toolchain" are not enough to make a new
+  work-kind loop-buildable; the workflow prompt is the third leg and it is work-kind-specific.
+
+- **WF-5 (this session) proven live:** `fly agent tickets queue --id 43 --workflow develop-gated`
+  assigned the workflow and queued in one step, then `dispatch --id 43` ran it — the
+  empty-workflow dead-end the audit found is closed end-to-end.
+
 ## Plan gaps the agents found (leftward candidates)
 
 - **Agent replace-instead-of-add error in exactly the code the gate can't test.**
