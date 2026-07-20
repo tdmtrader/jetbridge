@@ -499,6 +499,9 @@ all =
             [ test "renders a harvest: header" <|
                 given iVisitABuildWithAHarvestStep
                     >> then_ (iSeeText "harvest:")
+            , test "does not fall back to a step: header" <|
+                given iVisitABuildWithAHarvestStep
+                    >> then_ (iSeeNoText "step:")
             , test "shows the harvest step name" <|
                 given iVisitABuildWithAHarvestStep
                     >> then_ (iSeeText "push-branch")
@@ -1244,6 +1247,13 @@ iSeeText str =
         >> Common.queryView
         >> Query.findAll [ text str ]
         >> Query.count (Expect.equal 1)
+
+
+iSeeNoText str =
+    Tuple.first
+        >> Common.queryView
+        >> Query.findAll [ text str ]
+        >> Query.count (Expect.equal 0)
 
 
 iAmLookingAtTheRetryStepInTheBuildOutput =
