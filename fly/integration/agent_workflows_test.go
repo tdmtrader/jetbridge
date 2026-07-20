@@ -209,4 +209,90 @@ var _ = Describe("fly agent workflows", func() {
 			Expect(sess.Out).To(gbytes.Say(`workflow dev version 4 is now live`))
 		})
 	})
+
+	Describe("stats", func() {
+		BeforeEach(func() {
+			atcServer.AppendHandlers(
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("GET", "/api/v1/agent/workflows/develop/stats"),
+					ghttp.RespondWithJSONEncoded(http.StatusOK, []map[string]any{
+						{"version": 3, "runs": 4, "tickets": 3, "success_rate": 0.75, "avg_cost_usd": 2.0, "avg_turns": 10.0},
+					}),
+				),
+			)
+		})
+
+		It("prints the per-version stats table", func() {
+			flyCmd := exec.Command(flyPath, "-t", targetName, "agent", "workflows", "stats", "develop")
+			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+			Expect(err).NotTo(HaveOccurred())
+			<-sess.Exited
+			Expect(sess.ExitCode()).To(Equal(0))
+			Expect(sess.Out).To(gbytes.Say("v3"))
+			Expect(sess.Out).To(gbytes.Say("75%"))
+		})
+	})
+
+	Describe("annotate", func() {
+		BeforeEach(func() {
+			atcServer.AppendHandlers(
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("PUT", "/api/v1/agent/workflows/develop"),
+					ghttp.VerifyJSON(`{"annotation":"prefer for hotfixes"}`),
+					ghttp.RespondWith(http.StatusNoContent, nil),
+				),
+			)
+		})
+
+		It("PUTs the annotation", func() {
+			flyCmd := exec.Command(flyPath, "-t", targetName, "agent", "workflows", "annotate", "develop", "prefer for hotfixes")
+			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+			Expect(err).NotTo(HaveOccurred())
+			<-sess.Exited
+			Expect(sess.ExitCode()).To(Equal(0))
+			Expect(sess.Out).To(gbytes.Say("annotated develop"))
+		})
+	})
+
+	Describe("deprecate", func() {
+		BeforeEach(func() {
+			atcServer.AppendHandlers(
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("PUT", "/api/v1/agent/workflows/develop"),
+					ghttp.VerifyJSON(`{"hidden":true}`),
+					ghttp.RespondWith(http.StatusNoContent, nil),
+				),
+			)
+		})
+
+		It("PUTs hidden=true", func() {
+			flyCmd := exec.Command(flyPath, "-t", targetName, "agent", "workflows", "deprecate", "develop")
+			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+			Expect(err).NotTo(HaveOccurred())
+			<-sess.Exited
+			Expect(sess.ExitCode()).To(Equal(0))
+			Expect(sess.Out).To(gbytes.Say("deprecated develop"))
+		})
+	})
+
+	Describe("restore", func() {
+		BeforeEach(func() {
+			atcServer.AppendHandlers(
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("PUT", "/api/v1/agent/workflows/develop"),
+					ghttp.VerifyJSON(`{"hidden":false}`),
+					ghttp.RespondWith(http.StatusNoContent, nil),
+				),
+			)
+		})
+
+		It("PUTs hidden=false", func() {
+			flyCmd := exec.Command(flyPath, "-t", targetName, "agent", "workflows", "restore", "develop")
+			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+			Expect(err).NotTo(HaveOccurred())
+			<-sess.Exited
+			Expect(sess.ExitCode()).To(Equal(0))
+			Expect(sess.Out).To(gbytes.Say("restored develop"))
+		})
+	})
 })
