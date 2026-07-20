@@ -115,6 +115,31 @@ var _ = Describe("AgentCostLedgerFactory", func() {
 		}
 		Expect(found).To(BeTrue())
 
+		By("seeding known model/step fixture rows")
+		Expect(ledger.Insert(budget.LedgerEntry{OccurredAt: since.Add(time.Hour), Source: budget.SourceAgentStep, Model: "opus", StepName: "implement", CostUSD: 1.0})).NotTo(HaveOccurred())
+		Expect(ledger.Insert(budget.LedgerEntry{OccurredAt: since.Add(time.Hour), Source: budget.SourceAgentStep, Model: "opus", StepName: "harvest", CostUSD: 2.0})).NotTo(HaveOccurred())
+		Expect(ledger.Insert(budget.LedgerEntry{OccurredAt: since.Add(time.Hour), Source: budget.SourceAgentStep, Model: "sonnet", StepName: "implement", CostUSD: 4.0})).NotTo(HaveOccurred())
+
+		By("rolling up by model")
+		rows, err = ledger.Rollup(budget.GroupByModel, since, time.Time{})
+		Expect(err).NotTo(HaveOccurred())
+		modelCost := map[string]float64{}
+		for _, r := range rows {
+			modelCost[r.Key] = r.CostUSD
+		}
+		Expect(modelCost["opus"]).To(BeNumerically("~", 3.0, 0.0001))
+		Expect(modelCost["sonnet"]).To(BeNumerically("~", 4.0, 0.0001))
+
+		By("rolling up by step")
+		rows, err = ledger.Rollup(budget.GroupByStep, since, time.Time{})
+		Expect(err).NotTo(HaveOccurred())
+		stepCost := map[string]float64{}
+		for _, r := range rows {
+			stepCost[r.Key] = r.CostUSD
+		}
+		Expect(stepCost["implement"]).To(BeNumerically("~", 5.0, 0.0001))
+		Expect(stepCost["harvest"]).To(BeNumerically("~", 2.0, 0.0001))
+
 		By("bounding with until")
 		rows, err = ledger.Rollup(budget.GroupByDay, since, day2.Add(-time.Hour))
 		Expect(err).ToNot(HaveOccurred())
