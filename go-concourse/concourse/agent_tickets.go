@@ -3,6 +3,7 @@ package concourse
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -126,6 +127,28 @@ func (client *client) GetAgentTicketOutcome(id int) (outcomes.Outcome, bool, err
 	default:
 		return outcome, false, err
 	}
+}
+
+// AgentRunTranscript fetches the raw ndjson transcript for a ticket's run
+// (build) and returns it verbatim. A missing transcript surfaces as the
+// connection's ResourceNotFoundError.
+func (client *client) AgentRunTranscript(ticketID, buildID int) ([]byte, error) {
+	response := internal.Response{}
+	err := client.connection.Send(internal.Request{
+		RequestName: atc.GetAgentTicketRunTranscript,
+		Params: rata.Params{
+			"ticket_id": strconv.Itoa(ticketID),
+			"build_id":  strconv.Itoa(buildID),
+		},
+		ReturnResponseBody: true,
+	}, &response)
+	if err != nil {
+		return nil, err
+	}
+
+	body := response.Result.(io.ReadCloser)
+	defer body.Close()
+	return io.ReadAll(body)
 }
 
 func (client *client) DispatchAgentTicket(id int) (tickets.DispatchResponse, error) {

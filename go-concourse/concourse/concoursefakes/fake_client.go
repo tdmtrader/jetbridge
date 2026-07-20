@@ -68,6 +68,20 @@ type FakeClient struct {
 		result1 []schema.RunMetrics
 		result2 error
 	}
+	AgentRunTranscriptStub        func(int, int) ([]byte, error)
+	agentRunTranscriptMutex       sync.RWMutex
+	agentRunTranscriptArgsForCall []struct {
+		arg1 int
+		arg2 int
+	}
+	agentRunTranscriptReturns struct {
+		result1 []byte
+		result2 error
+	}
+	agentRunTranscriptReturnsOnCall map[int]struct {
+		result1 []byte
+		result2 error
+	}
 	AgentUserCredentialStatusStub        func() ([]credentials.Credential, error)
 	agentUserCredentialStatusMutex       sync.RWMutex
 	agentUserCredentialStatusArgsForCall []struct {
@@ -775,6 +789,71 @@ func (fake *FakeClient) AgentRunMetricsReturnsOnCall(i int, result1 []schema.Run
 	}
 	fake.agentRunMetricsReturnsOnCall[i] = struct {
 		result1 []schema.RunMetrics
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeClient) AgentRunTranscript(arg1 int, arg2 int) ([]byte, error) {
+	fake.agentRunTranscriptMutex.Lock()
+	ret, specificReturn := fake.agentRunTranscriptReturnsOnCall[len(fake.agentRunTranscriptArgsForCall)]
+	fake.agentRunTranscriptArgsForCall = append(fake.agentRunTranscriptArgsForCall, struct {
+		arg1 int
+		arg2 int
+	}{arg1, arg2})
+	stub := fake.AgentRunTranscriptStub
+	fakeReturns := fake.agentRunTranscriptReturns
+	fake.recordInvocation("AgentRunTranscript", []interface{}{arg1, arg2})
+	fake.agentRunTranscriptMutex.Unlock()
+	if stub != nil {
+		return stub(arg1, arg2)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2
+	}
+	return fakeReturns.result1, fakeReturns.result2
+}
+
+func (fake *FakeClient) AgentRunTranscriptCallCount() int {
+	fake.agentRunTranscriptMutex.RLock()
+	defer fake.agentRunTranscriptMutex.RUnlock()
+	return len(fake.agentRunTranscriptArgsForCall)
+}
+
+func (fake *FakeClient) AgentRunTranscriptCalls(stub func(int, int) ([]byte, error)) {
+	fake.agentRunTranscriptMutex.Lock()
+	defer fake.agentRunTranscriptMutex.Unlock()
+	fake.AgentRunTranscriptStub = stub
+}
+
+func (fake *FakeClient) AgentRunTranscriptArgsForCall(i int) (int, int) {
+	fake.agentRunTranscriptMutex.RLock()
+	defer fake.agentRunTranscriptMutex.RUnlock()
+	argsForCall := fake.agentRunTranscriptArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2
+}
+
+func (fake *FakeClient) AgentRunTranscriptReturns(result1 []byte, result2 error) {
+	fake.agentRunTranscriptMutex.Lock()
+	defer fake.agentRunTranscriptMutex.Unlock()
+	fake.AgentRunTranscriptStub = nil
+	fake.agentRunTranscriptReturns = struct {
+		result1 []byte
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeClient) AgentRunTranscriptReturnsOnCall(i int, result1 []byte, result2 error) {
+	fake.agentRunTranscriptMutex.Lock()
+	defer fake.agentRunTranscriptMutex.Unlock()
+	fake.AgentRunTranscriptStub = nil
+	if fake.agentRunTranscriptReturnsOnCall == nil {
+		fake.agentRunTranscriptReturnsOnCall = make(map[int]struct {
+			result1 []byte
+			result2 error
+		})
+	}
+	fake.agentRunTranscriptReturnsOnCall[i] = struct {
+		result1 []byte
 		result2 error
 	}{result1, result2}
 }
