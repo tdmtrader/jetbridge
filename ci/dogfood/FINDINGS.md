@@ -102,7 +102,30 @@ Newest first.
   agent burned 100 turns (8.2M cache-read tokens) without finishing. The proven loop strike
   zone (cf. #16–40) was smaller slices. If the higher turn cap still caps out, the S-tickets
   need slicing (each plan doc → 2–3 sub-tickets by task range, like ci/dogfood/dispatch.sh's
-  task-range model). Watch the re-dispatch to decide.
+  task-range model).
+
+- **CONFIRMED SYSTEMATIC: the ticket loop pushed TWO empty no-op branches for #43 and both
+  read as successful — the loop is not reliably materializing agent work into the pushed
+  branch.** Run 42 (develop-gated v1, sonnet): `error_max_turns` at 100 turns, $5.98, empty
+  branch. Run 43 (develop-gated v2, sonnet, max_turns 250 + commit-incrementally): terminated
+  `subtype:"success"` at only 48 turns / $2.15 / ~30k output tokens, yet ALSO pushed
+  `base_sha == head_sha` (empty). So the second failure is NOT the turn cap and NOT lack of
+  commits-guidance — the agent did ~30k tokens of work that never reached the `outputs:
+  [workspace]` dir the harvest pushes. Prime suspect: the resolve-once workspace protocol
+  (cp repo→$AGENT_OUTPUT_WORKSPACE, work + commit in WS) is still fragile under sonnet — the
+  agent likely works/commits in `repo/` or a mis-resolved path, leaving the WS output at base.
+  This is the #16 empty-expansion class the develop-v2 comment claims to have fixed; it is not
+  fixed for this path. **Debugging is blocked by the absence of transcript persistence** — the
+  build log carries only the flight-recorder `result` event, not the agent's tool calls, so
+  there is no way to see WHERE it wrote (ironically the exact capability tickets #43/#49
+  would add). ~$8 spent on two empty runs. → *Load-bearing leftward fixes, in priority order:*
+  (1) harvest MUST fail a run whose pushed head == base (no-op guard) — this alone stops the
+  money-burning "successful empty run"; (2) persist the agent transcript so workspace-protocol
+  failures are debuggable at all (#43/#49); (3) make the workspace materialization robust
+  (have the platform own the repo→WS copy, or have the harvest read the agent's actual cwd,
+  rather than trusting the agent to hand-resolve $AGENT_OUTPUT_WORKSPACE). Until (1)+(3) land,
+  the ticket loop cannot be trusted to build these tickets — build them the way Waves A/B/#41
+  were built (directly, adversarially reviewed) OR harden the loop first.
 
 ## Plan gaps the agents found (leftward candidates)
 
