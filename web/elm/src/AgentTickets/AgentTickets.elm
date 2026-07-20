@@ -12,6 +12,7 @@ module AgentTickets.AgentTickets exposing
 
 import AgentBadge
 import Application.Models exposing (Session)
+import Concourse.AgentDispatcher as AgentDispatcher
 import Concourse.AgentTicket as AgentTicket
 import Dict exposing (Dict)
 import Duration
@@ -29,6 +30,7 @@ import Routes
 import SideBar.SideBar as SideBar
 import Time
 import Tooltip
+import UserState exposing (UserState(..))
 import Views.Styles
 import Views.TopBar as TopBar
 
@@ -42,6 +44,8 @@ type alias Model =
         , now : Maybe Time.Posix
         , filter : String
         , sortByWait : Bool
+        , dispatcher : Maybe AgentDispatcher.Status
+        , armedMode : Maybe AgentDispatcher.Mode
         }
 
 
@@ -76,9 +80,11 @@ init =
       , now = Nothing
       , filter = ""
       , sortByWait = False
+      , dispatcher = Nothing
+      , armedMode = Nothing
       , isUserMenuExpanded = False
       }
-    , [ FetchAgentTickets, FetchAgentTicketCosts ]
+    , [ FetchAgentTickets, FetchAgentTicketCosts, FetchAgentDispatcher ]
     )
 
 
@@ -122,6 +128,22 @@ handleCallback callback ( model, effects ) =
 
         AgentCostRollupFetched (Err _) ->
             ( model, effects )
+
+        AgentDispatcherFetched (Ok status) ->
+            ( { model | dispatcher = Just status }, effects )
+
+        AgentDispatcherFetched (Err _) ->
+            ( model, effects )
+
+        AgentDispatcherSet (Ok status) ->
+            -- The PUT echoes the new effective state, so adopt it directly and
+            -- clear any armed pending action.
+            ( { model | dispatcher = Just status, armedMode = Nothing }, effects )
+
+        AgentDispatcherSet (Err _) ->
+            -- Leave the last-known status in place; disarm so the operator can
+            -- retry. A 403 (non-admin) surfaces as the global HTTP error toast.
+            ( { model | armedMode = Nothing }, effects )
 
         _ ->
             ( model, effects )
@@ -169,6 +191,20 @@ update msg ( model, effects ) =
         AgentTicketsSortToggled ->
             ( { model | sortByWait = not model.sortByWait }, effects )
 
+        AgentDispatcherModeClicked token ->
+            -- First click arms the target mode; a second click on the same
+            -- action confirms (see ConfirmAgentDispatcherMode). Clicking a
+            -- different action re-arms to that one.
+            ( { model | armedMode = Just (AgentDispatcher.modeFromString token) }, effects )
+
+        ConfirmAgentDispatcherMode token ->
+            ( { model | armedMode = Nothing }
+            , effects ++ [ SetAgentDispatcher (AgentDispatcher.modeFromString token) ]
+            )
+
+        CancelAgentDispatcherMode ->
+            ( { model | armedMode = Nothing }, effects )
+
         _ ->
             ( model, effects )
 
@@ -205,11 +241,226 @@ view session model =
             [ SideBar.view session Nothing
             , Html.div
                 [ style "padding" "16px", style "width" "100%" ]
-                [ Html.h1 [ style "font-size" "18px" ] [ Html.text "Ticket queue" ]
-                , content model
-                ]
+                (headerRow model
+                    :: dispatcherControls session model
+                    ++ [ dispatcherBanner model
+                       , content model
+                       ]
+                )
             ]
         ]
+
+
+{-| Page title with the live "Auto-dispatch: active/paused/off" status pill.
+-}
+headerRow : Model -> Html Message
+headerRow model =
+    Html.div
+        [ style "display" "flex"
+        , style "align-items" "center"
+        , style "gap" "12px"
+        , style "flex-wrap" "wrap"
+        ]
+        (Html.h1 [ style "font-size" "18px", style "margin" "0" ] [ Html.text "Ticket queue" ]
+            :: (case model.dispatcher of
+                    Just status ->
+                        [ dispatcherPill status ]
+
+                    Nothing ->
+                        []
+               )
+        )
+
+
+{-| Reuse the AgentBadge tone classes for the auto-dispatch pill: active is a
+green "good", paused an amber "warn", off/unknown a muted "neutral".
+-}
+dispatcherToneClass : AgentDispatcher.Mode -> String
+dispatcherToneClass mode =
+    case mode of
+        AgentDispatcher.Active ->
+            "agent-badge--good"
+
+        AgentDispatcher.Paused ->
+            "agent-badge--warn"
+
+        AgentDispatcher.Off ->
+            "agent-badge--neutral"
+
+        AgentDispatcher.Unknown _ ->
+            "agent-badge--neutral"
+
+
+dispatcherPill : AgentDispatcher.Status -> Html Message
+dispatcherPill status =
+    Html.span
+        [ class "agent-badge"
+        , class (dispatcherToneClass status.mode)
+        , id "dispatcher-status-pill"
+        , Html.Attributes.title (dispatcherPillTitle status)
+        ]
+        [ Html.span [ class "agent-badge__dot" ] []
+        , Html.text ("Auto-dispatch: " ++ AgentDispatcher.modeLabel status.mode)
+        ]
+
+
+dispatcherPillTitle : AgentDispatcher.Status -> String
+dispatcherPillTitle status =
+    let
+        srcNote =
+            if status.source == "boot-default" then
+                " (boot default: " ++ AgentDispatcher.modeLabel status.bootDefault ++ ")"
+
+            else
+                ""
+
+        byNote =
+            case status.updatedBy of
+                Just who ->
+                    " · set by " ++ who
+
+                Nothing ->
+                    ""
+
+        atNote =
+            case status.updatedAt of
+                Just when ->
+                    " · " ++ when
+
+                Nothing ->
+                    ""
+    in
+    "Auto-dispatch is " ++ AgentDispatcher.modeLabel status.mode ++ srcNote ++ byNote ++ atNote
+
+
+{-| When auto-dispatch is not active, explain that queued tickets will not run
+until it is resumed — and that manual dispatch from a ticket page still works.
+-}
+dispatcherBanner : Model -> Html Message
+dispatcherBanner model =
+    case Maybe.map .mode model.dispatcher of
+        Just AgentDispatcher.Paused ->
+            bannerBox "Auto-dispatch is paused — queued tickets will not run automatically until it is resumed. You can still dispatch any ticket manually from its page."
+
+        Just AgentDispatcher.Off ->
+            bannerBox "Auto-dispatch is off — queued tickets will not run automatically, and completed runs are not being reconciled. You can still dispatch any ticket manually from its page."
+
+        _ ->
+            Html.text ""
+
+
+bannerBox : String -> Html Message
+bannerBox message =
+    Html.div
+        [ id "dispatcher-banner"
+        , style "margin" "12px 0 0 0"
+        , style "padding" "8px 12px"
+        , style "border" "1px solid #6a5a1f"
+        , style "border-left" "3px solid #d4a72c"
+        , style "background" "#2a2410"
+        , style "color" "#e8d9a0"
+        , style "font-size" "13px"
+        ]
+        [ Html.text message ]
+
+
+{-| Admin-only pause/resume/off controls that PUT the dispatcher mode. The
+control is rendered only for an admin session; the server independently
+enforces the admin tier (a non-admin PUT gets a 403). Uses a two-step
+arm/confirm so a mode change is never a single stray click.
+-}
+dispatcherControls : Session -> Model -> List (Html Message)
+dispatcherControls session model =
+    case ( isAdmin session, model.dispatcher ) of
+        ( True, Just status ) ->
+            let
+                buttons =
+                    [ AgentDispatcher.Active, AgentDispatcher.Paused, AgentDispatcher.Off ]
+                        |> List.filter (\m -> m /= status.mode)
+                        |> List.map (modeButton model.armedMode)
+            in
+            [ Html.div
+                [ id "dispatcher-controls"
+                , style "display" "flex"
+                , style "align-items" "center"
+                , style "gap" "8px"
+                , style "flex-wrap" "wrap"
+                , style "margin" "10px 0 0 0"
+                ]
+                buttons
+            ]
+
+        _ ->
+            []
+
+
+modeButton : Maybe AgentDispatcher.Mode -> AgentDispatcher.Mode -> Html Message
+modeButton armed target =
+    let
+        token =
+            AgentDispatcher.modeToken target
+    in
+    if armed == Just target then
+        Html.span
+            [ style "display" "inline-flex", style "gap" "6px", style "align-items" "center" ]
+            [ ctrlButton "primary" (ConfirmAgentDispatcherMode token) ("Confirm: " ++ modeActionLabel target)
+            , ctrlButton "secondary" CancelAgentDispatcherMode "Cancel"
+            ]
+
+    else
+        ctrlButton "secondary" (AgentDispatcherModeClicked token) (modeActionLabel target)
+
+
+{-| Verb-first label for the control that switches INTO a mode.
+-}
+modeActionLabel : AgentDispatcher.Mode -> String
+modeActionLabel mode =
+    case mode of
+        AgentDispatcher.Active ->
+            "Resume auto-dispatch"
+
+        AgentDispatcher.Paused ->
+            "Pause auto-dispatch"
+
+        AgentDispatcher.Off ->
+            "Turn off"
+
+        AgentDispatcher.Unknown other ->
+            "Set " ++ other
+
+
+ctrlButton : String -> Message -> String -> Html Message
+ctrlButton kind msg label =
+    let
+        ( bg, fg ) =
+            if kind == "primary" then
+                ( "#2e4f2e", "#cfe8cf" )
+
+            else
+                ( "#2a2929", "#d0d0d0" )
+    in
+    Html.button
+        [ type_ "button"
+        , onClick msg
+        , style "background" bg
+        , style "color" fg
+        , style "border" "1px solid #3d3c3c"
+        , style "padding" "5px 12px"
+        , style "cursor" "pointer"
+        , style "font-size" "13px"
+        , style "white-space" "nowrap"
+        ]
+        [ Html.text label ]
+
+
+isAdmin : Session -> Bool
+isAdmin session =
+    case session.userState of
+        UserStateLoggedIn user ->
+            user.isAdmin
+
+        _ ->
+            False
 
 
 content : Model -> Html Message

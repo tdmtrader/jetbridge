@@ -93,6 +93,10 @@ func (wrappa *APIAuthWrappa) Wrap(handlers rata.Handlers) rata.Handlers {
 			atc.SetAgentUserCredential,
 			atc.GetAgentUserCredentialStatus,
 			atc.DeleteAgentUserCredential,
+			// GetAgentDispatcher: any authenticated user may READ the
+			// dispatcher status. Mutating it (SetAgentDispatcher) is admin-only,
+			// pinned in the CheckAdminHandler block below.
+			atc.GetAgentDispatcher,
 			atc.MCPEndpoint:
 			newHandler = auth.CheckAuthenticationHandler(handler, rejector)
 
@@ -152,7 +156,11 @@ func (wrappa *APIAuthWrappa) Wrap(handlers rata.Handlers) rata.Handlers {
 			atc.ListSharedForResourceType,
 			atc.CreateAgentPrincipal,
 			atc.ListAgentPrincipals,
-			atc.RevokeAgentPrincipal:
+			atc.RevokeAgentPrincipal,
+			// SetAgentDispatcher changes cluster-wide autonomous behavior — same
+			// admin tier as minting principals. Reads (GetAgentDispatcher) are
+			// merely authenticated (block above).
+			atc.SetAgentDispatcher:
 			newHandler = auth.CheckAdminHandler(handler, rejector)
 
 		// authorized (requested team matches resource team and has required role, or is admin)

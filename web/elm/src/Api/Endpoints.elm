@@ -40,6 +40,7 @@ type Endpoint
     | AgentMetrics
     | AgentWorkflowsList
     | AgentCostRollup
+    | AgentDispatcher
     | AgentCredentialsStatus
     | AgentPrincipalsList
     | AgentPrincipal Int
@@ -232,6 +233,9 @@ builder endpoint =
 
         AgentCostRollup ->
             base |> appendPath [ "agent", "costs" ]
+
+        AgentDispatcher ->
+            base |> appendPath [ "agent", "dispatcher" ]
 
         AgentCredentialsStatus ->
             base |> appendPath [ "agent", "user-credentials" ]

@@ -12,6 +12,7 @@ import (
 	"code.cloudfoundry.org/lager/v3"
 	"code.cloudfoundry.org/lager/v3/lagertest"
 
+	dispatcherapi "github.com/concourse/concourse/agent/api/dispatcher"
 	"github.com/concourse/concourse/agent/api/feedback"
 	"github.com/concourse/concourse/agent/api/metrics"
 	"github.com/concourse/concourse/agent/api/outcomes"
@@ -252,6 +253,8 @@ var _ = BeforeEach(func() {
 		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusNotImplemented) // dispatch handler stub
 		}),
+		dispatcherapi.NewMemoryStore(),
+		false, // agent dispatcher boot default (flag off)
 	)
 
 	Expect(err).NotTo(HaveOccurred())
