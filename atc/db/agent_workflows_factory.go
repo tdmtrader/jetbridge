@@ -22,8 +22,15 @@ type agentWorkflowsFactory struct {
 	conn DbConn
 }
 
-const workflowMetaColumns = `id, name, version, content_hash, live, description, created_by,
-	EXTRACT(EPOCH FROM created_at)::bigint`
+const workflowMetaColumns = `d.id, d.name, d.version, d.content_hash, d.live, d.description, d.created_by,
+	EXTRACT(EPOCH FROM d.created_at)::bigint,
+	COALESCE(l.hidden, false), COALESCE(l.annotation, '')`
+
+// workflowMetaFrom LEFT JOINs the name-keyed lifecycle table so every version
+// row carries its workflow's hidden/annotation (S-6). LEFT JOIN so a workflow
+// with no lifecycle row yet still reads (hidden=false, annotation='').
+const workflowMetaFrom = ` FROM agent_workflow_definitions d
+	LEFT JOIN agent_workflow_lifecycle l ON l.name = d.name`
 
 func (f *agentWorkflowsFactory) Import(name string, rawYAML []byte, createdBy string) (*workflow.Definition, error) {
 	return f.ImportManifest(name, workflow.Manifest{"workflow.yml": string(rawYAML)}, createdBy)
@@ -58,12 +65,11 @@ func (f *agentWorkflowsFactory) ImportManifest(name string, src workflow.Manifes
 
 	var def workflow.Definition
 	err = tx.QueryRow(`
-		SELECT `+workflowMetaColumns+`
-		FROM agent_workflow_definitions
-		WHERE name = $1 AND content_hash = $2`,
+		SELECT `+workflowMetaColumns+workflowMetaFrom+`
+		WHERE d.name = $1 AND d.content_hash = $2`,
 		name, hash,
 	).Scan(&def.ID, &def.Name, &def.Version, &def.ContentHash, &def.Live,
-		&def.Description, &def.CreatedBy, &def.CreatedAt)
+		&def.Description, &def.CreatedBy, &def.CreatedAt, &def.Hidden, &def.Annotation)
 	if err == nil {
 		// Idempotent on hash: byte-identical source returns the existing
 		// version untouched (contracts §1.6).
@@ -99,15 +105,15 @@ func (f *agentWorkflowsFactory) ImportManifest(name string, src workflow.Manifes
 }
 
 func (f *agentWorkflowsFactory) Get(name string, version int) (*workflow.Definition, bool, error) {
-	return f.getOne(`name = $1 AND version = $2`, name, version)
+	return f.getOne(`d.name = $1 AND d.version = $2`, name, version)
 }
 
 func (f *agentWorkflowsFactory) Live(name string) (*workflow.Definition, bool, error) {
-	return f.getOne(`name = $1 AND live`, name)
+	return f.getOne(`d.name = $1 AND d.live`, name)
 }
 
 func (f *agentWorkflowsFactory) Latest(name string) (*workflow.Definition, bool, error) {
-	return f.getOne(`name = $1 ORDER BY version DESC LIMIT 1`, name)
+	return f.getOne(`d.name = $1 ORDER BY d.version DESC LIMIT 1`, name)
 }
 
 // LiveVersions resolves every workflow's live version in ONE metadata query —
@@ -136,11 +142,11 @@ func (f *agentWorkflowsFactory) getOne(where string, args ...any) (*workflow.Def
 	var def workflow.Definition
 	var manifestJSON sql.NullString
 	err := f.conn.QueryRow(`
-		SELECT `+workflowMetaColumns+`, definition, source_manifest
-		FROM agent_workflow_definitions
+		SELECT `+workflowMetaColumns+`, d.definition, d.source_manifest`+workflowMetaFrom+`
 		WHERE `+where, args...,
 	).Scan(&def.ID, &def.Name, &def.Version, &def.ContentHash, &def.Live,
-		&def.Description, &def.CreatedBy, &def.CreatedAt, &def.RawYAML, &manifestJSON)
+		&def.Description, &def.CreatedBy, &def.CreatedAt, &def.Hidden, &def.Annotation,
+		&def.RawYAML, &manifestJSON)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, false, nil
 	}
@@ -175,9 +181,8 @@ func (f *agentWorkflowsFactory) getOne(where string, args ...any) (*workflow.Def
 
 func (f *agentWorkflowsFactory) List() ([]workflow.Definition, error) {
 	rows, err := f.conn.Query(`
-		SELECT DISTINCT ON (name) ` + workflowMetaColumns + `
-		FROM agent_workflow_definitions
-		ORDER BY name, version DESC`)
+		SELECT DISTINCT ON (d.name) ` + workflowMetaColumns + workflowMetaFrom + `
+		ORDER BY d.name, d.version DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -187,10 +192,9 @@ func (f *agentWorkflowsFactory) List() ([]workflow.Definition, error) {
 
 func (f *agentWorkflowsFactory) Versions(name string) ([]workflow.Definition, error) {
 	rows, err := f.conn.Query(`
-		SELECT `+workflowMetaColumns+`
-		FROM agent_workflow_definitions
-		WHERE name = $1
-		ORDER BY version ASC`, name)
+		SELECT `+workflowMetaColumns+workflowMetaFrom+`
+		WHERE d.name = $1
+		ORDER BY d.version ASC`, name)
 	if err != nil {
 		return nil, err
 	}
@@ -239,12 +243,45 @@ func (f *agentWorkflowsFactory) Promote(name string, version int, promotedBy str
 	return tx.Commit()
 }
 
+func (f *agentWorkflowsFactory) Annotate(name, annotation, updatedBy string) error {
+	return f.upsertLifecycle(name, "annotation", annotation, updatedBy)
+}
+
+func (f *agentWorkflowsFactory) SetHidden(name string, hidden bool, updatedBy string) error {
+	return f.upsertLifecycle(name, "hidden", hidden, updatedBy)
+}
+
+// upsertLifecycle sets one lifecycle column, refusing to touch a workflow that
+// has no versions (ErrVersionNotFound). The row is created lazily.
+func (f *agentWorkflowsFactory) upsertLifecycle(name, column string, value any, updatedBy string) error {
+	var exists bool
+	err := f.conn.QueryRow(
+		`SELECT EXISTS (SELECT 1 FROM agent_workflow_definitions WHERE name = $1)`, name,
+	).Scan(&exists)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return workflow.ErrVersionNotFound
+	}
+	// column is a fixed literal ("annotation"|"hidden"), never user input.
+	_, err = f.conn.Exec(`
+		INSERT INTO agent_workflow_lifecycle (name, `+column+`, updated_by, updated_at)
+		VALUES ($1, $2, $3, now())
+		ON CONFLICT (name) DO UPDATE SET
+			`+column+` = EXCLUDED.`+column+`,
+			updated_by = EXCLUDED.updated_by,
+			updated_at = now()`,
+		name, value, updatedBy)
+	return err
+}
+
 func scanWorkflowMetaRows(rows *sql.Rows) ([]workflow.Definition, error) {
 	out := []workflow.Definition{}
 	for rows.Next() {
 		var def workflow.Definition
 		if err := rows.Scan(&def.ID, &def.Name, &def.Version, &def.ContentHash, &def.Live,
-			&def.Description, &def.CreatedBy, &def.CreatedAt); err != nil {
+			&def.Description, &def.CreatedBy, &def.CreatedAt, &def.Hidden, &def.Annotation); err != nil {
 			return nil, err
 		}
 		out = append(out, def)
