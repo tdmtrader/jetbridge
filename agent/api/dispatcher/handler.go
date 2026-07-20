@@ -115,7 +115,10 @@ func (h *Handler) Set(w http.ResponseWriter, r *http.Request) {
 
 	identity := h.userName(r)
 	if identity == "" {
-		identity = "admin"
+		// Record an honest sentinel rather than masquerading as a real
+		// "admin" — updated_by is display/audit provenance for a
+		// security-relevant control, so don't fabricate an actor.
+		identity = "unknown"
 	}
 	if err := h.store.SetDispatcherMode(body.Mode, identity); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)

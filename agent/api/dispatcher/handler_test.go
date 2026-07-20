@@ -82,18 +82,19 @@ func TestPutSetsModeAndReturnsNewState(t *testing.T) {
 	}
 }
 
-func TestPutMissingUserDefaultsToAdmin(t *testing.T) {
+func TestPutMissingUserRecordsUnknown(t *testing.T) {
 	h, _ := newHandler(false)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("PUT", "/api/v1/agent/dispatcher", strings.NewReader(`{"mode":"active"}`))
-	// no X-Test-User header -> identity ""
+	// no X-Test-User header -> identity "" -> recorded as the honest "unknown"
+	// sentinel, NOT fabricated as a real "admin" actor.
 	h.Set(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("PUT = %d", rec.Code)
 	}
 	resp := getStatus(t, h)
-	if resp.UpdatedBy == nil || *resp.UpdatedBy != "admin" {
-		t.Errorf("updated_by = %v, want admin fallback", resp.UpdatedBy)
+	if resp.UpdatedBy == nil || *resp.UpdatedBy != "unknown" {
+		t.Errorf("updated_by = %v, want unknown sentinel", resp.UpdatedBy)
 	}
 }
 

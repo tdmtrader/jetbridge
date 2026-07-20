@@ -40,3 +40,19 @@ func ResolveEffectiveMode(found bool, settingMode string, bootFlag bool) string 
 	}
 	return ModeOff
 }
+
+// EffectiveModeFromRead resolves the mode for one tick from a settings read,
+// applying the fail-safe policy: a read FAULT must never auto-dispatch. On a
+// non-nil readErr we cannot tell whether an admin persisted paused/off, so we
+// return ModePaused — no auto-dispatch (an admin's pause/off is never
+// overridden by a transient DB blip) while keeping the reconciler safety net
+// alive; dispatch resumes on the next successful read. Only when the read
+// succeeds do we honor a persisted setting or the boot-flag seed. The boot
+// flag is deliberately NOT consulted on error: falling back to it could resume
+// auto-dispatch against an explicit pause whenever the flag seed is "active".
+func EffectiveModeFromRead(settingMode string, found bool, readErr error, bootFlag bool) string {
+	if readErr != nil {
+		return ModePaused
+	}
+	return ResolveEffectiveMode(found, settingMode, bootFlag)
+}

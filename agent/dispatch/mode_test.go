@@ -2,6 +2,7 @@ package dispatch_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/concourse/concourse/agent/api/tickets"
@@ -31,6 +32,40 @@ func TestResolveEffectiveMode(t *testing.T) {
 					tc.found, tc.setting, tc.bootFlag, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestEffectiveModeFromRead(t *testing.T) {
+	readErr := errors.New("connection reset")
+
+	// A read fault fails safe to paused REGARDLESS of found/setting/bootFlag —
+	// an admin's pause/off must never be overridden by a transient DB blip,
+	// and a boot flag seeded "active" must not resume dispatch on error.
+	for _, tc := range []struct {
+		name     string
+		setting  string
+		found    bool
+		bootFlag bool
+	}{
+		{"err with paused row + boot active", dispatch.ModePaused, true, true},
+		{"err with off row + boot active", dispatch.ModeOff, true, true},
+		{"err with no row + boot active", "", false, true},
+		{"err with no row + boot off", "", false, false},
+	} {
+		if got := dispatch.EffectiveModeFromRead(tc.setting, tc.found, readErr, tc.bootFlag); got != dispatch.ModePaused {
+			t.Errorf("%s: read error must fail-safe to paused, got %q", tc.name, got)
+		}
+	}
+
+	// No error delegates to ResolveEffectiveMode.
+	if got := dispatch.EffectiveModeFromRead(dispatch.ModeOff, true, nil, true); got != dispatch.ModeOff {
+		t.Errorf("no error, found row: got %q, want off", got)
+	}
+	if got := dispatch.EffectiveModeFromRead("", false, nil, true); got != dispatch.ModeActive {
+		t.Errorf("no error, no row, boot on: got %q, want active", got)
+	}
+	if got := dispatch.EffectiveModeFromRead("", false, nil, false); got != dispatch.ModeOff {
+		t.Errorf("no error, no row, boot off: got %q, want off", got)
 	}
 }
 

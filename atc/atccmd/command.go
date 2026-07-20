@@ -1424,12 +1424,13 @@ func (cmd *RunCommand) backendComponents(
 			modeResolver := func() string {
 				mode, found, err := dispatcherSettings.GetDispatcherMode()
 				if err != nil {
-					// A read fault must not silently activate the loop: fall
-					// back to the boot seed (off by default in current live).
+					// Fail-safe: a read fault must never auto-dispatch against
+					// an admin's explicit pause/off. EffectiveModeFromRead
+					// returns ModePaused on error (no dispatch, reconciler
+					// stays alive), independent of the boot seed.
 					logger.Error("failed-to-read-dispatcher-mode", err)
-					return dispatch.ResolveEffectiveMode(false, "", dispatcherBootFlag)
 				}
-				return dispatch.ResolveEffectiveMode(found, mode, dispatcherBootFlag)
+				return dispatch.EffectiveModeFromRead(mode, found, err, dispatcherBootFlag)
 			}
 
 			dispatcherDeps := dispatch.Deps{
