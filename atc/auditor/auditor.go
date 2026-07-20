@@ -188,6 +188,7 @@ func (a *auditor) ValidateAction(action string) bool {
 		atc.SetAgentTicketDisposition,
 		atc.GetAgentTicketOutcome,
 		atc.GetAgentTicketDiff,
+		atc.GetAgentTicketRunTranscript,
 		atc.GetAgentDispatcher,
 		atc.SetAgentDispatcher:
 		return a.EnableSystemAuditLog

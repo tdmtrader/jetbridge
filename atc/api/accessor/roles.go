@@ -140,7 +140,8 @@ var DefaultRoles = map[string]string{
 	// Delivery-outcomes routes (§4.2 + §1.11.1 writer reconciliation).
 	// SetAgentTicketDisposition is member-only with NO principal path in
 	// the wrappa — the human review gate (decision D-3).
-	atc.SetAgentTicketDisposition: MemberRole,
-	atc.GetAgentTicketOutcome:     ViewerRole,
-	atc.GetAgentTicketDiff:        ViewerRole,
+	atc.SetAgentTicketDisposition:   MemberRole,
+	atc.GetAgentTicketOutcome:       ViewerRole,
+	atc.GetAgentTicketDiff:          ViewerRole,
+	atc.GetAgentTicketRunTranscript: ViewerRole,
 }

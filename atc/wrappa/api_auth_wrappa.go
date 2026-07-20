@@ -242,7 +242,8 @@ func (wrappa *APIAuthWrappa) Wrap(handlers rata.Handlers) rata.Handlers {
 			// authorized viewer.
 			atc.SetAgentTicketDisposition,
 			atc.GetAgentTicketOutcome,
-			atc.GetAgentTicketDiff:
+			atc.GetAgentTicketDiff,
+			atc.GetAgentTicketRunTranscript:
 			newHandler = auth.CheckAgentAuthorizationHandler(handler, rejector)
 
 		// combined tier: agent principal (tickets:write) OR authorized
