@@ -27,14 +27,13 @@ RUN curl -fsSL -o /tmp/elm.gz \
     && npm install -g uglify-js@3.19.3 \
     && uglifyjs --version
 
-# Pre-warm ELM_HOME so in-pod `elm make` needs no network: build web/elm once
-# at image-build time (this also fails the build loudly if elm can't resolve
-# the repo's dependencies). Only web/elm is copied in — the source tree is not
-# otherwise part of the runtime image.
-COPY web/elm /tmp/elm-prewarm/web/elm
-RUN cd /tmp/elm-prewarm/web/elm \
-    && elm make --optimize --output /dev/null src/Main.elm \
-    && rm -rf /tmp/elm-prewarm
+# NOTE: the ELM_HOME pre-warm (`elm make` on web/elm at image-build time) was
+# REMOVED — the build pod has no egress to package.elm-lang.org, so the pre-warm
+# `elm make` failed dependency resolution and broke the whole image build (WF-2
+# Open Decision #4). The elm binary + uglify-js are still installed above for
+# in-pod use; a UI (elm) ticket will need run-time egress to package.elm-lang.org
+# for its first `elm make`, OR a network-independent pre-warm (vendored ELM_HOME)
+# — deferred until UI tickets are actually loop-dispatched.
 COPY --from=build /out/agent-runner /usr/local/bin/agent-runner
 # harvest-runner shares the image (§2.8.1: the harvest step's main
 # container is the agent-step image; git already present above).

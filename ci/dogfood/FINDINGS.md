@@ -127,6 +127,22 @@ Newest first.
   the ticket loop cannot be trusted to build these tickets — build them the way Waves A/B/#41
   were built (directly, adversarially reviewed) OR harden the loop first.
 
+- **The WF-2 elm pre-warm broke the agent-runner image build — the no-op guard + transcript
+  capture were never actually deployed until this was fixed.** `build-agent-runner-image` #8
+  (intended v0.2.200) and #9 (v0.2.201) both FAILED at the Dockerfile step
+  `cd /tmp/elm-prewarm/web/elm && elm make --optimize ...`: the build pod has no egress to
+  package.elm-lang.org, so `elm make` cannot resolve the repo's Elm deps (exactly WF-2 Open
+  Decision #4's warning). The `elm` binary (curl from github) and `uglify-js` (npm) installs
+  SUCCEEDED — only the package-registry pre-warm failed. CONSEQUENCE: the registry has no
+  v0.2.200/v0.2.201; home-infra pointed CONCOURSE_AGENT_STEP_IMAGE at a non-existent tag, so
+  dispatched run 44 errored with `failed to pull and unpack image: NotFound` (22s). The web
+  deploy was unaffected (it uses jetbridge:latest, not agent-runner), which masked the failure
+  — the poll had read the *attempted* tag out of the build log, not a successful push. LESSON:
+  after triggering build-agent-runner-image, VERIFY the tag actually landed in the registry
+  (`/v2/agent-runner/tags/list`) before bumping home-infra — a build-log tag string is not proof
+  of a push. → *Fix applied:* removed the pre-warm layer (keep elm+uglify binaries); a UI ticket
+  will need run-time egress to package.elm-lang.org or a vendored ELM_HOME (deferred).
+
 ## Plan gaps the agents found (leftward candidates)
 
 - **Agent replace-instead-of-add error in exactly the code the gate can't test.**
