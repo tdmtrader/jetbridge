@@ -329,4 +329,32 @@ all =
                     |> Query.findAll [ Test.Html.Selector.tag "h2" ]
                     |> Query.first
                     |> Query.has [ text "Merged (2) · $43.10" ]
+        , plumbingTest
         ]
+
+
+plumbingTest : Test
+plumbingTest =
+    test "CreateAgentTicket effect and AgentTicketCreated callback are wired" <|
+        \_ ->
+            -- Compile-level guard: these constructors must exist and typecheck.
+            let
+                effect =
+                    Effects.CreateAgentTicket
+                        { title = "t"
+                        , body = ""
+                        , repo = "o/n"
+                        , targetBranch = ""
+                        , workflowName = ""
+                        , workflowVersion = Nothing
+                        , budgetUsd = Nothing
+                        }
+
+                callback =
+                    Callback.AgentTicketCreated Data.httpUnauthorized
+            in
+            Expect.all
+                [ \_ -> Expect.equal effect effect
+                , \_ -> Expect.equal callback callback
+                ]
+                ()

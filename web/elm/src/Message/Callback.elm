@@ -88,5 +88,6 @@ type Callback
     | AgentTicketSaved Int (Fetched ())
     | AgentTicketTransitioned Int (Fetched ())
     | AgentTicketDispatched Int (Fetched Concourse.AgentTicket.DispatchResult)
+    | AgentTicketCreated (Fetched Concourse.AgentTicket.Ticket)
     | AgentTicketTaskUpdated Int (Fetched ())
     | AgentTicketMetricsFetched Int (Fetched (List Concourse.Agent.RunMetric))
