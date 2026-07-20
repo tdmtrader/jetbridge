@@ -29,6 +29,7 @@ import Concourse.AgentReview
 import Concourse.AgentTicket as AgentTicket
 import DateFormat
 import Dict exposing (Dict)
+import Duration
 import EffectTransformer exposing (ET)
 import Html exposing (Html)
 import Html.Attributes exposing (attribute, class, href, id, placeholder, style, value)
@@ -39,7 +40,7 @@ import Login.Login as Login
 import Message.Callback exposing (Callback(..))
 import Message.Effects exposing (Effect(..))
 import Message.Message exposing (Message(..))
-import Message.Subscription exposing (Delivery, Interval(..), Subscription)
+import Message.Subscription exposing (Delivery(..), Interval(..), Subscription)
 import Polling
 import Routes
 import Set exposing (Set)
@@ -75,6 +76,10 @@ type alias Model =
         , dispatchConfirm : Bool
         , pendingTransition : Maybe String
 
+        -- Live clock for the run rows' relative "N ago" times, advanced on the
+        -- same 5s tick that drives the self-heal refetch.
+        , now : Maybe Time.Posix
+
         -- Review panel state — structurally satisfies Build.AgentReview.PanelState
         -- so the panel view can be reused unchanged.
         , agentReviews : List Concourse.AgentReview.BuildReview
@@ -105,6 +110,7 @@ init { id } =
       , editBudget = ""
       , dispatchConfirm = False
       , pendingTransition = Nothing
+      , now = Nothing
       , agentReviews = []
       , agentReviewLoadError = False
       , agentReviewPanelExpanded = False
@@ -305,8 +311,24 @@ polls =
 
 
 handleDelivery : Delivery -> ET Model
-handleDelivery =
-    Polling.handleDelivery polls
+handleDelivery delivery ( model, effects ) =
+    -- Compose the polling fetch (Polling.handleDelivery only produces effects,
+    -- never touches the model) with a local model write advancing the `now`
+    -- clock the run rows' relative times read from — the pattern Polling's doc
+    -- calls out for pages that also need a tick-driven model update.
+    ( advanceClock delivery model
+    , Polling.handleDelivery polls delivery ( model, effects ) |> Tuple.second
+    )
+
+
+advanceClock : Delivery -> Model -> Model
+advanceClock delivery model =
+    case delivery of
+        ClockTicked _ time ->
+            { model | now = Just time }
+
+        _ ->
+            model
 
 
 update : Message -> ET Model
@@ -522,7 +544,11 @@ content session model =
                         , tabsBar model
                         , Html.Lazy.lazy2 tabContent model.activeTab detail
                         , Html.Lazy.lazy taskList detail.tasks
-                        , Html.Lazy.lazy runHistory model.runMetricsByBuild
+
+                        -- Not lazy: the relative run times read the `now` clock,
+                        -- which changes on every 5s tick, so a memo would never
+                        -- hit anyway.
+                        , runHistory model.now session.timeZone model.runMetricsByBuild
                         ]
                 in
                 Html.div []
@@ -1221,8 +1247,8 @@ Renders from the by-build grouping computed once per metrics fetch —
 grouping or filtering here would re-scan every metric row for every run row
 on every render.
 -}
-runHistory : Dict Int (List Concourse.Agent.RunMetric) -> Html Message
-runHistory metricsByBuild =
+runHistory : Maybe Time.Posix -> Time.Zone -> Dict Int (List Concourse.Agent.RunMetric) -> Html Message
+runHistory now zone metricsByBuild =
     if Dict.isEmpty metricsByBuild then
         Html.text ""
 
@@ -1231,15 +1257,17 @@ runHistory metricsByBuild =
             (formLabel "runs"
                 :: (metricsByBuild
                         |> Dict.toList
-                        -- keys ascend; newest build renders first
+                        -- keys ascend, so oldest build is attempt 1; number
+                        -- them before reversing so the newest renders first.
+                        |> List.indexedMap (\i entry -> ( i + 1, entry ))
                         |> List.reverse
-                        |> List.map runRow
+                        |> List.map (runRow now zone)
                    )
             )
 
 
-runRow : ( Int, List Concourse.Agent.RunMetric ) -> Html Message
-runRow ( buildId, forBuild ) =
+runRow : Maybe Time.Posix -> Time.Zone -> ( Int, ( Int, List Concourse.Agent.RunMetric ) ) -> Html Message
+runRow now zone ( attempt, ( buildId, forBuild ) ) =
     let
         cost =
             forBuild |> List.map .costUsd |> List.sum
@@ -1272,6 +1300,10 @@ runRow ( buildId, forBuild ) =
         hasResult =
             summary /= ""
 
+        -- The run started at its first step (rows are created_at ASC).
+        startedAt =
+            forBuild |> List.head |> Maybe.map .createdAt |> Maybe.withDefault 0
+
         -- U2/U3: the build status wins over the step status for display truth.
         -- The per-ROW server `outcome` field is deliberately not used here:
         -- this view collapses N step rows into ONE build-level verdict
@@ -1287,9 +1319,11 @@ runRow ( buildId, forBuild ) =
                 Nothing ->
                     Html.span [ style "color" "#b0b0b0", style "font-size" "12px" ] [ Html.text runStatus ]
     in
+    -- W-2: the row reads "attempt N · <relative time> · <outcome chip> · $cost".
+    -- The build id is the LINK TARGET (the href), not a visible label.
     Html.a
         [ class "agent-ticket-run-row"
-        , href (Routes.toString (Routes.OneOffBuild { id = buildId, highlight = Routes.HighlightNothing }))
+        , href (buildHref buildId)
         , style "display" "flex"
         , style "align-items" "center"
         , style "gap" "10px"
@@ -1298,13 +1332,46 @@ runRow ( buildId, forBuild ) =
         , style "color" "inherit"
         , style "text-decoration" "none"
         ]
-        [ Html.span [ style "font-family" "monospace", style "color" "#7aa37a", style "min-width" "80px", style "flex-shrink" "0" ]
-            [ Html.text ("build " ++ String.fromInt buildId) ]
+        [ Html.span [ style "font-family" "monospace", style "color" "#7aa37a", style "min-width" "72px", style "flex-shrink" "0" ]
+            [ Html.text ("attempt " ++ String.fromInt attempt) ]
+        , relativeRunTime now zone startedAt
         , Html.span [ style "flex-shrink" "0" ] [ statusView ]
         , Html.span [ style "color" "#9aa39b", style "flex" "1", style "min-width" "0", style "font-size" "12px", style "overflow" "hidden", style "text-overflow" "ellipsis", style "white-space" "nowrap" ]
             [ Html.text summary ]
         , Html.span [ style "font-family" "monospace", style "color" "#b0b0b0", style "flex-shrink" "0" ] [ Html.text ("$" ++ formatUsd cost) ]
         ]
+
+
+{-| A run row's start time as a relative "N ago" label (absolute time on hover),
+reusing the shared Duration helper the ticket-queue rows use. Renders nothing
+until the clock has ticked or when the timestamp is unknown / in the future.
+-}
+relativeRunTime : Maybe Time.Posix -> Time.Zone -> Int -> Html Message
+relativeRunTime now zone epochSeconds =
+    case now of
+        Just t ->
+            if epochSeconds > 0 then
+                let
+                    elapsed =
+                        Duration.between (Time.millisToPosix (epochSeconds * 1000)) t
+                in
+                if elapsed >= 0 then
+                    Html.span
+                        [ style "color" "#9aa39b"
+                        , style "font-size" "12px"
+                        , style "flex-shrink" "0"
+                        , Html.Attributes.title (formatTimestamp zone epochSeconds)
+                        ]
+                        [ Html.text (Duration.format elapsed ++ " ago") ]
+
+                else
+                    Html.text ""
+
+            else
+                Html.text ""
+
+        Nothing ->
+            Html.text ""
 
 
 actionButton : String -> Message -> String -> Html Message
