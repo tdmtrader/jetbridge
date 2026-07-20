@@ -47,6 +47,18 @@ func (s *stubPlatformUserResolver) UserBySub(sub string) (int, string, bool, err
 	return s.userID, s.userName, s.found, s.err
 }
 
+// stubTranscriptStore captures the agent transcript upserted at harvest
+// ingestion (ticket #43).
+type stubTranscriptStore struct {
+	upserted []db.AgentRunTranscript
+	err      error
+}
+
+func (s *stubTranscriptStore) Upsert(t db.AgentRunTranscript) error {
+	s.upserted = append(s.upserted, t)
+	return s.err
+}
+
 var _ = Describe("HarvestStep", func() {
 	var (
 		ctx    context.Context
@@ -310,11 +322,13 @@ var _ = Describe("HarvestStep", func() {
 			fakeMetricsStore *metricsfakes.FakeStore
 			fakeChecker      *budgetfakes.FakeChecker
 			reviewsStore     *reviews.MemoryStore
+			transcriptStore  *stubTranscriptStore
 			platformResolver *stubPlatformUserResolver
 
-			resultsJSON string
-			eventLines  []string
-			reviewJSON  string
+			resultsJSON   string
+			eventLines    []string
+			reviewJSON    string
+			transcriptRaw string
 
 			streamFullFlight func(context.Context, runtime.Artifact, string) (io.ReadCloser, error)
 
@@ -326,6 +340,7 @@ var _ = Describe("HarvestStep", func() {
 			fakeMetricsStore = new(metricsfakes.FakeStore)
 			fakeChecker = new(budgetfakes.FakeChecker)
 			reviewsStore = reviews.NewMemoryStore()
+			transcriptStore = &stubTranscriptStore{}
 			platformResolver = &stubPlatformUserResolver{userID: 99, userName: "platform", found: true}
 
 			// Task 9 shapes (NOT plan 09's).
@@ -358,6 +373,10 @@ var _ = Describe("HarvestStep", func() {
 			// The stub honors ctx cancellation, matching the production
 			// Streamer: only the detached ingestCtx (F4) keeps reads live
 			// once the step's timeout-scoped ctx expired.
+			transcriptRaw = `{"type":"system","subtype":"init"}` + "\n" +
+				`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"/w/main.go"}}]}}` + "\n" +
+				`{"type":"result","total_cost_usd":0.2}` + "\n"
+
 			streamFullFlight = func(ctx context.Context, _ runtime.Artifact, path string) (io.ReadCloser, error) {
 				if err := ctx.Err(); err != nil {
 					return nil, err
@@ -369,6 +388,8 @@ var _ = Describe("HarvestStep", func() {
 					return io.NopCloser(strings.NewReader(strings.Join(eventLines, "\n") + "\n")), nil
 				case "review.json":
 					return io.NopCloser(strings.NewReader(reviewJSON)), nil
+				case "transcript.ndjson":
+					return io.NopCloser(strings.NewReader(transcriptRaw)), nil
 				default:
 					return nil, fmt.Errorf("no fixture for %q", path)
 				}
@@ -386,6 +407,7 @@ var _ = Describe("HarvestStep", func() {
 				exec.WithHarvestStreamer(fakeStreamer),
 				exec.WithHarvestMetricsStore(fakeMetricsStore),
 				exec.WithHarvestReviewsStore(reviewsStore),
+				exec.WithHarvestTranscriptStore(transcriptStore),
 				exec.WithHarvestBudgetRecorder(fakeChecker),
 				exec.WithHarvestPlatformUserResolver(platformResolver),
 			)
@@ -416,6 +438,44 @@ var _ = Describe("HarvestStep", func() {
 			Expect(rm.EventsArtifact).To(Equal("flight-volume"))
 			Expect(rm.Results).To(MatchJSON(resultsJSON))
 			Expect(rm.Summary).To(ContainSubstring("judge 7.5/10"))
+		})
+
+		It("upserts the runner-captured transcript keyed by build/plan/ticket (ticket #43)", func() {
+			ok, err := step.Run(ctx, state)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(ok).To(BeTrue())
+
+			Expect(transcriptStore.upserted).To(HaveLen(1))
+			tr := transcriptStore.upserted[0]
+			Expect(tr.BuildID).To(Equal(stepMetadata.BuildID))
+			Expect(tr.PlanID).To(Equal(string(planID)))
+			Expect(tr.StepName).To(Equal("harvest"))
+			Expect(*tr.TicketID).To(Equal(42))
+			Expect(tr.NDJSON).To(Equal(transcriptRaw))
+			Expect(tr.ByteLen).To(Equal(len(transcriptRaw)))
+			Expect(tr.Truncated).To(BeFalse())
+		})
+
+		It("bounds an over-512KiB transcript to the tail with the truncation marker", func() {
+			// a head bigger than the 512KiB cap, then a distinctive tail line
+			var b strings.Builder
+			for b.Len() < 600*1024 {
+				b.WriteString(`{"type":"assistant","message":{"content":[{"type":"text","text":"padding padding padding"}]}}` + "\n")
+			}
+			b.WriteString(`{"type":"result","total_cost_usd":9.9}` + "\n")
+			transcriptRaw = b.String()
+
+			ok, err := step.Run(ctx, state)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(ok).To(BeTrue())
+
+			Expect(transcriptStore.upserted).To(HaveLen(1))
+			tr := transcriptStore.upserted[0]
+			Expect(tr.Truncated).To(BeTrue())
+			Expect(tr.ByteLen).To(BeNumerically("<=", 512*1024+256))
+			Expect(tr.NDJSON).To(HavePrefix(`{"type":"transcript_truncated","dropped_bytes":`))
+			// the diagnostic tail (the final result line) survives
+			Expect(tr.NDJSON).To(ContainSubstring(`"total_cost_usd":9.9`))
 		})
 
 		It("upserts the evidence row with server-side trust pins (D9)", func() {
