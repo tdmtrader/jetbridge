@@ -121,7 +121,7 @@ func Run(cfg Config, workspaceDir, credsDir, flightDir string, out io.Writer) in
 
 	// -- gates (between cleanliness and push, §6.3; unchanged engine) --
 	if len(cfg.GatePolicy.Gates) > 0 {
-		outcomes, gatesErr := RunGates(cfg.GatePolicy, workspaceDir, rec.eventWriter())
+		outcomes, gatesErr := RunGates(cfg.GatePolicy, workspaceDir, facts.BaseSHA, rec.eventWriter())
 		facts.Gates = outcomes
 		if gatesErr != nil {
 			return finish(schema.StatusError, "gate engine failure: "+gatesErr.Error())

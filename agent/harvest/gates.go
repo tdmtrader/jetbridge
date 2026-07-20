@@ -54,10 +54,10 @@ const defaultGateTimeout = 30 * time.Minute
 // events (nil-tolerant: nil = no flight dir) receives live gate.start /
 // gate.result events per attempt (§6.3: flakiness surfaced); emission
 // failures never break gate control flow.
-func RunGates(policy GatePolicy, workspaceDir string, events *schema.EventWriter) ([]GateOutcome, error) {
+func RunGates(policy GatePolicy, workspaceDir, baseSHA string, events *schema.EventWriter) ([]GateOutcome, error) {
 	outcomes := make([]GateOutcome, 0, len(policy.Gates))
 	for _, gate := range policy.Gates {
-		outcome := runGate(gate, workspaceDir, events)
+		outcome := runGate(gate, workspaceDir, baseSHA, events)
 		outcomes = append(outcomes, outcome)
 		if outcome.Status != "ok" {
 			break
@@ -66,7 +66,7 @@ func RunGates(policy GatePolicy, workspaceDir string, events *schema.EventWriter
 	return outcomes, nil
 }
 
-func runGate(gate Gate, workspaceDir string, events *schema.EventWriter) GateOutcome {
+func runGate(gate Gate, workspaceDir, baseSHA string, events *schema.EventWriter) GateOutcome {
 	if gate.Scope != "full" {
 		return GateOutcome{
 			Gate: gate.Gate, Scope: gate.Scope, Status: "error", Attempt: 1,
