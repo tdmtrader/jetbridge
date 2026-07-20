@@ -317,63 +317,93 @@ entryView model entry =
 summarize : AE.EntryBody -> ( String, String )
 summarize body =
     case body of
-        AE.StepStarted r ->
-            ( "step " ++ r.stepName ++ " started", "" )
-
-        AE.StepEnded r ->
-            ( "step " ++ r.stepName ++ " ended (" ++ r.status ++ ", $" ++ formatCost r.costUsd ++ ", " ++ String.fromInt r.turns ++ " turns)", r.summary )
-
-        AE.CostRecorded r ->
-            ( r.source ++ " cost $" ++ formatCost r.costUsd ++ " (" ++ String.fromInt r.turns ++ " turns)", "" )
-
-        AE.GateStarted r ->
-            ( "gate " ++ r.gate ++ " (" ++ r.component ++ ") started", "" )
-
-        AE.GateResulted r ->
-            ( "gate " ++ r.gate ++ " (" ++ r.component ++ "): " ++ r.status
-                ++ (if r.flaky then
-                        " · flaky"
+        AE.SystemInit r ->
+            ( "session started"
+                ++ (if r.subtype /= "" then
+                        " (" ++ r.subtype ++ ")"
 
                     else
                         ""
                    )
-            , r.summary
+            , ""
             )
 
-        AE.JudgeScored r ->
-            ( "judge " ++ formatCost r.total ++ "/" ++ formatCost r.maxTotal ++ " (" ++ r.model ++ ")"
-            , String.join "\n" (List.map (\d -> "- " ++ d.name ++ ": " ++ formatCost d.score ++ "/" ++ formatCost d.max ++ " — " ++ d.rationale) r.dimensions)
-            )
-
-        AE.Pushed r ->
-            ( "pushed " ++ r.branch ++ " @ " ++ String.left 10 r.sha, "" )
-
-        AE.HumanAsked r ->
-            ( "asked human: " ++ r.question, String.join "\n" r.options )
-
-        AE.HumanAnswered r ->
-            ( "human answered (" ++ r.answeredBy ++ ")", r.answer )
-
-        AE.CheckpointWaited r ->
-            ( "checkpoint " ++ r.checkpoint ++ " — waiting", "" )
-
-        AE.CheckpointReleased r ->
-            ( "checkpoint released (" ++ r.answeredBy ++ ")", "" )
-
-        AE.Errored r ->
-            ( "error", r.message )
-
-        AE.ToolCalled r ->
-            ( "tool " ++ r.tool, "```\n" ++ r.input ++ "\n```" )
-
-        AE.ToolResulted r ->
-            ( "tool result " ++ r.tool, "```\n" ++ r.output ++ "\n```" )
-
-        AE.ArtifactWritten r ->
-            ( "wrote " ++ r.path ++ " (" ++ String.fromInt r.bytes ++ " bytes)", "" )
+        AE.Said r ->
+            ( labelWithPreview "assistant" r.text, r.text )
 
         AE.Thought r ->
-            ( "thinking", r.summary )
+            ( labelWithPreview "thinking" r.summary, r.summary )
 
-        AE.Unknown ->
-            ( "(unrecognized event)", "" )
+        AE.ToolCalled r ->
+            ( "tool " ++ r.tool ++ inlineArg r.input, codeBlock r.input )
+
+        AE.ToolResulted r ->
+            ( "tool result"
+                ++ (if r.isError then
+                        " · error"
+
+                    else
+                        ""
+                   )
+            , codeBlock r.output
+            )
+
+        AE.RunResult r ->
+            ( "result: "
+                ++ r.subtype
+                ++ " ("
+                ++ String.fromInt r.numTurns
+                ++ " turns, $"
+                ++ formatCost r.costUsd
+                ++ (if r.isError then
+                        ", error"
+
+                    else
+                        ""
+                   )
+                ++ ")"
+            , r.result
+            )
+
+        AE.Truncated r ->
+            ( "transcript truncated (" ++ String.fromInt r.droppedBytes ++ " bytes dropped)", r.note )
+
+
+{-| Collapse a possibly-multiline value to its first line, capped, for showing
+inline in a collapsed entry's one-line label.
+-}
+firstLine : String -> String
+firstLine s =
+    s
+        |> String.lines
+        |> List.head
+        |> Maybe.withDefault ""
+        |> String.trim
+        |> String.left 100
+
+
+labelWithPreview : String -> String -> String
+labelWithPreview prefix bodyText =
+    if String.trim bodyText == "" then
+        prefix
+
+    else
+        prefix ++ ": " ++ firstLine bodyText
+
+
+inlineArg : String -> String
+inlineArg input =
+    if String.trim input == "" then
+        ""
+
+    else
+        " · " ++ firstLine input
+
+
+codeBlock : String -> String
+codeBlock s =
+    if String.trim s == "" then
+        ""
+
+    else
+        "```\n" ++ s ++ "\n```"

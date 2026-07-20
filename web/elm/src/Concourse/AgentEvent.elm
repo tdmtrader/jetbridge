@@ -1,29 +1,39 @@
 module Concourse.AgentEvent exposing
-    ( CostRecord
-    , EntryBody(..)
-    , GateResult
-    , JudgeDimension
-    , JudgeVerdict
-    , StepEnd
+    ( EntryBody(..)
     , TimelineEntry
     , Transcript
     , parseTranscript
     )
 
-{-| Pure decoding of a run's flight-events NDJSON (L-3 / #43 read API) into a
-typed timeline. One NDJSON line = one `{"ts","event","data"}` envelope. Lines
-that are blank or fail to decode are skipped and counted (`Transcript.skipped`)
-rather than aborting the whole transcript — the stream is appended live, so a
-half-written trailing line during a poll is normal.
+{-| Pure decoding of a run's transcript NDJSON into a typed timeline.
 
-Decoders cover the FULL event taxonomy (agent/schema/event.go +
-event_payloads.go), not just what the runner emits today, so the viewer lights
-up automatically if the runner ever streams per-turn tool/thinking events. Any
-event type without a specific decoder becomes `Unknown`, preserving its raw
-JSON for the raw-toggle instead of being dropped.
+The endpoint `.../runs/:build_id/transcript` serves the runner's raw claude-CLI
+`--output-format stream-json --verbose` stdout (flight/transcript.ndjson): one
+JSON object per line, in the claude-code 2.x stream-json shape — NOT the
+flight-events `{"ts","event","data"}` envelope. Each line is one of:
+
+  - `{"type":"system","subtype":"init",...}` — session start.
+  - `{"type":"assistant","message":{"content":[ ... ]}}` — assistant turn; each
+    content item is `text` (prose), `thinking` (reasoning), or `tool_use`
+    (a tool call with `name` + `input`). ONE line can carry SEVERAL items, so a
+    single line expands into several timeline entries.
+  - `{"type":"user","message":{"content":[ {"type":"tool_result",...} ]}}` —
+    tool output; each `tool_result`'s `content` is a string or a list of
+    `{"type":"text","text":...}` blocks.
+  - `{"type":"result","subtype":...,"num_turns":N,"total_cost_usd":F,...}` —
+    terminal summary.
+  - `{"type":"transcript_truncated","dropped_bytes":N,"note":...}` — marker the
+    runner prepends when it head-truncates the stream to its last 512 KiB.
+
+Lines that are blank are dropped. Lines that are not valid JSON, or whose
+top-level `type` is unrecognized, are skipped and counted (`Transcript.skipped`)
+rather than aborting the whole transcript — the stream is appended live, so a
+half-written trailing line during a poll is normal, and a future CLI line type
+degrades to a skip rather than a decode crash.
 -}
 
 import Json.Decode as D
+import Json.Encode as Encode
 
 
 type alias Transcript =
@@ -42,62 +52,13 @@ type alias TimelineEntry =
 
 
 type EntryBody
-    = StepStarted { stepName : String }
-    | StepEnded StepEnd
-    | CostRecorded CostRecord
-    | GateStarted { gate : String, component : String, scope : String }
-    | GateResulted GateResult
-    | JudgeScored JudgeVerdict
-    | Pushed { branch : String, sha : String }
-    | HumanAsked { questionId : Int, question : String, options : List String }
-    | HumanAnswered { questionId : Int, answer : String, answeredBy : String, timedOut : Bool }
-    | CheckpointWaited { questionId : Int, checkpoint : String }
-    | CheckpointReleased { questionId : Int, approved : Bool, answeredBy : String }
-    | Errored { message : String }
-    | ToolCalled { tool : String, input : String }
-    | ToolResulted { tool : String, output : String, isError : Bool }
-    | ArtifactWritten { path : String, bytes : Int }
+    = SystemInit { subtype : String }
+    | Said { text : String }
     | Thought { summary : String }
-    | Unknown
-
-
-type alias StepEnd =
-    { stepName : String
-    , status : String
-    , summary : String
-    , wallTimeSeconds : Int
-    , costUsd : Float
-    , turns : Int
-    }
-
-
-type alias CostRecord =
-    { source : String
-    , model : String
-    , inputTokens : Int
-    , outputTokens : Int
-    , turns : Int
-    , costUsd : Float
-    }
-
-
-type alias GateResult =
-    { gate : String
-    , component : String
-    , scope : String
-    , status : String
-    , durationSeconds : Float
-    , summary : String
-    , flaky : Bool
-    }
-
-
-type alias JudgeDimension =
-    { name : String, score : Float, max : Float, rationale : String }
-
-
-type alias JudgeVerdict =
-    { total : Float, maxTotal : Float, model : String, dimensions : List JudgeDimension }
+    | ToolCalled { tool : String, input : String }
+    | ToolResulted { output : String, isError : Bool }
+    | RunResult { subtype : String, numTurns : Int, costUsd : Float, isError : Bool, result : String }
+    | Truncated { droppedBytes : Int, note : String }
 
 
 parseTranscript : String -> Transcript
@@ -109,9 +70,18 @@ parseTranscript raw =
                 |> List.filter (\l -> l /= "")
 
         step line ( accEntries, skipped, seq ) =
-            case D.decodeString (envelopeDecoder line seq) line of
-                Ok entry ->
-                    ( entry :: accEntries, skipped, seq + 1 )
+            case D.decodeString lineDecoder line of
+                Ok tagged ->
+                    let
+                        ( entries, nextSeq ) =
+                            List.foldl
+                                (\( eventType, body ) ( acc, s ) ->
+                                    ( TimelineEntry s "" eventType line body :: acc, s + 1 )
+                                )
+                                ( accEntries, seq )
+                                tagged
+                    in
+                    ( entries, skipped, nextSeq )
 
                 Err _ ->
                     ( accEntries, skipped + 1, seq )
@@ -122,128 +92,239 @@ parseTranscript raw =
     { entries = List.reverse revEntries, skipped = totalSkipped }
 
 
-envelopeDecoder : String -> Int -> D.Decoder TimelineEntry
-envelopeDecoder rawLine seq =
-    D.map3 (\ts eventType body -> TimelineEntry seq ts eventType rawLine body)
-        (D.field "ts" D.string)
-        (D.field "event" D.string)
-        (D.field "event" D.string |> D.andThen (\t -> D.field "data" (bodyDecoder t)))
+{-| Decode one NDJSON line into zero-or-more `(eventType, body)` pairs, dispatched
+on the top-level `type`. An `assistant`/`user` line fans out to one pair per
+content item; every other recognized line yields exactly one. An unrecognized
+`type` (or a missing one) fails the decoder, so `parseTranscript` counts the line
+as skipped.
+-}
+lineDecoder : D.Decoder (List ( String, EntryBody ))
+lineDecoder =
+    D.field "type" D.string
+        |> D.andThen
+            (\t ->
+                case t of
+                    "system" ->
+                        D.map List.singleton systemDecoder
+
+                    "assistant" ->
+                        assistantDecoder
+
+                    "user" ->
+                        userDecoder
+
+                    "result" ->
+                        D.map List.singleton resultDecoder
+
+                    "transcript_truncated" ->
+                        D.map List.singleton truncatedDecoder
+
+                    other ->
+                        D.fail ("unrecognized transcript line type: " ++ other)
+            )
 
 
-bodyDecoder : String -> D.Decoder EntryBody
-bodyDecoder eventType =
+systemDecoder : D.Decoder ( String, EntryBody )
+systemDecoder =
+    D.map (\sub -> ( "system", SystemInit { subtype = sub } )) (strField "subtype")
+
+
+resultDecoder : D.Decoder ( String, EntryBody )
+resultDecoder =
+    D.map5
+        (\sub turns cost isErr res ->
+            ( "result", RunResult { subtype = sub, numTurns = turns, costUsd = cost, isError = isErr, result = res } )
+        )
+        (strField "subtype")
+        (intField "num_turns")
+        costField
+        (boolField "is_error")
+        resultTextField
+
+
+truncatedDecoder : D.Decoder ( String, EntryBody )
+truncatedDecoder =
+    D.map2
+        (\dropped note -> ( "transcript_truncated", Truncated { droppedBytes = dropped, note = note } ))
+        (intField "dropped_bytes")
+        (strField "note")
+
+
+{-| An assistant turn: `message.content` is a list whose items are `text`,
+`thinking`, or `tool_use` blocks. Unknown block types are dropped (not counted).
+A line with no decodable content yields an empty list rather than a skip.
+-}
+assistantDecoder : D.Decoder (List ( String, EntryBody ))
+assistantDecoder =
+    D.oneOf
+        [ D.at [ "message", "content" ] (D.list assistantContentDecoder)
+            |> D.map (List.filterMap identity)
+        , D.succeed []
+        ]
+
+
+assistantContentDecoder : D.Decoder (Maybe ( String, EntryBody ))
+assistantContentDecoder =
+    D.field "type" D.string
+        |> D.andThen
+            (\t ->
+                case t of
+                    "text" ->
+                        D.map (\s -> Just ( "text", Said { text = s } )) (strField "text")
+
+                    "thinking" ->
+                        D.map (\s -> Just ( "thinking", Thought { summary = s } )) (strField "thinking")
+
+                    "tool_use" ->
+                        D.map Just toolUseDecoder
+
+                    _ ->
+                        D.succeed Nothing
+            )
+
+
+toolUseDecoder : D.Decoder ( String, EntryBody )
+toolUseDecoder =
+    D.map2
+        (\name inputVal -> ( "tool_use", ToolCalled { tool = name, input = summarizeInput inputVal } ))
+        (strField "name")
+        (D.oneOf [ D.field "input" D.value, D.succeed Encode.null ])
+
+
+{-| A short, human-readable summary of a tool_use `input` object: the first
+present of the common single-value fields (Bash's `command`, Read/Edit/Write's
+`file_path`, Grep's `pattern`, …); otherwise the compact JSON of the whole input
+so nothing is silently lost for less common tools.
+-}
+summarizeInput : D.Value -> String
+summarizeInput v =
     let
-        f name dec =
-            D.field name dec
+        pick field =
+            case D.decodeValue (D.field field D.string) v of
+                Ok s ->
+                    if String.trim s /= "" then
+                        Just s
 
-        s name =
-            D.oneOf [ f name D.string, D.succeed "" ]
+                    else
+                        Nothing
 
-        i name =
-            D.oneOf [ f name D.int, D.succeed 0 ]
-
-        fl name =
-            D.oneOf [ f name D.float, D.succeed 0 ]
-
-        b name =
-            D.oneOf [ f name D.bool, D.succeed False ]
-
-        list name =
-            D.oneOf [ f name (D.list D.string), D.succeed [] ]
+                Err _ ->
+                    Nothing
     in
-    case eventType of
-        "step.start" ->
-            D.map (\n -> StepStarted { stepName = n }) (s "step_name")
+    case List.filterMap pick [ "command", "file_path", "path", "pattern", "query", "url", "prompt", "description" ] of
+        first :: _ ->
+            first
 
-        "step.end" ->
-            D.map6 (\n st su w c tu -> StepEnded (StepEnd n st su w c tu))
-                (s "step_name")
-                (s "status")
-                (s "summary")
-                (i "wall_time_seconds")
-                (fl "cost_usd")
-                (i "turns")
+        [] ->
+            case Encode.encode 0 v of
+                "null" ->
+                    ""
 
-        "cost.record" ->
-            D.map6 (\src m it ot tu c -> CostRecorded (CostRecord src m it ot tu c))
-                (s "source")
-                (s "model")
-                (i "input_tokens")
-                (i "output_tokens")
-                (i "turns")
-                (fl "cost_usd")
-
-        "gate.start" ->
-            D.map3 (\g c sc -> GateStarted { gate = g, component = c, scope = sc })
-                (s "gate")
-                (s "component")
-                (s "scope")
-
-        "gate.result" ->
-            D.map7 (\g c sc st dur su fk -> GateResulted (GateResult g c sc st dur su fk))
-                (s "gate")
-                (s "component")
-                (s "scope")
-                (s "status")
-                (fl "duration_seconds")
-                (s "summary")
-                (b "flaky")
-
-        "judge.score" ->
-            D.map4 (\tot mx m dims -> JudgeScored (JudgeVerdict tot mx m dims))
-                (fl "total")
-                (fl "max_total")
-                (s "model")
-                (D.oneOf [ f "dimensions" (D.list judgeDimensionDecoder), D.succeed [] ])
-
-        "push.done" ->
-            D.map2 (\br sha -> Pushed { branch = br, sha = sha }) (s "branch") (s "sha")
-
-        "human.ask" ->
-            D.map3 (\q qn opts -> HumanAsked { questionId = q, question = qn, options = opts })
-                (i "question_id")
-                (s "question")
-                (list "options")
-
-        "human.answer" ->
-            D.map4 (\q a by to -> HumanAnswered { questionId = q, answer = a, answeredBy = by, timedOut = to })
-                (i "question_id")
-                (s "answer")
-                (s "answered_by")
-                (b "timed_out")
-
-        "checkpoint.wait" ->
-            D.map2 (\q ck -> CheckpointWaited { questionId = q, checkpoint = ck }) (i "question_id") (s "checkpoint")
-
-        "checkpoint.release" ->
-            D.map3 (\q ap by -> CheckpointReleased { questionId = q, approved = ap, answeredBy = by })
-                (i "question_id")
-                (b "approved")
-                (s "answered_by")
-
-        "error" ->
-            D.map (\m -> Errored { message = m }) (s "message")
-
-        "tool.call" ->
-            D.map2 (\t inp -> ToolCalled { tool = t, input = inp }) (s "tool") (s "input")
-
-        "tool.result" ->
-            D.map3 (\t o e -> ToolResulted { tool = t, output = o, isError = e }) (s "tool") (s "output") (b "is_error")
-
-        "artifact.written" ->
-            D.map2 (\p n -> ArtifactWritten { path = p, bytes = n }) (s "path") (i "bytes")
-
-        "decision" ->
-            D.map (\su -> Thought { summary = su }) (s "summary")
-
-        _ ->
-            D.succeed Unknown
+                encoded ->
+                    encoded
 
 
-judgeDimensionDecoder : D.Decoder JudgeDimension
-judgeDimensionDecoder =
-    D.map4 JudgeDimension
-        (D.oneOf [ D.field "name" D.string, D.succeed "" ])
-        (D.oneOf [ D.field "score" D.float, D.succeed 0 ])
-        (D.oneOf [ D.field "max" D.float, D.succeed 0 ])
-        (D.oneOf [ D.field "rationale" D.string, D.succeed "" ])
+{-| A user turn carries tool_result blocks (the model's tool feedback loop).
+Non-tool_result items are dropped. Each tool_result's `content` is either a raw
+string or a list of `{"type":"text","text":...}` blocks.
+-}
+userDecoder : D.Decoder (List ( String, EntryBody ))
+userDecoder =
+    D.oneOf
+        [ D.at [ "message", "content" ] (D.list userContentDecoder)
+            |> D.map (List.filterMap identity)
+        , D.succeed []
+        ]
+
+
+userContentDecoder : D.Decoder (Maybe ( String, EntryBody ))
+userContentDecoder =
+    D.field "type" D.string
+        |> D.andThen
+            (\t ->
+                case t of
+                    "tool_result" ->
+                        D.map Just toolResultDecoder
+
+                    _ ->
+                        D.succeed Nothing
+            )
+
+
+toolResultDecoder : D.Decoder ( String, EntryBody )
+toolResultDecoder =
+    D.map2
+        (\output isErr -> ( "tool_result", ToolResulted { output = output, isError = isErr } ))
+        (D.oneOf
+            [ D.field "content" D.string
+            , D.field "content" (D.list textBlockDecoder |> D.map (String.join "\n" << List.filter (\s -> s /= "")))
+            , D.succeed ""
+            ]
+        )
+        (boolField "is_error")
+
+
+textBlockDecoder : D.Decoder String
+textBlockDecoder =
+    D.oneOf [ D.field "text" D.string, D.succeed "" ]
+
+
+{-| The terminal cost, preferring `total_cost_usd` (newer CLIs) over `cost_usd`,
+mirroring `schema.CLIEnvelope.ResolvedCostUSD` on the runner side.
+-}
+costField : D.Decoder Float
+costField =
+    D.map2
+        (\total base ->
+            if total > 0 then
+                total
+
+            else
+                base
+        )
+        (floatField "total_cost_usd")
+        (floatField "cost_usd")
+
+
+{-| The result line's `result` field is the agent's final text, which the CLI
+double-encodes as a JSON string (e.g. `"result":"\"done\""`). Unquote it once
+when it looks JSON-quoted, matching the runner's `summaryFromResult`.
+-}
+resultTextField : D.Decoder String
+resultTextField =
+    D.oneOf [ D.field "result" D.string, D.succeed "" ]
+        |> D.map unquoteOnce
+
+
+unquoteOnce : String -> String
+unquoteOnce s =
+    if String.startsWith "\"" s then
+        case D.decodeString D.string s of
+            Ok inner ->
+                inner
+
+            Err _ ->
+                s
+
+    else
+        s
+
+
+strField : String -> D.Decoder String
+strField name =
+    D.oneOf [ D.field name D.string, D.succeed "" ]
+
+
+intField : String -> D.Decoder Int
+intField name =
+    D.oneOf [ D.field name D.int, D.succeed 0 ]
+
+
+floatField : String -> D.Decoder Float
+floatField name =
+    D.oneOf [ D.field name D.float, D.succeed 0 ]
+
+
+boolField : String -> D.Decoder Bool
+boolField name =
+    D.oneOf [ D.field name D.bool, D.succeed False ]

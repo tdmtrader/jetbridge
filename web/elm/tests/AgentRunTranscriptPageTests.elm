@@ -20,10 +20,10 @@ import UserState
 sampleNdjson : String
 sampleNdjson =
     String.join "\n"
-        [ """{"ts":"2026-07-19T00:00:01Z","event":"step.start","data":{"step_name":"implement","build_id":4567,"plan_id":"p1"}}"""
-        , """{"ts":"2026-07-19T00:00:05Z","event":"gate.result","data":{"gate":"build","component":"web","scope":"affected","status":"ok","duration_seconds":12.0,"summary":"built"}}"""
-        , """{"ts":"2026-07-19T00:00:08Z","event":"judge.score","data":{"total":8.0,"max_total":10.0,"model":"claude","dimensions":[]}}"""
-        , """{"ts":"2026-07-19T00:00:09Z","event":"step.end","data":{"step_name":"implement","status":"ok","summary":"done","wall_time_seconds":9,"cost_usd":0.05,"turns":3}}"""
+        [ """{"type":"system","subtype":"init","session_id":"s1","tools":["Bash"]}"""
+        , """{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu_1","name":"Bash","input":{"command":"git commit -m wip"}}]}}"""
+        , """{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu_1","content":"ok"}]}}"""
+        , """{"type":"result","subtype":"success","result":"\\"done\\"","model":"m9","total_cost_usd":0.75,"num_turns":4,"is_error":false,"usage":{"input_tokens":100,"output_tokens":50}}"""
         ]
 
 
@@ -42,16 +42,16 @@ loaded =
 all : Test
 all =
     describe "AgentRunTranscript page"
-        [ test "renders a timeline entry for the gate result" <|
+        [ test "renders a tool-call entry naming the tool and its command" <|
             \_ ->
                 Page.view sampleSession loaded
                     |> Query.fromHtml
-                    |> Query.has [ text "build" ]
-        , test "renders a judge entry" <|
+                    |> Query.has [ text "tool Bash · git commit -m wip" ]
+        , test "renders the terminal result summary" <|
             \_ ->
                 Page.view sampleSession loaded
                     |> Query.fromHtml
-                    |> Query.has [ text "judge" ]
+                    |> Query.has [ text "result: success (4 turns, $0.75)" ]
         ]
 
 
