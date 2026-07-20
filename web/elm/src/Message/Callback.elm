@@ -3,6 +3,7 @@ module Message.Callback exposing (Callback(..))
 import Browser.Dom
 import Concourse
 import Concourse.Agent
+import Concourse.AgentDiff
 import Concourse.AgentDispatcher
 import Concourse.AgentReview
 import Concourse.AgentTicket
@@ -90,3 +91,4 @@ type Callback
     | AgentTicketDispatched Int (Fetched Concourse.AgentTicket.DispatchResult)
     | AgentTicketTaskUpdated Int (Fetched ())
     | AgentTicketMetricsFetched Int (Fetched (List Concourse.Agent.RunMetric))
+    | AgentTicketDiffFetched (Fetched Concourse.AgentDiff.DiffPage)

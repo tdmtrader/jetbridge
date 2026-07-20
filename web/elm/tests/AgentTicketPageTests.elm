@@ -243,6 +243,38 @@ all =
                                 , attribute (Html.Attributes.href "/builds/561978")
                                 ]
                     )
+        , test "renders the in-app unified diff when the diff endpoint returns one" <|
+            \_ ->
+                withDetail sampleDetailJson
+                    (\d ->
+                        Common.init "/agent-tickets/12"
+                            |> Application.handleCallback (Callback.AgentTicketFetched (Ok d))
+                            |> Tuple.first
+                            |> Application.handleCallback
+                                (Callback.AgentTicketDiffFetched
+                                    (Ok
+                                        { files =
+                                            [ { path = "atc/foo.go"
+                                              , patch = "@@ -1 +1 @@\n-old line\n+new line\n"
+                                              , truncated = False
+                                              }
+                                            ]
+                                        , offset = 0
+                                        , limit = 50
+                                        , totalFiles = 1
+                                        , hasMore = False
+                                        }
+                                    )
+                                )
+                            |> Tuple.first
+                            |> Common.queryView
+                            |> Query.find [ id "ticket-diff" ]
+                            |> Query.has
+                                [ containing [ text "atc/foo.go" ]
+                                , containing [ text "+new line" ]
+                                , containing [ text "-old line" ]
+                                ]
+                    )
         , test "run history shows one row per build, newest first, with per-build cost and final summary" <|
             \_ ->
                 let

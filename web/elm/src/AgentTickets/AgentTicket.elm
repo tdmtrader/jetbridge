@@ -25,6 +25,7 @@ import AgentBadge
 import Application.Models exposing (Session)
 import Build.AgentReview
 import Concourse.Agent
+import Concourse.AgentDiff
 import Concourse.AgentReview
 import Concourse.AgentTicket as AgentTicket
 import DateFormat
@@ -48,6 +49,7 @@ import SideBar.SideBar as SideBar
 import Time
 import Tooltip
 import UserState
+import Views.AgentDiff
 import Views.Prose
 import Views.Styles
 import Views.TopBar as TopBar
@@ -69,6 +71,8 @@ type alias Model =
         , loaded : Bool
         , loadError : Bool
         , actionError : Maybe String
+        , diff : Maybe Concourse.AgentDiff.DiffPage
+        , diffLoadError : Bool
         , editing : Bool
         , editTitle : String
         , editBody : String
@@ -104,6 +108,8 @@ init { id } =
       , loaded = False
       , loadError = False
       , actionError = Nothing
+      , diff = Nothing
+      , diffLoadError = False
       , editing = False
       , editTitle = ""
       , editBody = ""
@@ -121,7 +127,7 @@ init { id } =
       , expandedDescriptions = Set.empty
       , isUserMenuExpanded = False
       }
-    , [ FetchAgentTicket id, FetchAgentTicketMetrics id ]
+    , [ FetchAgentTicket id, FetchAgentTicketMetrics id, FetchAgentTicketDiff id ]
     )
 
 
@@ -236,6 +242,31 @@ handleCallback callback ( model, effects ) =
         AgentTicketMetricsFetched _ (Err _) ->
             ( model, effects )
 
+        AgentTicketDiffFetched (Ok fresh) ->
+            let
+                -- Reference-preserve so the lazy views below aren't defeated by
+                -- an equal-but-fresh record installed on every 5s self-heal.
+                page =
+                    case model.diff of
+                        Just old ->
+                            if old == fresh then
+                                old
+
+                            else
+                                fresh
+
+                        Nothing ->
+                            fresh
+            in
+            ( { model | diff = Just page, diffLoadError = False }, effects )
+
+        AgentTicketDiffFetched (Err _) ->
+            -- No diff yet (404 before harvest pushes base/pushed shas) or a
+            -- transient error: keep it off-screen and leave the GitHub compare
+            -- link as the fallback. Don't surface a red banner for the common
+            -- "diff not ready" case.
+            ( { model | diff = Nothing, diffLoadError = True }, effects )
+
         AgentTicketSaved _ (Ok ()) ->
             ( { model | editing = False, actionError = Nothing }
             , effects ++ [ FetchAgentTicket model.ticketId ]
@@ -256,7 +287,7 @@ handleCallback callback ( model, effects ) =
 
         AgentTicketDispatched _ (Ok _) ->
             ( { model | actionError = Nothing }
-            , effects ++ [ FetchAgentTicket model.ticketId, FetchAgentTicketMetrics model.ticketId ]
+            , effects ++ [ FetchAgentTicket model.ticketId, FetchAgentTicketMetrics model.ticketId, FetchAgentTicketDiff model.ticketId ]
             )
 
         AgentTicketDispatched _ (Err _) ->
@@ -305,7 +336,10 @@ polls =
                     []
 
                 else
-                    [ FetchAgentTicket model.ticketId, FetchAgentTicketMetrics model.ticketId ]
+                    [ FetchAgentTicket model.ticketId
+                    , FetchAgentTicketMetrics model.ticketId
+                    , FetchAgentTicketDiff model.ticketId
+                    ]
       }
     ]
 
@@ -531,6 +565,7 @@ content session model =
                         , provenanceTimestamps session.timeZone ticket
                         , errorNotice latestBuild ticket
                         , actionErrorBanner model
+                        , diffSection model
                         ]
 
                     -- The heavy sub-views render lazily: their arguments are
@@ -639,8 +674,12 @@ provenanceLine ticket =
                         Just url ->
                             [ Html.text (" · branch " ++ ticket.branch ++ " — ")
                             , Html.a
-                                (class "agent-ticket-compare-link" :: href url :: linkStyle)
-                                [ Html.text ("review diff vs " ++ ticket.targetBranch) ]
+                                (class "agent-ticket-compare-link"
+                                    :: href url
+                                    :: style "font-size" "11px"
+                                    :: linkStyle
+                                )
+                                [ Html.text "compare on GitHub ↗" ]
                             ]
 
                         Nothing ->
@@ -654,6 +693,32 @@ provenanceLine ticket =
             , style "margin" "2px 0 8px 0"
             ]
             (repoPart ++ branchPart)
+
+
+{-| The in-app diff — the PRIMARY review surface (S-4). Renders only when the
+server returned a windowed diff with at least one file; otherwise nothing shows
+and the demoted GitHub compare link in `provenanceLine` remains the fallback.
+-}
+diffSection : Model -> Html Message
+diffSection model =
+    case model.diff of
+        Just page ->
+            if List.isEmpty page.files then
+                Html.text ""
+
+            else
+                Html.div [ id "ticket-diff" ]
+                    [ Html.div
+                        [ style "font-size" "13px"
+                        , style "color" "#c8d0c8"
+                        , style "margin" "10px 0 2px 0"
+                        ]
+                        [ Html.text "Diff vs base" ]
+                    , Views.AgentDiff.view page
+                    ]
+
+        Nothing ->
+            Html.text ""
 
 
 {-| Created / updated / completed provenance. The epoch-seconds fields ride on

@@ -27,6 +27,7 @@ type AgentTicketsCommand struct {
 	Watch      AgentTicketsWatchCommand      `command:"watch" description:"Follow the build events of a ticket's dispatched run"`
 	Close      AgentTicketsCloseCommand      `command:"close" description:"Close a reviewed ticket to a terminal disposition (default: concluded)"`
 	Dispose    AgentTicketsDisposeCommand    `command:"dispose" description:"Record a terminal disposition (with reason taxonomy) on a reviewed ticket"`
+	Diff       AgentTicketsDiffCommand       `command:"diff" description:"Show the base..pushed unified diff for a ticket's harvest branch"`
 }
 
 // ticketPipelineName is the deterministic template-pipeline name dispatch
@@ -585,4 +586,46 @@ func (command *AgentTicketsDisposeCommand) Execute([]string) error {
 	}
 	fmt.Printf("ticket #%d disposed: %s (%s)\n", command.ID, outcome.Disposition, outcome.MergeState)
 	return nil
+}
+
+type AgentTicketsDiffCommand struct {
+	ID     int `long:"id" required:"true" description:"Ticket id"`
+	Offset int `long:"offset" default:"0" description:"File window offset"`
+	Limit  int `long:"limit" default:"50" description:"Max files in the window (server caps at 200)"`
+}
+
+func (command *AgentTicketsDiffCommand) Execute([]string) error {
+	target, err := rc.LoadTarget(Fly.Target, Fly.Verbose)
+	if err != nil {
+		return err
+	}
+	if err := target.Validate(); err != nil {
+		return err
+	}
+
+	page, found, err := target.Client().GetAgentTicketDiff(command.ID, command.Offset, command.Limit)
+	if err != nil {
+		return err
+	}
+	if !found {
+		fmt.Printf("no diff available for ticket %d\n", command.ID)
+		return nil
+	}
+
+	for _, f := range page.Files {
+		fmt.Printf("=== %s%s ===\n", f.Path, truncatedTag(f.Truncated))
+		fmt.Println(f.Patch)
+	}
+	if page.HasMore {
+		fmt.Printf("... %d of %d files shown; re-run with --offset %d for more\n",
+			command.Offset+len(page.Files), page.TotalFiles, command.Offset+command.Limit)
+	}
+	return nil
+}
+
+func truncatedTag(t bool) string {
+	if t {
+		return " [truncated]"
+	}
+	return ""
 }
