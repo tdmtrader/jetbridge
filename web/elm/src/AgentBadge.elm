@@ -32,6 +32,7 @@ type Status
     | Aborted
     | Succeeded
     | NoOutput
+    | Unrecorded
 
 
 type Tone
@@ -93,10 +94,13 @@ label status =
             "Aborted"
 
         Succeeded ->
-            "OK"
+            "succeeded"
 
         NoOutput ->
             "No output"
+
+        Unrecorded ->
+            "unrecorded"
 
 
 {-| A one-line, plain-English gloss for each status, surfaced as the badge's
@@ -151,6 +155,9 @@ description status =
         NoOutput ->
             "Finished but produced no result"
 
+        Unrecorded ->
+            "Delivered, but the runner wrote no flight recording"
+
 
 tone : Status -> Tone
 tone status =
@@ -198,6 +205,9 @@ tone status =
             Good
 
         NoOutput ->
+            Warn
+
+        Unrecorded ->
             Warn
 
 
@@ -310,6 +320,12 @@ runOutcome { buildStatus, runStatus, hasResult } =
             else if runStatus == "failed" then
                 Just Failed
 
+            else if runStatus == "incomplete" then
+                -- #41: a green build whose runner wrote no flight recording.
+                -- A server that predates the fused Outcome sends only this
+                -- step status; it must degrade to amber, not red or empty.
+                Just Unrecorded
+
             else
                 case buildStatus of
                     "succeeded" ->
@@ -342,6 +358,9 @@ fromOutcomeToken token =
 
         "no_output" ->
             Just NoOutput
+
+        "unrecorded" ->
+            Just Unrecorded
 
         "running" ->
             Just (Running Nothing)
