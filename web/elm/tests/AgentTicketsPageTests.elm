@@ -330,6 +330,8 @@ all =
                     |> Query.first
                     |> Query.has [ text "Merged (2) · $43.10" ]
         , plumbingTest
+        , openFormTest
+        , submitTest
         ]
 
 
@@ -358,3 +360,111 @@ plumbingTest =
                 , \_ -> Expect.equal callback callback
                 ]
                 ()
+
+
+openFormTest : Test
+openFormTest =
+    describe "new-ticket form"
+        [ test "New ticket button is present" <|
+            \_ ->
+                Common.init "/agent-tickets"
+                    |> Common.queryView
+                    |> Query.find [ class "agent-new-ticket-open" ]
+                    |> Query.has [ text "New ticket" ]
+        , test "clicking New ticket reveals the form and fetches workflows" <|
+            \_ ->
+                let
+                    ( _, effects ) =
+                        Common.init "/agent-tickets"
+                            |> Application.update
+                                (Msgs.Update Message.ClickNewAgentTicket)
+                in
+                Expect.equal True (List.member Effects.FetchAgentWorkflows effects)
+        ]
+
+
+submitTest : Test
+submitTest =
+    describe "submitting the new-ticket form"
+        [ test "valid submit emits CreateAgentTicket with the entered fields" <|
+            \_ ->
+                let
+                    ( _, effects ) =
+                        Common.init "/agent-tickets"
+                            |> Application.update (Msgs.Update Message.ClickNewAgentTicket)
+                            |> Tuple.first
+                            |> Application.update (Msgs.Update (Message.NewAgentTicketTitleChanged "ship it"))
+                            |> Tuple.first
+                            |> Application.update (Msgs.Update (Message.NewAgentTicketRepoChanged "o/n"))
+                            |> Tuple.first
+                            |> Application.update (Msgs.Update Message.SubmitNewAgentTicket)
+                in
+                Expect.equal True
+                    (List.member
+                        (Effects.CreateAgentTicket
+                            { title = "ship it"
+                            , body = ""
+                            , repo = "o/n"
+                            , targetBranch = ""
+                            , workflowName = ""
+                            , workflowVersion = Nothing
+                            , budgetUsd = Nothing
+                            }
+                        )
+                        effects
+                    )
+        , test "submit with empty repo does not emit CreateAgentTicket" <|
+            \_ ->
+                let
+                    ( _, effects ) =
+                        Common.init "/agent-tickets"
+                            |> Application.update (Msgs.Update Message.ClickNewAgentTicket)
+                            |> Tuple.first
+                            |> Application.update (Msgs.Update (Message.NewAgentTicketTitleChanged "no repo"))
+                            |> Tuple.first
+                            |> Application.update (Msgs.Update Message.SubmitNewAgentTicket)
+                in
+                Expect.equal False
+                    (List.any
+                        (\e ->
+                            case e of
+                                Effects.CreateAgentTicket _ ->
+                                    True
+
+                                _ ->
+                                    False
+                        )
+                        effects
+                    )
+        , test "created ticket navigates to its detail page" <|
+            \_ ->
+                let
+                    created =
+                        { id = 99
+                        , title = "ship it"
+                        , body = ""
+                        , state = "draft"
+                        , origin = "web"
+                        , repo = "o/n"
+                        , targetBranch = ""
+                        , workflowName = ""
+                        , budgetUsd = Nothing
+                        , userName = "me"
+                        , branch = ""
+                        , createdAt = 0
+                        , updatedAt = 0
+                        , workflowVersion = Nothing
+                        , pipelineRunId = Nothing
+                        , attemptCount = 0
+                        , errorDetail = ""
+                        , completedAt = Nothing
+                        }
+
+                    ( _, effects ) =
+                        Common.init "/agent-tickets"
+                            |> Application.handleCallback
+                                (Callback.AgentTicketCreated (Ok created))
+                in
+                Expect.equal True
+                    (List.member (Effects.NavigateTo "/agent-tickets/99") effects)
+        ]

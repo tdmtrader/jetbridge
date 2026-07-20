@@ -12,6 +12,7 @@ module AgentTickets.AgentTickets exposing
 
 import AgentBadge
 import Application.Models exposing (Session)
+import Concourse.Agent
 import Concourse.AgentDispatcher as AgentDispatcher
 import Concourse.AgentTicket as AgentTicket
 import Dict exposing (Dict)
@@ -46,6 +47,17 @@ type alias Model =
         , sortByWait : Bool
         , dispatcher : Maybe AgentDispatcher.Status
         , armedMode : Maybe AgentDispatcher.Mode
+        , showNewForm : Bool
+        , newTitle : String
+        , newBody : String
+        , newRepo : String
+        , newBranch : String
+        , newBudget : String
+        , newWorkflow : String
+        , newQueue : Bool
+        , workflows : List Concourse.Agent.WorkflowSummary
+        , creating : Bool
+        , createError : Maybe String
         }
 
 
@@ -82,6 +94,17 @@ init =
       , sortByWait = False
       , dispatcher = Nothing
       , armedMode = Nothing
+      , showNewForm = False
+      , newTitle = ""
+      , newBody = ""
+      , newRepo = ""
+      , newBranch = ""
+      , newBudget = ""
+      , newWorkflow = ""
+      , newQueue = False
+      , workflows = []
+      , creating = False
+      , createError = Nothing
       , isUserMenuExpanded = False
       }
     , [ FetchAgentTickets, FetchAgentTicketCosts, FetchAgentDispatcher ]
@@ -145,6 +168,47 @@ handleCallback callback ( model, effects ) =
             -- retry. A 403 (non-admin) surfaces as the global HTTP error toast.
             ( { model | armedMode = Nothing }, effects )
 
+        AgentWorkflowsFetched (Ok workflows) ->
+            ( { model | workflows = workflows }, effects )
+
+        AgentWorkflowsFetched (Err _) ->
+            ( model, effects )
+
+        AgentTicketCreated (Ok ticket) ->
+            -- Created as a draft. If "queue immediately" was checked, fire the
+            -- draft→queued transition, then navigate to the new ticket's detail
+            -- page — where the existing two-step Dispatch confirm is the money
+            -- gate. We deliberately do NOT auto-dispatch from the queue form.
+            let
+                queueEffect =
+                    if model.newQueue then
+                        [ TransitionAgentTicket
+                            { id = ticket.id, from = "draft", to = "queued" }
+                        ]
+
+                    else
+                        []
+            in
+            ( { model
+                | showNewForm = False
+                , creating = False
+                , createError = Nothing
+                , newTitle = ""
+                , newBody = ""
+                , newRepo = ""
+                , newBranch = ""
+                , newBudget = ""
+                , newWorkflow = ""
+                , newQueue = False
+              }
+            , effects
+                ++ queueEffect
+                ++ [ NavigateTo (Routes.toString (Routes.AgentTicket { id = ticket.id })) ]
+            )
+
+        AgentTicketCreated (Err _) ->
+            ( { model | creating = False, createError = Just "Couldn't create the ticket." }, effects )
+
         _ ->
             ( model, effects )
 
@@ -204,6 +268,63 @@ update msg ( model, effects ) =
 
         CancelAgentDispatcherMode ->
             ( { model | armedMode = Nothing }, effects )
+
+        ClickNewAgentTicket ->
+            -- Open the form and fetch the workflow list lazily (only when a
+            -- user actually opens the form, not on every queue-page load).
+            ( { model | showNewForm = True, createError = Nothing }
+            , effects ++ [ FetchAgentWorkflows ]
+            )
+
+        CancelNewAgentTicket ->
+            ( { model | showNewForm = False, createError = Nothing }, effects )
+
+        NewAgentTicketTitleChanged v ->
+            ( { model | newTitle = v }, effects )
+
+        NewAgentTicketBodyChanged v ->
+            ( { model | newBody = v }, effects )
+
+        NewAgentTicketRepoChanged v ->
+            ( { model | newRepo = v }, effects )
+
+        NewAgentTicketBranchChanged v ->
+            ( { model | newBranch = v }, effects )
+
+        NewAgentTicketBudgetChanged v ->
+            ( { model | newBudget = v }, effects )
+
+        NewAgentTicketWorkflowChanged v ->
+            ( { model | newWorkflow = v }, effects )
+
+        NewAgentTicketQueueToggled ->
+            ( { model | newQueue = not model.newQueue }, effects )
+
+        SubmitNewAgentTicket ->
+            let
+                title =
+                    String.trim model.newTitle
+
+                repo =
+                    String.trim model.newRepo
+            in
+            if title == "" || repo == "" then
+                ( { model | createError = Just "Title and repo are required." }, effects )
+
+            else
+                ( { model | creating = True, createError = Nothing }
+                , effects
+                    ++ [ CreateAgentTicket
+                            { title = title
+                            , body = model.newBody
+                            , repo = repo
+                            , targetBranch = String.trim model.newBranch
+                            , workflowName = model.newWorkflow
+                            , workflowVersion = Nothing
+                            , budgetUsd = parseBudget model.newBudget
+                            }
+                       ]
+                )
 
         _ ->
             ( model, effects )
@@ -502,7 +623,8 @@ content model =
                     knownSections ++ leftoverSection model leftover
         in
         Html.div []
-            (controlsBar model
+            (newTicketControls model
+                :: controlsBar model
                 :: body
                 ++ unattributedFooter model.costByTicket
             )
@@ -871,6 +993,174 @@ costLabel costs ticketId =
 
         Nothing ->
             "—"
+
+
+{-| The "New ticket" open button and, when open, the create form. Kept above
+the filter/sort controls so the primary write action is the first thing on
+the queue page.
+-}
+newTicketControls : Model -> Html Message
+newTicketControls model =
+    if model.showNewForm then
+        newTicketForm model
+
+    else
+        Html.div [ style "margin" "8px 0 0 0" ]
+            [ Html.button
+                [ class "agent-new-ticket-open"
+                , type_ "button"
+                , onClick ClickNewAgentTicket
+                , style "background" "#2e4f2e"
+                , style "color" "#cfe8cf"
+                , style "border" "1px solid #3d3c3c"
+                , style "padding" "6px 14px"
+                , style "cursor" "pointer"
+                , style "font-size" "13px"
+                ]
+                [ Html.text "New ticket" ]
+            ]
+
+
+newTicketForm : Model -> Html Message
+newTicketForm model =
+    Html.div
+        [ class "agent-new-ticket-form"
+        , style "border" "1px solid #3d3c3c"
+        , style "background" "#1e1d1d"
+        , style "padding" "12px"
+        , style "margin" "8px 0"
+        ]
+        [ newFieldLabel "title"
+        , Html.input
+            (class "agent-new-ticket-title" :: value model.newTitle :: onInput NewAgentTicketTitleChanged :: newInputStyles)
+            []
+        , newFieldLabel "repo (owner/name — required)"
+        , Html.input
+            (class "agent-new-ticket-repo" :: value model.newRepo :: placeholder "tdmtrader/concourse" :: onInput NewAgentTicketRepoChanged :: newInputStyles)
+            []
+        , newFieldLabel "spec (markdown body)"
+        , Html.textarea
+            (class "agent-new-ticket-body" :: value model.newBody :: onInput NewAgentTicketBodyChanged :: style "min-height" "120px" :: newInputStyles)
+            []
+        , newFieldLabel "target branch (optional)"
+        , Html.input
+            (class "agent-new-ticket-branch" :: value model.newBranch :: placeholder "main" :: onInput NewAgentTicketBranchChanged :: newInputStyles)
+            []
+        , newFieldLabel "budget USD (optional)"
+        , Html.input
+            (class "agent-new-ticket-budget" :: value model.newBudget :: placeholder "e.g. 5.00" :: onInput NewAgentTicketBudgetChanged :: newInputStyles)
+            []
+        , newFieldLabel "workflow"
+        , workflowPicker model
+        , Html.label
+            [ style "display" "flex", style "align-items" "center", style "gap" "6px", style "margin" "10px 0 0", style "color" "#b0b0b0", style "font-size" "13px" ]
+            [ Html.input
+                [ class "agent-new-ticket-queue"
+                , type_ "checkbox"
+                , Html.Attributes.checked model.newQueue
+                , onClick NewAgentTicketQueueToggled
+                ]
+                []
+            , Html.text "queue immediately after creating"
+            ]
+        , case model.createError of
+            Just err ->
+                Html.p [ style "color" "#f0a0a0", style "margin" "8px 0 0" ] [ Html.text err ]
+
+            Nothing ->
+                Html.text ""
+        , Html.div
+            [ style "display" "flex", style "gap" "8px", style "margin-top" "10px" ]
+            [ Html.button
+                [ class "agent-new-ticket-submit"
+                , type_ "button"
+                , onClick SubmitNewAgentTicket
+                , Html.Attributes.disabled model.creating
+                , style "background" "#2e4f2e"
+                , style "color" "#cfe8cf"
+                , style "border" "1px solid #3d3c3c"
+                , style "padding" "5px 12px"
+                , style "cursor" "pointer"
+                , style "font-size" "13px"
+                ]
+                [ Html.text
+                    (if model.creating then
+                        "Creating…"
+
+                     else
+                        "Create ticket"
+                    )
+                ]
+            , Html.button
+                [ type_ "button"
+                , onClick CancelNewAgentTicket
+                , style "background" "#2a2929"
+                , style "color" "#d0d0d0"
+                , style "border" "1px solid #3d3c3c"
+                , style "padding" "5px 12px"
+                , style "cursor" "pointer"
+                , style "font-size" "13px"
+                ]
+                [ Html.text "Cancel" ]
+            ]
+        ]
+
+
+{-| Workflow `<select>` populated from the lazily-fetched workflow list. The
+empty option leaves `workflow_name` unset so dispatch resolves the live
+version later (the ticket freezes a version at dispatch, not at create).
+-}
+workflowPicker : Model -> Html Message
+workflowPicker model =
+    Html.select
+        [ class "agent-new-ticket-workflow"
+        , Html.Events.onInput NewAgentTicketWorkflowChanged
+        , style "width" "100%"
+        , style "background" "#141313"
+        , style "color" "#e0e0e0"
+        , style "border" "1px solid #3d3c3c"
+        , style "padding" "6px 8px"
+        , style "box-sizing" "border-box"
+        ]
+        (Html.option
+            [ value "", Html.Attributes.selected (model.newWorkflow == "") ]
+            [ Html.text "(decide at dispatch)" ]
+            :: List.map
+                (\w ->
+                    Html.option
+                        [ value w.name, Html.Attributes.selected (model.newWorkflow == w.name) ]
+                        [ Html.text w.name ]
+                )
+                model.workflows
+        )
+
+
+newFieldLabel : String -> Html Message
+newFieldLabel txt =
+    Html.div
+        [ style "font-size" "11px", style "text-transform" "uppercase", style "letter-spacing" "0.08em", style "color" "#9aa39b", style "margin" "8px 0 4px" ]
+        [ Html.text txt ]
+
+
+newInputStyles : List (Html.Attribute Message)
+newInputStyles =
+    [ style "width" "100%"
+    , style "background" "#141313"
+    , style "color" "#e0e0e0"
+    , style "border" "1px solid #3d3c3c"
+    , style "padding" "6px 8px"
+    , style "box-sizing" "border-box"
+    ]
+
+
+parseBudget : String -> Maybe Float
+parseBudget raw =
+    case String.trim raw of
+        "" ->
+            Nothing
+
+        trimmed ->
+            String.toFloat trimmed
 
 
 formatUsd : Float -> String
