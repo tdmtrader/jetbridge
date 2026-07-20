@@ -696,4 +696,26 @@ all =
                         [ Query.has [ containing [ text "3h 0m ago" ] ]
                         , Query.has [ attribute (Attr.title "Jul 18, 2026 14:30") ]
                         ]
+        , test "the costs section states caps are set at deploy time when none is configured" <|
+            \_ ->
+                Common.init "/agent"
+                    |> Application.handleCallback
+                        (Callback.AgentCostRollupFetched
+                            (Ok
+                                { sampleRollup
+                                    | summary =
+                                        { dailyCapUsd = 0
+                                        , dailySpentUsd = 12.34
+                                        , dailyRemainingUsd = 0
+                                        , dailyExhausted = False
+                                        }
+                                }
+                            )
+                        )
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Query.has
+                        [ class "agent-daily-cap-none"
+                        , text "No daily cap set. Caps are set at deploy time today."
+                        ]
         ]

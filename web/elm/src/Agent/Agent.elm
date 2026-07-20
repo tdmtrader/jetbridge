@@ -1123,7 +1123,7 @@ dailyCapGauge summary =
             , style "font-size" "12px"
             , style "color" subtleColor
             ]
-            [ Html.text "no daily cap set — spend is unbounded (web flag: --agent-daily-budget-usd)" ]
+            [ Html.text "No daily cap set. Caps are set at deploy time today." ]
 
     else
         let
