@@ -90,6 +90,12 @@ type Message
     | AgentDispatcherModeClicked String
     | ConfirmAgentDispatcherMode String
     | CancelAgentDispatcherMode
+      -- Agent Workflow detail page (version select, promote, lifecycle)
+    | SelectWorkflowVersion Int
+    | ClickPromoteWorkflowVersion String Int
+    | EditWorkflowAnnotation String
+    | SaveWorkflowAnnotation String
+    | ClickDeprecateWorkflow String Bool
       -- common
     | Hover (Maybe DomID)
     | Click DomID
