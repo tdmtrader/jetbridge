@@ -176,6 +176,21 @@ var _ = Describe("AgentRunMetricsFactory", func() {
 		Expect(statuses).To(ContainElement(schema.RunStatusParked))
 	})
 
+	// --- L-1 (#41): the incomplete status (a server-set ingestion degradation,
+	// never client-submittable) round-trips through the CHECK constraint added
+	// by migration 1773106092. ---
+	It("stores and reads back a status=incomplete row (L-1 CHECK constraint)", func() {
+		Expect(factory.Upsert(&schema.RunMetrics{
+			BuildID: 60, PlanID: "no-flight", StepName: "implement",
+			Status: schema.RunStatusIncomplete, Summary: "no flight output (runner image predates flight recorder?)",
+		})).To(Succeed())
+
+		rows, err := factory.GetByBuild(60)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(rows).To(HaveLen(1))
+		Expect(rows[0].Status).To(Equal(schema.RunStatusIncomplete))
+	})
+
 	// --- finding F24: degraded re-ingestion must never clobber a real row ---
 	It("InsertIfAbsent inserts when absent and preserves an existing row", func() {
 		good := &schema.RunMetrics{

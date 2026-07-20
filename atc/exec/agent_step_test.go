@@ -1180,15 +1180,19 @@ var _ = Describe("AgentStep", func() {
 				fakeMetricsStore.InsertIfAbsentReturns(true, nil)
 			})
 
-			It("records an error row via InsertIfAbsent", func() {
+			It("records an incomplete row via InsertIfAbsent", func() {
+				// L-1 (#41): no flight file read at all is a missing RECORDING,
+				// not a failed step — status=incomplete so DeriveOutcome fuses
+				// it to amber "unrecorded" on a succeeded build (never red). It
+				// still degrades through InsertIfAbsent (F24), never the upsert.
 				ok, err := step.Run(ctx, state)
 				Expect(err).ToNot(HaveOccurred())
 				Expect(ok).To(BeTrue()) // exit status still drives step success
 				Expect(fakeMetricsStore.UpsertReturningInsertedCallCount()).To(BeZero())
 				Expect(fakeMetricsStore.InsertIfAbsentCallCount()).To(Equal(1))
 				rm := fakeMetricsStore.InsertIfAbsentArgsForCall(0)
-				Expect(rm.Status).To(Equal("error"))
-				Expect(rm.Summary).To(ContainSubstring("flight recorder"))
+				Expect(rm.Status).To(Equal(schema.RunStatusIncomplete))
+				Expect(rm.Summary).To(ContainSubstring("no flight output"))
 			})
 
 			// --- review finding (2026-07-12): a StreamFile failure silently
@@ -1512,7 +1516,7 @@ var _ = Describe("AgentStep", func() {
 
 					Expect(fakeMetricsStore.InsertIfAbsentCallCount()).To(Equal(1))
 					rm := fakeMetricsStore.InsertIfAbsentArgsForCall(0)
-					Expect(rm.Status).To(Equal("error")) // still a degraded error row
+					Expect(rm.Status).To(Equal(schema.RunStatusIncomplete)) // L-1: no flight read ⇒ incomplete (amber), still the observed floor
 					Expect(rm.CostUSD).To(BeNumerically("~", 0.42, 1e-9))
 
 					Expect(fakeChecker.RecordCallCount()).To(Equal(1))

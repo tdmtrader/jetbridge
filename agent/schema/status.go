@@ -12,6 +12,12 @@ const (
 	// PARK-V2 amendment): the step exited awaiting a human, with best-effort
 	// usage/cost — a defined end, not an error.
 	RunStatusParked = "parked"
+	// RunStatusIncomplete marks an ingestion that read NO flight output (L-1,
+	// #41): the step produced no results/events/review — dominant cause is a
+	// runner image predating the flight recorder. A missing RECORDING, not a
+	// failed step; DeriveOutcome renders it amber 'unrecorded' on a succeeded
+	// build (never red).
+	RunStatusIncomplete = "incomplete"
 )
 
 // ThreeWayStatus maps a results.json Status onto the three-way taxonomy.
