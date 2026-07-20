@@ -16,6 +16,34 @@ import (
 type AgentRunsCommand struct {
 	Limit int  `long:"limit" default:"50" description:"Maximum number of recent runs to show"`
 	Json  bool `long:"json" description:"Print command result as JSON"`
+
+	Transcript AgentRunTranscriptCommand `command:"transcript" description:"Print the raw tool-call transcript (ndjson) for a ticket's run"`
+}
+
+// AgentRunTranscriptCommand prints the raw agent tool-call transcript
+// (ndjson) a runner captured for a ticket's run (ticket #43) — the record of
+// which dir the agent edited and whether it committed to the workspace.
+type AgentRunTranscriptCommand struct {
+	Ticket int `long:"ticket" required:"true" description:"Ticket ID the run belongs to"`
+	Build  int `long:"build" required:"true" description:"Build ID of the run"`
+}
+
+func (command *AgentRunTranscriptCommand) Execute([]string) error {
+	target, err := rc.LoadTarget(Fly.Target, Fly.Verbose)
+	if err != nil {
+		return err
+	}
+	if err := target.Validate(); err != nil {
+		return err
+	}
+
+	raw, err := target.Client().AgentRunTranscript(command.Ticket, command.Build)
+	if err != nil {
+		return err
+	}
+
+	_, err = os.Stdout.Write(raw)
+	return err
 }
 
 func (command *AgentRunsCommand) Execute([]string) error {

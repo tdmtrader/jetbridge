@@ -180,6 +180,29 @@ var _ = Describe("fly agent", func() {
 		})
 	})
 
+	Describe("agent runs transcript", func() {
+		const ndjson = `{"type":"system","subtype":"init"}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"/w/main.go"}}]}}
+{"type":"result","total_cost_usd":0.4}
+`
+		BeforeEach(func() {
+			atcServer.AppendHandlers(
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("GET", "/api/v1/agent/tickets/12/runs/4242/transcript"),
+					ghttp.RespondWith(http.StatusOK, ndjson, http.Header{"Content-Type": []string{"application/x-ndjson"}}),
+				),
+			)
+		})
+
+		It("prints the raw ndjson transcript to stdout", func() {
+			flyCmd := exec.Command(flyPath, "-t", targetName, "agent", "runs", "transcript", "--ticket", "12", "--build", "4242")
+			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+			Expect(err).NotTo(HaveOccurred())
+			Eventually(sess).Should(gexec.Exit(0))
+			Expect(string(sess.Out.Contents())).To(Equal(ndjson))
+		})
+	})
+
 	Describe("agent runs with a lagging agent step image", func() {
 		BeforeEach(func() {
 			atcServer.AppendHandlers(
