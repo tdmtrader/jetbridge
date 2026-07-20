@@ -69,6 +69,21 @@ mergedDetailJson =
     """
 
 
+erroredDetailJson : String
+erroredDetailJson =
+    """
+    { "ticket":
+        { "id": 12, "title": "ship fly archives", "state": "errored"
+        , "workflow_name": "develop", "body": "do the thing"
+        , "created_at": 200, "completed_at": 300
+        , "error_detail": "runner crashed: boom"
+        }
+    , "spec": null
+    , "tasks": []
+    }
+    """
+
+
 withDetail : String -> (AgentTicket.Detail -> Expect.Expectation) -> Expect.Expectation
 withDetail json f =
     case Json.Decode.decodeString AgentTicket.decodeDetail json of
@@ -427,6 +442,53 @@ all =
                         (Msgs.DeliveryReceived (ClockTicked FiveSeconds <| Time.millisToPosix 0))
                     |> Tuple.second
                     |> Common.contains (Effects.FetchAgentTicket 12)
+        , test "the errored run-error box links to the failing run's build page" <|
+            \_ ->
+                withDetail erroredDetailJson
+                    (\d ->
+                        Common.init "/agent-tickets/12"
+                            |> Application.handleCallback (Callback.AgentTicketFetched (Ok d))
+                            |> Tuple.first
+                            |> Application.handleCallback
+                                (Callback.AgentTicketMetricsFetched 12
+                                    (Ok
+                                        [ { ticketId = Just 12
+                                          , pipelineRunId = Just 2
+                                          , buildId = 700
+                                          , planId = "plan-xyz"
+                                          , stepName = "implement"
+                                          , workflowName = "develop"
+                                          , workflowVersion = Just 1
+                                          , status = "errored"
+                                          , buildStatus = "errored"
+                                          , outcome = ""
+                                          , summary = ""
+                                          , model = ""
+                                          , usage =
+                                                { inputTokens = 0
+                                                , outputTokens = 0
+                                                , cacheReadInputTokens = 0
+                                                , cacheCreationInputTokens = 0
+                                                }
+                                          , turns = 1
+                                          , wallTimeSeconds = 1
+                                          , costUsd = 0.1
+                                          , eventCounts = Dict.empty
+                                          , createdAt = 100
+                                          }
+                                        ]
+                                    )
+                                )
+                            |> Tuple.first
+                            |> Common.queryView
+                            |> Query.find [ id "ticket-error-detail" ]
+                            |> Query.find [ class "agent-ticket-error-build-link" ]
+                            |> Query.has
+                                [ tag "a"
+                                , attribute (Html.Attributes.href "/builds/700")
+                                , text "Run error"
+                                ]
+                    )
         , test "the 5s tick stops refetching once the ticket is terminal" <|
             \_ ->
                 withDetail mergedDetailJson

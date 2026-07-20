@@ -497,11 +497,17 @@ content session model =
                     reviewCard =
                         Build.AgentReview.view (reviewerName session) model
 
+                    -- The failing run is the ticket's latest build; the error
+                    -- box links there so a reviewer can open the run that
+                    -- produced the failure text.
+                    latestBuild =
+                        model.runMetrics |> List.map .buildId |> List.maximum
+
                     top =
                         [ header model ticket
                         , provenanceLine ticket
                         , provenanceTimestamps session.timeZone ticket
-                        , errorNotice ticket
+                        , errorNotice latestBuild ticket
                         , actionErrorBanner model
                         ]
 
@@ -665,8 +671,8 @@ provenanceTimestamps zone ticket =
 (`error_detail`), but it was never shown. Surface it prominently, right above
 the Retry action, so the reviewer knows what to fix before re-queueing.
 -}
-errorNotice : AgentTicket.Ticket -> Html Message
-errorNotice ticket =
+errorNotice : Maybe Int -> AgentTicket.Ticket -> Html Message
+errorNotice maybeBuildId ticket =
     if ticket.errorDetail == "" then
         Html.text ""
 
@@ -679,9 +685,7 @@ errorNotice ticket =
             , style "padding" "10px 12px"
             , style "margin" "10px 0"
             ]
-            [ Html.div
-                [ style "font-weight" "bold", style "font-size" "12px", style "margin-bottom" "4px" ]
-                [ Html.text "Run error" ]
+            [ errorNoticeHeading maybeBuildId
             , Html.div
                 [ style "white-space" "pre-wrap"
                 , style "font-family" "monospace"
@@ -690,6 +694,39 @@ errorNotice ticket =
                 ]
                 [ Html.text ticket.errorDetail ]
             ]
+
+
+{-| The "Run error" heading. When the failing build id is known it is a link to
+that build's page, so a reviewer can jump from the error text to the run that
+produced it; otherwise it degrades to inert bold text.
+-}
+errorNoticeHeading : Maybe Int -> Html Message
+errorNoticeHeading maybeBuildId =
+    let
+        labelStyles =
+            [ style "font-weight" "bold", style "font-size" "12px", style "margin-bottom" "4px" ]
+    in
+    case maybeBuildId of
+        Just buildId ->
+            Html.a
+                (class "agent-ticket-error-build-link"
+                    :: href (buildHref buildId)
+                    :: style "color" "#f0a0a0"
+                    :: style "text-decoration" "underline"
+                    :: labelStyles
+                )
+                [ Html.text "Run error" ]
+
+        Nothing ->
+            Html.div labelStyles [ Html.text "Run error" ]
+
+
+{-| The one-off build page URL for a build id, shared by the run rows and the
+error-notice heading so both point at the same `/builds/<id>` route.
+-}
+buildHref : Int -> String
+buildHref buildId =
+    Routes.toString (Routes.OneOffBuild { id = buildId, highlight = Routes.HighlightNothing })
 
 
 stateBadge : String -> Html Message
