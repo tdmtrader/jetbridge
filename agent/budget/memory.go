@@ -80,6 +80,10 @@ func (m *MemoryLedger) Rollup(groupBy string, since, until time.Time) ([]RollupR
 				_ = json.Unmarshal(e.Metadata, &meta)
 			}
 			key = meta.Workflow
+		case GroupByModel:
+			key = e.Model
+		case GroupByStep:
+			key = e.StepName
 		default: // GroupByDay
 			key = e.OccurredAt.UTC().Format("2006-01-02")
 		}
