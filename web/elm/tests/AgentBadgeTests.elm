@@ -23,6 +23,7 @@ allStatuses =
     , Aborted
     , Succeeded
     , NoOutput
+    , Unrecorded
     ]
 
 
@@ -185,5 +186,36 @@ all =
                 \_ ->
                     displayOutcome { outcome = "quantum_flux", buildStatus = "succeeded", runStatus = "ok", hasResult = True }
                         |> Expect.equal (Just Succeeded)
+            ]
+        , describe "W-14 — status vocabulary through the single display map"
+            [ test "the ok outcome displays as 'succeeded', not 'OK'" <|
+                \_ ->
+                    label Succeeded
+                        |> Expect.equal "succeeded"
+            , test "fromOutcomeToken 'ok' still decodes to Succeeded (token unchanged)" <|
+                \_ ->
+                    fromOutcomeToken "ok"
+                        |> Expect.equal (Just Succeeded)
+            , test "fromOutcomeToken 'unrecorded' (#41) decodes to the Unrecorded badge" <|
+                \_ ->
+                    fromOutcomeToken "unrecorded"
+                        |> Expect.equal (Just Unrecorded)
+            , test "the unrecorded badge is amber (Warn), the no_output colour family — not red" <|
+                \_ ->
+                    tone Unrecorded
+                        |> Expect.equal Warn
+            , test "runStatus 'incomplete' with no fused outcome degrades to amber, not red or empty" <|
+                \_ ->
+                    -- #41: a green build whose runner wrote no flight recording.
+                    runOutcome { buildStatus = "succeeded", runStatus = "incomplete", hasResult = False }
+                        |> Expect.equal (Just Unrecorded)
+            , test "an incomplete run on a server without any build status still shows amber, never empty" <|
+                \_ ->
+                    runOutcome { buildStatus = "", runStatus = "incomplete", hasResult = False }
+                        |> Expect.equal (Just Unrecorded)
+            , test "displayOutcome routes the 'unrecorded' token to the amber badge" <|
+                \_ ->
+                    displayOutcome { outcome = "unrecorded", buildStatus = "succeeded", runStatus = "incomplete", hasResult = False }
+                        |> Expect.equal (Just Unrecorded)
             ]
         ]
