@@ -1405,7 +1405,33 @@ func (cmd *RunCommand) backendComponents(
 			Interval: time.Minute,
 		})
 
-		if cmd.AgentDispatcherEnabled {
+		// The dispatcher component is ALWAYS wired now (runtime-controlled),
+		// not gated on --agent-dispatcher-enabled. The boot flag is instead the
+		// FALLBACK seed for the effective mode: when no agent_settings row
+		// exists, ResolveEffectiveMode(false, "", cmd.AgentDispatcherEnabled)
+		// reproduces the historical behavior (flag off -> effective "off" ->
+		// fully dormant loop). An admin flips the mode at runtime via
+		// PUT /api/v1/agent/dispatcher, read HOT on the loop's next tick.
+		//
+		// NOTE for the human: housekeeping components (e.g. ticket #42's
+		// unmerged pipeline-archiver) MUST wire independently of this dispatch
+		// mode — they are NOT part of the dispatch loop and must keep running
+		// even when the dispatcher is paused/off. Do not fold them into any
+		// dispatch-mode conditional.
+		{
+			dispatcherSettings := db.NewAgentSettingsFactory(dbConn)
+			dispatcherBootFlag := cmd.AgentDispatcherEnabled
+			modeResolver := func() string {
+				mode, found, err := dispatcherSettings.GetDispatcherMode()
+				if err != nil {
+					// A read fault must not silently activate the loop: fall
+					// back to the boot seed (off by default in current live).
+					logger.Error("failed-to-read-dispatcher-mode", err)
+					return dispatch.ResolveEffectiveMode(false, "", dispatcherBootFlag)
+				}
+				return dispatch.ResolveEffectiveMode(found, mode, dispatcherBootFlag)
+			}
+
 			dispatcherDeps := dispatch.Deps{
 				Tickets:     db.NewAgentTicketsFactory(dbConn),
 				Workflows:   db.NewAgentWorkflowsFactory(dbConn),
@@ -1430,6 +1456,7 @@ func (cmd *RunCommand) backendComponents(
 					Name: atc.ComponentAgentDispatcher,
 				},
 				Runnable: dispatch.NewDispatcher(dispatcherDeps, dispatch.LoopConfig{
+					Mode:        modeResolver,
 					RunReader:   dbPipelineRunFactory,
 					Questions:   nil, // plan 08's checkpoint seam; checkpoints are render-refused until it lands
 					MaxAttempts: cmd.AgentDispatcherMaxAttempts,
@@ -2502,6 +2529,8 @@ func (cmd *RunCommand) constructAPIHandler(
 		}, func(r *http.Request) string {
 			return accessor.GetAccessor(r).Claims().UserName
 		}),
+		db.NewAgentSettingsFactory(dbConn),
+		cmd.AgentDispatcherEnabled,
 	)
 }
 

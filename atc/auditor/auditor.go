@@ -186,7 +186,9 @@ func (a *auditor) ValidateAction(action string) bool {
 		atc.DispatchAgentTicket,
 		atc.SetAgentTicketDisposition,
 		atc.GetAgentTicketOutcome,
-		atc.GetAgentTicketDiff:
+		atc.GetAgentTicketDiff,
+		atc.GetAgentDispatcher,
+		atc.SetAgentDispatcher:
 		return a.EnableSystemAuditLog
 	case atc.ListTeams,
 		atc.SetTeam,

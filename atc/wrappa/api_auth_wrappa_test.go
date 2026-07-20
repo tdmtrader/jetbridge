@@ -422,5 +422,108 @@ var _ = Describe("APIAuthWrappa", func() {
 				})
 			})
 		})
+
+		// Dispatcher runtime-control tier pinning (dispatcher-runtime-control
+		// wire contract): GetAgentDispatcher is merely authenticated (ANY
+		// signed-in user may READ status); SetAgentDispatcher is admin-only
+		// (same CheckAdminHandler tier as CreateAgentPrincipal). The no-panic
+		// loop only proves the switch is exhaustive — these specs pin the tier,
+		// including the REJECTS-non-admin-PUT case.
+		Describe("dispatcher route tiers", func() {
+			var (
+				wrapped      rata.Handlers
+				delegateHit  bool
+				fakeAccessor *accessorfakes.FakeAccessFactory
+				fakeaccess   *accessorfakes.FakeAccess
+			)
+
+			BeforeEach(func() {
+				delegateHit = false
+				fakeAccessor = new(accessorfakes.FakeAccessFactory)
+				fakeaccess = new(accessorfakes.FakeAccess)
+				fakeAccessor.CreateReturns(fakeaccess, nil)
+
+				delegate := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					delegateHit = true
+					w.WriteHeader(http.StatusOK)
+				})
+
+				wrapped = wrappa.NewAPIAuthWrappa(
+					fakeCheckPipelineAccessHandlerFactory,
+					fakeCheckBuildReadAccessHandlerFactory,
+					fakeCheckBuildWriteAccessHandlerFactory,
+					fakeCheckWorkerTeamAccessHandlerFactory,
+					auth.NewCheckAgentPrincipalHandlerFactory(principals.NewVerifier(principals.NewMemoryStore())),
+				).Wrap(rata.Handlers{
+					atc.GetAgentDispatcher: delegate,
+					atc.SetAgentDispatcher: delegate,
+				})
+			})
+
+			serveDispatcher := func(routeName string) *http.Response {
+				server := httptest.NewServer(accessor.NewHandler(
+					lagertest.NewTestLogger("api-auth-wrappa"),
+					"some-action",
+					wrapped[routeName],
+					fakeAccessor,
+					new(auditorfakes.FakeAuditor),
+					map[string]string{},
+				))
+				defer server.Close()
+
+				req, err := http.NewRequest("GET", server.URL, nil)
+				Expect(err).NotTo(HaveOccurred())
+				resp, err := http.DefaultClient.Do(req)
+				Expect(err).NotTo(HaveOccurred())
+				return resp
+			}
+
+			Describe("GetAgentDispatcher", func() {
+				It("401s unauthenticated requests", func() {
+					fakeaccess.IsAuthenticatedReturns(false)
+
+					resp := serveDispatcher(atc.GetAgentDispatcher)
+					Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized))
+					Expect(delegateHit).To(BeFalse())
+				})
+
+				It("admits ANY authenticated user, admin or not", func() {
+					fakeaccess.IsAuthenticatedReturns(true)
+					fakeaccess.IsAdminReturns(false)
+
+					resp := serveDispatcher(atc.GetAgentDispatcher)
+					Expect(resp.StatusCode).To(Equal(http.StatusOK))
+					Expect(delegateHit).To(BeTrue())
+				})
+			})
+
+			Describe("SetAgentDispatcher", func() {
+				It("401s unauthenticated requests", func() {
+					fakeaccess.IsAuthenticatedReturns(false)
+
+					resp := serveDispatcher(atc.SetAgentDispatcher)
+					Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized))
+					Expect(delegateHit).To(BeFalse())
+				})
+
+				It("REJECTS an authenticated non-admin (403)", func() {
+					fakeaccess.IsAuthenticatedReturns(true)
+					fakeaccess.IsAdminReturns(false)
+
+					resp := serveDispatcher(atc.SetAgentDispatcher)
+					Expect(resp.StatusCode).To(Equal(http.StatusForbidden))
+					Expect(delegateHit).To(BeFalse())
+				})
+
+				It("admits admins", func() {
+					fakeaccess.IsAuthenticatedReturns(true)
+					fakeaccess.IsAdminReturns(true)
+
+					resp := serveDispatcher(atc.SetAgentDispatcher)
+					Expect(resp.StatusCode).To(Equal(http.StatusOK))
+					Expect(delegateHit).To(BeTrue())
+				})
+			})
+		})
 	})
 })
