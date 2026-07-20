@@ -984,10 +984,22 @@ workflowRow w =
         ]
         [ Html.div [ style "flex" "1", style "min-width" "0" ]
             [ Html.div []
-                (Html.span
-                    [ style "font-weight" "700", style "color" Colors.text ]
+                (Html.a
+                    [ style "font-weight" "700"
+                    , style "color" Colors.text
+                    , href (Routes.toString (Routes.AgentWorkflow { name = w.name }))
+                    ]
                     [ Html.text w.name ]
                     :: workflowPills w
+                    ++ (if w.hidden then
+                            [ pill "agent-workflow-deprecated"
+                                { bg = "#4f2e2e", fg = "#df9f9f" }
+                                "deprecated"
+                            ]
+
+                        else
+                            []
+                       )
                 )
             , Html.div
                 [ style "font-size" "12px", style "color" mutedColor ]
