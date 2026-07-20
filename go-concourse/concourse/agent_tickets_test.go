@@ -5,6 +5,7 @@ import (
 
 	"github.com/concourse/concourse/agent/api/outcomes"
 	"github.com/concourse/concourse/agent/api/tickets"
+	"github.com/concourse/concourse/agent/gitcheck"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -215,6 +216,51 @@ var _ = Describe("Agent Tickets", func() {
 
 			It("returns found=false without an error", func() {
 				_, found, err := client.GetAgentTicketOutcome(99)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(found).To(BeFalse())
+			})
+		})
+	})
+
+	Describe("GetAgentTicketDiff", func() {
+		Context("when the diff exists", func() {
+			BeforeEach(func() {
+				atcServer.AppendHandlers(
+					ghttp.CombineHandlers(
+						ghttp.VerifyRequest("GET", "/api/v1/agent/tickets/12/diff", "offset=0&limit=50"),
+						ghttp.RespondWithJSONEncoded(http.StatusOK, gitcheck.DiffPage{
+							Files: []gitcheck.DiffFile{
+								{Path: "atc/foo.go", Patch: "@@ -1 +1 @@\n-old\n+new\n"},
+							},
+							Offset: 0, Limit: 50, TotalFiles: 1, HasMore: false,
+						}),
+					),
+				)
+			})
+
+			It("returns the decoded diff page and found=true", func() {
+				page, found, err := client.GetAgentTicketDiff(12, 0, 50)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(found).To(BeTrue())
+				Expect(page.TotalFiles).To(Equal(1))
+				Expect(page.Files).To(HaveLen(1))
+				Expect(page.Files[0].Path).To(Equal("atc/foo.go"))
+				Expect(page.Files[0].Patch).To(ContainSubstring("+new"))
+			})
+		})
+
+		Context("when there is no diff for the ticket", func() {
+			BeforeEach(func() {
+				atcServer.AppendHandlers(
+					ghttp.CombineHandlers(
+						ghttp.VerifyRequest("GET", "/api/v1/agent/tickets/99/diff", "offset=0&limit=50"),
+						ghttp.RespondWith(http.StatusNotFound, ""),
+					),
+				)
+			})
+
+			It("returns found=false without an error", func() {
+				_, found, err := client.GetAgentTicketDiff(99, 0, 50)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(found).To(BeFalse())
 			})

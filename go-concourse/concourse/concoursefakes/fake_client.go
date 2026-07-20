@@ -11,6 +11,7 @@ import (
 	"github.com/concourse/concourse/agent/api/outcomes"
 	"github.com/concourse/concourse/agent/api/tickets"
 	"github.com/concourse/concourse/agent/credentials"
+	"github.com/concourse/concourse/agent/gitcheck"
 	"github.com/concourse/concourse/agent/schema"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/go-concourse/concourse"
@@ -253,6 +254,23 @@ type FakeClient struct {
 	}
 	getAgentTicketReturnsOnCall map[int]struct {
 		result1 tickets.TicketDetail
+		result2 bool
+		result3 error
+	}
+	GetAgentTicketDiffStub        func(int, int, int) (gitcheck.DiffPage, bool, error)
+	getAgentTicketDiffMutex       sync.RWMutex
+	getAgentTicketDiffArgsForCall []struct {
+		arg1 int
+		arg2 int
+		arg3 int
+	}
+	getAgentTicketDiffReturns struct {
+		result1 gitcheck.DiffPage
+		result2 bool
+		result3 error
+	}
+	getAgentTicketDiffReturnsOnCall map[int]struct {
+		result1 gitcheck.DiffPage
 		result2 bool
 		result3 error
 	}
@@ -1679,6 +1697,75 @@ func (fake *FakeClient) GetAgentTicketReturnsOnCall(i int, result1 tickets.Ticke
 	}
 	fake.getAgentTicketReturnsOnCall[i] = struct {
 		result1 tickets.TicketDetail
+		result2 bool
+		result3 error
+	}{result1, result2, result3}
+}
+
+func (fake *FakeClient) GetAgentTicketDiff(arg1 int, arg2 int, arg3 int) (gitcheck.DiffPage, bool, error) {
+	fake.getAgentTicketDiffMutex.Lock()
+	ret, specificReturn := fake.getAgentTicketDiffReturnsOnCall[len(fake.getAgentTicketDiffArgsForCall)]
+	fake.getAgentTicketDiffArgsForCall = append(fake.getAgentTicketDiffArgsForCall, struct {
+		arg1 int
+		arg2 int
+		arg3 int
+	}{arg1, arg2, arg3})
+	stub := fake.GetAgentTicketDiffStub
+	fakeReturns := fake.getAgentTicketDiffReturns
+	fake.recordInvocation("GetAgentTicketDiff", []interface{}{arg1, arg2, arg3})
+	fake.getAgentTicketDiffMutex.Unlock()
+	if stub != nil {
+		return stub(arg1, arg2, arg3)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2, ret.result3
+	}
+	return fakeReturns.result1, fakeReturns.result2, fakeReturns.result3
+}
+
+func (fake *FakeClient) GetAgentTicketDiffCallCount() int {
+	fake.getAgentTicketDiffMutex.RLock()
+	defer fake.getAgentTicketDiffMutex.RUnlock()
+	return len(fake.getAgentTicketDiffArgsForCall)
+}
+
+func (fake *FakeClient) GetAgentTicketDiffCalls(stub func(int, int, int) (gitcheck.DiffPage, bool, error)) {
+	fake.getAgentTicketDiffMutex.Lock()
+	defer fake.getAgentTicketDiffMutex.Unlock()
+	fake.GetAgentTicketDiffStub = stub
+}
+
+func (fake *FakeClient) GetAgentTicketDiffArgsForCall(i int) (int, int, int) {
+	fake.getAgentTicketDiffMutex.RLock()
+	defer fake.getAgentTicketDiffMutex.RUnlock()
+	argsForCall := fake.getAgentTicketDiffArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2, argsForCall.arg3
+}
+
+func (fake *FakeClient) GetAgentTicketDiffReturns(result1 gitcheck.DiffPage, result2 bool, result3 error) {
+	fake.getAgentTicketDiffMutex.Lock()
+	defer fake.getAgentTicketDiffMutex.Unlock()
+	fake.GetAgentTicketDiffStub = nil
+	fake.getAgentTicketDiffReturns = struct {
+		result1 gitcheck.DiffPage
+		result2 bool
+		result3 error
+	}{result1, result2, result3}
+}
+
+func (fake *FakeClient) GetAgentTicketDiffReturnsOnCall(i int, result1 gitcheck.DiffPage, result2 bool, result3 error) {
+	fake.getAgentTicketDiffMutex.Lock()
+	defer fake.getAgentTicketDiffMutex.Unlock()
+	fake.GetAgentTicketDiffStub = nil
+	if fake.getAgentTicketDiffReturnsOnCall == nil {
+		fake.getAgentTicketDiffReturnsOnCall = make(map[int]struct {
+			result1 gitcheck.DiffPage
+			result2 bool
+			result3 error
+		})
+	}
+	fake.getAgentTicketDiffReturnsOnCall[i] = struct {
+		result1 gitcheck.DiffPage
 		result2 bool
 		result3 error
 	}{result1, result2, result3}

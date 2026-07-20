@@ -9,6 +9,7 @@ import (
 	"github.com/concourse/concourse/agent/api/outcomes"
 	"github.com/concourse/concourse/agent/api/tickets"
 	"github.com/concourse/concourse/agent/credentials"
+	"github.com/concourse/concourse/agent/gitcheck"
 	agentschema "github.com/concourse/concourse/agent/schema"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/go-concourse/concourse/internal"
@@ -58,6 +59,7 @@ type Client interface {
 	DispatchAgentTicket(id int) (tickets.DispatchResponse, error)
 	SetAgentTicketDisposition(id int, req outcomes.DispositionRequest) (outcomes.Outcome, error)
 	GetAgentTicketOutcome(id int) (outcomes.Outcome, bool, error)
+	GetAgentTicketDiff(id int, offset, limit int) (gitcheck.DiffPage, bool, error)
 	// AgentRunTranscript fetches the raw tool-call transcript (ndjson) a
 	// runner captured for a ticket's run (ticket #43).
 	AgentRunTranscript(ticketID, buildID int) ([]byte, error)

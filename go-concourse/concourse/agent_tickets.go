@@ -10,6 +10,7 @@ import (
 
 	"github.com/concourse/concourse/agent/api/outcomes"
 	"github.com/concourse/concourse/agent/api/tickets"
+	"github.com/concourse/concourse/agent/gitcheck"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/go-concourse/concourse/internal"
 	"github.com/tedsuo/rata"
@@ -126,6 +127,29 @@ func (client *client) GetAgentTicketOutcome(id int) (outcomes.Outcome, bool, err
 		return outcome, false, nil
 	default:
 		return outcome, false, err
+	}
+}
+
+func (client *client) GetAgentTicketDiff(id int, offset, limit int) (gitcheck.DiffPage, bool, error) {
+	query := url.Values{}
+	query.Set("offset", strconv.Itoa(offset))
+	query.Set("limit", strconv.Itoa(limit))
+
+	var page gitcheck.DiffPage
+	err := client.connection.Send(internal.Request{
+		RequestName: atc.GetAgentTicketDiff,
+		Params:      rata.Params{"ticket_id": strconv.Itoa(id)},
+		Query:       query,
+	}, &internal.Response{
+		Result: &page,
+	})
+	switch err.(type) {
+	case nil:
+		return page, true, nil
+	case internal.ResourceNotFoundError:
+		return page, false, nil
+	default:
+		return page, false, err
 	}
 }
 
