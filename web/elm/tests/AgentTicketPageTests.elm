@@ -540,6 +540,14 @@ all =
                                 , text "Run error"
                                 ]
                     )
+        , test "an errored ticket's finish timestamp reads 'ended', not 'completed'" <|
+            \_ ->
+                withDetail erroredDetailJson
+                    (\d ->
+                        renderWith "/agent-tickets/12" (Callback.AgentTicketFetched (Ok d))
+                            |> Query.find [ id "ticket-timestamps" ]
+                            |> Query.has [ text "created Jan 1, 1970 00:03 · ended Jan 1, 1970 00:05" ]
+                    )
         , test "the 5s tick stops refetching once the ticket is terminal" <|
             \_ ->
                 withDetail mergedDetailJson

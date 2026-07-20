@@ -677,7 +677,17 @@ provenanceTimestamps zone ticket =
                   else
                     Nothing
                 , ticket.completedAt
-                    |> Maybe.map (\c -> "completed " ++ formatTimestamp zone c)
+                    |> Maybe.map
+                        (\c ->
+                            -- An errored ticket didn't "complete"; it ended.
+                            (if ticket.state == "errored" then
+                                "ended "
+
+                             else
+                                "completed "
+                            )
+                                ++ formatTimestamp zone c
+                        )
                 ]
     in
     if List.isEmpty parts then
@@ -1304,6 +1314,15 @@ runRow now zone ( attempt, ( buildId, forBuild ) ) =
         startedAt =
             forBuild |> List.head |> Maybe.map .createdAt |> Maybe.withDefault 0
 
+        -- W-7: an empty summary means the runner delivered nothing readable;
+        -- say so rather than leaving the result cell blank.
+        summaryText =
+            if summary == "" then
+                "no result reported by runner"
+
+            else
+                summary
+
         -- U2/U3: the build status wins over the step status for display truth.
         -- The per-ROW server `outcome` field is deliberately not used here:
         -- this view collapses N step rows into ONE build-level verdict
@@ -1337,7 +1356,7 @@ runRow now zone ( attempt, ( buildId, forBuild ) ) =
         , relativeRunTime now zone startedAt
         , Html.span [ style "flex-shrink" "0" ] [ statusView ]
         , Html.span [ style "color" "#9aa39b", style "flex" "1", style "min-width" "0", style "font-size" "12px", style "overflow" "hidden", style "text-overflow" "ellipsis", style "white-space" "nowrap" ]
-            [ Html.text summary ]
+            [ Html.text summaryText ]
         , Html.span [ style "font-family" "monospace", style "color" "#b0b0b0", style "flex-shrink" "0" ] [ Html.text ("$" ++ formatUsd cost) ]
         ]
 
