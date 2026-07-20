@@ -62,6 +62,7 @@ type Route
     | Agent
     | AgentTickets
     | AgentTicket { id : Int }
+    | AgentRunTranscript { id : Int, buildId : Int }
 
 
 type SearchType
@@ -336,6 +337,12 @@ agentTickets =
     map (always <| AgentTickets) (s "agent-tickets")
 
 
+agentRunTranscript : Parser ((b -> Route) -> a) a
+agentRunTranscript =
+    map (\id buildId -> always <| AgentRunTranscript { id = id, buildId = buildId })
+        (s "agent-tickets" </> int </> s "runs" </> int)
+
+
 causality : Parser ((InstanceVars -> Route) -> a) a
 causality =
     let
@@ -503,6 +510,7 @@ sitemap =
         , dashboard
         , agentReviews
         , agent
+        , agentRunTranscript
         , agentTicket
         , agentTickets
         , pipeline
@@ -631,6 +639,10 @@ toString route =
             ( [ "agent-tickets", String.fromInt id ], [] )
                 |> RouteBuilder.build
 
+        AgentRunTranscript { id, buildId } ->
+            ( [ "agent-tickets", String.fromInt id, "runs", String.fromInt buildId ], [] )
+                |> RouteBuilder.build
+
 
 parsePath : Url.Url -> Maybe Route
 parsePath url =
@@ -750,6 +762,9 @@ getGroups route =
         AgentTicket _ ->
             []
 
+        AgentRunTranscript _ ->
+            []
+
 
 withGroups : List String -> Route -> Route
 withGroups groups route =
@@ -791,4 +806,7 @@ withGroups groups route =
             route
 
         AgentTicket _ ->
+            route
+
+        AgentRunTranscript _ ->
             route

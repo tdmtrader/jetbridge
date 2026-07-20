@@ -253,6 +253,7 @@ type Effect
     | UpdateAgentTicketTask { id : Int, ordering : Int, status : String, note : String }
     | FetchAgentTicketMetrics Int
     | FetchAgentTicketDiff Int
+    | FetchAgentRunEvents Int Int
     | FetchAgentTicketCosts
 
 
@@ -968,6 +969,12 @@ runEffect effect key csrfToken =
                 |> Api.expectJson Concourse.AgentDiff.decodeDiffPage
                 |> Api.request
                 |> Task.attempt AgentTicketDiffFetched
+
+        FetchAgentRunEvents ticketId buildId ->
+            Api.get (Endpoints.AgentTicketRunEvents ticketId buildId)
+                |> Api.expectString
+                |> Api.request
+                |> Task.attempt (AgentRunEventsFetched ticketId buildId)
 
         FetchAgentTicketCosts ->
             let

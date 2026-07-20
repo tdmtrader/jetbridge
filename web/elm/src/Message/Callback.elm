@@ -93,3 +93,4 @@ type Callback
     | AgentTicketTaskUpdated Int (Fetched ())
     | AgentTicketMetricsFetched Int (Fetched (List Concourse.Agent.RunMetric))
     | AgentTicketDiffFetched (Fetched Concourse.AgentDiff.DiffPage)
+    | AgentRunEventsFetched Int Int (Fetched String)

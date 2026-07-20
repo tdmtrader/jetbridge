@@ -308,4 +308,10 @@ all =
                     |> Url.fromString
                     |> Maybe.andThen Routes.parsePath
                     |> Expect.equal (Just <| Routes.AgentTicket { id = 12 })
+        , test "AgentRunTranscript round-trips through toString/parsePath" <|
+            \_ ->
+                ("http://example.com" ++ Routes.toString (Routes.AgentRunTranscript { id = 12, buildId = 4567 }))
+                    |> Url.fromString
+                    |> Maybe.andThen Routes.parsePath
+                    |> Expect.equal (Just <| Routes.AgentRunTranscript { id = 12, buildId = 4567 })
         ]

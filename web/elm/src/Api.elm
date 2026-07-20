@@ -2,6 +2,7 @@ module Api exposing
     ( Request
     , delete
     , expectJson
+    , expectString
     , get
     , ignoreResponse
     , paginatedGet
@@ -109,6 +110,17 @@ expectJson decoder r =
     , query = r.query
     , body = r.body
     , expect = Http.expectJson decoder
+    }
+
+
+expectString : Request a -> Request String
+expectString r =
+    { method = r.method
+    , headers = r.headers
+    , endpoint = r.endpoint
+    , query = r.query
+    , body = r.body
+    , expect = Http.expectString
     }
 
 
