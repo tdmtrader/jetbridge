@@ -5,6 +5,54 @@ jetbridge (concourse.home). This is the raw material the process-intelligence
 loop (plan 14) will eventually mine automatically; for now it's hand-kept.
 Newest first.
 
+## UX4 native-build enablement (2026-07-20, filing S-1..S-6 + W-items as tickets)
+
+- **UI/Elm work is NOT loop-buildable yet — the runner image has no Elm toolchain
+  and no workflow runs the elm-build gate. This blocks dispatching every UX ticket
+  (S-1 DAG, S-2 transcript, S-3 IA, S-4 diff, S-5 web-loop, S-6 workflows, W-5/10/11/13).**
+  WF-2 (merged this session, live at 5daa0678e3) added `elm 0.19.1` to
+  `deploy/agent-runner/Dockerfile` and an `elm-build` harvest gate to `agent/harvest`,
+  but three things are still missing before an agent can actually ship an Elm change:
+  (1) the runner image was never rebuilt/bumped — it is still `agent-runner:v0.2.196`
+  with no `elm` binary (WF-2 Task 6 is post-merge ops, deliberately deferred);
+  (2) `uglify-js` was intentionally left OUT of the Dockerfile because the *gate* only
+  needs `elm make` — but an *agent implementing a change* needs `elm make` **and**
+  `uglifyjs` to run `hack/build-web.sh` and regenerate the committed
+  `web/public/elm.min.js`; without uglifyjs the agent cannot produce the very bundle
+  the gate diff-checks for, so the gate would fail-closed on every Elm ticket;
+  (3) neither `develop` (v2, opus) nor `develop-fable` (v4) declares an `elm-build`
+  gate, so even on a fixed image the stale-bundle guard would not run.
+  → *Enablement checklist to make UI tickets loop-buildable:* add `uglify-js` to
+  `deploy/agent-runner/Dockerfile` (next to the elm layer); rebuild+push the
+  agent-runner image; bump `CONCOURSE_AGENT_STEP_IMAGE` in home-infra
+  `apps/concourse.yaml`; import a `develop-elm` workflow version whose gate_policy
+  includes `- gate: elm-build`. Until all four land, UI tickets can be *filed* but not
+  *dispatched* — filing them anyway (drafts) is correct so the backlog is visible.
+
+- **The `develop`/`develop-fable` gate command map is Go-only (`go build/test/lint`).**
+  The fixed `gateCommands` in `agent/harvest/gates.go` plus these two workflows cover
+  Go slices well (that is why the backend tickets #43/#44 and S-6's server half are
+  loop-ready today), but there is no front-end build/test in the loop at all until the
+  elm enablement above lands. Backend-only tickets dispatch cleanly now; anything that
+  touches `web/elm/**` does not.
+
+- **needs_review backlog is real friction, exactly as the audit predicted.** #41, #42,
+  #45, #46 all have their code merged + deployed to prod, yet the *tickets* still sit in
+  `needs_review` (their agent runs finished days ago). Dispositioning is a manual
+  `fly agent tickets` step with no nudge. #41 is a special case: its original agent run
+  correctly STOPPED at the status-CHECK-constraint migration gate, and the actual fix was
+  implemented out-of-band this session (migration 1773106092), so the ticket must be
+  *concluded as implemented elsewhere*, not merged from an `agent/ticket-41` branch that
+  never carried the fix. → *Signal:* a ticket whose work lands via a different path than
+  its own agent branch has no clean disposition verb; "concluded" is the least-wrong.
+
+- **Migration coordination is now load-bearing for the ticket queue.** #41 consumed slot
+  `1773106092`; S-6 (workflow lifecycle) and any future schema ticket must number ABOVE it
+  and merge in ascending order (the migrator is version-pointer based — a lower number
+  merged after a higher one deploys is silently never applied; see the migration-merge-order
+  rule below). File migration-bearing tickets with an explicit "claim the next free slot
+  above the current head; do not hard-code a number from a stale plan doc" instruction.
+
 ## Plan gaps the agents found (leftward candidates)
 
 - **Agent replace-instead-of-add error in exactly the code the gate can't test.**
