@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/concourse/concourse/agent/api/outcomes"
 	"github.com/concourse/concourse/agent/api/tickets"
@@ -41,6 +42,36 @@ func printSpecLintWarnings(warnings []string) {
 	for _, w := range warnings {
 		fmt.Fprintf(os.Stderr, "spec-lint: %s\n", w)
 	}
+}
+
+// assignWorkflowIfRequested realizes the documented "decided at dispatch"
+// semantics (WF-5): a ticket created with an empty workflow can have one
+// assigned via --workflow / --workflow-version on queue or dispatch, closing
+// the empty-workflow dead-end (DispatchOne's ErrNoWorkflow). A no-op when
+// neither flag is set. Sends only the pointers the caller supplied.
+func assignWorkflowIfRequested(client concourse.Client, id int, workflow string, workflowVer int) error {
+	if workflow == "" && workflowVer <= 0 {
+		return nil
+	}
+	var req tickets.UpdateRequest
+	if workflow != "" {
+		req.WorkflowName = &workflow
+	}
+	if workflowVer > 0 {
+		req.WorkflowVersion = &workflowVer
+	}
+	if _, err := client.UpdateAgentTicket(id, req); err != nil {
+		return fmt.Errorf("assign workflow to #%d failed: %w", id, err)
+	}
+	switch {
+	case workflow != "" && workflowVer > 0:
+		fmt.Printf("assigned workflow %q (version %d) to ticket #%d\n", workflow, workflowVer, id)
+	case workflow != "":
+		fmt.Printf("assigned workflow %q to ticket #%d\n", workflow, id)
+	default:
+		fmt.Printf("pinned workflow version %d on ticket #%d\n", workflowVer, id)
+	}
+	return nil
 }
 
 type AgentTicketsListCommand struct {
@@ -160,7 +191,9 @@ func (command *AgentTicketsCreateCommand) Execute([]string) error {
 }
 
 type AgentTicketsQueueCommand struct {
-	ID int `long:"id" required:"true" description:"Ticket id"`
+	ID          int    `long:"id" required:"true" description:"Ticket id"`
+	Workflow    string `long:"workflow" description:"Assign this workflow before queueing (fixes an empty-workflow ticket)"`
+	WorkflowVer int    `long:"workflow-version" description:"Pin a workflow definition version (0 = live)"`
 }
 
 func (command *AgentTicketsQueueCommand) Execute([]string) error {
@@ -171,8 +204,13 @@ func (command *AgentTicketsQueueCommand) Execute([]string) error {
 	if err := target.Validate(); err != nil {
 		return err
 	}
+	client := target.Client()
 
-	updated, err := target.Client().TransitionAgentTicket(command.ID, tickets.TransitionRequest{
+	if err := assignWorkflowIfRequested(client, command.ID, command.Workflow, command.WorkflowVer); err != nil {
+		return err
+	}
+
+	updated, err := client.TransitionAgentTicket(command.ID, tickets.TransitionRequest{
 		From: tickets.StateDraft, To: tickets.StateQueued,
 	})
 	if err != nil {
@@ -234,7 +272,9 @@ func (command *AgentTicketsTransitionCommand) Execute([]string) error {
 }
 
 type AgentTicketsDispatchCommand struct {
-	ID int `long:"id" required:"true" description:"Ticket id (must be queued)"`
+	ID          int    `long:"id" required:"true" description:"Ticket id (must be queued)"`
+	Workflow    string `long:"workflow" description:"Assign this workflow before dispatch (fixes an empty-workflow ticket)"`
+	WorkflowVer int    `long:"workflow-version" description:"Pin a workflow definition version (0 = live)"`
 }
 
 func (command *AgentTicketsDispatchCommand) Execute([]string) error {
@@ -245,9 +285,19 @@ func (command *AgentTicketsDispatchCommand) Execute([]string) error {
 	if err := target.Validate(); err != nil {
 		return err
 	}
+	client := target.Client()
 
-	res, err := target.Client().DispatchAgentTicket(command.ID)
+	if err := assignWorkflowIfRequested(client, command.ID, command.Workflow, command.WorkflowVer); err != nil {
+		return err
+	}
+
+	res, err := client.DispatchAgentTicket(command.ID)
 	if err != nil {
+		// Actionable hint for the empty-workflow dead-end: the ticket names no
+		// workflow and none was supplied here (WF-5). Never rewrites other errors.
+		if command.Workflow == "" && strings.Contains(err.Error(), "no workflow_name") {
+			return fmt.Errorf("%w (assign one with: fly agent tickets dispatch --id %d --workflow <name>)", err, command.ID)
+		}
 		return err
 	}
 	fmt.Printf("dispatched ticket #%d as run %d (pipeline %s)\n", command.ID, res.RunID, res.PipelineName)
