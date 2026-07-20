@@ -563,4 +563,50 @@ all =
                                 , Common.notContains (Effects.FetchAgentTicketMetrics 12)
                                 ]
                     )
+        , activeAttemptTest
         ]
+
+
+activeAttemptTest : Test
+activeAttemptTest =
+    test "shows an active-attempt strip while running" <|
+        \_ ->
+            withDetail runningDetailJson
+                (\d ->
+                    Common.init "/agent-tickets/9"
+                        |> Application.handleCallback (Callback.AgentTicketFetched (Ok d))
+                        |> Tuple.first
+                        |> Application.handleCallback
+                            (Callback.AgentTicketMetricsFetched 9
+                                (Ok
+                                    [ { ticketId = Just 9
+                                      , pipelineRunId = Just 2
+                                      , buildId = 500
+                                      , planId = "plan-run"
+                                      , stepName = "implement"
+                                      , workflowName = "develop"
+                                      , workflowVersion = Just 1
+                                      , status = "ok"
+                                      , buildStatus = "started"
+                                      , outcome = ""
+                                      , summary = ""
+                                      , model = ""
+                                      , usage =
+                                            { inputTokens = 0
+                                            , outputTokens = 0
+                                            , cacheReadInputTokens = 0
+                                            , cacheCreationInputTokens = 0
+                                            }
+                                      , turns = 1
+                                      , wallTimeSeconds = 1
+                                      , costUsd = 0.0
+                                      , eventCounts = Dict.empty
+                                      , createdAt = 100
+                                      }
+                                    ]
+                                )
+                            )
+                        |> Tuple.first
+                        |> Common.queryView
+                        |> Query.has [ class "agent-ticket-active-attempt" ]
+                )

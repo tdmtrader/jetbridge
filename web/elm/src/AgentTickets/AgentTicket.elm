@@ -530,6 +530,7 @@ content session model =
                         , provenanceLine ticket
                         , provenanceTimestamps session.timeZone ticket
                         , errorNotice latestBuild ticket
+                        , activeAttempt ticket model.runMetrics
                         , actionErrorBanner model
                         ]
 
@@ -1250,6 +1251,83 @@ taskStatusColor status =
 
         _ ->
             "#9aa39b"
+
+
+{-| A compact live strip for a dispatched-but-unfinished ticket: the latest
+build's current status badge plus a link into the build page. Only shown while
+the ticket is running — terminal and needs_review tickets have the full run
+history and review card instead. Live because the page already refetches
+metrics on the 5s poll.
+-}
+activeAttempt : AgentTicket.Ticket -> List Concourse.Agent.RunMetric -> Html Message
+activeAttempt ticket metrics =
+    if ticket.state /= "running" then
+        Html.text ""
+
+    else
+        case metrics |> List.map .buildId |> List.maximum of
+            Nothing ->
+                Html.div
+                    [ class "agent-ticket-active-attempt"
+                    , style "border" "1px solid #3d3c3c"
+                    , style "background" "#1b201b"
+                    , style "padding" "8px 12px"
+                    , style "margin" "10px 0"
+                    , style "color" "#9aa39b"
+                    , style "font-size" "13px"
+                    ]
+                    [ Html.text "Attempt starting…" ]
+
+            Just buildId ->
+                let
+                    forBuild =
+                        metrics |> List.filter (\m -> m.buildId == buildId)
+
+                    runStatus =
+                        case List.filter (\m -> m.status == "parked") forBuild of
+                            parked :: _ ->
+                                parked.status
+
+                            [] ->
+                                forBuild
+                                    |> List.reverse
+                                    |> List.head
+                                    |> Maybe.map .status
+                                    |> Maybe.withDefault ""
+
+                    buildStatus =
+                        forBuild |> List.head |> Maybe.map .buildStatus |> Maybe.withDefault ""
+
+                    hasResult =
+                        lastNonEmptySummary forBuild /= ""
+
+                    statusView =
+                        case AgentBadge.runOutcome { buildStatus = buildStatus, runStatus = runStatus, hasResult = hasResult } of
+                            Just s ->
+                                AgentBadge.view s
+
+                            Nothing ->
+                                Html.span [ style "color" "#b0b0b0" ] [ Html.text runStatus ]
+                in
+                Html.a
+                    [ class "agent-ticket-active-attempt"
+                    , href (Routes.toString (Routes.OneOffBuild { id = buildId, highlight = Routes.HighlightNothing }))
+                    , style "display" "flex"
+                    , style "align-items" "center"
+                    , style "gap" "10px"
+                    , style "border" "1px solid #3d5f3d"
+                    , style "background" "#1b201b"
+                    , style "padding" "8px 12px"
+                    , style "margin" "10px 0"
+                    , style "color" "inherit"
+                    , style "text-decoration" "none"
+                    ]
+                    [ Html.span [ style "color" "#9aa39b", style "font-size" "12px" ] [ Html.text "active attempt" ]
+                    , statusView
+                    , Html.span
+                        [ style "font-family" "monospace", style "color" "#7aa37a", style "font-size" "12px" ]
+                        [ Html.text ("build " ++ String.fromInt buildId ++ " →") ]
+                    ]
 
 
 {-| Per-run cost, aggregated from the step-level run metrics by build id.
