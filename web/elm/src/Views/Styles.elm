@@ -155,6 +155,12 @@ pageBelowTopBar route =
                     , style "display" "flex"
                     , style "height" "100%"
                     ]
+
+                Routes.AgentRunTranscript _ ->
+                    [ style "box-sizing" "border-box"
+                    , style "display" "flex"
+                    , style "height" "100%"
+                    ]
            )
 
 

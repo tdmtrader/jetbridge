@@ -83,6 +83,9 @@ type Message
     | ClickAgentTicketDispatch
     | ConfirmAgentTicketDispatch
     | CancelAgentTicketDispatch
+      -- Agent Run transcript page (S-2)
+    | TranscriptEntryToggled Int
+    | TranscriptRawToggled
       -- Agent Ticket queue page (client-side filter + sort)
     | AgentTicketsFilterChanged String
     | AgentTicketsSortToggled

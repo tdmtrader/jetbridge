@@ -548,7 +548,7 @@ content session model =
                         -- Not lazy: the relative run times read the `now` clock,
                         -- which changes on every 5s tick, so a memo would never
                         -- hit anyway.
-                        , runHistory model.now session.timeZone model.runMetricsByBuild
+                        , runHistory model.ticketId model.now session.timeZone model.runMetricsByBuild
                         ]
                 in
                 Html.div []
@@ -1257,8 +1257,8 @@ Renders from the by-build grouping computed once per metrics fetch —
 grouping or filtering here would re-scan every metric row for every run row
 on every render.
 -}
-runHistory : Maybe Time.Posix -> Time.Zone -> Dict Int (List Concourse.Agent.RunMetric) -> Html Message
-runHistory now zone metricsByBuild =
+runHistory : Int -> Maybe Time.Posix -> Time.Zone -> Dict Int (List Concourse.Agent.RunMetric) -> Html Message
+runHistory ticketId now zone metricsByBuild =
     if Dict.isEmpty metricsByBuild then
         Html.text ""
 
@@ -1271,13 +1271,13 @@ runHistory now zone metricsByBuild =
                         -- them before reversing so the newest renders first.
                         |> List.indexedMap (\i entry -> ( i + 1, entry ))
                         |> List.reverse
-                        |> List.map (runRow now zone)
+                        |> List.map (runRow ticketId now zone)
                    )
             )
 
 
-runRow : Maybe Time.Posix -> Time.Zone -> ( Int, ( Int, List Concourse.Agent.RunMetric ) ) -> Html Message
-runRow now zone ( attempt, ( buildId, forBuild ) ) =
+runRow : Int -> Maybe Time.Posix -> Time.Zone -> ( Int, ( Int, List Concourse.Agent.RunMetric ) ) -> Html Message
+runRow ticketId now zone ( attempt, ( buildId, forBuild ) ) =
     let
         cost =
             forBuild |> List.map .costUsd |> List.sum
@@ -1342,7 +1342,7 @@ runRow now zone ( attempt, ( buildId, forBuild ) ) =
     -- The build id is the LINK TARGET (the href), not a visible label.
     Html.a
         [ class "agent-ticket-run-row"
-        , href (buildHref buildId)
+        , href (Routes.toString (Routes.AgentRunTranscript { id = ticketId, buildId = buildId }))
         , style "display" "flex"
         , style "align-items" "center"
         , style "gap" "10px"

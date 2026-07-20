@@ -240,7 +240,7 @@ all =
                             |> Query.find [ class "agent-ticket-run-row" ]
                             |> Query.has
                                 [ tag "a"
-                                , attribute (Html.Attributes.href "/builds/561978")
+                                , attribute (Html.Attributes.href "/agent-tickets/12/runs/561978")
                                 ]
                     )
         , test "run history shows one row per build, newest first, with per-build cost and final summary" <|
@@ -298,7 +298,7 @@ all =
                                         -- newest build renders first: attempt 2,
                                         -- linking to build 200
                                         [ Query.has [ text "attempt 2" ]
-                                        , Query.has [ attribute (Html.Attributes.href "/builds/200") ]
+                                        , Query.has [ attribute (Html.Attributes.href "/agent-tickets/12/runs/200") ]
                                         , Query.has [ text "newest run verdict" ]
                                         , Query.has [ text "$1.50" ]
                                         , Query.hasNot [ text "build 200" ]
@@ -306,7 +306,7 @@ all =
                                 , Query.index 1
                                     >> Expect.all
                                         [ Query.has [ text "attempt 1" ]
-                                        , Query.has [ attribute (Html.Attributes.href "/builds/100") ]
+                                        , Query.has [ attribute (Html.Attributes.href "/agent-tickets/12/runs/100") ]
                                         , Query.has [ text "harvest verdict" ]
                                         , Query.has [ text "$0.50" ]
                                         ]
@@ -354,7 +354,7 @@ all =
                             |> Query.find [ class "agent-ticket-run-row" ]
                             |> Expect.all
                                 [ Query.has [ text "attempt 1" ]
-                                , Query.has [ attribute (Html.Attributes.href "/builds/561978") ]
+                                , Query.has [ attribute (Html.Attributes.href "/agent-tickets/12/runs/561978") ]
                                 , Query.hasNot [ text "build 561978" ]
                                 ]
                     )

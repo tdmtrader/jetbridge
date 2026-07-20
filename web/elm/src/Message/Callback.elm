@@ -90,3 +90,4 @@ type Callback
     | AgentTicketDispatched Int (Fetched Concourse.AgentTicket.DispatchResult)
     | AgentTicketTaskUpdated Int (Fetched ())
     | AgentTicketMetricsFetched Int (Fetched (List Concourse.Agent.RunMetric))
+    | AgentRunEventsFetched Int Int (Fetched String)
