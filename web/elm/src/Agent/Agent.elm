@@ -802,11 +802,24 @@ runStepCell expandedRuns r =
         , style "border-bottom" rowBorder
         , style "vertical-align" "top"
         ]
-        (Html.div
-            [ style "font-weight" "700", style "color" Colors.text ]
+        (Html.a
+            [ href (buildHref r.buildId)
+            , title ("open build #" ++ String.fromInt r.buildId)
+            , style "font-weight" "700"
+            , style "color" "#7a9ac0"
+            , style "text-decoration" "none"
+            ]
             [ Html.text r.stepName ]
             :: summaryBlock
         )
+
+
+{-| Href to a run's build page, `/builds/<id>`, so every ledger row links to the
+build it measured. Built through Routes so it stays in step with the router.
+-}
+buildHref : Int -> String
+buildHref buildId =
+    Routes.toString (Routes.OneOffBuild { id = buildId, highlight = Routes.HighlightNothing })
 
 
 {-| Render the run's DISPLAY truth as an AgentBadge. The server-derived

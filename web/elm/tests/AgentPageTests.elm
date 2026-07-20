@@ -662,6 +662,19 @@ all =
                         , Common.notContains Effects.FetchAgentCredentials
                         , Common.notContains Effects.FetchAgentPrincipals
                         ]
+        , test "links a run row to its build page" <|
+            \_ ->
+                Common.init "/agent"
+                    |> Application.handleCallback
+                        (Callback.AgentRunMetricsFetched (Ok [ sampleRun ]))
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Query.find [ class "agent-run-row" ]
+                    |> Query.has
+                        [ tag "a"
+                        , attribute (Attr.href "/builds/100")
+                        , containing [ text "review-diff" ]
+                        ]
         , test "run-row timestamps are relative once the clock ticks, with the absolute time on hover" <|
             \_ ->
                 Common.init "/agent"
