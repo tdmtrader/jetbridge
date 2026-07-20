@@ -10,4 +10,5 @@ type AgentCommand struct {
 	Workflows  AgentWorkflowsCommand  `command:"workflows" description:"Manage versioned agent workflow definitions"`
 	Principals AgentPrincipalsCommand `command:"principals" description:"Mint, list, and revoke agent principals (admin)"`
 	Tickets    AgentTicketsCommand    `command:"tickets" description:"File and track agent tickets"`
+	Dispatcher AgentDispatcherCommand `command:"dispatcher" description:"Show or set the autonomous dispatcher mode (off|paused|active)"`
 }

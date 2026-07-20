@@ -8,6 +8,7 @@ import (
 	"code.cloudfoundry.org/clock"
 	"code.cloudfoundry.org/lager/v3"
 	"github.com/concourse/concourse/agent/api/costs"
+	dispatcherapi "github.com/concourse/concourse/agent/api/dispatcher"
 	"github.com/concourse/concourse/agent/api/feedback"
 	metricsapi "github.com/concourse/concourse/agent/api/metrics"
 	outcomesapi "github.com/concourse/concourse/agent/api/outcomes"
@@ -118,6 +119,12 @@ func NewHandler(
 	// agentDispatchHandler serves DispatchAgentTicket (built in
 	// atccmd/command.go from dispatch.Deps; a stub in the test suite).
 	agentDispatchHandler http.Handler,
+	// agentSettingsStore + agentDispatcherBootDefault back the dispatcher
+	// runtime-control routes (GET/SetAgentDispatcher). The boot default is the
+	// --agent-dispatcher-enabled flag: the fallback effective mode when no
+	// agent_settings row exists.
+	agentSettingsStore dispatcherapi.Store,
+	agentDispatcherBootDefault bool,
 ) (http.Handler, error) {
 
 	absCLIDownloadsDir, err := filepath.Abs(cliDownloadsDir)
@@ -177,6 +184,13 @@ func NewHandler(
 	workflowsServer := workflowsapi.NewHandler(workflowStore)
 	principalsServer := principalsapi.NewHandler(
 		principalsStore,
+		func(r *http.Request) string {
+			return accessor.GetAccessor(r).Claims().UserName
+		},
+	)
+	dispatcherServer := dispatcherapi.NewHandler(
+		agentSettingsStore,
+		agentDispatcherBootDefault,
 		func(r *http.Request) string {
 			return accessor.GetAccessor(r).Claims().UserName
 		},
@@ -370,6 +384,9 @@ func NewHandler(
 		atc.CreateAgentPrincipal: http.HandlerFunc(principalsServer.CreatePrincipal),
 		atc.ListAgentPrincipals:  http.HandlerFunc(principalsServer.ListPrincipals),
 		atc.RevokeAgentPrincipal: http.HandlerFunc(principalsServer.RevokePrincipal),
+
+		atc.GetAgentDispatcher: http.HandlerFunc(dispatcherServer.Get),
+		atc.SetAgentDispatcher: http.HandlerFunc(dispatcherServer.Set),
 	}
 
 	return rata.NewRouter(atc.Routes, wrapper.Wrap(handlers))

@@ -167,6 +167,9 @@ const (
 	ListAgentPrincipals  = "ListAgentPrincipals"
 	RevokeAgentPrincipal = "RevokeAgentPrincipal"
 
+	GetAgentDispatcher = "GetAgentDispatcher"
+	SetAgentDispatcher = "SetAgentDispatcher"
+
 	MCPEndpoint = "MCPEndpoint"
 )
 
@@ -338,6 +341,9 @@ var Routes = rata.Routes([]rata.Route{
 	{Path: "/api/v1/agent/principals", Method: "POST", Name: CreateAgentPrincipal},
 	{Path: "/api/v1/agent/principals", Method: "GET", Name: ListAgentPrincipals},
 	{Path: "/api/v1/agent/principals/:principal_id", Method: "DELETE", Name: RevokeAgentPrincipal},
+
+	{Path: "/api/v1/agent/dispatcher", Method: "GET", Name: GetAgentDispatcher},
+	{Path: "/api/v1/agent/dispatcher", Method: "PUT", Name: SetAgentDispatcher},
 
 	{Path: "/api/v1/mcp", Method: "POST", Name: MCPEndpoint},
 

@@ -13,6 +13,12 @@ import (
 
 // LoopConfig tunes the Dispatcher beyond DispatchOne's Deps.
 type LoopConfig struct {
+	// Mode resolves the effective dispatcher mode HOT (read fresh each tick):
+	// active auto-dispatches + reconciles, paused reconciles only, off is
+	// dormant. Production wires a closure over agent_settings + the boot flag
+	// (ResolveEffectiveMode). nil defaults to active, preserving the
+	// always-dispatch behavior tests relied on before the runtime toggle.
+	Mode func() string
 	// RunReader powers the run-completion reconciler (reconcile.go). nil
 	// skips that pass entirely.
 	RunReader RunReader
@@ -71,18 +77,41 @@ func NewDispatcher(deps Deps, cfg LoopConfig) *Dispatcher {
 	return &Dispatcher{deps: deps, cfg: cfg}
 }
 
-// Run dispatches every currently-queued ticket, then reconciles completed
-// runs. Per-ticket failures never abort the pass (a poison ticket must not
-// starve the queue); only listing failures return an error.
+// effectiveMode resolves the mode this tick honors. nil provider (older
+// callers / tests) defaults to active — the historical always-dispatch loop.
+func (d *Dispatcher) effectiveMode() string {
+	if d.cfg.Mode == nil {
+		return ModeActive
+	}
+	return d.cfg.Mode()
+}
+
+// Run gates on the effective mode (resolved once per tick, hot):
+//
+//	active — dispatch every currently-queued ticket, then reconcile.
+//	paused — skip dispatch, still reconcile (the safety net stays alive).
+//	off    — skip both (fully dormant).
+//
+// Per-ticket failures never abort the pass (a poison ticket must not starve the
+// queue); only listing failures return an error.
 func (d *Dispatcher) Run(ctx context.Context) error {
 	logger := lagerctx.FromContext(ctx).Session("agent-dispatcher")
-	logger.Debug("start")
+	mode := d.effectiveMode()
+	logger.Debug("start", lager.Data{"mode": mode})
 	defer logger.Debug("done")
 
-	if err := d.dispatchQueued(ctx, logger); err != nil {
-		return err
+	switch mode {
+	case ModeActive:
+		if err := d.dispatchQueued(ctx, logger); err != nil {
+			return err
+		}
+		return d.reconcileCompletedRuns(ctx, logger)
+	case ModePaused:
+		return d.reconcileCompletedRuns(ctx, logger)
+	default:
+		// off (or any unrecognized mode — fail safe to dormant).
+		return nil
 	}
-	return d.reconcileCompletedRuns(ctx, logger)
 }
 
 func (d *Dispatcher) dispatchQueued(ctx context.Context, logger lager.Logger) error {
