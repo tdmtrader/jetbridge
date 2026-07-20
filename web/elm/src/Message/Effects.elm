@@ -249,6 +249,7 @@ type Effect
     | SaveAgentTicket { id : Int, title : String, body : String, budgetUsd : Maybe Float }
     | TransitionAgentTicket { id : Int, from : String, to : String }
     | DispatchAgentTicket Int
+    | CreateAgentTicket Concourse.AgentTicket.CreateParams
     | UpdateAgentTicketTask { id : Int, ordering : Int, status : String, note : String }
     | FetchAgentTicketMetrics Int
     | FetchAgentTicketDiff Int
@@ -942,6 +943,13 @@ runEffect effect key csrfToken =
                 |> Api.expectJson Concourse.AgentTicket.decodeDispatchResult
                 |> Api.request
                 |> Task.attempt (AgentTicketDispatched ticketId)
+
+        CreateAgentTicket params ->
+            Api.post Endpoints.AgentTicketsList csrfToken
+                |> Api.withJsonBody (Concourse.AgentTicket.encodeCreate params)
+                |> Api.expectJson Concourse.AgentTicket.decodeTicket
+                |> Api.request
+                |> Task.attempt AgentTicketCreated
 
         UpdateAgentTicketTask params ->
             Api.put (Endpoints.AgentTicketTask params.id params.ordering) csrfToken

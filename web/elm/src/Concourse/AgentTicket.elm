@@ -1,5 +1,6 @@
 module Concourse.AgentTicket exposing
-    ( Detail
+    ( CreateParams
+    , Detail
     , DispatchResult
     , Spec
     , Task
@@ -10,6 +11,7 @@ module Concourse.AgentTicket exposing
     , decodeSpec
     , decodeTask
     , decodeTicket
+    , encodeCreate
     , repoWebUrl
     )
 
@@ -27,6 +29,7 @@ payload never fails the whole page.
 
 import Json.Decode
 import Json.Decode.Extra exposing (andMap)
+import Json.Encode
 
 
 type alias Ticket =
@@ -81,6 +84,56 @@ type alias DispatchResult =
     { runId : Int
     , pipelineName : String
     }
+
+
+type alias CreateParams =
+    { title : String
+    , body : String
+    , repo : String
+    , targetBranch : String
+    , workflowName : String
+    , workflowVersion : Maybe Int
+    , budgetUsd : Maybe Float
+    }
+
+
+{-| The create-ticket request body (POST /api/v1/agent/tickets). Required
+fields (title, repo) are always sent; every optional field is omitted when
+empty/Nothing so the server's omitempty defaults apply — notably `origin`,
+which the server fills as "web" for browser-created tickets.
+-}
+encodeCreate : CreateParams -> Json.Encode.Value
+encodeCreate params =
+    Json.Encode.object
+        (List.concat
+            [ [ ( "title", Json.Encode.string params.title )
+              , ( "body", Json.Encode.string params.body )
+              , ( "repo", Json.Encode.string params.repo )
+              ]
+            , if params.targetBranch == "" then
+                []
+
+              else
+                [ ( "target_branch", Json.Encode.string params.targetBranch ) ]
+            , if params.workflowName == "" then
+                []
+
+              else
+                [ ( "workflow_name", Json.Encode.string params.workflowName ) ]
+            , case params.workflowVersion of
+                Just v ->
+                    [ ( "workflow_version", Json.Encode.int v ) ]
+
+                Nothing ->
+                    []
+            , case params.budgetUsd of
+                Just b ->
+                    [ ( "budget_usd", Json.Encode.float b ) ]
+
+                Nothing ->
+                    []
+            ]
+        )
 
 
 defaultTo : a -> Json.Decode.Decoder a -> Json.Decode.Decoder a

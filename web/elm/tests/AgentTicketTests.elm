@@ -3,6 +3,7 @@ module AgentTicketTests exposing (all)
 import Concourse.AgentTicket as AT
 import Expect
 import Json.Decode
+import Json.Encode
 import Test exposing (Test, describe, test)
 
 
@@ -93,4 +94,78 @@ all =
                     |> Result.toMaybe
                     |> Maybe.andThen AT.compareUrl
                     |> Expect.equal Nothing
+        , encodeCreateTests
+        ]
+
+
+encodeCreateTests : Test
+encodeCreateTests =
+    describe "encodeCreate"
+        [ test "includes required title and repo" <|
+            \_ ->
+                let
+                    json =
+                        Json.Encode.encode 0
+                            (AT.encodeCreate
+                                { title = "ship it"
+                                , body = "do the thing"
+                                , repo = "tdmtrader/concourse"
+                                , targetBranch = ""
+                                , workflowName = ""
+                                , workflowVersion = Nothing
+                                , budgetUsd = Nothing
+                                }
+                            )
+                in
+                Expect.all
+                    [ \s -> Expect.equal True (String.contains "\"title\":\"ship it\"" s)
+                    , \s -> Expect.equal True (String.contains "\"repo\":\"tdmtrader/concourse\"" s)
+                    , \s -> Expect.equal True (String.contains "\"body\":\"do the thing\"" s)
+                    ]
+                    json
+        , test "omits empty optional fields" <|
+            \_ ->
+                let
+                    json =
+                        Json.Encode.encode 0
+                            (AT.encodeCreate
+                                { title = "t"
+                                , body = ""
+                                , repo = "o/n"
+                                , targetBranch = ""
+                                , workflowName = ""
+                                , workflowVersion = Nothing
+                                , budgetUsd = Nothing
+                                }
+                            )
+                in
+                Expect.all
+                    [ \s -> Expect.equal False (String.contains "target_branch" s)
+                    , \s -> Expect.equal False (String.contains "workflow_name" s)
+                    , \s -> Expect.equal False (String.contains "workflow_version" s)
+                    , \s -> Expect.equal False (String.contains "budget_usd" s)
+                    ]
+                    json
+        , test "includes optional fields when set" <|
+            \_ ->
+                let
+                    json =
+                        Json.Encode.encode 0
+                            (AT.encodeCreate
+                                { title = "t"
+                                , body = ""
+                                , repo = "o/n"
+                                , targetBranch = "main"
+                                , workflowName = "develop"
+                                , workflowVersion = Nothing
+                                , budgetUsd = Just 5.0
+                                }
+                            )
+                in
+                Expect.all
+                    [ \s -> Expect.equal True (String.contains "\"target_branch\":\"main\"" s)
+                    , \s -> Expect.equal True (String.contains "\"workflow_name\":\"develop\"" s)
+                    , \s -> Expect.equal True (String.contains "\"budget_usd\":5" s)
+                    ]
+                    json
         ]

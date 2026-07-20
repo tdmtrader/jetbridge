@@ -86,6 +86,16 @@ type Message
       -- Agent Ticket queue page (client-side filter + sort)
     | AgentTicketsFilterChanged String
     | AgentTicketsSortToggled
+    | ClickNewAgentTicket
+    | CancelNewAgentTicket
+    | NewAgentTicketTitleChanged String
+    | NewAgentTicketBodyChanged String
+    | NewAgentTicketRepoChanged String
+    | NewAgentTicketBranchChanged String
+    | NewAgentTicketBudgetChanged String
+    | NewAgentTicketWorkflowChanged String
+    | NewAgentTicketQueueToggled
+    | SubmitNewAgentTicket
       -- Agent Ticket queue page (dispatcher runtime control)
     | AgentDispatcherModeClicked String
     | ConfirmAgentDispatcherMode String
