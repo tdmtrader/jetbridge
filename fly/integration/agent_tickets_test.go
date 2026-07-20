@@ -145,6 +145,29 @@ var _ = Describe("fly agent tickets", func() {
 			Expect(sess.Out).To(gbytes.Say("ticket #7 is now queued"))
 			Expect(sess.Err).To(gbytes.Say(`spec-lint: "flight recorder"`))
 		})
+
+		It("assigns the workflow before transitioning when --workflow is given", func() {
+			atcServer.AppendHandlers(
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("PUT", "/api/v1/agent/tickets/7"),
+					ghttp.VerifyJSON(`{"workflow_name":"foo"}`),
+					ghttp.RespondWithJSONEncoded(200, tickets.Ticket{ID: 7, WorkflowName: "foo", State: tickets.StateDraft}),
+				),
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("PUT", "/api/v1/agent/tickets/7/state"),
+					ghttp.VerifyJSON(`{"from":"draft","to":"queued"}`),
+					ghttp.RespondWithJSONEncoded(200, tickets.Ticket{ID: 7, State: tickets.StateQueued}),
+				),
+			)
+
+			flyCmd := exec.Command(flyPath, "-t", targetName, "agent", "tickets", "queue", "--id", "7", "--workflow", "foo")
+			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+			Expect(err).NotTo(HaveOccurred())
+			<-sess.Exited
+			Expect(sess.ExitCode()).To(Equal(0))
+			Expect(sess.Out).To(gbytes.Say(`assigned workflow "foo" to ticket #7`))
+			Expect(sess.Out).To(gbytes.Say("ticket #7 is now queued"))
+		})
 	})
 
 	Describe("transition", func() {
@@ -422,6 +445,52 @@ var _ = Describe("fly agent tickets", func() {
 			Expect(sess.ExitCode()).To(Equal(0))
 			Expect(sess.Out).To(gbytes.Say(`dispatched ticket #7 as run 321 \(pipeline agent-ticket-7\)`))
 			Expect(sess.Err).To(gbytes.Say(`spec-lint: "flight recorder": reword before the CLI refuses it`))
+		})
+
+		It("assigns the workflow before dispatching when --workflow is given", func() {
+			atcServer.AppendHandlers(
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("PUT", "/api/v1/agent/tickets/7"),
+					ghttp.VerifyJSON(`{"workflow_name":"foo"}`),
+					ghttp.RespondWithJSONEncoded(200, tickets.Ticket{ID: 7, WorkflowName: "foo", State: tickets.StateQueued}),
+				),
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("POST", "/api/v1/agent/tickets/7/dispatch"),
+					ghttp.RespondWithJSONEncoded(201, tickets.DispatchResponse{
+						RunID: 321, PipelineName: "agent-ticket-7",
+					}),
+				),
+			)
+
+			flyCmd := exec.Command(flyPath, "-t", targetName, "agent", "tickets", "dispatch", "--id", "7", "--workflow", "foo")
+			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+			Expect(err).NotTo(HaveOccurred())
+			<-sess.Exited
+			Expect(sess.ExitCode()).To(Equal(0))
+			Expect(sess.Out).To(gbytes.Say(`assigned workflow "foo" to ticket #7`))
+			Expect(sess.Out).To(gbytes.Say(`dispatched ticket #7 as run 321 \(pipeline agent-ticket-7\)`))
+		})
+
+		It("issues only the dispatch POST when no --workflow is given (backward compat)", func() {
+			atcServer.AppendHandlers(
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("POST", "/api/v1/agent/tickets/7/dispatch"),
+					ghttp.RespondWithJSONEncoded(201, tickets.DispatchResponse{
+						RunID: 321, PipelineName: "agent-ticket-7",
+					}),
+				),
+			)
+
+			flyCmd := exec.Command(flyPath, "-t", targetName, "agent", "tickets", "dispatch", "--id", "7")
+			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+			Expect(err).NotTo(HaveOccurred())
+			<-sess.Exited
+			Expect(sess.ExitCode()).To(Equal(0))
+			Expect(sess.Out).To(gbytes.Say(`dispatched ticket #7 as run 321 \(pipeline agent-ticket-7\)`))
+			// Only the dispatch POST handler is registered here: had the command
+			// sent a workflow-assign PUT, the ghttp server would have failed the
+			// spec for lack of a matching handler. This proves backward compat —
+			// no --workflow means no update call.
 		})
 	})
 
