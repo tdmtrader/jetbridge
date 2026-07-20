@@ -321,10 +321,16 @@ runOutcome { buildStatus, runStatus, hasResult } =
                 Just Failed
 
             else if runStatus == "incomplete" then
-                -- #41: a green build whose runner wrote no flight recording.
-                -- A server that predates the fused Outcome sends only this
-                -- step status; it must degrade to amber, not red or empty.
-                Just Unrecorded
+                -- #41: the runner wrote no flight recording. Mirror the server's
+                -- DeriveOutcome exactly (agent/schema metrics.go): a terminally
+                -- bad build already returned red above; a still-open build is
+                -- Running; a succeeded/unknown build degrades to amber Unrecorded
+                -- (never red, never empty).
+                if buildStatus == "started" || buildStatus == "pending" then
+                    Just (Running Nothing)
+
+                else
+                    Just Unrecorded
 
             else
                 case buildStatus of

@@ -213,6 +213,15 @@ all =
                 \_ ->
                     runOutcome { buildStatus = "", runStatus = "incomplete", hasResult = False }
                         |> Expect.equal (Just Unrecorded)
+            , test "an incomplete run on a still-open build shows Running, mirroring DeriveOutcome (not amber)" <|
+                \_ ->
+                    -- the server's DeriveOutcome maps incomplete+started/pending
+                    -- to running; the local fusion must agree so an in-flight run
+                    -- does not flash amber before its recording lands.
+                    [ runOutcome { buildStatus = "started", runStatus = "incomplete", hasResult = False }
+                    , runOutcome { buildStatus = "pending", runStatus = "incomplete", hasResult = False }
+                    ]
+                        |> Expect.equal [ Just (Running Nothing), Just (Running Nothing) ]
             , test "displayOutcome routes the 'unrecorded' token to the amber badge" <|
                 \_ ->
                     displayOutcome { outcome = "unrecorded", buildStatus = "succeeded", runStatus = "incomplete", hasResult = False }
