@@ -86,6 +86,10 @@ type Message
       -- Agent Ticket queue page (client-side filter + sort)
     | AgentTicketsFilterChanged String
     | AgentTicketsSortToggled
+      -- Agent Ticket queue page (dispatcher runtime control)
+    | AgentDispatcherModeClicked String
+    | ConfirmAgentDispatcherMode String
+    | CancelAgentDispatcherMode
       -- common
     | Hover (Maybe DomID)
     | Click DomID

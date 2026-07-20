@@ -334,6 +334,13 @@ testEndpoints =
                         |> toPath
                         |> Expect.equal "/api/v1/agent/tickets/12/metrics"
             ]
+        , describe "AgentDispatcher"
+            [ test "dispatcher control endpoint" <|
+                \_ ->
+                    AgentDispatcher
+                        |> toPath
+                        |> Expect.equal "/api/v1/agent/dispatcher"
+            ]
         ]
 
 

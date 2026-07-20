@@ -3,6 +3,7 @@ module Message.Callback exposing (Callback(..))
 import Browser.Dom
 import Concourse
 import Concourse.Agent
+import Concourse.AgentDispatcher
 import Concourse.AgentReview
 import Concourse.AgentTicket
 import Concourse.Pagination exposing (Page, Paginated)
@@ -75,6 +76,8 @@ type Callback
     | BuildAgentMetricsFetched (Fetched (List Concourse.Agent.RunMetric))
     | AgentWorkflowsFetched (Fetched (List Concourse.Agent.WorkflowSummary))
     | AgentCostRollupFetched (Fetched Concourse.Agent.CostRollup)
+    | AgentDispatcherFetched (Fetched Concourse.AgentDispatcher.Status)
+    | AgentDispatcherSet (Fetched Concourse.AgentDispatcher.Status)
     | AgentCredentialsFetched (Fetched (List Concourse.Agent.CredentialStatus))
     | AgentPlatformCredentialsFetched (Fetched (List Concourse.Agent.CredentialStatus))
     | AgentPrincipalsFetched (Fetched (List Concourse.Agent.Principal))
