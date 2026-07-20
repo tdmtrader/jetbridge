@@ -149,6 +149,10 @@ var _ = Describe("fly agent tickets", func() {
 		It("assigns the workflow before transitioning when --workflow is given", func() {
 			atcServer.AppendHandlers(
 				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("GET", "/api/v1/agent/tickets/7"),
+					ghttp.RespondWithJSONEncoded(200, tickets.TicketDetail{Ticket: tickets.Ticket{ID: 7, WorkflowName: "", State: tickets.StateDraft}}),
+				),
+				ghttp.CombineHandlers(
 					ghttp.VerifyRequest("PUT", "/api/v1/agent/tickets/7"),
 					ghttp.VerifyJSON(`{"workflow_name":"foo"}`),
 					ghttp.RespondWithJSONEncoded(200, tickets.Ticket{ID: 7, WorkflowName: "foo", State: tickets.StateDraft}),
@@ -450,6 +454,10 @@ var _ = Describe("fly agent tickets", func() {
 		It("assigns the workflow before dispatching when --workflow is given", func() {
 			atcServer.AppendHandlers(
 				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("GET", "/api/v1/agent/tickets/7"),
+					ghttp.RespondWithJSONEncoded(200, tickets.TicketDetail{Ticket: tickets.Ticket{ID: 7, WorkflowName: "", State: tickets.StateQueued}}),
+				),
+				ghttp.CombineHandlers(
 					ghttp.VerifyRequest("PUT", "/api/v1/agent/tickets/7"),
 					ghttp.VerifyJSON(`{"workflow_name":"foo"}`),
 					ghttp.RespondWithJSONEncoded(200, tickets.Ticket{ID: 7, WorkflowName: "foo", State: tickets.StateQueued}),
@@ -469,6 +477,42 @@ var _ = Describe("fly agent tickets", func() {
 			Expect(sess.ExitCode()).To(Equal(0))
 			Expect(sess.Out).To(gbytes.Say(`assigned workflow "foo" to ticket #7`))
 			Expect(sess.Out).To(gbytes.Say(`dispatched ticket #7 as run 321 \(pipeline agent-ticket-7\)`))
+		})
+
+		It("rolls the assigned workflow back to its prior value when dispatch fails (WF-5 no-worse-than-before)", func() {
+			restored := false
+			atcServer.AppendHandlers(
+				// Ticket already has a valid workflow "deploy".
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("GET", "/api/v1/agent/tickets/7"),
+					ghttp.RespondWithJSONEncoded(200, tickets.TicketDetail{Ticket: tickets.Ticket{ID: 7, WorkflowName: "deploy", State: tickets.StateQueued}}),
+				),
+				// User assigns a typo'd workflow.
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("PUT", "/api/v1/agent/tickets/7"),
+					ghttp.VerifyJSON(`{"workflow_name":"deploi"}`),
+					ghttp.RespondWithJSONEncoded(200, tickets.Ticket{ID: 7, WorkflowName: "deploi", State: tickets.StateQueued}),
+				),
+				// Dispatch cannot resolve it.
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("POST", "/api/v1/agent/tickets/7/dispatch"),
+					ghttp.RespondWith(422, "workflow definition not found: deploi live"),
+				),
+				// Compensating rollback restores the prior "deploy".
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("PUT", "/api/v1/agent/tickets/7"),
+					ghttp.VerifyJSON(`{"workflow_name":"deploy"}`),
+					func(w http.ResponseWriter, r *http.Request) { restored = true },
+					ghttp.RespondWithJSONEncoded(200, tickets.Ticket{ID: 7, WorkflowName: "deploy", State: tickets.StateQueued}),
+				),
+			)
+
+			flyCmd := exec.Command(flyPath, "-t", targetName, "agent", "tickets", "dispatch", "--id", "7", "--workflow", "deploi")
+			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+			Expect(err).NotTo(HaveOccurred())
+			<-sess.Exited
+			Expect(sess.ExitCode()).NotTo(Equal(0))
+			Expect(restored).To(BeTrue(), "a failed dispatch must roll the just-assigned workflow back to its prior value")
 		})
 
 		It("issues only the dispatch POST when no --workflow is given (backward compat)", func() {

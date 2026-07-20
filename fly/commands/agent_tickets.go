@@ -44,15 +44,37 @@ func printSpecLintWarnings(warnings []string) {
 	}
 }
 
-// assignWorkflowIfRequested realizes the documented "decided at dispatch"
-// semantics (WF-5): a ticket created with an empty workflow can have one
-// assigned via --workflow / --workflow-version on queue or dispatch, closing
-// the empty-workflow dead-end (DispatchOne's ErrNoWorkflow). A no-op when
-// neither flag is set. Sends only the pointers the caller supplied.
-func assignWorkflowIfRequested(client concourse.Client, id int, workflow string, workflowVer int) error {
+// assignWorkflow realizes the documented "decided at dispatch" semantics
+// (WF-5): a ticket created with an empty workflow can have one assigned via
+// --workflow / --workflow-version on queue or dispatch, closing the
+// empty-workflow dead-end (DispatchOne's ErrNoWorkflow). It is a no-op (and
+// returns a no-op restore) when neither flag is set.
+//
+// The assignment is COMPENSATING so a failed follow-up action never leaves the
+// ticket worse than before: it first reads the ticket's current workflow, then
+// applies the requested one, and returns restore() that reverts to the prior
+// value. Callers invoke restore() when the subsequent dispatch/queue fails, so
+// a bad --workflow value (e.g. a typo that DispatchOne cannot resolve) does not
+// clobber a previously valid assignment — the ticket is returned to exactly its
+// prior workflow, and the user can retry with a correct name. restore() is a
+// no-op when nothing was changed.
+func assignWorkflow(client concourse.Client, id int, workflow string, workflowVer int) (restore func(), err error) {
+	noop := func() {}
 	if workflow == "" && workflowVer <= 0 {
-		return nil
+		return noop, nil
 	}
+
+	// Capture the prior workflow so a failed follow-up can be rolled back.
+	prior, found, err := client.GetAgentTicket(id)
+	if err != nil {
+		return noop, fmt.Errorf("read ticket #%d before assigning workflow: %w", id, err)
+	}
+	if !found {
+		return noop, fmt.Errorf("ticket #%d not found", id)
+	}
+	priorName := prior.Ticket.WorkflowName
+	priorVersion := prior.Ticket.WorkflowVersion
+
 	var req tickets.UpdateRequest
 	if workflow != "" {
 		req.WorkflowName = &workflow
@@ -61,7 +83,7 @@ func assignWorkflowIfRequested(client concourse.Client, id int, workflow string,
 		req.WorkflowVersion = &workflowVer
 	}
 	if _, err := client.UpdateAgentTicket(id, req); err != nil {
-		return fmt.Errorf("assign workflow to #%d failed: %w", id, err)
+		return noop, fmt.Errorf("assign workflow to #%d failed: %w", id, err)
 	}
 	switch {
 	case workflow != "" && workflowVer > 0:
@@ -71,7 +93,28 @@ func assignWorkflowIfRequested(client concourse.Client, id int, workflow string,
 	default:
 		fmt.Printf("pinned workflow version %d on ticket #%d\n", workflowVer, id)
 	}
-	return nil
+
+	restore = func() {
+		// Revert only the fields we changed. WorkflowName is always a settable
+		// string (an empty prior restores the un-assigned state). A pin we added
+		// can be reverted to a concrete prior pin; a prior "live" (nil) pin cannot
+		// be re-expressed through the partial UpdateRequest, so a pin we added on
+		// top of a live prior is left in place — inert without a resolvable name.
+		var rb tickets.UpdateRequest
+		if req.WorkflowName != nil {
+			rb.WorkflowName = &priorName
+		}
+		if req.WorkflowVersion != nil && priorVersion != nil {
+			rb.WorkflowVersion = priorVersion
+		}
+		if rb.WorkflowName == nil && rb.WorkflowVersion == nil {
+			return
+		}
+		if _, err := client.UpdateAgentTicket(id, rb); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not restore ticket #%d workflow after a failed action: %v\n", id, err)
+		}
+	}
+	return restore, nil
 }
 
 type AgentTicketsListCommand struct {
@@ -193,7 +236,7 @@ func (command *AgentTicketsCreateCommand) Execute([]string) error {
 type AgentTicketsQueueCommand struct {
 	ID          int    `long:"id" required:"true" description:"Ticket id"`
 	Workflow    string `long:"workflow" description:"Assign this workflow before queueing (fixes an empty-workflow ticket)"`
-	WorkflowVer int    `long:"workflow-version" description:"Pin a workflow definition version (0 = live)"`
+	WorkflowVer int    `long:"workflow-version" description:"Pin a specific workflow definition version (omit to use the live version)"`
 }
 
 func (command *AgentTicketsQueueCommand) Execute([]string) error {
@@ -206,7 +249,8 @@ func (command *AgentTicketsQueueCommand) Execute([]string) error {
 	}
 	client := target.Client()
 
-	if err := assignWorkflowIfRequested(client, command.ID, command.Workflow, command.WorkflowVer); err != nil {
+	restore, err := assignWorkflow(client, command.ID, command.Workflow, command.WorkflowVer)
+	if err != nil {
 		return err
 	}
 
@@ -214,6 +258,9 @@ func (command *AgentTicketsQueueCommand) Execute([]string) error {
 		From: tickets.StateDraft, To: tickets.StateQueued,
 	})
 	if err != nil {
+		// Roll back a workflow we just assigned so a failed queue transition
+		// never leaves the ticket worse than before (WF-5).
+		restore()
 		return err
 	}
 	fmt.Printf("ticket #%d is now %s\n", updated.ID, updated.State)
@@ -274,7 +321,7 @@ func (command *AgentTicketsTransitionCommand) Execute([]string) error {
 type AgentTicketsDispatchCommand struct {
 	ID          int    `long:"id" required:"true" description:"Ticket id (must be queued)"`
 	Workflow    string `long:"workflow" description:"Assign this workflow before dispatch (fixes an empty-workflow ticket)"`
-	WorkflowVer int    `long:"workflow-version" description:"Pin a workflow definition version (0 = live)"`
+	WorkflowVer int    `long:"workflow-version" description:"Pin a specific workflow definition version (omit to use the live version)"`
 }
 
 func (command *AgentTicketsDispatchCommand) Execute([]string) error {
@@ -287,12 +334,17 @@ func (command *AgentTicketsDispatchCommand) Execute([]string) error {
 	}
 	client := target.Client()
 
-	if err := assignWorkflowIfRequested(client, command.ID, command.Workflow, command.WorkflowVer); err != nil {
+	restore, err := assignWorkflow(client, command.ID, command.Workflow, command.WorkflowVer)
+	if err != nil {
 		return err
 	}
 
 	res, err := client.DispatchAgentTicket(command.ID)
 	if err != nil {
+		// A workflow we just assigned must not outlive a failed dispatch (e.g. a
+		// typo the server cannot resolve): roll it back so the ticket is never
+		// left worse than before (WF-5).
+		restore()
 		// Actionable hint for the empty-workflow dead-end: the ticket names no
 		// workflow and none was supplied here (WF-5). Never rewrites other errors.
 		if command.Workflow == "" && strings.Contains(err.Error(), "no workflow_name") {

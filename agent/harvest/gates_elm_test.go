@@ -70,6 +70,67 @@ func TestElmGateNotApplicableWhenElmUntouched(t *testing.T) {
 	}
 }
 
+// TestElmGateNotApplicableForNonBundleElmPaths locks in the narrowed
+// applicability (WF-2 review fix): edits under web/elm that do NOT feed the
+// compiled bundle — tests, benchmarks, elm dotfiles — must NOT demand a bundle
+// regeneration. A correct rebuild of such a change produces a byte-identical
+// bundle, so requiring elm.min.js in the diff would be an unsatisfiable
+// false-failure. Each of these must read as "not applicable" (ok), and elm is
+// never invoked, so no stub is needed.
+func TestElmGateNotApplicableForNonBundleElmPaths(t *testing.T) {
+	for _, path := range []string{
+		"web/elm/tests/MainTests.elm",
+		"web/elm/benchmarks/Bench.elm",
+		"web/elm/.gitignore",
+	} {
+		t.Run(path, func(t *testing.T) {
+			dir, base := gitFixture(t,
+				map[string]string{path: "before\n"},
+				map[string]string{path: "after\n"}, // only a non-src/non-elm.json web/elm path
+			)
+			policy := harvest.GatePolicy{Gates: []harvest.Gate{{Gate: "elm-build", Scope: "full"}}}
+
+			outcomes, err := harvest.RunGates(policy, dir, base, nil)
+			if err != nil {
+				t.Fatalf("RunGates: %v", err)
+			}
+			if len(outcomes) != 1 || outcomes[0].Status != "ok" {
+				t.Fatalf("outcomes = %+v, want a single ok gate (%s does not feed the bundle => not applicable)", outcomes, path)
+			}
+			if !contains(outcomes[0].Detail, "not applicable") {
+				t.Errorf("detail = %q, want it to say the gate was not applicable", outcomes[0].Detail)
+			}
+		})
+	}
+}
+
+// TestElmGateAppliesToElmJson pins that web/elm/elm.json (the dependency
+// manifest, which DOES change the compiled bundle) is a bundle-feeding path:
+// changing it without regenerating the bundle FAILS the stale-bundle guard.
+func TestElmGateAppliesToElmJson(t *testing.T) {
+	stubElm(t, 0) // compiles fine
+	dir, baseSHA := gitFixture(t,
+		map[string]string{
+			"web/elm/src/Main.elm":  "module Main exposing (..)\nx = 1\n",
+			"web/elm/elm.json":      "{\"deps\":1}\n",
+			"web/public/elm.min.js": "old\n",
+		},
+		map[string]string{"web/elm/elm.json": "{\"deps\":2}\n"}, // dep bump, bundle NOT regenerated
+	)
+	policy := harvest.GatePolicy{Gates: []harvest.Gate{{Gate: "elm-build", Scope: "full"}}}
+
+	outcomes, err := harvest.RunGates(policy, dir, baseSHA, nil)
+	if err != nil {
+		t.Fatalf("RunGates: %v", err)
+	}
+	if len(outcomes) != 1 || outcomes[0].Status != "failed" {
+		t.Fatalf("outcomes = %+v, want failed (elm.json changed, bundle stale)", outcomes)
+	}
+	if !contains(outcomes[0].Detail, "stale-bundle guard") {
+		t.Errorf("detail = %q, want it to name the stale-bundle guard", outcomes[0].Detail)
+	}
+}
+
 // stubElm writes an executable that exits with the given code, and points
 // HARVEST_ELM_CLI at it so runElmBuildGate's compile step is deterministic
 // without a real Elm toolchain (mirrors the judge's HARVEST_JUDGE_CLI seam).

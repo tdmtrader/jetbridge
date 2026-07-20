@@ -142,20 +142,42 @@ func runGate(gate Gate, workspaceDir, baseSHA string, events *schema.EventWriter
 // concourse web app builds src/Main.elm from web/elm into the committed
 // web/public/elm.min.js bundle (see package.json "build-elm"). dev-mcp
 // (wave 3) will resolve these per-repo; until then they are hard-wired.
+//
+// Applicability is scoped to the paths that actually FEED the compiled bundle:
+// the source tree (web/elm/src/**) and the dependency manifest (web/elm/elm.json).
+// It deliberately excludes web/elm/tests/**, web/elm/benchmarks/**, and elm
+// dotfiles — none of those are in src/Main.elm's compile graph, so requiring a
+// bundle regeneration for them would be an unsatisfiable false-failure (a
+// correct rebuild produces a byte-identical bundle, so it would never appear in
+// the diff). (An unimported module under src/** is the residual over-trigger;
+// see the diff-presence caveat on runElmBuildGate.)
 const (
-	elmSourcePrefix = "web/elm/"
+	elmSourcePrefix = "web/elm/src/"
+	elmConfigPath   = "web/elm/elm.json"
 	elmBundlePath   = "web/public/elm.min.js"
 	elmSourceDir    = "web/elm"
 	elmMainModule   = "src/Main.elm"
 )
 
-// runElmBuildGate is the stale-bundle guard (WF-2). It applies ONLY when
-// web/elm/** is in the pushed diff (base..HEAD). When it applies it (1)
-// compiles web/elm with `elm make --optimize` to a throwaway output — a
-// source that no longer compiles is a real "failed" finding — and (2)
-// DIFF-CHECKS that web/public/elm.min.js was regenerated in the same diff.
-// A changed web/elm with an unchanged bundle FAILS: that is exactly the
-// deployed-stale-bundle failure mode this gate exists to kill.
+// runElmBuildGate is the stale-bundle guard (WF-2). It applies ONLY when a
+// bundle-feeding path (web/elm/src/** or web/elm/elm.json) is in the pushed
+// diff (base..HEAD). When it applies it (1) compiles web/elm with `elm make
+// --optimize` to a throwaway output — a source that no longer compiles is a
+// real "failed" finding — and (2) DIFF-CHECKS that web/public/elm.min.js was
+// regenerated in the same diff. A changed source with an unchanged bundle
+// FAILS: that is exactly the deployed-stale-bundle failure mode this gate
+// exists to kill.
+//
+// Scope (v0.5 tradeoff — Open Decision #1 in the WF-2 plan): this proves the
+// bundle is *present in the diff*, NOT that it byte-for-byte reproduces the
+// current source. It catches the dominant failure (edited src, forgot to
+// rebuild the bundle at all). It does NOT catch a bundle regenerated from an
+// EARLIER source state within a multi-commit push (commit A rebuilds, commit B
+// edits src again without rebuilding — both src and bundle appear in base..HEAD
+// so the gate passes though the bundle is stale relative to B). A byte-compare
+// would close that, but the committed bundle is elm make + uglify-js (minified)
+// and uglify is non-deterministic across versions, so a byte-compare would
+// itself produce false failures; deferred to dev-mcp per-repo build metadata.
 //
 // Retries are meaningless here (a stale bundle does not un-stale on a
 // re-run, a compile error is deterministic), so the gate always reports
@@ -187,7 +209,7 @@ func runElmBuildGate(gate Gate, workspaceDir, baseSHA string, events *schema.Eve
 	}
 	elmChanged, bundleChanged := false, false
 	for _, p := range changed {
-		if strings.HasPrefix(p, elmSourcePrefix) {
+		if strings.HasPrefix(p, elmSourcePrefix) || p == elmConfigPath {
 			elmChanged = true
 		}
 		if p == elmBundlePath {
@@ -195,7 +217,7 @@ func runElmBuildGate(gate Gate, workspaceDir, baseSHA string, events *schema.Eve
 		}
 	}
 	if !elmChanged {
-		return finish("ok", "elm-build gate: no web/elm/** changes in the diff — not applicable")
+		return finish("ok", "elm-build gate: no web/elm/src/** or web/elm/elm.json changes in the diff — not applicable")
 	}
 
 	// web/elm changed: the source must still compile...
