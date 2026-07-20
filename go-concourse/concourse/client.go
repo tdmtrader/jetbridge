@@ -54,6 +54,7 @@ type Client interface {
 	CreateAgentTicket(req tickets.CreateRequest) (tickets.Ticket, error)
 	GetAgentTicket(id int) (tickets.TicketDetail, bool, error)
 	TransitionAgentTicket(id int, req tickets.TransitionRequest) (tickets.Ticket, error)
+	UpdateAgentTicket(id int, req tickets.UpdateRequest) (tickets.Ticket, error)
 	DispatchAgentTicket(id int) (tickets.DispatchResponse, error)
 	SetAgentTicketDisposition(id int, req outcomes.DispositionRequest) (outcomes.Outcome, error)
 	GetAgentTicketOutcome(id int) (outcomes.Outcome, bool, error)
