@@ -253,7 +253,12 @@ reviewRow s =
             ]
             [ Html.text (String.fromFloat s.score) ]
         , Html.div []
-            [ Html.div [] [ Html.text (s.pipelineName ++ " / " ++ s.jobName ++ " #" ++ s.buildName) ]
+            [ Html.div []
+                [ Html.text (s.pipelineName ++ " / " ++ s.jobName ++ " #" ++ s.buildName)
+                , Html.span
+                    [ style "color" "#7a7a7a" ]
+                    [ Html.text (" · build " ++ String.fromInt s.buildId) ]
+                ]
             , Html.div
                 [ style "font-family" "monospace", style "font-size" "12px", style "color" "#7a7a7a" ]
                 [ Html.text
