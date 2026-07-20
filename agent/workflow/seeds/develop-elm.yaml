@@ -11,7 +11,7 @@ description: front-end dev loop — implement + rebuild elm.min.js; build+elm-bu
 spec_delivery: files
 defaults:
   model: claude-sonnet-5
-  max_turns: 120
+  max_turns: 250
 gate_policy:
   gates:
     - gate: build
@@ -38,12 +38,15 @@ prompts:
     4. Implement the assignment in web/elm/src. After each change, prove it
        compiles: cd "<WS>/web/elm" && elm make --optimize --output /dev/null src/Main.elm
        and run the relevant tests: elm-test tests/<File>Tests.elm
-    5. REGENERATE THE BUNDLE (mandatory — the deployed UI serves elm.min.js and
-       the elm-build gate FAILS if web/elm/src changed without it): from "<WS>",
-       run  bash hack/build-web.sh  and confirm web/public/elm.min.js changed.
-    6. Commit EVERYTHING including the regenerated bundle:
+    5. COMMIT INCREMENTALLY as you finish each view/component (do NOT save all
+       commits for the end — if you run low on turns, only committed work is
+       delivered; an uncommitted workspace delivers NOTHING):
        git -C "<WS>" add -A
        git -C "<WS>" -c user.name="agent-ticket-{{.Ticket.id}}" -c user.email="agents@jetbridge.local" commit -m "<clear message referencing ticket #{{.Ticket.id}}>"
+    6. REGENERATE THE BUNDLE as your FINAL step (mandatory — the deployed UI serves
+       elm.min.js and the elm-build gate FAILS if web/elm/src changed without it):
+       from "<WS>", run  bash hack/build-web.sh, confirm web/public/elm.min.js
+       changed, then commit it (same git -C "<WS>" add -A + commit as above).
     7. Leave the tree COMPLETELY clean: git -C "<WS>" status --porcelain
        must print NOTHING. Uncommitted changes fail the run and nothing is delivered.
     Do NOT push — the platform pushes your commits to branch agent/ticket-{{.Ticket.id}}.

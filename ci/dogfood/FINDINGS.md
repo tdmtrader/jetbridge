@@ -80,6 +80,30 @@ Newest first.
   assigned the workflow and queued in one step, then `dispatch --id 43` ran it — the
   empty-workflow dead-end the audit found is closed end-to-end.
 
+- **A turn-capped run pushes an EMPTY branch and is marked needs_review — the ticket-loop
+  harvest has no no-op guard.** #43 (flight-events, a six-touchpoint + persistence + tests
+  feature) dispatched on `develop-gated` (max_turns 100) hit the cap: the run log shows
+  `{"type":"result","subtype":"error_max_turns","num_turns":100,"is_error":false,"total_cost_usd":5.98}`.
+  The implement agent committed NOTHING before the cap; because claude-code reports max-turns
+  as `is_error:false`, the harvest treated the run as clean, ran the `build` gate against the
+  UNCHANGED workspace (`base_sha == head_sha == 6d4b4811ff`) where it passed trivially, and
+  pushed `agent/ticket-43` at the base sha — an empty branch — with summary "1 gate(s) ok;
+  pushed agent/ticket-43" and ticket → needs_review. $5.98 spent, zero work delivered, looks
+  successful. The dogfood-pipeline.yml runner has an explicit empty-branch guard ("A blocked
+  agent fails loudly"); the ticket-loop harvest (agent/harvest) does NOT. → *Two leftward
+  fixes:* (1) harvest must FAIL (errored, not needs_review) when `head_sha == base_sha` /
+  zero commits — a gate that runs against an unchanged tree is meaningless; (2) treat
+  `error_max_turns` as a run failure (or at least surface it), not a clean finish.
+  → *Workflow-level mitigations applied here:* bumped develop-gated/develop-elm max_turns to
+  250 and added "commit after each logical chunk" so partial work survives a cap and the
+  branch is never empty. Re-dispatched #43.
+
+- **These S-track tickets may be too big for one run.** #43 is a whole plan-doc feature; the
+  agent burned 100 turns (8.2M cache-read tokens) without finishing. The proven loop strike
+  zone (cf. #16–40) was smaller slices. If the higher turn cap still caps out, the S-tickets
+  need slicing (each plan doc → 2–3 sub-tickets by task range, like ci/dogfood/dispatch.sh's
+  task-range model). Watch the re-dispatch to decide.
+
 ## Plan gaps the agents found (leftward candidates)
 
 - **Agent replace-instead-of-add error in exactly the code the gate can't test.**

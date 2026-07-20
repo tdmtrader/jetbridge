@@ -10,7 +10,7 @@ description: backend dev loop with a full-scope build gate; harvest pushes agent
 spec_delivery: files
 defaults:
   model: claude-sonnet-5
-  max_turns: 100
+  max_turns: 250
 gate_policy:
   gates:
     - gate: build
@@ -31,13 +31,16 @@ prompts:
        comes up empty, stop and use the WS literal.
     2. Copy the repo checkout into it: cp -a repo/. "<WS>/"
     3. Do ALL work inside the workspace copy, never in repo/ and never cwd-relative.
-    4. Prove it compiles and tests pass before you finish: from "<WS>",
+    4. COMMIT INCREMENTALLY — after each logical chunk (a file group, a passing
+       test, one of the six route touchpoints), commit in the workspace:
+       git -C "<WS>" add -A
+       git -C "<WS>" -c user.name="agent-ticket-{{.Ticket.id}}" -c user.email="agents@jetbridge.local" commit -m "<clear message referencing ticket #{{.Ticket.id}}>"
+       Do NOT save all commits for the end — if you run low on turns, already-committed
+       work is what gets delivered; an uncommitted workspace delivers NOTHING.
+    5. Prove it compiles and tests pass before you finish: from "<WS>",
        go build ./... and go test the packages you touched (the build gate runs
        full-scope go build/test/lint before push; failing it sends the ticket to
        needs_review, so self-check first).
-    5. Commit your work there:
-       git -C "<WS>" add -A
-       git -C "<WS>" -c user.name="agent-ticket-{{.Ticket.id}}" -c user.email="agents@jetbridge.local" commit -m "<clear message referencing ticket #{{.Ticket.id}}>"
     6. Leave the tree COMPLETELY clean: git -C "<WS>" status --porcelain
        must print NOTHING. Uncommitted changes fail the run and nothing is delivered.
     Do NOT push — the platform pushes your commits to branch agent/ticket-{{.Ticket.id}}.
