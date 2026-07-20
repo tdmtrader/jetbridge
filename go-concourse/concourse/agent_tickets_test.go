@@ -221,6 +221,45 @@ var _ = Describe("Agent Tickets", func() {
 		})
 	})
 
+	Describe("AgentRunTranscript", func() {
+		Context("when a transcript exists", func() {
+			const ndjson = `{"type":"system","subtype":"init"}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit"}]}}
+{"type":"result","total_cost_usd":0.4}
+`
+			BeforeEach(func() {
+				atcServer.AppendHandlers(
+					ghttp.CombineHandlers(
+						ghttp.VerifyRequest("GET", "/api/v1/agent/tickets/12/runs/4242/transcript"),
+						ghttp.RespondWith(http.StatusOK, ndjson, http.Header{"Content-Type": []string{"application/x-ndjson"}}),
+					),
+				)
+			})
+
+			It("returns the raw ndjson bytes verbatim", func() {
+				raw, err := client.AgentRunTranscript(12, 4242)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(string(raw)).To(Equal(ndjson))
+			})
+		})
+
+		Context("when there is no transcript", func() {
+			BeforeEach(func() {
+				atcServer.AppendHandlers(
+					ghttp.CombineHandlers(
+						ghttp.VerifyRequest("GET", "/api/v1/agent/tickets/99/runs/1/transcript"),
+						ghttp.RespondWith(http.StatusNotFound, ""),
+					),
+				)
+			})
+
+			It("returns an error", func() {
+				_, err := client.AgentRunTranscript(99, 1)
+				Expect(err).To(HaveOccurred())
+			})
+		})
+	})
+
 	Describe("DispatchAgentTicket", func() {
 		BeforeEach(func() {
 			atcServer.AppendHandlers(

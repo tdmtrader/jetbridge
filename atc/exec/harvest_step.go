@@ -1,6 +1,7 @@
 package exec
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -96,6 +97,20 @@ func WithHarvestBudgetRecorder(c budget.Checker) HarvestStepOption {
 	return func(h *HarvestStep) { h.budgetChecker = c }
 }
 
+// HarvestTranscriptStore persists the agent tool-call transcript
+// (flight/transcript.ndjson) so a run's actual behavior is inspectable
+// (ticket #43). Satisfied by db.AgentRunTranscriptFactory.
+type HarvestTranscriptStore interface {
+	Upsert(t db.AgentRunTranscript) error
+}
+
+// WithHarvestTranscriptStore wires the store the runner-captured transcript
+// is upserted into (agent_run_transcripts). nil disables ingestion — never
+// fatal (observability is best-effort).
+func WithHarvestTranscriptStore(s HarvestTranscriptStore) HarvestStepOption {
+	return func(h *HarvestStep) { h.transcriptStore = s }
+}
+
 // WithHarvestPlatformUserResolver supplies the §1.13 platform-user
 // lookup (UserBySub("agent-platform")) so the harvest_judge ledger row
 // carries platform attribution. A nil resolver logs-and-skips
@@ -134,6 +149,7 @@ type HarvestStep struct {
 	metricsStore         metrics.Store
 	reviewsStore         reviews.Store
 	outcomesStore        outcomes.Store
+	transcriptStore      HarvestTranscriptStore
 	budgetChecker        budget.Checker
 	platformUserResolver PlatformUserResolver
 }
@@ -702,6 +718,40 @@ func (step *HarvestStep) ingestAndRecord(
 				logger.Error("failed-to-read-flight-file", readErr, lager.Data{"file": "review.json"})
 			}
 		}
+
+		// transcript.ndjson: the raw tool-call transcript (ticket #43). Its
+		// own store, keyed like the metrics row on (build_id, plan_id); a
+		// missing/failed transcript never affects metric ingestion. Bounded to
+		// the last 512KiB server-side as defense-in-depth (the runner already
+		// bounded it) — observability is best-effort, never fatal.
+		if step.transcriptStore != nil {
+			rc, err = step.streamer.StreamFile(ingestCtx, flightArtifact, "transcript.ndjson")
+			if err != nil {
+				logger.Error("failed-to-stream-flight-file", err, lager.Data{"file": "transcript.ndjson"})
+			} else if rc != nil {
+				raw, readErr := io.ReadAll(io.LimitReader(rc, 8<<20))
+				rc.Close()
+				if readErr != nil {
+					logger.Error("failed-to-read-flight-file", readErr, lager.Data{"file": "transcript.ndjson"})
+				} else if len(raw) > 0 {
+					nd, byteLen, truncated := boundTranscriptTail(raw)
+					tr := db.AgentRunTranscript{
+						BuildID:   step.metadata.BuildID,
+						PlanID:    string(step.planID),
+						StepName:  step.plan.Name,
+						NDJSON:    nd,
+						ByteLen:   byteLen,
+						Truncated: truncated,
+					}
+					if ticketID > 0 {
+						tr.TicketID = &ticketID
+					}
+					if err := step.transcriptStore.Upsert(tr); err != nil {
+						logger.Error("failed-to-ingest-transcript", err)
+					}
+				}
+			}
+		}
 	}
 
 	if !flightRead {
@@ -831,4 +881,27 @@ func (step *HarvestStep) ingestAndRecord(
 	}
 
 	return parsedResults
+}
+
+// maxTranscriptBytes bounds a persisted transcript to its last 512KiB — the
+// tail is the diagnostic part (commits/failures happen at the end).
+const maxTranscriptBytes = 512 * 1024
+
+// boundTranscriptTail keeps the last maxTranscriptBytes of a transcript,
+// aligned to a line boundary, and — when it truncated — prepends the
+// shared-contract head-truncation marker as the first line. Returns the
+// bounded ndjson, its byte length, and whether truncation occurred.
+func boundTranscriptTail(raw []byte) (string, int, bool) {
+	if len(raw) <= maxTranscriptBytes {
+		return string(raw), len(raw), false
+	}
+	tail := raw[len(raw)-maxTranscriptBytes:]
+	// drop a leading partial line so the first data line is whole
+	if i := bytes.IndexByte(tail, '\n'); i >= 0 && i+1 <= len(tail) {
+		tail = tail[i+1:]
+	}
+	dropped := len(raw) - len(tail)
+	marker := fmt.Sprintf(`{"type":"transcript_truncated","dropped_bytes":%d,"note":"head-truncated to last 512KiB"}`+"\n", dropped)
+	out := marker + string(tail)
+	return out, len(out), true
 }

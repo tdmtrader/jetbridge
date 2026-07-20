@@ -149,6 +149,7 @@ func (rw *RejectArchivedWrappa) Wrap(handlers rata.Handlers) rata.Handlers {
 			atc.SetAgentTicketDisposition,
 			atc.GetAgentTicketOutcome,
 			atc.GetAgentTicketDiff,
+			atc.GetAgentTicketRunTranscript,
 			atc.SetAgentUserCredential,
 			atc.GetAgentUserCredentialStatus,
 			atc.DeleteAgentUserCredential,

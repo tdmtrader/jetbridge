@@ -37,6 +37,7 @@ import (
 	"github.com/concourse/concourse/atc/api/resourceserver/versionserver"
 	"github.com/concourse/concourse/atc/api/runserver"
 	"github.com/concourse/concourse/atc/api/teamserver"
+	"github.com/concourse/concourse/atc/api/transcriptserver"
 	"github.com/concourse/concourse/atc/api/usersserver"
 	"github.com/concourse/concourse/atc/api/volumeserver"
 	"github.com/concourse/concourse/atc/api/wallserver"
@@ -118,6 +119,9 @@ func NewHandler(
 	// shared MirrorCache when --agent-outcome-git-dir is set, a true nil
 	// interface otherwise (master switch off → the diff API 404s).
 	outcomeDiffProvider outcomesapi.MirrorProvider,
+	// agentRunTranscriptStore backs GetAgentTicketRunTranscript (ticket #43):
+	// the raw tool-call transcript persisted at harvest ingestion.
+	agentRunTranscriptStore transcriptserver.Store,
 	workflowStore workflow.Store,
 	// agentDispatchHandler serves DispatchAgentTicket (built in
 	// atccmd/command.go from dispatch.Deps; a stub in the test suite).
@@ -184,6 +188,7 @@ func NewHandler(
 		return accessor.GetAccessor(r).Claims().UserName
 	})
 	outcomeDiffServer := outcomesapi.NewDiffHandler(outcomesStore, outcomeDiffProvider)
+	transcriptServer := transcriptserver.NewServer(logger, agentRunTranscriptStore)
 	workflowsServer := workflowsapi.NewHandler(workflowStore)
 	principalsServer := principalsapi.NewHandler(
 		principalsStore,
@@ -373,9 +378,10 @@ func NewHandler(
 		atc.UpdateAgentTicketTask: http.HandlerFunc(ticketsServer.UpdateTask),
 		atc.DispatchAgentTicket:   agentDispatchHandler,
 
-		atc.SetAgentTicketDisposition: http.HandlerFunc(outcomesServer.SetDisposition),
-		atc.GetAgentTicketOutcome:     http.HandlerFunc(outcomesServer.GetOutcome),
-		atc.GetAgentTicketDiff:        http.HandlerFunc(outcomeDiffServer.GetDiff),
+		atc.SetAgentTicketDisposition:   http.HandlerFunc(outcomesServer.SetDisposition),
+		atc.GetAgentTicketOutcome:       http.HandlerFunc(outcomesServer.GetOutcome),
+		atc.GetAgentTicketDiff:          http.HandlerFunc(outcomeDiffServer.GetDiff),
+		atc.GetAgentTicketRunTranscript: http.HandlerFunc(transcriptServer.GetTranscript),
 
 		atc.SetAgentUserCredential:       http.HandlerFunc(credentialsServer.Set),
 		atc.GetAgentUserCredentialStatus: http.HandlerFunc(credentialsServer.Status),

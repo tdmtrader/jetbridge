@@ -6,7 +6,7 @@ package commands
 type AgentCommand struct {
 	Auth       AgentAuthCommand       `command:"auth" description:"Vault your Anthropic token for agent workloads"`
 	Costs      AgentCostsCommand      `command:"costs" description:"Show agent cost rollups"`
-	Runs       AgentRunsCommand       `command:"runs" description:"List recent agent run metrics (cost, tokens, status)"`
+	Runs       AgentRunsCommand       `command:"runs" subcommands-optional:"true" description:"List recent agent run metrics (cost, tokens, status)"`
 	Workflows  AgentWorkflowsCommand  `command:"workflows" description:"Manage versioned agent workflow definitions"`
 	Principals AgentPrincipalsCommand `command:"principals" description:"Mint, list, and revoke agent principals (admin)"`
 	Tickets    AgentTicketsCommand    `command:"tickets" description:"File and track agent tickets"`

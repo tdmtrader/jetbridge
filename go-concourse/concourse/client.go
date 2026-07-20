@@ -58,6 +58,9 @@ type Client interface {
 	DispatchAgentTicket(id int) (tickets.DispatchResponse, error)
 	SetAgentTicketDisposition(id int, req outcomes.DispositionRequest) (outcomes.Outcome, error)
 	GetAgentTicketOutcome(id int) (outcomes.Outcome, bool, error)
+	// AgentRunTranscript fetches the raw tool-call transcript (ndjson) a
+	// runner captured for a ticket's run (ticket #43).
+	AgentRunTranscript(ticketID, buildID int) ([]byte, error)
 	// Agent principals are admin-only: minted, listed, and revoked by admins.
 	ListAgentPrincipals() ([]atc.AgentPrincipal, error)
 	CreateAgentPrincipal(spec atc.AgentPrincipalCreateSpec) (atc.AgentPrincipalCreated, error)
