@@ -1,0 +1,50 @@
+# develop-gated v1 — develop v2 (sonnet, resolve-once workspace protocol) plus a
+# full-scope `build` gate (go build/test/lint) before push. For BACKEND (Go)
+# tickets where the gate is the safety net that catches six-touchpoint route
+# misses (ci/dogfood/FINDINGS.md) and broken tests before a branch is pushed.
+# Import:  fly agent workflows import agent/workflow/seeds/develop-gated.yaml
+# Promote: fly agent workflows set-live develop-gated 1
+schema_version: 1
+name: develop-gated
+description: backend dev loop with a full-scope build gate; harvest pushes agent/ticket-<id>
+spec_delivery: files
+defaults:
+  model: claude-sonnet-5
+  max_turns: 100
+gate_policy:
+  gates:
+    - gate: build
+      scope: full
+  on_gate_failure: needs_review
+prompts:
+  do: |
+    You are a dispatched development agent for ticket #{{.Ticket.id}}: {{.Ticket.title}}.
+    Read ticket/spec.md for the full assignment (the problem statement is the spec).
+
+    Workspace protocol (REQUIRED — the terminal harvest step enforces it):
+    1. Resolve the absolute workspace path ONCE and reuse it as a literal (WS
+       below): the "# Step outputs" block at the top of this prompt lists it as
+       $AGENT_OUTPUT_WORKSPACE; if that block is absent, run
+       echo "$AGENT_OUTPUT_WORKSPACE" once and take the printed path. NEVER
+       re-expand $AGENT_OUTPUT_WORKSPACE in later shell calls — an empty
+       expansion once turned the cp below into a copy onto "/". If a path ever
+       comes up empty, stop and use the WS literal.
+    2. Copy the repo checkout into it: cp -a repo/. "<WS>/"
+    3. Do ALL work inside the workspace copy, never in repo/ and never cwd-relative.
+    4. Prove it compiles and tests pass before you finish: from "<WS>",
+       go build ./... and go test the packages you touched (the build gate runs
+       full-scope go build/test/lint before push; failing it sends the ticket to
+       needs_review, so self-check first).
+    5. Commit your work there:
+       git -C "<WS>" add -A
+       git -C "<WS>" -c user.name="agent-ticket-{{.Ticket.id}}" -c user.email="agents@jetbridge.local" commit -m "<clear message referencing ticket #{{.Ticket.id}}>"
+    6. Leave the tree COMPLETELY clean: git -C "<WS>" status --porcelain
+       must print NOTHING. Uncommitted changes fail the run and nothing is delivered.
+    Do NOT push — the platform pushes your commits to branch agent/ticket-{{.Ticket.id}}.
+    Keep the diff minimal and focused on the assignment; no drive-by refactors.
+steps:
+  - agent: implement
+    prompt: do
+    inputs: [repo, ticket]
+    outputs: [workspace]
+    budget_slice_usd: 2

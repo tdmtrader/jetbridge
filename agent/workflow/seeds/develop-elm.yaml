@@ -1,0 +1,56 @@
+# develop-elm v1 — the dev loop for front-end (web/elm) tickets. Same
+# resolve-once workspace protocol as develop v2, plus (a) a build + elm-build
+# gate policy so the stale-bundle guard runs before push, and (b) an explicit
+# instruction to regenerate the committed elm.min.js. Requires the agent-runner
+# image to carry elm 0.19.1 + uglify-js (WF-2 image + the uglify-js layer).
+# Import:  fly agent workflows import agent/workflow/seeds/develop-elm.yaml
+# Promote: fly agent workflows set-live develop-elm 1
+schema_version: 1
+name: develop-elm
+description: front-end dev loop — implement + rebuild elm.min.js; build+elm-build gates; harvest pushes agent/ticket-<id>
+spec_delivery: files
+defaults:
+  model: claude-sonnet-5
+  max_turns: 120
+gate_policy:
+  gates:
+    - gate: build
+      scope: full
+    - gate: elm-build
+      scope: full
+  on_gate_failure: needs_review
+prompts:
+  do: |
+    You are a dispatched development agent for ticket #{{.Ticket.id}}: {{.Ticket.title}}.
+    Read ticket/spec.md for the full assignment (the problem statement is the spec).
+    This is a FRONT-END ticket: it changes Elm under web/elm/.
+
+    Workspace protocol (REQUIRED — the terminal harvest step enforces it):
+    1. Resolve the absolute workspace path ONCE and reuse it as a literal (WS
+       below): the "# Step outputs" block at the top of this prompt lists it as
+       $AGENT_OUTPUT_WORKSPACE; if that block is absent, run
+       echo "$AGENT_OUTPUT_WORKSPACE" once and take the printed path. NEVER
+       re-expand $AGENT_OUTPUT_WORKSPACE in later shell calls — an empty
+       expansion once turned the cp below into a copy onto "/". If a path ever
+       comes up empty, stop and use the WS literal.
+    2. Copy the repo checkout into it: cp -a repo/. "<WS>/"
+    3. Do ALL work inside the workspace copy, never in repo/ and never cwd-relative.
+    4. Implement the assignment in web/elm/src. After each change, prove it
+       compiles: cd "<WS>/web/elm" && elm make --optimize --output /dev/null src/Main.elm
+       and run the relevant tests: elm-test tests/<File>Tests.elm
+    5. REGENERATE THE BUNDLE (mandatory — the deployed UI serves elm.min.js and
+       the elm-build gate FAILS if web/elm/src changed without it): from "<WS>",
+       run  bash hack/build-web.sh  and confirm web/public/elm.min.js changed.
+    6. Commit EVERYTHING including the regenerated bundle:
+       git -C "<WS>" add -A
+       git -C "<WS>" -c user.name="agent-ticket-{{.Ticket.id}}" -c user.email="agents@jetbridge.local" commit -m "<clear message referencing ticket #{{.Ticket.id}}>"
+    7. Leave the tree COMPLETELY clean: git -C "<WS>" status --porcelain
+       must print NOTHING. Uncommitted changes fail the run and nothing is delivered.
+    Do NOT push — the platform pushes your commits to branch agent/ticket-{{.Ticket.id}}.
+    Keep the diff minimal and focused on the assignment; no drive-by refactors.
+steps:
+  - agent: implement
+    prompt: do
+    inputs: [repo, ticket]
+    outputs: [workspace]
+    budget_slice_usd: 3

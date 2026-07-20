@@ -10,9 +10,12 @@ FROM node:20-bookworm-slim
 RUN npm install -g @anthropic-ai/claude-code@2.0.1 \
     && apt-get update && apt-get install -y --no-install-recommends git ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
-# Elm 0.19.1 toolchain for the WF-2 elm-build harvest gate (`elm make
-# --optimize` on web/elm). The gate only shells out to `elm`; the committed
-# bundle is diff-checked, so uglify-js is intentionally NOT installed here.
+# Elm 0.19.1 toolchain for front-end (web/elm) work. The WF-2 elm-build harvest
+# gate only shells out to `elm make`, but an AGENT implementing a UI change needs
+# BOTH `elm make` and `uglifyjs` to run hack/build-web.sh and regenerate the
+# committed web/public/elm.min.js — the bundle the gate diff-checks for. So
+# uglify-js is installed here too (pinned to the version that produced the
+# committed bundle, for regeneration parity).
 # elm ships as a single gzipped linux-x64 binary (~6 MiB gz, ~30 MiB on disk).
 ENV ELM_HOME=/usr/local/share/elm
 RUN curl -fsSL -o /tmp/elm.gz \
@@ -20,7 +23,9 @@ RUN curl -fsSL -o /tmp/elm.gz \
     && gunzip /tmp/elm.gz \
     && chmod +x /tmp/elm \
     && mv /tmp/elm /usr/local/bin/elm \
-    && elm --version
+    && elm --version \
+    && npm install -g uglify-js@3.19.3 \
+    && uglifyjs --version
 
 # Pre-warm ELM_HOME so in-pod `elm make` needs no network: build web/elm once
 # at image-build time (this also fails the build loudly if elm can't resolve
