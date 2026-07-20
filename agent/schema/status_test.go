@@ -29,3 +29,10 @@ func TestThreeWayStatus(t *testing.T) {
 		})
 	}
 }
+
+func TestRunStatusIncompleteVocabulary(t *testing.T) {
+	// L-1 (#41): 'incomplete' is an ingestion-degradation status (no flight
+	// output read), never a results.json wire value — ThreeWayStatus must not
+	// emit it. It exists only for DeriveOutcome to fuse to amber "unrecorded".
+	requireEqual(t, schema.RunStatusIncomplete, "incomplete")
+}

@@ -529,7 +529,11 @@ var _ = Describe("HarvestStep", func() {
 				fakeMetricsStore.InsertIfAbsentReturns(true, nil)
 			})
 
-			It("records a status=error row via InsertIfAbsent and skips evidence + ledger", func() {
+			It("records a status=incomplete row via InsertIfAbsent and skips evidence + ledger", func() {
+				// L-1 (#41): no flight file read at all is a missing RECORDING,
+				// not a failed step — status=incomplete so DeriveOutcome fuses
+				// it to amber "unrecorded" on a succeeded build (never red). It
+				// still degrades through InsertIfAbsent (F24), never the upsert.
 				ok, err := step.Run(ctx, state)
 				Expect(err).ToNot(HaveOccurred())
 				Expect(ok).To(BeTrue()) // exit status still drives step success
@@ -538,8 +542,8 @@ var _ = Describe("HarvestStep", func() {
 				Expect(fakeMetricsStore.UpsertReturningInsertedCallCount()).To(BeZero())
 				Expect(fakeMetricsStore.InsertIfAbsentCallCount()).To(Equal(1))
 				rm := fakeMetricsStore.InsertIfAbsentArgsForCall(0)
-				Expect(rm.Status).To(Equal("error"))
-				Expect(rm.Summary).To(ContainSubstring("flight recorder"))
+				Expect(rm.Status).To(Equal(schema.RunStatusIncomplete))
+				Expect(rm.Summary).To(ContainSubstring("no flight output"))
 
 				recs, err := reviewsStore.GetByBuild(stepMetadata.BuildID)
 				Expect(err).ToNot(HaveOccurred())
