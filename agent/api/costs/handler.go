@@ -107,7 +107,7 @@ func (h *Handler) GetRollup(w http.ResponseWriter, r *http.Request) {
 		groupBy = budget.GroupByDay
 	}
 	if !budget.ValidGroupBy(groupBy) {
-		http.Error(w, fmt.Sprintf("group_by must be one of user|ticket|day|workflow, got %q", groupBy), http.StatusBadRequest)
+		http.Error(w, fmt.Sprintf("group_by must be one of user|ticket|day|workflow|model|step, got %q", groupBy), http.StatusBadRequest)
 		return
 	}
 

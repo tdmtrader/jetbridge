@@ -171,3 +171,28 @@ func TestGetRollupDefaultsAndValidation(t *testing.T) {
 		t.Fatalf("bad since: got %d", rec.Code)
 	}
 }
+
+func TestGetRollupAcceptsModelAndStep(t *testing.T) {
+	for _, g := range []string{"model", "step"} {
+		h, _ := newHandler()
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/agent/costs?group_by="+g, nil)
+		rec := httptest.NewRecorder()
+		h.GetRollup(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("group_by=%s: status = %d, want 200; body=%s", g, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+func TestGetRollupRejectsUnknownGroupByWithModelStepInMessage(t *testing.T) {
+	h, _ := newHandler()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/agent/costs?group_by=nonsense", nil)
+	rec := httptest.NewRecorder()
+	h.GetRollup(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "model") || !strings.Contains(rec.Body.String(), "step") {
+		t.Fatalf("error body %q must list model and step", rec.Body.String())
+	}
+}
