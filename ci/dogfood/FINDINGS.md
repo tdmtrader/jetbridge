@@ -143,6 +143,32 @@ Newest first.
   of a push. → *Fix applied:* removed the pre-warm layer (keep elm+uglify binaries); a UI ticket
   will need run-time egress to package.elm-lang.org or a vendored ELM_HOME (deferred).
 
+- **The transcript observability paid off immediately — and DISPROVED the "agent edits the
+  wrong tree" hypothesis.** With capture live (v0.2.202), #43 run 45's transcript (readable in
+  the build log: 205 assistant msgs, 177 tool_use, 174 tool_result) shows the agent worked in
+  the CORRECT workspace (`/tmp/build/<hash>/workspace`, NOT `repo/`) and deliberately STOPPED:
+  its final message — "Ticket #43 — STOPPED at Slice 1 gate; no code changes made. workspace/
+  is a clean copy of repo/... nothing committed." It stopped because #43's infrastructure
+  (agent_run_transcripts, transcriptserver, migration 1773106093, the fly command) was ALREADY
+  in the base branch — I built + merged it directly. So run 45's empty branch is CORRECT
+  behavior, and the no-op guard correctly failed it. → The earlier empty runs were run 42
+  (turn cap) and run 43 (early stop), NOT a workspace-materialization bug. **The runner-CWD
+  fix I feared is NOT needed** — the resolve-once workspace protocol works. Lesson: without a
+  transcript, three empty runs looked like a systemic workspace bug; one transcript showed the
+  truth in minutes. This is the single strongest argument for the observability itself.
+
+- **Transcript ingestion was wired to the wrong exec — captured but not persisted to the DB.**
+  `transcript.ndjson` is written by the IMPLEMENT step (agent-runner, whose flight is ingested
+  by `atc/exec/agent_step.go` `ingestFlightRecorder`), but the transcript ingestion block was
+  added to `atc/exec/harvest_step.go` (the HARVEST step, whose harvest-runner flight never
+  contains a transcript). So `StreamFile("transcript.ndjson")` on the harvest flight finds
+  nothing (no error, no row) and `agent_run_transcripts` stays empty. The step_factory wiring
+  and the ingestion code are both correct; only the LOCATION is wrong. → *Fix (web-only, no
+  image rebuild):* move the transcript-ingestion block from harvest_step.go into
+  agent_step.go's ingestFlightRecorder alongside results.json/events.ndjson. The review lenses
+  missed it because each half tested in isolation; nothing exercised implement-flight →
+  transcript-row end-to-end.
+
 ## Plan gaps the agents found (leftward candidates)
 
 - **Agent replace-instead-of-add error in exactly the code the gate can't test.**
