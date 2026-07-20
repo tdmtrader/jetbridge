@@ -15,7 +15,7 @@ import (
 type AgentRunTranscript struct {
 	BuildID   int
 	PlanID    string
-	TicketID  *int   // NULL for pure-CI agent steps / unverified linkage
+	TicketID  *int // NULL for pure-CI agent steps / unverified linkage
 	StepName  string
 	NDJSON    string
 	ByteLen   int

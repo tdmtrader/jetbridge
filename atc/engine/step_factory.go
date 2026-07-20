@@ -43,6 +43,7 @@ type coreStepFactory struct {
 	agentTicketsStore     tickets.Store
 	agentReviewsStore     reviews.Store
 	agentOutcomesStore    outcomes.Store
+	agentTranscriptStore  exec.HarvestTranscriptStore
 	platformUserResolver  exec.PlatformUserResolver
 }
 
@@ -86,6 +87,13 @@ func WithAgentReviewsStore(s reviews.Store) CoreStepFactoryOption {
 // shas) after a successful push.
 func WithAgentOutcomesStore(s outcomes.Store) CoreStepFactoryOption {
 	return func(f *coreStepFactory) { f.agentOutcomesStore = s }
+}
+
+// WithAgentTranscriptStore sets the store the harvest step upserts the
+// runner-captured tool-call transcript (flight/transcript.ndjson) into
+// during server-side flight ingestion (agent_run_transcripts, ticket #43).
+func WithAgentTranscriptStore(s exec.HarvestTranscriptStore) CoreStepFactoryOption {
+	return func(f *coreStepFactory) { f.agentTranscriptStore = s }
 }
 
 // WithAgentPlatformUserResolver sets the §1.13 platform-user lookup
@@ -332,6 +340,9 @@ func (factory *coreStepFactory) HarvestStep(
 	}
 	if factory.agentOutcomesStore != nil {
 		harvestOpts = append(harvestOpts, exec.WithHarvestOutcomesStore(factory.agentOutcomesStore))
+	}
+	if factory.agentTranscriptStore != nil {
+		harvestOpts = append(harvestOpts, exec.WithHarvestTranscriptStore(factory.agentTranscriptStore))
 	}
 	if factory.agentBudgetChecker != nil {
 		harvestOpts = append(harvestOpts, exec.WithHarvestBudgetRecorder(factory.agentBudgetChecker))
