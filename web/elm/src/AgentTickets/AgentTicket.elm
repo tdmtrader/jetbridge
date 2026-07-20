@@ -548,6 +548,13 @@ header model ticket =
         , Html.span [ style "flex-shrink" "0", style "padding-top" "1px" ] [ stateBadge ticket.state ]
         , Html.h1
             [ style "font-size" "18px"
+
+            -- The global stylesheet sets `h1 { line-height: 60px }`, which on a
+            -- title that wraps to a second line opens a ~60px gap between the
+            -- lines. The single-line edit input never hits this because it
+            -- can't wrap; override to a normal heading line-height so a wrapped
+            -- title reads as one paragraph, matching the edit view.
+            , style "line-height" "1.3"
             , style "margin" "0"
             , style "flex" "1"
             , style "min-width" "0"
