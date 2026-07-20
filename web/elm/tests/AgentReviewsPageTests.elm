@@ -109,6 +109,24 @@ all =
                         [ Query.has [ containing [ text "cs / ar" ] ]
                         , Query.hasNot [ containing [ text "other / ar" ] ]
                         ]
+        , test "distinguishes rows with the same workflow but different instance identity" <|
+            \_ ->
+                let
+                    firstInstance =
+                        { sampleSummary | buildId = 100 }
+
+                    secondInstance =
+                        { sampleSummary | buildId = 200 }
+                in
+                Common.init "/teams/main/agent-reviews"
+                    |> Application.handleCallback
+                        (Callback.TeamAgentReviewsFetched (Ok [ firstInstance, secondInstance ]))
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Expect.all
+                        [ Query.has [ containing [ text "build 100" ] ]
+                        , Query.has [ containing [ text "build 200" ] ]
+                        ]
         , test "shows a no-match notice when the filter excludes everything" <|
             \_ ->
                 Common.init "/teams/main/agent-reviews"
