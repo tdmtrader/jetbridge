@@ -41,7 +41,7 @@ func Parse(raw []byte) (*Config, error) {
 }
 
 var validSidecarRoles = map[string]bool{"dev": true, "platform": true, "gateway": true, "custom": true}
-var validGates = map[string]bool{"build": true, "test": true, "lint": true}
+var validGates = map[string]bool{"build": true, "test": true, "lint": true, "elm-build": true}
 var validGateScopes = map[string]bool{"affected": true, "full": true, "affected_then_full": true}
 
 // nilRenderContext mirrors the frozen §6.2 render context (.Ticket .Spec
@@ -255,7 +255,7 @@ func (c *Config) Validate() error {
 
 	for i, g := range c.GatePolicy.Gates {
 		if !validGates[g.Gate] {
-			return fmt.Errorf("workflow: gate_policy.gates[%d]: gate must be build|test|lint, got %q", i, g.Gate)
+			return fmt.Errorf("workflow: gate_policy.gates[%d]: gate must be build|test|lint|elm-build, got %q", i, g.Gate)
 		}
 		if !validGateScopes[g.Scope] {
 			return fmt.Errorf("workflow: gate_policy.gates[%d]: scope must be affected|full|affected_then_full, got %q", i, g.Scope)

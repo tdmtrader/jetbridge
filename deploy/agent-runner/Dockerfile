@@ -10,6 +10,26 @@ FROM node:20-bookworm-slim
 RUN npm install -g @anthropic-ai/claude-code@2.0.1 \
     && apt-get update && apt-get install -y --no-install-recommends git ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
+# Elm 0.19.1 toolchain for the WF-2 elm-build harvest gate (`elm make
+# --optimize` on web/elm). The gate only shells out to `elm`; the committed
+# bundle is diff-checked, so uglify-js is intentionally NOT installed here.
+# elm ships as a single gzipped linux-x64 binary (~6 MiB gz, ~30 MiB on disk).
+ENV ELM_HOME=/usr/local/share/elm
+RUN curl -fsSL -o /tmp/elm.gz \
+      https://github.com/elm/compiler/releases/download/0.19.1/binary-for-linux-64-bit.gz \
+    && gunzip /tmp/elm.gz \
+    && chmod +x /tmp/elm \
+    && mv /tmp/elm /usr/local/bin/elm \
+    && elm --version
+
+# Pre-warm ELM_HOME so in-pod `elm make` needs no network: build web/elm once
+# at image-build time (this also fails the build loudly if elm can't resolve
+# the repo's dependencies). Only web/elm is copied in — the source tree is not
+# otherwise part of the runtime image.
+COPY web/elm /tmp/elm-prewarm/web/elm
+RUN cd /tmp/elm-prewarm/web/elm \
+    && elm make --optimize --output /dev/null src/Main.elm \
+    && rm -rf /tmp/elm-prewarm
 COPY --from=build /out/agent-runner /usr/local/bin/agent-runner
 # harvest-runner shares the image (§2.8.1: the harvest step's main
 # container is the agent-step image; git already present above).

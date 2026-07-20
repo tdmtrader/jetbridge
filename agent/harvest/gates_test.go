@@ -46,7 +46,7 @@ func TestRunGatesBuildAndTestPass(t *testing.T) {
 		{Gate: "test", Scope: "full"},
 	}}
 
-	outcomes, err := harvest.RunGates(policy, workspace, nil)
+	outcomes, err := harvest.RunGates(policy, workspace, "", nil)
 	if err != nil {
 		t.Fatalf("RunGates: %v", err)
 	}
@@ -81,7 +81,7 @@ func TestRunGatesTestFailureStopsTheSequence(t *testing.T) {
 		{Gate: "lint", Scope: "full"}, // must not run: sequence stops at the first non-ok gate
 	}}
 
-	outcomes, err := harvest.RunGates(policy, workspace, nil)
+	outcomes, err := harvest.RunGates(policy, workspace, "", nil)
 	if err != nil {
 		t.Fatalf("RunGates: %v", err)
 	}
@@ -106,7 +106,7 @@ func TestRunGatesVetFailureIsLintFailed(t *testing.T) {
 	})
 	policy := harvest.GatePolicy{Gates: []harvest.Gate{{Gate: "lint", Scope: "full"}}}
 
-	outcomes, err := harvest.RunGates(policy, workspace, nil)
+	outcomes, err := harvest.RunGates(policy, workspace, "", nil)
 	if err != nil {
 		t.Fatalf("RunGates: %v", err)
 	}
@@ -119,7 +119,7 @@ func TestRunGatesUnknownGateErrorsAsToolingFault(t *testing.T) {
 	workspace := passingModule(t)
 	policy := harvest.GatePolicy{Gates: []harvest.Gate{{Gate: "typo", Scope: "full"}}}
 
-	outcomes, err := harvest.RunGates(policy, workspace, nil)
+	outcomes, err := harvest.RunGates(policy, workspace, "", nil)
 	if err != nil {
 		t.Fatalf("RunGates: %v", err)
 	}
@@ -135,7 +135,7 @@ func TestRunGatesUnknownGateIsNeverRetried(t *testing.T) {
 	workspace := passingModule(t)
 	policy := harvest.GatePolicy{Gates: []harvest.Gate{{Gate: "typo", Scope: "full", Retries: 2}}}
 
-	outcomes, err := harvest.RunGates(policy, workspace, nil)
+	outcomes, err := harvest.RunGates(policy, workspace, "", nil)
 	if err != nil {
 		t.Fatalf("RunGates: %v", err)
 	}
@@ -148,7 +148,7 @@ func TestRunGatesNonFullScopeErrorsNamingDevMCP(t *testing.T) {
 	workspace := passingModule(t)
 	for _, scope := range []string{"affected", "affected_then_full"} {
 		policy := harvest.GatePolicy{Gates: []harvest.Gate{{Gate: "build", Scope: scope}}}
-		outcomes, err := harvest.RunGates(policy, workspace, nil)
+		outcomes, err := harvest.RunGates(policy, workspace, "", nil)
 		if err != nil {
 			t.Fatalf("RunGates: %v", err)
 		}
@@ -210,7 +210,7 @@ func TestFlaky(t *testing.T) {
 	})
 	policy := harvest.GatePolicy{Gates: []harvest.Gate{{Gate: "test", Scope: "full", Retries: 1}}}
 
-	outcomes, err := harvest.RunGates(policy, workspace, nil)
+	outcomes, err := harvest.RunGates(policy, workspace, "", nil)
 	if err != nil {
 		t.Fatalf("RunGates: %v", err)
 	}
@@ -237,7 +237,7 @@ func TestRunGatesExhaustsRetriesAndStaysFailed(t *testing.T) {
 	})
 	policy := harvest.GatePolicy{Gates: []harvest.Gate{{Gate: "test", Scope: "full", Retries: 2}}}
 
-	outcomes, err := harvest.RunGates(policy, workspace, nil)
+	outcomes, err := harvest.RunGates(policy, workspace, "", nil)
 	if err != nil {
 		t.Fatalf("RunGates: %v", err)
 	}
@@ -261,7 +261,7 @@ func TestRunGatesPerGateTimeout(t *testing.T) {
 	policy := harvest.GatePolicy{Gates: []harvest.Gate{{Gate: "test", Scope: "full", Timeout: "200ms"}}}
 
 	start := time.Now()
-	outcomes, err := harvest.RunGates(policy, workspace, nil)
+	outcomes, err := harvest.RunGates(policy, workspace, "", nil)
 	elapsed := time.Since(start)
 	if err != nil {
 		t.Fatalf("RunGates: %v", err)
