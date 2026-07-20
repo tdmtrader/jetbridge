@@ -34,6 +34,17 @@ func (client *client) AgentUserCredentialStatus() ([]credentials.Credential, err
 	return creds, err
 }
 
+// AgentPlatformInfo fetches GET /api/v1/agent/platform-info: the
+// agent-platform facts beside the /agent credentials/platform section,
+// including agent-step-image version skew (#45).
+func (client *client) AgentPlatformInfo() (credentials.PlatformInfo, error) {
+	var info credentials.PlatformInfo
+	err := client.connection.Send(internal.Request{
+		RequestName: atc.GetAgentPlatformInfo,
+	}, &internal.Response{Result: &info})
+	return info, err
+}
+
 func (client *client) DeleteAgentUserCredential(kind string, platform bool) error {
 	req := internal.Request{
 		RequestName: atc.DeleteAgentUserCredential,

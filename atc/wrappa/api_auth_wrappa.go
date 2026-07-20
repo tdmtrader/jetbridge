@@ -97,6 +97,7 @@ func (wrappa *APIAuthWrappa) Wrap(handlers rata.Handlers) rata.Handlers {
 			// dispatcher status. Mutating it (SetAgentDispatcher) is admin-only,
 			// pinned in the CheckAdminHandler block below.
 			atc.GetAgentDispatcher,
+			atc.GetAgentPlatformInfo,
 			atc.MCPEndpoint:
 			newHandler = auth.CheckAuthenticationHandler(handler, rejector)
 

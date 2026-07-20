@@ -43,6 +43,18 @@ type FakeClient struct {
 		result1 costs.RollupResponse
 		result2 error
 	}
+	AgentPlatformInfoStub        func() (credentials.PlatformInfo, error)
+	agentPlatformInfoMutex       sync.RWMutex
+	agentPlatformInfoArgsForCall []struct {
+	}
+	agentPlatformInfoReturns struct {
+		result1 credentials.PlatformInfo
+		result2 error
+	}
+	agentPlatformInfoReturnsOnCall map[int]struct {
+		result1 credentials.PlatformInfo
+		result2 error
+	}
 	AgentRunMetricsStub        func(int) ([]schema.RunMetrics, error)
 	agentRunMetricsMutex       sync.RWMutex
 	agentRunMetricsArgsForCall []struct {
@@ -629,6 +641,62 @@ func (fake *FakeClient) AgentCostRollupReturnsOnCall(i int, result1 costs.Rollup
 	}
 	fake.agentCostRollupReturnsOnCall[i] = struct {
 		result1 costs.RollupResponse
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeClient) AgentPlatformInfo() (credentials.PlatformInfo, error) {
+	fake.agentPlatformInfoMutex.Lock()
+	ret, specificReturn := fake.agentPlatformInfoReturnsOnCall[len(fake.agentPlatformInfoArgsForCall)]
+	fake.agentPlatformInfoArgsForCall = append(fake.agentPlatformInfoArgsForCall, struct {
+	}{})
+	stub := fake.AgentPlatformInfoStub
+	fakeReturns := fake.agentPlatformInfoReturns
+	fake.recordInvocation("AgentPlatformInfo", []interface{}{})
+	fake.agentPlatformInfoMutex.Unlock()
+	if stub != nil {
+		return stub()
+	}
+	if specificReturn {
+		return ret.result1, ret.result2
+	}
+	return fakeReturns.result1, fakeReturns.result2
+}
+
+func (fake *FakeClient) AgentPlatformInfoCallCount() int {
+	fake.agentPlatformInfoMutex.RLock()
+	defer fake.agentPlatformInfoMutex.RUnlock()
+	return len(fake.agentPlatformInfoArgsForCall)
+}
+
+func (fake *FakeClient) AgentPlatformInfoCalls(stub func() (credentials.PlatformInfo, error)) {
+	fake.agentPlatformInfoMutex.Lock()
+	defer fake.agentPlatformInfoMutex.Unlock()
+	fake.AgentPlatformInfoStub = stub
+}
+
+func (fake *FakeClient) AgentPlatformInfoReturns(result1 credentials.PlatformInfo, result2 error) {
+	fake.agentPlatformInfoMutex.Lock()
+	defer fake.agentPlatformInfoMutex.Unlock()
+	fake.AgentPlatformInfoStub = nil
+	fake.agentPlatformInfoReturns = struct {
+		result1 credentials.PlatformInfo
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeClient) AgentPlatformInfoReturnsOnCall(i int, result1 credentials.PlatformInfo, result2 error) {
+	fake.agentPlatformInfoMutex.Lock()
+	defer fake.agentPlatformInfoMutex.Unlock()
+	fake.AgentPlatformInfoStub = nil
+	if fake.agentPlatformInfoReturnsOnCall == nil {
+		fake.agentPlatformInfoReturnsOnCall = make(map[int]struct {
+			result1 credentials.PlatformInfo
+			result2 error
+		})
+	}
+	fake.agentPlatformInfoReturnsOnCall[i] = struct {
+		result1 credentials.PlatformInfo
 		result2 error
 	}{result1, result2}
 }
