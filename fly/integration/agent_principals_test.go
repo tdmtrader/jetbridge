@@ -58,6 +58,65 @@ var _ = Describe("fly agent principals", func() {
 		})
 	})
 
+	Describe("list with ephemeral run principals mixed in", func() {
+		BeforeEach(func() {
+			atcServer.AppendHandlers(
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("GET", "/api/v1/agent/principals"),
+					ghttp.RespondWithJSONEncoded(http.StatusOK, []principals.Principal{
+						{
+							ID:        7,
+							Name:      "agent-run-482",
+							Scopes:    []string{"tickets:read", "tickets:write"},
+							TeamName:  "main",
+							CreatedAt: 1704067200,
+						},
+						{
+							ID:        1,
+							Name:      "reviewer",
+							Scopes:    []string{"reviews:write", "tickets:read"},
+							TeamName:  "main",
+							CreatedAt: 1704067200,
+						},
+						{
+							ID:        8,
+							Name:      "agent-run-501",
+							Scopes:    []string{"tickets:read", "tickets:write"},
+							TeamName:  "main",
+							CreatedAt: 1704067200,
+						},
+					}),
+				),
+			)
+		})
+
+		It("prints operator principals first and collapses run principals to a summary line", func() {
+			flyCmd := exec.Command(flyPath, "-t", targetName, "agent", "principals", "list")
+			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+			Expect(err).NotTo(HaveOccurred())
+			<-sess.Exited
+			Expect(sess.ExitCode()).To(Equal(0))
+
+			Expect(sess.Out).NotTo(gbytes.Say(`agent-run-482`))
+			Expect(sess.Out).NotTo(gbytes.Say(`agent-run-501`))
+			Expect(sess.Out).To(gbytes.Say(`reviewer\s+reviews:write,tickets:read\s+main`))
+			Expect(sess.Out).To(gbytes.Say(`2 ephemeral run principals \(--all to list\)`))
+		})
+
+		It("expands every run principal individually with --all", func() {
+			flyCmd := exec.Command(flyPath, "-t", targetName, "agent", "principals", "list", "--all")
+			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+			Expect(err).NotTo(HaveOccurred())
+			<-sess.Exited
+			Expect(sess.ExitCode()).To(Equal(0))
+
+			Expect(sess.Out).To(gbytes.Say(`reviewer\s+reviews:write,tickets:read\s+main`))
+			Expect(sess.Out).To(gbytes.Say(`agent-run-482`))
+			Expect(sess.Out).To(gbytes.Say(`agent-run-501`))
+			Expect(sess.Out).NotTo(gbytes.Say(`ephemeral run principals`))
+		})
+	})
+
 	Describe("mint", func() {
 		BeforeEach(func() {
 			atcServer.AppendHandlers(

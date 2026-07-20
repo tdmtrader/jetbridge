@@ -57,12 +57,17 @@ func (h *Handler) CreatePrincipal(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(CreatedResponse{Principal: p, Token: token})
 }
 
-// ListPrincipals handles GET /api/v1/agent/principals.
+// ListPrincipals handles GET /api/v1/agent/principals. Kind is derived
+// read-side (ticket #44) rather than stored, so this is the only place
+// principal rows are classified as operator vs. run.
 func (h *Handler) ListPrincipals(w http.ResponseWriter, r *http.Request) {
 	list, err := h.store.List()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+	for i := range list {
+		list[i].Kind = DeriveKind(list[i].Name)
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(list)
