@@ -662,4 +662,25 @@ all =
                         , Common.notContains Effects.FetchAgentCredentials
                         , Common.notContains Effects.FetchAgentPrincipals
                         ]
+        , test "run-row timestamps are relative once the clock ticks, with the absolute time on hover" <|
+            \_ ->
+                Common.init "/agent"
+                    |> Application.handleCallback
+                        (Callback.AgentRunMetricsFetched
+                            (Ok [ { sampleRun | createdAt = 1784385000 } ])
+                        )
+                    |> Tuple.first
+                    |> Application.update
+                        (Msgs.DeliveryReceived
+                            (ClockTicked OneMinute <|
+                                Time.millisToPosix ((1784385000 + (3 * 3600)) * 1000)
+                            )
+                        )
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Query.find [ class "agent-run-row" ]
+                    |> Expect.all
+                        [ Query.has [ containing [ text "3h 0m ago" ] ]
+                        , Query.has [ attribute (Attr.title "Jul 18, 2026 14:30") ]
+                        ]
         ]
