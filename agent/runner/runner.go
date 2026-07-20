@@ -320,8 +320,14 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 		return 2, nil
 	}
 
-	// 4. Invoke the claude CLI.
-	args := []string{"-p", prompt, "--output-format", "json"}
+	// 4. Invoke the claude CLI. stream-json emits the turn-by-turn NDJSON
+	// (system init, assistant tool_use, user tool_result, final result) that
+	// becomes flight/transcript.ndjson — the actual tool-call transcript.
+	// --verbose is REQUIRED for stream-json in claude-code 2.x; without it
+	// the CLI rejects the flag combination. The final result line is the same
+	// shape as the old --output-format json envelope, so parseEnvelope (which
+	// reads the last non-empty line) still yields the run's model/cost/turns.
+	args := []string{"-p", prompt, "--output-format", "stream-json", "--verbose"}
 	if cfg.Model != "" {
 		args = append(args, "--model", cfg.Model)
 	}
@@ -380,6 +386,13 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 	}
 	if runErr != nil {
 		fmt.Fprintf(stderr, "agent-runner: claude: %v\n", runErr)
+	}
+
+	// Persist the captured stream-json stdout as the tool-call transcript.
+	// Best-effort observability: a write error must never fail the run, so
+	// log it and continue.
+	if err := writeTranscript(cfg.FlightDir, buf.Bytes()); err != nil {
+		fmt.Fprintf(stderr, "agent-runner: write transcript: %v\n", err)
 	}
 
 	// 5. Parse the last non-empty stdout line as the CLI envelope,
@@ -596,6 +609,43 @@ func writeResults(flightDir string, status schema.Status, summary string) {
 		return
 	}
 	_ = os.WriteFile(filepath.Join(flightDir, "results.json"), raw, 0o644)
+}
+
+// maxTranscriptBytes bounds flight/transcript.ndjson to the last 512 KiB.
+// The tail is the diagnostic part — commits and failures happen at the end
+// of the stream — so truncation drops the head, not the tail.
+const maxTranscriptBytes = 512 * 1024
+
+// writeTranscript persists the captured claude stream-json stdout as the
+// tool-call transcript at flight/transcript.ndjson. It is bounded to the last
+// maxTranscriptBytes; when the raw stream is larger the head is dropped and a
+// marker line is prepended:
+//
+//	{"type":"transcript_truncated","dropped_bytes":<N>,"note":"head-truncated to last 512KiB"}
+//
+// so consumers can tell the transcript was clipped. The kept tail is aligned
+// to the next line boundary to avoid emitting a partial leading JSON line.
+func writeTranscript(flightDir string, raw []byte) error {
+	if len(raw) <= maxTranscriptBytes {
+		return os.WriteFile(filepath.Join(flightDir, "transcript.ndjson"), raw, 0o644)
+	}
+
+	tail := raw[len(raw)-maxTranscriptBytes:]
+	// Drop the partial first line so the tail starts on a clean NDJSON record.
+	if nl := bytes.IndexByte(tail, '\n'); nl >= 0 && nl+1 < len(tail) {
+		tail = tail[nl+1:]
+	}
+	dropped := len(raw) - len(tail)
+
+	marker := fmt.Sprintf(
+		`{"type":"transcript_truncated","dropped_bytes":%d,"note":"head-truncated to last 512KiB"}`+"\n",
+		dropped,
+	)
+
+	out := make([]byte, 0, len(marker)+len(tail))
+	out = append(out, marker...)
+	out = append(out, tail...)
+	return os.WriteFile(filepath.Join(flightDir, "transcript.ndjson"), out, 0o644)
 }
 
 // writeEvent marshals data and appends it to the flight recorder,

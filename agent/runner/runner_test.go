@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -889,6 +890,192 @@ func TestRunInjectsOutputPathLiteralsIntoPrompt(t *testing.T) {
 	stepIdx := strings.Index(prompt, "do it")
 	if ctxIdx != 0 || outIdx < ctxIdx || stepIdx < outIdx || !strings.HasSuffix(prompt, "do it") {
 		t.Fatalf("prompt layering wrong (ctx %d, outputs %d, step %d):\n%s", ctxIdx, outIdx, stepIdx, prompt)
+	}
+}
+
+func TestParseEnvelopeReadsResultFromStreamJSON(t *testing.T) {
+	// Under --output-format stream-json --verbose claude emits NDJSON: a
+	// system init line, one assistant/user line per turn, then a final
+	// result line with the same shape as the old --output-format json
+	// envelope. parseEnvelope reads the LAST non-empty line, so envelope
+	// parsing keeps working — model/cost/turns come off the result line.
+	stream := strings.Join([]string{
+		`{"type":"system","subtype":"init","session_id":"s1","tools":["Bash"]}`,
+		`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git commit"}}]}}`,
+		`{"type":"user","message":{"content":[{"type":"tool_result","content":"ok"}]}}`,
+		`{"type":"result","subtype":"success","result":"\"done\"","model":"m9","total_cost_usd":0.75,"num_turns":4,"is_error":false,"usage":{"input_tokens":100,"output_tokens":50}}`,
+		``,
+	}, "\n")
+
+	env, err := runner.ParseEnvelope([]byte(stream))
+	if err != nil {
+		t.Fatalf("parseEnvelope: %v", err)
+	}
+	if env.Model != "m9" {
+		t.Errorf("Model = %q, want m9", env.Model)
+	}
+	if got := env.ResolvedCostUSD(); got != 0.75 {
+		t.Errorf("ResolvedCostUSD = %v, want 0.75", got)
+	}
+	if env.NumTurns != 4 {
+		t.Errorf("NumTurns = %d, want 4", env.NumTurns)
+	}
+	if env.IsError {
+		t.Error("IsError = true, want false")
+	}
+}
+
+func TestWriteTranscriptSmallPassesThrough(t *testing.T) {
+	dir := t.TempDir()
+	raw := []byte(`{"type":"system"}` + "\n" + `{"type":"result"}` + "\n")
+
+	if err := runner.WriteTranscript(dir, raw); err != nil {
+		t.Fatalf("writeTranscript: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, "transcript.ndjson"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, raw) {
+		t.Fatalf("small transcript should pass through unchanged:\ngot  %q\nwant %q", got, raw)
+	}
+	if bytes.Contains(got, []byte("transcript_truncated")) {
+		t.Fatal("small transcript must not carry a truncation marker")
+	}
+}
+
+func TestWriteTranscriptTailBoundsLargeInputWithMarker(t *testing.T) {
+	dir := t.TempDir()
+
+	// Build a stream well over the 512KiB bound. Each line is uniquely
+	// numbered so we can prove the HEAD was dropped and the TAIL kept.
+	var b bytes.Buffer
+	i := 0
+	for b.Len() < runner.MaxTranscriptBytes*2 {
+		fmt.Fprintf(&b, `{"type":"assistant","seq":%d,"pad":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}`+"\n", i)
+		i++
+	}
+	lastLine := fmt.Sprintf(`"seq":%d,`, i-1)
+	firstLine := `"seq":0,`
+	raw := b.Bytes()
+
+	if err := runner.WriteTranscript(dir, raw); err != nil {
+		t.Fatalf("writeTranscript: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, "transcript.ndjson"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	lines := strings.SplitN(string(got), "\n", 2)
+	// First line must be the truncation marker with a positive dropped_bytes.
+	var marker struct {
+		Type         string `json:"type"`
+		DroppedBytes int    `json:"dropped_bytes"`
+		Note         string `json:"note"`
+	}
+	if err := json.Unmarshal([]byte(lines[0]), &marker); err != nil {
+		t.Fatalf("first line is not a JSON marker: %v (%q)", err, lines[0])
+	}
+	if marker.Type != "transcript_truncated" {
+		t.Errorf("marker type = %q, want transcript_truncated", marker.Type)
+	}
+	if marker.DroppedBytes <= 0 {
+		t.Errorf("marker dropped_bytes = %d, want > 0", marker.DroppedBytes)
+	}
+	if marker.Note == "" {
+		t.Error("marker note must be set")
+	}
+
+	// The tail (including the final result line) survives; the head is gone.
+	if !strings.Contains(string(got), lastLine) {
+		t.Errorf("truncated transcript dropped the diagnostic tail (%q)", lastLine)
+	}
+	if strings.Contains(string(got), firstLine) {
+		t.Error("head-truncation should have dropped the earliest line")
+	}
+	// The kept content (excluding the marker line) must not exceed the bound.
+	if body := len(got) - len(lines[0]) - 1; body > runner.MaxTranscriptBytes {
+		t.Errorf("kept body = %d bytes, exceeds bound %d", body, runner.MaxTranscriptBytes)
+	}
+}
+
+func TestRunWritesTranscriptFromStreamJSON(t *testing.T) {
+	// End-to-end: the runner captures claude's full stream-json stdout and
+	// persists it to flight/transcript.ndjson (next to events.ndjson /
+	// results.json). The stub emits a multi-line stream; the whole thing is
+	// the tool-call transcript.
+	dir := t.TempDir()
+	flight := filepath.Join(dir, "flight")
+	os.MkdirAll(flight, 0o755)
+
+	claude := filepath.Join(dir, "claude")
+	// Multiple NDJSON lines; the final one is the result envelope.
+	script := "#!/bin/sh\n" +
+		`echo '{"type":"system","subtype":"init"}'` + "\n" +
+		`echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash"}]}}'` + "\n" +
+		`echo '{"type":"result","subtype":"success","result":"\"done\"","model":"m1","cost_usd":0.02,"num_turns":2,"is_error":false}'` + "\n"
+	if err := os.WriteFile(claude, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	exit, err := runner.Run(context.Background(), runner.Config{
+		Prompt: "p", FlightDir: flight, WorkDir: dir, StepName: "s", ClaudePath: claude,
+		Stdout: new(bytes.Buffer), Stderr: new(bytes.Buffer),
+	})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if exit != 0 {
+		t.Fatalf("expected exit 0, got %d", exit)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(flight, "transcript.ndjson"))
+	if err != nil {
+		t.Fatalf("flight/transcript.ndjson must be written: %v", err)
+	}
+	for _, want := range []string{`"type":"system"`, `"type":"tool_use"`, `"type":"result"`} {
+		if !strings.Contains(string(raw), want) {
+			t.Errorf("transcript missing %q:\n%s", want, raw)
+		}
+	}
+}
+
+func TestRunPassesStreamJSONFlags(t *testing.T) {
+	// stream-json emits the NDJSON tool-call events; --verbose is REQUIRED
+	// for stream-json in claude-code 2.x. Assert both reach the CLI.
+	dir := t.TempDir()
+	flight := filepath.Join(dir, "flight")
+	os.MkdirAll(flight, 0o755)
+	claude, argsPath := writeRecordingStubClaude(t, dir, okEnvelope)
+
+	exit, err := runner.Run(context.Background(), runner.Config{
+		Prompt: "do it", FlightDir: flight, WorkDir: dir, StepName: "s", ClaudePath: claude,
+	})
+	if err != nil || exit != 0 {
+		t.Fatalf("run: exit %d err %v", exit, err)
+	}
+	raw, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := strings.Split(strings.TrimRight(string(raw), "\x00"), "\x00")
+
+	ofIdx := -1
+	hasVerbose := false
+	for i, a := range args {
+		if a == "--output-format" {
+			ofIdx = i + 1
+		}
+		if a == "--verbose" {
+			hasVerbose = true
+		}
+	}
+	if ofIdx < 0 || ofIdx >= len(args) || args[ofIdx] != "stream-json" {
+		t.Fatalf("expected --output-format stream-json, got args %v", args)
+	}
+	if !hasVerbose {
+		t.Fatalf("expected --verbose flag, got args %v", args)
 	}
 }
 
