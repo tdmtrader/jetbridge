@@ -110,7 +110,7 @@ type GatePolicy struct {
 
 // Gate is one named check in the gate policy.
 type Gate struct {
-	Gate    string `yaml:"gate" json:"gate"`   // build | test | lint
+	Gate    string `yaml:"gate" json:"gate"`   // build | test | lint | elm-build
 	Scope   string `yaml:"scope" json:"scope"` // affected | full | affected_then_full
 	Focus   string `yaml:"focus,omitempty" json:"focus,omitempty"`
 	Timeout string `yaml:"timeout,omitempty" json:"timeout,omitempty"` // Go duration; default 30m (harvest-side)

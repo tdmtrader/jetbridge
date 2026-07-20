@@ -97,6 +97,15 @@ steps:
 	}
 }
 
+// TestValidateAcceptsElmBuildGate (WF-2): the elm-build gate name imports
+// clean — it is the stale-bundle guard added to the fixed gate vocabulary.
+func TestValidateAcceptsElmBuildGate(t *testing.T) {
+	yaml := mutate(t, "- gate: lint", "- gate: elm-build")
+	if _, err := workflow.Parse([]byte(yaml)); err != nil {
+		t.Fatalf("elm-build must be a valid gate name: %v", err)
+	}
+}
+
 // TestValidateAcceptsNilSafeSpecTemplates (E2b, 2026-07-09): templates that
 // guard .Spec and range .Tasks render cleanly against the spec-less context
 // every dispatch sees (contracts §6.2 nil-safety), so they must import clean —
