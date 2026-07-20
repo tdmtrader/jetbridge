@@ -662,4 +662,60 @@ all =
                         , Common.notContains Effects.FetchAgentCredentials
                         , Common.notContains Effects.FetchAgentPrincipals
                         ]
+        , test "links a run row to its build page" <|
+            \_ ->
+                Common.init "/agent"
+                    |> Application.handleCallback
+                        (Callback.AgentRunMetricsFetched (Ok [ sampleRun ]))
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Query.find [ class "agent-run-row" ]
+                    |> Query.has
+                        [ tag "a"
+                        , attribute (Attr.href "/builds/100")
+                        , containing [ text "review-diff" ]
+                        ]
+        , test "run-row timestamps are relative once the clock ticks, with the absolute time on hover" <|
+            \_ ->
+                Common.init "/agent"
+                    |> Application.handleCallback
+                        (Callback.AgentRunMetricsFetched
+                            (Ok [ { sampleRun | createdAt = 1784385000 } ])
+                        )
+                    |> Tuple.first
+                    |> Application.update
+                        (Msgs.DeliveryReceived
+                            (ClockTicked OneMinute <|
+                                Time.millisToPosix ((1784385000 + (3 * 3600)) * 1000)
+                            )
+                        )
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Query.find [ class "agent-run-row" ]
+                    |> Expect.all
+                        [ Query.has [ containing [ text "3h 0m ago" ] ]
+                        , Query.has [ attribute (Attr.title "Jul 18, 2026 14:30") ]
+                        ]
+        , test "the costs section states caps are set at deploy time when none is configured" <|
+            \_ ->
+                Common.init "/agent"
+                    |> Application.handleCallback
+                        (Callback.AgentCostRollupFetched
+                            (Ok
+                                { sampleRollup
+                                    | summary =
+                                        { dailyCapUsd = 0
+                                        , dailySpentUsd = 12.34
+                                        , dailyRemainingUsd = 0
+                                        , dailyExhausted = False
+                                        }
+                                }
+                            )
+                        )
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Query.has
+                        [ class "agent-daily-cap-none"
+                        , text "No daily cap set. Caps are set at deploy time today."
+                        ]
         ]

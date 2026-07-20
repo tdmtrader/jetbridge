@@ -15,6 +15,7 @@ import Application.Models exposing (Session)
 import Colors
 import Concourse.Agent as Agent
 import DateFormat
+import Duration
 import EffectTransformer exposing (ET)
 import Html exposing (Html)
 import Html.Attributes exposing (checked, class, disabled, href, id, placeholder, style, title, type_, value)
@@ -28,7 +29,7 @@ import Message.Message exposing (Message(..))
 import Message.ScrollDirection as ScrollDirection
 import Message.Subscription
     exposing
-        ( Delivery
+        ( Delivery(..)
         , Interval(..)
         , Subscription
         )
@@ -81,6 +82,7 @@ type alias Model =
         , revokeError : Maybe String
         , showEphemeralPrincipals : Bool
         , expandedRuns : Set String
+        , now : Maybe Time.Posix
         }
 
 
@@ -108,6 +110,7 @@ init =
       , revokeError = Nothing
       , showEphemeralPrincipals = False
       , expandedRuns = Set.empty
+      , now = Nothing
       , isUserMenuExpanded = False
       }
     , [ FetchAgentRunMetrics
@@ -405,8 +408,23 @@ polls =
 
 
 handleDelivery : Delivery -> ET Model
-handleDelivery =
-    Polling.handleDelivery polls
+handleDelivery delivery =
+    advanceNow delivery >> Polling.handleDelivery polls delivery
+
+
+{-| Advance the "now" clock that feeds the runs table's relative "N ago"
+timestamps. Kept out of `polls` (which stays fetch-only) and driven off the
+existing OneMinute poll tick this page already subscribes to — minute
+granularity is plenty for "3h ago" labels on a near-static admin console.
+-}
+advanceNow : Delivery -> ET Model
+advanceNow delivery ( model, effects ) =
+    case delivery of
+        ClockTicked OneMinute time ->
+            ( { model | now = Just time }, effects )
+
+        _ ->
+            ( model, effects )
 
 
 subscriptions : List Subscription
@@ -676,14 +694,14 @@ runsSection zone model =
 
                        -- Lazy so mint-form keystrokes (which rebuild the whole
                        -- model, and with it this page) stop re-rendering the
-                       -- 100-row table; all three arguments are reference-
-                       -- stable until the data actually changes.
-                       , Html.Lazy.lazy3 runsTable zone model.expandedRuns runs
+                       -- 100-row table; the arguments are reference-stable
+                       -- until the data (or the once-a-minute clock) changes.
+                       , Html.Lazy.lazy4 runsTable zone model.now model.expandedRuns runs
                        ]
 
 
-runsTable : Time.Zone -> Set String -> List Agent.RunMetric -> Html Message
-runsTable zone expandedRuns runs =
+runsTable : Time.Zone -> Maybe Time.Posix -> Set String -> List Agent.RunMetric -> Html Message
+runsTable zone now expandedRuns runs =
     Html.table
         [ class "agent-runs-table"
         , style "border-collapse" "collapse"
@@ -691,7 +709,7 @@ runsTable zone expandedRuns runs =
         , style "font-size" "12px"
         , style "color" Colors.text
         ]
-        (runsHeaderRow :: List.map (runRow zone expandedRuns) runs)
+        (runsHeaderRow :: List.map (runRow zone now expandedRuns) runs)
 
 
 runsHeaderRow : Html Message
@@ -704,7 +722,7 @@ runsHeaderRow =
         , tableHeaderCell "right" "tokens (in+out)"
         , tableHeaderCell "right" "turns"
         , tableHeaderCell "left" "ticket"
-        , tableHeaderCell "left" "when (local)"
+        , tableHeaderCell "left" "when"
         ]
 
 
@@ -717,8 +735,8 @@ runKey r =
     String.fromInt r.buildId ++ ":" ++ r.planId
 
 
-runRow : Time.Zone -> Set String -> Agent.RunMetric -> Html Message
-runRow zone expandedRuns r =
+runRow : Time.Zone -> Maybe Time.Posix -> Set String -> Agent.RunMetric -> Html Message
+runRow zone now expandedRuns r =
     Html.tr [ class "agent-run-row" ]
         [ runStepCell expandedRuns r
         , tableCell "left" (workflowRef r.workflowName r.workflowVersion)
@@ -727,7 +745,7 @@ runRow zone expandedRuns r =
         , tableCell "right" (String.fromInt r.usage.inputTokens ++ "+" ++ String.fromInt r.usage.outputTokens)
         , tableCell "right" (String.fromInt r.turns)
         , ticketRefCell r
-        , tableCell "left" (formatPosix zone (Just (secondsToPosix r.createdAt)))
+        , runWhenCell zone now r
         ]
 
 
@@ -784,11 +802,24 @@ runStepCell expandedRuns r =
         , style "border-bottom" rowBorder
         , style "vertical-align" "top"
         ]
-        (Html.div
-            [ style "font-weight" "700", style "color" Colors.text ]
+        (Html.a
+            [ href (buildHref r.buildId)
+            , title ("open build #" ++ String.fromInt r.buildId)
+            , style "font-weight" "700"
+            , style "color" "#7a9ac0"
+            , style "text-decoration" "none"
+            ]
             [ Html.text r.stepName ]
             :: summaryBlock
         )
+
+
+{-| Href to a run's build page, `/builds/<id>`, so every ledger row links to the
+build it measured. Built through Routes so it stays in step with the router.
+-}
+buildHref : Int -> String
+buildHref buildId =
+    Routes.toString (Routes.OneOffBuild { id = buildId, highlight = Routes.HighlightNothing })
 
 
 {-| Render the run's DISPLAY truth as an AgentBadge. The server-derived
@@ -864,6 +895,56 @@ ticketRefCell r =
 secondsToPosix : Int -> Time.Posix
 secondsToPosix seconds =
     Time.millisToPosix (seconds * 1000)
+
+
+{-| The "when" column: a relative "N ago" label (matching the ticket queue's
+elapsed labels), with the exact local timestamp on hover. Falls back to the
+absolute time as the visible label until the clock has first ticked (or when the
+timestamp is absent / in the future), so the column is never blank.
+-}
+runWhenCell : Time.Zone -> Maybe Time.Posix -> Agent.RunMetric -> Html Message
+runWhenCell zone now r =
+    let
+        absolute =
+            formatPosix zone (Just (secondsToPosix r.createdAt))
+
+        label =
+            relativeWhen now r.createdAt
+                |> Maybe.withDefault absolute
+    in
+    Html.td
+        [ style "text-align" "left"
+        , style "padding" "4px 16px 4px 0"
+        , style "border-bottom" rowBorder
+        , title absolute
+        ]
+        [ Html.text label ]
+
+
+{-| Relative "N ago" from a run's created-at epoch (seconds) to the live clock.
+Nothing when the clock hasn't ticked yet, the timestamp is unknown, or it is in
+the future — the caller then shows the absolute time instead.
+-}
+relativeWhen : Maybe Time.Posix -> Int -> Maybe String
+relativeWhen maybeNow createdAt =
+    case maybeNow of
+        Just now ->
+            if createdAt > 0 then
+                let
+                    elapsed =
+                        Duration.between (secondsToPosix createdAt) now
+                in
+                if elapsed >= 0 then
+                    Just (Duration.format elapsed ++ " ago")
+
+                else
+                    Nothing
+
+            else
+                Nothing
+
+        Nothing ->
+            Nothing
 
 
 
@@ -1042,7 +1123,7 @@ dailyCapGauge summary =
             , style "font-size" "12px"
             , style "color" subtleColor
             ]
-            [ Html.text "no daily cap set — spend is unbounded (web flag: --agent-daily-budget-usd)" ]
+            [ Html.text "No daily cap set. Caps are set at deploy time today." ]
 
     else
         let
