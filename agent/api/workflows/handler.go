@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	schema "github.com/concourse/concourse/agent/schema"
 	"github.com/concourse/concourse/agent/workflow"
 	"github.com/concourse/concourse/atc/api/accessor"
 )
@@ -23,16 +24,26 @@ const maxManifestRequestBytes = 12 << 20
 // CreateAgentWorkflowVersion, PromoteAgentWorkflowVersion).
 type Handler struct {
 	store workflow.Store
+	stats StatsProvider
 }
 
-func NewHandler(store workflow.Store) *Handler {
-	return &Handler{store: store}
+// StatsProvider is the read the Stats handler needs — a subset of
+// agent/api/metrics.Store, satisfied in production by
+// atc/db.AgentRunMetricsFactory.
+type StatsProvider interface {
+	WorkflowStats(workflowName string) ([]schema.WorkflowVersionStats, error)
+}
+
+func NewHandler(store workflow.Store, stats StatsProvider) *Handler {
+	return &Handler{store: store, stats: stats}
 }
 
 // WorkflowSummary is the GET /api/v1/agent/workflows element.
 type WorkflowSummary struct {
 	Name          string `json:"name"`
 	Description   string `json:"description"`
+	Annotation    string `json:"annotation,omitempty"`
+	Hidden        bool   `json:"hidden"`
 	LatestVersion int    `json:"latest_version"`
 	ContentHash   string `json:"content_hash"`
 	LiveVersion   int    `json:"live_version"` // 0 = no live version
@@ -219,4 +230,21 @@ func (h *Handler) Promote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// Stats handles GET /api/v1/agent/workflows/:workflow_name/stats. Returns the
+// per-version aggregation with the derived ratios filled in. A workflow with
+// no runs returns [] (200), not 404 — the workflow may exist with zero runs.
+func (h *Handler) Stats(w http.ResponseWriter, r *http.Request) {
+	name := r.FormValue(":workflow_name")
+	rows, err := h.stats.WorkflowStats(name)
+	if err != nil {
+		http.Error(w, "failed to load workflow stats", http.StatusInternalServerError)
+		return
+	}
+	out := make([]schema.WorkflowVersionStats, len(rows))
+	for i, row := range rows {
+		out[i] = row.WithDerived()
+	}
+	writeJSON(w, http.StatusOK, out)
 }

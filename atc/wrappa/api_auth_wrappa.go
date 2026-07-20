@@ -227,6 +227,11 @@ func (wrappa *APIAuthWrappa) Wrap(handlers rata.Handlers) rata.Handlers {
 			atc.GetAgentWorkflowVersion,
 			atc.CreateAgentWorkflowVersion,
 			atc.PromoteAgentWorkflowVersion,
+			atc.GetAgentWorkflowStats,
+			// UpdateAgentWorkflow (annotate/deprecate) is deliberately
+			// human-only (no principal tier): deprecating a workflow is an
+			// operator decision, not something an agent principal may do.
+			atc.UpdateAgentWorkflow,
 			atc.GetAgentCostRollup,
 			atc.ListAgentTickets,
 			atc.UpdateAgentTicket,

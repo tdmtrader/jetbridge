@@ -189,7 +189,7 @@ func NewHandler(
 	})
 	outcomeDiffServer := outcomesapi.NewDiffHandler(outcomesStore, outcomeDiffProvider)
 	transcriptServer := transcriptserver.NewServer(logger, agentRunTranscriptStore)
-	workflowsServer := workflowsapi.NewHandler(workflowStore)
+	workflowsServer := workflowsapi.NewHandler(workflowStore, metricsStore)
 	principalsServer := principalsapi.NewHandler(
 		principalsStore,
 		func(r *http.Request) string {
@@ -394,6 +394,7 @@ func NewHandler(
 		atc.GetAgentWorkflowVersion:      http.HandlerFunc(workflowsServer.Get),
 		atc.CreateAgentWorkflowVersion:   http.HandlerFunc(workflowsServer.Import),
 		atc.PromoteAgentWorkflowVersion:  http.HandlerFunc(workflowsServer.Promote),
+		atc.GetAgentWorkflowStats:        http.HandlerFunc(workflowsServer.Stats),
 
 		atc.CreateAgentPrincipal: http.HandlerFunc(principalsServer.CreatePrincipal),
 		atc.ListAgentPrincipals:  http.HandlerFunc(principalsServer.ListPrincipals),
