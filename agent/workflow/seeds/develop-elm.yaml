@@ -47,7 +47,14 @@ prompts:
        elm.min.js and the elm-build gate FAILS if web/elm/src changed without it):
        from "<WS>", run  bash hack/build-web.sh, confirm web/public/elm.min.js
        changed, then commit it (same git -C "<WS>" add -A + commit as above).
-    7. Leave the tree COMPLETELY clean: git -C "<WS>" status --porcelain
+    7. VERIFY YOUR WORK IS IN THE WORKSPACE (critical — a common failure is
+       editing the input repo/ tree instead of WS, which delivers nothing):
+       run  git -C "<WS>" show --stat HEAD  and confirm HEAD is YOUR commit and
+       lists your changed files (incl. web/public/elm.min.js). If HEAD is instead
+       the base commit and your files are not in it, you edited the wrong tree —
+       re-apply your changes INSIDE "<WS>" and commit there. The harvest now
+       FAILS a run whose HEAD equals the base.
+    8. Leave the tree COMPLETELY clean: git -C "<WS>" status --porcelain
        must print NOTHING. Uncommitted changes fail the run and nothing is delivered.
     Do NOT push — the platform pushes your commits to branch agent/ticket-{{.Ticket.id}}.
     Keep the diff minimal and focused on the assignment; no drive-by refactors.

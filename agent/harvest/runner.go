@@ -119,6 +119,16 @@ func Run(cfg Config, workspaceDir, credsDir, flightDir string, out io.Writer) in
 		}
 	}
 
+	// -- no-op guard: a clean workspace whose HEAD is still the base has zero
+	//    agent commits. Running gates against an unchanged tree is meaningless
+	//    and pushing it publishes an EMPTY branch that reads as a successful
+	//    review — the money-burning silent no-op the audit found (agent-ticket-43
+	//    runs 42/43). Fail loudly here, before gates and push. Only fires when
+	//    the base actually resolved (absence stays the existing degraded path). --
+	if facts.BaseSHA != "" && facts.HeadSHA == facts.BaseSHA {
+		return finish(schema.StatusFail, "no-op: the workspace HEAD equals the base commit "+facts.BaseSHA+" — the agent committed no work into the workspace checkout, so there is nothing to push. (A frequent cause: the agent edited the input repo/ tree instead of the workspace output.) Nothing was pushed.")
+	}
+
 	// -- gates (between cleanliness and push, §6.3; unchanged engine) --
 	if len(cfg.GatePolicy.Gates) > 0 {
 		outcomes, gatesErr := RunGates(cfg.GatePolicy, workspaceDir, facts.BaseSHA, rec.eventWriter())

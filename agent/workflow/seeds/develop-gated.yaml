@@ -41,7 +41,14 @@ prompts:
        go build ./... and go test the packages you touched (the build gate runs
        full-scope go build/test/lint before push; failing it sends the ticket to
        needs_review, so self-check first).
-    6. Leave the tree COMPLETELY clean: git -C "<WS>" status --porcelain
+    6. VERIFY YOUR WORK IS IN THE WORKSPACE (critical — a common failure is
+       editing the input repo/ tree instead of WS, which delivers nothing):
+       run  git -C "<WS>" show --stat HEAD  and confirm HEAD is YOUR commit and
+       lists YOUR changed files. If HEAD is instead the base commit (a message
+       you did not write, e.g. a "merge"/"build" commit) and your files are not
+       in it, you edited the wrong tree — re-apply your changes INSIDE "<WS>"
+       and commit there. The harvest now FAILS a run whose HEAD equals the base.
+    7. Leave the tree COMPLETELY clean: git -C "<WS>" status --porcelain
        must print NOTHING. Uncommitted changes fail the run and nothing is delivered.
     Do NOT push — the platform pushes your commits to branch agent/ticket-{{.Ticket.id}}.
     Keep the diff minimal and focused on the assignment; no drive-by refactors.

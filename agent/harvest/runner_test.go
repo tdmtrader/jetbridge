@@ -173,6 +173,46 @@ func TestRunNonRepoWorkspaceFails(t *testing.T) {
 	}
 }
 
+// TestRunNoOpEmptyBranchFails: a workspace whose HEAD is still the base commit
+// (the agent committed no work into the checkout — the ticket-loop failure mode
+// where the agent edits the input repo/ tree instead of the workspace output)
+// must FAIL loudly and push NOTHING, rather than run gates against an unchanged
+// tree and publish an empty branch that reads as a successful review.
+func TestRunNoOpEmptyBranchFails(t *testing.T) {
+	root := t.TempDir()
+	remote := filepath.Join(root, "remote.git")
+	git(t, root, "init", "--bare", "-b", "main", remote)
+	seed := filepath.Join(root, "seed")
+	git(t, root, "clone", remote, seed)
+	os.WriteFile(filepath.Join(seed, "README.md"), []byte("hello\n"), 0644)
+	git(t, seed, "add", ".")
+	git(t, seed, "commit", "-m", "seed")
+	git(t, seed, "push", "origin", "HEAD:main")
+	// workspace clone with NO commit on top: HEAD == origin/main == base.
+	workspace := filepath.Join(root, "workspace")
+	git(t, root, "clone", remote, workspace)
+
+	cfg := harvest.Config{
+		StepName: "harvest", Workspace: "workspace", Repo: "tdmtrader/jetbridge",
+		TargetBranch: "main", TicketID: 43, Branch: "agent/ticket-43", Push: true,
+	}
+	code, res, raw := runHarvest(t, cfg, workspace)
+	if code != 1 {
+		t.Fatalf("no-op exit = %d, want 1 (empty branch is an agent failure); raw: %s", code, raw)
+	}
+	if res.Status != "fail" || !strings.Contains(metaString(res, "detail"), "no-op") {
+		t.Errorf("no-op must fail with a no-op detail, got %+v", res)
+	}
+	if metaString(res, "pushed_branch") != "" {
+		t.Errorf("no-op must not push, got pushed_branch=%q", metaString(res, "pushed_branch"))
+	}
+	cmd := exec.Command("git", "rev-parse", "refs/heads/agent/ticket-43")
+	cmd.Dir = remote
+	if err := cmd.Run(); err == nil {
+		t.Error("no-op must not create the remote branch")
+	}
+}
+
 func TestRunRefusesNonFullScopeGatesAndInvalidJudge(t *testing.T) {
 	// Loud, never silent boundaries: the in-pod gate engine only
 	// enforces scope "full" — affected/affected_then_full still error
