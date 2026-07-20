@@ -16,6 +16,7 @@ import Browser.Dom exposing (Viewport, getElement, getViewport, getViewportOf, s
 import Browser.Navigation as Navigation
 import Concourse exposing (DatabaseID, encodeJob, encodePipeline, encodeTeam)
 import Concourse.Agent
+import Concourse.AgentDispatcher
 import Concourse.AgentReview
 import Concourse.AgentTicket
 import Concourse.BuildStatus exposing (BuildStatus)
@@ -222,6 +223,8 @@ type Effect
     | FetchAgentRunMetrics
     | FetchAgentWorkflows
     | FetchAgentCostRollup
+    | FetchAgentDispatcher
+    | SetAgentDispatcher Concourse.AgentDispatcher.Mode
     | FetchAgentCredentials
     | FetchAgentPlatformCredentials
     | FetchAgentPrincipals
@@ -828,6 +831,19 @@ runEffect effect key csrfToken =
                 |> Api.expectJson Concourse.Agent.decodeCostRollup
                 |> Api.request
                 |> Task.attempt AgentCostRollupFetched
+
+        FetchAgentDispatcher ->
+            Api.get Endpoints.AgentDispatcher
+                |> Api.expectJson Concourse.AgentDispatcher.decodeStatus
+                |> Api.request
+                |> Task.attempt AgentDispatcherFetched
+
+        SetAgentDispatcher mode ->
+            Api.put Endpoints.AgentDispatcher csrfToken
+                |> Api.withJsonBody (Concourse.AgentDispatcher.encodeMode mode)
+                |> Api.expectJson Concourse.AgentDispatcher.decodeStatus
+                |> Api.request
+                |> Task.attempt AgentDispatcherSet
 
         FetchAgentCredentials ->
             Api.get Endpoints.AgentCredentialsStatus
