@@ -16,6 +16,7 @@ import Browser.Dom exposing (Viewport, getElement, getViewport, getViewportOf, s
 import Browser.Navigation as Navigation
 import Concourse exposing (DatabaseID, encodeJob, encodePipeline, encodeTeam)
 import Concourse.Agent
+import Concourse.AgentDiff
 import Concourse.AgentDispatcher
 import Concourse.AgentReview
 import Concourse.AgentTicket
@@ -250,6 +251,7 @@ type Effect
     | DispatchAgentTicket Int
     | UpdateAgentTicketTask { id : Int, ordering : Int, status : String, note : String }
     | FetchAgentTicketMetrics Int
+    | FetchAgentTicketDiff Int
     | FetchAgentTicketCosts
 
 
@@ -952,6 +954,12 @@ runEffect effect key csrfToken =
                 |> Api.expectJson (Json.Decode.list Concourse.Agent.decodeRunMetric)
                 |> Api.request
                 |> Task.attempt (AgentTicketMetricsFetched ticketId)
+
+        FetchAgentTicketDiff ticketId ->
+            Api.get (Endpoints.AgentTicketDiff ticketId)
+                |> Api.expectJson Concourse.AgentDiff.decodeDiffPage
+                |> Api.request
+                |> Task.attempt AgentTicketDiffFetched
 
         FetchAgentTicketCosts ->
             let
