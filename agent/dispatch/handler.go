@@ -47,6 +47,7 @@ func NewHTTPHandler(deps Deps, userName func(*http.Request) string) http.Handler
 		json.NewEncoder(w).Encode(tickets.DispatchResponse{
 			RunID:        res.RunID,
 			PipelineName: res.PipelineName,
+			Warnings:     res.Warnings,
 		})
 	})
 }

@@ -123,6 +123,28 @@ var _ = Describe("fly agent tickets", func() {
 			Expect(sess.ExitCode()).To(Equal(0))
 			Expect(sess.Out).To(gbytes.Say("ticket #7 is now queued"))
 		})
+
+		It("prints advisory spec-lint warnings on stderr without failing", func() {
+			atcServer.AppendHandlers(
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("PUT", "/api/v1/agent/tickets/7/state"),
+					ghttp.VerifyJSON(`{"from":"draft","to":"queued"}`),
+					ghttp.RespondWithJSONEncoded(200, tickets.Ticket{
+						ID: 7, State: tickets.StateQueued,
+						Title: "wire the flight recorder",
+						Body:  "record all agent sessions",
+					}),
+				),
+			)
+
+			flyCmd := exec.Command(flyPath, "-t", targetName, "agent", "tickets", "queue", "--id", "7")
+			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+			Expect(err).NotTo(HaveOccurred())
+			<-sess.Exited
+			Expect(sess.ExitCode()).To(Equal(0))
+			Expect(sess.Out).To(gbytes.Say("ticket #7 is now queued"))
+			Expect(sess.Err).To(gbytes.Say(`spec-lint: "flight recorder"`))
+		})
 	})
 
 	Describe("transition", func() {
@@ -380,6 +402,26 @@ var _ = Describe("fly agent tickets", func() {
 			<-sess.Exited
 			Expect(sess.ExitCode()).To(Equal(0))
 			Expect(sess.Out).To(gbytes.Say(`dispatched ticket #7 as run 321 \(pipeline agent-ticket-7\)`))
+		})
+
+		It("prints server spec-lint warnings on stderr without failing", func() {
+			atcServer.AppendHandlers(
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("POST", "/api/v1/agent/tickets/7/dispatch"),
+					ghttp.RespondWithJSONEncoded(201, tickets.DispatchResponse{
+						RunID: 321, PipelineName: "agent-ticket-7",
+						Warnings: []string{`"flight recorder": reword before the CLI refuses it`},
+					}),
+				),
+			)
+
+			flyCmd := exec.Command(flyPath, "-t", targetName, "agent", "tickets", "dispatch", "--id", "7")
+			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+			Expect(err).NotTo(HaveOccurred())
+			<-sess.Exited
+			Expect(sess.ExitCode()).To(Equal(0))
+			Expect(sess.Out).To(gbytes.Say(`dispatched ticket #7 as run 321 \(pipeline agent-ticket-7\)`))
+			Expect(sess.Err).To(gbytes.Say(`spec-lint: "flight recorder": reword before the CLI refuses it`))
 		})
 	})
 

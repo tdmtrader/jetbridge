@@ -104,6 +104,10 @@ type Deps struct {
 type Result struct {
 	RunID        int    `json:"run_id"`
 	PipelineName string `json:"pipeline_name"`
+	// Warnings: advisory SpecLint findings on the dispatched prose
+	// (ticket #46). Never blocks — surfaced on the dispatch response and
+	// at info by the dispatcher loop.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // DispatchOne is the dispatcher core: claim a QUEUED ticket, resolve
@@ -199,6 +203,27 @@ func DispatchOne(ctx context.Context, deps Deps, ticketID int, dispatchedBy stri
 	if err != nil {
 		return Result{}, err
 	}
+
+	// Advisory spec lint (ticket #46): warn — NEVER block — on prose the
+	// claude CLI's usage-policy check has false-refused before. Both the
+	// ticket body and the latest spec reach the agent (RenderSpecMarkdown),
+	// so both are linted; duplicate findings collapse.
+	warnings := SpecLint(t.Title, t.Body)
+	if spec != nil {
+		for _, w := range SpecLint(spec.Title, spec.Body) {
+			seen := false
+			for _, have := range warnings {
+				if have == w {
+					seen = true
+					break
+				}
+			}
+			if !seen {
+				warnings = append(warnings, w)
+			}
+		}
+	}
+
 	planTasks, err := deps.Tickets.ActivePlan(ticketID)
 	if err != nil {
 		return Result{}, err
@@ -244,7 +269,7 @@ func DispatchOne(ctx context.Context, deps Deps, ticketID int, dispatchedBy stri
 		return Result{}, fmt.Errorf("run %d created but ticket %d transition failed: %w", runID, ticketID, err)
 	}
 
-	return Result{RunID: runID, PipelineName: pipelineName}, nil
+	return Result{RunID: runID, PipelineName: pipelineName, Warnings: warnings}, nil
 }
 
 // attachRunSecret creates the §8.2 agent-run-<runID> secret: a vaulted
