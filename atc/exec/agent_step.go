@@ -101,6 +101,17 @@ func WithAgentRunVerifier(v AgentRunVerifier) AgentStepOption {
 	return func(s *AgentStep) { s.runVerifier = v }
 }
 
+// WithAgentStepTranscriptStore sets the store the agent step's own
+// server-side flight ingestion upserts the runner-captured tool-call
+// transcript (flight/transcript.ndjson) into (agent_run_transcripts, ticket
+// #43). The transcript is captured by THIS step's runner — the IMPLEMENT
+// (agent) step — never the harvest step's, whose flight volume never
+// contains it. nil disables ingestion — never fatal (observability is
+// best-effort).
+func WithAgentStepTranscriptStore(ts HarvestTranscriptStore) AgentStepOption {
+	return func(s *AgentStep) { s.transcriptStore = ts }
+}
+
 // AgentStep runs the claude CLI (via the agent-runner entrypoint) in a
 // jetbridge pod with declared MCP sidecars, then ingests the flight
 // recorder server-side (shared-contracts §2.8, §5, §8.1).
@@ -121,6 +132,10 @@ type AgentStep struct {
 	budgetChecker       budget.Checker
 	runVerifier         AgentRunVerifier
 	platformTokenSecret string
+
+	// transcriptStore is the ticket #43 ingestion seam — optional,
+	// nil-guarded. Wired via WithAgentStepTranscriptStore.
+	transcriptStore HarvestTranscriptStore
 }
 
 func NewAgentStep(
@@ -833,6 +848,43 @@ func (step *AgentStep) ingestFlightRecorder(
 				rm.Status = schema.RunStatusError
 				if rm.Summary == "" || rm.Summary == "flight recorder output missing" {
 					rm.Summary = "event stream ended without step.end"
+				}
+			}
+		}
+
+		// transcript.ndjson: the raw tool-call transcript (ticket #43),
+		// captured by THIS step's runner — the agent step is where the
+		// transcript actually lives; the harvest step's flight volume never
+		// contains it. Its own store, keyed like the metrics row on
+		// (build_id, plan_id); a missing/failed transcript never affects
+		// metric ingestion. Bounded to the last 512KiB server-side as
+		// defense-in-depth (the runner already bounded it) — observability is
+		// best-effort, never fatal.
+		if step.transcriptStore != nil {
+			rc, err = step.streamer.StreamFile(ingestCtx, flightArtifact, "transcript.ndjson")
+			if err != nil {
+				logger.Error("failed-to-stream-flight-file", err, lager.Data{"file": "transcript.ndjson"})
+			} else if rc != nil {
+				raw, readErr := io.ReadAll(io.LimitReader(rc, 8<<20))
+				rc.Close()
+				if readErr != nil {
+					logger.Error("failed-to-read-flight-file", readErr, lager.Data{"file": "transcript.ndjson"})
+				} else if len(raw) > 0 {
+					nd, byteLen, truncated := boundTranscriptTail(raw)
+					tr := db.AgentRunTranscript{
+						BuildID:   step.metadata.BuildID,
+						PlanID:    string(step.planID),
+						StepName:  step.plan.Name,
+						NDJSON:    nd,
+						ByteLen:   byteLen,
+						Truncated: truncated,
+					}
+					if ticketID > 0 {
+						tr.TicketID = &ticketID
+					}
+					if err := step.transcriptStore.Upsert(tr); err != nil {
+						logger.Error("failed-to-ingest-transcript", err)
+					}
 				}
 			}
 		}

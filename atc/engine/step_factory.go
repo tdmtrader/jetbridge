@@ -279,6 +279,13 @@ func (factory *coreStepFactory) AgentStep(
 	if factory.agentMetricsStore != nil {
 		agentOpts = append(agentOpts, exec.WithAgentMetricsStore(factory.agentMetricsStore))
 	}
+	if factory.agentTranscriptStore != nil {
+		// The transcript is captured by THIS step's runner (the IMPLEMENT
+		// step) — never the harvest step's, whose flight volume never
+		// contains it — so ingestion must be wired here, not (only) into
+		// harvestOpts below.
+		agentOpts = append(agentOpts, exec.WithAgentStepTranscriptStore(factory.agentTranscriptStore))
+	}
 	if factory.agentBudgetChecker != nil {
 		agentOpts = append(agentOpts, exec.WithAgentBudgetChecker(factory.agentBudgetChecker))
 	}
