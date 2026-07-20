@@ -395,6 +395,7 @@ func NewHandler(
 		atc.CreateAgentWorkflowVersion:   http.HandlerFunc(workflowsServer.Import),
 		atc.PromoteAgentWorkflowVersion:  http.HandlerFunc(workflowsServer.Promote),
 		atc.GetAgentWorkflowStats:        http.HandlerFunc(workflowsServer.Stats),
+		atc.UpdateAgentWorkflow:          http.HandlerFunc(workflowsServer.Update),
 
 		atc.CreateAgentPrincipal: http.HandlerFunc(principalsServer.CreatePrincipal),
 		atc.ListAgentPrincipals:  http.HandlerFunc(principalsServer.ListPrincipals),

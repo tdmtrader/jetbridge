@@ -215,6 +215,46 @@ func TestStatsReturnsDerivedRows(t *testing.T) {
 	}
 }
 
+func TestUpdateAnnotatesAndHides(t *testing.T) {
+	h, store := newHandler(t)
+	if _, err := store.Import("wf", []byte(validYAML), "importer"); err != nil {
+		t.Fatal(err)
+	}
+
+	w := httptest.NewRecorder()
+	h.Update(w, request("PUT", "/api/v1/agent/workflows/wf",
+		url.Values{":workflow_name": {"wf"}}, `{"annotation":"note","hidden":true}`))
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("status = %d body=%s", w.Code, w.Body.String())
+	}
+
+	defs, _ := store.List()
+	if defs[0].Annotation != "note" || !defs[0].Hidden {
+		t.Errorf("lifecycle not applied: %+v", defs[0])
+	}
+}
+
+func TestUpdateUnknownWorkflowIs404(t *testing.T) {
+	h, _ := newHandler(t)
+	w := httptest.NewRecorder()
+	h.Update(w, request("PUT", "/api/v1/agent/workflows/ghost",
+		url.Values{":workflow_name": {"ghost"}}, `{"hidden":true}`))
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", w.Code)
+	}
+}
+
+func TestUpdateEmptyBodyIs400(t *testing.T) {
+	h, store := newHandler(t)
+	_, _ = store.Import("wf", []byte(validYAML), "importer")
+	w := httptest.NewRecorder()
+	h.Update(w, request("PUT", "/api/v1/agent/workflows/wf",
+		url.Values{":workflow_name": {"wf"}}, `{}`))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", w.Code)
+	}
+}
+
 func jsonRequest(path string, params url.Values, body string) *http.Request {
 	r := request("POST", path, params, body)
 	r.Header.Set("Content-Type", "application/json")
