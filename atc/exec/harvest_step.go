@@ -704,6 +704,16 @@ func (step *HarvestStep) ingestAndRecord(
 		}
 	}
 
+	if !flightRead {
+		// No flight file was read at all — the step produced no flight output
+		// (dominant cause: a runner image predating the flight recorder). This
+		// is a missing RECORDING, not a failed step: record it as incomplete so
+		// DeriveOutcome renders it amber "unrecorded" on a succeeded build
+		// (never red), while a failed/errored build still wins on read.
+		rm.Status = schema.RunStatusIncomplete
+		rm.Summary = "no flight output (runner image predates flight recorder?)"
+	}
+
 	// Evidence upsert — server-side trust pins (D9): Repo from the PLAN
 	// (never the pod-written payload), TicketID/PipelineRunID verified-or-
 	// nil, SubmittedBy "harvest". The payload supplies display columns only.

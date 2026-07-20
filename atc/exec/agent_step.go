@@ -838,6 +838,16 @@ func (step *AgentStep) ingestFlightRecorder(
 		}
 	}
 
+	if !flightRead {
+		// No flight file was read at all — the step produced no flight output
+		// (dominant cause: a runner image predating the flight recorder). This
+		// is a missing RECORDING, not a failed step: record it as incomplete so
+		// DeriveOutcome renders it amber "unrecorded" on a succeeded build
+		// (never red), while a failed/errored build still wins on read.
+		rm.Status = schema.RunStatusIncomplete
+		rm.Summary = "no flight output (runner image predates flight recorder?)"
+	}
+
 	// The flight recorder is SELF-REPORTED: it is written inside the agent
 	// pod, where claude runs as root with --dangerously-skip-permissions and
 	// AGENT_FLIGHT_DIR in its own env, so a prompt-injected agent (or a leaked
