@@ -18,6 +18,13 @@ type Definition struct {
 	CreatedBy   string `json:"created_by"`
 	CreatedAt   int64  `json:"created_at"`
 
+	// Hidden/Annotation are workflow-NAME-level lifecycle metadata (S-6),
+	// stored in agent_workflow_lifecycle and joined onto every version row on
+	// read. Hidden deprecates a workflow from default listings; Annotation is
+	// a human operator note distinct from the per-version YAML Description.
+	Hidden     bool   `json:"hidden"`
+	Annotation string `json:"annotation,omitempty"`
+
 	Config Config `json:"config"` // parsed YAML, §6 grammar
 
 	// RawYAML is the stored workflow.yml bytes. Populated by Get and
@@ -58,4 +65,10 @@ type Store interface {
 	LiveVersions() (map[string]int, error)         // name -> live version, one query for all names
 	Versions(name string) ([]Definition, error)
 	Promote(name string, version int, promotedBy string) error // atomically swaps the live flag
+	// Annotate sets the workflow's operator note (name-level). Returns
+	// ErrVersionNotFound if no version of name exists.
+	Annotate(name, annotation, updatedBy string) error
+	// SetHidden deprecates (hidden=true) or restores (false) a workflow from
+	// default listings. Returns ErrVersionNotFound if no version exists.
+	SetHidden(name string, hidden bool, updatedBy string) error
 }
