@@ -2,6 +2,7 @@ module AgentTicketsPageTests exposing (all)
 
 import Application.Application as Application
 import Common
+import Concourse.AgentDispatcher as AgentDispatcher
 import Concourse.AgentTicket as AgentTicket
 import Data
 import Expect
@@ -63,6 +64,19 @@ initAgentTickets =
         }
 
 
+dispatcherStatus : String -> Callback.Callback
+dispatcherStatus modeToken =
+    Callback.AgentDispatcherFetched
+        (Ok
+            { mode = AgentDispatcher.modeFromString modeToken
+            , source = "setting"
+            , updatedAt = Just "2026-07-19T12:00:00Z"
+            , updatedBy = Just "operator"
+            , bootDefault = AgentDispatcher.Off
+            }
+        )
+
+
 all : Test
 all =
     describe "ticket queue page"
@@ -70,14 +84,55 @@ all =
             \_ ->
                 List.length sampleTickets
                     |> Expect.equal 2
-        , test "fetches tickets and costs on load" <|
+        , test "fetches tickets, costs and dispatcher status on load" <|
             \_ ->
                 initAgentTickets
                     |> Tuple.second
                     |> Expect.all
                         [ Common.contains Effects.FetchAgentTickets
                         , Common.contains Effects.FetchAgentTicketCosts
+                        , Common.contains Effects.FetchAgentDispatcher
                         ]
+        , test "decodes the dispatcher status wire shape" <|
+            \_ ->
+                Json.Decode.decodeString AgentDispatcher.decodeStatus
+                    """
+                    { "mode": "paused", "source": "setting"
+                    , "updated_at": "2026-07-19T12:00:00Z", "updated_by": "operator"
+                    , "boot_default": "off" }
+                    """
+                    |> Result.map .mode
+                    |> Expect.equal (Ok AgentDispatcher.Paused)
+        , test "tolerates an unknown mode token without crashing" <|
+            \_ ->
+                Json.Decode.decodeString AgentDispatcher.decodeStatus
+                    """{ "mode": "hibernating", "source": "setting", "boot_default": "active" }"""
+                    |> Result.map .mode
+                    |> Expect.equal (Ok (AgentDispatcher.Unknown "hibernating"))
+        , test "renders the auto-dispatch status pill from the fetched status" <|
+            \_ ->
+                Common.init "/agent-tickets"
+                    |> Application.handleCallback (dispatcherStatus "active")
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Query.find [ Test.Html.Selector.id "dispatcher-status-pill" ]
+                    |> Query.has [ text "Auto-dispatch: active" ]
+        , test "shows the pause banner when auto-dispatch is not active" <|
+            \_ ->
+                Common.init "/agent-tickets"
+                    |> Application.handleCallback (dispatcherStatus "paused")
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Query.find [ Test.Html.Selector.id "dispatcher-banner" ]
+                    |> Query.has [ text "manually" ]
+        , test "shows no dispatcher banner when auto-dispatch is active" <|
+            \_ ->
+                Common.init "/agent-tickets"
+                    |> Application.handleCallback (dispatcherStatus "active")
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Query.findAll [ Test.Html.Selector.id "dispatcher-banner" ]
+                    |> Query.count (Expect.equal 0)
         , test "renders a ticket row with id, title and workflow" <|
             \_ ->
                 Common.init "/agent-tickets"
