@@ -62,6 +62,7 @@ type Route
     | Agent
     | AgentTickets
     | AgentTicket { id : Int }
+    | AgentWorkflow { name : String }
 
 
 type SearchType
@@ -336,6 +337,12 @@ agentTickets =
     map (always <| AgentTickets) (s "agent-tickets")
 
 
+agentWorkflow : Parser ((b -> Route) -> a) a
+agentWorkflow =
+    map (\name -> always <| AgentWorkflow { name = name })
+        (s "agent-workflows" </> string)
+
+
 causality : Parser ((InstanceVars -> Route) -> a) a
 causality =
     let
@@ -504,6 +511,7 @@ sitemap =
         , agentReviews
         , agent
         , agentTicket
+        , agentWorkflow
         , agentTickets
         , pipeline
         , build
@@ -631,6 +639,10 @@ toString route =
             ( [ "agent-tickets", String.fromInt id ], [] )
                 |> RouteBuilder.build
 
+        AgentWorkflow { name } ->
+            ( [ "agent-workflows", name ], [] )
+                |> RouteBuilder.build
+
 
 parsePath : Url.Url -> Maybe Route
 parsePath url =
@@ -750,6 +762,9 @@ getGroups route =
         AgentTicket _ ->
             []
 
+        AgentWorkflow _ ->
+            []
+
 
 withGroups : List String -> Route -> Route
 withGroups groups route =
@@ -791,4 +806,7 @@ withGroups groups route =
             route
 
         AgentTicket _ ->
+            route
+
+        AgentWorkflow _ ->
             route
