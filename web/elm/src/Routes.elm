@@ -1,5 +1,6 @@
 module Routes exposing
-    ( DashboardView(..)
+    ( AgentSection(..)
+    , DashboardView(..)
     , Highlight(..)
     , Route(..)
     , SearchType(..)
@@ -59,11 +60,18 @@ type Route
     | Causality { id : Concourse.VersionedResourceIdentifier, direction : Concourse.CausalityDirection, version : Maybe Concourse.Version, groups : List String }
     | DownloadFly
     | AgentReviews { teamName : String }
-    | Agent
+    | Agent AgentSection
     | AgentTickets
     | AgentTicket { id : Int }
     | AgentRunTranscript { id : Int, buildId : Int }
     | AgentWorkflow { name : String }
+
+
+type AgentSection
+    = AgentRuns
+    | AgentWorkflows
+    | AgentSpend
+    | AgentAdmin
 
 
 type SearchType
@@ -319,23 +327,55 @@ downloadFly =
 
 agentReviews : Parser ((b -> Route) -> a) a
 agentReviews =
+    map (always <| AgentReviews { teamName = defaultAgentTeam })
+        (s "agent" </> s "reviews")
+
+
+agentReviewsLegacy : Parser ((b -> Route) -> a) a
+agentReviewsLegacy =
     map (\teamName -> always <| AgentReviews { teamName = teamName })
         (s "teams" </> string </> s "agent-reviews")
 
 
-agent : Parser ((b -> Route) -> a) a
-agent =
-    map (always <| Agent) (s "agent")
+{-| W-11: a bare `/reviews` promotes discoverability of the agent reviews
+index. It binds to the default agent team rather than silently dropping to the
+dashboard, which is what an unknown path does today.
+-}
+agentReviewsShortcut : Parser ((b -> Route) -> a) a
+agentReviewsShortcut =
+    map (always <| AgentReviews { teamName = defaultAgentTeam })
+        (s "reviews")
+
+
+agentSection : Parser ((b -> Route) -> a) a
+agentSection =
+    oneOf
+        [ map (always <| Agent AgentRuns) (s "agent" </> s "runs")
+        , map (always <| Agent AgentWorkflows) (s "agent" </> s "workflows")
+        , map (always <| Agent AgentSpend) (s "agent" </> s "spend")
+        , map (always <| Agent AgentAdmin) (s "agent" </> s "admin")
+
+        -- Legacy bare /agent → the runs section (the mega-page opened on runs).
+        , map (always <| Agent AgentRuns) (s "agent")
+        ]
 
 
 agentTicket : Parser ((b -> Route) -> a) a
 agentTicket =
-    map (\id -> always <| AgentTicket { id = id }) (s "agent-tickets" </> int)
+    map (\id -> always <| AgentTicket { id = id }) (s "agent" </> s "tickets" </> int)
 
 
 agentTickets : Parser ((b -> Route) -> a) a
 agentTickets =
-    map (always <| AgentTickets) (s "agent-tickets")
+    map (always <| AgentTickets) (s "agent" </> s "tickets")
+
+
+defaultAgentTeam : String
+defaultAgentTeam =
+    -- JetBridge is single-agent-team; the team-less /agent/reviews path binds
+    -- to "main". The legacy /teams/:team/agent-reviews parser stays as a
+    -- back-compat alias for any other team's deep links.
+    "main"
 
 
 agentRunTranscript : Parser ((b -> Route) -> a) a
@@ -516,11 +556,13 @@ sitemap =
         , job
         , dashboard
         , agentReviews
-        , agent
+        , agentReviewsLegacy
+        , agentReviewsShortcut
         , agentRunTranscript
         , agentTicket
         , agentWorkflow
         , agentTickets
+        , agentSection
         , pipeline
         , build
         , oneOffBuild
@@ -631,20 +673,20 @@ toString route =
             ( [ "download-fly" ], [] )
                 |> RouteBuilder.build
 
-        AgentReviews { teamName } ->
-            ( [ "teams", teamName, "agent-reviews" ], [] )
+        AgentReviews _ ->
+            ( [ "agent", "reviews" ], [] )
                 |> RouteBuilder.build
 
-        Agent ->
-            ( [ "agent" ], [] )
+        Agent section ->
+            ( [ "agent", agentSectionPath section ], [] )
                 |> RouteBuilder.build
 
         AgentTickets ->
-            ( [ "agent-tickets" ], [] )
+            ( [ "agent", "tickets" ], [] )
                 |> RouteBuilder.build
 
         AgentTicket { id } ->
-            ( [ "agent-tickets", String.fromInt id ], [] )
+            ( [ "agent", "tickets", String.fromInt id ], [] )
                 |> RouteBuilder.build
 
         AgentRunTranscript { id, buildId } ->
@@ -654,6 +696,22 @@ toString route =
         AgentWorkflow { name } ->
             ( [ "agent-workflows", name ], [] )
                 |> RouteBuilder.build
+
+
+agentSectionPath : AgentSection -> String
+agentSectionPath section =
+    case section of
+        AgentRuns ->
+            "runs"
+
+        AgentWorkflows ->
+            "workflows"
+
+        AgentSpend ->
+            "spend"
+
+        AgentAdmin ->
+            "admin"
 
 
 parsePath : Url.Url -> Maybe Route
@@ -765,7 +823,7 @@ getGroups route =
         AgentReviews _ ->
             []
 
-        Agent ->
+        Agent _ ->
             []
 
         AgentTickets ->
@@ -814,7 +872,7 @@ withGroups groups route =
         AgentReviews _ ->
             route
 
-        Agent ->
+        Agent _ ->
             route
 
         AgentTickets ->

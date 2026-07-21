@@ -302,12 +302,72 @@ all =
                     |> Url.fromString
                     |> Maybe.andThen Routes.parsePath
                     |> Expect.equal (Just Routes.AgentTickets)
+        , test "agent tickets queue path is /agent/tickets" <|
+            \_ ->
+                Routes.toString Routes.AgentTickets
+                    |> Expect.equal "/agent/tickets"
         , test "agent ticket detail roundtrip" <|
             \_ ->
                 ("http://example.com" ++ Routes.toString (Routes.AgentTicket { id = 12 }))
                     |> Url.fromString
                     |> Maybe.andThen Routes.parsePath
                     |> Expect.equal (Just <| Routes.AgentTicket { id = 12 })
+        , test "agent ticket detail path is /agent/tickets/12" <|
+            \_ ->
+                Routes.toString (Routes.AgentTicket { id = 12 })
+                    |> Expect.equal "/agent/tickets/12"
+        , test "agent runs section roundtrip" <|
+            \_ ->
+                ("http://example.com" ++ Routes.toString (Routes.Agent Routes.AgentRuns))
+                    |> Url.fromString
+                    |> Maybe.andThen Routes.parsePath
+                    |> Expect.equal (Just <| Routes.Agent Routes.AgentRuns)
+        , test "agent workflows section roundtrip" <|
+            \_ ->
+                ("http://example.com" ++ Routes.toString (Routes.Agent Routes.AgentWorkflows))
+                    |> Url.fromString
+                    |> Maybe.andThen Routes.parsePath
+                    |> Expect.equal (Just <| Routes.Agent Routes.AgentWorkflows)
+        , test "agent spend section roundtrip" <|
+            \_ ->
+                ("http://example.com" ++ Routes.toString (Routes.Agent Routes.AgentSpend))
+                    |> Url.fromString
+                    |> Maybe.andThen Routes.parsePath
+                    |> Expect.equal (Just <| Routes.Agent Routes.AgentSpend)
+        , test "agent admin section roundtrip" <|
+            \_ ->
+                ("http://example.com" ++ Routes.toString (Routes.Agent Routes.AgentAdmin))
+                    |> Url.fromString
+                    |> Maybe.andThen Routes.parsePath
+                    |> Expect.equal (Just <| Routes.Agent Routes.AgentAdmin)
+        , test "bare /agent legacy alias parses to runs" <|
+            \_ ->
+                "http://example.com/agent"
+                    |> Url.fromString
+                    |> Maybe.andThen Routes.parsePath
+                    |> Expect.equal (Just <| Routes.Agent Routes.AgentRuns)
+        , test "agent reviews team-less path roundtrip" <|
+            \_ ->
+                ("http://example.com" ++ Routes.toString (Routes.AgentReviews { teamName = "main" }))
+                    |> Url.fromString
+                    |> Maybe.andThen Routes.parsePath
+                    |> Expect.equal (Just <| Routes.AgentReviews { teamName = "main" })
+        , test "agent reviews path is /agent/reviews" <|
+            \_ ->
+                Routes.toString (Routes.AgentReviews { teamName = "main" })
+                    |> Expect.equal "/agent/reviews"
+        , test "legacy /teams/main/agent-reviews still parses" <|
+            \_ ->
+                "http://example.com/teams/main/agent-reviews"
+                    |> Url.fromString
+                    |> Maybe.andThen Routes.parsePath
+                    |> Expect.equal (Just <| Routes.AgentReviews { teamName = "main" })
+        , test "bare /reviews shortcut parses to agent reviews" <|
+            \_ ->
+                "http://example.com/reviews"
+                    |> Url.fromString
+                    |> Maybe.andThen Routes.parsePath
+                    |> Expect.equal (Just <| Routes.AgentReviews { teamName = "main" })
         , test "AgentRunTranscript round-trips through toString/parsePath" <|
             \_ ->
                 ("http://example.com" ++ Routes.toString (Routes.AgentRunTranscript { id = 12, buildId = 4567 }))
