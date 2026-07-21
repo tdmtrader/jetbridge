@@ -4,13 +4,12 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/concourse/concourse/agent/deliverydiff"
 	"github.com/concourse/concourse/agent/gitcheck"
 )
 
-// MirrorProvider opens the repo mirror and returns a windowed diff.
-// Implemented by the outcome watcher's MirrorCache — one cache shared by
-// the watcher component and this handler. A nil provider means the diff
-// API is disabled (no --agent-outcome-git-dir, the master switch).
+// MirrorProvider is the historical compatibility fallback for deliveries
+// captured before Postgres-backed diffs were introduced.
 type MirrorProvider interface {
 	Diff(repo, base, pushed string, offset, limit int) (gitcheck.DiffPage, error)
 }
@@ -21,28 +20,46 @@ type MirrorProvider interface {
 // unlike the external compare link, it survives the merge and works for
 // private/non-GitHub remotes (both stay).
 type DiffHandler struct {
-	store    Store
-	provider MirrorProvider
+	outcomes Store
+	diffs    deliverydiff.Store
+	fallback MirrorProvider
 }
 
-func NewDiffHandler(store Store, provider MirrorProvider) *DiffHandler {
-	return &DiffHandler{store: store, provider: provider}
+func NewDiffHandler(outcomes Store, diffs deliverydiff.Store, fallback MirrorProvider) *DiffHandler {
+	return &DiffHandler{outcomes: outcomes, diffs: diffs, fallback: fallback}
 }
 
-// GetDiff handles GET /api/v1/agent/tickets/:ticket_id/diff. 404s when the
-// API is disabled, no outcome row exists, or base_sha is unknown (a
-// fallback-seeded row — the exception now that harvest seeds base_sha at
-// push time): the ATC never renders unbounded diffs.
+// GetDiff handles GET /api/v1/agent/tickets/:ticket_id/diff. New deliveries
+// are served from immutable Postgres evidence; the Git mirror is consulted
+// only for historical deliveries that have no stored attempt.
 func (h *DiffHandler) GetDiff(w http.ResponseWriter, r *http.Request) {
 	id, ok := ticketID(w, r)
 	if !ok {
 		return
 	}
-	if h.provider == nil {
-		http.Error(w, "diff API is not enabled", http.StatusNotFound)
+
+	offset := atoiDefault(r.URL.Query().Get("offset"), 0)
+	limit := atoiDefault(r.URL.Query().Get("limit"), 50)
+	if limit > 200 {
+		limit = 200
+	}
+	if h.diffs != nil {
+		stored, found, err := h.diffs.GetLatest(id)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if found {
+			writeJSON(w, http.StatusOK, stored.Page(offset, limit))
+			return
+		}
+	}
+
+	if h.fallback == nil {
+		http.Error(w, "no diff available for ticket", http.StatusNotFound)
 		return
 	}
-	o, found, err := h.store.Get(id)
+	o, found, err := h.outcomes.Get(id)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -52,13 +69,7 @@ func (h *DiffHandler) GetDiff(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	offset := atoiDefault(r.URL.Query().Get("offset"), 0)
-	limit := atoiDefault(r.URL.Query().Get("limit"), 50)
-	if limit > 200 {
-		limit = 200
-	}
-
-	page, err := h.provider.Diff(o.Repo, o.BaseSha, o.PushedSha, offset, limit)
+	page, err := h.fallback.Diff(o.Repo, o.BaseSha, o.PushedSha, offset, limit)
 	if err != nil {
 		http.Error(w, "diff unavailable: "+err.Error(), http.StatusBadGateway)
 		return
