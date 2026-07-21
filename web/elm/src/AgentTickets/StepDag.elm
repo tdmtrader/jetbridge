@@ -184,8 +184,24 @@ harvestBoxes buildId rm =
 
             else
                 []
+
+        expanded =
+            gateBoxes ++ judgeBoxes ++ pushBoxes
     in
-    gateBoxes ++ judgeBoxes ++ pushBoxes
+    if List.isEmpty expanded then
+        -- A harvest that FAILED before producing any gate/judge/push facts
+        -- (the fail-before-gates cases: no-op guard HEAD==base, workspace
+        -- dirty, not-a-git-repo, invalid judge) carries empty results
+        -- metadata. Expanding it into gate/judge/push boxes then yields the
+        -- empty list, which would make the failed harvest step VANISH from the
+        -- DAG — the opposite of the DAG's purpose. Fall back to a single box
+        -- for the harvest step itself, reusing the shared agentStepBox
+        -- constructor so it carries the harvest row's own outcome/color (a
+        -- failed harvest reads as one red/amber box).
+        [ agentStepBox buildId rm ]
+
+    else
+        expanded
 
 
 gateBox : Int -> Agent.GateResult -> StepBox

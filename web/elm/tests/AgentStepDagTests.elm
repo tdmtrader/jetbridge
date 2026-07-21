@@ -177,6 +177,27 @@ all =
                         |> List.head
                         |> Maybe.map (.boxes >> List.filter (\b -> String.startsWith "gate:" b.label) >> List.map (\b -> ( b.tone, b.warn )))
                         |> Expect.equal (Just [ ( AgentBadge.GoodMuted, True ), ( AgentBadge.Bad, False ) ])
+            , test "a harvest that failed before any gate/judge/push still renders exactly one harvest box (never vanishes)" <|
+                \_ ->
+                    -- S-1 regression: the fail-before-gates harvests (no-op guard
+                    -- HEAD==base, workspace dirty, not-a-git-repo, invalid judge)
+                    -- carry empty results.metadata, so gate/judge/push expansion
+                    -- is empty. The failed harvest must fall back to a single box
+                    -- carrying its own failure color — not disappear from the DAG.
+                    let
+                        harvest =
+                            -- default results = Agent.emptyStepResults (no metadata)
+                            row 100 "harvest" "failed" "failed" 0.4 200
+                    in
+                    StepDag.attempts "queued"
+                        (byBuild [ row 100 "implement" "ok" "succeeded" 0.2 100, harvest ])
+                        |> List.head
+                        |> Maybe.map .boxes
+                        |> Expect.all
+                            [ \mb -> Expect.equal (Maybe.map (List.map .label) mb) (Just [ "ticket", "implement", "harvest" ])
+                            , \mb -> Expect.equal (Maybe.map (List.filter (\b -> b.label == "harvest") >> List.length) mb) (Just 1)
+                            , \mb -> Expect.equal (Maybe.map (List.filter (\b -> b.label == "harvest") >> List.map .tone) mb) (Just [ AgentBadge.Bad ])
+                            ]
             , test "a no-output agent step renders green (GoodMuted) with a warn, never red" <|
                 \_ ->
                     -- succeeded build, ok step, but no summary/result → NoOutput.
