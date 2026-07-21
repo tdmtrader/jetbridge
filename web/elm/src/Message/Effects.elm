@@ -223,6 +223,11 @@ type Effect
     | FetchPipelineRuns Concourse.PipelineIdentifier
     | FetchAgentRunMetrics
     | FetchAgentWorkflows
+    | FetchAgentWorkflowVersions String
+    | FetchAgentWorkflowVersion String Int
+    | FetchAgentWorkflowStats String
+    | PromoteAgentWorkflowVersion String Int
+    | UpdateAgentWorkflowLifecycle String { annotation : Maybe String, hidden : Maybe Bool }
     | FetchAgentCostRollup
     | FetchAgentDispatcher
     | SetAgentDispatcher Concourse.AgentDispatcher.Mode
@@ -830,6 +835,35 @@ runEffect effect key csrfToken =
                 |> Api.request
                 |> Task.attempt AgentWorkflowsFetched
 
+        FetchAgentWorkflowVersions name ->
+            Api.get (Endpoints.AgentWorkflowVersions name)
+                |> Api.expectJson Concourse.Agent.decodeWorkflowVersions
+                |> Api.request
+                |> Task.attempt (AgentWorkflowVersionsFetched name)
+
+        FetchAgentWorkflowVersion name version ->
+            Api.get (Endpoints.AgentWorkflowVersion name version)
+                |> Api.expectJson Concourse.Agent.decodeWorkflowDefinition
+                |> Api.request
+                |> Task.attempt (AgentWorkflowVersionFetched name)
+
+        FetchAgentWorkflowStats name ->
+            Api.get (Endpoints.AgentWorkflowStats name)
+                |> Api.expectJson Concourse.Agent.decodeWorkflowStats
+                |> Api.request
+                |> Task.attempt (AgentWorkflowStatsFetched name)
+
+        PromoteAgentWorkflowVersion name version ->
+            Api.put (Endpoints.AgentWorkflowPromote name version) csrfToken
+                |> Api.request
+                |> Task.attempt (AgentWorkflowPromoted name)
+
+        UpdateAgentWorkflowLifecycle name patch ->
+            Api.put (Endpoints.AgentWorkflowLifecycle name) csrfToken
+                |> Api.withJsonBody (encodeLifecyclePatch patch)
+                |> Api.request
+                |> Task.attempt (AgentWorkflowLifecycleUpdated name)
+
         FetchAgentCostRollup ->
             Api.get Endpoints.AgentCostRollup
                 |> Api.expectJson Concourse.Agent.decodeCostRollup
@@ -999,6 +1033,16 @@ encodeTicketUpdate params =
                     Nothing ->
                         []
                )
+        )
+
+
+encodeLifecyclePatch : { annotation : Maybe String, hidden : Maybe Bool } -> Json.Encode.Value
+encodeLifecyclePatch patch =
+    Json.Encode.object
+        (List.filterMap identity
+            [ Maybe.map (\a -> ( "annotation", Json.Encode.string a )) patch.annotation
+            , Maybe.map (\h -> ( "hidden", Json.Encode.bool h )) patch.hidden
+            ]
         )
 
 

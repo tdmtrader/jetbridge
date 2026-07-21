@@ -21,6 +21,8 @@ import Time
 sampleWorkflow :
     { name : String
     , description : String
+    , annotation : String
+    , hidden : Bool
     , latestVersion : Int
     , contentHash : String
     , liveVersion : Int
@@ -29,6 +31,8 @@ sampleWorkflow :
 sampleWorkflow =
     { name = "standard-dev"
     , description = "the five-phase dev flow"
+    , annotation = ""
+    , hidden = False
     , latestVersion = 2
     , contentHash = "abcdef0123456789cafe"
     , liveVersion = 1

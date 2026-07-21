@@ -7,13 +7,21 @@ module Concourse.Agent exposing
     , PrincipalCreated
     , RunMetric
     , Usage
+    , WorkflowConfig
+    , WorkflowDefinition
+    , WorkflowGate
+    , WorkflowStep
     , WorkflowSummary
+    , WorkflowVersionStats
     , decodeCostRollup
     , decodeCredentialStatuses
     , decodePrincipalCreated
     , decodePrincipals
     , decodeRunMetric
+    , decodeWorkflowDefinition
+    , decodeWorkflowStats
     , decodeWorkflowSummary
+    , decodeWorkflowVersions
     )
 
 import Dict exposing (Dict)
@@ -25,6 +33,8 @@ import Time
 type alias WorkflowSummary =
     { name : String
     , description : String
+    , annotation : String
+    , hidden : Bool
     , latestVersion : Int
     , contentHash : String
     , liveVersion : Int
@@ -200,10 +210,176 @@ decodeWorkflowSummary =
     Json.Decode.succeed WorkflowSummary
         |> andMap (defaultTo "" <| Json.Decode.field "name" Json.Decode.string)
         |> andMap (defaultTo "" <| Json.Decode.field "description" Json.Decode.string)
+        |> andMap (defaultTo "" <| Json.Decode.field "annotation" Json.Decode.string)
+        |> andMap (defaultTo False <| Json.Decode.field "hidden" Json.Decode.bool)
         |> andMap (defaultTo 0 <| Json.Decode.field "latest_version" Json.Decode.int)
         |> andMap (defaultTo "" <| Json.Decode.field "content_hash" Json.Decode.string)
         |> andMap (defaultTo 0 <| Json.Decode.field "live_version" Json.Decode.int)
         |> andMap (defaultTo (dateFromSeconds 0) <| Json.Decode.field "created_at" (Json.Decode.map dateFromSeconds Json.Decode.int))
+
+
+
+-- Workflow detail (definition + config + per-version stats) --------------------
+
+
+type alias WorkflowStep =
+    { agent : String
+    , checkpoint : String
+    , prompt : String
+    , model : String
+    , maxTurns : Int
+    , inputs : List String
+    , outputs : List String
+    , budgetSliceUsd : Float
+    }
+
+
+type alias WorkflowGate =
+    { gate : String
+    , scope : String
+    , focus : String
+    }
+
+
+type alias WorkflowConfig =
+    { schemaVersion : Int
+    , name : String
+    , description : String
+    , specDelivery : String
+    , defaultModel : String
+    , defaultMaxTurns : Int
+    , budgetTicketUsd : Float
+    , budgetJudgeUsd : Float
+    , prompts : Dict String String
+    , steps : List WorkflowStep
+    , gates : List WorkflowGate
+    , onGateFailure : String
+    }
+
+
+type alias WorkflowDefinition =
+    { id : Int
+    , name : String
+    , version : Int
+    , contentHash : String
+    , live : Bool
+    , description : String
+    , annotation : String
+    , hidden : Bool
+    , createdBy : String
+    , createdAt : Time.Posix
+    , rawYaml : String
+    , config : WorkflowConfig
+    }
+
+
+type alias WorkflowVersionStats =
+    { version : Maybe Int
+    , runs : Int
+    , tickets : Int
+    , succeededRuns : Int
+    , successRate : Float
+    , avgCostUsd : Float
+    , avgTurns : Float
+    , totalCostUsd : Float
+    }
+
+
+decodeWorkflowStep : Json.Decode.Decoder WorkflowStep
+decodeWorkflowStep =
+    Json.Decode.succeed WorkflowStep
+        |> andMap (defaultTo "" <| Json.Decode.field "agent" Json.Decode.string)
+        |> andMap (defaultTo "" <| Json.Decode.field "checkpoint" Json.Decode.string)
+        |> andMap (defaultTo "" <| Json.Decode.field "prompt" Json.Decode.string)
+        |> andMap (defaultTo "" <| Json.Decode.field "model" Json.Decode.string)
+        |> andMap (defaultTo 0 <| Json.Decode.field "max_turns" Json.Decode.int)
+        |> andMap (defaultTo [] <| Json.Decode.field "inputs" (Json.Decode.list Json.Decode.string))
+        |> andMap (defaultTo [] <| Json.Decode.field "outputs" (Json.Decode.list Json.Decode.string))
+        |> andMap (defaultTo 0 <| Json.Decode.field "budget_slice_usd" Json.Decode.float)
+
+
+decodeWorkflowGate : Json.Decode.Decoder WorkflowGate
+decodeWorkflowGate =
+    Json.Decode.succeed WorkflowGate
+        |> andMap (defaultTo "" <| Json.Decode.field "gate" Json.Decode.string)
+        |> andMap (defaultTo "" <| Json.Decode.field "scope" Json.Decode.string)
+        |> andMap (defaultTo "" <| Json.Decode.field "focus" Json.Decode.string)
+
+
+decodeWorkflowConfig : Json.Decode.Decoder WorkflowConfig
+decodeWorkflowConfig =
+    Json.Decode.succeed WorkflowConfig
+        |> andMap (defaultTo 1 <| Json.Decode.field "schema_version" Json.Decode.int)
+        |> andMap (defaultTo "" <| Json.Decode.field "name" Json.Decode.string)
+        |> andMap (defaultTo "" <| Json.Decode.field "description" Json.Decode.string)
+        |> andMap (defaultTo "" <| Json.Decode.field "spec_delivery" Json.Decode.string)
+        |> andMap (defaultTo "" <| Json.Decode.at [ "defaults", "model" ] Json.Decode.string)
+        |> andMap (defaultTo 0 <| Json.Decode.at [ "defaults", "max_turns" ] Json.Decode.int)
+        |> andMap (defaultTo 0 <| Json.Decode.at [ "budget", "ticket_usd" ] Json.Decode.float)
+        |> andMap (defaultTo 0 <| Json.Decode.at [ "budget", "judge_usd" ] Json.Decode.float)
+        |> andMap (defaultTo Dict.empty <| Json.Decode.field "prompts" (Json.Decode.dict Json.Decode.string))
+        |> andMap (defaultTo [] <| Json.Decode.field "steps" (Json.Decode.list decodeWorkflowStep))
+        |> andMap (defaultTo [] <| Json.Decode.at [ "gate_policy", "gates" ] (Json.Decode.list decodeWorkflowGate))
+        |> andMap (defaultTo "" <| Json.Decode.at [ "gate_policy", "on_gate_failure" ] Json.Decode.string)
+
+
+emptyWorkflowConfig : WorkflowConfig
+emptyWorkflowConfig =
+    { schemaVersion = 1
+    , name = ""
+    , description = ""
+    , specDelivery = ""
+    , defaultModel = ""
+    , defaultMaxTurns = 0
+    , budgetTicketUsd = 0
+    , budgetJudgeUsd = 0
+    , prompts = Dict.empty
+    , steps = []
+    , gates = []
+    , onGateFailure = ""
+    }
+
+
+decodeWorkflowDefinition : Json.Decode.Decoder WorkflowDefinition
+decodeWorkflowDefinition =
+    Json.Decode.succeed WorkflowDefinition
+        |> andMap (defaultTo 0 <| Json.Decode.field "id" Json.Decode.int)
+        |> andMap (defaultTo "" <| Json.Decode.field "name" Json.Decode.string)
+        |> andMap (defaultTo 0 <| Json.Decode.field "version" Json.Decode.int)
+        |> andMap (defaultTo "" <| Json.Decode.field "content_hash" Json.Decode.string)
+        |> andMap (defaultTo False <| Json.Decode.field "live" Json.Decode.bool)
+        |> andMap (defaultTo "" <| Json.Decode.field "description" Json.Decode.string)
+        |> andMap (defaultTo "" <| Json.Decode.field "annotation" Json.Decode.string)
+        |> andMap (defaultTo False <| Json.Decode.field "hidden" Json.Decode.bool)
+        |> andMap (defaultTo "" <| Json.Decode.field "created_by" Json.Decode.string)
+        |> andMap (defaultTo (dateFromSeconds 0) <| Json.Decode.field "created_at" (Json.Decode.map dateFromSeconds Json.Decode.int))
+        |> andMap (defaultTo "" <| Json.Decode.field "raw_yaml" Json.Decode.string)
+        |> andMap (defaultTo emptyWorkflowConfig <| Json.Decode.field "config" decodeWorkflowConfig)
+
+
+decodeWorkflowVersions : Json.Decode.Decoder (List WorkflowDefinition)
+decodeWorkflowVersions =
+    Json.Decode.nullable (Json.Decode.list decodeWorkflowDefinition)
+        |> Json.Decode.map (Maybe.withDefault [])
+
+
+decodeWorkflowVersionStats : Json.Decode.Decoder WorkflowVersionStats
+decodeWorkflowVersionStats =
+    Json.Decode.succeed WorkflowVersionStats
+        |> andMap (optionalInt "version")
+        |> andMap (defaultTo 0 <| Json.Decode.field "runs" Json.Decode.int)
+        |> andMap (defaultTo 0 <| Json.Decode.field "tickets" Json.Decode.int)
+        |> andMap (defaultTo 0 <| Json.Decode.field "succeeded_runs" Json.Decode.int)
+        |> andMap (defaultTo 0 <| Json.Decode.field "success_rate" Json.Decode.float)
+        |> andMap (defaultTo 0 <| Json.Decode.field "avg_cost_usd" Json.Decode.float)
+        |> andMap (defaultTo 0 <| Json.Decode.field "avg_turns" Json.Decode.float)
+        |> andMap (defaultTo 0 <| Json.Decode.field "total_cost_usd" Json.Decode.float)
+
+
+decodeWorkflowStats : Json.Decode.Decoder (List WorkflowVersionStats)
+decodeWorkflowStats =
+    Json.Decode.nullable (Json.Decode.list decodeWorkflowVersionStats)
+        |> Json.Decode.map (Maybe.withDefault [])
 
 
 decodeCostSummary : Json.Decode.Decoder CostSummary

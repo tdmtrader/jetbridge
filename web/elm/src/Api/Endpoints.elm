@@ -39,6 +39,11 @@ type Endpoint
     | AgentFeedback
     | AgentMetrics
     | AgentWorkflowsList
+    | AgentWorkflowVersions String
+    | AgentWorkflowVersion String Int
+    | AgentWorkflowStats String
+    | AgentWorkflowLifecycle String
+    | AgentWorkflowPromote String Int
     | AgentCostRollup
     | AgentDispatcher
     | AgentCredentialsStatus
@@ -232,6 +237,21 @@ builder endpoint =
 
         AgentWorkflowsList ->
             base |> appendPath [ "agent", "workflows" ]
+
+        AgentWorkflowVersions name ->
+            base |> appendPath [ "agent", "workflows", name, "versions" ]
+
+        AgentWorkflowVersion name version ->
+            base |> appendPath [ "agent", "workflows", name, "versions", String.fromInt version ]
+
+        AgentWorkflowStats name ->
+            base |> appendPath [ "agent", "workflows", name, "stats" ]
+
+        AgentWorkflowLifecycle name ->
+            base |> appendPath [ "agent", "workflows", name ]
+
+        AgentWorkflowPromote name version ->
+            base |> appendPath [ "agent", "workflows", name, "versions", String.fromInt version, "live" ]
 
         AgentCostRollup ->
             base |> appendPath [ "agent", "costs" ]

@@ -19,6 +19,8 @@ func TestWorkflowRoutesRegistered(t *testing.T) {
 		{atc.GetAgentWorkflowVersion, "GET", "/api/v1/agent/workflows/:workflow_name/versions/:version"},
 		{atc.CreateAgentWorkflowVersion, "POST", "/api/v1/agent/workflows/:workflow_name/versions"},
 		{atc.PromoteAgentWorkflowVersion, "PUT", "/api/v1/agent/workflows/:workflow_name/versions/:version/live"},
+		{atc.GetAgentWorkflowStats, "GET", "/api/v1/agent/workflows/:workflow_name/stats"},
+		{atc.UpdateAgentWorkflow, "PUT", "/api/v1/agent/workflows/:workflow_name"},
 	}
 	for _, rr := range required {
 		found := false

@@ -10,9 +10,15 @@ import (
 // MemoryStore is an in-memory Store for testing (mirrors
 // agent/api/reviews.MemoryStore).
 type MemoryStore struct {
-	mu     sync.Mutex
-	nextID int
-	defs   []*Definition
+	mu        sync.Mutex
+	nextID    int
+	defs      []*Definition
+	lifecycle map[string]lifecycleEntry
+}
+
+type lifecycleEntry struct {
+	hidden     bool
+	annotation string
 }
 
 func NewMemoryStore() *MemoryStore {
@@ -77,7 +83,7 @@ func (m *MemoryStore) Get(name string, version int) (*Definition, bool, error) {
 	defer m.mu.Unlock()
 	for _, d := range m.defs {
 		if d.Name == name && d.Version == version {
-			cp := *d
+			cp := m.decorate(*d)
 			return &cp, true, nil
 		}
 	}
@@ -89,7 +95,7 @@ func (m *MemoryStore) Live(name string) (*Definition, bool, error) {
 	defer m.mu.Unlock()
 	for _, d := range m.defs {
 		if d.Name == name && d.Live {
-			cp := *d
+			cp := m.decorate(*d)
 			return &cp, true, nil
 		}
 	}
@@ -108,7 +114,7 @@ func (m *MemoryStore) Latest(name string) (*Definition, bool, error) {
 	if latest == nil {
 		return nil, false, nil
 	}
-	cp := *latest
+	cp := m.decorate(*latest)
 	return &cp, true, nil
 }
 
@@ -138,7 +144,7 @@ func (m *MemoryStore) List() ([]Definition, error) {
 		cp := *d
 		cp.RawYAML = "" // metadata-only listing
 		cp.SourceManifest = nil
-		out = append(out, cp)
+		out = append(out, m.decorate(cp))
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil
@@ -153,7 +159,7 @@ func (m *MemoryStore) Versions(name string) ([]Definition, error) {
 			cp := *d
 			cp.RawYAML = ""
 			cp.SourceManifest = nil
-			out = append(out, cp)
+			out = append(out, m.decorate(cp))
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Version < out[j].Version })
@@ -181,4 +187,54 @@ func (m *MemoryStore) Promote(name string, version int, promotedBy string) error
 	target.Live = true
 	_ = promotedBy // persisted by the DB store; the memory store only flips flags
 	return nil
+}
+
+func (m *MemoryStore) exists(name string) bool {
+	for _, d := range m.defs {
+		if d.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *MemoryStore) Annotate(name, annotation, updatedBy string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.exists(name) {
+		return ErrVersionNotFound
+	}
+	if m.lifecycle == nil {
+		m.lifecycle = map[string]lifecycleEntry{}
+	}
+	e := m.lifecycle[name]
+	e.annotation = annotation
+	m.lifecycle[name] = e
+	_ = updatedBy
+	return nil
+}
+
+func (m *MemoryStore) SetHidden(name string, hidden bool, updatedBy string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.exists(name) {
+		return ErrVersionNotFound
+	}
+	if m.lifecycle == nil {
+		m.lifecycle = map[string]lifecycleEntry{}
+	}
+	e := m.lifecycle[name]
+	e.hidden = hidden
+	m.lifecycle[name] = e
+	_ = updatedBy
+	return nil
+}
+
+// decorate stamps the name-level lifecycle metadata onto a returned copy.
+func (m *MemoryStore) decorate(d Definition) Definition {
+	if e, ok := m.lifecycle[d.Name]; ok {
+		d.Hidden = e.hidden
+		d.Annotation = e.annotation
+	}
+	return d
 }

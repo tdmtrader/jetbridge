@@ -164,6 +164,8 @@ const (
 	GetAgentWorkflowVersion     = "GetAgentWorkflowVersion"
 	CreateAgentWorkflowVersion  = "CreateAgentWorkflowVersion"
 	PromoteAgentWorkflowVersion = "PromoteAgentWorkflowVersion"
+	GetAgentWorkflowStats       = "GetAgentWorkflowStats"
+	UpdateAgentWorkflow         = "UpdateAgentWorkflow"
 
 	CreateAgentPrincipal = "CreateAgentPrincipal"
 	ListAgentPrincipals  = "ListAgentPrincipals"
@@ -341,6 +343,8 @@ var Routes = rata.Routes([]rata.Route{
 	{Path: "/api/v1/agent/workflows/:workflow_name/versions/:version", Method: "GET", Name: GetAgentWorkflowVersion},
 	{Path: "/api/v1/agent/workflows/:workflow_name/versions", Method: "POST", Name: CreateAgentWorkflowVersion},
 	{Path: "/api/v1/agent/workflows/:workflow_name/versions/:version/live", Method: "PUT", Name: PromoteAgentWorkflowVersion},
+	{Path: "/api/v1/agent/workflows/:workflow_name/stats", Method: "GET", Name: GetAgentWorkflowStats},
+	{Path: "/api/v1/agent/workflows/:workflow_name", Method: "PUT", Name: UpdateAgentWorkflow},
 
 	{Path: "/api/v1/agent/principals", Method: "POST", Name: CreateAgentPrincipal},
 	{Path: "/api/v1/agent/principals", Method: "GET", Name: ListAgentPrincipals},

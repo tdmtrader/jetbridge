@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/concourse/concourse/agent/api/workflows"
+	schema "github.com/concourse/concourse/agent/schema"
 	"github.com/concourse/concourse/agent/workflow"
 )
 
@@ -24,10 +25,19 @@ steps:
   outputs: [workspace]
 `
 
+type fakeStats struct {
+	rows []schema.WorkflowVersionStats
+	err  error
+}
+
+func (f fakeStats) WorkflowStats(string) ([]schema.WorkflowVersionStats, error) {
+	return f.rows, f.err
+}
+
 func newHandler(t *testing.T) (*workflows.Handler, *workflow.MemoryStore) {
 	t.Helper()
 	store := workflow.NewMemoryStore()
-	return workflows.NewHandler(store), store
+	return workflows.NewHandler(store, fakeStats{}), store
 }
 
 func request(method, path string, params url.Values, body string) *http.Request {
@@ -180,6 +190,68 @@ func TestPromote(t *testing.T) {
 		url.Values{":workflow_name": {"wf"}, ":version": {"9"}}, ""))
 	if w.Code != http.StatusNotFound {
 		t.Errorf("unknown version status = %d, want 404", w.Code)
+	}
+}
+
+func TestStatsReturnsDerivedRows(t *testing.T) {
+	store := workflow.NewMemoryStore()
+	v := 2
+	h := workflows.NewHandler(store, fakeStats{rows: []schema.WorkflowVersionStats{
+		{Version: &v, Runs: 4, SucceededRuns: 3, Tickets: 3, TotalCostUSD: 8, TotalTurns: 40},
+	}})
+
+	w := httptest.NewRecorder()
+	h.Stats(w, request("GET", "/api/v1/agent/workflows/wf/stats",
+		url.Values{":workflow_name": {"wf"}}, ""))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", w.Code, w.Body.String())
+	}
+	var got []schema.WorkflowVersionStats
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].SuccessRate != 0.75 || got[0].AvgTurns != 10 {
+		t.Errorf("derived rows = %+v", got)
+	}
+}
+
+func TestUpdateAnnotatesAndHides(t *testing.T) {
+	h, store := newHandler(t)
+	if _, err := store.Import("wf", []byte(validYAML), "importer"); err != nil {
+		t.Fatal(err)
+	}
+
+	w := httptest.NewRecorder()
+	h.Update(w, request("PUT", "/api/v1/agent/workflows/wf",
+		url.Values{":workflow_name": {"wf"}}, `{"annotation":"note","hidden":true}`))
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("status = %d body=%s", w.Code, w.Body.String())
+	}
+
+	defs, _ := store.List()
+	if defs[0].Annotation != "note" || !defs[0].Hidden {
+		t.Errorf("lifecycle not applied: %+v", defs[0])
+	}
+}
+
+func TestUpdateUnknownWorkflowIs404(t *testing.T) {
+	h, _ := newHandler(t)
+	w := httptest.NewRecorder()
+	h.Update(w, request("PUT", "/api/v1/agent/workflows/ghost",
+		url.Values{":workflow_name": {"ghost"}}, `{"hidden":true}`))
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", w.Code)
+	}
+}
+
+func TestUpdateEmptyBodyIs400(t *testing.T) {
+	h, store := newHandler(t)
+	_, _ = store.Import("wf", []byte(validYAML), "importer")
+	w := httptest.NewRecorder()
+	h.Update(w, request("PUT", "/api/v1/agent/workflows/wf",
+		url.Values{":workflow_name": {"wf"}}, `{}`))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", w.Code)
 	}
 }
 

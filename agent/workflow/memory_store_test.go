@@ -247,3 +247,29 @@ func TestMemoryStoreImportManifest(t *testing.T) {
 		}
 	}
 }
+
+func TestMemoryStoreAnnotateAndHide(t *testing.T) {
+	m := workflow.NewMemoryStore()
+	if _, err := m.Import("wf", defYAML("wf", "Do the work."), "importer"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := m.Annotate("wf", "prefer for hotfixes", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SetHidden("wf", true, "alice"); err != nil {
+		t.Fatal(err)
+	}
+
+	defs, err := m.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(defs) != 1 || defs[0].Annotation != "prefer for hotfixes" || !defs[0].Hidden {
+		t.Fatalf("list did not surface lifecycle: %+v", defs)
+	}
+
+	if err := m.Annotate("nope", "x", "alice"); !errors.Is(err, workflow.ErrVersionNotFound) {
+		t.Errorf("Annotate on unknown workflow = %v, want ErrVersionNotFound", err)
+	}
+}

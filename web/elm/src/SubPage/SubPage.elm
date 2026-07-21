@@ -16,6 +16,7 @@ import AgentReviews.AgentReviews as AgentReviews
 import AgentTickets.AgentRunTranscript as AgentRunTranscript
 import AgentTickets.AgentTicket as AgentTicket
 import AgentTickets.AgentTickets as AgentTickets
+import AgentWorkflow.AgentWorkflow as AgentWorkflow
 import Application.Models exposing (Session)
 import Build.Build as Build
 import Build.Header.Models
@@ -61,6 +62,7 @@ type Model
     | AgentTicketsModel AgentTickets.Model
     | AgentTicketModel AgentTicket.Model
     | AgentRunTranscriptModel AgentRunTranscript.Model
+    | AgentWorkflowModel AgentWorkflow.Model
 
 
 init : Session -> Routes.Route -> ( Model, List Effect )
@@ -157,6 +159,10 @@ init session route =
             AgentRunTranscript.init { id = id, buildId = buildId }
                 |> Tuple.mapFirst AgentRunTranscriptModel
 
+        Routes.AgentWorkflow { name } ->
+            AgentWorkflow.init { name = name }
+                |> Tuple.mapFirst AgentWorkflowModel
+
 
 handleNotFound : Session -> ET Model
 handleNotFound session ( model, effects ) =
@@ -209,8 +215,9 @@ genericUpdate :
     -> ET AgentTickets.Model
     -> ET AgentTicket.Model
     -> ET AgentRunTranscript.Model
+    -> ET AgentWorkflow.Model
     -> ET Model
-genericUpdate fBuild fJob fRes fPipe fDash fCaus fNF fFS dFly fAR fAgent fATs fAT fART2 ( model, effects ) =
+genericUpdate fBuild fJob fRes fPipe fDash fCaus fNF fFS dFly fAR fAgent fATs fAT fART2 fAW ( model, effects ) =
     case model of
         BuildModel buildModel ->
             fBuild ( buildModel, effects )
@@ -268,6 +275,10 @@ genericUpdate fBuild fJob fRes fPipe fDash fCaus fNF fFS dFly fAR fAgent fATs fA
             fART2 ( m, effects )
                 |> Tuple.mapFirst AgentRunTranscriptModel
 
+        AgentWorkflowModel agentWorkflowModel ->
+            fAW ( agentWorkflowModel, effects )
+                |> Tuple.mapFirst AgentWorkflowModel
+
 
 handleCallback : Callback -> Session -> ET Model
 handleCallback callback session =
@@ -286,9 +297,11 @@ handleCallback callback session =
         (AgentTickets.handleCallback callback)
         (AgentTicket.handleCallback callback)
         (AgentRunTranscript.handleCallback callback)
+        (AgentWorkflow.handleCallback callback)
         >> (case callback of
                 LoggedOut (Ok ()) ->
                     genericUpdate
+                        handleLoggedOut
                         handleLoggedOut
                         handleLoggedOut
                         handleLoggedOut
@@ -340,6 +353,7 @@ handleDelivery session delivery =
         (AgentTickets.handleDelivery delivery)
         (AgentTicket.handleDelivery delivery)
         (AgentRunTranscript.handleDelivery delivery)
+        (AgentWorkflow.handleDelivery delivery)
 
 
 update : Session -> Message -> ET Model
@@ -359,6 +373,7 @@ update session msg =
         (Login.update msg >> AgentTickets.update msg)
         (Login.update msg >> AgentTicket.update msg)
         (Login.update msg >> AgentRunTranscript.update msg)
+        (Login.update msg >> AgentWorkflow.update msg)
         >> (case msg of
                 GoToRoute route ->
                     handleGoToRoute route
@@ -471,6 +486,7 @@ urlUpdateValid routes =
         identity
         identity
         identity
+        identity
 
 
 view : Session -> Model -> ( String, Html Message )
@@ -541,6 +557,11 @@ view ({ userState } as session) mdl =
             , AgentRunTranscript.view session model
             )
 
+        AgentWorkflowModel model ->
+            ( AgentWorkflow.documentTitle model
+            , AgentWorkflow.view session model
+            )
+
         AgentModel model ->
             ( Agent.documentTitle
             , Agent.view session model
@@ -592,6 +613,9 @@ tooltip mdl =
         AgentRunTranscriptModel model ->
             AgentRunTranscript.tooltip model
 
+        AgentWorkflowModel model ->
+            AgentWorkflow.tooltip model
+
 
 subscriptions : Model -> List Subscription
 subscriptions mdl =
@@ -637,3 +661,6 @@ subscriptions mdl =
 
         AgentRunTranscriptModel _ ->
             AgentRunTranscript.subscriptions
+
+        AgentWorkflowModel _ ->
+            AgentWorkflow.subscriptions

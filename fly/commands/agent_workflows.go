@@ -24,6 +24,11 @@ type AgentWorkflowsCommand struct {
 	Show    WorkflowsShowCommand    `command:"show" description:"Print a workflow definition version"`
 	Import  WorkflowsImportCommand  `command:"import" description:"Import a workflow definition YAML file as a new version"`
 	SetLive WorkflowsSetLiveCommand `command:"set-live" description:"Mark a workflow definition version live (human promotion)"`
+
+	Stats     WorkflowsStatsCommand     `command:"stats" description:"Show per-version run statistics for a workflow"`
+	Annotate  WorkflowsAnnotateCommand  `command:"annotate" description:"Set an operator note on a workflow"`
+	Deprecate WorkflowsDeprecateCommand `command:"deprecate" description:"Hide a workflow from default listings"`
+	Restore   WorkflowsRestoreCommand   `command:"restore" description:"Un-hide a deprecated workflow"`
 }
 
 // workflowSummary mirrors agent/api/workflows.WorkflowSummary.
@@ -307,4 +312,134 @@ func (command *WorkflowsSetLiveCommand) Execute([]string) error {
 		return err
 	}
 	return setLiveVersion(target, command.Args.Name, command.Args.Version)
+}
+
+// workflowVersionStats mirrors agent/schema.WorkflowVersionStats (the derived
+// fields the stats handler emits).
+type workflowVersionStats struct {
+	Version      *int    `json:"version"`
+	Runs         int     `json:"runs"`
+	Tickets      int     `json:"tickets"`
+	SuccessRate  float64 `json:"success_rate"`
+	AvgCostUSD   float64 `json:"avg_cost_usd"`
+	AvgTurns     float64 `json:"avg_turns"`
+	TotalCostUSD float64 `json:"total_cost_usd"`
+}
+
+type WorkflowsStatsCommand struct {
+	Args struct {
+		Name string `positional-arg-name:"NAME" required:"true" description:"Workflow definition name"`
+	} `positional-args:"yes"`
+	Json bool `long:"json" description:"Print command result as JSON"`
+}
+
+func (command *WorkflowsStatsCommand) Execute([]string) error {
+	target, err := loadAgentTarget()
+	if err != nil {
+		return err
+	}
+	resp, err := agentAPIRequest(target, "GET",
+		"/api/v1/agent/workflows/"+url.PathEscape(command.Args.Name)+"/stats", nil)
+	if err != nil {
+		return err
+	}
+	var rows []workflowVersionStats
+	if err := decodeOrError(resp, &rows); err != nil {
+		return err
+	}
+	if command.Json {
+		return displayhelpers.JsonPrint(rows)
+	}
+	table := ui.Table{Headers: ui.TableRow{
+		{Contents: "version", Color: color.New(color.Bold)},
+		{Contents: "runs", Color: color.New(color.Bold)},
+		{Contents: "tickets", Color: color.New(color.Bold)},
+		{Contents: "success", Color: color.New(color.Bold)},
+		{Contents: "avg cost", Color: color.New(color.Bold)},
+		{Contents: "avg turns", Color: color.New(color.Bold)},
+	}}
+	for _, s := range rows {
+		version := "ad-hoc"
+		if s.Version != nil {
+			version = "v" + strconv.Itoa(*s.Version)
+		}
+		table.Data = append(table.Data, ui.TableRow{
+			{Contents: version},
+			{Contents: strconv.Itoa(s.Runs)},
+			{Contents: strconv.Itoa(s.Tickets)},
+			{Contents: fmt.Sprintf("%.0f%%", s.SuccessRate*100)},
+			{Contents: fmt.Sprintf("$%.2f", s.AvgCostUSD)},
+			{Contents: fmt.Sprintf("%.1f", s.AvgTurns)},
+		})
+	}
+	return table.Render(os.Stdout, Fly.PrintTableHeaders)
+}
+
+func putWorkflowLifecycle(target rc.Target, name string, body map[string]any) error {
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+	resp, err := agentAPIRequestWithType(target, "PUT",
+		"/api/v1/agent/workflows/"+url.PathEscape(name),
+		"application/json", bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	return decodeOrError(resp, nil)
+}
+
+type WorkflowsAnnotateCommand struct {
+	Args struct {
+		Name string `positional-arg-name:"NAME" required:"true" description:"Workflow definition name"`
+		Note string `positional-arg-name:"NOTE" required:"true" description:"Operator note"`
+	} `positional-args:"yes"`
+}
+
+func (command *WorkflowsAnnotateCommand) Execute([]string) error {
+	target, err := loadAgentTarget()
+	if err != nil {
+		return err
+	}
+	if err := putWorkflowLifecycle(target, command.Args.Name, map[string]any{"annotation": command.Args.Note}); err != nil {
+		return err
+	}
+	fmt.Printf("annotated %s\n", command.Args.Name)
+	return nil
+}
+
+type WorkflowsDeprecateCommand struct {
+	Args struct {
+		Name string `positional-arg-name:"NAME" required:"true" description:"Workflow definition name"`
+	} `positional-args:"yes"`
+}
+
+func (command *WorkflowsDeprecateCommand) Execute([]string) error {
+	target, err := loadAgentTarget()
+	if err != nil {
+		return err
+	}
+	if err := putWorkflowLifecycle(target, command.Args.Name, map[string]any{"hidden": true}); err != nil {
+		return err
+	}
+	fmt.Printf("deprecated %s (hidden from default listings)\n", command.Args.Name)
+	return nil
+}
+
+type WorkflowsRestoreCommand struct {
+	Args struct {
+		Name string `positional-arg-name:"NAME" required:"true" description:"Workflow definition name"`
+	} `positional-args:"yes"`
+}
+
+func (command *WorkflowsRestoreCommand) Execute([]string) error {
+	target, err := loadAgentTarget()
+	if err != nil {
+		return err
+	}
+	if err := putWorkflowLifecycle(target, command.Args.Name, map[string]any{"hidden": false}); err != nil {
+		return err
+	}
+	fmt.Printf("restored %s\n", command.Args.Name)
+	return nil
 }

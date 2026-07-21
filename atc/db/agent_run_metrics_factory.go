@@ -262,6 +262,47 @@ func (f *agentRunMetricsFactory) ListRecent(limit int) ([]agentschema.RunMetrics
 	return scanRunMetricsRows(rows)
 }
 
+// WorkflowStats aggregates agent_run_metrics per workflow_version for one
+// workflow. The run unit is a distinct build_id; cost/turns are summed across
+// the build's step rows (the LEFT JOIN to builds is 1:1 so there is no
+// fan-out) and success is counted from the joined build's terminal status.
+// NULL workflow_version rows (ad-hoc CI) aggregate into their own bucket and
+// sort last.
+func (f *agentRunMetricsFactory) WorkflowStats(workflowName string) ([]agentschema.WorkflowVersionStats, error) {
+	rows, err := f.conn.Query(`
+		SELECT
+			m.workflow_version,
+			COUNT(DISTINCT m.build_id)                                         AS runs,
+			COUNT(DISTINCT m.ticket_id) FILTER (WHERE m.ticket_id IS NOT NULL)  AS tickets,
+			COUNT(DISTINCT m.build_id) FILTER (WHERE b.status = 'succeeded')    AS succeeded_runs,
+			COALESCE(SUM(m.cost_usd), 0)                                        AS total_cost_usd,
+			COALESCE(SUM(m.turns), 0)                                           AS total_turns
+		FROM agent_run_metrics m
+		LEFT JOIN builds b ON b.id = m.build_id
+		WHERE m.workflow_name = $1
+		GROUP BY m.workflow_version
+		ORDER BY m.workflow_version DESC NULLS LAST`, workflowName)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []agentschema.WorkflowVersionStats{}
+	for rows.Next() {
+		var s agentschema.WorkflowVersionStats
+		var version sql.NullInt64
+		if err := rows.Scan(&version, &s.Runs, &s.Tickets, &s.SucceededRuns, &s.TotalCostUSD, &s.TotalTurns); err != nil {
+			return nil, err
+		}
+		if version.Valid {
+			v := int(version.Int64)
+			s.Version = &v
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
 func scanRunMetricsRows(rows *sql.Rows) ([]agentschema.RunMetrics, error) {
 	results := []agentschema.RunMetrics{}
 	for rows.Next() {
