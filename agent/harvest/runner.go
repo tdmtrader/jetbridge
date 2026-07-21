@@ -225,7 +225,7 @@ func Run(cfg Config, workspaceDir, credsDir, flightDir string, out io.Writer) in
 	cmd.Dir = workspaceDir
 	cmd.Env = os.Environ()
 	if credsDir != "" {
-		askpass, cleanup, err := writeAskpass(credsDir)
+		askpass, cleanup, err := WriteAskpass(credsDir)
 		if err != nil {
 			return finish(schema.StatusError, "git credentials: "+err.Error())
 		}
@@ -460,11 +460,12 @@ func assembleEvidence(cfg Config, status schema.Status, detail string, f *runFac
 	return ev
 }
 
-// writeAskpass materializes a GIT_ASKPASS helper answering username /
+// WriteAskpass materializes a GIT_ASKPASS helper (exported: the merge
+// runner needs the same mechanism — credential handling is not duplicated) answering username /
 // password prompts from the mounted secret files. The token never
 // touches argv or logs; it flows only through the helper's stdout into
 // git.
-func writeAskpass(credsDir string) (path string, cleanup func(), err error) {
+func WriteAskpass(credsDir string) (path string, cleanup func(), err error) {
 	token, err := os.ReadFile(filepath.Join(credsDir, "token"))
 	if err != nil {
 		return "", nil, fmt.Errorf("read token: %w", err)
