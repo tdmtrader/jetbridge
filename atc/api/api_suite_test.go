@@ -258,6 +258,9 @@ var _ = BeforeEach(func() {
 		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusNotImplemented) // dispatch handler stub
 		}),
+		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNotImplemented) // merge handler stub
+		}),
 		dispatcherapi.NewMemoryStore(),
 		false, // agent dispatcher boot default (flag off)
 	)

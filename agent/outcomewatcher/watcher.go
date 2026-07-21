@@ -58,7 +58,7 @@ func (w *Watcher) sync(synced map[string]bool, repo string) error {
 // seedRows is the §1.11.1 BACKSTOP: harvest seeds rows with authoritative
 // shas at push time (exec.HarvestStep.seedOutcome). Here we only (a)
 // create a fallback row when none exists — pushed_sha = remote branch
-// head at first sync (weaker baseline), base_sha = '' (diff 404s until a
+// head at first sync (weaker baseline), base_sha = ” (diff 404s until a
 // re-push seeds it) — and (b) re-arm a sent_back row (F6) when harvest's
 // own Ensure did not. An existing OPEN row is left alone: the backstop
 // must never overwrite harvest-seeded shas with fallback values.

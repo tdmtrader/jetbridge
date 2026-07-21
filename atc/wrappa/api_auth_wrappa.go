@@ -239,6 +239,9 @@ func (wrappa *APIAuthWrappa) Wrap(handlers rata.Handlers) rata.Handlers {
 			// tier): the manual trigger IS the budget gate while budget
 			// admission is deferred (manual-dispatch slice, 2026-07-17).
 			atc.DispatchAgentTicket,
+			// MergeAgentTicket is human-only for the same reason: an agent
+			// principal must never be able to land its own work.
+			atc.MergeAgentTicket,
 			// SetAgentTicketDisposition is deliberately human-only too
 			// (§4.2: authorized member, NO principal path): a principal
 			// tier would let an agent dispose its own ticket past the

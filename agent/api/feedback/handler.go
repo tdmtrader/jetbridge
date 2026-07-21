@@ -10,12 +10,12 @@ import (
 
 // Valid verdicts matching the ci-agent schema.
 var validVerdicts = map[string]bool{
-	"accurate":           true,
-	"false_positive":     true,
-	"noisy":              true,
-	"overly_strict":      true,
-	"partially_correct":  true,
-	"missed_context":     true,
+	"accurate":          true,
+	"false_positive":    true,
+	"noisy":             true,
+	"overly_strict":     true,
+	"partially_correct": true,
+	"missed_context":    true,
 }
 
 // ReviewRef identifies a specific review session.

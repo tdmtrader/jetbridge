@@ -2474,6 +2474,28 @@ func (cmd *RunCommand) constructAPIHandler(
 		wrappa.NewCompressionWrappa(logger),
 	}
 
+	agentDispatchDeps := dispatch.Deps{
+		Tickets:     db.NewAgentTicketsFactory(dbConn),
+		Workflows:   db.NewAgentWorkflowsFactory(dbConn),
+		Templates:   dispatch.NewTeamTemplateSaver(teamFactory, atc.DefaultTeamName),
+		Runs:        dbPipelineRunFactory,
+		Principals:  agentPrincipalsFactory,
+		Credentials: db.NewAgentUserCredentialsFactory(dbConn),
+		Secrets:     cmd.agentRunSecrets(),
+		Users:       db.NewAgentUserLookup(dbConn),
+		Budget: budget.NewChecker(
+			db.NewAgentCostLedgerFactory(dbConn),
+			dispatch.NewTicketBudgets(db.NewAgentTicketsFactory(dbConn), db.NewAgentWorkflowsFactory(dbConn)),
+			budget.Config{GlobalDailyCapUSD: cmd.AgentDailyBudgetUSD},
+		),
+		RunTimeout:     cmd.AgentRunTimeout,
+		ATCExternalURL: cmd.ExternalURL.String(),
+		RepoBaseURL:    cmd.AgentRepoBaseURL,
+	}
+	apiUserName := func(r *http.Request) string {
+		return accessor.GetAccessor(r).Claims().UserName
+	}
+
 	return api.NewHandler(
 		logger,
 		cmd.ExternalURL.String(),
@@ -2532,26 +2554,11 @@ func (cmd *RunCommand) constructAPIHandler(
 		cmd.agentOutcomeDiffProvider(),
 		db.NewAgentRunTranscriptFactory(dbConn),
 		db.NewAgentWorkflowsFactory(dbConn),
-		dispatch.NewHTTPHandler(dispatch.Deps{
-			Tickets:     db.NewAgentTicketsFactory(dbConn),
-			Workflows:   db.NewAgentWorkflowsFactory(dbConn),
-			Templates:   dispatch.NewTeamTemplateSaver(teamFactory, atc.DefaultTeamName),
-			Runs:        dbPipelineRunFactory,
-			Principals:  agentPrincipalsFactory,
-			Credentials: db.NewAgentUserCredentialsFactory(dbConn),
-			Secrets:     cmd.agentRunSecrets(),
-			Users:       db.NewAgentUserLookup(dbConn),
-			Budget: budget.NewChecker(
-				db.NewAgentCostLedgerFactory(dbConn),
-				dispatch.NewTicketBudgets(db.NewAgentTicketsFactory(dbConn), db.NewAgentWorkflowsFactory(dbConn)),
-				budget.Config{GlobalDailyCapUSD: cmd.AgentDailyBudgetUSD},
-			),
-			RunTimeout:     cmd.AgentRunTimeout,
-			ATCExternalURL: cmd.ExternalURL.String(),
-			RepoBaseURL:    cmd.AgentRepoBaseURL,
-		}, func(r *http.Request) string {
-			return accessor.GetAccessor(r).Claims().UserName
-		}),
+		dispatch.NewHTTPHandler(agentDispatchDeps, apiUserName),
+		// The merge handler shares the dispatch deps: it needs the ticket,
+		// workflow, template and run stores, and simply never consults the
+		// budget/credential legs (a merge runs a binary, not an agent).
+		dispatch.NewMergeHTTPHandler(agentDispatchDeps, apiUserName),
 		db.NewAgentSettingsFactory(dbConn),
 		cmd.AgentDispatcherEnabled,
 	)

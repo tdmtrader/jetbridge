@@ -438,6 +438,20 @@ type FakeClient struct {
 		result1 []atc.Worker
 		result2 error
 	}
+	MergeAgentTicketStub        func(int, tickets.MergeRequest) (tickets.MergeResponse, error)
+	mergeAgentTicketMutex       sync.RWMutex
+	mergeAgentTicketArgsForCall []struct {
+		arg1 int
+		arg2 tickets.MergeRequest
+	}
+	mergeAgentTicketReturns struct {
+		result1 tickets.MergeResponse
+		result2 error
+	}
+	mergeAgentTicketReturnsOnCall map[int]struct {
+		result1 tickets.MergeResponse
+		result2 error
+	}
 	RevokeAgentPrincipalStub        func(int) error
 	revokeAgentPrincipalMutex       sync.RWMutex
 	revokeAgentPrincipalArgsForCall []struct {
@@ -2539,6 +2553,71 @@ func (fake *FakeClient) ListWorkersReturnsOnCall(i int, result1 []atc.Worker, re
 	}
 	fake.listWorkersReturnsOnCall[i] = struct {
 		result1 []atc.Worker
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeClient) MergeAgentTicket(arg1 int, arg2 tickets.MergeRequest) (tickets.MergeResponse, error) {
+	fake.mergeAgentTicketMutex.Lock()
+	ret, specificReturn := fake.mergeAgentTicketReturnsOnCall[len(fake.mergeAgentTicketArgsForCall)]
+	fake.mergeAgentTicketArgsForCall = append(fake.mergeAgentTicketArgsForCall, struct {
+		arg1 int
+		arg2 tickets.MergeRequest
+	}{arg1, arg2})
+	stub := fake.MergeAgentTicketStub
+	fakeReturns := fake.mergeAgentTicketReturns
+	fake.recordInvocation("MergeAgentTicket", []interface{}{arg1, arg2})
+	fake.mergeAgentTicketMutex.Unlock()
+	if stub != nil {
+		return stub(arg1, arg2)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2
+	}
+	return fakeReturns.result1, fakeReturns.result2
+}
+
+func (fake *FakeClient) MergeAgentTicketCallCount() int {
+	fake.mergeAgentTicketMutex.RLock()
+	defer fake.mergeAgentTicketMutex.RUnlock()
+	return len(fake.mergeAgentTicketArgsForCall)
+}
+
+func (fake *FakeClient) MergeAgentTicketCalls(stub func(int, tickets.MergeRequest) (tickets.MergeResponse, error)) {
+	fake.mergeAgentTicketMutex.Lock()
+	defer fake.mergeAgentTicketMutex.Unlock()
+	fake.MergeAgentTicketStub = stub
+}
+
+func (fake *FakeClient) MergeAgentTicketArgsForCall(i int) (int, tickets.MergeRequest) {
+	fake.mergeAgentTicketMutex.RLock()
+	defer fake.mergeAgentTicketMutex.RUnlock()
+	argsForCall := fake.mergeAgentTicketArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2
+}
+
+func (fake *FakeClient) MergeAgentTicketReturns(result1 tickets.MergeResponse, result2 error) {
+	fake.mergeAgentTicketMutex.Lock()
+	defer fake.mergeAgentTicketMutex.Unlock()
+	fake.MergeAgentTicketStub = nil
+	fake.mergeAgentTicketReturns = struct {
+		result1 tickets.MergeResponse
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeClient) MergeAgentTicketReturnsOnCall(i int, result1 tickets.MergeResponse, result2 error) {
+	fake.mergeAgentTicketMutex.Lock()
+	defer fake.mergeAgentTicketMutex.Unlock()
+	fake.MergeAgentTicketStub = nil
+	if fake.mergeAgentTicketReturnsOnCall == nil {
+		fake.mergeAgentTicketReturnsOnCall = make(map[int]struct {
+			result1 tickets.MergeResponse
+			result2 error
+		})
+	}
+	fake.mergeAgentTicketReturnsOnCall[i] = struct {
+		result1 tickets.MergeResponse
 		result2 error
 	}{result1, result2}
 }

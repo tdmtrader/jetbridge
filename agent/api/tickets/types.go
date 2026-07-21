@@ -312,3 +312,25 @@ type DispatchResponse struct {
 	// Additive and omitempty — never a dispatch blocker.
 	Warnings []string `json:"warnings,omitempty"`
 }
+
+// MergeRequest is the optional MergeAgentTicket body (design 2026-07-20).
+// The zero value from an empty body is a pushing merge-commit integration
+// gated by the ticket's own workflow.
+type MergeRequest struct {
+	Method  string `json:"method,omitempty"`  // merge | squash; empty = merge
+	Message string `json:"message,omitempty"` // empty = generated
+	// Push false is the SPECULATIVE query — "would this land cleanly and
+	// pass?" — answered without mutating the remote.
+	Push bool `json:"push"`
+}
+
+// MergeResponse is the MergeAgentTicket 201 body: the created merge run and
+// the one-shot pipeline it materialized from.
+//
+// It deliberately reports no merged state. The ticket transitions only when
+// the merge actually lands (exec.MergeStep on exit 0) — reporting it here
+// would claim a merge that has not happened yet.
+type MergeResponse struct {
+	RunID        int    `json:"run_id"`
+	PipelineName string `json:"pipeline_name"`
+}

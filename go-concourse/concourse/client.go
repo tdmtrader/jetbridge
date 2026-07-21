@@ -57,6 +57,7 @@ type Client interface {
 	TransitionAgentTicket(id int, req tickets.TransitionRequest) (tickets.Ticket, error)
 	UpdateAgentTicket(id int, req tickets.UpdateRequest) (tickets.Ticket, error)
 	DispatchAgentTicket(id int) (tickets.DispatchResponse, error)
+	MergeAgentTicket(id int, req tickets.MergeRequest) (tickets.MergeResponse, error)
 	SetAgentTicketDisposition(id int, req outcomes.DispositionRequest) (outcomes.Outcome, error)
 	GetAgentTicketOutcome(id int) (outcomes.Outcome, bool, error)
 	GetAgentTicketDiff(id int, offset, limit int) (gitcheck.DiffPage, bool, error)

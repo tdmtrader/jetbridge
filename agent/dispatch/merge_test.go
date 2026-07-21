@@ -7,6 +7,7 @@ import (
 
 	"github.com/concourse/concourse/agent/api/tickets"
 	"github.com/concourse/concourse/agent/dispatch"
+	"github.com/concourse/concourse/agent/workflow"
 )
 
 // reviewedTicket walks a ticket to needs_review with a delivered branch,
@@ -114,5 +115,32 @@ func TestMergeOneMissingTicket(t *testing.T) {
 	deps, _, _, _ := dispatchDeps(t)
 	if _, err := dispatch.MergeOne(context.Background(), deps, 4242, "admin", dispatch.MergeOptions{}); !errors.Is(err, tickets.ErrTicketNotFound) {
 		t.Fatalf("expected ErrTicketNotFound, got %v", err)
+	}
+}
+
+// The merged tree must get at least the checks the branch got: the gate
+// policy defaults to the ticket's OWN (version-frozen) workflow.
+func TestMergeOneInheritsTheTicketsGatePolicy(t *testing.T) {
+	deps, store, saver, _ := dispatchDeps(t)
+	id := reviewedTicket(t, store)
+
+	if _, err := dispatch.MergeOne(context.Background(), deps, id, "admin", dispatch.MergeOptions{Push: true}); err != nil {
+		t.Fatal(err)
+	}
+	ms := mergeStepOf(t, saver.savedCfg)
+	want := smokeDefinition().Config.GatePolicy
+	if len(ms.GatePolicy.Gates) != len(want.Gates) {
+		t.Fatalf("merge gates = %+v, want the workflow's %+v", ms.GatePolicy.Gates, want.Gates)
+	}
+}
+
+// A branch whose gates cannot be reproduced is exactly the case to stop on.
+func TestMergeOneRefusesWhenTheWorkflowIsUnresolvable(t *testing.T) {
+	deps, store, _, _ := dispatchDeps(t)
+	id := reviewedTicket(t, store)
+	deps.Workflows = &fakeWorkflows{byName: map[string]*workflow.Definition{}} // gone
+
+	if _, err := dispatch.MergeOne(context.Background(), deps, id, "admin", dispatch.MergeOptions{Push: true}); err == nil {
+		t.Fatal("an unresolvable workflow must refuse rather than merge ungated")
 	}
 }

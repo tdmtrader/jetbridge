@@ -127,6 +127,9 @@ func NewHandler(
 	// agentDispatchHandler serves DispatchAgentTicket (built in
 	// atccmd/command.go from dispatch.Deps; a stub in the test suite).
 	agentDispatchHandler http.Handler,
+	// agentMergeHandler serves MergeAgentTicket (built alongside the dispatch
+	// handler from the same dispatch.Deps; a stub in the test suite).
+	agentMergeHandler http.Handler,
 	// agentSettingsStore + agentDispatcherBootDefault back the dispatcher
 	// runtime-control routes (GET/SetAgentDispatcher). The boot default is the
 	// --agent-dispatcher-enabled flag: the fallback effective mode when no
@@ -378,6 +381,7 @@ func NewHandler(
 		atc.SubmitAgentTicketPlan: http.HandlerFunc(ticketsServer.SubmitPlan),
 		atc.UpdateAgentTicketTask: http.HandlerFunc(ticketsServer.UpdateTask),
 		atc.DispatchAgentTicket:   agentDispatchHandler,
+		atc.MergeAgentTicket:      agentMergeHandler,
 
 		atc.SetAgentTicketDisposition:   http.HandlerFunc(outcomesServer.SetDisposition),
 		atc.GetAgentTicketOutcome:       http.HandlerFunc(outcomesServer.GetOutcome),

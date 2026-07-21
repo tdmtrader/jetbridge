@@ -153,6 +153,7 @@ const (
 	SubmitAgentTicketPlan = "SubmitAgentTicketPlan"
 	UpdateAgentTicketTask = "UpdateAgentTicketTask"
 	DispatchAgentTicket   = "DispatchAgentTicket"
+	MergeAgentTicket      = "MergeAgentTicket"
 
 	SetAgentTicketDisposition   = "SetAgentTicketDisposition"
 	GetAgentTicketOutcome       = "GetAgentTicketOutcome"
@@ -332,6 +333,7 @@ var Routes = rata.Routes([]rata.Route{
 	{Path: "/api/v1/agent/tickets/:ticket_id/plan", Method: "POST", Name: SubmitAgentTicketPlan},
 	{Path: "/api/v1/agent/tickets/:ticket_id/tasks/:ordering", Method: "PUT", Name: UpdateAgentTicketTask},
 	{Path: "/api/v1/agent/tickets/:ticket_id/dispatch", Method: "POST", Name: DispatchAgentTicket},
+	{Path: "/api/v1/agent/tickets/:ticket_id/merge", Method: "POST", Name: MergeAgentTicket},
 
 	{Path: "/api/v1/agent/tickets/:ticket_id/disposition", Method: "PUT", Name: SetAgentTicketDisposition},
 	{Path: "/api/v1/agent/tickets/:ticket_id/outcome", Method: "GET", Name: GetAgentTicketOutcome},

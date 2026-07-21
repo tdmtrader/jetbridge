@@ -28,6 +28,7 @@ type AgentTicketsCommand struct {
 	Close      AgentTicketsCloseCommand      `command:"close" description:"Close a reviewed ticket to a terminal disposition (default: concluded)"`
 	Dispose    AgentTicketsDisposeCommand    `command:"dispose" description:"Record a terminal disposition (with reason taxonomy) on a reviewed ticket"`
 	Diff       AgentTicketsDiffCommand       `command:"diff" description:"Show the base..pushed unified diff for a ticket's harvest branch"`
+	Merge      AgentTicketsMergeCommand      `command:"merge" description:"Merge a reviewed ticket's branch into its target (the platform performs the merge)"`
 }
 
 // ticketPipelineName is the deterministic template-pipeline name dispatch
@@ -628,4 +629,43 @@ func truncatedTag(t bool) string {
 		return " [truncated]"
 	}
 	return ""
+}
+
+// AgentTicketsMergeCommand triggers the platform-owned merge (design
+// 2026-07-20 §2): the platform performs the merge, so the outcome is
+// recorded rather than inferred.
+type AgentTicketsMergeCommand struct {
+	ID      int    `long:"id" required:"true" description:"Ticket id"`
+	Method  string `long:"method" choice:"merge" choice:"squash" description:"Integration method (default: merge)"`
+	Message string `long:"message" description:"Merge commit message (default: generated)"`
+	DryRun  bool   `long:"dry-run" description:"Speculative: report whether it would land cleanly and pass, without pushing"`
+}
+
+func (command *AgentTicketsMergeCommand) Execute([]string) error {
+	target, err := rc.LoadTarget(Fly.Target, Fly.Verbose)
+	if err != nil {
+		return err
+	}
+	if err := target.Validate(); err != nil {
+		return err
+	}
+
+	res, err := target.Client().MergeAgentTicket(command.ID, tickets.MergeRequest{
+		Method:  command.Method,
+		Message: command.Message,
+		Push:    !command.DryRun,
+	})
+	if err != nil {
+		return err
+	}
+
+	verb := "merging"
+	if command.DryRun {
+		verb = "checking (dry run, nothing will be pushed)"
+	}
+	fmt.Printf("%s ticket #%d: run %d in pipeline %s\n", verb, command.ID, res.RunID, res.PipelineName)
+	// The ticket moves only when the merge actually lands — the step records
+	// it on a real exit-0 push, never optimistically at trigger time.
+	fmt.Println("the ticket transitions to merged only if the merge actually lands")
+	return nil
 }

@@ -58,6 +58,7 @@ type Store interface {
 
 // SecretAttacher is the ephemeral K8s secret helper (§8.2). Implemented once
 // here; dispatch and the gateway use it, nobody re-implements secret lifecycle.
+//
 //counterfeiter:generate . SecretAttacher
 type SecretAttacher interface {
 	// Attach creates secret agent-run-<runID> in the worker namespace with

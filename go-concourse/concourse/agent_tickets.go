@@ -186,6 +186,24 @@ func (client *client) DispatchAgentTicket(id int) (tickets.DispatchResponse, err
 	return res, err
 }
 
+func (client *client) MergeAgentTicket(id int, req tickets.MergeRequest) (tickets.MergeResponse, error) {
+	buffer := &bytes.Buffer{}
+	if err := json.NewEncoder(buffer).Encode(req); err != nil {
+		return tickets.MergeResponse{}, err
+	}
+
+	var res tickets.MergeResponse
+	err := client.connection.Send(internal.Request{
+		RequestName: atc.MergeAgentTicket,
+		Params:      rata.Params{"ticket_id": strconv.Itoa(id)},
+		Body:        buffer,
+		Header:      http.Header{"Content-Type": []string{"application/json"}},
+	}, &internal.Response{
+		Result: &res,
+	})
+	return res, err
+}
+
 func (client *client) GetAgentTicket(id int) (tickets.TicketDetail, bool, error) {
 	var detail tickets.TicketDetail
 	err := client.connection.Send(internal.Request{
