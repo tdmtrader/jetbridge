@@ -94,6 +94,7 @@ import Views.Spinner as Spinner
 import Views.Styles
 import Views.Toggle as Toggle
 import Views.TopBar as TopBar
+import Views.Truncate
 
 
 type alias Flags =
@@ -1343,10 +1344,12 @@ agentTicketChip costs t =
                 Html.text t.state
         , Html.span
             [ style "overflow" "hidden"
-            , style "text-overflow" "ellipsis"
             , style "white-space" "nowrap"
             ]
-            [ Html.text ("#" ++ String.fromInt t.id ++ " " ++ t.title) ]
+            -- W-10: middle-truncate so a distinguishing suffix (e.g. a trailing
+            -- "(T9 only)") survives — plain CSS ellipsis would eat the tail.
+            -- The full title stays on the chip's `title` tooltip above.
+            [ Html.text (Views.Truncate.middle 48 ("#" ++ String.fromInt t.id ++ " " ++ t.title)) ]
         , Html.span
             [ style "font-family" "monospace", style "color" "#b0b0b0" ]
             [ Html.text (agentCostLabel costs t.id) ]
