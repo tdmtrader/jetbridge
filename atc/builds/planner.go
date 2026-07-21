@@ -129,6 +129,7 @@ func (visitor *planVisitor) VisitAgent(step *atc.AgentStep) error {
 func (visitor *planVisitor) VisitMerge(step *atc.MergeStep) error {
 	visitor.plan = visitor.planFactory.NewPlan(atc.MergePlan{
 		Name:          step.Name,
+		Workspace:     step.Workspace,
 		Repo:          step.Repo,
 		TargetBranch:  step.TargetBranch,
 		Branch:        step.Branch,

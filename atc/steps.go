@@ -264,6 +264,10 @@ var StepPrecedence = []StepDetector{
 		New: func() StepConfig { return &HarvestStep{} },
 	},
 	{
+		Key: "merge",
+		New: func() StepConfig { return &MergeStep{} },
+	},
+	{
 		Key: "run",
 		New: func() StepConfig { return &RunStep{} },
 	},
@@ -476,6 +480,7 @@ func (step *HarvestStep) Visit(v StepVisitor) error {
 // branch — a branch green in isolation can still break the target.
 type MergeStep struct {
 	Name          string             `json:"merge"`
+	Workspace     string             `json:"workspace"`                 // input artifact holding a clone with an `origin` remote
 	Repo          string             `json:"repo"`                      // canonical slug
 	TargetBranch  string             `json:"target_branch"`             // from the TICKET; never hardcoded
 	Branch        string             `json:"branch"`                    // delivered branch, e.g. agent/ticket-42

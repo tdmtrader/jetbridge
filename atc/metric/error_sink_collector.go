@@ -2,7 +2,7 @@ package metric
 
 import (
 	"errors"
-	
+
 	"code.cloudfoundry.org/lager/v3"
 )
 

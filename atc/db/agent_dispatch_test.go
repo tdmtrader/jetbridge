@@ -35,7 +35,7 @@ var _ = Describe("dispatching a ticket end-to-end", func() {
 		runFactory := db.NewPipelineRunFactory(logger, dbConn, lockFactory, checkFactory)
 
 		deps := dispatch.Deps{
-			Tickets:   ticketsFactory,
+			Tickets: ticketsFactory,
 			Workflows: liveOnlyWorkflows{def: &workflow.Definition{
 				Name: "smoke", Version: 2, ContentHash: "hash2", Live: true,
 				Config: workflow.Config{

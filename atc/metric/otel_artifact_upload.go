@@ -10,10 +10,10 @@ import (
 )
 
 var (
-	artifactUploadDurationHistogram  otelmetric.Float64Histogram
-	artifactUploadSizeHistogram      otelmetric.Float64Histogram
-	artifactFileCountHistogram       otelmetric.Float64Histogram
-	artifactTarDurationHistogram     otelmetric.Float64Histogram
+	artifactUploadDurationHistogram   otelmetric.Float64Histogram
+	artifactUploadSizeHistogram       otelmetric.Float64Histogram
+	artifactFileCountHistogram        otelmetric.Float64Histogram
+	artifactTarDurationHistogram      otelmetric.Float64Histogram
 	artifactTransferDurationHistogram otelmetric.Float64Histogram
 )
 

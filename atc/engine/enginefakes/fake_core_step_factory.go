@@ -104,6 +104,20 @@ type FakeCoreStepFactory struct {
 	loadVarStepReturnsOnCall map[int]struct {
 		result1 exec.Step
 	}
+	MergeStepStub        func(atc.Plan, exec.StepMetadata, db.ContainerMetadata, engine.DelegateFactory) exec.Step
+	mergeStepMutex       sync.RWMutex
+	mergeStepArgsForCall []struct {
+		arg1 atc.Plan
+		arg2 exec.StepMetadata
+		arg3 db.ContainerMetadata
+		arg4 engine.DelegateFactory
+	}
+	mergeStepReturns struct {
+		result1 exec.Step
+	}
+	mergeStepReturnsOnCall map[int]struct {
+		result1 exec.Step
+	}
 	PutStepStub        func(atc.Plan, exec.StepMetadata, db.ContainerMetadata, engine.DelegateFactory) exec.Step
 	putStepMutex       sync.RWMutex
 	putStepArgsForCall []struct {
@@ -602,6 +616,70 @@ func (fake *FakeCoreStepFactory) LoadVarStepReturnsOnCall(i int, result1 exec.St
 		})
 	}
 	fake.loadVarStepReturnsOnCall[i] = struct {
+		result1 exec.Step
+	}{result1}
+}
+
+func (fake *FakeCoreStepFactory) MergeStep(arg1 atc.Plan, arg2 exec.StepMetadata, arg3 db.ContainerMetadata, arg4 engine.DelegateFactory) exec.Step {
+	fake.mergeStepMutex.Lock()
+	ret, specificReturn := fake.mergeStepReturnsOnCall[len(fake.mergeStepArgsForCall)]
+	fake.mergeStepArgsForCall = append(fake.mergeStepArgsForCall, struct {
+		arg1 atc.Plan
+		arg2 exec.StepMetadata
+		arg3 db.ContainerMetadata
+		arg4 engine.DelegateFactory
+	}{arg1, arg2, arg3, arg4})
+	stub := fake.MergeStepStub
+	fakeReturns := fake.mergeStepReturns
+	fake.recordInvocation("MergeStep", []interface{}{arg1, arg2, arg3, arg4})
+	fake.mergeStepMutex.Unlock()
+	if stub != nil {
+		return stub(arg1, arg2, arg3, arg4)
+	}
+	if specificReturn {
+		return ret.result1
+	}
+	return fakeReturns.result1
+}
+
+func (fake *FakeCoreStepFactory) MergeStepCallCount() int {
+	fake.mergeStepMutex.RLock()
+	defer fake.mergeStepMutex.RUnlock()
+	return len(fake.mergeStepArgsForCall)
+}
+
+func (fake *FakeCoreStepFactory) MergeStepCalls(stub func(atc.Plan, exec.StepMetadata, db.ContainerMetadata, engine.DelegateFactory) exec.Step) {
+	fake.mergeStepMutex.Lock()
+	defer fake.mergeStepMutex.Unlock()
+	fake.MergeStepStub = stub
+}
+
+func (fake *FakeCoreStepFactory) MergeStepArgsForCall(i int) (atc.Plan, exec.StepMetadata, db.ContainerMetadata, engine.DelegateFactory) {
+	fake.mergeStepMutex.RLock()
+	defer fake.mergeStepMutex.RUnlock()
+	argsForCall := fake.mergeStepArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2, argsForCall.arg3, argsForCall.arg4
+}
+
+func (fake *FakeCoreStepFactory) MergeStepReturns(result1 exec.Step) {
+	fake.mergeStepMutex.Lock()
+	defer fake.mergeStepMutex.Unlock()
+	fake.MergeStepStub = nil
+	fake.mergeStepReturns = struct {
+		result1 exec.Step
+	}{result1}
+}
+
+func (fake *FakeCoreStepFactory) MergeStepReturnsOnCall(i int, result1 exec.Step) {
+	fake.mergeStepMutex.Lock()
+	defer fake.mergeStepMutex.Unlock()
+	fake.MergeStepStub = nil
+	if fake.mergeStepReturnsOnCall == nil {
+		fake.mergeStepReturnsOnCall = make(map[int]struct {
+			result1 exec.Step
+		})
+	}
+	fake.mergeStepReturnsOnCall[i] = struct {
 		result1 exec.Step
 	}{result1}
 }

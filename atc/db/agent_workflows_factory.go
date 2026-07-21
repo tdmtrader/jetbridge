@@ -28,7 +28,7 @@ const workflowMetaColumns = `d.id, d.name, d.version, d.content_hash, d.live, d.
 
 // workflowMetaFrom LEFT JOINs the name-keyed lifecycle table so every version
 // row carries its workflow's hidden/annotation (S-6). LEFT JOIN so a workflow
-// with no lifecycle row yet still reads (hidden=false, annotation='').
+// with no lifecycle row yet still reads (hidden=false, annotation=”).
 const workflowMetaFrom = ` FROM agent_workflow_definitions d
 	LEFT JOIN agent_workflow_lifecycle l ON l.name = d.name`
 

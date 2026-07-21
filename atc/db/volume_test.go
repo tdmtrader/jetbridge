@@ -784,7 +784,6 @@ var _ = Describe("Volume", func() {
 				builder.WithWorker(atc.Worker{
 					Name:     "weird-worker",
 					Platform: "weird",
-
 				}),
 			)
 

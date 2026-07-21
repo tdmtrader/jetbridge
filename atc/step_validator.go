@@ -377,6 +377,9 @@ func (validator *StepValidator) VisitMerge(step *MergeStep) error {
 		validator.recordWarning(*warning)
 	}
 
+	if step.Workspace == "" {
+		validator.recordError("must specify `workspace:` (an input artifact holding a clone with an `origin` remote)")
+	}
 	if step.Repo == "" {
 		validator.recordError("must specify `repo:`")
 	}

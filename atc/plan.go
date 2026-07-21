@@ -455,6 +455,7 @@ type HarvestPlan struct {
 // (design 2026-07-20 §2). Mirrors atc.MergeStep 1:1.
 type MergePlan struct {
 	Name          string             `json:"name"`
+	Workspace     string             `json:"workspace"`
 	Repo          string             `json:"repo"`
 	TargetBranch  string             `json:"target_branch"`
 	Branch        string             `json:"branch"`

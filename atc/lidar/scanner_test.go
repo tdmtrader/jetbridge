@@ -243,10 +243,10 @@ var _ = Describe("Scanner Resource Type Resolution", func() {
 	var (
 		err error
 
-		fakeCheckFactory        *dbfakes.FakeCheckFactory
+		fakeCheckFactory          *dbfakes.FakeCheckFactory
 		fakeResourceConfigFactory *dbfakes.FakeResourceConfigFactory
-		fakeResolver            *imageresolvertesting.FakeResolver
-		planFactory             atc.PlanFactory
+		fakeResolver              *imageresolvertesting.FakeResolver
+		planFactory               atc.PlanFactory
 
 		scanner Scanner
 
@@ -279,8 +279,8 @@ var _ = Describe("Scanner Resource Type Resolution", func() {
 
 	Context("when there are resource types to resolve", func() {
 		var (
-			fakeResourceType       *dbfakes.FakeResourceType
-			fakeResourceConfig     *dbfakes.FakeResourceConfig
+			fakeResourceType        *dbfakes.FakeResourceType
+			fakeResourceConfig      *dbfakes.FakeResourceConfig
 			fakeResourceConfigScope *dbfakes.FakeResourceConfigScope
 		)
 

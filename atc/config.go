@@ -198,7 +198,7 @@ type ResourceConfig struct {
 
 type ParamSchema struct {
 	Name        string   `json:"name"`
-	Type        string   `json:"type"`             // string | number | bool | enum
+	Type        string   `json:"type"` // string | number | bool | enum
 	Required    bool     `json:"required,omitempty"`
 	Default     any      `json:"default,omitempty"`
 	Values      []string `json:"values,omitempty"` // enum only
@@ -219,7 +219,7 @@ type ResourceType struct {
 	Privileged bool        `json:"privileged,omitempty"`
 	CheckEvery *CheckEvery `json:"check_every,omitempty"`
 	Tags       Tags        `json:"tags,omitempty"`
-	Params Params `json:"params,omitempty"`
+	Params     Params      `json:"params,omitempty"`
 }
 
 type Prototype struct {

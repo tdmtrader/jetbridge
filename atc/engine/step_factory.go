@@ -388,6 +388,45 @@ func (factory *coreStepFactory) HarvestStep(
 	return harvestStep
 }
 
+// MergeStep builds the platform-owned merge step. Its stores are
+// nil-guarded exactly like harvest's: without them the merge still runs and
+// pushes, it just records nothing server-side.
+func (factory *coreStepFactory) MergeStep(
+	plan atc.Plan,
+	stepMetadata exec.StepMetadata,
+	containerMetadata db.ContainerMetadata,
+	delegateFactory DelegateFactory,
+) exec.Step {
+	sum := sha256.Sum256([]byte(plan.Merge.Name))
+	containerMetadata.WorkingDirectory = filepath.Join("/tmp", "build", fmt.Sprintf("%x", sum[:4]))
+
+	var mergeOpts []exec.MergeStepOption
+	if factory.agentTicketsStore != nil {
+		mergeOpts = append(mergeOpts, exec.WithMergeTicketsStore(factory.agentTicketsStore))
+	}
+	if factory.agentOutcomesStore != nil {
+		mergeOpts = append(mergeOpts, exec.WithMergeOutcomesStore(factory.agentOutcomesStore))
+	}
+
+	mergeStep := exec.NewMergeStep(
+		plan.ID,
+		*plan.Merge,
+		stepMetadata,
+		containerMetadata,
+		factory.pool,
+		delegateFactory,
+		factory.defaultTaskTimeout,
+		factory.agentStepImage,
+		mergeOpts...,
+	)
+
+	mergeStep = exec.LogError(mergeStep, delegateFactory)
+	if atc.EnableBuildRerunWhenWorkerDisappears {
+		mergeStep = exec.RetryError(mergeStep, delegateFactory)
+	}
+	return mergeStep
+}
+
 func (factory *coreStepFactory) TaskStep(
 	plan atc.Plan,
 	stepMetadata exec.StepMetadata,
