@@ -9,6 +9,7 @@ module AgentBadge exposing
     , label
     , runOutcome
     , tone
+    , toneColor
     , view
     )
 
@@ -434,6 +435,44 @@ toneClass t =
 
         Error ->
             "agent-badge--error"
+
+
+{-| The hex color for a tone — THE single source of the status palette,
+mirroring the `agent-badge--*` rules in web/public/main.css so the step-DAG
+boxes and the badges can never drift apart.
+-}
+toneColor : Tone -> String
+toneColor t =
+    case t of
+        Neutral ->
+            "#9b9b9b"
+
+        Info ->
+            "#4a90e2"
+
+        Active ->
+            "#f1c40f"
+
+        Attention ->
+            "#f5a623"
+
+        Good ->
+            "#11c560"
+
+        GoodMuted ->
+            "#419867"
+
+        Warn ->
+            "#ed4b35"
+
+        Calm ->
+            "#2d76cc"
+
+        Bad ->
+            "#ed4b35"
+
+        Error ->
+            "#d58808"
 
 
 pulses : Status -> Bool
