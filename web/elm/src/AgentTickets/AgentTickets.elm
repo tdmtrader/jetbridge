@@ -10,6 +10,7 @@ module AgentTickets.AgentTickets exposing
     , view
     )
 
+import Agent.Nav as Nav
 import AgentBadge
 import Application.Models exposing (Session)
 import Concourse.Agent
@@ -362,7 +363,8 @@ view session model =
             [ SideBar.view session Nothing
             , Html.div
                 [ style "padding" "16px", style "width" "100%" ]
-                (headerRow model
+                (Nav.view route
+                    :: headerRow model
                     :: dispatcherControls session model
                     ++ [ dispatcherBanner model
                        , content model

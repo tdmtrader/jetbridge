@@ -21,6 +21,7 @@ transition (409) surfaces inline and triggers a refetch.
 
 -}
 
+import Agent.Nav as Nav
 import AgentBadge
 import Application.Models exposing (Session)
 import Build.AgentReview
@@ -530,7 +531,7 @@ view session model =
             [ SideBar.view session Nothing
             , Html.div
                 [ style "padding" "16px", style "width" "100%", style "max-width" "900px" ]
-                [ content session model ]
+                [ Nav.view route, content session model ]
             ]
         ]
 

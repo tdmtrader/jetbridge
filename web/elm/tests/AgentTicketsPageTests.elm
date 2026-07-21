@@ -58,7 +58,7 @@ initAgentTickets =
         { protocol = Url.Http
         , host = ""
         , port_ = Nothing
-        , path = "/agent-tickets"
+        , path = "/agent/tickets"
         , query = Nothing
         , fragment = Nothing
         }
@@ -111,7 +111,7 @@ all =
                     |> Expect.equal (Ok (AgentDispatcher.Unknown "hibernating"))
         , test "renders the auto-dispatch status pill from the fetched status" <|
             \_ ->
-                Common.init "/agent-tickets"
+                Common.init "/agent/tickets"
                     |> Application.handleCallback (dispatcherStatus "active")
                     |> Tuple.first
                     |> Common.queryView
@@ -119,7 +119,7 @@ all =
                     |> Query.has [ text "Auto-dispatch: active" ]
         , test "shows the pause banner when auto-dispatch is not active" <|
             \_ ->
-                Common.init "/agent-tickets"
+                Common.init "/agent/tickets"
                     |> Application.handleCallback (dispatcherStatus "paused")
                     |> Tuple.first
                     |> Common.queryView
@@ -127,7 +127,7 @@ all =
                     |> Query.has [ text "manually" ]
         , test "shows no dispatcher banner when auto-dispatch is active" <|
             \_ ->
-                Common.init "/agent-tickets"
+                Common.init "/agent/tickets"
                     |> Application.handleCallback (dispatcherStatus "active")
                     |> Tuple.first
                     |> Common.queryView
@@ -135,7 +135,7 @@ all =
                     |> Query.count (Expect.equal 0)
         , test "renders a ticket row with id, title and workflow" <|
             \_ ->
-                Common.init "/agent-tickets"
+                Common.init "/agent/tickets"
                     |> Application.handleCallback (Callback.AgentTicketsFetched (Ok sampleTickets))
                     |> Tuple.first
                     |> Common.queryView
@@ -148,7 +148,7 @@ all =
                         ]
         , test "joins per-ticket cost into the matching row" <|
             \_ ->
-                Common.init "/agent-tickets"
+                Common.init "/agent/tickets"
                     |> Application.handleCallback (Callback.AgentTicketsFetched (Ok sampleTickets))
                     |> Tuple.first
                     |> Application.handleCallback costRollup
@@ -159,21 +159,21 @@ all =
                     |> Query.has [ containing [ text "$0.18" ] ]
         , test "shows an empty-state notice when there are no tickets" <|
             \_ ->
-                Common.init "/agent-tickets"
+                Common.init "/agent/tickets"
                     |> Application.handleCallback (Callback.AgentTicketsFetched (Ok []))
                     |> Tuple.first
                     |> Common.queryView
                     |> Query.has [ text "No tickets yet." ]
         , test "shows an error notice when tickets fail to load" <|
             \_ ->
-                Common.init "/agent-tickets"
+                Common.init "/agent/tickets"
                     |> Application.handleCallback (Callback.AgentTicketsFetched Data.httpUnauthorized)
                     |> Tuple.first
                     |> Common.queryView
                     |> Query.has [ text "Couldn't load tickets." ]
         , test "shows the branch on rows that have a harvest branch" <|
             \_ ->
-                Common.init "/agent-tickets"
+                Common.init "/agent/tickets"
                     |> Application.handleCallback
                         (Callback.AgentTicketsFetched
                             (Ok
@@ -192,7 +192,7 @@ all =
                     |> Query.has [ text "agent/ticket-12" ]
         , test "live-updates: refetches tickets on the five second tick, but not the heavy cost rollup" <|
             \_ ->
-                Common.init "/agent-tickets"
+                Common.init "/agent/tickets"
                     |> Application.update
                         (Msgs.DeliveryReceived (ClockTicked FiveSeconds <| Time.millisToPosix 0))
                     |> Tuple.second
@@ -204,14 +204,14 @@ all =
             \_ ->
                 -- the rollup is a whole-window ledger aggregation; 5s polling
                 -- would run it 720x/hour per open tab for run-granularity data
-                Common.init "/agent-tickets"
+                Common.init "/agent/tickets"
                     |> Application.update
                         (Msgs.DeliveryReceived (ClockTicked OneMinute <| Time.millisToPosix 0))
                     |> Tuple.second
                     |> Common.contains Effects.FetchAgentTicketCosts
         , test "client-side filter narrows the visible rows by title" <|
             \_ ->
-                Common.init "/agent-tickets"
+                Common.init "/agent/tickets"
                     |> Application.handleCallback (Callback.AgentTicketsFetched (Ok sampleTickets))
                     |> Tuple.first
                     |> Application.update (Msgs.Update (Message.AgentTicketsFilterChanged "gap"))
@@ -221,7 +221,7 @@ all =
                     |> Query.count (Expect.equal 1)
         , test "enriches a row with author, attempt count and workflow version" <|
             \_ ->
-                Common.init "/agent-tickets"
+                Common.init "/agent/tickets"
                     |> Application.handleCallback
                         (Callback.AgentTicketsFetched
                             (Ok
@@ -245,7 +245,7 @@ all =
                         ]
         , test "surfaces unattributed spend as a footer line" <|
             \_ ->
-                Common.init "/agent-tickets"
+                Common.init "/agent/tickets"
                     |> Application.handleCallback (Callback.AgentTicketsFetched (Ok sampleTickets))
                     |> Tuple.first
                     |> Application.handleCallback
@@ -271,7 +271,7 @@ all =
                     |> Query.has [ containing [ text "$11.08" ] ]
         , test "renders the errored section above the draft section" <|
             \_ ->
-                Common.init "/agent-tickets"
+                Common.init "/agent/tickets"
                     |> Application.handleCallback
                         (Callback.AgentTicketsFetched
                             (Ok
@@ -293,7 +293,7 @@ all =
                         ]
         , test "section header carries a count and spend rollup" <|
             \_ ->
-                Common.init "/agent-tickets"
+                Common.init "/agent/tickets"
                     |> Application.handleCallback
                         (Callback.AgentTicketsFetched
                             (Ok
@@ -367,7 +367,7 @@ openFormTest =
     describe "new-ticket form"
         [ test "New ticket button is present" <|
             \_ ->
-                Common.init "/agent-tickets"
+                Common.init "/agent/tickets"
                     |> Common.queryView
                     |> Query.find [ class "agent-new-ticket-open" ]
                     |> Query.has [ text "New ticket" ]
@@ -375,7 +375,7 @@ openFormTest =
             \_ ->
                 let
                     ( _, effects ) =
-                        Common.init "/agent-tickets"
+                        Common.init "/agent/tickets"
                             |> Application.update
                                 (Msgs.Update Message.ClickNewAgentTicket)
                 in
@@ -390,7 +390,7 @@ submitTest =
             \_ ->
                 let
                     ( _, effects ) =
-                        Common.init "/agent-tickets"
+                        Common.init "/agent/tickets"
                             |> Application.update (Msgs.Update Message.ClickNewAgentTicket)
                             |> Tuple.first
                             |> Application.update (Msgs.Update (Message.NewAgentTicketTitleChanged "ship it"))
@@ -417,7 +417,7 @@ submitTest =
             \_ ->
                 let
                     ( _, effects ) =
-                        Common.init "/agent-tickets"
+                        Common.init "/agent/tickets"
                             |> Application.update (Msgs.Update Message.ClickNewAgentTicket)
                             |> Tuple.first
                             |> Application.update (Msgs.Update (Message.NewAgentTicketTitleChanged "no repo"))
@@ -461,10 +461,10 @@ submitTest =
                         }
 
                     ( _, effects ) =
-                        Common.init "/agent-tickets"
+                        Common.init "/agent/tickets"
                             |> Application.handleCallback
                                 (Callback.AgentTicketCreated (Ok created))
                 in
                 Expect.equal True
-                    (List.member (Effects.NavigateTo "/agent-tickets/99") effects)
+                    (List.member (Effects.NavigateTo "/agent/tickets/99") effects)
         ]

@@ -143,8 +143,8 @@ init session route =
             AgentReviews.init { teamName = teamName }
                 |> Tuple.mapFirst AgentReviewsModel
 
-        Routes.Agent ->
-            Agent.init
+        Routes.Agent section ->
+            Agent.init section
                 |> Tuple.mapFirst AgentModel
 
         Routes.AgentTickets ->
@@ -482,7 +482,13 @@ urlUpdateValid routes =
         identity
         identity
         identity
-        identity
+        (case routes.to of
+            Routes.Agent section ->
+                Agent.changeSection section
+
+            _ ->
+                identity
+        )
         identity
         identity
         identity
@@ -563,7 +569,7 @@ view ({ userState } as session) mdl =
             )
 
         AgentModel model ->
-            ( Agent.documentTitle
+            ( Agent.documentTitle model.section
             , Agent.view session model
             )
 

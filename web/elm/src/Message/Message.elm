@@ -68,7 +68,6 @@ type Message
     | AgentPrincipalRevokeClicked Int
     | AgentPrincipalsShowEphemeralToggled
     | AgentRunExpandToggled String
-    | AgentSectionNavClicked String
       -- Agent Ticket page (edit + disposition)
     | ClickAgentTicketEdit
     | AgentTicketTitleChanged String

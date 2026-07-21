@@ -70,7 +70,7 @@ all =
                     |> Query.find [ id "build-ticket-context" ]
                     |> Query.has
                         [ tag "a"
-                        , attribute (Attr.href "/agent-tickets/12")
+                        , attribute (Attr.href "/agent/tickets/12")
                         , containing [ text "agent ticket #12" ]
                         ]
         , test "shows no context bar for an ordinary build" <|
