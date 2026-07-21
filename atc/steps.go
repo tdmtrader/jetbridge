@@ -196,6 +196,7 @@ type StepVisitor interface {
 	VisitRun(*RunStep) error
 	VisitAgent(*AgentStep) error
 	VisitHarvest(*HarvestStep) error
+	VisitMerge(*MergeStep) error
 	VisitSetPipeline(*SetPipelineStep) error
 	VisitLoadVar(*LoadVarStep) error
 	VisitTry(*TryStep) error
@@ -459,6 +460,37 @@ type HarvestStep struct {
 
 func (step *HarvestStep) Visit(v StepVisitor) error {
 	return v.VisitHarvest(step)
+}
+
+// MergeStep integrates a delivered branch into its target and pushes —
+// the platform-owned merge (design 2026-07-20 §2). Because the PLATFORM
+// performs the merge, the outcome is a recorded fact rather than something
+// inferred from a git mirror afterwards.
+//
+// It is a distinct step type rather than a task step because it mounts the
+// §8.3 git-credential secret: SecretMounts is deliberately restricted to
+// specific step types, and opening it to arbitrary task steps would let any
+// pipeline author mount any secret.
+//
+// Gates declared here run against the MERGED result, not the delivered
+// branch — a branch green in isolation can still break the target.
+type MergeStep struct {
+	Name          string             `json:"merge"`
+	Repo          string             `json:"repo"`                      // canonical slug
+	TargetBranch  string             `json:"target_branch"`             // from the TICKET; never hardcoded
+	Branch        string             `json:"branch"`                    // delivered branch, e.g. agent/ticket-42
+	TicketID      int                `json:"ticket_id,omitempty"`       // 0 = no ticket (pure-CI use)
+	PipelineRunID int                `json:"pipeline_run_id,omitempty"` // 0 = unknown
+	Method        string             `json:"method,omitempty"`          // merge | squash; default merge
+	Message       string             `json:"message,omitempty"`
+	Push          bool               `json:"push,omitempty"` // false = speculative: answer, do not land
+	Env           TaskEnv            `json:"env,omitempty"`  // §8.1 identity rows
+	GatePolicy    harvest.GatePolicy `json:"gate_policy"`    // gates the merged tree
+	Timeout       string             `json:"timeout,omitempty"`
+}
+
+func (step *MergeStep) Visit(v StepVisitor) error {
+	return v.VisitMerge(step)
 }
 
 type SetPipelineStep struct {

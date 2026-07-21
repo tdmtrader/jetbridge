@@ -13,6 +13,7 @@ type Plan struct {
 	Run         *RunPlan         `json:"run,omitempty"`
 	Agent       *AgentPlan       `json:"agent,omitempty"`
 	Harvest     *HarvestPlan     `json:"harvest,omitempty"`
+	Merge       *MergePlan       `json:"merge,omitempty"`
 	SetPipeline *SetPipelinePlan `json:"set_pipeline,omitempty"`
 	LoadVar     *LoadVarPlan     `json:"load_var,omitempty"`
 
@@ -448,6 +449,23 @@ type HarvestPlan struct {
 	GatePolicy    harvest.GatePolicy   `json:"gate_policy"`
 	Judge         *harvest.JudgeConfig `json:"judge,omitempty"`
 	Timeout       string               `json:"timeout,omitempty"`
+}
+
+// MergePlan is the plan payload for the platform-owned merge step
+// (design 2026-07-20 §2). Mirrors atc.MergeStep 1:1.
+type MergePlan struct {
+	Name          string             `json:"name"`
+	Repo          string             `json:"repo"`
+	TargetBranch  string             `json:"target_branch"`
+	Branch        string             `json:"branch"`
+	TicketID      int                `json:"ticket_id,omitempty"`
+	PipelineRunID int                `json:"pipeline_run_id,omitempty"`
+	Method        string             `json:"method,omitempty"`
+	Message       string             `json:"message,omitempty"`
+	Push          bool               `json:"push,omitempty"`
+	Env           map[string]string  `json:"env,omitempty"`
+	GatePolicy    harvest.GatePolicy `json:"gate_policy"`
+	Timeout       string             `json:"timeout,omitempty"`
 }
 
 type SetPipelinePlan struct {

@@ -126,6 +126,25 @@ func (visitor *planVisitor) VisitAgent(step *atc.AgentStep) error {
 	return nil
 }
 
+func (visitor *planVisitor) VisitMerge(step *atc.MergeStep) error {
+	visitor.plan = visitor.planFactory.NewPlan(atc.MergePlan{
+		Name:          step.Name,
+		Repo:          step.Repo,
+		TargetBranch:  step.TargetBranch,
+		Branch:        step.Branch,
+		TicketID:      step.TicketID,
+		PipelineRunID: step.PipelineRunID,
+		Method:        step.Method,
+		Message:       step.Message,
+		Push:          step.Push,
+		Env:           step.Env,
+		GatePolicy:    step.GatePolicy,
+		Timeout:       step.Timeout,
+	})
+
+	return nil
+}
+
 func (visitor *planVisitor) VisitHarvest(step *atc.HarvestStep) error {
 	visitor.plan = visitor.planFactory.NewPlan(atc.HarvestPlan{
 		Name:          step.Name,

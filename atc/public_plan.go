@@ -20,6 +20,7 @@ func (plan *Plan) Public() *json.RawMessage {
 		Run            *json.RawMessage `json:"run,omitempty"`
 		Agent          *json.RawMessage `json:"agent,omitempty"`
 		Harvest        *json.RawMessage `json:"harvest,omitempty"`
+		Merge          *json.RawMessage `json:"merge,omitempty"`
 		SetPipeline    *json.RawMessage `json:"set_pipeline,omitempty"`
 		LoadVar        *json.RawMessage `json:"load_var,omitempty"`
 		OnAbort        *json.RawMessage `json:"on_abort,omitempty"`
@@ -76,6 +77,10 @@ func (plan *Plan) Public() *json.RawMessage {
 
 	if plan.Harvest != nil {
 		public.Harvest = plan.Harvest.Public()
+	}
+
+	if plan.Merge != nil {
+		public.Merge = plan.Merge.Public()
 	}
 
 	if plan.SetPipeline != nil {
@@ -339,6 +344,25 @@ func (plan HarvestPlan) Public() *json.RawMessage {
 		Name:   plan.Name,
 		Repo:   plan.Repo,
 		Branch: plan.Branch,
+	})
+}
+
+// Public deliberately omits Message and GatePolicy: the public plan is
+// visible to anyone who can see the build, and only the identity of the
+// merge is useful there.
+func (plan MergePlan) Public() *json.RawMessage {
+	return enc(struct {
+		Name         string `json:"name"`
+		Repo         string `json:"repo"`
+		Branch       string `json:"branch"`
+		TargetBranch string `json:"target_branch"`
+		Method       string `json:"method,omitempty"`
+	}{
+		Name:         plan.Name,
+		Repo:         plan.Repo,
+		Branch:       plan.Branch,
+		TargetBranch: plan.TargetBranch,
+		Method:       plan.Method,
 	})
 }
 

@@ -365,6 +365,38 @@ func (validator *StepValidator) VisitAgent(step *AgentStep) error {
 	return nil
 }
 
+func (validator *StepValidator) VisitMerge(step *MergeStep) error {
+	validator.pushContextf(".merge(%s)", step.Name)
+	defer validator.popContext()
+
+	warning, err := ValidateIdentifier(step.Name, validator.context...)
+	if err != nil {
+		validator.recordError(err.Error())
+	}
+	if warning != nil {
+		validator.recordWarning(*warning)
+	}
+
+	if step.Repo == "" {
+		validator.recordError("must specify `repo:`")
+	}
+	if step.Branch == "" {
+		validator.recordError("must specify `branch:` (the delivered branch to integrate)")
+	}
+	// The target is the TICKET's target branch. Defaulting it here would let
+	// a misconfigured step silently merge into the wrong branch, so it is
+	// required rather than defaulted (unlike harvest's target_branch, which
+	// only scopes a diff).
+	if step.TargetBranch == "" {
+		validator.recordError("must specify `target_branch:` (never defaulted — a wrong target merges into the wrong branch)")
+	}
+	if step.Method != "" && step.Method != "merge" && step.Method != "squash" {
+		validator.recordError("`method:` must be `merge` or `squash`")
+	}
+
+	return nil
+}
+
 func (validator *StepValidator) VisitHarvest(step *HarvestStep) error {
 	validator.pushContextf(".harvest(%s)", step.Name)
 	defer validator.popContext()

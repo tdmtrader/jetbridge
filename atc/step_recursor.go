@@ -26,6 +26,9 @@ type StepRecursor struct {
 	// OnHarvest will be invoked for any *HarvestStep present in the StepConfig.
 	OnHarvest func(*HarvestStep) error
 
+	// OnMerge will be invoked for any *MergeStep present in the StepConfig.
+	OnMerge func(*MergeStep) error
+
 	// OnSetPipeline will be invoked for any *SetPipelineStep present in the StepConfig.
 	OnSetPipeline func(*SetPipelineStep) error
 
@@ -82,6 +85,15 @@ func (recursor StepRecursor) VisitAgent(step *AgentStep) error {
 func (recursor StepRecursor) VisitHarvest(step *HarvestStep) error {
 	if recursor.OnHarvest != nil {
 		return recursor.OnHarvest(step)
+	}
+
+	return nil
+}
+
+// VisitMerge calls the OnMerge hook if configured.
+func (recursor StepRecursor) VisitMerge(step *MergeStep) error {
+	if recursor.OnMerge != nil {
+		return recursor.OnMerge(step)
 	}
 
 	return nil
