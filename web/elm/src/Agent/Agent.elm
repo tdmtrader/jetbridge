@@ -793,7 +793,7 @@ runStepCell expandedRuns r =
                     , style "cursor" "pointer"
                     , title r.summary
                     ]
-                    [ Html.text ("▸ " ++ r.summary) ]
+                    (Html.text "▸ " :: Views.Prose.inline r.summary)
                 ]
     in
     Html.td

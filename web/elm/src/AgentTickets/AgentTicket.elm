@@ -1040,9 +1040,9 @@ reviewDigest ticket metrics =
             else
                 Html.div
                     [ style "color" "#d0d0d0", style "line-height" "1.4", style "margin-bottom" "6px" ]
-                    [ Html.span [ style "color" "#9aa39b" ] [ Html.text "latest run — " ]
-                    , Html.text latestSummary
-                    ]
+                    (Html.span [ style "color" "#9aa39b" ] [ Html.text "latest run — " ]
+                        :: Views.Prose.inline latestSummary
+                    )
 
         factsRow =
             Html.div
@@ -1499,7 +1499,7 @@ runRow ticketId now zone ( attempt, ( buildId, forBuild ) ) =
         , relativeRunTime now zone startedAt
         , Html.span [ style "flex-shrink" "0" ] [ statusView ]
         , Html.span [ style "color" "#9aa39b", style "flex" "1", style "min-width" "0", style "font-size" "12px", style "overflow" "hidden", style "text-overflow" "ellipsis", style "white-space" "nowrap" ]
-            [ Html.text summaryText ]
+            (Views.Prose.inline summaryText)
         , Html.span [ style "font-family" "monospace", style "color" "#b0b0b0", style "flex-shrink" "0" ] [ Html.text ("$" ++ formatUsd cost) ]
         ]
 
