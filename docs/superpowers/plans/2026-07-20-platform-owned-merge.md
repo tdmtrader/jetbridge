@@ -564,22 +564,54 @@ git commit -m "feat(mergepolicy): fail-safe ladder decision (judge vetoes, never
 
 ---
 
-## Phase 1 exit criteria
+## Phase 1 exit criteria — MET (`61e4415fad`)
 
-- `go test ./agent/mergepolicy/` passes.
+- `go test ./agent/mergepolicy/` passes (17 tests).
 - `go vet ./agent/mergepolicy/` is clean.
-- No file outside `agent/mergepolicy/` has been modified.
+- No file outside `agent/mergepolicy/` was modified.
 
-## Phase 2 — blocked, plan later
+## Landed beyond Phase 1
+
+**`agent/merge` — the speculative merge engine (`bf83d15aa8`, 7 tests).**
+Greenfield, no collision. `Prepare` computes a prospective merge on a scratch
+branch of a working clone and **never touches the remote**, so a caller can gate
+the result before landing it (design §4.3). A conflict is a reported `Result`,
+not an error, and the merge is aborted so the clone stays usable. `Staleness` is
+the read-only half of freshness (§4.1).
+
+Runs **pod-side**, as `agent/harvest` does. This is a deliberate constraint, not
+an accident: `codex/postgres-delivered-diffs` is concurrently making the web node
+stateless with respect to git, and a web-side merge would undo that.
+
+## Priority change (owner, 2026-07-20)
+
+**The merge-policy ladder is demoted to a later extension.** `agent/mergepolicy`
+stays as landed — tested and self-contained — but nothing should be built on top
+of it for now. The `auto` and `judge` tiers, and the invariant reversal in design
+§2.1, are **not** part of the core path.
+
+The core is narrower and safer: **a human clicks merge, and the platform performs
+it.** That alone converts outcome tracking from inference to record, which is the
+whole point of the design. `Decide` is simply not consulted in the core path — a
+manual-tier policy escalates every time, which is exactly right.
+
+## Phase 2 — blocked on codex, plan when unblocked
 
 Unblock condition: `codex/postgres-delivered-diffs` merges and the quarantined
-files are stable. Then plan, in this order:
+files are stable. A monitor is armed for this. Revised order, ladder removed:
 
-1. Commit trailer in `agent/harvest` (tree-identical amend before push).
-2. Staleness reporting (a query, no mutation).
-3. Merge route + handler + `merged_by` on the outcome row (migration
-   `1773106096`, **must land after codex's `1773106095`**).
-4. Merge-time freshness step (rebase-or-merge, gate, land).
-5. `merge_policy` block in `agent/workflow/config.go` + render-time refusal.
-6. Elm merge button — serialize against in-flight UX4 Elm work; not
+1. **Commit trailer** in `agent/harvest` (tree-identical amend before push).
+   Highest value per line of code — independently fixes squash detection for
+   merges performed outside the platform.
+2. **Staleness surfacing** — `merge.Staleness` is already built; this is only
+   plumbing it to the ticket page. No mutation.
+3. **Merge step + runner** — a pod-side entry point calling `merge.Prepare`,
+   running gates on the result, then pushing. Mirrors `cmd/harvest-runner`.
+4. **Merge route + handler** — triggers the step, records the outcome from what
+   the platform actually did.
+5. **Elm merge button** — serialize against in-flight UX4 Elm work; not
    gate-verifiable, so do not dispatch to the loop.
+
+Migration `1773106096` is reserved and **must land after codex's `1773106095`**.
+It is needed only once step 4 records something new; steps 1–3 need no schema
+change.
