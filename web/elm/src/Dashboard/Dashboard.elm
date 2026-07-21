@@ -1521,16 +1521,38 @@ instanceGroupCardsView session model =
                 |> List.concatMap
                     (\( team, teamPipelines ) ->
                         List.Extra.gatherEqualsBy .name teamPipelines
-                            |> List.map
+                            |> List.filterMap
                                 (\( p, ps ) ->
-                                    { header = team ++ " / " ++ p.name
-                                    , cards = p :: ps |> List.map InstancedPipelineCard
-                                    , teamName = team
-                                    }
+                                    case dropAgentTemplateCards (p :: ps) of
+                                        [] ->
+                                            -- Every member was a phantom agent
+                                            -- template (a never-run ticket group);
+                                            -- omit the section rather than fall
+                                            -- through to the "not-set" placeholder.
+                                            Nothing
+
+                                        members ->
+                                            Just
+                                                { header = team ++ " / " ++ p.name
+                                                , cards = List.map InstancedPipelineCard members
+                                                , teamName = team
+                                                }
                                 )
                     )
     in
     cardsView session model instanceGroups
+
+
+{-| W-13: the `agent-ticket-<id>` base template dispatch saves is uninstanced
+(empty instance vars) and never runs itself — its per-attempt runs are the
+instanced members. In the drilled-in instance-group view it would otherwise
+render a phantom "no instance vars" card, so drop it here. Non-agent groups
+(and their legitimate empty-vars members) are left untouched.
+-}
+dropAgentTemplateCards : List Pipeline -> List Pipeline
+dropAgentTemplateCards =
+    List.filter
+        (\p -> not (Filter.isAgentPipeline p && Dict.isEmpty p.instanceVars))
 
 
 cardsView : Session -> Model -> List (Group.Section Card) -> List (Html Message)
