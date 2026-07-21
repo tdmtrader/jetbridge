@@ -343,8 +343,12 @@ tooltip model =
 
 agentPlatformLink : List (Html Message)
 agentPlatformLink =
-    [ agentNavLink "sidebar-agent-platform" Routes.Agent "Agent platform"
-    , agentNavLink "sidebar-agent-tickets" Routes.AgentTickets "Ticket queue"
+    -- The in-page Agent.Nav sub-nav now carries section switching, so the
+    -- sidebar needs only a single entry into the agent IA (landing on the
+    -- ticket queue, the loop's primary surface). W-11 promotes the otherwise
+    -- orphaned agent reviews index to its own dedicated sidebar entry.
+    [ agentNavLink "sidebar-agent-tickets" Routes.AgentTickets "Agent"
+    , agentNavLink "sidebar-agent-reviews" (Routes.AgentReviews { teamName = "main" }) "Agent reviews"
     ]
 
 
