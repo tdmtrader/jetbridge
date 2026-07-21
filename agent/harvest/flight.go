@@ -55,16 +55,17 @@ func (r *flightRecorder) emit(t schema.EventType, payload any) {
 	_ = r.events.Write(schema.Event{Type: t, Data: data})
 }
 
-// writeJSON writes one flight file, best-effort.
-func (r *flightRecorder) writeJSON(name string, v any) {
+// writeJSON writes one flight file. Callers decide whether a failure is
+// diagnostic-only or prevents the operation from continuing.
+func (r *flightRecorder) writeJSON(name string, v any) error {
 	if r == nil {
-		return
+		return nil
 	}
 	data, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
-		return
+		return err
 	}
-	_ = os.WriteFile(filepath.Join(r.dir, name), append(data, '\n'), 0o644)
+	return os.WriteFile(filepath.Join(r.dir, name), append(data, '\n'), 0o644)
 }
 
 func (r *flightRecorder) close() {

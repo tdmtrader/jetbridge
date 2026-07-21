@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/concourse/concourse/agent/deliverydiff"
 	schema "github.com/concourse/concourse/agent/schema"
 )
 
@@ -53,8 +54,8 @@ func Run(cfg Config, workspaceDir, credsDir, flightDir string, out io.Writer) in
 	finish := func(status schema.Status, detail string) int {
 		meta := facts.metadata(detail)
 		res := buildResults(status, detail, meta)
-		rec.writeJSON("review.json", assembleEvidence(cfg, status, detail, facts, int(time.Since(started).Seconds())))
-		rec.writeJSON("results.json", res)
+		_ = rec.writeJSON("review.json", assembleEvidence(cfg, status, detail, facts, int(time.Since(started).Seconds())))
+		_ = rec.writeJSON("results.json", res)
 		rec.emit(schema.EventStepEnd, schema.StepEndData{
 			StepName: cfg.StepName, Status: stepEndStatus(status),
 			Summary: detail, WallTimeSeconds: int(time.Since(started).Seconds()),
@@ -114,7 +115,7 @@ func Run(cfg Config, workspaceDir, credsDir, flightDir string, out io.Writer) in
 	if base, err := BaseSHA(workspaceDir, cfg.TargetBranch); err == nil {
 		facts.BaseSHA = base
 		if m, err := BuildManifest(workspaceDir, base, head, cfg.Repo, cfg.Branch); err == nil {
-			rec.writeJSON("manifest.json", m)
+			_ = rec.writeJSON("manifest.json", m)
 			facts.ManifestWritten = true
 		}
 	}
@@ -213,6 +214,12 @@ func Run(cfg Config, workspaceDir, credsDir, flightDir string, out io.Writer) in
 		return finish(schema.StatusError, "git push failed: "+pushOut.String())
 	}
 	facts.PushedBranch = cfg.Branch
+	diff, err := deliverydiff.Capture(workspaceDir, facts.BaseSHA, head, cfg.Branch)
+	if err != nil {
+		facts.DiffErr = err.Error()
+	} else if err := rec.writeJSON("diff.json", diff); err != nil {
+		facts.DiffErr = err.Error()
+	}
 	rec.emit(schema.EventPushDone, schema.PushDoneData{
 		Branch: cfg.Branch, Sha: head, ManifestArtifact: manifestArtifactName(facts),
 	})
@@ -228,6 +235,7 @@ type runFacts struct {
 	Gates            []GateOutcome
 	Judge            *JudgeResult
 	JudgeErr         string
+	DiffErr          string
 	PushedBranch     string
 	ManifestWritten  bool
 }
@@ -257,6 +265,9 @@ func (f *runFacts) metadata(detail string) map[string]interface{} {
 	}
 	if f.JudgeErr != "" {
 		m["judge_error"] = f.JudgeErr
+	}
+	if f.DiffErr != "" {
+		m["diff_error"] = f.DiffErr
 	}
 	return m
 }

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/concourse/concourse/agent/deliverydiff"
 	"github.com/concourse/concourse/agent/harvest"
 	schema "github.com/concourse/concourse/agent/schema"
 )
@@ -109,6 +110,22 @@ func TestRunFlightOutputsOnPass(t *testing.T) {
 		t.Fatalf("manifest: %+v, %v", m, err)
 	}
 
+	var diff deliverydiff.Artifact
+	raw, err = os.ReadFile(filepath.Join(flight, "diff.json"))
+	if err != nil {
+		t.Fatalf("diff.json: %v", err)
+	}
+	if err := json.Unmarshal(raw, &diff); err != nil {
+		t.Fatalf("diff unmarshal: %v", err)
+	}
+	base := git(t, ws, "rev-parse", "origin/main")
+	if err := diff.Validate(); err != nil || diff.BaseSHA != base || diff.PushedSHA != head || diff.DeliveredBranch != cfg.Branch {
+		t.Fatalf("diff: %+v, %v", diff, err)
+	}
+	if len(diff.Files) != 1 || diff.Files[0].Path != "report.md" || !strings.Contains(diff.Files[0].Patch, "+the work") {
+		t.Fatalf("diff files: %+v", diff.Files)
+	}
+
 	// evidence: schema_version harvest/1, pass, commit = head
 	var ev harvest.Evidence
 	raw, err = os.ReadFile(filepath.Join(flight, "review.json"))
@@ -146,6 +163,9 @@ func TestRunFlightGateFailureEvidence(t *testing.T) {
 	if got := git(t, remote, "for-each-ref", "refs/heads/agent"); got != "" {
 		t.Fatalf("nothing may be pushed on gate failure: %q", got)
 	}
+	if _, err := os.Stat(filepath.Join(flight, "diff.json")); !os.IsNotExist(err) {
+		t.Fatalf("gate failure must not write diff.json: %v", err)
+	}
 	types := eventTypes(t, flight)
 	if !containsType(types, "gate.start") || !containsType(types, "gate.result") {
 		t.Fatalf("gate events missing: %v", types)
@@ -182,6 +202,22 @@ func TestRunFlightDirtyEvidence(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(ws, "wip.txt")); err != nil {
 		t.Fatal("no auto-discard: uncommitted work must survive (F33)")
+	}
+	if _, err := os.Stat(filepath.Join(flight, "diff.json")); !os.IsNotExist(err) {
+		t.Fatalf("dirty workspace must not write diff.json: %v", err)
+	}
+}
+
+func TestRunPushFalseDoesNotWriteDiff(t *testing.T) {
+	ws, _ := workspaceWithRemote(t)
+	flight := t.TempDir()
+	var out bytes.Buffer
+	exit := harvest.Run(harvest.Config{StepName: "harvest", Repo: "r"}, ws, "", flight, &out)
+	if exit != 0 {
+		t.Fatalf("exit = %d: %s", exit, out.String())
+	}
+	if _, err := os.Stat(filepath.Join(flight, "diff.json")); !os.IsNotExist(err) {
+		t.Fatalf("push=false must not write diff.json: %v", err)
 	}
 }
 
