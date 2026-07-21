@@ -33,7 +33,7 @@ type Gate struct {
 // JudgeConfig is the §6.4 rubric block.
 type JudgeConfig struct {
 	Rubric        []RubricDimension `json:"rubric"`
-	PassThreshold float64           `json:"pass_threshold"`       // 0-10 weighted total
+	PassThreshold float64           `json:"pass_threshold"` // 0-10 weighted total
 	Model         string            `json:"model,omitempty"`
 	BudgetUSD     float64           `json:"budget_usd,omitempty"` // §6 budget.judge_usd; 0 = uncapped
 }

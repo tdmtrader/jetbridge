@@ -110,14 +110,10 @@ func Run(cfg Config, workspaceDir, credsDir, flightDir string, out io.Writer) in
 	}
 	facts.HeadSHA = head
 
-	// -- base + manifest (best-effort context: absence degrades the
-	//    judge diff and skips manifest.json, never fails the harvest) --
+	// -- base (best-effort context: absence degrades the judge diff and
+	//    skips manifest.json, never fails the harvest) --
 	if base, err := BaseSHA(workspaceDir, cfg.TargetBranch); err == nil {
 		facts.BaseSHA = base
-		if m, err := BuildManifest(workspaceDir, base, head, cfg.Repo, cfg.Branch); err == nil {
-			_ = rec.writeJSON("manifest.json", m)
-			facts.ManifestWritten = true
-		}
 	}
 
 	// -- no-op guard: a clean workspace whose HEAD is still the base has zero
@@ -128,6 +124,37 @@ func Run(cfg Config, workspaceDir, credsDir, flightDir string, out io.Writer) in
 	//    the base actually resolved (absence stays the existing degraded path). --
 	if facts.BaseSHA != "" && facts.HeadSHA == facts.BaseSHA {
 		return finish(schema.StatusFail, "no-op: the workspace HEAD equals the base commit "+facts.BaseSHA+" — the agent committed no work into the workspace checkout, so there is nothing to push. (A frequent cause: the agent edited the input repo/ tree instead of the workspace output.) Nothing was pushed.")
+	}
+
+	// -- commit trailer (BEST-EFFORT, design 2026-07-20 §5): stamp
+	//    "Agent-Ticket: <id>" so a squash/rebase merge performed OUTSIDE the
+	//    platform is still attributable — the cases agent/gitcheck's patch-id
+	//    heuristic cannot detect. The amend rewrites only the message, so the
+	//    tree is identical and the gates below are unaffected.
+	//
+	//    ORDERING IS LOAD-BEARING. After the no-op guard: amending a HEAD
+	//    that still equals the base would mint a fresh sha and silently
+	//    defeat it. Before the manifest, the push, and deliverydiff.Capture,
+	//    all of which record `head` — stamping later would publish a sha that
+	//    is not the one actually pushed.
+	//
+	//    A stamping failure degrades detection to the backstop; it must never
+	//    fail a delivery that is otherwise good.
+	if cfg.TicketID > 0 {
+		if stamped, err := StampTrailer(workspaceDir, cfg.TicketID); err != nil {
+			facts.TrailerErr = err.Error()
+		} else {
+			head = stamped
+			facts.HeadSHA = head
+		}
+	}
+
+	// -- manifest, built from the FINAL head (post-trailer) --
+	if facts.BaseSHA != "" {
+		if m, err := BuildManifest(workspaceDir, facts.BaseSHA, head, cfg.Repo, cfg.Branch); err == nil {
+			_ = rec.writeJSON("manifest.json", m)
+			facts.ManifestWritten = true
+		}
 	}
 
 	// -- gates (between cleanliness and push, §6.3; unchanged engine) --
@@ -236,6 +263,7 @@ type runFacts struct {
 	Judge            *JudgeResult
 	JudgeErr         string
 	DiffErr          string
+	TrailerErr       string
 	PushedBranch     string
 	ManifestWritten  bool
 }
@@ -265,6 +293,9 @@ func (f *runFacts) metadata(detail string) map[string]interface{} {
 	}
 	if f.JudgeErr != "" {
 		m["judge_error"] = f.JudgeErr
+	}
+	if f.TrailerErr != "" {
+		m["trailer_error"] = f.TrailerErr
 	}
 	if f.DiffErr != "" {
 		m["diff_error"] = f.DiffErr

@@ -93,7 +93,6 @@ func metaGates(t *testing.T, res schema.Results) []harvest.GateOutcome {
 
 func TestRunPushesCommittedWorkBySha(t *testing.T) {
 	workspace, remote := workspaceWithRemote(t)
-	head := git(t, workspace, "rev-parse", "HEAD")
 
 	cfg := harvest.Config{
 		StepName: "harvest", Workspace: "workspace", Repo: "tdmtrader/jetbridge",
@@ -103,6 +102,12 @@ func TestRunPushesCommittedWorkBySha(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit = %d, output: %s", code, raw)
 	}
+
+	// Harvest stamps the ticket trailer, which amends the tip — so the
+	// delivered sha is the POST-amend HEAD. Read it after the run: the point
+	// of the assertion is that results, workspace, and remote all agree on
+	// the ONE sha that was actually published.
+	head := git(t, workspace, "rev-parse", "HEAD")
 	if res.Status != "pass" || metaString(res, "pushed_branch") != "agent/ticket-42" || metaString(res, "head_sha") != head {
 		t.Errorf("results = %+v", res)
 	}
@@ -110,6 +115,9 @@ func TestRunPushesCommittedWorkBySha(t *testing.T) {
 	remoteSHA := git(t, remote, "rev-parse", "refs/heads/agent/ticket-42")
 	if remoteSHA != head {
 		t.Errorf("remote branch = %s, want %s", remoteSHA, head)
+	}
+	if body := git(t, workspace, "log", "-1", "--format=%B"); !strings.Contains(body, "Agent-Ticket: 42") {
+		t.Errorf("the delivered commit must carry the ticket trailer, got:\n%s", body)
 	}
 }
 
@@ -127,11 +135,12 @@ func TestRunRePushUpdatesTheBranch(t *testing.T) {
 	os.WriteFile(filepath.Join(workspace, "report.md"), []byte("more work\n"), 0644)
 	git(t, workspace, "add", ".")
 	git(t, workspace, "commit", "-m", "rework")
-	head2 := git(t, workspace, "rev-parse", "HEAD")
 
 	if code, _, raw := runHarvest(t, cfg, workspace); code != 0 {
 		t.Fatalf("re-push exit = %d: %s", code, raw)
 	}
+	// post-trailer HEAD, as above
+	head2 := git(t, workspace, "rev-parse", "HEAD")
 	if remoteSHA := git(t, remote, "rev-parse", "refs/heads/agent/ticket-42"); remoteSHA != head2 {
 		t.Errorf("remote branch = %s, want %s", remoteSHA, head2)
 	}
@@ -288,6 +297,9 @@ func TestRunGatesPassPushesTheBranch(t *testing.T) {
 		}
 	}
 
+	// post-trailer HEAD: the amend happens before the push, so the delivered
+	// sha is the amended one.
+	head = git(t, workspace, "rev-parse", "HEAD")
 	remoteSHA := git(t, remote, "rev-parse", "refs/heads/agent/ticket-1")
 	if remoteSHA != head {
 		t.Errorf("remote branch = %s, want %s (gates-pass must push)", remoteSHA, head)
