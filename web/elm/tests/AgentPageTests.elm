@@ -3,6 +3,7 @@ module AgentPageTests exposing (all)
 import Application.Application as Application
 import Common
 import Data
+import Concourse.Agent
 import Dict
 import Expect
 import Html.Attributes as Attr
@@ -170,6 +171,7 @@ sampleRun :
     , costUsd : Float
     , eventCounts : Dict.Dict String Int
     , createdAt : Int
+    , results : Concourse.Agent.StepResults
     }
 sampleRun =
     { ticketId = Just 42
@@ -195,6 +197,7 @@ sampleRun =
     , costUsd = 1.25
     , eventCounts = Dict.empty
     , createdAt = 0
+    , results = { gates = [], judge = Nothing, pushedBranch = "" }
     }
 
 

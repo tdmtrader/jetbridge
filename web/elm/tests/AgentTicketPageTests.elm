@@ -231,6 +231,7 @@ all =
                                           , costUsd = 0.21
                                           , eventCounts = Dict.empty
                                           , createdAt = 100
+                                          , results = { gates = [], judge = Nothing, pushedBranch = "" }
                                           }
                                         ]
                                     )
@@ -302,6 +303,7 @@ all =
                         , costUsd = cost
                         , eventCounts = Dict.empty
                         , createdAt = 100
+                        , results = { gates = [], judge = Nothing, pushedBranch = "" }
                         }
                 in
                 withDetail sampleDetailJson
@@ -377,6 +379,7 @@ all =
                                           , costUsd = 0.21
                                           , eventCounts = Dict.empty
                                           , createdAt = 100
+                                          , results = { gates = [], judge = Nothing, pushedBranch = "" }
                                           }
                                         ]
                                     )
@@ -558,6 +561,7 @@ all =
                                           , costUsd = 0.1
                                           , eventCounts = Dict.empty
                                           , createdAt = 100
+                                          , results = { gates = [], judge = Nothing, pushedBranch = "" }
                                           }
                                         ]
                                     )
@@ -634,6 +638,7 @@ activeAttemptTest =
                                       , costUsd = 0.0
                                       , eventCounts = Dict.empty
                                       , createdAt = 100
+                                      , results = { gates = [], judge = Nothing, pushedBranch = "" }
                                       }
                                     ]
                                 )
