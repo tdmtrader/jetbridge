@@ -35,6 +35,7 @@ worker/runtime/integration/sample/sample
 
 # Editor / AI tool configs
 .claude/worktrees/
+.worktrees/
 .codex/
 .cursor/
 .gemini/
