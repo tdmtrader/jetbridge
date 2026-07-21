@@ -94,6 +94,7 @@ import Views.Spinner as Spinner
 import Views.Styles
 import Views.Toggle as Toggle
 import Views.TopBar as TopBar
+import Views.Truncate
 
 
 type alias Flags =
@@ -1361,10 +1362,12 @@ agentTicketChip costs t =
                 Html.text t.state
         , Html.span
             [ style "overflow" "hidden"
-            , style "text-overflow" "ellipsis"
             , style "white-space" "nowrap"
             ]
-            [ Html.text ("#" ++ String.fromInt t.id ++ " " ++ t.title) ]
+            -- W-10: middle-truncate so a distinguishing suffix (e.g. a trailing
+            -- "(T9 only)") survives — plain CSS ellipsis would eat the tail.
+            -- The full title stays on the chip's `title` tooltip above.
+            [ Html.text (Views.Truncate.middle 48 ("#" ++ String.fromInt t.id ++ " " ++ t.title)) ]
         , Html.span
             [ style "font-family" "monospace", style "color" "#b0b0b0" ]
             [ Html.text (agentCostLabel costs t.id) ]
@@ -1536,16 +1539,38 @@ instanceGroupCardsView session model =
                 |> List.concatMap
                     (\( team, teamPipelines ) ->
                         List.Extra.gatherEqualsBy .name teamPipelines
-                            |> List.map
+                            |> List.filterMap
                                 (\( p, ps ) ->
-                                    { header = team ++ " / " ++ p.name
-                                    , cards = p :: ps |> List.map InstancedPipelineCard
-                                    , teamName = team
-                                    }
+                                    case dropAgentTemplateCards (p :: ps) of
+                                        [] ->
+                                            -- Every member was a phantom agent
+                                            -- template (a never-run ticket group);
+                                            -- omit the section rather than fall
+                                            -- through to the "not-set" placeholder.
+                                            Nothing
+
+                                        members ->
+                                            Just
+                                                { header = team ++ " / " ++ p.name
+                                                , cards = List.map InstancedPipelineCard members
+                                                , teamName = team
+                                                }
                                 )
                     )
     in
     cardsView session model instanceGroups
+
+
+{-| W-13: the `agent-ticket-<id>` base template dispatch saves is uninstanced
+(empty instance vars) and never runs itself — its per-attempt runs are the
+instanced members. In the drilled-in instance-group view it would otherwise
+render a phantom "no instance vars" card, so drop it here. Non-agent groups
+(and their legitimate empty-vars members) are left untouched.
+-}
+dropAgentTemplateCards : List Pipeline -> List Pipeline
+dropAgentTemplateCards =
+    List.filter
+        (\p -> not (Filter.isAgentPipeline p && Dict.isEmpty p.instanceVars))
 
 
 cardsView : Session -> Model -> List (Group.Section Card) -> List (Html Message)

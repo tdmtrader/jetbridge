@@ -370,6 +370,46 @@ all =
                                     Msgs.PipelineCardInstanceVar Msgs.AllPipelinesSection 1 "a" "foo"
                             ]
             ]
+        , describe "agent-ticket groups (W-13)" <|
+            let
+                findCards =
+                    Query.findAll [ class "card" ]
+            in
+            [ test "suppresses the base template's phantom 'no instance vars' card" <|
+                \_ ->
+                    whenViewingAgentGroup
+                        |> gotPipelines
+                            [ agentTemplatePipeline 1
+                            , agentRunInstance 2 1
+                            ]
+                        |> Common.queryView
+                        |> Query.hasNot [ text "no instance vars" ]
+            , test "still renders the real run instance card" <|
+                \_ ->
+                    whenViewingAgentGroup
+                        |> gotPipelines
+                            [ agentTemplatePipeline 1
+                            , agentRunInstance 2 1
+                            ]
+                        |> Common.queryView
+                        |> findCards
+                        |> Query.count (Expect.equal 1)
+            , test "a never-run agent group (bare template only) shows no phantom card" <|
+                \_ ->
+                    whenViewingAgentGroup
+                        |> gotPipelines [ agentTemplatePipeline 1 ]
+                        |> Common.queryView
+                        |> Query.hasNot [ text "no instance vars" ]
+            , test "a non-agent group with an empty-vars member still shows 'no instance vars'" <|
+                \_ ->
+                    whenOnDashboardViewingInstanceGroup { dashboardView = ViewNonArchivedPipelines }
+                        |> gotPipelines
+                            [ pipelineInstanceWithVars 1 []
+                            , pipelineInstanceWithVars 2 [ ( "a", JsonString "x" ) ]
+                            ]
+                        |> Common.queryView
+                        |> Query.has [ text "no instance vars" ]
+            ]
         ]
 
 
@@ -384,6 +424,40 @@ whenOnDashboardViewingInstanceGroup { dashboardView } =
                     }
             )
         |> Tuple.first
+
+
+whenViewingAgentGroup : Application.Model
+whenViewingAgentGroup =
+    whenOnDashboard { highDensity = False }
+        |> Application.handleDelivery
+            (RouteChanged <|
+                Routes.Dashboard
+                    { searchType = Routes.Normal "team:\"team\" group:\"agent-ticket-5\""
+                    , dashboardView = ViewNonArchivedPipelines
+                    }
+            )
+        |> Tuple.first
+
+
+{-| The uninstanced base template dispatch saves as `agent-ticket-<id>` — empty
+instance vars, never runs itself (runs are the per-attempt instances below).
+-}
+agentTemplatePipeline : Int -> ( Concourse.Pipeline, List Concourse.Job )
+agentTemplatePipeline id =
+    ( Data.pipeline "team" id
+        |> Data.withName "agent-ticket-5"
+        |> Data.withInstanceVars Dict.empty
+    , []
+    )
+
+
+agentRunInstance : Int -> Int -> ( Concourse.Pipeline, List Concourse.Job )
+agentRunInstance id runNo =
+    ( Data.pipeline "team" id
+        |> Data.withName "agent-ticket-5"
+        |> Data.withInstanceVars (Dict.fromList [ ( "run", JsonNumber <| toFloat runNo ) ])
+    , [ job BuildStatusSucceeded |> Data.withPipelineId id ]
+    )
 
 
 pipelineInstance : BuildStatus -> Bool -> Int -> ( Concourse.Pipeline, List Concourse.Job )

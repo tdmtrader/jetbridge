@@ -1,4 +1,4 @@
-module Dashboard.Filter exposing (Suggestion, filterTeams, isViewingInstanceGroups, suggestions)
+module Dashboard.Filter exposing (Suggestion, filterTeams, isAgentPipeline, isViewingInstanceGroups, suggestions)
 
 import Application.Models exposing (Session)
 import Concourse exposing (flattenJson)
