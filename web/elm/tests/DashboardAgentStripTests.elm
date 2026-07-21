@@ -89,7 +89,7 @@ all =
                     |> Query.find [ id "agent-ticket-strip" ]
                     |> Query.has
                         [ tag "a"
-                        , attribute (Attr.href "/agent-tickets/12")
+                        , attribute (Attr.href "/agent/tickets/12")
                         , containing [ text "#12 ship fly archives" ]
                         ]
         , test "joins per-ticket cost into the chip" <|
@@ -118,7 +118,7 @@ all =
                     |> Query.find [ id "agent-ticket-strip" ]
                     |> Query.has
                         [ tag "a"
-                        , attribute (Attr.href "/agent-tickets/8")
+                        , attribute (Attr.href "/agent/tickets/8")
                         , containing [ text "#8 blew up" ]
                         ]
         ]

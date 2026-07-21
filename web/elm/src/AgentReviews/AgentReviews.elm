@@ -9,6 +9,7 @@ module AgentReviews.AgentReviews exposing
     , view
     )
 
+import Agent.Nav as Nav
 import Application.Models exposing (Session)
 import Concourse.AgentReview as AgentReview
 import EffectTransformer exposing (ET)
@@ -115,7 +116,8 @@ view session model =
             [ SideBar.view session Nothing
             , Html.div
                 [ style "padding" "16px", style "width" "100%" ]
-                [ Html.h1 [ style "font-size" "18px" ]
+                [ Nav.view route
+                , Html.h1 [ style "font-size" "18px" ]
                     [ Html.text ("Agent reviews — " ++ model.teamName) ]
                 , content model
                 ]

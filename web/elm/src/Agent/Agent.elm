@@ -1,5 +1,6 @@
 module Agent.Agent exposing
     ( Model
+    , changeSection
     , documentTitle
     , handleCallback
     , handleDelivery
@@ -10,23 +11,22 @@ module Agent.Agent exposing
     , view
     )
 
-import AgentBadge
+import Agent.Admin as Admin
+import Agent.Nav as Nav
+import Agent.Runs as Runs
+import Agent.Shared as Shared
+import Agent.Spend as Spend
+import Agent.Workflows as Workflows
 import Application.Models exposing (Session)
-import Colors
 import Concourse.Agent as Agent
-import DateFormat
-import Duration
 import EffectTransformer exposing (ET)
 import Html exposing (Html)
-import Html.Attributes exposing (checked, class, disabled, href, id, placeholder, style, title, type_, value)
-import Html.Events exposing (onClick, onInput)
-import Html.Lazy
+import Html.Attributes exposing (id, style)
 import Http
 import Login.Login as Login
 import Message.Callback exposing (Callback(..))
 import Message.Effects exposing (Effect(..))
 import Message.Message exposing (Message(..))
-import Message.ScrollDirection as ScrollDirection
 import Message.Subscription
     exposing
         ( Delivery(..)
@@ -39,23 +39,8 @@ import Set exposing (Set)
 import SideBar.SideBar as SideBar
 import Time
 import Tooltip
-import Views.Prose
 import Views.Styles
 import Views.TopBar as TopBar
-
-
-{-| The closed scope vocabulary an admin may grant when minting a principal.
-Mirrors agent/api/principals `ValidScopes`; keep the two in lockstep.
--}
-mintScopeVocabulary : List String
-mintScopeVocabulary =
-    [ "reviews:write"
-    , "tickets:read"
-    , "tickets:write"
-    , "metrics:write"
-    , "costs:write"
-    , "questions:answer"
-    ]
 
 
 type alias Model =
@@ -83,11 +68,12 @@ type alias Model =
         , showEphemeralPrincipals : Bool
         , expandedRuns : Set String
         , now : Maybe Time.Posix
+        , section : Routes.AgentSection
         }
 
 
-init : ( Model, List Effect )
-init =
+init : Routes.AgentSection -> ( Model, List Effect )
+init section =
     ( { runs = Nothing
       , runsError = Nothing
       , workflows = Nothing
@@ -111,8 +97,12 @@ init =
       , showEphemeralPrincipals = False
       , expandedRuns = Set.empty
       , now = Nothing
+      , section = section
       , isUserMenuExpanded = False
       }
+      -- Fetch every section's data on load so switching tabs is instant against
+      -- already-loaded data (the 1-min poll keeps it fresh). Per-section fetch
+      -- is a deferred optimization.
     , [ FetchAgentRunMetrics
       , FetchAgentWorkflows
       , FetchAgentCostRollup
@@ -124,9 +114,30 @@ init =
     )
 
 
-documentTitle : String
-documentTitle =
-    "Agent"
+{-| A same-page section switch (e.g. /agent/runs → /agent/spend). Only the
+active section changes; the fetched ledger/workflows/costs data is preserved so
+the switch is instant. `Application.routeMatchesModel` routes these through
+`urlUpdate` (data-preserving) rather than re-`init`.
+-}
+changeSection : Routes.AgentSection -> ET Model
+changeSection section ( model, effects ) =
+    ( { model | section = section }, effects )
+
+
+documentTitle : Routes.AgentSection -> String
+documentTitle section =
+    case section of
+        Routes.AgentRuns ->
+            "Agent runs"
+
+        Routes.AgentWorkflows ->
+            "Agent workflows"
+
+        Routes.AgentSpend ->
+            "Agent spend"
+
+        Routes.AgentAdmin ->
+            "Agent admin"
 
 
 handleCallback : Callback -> ET Model
@@ -267,37 +278,6 @@ mutationError verb err =
             "couldn't " ++ verb ++ " principal"
 
 
-{-| The mint button is enabled only with a non-empty name, at least one scope
-selected, and a valid expiry field — the same required-field rule the API
-enforces. A blank expiry is valid (= no expiry); any non-blank value must
-parse to a positive integer number of days.
--}
-canMint : Model -> Bool
-canMint model =
-    (String.trim model.mintName /= "")
-        && not (Set.isEmpty model.mintScopes)
-        && expiresIsValid model.mintExpiresDays
-
-
-{-| The "expires in N days" field is valid when it is blank (no expiry) or
-parses to a positive integer. Blank, zero, negative, and non-numeric input
-that would silently mean "never expires" are surfaced as invalid instead.
--}
-expiresIsValid : String -> Bool
-expiresIsValid raw =
-    case String.trim raw of
-        "" ->
-            True
-
-        trimmed ->
-            case String.toInt trimmed of
-                Just days ->
-                    days > 0
-
-                Nothing ->
-                    False
-
-
 update : Message -> ET Model
 update msg ( model, effects ) =
     case msg of
@@ -356,9 +336,6 @@ update msg ( model, effects ) =
         AgentPrincipalsShowEphemeralToggled ->
             ( { model | showEphemeralPrincipals = not model.showEphemeralPrincipals }, effects )
 
-        AgentSectionNavClicked anchorId ->
-            ( model, effects ++ [ Scroll (ScrollDirection.ToId anchorId) agentContentId ] )
-
         AgentRunExpandToggled rowKey ->
             -- Toggle a single ledger row between its one-line summary and the
             -- full run summary. Keyed by build id + plan id (see runKey): a
@@ -377,6 +354,19 @@ update msg ( model, effects ) =
 
         _ ->
             ( model, effects )
+
+
+{-| The mint button is enabled only with a non-empty name, at least one scope
+selected, and a valid expiry field — the shared rule the mint form and API both
+enforce.
+-}
+canMint : Model -> Bool
+canMint model =
+    Shared.canMint
+        { name = model.mintName
+        , scopes = model.mintScopes
+        , expiresDays = model.mintExpiresDays
+        }
 
 
 tooltip : Model -> a -> Maybe Tooltip.Tooltip
@@ -433,133 +423,6 @@ subscriptions =
 
 
 
--- COLORS / STYLE HELPERS
-
-
-mutedColor : String
-mutedColor =
-    "#b0b0b0"
-
-
-subtleColor : String
-subtleColor =
-    "#7a7a7a"
-
-
-rowBorder : String
-rowBorder =
-    "1px solid " ++ Colors.background
-
-
-amberColor : String
-amberColor =
-    "#e0a44e"
-
-
-{-| Round a dollar amount to two decimals via integer cents so the display
-never leaks floating-point noise (e.g. 0.1 + 0.2).
--}
-formatUsd : Float -> String
-formatUsd amount =
-    let
-        cents =
-            round (amount * 100)
-
-        sign =
-            if cents < 0 then
-                "-"
-
-            else
-                ""
-
-        absCents =
-            abs cents
-
-        dollars =
-            absCents // 100
-
-        remainder =
-            modBy 100 absCents
-
-        fraction =
-            if remainder < 10 then
-                "0" ++ String.fromInt remainder
-
-            else
-                String.fromInt remainder
-    in
-    sign ++ String.fromInt dollars ++ "." ++ fraction
-
-
-sectionBlock : String -> String -> List (Html Message) -> Html Message
-sectionBlock anchorId title children =
-    Html.div
-        [ id anchorId, style "margin-top" "24px" ]
-        (Html.h2
-            [ style "font-size" "15px"
-            , style "margin" "0 0 8px 0"
-            , style "color" Colors.text
-            ]
-            [ Html.text title ]
-            :: children
-        )
-
-
-mutedLine : String -> Html Message
-mutedLine content =
-    Html.p
-        [ style "color" mutedColor
-        , style "font-family" "monospace"
-        , style "font-size" "12px"
-        , style "margin" "4px 0"
-        ]
-        [ Html.text content ]
-
-
-errorLine : String -> Html Message
-errorLine content =
-    Html.p
-        [ class "agent-section-error"
-        , style "color" amberColor
-        , style "font-family" "monospace"
-        , style "font-size" "12px"
-        , style "margin" "4px 0"
-        ]
-        [ Html.text content ]
-
-
-{-| A visible warning shown above a section's content when a poll fails after
-data has already loaded. Without it a broken refresh is invisible — the stale
-data keeps rendering forever with no hint that it stopped updating.
--}
-staleDataWarning : Maybe String -> List (Html Message)
-staleDataWarning maybeError =
-    case maybeError of
-        Just message ->
-            [ Html.div [ class "agent-section-stale" ]
-                [ errorLine ("refresh failed — showing stale data: " ++ message) ]
-            ]
-
-        Nothing ->
-            []
-
-
-pill : String -> { bg : String, fg : String } -> String -> Html Message
-pill className { bg, fg } labelText =
-    Html.span
-        [ class className
-        , style "margin-left" "8px"
-        , style "padding" "1px 8px"
-        , style "border-radius" "3px"
-        , style "font-size" "11px"
-        , style "font-weight" "700"
-        , style "background" bg
-        , style "color" fg
-        ]
-        [ Html.text labelText ]
-
-
-
 -- VIEW
 
 
@@ -567,7 +430,7 @@ view : Session -> Model -> Html Message
 view session model =
     let
         route =
-            Routes.Agent
+            Routes.Agent model.section
     in
     Html.div
         (id "page-including-top-bar" :: Views.Styles.pageIncludingTopBar)
@@ -584,1263 +447,50 @@ view session model =
             (id "page-below-top-bar" :: Views.Styles.pageBelowTopBar route)
             [ SideBar.view session Nothing
             , Html.div
-                -- The console's own scroll container (like the build page's
-                -- body): the section nav jumps by setting its scrollTop via
-                -- the scrollToId port, which needs a scrolling parent by id.
-                [ id agentContentId
+                [ id "agent-content"
                 , style "padding" "16px"
                 , style "width" "100%"
                 , style "box-sizing" "border-box"
                 , style "overflow-y" "auto"
                 ]
-                [ Html.h1
-                    [ style "font-size" "18px"
-                    , style "margin" "0"
-                    , style "color" Colors.text
-                    ]
-                    [ Html.text "Agent" ]
-                , Html.p
-                    [ style "color" mutedColor
-                    , style "font-family" "monospace"
-                    , style "font-size" "12px"
-                    , style "margin" "4px 0 0 0"
-                    ]
-                    [ Html.text "workflows and spend" ]
-                , sectionNav
-                , runsSection session.timeZone model
-                , workflowsSection model
-                , costsSection model
-                , credentialsSection session.timeZone model
-                , principalsSection session.timeZone model
+                [ Nav.view route
+                , sectionView session model
                 ]
             ]
         ]
 
 
-
--- SECTION NAV
-
-
-agentContentId : String
-agentContentId =
-    "agent-content"
-
-
-{-| A slim in-page nav strip so the long single-column console can be jumped
-around without scroll-hunting. Each entry scrolls to a section's `id` via the
-`scrollToId` port — a plain `#fragment` href is dead here: `Browser.application`
-intercepts every internal link click and re-navigates through `Routes`, which
-carries no fragment for this page, so the browser never performs the jump.
--}
-sectionNav : Html Message
-sectionNav =
-    Html.div
-        [ class "agent-section-nav"
-        , style "display" "flex"
-        , style "flex-wrap" "wrap"
-        , style "gap" "12px"
-        , style "margin" "12px 0 0 0"
-        , style "font-family" "monospace"
-        , style "font-size" "12px"
-        ]
-        (List.map navLink
-            [ ( "agent-runs", "runs" )
-            , ( "agent-workflows", "workflows" )
-            , ( "agent-costs", "costs" )
-            , ( "agent-credentials", "credentials" )
-            , ( "agent-principals", "principals" )
-            ]
-        )
-
-
-navLink : ( String, String ) -> Html Message
-navLink ( anchorId, label ) =
-    Html.button
-        [ onClick (AgentSectionNavClicked anchorId)
-        , type_ "button"
-        , style "background" "transparent"
-        , style "border" "none"
-        , style "padding" "0"
-        , style "font" "inherit"
-        , style "color" "#7a9ac0"
-        , style "cursor" "pointer"
-        ]
-        [ Html.text label ]
-
-
-
--- RUNS SECTION
-
-
-runsSection : Time.Zone -> Model -> Html Message
-runsSection zone model =
-    sectionBlock "agent-runs" "Recent runs" <|
-        case model.runs of
-            Nothing ->
-                case model.runsError of
-                    Just message ->
-                        [ errorLine message ]
-
-                    Nothing ->
-                        [ mutedLine "loading…" ]
-
-            Just [] ->
-                staleDataWarning model.runsError
-                    ++ [ mutedLine "no agent runs recorded yet" ]
-
-            Just runs ->
-                staleDataWarning model.runsError
-                    ++ [ mutedLine "showing the newest 100 runs (capped server-side, most recent first)"
-
-                       -- Lazy so mint-form keystrokes (which rebuild the whole
-                       -- model, and with it this page) stop re-rendering the
-                       -- 100-row table; the arguments are reference-stable
-                       -- until the data (or the once-a-minute clock) changes.
-                       , Html.Lazy.lazy4 runsTable zone model.now model.expandedRuns runs
-                       ]
-
-
-runsTable : Time.Zone -> Maybe Time.Posix -> Set String -> List Agent.RunMetric -> Html Message
-runsTable zone now expandedRuns runs =
-    Html.table
-        [ class "agent-runs-table"
-        , style "border-collapse" "collapse"
-        , style "font-family" "monospace"
-        , style "font-size" "12px"
-        , style "color" Colors.text
-        ]
-        (runsHeaderRow :: List.map (runRow zone now expandedRuns) runs)
-
-
-runsHeaderRow : Html Message
-runsHeaderRow =
-    Html.tr []
-        [ tableHeaderCell "left" "step"
-        , tableHeaderCell "left" "workflow"
-        , tableHeaderCell "left" "status"
-        , tableHeaderCell "right" "cost"
-        , tableHeaderCell "right" "tokens (in+out)"
-        , tableHeaderCell "right" "turns"
-        , tableHeaderCell "left" "ticket"
-        , tableHeaderCell "left" "when"
-        ]
-
-
-{-| Stable identity for a ledger row. (build id, plan id) is the metrics
-table's unique key — a build id alone is shared by sibling step rows of the
-same build, and a list ordinal changes when the refetch prepends a newer run.
--}
-runKey : Agent.RunMetric -> String
-runKey r =
-    String.fromInt r.buildId ++ ":" ++ r.planId
-
-
-runRow : Time.Zone -> Maybe Time.Posix -> Set String -> Agent.RunMetric -> Html Message
-runRow zone now expandedRuns r =
-    Html.tr [ class "agent-run-row" ]
-        [ runStepCell expandedRuns r
-        , tableCell "left" (workflowRef r.workflowName r.workflowVersion)
-        , runStatusCell r
-        , tableCell "right" ("$" ++ formatUsd r.costUsd)
-        , tableCell "right" (String.fromInt r.usage.inputTokens ++ "+" ++ String.fromInt r.usage.outputTokens)
-        , tableCell "right" (String.fromInt r.turns)
-        , ticketRefCell r
-        , runWhenCell zone now r
-        ]
-
-
-{-| The step name plus its summary underneath it — omitted when the summary is
-empty so the row does not carry a blank subtext line. The summary is
-click-to-expand: collapsed it is a truncated one-liner; expanded it renders the
-full run summary as prose (`AgentRunExpandToggled`, keyed by `runKey` so the
-expanded row stays put when a 5s refetch prepends a newer run).
--}
-runStepCell : Set String -> Agent.RunMetric -> Html Message
-runStepCell expandedRuns r =
-    let
-        rowKey =
-            runKey r
-
-        expanded =
-            Set.member rowKey expandedRuns
-
-        summaryBlock =
-            if r.summary == "" then
-                []
-
-            else if expanded then
-                [ Html.div
-                    [ class "agent-run-summary-full"
-                    , onClick (AgentRunExpandToggled rowKey)
-                    , style "max-width" "480px"
-                    , style "margin-top" "2px"
-                    , style "cursor" "pointer"
-                    , title "click to collapse"
-                    ]
-                    [ Html.Lazy.lazy Views.Prose.view r.summary ]
-                ]
-
-            else
-                [ Html.div
-                    [ class "agent-run-summary"
-                    , onClick (AgentRunExpandToggled rowKey)
-                    , style "font-size" "11px"
-                    , style "color" mutedColor
-                    , style "max-width" "320px"
-                    , style "white-space" "nowrap"
-                    , style "overflow" "hidden"
-                    , style "text-overflow" "ellipsis"
-                    , style "cursor" "pointer"
-                    , title r.summary
-                    ]
-                    [ Html.text ("▸ " ++ r.summary) ]
-                ]
-    in
-    Html.td
-        [ style "text-align" "left"
-        , style "padding" "4px 16px 4px 0"
-        , style "border-bottom" rowBorder
-        , style "vertical-align" "top"
-        ]
-        (Html.a
-            [ href (buildHref r.buildId)
-            , title ("open build #" ++ String.fromInt r.buildId)
-            , style "font-weight" "700"
-            , style "color" "#7a9ac0"
-            , style "text-decoration" "none"
-            ]
-            [ Html.text r.stepName ]
-            :: summaryBlock
-        )
-
-
-{-| Href to a run's build page, `/builds/<id>`, so every ledger row links to the
-build it measured. Built through Routes so it stays in step with the router.
--}
-buildHref : Int -> String
-buildHref buildId =
-    Routes.toString (Routes.OneOffBuild { id = buildId, highlight = Routes.HighlightNothing })
-
-
-{-| Render the run's DISPLAY truth as an AgentBadge. The server-derived
-`outcome` field carries the fused verdict (build status wins over step status,
-U3), so a step that exited "ok" inside a failed build shows Failed, and an
-"ok" step that delivered nothing shows "No output" — never a green OK on a
-build that did not deliver. Servers that predate the field send no outcome;
-the same fusion is then derived locally. Falls back to the raw step status
-only when the badge can derive nothing.
--}
-runStatusCell : Agent.RunMetric -> Html Message
-runStatusCell r =
-    Html.td
-        [ style "text-align" "left"
-        , style "padding" "4px 16px 4px 0"
-        , style "border-bottom" rowBorder
-        ]
-        [ case AgentBadge.displayOutcome { outcome = r.outcome, buildStatus = r.buildStatus, runStatus = r.status, hasResult = r.summary /= "" } of
-            Just badgeStatus ->
-                AgentBadge.view badgeStatus
-
-            Nothing ->
-                Html.text r.status
-        ]
-
-
-{-| "name@version", or just the name when the version is unknown, or "—" when
-there is no workflow at all (an ad-hoc / CI run).
--}
-workflowRef : String -> Maybe Int -> String
-workflowRef name version =
-    case ( name, version ) of
-        ( "", _ ) ->
-            "—"
-
-        ( n, Just v ) ->
-            n ++ "@" ++ String.fromInt v
-
-        ( n, Nothing ) ->
-            n
-
-
-{-| A linked "#N" back to the originating ticket for a ticket-backed run, or a
-plain "CI" when there is no ticket.
--}
-ticketRefCell : Agent.RunMetric -> Html Message
-ticketRefCell r =
-    Html.td
-        [ style "text-align" "left"
-        , style "padding" "4px 16px 4px 0"
-        , style "border-bottom" rowBorder
-        ]
-        [ case r.ticketId of
-            Just t ->
-                Html.a
-                    [ href (Routes.toString (Routes.AgentTicket { id = t }))
-                    , title ("Agent ticket #" ++ String.fromInt t)
-                    , style "color" "#7a9ac0"
-                    , style "text-decoration" "none"
-                    ]
-                    [ Html.text ("#" ++ String.fromInt t) ]
-
-            Nothing ->
-                Html.span
-                    [ title "Continuous-integration review run — not tied to an agent ticket"
-                    , style "color" subtleColor
-                    , style "cursor" "help"
-                    ]
-                    [ Html.text "CI" ]
-        ]
-
-
-secondsToPosix : Int -> Time.Posix
-secondsToPosix seconds =
-    Time.millisToPosix (seconds * 1000)
-
-
-{-| The "when" column: a relative "N ago" label (matching the ticket queue's
-elapsed labels), with the exact local timestamp on hover. Falls back to the
-absolute time as the visible label until the clock has first ticked (or when the
-timestamp is absent / in the future), so the column is never blank.
--}
-runWhenCell : Time.Zone -> Maybe Time.Posix -> Agent.RunMetric -> Html Message
-runWhenCell zone now r =
-    let
-        absolute =
-            formatPosix zone (Just (secondsToPosix r.createdAt))
-
-        label =
-            relativeWhen now r.createdAt
-                |> Maybe.withDefault absolute
-    in
-    Html.td
-        [ style "text-align" "left"
-        , style "padding" "4px 16px 4px 0"
-        , style "border-bottom" rowBorder
-        , title absolute
-        ]
-        [ Html.text label ]
-
-
-{-| Relative "N ago" from a run's created-at epoch (seconds) to the live clock.
-Nothing when the clock hasn't ticked yet, the timestamp is unknown, or it is in
-the future — the caller then shows the absolute time instead.
--}
-relativeWhen : Maybe Time.Posix -> Int -> Maybe String
-relativeWhen maybeNow createdAt =
-    case maybeNow of
-        Just now ->
-            if createdAt > 0 then
-                let
-                    elapsed =
-                        Duration.between (secondsToPosix createdAt) now
-                in
-                if elapsed >= 0 then
-                    Just (Duration.format elapsed ++ " ago")
-
-                else
-                    Nothing
-
-            else
-                Nothing
-
-        Nothing ->
-            Nothing
-
-
-
--- WORKFLOWS SECTION
-
-
-workflowsSection : Model -> Html Message
-workflowsSection model =
-    sectionBlock "agent-workflows" "Workflows" <|
-        case model.workflows of
-            Nothing ->
-                case model.workflowsError of
-                    Just message ->
-                        [ errorLine message ]
-
-                    Nothing ->
-                        [ mutedLine "loading…" ]
-
-            Just [] ->
-                staleDataWarning model.workflowsError
-                    ++ [ mutedLine "no workflow definitions — import one with: fly agent workflows import" ]
-
-            Just workflows ->
-                staleDataWarning model.workflowsError
-                    ++ [ Html.div [ class "agent-workflows" ] (List.map workflowRow workflows) ]
-
-
-workflowRow : Agent.WorkflowSummary -> Html Message
-workflowRow w =
-    Html.div
-        [ class "agent-workflow-row"
-        , style "display" "flex"
-        , style "align-items" "baseline"
-        , style "gap" "12px"
-        , style "padding" "8px 0"
-        , style "border-bottom" rowBorder
-        ]
-        [ Html.div [ style "flex" "1", style "min-width" "0" ]
-            [ Html.div []
-                (Html.a
-                    [ style "font-weight" "700"
-                    , style "color" Colors.text
-                    , href (Routes.toString (Routes.AgentWorkflow { name = w.name }))
-                    ]
-                    [ Html.text w.name ]
-                    :: workflowPills w
-                    ++ (if w.hidden then
-                            [ pill "agent-workflow-deprecated"
-                                { bg = "#4f2e2e", fg = "#df9f9f" }
-                                "deprecated"
-                            ]
-
-                        else
-                            []
-                       )
-                )
-            , Html.div
-                [ style "font-size" "12px", style "color" mutedColor ]
-                [ Html.text w.description ]
-            ]
-        , Html.div
-            [ style "font-family" "monospace"
-            , style "font-size" "12px"
-            , style "color" subtleColor
-            , style "text-align" "right"
-            , style "white-space" "nowrap"
-            ]
-            [ liveVersionLine w
-            , Html.div [] [ Html.text ("latest v" ++ String.fromInt w.latestVersion) ]
-            , Html.div [] [ Html.text ("#" ++ String.left 12 w.contentHash) ]
-            ]
-        ]
-
-
-workflowPills : Agent.WorkflowSummary -> List (Html Message)
-workflowPills w =
-    let
-        livePill =
-            if w.liveVersion > 0 then
-                [ pill "agent-workflow-live"
-                    { bg = "#2e4f2e", fg = "#9fdf9f" }
-                    "live"
-                ]
-
-            else
-                []
-
-        candidatePill =
-            if w.latestVersion > w.liveVersion then
-                [ pill "agent-workflow-candidate"
-                    { bg = Colors.background, fg = mutedColor }
-                    ("candidate v" ++ String.fromInt w.latestVersion)
-                ]
-
-            else
-                []
-    in
-    livePill ++ candidatePill
-
-
-liveVersionLine : Agent.WorkflowSummary -> Html Message
-liveVersionLine w =
-    if w.liveVersion == 0 then
-        Html.div [ style "color" subtleColor ] [ Html.text "no live version" ]
-
-    else
-        Html.div [] [ Html.text ("v" ++ String.fromInt w.liveVersion ++ " live") ]
-
-
-
--- COSTS SECTION
-
-
-costsSection : Model -> Html Message
-costsSection model =
-    sectionBlock "agent-costs" "Costs" <|
-        case model.costRollup of
-            Nothing ->
-                case model.costError of
-                    Just message ->
-                        [ errorLine message ]
-
-                    Nothing ->
-                        [ mutedLine "loading…" ]
-
-            Just rollup ->
-                staleDataWarning model.costError
-                    ++ [ costSummaryLine rollup.summary
-                       , dailyCapGauge rollup.summary
-                       , costTable rollup.rows
-                       , unattributedLine model.unattributedUsd
-                       ]
-
-
-costSummaryLine : Agent.CostSummary -> Html Message
-costSummaryLine summary =
-    let
-        spent =
-            "today (UTC day): $" ++ formatUsd summary.dailySpentUsd ++ " spent"
-
-        cap =
-            if summary.dailyCapUsd > 0 then
-                " / $"
-                    ++ formatUsd summary.dailyCapUsd
-                    ++ " cap ($"
-                    ++ formatUsd summary.dailyRemainingUsd
-                    ++ " left)"
-
-            else
-                ""
-
-        exhausted =
-            if summary.dailyExhausted then
-                [ Html.span
-                    [ class "agent-budget-exhausted"
-                    , style "margin-left" "8px"
-                    , style "color" amberColor
-                    , style "font-weight" "700"
-                    ]
-                    [ Html.text "budget exhausted" ]
-                ]
-
-            else
-                []
-    in
-    Html.div
-        [ style "margin" "0 0 12px 0"
-        , style "font-family" "monospace"
-        , style "font-size" "12px"
-        , style "color" Colors.text
-        ]
-        (Html.span [] [ Html.text (spent ++ cap) ] :: exhausted)
-
-
-{-| A slim gauge of today's spend against the daily cap, mirroring the ticket
-budget bar. Rendered only when a cap is configured; turns amber once the cap is
-exhausted. Complements — does not replace — the exact-text summary line above.
--}
-dailyCapGauge : Agent.CostSummary -> Html Message
-dailyCapGauge summary =
-    if summary.dailyCapUsd <= 0 then
-        -- An uncapped ledger deserves an explicit statement, not silence:
-        -- otherwise "no gauge" is indistinguishable from "under the cap".
-        Html.div
-            [ class "agent-daily-cap-none"
-            , style "margin" "0 0 12px 0"
-            , style "font-family" "monospace"
-            , style "font-size" "12px"
-            , style "color" subtleColor
-            ]
-            [ Html.text "No daily cap set. Caps are set at deploy time today." ]
-
-    else
-        let
-            pct =
-                min 100 (summary.dailySpentUsd / summary.dailyCapUsd * 100)
-        in
-        Html.div
-            [ class "agent-daily-cap-gauge"
-            , style "max-width" "320px"
-            , style "margin" "0 0 12px 0"
-            , style "height" "6px"
-            , style "background" "#3d3c3c"
-            ]
-            [ Html.div
-                [ style "height" "6px"
-                , style "width" (String.fromFloat pct ++ "%")
-                , style "background"
-                    (if summary.dailyExhausted then
-                        amberColor
-
-                     else
-                        "#7aa37a"
-                    )
-                ]
-                []
-            ]
-
-
-{-| Spend the by-ticket rollup reports under no ticket at all (the CI review
-runs, harvest pushes, platform housekeeping — the rollup's empty-string key).
-It is a large share of real spend and would otherwise appear nowhere.
--}
-unattributedLine : Maybe Float -> Html Message
-unattributedLine maybeUsd =
-    case maybeUsd of
-        Just usd ->
-            if usd > 0 then
-                Html.div
-                    [ class "agent-unattributed-cost"
-                    , style "margin" "8px 0 0 0"
-                    , style "font-family" "monospace"
-                    , style "font-size" "12px"
-                    , style "color" mutedColor
-                    ]
-                    [ Html.text ("unattributed (no ticket, all time): $" ++ formatUsd usd) ]
-
-            else
-                Html.text ""
-
-        Nothing ->
-            Html.text ""
-
-
-costTable : List Agent.CostRow -> Html Message
-costTable rows =
-    if List.isEmpty rows then
-        mutedLine "no cost records yet"
-
-    else
-        Html.table
-            [ class "agent-costs-table"
-            , style "border-collapse" "collapse"
-            , style "font-family" "monospace"
-            , style "font-size" "12px"
-            , style "color" Colors.text
-            ]
-            (costHeaderRow :: List.map costRow rows)
-
-
-costHeaderRow : Html Message
-costHeaderRow =
-    Html.tr []
-        [ tableHeaderCell "left" "day (UTC)"
-        , tableHeaderCell "right" "entries"
-        , tableHeaderCell "right" "tokens (in+out)"
-        , tableHeaderCell "right" "turns"
-        , tableHeaderCell "right" "cost"
-        ]
-
-
-costRow : Agent.CostRow -> Html Message
-costRow r =
-    Html.tr [ class "agent-cost-row" ]
-        [ tableCell "left" r.key
-        , tableCell "right" (String.fromInt r.entries)
-        , tableCell "right" (String.fromInt r.inputTokens ++ "+" ++ String.fromInt r.outputTokens)
-        , tableCell "right" (String.fromInt r.turns)
-        , tableCell "right" ("$" ++ formatUsd r.costUsd)
-        ]
-
-
-
--- SHARED TABLE + TIME HELPERS
-
-
-tableHeaderCell : String -> String -> Html Message
-tableHeaderCell align content =
-    Html.th
-        [ style "text-align" align
-        , style "padding" "4px 16px 4px 0"
-        , style "color" mutedColor
-        , style "font-weight" "700"
-        , style "border-bottom" rowBorder
-        ]
-        [ Html.text content ]
-
-
-tableCell : String -> String -> Html Message
-tableCell align content =
-    Html.td
-        [ style "text-align" align
-        , style "padding" "4px 16px 4px 0"
-        , style "border-bottom" rowBorder
-        ]
-        [ Html.text content ]
-
-
-{-| Humanize an optional timestamp as a compact absolute time in the viewer's
-own time zone (from `session.timeZone`), e.g. "Jul 18, 2026 14:30", or "—"
-when absent. Showing local time is what an operator expects for "which of
-today's runs came first"; the minutes matter on an ops console. The
-server-aggregated cost buckets stay labelled as UTC days separately.
--}
-formatPosix : Time.Zone -> Maybe Time.Posix -> String
-formatPosix zone maybe =
-    case maybe of
-        Nothing ->
-            "—"
-
-        Just posix ->
-            DateFormat.format
-                [ DateFormat.monthNameAbbreviated
-                , DateFormat.text " "
-                , DateFormat.dayOfMonthNumber
-                , DateFormat.text ", "
-                , DateFormat.yearNumber
-                , DateFormat.text " "
-                , DateFormat.hourMilitaryFixed
-                , DateFormat.text ":"
-                , DateFormat.minuteFixed
-                ]
-                zone
-                posix
-
-
-
--- CREDENTIALS SECTION (read-only status)
-
-
-credentialsSection : Time.Zone -> Model -> Html Message
-credentialsSection zone model =
-    -- Two distinct slots, each behind its own labelled sub-header (U17): the
-    -- vaulted PLATFORM credential dispatched runs authenticate with, and the
-    -- viewer's OWN interactive credential. Keeping them apart stops an empty
-    -- personal slot from reading as "the platform auth is missing".
-    sectionBlock "agent-credentials" "Credentials" <|
-        platformCredentialsBlock zone model.platformCredentials
-            ++ personalCredentialsBlock zone model
-
-
-{-| A bold, muted sub-header naming one of the two credential slots so the
-platform slot and the personal slot can never be mistaken for one another.
--}
-credentialSlotLabel : String -> Html Message
-credentialSlotLabel labelText =
-    Html.div
-        [ style "color" mutedColor
-        , style "font-family" "monospace"
-        , style "font-size" "12px"
-        , style "font-weight" "700"
-        , style "margin" "10px 0 2px 0"
-        ]
-        [ Html.text labelText ]
-
-
-{-| The vaulted platform credential dispatched runs actually authenticate
-with. Fetched with `?user=platform` (admin-only; a 403 hides the block), so
-the section no longer claims "no credentials stored" while dispatch works.
-Rendered under its own "Platform credential" header.
--}
-platformCredentialsBlock : Time.Zone -> Maybe (List Agent.CredentialStatus) -> List (Html Message)
-platformCredentialsBlock zone maybeCreds =
-    case maybeCreds of
-        Just (cred :: rest) ->
-            [ credentialSlotLabel "Platform credential (used by dispatched runs)"
-            , Html.div
-                [ class "agent-platform-credential"
-                , style "font-family" "monospace"
-                , style "font-size" "12px"
-                , style "color" Colors.text
-                , style "margin" "0 0 8px 0"
-                ]
-                (List.map
-                    (\c ->
-                        Html.div []
-                            [ Html.text
-                                (c.kind
-                                    ++ " (expires "
-                                    ++ formatPosix zone c.expiresAt
-                                    ++ ") — active"
-                                )
-                            ]
-                    )
-                    (cred :: rest)
-                )
-            ]
-
-        _ ->
-            []
-
-
-{-| The viewer's own credential, set via `fly agent auth`. Kept under its own
-header so an empty personal slot reads as "you have no personal credential",
-not "the platform auth is missing" (U17).
--}
-personalCredentialsBlock : Time.Zone -> Model -> List (Html Message)
-personalCredentialsBlock zone model =
-    credentialSlotLabel "Your credential (interactive fly login)"
-        :: mutedLine "set or rotate with: fly agent auth"
-        :: (case model.credentials of
-                Nothing ->
-                    case model.credentialsError of
-                        Just message ->
-                            [ errorLine message ]
-
-                        Nothing ->
-                            [ mutedLine "loading…" ]
-
-                Just [] ->
-                    staleDataWarning model.credentialsError
-                        ++ [ mutedLine "no personal credential stored — run: fly agent auth" ]
-
-                Just creds ->
-                    staleDataWarning model.credentialsError
-                        ++ [ credentialsTable zone creds ]
-           )
-
-
-credentialsTable : Time.Zone -> List Agent.CredentialStatus -> Html Message
-credentialsTable zone creds =
-    Html.table
-        [ class "agent-credentials-table"
-        , style "border-collapse" "collapse"
-        , style "font-family" "monospace"
-        , style "font-size" "12px"
-        , style "color" Colors.text
-        ]
-        (Html.tr []
-            [ tableHeaderCell "left" "kind"
-            , tableHeaderCell "left" "expires"
-            , tableHeaderCell "left" "last verified"
-            ]
-            :: List.map (credentialRow zone) creds
-        )
-
-
-credentialRow : Time.Zone -> Agent.CredentialStatus -> Html Message
-credentialRow zone c =
-    Html.tr [ class "agent-credential-row" ]
-        [ tableCell "left" c.kind
-        , tableCell "left" (formatPosix zone c.expiresAt)
-        , tableCell "left" (formatPosix zone c.lastVerifiedAt)
-        ]
-
-
-
--- PRINCIPALS SECTION (admin: mint / list / revoke)
-
-
-principalsSection : Time.Zone -> Model -> Html Message
-principalsSection zone model =
-    sectionBlock "agent-principals"
-        "Principals"
-        (mintFence model
-            :: revokeErrorLine model
-            :: principalsBody zone model
-        )
-
-
-{-| Fence the privileged mint form inside its own bordered, labelled box so it
-is unmistakably a credential-issuing control and does not read as just another
-read-only panel sitting under the spend tables (U15).
--}
-mintFence : Model -> Html Message
-mintFence model =
-    Html.div
-        [ class "agent-mint-fence"
-        , style "border" ("1px solid " ++ amberColor)
-        , style "border-radius" "4px"
-        , style "padding" "10px 12px"
-        , style "margin" "4px 0 12px 0"
-        ]
-        (Html.div
-            [ style "color" amberColor
-            , style "font-family" "monospace"
-            , style "font-size" "12px"
-            , style "font-weight" "700"
-            , style "margin-bottom" "8px"
-            ]
-            [ Html.text "Mint a principal — issues a privileged API credential" ]
-            :: mintForm model
-            :: mintedTokenBox model
-        )
-
-
-{-| Revoke failures render here, in the principals section next to the table —
-not inside the mint form, where a revoke error would be far from the row that
-triggered it and would only be cleared by a successful mint.
--}
-revokeErrorLine : Model -> Html Message
-revokeErrorLine model =
-    case model.revokeError of
-        Just message ->
-            Html.div [ class "agent-revoke-error" ] [ errorLine message ]
-
-        Nothing ->
-            Html.text ""
-
-
-mintForm : Model -> Html Message
-mintForm model =
-    Html.div
-        [ class "agent-mint-form"
-        , style "margin" "0 0 12px 0"
-        , style "font-family" "monospace"
-        , style "font-size" "12px"
-        , style "color" Colors.text
-        ]
-        [ Html.div [ style "margin-bottom" "6px" ]
-            [ mintTextField "name" model.mintName AgentMintNameChanged
-            , mintTextField "description (optional)" model.mintDescription AgentMintDescriptionChanged
-            ]
-        , Html.div
-            [ class "agent-mint-scopes"
-            , style "display" "flex"
-            , style "flex-wrap" "wrap"
-            , style "gap" "12px"
-            , style "margin-bottom" "6px"
-            ]
-            (List.map (scopeCheckbox model) mintScopeVocabulary)
-        , Html.div
-            [ style "display" "flex"
-            , style "align-items" "center"
-            , style "gap" "10px"
-            ]
-            [ expiresField model.mintExpiresDays
-            , mintButton model
-            ]
-        , mintErrorLine model
-        ]
-
-
-mintTextField : String -> String -> (String -> Message) -> Html Message
-mintTextField ph val toMsg =
-    Html.input
-        [ type_ "text"
-        , placeholder ph
-        , value val
-        , onInput toMsg
-        , style "margin-right" "8px"
-        , style "padding" "3px 6px"
-        , style "font-family" "monospace"
-        , style "font-size" "12px"
-        , style "background" Colors.background
-        , style "color" Colors.text
-        , style "border" ("1px solid " ++ subtleColor)
-        ]
-        []
-
-
-scopeCheckbox : Model -> String -> Html Message
-scopeCheckbox model scope =
-    Html.label
-        [ class "agent-mint-scope"
-        , style "display" "inline-flex"
-        , style "align-items" "center"
-        , style "gap" "4px"
-        , style "cursor" "pointer"
-        ]
-        [ Html.input
-            [ type_ "checkbox"
-            , checked (Set.member scope model.mintScopes)
-            , onClick (AgentMintScopeToggled scope)
-            ]
-            []
-        , Html.text scope
-        ]
-
-
-expiresField : String -> Html Message
-expiresField val =
-    Html.label
-        [ style "display" "inline-flex"
-        , style "align-items" "center"
-        , style "gap" "4px"
-        , style "color" mutedColor
-        ]
-        ([ Html.text "expires in"
-         , Html.input
-            [ type_ "text"
-            , placeholder "N"
-            , value val
-            , onInput AgentMintExpiresChanged
-            , style "width" "48px"
-            , style "padding" "3px 6px"
-            , style "font-family" "monospace"
-            , style "font-size" "12px"
-            , style "background" Colors.background
-            , style "color" Colors.text
-            , style "border"
-                ("1px solid "
-                    ++ (if expiresIsValid val then
-                            subtleColor
-
-                        else
-                            amberColor
-                       )
-                )
-            ]
-            []
-         , Html.text "days (optional)"
-         ]
-            ++ expiresHint val
-        )
-
-
-{-| Inline hint shown only when the expires field has non-blank input that does
-not parse to a positive integer. Without this the field would silently mean
-"never expires", which is a surprising, easy-to-miss failure.
--}
-expiresHint : String -> List (Html Message)
-expiresHint val =
-    if expiresIsValid val then
-        []
-
-    else
-        [ Html.span
-            [ class "agent-mint-expires-hint"
-            , style "color" amberColor
-            , style "font-size" "11px"
-            ]
-            [ Html.text "must be a positive number of days; leave blank for no expiry" ]
-        ]
-
-
-mintButton : Model -> Html Message
-mintButton model =
-    let
-        enabled =
-            canMint model && not model.minting
-
-        label =
-            if model.minting then
-                "minting…"
-
-            else
-                "mint"
-    in
-    Html.button
-        [ class "agent-mint-button"
-        , onClick AgentMintSubmitted
-        , disabled (not enabled)
-        , style "padding" "4px 12px"
-        , style "font-family" "monospace"
-        , style "font-size" "12px"
-        , style "font-weight" "700"
-        , style "border" "none"
-        , style "border-radius" "3px"
-        , style "cursor"
-            (if enabled then
-                "pointer"
-
-             else
-                "not-allowed"
-            )
-        , style "background"
-            (if enabled then
-                "#2e4f2e"
-
-             else
-                Colors.background
-            )
-        , style "color"
-            (if enabled then
-                "#9fdf9f"
-
-             else
-                subtleColor
-            )
-        ]
-        [ Html.text label ]
-
-
-mintErrorLine : Model -> Html Message
-mintErrorLine model =
-    case model.mintError of
-        Just message ->
-            errorLine message
-
-        Nothing ->
-            Html.text ""
-
-
-mintedTokenBox : Model -> List (Html Message)
-mintedTokenBox model =
-    case model.mintedToken of
-        Nothing ->
-            []
-
-        Just token ->
-            [ Html.div
-                [ class "agent-minted-token"
-                , style "margin" "0 0 12px 0"
-                , style "padding" "8px 12px"
-                , style "border" ("1px solid " ++ amberColor)
-                , style "border-radius" "3px"
-                , style "background" "#3a3320"
-                , style "font-family" "monospace"
-                , style "font-size" "12px"
-                , style "color" Colors.text
-                ]
-                [ Html.div
-                    [ style "color" amberColor
-                    , style "font-weight" "700"
-                    , style "margin-bottom" "4px"
-                    ]
-                    [ Html.text "token (shown once — copy it now):" ]
-                , Html.div
-                    [ class "agent-minted-token-value"
-                    , style "word-break" "break-all"
-                    ]
-                    [ Html.text token ]
-                , Html.button
-                    [ class "agent-minted-token-dismiss"
-                    , onClick AgentMintedTokenDismissed
-                    , style "margin-top" "6px"
-                    , style "padding" "2px 8px"
-                    , style "font-family" "monospace"
-                    , style "font-size" "11px"
-                    , style "cursor" "pointer"
-                    , style "background" Colors.background
-                    , style "color" mutedColor
-                    , style "border" ("1px solid " ++ subtleColor)
-                    , style "border-radius" "3px"
-                    ]
-                    [ Html.text "dismiss" ]
-                ]
-            ]
-
-
-principalsBody : Time.Zone -> Model -> List (Html Message)
-principalsBody zone model =
-    case model.principals of
-        Nothing ->
-            case model.principalsError of
-                Just message ->
-                    [ errorLine message ]
-
-                Nothing ->
-                    [ mutedLine "loading…" ]
-
-        Just [] ->
-            staleDataWarning model.principalsError
-                ++ [ mutedLine "no principals yet — mint one above" ]
-
-        Just principals ->
-            let
-                ( ephemeral, durable ) =
-                    List.partition isEphemeralPrincipal principals
-            in
-            staleDataWarning model.principalsError
-                ++ (if List.isEmpty durable then
-                        [ mutedLine "no durable principals — mint one above" ]
-
-                    else
-                        [ principalsTable zone durable ]
-                   )
-                ++ ephemeralPrincipals zone model ephemeral
-
-
-{-| Per-run agent tokens are named `run-<id>` and are minted/revoked
-automatically for every dispatch, so they flood the principals table. Fold them
-behind a collapsed toggle, leaving the durable (human/service) principals in the
-main table.
--}
-isEphemeralPrincipal : Agent.Principal -> Bool
-isEphemeralPrincipal p =
-    case String.split "-" p.name of
-        [ "run", n ] ->
-            String.toInt n /= Nothing
-
-        _ ->
-            False
-
-
-ephemeralPrincipals : Time.Zone -> Model -> List Agent.Principal -> List (Html Message)
-ephemeralPrincipals zone model ephemeral =
-    if List.isEmpty ephemeral then
-        []
-
-    else
-        Html.button
-            [ class "agent-ephemeral-toggle"
-            , onClick AgentPrincipalsShowEphemeralToggled
-            , style "background" "transparent"
-            , style "border" "none"
-            , style "color" subtleColor
-            , style "font-family" "monospace"
-            , style "font-size" "12px"
-            , style "cursor" "pointer"
-            , style "padding" "8px 0"
-            , style "text-align" "left"
-            ]
-            [ Html.text
-                ((if model.showEphemeralPrincipals then
-                    "▾ hide "
-
-                  else
-                    "▸ show "
-                 )
-                    ++ String.fromInt (List.length ephemeral)
-                    ++ " ephemeral run "
-                    ++ (if List.length ephemeral == 1 then
-                            "principal"
-
-                        else
-                            "principals"
-                       )
-                )
-            ]
-            :: (if model.showEphemeralPrincipals then
-                    [ principalsTable zone ephemeral ]
-
-                else
-                    []
-               )
-
-
-principalsTable : Time.Zone -> List Agent.Principal -> Html Message
-principalsTable zone principals =
-    Html.table
-        [ class "agent-principals-table"
-        , style "border-collapse" "collapse"
-        , style "font-family" "monospace"
-        , style "font-size" "12px"
-        , style "color" Colors.text
-        ]
-        (Html.tr []
-            [ tableHeaderCell "left" "name"
-            , tableHeaderCell "left" "scopes"
-            , tableHeaderCell "left" "team"
-            , tableHeaderCell "left" "created"
-            , tableHeaderCell "left" "expires"
-            , tableHeaderCell "left" "last used"
-            , tableHeaderCell "left" ""
-            ]
-            :: List.map (principalRow zone) principals
-        )
-
-
-principalRow : Time.Zone -> Agent.Principal -> Html Message
-principalRow zone p =
-    let
-        dim =
-            case p.revokedAt of
-                Just _ ->
-                    [ style "opacity" "0.5" ]
-
-                Nothing ->
-                    []
-
-        action =
-            case p.revokedAt of
-                Just revokedAt ->
-                    Html.span
-                        [ class "agent-principal-revoked"
-                        , style "color" subtleColor
-                        ]
-                        [ Html.text ("revoked " ++ formatPosix zone (Just revokedAt)) ]
-
-                Nothing ->
-                    Html.button
-                        [ class "agent-principal-revoke"
-                        , onClick (AgentPrincipalRevokeClicked p.id)
-                        , style "padding" "2px 8px"
-                        , style "font-family" "monospace"
-                        , style "font-size" "11px"
-                        , style "cursor" "pointer"
-                        , style "background" "#5c2626"
-                        , style "color" "#f0a0a0"
-                        , style "border" "none"
-                        , style "border-radius" "3px"
-                        ]
-                        [ Html.text "revoke" ]
-    in
-    Html.tr (class "agent-principal-row" :: dim)
-        [ tableCell "left" p.name
-        , tableCell "left" (String.join ", " p.scopes)
-        , tableCell "left" p.teamName
-        , tableCell "left" (formatPosix zone (Just p.createdAt))
-        , tableCell "left" (formatPosix zone p.expiresAt)
-        , tableCell "left" (formatPosix zone p.lastUsedAt)
-        , Html.td
-            [ style "padding" "4px 16px 4px 0"
-            , style "border-bottom" rowBorder
-            ]
-            [ action ]
-        ]
+sectionView : Session -> Model -> Html Message
+sectionView session model =
+    case model.section of
+        Routes.AgentRuns ->
+            Runs.view session.timeZone model.now model.expandedRuns model.runs model.runsError
+
+        Routes.AgentWorkflows ->
+            Workflows.view model.workflows model.workflowsError
+
+        Routes.AgentSpend ->
+            Spend.view
+                { costRollup = model.costRollup
+                , costError = model.costError
+                , unattributedUsd = model.unattributedUsd
+                }
+
+        Routes.AgentAdmin ->
+            Admin.view session.userState
+                session.timeZone
+                { credentials = model.credentials
+                , credentialsError = model.credentialsError
+                , platformCredentials = model.platformCredentials
+                , principals = model.principals
+                , principalsError = model.principalsError
+                , revokeError = model.revokeError
+                , showEphemeralPrincipals = model.showEphemeralPrincipals
+                , mintName = model.mintName
+                , mintDescription = model.mintDescription
+                , mintScopes = model.mintScopes
+                , mintExpiresDays = model.mintExpiresDays
+                , mintedToken = model.mintedToken
+                , mintError = model.mintError
+                , minting = model.minting
+                }

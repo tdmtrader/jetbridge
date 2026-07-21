@@ -1281,8 +1281,26 @@ agentTicketStrip model =
                 , style "font-size" "13px"
                 ]
                 [ Html.text "agent tickets" ]
+                :: agentReviewsChip
                 :: List.map (agentTicketChip model.agentTicketCosts) shown
             )
+
+
+{-| W-11: a persistent discoverability link to the agent reviews index, sitting
+next to the agent-tickets link on the dashboard strip so the otherwise orphaned
+reviews page has an entry point from the dashboard.
+-}
+agentReviewsChip : Html Message
+agentReviewsChip =
+    Html.a
+        [ id "agent-reviews-chip"
+        , href (Routes.toString (Routes.AgentReviews { teamName = "main" }))
+        , style "color" "#9aa39b"
+        , style "font-weight" "700"
+        , style "text-decoration" "none"
+        , style "font-size" "13px"
+        ]
+        [ Html.text "agent reviews" ]
 
 
 agentActiveStates : List String

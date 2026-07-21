@@ -2,6 +2,7 @@ module AgentPageTests exposing (all)
 
 import Application.Application as Application
 import Common
+import Concourse
 import Data
 import Dict
 import Expect
@@ -14,7 +15,7 @@ import Message.Subscription as Subscription exposing (Delivery(..), Interval(..)
 import Message.TopLevelMessage as Msgs
 import Test exposing (Test, describe, test)
 import Test.Html.Query as Query
-import Test.Html.Selector exposing (attribute, class, containing, style, tag, text)
+import Test.Html.Selector exposing (attribute, class, containing, id, style, tag, text)
 import Time
 
 
@@ -198,17 +199,29 @@ sampleRun =
     }
 
 
+adminUser : Concourse.User
+adminUser =
+    { id = "1"
+    , userName = "admin"
+    , name = "Admin"
+    , email = "admin@example.com"
+    , isAdmin = True
+    , teams = Dict.empty
+    , displayUserId = "admin"
+    }
+
+
 all : Test
 all =
     describe "agent page"
         [ test "fetches workflows and cost rollup on load" <|
             \_ ->
-                Common.init "/agent"
+                Common.init "/agent/runs"
                     |> Common.queryView
-                    |> Query.has [ text "Agent" ]
+                    |> Query.has [ id "agent-subnav" ]
         , test "renders a recent run row with its step name and status badge" <|
             \_ ->
-                Common.init "/agent"
+                Common.init "/agent/runs"
                     |> Application.handleCallback
                         (Callback.AgentRunMetricsFetched (Ok [ sampleRun ]))
                     |> Tuple.first
@@ -220,7 +233,7 @@ all =
                         ]
         , test "run rows show created-at in the app-wide date format" <|
             \_ ->
-                Common.init "/agent"
+                Common.init "/agent/runs"
                     |> Application.handleCallback
                         (Callback.AgentRunMetricsFetched
                             (Ok [ { sampleRun | createdAt = 1784385000 } ])
@@ -231,7 +244,7 @@ all =
                     |> Query.has [ containing [ text "Jul 18, 2026 14:30" ] ]
         , test "a runs poll failure after a load shows a stale-data warning and keeps the data" <|
             \_ ->
-                Common.init "/agent"
+                Common.init "/agent/runs"
                     |> Application.handleCallback
                         (Callback.AgentRunMetricsFetched (Ok [ sampleRun ]))
                     |> Tuple.first
@@ -248,7 +261,7 @@ all =
                         ]
         , test "links a ticket-backed run back to its ticket" <|
             \_ ->
-                Common.init "/agent"
+                Common.init "/agent/runs"
                     |> Application.handleCallback
                         (Callback.AgentRunMetricsFetched (Ok [ sampleRun ]))
                     |> Tuple.first
@@ -256,12 +269,12 @@ all =
                     |> Query.find [ class "agent-run-row" ]
                     |> Query.has
                         [ tag "a"
-                        , attribute (Attr.href "/agent-tickets/42")
+                        , attribute (Attr.href "/agent/tickets/42")
                         , containing [ text "#42" ]
                         ]
         , test "a collapsed ledger row shows the truncated one-line summary" <|
             \_ ->
-                Common.init "/agent"
+                Common.init "/agent/runs"
                     |> Application.handleCallback
                         (Callback.AgentRunMetricsFetched (Ok [ sampleRun ]))
                     |> Tuple.first
@@ -270,7 +283,7 @@ all =
                     |> Query.has [ class "agent-run-summary", containing [ text "one finding" ] ]
         , test "expanding a ledger row reveals the full run summary" <|
             \_ ->
-                Common.init "/agent"
+                Common.init "/agent/runs"
                     |> Application.handleCallback
                         (Callback.AgentRunMetricsFetched (Ok [ sampleRun ]))
                     |> Tuple.first
@@ -284,7 +297,7 @@ all =
                     |> Query.has [ class "agent-run-summary-full", containing [ text "one finding" ] ]
         , test "renders a workflow name with a live indicator" <|
             \_ ->
-                Common.init "/agent"
+                Common.init "/agent/workflows"
                     |> Application.handleCallback
                         (Callback.AgentWorkflowsFetched (Ok [ sampleWorkflow ]))
                     |> Tuple.first
@@ -297,7 +310,7 @@ all =
                         ]
         , test "shows an empty state when there are no workflows" <|
             \_ ->
-                Common.init "/agent"
+                Common.init "/agent/workflows"
                     |> Application.handleCallback
                         (Callback.AgentWorkflowsFetched (Ok []))
                     |> Tuple.first
@@ -305,7 +318,7 @@ all =
                     |> Query.has [ text "no workflow definitions — import one with: fly agent workflows import" ]
         , test "renders the cost row with its formatted cost" <|
             \_ ->
-                Common.init "/agent"
+                Common.init "/agent/spend"
                     |> Application.handleCallback
                         (Callback.AgentCostRollupFetched (Ok sampleRollup))
                     |> Tuple.first
@@ -314,7 +327,7 @@ all =
                     |> Query.has [ containing [ text "$3.50" ] ]
         , test "renders the daily spend summary line" <|
             \_ ->
-                Common.init "/agent"
+                Common.init "/agent/spend"
                     |> Application.handleCallback
                         (Callback.AgentCostRollupFetched (Ok sampleRollup))
                     |> Tuple.first
@@ -322,7 +335,7 @@ all =
                     |> Query.has [ text "today (UTC day): $12.34 spent / $20.00 cap ($7.66 left)" ]
         , test "renders a daily-cap gauge when a cap is configured" <|
             \_ ->
-                Common.init "/agent"
+                Common.init "/agent/spend"
                     |> Application.handleCallback
                         (Callback.AgentCostRollupFetched (Ok sampleRollup))
                     |> Tuple.first
@@ -330,7 +343,7 @@ all =
                     |> Query.has [ class "agent-daily-cap-gauge" ]
         , test "states that spend is unbounded when no daily cap is set" <|
             \_ ->
-                Common.init "/agent"
+                Common.init "/agent/spend"
                     |> Application.handleCallback
                         (Callback.AgentCostRollupFetched
                             (Ok
@@ -349,7 +362,7 @@ all =
                     |> Query.has [ class "agent-daily-cap-none" ]
         , test "surfaces the unattributed bucket from the by-ticket rollup" <|
             \_ ->
-                Common.init "/agent"
+                Common.init "/agent/spend"
                     |> Application.handleCallback
                         (Callback.AgentCostRollupFetched (Ok sampleRollup))
                     |> Tuple.first
@@ -382,7 +395,7 @@ all =
                     |> Query.has [ text "unattributed (no ticket, all time): $11.08" ]
         , test "the by-ticket rollup does not clobber the by-day cost table" <|
             \_ ->
-                Common.init "/agent"
+                Common.init "/agent/spend"
                     |> Application.handleCallback
                         (Callback.AgentCostRollupFetched (Ok sampleRollup))
                     |> Tuple.first
@@ -396,7 +409,9 @@ all =
                     |> Query.has [ containing [ text "$3.50" ] ]
         , test "shows the platform credential dispatched runs authenticate with" <|
             \_ ->
-                Common.init "/agent"
+                Common.init "/agent/admin"
+                    |> Application.handleCallback (Callback.UserFetched (Ok adminUser))
+                    |> Tuple.first
                     |> Application.handleCallback
                         (Callback.AgentPlatformCredentialsFetched
                             (Ok
@@ -417,7 +432,7 @@ all =
                         ]
         , test "shows an admin-only message when workflows fetch is forbidden" <|
             \_ ->
-                Common.init "/agent"
+                Common.init "/agent/workflows"
                     |> Application.handleCallback
                         (Callback.AgentWorkflowsFetched Data.httpForbidden)
                     |> Tuple.first
@@ -426,7 +441,7 @@ all =
                         [ text "not authorized — the agent workflows API is admin-only" ]
         , test "shows a generic error message when costs fetch fails" <|
             \_ ->
-                Common.init "/agent"
+                Common.init "/agent/spend"
                     |> Application.handleCallback
                         (Callback.AgentCostRollupFetched (Err Http.NetworkError))
                     |> Tuple.first
@@ -434,7 +449,9 @@ all =
                     |> Query.has [ text "couldn't load costs" ]
         , test "renders a stored credential's kind" <|
             \_ ->
-                Common.init "/agent"
+                Common.init "/agent/admin"
+                    |> Application.handleCallback (Callback.UserFetched (Ok adminUser))
+                    |> Tuple.first
                     |> Application.handleCallback
                         (Callback.AgentCredentialsFetched (Ok [ sampleCredential ]))
                     |> Tuple.first
@@ -443,7 +460,9 @@ all =
                     |> Query.has [ text "anthropic_oauth" ]
         , test "renders a principal with its name and a revoke control" <|
             \_ ->
-                Common.init "/agent"
+                Common.init "/agent/admin"
+                    |> Application.handleCallback (Callback.UserFetched (Ok adminUser))
+                    |> Tuple.first
                     |> Application.handleCallback
                         (Callback.AgentPrincipalsFetched (Ok [ samplePrincipal ]))
                     |> Tuple.first
@@ -455,7 +474,9 @@ all =
                         ]
         , test "renders the one-time token box after minting" <|
             \_ ->
-                Common.init "/agent"
+                Common.init "/agent/admin"
+                    |> Application.handleCallback (Callback.UserFetched (Ok adminUser))
+                    |> Tuple.first
                     |> Application.handleCallback
                         (Callback.AgentPrincipalCreated (Ok samplePrincipalCreated))
                     |> Tuple.first
@@ -464,7 +485,9 @@ all =
                     |> Query.has [ text "cap1.xxx" ]
         , test "folds ephemeral run principals behind a toggle, keeping durable ones visible" <|
             \_ ->
-                Common.init "/agent"
+                Common.init "/agent/admin"
+                    |> Application.handleCallback (Callback.UserFetched (Ok adminUser))
+                    |> Tuple.first
                     |> Application.handleCallback
                         (Callback.AgentPrincipalsFetched (Ok [ samplePrincipal, ephemeralPrincipal ]))
                     |> Tuple.first
@@ -476,7 +499,9 @@ all =
                         ]
         , test "expanding the toggle reveals the ephemeral run principals" <|
             \_ ->
-                Common.init "/agent"
+                Common.init "/agent/admin"
+                    |> Application.handleCallback (Callback.UserFetched (Ok adminUser))
+                    |> Tuple.first
                     |> Application.handleCallback
                         (Callback.AgentPrincipalsFetched (Ok [ samplePrincipal, ephemeralPrincipal ]))
                     |> Tuple.first
@@ -487,7 +512,9 @@ all =
                     |> Query.has [ class "agent-principal-row", containing [ text "run-123" ] ]
         , test "shows an admin-only message when principals fetch is forbidden" <|
             \_ ->
-                Common.init "/agent"
+                Common.init "/agent/admin"
+                    |> Application.handleCallback (Callback.UserFetched (Ok adminUser))
+                    |> Tuple.first
                     |> Application.handleCallback
                         (Callback.AgentPrincipalsFetched Data.httpForbidden)
                     |> Tuple.first
@@ -496,7 +523,9 @@ all =
                         [ text "not authorized — the agent principals API is admin-only" ]
         , test "the mint button shows a disabled minting state after submit" <|
             \_ ->
-                Common.init "/agent"
+                Common.init "/agent/admin"
+                    |> Application.handleCallback (Callback.UserFetched (Ok adminUser))
+                    |> Tuple.first
                     |> Application.update
                         (Msgs.Update <| Message.Message.AgentMintNameChanged "reviewer")
                     |> Tuple.first
@@ -514,7 +543,9 @@ all =
                         ]
         , test "a revoke failure surfaces in the principals section, not the mint form" <|
             \_ ->
-                Common.init "/agent"
+                Common.init "/agent/admin"
+                    |> Application.handleCallback (Callback.UserFetched (Ok adminUser))
+                    |> Tuple.first
                     |> Application.handleCallback
                         (Callback.AgentPrincipalsFetched (Ok [ samplePrincipal ]))
                     |> Tuple.first
@@ -530,7 +561,7 @@ all =
                         ]
         , test "a workflows poll failure after a load shows a stale-data warning and keeps the data" <|
             \_ ->
-                Common.init "/agent"
+                Common.init "/agent/workflows"
                     |> Application.handleCallback
                         (Callback.AgentWorkflowsFetched (Ok [ sampleWorkflow ]))
                     |> Tuple.first
@@ -547,7 +578,7 @@ all =
                         ]
         , test "a costs poll failure after a load shows a stale-data warning and keeps the data" <|
             \_ ->
-                Common.init "/agent"
+                Common.init "/agent/spend"
                     |> Application.handleCallback
                         (Callback.AgentCostRollupFetched (Ok sampleRollup))
                     |> Tuple.first
@@ -564,7 +595,9 @@ all =
                         ]
         , test "a credentials poll failure after a load shows a stale-data warning and keeps the data" <|
             \_ ->
-                Common.init "/agent"
+                Common.init "/agent/admin"
+                    |> Application.handleCallback (Callback.UserFetched (Ok adminUser))
+                    |> Tuple.first
                     |> Application.handleCallback
                         (Callback.AgentCredentialsFetched (Ok [ sampleCredential ]))
                     |> Tuple.first
@@ -581,7 +614,9 @@ all =
                         ]
         , test "a principals poll failure after a load shows a stale-data warning and keeps the data" <|
             \_ ->
-                Common.init "/agent"
+                Common.init "/agent/admin"
+                    |> Application.handleCallback (Callback.UserFetched (Ok adminUser))
+                    |> Tuple.first
                     |> Application.handleCallback
                         (Callback.AgentPrincipalsFetched (Ok [ samplePrincipal ]))
                     |> Tuple.first
@@ -598,7 +633,7 @@ all =
                         ]
         , test "a successful refetch clears the stale-data warning" <|
             \_ ->
-                Common.init "/agent"
+                Common.init "/agent/workflows"
                     |> Application.handleCallback
                         (Callback.AgentWorkflowsFetched (Ok [ sampleWorkflow ]))
                     |> Tuple.first
@@ -612,7 +647,9 @@ all =
                     |> Query.hasNot [ class "agent-section-stale" ]
         , test "a non-numeric expiry shows a hint and disables minting" <|
             \_ ->
-                Common.init "/agent"
+                Common.init "/agent/admin"
+                    |> Application.handleCallback (Callback.UserFetched (Ok adminUser))
+                    |> Tuple.first
                     |> Application.update
                         (Msgs.Update <| Message.Message.AgentMintNameChanged "reviewer")
                     |> Tuple.first
@@ -633,12 +670,12 @@ all =
                         ]
         , test "subscribes to the one minute clock" <|
             \_ ->
-                Common.init "/agent"
+                Common.init "/agent/runs"
                     |> Application.subscriptions
                     |> Common.contains (Subscription.OnClockTick OneMinute)
         , test "on one minute timer, refetches workflows, costs, credentials, and principals" <|
             \_ ->
-                Common.init "/agent"
+                Common.init "/agent/runs"
                     |> Application.update
                         (Msgs.DeliveryReceived
                             (ClockTicked OneMinute <| Time.millisToPosix 0)
@@ -653,7 +690,7 @@ all =
                         ]
         , test "on five second timer, does not refetch agent data" <|
             \_ ->
-                Common.init "/agent"
+                Common.init "/agent/runs"
                     |> Application.update
                         (Msgs.DeliveryReceived
                             (ClockTicked FiveSeconds <| Time.millisToPosix 0)
@@ -668,7 +705,7 @@ all =
                         ]
         , test "links a run row to its build page" <|
             \_ ->
-                Common.init "/agent"
+                Common.init "/agent/runs"
                     |> Application.handleCallback
                         (Callback.AgentRunMetricsFetched (Ok [ sampleRun ]))
                     |> Tuple.first
@@ -681,7 +718,7 @@ all =
                         ]
         , test "run-row timestamps are relative once the clock ticks, with the absolute time on hover" <|
             \_ ->
-                Common.init "/agent"
+                Common.init "/agent/runs"
                     |> Application.handleCallback
                         (Callback.AgentRunMetricsFetched
                             (Ok [ { sampleRun | createdAt = 1784385000 } ])
@@ -702,7 +739,7 @@ all =
                         ]
         , test "the costs section states caps are set at deploy time when none is configured" <|
             \_ ->
-                Common.init "/agent"
+                Common.init "/agent/spend"
                     |> Application.handleCallback
                         (Callback.AgentCostRollupFetched
                             (Ok
@@ -722,4 +759,48 @@ all =
                         [ class "agent-daily-cap-none"
                         , text "No daily cap set. Caps are set at deploy time today."
                         ]
+        , describe "agent sub-nav"
+            [ test "renders all six section tabs" <|
+                \_ ->
+                    Common.init "/agent/runs"
+                        |> Common.queryView
+                        |> Query.find [ id "agent-subnav" ]
+                        |> Query.findAll [ tag "a" ]
+                        |> Query.count (Expect.equal 6)
+            , test "runs tab links to /agent/runs" <|
+                \_ ->
+                    Common.init "/agent/runs"
+                        |> Common.queryView
+                        |> Query.find [ id "agent-subnav-runs" ]
+                        |> Query.has [ attribute (Attr.href "/agent/runs") ]
+            , test "reviews tab links to /agent/reviews" <|
+                \_ ->
+                    Common.init "/agent/runs"
+                        |> Common.queryView
+                        |> Query.find [ id "agent-subnav-reviews" ]
+                        |> Query.has [ attribute (Attr.href "/agent/reviews") ]
+            , test "the active section tab is marked current" <|
+                \_ ->
+                    Common.init "/agent/spend"
+                        |> Common.queryView
+                        |> Query.find [ id "agent-subnav-spend" ]
+                        |> Query.has [ attribute (Attr.attribute "aria-current" "page") ]
+            , test "ticket queue mounts the agent sub-nav with tickets active" <|
+                \_ ->
+                    Common.init "/agent/tickets"
+                        |> Common.queryView
+                        |> Query.find [ id "agent-subnav-tickets" ]
+                        |> Query.has [ attribute (Attr.attribute "aria-current" "page") ]
+            , test "reviews index mounts the agent sub-nav with reviews active" <|
+                \_ ->
+                    Common.init "/agent/reviews"
+                        |> Common.queryView
+                        |> Query.find [ id "agent-subnav-reviews" ]
+                        |> Query.has [ attribute (Attr.attribute "aria-current" "page") ]
+            ]
+        , test "a non-admin sees the admin surface denied notice" <|
+            \_ ->
+                Common.init "/agent/admin"
+                    |> Common.queryView
+                    |> Query.has [ id "agent-admin-denied" ]
         ]

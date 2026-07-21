@@ -168,8 +168,25 @@ breadcrumbs session route =
             Routes.DownloadFly ->
                 ( [ clusterNameBreadcrumb session ], False, False )
 
-            Routes.Agent ->
-                ( [ agentBreadcrumb ], False, False )
+            Routes.Agent section ->
+                ( [ agentBreadcrumb, breadcrumbSeparator, agentSectionBreadcrumb section ], False, False )
+
+            Routes.AgentTickets ->
+                ( [ agentBreadcrumb, breadcrumbSeparator, agentLeafBreadcrumb "tickets" ], False, False )
+
+            Routes.AgentTicket { id } ->
+                ( [ agentBreadcrumb
+                  , breadcrumbSeparator
+                  , agentLeafBreadcrumb "tickets"
+                  , breadcrumbSeparator
+                  , agentLeafBreadcrumb ("#" ++ String.fromInt id)
+                  ]
+                , False
+                , False
+                )
+
+            Routes.AgentReviews _ ->
+                ( [ agentBreadcrumb, breadcrumbSeparator, agentLeafBreadcrumb "reviews" ], False, False )
 
             _ ->
                 ( [], False, False )
@@ -216,9 +233,36 @@ clusterNameBreadcrumb session _ =
 
 agentBreadcrumb : Bool -> Html Message
 agentBreadcrumb _ =
-    Html.div
-        (id "breadcrumb-agent" :: Styles.clusterName)
+    Html.a
+        (href (Routes.toString (Routes.Agent Routes.AgentRuns))
+            :: id "breadcrumb-agent"
+            :: Styles.clusterName
+        )
         [ Html.text "agent" ]
+
+
+agentSectionBreadcrumb : Routes.AgentSection -> (Bool -> Html Message)
+agentSectionBreadcrumb section =
+    agentLeafBreadcrumb <|
+        case section of
+            Routes.AgentRuns ->
+                "runs"
+
+            Routes.AgentWorkflows ->
+                "workflows"
+
+            Routes.AgentSpend ->
+                "spend"
+
+            Routes.AgentAdmin ->
+                "admin"
+
+
+agentLeafBreadcrumb : String -> Bool -> Html Message
+agentLeafBreadcrumb label _ =
+    Html.div
+        (id ("breadcrumb-agent-" ++ label) :: Styles.clusterName)
+        [ Html.text label ]
 
 
 pipelineBreadcrumbs : Session -> Concourse.Pipeline -> List String -> List (Bool -> Html Message)

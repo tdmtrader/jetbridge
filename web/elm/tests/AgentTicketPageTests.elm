@@ -100,7 +100,7 @@ initDetail =
         { protocol = Url.Http
         , host = ""
         , port_ = Nothing
-        , path = "/agent-tickets/12"
+        , path = "/agent/tickets/12"
         , query = Nothing
         , fragment = Nothing
         }
@@ -134,7 +134,7 @@ all =
             \_ ->
                 withDetail sampleDetailJson
                     (\d ->
-                        renderWith "/agent-tickets/12" (Callback.AgentTicketFetched (Ok d))
+                        renderWith "/agent/tickets/12" (Callback.AgentTicketFetched (Ok d))
                             |> Query.has
                                 [ containing [ text "ship fly archives" ]
                                 , containing [ text "Spec" ]
@@ -150,7 +150,7 @@ all =
                             ticket =
                                 d.ticket
                         in
-                        renderWith "/agent-tickets/12"
+                        renderWith "/agent/tickets/12"
                             (Callback.AgentTicketFetched
                                 (Ok { d | ticket = { ticket | createdAt = 1784385000 } })
                             )
@@ -161,7 +161,7 @@ all =
             \_ ->
                 withDetail sampleDetailJson
                     (\d ->
-                        renderWith "/agent-tickets/12" (Callback.AgentTicketFetched (Ok d))
+                        renderWith "/agent/tickets/12" (Callback.AgentTicketFetched (Ok d))
                             |> Query.has
                                 [ containing [ text "Merge" ]
                                 , containing [ text "Send back" ]
@@ -171,18 +171,18 @@ all =
             \_ ->
                 withDetail queuedDetailJson
                     (\d ->
-                        renderWith "/agent-tickets/12" (Callback.AgentTicketFetched (Ok d))
+                        renderWith "/agent/tickets/12" (Callback.AgentTicketFetched (Ok d))
                             |> Query.has [ containing [ text "Dispatch run" ] ]
                     )
         , test "shows an error notice when the ticket fails to load" <|
             \_ ->
-                renderWith "/agent-tickets/12" (Callback.AgentTicketFetched Data.httpUnauthorized)
+                renderWith "/agent/tickets/12" (Callback.AgentTicketFetched Data.httpUnauthorized)
                     |> Query.has [ text "Couldn't load ticket." ]
         , test "links the harvest-branch diff for a needs_review ticket" <|
             \_ ->
                 withDetail sampleDetailJson
                     (\d ->
-                        renderWith "/agent-tickets/12" (Callback.AgentTicketFetched (Ok d))
+                        renderWith "/agent/tickets/12" (Callback.AgentTicketFetched (Ok d))
                             |> Query.find [ class "agent-ticket-compare-link" ]
                             |> Query.has
                                 [ attribute
@@ -195,14 +195,14 @@ all =
             \_ ->
                 withDetail queuedDetailJson
                     (\d ->
-                        renderWith "/agent-tickets/12" (Callback.AgentTicketFetched (Ok d))
+                        renderWith "/agent/tickets/12" (Callback.AgentTicketFetched (Ok d))
                             |> Query.hasNot [ class "agent-ticket-compare-link" ]
                     )
         , test "run history rows link to their build" <|
             \_ ->
                 withDetail sampleDetailJson
                     (\d ->
-                        Common.init "/agent-tickets/12"
+                        Common.init "/agent/tickets/12"
                             |> Application.handleCallback (Callback.AgentTicketFetched (Ok d))
                             |> Tuple.first
                             |> Application.handleCallback
@@ -247,7 +247,7 @@ all =
             \_ ->
                 withDetail sampleDetailJson
                     (\d ->
-                        Common.init "/agent-tickets/12"
+                        Common.init "/agent/tickets/12"
                             |> Application.handleCallback (Callback.AgentTicketFetched (Ok d))
                             |> Tuple.first
                             |> Application.handleCallback
@@ -306,7 +306,7 @@ all =
                 in
                 withDetail sampleDetailJson
                     (\d ->
-                        Common.init "/agent-tickets/12"
+                        Common.init "/agent/tickets/12"
                             |> Application.handleCallback (Callback.AgentTicketFetched (Ok d))
                             |> Tuple.first
                             |> Application.handleCallback
@@ -348,7 +348,7 @@ all =
             \_ ->
                 withDetail sampleDetailJson
                     (\d ->
-                        Common.init "/agent-tickets/12"
+                        Common.init "/agent/tickets/12"
                             |> Application.handleCallback (Callback.AgentTicketFetched (Ok d))
                             |> Tuple.first
                             |> Application.handleCallback
@@ -394,7 +394,7 @@ all =
             \_ ->
                 withDetail sampleDetailJson
                     (\d ->
-                        Common.init "/agent-tickets/12"
+                        Common.init "/agent/tickets/12"
                             |> Application.handleCallback (Callback.AgentTicketFetched (Ok d))
                             |> Tuple.first
                             |> Application.update (Msgs.Update Message.Message.ClickAgentTicketEdit)
@@ -414,7 +414,7 @@ all =
             \_ ->
                 withDetail sampleDetailJson
                     (\d ->
-                        Common.init "/agent-tickets/12"
+                        Common.init "/agent/tickets/12"
                             |> Application.handleCallback (Callback.AgentTicketFetched (Ok d))
                             |> Tuple.first
                             |> Application.update (Msgs.Update Message.Message.ClickAgentTicketEdit)
@@ -438,7 +438,7 @@ all =
             \_ ->
                 withDetail sampleDetailJson
                     (\d ->
-                        Common.init "/agent-tickets/12"
+                        Common.init "/agent/tickets/12"
                             |> Application.handleCallback (Callback.AgentTicketFetched (Ok d))
                             |> Tuple.first
                             |> Application.update (Msgs.Update Message.Message.ClickAgentTicketEdit)
@@ -456,7 +456,7 @@ all =
                     (\d ->
                         withDetail mergedDetailJson
                             (\merged ->
-                                Common.init "/agent-tickets/12"
+                                Common.init "/agent/tickets/12"
                                     |> Application.handleCallback (Callback.AgentTicketFetched (Ok d))
                                     |> Tuple.first
                                     |> Application.update (Msgs.Update Message.Message.ClickAgentTicketEdit)
@@ -478,7 +478,7 @@ all =
                     (\queued ->
                         withDetail runningDetailJson
                             (\running ->
-                                Common.init "/agent-tickets/12"
+                                Common.init "/agent/tickets/12"
                                     |> Application.handleCallback (Callback.AgentTicketFetched (Ok queued))
                                     |> Tuple.first
                                     |> Application.update (Msgs.Update (Message.Message.ClickAgentTicketTransition "abandoned"))
@@ -493,7 +493,7 @@ all =
             \_ ->
                 withDetail queuedDetailJson
                     (\queued ->
-                        Common.init "/agent-tickets/12"
+                        Common.init "/agent/tickets/12"
                             |> Application.handleCallback (Callback.AgentTicketFetched (Ok queued))
                             |> Tuple.first
                             |> Application.update (Msgs.Update (Message.Message.ClickAgentTicketTransition "abandoned"))
@@ -507,7 +507,7 @@ all =
             \_ ->
                 withDetail sampleDetailJson
                     (\d ->
-                        Common.init "/agent-tickets/12"
+                        Common.init "/agent/tickets/12"
                             |> Application.handleCallback (Callback.AgentTicketFetched (Ok d))
                             |> Tuple.first
                             |> Application.update
@@ -520,7 +520,7 @@ all =
                     )
         , test "the 5s tick keeps polling while the ticket hasn't loaded yet" <|
             \_ ->
-                Common.init "/agent-tickets/12"
+                Common.init "/agent/tickets/12"
                     |> Application.update
                         (Msgs.DeliveryReceived (ClockTicked FiveSeconds <| Time.millisToPosix 0))
                     |> Tuple.second
@@ -529,7 +529,7 @@ all =
             \_ ->
                 withDetail erroredDetailJson
                     (\d ->
-                        Common.init "/agent-tickets/12"
+                        Common.init "/agent/tickets/12"
                             |> Application.handleCallback (Callback.AgentTicketFetched (Ok d))
                             |> Tuple.first
                             |> Application.handleCallback
@@ -576,7 +576,7 @@ all =
             \_ ->
                 withDetail erroredDetailJson
                     (\d ->
-                        renderWith "/agent-tickets/12" (Callback.AgentTicketFetched (Ok d))
+                        renderWith "/agent/tickets/12" (Callback.AgentTicketFetched (Ok d))
                             |> Query.find [ id "ticket-timestamps" ]
                             |> Query.has [ text "created Jan 1, 1970 00:03 · ended Jan 1, 1970 00:05" ]
                     )
@@ -584,7 +584,7 @@ all =
             \_ ->
                 withDetail mergedDetailJson
                     (\merged ->
-                        Common.init "/agent-tickets/12"
+                        Common.init "/agent/tickets/12"
                             |> Application.handleCallback (Callback.AgentTicketFetched (Ok merged))
                             |> Tuple.first
                             |> Application.update
@@ -605,7 +605,7 @@ activeAttemptTest =
         \_ ->
             withDetail runningDetailJson
                 (\d ->
-                    Common.init "/agent-tickets/9"
+                    Common.init "/agent/tickets/9"
                         |> Application.handleCallback (Callback.AgentTicketFetched (Ok d))
                         |> Tuple.first
                         |> Application.handleCallback
