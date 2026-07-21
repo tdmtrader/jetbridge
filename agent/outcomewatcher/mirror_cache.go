@@ -10,10 +10,9 @@ import (
 // Auth aliases gitcheck.Auth so callers configure one type.
 type Auth = gitcheck.Auth
 
-// MirrorCache opens one bare --mirror per repo under a shared dir. It is
-// shared between the watcher component (which Syncs + Detects on a polling
-// interval) and the GetAgentTicketDiff handler, for which it is the
-// outcomes.MirrorProvider — one cache, opened once per repo.
+// MirrorCache opens one bare --mirror per repo under a shared dir. The outcome
+// watcher uses it for polling and detection; GetAgentTicketDiff uses it only
+// as a compatibility fallback for deliveries predating stored diff evidence.
 type MirrorCache struct {
 	dir         string
 	urlTemplate string
@@ -85,8 +84,8 @@ func (c *MirrorCache) BranchHead(repo, branch string) (string, error) {
 	return m.BranchHead(branch)
 }
 
-// Diff implements outcomes.MirrorProvider (§1.11.1 windowed diff: 50-file
-// window, 64 KiB per-file cap, has_more paging — enforced by gitcheck).
+// Diff implements outcomes.MirrorProvider for historical compatibility
+// (§1.11.1 windowed diff bounds are enforced by gitcheck).
 func (c *MirrorCache) Diff(repo, base, pushed string, offset, limit int) (gitcheck.DiffPage, error) {
 	m, err := c.mirror(repo)
 	if err != nil {

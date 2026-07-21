@@ -18,6 +18,7 @@ import (
 	workflowsapi "github.com/concourse/concourse/agent/api/workflows"
 	"github.com/concourse/concourse/agent/budget"
 	"github.com/concourse/concourse/agent/credentials"
+	"github.com/concourse/concourse/agent/deliverydiff"
 	"github.com/concourse/concourse/agent/workflow"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api/accessor"
@@ -115,9 +116,9 @@ func NewHandler(
 	agentDailyBudgetUSD float64,
 	ticketBudgets budget.TicketBudgets,
 	outcomesStore outcomesapi.Store,
-	// outcomeDiffProvider backs GetAgentTicketDiff: the outcome watcher's
-	// shared MirrorCache when --agent-outcome-git-dir is set, a true nil
-	// interface otherwise (master switch off → the diff API 404s).
+	deliveryDiffStore deliverydiff.Store,
+	// outcomeDiffProvider is the optional historical compatibility fallback
+	// backed by the outcome watcher's shared MirrorCache.
 	outcomeDiffProvider outcomesapi.MirrorProvider,
 	// agentRunTranscriptStore backs GetAgentTicketRunTranscript (ticket #43):
 	// the raw tool-call transcript persisted at harvest ingestion.
@@ -187,7 +188,7 @@ func NewHandler(
 	outcomesServer := outcomesapi.NewHandler(outcomesStore, ticketsStore, func(r *http.Request) string {
 		return accessor.GetAccessor(r).Claims().UserName
 	})
-	outcomeDiffServer := outcomesapi.NewDiffHandler(outcomesStore, outcomeDiffProvider)
+	outcomeDiffServer := outcomesapi.NewDiffHandler(outcomesStore, deliveryDiffStore, outcomeDiffProvider)
 	transcriptServer := transcriptserver.NewServer(logger, agentRunTranscriptStore)
 	workflowsServer := workflowsapi.NewHandler(workflowStore, metricsStore)
 	principalsServer := principalsapi.NewHandler(

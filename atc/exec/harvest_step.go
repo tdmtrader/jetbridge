@@ -19,6 +19,7 @@ import (
 	"github.com/concourse/concourse/agent/api/tickets"
 	"github.com/concourse/concourse/agent/budget"
 	"github.com/concourse/concourse/agent/credentials"
+	"github.com/concourse/concourse/agent/deliverydiff"
 	"github.com/concourse/concourse/agent/harvest"
 	"github.com/concourse/concourse/agent/schema"
 	"github.com/concourse/concourse/atc"
@@ -91,6 +92,12 @@ func WithHarvestOutcomesStore(s outcomes.Store) HarvestStepOption {
 	return func(h *HarvestStep) { h.outcomesStore = s }
 }
 
+// WithHarvestDeliveryDiffStore wires the durable store for the bounded
+// base..pushed review artifact emitted after a successful push.
+func WithHarvestDeliveryDiffStore(s deliverydiff.Store) HarvestStepOption {
+	return func(h *HarvestStep) { h.deliveryDiffStore = s }
+}
+
 // WithHarvestBudgetRecorder sets the budget library used for the
 // fire-and-forget harvest_judge ledger append.
 func WithHarvestBudgetRecorder(c budget.Checker) HarvestStepOption {
@@ -149,6 +156,7 @@ type HarvestStep struct {
 	metricsStore         metrics.Store
 	reviewsStore         reviews.Store
 	outcomesStore        outcomes.Store
+	deliveryDiffStore    deliverydiff.Store
 	transcriptStore      HarvestTranscriptStore
 	budgetChecker        budget.Checker
 	platformUserResolver PlatformUserResolver
@@ -412,6 +420,7 @@ func (step *HarvestStep) run(ctx context.Context, state RunState, delegate TaskD
 			// AFTER the transition — that ordering is load-bearing
 			// (§1.11.1: the row must never precede the lifecycle edge).
 			step.seedOutcome(logger, results, branch)
+			step.ingestDeliveryDiff(ctx, logger, chosenWorker, volumeMounts, results, branch)
 		}
 	case 1:
 		step.transitionTicket(ctx, logger, "needs_review", "", "")
@@ -522,6 +531,106 @@ func (step *HarvestStep) seedOutcome(logger lager.Logger, res *schema.Results, b
 		return
 	}
 	logger.Info("outcome-seeded", lager.Data{"ticket-id": ticketID, "pushed-sha": pushed, "base-sha": base})
+}
+
+// ingestDeliveryDiff persists the pod-produced diff only after the successful
+// lifecycle transition and only when its delivery identity exactly matches the
+// validated results document and server-owned plan. Failures are diagnostic;
+// the branch was already pushed and remains a successful delivery.
+func (step *HarvestStep) ingestDeliveryDiff(
+	ctx context.Context,
+	logger lager.Logger,
+	wkr runtime.Worker,
+	volumeMounts []runtime.VolumeMount,
+	results *schema.Results,
+	branch string,
+) {
+	if step.deliveryDiffStore == nil || step.streamer == nil || results == nil {
+		return
+	}
+	ticketID, runID := step.verifiedIDs(logger)
+	if ticketID == 0 || results.Status != schema.StatusPass {
+		return
+	}
+	baseSHA := metaString(results.Metadata, "base_sha")
+	pushedSHA := metaString(results.Metadata, "head_sha")
+	if baseSHA == "" || pushedSHA == "" || metaString(results.Metadata, "pushed_branch") != branch || branch != step.plan.Branch {
+		logger.Info("skipping-delivery-diff", lager.Data{"reason": "results delivery identity mismatch"})
+		return
+	}
+
+	flightPath := ensureTrailingSlash(artifactPath(step.containerMetadata.WorkingDirectory, harvestFlightArtifact, ""))
+	var flightArtifact runtime.Artifact
+	for _, mount := range volumeMounts {
+		if filepath.Clean(mount.MountPath) == filepath.Clean(flightPath) {
+			flightArtifact = wkr.ArtifactFromVolume(mount.Volume)
+			break
+		}
+	}
+	if flightArtifact == nil {
+		logger.Info("skipping-delivery-diff", lager.Data{"reason": "flight artifact missing"})
+		return
+	}
+
+	ingestCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancel()
+	rc, err := step.streamer.StreamFile(ingestCtx, flightArtifact, "diff.json")
+	if err != nil {
+		logger.Error("failed-to-stream-flight-file", err, lager.Data{"file": "diff.json"})
+		return
+	}
+	if rc == nil {
+		return
+	}
+	raw, readErr := io.ReadAll(io.LimitReader(rc, (5<<20)+1))
+	closeErr := rc.Close()
+	if readErr != nil {
+		logger.Error("failed-to-read-flight-file", readErr, lager.Data{"file": "diff.json"})
+		return
+	}
+	if closeErr != nil {
+		logger.Error("failed-to-close-flight-file", closeErr, lager.Data{"file": "diff.json"})
+	}
+	if len(raw) > 5<<20 {
+		logger.Info("skipping-delivery-diff", lager.Data{"reason": "diff artifact exceeds 5 MiB"})
+		return
+	}
+
+	var artifact deliverydiff.Artifact
+	if err := json.Unmarshal(raw, &artifact); err != nil {
+		logger.Error("failed-to-parse-delivery-diff", err)
+		return
+	}
+	if err := artifact.Validate(); err != nil {
+		logger.Error("invalid-delivery-diff", err)
+		return
+	}
+	if artifact.BaseSHA != baseSHA || artifact.PushedSHA != pushedSHA || artifact.DeliveredBranch != branch {
+		logger.Info("skipping-delivery-diff", lager.Data{"reason": "artifact delivery identity mismatch"})
+		return
+	}
+
+	err = step.deliveryDiffStore.Upsert(deliverydiff.DeliveryDiff{
+		BuildID:         step.metadata.BuildID,
+		PlanID:          string(step.planID),
+		TicketID:        ticketID,
+		PipelineRunID:   runID,
+		Repo:            step.plan.Repo,
+		TargetBranch:    step.plan.TargetBranch,
+		DeliveredBranch: branch,
+		BaseSHA:         artifact.BaseSHA,
+		PushedSHA:       artifact.PushedSHA,
+		Files:           artifact.Files,
+		TotalFiles:      artifact.TotalFiles,
+		CapturedFiles:   artifact.CapturedFiles,
+		ByteLen:         artifact.ByteLen,
+		Truncated:       artifact.Truncated,
+	})
+	if err != nil {
+		logger.Error("failed-to-ingest-delivery-diff", err, lager.Data{"ticket-id": ticketID})
+		return
+	}
+	logger.Info("delivery-diff-ingested", lager.Data{"ticket-id": ticketID, "files": artifact.CapturedFiles})
 }
 
 // metaString pulls a string value out of schema.Results' interface-typed

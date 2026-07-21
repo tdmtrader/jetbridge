@@ -251,7 +251,8 @@ var _ = BeforeEach(func() {
 		0,
 		budget.NoTicketBudgets{},
 		outcomes.NewMemoryStore(),
-		nil, // outcomeDiffProvider: diff API disabled (no mirror cache in the suite)
+		nil, // deliveryDiffStore
+		nil, // outcomeDiffProvider: no historical mirror fallback in the suite
 		new(dbfakes.FakeAgentRunTranscriptFactory),
 		workflow.NewMemoryStore(),
 		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

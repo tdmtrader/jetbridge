@@ -134,11 +134,10 @@ type RunCommand struct {
 	// requires the jetbridge runtime.
 	agentRunSecretAttacher *lazySecretAttacher
 
-	// agentOutcomeMirrorProvider is the shared outcome-diff mirror cache
-	// (delivery-outcomes §1.11.1), built lazily via agentOutcomeMirrors()
-	// when --agent-outcome-git-dir is set (the master switch) and shared
-	// by the agent_outcome_watcher component and GetAgentTicketDiff's
-	// handler threading — the API handler and the backend component block
+	// agentOutcomeMirrorProvider is the outcome watcher's Git cache, built
+	// lazily when --agent-outcome-git-dir is set and shared with the ticket
+	// diff handler only as a historical compatibility fallback. The API
+	// handler and the backend component block
 	// race on construction order (same bridge reason as k8sArtifactLocator).
 	// Kept as the concrete type so the disabled case stays a TRUE nil
 	// interface at the handler seam (see agentOutcomeDiffProvider).
@@ -254,7 +253,7 @@ type RunCommand struct {
 	AgentDispatcherMaxAttempts int           `long:"agent-dispatcher-max-attempts" default:"3" description:"Max automatic re-dispatches per ticket (reconciler send_back requeues); past the cap the ticket errors. 0 = uncapped."`
 	AgentRunTimeout            time.Duration `long:"agent-run-timeout" default:"6h" description:"Per-run agent principal token expiry (contracts §2.8.2). The run secret itself is collected by the run-secret reaper on run completion."`
 
-	AgentOutcomeGitDir          string        `long:"agent-outcome-git-dir" description:"Directory for the outcome watcher's bare git mirrors. Empty disables both the watcher and the ticket diff API (the master switch)."`
+	AgentOutcomeGitDir          string        `long:"agent-outcome-git-dir" description:"Directory for the optional outcome watcher's bare Git mirrors. Empty disables automated Git-based outcome detection; delivered ticket diffs remain available from Postgres."`
 	AgentOutcomeGitURLTemplate  string        `long:"agent-outcome-git-url-template" default:"https://github.com/{repo}.git" description:"Template for mirror clone URLs; {repo} is the ticket's repo slug."`
 	AgentOutcomeGitUsername     string        `long:"agent-outcome-git-username" description:"Optional username for mirror fetches (https only)."`
 	AgentOutcomeGitToken        string        `long:"agent-outcome-git-token" description:"Optional token for mirror fetches (https only; delivered via a temp credential helper, never argv)."`
@@ -1489,8 +1488,8 @@ func (cmd *RunCommand) backendComponents(
 
 	// Outcome watcher (delivery-outcomes §1.11.1): deliberately K8s-INDEPENDENT
 	// — it only reads git mirrors and the DB, so unlike the agent components
-	// above it gates ONLY on the --agent-outcome-git-dir master switch, never
-	// on the K8s runtime.
+	// above it gates only on its optional --agent-outcome-git-dir, never on
+	// the K8s runtime or the Postgres-backed ticket diff path.
 	if cmd.AgentOutcomeGitDir != "" {
 		// The same cache is handed to GetAgentTicketDiff's handler
 		// threading (agentOutcomeDiffProvider in constructAPIHandler).
@@ -2217,6 +2216,7 @@ func (cmd *RunCommand) constructEngine(
 				engine.WithAgentTicketsStore(db.NewAgentTicketsFactory(dbConn)),
 				engine.WithAgentReviewsStore(db.NewAgentReviewsFactory(dbConn)),
 				engine.WithAgentOutcomesStore(db.NewAgentOutcomesFactory(dbConn)),
+				engine.WithAgentDeliveryDiffStore(db.NewAgentDeliveryDiffFactory(dbConn)),
 				engine.WithAgentTranscriptStore(db.NewAgentRunTranscriptFactory(dbConn)),
 				engine.WithAgentPlatformUserResolver(db.NewAgentUserCredentialsFactory(dbConn)),
 			),
@@ -2528,6 +2528,7 @@ func (cmd *RunCommand) constructAPIHandler(
 		cmd.AgentDailyBudgetUSD,
 		dispatch.NewTicketBudgets(db.NewAgentTicketsFactory(dbConn), db.NewAgentWorkflowsFactory(dbConn)),
 		db.NewAgentOutcomesFactory(dbConn),
+		db.NewAgentDeliveryDiffFactory(dbConn),
 		cmd.agentOutcomeDiffProvider(),
 		db.NewAgentRunTranscriptFactory(dbConn),
 		db.NewAgentWorkflowsFactory(dbConn),
@@ -2556,10 +2557,10 @@ func (cmd *RunCommand) constructAPIHandler(
 	)
 }
 
-// agentOutcomeMirrors lazily builds the shared outcome-diff mirror cache;
-// nil when --agent-outcome-git-dir is empty — the MASTER SWITCH, which
-// disables both the agent_outcome_watcher component and the ticket diff
-// API. Lazy + nil-guarded because the API handler is constructed before
+// agentOutcomeMirrors lazily builds the optional outcome watcher's mirror
+// cache. A nil cache disables automated Git-based outcome detection and the
+// historical diff fallback, while Postgres-backed delivered diffs remain
+// available. Lazy + nil-guarded because the API handler is constructed before
 // the backend component block (same construction-order bridge as
 // agentRunSecrets). The username/token are https-only and delivered via
 // gitcheck's temp credential helper, never argv.
@@ -2578,10 +2579,9 @@ func (cmd *RunCommand) agentOutcomeMirrors() *outcomewatcher.MirrorCache {
 	return cmd.agentOutcomeMirrorProvider
 }
 
-// agentOutcomeDiffProvider adapts the shared cache for GetAgentTicketDiff's
-// handler threading, returning a TRUE nil interface when the master switch
-// is off — assigning a typed-nil *MirrorCache would defeat the diff
-// handler's provider == nil check (→ 404 "diff API is not enabled").
+// agentOutcomeDiffProvider adapts the shared cache as GetAgentTicketDiff's
+// historical compatibility fallback. Returning a true nil interface avoids
+// calling methods on a typed-nil *MirrorCache.
 func (cmd *RunCommand) agentOutcomeDiffProvider() outcomes.MirrorProvider {
 	if cache := cmd.agentOutcomeMirrors(); cache != nil {
 		return cache
