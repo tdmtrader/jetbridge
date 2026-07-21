@@ -226,5 +226,19 @@ all =
                 \_ ->
                     displayOutcome { outcome = "unrecorded", buildStatus = "succeeded", runStatus = "incomplete", hasResult = False }
                         |> Expect.equal (Just Unrecorded)
+            , test "toneColor returns the good hex for a Good status" <|
+                \_ ->
+                    AgentBadge.toneColor (AgentBadge.tone AgentBadge.Succeeded)
+                        |> Expect.equal "#11c560"
+            , test "toneColor returns the bad hex for a Failed status" <|
+                \_ ->
+                    AgentBadge.toneColor (AgentBadge.tone AgentBadge.Failed)
+                        |> Expect.equal "#ed4b35"
+            , test "toneColor covers every tone (no empty string)" <|
+                \_ ->
+                    [ AgentBadge.Neutral, AgentBadge.Info, AgentBadge.Active, AgentBadge.Attention, AgentBadge.Good, AgentBadge.GoodMuted, AgentBadge.Warn, AgentBadge.Calm, AgentBadge.Bad, AgentBadge.Error ]
+                        |> List.map AgentBadge.toneColor
+                        |> List.all (\c -> String.startsWith "#" c)
+                        |> Expect.equal True
             ]
         ]

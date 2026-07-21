@@ -23,6 +23,7 @@ transition (409) surfaces inline and triggers a refetch.
 
 import Agent.Nav as Nav
 import AgentBadge
+import AgentTickets.StepDag as StepDag
 import Application.Models exposing (Session)
 import Build.AgentReview
 import Concourse.Agent
@@ -581,6 +582,7 @@ content session model =
                         , tabsBar model
                         , Html.Lazy.lazy2 tabContent model.activeTab detail
                         , Html.Lazy.lazy taskList detail.tasks
+                        , Html.Lazy.lazy2 StepDag.view ticket.state model.runMetricsByBuild
 
                         -- Not lazy: the relative run times read the `now` clock,
                         -- which changes on every 5s tick, so a memo would never

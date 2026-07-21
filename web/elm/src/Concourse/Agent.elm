@@ -3,9 +3,12 @@ module Concourse.Agent exposing
     , CostRow
     , CostSummary
     , CredentialStatus
+    , GateResult
+    , JudgeResult
     , Principal
     , PrincipalCreated
     , RunMetric
+    , StepResults
     , Usage
     , WorkflowConfig
     , WorkflowDefinition
@@ -22,6 +25,7 @@ module Concourse.Agent exposing
     , decodeWorkflowStats
     , decodeWorkflowSummary
     , decodeWorkflowVersions
+    , emptyStepResults
     )
 
 import Dict exposing (Dict)
@@ -145,6 +149,37 @@ type alias Usage =
     }
 
 
+type alias GateResult =
+    { gate : String
+    , status : String
+    , flaky : Bool
+    , durationSeconds : Float
+    }
+
+
+type alias JudgeResult =
+    { total : Float
+    , maxTotal : Float
+    , pass : Bool
+    }
+
+
+{-| The DAG-relevant slice of a step's results.json: the harvest step's gate
+outcomes, judge verdict and pushed branch (metadata keys written by
+agent/harvest/runner.go). Empty for agent steps, which carry no results.
+-}
+type alias StepResults =
+    { gates : List GateResult
+    , judge : Maybe JudgeResult
+    , pushedBranch : String
+    }
+
+
+emptyStepResults : StepResults
+emptyStepResults =
+    { gates = [], judge = Nothing, pushedBranch = "" }
+
+
 type alias RunMetric =
     { ticketId : Maybe Int
     , pipelineRunId : Maybe Int
@@ -164,7 +199,37 @@ type alias RunMetric =
     , costUsd : Float
     , eventCounts : Dict String Int
     , createdAt : Int
+    , results : StepResults
     }
+
+
+decodeGateResult : Json.Decode.Decoder GateResult
+decodeGateResult =
+    Json.Decode.succeed GateResult
+        |> andMap (defaultTo "" <| Json.Decode.field "gate" Json.Decode.string)
+        |> andMap (defaultTo "" <| Json.Decode.field "status" Json.Decode.string)
+        |> andMap (defaultTo False <| Json.Decode.field "flaky" Json.Decode.bool)
+        |> andMap (defaultTo 0 <| Json.Decode.field "duration_seconds" Json.Decode.float)
+
+
+decodeJudgeResult : Json.Decode.Decoder JudgeResult
+decodeJudgeResult =
+    Json.Decode.succeed JudgeResult
+        |> andMap (defaultTo 0 <| Json.Decode.field "total" Json.Decode.float)
+        |> andMap (defaultTo 0 <| Json.Decode.field "max_total" Json.Decode.float)
+        |> andMap (defaultTo False <| Json.Decode.field "pass" Json.Decode.bool)
+
+
+{-| Decode the DAG slice out of a row's `results.metadata`. Absent/partial
+results (agent steps, older servers) fall back to emptyStepResults, so this is
+fully back-compatible.
+-}
+decodeStepResults : Json.Decode.Decoder StepResults
+decodeStepResults =
+    Json.Decode.succeed StepResults
+        |> andMap (defaultTo [] (Json.Decode.at [ "results", "metadata", "gates" ] (Json.Decode.list decodeGateResult)))
+        |> andMap (Json.Decode.maybe (Json.Decode.at [ "results", "metadata", "judge" ] decodeJudgeResult))
+        |> andMap (defaultTo "" (Json.Decode.at [ "results", "metadata", "pushed_branch" ] Json.Decode.string))
 
 
 decodeUsage : Json.Decode.Decoder Usage
@@ -199,6 +264,7 @@ decodeRunMetric =
         |> andMap (defaultTo 0 <| Json.Decode.field "cost_usd" Json.Decode.float)
         |> andMap (defaultTo Dict.empty <| Json.Decode.field "event_counts" (Json.Decode.dict Json.Decode.int))
         |> andMap (defaultTo 0 <| Json.Decode.field "created_at" Json.Decode.int)
+        |> andMap (defaultTo emptyStepResults decodeStepResults)
 
 
 

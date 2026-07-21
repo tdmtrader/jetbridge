@@ -55,6 +55,7 @@ runMetricFor buildId cost =
     , costUsd = cost
     , eventCounts = Dict.empty
     , createdAt = 0
+    , results = { gates = [], judge = Nothing, pushedBranch = "" }
     }
 
 

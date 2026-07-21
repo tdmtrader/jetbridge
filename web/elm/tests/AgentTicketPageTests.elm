@@ -231,6 +231,7 @@ all =
                                           , costUsd = 0.21
                                           , eventCounts = Dict.empty
                                           , createdAt = 100
+                                          , results = { gates = [], judge = Nothing, pushedBranch = "" }
                                           }
                                         ]
                                     )
@@ -302,6 +303,7 @@ all =
                         , costUsd = cost
                         , eventCounts = Dict.empty
                         , createdAt = 100
+                        , results = { gates = [], judge = Nothing, pushedBranch = "" }
                         }
                 in
                 withDetail sampleDetailJson
@@ -377,6 +379,7 @@ all =
                                           , costUsd = 0.21
                                           , eventCounts = Dict.empty
                                           , createdAt = 100
+                                          , results = { gates = [], judge = Nothing, pushedBranch = "" }
                                           }
                                         ]
                                     )
@@ -558,6 +561,7 @@ all =
                                           , costUsd = 0.1
                                           , eventCounts = Dict.empty
                                           , createdAt = 100
+                                          , results = { gates = [], judge = Nothing, pushedBranch = "" }
                                           }
                                         ]
                                     )
@@ -593,6 +597,48 @@ all =
                             |> Expect.all
                                 [ Common.notContains (Effects.FetchAgentTicket 12)
                                 , Common.notContains (Effects.FetchAgentTicketMetrics 12)
+                                ]
+                    )
+        , test "renders the step DAG with a box per step for a fetched build" <|
+            \_ ->
+                withDetail sampleDetailJson
+                    (\d ->
+                        Common.init "/agent/tickets/12"
+                            |> Application.handleCallback (Callback.AgentTicketFetched (Ok d))
+                            |> Tuple.first
+                            |> Application.handleCallback
+                                (Callback.AgentTicketMetricsFetched 12
+                                    (Ok
+                                        [ { ticketId = Just 12
+                                          , pipelineRunId = Just 2
+                                          , buildId = 561978
+                                          , planId = "plan-xyz"
+                                          , stepName = "implement"
+                                          , workflowName = "develop"
+                                          , workflowVersion = Just 1
+                                          , status = "ok"
+                                          , buildStatus = "succeeded"
+                                          , outcome = "ok"
+                                          , summary = "did the thing"
+                                          , model = ""
+                                          , usage = { inputTokens = 0, outputTokens = 0, cacheReadInputTokens = 0, cacheCreationInputTokens = 0 }
+                                          , turns = 1
+                                          , wallTimeSeconds = 77
+                                          , costUsd = 0.21
+                                          , eventCounts = Dict.empty
+                                          , createdAt = 100
+                                          , results = { gates = [], judge = Nothing, pushedBranch = "" }
+                                          }
+                                        ]
+                                    )
+                                )
+                            |> Tuple.first
+                            |> Common.queryView
+                            |> Query.find [ id "ticket-step-dag" ]
+                            |> Expect.all
+                                [ Query.has [ text "attempt 1" ]
+                                , Query.has [ class "agent-step-box", containing [ text "implement" ] ]
+                                , Query.has [ class "agent-step-box", containing [ text "review" ] ]
                                 ]
                     )
         , activeAttemptTest
@@ -634,6 +680,7 @@ activeAttemptTest =
                                       , costUsd = 0.0
                                       , eventCounts = Dict.empty
                                       , createdAt = 100
+                                      , results = { gates = [], judge = Nothing, pushedBranch = "" }
                                       }
                                     ]
                                 )
