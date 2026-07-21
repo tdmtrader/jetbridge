@@ -2217,6 +2217,7 @@ func (cmd *RunCommand) constructEngine(
 				engine.WithAgentTicketsStore(db.NewAgentTicketsFactory(dbConn)),
 				engine.WithAgentReviewsStore(db.NewAgentReviewsFactory(dbConn)),
 				engine.WithAgentOutcomesStore(db.NewAgentOutcomesFactory(dbConn)),
+				engine.WithAgentDeliveryDiffStore(db.NewAgentDeliveryDiffFactory(dbConn)),
 				engine.WithAgentTranscriptStore(db.NewAgentRunTranscriptFactory(dbConn)),
 				engine.WithAgentPlatformUserResolver(db.NewAgentUserCredentialsFactory(dbConn)),
 			),

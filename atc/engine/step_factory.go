@@ -11,6 +11,7 @@ import (
 	"github.com/concourse/concourse/agent/api/reviews"
 	"github.com/concourse/concourse/agent/api/tickets"
 	"github.com/concourse/concourse/agent/budget"
+	"github.com/concourse/concourse/agent/deliverydiff"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/lock"
@@ -21,30 +22,31 @@ import (
 )
 
 type coreStepFactory struct {
-	pool                  worker.Pool
-	streamer              worker.Streamer
-	lockFactory           lock.LockFactory
-	teamFactory           db.TeamFactory
-	buildFactory          db.BuildFactory
-	resourceCacheFactory  db.ResourceCacheFactory
-	resourceConfigFactory db.ResourceConfigFactory
-	defaultLimits         atc.ContainerLimits
-	defaultRequests       atc.ContainerLimits
-	defaultCheckTimeout   time.Duration
-	defaultGetTimeout     time.Duration
-	defaultPutTimeout     time.Duration
-	defaultTaskTimeout    time.Duration
-	imageResolver         imageresolver.Resolver
-	agentStepImage        string
-	agentMetricsStore     metrics.Store
-	agentBudgetChecker    budget.Checker
-	agentRunVerifier      exec.AgentRunVerifier
-	agentPlatformToken    string
-	agentTicketsStore     tickets.Store
-	agentReviewsStore     reviews.Store
-	agentOutcomesStore    outcomes.Store
-	agentTranscriptStore  exec.HarvestTranscriptStore
-	platformUserResolver  exec.PlatformUserResolver
+	pool                   worker.Pool
+	streamer               worker.Streamer
+	lockFactory            lock.LockFactory
+	teamFactory            db.TeamFactory
+	buildFactory           db.BuildFactory
+	resourceCacheFactory   db.ResourceCacheFactory
+	resourceConfigFactory  db.ResourceConfigFactory
+	defaultLimits          atc.ContainerLimits
+	defaultRequests        atc.ContainerLimits
+	defaultCheckTimeout    time.Duration
+	defaultGetTimeout      time.Duration
+	defaultPutTimeout      time.Duration
+	defaultTaskTimeout     time.Duration
+	imageResolver          imageresolver.Resolver
+	agentStepImage         string
+	agentMetricsStore      metrics.Store
+	agentBudgetChecker     budget.Checker
+	agentRunVerifier       exec.AgentRunVerifier
+	agentPlatformToken     string
+	agentTicketsStore      tickets.Store
+	agentReviewsStore      reviews.Store
+	agentOutcomesStore     outcomes.Store
+	agentDeliveryDiffStore deliverydiff.Store
+	agentTranscriptStore   exec.HarvestTranscriptStore
+	platformUserResolver   exec.PlatformUserResolver
 }
 
 // CoreStepFactoryOption configures optional fields on coreStepFactory.
@@ -87,6 +89,12 @@ func WithAgentReviewsStore(s reviews.Store) CoreStepFactoryOption {
 // shas) after a successful push.
 func WithAgentOutcomesStore(s outcomes.Store) CoreStepFactoryOption {
 	return func(f *coreStepFactory) { f.agentOutcomesStore = s }
+}
+
+// WithAgentDeliveryDiffStore sets the durable review-diff store populated by
+// successful harvest steps.
+func WithAgentDeliveryDiffStore(s deliverydiff.Store) CoreStepFactoryOption {
+	return func(f *coreStepFactory) { f.agentDeliveryDiffStore = s }
 }
 
 // WithAgentTranscriptStore sets the store the harvest step upserts the
@@ -347,6 +355,9 @@ func (factory *coreStepFactory) HarvestStep(
 	}
 	if factory.agentOutcomesStore != nil {
 		harvestOpts = append(harvestOpts, exec.WithHarvestOutcomesStore(factory.agentOutcomesStore))
+	}
+	if factory.agentDeliveryDiffStore != nil {
+		harvestOpts = append(harvestOpts, exec.WithHarvestDeliveryDiffStore(factory.agentDeliveryDiffStore))
 	}
 	if factory.agentTranscriptStore != nil {
 		harvestOpts = append(harvestOpts, exec.WithHarvestTranscriptStore(factory.agentTranscriptStore))

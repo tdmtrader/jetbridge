@@ -15,6 +15,9 @@ import (
 	"github.com/concourse/concourse/agent/api/tickets"
 	"github.com/concourse/concourse/agent/budget"
 	"github.com/concourse/concourse/agent/budget/budgetfakes"
+	"github.com/concourse/concourse/agent/deliverydiff"
+	"github.com/concourse/concourse/agent/deliverydiff/deliverydifffakes"
+	"github.com/concourse/concourse/agent/gitcheck"
 	"github.com/concourse/concourse/agent/harvest"
 	"github.com/concourse/concourse/agent/schema"
 	"github.com/concourse/concourse/atc"
@@ -819,6 +822,132 @@ var _ = Describe("HarvestStep", func() {
 
 			Expect(fakeOutcomes.EnsureCallCount()).To(Equal(1))
 			Expect(stateAtEnsure).To(Equal(tickets.StateNeedsReview))
+		})
+	})
+
+	Describe("delivery diff ingestion", func() {
+		var (
+			fakeStreamer     *execfakes.FakeStreamer
+			fakeMetricsStore *metricsfakes.FakeStore
+			diffStore        *deliverydifffakes.FakeStore
+			baseSHA          string
+			pushedSHA        string
+			resultsJSON      string
+			diffJSON         string
+		)
+
+		BeforeEach(func() {
+			fakeStreamer = new(execfakes.FakeStreamer)
+			fakeMetricsStore = new(metricsfakes.FakeStore)
+			fakeMetricsStore.UpsertReturningInsertedReturns(true, nil, nil)
+			diffStore = new(deliverydifffakes.FakeStore)
+			baseSHA = strings.Repeat("a", 40)
+			pushedSHA = strings.Repeat("b", 40)
+			resultsJSON = fmt.Sprintf(`{"schema_version":"1.0","status":"pass","confidence":1,"summary":"pushed","artifacts":[],"metadata":{"pushed_branch":"agent/ticket-42","head_sha":"%s","base_sha":"%s"}}`, pushedSHA, baseSHA)
+			setDiff := func(artifact deliverydiff.Artifact) {
+				raw, err := json.Marshal(artifact)
+				Expect(err).NotTo(HaveOccurred())
+				diffJSON = string(raw)
+			}
+			setDiff(deliverydiff.Artifact{
+				SchemaVersion: deliverydiff.SchemaVersion, BaseSHA: baseSHA, PushedSHA: pushedSHA,
+				DeliveredBranch: "agent/ticket-42",
+				Files:           []gitcheck.DiffFile{{Path: "a.txt", Patch: "patch"}},
+				TotalFiles:      1, CapturedFiles: 1, ByteLen: 5,
+			})
+			fakeStreamer.StreamFileStub = func(ctx context.Context, _ runtime.Artifact, path string) (io.ReadCloser, error) {
+				if err := ctx.Err(); err != nil {
+					return nil, err
+				}
+				switch path {
+				case "results.json":
+					return io.NopCloser(strings.NewReader(resultsJSON)), nil
+				case "diff.json":
+					return io.NopCloser(strings.NewReader(diffJSON)), nil
+				default:
+					return nil, fmt.Errorf("no fixture for %q", path)
+				}
+			}
+		})
+
+		opts := func() []exec.HarvestStepOption {
+			return []exec.HarvestStepOption{
+				exec.WithHarvestRunVerifier(fakeRunVerifier),
+				exec.WithHarvestStreamer(fakeStreamer),
+				exec.WithHarvestMetricsStore(fakeMetricsStore),
+				exec.WithHarvestDeliveryDiffStore(diffStore),
+			}
+		}
+
+		It("stores a validated delivery diff with server-pinned identity", func() {
+			plan := harvestPlan
+			plan.Judge = nil
+			step := newStep(plan, opts()...)
+			ok, err := step.Run(ctx, state)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(ok).To(BeTrue())
+			Expect(diffStore.UpsertCallCount()).To(Equal(1))
+			got := diffStore.UpsertArgsForCall(0)
+			Expect(got).To(Equal(deliverydiff.DeliveryDiff{
+				BuildID: 1234, PlanID: "h1", TicketID: 42, PipelineRunID: 7,
+				Repo: "tdmtrader/concourse", TargetBranch: "main", DeliveredBranch: "agent/ticket-42",
+				BaseSHA: baseSHA, PushedSHA: pushedSHA,
+				Files:      []gitcheck.DiffFile{{Path: "a.txt", Patch: "patch"}},
+				TotalFiles: 1, CapturedFiles: 1, ByteLen: 5,
+			}))
+		})
+
+		It("rejects mismatched or malformed delivery diff evidence without changing the successful step result", func() {
+			cases := map[string]func(){
+				"SHA mismatch":    func() { diffJSON = strings.Replace(diffJSON, pushedSHA, strings.Repeat("c", 40), 1) },
+				"branch mismatch": func() { diffJSON = strings.Replace(diffJSON, "agent/ticket-42", "agent/ticket-99", 1) },
+				"malformed JSON":  func() { diffJSON = "{" },
+				"over-limit patch": func() {
+					patch := strings.Repeat("x", deliverydiff.MaxPatchBytesPerFile+1)
+					raw, err := json.Marshal(deliverydiff.Artifact{
+						SchemaVersion: deliverydiff.SchemaVersion, BaseSHA: baseSHA, PushedSHA: pushedSHA,
+						DeliveredBranch: "agent/ticket-42", Files: []gitcheck.DiffFile{{Path: "a", Patch: patch}},
+						TotalFiles: 1, CapturedFiles: 1, ByteLen: len(patch), Truncated: true,
+					})
+					Expect(err).NotTo(HaveOccurred())
+					diffJSON = string(raw)
+				},
+			}
+			for name, mutate := range cases {
+				By(name)
+				mutate()
+				plan := harvestPlan
+				plan.Judge = nil
+				step := newStep(plan, opts()...)
+				ok, err := step.Run(ctx, state)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(ok).To(BeTrue())
+				Expect(diffStore.UpsertCallCount()).To(Equal(0))
+			}
+		})
+
+		It("stores nothing for an unverified ticket, exit 1, or nil store", func() {
+			plan := harvestPlan
+			plan.Judge = nil
+			fakeRunVerifier.TicketBelongsToRunReturns(false, nil)
+			ok, err := newStep(plan, opts()...).Run(ctx, state)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(ok).To(BeTrue())
+			Expect(diffStore.UpsertCallCount()).To(Equal(0))
+
+			fakeRunVerifier.TicketBelongsToRunReturns(true, nil)
+			exitStatus = 1
+			ok, err = newStep(plan, opts()...).Run(ctx, state)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(ok).To(BeFalse())
+			Expect(diffStore.UpsertCallCount()).To(Equal(0))
+
+			exitStatus = 0
+			nilStoreOpts := opts()
+			nilStoreOpts = nilStoreOpts[:len(nilStoreOpts)-1]
+			ok, err = newStep(plan, nilStoreOpts...).Run(ctx, state)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(ok).To(BeTrue())
 		})
 	})
 })
