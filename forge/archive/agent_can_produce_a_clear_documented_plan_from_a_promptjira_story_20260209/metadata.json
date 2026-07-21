@@ -1,8 +1,0 @@
-{
-  "trackId": "agent_can_produce_a_clear_documented_plan_from_a_promptjira_story_20260209",
-  "type": "feature",
-  "status": "completed",
-  "description": "Agent can produce a clear, documented plan from a prompt/Jira story",
-  "createdAt": "2026-02-10T04:50:43.900Z",
-  "updatedAt": "2026-02-27T02:43:44.755Z"
-}

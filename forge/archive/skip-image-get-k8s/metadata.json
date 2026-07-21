@@ -1,8 +1,0 @@
-{
-  "trackId": "skip-image-get-k8s",
-  "type": "feature",
-  "status": "archived",
-  "description": "Skip Image Resource Download on K8s — Skip get step for image resources on K8s, pass only digest/SHA",
-  "createdAt": "2026-02-11T19:09:23.922Z",
-  "updatedAt": "2026-02-11T19:09:23.922Z"
-}
