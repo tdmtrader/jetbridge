@@ -957,3 +957,7 @@ Honest assessment: this is a LARGE remainder (one migration, one new table+facto
 | E1-E2 (live) | **native-fable** | theborg deploy, real merge, webhook LISTEN verification, 5m-tick observation — inherently owner-supervised, full-access session. |
 
 Sequencing: A (native) → B1-B3 (loop) → B4 (loop) → C (loop ×2) → D (native) → E (native). Each loop dispatch waits for the previous merge (dispatch-timing rule: push → settle → dispatch; no double-spend). The ticketed runs' `gate_policy` must be scoped like tickets #13/#14 (full-scope go gates; postgres-backed specs explicitly excluded from the gate and covered by the human local-verify step named per slice).
+
+## 2026-07-20 superseding amendment: delivered diff storage
+
+Per the [approved Postgres-backed delivered-diff design](../../../specs/2026-07-20-agent-delivered-diff-storage-design.md), delivered review diffs are captured by harvest and persisted in `agent_delivery_diffs`; `GetAgentTicketDiff` reads the newest successful delivery from Postgres. `--agent-outcome-git-dir` controls only Git-based outcome reconciliation. A configured mirror is a compatibility fallback for historical tickets without stored delivery evidence. This supersedes §1.11.1's “master switch” coupling without changing merge-detection heuristics or the public `DiffPage` wire contract. Historical tasks and rollout notes above describe the original decision and are intentionally not rewritten.
