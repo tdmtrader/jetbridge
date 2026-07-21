@@ -86,8 +86,8 @@ type Deps struct {
 	// Users, when non-nil, resolves the ticket's triggering user id at
 	// dispatch (the create handler records only the username). nil skips
 	// (platform-funded, as before).
-	Users UserLookup
-	Secrets     credentials.SecretAttacher
+	Users   UserLookup
+	Secrets credentials.SecretAttacher
 
 	// RunTimeout bounds the per-run principal token (§2.8.2: expires_at =
 	// now + --agent-run-timeout). Zero preserves the pre-flag 24h default.
