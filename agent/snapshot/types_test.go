@@ -1,0 +1,168 @@
+package snapshot
+
+import (
+	"encoding/json"
+	"math"
+	"reflect"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestTypeRef(t *testing.T) {
+	valid := []string{"review/v1", "repository-change/v12", "foo.bar/v3"}
+	for _, raw := range valid {
+		t.Run(raw, func(t *testing.T) {
+			ref, err := ParseTypeRef(raw)
+			if err != nil {
+				t.Fatalf("parse type ref: %v", err)
+			}
+			if err := ref.Validate(); err != nil {
+				t.Fatalf("validate type ref: %v", err)
+			}
+			if got := ref.String(); got != raw {
+				t.Fatalf("String() = %q, want %q", got, raw)
+			}
+		})
+	}
+}
+
+func TestTypeRefRejectsInvalidGrammarAndVersion(t *testing.T) {
+	invalid := []string{
+		"", "Review/v1", "review/v0", "review/v01", "review/v-1", "review/1",
+		"review/v1 ", "review/v1/extra", "review./v1", "review..comment/v1", "review_/v1",
+	}
+	for _, raw := range invalid {
+		t.Run(raw, func(t *testing.T) {
+			if _, err := ParseTypeRef(raw); err == nil {
+				t.Fatal("expected invalid type reference to fail")
+			}
+		})
+	}
+}
+
+func TestPort(t *testing.T) {
+	ports := []Port{
+		{Name: "before", Type: TypeRef("repository/v1")},
+		{Name: "review", Type: TypeRef("review/v1"), Optional: true},
+	}
+	if err := ValidatePorts(ports); err != nil {
+		t.Fatalf("validate ports: %v", err)
+	}
+
+	if err := ValidatePorts([]Port{{Name: "review", Type: TypeRef("review/v1")}, {Name: "review", Type: TypeRef("review/v1")}}); err == nil {
+		t.Fatal("expected duplicate port name to fail")
+	}
+}
+
+func TestPortRejectsInvalidFields(t *testing.T) {
+	for _, port := range []Port{
+		{Type: TypeRef("review/v1")},
+		{Name: "review", Type: TypeRef("review/v0")},
+	} {
+		if err := port.Validate(); err == nil {
+			t.Fatalf("expected %+v to be invalid", port)
+		}
+	}
+}
+
+func TestManifestJSONRoundTrip(t *testing.T) {
+	createdAt := time.Date(2026, time.July, 21, 12, 0, 0, 0, time.UTC)
+	want := Snapshot{
+		ID:                SnapshotID(9007199254740993),
+		Type:              TypeRef("review/v1"),
+		Digest:            "sha256:0123456789abcdef",
+		ByteSize:          42,
+		FileCount:         1,
+		Representation:    "application/x-tar",
+		IntrinsicMetadata: json.RawMessage(`{"schema_version":1}`),
+		ContentState:      ContentStateAvailable,
+		CreatedAt:         createdAt,
+	}
+
+	encoded, err := json.Marshal(want)
+	if err != nil {
+		t.Fatalf("marshal snapshot: %v", err)
+	}
+	if string(encoded) == "" || !strings.Contains(string(encoded), `"id":"9007199254740993"`) {
+		t.Fatalf("snapshot id must be a quoted decimal string: %s", encoded)
+	}
+
+	var got Snapshot
+	if err := json.Unmarshal(encoded, &got); err != nil {
+		t.Fatalf("unmarshal snapshot: %v", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("snapshot round trip = %#v, want %#v", got, want)
+	}
+}
+
+func TestSnapshotAndWorkflowRunIDsUseQuotedCanonicalPositiveDecimals(t *testing.T) {
+	snapshotJSON, err := json.Marshal(SnapshotID(9007199254740993))
+	if err != nil {
+		t.Fatalf("marshal snapshot id: %v", err)
+	}
+	if got, want := string(snapshotJSON), `"9007199254740993"`; got != want {
+		t.Fatalf("snapshot ID JSON = %s, want %s", got, want)
+	}
+	var snapshotID SnapshotID
+	if err := json.Unmarshal(snapshotJSON, &snapshotID); err != nil {
+		t.Fatalf("unmarshal snapshot id: %v", err)
+	}
+	if got, want := snapshotID.String(), "9007199254740993"; got != want {
+		t.Fatalf("snapshot ID String() = %s, want %s", got, want)
+	}
+
+	workflowRunJSON, err := json.Marshal(WorkflowRunID(math.MaxInt64))
+	if err != nil {
+		t.Fatalf("marshal workflow run id: %v", err)
+	}
+	if got, want := string(workflowRunJSON), `"9223372036854775807"`; got != want {
+		t.Fatalf("workflow run ID JSON = %s, want %s", got, want)
+	}
+	var workflowRunID WorkflowRunID
+	if err := json.Unmarshal(workflowRunJSON, &workflowRunID); err != nil {
+		t.Fatalf("unmarshal workflow run id: %v", err)
+	}
+	if got, want := workflowRunID.String(), "9223372036854775807"; got != want {
+		t.Fatalf("workflow run ID String() = %s, want %s", got, want)
+	}
+}
+
+func TestSnapshotAndWorkflowRunIDsRejectNonCanonicalJSON(t *testing.T) {
+	invalid := []string{
+		`0`, `null`, `1`, `-1`, `"0"`, `"-1"`, `"+1"`, `"01"`, `" 1"`, `"1 "`, `"1e3"`, `"9223372036854775808"`, `""`,
+	}
+	for _, raw := range invalid {
+		t.Run(raw, func(t *testing.T) {
+			var snapshotID SnapshotID
+			if err := json.Unmarshal([]byte(raw), &snapshotID); err == nil {
+				t.Fatalf("SnapshotID accepted %s", raw)
+			}
+			var workflowRunID WorkflowRunID
+			if err := json.Unmarshal([]byte(raw), &workflowRunID); err == nil {
+				t.Fatalf("WorkflowRunID accepted %s", raw)
+			}
+		})
+	}
+}
+
+func TestRetentionClaimsSortDeterministicallyWithoutTreatingGrantsAsRetention(t *testing.T) {
+	now := time.Date(2026, time.July, 21, 12, 0, 0, 0, time.UTC)
+	later := now.Add(time.Hour)
+	claims := []RetentionClaim{
+		{ID: 2, SnapshotID: 1, Class: RetentionClassPin, Actor: "zoe", CreatedAt: later},
+		{ID: 3, SnapshotID: 1, Class: RetentionClassBinding, Actor: "build", CreatedAt: later},
+		{ID: 1, SnapshotID: 1, Class: RetentionClassPin, Actor: "amy", CreatedAt: now},
+	}
+	SortRetentionClaims(claims)
+	if got, want := []int64{claims[0].ID, claims[1].ID, claims[2].ID}, []int64{3, 1, 2}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("claim order = %v, want %v", got, want)
+	}
+	if got := EffectiveRetentionClaim(claims, now); got == nil || got.ID != 3 {
+		t.Fatalf("effective retention claim = %#v, want binding claim", got)
+	}
+	if got := EffectiveRetentionClaim(nil, now); got != nil {
+		t.Fatalf("effective retention claim = %#v, want nil", got)
+	}
+}
