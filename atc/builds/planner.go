@@ -2,6 +2,8 @@ package builds
 
 import (
 	"encoding/json"
+	"fmt"
+	"maps"
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
@@ -69,6 +71,8 @@ func (visitor *planVisitor) VisitTask(step *atc.TaskStep) error {
 		Params:            step.Params,
 		InputMapping:      step.InputMapping,
 		OutputMapping:     step.OutputMapping,
+		SnapshotInputs:    maps.Clone(step.SnapshotInputs),
+		SnapshotOutputs:   maps.Clone(step.SnapshotOutputs),
 		ImageArtifactName: step.ImageArtifactName,
 		Timeout:           step.Timeout,
 		Sidecars:          step.Sidecars,
@@ -103,24 +107,29 @@ func (visitor *planVisitor) VisitRun(step *atc.RunStep) error {
 }
 
 func (visitor *planVisitor) VisitAgent(step *atc.AgentStep) error {
+	if len(step.Capabilities) > 0 {
+		return fmt.Errorf("agent step %s has unresolved capabilities; compile them before planning", step.Name)
+	}
 	visitor.plan = visitor.planFactory.NewPlan(atc.AgentPlan{
-		Name:           step.Name,
-		Prompt:         step.Prompt,
-		PromptFile:     step.PromptFile,
-		Model:          step.Model,
-		MaxTurns:       step.MaxTurns,
-		BudgetSliceUSD: step.BudgetSliceUSD,
-		OutputSchema:   step.OutputSchema,
-		SystemPrompt:   step.SystemPrompt,
-		Context:        step.Context,
-		Skills:         step.Skills,
-		Sidecars:       step.Sidecars,
-		Inputs:         step.Inputs,
-		Outputs:        step.Outputs,
-		Env:            step.Env,
-		Timeout:        step.Timeout,
-		Limits:         step.Limits,
-		Requests:       step.Requests,
+		Name:            step.Name,
+		Prompt:          step.Prompt,
+		PromptFile:      step.PromptFile,
+		Model:           step.Model,
+		MaxTurns:        step.MaxTurns,
+		BudgetSliceUSD:  step.BudgetSliceUSD,
+		OutputSchema:    step.OutputSchema,
+		SystemPrompt:    step.SystemPrompt,
+		Context:         step.Context,
+		Skills:          step.Skills,
+		Sidecars:        step.Sidecars,
+		Inputs:          step.Inputs,
+		Outputs:         step.Outputs,
+		SnapshotInputs:  maps.Clone(step.SnapshotInputs),
+		SnapshotOutputs: maps.Clone(step.SnapshotOutputs),
+		Env:             step.Env,
+		Timeout:         step.Timeout,
+		Limits:          step.Limits,
+		Requests:        step.Requests,
 	})
 
 	return nil

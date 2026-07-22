@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 
+	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/configvalidate"
 
@@ -3002,6 +3003,186 @@ var _ = Describe("ValidateConfig", func() {
 				Expect(errorMessages).To(HaveLen(0))
 			})
 		})
+	})
+})
+
+var _ = Describe("typed snapshot step declarations", func() {
+	validateStep := func(step atc.StepConfig) []string {
+		_, errors := configvalidate.Validate(atc.Config{
+			Jobs: atc.JobConfigs{{
+				Name:         "typed-job",
+				PlanSequence: []atc.Step{{Config: step}},
+			}},
+		})
+		return errors
+	}
+
+	validTask := func() *atc.TaskStep {
+		return &atc.TaskStep{
+			Name: "transform",
+			Config: &atc.TaskConfig{
+				Platform: "linux",
+				Run:      atc.TaskRunConfig{Path: "/bin/true"},
+				Inputs:   []atc.TaskInputConfig{{Name: "source"}},
+				Outputs:  []atc.TaskOutputConfig{{Name: "result"}},
+			},
+			InputMapping:  map[string]string{"source": "repository"},
+			OutputMapping: map[string]string{"result": "change"},
+			SnapshotInputs: map[string]atc.SnapshotInputConfig{
+				"repository": {Type: snapshot.TypeRef("repository/v1")},
+			},
+			SnapshotOutputs: map[string]atc.SnapshotOutputConfig{
+				"change": {Type: snapshot.TypeRef("repository-change/v1")},
+			},
+		}
+	}
+
+	validAgent := func() *atc.AgentStep {
+		return &atc.AgentStep{
+			Name:    "review",
+			Prompt:  "review it",
+			Inputs:  []string{"change"},
+			Outputs: []string{"review"},
+			SnapshotInputs: map[string]atc.SnapshotInputConfig{
+				"change": {Type: snapshot.TypeRef("repository-change/v1")},
+			},
+			SnapshotOutputs: map[string]atc.SnapshotOutputConfig{
+				"review": {Type: snapshot.TypeRef("review/v1")},
+			},
+		}
+	}
+
+	It("accepts effective mapped Task names and direct Agent names", func() {
+		Expect(validateStep(validTask())).To(BeEmpty())
+		Expect(validateStep(validAgent())).To(BeEmpty())
+	})
+
+	It("rejects invalid type references in deterministic key order", func() {
+		agent := validAgent()
+		agent.Inputs = []string{"zeta", "alpha"}
+		agent.SnapshotInputs = map[string]atc.SnapshotInputConfig{
+			"zeta":  {Type: snapshot.TypeRef("bad-z")},
+			"alpha": {Type: snapshot.TypeRef("bad-a")},
+		}
+		errors := validateStep(agent)
+		Expect(errors).To(HaveLen(1))
+		joined := strings.Join(errors, "\n")
+		alpha := strings.Index(joined, `input_types["alpha"]`)
+		zeta := strings.Index(joined, `input_types["zeta"]`)
+		Expect(alpha).To(BeNumerically(">=", 0), joined)
+		Expect(zeta).To(BeNumerically(">", alpha), joined)
+	})
+
+	It("keys Task declarations by effective post-mapping artifact names", func() {
+		task := validTask()
+		task.SnapshotInputs = map[string]atc.SnapshotInputConfig{
+			"source": {Type: snapshot.TypeRef("repository/v1")},
+		}
+		task.SnapshotOutputs = map[string]atc.SnapshotOutputConfig{
+			"result": {Type: snapshot.TypeRef("repository-change/v1")},
+		}
+		joined := strings.Join(validateStep(task), "\n")
+		Expect(joined).To(ContainSubstring(`input_types["source"] does not name an effective task input`))
+		Expect(joined).To(ContainSubstring(`output_types["result"] does not name an effective task output`))
+	})
+
+	It("defers membership checks for file-backed Tasks while retaining syntax checks", func() {
+		task := &atc.TaskStep{
+			Name:       "transform",
+			ConfigPath: "repo/task.yml",
+			SnapshotInputs: map[string]atc.SnapshotInputConfig{
+				"repository": {Type: snapshot.TypeRef("repository/v1")},
+			},
+			SnapshotOutputs: map[string]atc.SnapshotOutputConfig{
+				"change": {Type: snapshot.TypeRef("repository-change/v1")},
+			},
+		}
+		Expect(validateStep(task)).To(BeEmpty())
+
+		task.SnapshotInputs["repository"] = atc.SnapshotInputConfig{Type: snapshot.TypeRef("invalid")}
+		Expect(strings.Join(validateStep(task), "\n")).To(ContainSubstring(`input_types["repository"]`))
+	})
+
+	It("requires typed names to exist in the corresponding legacy declarations", func() {
+		task := validTask()
+		task.SnapshotInputs["missing"] = atc.SnapshotInputConfig{Type: snapshot.TypeRef("opaque/v1")}
+		task.SnapshotOutputs["missing"] = atc.SnapshotOutputConfig{Type: snapshot.TypeRef("opaque/v1")}
+		joined := strings.Join(validateStep(task), "\n")
+		Expect(joined).To(ContainSubstring(`input_types["missing"] does not name an effective task input`))
+		Expect(joined).To(ContainSubstring(`output_types["missing"] does not name an effective task output`))
+
+		agent := validAgent()
+		agent.SnapshotInputs["missing"] = atc.SnapshotInputConfig{Type: snapshot.TypeRef("opaque/v1")}
+		agent.SnapshotOutputs["missing"] = atc.SnapshotOutputConfig{Type: snapshot.TypeRef("opaque/v1")}
+		joined = strings.Join(validateStep(agent), "\n")
+		Expect(joined).To(ContainSubstring(`input_types["missing"] does not name a declared agent input`))
+		Expect(joined).To(ContainSubstring(`output_types["missing"] does not name a declared agent output`))
+	})
+
+	It("enforces producer retention and workflow metadata as an all-or-none group", func() {
+		cases := []struct {
+			name   string
+			config atc.SnapshotOutputConfig
+			want   string
+		}{
+			{name: "fixture", config: atc.SnapshotOutputConfig{Type: snapshot.TypeRef("review/v1"), Retention: snapshot.RetentionClassFixture}, want: `retention "fixture" cannot be claimed by a producer`},
+			{name: "pin", config: atc.SnapshotOutputConfig{Type: snapshot.TypeRef("review/v1"), Retention: snapshot.RetentionClassPin}, want: `retention "pin" cannot be claimed by a producer`},
+			{name: "unsupported", config: atc.SnapshotOutputConfig{Type: snapshot.TypeRef("review/v1"), Retention: snapshot.RetentionClass("forever")}, want: `unsupported producer retention "forever"`},
+			{name: "metadata on binding", config: atc.SnapshotOutputConfig{Type: snapshot.TypeRef("review/v1"), WorkflowPort: "review"}, want: "workflow metadata requires workflow retention"},
+			{name: "missing port", config: atc.SnapshotOutputConfig{Type: snapshot.TypeRef("review/v1"), Retention: snapshot.RetentionClassWorkflow, WorkflowDefinitionID: 1, WorkflowRunID: "1"}, want: "requires workflow_port"},
+			{name: "unsafe port", config: atc.SnapshotOutputConfig{Type: snapshot.TypeRef("review/v1"), Retention: snapshot.RetentionClassWorkflow, WorkflowPort: "../review", WorkflowDefinitionID: 1, WorkflowRunID: "1"}, want: "not a safe artifact identifier"},
+			{name: "missing definition", config: atc.SnapshotOutputConfig{Type: snapshot.TypeRef("review/v1"), Retention: snapshot.RetentionClassWorkflow, WorkflowPort: "review", WorkflowRunID: "1"}, want: "positive workflow_definition_id"},
+			{name: "missing run", config: atc.SnapshotOutputConfig{Type: snapshot.TypeRef("review/v1"), Retention: snapshot.RetentionClassWorkflow, WorkflowPort: "review", WorkflowDefinitionID: 1}, want: "requires workflow_run_id"},
+			{name: "invalid run", config: atc.SnapshotOutputConfig{Type: snapshot.TypeRef("review/v1"), Retention: snapshot.RetentionClassWorkflow, WorkflowPort: "review", WorkflowDefinitionID: 1, WorkflowRunID: "01"}, want: "canonical positive decimal"},
+			{name: "wrong template", config: atc.SnapshotOutputConfig{Type: snapshot.TypeRef("review/v1"), Retention: snapshot.RetentionClassWorkflow, WorkflowPort: "review", WorkflowDefinitionID: 1, WorkflowRunID: "((run_id))"}, want: "canonical positive decimal"},
+		}
+		for _, test := range cases {
+			By(test.name)
+			agent := validAgent()
+			agent.SnapshotOutputs["review"] = test.config
+			Expect(strings.Join(validateStep(agent), "\n")).To(ContainSubstring(test.want))
+		}
+
+		for _, runID := range []string{"((workflow_run_id))", "9007199254740993"} {
+			agent := validAgent()
+			agent.SnapshotOutputs["review"] = atc.SnapshotOutputConfig{
+				Type:                 snapshot.TypeRef("review/v1"),
+				Retention:            snapshot.RetentionClassWorkflow,
+				WorkflowPort:         "review",
+				WorkflowDefinitionID: 1,
+				WorkflowRunID:        runID,
+			}
+			Expect(validateStep(agent)).To(BeEmpty(), runID)
+		}
+	})
+
+	It("rejects duplicate effective typed outputs before map lookup", func() {
+		task := validTask()
+		task.Config.Outputs = append(task.Config.Outputs, atc.TaskOutputConfig{Name: "other"})
+		task.OutputMapping["other"] = "change"
+		Expect(strings.Join(validateStep(task), "\n")).To(ContainSubstring(`duplicate effective task output "change"`))
+
+		agent := validAgent()
+		agent.Outputs = []string{"review", "review"}
+		Expect(strings.Join(validateStep(agent), "\n")).To(ContainSubstring(`duplicate agent output "review"`))
+	})
+
+	It("never infers types from OutputSchema", func() {
+		agent := validAgent()
+		agent.OutputSchema = "review/v1"
+		agent.SnapshotOutputs = nil
+		Expect(validateStep(agent)).To(BeEmpty())
+
+		agent.SnapshotOutputs = map[string]atc.SnapshotOutputConfig{
+			"not-declared": {Type: snapshot.TypeRef(agent.OutputSchema)},
+		}
+		Expect(strings.Join(validateStep(agent), "\n")).To(ContainSubstring(`output_types["not-declared"] does not name a declared agent output`))
+	})
+
+	It("rejects unresolved named capabilities before execution", func() {
+		agent := validAgent()
+		agent.Capabilities = []string{"dev"}
+		Expect(strings.Join(validateStep(agent), "\n")).To(ContainSubstring("capabilities must be expanded before execution"))
 	})
 })
 

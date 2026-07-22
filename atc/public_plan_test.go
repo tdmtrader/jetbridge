@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"strings"
 
+	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/atc"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -1157,6 +1158,83 @@ var _ = Describe("Plan", func() {
 	}
 }
 `))
+		})
+	})
+
+	Describe("typed snapshot declarations", func() {
+		It("exposes Task types and workflow metadata without exposing task configuration or params", func() {
+			plan := atc.Plan{
+				ID: "8/task",
+				Task: &atc.TaskPlan{
+					Name:       "transform",
+					Privileged: true,
+					Hermetic:   true,
+					ConfigPath: "secret/task.yml",
+					Config: &atc.TaskConfig{
+						Platform: "linux",
+						Params:   atc.TaskEnv{"TOKEN": "secret"},
+					},
+					Params: atc.TaskEnv{"TOKEN": "secret"},
+					SnapshotInputs: map[string]atc.SnapshotInputConfig{
+						"repository": {Type: snapshot.TypeRef("repository/v1"), Optional: true},
+					},
+					SnapshotOutputs: map[string]atc.SnapshotOutputConfig{
+						"change": {
+							Type:                 snapshot.TypeRef("repository-change/v1"),
+							Retention:            snapshot.RetentionClassWorkflow,
+							WorkflowPort:         "change",
+							WorkflowDefinitionID: 17,
+							WorkflowRunID:        "9007199254740993",
+						},
+					},
+				},
+			}
+			Expect([]byte(*plan.Public())).To(MatchJSON(`{
+				"id":"8/task",
+				"task":{
+					"name":"transform",
+					"privileged":true,
+					"hermetic":true,
+					"input_types":{"repository":{"type":"repository/v1","optional":true}},
+					"output_types":{"change":{
+						"type":"repository-change/v1",
+						"retention":"workflow",
+						"workflow_port":"change",
+						"workflow_definition_id":17,
+						"workflow_run_id":"9007199254740993"
+					}}
+				}
+			}`))
+		})
+
+		It("exposes Agent types while redacting all agent instructions and credentials", func() {
+			plan := atc.Plan{
+				ID: "8/agent",
+				Agent: &atc.AgentPlan{
+					Name:         "review",
+					Model:        "claude-opus-4",
+					Prompt:       "secret prompt",
+					OutputSchema: "secret/schema.json",
+					Context:      "secret context",
+					Skills:       []string{"private-skill"},
+					Env:          map[string]string{"TOKEN": "secret"},
+					SnapshotInputs: map[string]atc.SnapshotInputConfig{
+						"change": {Type: snapshot.TypeRef("repository-change/v1")},
+					},
+					SnapshotOutputs: map[string]atc.SnapshotOutputConfig{
+						"review": {Type: snapshot.TypeRef("review/v1")},
+					},
+				},
+			}
+			Expect([]byte(*plan.Public())).To(MatchJSON(`{
+				"id":"8/agent",
+				"agent":{
+					"name":"review",
+					"model":"claude-opus-4",
+					"input_types":{"change":{"type":"repository-change/v1"}},
+					"output_types":{"review":{"type":"review/v1"}}
+				}
+			}`))
 		})
 	})
 })

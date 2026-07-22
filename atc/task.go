@@ -4,10 +4,150 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"strings"
 
+	"github.com/concourse/concourse/agent/snapshot"
 	"sigs.k8s.io/yaml"
 )
+
+// SnapshotInputConfig declares the semantic type required at one effective
+// build-artifact input name. It is intentionally separate from TaskInputConfig:
+// the legacy declaration creates the mount, while this declaration constrains
+// a value that already exists at that mount.
+type SnapshotInputConfig struct {
+	Type     snapshot.TypeRef `json:"type"`
+	Optional bool             `json:"optional,omitempty"`
+}
+
+func (config SnapshotInputConfig) Validate() error {
+	return config.Type.Validate()
+}
+
+func (config SnapshotInputConfig) MarshalJSON() ([]byte, error) {
+	if err := config.Validate(); err != nil {
+		return nil, err
+	}
+	type wire SnapshotInputConfig
+	return json.Marshal(wire(config))
+}
+
+func (config *SnapshotInputConfig) UnmarshalJSON(data []byte) error {
+	type wire SnapshotInputConfig
+	var decoded wire
+	if err := strictSnapshotConfig(data, &decoded); err != nil {
+		return err
+	}
+	parsed := SnapshotInputConfig(decoded)
+	if err := parsed.Validate(); err != nil {
+		return err
+	}
+	*config = parsed
+	return nil
+}
+
+// SnapshotOutputConfig declares the semantic type produced at one effective
+// build-artifact output name. Workflow binding fields are untrusted linkage
+// claims; execution re-authorizes them against the durable run and build.
+type SnapshotOutputConfig struct {
+	Type                 snapshot.TypeRef        `json:"type"`
+	Optional             bool                    `json:"optional,omitempty"`
+	Retention            snapshot.RetentionClass `json:"retention,omitempty"`
+	WorkflowPort         string                  `json:"workflow_port,omitempty"`
+	WorkflowDefinitionID int                     `json:"workflow_definition_id,omitempty"`
+	WorkflowRunID        string                  `json:"workflow_run_id,omitempty"`
+}
+
+func (config SnapshotOutputConfig) Validate() error {
+	if err := config.Type.Validate(); err != nil {
+		return err
+	}
+
+	hasWorkflowMetadata := config.WorkflowPort != "" || config.WorkflowDefinitionID != 0 || config.WorkflowRunID != ""
+	switch config.Retention {
+	case "", snapshot.RetentionClassBinding:
+		if hasWorkflowMetadata {
+			return fmt.Errorf("snapshot: workflow metadata requires workflow retention")
+		}
+		return nil
+	case snapshot.RetentionClassWorkflow:
+		if config.WorkflowPort == "" {
+			return fmt.Errorf("snapshot: workflow retention requires workflow_port")
+		}
+		if warning, err := ValidateIdentifier(config.WorkflowPort); err != nil || warning != nil {
+			return fmt.Errorf("snapshot: workflow_port %q is not a safe artifact identifier", config.WorkflowPort)
+		}
+		if config.WorkflowDefinitionID <= 0 {
+			return fmt.Errorf("snapshot: workflow retention requires a positive workflow_definition_id")
+		}
+		if config.WorkflowRunID == "" {
+			return fmt.Errorf("snapshot: workflow retention requires workflow_run_id")
+		}
+		if config.WorkflowRunID != "((workflow_run_id))" {
+			if _, err := snapshot.ParseWorkflowRunID(config.WorkflowRunID); err != nil {
+				return fmt.Errorf("snapshot: workflow_run_id: %w", err)
+			}
+		}
+		return nil
+	case snapshot.RetentionClassFixture, snapshot.RetentionClassPin:
+		return fmt.Errorf("snapshot: retention %q cannot be claimed by a producer", config.Retention)
+	default:
+		return fmt.Errorf("snapshot: unsupported producer retention %q", config.Retention)
+	}
+}
+
+// MarshalJSON always emits the long object form, including when the value was
+// authored using the output scalar shorthand.
+func (config SnapshotOutputConfig) MarshalJSON() ([]byte, error) {
+	if err := config.Validate(); err != nil {
+		return nil, err
+	}
+	type wire SnapshotOutputConfig
+	return json.Marshal(wire(config))
+}
+
+func (config *SnapshotOutputConfig) UnmarshalJSON(data []byte) error {
+	if len(bytes.TrimSpace(data)) > 0 && bytes.TrimSpace(data)[0] == '"' {
+		var raw string
+		if err := strictSnapshotConfig(data, &raw); err != nil {
+			return err
+		}
+		parsed, err := snapshot.ParseTypeRef(raw)
+		if err != nil {
+			return err
+		}
+		*config = SnapshotOutputConfig{Type: parsed}
+		return nil
+	}
+
+	type wire SnapshotOutputConfig
+	var decoded wire
+	if err := strictSnapshotConfig(data, &decoded); err != nil {
+		return err
+	}
+	parsed := SnapshotOutputConfig(decoded)
+	if err := parsed.Validate(); err != nil {
+		return err
+	}
+	*config = parsed
+	return nil
+}
+
+func strictSnapshotConfig(data []byte, target any) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("snapshot: unexpected trailing JSON value")
+		}
+		return fmt.Errorf("snapshot: trailing JSON: %w", err)
+	}
+	return nil
+}
 
 type TaskConfig struct {
 	// The platform the task must run on (e.g. linux, windows).

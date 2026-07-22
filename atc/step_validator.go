@@ -120,6 +120,14 @@ func (validator *StepValidator) VisitTask(plan *TaskStep) error {
 		validator.popContext()
 	}
 
+	validator.validateSnapshotInputs(plan.SnapshotInputs, effectiveTaskInputs(plan), plan.Config != nil, "task")
+	validator.validateSnapshotOutputs(plan.SnapshotOutputs, effectiveTaskOutputs(plan), plan.Config != nil, "task")
+	if plan.Config != nil && len(plan.SnapshotOutputs) > 0 {
+		for _, name := range duplicateEffectiveTaskOutputs(plan) {
+			validator.recordErrorf("duplicate effective task output %q", name)
+		}
+	}
+
 	for i, src := range plan.Sidecars {
 		if src.Config == nil {
 			continue // file references are validated at runtime
@@ -290,6 +298,18 @@ func (validator *StepValidator) VisitAgent(step *AgentStep) error {
 		validator.recordError("max_turns must not be negative")
 	}
 
+	if len(step.Capabilities) > 0 {
+		validator.recordError("capabilities must be expanded before execution")
+	}
+
+	validator.validateSnapshotInputs(step.SnapshotInputs, stringSet(step.Inputs), true, "agent")
+	validator.validateSnapshotOutputs(step.SnapshotOutputs, stringSet(step.Outputs), true, "agent")
+	if len(step.SnapshotOutputs) > 0 {
+		for _, name := range duplicateStrings(step.Outputs) {
+			validator.recordErrorf("duplicate agent output %q", name)
+		}
+	}
+
 	// The exec exports AGENT_OUTPUT_<NAME> (uppercased, -→_) per declared
 	// output, so names must stay distinct AFTER mangling and must not
 	// reproduce the load-bearing AGENT_OUTPUT_SCHEMA row (native review
@@ -363,6 +383,132 @@ func (validator *StepValidator) VisitAgent(step *AgentStep) error {
 	}
 
 	return nil
+}
+
+func (validator *StepValidator) validateSnapshotInputs(
+	configs map[string]SnapshotInputConfig,
+	members map[string]struct{},
+	membershipKnown bool,
+	kind string,
+) {
+	for _, name := range sortedMapKeys(configs) {
+		config := configs[name]
+		if name == "" {
+			validator.recordError("input_types key must not be empty")
+		}
+		if err := config.Validate(); err != nil {
+			validator.recordErrorf("input_types[%q]: %s", name, err)
+		}
+		if membershipKnown {
+			if _, found := members[name]; !found {
+				if kind == "task" {
+					validator.recordErrorf("input_types[%q] does not name an effective task input", name)
+				} else {
+					validator.recordErrorf("input_types[%q] does not name a declared agent input", name)
+				}
+			}
+		}
+	}
+}
+
+func (validator *StepValidator) validateSnapshotOutputs(
+	configs map[string]SnapshotOutputConfig,
+	members map[string]struct{},
+	membershipKnown bool,
+	kind string,
+) {
+	for _, name := range sortedMapKeys(configs) {
+		config := configs[name]
+		if name == "" {
+			validator.recordError("output_types key must not be empty")
+		}
+		if err := config.Validate(); err != nil {
+			validator.recordErrorf("output_types[%q]: %s", name, err)
+		}
+		if membershipKnown {
+			if _, found := members[name]; !found {
+				if kind == "task" {
+					validator.recordErrorf("output_types[%q] does not name an effective task output", name)
+				} else {
+					validator.recordErrorf("output_types[%q] does not name a declared agent output", name)
+				}
+			}
+		}
+	}
+}
+
+func effectiveTaskInputs(step *TaskStep) map[string]struct{} {
+	if step.Config == nil {
+		return nil
+	}
+	names := make(map[string]struct{}, len(step.Config.Inputs))
+	for _, input := range step.Config.Inputs {
+		name := input.Name
+		if mapped, found := step.InputMapping[name]; found {
+			name = mapped
+		}
+		names[name] = struct{}{}
+	}
+	return names
+}
+
+func effectiveTaskOutputs(step *TaskStep) map[string]struct{} {
+	if step.Config == nil {
+		return nil
+	}
+	names := make(map[string]struct{}, len(step.Config.Outputs))
+	for _, output := range step.Config.Outputs {
+		name := output.Name
+		if mapped, found := step.OutputMapping[name]; found {
+			name = mapped
+		}
+		names[name] = struct{}{}
+	}
+	return names
+}
+
+func duplicateEffectiveTaskOutputs(step *TaskStep) []string {
+	if step.Config == nil {
+		return nil
+	}
+	names := make([]string, 0, len(step.Config.Outputs))
+	for _, output := range step.Config.Outputs {
+		name := output.Name
+		if mapped, found := step.OutputMapping[name]; found {
+			name = mapped
+		}
+		names = append(names, name)
+	}
+	return duplicateStrings(names)
+}
+
+func duplicateStrings(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	duplicates := map[string]struct{}{}
+	for _, value := range values {
+		if _, found := seen[value]; found {
+			duplicates[value] = struct{}{}
+		}
+		seen[value] = struct{}{}
+	}
+	return sortedMapKeys(duplicates)
+}
+
+func stringSet(values []string) map[string]struct{} {
+	set := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		set[value] = struct{}{}
+	}
+	return set
+}
+
+func sortedMapKeys[V any](values map[string]V) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func (validator *StepValidator) VisitHarvest(step *HarvestStep) error {

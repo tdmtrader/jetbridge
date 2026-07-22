@@ -352,21 +352,23 @@ func (step *PutStep) Visit(v StepVisitor) error {
 }
 
 type TaskStep struct {
-	Name              string            `json:"task"`
-	Privileged        bool              `json:"privileged,omitempty"`
-	Hermetic          bool              `json:"hermetic,omitempty"`
-	ConfigPath        string            `json:"file,omitempty"`
-	Limits            *ContainerLimits  `json:"container_limits,omitempty"`
-	Requests          *ContainerLimits  `json:"container_requests,omitempty"`
-	Config            *TaskConfig       `json:"config,omitempty"`
-	Params            TaskEnv           `json:"params,omitempty"`
-	Vars              Params            `json:"vars,omitempty"`
-	Tags              Tags              `json:"tags,omitempty"`
-	InputMapping      map[string]string `json:"input_mapping,omitempty"`
-	OutputMapping     map[string]string `json:"output_mapping,omitempty"`
-	ImageArtifactName string            `json:"image,omitempty"`
-	Timeout           string            `json:"timeout,omitempty"`
-	Sidecars          []SidecarSource   `json:"sidecars,omitempty"`
+	Name              string                          `json:"task"`
+	Privileged        bool                            `json:"privileged,omitempty"`
+	Hermetic          bool                            `json:"hermetic,omitempty"`
+	ConfigPath        string                          `json:"file,omitempty"`
+	Limits            *ContainerLimits                `json:"container_limits,omitempty"`
+	Requests          *ContainerLimits                `json:"container_requests,omitempty"`
+	Config            *TaskConfig                     `json:"config,omitempty"`
+	Params            TaskEnv                         `json:"params,omitempty"`
+	Vars              Params                          `json:"vars,omitempty"`
+	Tags              Tags                            `json:"tags,omitempty"`
+	InputMapping      map[string]string               `json:"input_mapping,omitempty"`
+	OutputMapping     map[string]string               `json:"output_mapping,omitempty"`
+	SnapshotInputs    map[string]SnapshotInputConfig  `json:"input_types,omitempty"`
+	SnapshotOutputs   map[string]SnapshotOutputConfig `json:"output_types,omitempty"`
+	ImageArtifactName string                          `json:"image,omitempty"`
+	Timeout           string                          `json:"timeout,omitempty"`
+	Sidecars          []SidecarSource                 `json:"sidecars,omitempty"`
 }
 
 func (step *TaskStep) Visit(v StepVisitor) error {
@@ -419,9 +421,12 @@ type AgentStep struct {
 	Context      string   `json:"context,omitempty"`
 	Skills       []string `json:"skills,omitempty"`
 
-	Sidecars []SidecarSource `json:"sidecars,omitempty"`
-	Inputs   []string        `json:"inputs,omitempty"`
-	Outputs  []string        `json:"outputs,omitempty"`
+	Sidecars        []SidecarSource                 `json:"sidecars,omitempty"`
+	Inputs          []string                        `json:"inputs,omitempty"`
+	Outputs         []string                        `json:"outputs,omitempty"`
+	Capabilities    []string                        `json:"capabilities,omitempty"`
+	SnapshotInputs  map[string]SnapshotInputConfig  `json:"input_types,omitempty"`
+	SnapshotOutputs map[string]SnapshotOutputConfig `json:"output_types,omitempty"`
 	// Env is TaskEnv (underlying map[string]string) so numeric values —
 	// e.g. the ((run_id)) reserved var interpolated into
 	// AGENT_PIPELINE_RUN_ID by CreateRun materialization (F30) — coerce

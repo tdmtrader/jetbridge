@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/builds"
 	"github.com/concourse/concourse/atc/db"
@@ -2066,6 +2067,60 @@ func (s *PlannerSuite) TestFactory() {
 		})
 	}
 	atc.LoadBaseResourceTypeDefaults(map[string]atc.Source{})
+}
+
+func (s *PlannerSuite) TestTypedSnapshotDeclarations() {
+	planner := builds.NewPlanner(atc.NewPlanFactory(0))
+	task := &atc.TaskStep{
+		Name:       "transform",
+		ConfigPath: "repo/task.yml",
+		SnapshotInputs: map[string]atc.SnapshotInputConfig{
+			"repository": {Type: snapshot.TypeRef("repository/v1"), Optional: true},
+		},
+		SnapshotOutputs: map[string]atc.SnapshotOutputConfig{
+			"change": {
+				Type:                 snapshot.TypeRef("repository-change/v1"),
+				Retention:            snapshot.RetentionClassWorkflow,
+				WorkflowPort:         "change",
+				WorkflowDefinitionID: 17,
+				WorkflowRunID:        "9007199254740993",
+			},
+		},
+	}
+	plan, err := planner.Create(task, resources, defaultResourceTypes, prototypes, nil, false)
+	s.NoError(err)
+	s.NotNil(plan.Task)
+	s.Equal(task.SnapshotInputs, plan.Task.SnapshotInputs)
+	s.Equal(task.SnapshotOutputs, plan.Task.SnapshotOutputs)
+
+	// Planning freezes declarations: later authoring mutations must not alter a
+	// persisted execution plan.
+	task.SnapshotInputs["repository"] = atc.SnapshotInputConfig{Type: snapshot.TypeRef("opaque/v1")}
+	delete(task.SnapshotOutputs, "change")
+	s.Equal(snapshot.TypeRef("repository/v1"), plan.Task.SnapshotInputs["repository"].Type)
+	s.Contains(plan.Task.SnapshotOutputs, "change")
+
+	agent := &atc.AgentStep{
+		Name:   "review",
+		Prompt: "review it",
+		SnapshotInputs: map[string]atc.SnapshotInputConfig{
+			"change": {Type: snapshot.TypeRef("repository-change/v1")},
+		},
+		SnapshotOutputs: map[string]atc.SnapshotOutputConfig{
+			"review": {Type: snapshot.TypeRef("review/v1")},
+		},
+	}
+	plan, err = planner.Create(agent, resources, defaultResourceTypes, prototypes, nil, false)
+	s.NoError(err)
+	s.NotNil(plan.Agent)
+	s.Equal(agent.SnapshotInputs, plan.Agent.SnapshotInputs)
+	s.Equal(agent.SnapshotOutputs, plan.Agent.SnapshotOutputs)
+	agent.SnapshotOutputs["review"] = atc.SnapshotOutputConfig{Type: snapshot.TypeRef("opaque/v1")}
+	s.Equal(snapshot.TypeRef("review/v1"), plan.Agent.SnapshotOutputs["review"].Type)
+
+	agent.Capabilities = []string{"dev"}
+	_, err = planner.Create(agent, resources, defaultResourceTypes, prototypes, nil, false)
+	s.EqualError(err, "agent step review has unresolved capabilities; compile them before planning")
 }
 
 func newCPULimit(cpuLimit uint64) *atc.CPULimit {

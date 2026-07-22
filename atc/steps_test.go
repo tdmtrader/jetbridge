@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 
+	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/atc"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
@@ -735,6 +736,137 @@ func (s *StepsSuite) TestFactory() {
 			test.Run(s)
 		})
 	}
+}
+
+func (s *StepsSuite) TestSnapshotPortConfigs() {
+	s.Run("strict configs and canonical output form", func() {
+		var input atc.SnapshotInputConfig
+		err := json.Unmarshal([]byte(`{"type":"repository/v1","optional":true}`), &input)
+		s.NoError(err)
+		s.Equal(atc.SnapshotInputConfig{Type: snapshot.TypeRef("repository/v1"), Optional: true}, input)
+
+		var scalar atc.SnapshotOutputConfig
+		err = json.Unmarshal([]byte(`"review/v1"`), &scalar)
+		s.NoError(err)
+		s.Equal(atc.SnapshotOutputConfig{Type: snapshot.TypeRef("review/v1")}, scalar)
+		encoded, err := json.Marshal(scalar)
+		s.NoError(err)
+		s.JSONEq(`{"type":"review/v1"}`, string(encoded))
+
+		var long atc.SnapshotOutputConfig
+		err = json.Unmarshal([]byte(`{
+			"type":"repository-change/v1",
+			"optional":true,
+			"retention":"workflow",
+			"workflow_port":"change",
+			"workflow_definition_id":17,
+			"workflow_run_id":"9007199254740993"
+		}`), &long)
+		s.NoError(err)
+		s.Equal("9007199254740993", long.WorkflowRunID)
+		encoded, err = json.Marshal(long)
+		s.NoError(err)
+		s.JSONEq(`{
+			"type":"repository-change/v1",
+			"optional":true,
+			"retention":"workflow",
+			"workflow_port":"change",
+			"workflow_definition_id":17,
+			"workflow_run_id":"9007199254740993"
+		}`, string(encoded))
+	})
+
+	s.Run("rejects non-object inputs and malformed nested values", func() {
+		for _, test := range []struct {
+			name    string
+			payload string
+			target  any
+		}{
+			{name: "input shorthand", payload: `"repository/v1"`, target: &atc.SnapshotInputConfig{}},
+			{name: "input unknown field", payload: `{"type":"repository/v1","typo":true}`, target: &atc.SnapshotInputConfig{}},
+			{name: "input trailing value", payload: `{"type":"repository/v1"} {}`, target: &atc.SnapshotInputConfig{}},
+			{name: "output unknown field", payload: `{"type":"review/v1","typo":true}`, target: &atc.SnapshotOutputConfig{}},
+			{name: "output trailing value", payload: `{"type":"review/v1"} {}`, target: &atc.SnapshotOutputConfig{}},
+			{name: "numeric workflow run id", payload: `{"type":"review/v1","retention":"workflow","workflow_port":"review","workflow_definition_id":1,"workflow_run_id":9007199254740993}`, target: &atc.SnapshotOutputConfig{}},
+		} {
+			s.Run(test.name, func() {
+				s.Error(json.Unmarshal([]byte(test.payload), test.target))
+			})
+		}
+
+		_, err := json.Marshal(atc.SnapshotInputConfig{Type: snapshot.TypeRef("not-a-versioned-type")})
+		s.Error(err)
+		_, err = json.Marshal(atc.SnapshotOutputConfig{Type: snapshot.TypeRef("not-a-versioned-type")})
+		s.Error(err)
+	})
+
+	s.Run("task and agent declarations round trip without changing legacy fields", func() {
+		payload := []byte(`
+jobs:
+- name: typed
+  plan:
+  - task: transform
+    config:
+      platform: linux
+      run: {path: /bin/true}
+      inputs: [{name: source}]
+      outputs: [{name: result}]
+    input_mapping: {source: repository}
+    output_mapping: {result: change}
+    input_types:
+      repository: {type: repository/v1, optional: true}
+    output_types:
+      change:
+        type: repository-change/v1
+        retention: workflow
+        workflow_port: change
+        workflow_definition_id: 17
+        workflow_run_id: "9007199254740993"
+  - agent: review
+    prompt: review it
+    capabilities: [dev, jira]
+    inputs: [change]
+    outputs: [review]
+    input_types:
+      change: {type: repository-change/v1}
+    output_types:
+      review: review/v1
+    output_schema: repo/schemas/review.json
+`)
+		var config atc.Config
+		s.NoError(atc.UnmarshalConfig(payload, &config))
+		s.Len(config.Jobs[0].PlanSequence, 2)
+
+		task := config.Jobs[0].PlanSequence[0].Config.(*atc.TaskStep)
+		s.Equal([]atc.TaskInputConfig{{Name: "source"}}, task.Config.Inputs)
+		s.Equal([]atc.TaskOutputConfig{{Name: "result"}}, task.Config.Outputs)
+		s.Equal(map[string]string{"source": "repository"}, task.InputMapping)
+		s.Equal(map[string]string{"result": "change"}, task.OutputMapping)
+		s.Equal(snapshot.TypeRef("repository/v1"), task.SnapshotInputs["repository"].Type)
+		s.Equal("9007199254740993", task.SnapshotOutputs["change"].WorkflowRunID)
+
+		agent := config.Jobs[0].PlanSequence[1].Config.(*atc.AgentStep)
+		s.Equal([]string{"dev", "jira"}, agent.Capabilities)
+		s.Equal([]string{"change"}, agent.Inputs)
+		s.Equal([]string{"review"}, agent.Outputs)
+		s.Equal("repo/schemas/review.json", agent.OutputSchema)
+		s.Equal(snapshot.TypeRef("review/v1"), agent.SnapshotOutputs["review"].Type)
+
+		encoded, err := json.Marshal(config)
+		s.NoError(err)
+		var roundTripped atc.Config
+		s.NoError(atc.UnmarshalConfig(encoded, &roundTripped))
+		s.Equal(config, roundTripped)
+
+		var raw map[string]any
+		s.NoError(json.Unmarshal(encoded, &raw))
+		jobs := raw["jobs"].([]any)
+		plan := jobs[0].(map[string]any)["plan"].([]any)
+		agentWire := plan[1].(map[string]any)
+		s.Equal("repo/schemas/review.json", agentWire["output_schema"])
+		outputTypes := agentWire["output_types"].(map[string]any)
+		s.Equal(map[string]any{"type": "review/v1"}, outputTypes["review"])
+	})
 }
 
 func rawMessage(s string) *json.RawMessage {

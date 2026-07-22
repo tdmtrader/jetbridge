@@ -363,6 +363,10 @@ type TaskPlan struct {
 	InputMapping  map[string]string `json:"input_mapping,omitempty"`
 	OutputMapping map[string]string `json:"output_mapping,omitempty"`
 
+	// Snapshot declarations constrain the effective mapped artifact names.
+	SnapshotInputs  map[string]SnapshotInputConfig  `json:"input_types,omitempty"`
+	SnapshotOutputs map[string]SnapshotOutputConfig `json:"output_types,omitempty"`
+
 	// A timeout to enforce on the task's process. Note that fetching the task's
 	// image does not count towards the timeout.
 	Timeout string `json:"timeout,omitempty"`
@@ -413,23 +417,25 @@ type RunPlan struct {
 // All fields are literal values resolved at plan time; the exec never reads
 // workflow definition tables.
 type AgentPlan struct {
-	Name           string            `json:"name"`
-	Prompt         string            `json:"prompt,omitempty"`
-	PromptFile     string            `json:"prompt_file,omitempty"`
-	Model          string            `json:"model,omitempty"`
-	MaxTurns       int               `json:"max_turns,omitempty"`
-	BudgetSliceUSD float64           `json:"budget_slice_usd,omitempty"`
-	OutputSchema   string            `json:"output_schema,omitempty"`
-	SystemPrompt   string            `json:"system_prompt,omitempty"`
-	Context        string            `json:"context,omitempty"`
-	Skills         []string          `json:"skills,omitempty"`
-	Sidecars       []SidecarSource   `json:"sidecars,omitempty"`
-	Inputs         []string          `json:"inputs,omitempty"`
-	Outputs        []string          `json:"outputs,omitempty"`
-	Env            map[string]string `json:"env,omitempty"`
-	Timeout        string            `json:"timeout,omitempty"`
-	Limits         *ContainerLimits  `json:"container_limits,omitempty"`
-	Requests       *ContainerLimits  `json:"container_requests,omitempty"`
+	Name            string                          `json:"name"`
+	Prompt          string                          `json:"prompt,omitempty"`
+	PromptFile      string                          `json:"prompt_file,omitempty"`
+	Model           string                          `json:"model,omitempty"`
+	MaxTurns        int                             `json:"max_turns,omitempty"`
+	BudgetSliceUSD  float64                         `json:"budget_slice_usd,omitempty"`
+	OutputSchema    string                          `json:"output_schema,omitempty"`
+	SystemPrompt    string                          `json:"system_prompt,omitempty"`
+	Context         string                          `json:"context,omitempty"`
+	Skills          []string                        `json:"skills,omitempty"`
+	Sidecars        []SidecarSource                 `json:"sidecars,omitempty"`
+	Inputs          []string                        `json:"inputs,omitempty"`
+	Outputs         []string                        `json:"outputs,omitempty"`
+	SnapshotInputs  map[string]SnapshotInputConfig  `json:"input_types,omitempty"`
+	SnapshotOutputs map[string]SnapshotOutputConfig `json:"output_types,omitempty"`
+	Env             map[string]string               `json:"env,omitempty"`
+	Timeout         string                          `json:"timeout,omitempty"`
+	Limits          *ContainerLimits                `json:"container_limits,omitempty"`
+	Requests        *ContainerLimits                `json:"container_requests,omitempty"`
 }
 
 // HarvestPlan is the plan payload for the terminal harvest step

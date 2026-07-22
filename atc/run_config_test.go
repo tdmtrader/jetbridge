@@ -1,6 +1,7 @@
 package atc_test
 
 import (
+	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/atc"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -105,6 +106,34 @@ var _ = Describe("MaterializeRunConfig", func() {
 		out, err := atc.MaterializeRunConfig(withRunID, 7, 9001, map[string]any{"run_id": "hijack"})
 		Expect(err).ToNot(HaveOccurred())
 		Expect(out.Resources[0].Source["tag"]).To(Equal("run-7-id-9001"))
+	})
+
+	It("preserves an interpolated quoted workflow run ID above 2^53 exactly", func() {
+		withWorkflowRun := template
+		withWorkflowRun.Jobs = atc.JobConfigs{{
+			Name: "entry",
+			PlanSequence: []atc.Step{{Config: &atc.AgentStep{
+				Name:    "review",
+				Prompt:  "review it",
+				Outputs: []string{"review"},
+				SnapshotOutputs: map[string]atc.SnapshotOutputConfig{
+					"review": {
+						Type:                 snapshot.TypeRef("review/v1"),
+						Retention:            snapshot.RetentionClassWorkflow,
+						WorkflowPort:         "review",
+						WorkflowDefinitionID: 17,
+						WorkflowRunID:        "((workflow_run_id))",
+					},
+				},
+			}}},
+		}}
+
+		out, err := atc.MaterializeRunConfig(withWorkflowRun, 7, 9001, map[string]any{
+			"workflow_run_id": "9007199254740993",
+		})
+		Expect(err).ToNot(HaveOccurred())
+		agent := out.Jobs[0].PlanSequence[0].Config.(*atc.AgentStep)
+		Expect(agent.SnapshotOutputs["review"].WorkflowRunID).To(Equal("9007199254740993"))
 	})
 })
 

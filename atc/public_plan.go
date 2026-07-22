@@ -298,13 +298,17 @@ func (plan CheckPlan) Public() *json.RawMessage {
 
 func (plan TaskPlan) Public() *json.RawMessage {
 	return enc(struct {
-		Name       string `json:"name"`
-		Privileged bool   `json:"privileged"`
-		Hermetic   bool   `json:"hermetic"`
+		Name            string                          `json:"name"`
+		Privileged      bool                            `json:"privileged"`
+		Hermetic        bool                            `json:"hermetic"`
+		SnapshotInputs  map[string]SnapshotInputConfig  `json:"input_types,omitempty"`
+		SnapshotOutputs map[string]SnapshotOutputConfig `json:"output_types,omitempty"`
 	}{
-		Name:       plan.Name,
-		Privileged: plan.Privileged,
-		Hermetic:   plan.Hermetic,
+		Name:            plan.Name,
+		Privileged:      plan.Privileged,
+		Hermetic:        plan.Hermetic,
+		SnapshotInputs:  plan.SnapshotInputs,
+		SnapshotOutputs: plan.SnapshotOutputs,
 	})
 }
 
@@ -322,11 +326,15 @@ func (plan RunPlan) Public() *json.RawMessage {
 
 func (plan AgentPlan) Public() *json.RawMessage {
 	return enc(struct {
-		Name  string `json:"name"`
-		Model string `json:"model,omitempty"`
+		Name            string                          `json:"name"`
+		Model           string                          `json:"model,omitempty"`
+		SnapshotInputs  map[string]SnapshotInputConfig  `json:"input_types,omitempty"`
+		SnapshotOutputs map[string]SnapshotOutputConfig `json:"output_types,omitempty"`
 	}{
-		Name:  plan.Name,
-		Model: plan.Model,
+		Name:            plan.Name,
+		Model:           plan.Model,
+		SnapshotInputs:  plan.SnapshotInputs,
+		SnapshotOutputs: plan.SnapshotOutputs,
 	})
 }
 
