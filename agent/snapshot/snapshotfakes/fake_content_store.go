@@ -48,12 +48,11 @@ type FakeContentStore struct {
 		result1 bool
 		result2 error
 	}
-	OpenStub        func(context.Context, snapshot.Snapshot, []snapshot.Location) (io.ReadCloser, error)
+	OpenStub        func(context.Context, snapshot.Snapshot) (io.ReadCloser, error)
 	openMutex       sync.RWMutex
 	openArgsForCall []struct {
 		arg1 context.Context
 		arg2 snapshot.Snapshot
-		arg3 []snapshot.Location
 	}
 	openReturns struct {
 		result1 io.ReadCloser
@@ -271,25 +270,19 @@ func (fake *FakeContentStore) ExistsReturnsOnCall(i int, result1 bool, result2 e
 	}{result1, result2}
 }
 
-func (fake *FakeContentStore) Open(arg1 context.Context, arg2 snapshot.Snapshot, arg3 []snapshot.Location) (io.ReadCloser, error) {
-	var arg3Copy []snapshot.Location
-	if arg3 != nil {
-		arg3Copy = make([]snapshot.Location, len(arg3))
-		copy(arg3Copy, arg3)
-	}
+func (fake *FakeContentStore) Open(arg1 context.Context, arg2 snapshot.Snapshot) (io.ReadCloser, error) {
 	fake.openMutex.Lock()
 	ret, specificReturn := fake.openReturnsOnCall[len(fake.openArgsForCall)]
 	fake.openArgsForCall = append(fake.openArgsForCall, struct {
 		arg1 context.Context
 		arg2 snapshot.Snapshot
-		arg3 []snapshot.Location
-	}{arg1, arg2, arg3Copy})
+	}{arg1, arg2})
 	stub := fake.OpenStub
 	fakeReturns := fake.openReturns
-	fake.recordInvocation("Open", []interface{}{arg1, arg2, arg3Copy})
+	fake.recordInvocation("Open", []interface{}{arg1, arg2})
 	fake.openMutex.Unlock()
 	if stub != nil {
-		return stub(arg1, arg2, arg3)
+		return stub(arg1, arg2)
 	}
 	if specificReturn {
 		return ret.result1, ret.result2
@@ -303,17 +296,17 @@ func (fake *FakeContentStore) OpenCallCount() int {
 	return len(fake.openArgsForCall)
 }
 
-func (fake *FakeContentStore) OpenCalls(stub func(context.Context, snapshot.Snapshot, []snapshot.Location) (io.ReadCloser, error)) {
+func (fake *FakeContentStore) OpenCalls(stub func(context.Context, snapshot.Snapshot) (io.ReadCloser, error)) {
 	fake.openMutex.Lock()
 	defer fake.openMutex.Unlock()
 	fake.OpenStub = stub
 }
 
-func (fake *FakeContentStore) OpenArgsForCall(i int) (context.Context, snapshot.Snapshot, []snapshot.Location) {
+func (fake *FakeContentStore) OpenArgsForCall(i int) (context.Context, snapshot.Snapshot) {
 	fake.openMutex.RLock()
 	defer fake.openMutex.RUnlock()
 	argsForCall := fake.openArgsForCall[i]
-	return argsForCall.arg1, argsForCall.arg2, argsForCall.arg3
+	return argsForCall.arg1, argsForCall.arg2
 }
 
 func (fake *FakeContentStore) OpenReturns(result1 io.ReadCloser, result2 error) {

@@ -55,7 +55,7 @@ func TestAggregateJSONBoundariesRejectInvalidNestedValuesAndUnknownFields(t *tes
 		{name: "port unknown field", raw: `{"name":"out","type":"review/v1","extra":true}`, target: new(Port)},
 		{name: "snapshot ref digest", raw: `{"id":"1","type":"review/v1","digest":"sha256:nope"}`, target: new(SnapshotRef)},
 		{name: "retention class", raw: `{"class":"grant","reason":"authorization is not retention"}`, target: new(RetentionSpec)},
-		{name: "seal commit missing outputs", raw: `{"request":{}}`, target: new(SealCommit)},
+		{name: "seal commit missing outputs", raw: `{"context":{"build_id":1,"team_id":1,"team_name":"main","created_by":"alice","plan_id":"p","attempt":"1","step_kind":"task","step_name":"s","input_order":[],"inputs":{}},"outputs":[]}`, target: new(SealCommit)},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -81,37 +81,50 @@ func TestSealCommitUsesOnlyPrePersistenceCorrelatedDTOs(t *testing.T) {
 			Digest: digest, ByteSize: 42, FileCount: 1, Representation: "application/x-tar", IntrinsicMetadata: json.RawMessage(`{"schema":1}`),
 		}},
 	}
+	context, err := request.CommitContext()
+	if err != nil {
+		t.Fatalf("derive commit context: %v", err)
+	}
+	stage := StagedUpload{ID: 101, Digest: digest, TeamID: 8, Attempt: "1", LeaseExpiresAt: now.Add(time.Hour), CreatedAt: now}
+	output, err := request.Outputs[0].CommitOutput(
+		"review-result",
+		stage,
+		[]Location{{Digest: digest, Driver: "jetbridge-daemon-v1", Key: "snapshots/sha256/key.tar", Node: "worker-1"}},
+		[]RetentionSpec{{Class: RetentionClassBinding, ExpiresAt: ptrTime(now.Add(time.Hour)), Actor: "build/7", Reason: "build output"}},
+		json.RawMessage(`{"adapter":"task"}`),
+	)
+	if err != nil {
+		t.Fatalf("derive commit output: %v", err)
+	}
 	commit := SealCommit{
-		Request: request,
-		Outputs: []SealCommitOutput{{
-			ClientKey: "review-result", OutputPort: "review", Digest: digest, StagedUploadID: 101,
-			Locations:      []Location{{Digest: digest, Driver: "jetbridge-daemon-v1", Key: "snapshots/sha256/key.tar", Node: "worker-1"}},
-			Retention:      []RetentionSpec{{Class: RetentionClassBinding, ExpiresAt: ptrTime(now.Add(time.Hour)), Actor: "build/7", Reason: "build output"}},
-			SourceMetadata: json.RawMessage(`{"adapter":"task"}`),
-		}},
+		Context: context,
+		Outputs: []SealCommitOutput{output},
 	}
 	if err := commit.Validate(); err != nil {
 		t.Fatalf("validate seal commit: %v", err)
 	}
 
 	typeOfCommit := reflect.TypeOf(commit)
-	for _, persistedField := range []string{"Snapshots", "Productions", "Grants", "Claims", "Lineage", "StagedUploads"} {
+	for _, persistedField := range []string{"Request", "Snapshots", "Productions", "Grants", "Claims", "Lineage", "StagedUploads"} {
 		if _, found := typeOfCommit.FieldByName(persistedField); found {
 			t.Fatalf("SealCommit exposes persistence-row field %s", persistedField)
 		}
 	}
+	if _, found := reflect.TypeOf(context).FieldByName("Outputs"); found {
+		t.Fatal("SealCommitContext contains pre-upload candidates")
+	}
 
 	clone := commit.Clone()
-	clone.Request.InputOrder[0] = "changed"
-	clone.Request.Inputs["before"] = SnapshotRef{ID: 2, Type: TypeRef("repository/v1"), Digest: digest}
-	*clone.Request.WorkflowDefinitionID = 99
-	*clone.Request.WorkflowRunID = 99
-	clone.Request.Outputs[0].IntrinsicMetadata[2] = 'X'
+	clone.Context.InputOrder[0] = "changed"
+	clone.Context.Inputs["before"] = SnapshotRef{ID: 2, Type: TypeRef("repository/v1"), Digest: digest}
+	*clone.Context.WorkflowDefinitionID = 99
+	*clone.Context.WorkflowRunID = 99
+	clone.Outputs[0].IntrinsicMetadata[2] = 'X'
 	clone.Outputs[0].Locations[0].Node = "changed"
 	clone.Outputs[0].Retention[0].Actor = "changed"
 	*clone.Outputs[0].Retention[0].ExpiresAt = now.Add(2 * time.Hour)
 	clone.Outputs[0].SourceMetadata[2] = 'X'
-	if commit.Request.InputOrder[0] != "before" || commit.Request.Inputs["before"].ID != 1 || *commit.Request.WorkflowDefinitionID != 12 || *commit.Request.WorkflowRunID != 13 || string(commit.Request.Outputs[0].IntrinsicMetadata) != `{"schema":1}` || commit.Outputs[0].Locations[0].Node != "worker-1" || commit.Outputs[0].Retention[0].Actor != "build/7" || !commit.Outputs[0].Retention[0].ExpiresAt.Equal(now.Add(time.Hour)) || string(commit.Outputs[0].SourceMetadata) != `{"adapter":"task"}` {
+	if commit.Context.InputOrder[0] != "before" || commit.Context.Inputs["before"].ID != 1 || *commit.Context.WorkflowDefinitionID != 12 || *commit.Context.WorkflowRunID != 13 || string(commit.Outputs[0].IntrinsicMetadata) != `{"schema":1}` || commit.Outputs[0].Locations[0].Node != "worker-1" || commit.Outputs[0].Retention[0].Actor != "build/7" || !commit.Outputs[0].Retention[0].ExpiresAt.Equal(now.Add(time.Hour)) || string(commit.Outputs[0].SourceMetadata) != `{"adapter":"task"}` {
 		t.Fatalf("caller mutation changed original commit: %#v", commit)
 	}
 
@@ -119,12 +132,60 @@ func TestSealCommitUsesOnlyPrePersistenceCorrelatedDTOs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal valid commit: %v", err)
 	}
+	if strings.Contains(string(encoded), "ArchivePath") || strings.Contains(string(encoded), "review.tar") {
+		t.Fatalf("commit JSON contains private archive path: %s", encoded)
+	}
 	var decoded SealCommit
 	if err := json.Unmarshal(encoded, &decoded); err != nil {
 		t.Fatalf("unmarshal valid commit: %v", err)
 	}
 	if err := decoded.Validate(); err != nil {
 		t.Fatalf("round-tripped commit is invalid: %v", err)
+	}
+}
+
+func TestCandidateOutputRequiresPrivateArchivePath(t *testing.T) {
+	digest := mustTestDigest(t)
+	candidate := CandidateOutput{
+		Port: Port{Name: "out", Type: TypeRef("opaque/v1")}, Digest: digest,
+		ByteSize: 1, Representation: "application/x-tar",
+	}
+	if err := candidate.Validate(); err == nil {
+		t.Fatal("CandidateOutput.Validate accepted an empty ArchivePath")
+	}
+}
+
+func TestSealCommitEnforcesPhysicalAndStageDigestConsistency(t *testing.T) {
+	digest := mustTestDigest(t)
+	other, err := ParseDigest("sha256:1123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := validSealCommit(t, digest)
+	second := base.Outputs[0].Clone()
+	second.ClientKey = "second"
+	second.Port.Name = "second"
+	base.Outputs = append(base.Outputs, second)
+
+	tests := map[string]func(*SealCommit){
+		"byte size":      func(commit *SealCommit) { commit.Outputs[1].ByteSize++ },
+		"file count":     func(commit *SealCommit) { commit.Outputs[1].FileCount++ },
+		"representation": func(commit *SealCommit) { commit.Outputs[1].Representation = "application/zip" },
+		"stage digest": func(commit *SealCommit) {
+			commit.Outputs[1].Digest = other
+			for i := range commit.Outputs[1].Locations {
+				commit.Outputs[1].Locations[i].Digest = other
+			}
+		},
+	}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			commit := base.Clone()
+			mutate(&commit)
+			if err := commit.Validate(); err == nil {
+				t.Fatalf("SealCommit.Validate accepted inconsistent %s", name)
+			}
+		})
 	}
 }
 
@@ -139,7 +200,7 @@ func TestSealRequestRequiresInputOrderToBeAnExactPermutation(t *testing.T) {
 		Outputs: []CandidateOutput{{Port: Port{Name: "out", Type: TypeRef("opaque/v1")}, ArchivePath: "/tmp/out.tar", Digest: digest, ByteSize: 1, Representation: "application/x-tar"}},
 	}
 	for name, order := range map[string][]string{
-		"missing": {"first"}, "duplicate": {"first", "first"}, "unknown": {"first", "third"},
+		"missing": {"first"}, "duplicate": {"first", "first"}, "unknown": {"first", "third"}, "whitespace order": {"first", " "},
 	} {
 		t.Run(name, func(t *testing.T) {
 			request := base.Clone()
@@ -153,6 +214,13 @@ func TestSealRequestRequiresInputOrderToBeAnExactPermutation(t *testing.T) {
 	request.InputOrder = []string{"second", "first"}
 	if err := request.Validate(); err != nil {
 		t.Fatalf("valid input order: %v", err)
+	}
+	request = base.Clone()
+	request.Inputs[" "] = request.Inputs["second"]
+	delete(request.Inputs, "second")
+	request.InputOrder = []string{"first", " "}
+	if err := request.Validate(); err == nil {
+		t.Fatal("Validate accepted a whitespace Inputs map key")
 	}
 }
 
@@ -234,22 +302,134 @@ func TestWithDigestLeaseRejectsLeaseThatDoesNotCoverRequestedDigest(t *testing.T
 	}
 }
 
+func TestWithDigestLeaseClosesPartialLeaseReturnedWithAcquireError(t *testing.T) {
+	digest := mustTestDigest(t)
+	acquireErr := errors.New("second digest lock failed")
+	closeErr := errors.New("partial lease close failed")
+	events := []string{}
+	lease := &recordingLease{covered: map[Digest]bool{digest: true}, events: &events, closeErr: closeErr}
+	manager := &recordingLockManager{lease: lease, acquireErr: acquireErr}
+	called := false
+	err := WithDigestLease(context.Background(), manager, []Digest{digest}, func(DigestLease) error {
+		called = true
+		return nil
+	})
+	if called || !errors.Is(err, acquireErr) || !errors.Is(err, closeErr) {
+		t.Fatalf("callback=%t error=%v, want joined acquire/close errors", called, err)
+	}
+	if want := []string{"close"}; !reflect.DeepEqual(events, want) {
+		t.Fatalf("events = %v, want %v", events, want)
+	}
+}
+
 func TestDigestStateAggregatesSemanticSnapshotsSharingPhysicalBytes(t *testing.T) {
 	digest := mustTestDigest(t)
-	state := DigestState{
+	available := DigestState{
 		Digest: digest,
 		Snapshots: []Snapshot{
-			{ID: 1, Type: TypeRef("opaque/v1"), Digest: digest, ByteSize: 1, Representation: "application/x-tar", ContentState: ContentStateAvailable, CreatedAt: time.Now()},
-			{ID: 2, Type: TypeRef("review/v1"), Digest: digest, ByteSize: 1, Representation: "application/x-tar", ContentState: ContentStateAvailable, CreatedAt: time.Now()},
+			{ID: 1, Type: TypeRef("opaque/v1"), Digest: digest, ByteSize: 1, FileCount: 2, Representation: "application/x-tar", ContentState: ContentStateAvailable, CreatedAt: time.Now()},
+			{ID: 2, Type: TypeRef("review/v1"), Digest: digest, ByteSize: 1, FileCount: 2, Representation: "application/x-tar", ContentState: ContentStateAvailable, CreatedAt: time.Now()},
 		},
 		Locations:          []Location{{Digest: digest, Driver: "driver", Key: "key"}},
 		HasActiveRetention: true,
 	}
-	if err := state.Validate(); err != nil {
+	if err := available.Validate(); err != nil {
 		t.Fatalf("validate aggregate digest state: %v", err)
 	}
-	if !state.Committed() {
-		t.Fatal("state with semantic snapshots is not committed")
+	if !available.HasManifest() || !available.Available() || !available.Reusable() {
+		t.Fatalf("available state predicates were false: %#v", available)
+	}
+
+	withoutLocation := available.Clone()
+	withoutLocation.Locations = nil
+	if !withoutLocation.Available() || withoutLocation.Reusable() {
+		t.Fatalf("location-free state available=%t reusable=%t", withoutLocation.Available(), withoutLocation.Reusable())
+	}
+	expired := available.Clone()
+	for i := range expired.Snapshots {
+		expired.Snapshots[i].ContentState = ContentStateExpired
+	}
+	if !expired.HasManifest() || expired.Available() || expired.Reusable() {
+		t.Fatalf("expired state predicates are unsafe: %#v", expired)
+	}
+
+	for name, mutate := range map[string]func(*DigestState){
+		"byte size":      func(state *DigestState) { state.Snapshots[1].ByteSize++ },
+		"file count":     func(state *DigestState) { state.Snapshots[1].FileCount++ },
+		"representation": func(state *DigestState) { state.Snapshots[1].Representation = "application/zip" },
+		"content state":  func(state *DigestState) { state.Snapshots[1].ContentState = ContentStateExpired },
+	} {
+		t.Run(name, func(t *testing.T) {
+			state := available.Clone()
+			mutate(&state)
+			if err := state.Validate(); err == nil {
+				t.Fatalf("DigestState.Validate accepted contradictory %s", name)
+			}
+			if state.Available() || state.Reusable() {
+				t.Fatalf("contradictory state reported available/reusable: %#v", state)
+			}
+		})
+	}
+
+	now := time.Now()
+	expirable := available.Clone()
+	expirable.HasActiveRetention = false
+	expirable.Locations = nil
+	expirable.Stages = []StagedUpload{{
+		ID: 1, Digest: digest, TeamID: 1, Attempt: "1", CreatedAt: now.Add(-time.Hour), LeaseExpiresAt: now.Add(time.Hour),
+	}}
+	if expirable.CanExpire(now) {
+		t.Fatal("digest with an unexpired sibling stage can expire")
+	}
+	expirable.Stages[0].LeaseExpiresAt = now
+	if !expirable.CanExpire(now) {
+		t.Fatal("unretained digest with no locations and no unexpired stage cannot expire")
+	}
+}
+
+func TestLifecyclePageRequestIsBoundedAndHasStableTermination(t *testing.T) {
+	for _, limit := range []int{-1, 0, MaxLifecyclePageSize + 1} {
+		if err := (LifecyclePageRequest{Limit: limit}).Validate(); err == nil {
+			t.Fatalf("LifecyclePageRequest accepted limit %d", limit)
+		}
+	}
+	if err := (LifecyclePageRequest{Limit: MaxLifecyclePageSize}).Validate(); err != nil {
+		t.Fatalf("max lifecycle page: %v", err)
+	}
+	if err := (LifecyclePageRequest{After: "not-a-cursor", Limit: 1}).Validate(); err == nil {
+		t.Fatal("LifecyclePageRequest accepted an invalid cursor")
+	}
+	page := LifecycleCandidatePage{}
+	if !page.Terminal() {
+		t.Fatal("empty Next cursor must terminate discovery")
+	}
+
+	digest := mustTestDigest(t)
+	page = LifecycleCandidatePage{
+		Candidates: []LifecycleCandidate{{Digest: digest, Kind: LifecycleCandidateExpiry}},
+		Next:       LifecycleCursor(testDigestText + "|expiry"),
+	}
+	if err := page.Validate(LifecyclePageRequest{Limit: 1}); err != nil {
+		t.Fatalf("valid ordered lifecycle page: %v", err)
+	}
+	page = LifecycleCandidatePage{
+		Candidates: []LifecycleCandidate{
+			{Digest: digest, Kind: LifecycleCandidateRepair},
+			{Digest: digest, Kind: LifecycleCandidateExpiry},
+		},
+	}
+	if err := page.Validate(LifecyclePageRequest{Limit: 2}); err == nil {
+		t.Fatal("lifecycle page accepted candidates outside deterministic cursor order")
+	}
+}
+
+func TestContentStoreOpenKeepsFrozenSignature(t *testing.T) {
+	method, found := reflect.TypeOf((*ContentStore)(nil)).Elem().MethodByName("Open")
+	if !found {
+		t.Fatal("ContentStore.Open is missing")
+	}
+	if got := method.Type.NumIn(); got != 2 {
+		t.Fatalf("ContentStore.Open has %d inputs, want context.Context and Snapshot", got)
 	}
 }
 
@@ -297,6 +477,24 @@ func TestCloneHelpersCopyManifestAndFilterPointers(t *testing.T) {
 	}
 }
 
+func validSealCommit(t *testing.T, digest Digest) SealCommit {
+	t.Helper()
+	return SealCommit{
+		Context: SealCommitContext{
+			BuildID: 1, TeamID: 1, TeamName: "main", CreatedBy: "alice", PlanID: "p",
+			Attempt: "1", StepKind: "task", StepName: "s", InputOrder: []string{}, Inputs: map[string]SnapshotRef{},
+		},
+		Outputs: []SealCommitOutput{{
+			ClientKey: "first", Port: Port{Name: "first", Type: TypeRef("opaque/v1")}, Digest: digest,
+			ByteSize: 10, FileCount: 1, Representation: "application/x-tar", IntrinsicMetadata: json.RawMessage(`{"schema":1}`),
+			StagedUploadID: 99,
+			Locations:      []Location{{Digest: digest, Driver: "driver", Key: "key"}},
+			Retention:      []RetentionSpec{{Class: RetentionClassBinding, Reason: "output"}},
+			SourceMetadata: json.RawMessage(`{"source":"test"}`),
+		}},
+	}
+}
+
 func ptrTime(value time.Time) *time.Time { return &value }
 
 type recordingLease struct {
@@ -312,11 +510,12 @@ func (l *recordingLease) Close() error {
 }
 
 type recordingLockManager struct {
-	lease    DigestLease
-	acquired []Digest
+	lease      DigestLease
+	acquired   []Digest
+	acquireErr error
 }
 
 func (m *recordingLockManager) AcquireMany(_ context.Context, digests []Digest) (DigestLease, error) {
 	m.acquired = append([]Digest(nil), digests...)
-	return m.lease, nil
+	return m.lease, m.acquireErr
 }

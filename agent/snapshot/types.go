@@ -201,6 +201,23 @@ func (id SnapshotID) MarshalJSON() ([]byte, error) {
 	return []byte(`"` + value + `"`), nil
 }
 
+func (id SnapshotID) MarshalText() ([]byte, error) {
+	value, err := id.TemplateValue()
+	if err != nil {
+		return nil, err
+	}
+	return []byte(value), nil
+}
+
+func (id *SnapshotID) UnmarshalText(data []byte) error {
+	parsed, err := ParseSnapshotID(string(data))
+	if err != nil {
+		return err
+	}
+	*id = parsed
+	return nil
+}
+
 func (id *SnapshotID) UnmarshalJSON(data []byte) error {
 	value, err := parseRawQuotedPositiveID(data, "snapshot ID")
 	if err != nil {
@@ -250,6 +267,23 @@ func (id WorkflowRunID) MarshalJSON() ([]byte, error) {
 		return nil, err
 	}
 	return []byte(`"` + value + `"`), nil
+}
+
+func (id WorkflowRunID) MarshalText() ([]byte, error) {
+	value, err := id.TemplateValue()
+	if err != nil {
+		return nil, err
+	}
+	return []byte(value), nil
+}
+
+func (id *WorkflowRunID) UnmarshalText(data []byte) error {
+	parsed, err := ParseWorkflowRunID(string(data))
+	if err != nil {
+		return err
+	}
+	*id = parsed
+	return nil
 }
 
 func (id *WorkflowRunID) UnmarshalJSON(data []byte) error {
@@ -800,6 +834,9 @@ func (o CandidateOutput) Validate() error {
 	if err := o.Digest.Validate(); err != nil {
 		return err
 	}
+	if strings.TrimSpace(o.ArchivePath) == "" {
+		return fmt.Errorf("snapshot: candidate archive path is required")
+	}
 	if o.ByteSize < 0 || o.FileCount < 0 {
 		return fmt.Errorf("snapshot: candidate byte and file counts must not be negative")
 	}
@@ -876,8 +913,102 @@ func (o *SealedOutput) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// SealRequest is the invocation context. InputOrder is the exact permutation
-// used to persist lineage positions; maps alone cannot preserve source order.
+// SealCommitContext is the pre-persistence invocation and ordered lineage
+// context. It deliberately contains no pre-upload CandidateOutput values.
+type SealCommitContext struct {
+	BuildID              int                    `json:"build_id"`
+	TeamID               int                    `json:"team_id"`
+	TeamName             string                 `json:"team_name"`
+	CreatedBy            string                 `json:"created_by"`
+	PlanID               string                 `json:"plan_id"`
+	Attempt              string                 `json:"attempt"`
+	StepKind             string                 `json:"step_kind"`
+	StepName             string                 `json:"step_name"`
+	WorkflowDefinitionID *int                   `json:"workflow_definition_id,omitempty"`
+	WorkflowRunID        *WorkflowRunID         `json:"workflow_run_id,omitempty"`
+	InputOrder           []string               `json:"input_order"`
+	Inputs               map[string]SnapshotRef `json:"inputs"`
+}
+
+func (c SealCommitContext) Validate() error {
+	if c.BuildID <= 0 || c.TeamID <= 0 {
+		return fmt.Errorf("snapshot: build and team IDs must be positive")
+	}
+	for label, value := range map[string]string{
+		"team name": c.TeamName, "creator": c.CreatedBy, "plan ID": c.PlanID,
+		"attempt": c.Attempt, "step kind": c.StepKind, "step name": c.StepName,
+	} {
+		if strings.TrimSpace(value) == "" {
+			return fmt.Errorf("snapshot: %s is required", label)
+		}
+	}
+	if c.WorkflowDefinitionID != nil && *c.WorkflowDefinitionID <= 0 {
+		return fmt.Errorf("snapshot: workflow definition ID must be positive")
+	}
+	if c.WorkflowRunID != nil {
+		if err := c.WorkflowRunID.Validate(); err != nil {
+			return err
+		}
+	}
+	if len(c.InputOrder) != len(c.Inputs) {
+		return fmt.Errorf("snapshot: input order must contain every input exactly once")
+	}
+	for name, ref := range c.Inputs {
+		if strings.TrimSpace(name) == "" {
+			return fmt.Errorf("snapshot: input port name is required")
+		}
+		if err := ref.Validate(); err != nil {
+			return fmt.Errorf("snapshot: input %q: %w", name, err)
+		}
+	}
+	seenInputs := make(map[string]struct{}, len(c.Inputs))
+	for _, name := range c.InputOrder {
+		if strings.TrimSpace(name) == "" {
+			return fmt.Errorf("snapshot: input order port name is required")
+		}
+		if _, found := c.Inputs[name]; !found {
+			return fmt.Errorf("snapshot: input order contains unknown port %q", name)
+		}
+		if _, duplicate := seenInputs[name]; duplicate {
+			return fmt.Errorf("snapshot: input order contains duplicate port %q", name)
+		}
+		seenInputs[name] = struct{}{}
+	}
+	return nil
+}
+
+func (c SealCommitContext) Clone() SealCommitContext {
+	c.WorkflowDefinitionID = cloneInt(c.WorkflowDefinitionID)
+	c.WorkflowRunID = cloneWorkflowRunID(c.WorkflowRunID)
+	c.InputOrder = append([]string(nil), c.InputOrder...)
+	c.Inputs = cloneSnapshotRefs(c.Inputs)
+	return c
+}
+
+func (c SealCommitContext) MarshalJSON() ([]byte, error) {
+	if err := c.Validate(); err != nil {
+		return nil, err
+	}
+	type wire SealCommitContext
+	return json.Marshal(wire(c))
+}
+
+func (c *SealCommitContext) UnmarshalJSON(data []byte) error {
+	type wire SealCommitContext
+	var value wire
+	if err := strictUnmarshal(data, &value); err != nil {
+		return err
+	}
+	parsed := SealCommitContext(value)
+	if err := parsed.Validate(); err != nil {
+		return err
+	}
+	*c = parsed.Clone()
+	return nil
+}
+
+// SealRequest is the frozen pre-upload invocation shape. InputOrder is the
+// exact permutation used to persist lineage positions.
 type SealRequest struct {
 	BuildID              int                    `json:"build_id"`
 	TeamID               int                    `json:"team_id"`
@@ -895,41 +1026,8 @@ type SealRequest struct {
 }
 
 func (r SealRequest) Validate() error {
-	if r.BuildID <= 0 || r.TeamID <= 0 {
-		return fmt.Errorf("snapshot: build and team IDs must be positive")
-	}
-	for label, value := range map[string]string{
-		"team name": r.TeamName, "creator": r.CreatedBy, "plan ID": r.PlanID,
-		"attempt": r.Attempt, "step kind": r.StepKind, "step name": r.StepName,
-	} {
-		if strings.TrimSpace(value) == "" {
-			return fmt.Errorf("snapshot: %s is required", label)
-		}
-	}
-	if r.WorkflowDefinitionID != nil && *r.WorkflowDefinitionID <= 0 {
-		return fmt.Errorf("snapshot: workflow definition ID must be positive")
-	}
-	if r.WorkflowRunID != nil {
-		if err := r.WorkflowRunID.Validate(); err != nil {
-			return err
-		}
-	}
-	if len(r.InputOrder) != len(r.Inputs) {
-		return fmt.Errorf("snapshot: input order must contain every input exactly once")
-	}
-	seenInputs := make(map[string]struct{}, len(r.Inputs))
-	for _, name := range r.InputOrder {
-		ref, found := r.Inputs[name]
-		if !found {
-			return fmt.Errorf("snapshot: input order contains unknown port %q", name)
-		}
-		if _, duplicate := seenInputs[name]; duplicate {
-			return fmt.Errorf("snapshot: input order contains duplicate port %q", name)
-		}
-		if err := ref.Validate(); err != nil {
-			return fmt.Errorf("snapshot: input %q: %w", name, err)
-		}
-		seenInputs[name] = struct{}{}
+	if err := r.commitContext().Validate(); err != nil {
+		return err
 	}
 	if len(r.Outputs) == 0 {
 		return fmt.Errorf("snapshot: at least one output is required")
@@ -942,6 +1040,22 @@ func (r SealRequest) Validate() error {
 		ports[i] = output.Port
 	}
 	return ValidatePorts(ports)
+}
+
+func (r SealRequest) commitContext() SealCommitContext {
+	return SealCommitContext{
+		BuildID: r.BuildID, TeamID: r.TeamID, TeamName: r.TeamName, CreatedBy: r.CreatedBy,
+		PlanID: r.PlanID, Attempt: r.Attempt, StepKind: r.StepKind, StepName: r.StepName,
+		WorkflowDefinitionID: r.WorkflowDefinitionID, WorkflowRunID: r.WorkflowRunID,
+		InputOrder: r.InputOrder, Inputs: r.Inputs,
+	}
+}
+
+func (r SealRequest) CommitContext() (SealCommitContext, error) {
+	if err := r.Validate(); err != nil {
+		return SealCommitContext{}, err
+	}
+	return r.commitContext().Clone(), nil
 }
 
 func (r SealRequest) Clone() SealRequest {

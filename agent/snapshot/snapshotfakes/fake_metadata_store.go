@@ -54,12 +54,11 @@ type FakeMetadataStore struct {
 		result1 snapshot.DigestState
 		result2 error
 	}
-	DiscoverLifecycleCandidatesStub        func(context.Context, snapshot.LifecycleCursor, int) (snapshot.LifecycleCandidatePage, error)
+	DiscoverLifecycleCandidatesStub        func(context.Context, snapshot.LifecyclePageRequest) (snapshot.LifecycleCandidatePage, error)
 	discoverLifecycleCandidatesMutex       sync.RWMutex
 	discoverLifecycleCandidatesArgsForCall []struct {
 		arg1 context.Context
-		arg2 snapshot.LifecycleCursor
-		arg3 int
+		arg2 snapshot.LifecyclePageRequest
 	}
 	discoverLifecycleCandidatesReturns struct {
 		result1 snapshot.LifecycleCandidatePage
@@ -392,20 +391,19 @@ func (fake *FakeMetadataStore) DigestStateReturnsOnCall(i int, result1 snapshot.
 	}{result1, result2}
 }
 
-func (fake *FakeMetadataStore) DiscoverLifecycleCandidates(arg1 context.Context, arg2 snapshot.LifecycleCursor, arg3 int) (snapshot.LifecycleCandidatePage, error) {
+func (fake *FakeMetadataStore) DiscoverLifecycleCandidates(arg1 context.Context, arg2 snapshot.LifecyclePageRequest) (snapshot.LifecycleCandidatePage, error) {
 	fake.discoverLifecycleCandidatesMutex.Lock()
 	ret, specificReturn := fake.discoverLifecycleCandidatesReturnsOnCall[len(fake.discoverLifecycleCandidatesArgsForCall)]
 	fake.discoverLifecycleCandidatesArgsForCall = append(fake.discoverLifecycleCandidatesArgsForCall, struct {
 		arg1 context.Context
-		arg2 snapshot.LifecycleCursor
-		arg3 int
-	}{arg1, arg2, arg3})
+		arg2 snapshot.LifecyclePageRequest
+	}{arg1, arg2})
 	stub := fake.DiscoverLifecycleCandidatesStub
 	fakeReturns := fake.discoverLifecycleCandidatesReturns
-	fake.recordInvocation("DiscoverLifecycleCandidates", []interface{}{arg1, arg2, arg3})
+	fake.recordInvocation("DiscoverLifecycleCandidates", []interface{}{arg1, arg2})
 	fake.discoverLifecycleCandidatesMutex.Unlock()
 	if stub != nil {
-		return stub(arg1, arg2, arg3)
+		return stub(arg1, arg2)
 	}
 	if specificReturn {
 		return ret.result1, ret.result2
@@ -419,17 +417,17 @@ func (fake *FakeMetadataStore) DiscoverLifecycleCandidatesCallCount() int {
 	return len(fake.discoverLifecycleCandidatesArgsForCall)
 }
 
-func (fake *FakeMetadataStore) DiscoverLifecycleCandidatesCalls(stub func(context.Context, snapshot.LifecycleCursor, int) (snapshot.LifecycleCandidatePage, error)) {
+func (fake *FakeMetadataStore) DiscoverLifecycleCandidatesCalls(stub func(context.Context, snapshot.LifecyclePageRequest) (snapshot.LifecycleCandidatePage, error)) {
 	fake.discoverLifecycleCandidatesMutex.Lock()
 	defer fake.discoverLifecycleCandidatesMutex.Unlock()
 	fake.DiscoverLifecycleCandidatesStub = stub
 }
 
-func (fake *FakeMetadataStore) DiscoverLifecycleCandidatesArgsForCall(i int) (context.Context, snapshot.LifecycleCursor, int) {
+func (fake *FakeMetadataStore) DiscoverLifecycleCandidatesArgsForCall(i int) (context.Context, snapshot.LifecyclePageRequest) {
 	fake.discoverLifecycleCandidatesMutex.RLock()
 	defer fake.discoverLifecycleCandidatesMutex.RUnlock()
 	argsForCall := fake.discoverLifecycleCandidatesArgsForCall[i]
-	return argsForCall.arg1, argsForCall.arg2, argsForCall.arg3
+	return argsForCall.arg1, argsForCall.arg2
 }
 
 func (fake *FakeMetadataStore) DiscoverLifecycleCandidatesReturns(result1 snapshot.LifecycleCandidatePage, result2 error) {

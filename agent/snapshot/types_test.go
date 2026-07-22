@@ -133,6 +133,55 @@ func TestSnapshotAndWorkflowRunIDsUseQuotedCanonicalPositiveDecimals(t *testing.
 	}
 }
 
+func TestSnapshotAndWorkflowRunIDsUseCanonicalTextForMapKeys(t *testing.T) {
+	snapshotMap := map[SnapshotID]string{SnapshotID(9007199254740993): "snapshot"}
+	encoded, err := json.Marshal(snapshotMap)
+	if err != nil {
+		t.Fatalf("marshal snapshot ID map: %v", err)
+	}
+	if got, want := string(encoded), `{"9007199254740993":"snapshot"}`; got != want {
+		t.Fatalf("snapshot map JSON = %s, want %s", got, want)
+	}
+	var decodedSnapshots map[SnapshotID]string
+	if err := json.Unmarshal(encoded, &decodedSnapshots); err != nil {
+		t.Fatalf("unmarshal snapshot ID map: %v", err)
+	}
+	if got := decodedSnapshots[SnapshotID(9007199254740993)]; got != "snapshot" {
+		t.Fatalf("decoded snapshot map value = %q", got)
+	}
+
+	workflowMap := map[WorkflowRunID]string{WorkflowRunID(math.MaxInt64): "workflow"}
+	encoded, err = json.Marshal(workflowMap)
+	if err != nil {
+		t.Fatalf("marshal workflow run ID map: %v", err)
+	}
+	if got, want := string(encoded), `{"9223372036854775807":"workflow"}`; got != want {
+		t.Fatalf("workflow map JSON = %s, want %s", got, want)
+	}
+	var decodedWorkflows map[WorkflowRunID]string
+	if err := json.Unmarshal(encoded, &decodedWorkflows); err != nil {
+		t.Fatalf("unmarshal workflow run ID map: %v", err)
+	}
+	if got := decodedWorkflows[WorkflowRunID(math.MaxInt64)]; got != "workflow" {
+		t.Fatalf("decoded workflow map value = %q", got)
+	}
+}
+
+func TestSnapshotAndWorkflowRunIDMapKeysRejectNonCanonicalText(t *testing.T) {
+	for _, raw := range []string{"0", "-1", "+1", "01", "9223372036854775808"} {
+		t.Run(raw, func(t *testing.T) {
+			var snapshots map[SnapshotID]string
+			if err := json.Unmarshal([]byte(`{"`+raw+`":"value"}`), &snapshots); err == nil {
+				t.Fatalf("snapshot ID map accepted key %q", raw)
+			}
+			var workflows map[WorkflowRunID]string
+			if err := json.Unmarshal([]byte(`{"`+raw+`":"value"}`), &workflows); err == nil {
+				t.Fatalf("workflow run ID map accepted key %q", raw)
+			}
+		})
+	}
+}
+
 func TestSnapshotAndWorkflowRunIDsRejectNonCanonicalJSON(t *testing.T) {
 	invalid := []string{
 		`0`, `null`, `1`, `-1`, `"0"`, `"-1"`, `"+1"`, `"01"`, `" 1"`, `"1 "`, `"1e3"`, `"9223372036854775808"`, `""`,
