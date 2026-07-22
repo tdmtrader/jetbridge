@@ -111,7 +111,7 @@ func TestResolve_HoldsReadGuardDuringCopy(t *testing.T) {
 	// resolve must block rather than copy from a directory being deleted.
 	release := srv.Guard().BeginSweep("handle-y")
 
-	dest := filepath.Join(t.TempDir(), "dest")
+	dest := filepath.Join(storagePath, "steps", "test-resolve-destinations", "guarded")
 	resolved := make(chan resolveResponse, 1)
 	go func() {
 		resolved <- srv.resolveOne(context.Background(), "handle-y/output", dest)

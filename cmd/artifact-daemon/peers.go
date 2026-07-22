@@ -1,10 +1,10 @@
 package main
 
 import (
-	"archive/tar"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -118,6 +118,9 @@ func (p *PeerResolver) peerIPs(ctx context.Context) ([]string, error) {
 // Returns the IP of the first peer that responds 200 to HEAD /artifacts/<key>,
 // or ("", false) if no peer has it. Peers are probed concurrently.
 func (p *PeerResolver) Probe(ctx context.Context, key string) (string, bool) {
+	if err := validateCanonicalRelativeKey(key); err != nil || snapshotNamespaceKey(key) {
+		return "", false
+	}
 	logger := p.logger.Session("peer-probe", lager.Data{"key": key})
 
 	ips, err := p.peerIPs(ctx)
@@ -179,6 +182,9 @@ func (p *PeerResolver) Probe(ctx context.Context, key string) (string, bool) {
 // It streams GET /artifacts/steps/<key> from the peer, which returns a tar
 // stream, and extracts it to the destination directory.
 func (p *PeerResolver) Fetch(ctx context.Context, peerIP, key, destPath string) error {
+	if err := validateCanonicalRelativeKey(key); err != nil || snapshotNamespaceKey(key) {
+		return fmt.Errorf("invalid peer artifact key")
+	}
 	logger := p.logger.Session("peer-fetch", lager.Data{"key": key, "peer": peerIP, "dest": destPath})
 
 	url := fmt.Sprintf("http://%s:%d/artifacts/steps/%s", peerIP, p.port, key)
@@ -211,7 +217,7 @@ func (p *PeerResolver) Fetch(ctx context.Context, peerIP, key, destPath string) 
 		}
 
 		// Stream response (tar) to a temp file, then extract.
-		err = extractTarToDir(resp.Body, destPath)
+		err = extractTarToDir(ctx, resp.Body, destPath)
 		resp.Body.Close()
 		if err != nil {
 			lastErr = err
@@ -230,52 +236,53 @@ func (p *PeerResolver) Fetch(ctx context.Context, peerIP, key, destPath string) 
 }
 
 // extractTarToDir reads a tar stream and extracts files to destDir.
-func extractTarToDir(r io.Reader, destDir string) error {
-	if err := os.MkdirAll(destDir, 0755); err != nil {
-		return fmt.Errorf("create dest dir: %w", err)
+func extractTarToDir(ctx context.Context, r io.Reader, destDir string) error {
+	if destDir == "" || !filepath.IsAbs(destDir) || filepath.Clean(destDir) != destDir {
+		return fmt.Errorf("destination is not a canonical absolute path")
 	}
-
-	tr := tar.NewReader(r)
-	for {
-		hdr, err := tr.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return fmt.Errorf("reading tar: %w", err)
-		}
-
-		target := filepath.Join(destDir, hdr.Name)
-
-		// Prevent path traversal.
-		rel, err := filepath.Rel(destDir, target)
-		if err != nil || len(rel) >= 2 && rel[:2] == ".." {
-			continue
-		}
-
-		// Normalize permissions: strip setuid/setgid, enforce minimum readable floor.
-		mode := sanitizeMode(hdr.Typeflag, os.FileMode(hdr.Mode))
-
-		switch hdr.Typeflag {
-		case tar.TypeDir:
-			os.MkdirAll(target, mode)
-		case tar.TypeReg:
-			if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
-				return err
-			}
-			f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
-			if err != nil {
-				return err
-			}
-			if _, err := io.Copy(f, tr); err != nil {
-				f.Close()
-				return err
-			}
-			f.Close()
-		case tar.TypeSymlink:
-			os.MkdirAll(filepath.Dir(target), 0755)
-			os.Symlink(hdr.Linkname, target)
-		}
+	if info, err := os.Lstat(destDir); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("destination is a symlink")
+	} else if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("inspect destination: %w", err)
+	}
+	parent := filepath.Dir(destDir)
+	if err := os.MkdirAll(parent, 0755); err != nil {
+		return fmt.Errorf("create destination parent: %w", err)
+	}
+	resolvedParent, err := filepath.EvalSymlinks(parent)
+	if err != nil {
+		return fmt.Errorf("resolve destination parent: %w", err)
+	}
+	parentRoot, err := os.OpenRoot(resolvedParent)
+	if err != nil {
+		return fmt.Errorf("anchor destination parent: %w", err)
+	}
+	defer parentRoot.Close()
+	tmpName, err := createRootTempDir(parentRoot, ".peer-fetch-")
+	if err != nil {
+		return fmt.Errorf("create peer extraction directory: %w", err)
+	}
+	defer parentRoot.RemoveAll(tmpName)
+	root, err := parentRoot.OpenRoot(tmpName)
+	if err != nil {
+		return fmt.Errorf("anchor peer extraction directory: %w", err)
+	}
+	extractErr := extractTarAnchored(ctx, root, r)
+	closeErr := root.Close()
+	if extractErr != nil || closeErr != nil {
+		return fmt.Errorf("extract peer tar: %w", errors.Join(extractErr, closeErr))
+	}
+	destName := filepath.Base(destDir)
+	if info, err := parentRoot.Lstat(destName); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("destination became a symlink")
+	} else if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("reinspect destination: %w", err)
+	}
+	if err := parentRoot.RemoveAll(destName); err != nil {
+		return fmt.Errorf("remove stale destination: %w", err)
+	}
+	if err := parentRoot.Rename(tmpName, destName); err != nil {
+		return fmt.Errorf("publish peer extraction: %w", err)
 	}
 	return nil
 }

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"math"
 	"os"
 	"path"
 	"path/filepath"
@@ -20,7 +21,48 @@ import (
 const (
 	DefaultMaxSnapshotEntries      int64 = 100_000
 	DefaultMaxSnapshotContentBytes int64 = 10 << 30
+	MaxSnapshotPathBytes           int64 = 4096
+	MaxSnapshotSymlinkTargetBytes  int64 = 4096
 )
+
+const tarBlockBytes int64 = 512
+
+// CanonicalArchiveByteLimit derives a checked transport bound from the
+// logical canonicalizer limits. Canonical GNU tar includes headers, padding,
+// optional GNU long-name/long-link records, and a two-block trailer in
+// addition to regular-file content. The result deliberately overestimates by
+// allowing both long-string records and content padding for every entry.
+func CanonicalArchiveByteLimit(maxContentBytes, maxEntries int64) (int64, error) {
+	if maxContentBytes <= 0 {
+		return 0, fmt.Errorf("snapshot: maximum content bytes must be positive")
+	}
+	if maxEntries <= 0 {
+		return 0, fmt.Errorf("snapshot: maximum entries must be positive")
+	}
+	roundBlock := func(value int64) (int64, error) {
+		if value < 0 || value > math.MaxInt64-(tarBlockBytes-1) {
+			return 0, fmt.Errorf("snapshot: canonical archive bound overflows")
+		}
+		return ((value + tarBlockBytes - 1) / tarBlockBytes) * tarBlockBytes, nil
+	}
+	longNamePayload, err := roundBlock(MaxSnapshotPathBytes + 1)
+	if err != nil {
+		return 0, err
+	}
+	longLinkPayload, err := roundBlock(MaxSnapshotSymlinkTargetBytes + 1)
+	if err != nil {
+		return 0, err
+	}
+	perEntry := tarBlockBytes + tarBlockBytes + longNamePayload + tarBlockBytes + longLinkPayload + (tarBlockBytes - 1)
+	if maxEntries > (math.MaxInt64-2*tarBlockBytes)/perEntry {
+		return 0, fmt.Errorf("snapshot: canonical archive bound overflows")
+	}
+	overhead := maxEntries*perEntry + 2*tarBlockBytes
+	if maxContentBytes > math.MaxInt64-overhead {
+		return 0, fmt.Errorf("snapshot: canonical archive bound overflows")
+	}
+	return maxContentBytes + overhead, nil
+}
 
 // Canonicalizer safely materializes a tar stream and emits its deterministic
 // filesystem-tree representation. Zero limits select the secure defaults.
@@ -749,6 +791,9 @@ func validateArchivePath(name string) error {
 	if name == "" {
 		return fmt.Errorf("snapshot: archive path is empty")
 	}
+	if int64(len(name)) > MaxSnapshotPathBytes {
+		return fmt.Errorf("snapshot: archive path exceeds %d bytes", MaxSnapshotPathBytes)
+	}
 	if strings.Contains(name, `\`) {
 		return fmt.Errorf("snapshot: archive path %q contains a backslash", name)
 	}
@@ -1115,6 +1160,9 @@ func sortSpoolEntries(regulars []capturedEntry) {
 func cleanSymlinkTarget(name, target string) (string, error) {
 	if target == "" {
 		return "", fmt.Errorf("snapshot: symlink %q has an empty target", name)
+	}
+	if int64(len(target)) > MaxSnapshotSymlinkTargetBytes {
+		return "", fmt.Errorf("snapshot: symlink %q target exceeds %d bytes", name, MaxSnapshotSymlinkTargetBytes)
 	}
 	if strings.Contains(target, `\`) {
 		return "", fmt.Errorf("snapshot: symlink %q target contains a backslash", name)

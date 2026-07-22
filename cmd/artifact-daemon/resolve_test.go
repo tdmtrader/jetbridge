@@ -83,7 +83,7 @@ func TestResolveEndpoint_LocalRegistry(t *testing.T) {
 	resp.Body.Close()
 
 	// Create destination directory.
-	destDir := filepath.Join(t.TempDir(), "input")
+	destDir := resolveDestination(storagePath, "input")
 
 	// POST /resolve
 	resolveBody := `{"key":"handle-a/out","dest":"` + destDir + `"}`
@@ -124,7 +124,7 @@ func TestResolveEndpoint_FilesystemFallback(t *testing.T) {
 	os.MkdirAll(srcDir, 0755)
 	os.WriteFile(filepath.Join(srcDir, "file.txt"), []byte("fallback data"), 0644)
 
-	destDir := filepath.Join(t.TempDir(), "resolved")
+	destDir := resolveDestination(storagePath, "resolved")
 
 	// POST /resolve — should find via filesystem scan fallback.
 	resolveBody := `{"key":"handle-b/dir","dest":"` + destDir + `"}`
@@ -154,9 +154,9 @@ func TestResolveEndpoint_FilesystemFallback(t *testing.T) {
 }
 
 func TestResolveEndpoint_NotFound(t *testing.T) {
-	ts, _ := setupServer(t)
+	ts, storagePath := setupServer(t)
 
-	destDir := filepath.Join(t.TempDir(), "nope")
+	destDir := resolveDestination(storagePath, "nope")
 	body := `{"key":"nonexistent","dest":"` + destDir + `"}`
 	resp, err := http.Post(ts.URL+"/resolve", "application/json", strings.NewReader(body))
 	if err != nil {
@@ -203,7 +203,7 @@ func TestResolveEndpoint_MultipleFiles(t *testing.T) {
 	resp, _ := http.Post(ts.URL+"/register", "application/json", strings.NewReader(regBody))
 	resp.Body.Close()
 
-	destDir := filepath.Join(t.TempDir(), "dest")
+	destDir := resolveDestination(storagePath, "dest")
 	resolveBody := `{"key":"handle-c/result","dest":"` + destDir + `"}`
 	resp, err := http.Post(ts.URL+"/resolve", "application/json", strings.NewReader(resolveBody))
 	if err != nil {
@@ -243,7 +243,7 @@ func TestResolveEndpoint_RestrictivePermissionsBecomWorldReadable(t *testing.T) 
 	resp, _ := http.Post(ts.URL+"/register", "application/json", strings.NewReader(regBody))
 	resp.Body.Close()
 
-	destDir := filepath.Join(t.TempDir(), "dest-restricted")
+	destDir := resolveDestination(storagePath, "dest-restricted")
 	resolveBody := `{"key":"handle-restricted/out","dest":"` + destDir + `"}`
 	resp, err := http.Post(ts.URL+"/resolve", "application/json", strings.NewReader(resolveBody))
 	if err != nil {
@@ -286,7 +286,7 @@ func TestResolveEndpoint_StartupScanThenResolve(t *testing.T) {
 	os.MkdirAll(srcDir, 0755)
 	os.WriteFile(filepath.Join(srcDir, "legacy.txt"), []byte("old data"), 0644)
 
-	destDir := filepath.Join(t.TempDir(), "legacy-dest")
+	destDir := resolveDestination(storagePath, "legacy-dest")
 	body := `{"key":"old-handle/output","dest":"` + destDir + `"}`
 	resp, err := http.Post(ts.URL+"/resolve", "application/json", strings.NewReader(body))
 	if err != nil {

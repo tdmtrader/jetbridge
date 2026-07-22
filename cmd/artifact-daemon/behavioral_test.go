@@ -203,7 +203,7 @@ func TestRegister_ThenResolve_FullFlow(t *testing.T) {
 	}
 
 	// Resolve should find it via registry (method=registry), not filesystem.
-	destDir := filepath.Join(t.TempDir(), "resolved")
+	destDir := resolveDestination(storagePath, "registered-flow")
 	resolveBody := `{"key":"reg-handle/output","dest":"` + destDir + `"}`
 	resp, err = http.Post(ts.URL+"/resolve", "application/json", strings.NewReader(resolveBody))
 	if err != nil {
@@ -254,7 +254,7 @@ func TestRegister_DuplicateOverwrites(t *testing.T) {
 	resp.Body.Close()
 
 	// Resolve should use the second registration.
-	destDir := filepath.Join(t.TempDir(), "dup-dest")
+	destDir := resolveDestination(storagePath, "duplicate-alias")
 	resolveBody := `{"key":"dup-key","dest":"` + destDir + `"}`
 	resp, err := http.Post(ts.URL+"/resolve", "application/json", strings.NewReader(resolveBody))
 	if err != nil {
@@ -298,7 +298,7 @@ func TestResolve_AtomicCopy_OverwritesStaleDestination(t *testing.T) {
 	// Pre-create a "stale" destination with a read-only file to simulate a
 	// prior interrupted copy. Without atomic copy, cp -R would fail trying
 	// to overwrite the read-only file.
-	destDir := filepath.Join(t.TempDir(), "stale-dest")
+	destDir := resolveDestination(storagePath, "stale-dest")
 	os.MkdirAll(destDir, 0755)
 	os.WriteFile(filepath.Join(destDir, "result.txt"), []byte("stale-data"), 0444) // read-only
 
@@ -377,7 +377,7 @@ func TestResolve_PeerFallback_EndToEnd(t *testing.T) {
 	defer localTS.Close()
 
 	// Resolve via local daemon - should fall back to peer.
-	destDir := filepath.Join(t.TempDir(), "peer-resolved")
+	destDir := resolveDestination(localStorage, "peer-resolved")
 	resolveBody := `{"key":"peer-handle/result","dest":"` + destDir + `"}`
 	resp, err := http.Post(localTS.URL+"/resolve", "application/json", strings.NewReader(resolveBody))
 	if err != nil {
@@ -417,7 +417,7 @@ func TestResolve_FilesystemFallback_AutoRegisters(t *testing.T) {
 	os.WriteFile(filepath.Join(srcDir, "data.txt"), []byte("auto-data"), 0644)
 
 	// First resolve: filesystem fallback.
-	destDir1 := filepath.Join(t.TempDir(), "dest1")
+	destDir1 := resolveDestination(storagePath, "auto-register-1")
 	body := `{"key":"auto-reg/output","dest":"` + destDir1 + `"}`
 	resp, err := http.Post(ts.URL+"/resolve", "application/json", strings.NewReader(body))
 	if err != nil {
@@ -431,7 +431,7 @@ func TestResolve_FilesystemFallback_AutoRegisters(t *testing.T) {
 	}
 
 	// Second resolve: should use registry (auto-registered by first resolve).
-	destDir2 := filepath.Join(t.TempDir(), "dest2")
+	destDir2 := resolveDestination(storagePath, "auto-register-2")
 	body = `{"key":"auto-reg/output","dest":"` + destDir2 + `"}`
 	resp, err = http.Post(ts.URL+"/resolve", "application/json", strings.NewReader(body))
 	if err != nil {
@@ -460,7 +460,7 @@ func TestResolve_ResponseIncludesStructuredFields(t *testing.T) {
 	resp, _ := http.Post(ts.URL+"/register", "application/json", strings.NewReader(regBody))
 	resp.Body.Close()
 
-	destDir := filepath.Join(t.TempDir(), "struct-dest")
+	destDir := resolveDestination(storagePath, "structured")
 	resolveBody := `{"key":"struct-handle/out","dest":"` + destDir + `"}`
 	resp, err := http.Post(ts.URL+"/resolve", "application/json", strings.NewReader(resolveBody))
 	if err != nil {
@@ -484,9 +484,9 @@ func TestResolve_ResponseIncludesStructuredFields(t *testing.T) {
 }
 
 func TestResolve_NotFound_IncludesStructuredFields(t *testing.T) {
-	ts, _ := setupServer(t)
+	ts, storagePath := setupServer(t)
 
-	destDir := filepath.Join(t.TempDir(), "nf-dest")
+	destDir := resolveDestination(storagePath, "not-found")
 	body := `{"key":"nonexistent-key","dest":"` + destDir + `"}`
 	resp, err := http.Post(ts.URL+"/resolve", "application/json", strings.NewReader(body))
 	if err != nil {
@@ -1102,7 +1102,7 @@ func TestPeerFetch_AllAttemptsExhausted(t *testing.T) {
 // PD-04: Tar extraction path traversal
 // ---------------------------------------------------------------------------
 
-func TestExtractTar_PathTraversal_Skipped(t *testing.T) {
+func TestExtractTar_PathTraversal_Rejected(t *testing.T) {
 	// Build a tar with a ".." path entry.
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
@@ -1127,8 +1127,8 @@ func TestExtractTar_PathTraversal_Skipped(t *testing.T) {
 
 	destDir := filepath.Join(t.TempDir(), "extract")
 	err := resolver.Fetch(context.Background(), host, "traversal-key", destDir)
-	if err != nil {
-		t.Fatalf("Fetch: %v", err)
+	if err == nil {
+		t.Fatal("expected unsafe peer archive to be rejected")
 	}
 
 	// The ".." entry should have been skipped.
@@ -1136,13 +1136,9 @@ func TestExtractTar_PathTraversal_Skipped(t *testing.T) {
 		t.Error("path traversal entry should have been skipped")
 	}
 
-	// Legitimate file should exist.
-	data, err := os.ReadFile(filepath.Join(destDir, "safe.txt"))
-	if err != nil {
-		t.Fatalf("safe.txt not extracted: %v", err)
-	}
-	if string(data) != "safe" {
-		t.Errorf("expected 'safe', got %q", string(data))
+	// A rejected archive is atomic: later legitimate members are not exposed.
+	if _, err := os.Stat(filepath.Join(destDir, "safe.txt")); !os.IsNotExist(err) {
+		t.Fatalf("rejected archive exposed a partial destination: %v", err)
 	}
 }
 

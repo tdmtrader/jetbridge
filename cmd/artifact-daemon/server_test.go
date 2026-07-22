@@ -20,6 +20,7 @@ import (
 
 	"code.cloudfoundry.org/lager/v3/lagertest"
 
+	agentsnapshot "github.com/concourse/concourse/agent/snapshot"
 	daemon "github.com/concourse/concourse/cmd/artifact-daemon"
 )
 
@@ -32,6 +33,10 @@ func setupServer(t *testing.T) (*httptest.Server, string) {
 	ts := httptest.NewServer(server.Handler())
 	t.Cleanup(ts.Close)
 	return ts, storagePath
+}
+
+func resolveDestination(storagePath, name string) string {
+	return filepath.Join(storagePath, "steps", "test-resolve-destinations", name)
 }
 
 func snapshotDigest(data []byte) string {
@@ -65,8 +70,8 @@ func TestSnapshotArtifactIsImmutableAndDigestAddressed(t *testing.T) {
 	if got := putArtifact(t, ts.Client(), url, bytes.NewReader(content)).StatusCode; got != http.StatusOK {
 		t.Fatalf("identical PUT status = %d, want 200", got)
 	}
-	if got := putArtifact(t, ts.Client(), url, strings.NewReader("different")).StatusCode; got != http.StatusConflict {
-		t.Fatalf("conflicting PUT status = %d, want 409", got)
+	if got := putArtifact(t, ts.Client(), url, strings.NewReader("different")).StatusCode; got != http.StatusUnprocessableEntity {
+		t.Fatalf("wrong-digest overwrite status = %d, want 422", got)
 	}
 
 	wrongDigestURL := ts.URL + "/artifacts/snapshots/sha256/" + strings.Repeat("0", 64) + ".tar"
@@ -194,7 +199,7 @@ func TestSnapshotArtifactCannotFollowParentSymlinkOutsideStorage(t *testing.T) {
 
 func TestSnapshotArtifactRejectsAndDoesNotDeleteNonRegularContent(t *testing.T) {
 	storagePath := t.TempDir()
-	digest := strings.Repeat("a", 64)
+	digest := snapshotDigest([]byte("x"))
 	storedPath := filepath.Join(storagePath, "snapshots", "sha256", digest+".tar")
 	if err := os.MkdirAll(storedPath, 0755); err != nil {
 		t.Fatal(err)
@@ -272,7 +277,14 @@ func TestSnapshotArtifactRejectsDeclaredOversizeBeforeCreatingTemporaryFile(t *t
 		"http://daemon/artifacts/snapshots/sha256/"+digest+".tar",
 		strings.NewReader("small body"),
 	)
-	req.ContentLength = (10 << 30) + 1
+	maxArchiveBytes, err := agentsnapshot.CanonicalArchiveByteLimit(
+		agentsnapshot.DefaultMaxSnapshotContentBytes,
+		agentsnapshot.DefaultMaxSnapshotEntries,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.ContentLength = maxArchiveBytes + 1
 	response := httptest.NewRecorder()
 	server.Handler().ServeHTTP(response, req)
 	if response.Code != http.StatusRequestEntityTooLarge {
@@ -1469,7 +1481,7 @@ func TestResolve_TouchesStepDirSoSweeperSpares(t *testing.T) {
 	os.Chtimes(handleDir, past, past)
 
 	// Resolve the artifact — this read must refresh the handle dir mtime.
-	dest := filepath.Join(t.TempDir(), "dest")
+	dest := resolveDestination(storagePath, "sweeper-touch")
 	body := strings.NewReader(`{"key":"old-handle/output","dest":"` + dest + `"}`)
 	resp, err := http.Post(ts.URL+"/resolve", "application/json", body)
 	if err != nil {

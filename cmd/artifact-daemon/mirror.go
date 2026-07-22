@@ -388,6 +388,10 @@ func (m *Mirror) Trigger(ctx context.Context, key string) {
 	if m == nil || m.replicas == 0 {
 		return
 	}
+	if err := validateCanonicalRelativeKey(key); err != nil || snapshotNamespaceKey(key) {
+		m.logger.Info("mirror-invalid-key", lager.Data{"key": key})
+		return
+	}
 	if !m.pool.Submit(func() {
 		m.run(context.Background(), key)
 	}) {
@@ -396,7 +400,15 @@ func (m *Mirror) Trigger(ctx context.Context, key string) {
 }
 
 func (m *Mirror) run(ctx context.Context, key string) {
+	if err := validateCanonicalRelativeKey(key); err != nil || snapshotNamespaceKey(key) {
+		m.logger.Info("mirror-invalid-key", lager.Data{"key": key})
+		return
+	}
 	sourceDir := filepath.Join(m.storagePath, "steps", key)
+	if err := verifyExistingPathComponents(filepath.Join(m.storagePath, "steps"), filepath.FromSlash(key), true); err != nil {
+		m.logger.Error("mirror-source-unsafe", err, lager.Data{"key": key, "src": sourceDir})
+		return
+	}
 	if _, err := os.Stat(sourceDir); err != nil {
 		m.logger.Error("mirror-source-missing", err, lager.Data{
 			"key": key,

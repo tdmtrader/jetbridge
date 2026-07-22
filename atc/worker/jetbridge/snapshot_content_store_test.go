@@ -1,6 +1,7 @@
 package jetbridge
 
 import (
+	"archive/tar"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -153,6 +154,39 @@ func TestSnapshotContentStorePutEnforcesMaximumBeforeNetwork(t *testing.T) {
 	}
 	if requests.Load() != 0 {
 		t.Fatalf("HTTP requests = %d, want zero", requests.Load())
+	}
+}
+
+func TestSnapshotContentStoreAcceptsCanonicalTarOverheadForSmallContentLimit(t *testing.T) {
+	var archive bytes.Buffer
+	writer := tar.NewWriter(&archive)
+	if err := writer.WriteHeader(&tar.Header{Name: "file", Typeflag: tar.TypeReg, Mode: 0644, Size: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writer.Write([]byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	archiveLimit, err := snapshot.CanonicalArchiveByteLimit(1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var requests atomic.Int64
+	client := snapshotDaemonClient(t, []string{"node-a"}, roundTripFunc(func(*http.Request) (*http.Response, error) {
+		requests.Add(1)
+		return response(http.StatusCreated, nil), nil
+	}))
+	store, err := NewSnapshotContentStore(client, &locationResolverStub{}, 1, archiveLimit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Put(context.Background(), digestFor(archive.Bytes()), bytes.NewReader(archive.Bytes())); err != nil {
+		t.Fatal(err)
+	}
+	if requests.Load() != 1 {
+		t.Fatalf("requests = %d, want 1", requests.Load())
 	}
 }
 

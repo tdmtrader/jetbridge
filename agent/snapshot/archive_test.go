@@ -39,6 +39,31 @@ type tarEntry struct {
 	paxRecords map[string]string
 }
 
+func TestCanonicalArchiveByteLimitIncludesBoundedTransportOverhead(t *testing.T) {
+	limit, err := CanonicalArchiveByteLimit(1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tree := capture(t, Canonicalizer{MaxEntries: 1, MaxContentBytes: 1}, bytes.NewReader(makeTar(t, []tarEntry{{
+		name: "file", typeflag: tar.TypeReg, mode: 0644, content: "x",
+	}})))
+	defer tree.Close()
+	if tree.ByteSize <= 1 {
+		t.Fatalf("canonical archive size = %d, want physical tar overhead", tree.ByteSize)
+	}
+	if tree.ByteSize > limit {
+		t.Fatalf("canonical archive size = %d exceeds derived limit %d", tree.ByteSize, limit)
+	}
+
+	defaultLimit, err := CanonicalArchiveByteLimit(DefaultMaxSnapshotContentBytes, DefaultMaxSnapshotEntries)
+	if err != nil || defaultLimit <= DefaultMaxSnapshotContentBytes {
+		t.Fatalf("default transport limit = %d, %v", defaultLimit, err)
+	}
+	if _, err := CanonicalArchiveByteLimit(math.MaxInt64, math.MaxInt64); err == nil {
+		t.Fatal("expected overflow to fail closed")
+	}
+}
+
 func TestCanonicalCaptureNormalizesMetadataAndInputOrder(t *testing.T) {
 	t.Parallel()
 

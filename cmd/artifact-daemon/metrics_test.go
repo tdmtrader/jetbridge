@@ -50,7 +50,7 @@ func TestMetricsEndpoint_RecordsResolve(t *testing.T) {
 	}
 	os.WriteFile(filepath.Join(srcDir, "data.txt"), []byte("x"), 0644)
 
-	destDir := filepath.Join(t.TempDir(), "input")
+	destDir := resolveDestination(storagePath, "metrics-ok")
 	resp, err := http.Post(ts.URL+"/resolve", "application/json",
 		strings.NewReader(`{"key":"handle-m/out","dest":"`+destDir+`"}`))
 	if err != nil {
@@ -73,9 +73,9 @@ func TestMetricsEndpoint_RecordsResolve(t *testing.T) {
 // TestMetricsEndpoint_RecordsNotFound verifies a missing artifact records a
 // not_found resolve outcome.
 func TestMetricsEndpoint_RecordsNotFound(t *testing.T) {
-	ts, _ := setupServer(t)
+	ts, storagePath := setupServer(t)
 
-	destDir := filepath.Join(t.TempDir(), "input")
+	destDir := resolveDestination(storagePath, "metrics-not-found")
 	resp, err := http.Post(ts.URL+"/resolve", "application/json",
 		strings.NewReader(`{"key":"does-not-exist","dest":"`+destDir+`"}`))
 	if err != nil {

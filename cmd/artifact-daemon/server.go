@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"code.cloudfoundry.org/lager/v3"
+	"github.com/concourse/concourse/agent/snapshot"
 )
 
 // Server is the artifact-daemon HTTP server that stores and serves
@@ -38,23 +39,34 @@ type Server struct {
 	metrics          *metrics
 	guard            *ReadGuard
 	snapshotMaxBytes int64
+
+	// Injected only by package-internal durability tests. Production always
+	// uses syncRootDirectory so a successful convergence response means the
+	// namespace mutation (or observed steady state) was re-synchronized.
+	syncSnapshotDirectory func(*os.Root, string) error
 }
 
-const (
-	snapshotKeyPrefix       = "snapshots/sha256/"
-	defaultSnapshotMaxBytes = int64(10 << 30)
-)
+const snapshotKeyPrefix = "snapshots/sha256/"
+
+var defaultSnapshotMaxBytes = func() int64 {
+	limit, err := snapshot.CanonicalArchiveByteLimit(snapshot.DefaultMaxSnapshotContentBytes, snapshot.DefaultMaxSnapshotEntries)
+	if err != nil {
+		panic(err)
+	}
+	return limit
+}()
 
 // NewServer creates a new artifact-daemon server.
 func NewServer(logger lager.Logger, storagePath, nodeName string) *Server {
 	return &Server{
-		logger:           logger,
-		storagePath:      storagePath,
-		nodeName:         nodeName,
-		registry:         NewRegistry(logger),
-		metrics:          newMetrics(),
-		guard:            NewReadGuard(),
-		snapshotMaxBytes: defaultSnapshotMaxBytes,
+		logger:                logger,
+		storagePath:           storagePath,
+		nodeName:              nodeName,
+		registry:              NewRegistry(logger),
+		metrics:               newMetrics(),
+		guard:                 NewReadGuard(),
+		snapshotMaxBytes:      defaultSnapshotMaxBytes,
+		syncSnapshotDirectory: syncRootDirectory,
 	}
 }
 
@@ -152,6 +164,13 @@ func (s *Server) Handler(opts ...HandlerOption) http.Handler {
 				return
 			}
 		}
+		if strings.HasPrefix(r.URL.Path, "/stream-in/") || strings.HasPrefix(r.URL.EscapedPath(), "/stream-in/") {
+			key, err := canonicalRequestKey(r.URL.Path, r.URL.EscapedPath(), "/stream-in/")
+			if err != nil || snapshotNamespaceKey(key) {
+				http.Error(w, "malformed stream-in key", http.StatusBadRequest)
+				return
+			}
+		}
 		mux.ServeHTTP(w, r)
 	})
 }
@@ -202,8 +221,11 @@ func (s *Server) artifactPath(r *http.Request) (string, error) {
 
 func snapshotDigestForRequest(r *http.Request) (string, bool, error) {
 	key := strings.TrimPrefix(r.URL.Path, "/artifacts/")
-	if !strings.HasPrefix(key, snapshotKeyPrefix) {
+	if !snapshotNamespaceKey(key) {
 		return "", false, nil
+	}
+	if !strings.HasPrefix(key, snapshotKeyPrefix) {
+		return "", true, fmt.Errorf("invalid snapshot namespace path")
 	}
 	name := strings.TrimPrefix(key, snapshotKeyPrefix)
 	if len(name) != 68 || !strings.HasSuffix(name, ".tar") {
@@ -276,6 +298,11 @@ func (s *Server) handlePutSnapshot(w http.ResponseWriter, r *http.Request, expec
 		return
 	}
 	actualDigest := hex.EncodeToString(hash.Sum(nil))
+	if actualDigest != expectedDigest {
+		status = "digest_mismatch"
+		http.Error(w, "snapshot digest mismatch", http.StatusUnprocessableEntity)
+		return
+	}
 	if err := file.Chmod(0644); err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
@@ -289,13 +316,17 @@ func (s *Server) handlePutSnapshot(w http.ResponseWriter, r *http.Request, expec
 		return
 	}
 
-	exists, identical, err := compareSnapshot(root, key, tmpKey)
+	exists, identical, err := compareSnapshot(r.Context(), root, key, tmpKey)
 	if err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 	if exists {
 		if identical {
+			if err := s.syncSnapshotDirectory(root, parent); err != nil {
+				http.Error(w, "internal error", http.StatusInternalServerError)
+				return
+			}
 			status = "identical"
 			w.WriteHeader(http.StatusOK)
 		} else {
@@ -304,20 +335,18 @@ func (s *Server) handlePutSnapshot(w http.ResponseWriter, r *http.Request, expec
 		}
 		return
 	}
-	if actualDigest != expectedDigest {
-		status = "digest_mismatch"
-		http.Error(w, "snapshot digest mismatch", http.StatusUnprocessableEntity)
-		return
-	}
-
 	if err := root.Link(tmpKey, key); err != nil {
 		if errors.Is(err, os.ErrExist) {
-			exists, identical, compareErr := compareSnapshot(root, key, tmpKey)
+			exists, identical, compareErr := compareSnapshot(r.Context(), root, key, tmpKey)
 			if compareErr != nil {
 				http.Error(w, "internal error", http.StatusInternalServerError)
 				return
 			}
 			if exists && identical {
+				if err := s.syncSnapshotDirectory(root, parent); err != nil {
+					http.Error(w, "internal error", http.StatusInternalServerError)
+					return
+				}
 				status = "identical"
 				w.WriteHeader(http.StatusOK)
 				return
@@ -336,7 +365,7 @@ func (s *Server) handlePutSnapshot(w http.ResponseWriter, r *http.Request, expec
 		return
 	}
 	tmpExists = false
-	if err := syncRootDirectory(root, parent); err != nil {
+	if err := s.syncSnapshotDirectory(root, parent); err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -394,7 +423,10 @@ func createSnapshotTemp(root *os.Root, parent string) (string, *os.File, error) 
 	return "", nil, fmt.Errorf("unable to allocate snapshot temporary file")
 }
 
-func compareSnapshot(root *os.Root, key, tmpKey string) (bool, bool, error) {
+func compareSnapshot(ctx context.Context, root *os.Root, key, tmpKey string) (bool, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, false, err
+	}
 	info, err := root.Lstat(key)
 	if errors.Is(err, os.ErrNotExist) {
 		return false, false, nil
@@ -425,6 +457,9 @@ func compareSnapshot(root *os.Root, key, tmpKey string) (bool, bool, error) {
 	left := make([]byte, 128*1024)
 	right := make([]byte, 128*1024)
 	for {
+		if err := ctx.Err(); err != nil {
+			return false, false, err
+		}
 		leftN, leftErr := io.ReadFull(existing, left)
 		rightN, rightErr := io.ReadFull(temporary, right)
 		if leftN != rightN || !bytes.Equal(left[:leftN], right[:rightN]) {
@@ -532,22 +567,30 @@ func (s *Server) handleDeleteSnapshot(w http.ResponseWriter, _ *http.Request, di
 	start := time.Now()
 	status := "error"
 	defer func() { s.metrics.recordSnapshot("delete", status, 0, time.Since(start)) }()
+	if err := os.MkdirAll(s.storagePath, 0755); err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
 	root, err := os.OpenRoot(s.storagePath)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			status = "not_found"
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 	defer root.Close()
 	key := snapshotKey(digest)
+	parent := path.Dir(key)
+	if err := root.MkdirAll(parent, 0755); err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
 	release := s.guard.BeginSweep(key)
 	defer release()
 	info, err := root.Lstat(key)
 	if errors.Is(err, os.ErrNotExist) {
+		if err := s.syncSnapshotDirectory(root, parent); err != nil {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
 		status = "not_found"
 		w.WriteHeader(http.StatusNoContent)
 		return
@@ -565,7 +608,7 @@ func (s *Server) handleDeleteSnapshot(w http.ResponseWriter, _ *http.Request, di
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	if err := syncRootDirectory(root, path.Dir(key)); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := s.syncSnapshotDirectory(root, parent); err != nil && !errors.Is(err, os.ErrNotExist) {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -608,6 +651,10 @@ func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 		}
 		s.logger.Error("failed-to-stat-artifact", err, lager.Data{"path": path})
 		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if err := s.validateGenericArtifactSource(path); err != nil {
+		http.Error(w, "artifact source is outside the generic artifact namespace", http.StatusBadRequest)
 		return
 	}
 
@@ -720,6 +767,10 @@ func (s *Server) handlePutArtifact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	path := artifactPath
+	if err := s.validateGenericArtifactSource(path); err != nil {
+		http.Error(w, "artifact destination is outside the generic artifact namespace", http.StatusBadRequest)
+		return
+	}
 
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		s.logger.Error("failed-to-create-artifact-dir", err, lager.Data{"path": path})
@@ -778,9 +829,9 @@ func (s *Server) handlePutArtifact(w http.ResponseWriter, r *http.Request) {
 // number (\x1f\x8b). This allows both raw tar (from DaemonSetVolume.StreamIn)
 // and gzipped tar (from fly CLI uploads) to work.
 func (s *Server) handleStreamIn(w http.ResponseWriter, r *http.Request) {
-	key := strings.TrimPrefix(r.URL.Path, "/stream-in/")
-	if key == "" {
-		http.Error(w, "key required", http.StatusBadRequest)
+	key, err := canonicalRequestKey(r.URL.Path, r.URL.EscapedPath(), "/stream-in/")
+	if err != nil || snapshotNamespaceKey(key) {
+		http.Error(w, "malformed stream-in key", http.StatusBadRequest)
 		return
 	}
 
@@ -796,14 +847,30 @@ func (s *Server) handleStreamIn(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "create dir: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	tmpDest, err := os.MkdirTemp(stepsRoot, ".in-tmp-")
+	if err := verifyExistingPathComponents(s.storagePath, "steps", false); err != nil {
+		http.Error(w, "invalid steps root", http.StatusInternalServerError)
+		return
+	}
+	if err := verifyExistingPathComponents(stepsRoot, filepath.FromSlash(key), false); err != nil {
+		http.Error(w, "unsafe stream-in destination", http.StatusBadRequest)
+		return
+	}
+	stepsHandle, err := os.OpenRoot(stepsRoot)
+	if err != nil {
+		s.logger.Error("failed-to-anchor-stream-in-dir", err, lager.Data{"key": key})
+		http.Error(w, "anchor steps dir: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer stepsHandle.Close()
+	tmpName, err := createRootTempDir(stepsHandle, ".in-tmp-")
 	if err != nil {
 		s.logger.Error("failed-to-create-stream-in-tmp-dir", err, lager.Data{"key": key})
 		http.Error(w, "create tmp dir: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+	tmpDest := filepath.Join(stepsRoot, tmpName)
 	// No-op after the successful rename; cleans up on every error path.
-	defer os.RemoveAll(tmpDest)
+	defer stepsHandle.RemoveAll(tmpName)
 
 	// Auto-detect gzip by peeking at the first 2 bytes.
 	br := bufio.NewReader(r.Body)
@@ -819,65 +886,26 @@ func (s *Server) handleStreamIn(w http.ResponseWriter, r *http.Request) {
 		tarSource = gr
 	}
 
-	tr := tar.NewReader(tarSource)
-	for {
-		hdr, err := tr.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			s.logger.Error("failed-to-read-tar", err, lager.Data{"key": key})
-			http.Error(w, "tar: "+err.Error(), http.StatusBadRequest)
-			return
-		}
-
-		target := filepath.Join(tmpDest, hdr.Name)
-		// Path traversal protection.
-		if !strings.HasPrefix(filepath.Clean(target), filepath.Clean(tmpDest)) {
-			continue
-		}
-
-		// Normalize permissions: strip setuid/setgid, enforce minimum readable floor.
-		// Dirs get at least 0755, files get at least 0644, so the daemon can always
-		// read and serve artifacts it extracted.
-		mode := sanitizeMode(hdr.Typeflag, os.FileMode(hdr.Mode))
-
-		switch hdr.Typeflag {
-		case tar.TypeDir:
-			if err := os.MkdirAll(target, mode); err != nil {
-				s.logger.Error("failed-to-create-dir", err, lager.Data{"target": target})
-				http.Error(w, "mkdir: "+err.Error(), http.StatusInternalServerError)
-				return
-			}
-		case tar.TypeReg:
-			if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
-				s.logger.Error("failed-to-create-parent-dir", err, lager.Data{"target": target})
-				http.Error(w, "mkdir: "+err.Error(), http.StatusInternalServerError)
-				return
-			}
-			f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
-			if err != nil {
-				s.logger.Error("failed-to-create-file", err, lager.Data{"target": target})
-				http.Error(w, "create: "+err.Error(), http.StatusInternalServerError)
-				return
-			}
-			if _, err := io.Copy(f, tr); err != nil {
-				f.Close()
-				s.logger.Error("failed-to-write-file", err, lager.Data{"target": target})
-				http.Error(w, "write: "+err.Error(), http.StatusInternalServerError)
-				return
-			}
-			f.Close()
-		case tar.TypeSymlink:
-			_ = os.Symlink(hdr.Linkname, target)
-		}
+	extractionRoot, err := stepsHandle.OpenRoot(tmpName)
+	if err != nil {
+		http.Error(w, "open extraction root: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	extractErr := extractTarAnchored(r.Context(), extractionRoot, tarSource)
+	closeErr := extractionRoot.Close()
+	if extractErr != nil || closeErr != nil {
+		err := errors.Join(extractErr, closeErr)
+		s.logger.Error("failed-to-extract-tar", err, lager.Data{"key": key})
+		http.Error(w, "tar: "+err.Error(), http.StatusBadRequest)
+		return
 	}
 
 	// Move the fully-extracted tree into place. Remove any previous copy
 	// first (rename onto a non-empty dir fails). The replace is destructive
 	// like a sweep: take the handle's exclusive lock so in-flight reads
 	// (resolve copies, GET/mirror tar walks) never see a half-removed tree.
-	if err := os.MkdirAll(filepath.Dir(dest), 0755); err != nil {
+	destRel := filepath.FromSlash(key)
+	if err := stepsHandle.MkdirAll(filepath.Dir(destRel), 0755); err != nil {
 		s.logger.Error("failed-to-create-stream-in-parent", err, lager.Data{"key": key})
 		http.Error(w, "create parent: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -885,8 +913,10 @@ func (s *Server) handleStreamIn(w http.ResponseWriter, r *http.Request) {
 	renameErr := func() error {
 		release := s.guard.BeginSweep(s.stepHandle(dest))
 		defer release()
-		os.RemoveAll(dest)
-		return os.Rename(tmpDest, dest)
+		if err := stepsHandle.RemoveAll(destRel); err != nil {
+			return fmt.Errorf("remove stale stream-in destination: %w", err)
+		}
+		return stepsHandle.Rename(tmpName, destRel)
 	}()
 	if renameErr != nil {
 		s.logger.Error("failed-to-rename-stream-in", renameErr, lager.Data{"key": key, "tmp": tmpDest})
@@ -926,6 +956,10 @@ func (s *Server) handleDeleteArtifact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	path := artifactPath
+	if err := s.validateGenericArtifactSource(path); err != nil {
+		http.Error(w, "artifact target is outside the generic artifact namespace", http.StatusBadRequest)
+		return
+	}
 
 	// Deletion is destructive like a sweep: wait out in-flight reads so a
 	// concurrent copy never sees a half-removed tree.
@@ -975,6 +1009,10 @@ func (s *Server) handleHeadArtifact(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
+	if err := s.validateGenericArtifactSource(path); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
 
 	w.WriteHeader(http.StatusOK)
 }
@@ -985,13 +1023,19 @@ func (s *Server) handleHeadArtifact(w http.ResponseWriter, r *http.Request) {
 // full key first, then strip common prefixes.
 func (s *Server) lookupRegistryAlias(r *http.Request) (string, bool) {
 	key := strings.TrimPrefix(r.URL.Path, "/artifacts/")
-	if path, found := s.registry.Lookup(key); found {
-		return path, true
+	if artifactPath, found := s.registry.Lookup(key); found {
+		if _, err := s.validateStepPath(artifactPath, true); err == nil {
+			return artifactPath, true
+		}
+		s.registry.Remove(key)
 	}
 	// Strip "steps/" prefix — peer probes prepend it but aliases don't have it.
 	if stripped := strings.TrimPrefix(key, "steps/"); stripped != key {
-		if path, found := s.registry.Lookup(stripped); found {
-			return path, true
+		if artifactPath, found := s.registry.Lookup(stripped); found {
+			if _, err := s.validateStepPath(artifactPath, true); err == nil {
+				return artifactPath, true
+			}
+			s.registry.Remove(stripped)
 		}
 	}
 	return "", false
@@ -1023,8 +1067,8 @@ func (s *Server) handleMirrorTrigger(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("invalid JSON: %v", err), http.StatusBadRequest)
 		return
 	}
-	if req.Key == "" {
-		http.Error(w, "key is required", http.StatusBadRequest)
+	if err := validateCanonicalRelativeKey(req.Key); err != nil || snapshotNamespaceKey(req.Key) {
+		http.Error(w, "invalid mirror key", http.StatusBadRequest)
 		return
 	}
 
@@ -1062,6 +1106,10 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "key and local_path are required", http.StatusBadRequest)
 		return
 	}
+	if err := validateCanonicalRelativeKey(req.Key); err != nil || snapshotNamespaceKey(req.Key) {
+		http.Error(w, "invalid registration key", http.StatusBadRequest)
+		return
+	}
 
 	// Validate that the path exists on disk.
 	if _, err := os.Stat(req.LocalPath); err != nil {
@@ -1072,6 +1120,10 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		}
 		s.logger.Error("register-stat-error", err, lager.Data{"key": req.Key, "path": req.LocalPath})
 		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if _, err := s.validateStepPath(req.LocalPath, true); err != nil {
+		http.Error(w, "registration source must be a real path beneath the steps root", http.StatusBadRequest)
 		return
 	}
 
@@ -1089,10 +1141,17 @@ func (s *Server) resolveOne(ctx context.Context, key, dest string) (resp resolve
 		s.metrics.recordResolve(resp.Method, resp.Status, time.Since(start))
 	}()
 	logger := s.logger.Session("resolve", lager.Data{"key": key, "dest": dest})
+	if err := s.validateResolveBoundary(key, dest); err != nil {
+		return resolveResponse{Status: "error", Method: "validation", Error: err.Error()}
+	}
 
 	// Step 1: Check registry for explicit registration.
 	sourcePath, found := s.registry.Lookup(key)
 	if found {
+		if _, err := s.validateStepPath(sourcePath, true); err != nil {
+			s.registry.Remove(key)
+			return resolveResponse{Status: "error", Source: sourcePath, Method: "validation", Error: fmt.Sprintf("unsafe registry source: %v", err)}
+		}
 		if err := s.copyArtifactGuarded(sourcePath, dest); err != nil {
 			logger.Error("copy-failed", err, lager.Data{"source": sourcePath})
 			return resolveResponse{Status: "error", Source: sourcePath, Method: "local", Error: err.Error()}
@@ -1105,6 +1164,9 @@ func (s *Server) resolveOne(ctx context.Context, key, dest string) (resp resolve
 	// Step 2: Fallback — check if key maps to a steps/ directory on disk.
 	stepsPath := filepath.Join(s.storagePath, "steps", key)
 	if info, err := os.Stat(stepsPath); err == nil && info.IsDir() {
+		if _, err := s.validateStepPath(stepsPath, true); err != nil {
+			return resolveResponse{Status: "error", Source: stepsPath, Method: "validation", Error: fmt.Sprintf("unsafe filesystem source: %v", err)}
+		}
 		s.registry.Register(key, stepsPath)
 
 		if err := s.copyArtifactGuarded(stepsPath, dest); err != nil {
@@ -1120,7 +1182,7 @@ func (s *Server) resolveOne(ctx context.Context, key, dest string) (resp resolve
 	if s.peers != nil {
 		peerIP, found := s.peers.Probe(ctx, key)
 		if found {
-			if err := s.peers.Fetch(ctx, peerIP, key, dest); err != nil {
+			if err := s.fetchPeerArtifact(ctx, peerIP, key, dest); err != nil {
 				logger.Error("peer-fetch-failed", err, lager.Data{"peer": peerIP})
 				return resolveResponse{Status: "error", Source: peerIP, Method: "peer", Error: err.Error()}
 			}
@@ -1134,6 +1196,46 @@ func (s *Server) resolveOne(ctx context.Context, key, dest string) (resp resolve
 	duration := time.Since(start)
 	logger.Info("not-found", lager.Data{"duration": duration.String()})
 	return resolveResponse{Status: "not_found", Method: "exhausted", Duration: duration.String(), Error: fmt.Sprintf("artifact %q not found on this node or any peer", key)}
+}
+
+func (s *Server) fetchPeerArtifact(ctx context.Context, peerIP, key, dest string) error {
+	stepsRoot := filepath.Join(s.storagePath, "steps")
+	destRel, err := pathBelow(stepsRoot, dest)
+	if err != nil {
+		return fmt.Errorf("derive peer destination: %w", err)
+	}
+	if err := os.MkdirAll(stepsRoot, 0755); err != nil {
+		return fmt.Errorf("create peer steps root: %w", err)
+	}
+	if err := verifyExistingPathComponents(s.storagePath, "steps", false); err != nil {
+		return fmt.Errorf("validate peer steps root: %w", err)
+	}
+	stepsHandle, err := os.OpenRoot(stepsRoot)
+	if err != nil {
+		return fmt.Errorf("anchor peer destination: %w", err)
+	}
+	defer stepsHandle.Close()
+	if err := stepsHandle.MkdirAll(filepath.Dir(destRel), 0755); err != nil {
+		return fmt.Errorf("create peer destination parent: %w", err)
+	}
+	tmpName, err := createRootTempDir(stepsHandle, ".peer-stage-")
+	if err != nil {
+		return fmt.Errorf("create peer staging directory: %w", err)
+	}
+	defer stepsHandle.RemoveAll(tmpName)
+	if err := s.peers.Fetch(ctx, peerIP, key, filepath.Join(stepsRoot, tmpName)); err != nil {
+		return err
+	}
+
+	release := s.guard.BeginSweep(s.stepHandle(dest))
+	defer release()
+	if err := stepsHandle.RemoveAll(destRel); err != nil {
+		return fmt.Errorf("remove stale peer destination: %w", err)
+	}
+	if err := stepsHandle.Rename(tmpName, destRel); err != nil {
+		return fmt.Errorf("publish peer artifact: %w", err)
+	}
+	return nil
 }
 
 // handleResolve accepts POST /resolve with a JSON body containing {key, dest}.
@@ -1151,6 +1253,10 @@ func (s *Server) handleResolve(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Key == "" || req.Dest == "" {
 		http.Error(w, "key and dest are required", http.StatusBadRequest)
+		return
+	}
+	if err := s.validateResolveBoundary(req.Key, req.Dest); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -1185,6 +1291,24 @@ func (s *Server) handleResolveBatch(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, fmt.Sprintf("invalid JSON: %v", err), http.StatusBadRequest)
 		return
+	}
+	destinations := make([]string, 0, len(req.Items))
+	for _, item := range req.Items {
+		if item.Key == "" || item.Dest == "" {
+			http.Error(w, "every item requires key and dest", http.StatusBadRequest)
+			return
+		}
+		if err := s.validateResolveBoundary(item.Key, item.Dest); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		for _, existing := range destinations {
+			if pathsOverlap(existing, item.Dest) {
+				http.Error(w, "batch destinations must not overlap", http.StatusBadRequest)
+				return
+			}
+		}
+		destinations = append(destinations, item.Dest)
 	}
 
 	results := make([]resolveResponse, len(req.Items))
@@ -1232,11 +1356,41 @@ func (s *Server) copyArtifactGuarded(src, dest string) error {
 // previous copy was interrupted (e.g., by restrictive or read-only files
 // left in the destination).
 func (s *Server) copyArtifact(src, dest string) error {
-	// Create a temp directory alongside dest (same filesystem for atomic rename).
-	tmpDest, err := os.MkdirTemp(filepath.Dir(dest), ".cp-tmp-")
+	if _, err := s.validateStepPath(src, true); err != nil {
+		return fmt.Errorf("validate source boundary: %w", err)
+	}
+	if _, err := s.validateStepPath(dest, false); err != nil {
+		return fmt.Errorf("validate destination boundary: %w", err)
+	}
+	stepsRoot := filepath.Join(s.storagePath, "steps")
+	srcRel, err := pathBelow(stepsRoot, src)
+	if err != nil {
+		return fmt.Errorf("derive source path: %w", err)
+	}
+	destRel, err := pathBelow(stepsRoot, dest)
+	if err != nil {
+		return fmt.Errorf("derive destination path: %w", err)
+	}
+	if pathsOverlap(srcRel, destRel) {
+		return fmt.Errorf("source and destination must not overlap")
+	}
+	stepsHandle, err := os.OpenRoot(stepsRoot)
+	if err != nil {
+		return fmt.Errorf("anchor steps root: %w", err)
+	}
+	defer stepsHandle.Close()
+	if err := stepsHandle.MkdirAll(filepath.Dir(destRel), 0755); err != nil {
+		return fmt.Errorf("create destination parent: %w", err)
+	}
+	// Keep the temporary copy at the anchored steps root. Publication and
+	// cleanup then remain confined even if a destination parent is replaced by
+	// a symlink between validation and rename.
+	tmpName, err := createRootTempDir(stepsHandle, ".cp-tmp-")
 	if err != nil {
 		return fmt.Errorf("create temp dir: %w", err)
 	}
+	tmpDest := filepath.Join(stepsRoot, tmpName)
+	defer stepsHandle.RemoveAll(tmpName)
 
 	// Use cp -R (recursive only — no ownership/mode preservation). The daemon
 	// has CAP_DAC_OVERRIDE to read source files owned by any UID, but does NOT
@@ -1245,7 +1399,6 @@ func (s *Server) copyArtifact(src, dest string) error {
 	// these are ephemeral artifact cache copies.
 	cmd := exec.Command("cp", "-R", src+"/.", tmpDest+"/")
 	if output, err := cmd.CombinedOutput(); err != nil {
-		os.RemoveAll(tmpDest)
 		return fmt.Errorf("cp -R %s/. %s/: %w (output: %s)", src, tmpDest, err, strings.TrimSpace(string(output)))
 	}
 
@@ -1256,16 +1409,15 @@ func (s *Server) copyArtifact(src, dest string) error {
 	// on directories (where owner already has execute).
 	chmodCmd := exec.Command("chmod", "-R", "a+rX", tmpDest)
 	if output, err := chmodCmd.CombinedOutput(); err != nil {
-		os.RemoveAll(tmpDest)
 		return fmt.Errorf("chmod -R a+rX %s: %w (output: %s)", tmpDest, err, strings.TrimSpace(string(output)))
 	}
 
-	// Remove any existing dest (may contain partial state from a prior failed copy).
-	os.RemoveAll(dest)
-
-	// Atomic rename on the same filesystem.
-	if err := os.Rename(tmpDest, dest); err != nil {
-		os.RemoveAll(tmpDest)
+	// Remove and publish through the anchored root; os.Root refuses to follow
+	// a path component outside the steps namespace.
+	if err := stepsHandle.RemoveAll(destRel); err != nil {
+		return fmt.Errorf("remove stale destination: %w", err)
+	}
+	if err := stepsHandle.Rename(tmpName, destRel); err != nil {
 		return fmt.Errorf("rename %s -> %s: %w", tmpDest, dest, err)
 	}
 	return nil
@@ -1291,7 +1443,7 @@ func sanitizeMode(typeflag byte, mode os.FileMode) os.FileMode {
 // otherwise.
 func (s *Server) handleHeadResourceCache(w http.ResponseWriter, r *http.Request) {
 	key := strings.TrimPrefix(r.URL.Path, "/resource-caches/")
-	if key == "" {
+	if err := validateCanonicalRelativeKey(key); err != nil || snapshotNamespaceKey(key) {
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
@@ -1301,7 +1453,6 @@ func (s *Server) handleHeadResourceCache(w http.ResponseWriter, r *http.Request)
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
-
 	// Verify the path still exists on disk — aliases can become stale if
 	// the sweeper removed the step directory.
 	if _, err := os.Stat(path); err != nil {
@@ -1312,6 +1463,11 @@ func (s *Server) handleHeadResourceCache(w http.ResponseWriter, r *http.Request)
 		}
 		s.logger.Error("resource-cache-stat-error", err, lager.Data{"key": key, "path": path})
 		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	if _, err := s.validateStepPath(path, true); err != nil {
+		s.registry.Remove(key)
+		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
 
@@ -1325,7 +1481,7 @@ func (s *Server) handleHeadResourceCache(w http.ResponseWriter, r *http.Request)
 // peer daemons to fetch cached resource data for cross-node resolution.
 func (s *Server) handleGetResourceCache(w http.ResponseWriter, r *http.Request) {
 	key := strings.TrimPrefix(r.URL.Path, "/resource-caches/")
-	if key == "" {
+	if err := validateCanonicalRelativeKey(key); err != nil || snapshotNamespaceKey(key) {
 		http.Error(w, "key required", http.StatusBadRequest)
 		return
 	}
@@ -1333,6 +1489,11 @@ func (s *Server) handleGetResourceCache(w http.ResponseWriter, r *http.Request) 
 	path, found := s.registry.Lookup(key)
 	if !found {
 		http.NotFound(w, r)
+		return
+	}
+	if _, err := s.validateStepPath(path, true); err != nil {
+		s.registry.Remove(key)
+		http.Error(w, "invalid resource cache source", http.StatusBadRequest)
 		return
 	}
 

@@ -135,6 +135,7 @@ type RunCommand struct {
 	agentSnapshotMu           sync.Mutex
 	agentSnapshotDaemonClient *jetbridge.DaemonClient
 	agentSnapshotContentStore snapshot.ContentStore
+	agentSnapshotComposer     func(db.DbConn) (*jetbridge.DaemonClient, snapshot.ContentStore, error)
 
 	// agentRunSecretAttacher bridges dispatch's API handler (constructed
 	// before the K8s clientset exists) to the real attacher bound in the
@@ -224,8 +225,8 @@ type RunCommand struct {
 	AgentSnapshots struct {
 		Enabled           bool  `long:"agent-snapshot-enabled" description:"Enable durable typed snapshot content storage through the Kubernetes artifact daemon."`
 		ReplicationFactor int   `long:"agent-snapshot-replication-factor" default:"2" description:"Number of stable artifact-daemon nodes selected for each snapshot upload."`
-		MaxBytes          int64 `long:"agent-snapshot-max-bytes" default:"10737418240" description:"Maximum canonical snapshot archive size in bytes."`
-		MaxFiles          int64 `long:"agent-snapshot-max-files" default:"100000" description:"Maximum number of files in a canonical snapshot archive."`
+		MaxBytes          int64 `long:"agent-snapshot-max-bytes" default:"10737418240" description:"Maximum regular-file content bytes admitted by snapshot canonicalization; may only lower the built-in limit."`
+		MaxFiles          int64 `long:"agent-snapshot-max-files" default:"100000" description:"Maximum entries admitted by snapshot canonicalization; may only lower the built-in limit."`
 	} `group:"Agent Snapshots"`
 
 	CLIArtifactsDir flag.Dir `long:"cli-artifacts-dir" description:"Directory containing downloadable CLI binaries."`
@@ -828,6 +829,13 @@ func (cmd *RunCommand) constructMembers(
 
 	workerCache, err := db.NewWorkerCache(logger.Session("worker-cache"), backendConn, 1*time.Minute)
 	if err != nil {
+		return nil, err
+	}
+	// Snapshot content is a command-scoped service, not a property of whichever
+	// worker pool happens to be constructed first. Select backendConn
+	// deliberately, compose once, and inject the exact daemon client into both
+	// API/backend pools below.
+	if err := cmd.composeAgentSnapshots(backendConn); err != nil {
 		return nil, err
 	}
 	checkBuildsChan := make(chan db.Build, 2000)
@@ -1561,6 +1569,86 @@ func (cmd *RunCommand) streamer() worker.Streamer {
 	return worker.NewStreamer(cmd.compression())
 }
 
+func (cmd *RunCommand) composeAgentSnapshots(connection db.DbConn) error {
+	cmd.agentSnapshotMu.Lock()
+	defer cmd.agentSnapshotMu.Unlock()
+	if !cmd.AgentSnapshots.Enabled {
+		return nil
+	}
+	if cmd.agentSnapshotDaemonClient != nil || cmd.agentSnapshotContentStore != nil {
+		if cmd.agentSnapshotDaemonClient == nil || cmd.agentSnapshotContentStore == nil {
+			return fmt.Errorf("snapshot command composition is partially initialized")
+		}
+		return nil
+	}
+	composer := cmd.agentSnapshotComposer
+	if composer == nil {
+		composer = cmd.buildAgentSnapshotComponents
+	}
+	daemonClient, contentStore, err := composer(connection)
+	if err != nil {
+		return fmt.Errorf("compose agent snapshot storage: %w", err)
+	}
+	if daemonClient == nil || contentStore == nil {
+		return fmt.Errorf("compose agent snapshot storage returned incomplete components")
+	}
+	cmd.agentSnapshotDaemonClient = daemonClient
+	cmd.agentSnapshotContentStore = contentStore
+	return nil
+}
+
+func (cmd *RunCommand) buildAgentSnapshotComponents(connection db.DbConn) (*jetbridge.DaemonClient, snapshot.ContentStore, error) {
+	if connection == nil {
+		return nil, nil, fmt.Errorf("snapshot metadata database connection is required")
+	}
+	if cmd.Kubernetes.ArtifactDaemonTLSCert == "" || cmd.Kubernetes.ArtifactDaemonTLSKey == "" || cmd.Kubernetes.ArtifactDaemonTLSCACert == "" {
+		return nil, nil, fmt.Errorf("snapshot daemon mTLS certificate, key, and CA certificate are required")
+	}
+	k8sConfig := jetbridge.NewConfig(cmd.Kubernetes.Namespace, cmd.Kubernetes.Kubeconfig)
+	k8sConfig.ArtifactDaemonPort = cmd.Kubernetes.ArtifactDaemonPort
+	k8sConfig.ArtifactDaemonService = cmd.Kubernetes.ArtifactDaemonService
+	k8sClientset, err := jetbridge.NewClientset(k8sConfig)
+	if err != nil {
+		return nil, nil, fmt.Errorf("create snapshot daemon discovery client: %w", err)
+	}
+	daemonPort := k8sConfig.ArtifactDaemonPort
+	if daemonPort == 0 {
+		daemonPort = 7780
+	}
+	daemonTLSConfig := &jetbridge.DaemonClientTLSConfig{
+		CertPath:   cmd.Kubernetes.ArtifactDaemonTLSCert,
+		KeyPath:    cmd.Kubernetes.ArtifactDaemonTLSKey,
+		CACertPath: cmd.Kubernetes.ArtifactDaemonTLSCACert,
+	}
+	daemonLogger := lager.NewLogger("snapshot-daemon-client")
+	daemonLogger.RegisterSink(lager.NewWriterSink(os.Stderr, lager.INFO))
+	daemonClient, err := jetbridge.NewDaemonClientChecked(
+		daemonLogger,
+		k8sClientset,
+		k8sConfig.Namespace,
+		k8sConfig.ArtifactDaemonService,
+		daemonPort,
+		daemonTLSConfig,
+	)
+	if err != nil {
+		return nil, nil, fmt.Errorf("construct checked snapshot daemon client: %w", err)
+	}
+	archiveMaxBytes, err := snapshot.CanonicalArchiveByteLimit(cmd.AgentSnapshots.MaxBytes, cmd.AgentSnapshots.MaxFiles)
+	if err != nil {
+		return nil, nil, fmt.Errorf("derive snapshot archive transport bound: %w", err)
+	}
+	contentStore, err := jetbridge.NewSnapshotContentStore(
+		daemonClient,
+		db.NewAgentSnapshotsFactory(connection),
+		cmd.AgentSnapshots.ReplicationFactor,
+		archiveMaxBytes,
+	)
+	if err != nil {
+		return nil, nil, fmt.Errorf("construct snapshot content store: %w", err)
+	}
+	return daemonClient, contentStore, nil
+}
+
 func (cmd *RunCommand) constructPool(dbConn db.DbConn, lockFactory lock.LockFactory, workerCache *db.WorkerCache) (worker.Pool, error) {
 	dbResourceCacheFactory := db.NewResourceCacheFactory(dbConn, lockFactory)
 	dbWorkerBaseResourceTypeFactory := db.NewWorkerBaseResourceTypeFactory(dbConn)
@@ -1643,34 +1731,12 @@ func (cmd *RunCommand) constructPool(dbConn db.DbConn, lockFactory lock.LockFact
 
 			if cmd.AgentSnapshots.Enabled {
 				cmd.agentSnapshotMu.Lock()
-				if cmd.agentSnapshotDaemonClient == nil {
-					daemonClient, err := jetbridge.NewDaemonClientChecked(
-						dcLogger,
-						k8sClientset,
-						k8sCfg.Namespace,
-						k8sCfg.ArtifactDaemonService,
-						daemonPort,
-						daemonTLSCfg,
-					)
-					if err != nil {
-						cmd.agentSnapshotMu.Unlock()
-						return worker.Pool{}, fmt.Errorf("construct snapshot daemon client: %w", err)
-					}
-					contentStore, err := jetbridge.NewSnapshotContentStore(
-						daemonClient,
-						db.NewAgentSnapshotsFactory(dbConn),
-						cmd.AgentSnapshots.ReplicationFactor,
-						cmd.AgentSnapshots.MaxBytes,
-					)
-					if err != nil {
-						cmd.agentSnapshotMu.Unlock()
-						return worker.Pool{}, fmt.Errorf("construct snapshot content store: %w", err)
-					}
-					cmd.agentSnapshotDaemonClient = daemonClient
-					cmd.agentSnapshotContentStore = contentStore
-				}
-				factory.K8sDaemonClient = cmd.agentSnapshotDaemonClient
+				sharedDaemonClient := cmd.agentSnapshotDaemonClient
 				cmd.agentSnapshotMu.Unlock()
+				if sharedDaemonClient == nil {
+					return worker.Pool{}, fmt.Errorf("snapshot command components must be composed before constructing worker pools")
+				}
+				factory.K8sDaemonClient = sharedDaemonClient
 			} else {
 				factory.K8sDaemonClient = jetbridge.NewDaemonClient(
 					dcLogger,
@@ -2104,6 +2170,12 @@ func (cmd *RunCommand) validateAgentSnapshots() error {
 	}
 	if cmd.AgentSnapshots.MaxFiles <= 0 {
 		errs = multierror.Append(errs, errors.New("--agent-snapshot-max-files must be positive"))
+	}
+	if cmd.AgentSnapshots.MaxBytes > snapshot.DefaultMaxSnapshotContentBytes {
+		errs = multierror.Append(errs, fmt.Errorf("--agent-snapshot-max-bytes must not exceed %d", snapshot.DefaultMaxSnapshotContentBytes))
+	}
+	if cmd.AgentSnapshots.MaxFiles > snapshot.DefaultMaxSnapshotEntries {
+		errs = multierror.Append(errs, fmt.Errorf("--agent-snapshot-max-files must not exceed %d", snapshot.DefaultMaxSnapshotEntries))
 	}
 	if !cmd.AgentSnapshots.Enabled {
 		return errs.ErrorOrNil()
@@ -2615,14 +2687,14 @@ func (cmd *RunCommand) constructAPIHandler(
 		cmd.agentOutcomeDiffProvider(),
 		db.NewAgentWorkflowsFactory(dbConn),
 		dispatch.NewHTTPHandler(dispatch.Deps{
-			Tickets:        db.NewAgentTicketsFactory(dbConn),
-			Workflows:      db.NewAgentWorkflowsFactory(dbConn),
-			Templates:      dispatch.NewTeamTemplateSaver(teamFactory, atc.DefaultTeamName),
-			Runs:           dbPipelineRunFactory,
-			Principals:     agentPrincipalsFactory,
-			Credentials:    db.NewAgentUserCredentialsFactory(dbConn),
-			Secrets:        cmd.agentRunSecrets(),
-			Users:          db.NewAgentUserLookup(dbConn),
+			Tickets:     db.NewAgentTicketsFactory(dbConn),
+			Workflows:   db.NewAgentWorkflowsFactory(dbConn),
+			Templates:   dispatch.NewTeamTemplateSaver(teamFactory, atc.DefaultTeamName),
+			Runs:        dbPipelineRunFactory,
+			Principals:  agentPrincipalsFactory,
+			Credentials: db.NewAgentUserCredentialsFactory(dbConn),
+			Secrets:     cmd.agentRunSecrets(),
+			Users:       db.NewAgentUserLookup(dbConn),
 			Budget: budget.NewChecker(
 				db.NewAgentCostLedgerFactory(dbConn),
 				dispatch.NewTicketBudgets(db.NewAgentTicketsFactory(dbConn), db.NewAgentWorkflowsFactory(dbConn)),

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/atccmd"
 	"github.com/jessevdk/go-flags"
@@ -96,6 +97,28 @@ func (s *CommandSuite) TestAgentSnapshotNumericBoundsAreAlwaysPositive() {
 			err := atccmd.ValidateAgentSnapshotsForTest(command)
 			s.Error(err)
 			s.Contains(err.Error(), "must be positive")
+		})
+	}
+}
+
+func (s *CommandSuite) TestAgentSnapshotLimitsMayOnlyLowerCanonicalizerDefaults() {
+	for name, mutate := range map[string]func(*atccmd.RunCommand){
+		"content bytes": func(command *atccmd.RunCommand) {
+			command.AgentSnapshots.MaxBytes = snapshot.DefaultMaxSnapshotContentBytes + 1
+		},
+		"entries": func(command *atccmd.RunCommand) {
+			command.AgentSnapshots.MaxFiles = snapshot.DefaultMaxSnapshotEntries + 1
+		},
+	} {
+		s.Run(name, func() {
+			command := &atccmd.RunCommand{}
+			command.AgentSnapshots.ReplicationFactor = 2
+			command.AgentSnapshots.MaxBytes = snapshot.DefaultMaxSnapshotContentBytes
+			command.AgentSnapshots.MaxFiles = snapshot.DefaultMaxSnapshotEntries
+			mutate(command)
+			err := atccmd.ValidateAgentSnapshotsForTest(command)
+			s.Error(err)
+			s.Contains(err.Error(), "must not exceed")
 		})
 	}
 }
