@@ -947,6 +947,86 @@ func TestCanonicalCaptureRejectsArchivePathReplacementAtBoundary(t *testing.T) {
 	}
 }
 
+func TestCanonicalCaptureRejectsArchiveContentRewriteAtBoundary(t *testing.T) {
+	t.Parallel()
+
+	canonicalizer := Canonicalizer{
+		beforeCaptureBoundary: func(root *os.Root, _ string) error {
+			archive, err := root.OpenFile("canonical.tar", os.O_WRONLY, 0)
+			if err != nil {
+				return err
+			}
+			info, statErr := archive.Stat()
+			if statErr == nil {
+				_, statErr = archive.WriteAt(bytes.Repeat([]byte{0xa5}, int(info.Size())), 0)
+			}
+			return errors.Join(statErr, archive.Close())
+		},
+	}
+	_, err := canonicalizer.Capture(context.Background(), bytes.NewReader(makeTar(t, nil)))
+	if err == nil || !strings.Contains(err.Error(), "archive digest") {
+		t.Fatalf("Capture() error = %v, want archive digest integrity failure", err)
+	}
+}
+
+func TestCanonicalCaptureRejectsArchiveModeChangeAtBoundary(t *testing.T) {
+	t.Parallel()
+
+	canonicalizer := Canonicalizer{
+		beforeCaptureBoundary: func(root *os.Root, _ string) error {
+			return root.Chmod("canonical.tar", 0644)
+		},
+	}
+	_, err := canonicalizer.Capture(context.Background(), bytes.NewReader(makeTar(t, nil)))
+	if err == nil || !strings.Contains(err.Error(), "archive mode") {
+		t.Fatalf("Capture() error = %v, want archive mode integrity failure", err)
+	}
+}
+
+func TestCanonicalCaptureRejectsArchiveSizeChangeAtBoundary(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		mutate func(*os.File) error
+	}{
+		{
+			name: "truncate",
+			mutate: func(archive *os.File) error {
+				return archive.Truncate(1)
+			},
+		},
+		{
+			name: "append",
+			mutate: func(archive *os.File) error {
+				_, err := archive.Write([]byte("appended"))
+				return err
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			canonicalizer := Canonicalizer{
+				beforeCaptureBoundary: func(root *os.Root, _ string) error {
+					flags := os.O_WRONLY
+					if tt.name == "append" {
+						flags |= os.O_APPEND
+					}
+					archive, err := root.OpenFile("canonical.tar", flags, 0)
+					if err != nil {
+						return err
+					}
+					return errors.Join(tt.mutate(archive), archive.Close())
+				},
+			}
+			_, err := canonicalizer.Capture(context.Background(), bytes.NewReader(makeTar(t, nil)))
+			if err == nil || !strings.Contains(err.Error(), "archive byte size") {
+				t.Fatalf("Capture() error = %v, want archive byte-size integrity failure", err)
+			}
+		})
+	}
+}
+
 func TestCanonicalCapturePerformsFinalTreeVerificationAtSuccessBoundary(t *testing.T) {
 	t.Parallel()
 

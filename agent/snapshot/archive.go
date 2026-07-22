@@ -258,6 +258,9 @@ func (c Canonicalizer) Capture(ctx context.Context, rawTar io.Reader) (tree *Cap
 	if err := verifyCaptureIndex(ctx, extractionRoot, index, maxEntries); err != nil {
 		return nil, fmt.Errorf("snapshot: verify captured tree at success boundary: %w", err)
 	}
+	if err := verifyCanonicalArchive(ctx, captureRoot, archiveInfo, privateRoot, byteSize, digest); err != nil {
+		return nil, fmt.Errorf("snapshot: verify returned canonical archive: %w", err)
+	}
 	if err := extractionRoot.Close(); err != nil {
 		return nil, fmt.Errorf("snapshot: close extraction root: %w", err)
 	}
@@ -392,10 +395,121 @@ func verifyCaptureBoundary(
 		return fmt.Errorf("snapshot: verify archive path identity at object path: %w", err)
 	}
 	if !os.SameFile(archiveInfo, anchoredArchiveInfo) ||
-		!os.SameFile(archiveInfo, pathArchiveInfo) ||
-		archiveInfo.Size() != anchoredArchiveInfo.Size() ||
-		archiveInfo.Size() != pathArchiveInfo.Size() {
+		!os.SameFile(archiveInfo, pathArchiveInfo) {
 		return fmt.Errorf("snapshot: archive path identity changed before success")
+	}
+	return nil
+}
+
+func verifyCanonicalArchive(
+	ctx context.Context,
+	captureRoot *os.Root,
+	originalInfo fs.FileInfo,
+	privateRoot string,
+	byteSize int64,
+	digest Digest,
+) (err error) {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	validateInfo := func(location string, info fs.FileInfo) error {
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("snapshot: canonical archive type at %s is %v, want regular", location, info.Mode())
+		}
+		if info.Mode().Perm() != 0600 {
+			return fmt.Errorf("snapshot: canonical archive mode at %s is %v, want 0600", location, info.Mode().Perm())
+		}
+		if info.Size() != byteSize {
+			return fmt.Errorf("snapshot: canonical archive byte size at %s is %d, want %d", location, info.Size(), byteSize)
+		}
+		if !os.SameFile(originalInfo, info) {
+			return fmt.Errorf("snapshot: canonical archive path identity at %s changed before success", location)
+		}
+		return nil
+	}
+	if err := validateInfo("created descriptor", originalInfo); err != nil {
+		return err
+	}
+	anchoredBefore, err := captureRoot.Lstat("canonical.tar")
+	if err != nil {
+		return fmt.Errorf("snapshot: inspect canonical archive path identity before reading: %w", err)
+	}
+	if err := validateInfo("anchored path before reading", anchoredBefore); err != nil {
+		return err
+	}
+	archivePath := filepath.Join(privateRoot, "canonical.tar")
+	pathBefore, err := os.Lstat(archivePath)
+	if err != nil {
+		return fmt.Errorf("snapshot: inspect canonical archive object path identity before reading: %w", err)
+	}
+	if err := validateInfo("object path before reading", pathBefore); err != nil {
+		return err
+	}
+
+	archive, err := captureRoot.Open("canonical.tar")
+	if err != nil {
+		return fmt.Errorf("snapshot: reopen canonical archive read-only: %w", err)
+	}
+	defer func() {
+		err = errors.Join(err, archive.Close())
+	}()
+	descriptorBefore, err := archive.Stat()
+	if err != nil {
+		return fmt.Errorf("snapshot: stat canonical archive descriptor before reading: %w", err)
+	}
+	if err := validateInfo("reopened descriptor before reading", descriptorBefore); err != nil {
+		return err
+	}
+	anchoredOpened, err := captureRoot.Lstat("canonical.tar")
+	if err != nil {
+		return fmt.Errorf("snapshot: recheck canonical archive path identity before reading: %w", err)
+	}
+	if err := validateInfo("anchored path after reopening", anchoredOpened); err != nil {
+		return err
+	}
+	pathOpened, err := os.Lstat(archivePath)
+	if err != nil {
+		return fmt.Errorf("snapshot: recheck canonical archive object path identity before reading: %w", err)
+	}
+	if err := validateInfo("object path after reopening", pathOpened); err != nil {
+		return err
+	}
+
+	hasher := sha256.New()
+	readSize, readErr := io.Copy(hasher, contextReader{ctx: ctx, reader: archive})
+	if readErr != nil {
+		return fmt.Errorf("snapshot: hash canonical archive: %w", readErr)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	descriptorAfter, err := archive.Stat()
+	if err != nil {
+		return fmt.Errorf("snapshot: stat canonical archive descriptor after reading: %w", err)
+	}
+	if err := validateInfo("reopened descriptor after reading", descriptorAfter); err != nil {
+		return err
+	}
+	anchoredAfter, err := captureRoot.Lstat("canonical.tar")
+	if err != nil {
+		return fmt.Errorf("snapshot: recheck canonical archive path identity after reading: %w", err)
+	}
+	if err := validateInfo("anchored path after reading", anchoredAfter); err != nil {
+		return err
+	}
+	pathAfter, err := os.Lstat(archivePath)
+	if err != nil {
+		return fmt.Errorf("snapshot: recheck canonical archive object path identity after reading: %w", err)
+	}
+	if err := validateInfo("object path after reading", pathAfter); err != nil {
+		return err
+	}
+	if readSize != byteSize {
+		return fmt.Errorf("snapshot: canonical archive byte size read is %d, want %d", readSize, byteSize)
+	}
+	actualDigest := Digest(fmt.Sprintf("sha256:%x", hasher.Sum(nil)))
+	if actualDigest != digest {
+		return fmt.Errorf("snapshot: canonical archive digest is %q, want %q", actualDigest, digest)
 	}
 	return nil
 }
