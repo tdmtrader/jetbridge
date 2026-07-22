@@ -92,6 +92,7 @@ var _ = Describe("Builder", func() {
 					PipelineInstanceVars: atc.InstanceVars{"branch": "master"},
 					ExternalURL:          "http://example.com",
 					CreatedBy:            "some-user",
+					SnapshotCreatedBy:    "some-user",
 				}
 
 				expectedMetadataWithoutCreatedBy = exec.StepMetadata{
@@ -105,6 +106,7 @@ var _ = Describe("Builder", func() {
 					PipelineName:         "some-pipeline",
 					PipelineInstanceVars: atc.InstanceVars{"branch": "master"},
 					ExternalURL:          "http://example.com",
+					SnapshotCreatedBy:    "some-user",
 				}
 			})
 
@@ -131,6 +133,44 @@ var _ = Describe("Builder", func() {
 					Expect(err).ToNot(HaveOccurred())
 
 					stepper(fakeBuild.PrivatePlan())
+				})
+
+				Describe("snapshot producer principal fallback", func() {
+					BeforeEach(func() {
+						expectedPlan = planFactory.NewPlan(atc.InParallelPlan{Steps: []atc.Plan{
+							planFactory.NewPlan(atc.TaskPlan{Name: "typed-task"}),
+							planFactory.NewPlan(atc.AgentPlan{Name: "typed-agent", Prompt: "p"}),
+						}})
+					})
+
+					assertFallback := func() {
+						Expect(fakeCoreStepFactory.TaskStepCallCount()).To(Equal(1))
+						_, taskMetadata, _, _ := fakeCoreStepFactory.TaskStepArgsForCall(0)
+						Expect(taskMetadata.SnapshotCreatedBy).To(Equal("concourse"))
+						Expect(taskMetadata.CreatedBy).To(BeEmpty())
+
+						Expect(fakeCoreStepFactory.AgentStepCallCount()).To(Equal(1))
+						_, agentMetadata, _, _ := fakeCoreStepFactory.AgentStepArgsForCall(0)
+						Expect(agentMetadata.SnapshotCreatedBy).To(Equal("concourse"))
+						Expect(agentMetadata.CreatedBy).To(BeEmpty())
+					}
+
+					Context("when the build creator is absent", func() {
+						BeforeEach(func() {
+							fakeBuild.CreatedByReturns(nil)
+						})
+
+						It("uses the automated principal without exposing it", assertFallback)
+					})
+
+					Context("when the build creator is blank", func() {
+						BeforeEach(func() {
+							blank := "  "
+							fakeBuild.CreatedByReturns(&blank)
+						})
+
+						It("uses the automated principal without exposing it", assertFallback)
+					})
 				})
 
 				Context("with a putget in an in_parallel", func() {

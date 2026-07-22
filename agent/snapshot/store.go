@@ -158,6 +158,7 @@ func (s *RetentionSpec) UnmarshalJSON(data []byte) error {
 type SealCommitOutput struct {
 	ClientKey         string          `json:"client_key"`
 	Port              Port            `json:"port"`
+	WorkflowPort      string          `json:"workflow_port,omitempty"`
 	Digest            Digest          `json:"digest"`
 	ByteSize          int64           `json:"byte_size"`
 	FileCount         int64           `json:"file_count"`
@@ -205,10 +206,17 @@ func (o SealCommitOutput) Validate() error {
 	if len(o.Retention) == 0 {
 		return fmt.Errorf("snapshot: at least one retention policy is required")
 	}
+	hasWorkflowRetention := false
 	for _, retention := range o.Retention {
 		if err := retention.Validate(); err != nil {
 			return err
 		}
+		if retention.Class == RetentionClassWorkflow {
+			hasWorkflowRetention = true
+		}
+	}
+	if (strings.TrimSpace(o.WorkflowPort) != "") != hasWorkflowRetention {
+		return fmt.Errorf("snapshot: workflow port and workflow retention must be provided together")
 	}
 	if err := validateRawMessage(o.SourceMetadata); err != nil {
 		return fmt.Errorf("snapshot: source metadata: %w", err)
@@ -234,6 +242,7 @@ func (o SealCommitOutput) Clone() SealCommitOutput {
 // phase without carrying the private ArchivePath across that boundary.
 func (o CandidateOutput) CommitOutput(
 	clientKey string,
+	workflowPort string,
 	stage StagedUpload,
 	locations []Location,
 	retention []RetentionSpec,
@@ -249,7 +258,7 @@ func (o CandidateOutput) CommitOutput(
 		return SealCommitOutput{}, fmt.Errorf("snapshot: staged upload digest does not match candidate")
 	}
 	output := SealCommitOutput{
-		ClientKey: clientKey, Port: o.Port, Digest: o.Digest,
+		ClientKey: clientKey, Port: o.Port, WorkflowPort: workflowPort, Digest: o.Digest,
 		ByteSize: o.ByteSize, FileCount: o.FileCount, Representation: o.Representation,
 		IntrinsicMetadata: o.IntrinsicMetadata, StagedUploadID: stage.ID,
 		Locations: locations, Retention: retention, SourceMetadata: sourceMetadata,
@@ -302,6 +311,7 @@ func (c SealCommit) Validate() error {
 	}
 	clientKeys := make(map[string]struct{}, len(c.Outputs))
 	ports := make(map[string]struct{}, len(c.Outputs))
+	workflowPorts := make(map[string]struct{}, len(c.Outputs))
 	stageDigests := make(map[int64]Digest, len(c.Outputs))
 	type physicalMetadata struct {
 		byteSize       int64
@@ -326,6 +336,12 @@ func (c SealCommit) Validate() error {
 			return fmt.Errorf("snapshot: duplicate committed output port %q", output.Port.Name)
 		}
 		ports[output.Port.Name] = struct{}{}
+		if output.WorkflowPort != "" {
+			if _, duplicate := workflowPorts[output.WorkflowPort]; duplicate {
+				return fmt.Errorf("snapshot: duplicate workflow port %q", output.WorkflowPort)
+			}
+			workflowPorts[output.WorkflowPort] = struct{}{}
+		}
 		expectedPort, found := expected[output.Port.Name]
 		if !found || expectedPort.Type != output.Port.Type || expectedPort.Optional != output.Port.Optional {
 			return fmt.Errorf("snapshot: committed output %q does not match the expected output set", output.Port.Name)

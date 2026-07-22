@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"reflect"
 	"strings"
 	"testing"
@@ -77,9 +78,9 @@ func TestSealCommitUsesOnlyPrePersistenceCorrelatedDTOs(t *testing.T) {
 		WorkflowDefinitionID: &workflowDefinitionID, WorkflowRunID: &workflowRunID,
 		Inputs:             map[string]SnapshotRef{"before": {ID: 1, Type: TypeRef("repository/v1"), Digest: digest}},
 		OutputDeclarations: []Port{{Name: "review", Type: TypeRef("review/v1")}},
-		Outputs: []CandidateOutput{{
-			Port: Port{Name: "review", Type: TypeRef("review/v1")}, ArchivePath: "/private/spool/review.tar",
-			Digest: digest, ByteSize: 42, FileCount: 1, Representation: "application/x-tar", IntrinsicMetadata: json.RawMessage(`{"schema":1}`),
+		Outputs: []OutputSource{{
+			ClientKey: "review-result", Port: Port{Name: "review", Type: TypeRef("review/v1")},
+			OpenTar: func(context.Context) (io.ReadCloser, error) { return io.NopCloser(strings.NewReader("tar")), nil },
 		}},
 	}
 	context, err := request.CommitContext()
@@ -87,8 +88,13 @@ func TestSealCommitUsesOnlyPrePersistenceCorrelatedDTOs(t *testing.T) {
 		t.Fatalf("derive commit context: %v", err)
 	}
 	stage := StagedUpload{ID: 101, Digest: digest, TeamID: 8, Attempt: "1", LeaseExpiresAt: now.Add(time.Hour), CreatedAt: now}
-	output, err := request.Outputs[0].CommitOutput(
+	candidate := CandidateOutput{
+		Port: Port{Name: "review", Type: TypeRef("review/v1")}, ArchivePath: "/private/spool/review.tar",
+		Digest: digest, ByteSize: 42, FileCount: 1, Representation: "application/x-tar", IntrinsicMetadata: json.RawMessage(`{"schema":1}`),
+	}
+	output, err := candidate.CommitOutput(
 		"review-result",
+		"",
 		stage,
 		[]Location{{Digest: digest, Driver: "jetbridge-daemon-v1", Key: "snapshots/sha256/key.tar", Node: "worker-1"}},
 		[]RetentionSpec{{Class: RetentionClassBinding, ExpiresAt: ptrTime(now.Add(time.Hour)), Actor: "build/7", Reason: "build output"}},
@@ -158,21 +164,23 @@ func TestCandidateOutputRequiresPrivateArchivePath(t *testing.T) {
 }
 
 func TestSealRequestValidatesDeclaredRequiredAndOptionalOutputs(t *testing.T) {
-	digest := mustTestDigest(t)
 	requiredA := Port{Name: "first", Type: TypeRef("opaque/v1")}
 	requiredB := Port{Name: "second", Type: TypeRef("review/v1")}
 	optional := Port{Name: "notes", Type: TypeRef("opaque/v1"), Optional: true}
-	candidate := func(port Port) CandidateOutput {
-		return CandidateOutput{
-			Port: port, ArchivePath: "/tmp/" + port.Name + ".tar", Digest: digest,
-			ByteSize: 10, FileCount: 1, Representation: "application/x-tar",
+	source := func(port Port) OutputSource {
+		return OutputSource{
+			ClientKey: port.Name,
+			Port:      port,
+			OpenTar: func(context.Context) (io.ReadCloser, error) {
+				return io.NopCloser(strings.NewReader("tar")), nil
+			},
 		}
 	}
 	base := SealRequest{
 		BuildID: 1, TeamID: 1, TeamName: "main", CreatedBy: "alice", PlanID: "p",
 		Attempt: "1", StepKind: "task", StepName: "s", Inputs: map[string]SnapshotRef{}, InputOrder: []string{},
 		OutputDeclarations: []Port{requiredA, optional, requiredB},
-		Outputs:            []CandidateOutput{candidate(requiredA), candidate(requiredB)},
+		Outputs:            []OutputSource{source(requiredA), source(requiredB)},
 	}
 	if err := base.Validate(); err != nil {
 		t.Fatalf("required outputs with absent optional output: %v", err)
@@ -186,7 +194,7 @@ func TestSealRequestValidatesDeclaredRequiredAndOptionalOutputs(t *testing.T) {
 	}
 
 	withOptional := base.Clone()
-	withOptional.Outputs = append(withOptional.Outputs, candidate(optional))
+	withOptional.Outputs = append(withOptional.Outputs, source(optional))
 	if err := withOptional.Validate(); err != nil {
 		t.Fatalf("present optional output: %v", err)
 	}
@@ -221,7 +229,7 @@ func TestSealRequestValidatesDeclaredRequiredAndOptionalOutputs(t *testing.T) {
 		},
 		"type mismatch": func(request *SealRequest) { request.Outputs[1].Port.Type = TypeRef("opaque/v1") },
 		"optionality mismatch": func(request *SealRequest) {
-			request.Outputs = append(request.Outputs, candidate(Port{Name: optional.Name, Type: optional.Type}))
+			request.Outputs = append(request.Outputs, source(Port{Name: optional.Name, Type: optional.Type}))
 		},
 		"duplicate candidate": func(request *SealRequest) { request.Outputs = append(request.Outputs, request.Outputs[0]) },
 	} {
@@ -268,6 +276,25 @@ func TestSealCommitRequiresEveryActualOutputExactlyOnce(t *testing.T) {
 	}
 }
 
+func TestSealCommitRejectsDuplicateWorkflowPorts(t *testing.T) {
+	digest := mustTestDigest(t)
+	commit := validSealCommit(t, digest)
+	first := &commit.Outputs[0]
+	first.WorkflowPort = "review"
+	first.Retention = []RetentionSpec{{Class: RetentionClassWorkflow, Actor: "workflow:first", Reason: "durable workflow-run output"}}
+
+	second := first.Clone()
+	second.ClientKey = "second"
+	second.Port.Name = "second"
+	second.StagedUploadID = 100
+	commit.Outputs = append(commit.Outputs, second)
+	commit.Context.ExpectedOutputs = append(commit.Context.ExpectedOutputs, second.Port)
+
+	if err := commit.Validate(); err == nil || !strings.Contains(err.Error(), "duplicate workflow port") {
+		t.Fatalf("SealCommit.Validate() error = %v, want duplicate workflow-port rejection", err)
+	}
+}
+
 func TestCandidateAndSealRequestAreInternalOnlyJSONValues(t *testing.T) {
 	digest := mustTestDigest(t)
 	candidate := CandidateOutput{
@@ -277,7 +304,10 @@ func TestCandidateAndSealRequestAreInternalOnlyJSONValues(t *testing.T) {
 	request := SealRequest{
 		BuildID: 1, TeamID: 1, TeamName: "main", CreatedBy: "alice", PlanID: "p",
 		Attempt: "1", StepKind: "task", StepName: "s", InputOrder: []string{}, Inputs: map[string]SnapshotRef{},
-		OutputDeclarations: []Port{candidate.Port}, Outputs: []CandidateOutput{candidate},
+		OutputDeclarations: []Port{candidate.Port}, Outputs: []OutputSource{{
+			ClientKey: "out", Port: candidate.Port,
+			OpenTar: func(context.Context) (io.ReadCloser, error) { return io.NopCloser(strings.NewReader("tar")), nil },
+		}},
 	}
 	for name, value := range map[string]any{"candidate": candidate, "seal request": request} {
 		t.Run(name+" marshal", func(t *testing.T) {
@@ -373,7 +403,10 @@ func TestSealRequestRequiresInputOrderToBeAnExactPermutation(t *testing.T) {
 			"second": {ID: 2, Type: TypeRef("opaque/v1"), Digest: digest},
 		},
 		OutputDeclarations: []Port{{Name: "out", Type: TypeRef("opaque/v1")}},
-		Outputs:            []CandidateOutput{{Port: Port{Name: "out", Type: TypeRef("opaque/v1")}, ArchivePath: "/tmp/out.tar", Digest: digest, ByteSize: 1, Representation: "application/x-tar"}},
+		Outputs: []OutputSource{{
+			ClientKey: "out", Port: Port{Name: "out", Type: TypeRef("opaque/v1")},
+			OpenTar: func(context.Context) (io.ReadCloser, error) { return io.NopCloser(strings.NewReader("tar")), nil },
+		}},
 	}
 	for name, order := range map[string][]string{
 		"missing": {"first"}, "duplicate": {"first", "first"}, "unknown": {"first", "third"}, "whitespace order": {"first", " "},

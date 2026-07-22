@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/exec"
@@ -47,10 +48,10 @@ var _ = Describe("TaskStep", func() {
 		state exec.RunState
 		repo  *build.Repository
 
-		taskStep         exec.Step
-		taskStepOptions  []exec.TaskStepOption
-		stepOk           bool
-		stepErr          error
+		taskStep        exec.Step
+		taskStepOptions []exec.TaskStepOption
+		stepOk          bool
+		stepErr         error
 
 		cpuLimit          = atc.CPULimit(1024)
 		memoryLimit       = atc.MemoryLimit(1024)
@@ -228,7 +229,6 @@ var _ = Describe("TaskStep", func() {
 				Expect(workerName).To(Equal("worker"))
 			})
 
-	
 			Context("when selecting a worker fails", func() {
 				BeforeEach(func() {
 					fakePool.FindOrSelectWorkerReturns(nil, errors.New("nope"))
@@ -738,6 +738,342 @@ var _ = Describe("TaskStep", func() {
 			})
 		})
 
+		Context("with typed snapshot declarations", func() {
+			var (
+				outputSealer *recordingOutputSealer
+				inputVolume  *runtimetest.Volume
+				inputRef     snapshot.SnapshotRef
+				outputVolume *runtimetest.Volume
+				outputDigest snapshot.Digest
+			)
+
+			BeforeEach(func() {
+				var err error
+				outputDigest, err = snapshot.ParseDigest("sha256:" + strings.Repeat("a", 64))
+				Expect(err).NotTo(HaveOccurred())
+				stepMetadata.TeamName = "main"
+				stepMetadata.SnapshotCreatedBy = "concourse"
+				containerMetadata.Attempt = "2"
+				inputDigest, err := snapshot.ParseDigest("sha256:" + strings.Repeat("b", 64))
+				Expect(err).NotTo(HaveOccurred())
+				inputRef = snapshot.SnapshotRef{ID: 81, Type: snapshot.TypeRef("repository/v1"), Digest: inputDigest}
+				inputVolume = runtimetest.NewVolume("typed-input")
+				Expect(repo.RegisterArtifacts(map[build.ArtifactName]build.ArtifactEntry{
+					"repository": {Artifact: inputVolume, FromCache: true, Snapshot: &inputRef},
+				})).To(Succeed())
+				taskPlan.Config.Inputs = []atc.TaskInputConfig{{Name: "source", Path: "checkout"}}
+				taskPlan.InputMapping = map[string]string{"source": "repository"}
+				taskPlan.SnapshotInputs = map[string]atc.SnapshotInputConfig{
+					"repository": {Type: snapshot.TypeRef("repository/v1")},
+				}
+				taskPlan.Config.Outputs = []atc.TaskOutputConfig{{Name: "change", Path: "result"}}
+				taskPlan.OutputMapping = map[string]string{"change": "mapped-change"}
+				taskPlan.SnapshotOutputs = map[string]atc.SnapshotOutputConfig{
+					"mapped-change": {
+						Type: snapshot.TypeRef("repository-change/v1"), Retention: snapshot.RetentionClassWorkflow,
+						WorkflowPort: "result", WorkflowDefinitionID: 77, WorkflowRunID: "9007199254740993",
+					},
+				}
+				outputVolume = runtimetest.NewVolume("typed-output")
+				chosenContainer.Mounts = []runtime.VolumeMount{{
+					Volume: outputVolume, MountPath: "some-artifact-root/result/",
+				}}
+				outputSealer = &recordingOutputSealer{result: map[string]snapshot.SealedOutput{
+					"mapped-change": {
+						Port:     snapshot.Port{Name: "mapped-change", Type: snapshot.TypeRef("repository-change/v1")},
+						Snapshot: snapshot.SnapshotRef{ID: 91, Type: snapshot.TypeRef("repository-change/v1"), Digest: outputDigest},
+					},
+				}}
+				taskStepOptions = []exec.TaskStepOption{exec.WithTaskOutputSealer(outputSealer)}
+			})
+
+			It("seals the complete typed batch and atomically publishes worker artifacts with refs", func() {
+				Expect(stepErr).NotTo(HaveOccurred())
+				Expect(stepOk).To(BeTrue())
+				Expect(outputSealer.calls).To(HaveLen(1))
+				request := outputSealer.calls[0]
+				Expect(request.BuildID).To(Equal(1234))
+				Expect(request.TeamID).To(Equal(123))
+				Expect(request.TeamName).To(Equal("main"))
+				Expect(request.CreatedBy).To(Equal("concourse"))
+				Expect(request.PlanID).To(Equal("42"))
+				Expect(request.Attempt).To(Equal("2"))
+				Expect(request.StepKind).To(Equal("task"))
+				Expect(request.StepName).To(Equal("some-task"))
+				Expect(request.InputOrder).To(Equal([]string{"repository"}))
+				Expect(request.Inputs).To(Equal(map[string]snapshot.SnapshotRef{"repository": inputRef}))
+				Expect(request.OutputDeclarations).To(Equal([]snapshot.Port{{
+					Name: "mapped-change", Type: snapshot.TypeRef("repository-change/v1"),
+				}}))
+				Expect(request.Outputs).To(HaveLen(1))
+				Expect(request.Outputs[0].ClientKey).To(Equal("mapped-change"))
+				Expect(request.Outputs[0].Port).To(Equal(request.OutputDeclarations[0]))
+				Expect(request.Outputs[0].Retention).To(Equal(snapshot.RetentionClassWorkflow))
+				Expect(request.Outputs[0].WorkflowPort).To(Equal("result"))
+				Expect(*request.WorkflowDefinitionID).To(Equal(77))
+				Expect(request.WorkflowRunID.String()).To(Equal("9007199254740993"))
+				Expect(chosenContainer.Spec.Inputs).To(ConsistOf(runtime.Input{
+					Artifact: inputVolume, DestinationPath: "some-artifact-root/checkout", FromCache: true,
+				}))
+
+				entry, found := repo.ArtifactEntryFor("mapped-change")
+				Expect(found).To(BeTrue())
+				Expect(entry.Artifact).To(Equal(outputVolume))
+				Expect(entry.Snapshot).NotTo(BeNil())
+				Expect(*entry.Snapshot).To(Equal(outputSealer.result["mapped-change"].Snapshot))
+			})
+
+			Context("when the process exits nonzero", func() {
+				BeforeEach(func() { chosenContainer.ProcessDefs[0].Stub.ExitStatus = 1 })
+
+				It("does not seal or publish typed outputs", func() {
+					Expect(stepErr).NotTo(HaveOccurred())
+					Expect(stepOk).To(BeFalse())
+					Expect(outputSealer.calls).To(BeEmpty())
+					_, found := repo.ArtifactEntryFor("mapped-change")
+					Expect(found).To(BeFalse())
+				})
+			})
+
+			Context("when sealing fails", func() {
+				BeforeEach(func() { outputSealer.err = errors.New("seal failed") })
+
+				It("propagates the error without publishing the typed artifact", func() {
+					Expect(stepErr).To(MatchError(ContainSubstring("seal failed")))
+					_, found := repo.ArtifactEntryFor("mapped-change")
+					Expect(found).To(BeFalse())
+				})
+			})
+
+			Context("when the process wait fails", func() {
+				BeforeEach(func() { chosenContainer.ProcessDefs[0].Stub.Err = "wait failed" })
+
+				It("does not seal or publish typed outputs", func() {
+					Expect(stepErr).To(MatchError("wait failed"))
+					Expect(outputSealer.calls).To(BeEmpty())
+					_, found := repo.ArtifactEntryFor("mapped-change")
+					Expect(found).To(BeFalse())
+				})
+			})
+
+			Context("when the required typed output mount is missing", func() {
+				BeforeEach(func() { chosenContainer.Mounts = nil })
+
+				It("rejects the entire batch before sealing", func() {
+					Expect(stepErr).To(MatchError(ContainSubstring("required typed output")))
+					Expect(outputSealer.calls).To(BeEmpty())
+					_, found := repo.ArtifactEntryFor("mapped-change")
+					Expect(found).To(BeFalse())
+				})
+			})
+
+			Context("when the typed output has duplicate mounts", func() {
+				BeforeEach(func() {
+					chosenContainer.Mounts = append(chosenContainer.Mounts, runtime.VolumeMount{
+						Volume: runtimetest.NewVolume("duplicate"), MountPath: "some-artifact-root/result",
+					})
+				})
+
+				It("rejects the entire batch before sealing", func() {
+					Expect(stepErr).To(MatchError(ContainSubstring("duplicate mounts")))
+					Expect(outputSealer.calls).To(BeEmpty())
+					_, found := repo.ArtifactEntryFor("mapped-change")
+					Expect(found).To(BeFalse())
+				})
+			})
+
+			Context("when one of two required typed output mounts is missing", func() {
+				BeforeEach(func() {
+					taskPlan.Config.Outputs = append(taskPlan.Config.Outputs, atc.TaskOutputConfig{Name: "review"})
+					taskPlan.SnapshotOutputs["review"] = atc.SnapshotOutputConfig{Type: snapshot.TypeRef("review/v1")}
+				})
+
+				It("does not seal or publish the valid first output", func() {
+					Expect(stepErr).To(MatchError(ContainSubstring("required typed output \"review\"")))
+					Expect(outputSealer.calls).To(BeEmpty())
+					_, firstFound := repo.ArtifactEntryFor("mapped-change")
+					_, secondFound := repo.ArtifactEntryFor("review")
+					Expect(firstFound).To(BeFalse())
+					Expect(secondFound).To(BeFalse())
+				})
+			})
+
+			Context("when an optional typed output mount is absent", func() {
+				BeforeEach(func() {
+					declaration := taskPlan.SnapshotOutputs["mapped-change"]
+					declaration.Optional = true
+					taskPlan.SnapshotOutputs["mapped-change"] = declaration
+					chosenContainer.Mounts = nil
+					outputSealer.result = map[string]snapshot.SealedOutput{}
+				})
+
+				It("seals the empty actual set without publishing an entry", func() {
+					Expect(stepErr).NotTo(HaveOccurred())
+					Expect(stepOk).To(BeTrue())
+					Expect(outputSealer.calls).To(HaveLen(1))
+					Expect(outputSealer.calls[0].OutputDeclarations).To(Equal([]snapshot.Port{{
+						Name: "mapped-change", Type: snapshot.TypeRef("repository-change/v1"), Optional: true,
+					}}))
+					Expect(outputSealer.calls[0].Outputs).To(BeEmpty())
+					_, found := repo.ArtifactEntryFor("mapped-change")
+					Expect(found).To(BeFalse())
+				})
+			})
+
+			Context("when atomic repository publication rejects the batch", func() {
+				var existing *runtimetest.Volume
+
+				BeforeEach(func() {
+					state = state.NewArtifactScope()
+					repo = state.ArtifactRepository()
+					existing = runtimetest.NewVolume("existing")
+					repo.RegisterArtifact("mapped-change", existing, false)
+				})
+
+				It("propagates the error without replacing the existing generation", func() {
+					Expect(stepErr).To(MatchError(ContainSubstring(build.ErrArtifactAlreadyRegistered.Error())))
+					Expect(outputSealer.calls).To(HaveLen(1))
+					entry, found := repo.ArtifactEntryFor("mapped-change")
+					Expect(found).To(BeTrue())
+					Expect(entry.Artifact).To(Equal(existing))
+					Expect(entry.Snapshot).To(BeNil())
+				})
+			})
+		})
+
+		Context("with typed snapshot inputs", func() {
+			var inputDigest snapshot.Digest
+
+			BeforeEach(func() {
+				var err error
+				inputDigest, err = snapshot.ParseDigest("sha256:" + strings.Repeat("c", 64))
+				Expect(err).NotTo(HaveOccurred())
+				taskPlan.Config.Inputs = []atc.TaskInputConfig{{Name: "source", Path: "checkout"}}
+				taskPlan.InputMapping = map[string]string{"source": "repository"}
+				taskPlan.SnapshotInputs = map[string]atc.SnapshotInputConfig{
+					"repository": {Type: snapshot.TypeRef("repository/v1")},
+				}
+				taskStepOptions = []exec.TaskStepOption{exec.WithTaskOutputSealer(&recordingOutputSealer{})}
+			})
+
+			Context("when an optional input is absent", func() {
+				BeforeEach(func() {
+					declaration := taskPlan.SnapshotInputs["repository"]
+					declaration.Optional = true
+					taskPlan.SnapshotInputs["repository"] = declaration
+				})
+
+				It("runs without mounting or reporting it missing", func() {
+					Expect(stepErr).NotTo(HaveOccurred())
+					Expect(stepOk).To(BeTrue())
+					Expect(fakePool.FindOrSelectWorkerCallCount()).To(Equal(1))
+					Expect(chosenContainer.Spec.Inputs).To(BeEmpty())
+				})
+			})
+
+			Context("when a required input is absent", func() {
+				It("returns MissingInputsError before worker selection", func() {
+					Expect(stepErr).To(BeAssignableToTypeOf(exec.MissingInputsError{}))
+					Expect(stepErr.(exec.MissingInputsError).Inputs).To(Equal([]string{"repository"}))
+					Expect(fakePool.FindOrSelectWorkerCallCount()).To(Equal(0))
+				})
+			})
+
+			Context("when the input snapshot type differs", func() {
+				BeforeEach(func() {
+					ref := snapshot.SnapshotRef{ID: 41, Type: snapshot.TypeRef("review/v1"), Digest: inputDigest}
+					Expect(repo.RegisterArtifacts(map[build.ArtifactName]build.ArtifactEntry{
+						"repository": {Artifact: runtimetest.NewVolume("input"), Snapshot: &ref},
+					})).To(Succeed())
+				})
+
+				It("fails before worker selection", func() {
+					Expect(stepErr).To(MatchError(ContainSubstring("does not match declared type")))
+					Expect(fakePool.FindOrSelectWorkerCallCount()).To(Equal(0))
+				})
+			})
+		})
+
+		Context("when a file-fetched task config omits a typed declaration", func() {
+			BeforeEach(func() {
+				taskPlan.Config = nil
+				taskPlan.ConfigPath = "config/task.yml"
+				taskPlan.SnapshotOutputs = map[string]atc.SnapshotOutputConfig{
+					"declared": {Type: snapshot.TypeRef("opaque/v1")},
+				}
+				repo.RegisterArtifact("config", runtimetest.NewVolume("config"), false)
+				fakeStreamer.StreamFileReturns(io.NopCloser(strings.NewReader(`
+platform: linux
+run:
+  path: "true"
+outputs:
+- name: actual
+`)), nil)
+				taskStepOptions = []exec.TaskStepOption{exec.WithTaskOutputSealer(&recordingOutputSealer{})}
+			})
+
+			It("fails membership validation before worker selection", func() {
+				Expect(stepErr).To(MatchError(ContainSubstring("absent from the fetched task config")))
+				Expect(fakePool.FindOrSelectWorkerCallCount()).To(Equal(0))
+			})
+		})
+
+		Context("with a typed input carrying no snapshot ref", func() {
+			BeforeEach(func() {
+				stepMetadata.TeamName = "main"
+				stepMetadata.SnapshotCreatedBy = "concourse"
+				containerMetadata.Attempt = "1"
+				taskPlan.Config.Inputs = []atc.TaskInputConfig{{Name: "repository"}}
+				taskPlan.SnapshotInputs = map[string]atc.SnapshotInputConfig{
+					"repository": {Type: snapshot.TypeRef("repository/v1")},
+				}
+				inputVolume := runtimetest.NewVolume("repository")
+				repo.RegisterArtifact("repository", inputVolume, false)
+				taskStepOptions = []exec.TaskStepOption{exec.WithTaskOutputSealer(&recordingOutputSealer{})}
+			})
+
+			It("fails before worker selection", func() {
+				Expect(stepErr).To(MatchError(ContainSubstring("snapshot ref")))
+				Expect(fakePool.FindOrSelectWorkerCallCount()).To(Equal(0))
+			})
+		})
+
+		Context("with typed declarations but no sealer", func() {
+			BeforeEach(func() {
+				taskPlan.Config.Inputs = []atc.TaskInputConfig{{Name: "optional", Optional: true}}
+				taskPlan.SnapshotInputs = map[string]atc.SnapshotInputConfig{
+					"optional": {Type: snapshot.TypeRef("opaque/v1"), Optional: true},
+				}
+			})
+
+			It("fails closed before worker selection", func() {
+				Expect(stepErr).To(MatchError(ContainSubstring("output sealer")))
+				Expect(fakePool.FindOrSelectWorkerCallCount()).To(Equal(0))
+			})
+		})
+
+		Context("with typed workflow outputs claiming different runs", func() {
+			BeforeEach(func() {
+				taskPlan.Config.Outputs = []atc.TaskOutputConfig{{Name: "first"}, {Name: "second"}}
+				taskPlan.SnapshotOutputs = map[string]atc.SnapshotOutputConfig{
+					"first": {
+						Type: snapshot.TypeRef("opaque/v1"), Retention: snapshot.RetentionClassWorkflow,
+						WorkflowPort: "first", WorkflowDefinitionID: 7, WorkflowRunID: "8",
+					},
+					"second": {
+						Type: snapshot.TypeRef("opaque/v1"), Retention: snapshot.RetentionClassWorkflow,
+						WorkflowPort: "second", WorkflowDefinitionID: 7, WorkflowRunID: "9",
+					},
+				}
+				taskStepOptions = []exec.TaskStepOption{exec.WithTaskOutputSealer(&recordingOutputSealer{})}
+			})
+
+			It("fails before worker selection", func() {
+				Expect(stepErr).To(MatchError(ContainSubstring("multiple workflow definition/run associations")))
+				Expect(fakePool.FindOrSelectWorkerCallCount()).To(Equal(0))
+			})
+		})
+
 		Context("when missing the platform", func() {
 			BeforeEach(func() {
 				taskPlan.Config.Platform = ""
@@ -1182,379 +1518,379 @@ var _ = Describe("TaskStep", func() {
 		})
 
 		Context("when sidecars are defined inline", func() {
-		BeforeEach(func() {
-			taskPlan.Sidecars = []atc.SidecarSource{
-				{Config: &atc.SidecarConfig{
-					Name:  "redis",
-					Image: "redis:7",
-					Ports: []atc.SidecarPort{{ContainerPort: 6379}},
-				}},
-			}
+			BeforeEach(func() {
+				taskPlan.Sidecars = []atc.SidecarSource{
+					{Config: &atc.SidecarConfig{
+						Name:  "redis",
+						Image: "redis:7",
+						Ports: []atc.SidecarPort{{ContainerPort: 6379}},
+					}},
+				}
+			})
+
+			It("includes inline sidecars in the container spec without file streaming", func() {
+				Expect(stepErr).ToNot(HaveOccurred())
+				Expect(chosenContainer.Spec.Sidecars).To(HaveLen(1))
+				Expect(chosenContainer.Spec.Sidecars[0].Name).To(Equal("redis"))
+				Expect(chosenContainer.Spec.Sidecars[0].Image).To(Equal("redis:7"))
+				Expect(fakeStreamer.StreamFileCallCount()).To(Equal(0))
+			})
 		})
 
-		It("includes inline sidecars in the container spec without file streaming", func() {
-			Expect(stepErr).ToNot(HaveOccurred())
-			Expect(chosenContainer.Spec.Sidecars).To(HaveLen(1))
-			Expect(chosenContainer.Spec.Sidecars[0].Name).To(Equal("redis"))
-			Expect(chosenContainer.Spec.Sidecars[0].Image).To(Equal("redis:7"))
-			Expect(fakeStreamer.StreamFileCallCount()).To(Equal(0))
-		})
-	})
-
-	Context("when sidecars are a mix of file and inline", func() {
-		BeforeEach(func() {
-			sidecarYAML := `
+		Context("when sidecars are a mix of file and inline", func() {
+			BeforeEach(func() {
+				sidecarYAML := `
 - name: postgres
   image: postgres:15
   ports:
   - containerPort: 5432
 `
-			fakeStreamer.StreamFileReturnsOnCall(0,
-				io.NopCloser(strings.NewReader(sidecarYAML)), nil,
-			)
+				fakeStreamer.StreamFileReturnsOnCall(0,
+					io.NopCloser(strings.NewReader(sidecarYAML)), nil,
+				)
 
-			sidecarVolume := runtimetest.NewVolume("sidecar-source")
-			repo.RegisterArtifact("my-repo", sidecarVolume, false)
+				sidecarVolume := runtimetest.NewVolume("sidecar-source")
+				repo.RegisterArtifact("my-repo", sidecarVolume, false)
 
-			taskPlan.Sidecars = []atc.SidecarSource{
-				{File: "my-repo/ci/sidecars/postgres.yml"},
-				{Config: &atc.SidecarConfig{
-					Name:  "redis",
-					Image: "redis:7",
-				}},
-			}
+				taskPlan.Sidecars = []atc.SidecarSource{
+					{File: "my-repo/ci/sidecars/postgres.yml"},
+					{Config: &atc.SidecarConfig{
+						Name:  "redis",
+						Image: "redis:7",
+					}},
+				}
+			})
+
+			It("loads both file and inline sidecars", func() {
+				Expect(stepErr).ToNot(HaveOccurred())
+				Expect(chosenContainer.Spec.Sidecars).To(HaveLen(2))
+				Expect(chosenContainer.Spec.Sidecars[0].Name).To(Equal("postgres"))
+				Expect(chosenContainer.Spec.Sidecars[1].Name).To(Equal("redis"))
+			})
 		})
 
-		It("loads both file and inline sidecars", func() {
-			Expect(stepErr).ToNot(HaveOccurred())
-			Expect(chosenContainer.Spec.Sidecars).To(HaveLen(2))
-			Expect(chosenContainer.Spec.Sidecars[0].Name).To(Equal("postgres"))
-			Expect(chosenContainer.Spec.Sidecars[1].Name).To(Equal("redis"))
-		})
-	})
-
-	Context("when inline sidecar has a duplicate name with a file sidecar", func() {
-		BeforeEach(func() {
-			sidecarYAML := `
+		Context("when inline sidecar has a duplicate name with a file sidecar", func() {
+			BeforeEach(func() {
+				sidecarYAML := `
 - name: postgres
   image: postgres:15
 `
-			fakeStreamer.StreamFileReturnsOnCall(0,
-				io.NopCloser(strings.NewReader(sidecarYAML)), nil,
-			)
+				fakeStreamer.StreamFileReturnsOnCall(0,
+					io.NopCloser(strings.NewReader(sidecarYAML)), nil,
+				)
 
-			sidecarVolume := runtimetest.NewVolume("sidecar-source")
-			repo.RegisterArtifact("my-repo", sidecarVolume, false)
+				sidecarVolume := runtimetest.NewVolume("sidecar-source")
+				repo.RegisterArtifact("my-repo", sidecarVolume, false)
 
-			taskPlan.Sidecars = []atc.SidecarSource{
-				{File: "my-repo/ci/sidecars/postgres.yml"},
-				{Config: &atc.SidecarConfig{
-					Name:  "postgres",
-					Image: "postgres:16",
-				}},
-			}
-		})
-
-		It("returns a duplicate name error", func() {
-			Expect(stepErr).To(HaveOccurred())
-			Expect(stepErr.Error()).To(ContainSubstring("duplicate sidecar name"))
-		})
-	})
-
-	Context("when inline sidecar uses a reserved name", func() {
-		BeforeEach(func() {
-			taskPlan.Sidecars = []atc.SidecarSource{
-				{Config: &atc.SidecarConfig{
-					Name:  "main",
-					Image: "redis:7",
-				}},
-			}
-		})
-
-		It("returns a reserved name error", func() {
-			Expect(stepErr).To(HaveOccurred())
-			Expect(stepErr.Error()).To(ContainSubstring("reserved container name"))
-		})
-	})
-
-	Context("when inline sidecar is missing required fields", func() {
-		BeforeEach(func() {
-			taskPlan.Sidecars = []atc.SidecarSource{
-				{Config: &atc.SidecarConfig{
-					Name: "redis",
-				}},
-			}
-		})
-
-		It("returns a validation error", func() {
-			Expect(stepErr).To(HaveOccurred())
-			Expect(stepErr.Error()).To(ContainSubstring("missing 'image'"))
-		})
-	})
-
-	Context("when a sidecar uses image_artifact reference", func() {
-		BeforeEach(func() {
-			// Register an image ref in the artifact repository (simulates a prior build step)
-			repo.RegisterImageRef("my-db-image", "docker:///myrepo/mydb@sha256:abc123def456")
-
-			taskPlan.Sidecars = []atc.SidecarSource{
-				{Config: &atc.SidecarConfig{
-					Name:          "postgres",
-					ImageArtifact: "my-db-image",
-					Ports:         []atc.SidecarPort{{ContainerPort: 5432}},
-				}},
-			}
-		})
-
-		It("resolves the artifact ref and uses it as the sidecar image", func() {
-			Expect(stepErr).ToNot(HaveOccurred())
-			Expect(chosenContainer.Spec.Sidecars).To(HaveLen(1))
-			Expect(chosenContainer.Spec.Sidecars[0].Name).To(Equal("postgres"))
-			Expect(chosenContainer.Spec.Sidecars[0].Image).To(Equal("docker:///myrepo/mydb@sha256:abc123def456"))
-			Expect(chosenContainer.Spec.Sidecars[0].ImageArtifact).To(Equal(""))
-		})
-	})
-
-	Context("when a sidecar uses image_artifact that does not exist", func() {
-		BeforeEach(func() {
-			taskPlan.Sidecars = []atc.SidecarSource{
-				{Config: &atc.SidecarConfig{
-					Name:          "postgres",
-					ImageArtifact: "nonexistent-image",
-					Ports:         []atc.SidecarPort{{ContainerPort: 5432}},
-				}},
-			}
-		})
-
-		It("returns an error", func() {
-			Expect(stepErr).To(HaveOccurred())
-			Expect(stepErr.Error()).To(ContainSubstring(`image_artifact "nonexistent-image" not found`))
-		})
-	})
-
-	Context("when a sidecar uses image_artifact mixed with regular sidecars", func() {
-		BeforeEach(func() {
-			repo.RegisterImageRef("my-db-image", "docker:///myrepo/mydb@sha256:abc123def456")
-
-			taskPlan.Sidecars = []atc.SidecarSource{
-				{Config: &atc.SidecarConfig{
-					Name:          "postgres",
-					ImageArtifact: "my-db-image",
-					Ports:         []atc.SidecarPort{{ContainerPort: 5432}},
-				}},
-				{Config: &atc.SidecarConfig{
-					Name:  "redis",
-					Image: "redis:7",
-					Ports: []atc.SidecarPort{{ContainerPort: 6379}},
-				}},
-			}
-		})
-
-		It("resolves the artifact ref and keeps the regular sidecar unchanged", func() {
-			Expect(stepErr).ToNot(HaveOccurred())
-			Expect(chosenContainer.Spec.Sidecars).To(HaveLen(2))
-			Expect(chosenContainer.Spec.Sidecars[0].Name).To(Equal("postgres"))
-			Expect(chosenContainer.Spec.Sidecars[0].Image).To(Equal("docker:///myrepo/mydb@sha256:abc123def456"))
-			Expect(chosenContainer.Spec.Sidecars[1].Name).To(Equal("redis"))
-			Expect(chosenContainer.Spec.Sidecars[1].Image).To(Equal("redis:7"))
-		})
-	})
-
-	Context("when sidecar images are resolved to pinned digests", func() {
-		var fakeResolver *imageresolvertesting.FakeResolver
-
-		BeforeEach(func() {
-			fakeResolver = &imageresolvertesting.FakeResolver{}
-			fakeResolver.ResolveStub(func(ctx context.Context, repo string, tag string, auth *imageresolver.BasicAuth) (string, error) {
-				return "sha256:resolved" + repo + tag, nil
+				taskPlan.Sidecars = []atc.SidecarSource{
+					{File: "my-repo/ci/sidecars/postgres.yml"},
+					{Config: &atc.SidecarConfig{
+						Name:  "postgres",
+						Image: "postgres:16",
+					}},
+				}
 			})
 
-			taskStepOptions = []exec.TaskStepOption{exec.WithImageResolver(fakeResolver)}
-
-			taskPlan.Sidecars = []atc.SidecarSource{
-				{Config: &atc.SidecarConfig{
-					Name:  "redis",
-					Image: "redis:7",
-					Ports: []atc.SidecarPort{{ContainerPort: 6379}},
-				}},
-			}
+			It("returns a duplicate name error", func() {
+				Expect(stepErr).To(HaveOccurred())
+				Expect(stepErr.Error()).To(ContainSubstring("duplicate sidecar name"))
+			})
 		})
 
-		It("resolves bare image tags to pinned digests", func() {
-			Expect(stepErr).ToNot(HaveOccurred())
-			Expect(chosenContainer.Spec.Sidecars).To(HaveLen(1))
-			Expect(chosenContainer.Spec.Sidecars[0].Image).To(Equal("redis@sha256:resolvedredis7"))
-		})
-	})
-
-	Context("when sidecar image is already digest-pinned", func() {
-		var fakeResolver *imageresolvertesting.FakeResolver
-
-		BeforeEach(func() {
-			fakeResolver = &imageresolvertesting.FakeResolver{}
-			fakeResolver.ResolveReturns("sha256:shouldnotbecalled", nil)
-
-			taskStepOptions = []exec.TaskStepOption{exec.WithImageResolver(fakeResolver)}
-
-			taskPlan.Sidecars = []atc.SidecarSource{
-				{Config: &atc.SidecarConfig{
-					Name:  "redis",
-					Image: "redis@sha256:abc123",
-					Ports: []atc.SidecarPort{{ContainerPort: 6379}},
-				}},
-			}
-		})
-
-		It("skips resolution for already-pinned digests", func() {
-			Expect(stepErr).ToNot(HaveOccurred())
-			Expect(chosenContainer.Spec.Sidecars).To(HaveLen(1))
-			Expect(chosenContainer.Spec.Sidecars[0].Image).To(Equal("redis@sha256:abc123"))
-			Expect(fakeResolver.ResolveCallCount()).To(Equal(0))
-		})
-	})
-
-	Context("when sidecar image resolution fails", func() {
-		BeforeEach(func() {
-			fakeResolver := &imageresolvertesting.FakeResolver{}
-			fakeResolver.ResolveReturns("", fmt.Errorf("registry unreachable"))
-
-			taskStepOptions = []exec.TaskStepOption{exec.WithImageResolver(fakeResolver)}
-
-			taskPlan.Sidecars = []atc.SidecarSource{
-				{Config: &atc.SidecarConfig{
-					Name:  "redis",
-					Image: "redis:7",
-					Ports: []atc.SidecarPort{{ContainerPort: 6379}},
-				}},
-			}
-		})
-
-		It("falls through to the original tag-based image (best-effort)", func() {
-			Expect(stepErr).ToNot(HaveOccurred())
-			Expect(chosenContainer.Spec.Sidecars).To(HaveLen(1))
-			Expect(chosenContainer.Spec.Sidecars[0].Image).To(Equal("redis:7"))
-		})
-	})
-
-	Context("when sidecar image has a docker:/// prefix", func() {
-		var fakeResolver *imageresolvertesting.FakeResolver
-
-		BeforeEach(func() {
-			fakeResolver = &imageresolvertesting.FakeResolver{}
-			fakeResolver.ResolveStub(func(ctx context.Context, repo string, tag string, auth *imageresolver.BasicAuth) (string, error) {
-				return "sha256:stripped" + repo + tag, nil
+		Context("when inline sidecar uses a reserved name", func() {
+			BeforeEach(func() {
+				taskPlan.Sidecars = []atc.SidecarSource{
+					{Config: &atc.SidecarConfig{
+						Name:  "main",
+						Image: "redis:7",
+					}},
+				}
 			})
 
-			taskStepOptions = []exec.TaskStepOption{exec.WithImageResolver(fakeResolver)}
-
-			taskPlan.Sidecars = []atc.SidecarSource{
-				{Config: &atc.SidecarConfig{
-					Name:  "redis",
-					Image: "docker:///redis:7",
-					Ports: []atc.SidecarPort{{ContainerPort: 6379}},
-				}},
-			}
+			It("returns a reserved name error", func() {
+				Expect(stepErr).To(HaveOccurred())
+				Expect(stepErr.Error()).To(ContainSubstring("reserved container name"))
+			})
 		})
 
-		It("strips the prefix before resolving the digest", func() {
-			Expect(stepErr).ToNot(HaveOccurred())
-			Expect(fakeResolver.ResolveCallCount()).To(Equal(1))
-			_, resolvedRepo, resolvedTag, _ := fakeResolver.ResolveArgsForCall(0)
-			Expect(resolvedRepo).To(Equal("redis"))
-			Expect(resolvedTag).To(Equal("7"))
-		})
-
-		It("sets the resolved digest on the sidecar", func() {
-			Expect(chosenContainer.Spec.Sidecars).To(HaveLen(1))
-			Expect(chosenContainer.Spec.Sidecars[0].Image).To(Equal("redis@sha256:strippedredis7"))
-		})
-	})
-
-	Context("when sidecar image has a docker:// prefix (double-slash)", func() {
-		var fakeResolver *imageresolvertesting.FakeResolver
-
-		BeforeEach(func() {
-			fakeResolver = &imageresolvertesting.FakeResolver{}
-			fakeResolver.ResolveStub(func(ctx context.Context, repo string, tag string, auth *imageresolver.BasicAuth) (string, error) {
-				return "sha256:stripped" + repo + tag, nil
+		Context("when inline sidecar is missing required fields", func() {
+			BeforeEach(func() {
+				taskPlan.Sidecars = []atc.SidecarSource{
+					{Config: &atc.SidecarConfig{
+						Name: "redis",
+					}},
+				}
 			})
 
-			taskStepOptions = []exec.TaskStepOption{exec.WithImageResolver(fakeResolver)}
-
-			taskPlan.Sidecars = []atc.SidecarSource{
-				{Config: &atc.SidecarConfig{
-					Name:  "mydb",
-					Image: "docker://myregistry.example.com/mydb:v3",
-					Ports: []atc.SidecarPort{{ContainerPort: 5432}},
-				}},
-			}
+			It("returns a validation error", func() {
+				Expect(stepErr).To(HaveOccurred())
+				Expect(stepErr.Error()).To(ContainSubstring("missing 'image'"))
+			})
 		})
 
-		It("strips the prefix and resolves correctly", func() {
-			Expect(stepErr).ToNot(HaveOccurred())
-			Expect(fakeResolver.ResolveCallCount()).To(Equal(1))
-			_, resolvedRepo, resolvedTag, _ := fakeResolver.ResolveArgsForCall(0)
-			Expect(resolvedRepo).To(Equal("myregistry.example.com/mydb"))
-			Expect(resolvedTag).To(Equal("v3"))
-		})
-	})
+		Context("when a sidecar uses image_artifact reference", func() {
+			BeforeEach(func() {
+				// Register an image ref in the artifact repository (simulates a prior build step)
+				repo.RegisterImageRef("my-db-image", "docker:///myrepo/mydb@sha256:abc123def456")
 
-	Context("when sidecar image has a raw:/// prefix", func() {
-		var fakeResolver *imageresolvertesting.FakeResolver
-
-		BeforeEach(func() {
-			fakeResolver = &imageresolvertesting.FakeResolver{}
-			fakeResolver.ResolveStub(func(ctx context.Context, repo string, tag string, auth *imageresolver.BasicAuth) (string, error) {
-				return "sha256:stripped" + repo + tag, nil
+				taskPlan.Sidecars = []atc.SidecarSource{
+					{Config: &atc.SidecarConfig{
+						Name:          "postgres",
+						ImageArtifact: "my-db-image",
+						Ports:         []atc.SidecarPort{{ContainerPort: 5432}},
+					}},
+				}
 			})
 
-			taskStepOptions = []exec.TaskStepOption{exec.WithImageResolver(fakeResolver)}
-
-			taskPlan.Sidecars = []atc.SidecarSource{
-				{Config: &atc.SidecarConfig{
-					Name:  "nginx",
-					Image: "raw:///nginx:alpine",
-					Ports: []atc.SidecarPort{{ContainerPort: 80}},
-				}},
-			}
+			It("resolves the artifact ref and uses it as the sidecar image", func() {
+				Expect(stepErr).ToNot(HaveOccurred())
+				Expect(chosenContainer.Spec.Sidecars).To(HaveLen(1))
+				Expect(chosenContainer.Spec.Sidecars[0].Name).To(Equal("postgres"))
+				Expect(chosenContainer.Spec.Sidecars[0].Image).To(Equal("docker:///myrepo/mydb@sha256:abc123def456"))
+				Expect(chosenContainer.Spec.Sidecars[0].ImageArtifact).To(Equal(""))
+			})
 		})
 
-		It("strips the prefix and resolves correctly", func() {
-			Expect(stepErr).ToNot(HaveOccurred())
-			Expect(fakeResolver.ResolveCallCount()).To(Equal(1))
-			_, resolvedRepo, resolvedTag, _ := fakeResolver.ResolveArgsForCall(0)
-			Expect(resolvedRepo).To(Equal("nginx"))
-			Expect(resolvedTag).To(Equal("alpine"))
-		})
-	})
+		Context("when a sidecar uses image_artifact that does not exist", func() {
+			BeforeEach(func() {
+				taskPlan.Sidecars = []atc.SidecarSource{
+					{Config: &atc.SidecarConfig{
+						Name:          "postgres",
+						ImageArtifact: "nonexistent-image",
+						Ports:         []atc.SidecarPort{{ContainerPort: 5432}},
+					}},
+				}
+			})
 
-	Context("when sidecar image has a docker:/// prefix and is already digest-pinned", func() {
-		var fakeResolver *imageresolvertesting.FakeResolver
-
-		BeforeEach(func() {
-			fakeResolver = &imageresolvertesting.FakeResolver{}
-			fakeResolver.ResolveReturns("sha256:shouldnotbecalled", nil)
-
-			taskStepOptions = []exec.TaskStepOption{exec.WithImageResolver(fakeResolver)}
-
-			taskPlan.Sidecars = []atc.SidecarSource{
-				{Config: &atc.SidecarConfig{
-					Name:  "redis",
-					Image: "docker:///redis@sha256:alreadypinned",
-					Ports: []atc.SidecarPort{{ContainerPort: 6379}},
-				}},
-			}
+			It("returns an error", func() {
+				Expect(stepErr).To(HaveOccurred())
+				Expect(stepErr.Error()).To(ContainSubstring(`image_artifact "nonexistent-image" not found`))
+			})
 		})
 
-		It("skips resolution for already-pinned digests", func() {
-			Expect(stepErr).ToNot(HaveOccurred())
-			Expect(chosenContainer.Spec.Sidecars).To(HaveLen(1))
-			Expect(chosenContainer.Spec.Sidecars[0].Image).To(Equal("docker:///redis@sha256:alreadypinned"))
-			Expect(fakeResolver.ResolveCallCount()).To(Equal(0))
-		})
-	})
+		Context("when a sidecar uses image_artifact mixed with regular sidecars", func() {
+			BeforeEach(func() {
+				repo.RegisterImageRef("my-db-image", "docker:///myrepo/mydb@sha256:abc123def456")
 
-	Context("when a sidecar file references an unknown source", func() {
+				taskPlan.Sidecars = []atc.SidecarSource{
+					{Config: &atc.SidecarConfig{
+						Name:          "postgres",
+						ImageArtifact: "my-db-image",
+						Ports:         []atc.SidecarPort{{ContainerPort: 5432}},
+					}},
+					{Config: &atc.SidecarConfig{
+						Name:  "redis",
+						Image: "redis:7",
+						Ports: []atc.SidecarPort{{ContainerPort: 6379}},
+					}},
+				}
+			})
+
+			It("resolves the artifact ref and keeps the regular sidecar unchanged", func() {
+				Expect(stepErr).ToNot(HaveOccurred())
+				Expect(chosenContainer.Spec.Sidecars).To(HaveLen(2))
+				Expect(chosenContainer.Spec.Sidecars[0].Name).To(Equal("postgres"))
+				Expect(chosenContainer.Spec.Sidecars[0].Image).To(Equal("docker:///myrepo/mydb@sha256:abc123def456"))
+				Expect(chosenContainer.Spec.Sidecars[1].Name).To(Equal("redis"))
+				Expect(chosenContainer.Spec.Sidecars[1].Image).To(Equal("redis:7"))
+			})
+		})
+
+		Context("when sidecar images are resolved to pinned digests", func() {
+			var fakeResolver *imageresolvertesting.FakeResolver
+
+			BeforeEach(func() {
+				fakeResolver = &imageresolvertesting.FakeResolver{}
+				fakeResolver.ResolveStub(func(ctx context.Context, repo string, tag string, auth *imageresolver.BasicAuth) (string, error) {
+					return "sha256:resolved" + repo + tag, nil
+				})
+
+				taskStepOptions = []exec.TaskStepOption{exec.WithImageResolver(fakeResolver)}
+
+				taskPlan.Sidecars = []atc.SidecarSource{
+					{Config: &atc.SidecarConfig{
+						Name:  "redis",
+						Image: "redis:7",
+						Ports: []atc.SidecarPort{{ContainerPort: 6379}},
+					}},
+				}
+			})
+
+			It("resolves bare image tags to pinned digests", func() {
+				Expect(stepErr).ToNot(HaveOccurred())
+				Expect(chosenContainer.Spec.Sidecars).To(HaveLen(1))
+				Expect(chosenContainer.Spec.Sidecars[0].Image).To(Equal("redis@sha256:resolvedredis7"))
+			})
+		})
+
+		Context("when sidecar image is already digest-pinned", func() {
+			var fakeResolver *imageresolvertesting.FakeResolver
+
+			BeforeEach(func() {
+				fakeResolver = &imageresolvertesting.FakeResolver{}
+				fakeResolver.ResolveReturns("sha256:shouldnotbecalled", nil)
+
+				taskStepOptions = []exec.TaskStepOption{exec.WithImageResolver(fakeResolver)}
+
+				taskPlan.Sidecars = []atc.SidecarSource{
+					{Config: &atc.SidecarConfig{
+						Name:  "redis",
+						Image: "redis@sha256:abc123",
+						Ports: []atc.SidecarPort{{ContainerPort: 6379}},
+					}},
+				}
+			})
+
+			It("skips resolution for already-pinned digests", func() {
+				Expect(stepErr).ToNot(HaveOccurred())
+				Expect(chosenContainer.Spec.Sidecars).To(HaveLen(1))
+				Expect(chosenContainer.Spec.Sidecars[0].Image).To(Equal("redis@sha256:abc123"))
+				Expect(fakeResolver.ResolveCallCount()).To(Equal(0))
+			})
+		})
+
+		Context("when sidecar image resolution fails", func() {
+			BeforeEach(func() {
+				fakeResolver := &imageresolvertesting.FakeResolver{}
+				fakeResolver.ResolveReturns("", fmt.Errorf("registry unreachable"))
+
+				taskStepOptions = []exec.TaskStepOption{exec.WithImageResolver(fakeResolver)}
+
+				taskPlan.Sidecars = []atc.SidecarSource{
+					{Config: &atc.SidecarConfig{
+						Name:  "redis",
+						Image: "redis:7",
+						Ports: []atc.SidecarPort{{ContainerPort: 6379}},
+					}},
+				}
+			})
+
+			It("falls through to the original tag-based image (best-effort)", func() {
+				Expect(stepErr).ToNot(HaveOccurred())
+				Expect(chosenContainer.Spec.Sidecars).To(HaveLen(1))
+				Expect(chosenContainer.Spec.Sidecars[0].Image).To(Equal("redis:7"))
+			})
+		})
+
+		Context("when sidecar image has a docker:/// prefix", func() {
+			var fakeResolver *imageresolvertesting.FakeResolver
+
+			BeforeEach(func() {
+				fakeResolver = &imageresolvertesting.FakeResolver{}
+				fakeResolver.ResolveStub(func(ctx context.Context, repo string, tag string, auth *imageresolver.BasicAuth) (string, error) {
+					return "sha256:stripped" + repo + tag, nil
+				})
+
+				taskStepOptions = []exec.TaskStepOption{exec.WithImageResolver(fakeResolver)}
+
+				taskPlan.Sidecars = []atc.SidecarSource{
+					{Config: &atc.SidecarConfig{
+						Name:  "redis",
+						Image: "docker:///redis:7",
+						Ports: []atc.SidecarPort{{ContainerPort: 6379}},
+					}},
+				}
+			})
+
+			It("strips the prefix before resolving the digest", func() {
+				Expect(stepErr).ToNot(HaveOccurred())
+				Expect(fakeResolver.ResolveCallCount()).To(Equal(1))
+				_, resolvedRepo, resolvedTag, _ := fakeResolver.ResolveArgsForCall(0)
+				Expect(resolvedRepo).To(Equal("redis"))
+				Expect(resolvedTag).To(Equal("7"))
+			})
+
+			It("sets the resolved digest on the sidecar", func() {
+				Expect(chosenContainer.Spec.Sidecars).To(HaveLen(1))
+				Expect(chosenContainer.Spec.Sidecars[0].Image).To(Equal("redis@sha256:strippedredis7"))
+			})
+		})
+
+		Context("when sidecar image has a docker:// prefix (double-slash)", func() {
+			var fakeResolver *imageresolvertesting.FakeResolver
+
+			BeforeEach(func() {
+				fakeResolver = &imageresolvertesting.FakeResolver{}
+				fakeResolver.ResolveStub(func(ctx context.Context, repo string, tag string, auth *imageresolver.BasicAuth) (string, error) {
+					return "sha256:stripped" + repo + tag, nil
+				})
+
+				taskStepOptions = []exec.TaskStepOption{exec.WithImageResolver(fakeResolver)}
+
+				taskPlan.Sidecars = []atc.SidecarSource{
+					{Config: &atc.SidecarConfig{
+						Name:  "mydb",
+						Image: "docker://myregistry.example.com/mydb:v3",
+						Ports: []atc.SidecarPort{{ContainerPort: 5432}},
+					}},
+				}
+			})
+
+			It("strips the prefix and resolves correctly", func() {
+				Expect(stepErr).ToNot(HaveOccurred())
+				Expect(fakeResolver.ResolveCallCount()).To(Equal(1))
+				_, resolvedRepo, resolvedTag, _ := fakeResolver.ResolveArgsForCall(0)
+				Expect(resolvedRepo).To(Equal("myregistry.example.com/mydb"))
+				Expect(resolvedTag).To(Equal("v3"))
+			})
+		})
+
+		Context("when sidecar image has a raw:/// prefix", func() {
+			var fakeResolver *imageresolvertesting.FakeResolver
+
+			BeforeEach(func() {
+				fakeResolver = &imageresolvertesting.FakeResolver{}
+				fakeResolver.ResolveStub(func(ctx context.Context, repo string, tag string, auth *imageresolver.BasicAuth) (string, error) {
+					return "sha256:stripped" + repo + tag, nil
+				})
+
+				taskStepOptions = []exec.TaskStepOption{exec.WithImageResolver(fakeResolver)}
+
+				taskPlan.Sidecars = []atc.SidecarSource{
+					{Config: &atc.SidecarConfig{
+						Name:  "nginx",
+						Image: "raw:///nginx:alpine",
+						Ports: []atc.SidecarPort{{ContainerPort: 80}},
+					}},
+				}
+			})
+
+			It("strips the prefix and resolves correctly", func() {
+				Expect(stepErr).ToNot(HaveOccurred())
+				Expect(fakeResolver.ResolveCallCount()).To(Equal(1))
+				_, resolvedRepo, resolvedTag, _ := fakeResolver.ResolveArgsForCall(0)
+				Expect(resolvedRepo).To(Equal("nginx"))
+				Expect(resolvedTag).To(Equal("alpine"))
+			})
+		})
+
+		Context("when sidecar image has a docker:/// prefix and is already digest-pinned", func() {
+			var fakeResolver *imageresolvertesting.FakeResolver
+
+			BeforeEach(func() {
+				fakeResolver = &imageresolvertesting.FakeResolver{}
+				fakeResolver.ResolveReturns("sha256:shouldnotbecalled", nil)
+
+				taskStepOptions = []exec.TaskStepOption{exec.WithImageResolver(fakeResolver)}
+
+				taskPlan.Sidecars = []atc.SidecarSource{
+					{Config: &atc.SidecarConfig{
+						Name:  "redis",
+						Image: "docker:///redis@sha256:alreadypinned",
+						Ports: []atc.SidecarPort{{ContainerPort: 6379}},
+					}},
+				}
+			})
+
+			It("skips resolution for already-pinned digests", func() {
+				Expect(stepErr).ToNot(HaveOccurred())
+				Expect(chosenContainer.Spec.Sidecars).To(HaveLen(1))
+				Expect(chosenContainer.Spec.Sidecars[0].Image).To(Equal("docker:///redis@sha256:alreadypinned"))
+				Expect(fakeResolver.ResolveCallCount()).To(Equal(0))
+			})
+		})
+
+		Context("when a sidecar file references an unknown source", func() {
 			BeforeEach(func() {
 				taskPlan.Sidecars = []atc.SidecarSource{{File: "nonexistent/sidecars/db.yml"}}
 			})

@@ -19,6 +19,9 @@ type StepMetadata struct {
 	InstanceVarsQuery    url.Values
 	ExternalURL          string
 	CreatedBy            string
+	// SnapshotCreatedBy is the authenticated producer principal used only by
+	// server-side snapshot provenance. It is never exported to step env.
+	SnapshotCreatedBy string
 }
 
 func (metadata StepMetadata) Env() []string {

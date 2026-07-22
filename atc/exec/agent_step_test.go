@@ -15,6 +15,7 @@ import (
 	"github.com/concourse/concourse/agent/budget"
 	"github.com/concourse/concourse/agent/budget/budgetfakes"
 	"github.com/concourse/concourse/agent/schema"
+	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/exec"
@@ -66,7 +67,8 @@ var _ = Describe("AgentStep", func() {
 		state exec.RunState
 		repo  *build.Repository
 
-		step exec.Step
+		step             exec.Step
+		agentStepOptions []exec.AgentStepOption
 
 		chosenWorker    *runtimetest.Worker
 		chosenContainer *runtimetest.WorkerContainer
@@ -126,6 +128,11 @@ var _ = Describe("AgentStep", func() {
 		// cross-run / cross-ticket guards override these.
 		fakeRunVerifier.RunBelongsToPipelineReturns(true, nil)
 		fakeRunVerifier.TicketBelongsToRunReturns(true, nil)
+		agentStepOptions = []exec.AgentStepOption{
+			exec.WithAgentBudgetChecker(fakeChecker),
+			exec.WithAgentMetricsStore(fakeMetricsStore),
+			exec.WithAgentRunVerifier(fakeRunVerifier),
+		}
 
 		state = exec.NewRunState(noopStepper, vars.StaticVariables{"branch": "main"})
 		repo = state.ArtifactRepository()
@@ -193,9 +200,7 @@ var _ = Describe("AgentStep", func() {
 			fakeDelegateFactory,
 			0,
 			agentImage,
-			exec.WithAgentBudgetChecker(fakeChecker),
-			exec.WithAgentMetricsStore(fakeMetricsStore),
-			exec.WithAgentRunVerifier(fakeRunVerifier),
+			agentStepOptions...,
 		)
 	})
 
@@ -374,6 +379,316 @@ var _ = Describe("AgentStep", func() {
 
 		_, _, found = repo.ArtifactFor(build.ArtifactName("flight"))
 		Expect(found).To(BeTrue())
+	})
+
+	Context("with typed snapshot declarations", func() {
+		var (
+			outputSealer *recordingOutputSealer
+			inputVolume  *runtimetest.Volume
+			inputRef     snapshot.SnapshotRef
+			outputDigest snapshot.Digest
+		)
+
+		BeforeEach(func() {
+			var err error
+			outputDigest, err = snapshot.ParseDigest("sha256:" + strings.Repeat("c", 64))
+			Expect(err).NotTo(HaveOccurred())
+			stepMetadata.TeamName = "main"
+			stepMetadata.SnapshotCreatedBy = "concourse"
+			containerMetadata.Attempt = "3"
+			inputDigest, err := snapshot.ParseDigest("sha256:" + strings.Repeat("d", 64))
+			Expect(err).NotTo(HaveOccurred())
+			inputRef = snapshot.SnapshotRef{ID: 82, Type: snapshot.TypeRef("repository/v1"), Digest: inputDigest}
+			inputVolume = runtimetest.NewVolume("typed-agent-input")
+			Expect(repo.RegisterArtifacts(map[build.ArtifactName]build.ArtifactEntry{
+				"repository": {Artifact: inputVolume, FromCache: true, Snapshot: &inputRef},
+			})).To(Succeed())
+			agentPlan.Inputs = []string{"repository"}
+			agentPlan.SnapshotInputs = map[string]atc.SnapshotInputConfig{
+				"repository": {Type: snapshot.TypeRef("repository/v1")},
+			}
+			agentPlan.SnapshotOutputs = map[string]atc.SnapshotOutputConfig{
+				"workspace": {
+					Type: snapshot.TypeRef("repository-change/v1"), Retention: snapshot.RetentionClassWorkflow,
+					WorkflowPort: "change", WorkflowDefinitionID: 88, WorkflowRunID: "9007199254740993",
+				},
+			}
+			outputSealer = &recordingOutputSealer{result: map[string]snapshot.SealedOutput{
+				"workspace": {
+					Port:     snapshot.Port{Name: "workspace", Type: snapshot.TypeRef("repository-change/v1")},
+					Snapshot: snapshot.SnapshotRef{ID: 92, Type: snapshot.TypeRef("repository-change/v1"), Digest: outputDigest},
+				},
+			}}
+			agentStepOptions = append(agentStepOptions, exec.WithAgentOutputSealer(outputSealer))
+		})
+
+		It("seals and publishes the complete typed output while keeping flight legacy", func() {
+			ok, err := step.Run(ctx, state)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(ok).To(BeTrue())
+			Expect(outputSealer.calls).To(HaveLen(1))
+			request := outputSealer.calls[0]
+			Expect(request.BuildID).To(Equal(1234))
+			Expect(request.TeamID).To(Equal(123))
+			Expect(request.TeamName).To(Equal("main"))
+			Expect(request.CreatedBy).To(Equal("concourse"))
+			Expect(request.PlanID).To(Equal("42"))
+			Expect(request.Attempt).To(Equal("3"))
+			Expect(request.StepKind).To(Equal("agent"))
+			Expect(request.StepName).To(Equal("write-spec"))
+			Expect(request.InputOrder).To(Equal([]string{"repository"}))
+			Expect(request.Inputs).To(Equal(map[string]snapshot.SnapshotRef{"repository": inputRef}))
+			Expect(request.OutputDeclarations).To(Equal([]snapshot.Port{{
+				Name: "workspace", Type: snapshot.TypeRef("repository-change/v1"),
+			}}))
+			Expect(request.Outputs).To(HaveLen(1))
+			Expect(request.Outputs[0].ClientKey).To(Equal("workspace"))
+			Expect(request.Outputs[0].WorkflowPort).To(Equal("change"))
+			Expect(*request.WorkflowDefinitionID).To(Equal(88))
+			Expect(request.WorkflowRunID.String()).To(Equal("9007199254740993"))
+			Expect(chosenContainer.Spec.Inputs).To(ConsistOf(runtime.Input{
+				Artifact: inputVolume, DestinationPath: "some-artifact-root/repository", FromCache: true,
+			}))
+
+			entry, found := repo.ArtifactEntryFor("workspace")
+			Expect(found).To(BeTrue())
+			Expect(entry.Snapshot).NotTo(BeNil())
+			Expect(*entry.Snapshot).To(Equal(outputSealer.result["workspace"].Snapshot))
+			flight, found := repo.ArtifactEntryFor("flight")
+			Expect(found).To(BeTrue())
+			Expect(flight.Snapshot).To(BeNil())
+		})
+
+		Context("when sealing fails", func() {
+			BeforeEach(func() { outputSealer.err = errors.New("semantic validation failed") })
+
+			It("ingests flight before returning the seal error and exposes no typed entry", func() {
+				ok, err := step.Run(ctx, state)
+				Expect(ok).To(BeFalse())
+				Expect(err).To(MatchError(ContainSubstring("semantic validation failed")))
+				Expect(fakeMetricsStore.InsertIfAbsentCallCount()).To(Equal(1))
+				entry, found := repo.ArtifactEntryFor("workspace")
+				Expect(found).To(BeFalse())
+				Expect(entry.Snapshot).To(BeNil())
+			})
+		})
+
+		Context("when the process exits nonzero", func() {
+			BeforeEach(func() { chosenContainer.ProcessDefs[0].Stub.ExitStatus = 2 })
+
+			It("ingests flight but does not seal or publish typed outputs", func() {
+				ok, err := step.Run(ctx, state)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(ok).To(BeFalse())
+				Expect(outputSealer.calls).To(BeEmpty())
+				Expect(fakeMetricsStore.InsertIfAbsentCallCount()).To(Equal(1))
+				_, found := repo.ArtifactEntryFor("workspace")
+				Expect(found).To(BeFalse())
+			})
+		})
+
+		Context("when the process wait fails", func() {
+			BeforeEach(func() { chosenContainer.ProcessDefs[0].Stub.Err = "worker connection dropped" })
+
+			It("ingests flight but does not seal or publish typed outputs", func() {
+				ok, err := step.Run(ctx, state)
+				Expect(ok).To(BeFalse())
+				Expect(err).To(MatchError("worker connection dropped"))
+				Expect(fakeMetricsStore.InsertIfAbsentCallCount()).To(Equal(1))
+				Expect(outputSealer.calls).To(BeEmpty())
+				_, found := repo.ArtifactEntryFor("workspace")
+				Expect(found).To(BeFalse())
+			})
+		})
+
+		Context("when the required typed output mount is missing", func() {
+			BeforeEach(func() {
+				chosenContainer.Mounts = chosenContainer.Mounts[1:]
+			})
+
+			It("ingests flight and rejects the batch before sealing", func() {
+				ok, err := step.Run(ctx, state)
+				Expect(ok).To(BeFalse())
+				Expect(err).To(MatchError(ContainSubstring("required typed output")))
+				Expect(fakeMetricsStore.InsertIfAbsentCallCount()).To(Equal(1))
+				Expect(outputSealer.calls).To(BeEmpty())
+				_, found := repo.ArtifactEntryFor("workspace")
+				Expect(found).To(BeFalse())
+			})
+		})
+
+		Context("when the typed output has duplicate mounts", func() {
+			BeforeEach(func() {
+				chosenContainer.Mounts = append(chosenContainer.Mounts, runtime.VolumeMount{
+					Volume: runtimetest.NewVolume("duplicate-workspace"), MountPath: "some-artifact-root/workspace/",
+				})
+			})
+
+			It("ingests flight and rejects the batch before sealing", func() {
+				ok, err := step.Run(ctx, state)
+				Expect(ok).To(BeFalse())
+				Expect(err).To(MatchError(ContainSubstring("duplicate mounts")))
+				Expect(fakeMetricsStore.InsertIfAbsentCallCount()).To(Equal(1))
+				Expect(outputSealer.calls).To(BeEmpty())
+				_, found := repo.ArtifactEntryFor("workspace")
+				Expect(found).To(BeFalse())
+			})
+		})
+
+		Context("when one of two required typed output mounts is missing", func() {
+			BeforeEach(func() {
+				agentPlan.Outputs = append(agentPlan.Outputs, "review")
+				agentPlan.SnapshotOutputs["review"] = atc.SnapshotOutputConfig{Type: snapshot.TypeRef("review/v1")}
+			})
+
+			It("does not publish the valid first output", func() {
+				ok, err := step.Run(ctx, state)
+				Expect(ok).To(BeFalse())
+				Expect(err).To(MatchError(ContainSubstring("required typed output \"review\"")))
+				Expect(fakeMetricsStore.InsertIfAbsentCallCount()).To(Equal(1))
+				Expect(outputSealer.calls).To(BeEmpty())
+				_, firstFound := repo.ArtifactEntryFor("workspace")
+				_, secondFound := repo.ArtifactEntryFor("review")
+				Expect(firstFound).To(BeFalse())
+				Expect(secondFound).To(BeFalse())
+			})
+		})
+
+		Context("when an optional typed output mount is absent", func() {
+			BeforeEach(func() {
+				declaration := agentPlan.SnapshotOutputs["workspace"]
+				declaration.Optional = true
+				agentPlan.SnapshotOutputs["workspace"] = declaration
+				chosenContainer.Mounts = chosenContainer.Mounts[1:]
+				outputSealer.result = map[string]snapshot.SealedOutput{}
+			})
+
+			It("seals the empty actual set while preserving flight behavior", func() {
+				ok, err := step.Run(ctx, state)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(ok).To(BeTrue())
+				Expect(fakeMetricsStore.InsertIfAbsentCallCount()).To(Equal(1))
+				Expect(outputSealer.calls).To(HaveLen(1))
+				Expect(outputSealer.calls[0].OutputDeclarations).To(Equal([]snapshot.Port{{
+					Name: "workspace", Type: snapshot.TypeRef("repository-change/v1"), Optional: true,
+				}}))
+				Expect(outputSealer.calls[0].Outputs).To(BeEmpty())
+				_, found := repo.ArtifactEntryFor("workspace")
+				Expect(found).To(BeFalse())
+			})
+		})
+
+		Context("when atomic repository publication rejects the batch", func() {
+			var existing *runtimetest.Volume
+
+			BeforeEach(func() {
+				state = state.NewArtifactScope()
+				repo = state.ArtifactRepository()
+				existing = runtimetest.NewVolume("existing-workspace")
+				repo.RegisterArtifact("workspace", existing, false)
+			})
+
+			It("ingests flight and propagates the publication error without replacement", func() {
+				ok, err := step.Run(ctx, state)
+				Expect(ok).To(BeFalse())
+				Expect(err).To(MatchError(ContainSubstring(build.ErrArtifactAlreadyRegistered.Error())))
+				Expect(fakeMetricsStore.InsertIfAbsentCallCount()).To(Equal(1))
+				Expect(outputSealer.calls).To(HaveLen(1))
+				entry, found := repo.ArtifactEntryFor("workspace")
+				Expect(found).To(BeTrue())
+				Expect(entry.Artifact).To(Equal(existing))
+				Expect(entry.Snapshot).To(BeNil())
+			})
+		})
+	})
+
+	Context("with typed snapshot inputs", func() {
+		var inputDigest snapshot.Digest
+
+		BeforeEach(func() {
+			var err error
+			inputDigest, err = snapshot.ParseDigest("sha256:" + strings.Repeat("e", 64))
+			Expect(err).NotTo(HaveOccurred())
+			agentPlan.Inputs = []string{"repository"}
+			agentPlan.SnapshotInputs = map[string]atc.SnapshotInputConfig{
+				"repository": {Type: snapshot.TypeRef("repository/v1")},
+			}
+			agentStepOptions = append(agentStepOptions, exec.WithAgentOutputSealer(&recordingOutputSealer{}))
+		})
+
+		Context("when an optional input is absent", func() {
+			BeforeEach(func() {
+				declaration := agentPlan.SnapshotInputs["repository"]
+				declaration.Optional = true
+				agentPlan.SnapshotInputs["repository"] = declaration
+			})
+
+			It("runs without mounting or reporting it missing", func() {
+				ok, err := step.Run(ctx, state)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(ok).To(BeTrue())
+				Expect(fakePool.FindOrSelectWorkerCallCount()).To(Equal(1))
+				Expect(chosenContainer.Spec.Inputs).To(BeEmpty())
+			})
+		})
+
+		Context("when a required input is absent", func() {
+			It("returns MissingInputsError before worker selection", func() {
+				_, err := step.Run(ctx, state)
+				Expect(err).To(BeAssignableToTypeOf(exec.MissingInputsError{}))
+				Expect(err.(exec.MissingInputsError).Inputs).To(Equal([]string{"repository"}))
+				Expect(fakePool.FindOrSelectWorkerCallCount()).To(Equal(0))
+			})
+		})
+
+		Context("when the input snapshot type differs", func() {
+			BeforeEach(func() {
+				ref := snapshot.SnapshotRef{ID: 42, Type: snapshot.TypeRef("review/v1"), Digest: inputDigest}
+				Expect(repo.RegisterArtifacts(map[build.ArtifactName]build.ArtifactEntry{
+					"repository": {Artifact: runtimetest.NewVolume("input"), Snapshot: &ref},
+				})).To(Succeed())
+			})
+
+			It("fails before worker selection", func() {
+				_, err := step.Run(ctx, state)
+				Expect(err).To(MatchError(ContainSubstring("does not match declared type")))
+				Expect(fakePool.FindOrSelectWorkerCallCount()).To(Equal(0))
+			})
+		})
+	})
+
+	Context("with a typed input carrying no snapshot ref", func() {
+		BeforeEach(func() {
+			stepMetadata.TeamName = "main"
+			stepMetadata.SnapshotCreatedBy = "concourse"
+			containerMetadata.Attempt = "1"
+			agentPlan.Inputs = []string{"repository"}
+			agentPlan.SnapshotInputs = map[string]atc.SnapshotInputConfig{
+				"repository": {Type: snapshot.TypeRef("repository/v1")},
+			}
+			repo.RegisterArtifact("repository", runtimetest.NewVolume("repository"), false)
+			agentStepOptions = append(agentStepOptions, exec.WithAgentOutputSealer(&recordingOutputSealer{}))
+		})
+
+		It("fails before worker selection", func() {
+			_, err := step.Run(ctx, state)
+			Expect(err).To(MatchError(ContainSubstring("snapshot ref")))
+			Expect(fakePool.FindOrSelectWorkerCallCount()).To(Equal(0))
+		})
+	})
+
+	Context("with typed declarations but no sealer", func() {
+		BeforeEach(func() {
+			agentPlan.SnapshotOutputs = map[string]atc.SnapshotOutputConfig{
+				"workspace": {Type: snapshot.TypeRef("repository-change/v1")},
+			}
+		})
+
+		It("fails closed before worker selection", func() {
+			_, err := step.Run(ctx, state)
+			Expect(err).To(MatchError(ContainSubstring("output sealer")))
+			Expect(fakePool.FindOrSelectWorkerCallCount()).To(Equal(0))
+		})
 	})
 
 	It("resolves the step slice through the budget checker", func() {

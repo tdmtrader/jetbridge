@@ -17,6 +17,7 @@ import (
 	"github.com/concourse/concourse/agent/api/metrics"
 	"github.com/concourse/concourse/agent/budget"
 	"github.com/concourse/concourse/agent/schema"
+	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/exec/build"
@@ -101,6 +102,12 @@ func WithAgentRunVerifier(v AgentRunVerifier) AgentStepOption {
 	return func(s *AgentStep) { s.runVerifier = v }
 }
 
+// WithAgentOutputSealer enables strict typed snapshot input and output
+// execution for agent plans. The flight artifact remains outside this path.
+func WithAgentOutputSealer(sealer snapshot.OutputSealer) AgentStepOption {
+	return func(s *AgentStep) { s.outputSealer = sealer }
+}
+
 // AgentStep runs the claude CLI (via the agent-runner entrypoint) in a
 // jetbridge pod with declared MCP sidecars, then ingests the flight
 // recorder server-side (shared-contracts §2.8, §5, §8.1).
@@ -121,6 +128,7 @@ type AgentStep struct {
 	budgetChecker       budget.Checker
 	runVerifier         AgentRunVerifier
 	platformTokenSecret string
+	outputSealer        snapshot.OutputSealer
 }
 
 func NewAgentStep(
@@ -183,6 +191,12 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 
 	if step.agentImage == "" {
 		return false, errors.New("agent step requires the web node to be started with --agent-step-image")
+	}
+	if err := step.validateSnapshotDeclarations(); err != nil {
+		return false, err
+	}
+	if (len(step.plan.SnapshotInputs) > 0 || len(step.plan.SnapshotOutputs) > 0) && step.outputSealer == nil {
+		return false, fmt.Errorf("agent %q has typed snapshot declarations but no output sealer is configured", step.plan.Name)
 	}
 
 	// Agent env is STATIC-ONLY (contracts §2.8): the renderer resolves
@@ -411,7 +425,36 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 	repository := state.ArtifactRepository()
 
 	var missingInputs []string
+	snapshotInputs := snapshotInputBindings{refs: map[string]snapshot.SnapshotRef{}}
 	for _, name := range step.plan.Inputs {
+		if declaration, typed := step.plan.SnapshotInputs[name]; typed {
+			entry, found := repository.ArtifactEntryFor(build.ArtifactName(name))
+			if !found {
+				if !declaration.Optional {
+					missingInputs = append(missingInputs, name)
+				}
+				continue
+			}
+			if entry.Artifact == nil {
+				return false, fmt.Errorf("agent typed input %q has no artifact", name)
+			}
+			if entry.Snapshot == nil {
+				return false, fmt.Errorf("agent typed input %q has no snapshot ref", name)
+			}
+			ref := *entry.Snapshot
+			if err := ref.Validate(); err != nil {
+				return false, fmt.Errorf("agent typed input %q has invalid snapshot ref: %w", name, err)
+			}
+			if ref.Type != declaration.Type {
+				return false, fmt.Errorf("agent typed input %q snapshot type %q does not match declared type %q", name, ref.Type, declaration.Type)
+			}
+			containerSpec.Inputs = append(containerSpec.Inputs, runtime.Input{
+				Artifact: entry.Artifact, DestinationPath: artifactPath(workdir, name, ""), FromCache: entry.FromCache,
+			})
+			snapshotInputs.order = append(snapshotInputs.order, name)
+			snapshotInputs.refs[name] = ref
+			continue
+		}
 		artifact, fromCache, found := repository.ArtifactFor(build.ArtifactName(name))
 		if !found {
 			missingInputs = append(missingInputs, name)
@@ -650,7 +693,7 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 
 	result, runErr := process.Wait(ctx)
 
-	step.registerOutputs(logger, repository, chosenWorker, outputNames, volumeMounts)
+	step.registerLegacyOutputs(logger, repository, chosenWorker, outputNames, volumeMounts)
 
 	// Synchronous server-side ingestion of the flight recorder — on EVERY
 	// path where the container ran, including DeadlineExceeded and transport
@@ -668,6 +711,11 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 		}
 
 		return false, runErr
+	}
+	if result.ExitStatus == 0 && len(step.plan.SnapshotOutputs) > 0 {
+		if err := step.sealTypedOutputs(ctx, repository, chosenWorker, volumeMounts, snapshotInputs); err != nil {
+			return false, err
+		}
 	}
 
 	oteltrace.SpanFromContext(ctx).AddEvent("step.finished")
@@ -1041,10 +1089,13 @@ func (step *AgentStep) outputNames() []string {
 	return names
 }
 
-func (step *AgentStep) registerOutputs(logger lager.Logger, repository *build.Repository, worker runtime.Worker, outputNames []string, volumeMounts []runtime.VolumeMount) {
+func (step *AgentStep) registerLegacyOutputs(logger lager.Logger, repository *build.Repository, worker runtime.Worker, outputNames []string, volumeMounts []runtime.VolumeMount) {
 	logger.Debug("registering-outputs", lager.Data{"outputs": outputNames})
 
 	for _, name := range outputNames {
+		if _, typed := step.plan.SnapshotOutputs[name]; typed {
+			continue
+		}
 		outputPath := artifactPath(step.containerMetadata.WorkingDirectory, name, "")
 
 		for _, mount := range volumeMounts {
@@ -1058,6 +1109,142 @@ func (step *AgentStep) registerOutputs(logger lager.Logger, repository *build.Re
 			}
 		}
 	}
+}
+
+func (step *AgentStep) sealTypedOutputs(
+	ctx context.Context,
+	repository *build.Repository,
+	worker runtime.Worker,
+	volumeMounts []runtime.VolumeMount,
+	inputs snapshotInputBindings,
+) error {
+	outputs, declarations, workflowDefinitionID, workflowRunID, err := step.collectTypedOutputs(worker, volumeMounts)
+	if err != nil {
+		return err
+	}
+	sources := make([]snapshot.OutputSource, len(outputs))
+	for i, output := range outputs {
+		sources[i] = output.source
+	}
+	sealed, err := step.outputSealer.Seal(ctx, snapshot.SealRequest{
+		BuildID: step.metadata.BuildID, TeamID: step.metadata.TeamID, TeamName: step.metadata.TeamName,
+		CreatedBy: step.metadata.SnapshotCreatedBy, PlanID: string(step.planID), Attempt: step.containerMetadata.Attempt,
+		StepKind: "agent", StepName: step.plan.Name,
+		WorkflowDefinitionID: workflowDefinitionID, WorkflowRunID: workflowRunID,
+		InputOrder: append([]string(nil), inputs.order...), Inputs: cloneExecSnapshotRefs(inputs.refs),
+		OutputDeclarations: declarations, Outputs: sources,
+	})
+	if err != nil {
+		return err
+	}
+	if len(sealed) != len(outputs) {
+		return fmt.Errorf("agent output sealer returned %d outputs, want %d", len(sealed), len(outputs))
+	}
+	entries := make(map[build.ArtifactName]build.ArtifactEntry, len(outputs))
+	for _, output := range outputs {
+		sealedOutput, found := sealed[output.source.ClientKey]
+		if !found {
+			return fmt.Errorf("agent output sealer did not return client key %q", output.source.ClientKey)
+		}
+		if err := sealedOutput.Validate(); err != nil {
+			return fmt.Errorf("agent output sealer returned invalid output %q: %w", output.source.ClientKey, err)
+		}
+		if sealedOutput.Port != output.source.Port {
+			return fmt.Errorf("agent output sealer returned a mismatched declaration for %q", output.source.ClientKey)
+		}
+		ref := sealedOutput.Snapshot
+		entries[build.ArtifactName(output.source.ClientKey)] = build.ArtifactEntry{Artifact: output.artifact, Snapshot: &ref}
+	}
+	if err := repository.RegisterArtifacts(entries); err != nil {
+		return fmt.Errorf("publish typed agent outputs: %w", err)
+	}
+	return nil
+}
+
+func (step *AgentStep) collectTypedOutputs(
+	worker runtime.Worker,
+	volumeMounts []runtime.VolumeMount,
+) ([]collectedTypedOutput, []snapshot.Port, *int, *snapshot.WorkflowRunID, error) {
+	outputs := make([]collectedTypedOutput, 0, len(step.plan.SnapshotOutputs))
+	declarations := make([]snapshot.Port, 0, len(step.plan.SnapshotOutputs))
+	seen := make(map[string]struct{}, len(step.plan.SnapshotOutputs))
+	workflowDefinitionID, workflowRunID, err := snapshotWorkflowAssociation("agent", step.plan.SnapshotOutputs)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	for _, name := range step.plan.Outputs {
+		declaration, typed := step.plan.SnapshotOutputs[name]
+		if !typed {
+			continue
+		}
+		if _, duplicate := seen[name]; duplicate {
+			return nil, nil, nil, nil, fmt.Errorf("agent typed output %q is declared more than once", name)
+		}
+		seen[name] = struct{}{}
+		port := snapshot.Port{Name: name, Type: declaration.Type, Optional: declaration.Optional}
+		declarations = append(declarations, port)
+		outputPath := artifactPath(step.containerMetadata.WorkingDirectory, name, "")
+		var artifact runtime.Artifact
+		matches := 0
+		for _, mount := range volumeMounts {
+			if filepath.Clean(mount.MountPath) == filepath.Clean(outputPath) {
+				matches++
+				if matches == 1 {
+					artifact = worker.ArtifactFromVolume(mount.Volume)
+				}
+			}
+		}
+		if matches > 1 {
+			return nil, nil, nil, nil, fmt.Errorf("agent typed output %q has duplicate mounts", name)
+		}
+		if matches == 0 {
+			if declaration.Optional {
+				continue
+			}
+			return nil, nil, nil, nil, fmt.Errorf("agent required typed output %q has no mount", name)
+		}
+		capturedArtifact := artifact
+		outputs = append(outputs, collectedTypedOutput{
+			artifact: artifact,
+			source: snapshot.OutputSource{
+				ClientKey: name, Port: port, Retention: declaration.Retention, WorkflowPort: declaration.WorkflowPort,
+				OpenTar: func(ctx context.Context) (io.ReadCloser, error) {
+					return capturedArtifact.StreamOut(ctx, ".", nil)
+				},
+			},
+		})
+	}
+	return outputs, declarations, workflowDefinitionID, workflowRunID, nil
+}
+
+func (step *AgentStep) validateSnapshotDeclarations() error {
+	inputs := make(map[string]struct{}, len(step.plan.Inputs))
+	for _, name := range step.plan.Inputs {
+		inputs[name] = struct{}{}
+	}
+	for _, name := range sortedSnapshotKeys(step.plan.SnapshotInputs) {
+		declaration := step.plan.SnapshotInputs[name]
+		if err := declaration.Validate(); err != nil {
+			return fmt.Errorf("agent typed input %q: %w", name, err)
+		}
+		if _, found := inputs[name]; !found {
+			return fmt.Errorf("agent typed input %q is absent from the declared inputs", name)
+		}
+	}
+	outputs := make(map[string]struct{}, len(step.plan.Outputs))
+	for _, name := range step.plan.Outputs {
+		outputs[name] = struct{}{}
+	}
+	for _, name := range sortedSnapshotKeys(step.plan.SnapshotOutputs) {
+		if name == agentFlightArtifact {
+			return fmt.Errorf("agent flight output cannot be a typed snapshot")
+		}
+		if _, found := outputs[name]; !found {
+			return fmt.Errorf("agent typed output %q is absent from the declared outputs", name)
+		}
+	}
+	_, _, err := snapshotWorkflowAssociation("agent", step.plan.SnapshotOutputs)
+	return err
 }
 
 // mergeContainerLimits overlays the non-nil fields of override onto defaults

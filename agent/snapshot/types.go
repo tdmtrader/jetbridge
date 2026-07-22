@@ -833,6 +833,54 @@ type CandidateOutput struct {
 	IntrinsicMetadata json.RawMessage `json:"intrinsic_metadata,omitempty"`
 }
 
+// OutputSource is the process-local description of one output mount offered
+// to the sealing boundary. OpenTar must return a fresh, uncompressed tar
+// stream on every call; it and the source policy are deliberately never
+// serialized or persisted as part of the snapshot value.
+type OutputSource struct {
+	ClientKey      string
+	Port           Port
+	OpenTar        func(context.Context) (io.ReadCloser, error)
+	Retention      RetentionClass
+	WorkflowPort   string
+	SourceMetadata json.RawMessage
+}
+
+func (s OutputSource) Validate() error {
+	if strings.TrimSpace(s.ClientKey) == "" {
+		return fmt.Errorf("snapshot: output source client key is required")
+	}
+	if err := s.Port.Validate(); err != nil {
+		return err
+	}
+	if s.OpenTar == nil {
+		return fmt.Errorf("snapshot: output source %q tar opener is required", s.ClientKey)
+	}
+	if err := validateRawMessage(s.SourceMetadata); err != nil {
+		return fmt.Errorf("snapshot: output source %q metadata: %w", s.ClientKey, err)
+	}
+	switch s.Retention {
+	case "", RetentionClassBinding:
+		if s.WorkflowPort != "" {
+			return fmt.Errorf("snapshot: output source %q workflow port requires workflow retention", s.ClientKey)
+		}
+	case RetentionClassWorkflow:
+		if strings.TrimSpace(s.WorkflowPort) == "" {
+			return fmt.Errorf("snapshot: output source %q workflow retention requires a workflow port", s.ClientKey)
+		}
+	case RetentionClassFixture, RetentionClassPin:
+		return fmt.Errorf("snapshot: output source %q cannot claim producer retention %q", s.ClientKey, s.Retention)
+	default:
+		return fmt.Errorf("snapshot: output source %q has unsupported producer retention %q", s.ClientKey, s.Retention)
+	}
+	return nil
+}
+
+func (s OutputSource) Clone() OutputSource {
+	s.SourceMetadata = cloneRaw(s.SourceMetadata)
+	return s
+}
+
 func (o CandidateOutput) Validate() error {
 	if err := o.Port.Validate(); err != nil {
 		return err
@@ -943,6 +991,9 @@ func (c SealCommitContext) Validate() error {
 			return err
 		}
 	}
+	if (c.WorkflowDefinitionID == nil) != (c.WorkflowRunID == nil) {
+		return fmt.Errorf("snapshot: workflow definition and run IDs must be provided together")
+	}
 	if len(c.InputOrder) != len(c.Inputs) {
 		return fmt.Errorf("snapshot: input order must contain every input exactly once")
 	}
@@ -1017,7 +1068,7 @@ type SealRequest struct {
 	InputOrder           []string               `json:"input_order"`
 	Inputs               map[string]SnapshotRef `json:"inputs"`
 	OutputDeclarations   []Port                 `json:"output_declarations"`
-	Outputs              []CandidateOutput      `json:"outputs"`
+	Outputs              []OutputSource         `json:"-"`
 }
 
 func (r SealRequest) Validate() error {
@@ -1035,6 +1086,8 @@ func (r SealRequest) Validate() error {
 		declarations[declaration.Name] = declaration
 	}
 	produced := make(map[string]struct{}, len(r.Outputs))
+	clientKeys := make(map[string]struct{}, len(r.Outputs))
+	workflowPorts := make(map[string]struct{}, len(r.Outputs))
 	for i, output := range r.Outputs {
 		if err := output.Validate(); err != nil {
 			return fmt.Errorf("snapshot: output %d: %w", i, err)
@@ -1047,9 +1100,22 @@ func (r SealRequest) Validate() error {
 			return fmt.Errorf("snapshot: candidate output %q does not match its declaration", output.Port.Name)
 		}
 		if _, duplicate := produced[output.Port.Name]; duplicate {
-			return fmt.Errorf("snapshot: duplicate candidate output %q", output.Port.Name)
+			return fmt.Errorf("snapshot: duplicate output source port %q", output.Port.Name)
 		}
 		produced[output.Port.Name] = struct{}{}
+		if _, duplicate := clientKeys[output.ClientKey]; duplicate {
+			return fmt.Errorf("snapshot: duplicate output source client key %q", output.ClientKey)
+		}
+		clientKeys[output.ClientKey] = struct{}{}
+		if output.Retention == RetentionClassWorkflow && r.WorkflowRunID == nil {
+			return fmt.Errorf("snapshot: output source %q workflow retention requires workflow definition and run IDs", output.ClientKey)
+		}
+		if output.WorkflowPort != "" {
+			if _, duplicate := workflowPorts[output.WorkflowPort]; duplicate {
+				return fmt.Errorf("snapshot: duplicate workflow port %q", output.WorkflowPort)
+			}
+			workflowPorts[output.WorkflowPort] = struct{}{}
+		}
 	}
 	for _, declaration := range r.OutputDeclarations {
 		if _, found := produced[declaration.Name]; !found && !declaration.Optional {
@@ -1086,7 +1152,13 @@ func (r SealRequest) Clone() SealRequest {
 	r.InputOrder = append([]string(nil), r.InputOrder...)
 	r.Inputs = cloneSnapshotRefs(r.Inputs)
 	r.OutputDeclarations = append([]Port(nil), r.OutputDeclarations...)
-	r.Outputs = cloneCandidates(r.Outputs)
+	if r.Outputs != nil {
+		outputs := make([]OutputSource, len(r.Outputs))
+		for i, output := range r.Outputs {
+			outputs[i] = output.Clone()
+		}
+		r.Outputs = outputs
+	}
 	return r
 }
 

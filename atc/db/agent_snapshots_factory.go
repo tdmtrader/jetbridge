@@ -165,9 +165,9 @@ func (factory *agentSnapshotsFactory) CommitSealBatch(
 		if err := insertOrVerifyLineage(ctx, tx, productionID, productionCreated, commit.Context); err != nil {
 			return nil, err
 		}
-		if commit.Context.WorkflowRunID != nil {
+		if commit.Context.WorkflowRunID != nil && output.WorkflowPort != "" {
 			if err := bindWorkflowRunSnapshot(
-				ctx, tx, *commit.Context.WorkflowRunID, "output", output.Port.Name, manifest.ID,
+				ctx, tx, *commit.Context.WorkflowRunID, "output", output.WorkflowPort, manifest.ID,
 			); err != nil {
 				return nil, err
 			}

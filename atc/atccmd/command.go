@@ -31,6 +31,7 @@ import (
 	"github.com/concourse/concourse/agent/outcomewatcher"
 	"github.com/concourse/concourse/agent/pipelinearchiver"
 	"github.com/concourse/concourse/agent/snapshot"
+	"github.com/concourse/concourse/agent/snapshot/contracts"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api"
 	"github.com/concourse/concourse/atc/api/accessor"
@@ -106,7 +107,10 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
-const algorithmLimitRows = 100
+const (
+	algorithmLimitRows    = 100
+	agentSnapshotStageTTL = time.Hour
+)
 
 var schedulerCache = gocache.New(10*time.Second, 10*time.Second)
 
@@ -121,6 +125,21 @@ type ATCCommand struct {
 	Migration  Migration  `command:"migrate"`
 }
 
+type snapshotStorageComposer func(
+	db.DbConn,
+	db.AgentSnapshotsFactory,
+	snapshot.ArchiveLimits,
+) (*jetbridge.DaemonClient, snapshot.ContentStore, error)
+
+type snapshotSealerComposer func(
+	snapshot.Canonicalizer,
+	snapshot.ValidatorRegistry,
+	snapshot.MetadataStore,
+	snapshot.ContentStore,
+	snapshot.DigestLockManager,
+	time.Duration,
+) (snapshot.OutputSealer, error)
+
 type RunCommand struct {
 	Logger flag.Lager
 
@@ -133,11 +152,16 @@ type RunCommand struct {
 	// Snapshot daemon transport and content storage are command-scoped so API
 	// and backend composition share one durable client/store rather than
 	// rebuilding restart-unsafe state inside each pool construction.
-	agentSnapshotMu            sync.Mutex
-	agentSnapshotDaemonClient  *jetbridge.DaemonClient
-	agentSnapshotContentStore  snapshot.ContentStore
-	agentSnapshotArchiveLimits snapshot.ArchiveLimits
-	agentSnapshotComposer      func(db.DbConn) (*jetbridge.DaemonClient, snapshot.ContentStore, error)
+	agentSnapshotMu                sync.Mutex
+	agentSnapshotDaemonClient      *jetbridge.DaemonClient
+	agentSnapshotContentStore      snapshot.ContentStore
+	agentSnapshotMetadataStore     db.AgentSnapshotsFactory
+	agentSnapshotDigestLocker      snapshot.DigestLockManager
+	agentSnapshotValidatorRegistry snapshot.ValidatorRegistry
+	agentSnapshotOutputSealer      snapshot.OutputSealer
+	agentSnapshotArchiveLimits     snapshot.ArchiveLimits
+	agentSnapshotComposer          snapshotStorageComposer
+	agentSnapshotSealerComposer    snapshotSealerComposer
 
 	artifactResolveCapabilityMu  sync.Mutex
 	artifactResolveCapabilityKey []byte
@@ -1588,26 +1612,76 @@ func (cmd *RunCommand) composeAgentSnapshots(connection db.DbConn) error {
 	if !cmd.AgentSnapshots.Enabled {
 		return nil
 	}
-	if cmd.agentSnapshotDaemonClient != nil || cmd.agentSnapshotContentStore != nil {
-		if cmd.agentSnapshotDaemonClient == nil || cmd.agentSnapshotContentStore == nil {
+	initialized := cmd.agentSnapshotDaemonClient != nil ||
+		cmd.agentSnapshotContentStore != nil ||
+		cmd.agentSnapshotMetadataStore != nil ||
+		cmd.agentSnapshotDigestLocker != nil ||
+		cmd.agentSnapshotValidatorRegistry != nil ||
+		cmd.agentSnapshotOutputSealer != nil ||
+		cmd.agentSnapshotArchiveLimits != (snapshot.ArchiveLimits{})
+	if initialized {
+		if cmd.agentSnapshotDaemonClient == nil ||
+			cmd.agentSnapshotContentStore == nil ||
+			cmd.agentSnapshotMetadataStore == nil ||
+			cmd.agentSnapshotDigestLocker == nil ||
+			cmd.agentSnapshotValidatorRegistry == nil ||
+			cmd.agentSnapshotOutputSealer == nil ||
+			cmd.agentSnapshotArchiveLimits == (snapshot.ArchiveLimits{}) {
 			return fmt.Errorf("snapshot command composition is partially initialized")
 		}
 		return nil
+	}
+	if connection == nil {
+		return fmt.Errorf("snapshot metadata database connection is required")
+	}
+
+	archiveLimits := cmd.configuredAgentSnapshotArchiveLimits()
+	metadataStore := db.NewAgentSnapshotsFactory(connection)
+	digestLocker := db.NewAgentSnapshotDigestLocker(connection)
+	registry, err := contracts.NewRegistry()
+	if err != nil {
+		return fmt.Errorf("compose agent snapshot validator registry: %w", err)
 	}
 	composer := cmd.agentSnapshotComposer
 	if composer == nil {
 		composer = cmd.buildAgentSnapshotComponents
 	}
-	daemonClient, contentStore, err := composer(connection)
+	daemonClient, contentStore, err := composer(connection, metadataStore, archiveLimits)
 	if err != nil {
 		return fmt.Errorf("compose agent snapshot storage: %w", err)
 	}
 	if daemonClient == nil || contentStore == nil {
 		return fmt.Errorf("compose agent snapshot storage returned incomplete components")
 	}
+	sealerComposer := cmd.agentSnapshotSealerComposer
+	if sealerComposer == nil {
+		sealerComposer = buildAgentSnapshotSealer
+	}
+	outputSealer, err := sealerComposer(
+		snapshot.Canonicalizer{
+			MaxContentBytes: archiveLimits.MaxContentBytes,
+			MaxEntries:      archiveLimits.MaxEntries,
+		},
+		registry,
+		metadataStore,
+		contentStore,
+		digestLocker,
+		agentSnapshotStageTTL,
+	)
+	if err != nil {
+		return fmt.Errorf("compose agent snapshot output sealer: %w", err)
+	}
+	if outputSealer == nil {
+		return fmt.Errorf("compose agent snapshot output sealer returned no sealer")
+	}
+
 	cmd.agentSnapshotDaemonClient = daemonClient
 	cmd.agentSnapshotContentStore = contentStore
-	cmd.agentSnapshotArchiveLimits = cmd.configuredAgentSnapshotArchiveLimits()
+	cmd.agentSnapshotMetadataStore = metadataStore
+	cmd.agentSnapshotDigestLocker = digestLocker
+	cmd.agentSnapshotValidatorRegistry = registry
+	cmd.agentSnapshotOutputSealer = outputSealer
+	cmd.agentSnapshotArchiveLimits = archiveLimits
 	return nil
 }
 
@@ -1618,9 +1692,16 @@ func (cmd *RunCommand) configuredAgentSnapshotArchiveLimits() snapshot.ArchiveLi
 	}
 }
 
-func (cmd *RunCommand) buildAgentSnapshotComponents(connection db.DbConn) (*jetbridge.DaemonClient, snapshot.ContentStore, error) {
+func (cmd *RunCommand) buildAgentSnapshotComponents(
+	connection db.DbConn,
+	metadataStore db.AgentSnapshotsFactory,
+	archiveLimits snapshot.ArchiveLimits,
+) (*jetbridge.DaemonClient, snapshot.ContentStore, error) {
 	if connection == nil {
 		return nil, nil, fmt.Errorf("snapshot metadata database connection is required")
+	}
+	if metadataStore == nil {
+		return nil, nil, fmt.Errorf("snapshot metadata store is required")
 	}
 	if cmd.Kubernetes.ArtifactDaemonTLSCert == "" || cmd.Kubernetes.ArtifactDaemonTLSKey == "" || cmd.Kubernetes.ArtifactDaemonTLSCACert == "" {
 		return nil, nil, fmt.Errorf("snapshot daemon mTLS certificate, key, and CA certificate are required")
@@ -1654,10 +1735,9 @@ func (cmd *RunCommand) buildAgentSnapshotComponents(connection db.DbConn) (*jetb
 	if err != nil {
 		return nil, nil, fmt.Errorf("construct checked snapshot daemon client: %w", err)
 	}
-	archiveLimits := cmd.configuredAgentSnapshotArchiveLimits()
 	contentStore, err := jetbridge.NewSnapshotContentStore(
 		daemonClient,
-		db.NewAgentSnapshotsFactory(connection),
+		metadataStore,
 		cmd.AgentSnapshots.ReplicationFactor,
 		archiveLimits,
 	)
@@ -1665,6 +1745,36 @@ func (cmd *RunCommand) buildAgentSnapshotComponents(connection db.DbConn) (*jetb
 		return nil, nil, fmt.Errorf("construct snapshot content store: %w", err)
 	}
 	return daemonClient, contentStore, nil
+}
+
+func buildAgentSnapshotSealer(
+	canonicalizer snapshot.Canonicalizer,
+	registry snapshot.ValidatorRegistry,
+	metadataStore snapshot.MetadataStore,
+	contentStore snapshot.ContentStore,
+	digestLocker snapshot.DigestLockManager,
+	stageTTL time.Duration,
+) (snapshot.OutputSealer, error) {
+	return snapshot.NewBatchSealer(
+		canonicalizer,
+		registry,
+		metadataStore,
+		contentStore,
+		digestLocker,
+		snapshot.WithBatchSealerStageTTL(stageTTL),
+	)
+}
+
+func (cmd *RunCommand) agentSnapshotCoreStepFactoryOption() (engine.CoreStepFactoryOption, bool) {
+	if !cmd.AgentSnapshots.Enabled {
+		return nil, false
+	}
+	cmd.agentSnapshotMu.Lock()
+	defer cmd.agentSnapshotMu.Unlock()
+	if cmd.agentSnapshotOutputSealer == nil {
+		return nil, false
+	}
+	return engine.WithOutputSealer(cmd.agentSnapshotOutputSealer), true
 }
 
 func (cmd *RunCommand) constructPool(dbConn db.DbConn, lockFactory lock.LockFactory, workerCache *db.WorkerCache) (worker.Pool, error) {
@@ -2399,6 +2509,21 @@ func (cmd *RunCommand) constructEngine(
 			GlobalDailyCapUSD: cmd.AgentDailyBudgetUSD,
 		},
 	)
+	coreStepFactoryOptions := []engine.CoreStepFactoryOption{
+		engine.WithCoreImageResolver(resolver),
+		engine.WithAgentStepImage(cmd.AgentStepImage),
+		engine.WithAgentPlatformTokenSecret(cmd.AgentPlatformTokenSecret),
+		engine.WithAgentMetricsStore(db.NewAgentRunMetricsFactory(dbConn)),
+		engine.WithAgentBudgetChecker(agentBudgetChecker),
+		engine.WithAgentRunVerifier(pipelineRunFactory),
+		engine.WithAgentTicketsStore(db.NewAgentTicketsFactory(dbConn)),
+		engine.WithAgentReviewsStore(db.NewAgentReviewsFactory(dbConn)),
+		engine.WithAgentOutcomesStore(db.NewAgentOutcomesFactory(dbConn)),
+		engine.WithAgentPlatformUserResolver(db.NewAgentUserCredentialsFactory(dbConn)),
+	}
+	if outputSealerOption, ok := cmd.agentSnapshotCoreStepFactoryOption(); ok {
+		coreStepFactoryOptions = append(coreStepFactoryOptions, outputSealerOption)
+	}
 
 	return engine.NewEngine(
 		engine.NewStepperFactory(
@@ -2416,16 +2541,7 @@ func (cmd *RunCommand) constructEngine(
 				cmd.DefaultGetTimeout,
 				cmd.DefaultPutTimeout,
 				cmd.DefaultTaskTimeout,
-				engine.WithCoreImageResolver(resolver),
-				engine.WithAgentStepImage(cmd.AgentStepImage),
-				engine.WithAgentPlatformTokenSecret(cmd.AgentPlatformTokenSecret),
-				engine.WithAgentMetricsStore(db.NewAgentRunMetricsFactory(dbConn)),
-				engine.WithAgentBudgetChecker(agentBudgetChecker),
-				engine.WithAgentRunVerifier(pipelineRunFactory),
-				engine.WithAgentTicketsStore(db.NewAgentTicketsFactory(dbConn)),
-				engine.WithAgentReviewsStore(db.NewAgentReviewsFactory(dbConn)),
-				engine.WithAgentOutcomesStore(db.NewAgentOutcomesFactory(dbConn)),
-				engine.WithAgentPlatformUserResolver(db.NewAgentUserCredentialsFactory(dbConn)),
+				coreStepFactoryOptions...,
 			),
 			cmd.ExternalURL.String(),
 			rateLimiter,

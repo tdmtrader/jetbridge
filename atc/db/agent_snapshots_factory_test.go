@@ -288,6 +288,7 @@ var _ = Describe("AgentSnapshotsFactory", func() {
 		resultDigest := digest("2")
 		resultStage := stage(resultDigest, defaultTeam.ID(), "workflow-output")
 		result := output("result", "result", "review/v1", resultDigest, resultStage)
+		result.WorkflowPort = "public-review"
 		result.Retention = append(result.Retention, snapshot.RetentionSpec{
 			Class: snapshot.RetentionClassWorkflow, Actor: "workflow-output", Reason: "durable workflow output",
 		})
@@ -308,17 +309,42 @@ var _ = Describe("AgentSnapshotsFactory", func() {
 		Expect(dbConn.QueryRow(`SELECT count(*) FROM agent_snapshot_staged_uploads WHERE id = $1`, resultStage.ID).Scan(&retainedStage)).To(Succeed())
 		Expect(retainedStage).To(Equal(1), "wrong-build rejection must roll the seal transaction back")
 
+		duplicate := result.Clone()
+		duplicate.ClientKey = "duplicate"
+		duplicate.Port.Name = "duplicate"
+		_, err = factory.CommitSealBatch(ctx, lease, snapshot.SealCommit{
+			Context: snapshot.SealCommitContext{
+				BuildID: producerBuildID, TeamID: defaultTeam.ID(), TeamName: defaultTeam.Name(),
+				CreatedBy: "alice", PlanID: "plan-output", Attempt: "workflow-output",
+				StepKind: "agent", StepName: "review", WorkflowDefinitionID: &definitionID, WorkflowRunID: &runID,
+				InputOrder: []string{"source"}, Inputs: map[string]snapshot.SnapshotRef{"source": input},
+				ExpectedOutputs: []snapshot.Port{result.Port, duplicate.Port},
+			},
+			Outputs: []snapshot.SealCommitOutput{result, duplicate},
+		})
+		Expect(err).To(MatchError(ContainSubstring("duplicate workflow port")))
+		var manifests int
+		Expect(dbConn.QueryRow(`SELECT count(*) FROM agent_snapshots WHERE digest = $1`, resultDigest).Scan(&manifests)).To(Succeed())
+		Expect(manifests).To(Equal(0))
+		Expect(dbConn.QueryRow(`SELECT count(*) FROM agent_snapshot_staged_uploads WHERE id = $1`, resultStage.ID).Scan(&retainedStage)).To(Succeed())
+		Expect(retainedStage).To(Equal(1), "duplicate workflow-port rejection must not consume its stage")
+
+		bindingDigest := digest("3")
+		bindingStage := stage(bindingDigest, defaultTeam.ID(), "workflow-output")
+		binding := output("audit", "audit", "log-bundle/v1", bindingDigest, bindingStage)
+
 		sealed, err := factory.CommitSealBatch(ctx, lease, snapshot.SealCommit{
 			Context: snapshot.SealCommitContext{
 				BuildID: producerBuildID, TeamID: defaultTeam.ID(), TeamName: defaultTeam.Name(),
 				CreatedBy: "alice", PlanID: "plan-output", Attempt: "workflow-output",
 				StepKind: "agent", StepName: "review", WorkflowDefinitionID: &definitionID, WorkflowRunID: &runID,
 				InputOrder: []string{"source"}, Inputs: map[string]snapshot.SnapshotRef{"source": input},
-				ExpectedOutputs: []snapshot.Port{result.Port},
+				ExpectedOutputs: []snapshot.Port{result.Port, binding.Port},
 			},
-			Outputs: []snapshot.SealCommitOutput{result},
+			Outputs: []snapshot.SealCommitOutput{result, binding},
 		})
 		Expect(err).NotTo(HaveOccurred())
+		Expect(sealed).To(HaveKey("audit"))
 
 		bindings, err := runFactory.Snapshots(ctx, run.ID)
 		Expect(err).NotTo(HaveOccurred())
@@ -329,7 +355,7 @@ var _ = Describe("AgentSnapshotsFactory", func() {
 			},
 			db.AgentWorkflowRunSnapshotBinding{
 				WorkflowRunID: run.ID, Direction: db.AgentWorkflowRunSnapshotOutput,
-				PortName: "result", Snapshot: sealed["result"].Snapshot,
+				PortName: "public-review", Snapshot: sealed["result"].Snapshot,
 			},
 		))
 
@@ -340,7 +366,7 @@ var _ = Describe("AgentSnapshotsFactory", func() {
 			SELECT count(*) FROM agent_snapshot_productions
 			WHERE build_id = $1 AND workflow_run_id = $2
 		`, producerBuildID, int64(run.ID)).Scan(&productions)).To(Succeed())
-		Expect(productions).To(Equal(1))
+		Expect(productions).To(Equal(2))
 	})
 
 	It("deduplicates semantic manifests while preserving distinct productions and semantic siblings", func() {

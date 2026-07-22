@@ -7,11 +7,13 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
 	"code.cloudfoundry.org/lager/v3"
 	"code.cloudfoundry.org/lager/v3/lagerctx"
+	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/exec/build"
@@ -20,9 +22,9 @@ import (
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/worker"
 	"github.com/concourse/concourse/tracing"
-	oteltrace "go.opentelemetry.io/otel/trace"
 	"github.com/concourse/concourse/vars"
 	"go.opentelemetry.io/otel/trace"
+	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
 const taskProcessID = "task"
@@ -95,6 +97,13 @@ func WithImageResolver(r imageresolver.Resolver) TaskStepOption {
 	}
 }
 
+// WithTaskOutputSealer enables strict typed snapshot input and output
+// execution for task plans. Typed plans fail closed when this option is not
+// provided; legacy plans do not consult it.
+func WithTaskOutputSealer(sealer snapshot.OutputSealer) TaskStepOption {
+	return func(s *TaskStep) { s.outputSealer = sealer }
+}
+
 // TaskStep executes a TaskConfig, whose inputs will be fetched from the
 // artifact.Repository and outputs will be added to the artifact.Repository.
 type TaskStep struct {
@@ -109,6 +118,7 @@ type TaskStep struct {
 	delegateFactory    TaskDelegateFactory
 	defaultTaskTimeout time.Duration
 	imageResolver      imageresolver.Resolver
+	outputSealer       snapshot.OutputSealer
 }
 
 func NewTaskStep(
@@ -237,6 +247,12 @@ func (step *TaskStep) run(ctx context.Context, state RunState, delegate TaskDele
 	if err != nil {
 		return false, err
 	}
+	if err := step.validateSnapshotDeclarations(config); err != nil {
+		return false, err
+	}
+	if (len(step.plan.SnapshotInputs) > 0 || len(step.plan.SnapshotOutputs) > 0) && step.outputSealer == nil {
+		return false, fmt.Errorf("task %q has typed snapshot declarations but no output sealer is configured", step.plan.Name)
+	}
 
 	if config.Limits == nil {
 		config.Limits = &atc.ContainerLimits{}
@@ -286,7 +302,7 @@ func (step *TaskStep) run(ctx context.Context, state RunState, delegate TaskDele
 
 	delegate.SetTaskConfig(config)
 
-	containerSpec, err := step.containerSpec(logger, state, imageSpec, config, step.containerMetadata)
+	containerSpec, snapshotInputs, err := step.containerSpec(logger, state, imageSpec, config, step.containerMetadata)
 	if err != nil {
 		return false, err
 	}
@@ -368,7 +384,7 @@ func (step *TaskStep) run(ctx context.Context, state RunState, delegate TaskDele
 
 	result, runErr := process.Wait(ctx)
 
-	step.registerOutputs(logger, repository, worker, config, volumeMounts, step.containerMetadata)
+	step.registerLegacyOutputs(logger, repository, worker, config, volumeMounts, step.containerMetadata)
 
 	// Do not initialize caches for one-off builds
 	if step.metadata.JobID != 0 {
@@ -385,6 +401,11 @@ func (step *TaskStep) run(ctx context.Context, state RunState, delegate TaskDele
 		}
 
 		return false, runErr
+	}
+	if result.ExitStatus == 0 && len(step.plan.SnapshotOutputs) > 0 {
+		if err := step.sealTypedOutputs(ctx, repository, worker, config, volumeMounts, snapshotInputs); err != nil {
+			return false, err
+		}
 	}
 
 	oteltrace.SpanFromContext(ctx).AddEvent("step.finished")
@@ -442,8 +463,14 @@ func (step *TaskStep) imageSpec(ctx context.Context, logger lager.Logger, state 
 	return imageSpec, nil
 }
 
-func (step *TaskStep) containerInputs(logger lager.Logger, repository *build.Repository, config atc.TaskConfig, metadata db.ContainerMetadata) ([]runtime.Input, error) {
+type snapshotInputBindings struct {
+	order []string
+	refs  map[string]snapshot.SnapshotRef
+}
+
+func (step *TaskStep) containerInputs(logger lager.Logger, repository *build.Repository, config atc.TaskConfig, metadata db.ContainerMetadata) ([]runtime.Input, snapshotInputBindings, error) {
 	var inputs []runtime.Input
+	bindings := snapshotInputBindings{refs: map[string]snapshot.SnapshotRef{}}
 
 	var missingRequiredInputs []string
 
@@ -451,6 +478,36 @@ func (step *TaskStep) containerInputs(logger lager.Logger, repository *build.Rep
 		inputName := input.Name
 		if sourceName, ok := step.plan.InputMapping[inputName]; ok {
 			inputName = sourceName
+		}
+
+		if declaration, typed := step.plan.SnapshotInputs[inputName]; typed {
+			entry, found := repository.ArtifactEntryFor(build.ArtifactName(inputName))
+			if !found {
+				if !declaration.Optional {
+					missingRequiredInputs = append(missingRequiredInputs, inputName)
+				}
+				continue
+			}
+			if entry.Artifact == nil {
+				return nil, snapshotInputBindings{}, fmt.Errorf("task typed input %q has no artifact", inputName)
+			}
+			if entry.Snapshot == nil {
+				return nil, snapshotInputBindings{}, fmt.Errorf("task typed input %q has no snapshot ref", inputName)
+			}
+			ref := *entry.Snapshot
+			if err := ref.Validate(); err != nil {
+				return nil, snapshotInputBindings{}, fmt.Errorf("task typed input %q has invalid snapshot ref: %w", inputName, err)
+			}
+			if ref.Type != declaration.Type {
+				return nil, snapshotInputBindings{}, fmt.Errorf("task typed input %q snapshot type %q does not match declared type %q", inputName, ref.Type, declaration.Type)
+			}
+			inputs = append(inputs, runtime.Input{
+				Artifact: entry.Artifact, DestinationPath: artifactPath(metadata.WorkingDirectory, input.Name, input.Path),
+				FromCache: entry.FromCache,
+			})
+			bindings.order = append(bindings.order, inputName)
+			bindings.refs[inputName] = ref
+			continue
 		}
 
 		artifact, fromCache, found := repository.ArtifactFor(build.ArtifactName(inputName))
@@ -468,13 +525,13 @@ func (step *TaskStep) containerInputs(logger lager.Logger, repository *build.Rep
 	}
 
 	if len(missingRequiredInputs) > 0 {
-		return nil, MissingInputsError{missingRequiredInputs}
+		return nil, snapshotInputBindings{}, MissingInputsError{missingRequiredInputs}
 	}
 
-	return inputs, nil
+	return inputs, bindings, nil
 }
 
-func (step *TaskStep) containerSpec(logger lager.Logger, state RunState, imageSpec runtime.ImageSpec, config atc.TaskConfig, metadata db.ContainerMetadata) (runtime.ContainerSpec, error) {
+func (step *TaskStep) containerSpec(logger lager.Logger, state RunState, imageSpec runtime.ImageSpec, config atc.TaskConfig, metadata db.ContainerMetadata) (runtime.ContainerSpec, snapshotInputBindings, error) {
 	env := step.metadata.TaskEnv()
 	env = append(env, config.Params.Env()...)
 
@@ -493,9 +550,10 @@ func (step *TaskStep) containerSpec(logger lager.Logger, state RunState, imageSp
 	}
 
 	var err error
-	containerSpec.Inputs, err = step.containerInputs(logger, state.ArtifactRepository(), config, metadata)
+	var bindings snapshotInputBindings
+	containerSpec.Inputs, bindings, err = step.containerInputs(logger, state.ArtifactRepository(), config, metadata)
 	if err != nil {
-		return runtime.ContainerSpec{}, err
+		return runtime.ContainerSpec{}, snapshotInputBindings{}, err
 	}
 
 	containerSpec.Caches = make([]string, len(config.Caches))
@@ -529,7 +587,7 @@ func (step *TaskStep) containerSpec(logger lager.Logger, state RunState, imageSp
 	// ValueFrom.SecretKeyRef instead of a literal value.
 	containerSpec.SecretEnv = BuildSecretEnv(config.Params, state)
 
-	return containerSpec, nil
+	return containerSpec, bindings, nil
 }
 
 // BuildSecretEnv cross-references resolved param values against tracked
@@ -587,13 +645,16 @@ func (step *TaskStep) workerSpec(config atc.TaskConfig) worker.Spec {
 	}
 }
 
-func (step *TaskStep) registerOutputs(logger lager.Logger, repository *build.Repository, worker runtime.Worker, config atc.TaskConfig, volumeMounts []runtime.VolumeMount, metadata db.ContainerMetadata) {
+func (step *TaskStep) registerLegacyOutputs(logger lager.Logger, repository *build.Repository, worker runtime.Worker, config atc.TaskConfig, volumeMounts []runtime.VolumeMount, metadata db.ContainerMetadata) {
 	logger.Debug("registering-outputs", lager.Data{"outputs": config.Outputs})
 
 	for _, output := range config.Outputs {
 		outputName := output.Name
 		if destinationName, ok := step.plan.OutputMapping[output.Name]; ok {
 			outputName = destinationName
+		}
+		if _, typed := step.plan.SnapshotOutputs[outputName]; typed {
+			continue
 		}
 
 		outputPath := artifactPath(metadata.WorkingDirectory, output.Name, output.Path)
@@ -610,6 +671,208 @@ func (step *TaskStep) registerOutputs(logger lager.Logger, repository *build.Rep
 			}
 		}
 	}
+}
+
+type collectedTypedOutput struct {
+	source   snapshot.OutputSource
+	artifact runtime.Artifact
+}
+
+func (step *TaskStep) sealTypedOutputs(
+	ctx context.Context,
+	repository *build.Repository,
+	worker runtime.Worker,
+	config atc.TaskConfig,
+	volumeMounts []runtime.VolumeMount,
+	inputs snapshotInputBindings,
+) error {
+	outputs, declarations, workflowDefinitionID, workflowRunID, err := step.collectTypedOutputs(worker, config, volumeMounts)
+	if err != nil {
+		return err
+	}
+	sources := make([]snapshot.OutputSource, len(outputs))
+	for i, output := range outputs {
+		sources[i] = output.source
+	}
+	sealed, err := step.outputSealer.Seal(ctx, snapshot.SealRequest{
+		BuildID: step.metadata.BuildID, TeamID: step.metadata.TeamID, TeamName: step.metadata.TeamName,
+		CreatedBy: step.metadata.SnapshotCreatedBy, PlanID: string(step.planID), Attempt: step.containerMetadata.Attempt,
+		StepKind: "task", StepName: step.plan.Name,
+		WorkflowDefinitionID: workflowDefinitionID, WorkflowRunID: workflowRunID,
+		InputOrder: append([]string(nil), inputs.order...), Inputs: cloneExecSnapshotRefs(inputs.refs),
+		OutputDeclarations: declarations, Outputs: sources,
+	})
+	if err != nil {
+		return err
+	}
+	if len(sealed) != len(outputs) {
+		return fmt.Errorf("task output sealer returned %d outputs, want %d", len(sealed), len(outputs))
+	}
+	entries := make(map[build.ArtifactName]build.ArtifactEntry, len(outputs))
+	for _, output := range outputs {
+		sealedOutput, found := sealed[output.source.ClientKey]
+		if !found {
+			return fmt.Errorf("task output sealer did not return client key %q", output.source.ClientKey)
+		}
+		if err := sealedOutput.Validate(); err != nil {
+			return fmt.Errorf("task output sealer returned invalid output %q: %w", output.source.ClientKey, err)
+		}
+		if sealedOutput.Port != output.source.Port {
+			return fmt.Errorf("task output sealer returned a mismatched declaration for %q", output.source.ClientKey)
+		}
+		ref := sealedOutput.Snapshot
+		entries[build.ArtifactName(output.source.ClientKey)] = build.ArtifactEntry{Artifact: output.artifact, Snapshot: &ref}
+	}
+	if err := repository.RegisterArtifacts(entries); err != nil {
+		return fmt.Errorf("publish typed task outputs: %w", err)
+	}
+	return nil
+}
+
+func (step *TaskStep) collectTypedOutputs(
+	worker runtime.Worker,
+	config atc.TaskConfig,
+	volumeMounts []runtime.VolumeMount,
+) ([]collectedTypedOutput, []snapshot.Port, *int, *snapshot.WorkflowRunID, error) {
+	outputs := make([]collectedTypedOutput, 0, len(step.plan.SnapshotOutputs))
+	declarations := make([]snapshot.Port, 0, len(step.plan.SnapshotOutputs))
+	seen := make(map[string]struct{}, len(step.plan.SnapshotOutputs))
+	workflowDefinitionID, workflowRunID, err := snapshotWorkflowAssociation("task", step.plan.SnapshotOutputs)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	for _, output := range config.Outputs {
+		effectiveName := output.Name
+		if mapped, found := step.plan.OutputMapping[output.Name]; found {
+			effectiveName = mapped
+		}
+		declaration, typed := step.plan.SnapshotOutputs[effectiveName]
+		if !typed {
+			continue
+		}
+		if _, duplicate := seen[effectiveName]; duplicate {
+			return nil, nil, nil, nil, fmt.Errorf("task typed output %q is declared more than once", effectiveName)
+		}
+		seen[effectiveName] = struct{}{}
+		port := snapshot.Port{Name: effectiveName, Type: declaration.Type, Optional: declaration.Optional}
+		declarations = append(declarations, port)
+		outputPath := artifactPath(step.containerMetadata.WorkingDirectory, output.Name, output.Path)
+		var artifact runtime.Artifact
+		matches := 0
+		for _, mount := range volumeMounts {
+			if filepath.Clean(mount.MountPath) == filepath.Clean(outputPath) {
+				matches++
+				if matches == 1 {
+					artifact = worker.ArtifactFromVolume(mount.Volume)
+				}
+			}
+		}
+		if matches > 1 {
+			return nil, nil, nil, nil, fmt.Errorf("task typed output %q has duplicate mounts", effectiveName)
+		}
+		if matches == 0 {
+			if declaration.Optional {
+				continue
+			}
+			return nil, nil, nil, nil, fmt.Errorf("task required typed output %q has no mount", effectiveName)
+		}
+		capturedArtifact := artifact
+		outputs = append(outputs, collectedTypedOutput{
+			artifact: artifact,
+			source: snapshot.OutputSource{
+				ClientKey: effectiveName, Port: port, Retention: declaration.Retention,
+				WorkflowPort: declaration.WorkflowPort,
+				OpenTar: func(ctx context.Context) (io.ReadCloser, error) {
+					return capturedArtifact.StreamOut(ctx, ".", nil)
+				},
+			},
+		})
+	}
+	return outputs, declarations, workflowDefinitionID, workflowRunID, nil
+}
+
+func (step *TaskStep) validateSnapshotDeclarations(config atc.TaskConfig) error {
+	inputs := make(map[string]struct{}, len(config.Inputs))
+	for _, input := range config.Inputs {
+		name := input.Name
+		if mapped, found := step.plan.InputMapping[input.Name]; found {
+			name = mapped
+		}
+		inputs[name] = struct{}{}
+	}
+	for _, name := range sortedSnapshotKeys(step.plan.SnapshotInputs) {
+		declaration := step.plan.SnapshotInputs[name]
+		if err := declaration.Validate(); err != nil {
+			return fmt.Errorf("task typed input %q: %w", name, err)
+		}
+		if _, found := inputs[name]; !found {
+			return fmt.Errorf("task typed input %q is absent from the fetched task config after input mapping", name)
+		}
+	}
+	outputs := make(map[string]struct{}, len(config.Outputs))
+	for _, output := range config.Outputs {
+		name := output.Name
+		if mapped, found := step.plan.OutputMapping[output.Name]; found {
+			name = mapped
+		}
+		outputs[name] = struct{}{}
+	}
+	for _, name := range sortedSnapshotKeys(step.plan.SnapshotOutputs) {
+		if _, found := outputs[name]; !found {
+			return fmt.Errorf("task typed output %q is absent from the fetched task config after output mapping", name)
+		}
+	}
+	_, _, err := snapshotWorkflowAssociation("task", step.plan.SnapshotOutputs)
+	return err
+}
+
+func cloneExecSnapshotRefs(refs map[string]snapshot.SnapshotRef) map[string]snapshot.SnapshotRef {
+	cloned := make(map[string]snapshot.SnapshotRef, len(refs))
+	for name, ref := range refs {
+		cloned[name] = ref
+	}
+	return cloned
+}
+
+func snapshotWorkflowAssociation(
+	stepKind string,
+	outputs map[string]atc.SnapshotOutputConfig,
+) (*int, *snapshot.WorkflowRunID, error) {
+	var workflowDefinitionID *int
+	var workflowRunID *snapshot.WorkflowRunID
+	for _, name := range sortedSnapshotKeys(outputs) {
+		declaration := outputs[name]
+		if err := declaration.Validate(); err != nil {
+			return nil, nil, fmt.Errorf("%s typed output %q: %w", stepKind, name, err)
+		}
+		if declaration.Retention != snapshot.RetentionClassWorkflow {
+			continue
+		}
+		parsedRunID, err := snapshot.ParseWorkflowRunID(declaration.WorkflowRunID)
+		if err != nil {
+			return nil, nil, fmt.Errorf("%s typed output %q workflow run ID: %w", stepKind, name, err)
+		}
+		if workflowDefinitionID == nil {
+			definitionID := declaration.WorkflowDefinitionID
+			runID := parsedRunID
+			workflowDefinitionID = &definitionID
+			workflowRunID = &runID
+			continue
+		}
+		if *workflowDefinitionID != declaration.WorkflowDefinitionID || *workflowRunID != parsedRunID {
+			return nil, nil, fmt.Errorf("%s typed outputs claim multiple workflow definition/run associations", stepKind)
+		}
+	}
+	return workflowDefinitionID, workflowRunID, nil
+}
+
+func sortedSnapshotKeys[V any](values map[string]V) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func (step *TaskStep) registerCaches(ctx context.Context, repository *build.Repository, config atc.TaskConfig, volumeMounts []runtime.VolumeMount, metadata db.ContainerMetadata) error {

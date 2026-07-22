@@ -11,6 +11,7 @@ import (
 	"github.com/concourse/concourse/agent/api/reviews"
 	"github.com/concourse/concourse/agent/api/tickets"
 	"github.com/concourse/concourse/agent/budget"
+	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/lock"
@@ -44,6 +45,7 @@ type coreStepFactory struct {
 	agentReviewsStore     reviews.Store
 	agentOutcomesStore    outcomes.Store
 	platformUserResolver  exec.PlatformUserResolver
+	outputSealer          snapshot.OutputSealer
 }
 
 // CoreStepFactoryOption configures optional fields on coreStepFactory.
@@ -54,6 +56,12 @@ func WithCoreImageResolver(r imageresolver.Resolver) CoreStepFactoryOption {
 	return func(f *coreStepFactory) {
 		f.imageResolver = r
 	}
+}
+
+// WithOutputSealer enables typed snapshot execution for both Task and Agent
+// steps using one command-scoped sealer instance.
+func WithOutputSealer(sealer snapshot.OutputSealer) CoreStepFactoryOption {
+	return func(f *coreStepFactory) { f.outputSealer = sealer }
 }
 
 // WithAgentStepImage sets the main-container image for agent: steps
@@ -280,6 +288,9 @@ func (factory *coreStepFactory) AgentStep(
 	if factory.agentPlatformToken != "" {
 		agentOpts = append(agentOpts, exec.WithAgentPlatformTokenSecret(factory.agentPlatformToken))
 	}
+	if factory.outputSealer != nil {
+		agentOpts = append(agentOpts, exec.WithAgentOutputSealer(factory.outputSealer))
+	}
 
 	agentStep := exec.NewAgentStep(
 		plan.ID,
@@ -371,6 +382,9 @@ func (factory *coreStepFactory) TaskStep(
 	var taskOpts []exec.TaskStepOption
 	if factory.imageResolver != nil {
 		taskOpts = append(taskOpts, exec.WithImageResolver(factory.imageResolver))
+	}
+	if factory.outputSealer != nil {
+		taskOpts = append(taskOpts, exec.WithTaskOutputSealer(factory.outputSealer))
 	}
 
 	taskStep := exec.NewTaskStep(

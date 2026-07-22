@@ -537,6 +537,11 @@ func (factory *stepperFactory) stepMetadata(
 	externalURL string,
 	exposeBuildCreatedBy bool,
 ) exec.StepMetadata {
+	snapshotCreatedBy := "concourse"
+	createdBy := build.CreatedBy()
+	if createdBy != nil && strings.TrimSpace(*createdBy) != "" {
+		snapshotCreatedBy = *createdBy
+	}
 	meta := exec.StepMetadata{
 		BuildID:              build.ID(),
 		BuildName:            build.Name(),
@@ -549,9 +554,10 @@ func (factory *stepperFactory) stepMetadata(
 		PipelineInstanceVars: build.PipelineInstanceVars(),
 		InstanceVarsQuery:    build.PipelineRef().QueryParams(),
 		ExternalURL:          externalURL,
+		SnapshotCreatedBy:    snapshotCreatedBy,
 	}
-	if exposeBuildCreatedBy && build.CreatedBy() != nil {
-		meta.CreatedBy = *build.CreatedBy()
+	if exposeBuildCreatedBy && createdBy != nil {
+		meta.CreatedBy = *createdBy
 	}
 	return meta
 }

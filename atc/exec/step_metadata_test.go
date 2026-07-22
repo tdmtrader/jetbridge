@@ -129,4 +129,12 @@ var _ = Describe("StepMetadata", func() {
 			})
 		})
 	})
+
+	Describe("snapshot creator", func() {
+		It("is server-only and is never exposed through either environment", func() {
+			metadata := exec.StepMetadata{SnapshotCreatedBy: "concourse"}
+			Expect(metadata.Env()).To(BeEmpty())
+			Expect(metadata.TaskEnv()).To(BeEmpty())
+		})
+	})
 })
