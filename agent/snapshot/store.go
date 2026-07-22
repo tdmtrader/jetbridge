@@ -309,6 +309,11 @@ func (c SealCommit) Validate() error {
 		representation string
 	}
 	physicalByDigest := make(map[Digest]physicalMetadata, len(c.Outputs))
+	type semanticIdentity struct {
+		typeRef TypeRef
+		digest  Digest
+	}
+	intrinsicByIdentity := make(map[semanticIdentity]json.RawMessage, len(c.Outputs))
 	for _, output := range c.Outputs {
 		if err := output.Validate(); err != nil {
 			return err
@@ -334,6 +339,11 @@ func (c SealCommit) Validate() error {
 			return fmt.Errorf("snapshot: outputs sharing digest %s have contradictory physical metadata", output.Digest)
 		}
 		physicalByDigest[output.Digest] = physical
+		identity := semanticIdentity{typeRef: output.Port.Type, digest: output.Digest}
+		if existing, found := intrinsicByIdentity[identity]; found && !rawJSONEqual(existing, output.IntrinsicMetadata) {
+			return fmt.Errorf("snapshot: outputs sharing type %s and digest %s have contradictory intrinsic metadata", output.Port.Type, output.Digest)
+		}
+		intrinsicByIdentity[identity] = output.IntrinsicMetadata
 	}
 	return nil
 }

@@ -331,6 +331,39 @@ func TestSealCommitEnforcesPhysicalAndStageDigestConsistency(t *testing.T) {
 	}
 }
 
+func TestSealCommitRejectsConflictingBatchIntrinsicMetadata(t *testing.T) {
+	digest := mustTestDigest(t)
+	base := validSealCommit(t, digest)
+	second := base.Outputs[0].Clone()
+	second.ClientKey = "second"
+	second.Port.Name = "second"
+	second.StagedUploadID = 100
+	base.Outputs[0].IntrinsicMetadata = json.RawMessage(`{"schema":1,"format":"tar"}`)
+	second.IntrinsicMetadata = cloneRaw(base.Outputs[0].IntrinsicMetadata)
+	base.Outputs = append(base.Outputs, second)
+	base.Context.ExpectedOutputs = append(base.Context.ExpectedOutputs, second.Port)
+
+	conflicting := base.Clone()
+	conflicting.Outputs[1].IntrinsicMetadata = json.RawMessage(`{"schema":2,"format":"tar"}`)
+	if err := conflicting.Validate(); err == nil {
+		t.Fatal("SealCommit.Validate accepted conflicting intrinsic metadata for one type and digest")
+	}
+
+	equivalent := base.Clone()
+	equivalent.Outputs[1].IntrinsicMetadata = json.RawMessage("{\n  \"format\" : \"tar\",\n  \"schema\" : 1\n}")
+	if err := equivalent.Validate(); err != nil {
+		t.Fatalf("semantically equivalent intrinsic metadata: %v", err)
+	}
+
+	differentType := base.Clone()
+	differentType.Outputs[1].Port.Type = TypeRef("review/v1")
+	differentType.Context.ExpectedOutputs[1].Type = TypeRef("review/v1")
+	differentType.Outputs[1].IntrinsicMetadata = json.RawMessage(`{"schema":2}`)
+	if err := differentType.Validate(); err != nil {
+		t.Fatalf("different types sharing one digest may have different intrinsic metadata: %v", err)
+	}
+}
+
 func TestSealRequestRequiresInputOrderToBeAnExactPermutation(t *testing.T) {
 	digest := mustTestDigest(t)
 	base := SealRequest{
