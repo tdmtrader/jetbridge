@@ -1,5 +1,7 @@
 # The Bench — Track D: Plan 14 Supersede / Retain Disposition
 
+> **SUPERSEDED — historical implementation record (not executable).** The approved [Agentic Workflows as Functions over Snapshots design](../../../specs/2026-07-21-agentic-workflows-as-functions-design.md) and [Agentic Functions program plan](../../2026-07-21-agentic-functions-program.md) are authoritative. This document preserves the abandoned ticket-centric roadmap only. **Explicit superseded block:** every section below this banner, including migration reservations at `1773106100+`, `step_kind`, ticket/build/plan keys, restore runner/stub, and `primaryMetric` references, is historical and must not be implemented. **Keep:** fixtures, repetitions, evaluators, controls, and scorecards. **Supersede:** `step_kind`, ticket/build/plan keys, restore runner/stub, and the primary-metric switch.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Descends-from:** `14-process-intel-experiments.md` (amends it), `docs/superpowers/specs/2026-07-19-agent-bench-design.md` (§8 retrospective loop, handoff brief **D**, "Data model sketch"). Cross-track siblings: `bench/A1-fixtures`, `bench/A2-replay-harness`, `bench/B-evaluators`, `bench/C-scorecards`.

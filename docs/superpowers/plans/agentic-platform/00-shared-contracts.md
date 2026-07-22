@@ -1,5 +1,7 @@
 # Agentic Platform — Shared Contracts
 
+> **SUPERSEDED — historical implementation record (not executable).** The approved [Agentic Workflows as Functions over Snapshots design](../../specs/2026-07-21-agentic-workflows-as-functions-design.md) and [Agentic Functions program plan](../2026-07-21-agentic-functions-program.md) are authoritative. This document preserves the abandoned ticket-centric roadmap only. **Explicit superseded block:** every section below this banner, including migration reservations at `1773106100+`, `step_kind`, ticket/build/plan keys, restore runner/stub, and `primaryMetric` references, is historical and must not be implemented. **Keep:** fixtures, repetitions, evaluators, controls, and scorecards. **Supersede:** `step_kind`, ticket/build/plan keys, restore runner/stub, and the primary-metric switch.
+
 - **Date:** 2026-07-07
 - **Status:** Frozen for planning. Parallel workstream planners treat this document as gospel; changes require a cross-workstream sign-off note appended to §11.
 - **Source of truth:** `docs/superpowers/specs/2026-07-07-agentic-platform-end-state-design.md`
@@ -39,7 +41,7 @@ These decisions apply everywhere below and are marked once:
 | 1773106070–79 | platform-mcp-hitl | `agent_run_questions` (+ `question_hash` dedup, `1773106072`, 2026-07-10 PARK-V2) |
 | 1773106080–89 | harvest-step | `agent_reviews`/`agent_feedback` linkage columns |
 | 1773106090–99 | delivery-outcomes | `agent_outcomes` |
-| 1773106100–109 | process-intel-experiments | `agent_benchmark_cases`, `agent_experiments`, `agent_experiment_runs` |
+| Historical / withdrawn | Historical `1773106100–109` reservation for `agent_benchmark_cases`, `agent_experiments`, and `agent_experiment_runs`; it is not an active allocation and must not be implemented. |
 
 ### 1.2 `agent_principals` — owner: **agent-identity**; consumers: ticket-core, agent-step, platform-mcp-hitl, gateway-mcp, harvest-step, dispatch
 

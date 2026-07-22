@@ -1,5 +1,7 @@
 # The Bench — program index (six-plan cross-track gate)
 
+> **SUPERSEDED — historical implementation record (not executable).** The approved [Agentic Workflows as Functions over Snapshots design](../../../specs/2026-07-21-agentic-workflows-as-functions-design.md) and [Agentic Functions program plan](../../2026-07-21-agentic-functions-program.md) are authoritative. This document preserves the abandoned ticket-centric roadmap only. **Explicit superseded block:** every section below this banner, including migration reservations at `1773106100+`, `step_kind`, ticket/build/plan keys, restore runner/stub, and `primaryMetric` references, is historical and must not be implemented. **Keep:** fixtures, repetitions, evaluators, controls, and scorecards. **Supersede:** `step_kind`, ticket/build/plan keys, restore runner/stub, and the primary-metric switch.
+
 **Date:** 2026-07-19 · **Branch:** jetbridge · **Head migration (walk const):** `1773106090`
 (`legacy_upgrade_test.go:37`) — **on-disk file head is `1773106091`** (`create_agent_settings`,
 dispatcher runtime-toggle). The const lags the on-disk head by one (a pre-existing bug): the walk

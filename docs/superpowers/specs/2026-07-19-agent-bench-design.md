@@ -1,5 +1,7 @@
 # The Bench — Step-Level Evaluation and the Inner Improvement Loop
 
+> **SUPERSEDED — historical implementation record (not executable).** The approved [Agentic Workflows as Functions over Snapshots design](2026-07-21-agentic-workflows-as-functions-design.md) and [Agentic Functions program plan](../plans/2026-07-21-agentic-functions-program.md) are authoritative. This document preserves the abandoned ticket-centric roadmap only. **Explicit superseded block:** every section below this banner, including migration reservations at `1773106100+`, `step_kind`, ticket/build/plan keys, restore runner/stub, and `primaryMetric` references, is historical and must not be implemented. **Keep:** fixtures, repetitions, evaluators, controls, and scorecards. **Supersede:** `step_kind`, ticket/build/plan keys, restore runner/stub, and the primary-metric switch.
+
 - **Date:** 2026-07-19
 - **Status:** Approved design (brainstormed + section-approved 2026-07-19); ready for plan decomposition
 - **Scope:** Reshapes the unbuilt improvement-loop workstreams (13-scorecards, 14-process-intel-experiments) around step-level evaluation. 10-gateway-mcp executes **unchanged** on its original charter (see §10). Nothing in landed waves 1–4 changes.
