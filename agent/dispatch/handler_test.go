@@ -136,9 +136,9 @@ func TestDispatchHandlerErrorMapping(t *testing.T) {
 	// judge renders now (judge-evidence Slice E) — hitl remains the
 	// canonical still-refused surface for this mapping test.
 	deps.Workflows.(*fakeWorkflows).byName["parked"] = &workflow.Definition{
-		Name: "parked", Version: 1, Live: true,
+		Name: "parked", Version: 1, SchemaVersion: 2, Live: true,
 		Config: workflow.Config{
-			Name: "parked", SpecDelivery: "files",
+			SchemaVersion: 2, Name: "parked", SpecDelivery: "files",
 			Prompts: map[string]string{"do": "x"},
 			HITL:    workflow.HITL{AskTimeout: "park"},
 			Steps:   []workflow.Step{{Agent: "a", Prompt: "do", Inputs: []string{"ticket"}, Outputs: []string{"workspace"}}},

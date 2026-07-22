@@ -3275,6 +3275,33 @@ var _ = Describe("params schema validation", func() {
 		Expect(errs).To(BeEmpty())
 	})
 
+	It("accepts the canonical decimal formats on string params", func() {
+		errs := validate(atc.Config{
+			Template: true,
+			Params: []atc.ParamSchema{
+				{Name: "required_id", Type: "string", Format: atc.ParamFormatPositiveDecimalInt64, Required: true},
+				{Name: "optional_id", Type: "string", Format: atc.ParamFormatZeroOrPositiveDecimalInt64, Default: "0"},
+			},
+			Jobs: atc.JobConfigs{validJob},
+		})
+		Expect(errs).To(BeEmpty())
+	})
+
+	It("rejects unknown formats, formats on non-string params, and malformed defaults", func() {
+		errs := validate(atc.Config{
+			Template: true,
+			Params: []atc.ParamSchema{
+				{Name: "unknown", Type: "string", Format: "decimal-ish"},
+				{Name: "number", Type: "number", Format: atc.ParamFormatPositiveDecimalInt64},
+				{Name: "bad-default", Type: "string", Format: atc.ParamFormatPositiveDecimalInt64, Default: "0"},
+			},
+			Jobs: atc.JobConfigs{validJob},
+		})
+		Expect(errs).To(ContainElement(ContainSubstring(`invalid format "decimal-ish"`)))
+		Expect(errs).To(ContainElement(ContainSubstring("format is only allowed for string params")))
+		Expect(errs).To(ContainElement(ContainSubstring("invalid default")))
+	})
+
 	It("rejects params on non-template pipelines", func() {
 		errs := validate(atc.Config{
 			Params: []atc.ParamSchema{{Name: "commit", Type: "string"}},

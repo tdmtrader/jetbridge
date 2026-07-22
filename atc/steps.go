@@ -116,7 +116,15 @@ func (step *Step) UnmarshalJSON(data []byte) error {
 // calling .Unwrap to marshal all nested steps into one big set of fields which
 // is then marshalled and returned.
 func (step Step) MarshalJSON() ([]byte, error) {
-	fields := step.UnknownFields
+	fields := make(map[string]*json.RawMessage, len(step.UnknownFields))
+	for name, raw := range step.UnknownFields {
+		if raw == nil {
+			fields[name] = nil
+			continue
+		}
+		cloned := append(json.RawMessage(nil), (*raw)...)
+		fields[name] = &cloned
+	}
 
 	unwrapped := step.Config
 	for unwrapped != nil {

@@ -57,6 +57,9 @@ func coerceParam(p ParamSchema, raw any) (any, error) {
 		if !ok {
 			return nil, fmt.Errorf("param %q: expected string, got %T", p.Name, raw)
 		}
+		if err := validateParamStringFormat(p, s); err != nil {
+			return nil, err
+		}
 		return s, nil
 
 	case "number":
@@ -103,4 +106,36 @@ func coerceParam(p ParamSchema, raw any) (any, error) {
 	}
 
 	return nil, fmt.Errorf("param %q: unknown type %q", p.Name, p.Type)
+}
+
+func validateParamStringFormat(p ParamSchema, value string) error {
+	allowZero := false
+	switch p.Format {
+	case "":
+		return nil
+	case ParamFormatPositiveDecimalInt64:
+	case ParamFormatZeroOrPositiveDecimalInt64:
+		allowZero = true
+	default:
+		return fmt.Errorf("param %q: unknown format %q", p.Name, p.Format)
+	}
+
+	canonical := value == "0" && allowZero
+	if value != "0" && len(value) > 0 && value[0] >= '1' && value[0] <= '9' {
+		canonical = true
+		for i := 1; i < len(value); i++ {
+			if value[i] < '0' || value[i] > '9' {
+				canonical = false
+				break
+			}
+		}
+	}
+	if canonical {
+		_, err := strconv.ParseInt(value, 10, 64)
+		canonical = err == nil
+	}
+	if !canonical {
+		return fmt.Errorf("param %q: %q is not a canonical %s", p.Name, value, p.Format)
+	}
+	return nil
 }

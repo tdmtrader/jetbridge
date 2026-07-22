@@ -181,6 +181,68 @@ func TestTypeCheckOptionalPresenceAndExactTypes(t *testing.T) {
 	}
 }
 
+func TestTypeCheckLoadSnapshotIsATypedProducer(t *testing.T) {
+	load := func(name string, typ snapshot.TypeRef, optional bool) atc.Step {
+		return atc.Step{Config: &atc.LoadSnapshotStep{
+			Name: name, ID: "1", Type: typ, Optional: optional,
+		}}
+	}
+	consumer := func(optional bool, typ snapshot.TypeRef) atc.Step {
+		return atc.Step{Config: typedAgent("consume", "consume", []string{"repo"}, map[string]atc.SnapshotInputConfig{
+			"repo": {Type: typ, Optional: optional},
+		}, nil, nil)}
+	}
+
+	t.Run("required loads satisfy required typed consumers", func(t *testing.T) {
+		function := &FunctionConfig{SignatureVersion: 1, Plan: []atc.Step{
+			load("repo", repositoryV1, false),
+			consumer(false, repositoryV1),
+		}}
+		if err := TypeCheckFunction(function); err != nil {
+			t.Fatalf("TypeCheckFunction: %v", err)
+		}
+	})
+
+	t.Run("optional loads are conditional", func(t *testing.T) {
+		optional := &FunctionConfig{SignatureVersion: 1, Plan: []atc.Step{
+			load("repo", repositoryV1, true),
+			consumer(true, repositoryV1),
+		}}
+		if err := TypeCheckFunction(optional); err != nil {
+			t.Fatalf("optional consumer: %v", err)
+		}
+
+		required := &FunctionConfig{SignatureVersion: 1, Plan: []atc.Step{
+			load("repo", repositoryV1, true),
+			consumer(false, repositoryV1),
+		}}
+		if err := TypeCheckFunction(required); err == nil || !strings.Contains(err.Error(), "conditional") {
+			t.Fatalf("error = %v, want conditional binding", err)
+		}
+	})
+
+	t.Run("loads preserve exact types", func(t *testing.T) {
+		function := &FunctionConfig{SignatureVersion: 1, Plan: []atc.Step{
+			load("repo", repositoryV1, false),
+			consumer(false, repositoryV2),
+		}}
+		if err := TypeCheckFunction(function); err == nil || !strings.Contains(err.Error(), "type mismatch") {
+			t.Fatalf("error = %v, want type mismatch", err)
+		}
+	})
+
+	t.Run("parallel loads use the ordinary collision rules", func(t *testing.T) {
+		parallel := &atc.InParallelStep{Config: atc.InParallelConfig{Steps: []atc.Step{
+			load("repo", repositoryV1, false),
+			load("repo", repositoryV1, false),
+		}}}
+		function := &FunctionConfig{SignatureVersion: 1, Plan: []atc.Step{{Config: parallel}}}
+		if err := TypeCheckFunction(function); err == nil || !strings.Contains(err.Error(), `parallel branches both produce "repo"`) {
+			t.Fatalf("error = %v, want parallel producer collision", err)
+		}
+	})
+}
+
 func TestTypeCheckRejectsUntypedAndAmbiguousFlow(t *testing.T) {
 	tests := []struct {
 		name     string

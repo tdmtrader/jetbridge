@@ -30,6 +30,14 @@ type Config struct {
 	RunRetention  *RunRetentionConfig `json:"run_retention,omitempty"`
 }
 
+// CanonicalJSON returns the stable JSON representation used for config
+// identity. encoding/json sorts map keys and preserves slice order, so the
+// wire representation is deterministic without normalizing or mutating the
+// caller's config.
+func (config Config) CanonicalJSON() ([]byte, error) {
+	return json.Marshal(config)
+}
+
 func UnmarshalConfig(payload []byte, config any) error {
 	// a 'skeleton' of Config, specifying only the toplevel fields
 	type skeletonConfig struct {
@@ -198,12 +206,18 @@ type ResourceConfig struct {
 
 type ParamSchema struct {
 	Name        string   `json:"name"`
-	Type        string   `json:"type"`             // string | number | bool | enum
+	Type        string   `json:"type"` // string | number | bool | enum
+	Format      string   `json:"format,omitempty"`
 	Required    bool     `json:"required,omitempty"`
 	Default     any      `json:"default,omitempty"`
 	Values      []string `json:"values,omitempty"` // enum only
 	Description string   `json:"description,omitempty"`
 }
+
+const (
+	ParamFormatPositiveDecimalInt64       = "positive-decimal-int64"
+	ParamFormatZeroOrPositiveDecimalInt64 = "zero-or-positive-decimal-int64"
+)
 
 type RunRetentionConfig struct {
 	KeepLast int `json:"keep_last,omitempty"`
@@ -219,7 +233,7 @@ type ResourceType struct {
 	Privileged bool        `json:"privileged,omitempty"`
 	CheckEvery *CheckEvery `json:"check_every,omitempty"`
 	Tags       Tags        `json:"tags,omitempty"`
-	Params Params `json:"params,omitempty"`
+	Params     Params      `json:"params,omitempty"`
 }
 
 type Prototype struct {

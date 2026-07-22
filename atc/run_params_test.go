@@ -55,4 +55,27 @@ var _ = Describe("ValidateRunParams", func() {
 		Expect(err).ToNot(HaveOccurred())
 		Expect(out).ToNot(HaveKey("verbose"))
 	})
+
+	DescribeTable("validates canonical decimal int64 string formats",
+		func(format string, value any, shouldPass bool) {
+			formatted := []atc.ParamSchema{{Name: "id", Type: "string", Format: format, Required: true}}
+			out, err := atc.ValidateRunParams(formatted, map[string]any{"id": value})
+			if shouldPass {
+				Expect(err).NotTo(HaveOccurred())
+				Expect(out["id"]).To(Equal(value))
+			} else {
+				Expect(err).To(MatchError(ContainSubstring("canonical")))
+			}
+		},
+		Entry("positive accepts one", atc.ParamFormatPositiveDecimalInt64, "1", true),
+		Entry("positive accepts max int64", atc.ParamFormatPositiveDecimalInt64, "9223372036854775807", true),
+		Entry("positive rejects zero", atc.ParamFormatPositiveDecimalInt64, "0", false),
+		Entry("zero-or-positive accepts zero", atc.ParamFormatZeroOrPositiveDecimalInt64, "0", true),
+		Entry("zero-or-positive accepts max int64", atc.ParamFormatZeroOrPositiveDecimalInt64, "9223372036854775807", true),
+		Entry("rejects a leading zero", atc.ParamFormatZeroOrPositiveDecimalInt64, "01", false),
+		Entry("rejects a sign", atc.ParamFormatZeroOrPositiveDecimalInt64, "+1", false),
+		Entry("rejects whitespace", atc.ParamFormatZeroOrPositiveDecimalInt64, " 1", false),
+		Entry("rejects exponent notation", atc.ParamFormatZeroOrPositiveDecimalInt64, "1e2", false),
+		Entry("rejects overflow", atc.ParamFormatZeroOrPositiveDecimalInt64, "9223372036854775808", false),
+	)
 })

@@ -10,6 +10,45 @@ import (
 )
 
 var _ = Describe("Config", func() {
+	Describe("CanonicalJSON", func() {
+		It("is deterministic and does not mutate step unknown fields", func() {
+			future := json.RawMessage(`{"a":1,"z":2}`)
+			unknown := map[string]*json.RawMessage{"future": &future}
+			config := Config{
+				Template: true,
+				Jobs: JobConfigs{{
+					Name: "run",
+					PlanSequence: []Step{{
+						Config:        &TaskStep{Name: "build", ConfigPath: "task.yml"},
+						UnknownFields: unknown,
+					}},
+				}},
+			}
+
+			first, err := config.CanonicalJSON()
+			Expect(err).NotTo(HaveOccurred())
+			second, err := config.CanonicalJSON()
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(second).To(Equal(first))
+			Expect(string(first)).To(Equal(`{"jobs":[{"name":"run","plan":[{"file":"task.yml","future":{"a":1,"z":2},"task":"build"}]}],"template":true}`))
+			Expect(unknown).To(HaveLen(1))
+			Expect(unknown).To(HaveKey("future"))
+			Expect(string(*unknown["future"])).To(Equal(`{"a":1,"z":2}`))
+		})
+
+		It("preserves string, number, and boolean default types", func() {
+			config := Config{Template: true, Params: []ParamSchema{
+				{Name: "string", Type: "string", Default: "1"},
+				{Name: "number", Type: "number", Default: 1},
+				{Name: "boolean", Type: "bool", Default: true},
+			}}
+			canonical, err := config.CanonicalJSON()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(string(canonical)).To(Equal(`{"template":true,"params":[{"name":"string","type":"string","default":"1"},{"name":"number","type":"number","default":1},{"name":"boolean","type":"bool","default":true}]}`))
+		})
+	})
+
 	Describe("ResourceTypes.ImageForType", func() {
 		var types ResourceTypes
 

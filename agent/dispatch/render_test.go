@@ -2,6 +2,7 @@ package dispatch_test
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -11,6 +12,21 @@ import (
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/configvalidate"
 )
+
+func TestRenderLegacyTicketCompatibilityAlias(t *testing.T) {
+	in := renderInput()
+	legacy, err := dispatch.RenderLegacyTicket(in)
+	if err != nil {
+		t.Fatalf("RenderLegacyTicket: %v", err)
+	}
+	compatibility, err := dispatch.Render(in)
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	if !reflect.DeepEqual(compatibility, legacy) {
+		t.Fatalf("compatibility Render changed legacy config:\ncompat=%#v\nlegacy=%#v", compatibility, legacy)
+	}
+}
 
 func renderInput() dispatch.RenderInput {
 	version := 3

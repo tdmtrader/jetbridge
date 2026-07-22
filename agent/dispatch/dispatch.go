@@ -86,8 +86,8 @@ type Deps struct {
 	// Users, when non-nil, resolves the ticket's triggering user id at
 	// dispatch (the create handler records only the username). nil skips
 	// (platform-funded, as before).
-	Users UserLookup
-	Secrets     credentials.SecretAttacher
+	Users   UserLookup
+	Secrets credentials.SecretAttacher
 
 	// RunTimeout bounds the per-run principal token (§2.8.2: expires_at =
 	// now + --agent-run-timeout). Zero preserves the pre-flag 24h default.
@@ -170,6 +170,9 @@ func DispatchOne(ctx context.Context, deps Deps, ticketID int, dispatchedBy stri
 		}
 		return Result{}, fmt.Errorf("%w: %s %s", ErrWorkflowNotFound, t.WorkflowName, version)
 	}
+	if def.SchemaVersion != 1 && def.SchemaVersion != 2 {
+		return Result{}, fmt.Errorf("%w: workflow %s v%d uses schema_version %d; legacy ticket dispatch supports only schema versions 1 and 2", ErrRenderRefused, def.Name, def.Version, def.SchemaVersion)
+	}
 
 	// Freeze the resolved version onto the ticket (contracts §1.7:
 	// workflow_version NULL = live at dispatch time — dispatch resolves
@@ -229,7 +232,7 @@ func DispatchOne(ctx context.Context, deps Deps, ticketID int, dispatchedBy stri
 		return Result{}, err
 	}
 
-	cfg, err := Render(RenderInput{
+	cfg, err := RenderLegacyTicket(RenderInput{
 		Workflow:        def.Config,
 		WorkflowName:    def.Name,
 		WorkflowVersion: def.Version,

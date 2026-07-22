@@ -618,6 +618,14 @@ func validateParamsSchema(c atc.Config) error {
 		}
 		seen[p.Name] = true
 
+		if p.Format != "" {
+			if p.Type != "string" {
+				errorMessages = append(errorMessages, identifier+": format is only allowed for string params")
+			} else if p.Format != atc.ParamFormatPositiveDecimalInt64 && p.Format != atc.ParamFormatZeroOrPositiveDecimalInt64 {
+				errorMessages = append(errorMessages, fmt.Sprintf("%s: invalid format %q", identifier, p.Format))
+			}
+		}
+
 		switch p.Type {
 		case "string", "number", "bool":
 			if len(p.Values) > 0 {

@@ -15,6 +15,7 @@ template: true
 params:
 - name: commit
   type: string
+  format: positive-decimal-int64
   required: true
 - name: suite
   type: enum
@@ -36,6 +37,7 @@ jobs:
 		Expect(config.Params).To(HaveLen(2))
 		Expect(config.Params[0].Name).To(Equal("commit"))
 		Expect(config.Params[0].Type).To(Equal("string"))
+		Expect(config.Params[0].Format).To(Equal(atc.ParamFormatPositiveDecimalInt64))
 		Expect(config.Params[0].Required).To(BeTrue())
 		Expect(config.Params[1].Values).To(Equal([]string{"unit", "integration"}))
 		Expect(config.Params[1].Default).To(Equal("unit"))
@@ -140,8 +142,8 @@ var _ = Describe("MaterializeRunConfig", func() {
 		withSnapshot := template
 		withSnapshot.Template = true
 		withSnapshot.Params = []atc.ParamSchema{
-			{Name: "subject_id", Type: "string", Default: "0"},
-			{Name: "workflow_run_id", Type: "string", Required: true},
+			{Name: "subject_id", Type: "string", Format: atc.ParamFormatZeroOrPositiveDecimalInt64, Default: "0"},
+			{Name: "workflow_run_id", Type: "string", Format: atc.ParamFormatPositiveDecimalInt64, Required: true},
 		}
 		withSnapshot.Jobs = atc.JobConfigs{{
 			Name: "entry",
@@ -168,6 +170,12 @@ var _ = Describe("MaterializeRunConfig", func() {
 		Expect(err).ToNot(HaveOccurred())
 		load = out.Jobs[0].PlanSequence[0].Config.(*atc.LoadSnapshotStep)
 		Expect(load.ID).To(Equal("0"))
+
+		_, err = atc.ValidateRunParams(withSnapshot.Params, map[string]any{
+			"subject_id":      float64(1),
+			"workflow_run_id": "1",
+		})
+		Expect(err).To(MatchError(ContainSubstring("expected string")))
 	})
 })
 

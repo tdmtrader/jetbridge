@@ -256,6 +256,8 @@ func (checker *snapshotFlowChecker) checkStep(step atc.Step, entry snapshotEnvir
 		return checker.checkAgent(config, entry, path)
 	case *atc.GetStep:
 		return writeUntyped(entry, config.Name, path+".get("+config.Name+")"), nil
+	case *atc.LoadSnapshotStep:
+		return checker.checkLoadSnapshot(config, entry, path)
 	case *atc.PutStep, *atc.RunStep, *atc.HarvestStep, *atc.SetPipelineStep, *atc.LoadVarStep:
 		return emptySnapshotFlow(entry), nil
 	case *atc.DoStep:
@@ -311,6 +313,38 @@ func (checker *snapshotFlowChecker) checkStep(step atc.Step, entry snapshotEnvir
 	default:
 		return snapshotFlow{}, fmt.Errorf("workflow: %s: unsupported step config %T; snapshot-flow semantics must be defined explicitly", path, config)
 	}
+}
+
+func (checker *snapshotFlowChecker) checkLoadSnapshot(step *atc.LoadSnapshotStep, entry snapshotEnvironment, path string) (snapshotFlow, error) {
+	identity := fmt.Sprintf("%s.load_snapshot(%q)", path, step.Name)
+	if checker.acrossDepth > 0 {
+		return snapshotFlow{}, fmt.Errorf("workflow: %s: typed snapshot load is not allowed inside across local scope", identity)
+	}
+	if step.Optional {
+		if _, found := entry[step.Name]; found {
+			return snapshotFlow{}, fmt.Errorf("workflow: %s: optional load shadows an existing artifact; its value would be path-dependent", identity)
+		}
+	}
+
+	presence := snapshotGuaranteed
+	if step.Optional {
+		presence = snapshotConditional
+	}
+	binding := snapshotBinding{
+		typ:       step.Type,
+		presence:  presence,
+		typed:     true,
+		writePath: identity,
+	}
+	env := cloneSnapshotEnvironment(entry)
+	env[step.Name] = binding
+	writes := map[string]snapshotBinding{step.Name: binding}
+	return snapshotFlow{
+		env:         env,
+		produced:    writes,
+		mayProduced: cloneProduced(writes),
+		allProduced: cloneProduced(writes),
+	}, nil
 }
 
 func (checker *snapshotFlowChecker) checkWrapped(step atc.StepConfig, entry snapshotEnvironment, path string) (snapshotFlow, error) {
@@ -422,32 +456,38 @@ func (checker *snapshotFlowChecker) checkParallel(config *atc.InParallelStep, en
 }
 
 func (checker *snapshotFlowChecker) checkTask(step *atc.TaskStep, entry snapshotEnvironment, path string) (snapshotFlow, error) {
-	inputs := []string(nil)
-	outputs := []string(nil)
-	if step.Config != nil {
-		inputs = make([]string, 0, len(step.Config.Inputs))
-		for _, input := range step.Config.Inputs {
-			name := input.Name
-			if mapped, found := step.InputMapping[name]; found {
-				name = mapped
-			}
-			inputs = append(inputs, name)
-		}
-		outputs = make([]string, 0, len(step.Config.Outputs))
-		for _, output := range step.Config.Outputs {
-			name := output.Name
-			if mapped, found := step.OutputMapping[name]; found {
-				name = mapped
-			}
-			outputs = append(outputs, name)
-		}
-	}
+	inputs, outputs := effectiveTaskArtifactNames(step)
 	// A file-backed task's legacy input/output membership is unknowable until
 	// runtime. Its explicit input_types/output_types are still checked here;
 	// unknown extra legacy artifacts remain ordinary Concourse dependencies.
 	// Consequently an undeclared shadow by such a file is the one documented
 	// static limitation, rather than a reason to ban file tasks from v3.
 	return checker.checkLeaf("task", step.Name, step.FunctionID, inputs, step.SnapshotInputs, outputs, step.SnapshotOutputs, step, nil, entry, path)
+}
+
+func effectiveTaskArtifactNames(step *atc.TaskStep) ([]string, []string) {
+	inputs := []string(nil)
+	outputs := []string(nil)
+	if step == nil || step.Config == nil {
+		return inputs, outputs
+	}
+	inputs = make([]string, 0, len(step.Config.Inputs))
+	for _, input := range step.Config.Inputs {
+		name := input.Name
+		if mapped, found := step.InputMapping[name]; found {
+			name = mapped
+		}
+		inputs = append(inputs, name)
+	}
+	outputs = make([]string, 0, len(step.Config.Outputs))
+	for _, output := range step.Config.Outputs {
+		name := output.Name
+		if mapped, found := step.OutputMapping[name]; found {
+			name = mapped
+		}
+		outputs = append(outputs, name)
+	}
+	return inputs, outputs
 }
 
 func (checker *snapshotFlowChecker) checkAgent(step *atc.AgentStep, entry snapshotEnvironment, path string) (snapshotFlow, error) {

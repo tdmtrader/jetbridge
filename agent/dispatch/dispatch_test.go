@@ -76,16 +76,48 @@ func (f *fakeSaver) SaveTemplate(name string, cfg atc.Config) (int, error) {
 
 func smokeDefinition() *workflow.Definition {
 	return &workflow.Definition{
-		Name: "smoke", Version: 3, ContentHash: "abc123", Live: true,
+		Name: "smoke", Version: 3, SchemaVersion: 2, ContentHash: "abc123", Live: true,
 		Config: workflow.Config{
-			Name:         "smoke",
-			SpecDelivery: "files",
-			Defaults:     workflow.Defaults{Model: "claude-sonnet-5", MaxTurns: 5},
-			Prompts:      map[string]string{"do": "Do it."},
+			SchemaVersion: 2,
+			Name:          "smoke",
+			SpecDelivery:  "files",
+			Defaults:      workflow.Defaults{Model: "claude-sonnet-5", MaxTurns: 5},
+			Prompts:       map[string]string{"do": "Do it."},
 			Steps: []workflow.Step{
 				{Agent: "implement", Prompt: "do", Inputs: []string{"ticket"}, Outputs: []string{"workspace"}},
 			},
 		},
+	}
+}
+
+func TestDispatchOneRejectsSchemaThreeBeforeLegacySideEffects(t *testing.T) {
+	deps, store, saver, runs := dispatchDeps(t)
+	definition := deps.Workflows.(*fakeWorkflows).byName["smoke"]
+	definition.SchemaVersion = 3
+	definition.Config.SchemaVersion = 3
+	id := queuedTicket(t, store, "smoke")
+
+	_, err := dispatch.DispatchOne(context.Background(), deps, id, "admin")
+	if !errors.Is(err, dispatch.ErrRenderRefused) || !strings.Contains(err.Error(), "schema_version 3") {
+		t.Fatalf("error = %v, want explicit schema-version legacy-path refusal", err)
+	}
+	if saver.savedName != "" || runs.CreateRunCallCount() != 0 {
+		t.Fatalf("v3 reached legacy persistence: saver=%q create-runs=%d", saver.savedName, runs.CreateRunCallCount())
+	}
+	got, _, _ := store.Get(id)
+	if got.WorkflowVersion != nil || got.State != tickets.StateQueued {
+		t.Fatalf("v3 refusal must precede version freeze/state changes: %+v", got)
+	}
+}
+
+func TestDispatchOneAcceptsSchemaOneOnLegacyPath(t *testing.T) {
+	deps, store, _, _ := dispatchDeps(t)
+	definition := deps.Workflows.(*fakeWorkflows).byName["smoke"]
+	definition.SchemaVersion = 1
+	definition.Config.SchemaVersion = 1
+	id := queuedTicket(t, store, "smoke")
+	if _, err := dispatch.DispatchOne(context.Background(), deps, id, "admin"); err != nil {
+		t.Fatalf("schema-version-1 legacy dispatch: %v", err)
 	}
 }
 

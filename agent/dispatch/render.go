@@ -141,7 +141,7 @@ func RenderAgentStep(in RenderInput, step workflow.Step) (atc.AgentStep, error) 
 	}, nil
 }
 
-// Render assembles the full template pipeline for a ticket: one entry
+// RenderLegacyTicket assembles the full template pipeline for a ticket: one entry
 // job "run" (no passed: upstream, so CreateRun auto-triggers it) whose
 // plan is [get repo?] -> [write-ticket?] -> agent steps in workflow
 // order. The write-ticket task materializes the deterministic
@@ -149,7 +149,7 @@ func RenderAgentStep(in RenderInput, step workflow.Step) (atc.AgentStep, error) 
 // RenderPlanMarkdown) as the read-only "ticket" artifact; contents
 // travel base64-encoded inside the task script so arbitrary markdown
 // survives shell quoting byte-exact.
-func Render(in RenderInput) (atc.Config, error) {
+func RenderLegacyTicket(in RenderInput) (atc.Config, error) {
 	switch in.Workflow.SpecDelivery {
 	case "files":
 	case "", "mcp":
@@ -283,6 +283,12 @@ func Render(in RenderInput) (atc.Config, error) {
 		}}
 	}
 	return cfg, nil
+}
+
+// Render is the deprecated compatibility alias for legacy ticket callers.
+// Generic schema-version-3 workflows use workflow.RenderFunction instead.
+func Render(in RenderInput) (atc.Config, error) {
+	return RenderLegacyTicket(in)
 }
 
 // renderPrompt executes a §6.2 prompt template against the frozen
