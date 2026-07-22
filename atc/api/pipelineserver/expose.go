@@ -11,6 +11,9 @@ func (s *Server) ExposePipeline(pipeline db.Pipeline) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		err := pipeline.Expose()
 		if err != nil {
+			if writeWorkflowRunTemplateConflict(w, err) {
+				return
+			}
 			logger.Error("failed-to-expose-pipeline", err)
 			w.WriteHeader(http.StatusInternalServerError)
 			return

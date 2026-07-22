@@ -163,6 +163,12 @@ const (
 	GetAgentWorkflowVersion     = "GetAgentWorkflowVersion"
 	CreateAgentWorkflowVersion  = "CreateAgentWorkflowVersion"
 	PromoteAgentWorkflowVersion = "PromoteAgentWorkflowVersion"
+	CreateAgentWorkflowRun      = "CreateAgentWorkflowRun"
+	ListAgentWorkflowRuns       = "ListAgentWorkflowRuns"
+	GetAgentWorkflowRun         = "GetAgentWorkflowRun"
+	CancelAgentWorkflowRun      = "CancelAgentWorkflowRun"
+	RetryAgentWorkflowRun       = "RetryAgentWorkflowRun"
+	GetAgentWorkflowRunOutputs  = "GetAgentWorkflowRunOutputs"
 
 	CreateAgentSnapshot   = "CreateAgentSnapshot"
 	ListAgentSnapshots    = "ListAgentSnapshots"
@@ -346,6 +352,12 @@ var Routes = rata.Routes([]rata.Route{
 	{Path: "/api/v1/agent/workflows/:workflow_name/versions/:version", Method: "GET", Name: GetAgentWorkflowVersion},
 	{Path: "/api/v1/agent/workflows/:workflow_name/versions", Method: "POST", Name: CreateAgentWorkflowVersion},
 	{Path: "/api/v1/agent/workflows/:workflow_name/versions/:version/live", Method: "PUT", Name: PromoteAgentWorkflowVersion},
+	{Path: "/api/v1/agent/workflows/:workflow_name/runs", Method: "POST", Name: CreateAgentWorkflowRun},
+	{Path: "/api/v1/agent/workflows/:workflow_name/runs", Method: "GET", Name: ListAgentWorkflowRuns},
+	{Path: "/api/v1/agent/workflows/:workflow_name/runs/:workflow_run_id", Method: "GET", Name: GetAgentWorkflowRun},
+	{Path: "/api/v1/agent/workflows/:workflow_name/runs/:workflow_run_id/cancel", Method: "POST", Name: CancelAgentWorkflowRun},
+	{Path: "/api/v1/agent/workflows/:workflow_name/runs/:workflow_run_id/retry", Method: "POST", Name: RetryAgentWorkflowRun},
+	{Path: "/api/v1/agent/workflows/:workflow_name/runs/:workflow_run_id/outputs", Method: "GET", Name: GetAgentWorkflowRunOutputs},
 
 	{Path: "/api/v1/teams/:team_name/agent/snapshots", Method: "POST", Name: CreateAgentSnapshot},
 	{Path: "/api/v1/teams/:team_name/agent/snapshots", Method: "GET", Name: ListAgentSnapshots},

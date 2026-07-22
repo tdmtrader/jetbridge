@@ -1,10 +1,13 @@
 package tickets_test
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 
 	"github.com/concourse/concourse/agent/api/tickets"
+	"github.com/concourse/concourse/agent/snapshot/contracts"
 )
 
 func newTicket() *tickets.Ticket {
@@ -116,5 +119,115 @@ func TestMemoryStoreSpecsAndPlans(t *testing.T) {
 	err = s.UpdateTaskStatus(id, 2, 99, tickets.TaskDone)
 	if !errors.Is(err, tickets.ErrTaskNotFound) {
 		t.Errorf("missing task: got %v, want ErrTaskNotFound", err)
+	}
+}
+
+func TestMemoryStoreIncrementsRevisionForEverySuccessfulMutation(t *testing.T) {
+	s := tickets.NewMemoryStore()
+	id, err := s.Create(newTicket())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wantRevision := int64(1)
+	assertRevision := func(operation string) {
+		t.Helper()
+		got, found, err := s.Get(id)
+		if err != nil || !found || got.Revision != wantRevision {
+			t.Fatalf("%s revision = (%+v, %t, %v), want %d", operation, got, found, err, wantRevision)
+		}
+	}
+	mutated := func(operation string, err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatalf("%s: %v", operation, err)
+		}
+		wantRevision++
+		assertRevision(operation)
+	}
+
+	assertRevision("create")
+	title := "updated"
+	mutated("update", s.Update(id, tickets.Update{Title: &title}))
+	mutated("transition", s.Transition(id, tickets.StateDraft, tickets.StateQueued, tickets.TransitionMeta{}))
+	_, err = s.SubmitSpec(id, tickets.Spec{Title: "spec", Body: "body", SubmittedBy: "agent"})
+	mutated("submit spec", err)
+	planVersion, err := s.SubmitPlan(id, []tickets.Task{{Title: "task"}})
+	mutated("submit plan", err)
+	mutated("update task status", s.UpdateTaskStatus(id, planVersion, 1, tickets.TaskInProgress))
+	mutated("append task note", s.AppendTaskNote(id, planVersion, 1, "progress"))
+	_, err = s.UpdateActiveTask(id, 1, tickets.TaskDone, "finished")
+	mutated("update active task", err)
+	commentID, err := s.AppendComment(id, tickets.Comment{Body: "Ship it?", CreatedBy: "agent"})
+	mutated("append comment", err)
+	mutated("answer comment", s.AnswerComment(id, commentID, "yes", "alice"))
+
+	beforeFailure := wantRevision
+	if err := s.AnswerComment(id, commentID, "again", "bob"); !errors.Is(err, tickets.ErrCommentAnswered) {
+		t.Fatalf("second answer = %v, want ErrCommentAnswered", err)
+	}
+	wantRevision = beforeFailure
+	assertRevision("failed second answer")
+}
+
+func TestMemoryStoreCapturesLatestNestedStateAndFirstWriterAnswer(t *testing.T) {
+	s := tickets.NewMemoryStore()
+	version := 3
+	id, err := s.Create(&tickets.Ticket{
+		Title: "upgrade", Body: "upgrade the dependency", Origin: "jira", ExternalRef: "ENG-42", Repo: "repo",
+		WorkflowName: "version-upgrade", WorkflowVersion: &version, CreatedBy: "alice",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SubmitSpec(id, tickets.Spec{
+		Title: "old", Body: "old", SubmittedBy: "alice",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SubmitSpec(id, tickets.Spec{
+		Title: "current", Body: "current spec", AcceptanceCriteria: []string{"tests pass"}, SubmittedBy: "bob",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SubmitPlan(id, []tickets.Task{{Title: "old plan"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SubmitPlan(id, []tickets.Task{{Title: "bump version"}, {Title: "run tests"}}); err != nil {
+		t.Fatal(err)
+	}
+	commentID, err := s.AppendComment(id, tickets.Comment{Body: "May I update the lockfile?", CreatedBy: "agent"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AnswerComment(id, commentID, "yes", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Transition(id, tickets.StateDraft, tickets.StateQueued, tickets.TransitionMeta{}); err != nil {
+		t.Fatal(err)
+	}
+
+	captured, found, err := s.CaptureRevision(context.Background(), id)
+	if err != nil || !found {
+		t.Fatalf("CaptureRevision = (%+v, %t, %v)", captured, found, err)
+	}
+	var document contracts.WorkItemDocument
+	if err := json.Unmarshal(captured.Document, &document); err != nil {
+		t.Fatal(err)
+	}
+	if document.Adapter != "jira" || document.ExternalID != "ENG-42" || document.State != "queued" ||
+		document.Workflow == nil || document.Workflow.Name != "version-upgrade" || document.Spec == nil || document.Spec.Revision != "2" ||
+		document.Plan == nil || document.Plan.Revision != "2" || len(document.Comments) != 1 {
+		t.Fatalf("captured document = %+v", document)
+	}
+	var comment struct {
+		Answer     string `json:"answer"`
+		AnsweredBy string `json:"answered_by"`
+	}
+	if err := json.Unmarshal([]byte(document.Comments[0].Content), &comment); err != nil {
+		t.Fatal(err)
+	}
+	if comment.Answer != "yes" || comment.AnsweredBy != "alice" {
+		t.Fatalf("captured answer = %+v", comment)
 	}
 }

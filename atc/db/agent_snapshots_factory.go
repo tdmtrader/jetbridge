@@ -346,13 +346,19 @@ func validateSealInvocation(ctx context.Context, tx Tx, commit snapshot.SealComm
 	if build.WorkflowRunID != nil {
 		var definitionID int
 		var plannedBuildID, instancePipelineID sql.NullInt64
+		var status AgentWorkflowRunStatus
+		var actualPlanCaptured bool
 		err := tx.QueryRowContext(ctx, `
-			SELECT workflow_definition_id, planned_build_id, instance_pipeline_id
+			SELECT workflow_definition_id, planned_build_id, instance_pipeline_id,
+			       status,
+			       actual_plan IS NOT NULL
+			         AND actual_plan_hash IS NOT NULL
+			         AND resolved_dependencies IS NOT NULL
 			FROM agent_workflow_runs
 			WHERE id = $1 AND team_id = $2
 			FOR UPDATE
 		`, int64(*build.WorkflowRunID), commit.TeamID).Scan(
-			&definitionID, &plannedBuildID, &instancePipelineID,
+			&definitionID, &plannedBuildID, &instancePipelineID, &status, &actualPlanCaptured,
 		)
 		if errors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("db: snapshot workflow run is not owned by the producer team")
@@ -363,11 +369,17 @@ func validateSealInvocation(ctx context.Context, tx Tx, commit snapshot.SealComm
 		if build.WorkflowDefinitionID == nil || definitionID != *build.WorkflowDefinitionID {
 			return fmt.Errorf("db: snapshot workflow run and definition do not match")
 		}
+		if status != AgentWorkflowRunStatusAdmitting && status != AgentWorkflowRunStatusRunning && status != AgentWorkflowRunStatusCanceling {
+			return fmt.Errorf("db: snapshot workflow output requires an active workflow run")
+		}
 		if !plannedBuildID.Valid || plannedBuildID.Int64 != int64(build.BuildID) {
 			return fmt.Errorf("db: snapshot workflow output build does not match the workflow run planned build")
 		}
 		if !instancePipelineID.Valid || !buildPipelineID.Valid || instancePipelineID.Int64 != buildPipelineID.Int64 {
 			return fmt.Errorf("db: snapshot workflow output build does not belong to the linked workflow instance")
+		}
+		if !actualPlanCaptured {
+			return fmt.Errorf("db: snapshot workflow output requires captured actual plan provenance")
 		}
 	}
 	return nil

@@ -2,6 +2,7 @@ package configserver
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -125,6 +126,10 @@ func (s *Server) SaveConfig(w http.ResponseWriter, r *http.Request) {
 
 	_, created, err := team.SavePipeline(pipelineRef, config, version, true)
 	if err != nil {
+		if errors.Is(err, db.ErrWorkflowRunTemplateImmutable) {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
 		session.Error("failed-to-save-config", err)
 		w.WriteHeader(http.StatusInternalServerError)
 		fmt.Fprintf(w, "failed to save config: %s", err)

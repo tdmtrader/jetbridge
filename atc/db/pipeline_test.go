@@ -2,6 +2,7 @@ package db_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"time"
@@ -1897,6 +1898,22 @@ var _ = Describe("Pipeline", func() {
 				Status: atc.StatusStarted,
 				Time:   startedBuild.StartTime().Unix(),
 			}, "0")))
+		})
+	})
+
+	Describe("CreateStartedBuild workflow-run ownership guard", func() {
+		It("rejects a manually started one-off without inserting a build or event", func() {
+			Expect(markPipelineWorkflowRunOwned(pipeline.ID(), team.ID(), team.Name())).To(Succeed())
+			var before int
+			Expect(dbConn.QueryRow(`SELECT count(*) FROM builds WHERE pipeline_id = $1`, pipeline.ID()).Scan(&before)).To(Succeed())
+
+			created, err := pipeline.CreateStartedBuild(atc.Plan{ID: "manual"})
+			Expect(created).To(BeNil())
+			Expect(errors.Is(err, db.ErrWorkflowRunOwnedPipeline)).To(BeTrue())
+
+			var after int
+			Expect(dbConn.QueryRow(`SELECT count(*) FROM builds WHERE pipeline_id = $1`, pipeline.ID()).Scan(&after)).To(Succeed())
+			Expect(after).To(Equal(before))
 		})
 	})
 

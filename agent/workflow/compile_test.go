@@ -458,11 +458,6 @@ func TestCompileV3WalksAllCompositionForms(t *testing.T) {
           - try:
               agent: try-agent
               prompt_file: prompts/try.md
-          - across:
-              - var: item
-                values: [one]
-            agent: across-agent
-            prompt_file: prompts/across.md
       - attempts: 2
         agent: retry-agent
         prompt_file: prompts/retry.md
@@ -487,7 +482,7 @@ func TestCompileV3WalksAllCompositionForms(t *testing.T) {
           agent: ensure-agent
           prompt_file: prompts/ensure.md`
 	manifest := workflow.Manifest{"workflow.yml": v3CompileSource(plan, "")}
-	names := []string{"do", "try", "across", "retry", "timeout", "base", "success", "failure", "error", "abort", "ensure"}
+	names := []string{"do", "try", "retry", "timeout", "base", "success", "failure", "error", "abort", "ensure"}
 	for _, name := range names {
 		manifest["prompts/"+name+".md"] = "compiled " + name
 	}

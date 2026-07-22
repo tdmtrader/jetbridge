@@ -2,9 +2,11 @@
 package dbfakes
 
 import (
+	"context"
 	"sync"
 
 	"github.com/concourse/concourse/agent/api/tickets"
+	"github.com/concourse/concourse/agent/workitem"
 	"github.com/concourse/concourse/atc/db"
 )
 
@@ -22,6 +24,34 @@ type FakeAgentTicketsFactory struct {
 		result1 []tickets.Task
 		result2 error
 	}
+	AnswerCommentStub        func(int, int, string, string) error
+	answerCommentMutex       sync.RWMutex
+	answerCommentArgsForCall []struct {
+		arg1 int
+		arg2 int
+		arg3 string
+		arg4 string
+	}
+	answerCommentReturns struct {
+		result1 error
+	}
+	answerCommentReturnsOnCall map[int]struct {
+		result1 error
+	}
+	AppendCommentStub        func(int, tickets.Comment) (int, error)
+	appendCommentMutex       sync.RWMutex
+	appendCommentArgsForCall []struct {
+		arg1 int
+		arg2 tickets.Comment
+	}
+	appendCommentReturns struct {
+		result1 int
+		result2 error
+	}
+	appendCommentReturnsOnCall map[int]struct {
+		result1 int
+		result2 error
+	}
 	AppendTaskNoteStub        func(int, int, int, string) error
 	appendTaskNoteMutex       sync.RWMutex
 	appendTaskNoteArgsForCall []struct {
@@ -35,6 +65,35 @@ type FakeAgentTicketsFactory struct {
 	}
 	appendTaskNoteReturnsOnCall map[int]struct {
 		result1 error
+	}
+	CaptureRevisionStub        func(context.Context, int) (workitem.CapturedRevision, bool, error)
+	captureRevisionMutex       sync.RWMutex
+	captureRevisionArgsForCall []struct {
+		arg1 context.Context
+		arg2 int
+	}
+	captureRevisionReturns struct {
+		result1 workitem.CapturedRevision
+		result2 bool
+		result3 error
+	}
+	captureRevisionReturnsOnCall map[int]struct {
+		result1 workitem.CapturedRevision
+		result2 bool
+		result3 error
+	}
+	CommentsStub        func(int) ([]tickets.Comment, error)
+	commentsMutex       sync.RWMutex
+	commentsArgsForCall []struct {
+		arg1 int
+	}
+	commentsReturns struct {
+		result1 []tickets.Comment
+		result2 error
+	}
+	commentsReturnsOnCall map[int]struct {
+		result1 []tickets.Comment
+		result2 error
 	}
 	CreateStub        func(*tickets.Ticket) (int, error)
 	createMutex       sync.RWMutex
@@ -244,6 +303,135 @@ func (fake *FakeAgentTicketsFactory) ActivePlanReturnsOnCall(i int, result1 []ti
 	}{result1, result2}
 }
 
+func (fake *FakeAgentTicketsFactory) AnswerComment(arg1 int, arg2 int, arg3 string, arg4 string) error {
+	fake.answerCommentMutex.Lock()
+	ret, specificReturn := fake.answerCommentReturnsOnCall[len(fake.answerCommentArgsForCall)]
+	fake.answerCommentArgsForCall = append(fake.answerCommentArgsForCall, struct {
+		arg1 int
+		arg2 int
+		arg3 string
+		arg4 string
+	}{arg1, arg2, arg3, arg4})
+	stub := fake.AnswerCommentStub
+	fakeReturns := fake.answerCommentReturns
+	fake.recordInvocation("AnswerComment", []interface{}{arg1, arg2, arg3, arg4})
+	fake.answerCommentMutex.Unlock()
+	if stub != nil {
+		return stub(arg1, arg2, arg3, arg4)
+	}
+	if specificReturn {
+		return ret.result1
+	}
+	return fakeReturns.result1
+}
+
+func (fake *FakeAgentTicketsFactory) AnswerCommentCallCount() int {
+	fake.answerCommentMutex.RLock()
+	defer fake.answerCommentMutex.RUnlock()
+	return len(fake.answerCommentArgsForCall)
+}
+
+func (fake *FakeAgentTicketsFactory) AnswerCommentCalls(stub func(int, int, string, string) error) {
+	fake.answerCommentMutex.Lock()
+	defer fake.answerCommentMutex.Unlock()
+	fake.AnswerCommentStub = stub
+}
+
+func (fake *FakeAgentTicketsFactory) AnswerCommentArgsForCall(i int) (int, int, string, string) {
+	fake.answerCommentMutex.RLock()
+	defer fake.answerCommentMutex.RUnlock()
+	argsForCall := fake.answerCommentArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2, argsForCall.arg3, argsForCall.arg4
+}
+
+func (fake *FakeAgentTicketsFactory) AnswerCommentReturns(result1 error) {
+	fake.answerCommentMutex.Lock()
+	defer fake.answerCommentMutex.Unlock()
+	fake.AnswerCommentStub = nil
+	fake.answerCommentReturns = struct {
+		result1 error
+	}{result1}
+}
+
+func (fake *FakeAgentTicketsFactory) AnswerCommentReturnsOnCall(i int, result1 error) {
+	fake.answerCommentMutex.Lock()
+	defer fake.answerCommentMutex.Unlock()
+	fake.AnswerCommentStub = nil
+	if fake.answerCommentReturnsOnCall == nil {
+		fake.answerCommentReturnsOnCall = make(map[int]struct {
+			result1 error
+		})
+	}
+	fake.answerCommentReturnsOnCall[i] = struct {
+		result1 error
+	}{result1}
+}
+
+func (fake *FakeAgentTicketsFactory) AppendComment(arg1 int, arg2 tickets.Comment) (int, error) {
+	fake.appendCommentMutex.Lock()
+	ret, specificReturn := fake.appendCommentReturnsOnCall[len(fake.appendCommentArgsForCall)]
+	fake.appendCommentArgsForCall = append(fake.appendCommentArgsForCall, struct {
+		arg1 int
+		arg2 tickets.Comment
+	}{arg1, arg2})
+	stub := fake.AppendCommentStub
+	fakeReturns := fake.appendCommentReturns
+	fake.recordInvocation("AppendComment", []interface{}{arg1, arg2})
+	fake.appendCommentMutex.Unlock()
+	if stub != nil {
+		return stub(arg1, arg2)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2
+	}
+	return fakeReturns.result1, fakeReturns.result2
+}
+
+func (fake *FakeAgentTicketsFactory) AppendCommentCallCount() int {
+	fake.appendCommentMutex.RLock()
+	defer fake.appendCommentMutex.RUnlock()
+	return len(fake.appendCommentArgsForCall)
+}
+
+func (fake *FakeAgentTicketsFactory) AppendCommentCalls(stub func(int, tickets.Comment) (int, error)) {
+	fake.appendCommentMutex.Lock()
+	defer fake.appendCommentMutex.Unlock()
+	fake.AppendCommentStub = stub
+}
+
+func (fake *FakeAgentTicketsFactory) AppendCommentArgsForCall(i int) (int, tickets.Comment) {
+	fake.appendCommentMutex.RLock()
+	defer fake.appendCommentMutex.RUnlock()
+	argsForCall := fake.appendCommentArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2
+}
+
+func (fake *FakeAgentTicketsFactory) AppendCommentReturns(result1 int, result2 error) {
+	fake.appendCommentMutex.Lock()
+	defer fake.appendCommentMutex.Unlock()
+	fake.AppendCommentStub = nil
+	fake.appendCommentReturns = struct {
+		result1 int
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeAgentTicketsFactory) AppendCommentReturnsOnCall(i int, result1 int, result2 error) {
+	fake.appendCommentMutex.Lock()
+	defer fake.appendCommentMutex.Unlock()
+	fake.AppendCommentStub = nil
+	if fake.appendCommentReturnsOnCall == nil {
+		fake.appendCommentReturnsOnCall = make(map[int]struct {
+			result1 int
+			result2 error
+		})
+	}
+	fake.appendCommentReturnsOnCall[i] = struct {
+		result1 int
+		result2 error
+	}{result1, result2}
+}
+
 func (fake *FakeAgentTicketsFactory) AppendTaskNote(arg1 int, arg2 int, arg3 int, arg4 string) error {
 	fake.appendTaskNoteMutex.Lock()
 	ret, specificReturn := fake.appendTaskNoteReturnsOnCall[len(fake.appendTaskNoteArgsForCall)]
@@ -306,6 +494,138 @@ func (fake *FakeAgentTicketsFactory) AppendTaskNoteReturnsOnCall(i int, result1 
 	fake.appendTaskNoteReturnsOnCall[i] = struct {
 		result1 error
 	}{result1}
+}
+
+func (fake *FakeAgentTicketsFactory) CaptureRevision(arg1 context.Context, arg2 int) (workitem.CapturedRevision, bool, error) {
+	fake.captureRevisionMutex.Lock()
+	ret, specificReturn := fake.captureRevisionReturnsOnCall[len(fake.captureRevisionArgsForCall)]
+	fake.captureRevisionArgsForCall = append(fake.captureRevisionArgsForCall, struct {
+		arg1 context.Context
+		arg2 int
+	}{arg1, arg2})
+	stub := fake.CaptureRevisionStub
+	fakeReturns := fake.captureRevisionReturns
+	fake.recordInvocation("CaptureRevision", []interface{}{arg1, arg2})
+	fake.captureRevisionMutex.Unlock()
+	if stub != nil {
+		return stub(arg1, arg2)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2, ret.result3
+	}
+	return fakeReturns.result1, fakeReturns.result2, fakeReturns.result3
+}
+
+func (fake *FakeAgentTicketsFactory) CaptureRevisionCallCount() int {
+	fake.captureRevisionMutex.RLock()
+	defer fake.captureRevisionMutex.RUnlock()
+	return len(fake.captureRevisionArgsForCall)
+}
+
+func (fake *FakeAgentTicketsFactory) CaptureRevisionCalls(stub func(context.Context, int) (workitem.CapturedRevision, bool, error)) {
+	fake.captureRevisionMutex.Lock()
+	defer fake.captureRevisionMutex.Unlock()
+	fake.CaptureRevisionStub = stub
+}
+
+func (fake *FakeAgentTicketsFactory) CaptureRevisionArgsForCall(i int) (context.Context, int) {
+	fake.captureRevisionMutex.RLock()
+	defer fake.captureRevisionMutex.RUnlock()
+	argsForCall := fake.captureRevisionArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2
+}
+
+func (fake *FakeAgentTicketsFactory) CaptureRevisionReturns(result1 workitem.CapturedRevision, result2 bool, result3 error) {
+	fake.captureRevisionMutex.Lock()
+	defer fake.captureRevisionMutex.Unlock()
+	fake.CaptureRevisionStub = nil
+	fake.captureRevisionReturns = struct {
+		result1 workitem.CapturedRevision
+		result2 bool
+		result3 error
+	}{result1, result2, result3}
+}
+
+func (fake *FakeAgentTicketsFactory) CaptureRevisionReturnsOnCall(i int, result1 workitem.CapturedRevision, result2 bool, result3 error) {
+	fake.captureRevisionMutex.Lock()
+	defer fake.captureRevisionMutex.Unlock()
+	fake.CaptureRevisionStub = nil
+	if fake.captureRevisionReturnsOnCall == nil {
+		fake.captureRevisionReturnsOnCall = make(map[int]struct {
+			result1 workitem.CapturedRevision
+			result2 bool
+			result3 error
+		})
+	}
+	fake.captureRevisionReturnsOnCall[i] = struct {
+		result1 workitem.CapturedRevision
+		result2 bool
+		result3 error
+	}{result1, result2, result3}
+}
+
+func (fake *FakeAgentTicketsFactory) Comments(arg1 int) ([]tickets.Comment, error) {
+	fake.commentsMutex.Lock()
+	ret, specificReturn := fake.commentsReturnsOnCall[len(fake.commentsArgsForCall)]
+	fake.commentsArgsForCall = append(fake.commentsArgsForCall, struct {
+		arg1 int
+	}{arg1})
+	stub := fake.CommentsStub
+	fakeReturns := fake.commentsReturns
+	fake.recordInvocation("Comments", []interface{}{arg1})
+	fake.commentsMutex.Unlock()
+	if stub != nil {
+		return stub(arg1)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2
+	}
+	return fakeReturns.result1, fakeReturns.result2
+}
+
+func (fake *FakeAgentTicketsFactory) CommentsCallCount() int {
+	fake.commentsMutex.RLock()
+	defer fake.commentsMutex.RUnlock()
+	return len(fake.commentsArgsForCall)
+}
+
+func (fake *FakeAgentTicketsFactory) CommentsCalls(stub func(int) ([]tickets.Comment, error)) {
+	fake.commentsMutex.Lock()
+	defer fake.commentsMutex.Unlock()
+	fake.CommentsStub = stub
+}
+
+func (fake *FakeAgentTicketsFactory) CommentsArgsForCall(i int) int {
+	fake.commentsMutex.RLock()
+	defer fake.commentsMutex.RUnlock()
+	argsForCall := fake.commentsArgsForCall[i]
+	return argsForCall.arg1
+}
+
+func (fake *FakeAgentTicketsFactory) CommentsReturns(result1 []tickets.Comment, result2 error) {
+	fake.commentsMutex.Lock()
+	defer fake.commentsMutex.Unlock()
+	fake.CommentsStub = nil
+	fake.commentsReturns = struct {
+		result1 []tickets.Comment
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeAgentTicketsFactory) CommentsReturnsOnCall(i int, result1 []tickets.Comment, result2 error) {
+	fake.commentsMutex.Lock()
+	defer fake.commentsMutex.Unlock()
+	fake.CommentsStub = nil
+	if fake.commentsReturnsOnCall == nil {
+		fake.commentsReturnsOnCall = make(map[int]struct {
+			result1 []tickets.Comment
+			result2 error
+		})
+	}
+	fake.commentsReturnsOnCall[i] = struct {
+		result1 []tickets.Comment
+		result2 error
+	}{result1, result2}
 }
 
 func (fake *FakeAgentTicketsFactory) Create(arg1 *tickets.Ticket) (int, error) {

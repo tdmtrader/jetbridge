@@ -1,13 +1,16 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"strconv"
+	"strings"
 
 	sq "github.com/Masterminds/squirrel"
 	"github.com/concourse/concourse/agent/api/tickets"
+	"github.com/concourse/concourse/agent/workitem"
 )
 
 //counterfeiter:generate . AgentTicketsFactory
@@ -69,7 +72,7 @@ func (f *agentTicketsFactory) Create(t *tickets.Ticket) (int, error) {
 	return id, err
 }
 
-const ticketColumns = `t.id, t.title, t.body, t.state, t.origin, t.repo, t.target_branch,
+const ticketColumns = `t.id, t.revision, t.title, t.body, t.state, t.origin, t.repo, t.target_branch,
 	t.workflow_name, t.workflow_version, t.workflow_definition_id,
 	t.budget_usd, t.user_id, t.user_name, t.created_by, t.external_ref,
 	t.pipeline_run_id, t.branch, t.attempt_count, t.error_detail,
@@ -86,7 +89,7 @@ func scanTicket(row ticketScanner) (*tickets.Ticket, error) {
 	var wfVersion, wfDefID, userID, runID sql.NullInt64
 	var budget sql.NullFloat64
 	err := row.Scan(
-		&t.ID, &t.Title, &t.Body, &t.State, &t.Origin, &t.Repo, &t.TargetBranch,
+		&t.ID, &t.Revision, &t.Title, &t.Body, &t.State, &t.Origin, &t.Repo, &t.TargetBranch,
 		&t.WorkflowName, &wfVersion, &wfDefID,
 		&budget, &userID, &t.UserName, &t.CreatedBy, &t.ExternalRef,
 		&runID, &t.Branch, &t.AttemptCount, &t.ErrorDetail,
@@ -171,6 +174,7 @@ func (f *agentTicketsFactory) List(filter tickets.ListFilter) ([]tickets.Ticket,
 func (f *agentTicketsFactory) Update(id int, upd tickets.Update) error {
 	q := psql.Update("agent_tickets").
 		Set("updated_at", sq.Expr("now()")).
+		Set("revision", sq.Expr("revision + 1")).
 		Where(sq.Eq{"id": id})
 	if upd.Title != nil {
 		q = q.Set("title", *upd.Title)
@@ -223,6 +227,7 @@ func (f *agentTicketsFactory) Transition(id int, from, to tickets.State, meta ti
 	q := psql.Update("agent_tickets").
 		Set("state", string(to)).
 		Set("updated_at", sq.Expr("now()")).
+		Set("revision", sq.Expr("revision + 1")).
 		Where(sq.Eq{"id": id, "state": string(from)})
 
 	switch to {
@@ -301,6 +306,25 @@ func lockTicket(tx Tx, ticketID int) error {
 	return err
 }
 
+func bumpTicketRevision(tx Tx, ticketID int) error {
+	result, err := tx.Exec(`
+		UPDATE agent_tickets
+		SET revision = revision + 1, updated_at = now()
+		WHERE id = $1
+	`, ticketID)
+	if err != nil {
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows != 1 {
+		return tickets.ErrTicketNotFound
+	}
+	return nil
+}
+
 func (f *agentTicketsFactory) SubmitSpec(ticketID int, spec tickets.Spec) (int, error) {
 	criteria, err := json.Marshal(emptyIfNilStrings(spec.AcceptanceCriteria))
 	if err != nil {
@@ -335,6 +359,9 @@ func (f *agentTicketsFactory) SubmitSpec(ticketID int, spec tickets.Spec) (int, 
 		 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
 		ticketID, version, spec.Title, spec.Body, criteria, links, spec.SubmittedBy)
 	if err != nil {
+		return 0, err
+	}
+	if err := bumpTicketRevision(tx, ticketID); err != nil {
 		return 0, err
 	}
 
@@ -404,6 +431,9 @@ func (f *agentTicketsFactory) SubmitPlan(ticketID int, ts []tickets.Task) (int, 
 			return 0, err
 		}
 	}
+	if err := bumpTicketRevision(tx, ticketID); err != nil {
+		return 0, err
+	}
 
 	return planVersion, tx.Commit()
 }
@@ -435,7 +465,16 @@ func (f *agentTicketsFactory) ActivePlan(ticketID int) ([]tickets.Task, error) {
 }
 
 func (f *agentTicketsFactory) UpdateTaskStatus(ticketID int, planVersion, ordering int, status tickets.TaskStatus) error {
-	res, err := f.conn.Exec(
+	tx, err := f.conn.Begin()
+	if err != nil {
+		return err
+	}
+	defer Rollback(tx)
+	if err := lockTicket(tx, ticketID); err != nil {
+		return err
+	}
+
+	res, err := tx.Exec(
 		`UPDATE agent_ticket_tasks SET status = $1, updated_at = now()
 		 WHERE ticket_id = $2 AND plan_version = $3 AND ordering = $4`,
 		string(status), ticketID, planVersion, ordering)
@@ -449,7 +488,10 @@ func (f *agentTicketsFactory) UpdateTaskStatus(ticketID int, planVersion, orderi
 	if n == 0 {
 		return tickets.ErrTaskNotFound
 	}
-	return nil
+	if err := bumpTicketRevision(tx, ticketID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // UpdateActiveTask atomically applies a status update (plus optional
@@ -500,6 +542,9 @@ func (f *agentTicketsFactory) UpdateActiveTask(ticketID, ordering int, status ti
 	if n == 0 {
 		return 0, tickets.ErrTaskNotFound
 	}
+	if err := bumpTicketRevision(tx, ticketID); err != nil {
+		return 0, err
+	}
 
 	return planVersion, tx.Commit()
 }
@@ -507,7 +552,16 @@ func (f *agentTicketsFactory) UpdateActiveTask(ticketID, ordering int, status ti
 // AppendTaskNote appends the §3.2 update_task_status note as a markdown
 // blockquote on the task's detail (ticket-core contract addendum).
 func (f *agentTicketsFactory) AppendTaskNote(ticketID int, planVersion, ordering int, note string) error {
-	res, err := f.conn.Exec(
+	tx, err := f.conn.Begin()
+	if err != nil {
+		return err
+	}
+	defer Rollback(tx)
+	if err := lockTicket(tx, ticketID); err != nil {
+		return err
+	}
+
+	res, err := tx.Exec(
 		`UPDATE agent_ticket_tasks
 		 SET detail = CASE WHEN detail = '' THEN '> ' || $1
 		                   ELSE detail || E'\n\n> ' || $1 END,
@@ -524,5 +578,279 @@ func (f *agentTicketsFactory) AppendTaskNote(ticketID int, planVersion, ordering
 	if n == 0 {
 		return tickets.ErrTaskNotFound
 	}
-	return nil
+	if err := bumpTicketRevision(tx, ticketID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (f *agentTicketsFactory) AppendComment(ticketID int, comment tickets.Comment) (int, error) {
+	if strings.TrimSpace(comment.Body) == "" || strings.TrimSpace(comment.CreatedBy) == "" {
+		return 0, tickets.ErrCommentNotFound
+	}
+	tx, err := f.conn.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer Rollback(tx)
+	if err := lockTicket(tx, ticketID); err != nil {
+		return 0, err
+	}
+
+	var commentID int
+	err = tx.QueryRow(`
+		INSERT INTO agent_ticket_comments (ticket_id, body, created_by)
+		VALUES ($1, $2, $3)
+		RETURNING id
+	`, ticketID, comment.Body, comment.CreatedBy).Scan(&commentID)
+	if err != nil {
+		return 0, err
+	}
+	if err := bumpTicketRevision(tx, ticketID); err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return commentID, nil
+}
+
+func (f *agentTicketsFactory) AnswerComment(ticketID, commentID int, answer, answeredBy string) error {
+	if strings.TrimSpace(answer) == "" || strings.TrimSpace(answeredBy) == "" {
+		return tickets.ErrCommentNotFound
+	}
+	tx, err := f.conn.Begin()
+	if err != nil {
+		return err
+	}
+	defer Rollback(tx)
+	if err := lockTicket(tx, ticketID); err != nil {
+		return err
+	}
+
+	result, err := tx.Exec(`
+		UPDATE agent_ticket_comments
+		SET answer = $1,
+		    answered_by = $2,
+		    answered_at = now(),
+		    revision = revision + 1
+		WHERE ticket_id = $3 AND id = $4 AND answered_at IS NULL
+	`, answer, answeredBy, ticketID, commentID)
+	if err != nil {
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		var answered bool
+		err := tx.QueryRow(`
+			SELECT answered_at IS NOT NULL
+			FROM agent_ticket_comments
+			WHERE ticket_id = $1 AND id = $2
+		`, ticketID, commentID).Scan(&answered)
+		if errors.Is(err, sql.ErrNoRows) {
+			return tickets.ErrCommentNotFound
+		}
+		if err != nil {
+			return err
+		}
+		if answered {
+			return tickets.ErrCommentAnswered
+		}
+		return tickets.ErrCommentNotFound
+	}
+	if err := bumpTicketRevision(tx, ticketID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (f *agentTicketsFactory) Comments(ticketID int) ([]tickets.Comment, error) {
+	if _, found, err := f.Get(ticketID); err != nil {
+		return nil, err
+	} else if !found {
+		return nil, tickets.ErrTicketNotFound
+	}
+
+	rows, err := f.conn.Query(`
+		SELECT id, ticket_id, revision, body, created_by,
+		       EXTRACT(EPOCH FROM created_at)::bigint,
+		       answer, answered_by,
+		       COALESCE(EXTRACT(EPOCH FROM answered_at)::bigint, 0)
+		FROM agent_ticket_comments
+		WHERE ticket_id = $1
+		ORDER BY created_at, id
+	`, ticketID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	comments := []tickets.Comment{}
+	for rows.Next() {
+		var comment tickets.Comment
+		if err := rows.Scan(
+			&comment.ID, &comment.TicketID, &comment.Revision, &comment.Body, &comment.CreatedBy,
+			&comment.CreatedAt, &comment.Answer, &comment.AnsweredBy, &comment.AnsweredAt,
+		); err != nil {
+			return nil, err
+		}
+		comments = append(comments, comment)
+	}
+	return comments, rows.Err()
+}
+
+const captureTicketRevisionSQL = `
+	SELECT t.id,
+	       t.revision,
+	       t.updated_at,
+	       t.origin,
+	       t.external_ref,
+	       t.title,
+	       t.body,
+	       t.state,
+	       t.workflow_name,
+	       t.workflow_version,
+	       t.workflow_definition_id,
+	       COALESCE(latest_spec.payload, 'null'::jsonb),
+	       COALESCE(active_plan.payload, 'null'::jsonb),
+	       COALESCE(ticket_comments.payload, '[]'::jsonb)
+	FROM agent_tickets t
+	LEFT JOIN LATERAL (
+		SELECT jsonb_build_object(
+			'version', s.version,
+			'title', s.title,
+			'body', s.body,
+			'acceptance_criteria', s.acceptance_criteria,
+			'links', s.links,
+			'submitted_by', s.submitted_by,
+			'created_at', EXTRACT(EPOCH FROM s.created_at)::bigint
+		) AS payload
+		FROM agent_ticket_specs s
+		WHERE s.ticket_id = t.id
+		ORDER BY s.version DESC
+		LIMIT 1
+	) latest_spec ON TRUE
+	LEFT JOIN LATERAL (
+		SELECT jsonb_build_object(
+			'version', task.plan_version,
+			'tasks', jsonb_agg(
+				jsonb_build_object(
+					'ordering', task.ordering,
+					'title', task.title,
+					'detail', task.detail,
+					'status', task.status,
+					'updated_at', EXTRACT(EPOCH FROM task.updated_at)::bigint
+				) ORDER BY task.ordering
+			)
+		) AS payload
+		FROM agent_ticket_tasks task
+		WHERE task.ticket_id = t.id
+		  AND task.plan_version = (
+			SELECT MAX(candidate.plan_version)
+			FROM agent_ticket_tasks candidate
+			WHERE candidate.ticket_id = t.id
+		  )
+		GROUP BY task.plan_version
+	) active_plan ON TRUE
+	LEFT JOIN LATERAL (
+		SELECT jsonb_agg(
+			jsonb_build_object(
+				'id', comment.id,
+				'revision', comment.revision,
+				'body', comment.body,
+				'created_by', comment.created_by,
+				'created_at', EXTRACT(EPOCH FROM comment.created_at)::bigint,
+				'answer', comment.answer,
+				'answered_by', comment.answered_by,
+				'answered_at', COALESCE(EXTRACT(EPOCH FROM comment.answered_at)::bigint, 0)
+			) ORDER BY comment.created_at, comment.id
+		) AS payload
+		FROM agent_ticket_comments comment
+		WHERE comment.ticket_id = t.id
+	) ticket_comments ON TRUE
+	WHERE t.id = $1
+`
+
+func (f *agentTicketsFactory) CaptureRevision(ctx context.Context, ticketID int) (workitem.CapturedRevision, bool, error) {
+	if ctx == nil {
+		return workitem.CapturedRevision{}, false, context.Canceled
+	}
+	if err := ctx.Err(); err != nil {
+		return workitem.CapturedRevision{}, false, err
+	}
+	tx, err := f.conn.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
+	if err != nil {
+		return workitem.CapturedRevision{}, false, err
+	}
+	defer Rollback(tx)
+
+	var (
+		revision     workitem.Revision
+		origin       string
+		externalRef  string
+		workflowVer  sql.NullInt64
+		workflowDef  sql.NullInt64
+		specJSON     []byte
+		planJSON     []byte
+		commentsJSON []byte
+	)
+	err = tx.QueryRowContext(ctx, captureTicketRevisionSQL, ticketID).Scan(
+		&revision.TicketID,
+		&revision.Revision,
+		&revision.UpdatedAt,
+		&origin,
+		&externalRef,
+		&revision.Title,
+		&revision.Body,
+		&revision.State,
+		&revision.Workflow.Name,
+		&workflowVer,
+		&workflowDef,
+		&specJSON,
+		&planJSON,
+		&commentsJSON,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return workitem.CapturedRevision{}, false, nil
+	}
+	if err != nil {
+		return workitem.CapturedRevision{}, false, err
+	}
+	if origin == "jira" {
+		revision.Adapter = "jira"
+	} else {
+		revision.Adapter = "jetbridge"
+	}
+	if externalRef != "" {
+		revision.ExternalID = externalRef
+	} else {
+		revision.ExternalID = strconv.Itoa(revision.TicketID)
+	}
+	if workflowVer.Valid {
+		value := int(workflowVer.Int64)
+		revision.Workflow.Version = &value
+	}
+	if workflowDef.Valid {
+		value := int(workflowDef.Int64)
+		revision.Workflow.DefinitionID = &value
+	}
+	if err := json.Unmarshal(specJSON, &revision.Spec); err != nil {
+		return workitem.CapturedRevision{}, false, err
+	}
+	if err := json.Unmarshal(planJSON, &revision.Plan); err != nil {
+		return workitem.CapturedRevision{}, false, err
+	}
+	if err := json.Unmarshal(commentsJSON, &revision.Comments); err != nil {
+		return workitem.CapturedRevision{}, false, err
+	}
+	captured, err := workitem.MarshalRevision(revision)
+	if err != nil {
+		return workitem.CapturedRevision{}, true, err
+	}
+	if err := tx.Commit(); err != nil {
+		return workitem.CapturedRevision{}, true, err
+	}
+	return captured, true, nil
 }

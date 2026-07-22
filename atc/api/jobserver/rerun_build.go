@@ -3,6 +3,7 @@ package jobserver
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 
 	"github.com/concourse/concourse/atc/api/accessor"
@@ -51,6 +52,11 @@ func (s *Server) RerunJobBuild(pipeline db.Pipeline) http.Handler {
 		acc := accessor.GetAccessor(r)
 		build, err := job.RerunBuild(buildToRerun, acc.UserInfo().DisplayUserId)
 		if err != nil {
+			if errors.Is(err, db.ErrWorkflowRunOwnedPipeline) {
+				w.WriteHeader(http.StatusConflict)
+				fmt.Fprint(w, "manual reruns are disabled for durable workflow-run execution pipelines; retry the workflow run instead")
+				return
+			}
 			logger.Error("failed-to-retrigger-build", err)
 			w.WriteHeader(http.StatusInternalServerError)
 			return

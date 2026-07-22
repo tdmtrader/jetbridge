@@ -834,6 +834,9 @@ func (j *job) CreateBuild(createdBy string) (_ Build, err error) {
 	}
 
 	defer Rollback(tx)
+	if err := rejectWorkflowRunOwnedPipeline(context.Background(), tx, j.pipelineID); err != nil {
+		return nil, err
+	}
 
 	build, err := j.createBuild(tx, createdBy)
 	if err != nil {
@@ -911,6 +914,9 @@ func (j *job) tryRerunBuild(buildToRerun Build, createdBy string) (Build, error)
 	}
 
 	defer Rollback(tx)
+	if err := rejectWorkflowRunOwnedPipeline(context.Background(), tx, j.pipelineID); err != nil {
+		return nil, err
+	}
 
 	buildToRerunID := buildToRerun.ID()
 	if buildToRerun.RerunOf() != 0 {

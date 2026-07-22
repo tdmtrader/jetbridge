@@ -78,8 +78,8 @@ var _ = Describe("PipelineRunFactory", func() {
 		template, _, err = defaultTeam.SavePipeline(
 			atc.PipelineRef{Name: "run-template"}, templateConfig, db.ConfigVersion(0), false)
 		Expect(err).ToNot(HaveOccurred())
-		workflowTemplate, _, err = defaultTeam.SavePipeline(
-			atc.PipelineRef{Name: "workflow-run-template"}, workflowTemplateConfig, db.ConfigVersion(0), false)
+		workflowTemplate, _, err = db.NewWorkflowRunTemplateFactory(dbConn, lockFactory).SaveWorkflowRunTemplate(
+			context.Background(), defaultTeam.ID(), atc.PipelineRef{Name: "workflow-run-template"}, workflowTemplateConfig)
 		Expect(err).ToNot(HaveOccurred())
 
 		createDurable = func() (db.AgentWorkflowRun, db.WorkflowRunTemplateRef, db.AgentWorkflowRunsFactory) {
@@ -159,6 +159,46 @@ var _ = Describe("PipelineRunFactory", func() {
 		Expect(second.Number()).To(Equal(2))
 	})
 
+	It("rejects public runs of explicitly owned workflow templates without blocking ordinary templates", func() {
+		_, err := factory.CreateRun(workflowTemplate.ID(), nil, "some-user")
+		Expect(err).To(MatchError(db.ErrWorkflowRunOwnedPipeline))
+		workflowJob, found, err := workflowTemplate.Job("run")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		_, err = workflowJob.CreateBuild("some-user")
+		Expect(err).To(MatchError(db.ErrWorkflowRunOwnedPipeline))
+
+		var allocated int
+		Expect(dbConn.QueryRow(`
+			SELECT count(*) FROM pipeline_runs WHERE template_pipeline_id = $1
+		`, workflowTemplate.ID()).Scan(&allocated)).To(Succeed())
+		Expect(allocated).To(BeZero())
+
+		_, err = factory.CreateRun(template.ID(), nil, "some-user")
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("rejects durable execution through an exact but unowned template", func() {
+		durable, _, _ := createDurable()
+		unowned, _, err := defaultTeam.SavePipeline(
+			atc.PipelineRef{Name: "unowned-workflow-template"}, workflowTemplateConfig, db.ConfigVersion(0), false,
+		)
+		Expect(err).NotTo(HaveOccurred())
+		targetHash, err := workflow.TargetConfigHash(workflowTemplateConfig)
+		Expect(err).NotTo(HaveOccurred())
+
+		_, created, err := factory.CreateRunForWorkflowRun(
+			context.Background(), durable.ID,
+			db.WorkflowRunTemplateRef{
+				PipelineID: unowned.ID(), TeamID: unowned.TeamID(), Name: unowned.Name(),
+				ConfigVersion: int(unowned.ConfigVersion()), FullHash: targetHash,
+			},
+			nil, "alice", func(context.Context, int) error { return nil },
+		)
+		Expect(err).To(MatchError("db: workflow-run template reference drifted or collided"))
+		Expect(created).To(BeFalse())
+	})
+
 	It("creates and links a workflow-owned run and its entry builds in one transaction", func() {
 		durable, templateRef, runStore := createDurable()
 
@@ -177,12 +217,33 @@ var _ = Describe("PipelineRunFactory", func() {
 		Expect(found).To(BeTrue())
 		Expect(stored.Status).To(Equal(db.AgentWorkflowRunStatusAdmitting))
 		Expect(stored.PipelineRunID).To(Equal(func() *int { value := execution.PipelineRun.ID(); return &value }()))
-		Expect(stored.PlannedBuildID).To(Equal(&execution.EntryBuildIDs[0]))
+		expectedPlannedBuildID := int64(execution.EntryBuildIDs[0])
+		Expect(stored.PlannedBuildID).To(Equal(&expectedPlannedBuildID))
 		Expect(stored.StartedAt).To(BeNil())
 		Expect(stored.ConcreteConfig).To(MatchJSON(execution.InstanceCanonicalJSON))
 		Expect(stored.ConcreteConfigHash).To(Equal(&execution.InstanceConfigHash))
 		instanceSum := sha256.Sum256(append([]byte("workflow-instance-config/v1\x00"), execution.InstanceCanonicalJSON...))
 		Expect(execution.InstanceConfigHash).To(Equal(fmt.Sprintf("%x", instanceSum[:])))
+	})
+
+	It("keeps the workflow-owned instance cleanup path available", func() {
+		durable, templateRef, _ := createDurable()
+		execution, created, err := factory.CreateRunForWorkflowRun(
+			context.Background(), durable.ID, templateRef, nil, "alice",
+			func(context.Context, int) error { return nil },
+		)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(created).To(BeTrue())
+
+		Expect(execution.PipelineRun.Archive()).To(Succeed())
+		Expect(execution.PipelineRun.Archived()).To(BeTrue())
+		instance, found, err := execution.PipelineRun.InstancePipeline()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(instance.Archived()).To(BeTrue())
+		_, err = workflowTemplate.Reload()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(workflowTemplate.Archived()).To(BeFalse())
 	})
 
 	It("rolls back the execution link, instance, builds, and selected build when the callback fails", func() {
@@ -322,7 +383,8 @@ var _ = Describe("PipelineRunFactory", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(found).To(BeTrue())
 		Expect(stored.Status).To(Equal(db.AgentWorkflowRunStatusAdmitting))
-		Expect(stored.PlannedBuildID).To(Equal(&outcome.execution.EntryBuildIDs[0]))
+		expectedPlannedBuildID := int64(outcome.execution.EntryBuildIDs[0])
+		Expect(stored.PlannedBuildID).To(Equal(&expectedPlannedBuildID))
 	})
 
 	It("fails closed unless the durable Task 5 config has exactly one run entry job", func() {

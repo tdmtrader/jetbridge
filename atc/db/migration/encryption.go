@@ -9,21 +9,32 @@ import (
 )
 
 var encryptedColumns = []encryptedColumn{
-	{"teams", "legacy_auth", "id"},
-	{"resources", "config", "id"},
-	{"jobs", "config", "id"},
-	{"resource_types", "config", "id"},
-	{"prototypes", "config", "id"},
-	{"builds", "private_plan", "id"},
-	{"cert_cache", "cert", "domain"},
-	{"pipelines", "var_sources", "id"},
-	{"agent_user_credentials", "encrypted_token", "id"},
+	{Table: "teams", Column: "legacy_auth", PrimaryKey: "id"},
+	{Table: "resources", Column: "config", PrimaryKey: "id"},
+	{Table: "jobs", Column: "config", PrimaryKey: "id"},
+	{Table: "resource_types", Column: "config", PrimaryKey: "id"},
+	{Table: "prototypes", Column: "config", PrimaryKey: "id"},
+	{Table: "builds", Column: "private_plan", PrimaryKey: "id"},
+	{Table: "cert_cache", Column: "cert", PrimaryKey: "domain"},
+	{Table: "pipelines", Column: "var_sources", PrimaryKey: "id"},
+	{Table: "agent_user_credentials", Column: "encrypted_token", PrimaryKey: "id"},
+	{Table: "agent_workflow_runs", Column: "actual_plan", PrimaryKey: "id", NonceColumn: "actual_plan_nonce"},
+	{Table: "agent_workflow_runs", Column: "actual_plan_hash", PrimaryKey: "id", NonceColumn: "actual_plan_hash_nonce"},
+	{Table: "agent_workflow_runs", Column: "resolved_dependencies", PrimaryKey: "id", NonceColumn: "resolved_dependencies_nonce"},
 }
 
 type encryptedColumn struct {
-	Table      string
-	Column     string
-	PrimaryKey string
+	Table       string
+	Column      string
+	PrimaryKey  string
+	NonceColumn string
+}
+
+func (column encryptedColumn) nonceColumn() string {
+	if column.NonceColumn == "" {
+		return "nonce"
+	}
+	return column.NonceColumn
 }
 
 // existingEncryptedColumns filters encryptedColumns down to tables that
@@ -51,10 +62,11 @@ func (m migrator) encryptPlaintext(key *encryption.Key) error {
 		return err
 	}
 	for _, ec := range columns {
+		nonceColumn := ec.nonceColumn()
 		rows, err := m.db.Query(`
 			SELECT ` + ec.PrimaryKey + `, ` + ec.Column + `
 			FROM ` + ec.Table + `
-			WHERE nonce IS NULL
+			WHERE ` + nonceColumn + ` IS NULL
 			AND ` + ec.Column + ` IS NOT NULL
 		`)
 		if err != nil {
@@ -95,7 +107,7 @@ func (m migrator) encryptPlaintext(key *encryption.Key) error {
 
 			_, err = m.db.Exec(`
 				UPDATE `+ec.Table+`
-				SET `+ec.Column+` = $1, nonce = $2
+				SET `+ec.Column+` = $1, `+nonceColumn+` = $2
 				WHERE `+ec.PrimaryKey+` = $3
 			`, encrypted, nonce, primaryKey)
 			if err != nil {
@@ -123,10 +135,11 @@ func (m migrator) decryptToPlaintext(oldKey *encryption.Key) error {
 		return err
 	}
 	for _, ec := range columns {
+		nonceColumn := ec.nonceColumn()
 		rows, err := m.db.Query(`
-			SELECT ` + ec.PrimaryKey + `, nonce, ` + ec.Column + `
+			SELECT ` + ec.PrimaryKey + `, ` + nonceColumn + `, ` + ec.Column + `
 			FROM ` + ec.Table + `
-			WHERE nonce IS NOT NULL
+			WHERE ` + nonceColumn + ` IS NOT NULL
 		`)
 		if err != nil {
 			return err
@@ -162,7 +175,7 @@ func (m migrator) decryptToPlaintext(oldKey *encryption.Key) error {
 
 			_, err = m.db.Exec(`
 				UPDATE `+ec.Table+`
-				SET `+ec.Column+` = $1, nonce = NULL
+				SET `+ec.Column+` = $1, `+nonceColumn+` = NULL
 				WHERE `+ec.PrimaryKey+` = $2
 			`, decrypted, primaryKey)
 			if err != nil {
@@ -192,10 +205,11 @@ func (m migrator) encryptWithNewKey(newKey *encryption.Key, oldKey *encryption.K
 		return err
 	}
 	for _, ec := range columns {
+		nonceColumn := ec.nonceColumn()
 		rows, err := m.db.Query(`
-			SELECT ` + ec.PrimaryKey + `, nonce, ` + ec.Column + `
+			SELECT ` + ec.PrimaryKey + `, ` + nonceColumn + `, ` + ec.Column + `
 			FROM ` + ec.Table + `
-			WHERE nonce IS NOT NULL
+			WHERE ` + nonceColumn + ` IS NOT NULL
 		`)
 		if err != nil {
 			return err
@@ -243,7 +257,7 @@ func (m migrator) encryptWithNewKey(newKey *encryption.Key, oldKey *encryption.K
 
 			_, err = m.db.Exec(`
 				UPDATE `+ec.Table+`
-				SET `+ec.Column+` = $1, nonce = $2
+				SET `+ec.Column+` = $1, `+nonceColumn+` = $2
 				WHERE `+ec.PrimaryKey+` = $3
 			`, encrypted, newNonce, primaryKey)
 			if err != nil {

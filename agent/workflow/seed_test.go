@@ -2,11 +2,101 @@ package workflow_test
 
 import (
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/agent/workflow"
+	"github.com/concourse/concourse/atc"
 )
+
+func TestVersionThreeEngineeringSeedsCompileAndRender(t *testing.T) {
+	tests := []struct {
+		directory string
+		name      string
+		inputs    []workflow.SignaturePort
+		outputs   []workflow.SignaturePort
+	}{
+		{
+			directory: "seeds/code-review-v3",
+			name:      "code-review",
+			inputs: []workflow.SignaturePort{
+				{Name: "before", Type: snapshot.TypeRef("repository/v1")},
+				{Name: "after", Type: snapshot.TypeRef("repository/v1")},
+			},
+			outputs: []workflow.SignaturePort{{Name: "review", Type: snapshot.TypeRef("review/v1")}},
+		},
+		{
+			directory: "seeds/small-fix-v3",
+			name:      "small-fix",
+			inputs: []workflow.SignaturePort{
+				{Name: "repository", Type: snapshot.TypeRef("repository/v1")},
+				{Name: "work-item", Type: snapshot.TypeRef("work-item/v1")},
+			},
+			outputs: []workflow.SignaturePort{
+				{Name: "change", Type: snapshot.TypeRef("repository-change/v1")},
+				{Name: "report", Type: snapshot.TypeRef("opaque/v1")},
+			},
+		},
+		{
+			directory: "seeds/version-upgrade-v3",
+			name:      "version-upgrade",
+			inputs: []workflow.SignaturePort{
+				{Name: "repository", Type: snapshot.TypeRef("repository/v1")},
+				{Name: "request", Type: snapshot.TypeRef("upgrade-request/v1")},
+			},
+			outputs: []workflow.SignaturePort{
+				{Name: "change", Type: snapshot.TypeRef("repository-change/v1")},
+				{Name: "report", Type: snapshot.TypeRef("upgrade-report/v1")},
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			manifest, err := workflow.ManifestFromDir(test.directory)
+			if err != nil {
+				t.Fatalf("ManifestFromDir: %v", err)
+			}
+			definition, err := workflow.NewMemoryStore().ImportManifest(test.name, manifest, "seed-test")
+			if err != nil {
+				t.Fatalf("compile/import seed: %v", err)
+			}
+			if definition.SchemaVersion != 3 || definition.SignatureVersion != 1 {
+				t.Fatalf("version identity = schema %d signature %d", definition.SchemaVersion, definition.SignatureVersion)
+			}
+			signature, err := definition.Compiled.PublicSignature()
+			if err != nil {
+				t.Fatalf("PublicSignature: %v", err)
+			}
+			if !reflect.DeepEqual(signature.Inputs, test.inputs) || !reflect.DeepEqual(signature.Outputs, test.outputs) {
+				t.Fatalf("signature = %+v, want inputs=%+v outputs=%+v", signature, test.inputs, test.outputs)
+			}
+
+			target, err := workflow.FullFunctionTarget(*definition)
+			if err != nil {
+				t.Fatalf("FullFunctionTarget: %v", err)
+			}
+			rendered, err := workflow.RenderFunction(target)
+			if err != nil {
+				t.Fatalf("RenderFunction: %v", err)
+			}
+			if len(rendered.Config.Jobs) != 1 || len(rendered.Config.Jobs[0].PlanSequence) <= len(test.inputs) {
+				t.Fatalf("rendered plan omitted the authored DAG: %+v", rendered.Config.Jobs)
+			}
+			for _, step := range rendered.Config.Jobs[0].PlanSequence {
+				switch step.Config.(type) {
+				case *atc.HarvestStep:
+					t.Fatal("version-3 seed gained an implicit harvest/publisher")
+				}
+			}
+			if strings.Contains(string(manifest["workflow.yml"]), "ticket_id") || strings.Contains(string(manifest["workflow.yml"]), "workspace") {
+				t.Fatal("version-3 seed is coupled to the legacy ticket/workspace model")
+			}
+		})
+	}
+}
 
 func TestSeedStandardDevValidates(t *testing.T) {
 	raw, err := os.ReadFile("seeds/standard-dev.yaml")

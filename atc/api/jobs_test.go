@@ -1444,6 +1444,20 @@ var _ = Describe("Jobs API", func() {
 						fakeJob.DisableManualTriggerReturns(false)
 					})
 
+					Context("when the pipeline is owned by a durable workflow run", func() {
+						BeforeEach(func() {
+							fakeJob.CreateBuildReturns(nil, fmt.Errorf("manual build guard: %w", db.ErrWorkflowRunOwnedPipeline))
+						})
+
+						It("returns 409 Conflict", func() {
+							Expect(response.StatusCode).To(Equal(http.StatusConflict))
+						})
+
+						It("does not schedule resource checks", func() {
+							Expect(dbCheckFactory.TryCreateCheckCallCount()).To(BeZero())
+						})
+					})
+
 					Context("when triggering the build fails", func() {
 						BeforeEach(func() {
 							fakeJob.CreateBuildReturns(nil, errors.New("nopers"))
@@ -2064,6 +2078,16 @@ var _ = Describe("Jobs API", func() {
 						BeforeEach(func() {
 							fakeBuild.InputsReadyReturns(true)
 						})
+						Context("when the pipeline is owned by a durable workflow run", func() {
+							BeforeEach(func() {
+								fakeJob.RerunBuildReturns(nil, fmt.Errorf("rerun guard: %w", db.ErrWorkflowRunOwnedPipeline))
+							})
+
+							It("returns 409 Conflict", func() {
+								Expect(response.StatusCode).To(Equal(http.StatusConflict))
+							})
+						})
+
 						Context("when creating the rerun build fails", func() {
 							BeforeEach(func() {
 								fakeJob.RerunBuildReturns(nil, errors.New("nopers"))

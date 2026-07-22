@@ -45,6 +45,9 @@ func (s *Server) RenamePipeline(team db.Team) http.Handler {
 		oldName := r.FormValue(":pipeline_name")
 		found, err := team.RenamePipeline(oldName, rename.NewName)
 		if err != nil {
+			if writeWorkflowRunTemplateConflict(w, err) {
+				return
+			}
 			logger.Error("failed-to-update-name", err)
 			w.WriteHeader(http.StatusInternalServerError)
 			return

@@ -35,6 +35,7 @@ func NewTestMeterProvider() *sdkmetric.ManualReader {
 	metric.InitOTelScheduling()
 	metric.InitOTelGC()
 	metric.InitOTelDBChecks()
+	metric.InitOTelWorkflowRunReconciler()
 
 	return reader
 }

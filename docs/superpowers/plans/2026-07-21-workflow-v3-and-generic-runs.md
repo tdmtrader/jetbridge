@@ -11,7 +11,7 @@
 ## Global Constraints
 
 - The snapshot core plan through `load_snapshot:` must be complete before binder execution tasks begin.
-- Version 3 embeds ordinary Concourse step grammar. Do not introduce agent-only equivalents of `do`, `in_parallel`, hooks, retry, timeout, or across.
+- Version 3 embeds ordinary Concourse step grammar. Do not introduce agent-only equivalents of `do`, `in_parallel`, hooks, retry, timeout, or across. `AcrossStep` remains ordinary Concourse syntax but is rejected at the immutable workflow boundary until runtime-expanded subplans can be frozen as exact provenance.
 - One invocation target maps to one immutable template name containing its target-config hash prefix. Full workflows and extracted `function_id` nodes from the same definition use distinct names and can never update each other's template between bind validation and run creation.
 - Durable `agent_workflow_runs` are authoritative history; `pipeline_runs` are execution linkage and may be deleted.
 - V1/v2 imports and dispatch remain byte-compatible unless a focused compatibility test says otherwise.
@@ -68,7 +68,7 @@
 
 - [ ] Write sequence tests for workflow inputs, stable unique `function_id` values, typed task/agent outputs, downstream exact matches, optional ports, and public output mappings.
 - [ ] Write composition tests for `do`, `in_parallel`, `try`, retry, timeout, `on_success`, `on_failure`, `on_error`, `on_abort`, and `ensure` using their actual artifact visibility semantics.
-- [ ] Write rejection tests for use-before-produce, type mismatch, untyped workflow output, duplicate parallel producers, conditional required output, typed output escaping `across`, and undeclared public input/output.
+- [ ] Write rejection tests for use-before-produce, type mismatch, untyped workflow output, duplicate parallel producers, conditional required output, any `across` execution without expanded-plan provenance, and undeclared public input/output.
 - [ ] Run `go test ./agent/workflow -run TypeCheck -count=1` and confirm failure.
 - [ ] Implement a recursive environment transformer over concrete `atc.StepConfig` types. Sequence mutates one environment; parallel branches start from copies and merge unique outputs; wrappers propagate only outputs guaranteed on the success path.
 - [ ] Run ordinary `configvalidate.Validate` after function-specific compilation so images, resources, sidecars, and standard step rules are not duplicated.

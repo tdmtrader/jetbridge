@@ -38,6 +38,14 @@ func (pl *pipelineLifecycle) ArchiveAbandonedPipelines() error {
 		LeftJoin("jobs j ON (j.id = p.parent_job_id)").
 		LeftJoin("pipelines parent ON (j.pipeline_id = parent.id)").
 		Where(sq.And{
+			// Server-owned durable workflow definitions are never ordinary child
+			// pipelines, and must not be selected by lifecycle cleanup even if a
+			// future representation adds parent provenance.
+			sq.Expr(`NOT EXISTS (
+				SELECT 1
+				FROM agent_workflow_run_templates wrt
+				WHERE wrt.pipeline_id = p.id
+			)`),
 			// pipeline was set by some build
 			sq.NotEq{"p.parent_job_id": nil},
 			// pipeline is not already archived

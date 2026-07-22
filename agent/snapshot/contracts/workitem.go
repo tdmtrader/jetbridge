@@ -11,17 +11,37 @@ import (
 )
 
 type WorkItemDocument struct {
-	SchemaVersion string                    `json:"schema_version"`
-	Adapter       string                    `json:"adapter"`
-	ExternalID    string                    `json:"external_id"`
-	Revision      string                    `json:"revision"`
-	CapturedAt    string                    `json:"captured_at"`
-	Title         string                    `json:"title"`
-	Body          string                    `json:"body"`
-	State         string                    `json:"state"`
-	Spec          *WorkItemRevision         `json:"spec,omitempty"`
-	Plan          *WorkItemRevision         `json:"plan,omitempty"`
-	Comments      []WorkItemCommentRevision `json:"comments,omitempty"`
+	SchemaVersion string                     `json:"schema_version"`
+	Adapter       string                     `json:"adapter"`
+	ExternalID    string                     `json:"external_id"`
+	Revision      string                     `json:"revision"`
+	CapturedAt    string                     `json:"captured_at"`
+	Title         string                     `json:"title"`
+	Body          string                     `json:"body"`
+	State         string                     `json:"state"`
+	Workflow      *WorkItemWorkflowSelection `json:"workflow,omitempty"`
+	Spec          *WorkItemRevision          `json:"spec,omitempty"`
+	Plan          *WorkItemRevision          `json:"plan,omitempty"`
+	Comments      []WorkItemCommentRevision  `json:"comments,omitempty"`
+}
+
+type WorkItemWorkflowSelection struct {
+	Name         string `json:"name,omitempty"`
+	Version      *int   `json:"version,omitempty"`
+	DefinitionID *int   `json:"definition_id,omitempty"`
+}
+
+func (selection WorkItemWorkflowSelection) validate() error {
+	if selection.Version != nil && *selection.Version <= 0 {
+		return fmt.Errorf("workflow.version must be positive")
+	}
+	if selection.DefinitionID != nil && *selection.DefinitionID <= 0 {
+		return fmt.Errorf("workflow.definition_id must be positive")
+	}
+	if (selection.Version != nil || selection.DefinitionID != nil) && strings.TrimSpace(selection.Name) == "" {
+		return fmt.Errorf("workflow.name is required when a version or definition is selected")
+	}
+	return nil
 }
 
 type WorkItemRevision struct {
@@ -52,6 +72,11 @@ func (d WorkItemDocument) Validate() error {
 	}
 	if d.Spec != nil {
 		if err := d.Spec.validate("spec"); err != nil {
+			return err
+		}
+	}
+	if d.Workflow != nil {
+		if err := d.Workflow.validate(); err != nil {
 			return err
 		}
 	}

@@ -104,6 +104,39 @@ var _ = Describe("AgentPrincipalsFactory", func() {
 		Expect(found).To(BeFalse())
 	})
 
+	It("revokes every exact per-run principal name durably", func() {
+		first, _, err := factory.Create(principals.CreateSpec{
+			Name: "agent-run-42", Scopes: []string{principals.ScopeTicketsWrite},
+		})
+		Expect(err).NotTo(HaveOccurred())
+		second, _, err := factory.Create(principals.CreateSpec{
+			Name: "agent-run-42", Scopes: []string{principals.ScopeMetricsWrite},
+		})
+		Expect(err).NotTo(HaveOccurred())
+		other, _, err := factory.Create(principals.CreateSpec{
+			Name: "agent-run-420", Scopes: []string{principals.ScopeMetricsWrite},
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(factory.RevokeByName("agent-run-42")).To(Succeed())
+		Expect(factory.RevokeByName("agent-run-42")).To(Succeed())
+
+		for _, id := range []int{first.ID, second.ID} {
+			stored, found, err := factory.Get(id)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(stored.RevokedAt).NotTo(BeNil())
+		}
+		stored, found, err := factory.Get(other.ID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(stored.RevokedAt).To(BeNil())
+	})
+
+	It("rejects an empty revoke-by-name target", func() {
+		Expect(factory.RevokeByName(" ")).To(MatchError("db: agent principal name is required"))
+	})
+
 	It("records usage", func() {
 		created, _, err := factory.Create(principals.CreateSpec{
 			Name: "agent-step", Scopes: []string{principals.ScopeMetricsWrite},

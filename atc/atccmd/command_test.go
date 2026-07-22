@@ -101,6 +101,49 @@ func (s *CommandSuite) TestAgentSnapshotFlagDefaults() {
 	s.Equal([]string{"10m"}, repairInterval.Default)
 }
 
+func (s *CommandSuite) TestAgentWorkflowRunReconcilerFlagDefaults() {
+	cmd := &atccmd.ATCCommand{}
+	parser := flags.NewParser(cmd, flags.Default)
+	parser.NamespaceDelimiter = "-"
+	runCmd := parser.Find("run")
+
+	interval := runCmd.FindOptionByLongName("agent-workflow-run-reconciler-interval")
+	s.NotNil(interval)
+	s.Equal([]string{"10s"}, interval.Default)
+	timeout := runCmd.FindOptionByLongName("agent-workflow-run-admission-timeout")
+	s.NotNil(timeout)
+	s.Equal([]string{"15m"}, timeout.Default)
+}
+
+func (s *CommandSuite) TestAgentWorkflowRunReconcilerDurationsAreValid() {
+	tests := map[string]struct {
+		interval time.Duration
+		timeout  time.Duration
+		want     string
+	}{
+		"zero interval":     {interval: 0, timeout: time.Minute, want: "reconciler-interval must be positive"},
+		"negative interval": {interval: -time.Second, timeout: time.Minute, want: "reconciler-interval must be positive"},
+		"zero timeout":      {interval: time.Second, timeout: 0, want: "admission-timeout must be positive"},
+		"negative timeout":  {interval: time.Second, timeout: -time.Second, want: "admission-timeout must be positive"},
+		"timeout too short": {interval: 10 * time.Second, timeout: 19 * time.Second, want: "at least twice"},
+	}
+	for name, test := range tests {
+		s.Run(name, func() {
+			command := &atccmd.RunCommand{}
+			command.AgentWorkflowRuns.ReconcilerInterval = test.interval
+			command.AgentWorkflowRuns.AdmissionTimeout = test.timeout
+			err := atccmd.ValidateAgentWorkflowRunsForTest(command)
+			s.Error(err)
+			s.Contains(err.Error(), test.want)
+		})
+	}
+
+	command := &atccmd.RunCommand{}
+	command.AgentWorkflowRuns.ReconcilerInterval = 10 * time.Second
+	command.AgentWorkflowRuns.AdmissionTimeout = 20 * time.Second
+	s.NoError(atccmd.ValidateAgentWorkflowRunsForTest(command))
+}
+
 func (s *CommandSuite) TestAgentSnapshotNumericBoundsAreAlwaysPositive() {
 	for name, mutate := range map[string]func(*atccmd.RunCommand){
 		"replication":       func(command *atccmd.RunCommand) { command.AgentSnapshots.ReplicationFactor = 0 },

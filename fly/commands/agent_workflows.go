@@ -20,10 +20,15 @@ import (
 
 // AgentWorkflowsCommand groups the workflow-definition subcommands.
 type AgentWorkflowsCommand struct {
-	List    WorkflowsListCommand    `command:"list" description:"List workflow definitions (latest and live versions)"`
-	Show    WorkflowsShowCommand    `command:"show" description:"Print a workflow definition version"`
-	Import  WorkflowsImportCommand  `command:"import" description:"Import a workflow definition YAML file as a new version"`
-	SetLive WorkflowsSetLiveCommand `command:"set-live" description:"Mark a workflow definition version live (human promotion)"`
+	List      WorkflowsListCommand      `command:"list" description:"List workflow definitions (latest and live versions)"`
+	Show      WorkflowsShowCommand      `command:"show" description:"Print a workflow definition version"`
+	Import    WorkflowsImportCommand    `command:"import" description:"Import a workflow definition YAML file as a new version"`
+	SetLive   WorkflowsSetLiveCommand   `command:"set-live" description:"Mark a workflow definition version live (human promotion)"`
+	Run       WorkflowsRunCommand       `command:"run" description:"Create a durable workflow run from named snapshot inputs"`
+	Runs      WorkflowsRunsCommand      `command:"runs" description:"List durable runs for one workflow definition"`
+	ShowRun   WorkflowsShowRunCommand   `command:"show-run" description:"Inspect one durable workflow run or its output manifest"`
+	CancelRun WorkflowsCancelRunCommand `command:"cancel-run" description:"Request cancellation of a durable workflow run"`
+	RetryRun  WorkflowsRetryRunCommand  `command:"retry-run" description:"Retry a terminal durable workflow run with its pinned inputs"`
 }
 
 // workflowSummary mirrors agent/api/workflows.WorkflowSummary.

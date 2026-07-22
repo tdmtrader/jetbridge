@@ -152,7 +152,6 @@ func TestExtractFunctionTargetRejectsNestedMatches(t *testing.T) {
 		{name: "do", step: atc.Step{Config: &atc.DoStep{Steps: []atc.Step{selected()}}}},
 		{name: "parallel", step: atc.Step{Config: &atc.InParallelStep{Config: atc.InParallelConfig{Steps: []atc.Step{selected()}}}}},
 		{name: "try", step: atc.Step{Config: &atc.TryStep{Step: selected()}}},
-		{name: "across", step: atc.Step{Config: &atc.AcrossStep{Vars: []atc.AcrossVarConfig{{Var: "item", Values: []string{"one"}}}, Step: selected().Config}}},
 		{name: "retry", step: atc.Step{Config: &atc.RetryStep{Attempts: 2, Step: selected().Config}}},
 		{name: "timeout", step: atc.Step{Config: &atc.TimeoutStep{Duration: "1m", Step: selected().Config}}},
 		{name: "on success", step: atc.Step{Config: &atc.OnSuccessStep{Step: selected().Config, Hook: plain("hook")}}},
@@ -169,6 +168,17 @@ func TestExtractFunctionTargetRejectsNestedMatches(t *testing.T) {
 				t.Fatalf("error = %v, want direct top-level refusal", err)
 			}
 		})
+	}
+}
+
+func TestExtractFunctionTargetRejectsAcrossBeforeExtraction(t *testing.T) {
+	selected := atc.Step{Config: &atc.AgentStep{Name: "selected", FunctionID: "selected", Prompt: "work"}}
+	definition := extractTestDefinition([]atc.Step{{Config: &atc.AcrossStep{
+		Vars: []atc.AcrossVarConfig{{Var: "item", Values: []string{"one"}}}, Step: selected.Config,
+	}}}, nil)
+	_, err := ExtractFunctionTarget(definition, "selected")
+	if err == nil || !strings.Contains(err.Error(), "across") || !strings.Contains(err.Error(), "exact execution provenance") {
+		t.Fatalf("error = %v, want immutable-provenance refusal", err)
 	}
 }
 

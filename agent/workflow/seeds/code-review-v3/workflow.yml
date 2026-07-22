@@ -1,0 +1,27 @@
+schema_version: 3
+name: code-review
+signature_version: 1
+description: Review one immutable repository state relative to another.
+inputs:
+  - name: before
+    type: repository/v1
+    description: Repository state used as the comparison base.
+  - name: after
+    type: repository/v1
+    description: Repository state to review.
+outputs:
+  - name: review
+    type: review/v1
+    from: review
+    description: Structured findings and an overall disposition.
+plan:
+  - agent: review
+    function_id: review
+    prompt_file: prompts/review.md
+    inputs: [before, after]
+    outputs: [review]
+    input_types:
+      before: {type: repository/v1}
+      after: {type: repository/v1}
+    output_types:
+      review: review/v1

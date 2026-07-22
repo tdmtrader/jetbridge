@@ -253,19 +253,14 @@ func TestFullFunctionTargetRejectsUnfrozenExecutionDependencies(t *testing.T) {
 	}
 }
 
-func TestFullFunctionTargetPreservesProvableTasksResourcesPublishersAndStaticAcross(t *testing.T) {
+func TestFullFunctionTargetPreservesProvableTasksResourcesAndPublishers(t *testing.T) {
 	definition := renderTestDefinition()
 	task := renderImmutableTask()
 	addRenderResource(&definition, "source")
 	addRenderResource(&definition, "destination")
-	staticAcross := &atc.AcrossStep{
-		Vars: []atc.AcrossVarConfig{{Var: "item", Values: []string{"one", "two"}}},
-		Step: &atc.GetStep{Name: "matrix", Resource: "source", Params: atc.Params{"path": "((.:item))"}},
-	}
 	definition.Compiled.Function.Plan = append([]atc.Step{
 		{Config: &atc.GetStep{Name: "fetched", Resource: "source"}},
 		{Config: task},
-		{Config: staticAcross},
 		{Config: &atc.PutStep{Name: "published", Resource: "destination", Params: atc.Params{"artifact": "fetched"}}},
 	}, definition.Compiled.Function.Plan...)
 
@@ -280,8 +275,8 @@ func TestFullFunctionTargetPreservesProvableTasksResourcesPublishersAndStaticAcr
 	if len(rendered.Config.Resources) != 2 {
 		t.Fatalf("resources = %#v, want source and destination", rendered.Config.Resources)
 	}
-	if got := rendered.Config.Jobs[0].PlanSequence[4].Config; reflect.TypeOf(got) != reflect.TypeOf(staticAcross) {
-		t.Fatalf("static across was not preserved: %T", got)
+	if got := rendered.Config.Jobs[0].PlanSequence[4].Config; reflect.TypeOf(got) != reflect.TypeOf(&atc.PutStep{}) {
+		t.Fatalf("publisher was not preserved: %T", got)
 	}
 }
 

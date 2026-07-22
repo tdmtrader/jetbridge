@@ -459,23 +459,16 @@ func TestTypeCheckCompositionSemantics(t *testing.T) {
 		}
 	})
 
-	t.Run("across rejects nested typed output", func(t *testing.T) {
-		body := &atc.DoStep{Steps: []atc.Step{{Config: typedAgent("produce", "produce", nil, nil, []string{"review"}, map[string]atc.SnapshotOutputConfig{"review": {Type: reviewV1, Optional: true}})}}}
-		err := TypeCheckFunction(&FunctionConfig{SignatureVersion: 1, Plan: []atc.Step{{Config: &atc.AcrossStep{Step: body}}}})
-		if err == nil || !strings.Contains(err.Error(), "typed output") || !strings.Contains(err.Error(), "across") {
-			t.Fatalf("error = %v", err)
-		}
-	})
-
-	t.Run("across checks typed inputs but does not export local flow", func(t *testing.T) {
+	t.Run("across is rejected until expanded plans can be frozen", func(t *testing.T) {
 		inputOnly := typedAgent("inspect", "inspect", []string{"repo"}, map[string]atc.SnapshotInputConfig{"repo": {Type: repositoryV1}}, nil, nil)
 		function := &FunctionConfig{
 			SignatureVersion: 1,
 			Inputs:           []snapshot.Port{{Name: "repo", Type: repositoryV1}},
 			Plan:             []atc.Step{{Config: &atc.AcrossStep{Step: inputOnly}}},
 		}
-		if err := TypeCheckFunction(function); err != nil {
-			t.Fatalf("TypeCheckFunction: %v", err)
+		err := TypeCheckFunction(function)
+		if err == nil || !strings.Contains(err.Error(), "across") || !strings.Contains(err.Error(), "exact execution provenance") {
+			t.Fatalf("error = %v, want immutable-provenance rejection", err)
 		}
 	})
 }
@@ -657,6 +650,15 @@ func TestTypeCheckFunctionDelegatesOrdinaryStepAndDeclarationErrors(t *testing.T
 			name:     "unknown prototype",
 			function: &FunctionConfig{SignatureVersion: 1, Plan: []atc.Step{{Config: &atc.RunStep{Message: "run", Type: "missing"}}}},
 			want:     "unknown prototype",
+		},
+		{
+			name: "known prototype is rejected before execution admission",
+			function: &FunctionConfig{
+				SignatureVersion: 1,
+				Prototypes:       atc.Prototypes{{Name: "known", Type: "mock", Source: atc.Source{"uri": "example"}}},
+				Plan:             []atc.Step{{Config: &atc.RunStep{Message: "run", Type: "known"}}},
+			},
+			want: "prototype run steps are not executable",
 		},
 		{
 			name: "unused resource",

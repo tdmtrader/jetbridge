@@ -2,6 +2,8 @@ package pipelineserver
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 
 	"code.cloudfoundry.org/lager/v3"
@@ -23,6 +25,11 @@ func (s *Server) CreateBuild(pipeline db.Pipeline) http.Handler {
 
 		build, err := pipeline.CreateStartedBuild(plan)
 		if err != nil {
+			if errors.Is(err, db.ErrWorkflowRunOwnedPipeline) {
+				w.WriteHeader(http.StatusConflict)
+				fmt.Fprint(w, "manual builds are disabled for durable workflow-run execution pipelines; create a workflow run instead")
+				return
+			}
 			logger.Error("failed-to-create-one-off-build", err)
 			w.WriteHeader(http.StatusInternalServerError)
 			return

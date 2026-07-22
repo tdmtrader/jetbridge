@@ -49,6 +49,11 @@ func (s *Server) CreateRun(pipeline db.Pipeline) http.Handler {
 		// factory-created runs without their frozen checks)
 		run, err := s.runFactory.CreateRun(pipeline.ID(), validated, acc.UserInfo().DisplayUserId)
 		if err != nil {
+			if errors.Is(err, db.ErrWorkflowRunOwnedPipeline) {
+				w.WriteHeader(http.StatusConflict)
+				fmt.Fprint(w, err.Error())
+				return
+			}
 			logger.Error("failed-to-create-run", err)
 			w.WriteHeader(http.StatusInternalServerError)
 			return

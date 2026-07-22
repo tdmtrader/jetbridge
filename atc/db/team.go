@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -432,15 +433,20 @@ func savePipeline(
 		"instance_vars": instanceVars,
 	}
 
-	var existingConfig bool
-	err := psql.Select("1").
+	var existingPipelineID int
+	err := psql.Select("id").
 		From("pipelines").
 		Where(pipelineRefWhereClause).
-		Prefix("SELECT EXISTS (").Suffix(")").
 		RunWith(tx).
 		QueryRow().
-		Scan(&existingConfig)
-	if err != nil {
+		Scan(&existingPipelineID)
+	var existingConfig bool
+	if err == nil {
+		existingConfig = true
+		if err := rejectWorkflowRunTemplateMutation(context.Background(), tx, existingPipelineID); err != nil {
+			return 0, false, err
+		}
+	} else if err != sql.ErrNoRows {
 		return 0, false, err
 	}
 
@@ -681,19 +687,44 @@ func (t *team) SavePipeline(
 }
 
 func (t *team) RenamePipeline(oldName, newName string) (bool, error) {
+	tx, err := t.conn.Begin()
+	if err != nil {
+		return false, err
+	}
+	defer Rollback(tx)
+
+	var immutable bool
+	err = psql.Select("1").
+		From("pipelines p").
+		Join("agent_workflow_run_templates t ON t.pipeline_id = p.id").
+		Where(sq.Eq{"p.team_id": t.id, "p.name": oldName}).
+		Prefix("SELECT EXISTS (").Suffix(")").
+		RunWith(tx).
+		QueryRow().
+		Scan(&immutable)
+	if err != nil {
+		return false, err
+	}
+	if immutable {
+		return false, ErrWorkflowRunTemplateImmutable
+	}
+
 	result, err := psql.Update("pipelines").
 		Set("name", newName).
 		Where(sq.Eq{
 			"team_id": t.id,
 			"name":    oldName,
 		}).
-		RunWith(t.conn).
+		RunWith(tx).
 		Exec()
 	if err != nil {
 		return false, err
 	}
 	rowsAffected, err := result.RowsAffected()
 	if err != nil {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
 		return false, err
 	}
 	return rowsAffected > 0, nil

@@ -1,10 +1,12 @@
 package integration_test
 
 import (
+	"encoding/json"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -28,6 +30,392 @@ steps:
 `
 
 var _ = Describe("fly agent workflows", func() {
+	Describe("run", func() {
+		It("creates a pinned workflow run with named snapshot inputs and lossless IDs", func() {
+			atcServer.AppendHandlers(
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("POST", "/api/v1/agent/workflows/standard-dev/runs"),
+					ghttp.VerifyContentType("application/json"),
+					ghttp.VerifyJSONRepresenting(map[string]any{
+						"version":         3,
+						"inputs":          map[string]any{"after": "9007199254740995", "before": "9007199254740993"},
+						"idempotency_key": "cli-key",
+					}),
+					ghttp.RespondWithJSONEncoded(http.StatusCreated, map[string]any{
+						"workflow_run_id":  "9007199254740997",
+						"pipeline_run_id":  73,
+						"workflow_name":    "standard-dev",
+						"workflow_version": 3,
+						"status":           "running",
+					}),
+				),
+			)
+
+			flyCmd := exec.Command(
+				flyPath, "-t", targetName, "agent", "workflows", "run", "standard-dev",
+				"--input", "before=9007199254740993",
+				"--input", "after=9007199254740995",
+				"--version", "3",
+				"--idempotency-key", "cli-key",
+				"--json",
+			)
+			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+			Expect(err).NotTo(HaveOccurred())
+			<-sess.Exited
+			Expect(sess.ExitCode()).To(Equal(0))
+			Expect(sess.Out).To(gbytes.Say(`"workflow_run_id": "9007199254740997"`))
+			Expect(sess.Out).To(gbytes.Say(`"pipeline_run_id": 73`))
+		})
+
+		It("generates an idempotency key when one is not supplied", func() {
+			atcServer.AppendHandlers(func(w http.ResponseWriter, r *http.Request) {
+				Expect(r.Method).To(Equal(http.MethodPost))
+				Expect(r.URL.Path).To(Equal("/api/v1/agent/workflows/standard-dev/runs"))
+				var request map[string]any
+				Expect(json.NewDecoder(r.Body).Decode(&request)).To(Succeed())
+				Expect(request).NotTo(HaveKey("version"))
+				Expect(request).NotTo(HaveKey("inputs"))
+				Expect(request["idempotency_key"]).To(BeAssignableToTypeOf(""))
+				Expect(request["idempotency_key"]).NotTo(BeEmpty())
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusCreated)
+				Expect(json.NewEncoder(w).Encode(map[string]any{
+					"workflow_run_id":  "9007199254740997",
+					"pipeline_run_id":  nil,
+					"workflow_name":    "standard-dev",
+					"workflow_version": 4,
+					"status":           "admitting",
+				})).To(Succeed())
+			})
+
+			flyCmd := exec.Command(flyPath, "-t", targetName, "agent", "workflows", "run", "standard-dev")
+			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+			Expect(err).NotTo(HaveOccurred())
+			<-sess.Exited
+			Expect(sess.ExitCode()).To(Equal(0))
+			Expect(sess.Out).To(gbytes.Say(`workflow run 9007199254740997`))
+			Expect(sess.Out).To(gbytes.Say(`pipeline run: none`))
+		})
+
+		It("waits for the durable workflow run rather than the linked pipeline run", func() {
+			atcServer.AppendHandlers(
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("POST", "/api/v1/agent/workflows/standard-dev/runs"),
+					ghttp.RespondWithJSONEncoded(http.StatusCreated, map[string]any{
+						"workflow_run_id":  "9007199254740997",
+						"pipeline_run_id":  73,
+						"workflow_name":    "standard-dev",
+						"workflow_version": 3,
+						"status":           "running",
+						"inputs":           []any{},
+						"outputs":          []any{},
+					}),
+				),
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("GET", "/api/v1/agent/workflows/standard-dev/runs/9007199254740997"),
+					ghttp.RespondWithJSONEncoded(http.StatusOK, map[string]any{
+						"workflow_run_id":  "9007199254740997",
+						"pipeline_run_id":  73,
+						"workflow_name":    "standard-dev",
+						"workflow_version": 3,
+						"status":           "succeeded",
+						"inputs":           []any{},
+						"outputs":          []any{},
+					}),
+				),
+			)
+
+			flyCmd := exec.Command(
+				flyPath, "-t", targetName, "agent", "workflows", "run", "standard-dev",
+				"--idempotency-key", "wait-key", "--wait", "--json",
+			)
+			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+			Expect(err).NotTo(HaveOccurred())
+			<-sess.Exited
+			Expect(sess.ExitCode()).To(Equal(0))
+			Expect(sess.Out).To(gbytes.Say(`"workflow_run_id": "9007199254740997"`))
+			Expect(sess.Out).To(gbytes.Say(`"status": "succeeded"`))
+			Expect(string(sess.Out.Contents())).NotTo(ContainSubstring(`"status": "running"`))
+		})
+
+		It("prints a waited terminal failure and exits nonzero", func() {
+			atcServer.AppendHandlers(
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("POST", "/api/v1/agent/workflows/standard-dev/runs"),
+					ghttp.RespondWithJSONEncoded(http.StatusCreated, map[string]any{
+						"workflow_run_id":  "9007199254740997",
+						"pipeline_run_id":  73,
+						"workflow_name":    "standard-dev",
+						"workflow_version": 3,
+						"status":           "running",
+						"inputs":           []any{},
+						"outputs":          []any{},
+					}),
+				),
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("GET", "/api/v1/agent/workflows/standard-dev/runs/9007199254740997"),
+					ghttp.RespondWithJSONEncoded(http.StatusOK, map[string]any{
+						"workflow_run_id":  "9007199254740997",
+						"pipeline_run_id":  73,
+						"workflow_name":    "standard-dev",
+						"workflow_version": 3,
+						"status":           "failed",
+						"error_message":    "review contract failed",
+						"inputs":           []any{},
+						"outputs":          []any{},
+					}),
+				),
+			)
+
+			flyCmd := exec.Command(
+				flyPath, "-t", targetName, "agent", "workflows", "run", "standard-dev",
+				"--idempotency-key", "failed-wait-key", "--wait", "--follow", "--json",
+			)
+			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+			Expect(err).NotTo(HaveOccurred())
+			<-sess.Exited
+			Expect(sess.ExitCode()).To(Equal(1))
+			Expect(sess.Out).To(gbytes.Say(`"workflow_run_id": "9007199254740997"`))
+			Expect(sess.Out).To(gbytes.Say(`"status": "failed"`))
+			Expect(sess.Err).To(gbytes.Say(`workflow run 9007199254740997: running`))
+			Expect(sess.Err).To(gbytes.Say(`workflow run 9007199254740997: failed`))
+			Expect(sess.Err).To(gbytes.Say(`workflow run 9007199254740997 finished with status failed`))
+		})
+	})
+
+	Describe("runs", func() {
+		It("lists workflow-scoped runs with combined filters and lossless durable IDs", func() {
+			atcServer.AppendHandlers(
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest(
+						"GET",
+						"/api/v1/agent/workflows/standard-dev/runs",
+						"limit=7&origin_kind=ticket&origin_reference=42&status=running",
+					),
+					ghttp.RespondWithJSONEncoded(http.StatusOK, []map[string]any{{
+						"workflow_run_id":  "9007199254740997",
+						"pipeline_run_id":  73,
+						"workflow_name":    "standard-dev",
+						"workflow_version": 3,
+						"status":           "running",
+						"origin_kind":      "ticket",
+						"origin_reference": "42",
+					}}),
+				),
+			)
+
+			flyCmd := exec.Command(
+				flyPath, "-t", targetName, "agent", "workflows", "runs", "standard-dev",
+				"--status", "running",
+				"--origin-kind", "ticket",
+				"--origin-reference", "42",
+				"--limit", "7",
+				"--json",
+			)
+			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+			Expect(err).NotTo(HaveOccurred())
+			<-sess.Exited
+			Expect(sess.ExitCode()).To(Equal(0))
+			Expect(sess.Out).To(gbytes.Say(`"workflow_run_id": "9007199254740997"`))
+			Expect(sess.Out).To(gbytes.Say(`"pipeline_run_id": 73`))
+		})
+
+		It("prints durable and pipeline run IDs as distinct table columns", func() {
+			atcServer.AppendHandlers(
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("GET", "/api/v1/agent/workflows/standard-dev/runs", "limit=100"),
+					ghttp.RespondWithJSONEncoded(http.StatusOK, []map[string]any{{
+						"workflow_run_id":  "9007199254740997",
+						"pipeline_run_id":  nil,
+						"workflow_name":    "standard-dev",
+						"workflow_version": 3,
+						"status":           "succeeded",
+						"origin_kind":      "cli",
+						"origin_reference": "",
+					}}),
+				),
+			)
+
+			flyCmd := exec.Command(flyPath, "-t", targetName, "agent", "workflows", "runs", "standard-dev")
+			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+			Expect(err).NotTo(HaveOccurred())
+			<-sess.Exited
+			Expect(sess.ExitCode()).To(Equal(0))
+			Expect(sess.Out).To(gbytes.Say(`9007199254740997\s+none\s+3\s+succeeded\s+cli`))
+		})
+	})
+
+	Describe("show-run", func() {
+		It("inspects one durable run without treating the pipeline run ID as its identity", func() {
+			atcServer.AppendHandlers(
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("GET", "/api/v1/agent/workflows/standard-dev/runs/9007199254740997"),
+					ghttp.RespondWithJSONEncoded(http.StatusOK, map[string]any{
+						"workflow_run_id":  "9007199254740997",
+						"pipeline_run_id":  73,
+						"workflow_name":    "standard-dev",
+						"workflow_version": 3,
+						"status":           "running",
+						"inputs":           []any{},
+						"outputs":          []any{},
+					}),
+				),
+			)
+
+			flyCmd := exec.Command(
+				flyPath, "-t", targetName, "agent", "workflows", "show-run",
+				"standard-dev", "9007199254740997", "--json",
+			)
+			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+			Expect(err).NotTo(HaveOccurred())
+			<-sess.Exited
+			Expect(sess.ExitCode()).To(Equal(0))
+			Expect(sess.Out).To(gbytes.Say(`"workflow_run_id": "9007199254740997"`))
+			Expect(sess.Out).To(gbytes.Say(`"pipeline_run_id": 73`))
+		})
+
+		It("prints the separately addressable output manifest", func() {
+			atcServer.AppendHandlers(
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("GET", "/api/v1/agent/workflows/standard-dev/runs/9007199254740997/outputs"),
+					ghttp.RespondWithJSONEncoded(http.StatusOK, map[string]any{
+						"workflow_run_id": "9007199254740997",
+						"outputs": []map[string]any{{
+							"port": "review",
+							"snapshot": map[string]any{
+								"id":                 "9007199254740999",
+								"type":               "review/v1",
+								"digest":             "sha256:" + strings.Repeat("a", 64),
+								"byte_size":          12,
+								"file_count":         1,
+								"representation":     "application/x-tar",
+								"intrinsic_metadata": map[string]any{},
+								"content_state":      "available",
+								"created_at":         "2026-07-22T12:00:00Z",
+							},
+						}},
+					}),
+				),
+			)
+
+			flyCmd := exec.Command(
+				flyPath, "-t", targetName, "agent", "workflows", "show-run",
+				"standard-dev", "9007199254740997", "--outputs", "--json",
+			)
+			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+			Expect(err).NotTo(HaveOccurred())
+			<-sess.Exited
+			Expect(sess.ExitCode()).To(Equal(0))
+			Expect(sess.Out).To(gbytes.Say(`"workflow_run_id": "9007199254740997"`))
+			Expect(sess.Out).To(gbytes.Say(`"id": "9007199254740999"`))
+		})
+
+		It("follows status transitions on stderr and prints one final result", func() {
+			atcServer.AppendHandlers(
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("GET", "/api/v1/agent/workflows/standard-dev/runs/9007199254740997"),
+					ghttp.RespondWithJSONEncoded(http.StatusOK, map[string]any{
+						"workflow_run_id":  "9007199254740997",
+						"pipeline_run_id":  73,
+						"workflow_name":    "standard-dev",
+						"workflow_version": 3,
+						"status":           "running",
+						"inputs":           []any{},
+						"outputs":          []any{},
+					}),
+				),
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("GET", "/api/v1/agent/workflows/standard-dev/runs/9007199254740997"),
+					ghttp.RespondWithJSONEncoded(http.StatusOK, map[string]any{
+						"workflow_run_id":  "9007199254740997",
+						"pipeline_run_id":  73,
+						"workflow_name":    "standard-dev",
+						"workflow_version": 3,
+						"status":           "succeeded",
+						"inputs":           []any{},
+						"outputs":          []any{},
+					}),
+				),
+			)
+
+			flyCmd := exec.Command(
+				flyPath, "-t", targetName, "agent", "workflows", "show-run",
+				"standard-dev", "9007199254740997", "--follow",
+			)
+			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+			Expect(err).NotTo(HaveOccurred())
+			<-sess.Exited
+			Expect(sess.ExitCode()).To(Equal(0))
+			Expect(sess.Err).To(gbytes.Say(`workflow run 9007199254740997: running`))
+			Expect(sess.Err).To(gbytes.Say(`workflow run 9007199254740997: succeeded`))
+			Expect(sess.Out).To(gbytes.Say(`status: succeeded`))
+			Expect(string(sess.Out.Contents())).NotTo(ContainSubstring(`status: running`))
+		})
+	})
+
+	Describe("cancel-run", func() {
+		It("requests cancellation by durable workflow run ID", func() {
+			atcServer.AppendHandlers(
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("POST", "/api/v1/agent/workflows/standard-dev/runs/9007199254740997/cancel"),
+					ghttp.RespondWithJSONEncoded(http.StatusAccepted, map[string]any{
+						"workflow_run_id":  "9007199254740997",
+						"pipeline_run_id":  73,
+						"workflow_name":    "standard-dev",
+						"workflow_version": 3,
+						"status":           "canceling",
+						"inputs":           []any{},
+						"outputs":          []any{},
+					}),
+				),
+			)
+
+			flyCmd := exec.Command(
+				flyPath, "-t", targetName, "agent", "workflows", "cancel-run",
+				"standard-dev", "9007199254740997", "--json",
+			)
+			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+			Expect(err).NotTo(HaveOccurred())
+			<-sess.Exited
+			Expect(sess.ExitCode()).To(Equal(0))
+			Expect(sess.Out).To(gbytes.Say(`"workflow_run_id": "9007199254740997"`))
+			Expect(sess.Out).To(gbytes.Say(`"status": "canceling"`))
+		})
+	})
+
+	Describe("retry-run", func() {
+		It("creates a new run linked to the durable source run", func() {
+			atcServer.AppendHandlers(
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("POST", "/api/v1/agent/workflows/standard-dev/runs/9007199254740997/retry"),
+					ghttp.VerifyContentType("application/json"),
+					ghttp.VerifyJSONRepresenting(map[string]any{"idempotency_key": "retry-key"}),
+					ghttp.RespondWithJSONEncoded(http.StatusCreated, map[string]any{
+						"workflow_run_id":          "9007199254741001",
+						"pipeline_run_id":          74,
+						"workflow_name":            "standard-dev",
+						"workflow_version":         3,
+						"status":                   "running",
+						"retry_of_workflow_run_id": "9007199254740997",
+						"inputs":                   []any{},
+						"outputs":                  []any{},
+					}),
+				),
+			)
+
+			flyCmd := exec.Command(
+				flyPath, "-t", targetName, "agent", "workflows", "retry-run",
+				"standard-dev", "9007199254740997", "--idempotency-key", "retry-key", "--json",
+			)
+			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+			Expect(err).NotTo(HaveOccurred())
+			<-sess.Exited
+			Expect(sess.ExitCode()).To(Equal(0))
+			Expect(sess.Out).To(gbytes.Say(`"workflow_run_id": "9007199254741001"`))
+			Expect(sess.Out).To(gbytes.Say(`"retry_of_workflow_run_id": "9007199254740997"`))
+		})
+	})
+
 	Describe("list", func() {
 		BeforeEach(func() {
 			atcServer.AppendHandlers(

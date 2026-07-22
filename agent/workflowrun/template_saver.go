@@ -17,13 +17,24 @@ type TemplateTeamFinder interface {
 	FindTeam(string) (db.Team, bool, error)
 }
 
-type TemplateSaver struct{ teams TemplateTeamFinder }
+type WorkflowRunTemplateStore interface {
+	SaveWorkflowRunTemplate(context.Context, int, atc.PipelineRef, atc.Config) (db.Pipeline, bool, error)
+	IsWorkflowRunTemplate(context.Context, int) (bool, error)
+}
 
-func NewTemplateSaver(teams TemplateTeamFinder) (*TemplateSaver, error) {
+type TemplateSaver struct {
+	teams     TemplateTeamFinder
+	templates WorkflowRunTemplateStore
+}
+
+func NewTemplateSaver(teams TemplateTeamFinder, templates WorkflowRunTemplateStore) (*TemplateSaver, error) {
 	if nilInterface(teams) {
 		return nil, fmt.Errorf("%w: template team finder is required", ErrInvalidRequest)
 	}
-	return &TemplateSaver{teams: teams}, nil
+	if nilInterface(templates) {
+		return nil, fmt.Errorf("%w: workflow-run template store is required", ErrInvalidRequest)
+	}
+	return &TemplateSaver{teams: teams, templates: templates}, nil
 }
 
 func (s *TemplateSaver) SaveOrReuse(
@@ -56,7 +67,9 @@ func (s *TemplateSaver) SaveOrReuse(
 		return WorkflowRunTemplateRef{}, fmt.Errorf("%w: read immutable template: %v", ErrPlatformFailure, err)
 	}
 	if !found {
-		saved, created, saveErr := team.SavePipeline(pipelineRef, cloneConfig(spec.Config), db.ConfigVersion(0), false)
+		saved, created, saveErr := s.templates.SaveWorkflowRunTemplate(
+			ctx, admission.TeamID, pipelineRef, cloneConfig(spec.Config),
+		)
 		pipeline = saved
 		if saveErr != nil || !created {
 			winner, winnerFound, readErr := team.Pipeline(pipelineRef)
@@ -74,7 +87,7 @@ func (s *TemplateSaver) SaveOrReuse(
 	}
 
 	for range templateVersionReadAttempts {
-		ref, drifted, err := validateImmutableTemplate(team, pipelineRef, pipeline, admission.TeamID, spec)
+		ref, drifted, err := s.validateImmutableTemplate(ctx, team, pipelineRef, pipeline, admission.TeamID, spec)
 		if err != nil {
 			return WorkflowRunTemplateRef{}, err
 		}
@@ -92,7 +105,8 @@ func (s *TemplateSaver) SaveOrReuse(
 	return WorkflowRunTemplateRef{}, fmt.Errorf("%w: template version changed during reconstruction", ErrImmutableTemplateCollision)
 }
 
-func validateImmutableTemplate(
+func (s *TemplateSaver) validateImmutableTemplate(
+	ctx context.Context,
 	team db.Team,
 	pipelineRef atc.PipelineRef,
 	pipeline db.Pipeline,
@@ -101,6 +115,13 @@ func validateImmutableTemplate(
 ) (WorkflowRunTemplateRef, bool, error) {
 	if nilInterface(pipeline) || pipeline.ID() <= 0 || pipeline.TeamID() != teamID || pipeline.Name() != spec.Name ||
 		!pipeline.Template() || pipeline.InstanceVars() != nil || pipeline.Archived() {
+		return WorkflowRunTemplateRef{}, false, ErrImmutableTemplateCollision
+	}
+	owned, err := s.templates.IsWorkflowRunTemplate(ctx, pipeline.ID())
+	if err != nil {
+		return WorkflowRunTemplateRef{}, false, fmt.Errorf("%w: verify immutable template ownership: %v", ErrPlatformFailure, err)
+	}
+	if !owned {
 		return WorkflowRunTemplateRef{}, false, ErrImmutableTemplateCollision
 	}
 	before := pipeline.ConfigVersion()

@@ -29,6 +29,7 @@ const (
 	ComponentAgentOutcomeWatcher           = "agent_outcome_watcher"
 	ComponentAgentSnapshotGC               = "agent_snapshot_gc"
 	ComponentAgentSnapshotRepair           = "agent_snapshot_repair"
+	ComponentAgentWorkflowRunReconciler     = "agent_workflow_run_reconciler"
 	ComponentPipelinePauser                = "pipeline_pauser"
 	ComponentSigningKeyLifecycler          = "signing_key_lifecycler"
 	ComponentPipelineRunLifecycler         = "pipeline_run_lifecycler"

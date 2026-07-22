@@ -17,6 +17,9 @@ func (s *Server) DeletePipeline(pipelineDB db.Pipeline) http.Handler {
 
 		err := pipelineDB.Destroy()
 		if err != nil {
+			if writeWorkflowRunTemplateConflict(w, err) {
+				return
+			}
 			logger.Error("failed", err)
 
 			w.WriteHeader(http.StatusInternalServerError)

@@ -5,13 +5,16 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"code.cloudfoundry.org/clock"
 	"code.cloudfoundry.org/lager/v3"
 	sq "github.com/Masterminds/squirrel"
+	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/creds"
 	"github.com/concourse/concourse/atc/creds/dummy"
@@ -414,6 +417,92 @@ var _ = Describe("Build", func() {
 				Expect(build.HasPlan()).To(BeTrue())
 				Expect(build.PublicPlan()).To(Equal(plan.Public()))
 			})
+		})
+	})
+
+	Describe("durable workflow-run transaction hooks", func() {
+		var (
+			runID snapshot.WorkflowRunID
+			plan  atc.Plan
+		)
+
+		BeforeEach(func() {
+			config := atc.Config{Jobs: atc.JobConfigs{{
+				Name:         "run",
+				PlanSequence: []atc.Step{{Config: &atc.AgentStep{Name: "review"}}},
+			}}}
+			var err error
+			runID, err = attachSelectedWorkflowRun(build, team, config)
+			Expect(err).NotTo(HaveOccurred())
+			plan = atc.Plan{ID: "review-plan", Agent: &atc.AgentPlan{Name: "review"}}
+		})
+
+		It("captures the canonical plan and copied terminal outcome", func() {
+			started, err := build.Start(plan)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(started).To(BeTrue())
+
+			var actualPlan, dependencies []byte
+			var planHash string
+			Expect(dbConn.QueryRow(`
+				SELECT actual_plan, actual_plan_hash, resolved_dependencies
+				FROM agent_workflow_runs WHERE id = $1
+			`, int64(runID)).Scan(&actualPlan, &planHash, &dependencies)).To(Succeed())
+			Expect(actualPlan).To(MatchJSON(`{"id":"review-plan","agent":{"name":"review"}}`))
+			Expect(planHash).To(MatchRegexp(`^[0-9a-f]{64}$`))
+			Expect(dependencies).To(MatchJSON(`{"version":1,"resources":[],"images":[],"platform_resource_types":[]}`))
+
+			Expect(build.Finish(db.BuildStatusSucceeded)).To(Succeed())
+			var executionStatus string
+			Expect(dbConn.QueryRow(`SELECT execution_status FROM agent_workflow_runs WHERE id = $1`, int64(runID)).Scan(&executionStatus)).To(Succeed())
+			Expect(executionStatus).To(Equal("succeeded"))
+		})
+
+		It("rolls the build start and event back on semantic provenance failure", func() {
+			started, err := build.Start(atc.Plan{ID: "unsupported"})
+			Expect(started).To(BeFalse())
+			var provenanceErr *db.AgentWorkflowRunProvenanceError
+			Expect(errors.As(err, &provenanceErr)).To(BeTrue())
+
+			found, reloadErr := build.Reload()
+			Expect(reloadErr).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(build.Status()).To(Equal(db.BuildStatusPending))
+			Expect(build.HasPlan()).To(BeFalse())
+			var captured bool
+			Expect(dbConn.QueryRow(`SELECT actual_plan IS NOT NULL FROM agent_workflow_runs WHERE id = $1`, int64(runID)).Scan(&captured)).To(Succeed())
+			Expect(captured).To(BeFalse())
+		})
+
+		It("atomically terminalizes planner failures with a bounded durable reason", func() {
+			message := strings.Repeat("é", 3000)
+			Expect(build.FinishWorkflowPlanningError(message)).To(Succeed())
+
+			var workflowStatus, executionStatus, storedMessage string
+			Expect(dbConn.QueryRow(`
+				SELECT status, execution_status, error_message
+				FROM agent_workflow_runs WHERE id = $1
+			`, int64(runID)).Scan(&workflowStatus, &executionStatus, &storedMessage)).To(Succeed())
+			Expect(workflowStatus).To(Equal("errored"))
+			Expect(executionStatus).To(Equal("errored"))
+			Expect([]byte(storedMessage)).To(HaveLen(4096))
+			Expect(json.Valid([]byte(strconv.Quote(storedMessage)))).To(BeTrue())
+		})
+
+		It("returns a typed cancellation race and can durably copy the aborted result", func() {
+			_, err := dbConn.Exec(`UPDATE agent_workflow_runs SET status = 'canceling' WHERE id = $1`, int64(runID))
+			Expect(err).NotTo(HaveOccurred())
+
+			started, err := build.Start(plan)
+			Expect(started).To(BeFalse())
+			var cancelingErr *db.AgentWorkflowRunCancelingError
+			Expect(errors.As(err, &cancelingErr)).To(BeTrue())
+			Expect(cancelingErr.WorkflowRunID).To(Equal(runID))
+			Expect(build.Finish(db.BuildStatusAborted)).To(Succeed())
+
+			var executionStatus string
+			Expect(dbConn.QueryRow(`SELECT execution_status FROM agent_workflow_runs WHERE id = $1`, int64(runID)).Scan(&executionStatus)).To(Succeed())
+			Expect(executionStatus).To(Equal("aborted"))
 		})
 	})
 

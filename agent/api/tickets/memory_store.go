@@ -1,24 +1,33 @@
 package tickets
 
 import (
+	"context"
+	"strconv"
 	"sync"
 	"time"
+
+	"github.com/concourse/concourse/agent/workitem"
 )
 
 // MemoryStore is an in-memory Store for testing (reviews.MemoryStore
 // precedent). It mirrors the DB factory's semantics, including the
 // single-writer transition rules.
 type MemoryStore struct {
-	mu      sync.Mutex
-	nextID  int
-	byID    map[int]*Ticket
-	specs   map[int][]Spec // keyed by ticket id, ascending version
-	tasks   map[int][]Task // keyed by ticket id, all plan versions
-	taskSeq int
+	mu         sync.Mutex
+	nextID     int
+	byID       map[int]*Ticket
+	specs      map[int][]Spec // keyed by ticket id, ascending version
+	tasks      map[int][]Task // keyed by ticket id, all plan versions
+	taskSeq    int
+	comments   map[int][]Comment
+	commentSeq int
 }
 
 func NewMemoryStore() *MemoryStore {
-	return &MemoryStore{byID: map[int]*Ticket{}, specs: map[int][]Spec{}, tasks: map[int][]Task{}}
+	return &MemoryStore{
+		byID: map[int]*Ticket{}, specs: map[int][]Spec{}, tasks: map[int][]Task{},
+		comments: map[int][]Comment{},
+	}
 }
 
 func (m *MemoryStore) Create(t *Ticket) (int, error) {
@@ -27,6 +36,7 @@ func (m *MemoryStore) Create(t *Ticket) (int, error) {
 	m.nextID++
 	cp := *t
 	cp.ID = m.nextID
+	cp.Revision = 1
 	cp.State = StateDraft
 	if cp.Origin == "" {
 		cp.Origin = "web"
@@ -109,7 +119,7 @@ func (m *MemoryStore) Update(id int, upd Update) error {
 	if upd.TargetBranch != nil {
 		t.TargetBranch = *upd.TargetBranch
 	}
-	t.UpdatedAt = time.Now().Unix()
+	m.bump(t)
 	return nil
 }
 
@@ -127,7 +137,7 @@ func (m *MemoryStore) Transition(id int, from, to State, meta TransitionMeta) er
 		return ErrStaleTransition
 	}
 	t.State = to
-	t.UpdatedAt = time.Now().Unix()
+	m.bump(t)
 	switch to {
 	case StateQueued:
 		t.CompletedAt = 0
@@ -172,6 +182,7 @@ func (m *MemoryStore) SubmitSpec(ticketID int, spec Spec) (int, error) {
 		spec.Links = []Link{}
 	}
 	m.specs[ticketID] = append(m.specs[ticketID], spec)
+	m.bump(m.byID[ticketID])
 	return version, nil
 }
 
@@ -211,6 +222,7 @@ func (m *MemoryStore) SubmitPlan(ticketID int, ts []Task) (int, error) {
 		task.UpdatedAt = time.Now().Unix()
 		m.tasks[ticketID] = append(m.tasks[ticketID], task)
 	}
+	m.bump(m.byID[ticketID])
 	return planVersion, nil
 }
 
@@ -239,6 +251,7 @@ func (m *MemoryStore) UpdateTaskStatus(ticketID int, planVersion, ordering int, 
 		if t.PlanVersion == planVersion && t.Ordering == ordering {
 			m.tasks[ticketID][i].Status = status
 			m.tasks[ticketID][i].UpdatedAt = time.Now().Unix()
+			m.bump(m.byID[ticketID])
 			return nil
 		}
 	}
@@ -273,6 +286,7 @@ func (m *MemoryStore) UpdateActiveTask(ticketID, ordering int, status TaskStatus
 				}
 			}
 			m.tasks[ticketID][i].UpdatedAt = time.Now().Unix()
+			m.bump(m.byID[ticketID])
 			return maxVersion, nil
 		}
 	}
@@ -290,8 +304,171 @@ func (m *MemoryStore) AppendTaskNote(ticketID int, planVersion, ordering int, no
 				m.tasks[ticketID][i].Detail = t.Detail + "\n\n> " + note
 			}
 			m.tasks[ticketID][i].UpdatedAt = time.Now().Unix()
+			m.bump(m.byID[ticketID])
 			return nil
 		}
 	}
 	return ErrTaskNotFound
+}
+
+func (m *MemoryStore) AppendComment(ticketID int, comment Comment) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ticket, found := m.byID[ticketID]
+	if !found {
+		return 0, ErrTicketNotFound
+	}
+	if comment.Body == "" || comment.CreatedBy == "" {
+		return 0, ErrCommentNotFound
+	}
+	m.commentSeq++
+	comment.ID = m.commentSeq
+	comment.TicketID = ticketID
+	comment.Revision = 1
+	comment.CreatedAt = time.Now().Unix()
+	comment.Answer = ""
+	comment.AnsweredBy = ""
+	comment.AnsweredAt = 0
+	m.comments[ticketID] = append(m.comments[ticketID], comment)
+	m.bump(ticket)
+	return comment.ID, nil
+}
+
+func (m *MemoryStore) AnswerComment(ticketID, commentID int, answer, answeredBy string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ticket, found := m.byID[ticketID]
+	if !found {
+		return ErrTicketNotFound
+	}
+	for index := range m.comments[ticketID] {
+		comment := &m.comments[ticketID][index]
+		if comment.ID != commentID {
+			continue
+		}
+		if comment.AnsweredAt != 0 {
+			return ErrCommentAnswered
+		}
+		comment.Answer = answer
+		comment.AnsweredBy = answeredBy
+		comment.AnsweredAt = time.Now().Unix()
+		comment.Revision++
+		m.bump(ticket)
+		return nil
+	}
+	return ErrCommentNotFound
+}
+
+func (m *MemoryStore) Comments(ticketID int) ([]Comment, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, found := m.byID[ticketID]; !found {
+		return nil, ErrTicketNotFound
+	}
+	return append([]Comment(nil), m.comments[ticketID]...), nil
+}
+
+func (m *MemoryStore) CaptureRevision(ctx context.Context, ticketID int) (workitem.CapturedRevision, bool, error) {
+	if ctx == nil {
+		return workitem.CapturedRevision{}, false, context.Canceled
+	}
+	if err := ctx.Err(); err != nil {
+		return workitem.CapturedRevision{}, false, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ticket, found := m.byID[ticketID]
+	if !found {
+		return workitem.CapturedRevision{}, false, nil
+	}
+
+	revision := workitem.Revision{
+		TicketID: ticket.ID, Revision: ticket.Revision,
+		UpdatedAt: time.Unix(ticket.UpdatedAt, 0).UTC(),
+		Adapter:   ticketAdapter(*ticket), ExternalID: ticketExternalID(*ticket),
+		Title: ticket.Title, Body: ticket.Body, State: string(ticket.State),
+		Workflow: workitem.WorkflowSelection{
+			Name: ticket.WorkflowName, Version: cloneTicketInt(ticket.WorkflowVersion),
+			DefinitionID: cloneTicketInt(ticket.WorkflowDefinitionID),
+		},
+	}
+	if specs := m.specs[ticketID]; len(specs) > 0 {
+		revision.Spec = workItemSpec(specs[len(specs)-1])
+	}
+	maxPlan := 0
+	for _, task := range m.tasks[ticketID] {
+		if task.PlanVersion > maxPlan {
+			maxPlan = task.PlanVersion
+		}
+	}
+	if maxPlan > 0 {
+		revision.Plan = &workitem.PlanRevision{Version: maxPlan, Tasks: []workitem.TaskRevision{}}
+		for _, task := range m.tasks[ticketID] {
+			if task.PlanVersion == maxPlan {
+				revision.Plan.Tasks = append(revision.Plan.Tasks, workItemTask(task))
+			}
+		}
+	}
+	for _, comment := range m.comments[ticketID] {
+		revision.Comments = append(revision.Comments, workItemComment(comment))
+	}
+	captured, err := workitem.MarshalRevision(revision)
+	if err != nil {
+		return workitem.CapturedRevision{}, true, err
+	}
+	return captured, true, nil
+}
+
+func (m *MemoryStore) bump(ticket *Ticket) {
+	ticket.Revision++
+	ticket.UpdatedAt = time.Now().Unix()
+}
+
+func ticketAdapter(ticket Ticket) string {
+	if ticket.Origin == "jira" {
+		return "jira"
+	}
+	return "jetbridge"
+}
+
+func ticketExternalID(ticket Ticket) string {
+	if ticket.ExternalRef != "" {
+		return ticket.ExternalRef
+	}
+	return strconv.Itoa(ticket.ID)
+}
+
+func cloneTicketInt(value *int) *int {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
+}
+
+func workItemSpec(spec Spec) *workitem.SpecRevision {
+	criteria := append([]string(nil), spec.AcceptanceCriteria...)
+	links := make([]workitem.Link, len(spec.Links))
+	for index, link := range spec.Links {
+		links[index] = workitem.Link{Title: link.Title, URL: link.URL}
+	}
+	return &workitem.SpecRevision{
+		Version: spec.Version, Title: spec.Title, Body: spec.Body,
+		AcceptanceCriteria: criteria, Links: links, SubmittedBy: spec.SubmittedBy, CreatedAt: spec.CreatedAt,
+	}
+}
+
+func workItemTask(task Task) workitem.TaskRevision {
+	return workitem.TaskRevision{
+		Ordering: task.Ordering, Title: task.Title, Detail: task.Detail,
+		Status: string(task.Status), UpdatedAt: task.UpdatedAt,
+	}
+}
+
+func workItemComment(comment Comment) workitem.CommentRevision {
+	return workitem.CommentRevision{
+		ID: comment.ID, Revision: comment.Revision, Body: comment.Body,
+		CreatedBy: comment.CreatedBy, CreatedAt: comment.CreatedAt,
+		Answer: comment.Answer, AnsweredBy: comment.AnsweredBy, AnsweredAt: comment.AnsweredAt,
+	}
 }

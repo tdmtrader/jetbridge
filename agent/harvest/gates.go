@@ -1,140 +1,65 @@
 package harvest
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
-	"fmt"
-	"os/exec"
-	"strings"
-	"time"
 
+	functiongates "github.com/concourse/concourse/agent/functions/gates"
 	schema "github.com/concourse/concourse/agent/schema"
+	"github.com/concourse/concourse/agent/snapshot/contracts"
 )
 
-// GateOutcome is the per-gate result of RunGates (§6.3, v0.5 slice).
-type GateOutcome struct {
-	Gate            string  `json:"gate"`
-	Scope           string  `json:"scope"`
-	Status          string  `json:"status"` // ok | failed | error
-	Attempt         int     `json:"attempt"`
-	Flaky           bool    `json:"flaky,omitempty"`
-	DurationSeconds float64 `json:"duration_seconds"`
-	Detail          string  `json:"detail,omitempty"`
-}
+// GateOutcome remains the legacy harvest wire name while the canonical
+// deterministic function emits the gate-results/v1 contract directly.
+type GateOutcome = contracts.GateOutcome
 
-// gateCommands is the v0.5 FIXED command map — the interim executor
-// until dev-mcp owns per-repo commands (full harvest-step workstream,
-// wave 3). Every command runs with cwd=workspaceDir.
-var gateCommands = map[string][]string{
-	"build": {"go", "build", "./..."},
-	"test":  {"go", "test", "./..."},
-	"lint":  {"go", "vet", "./..."},
-}
-
-const defaultGateTimeout = 30 * time.Minute
-
-// RunGates executes policy.Gates in order against workspaceDir using
-// the v0.5 fixed command map. It stops at the first gate whose final
-// status is not "ok" — a gate behind a blocked gate can never unblock
-// the push, so there is nothing to gain by running it.
-//
-// v0.5 can only enforce scope "full": any other scope errors that gate
-// (dev-mcp, wave 3, is the only executor able to resolve affected
-// components) rather than silently running the full suite in its
-// place. An unrecognized gate name is likewise a tooling fault, not a
-// failure.
-//
-// Retries follow the §6.3 flake stance: 0-2 failed-only re-runs
-// (errors are never retried); a gate that passes on a retry is
-// recorded ok with Flaky:true and Attempt:N — flakiness is surfaced,
-// never hidden.
-//
-// events (nil-tolerant: nil = no flight dir) receives live gate.start /
-// gate.result events per attempt (§6.3: flakiness surfaced); emission
-// failures never break gate control flow.
+// RunGates is the v1/v2 compatibility adapter around the reusable gate
+// function. Version-3 workflows invoke the same runner as an explicit node.
 func RunGates(policy GatePolicy, workspaceDir string, events *schema.EventWriter) ([]GateOutcome, error) {
-	outcomes := make([]GateOutcome, 0, len(policy.Gates))
+	gates := make([]functiongates.Gate, 0, len(policy.Gates))
 	for _, gate := range policy.Gates {
-		outcome := runGate(gate, workspaceDir, events)
-		outcomes = append(outcomes, outcome)
-		if outcome.Status != "ok" {
-			break
-		}
+		gates = append(gates, functiongates.Gate{
+			Name: gate.Gate, Scope: gate.Scope, Focus: gate.Focus,
+			Timeout: gate.Timeout, Retries: gate.Retries,
+		})
 	}
-	return outcomes, nil
+	runner := functiongates.NewRunner(nil).WithObserver(gateEventObserver{events: events})
+	document, err := runner.Run(context.Background(), workspaceDir, functiongates.Policy{
+		Gates: gates, OnGateFailure: policy.OnGateFailure,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return append([]GateOutcome(nil), document.Gates...), nil
 }
 
-func runGate(gate Gate, workspaceDir string, events *schema.EventWriter) GateOutcome {
-	if gate.Scope != "full" {
-		return GateOutcome{
-			Gate: gate.Gate, Scope: gate.Scope, Status: "error", Attempt: 1,
-			Detail: fmt.Sprintf("scope %q is not enforceable by the v0.5 in-pod gate engine — dev-mcp remains the wave-3 executor for affected/affected_then_full scopes", gate.Scope),
-		}
-	}
+type gateEventObserver struct {
+	events *schema.EventWriter
+}
 
-	args, ok := gateCommands[gate.Gate]
-	if !ok {
-		return GateOutcome{
-			Gate: gate.Gate, Scope: gate.Scope, Status: "error", Attempt: 1,
-			Detail: fmt.Sprintf("unknown gate %q — the v0.5 command map is build|test|lint", gate.Gate),
-		}
-	}
+func (observer gateEventObserver) AttemptStarted(_ context.Context, event functiongates.AttemptEvent) {
+	emitEvent(observer.events, schema.EventGateStart, schema.GateStartData{
+		Gate: event.Gate.Name, Scope: event.Gate.Scope,
+	})
+}
 
-	timeout := defaultGateTimeout
-	if gate.Timeout != "" {
-		d, err := time.ParseDuration(gate.Timeout)
-		if err != nil {
-			return GateOutcome{
-				Gate: gate.Gate, Scope: gate.Scope, Status: "error", Attempt: 1,
-				Detail: fmt.Sprintf("invalid timeout %q: %v", gate.Timeout, err),
-			}
-		}
-		timeout = d
-	}
-
-	maxAttempts := gate.Retries + 1
-	if maxAttempts < 1 {
-		maxAttempts = 1
-	}
-
-	var last GateOutcome
-	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		emitEvent(events, schema.EventGateStart, schema.GateStartData{
-			Gate: gate.Gate, Scope: gate.Scope,
-		})
-		start := time.Now()
-		status, detail := execGate(args, workspaceDir, timeout)
-		last = GateOutcome{
-			Gate: gate.Gate, Scope: gate.Scope, Status: status,
-			Attempt: attempt, DurationSeconds: time.Since(start).Seconds(), Detail: detail,
-		}
-		if status == "ok" && attempt > 1 {
-			last.Flaky = true
-		}
-		// Every attempt gets a result event (§6.3: flakiness surfaced).
-		emitEvent(events, schema.EventGateResult, schema.GateResultData{
-			Gate: gate.Gate, Scope: gate.Scope, Status: status,
-			DurationSeconds: last.DurationSeconds,
-			Summary:         truncate(detail, 4096),
-			Attempt:         attempt, Flaky: last.Flaky,
-		})
-		if status == "ok" {
-			return last
-		}
-		if status == "error" {
-			// Tooling faults are never retried (§6.3 flake stance).
-			return last
-		}
-		// status == "failed": failed-only retries continue the loop.
-	}
-	return last
+func (observer gateEventObserver) AttemptFinished(
+	_ context.Context,
+	_ functiongates.AttemptEvent,
+	outcome contracts.GateOutcome,
+) {
+	emitEvent(observer.events, schema.EventGateResult, schema.GateResultData{
+		Gate: outcome.Gate, Scope: outcome.Scope, Status: outcome.Status,
+		DurationSeconds: outcome.DurationSeconds,
+		Summary:         truncate(outcome.Detail, 4096),
+		Attempt:         outcome.Attempt,
+		Flaky:           outcome.Flaky,
+	})
 }
 
 // emitEvent writes one event to a nil-tolerant writer; marshal or write
-// failures are ignored — the recorder must never break control flow.
-func emitEvent(events *schema.EventWriter, t schema.EventType, payload any) {
+// failures are ignored because evidence recording must not alter gate flow.
+func emitEvent(events *schema.EventWriter, eventType schema.EventType, payload any) {
 	if events == nil {
 		return
 	}
@@ -142,42 +67,12 @@ func emitEvent(events *schema.EventWriter, t schema.EventType, payload any) {
 	if err != nil {
 		return
 	}
-	_ = events.Write(schema.Event{Type: t, Data: data})
+	_ = events.Write(schema.Event{Type: eventType, Data: data})
 }
 
-// truncate caps s at n bytes.
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
+func truncate(value string, maximum int) string {
+	if len(value) <= maximum {
+		return value
 	}
-	return s[:n]
-}
-
-// execGate runs one gate command to completion (or timeout), returning
-// "ok" on a clean exit, "failed" on a normal non-zero exit (the gate
-// ran and found something), and "error" for anything else (timeout,
-// couldn't start, killed) — a tooling fault rather than a gate finding.
-func execGate(args []string, workspaceDir string, timeout time.Duration) (status, detail string) {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
-	cmd.Dir = workspaceDir
-	var buf bytes.Buffer
-	cmd.Stdout = &buf
-	cmd.Stderr = &buf
-	err := cmd.Run()
-	output := strings.TrimSpace(buf.String())
-
-	if err == nil {
-		return "ok", output
-	}
-	if ctx.Err() == context.DeadlineExceeded {
-		return "error", fmt.Sprintf("gate timed out after %s", timeout)
-	}
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
-		return "failed", output
-	}
-	return "error", err.Error()
+	return value[:maximum]
 }

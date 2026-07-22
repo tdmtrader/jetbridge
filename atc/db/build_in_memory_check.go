@@ -490,6 +490,10 @@ func (b *inMemoryCheckBuild) Finish(status BuildStatus) error {
 	return nil
 }
 
+func (b *inMemoryCheckBuild) FinishWorkflowPlanningError(string) error {
+	return b.Finish(BuildStatusErrored)
+}
+
 func (b *inMemoryCheckBuild) saveEvent(tx Tx, event atc.Event) error {
 	payload, err := json.Marshal(event)
 	if err != nil {

@@ -1,9 +1,17 @@
 package db_test
 
 import (
+	"context"
 	"database/sql"
+	"encoding/json"
+	"fmt"
+	"strconv"
+	"strings"
+	"time"
 
 	"github.com/concourse/concourse/agent/api/tickets"
+	"github.com/concourse/concourse/agent/snapshot/contracts"
+	"github.com/concourse/concourse/agent/workitem"
 	"github.com/concourse/concourse/atc/db"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -50,6 +58,7 @@ var _ = Describe("AgentTicketsFactory", func() {
 		Expect(err).ToNot(HaveOccurred())
 		Expect(found).To(BeTrue())
 		Expect(got.State).To(Equal(tickets.StateDraft))
+		Expect(got.Revision).To(Equal(int64(1)))
 		Expect(got.Origin).To(Equal("fly"))
 		Expect(got.TargetBranch).To(Equal("main")) // defaulted
 		Expect(got.WorkflowName).To(Equal("standard-dev"))
@@ -383,6 +392,150 @@ var _ = Describe("AgentTicketsFactory", func() {
 				To(MatchError(tickets.ErrTaskNotFound))
 			Expect(factory.AppendTaskNote(id, 9, 1, "x")).
 				To(MatchError(tickets.ErrTaskNotFound))
+		})
+	})
+
+	Describe("immutable work-item revision capture", func() {
+		It("increments every mutable path and captures the complete current revision", func() {
+			version := 3
+			ticket := newTicket("upgrade postgres", "tdmtrader/concourse")
+			ticket.Origin = "jira"
+			ticket.ExternalRef = "ENG-42"
+			ticket.WorkflowName = "version-upgrade"
+			ticket.WorkflowVersion = &version
+			id, err := factory.Create(ticket)
+			Expect(err).ToNot(HaveOccurred())
+
+			expectRevision := func(revision int64) {
+				got, found, err := factory.Get(id)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(found).To(BeTrue())
+				Expect(got.Revision).To(Equal(revision))
+			}
+			expectRevision(1)
+
+			body := "Upgrade PostgreSQL to 18."
+			Expect(factory.Update(id, tickets.Update{Body: &body})).To(Succeed())
+			expectRevision(2)
+			Expect(factory.Transition(id, tickets.StateDraft, tickets.StateQueued, tickets.TransitionMeta{})).To(Succeed())
+			expectRevision(3)
+			_, err = factory.SubmitSpec(id, tickets.Spec{Title: "old", Body: "old", SubmittedBy: "alice"})
+			Expect(err).ToNot(HaveOccurred())
+			expectRevision(4)
+			_, err = factory.SubmitSpec(id, tickets.Spec{
+				Title: "current", Body: "preserve extensions", AcceptanceCriteria: []string{"tests pass"},
+				Links: []tickets.Link{{Title: "release", URL: "https://example.test/release"}}, SubmittedBy: "bob",
+			})
+			Expect(err).ToNot(HaveOccurred())
+			expectRevision(5)
+			_, err = factory.SubmitPlan(id, []tickets.Task{{Title: "old plan"}})
+			Expect(err).ToNot(HaveOccurred())
+			expectRevision(6)
+			planVersion, err := factory.SubmitPlan(id, []tickets.Task{{Title: "bump"}, {Title: "test"}})
+			Expect(err).ToNot(HaveOccurred())
+			expectRevision(7)
+			Expect(factory.UpdateTaskStatus(id, planVersion, 1, tickets.TaskInProgress)).To(Succeed())
+			expectRevision(8)
+			Expect(factory.AppendTaskNote(id, planVersion, 1, "editing go.mod")).To(Succeed())
+			expectRevision(9)
+			_, err = factory.UpdateActiveTask(id, 1, tickets.TaskDone, "complete")
+			Expect(err).ToNot(HaveOccurred())
+			expectRevision(10)
+			commentID, err := factory.AppendComment(id, tickets.Comment{Body: "May I update extensions?", CreatedBy: "agent"})
+			Expect(err).ToNot(HaveOccurred())
+			expectRevision(11)
+			Expect(factory.AnswerComment(id, commentID, "yes", "carol")).To(Succeed())
+			expectRevision(12)
+			Expect(factory.AnswerComment(id, commentID, "no", "dave")).To(MatchError(tickets.ErrCommentAnswered))
+			expectRevision(12)
+
+			captured, found, err := factory.CaptureRevision(context.Background(), id)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(captured.TicketID).To(Equal(id))
+			Expect(captured.Revision).To(Equal(int64(12)))
+			var document contracts.WorkItemDocument
+			Expect(json.Unmarshal(captured.Document, &document)).To(Succeed())
+			Expect(document.Validate()).To(Succeed())
+			Expect(document.Adapter).To(Equal("jira"))
+			Expect(document.ExternalID).To(Equal("ENG-42"))
+			Expect(document.Body).To(Equal(body))
+			Expect(document.State).To(Equal("queued"))
+			Expect(document.Workflow).ToNot(BeNil())
+			Expect(document.Workflow.Name).To(Equal("version-upgrade"))
+			Expect(document.Workflow.Version).ToNot(BeNil())
+			Expect(*document.Workflow.Version).To(Equal(3))
+			Expect(document.Spec).ToNot(BeNil())
+			Expect(document.Spec.Revision).To(Equal("2"))
+			Expect(document.Plan).ToNot(BeNil())
+			Expect(document.Plan.Revision).To(Equal(strconv.Itoa(planVersion)))
+			Expect(document.Comments).To(HaveLen(1))
+
+			var spec workitem.SpecRevision
+			Expect(json.Unmarshal([]byte(document.Spec.Content), &spec)).To(Succeed())
+			Expect(spec.Body).To(Equal("preserve extensions"))
+			Expect(spec.AcceptanceCriteria).To(Equal([]string{"tests pass"}))
+			var plan workitem.PlanRevision
+			Expect(json.Unmarshal([]byte(document.Plan.Content), &plan)).To(Succeed())
+			Expect(plan.Tasks).To(HaveLen(2))
+			Expect(plan.Tasks[0].Status).To(Equal("done"))
+			Expect(plan.Tasks[0].Detail).To(Equal("> editing go.mod\n\n> complete"))
+			var comment workitem.CommentRevision
+			Expect(json.Unmarshal([]byte(document.Comments[0].Content), &comment)).To(Succeed())
+			Expect(comment.Revision).To(Equal(int64(2)))
+			Expect(comment.Answer).To(Equal("yes"))
+			Expect(comment.AnsweredBy).To(Equal("carol"))
+		})
+
+		It("returns complete revision N or N+1 while specs are edited concurrently", func() {
+			id, err := factory.Create(newTicket("concurrent capture", "repo"))
+			Expect(err).ToNot(HaveOccurred())
+			started := make(chan struct{})
+			finished := make(chan error, 1)
+			go func() {
+				<-started
+				for version := 1; version <= 40; version++ {
+					_, err := factory.SubmitSpec(id, tickets.Spec{
+						Title: fmt.Sprintf("spec-%d", version), Body: fmt.Sprintf("body-%d", version), SubmittedBy: "writer",
+					})
+					if err != nil {
+						finished <- err
+						return
+					}
+					time.Sleep(time.Millisecond)
+				}
+				finished <- nil
+			}()
+			close(started)
+
+			captures := 0
+			for {
+				select {
+				case err := <-finished:
+					Expect(err).ToNot(HaveOccurred())
+					Expect(captures).To(BeNumerically(">", 0))
+					return
+				default:
+				}
+				captured, found, err := factory.CaptureRevision(context.Background(), id)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(found).To(BeTrue())
+				var document contracts.WorkItemDocument
+				Expect(json.Unmarshal(captured.Document, &document)).To(Succeed())
+				if document.Spec == nil {
+					Expect(captured.Revision).To(Equal(int64(1)))
+				} else {
+					var spec workitem.SpecRevision
+					Expect(json.Unmarshal([]byte(document.Spec.Content), &spec)).To(Succeed())
+					suffix := strings.TrimPrefix(spec.Title, "spec-")
+					titleVersion, err := strconv.Atoi(suffix)
+					Expect(err).ToNot(HaveOccurred())
+					Expect(spec.Version).To(Equal(titleVersion))
+					Expect(spec.Body).To(Equal(fmt.Sprintf("body-%d", titleVersion)))
+					Expect(captured.Revision).To(Equal(int64(titleVersion + 1)))
+				}
+				captures++
+			}
 		})
 	})
 })

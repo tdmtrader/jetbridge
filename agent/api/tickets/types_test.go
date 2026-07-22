@@ -1,10 +1,25 @@
 package tickets_test
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/concourse/concourse/agent/api/tickets"
 )
+
+func TestTicketRevisionIsPublicAndLossless(t *testing.T) {
+	encoded, err := json.Marshal(tickets.Ticket{ID: 1, Revision: 9007199254740993})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded tickets.Ticket
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Revision != 9007199254740993 {
+		t.Fatalf("revision = %d", decoded.Revision)
+	}
+}
 
 func TestValidTransitionMatrix(t *testing.T) {
 	allowed := []struct{ from, to tickets.State }{

@@ -11,8 +11,12 @@ func (s *Server) ArchivePipeline(pipelineDB db.Pipeline) http.Handler {
 		s.logger.Debug("archive-pipeline")
 		err := pipelineDB.Archive()
 		if err != nil {
+			if writeWorkflowRunTemplateConflict(w, err) {
+				return
+			}
 			w.WriteHeader(http.StatusInternalServerError)
 			s.logger.Error("archive-pipeline", err)
+			return
 		}
 	})
 }

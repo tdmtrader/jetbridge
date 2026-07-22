@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
@@ -25,6 +26,7 @@ import (
 	"github.com/concourse/concourse/atc/db/lock"
 	"github.com/concourse/concourse/atc/event"
 	"github.com/concourse/concourse/atc/util"
+	"github.com/concourse/concourse/atc/workflowprovenance"
 	"github.com/concourse/concourse/tracing"
 )
 
@@ -178,6 +180,7 @@ type Build interface {
 
 	Start(atc.Plan) (bool, error)
 	Finish(BuildStatus) error
+	FinishWorkflowPlanningError(string) error
 
 	Variables(lager.Logger, creds.Secrets, creds.VarSourcePool) (vars.Variables, error)
 
@@ -546,6 +549,7 @@ func (b *build) Start(plan atc.Plan) (bool, error) {
 	if !started {
 		return false, nil
 	}
+	_ = b.conn.Bus().Notify(atc.ComponentAgentWorkflowRunReconciler)
 
 	err = b.conn.Bus().Notify(buildEventsChannel(b.id))
 	if err != nil {
@@ -602,11 +606,41 @@ func (b *build) start(tx Tx, plan atc.Plan) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	captureResult, err := prepareAgentWorkflowRunBuildStart(context.Background(), tx, int64(b.id))
+	if err != nil {
+		return false, err
+	}
+	if captureResult.Disposition == AgentWorkflowRunBuildDispositionSelected {
+		captured, err := workflowprovenance.FromPlan(workflowprovenance.Input{
+			WorkflowRunID:        captureResult.WorkflowRunID,
+			WorkflowDefinitionID: captureResult.WorkflowDefinitionID,
+			ConcreteConfig:       captureResult.ConcreteConfig,
+		}, plan)
+		if err != nil {
+			return false, &AgentWorkflowRunProvenanceError{Cause: err}
+		}
+		if err := captureAgentWorkflowRunPlan(context.Background(), tx, captureResult.WorkflowRunID, AgentWorkflowRunPlan{
+			BuildID:              int64(b.id),
+			ActualPlan:           captured.CanonicalPlan,
+			ActualPlanHash:       captured.PlanHash,
+			ResolvedDependencies: captured.ResolvedDependencies,
+		}); err != nil {
+			return false, err
+		}
+	}
 
 	return true, nil
 }
 
 func (b *build) Finish(status BuildStatus) error {
+	return b.finish(status, nil)
+}
+
+func (b *build) FinishWorkflowPlanningError(message string) error {
+	return b.finish(BuildStatusErrored, &message)
+}
+
+func (b *build) finish(status BuildStatus, planningError *string) error {
 	tx, err := b.conn.Begin()
 	if err != nil {
 		return err
@@ -647,6 +681,19 @@ func (b *build) Finish(status BuildStatus) error {
 	})
 	if err != nil {
 		return err
+	}
+	if planningError != nil {
+		if _, err := terminalizeAgentWorkflowRunPlanningError(
+			context.Background(), tx, int64(b.id), *planningError,
+		); err != nil {
+			return err
+		}
+	} else {
+		if _, err := captureAgentWorkflowRunExecutionStatus(
+			context.Background(), tx, int64(b.id), status,
+		); err != nil {
+			return err
+		}
 	}
 
 	if b.jobID != 0 && status == BuildStatusSucceeded {
@@ -814,6 +861,7 @@ WITH RECURSIVE pipelines_to_archive AS (
 	if err != nil {
 		return err
 	}
+	_ = b.conn.Bus().Notify(atc.ComponentAgentWorkflowRunReconciler)
 
 	err = b.conn.Bus().Notify(buildEventsChannel(b.id))
 	if err != nil {

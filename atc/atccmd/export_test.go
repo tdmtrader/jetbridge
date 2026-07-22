@@ -9,3 +9,7 @@ func ValidateK8sRuntimeForTest(cmd *RunCommand) error {
 func ValidateAgentSnapshotsForTest(cmd *RunCommand) error {
 	return cmd.validateAgentSnapshots()
 }
+
+func ValidateAgentWorkflowRunsForTest(cmd *RunCommand) error {
+	return cmd.validateAgentWorkflowRuns()
+}

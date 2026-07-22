@@ -2,6 +2,7 @@ package db_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -127,6 +128,23 @@ var _ = Describe("Job", func() {
 			_, next, err := job.FinishedAndNextBuild()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(next.ID()).To(Equal(build.ID()))
+		})
+
+		It("rejects a public manual build for a workflow-run-owned pipeline without scheduling it", func() {
+			Expect(markPipelineWorkflowRunOwned(pipeline.ID(), team.ID(), team.Name())).To(Succeed())
+			requestedAt := job.ScheduleRequestedTime()
+
+			created, err := job.CreateBuild("manual")
+			Expect(created).To(BeNil())
+			Expect(errors.Is(err, db.ErrWorkflowRunOwnedPipeline)).To(BeTrue())
+
+			pending, queryErr := job.GetPendingBuilds()
+			Expect(queryErr).NotTo(HaveOccurred())
+			Expect(pending).To(BeEmpty())
+			found, reloadErr := job.Reload()
+			Expect(reloadErr).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(job.ScheduleRequestedTime()).To(BeTemporally("==", requestedAt))
 		})
 	})
 
@@ -737,6 +755,20 @@ var _ = Describe("Job", func() {
 				Expect(found).To(BeTrue())
 
 				Expect(job.ScheduleRequestedTime()).Should(BeTemporally(">", requestedSchedule))
+			})
+
+			Context("when the pipeline becomes workflow-run-owned", func() {
+				BeforeEach(func() {
+					Expect(markPipelineWorkflowRunOwned(pipeline.ID(), team.ID(), team.Name())).To(Succeed())
+				})
+
+				It("rejects the rerun without inserting or scheduling another build", func() {
+					Expect(rerunBuild).To(BeNil())
+					Expect(errors.Is(rerunErr, db.ErrWorkflowRunOwnedPipeline)).To(BeTrue())
+					pending, err := job.GetPendingBuilds()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(pending).To(ConsistOf(firstBuild))
+				})
 			})
 
 			Context("when there is an existing rerun build", func() {
@@ -2055,6 +2087,15 @@ var _ = Describe("Job", func() {
 
 	Describe("EnsurePendingBuildExists", func() {
 		Context("when only a started build exists", func() {
+			It("preserves automatic scheduling for a workflow-run-owned pipeline", func() {
+				Expect(markPipelineWorkflowRunOwned(pipeline.ID(), team.ID(), team.Name())).To(Succeed())
+				Expect(job.EnsurePendingBuildExists(context.TODO())).To(Succeed())
+				pending, err := job.GetPendingBuilds()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(pending).To(HaveLen(1))
+				Expect(pending[0].IsManuallyTriggered()).To(BeFalse())
+			})
+
 			It("creates a build and updates the next build for the job", func() {
 				err := job.EnsurePendingBuildExists(context.TODO())
 				Expect(err).NotTo(HaveOccurred())

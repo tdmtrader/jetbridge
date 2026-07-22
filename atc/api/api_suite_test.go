@@ -1,6 +1,8 @@
 package api_test
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -20,9 +22,13 @@ import (
 	"github.com/concourse/concourse/agent/api/reviews"
 	snapshotsapi "github.com/concourse/concourse/agent/api/snapshots"
 	"github.com/concourse/concourse/agent/api/tickets"
+	workflowrunsapi "github.com/concourse/concourse/agent/api/workflowruns"
 	"github.com/concourse/concourse/agent/budget"
 	"github.com/concourse/concourse/agent/credentials"
+	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/agent/workflow"
+	"github.com/concourse/concourse/agent/workflowrun"
+	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api"
 	"github.com/concourse/concourse/atc/api/accessor"
 	"github.com/concourse/concourse/atc/api/accessor/accessorfakes"
@@ -95,6 +101,32 @@ type fakeEventHandlerFactory struct {
 	build db.BuildForAPI
 
 	lock sync.Mutex
+}
+
+type unavailableWorkflowRunBackend struct{}
+
+func (unavailableWorkflowRunBackend) BindAndCreate(context.Context, workflowrun.AdmissionContext, workflowrun.BindRequest) (workflowrun.BindResult, error) {
+	return workflowrun.BindResult{}, errors.New("workflow-run backend is unavailable in the API suite")
+}
+
+func (unavailableWorkflowRunBackend) Get(context.Context, int, snapshot.WorkflowRunID) (db.AgentWorkflowRun, bool, error) {
+	return db.AgentWorkflowRun{}, false, nil
+}
+
+func (unavailableWorkflowRunBackend) List(context.Context, db.AgentWorkflowRunListFilter) ([]db.AgentWorkflowRun, error) {
+	return nil, nil
+}
+
+func (unavailableWorkflowRunBackend) Snapshots(context.Context, snapshot.WorkflowRunID) ([]db.AgentWorkflowRunSnapshotBinding, error) {
+	return nil, nil
+}
+
+func (unavailableWorkflowRunBackend) Cancel(context.Context, int, snapshot.WorkflowRunID) (db.AgentWorkflowRun, bool, error) {
+	return db.AgentWorkflowRun{}, false, nil
+}
+
+func (unavailableWorkflowRunBackend) GetAuthorized(context.Context, int, snapshot.SnapshotID) (snapshot.Snapshot, bool, error) {
+	return snapshot.Snapshot{}, false, nil
 }
 
 func (f *fakeEventHandlerFactory) Construct(
@@ -196,6 +228,14 @@ var _ = BeforeEach(func() {
 
 	snapshotHandlers, err := snapshotsapi.NewHandlerFactory(snapshotsapi.Config{Enabled: false})
 	Expect(err).NotTo(HaveOccurred())
+	workflowRunBackend := unavailableWorkflowRunBackend{}
+	workflowRunHandlers, err := workflowrunsapi.NewHandler(workflowrunsapi.Config{
+		Team:     workflowrunsapi.TrustedTeam{ID: 1, Name: atc.DefaultTeamName},
+		Identity: func(*http.Request) (string, error) { return "api-suite", nil },
+		Binder:   workflowRunBackend, Runs: workflowRunBackend,
+		Canceler: workflowRunBackend, Manifests: workflowRunBackend,
+	})
+	Expect(err).NotTo(HaveOccurred())
 	handler, err := api.NewHandler(
 		logger,
 
@@ -262,6 +302,7 @@ var _ = BeforeEach(func() {
 		dispatcherapi.NewMemoryStore(),
 		false, // agent dispatcher boot default (flag off)
 		snapshotHandlers,
+		workflowRunHandlers,
 	)
 
 	Expect(err).NotTo(HaveOccurred())

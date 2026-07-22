@@ -77,6 +77,17 @@ type FakeAgentPrincipalsFactory struct {
 		result1 bool
 		result2 error
 	}
+	RevokeByNameStub        func(string) error
+	revokeByNameMutex       sync.RWMutex
+	revokeByNameArgsForCall []struct {
+		arg1 string
+	}
+	revokeByNameReturns struct {
+		result1 error
+	}
+	revokeByNameReturnsOnCall map[int]struct {
+		result1 error
+	}
 	invocations      map[string][][]interface{}
 	invocationsMutex sync.RWMutex
 }
@@ -395,6 +406,67 @@ func (fake *FakeAgentPrincipalsFactory) RevokeReturnsOnCall(i int, result1 bool,
 		result1 bool
 		result2 error
 	}{result1, result2}
+}
+
+func (fake *FakeAgentPrincipalsFactory) RevokeByName(arg1 string) error {
+	fake.revokeByNameMutex.Lock()
+	ret, specificReturn := fake.revokeByNameReturnsOnCall[len(fake.revokeByNameArgsForCall)]
+	fake.revokeByNameArgsForCall = append(fake.revokeByNameArgsForCall, struct {
+		arg1 string
+	}{arg1})
+	stub := fake.RevokeByNameStub
+	fakeReturns := fake.revokeByNameReturns
+	fake.recordInvocation("RevokeByName", []interface{}{arg1})
+	fake.revokeByNameMutex.Unlock()
+	if stub != nil {
+		return stub(arg1)
+	}
+	if specificReturn {
+		return ret.result1
+	}
+	return fakeReturns.result1
+}
+
+func (fake *FakeAgentPrincipalsFactory) RevokeByNameCallCount() int {
+	fake.revokeByNameMutex.RLock()
+	defer fake.revokeByNameMutex.RUnlock()
+	return len(fake.revokeByNameArgsForCall)
+}
+
+func (fake *FakeAgentPrincipalsFactory) RevokeByNameCalls(stub func(string) error) {
+	fake.revokeByNameMutex.Lock()
+	defer fake.revokeByNameMutex.Unlock()
+	fake.RevokeByNameStub = stub
+}
+
+func (fake *FakeAgentPrincipalsFactory) RevokeByNameArgsForCall(i int) string {
+	fake.revokeByNameMutex.RLock()
+	defer fake.revokeByNameMutex.RUnlock()
+	argsForCall := fake.revokeByNameArgsForCall[i]
+	return argsForCall.arg1
+}
+
+func (fake *FakeAgentPrincipalsFactory) RevokeByNameReturns(result1 error) {
+	fake.revokeByNameMutex.Lock()
+	defer fake.revokeByNameMutex.Unlock()
+	fake.RevokeByNameStub = nil
+	fake.revokeByNameReturns = struct {
+		result1 error
+	}{result1}
+}
+
+func (fake *FakeAgentPrincipalsFactory) RevokeByNameReturnsOnCall(i int, result1 error) {
+	fake.revokeByNameMutex.Lock()
+	defer fake.revokeByNameMutex.Unlock()
+	fake.RevokeByNameStub = nil
+	if fake.revokeByNameReturnsOnCall == nil {
+		fake.revokeByNameReturnsOnCall = make(map[int]struct {
+			result1 error
+		})
+	}
+	fake.revokeByNameReturnsOnCall[i] = struct {
+		result1 error
+	}{result1}
 }
 
 func (fake *FakeAgentPrincipalsFactory) Invocations() map[string][][]interface{} {

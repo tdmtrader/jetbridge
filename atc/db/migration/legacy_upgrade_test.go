@@ -34,7 +34,7 @@ const v713LastMigration = 1666754000
 const v801LastMigration = 1765921815
 
 // JetBridge HEAD (last migration)
-const jetbridgeHeadMigration = 1773106102
+const jetbridgeHeadMigration = 1773106104
 
 var _ = Describe("Legacy Database Upgrade", func() {
 	var (
@@ -653,6 +653,20 @@ func verifyBuildStatuses(db *sql.DB, expected map[string]int) {
 }
 
 func verifyJetBridgeSchemaChanges(db *sql.DB) {
+	// Mutable ticket state is revisioned so adapters can capture one immutable
+	// work-item value, including durable comments and first-writer answers.
+	var ticketRevisionNullable string
+	err := db.QueryRow(`
+		SELECT is_nullable FROM information_schema.columns
+		WHERE table_name = 'agent_tickets' AND column_name = 'revision'
+	`).Scan(&ticketRevisionNullable)
+	Expect(err).NotTo(HaveOccurred())
+	Expect(ticketRevisionNullable).To(Equal("NO"))
+	var ticketCommentsExists bool
+	err = db.QueryRow(`SELECT to_regclass('agent_ticket_comments') IS NOT NULL`).Scan(&ticketCommentsExists)
+	Expect(err).NotTo(HaveOccurred())
+	Expect(ticketCommentsExists).To(BeTrue())
+
 	// Workflow schema/signature identity is durable metadata at HEAD.
 	for _, column := range []string{"schema_version", "signature_version"} {
 		var nullable string
@@ -685,7 +699,7 @@ func verifyJetBridgeSchemaChanges(db *sql.DB) {
 
 	// Verify signing_keys table exists
 	var signingKeysExists bool
-	err := db.QueryRow("SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name = 'signing_keys')").Scan(&signingKeysExists)
+	err = db.QueryRow("SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name = 'signing_keys')").Scan(&signingKeysExists)
 	Expect(err).NotTo(HaveOccurred())
 	Expect(signingKeysExists).To(BeTrue(), "signing_keys table should exist")
 

@@ -63,6 +63,15 @@ var _ = Describe("Encryption", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(isEncryptedWith(db, key, "test")).To(BeTrue())
 		})
+
+		It("encrypts every workflow-run provenance field with its dedicated nonce", func() {
+			migrator := migration.NewMigrator(db, lockFactory)
+			Expect(migrator.Up(nil, nil)).To(Succeed())
+			insertWorkflowRunProvenance(db, encryption.NewNoEncryption(), "workflow-plaintext")
+
+			Expect(migrator.Up(key, nil)).To(Succeed())
+			Expect(isWorkflowRunProvenanceEncryptedWith(db, key, "workflow-plaintext")).To(BeTrue())
+		})
 	})
 
 	Context("starting with encrypted DB", func() {
@@ -89,6 +98,15 @@ var _ = Describe("Encryption", func() {
 				Expect(err).NotTo(HaveOccurred())
 				Expect(isEncryptedWith(db, encryption.NewNoEncryption(), "test")).To(BeTrue())
 			})
+
+			It("decrypts every workflow-run provenance field through its dedicated nonce", func() {
+				migrator := migration.NewMigrator(db, lockFactory)
+				Expect(migrator.Up(key1, nil)).To(Succeed())
+				insertWorkflowRunProvenance(db, key1, "workflow-decrypt")
+
+				Expect(migrator.Up(nil, key1)).To(Succeed())
+				Expect(isWorkflowRunProvenanceEncryptedWith(db, encryption.NewNoEncryption(), "workflow-decrypt")).To(BeTrue())
+			})
 		})
 
 		Context("rotating the encryption key", func() {
@@ -103,6 +121,15 @@ var _ = Describe("Encryption", func() {
 				err = migrator.Up(key1, key2)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(isEncryptedWith(db, key1, "test")).To(BeTrue())
+			})
+
+			It("rotates every workflow-run provenance field through its dedicated nonce", func() {
+				migrator := migration.NewMigrator(db, lockFactory)
+				Expect(migrator.Up(key1, nil)).To(Succeed())
+				insertWorkflowRunProvenance(db, key1, "workflow-rotate")
+
+				Expect(migrator.Up(key2, key1)).To(Succeed())
+				Expect(isWorkflowRunProvenanceEncryptedWith(db, key2, "workflow-rotate")).To(BeTrue())
 			})
 
 			It("rotates the key while doing a migration", func() {
@@ -235,6 +262,69 @@ func isEncryptedWith(db *sql.DB, strategy encryption.Strategy, name string) bool
 
 	_, err = strategy.Decrypt(ciphertext, nonce)
 	return err == nil
+}
+
+func insertWorkflowRunProvenance(db *sql.DB, strategy encryption.Strategy, name string) {
+	const planPlaintext = `{"id":"secret-plan","private":"top-secret-api-token","task":"review"}`
+	hashPlaintext := name + "-actual-plan-hash"
+	dependenciesPlaintext := fmt.Sprintf(`{"version":1,"resources":[{"source_identity_hash":%q}],"images":[],"platform_resource_types":[]}`, name+"-source-hash")
+	planCiphertext, planNonce, err := strategy.Encrypt([]byte(planPlaintext))
+	Expect(err).NotTo(HaveOccurred())
+	hashCiphertext, hashNonce, err := strategy.Encrypt([]byte(hashPlaintext))
+	Expect(err).NotTo(HaveOccurred())
+	dependenciesCiphertext, dependenciesNonce, err := strategy.Encrypt([]byte(dependenciesPlaintext))
+	Expect(err).NotTo(HaveOccurred())
+
+	var definitionID int
+	Expect(db.QueryRow(`
+		INSERT INTO agent_workflow_definitions
+			(name, version, content_hash, definition, created_by, schema_version, signature_version)
+		VALUES ($1, 1, $2, 'schema_version: 3', 'migration-test', 3, 1)
+		RETURNING id
+	`, name, name+"-definition-hash").Scan(&definitionID)).To(Succeed())
+	_, err = db.Exec(`
+		INSERT INTO agent_workflow_runs
+			(team_id, team_name, workflow_definition_id, workflow_name,
+			 workflow_version, schema_version, signature_version,
+			 definition_content_hash, idempotency_key,
+			 parameterized_config, parameterized_config_hash,
+			 actual_plan, actual_plan_nonce,
+			 actual_plan_hash, actual_plan_hash_nonce,
+			 resolved_dependencies, resolved_dependencies_nonce,
+			 origin_kind, origin_reference, created_by, status, planned_build_id)
+		VALUES
+			(1, 'migration-team', $1, $2, 1, 3, 1,
+			 $3, $2, '{}', $4, $5, $6, $7, $8, $9, $10,
+			 'migration', $2, 'migration-test', 'admitting', 1)
+	`, definitionID, name, name+"-definition-hash", name+"-parameterized-hash",
+		planCiphertext, planNonce, hashCiphertext, hashNonce, dependenciesCiphertext, dependenciesNonce)
+	Expect(err).NotTo(HaveOccurred())
+}
+
+func isWorkflowRunProvenanceEncryptedWith(db *sql.DB, strategy encryption.Strategy, name string) bool {
+	var planCiphertext, hashCiphertext, dependenciesCiphertext string
+	var planNonce, hashNonce, dependenciesNonce *string
+	Expect(db.QueryRow(`
+		SELECT actual_plan, actual_plan_nonce,
+		       actual_plan_hash, actual_plan_hash_nonce,
+		       resolved_dependencies, resolved_dependencies_nonce
+		FROM agent_workflow_runs
+		WHERE idempotency_key = $1
+	`, name).Scan(
+		&planCiphertext, &planNonce, &hashCiphertext, &hashNonce,
+		&dependenciesCiphertext, &dependenciesNonce,
+	)).To(Succeed())
+	planPlaintext, err := strategy.Decrypt(planCiphertext, planNonce)
+	if err != nil || string(planPlaintext) != `{"id":"secret-plan","private":"top-secret-api-token","task":"review"}` {
+		return false
+	}
+	hashPlaintext, err := strategy.Decrypt(hashCiphertext, hashNonce)
+	if err != nil || string(hashPlaintext) != name+"-actual-plan-hash" {
+		return false
+	}
+	dependenciesPlaintext, err := strategy.Decrypt(dependenciesCiphertext, dependenciesNonce)
+	expectedDependencies := fmt.Sprintf(`{"version":1,"resources":[{"source_identity_hash":%q}],"images":[],"platform_resource_types":[]}`, name+"-source-hash")
+	return err == nil && string(dependenciesPlaintext) == expectedDependencies
 }
 
 // createKey generates an encryption.Key from a 32 characters key

@@ -65,7 +65,8 @@ func TestBindAndCreateAdmitsFromServerDerivedIdentity(t *testing.T) {
 	}
 	running := admitting
 	running.Status = db.AgentWorkflowRunStatusRunning
-	pipelineRunID, templateID, instanceID, plannedBuildID := 313, 211, 419, 521
+	pipelineRunID, templateID, instanceID := 313, 211, 419
+	plannedBuildID := int64(521)
 	instanceHash := "instance-hash"
 	running.PipelineRunID, running.TemplatePipelineID, running.InstancePipelineID = &pipelineRunID, &templateID, &instanceID
 	running.ConcreteConfig, running.ConcreteConfigHash = mustCanonical(t, rendered.Config), &instanceHash
@@ -260,7 +261,8 @@ func TestBindAndCreateExistingRunningRunHasNoExternalSideEffects(t *testing.T) {
 		IdempotencyKey: "same", OriginKind: "ticket", OriginReference: "ABC-1",
 		CreatedBy: "alice", Status: db.AgentWorkflowRunStatusRunning,
 	}
-	pipelineRunID, templateID, instanceID, plannedBuildID := 1, 2, 3, 4
+	pipelineRunID, templateID, instanceID := 1, 2, 3
+	plannedBuildID := int64(4)
 	instanceHash := "instance-hash"
 	run.PipelineRunID, run.TemplatePipelineID, run.InstancePipelineID = &pipelineRunID, &templateID, &instanceID
 	run.ConcreteConfig, run.ConcreteConfigHash = json.RawMessage(`{"jobs":[]}`), &instanceHash
@@ -320,7 +322,8 @@ func TestBindAndCreateResumesCleanAdmittingRunWithoutResolvingOrRendering(t *tes
 	}
 	running := run
 	running.Status = db.AgentWorkflowRunStatusRunning
-	pipelineRunID, templateID, instanceID, plannedBuildID := 1, 2, 3, 4
+	pipelineRunID, templateID, instanceID := 1, 2, 3
+	plannedBuildID := int64(4)
 	instanceHash := "instance"
 	running.PipelineRunID, running.TemplatePipelineID, running.InstancePipelineID = &pipelineRunID, &templateID, &instanceID
 	running.ConcreteConfig, running.ConcreteConfigHash = json.RawMessage(`{"jobs":[]}`), &instanceHash
@@ -404,7 +407,8 @@ func TestBindAndCreateRepairsCompleteAdmittingCrashWindowWithoutExternalSideEffe
 		ParameterizedConfigHash: "parameterized-hash", OriginKind: "manual", CreatedBy: "alice",
 		Status: db.AgentWorkflowRunStatusAdmitting,
 	}
-	pipelineRunID, templateID, instanceID, plannedBuildID := 1, 2, 3, 4
+	pipelineRunID, templateID, instanceID := 1, 2, 3
+	plannedBuildID := int64(4)
 	instanceHash := "instance-hash"
 	run.PipelineRunID, run.TemplatePipelineID, run.InstancePipelineID = &pipelineRunID, &templateID, &instanceID
 	run.ConcreteConfig, run.ConcreteConfigHash = json.RawMessage(`{"jobs":[{"name":"run"}]}`), &instanceHash
@@ -633,7 +637,8 @@ func TestBindAndCreateNilVersionRaceRejectsDifferentResolvedWinner(t *testing.T)
 		ParameterizedConfigHash: rendered.TargetConfigHash, OriginKind: "manual", CreatedBy: "alice",
 		Status: db.AgentWorkflowRunStatusRunning,
 	}
-	pipelineRunID, templateID, instanceID, plannedBuildID := 1, 2, 3, 4
+	pipelineRunID, templateID, instanceID := 1, 2, 3
+	plannedBuildID := int64(4)
 	instanceHash := "instance"
 	winner.PipelineRunID, winner.TemplatePipelineID, winner.InstancePipelineID = &pipelineRunID, &templateID, &instanceID
 	winner.ConcreteConfig, winner.ConcreteConfigHash = json.RawMessage(`{"jobs":[]}`), &instanceHash

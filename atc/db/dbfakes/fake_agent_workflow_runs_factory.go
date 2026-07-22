@@ -4,12 +4,58 @@ package dbfakes
 import (
 	"context"
 	"sync"
+	"time"
 
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/atc/db"
 )
 
 type FakeAgentWorkflowRunsFactory struct {
+	AdvanceAdmissionStub        func(context.Context, snapshot.WorkflowRunID) (bool, error)
+	advanceAdmissionMutex       sync.RWMutex
+	advanceAdmissionArgsForCall []struct {
+		arg1 context.Context
+		arg2 snapshot.WorkflowRunID
+	}
+	advanceAdmissionReturns struct {
+		result1 bool
+		result2 error
+	}
+	advanceAdmissionReturnsOnCall map[int]struct {
+		result1 bool
+		result2 error
+	}
+	CaptureExecutionStatusStub        func(context.Context, int64, db.BuildStatus) (db.AgentWorkflowRunBuildCaptureResult, error)
+	captureExecutionStatusMutex       sync.RWMutex
+	captureExecutionStatusArgsForCall []struct {
+		arg1 context.Context
+		arg2 int64
+		arg3 db.BuildStatus
+	}
+	captureExecutionStatusReturns struct {
+		result1 db.AgentWorkflowRunBuildCaptureResult
+		result2 error
+	}
+	captureExecutionStatusReturnsOnCall map[int]struct {
+		result1 db.AgentWorkflowRunBuildCaptureResult
+		result2 error
+	}
+	ClaimForReconciliationStub        func(context.Context, time.Time, time.Duration, int) ([]snapshot.WorkflowRunID, error)
+	claimForReconciliationMutex       sync.RWMutex
+	claimForReconciliationArgsForCall []struct {
+		arg1 context.Context
+		arg2 time.Time
+		arg3 time.Duration
+		arg4 int
+	}
+	claimForReconciliationReturns struct {
+		result1 []snapshot.WorkflowRunID
+		result2 error
+	}
+	claimForReconciliationReturnsOnCall map[int]struct {
+		result1 []snapshot.WorkflowRunID
+		result2 error
+	}
 	CreateWithInputsStub        func(context.Context, db.AgentWorkflowRunCreateRequest) (db.AgentWorkflowRun, bool, error)
 	createWithInputsMutex       sync.RWMutex
 	createWithInputsArgsForCall []struct {
@@ -23,6 +69,22 @@ type FakeAgentWorkflowRunsFactory struct {
 	}
 	createWithInputsReturnsOnCall map[int]struct {
 		result1 db.AgentWorkflowRun
+		result2 bool
+		result3 error
+	}
+	FinalizeStub        func(context.Context, db.AgentWorkflowRunFinalization) (db.AgentWorkflowRunFinalizationResult, bool, error)
+	finalizeMutex       sync.RWMutex
+	finalizeArgsForCall []struct {
+		arg1 context.Context
+		arg2 db.AgentWorkflowRunFinalization
+	}
+	finalizeReturns struct {
+		result1 db.AgentWorkflowRunFinalizationResult
+		result2 bool
+		result3 error
+	}
+	finalizeReturnsOnCall map[int]struct {
+		result1 db.AgentWorkflowRunFinalizationResult
 		result2 bool
 		result3 error
 	}
@@ -78,6 +140,22 @@ type FakeAgentWorkflowRunsFactory struct {
 		result1 bool
 		result2 error
 	}
+	InspectForReconciliationStub        func(context.Context, snapshot.WorkflowRunID) (db.AgentWorkflowRunReconciliationView, bool, error)
+	inspectForReconciliationMutex       sync.RWMutex
+	inspectForReconciliationArgsForCall []struct {
+		arg1 context.Context
+		arg2 snapshot.WorkflowRunID
+	}
+	inspectForReconciliationReturns struct {
+		result1 db.AgentWorkflowRunReconciliationView
+		result2 bool
+		result3 error
+	}
+	inspectForReconciliationReturnsOnCall map[int]struct {
+		result1 db.AgentWorkflowRunReconciliationView
+		result2 bool
+		result3 error
+	}
 	LinkExecutionStub        func(context.Context, snapshot.WorkflowRunID, db.AgentWorkflowRunExecutionLink) error
 	linkExecutionMutex       sync.RWMutex
 	linkExecutionArgsForCall []struct {
@@ -102,20 +180,6 @@ type FakeAgentWorkflowRunsFactory struct {
 		result2 error
 	}
 	listReturnsOnCall map[int]struct {
-		result1 []db.AgentWorkflowRun
-		result2 error
-	}
-	ListForReconciliationStub        func(context.Context, int) ([]db.AgentWorkflowRun, error)
-	listForReconciliationMutex       sync.RWMutex
-	listForReconciliationArgsForCall []struct {
-		arg1 context.Context
-		arg2 int
-	}
-	listForReconciliationReturns struct {
-		result1 []db.AgentWorkflowRun
-		result2 error
-	}
-	listForReconciliationReturnsOnCall map[int]struct {
 		result1 []db.AgentWorkflowRun
 		result2 error
 	}
@@ -163,8 +227,222 @@ type FakeAgentWorkflowRunsFactory struct {
 		result1 bool
 		result2 error
 	}
+	ValidateCancellationTargetStub        func(context.Context, int, snapshot.WorkflowRunID, int64) (bool, error)
+	validateCancellationTargetMutex       sync.RWMutex
+	validateCancellationTargetArgsForCall []struct {
+		arg1 context.Context
+		arg2 int
+		arg3 snapshot.WorkflowRunID
+		arg4 int64
+	}
+	validateCancellationTargetReturns struct {
+		result1 bool
+		result2 error
+	}
+	validateCancellationTargetReturnsOnCall map[int]struct {
+		result1 bool
+		result2 error
+	}
 	invocations      map[string][][]interface{}
 	invocationsMutex sync.RWMutex
+}
+
+func (fake *FakeAgentWorkflowRunsFactory) AdvanceAdmission(arg1 context.Context, arg2 snapshot.WorkflowRunID) (bool, error) {
+	fake.advanceAdmissionMutex.Lock()
+	ret, specificReturn := fake.advanceAdmissionReturnsOnCall[len(fake.advanceAdmissionArgsForCall)]
+	fake.advanceAdmissionArgsForCall = append(fake.advanceAdmissionArgsForCall, struct {
+		arg1 context.Context
+		arg2 snapshot.WorkflowRunID
+	}{arg1, arg2})
+	stub := fake.AdvanceAdmissionStub
+	fakeReturns := fake.advanceAdmissionReturns
+	fake.recordInvocation("AdvanceAdmission", []interface{}{arg1, arg2})
+	fake.advanceAdmissionMutex.Unlock()
+	if stub != nil {
+		return stub(arg1, arg2)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2
+	}
+	return fakeReturns.result1, fakeReturns.result2
+}
+
+func (fake *FakeAgentWorkflowRunsFactory) AdvanceAdmissionCallCount() int {
+	fake.advanceAdmissionMutex.RLock()
+	defer fake.advanceAdmissionMutex.RUnlock()
+	return len(fake.advanceAdmissionArgsForCall)
+}
+
+func (fake *FakeAgentWorkflowRunsFactory) AdvanceAdmissionCalls(stub func(context.Context, snapshot.WorkflowRunID) (bool, error)) {
+	fake.advanceAdmissionMutex.Lock()
+	defer fake.advanceAdmissionMutex.Unlock()
+	fake.AdvanceAdmissionStub = stub
+}
+
+func (fake *FakeAgentWorkflowRunsFactory) AdvanceAdmissionArgsForCall(i int) (context.Context, snapshot.WorkflowRunID) {
+	fake.advanceAdmissionMutex.RLock()
+	defer fake.advanceAdmissionMutex.RUnlock()
+	argsForCall := fake.advanceAdmissionArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2
+}
+
+func (fake *FakeAgentWorkflowRunsFactory) AdvanceAdmissionReturns(result1 bool, result2 error) {
+	fake.advanceAdmissionMutex.Lock()
+	defer fake.advanceAdmissionMutex.Unlock()
+	fake.AdvanceAdmissionStub = nil
+	fake.advanceAdmissionReturns = struct {
+		result1 bool
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeAgentWorkflowRunsFactory) AdvanceAdmissionReturnsOnCall(i int, result1 bool, result2 error) {
+	fake.advanceAdmissionMutex.Lock()
+	defer fake.advanceAdmissionMutex.Unlock()
+	fake.AdvanceAdmissionStub = nil
+	if fake.advanceAdmissionReturnsOnCall == nil {
+		fake.advanceAdmissionReturnsOnCall = make(map[int]struct {
+			result1 bool
+			result2 error
+		})
+	}
+	fake.advanceAdmissionReturnsOnCall[i] = struct {
+		result1 bool
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeAgentWorkflowRunsFactory) CaptureExecutionStatus(arg1 context.Context, arg2 int64, arg3 db.BuildStatus) (db.AgentWorkflowRunBuildCaptureResult, error) {
+	fake.captureExecutionStatusMutex.Lock()
+	ret, specificReturn := fake.captureExecutionStatusReturnsOnCall[len(fake.captureExecutionStatusArgsForCall)]
+	fake.captureExecutionStatusArgsForCall = append(fake.captureExecutionStatusArgsForCall, struct {
+		arg1 context.Context
+		arg2 int64
+		arg3 db.BuildStatus
+	}{arg1, arg2, arg3})
+	stub := fake.CaptureExecutionStatusStub
+	fakeReturns := fake.captureExecutionStatusReturns
+	fake.recordInvocation("CaptureExecutionStatus", []interface{}{arg1, arg2, arg3})
+	fake.captureExecutionStatusMutex.Unlock()
+	if stub != nil {
+		return stub(arg1, arg2, arg3)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2
+	}
+	return fakeReturns.result1, fakeReturns.result2
+}
+
+func (fake *FakeAgentWorkflowRunsFactory) CaptureExecutionStatusCallCount() int {
+	fake.captureExecutionStatusMutex.RLock()
+	defer fake.captureExecutionStatusMutex.RUnlock()
+	return len(fake.captureExecutionStatusArgsForCall)
+}
+
+func (fake *FakeAgentWorkflowRunsFactory) CaptureExecutionStatusCalls(stub func(context.Context, int64, db.BuildStatus) (db.AgentWorkflowRunBuildCaptureResult, error)) {
+	fake.captureExecutionStatusMutex.Lock()
+	defer fake.captureExecutionStatusMutex.Unlock()
+	fake.CaptureExecutionStatusStub = stub
+}
+
+func (fake *FakeAgentWorkflowRunsFactory) CaptureExecutionStatusArgsForCall(i int) (context.Context, int64, db.BuildStatus) {
+	fake.captureExecutionStatusMutex.RLock()
+	defer fake.captureExecutionStatusMutex.RUnlock()
+	argsForCall := fake.captureExecutionStatusArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2, argsForCall.arg3
+}
+
+func (fake *FakeAgentWorkflowRunsFactory) CaptureExecutionStatusReturns(result1 db.AgentWorkflowRunBuildCaptureResult, result2 error) {
+	fake.captureExecutionStatusMutex.Lock()
+	defer fake.captureExecutionStatusMutex.Unlock()
+	fake.CaptureExecutionStatusStub = nil
+	fake.captureExecutionStatusReturns = struct {
+		result1 db.AgentWorkflowRunBuildCaptureResult
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeAgentWorkflowRunsFactory) CaptureExecutionStatusReturnsOnCall(i int, result1 db.AgentWorkflowRunBuildCaptureResult, result2 error) {
+	fake.captureExecutionStatusMutex.Lock()
+	defer fake.captureExecutionStatusMutex.Unlock()
+	fake.CaptureExecutionStatusStub = nil
+	if fake.captureExecutionStatusReturnsOnCall == nil {
+		fake.captureExecutionStatusReturnsOnCall = make(map[int]struct {
+			result1 db.AgentWorkflowRunBuildCaptureResult
+			result2 error
+		})
+	}
+	fake.captureExecutionStatusReturnsOnCall[i] = struct {
+		result1 db.AgentWorkflowRunBuildCaptureResult
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeAgentWorkflowRunsFactory) ClaimForReconciliation(arg1 context.Context, arg2 time.Time, arg3 time.Duration, arg4 int) ([]snapshot.WorkflowRunID, error) {
+	fake.claimForReconciliationMutex.Lock()
+	ret, specificReturn := fake.claimForReconciliationReturnsOnCall[len(fake.claimForReconciliationArgsForCall)]
+	fake.claimForReconciliationArgsForCall = append(fake.claimForReconciliationArgsForCall, struct {
+		arg1 context.Context
+		arg2 time.Time
+		arg3 time.Duration
+		arg4 int
+	}{arg1, arg2, arg3, arg4})
+	stub := fake.ClaimForReconciliationStub
+	fakeReturns := fake.claimForReconciliationReturns
+	fake.recordInvocation("ClaimForReconciliation", []interface{}{arg1, arg2, arg3, arg4})
+	fake.claimForReconciliationMutex.Unlock()
+	if stub != nil {
+		return stub(arg1, arg2, arg3, arg4)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2
+	}
+	return fakeReturns.result1, fakeReturns.result2
+}
+
+func (fake *FakeAgentWorkflowRunsFactory) ClaimForReconciliationCallCount() int {
+	fake.claimForReconciliationMutex.RLock()
+	defer fake.claimForReconciliationMutex.RUnlock()
+	return len(fake.claimForReconciliationArgsForCall)
+}
+
+func (fake *FakeAgentWorkflowRunsFactory) ClaimForReconciliationCalls(stub func(context.Context, time.Time, time.Duration, int) ([]snapshot.WorkflowRunID, error)) {
+	fake.claimForReconciliationMutex.Lock()
+	defer fake.claimForReconciliationMutex.Unlock()
+	fake.ClaimForReconciliationStub = stub
+}
+
+func (fake *FakeAgentWorkflowRunsFactory) ClaimForReconciliationArgsForCall(i int) (context.Context, time.Time, time.Duration, int) {
+	fake.claimForReconciliationMutex.RLock()
+	defer fake.claimForReconciliationMutex.RUnlock()
+	argsForCall := fake.claimForReconciliationArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2, argsForCall.arg3, argsForCall.arg4
+}
+
+func (fake *FakeAgentWorkflowRunsFactory) ClaimForReconciliationReturns(result1 []snapshot.WorkflowRunID, result2 error) {
+	fake.claimForReconciliationMutex.Lock()
+	defer fake.claimForReconciliationMutex.Unlock()
+	fake.ClaimForReconciliationStub = nil
+	fake.claimForReconciliationReturns = struct {
+		result1 []snapshot.WorkflowRunID
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeAgentWorkflowRunsFactory) ClaimForReconciliationReturnsOnCall(i int, result1 []snapshot.WorkflowRunID, result2 error) {
+	fake.claimForReconciliationMutex.Lock()
+	defer fake.claimForReconciliationMutex.Unlock()
+	fake.ClaimForReconciliationStub = nil
+	if fake.claimForReconciliationReturnsOnCall == nil {
+		fake.claimForReconciliationReturnsOnCall = make(map[int]struct {
+			result1 []snapshot.WorkflowRunID
+			result2 error
+		})
+	}
+	fake.claimForReconciliationReturnsOnCall[i] = struct {
+		result1 []snapshot.WorkflowRunID
+		result2 error
+	}{result1, result2}
 }
 
 func (fake *FakeAgentWorkflowRunsFactory) CreateWithInputs(arg1 context.Context, arg2 db.AgentWorkflowRunCreateRequest) (db.AgentWorkflowRun, bool, error) {
@@ -230,6 +508,74 @@ func (fake *FakeAgentWorkflowRunsFactory) CreateWithInputsReturnsOnCall(i int, r
 	}
 	fake.createWithInputsReturnsOnCall[i] = struct {
 		result1 db.AgentWorkflowRun
+		result2 bool
+		result3 error
+	}{result1, result2, result3}
+}
+
+func (fake *FakeAgentWorkflowRunsFactory) Finalize(arg1 context.Context, arg2 db.AgentWorkflowRunFinalization) (db.AgentWorkflowRunFinalizationResult, bool, error) {
+	fake.finalizeMutex.Lock()
+	ret, specificReturn := fake.finalizeReturnsOnCall[len(fake.finalizeArgsForCall)]
+	fake.finalizeArgsForCall = append(fake.finalizeArgsForCall, struct {
+		arg1 context.Context
+		arg2 db.AgentWorkflowRunFinalization
+	}{arg1, arg2})
+	stub := fake.FinalizeStub
+	fakeReturns := fake.finalizeReturns
+	fake.recordInvocation("Finalize", []interface{}{arg1, arg2})
+	fake.finalizeMutex.Unlock()
+	if stub != nil {
+		return stub(arg1, arg2)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2, ret.result3
+	}
+	return fakeReturns.result1, fakeReturns.result2, fakeReturns.result3
+}
+
+func (fake *FakeAgentWorkflowRunsFactory) FinalizeCallCount() int {
+	fake.finalizeMutex.RLock()
+	defer fake.finalizeMutex.RUnlock()
+	return len(fake.finalizeArgsForCall)
+}
+
+func (fake *FakeAgentWorkflowRunsFactory) FinalizeCalls(stub func(context.Context, db.AgentWorkflowRunFinalization) (db.AgentWorkflowRunFinalizationResult, bool, error)) {
+	fake.finalizeMutex.Lock()
+	defer fake.finalizeMutex.Unlock()
+	fake.FinalizeStub = stub
+}
+
+func (fake *FakeAgentWorkflowRunsFactory) FinalizeArgsForCall(i int) (context.Context, db.AgentWorkflowRunFinalization) {
+	fake.finalizeMutex.RLock()
+	defer fake.finalizeMutex.RUnlock()
+	argsForCall := fake.finalizeArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2
+}
+
+func (fake *FakeAgentWorkflowRunsFactory) FinalizeReturns(result1 db.AgentWorkflowRunFinalizationResult, result2 bool, result3 error) {
+	fake.finalizeMutex.Lock()
+	defer fake.finalizeMutex.Unlock()
+	fake.FinalizeStub = nil
+	fake.finalizeReturns = struct {
+		result1 db.AgentWorkflowRunFinalizationResult
+		result2 bool
+		result3 error
+	}{result1, result2, result3}
+}
+
+func (fake *FakeAgentWorkflowRunsFactory) FinalizeReturnsOnCall(i int, result1 db.AgentWorkflowRunFinalizationResult, result2 bool, result3 error) {
+	fake.finalizeMutex.Lock()
+	defer fake.finalizeMutex.Unlock()
+	fake.FinalizeStub = nil
+	if fake.finalizeReturnsOnCall == nil {
+		fake.finalizeReturnsOnCall = make(map[int]struct {
+			result1 db.AgentWorkflowRunFinalizationResult
+			result2 bool
+			result3 error
+		})
+	}
+	fake.finalizeReturnsOnCall[i] = struct {
+		result1 db.AgentWorkflowRunFinalizationResult
 		result2 bool
 		result3 error
 	}{result1, result2, result3}
@@ -442,6 +788,74 @@ func (fake *FakeAgentWorkflowRunsFactory) InputBindingMatchesReturnsOnCall(i int
 	}{result1, result2}
 }
 
+func (fake *FakeAgentWorkflowRunsFactory) InspectForReconciliation(arg1 context.Context, arg2 snapshot.WorkflowRunID) (db.AgentWorkflowRunReconciliationView, bool, error) {
+	fake.inspectForReconciliationMutex.Lock()
+	ret, specificReturn := fake.inspectForReconciliationReturnsOnCall[len(fake.inspectForReconciliationArgsForCall)]
+	fake.inspectForReconciliationArgsForCall = append(fake.inspectForReconciliationArgsForCall, struct {
+		arg1 context.Context
+		arg2 snapshot.WorkflowRunID
+	}{arg1, arg2})
+	stub := fake.InspectForReconciliationStub
+	fakeReturns := fake.inspectForReconciliationReturns
+	fake.recordInvocation("InspectForReconciliation", []interface{}{arg1, arg2})
+	fake.inspectForReconciliationMutex.Unlock()
+	if stub != nil {
+		return stub(arg1, arg2)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2, ret.result3
+	}
+	return fakeReturns.result1, fakeReturns.result2, fakeReturns.result3
+}
+
+func (fake *FakeAgentWorkflowRunsFactory) InspectForReconciliationCallCount() int {
+	fake.inspectForReconciliationMutex.RLock()
+	defer fake.inspectForReconciliationMutex.RUnlock()
+	return len(fake.inspectForReconciliationArgsForCall)
+}
+
+func (fake *FakeAgentWorkflowRunsFactory) InspectForReconciliationCalls(stub func(context.Context, snapshot.WorkflowRunID) (db.AgentWorkflowRunReconciliationView, bool, error)) {
+	fake.inspectForReconciliationMutex.Lock()
+	defer fake.inspectForReconciliationMutex.Unlock()
+	fake.InspectForReconciliationStub = stub
+}
+
+func (fake *FakeAgentWorkflowRunsFactory) InspectForReconciliationArgsForCall(i int) (context.Context, snapshot.WorkflowRunID) {
+	fake.inspectForReconciliationMutex.RLock()
+	defer fake.inspectForReconciliationMutex.RUnlock()
+	argsForCall := fake.inspectForReconciliationArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2
+}
+
+func (fake *FakeAgentWorkflowRunsFactory) InspectForReconciliationReturns(result1 db.AgentWorkflowRunReconciliationView, result2 bool, result3 error) {
+	fake.inspectForReconciliationMutex.Lock()
+	defer fake.inspectForReconciliationMutex.Unlock()
+	fake.InspectForReconciliationStub = nil
+	fake.inspectForReconciliationReturns = struct {
+		result1 db.AgentWorkflowRunReconciliationView
+		result2 bool
+		result3 error
+	}{result1, result2, result3}
+}
+
+func (fake *FakeAgentWorkflowRunsFactory) InspectForReconciliationReturnsOnCall(i int, result1 db.AgentWorkflowRunReconciliationView, result2 bool, result3 error) {
+	fake.inspectForReconciliationMutex.Lock()
+	defer fake.inspectForReconciliationMutex.Unlock()
+	fake.InspectForReconciliationStub = nil
+	if fake.inspectForReconciliationReturnsOnCall == nil {
+		fake.inspectForReconciliationReturnsOnCall = make(map[int]struct {
+			result1 db.AgentWorkflowRunReconciliationView
+			result2 bool
+			result3 error
+		})
+	}
+	fake.inspectForReconciliationReturnsOnCall[i] = struct {
+		result1 db.AgentWorkflowRunReconciliationView
+		result2 bool
+		result3 error
+	}{result1, result2, result3}
+}
+
 func (fake *FakeAgentWorkflowRunsFactory) LinkExecution(arg1 context.Context, arg2 snapshot.WorkflowRunID, arg3 db.AgentWorkflowRunExecutionLink) error {
 	fake.linkExecutionMutex.Lock()
 	ret, specificReturn := fake.linkExecutionReturnsOnCall[len(fake.linkExecutionArgsForCall)]
@@ -565,71 +979,6 @@ func (fake *FakeAgentWorkflowRunsFactory) ListReturnsOnCall(i int, result1 []db.
 		})
 	}
 	fake.listReturnsOnCall[i] = struct {
-		result1 []db.AgentWorkflowRun
-		result2 error
-	}{result1, result2}
-}
-
-func (fake *FakeAgentWorkflowRunsFactory) ListForReconciliation(arg1 context.Context, arg2 int) ([]db.AgentWorkflowRun, error) {
-	fake.listForReconciliationMutex.Lock()
-	ret, specificReturn := fake.listForReconciliationReturnsOnCall[len(fake.listForReconciliationArgsForCall)]
-	fake.listForReconciliationArgsForCall = append(fake.listForReconciliationArgsForCall, struct {
-		arg1 context.Context
-		arg2 int
-	}{arg1, arg2})
-	stub := fake.ListForReconciliationStub
-	fakeReturns := fake.listForReconciliationReturns
-	fake.recordInvocation("ListForReconciliation", []interface{}{arg1, arg2})
-	fake.listForReconciliationMutex.Unlock()
-	if stub != nil {
-		return stub(arg1, arg2)
-	}
-	if specificReturn {
-		return ret.result1, ret.result2
-	}
-	return fakeReturns.result1, fakeReturns.result2
-}
-
-func (fake *FakeAgentWorkflowRunsFactory) ListForReconciliationCallCount() int {
-	fake.listForReconciliationMutex.RLock()
-	defer fake.listForReconciliationMutex.RUnlock()
-	return len(fake.listForReconciliationArgsForCall)
-}
-
-func (fake *FakeAgentWorkflowRunsFactory) ListForReconciliationCalls(stub func(context.Context, int) ([]db.AgentWorkflowRun, error)) {
-	fake.listForReconciliationMutex.Lock()
-	defer fake.listForReconciliationMutex.Unlock()
-	fake.ListForReconciliationStub = stub
-}
-
-func (fake *FakeAgentWorkflowRunsFactory) ListForReconciliationArgsForCall(i int) (context.Context, int) {
-	fake.listForReconciliationMutex.RLock()
-	defer fake.listForReconciliationMutex.RUnlock()
-	argsForCall := fake.listForReconciliationArgsForCall[i]
-	return argsForCall.arg1, argsForCall.arg2
-}
-
-func (fake *FakeAgentWorkflowRunsFactory) ListForReconciliationReturns(result1 []db.AgentWorkflowRun, result2 error) {
-	fake.listForReconciliationMutex.Lock()
-	defer fake.listForReconciliationMutex.Unlock()
-	fake.ListForReconciliationStub = nil
-	fake.listForReconciliationReturns = struct {
-		result1 []db.AgentWorkflowRun
-		result2 error
-	}{result1, result2}
-}
-
-func (fake *FakeAgentWorkflowRunsFactory) ListForReconciliationReturnsOnCall(i int, result1 []db.AgentWorkflowRun, result2 error) {
-	fake.listForReconciliationMutex.Lock()
-	defer fake.listForReconciliationMutex.Unlock()
-	fake.ListForReconciliationStub = nil
-	if fake.listForReconciliationReturnsOnCall == nil {
-		fake.listForReconciliationReturnsOnCall = make(map[int]struct {
-			result1 []db.AgentWorkflowRun
-			result2 error
-		})
-	}
-	fake.listForReconciliationReturnsOnCall[i] = struct {
 		result1 []db.AgentWorkflowRun
 		result2 error
 	}{result1, result2}
@@ -826,6 +1175,73 @@ func (fake *FakeAgentWorkflowRunsFactory) TransitionReturnsOnCall(i int, result1
 		})
 	}
 	fake.transitionReturnsOnCall[i] = struct {
+		result1 bool
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeAgentWorkflowRunsFactory) ValidateCancellationTarget(arg1 context.Context, arg2 int, arg3 snapshot.WorkflowRunID, arg4 int64) (bool, error) {
+	fake.validateCancellationTargetMutex.Lock()
+	ret, specificReturn := fake.validateCancellationTargetReturnsOnCall[len(fake.validateCancellationTargetArgsForCall)]
+	fake.validateCancellationTargetArgsForCall = append(fake.validateCancellationTargetArgsForCall, struct {
+		arg1 context.Context
+		arg2 int
+		arg3 snapshot.WorkflowRunID
+		arg4 int64
+	}{arg1, arg2, arg3, arg4})
+	stub := fake.ValidateCancellationTargetStub
+	fakeReturns := fake.validateCancellationTargetReturns
+	fake.recordInvocation("ValidateCancellationTarget", []interface{}{arg1, arg2, arg3, arg4})
+	fake.validateCancellationTargetMutex.Unlock()
+	if stub != nil {
+		return stub(arg1, arg2, arg3, arg4)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2
+	}
+	return fakeReturns.result1, fakeReturns.result2
+}
+
+func (fake *FakeAgentWorkflowRunsFactory) ValidateCancellationTargetCallCount() int {
+	fake.validateCancellationTargetMutex.RLock()
+	defer fake.validateCancellationTargetMutex.RUnlock()
+	return len(fake.validateCancellationTargetArgsForCall)
+}
+
+func (fake *FakeAgentWorkflowRunsFactory) ValidateCancellationTargetCalls(stub func(context.Context, int, snapshot.WorkflowRunID, int64) (bool, error)) {
+	fake.validateCancellationTargetMutex.Lock()
+	defer fake.validateCancellationTargetMutex.Unlock()
+	fake.ValidateCancellationTargetStub = stub
+}
+
+func (fake *FakeAgentWorkflowRunsFactory) ValidateCancellationTargetArgsForCall(i int) (context.Context, int, snapshot.WorkflowRunID, int64) {
+	fake.validateCancellationTargetMutex.RLock()
+	defer fake.validateCancellationTargetMutex.RUnlock()
+	argsForCall := fake.validateCancellationTargetArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2, argsForCall.arg3, argsForCall.arg4
+}
+
+func (fake *FakeAgentWorkflowRunsFactory) ValidateCancellationTargetReturns(result1 bool, result2 error) {
+	fake.validateCancellationTargetMutex.Lock()
+	defer fake.validateCancellationTargetMutex.Unlock()
+	fake.ValidateCancellationTargetStub = nil
+	fake.validateCancellationTargetReturns = struct {
+		result1 bool
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeAgentWorkflowRunsFactory) ValidateCancellationTargetReturnsOnCall(i int, result1 bool, result2 error) {
+	fake.validateCancellationTargetMutex.Lock()
+	defer fake.validateCancellationTargetMutex.Unlock()
+	fake.ValidateCancellationTargetStub = nil
+	if fake.validateCancellationTargetReturnsOnCall == nil {
+		fake.validateCancellationTargetReturnsOnCall = make(map[int]struct {
+			result1 bool
+			result2 error
+		})
+	}
+	fake.validateCancellationTargetReturnsOnCall[i] = struct {
 		result1 bool
 		result2 error
 	}{result1, result2}

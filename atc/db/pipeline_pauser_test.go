@@ -222,6 +222,24 @@ var _ = Describe("PipelinePauser", func() {
 			Expect(newPipeline.Paused()).To(BeFalse(), "pipeline should NOT be paused")
 		})
 	})
+	Describe("server-owned durable workflow templates", func() {
+		It("does not treat them as inactive user pipelines", func() {
+			config := defaultPipelineConfig
+			config.Template = true
+			template, created, err := db.NewWorkflowRunTemplateFactory(dbConn, lockFactory).SaveWorkflowRunTemplate(
+				context.Background(), defaultTeam.ID(), atc.PipelineRef{Name: "durable-workflow-template"}, config,
+			)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(created).To(BeTrue())
+			_, err = dbConn.Exec(`UPDATE pipelines SET last_updated = NOW() - INTERVAL '20' DAY WHERE id = $1`, template.ID())
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(pauser.PausePipelines(context.Background(), 10)).To(Succeed())
+			_, err = template.Reload()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(template.Paused()).To(BeFalse())
+		})
+	})
 	Describe("pipeline with a build currently running", func() {
 		It("should not be paused", func() {
 			By("using the default pipeline with one job")

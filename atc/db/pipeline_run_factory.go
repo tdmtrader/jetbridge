@@ -192,6 +192,9 @@ func (f *pipelineRunFactory) CreateRun(templatePipelineID int, params map[string
 		return nil, err
 	}
 	defer Rollback(tx)
+	if err := rejectWorkflowRunOwnedPipeline(context.Background(), tx, templatePipelineID); err != nil {
+		return nil, err
+	}
 
 	// A pipeline instance {name, {"run": N}} may already exist (e.g. a user
 	// ran fly set-pipeline with those instance vars before this run number
@@ -350,7 +353,7 @@ func (f *pipelineRunFactory) CreateRunForWorkflowRun(
 		FROM agent_workflow_runs
 		WHERE id = $1
 		FOR UPDATE
-	`, int64(workflowRunID)))
+	`, int64(workflowRunID)), tx.EncryptionStrategy())
 	if errors.Is(err, sql.ErrNoRows) {
 		return WorkflowRunExecution{}, false, fmt.Errorf("db: workflow run not found")
 	}
@@ -559,13 +562,15 @@ func validateLockedWorkflowTemplate(ctx context.Context, tx Tx, durableTeamID in
 		template        bool
 		instanceVars    sql.NullString
 		archived        bool
+		owned           bool
 	)
 	err := tx.QueryRowContext(ctx, `
-		SELECT team_id, name, version, template, instance_vars, archived
-		FROM pipelines
-		WHERE id = $1
-		FOR UPDATE
-	`, ref.PipelineID).Scan(&teamID, &name, &version, &template, &instanceVars, &archived)
+		SELECT p.team_id, p.name, p.version, p.template, p.instance_vars, p.archived,
+		       EXISTS (SELECT 1 FROM agent_workflow_run_templates o WHERE o.pipeline_id = p.id)
+		FROM pipelines p
+		WHERE p.id = $1
+		FOR UPDATE OF p
+	`, ref.PipelineID).Scan(&teamID, &name, &version, &template, &instanceVars, &archived, &owned)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrTemplateNotFound
 	}
@@ -573,7 +578,7 @@ func validateLockedWorkflowTemplate(ctx context.Context, tx Tx, durableTeamID in
 		return err
 	}
 	if teamID != durableTeamID || teamID != ref.TeamID || name != ref.Name || version != ref.ConfigVersion ||
-		!template || instanceVars.Valid || archived {
+		!template || instanceVars.Valid || archived || !owned {
 		return fmt.Errorf("db: workflow-run template reference drifted or collided")
 	}
 	return nil
@@ -705,7 +710,8 @@ func loadCommittedWorkflowRunExecution(
 	if instanceHash != *durable.ConcreteConfigHash {
 		return WorkflowRunExecution{}, fmt.Errorf("db: committed workflow-run instance hash mismatch")
 	}
-	var selectedBuildID, buildPipelineID, buildTeamID, jobPipelineID int
+	var selectedBuildID int64
+	var buildPipelineID, buildTeamID, jobPipelineID int
 	var jobName string
 	if err := tx.QueryRowContext(ctx, `
 		SELECT b.id, b.pipeline_id, b.team_id, j.pipeline_id, j.name
@@ -723,10 +729,14 @@ func loadCommittedWorkflowRunExecution(
 		buildTeamID != durable.TeamID || jobName != "run" {
 		return WorkflowRunExecution{}, fmt.Errorf("db: committed workflow-run selected build association mismatch")
 	}
+	entryBuildID := int(selectedBuildID)
+	if int64(entryBuildID) != selectedBuildID {
+		return WorkflowRunExecution{}, fmt.Errorf("db: committed workflow-run selected build identifier is out of range")
+	}
 	return WorkflowRunExecution{
 		PipelineRun: pipelineRun, InstanceConfig: instanceConfig,
 		InstanceCanonicalJSON: append([]byte(nil), instanceCanonical...),
-		InstanceConfigHash:    instanceHash, EntryBuildIDs: []int{selectedBuildID},
+		InstanceConfigHash:    instanceHash, EntryBuildIDs: []int{entryBuildID},
 	}, nil
 }
 

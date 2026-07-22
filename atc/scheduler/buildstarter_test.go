@@ -609,14 +609,14 @@ var _ = Describe("BuildStarter", func() {
 									It("keeps going after failing to create", func() {
 										Expect(fakePlanner.CreateCallCount()).To(Equal(3))
 
-										Expect(rerunBuild.FinishCallCount()).To(Equal(1))
-										Expect(pendingBuild1.FinishCallCount()).To(Equal(1))
-										Expect(pendingBuild2.FinishCallCount()).To(Equal(1))
+										Expect(rerunBuild.FinishWorkflowPlanningErrorCallCount()).To(Equal(1))
+										Expect(pendingBuild1.FinishWorkflowPlanningErrorCallCount()).To(Equal(1))
+										Expect(pendingBuild2.FinishWorkflowPlanningErrorCallCount()).To(Equal(1))
 									})
 
 									Context("when marking the build as errored fails", func() {
 										BeforeEach(func() {
-											pendingBuild1.FinishReturns(disaster)
+											pendingBuild1.FinishWorkflowPlanningErrorReturns(disaster)
 										})
 
 										It("returns an error", func() {
@@ -629,15 +629,14 @@ var _ = Describe("BuildStarter", func() {
 										})
 
 										It("marked the right build as errored", func() {
-											Expect(pendingBuild1.FinishCallCount()).To(Equal(1))
-											actualStatus := pendingBuild1.FinishArgsForCall(0)
-											Expect(actualStatus).To(Equal(db.BuildStatusErrored))
+											Expect(pendingBuild1.FinishWorkflowPlanningErrorCallCount()).To(Equal(1))
+											Expect(pendingBuild1.FinishWorkflowPlanningErrorArgsForCall(0)).To(Equal("workflow plan creation failed"))
 										})
 									})
 
 									Context("when marking the build as errored succeeds", func() {
 										BeforeEach(func() {
-											pendingBuild1.FinishReturns(nil)
+											pendingBuild1.FinishWorkflowPlanningErrorReturns(nil)
 										})
 
 										It("does not start the other builds", func() {
@@ -696,6 +695,33 @@ var _ = Describe("BuildStarter", func() {
 										Expect(actualPrototypes).To(Equal(prototypes))
 										Expect(actualBuildInputs).To(Equal([]db.BuildInput{{Name: "some-input"}}))
 										Expect(actualManuallyTriggered).To(Equal(false))
+									})
+
+									Context("when workflow plan provenance is semantically invalid", func() {
+										BeforeEach(func() {
+											pendingBuild1.StartReturns(false, &db.AgentWorkflowRunProvenanceError{Cause: errors.New("contract mismatch")})
+										})
+
+										It("terminalizes the durable planning error and continues", func() {
+											Expect(tryStartErr).NotTo(HaveOccurred())
+											Expect(pendingBuild1.FinishWorkflowPlanningErrorCallCount()).To(Equal(1))
+											Expect(pendingBuild1.FinishWorkflowPlanningErrorArgsForCall(0)).To(Equal("workflow plan provenance validation failed"))
+											Expect(pendingBuild2.StartCallCount()).To(Equal(1))
+										})
+									})
+
+									Context("when cancellation wins before the selected build starts", func() {
+										BeforeEach(func() {
+											pendingBuild1.StartReturns(false, &db.AgentWorkflowRunCancelingError{WorkflowRunID: 41})
+										})
+
+										It("finishes the selected build aborted and continues", func() {
+											Expect(tryStartErr).NotTo(HaveOccurred())
+											Expect(pendingBuild1.FinishCallCount()).To(Equal(1))
+											Expect(pendingBuild1.FinishArgsForCall(0)).To(Equal(db.BuildStatusAborted))
+											Expect(pendingBuild1.FinishWorkflowPlanningErrorCallCount()).To(BeZero())
+											Expect(pendingBuild2.StartCallCount()).To(Equal(1))
+										})
 									})
 
 									Context("when starting the build fails", func() {

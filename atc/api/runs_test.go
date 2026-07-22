@@ -76,6 +76,16 @@ var _ = Describe("Pipeline Runs API", func() {
 			response = post(`{}`)
 			Expect(response.StatusCode).To(Equal(http.StatusConflict))
 		})
+
+		It("returns 409 when the template is owned by durable workflow execution", func() {
+			fakePipelineRunFactory.CreateRunReturns(nil, db.ErrWorkflowRunOwnedPipeline)
+
+			response = post(`{}`)
+			Expect(response.StatusCode).To(Equal(http.StatusConflict))
+			body, err := io.ReadAll(response.Body)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(string(body)).To(ContainSubstring("durable workflow run"))
+		})
 	})
 
 	Describe("GET /api/v1/teams/a-team/pipelines/a-pipeline/runs", func() {

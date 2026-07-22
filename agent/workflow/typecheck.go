@@ -58,7 +58,7 @@ type publicOutputTarget struct {
 
 type snapshotFlowChecker struct {
 	functionIDs map[string]string
-	acrossDepth int
+	prototypes  map[string]struct{}
 }
 
 // TypeCheckFunction proves the typed snapshot flow of a compiled version-3
@@ -187,7 +187,11 @@ func analyzeFunctionFlow(function *FunctionConfig) ([]publicOutputTarget, error)
 		}
 	}
 
-	checker := &snapshotFlowChecker{functionIDs: make(map[string]string)}
+	prototypes := make(map[string]struct{}, len(function.Prototypes))
+	for _, prototype := range function.Prototypes {
+		prototypes[prototype.Name] = struct{}{}
+	}
+	checker := &snapshotFlowChecker{functionIDs: make(map[string]string), prototypes: prototypes}
 	result, err := checker.checkSequence(function.Plan, env, "plan")
 	if err != nil {
 		return nil, err
@@ -258,7 +262,18 @@ func (checker *snapshotFlowChecker) checkStep(step atc.Step, entry snapshotEnvir
 		return writeUntyped(entry, config.Name, path+".get("+config.Name+")"), nil
 	case *atc.LoadSnapshotStep:
 		return checker.checkLoadSnapshot(config, entry, path)
-	case *atc.PutStep, *atc.RunStep, *atc.HarvestStep, *atc.SetPipelineStep, *atc.LoadVarStep:
+	case *atc.RunStep:
+		if _, found := checker.prototypes[config.Type]; !found {
+			// Preserve the ordinary Concourse validator's authoritative unknown
+			// prototype diagnostic, which runs immediately after snapshot flow.
+			return emptySnapshotFlow(entry), nil
+		}
+		// Concourse currently plans prototype runs without retaining their
+		// resolved source/image identity, and the runtime RunStep itself is only
+		// a placeholder. Reject the advertised syntax at the immutable function
+		// boundary instead of allocating a durable run that must planning-error.
+		return snapshotFlow{}, fmt.Errorf("workflow: %s: prototype run steps are not executable in workflow functions", path)
+	case *atc.PutStep, *atc.HarvestStep, *atc.SetPipelineStep, *atc.LoadVarStep:
 		return emptySnapshotFlow(entry), nil
 	case *atc.DoStep:
 		return checker.checkSequence(config.Steps, entry, path+".do.steps")
@@ -303,13 +318,13 @@ func (checker *snapshotFlowChecker) checkStep(step atc.Step, entry snapshotEnvir
 	case *atc.EnsureStep:
 		return checker.checkEnsure(config, entry, path)
 	case *atc.AcrossStep:
-		checker.acrossDepth++
-		_, err := checker.checkWrapped(config.Step, cloneSnapshotEnvironment(entry), path+".across")
-		checker.acrossDepth--
-		if err != nil {
-			return snapshotFlow{}, err
-		}
-		return emptySnapshotFlow(entry), nil
+		// Across expands an uninterpolated template into new runtime plans and
+		// plan IDs. Workflow runs currently freeze provenance before execution,
+		// so accepting this step would let the durable envelope describe a plan
+		// other than the iterations that actually ran. Ordinary Concourse keeps
+		// supporting across; the immutable workflow boundary rejects it until
+		// expanded plans can be persisted and verified exactly.
+		return snapshotFlow{}, fmt.Errorf("workflow: %s: across steps cannot provide exact execution provenance in workflow functions", path)
 	default:
 		return snapshotFlow{}, fmt.Errorf("workflow: %s: unsupported step config %T; snapshot-flow semantics must be defined explicitly", path, config)
 	}
@@ -317,9 +332,6 @@ func (checker *snapshotFlowChecker) checkStep(step atc.Step, entry snapshotEnvir
 
 func (checker *snapshotFlowChecker) checkLoadSnapshot(step *atc.LoadSnapshotStep, entry snapshotEnvironment, path string) (snapshotFlow, error) {
 	identity := fmt.Sprintf("%s.load_snapshot(%q)", path, step.Name)
-	if checker.acrossDepth > 0 {
-		return snapshotFlow{}, fmt.Errorf("workflow: %s: typed snapshot load is not allowed inside across local scope", identity)
-	}
 	if step.Optional {
 		if _, found := entry[step.Name]; found {
 			return snapshotFlow{}, fmt.Errorf("workflow: %s: optional load shadows an existing artifact; its value would be path-dependent", identity)
@@ -567,9 +579,6 @@ func (checker *snapshotFlowChecker) checkLeaf(
 		declaration := typedOutputs[name]
 		if err := declaration.Validate(); err != nil {
 			return snapshotFlow{}, fmt.Errorf("workflow: %s: output %q: %w", identity, name, err)
-		}
-		if checker.acrossDepth > 0 {
-			return snapshotFlow{}, fmt.Errorf("workflow: %s: typed output %q is not allowed inside across local scope", identity, name)
 		}
 		if _, found := env[name]; found && declaration.Optional {
 			return snapshotFlow{}, fmt.Errorf("workflow: %s: optional output %q shadows an existing artifact; its concrete producer would be path-dependent", identity, name)

@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 
@@ -221,8 +222,9 @@ func (s *buildStarter) tryStartNextPendingBuild(
 	if err != nil {
 		logger.Error("failed-to-create-build-plan", err)
 
-		// Don't use ErrorBuild because it logs a build event, and this build hasn't started
-		if err = nextPendingBuild.Finish(db.BuildStatusErrored); err != nil {
+		// This is also the durable workflow planning-error boundary. Ordinary
+		// builds retain the existing errored-build behavior.
+		if err = nextPendingBuild.FinishWorkflowPlanningError("workflow plan creation failed"); err != nil {
 			logger.Error("failed-to-mark-build-as-errored", err)
 			return startResults{}, fmt.Errorf("finish build: %w", err)
 		}
@@ -236,6 +238,22 @@ func (s *buildStarter) tryStartNextPendingBuild(
 	started, err := nextPendingBuild.Start(plan)
 	startSpan.End()
 	if err != nil {
+		var canceling *db.AgentWorkflowRunCancelingError
+		if errors.As(err, &canceling) {
+			if finishErr := nextPendingBuild.Finish(db.BuildStatusAborted); finishErr != nil {
+				logger.Error("failed-to-finish-canceling-workflow-build", finishErr)
+				return startResults{}, fmt.Errorf("finish canceling workflow build: %w", finishErr)
+			}
+			return startResults{finished: true}, nil
+		}
+		var provenance *db.AgentWorkflowRunProvenanceError
+		if errors.As(err, &provenance) {
+			if finishErr := nextPendingBuild.FinishWorkflowPlanningError("workflow plan provenance validation failed"); finishErr != nil {
+				logger.Error("failed-to-finish-invalid-workflow-plan", finishErr)
+				return startResults{}, fmt.Errorf("finish invalid workflow plan: %w", finishErr)
+			}
+			return startResults{finished: true}, nil
+		}
 		logger.Error("failed-to-mark-build-as-started", err)
 		return startResults{}, fmt.Errorf("start build: %w", err)
 	}

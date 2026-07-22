@@ -15,6 +15,9 @@ func (s *Server) PausePipeline(pipelineDB db.Pipeline) http.Handler {
 
 		err := pipelineDB.Pause(user)
 		if err != nil {
+			if writeWorkflowRunTemplateConflict(w, err) {
+				return
+			}
 			logger.Error("failed-to-pause-pipeline", err)
 			w.WriteHeader(http.StatusInternalServerError)
 			return

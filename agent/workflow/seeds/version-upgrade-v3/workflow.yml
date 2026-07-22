@@ -1,0 +1,32 @@
+schema_version: 3
+name: version-upgrade
+signature_version: 1
+description: Upgrade a declared component and return a tested change plus a structured report.
+inputs:
+  - name: repository
+    type: repository/v1
+    description: Clean immutable base repository.
+  - name: request
+    type: upgrade-request/v1
+    description: Exact component and target version request.
+outputs:
+  - name: change
+    type: repository-change/v1
+    from: change
+    description: Tested repository change relative to the repository input.
+  - name: report
+    type: upgrade-report/v1
+    from: report
+    description: Structured upgrade summary and version transition.
+plan:
+  - agent: upgrade
+    function_id: upgrade
+    prompt_file: prompts/upgrade.md
+    inputs: [repository, request]
+    outputs: [change, report]
+    input_types:
+      repository: {type: repository/v1}
+      request: {type: upgrade-request/v1}
+    output_types:
+      change: repository-change/v1
+      report: upgrade-report/v1

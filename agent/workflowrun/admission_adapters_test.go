@@ -1,0 +1,466 @@
+package workflowrun
+
+import (
+	"context"
+	"errors"
+	"reflect"
+	"testing"
+	"time"
+
+	"github.com/concourse/concourse/agent/api/principals"
+	"github.com/concourse/concourse/agent/budget"
+	"github.com/concourse/concourse/agent/credentials"
+	"github.com/concourse/concourse/agent/snapshot"
+	"github.com/concourse/concourse/atc/db"
+)
+
+type budgetCheckerStub struct {
+	global func() (budget.Remaining, error)
+}
+
+func (s *budgetCheckerStub) TicketRemaining(int) (budget.Remaining, error) {
+	panic("TicketRemaining must not be called by global workflow admission")
+}
+
+func (s *budgetCheckerStub) GlobalDailyRemaining() (budget.Remaining, error) {
+	return s.global()
+}
+
+func (s *budgetCheckerStub) StepSlice(int, float64) (budget.Remaining, error) {
+	panic("StepSlice must not be called by global workflow admission")
+}
+
+func (s *budgetCheckerStub) Record(budget.LedgerEntry) error {
+	panic("Record must not be called by global workflow admission")
+}
+
+func TestGlobalDailyBudgetAdmitterDeniesOnlyExhaustedCappedBudget(t *testing.T) {
+	tests := []struct {
+		name      string
+		remaining budget.Remaining
+		denied    bool
+	}{
+		{name: "capped exhausted", remaining: budget.Remaining{LimitUSD: 100, SpentUSD: 100, Exhausted: true}, denied: true},
+		{name: "capped available", remaining: budget.Remaining{LimitUSD: 100, RemainingUSD: 1, Exhausted: false}},
+		{name: "uncapped even if inconsistent checker says exhausted", remaining: budget.Remaining{LimitUSD: 0, SpentUSD: 100, Exhausted: true}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			calls := 0
+			admitter, err := NewGlobalDailyBudgetAdmitter(&budgetCheckerStub{global: func() (budget.Remaining, error) {
+				calls++
+				return test.remaining, nil
+			}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = admitter.Admit(context.Background(), BudgetAdmission{})
+			if test.denied != errors.Is(err, ErrBudgetDenied) {
+				t.Fatalf("Admit error = %v, denied = %t", err, test.denied)
+			}
+			if calls != 1 {
+				t.Fatalf("GlobalDailyRemaining calls = %d", calls)
+			}
+		})
+	}
+}
+
+func TestGlobalDailyBudgetAdmitterPropagatesContextAndBoundsCheckerFailure(t *testing.T) {
+	secret := errors.New("ledger password swordfish")
+	checker := &budgetCheckerStub{global: func() (budget.Remaining, error) {
+		return budget.Remaining{}, secret
+	}}
+	admitter, err := NewGlobalDailyBudgetAdmitter(checker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := admitter.Admit(context.Background(), BudgetAdmission{}); !errors.Is(err, ErrBudgetCheckFailure) || errors.Is(err, secret) || err.Error() != ErrBudgetCheckFailure.Error() {
+		t.Fatalf("Admit checker error = %v", err)
+	}
+
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := admitter.Admit(canceled, BudgetAdmission{}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Admit context error = %v", err)
+	}
+}
+
+type creatorUserResolverStub struct {
+	find func(string) (int, bool, error)
+}
+
+func (s *creatorUserResolverStub) FindByUsername(name string) (int, bool, error) {
+	return s.find(name)
+}
+
+type credentialBackendStub struct {
+	resolve   func(int, string) (*credentials.Credential, bool, error)
+	platform  func(string) (int, string, bool, error)
+	put       func(int, string, string, string, time.Time) error
+	status    func(int) ([]credentials.Credential, error)
+	expiring  func(time.Duration) ([]credentials.Credential, error)
+	delete    func(int, string) error
+	setJiraID func(int, string) error
+}
+
+func (s *credentialBackendStub) Resolve(userID int, kind string) (*credentials.Credential, bool, error) {
+	return s.resolve(userID, kind)
+}
+
+func (s *credentialBackendStub) UserBySub(sub string) (int, string, bool, error) {
+	return s.platform(sub)
+}
+
+func (s *credentialBackendStub) Put(userID int, userName, kind, token string, expiresAt time.Time) error {
+	return s.put(userID, userName, kind, token, expiresAt)
+}
+
+func (s *credentialBackendStub) Status(userID int) ([]credentials.Credential, error) {
+	return s.status(userID)
+}
+
+func (s *credentialBackendStub) ExpiringWithin(within time.Duration) ([]credentials.Credential, error) {
+	return s.expiring(within)
+}
+
+func (s *credentialBackendStub) Delete(userID int, kind string) error {
+	return s.delete(userID, kind)
+}
+
+func (s *credentialBackendStub) SetJiraAccountID(userID int, accountID string) error {
+	return s.setJiraID(userID, accountID)
+}
+
+type principalStoreStub struct {
+	create    func(principals.CreateSpec) (principals.Principal, string, error)
+	revoke    func(int) (bool, error)
+	list      func() ([]principals.Principal, error)
+	get       func(int) (principals.Principal, bool, error)
+	recordUse func(int, time.Time) error
+}
+
+func (s *principalStoreStub) Create(spec principals.CreateSpec) (principals.Principal, string, error) {
+	return s.create(spec)
+}
+
+func (s *principalStoreStub) Revoke(id int) (bool, error) { return s.revoke(id) }
+func (s *principalStoreStub) List() ([]principals.Principal, error) {
+	return s.list()
+}
+func (s *principalStoreStub) Get(id int) (principals.Principal, bool, error) {
+	return s.get(id)
+}
+func (s *principalStoreStub) RecordUse(id int, usedAt time.Time) error {
+	return s.recordUse(id, usedAt)
+}
+
+type secretAttacherStub struct {
+	attach  func(context.Context, int, *credentials.Credential, string) (string, error)
+	cleanup func(context.Context, int) error
+}
+
+func (s *secretAttacherStub) Attach(ctx context.Context, runID int, credential *credentials.Credential, token string) (string, error) {
+	return s.attach(ctx, runID, credential, token)
+}
+
+func (s *secretAttacherStub) Cleanup(ctx context.Context, runID int) error {
+	return s.cleanup(ctx, runID)
+}
+
+func TestVaultedRunSecretPreparerResolvesCreatorAndDefersMintUntilAllocatedRun(t *testing.T) {
+	ctx := context.Background()
+	now := time.Unix(1_784_800_000, 0)
+	credential := &credentials.Credential{
+		UserID: 17, UserName: "alice", Kind: credentials.KindAnthropicOAuth,
+		ExpiresAt: now.Add(time.Hour).Unix(), Token: "user-oauth-token",
+	}
+	var order []string
+	users := &creatorUserResolverStub{find: func(name string) (int, bool, error) {
+		order = append(order, "find-user")
+		if name != "alice" {
+			t.Fatalf("creator = %q", name)
+		}
+		return 17, true, nil
+	}}
+	vault := newCredentialBackendStub()
+	vault.resolve = func(userID int, kind string) (*credentials.Credential, bool, error) {
+		order = append(order, "resolve-user")
+		if userID != 17 || kind != credentials.KindAnthropicOAuth {
+			t.Fatalf("Resolve = (%d, %q)", userID, kind)
+		}
+		return credential, true, nil
+	}
+	vault.platform = func(string) (int, string, bool, error) {
+		t.Fatal("usable creator credential must not fall back to platform")
+		return 0, "", false, nil
+	}
+	principalCalls := 0
+	principalStore := newPrincipalStoreStub()
+	principalStore.create = func(spec principals.CreateSpec) (principals.Principal, string, error) {
+		principalCalls++
+		order = append(order, "mint-principal")
+		wantExpiry := now.Add(6 * time.Hour).Unix()
+		wantScopes := []string{
+			principals.ScopeTicketsRead,
+			principals.ScopeTicketsWrite,
+			principals.ScopeMetricsWrite,
+			principals.ScopeCostsWrite,
+			principals.ScopeQuestionsAnswer,
+		}
+		if spec.Name != credentials.RunSecretName(313) || spec.TeamName != "main" ||
+			spec.CreatedBy != "workflow-run" || spec.ExpiresAt == nil || *spec.ExpiresAt != wantExpiry ||
+			!reflect.DeepEqual(spec.Scopes, wantScopes) {
+			t.Fatalf("principal spec = %+v", spec)
+		}
+		return principals.Principal{ID: 29, Name: spec.Name}, "cap1.29.secret", nil
+	}
+	principalStore.revoke = func(int) (bool, error) {
+		t.Fatal("successful attach must not revoke")
+		return false, nil
+	}
+	attacher := &secretAttacherStub{
+		attach: func(got context.Context, pipelineRunID int, gotCredential *credentials.Credential, token string) (string, error) {
+			order = append(order, "attach-secret")
+			if got != ctx || pipelineRunID != 313 || gotCredential == credential ||
+				gotCredential.Token != "user-oauth-token" || token != "cap1.29.secret" {
+				t.Fatalf("Attach = (%v, %d, %+v, %q)", got, pipelineRunID, gotCredential, token)
+			}
+			return credentials.RunSecretName(pipelineRunID), nil
+		},
+		cleanup: func(context.Context, int) error {
+			t.Fatal("successful attach must not clean up")
+			return nil
+		},
+	}
+	preparer, err := NewVaultedRunSecretPreparer(users, vault, principalStore, attacher, 6*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	preparer.now = func() time.Time { return now }
+	run := cancellationRun(snapshot.WorkflowRunID(9007199254740993), 7, db.AgentWorkflowRunStatusAdmitting)
+	run.CreatedBy = "alice"
+	prepared, err := preparer.Prepare(ctx, AdmissionContext{TeamID: 7, TeamName: "main", CreatedBy: "alice"}, run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if principalCalls != 0 {
+		t.Fatal("Prepare minted a principal before pipeline-run allocation")
+	}
+	credential.Token = "mutated-after-prepare"
+	if err := prepared.Attach(ctx, 313); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"find-user", "resolve-user", "mint-principal", "attach-secret"}; !reflect.DeepEqual(order, want) {
+		t.Fatalf("order = %#v, want %#v", order, want)
+	}
+	if err := prepared.Attach(ctx, 313); err != nil {
+		t.Fatalf("same-run replay: %v", err)
+	}
+	if principalCalls != 1 {
+		t.Fatalf("principal creates after replay = %d", principalCalls)
+	}
+	if err := prepared.Attach(ctx, 314); !errors.Is(err, ErrRunSecretAttachFailure) {
+		t.Fatalf("different run replay error = %v", err)
+	}
+}
+
+func TestVaultedRunSecretPreparerFallsBackFromExpiredCreatorToPlatformAPIKey(t *testing.T) {
+	now := time.Unix(1_784_900_000, 0)
+	var resolutions []string
+	users := &creatorUserResolverStub{find: func(string) (int, bool, error) { return 17, true, nil }}
+	vault := newCredentialBackendStub()
+	vault.resolve = func(userID int, kind string) (*credentials.Credential, bool, error) {
+		resolutions = append(resolutions, string(rune(userID))+":"+kind)
+		switch {
+		case userID == 17 && kind == credentials.KindAnthropicOAuth:
+			return &credentials.Credential{UserID: 17, Kind: kind, Token: "expired", ExpiresAt: now.Unix()}, true, nil
+		case userID == 17 && kind == credentials.KindAnthropicAPIKey:
+			return nil, false, nil
+		case userID == 99 && kind == credentials.KindAnthropicOAuth:
+			return nil, false, nil
+		case userID == 99 && kind == credentials.KindAnthropicAPIKey:
+			return &credentials.Credential{UserID: 99, UserName: "platform", Kind: kind, Token: "platform-key"}, true, nil
+		default:
+			t.Fatalf("unexpected Resolve = (%d, %q)", userID, kind)
+			return nil, false, nil
+		}
+	}
+	vault.platform = func(sub string) (int, string, bool, error) {
+		if sub != credentials.PlatformUserSub {
+			t.Fatalf("platform sub = %q", sub)
+		}
+		return 99, credentials.PlatformUserName, true, nil
+	}
+	principalsStore := newPrincipalStoreStub()
+	principalsStore.create = func(spec principals.CreateSpec) (principals.Principal, string, error) {
+		return principals.Principal{ID: 41, Name: spec.Name}, "cap1.41.token", nil
+	}
+	principalsStore.revoke = func(int) (bool, error) { return true, nil }
+	var attached *credentials.Credential
+	attacher := &secretAttacherStub{
+		attach: func(_ context.Context, runID int, credential *credentials.Credential, _ string) (string, error) {
+			attached = credential
+			return credentials.RunSecretName(runID), nil
+		},
+		cleanup: func(context.Context, int) error { return nil },
+	}
+	preparer, err := NewVaultedRunSecretPreparer(users, vault, principalsStore, attacher, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	preparer.now = func() time.Time { return now }
+	run := cancellationRun(151, 7, db.AgentWorkflowRunStatusAdmitting)
+	run.CreatedBy = "alice"
+	prepared, err := preparer.Prepare(context.Background(), AdmissionContext{TeamID: 7, TeamName: "main", CreatedBy: "alice"}, run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := prepared.Attach(context.Background(), 419); err != nil {
+		t.Fatal(err)
+	}
+	if attached == nil || attached.UserID != 99 || attached.Kind != credentials.KindAnthropicAPIKey || attached.Token != "platform-key" {
+		t.Fatalf("attached credential = %+v", attached)
+	}
+	if len(resolutions) != 4 {
+		t.Fatalf("resolution count = %d", len(resolutions))
+	}
+}
+
+func TestVaultedRunSecretPreparerRevokesMintedPrincipalWhenAttachmentFails(t *testing.T) {
+	secret := errors.New("kubernetes bearer token")
+	users := &creatorUserResolverStub{find: func(string) (int, bool, error) { return 17, true, nil }}
+	vault := newCredentialBackendStub()
+	vault.resolve = func(userID int, kind string) (*credentials.Credential, bool, error) {
+		return &credentials.Credential{UserID: userID, Kind: kind, Token: "oauth"}, true, nil
+	}
+	vault.platform = func(string) (int, string, bool, error) { return 0, "", false, nil }
+	var revoked []int
+	principalStore := newPrincipalStoreStub()
+	principalStore.create = func(spec principals.CreateSpec) (principals.Principal, string, error) {
+		return principals.Principal{ID: 51, Name: spec.Name}, "cap1.51.token", nil
+	}
+	principalStore.revoke = func(id int) (bool, error) {
+		revoked = append(revoked, id)
+		return true, errors.New("revocation backend details")
+	}
+	cleanupCalls := 0
+	attacher := &secretAttacherStub{
+		attach: func(context.Context, int, *credentials.Credential, string) (string, error) { return "", secret },
+		cleanup: func(_ context.Context, runID int) error {
+			cleanupCalls++
+			if runID != 521 {
+				t.Fatalf("cleanup run = %d", runID)
+			}
+			return nil
+		},
+	}
+	preparer, err := NewVaultedRunSecretPreparer(users, vault, principalStore, attacher, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := cancellationRun(161, 7, db.AgentWorkflowRunStatusAdmitting)
+	run.CreatedBy = "alice"
+	prepared, err := preparer.Prepare(context.Background(), AdmissionContext{TeamID: 7, TeamName: "main", CreatedBy: "alice"}, run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = prepared.Attach(context.Background(), 521)
+	if !errors.Is(err, ErrRunSecretAttachFailure) || err.Error() != ErrRunSecretAttachFailure.Error() || errors.Is(err, secret) {
+		t.Fatalf("Attach error = %v", err)
+	}
+	if !reflect.DeepEqual(revoked, []int{51}) || cleanupCalls != 1 {
+		t.Fatalf("rollback = revoked %#v cleanup %d", revoked, cleanupCalls)
+	}
+}
+
+func TestVaultedRunSecretPreparerBoundsUnavailableAndStoreFailures(t *testing.T) {
+	users := &creatorUserResolverStub{find: func(string) (int, bool, error) { return 0, false, nil }}
+	vault := newCredentialBackendStub()
+	vault.resolve = func(int, string) (*credentials.Credential, bool, error) { return nil, false, nil }
+	vault.platform = func(string) (int, string, bool, error) { return 0, "", false, nil }
+	principalStore := newPrincipalStoreStub()
+	attacher := &secretAttacherStub{}
+	preparer, err := NewVaultedRunSecretPreparer(users, vault, principalStore, attacher, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := cancellationRun(171, 7, db.AgentWorkflowRunStatusAdmitting)
+	run.CreatedBy = "alice"
+	_, err = preparer.Prepare(context.Background(), AdmissionContext{TeamID: 7, TeamName: "main", CreatedBy: "alice"}, run)
+	if !errors.Is(err, ErrRunCredentialUnavailable) || err.Error() != ErrRunCredentialUnavailable.Error() {
+		t.Fatalf("unavailable error = %v", err)
+	}
+
+	secret := errors.New("users table connection password")
+	users.find = func(string) (int, bool, error) { return 0, false, secret }
+	_, err = preparer.Prepare(context.Background(), AdmissionContext{TeamID: 7, TeamName: "main", CreatedBy: "alice"}, run)
+	if !errors.Is(err, ErrRunSecretPreparationFailure) || errors.Is(err, secret) || err.Error() != ErrRunSecretPreparationFailure.Error() {
+		t.Fatalf("store error = %v", err)
+	}
+}
+
+func TestVaultedRunSecretPreparerIsContextAwareAndRejectsInvalidAllocatedRunID(t *testing.T) {
+	resolveCalls := 0
+	users := &creatorUserResolverStub{find: func(string) (int, bool, error) {
+		resolveCalls++
+		return 17, true, nil
+	}}
+	vault := newCredentialBackendStub()
+	vault.resolve = func(userID int, kind string) (*credentials.Credential, bool, error) {
+		return &credentials.Credential{UserID: userID, Kind: kind, Token: "oauth"}, true, nil
+	}
+	vault.platform = func(string) (int, string, bool, error) { return 0, "", false, nil }
+	principalCalls := 0
+	principalStore := newPrincipalStoreStub()
+	principalStore.create = func(principals.CreateSpec) (principals.Principal, string, error) {
+		principalCalls++
+		return principals.Principal{ID: 1}, "token", nil
+	}
+	principalStore.revoke = func(int) (bool, error) { return true, nil }
+	attacher := &secretAttacherStub{}
+	preparer, err := NewVaultedRunSecretPreparer(users, vault, principalStore, attacher, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := cancellationRun(181, 7, db.AgentWorkflowRunStatusAdmitting)
+	run.CreatedBy = "alice"
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := preparer.Prepare(canceled, AdmissionContext{TeamID: 7, TeamName: "main", CreatedBy: "alice"}, run); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Prepare canceled error = %v", err)
+	}
+	if resolveCalls != 0 {
+		t.Fatal("canceled preparation touched user store")
+	}
+
+	prepared, err := preparer.Prepare(context.Background(), AdmissionContext{TeamID: 7, TeamName: "main", CreatedBy: "alice"}, run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := prepared.Attach(context.Background(), 0); !errors.Is(err, ErrRunSecretAttachFailure) {
+		t.Fatalf("invalid run ID error = %v", err)
+	}
+	if principalCalls != 0 {
+		t.Fatal("invalid allocated run ID minted a principal")
+	}
+}
+
+func newCredentialBackendStub() *credentialBackendStub {
+	return &credentialBackendStub{
+		put:    func(int, string, string, string, time.Time) error { panic("unexpected Put") },
+		status: func(int) ([]credentials.Credential, error) { panic("unexpected Status") },
+		expiring: func(time.Duration) ([]credentials.Credential, error) {
+			panic("unexpected ExpiringWithin")
+		},
+		delete:    func(int, string) error { panic("unexpected Delete") },
+		setJiraID: func(int, string) error { panic("unexpected SetJiraAccountID") },
+	}
+}
+
+func newPrincipalStoreStub() *principalStoreStub {
+	return &principalStoreStub{
+		list:      func() ([]principals.Principal, error) { panic("unexpected List") },
+		get:       func(int) (principals.Principal, bool, error) { panic("unexpected Get") },
+		recordUse: func(int, time.Time) error { panic("unexpected RecordUse") },
+	}
+}

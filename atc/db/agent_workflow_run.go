@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/concourse/concourse/agent/snapshot"
+	"github.com/concourse/concourse/atc/db/encryption"
 )
 
 type AgentWorkflowRunStatus string
@@ -37,6 +38,27 @@ func (status AgentWorkflowRunStatus) Validate() error {
 	}
 }
 
+type AgentWorkflowRunExecutionStatus string
+
+const (
+	AgentWorkflowRunExecutionStatusSucceeded AgentWorkflowRunExecutionStatus = "succeeded"
+	AgentWorkflowRunExecutionStatusFailed    AgentWorkflowRunExecutionStatus = "failed"
+	AgentWorkflowRunExecutionStatusErrored   AgentWorkflowRunExecutionStatus = "errored"
+	AgentWorkflowRunExecutionStatusAborted   AgentWorkflowRunExecutionStatus = "aborted"
+)
+
+func (status AgentWorkflowRunExecutionStatus) Validate() error {
+	switch status {
+	case AgentWorkflowRunExecutionStatusSucceeded,
+		AgentWorkflowRunExecutionStatusFailed,
+		AgentWorkflowRunExecutionStatusErrored,
+		AgentWorkflowRunExecutionStatusAborted:
+		return nil
+	default:
+		return fmt.Errorf("db: invalid agent workflow-run execution status %q", status)
+	}
+}
+
 func validateAgentWorkflowRunTransition(from, to AgentWorkflowRunStatus) error {
 	legal := false
 	switch from {
@@ -48,9 +70,12 @@ func validateAgentWorkflowRunTransition(from, to AgentWorkflowRunStatus) error {
 		legal = to == AgentWorkflowRunStatusSucceeded ||
 			to == AgentWorkflowRunStatusFailed ||
 			to == AgentWorkflowRunStatusErrored ||
+			to == AgentWorkflowRunStatusAborted ||
 			to == AgentWorkflowRunStatusCanceling
 	case AgentWorkflowRunStatusCanceling:
-		legal = to == AgentWorkflowRunStatusAborted ||
+		legal = to == AgentWorkflowRunStatusSucceeded ||
+			to == AgentWorkflowRunStatusFailed ||
+			to == AgentWorkflowRunStatusAborted ||
 			to == AgentWorkflowRunStatusErrored
 	}
 	if !legal {
@@ -96,12 +121,14 @@ type AgentWorkflowRun struct {
 	OriginReference         string
 	CreatedBy               string
 	Status                  AgentWorkflowRunStatus
+	ExecutionStatus         *AgentWorkflowRunExecutionStatus
 	ErrorMessage            string
 	RetryOfWorkflowRunID    *snapshot.WorkflowRunID
 	PipelineRunID           *int
 	TemplatePipelineID      *int
 	InstancePipelineID      *int
-	PlannedBuildID          *int
+	PlannedBuildID          *int64
+	ReconcileAfter          time.Time
 	CreatedAt               time.Time
 	UpdatedAt               time.Time
 	StartedAt               *time.Time
@@ -189,7 +216,7 @@ func (link AgentWorkflowRunExecutionLink) Validate() error {
 }
 
 type AgentWorkflowRunPlan struct {
-	BuildID              int
+	BuildID              int64
 	ActualPlan           json.RawMessage
 	ActualPlanHash       string
 	ResolvedDependencies json.RawMessage
@@ -199,11 +226,166 @@ func (plan AgentWorkflowRunPlan) Validate() error {
 	if plan.BuildID <= 0 || len(plan.ActualPlan) == 0 || !json.Valid(plan.ActualPlan) || strings.TrimSpace(plan.ActualPlanHash) == "" {
 		return fmt.Errorf("db: workflow-run build, actual plan, and hash are required")
 	}
-	if len(plan.ResolvedDependencies) != 0 && !json.Valid(plan.ResolvedDependencies) {
+	if len(plan.ResolvedDependencies) == 0 || !json.Valid(plan.ResolvedDependencies) {
 		return fmt.Errorf("db: workflow-run resolved dependencies must be valid JSON")
 	}
 	return nil
 }
+
+type AgentWorkflowRunReconciliationView struct {
+	Run                 AgentWorkflowRun
+	SelectedBuildExists bool
+	SelectedBuildStatus BuildStatus
+}
+
+type AgentWorkflowRunExpectedProducer struct {
+	PlanID          string
+	StepKind        string
+	StepName        string
+	LocalOutputPort string
+}
+
+func (producer AgentWorkflowRunExpectedProducer) Validate() error {
+	if strings.TrimSpace(producer.PlanID) == "" ||
+		(producer.StepKind != "task" && producer.StepKind != "agent") ||
+		strings.TrimSpace(producer.StepName) == "" ||
+		strings.TrimSpace(producer.LocalOutputPort) == "" {
+		return fmt.Errorf("db: workflow-run expected producer requires a plan ID, task/agent identity, and local output")
+	}
+	return nil
+}
+
+type AgentWorkflowRunExpectedOutput struct {
+	Port                 string
+	Type                 snapshot.TypeRef
+	Optional             bool
+	WorkflowDefinitionID int
+	WorkflowRunID        snapshot.WorkflowRunID
+	Producers            []AgentWorkflowRunExpectedProducer
+}
+
+func (output AgentWorkflowRunExpectedOutput) Validate() error {
+	if strings.TrimSpace(output.Port) == "" || output.WorkflowDefinitionID <= 0 {
+		return fmt.Errorf("db: workflow-run expected output port and definition are required")
+	}
+	if err := output.Type.Validate(); err != nil {
+		return err
+	}
+	if err := output.WorkflowRunID.Validate(); err != nil {
+		return err
+	}
+	if len(output.Producers) == 0 {
+		return fmt.Errorf("db: workflow-run expected output %q requires at least one producer", output.Port)
+	}
+	seenPlanIDs := make(map[string]struct{}, len(output.Producers))
+	for _, producer := range output.Producers {
+		if err := producer.Validate(); err != nil {
+			return fmt.Errorf("db: workflow-run expected output %q: %w", output.Port, err)
+		}
+		if _, found := seenPlanIDs[producer.PlanID]; found {
+			return fmt.Errorf("db: workflow-run expected output %q has duplicate producer plan ID %q", output.Port, producer.PlanID)
+		}
+		seenPlanIDs[producer.PlanID] = struct{}{}
+	}
+	return nil
+}
+
+type AgentWorkflowRunFinalization struct {
+	WorkflowRunID           snapshot.WorkflowRunID
+	ExpectedStatus          AgentWorkflowRunStatus
+	ExpectedExecutionStatus *AgentWorkflowRunExecutionStatus
+	ExpectedActualPlanHash  *string
+	TerminalStatus          AgentWorkflowRunStatus
+	ErrorMessage            string
+	ExpectedOutputs         []AgentWorkflowRunExpectedOutput
+}
+
+func (finalization AgentWorkflowRunFinalization) Validate() error {
+	if err := finalization.WorkflowRunID.Validate(); err != nil {
+		return err
+	}
+	if err := finalization.ExpectedStatus.Validate(); err != nil {
+		return err
+	}
+	if finalization.ExpectedStatus != AgentWorkflowRunStatusAdmitting &&
+		finalization.ExpectedStatus != AgentWorkflowRunStatusRunning &&
+		finalization.ExpectedStatus != AgentWorkflowRunStatusCanceling {
+		return fmt.Errorf("db: workflow-run finalization expected status must be active")
+	}
+	if finalization.ExpectedExecutionStatus != nil {
+		if err := finalization.ExpectedExecutionStatus.Validate(); err != nil {
+			return err
+		}
+	}
+	if finalization.ExpectedActualPlanHash != nil && strings.TrimSpace(*finalization.ExpectedActualPlanHash) == "" {
+		return fmt.Errorf("db: workflow-run expected actual-plan hash must be nonblank")
+	}
+	if finalization.TerminalStatus != AgentWorkflowRunStatusSucceeded &&
+		finalization.TerminalStatus != AgentWorkflowRunStatusFailed &&
+		finalization.TerminalStatus != AgentWorkflowRunStatusErrored &&
+		finalization.TerminalStatus != AgentWorkflowRunStatusAborted {
+		return fmt.Errorf("db: workflow-run finalization status must be terminal")
+	}
+	if len(finalization.ErrorMessage) > 64*1024 {
+		return fmt.Errorf("db: workflow-run error message exceeds 64 KiB")
+	}
+	if finalization.TerminalStatus == AgentWorkflowRunStatusSucceeded {
+		if finalization.ExpectedExecutionStatus == nil ||
+			*finalization.ExpectedExecutionStatus != AgentWorkflowRunExecutionStatusSucceeded ||
+			finalization.ExpectedActualPlanHash == nil {
+			return fmt.Errorf("db: successful workflow-run finalization requires succeeded execution and an actual-plan hash")
+		}
+	} else if len(finalization.ExpectedOutputs) != 0 {
+		return fmt.Errorf("db: workflow-run output evidence is only valid for successful execution")
+	}
+	seenPorts := make(map[string]struct{}, len(finalization.ExpectedOutputs))
+	for _, output := range finalization.ExpectedOutputs {
+		if err := output.Validate(); err != nil {
+			return err
+		}
+		if _, found := seenPorts[output.Port]; found {
+			return fmt.Errorf("db: duplicate workflow-run expected output %q", output.Port)
+		}
+		seenPorts[output.Port] = struct{}{}
+	}
+	return nil
+}
+
+type AgentWorkflowRunFinalizationResult struct {
+	Status       AgentWorkflowRunStatus
+	ErrorMessage string
+	CompletedAt  time.Time
+}
+
+type AgentWorkflowRunBuildDisposition string
+
+const (
+	AgentWorkflowRunBuildDispositionOrdinary  AgentWorkflowRunBuildDisposition = "ordinary"
+	AgentWorkflowRunBuildDispositionSelected  AgentWorkflowRunBuildDisposition = "selected"
+	AgentWorkflowRunBuildDispositionAnomalous AgentWorkflowRunBuildDisposition = "anomalous"
+)
+
+type AgentWorkflowRunBuildCaptureResult struct {
+	WorkflowRunID        snapshot.WorkflowRunID
+	WorkflowDefinitionID int
+	ConcreteConfig       json.RawMessage
+	Disposition          AgentWorkflowRunBuildDisposition
+}
+
+type AgentWorkflowRunCancelingError struct {
+	WorkflowRunID snapshot.WorkflowRunID
+}
+
+func (err *AgentWorkflowRunCancelingError) Error() string {
+	return fmt.Sprintf("db: workflow run %s is canceling before its selected build starts", err.WorkflowRunID.String())
+}
+
+type agentWorkflowRunAnomalyKind string
+
+const (
+	agentWorkflowRunAnomalyLaterBuildStarted   agentWorkflowRunAnomalyKind = "later_build_started"
+	agentWorkflowRunAnomalyLaterBuildCompleted agentWorkflowRunAnomalyKind = "later_build_completed"
+)
 
 type AgentWorkflowRunSnapshotBinding struct {
 	WorkflowRunID snapshot.WorkflowRunID
@@ -225,49 +407,75 @@ const agentWorkflowRunColumns = `
 	id, team_id, team_name, workflow_definition_id, workflow_name,
 	workflow_version, schema_version, signature_version, definition_content_hash,
 	function_id, idempotency_key, parameterized_config, parameterized_config_hash,
-	concrete_config, concrete_config_hash, actual_plan, actual_plan_hash,
-	resolved_dependencies, origin_kind, origin_reference, created_by, status,
-	error_message, retry_of_workflow_run_id, pipeline_run_id, template_pipeline_id,
-	instance_pipeline_id, planned_build_id, created_at, updated_at, started_at, completed_at`
+	concrete_config, concrete_config_hash, actual_plan, actual_plan_nonce,
+	actual_plan_hash, actual_plan_hash_nonce, resolved_dependencies, resolved_dependencies_nonce,
+	origin_kind, origin_reference, created_by, status,
+	execution_status, error_message, retry_of_workflow_run_id, pipeline_run_id,
+	template_pipeline_id, instance_pipeline_id, planned_build_id, reconcile_after,
+	created_at, updated_at, started_at, completed_at`
 
-func scanAgentWorkflowRun(row scannable) (AgentWorkflowRun, error) {
+func scanAgentWorkflowRun(row scannable, encryptionStrategy encryption.Strategy) (AgentWorkflowRun, error) {
 	var (
-		run                  AgentWorkflowRun
-		id                   int64
-		functionID           sql.NullString
-		parameterizedConfig  []byte
-		concreteConfig       []byte
-		concreteConfigHash   sql.NullString
-		actualPlan           []byte
-		actualPlanHash       sql.NullString
-		resolvedDependencies []byte
-		status               string
-		retryID              sql.NullInt64
-		pipelineRunID        sql.NullInt64
-		templatePipelineID   sql.NullInt64
-		instancePipelineID   sql.NullInt64
-		plannedBuildID       sql.NullInt64
-		startedAt            sql.NullTime
-		completedAt          sql.NullTime
+		run                       AgentWorkflowRun
+		id                        int64
+		functionID                sql.NullString
+		parameterizedConfig       []byte
+		concreteConfig            []byte
+		concreteConfigHash        sql.NullString
+		actualPlan                sql.NullString
+		actualPlanNonce           sql.NullString
+		actualPlanHash            sql.NullString
+		actualPlanHashNonce       sql.NullString
+		resolvedDependencies      sql.NullString
+		resolvedDependenciesNonce sql.NullString
+		status                    string
+		executionStatus           sql.NullString
+		retryID                   sql.NullInt64
+		pipelineRunID             sql.NullInt64
+		templatePipelineID        sql.NullInt64
+		instancePipelineID        sql.NullInt64
+		plannedBuildID            sql.NullInt64
+		startedAt                 sql.NullTime
+		completedAt               sql.NullTime
 	)
 	err := row.Scan(
 		&id, &run.TeamID, &run.TeamName, &run.WorkflowDefinitionID, &run.WorkflowName,
 		&run.WorkflowVersion, &run.SchemaVersion, &run.SignatureVersion, &run.DefinitionContentHash,
 		&functionID, &run.IdempotencyKey, &parameterizedConfig, &run.ParameterizedConfigHash,
-		&concreteConfig, &concreteConfigHash, &actualPlan, &actualPlanHash,
-		&resolvedDependencies, &run.OriginKind, &run.OriginReference, &run.CreatedBy, &status,
-		&run.ErrorMessage, &retryID, &pipelineRunID, &templatePipelineID,
-		&instancePipelineID, &plannedBuildID, &run.CreatedAt, &run.UpdatedAt, &startedAt, &completedAt,
+		&concreteConfig, &concreteConfigHash, &actualPlan, &actualPlanNonce,
+		&actualPlanHash, &actualPlanHashNonce, &resolvedDependencies, &resolvedDependenciesNonce,
+		&run.OriginKind, &run.OriginReference, &run.CreatedBy, &status,
+		&executionStatus, &run.ErrorMessage, &retryID, &pipelineRunID, &templatePipelineID,
+		&instancePipelineID, &plannedBuildID, &run.ReconcileAfter, &run.CreatedAt, &run.UpdatedAt,
+		&startedAt, &completedAt,
 	)
 	if err != nil {
 		return AgentWorkflowRun{}, err
 	}
 	run.ID = snapshot.WorkflowRunID(id)
 	run.Status = AgentWorkflowRunStatus(status)
+	if executionStatus.Valid {
+		value := AgentWorkflowRunExecutionStatus(executionStatus.String)
+		run.ExecutionStatus = &value
+	}
 	run.ParameterizedConfig = cloneJSON(parameterizedConfig)
 	run.ConcreteConfig = cloneJSON(concreteConfig)
-	run.ActualPlan = cloneJSON(actualPlan)
-	run.ResolvedDependencies = cloneJSON(resolvedDependencies)
+	if actualPlan.Valid {
+		var nonce *string
+		if actualPlanNonce.Valid {
+			nonce = &actualPlanNonce.String
+		}
+		plaintext, err := encryptionStrategy.Decrypt(actualPlan.String, nonce)
+		if err != nil {
+			return AgentWorkflowRun{}, fmt.Errorf("db: decrypt workflow-run actual plan: %w", err)
+		}
+		if !json.Valid(plaintext) {
+			return AgentWorkflowRun{}, fmt.Errorf("db: invalid persisted workflow-run actual plan")
+		}
+		run.ActualPlan = cloneJSON(plaintext)
+	} else if actualPlanNonce.Valid {
+		return AgentWorkflowRun{}, fmt.Errorf("db: workflow-run actual-plan nonce has no ciphertext")
+	}
 	if functionID.Valid {
 		run.FunctionID = &functionID.String
 	}
@@ -275,7 +483,37 @@ func scanAgentWorkflowRun(row scannable) (AgentWorkflowRun, error) {
 		run.ConcreteConfigHash = &concreteConfigHash.String
 	}
 	if actualPlanHash.Valid {
-		run.ActualPlanHash = &actualPlanHash.String
+		var nonce *string
+		if actualPlanHashNonce.Valid {
+			nonce = &actualPlanHashNonce.String
+		}
+		plaintext, err := encryptionStrategy.Decrypt(actualPlanHash.String, nonce)
+		if err != nil {
+			return AgentWorkflowRun{}, fmt.Errorf("db: decrypt workflow-run actual plan hash: %w", err)
+		}
+		value := string(plaintext)
+		if strings.TrimSpace(value) == "" {
+			return AgentWorkflowRun{}, fmt.Errorf("db: invalid persisted workflow-run actual plan hash")
+		}
+		run.ActualPlanHash = &value
+	} else if actualPlanHashNonce.Valid {
+		return AgentWorkflowRun{}, fmt.Errorf("db: workflow-run actual-plan-hash nonce has no ciphertext")
+	}
+	if resolvedDependencies.Valid {
+		var nonce *string
+		if resolvedDependenciesNonce.Valid {
+			nonce = &resolvedDependenciesNonce.String
+		}
+		plaintext, err := encryptionStrategy.Decrypt(resolvedDependencies.String, nonce)
+		if err != nil {
+			return AgentWorkflowRun{}, fmt.Errorf("db: decrypt workflow-run resolved dependencies: %w", err)
+		}
+		if !json.Valid(plaintext) {
+			return AgentWorkflowRun{}, fmt.Errorf("db: invalid persisted workflow-run resolved dependencies")
+		}
+		run.ResolvedDependencies = cloneJSON(plaintext)
+	} else if resolvedDependenciesNonce.Valid {
+		return AgentWorkflowRun{}, fmt.Errorf("db: workflow-run resolved-dependencies nonce has no ciphertext")
 	}
 	if retryID.Valid {
 		value := snapshot.WorkflowRunID(retryID.Int64)
@@ -284,7 +522,10 @@ func scanAgentWorkflowRun(row scannable) (AgentWorkflowRun, error) {
 	run.PipelineRunID = nullIntToInt(pipelineRunID)
 	run.TemplatePipelineID = nullIntToInt(templatePipelineID)
 	run.InstancePipelineID = nullIntToInt(instancePipelineID)
-	run.PlannedBuildID = nullIntToInt(plannedBuildID)
+	if plannedBuildID.Valid {
+		value := plannedBuildID.Int64
+		run.PlannedBuildID = &value
+	}
 	if startedAt.Valid {
 		run.StartedAt = &startedAt.Time
 	}
@@ -296,6 +537,14 @@ func scanAgentWorkflowRun(row scannable) (AgentWorkflowRun, error) {
 	}
 	if err := run.Status.Validate(); err != nil {
 		return AgentWorkflowRun{}, fmt.Errorf("db: invalid persisted workflow run: %w", err)
+	}
+	if run.ExecutionStatus != nil {
+		if err := run.ExecutionStatus.Validate(); err != nil {
+			return AgentWorkflowRun{}, fmt.Errorf("db: invalid persisted workflow run: %w", err)
+		}
+	}
+	if run.ReconcileAfter.IsZero() {
+		return AgentWorkflowRun{}, fmt.Errorf("db: invalid persisted workflow run: reconcile time is required")
 	}
 	return run, nil
 }

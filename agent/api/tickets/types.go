@@ -4,7 +4,12 @@
 // (00-shared-contracts.md §1.7 / §2.1 + ticket-core addendum).
 package tickets
 
-import "errors"
+import (
+	"context"
+	"errors"
+
+	"github.com/concourse/concourse/agent/workitem"
+)
 
 type State string
 
@@ -119,11 +124,14 @@ var (
 	ErrStaleTransition   = errors.New("ticket state changed concurrently")
 	ErrNoActivePlan      = errors.New("ticket has no submitted plan")
 	ErrTaskNotFound      = errors.New("plan task not found")
+	ErrCommentNotFound   = errors.New("ticket comment not found")
+	ErrCommentAnswered   = errors.New("ticket comment already answered")
 )
 
 // Ticket is the §2.1 API shape (epoch-seconds timestamps).
 type Ticket struct {
 	ID                   int      `json:"id"`
+	Revision             int64    `json:"revision"`
 	Title                string   `json:"title"`
 	Body                 string   `json:"body"`
 	State                State    `json:"state"`
@@ -145,6 +153,20 @@ type Ticket struct {
 	CreatedAt            int64    `json:"created_at"`
 	UpdatedAt            int64    `json:"updated_at"`
 	CompletedAt          int64    `json:"completed_at,omitempty"`
+}
+
+// Comment is one mutable work-item interaction. An answer is first-writer
+// wins; both creation and answer increment the enclosing ticket revision.
+type Comment struct {
+	ID         int    `json:"id"`
+	TicketID   int    `json:"ticket_id"`
+	Revision   int64  `json:"revision"`
+	Body       string `json:"body"`
+	CreatedBy  string `json:"created_by"`
+	CreatedAt  int64  `json:"created_at"`
+	Answer     string `json:"answer,omitempty"`
+	AnsweredBy string `json:"answered_by,omitempty"`
+	AnsweredAt int64  `json:"answered_at,omitempty"`
 }
 
 type Link struct {
@@ -244,6 +266,15 @@ type Store interface {
 	UpdateActiveTask(ticketID, ordering int, status TaskStatus, note string) (planVersion int, err error)
 	ActivePlan(ticketID int) ([]Task, error)
 	LatestSpec(ticketID int) (*Spec, bool, error)
+
+	AppendComment(ticketID int, comment Comment) (int, error)
+	AnswerComment(ticketID, commentID int, answer, answeredBy string) error
+	Comments(ticketID int) ([]Comment, error)
+
+	// CaptureRevision returns strict work-item/v1 bytes assembled from one
+	// source snapshot. Implementations must never compose this by calling the
+	// ordinary getters independently.
+	CaptureRevision(context.Context, int) (workitem.CapturedRevision, bool, error)
 }
 
 // --- HTTP request bodies (also used by the go-concourse client) ---

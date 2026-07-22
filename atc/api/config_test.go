@@ -534,6 +534,16 @@ var _ = Describe("Config API", func() {
 							})
 						})
 
+						Context("when the pipeline is an immutable workflow-run template", func() {
+							BeforeEach(func() {
+								dbTeam.SavePipelineReturns(nil, false, db.ErrWorkflowRunTemplateImmutable)
+							})
+
+							It("returns 409 Conflict", func() {
+								Expect(response.StatusCode).To(Equal(http.StatusConflict))
+							})
+						})
+
 						Context("when it's the first time the pipeline has been created", func() {
 							BeforeEach(func() {
 								returnedPipeline := new(dbfakes.FakePipeline)

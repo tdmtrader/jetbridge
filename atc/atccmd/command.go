@@ -26,6 +26,7 @@ import (
 	"github.com/concourse/concourse/agent/api/outcomes"
 	"github.com/concourse/concourse/agent/api/principals"
 	snapshotsapi "github.com/concourse/concourse/agent/api/snapshots"
+	workflowrunsapi "github.com/concourse/concourse/agent/api/workflowruns"
 	"github.com/concourse/concourse/agent/artifactcap"
 	"github.com/concourse/concourse/agent/budget"
 	"github.com/concourse/concourse/agent/credentials"
@@ -34,6 +35,7 @@ import (
 	"github.com/concourse/concourse/agent/pipelinearchiver"
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/agent/snapshot/contracts"
+	"github.com/concourse/concourse/agent/workflowrun"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api"
 	"github.com/concourse/concourse/atc/api/accessor"
@@ -296,6 +298,11 @@ type RunCommand struct {
 		GCInterval        time.Duration `long:"agent-snapshot-gc-interval" default:"5m" description:"Interval between bounded snapshot garbage-collection passes."`
 		RepairInterval    time.Duration `long:"agent-snapshot-repair-interval" default:"10m" description:"Interval between bounded snapshot replica-repair passes."`
 	} `group:"Agent Snapshots"`
+
+	AgentWorkflowRuns struct {
+		ReconcilerInterval time.Duration `long:"agent-workflow-run-reconciler-interval" default:"10s" description:"Interval between bounded durable workflow-run reconciliation passes."`
+		AdmissionTimeout   time.Duration `long:"agent-workflow-run-admission-timeout" default:"15m" description:"Maximum age of an incomplete durable workflow-run admission before it is terminalized as interrupted."`
+	} `group:"Agent Workflow Runs"`
 
 	CLIArtifactsDir flag.Dir `long:"cli-artifacts-dir" description:"Directory containing downloadable CLI binaries."`
 	WebPublicDir    flag.Dir `long:"web-public-dir" description:"Web public/ directory to serve live for local development."`
@@ -752,6 +759,7 @@ func (cmd *RunCommand) Runner(positionalArguments []string) (ifrit.Runner, error
 	metric.InitOTelGC()
 	metric.InitOTelDBChecks()
 	metric.InitOTelArtifactUpload()
+	metric.InitOTelWorkflowRunReconciler()
 
 	// Connection tracker is off by default. Can be turned on/ff at runtime.
 	http.HandleFunc("/debug/connections", func(w http.ResponseWriter, r *http.Request) {
@@ -1089,6 +1097,7 @@ func (cmd *RunCommand) constructAPIMembers(
 		dbWall,
 		policyChecker,
 		dbSigningKeyFactory,
+		lockFactory,
 		dbConn,
 	)
 	if err != nil {
@@ -1244,6 +1253,16 @@ func (cmd *RunCommand) backendComponents(
 	dbPipelineLifecycle := db.NewPipelineLifecycle(dbConn, lockFactory)
 	dbPipelinePauser := db.NewPipelinePauser(dbConn, lockFactory)
 	dbSigningKeyFactory := db.NewSigningKeyFactory(dbConn)
+	dbAgentWorkflowRunsFactory := db.NewAgentWorkflowRunsFactory(dbConn)
+	agentWorkflowRunReconciler, err := workflowrun.NewReconciler(
+		dbAgentWorkflowRunsFactory,
+		logger.Session(atc.ComponentAgentWorkflowRunReconciler),
+		cmd.AgentWorkflowRuns.AdmissionTimeout,
+		cmd.AgentWorkflowRuns.ReconcilerInterval,
+	)
+	if err != nil {
+		return nil, err
+	}
 
 	dbWorkerFactory := db.NewWorkerFactory(dbConn, workerCache)
 
@@ -1401,6 +1420,13 @@ func (cmd *RunCommand) backendComponents(
 			},
 			Runnable: runlifecycle.NewLifecycler(dbPipelineRunFactory),
 		},
+		{
+			Component: atc.Component{
+				Name: atc.ComponentAgentWorkflowRunReconciler,
+			},
+			Runnable: agentWorkflowRunReconciler,
+			Interval: cmd.AgentWorkflowRuns.ReconcilerInterval,
+		},
 	}
 
 	idtoken.UpdateGlobalManagerFactory(func(f *idtoken.ManagerFactory) {
@@ -1498,7 +1524,7 @@ func (cmd *RunCommand) backendComponents(
 				k8sClientset,
 				cmd.Kubernetes.Namespace,
 				db.NewAgentRunChecker(dbConn),
-				nil, // PrincipalRevoker: bound by agent-identity's cutover task (Task 1 F22 addendum)
+				db.NewAgentPrincipalsFactory(dbConn),
 			),
 			Interval: time.Minute,
 		})
@@ -2488,6 +2514,26 @@ func (cmd *RunCommand) validate() error {
 		errs = multierror.Append(errs, err)
 	}
 
+	if err := cmd.validateAgentWorkflowRuns(); err != nil {
+		errs = multierror.Append(errs, err)
+	}
+
+	return errs.ErrorOrNil()
+}
+
+func (cmd *RunCommand) validateAgentWorkflowRuns() error {
+	var errs *multierror.Error
+	if cmd.AgentWorkflowRuns.ReconcilerInterval <= 0 {
+		errs = multierror.Append(errs, errors.New("--agent-workflow-run-reconciler-interval must be positive"))
+	}
+	if cmd.AgentWorkflowRuns.AdmissionTimeout <= 0 {
+		errs = multierror.Append(errs, errors.New("--agent-workflow-run-admission-timeout must be positive"))
+	}
+	if cmd.AgentWorkflowRuns.ReconcilerInterval > 0 &&
+		cmd.AgentWorkflowRuns.AdmissionTimeout > 0 &&
+		cmd.AgentWorkflowRuns.ReconcilerInterval > cmd.AgentWorkflowRuns.AdmissionTimeout/2 {
+		errs = multierror.Append(errs, errors.New("--agent-workflow-run-admission-timeout must be at least twice --agent-workflow-run-reconciler-interval"))
+	}
 	return errs.ErrorOrNil()
 }
 
@@ -2951,6 +2997,7 @@ func (cmd *RunCommand) constructAPIHandler(
 	dbWall db.Wall,
 	policyChecker policy.Checker,
 	dbSigningKeyFactory db.SigningKeyFactory,
+	lockFactory lock.LockFactory,
 	dbConn db.DbConn,
 ) (http.Handler, error) {
 	snapshotHandlers, err := cmd.agentSnapshotAPIHandlers()
@@ -3008,6 +3055,70 @@ func (cmd *RunCommand) constructAPIHandler(
 			customRoles,
 		),
 		wrappa.NewCompressionWrappa(logger),
+	}
+
+	mainTeam, found, err := teamFactory.FindTeam(atc.DefaultTeamName)
+	if err != nil {
+		return nil, fmt.Errorf("resolve main team for workflow-run API: %w", err)
+	}
+	if !found || mainTeam == nil || mainTeam.ID() <= 0 || mainTeam.Name() != atc.DefaultTeamName {
+		return nil, errors.New("resolve main team for workflow-run API: main team is unavailable")
+	}
+	workflowStore := db.NewAgentWorkflowsFactory(dbConn)
+	workflowRunStore := db.NewAgentWorkflowRunsFactory(dbConn)
+	snapshotStore := db.NewAgentSnapshotsFactory(dbConn)
+	templateSaver, err := workflowrun.NewTemplateSaver(
+		teamFactory,
+		db.NewWorkflowRunTemplateFactory(dbConn, lockFactory),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("construct workflow-run template saver: %w", err)
+	}
+	workflowBudget, err := workflowrun.NewGlobalDailyBudgetAdmitter(budget.NewChecker(
+		db.NewAgentCostLedgerFactory(dbConn),
+		dispatch.NewTicketBudgets(db.NewAgentTicketsFactory(dbConn), workflowStore),
+		budget.Config{GlobalDailyCapUSD: cmd.AgentDailyBudgetUSD},
+	))
+	if err != nil {
+		return nil, fmt.Errorf("construct workflow-run budget admission: %w", err)
+	}
+	workflowSecrets, err := workflowrun.NewVaultedRunSecretPreparer(
+		db.NewAgentUserLookup(dbConn),
+		db.NewAgentUserCredentialsFactory(dbConn),
+		agentPrincipalsFactory,
+		cmd.agentRunSecrets(),
+		cmd.AgentRunTimeout,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("construct workflow-run secret preparation: %w", err)
+	}
+	workflowBinder, err := workflowrun.NewBinder(
+		workflowrun.WorkflowDefinitionStoreResolver{Store: workflowStore},
+		workflowrun.WorkflowTargetRenderer{},
+		snapshotStore,
+		workflowRunStore,
+		workflowBudget,
+		templateSaver,
+		dbPipelineRunFactory,
+		workflowSecrets,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("construct workflow-run binder: %w", err)
+	}
+	workflowCanceler, err := workflowrun.NewCanceler(workflowRunStore, dbBuildFactory)
+	if err != nil {
+		return nil, fmt.Errorf("construct workflow-run canceler: %w", err)
+	}
+	workflowRunHandlers, err := workflowrunsapi.NewHandler(workflowrunsapi.Config{
+		Team: workflowrunsapi.TrustedTeam{ID: mainTeam.ID(), Name: mainTeam.Name()},
+		Identity: func(r *http.Request) (string, error) {
+			return workflowRunCreatorIdentity(accessor.GetAccessor(r).UserInfo())
+		},
+		Binder: workflowBinder, Runs: workflowRunStore,
+		Canceler: workflowCanceler, Manifests: snapshotStore,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("construct workflow-run API: %w", err)
 	}
 
 	return api.NewHandler(
@@ -3089,7 +3200,15 @@ func (cmd *RunCommand) constructAPIHandler(
 		db.NewAgentSettingsFactory(dbConn),
 		cmd.AgentDispatcherEnabled,
 		snapshotHandlers,
+		workflowRunHandlers,
 	)
+}
+
+func workflowRunCreatorIdentity(info atc.UserInfo) (string, error) {
+	if strings.TrimSpace(info.DisplayUserId) == "" {
+		return "", errors.New("authenticated workflow-run creator is unavailable")
+	}
+	return info.DisplayUserId, nil
 }
 
 // agentOutcomeMirrors lazily builds the shared outcome-diff mirror cache;

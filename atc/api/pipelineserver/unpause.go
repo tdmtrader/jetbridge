@@ -12,6 +12,9 @@ func (s *Server) UnpausePipeline(pipelineDB db.Pipeline) http.Handler {
 		err := pipelineDB.Unpause()
 
 		if err != nil {
+			if writeWorkflowRunTemplateConflict(w, err) {
+				return
+			}
 			logger.Error("failed-to-unpause-pipeline", err)
 			w.WriteHeader(http.StatusInternalServerError)
 			return

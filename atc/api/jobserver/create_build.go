@@ -2,6 +2,7 @@ package jobserver
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -54,6 +55,11 @@ func (s *Server) CreateJobBuild(pipeline db.Pipeline) http.Handler {
 		acc := accessor.GetAccessor(r)
 		build, err := job.CreateBuild(acc.UserInfo().DisplayUserId)
 		if err != nil {
+			if errors.Is(err, db.ErrWorkflowRunOwnedPipeline) {
+				w.WriteHeader(http.StatusConflict)
+				fmt.Fprint(w, "manual builds are disabled for durable workflow-run execution pipelines; create a workflow run instead")
+				return
+			}
 			logger.Error("failed-to-create-job-build", err)
 			w.WriteHeader(http.StatusInternalServerError)
 			return

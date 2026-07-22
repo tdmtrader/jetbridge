@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -678,14 +679,27 @@ func (p *pipeline) Dashboard() ([]atc.JobSummary, error) {
 }
 
 func (p *pipeline) Pause(pausedBy string) error {
-	_, err := psql.Update("pipelines").
+	tx, err := p.conn.Begin()
+	if err != nil {
+		return err
+	}
+	defer Rollback(tx)
+
+	if err := rejectWorkflowRunTemplateMutation(context.Background(), tx, p.id); err != nil {
+		return err
+	}
+
+	_, err = psql.Update("pipelines").
 		Set("paused", true).
 		Set("paused_at", sq.Expr("now()")).
 		Set("paused_by", pausedBy).
 		Where(sq.Eq{"id": p.id, "paused": false}).
-		RunWith(p.conn).
+		RunWith(tx).
 		Exec()
 	if err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
 		return err
 	}
 
@@ -701,6 +715,10 @@ func (p *pipeline) Unpause() error {
 	}
 
 	defer Rollback(tx)
+
+	if err := rejectWorkflowRunTemplateMutation(context.Background(), tx, p.id); err != nil {
+		return err
+	}
 
 	_, err = psql.Update("pipelines").
 		Set("paused", false).
@@ -729,6 +747,9 @@ func (p *pipeline) Archive() error {
 	}
 
 	defer Rollback(tx)
+	if err := rejectWorkflowRunTemplateMutation(context.Background(), tx, p.id); err != nil {
+		return err
+	}
 	err = p.archive(tx)
 	if err != nil {
 		return err
@@ -772,37 +793,71 @@ func (p *pipeline) archive(tx Tx) error {
 }
 
 func (p *pipeline) Hide() error {
-	_, err := psql.Update("pipelines").
+	tx, err := p.conn.Begin()
+	if err != nil {
+		return err
+	}
+	defer Rollback(tx)
+	if err := rejectWorkflowRunTemplateMutation(context.Background(), tx, p.id); err != nil {
+		return err
+	}
+
+	_, err = psql.Update("pipelines").
 		Set("public", false).
 		Where(sq.Eq{
 			"id": p.id,
 		}).
-		RunWith(p.conn).
+		RunWith(tx).
 		Exec()
-
-	return err
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (p *pipeline) Expose() error {
-	_, err := psql.Update("pipelines").
+	tx, err := p.conn.Begin()
+	if err != nil {
+		return err
+	}
+	defer Rollback(tx)
+	if err := rejectWorkflowRunTemplateMutation(context.Background(), tx, p.id); err != nil {
+		return err
+	}
+
+	_, err = psql.Update("pipelines").
 		Set("public", true).
 		Where(sq.Eq{
 			"id": p.id,
 		}).
-		RunWith(p.conn).
+		RunWith(tx).
 		Exec()
-
-	return err
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (p *pipeline) Destroy() error {
-	_, err := psql.Delete("pipelines").
+	tx, err := p.conn.Begin()
+	if err != nil {
+		return err
+	}
+	defer Rollback(tx)
+	if err := rejectWorkflowRunTemplateMutation(context.Background(), tx, p.id); err != nil {
+		return err
+	}
+
+	_, err = psql.Delete("pipelines").
 		Where(sq.Eq{
 			"id": p.id,
 		}).
-		RunWith(p.conn).
+		RunWith(tx).
 		Exec()
 	if err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
 		return err
 	}
 
@@ -1092,6 +1147,9 @@ func (p *pipeline) CreateStartedBuild(plan atc.Plan) (Build, error) {
 	}
 
 	defer Rollback(tx)
+	if err := rejectWorkflowRunOwnedPipeline(context.Background(), tx, p.id); err != nil {
+		return nil, err
+	}
 
 	metadata, err := json.Marshal(plan)
 	if err != nil {

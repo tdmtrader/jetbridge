@@ -1,0 +1,50 @@
+schema_version: 3
+name: small-fix
+signature_version: 1
+description: Implement, test, and review a bounded work item without publishing it.
+inputs:
+  - name: repository
+    type: repository/v1
+    description: Clean immutable base repository.
+  - name: work-item
+    type: work-item/v1
+    description: Captured request to implement.
+outputs:
+  - name: change
+    type: repository-change/v1
+    from: final-change
+    description: Validated change relative to the repository input.
+  - name: report
+    type: opaque/v1
+    from: report
+    description: Human-readable implementation, test, and review notes.
+plan:
+  - agent: implement-and-test
+    function_id: implement-and-test
+    prompt_file: prompts/implement.md
+    inputs: [repository, work-item]
+    outputs: [candidate-change, validation]
+    input_types:
+      repository: {type: repository/v1}
+      work-item: {type: work-item/v1}
+    output_types:
+      candidate-change: repository-change/v1
+      validation: validation-report/v1
+  - agent: review
+    function_id: review
+    prompt: >-
+      Review candidate-change against repository and validation. Re-run or inspect
+      the relevant tests, fix only defects required by the captured work item, and
+      write the accepted repository-change/v1 to $AGENT_OUTPUT_FINAL_CHANGE. Write
+      a concise report.md with implementation, tests, risks, and review disposition
+      to $AGENT_OUTPUT_REPORT. Do not push, merge, comment, or contact live systems.
+    inputs: [repository, work-item, candidate-change, validation]
+    outputs: [final-change, report]
+    input_types:
+      repository: {type: repository/v1}
+      work-item: {type: work-item/v1}
+      candidate-change: {type: repository-change/v1}
+      validation: {type: validation-report/v1}
+    output_types:
+      final-change: repository-change/v1
+      report: opaque/v1

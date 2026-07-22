@@ -44,6 +44,14 @@ CREATE INDEX agent_snapshot_staged_uploads_expiry
 CREATE INDEX agent_snapshot_staged_uploads_digest
     ON agent_snapshot_staged_uploads (digest, lease_expires_at, id);
 
+-- This registry is intentionally separate from pipelines.template. Ordinary
+-- Concourse instanced-pipeline templates remain user-runnable; only immutable
+-- templates created for durable workflow execution are server-owned.
+CREATE TABLE agent_workflow_run_templates (
+    pipeline_id INTEGER PRIMARY KEY REFERENCES pipelines (id) ON DELETE CASCADE,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE TABLE agent_workflow_runs (
     id                         BIGSERIAL PRIMARY KEY,
     team_id                    INTEGER NOT NULL CHECK (team_id > 0),
@@ -60,9 +68,12 @@ CREATE TABLE agent_workflow_runs (
     parameterized_config_hash  TEXT NOT NULL CHECK (btrim(parameterized_config_hash) <> ''),
     concrete_config            JSONB,
     concrete_config_hash       TEXT,
-    actual_plan                JSONB,
+    actual_plan                TEXT,
+    actual_plan_nonce          TEXT,
     actual_plan_hash           TEXT,
-    resolved_dependencies      JSONB,
+    actual_plan_hash_nonce     TEXT,
+    resolved_dependencies      TEXT,
+    resolved_dependencies_nonce TEXT,
     origin_kind                TEXT NOT NULL CHECK (btrim(origin_kind) <> ''),
     origin_reference           TEXT NOT NULL,
     created_by                 TEXT NOT NULL CHECK (btrim(created_by) <> ''),
@@ -81,6 +92,9 @@ CREATE TABLE agent_workflow_runs (
     UNIQUE (team_id, idempotency_key),
     CHECK ((concrete_config IS NULL) = (concrete_config_hash IS NULL)),
     CHECK ((actual_plan IS NULL) = (actual_plan_hash IS NULL)),
+    CHECK (actual_plan IS NOT NULL OR actual_plan_nonce IS NULL),
+    CHECK (actual_plan_hash IS NOT NULL OR actual_plan_hash_nonce IS NULL),
+    CHECK (resolved_dependencies IS NOT NULL OR resolved_dependencies_nonce IS NULL),
     CHECK (completed_at IS NULL OR completed_at >= created_at)
 );
 

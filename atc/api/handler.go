@@ -1,6 +1,7 @@
 package api
 
 import (
+	"fmt"
 	"net/http"
 	"path/filepath"
 	"time"
@@ -16,6 +17,7 @@ import (
 	reviewsapi "github.com/concourse/concourse/agent/api/reviews"
 	snapshotsapi "github.com/concourse/concourse/agent/api/snapshots"
 	ticketsapi "github.com/concourse/concourse/agent/api/tickets"
+	workflowrunsapi "github.com/concourse/concourse/agent/api/workflowruns"
 	workflowsapi "github.com/concourse/concourse/agent/api/workflows"
 	"github.com/concourse/concourse/agent/budget"
 	"github.com/concourse/concourse/agent/credentials"
@@ -130,7 +132,11 @@ func NewHandler(
 	agentSettingsStore dispatcherapi.Store,
 	agentDispatcherBootDefault bool,
 	snapshotHandlers *snapshotsapi.HandlerFactory,
+	workflowRunHandlers *workflowrunsapi.Handler,
 ) (http.Handler, error) {
+	if workflowRunHandlers == nil {
+		return nil, fmt.Errorf("workflow-run API handlers are required")
+	}
 
 	absCLIDownloadsDir, err := filepath.Abs(cliDownloadsDir)
 	if err != nil {
@@ -395,6 +401,12 @@ func NewHandler(
 		atc.GetAgentWorkflowVersion:      http.HandlerFunc(workflowsServer.Get),
 		atc.CreateAgentWorkflowVersion:   http.HandlerFunc(workflowsServer.Import),
 		atc.PromoteAgentWorkflowVersion:  http.HandlerFunc(workflowsServer.Promote),
+		atc.CreateAgentWorkflowRun:       http.HandlerFunc(workflowRunHandlers.Create),
+		atc.ListAgentWorkflowRuns:        http.HandlerFunc(workflowRunHandlers.List),
+		atc.GetAgentWorkflowRun:          http.HandlerFunc(workflowRunHandlers.Get),
+		atc.CancelAgentWorkflowRun:       http.HandlerFunc(workflowRunHandlers.Cancel),
+		atc.RetryAgentWorkflowRun:        http.HandlerFunc(workflowRunHandlers.Retry),
+		atc.GetAgentWorkflowRunOutputs:   http.HandlerFunc(workflowRunHandlers.Outputs),
 
 		atc.CreateAgentPrincipal: http.HandlerFunc(principalsServer.CreatePrincipal),
 		atc.ListAgentPrincipals:  http.HandlerFunc(principalsServer.ListPrincipals),

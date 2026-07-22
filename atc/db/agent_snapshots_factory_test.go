@@ -470,11 +470,9 @@ var _ = Describe("AgentSnapshotsFactory", func() {
 		})).To(Succeed())
 
 		var producerBuildID int
-		Expect(dbConn.QueryRow(`INSERT INTO builds (name, status, team_id, pipeline_id) VALUES ($1, 'pending', $2, $3) RETURNING id`, fmt.Sprintf("snapshot-output-%d", pipelineSuffix), defaultTeam.ID(), instanceID).Scan(&producerBuildID)).To(Succeed())
-		Expect(runFactory.RecordPlan(ctx, run.ID, db.AgentWorkflowRunPlan{
-			BuildID: producerBuildID, ActualPlan: json.RawMessage(`{"task":"review"}`),
-			ActualPlanHash: strings.Repeat("d", 64), ResolvedDependencies: json.RawMessage(`{}`),
-		})).To(Succeed())
+		Expect(dbConn.QueryRow(`INSERT INTO builds (name, status, team_id, pipeline_id) VALUES ($1, 'started', $2, $3) RETURNING id`, fmt.Sprintf("snapshot-output-%d", pipelineSuffix), defaultTeam.ID(), instanceID).Scan(&producerBuildID)).To(Succeed())
+		_, err = dbConn.Exec(`UPDATE agent_workflow_runs SET planned_build_id = $2 WHERE id = $1`, int64(run.ID), producerBuildID)
+		Expect(err).NotTo(HaveOccurred())
 
 		resultDigest := digest("2")
 		resultStage := stage(resultDigest, defaultTeam.ID(), "workflow-output")
@@ -484,6 +482,43 @@ var _ = Describe("AgentSnapshotsFactory", func() {
 			Class: snapshot.RetentionClassWorkflow, Actor: "workflow-output", Reason: "durable workflow output",
 		})
 		runID := run.ID
+		_, err = factory.CommitSealBatch(ctx, lease, snapshot.SealCommit{
+			Context: snapshot.SealCommitContext{
+				TeamID: defaultTeam.ID(), TeamName: defaultTeam.Name(), CreatedBy: "alice",
+				Build: &snapshot.BuildOccurrence{BuildID: producerBuildID, PlanID: "plan-output", Attempt: "workflow-output",
+					StepKind: "agent", StepName: "review", WorkflowDefinitionID: &definitionID, WorkflowRunID: &runID},
+				InputOrder: []string{"source"}, Inputs: map[string]snapshot.SnapshotRef{"source": input},
+				ExpectedOutputs: []snapshot.Port{result.Port},
+			},
+			Outputs: []snapshot.SealCommitOutput{result},
+		})
+		Expect(err).To(MatchError(ContainSubstring("actual plan")))
+		var retainedStage int
+		Expect(dbConn.QueryRow(`SELECT count(*) FROM agent_snapshot_staged_uploads WHERE id = $1`, resultStage.ID).Scan(&retainedStage)).To(Succeed())
+		Expect(retainedStage).To(Equal(1), "missing-provenance rejection must roll the seal transaction back")
+
+		Expect(runFactory.RecordPlan(ctx, run.ID, db.AgentWorkflowRunPlan{
+			BuildID: int64(producerBuildID), ActualPlan: json.RawMessage(`{"task":"review"}`),
+			ActualPlanHash: strings.Repeat("d", 64), ResolvedDependencies: json.RawMessage(`{}`),
+		})).To(Succeed())
+		_, err = dbConn.Exec(`UPDATE agent_workflow_runs SET status = 'succeeded', completed_at = now() WHERE id = $1`, int64(run.ID))
+		Expect(err).NotTo(HaveOccurred())
+		_, err = factory.CommitSealBatch(ctx, lease, snapshot.SealCommit{
+			Context: snapshot.SealCommitContext{
+				TeamID: defaultTeam.ID(), TeamName: defaultTeam.Name(), CreatedBy: "alice",
+				Build: &snapshot.BuildOccurrence{BuildID: producerBuildID, PlanID: "plan-output", Attempt: "workflow-output",
+					StepKind: "agent", StepName: "review", WorkflowDefinitionID: &definitionID, WorkflowRunID: &runID},
+				InputOrder: []string{"source"}, Inputs: map[string]snapshot.SnapshotRef{"source": input},
+				ExpectedOutputs: []snapshot.Port{result.Port},
+			},
+			Outputs: []snapshot.SealCommitOutput{result},
+		})
+		Expect(err).To(MatchError(ContainSubstring("active")))
+		Expect(dbConn.QueryRow(`SELECT count(*) FROM agent_snapshot_staged_uploads WHERE id = $1`, resultStage.ID).Scan(&retainedStage)).To(Succeed())
+		Expect(retainedStage).To(Equal(1), "terminal-run rejection must roll the seal transaction back")
+		_, err = dbConn.Exec(`UPDATE agent_workflow_runs SET status = 'admitting', completed_at = NULL WHERE id = $1`, int64(run.ID))
+		Expect(err).NotTo(HaveOccurred())
+
 		wrongBuildID := newBuild(defaultTeam.ID())
 		_, err = factory.CommitSealBatch(ctx, lease, snapshot.SealCommit{
 			Context: snapshot.SealCommitContext{
@@ -496,7 +531,6 @@ var _ = Describe("AgentSnapshotsFactory", func() {
 			Outputs: []snapshot.SealCommitOutput{result},
 		})
 		Expect(err).To(MatchError(ContainSubstring("planned build")))
-		var retainedStage int
 		Expect(dbConn.QueryRow(`SELECT count(*) FROM agent_snapshot_staged_uploads WHERE id = $1`, resultStage.ID).Scan(&retainedStage)).To(Succeed())
 		Expect(retainedStage).To(Equal(1), "wrong-build rejection must roll the seal transaction back")
 

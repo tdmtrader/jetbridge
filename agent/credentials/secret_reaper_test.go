@@ -140,7 +140,7 @@ func TestReaperIgnoresSecretsWithoutRunLabel(t *testing.T) {
 	}
 }
 
-func TestReaperRevokeIsBestEffort(t *testing.T) {
+func TestReaperUsesSecretAsDurablePrincipalRevocationRetryMarker(t *testing.T) {
 	// nil revoker (wave-1 wiring, before agent-identity binds it)
 	clientset := fake.NewSimpleClientset()
 	seedRunSecret(t, clientset, "ns", 11, time.Hour)
@@ -153,19 +153,31 @@ func TestReaperRevokeIsBestEffort(t *testing.T) {
 		t.Fatalf("secret must be reaped with nil revoker, got err=%v", err)
 	}
 
-	// failing revoker: revocation is attempted, its error logged, never fatal
+	// A failing revoker keeps the secret so the next pass can retry the exact
+	// deterministic principal name rather than losing the lifecycle marker.
 	seedRunSecret(t, clientset, "ns", 12, time.Hour)
 	revoker := &fakeRevoker{err: fmt.Errorf("store down")}
 	reaper = credentials.NewRunSecretReaper(
 		lagertest.NewTestLogger("reaper"), clientset, "ns", &fakeRunChecker{}, revoker)
-	if err := reaper.Run(context.Background()); err != nil {
-		t.Fatalf("revoker error must not fail the sweep: %v", err)
+	if err := reaper.Run(context.Background()); err == nil {
+		t.Fatal("revoker error must surface so the component retries")
 	}
-	if _, err := clientset.CoreV1().Secrets("ns").Get(context.Background(), "agent-run-12", metav1.GetOptions{}); !apierrors.IsNotFound(err) {
-		t.Fatalf("secret must be reaped despite revoke failure, got err=%v", err)
+	if _, err := clientset.CoreV1().Secrets("ns").Get(context.Background(), "agent-run-12", metav1.GetOptions{}); err != nil {
+		t.Fatalf("secret must remain as a revocation retry marker: %v", err)
 	}
 	if len(revoker.names) != 1 || revoker.names[0] != "agent-run-12" {
 		t.Fatalf("revocation must be attempted: %v", revoker.names)
+	}
+
+	revoker.err = nil
+	if err := reaper.Run(context.Background()); err != nil {
+		t.Fatalf("successful retry: %v", err)
+	}
+	if _, err := clientset.CoreV1().Secrets("ns").Get(context.Background(), "agent-run-12", metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("secret must be deleted after principal revocation, got err=%v", err)
+	}
+	if len(revoker.names) != 2 || revoker.names[1] != "agent-run-12" {
+		t.Fatalf("revocation retry must use the same exact principal: %v", revoker.names)
 	}
 }
 

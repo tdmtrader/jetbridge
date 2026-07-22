@@ -198,6 +198,17 @@ type FakeBuild struct {
 	finishReturnsOnCall map[int]struct {
 		result1 error
 	}
+	FinishWorkflowPlanningErrorStub        func(string) error
+	finishWorkflowPlanningErrorMutex       sync.RWMutex
+	finishWorkflowPlanningErrorArgsForCall []struct {
+		arg1 string
+	}
+	finishWorkflowPlanningErrorReturns struct {
+		result1 error
+	}
+	finishWorkflowPlanningErrorReturnsOnCall map[int]struct {
+		result1 error
+	}
 	HasPlanStub        func() bool
 	hasPlanMutex       sync.RWMutex
 	hasPlanArgsForCall []struct {
@@ -1662,6 +1673,67 @@ func (fake *FakeBuild) FinishReturnsOnCall(i int, result1 error) {
 		})
 	}
 	fake.finishReturnsOnCall[i] = struct {
+		result1 error
+	}{result1}
+}
+
+func (fake *FakeBuild) FinishWorkflowPlanningError(arg1 string) error {
+	fake.finishWorkflowPlanningErrorMutex.Lock()
+	ret, specificReturn := fake.finishWorkflowPlanningErrorReturnsOnCall[len(fake.finishWorkflowPlanningErrorArgsForCall)]
+	fake.finishWorkflowPlanningErrorArgsForCall = append(fake.finishWorkflowPlanningErrorArgsForCall, struct {
+		arg1 string
+	}{arg1})
+	stub := fake.FinishWorkflowPlanningErrorStub
+	fakeReturns := fake.finishWorkflowPlanningErrorReturns
+	fake.recordInvocation("FinishWorkflowPlanningError", []interface{}{arg1})
+	fake.finishWorkflowPlanningErrorMutex.Unlock()
+	if stub != nil {
+		return stub(arg1)
+	}
+	if specificReturn {
+		return ret.result1
+	}
+	return fakeReturns.result1
+}
+
+func (fake *FakeBuild) FinishWorkflowPlanningErrorCallCount() int {
+	fake.finishWorkflowPlanningErrorMutex.RLock()
+	defer fake.finishWorkflowPlanningErrorMutex.RUnlock()
+	return len(fake.finishWorkflowPlanningErrorArgsForCall)
+}
+
+func (fake *FakeBuild) FinishWorkflowPlanningErrorCalls(stub func(string) error) {
+	fake.finishWorkflowPlanningErrorMutex.Lock()
+	defer fake.finishWorkflowPlanningErrorMutex.Unlock()
+	fake.FinishWorkflowPlanningErrorStub = stub
+}
+
+func (fake *FakeBuild) FinishWorkflowPlanningErrorArgsForCall(i int) string {
+	fake.finishWorkflowPlanningErrorMutex.RLock()
+	defer fake.finishWorkflowPlanningErrorMutex.RUnlock()
+	argsForCall := fake.finishWorkflowPlanningErrorArgsForCall[i]
+	return argsForCall.arg1
+}
+
+func (fake *FakeBuild) FinishWorkflowPlanningErrorReturns(result1 error) {
+	fake.finishWorkflowPlanningErrorMutex.Lock()
+	defer fake.finishWorkflowPlanningErrorMutex.Unlock()
+	fake.FinishWorkflowPlanningErrorStub = nil
+	fake.finishWorkflowPlanningErrorReturns = struct {
+		result1 error
+	}{result1}
+}
+
+func (fake *FakeBuild) FinishWorkflowPlanningErrorReturnsOnCall(i int, result1 error) {
+	fake.finishWorkflowPlanningErrorMutex.Lock()
+	defer fake.finishWorkflowPlanningErrorMutex.Unlock()
+	fake.FinishWorkflowPlanningErrorStub = nil
+	if fake.finishWorkflowPlanningErrorReturnsOnCall == nil {
+		fake.finishWorkflowPlanningErrorReturnsOnCall = make(map[int]struct {
+			result1 error
+		})
+	}
+	fake.finishWorkflowPlanningErrorReturnsOnCall[i] = struct {
 		result1 error
 	}{result1}
 }

@@ -855,6 +855,17 @@ var _ = Describe("Pipelines API", func() {
 						Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
 					})
 				})
+
+				Context("when the pipeline is an immutable workflow-run template", func() {
+					BeforeEach(func() {
+						fakeTeam.PipelineReturns(dbPipeline, true, nil)
+						dbPipeline.DestroyReturns(db.ErrWorkflowRunTemplateImmutable)
+					})
+
+					It("returns 409 Conflict", func() {
+						Expect(response.StatusCode).To(Equal(http.StatusConflict))
+					})
+				})
 			})
 
 			Context("when requester does not belong to the team", func() {
@@ -934,6 +945,17 @@ var _ = Describe("Pipelines API", func() {
 						Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
 					})
 				})
+
+				Context("when the pipeline is an immutable workflow-run template", func() {
+					BeforeEach(func() {
+						fakeTeam.PipelineReturns(dbPipeline, true, nil)
+						dbPipeline.PauseReturns(db.ErrWorkflowRunTemplateImmutable)
+					})
+
+					It("returns 409", func() {
+						Expect(response.StatusCode).To(Equal(http.StatusConflict))
+					})
+				})
 			})
 
 			Context("when requester does not belong to the team", func() {
@@ -990,6 +1012,16 @@ var _ = Describe("Pipelines API", func() {
 
 			It("gives a server error", func() {
 				Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
+			})
+		})
+
+		Context("when the pipeline is an immutable workflow-run template", func() {
+			BeforeEach(func() {
+				dbPipeline.ArchiveReturns(db.ErrWorkflowRunTemplateImmutable)
+			})
+
+			It("returns 409 Conflict", func() {
+				Expect(response.StatusCode).To(Equal(http.StatusConflict))
 			})
 		})
 
@@ -1062,6 +1094,16 @@ var _ = Describe("Pipelines API", func() {
 
 					It("returns 500", func() {
 						Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
+					})
+				})
+
+				Context("when the pipeline is an immutable workflow-run template", func() {
+					BeforeEach(func() {
+						dbPipeline.UnpauseReturns(db.ErrWorkflowRunTemplateImmutable)
+					})
+
+					It("returns 409", func() {
+						Expect(response.StatusCode).To(Equal(http.StatusConflict))
 					})
 				})
 			})
@@ -1144,6 +1186,17 @@ var _ = Describe("Pipelines API", func() {
 						Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
 					})
 				})
+
+				Context("when the pipeline is an immutable workflow-run template", func() {
+					BeforeEach(func() {
+						fakeTeam.PipelineReturns(dbPipeline, true, nil)
+						dbPipeline.ExposeReturns(db.ErrWorkflowRunTemplateImmutable)
+					})
+
+					It("returns 409", func() {
+						Expect(response.StatusCode).To(Equal(http.StatusConflict))
+					})
+				})
 			})
 
 			Context("when requester does not belong to the team", func() {
@@ -1220,6 +1273,17 @@ var _ = Describe("Pipelines API", func() {
 
 					It("returns 500", func() {
 						Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
+					})
+				})
+
+				Context("when the pipeline is an immutable workflow-run template", func() {
+					BeforeEach(func() {
+						fakeTeam.PipelineReturns(dbPipeline, true, nil)
+						dbPipeline.HideReturns(db.ErrWorkflowRunTemplateImmutable)
+					})
+
+					It("returns 409", func() {
+						Expect(response.StatusCode).To(Equal(http.StatusConflict))
 					})
 				})
 			})
@@ -1715,6 +1779,16 @@ var _ = Describe("Pipelines API", func() {
 					})
 				})
 
+				Context("when the pipeline is an immutable workflow-run template", func() {
+					BeforeEach(func() {
+						fakeTeam.RenamePipelineReturns(false, db.ErrWorkflowRunTemplateImmutable)
+					})
+
+					It("returns 409 Conflict", func() {
+						Expect(response.StatusCode).To(Equal(http.StatusConflict))
+					})
+				})
+
 				Context("when the new name is an invalid identifier", func() {
 					Context("and is a string", func() {
 						BeforeEach(func() {
@@ -2031,6 +2105,16 @@ var _ = Describe("Pipelines API", func() {
 
 					It("returns 500 Internal Server Error", func() {
 						Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
+					})
+				})
+
+				Context("when the pipeline is owned by a durable workflow run", func() {
+					BeforeEach(func() {
+						dbPipeline.CreateStartedBuildReturns(nil, fmt.Errorf("one-off build guard: %w", db.ErrWorkflowRunOwnedPipeline))
+					})
+
+					It("returns 409 Conflict", func() {
+						Expect(response.StatusCode).To(Equal(http.StatusConflict))
 					})
 				})
 

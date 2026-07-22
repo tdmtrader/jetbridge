@@ -19,14 +19,19 @@ func TestTemplateSaverCreatesWithCreateOnlyVersion(t *testing.T) {
 	team.NameReturns("research")
 	team.PipelineReturns(nil, false, nil)
 	team.PipelineReturnsOnCall(1, pipeline, true, nil)
-	team.SavePipelineReturns(pipeline, true, nil)
+	store := &templateStoreStub{save: func(ctx context.Context, teamID int, ref atc.PipelineRef, config atc.Config) (db.Pipeline, bool, error) {
+		if ctx == nil || teamID != 7 || ref.Name != spec.Name || ref.InstanceVars != nil || !configsEqual(config, spec.Config) {
+			t.Fatalf("Save args = (%v, %d, %+v, %+v)", ctx, teamID, ref, config)
+		}
+		return pipeline, true, nil
+	}, owns: func(context.Context, int) (bool, error) { return true, nil }}
 	finder := &teamFinderStub{find: func(name string) (db.Team, bool, error) {
 		if name != "research" {
 			t.Fatalf("team lookup = %q", name)
 		}
 		return team, true, nil
 	}}
-	saver, err := NewTemplateSaver(finder)
+	saver, err := NewTemplateSaver(finder, store)
 	if err != nil {
 		t.Fatalf("NewTemplateSaver: %v", err)
 	}
@@ -40,12 +45,8 @@ func TestTemplateSaverCreatesWithCreateOnlyVersion(t *testing.T) {
 	if ref.PipelineID != 81 || ref.TeamID != 7 || ref.Name != spec.Name || ref.ConfigVersion != 13 || ref.FullHash != spec.FullHash {
 		t.Fatalf("ref = %+v", ref)
 	}
-	if team.SavePipelineCallCount() != 1 {
-		t.Fatalf("SavePipeline calls = %d", team.SavePipelineCallCount())
-	}
-	gotRef, gotConfig, from, paused := team.SavePipelineArgsForCall(0)
-	if gotRef.Name != spec.Name || gotRef.InstanceVars != nil || from != db.ConfigVersion(0) || paused || !configsEqual(gotConfig, spec.Config) {
-		t.Fatalf("SavePipeline args = (%+v, %+v, %d, %t)", gotRef, gotConfig, from, paused)
+	if store.saveCalls != 1 {
+		t.Fatalf("Save calls = %d", store.saveCalls)
 	}
 }
 
@@ -56,9 +57,10 @@ func TestTemplateSaverReusesOnlyAnExactImmutableTemplate(t *testing.T) {
 	team.IDReturns(7)
 	team.NameReturns("research")
 	team.PipelineReturns(pipeline, true, nil)
+	store := alwaysOwnedTemplateStore()
 	saver, err := NewTemplateSaver(&teamFinderStub{find: func(string) (db.Team, bool, error) {
 		return team, true, nil
-	}})
+	}}, store)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,8 +69,29 @@ func TestTemplateSaverReusesOnlyAnExactImmutableTemplate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SaveOrReuse: %v", err)
 	}
-	if ref.PipelineID != pipeline.ID() || team.SavePipelineCallCount() != 0 {
-		t.Fatalf("reuse = %+v, save calls = %d", ref, team.SavePipelineCallCount())
+	if ref.PipelineID != pipeline.ID() || store.saveCalls != 0 {
+		t.Fatalf("reuse = %+v, save calls = %d", ref, store.saveCalls)
+	}
+}
+
+func TestTemplateSaverRejectsAnExactButUnownedPipeline(t *testing.T) {
+	spec := templateSaverSpec(t)
+	pipeline := exactTemplatePipeline(spec, 81, 7, 13)
+	team := new(dbfakes.FakeTeam)
+	team.IDReturns(7)
+	team.NameReturns("research")
+	team.PipelineReturns(pipeline, true, nil)
+	store := &templateStoreStub{owns: func(context.Context, int) (bool, error) { return false, nil }}
+	saver, err := NewTemplateSaver(&teamFinderStub{find: func(string) (db.Team, bool, error) {
+		return team, true, nil
+	}}, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = saver.SaveOrReuse(context.Background(), AdmissionContext{TeamID: 7, TeamName: "research"}, spec)
+	if !errors.Is(err, ErrImmutableTemplateCollision) {
+		t.Fatalf("error = %v", err)
 	}
 }
 
@@ -97,7 +120,7 @@ func TestTemplateSaverRejectsEveryMutableOrCollidingShape(t *testing.T) {
 			team.PipelineReturns(pipeline, true, nil)
 			saver, err := NewTemplateSaver(&teamFinderStub{find: func(string) (db.Team, bool, error) {
 				return team, true, nil
-			}})
+			}}, alwaysOwnedTemplateStore())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -118,10 +141,13 @@ func TestTemplateSaverConvergesWithConcurrentExactCreator(t *testing.T) {
 	team.PipelineReturns(nil, false, nil)
 	team.PipelineReturnsOnCall(1, pipeline, true, nil)
 	team.PipelineReturnsOnCall(2, pipeline, true, nil)
-	team.SavePipelineReturns(nil, false, db.ErrConfigComparisonFailed)
+	store := alwaysOwnedTemplateStore()
+	store.save = func(context.Context, int, atc.PipelineRef, atc.Config) (db.Pipeline, bool, error) {
+		return nil, false, db.ErrConfigComparisonFailed
+	}
 	saver, err := NewTemplateSaver(&teamFinderStub{find: func(string) (db.Team, bool, error) {
 		return team, true, nil
-	}})
+	}}, store)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,8 +155,8 @@ func TestTemplateSaverConvergesWithConcurrentExactCreator(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SaveOrReuse: %v", err)
 	}
-	if ref.PipelineID != 81 || team.SavePipelineCallCount() != 1 {
-		t.Fatalf("ref = %+v, save calls = %d", ref, team.SavePipelineCallCount())
+	if ref.PipelineID != 81 || store.saveCalls != 1 {
+		t.Fatalf("ref = %+v, save calls = %d", ref, store.saveCalls)
 	}
 }
 
@@ -147,7 +173,7 @@ func TestTemplateSaverRetriesVersionDriftAndBoundsPersistentMutation(t *testing.
 		team.PipelineReturnsOnCall(1, version11, true, nil)
 		saver, err := NewTemplateSaver(&teamFinderStub{find: func(string) (db.Team, bool, error) {
 			return team, true, nil
-		}})
+		}}, alwaysOwnedTemplateStore())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -171,7 +197,7 @@ func TestTemplateSaverRetriesVersionDriftAndBoundsPersistentMutation(t *testing.
 		}
 		saver, err := NewTemplateSaver(&teamFinderStub{find: func(string) (db.Team, bool, error) {
 			return team, true, nil
-		}})
+		}}, alwaysOwnedTemplateStore())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -203,7 +229,7 @@ func TestTemplateSaverRequiresAuthoritativeTeamIdentity(t *testing.T) {
 			team.NameReturns(test.teamName)
 			saver, err := NewTemplateSaver(&teamFinderStub{find: func(string) (db.Team, bool, error) {
 				return team, test.found, nil
-			}})
+			}}, alwaysOwnedTemplateStore())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -212,6 +238,16 @@ func TestTemplateSaverRequiresAuthoritativeTeamIdentity(t *testing.T) {
 				t.Fatalf("error = %v", err)
 			}
 		})
+	}
+}
+
+func TestTemplateSaverRequiresAnAuthoritativeTemplateStore(t *testing.T) {
+	finder := &teamFinderStub{find: func(string) (db.Team, bool, error) { return nil, false, nil }}
+	for _, store := range []WorkflowRunTemplateStore{nil, (*templateStoreStub)(nil)} {
+		_, err := NewTemplateSaver(finder, store)
+		if !errors.Is(err, ErrInvalidRequest) {
+			t.Fatalf("error = %v", err)
+		}
 	}
 }
 
@@ -261,3 +297,28 @@ type teamFinderStub struct {
 }
 
 func (s *teamFinderStub) FindTeam(name string) (db.Team, bool, error) { return s.find(name) }
+
+type templateStoreStub struct {
+	save      func(context.Context, int, atc.PipelineRef, atc.Config) (db.Pipeline, bool, error)
+	owns      func(context.Context, int) (bool, error)
+	saveCalls int
+}
+
+func (s *templateStoreStub) SaveWorkflowRunTemplate(ctx context.Context, teamID int, ref atc.PipelineRef, config atc.Config) (db.Pipeline, bool, error) {
+	s.saveCalls++
+	if s.save == nil {
+		return nil, false, errors.New("unexpected SaveWorkflowRunTemplate")
+	}
+	return s.save(ctx, teamID, ref, config)
+}
+
+func (s *templateStoreStub) IsWorkflowRunTemplate(ctx context.Context, pipelineID int) (bool, error) {
+	if s.owns == nil {
+		return false, errors.New("unexpected IsWorkflowRunTemplate")
+	}
+	return s.owns(ctx, pipelineID)
+}
+
+func alwaysOwnedTemplateStore() *templateStoreStub {
+	return &templateStoreStub{owns: func(context.Context, int) (bool, error) { return true, nil }}
+}

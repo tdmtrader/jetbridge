@@ -907,7 +907,7 @@ func cloneRun(run db.AgentWorkflowRun) db.AgentWorkflowRun {
 	run.PipelineRunID = cloneInt(run.PipelineRunID)
 	run.TemplatePipelineID = cloneInt(run.TemplatePipelineID)
 	run.InstancePipelineID = cloneInt(run.InstancePipelineID)
-	run.PlannedBuildID = cloneInt(run.PlannedBuildID)
+	run.PlannedBuildID = cloneInt64(run.PlannedBuildID)
 	return run
 }
 
@@ -927,6 +927,14 @@ func cloneString(value *string) *string {
 }
 
 func cloneInt(value *int) *int {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
+}
+
+func cloneInt64(value *int64) *int64 {
 	if value == nil {
 		return nil
 	}

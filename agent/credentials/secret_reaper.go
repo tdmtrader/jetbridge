@@ -21,11 +21,10 @@ type RunChecker interface {
 	RunActive(runID int) (bool, error)
 }
 
-// PrincipalRevoker best-effort revokes the per-run principal named
-// agent-run-<run-id> (dispatch addendum 2026-07-08). Bound to an adapter
-// over agent-identity's principals.Store by its cutover task; nil until
-// then — safe because per-run principals carry expires_at, unlike the
-// secret this reaper exists to delete.
+// PrincipalRevoker durably revokes every per-run principal named
+// agent-run-<run-id> (dispatch addendum 2026-07-08). Production binds the
+// database-backed principal store; a revocation failure keeps the labeled
+// secret as a durable retry marker for the next sweep.
 type PrincipalRevoker interface {
 	RevokeByName(name string) error
 }
@@ -103,6 +102,21 @@ func (r *RunSecretReaper) Run(ctx context.Context) error {
 			continue
 		}
 
+		if r.revoker != nil {
+			if err := r.revoker.RevokeByName(RunSecretName(runID)); err != nil {
+				// Keep the secret so the next sweep has a durable retry marker.
+				// Deleting it first would permanently lose the only lifecycle
+				// signal after a transient principal-store failure.
+				r.logger.Error("failed-to-revoke-run-principal", err, lager.Data{
+					"principal": RunSecretName(runID),
+				})
+				if sweepErr == nil {
+					sweepErr = err
+				}
+				continue
+			}
+		}
+
 		err = r.client.CoreV1().Secrets(r.namespace).Delete(ctx, secret.Name, metav1.DeleteOptions{})
 		if err != nil && !apierrors.IsNotFound(err) {
 			r.logger.Error("failed-to-delete-run-secret", err, lager.Data{"secret": secret.Name})
@@ -112,15 +126,6 @@ func (r *RunSecretReaper) Run(ctx context.Context) error {
 			continue
 		}
 		r.logger.Info("reaped-run-secret", lager.Data{"secret": secret.Name, "run_id": runID})
-
-		if r.revoker != nil {
-			if err := r.revoker.RevokeByName(RunSecretName(runID)); err != nil {
-				// Best-effort: the principal expires on its own (expires_at).
-				r.logger.Error("failed-to-revoke-run-principal", err, lager.Data{
-					"principal": RunSecretName(runID),
-				})
-			}
-		}
 	}
 	return sweepErr
 }
