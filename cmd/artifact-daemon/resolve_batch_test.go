@@ -158,18 +158,8 @@ func TestResolveBatch_EmptyBatch(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200 for empty batch, got %d", resp.StatusCode)
-	}
-
-	var result batchResponse
-	json.NewDecoder(resp.Body).Decode(&result)
-
-	if result.Status != "ok" {
-		t.Errorf("expected status=ok for empty batch, got %q", result.Status)
-	}
-	if len(result.Results) != 0 {
-		t.Errorf("expected 0 results, got %d", len(result.Results))
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for empty batch, got %d", resp.StatusCode)
 	}
 }
 

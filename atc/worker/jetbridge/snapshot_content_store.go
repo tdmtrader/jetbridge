@@ -31,6 +31,7 @@ type SnapshotContentStore struct {
 	locations         SnapshotLocationResolver
 	replicationFactor int
 	maxBytes          int64
+	archiveLimits     snapshot.ArchiveLimits
 }
 
 var _ snapshot.ContentStore = (*SnapshotContentStore)(nil)
@@ -39,7 +40,7 @@ func NewSnapshotContentStore(
 	daemon *DaemonClient,
 	locations SnapshotLocationResolver,
 	replicationFactor int,
-	maxBytes int64,
+	archiveLimits snapshot.ArchiveLimits,
 ) (*SnapshotContentStore, error) {
 	if daemon == nil || locations == nil {
 		return nil, fmt.Errorf("snapshot content store requires daemon client and location resolver")
@@ -50,14 +51,16 @@ func NewSnapshotContentStore(
 	if replicationFactor <= 0 {
 		return nil, fmt.Errorf("snapshot replication factor must be positive")
 	}
-	if maxBytes <= 0 {
-		return nil, fmt.Errorf("snapshot maximum bytes must be positive")
+	maxBytes, err := archiveLimits.CanonicalArchiveByteLimit()
+	if err != nil {
+		return nil, fmt.Errorf("snapshot archive limits: %w", err)
 	}
 	return &SnapshotContentStore{
 		daemon:            daemon,
 		locations:         locations,
 		replicationFactor: replicationFactor,
 		maxBytes:          maxBytes,
+		archiveLimits:     archiveLimits,
 	}, nil
 }
 
@@ -77,6 +80,16 @@ func (store *SnapshotContentStore) Put(ctx context.Context, digest snapshot.Dige
 		return nil, err
 	}
 	spoolName := spool.Name()
+	if _, err := spool.Seek(0, io.SeekStart); err != nil {
+		spool.Close()
+		os.Remove(spoolName)
+		return nil, err
+	}
+	if err := snapshot.ValidateArchiveLimits(ctx, spool, store.archiveLimits); err != nil {
+		spool.Close()
+		os.Remove(spoolName)
+		return nil, err
+	}
 	if err := spool.Close(); err != nil {
 		os.Remove(spoolName)
 		return nil, err

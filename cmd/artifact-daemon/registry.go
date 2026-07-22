@@ -21,11 +21,18 @@ import (
 // Only alias entries are persisted to disk (via AliasStore) because scan
 // entries are always recoverable from the directory structure.
 type Registry struct {
-	mu         sync.RWMutex
-	entries    map[string]string // key → absolute disk path (all entries)
-	aliases    map[string]string // key → absolute disk path (alias entries only, persisted)
-	aliasStore *AliasStore       // optional persistence; nil disables persistence
+	mu        sync.RWMutex
+	persistMu sync.Mutex
+	entries   map[string]string // key → absolute disk path (all entries)
+	aliases   map[string]string // key → absolute disk path (alias entries only, persisted)
+
+	aliasStore *AliasStore // optional persistence; nil disables persistence
 	logger     lager.Logger
+
+	// Injected only by package-internal ordering tests. Production leaves this
+	// nil; it marks the point after an alias snapshot is taken but before it is
+	// handed to AliasStore.
+	beforePersistAliases func(map[string]string)
 }
 
 // NewRegistry creates an empty Registry.
@@ -40,6 +47,8 @@ func NewRegistry(logger lager.Logger) *Registry {
 // SetAliasStore attaches a persistence store for alias entries.
 // Must be called before LoadAliases.
 func (r *Registry) SetAliasStore(store *AliasStore) {
+	r.persistMu.Lock()
+	defer r.persistMu.Unlock()
 	r.aliasStore = store
 }
 
@@ -49,6 +58,20 @@ func (r *Registry) Register(key, localPath string) {
 	r.entries[key] = localPath
 	r.mu.Unlock()
 	r.logger.Debug("registered", lager.Data{"key": key, "path": localPath})
+}
+
+// RegisterIfAbsent records key without replacing an explicit registration
+// that may have appeared while a filesystem fallback was being copied.
+func (r *Registry) RegisterIfAbsent(key, localPath string) bool {
+	r.mu.Lock()
+	if _, found := r.entries[key]; found {
+		r.mu.Unlock()
+		return false
+	}
+	r.entries[key] = localPath
+	r.mu.Unlock()
+	r.logger.Debug("registered", lager.Data{"key": key, "path": localPath})
+	return true
 }
 
 // Lookup returns the local disk path for a key, or ("", false) if not found.
@@ -62,19 +85,25 @@ func (r *Registry) Lookup(key string) (string, bool) {
 // RegisterAlias records an alias entry (volume handle → disk path) and
 // persists it to disk so it survives daemon restarts.
 func (r *Registry) RegisterAlias(key, localPath string) {
+	r.persistMu.Lock()
+	defer r.persistMu.Unlock()
+
 	r.mu.Lock()
 	r.entries[key] = localPath
 	r.aliases[key] = localPath
 	r.mu.Unlock()
 
 	r.logger.Debug("registered-alias", lager.Data{"key": key, "path": localPath})
-	r.persistAliases()
+	r.persistAliasesLocked()
 }
 
 // LoadAliases reads persisted aliases from the AliasStore and merges them
 // into the registry. Stale entries (path no longer exists) are skipped by
 // the store's Load method.
 func (r *Registry) LoadAliases() error {
+	r.persistMu.Lock()
+	defer r.persistMu.Unlock()
+
 	if r.aliasStore == nil {
 		return nil
 	}
@@ -99,6 +128,9 @@ func (r *Registry) LoadAliases() error {
 
 // Remove deletes a key from the registry and alias store.
 func (r *Registry) Remove(key string) {
+	r.persistMu.Lock()
+	defer r.persistMu.Unlock()
+
 	r.mu.Lock()
 	delete(r.entries, key)
 	_, wasAlias := r.aliases[key]
@@ -106,13 +138,39 @@ func (r *Registry) Remove(key string) {
 	r.mu.Unlock()
 
 	if wasAlias {
-		r.persistAliases()
+		r.persistAliasesLocked()
 	}
+}
+
+// RemoveIf deletes key only when it still names expectedPath. Callers use it
+// after guarded open failures so a concurrent re-registration cannot be
+// accidentally removed as stale.
+func (r *Registry) RemoveIf(key, expectedPath string) bool {
+	r.persistMu.Lock()
+	defer r.persistMu.Unlock()
+
+	r.mu.Lock()
+	if current, found := r.entries[key]; !found || current != expectedPath {
+		r.mu.Unlock()
+		return false
+	}
+	delete(r.entries, key)
+	_, wasAlias := r.aliases[key]
+	delete(r.aliases, key)
+	r.mu.Unlock()
+
+	if wasAlias {
+		r.persistAliasesLocked()
+	}
+	return true
 }
 
 // RemoveByPath removes all entries whose disk path is under dirPath.
 // Used by the sweeper to clean up aliases when a step directory is removed.
 func (r *Registry) RemoveByPath(dirPath string) {
+	r.persistMu.Lock()
+	defer r.persistMu.Unlock()
+
 	r.mu.Lock()
 	hadAliases := false
 	for key, path := range r.entries {
@@ -127,13 +185,15 @@ func (r *Registry) RemoveByPath(dirPath string) {
 	r.mu.Unlock()
 
 	if hadAliases {
-		r.persistAliases()
+		r.persistAliasesLocked()
 	}
 }
 
-// persistAliases writes the current alias map to the AliasStore. Errors are
+// persistAliasesLocked writes the current alias map to the AliasStore. The
+// caller holds persistMu from before its in-memory mutation through this save,
+// so an older snapshot cannot overwrite a newer mutation on disk. Errors are
 // logged but not propagated — persistence failure should not break registration.
-func (r *Registry) persistAliases() {
+func (r *Registry) persistAliasesLocked() {
 	if r.aliasStore == nil {
 		return
 	}
@@ -144,6 +204,9 @@ func (r *Registry) persistAliases() {
 		snapshot[k] = v
 	}
 	r.mu.RUnlock()
+	if r.beforePersistAliases != nil {
+		r.beforePersistAliases(snapshot)
+	}
 
 	if err := r.aliasStore.Save(snapshot); err != nil {
 		r.logger.Error("failed-to-persist-aliases", err)

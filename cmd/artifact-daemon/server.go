@@ -15,7 +15,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"os/exec"
 	"path"
 	"path/filepath"
 	"strconv"
@@ -24,7 +23,9 @@ import (
 	"time"
 
 	"code.cloudfoundry.org/lager/v3"
+	"github.com/concourse/concourse/agent/artifactcap"
 	"github.com/concourse/concourse/agent/snapshot"
+	"golang.org/x/sys/unix"
 )
 
 // Server is the artifact-daemon HTTP server that stores and serves
@@ -39,11 +40,125 @@ type Server struct {
 	metrics          *metrics
 	guard            *ReadGuard
 	snapshotMaxBytes int64
+	resolveSlots     chan struct{}
+	resolveTimeout   time.Duration
 
 	// Injected only by package-internal durability tests. Production always
 	// uses syncRootDirectory so a successful convergence response means the
 	// namespace mutation (or observed steady state) was re-synchronized.
 	syncSnapshotDirectory func(*os.Root, string) error
+	copyHooks             anchoredCopyHooks
+	serveHooks            anchoredServeHooks
+	mutationHooks         anchoredMutationHooks
+}
+
+type anchoredCopyHooks struct {
+	sourceOpened               func()
+	destinationParentOpened    func()
+	temporaryReady             func(string)
+	destinationEntryPublishing func()
+}
+
+type anchoredServeHooks struct {
+	sourceDescriptorOpened func()
+	sourceOpened           func()
+}
+
+type anchoredMutationHooks struct {
+	destinationParentOpened    func()
+	temporaryOpened            func(*os.File, string)
+	streamInDestinationRemoved func()
+}
+
+func (s *Server) openGenericArtifact(candidate string) (*os.File, os.FileInfo, error) {
+	rel, err := pathBelow(s.storagePath, candidate)
+	if err != nil {
+		return nil, nil, err
+	}
+	if snapshotNamespaceKey(filepath.ToSlash(rel)) {
+		return nil, nil, fmt.Errorf("snapshot namespace is reserved")
+	}
+	if daemonPrivateNamespaceKey(filepath.ToSlash(rel)) {
+		return nil, nil, fmt.Errorf("daemon-private namespace is reserved")
+	}
+	root, err := openDirectoryNoFollow(s.storagePath)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer root.Close()
+	return openPathAtNoFollow(root, rel)
+}
+
+func (s *Server) openGenericArtifactWithReadGuard(ctx context.Context, candidate string) (*os.File, os.FileInfo, func(), error) {
+	release, err := s.guard.BeginReadContext(ctx, s.stepHandle(candidate))
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	file, info, err := s.openGenericArtifact(candidate)
+	if err != nil {
+		release()
+		return nil, nil, nil, err
+	}
+	return file, info, release, nil
+}
+
+func (s *Server) openRegisteredArtifactWithReadGuard(ctx context.Context, key string) (*os.File, os.FileInfo, string, func(), error) {
+	for range 8 {
+		candidate, found := s.registry.Lookup(key)
+		if !found {
+			return nil, nil, "", nil, os.ErrNotExist
+		}
+		// Lexical containment is stable and can reject outside authority before
+		// locking. Existence and no-symlink validation must happen only after
+		// acquiring the handle guard: stream-in deliberately has a short
+		// remove-old/rename-new window while holding that handle exclusively.
+		if _, err := pathBelow(filepath.Join(s.storagePath, "steps"), candidate); err != nil {
+			s.registry.RemoveIf(key, candidate)
+			return nil, nil, "", nil, os.ErrNotExist
+		}
+		release, err := s.guard.BeginReadContext(ctx, s.stepHandle(candidate))
+		if err != nil {
+			return nil, nil, "", nil, err
+		}
+		current, stillRegistered := s.registry.Lookup(key)
+		if !stillRegistered || current != candidate {
+			release()
+			continue
+		}
+		if _, err := s.validateStepPath(candidate, true); err != nil {
+			s.registry.RemoveIf(key, candidate)
+			release()
+			return nil, nil, "", nil, os.ErrNotExist
+		}
+		file, info, err := s.openGenericArtifact(candidate)
+		if err != nil {
+			release()
+			if errors.Is(err, os.ErrNotExist) {
+				s.registry.RemoveIf(key, candidate)
+			}
+			return nil, nil, "", nil, err
+		}
+		return file, info, candidate, release, nil
+	}
+	return nil, nil, "", nil, fmt.Errorf("registry alias changed repeatedly during guarded open")
+}
+
+func (s *Server) openRegistryAliasForRequestWithReadGuard(ctx context.Context, r *http.Request) (*os.File, os.FileInfo, string, func(), error) {
+	key := strings.TrimPrefix(r.URL.Path, "/artifacts/")
+	keys := []string{key}
+	if stripped := strings.TrimPrefix(key, "steps/"); stripped != key {
+		keys = append(keys, stripped)
+	}
+	for _, candidateKey := range keys {
+		file, info, candidate, release, err := s.openRegisteredArtifactWithReadGuard(ctx, candidateKey)
+		if err == nil {
+			return file, info, candidate, release, nil
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return nil, nil, "", nil, err
+		}
+	}
+	return nil, nil, "", nil, os.ErrNotExist
 }
 
 const snapshotKeyPrefix = "snapshots/sha256/"
@@ -56,6 +171,11 @@ var defaultSnapshotMaxBytes = func() int64 {
 	return limit
 }()
 
+const (
+	defaultResolveMaxConcurrent = 32
+	defaultResolveTimeout       = 30 * time.Minute
+)
+
 // NewServer creates a new artifact-daemon server.
 func NewServer(logger lager.Logger, storagePath, nodeName string) *Server {
 	return &Server{
@@ -66,8 +186,25 @@ func NewServer(logger lager.Logger, storagePath, nodeName string) *Server {
 		metrics:               newMetrics(),
 		guard:                 NewReadGuard(),
 		snapshotMaxBytes:      defaultSnapshotMaxBytes,
+		resolveSlots:          make(chan struct{}, defaultResolveMaxConcurrent),
+		resolveTimeout:        defaultResolveTimeout,
 		syncSnapshotDirectory: syncRootDirectory,
 	}
+}
+
+// ConfigureResolveLimits sets daemon-wide resolve admission and the maximum
+// lifetime of one local or peer resolution. It must be called before Handler
+// begins serving requests.
+func (s *Server) ConfigureResolveLimits(maxConcurrent int, timeout time.Duration) error {
+	if maxConcurrent <= 0 {
+		return fmt.Errorf("resolve max concurrency must be positive")
+	}
+	if timeout <= 0 {
+		return fmt.Errorf("resolve timeout must be positive")
+	}
+	s.resolveSlots = make(chan struct{}, maxConcurrent)
+	s.resolveTimeout = timeout
+	return nil
 }
 
 // Guard returns the read/sweep coordination guard. The sweeper takes its
@@ -83,7 +220,7 @@ func (s *Server) Guard() *ReadGuard {
 func (s *Server) stepHandle(path string) string {
 	stepsRoot := filepath.Join(s.storagePath, "steps")
 	rel, err := filepath.Rel(stepsRoot, path)
-	if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return path
 	}
 	return strings.Split(rel, string(filepath.Separator))[0]
@@ -116,8 +253,10 @@ func (s *Server) SetMirrorTrigger(trigger func(ctx context.Context, key string))
 
 // Handler returns the HTTP handler for the server. When tlsEnabled is true,
 // protected routes are wrapped with requireClientCert middleware that returns
-// 401 if the request lacks a verified client certificate. Exempt routes
-// (/healthz, /resolve, /resolve-batch) are accessible without a client cert.
+// 401 if the request lacks a verified client certificate. Resolve routes do
+// not require a client certificate because build init containers cannot hold
+// one; production config independently requires an exact short-lived resolve
+// capability on every item.
 func (s *Server) Handler(opts ...HandlerOption) http.Handler {
 	cfg := handlerConfig{}
 	for _, o := range opts {
@@ -134,11 +273,16 @@ func (s *Server) Handler(opts ...HandlerOption) http.Handler {
 		return h
 	}
 
-	// Exempt paths — no client cert required (kubelet probes and Prometheus
-	// scrapers cannot present client certs; protected by NetworkPolicy).
+	// Routes without client-certificate enforcement. Kubelet probes and
+	// Prometheus scrapers cannot present client certs; resolve routes apply
+	// their independent capability verifier before any lookup or mutation.
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
-	mux.HandleFunc("POST /resolve", s.handleResolve)
-	mux.HandleFunc("POST /resolve-batch", s.handleResolveBatch)
+	mux.HandleFunc("POST /resolve", func(w http.ResponseWriter, r *http.Request) {
+		s.handleResolve(w, r, cfg)
+	})
+	mux.HandleFunc("POST /resolve-batch", func(w http.ResponseWriter, r *http.Request) {
+		s.handleResolveBatch(w, r, cfg)
+	})
 	if s.metrics != nil {
 		mux.Handle("GET /metrics", s.metrics.handler())
 	}
@@ -179,13 +323,25 @@ func (s *Server) Handler(opts ...HandlerOption) http.Handler {
 type HandlerOption func(*handlerConfig)
 
 type handlerConfig struct {
-	tlsEnabled bool
+	tlsEnabled                bool
+	resolveCapabilityRequired bool
+	resolveCapabilityVerifier *artifactcap.Verifier
 }
 
 // WithTLS enables mTLS enforcement on protected routes.
 func WithTLS() HandlerOption {
 	return func(c *handlerConfig) {
 		c.tlsEnabled = true
+	}
+}
+
+// WithResolveCapabilityKey requires every resolve operation to carry a valid
+// short-lived capability bound to its exact source key and destination. An
+// invalid key deliberately leaves the handler fail-closed.
+func WithResolveCapabilityKey(key []byte) HandlerOption {
+	return func(c *handlerConfig) {
+		c.resolveCapabilityRequired = true
+		c.resolveCapabilityVerifier, _ = artifactcap.NewVerifier(key)
 	}
 }
 
@@ -196,16 +352,15 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 func (s *Server) artifactPath(r *http.Request) (string, error) {
 	escaped := strings.TrimPrefix(r.URL.EscapedPath(), "/artifacts/")
 	key := strings.TrimPrefix(r.URL.Path, "/artifacts/")
-	if key == r.URL.Path || key == "" || escaped == r.URL.EscapedPath() || strings.Contains(escaped, "%") {
+	if key == r.URL.Path || key == "" || escaped == r.URL.EscapedPath() {
 		return "", fmt.Errorf("invalid artifact key")
 	}
-	if strings.HasPrefix(key, "/") || strings.ContainsAny(key, "\\\x00") || path.Clean(key) != key {
+	canonicalEscaped, err := canonicalEscapedKey(key)
+	if err != nil || escaped != canonicalEscaped {
 		return "", fmt.Errorf("non-canonical artifact key")
 	}
-	for _, segment := range strings.Split(key, "/") {
-		if segment == "" || segment == "." || segment == ".." {
-			return "", fmt.Errorf("invalid artifact key segment")
-		}
+	if daemonPrivateNamespaceKey(key) {
+		return "", fmt.Errorf("daemon-private artifact key")
 	}
 	converted := filepath.FromSlash(key)
 	if filepath.IsAbs(converted) {
@@ -266,7 +421,7 @@ func (s *Server) handlePutSnapshot(w http.ResponseWriter, r *http.Request, expec
 
 	key := snapshotKey(expectedDigest)
 	parent := path.Dir(key)
-	if err := root.MkdirAll(parent, 0755); err != nil {
+	if err := s.ensureSnapshotNamespace(root); err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -371,6 +526,28 @@ func (s *Server) handlePutSnapshot(w http.ResponseWriter, r *http.Request, expec
 	}
 	status = "created"
 	w.WriteHeader(http.StatusCreated)
+}
+
+func (s *Server) ensureSnapshotNamespace(root *os.Root) error {
+	for _, directory := range []struct {
+		name   string
+		parent string
+	}{
+		{name: "snapshots", parent: "."},
+		{name: "snapshots/sha256", parent: "snapshots"},
+	} {
+		if err := root.Mkdir(directory.name, 0755); err != nil && !errors.Is(err, os.ErrExist) {
+			return err
+		}
+		info, err := root.Lstat(directory.name)
+		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("snapshot namespace component %q is not a real directory", directory.name)
+		}
+		if err := s.syncSnapshotDirectory(root, directory.parent); err != nil {
+			return err
+		}
+	}
+	return s.syncSnapshotDirectory(root, "snapshots/sha256")
 }
 
 var errSnapshotTooLarge = errors.New("snapshot exceeds maximum size")
@@ -579,7 +756,7 @@ func (s *Server) handleDeleteSnapshot(w http.ResponseWriter, _ *http.Request, di
 	defer root.Close()
 	key := snapshotKey(digest)
 	parent := path.Dir(key)
-	if err := root.MkdirAll(parent, 0755); err != nil {
+	if err := s.ensureSnapshotNamespace(root); err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -636,13 +813,10 @@ func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 	// Check filesystem first, then fall back to registry aliases.
 	// This enables peer daemons to serve registry-only artifacts
 	// (e.g., resource caches registered via POST /register).
-	info, err := os.Stat(path)
-	if err != nil && os.IsNotExist(err) {
+	file, info, release, err := s.openGenericArtifactWithReadGuard(r.Context(), path)
+	if err != nil && errors.Is(err, os.ErrNotExist) {
 		// Filesystem miss — try registry lookup.
-		if regPath, found := s.lookupRegistryAlias(r); found {
-			path = regPath
-			info, err = os.Stat(path)
-		}
+		file, info, path, release, err = s.openRegistryAliasForRequestWithReadGuard(r.Context(), r)
 	}
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -653,21 +827,24 @@ func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	if err := s.validateGenericArtifactSource(path); err != nil {
-		http.Error(w, "artifact source is outside the generic artifact namespace", http.StatusBadRequest)
-		return
-	}
-
-	// Hold the read guard while serving so the sweeper cannot delete the
-	// directory mid-stream. Released via defer: the tar-abort path panics.
-	release := s.guard.BeginRead(s.stepHandle(path))
+	defer file.Close()
 	defer release()
+
+	// The read guard was acquired before opening the descriptor. Holding it
+	// through the stream prevents stream-in/sweep from clearing the opened inode
+	// in the gap and producing a valid-looking partial tar from a stale tree.
+	if s.serveHooks.sourceDescriptorOpened != nil {
+		s.serveHooks.sourceDescriptorOpened()
+	}
+	if s.serveHooks.sourceOpened != nil {
+		s.serveHooks.sourceOpened()
+	}
 	s.touchStepDir(path)
 
 	// Directory: tar on-the-fly and stream.
 	if info.IsDir() {
 		w.Header().Set("Content-Type", "application/x-tar")
-		if err := s.tarDirectory(w, path); err != nil {
+		if err := tarOpenedDirectory(w, file); err != nil {
 			s.logger.Error("failed-to-tar-artifact", err, lager.Data{"path": path})
 			// The 200 header and part of the body are already out; abort
 			// the connection so the client sees a hard failure instead of
@@ -678,63 +855,11 @@ func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// File: serve as-is (backward compat for legacy tar files).
-	f, err := os.Open(path)
-	if err != nil {
-		s.logger.Error("failed-to-open-artifact", err, lager.Data{"path": path})
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	defer f.Close()
-
 	w.Header().Set("Content-Type", "application/octet-stream")
-	if _, err := io.Copy(w, f); err != nil {
+	if _, err := io.Copy(w, file); err != nil {
 		s.logger.Error("failed-to-stream-artifact", err, lager.Data{"path": path})
 		panic(http.ErrAbortHandler)
 	}
-}
-
-// tarDirectory writes a tar archive of the directory to w. Any error —
-// including a file changing or disappearing mid-walk — is returned so the
-// caller can abort the response; a silently truncated tar reads as complete
-// on the client side.
-func (s *Server) tarDirectory(w io.Writer, dir string) error {
-	tw := tar.NewWriter(w)
-
-	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
-		if err != nil || info.IsDir() {
-			return err
-		}
-		rel, _ := filepath.Rel(dir, path)
-		hdr := &tar.Header{
-			Name:    rel,
-			Size:    info.Size(),
-			Mode:    int64(info.Mode()),
-			ModTime: info.ModTime(),
-		}
-		if info.Mode()&os.ModeSymlink != 0 {
-			link, _ := os.Readlink(path)
-			hdr.Typeflag = tar.TypeSymlink
-			hdr.Linkname = link
-			hdr.Size = 0
-			return tw.WriteHeader(hdr)
-		}
-		if err := tw.WriteHeader(hdr); err != nil {
-			return err
-		}
-		f, err := os.Open(path)
-		if err != nil {
-			return err
-		}
-		defer f.Close()
-		_, err = io.Copy(tw, f)
-		return err
-	})
-	if err != nil {
-		// Deliberately skip tw.Close(): writing the tar terminator would
-		// make the truncated stream parse as a complete archive.
-		return err
-	}
-	return tw.Close()
 }
 
 // touchStepDir bumps the mtime of the steps/{handle} directory containing
@@ -767,57 +892,73 @@ func (s *Server) handlePutArtifact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	path := artifactPath
-	if err := s.validateGenericArtifactSource(path); err != nil {
-		http.Error(w, "artifact destination is outside the generic artifact namespace", http.StatusBadRequest)
-		return
-	}
-
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-		s.logger.Error("failed-to-create-artifact-dir", err, lager.Data{"path": path})
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-
-	// Write through a temp file + rename: GET serves whatever exists at the
-	// final path, so an in-flight or failed upload must never be visible
-	// there as a truncated artifact.
-	f, err := os.CreateTemp(filepath.Dir(path), ".put-tmp-")
+	rel, err := pathBelow(s.storagePath, path)
 	if err != nil {
-		s.logger.Error("failed-to-create-artifact", err, lager.Data{"path": path})
+		http.Error(w, "malformed artifact path", http.StatusBadRequest)
+		return
+	}
+	root, err := openDirectoryNoFollow(s.storagePath)
+	if err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	tmpPath := f.Name()
-
-	if _, err := io.Copy(f, r.Body); err != nil {
-		f.Close()
-		os.Remove(tmpPath)
+	defer root.Close()
+	parentRel := filepath.Dir(rel)
+	parent, err := openDirAtNoFollow(root, parentRel, true)
+	if err != nil {
+		http.Error(w, "invalid artifact destination", http.StatusBadRequest)
+		return
+	}
+	defer parent.Close()
+	if s.mutationHooks.destinationParentOpened != nil {
+		s.mutationHooks.destinationParentOpened()
+	}
+	staging, err := openDaemonStagingAt(root)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	defer staging.Close()
+	tmpName, file, err := randomFileAt(staging, ".put-tmp-", 0600)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if s.mutationHooks.temporaryOpened != nil {
+		s.mutationHooks.temporaryOpened(staging, tmpName)
+	}
+	tmpExists := true
+	defer func() {
+		_ = file.Close()
+		if tmpExists {
+			_ = unix.Unlinkat(int(staging.Fd()), tmpName, 0)
+		}
+	}()
+	if _, err := io.Copy(file, r.Body); err != nil {
 		s.logger.Error("failed-to-write-artifact", err, lager.Data{"path": path})
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	if err := f.Close(); err != nil {
-		os.Remove(tmpPath)
-		s.logger.Error("failed-to-close-artifact", err, lager.Data{"path": path})
+	if err := unix.Fchmod(int(file.Fd()), 0644); err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-
-	// CreateTemp uses 0600; artifacts are served to any authenticated reader.
-	if err := os.Chmod(tmpPath, 0644); err != nil {
-		os.Remove(tmpPath)
-		s.logger.Error("failed-to-chmod-artifact", err, lager.Data{"path": path})
+	temporaryUnchanged, err := sameOpenEntryAt(staging, tmpName, file)
+	if err != nil || !temporaryUnchanged {
+		http.Error(w, "artifact upload temporary changed before publication", http.StatusConflict)
+		return
+	}
+	unchanged, err := sameOpenDirectoryAt(root, parentRel, parent)
+	if err != nil || !unchanged {
+		http.Error(w, "artifact destination changed during upload", http.StatusConflict)
+		return
+	}
+	if err := unix.Renameat(int(staging.Fd()), tmpName, int(parent.Fd()), filepath.Base(rel)); err != nil {
+		s.logger.Error("failed-to-publish-artifact", err, lager.Data{"path": path})
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-
-	if err := os.Rename(tmpPath, path); err != nil {
-		os.Remove(tmpPath)
-		s.logger.Error("failed-to-rename-artifact", err, lager.Data{"path": path})
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-
+	tmpExists = false
 	w.WriteHeader(http.StatusCreated)
 }
 
@@ -842,27 +983,31 @@ func (s *Server) handleStreamIn(w http.ResponseWriter, r *http.Request) {
 	// a complete artifact, so partial state — an in-flight extraction or a
 	// failed upload — must never be visible at the final path.
 	stepsRoot := filepath.Join(s.storagePath, "steps")
-	if err := os.MkdirAll(stepsRoot, 0755); err != nil {
-		s.logger.Error("failed-to-create-stream-in-dir", err, lager.Data{"key": key})
-		http.Error(w, "create dir: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	if err := verifyExistingPathComponents(s.storagePath, "steps", false); err != nil {
-		http.Error(w, "invalid steps root", http.StatusInternalServerError)
-		return
-	}
-	if err := verifyExistingPathComponents(stepsRoot, filepath.FromSlash(key), false); err != nil {
-		http.Error(w, "unsafe stream-in destination", http.StatusBadRequest)
-		return
-	}
-	stepsHandle, err := os.OpenRoot(stepsRoot)
+	storageHandle, err := openDirectoryNoFollow(s.storagePath)
 	if err != nil {
-		s.logger.Error("failed-to-anchor-stream-in-dir", err, lager.Data{"key": key})
-		http.Error(w, "anchor steps dir: "+err.Error(), http.StatusInternalServerError)
+		http.Error(w, "anchor storage root: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer storageHandle.Close()
+	if err := unix.Mkdirat(int(storageHandle.Fd()), "steps", 0755); err != nil && !errors.Is(err, unix.EEXIST) {
+		http.Error(w, "create steps root: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	stepsHandle, err := openDirAtNoFollow(storageHandle, "steps", false)
+	if err != nil {
+		http.Error(w, "anchor steps root: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	defer stepsHandle.Close()
-	tmpName, err := createRootTempDir(stepsHandle, ".in-tmp-")
+	destRel := filepath.FromSlash(key)
+	destParentRel := filepath.Dir(destRel)
+	destParent, err := openDirAtNoFollow(stepsHandle, destParentRel, true)
+	if err != nil {
+		http.Error(w, "unsafe stream-in destination", http.StatusBadRequest)
+		return
+	}
+	defer destParent.Close()
+	tmpName, tmpHandle, err := randomDirectoryAt(stepsHandle, ".in-tmp-")
 	if err != nil {
 		s.logger.Error("failed-to-create-stream-in-tmp-dir", err, lager.Data{"key": key})
 		http.Error(w, "create tmp dir: "+err.Error(), http.StatusInternalServerError)
@@ -870,7 +1015,8 @@ func (s *Server) handleStreamIn(w http.ResponseWriter, r *http.Request) {
 	}
 	tmpDest := filepath.Join(stepsRoot, tmpName)
 	// No-op after the successful rename; cleans up on every error path.
-	defer stepsHandle.RemoveAll(tmpName)
+	defer removeTreeAt(stepsHandle, tmpName)
+	defer tmpHandle.Close()
 
 	// Auto-detect gzip by peeking at the first 2 bytes.
 	br := bufio.NewReader(r.Body)
@@ -886,7 +1032,7 @@ func (s *Server) handleStreamIn(w http.ResponseWriter, r *http.Request) {
 		tarSource = gr
 	}
 
-	extractionRoot, err := stepsHandle.OpenRoot(tmpName)
+	extractionRoot, err := openRootAt(tmpHandle)
 	if err != nil {
 		http.Error(w, "open extraction root: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -904,19 +1050,28 @@ func (s *Server) handleStreamIn(w http.ResponseWriter, r *http.Request) {
 	// first (rename onto a non-empty dir fails). The replace is destructive
 	// like a sweep: take the handle's exclusive lock so in-flight reads
 	// (resolve copies, GET/mirror tar walks) never see a half-removed tree.
-	destRel := filepath.FromSlash(key)
-	if err := stepsHandle.MkdirAll(filepath.Dir(destRel), 0755); err != nil {
-		s.logger.Error("failed-to-create-stream-in-parent", err, lager.Data{"key": key})
-		http.Error(w, "create parent: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
 	renameErr := func() error {
 		release := s.guard.BeginSweep(s.stepHandle(dest))
 		defer release()
-		if err := stepsHandle.RemoveAll(destRel); err != nil {
+		temporaryUnchanged, err := sameOpenDirectoryAt(stepsHandle, tmpName, tmpHandle)
+		if err != nil {
+			return fmt.Errorf("revalidate stream-in temporary directory: %w", err)
+		}
+		if !temporaryUnchanged {
+			return fmt.Errorf("stream-in temporary directory changed before publication")
+		}
+		unchanged, err := sameOpenDirectoryAt(stepsHandle, destParentRel, destParent)
+		if err != nil || !unchanged {
+			return fmt.Errorf("stream-in destination parent changed: %w", err)
+		}
+		destBase := filepath.Base(destRel)
+		if err := removeTreeAt(destParent, destBase); err != nil {
 			return fmt.Errorf("remove stale stream-in destination: %w", err)
 		}
-		return stepsHandle.Rename(tmpName, destRel)
+		if s.mutationHooks.streamInDestinationRemoved != nil {
+			s.mutationHooks.streamInDestinationRemoved()
+		}
+		return unix.Renameat(int(stepsHandle.Fd()), tmpName, int(destParent.Fd()), destBase)
 	}()
 	if renameErr != nil {
 		s.logger.Error("failed-to-rename-stream-in", renameErr, lager.Data{"key": key, "tmp": tmpDest})
@@ -956,18 +1111,39 @@ func (s *Server) handleDeleteArtifact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	path := artifactPath
-	if err := s.validateGenericArtifactSource(path); err != nil {
-		http.Error(w, "artifact target is outside the generic artifact namespace", http.StatusBadRequest)
+	rel, err := pathBelow(s.storagePath, path)
+	if err != nil {
+		http.Error(w, "malformed artifact path", http.StatusBadRequest)
 		return
 	}
-
-	// Deletion is destructive like a sweep: wait out in-flight reads so a
-	// concurrent copy never sees a half-removed tree.
 	release := s.guard.BeginSweep(s.stepHandle(path))
 	defer release()
-
-	err = os.RemoveAll(path)
+	root, err := openDirectoryNoFollow(s.storagePath)
 	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	defer root.Close()
+	parentRel := filepath.Dir(rel)
+	parent, err := openDirAtNoFollow(root, parentRel, false)
+	if errors.Is(err, os.ErrNotExist) {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if err != nil {
+		http.Error(w, "invalid artifact target", http.StatusBadRequest)
+		return
+	}
+	defer parent.Close()
+	if s.mutationHooks.destinationParentOpened != nil {
+		s.mutationHooks.destinationParentOpened()
+	}
+	unchanged, err := sameOpenDirectoryAt(root, parentRel, parent)
+	if err != nil || !unchanged {
+		http.Error(w, "artifact target changed during delete", http.StatusConflict)
+		return
+	}
+	if err := removeTreeAt(parent, filepath.Base(rel)); err != nil {
 		s.logger.Error("failed-to-delete-artifact", err, lager.Data{"path": path})
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
@@ -993,15 +1169,12 @@ func (s *Server) handleHeadArtifact(w http.ResponseWriter, r *http.Request) {
 	}
 	path := artifactPath
 
-	// Check filesystem first, then fall back to registry aliases.
-	if _, err := os.Stat(path); err != nil {
-		if os.IsNotExist(err) {
-			if regPath, found := s.lookupRegistryAlias(r); found {
-				if _, err := os.Stat(regPath); err == nil {
-					w.WriteHeader(http.StatusOK)
-					return
-				}
-			}
+	file, _, release, err := s.openGenericArtifactWithReadGuard(r.Context(), path)
+	if err != nil && errors.Is(err, os.ErrNotExist) {
+		file, _, _, release, err = s.openRegistryAliasForRequestWithReadGuard(r.Context(), r)
+	}
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
@@ -1009,36 +1182,9 @@ func (s *Server) handleHeadArtifact(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
-	if err := s.validateGenericArtifactSource(path); err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		return
-	}
-
+	file.Close()
+	release()
 	w.WriteHeader(http.StatusOK)
-}
-
-// lookupRegistryAlias checks the registry for an artifact key extracted from
-// the request URL. Peer probes send URLs like /artifacts/steps/rc-42, yielding
-// the key "steps/rc-42" — but the registry stores just "rc-42". We try the
-// full key first, then strip common prefixes.
-func (s *Server) lookupRegistryAlias(r *http.Request) (string, bool) {
-	key := strings.TrimPrefix(r.URL.Path, "/artifacts/")
-	if artifactPath, found := s.registry.Lookup(key); found {
-		if _, err := s.validateStepPath(artifactPath, true); err == nil {
-			return artifactPath, true
-		}
-		s.registry.Remove(key)
-	}
-	// Strip "steps/" prefix — peer probes prepend it but aliases don't have it.
-	if stripped := strings.TrimPrefix(key, "steps/"); stripped != key {
-		if artifactPath, found := s.registry.Lookup(stripped); found {
-			if _, err := s.validateStepPath(artifactPath, true); err == nil {
-				return artifactPath, true
-			}
-			s.registry.Remove(stripped)
-		}
-	}
-	return "", false
 }
 
 // registerRequest is the JSON body for POST /register.
@@ -1063,8 +1209,7 @@ type mirrorRequest struct {
 // off.
 func (s *Server) handleMirrorTrigger(w http.ResponseWriter, r *http.Request) {
 	var req mirrorRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, fmt.Sprintf("invalid JSON: %v", err), http.StatusBadRequest)
+	if !decodeControlJSON(w, r, &req, "mirror") {
 		return
 	}
 	if err := validateCanonicalRelativeKey(req.Key); err != nil || snapshotNamespaceKey(req.Key) {
@@ -1081,25 +1226,59 @@ func (s *Server) handleMirrorTrigger(w http.ResponseWriter, r *http.Request) {
 
 // resolveRequest is the JSON body for POST /resolve.
 type resolveRequest struct {
-	Key  string `json:"key"`
-	Dest string `json:"dest"`
+	Key        string `json:"key"`
+	Dest       string `json:"dest"`
+	Capability string `json:"capability,omitempty"`
+}
+
+const (
+	maxResolveControlBody = 64 << 10
+	maxResolveBatchItems  = 64
+	maxResolveWorkers     = 8
+)
+
+func decodeResolveControlJSON(w http.ResponseWriter, r *http.Request, destination any) bool {
+	return decodeControlJSON(w, r, destination, "resolve")
+}
+
+func decodeControlJSON(w http.ResponseWriter, r *http.Request, destination any, kind string) bool {
+	if r.ContentLength > maxResolveControlBody {
+		http.Error(w, kind+" request body is too large", http.StatusRequestEntityTooLarge)
+		return false
+	}
+	limited := http.MaxBytesReader(w, r.Body, maxResolveControlBody)
+	decoder := json.NewDecoder(limited)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(destination); err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			http.Error(w, kind+" request body is too large", http.StatusRequestEntityTooLarge)
+		} else {
+			http.Error(w, "invalid "+kind+" request", http.StatusBadRequest)
+		}
+		return false
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		http.Error(w, kind+" request must contain exactly one JSON value", http.StatusBadRequest)
+		return false
+	}
+	return true
 }
 
 // resolveResponse is the JSON body returned by POST /resolve.
 type resolveResponse struct {
-	Status   string `json:"status"`
-	Source   string `json:"source"`
-	Method   string `json:"method"`
-	Duration string `json:"duration,omitempty"`
-	Error    string `json:"error,omitempty"`
+	Status          string `json:"status"`
+	Method          string `json:"method"`
+	Duration        string `json:"duration,omitempty"`
+	Error           string `json:"error,omitempty"`
+	Acknowledgement string `json:"acknowledgement,omitempty"`
 }
 
 // handleRegister accepts POST /register with a JSON body containing
 // {key, local_path} and registers the artifact in the daemon's registry.
 func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	var req registerRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, fmt.Sprintf("invalid JSON: %v", err), http.StatusBadRequest)
+	if !decodeControlJSON(w, r, &req, "register") {
 		return
 	}
 	if req.Key == "" || req.LocalPath == "" {
@@ -1111,9 +1290,17 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate that the path exists on disk.
-	if _, err := os.Stat(req.LocalPath); err != nil {
-		if os.IsNotExist(err) {
+	if _, err := s.validateStepPath(req.LocalPath, false); err != nil {
+		if _, statErr := os.Lstat(req.LocalPath); errors.Is(statErr, os.ErrNotExist) {
+			http.Error(w, fmt.Sprintf("path not found: %s", req.LocalPath), http.StatusNotFound)
+			return
+		}
+		http.Error(w, "registration source must be beneath the steps root", http.StatusBadRequest)
+		return
+	}
+	file, _, err := s.openGenericArtifact(req.LocalPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
 			s.logger.Info("register-path-not-found", lager.Data{"key": req.Key, "path": req.LocalPath})
 			http.Error(w, fmt.Sprintf("path not found: %s", req.LocalPath), http.StatusNotFound)
 			return
@@ -1122,10 +1309,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	if _, err := s.validateStepPath(req.LocalPath, true); err != nil {
-		http.Error(w, "registration source must be a real path beneath the steps root", http.StatusBadRequest)
-		return
-	}
+	file.Close()
 
 	s.registry.RegisterAlias(req.Key, req.LocalPath)
 
@@ -1133,9 +1317,84 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusCreated)
 }
 
+var errResolveRegistryChanged = errors.New("registry mapping changed during guarded resolve")
+
+// copyRegisteredArtifactGuarded confirms the expected registry mapping only
+// after acquiring the paired source/destination guard, then validates, opens,
+// and copies the source without releasing that guard. This ordering prevents a
+// stream-in publication gap from looking like a stale alias.
+func (s *Server) copyRegisteredArtifactGuarded(ctx context.Context, key, expectedSource, dest, acknowledgement string) (bool, error) {
+	stepsRoot := filepath.Join(s.storagePath, "steps")
+	if _, err := pathBelow(stepsRoot, expectedSource); err != nil {
+		s.registry.RemoveIf(key, expectedSource)
+		return true, fmt.Errorf("unsafe registry source: %w", err)
+	}
+
+	release, err := s.guard.BeginResolveContext(ctx, s.stepHandle(expectedSource), s.stepHandle(dest))
+	if err != nil {
+		return false, err
+	}
+	defer release()
+
+	current, stillRegistered := s.registry.Lookup(key)
+	if !stillRegistered || current != expectedSource {
+		return false, errResolveRegistryChanged
+	}
+	if _, err := s.validateStepPath(expectedSource, true); err != nil {
+		s.registry.RemoveIf(key, expectedSource)
+		return true, fmt.Errorf("unsafe registry source: %w", err)
+	}
+	opened, info, err := s.openGenericArtifact(expectedSource)
+	if err != nil {
+		s.registry.RemoveIf(key, expectedSource)
+		return true, fmt.Errorf("registry source is not anchored: %w", err)
+	}
+	opened.Close()
+	if !info.IsDir() {
+		s.registry.RemoveIf(key, expectedSource)
+		return true, fmt.Errorf("registry source is not an anchored directory")
+	}
+
+	s.touchStepDir(expectedSource)
+	return false, s.copyArtifactContextWithReceipt(ctx, expectedSource, dest, acknowledgement)
+}
+
+// copyFilesystemArtifactGuarded checks and copies the canonical steps/{key}
+// fallback while holding the same paired guard used for publication. A
+// registry entry that appears while waiting wins and makes the caller retry
+// the registered path instead.
+func (s *Server) copyFilesystemArtifactGuarded(ctx context.Context, key, sourcePath, dest, acknowledgement string) (bool, error) {
+	release, err := s.guard.BeginResolveContext(ctx, s.stepHandle(sourcePath), s.stepHandle(dest))
+	if err != nil {
+		return false, err
+	}
+	defer release()
+
+	if _, registered := s.registry.Lookup(key); registered {
+		return false, errResolveRegistryChanged
+	}
+	file, info, err := s.openGenericArtifact(sourcePath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, fmt.Errorf("open filesystem source: %w", err)
+	}
+	file.Close()
+	if !info.IsDir() {
+		return false, nil
+	}
+	if !s.registry.RegisterIfAbsent(key, sourcePath) {
+		return false, errResolveRegistryChanged
+	}
+
+	s.touchStepDir(sourcePath)
+	return true, s.copyArtifactContextWithReceipt(ctx, sourcePath, dest, acknowledgement)
+}
+
 // resolveOne resolves a single artifact key to a destination path.
 // It is the core logic shared by handleResolve and handleResolveBatch.
-func (s *Server) resolveOne(ctx context.Context, key, dest string) (resp resolveResponse) {
+func (s *Server) resolveOne(ctx context.Context, key, dest, acknowledgement string) (resp resolveResponse) {
 	start := time.Now()
 	defer func() {
 		s.metrics.recordResolve(resp.Method, resp.Status, time.Since(start))
@@ -1144,51 +1403,77 @@ func (s *Server) resolveOne(ctx context.Context, key, dest string) (resp resolve
 	if err := s.validateResolveBoundary(key, dest); err != nil {
 		return resolveResponse{Status: "error", Method: "validation", Error: err.Error()}
 	}
-
-	// Step 1: Check registry for explicit registration.
-	sourcePath, found := s.registry.Lookup(key)
-	if found {
-		if _, err := s.validateStepPath(sourcePath, true); err != nil {
-			s.registry.Remove(key)
-			return resolveResponse{Status: "error", Source: sourcePath, Method: "validation", Error: fmt.Sprintf("unsafe registry source: %v", err)}
-		}
-		if err := s.copyArtifactGuarded(sourcePath, dest); err != nil {
-			logger.Error("copy-failed", err, lager.Data{"source": sourcePath})
-			return resolveResponse{Status: "error", Source: sourcePath, Method: "local", Error: err.Error()}
-		}
-		duration := time.Since(start)
-		logger.Info("resolved", lager.Data{"method": "registry", "source": sourcePath, "duration": duration.String()})
-		return resolveResponse{Status: "ok", Source: sourcePath, Method: "registry", Duration: duration.String()}
+	if err := ctx.Err(); err != nil {
+		return resolveFailure("admission", err)
 	}
+	select {
+	case s.resolveSlots <- struct{}{}:
+		defer func() { <-s.resolveSlots }()
+	default:
+		return resolveResponse{Status: "busy", Method: "admission", Error: "artifact resolver is at its daemon-wide concurrency limit"}
+	}
+	resolveCtx, cancel := context.WithTimeout(ctx, s.resolveTimeout)
+	defer cancel()
+	ctx = resolveCtx
 
-	// Step 2: Fallback — check if key maps to a steps/ directory on disk.
+	// Steps 1 and 2: resolve a registered source or the canonical filesystem
+	// fallback. Mapping changes are retried so lookup, source open, and copy all
+	// agree under the paired guard.
 	stepsPath := filepath.Join(s.storagePath, "steps", key)
-	if info, err := os.Stat(stepsPath); err == nil && info.IsDir() {
-		if _, err := s.validateStepPath(stepsPath, true); err != nil {
-			return resolveResponse{Status: "error", Source: stepsPath, Method: "validation", Error: fmt.Sprintf("unsafe filesystem source: %v", err)}
+	localSearchSettled := false
+	for range 8 {
+		sourcePath, found := s.registry.Lookup(key)
+		if found {
+			invalid, err := s.copyRegisteredArtifactGuarded(ctx, key, sourcePath, dest, acknowledgement)
+			if errors.Is(err, errResolveRegistryChanged) {
+				continue
+			}
+			if err != nil {
+				logger.Error("copy-failed", err, lager.Data{"source": sourcePath})
+				if invalid {
+					return resolveResponse{Status: "error", Method: "validation", Error: err.Error()}
+				}
+				return resolveFailure("local", err)
+			}
+			duration := time.Since(start)
+			logger.Info("resolved", lager.Data{"method": "registry", "source": sourcePath, "duration": duration.String()})
+			return resolveResponse{Status: "ok", Method: "registry", Duration: duration.String(), Acknowledgement: acknowledgement}
 		}
-		s.registry.Register(key, stepsPath)
 
-		if err := s.copyArtifactGuarded(stepsPath, dest); err != nil {
-			logger.Error("copy-failed", err, lager.Data{"source": stepsPath})
-			return resolveResponse{Status: "error", Source: stepsPath, Method: "filesystem", Error: err.Error()}
+		copied, err := s.copyFilesystemArtifactGuarded(ctx, key, stepsPath, dest, acknowledgement)
+		if errors.Is(err, errResolveRegistryChanged) {
+			continue
 		}
-		duration := time.Since(start)
-		logger.Info("resolved", lager.Data{"method": "filesystem", "source": stepsPath, "duration": duration.String()})
-		return resolveResponse{Status: "ok", Source: stepsPath, Method: "filesystem", Duration: duration.String()}
+		if err != nil {
+			logger.Error("copy-failed", err, lager.Data{"source": stepsPath})
+			return resolveFailure("filesystem", err)
+		}
+		if copied {
+			duration := time.Since(start)
+			logger.Info("resolved", lager.Data{"method": "filesystem", "source": stepsPath, "duration": duration.String()})
+			return resolveResponse{Status: "ok", Method: "filesystem", Duration: duration.String(), Acknowledgement: acknowledgement}
+		}
+		localSearchSettled = true
+		break
+	}
+	if !localSearchSettled {
+		return resolveResponse{Status: "error", Method: "validation", Error: "registry mapping changed repeatedly during guarded resolve"}
 	}
 
 	// Step 3: Query peer daemons for cross-node resolution.
 	if s.peers != nil {
 		peerIP, found := s.peers.Probe(ctx, key)
 		if found {
-			if err := s.fetchPeerArtifact(ctx, peerIP, key, dest); err != nil {
+			if err := s.fetchPeerArtifact(ctx, peerIP, key, dest, acknowledgement); err != nil {
 				logger.Error("peer-fetch-failed", err, lager.Data{"peer": peerIP})
-				return resolveResponse{Status: "error", Source: peerIP, Method: "peer", Error: err.Error()}
+				return resolveFailure("peer", err)
 			}
 			duration := time.Since(start)
 			logger.Info("resolved", lager.Data{"method": "peer", "peer": peerIP, "duration": duration.String()})
-			return resolveResponse{Status: "ok", Source: peerIP, Method: "peer", Duration: duration.String()}
+			return resolveResponse{Status: "ok", Method: "peer", Duration: duration.String(), Acknowledgement: acknowledgement}
+		}
+		if err := ctx.Err(); err != nil {
+			return resolveFailure("peer", err)
 		}
 	}
 
@@ -1198,42 +1483,67 @@ func (s *Server) resolveOne(ctx context.Context, key, dest string) (resp resolve
 	return resolveResponse{Status: "not_found", Method: "exhausted", Duration: duration.String(), Error: fmt.Sprintf("artifact %q not found on this node or any peer", key)}
 }
 
-func (s *Server) fetchPeerArtifact(ctx context.Context, peerIP, key, dest string) error {
+func resolveFailure(method string, err error) resolveResponse {
+	status := "error"
+	if errors.Is(err, context.DeadlineExceeded) {
+		status = "timeout"
+	}
+	return resolveResponse{Status: status, Method: method, Error: err.Error()}
+}
+
+func (s *Server) fetchPeerArtifact(ctx context.Context, peerIP, key, dest, acknowledgement string) error {
 	stepsRoot := filepath.Join(s.storagePath, "steps")
 	destRel, err := pathBelow(stepsRoot, dest)
 	if err != nil {
 		return fmt.Errorf("derive peer destination: %w", err)
 	}
-	if err := os.MkdirAll(stepsRoot, 0755); err != nil {
+	storageHandle, err := openDirectoryNoFollow(s.storagePath)
+	if err != nil {
+		return fmt.Errorf("anchor peer storage root: %w", err)
+	}
+	defer storageHandle.Close()
+	if err := unix.Mkdirat(int(storageHandle.Fd()), "steps", 0755); err != nil && !errors.Is(err, unix.EEXIST) {
 		return fmt.Errorf("create peer steps root: %w", err)
 	}
-	if err := verifyExistingPathComponents(s.storagePath, "steps", false); err != nil {
-		return fmt.Errorf("validate peer steps root: %w", err)
-	}
-	stepsHandle, err := os.OpenRoot(stepsRoot)
+	stepsHandle, err := openDirAtNoFollow(storageHandle, "steps", false)
 	if err != nil {
-		return fmt.Errorf("anchor peer destination: %w", err)
+		return fmt.Errorf("anchor peer steps root: %w", err)
 	}
 	defer stepsHandle.Close()
-	if err := stepsHandle.MkdirAll(filepath.Dir(destRel), 0755); err != nil {
+	destParentRel := filepath.Dir(destRel)
+	destParent, err := openDirAtNoFollow(stepsHandle, destParentRel, true)
+	if err != nil {
 		return fmt.Errorf("create peer destination parent: %w", err)
 	}
-	tmpName, err := createRootTempDir(stepsHandle, ".peer-stage-")
+	defer destParent.Close()
+	release, err := s.guard.BeginSweepContext(ctx, s.stepHandle(dest))
 	if err != nil {
-		return fmt.Errorf("create peer staging directory: %w", err)
-	}
-	defer stepsHandle.RemoveAll(tmpName)
-	if err := s.peers.Fetch(ctx, peerIP, key, filepath.Join(stepsRoot, tmpName)); err != nil {
 		return err
 	}
-
-	release := s.guard.BeginSweep(s.stepHandle(dest))
 	defer release()
-	if err := stepsHandle.RemoveAll(destRel); err != nil {
-		return fmt.Errorf("remove stale peer destination: %w", err)
+	unchanged, err := sameOpenDirectoryAt(stepsHandle, destParentRel, destParent)
+	if err != nil {
+		return fmt.Errorf("revalidate peer destination parent: %w", err)
 	}
-	if err := stepsHandle.Rename(tmpName, destRel); err != nil {
-		return fmt.Errorf("publish peer artifact: %w", err)
+	if !unchanged {
+		return fmt.Errorf("peer destination parent changed before fetch")
+	}
+	destBase := filepath.Base(destRel)
+	receiptName, err := resolveReceiptMaterial(acknowledgement)
+	if err != nil {
+		return err
+	}
+	if err := s.peers.FetchIntoOpenedDirectoryWithReceipt(ctx, peerIP, key, destParent, destBase, receiptName, []byte(acknowledgement)); err != nil {
+		return err
+	}
+	unchanged, err = sameOpenDirectoryAt(stepsHandle, destParentRel, destParent)
+	if err != nil {
+		cleanupErr := removeTreeAt(destParent, destBase)
+		return fmt.Errorf("revalidate peer destination parent after fetch: %w", errors.Join(err, cleanupErr))
+	}
+	if !unchanged {
+		cleanupErr := removeTreeAt(destParent, destBase)
+		return errors.Join(fmt.Errorf("peer destination parent changed during fetch"), cleanupErr)
 	}
 	return nil
 }
@@ -1245,10 +1555,9 @@ func (s *Server) fetchPeerArtifact(ctx context.Context, peerIP, key, dest string
 //  1. Check local registry for an explicit registration
 //  2. Fall back to filesystem scan (check if the key maps to a steps/ directory)
 //  3. Query peer daemons for cross-node resolution
-func (s *Server) handleResolve(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleResolve(w http.ResponseWriter, r *http.Request, cfg handlerConfig) {
 	var req resolveRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, fmt.Sprintf("invalid JSON: %v", err), http.StatusBadRequest)
+	if !decodeResolveControlJSON(w, r, &req) {
 		return
 	}
 	if req.Key == "" || req.Dest == "" {
@@ -1259,11 +1568,20 @@ func (s *Server) handleResolve(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	acknowledgement, authorized := authorizeResolve(cfg, req)
+	if !authorized {
+		http.Error(w, "valid resolve capability required", http.StatusUnauthorized)
+		return
+	}
 
-	resp := s.resolveOne(r.Context(), req.Key, req.Dest)
+	resp := s.resolveOne(r.Context(), req.Key, req.Dest, acknowledgement)
 
 	status := http.StatusOK
-	if resp.Status == "error" {
+	if resp.Status == "busy" {
+		status = http.StatusServiceUnavailable
+	} else if resp.Status == "timeout" {
+		status = http.StatusGatewayTimeout
+	} else if resp.Status == "error" {
 		status = http.StatusInternalServerError
 	} else if resp.Status == "not_found" {
 		status = http.StatusNotFound
@@ -1286,13 +1604,21 @@ type batchResolveResponse struct {
 // {"items": [{key, dest}, ...]}. It resolves all artifacts concurrently and
 // returns an aggregated response. If any item fails, the overall status is
 // "error" and the HTTP status is 500.
-func (s *Server) handleResolveBatch(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleResolveBatch(w http.ResponseWriter, r *http.Request, cfg handlerConfig) {
 	var req batchResolveRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, fmt.Sprintf("invalid JSON: %v", err), http.StatusBadRequest)
+	if !decodeResolveControlJSON(w, r, &req) {
+		return
+	}
+	if len(req.Items) == 0 {
+		http.Error(w, "batch requires at least one item", http.StatusBadRequest)
+		return
+	}
+	if len(req.Items) > maxResolveBatchItems {
+		http.Error(w, "resolve batch has too many items", http.StatusRequestEntityTooLarge)
 		return
 	}
 	destinations := make([]string, 0, len(req.Items))
+	operations := make(map[string]struct{}, len(req.Items))
 	for _, item := range req.Items {
 		if item.Key == "" || item.Dest == "" {
 			http.Error(w, "every item requires key and dest", http.StatusBadRequest)
@@ -1302,6 +1628,12 @@ func (s *Server) handleResolveBatch(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		operation := item.Key + "\x00" + item.Dest
+		if _, exists := operations[operation]; exists {
+			http.Error(w, "batch items must not be duplicated", http.StatusBadRequest)
+			return
+		}
+		operations[operation] = struct{}{}
 		for _, existing := range destinations {
 			if pathsOverlap(existing, item.Dest) {
 				http.Error(w, "batch destinations must not overlap", http.StatusBadRequest)
@@ -1310,17 +1642,34 @@ func (s *Server) handleResolveBatch(w http.ResponseWriter, r *http.Request) {
 		}
 		destinations = append(destinations, item.Dest)
 	}
+	acknowledgements := make([]string, len(req.Items))
+	for index, item := range req.Items {
+		acknowledgement, authorized := authorizeResolve(cfg, item)
+		if !authorized {
+			http.Error(w, "valid resolve capability required", http.StatusUnauthorized)
+			return
+		}
+		acknowledgements[index] = acknowledgement
+	}
 
 	results := make([]resolveResponse, len(req.Items))
-
+	jobs := make(chan int)
 	var wg sync.WaitGroup
-	for i, item := range req.Items {
+	workerCount := min(maxResolveWorkers, len(req.Items))
+	for range workerCount {
 		wg.Add(1)
-		go func(idx int, key, dest string) {
+		go func() {
 			defer wg.Done()
-			results[idx] = s.resolveOne(r.Context(), key, dest)
-		}(i, item.Key, item.Dest)
+			for idx := range jobs {
+				item := req.Items[idx]
+				results[idx] = s.resolveOne(r.Context(), item.Key, item.Dest, acknowledgements[idx])
+			}
+		}()
 	}
+	for i := range req.Items {
+		jobs <- i
+	}
+	close(jobs)
 	wg.Wait()
 
 	overall := "ok"
@@ -1334,20 +1683,32 @@ func (s *Server) handleResolveBatch(w http.ResponseWriter, r *http.Request) {
 	status := http.StatusOK
 	if overall == "error" {
 		status = http.StatusInternalServerError
+		for _, result := range results {
+			if result.Status == "busy" {
+				status = http.StatusServiceUnavailable
+				break
+			}
+			if result.Status == "timeout" {
+				status = http.StatusGatewayTimeout
+			}
+		}
 	}
 
 	writeJSON(w, status, batchResolveResponse{Status: overall, Results: results})
 }
 
-// copyArtifactGuarded wraps copyArtifact with the read guard and a
-// pre-copy mtime touch: the guard keeps the sweeper from deleting src
-// mid-copy (cp -R silently omits files removed before enumeration), and the
-// touch makes the sweeper's under-lock re-check spare the directory.
-func (s *Server) copyArtifactGuarded(src, dest string) error {
-	release := s.guard.BeginRead(s.stepHandle(src))
-	defer release()
-	s.touchStepDir(src)
-	return s.copyArtifact(src, dest)
+func authorizeResolve(cfg handlerConfig, req resolveRequest) (string, bool) {
+	if !cfg.resolveCapabilityRequired {
+		return "", true
+	}
+	if cfg.resolveCapabilityVerifier == nil || req.Capability == "" {
+		return "", false
+	}
+	if cfg.resolveCapabilityVerifier.VerifyResolve(req.Capability, req.Key, req.Dest, time.Now()) != nil {
+		return "", false
+	}
+	acknowledgement, err := cfg.resolveCapabilityVerifier.ResolveAcknowledgement(req.Capability)
+	return acknowledgement, err == nil
 }
 
 // copyArtifact copies the contents of src directory to dest atomically.
@@ -1356,11 +1717,16 @@ func (s *Server) copyArtifactGuarded(src, dest string) error {
 // previous copy was interrupted (e.g., by restrictive or read-only files
 // left in the destination).
 func (s *Server) copyArtifact(src, dest string) error {
-	if _, err := s.validateStepPath(src, true); err != nil {
-		return fmt.Errorf("validate source boundary: %w", err)
-	}
-	if _, err := s.validateStepPath(dest, false); err != nil {
-		return fmt.Errorf("validate destination boundary: %w", err)
+	return s.copyArtifactContext(context.Background(), src, dest)
+}
+
+func (s *Server) copyArtifactContext(ctx context.Context, src, dest string) error {
+	return s.copyArtifactContextWithReceipt(ctx, src, dest, "")
+}
+
+func (s *Server) copyArtifactContextWithReceipt(ctx context.Context, src, dest, acknowledgement string) error {
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	stepsRoot := filepath.Join(s.storagePath, "steps")
 	srcRel, err := pathBelow(stepsRoot, src)
@@ -1374,53 +1740,73 @@ func (s *Server) copyArtifact(src, dest string) error {
 	if pathsOverlap(srcRel, destRel) {
 		return fmt.Errorf("source and destination must not overlap")
 	}
-	stepsHandle, err := os.OpenRoot(stepsRoot)
+	stepsHandle, err := openDirectoryNoFollow(stepsRoot)
 	if err != nil {
 		return fmt.Errorf("anchor steps root: %w", err)
 	}
 	defer stepsHandle.Close()
-	if err := stepsHandle.MkdirAll(filepath.Dir(destRel), 0755); err != nil {
-		return fmt.Errorf("create destination parent: %w", err)
+	sourceHandle, err := openDirAtNoFollow(stepsHandle, srcRel, false)
+	if err != nil {
+		return fmt.Errorf("open source without symlinks: %w", err)
 	}
-	// Keep the temporary copy at the anchored steps root. Publication and
-	// cleanup then remain confined even if a destination parent is replaced by
-	// a symlink between validation and rename.
-	tmpName, err := createRootTempDir(stepsHandle, ".cp-tmp-")
+	defer sourceHandle.Close()
+	if s.copyHooks.sourceOpened != nil {
+		s.copyHooks.sourceOpened()
+	}
+	destParentRel := filepath.Dir(destRel)
+	destParent, err := openDirAtNoFollow(stepsHandle, destParentRel, true)
+	if err != nil {
+		return fmt.Errorf("open destination parent without symlinks: %w", err)
+	}
+	defer destParent.Close()
+	if s.copyHooks.destinationParentOpened != nil {
+		s.copyHooks.destinationParentOpened()
+	}
+	tmpName, tmpHandle, err := randomDirectoryAt(stepsHandle, ".cp-tmp-")
 	if err != nil {
 		return fmt.Errorf("create temp dir: %w", err)
 	}
-	tmpDest := filepath.Join(stepsRoot, tmpName)
-	defer stepsHandle.RemoveAll(tmpName)
-
-	// Use cp -R (recursive only — no ownership/mode preservation). The daemon
-	// has CAP_DAC_OVERRIDE to read source files owned by any UID, but does NOT
-	// have CAP_CHOWN. GNU cp -p as root treats chown failure as a hard error,
-	// so we must not use -p. Ownership/mode preservation is unnecessary anyway —
-	// these are ephemeral artifact cache copies.
-	cmd := exec.Command("cp", "-R", src+"/.", tmpDest+"/")
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("cp -R %s/. %s/: %w (output: %s)", src, tmpDest, err, strings.TrimSpace(string(output)))
+	defer removeTreeAt(stepsHandle, tmpName)
+	defer tmpHandle.Close()
+	if err := copyOpenedTree(ctx, sourceHandle, tmpHandle, ""); err != nil {
+		return fmt.Errorf("copy opened artifact tree: %w", err)
 	}
-
-	// Ensure world-readable permissions so non-root task containers can access
-	// artifacts. Source files may have restrictive modes (e.g. 0600) set by the
-	// producing step's UID. The daemon owns the copies (root:root) so chmod
-	// succeeds without CAP_FOWNER. "a+rX" adds read for all and execute only
-	// on directories (where owner already has execute).
-	chmodCmd := exec.Command("chmod", "-R", "a+rX", tmpDest)
-	if output, err := chmodCmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("chmod -R a+rX %s: %w (output: %s)", tmpDest, err, strings.TrimSpace(string(output)))
+	receiptName, err := resolveReceiptMaterial(acknowledgement)
+	if err != nil {
+		return err
 	}
-
-	// Remove and publish through the anchored root; os.Root refuses to follow
-	// a path component outside the steps namespace.
-	if err := stepsHandle.RemoveAll(destRel); err != nil {
-		return fmt.Errorf("remove stale destination: %w", err)
+	if receiptName != "" {
+		if err := writeExclusiveFileAt(tmpHandle, receiptName, []byte(acknowledgement), 0600); err != nil {
+			return fmt.Errorf("write resolve receipt: %w", err)
+		}
 	}
-	if err := stepsHandle.Rename(tmpName, destRel); err != nil {
-		return fmt.Errorf("rename %s -> %s: %w", tmpDest, dest, err)
+	if s.copyHooks.temporaryReady != nil {
+		s.copyHooks.temporaryReady(tmpName)
+	}
+	temporaryUnchanged, err := sameOpenDirectoryAt(stepsHandle, tmpName, tmpHandle)
+	if err != nil || !temporaryUnchanged {
+		return fmt.Errorf("copied temporary tree changed before publication: %w", err)
+	}
+	unchanged, err := sameOpenDirectoryAt(stepsHandle, destParentRel, destParent)
+	if err != nil || !unchanged {
+		return fmt.Errorf("destination parent changed during copy: %w", err)
+	}
+	destBase := filepath.Base(destRel)
+	if err := publishPreparedDirectoryAt(ctx, stepsHandle, tmpName, tmpHandle, destParent, destBase, receiptName, s.copyHooks.destinationEntryPublishing); err != nil {
+		return fmt.Errorf("publish copied artifact: %w", err)
 	}
 	return nil
+}
+
+func resolveReceiptMaterial(acknowledgement string) (string, error) {
+	if acknowledgement == "" {
+		return "", nil
+	}
+	name, err := artifactcap.ResolveReceiptFilename(acknowledgement)
+	if err != nil {
+		return "", fmt.Errorf("derive resolve receipt: %w", err)
+	}
+	return name, nil
 }
 
 // sanitizeMode strips setuid/setgid bits and enforces a minimum permission
@@ -1448,16 +1834,9 @@ func (s *Server) handleHeadResourceCache(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	path, found := s.registry.Lookup(key)
-	if !found {
-		w.WriteHeader(http.StatusNotFound)
-		return
-	}
-	// Verify the path still exists on disk — aliases can become stale if
-	// the sweeper removed the step directory.
-	if _, err := os.Stat(path); err != nil {
-		if os.IsNotExist(err) {
-			s.registry.Remove(key)
+	file, _, path, release, err := s.openRegisteredArtifactWithReadGuard(r.Context(), key)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
@@ -1465,11 +1844,8 @@ func (s *Server) handleHeadResourceCache(w http.ResponseWriter, r *http.Request)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
-	if _, err := s.validateStepPath(path, true); err != nil {
-		s.registry.Remove(key)
-		w.WriteHeader(http.StatusBadRequest)
-		return
-	}
+	file.Close()
+	release()
 
 	if s.nodeName != "" {
 		w.Header().Set("X-Node-Name", s.nodeName)
@@ -1486,21 +1862,9 @@ func (s *Server) handleGetResourceCache(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	path, found := s.registry.Lookup(key)
-	if !found {
-		http.NotFound(w, r)
-		return
-	}
-	if _, err := s.validateStepPath(path, true); err != nil {
-		s.registry.Remove(key)
-		http.Error(w, "invalid resource cache source", http.StatusBadRequest)
-		return
-	}
-
-	info, err := os.Stat(path)
+	file, info, path, release, err := s.openRegisteredArtifactWithReadGuard(r.Context(), key)
 	if err != nil {
-		if os.IsNotExist(err) {
-			s.registry.Remove(key)
+		if errors.Is(err, os.ErrNotExist) {
 			http.NotFound(w, r)
 			return
 		}
@@ -1508,19 +1872,24 @@ func (s *Server) handleGetResourceCache(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
+	defer file.Close()
+	defer release()
 
 	if s.nodeName != "" {
 		w.Header().Set("X-Node-Name", s.nodeName)
 	}
 
-	// Same guard discipline as handleGetArtifact: no sweeps mid-stream.
-	release := s.guard.BeginRead(s.stepHandle(path))
-	defer release()
+	if s.serveHooks.sourceDescriptorOpened != nil {
+		s.serveHooks.sourceDescriptorOpened()
+	}
+	if s.serveHooks.sourceOpened != nil {
+		s.serveHooks.sourceOpened()
+	}
 	s.touchStepDir(path)
 
 	if info.IsDir() {
 		w.Header().Set("Content-Type", "application/x-tar")
-		if err := s.tarDirectory(w, path); err != nil {
+		if err := tarOpenedDirectory(w, file); err != nil {
 			s.logger.Error("failed-to-tar-resource-cache", err, lager.Data{"key": key, "path": path})
 			// Headers already sent; abort so the peer sees a hard failure
 			// rather than a clean-looking truncated tar.
@@ -1529,16 +1898,8 @@ func (s *Server) handleGetResourceCache(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	f, err := os.Open(path)
-	if err != nil {
-		s.logger.Error("resource-cache-open-error", err, lager.Data{"key": key, "path": path})
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	defer f.Close()
-
 	w.Header().Set("Content-Type", "application/octet-stream")
-	if _, err := io.Copy(w, f); err != nil {
+	if _, err := io.Copy(w, file); err != nil {
 		s.logger.Error("failed-to-stream-resource-cache", err, lager.Data{"key": key, "path": path})
 		panic(http.ErrAbortHandler)
 	}

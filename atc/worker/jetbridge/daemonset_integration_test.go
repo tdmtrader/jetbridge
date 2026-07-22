@@ -29,11 +29,12 @@ import (
 // the pod spec includes a hostPath volume instead of a PVC volume.
 func TestDaemonSetMode_PodHasHostPathVolume(t *testing.T) {
 	cfg := Config{
-		Namespace:              "test-ns",
-		ArtifactDaemonHostPath: "/var/concourse/artifacts",
-		ArtifactDaemonPort:     7780,
-		ArtifactDaemonService:  "artifact-daemon",
-		ArtifactHelperImage:    "alpine:latest",
+		Namespace:                          "test-ns",
+		ArtifactDaemonHostPath:             "/var/concourse/artifacts",
+		ArtifactDaemonPort:                 7780,
+		ArtifactDaemonService:              "artifact-daemon",
+		ArtifactHelperImage:                "alpine:latest",
+		ArtifactDaemonResolveCapabilityKey: []byte("0123456789abcdef0123456789abcdef"),
 	}
 
 	backend := NewDaemonSetBackend(cfg, nil, nil)
@@ -176,11 +177,12 @@ func TestDaemonSetMode_NoAffinityForPVC(t *testing.T) {
 // TestDaemonSetMode_InitContainerResolveCommand verifies the daemon resolve command.
 func TestDaemonSetMode_InitContainerResolveCommand(t *testing.T) {
 	cfg := Config{
-		Namespace:              "test-ns",
-		ArtifactDaemonHostPath: "/var/concourse/artifacts",
-		ArtifactDaemonPort:     7780,
-		ArtifactDaemonService:  "artifact-daemon",
-		ArtifactHelperImage:    "alpine:latest",
+		Namespace:                          "test-ns",
+		ArtifactDaemonHostPath:             "/var/concourse/artifacts",
+		ArtifactDaemonPort:                 7780,
+		ArtifactDaemonService:              "artifact-daemon",
+		ArtifactHelperImage:                "alpine:latest",
+		ArtifactDaemonResolveCapabilityKey: []byte("0123456789abcdef0123456789abcdef"),
 	}
 
 	locator := NewArtifactLocator()
@@ -229,8 +231,9 @@ func TestDaemonSetMode_InitContainerResolveCommand(t *testing.T) {
 	if !strings.Contains(cmd, "/resolve") {
 		t.Errorf("expected /resolve endpoint in command, got: %s", cmd)
 	}
-	if !strings.Contains(cmd, "test-handle/result") {
-		t.Errorf("expected daemon key in command, got: %s", cmd)
+	items := decodeEmbeddedBatchItems(t, cmd)
+	if len(items) != 1 || items[0].Key != "test-handle/result" {
+		t.Errorf("expected daemon key in resolve payload, got: %+v", items)
 	}
 }
 
@@ -410,11 +413,12 @@ func TestDaemonSetMode_RecordOutputLocationsWithEmptyNodeName(t *testing.T) {
 
 func daemonSetConfig() Config {
 	return Config{
-		Namespace:              "test-ns",
-		ArtifactDaemonHostPath: "/var/concourse/artifacts",
-		ArtifactDaemonPort:     7780,
-		ArtifactDaemonService:  "artifact-daemon",
-		ArtifactHelperImage:    "alpine:latest",
+		Namespace:                          "test-ns",
+		ArtifactDaemonHostPath:             "/var/concourse/artifacts",
+		ArtifactDaemonPort:                 7780,
+		ArtifactDaemonService:              "artifact-daemon",
+		ArtifactHelperImage:                "alpine:latest",
+		ArtifactDaemonResolveCapabilityKey: []byte("0123456789abcdef0123456789abcdef"),
 	}
 }
 
@@ -631,8 +635,9 @@ func TestDaemonSetMode_InitContainerUsesDaemonResolve(t *testing.T) {
 	if !strings.Contains(cmd, "/resolve") {
 		t.Errorf("init container should use daemon /resolve endpoint, got command: %s", cmd)
 	}
-	if !strings.Contains(cmd, "source-handle/src") {
-		t.Errorf("init container should reference daemon key, got command: %s", cmd)
+	items := decodeEmbeddedBatchItems(t, cmd)
+	if len(items) != 1 || items[0].Key != "source-handle/src" {
+		t.Errorf("init container should reference daemon key, got payload: %+v", items)
 	}
 }
 
@@ -675,8 +680,9 @@ func TestDaemonSetMode_MissingLocatorFallsBackToVolumeHandle(t *testing.T) {
 
 	// The init container should use the volume handle as the daemon key.
 	cmd := strings.Join(inits[0].Command, " ")
-	if !strings.Contains(cmd, "cached-vol") {
-		t.Errorf("expected init container to use volume handle as key, got: %s", cmd)
+	items := decodeEmbeddedBatchItems(t, cmd)
+	if len(items) != 1 || items[0].Key != "cached-vol" {
+		t.Errorf("expected init container to use volume handle as key, got: %+v", items)
 	}
 }
 
@@ -687,7 +693,7 @@ func TestDaemonSetMode_EmptyKeyFailsFast(t *testing.T) {
 	backend := NewDaemonSetBackend(cfg, nil, nil)
 	_ = &Container{config: cfg, storageBackend: backend}
 
-	cmd := backend.daemonResolveCommand("", "/tmp/build/input")
+	cmd := backend.daemonResolveCommand("", "/tmp/build/input", "/tmp/input")
 	script := strings.Join(cmd, " ")
 	if !strings.Contains(script, "exit 1") {
 		t.Errorf("expected exit 1 for empty key, got: %s", script)
@@ -736,9 +742,9 @@ func TestDaemonSetMode_RecordAndLocateRoundTrip(t *testing.T) {
 	}
 
 	cmd := strings.Join(inits[0].Command, " ")
-	// Should contain the daemon key in the /resolve call
-	if !strings.Contains(cmd, "producer-handle/result") {
-		t.Errorf("expected daemon key in command, got: %s", cmd)
+	items := decodeEmbeddedBatchItems(t, cmd)
+	if len(items) != 1 || items[0].Key != "producer-handle/result" {
+		t.Errorf("expected daemon key in resolve payload, got: %+v", items)
 	}
 	if !strings.Contains(cmd, "/resolve") {
 		t.Errorf("expected /resolve endpoint in command, got: %s", cmd)
@@ -754,7 +760,7 @@ func TestDaemonSetMode_DaemonResolveCommand(t *testing.T) {
 	backend := NewDaemonSetBackend(cfg, nil, nil)
 	_ = &Container{config: cfg, storageBackend: backend}
 
-	cmd := backend.daemonResolveCommand("producer-handle/result", "/var/concourse/artifacts/steps/consumer/input-0")
+	cmd := backend.daemonResolveCommand("producer-handle/result", "/var/concourse/artifacts/steps/consumer/input-0", "/tmp/input")
 	script := strings.Join(cmd, " ")
 
 	if !strings.Contains(script, "wget") {
@@ -766,8 +772,9 @@ func TestDaemonSetMode_DaemonResolveCommand(t *testing.T) {
 	if !strings.Contains(script, "/resolve") {
 		t.Errorf("expected /resolve endpoint in command, got: %s", script)
 	}
-	if !strings.Contains(script, "producer-handle/result") {
-		t.Errorf("expected daemon key in command, got: %s", script)
+	item := decodeEmbeddedResolveItem(t, script)
+	if item.Key != "producer-handle/result" {
+		t.Errorf("expected daemon key in resolve payload, got: %+v", item)
 	}
 }
 
@@ -1225,8 +1232,9 @@ func TestDaemonSetMode_CacheHitFlow(t *testing.T) {
 	// The init container should use the volume handle as the daemon key
 	// (since locator has no entry for this cache hit).
 	cmd := strings.Join(inits[0].Command, " ")
-	if !strings.Contains(cmd, cachedVolHandle) {
-		t.Errorf("expected volume handle %q in daemon resolve command, got: %s", cachedVolHandle, cmd)
+	items := decodeEmbeddedBatchItems(t, cmd)
+	if len(items) != 1 || items[0].Key != cachedVolHandle {
+		t.Errorf("expected volume handle %q in daemon resolve payload, got: %+v", cachedVolHandle, items)
 	}
 	if !strings.Contains(cmd, "/resolve") {
 		t.Errorf("expected /resolve endpoint in command, got: %s", cmd)
@@ -1306,8 +1314,9 @@ func TestDaemonSetMode_CacheMissFlow(t *testing.T) {
 	// The init container should use the daemon key from the locator
 	// (not the volume handle fallback).
 	cmd := strings.Join(inits[0].Command, " ")
-	if !strings.Contains(cmd, "get-container/dir") {
-		t.Errorf("expected daemon key get-container/dir in command, got: %s", cmd)
+	items := decodeEmbeddedBatchItems(t, cmd)
+	if len(items) != 1 || items[0].Key != "get-container/dir" {
+		t.Errorf("expected daemon key get-container/dir in payload, got: %+v", items)
 	}
 }
 
@@ -1366,8 +1375,9 @@ func TestDaemonSetMode_CacheHitATCRestart(t *testing.T) {
 
 	// Uses volume handle as daemon key (locator empty after restart).
 	cmd := strings.Join(inits[0].Command, " ")
-	if !strings.Contains(cmd, cachedVolHandle) {
-		t.Errorf("expected volume handle fallback, got: %s", cmd)
+	items := decodeEmbeddedBatchItems(t, cmd)
+	if len(items) != 1 || items[0].Key != cachedVolHandle {
+		t.Errorf("expected volume handle fallback, got: %+v", items)
 	}
 }
 
@@ -1425,8 +1435,9 @@ func TestDaemonSetMode_CacheHitDaemonRestartLimitation(t *testing.T) {
 	// If the daemon can't resolve it, the init container fails and the
 	// build retries (standard Concourse retry behavior).
 	cmd := strings.Join(inits[0].Command, " ")
-	if !strings.Contains(cmd, cachedVolHandle) {
-		t.Errorf("expected volume handle in command, got: %s", cmd)
+	items := decodeEmbeddedBatchItems(t, cmd)
+	if len(items) != 1 || items[0].Key != cachedVolHandle {
+		t.Errorf("expected volume handle in payload, got: %+v", items)
 	}
 	// Verify the command will error properly on failure (exit 1 in wget).
 	if !strings.Contains(cmd, "exit 1") {
@@ -1489,8 +1500,9 @@ func TestDaemonSetMode_ConcurrentBuildsShareCache(t *testing.T) {
 
 	// Should use the daemon key from the locator (recorded by build 1).
 	cmd := strings.Join(inits[0].Command, " ")
-	if !strings.Contains(cmd, "get-build-1/dir") {
-		t.Errorf("expected daemon key from build 1, got: %s", cmd)
+	items := decodeEmbeddedBatchItems(t, cmd)
+	if len(items) != 1 || items[0].Key != "get-build-1/dir" {
+		t.Errorf("expected daemon key from build 1, got: %+v", items)
 	}
 }
 

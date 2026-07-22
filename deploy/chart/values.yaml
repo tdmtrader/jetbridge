@@ -495,6 +495,23 @@ artifactDaemon:
   # -- Override the headless service name. When set, used verbatim.
   # Default (when empty): <release-fullname>-artifact-daemon
   serviceName: ""
+  # -- Shared signing key for short-lived, source-and-destination-bound
+  # artifact resolve capabilities. The generated Secret is persisted across
+  # Helm upgrades with lookup. To rotate, replace the Secret and restart both
+  # web and artifact-daemon pods; in-flight tokens signed by the old key then
+  # fail closed.
+  resolveCapability:
+    # -- Existing Secret containing exactly 32 raw bytes at key resolve.key.
+    # When empty, the chart creates and preserves a dedicated Secret.
+    existingSecret: ""
+    # -- Token lifetime. Keep this above pod scheduling timeout + startup
+    # timeout + the bounded init retry window (31m) + clock-skew margin (5m).
+    ttl: 2h
+  # -- Daemon-wide resolve admission. Excess requests fail fast and each
+  # admitted local or peer copy is cancelled at the operation timeout.
+  resolve:
+    maxConcurrent: 32
+    timeout: 30m
   # -- Resource requests and limits for the DaemonSet pods
   resources:
     requests:
@@ -544,8 +561,9 @@ artifactDaemon:
   tls:
     # -- Enable TLS (HTTPS + mTLS) for the artifact daemon.
     # When enabled, cross-node traffic (ATC→daemon, daemon→daemon) requires
-    # mutual TLS with client certificates. Init containers verify the daemon's
-    # server cert via the mounted CA. Health probes use HTTPS without client cert.
+    # mutual TLS with client certificates. Resolve init containers use
+    # short-lived operation-bound capabilities because they do not receive the
+    # client private key. Health probes use HTTPS without client cert.
     enabled: false
     # -- Name of an existing Secret containing TLS certs. Keys expected:
     # ca.crt, tls.crt, tls.key, client.crt, client.key.

@@ -2,8 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"flag"
 	"fmt"
 	"net/http"
@@ -13,6 +11,7 @@ import (
 	"time"
 
 	"code.cloudfoundry.org/lager/v3"
+	"github.com/concourse/concourse/agent/artifactcap"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 )
@@ -33,11 +32,19 @@ func main() {
 	mirrorTimeout := flag.Duration("mirror-timeout", 5*time.Minute, "Per-peer per-job mirror PUT timeout")
 	preemptionWatch := flag.Bool("preemption-watch", false, "Watch GCP metadata server for spot preemption notice and evacuate unmirrored artifacts before termination")
 	preemptionBudget := flag.Duration("preemption-budget", 25*time.Second, "Total time budget for synchronous evacuation on preemption")
+	resolveCapabilityKeyFile := flag.String("resolve-capability-key", "", "Path to the raw 32-byte key required to authorize resolve operations")
+	resolveMaxConcurrent := flag.Int("resolve-max-concurrent", defaultResolveMaxConcurrent, "Daemon-wide maximum number of concurrent artifact resolve operations")
+	resolveTimeout := flag.Duration("resolve-timeout", defaultResolveTimeout, "Maximum lifetime of one local or peer artifact resolve operation")
 
 	flag.Parse()
 
 	logger := lager.NewLogger("artifact-daemon")
 	logger.RegisterSink(lager.NewWriterSink(os.Stdout, lager.INFO))
+	resolveCapabilityKey, err := artifactcap.LoadKeyFile(*resolveCapabilityKeyFile)
+	if err != nil {
+		logger.Error("failed-to-load-resolve-capability-key", err)
+		os.Exit(1)
+	}
 
 	// Build K8s client for node labeling.
 	var labeler *NodeLabeler
@@ -63,6 +70,10 @@ func main() {
 	}
 
 	server := NewServer(logger, *storagePath, *nodeName)
+	if err := server.ConfigureResolveLimits(*resolveMaxConcurrent, *resolveTimeout); err != nil {
+		logger.Error("invalid-resolve-limits", err)
+		os.Exit(1)
+	}
 
 	// Set up alias persistence so volume-handle mappings survive restarts.
 	aliasStore := NewAliasStore(logger, *storagePath)
@@ -105,6 +116,7 @@ func main() {
 					CertPath:   *tlsCert, // daemon uses its own server cert as client cert for peers
 					KeyPath:    *tlsKey,
 					CACertPath: *tlsCACert,
+					ServerName: peerTLSServerName(*namespace, *serviceName),
 				}
 			}
 
@@ -155,14 +167,12 @@ func main() {
 	}()
 
 	var handlerOpts []HandlerOption
+	handlerOpts = append(handlerOpts, WithResolveCapabilityKey(resolveCapabilityKey))
 	if tlsEnabled {
 		handlerOpts = append(handlerOpts, WithTLS())
 	}
 
-	httpServer := &http.Server{
-		Addr:    fmt.Sprintf(":%d", *port),
-		Handler: server.Handler(handlerOpts...),
-	}
+	httpServer := newArtifactHTTPServer(*port, server.Handler(handlerOpts...))
 
 	// Wire preemption watcher if enabled. The watcher long-polls GCP
 	// metadata in its own goroutine and fires Mirror.Evacuate when the
@@ -272,25 +282,18 @@ func buildK8sClient() (kubernetes.Interface, error) {
 // manager for PUT /stream-in to peers. When peerTLS is configured, the
 // client uses mTLS (same client cert as the peer probe path).
 func buildMirrorHTTPClient(logger lager.Logger, peerTLS *PeerTLSConfig, timeout time.Duration) *http.Client {
-	transport := http.DefaultTransport.(*http.Transport).Clone()
+	var transport http.RoundTripper = http.DefaultTransport.(*http.Transport).Clone()
 
-	if peerTLS != nil && peerTLS.CertPath != "" {
-		clientCert, err := tls.LoadX509KeyPair(peerTLS.CertPath, peerTLS.KeyPath)
+	if peerTLS != nil {
+		tlsConfig, err := loadPeerClientTLS(peerTLS)
 		if err != nil {
-			logger.Error("mirror-load-client-cert-failed", err)
+			logger.Error("mirror-configure-tls-failed", err)
+			transport = failingRoundTripper{err: err}
 		} else {
-			caCertPEM, err := os.ReadFile(peerTLS.CACertPath)
-			if err != nil {
-				logger.Error("mirror-read-ca-cert-failed", err)
-			} else {
-				caPool := x509.NewCertPool()
-				caPool.AppendCertsFromPEM(caCertPEM)
-				transport.TLSClientConfig = &tls.Config{
-					Certificates: []tls.Certificate{clientCert},
-					RootCAs:      caPool,
-				}
-				logger.Info("mirror-mtls-enabled")
-			}
+			httpTransport := http.DefaultTransport.(*http.Transport).Clone()
+			httpTransport.TLSClientConfig = tlsConfig
+			transport = httpTransport
+			logger.Info("mirror-mtls-enabled", lager.Data{"server-name": peerTLS.ServerName})
 		}
 	}
 

@@ -7,9 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	"code.cloudfoundry.org/lager/v3"
@@ -37,6 +40,44 @@ type PeerTLSConfig struct {
 	CertPath   string
 	KeyPath    string
 	CACertPath string
+	ServerName string
+}
+
+func peerTLSServerName(namespace, service string) string {
+	if namespace == "" || service == "" {
+		return ""
+	}
+	return fmt.Sprintf("%s.%s.svc", service, namespace)
+}
+
+func loadPeerClientTLS(config *PeerTLSConfig) (*tls.Config, error) {
+	if config == nil || config.CertPath == "" || config.KeyPath == "" || config.CACertPath == "" {
+		return nil, fmt.Errorf("complete peer TLS certificate, key, and CA paths are required")
+	}
+	clientCert, err := tls.LoadX509KeyPair(config.CertPath, config.KeyPath)
+	if err != nil {
+		return nil, fmt.Errorf("load peer client certificate: %w", err)
+	}
+	caCertPEM, err := os.ReadFile(config.CACertPath)
+	if err != nil {
+		return nil, fmt.Errorf("read peer CA certificate: %w", err)
+	}
+	caPool := x509.NewCertPool()
+	if !caPool.AppendCertsFromPEM(caCertPEM) {
+		return nil, fmt.Errorf("parse peer CA certificate")
+	}
+	return &tls.Config{
+		Certificates: []tls.Certificate{clientCert},
+		RootCAs:      caPool,
+		ServerName:   config.ServerName,
+		MinVersion:   tls.VersionTLS12,
+	}, nil
+}
+
+type failingRoundTripper struct{ err error }
+
+func (f failingRoundTripper) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, f.err
 }
 
 // NewPeerResolver creates a PeerResolver that discovers peers via the
@@ -46,26 +87,26 @@ func NewPeerResolver(logger lager.Logger, clientset kubernetes.Interface, namesp
 	scheme := "http"
 	var probeTransport, fetchTransport http.RoundTripper
 
-	if tlsCfg != nil && tlsCfg.CertPath != "" {
-		clientCert, err := tls.LoadX509KeyPair(tlsCfg.CertPath, tlsCfg.KeyPath)
+	if tlsCfg != nil {
+		scheme = "https"
+		effective := *tlsCfg
+		if effective.ServerName == "" {
+			effective.ServerName = peerTLSServerName(namespace, service)
+		}
+		tlsConfig, err := loadPeerClientTLS(&effective)
 		if err != nil {
-			logger.Error("failed-to-load-peer-client-cert", err)
+			logger.Error("failed-to-configure-peer-tls", err)
+			failure := failingRoundTripper{err: err}
+			probeTransport = failure
+			fetchTransport = failure
 		} else {
-			caCertPEM, err := os.ReadFile(tlsCfg.CACertPath)
-			if err != nil {
-				logger.Error("failed-to-read-peer-ca-cert", err)
-			} else {
-				caPool := x509.NewCertPool()
-				caPool.AppendCertsFromPEM(caCertPEM)
-				tlsConfig := &tls.Config{
-					Certificates: []tls.Certificate{clientCert},
-					RootCAs:      caPool,
-				}
-				probeTransport = &http.Transport{TLSClientConfig: tlsConfig}
-				fetchTransport = &http.Transport{TLSClientConfig: tlsConfig.Clone()}
-				scheme = "https"
-				logger.Info("peer-mtls-enabled")
-			}
+			probeHTTPTransport := http.DefaultTransport.(*http.Transport).Clone()
+			probeHTTPTransport.TLSClientConfig = tlsConfig
+			fetchHTTPTransport := http.DefaultTransport.(*http.Transport).Clone()
+			fetchHTTPTransport.TLSClientConfig = tlsConfig.Clone()
+			probeTransport = probeHTTPTransport
+			fetchTransport = fetchHTTPTransport
+			logger.Info("peer-mtls-enabled", lager.Data{"server-name": effective.ServerName})
 		}
 	}
 
@@ -145,8 +186,8 @@ func (p *PeerResolver) Probe(ctx context.Context, key string) (string, bool) {
 
 	for _, ip := range ips {
 		go func(ip string) {
-			url := fmt.Sprintf("%s://%s:%d/artifacts/steps/%s", p.scheme, ip, p.port, key)
-			req, err := http.NewRequestWithContext(ctx, http.MethodHead, url, nil)
+			target := p.artifactURL(ip, key)
+			req, err := http.NewRequestWithContext(ctx, http.MethodHead, target, nil)
 			if err != nil {
 				results <- probeResult{ip: ip, found: false}
 				return
@@ -182,57 +223,78 @@ func (p *PeerResolver) Probe(ctx context.Context, key string) (string, bool) {
 // It streams GET /artifacts/steps/<key> from the peer, which returns a tar
 // stream, and extracts it to the destination directory.
 func (p *PeerResolver) Fetch(ctx context.Context, peerIP, key, destPath string) error {
+	return p.fetch(ctx, peerIP, key, func(body io.Reader) error {
+		return extractTarToDir(ctx, body, destPath)
+	})
+}
+
+// FetchIntoOpenedDirectory is the production peer-fetch path. The caller
+// supplies an already-open parent directory, so retries and final publication
+// cannot be redirected by swapping any pathname component.
+func (p *PeerResolver) FetchIntoOpenedDirectory(ctx context.Context, peerIP, key string, parent *os.File, destName string) error {
+	return p.fetch(ctx, peerIP, key, func(body io.Reader) error {
+		return extractTarIntoOpenedDirectory(ctx, body, parent, destName)
+	})
+}
+
+// FetchIntoOpenedDirectoryWithReceipt is the resolve path. It prepares the
+// token-specific receipt inside the same private extraction tree and publishes
+// it last when preserving an existing kubelet-mounted destination inode.
+func (p *PeerResolver) FetchIntoOpenedDirectoryWithReceipt(ctx context.Context, peerIP, key string, parent *os.File, destName, receiptName string, receiptContents []byte) error {
+	return p.fetch(ctx, peerIP, key, func(body io.Reader) error {
+		return extractTarIntoOpenedDirectoryWithReceipt(ctx, body, parent, destName, receiptName, receiptContents)
+	})
+}
+
+func (p *PeerResolver) fetch(ctx context.Context, peerIP, key string, extract func(io.Reader) error) error {
 	if err := validateCanonicalRelativeKey(key); err != nil || snapshotNamespaceKey(key) {
 		return fmt.Errorf("invalid peer artifact key")
 	}
-	logger := p.logger.Session("peer-fetch", lager.Data{"key": key, "peer": peerIP, "dest": destPath})
-
-	url := fmt.Sprintf("http://%s:%d/artifacts/steps/%s", peerIP, p.port, key)
+	logger := p.logger.Session("peer-fetch", lager.Data{"key": key, "peer": peerIP})
+	target := p.artifactURL(peerIP, key)
 
 	var lastErr error
 	for attempt := 1; attempt <= 3; attempt++ {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 		if err != nil {
 			return fmt.Errorf("create request: %w", err)
 		}
-
 		resp, err := p.fetchClient.Do(req)
 		if err != nil {
 			lastErr = err
 			logger.Error("fetch-attempt-failed", err, lager.Data{"attempt": attempt})
-			if attempt < 3 {
-				time.Sleep(time.Duration(attempt) * time.Second)
-			}
-			continue
-		}
-
-		if resp.StatusCode != http.StatusOK {
+		} else if resp.StatusCode != http.StatusOK {
 			resp.Body.Close()
 			lastErr = fmt.Errorf("peer returned %d", resp.StatusCode)
 			logger.Error("fetch-bad-status", lastErr, lager.Data{"attempt": attempt})
-			if attempt < 3 {
-				time.Sleep(time.Duration(attempt) * time.Second)
+		} else {
+			extractErr := extract(resp.Body)
+			closeErr := resp.Body.Close()
+			if extractErr == nil && closeErr == nil {
+				logger.Info("fetched", lager.Data{"attempt": attempt})
+				return nil
 			}
-			continue
+			lastErr = errors.Join(extractErr, closeErr)
+			logger.Error("extract-failed", lastErr, lager.Data{"attempt": attempt})
 		}
-
-		// Stream response (tar) to a temp file, then extract.
-		err = extractTarToDir(ctx, resp.Body, destPath)
-		resp.Body.Close()
-		if err != nil {
-			lastErr = err
-			logger.Error("extract-failed", err, lager.Data{"attempt": attempt})
-			if attempt < 3 {
-				time.Sleep(time.Duration(attempt) * time.Second)
+		if attempt < 3 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(time.Duration(attempt) * time.Second):
 			}
-			continue
 		}
-
-		logger.Info("fetched", lager.Data{"attempt": attempt})
-		return nil
 	}
-
 	return fmt.Errorf("peer fetch failed after 3 attempts: %w", lastErr)
+}
+
+func (p *PeerResolver) artifactURL(peerIP, key string) string {
+	target := url.URL{
+		Scheme: p.scheme,
+		Host:   net.JoinHostPort(peerIP, strconv.Itoa(p.port)),
+		Path:   "/artifacts/steps/" + key,
+	}
+	return target.String()
 }
 
 // extractTarToDir reads a tar stream and extracts files to destDir.
@@ -253,17 +315,29 @@ func extractTarToDir(ctx context.Context, r io.Reader, destDir string) error {
 	if err != nil {
 		return fmt.Errorf("resolve destination parent: %w", err)
 	}
-	parentRoot, err := os.OpenRoot(resolvedParent)
+	parentHandle, err := openDirectoryNoFollow(resolvedParent)
 	if err != nil {
 		return fmt.Errorf("anchor destination parent: %w", err)
 	}
-	defer parentRoot.Close()
-	tmpName, err := createRootTempDir(parentRoot, ".peer-fetch-")
+	defer parentHandle.Close()
+	return extractTarIntoOpenedDirectory(ctx, r, parentHandle, filepath.Base(destDir))
+}
+
+func extractTarIntoOpenedDirectory(ctx context.Context, r io.Reader, parent *os.File, destName string) error {
+	return extractTarIntoOpenedDirectoryWithReceipt(ctx, r, parent, destName, "", nil)
+}
+
+func extractTarIntoOpenedDirectoryWithReceipt(ctx context.Context, r io.Reader, parent *os.File, destName, receiptName string, receiptContents []byte) error {
+	if destName == "" || destName == "." || destName == ".." || filepath.Base(destName) != destName {
+		return fmt.Errorf("peer destination name is not a single safe component")
+	}
+	tmpName, tmpHandle, err := randomDirectoryAt(parent, ".peer-fetch-")
 	if err != nil {
 		return fmt.Errorf("create peer extraction directory: %w", err)
 	}
-	defer parentRoot.RemoveAll(tmpName)
-	root, err := parentRoot.OpenRoot(tmpName)
+	defer removeTreeAt(parent, tmpName)
+	defer tmpHandle.Close()
+	root, err := openRootAt(tmpHandle)
 	if err != nil {
 		return fmt.Errorf("anchor peer extraction directory: %w", err)
 	}
@@ -272,16 +346,19 @@ func extractTarToDir(ctx context.Context, r io.Reader, destDir string) error {
 	if extractErr != nil || closeErr != nil {
 		return fmt.Errorf("extract peer tar: %w", errors.Join(extractErr, closeErr))
 	}
-	destName := filepath.Base(destDir)
-	if info, err := parentRoot.Lstat(destName); err == nil && info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("destination became a symlink")
-	} else if err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("reinspect destination: %w", err)
+	if receiptName != "" {
+		if err := writeExclusiveFileAt(tmpHandle, receiptName, receiptContents, 0600); err != nil {
+			return fmt.Errorf("write peer resolve receipt: %w", err)
+		}
 	}
-	if err := parentRoot.RemoveAll(destName); err != nil {
-		return fmt.Errorf("remove stale destination: %w", err)
+	temporaryUnchanged, err := sameOpenDirectoryAt(parent, tmpName, tmpHandle)
+	if err != nil {
+		return fmt.Errorf("revalidate peer extraction directory: %w", err)
 	}
-	if err := parentRoot.Rename(tmpName, destName); err != nil {
+	if !temporaryUnchanged {
+		return fmt.Errorf("peer extraction directory changed before publication")
+	}
+	if err := publishPreparedDirectoryAt(ctx, parent, tmpName, tmpHandle, parent, destName, receiptName, nil); err != nil {
 		return fmt.Errorf("publish peer extraction: %w", err)
 	}
 	return nil

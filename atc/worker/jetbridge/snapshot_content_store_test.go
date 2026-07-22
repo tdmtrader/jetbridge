@@ -118,18 +118,47 @@ func response(status int, body []byte) *http.Response {
 	}
 }
 
+var testSnapshotArchiveLimits = snapshot.ArchiveLimits{
+	MaxContentBytes: 1024,
+	MaxEntries:      100,
+}
+
+func testSnapshotArchive(t *testing.T, contents ...string) []byte {
+	t.Helper()
+	var archive bytes.Buffer
+	writer := tar.NewWriter(&archive)
+	for index, content := range contents {
+		if err := writer.WriteHeader(&tar.Header{
+			Name:     fmt.Sprintf("file-%d", index),
+			Typeflag: tar.TypeReg,
+			Mode:     0644,
+			Size:     int64(len(content)),
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := writer.Write([]byte(content)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return archive.Bytes()
+}
+
 func TestSnapshotContentStorePutRejectsDigestMismatchBeforeNetwork(t *testing.T) {
 	var requests atomic.Int64
 	client := snapshotDaemonClient(t, []string{"node-a"}, roundTripFunc(func(*http.Request) (*http.Response, error) {
 		requests.Add(1)
 		return response(http.StatusCreated, nil), nil
 	}))
-	store, err := NewSnapshotContentStore(client, &locationResolverStub{}, 2, 1024)
+	store, err := NewSnapshotContentStore(client, &locationResolverStub{}, 2, testSnapshotArchiveLimits)
 	if err != nil {
 		t.Fatal(err)
 	}
+	actual := testSnapshotArchive(t, "actual")
 	wrongDigest := digestFor([]byte("different"))
-	locations, err := store.Put(context.Background(), wrongDigest, strings.NewReader("actual"))
+	locations, err := store.Put(context.Background(), wrongDigest, bytes.NewReader(actual))
 	if err == nil || len(locations) != 0 {
 		t.Fatalf("Put = %#v, %v; want digest error", locations, err)
 	}
@@ -144,12 +173,12 @@ func TestSnapshotContentStorePutEnforcesMaximumBeforeNetwork(t *testing.T) {
 		requests.Add(1)
 		return response(http.StatusCreated, nil), nil
 	}))
-	store, err := NewSnapshotContentStore(client, &locationResolverStub{}, 1, 3)
+	store, err := NewSnapshotContentStore(client, &locationResolverStub{}, 1, snapshot.ArchiveLimits{MaxContentBytes: 1, MaxEntries: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
-	content := []byte("four")
-	if _, err := store.Put(context.Background(), digestFor(content), bytes.NewReader(content)); err == nil || !strings.Contains(err.Error(), "maximum") {
+	content := testSnapshotArchive(t, "xx")
+	if _, err := store.Put(context.Background(), digestFor(content), bytes.NewReader(content)); err == nil || !strings.Contains(err.Error(), "content limit") {
 		t.Fatalf("Put maximum error = %v", err)
 	}
 	if requests.Load() != 0 {
@@ -169,16 +198,12 @@ func TestSnapshotContentStoreAcceptsCanonicalTarOverheadForSmallContentLimit(t *
 	if err := writer.Close(); err != nil {
 		t.Fatal(err)
 	}
-	archiveLimit, err := snapshot.CanonicalArchiveByteLimit(1, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
 	var requests atomic.Int64
 	client := snapshotDaemonClient(t, []string{"node-a"}, roundTripFunc(func(*http.Request) (*http.Response, error) {
 		requests.Add(1)
 		return response(http.StatusCreated, nil), nil
 	}))
-	store, err := NewSnapshotContentStore(client, &locationResolverStub{}, 1, archiveLimit)
+	store, err := NewSnapshotContentStore(client, &locationResolverStub{}, 1, snapshot.ArchiveLimits{MaxContentBytes: 1, MaxEntries: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -190,8 +215,40 @@ func TestSnapshotContentStoreAcceptsCanonicalTarOverheadForSmallContentLimit(t *
 	}
 }
 
+func TestSnapshotContentStoreRejectsLogicalContentLimitBeforeNetwork(t *testing.T) {
+	var archive bytes.Buffer
+	writer := tar.NewWriter(&archive)
+	if err := writer.WriteHeader(&tar.Header{Name: "file", Typeflag: tar.TypeReg, Mode: 0644, Size: 2}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writer.Write([]byte("xx")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var requests atomic.Int64
+	client := snapshotDaemonClient(t, []string{"node-a"}, roundTripFunc(func(*http.Request) (*http.Response, error) {
+		requests.Add(1)
+		return response(http.StatusCreated, nil), nil
+	}))
+	store, err := NewSnapshotContentStore(client, &locationResolverStub{}, 1, snapshot.ArchiveLimits{
+		MaxContentBytes: 1,
+		MaxEntries:      1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Put(context.Background(), digestFor(archive.Bytes()), bytes.NewReader(archive.Bytes())); err == nil || !strings.Contains(err.Error(), "content limit") {
+		t.Fatalf("Put logical limit error = %v", err)
+	}
+	if requests.Load() != 0 {
+		t.Fatalf("HTTP requests = %d, want zero", requests.Load())
+	}
+}
+
 func TestSnapshotContentStorePutUsesDeterministicFactorAndAllowsDegradedSuccess(t *testing.T) {
-	content := []byte("replicated archive")
+	content := testSnapshotArchive(t, "replicated archive")
 	var mutex sync.Mutex
 	var hosts []string
 	client := snapshotDaemonClient(t, []string{"node-c", "node-b", "node-a"}, roundTripFunc(func(request *http.Request) (*http.Response, error) {
@@ -212,7 +269,7 @@ func TestSnapshotContentStorePutUsesDeterministicFactorAndAllowsDegradedSuccess(
 		// the immutable daemon endpoint suite.
 		return response(http.StatusOK, nil), nil
 	}))
-	store, err := NewSnapshotContentStore(client, &locationResolverStub{}, 2, 1024)
+	store, err := NewSnapshotContentStore(client, &locationResolverStub{}, 2, testSnapshotArchiveLimits)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -233,14 +290,14 @@ func TestSnapshotContentStorePutUsesDeterministicFactorAndAllowsDegradedSuccess(
 }
 
 func TestSnapshotContentStorePutReturnsAggregateFailureWhenNoReplicaAcknowledges(t *testing.T) {
-	content := []byte("archive")
+	content := testSnapshotArchive(t, "archive")
 	client := snapshotDaemonClient(t, []string{"node-a", "node-b"}, roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		if request.URL.Hostname() == "node-a.test" {
 			return nil, fmt.Errorf("node offline")
 		}
 		return response(http.StatusConflict, nil), nil
 	}))
-	store, _ := NewSnapshotContentStore(client, &locationResolverStub{}, 2, 1024)
+	store, _ := NewSnapshotContentStore(client, &locationResolverStub{}, 2, testSnapshotArchiveLimits)
 	locations, err := store.Put(context.Background(), digestFor(content), bytes.NewReader(content))
 	if err == nil || len(locations) != 0 || !strings.Contains(err.Error(), "node-a") || !strings.Contains(err.Error(), "node-b") {
 		t.Fatalf("Put = %#v, %v", locations, err)
@@ -265,7 +322,7 @@ func TestSnapshotContentStoreOpenTriesRecordedReplicaBeforeLiveFallback(t *testi
 		}
 		return response(http.StatusOK, content), nil
 	}))
-	store, _ := NewSnapshotContentStore(client, resolver, 2, 1024)
+	store, _ := NewSnapshotContentStore(client, resolver, 2, testSnapshotArchiveLimits)
 	reader, err := store.Open(context.Background(), snapshotFor(content))
 	if err != nil {
 		t.Fatal(err)
@@ -288,7 +345,7 @@ func TestSnapshotContentStoreOpenReportsCorruptionAtEOF(t *testing.T) {
 	client := snapshotDaemonClient(t, []string{"node-a"}, roundTripFunc(func(*http.Request) (*http.Response, error) {
 		return response(http.StatusOK, corrupt), nil
 	}))
-	store, _ := NewSnapshotContentStore(client, &locationResolverStub{}, 1, 1024)
+	store, _ := NewSnapshotContentStore(client, &locationResolverStub{}, 1, testSnapshotArchiveLimits)
 	reader, err := store.Open(context.Background(), snapshotFor(want))
 	if err != nil {
 		t.Fatal(err)
@@ -307,7 +364,7 @@ func TestSnapshotContentStoreOpenRejectsDeclaredLengthBeforeExposingBytes(t *tes
 		result.ContentLength++
 		return result, nil
 	}))
-	store, _ := NewSnapshotContentStore(client, &locationResolverStub{}, 1, 1024)
+	store, _ := NewSnapshotContentStore(client, &locationResolverStub{}, 1, testSnapshotArchiveLimits)
 	reader, err := store.Open(context.Background(), snapshotFor(content))
 	if err == nil || reader != nil || !strings.Contains(err.Error(), "length") {
 		t.Fatalf("Open = %#v, %v", reader, err)
@@ -329,7 +386,7 @@ func TestSnapshotContentStoreExistsAndDeletesUseStrictStableLocation(t *testing.
 		}
 		return response(http.StatusNoContent, nil), nil
 	}))
-	store, _ := NewSnapshotContentStore(client, &locationResolverStub{}, 1, 1024)
+	store, _ := NewSnapshotContentStore(client, &locationResolverStub{}, 1, testSnapshotArchiveLimits)
 	exists, err := store.Exists(context.Background(), valid)
 	if err != nil || !exists {
 		t.Fatalf("Exists = %v, %v", exists, err)
@@ -365,7 +422,7 @@ func TestSnapshotContentStoreDeleteAllBroadcastsAndAggregates(t *testing.T) {
 		}
 		return response(http.StatusNoContent, nil), nil
 	}))
-	store, _ := NewSnapshotContentStore(client, &locationResolverStub{}, 2, 1024)
+	store, _ := NewSnapshotContentStore(client, &locationResolverStub{}, 2, testSnapshotArchiveLimits)
 	err := store.DeleteAll(context.Background(), digestFor(content))
 	if err == nil || !strings.Contains(err.Error(), "node-b") || requests.Load() != 3 {
 		t.Fatalf("DeleteAll = %v, requests=%d", err, requests.Load())
@@ -373,14 +430,14 @@ func TestSnapshotContentStoreDeleteAllBroadcastsAndAggregates(t *testing.T) {
 }
 
 func TestSnapshotContentStoreHonorsCancellation(t *testing.T) {
-	content := []byte("archive")
+	content := testSnapshotArchive(t, "archive")
 	started := make(chan struct{})
 	client := snapshotDaemonClient(t, []string{"node-a"}, roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		close(started)
 		<-request.Context().Done()
 		return nil, request.Context().Err()
 	}))
-	store, _ := NewSnapshotContentStore(client, &locationResolverStub{}, 1, 1024)
+	store, _ := NewSnapshotContentStore(client, &locationResolverStub{}, 1, testSnapshotArchiveLimits)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {

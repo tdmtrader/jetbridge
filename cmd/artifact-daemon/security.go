@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -56,20 +57,30 @@ func canonicalRequestKey(rPath, escapedPath, prefix string) (string, error) {
 	}
 	key := strings.TrimPrefix(rPath, prefix)
 	escapedKey := strings.TrimPrefix(escapedPath, prefix)
-	// Artifact keys are generated opaque identifiers. Requiring their escaped
-	// and decoded spellings to agree removes ambiguous encoded separators and
-	// dot segments before net/http has an opportunity to canonicalize them.
-	if strings.Contains(escapedKey, "%") || escapedKey != key {
+	canonicalEscaped, err := canonicalEscapedKey(key)
+	if err != nil || escapedKey != canonicalEscaped {
 		return "", fmt.Errorf("encoded artifact key is not canonical")
-	}
-	if err := validateCanonicalRelativeKey(key); err != nil {
-		return "", err
 	}
 	return key, nil
 }
 
+func canonicalEscapedKey(key string) (string, error) {
+	if err := validateCanonicalRelativeKey(key); err != nil {
+		return "", err
+	}
+	segments := strings.Split(key, "/")
+	for i, segment := range segments {
+		segments[i] = url.PathEscape(segment)
+	}
+	return strings.Join(segments, "/"), nil
+}
+
 func snapshotNamespaceKey(key string) bool {
 	return key == "snapshots" || strings.HasPrefix(key, "snapshots/")
+}
+
+func daemonPrivateNamespaceKey(key string) bool {
+	return key == daemonStagingDirectory || strings.HasPrefix(key, daemonStagingDirectory+"/")
 }
 
 func pathBelow(base, candidate string) (string, error) {
@@ -148,53 +159,6 @@ func (s *Server) validateResolveBoundary(key, dest string) error {
 	return nil
 }
 
-func (s *Server) validateGenericArtifactSource(candidate string) error {
-	resolved, err := resolveExistingPathPrefix(candidate)
-	if err != nil {
-		return err
-	}
-	resolvedStorageRoot, err := filepath.EvalSymlinks(s.storagePath)
-	if err != nil {
-		return err
-	}
-	if resolved != resolvedStorageRoot && !strings.HasPrefix(resolved, resolvedStorageRoot+string(filepath.Separator)) {
-		return fmt.Errorf("artifact resolves outside storage root")
-	}
-	resolvedSnapshotRoot := filepath.Join(resolvedStorageRoot, "snapshots")
-	if resolved == resolvedSnapshotRoot || strings.HasPrefix(resolved, resolvedSnapshotRoot+string(filepath.Separator)) {
-		return fmt.Errorf("artifact resolves into snapshot namespace")
-	}
-	return nil
-}
-
-func resolveExistingPathPrefix(candidate string) (string, error) {
-	cleaned := filepath.Clean(candidate)
-	missing := make([]string, 0, 4)
-	current := cleaned
-	for {
-		_, err := os.Lstat(current)
-		if err == nil {
-			resolved, err := filepath.EvalSymlinks(current)
-			if err != nil {
-				return "", err
-			}
-			for i := len(missing) - 1; i >= 0; i-- {
-				resolved = filepath.Join(resolved, missing[i])
-			}
-			return filepath.Clean(resolved), nil
-		}
-		if !errors.Is(err, os.ErrNotExist) {
-			return "", err
-		}
-		parent := filepath.Dir(current)
-		if parent == current {
-			return "", err
-		}
-		missing = append(missing, filepath.Base(current))
-		current = parent
-	}
-}
-
 type extractedPathKind uint8
 
 const (
@@ -215,13 +179,8 @@ func normalizedTarPath(hdr *tar.Header) (string, error) {
 }
 
 func validateArchiveSymlink(name, target string) error {
-	if target == "" || strings.ContainsAny(target, "\\\x00") || path.IsAbs(target) || path.Clean(target) != target {
+	if target == "" || strings.ContainsAny(target, "\\\x00") || path.IsAbs(target) {
 		return fmt.Errorf("unsafe symlink target %q", target)
-	}
-	for _, segment := range strings.Split(target, "/") {
-		if segment == "" || segment == "." || segment == ".." {
-			return fmt.Errorf("unsafe symlink target %q", target)
-		}
 	}
 	resolved := path.Clean(path.Join(path.Dir(name), target))
 	if resolved == ".." || strings.HasPrefix(resolved, "../") || path.IsAbs(resolved) {

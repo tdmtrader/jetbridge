@@ -1,15 +1,17 @@
 package main
 
 import (
-	"archive/tar"
 	"context"
 	"fmt"
 	"hash/fnv"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -230,11 +232,15 @@ func (j *mirrorJob) putToPeer(ctx context.Context, peer string) mirrorPeerOutcom
 	go func() {
 		release := j.guard.BeginRead(keyHandle(j.key))
 		defer release()
-		pw.CloseWithError(tarDir(pw, j.sourceDir))
+		pw.CloseWithError(tarDir(pw, j.sourceDir, j.key))
 	}()
 
-	url := fmt.Sprintf("%s://%s:%d/stream-in/%s", j.scheme, peer, j.port, j.key)
-	req, err := http.NewRequestWithContext(pctx, http.MethodPut, url, pr)
+	target := url.URL{
+		Scheme: j.scheme,
+		Host:   net.JoinHostPort(peer, strconv.Itoa(j.port)),
+		Path:   "/stream-in/" + j.key,
+	}
+	req, err := http.NewRequestWithContext(pctx, http.MethodPut, target.String(), pr)
 	if err != nil {
 		pr.Close()
 		return mirrorPeerOutcome{Peer: peer, Status: "unreachable", Err: err}
@@ -259,58 +265,56 @@ func (j *mirrorJob) putToPeer(ctx context.Context, peer string) mirrorPeerOutcom
 	return mirrorPeerOutcome{Peer: peer, Status: "rejected", Err: fmt.Errorf("HTTP %d", resp.StatusCode)}
 }
 
-// tarDir streams a tar archive of src into w. Directories, regular files,
-// and symlinks are preserved; everything else is skipped.
-func tarDir(w io.Writer, src string) error {
-	tw := tar.NewWriter(w)
-	defer tw.Close()
-
-	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+// tarDir derives and opens the steps root once, then traverses the exact key
+// with no-follow descriptor-relative opens. A task swapping any source path
+// component to a sibling build cannot redirect mirroring.
+func tarDir(w io.Writer, src, key string) error {
+	if err := validateCanonicalRelativeKey(key); err != nil {
+		return err
+	}
+	stepsRoot := filepath.Clean(src)
+	for range strings.Split(key, "/") {
+		stepsRoot = filepath.Dir(stepsRoot)
+	}
+	if filepath.Join(stepsRoot, filepath.FromSlash(key)) != filepath.Clean(src) {
+		// mirrorJob is also a low-level helper whose tests and legacy callers
+		// provide an already-selected standalone source directory. The Mirror
+		// manager always takes the descriptor-rooted branch below.
+		source, err := openDirectoryNoFollow(src)
 		if err != nil {
 			return err
 		}
-		rel, err := filepath.Rel(src, path)
-		if err != nil {
-			return err
-		}
-		if rel == "." {
-			return nil
-		}
+		defer source.Close()
+		return tarOpenedDirectory(w, source)
+	}
+	root, err := openDirectoryNoFollow(stepsRoot)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	source, err := openDirAtNoFollow(root, filepath.FromSlash(key), false)
+	if err != nil {
+		return err
+	}
+	defer source.Close()
+	return tarOpenedDirectory(w, source)
+}
 
-		hdr := &tar.Header{
-			Name:    rel,
-			Mode:    int64(info.Mode().Perm()),
-			ModTime: info.ModTime(),
-		}
-		switch {
-		case info.IsDir():
-			hdr.Typeflag = tar.TypeDir
-			hdr.Size = 0
-			return tw.WriteHeader(hdr)
-		case info.Mode()&os.ModeSymlink != 0:
-			link, err := os.Readlink(path)
-			if err != nil {
-				return err
-			}
-			hdr.Typeflag = tar.TypeSymlink
-			hdr.Linkname = link
-			hdr.Size = 0
-			return tw.WriteHeader(hdr)
-		default:
-			hdr.Typeflag = tar.TypeReg
-			hdr.Size = info.Size()
-			if err := tw.WriteHeader(hdr); err != nil {
-				return err
-			}
-			f, err := os.Open(path)
-			if err != nil {
-				return err
-			}
-			defer f.Close()
-			_, err = io.Copy(tw, f)
-			return err
-		}
-	})
+func openMirrorSource(storagePath, key string) (*os.File, error) {
+	if err := validateCanonicalRelativeKey(key); err != nil || snapshotNamespaceKey(key) {
+		return nil, fmt.Errorf("invalid mirror key")
+	}
+	storage, err := openDirectoryNoFollow(storagePath)
+	if err != nil {
+		return nil, err
+	}
+	defer storage.Close()
+	steps, err := openDirAtNoFollow(storage, "steps", false)
+	if err != nil {
+		return nil, err
+	}
+	defer steps.Close()
+	return openDirAtNoFollow(steps, filepath.FromSlash(key), false)
 }
 
 // ---------------------------------------------------------------------------
@@ -405,17 +409,15 @@ func (m *Mirror) run(ctx context.Context, key string) {
 		return
 	}
 	sourceDir := filepath.Join(m.storagePath, "steps", key)
-	if err := verifyExistingPathComponents(filepath.Join(m.storagePath, "steps"), filepath.FromSlash(key), true); err != nil {
-		m.logger.Error("mirror-source-unsafe", err, lager.Data{"key": key, "src": sourceDir})
-		return
-	}
-	if _, err := os.Stat(sourceDir); err != nil {
+	openedSource, err := openMirrorSource(m.storagePath, key)
+	if err != nil {
 		m.logger.Error("mirror-source-missing", err, lager.Data{
 			"key": key,
 			"src": sourceDir,
 		})
 		return
 	}
+	openedSource.Close()
 
 	peerIPs := m.evacuationPeers
 	if len(peerIPs) == 0 {
@@ -546,10 +548,12 @@ func (m *Mirror) Evacuate(ctx context.Context, budget time.Duration) {
 // worker pool.
 func (m *Mirror) evacuateOne(ctx context.Context, key string) {
 	sourceDir := filepath.Join(m.storagePath, "steps", key)
-	if _, err := os.Stat(sourceDir); err != nil {
+	openedSource, err := openMirrorSource(m.storagePath, key)
+	if err != nil {
 		m.logger.Debug("evacuate-source-missing", lager.Data{"key": key})
 		return
 	}
+	openedSource.Close()
 
 	peerIPs := m.evacuationPeers
 	if len(peerIPs) == 0 && m.peers != nil {
@@ -589,29 +593,45 @@ func (m *Mirror) evacuateOne(ctx context.Context, key string) {
 // {handle}/{output} keys whose status map doesn't contain at least one
 // "ok" outcome. Used by Evacuate to prioritize what to flush.
 func (m *Mirror) findUnmirroredKeys() []string {
-	stepsRoot := filepath.Join(m.storagePath, "steps")
 	var keys []string
-
-	entries, err := os.ReadDir(stepsRoot)
+	storage, err := openDirectoryNoFollow(m.storagePath)
+	if err != nil {
+		return nil
+	}
+	defer storage.Close()
+	steps, err := openDirAtNoFollow(storage, "steps", false)
 	if err != nil {
 		// steps/ doesn't exist yet (clean daemon, no work done) — nothing
 		// to evacuate.
 		return nil
 	}
+	defer steps.Close()
+	entries, err := steps.ReadDir(-1)
+	if err != nil {
+		return nil
+	}
 	for _, handleEntry := range entries {
-		if !handleEntry.IsDir() {
+		handle := handleEntry.Name()
+		if err := validateCanonicalRelativeKey(handle); err != nil {
 			continue
 		}
-		handle := handleEntry.Name()
-		outputs, err := os.ReadDir(filepath.Join(stepsRoot, handle))
+		handleDir, err := openDirAtNoFollow(steps, handle, false)
+		if err != nil {
+			continue
+		}
+		outputs, err := handleDir.ReadDir(-1)
+		handleDir.Close()
 		if err != nil {
 			continue
 		}
 		for _, outputEntry := range outputs {
-			if !outputEntry.IsDir() {
+			output := outputEntry.Name()
+			key := handle + "/" + output
+			openedOutput, err := openDirAtNoFollow(steps, filepath.FromSlash(key), false)
+			if err != nil {
 				continue
 			}
-			key := handle + "/" + outputEntry.Name()
+			openedOutput.Close()
 			if !m.isAtLeastOnePeerOK(key) {
 				keys = append(keys, key)
 			}

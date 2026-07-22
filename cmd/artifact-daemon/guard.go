@@ -1,6 +1,10 @@
 package main
 
-import "sync"
+import (
+	"context"
+	"sync"
+	"time"
+)
 
 // ReadGuard coordinates artifact directory reads with destructive operations
 // (TTL sweeps, DELETE, stream-in replaces) inside the daemon process.
@@ -66,6 +70,25 @@ func (g *ReadGuard) BeginRead(handle string) func() {
 	}
 }
 
+// BeginReadContext is BeginRead with cancellation while waiting for a
+// conflicting destructive operation. Resolve paths use it so their operation
+// deadline covers guard admission instead of occupying a daemon-wide resolve
+// slot behind an unbounded RWMutex wait.
+func (g *ReadGuard) BeginReadContext(ctx context.Context, handle string) (func(), error) {
+	if g == nil {
+		return func() {}, nil
+	}
+	l := g.acquire(handle)
+	if err := waitForGuard(ctx, l.mu.TryRLock); err != nil {
+		g.release(handle, l)
+		return nil, err
+	}
+	return func() {
+		l.mu.RUnlock()
+		g.release(handle, l)
+	}, nil
+}
+
 // BeginSweep takes the exclusive side for the handle, waiting out any
 // in-flight reads of it. The returned func releases it.
 func (g *ReadGuard) BeginSweep(handle string) func() {
@@ -77,5 +100,88 @@ func (g *ReadGuard) BeginSweep(handle string) func() {
 	return func() {
 		l.mu.Unlock()
 		g.release(handle, l)
+	}
+}
+
+// BeginSweepContext is BeginSweep with cancellation while waiting for active
+// readers. It is used by peer resolve publication, whose exclusive destination
+// lock is part of the bounded resolve operation.
+func (g *ReadGuard) BeginSweepContext(ctx context.Context, handle string) (func(), error) {
+	if g == nil {
+		return func() {}, nil
+	}
+	l := g.acquire(handle)
+	if err := waitForGuard(ctx, l.mu.TryLock); err != nil {
+		g.release(handle, l)
+		return nil, err
+	}
+	return func() {
+		l.mu.Unlock()
+		g.release(handle, l)
+	}, nil
+}
+
+// BeginResolveContext holds the source for reading and the destination for
+// destructive publication. Different handles are always acquired in lexical
+// order, independent of their lock mode, preventing A->B and B->A resolves
+// from deadlocking. When both paths share a handle, one exclusive lock covers
+// both authorities.
+func (g *ReadGuard) BeginResolveContext(ctx context.Context, sourceHandle, destinationHandle string) (func(), error) {
+	if g == nil {
+		return func() {}, nil
+	}
+	if sourceHandle == destinationHandle {
+		return g.BeginSweepContext(ctx, sourceHandle)
+	}
+	type acquisition struct {
+		handle string
+		sweep  bool
+	}
+	first := acquisition{handle: sourceHandle}
+	second := acquisition{handle: destinationHandle, sweep: true}
+	if second.handle < first.handle {
+		first, second = second, first
+	}
+	acquire := func(item acquisition) (func(), error) {
+		if item.sweep {
+			return g.BeginSweepContext(ctx, item.handle)
+		}
+		return g.BeginReadContext(ctx, item.handle)
+	}
+	releaseFirst, err := acquire(first)
+	if err != nil {
+		return nil, err
+	}
+	releaseSecond, err := acquire(second)
+	if err != nil {
+		releaseFirst()
+		return nil, err
+	}
+	return func() {
+		releaseSecond()
+		releaseFirst()
+	}, nil
+}
+
+func waitForGuard(ctx context.Context, try func() bool) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if try() {
+			return nil
+		}
+		timer := time.NewTimer(time.Millisecond)
+		select {
+		case <-ctx.Done():
+			// Go 1.23+ timer channels are synchronous. A failed Stop does not
+			// imply a value is available to drain and attempting one can block.
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
 	}
 }

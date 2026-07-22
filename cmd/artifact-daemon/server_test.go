@@ -902,6 +902,43 @@ func TestStreamIn_RawTar(t *testing.T) {
 	}
 }
 
+func TestStreamInPreservesSafeDotAndParentSymlinks(t *testing.T) {
+	ts, storagePath := setupServer(t)
+	var archive bytes.Buffer
+	tw := tar.NewWriter(&archive)
+	for name, content := range map[string]string{"shared": "shared", "dir/target": "target"} {
+		if err := tw.WriteHeader(&tar.Header{Name: name, Typeflag: tar.TypeReg, Mode: 0644, Size: int64(len(content))}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tw.Write([]byte(content)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for name, target := range map[string]string{"dir/dot-link": "./target", "dir/parent-link": "../shared"} {
+		if err := tw.WriteHeader(&tar.Header{Name: name, Typeflag: tar.TypeSymlink, Linkname: target, Mode: 0777}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	req, _ := http.NewRequest(http.MethodPut, ts.URL+"/stream-in/symlinks/output", bytes.NewReader(archive.Bytes()))
+	resp, err := ts.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("status = %d, want 201", resp.StatusCode)
+	}
+	for name, want := range map[string]string{"dot-link": "./target", "parent-link": "../shared"} {
+		got, err := os.Readlink(filepath.Join(storagePath, "steps", "symlinks", "output", "dir", name))
+		if err != nil || got != want {
+			t.Fatalf("symlink %s = %q, %v; want %q", name, got, err, want)
+		}
+	}
+}
+
 func TestStreamIn_GzippedTar(t *testing.T) {
 	ts, storagePath := setupServer(t)
 

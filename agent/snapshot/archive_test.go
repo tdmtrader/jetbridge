@@ -64,6 +64,67 @@ func TestCanonicalArchiveByteLimitIncludesBoundedTransportOverhead(t *testing.T)
 	}
 }
 
+func TestValidateArchiveLimitsEnforcesLogicalContentAndImplicitEntries(t *testing.T) {
+	t.Parallel()
+
+	t.Run("content bytes independent of tar overhead", func(t *testing.T) {
+		raw := makeTar(t, []tarEntry{{name: "file", typeflag: tar.TypeReg, content: "xx"}})
+		err := ValidateArchiveLimits(context.Background(), bytes.NewReader(raw), ArchiveLimits{
+			MaxContentBytes: 1,
+			MaxEntries:      1,
+		})
+		if err == nil || !strings.Contains(err.Error(), "content limit") {
+			t.Fatalf("ValidateArchiveLimits() error = %v, want content limit", err)
+		}
+	})
+
+	t.Run("implicit parents count as entries", func(t *testing.T) {
+		raw := makeTar(t, []tarEntry{{name: "parent/file", typeflag: tar.TypeReg, content: "x"}})
+		err := ValidateArchiveLimits(context.Background(), bytes.NewReader(raw), ArchiveLimits{
+			MaxContentBytes: 1,
+			MaxEntries:      1,
+		})
+		if err == nil || !strings.Contains(err.Error(), "entry limit") {
+			t.Fatalf("ValidateArchiveLimits() error = %v, want entry limit", err)
+		}
+	})
+
+	t.Run("exact limits pass", func(t *testing.T) {
+		raw := makeTar(t, []tarEntry{{name: "parent/file", typeflag: tar.TypeReg, content: "x"}})
+		if err := ValidateArchiveLimits(context.Background(), bytes.NewReader(raw), ArchiveLimits{
+			MaxContentBytes: 1,
+			MaxEntries:      2,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("duplicate explicit directory is rejected", func(t *testing.T) {
+		raw := makeTar(t, []tarEntry{
+			{name: "parent", typeflag: tar.TypeDir},
+			{name: "parent", typeflag: tar.TypeDir},
+		})
+		err := ValidateArchiveLimits(context.Background(), bytes.NewReader(raw), ArchiveLimits{
+			MaxContentBytes: 1,
+			MaxEntries:      1,
+		})
+		if err == nil || !strings.Contains(err.Error(), "duplicate canonical path") {
+			t.Fatalf("ValidateArchiveLimits() error = %v, want duplicate-path rejection", err)
+		}
+	})
+
+	t.Run("data after the tar terminator is rejected", func(t *testing.T) {
+		raw := append(makeTar(t, []tarEntry{{name: "file", typeflag: tar.TypeReg, content: "x"}}), byte('x'))
+		err := ValidateArchiveLimits(context.Background(), bytes.NewReader(raw), ArchiveLimits{
+			MaxContentBytes: 1,
+			MaxEntries:      1,
+		})
+		if err == nil || !strings.Contains(err.Error(), "trailing data") {
+			t.Fatalf("ValidateArchiveLimits() error = %v, want trailing-data rejection", err)
+		}
+	})
+}
+
 func TestCanonicalCaptureNormalizesMetadataAndInputOrder(t *testing.T) {
 	t.Parallel()
 

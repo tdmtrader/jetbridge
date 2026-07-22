@@ -199,3 +199,36 @@ func containsStr(ss []string, want string) bool {
 	}
 	return false
 }
+
+func TestArtifactResolveCapabilitySecretIsPrivateAndWired(t *testing.T) {
+	manifests := renderChart(t)
+	for _, want := range []string{
+		"artifact-daemon-resolve-capability",
+		"resolve.key:",
+		"--resolve-capability-key=/etc/concourse/resolve-capability/resolve.key",
+		"--kubernetes-artifact-daemon-resolve-capability-key=/etc/concourse/resolve-capability/resolve.key",
+		"--kubernetes-artifact-daemon-resolve-capability-ttl=2h",
+		"--resolve-max-concurrent=32",
+		"--resolve-timeout=30m",
+		"mountPath: /etc/concourse/resolve-capability",
+	} {
+		if !strings.Contains(manifests, want) {
+			t.Errorf("rendered chart missing capability wiring %q", want)
+		}
+	}
+	// The scoped token is generated into an init request; task pods must never
+	// receive the shared signing Secret as a general environment value.
+	if strings.Contains(manifests, "CONCOURSE_ARTIFACT_RESOLVE_CAPABILITY_KEY") {
+		t.Fatal("shared capability key was exposed as an environment variable")
+	}
+}
+
+func TestArtifactResolveCapabilitySupportsExistingSecret(t *testing.T) {
+	manifests := renderChart(t, "artifactDaemon.resolveCapability.existingSecret=operator-key")
+	if !strings.Contains(manifests, "secretName: operator-key") {
+		t.Fatal("existing capability Secret was not mounted")
+	}
+	if strings.Contains(manifests, "kind: Secret\nmetadata:\n  name: test-release-concourse-jetbridge-artifact-daemon-resolve-capability") {
+		t.Fatal("chart generated a capability Secret despite existingSecret override")
+	}
+}

@@ -2,6 +2,7 @@ package jetbridge
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/concourse/concourse/agent/artifactcap"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/runtime"
 	corev1 "k8s.io/api/core/v1"
@@ -25,14 +27,36 @@ type DaemonSetBackend struct {
 	artifactLocator *ArtifactLocator
 	nodeIPResolver  *NodeIPResolver
 	daemonClient    *DaemonClient
+	resolveSigner   *artifactcap.Signer
+	resolveConfigOK bool
 }
 
 func NewDaemonSetBackend(config Config, locator *ArtifactLocator, resolver *NodeIPResolver) *DaemonSetBackend {
+	signer, signerErr := artifactcap.NewSigner(config.ArtifactDaemonResolveCapabilityKey)
+	minimumTTL, ttlErr := MinimumArtifactResolveCapabilityTTL(config.PodSchedulingTimeout, config.PodStartupTimeout)
+	lifetime := config.ArtifactDaemonResolveCapabilityTTL
+	if lifetime <= 0 {
+		lifetime = DefaultArtifactResolveCapabilityTTL
+	}
+	resolveConfigOK := signerErr == nil && ttlErr == nil && lifetime > minimumTTL
+	if !resolveConfigOK {
+		signer = nil
+	}
 	return &DaemonSetBackend{
 		config:          config,
 		artifactLocator: locator,
 		nodeIPResolver:  resolver,
+		resolveSigner:   signer,
+		resolveConfigOK: resolveConfigOK,
 	}
+}
+
+func (b *DaemonSetBackend) resolveCapabilityExpiry() time.Time {
+	lifetime := b.config.ArtifactDaemonResolveCapabilityTTL
+	if lifetime <= 0 {
+		lifetime = DefaultArtifactResolveCapabilityTTL
+	}
+	return time.Now().Add(lifetime)
 }
 
 // SetDaemonClient sets the DaemonClient used for probing daemon pods for
@@ -95,8 +119,52 @@ func (b *DaemonSetBackend) ArtifactStoreVolumeName() string {
 
 // batchItem is a single key/dest pair for the /resolve-batch endpoint.
 type batchItem struct {
-	Key  string `json:"key"`
-	Dest string `json:"dest"`
+	Key             string `json:"key"`
+	Dest            string `json:"dest"`
+	Capability      string `json:"capability"`
+	Acknowledgement string `json:"-"`
+	LocalDest       string `json:"-"`
+}
+
+type batchPayload struct {
+	Items []batchItem `json:"items"`
+}
+
+const (
+	resolveBatchMaxItems = 64
+	resolveBatchMaxBytes = 64 << 10
+)
+
+func chunkResolveBatchItems(items []batchItem) ([][]batchItem, error) {
+	var batches [][]batchItem
+	current := make([]batchItem, 0, min(resolveBatchMaxItems, len(items)))
+	for _, item := range items {
+		candidate := append(append([]batchItem(nil), current...), item)
+		payload, err := json.Marshal(batchPayload{Items: candidate})
+		if err != nil {
+			return nil, fmt.Errorf("encode resolve batch: %w", err)
+		}
+		if len(candidate) <= resolveBatchMaxItems && len(payload) <= resolveBatchMaxBytes {
+			current = candidate
+			continue
+		}
+		if len(current) == 0 {
+			return nil, fmt.Errorf("one artifact resolve item exceeds the %d-byte request limit", resolveBatchMaxBytes)
+		}
+		batches = append(batches, current)
+		current = []batchItem{item}
+		payload, err = json.Marshal(batchPayload{Items: current})
+		if err != nil {
+			return nil, fmt.Errorf("encode resolve batch: %w", err)
+		}
+		if len(payload) > resolveBatchMaxBytes {
+			return nil, fmt.Errorf("one artifact resolve item exceeds the %d-byte request limit", resolveBatchMaxBytes)
+		}
+	}
+	if len(current) > 0 {
+		batches = append(batches, current)
+	}
+	return batches, nil
 }
 
 func (b *DaemonSetBackend) BuildFetchInitContainers(handle string, inputs []runtime.Input, podVolumes []corev1.Volume, mainMounts []corev1.VolumeMount) []corev1.Container {
@@ -128,7 +196,18 @@ func (b *DaemonSetBackend) BuildFetchInitContainers(handle string, inputs []runt
 			hostDestPath = filepath.Join(b.config.ArtifactDaemonHostPath, "steps", handle, volumeName)
 		}
 
-		items = append(items, batchItem{Key: daemonKey, Dest: hostDestPath})
+		if b.resolveSigner == nil || !b.resolveConfigOK {
+			return []corev1.Container{b.capabilityFailureInitContainer()}
+		}
+		capability, err := b.resolveSigner.SignResolve(daemonKey, hostDestPath, b.resolveCapabilityExpiry())
+		if err != nil {
+			return []corev1.Container{b.capabilityFailureInitContainer()}
+		}
+		acknowledgement, err := b.resolveSigner.ResolveAcknowledgement(capability)
+		if err != nil {
+			return []corev1.Container{b.capabilityFailureInitContainer()}
+		}
+		items = append(items, batchItem{Key: daemonKey, Dest: hostDestPath, Capability: capability, Acknowledgement: acknowledgement, LocalDest: input.DestinationPath})
 
 		if !seenVolumes[volumeName] {
 			seenVolumes[volumeName] = true
@@ -157,10 +236,14 @@ func (b *DaemonSetBackend) BuildFetchInitContainers(handle string, inputs []runt
 	// Note: when TLS is enabled the init container reaches the daemon over
 	// HTTPS at ${HOST_IP}:7780 (the node IP, via hostPort). The node IP cannot
 	// be a certificate SAN, so BusyBox wget can't verify the hostname; the
-	// resolve command uses --no-check-certificate instead. The connection is
-	// still TLS-encrypted, and /resolve(-batch) is an exempt, same-node,
-	// NetworkPolicy-protected control path — artifact data flows via the shared
-	// hostPath, not over this HTTP call. No CA cert mount is needed.
+	// resolve command uses --no-check-certificate instead. Request authority is
+	// an exact short-lived capability, and success is authenticated separately:
+	// web embeds a token-specific expected HMAC acknowledgement in this script
+	// but never sends it. The daemon returns it and writes the same value to a
+	// token-specific receipt inside the destination only after the authorized
+	// copy succeeds. Init requires and removes that receipt through the exact
+	// writable input mount, so a TLS interceptor cannot turn a cross-node relay
+	// into local success. NetworkPolicy adds same-node confinement when enabled.
 
 	return []corev1.Container{
 		{
@@ -177,6 +260,17 @@ func (b *DaemonSetBackend) BuildFetchInitContainers(handle string, inputs []runt
 	}
 }
 
+func (b *DaemonSetBackend) capabilityFailureInitContainer() corev1.Container {
+	allowEscalation := false
+	return corev1.Container{
+		Name:            "fetch-inputs",
+		Image:           b.helperImage(),
+		Command:         []string{"sh", "-c", `echo "[artifact-fetch] resolve capability key or lifetime configuration is invalid" >&2; exit 1`},
+		ImagePullPolicy: corev1.PullIfNotPresent,
+		SecurityContext: &corev1.SecurityContext{AllowPrivilegeEscalation: &allowEscalation},
+	}
+}
+
 func (b *DaemonSetBackend) daemonScheme() string {
 	return daemonURLScheme(b.config)
 }
@@ -184,8 +278,11 @@ func (b *DaemonSetBackend) daemonScheme() string {
 // wgetTLSOpts returns extra BusyBox wget options for daemon HTTPS calls. When
 // TLS is enabled it adds --no-check-certificate: the init container dials the
 // daemon by node IP (HOST_IP), which is not a cert SAN, so hostname
-// verification cannot succeed. The connection is still encrypted; /resolve is
-// an exempt, same-node, NetworkPolicy-protected control path.
+// verification cannot succeed. The request is capability-authenticated and the
+// response is authenticated with a token-specific expected acknowledgement
+// that is not included in the request. Init additionally consumes the matching
+// receipt through its node-local input mount. NetworkPolicy adds same-node
+// confinement when enabled.
 func (b *DaemonSetBackend) wgetTLSOpts() string {
 	if b.config.ArtifactDaemonTLSEnabled {
 		return "--no-check-certificate"
@@ -193,7 +290,7 @@ func (b *DaemonSetBackend) wgetTLSOpts() string {
 	return ""
 }
 
-func (b *DaemonSetBackend) daemonResolveCommand(key, hostDest string) []string {
+func (b *DaemonSetBackend) daemonResolveCommand(key, hostDest, localDest string) []string {
 	if key == "" {
 		script := `echo "ERROR: artifact key is empty — producing step did not record its output location" >&2; exit 1`
 		return []string{"sh", "-c", script}
@@ -203,15 +300,38 @@ func (b *DaemonSetBackend) daemonResolveCommand(key, hostDest string) []string {
 	if port == 0 {
 		port = 7780
 	}
+	if b.resolveSigner == nil || !b.resolveConfigOK {
+		return []string{"sh", "-c", `echo "[artifact-fetch] resolve capability key or lifetime configuration is invalid" >&2; exit 1`}
+	}
+	capability, err := b.resolveSigner.SignResolve(key, hostDest, b.resolveCapabilityExpiry())
+	if err != nil {
+		return []string{"sh", "-c", `echo "[artifact-fetch] capability signing failed" >&2; exit 1`}
+	}
+	acknowledgement, err := b.resolveSigner.ResolveAcknowledgement(capability)
+	if err != nil {
+		return []string{"sh", "-c", `echo "[artifact-fetch] resolve acknowledgement signing failed" >&2; exit 1`}
+	}
+	payload, err := json.Marshal(batchItem{Key: key, Dest: hostDest, Capability: capability})
+	if err != nil {
+		return []string{"sh", "-c", `echo "[artifact-fetch] resolve payload encoding failed" >&2; exit 1`}
+	}
+	payloadBase64 := base64.StdEncoding.EncodeToString(payload)
+	receiptName, err := artifactcap.ResolveReceiptFilename(acknowledgement)
+	if err != nil || localDest == "" {
+		return []string{"sh", "-c", `echo "[artifact-fetch] resolve receipt configuration failed" >&2; exit 1`}
+	}
+	receiptPathBase64 := base64.StdEncoding.EncodeToString([]byte(filepath.Join(localDest, receiptName)))
 
 	script := fmt.Sprintf(`
 set -e
-KEY="%s"
-DST="%s"
 PORT=%d
 DAEMON="%s://${HOST_IP}:${PORT}"
 WGET_OPTS="%s"
-echo "[artifact-fetch] resolving key=${KEY} dest=${DST} daemon=${DAEMON}" >&2
+PAYLOAD_B64='%s'
+PAYLOAD=$(printf '%%s' "${PAYLOAD_B64}" | base64 -d)
+RECEIPT_PATH_B64='%s'
+RECEIPT_PATH=$(printf '%%s' "${RECEIPT_PATH_B64}" | base64 -d)
+echo "[artifact-fetch] resolving artifact via ${DAEMON}" >&2
 # Retry up to 10 times with backoff — the daemon may not be reachable
 # immediately (hostPort iptables rules propagation, daemon restart after
 # eviction, etc.).
@@ -219,7 +339,7 @@ ATTEMPT=0
 MAX=10
 while true; do
   ATTEMPT=$((ATTEMPT + 1))
-  RESP=$(wget ${WGET_OPTS} -qO- -T 180 --post-data='{"key":"'"${KEY}"'","dest":"'"${DST}"'"}' "${DAEMON}/resolve" 2>&1) && break
+  RESP=$(wget ${WGET_OPTS} -qO- -T 180 --header='Content-Type: application/json' --post-data="${PAYLOAD}" "${DAEMON}/resolve" 2>&1) && break
   if [ "$ATTEMPT" -ge "$MAX" ]; then
     echo "[artifact-fetch] FAILED after ${MAX} attempts: ${RESP}" >&2
     exit 1
@@ -228,7 +348,24 @@ while true; do
   sleep 2
 done
 echo "[artifact-fetch] resolved: ${RESP}" >&2
-`, key, hostDest, port, b.daemonScheme(), b.wgetTLSOpts())
+case "${RESP}" in
+  *'"acknowledgement":"%s"'*) ;;
+  *) echo "[artifact-fetch] daemon response was not authenticated" >&2; exit 1 ;;
+esac
+if [ ! -f "${RECEIPT_PATH}" ] || [ -L "${RECEIPT_PATH}" ]; then
+  echo "[artifact-fetch] node-local resolve receipt is missing or unsafe" >&2
+  exit 1
+fi
+ACTUAL_RECEIPT=$(cat "${RECEIPT_PATH}")
+if [ "${ACTUAL_RECEIPT}" != "%s" ]; then
+  echo "[artifact-fetch] node-local resolve receipt was not authenticated" >&2
+  exit 1
+fi
+if ! rm -f "${RECEIPT_PATH}"; then
+  echo "[artifact-fetch] could not consume node-local resolve receipt" >&2
+  exit 1
+fi
+`, port, b.daemonScheme(), b.wgetTLSOpts(), payloadBase64, receiptPathBase64, acknowledgement, acknowledgement)
 
 	return []string{"sh", "-c", script}
 }
@@ -243,22 +380,36 @@ func (b *DaemonSetBackend) daemonResolveBatchCommand(items []batchItem) []string
 		port = 7780
 	}
 
-	// Build the JSON payload for /resolve-batch.
-	type batchPayload struct {
-		Items []batchItem `json:"items"`
+	batches, err := chunkResolveBatchItems(items)
+	if err != nil {
+		return []string{"sh", "-c", fmt.Sprintf("echo '[artifact-fetch] invalid resolve batch: %s' >&2; exit 1", err)}
 	}
-	payload, _ := json.Marshal(batchPayload{Items: items})
 
-	script := fmt.Sprintf(`
+	var script strings.Builder
+	fmt.Fprintf(&script, `
 set -e
 PORT=%d
 DAEMON="%s://${HOST_IP}:${PORT}"
 WGET_OPTS="%s"
-PAYLOAD='%s'
-echo "[artifact-fetch] batch resolving %d artifacts via ${DAEMON}/resolve-batch" >&2
 ATTEMPT=0
 MAX=10
+
+`, port, b.daemonScheme(), b.wgetTLSOpts())
+	for _, batch := range batches {
+		payload, err := json.Marshal(batchPayload{Items: batch})
+		if err != nil {
+			return []string{"sh", "-c", "echo '[artifact-fetch] resolve payload encoding failed' >&2; exit 1"}
+		}
+		payloadBase64 := base64.StdEncoding.EncodeToString(payload)
+		fmt.Fprintf(&script, `
+PAYLOAD_B64='%s'
+PAYLOAD=$(printf '%%s' "${PAYLOAD_B64}" | base64 -d)
+echo "[artifact-fetch] batch resolving %d artifacts via ${DAEMON}/resolve-batch" >&2
 while true; do
+  if [ "$ATTEMPT" -ge "$MAX" ]; then
+    echo "[artifact-fetch] FAILED: global ${MAX}-attempt retry budget exhausted" >&2
+    exit 1
+  fi
   ATTEMPT=$((ATTEMPT + 1))
   RESP=$(wget ${WGET_OPTS} -qO- -T 180 --header='Content-Type: application/json' --post-data="${PAYLOAD}" "${DAEMON}/resolve-batch" 2>&1) && break
   if [ "$ATTEMPT" -ge "$MAX" ]; then
@@ -273,9 +424,37 @@ echo "[artifact-fetch] batch resolved: ${RESP}" >&2
 case "${RESP}" in
   *'"status":"error"'*) echo "[artifact-fetch] batch had failures — see above" >&2; exit 1 ;;
 esac
-`, port, b.daemonScheme(), b.wgetTLSOpts(), string(payload), len(items))
+`, payloadBase64, len(batch))
+		for _, item := range batch {
+			receiptName, err := artifactcap.ResolveReceiptFilename(item.Acknowledgement)
+			if err != nil || item.LocalDest == "" {
+				return []string{"sh", "-c", "echo '[artifact-fetch] resolve receipt configuration failed' >&2; exit 1"}
+			}
+			receiptPathBase64 := base64.StdEncoding.EncodeToString([]byte(filepath.Join(item.LocalDest, receiptName)))
+			fmt.Fprintf(&script, `case "${RESP}" in
+  *'"acknowledgement":"%s"'*) ;;
+  *) echo "[artifact-fetch] daemon response was not authenticated" >&2; exit 1 ;;
+esac
+RECEIPT_PATH_B64='%s'
+RECEIPT_PATH=$(printf '%%s' "${RECEIPT_PATH_B64}" | base64 -d)
+if [ ! -f "${RECEIPT_PATH}" ] || [ -L "${RECEIPT_PATH}" ]; then
+  echo "[artifact-fetch] node-local resolve receipt is missing or unsafe" >&2
+  exit 1
+fi
+ACTUAL_RECEIPT=$(cat "${RECEIPT_PATH}")
+if [ "${ACTUAL_RECEIPT}" != "%s" ]; then
+  echo "[artifact-fetch] node-local resolve receipt was not authenticated" >&2
+  exit 1
+fi
+if ! rm -f "${RECEIPT_PATH}"; then
+  echo "[artifact-fetch] could not consume node-local resolve receipt" >&2
+  exit 1
+fi
+`, item.Acknowledgement, receiptPathBase64, item.Acknowledgement)
+		}
+	}
 
-	return []string{"sh", "-c", script}
+	return []string{"sh", "-c", script.String()}
 }
 
 func (b *DaemonSetBackend) artifactLocate(key string) (ArtifactLocation, bool) {

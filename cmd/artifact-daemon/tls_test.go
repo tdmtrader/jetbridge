@@ -123,6 +123,38 @@ func newTLSTestFixture(t *testing.T) *tlsTestFixture {
 	}
 }
 
+func (f *tlsTestFixture) replaceServerCertificate(t *testing.T, dnsNames []string, ipAddresses []net.IP) {
+	t.Helper()
+	serverKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(22),
+		Subject:      pkix.Name{CommonName: "artifact-daemon"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(24 * time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		DNSNames:     dnsNames,
+		IPAddresses:  ipAddresses,
+	}
+	certificateDER, err := x509.CreateCertificate(rand.Reader, template, f.CACert, &serverKey.PublicKey, f.CAKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyDER, err := x509.MarshalECPrivateKey(serverKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(f.ServerCertPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certificateDER}), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(f.ServerKeyPath, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}), 0600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // clientWithMTLS returns an HTTP client configured with the client cert and CA trust.
 func (f *tlsTestFixture) clientWithMTLS(t *testing.T) *http.Client {
 	t.Helper()
@@ -392,5 +424,52 @@ func TestTLS_ExemptPaths_WorkWithoutClientCert(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode == http.StatusUnauthorized {
 		t.Error("/resolve-batch: expected non-401 without client cert, got 401")
+	}
+}
+
+func TestPeerFetchUsesConfiguredHTTPSScheme(t *testing.T) {
+	fix := newTLSTestFixture(t)
+	baseURL, storagePath := startTLSServer(t, fix)
+	source := filepath.Join(storagePath, "steps", "producer", "output")
+	if err := os.MkdirAll(source, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "data"), []byte("secure-peer"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	host, port := splitHostPort(t, strings.TrimPrefix(baseURL, "https://"))
+	resolver := daemon.NewPeerResolver(lagertest.NewTestLogger("https-peer"), nil, "", "", port, "", &daemon.PeerTLSConfig{
+		CertPath: fix.ClientCertPath, KeyPath: fix.ClientKeyPath, CACertPath: fix.CACertPath,
+	})
+	dest := filepath.Join(t.TempDir(), "fetched")
+	if err := resolver.Fetch(t.Context(), host, "producer/output", dest); err != nil {
+		t.Fatalf("HTTPS peer fetch: %v", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(dest, "data")); err != nil || string(got) != "secure-peer" {
+		t.Fatalf("fetched bytes = %q, %v", got, err)
+	}
+}
+
+func TestPeerFetchDialedByIPVerifiesServiceDNSIdentity(t *testing.T) {
+	fix := newTLSTestFixture(t)
+	const serverName = "artifact-daemon.test-ns.svc"
+	// Deliberately issue no IP SAN. Production peers are dialed by pod IP but
+	// the chart certificate covers the stable service DNS identity instead.
+	fix.replaceServerCertificate(t, []string{serverName}, nil)
+	baseURL, storagePath := startTLSServer(t, fix)
+	source := filepath.Join(storagePath, "steps", "producer", "output")
+	if err := os.MkdirAll(source, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "data"), []byte("dns-identity"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	host, port := splitHostPort(t, strings.TrimPrefix(baseURL, "https://"))
+	resolver := daemon.NewPeerResolver(lagertest.NewTestLogger("dns-peer"), nil, "test-ns", "artifact-daemon", port, "", &daemon.PeerTLSConfig{
+		CertPath: fix.ClientCertPath, KeyPath: fix.ClientKeyPath, CACertPath: fix.CACertPath,
+	})
+	dest := filepath.Join(t.TempDir(), "fetched")
+	if err := resolver.Fetch(t.Context(), host, "producer/output", dest); err != nil {
+		t.Fatalf("IP-dialed peer did not verify the issued service DNS SAN: %v", err)
 	}
 }

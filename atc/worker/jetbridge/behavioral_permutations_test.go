@@ -33,11 +33,12 @@ func (a *permStubArtifact) StreamOut(_ context.Context, _ string, _ compression.
 
 func permDaemonSetConfig() Config {
 	return Config{
-		Namespace:              "test-ns",
-		ArtifactDaemonHostPath: "/artifact-store",
-		ArtifactDaemonPort:     7780,
-		ArtifactDaemonService:  "artifact-daemon",
-		ArtifactHelperImage:    "alpine:latest",
+		Namespace:                          "test-ns",
+		ArtifactDaemonHostPath:             "/artifact-store",
+		ArtifactDaemonPort:                 7780,
+		ArtifactDaemonService:              "artifact-daemon",
+		ArtifactHelperImage:                "alpine:latest",
+		ArtifactDaemonResolveCapabilityKey: []byte("0123456789abcdef0123456789abcdef"),
 	}
 }
 
@@ -741,11 +742,9 @@ func TestBuildArtifactInitContainers_LocatorHitVsMiss(t *testing.T) {
 
 	// The batch command should contain both the locator HostDir and the volume handle.
 	cmdStr := strings.Join(inits[0].Command, " ")
-	if !contains(cmdStr, "producer-handle/result") {
-		t.Errorf("expected batch command to contain locator HostDir 'producer-handle/result', got: %s", cmdStr)
-	}
-	if !contains(cmdStr, "vol-b") {
-		t.Errorf("expected batch command to contain volume handle 'vol-b' as fallback, got: %s", cmdStr)
+	items := decodeEmbeddedBatchItems(t, cmdStr)
+	if len(items) != 2 || items[0].Key != "producer-handle/result" || items[1].Key != "vol-b" {
+		t.Errorf("unexpected locator/fallback payload: %+v", items)
 	}
 }
 

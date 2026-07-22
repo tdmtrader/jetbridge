@@ -24,6 +24,7 @@ import (
 	"github.com/concourse/concourse"
 	"github.com/concourse/concourse/agent/api/outcomes"
 	"github.com/concourse/concourse/agent/api/principals"
+	"github.com/concourse/concourse/agent/artifactcap"
 	"github.com/concourse/concourse/agent/budget"
 	"github.com/concourse/concourse/agent/credentials"
 	"github.com/concourse/concourse/agent/dispatch"
@@ -132,10 +133,14 @@ type RunCommand struct {
 	// Snapshot daemon transport and content storage are command-scoped so API
 	// and backend composition share one durable client/store rather than
 	// rebuilding restart-unsafe state inside each pool construction.
-	agentSnapshotMu           sync.Mutex
-	agentSnapshotDaemonClient *jetbridge.DaemonClient
-	agentSnapshotContentStore snapshot.ContentStore
-	agentSnapshotComposer     func(db.DbConn) (*jetbridge.DaemonClient, snapshot.ContentStore, error)
+	agentSnapshotMu            sync.Mutex
+	agentSnapshotDaemonClient  *jetbridge.DaemonClient
+	agentSnapshotContentStore  snapshot.ContentStore
+	agentSnapshotArchiveLimits snapshot.ArchiveLimits
+	agentSnapshotComposer      func(db.DbConn) (*jetbridge.DaemonClient, snapshot.ContentStore, error)
+
+	artifactResolveCapabilityMu  sync.Mutex
+	artifactResolveCapabilityKey []byte
 
 	// agentRunSecretAttacher bridges dispatch's API handler (constructed
 	// before the K8s clientset exists) to the real attacher bound in the
@@ -202,24 +207,26 @@ type RunCommand struct {
 	StreamingArtifactsCompression string `long:"streaming-artifacts-compression" default:"gzip" choice:"gzip" choice:"zstd" choice:"s2" choice:"raw" description:"Compression algorithm for internal streaming."`
 
 	Kubernetes struct {
-		Namespace               string        `long:"kubernetes-namespace"              description:"Kubernetes namespace in which to run task Pods. When set, enables the K8s execution backend."`
-		Kubeconfig              string        `long:"kubernetes-kubeconfig"             description:"Path to kubeconfig file for K8s backend. If empty, in-cluster configuration is used."`
-		PodStartupTimeout       time.Duration `long:"kubernetes-pod-startup-timeout"      default:"5m"  description:"Maximum time to wait for a pod to reach Running state before failing the task."`
-		PodSchedulingTimeout    time.Duration `long:"kubernetes-pod-scheduling-timeout"   default:"15m" description:"Maximum time to wait for an Unschedulable pod to be scheduled before failing the task. Set to 0 to fail immediately (old behavior)."`
-		ImagePullSecrets        []string      `long:"kubernetes-image-pull-secret"      description:"Kubernetes Secret name to use as imagePullSecrets on task Pods. Can be specified multiple times."`
-		ServiceAccount          string        `long:"kubernetes-service-account"        description:"Kubernetes ServiceAccount name to set on task Pods. Defaults to the namespace default SA."`
-		CacheStore              string        `long:"kubernetes-cache-store"            description:"Task cache backend: hostpath (node-local dirs) or emptydir (ephemeral). Empty = auto-detect."`
-		CacheHostPath           string        `long:"kubernetes-cache-host-path"        description:"Base directory on host node for persistent task caches. Caches are node-local and survive pod restarts."`
-		ArtifactHelperImage     string        `long:"kubernetes-artifact-helper-image"     description:"Container image for artifact init containers. Defaults to alpine:latest."`
-		ArtifactDaemonPort      int           `long:"kubernetes-artifact-daemon-port"      default:"7780" description:"HTTP port for the DaemonSet artifact server (hostPort)."`
-		ArtifactDaemonHostPath  string        `long:"kubernetes-artifact-daemon-host-path" description:"Host path for artifact storage on each node. When set, build pods require concourse.dev/artifact-cache=ready node label."`
-		ArtifactDaemonService   string        `long:"kubernetes-artifact-daemon-service"   default:"artifact-daemon" description:"Headless Service name for DaemonSet per-pod DNS."`
-		ArtifactDaemonTLSCert   string        `long:"kubernetes-artifact-daemon-tls-cert"    description:"Path to client certificate for mTLS with the artifact daemon."`
-		ArtifactDaemonTLSKey    string        `long:"kubernetes-artifact-daemon-tls-key"     description:"Path to client private key for mTLS with the artifact daemon."`
-		ArtifactDaemonTLSCACert string        `long:"kubernetes-artifact-daemon-tls-ca-cert" description:"Path to CA certificate for verifying the artifact daemon's server certificate."`
-		ImageRegistryPrefix     string        `long:"kubernetes-image-registry-prefix"     description:"Registry path prefix for custom resource type images (e.g. gcr.io/my-project/concourse). Images are resolved as <prefix>/<type-name>."`
-		ImageRegistrySecret     string        `long:"kubernetes-image-registry-secret"     description:"Kubernetes Secret name (type kubernetes.io/dockerconfigjson) for registry auth. Auto-added to imagePullSecrets on every pod."`
-		BaseResourceTypes       []string      `long:"kubernetes-base-resource-type"        description:"Override or add a base resource type image. Format: name=image (e.g. git=my-registry/git-resource:v2). Can be specified multiple times. Merges with built-in defaults." value-name:"NAME=IMAGE"`
+		Namespace                          string        `long:"kubernetes-namespace"              description:"Kubernetes namespace in which to run task Pods. When set, enables the K8s execution backend."`
+		Kubeconfig                         string        `long:"kubernetes-kubeconfig"             description:"Path to kubeconfig file for K8s backend. If empty, in-cluster configuration is used."`
+		PodStartupTimeout                  time.Duration `long:"kubernetes-pod-startup-timeout"      default:"5m"  description:"Maximum time to wait for a pod to reach Running state before failing the task."`
+		PodSchedulingTimeout               time.Duration `long:"kubernetes-pod-scheduling-timeout"   default:"15m" description:"Maximum time to wait for an Unschedulable pod to be scheduled before failing the task. Set to 0 to fail immediately (old behavior)."`
+		ImagePullSecrets                   []string      `long:"kubernetes-image-pull-secret"      description:"Kubernetes Secret name to use as imagePullSecrets on task Pods. Can be specified multiple times."`
+		ServiceAccount                     string        `long:"kubernetes-service-account"        description:"Kubernetes ServiceAccount name to set on task Pods. Defaults to the namespace default SA."`
+		CacheStore                         string        `long:"kubernetes-cache-store"            description:"Task cache backend: hostpath (node-local dirs) or emptydir (ephemeral). Empty = auto-detect."`
+		CacheHostPath                      string        `long:"kubernetes-cache-host-path"        description:"Base directory on host node for persistent task caches. Caches are node-local and survive pod restarts."`
+		ArtifactHelperImage                string        `long:"kubernetes-artifact-helper-image"     description:"Container image for artifact init containers. Defaults to alpine:latest."`
+		ArtifactDaemonPort                 int           `long:"kubernetes-artifact-daemon-port"      default:"7780" description:"HTTP port for the DaemonSet artifact server (hostPort)."`
+		ArtifactDaemonHostPath             string        `long:"kubernetes-artifact-daemon-host-path" description:"Host path for artifact storage on each node. When set, build pods require concourse.dev/artifact-cache=ready node label."`
+		ArtifactDaemonService              string        `long:"kubernetes-artifact-daemon-service"   default:"artifact-daemon" description:"Headless Service name for DaemonSet per-pod DNS."`
+		ArtifactDaemonTLSCert              string        `long:"kubernetes-artifact-daemon-tls-cert"    description:"Path to client certificate for mTLS with the artifact daemon."`
+		ArtifactDaemonTLSKey               string        `long:"kubernetes-artifact-daemon-tls-key"     description:"Path to client private key for mTLS with the artifact daemon."`
+		ArtifactDaemonTLSCACert            string        `long:"kubernetes-artifact-daemon-tls-ca-cert" description:"Path to CA certificate for verifying the artifact daemon's server certificate."`
+		ArtifactDaemonResolveCapabilityKey string        `long:"kubernetes-artifact-daemon-resolve-capability-key" description:"Path to the raw 32-byte key used to authorize artifact resolve operations."`
+		ArtifactDaemonResolveCapabilityTTL time.Duration `long:"kubernetes-artifact-daemon-resolve-capability-ttl" default:"2h" description:"Lifetime of operation-bound resolve capabilities; must cover the configured pod admission and init retry bounds."`
+		ImageRegistryPrefix                string        `long:"kubernetes-image-registry-prefix"     description:"Registry path prefix for custom resource type images (e.g. gcr.io/my-project/concourse). Images are resolved as <prefix>/<type-name>."`
+		ImageRegistrySecret                string        `long:"kubernetes-image-registry-secret"     description:"Kubernetes Secret name (type kubernetes.io/dockerconfigjson) for registry auth. Auto-added to imagePullSecrets on every pod."`
+		BaseResourceTypes                  []string      `long:"kubernetes-base-resource-type"        description:"Override or add a base resource type image. Format: name=image (e.g. git=my-registry/git-resource:v2). Can be specified multiple times. Merges with built-in defaults." value-name:"NAME=IMAGE"`
 	} `group:"Kubernetes Runtime"`
 
 	AgentSnapshots struct {
@@ -1344,6 +1351,10 @@ func (cmd *RunCommand) backendComponents(
 	cmd.k8sArtifactLocator = jetbridge.NewArtifactLocator()
 
 	if cmd.Kubernetes.Namespace != "" {
+		resolveCapabilityKey, err := cmd.loadArtifactResolveCapabilityKey()
+		if err != nil {
+			return nil, fmt.Errorf("load artifact resolve capability key: %w", err)
+		}
 		k8sCfg := jetbridge.NewConfig(cmd.Kubernetes.Namespace, cmd.Kubernetes.Kubeconfig)
 		k8sCfg.PodStartupTimeout = cmd.Kubernetes.PodStartupTimeout
 		k8sCfg.PodSchedulingTimeout = cmd.Kubernetes.PodSchedulingTimeout
@@ -1359,6 +1370,8 @@ func (cmd *RunCommand) backendComponents(
 		k8sCfg.ArtifactDaemonTLSKey = cmd.Kubernetes.ArtifactDaemonTLSKey
 		k8sCfg.ArtifactDaemonTLSCACert = cmd.Kubernetes.ArtifactDaemonTLSCACert
 		k8sCfg.ArtifactDaemonTLSEnabled = cmd.Kubernetes.ArtifactDaemonTLSCert != ""
+		k8sCfg.ArtifactDaemonResolveCapabilityKey = resolveCapabilityKey
+		k8sCfg.ArtifactDaemonResolveCapabilityTTL = cmd.Kubernetes.ArtifactDaemonResolveCapabilityTTL
 		if cmd.Kubernetes.CacheStore != "" && !jetbridge.ValidCacheStores[cmd.Kubernetes.CacheStore] {
 			return nil, fmt.Errorf("invalid --kubernetes-cache-store value %q (valid: hostpath, emptydir)", cmd.Kubernetes.CacheStore)
 		}
@@ -1594,7 +1607,15 @@ func (cmd *RunCommand) composeAgentSnapshots(connection db.DbConn) error {
 	}
 	cmd.agentSnapshotDaemonClient = daemonClient
 	cmd.agentSnapshotContentStore = contentStore
+	cmd.agentSnapshotArchiveLimits = cmd.configuredAgentSnapshotArchiveLimits()
 	return nil
+}
+
+func (cmd *RunCommand) configuredAgentSnapshotArchiveLimits() snapshot.ArchiveLimits {
+	return snapshot.ArchiveLimits{
+		MaxContentBytes: cmd.AgentSnapshots.MaxBytes,
+		MaxEntries:      cmd.AgentSnapshots.MaxFiles,
+	}
 }
 
 func (cmd *RunCommand) buildAgentSnapshotComponents(connection db.DbConn) (*jetbridge.DaemonClient, snapshot.ContentStore, error) {
@@ -1633,15 +1654,12 @@ func (cmd *RunCommand) buildAgentSnapshotComponents(connection db.DbConn) (*jetb
 	if err != nil {
 		return nil, nil, fmt.Errorf("construct checked snapshot daemon client: %w", err)
 	}
-	archiveMaxBytes, err := snapshot.CanonicalArchiveByteLimit(cmd.AgentSnapshots.MaxBytes, cmd.AgentSnapshots.MaxFiles)
-	if err != nil {
-		return nil, nil, fmt.Errorf("derive snapshot archive transport bound: %w", err)
-	}
+	archiveLimits := cmd.configuredAgentSnapshotArchiveLimits()
 	contentStore, err := jetbridge.NewSnapshotContentStore(
 		daemonClient,
 		db.NewAgentSnapshotsFactory(connection),
 		cmd.AgentSnapshots.ReplicationFactor,
-		archiveMaxBytes,
+		archiveLimits,
 	)
 	if err != nil {
 		return nil, nil, fmt.Errorf("construct snapshot content store: %w", err)
@@ -1675,6 +1693,10 @@ func (cmd *RunCommand) constructPool(dbConn db.DbConn, lockFactory lock.LockFact
 	}
 
 	if cmd.Kubernetes.Namespace != "" {
+		resolveCapabilityKey, err := cmd.loadArtifactResolveCapabilityKey()
+		if err != nil {
+			return worker.Pool{}, fmt.Errorf("load artifact resolve capability key: %w", err)
+		}
 		k8sCfg := jetbridge.NewConfig(cmd.Kubernetes.Namespace, cmd.Kubernetes.Kubeconfig)
 		k8sCfg.PodStartupTimeout = cmd.Kubernetes.PodStartupTimeout
 		k8sCfg.PodSchedulingTimeout = cmd.Kubernetes.PodSchedulingTimeout
@@ -1690,6 +1712,8 @@ func (cmd *RunCommand) constructPool(dbConn db.DbConn, lockFactory lock.LockFact
 		k8sCfg.ArtifactDaemonTLSKey = cmd.Kubernetes.ArtifactDaemonTLSKey
 		k8sCfg.ArtifactDaemonTLSCACert = cmd.Kubernetes.ArtifactDaemonTLSCACert
 		k8sCfg.ArtifactDaemonTLSEnabled = cmd.Kubernetes.ArtifactDaemonTLSCert != ""
+		k8sCfg.ArtifactDaemonResolveCapabilityKey = resolveCapabilityKey
+		k8sCfg.ArtifactDaemonResolveCapabilityTTL = cmd.Kubernetes.ArtifactDaemonResolveCapabilityTTL
 		if cmd.Kubernetes.ImageRegistryPrefix != "" || cmd.Kubernetes.ImageRegistrySecret != "" {
 			k8sCfg.ImageRegistry = &jetbridge.ImageRegistryConfig{
 				Prefix:     cmd.Kubernetes.ImageRegistryPrefix,
@@ -2221,7 +2245,34 @@ func (cmd *RunCommand) validateK8sRuntime() error {
 			"the DaemonSet artifact cache is mandatory for the K8s runtime, because downstream artifact reads " +
 			"must not exec into the producing pod (which is reaped as soon as the step finishes)")
 	}
+	if cmd.Kubernetes.ArtifactDaemonResolveCapabilityKey == "" {
+		return errors.New("--kubernetes-artifact-daemon-resolve-capability-key is required when --kubernetes-namespace is set")
+	}
+	minimumCapabilityTTL, err := jetbridge.MinimumArtifactResolveCapabilityTTL(
+		cmd.Kubernetes.PodSchedulingTimeout,
+		cmd.Kubernetes.PodStartupTimeout,
+	)
+	if err != nil {
+		return err
+	}
+	if cmd.Kubernetes.ArtifactDaemonResolveCapabilityTTL <= minimumCapabilityTTL {
+		return fmt.Errorf("--kubernetes-artifact-daemon-resolve-capability-ttl must exceed the bounded scheduling, startup, retry, and skew window of %s", minimumCapabilityTTL)
+	}
 	return nil
+}
+
+func (cmd *RunCommand) loadArtifactResolveCapabilityKey() ([]byte, error) {
+	cmd.artifactResolveCapabilityMu.Lock()
+	defer cmd.artifactResolveCapabilityMu.Unlock()
+	if len(cmd.artifactResolveCapabilityKey) != 0 {
+		return append([]byte(nil), cmd.artifactResolveCapabilityKey...), nil
+	}
+	key, err := artifactcap.LoadKeyFile(cmd.Kubernetes.ArtifactDaemonResolveCapabilityKey)
+	if err != nil {
+		return nil, err
+	}
+	cmd.artifactResolveCapabilityKey = append([]byte(nil), key...)
+	return append([]byte(nil), key...), nil
 }
 
 func (cmd *RunCommand) nonTLSBindAddr() string {

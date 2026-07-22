@@ -1,20 +1,26 @@
 package jetbridge
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"code.cloudfoundry.org/lager/v3/lagertest"
+	"github.com/concourse/concourse/agent/artifactcap"
 	"github.com/concourse/concourse/atc/compression"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/runtime"
@@ -23,6 +29,86 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
 )
+
+func decodeEmbeddedPayload(t *testing.T, script string) []byte {
+	t.Helper()
+	start := strings.Index(script, "PAYLOAD_B64='")
+	if start < 0 {
+		t.Fatalf("base64 payload missing from init command: %s", script)
+	}
+	start += len("PAYLOAD_B64='")
+	end := strings.Index(script[start:], "'\n")
+	if end < 0 {
+		t.Fatalf("base64 payload terminator missing: %s", script)
+	}
+	payload, err := base64.StdEncoding.DecodeString(script[start : start+end])
+	if err != nil {
+		t.Fatalf("decode embedded payload: %v", err)
+	}
+	return payload
+}
+
+func decodeEmbeddedResolveItem(t *testing.T, script string) batchItem {
+	t.Helper()
+	var item batchItem
+	if err := json.Unmarshal(decodeEmbeddedPayload(t, script), &item); err != nil {
+		t.Fatal(err)
+	}
+	return item
+}
+
+func decodeEmbeddedBatchItems(t *testing.T, script string) []batchItem {
+	t.Helper()
+	var payload struct {
+		Items []batchItem `json:"items"`
+	}
+	if err := json.Unmarshal(decodeEmbeddedPayload(t, script), &payload); err != nil {
+		t.Fatal(err)
+	}
+	return payload.Items
+}
+
+func decodeEmbeddedBatchPayloads(t *testing.T, script string) [][]batchItem {
+	t.Helper()
+	const marker = "PAYLOAD_B64='"
+	var batches [][]batchItem
+	for {
+		start := strings.Index(script, marker)
+		if start < 0 {
+			return batches
+		}
+		start += len(marker)
+		end := strings.Index(script[start:], "'\n")
+		if end < 0 {
+			t.Fatalf("base64 payload terminator missing: %s", script)
+		}
+		encoded := script[start : start+end]
+		payload, err := base64.StdEncoding.DecodeString(encoded)
+		if err != nil {
+			t.Fatalf("decode embedded payload: %v", err)
+		}
+		var batch struct {
+			Items []batchItem `json:"items"`
+		}
+		if err := json.Unmarshal(payload, &batch); err != nil {
+			t.Fatalf("decode embedded batch: %v", err)
+		}
+		batches = append(batches, batch.Items)
+		script = script[start+end+2:]
+	}
+}
+
+func runGeneratedFetchScript(t *testing.T, command []string, response string) error {
+	t.Helper()
+	bin := t.TempDir()
+	wget := filepath.Join(bin, "wget")
+	if err := os.WriteFile(wget, []byte("#!/bin/sh\nprintf '%s' \"${FAKE_WGET_RESPONSE}\"\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(command[0], command[1:]...)
+	cmd.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"), "HOST_IP=127.0.0.1", "FAKE_WGET_RESPONSE="+response)
+	return cmd.Run()
+}
 
 // daemonTestServer wraps an httptest.Server for daemon-backed lookup tests.
 // It records every request URL so callers can assert which endpoints
@@ -91,11 +177,12 @@ func daemonBackend(t *testing.T, locator *ArtifactLocator, daemon *daemonTestSer
 
 func testDaemonConfig() Config {
 	return Config{
-		Namespace:              "test-ns",
-		ArtifactDaemonHostPath: "/artifact-store",
-		ArtifactDaemonPort:     7780,
-		ArtifactDaemonService:  "artifact-daemon",
-		ArtifactHelperImage:    "alpine:latest",
+		Namespace:                          "test-ns",
+		ArtifactDaemonHostPath:             "/artifact-store",
+		ArtifactDaemonPort:                 7780,
+		ArtifactDaemonService:              "artifact-daemon",
+		ArtifactHelperImage:                "alpine:latest",
+		ArtifactDaemonResolveCapabilityKey: []byte("0123456789abcdef0123456789abcdef"),
 	}
 }
 
@@ -265,14 +352,328 @@ func TestDaemonSetBackend_BuildFetchInitContainers_MultipleInputs(t *testing.T) 
 		t.Errorf("expected /resolve-batch in command, got: %s", cmdStr)
 	}
 
-	// Should contain all three artifact keys.
-	if !strings.Contains(cmdStr, "vol-a") || !strings.Contains(cmdStr, "vol-b") || !strings.Contains(cmdStr, "vol-c") {
-		t.Errorf("expected all artifact keys in batch command, got: %s", cmdStr)
+	items := decodeEmbeddedBatchItems(t, cmdStr)
+	if len(items) != 3 || items[0].Key != "vol-a" || items[1].Key != "vol-b" || items[2].Key != "vol-c" {
+		t.Errorf("unexpected batch items: %+v", items)
 	}
 
 	// Should mount all input volumes plus the hostpath volume.
 	if len(inits[0].VolumeMounts) < 4 { // 3 inputs + 1 hostpath
 		t.Errorf("expected at least 4 volume mounts, got %d", len(inits[0].VolumeMounts))
+	}
+}
+
+func TestDaemonSetBackend_BuildFetchInitContainersChunksServerBoundedBatches(t *testing.T) {
+	b := testBackend(nil)
+	inputs := make([]runtime.Input, 65)
+	mounts := make([]corev1.VolumeMount, 65)
+	volumes := make([]corev1.Volume, 65)
+	for i := range inputs {
+		name := fmt.Sprintf("input-%d", i)
+		mountPath := "/tmp/" + name
+		inputs[i] = runtime.Input{Artifact: &testArtifact{handle: fmt.Sprintf("producer-%d/output", i)}, DestinationPath: mountPath}
+		mounts[i] = corev1.VolumeMount{Name: name, MountPath: mountPath}
+		volumes[i] = b.StepVolume(name, "consumer", name)
+	}
+
+	inits := b.BuildFetchInitContainers("consumer", inputs, volumes, mounts)
+	if len(inits) != 1 {
+		t.Fatalf("init containers = %d, want one sequential batch client", len(inits))
+	}
+	batches := decodeEmbeddedBatchPayloads(t, strings.Join(inits[0].Command, " "))
+	if len(batches) != 2 || len(batches[0]) != 64 || len(batches[1]) != 1 {
+		t.Fatalf("batch sizes = %v, want [64 1]", []int{len(batches[0]), len(batches[1])})
+	}
+	for _, batch := range batches {
+		payload, err := json.Marshal(struct {
+			Items []batchItem `json:"items"`
+		}{Items: batch})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(payload) > 64<<10 {
+			t.Fatalf("encoded batch size = %d, want <= 64KiB", len(payload))
+		}
+		verifier, _ := artifactcap.NewVerifier(testDaemonConfig().ArtifactDaemonResolveCapabilityKey)
+		for _, item := range batch {
+			acknowledgement, err := verifier.ResolveAcknowledgement(item.Capability)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(strings.Join(inits[0].Command, " "), acknowledgement) {
+				t.Fatal("chunked batch omitted an expected authenticated acknowledgement")
+			}
+		}
+	}
+	if count := strings.Count(strings.Join(inits[0].Command, " "), "ATTEMPT=0"); count != 1 {
+		t.Fatalf("sequential chunks initialize %d retry budgets, want one global budget", count)
+	}
+}
+
+func TestDaemonSetBackend_ChunkedFetchHasOneWorstCaseRetryBudget(t *testing.T) {
+	b := testBackend(nil)
+	localRoot := t.TempDir()
+	inputs := make([]runtime.Input, 65)
+	mounts := make([]corev1.VolumeMount, 65)
+	volumes := make([]corev1.Volume, 65)
+	for i := range inputs {
+		name := fmt.Sprintf("input-%d", i)
+		mountPath := filepath.Join(localRoot, name)
+		if err := os.Mkdir(mountPath, 0755); err != nil {
+			t.Fatal(err)
+		}
+		inputs[i] = runtime.Input{Artifact: &testArtifact{handle: fmt.Sprintf("producer-%d/output", i)}, DestinationPath: mountPath}
+		mounts[i] = corev1.VolumeMount{Name: name, MountPath: mountPath}
+		volumes[i] = b.StepVolume(name, "consumer", name)
+	}
+
+	init := b.BuildFetchInitContainers("consumer", inputs, volumes, mounts)[0]
+	batches := decodeEmbeddedBatchPayloads(t, strings.Join(init.Command, " "))
+	if len(batches) != 2 {
+		t.Fatalf("batch count = %d, want two", len(batches))
+	}
+	verifier, _ := artifactcap.NewVerifier(testDaemonConfig().ArtifactDaemonResolveCapabilityKey)
+	type result struct {
+		Status          string `json:"status"`
+		Acknowledgement string `json:"acknowledgement"`
+	}
+	results := make([]result, 0, len(inputs))
+	index := 0
+	for _, batch := range batches {
+		for _, item := range batch {
+			acknowledgement, err := verifier.ResolveAcknowledgement(item.Capability)
+			if err != nil {
+				t.Fatal(err)
+			}
+			receiptName, err := artifactcap.ResolveReceiptFilename(acknowledgement)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(inputs[index].DestinationPath, receiptName), []byte(acknowledgement), 0600); err != nil {
+				t.Fatal(err)
+			}
+			results = append(results, result{Status: "ok", Acknowledgement: acknowledgement})
+			index++
+		}
+	}
+	response, err := json.Marshal(struct {
+		Status  string   `json:"status"`
+		Results []result `json:"results"`
+	}{Status: "ok", Results: results})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	bin := t.TempDir()
+	counter := filepath.Join(bin, "wget-count")
+	wget := filepath.Join(bin, "wget")
+	wgetScript := `#!/bin/sh
+COUNT=0
+if [ -f "${FAKE_WGET_COUNT}" ]; then COUNT=$(cat "${FAKE_WGET_COUNT}"); fi
+COUNT=$((COUNT + 1))
+printf '%s' "${COUNT}" > "${FAKE_WGET_COUNT}"
+if [ "${COUNT}" -lt 10 ]; then exit 1; fi
+printf '%s' "${FAKE_WGET_RESPONSE}"
+`
+	if err := os.WriteFile(wget, []byte(wgetScript), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bin, "sleep"), []byte("#!/bin/sh\nexit 0\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(init.Command[0], init.Command[1:]...)
+	cmd.Env = append(os.Environ(),
+		"PATH="+bin+":"+os.Getenv("PATH"),
+		"HOST_IP=127.0.0.1",
+		"FAKE_WGET_COUNT="+counter,
+		"FAKE_WGET_RESPONSE="+string(response),
+	)
+	if err := cmd.Run(); err == nil {
+		t.Fatal("two chunks exceeded one ten-attempt retry budget")
+	}
+	countBytes, err := os.ReadFile(counter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(countBytes) != "10" {
+		t.Fatalf("wget attempts = %s, want one global maximum of 10", countBytes)
+	}
+}
+
+func TestChunkResolveBatchItemsHonorsEncodedBodyLimit(t *testing.T) {
+	items := make([]batchItem, 20)
+	for i := range items {
+		items[i] = batchItem{
+			Key:        fmt.Sprintf("producer-%d/%s", i, strings.Repeat("k", 1500)),
+			Dest:       fmt.Sprintf("/artifact-store/steps/consumer-%d/%s", i, strings.Repeat("d", 1500)),
+			Capability: strings.Repeat("c", 2500),
+		}
+	}
+	batches, err := chunkResolveBatchItems(items)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(batches) < 2 {
+		t.Fatalf("large encoded items produced %d batch, want size-based chunking", len(batches))
+	}
+	for _, batch := range batches {
+		payload, _ := json.Marshal(batchPayload{Items: batch})
+		if len(batch) > 64 || len(payload) > 64<<10 {
+			t.Fatalf("batch bounds = %d items/%d bytes", len(batch), len(payload))
+		}
+	}
+}
+
+func TestDaemonSetBackend_BuildFetchInitContainersSignsExactResolveItems(t *testing.T) {
+	cfg := testDaemonConfig()
+	b := NewDaemonSetBackend(cfg, nil, nil)
+	inputs := []runtime.Input{{Artifact: &testArtifact{handle: "producer/output"}, DestinationPath: "/tmp/input"}}
+	mounts := []corev1.VolumeMount{{Name: "input-0", MountPath: "/tmp/input"}}
+	volumes := []corev1.Volume{b.StepVolume("input-0", "consumer", "input-0")}
+
+	inits := b.BuildFetchInitContainers("consumer", inputs, volumes, mounts)
+	if len(inits) != 1 {
+		t.Fatalf("init containers = %d, want 1", len(inits))
+	}
+	script := strings.Join(inits[0].Command, " ")
+	var payload struct {
+		Items []batchItem `json:"items"`
+	}
+	if err := json.Unmarshal(decodeEmbeddedPayload(t, script), &payload); err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	if len(payload.Items) != 1 || payload.Items[0].Capability == "" {
+		t.Fatalf("unsigned payload: %+v", payload.Items)
+	}
+	verifier, _ := artifactcap.NewVerifier(cfg.ArtifactDaemonResolveCapabilityKey)
+	wantDest := "/artifact-store/steps/consumer/input-0"
+	if err := verifier.VerifyResolve(payload.Items[0].Capability, "producer/output", wantDest, time.Now()); err != nil {
+		t.Fatalf("generated capability does not bind exact operation: %v", err)
+	}
+	expectedAcknowledgement, err := verifier.ResolveAcknowledgement(payload.Items[0].Capability)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(script, `"acknowledgement":"`+expectedAcknowledgement+`"`) {
+		t.Fatal("init command does not require the token-specific authenticated daemon response")
+	}
+	if bytes.Contains(decodeEmbeddedPayload(t, script), []byte("acknowledgement")) {
+		t.Fatal("expected acknowledgement was sent to the daemon and is visible to an active network peer")
+	}
+	if strings.Contains(script, string(cfg.ArtifactDaemonResolveCapabilityKey)) {
+		t.Fatal("init command exposed the shared signing key")
+	}
+}
+
+func TestDaemonSetBackend_FetchInitRequiresAuthenticatedResponseAndLocalReceipt(t *testing.T) {
+	cfg := testDaemonConfig()
+	b := NewDaemonSetBackend(cfg, nil, nil)
+	localDest := t.TempDir()
+	inputs := []runtime.Input{{Artifact: &testArtifact{handle: "producer/output"}, DestinationPath: localDest}}
+	mounts := []corev1.VolumeMount{{Name: "input-0", MountPath: localDest}}
+	volumes := []corev1.Volume{b.StepVolume("input-0", "consumer", "input-0")}
+	init := b.BuildFetchInitContainers("consumer", inputs, volumes, mounts)[0]
+	items := decodeEmbeddedBatchItems(t, strings.Join(init.Command, " "))
+	verifier, _ := artifactcap.NewVerifier(cfg.ArtifactDaemonResolveCapabilityKey)
+	acknowledgement, err := verifier.ResolveAcknowledgement(items[0].Capability)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receiptName, err := artifactcap.ResolveReceiptFilename(acknowledgement)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receiptPath := filepath.Join(localDest, receiptName)
+
+	for name, response := range map[string]string{
+		"missing": `{"status":"ok","results":[{"status":"ok"}]}`,
+		"wrong":   `{"status":"ok","results":[{"status":"ok","acknowledgement":"wrong"}]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := os.WriteFile(receiptPath, []byte(acknowledgement), 0600); err != nil {
+				t.Fatal(err)
+			}
+			defer os.Remove(receiptPath)
+			if err := runGeneratedFetchScript(t, init.Command, response); err == nil {
+				t.Fatal("unauthenticated daemon response was accepted")
+			}
+		})
+	}
+	valid := fmt.Sprintf(`{"status":"ok","results":[{"status":"ok","acknowledgement":"%s"}]}`, acknowledgement)
+	if err := runGeneratedFetchScript(t, init.Command, valid); err == nil {
+		t.Fatal("relayed daemon success without a receipt in the node-local mount was accepted")
+	}
+	if err := os.WriteFile(receiptPath, []byte("wrong"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := runGeneratedFetchScript(t, init.Command, valid); err == nil {
+		t.Fatal("wrong node-local receipt was accepted")
+	}
+	if err := os.WriteFile(receiptPath, []byte(acknowledgement), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := runGeneratedFetchScript(t, init.Command, valid); err != nil {
+		t.Fatalf("authenticated daemon response with a local receipt was rejected: %v", err)
+	}
+	if _, err := os.Stat(receiptPath); !os.IsNotExist(err) {
+		t.Fatalf("init did not consume the node-local receipt: %v", err)
+	}
+}
+
+func TestDaemonSetBackend_ResolveCapabilityCoversConfiguredPodAdmissionWindow(t *testing.T) {
+	cfg := testDaemonConfig()
+	cfg.PodSchedulingTimeout = 2 * time.Hour
+	cfg.PodStartupTimeout = time.Hour
+	cfg.ArtifactDaemonResolveCapabilityTTL = 4 * time.Hour
+	b := NewDaemonSetBackend(cfg, nil, nil)
+	inputs := []runtime.Input{{Artifact: &testArtifact{handle: "producer/output"}, DestinationPath: "/tmp/input"}}
+	mounts := []corev1.VolumeMount{{Name: "input-0", MountPath: "/tmp/input"}}
+	volumes := []corev1.Volume{b.StepVolume("input-0", "consumer", "input-0")}
+	mintedAfter := time.Now()
+	inits := b.BuildFetchInitContainers("consumer", inputs, volumes, mounts)
+	items := decodeEmbeddedBatchItems(t, strings.Join(inits[0].Command, " "))
+	verifier, _ := artifactcap.NewVerifier(cfg.ArtifactDaemonResolveCapabilityKey)
+	dest := "/artifact-store/steps/consumer/input-0"
+	withinAdmissionAndRetry := mintedAfter.Add(cfg.PodSchedulingTimeout + cfg.PodStartupTimeout + ArtifactResolveInitRetryBudget)
+	if err := verifier.VerifyResolve(items[0].Capability, "producer/output", dest, withinAdmissionAndRetry); err != nil {
+		t.Fatalf("capability expired inside configured admission/retry window: %v", err)
+	}
+	if err := verifier.VerifyResolve(items[0].Capability, "producer/output", dest, mintedAfter.Add(cfg.ArtifactDaemonResolveCapabilityTTL+time.Second)); err == nil {
+		t.Fatal("capability remained valid beyond its configured lifetime")
+	}
+}
+
+func TestDaemonSetBackend_BuildFetchInitContainersFailsClosedWithoutCapabilityKey(t *testing.T) {
+	cfg := testDaemonConfig()
+	cfg.ArtifactDaemonResolveCapabilityKey = nil
+	b := NewDaemonSetBackend(cfg, nil, nil)
+	inputs := []runtime.Input{{Artifact: &testArtifact{handle: "producer/output"}, DestinationPath: "/tmp/input"}}
+	mounts := []corev1.VolumeMount{{Name: "input-0", MountPath: "/tmp/input"}}
+	volumes := []corev1.Volume{b.StepVolume("input-0", "consumer", "input-0")}
+
+	inits := b.BuildFetchInitContainers("consumer", inputs, volumes, mounts)
+	if len(inits) != 1 {
+		t.Fatalf("init containers = %d, want explicit failing init", len(inits))
+	}
+	script := strings.Join(inits[0].Command, " ")
+	if !strings.Contains(script, "resolve capability key or lifetime configuration is invalid") || strings.Contains(script, "/resolve-batch") {
+		t.Fatalf("missing-key init did not fail closed: %s", script)
+	}
+}
+
+func TestDaemonSetBackend_BuildFetchInitContainersFailsClosedForShortCapabilityLifetime(t *testing.T) {
+	cfg := testDaemonConfig()
+	cfg.PodSchedulingTimeout = 15 * time.Minute
+	cfg.PodStartupTimeout = 5 * time.Minute
+	cfg.ArtifactDaemonResolveCapabilityTTL = 30 * time.Minute
+	b := NewDaemonSetBackend(cfg, nil, nil)
+	inputs := []runtime.Input{{Artifact: &testArtifact{handle: "producer/output"}, DestinationPath: "/tmp/input"}}
+	mounts := []corev1.VolumeMount{{Name: "input-0", MountPath: "/tmp/input"}}
+	volumes := []corev1.Volume{b.StepVolume("input-0", "consumer", "input-0")}
+
+	inits := b.BuildFetchInitContainers("consumer", inputs, volumes, mounts)
+	if len(inits) != 1 || !strings.Contains(strings.Join(inits[0].Command, " "), "lifetime configuration is invalid") {
+		t.Fatalf("short-lived capability configuration did not fail closed: %+v", inits)
 	}
 }
 
@@ -324,8 +725,9 @@ func TestDaemonSetBackend_BuildFetchInitContainers_LocatorHit(t *testing.T) {
 
 	// The batch command should use the locator's HostDir, not the volume handle.
 	cmdStr := strings.Join(inits[0].Command, " ")
-	if !strings.Contains(cmdStr, "producer-handle/result") {
-		t.Errorf("expected resolve command to use locator HostDir 'producer-handle/result', got: %s", cmdStr)
+	items := decodeEmbeddedBatchItems(t, cmdStr)
+	if len(items) != 1 || items[0].Key != "producer-handle/result" {
+		t.Errorf("expected resolve payload to use locator HostDir, got: %+v", items)
 	}
 }
 
@@ -1130,7 +1532,7 @@ func TestNilBackend_StepVolumeReturnsEmptyDir(t *testing.T) {
 
 func TestDaemonSetBackend_DaemonResolveCommand_EmptyKey(t *testing.T) {
 	b := testBackend(nil)
-	cmd := b.daemonResolveCommand("", "/dest")
+	cmd := b.daemonResolveCommand("", "/dest", "/local-dest")
 	cmdStr := strings.Join(cmd, " ")
 	if !strings.Contains(cmdStr, "exit 1") {
 		t.Errorf("expected exit 1 for empty key, got: %s", cmdStr)
@@ -1139,22 +1541,41 @@ func TestDaemonSetBackend_DaemonResolveCommand_EmptyKey(t *testing.T) {
 
 func TestDaemonSetBackend_DaemonResolveCommand_ValidKey(t *testing.T) {
 	b := testBackend(nil)
-	cmd := b.daemonResolveCommand("handle/result", "/dest/path")
+	cmd := b.daemonResolveCommand("handle/result", "/dest/path", "/local-dest")
 	cmdStr := strings.Join(cmd, " ")
-	if !strings.Contains(cmdStr, "handle/result") {
-		t.Errorf("expected key in command, got: %s", cmdStr)
+	var payload batchItem
+	if err := json.Unmarshal(decodeEmbeddedPayload(t, cmdStr), &payload); err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(cmdStr, "/dest/path") {
-		t.Errorf("expected dest in command, got: %s", cmdStr)
+	if payload.Key != "handle/result" || payload.Dest != "/dest/path" || payload.Capability == "" {
+		t.Errorf("unexpected resolve payload: %+v", payload)
 	}
 	if !strings.Contains(cmdStr, "/resolve") {
 		t.Errorf("expected /resolve endpoint in command, got: %s", cmdStr)
 	}
 }
 
+func TestDaemonSetBackend_DaemonResolveCommandDoesNotInterpolateOperationIntoShell(t *testing.T) {
+	b := testBackend(nil)
+	key := "handle/' ; touch /tmp/injected #"
+	dest := "/dest/' ; touch /tmp/also-injected #"
+	localDest := "/local/' ; touch /tmp/local-injected #"
+	script := strings.Join(b.daemonResolveCommand(key, dest, localDest), " ")
+	if strings.Contains(script, key) || strings.Contains(script, dest) || strings.Contains(script, localDest) {
+		t.Fatalf("operation was interpolated into shell source: %s", script)
+	}
+	var payload batchItem
+	if err := json.Unmarshal(decodeEmbeddedPayload(t, script), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Key != key || payload.Dest != dest {
+		t.Fatalf("decoded operation = %+v", payload)
+	}
+}
+
 func TestDaemonSetBackend_DaemonResolveCommand_Timeout180s(t *testing.T) {
 	b := testBackend(nil)
-	cmd := b.daemonResolveCommand("handle/result", "/dest/path")
+	cmd := b.daemonResolveCommand("handle/result", "/dest/path", "/local-dest")
 	cmdStr := strings.Join(cmd, " ")
 
 	// Must use 180s timeout to accommodate cross-node large artifact transfers.
@@ -1172,7 +1593,7 @@ func TestDaemonSetBackend_DaemonResolveCommand_DefaultPort(t *testing.T) {
 	cfg.ArtifactDaemonPort = 0
 	b := NewDaemonSetBackend(cfg, nil, nil)
 
-	cmd := b.daemonResolveCommand("key", "/dest")
+	cmd := b.daemonResolveCommand("key", "/dest", "/local-dest")
 	cmdStr := strings.Join(cmd, " ")
 	if !strings.Contains(cmdStr, "7780") {
 		t.Errorf("expected default port 7780, got: %s", cmdStr)

@@ -19,6 +19,16 @@ const (
 	// an Unschedulable pod to be scheduled before failing the task.
 	DefaultPodSchedulingTimeout = 15 * time.Minute
 
+	// DefaultArtifactResolveCapabilityTTL covers the bounded pod admission and
+	// init retry windows while remaining short-lived relative to build history.
+	DefaultArtifactResolveCapabilityTTL = 2 * time.Hour
+
+	// ArtifactResolveInitRetryBudget matches ten wget attempts at 180 seconds
+	// plus bounded backoff in the generated init script.
+	ArtifactResolveInitRetryBudget = 31 * time.Minute
+
+	artifactResolveExpirySafetyMargin = 5 * time.Minute
+
 	// workerLabelKey is the Pod label used to identify Pods managed by a
 	// particular Concourse K8s worker.
 	workerLabelKey = "concourse.ci/worker"
@@ -184,6 +194,16 @@ type Config struct {
 	// ArtifactDaemonTLSEnabled indicates whether TLS is enabled for daemon
 	// communication. Derived from the presence of TLS cert/key/CA paths.
 	ArtifactDaemonTLSEnabled bool
+
+	// ArtifactDaemonResolveCapabilityKey is the 32-byte HMAC key used only by
+	// the ATC to mint narrowly-scoped resolve capabilities for init containers.
+	// It is copied into an immutable signer when the storage backend is built.
+	ArtifactDaemonResolveCapabilityKey []byte
+
+	// ArtifactDaemonResolveCapabilityTTL is the lifetime of resolve tokens
+	// minted into a pod. It must exceed scheduling, startup, retry, and skew
+	// bounds so a pod admitted within its configured lifetime can initialize.
+	ArtifactDaemonResolveCapabilityTTL time.Duration
 }
 
 // ImageRegistryConfig holds configuration for a container image registry
@@ -206,10 +226,31 @@ func NewConfig(namespace, kubeconfigPath string) Config {
 		namespace = "default"
 	}
 	return Config{
-		Namespace:         namespace,
-		KubeconfigPath:    kubeconfigPath,
-		PodStartupTimeout: DefaultPodStartupTimeout,
+		Namespace:                          namespace,
+		KubeconfigPath:                     kubeconfigPath,
+		PodStartupTimeout:                  DefaultPodStartupTimeout,
+		PodSchedulingTimeout:               DefaultPodSchedulingTimeout,
+		ArtifactDaemonResolveCapabilityTTL: DefaultArtifactResolveCapabilityTTL,
 	}
+}
+
+func MinimumArtifactResolveCapabilityTTL(schedulingTimeout, startupTimeout time.Duration) (time.Duration, error) {
+	if schedulingTimeout < 0 || startupTimeout < 0 {
+		return 0, fmt.Errorf("pod scheduling and startup timeouts must not be negative")
+	}
+	minimum := schedulingTimeout + startupTimeout
+	if minimum < schedulingTimeout {
+		return 0, fmt.Errorf("artifact resolve capability lifetime bound overflows")
+	}
+	minimum += ArtifactResolveInitRetryBudget
+	if minimum < ArtifactResolveInitRetryBudget {
+		return 0, fmt.Errorf("artifact resolve capability lifetime bound overflows")
+	}
+	minimum += artifactResolveExpirySafetyMargin
+	if minimum < artifactResolveExpirySafetyMargin {
+		return 0, fmt.Errorf("artifact resolve capability lifetime bound overflows")
+	}
+	return minimum, nil
 }
 
 // NewClientset creates a Kubernetes clientset from the Config. If

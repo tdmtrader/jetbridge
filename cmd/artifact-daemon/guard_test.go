@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -114,7 +115,7 @@ func TestResolve_HoldsReadGuardDuringCopy(t *testing.T) {
 	dest := filepath.Join(storagePath, "steps", "test-resolve-destinations", "guarded")
 	resolved := make(chan resolveResponse, 1)
 	go func() {
-		resolved <- srv.resolveOne(context.Background(), "handle-y/output", dest)
+		resolved <- srv.resolveOne(context.Background(), "handle-y/output", dest, "")
 	}()
 
 	select {
@@ -159,5 +160,29 @@ func TestReadGuard_IsKeyedPerHandle(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("sweep of handle-b blocked behind read of handle-a")
+	}
+}
+
+func TestReadGuard_ContextCancellationDoesNotRaceTimerDrain(t *testing.T) {
+	guard := NewReadGuard()
+	release := guard.BeginSweep("blocked")
+	defer release()
+
+	for range 200 {
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() {
+			_, err := guard.BeginReadContext(ctx, "blocked")
+			done <- err
+		}()
+		time.AfterFunc(time.Microsecond, cancel)
+		select {
+		case err := <-done:
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("guard cancellation = %v, want context.Canceled", err)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("guard cancellation blocked racing its polling timer")
+		}
 	}
 }

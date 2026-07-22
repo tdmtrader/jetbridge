@@ -29,6 +29,8 @@ func (*compositionContentStore) DeleteAll(context.Context, snapshot.Digest) erro
 func TestAgentSnapshotComponentsAreComposedOnceWithExplicitConnection(t *testing.T) {
 	command := &RunCommand{}
 	command.AgentSnapshots.Enabled = true
+	command.AgentSnapshots.MaxBytes = 17
+	command.AgentSnapshots.MaxFiles = 3
 	wantDaemon := &jetbridge.DaemonClient{}
 	wantStore := &compositionContentStore{}
 	var calls int
@@ -51,6 +53,9 @@ func TestAgentSnapshotComponentsAreComposedOnceWithExplicitConnection(t *testing
 	}
 	if command.agentSnapshotDaemonClient != wantDaemon || command.agentSnapshotContentStore != wantStore {
 		t.Fatal("composition did not retain exact daemon/store identity")
+	}
+	if command.agentSnapshotArchiveLimits != (snapshot.ArchiveLimits{MaxContentBytes: 17, MaxEntries: 3}) {
+		t.Fatalf("retained archive limits = %#v", command.agentSnapshotArchiveLimits)
 	}
 }
 
@@ -79,5 +84,8 @@ func TestAgentSnapshotCompositionFailureIsFailClosed(t *testing.T) {
 	}
 	if command.agentSnapshotDaemonClient != nil || command.agentSnapshotContentStore != nil {
 		t.Fatal("failed composition published partial components")
+	}
+	if command.agentSnapshotArchiveLimits != (snapshot.ArchiveLimits{}) {
+		t.Fatal("failed composition published snapshot admission limits")
 	}
 }

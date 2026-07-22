@@ -3,6 +3,7 @@ package atccmd_test
 import (
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/atc"
@@ -61,6 +62,12 @@ func (s *CommandSuite) TestKubernetesFlags() {
 	kubeconfigOpt := runCmd.FindOptionByLongName("kubernetes-kubeconfig")
 	s.NotNil(kubeconfigOpt, "--kubernetes-kubeconfig flag should exist")
 	s.Contains(kubeconfigOpt.Description, "kubeconfig")
+
+	resolveKey := runCmd.FindOptionByLongName("kubernetes-artifact-daemon-resolve-capability-key")
+	s.NotNil(resolveKey, "resolve capability key file flag should exist")
+	resolveTTL := runCmd.FindOptionByLongName("kubernetes-artifact-daemon-resolve-capability-ttl")
+	s.NotNil(resolveTTL, "resolve capability lifetime flag should exist")
+	s.Equal([]string{"2h"}, resolveTTL.Default)
 }
 
 func (s *CommandSuite) TestAgentSnapshotFlagDefaults() {
@@ -144,6 +151,7 @@ func (s *CommandSuite) TestEnabledAgentSnapshotsRequireK8sDaemonAndCompleteMTLS(
 	command.Kubernetes.ArtifactDaemonTLSCert = "/cert"
 	command.Kubernetes.ArtifactDaemonTLSKey = "/key"
 	command.Kubernetes.ArtifactDaemonTLSCACert = "/ca"
+	command.Kubernetes.ArtifactDaemonResolveCapabilityKey = "/resolve-capability/key"
 	s.NoError(atccmd.ValidateAgentSnapshotsForTest(command))
 }
 
@@ -192,9 +200,35 @@ func (s *CommandSuite) TestK8sRuntimeAcceptsConfiguredDaemonHostPath() {
 	cmd := &atccmd.RunCommand{}
 	cmd.Kubernetes.Namespace = "concourse"
 	cmd.Kubernetes.ArtifactDaemonHostPath = "/var/concourse/artifacts"
+	cmd.Kubernetes.ArtifactDaemonResolveCapabilityKey = "/resolve-capability/key"
+	cmd.Kubernetes.ArtifactDaemonResolveCapabilityTTL = 2 * time.Hour
 
 	err := atccmd.ValidateK8sRuntimeForTest(cmd)
 	s.NoError(err, "expected validation to pass when DaemonSet host path is set")
+}
+
+func (s *CommandSuite) TestK8sRuntimeRejectsCapabilityTTLShorterThanAdmissionAndRetryBound() {
+	cmd := &atccmd.RunCommand{}
+	cmd.Kubernetes.Namespace = "concourse"
+	cmd.Kubernetes.ArtifactDaemonHostPath = "/var/concourse/artifacts"
+	cmd.Kubernetes.ArtifactDaemonResolveCapabilityKey = "/resolve-capability/key"
+	cmd.Kubernetes.PodSchedulingTimeout = 2 * time.Hour
+	cmd.Kubernetes.PodStartupTimeout = time.Hour
+	cmd.Kubernetes.ArtifactDaemonResolveCapabilityTTL = 3 * time.Hour
+
+	err := atccmd.ValidateK8sRuntimeForTest(cmd)
+	s.Error(err)
+	s.Contains(err.Error(), "resolve-capability-ttl")
+}
+
+func (s *CommandSuite) TestK8sRuntimeRequiresResolveCapabilityKey() {
+	cmd := &atccmd.RunCommand{}
+	cmd.Kubernetes.Namespace = "concourse"
+	cmd.Kubernetes.ArtifactDaemonHostPath = "/var/concourse/artifacts"
+
+	err := atccmd.ValidateK8sRuntimeForTest(cmd)
+	s.Error(err)
+	s.Contains(err.Error(), "kubernetes-artifact-daemon-resolve-capability-key")
 }
 
 func (s *CommandSuite) TestK8sRuntimeValidationSkippedWhenK8sDisabled() {

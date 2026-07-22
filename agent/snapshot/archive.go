@@ -27,6 +27,109 @@ const (
 
 const tarBlockBytes int64 = 512
 
+// ArchiveLimits are the logical admission limits for a snapshot archive.
+// They are intentionally distinct from the derived physical tar byte bound:
+// lowering MaxContentBytes to one byte must reject a two-byte file even though
+// both archives fit inside the tar transport envelope.
+type ArchiveLimits struct {
+	MaxContentBytes int64
+	MaxEntries      int64
+}
+
+func (limits ArchiveLimits) validate() error {
+	if limits.MaxContentBytes <= 0 {
+		return fmt.Errorf("snapshot: maximum content bytes must be positive")
+	}
+	if limits.MaxEntries <= 0 {
+		return fmt.Errorf("snapshot: maximum entries must be positive")
+	}
+	return nil
+}
+
+func (limits ArchiveLimits) CanonicalArchiveByteLimit() (int64, error) {
+	if err := limits.validate(); err != nil {
+		return 0, err
+	}
+	return CanonicalArchiveByteLimit(limits.MaxContentBytes, limits.MaxEntries)
+}
+
+// ValidateArchiveLimits streams an archive once and enforces the same logical
+// entry and regular-content accounting used by Canonicalizer. Implicit parent
+// directories count as entries, so a non-canonical nested path cannot evade an
+// entry limit by omitting directory headers.
+func ValidateArchiveLimits(ctx context.Context, source io.Reader, limits ArchiveLimits) error {
+	if source == nil {
+		return fmt.Errorf("snapshot: archive reader is required")
+	}
+	if err := limits.validate(); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	reader := tar.NewReader(contextReader{ctx: ctx, reader: source})
+	materialized := make(map[string]capturedEntry)
+	seenHeaders := make(map[string]struct{})
+	var contentBytes int64
+	for {
+		header, err := reader.Next()
+		if errors.Is(err, io.EOF) {
+			var trailing [1]byte
+			n, trailingErr := io.ReadFull(contextReader{ctx: ctx, reader: source}, trailing[:])
+			if n != 0 {
+				return fmt.Errorf("snapshot: archive contains trailing data after the tar terminator")
+			}
+			if errors.Is(trailingErr, io.EOF) {
+				return nil
+			}
+			return fmt.Errorf("snapshot: inspect archive terminator: %w", trailingErr)
+		}
+		if err != nil {
+			return fmt.Errorf("snapshot: read admitted archive: %w", err)
+		}
+		if err := validateHeader(header); err != nil {
+			return err
+		}
+		if _, exists := seenHeaders[header.Name]; exists {
+			return fmt.Errorf("snapshot: duplicate canonical path %q", header.Name)
+		}
+		seenHeaders[header.Name] = struct{}{}
+		kind := headerKind(header.Typeflag)
+		planned, err := planMaterialization(header.Name, kind, materialized)
+		if err != nil {
+			return err
+		}
+		if int64(len(materialized)) > limits.MaxEntries-int64(len(planned)) {
+			return fmt.Errorf("snapshot: archive exceeds entry limit of %d", limits.MaxEntries)
+		}
+		for _, entry := range planned {
+			materialized[entry.name] = capturedEntry{name: entry.name, kind: extractedDirectory}
+		}
+		materialized[header.Name] = capturedEntry{name: header.Name, kind: kind}
+
+		if kind == extractedSymlink {
+			if _, err := cleanSymlinkTarget(header.Name, header.Linkname); err != nil {
+				return err
+			}
+		}
+		if kind != extractedRegular {
+			continue
+		}
+		if contentBytes > limits.MaxContentBytes-header.Size {
+			return fmt.Errorf("snapshot: archive exceeds regular content limit of %d bytes", limits.MaxContentBytes)
+		}
+		contentBytes += header.Size
+		copied, err := io.Copy(io.Discard, contextReader{ctx: ctx, reader: reader})
+		if err != nil {
+			return fmt.Errorf("snapshot: read regular content for %q: %w", header.Name, err)
+		}
+		if copied != header.Size {
+			return fmt.Errorf("snapshot: regular file %q is truncated: copied %d of %d bytes", header.Name, copied, header.Size)
+		}
+	}
+}
+
 // CanonicalArchiveByteLimit derives a checked transport bound from the
 // logical canonicalizer limits. Canonical GNU tar includes headers, padding,
 // optional GNU long-name/long-link records, and a two-block trailer in

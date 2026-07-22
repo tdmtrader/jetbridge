@@ -65,6 +65,30 @@ func TestSnapshotIdenticalPUTRetriesFailedParentSync(t *testing.T) {
 	}
 }
 
+func TestSnapshotFirstPUTFsyncsNamespaceParentsInOrder(t *testing.T) {
+	storagePath := t.TempDir()
+	server := NewServer(lagertest.NewTestLogger("snapshot-namespace-sync"), storagePath, "node")
+	var synced []string
+	server.syncSnapshotDirectory = func(root *os.Root, name string) error {
+		synced = append(synced, name)
+		return nil
+	}
+	content := []byte("first durable content")
+	target, _ := internalSnapshotPath(storagePath, content)
+	if got := serveSnapshotRequest(server, http.MethodPut, target, bytes.NewReader(content)).Code; got != http.StatusCreated {
+		t.Fatalf("PUT = %d, want 201", got)
+	}
+	want := []string{".", "snapshots", "snapshots/sha256", "snapshots/sha256"}
+	if len(synced) != len(want) {
+		t.Fatalf("fsync sequence = %v, want %v", synced, want)
+	}
+	for i := range want {
+		if synced[i] != want[i] {
+			t.Fatalf("fsync sequence = %v, want %v", synced, want)
+		}
+	}
+}
+
 func TestSnapshotMissingDELETERetriesFailedParentSync(t *testing.T) {
 	storagePath := t.TempDir()
 	server := NewServer(lagertest.NewTestLogger("snapshot-delete-sync"), storagePath, "node")

@@ -48,6 +48,7 @@ func TestSnapshotNamespaceIsReservedBeforeGenericArtifactDispatch(t *testing.T) 
 		{http.MethodDelete, "/artifacts/snapshots/sha256/not-a-digest.tar"},
 		{http.MethodPut, "/artifacts/snapshots//sha256/" + digest + ".tar"},
 		{http.MethodDelete, "/artifacts/snapshots%2fsha256%2f" + digest + ".tar"},
+		{http.MethodPut, "/artifacts/.artifact-daemon-staging/poison"},
 	} {
 		t.Run(tc.method+"_"+tc.path, func(t *testing.T) {
 			client := *ts.Client()
@@ -67,6 +68,38 @@ func TestSnapshotNamespaceIsReservedBeforeGenericArtifactDispatch(t *testing.T) 
 	stored, err := os.ReadFile(exactPath)
 	if err != nil || !bytes.Equal(stored, content) {
 		t.Fatalf("reserved snapshot changed: %q, %v", stored, err)
+	}
+}
+
+func TestArtifactKeysAcceptOnlyCanonicalUnicodePercentEncoding(t *testing.T) {
+	ts, storagePath := setupServer(t)
+	valid := boundaryRequest(t, ts.Client(), http.MethodPut, ts.URL+"/artifacts/steps/caf%C3%A9/output", strings.NewReader("unicode"))
+	if valid.StatusCode != http.StatusCreated {
+		t.Fatalf("canonical Unicode key status = %d, want 201", valid.StatusCode)
+	}
+	if got, err := os.ReadFile(filepath.Join(storagePath, "steps", "café", "output")); err != nil || string(got) != "unicode" {
+		t.Fatalf("Unicode artifact = %q, %v", got, err)
+	}
+
+	for _, encoded := range []string{
+		"steps/caf%c3%a9/other",
+		"steps/%63afe/other",
+		"steps/one%2Ftwo/other",
+		"steps/%2e%2e/other",
+		"steps/%ZZ/other",
+	} {
+		req, err := http.NewRequest(http.MethodPut, ts.URL+"/artifacts/"+encoded, strings.NewReader("poison"))
+		if err != nil {
+			continue // malformed URL was rejected even before the daemon boundary
+		}
+		resp, err := ts.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("noncanonical key %q status = %d, want 400", encoded, resp.StatusCode)
+		}
 	}
 }
 

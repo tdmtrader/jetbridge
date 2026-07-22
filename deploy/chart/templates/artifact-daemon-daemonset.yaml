@@ -1,6 +1,7 @@
 {{- if .Values.artifactDaemon.enabled }}
 {{- $tlsEnabled := .Values.artifactDaemon.tls.enabled | default false }}
 {{- $tlsSecretName := .Values.artifactDaemon.tls.existingSecret | default (printf "%s-artifact-daemon-tls" (include "concourse.fullname" .)) }}
+{{- $resolveCapabilitySecretName := .Values.artifactDaemon.resolveCapability.existingSecret | default (printf "%s-artifact-daemon-resolve-capability" (include "concourse.fullname" .)) }}
 {{- /*
    Resolve mirror.replicas: numbers pass through (including the explicit
    value 0 = disabled); the literal "all" maps to -1 (the daemon's flag
@@ -65,6 +66,9 @@ spec:
             - --namespace={{ include "concourse.kubernetesNamespace" . }}
             - --service-name={{ include "concourse.artifactDaemonServiceName" . }}
             - --label-key=concourse.dev/artifact-cache
+            - --resolve-capability-key=/etc/concourse/resolve-capability/resolve.key
+            - --resolve-max-concurrent={{ .Values.artifactDaemon.resolve.maxConcurrent | default 32 }}
+            - --resolve-timeout={{ .Values.artifactDaemon.resolve.timeout | default "30m" }}
             {{- if $tlsEnabled }}
             - --tls-cert=/etc/concourse/daemon-tls/tls.crt
             - --tls-key=/etc/concourse/daemon-tls/tls.key
@@ -123,6 +127,9 @@ spec:
           volumeMounts:
             - name: artifact-storage
               mountPath: {{ .Values.artifactDaemon.hostPath | default "/var/concourse/artifacts" }}
+            - name: resolve-capability
+              mountPath: /etc/concourse/resolve-capability
+              readOnly: true
             {{- if $tlsEnabled }}
             - name: daemon-tls
               mountPath: /etc/concourse/daemon-tls
@@ -133,6 +140,9 @@ spec:
           hostPath:
             path: {{ .Values.artifactDaemon.hostPath | default "/var/concourse/artifacts" }}
             type: DirectoryOrCreate
+        - name: resolve-capability
+          secret:
+            secretName: {{ $resolveCapabilitySecretName }}
         {{- if $tlsEnabled }}
         - name: daemon-tls
           secret:
