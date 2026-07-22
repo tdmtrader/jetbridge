@@ -6,8 +6,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"reflect"
 	"regexp"
 	"sort"
 	"strconv"
@@ -16,6 +18,10 @@ import (
 )
 
 var typeRefPattern = regexp.MustCompile(`^[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*)*/v[1-9][0-9]*$`)
+
+// ErrInternalOnly marks process-local values that deliberately have no JSON
+// representation because they contain private filesystem paths.
+var ErrInternalOnly = errors.New("snapshot: internal-only value has no JSON representation")
 
 // TypeRef is a versioned, server-validated snapshot contract name.
 type TypeRef string
@@ -852,25 +858,11 @@ func (o CandidateOutput) Clone() CandidateOutput {
 }
 
 func (o CandidateOutput) MarshalJSON() ([]byte, error) {
-	if err := o.Validate(); err != nil {
-		return nil, err
-	}
-	type wire CandidateOutput
-	return json.Marshal(wire(o))
+	return nil, fmt.Errorf("%w: CandidateOutput", ErrInternalOnly)
 }
 
 func (o *CandidateOutput) UnmarshalJSON(data []byte) error {
-	type wire CandidateOutput
-	var value wire
-	if err := strictUnmarshal(data, &value); err != nil {
-		return err
-	}
-	parsed := CandidateOutput(value)
-	if err := parsed.Validate(); err != nil {
-		return err
-	}
-	*o = parsed.Clone()
-	return nil
+	return fmt.Errorf("%w: CandidateOutput", ErrInternalOnly)
 }
 
 type SealedOutput struct {
@@ -928,6 +920,7 @@ type SealCommitContext struct {
 	WorkflowRunID        *WorkflowRunID         `json:"workflow_run_id,omitempty"`
 	InputOrder           []string               `json:"input_order"`
 	Inputs               map[string]SnapshotRef `json:"inputs"`
+	ExpectedOutputs      []Port                 `json:"expected_outputs"`
 }
 
 func (c SealCommitContext) Validate() error {
@@ -974,7 +967,7 @@ func (c SealCommitContext) Validate() error {
 		}
 		seenInputs[name] = struct{}{}
 	}
-	return nil
+	return ValidatePorts(c.ExpectedOutputs)
 }
 
 func (c SealCommitContext) Clone() SealCommitContext {
@@ -982,6 +975,7 @@ func (c SealCommitContext) Clone() SealCommitContext {
 	c.WorkflowRunID = cloneWorkflowRunID(c.WorkflowRunID)
 	c.InputOrder = append([]string(nil), c.InputOrder...)
 	c.Inputs = cloneSnapshotRefs(c.Inputs)
+	c.ExpectedOutputs = append([]Port(nil), c.ExpectedOutputs...)
 	return c
 }
 
@@ -1022,6 +1016,7 @@ type SealRequest struct {
 	WorkflowRunID        *WorkflowRunID         `json:"workflow_run_id,omitempty"`
 	InputOrder           []string               `json:"input_order"`
 	Inputs               map[string]SnapshotRef `json:"inputs"`
+	OutputDeclarations   []Port                 `json:"output_declarations"`
 	Outputs              []CandidateOutput      `json:"outputs"`
 }
 
@@ -1029,17 +1024,39 @@ func (r SealRequest) Validate() error {
 	if err := r.commitContext().Validate(); err != nil {
 		return err
 	}
-	if len(r.Outputs) == 0 {
-		return fmt.Errorf("snapshot: at least one output is required")
+	if len(r.OutputDeclarations) == 0 {
+		return fmt.Errorf("snapshot: at least one output declaration is required")
 	}
-	ports := make([]Port, len(r.Outputs))
+	if err := ValidatePorts(r.OutputDeclarations); err != nil {
+		return err
+	}
+	declarations := make(map[string]Port, len(r.OutputDeclarations))
+	for _, declaration := range r.OutputDeclarations {
+		declarations[declaration.Name] = declaration
+	}
+	produced := make(map[string]struct{}, len(r.Outputs))
 	for i, output := range r.Outputs {
 		if err := output.Validate(); err != nil {
 			return fmt.Errorf("snapshot: output %d: %w", i, err)
 		}
-		ports[i] = output.Port
+		declaration, found := declarations[output.Port.Name]
+		if !found {
+			return fmt.Errorf("snapshot: candidate output %q is undeclared", output.Port.Name)
+		}
+		if output.Port.Type != declaration.Type || output.Port.Optional != declaration.Optional {
+			return fmt.Errorf("snapshot: candidate output %q does not match its declaration", output.Port.Name)
+		}
+		if _, duplicate := produced[output.Port.Name]; duplicate {
+			return fmt.Errorf("snapshot: duplicate candidate output %q", output.Port.Name)
+		}
+		produced[output.Port.Name] = struct{}{}
 	}
-	return ValidatePorts(ports)
+	for _, declaration := range r.OutputDeclarations {
+		if _, found := produced[declaration.Name]; !found && !declaration.Optional {
+			return fmt.Errorf("snapshot: required output %q was not produced", declaration.Name)
+		}
+	}
+	return nil
 }
 
 func (r SealRequest) commitContext() SealCommitContext {
@@ -1055,7 +1072,12 @@ func (r SealRequest) CommitContext() (SealCommitContext, error) {
 	if err := r.Validate(); err != nil {
 		return SealCommitContext{}, err
 	}
-	return r.commitContext().Clone(), nil
+	context := r.commitContext()
+	context.ExpectedOutputs = make([]Port, len(r.Outputs))
+	for i, output := range r.Outputs {
+		context.ExpectedOutputs[i] = output.Port
+	}
+	return context.Clone(), nil
 }
 
 func (r SealRequest) Clone() SealRequest {
@@ -1063,30 +1085,17 @@ func (r SealRequest) Clone() SealRequest {
 	r.WorkflowRunID = cloneWorkflowRunID(r.WorkflowRunID)
 	r.InputOrder = append([]string(nil), r.InputOrder...)
 	r.Inputs = cloneSnapshotRefs(r.Inputs)
+	r.OutputDeclarations = append([]Port(nil), r.OutputDeclarations...)
 	r.Outputs = cloneCandidates(r.Outputs)
 	return r
 }
 
 func (r SealRequest) MarshalJSON() ([]byte, error) {
-	if err := r.Validate(); err != nil {
-		return nil, err
-	}
-	type wire SealRequest
-	return json.Marshal(wire(r))
+	return nil, fmt.Errorf("%w: SealRequest", ErrInternalOnly)
 }
 
 func (r *SealRequest) UnmarshalJSON(data []byte) error {
-	type wire SealRequest
-	var value wire
-	if err := strictUnmarshal(data, &value); err != nil {
-		return err
-	}
-	parsed := SealRequest(value)
-	if err := parsed.Validate(); err != nil {
-		return err
-	}
-	*r = parsed.Clone()
-	return nil
+	return fmt.Errorf("%w: SealRequest", ErrInternalOnly)
 }
 
 type OutputSealer interface {
@@ -1117,6 +1126,24 @@ func validateRawMessage(value json.RawMessage) error {
 
 func cloneRaw(value json.RawMessage) json.RawMessage {
 	return append(json.RawMessage(nil), value...)
+}
+
+func rawJSONEqual(left, right json.RawMessage) bool {
+	if len(left) == 0 || len(right) == 0 {
+		return len(left) == len(right)
+	}
+	decode := func(value json.RawMessage) (any, error) {
+		decoder := json.NewDecoder(bytes.NewReader(value))
+		decoder.UseNumber()
+		var decoded any
+		if err := decoder.Decode(&decoded); err != nil {
+			return nil, err
+		}
+		return decoded, nil
+	}
+	leftValue, leftErr := decode(left)
+	rightValue, rightErr := decode(right)
+	return leftErr == nil && rightErr == nil && reflect.DeepEqual(leftValue, rightValue)
 }
 
 func cloneTime(value *time.Time) *time.Time {

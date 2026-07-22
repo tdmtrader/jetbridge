@@ -55,7 +55,7 @@ func TestAggregateJSONBoundariesRejectInvalidNestedValuesAndUnknownFields(t *tes
 		{name: "port unknown field", raw: `{"name":"out","type":"review/v1","extra":true}`, target: new(Port)},
 		{name: "snapshot ref digest", raw: `{"id":"1","type":"review/v1","digest":"sha256:nope"}`, target: new(SnapshotRef)},
 		{name: "retention class", raw: `{"class":"grant","reason":"authorization is not retention"}`, target: new(RetentionSpec)},
-		{name: "seal commit missing outputs", raw: `{"context":{"build_id":1,"team_id":1,"team_name":"main","created_by":"alice","plan_id":"p","attempt":"1","step_kind":"task","step_name":"s","input_order":[],"inputs":{}},"outputs":[]}`, target: new(SealCommit)},
+		{name: "seal commit missing outputs", raw: `{"context":{"build_id":1,"team_id":1,"team_name":"main","created_by":"alice","plan_id":"p","attempt":"1","step_kind":"task","step_name":"s","input_order":[],"inputs":{},"expected_outputs":[{"name":"out","type":"opaque/v1"}]},"outputs":[]}`, target: new(SealCommit)},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -75,7 +75,8 @@ func TestSealCommitUsesOnlyPrePersistenceCorrelatedDTOs(t *testing.T) {
 		BuildID: 7, TeamID: 8, TeamName: "main", CreatedBy: "alice", PlanID: "plan",
 		Attempt: "1", StepKind: "task", StepName: "review", InputOrder: []string{"before"},
 		WorkflowDefinitionID: &workflowDefinitionID, WorkflowRunID: &workflowRunID,
-		Inputs: map[string]SnapshotRef{"before": {ID: 1, Type: TypeRef("repository/v1"), Digest: digest}},
+		Inputs:             map[string]SnapshotRef{"before": {ID: 1, Type: TypeRef("repository/v1"), Digest: digest}},
+		OutputDeclarations: []Port{{Name: "review", Type: TypeRef("review/v1")}},
 		Outputs: []CandidateOutput{{
 			Port: Port{Name: "review", Type: TypeRef("review/v1")}, ArchivePath: "/private/spool/review.tar",
 			Digest: digest, ByteSize: 42, FileCount: 1, Representation: "application/x-tar", IntrinsicMetadata: json.RawMessage(`{"schema":1}`),
@@ -117,6 +118,7 @@ func TestSealCommitUsesOnlyPrePersistenceCorrelatedDTOs(t *testing.T) {
 	clone := commit.Clone()
 	clone.Context.InputOrder[0] = "changed"
 	clone.Context.Inputs["before"] = SnapshotRef{ID: 2, Type: TypeRef("repository/v1"), Digest: digest}
+	clone.Context.ExpectedOutputs[0].Name = "changed"
 	*clone.Context.WorkflowDefinitionID = 99
 	*clone.Context.WorkflowRunID = 99
 	clone.Outputs[0].IntrinsicMetadata[2] = 'X'
@@ -124,7 +126,7 @@ func TestSealCommitUsesOnlyPrePersistenceCorrelatedDTOs(t *testing.T) {
 	clone.Outputs[0].Retention[0].Actor = "changed"
 	*clone.Outputs[0].Retention[0].ExpiresAt = now.Add(2 * time.Hour)
 	clone.Outputs[0].SourceMetadata[2] = 'X'
-	if commit.Context.InputOrder[0] != "before" || commit.Context.Inputs["before"].ID != 1 || *commit.Context.WorkflowDefinitionID != 12 || *commit.Context.WorkflowRunID != 13 || string(commit.Outputs[0].IntrinsicMetadata) != `{"schema":1}` || commit.Outputs[0].Locations[0].Node != "worker-1" || commit.Outputs[0].Retention[0].Actor != "build/7" || !commit.Outputs[0].Retention[0].ExpiresAt.Equal(now.Add(time.Hour)) || string(commit.Outputs[0].SourceMetadata) != `{"adapter":"task"}` {
+	if commit.Context.InputOrder[0] != "before" || commit.Context.Inputs["before"].ID != 1 || commit.Context.ExpectedOutputs[0].Name != "review" || *commit.Context.WorkflowDefinitionID != 12 || *commit.Context.WorkflowRunID != 13 || string(commit.Outputs[0].IntrinsicMetadata) != `{"schema":1}` || commit.Outputs[0].Locations[0].Node != "worker-1" || commit.Outputs[0].Retention[0].Actor != "build/7" || !commit.Outputs[0].Retention[0].ExpiresAt.Equal(now.Add(time.Hour)) || string(commit.Outputs[0].SourceMetadata) != `{"adapter":"task"}` {
 		t.Fatalf("caller mutation changed original commit: %#v", commit)
 	}
 
@@ -155,6 +157,145 @@ func TestCandidateOutputRequiresPrivateArchivePath(t *testing.T) {
 	}
 }
 
+func TestSealRequestValidatesDeclaredRequiredAndOptionalOutputs(t *testing.T) {
+	digest := mustTestDigest(t)
+	requiredA := Port{Name: "first", Type: TypeRef("opaque/v1")}
+	requiredB := Port{Name: "second", Type: TypeRef("review/v1")}
+	optional := Port{Name: "notes", Type: TypeRef("opaque/v1"), Optional: true}
+	candidate := func(port Port) CandidateOutput {
+		return CandidateOutput{
+			Port: port, ArchivePath: "/tmp/" + port.Name + ".tar", Digest: digest,
+			ByteSize: 10, FileCount: 1, Representation: "application/x-tar",
+		}
+	}
+	base := SealRequest{
+		BuildID: 1, TeamID: 1, TeamName: "main", CreatedBy: "alice", PlanID: "p",
+		Attempt: "1", StepKind: "task", StepName: "s", Inputs: map[string]SnapshotRef{}, InputOrder: []string{},
+		OutputDeclarations: []Port{requiredA, optional, requiredB},
+		Outputs:            []CandidateOutput{candidate(requiredA), candidate(requiredB)},
+	}
+	if err := base.Validate(); err != nil {
+		t.Fatalf("required outputs with absent optional output: %v", err)
+	}
+	context, err := base.CommitContext()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := context.ExpectedOutputs, []Port{requiredA, requiredB}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("expected outputs = %#v, want actual candidates %#v", got, want)
+	}
+
+	withOptional := base.Clone()
+	withOptional.Outputs = append(withOptional.Outputs, candidate(optional))
+	if err := withOptional.Validate(); err != nil {
+		t.Fatalf("present optional output: %v", err)
+	}
+	context, err = withOptional.CommitContext()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := context.ExpectedOutputs, []Port{requiredA, requiredB, optional}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("expected outputs with optional = %#v, want %#v", got, want)
+	}
+	onlyOptional := base.Clone()
+	onlyOptional.OutputDeclarations = []Port{optional}
+	onlyOptional.Outputs = nil
+	if err := onlyOptional.Validate(); err != nil {
+		t.Fatalf("all-optional absent output set: %v", err)
+	}
+	context, err = onlyOptional.CommitContext()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(context.ExpectedOutputs) != 0 {
+		t.Fatalf("absent optional output unexpectedly committed: %#v", context.ExpectedOutputs)
+	}
+	if err := (SealCommit{Context: context}).Validate(); err != nil {
+		t.Fatalf("empty actual commit for absent optional output: %v", err)
+	}
+
+	for name, mutate := range map[string]func(*SealRequest){
+		"missing required": func(request *SealRequest) { request.Outputs = request.Outputs[:1] },
+		"undeclared": func(request *SealRequest) {
+			request.Outputs[1].Port = Port{Name: "extra", Type: TypeRef("review/v1")}
+		},
+		"type mismatch": func(request *SealRequest) { request.Outputs[1].Port.Type = TypeRef("opaque/v1") },
+		"optionality mismatch": func(request *SealRequest) {
+			request.Outputs = append(request.Outputs, candidate(Port{Name: optional.Name, Type: optional.Type}))
+		},
+		"duplicate candidate": func(request *SealRequest) { request.Outputs = append(request.Outputs, request.Outputs[0]) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			request := base.Clone()
+			mutate(&request)
+			if err := request.Validate(); err == nil {
+				t.Fatalf("SealRequest.Validate accepted %s", name)
+			}
+		})
+	}
+}
+
+func TestSealCommitRequiresEveryActualOutputExactlyOnce(t *testing.T) {
+	digest := mustTestDigest(t)
+	commit := validSealCommit(t, digest)
+	second := commit.Outputs[0].Clone()
+	second.ClientKey = "second"
+	second.Port = Port{Name: "second", Type: TypeRef("review/v1")}
+	second.StagedUploadID = 100
+	commit.Context.ExpectedOutputs = []Port{commit.Outputs[0].Port, second.Port}
+
+	if err := commit.Validate(); err == nil {
+		t.Fatal("two-required-output context accepted a one-output commit")
+	}
+	commit.Outputs = append(commit.Outputs, second)
+	commit.Outputs[0], commit.Outputs[1] = commit.Outputs[1], commit.Outputs[0]
+	if err := commit.Validate(); err != nil {
+		t.Fatalf("exact output permutation: %v", err)
+	}
+
+	missing := commit.Clone()
+	missing.Outputs = missing.Outputs[:1]
+	if err := missing.Validate(); err == nil {
+		t.Fatal("commit accepted a missing expected output")
+	}
+	extra := commit.Clone()
+	extraOutput := extra.Outputs[0].Clone()
+	extraOutput.ClientKey = "extra"
+	extraOutput.Port.Name = "extra"
+	extra.Outputs = append(extra.Outputs, extraOutput)
+	if err := extra.Validate(); err == nil {
+		t.Fatal("commit accepted an extra output")
+	}
+}
+
+func TestCandidateAndSealRequestAreInternalOnlyJSONValues(t *testing.T) {
+	digest := mustTestDigest(t)
+	candidate := CandidateOutput{
+		Port: Port{Name: "out", Type: TypeRef("opaque/v1")}, ArchivePath: "/private/out.tar",
+		Digest: digest, ByteSize: 1, Representation: "application/x-tar",
+	}
+	request := SealRequest{
+		BuildID: 1, TeamID: 1, TeamName: "main", CreatedBy: "alice", PlanID: "p",
+		Attempt: "1", StepKind: "task", StepName: "s", InputOrder: []string{}, Inputs: map[string]SnapshotRef{},
+		OutputDeclarations: []Port{candidate.Port}, Outputs: []CandidateOutput{candidate},
+	}
+	for name, value := range map[string]any{"candidate": candidate, "seal request": request} {
+		t.Run(name+" marshal", func(t *testing.T) {
+			if _, err := json.Marshal(value); !errors.Is(err, ErrInternalOnly) {
+				t.Fatalf("json.Marshal error = %v, want ErrInternalOnly", err)
+			}
+		})
+	}
+	var decodedCandidate CandidateOutput
+	if err := json.Unmarshal([]byte(`{}`), &decodedCandidate); !errors.Is(err, ErrInternalOnly) {
+		t.Fatalf("candidate json.Unmarshal error = %v, want ErrInternalOnly", err)
+	}
+	var decodedRequest SealRequest
+	if err := json.Unmarshal([]byte(`{}`), &decodedRequest); !errors.Is(err, ErrInternalOnly) {
+		t.Fatalf("request json.Unmarshal error = %v, want ErrInternalOnly", err)
+	}
+}
+
 func TestSealCommitEnforcesPhysicalAndStageDigestConsistency(t *testing.T) {
 	digest := mustTestDigest(t)
 	other, err := ParseDigest("sha256:1123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
@@ -166,6 +307,7 @@ func TestSealCommitEnforcesPhysicalAndStageDigestConsistency(t *testing.T) {
 	second.ClientKey = "second"
 	second.Port.Name = "second"
 	base.Outputs = append(base.Outputs, second)
+	base.Context.ExpectedOutputs = append(base.Context.ExpectedOutputs, second.Port)
 
 	tests := map[string]func(*SealCommit){
 		"byte size":      func(commit *SealCommit) { commit.Outputs[1].ByteSize++ },
@@ -197,7 +339,8 @@ func TestSealRequestRequiresInputOrderToBeAnExactPermutation(t *testing.T) {
 			"first":  {ID: 1, Type: TypeRef("opaque/v1"), Digest: digest},
 			"second": {ID: 2, Type: TypeRef("opaque/v1"), Digest: digest},
 		},
-		Outputs: []CandidateOutput{{Port: Port{Name: "out", Type: TypeRef("opaque/v1")}, ArchivePath: "/tmp/out.tar", Digest: digest, ByteSize: 1, Representation: "application/x-tar"}},
+		OutputDeclarations: []Port{{Name: "out", Type: TypeRef("opaque/v1")}},
+		Outputs:            []CandidateOutput{{Port: Port{Name: "out", Type: TypeRef("opaque/v1")}, ArchivePath: "/tmp/out.tar", Digest: digest, ByteSize: 1, Representation: "application/x-tar"}},
 	}
 	for name, order := range map[string][]string{
 		"missing": {"first"}, "duplicate": {"first", "first"}, "unknown": {"first", "third"}, "whitespace order": {"first", " "},
@@ -387,6 +530,50 @@ func TestDigestStateAggregatesSemanticSnapshotsSharingPhysicalBytes(t *testing.T
 	}
 }
 
+func TestDigestStateValidatesCommitAgainstPersistedSemanticManifests(t *testing.T) {
+	digest := mustTestDigest(t)
+	output := validSealCommit(t, digest).Outputs[0]
+	createdAt := time.Date(2026, time.July, 21, 12, 0, 0, 0, time.UTC)
+	expired := DigestState{
+		Digest: digest,
+		Snapshots: []Snapshot{{
+			ID: 1, Type: output.Port.Type, Digest: digest,
+			ByteSize: output.ByteSize, FileCount: output.FileCount, Representation: output.Representation,
+			IntrinsicMetadata: cloneRaw(output.IntrinsicMetadata), ContentState: ContentStateExpired, CreatedAt: createdAt,
+		}},
+	}
+	if err := expired.ValidateCommit(output); err != nil || !expired.Accepts(output) {
+		t.Fatalf("coherent expired reseal rejected: %v", err)
+	}
+
+	for name, mutate := range map[string]func(*SealCommitOutput){
+		"byte size":      func(candidate *SealCommitOutput) { candidate.ByteSize++ },
+		"file count":     func(candidate *SealCommitOutput) { candidate.FileCount++ },
+		"representation": func(candidate *SealCommitOutput) { candidate.Representation = "application/zip" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := output.Clone()
+			mutate(&candidate)
+			if err := expired.ValidateCommit(candidate); err == nil || expired.Accepts(candidate) {
+				t.Fatalf("persisted digest accepted conflicting %s", name)
+			}
+		})
+	}
+
+	sameTypeConflict := output.Clone()
+	sameTypeConflict.IntrinsicMetadata = json.RawMessage(`{"schema":2}`)
+	if err := expired.ValidateCommit(sameTypeConflict); err == nil || expired.Accepts(sameTypeConflict) {
+		t.Fatal("identical type/digest accepted conflicting intrinsic metadata")
+	}
+
+	differentType := expired.Clone()
+	differentType.Snapshots[0].Type = TypeRef("review/v1")
+	differentType.Snapshots[0].IntrinsicMetadata = json.RawMessage(`{"review_schema":99}`)
+	if err := differentType.ValidateCommit(output); err != nil || !differentType.Accepts(output) {
+		t.Fatalf("different semantic type intrinsic metadata was not independent: %v", err)
+	}
+}
+
 func TestLifecyclePageRequestIsBoundedAndHasStableTermination(t *testing.T) {
 	for _, limit := range []int{-1, 0, MaxLifecyclePageSize + 1} {
 		if err := (LifecyclePageRequest{Limit: limit}).Validate(); err == nil {
@@ -483,6 +670,7 @@ func validSealCommit(t *testing.T, digest Digest) SealCommit {
 		Context: SealCommitContext{
 			BuildID: 1, TeamID: 1, TeamName: "main", CreatedBy: "alice", PlanID: "p",
 			Attempt: "1", StepKind: "task", StepName: "s", InputOrder: []string{}, Inputs: map[string]SnapshotRef{},
+			ExpectedOutputs: []Port{{Name: "first", Type: TypeRef("opaque/v1")}},
 		},
 		Outputs: []SealCommitOutput{{
 			ClientKey: "first", Port: Port{Name: "first", Type: TypeRef("opaque/v1")}, Digest: digest,

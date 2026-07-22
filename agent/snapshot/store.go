@@ -293,8 +293,12 @@ func (c SealCommit) Validate() error {
 	if err := c.Context.Validate(); err != nil {
 		return err
 	}
-	if len(c.Outputs) == 0 {
-		return fmt.Errorf("snapshot: at least one commit output is required")
+	if len(c.Outputs) != len(c.Context.ExpectedOutputs) {
+		return fmt.Errorf("snapshot: commit output count does not match the complete expected output set")
+	}
+	expected := make(map[string]Port, len(c.Context.ExpectedOutputs))
+	for _, port := range c.Context.ExpectedOutputs {
+		expected[port.Name] = port
 	}
 	clientKeys := make(map[string]struct{}, len(c.Outputs))
 	ports := make(map[string]struct{}, len(c.Outputs))
@@ -317,6 +321,10 @@ func (c SealCommit) Validate() error {
 			return fmt.Errorf("snapshot: duplicate committed output port %q", output.Port.Name)
 		}
 		ports[output.Port.Name] = struct{}{}
+		expectedPort, found := expected[output.Port.Name]
+		if !found || expectedPort.Type != output.Port.Type || expectedPort.Optional != output.Port.Optional {
+			return fmt.Errorf("snapshot: committed output %q does not match the expected output set", output.Port.Name)
+		}
 		if digest, found := stageDigests[output.StagedUploadID]; found && digest != output.Digest {
 			return fmt.Errorf("snapshot: staged upload %d is correlated with multiple digests", output.StagedUploadID)
 		}
@@ -573,6 +581,35 @@ func (s DigestState) Available() bool {
 
 func (s DigestState) Reusable() bool { return s.Available() && len(s.Locations) > 0 }
 
+// ValidateCommit is the authoritative cross-transaction digest compatibility
+// rule. Expired coherent manifests may be resealed, but physical metadata must
+// agree across every semantic type and intrinsic metadata must agree for an
+// existing identical (TypeRef,Digest) identity.
+func (s DigestState) ValidateCommit(output SealCommitOutput) error {
+	if err := s.Validate(); err != nil {
+		return err
+	}
+	if err := output.Validate(); err != nil {
+		return err
+	}
+	if output.Digest != s.Digest {
+		return fmt.Errorf("snapshot: commit output digest does not match digest state")
+	}
+	for _, manifest := range s.Snapshots {
+		if manifest.ByteSize != output.ByteSize || manifest.FileCount != output.FileCount || manifest.Representation != output.Representation {
+			return fmt.Errorf("snapshot: commit output conflicts with persisted physical digest metadata")
+		}
+		if manifest.Type == output.Port.Type && !rawJSONEqual(manifest.IntrinsicMetadata, output.IntrinsicMetadata) {
+			return fmt.Errorf("snapshot: commit output conflicts with intrinsic metadata for the same type and digest")
+		}
+	}
+	return nil
+}
+
+func (s DigestState) Accepts(output SealCommitOutput) bool {
+	return s.ValidateCommit(output) == nil
+}
+
 func (s DigestState) HasUnexpiredStage(now time.Time) bool {
 	for _, stage := range s.Stages {
 		if stage.LeaseExpiresAt.After(now) {
@@ -609,6 +646,10 @@ type MetadataStore interface {
 	// CommitSealBatch verifies every persisted stage's digest, team, and attempt
 	// against the commit context and verifies lease coverage for every output
 	// digest inside the same transaction that allocates and connects all rows.
+	// For each digest it loads all persisted sibling manifests and applies
+	// DigestState.ValidateCommit. When coherent expired bytes are reuploaded, the
+	// transaction transitions every semantic sibling manifest for that digest to
+	// available; it never revives only one (TypeRef,Digest) row.
 	CommitSealBatch(context.Context, DigestLease, SealCommit) (map[string]SealedOutput, error)
 
 	DiscoverLifecycleCandidates(context.Context, LifecyclePageRequest) (LifecycleCandidatePage, error)
