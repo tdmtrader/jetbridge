@@ -5,3 +5,7 @@ package atccmd
 func ValidateK8sRuntimeForTest(cmd *RunCommand) error {
 	return cmd.validateK8sRuntime()
 }
+
+func ValidateAgentSnapshotsForTest(cmd *RunCommand) error {
+	return cmd.validateAgentSnapshots()
+}

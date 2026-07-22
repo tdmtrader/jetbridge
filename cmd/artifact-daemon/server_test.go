@@ -5,6 +5,9 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -29,6 +32,318 @@ func setupServer(t *testing.T) (*httptest.Server, string) {
 	ts := httptest.NewServer(server.Handler())
 	t.Cleanup(ts.Close)
 	return ts, storagePath
+}
+
+func snapshotDigest(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
+func putArtifact(t *testing.T, client *http.Client, url string, body io.Reader) *http.Response {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPut, url, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("PUT %s: %v", url, err)
+	}
+	t.Cleanup(func() { resp.Body.Close() })
+	return resp
+}
+
+func TestSnapshotArtifactIsImmutableAndDigestAddressed(t *testing.T) {
+	ts, storagePath := setupServer(t)
+	content := []byte("canonical snapshot archive")
+	digest := snapshotDigest(content)
+	url := ts.URL + "/artifacts/snapshots/sha256/" + digest + ".tar"
+
+	if got := putArtifact(t, ts.Client(), url, bytes.NewReader(content)).StatusCode; got != http.StatusCreated {
+		t.Fatalf("first PUT status = %d, want 201", got)
+	}
+	if got := putArtifact(t, ts.Client(), url, bytes.NewReader(content)).StatusCode; got != http.StatusOK {
+		t.Fatalf("identical PUT status = %d, want 200", got)
+	}
+	if got := putArtifact(t, ts.Client(), url, strings.NewReader("different")).StatusCode; got != http.StatusConflict {
+		t.Fatalf("conflicting PUT status = %d, want 409", got)
+	}
+
+	wrongDigestURL := ts.URL + "/artifacts/snapshots/sha256/" + strings.Repeat("0", 64) + ".tar"
+	if got := putArtifact(t, ts.Client(), wrongDigestURL, bytes.NewReader(content)).StatusCode; got != http.StatusUnprocessableEntity {
+		t.Fatalf("wrong-digest PUT status = %d, want 422", got)
+	}
+
+	stored, err := os.ReadFile(filepath.Join(storagePath, "snapshots", "sha256", digest+".tar"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(stored, content) {
+		t.Fatalf("stored bytes = %q, want %q", stored, content)
+	}
+}
+
+func TestSnapshotArtifactHeadersAndRestartDurability(t *testing.T) {
+	storagePath := t.TempDir()
+	content := []byte("durable canonical tar")
+	digest := snapshotDigest(content)
+	artifactURL := "/artifacts/snapshots/sha256/" + digest + ".tar"
+
+	first := httptest.NewServer(daemon.NewServer(lagertest.NewTestLogger("first"), storagePath, "node-a").Handler())
+	if got := putArtifact(t, first.Client(), first.URL+artifactURL, bytes.NewReader(content)).StatusCode; got != http.StatusCreated {
+		t.Fatalf("PUT status = %d, want 201", got)
+	}
+	first.Close()
+
+	// A fresh server has an empty in-memory registry. Snapshot lookup must be
+	// entirely namespace-based so hostPath bytes survive daemon restarts.
+	second := httptest.NewServer(daemon.NewServer(lagertest.NewTestLogger("second"), storagePath, "node-a").Handler())
+	defer second.Close()
+
+	resp, err := second.Client().Get(second.URL + artifactURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, readErr := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if resp.StatusCode != http.StatusOK || !bytes.Equal(body, content) {
+		t.Fatalf("GET status/body = %d/%q", resp.StatusCode, body)
+	}
+	if got := resp.Header.Get("Content-Type"); got != "application/x-tar" {
+		t.Fatalf("Content-Type = %q", got)
+	}
+	if got := resp.Header.Get("Content-Length"); got != fmt.Sprint(len(content)) {
+		t.Fatalf("Content-Length = %q", got)
+	}
+	if got := resp.Header.Get("ETag"); !strings.Contains(got, digest) {
+		t.Fatalf("ETag %q does not contain digest", got)
+	}
+
+	req, _ := http.NewRequest(http.MethodHead, second.URL+artifactURL, nil)
+	head, err := second.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	headBody, _ := io.ReadAll(head.Body)
+	head.Body.Close()
+	if head.StatusCode != http.StatusOK || len(headBody) != 0 {
+		t.Fatalf("HEAD status/body length = %d/%d", head.StatusCode, len(headBody))
+	}
+	if got := head.Header.Get("Content-Length"); got != fmt.Sprint(len(content)) {
+		t.Fatalf("HEAD Content-Length = %q", got)
+	}
+}
+
+func TestSnapshotArtifactRejectsHostilePaths(t *testing.T) {
+	ts, _ := setupServer(t)
+	validDigest := strings.Repeat("a", 64)
+	paths := []string{
+		"/artifacts/",
+		"/artifacts//snapshots/sha256/" + validDigest + ".tar",
+		"/artifacts/snapshots//sha256/" + validDigest + ".tar",
+		"/artifacts/snapshots/sha256/../" + validDigest + ".tar",
+		"/artifacts/snapshots/sha256/%2e%2e%2f" + validDigest + ".tar",
+		"/artifacts/snapshots/sha256/" + strings.ToUpper(validDigest) + ".tar",
+		"/artifacts/snapshots/sha256/short.tar",
+		"/artifacts/snapshots/sha256/" + validDigest + ".tar/extra",
+		"/artifacts/snapshots%2fsha256%2f" + validDigest + ".tar",
+		"/artifacts/snapshots%5csha256%5c" + validDigest + ".tar",
+	}
+	for _, requestPath := range paths {
+		t.Run(requestPath, func(t *testing.T) {
+			req, err := http.NewRequest(http.MethodPut, ts.URL+requestPath, strings.NewReader("x"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			client := *ts.Client()
+			client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+			resp, err := client.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400", resp.StatusCode)
+			}
+		})
+	}
+}
+
+func TestSnapshotArtifactCannotFollowParentSymlinkOutsideStorage(t *testing.T) {
+	storagePath := t.TempDir()
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(storagePath, "snapshots")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	server := httptest.NewServer(daemon.NewServer(lagertest.NewTestLogger("symlink"), storagePath, "node-a").Handler())
+	defer server.Close()
+	content := []byte("must remain confined")
+	digest := snapshotDigest(content)
+	url := server.URL + "/artifacts/snapshots/sha256/" + digest + ".tar"
+	resp := putArtifact(t, server.Client(), url, bytes.NewReader(content))
+	if resp.StatusCode < 400 {
+		t.Fatalf("status = %d, want rejection", resp.StatusCode)
+	}
+	if _, err := os.Stat(filepath.Join(outside, "sha256", digest+".tar")); !os.IsNotExist(err) {
+		t.Fatalf("snapshot escaped storage root: %v", err)
+	}
+}
+
+func TestSnapshotArtifactRejectsAndDoesNotDeleteNonRegularContent(t *testing.T) {
+	storagePath := t.TempDir()
+	digest := strings.Repeat("a", 64)
+	storedPath := filepath.Join(storagePath, "snapshots", "sha256", digest+".tar")
+	if err := os.MkdirAll(storedPath, 0755); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(daemon.NewServer(lagertest.NewTestLogger("nonregular"), storagePath, "node-a").Handler())
+	defer server.Close()
+	url := server.URL + "/artifacts/snapshots/sha256/" + digest + ".tar"
+
+	if got := putArtifact(t, server.Client(), url, strings.NewReader("x")).StatusCode; got != http.StatusConflict {
+		t.Fatalf("PUT status = %d, want 409", got)
+	}
+	req, _ := http.NewRequest(http.MethodDelete, url, nil)
+	resp, err := server.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("DELETE status = %d, want 409", resp.StatusCode)
+	}
+	if info, err := os.Stat(storedPath); err != nil || !info.IsDir() {
+		t.Fatalf("nonregular content was deleted or changed: %v, %v", info, err)
+	}
+}
+
+type cancelAfterFirstRead struct {
+	cancel context.CancelFunc
+	read   bool
+}
+
+func (r *cancelAfterFirstRead) Read(buffer []byte) (int, error) {
+	if r.read {
+		return 0, io.EOF
+	}
+	r.read = true
+	copy(buffer, "partial")
+	r.cancel()
+	return len("partial"), nil
+}
+
+func TestSnapshotArtifactCancellationCleansTemporaryFile(t *testing.T) {
+	storagePath := t.TempDir()
+	server := daemon.NewServer(lagertest.NewTestLogger("cancel"), storagePath, "node-a")
+	ctx, cancel := context.WithCancel(context.Background())
+	content := []byte("partial")
+	digest := snapshotDigest(content)
+	req := httptest.NewRequest(
+		http.MethodPut,
+		"http://daemon/artifacts/snapshots/sha256/"+digest+".tar",
+		&cancelAfterFirstRead{cancel: cancel},
+	).WithContext(ctx)
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, req)
+	if response.Code < 400 {
+		t.Fatalf("status = %d, want cancellation failure", response.Code)
+	}
+	matches, err := filepath.Glob(filepath.Join(storagePath, "snapshots", "sha256", ".snapshot-put-*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("temporary files survived cancellation: %v", matches)
+	}
+	if _, err := os.Stat(filepath.Join(storagePath, "snapshots", "sha256", digest+".tar")); !os.IsNotExist(err) {
+		t.Fatalf("final snapshot visible after cancellation: %v", err)
+	}
+}
+
+func TestSnapshotArtifactRejectsDeclaredOversizeBeforeCreatingTemporaryFile(t *testing.T) {
+	storagePath := t.TempDir()
+	server := daemon.NewServer(lagertest.NewTestLogger("oversize"), storagePath, "node-a")
+	digest := strings.Repeat("a", 64)
+	req := httptest.NewRequest(
+		http.MethodPut,
+		"http://daemon/artifacts/snapshots/sha256/"+digest+".tar",
+		strings.NewReader("small body"),
+	)
+	req.ContentLength = (10 << 30) + 1
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, req)
+	if response.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want 413", response.Code)
+	}
+	matches, err := filepath.Glob(filepath.Join(storagePath, "snapshots", "sha256", ".snapshot-put-*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("oversize request created temporary files: %v", matches)
+	}
+}
+
+func TestSnapshotArtifactConcurrentIdenticalWritersConverge(t *testing.T) {
+	ts, _ := setupServer(t)
+	content := []byte("same immutable bytes")
+	digest := snapshotDigest(content)
+	url := ts.URL + "/artifacts/snapshots/sha256/" + digest + ".tar"
+	const writers = 12
+	statuses := make(chan int, writers)
+	var wg sync.WaitGroup
+	for range writers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			req, _ := http.NewRequest(http.MethodPut, url, bytes.NewReader(content))
+			resp, err := ts.Client().Do(req)
+			if err != nil {
+				statuses <- 0
+				return
+			}
+			resp.Body.Close()
+			statuses <- resp.StatusCode
+		}()
+	}
+	wg.Wait()
+	close(statuses)
+	created := 0
+	for status := range statuses {
+		switch status {
+		case http.StatusCreated:
+			created++
+		case http.StatusOK:
+		default:
+			t.Fatalf("unexpected writer status %d", status)
+		}
+	}
+	if created != 1 {
+		t.Fatalf("created responses = %d, want exactly 1", created)
+	}
+}
+
+func TestGenericArtifactPutRemainsReplaceable(t *testing.T) {
+	ts, _ := setupServer(t)
+	url := ts.URL + "/artifacts/legacy.tar"
+	if got := putArtifact(t, ts.Client(), url, strings.NewReader("one")).StatusCode; got != http.StatusCreated {
+		t.Fatalf("first status = %d", got)
+	}
+	if got := putArtifact(t, ts.Client(), url, strings.NewReader("two")).StatusCode; got != http.StatusCreated {
+		t.Fatalf("replace status = %d", got)
+	}
+	resp, err := ts.Client().Get(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if string(body) != "two" {
+		t.Fatalf("body = %q", body)
+	}
 }
 
 func TestHealthz(t *testing.T) {

@@ -29,6 +29,7 @@ import (
 	"github.com/concourse/concourse/agent/dispatch"
 	"github.com/concourse/concourse/agent/outcomewatcher"
 	"github.com/concourse/concourse/agent/pipelinearchiver"
+	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api"
 	"github.com/concourse/concourse/atc/api/accessor"
@@ -128,6 +129,13 @@ type RunCommand struct {
 	// for DaemonSet mode. Created in backendComponents, used in constructPool.
 	k8sArtifactLocator *jetbridge.ArtifactLocator
 
+	// Snapshot daemon transport and content storage are command-scoped so API
+	// and backend composition share one durable client/store rather than
+	// rebuilding restart-unsafe state inside each pool construction.
+	agentSnapshotMu           sync.Mutex
+	agentSnapshotDaemonClient *jetbridge.DaemonClient
+	agentSnapshotContentStore snapshot.ContentStore
+
 	// agentRunSecretAttacher bridges dispatch's API handler (constructed
 	// before the K8s clientset exists) to the real attacher bound in the
 	// K8s components block. Unbound, every Attach fails loudly — dispatch
@@ -212,6 +220,13 @@ type RunCommand struct {
 		ImageRegistrySecret     string        `long:"kubernetes-image-registry-secret"     description:"Kubernetes Secret name (type kubernetes.io/dockerconfigjson) for registry auth. Auto-added to imagePullSecrets on every pod."`
 		BaseResourceTypes       []string      `long:"kubernetes-base-resource-type"        description:"Override or add a base resource type image. Format: name=image (e.g. git=my-registry/git-resource:v2). Can be specified multiple times. Merges with built-in defaults." value-name:"NAME=IMAGE"`
 	} `group:"Kubernetes Runtime"`
+
+	AgentSnapshots struct {
+		Enabled           bool  `long:"agent-snapshot-enabled" description:"Enable durable typed snapshot content storage through the Kubernetes artifact daemon."`
+		ReplicationFactor int   `long:"agent-snapshot-replication-factor" default:"2" description:"Number of stable artifact-daemon nodes selected for each snapshot upload."`
+		MaxBytes          int64 `long:"agent-snapshot-max-bytes" default:"10737418240" description:"Maximum canonical snapshot archive size in bytes."`
+		MaxFiles          int64 `long:"agent-snapshot-max-files" default:"100000" description:"Maximum number of files in a canonical snapshot archive."`
+	} `group:"Agent Snapshots"`
 
 	CLIArtifactsDir flag.Dir `long:"cli-artifacts-dir" description:"Directory containing downloadable CLI binaries."`
 	WebPublicDir    flag.Dir `long:"web-public-dir" description:"Web public/ directory to serve live for local development."`
@@ -1555,7 +1570,7 @@ func (cmd *RunCommand) constructPool(dbConn db.DbConn, lockFactory lock.LockFact
 	dbWorkerFactory := db.NewWorkerFactory(dbConn, workerCache)
 	dbTeamFactory := db.NewTeamFactory(dbConn, lockFactory)
 
-	db := worker.NewDB(
+	workerDB := worker.NewDB(
 		dbWorkerFactory,
 		dbTeamFactory,
 		dbVolumeRepository,
@@ -1567,7 +1582,7 @@ func (cmd *RunCommand) constructPool(dbConn db.DbConn, lockFactory lock.LockFact
 	)
 
 	factory := worker.DefaultFactory{
-		DB:       db,
+		DB:       workerDB,
 		Streamer: cmd.streamer(),
 	}
 
@@ -1618,7 +1633,7 @@ func (cmd *RunCommand) constructPool(dbConn db.DbConn, lockFactory lock.LockFact
 			dcLogger.RegisterSink(lager.NewWriterSink(os.Stderr, lager.INFO))
 
 			var daemonTLSCfg *jetbridge.DaemonClientTLSConfig
-			if k8sCfg.ArtifactDaemonTLSCert != "" {
+			if k8sCfg.ArtifactDaemonTLSCert != "" || k8sCfg.ArtifactDaemonTLSKey != "" || k8sCfg.ArtifactDaemonTLSCACert != "" {
 				daemonTLSCfg = &jetbridge.DaemonClientTLSConfig{
 					CertPath:   k8sCfg.ArtifactDaemonTLSCert,
 					KeyPath:    k8sCfg.ArtifactDaemonTLSKey,
@@ -1626,20 +1641,52 @@ func (cmd *RunCommand) constructPool(dbConn db.DbConn, lockFactory lock.LockFact
 				}
 			}
 
-			factory.K8sDaemonClient = jetbridge.NewDaemonClient(
-				dcLogger,
-				k8sClientset,
-				k8sCfg.Namespace,
-				k8sCfg.ArtifactDaemonService,
-				daemonPort,
-				daemonTLSCfg,
-			)
+			if cmd.AgentSnapshots.Enabled {
+				cmd.agentSnapshotMu.Lock()
+				if cmd.agentSnapshotDaemonClient == nil {
+					daemonClient, err := jetbridge.NewDaemonClientChecked(
+						dcLogger,
+						k8sClientset,
+						k8sCfg.Namespace,
+						k8sCfg.ArtifactDaemonService,
+						daemonPort,
+						daemonTLSCfg,
+					)
+					if err != nil {
+						cmd.agentSnapshotMu.Unlock()
+						return worker.Pool{}, fmt.Errorf("construct snapshot daemon client: %w", err)
+					}
+					contentStore, err := jetbridge.NewSnapshotContentStore(
+						daemonClient,
+						db.NewAgentSnapshotsFactory(dbConn),
+						cmd.AgentSnapshots.ReplicationFactor,
+						cmd.AgentSnapshots.MaxBytes,
+					)
+					if err != nil {
+						cmd.agentSnapshotMu.Unlock()
+						return worker.Pool{}, fmt.Errorf("construct snapshot content store: %w", err)
+					}
+					cmd.agentSnapshotDaemonClient = daemonClient
+					cmd.agentSnapshotContentStore = contentStore
+				}
+				factory.K8sDaemonClient = cmd.agentSnapshotDaemonClient
+				cmd.agentSnapshotMu.Unlock()
+			} else {
+				factory.K8sDaemonClient = jetbridge.NewDaemonClient(
+					dcLogger,
+					k8sClientset,
+					k8sCfg.Namespace,
+					k8sCfg.ArtifactDaemonService,
+					daemonPort,
+					daemonTLSCfg,
+				)
+			}
 		}
 	}
 
 	return worker.NewPool(
 		factory,
-		db,
+		workerDB,
 	), nil
 }
 
@@ -2040,6 +2087,44 @@ func (cmd *RunCommand) validate() error {
 		errs = multierror.Append(errs, err)
 	}
 
+	if err := cmd.validateAgentSnapshots(); err != nil {
+		errs = multierror.Append(errs, err)
+	}
+
+	return errs.ErrorOrNil()
+}
+
+func (cmd *RunCommand) validateAgentSnapshots() error {
+	var errs *multierror.Error
+	if cmd.AgentSnapshots.ReplicationFactor <= 0 {
+		errs = multierror.Append(errs, errors.New("--agent-snapshot-replication-factor must be positive"))
+	}
+	if cmd.AgentSnapshots.MaxBytes <= 0 {
+		errs = multierror.Append(errs, errors.New("--agent-snapshot-max-bytes must be positive"))
+	}
+	if cmd.AgentSnapshots.MaxFiles <= 0 {
+		errs = multierror.Append(errs, errors.New("--agent-snapshot-max-files must be positive"))
+	}
+	if !cmd.AgentSnapshots.Enabled {
+		return errs.ErrorOrNil()
+	}
+	if cmd.Kubernetes.Namespace == "" {
+		errs = multierror.Append(errs, errors.New("--kubernetes-namespace is required when --agent-snapshot-enabled is set"))
+	}
+	if cmd.Kubernetes.ArtifactDaemonHostPath == "" {
+		errs = multierror.Append(errs, errors.New("--kubernetes-artifact-daemon-host-path is required when --agent-snapshot-enabled is set"))
+	}
+	if cmd.Kubernetes.ArtifactDaemonService == "" {
+		errs = multierror.Append(errs, errors.New("--kubernetes-artifact-daemon-service is required when --agent-snapshot-enabled is set"))
+	}
+	if cmd.Kubernetes.ArtifactDaemonPort <= 0 || cmd.Kubernetes.ArtifactDaemonPort > 65535 {
+		errs = multierror.Append(errs, errors.New("--kubernetes-artifact-daemon-port must be between 1 and 65535 when --agent-snapshot-enabled is set"))
+	}
+	if cmd.Kubernetes.ArtifactDaemonTLSCert == "" ||
+		cmd.Kubernetes.ArtifactDaemonTLSKey == "" ||
+		cmd.Kubernetes.ArtifactDaemonTLSCACert == "" {
+		errs = multierror.Append(errs, errors.New("artifact daemon mTLS certificate, key, and CA certificate are required when --agent-snapshot-enabled is set"))
+	}
 	return errs.ErrorOrNil()
 }
 

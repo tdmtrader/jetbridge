@@ -12,10 +12,13 @@ import (
 // dedicated registry (not the global default) so each Server instance — and
 // each test — is isolated.
 type metrics struct {
-	registry        *prometheus.Registry
-	resolveRequests *prometheus.CounterVec
-	resolveDuration *prometheus.HistogramVec
-	peerFetch       *prometheus.CounterVec
+	registry           *prometheus.Registry
+	resolveRequests    *prometheus.CounterVec
+	resolveDuration    *prometheus.HistogramVec
+	peerFetch          *prometheus.CounterVec
+	snapshotOperations *prometheus.CounterVec
+	snapshotBytes      *prometheus.CounterVec
+	snapshotDuration   *prometheus.HistogramVec
 }
 
 // newMetrics builds and registers the daemon metric collectors.
@@ -39,8 +42,31 @@ func newMetrics() *metrics {
 			Name:      "peer_fetch_total",
 			Help:      "Total cross-node peer artifact fetches, by status (ok/error).",
 		}, []string{"status"}),
+		snapshotOperations: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "artifact_daemon",
+			Name:      "snapshot_operations_total",
+			Help:      "Total immutable snapshot operations by operation and bounded status.",
+		}, []string{"operation", "status"}),
+		snapshotBytes: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "artifact_daemon",
+			Name:      "snapshot_bytes_total",
+			Help:      "Total immutable snapshot bytes transferred by operation and bounded status.",
+		}, []string{"operation", "status"}),
+		snapshotDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Namespace: "artifact_daemon",
+			Name:      "snapshot_duration_seconds",
+			Help:      "Immutable snapshot operation duration by operation and bounded status.",
+			Buckets:   prometheus.DefBuckets,
+		}, []string{"operation", "status"}),
 	}
-	reg.MustRegister(m.resolveRequests, m.resolveDuration, m.peerFetch)
+	reg.MustRegister(
+		m.resolveRequests,
+		m.resolveDuration,
+		m.peerFetch,
+		m.snapshotOperations,
+		m.snapshotBytes,
+		m.snapshotDuration,
+	)
 
 	// Initialize peer-fetch series to 0 so the family is always scrapeable and
 	// rate() works from the first fetch (CounterVecs emit no series until a
@@ -49,6 +75,27 @@ func newMetrics() *metrics {
 	m.peerFetch.WithLabelValues("error")
 
 	return m
+}
+
+func (m *metrics) recordSnapshot(operation, status string, bytes int64, duration time.Duration) {
+	if m == nil {
+		return
+	}
+	switch operation {
+	case "put", "get", "head", "delete":
+	default:
+		operation = "unknown"
+	}
+	switch status {
+	case "ok", "created", "identical", "conflict", "digest_mismatch", "not_found":
+	default:
+		status = "error"
+	}
+	m.snapshotOperations.WithLabelValues(operation, status).Inc()
+	if bytes > 0 {
+		m.snapshotBytes.WithLabelValues(operation, status).Add(float64(bytes))
+	}
+	m.snapshotDuration.WithLabelValues(operation, status).Observe(duration.Seconds())
 }
 
 // recordResolve records the outcome of a single resolveOne call. A nil receiver

@@ -3,6 +3,7 @@ package main_test
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -64,6 +65,39 @@ func TestSweeper_RemovesExpiredLegacyFlatFiles(t *testing.T) {
 
 	if _, err := os.Stat(oldFile); !os.IsNotExist(err) {
 		t.Error("expected expired legacy flat file to be removed")
+	}
+}
+
+func TestSweeperNeverDeletesDurableSnapshotsOrStepDeletion(t *testing.T) {
+	storagePath := t.TempDir()
+	snapshotPath := filepath.Join(storagePath, "snapshots", "sha256", strings.Repeat("a", 64)+".tar")
+	if err := os.MkdirAll(filepath.Dir(snapshotPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(snapshotPath, []byte("durable"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-30 * 24 * time.Hour)
+	if err := os.Chtimes(snapshotPath, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	stepPath := filepath.Join(storagePath, "steps", "producer")
+	if err := os.MkdirAll(stepPath, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(stepPath, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	sweeper := daemon.NewSweeper(lagertest.NewTestLogger("sweeper"), storagePath, time.Hour, time.Minute, nil)
+	sweeper.SweepOnce()
+
+	if _, err := os.Stat(stepPath); !os.IsNotExist(err) {
+		t.Fatalf("expired producer step survived: %v", err)
+	}
+	if got, err := os.ReadFile(snapshotPath); err != nil || string(got) != "durable" {
+		t.Fatalf("durable snapshot changed during sweep: %q, %v", got, err)
 	}
 }
 

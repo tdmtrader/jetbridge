@@ -62,6 +62,68 @@ func (s *CommandSuite) TestKubernetesFlags() {
 	s.Contains(kubeconfigOpt.Description, "kubeconfig")
 }
 
+func (s *CommandSuite) TestAgentSnapshotFlagDefaults() {
+	cmd := &atccmd.ATCCommand{}
+	parser := flags.NewParser(cmd, flags.Default)
+	parser.NamespaceDelimiter = "-"
+	runCmd := parser.Find("run")
+
+	enabled := runCmd.FindOptionByLongName("agent-snapshot-enabled")
+	s.NotNil(enabled)
+	replication := runCmd.FindOptionByLongName("agent-snapshot-replication-factor")
+	s.NotNil(replication)
+	s.Equal([]string{"2"}, replication.Default)
+	maxBytes := runCmd.FindOptionByLongName("agent-snapshot-max-bytes")
+	s.NotNil(maxBytes)
+	s.Equal([]string{"10737418240"}, maxBytes.Default)
+	maxFiles := runCmd.FindOptionByLongName("agent-snapshot-max-files")
+	s.NotNil(maxFiles)
+	s.Equal([]string{"100000"}, maxFiles.Default)
+}
+
+func (s *CommandSuite) TestAgentSnapshotNumericBoundsAreAlwaysPositive() {
+	for name, mutate := range map[string]func(*atccmd.RunCommand){
+		"replication": func(command *atccmd.RunCommand) { command.AgentSnapshots.ReplicationFactor = 0 },
+		"max bytes":   func(command *atccmd.RunCommand) { command.AgentSnapshots.MaxBytes = -1 },
+		"max files":   func(command *atccmd.RunCommand) { command.AgentSnapshots.MaxFiles = 0 },
+	} {
+		s.Run(name, func() {
+			command := &atccmd.RunCommand{}
+			command.AgentSnapshots.ReplicationFactor = 2
+			command.AgentSnapshots.MaxBytes = 10 << 30
+			command.AgentSnapshots.MaxFiles = 100000
+			mutate(command)
+			err := atccmd.ValidateAgentSnapshotsForTest(command)
+			s.Error(err)
+			s.Contains(err.Error(), "must be positive")
+		})
+	}
+}
+
+func (s *CommandSuite) TestEnabledAgentSnapshotsRequireK8sDaemonAndCompleteMTLS() {
+	command := &atccmd.RunCommand{}
+	command.AgentSnapshots.Enabled = true
+	command.AgentSnapshots.ReplicationFactor = 2
+	command.AgentSnapshots.MaxBytes = 10 << 30
+	command.AgentSnapshots.MaxFiles = 100000
+
+	err := atccmd.ValidateAgentSnapshotsForTest(command)
+	s.Error(err)
+	s.Contains(err.Error(), "kubernetes-namespace")
+	s.Contains(err.Error(), "artifact-daemon-host-path")
+	s.Contains(err.Error(), "artifact-daemon-service")
+	s.Contains(err.Error(), "mTLS")
+
+	command.Kubernetes.Namespace = "cicd"
+	command.Kubernetes.ArtifactDaemonHostPath = "/var/concourse/artifacts"
+	command.Kubernetes.ArtifactDaemonService = "artifact-daemon"
+	command.Kubernetes.ArtifactDaemonPort = 7780
+	command.Kubernetes.ArtifactDaemonTLSCert = "/cert"
+	command.Kubernetes.ArtifactDaemonTLSKey = "/key"
+	command.Kubernetes.ArtifactDaemonTLSCACert = "/ca"
+	s.NoError(atccmd.ValidateAgentSnapshotsForTest(command))
+}
+
 func (s *CommandSuite) TestBuildTrackerIntervalFlagRemoved() {
 	cmd := &atccmd.ATCCommand{}
 	parser := flags.NewParser(cmd, flags.Default)

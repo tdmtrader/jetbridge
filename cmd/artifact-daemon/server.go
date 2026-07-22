@@ -3,15 +3,22 @@ package main
 import (
 	"archive/tar"
 	"bufio"
+	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -22,25 +29,32 @@ import (
 // Server is the artifact-daemon HTTP server that stores and serves
 // artifact tar files from local hostPath storage.
 type Server struct {
-	logger        lager.Logger
-	storagePath   string
-	nodeName      string
-	registry      *Registry
-	peers         *PeerResolver
-	mirrorTrigger func(ctx context.Context, key string)
-	metrics       *metrics
-	guard         *ReadGuard
+	logger           lager.Logger
+	storagePath      string
+	nodeName         string
+	registry         *Registry
+	peers            *PeerResolver
+	mirrorTrigger    func(ctx context.Context, key string)
+	metrics          *metrics
+	guard            *ReadGuard
+	snapshotMaxBytes int64
 }
+
+const (
+	snapshotKeyPrefix       = "snapshots/sha256/"
+	defaultSnapshotMaxBytes = int64(10 << 30)
+)
 
 // NewServer creates a new artifact-daemon server.
 func NewServer(logger lager.Logger, storagePath, nodeName string) *Server {
 	return &Server{
-		logger:      logger,
-		storagePath: storagePath,
-		nodeName:    nodeName,
-		registry:    NewRegistry(logger),
-		metrics:     newMetrics(),
-		guard:       NewReadGuard(),
+		logger:           logger,
+		storagePath:      storagePath,
+		nodeName:         nodeName,
+		registry:         NewRegistry(logger),
+		metrics:          newMetrics(),
+		guard:            NewReadGuard(),
+		snapshotMaxBytes: defaultSnapshotMaxBytes,
 	}
 }
 
@@ -128,7 +142,18 @@ func (s *Server) Handler(opts ...HandlerOption) http.Handler {
 	mux.HandleFunc("HEAD /resource-caches/", protect(s.handleHeadResourceCache))
 	mux.HandleFunc("GET /resource-caches/", protect(s.handleGetResourceCache))
 
-	return mux
+	// net/http's ServeMux canonicalizes traversal-looking paths before route
+	// selection. Validate artifact paths first so malformed paths receive the
+	// contractually required 400 instead of a redirect.
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/artifacts/") || strings.HasPrefix(r.URL.EscapedPath(), "/artifacts/") {
+			if _, err := s.artifactPath(r); err != nil {
+				http.Error(w, "malformed artifact path", http.StatusBadRequest)
+				return
+			}
+		}
+		mux.ServeHTTP(w, r)
+	})
 }
 
 // HandlerOption configures the HTTP handler.
@@ -149,13 +174,421 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-func (s *Server) artifactPath(r *http.Request) string {
+func (s *Server) artifactPath(r *http.Request) (string, error) {
+	escaped := strings.TrimPrefix(r.URL.EscapedPath(), "/artifacts/")
 	key := strings.TrimPrefix(r.URL.Path, "/artifacts/")
-	return filepath.Join(s.storagePath, key)
+	if key == r.URL.Path || key == "" || escaped == r.URL.EscapedPath() || strings.Contains(escaped, "%") {
+		return "", fmt.Errorf("invalid artifact key")
+	}
+	if strings.HasPrefix(key, "/") || strings.ContainsAny(key, "\\\x00") || path.Clean(key) != key {
+		return "", fmt.Errorf("non-canonical artifact key")
+	}
+	for _, segment := range strings.Split(key, "/") {
+		if segment == "" || segment == "." || segment == ".." {
+			return "", fmt.Errorf("invalid artifact key segment")
+		}
+	}
+	converted := filepath.FromSlash(key)
+	if filepath.IsAbs(converted) {
+		return "", fmt.Errorf("absolute artifact key")
+	}
+	joined := filepath.Join(s.storagePath, converted)
+	rel, err := filepath.Rel(s.storagePath, joined)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("artifact path escapes storage root")
+	}
+	return joined, nil
+}
+
+func snapshotDigestForRequest(r *http.Request) (string, bool, error) {
+	key := strings.TrimPrefix(r.URL.Path, "/artifacts/")
+	if !strings.HasPrefix(key, snapshotKeyPrefix) {
+		return "", false, nil
+	}
+	name := strings.TrimPrefix(key, snapshotKeyPrefix)
+	if len(name) != 68 || !strings.HasSuffix(name, ".tar") {
+		return "", true, fmt.Errorf("invalid snapshot key")
+	}
+	digest := strings.TrimSuffix(name, ".tar")
+	decoded, err := hex.DecodeString(digest)
+	if err != nil || len(decoded) != sha256.Size || hex.EncodeToString(decoded) != digest {
+		return "", true, fmt.Errorf("invalid snapshot digest")
+	}
+	return digest, true, nil
+}
+
+func snapshotKey(digest string) string {
+	return snapshotKeyPrefix + digest + ".tar"
+}
+
+func (s *Server) handlePutSnapshot(w http.ResponseWriter, r *http.Request, expectedDigest string) {
+	start := time.Now()
+	status := "error"
+	var copied int64
+	defer func() { s.metrics.recordSnapshot("put", status, copied, time.Since(start)) }()
+	if r.ContentLength > s.snapshotMaxBytes {
+		http.Error(w, "snapshot upload exceeds maximum size", http.StatusRequestEntityTooLarge)
+		return
+	}
+
+	if err := os.MkdirAll(s.storagePath, 0755); err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	root, err := os.OpenRoot(s.storagePath)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	defer root.Close()
+
+	key := snapshotKey(expectedDigest)
+	parent := path.Dir(key)
+	if err := root.MkdirAll(parent, 0755); err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	release := s.guard.BeginSweep(key)
+	defer release()
+
+	tmpKey, file, err := createSnapshotTemp(root, parent)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	tmpExists := true
+	defer func() {
+		_ = file.Close()
+		if tmpExists {
+			_ = root.Remove(tmpKey)
+		}
+	}()
+
+	hash := sha256.New()
+	copied, err = copySnapshotContext(r.Context(), io.MultiWriter(file, hash), r.Body, s.snapshotMaxBytes)
+	if err != nil {
+		code := http.StatusInternalServerError
+		if errors.Is(err, errSnapshotTooLarge) {
+			code = http.StatusRequestEntityTooLarge
+		}
+		http.Error(w, "snapshot upload failed", code)
+		return
+	}
+	actualDigest := hex.EncodeToString(hash.Sum(nil))
+	if err := file.Chmod(0644); err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if err := file.Sync(); err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if err := file.Close(); err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	exists, identical, err := compareSnapshot(root, key, tmpKey)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if exists {
+		if identical {
+			status = "identical"
+			w.WriteHeader(http.StatusOK)
+		} else {
+			status = "conflict"
+			http.Error(w, "snapshot content conflict", http.StatusConflict)
+		}
+		return
+	}
+	if actualDigest != expectedDigest {
+		status = "digest_mismatch"
+		http.Error(w, "snapshot digest mismatch", http.StatusUnprocessableEntity)
+		return
+	}
+
+	if err := root.Link(tmpKey, key); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			exists, identical, compareErr := compareSnapshot(root, key, tmpKey)
+			if compareErr != nil {
+				http.Error(w, "internal error", http.StatusInternalServerError)
+				return
+			}
+			if exists && identical {
+				status = "identical"
+				w.WriteHeader(http.StatusOK)
+				return
+			}
+			status = "conflict"
+			http.Error(w, "snapshot content conflict", http.StatusConflict)
+			return
+		}
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if err := root.Remove(tmpKey); err != nil {
+		// The immutable final link is already durable content. Report failure so
+		// callers retry; a retry compares identical bytes and converges.
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	tmpExists = false
+	if err := syncRootDirectory(root, parent); err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	status = "created"
+	w.WriteHeader(http.StatusCreated)
+}
+
+var errSnapshotTooLarge = errors.New("snapshot exceeds maximum size")
+
+func copySnapshotContext(ctx context.Context, dst io.Writer, src io.Reader, maxBytes int64) (int64, error) {
+	buffer := make([]byte, 128*1024)
+	var total int64
+	for {
+		if err := ctx.Err(); err != nil {
+			return total, err
+		}
+		n, readErr := src.Read(buffer)
+		if n > 0 {
+			if total+int64(n) > maxBytes {
+				return total, errSnapshotTooLarge
+			}
+			written, writeErr := dst.Write(buffer[:n])
+			total += int64(written)
+			if writeErr != nil {
+				return total, writeErr
+			}
+			if written != n {
+				return total, io.ErrShortWrite
+			}
+		}
+		if readErr != nil {
+			if errors.Is(readErr, io.EOF) {
+				return total, nil
+			}
+			return total, readErr
+		}
+	}
+}
+
+func createSnapshotTemp(root *os.Root, parent string) (string, *os.File, error) {
+	for range 100 {
+		random := make([]byte, 16)
+		if _, err := rand.Read(random); err != nil {
+			return "", nil, err
+		}
+		name := path.Join(parent, ".snapshot-put-"+hex.EncodeToString(random))
+		file, err := root.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+		if err == nil {
+			return name, file, nil
+		}
+		if !errors.Is(err, os.ErrExist) {
+			return "", nil, err
+		}
+	}
+	return "", nil, fmt.Errorf("unable to allocate snapshot temporary file")
+}
+
+func compareSnapshot(root *os.Root, key, tmpKey string) (bool, bool, error) {
+	info, err := root.Lstat(key)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, false, nil
+	}
+	if err != nil {
+		return false, false, err
+	}
+	if !info.Mode().IsRegular() {
+		return true, false, nil
+	}
+	tmpInfo, err := root.Stat(tmpKey)
+	if err != nil {
+		return false, false, err
+	}
+	if info.Size() != tmpInfo.Size() {
+		return true, false, nil
+	}
+	existing, err := root.Open(key)
+	if err != nil {
+		return false, false, err
+	}
+	defer existing.Close()
+	temporary, err := root.Open(tmpKey)
+	if err != nil {
+		return false, false, err
+	}
+	defer temporary.Close()
+	left := make([]byte, 128*1024)
+	right := make([]byte, 128*1024)
+	for {
+		leftN, leftErr := io.ReadFull(existing, left)
+		rightN, rightErr := io.ReadFull(temporary, right)
+		if leftN != rightN || !bytes.Equal(left[:leftN], right[:rightN]) {
+			return true, false, nil
+		}
+		if errors.Is(leftErr, io.EOF) || errors.Is(leftErr, io.ErrUnexpectedEOF) {
+			return true, errors.Is(rightErr, io.EOF) || errors.Is(rightErr, io.ErrUnexpectedEOF), nil
+		}
+		if leftErr != nil || rightErr != nil {
+			return false, false, errors.Join(leftErr, rightErr)
+		}
+	}
+}
+
+func syncRootDirectory(root *os.Root, name string) error {
+	directory, err := root.Open(name)
+	if err != nil {
+		return err
+	}
+	defer directory.Close()
+	return directory.Sync()
+}
+
+func (s *Server) handleGetSnapshot(w http.ResponseWriter, r *http.Request, digest string) {
+	start := time.Now()
+	status := "error"
+	var copied int64
+	defer func() { s.metrics.recordSnapshot("get", status, copied, time.Since(start)) }()
+	release := s.guard.BeginRead(snapshotKey(digest))
+	defer release()
+	root, file, info, ok := s.openSnapshotForRead(w, digest)
+	if !ok {
+		return
+	}
+	defer root.Close()
+	defer file.Close()
+	setSnapshotHeaders(w, digest, info.Size())
+	w.WriteHeader(http.StatusOK)
+	copied, err := io.Copy(w, file)
+	if err != nil || copied != info.Size() {
+		panic(http.ErrAbortHandler)
+	}
+	status = "ok"
+}
+
+func (s *Server) handleHeadSnapshot(w http.ResponseWriter, _ *http.Request, digest string) {
+	start := time.Now()
+	status := "error"
+	defer func() { s.metrics.recordSnapshot("head", status, 0, time.Since(start)) }()
+	release := s.guard.BeginRead(snapshotKey(digest))
+	defer release()
+	root, file, info, ok := s.openSnapshotForRead(w, digest)
+	if !ok {
+		return
+	}
+	defer root.Close()
+	defer file.Close()
+	setSnapshotHeaders(w, digest, info.Size())
+	status = "ok"
+	w.WriteHeader(http.StatusOK)
+}
+
+func (s *Server) openSnapshotForRead(w http.ResponseWriter, digest string) (*os.Root, *os.File, os.FileInfo, bool) {
+	root, err := os.OpenRoot(s.storagePath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			http.Error(w, "not found", http.StatusNotFound)
+		} else {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+		}
+		return nil, nil, nil, false
+	}
+	key := snapshotKey(digest)
+	info, err := root.Lstat(key)
+	if err != nil {
+		root.Close()
+		if errors.Is(err, os.ErrNotExist) {
+			http.Error(w, "not found", http.StatusNotFound)
+		} else {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+		}
+		return nil, nil, nil, false
+	}
+	if !info.Mode().IsRegular() {
+		root.Close()
+		http.Error(w, "snapshot content conflict", http.StatusConflict)
+		return nil, nil, nil, false
+	}
+	file, err := root.Open(key)
+	if err != nil {
+		root.Close()
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return nil, nil, nil, false
+	}
+	return root, file, info, true
+}
+
+func setSnapshotHeaders(w http.ResponseWriter, digest string, size int64) {
+	w.Header().Set("Content-Type", "application/x-tar")
+	w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
+	w.Header().Set("ETag", `"sha256:`+digest+`"`)
+}
+
+func (s *Server) handleDeleteSnapshot(w http.ResponseWriter, _ *http.Request, digest string) {
+	start := time.Now()
+	status := "error"
+	defer func() { s.metrics.recordSnapshot("delete", status, 0, time.Since(start)) }()
+	root, err := os.OpenRoot(s.storagePath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			status = "not_found"
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	defer root.Close()
+	key := snapshotKey(digest)
+	release := s.guard.BeginSweep(key)
+	defer release()
+	info, err := root.Lstat(key)
+	if errors.Is(err, os.ErrNotExist) {
+		status = "not_found"
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if !info.Mode().IsRegular() {
+		status = "conflict"
+		http.Error(w, "snapshot content conflict", http.StatusConflict)
+		return
+	}
+	if err := root.Remove(key); err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if err := syncRootDirectory(root, path.Dir(key)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	status = "ok"
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
-	path := s.artifactPath(r)
+	artifactPath, err := s.artifactPath(r)
+	if err != nil {
+		http.Error(w, "malformed artifact path", http.StatusBadRequest)
+		return
+	}
+	digest, snapshotRequest, err := snapshotDigestForRequest(r)
+	if err != nil {
+		http.Error(w, "malformed snapshot path", http.StatusBadRequest)
+		return
+	}
+	if snapshotRequest {
+		s.handleGetSnapshot(w, r, digest)
+		return
+	}
+	path := artifactPath
 
 	// Check filesystem first, then fall back to registry aliases.
 	// This enables peer daemons to serve registry-only artifacts
@@ -272,7 +705,21 @@ func (s *Server) touchStepDir(path string) {
 }
 
 func (s *Server) handlePutArtifact(w http.ResponseWriter, r *http.Request) {
-	path := s.artifactPath(r)
+	artifactPath, err := s.artifactPath(r)
+	if err != nil {
+		http.Error(w, "malformed artifact path", http.StatusBadRequest)
+		return
+	}
+	digest, snapshotRequest, err := snapshotDigestForRequest(r)
+	if err != nil {
+		http.Error(w, "malformed snapshot path", http.StatusBadRequest)
+		return
+	}
+	if snapshotRequest {
+		s.handlePutSnapshot(w, r, digest)
+		return
+	}
+	path := artifactPath
 
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		s.logger.Error("failed-to-create-artifact-dir", err, lager.Data{"path": path})
@@ -464,14 +911,28 @@ func (s *Server) handleStreamIn(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeleteArtifact(w http.ResponseWriter, r *http.Request) {
-	path := s.artifactPath(r)
+	artifactPath, err := s.artifactPath(r)
+	if err != nil {
+		http.Error(w, "malformed artifact path", http.StatusBadRequest)
+		return
+	}
+	digest, snapshotRequest, err := snapshotDigestForRequest(r)
+	if err != nil {
+		http.Error(w, "malformed snapshot path", http.StatusBadRequest)
+		return
+	}
+	if snapshotRequest {
+		s.handleDeleteSnapshot(w, r, digest)
+		return
+	}
+	path := artifactPath
 
 	// Deletion is destructive like a sweep: wait out in-flight reads so a
 	// concurrent copy never sees a half-removed tree.
 	release := s.guard.BeginSweep(s.stepHandle(path))
 	defer release()
 
-	err := os.RemoveAll(path)
+	err = os.RemoveAll(path)
 	if err != nil {
 		s.logger.Error("failed-to-delete-artifact", err, lager.Data{"path": path})
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -482,7 +943,21 @@ func (s *Server) handleDeleteArtifact(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleHeadArtifact(w http.ResponseWriter, r *http.Request) {
-	path := s.artifactPath(r)
+	artifactPath, err := s.artifactPath(r)
+	if err != nil {
+		http.Error(w, "malformed artifact path", http.StatusBadRequest)
+		return
+	}
+	digest, snapshotRequest, err := snapshotDigestForRequest(r)
+	if err != nil {
+		http.Error(w, "malformed snapshot path", http.StatusBadRequest)
+		return
+	}
+	if snapshotRequest {
+		s.handleHeadSnapshot(w, r, digest)
+		return
+	}
+	path := artifactPath
 
 	// Check filesystem first, then fall back to registry aliases.
 	if _, err := os.Stat(path); err != nil {

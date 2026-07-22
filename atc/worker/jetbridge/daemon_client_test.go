@@ -3,8 +3,11 @@ package jetbridge_test
 import (
 	"context"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
+	"strings"
 	"testing"
 
 	"code.cloudfoundry.org/lager/v3/lagertest"
@@ -13,6 +16,68 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
 )
+
+func boolPointer(value bool) *bool { return &value }
+
+func stringPointer(value string) *string { return &value }
+
+func TestDaemonEndpointsAreStableReadyNodeIdentities(t *testing.T) {
+	clientset := fake.NewSimpleClientset(&discoveryv1.EndpointSlice{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "artifact-daemon-stable",
+			Namespace: "cicd",
+			Labels:    map[string]string{discoveryv1.LabelServiceName: "artifact-daemon"},
+		},
+		Endpoints: []discoveryv1.Endpoint{
+			{NodeName: stringPointer("node-b"), Addresses: []string{"10.0.0.9", "10.0.0.2"}},
+			{NodeName: stringPointer("node-a"), Addresses: []string{"10.0.0.3"}, Conditions: discoveryv1.EndpointConditions{Ready: nil}},
+			{NodeName: stringPointer("node-b"), Addresses: []string{"10.0.0.1"}},
+			{NodeName: stringPointer("not-ready"), Addresses: []string{"10.0.0.4"}, Conditions: discoveryv1.EndpointConditions{Ready: boolPointer(false)}},
+			{NodeName: stringPointer("not-serving"), Addresses: []string{"10.0.0.5"}, Conditions: discoveryv1.EndpointConditions{Serving: boolPointer(false)}},
+			{NodeName: stringPointer("terminating"), Addresses: []string{"10.0.0.6"}, Conditions: discoveryv1.EndpointConditions{Terminating: boolPointer(true)}},
+			{Addresses: []string{"10.0.0.7"}},
+		},
+	})
+	client := jetbridge.NewDaemonClient(lagertest.NewTestLogger("test"), clientset, "cicd", "artifact-daemon", 7780, nil)
+
+	endpoints, err := client.DaemonEndpoints(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []jetbridge.DaemonEndpoint{
+		{NodeName: "node-a", Address: "10.0.0.3"},
+		{NodeName: "node-b", Address: "10.0.0.1"},
+	}
+	if !reflect.DeepEqual(endpoints, want) {
+		t.Fatalf("endpoints = %#v, want %#v", endpoints, want)
+	}
+}
+
+func TestDaemonEndpointURLHandlesIPv6(t *testing.T) {
+	endpoint := jetbridge.DaemonEndpoint{NodeName: "node-v6", Address: "2001:db8::7"}
+	got, err := endpoint.URL("https", 7780, "snapshots/sha256/"+strings.Repeat("a", 64)+".tar")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantHost := net.JoinHostPort("2001:db8::7", "7780")
+	if got.Scheme != "https" || got.Host != wantHost || !strings.HasPrefix(got.Path, "/artifacts/snapshots/") {
+		t.Fatalf("URL = %s", got.String())
+	}
+}
+
+func TestNewDaemonClientCheckedFailsClosedOnInvalidTLS(t *testing.T) {
+	_, err := jetbridge.NewDaemonClientChecked(
+		lagertest.NewTestLogger("test"),
+		fake.NewSimpleClientset(),
+		"cicd",
+		"artifact-daemon",
+		7780,
+		&jetbridge.DaemonClientTLSConfig{CertPath: "/missing/cert"},
+	)
+	if err == nil {
+		t.Fatal("expected incomplete TLS configuration to fail closed")
+	}
+}
 
 func fakeEndpointSlice(namespace, service string, ips ...string) *discoveryv1.EndpointSlice {
 	var endpoints []discoveryv1.Endpoint

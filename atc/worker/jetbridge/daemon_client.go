@@ -2,8 +2,13 @@ package jetbridge
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,13 +22,43 @@ import (
 // them for resource cache existence. It mirrors the PeerResolver discovery
 // pattern in cmd/artifact-daemon/peers.go but runs on the ATC side.
 type DaemonClient struct {
-	logger    lager.Logger
-	clientset kubernetes.Interface
-	namespace string
-	service   string
-	port      int
-	client    *http.Client
-	scheme    string // "http" or "https"
+	logger            lager.Logger
+	clientset         kubernetes.Interface
+	namespace         string
+	service           string
+	port              int
+	client            *http.Client
+	streamingClient   *http.Client
+	scheme            string // "http" or "https"
+	initializationErr error
+}
+
+// DaemonEndpoint pairs a daemon's stable Kubernetes node identity with its
+// current routable address. NodeName, not pod IP, is persisted in snapshot
+// locations so pod replacement does not change storage identity.
+type DaemonEndpoint struct {
+	NodeName string
+	Address  string
+}
+
+func (endpoint DaemonEndpoint) URL(scheme string, port int, key string) (*url.URL, error) {
+	if strings.TrimSpace(endpoint.NodeName) == "" || strings.TrimSpace(endpoint.Address) == "" {
+		return nil, fmt.Errorf("daemon endpoint requires node name and address")
+	}
+	if scheme != "http" && scheme != "https" {
+		return nil, fmt.Errorf("invalid daemon URL scheme %q", scheme)
+	}
+	if port <= 0 || port > 65535 {
+		return nil, fmt.Errorf("invalid daemon port %d", port)
+	}
+	if key == "" || strings.HasPrefix(key, "/") || strings.ContainsAny(key, "\\\x00") {
+		return nil, fmt.Errorf("invalid daemon artifact key")
+	}
+	return &url.URL{
+		Scheme: scheme,
+		Host:   net.JoinHostPort(endpoint.Address, strconv.Itoa(port)),
+		Path:   "/artifacts/" + key,
+	}, nil
 }
 
 // DaemonClientTLSConfig holds optional mTLS configuration for the DaemonClient.
@@ -39,34 +74,139 @@ type DaemonClientTLSConfig struct {
 func NewDaemonClient(logger lager.Logger, clientset kubernetes.Interface, namespace, service string, port int, tlsCfg *DaemonClientTLSConfig) *DaemonClient {
 	scheme := "http"
 	transport := http.DefaultTransport.(*http.Transport).Clone()
+	var initializationErr error
 
-	if tlsCfg != nil && tlsCfg.CertPath != "" && tlsCfg.KeyPath != "" && tlsCfg.CACertPath != "" {
+	if tlsCfg != nil {
+		scheme = "https"
+		if tlsCfg.CertPath == "" || tlsCfg.KeyPath == "" || tlsCfg.CACertPath == "" {
+			initializationErr = errors.New("artifact daemon mTLS requires certificate, key, and CA certificate")
+		}
 		serverName := ""
 		if service != "" && namespace != "" {
 			serverName = fmt.Sprintf("%s.%s.svc", service, namespace)
 		}
-		tlsConfig, err := loadDaemonClientTLS(tlsCfg.CertPath, tlsCfg.KeyPath, tlsCfg.CACertPath, serverName)
-		if err != nil {
-			logger.Error("failed-to-load-daemon-client-tls", err)
-		} else {
-			transport.TLSClientConfig = tlsConfig
-			scheme = "https"
-			logger.Info("mtls-enabled")
+		if initializationErr == nil {
+			tlsConfig, err := loadDaemonClientTLS(tlsCfg.CertPath, tlsCfg.KeyPath, tlsCfg.CACertPath, serverName)
+			if err != nil {
+				initializationErr = err
+			} else {
+				transport.TLSClientConfig = tlsConfig
+				logger.Info("mtls-enabled")
+			}
+		}
+		if initializationErr != nil {
+			logger.Error("failed-to-load-daemon-client-tls", initializationErr)
 		}
 	}
+	streamingTransport := transport.Clone()
+	streamingTransport.ResponseHeaderTimeout = 30 * time.Second
 
 	return &DaemonClient{
-		logger:    logger,
-		clientset: clientset,
-		namespace: namespace,
-		service:   service,
-		port:      port,
-		scheme:    scheme,
+		logger:            logger,
+		clientset:         clientset,
+		namespace:         namespace,
+		service:           service,
+		port:              port,
+		scheme:            scheme,
+		initializationErr: initializationErr,
 		client: &http.Client{
 			Timeout:   5 * time.Second,
 			Transport: transport,
 		},
+		streamingClient: &http.Client{Transport: streamingTransport},
 	}
+}
+
+// NewDaemonClientChecked constructs a daemon client and rejects incomplete or
+// invalid requested TLS. Callers enabling authenticated snapshot content must
+// use this constructor so configuration failure cannot downgrade to HTTP.
+func NewDaemonClientChecked(logger lager.Logger, clientset kubernetes.Interface, namespace, service string, port int, tlsCfg *DaemonClientTLSConfig) (*DaemonClient, error) {
+	client := NewDaemonClient(logger, clientset, namespace, service, port, tlsCfg)
+	if client.initializationErr != nil {
+		return nil, client.initializationErr
+	}
+	return client, nil
+}
+
+// DaemonEndpoints returns one deterministic current address for every usable
+// daemon node. EndpointSlice list/order and duplicate pod addresses cannot
+// affect the result.
+func (d *DaemonClient) DaemonEndpoints(ctx context.Context) ([]DaemonEndpoint, error) {
+	if d == nil || d.clientset == nil {
+		return nil, fmt.Errorf("daemon discovery client is required")
+	}
+	slices, err := d.clientset.DiscoveryV1().EndpointSlices(d.namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: discoveryv1.LabelServiceName + "=" + d.service,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list endpoint slices for %s: %w", d.service, err)
+	}
+	addressByNode := make(map[string]string)
+	for _, slice := range slices.Items {
+		for _, endpoint := range slice.Endpoints {
+			if endpoint.Conditions.Ready != nil && !*endpoint.Conditions.Ready {
+				continue
+			}
+			if endpoint.Conditions.Serving != nil && !*endpoint.Conditions.Serving {
+				continue
+			}
+			if endpoint.Conditions.Terminating != nil && *endpoint.Conditions.Terminating {
+				continue
+			}
+			if endpoint.NodeName == nil || strings.TrimSpace(*endpoint.NodeName) == "" {
+				continue
+			}
+			nodeName := strings.TrimSpace(*endpoint.NodeName)
+			for _, candidate := range endpoint.Addresses {
+				candidate = strings.TrimSpace(candidate)
+				if candidate == "" {
+					continue
+				}
+				if current, found := addressByNode[nodeName]; !found || candidate < current {
+					addressByNode[nodeName] = candidate
+				}
+			}
+		}
+	}
+	endpoints := make([]DaemonEndpoint, 0, len(addressByNode))
+	for nodeName, address := range addressByNode {
+		endpoints = append(endpoints, DaemonEndpoint{NodeName: nodeName, Address: address})
+	}
+	sort.Slice(endpoints, func(i, j int) bool {
+		if endpoints[i].NodeName != endpoints[j].NodeName {
+			return endpoints[i].NodeName < endpoints[j].NodeName
+		}
+		return endpoints[i].Address < endpoints[j].Address
+	})
+	return endpoints, nil
+}
+
+func (d *DaemonClient) snapshotHTTPClient() (*http.Client, error) {
+	if d == nil {
+		return nil, fmt.Errorf("daemon client is required")
+	}
+	if d.initializationErr != nil {
+		return nil, d.initializationErr
+	}
+	if d.streamingClient == nil {
+		return nil, fmt.Errorf("daemon streaming client is required")
+	}
+	return d.streamingClient, nil
+}
+
+func (d *DaemonClient) snapshotURL(endpoint DaemonEndpoint, key string) (*url.URL, error) {
+	if d == nil {
+		return nil, fmt.Errorf("daemon client is required")
+	}
+	return endpoint.URL(d.scheme, d.port, key)
+}
+
+func (d *DaemonClient) routeURL(address, route string) string {
+	return (&url.URL{
+		Scheme: d.scheme,
+		Host:   net.JoinHostPort(address, strconv.Itoa(d.port)),
+		Path:   "/" + strings.TrimPrefix(route, "/"),
+	}).String()
 }
 
 // daemonIPs returns the IP addresses of all artifact-daemon pods.
@@ -133,8 +273,8 @@ func (d *DaemonClient) ProbeResourceCache(ctx context.Context, cacheKey string) 
 			// writing anything meaningful).
 
 			// Try the new endpoint first (daemon v0.2.83+).
-			url := fmt.Sprintf("%s://%s:%d/resource-caches/%s", d.scheme, ip, d.port, cacheKey)
-			req, err := http.NewRequestWithContext(ctx, http.MethodHead, url, nil)
+			requestURL := d.routeURL(ip, "/resource-caches/"+cacheKey)
+			req, err := http.NewRequestWithContext(ctx, http.MethodHead, requestURL, nil)
 			if err != nil {
 				results <- probeResult{}
 				return
@@ -155,7 +295,7 @@ func (d *DaemonClient) ProbeResourceCache(ctx context.Context, cacheKey string) 
 			// Fallback for older daemons: POST /resolve with a probe-only
 			// destination. The daemon checks registry → filesystem → peers.
 			// We use a unique temp path to avoid conflicts.
-			resolveURL := fmt.Sprintf("%s://%s:%d/resolve", d.scheme, ip, d.port)
+			resolveURL := d.routeURL(ip, "/resolve")
 			// Use /tmp/probe-{key} as destination — the daemon will try to
 			// copy data there but we only care about the response status.
 			resolveBody := fmt.Sprintf(`{"key":%q,"dest":"/tmp/concourse-probe-%s"}`, cacheKey, cacheKey)
@@ -231,8 +371,8 @@ func (d *DaemonClient) ProbeStepArtifact(ctx context.Context, key string) (strin
 
 	for _, ip := range ips {
 		go func(ip string) {
-			url := fmt.Sprintf("%s://%s:%d/artifacts/steps/%s", d.scheme, ip, d.port, key)
-			req, err := http.NewRequestWithContext(ctx, http.MethodHead, url, nil)
+			requestURL := d.routeURL(ip, "/artifacts/steps/"+key)
+			req, err := http.NewRequestWithContext(ctx, http.MethodHead, requestURL, nil)
 			if err != nil {
 				results <- probeResult{}
 				return
@@ -281,10 +421,10 @@ func (d *DaemonClient) ProbeStepArtifact(ctx context.Context, key string) (strin
 func (d *DaemonClient) TriggerMirror(ctx context.Context, daemonIP, key string) error {
 	logger := d.logger.Session("trigger-mirror", lager.Data{"daemon_ip": daemonIP, "key": key})
 
-	url := fmt.Sprintf("%s://%s:%d/mirror", d.scheme, daemonIP, d.port)
+	requestURL := d.routeURL(daemonIP, "/mirror")
 	body := fmt.Sprintf(`{"key":%q}`, key)
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, requestURL, strings.NewReader(body))
 	if err != nil {
 		logger.Error("create-request-failed", err)
 		return nil
@@ -324,8 +464,8 @@ func (d *DaemonClient) RegisterAlias(ctx context.Context, key, localPath string)
 	registered := false
 
 	for _, ip := range ips {
-		url := fmt.Sprintf("%s://%s:%d/register", d.scheme, ip, d.port)
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(body))
+		requestURL := d.routeURL(ip, "/register")
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, requestURL, strings.NewReader(body))
 		if err != nil {
 			continue
 		}

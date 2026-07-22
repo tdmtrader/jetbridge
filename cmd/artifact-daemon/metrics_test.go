@@ -1,6 +1,9 @@
 package main_test
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"io"
 	"net/http"
 	"os"
@@ -86,5 +89,30 @@ func TestMetricsEndpoint_RecordsNotFound(t *testing.T) {
 	body := getMetrics(t, ts.URL)
 	if !strings.Contains(body, `artifact_daemon_resolve_requests_total{method="exhausted",status="not_found"} 1`) {
 		t.Errorf("expected resolve_requests_total{exhausted,not_found}=1, got:\n%s", body)
+	}
+}
+
+func TestMetricsEndpointRecordsSnapshotOperationsWithoutUnboundedLabels(t *testing.T) {
+	ts, _ := setupServer(t)
+	content := []byte("metric snapshot")
+	sum := sha256.Sum256(content)
+	digest := hex.EncodeToString(sum[:])
+	url := ts.URL + "/artifacts/snapshots/sha256/" + digest + ".tar"
+	req, _ := http.NewRequest(http.MethodPut, url, bytes.NewReader(content))
+	resp, err := ts.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("PUT status = %d", resp.StatusCode)
+	}
+
+	body := getMetrics(t, ts.URL)
+	if !strings.Contains(body, `artifact_daemon_snapshot_operations_total{operation="put",status="created"} 1`) {
+		t.Fatalf("missing bounded snapshot operation metric:\n%s", body)
+	}
+	if strings.Contains(body, digest) {
+		t.Fatalf("snapshot digest leaked into metric labels:\n%s", body)
 	}
 }
