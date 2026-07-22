@@ -2,6 +2,7 @@ package atc_test
 
 import (
 	"encoding/json"
+	"math"
 	"time"
 
 	. "github.com/concourse/concourse/atc"
@@ -10,6 +11,44 @@ import (
 )
 
 var _ = Describe("Config", func() {
+	Describe("CanonicalJSON value codec", func() {
+		It("canonicalizes maps deterministically while preserving slice order and scalar types", func() {
+			value := map[string]any{
+				"z": []any{"second", 2, false},
+				"a": map[string]any{"number": 1, "string": "1", "boolean": true},
+			}
+
+			first, err := CanonicalJSON(value)
+			Expect(err).NotTo(HaveOccurred())
+			second, err := CanonicalJSON(value)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(second).To(Equal(first))
+			Expect(string(first)).To(Equal(`{"a":{"boolean":true,"number":1,"string":"1"},"z":["second",2,false]}`))
+			Expect(CanonicalJSONVersion).To(Equal(1))
+		})
+
+		It("uses the same bytes for typed configs and the config compatibility method", func() {
+			config := Config{Template: true, Params: []ParamSchema{{Name: "branch", Type: "string", Default: "main"}}}
+
+			generic, err := CanonicalJSON(config)
+			Expect(err).NotTo(HaveOccurred())
+			compatibility, err := config.CanonicalJSON()
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(generic).To(Equal(compatibility))
+			Expect(string(generic)).To(Equal(`{"template":true,"params":[{"name":"branch","type":"string","default":"main"}]}`))
+		})
+
+		It("returns errors for unsupported and non-finite semantic values", func() {
+			_, err := CanonicalJSON(map[string]any{"callback": func() {}})
+			Expect(err).To(MatchError(ContainSubstring("unsupported type")))
+
+			_, err = CanonicalJSON(map[string]any{"score": math.Inf(1)})
+			Expect(err).To(MatchError(ContainSubstring("unsupported value")))
+		})
+	})
+
 	Describe("CanonicalJSON", func() {
 		It("is deterministic and does not mutate step unknown fields", func() {
 			future := json.RawMessage(`{"a":1,"z":2}`)

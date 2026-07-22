@@ -17,6 +17,19 @@ import (
 const ConfigVersionHeader = "X-Concourse-Config-Version"
 const DefaultTeamName = "main"
 
+// CanonicalJSONVersion identifies the deterministic semantic JSON codec used
+// by Concourse control-plane identities. Protocols must still domain-separate
+// their hashes; the version freezes the encoding rules shared by those
+// protocols.
+const CanonicalJSONVersion = 1
+
+// CanonicalJSON returns the version-1 deterministic JSON representation of a
+// typed semantic value. encoding/json sorts string map keys, preserves slice
+// order and scalar types, and returns an error for unsupported values.
+func CanonicalJSON(value any) ([]byte, error) {
+	return json.Marshal(value)
+}
+
 type Config struct {
 	Groups        GroupConfigs        `json:"groups,omitempty"`
 	VarSources    VarSourceConfigs    `json:"var_sources,omitempty"`
@@ -35,7 +48,7 @@ type Config struct {
 // wire representation is deterministic without normalizing or mutating the
 // caller's config.
 func (config Config) CanonicalJSON() ([]byte, error) {
-	return json.Marshal(config)
+	return CanonicalJSON(config)
 }
 
 func UnmarshalConfig(payload []byte, config any) error {

@@ -342,6 +342,12 @@ func validateRenderableFunction(function *FunctionConfig, signature PublicSignat
 	if err := validateCanonicalWorkflowOutputLinkage(function, workflowDefinitionID); err != nil {
 		return err
 	}
+	// Renderer-owned tokens have a narrower authority boundary than generic
+	// runtime interpolation. Diagnose attempted token forgery before reporting
+	// the broader immutable-dependency violation.
+	if err := rejectReservedTokenInjection(function, signature); err != nil {
+		return err
+	}
 	if err := walkFunctionSteps(function.Plan, func(step atc.Step, path string, _ bool) error {
 		if len(step.UnknownFields) > 0 {
 			return fmt.Errorf("workflow: %s: unknown step fields are not renderable", path)
@@ -355,28 +361,139 @@ func validateRenderableFunction(function *FunctionConfig, signature PublicSignat
 					return fmt.Errorf("workflow: %s: %w", path, err)
 				}
 			}
+			if _, err := validateImmutableTaskDependencies(leaf, function.ResourceTypes); err != nil {
+				return fmt.Errorf("workflow: %s: %w", path, err)
+			}
 		case *atc.AgentStep:
 			if leaf.FunctionID != "" {
 				if err := validateSafeIdentifier(leaf.FunctionID, "function ID"); err != nil {
 					return fmt.Errorf("workflow: %s: %w", path, err)
 				}
 			}
-			agent := leaf
-			if len(agent.Skills) > 0 {
-				return fmt.Errorf("workflow: %s: agent skills are not supported by immutable function templates", path)
+			if err := validateImmutableAgentDependencies(leaf); err != nil {
+				return fmt.Errorf("workflow: %s: %w", path, err)
 			}
-			if agent.PromptFile != "" || agent.SystemPromptFile != "" || len(agent.ContextFiles) > 0 || len(agent.Capabilities) > 0 {
-				return fmt.Errorf("workflow: %s: unresolved agent source assets or capabilities are not renderable", path)
-			}
-			if err := validateExtractedSidecars(agent.Sidecars); err != nil {
-				return fmt.Errorf("workflow: %s: literal agent sidecars: %w", path, err)
+		case *atc.HarvestStep:
+			if leaf.DevMCP != nil {
+				if err := validateImmutableSidecars([]atc.SidecarSource{*leaf.DevMCP}); err != nil {
+					return fmt.Errorf("workflow: %s: harvest sidecar: %w", path, err)
+				}
 			}
 		}
 		return nil
 	}); err != nil {
 		return err
 	}
-	return rejectReservedTokenInjection(function, signature)
+	if err := validateImmutableRuntimeDependencies(function.Plan); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateImmutableRuntimeDependencies(steps []atc.Step) error {
+	for index, step := range steps {
+		if err := validateImmutableRuntimeStep(step, fmt.Sprintf("plan[%d]", index), nil); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateImmutableRuntimeStep(step atc.Step, path string, acrossVars map[string]struct{}) error {
+	switch config := step.Config.(type) {
+	case *atc.TaskStep:
+		copy := *config
+		copy.SnapshotOutputs = cloneSnapshotOutputs(config.SnapshotOutputs)
+		sanitizeTypedOutputRunTokens(copy.SnapshotOutputs)
+		if err := rejectRuntimeInterpolationExcept(copy, path+".task", acrossVars); err != nil {
+			return fmt.Errorf("workflow: %w", err)
+		}
+	case *atc.AgentStep:
+		copy := *config
+		copy.SnapshotOutputs = cloneSnapshotOutputs(config.SnapshotOutputs)
+		sanitizeTypedOutputRunTokens(copy.SnapshotOutputs)
+		if err := rejectRuntimeInterpolationExcept(copy, path+".agent", acrossVars); err != nil {
+			return fmt.Errorf("workflow: %w", err)
+		}
+	case *atc.HarvestStep:
+		if config.DevMCP != nil {
+			if err := rejectRuntimeInterpolationExcept(*config.DevMCP, path+".harvest.dev_mcp", acrossVars); err != nil {
+				return fmt.Errorf("workflow: %w", err)
+			}
+		}
+	case *atc.DoStep:
+		for index, child := range config.Steps {
+			if err := validateImmutableRuntimeStep(child, fmt.Sprintf("%s.do[%d]", path, index), acrossVars); err != nil {
+				return err
+			}
+		}
+	case *atc.InParallelStep:
+		for index, child := range config.Config.Steps {
+			if err := validateImmutableRuntimeStep(child, fmt.Sprintf("%s.in_parallel[%d]", path, index), acrossVars); err != nil {
+				return err
+			}
+		}
+	case *atc.TryStep:
+		return validateImmutableRuntimeStep(config.Step, path+".try", acrossVars)
+	case *atc.AcrossStep:
+		childVars := cloneStringSet(acrossVars)
+		for index, variable := range config.Vars {
+			if err := rejectRuntimeInterpolationExcept(variable.Values, fmt.Sprintf("%s.across[%d].values", path, index), acrossVars); err != nil {
+				return fmt.Errorf("workflow: dynamic across values are not immutable: %w", err)
+			}
+			childVars[variable.Var] = struct{}{}
+		}
+		return validateImmutableRuntimeStep(atc.Step{Config: config.Step}, path+".across", childVars)
+	case *atc.RetryStep:
+		return validateImmutableRuntimeStep(atc.Step{Config: config.Step}, path+".attempts", acrossVars)
+	case *atc.TimeoutStep:
+		return validateImmutableRuntimeStep(atc.Step{Config: config.Step}, path+".timeout", acrossVars)
+	case *atc.OnSuccessStep:
+		if err := validateImmutableRuntimeStep(atc.Step{Config: config.Step}, path+".step", acrossVars); err != nil {
+			return err
+		}
+		return validateImmutableRuntimeStep(config.Hook, path+".on_success", acrossVars)
+	case *atc.OnFailureStep:
+		if err := validateImmutableRuntimeStep(atc.Step{Config: config.Step}, path+".step", acrossVars); err != nil {
+			return err
+		}
+		return validateImmutableRuntimeStep(config.Hook, path+".on_failure", acrossVars)
+	case *atc.OnErrorStep:
+		if err := validateImmutableRuntimeStep(atc.Step{Config: config.Step}, path+".step", acrossVars); err != nil {
+			return err
+		}
+		return validateImmutableRuntimeStep(config.Hook, path+".on_error", acrossVars)
+	case *atc.OnAbortStep:
+		if err := validateImmutableRuntimeStep(atc.Step{Config: config.Step}, path+".step", acrossVars); err != nil {
+			return err
+		}
+		return validateImmutableRuntimeStep(config.Hook, path+".on_abort", acrossVars)
+	case *atc.EnsureStep:
+		if err := validateImmutableRuntimeStep(atc.Step{Config: config.Step}, path+".step", acrossVars); err != nil {
+			return err
+		}
+		return validateImmutableRuntimeStep(config.Hook, path+".ensure", acrossVars)
+	}
+	return nil
+}
+
+func cloneSnapshotOutputs(source map[string]atc.SnapshotOutputConfig) map[string]atc.SnapshotOutputConfig {
+	if source == nil {
+		return nil
+	}
+	cloned := make(map[string]atc.SnapshotOutputConfig, len(source))
+	for name, output := range source {
+		cloned[name] = output
+	}
+	return cloned
+}
+
+func cloneStringSet(source map[string]struct{}) map[string]struct{} {
+	cloned := make(map[string]struct{}, len(source)+1)
+	for value := range source {
+		cloned[value] = struct{}{}
+	}
+	return cloned
 }
 
 type workflowOutputLinkage struct {

@@ -109,19 +109,8 @@ func validateExtractedLeaf(step atc.Step, path string, resourceTypes atc.Resourc
 		if leaf.Timeout != "" {
 			return nil, nil, nil, fmt.Errorf("task timeout modifier is not extractable")
 		}
-		if leaf.ConfigPath != "" {
-			return nil, nil, nil, fmt.Errorf("file-backed task config %q is not extractable", leaf.ConfigPath)
-		}
-		if leaf.Config == nil {
-			return nil, nil, nil, fmt.Errorf("inline task config is required")
-		}
-		if leaf.ImageArtifactName != "" {
-			return nil, nil, nil, fmt.Errorf("task image artifact %q is not extractable", leaf.ImageArtifactName)
-		}
-		if len(leaf.Vars) > 0 {
-			return nil, nil, nil, fmt.Errorf("task vars are an unresolved runtime dependency")
-		}
-		if err := validateExtractedSidecars(leaf.Sidecars); err != nil {
+		closure, err := validateImmutableTaskDependencies(leaf, resourceTypes)
+		if err != nil {
 			return nil, nil, nil, err
 		}
 		ordinaryInputs, ordinaryOutputs := effectiveTaskArtifactNames(leaf)
@@ -131,35 +120,13 @@ func validateExtractedLeaf(step atc.Step, path string, resourceTypes atc.Resourc
 		if err := validateExactTypedCoverage("task output", ordinaryOutputs, snapshotOutputNames(leaf.SnapshotOutputs)); err != nil {
 			return nil, nil, nil, err
 		}
-		if len(leaf.Config.Caches) > 0 {
-			return nil, nil, nil, fmt.Errorf("task caches are mutable build state and are not extractable")
-		}
-		if leaf.Config.RootfsURI != "" {
-			return nil, nil, nil, fmt.Errorf("task rootfs_uri is not an immutable image and is not extractable")
-		}
-		if leaf.Config.ImageResource == nil {
-			return nil, nil, nil, fmt.Errorf("task image_resource is required for immutable extraction")
-		}
-		closure, err := immutableTaskImageClosure(leaf.Config.ImageResource, resourceTypes)
-		if err != nil {
-			return nil, nil, nil, err
-		}
 		return signatureInputs(leaf.SnapshotInputs), signatureOutputs(leaf.SnapshotOutputs), closure, nil
 
 	case *atc.AgentStep:
 		if leaf.Timeout != "" {
 			return nil, nil, nil, fmt.Errorf("agent timeout modifier is not extractable")
 		}
-		if leaf.PromptFile != "" || leaf.SystemPromptFile != "" || len(leaf.ContextFiles) > 0 {
-			return nil, nil, nil, fmt.Errorf("agent file assets are not extractable")
-		}
-		if len(leaf.Capabilities) > 0 {
-			return nil, nil, nil, fmt.Errorf("unexpanded agent capabilities are not extractable")
-		}
-		if len(leaf.Skills) > 0 {
-			return nil, nil, nil, fmt.Errorf("agent skills are not supported by immutable extracted targets")
-		}
-		if err := validateExtractedSidecars(leaf.Sidecars); err != nil {
+		if err := validateImmutableAgentDependencies(leaf); err != nil {
 			return nil, nil, nil, err
 		}
 		if err := validateExactTypedCoverage("agent input", leaf.Inputs, snapshotInputNames(leaf.SnapshotInputs)); err != nil {
@@ -175,16 +142,63 @@ func validateExtractedLeaf(step atc.Step, path string, resourceTypes atc.Resourc
 	}
 }
 
-func validateExtractedSidecars(sidecars []atc.SidecarSource) error {
+func validateImmutableTaskDependencies(task *atc.TaskStep, resourceTypes atc.ResourceTypes) (atc.ResourceTypes, error) {
+	if task == nil {
+		return nil, fmt.Errorf("task config is required")
+	}
+	if task.ConfigPath != "" {
+		return nil, fmt.Errorf("file-backed task config %q is not immutable", task.ConfigPath)
+	}
+	if task.Config == nil {
+		return nil, fmt.Errorf("inline task config is required")
+	}
+	if task.ImageArtifactName != "" {
+		return nil, fmt.Errorf("task image artifact %q is not immutable", task.ImageArtifactName)
+	}
+	if len(task.Vars) > 0 {
+		return nil, fmt.Errorf("task vars are an unresolved runtime dependency")
+	}
+	if err := validateImmutableSidecars(task.Sidecars); err != nil {
+		return nil, err
+	}
+	if len(task.Config.Caches) > 0 {
+		return nil, fmt.Errorf("task caches are mutable build state")
+	}
+	if task.Config.RootfsURI != "" {
+		return nil, fmt.Errorf("task rootfs_uri is not an immutable image")
+	}
+	if task.Config.ImageResource == nil {
+		return nil, fmt.Errorf("task image_resource is required for immutable execution")
+	}
+	return immutableTaskImageClosure(task.Config.ImageResource, resourceTypes)
+}
+
+func validateImmutableAgentDependencies(agent *atc.AgentStep) error {
+	if agent == nil {
+		return fmt.Errorf("agent config is required")
+	}
+	if agent.PromptFile != "" || agent.SystemPromptFile != "" || len(agent.ContextFiles) > 0 {
+		return fmt.Errorf("agent file assets are unresolved runtime dependencies")
+	}
+	if len(agent.Capabilities) > 0 {
+		return fmt.Errorf("unexpanded agent capabilities are unresolved runtime dependencies")
+	}
+	if len(agent.Skills) > 0 {
+		return fmt.Errorf("agent skills are not supported by immutable function templates")
+	}
+	return validateImmutableSidecars(agent.Sidecars)
+}
+
+func validateImmutableSidecars(sidecars []atc.SidecarSource) error {
 	for index, source := range sidecars {
 		if source.File != "" {
-			return fmt.Errorf("sidecar[%d] file %q is not extractable", index, source.File)
+			return fmt.Errorf("sidecar[%d] file %q is not immutable", index, source.File)
 		}
 		if source.Config == nil {
 			return fmt.Errorf("sidecar[%d] must contain a literal config", index)
 		}
 		if source.Config.ImageArtifact != "" {
-			return fmt.Errorf("sidecar[%d] image_artifact %q is not extractable", index, source.Config.ImageArtifact)
+			return fmt.Errorf("sidecar[%d] image_artifact %q is not immutable", index, source.Config.ImageArtifact)
 		}
 		if err := source.Config.ValidateCapability(); err != nil {
 			return fmt.Errorf("sidecar[%d] must use a literal exact digest: %w", index, err)
@@ -292,13 +306,23 @@ func rejectExtractionInterpolation(step atc.Step) error {
 }
 
 func rejectRuntimeInterpolation(source any, root string) error {
+	return rejectRuntimeInterpolationExcept(source, root, nil)
+}
+
+func rejectRuntimeInterpolationExcept(source any, root string, allowedAcrossVars map[string]struct{}) error {
 	payload, err := json.Marshal(source)
 	if err != nil {
-		return fmt.Errorf("inspect extraction dependencies: %w", err)
+		return fmt.Errorf("inspect immutable dependencies: %w", err)
 	}
 	var value any
 	if err := json.Unmarshal(payload, &value); err != nil {
-		return fmt.Errorf("inspect extraction dependencies: %w", err)
+		return fmt.Errorf("inspect immutable dependencies: %w", err)
+	}
+	hasUnresolvedInterpolation := func(value string) bool {
+		for variable := range allowedAcrossVars {
+			value = strings.ReplaceAll(value, "((.:"+variable+"))", "")
+		}
+		return strings.Contains(value, "((")
 	}
 	var inspect func(any, []string) error
 	inspect = func(current any, path []string) error {
@@ -310,7 +334,7 @@ func rejectRuntimeInterpolation(source any, root string) error {
 			}
 			sort.Strings(keys)
 			for _, key := range keys {
-				if strings.Contains(key, "((") {
+				if hasUnresolvedInterpolation(key) {
 					return fmt.Errorf("unresolved runtime interpolation in map key %s", strings.Join(append(path, key), "."))
 				}
 				if err := inspect(typed[key], append(path, key)); err != nil {
@@ -325,7 +349,7 @@ func rejectRuntimeInterpolation(source any, root string) error {
 			}
 		case string:
 			joined := strings.Join(path, ".")
-			if strings.Contains(typed, "((") {
+			if hasUnresolvedInterpolation(typed) {
 				return fmt.Errorf("unresolved runtime interpolation in %s", joined)
 			}
 		}
