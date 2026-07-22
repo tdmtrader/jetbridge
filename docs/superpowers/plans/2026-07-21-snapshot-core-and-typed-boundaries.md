@@ -90,9 +90,9 @@
 - [ ] Write registry tests for exact version lookup, unsupported type errors, duplicate registration, and validation context input lookup.
 - [ ] Expand `ReviewOutput.Validate` tests to cover exact `1.0.0`, score ranges, threshold consistency, nested severity/category checks, unique finding IDs, safe file/test paths, positive line ranges, and test-summary totals.
 - [ ] Define and test `change.json`, `work-item.json`, `measurements.json`, engineering request/report, audit/diagnosis, question, and human-answer Go contracts with strict JSON decoding (`DisallowUnknownFields`) and one trailing-JSON rejection.
-- [ ] Test `repository-change/v1` for `git-tree`, `patch`, and `bundle` against a temporary base Git repository; verify full SHA format, base/result relationship, payload digest, safe paths, `git apply --check`, and `git bundle verify`.
+- [ ] Test `repository-change/v1` for `git-tree`, `patch`, and `bundle` against a temporary base Git repository; verify a full base SHA and required full result-tree SHA, require a full result commit SHA only for commit-bearing `git-tree` and `bundle` representations, prove patches by their resulting tree, and verify base/result relationship, payload digest, safe paths, `git apply --check`, and `git bundle verify`.
 - [ ] Run `go test ./agent/snapshot/contracts ./agent/schema -count=1` and confirm failures.
-- [ ] Implement a registry containing `opaque/v1`, `repository/v1`, `repository-change/v1`, `review/v1`, `work-item/v1`, `log-bundle/v1`, `measurements/v1`, `upgrade-request/v1`, `upgrade-report/v1`, `validation-report/v1`, `gate-results/v1`, `database-snapshot/v1`, `deployment-snapshot/v1`, `audit-findings/v1`, `diagnosis/v1`, `question/v1`, and `human-answer/v1`.
+- [ ] Implement a registry containing exactly 17 named contracts: `opaque/v1`, `repository/v1`, `repository-change/v1`, `review/v1`, `work-item/v1`, `log-bundle/v1`, `measurements/v1`, `upgrade-request/v1`, `upgrade-report/v1`, `validation-report/v1`, `gate-results/v1`, `database-snapshot/v1`, `deployment-snapshot/v1`, `audit-findings/v1`, `diagnosis/v1`, `question/v1`, and `human-answer/v1`.
 - [ ] Keep validators free of network access. Resolve declared base snapshots through the supplied `ValidationContext` content reader.
 - [ ] Re-run focused tests and commit `feat(snapshot): enforce built-in snapshot contracts`.
 

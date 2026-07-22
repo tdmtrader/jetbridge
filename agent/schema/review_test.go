@@ -2,6 +2,7 @@ package schema_test
 
 import (
 	"encoding/json"
+	"math"
 	"testing"
 
 	"github.com/concourse/concourse/agent/schema"
@@ -117,6 +118,108 @@ func TestReviewOutputValidate(t *testing.T) {
 		r := validReview()
 		r.Summary = ""
 		requireErrContains(t, r.Validate(), "summary")
+	})
+}
+
+func TestReviewOutputValidateRemainsCompatibilityOriented(t *testing.T) {
+	r := validReview()
+	r.SchemaVersion = "0.9.0"
+	r.Score.Value = math.NaN()
+	r.ProvenIssues[0].Severity = schema.Severity("legacy-custom")
+
+	requireNoErr(t, r.Validate())
+}
+
+func TestReviewOutputValidateSnapshotV1(t *testing.T) {
+	t.Run("accepts a valid strict snapshot review", func(t *testing.T) {
+		r := validReview()
+		requireNoErr(t, r.ValidateSnapshotV1())
+	})
+
+	t.Run("allows a failed review above threshold for critical-issue policy", func(t *testing.T) {
+		r := validReview()
+		r.Score.Pass = false
+		requireNoErr(t, r.ValidateSnapshotV1())
+	})
+
+	t.Run("allows either sign for finite deductions", func(t *testing.T) {
+		r := validReview()
+		r.Score.Deductions[0].Points = 1.5
+		requireNoErr(t, r.ValidateSnapshotV1())
+	})
+
+	t.Run("rejects invalid top-level and score fields", func(t *testing.T) {
+		for _, tc := range []struct {
+			name  string
+			setup func(*schema.ReviewOutput)
+			want  string
+		}{
+			{"wrong schema version", func(r *schema.ReviewOutput) { r.SchemaVersion = "1.0.1" }, "1.0.0"},
+			{"blank summary", func(r *schema.ReviewOutput) { r.Summary = " \t" }, "summary"},
+			{"non-finite value", func(r *schema.ReviewOutput) { r.Score.Value = math.NaN() }, "value"},
+			{"non-finite max", func(r *schema.ReviewOutput) { r.Score.Max = math.Inf(1) }, "max"},
+			{"non-positive max", func(r *schema.ReviewOutput) { r.Score.Max = 0 }, "max"},
+			{"value below zero", func(r *schema.ReviewOutput) { r.Score.Value = -0.1 }, "value"},
+			{"value above max", func(r *schema.ReviewOutput) { r.Score.Value = 10.1 }, "value"},
+			{"threshold below zero", func(r *schema.ReviewOutput) { r.Score.Threshold = -0.1 }, "threshold"},
+			{"threshold above max", func(r *schema.ReviewOutput) { r.Score.Threshold = 10.1 }, "threshold"},
+			{"pass below threshold", func(r *schema.ReviewOutput) { r.Score.Value = 6.9 }, "pass"},
+			{"non-finite deduction", func(r *schema.ReviewOutput) { r.Score.Deductions[0].Points = math.Inf(-1) }, "points"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				r := validReview()
+				tc.setup(&r)
+				requireErrContains(t, r.ValidateSnapshotV1(), tc.want)
+			})
+		}
+	})
+
+	t.Run("validates metadata and test totals", func(t *testing.T) {
+		for _, tc := range []struct {
+			name  string
+			setup func(*schema.ReviewOutput)
+			want  string
+		}{
+			{"blank repo", func(r *schema.ReviewOutput) { r.Metadata.Repo = " " }, "repo"},
+			{"invalid timestamp", func(r *schema.ReviewOutput) { r.Metadata.Timestamp = "yesterday" }, "timestamp"},
+			{"negative duration", func(r *schema.ReviewOutput) { r.Metadata.DurationSec = -1 }, "duration"},
+			{"negative test total", func(r *schema.ReviewOutput) { r.TestSummary.Passing = -1 }, "passing"},
+			{"inconsistent summary", func(r *schema.ReviewOutput) { r.TestSummary.TotalGenerated++ }, "total_generated"},
+			{"metadata total mismatch", func(r *schema.ReviewOutput) { r.Metadata.TestsGenerated++ }, "tests_generated"},
+			{"metadata failure mismatch", func(r *schema.ReviewOutput) { r.Metadata.TestsFailing++ }, "tests_failing"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				r := validReview()
+				tc.setup(&r)
+				requireErrContains(t, r.ValidateSnapshotV1(), tc.want)
+			})
+		}
+	})
+
+	t.Run("validates nested findings and globally unique IDs", func(t *testing.T) {
+		for _, tc := range []struct {
+			name  string
+			setup func(*schema.ReviewOutput)
+			want  string
+		}{
+			{"invalid issue severity", func(r *schema.ReviewOutput) { r.ProvenIssues[0].Severity = "urgent" }, "severity"},
+			{"invalid issue category", func(r *schema.ReviewOutput) { r.ProvenIssues[0].Category = "style" }, "category"},
+			{"unsafe issue path", func(r *schema.ReviewOutput) { r.ProvenIssues[0].File = "../secret" }, "file"},
+			{"noncanonical issue path", func(r *schema.ReviewOutput) { r.ProvenIssues[0].File = "src//main.go" }, "file"},
+			{"unsafe test path", func(r *schema.ReviewOutput) { r.ProvenIssues[0].TestFile = "/tmp/test.go" }, "test_file"},
+			{"negative line", func(r *schema.ReviewOutput) { r.ProvenIssues[0].Line = -1 }, "line"},
+			{"end before start", func(r *schema.ReviewOutput) { r.ProvenIssues[0].EndLine = 41 }, "end_line"},
+			{"invalid observation category", func(r *schema.ReviewOutput) { r.Observations[0].Category = "style" }, "category"},
+			{"duplicate issue IDs", func(r *schema.ReviewOutput) { r.Observations[0].ID = "001" }, "duplicate"},
+			{"unknown deduction reference", func(r *schema.ReviewOutput) { r.Score.Deductions[0].IssueID = "missing" }, "issue_id"},
+			{"deduction severity mismatch", func(r *schema.ReviewOutput) { r.Score.Deductions[0].Severity = schema.SeverityLow }, "severity"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				r := validReview()
+				tc.setup(&r)
+				requireErrContains(t, r.ValidateSnapshotV1(), tc.want)
+			})
+		}
 	})
 }
 

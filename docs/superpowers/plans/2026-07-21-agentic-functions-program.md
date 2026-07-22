@@ -165,9 +165,11 @@ It resolves and pins the immutable definition or named internal function, valida
 
 ### Built-in snapshot contracts
 
+The authoritative registry contains exactly 17 named contracts:
+
 - `opaque/v1`: any safe, non-empty canonical tree.
 - `repository/v1`: a Git work tree with a valid `.git`, a full `HEAD` commit, no unsafe paths, and captured repository/commit metadata in the snapshot manifest.
-- `repository-change/v1`: `change.json` with schema version, repository ID, full base/result SHAs, payload digest, and one `git-tree`, `patch`, or `bundle` representation. Validation proves the result against the declared base snapshot.
+- `repository-change/v1`: `change.json` with schema version, repository ID, full base SHA, required full result-tree SHA, payload digest, and one `git-tree`, `patch`, or `bundle` representation. Commit-bearing `git-tree` and `bundle` changes also declare a full result commit SHA; a `patch` omits that field because it proves only the resulting tree. Validation proves the result against the declared base snapshot.
 - `review/v1`: `review.json` strictly decoded into the existing review schema with exact version, nested field validation, score bounds, unique finding IDs, safe paths, valid severities/categories, and consistent test totals.
 - `work-item/v1`: `work-item.json` with adapter, external ID, immutable revision, captured timestamp, title/body/state, and optional spec/plan/comment revision data.
 - `log-bundle/v1`: at least one safe regular file plus optional `metadata.json`; it never contacts the source system during execution.

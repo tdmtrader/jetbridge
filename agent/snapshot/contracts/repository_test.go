@@ -1,0 +1,534 @@
+package contracts_test
+
+import (
+	"archive/tar"
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"io"
+	"io/fs"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/concourse/concourse/agent/snapshot"
+	"github.com/concourse/concourse/agent/snapshot/contracts"
+)
+
+func TestRepositoryContractValidatesCleanFullRepositoryAndStableIdentity(t *testing.T) {
+	repository := newGitRepository(t, "")
+	first, err := validateDirectory(t, "repository/v1", repository, emptyValidationContext(t))
+	if err != nil {
+		t.Fatalf("first repository validation error = %v", err)
+	}
+	firstMetadata := decodeRepositoryMetadata(t, first)
+	if firstMetadata.ObjectFormat != "sha1" || len(firstMetadata.HeadSHA) != 40 || len(firstMetadata.TreeSHA) != 40 {
+		t.Fatalf("first metadata = %+v, want full sha1 object IDs", firstMetadata)
+	}
+	if len(firstMetadata.RootCommits) != 1 || firstMetadata.RepositoryID == "" {
+		t.Fatalf("first metadata = %+v, want one root and stable repository ID", firstMetadata)
+	}
+
+	writeTestFile(t, filepath.Join(repository, "README.md"), "second\n")
+	runTestGit(t, repository, "add", "README.md")
+	runTestGit(t, repository, "commit", "-q", "-m", "second")
+	second, err := validateDirectory(t, "repository/v1", repository, emptyValidationContext(t))
+	if err != nil {
+		t.Fatalf("second repository validation error = %v", err)
+	}
+	secondMetadata := decodeRepositoryMetadata(t, second)
+	if secondMetadata.RepositoryID != firstMetadata.RepositoryID {
+		t.Fatalf("repository ID changed from %q to %q after descendant commit", firstMetadata.RepositoryID, secondMetadata.RepositoryID)
+	}
+	if secondMetadata.HeadSHA == firstMetadata.HeadSHA || secondMetadata.TreeSHA == firstMetadata.TreeSHA {
+		t.Fatalf("second metadata = %+v, want changed head and tree", secondMetadata)
+	}
+}
+
+func TestRepositoryContractSupportsGitSHA256WhenAvailable(t *testing.T) {
+	repository := newGitRepository(t, "sha256")
+	result, err := validateDirectory(t, "repository/v1", repository, emptyValidationContext(t))
+	if err != nil {
+		t.Fatalf("sha256 repository validation error = %v", err)
+	}
+	metadata := decodeRepositoryMetadata(t, result)
+	if metadata.ObjectFormat != "sha256" || len(metadata.HeadSHA) != 64 || len(metadata.TreeSHA) != 64 || len(metadata.RootCommits[0]) != 64 {
+		t.Fatalf("sha256 metadata = %+v, want full 64-character IDs", metadata)
+	}
+}
+
+func TestRepositoryContractRejectsUnsafeIncompleteOrDirtyRepositories(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(*testing.T, string)
+		want  string
+	}{
+		{"dirty tracked file", func(t *testing.T, dir string) { writeTestFile(t, filepath.Join(dir, "README.md"), "dirty\n") }, "clean"},
+		{"untracked file", func(t *testing.T, dir string) { writeTestFile(t, filepath.Join(dir, "new.txt"), "new\n") }, "clean"},
+		{"git file", replaceGitDirectoryWith(t, "file"), ".git"},
+		{"git symlink", replaceGitDirectoryWith(t, "symlink"), ".git"},
+		{"shallow", func(t *testing.T, dir string) {
+			writeTestFile(t, filepath.Join(dir, ".git", "shallow"), runTestGit(t, dir, "rev-parse", "HEAD")+"\n")
+		}, "shallow"},
+		{"commondir", func(t *testing.T, dir string) {
+			writeTestFile(t, filepath.Join(dir, ".git", "commondir"), "../outside\n")
+		}, "commondir"},
+		{"external core.worktree", func(t *testing.T, dir string) {
+			runTestGit(t, dir, "config", "core.worktree", t.TempDir())
+		}, "core.worktree"},
+		{"external alternates", func(t *testing.T, dir string) {
+			outside := filepath.Join(t.TempDir(), "objects")
+			if err := os.MkdirAll(outside, 0755); err != nil {
+				t.Fatalf("mkdir alternates: %v", err)
+			}
+			writeTestFile(t, filepath.Join(dir, ".git", "objects", "info", "alternates"), outside+"\n")
+		}, "alternates"},
+		{"contained alternates", func(t *testing.T, dir string) {
+			if err := os.MkdirAll(filepath.Join(dir, ".git", "objects", "alternate"), 0755); err != nil {
+				t.Fatalf("mkdir contained alternate: %v", err)
+			}
+			writeTestFile(t, filepath.Join(dir, ".git", "objects", "info", "alternates"), "alternate\n")
+		}, "alternates"},
+		{"broken head", func(t *testing.T, dir string) {
+			writeTestFile(t, filepath.Join(dir, ".git", "HEAD"), "ref: refs/heads/missing\n")
+		}, "HEAD"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			repository := newGitRepository(t, "")
+			tc.setup(t, repository)
+			if _, err := validateDirectory(t, "repository/v1", repository, emptyValidationContext(t)); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("validation error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestRepositoryChangeContractValidatesGitTree(t *testing.T) {
+	base := newGitRepository(t, "")
+	baseArchive, baseDigest := canonicalRepositoryArchive(t, base)
+	baseMetadata := repositoryMetadataForDirectory(t, base)
+
+	writeTestFile(t, filepath.Join(base, "README.md"), "result\n")
+	runTestGit(t, base, "add", "README.md")
+	runTestGit(t, base, "commit", "-q", "-m", "result")
+	resultMetadata := repositoryMetadataForDirectory(t, base)
+	resultArchive, _ := canonicalRepositoryArchive(t, base)
+
+	document := validChangeDocument(baseMetadata, resultMetadata, "git-tree", "result.tar", digestBytes(resultArchive))
+	if _, err := validateFiles(t, "repository-change/v1", map[string][]byte{
+		"change.json": marshalDocument(t, document), "result.tar": resultArchive,
+	}, repositoryInputContext(t, "base", baseArchive, baseDigest)); err != nil {
+		t.Fatalf("valid git-tree change error = %v", err)
+	}
+
+	document.ResultTreeSHA = baseMetadata.TreeSHA
+	if _, err := validateFiles(t, "repository-change/v1", map[string][]byte{
+		"change.json": marshalDocument(t, document), "result.tar": resultArchive,
+	}, repositoryInputContext(t, "base", baseArchive, baseDigest)); err == nil || !strings.Contains(err.Error(), "result_tree_sha") {
+		t.Fatalf("wrong git-tree result error = %v, want result_tree_sha", err)
+	}
+}
+
+func TestRepositoryChangeContractValidatesPatchWithoutPretendingItProvesACommit(t *testing.T) {
+	base := newGitRepository(t, "")
+	baseArchive, baseDigest := canonicalRepositoryArchive(t, base)
+	baseMetadata := repositoryMetadataForDirectory(t, base)
+
+	writeTestFile(t, filepath.Join(base, "README.md"), "patched\n")
+	patch := []byte(runTestGit(t, base, "diff", "--binary", "--no-ext-diff") + "\n")
+	runTestGit(t, base, "add", "README.md")
+	resultTree := runTestGit(t, base, "write-tree")
+	document := contracts.RepositoryChangeDocument{
+		SchemaVersion: "1.0.0", RepositoryID: baseMetadata.RepositoryID, BaseInput: "base",
+		BaseSHA: baseMetadata.HeadSHA, ResultTreeSHA: resultTree,
+		Representation: "patch", PayloadPath: "change.patch", PayloadDigest: digestBytes(patch),
+	}
+	if _, err := validateFiles(t, "repository-change/v1", map[string][]byte{
+		"change.json": marshalDocument(t, document), "change.patch": patch,
+	}, repositoryInputContext(t, "base", baseArchive, baseDigest)); err != nil {
+		t.Fatalf("valid patch change error = %v", err)
+	}
+
+	document.ResultSHA = baseMetadata.HeadSHA
+	if _, err := validateFiles(t, "repository-change/v1", map[string][]byte{
+		"change.json": marshalDocument(t, document), "change.patch": patch,
+	}, repositoryInputContext(t, "base", baseArchive, baseDigest)); err == nil || !strings.Contains(err.Error(), "result_sha") {
+		t.Fatalf("patch result_sha error = %v, want result_sha rejection", err)
+	}
+}
+
+func TestRepositoryChangeContractValidatesBundleAndBaseAncestry(t *testing.T) {
+	base := newGitRepository(t, "")
+	baseArchive, baseDigest := canonicalRepositoryArchive(t, base)
+	baseMetadata := repositoryMetadataForDirectory(t, base)
+
+	writeTestFile(t, filepath.Join(base, "README.md"), "bundled\n")
+	runTestGit(t, base, "add", "README.md")
+	runTestGit(t, base, "commit", "-q", "-m", "bundled")
+	resultMetadata := repositoryMetadataForDirectory(t, base)
+	bundlePath := filepath.Join(t.TempDir(), "result.bundle")
+	runTestGit(t, base, "bundle", "create", bundlePath, "HEAD", "^"+baseMetadata.HeadSHA)
+	bundle, err := os.ReadFile(bundlePath)
+	if err != nil {
+		t.Fatalf("read bundle: %v", err)
+	}
+	document := validChangeDocument(baseMetadata, resultMetadata, "bundle", "result.bundle", digestBytes(bundle))
+	if _, err := validateFiles(t, "repository-change/v1", map[string][]byte{
+		"change.json": marshalDocument(t, document), "result.bundle": bundle,
+	}, repositoryInputContext(t, "base", baseArchive, baseDigest)); err != nil {
+		t.Fatalf("valid bundle change error = %v", err)
+	}
+
+	document.BaseSHA = strings.Repeat("0", len(baseMetadata.HeadSHA))
+	if _, err := validateFiles(t, "repository-change/v1", map[string][]byte{
+		"change.json": marshalDocument(t, document), "result.bundle": bundle,
+	}, repositoryInputContext(t, "base", baseArchive, baseDigest)); err == nil || !strings.Contains(err.Error(), "base_sha") {
+		t.Fatalf("wrong bundle base error = %v, want base_sha", err)
+	}
+}
+
+func TestRepositoryChangeContractRejectsDigestPathAndExactInputMismatches(t *testing.T) {
+	base := newGitRepository(t, "")
+	baseArchive, baseDigest := canonicalRepositoryArchive(t, base)
+	metadata := repositoryMetadataForDirectory(t, base)
+	document := contracts.RepositoryChangeDocument{
+		SchemaVersion: "1.0.0", RepositoryID: metadata.RepositoryID, BaseInput: "before",
+		BaseSHA: metadata.HeadSHA, ResultTreeSHA: metadata.TreeSHA,
+		Representation: "patch", PayloadPath: "../change.patch", PayloadDigest: "sha256:" + strings.Repeat("0", 64),
+	}
+	if _, err := validateFiles(t, "repository-change/v1", map[string][]byte{
+		"change.json": marshalDocument(t, document), "change.patch": nil,
+	}, repositoryInputContext(t, "base", baseArchive, baseDigest)); err == nil || (!strings.Contains(err.Error(), "payload_path") && !strings.Contains(err.Error(), "before")) {
+		t.Fatalf("mismatch error = %v, want path or exact input error", err)
+	}
+}
+
+func TestRepositoryChangeGitTreeRequiresActualHEADToEqualResultSHA(t *testing.T) {
+	base := newGitRepository(t, "")
+	baseArchive, baseDigest := canonicalRepositoryArchive(t, base)
+	baseMetadata := repositoryMetadataForDirectory(t, base)
+	writeTestFile(t, filepath.Join(base, "README.md"), "declared result\n")
+	runTestGit(t, base, "add", "README.md")
+	runTestGit(t, base, "commit", "-q", "-m", "declared result")
+	declaredResult := repositoryMetadataForDirectory(t, base)
+	writeTestFile(t, filepath.Join(base, "README.md"), "actual head\n")
+	runTestGit(t, base, "add", "README.md")
+	runTestGit(t, base, "commit", "-q", "-m", "actual head")
+	resultArchive, _ := canonicalRepositoryArchive(t, base)
+	document := validChangeDocument(baseMetadata, declaredResult, "git-tree", "result.tar", digestBytes(resultArchive))
+
+	if _, err := validateFiles(t, "repository-change/v1", map[string][]byte{
+		"change.json": marshalDocument(t, document), "result.tar": resultArchive,
+	}, repositoryInputContext(t, "base", baseArchive, baseDigest)); err == nil || !strings.Contains(err.Error(), "HEAD") {
+		t.Fatalf("non-HEAD result error = %v, want HEAD mismatch", err)
+	}
+}
+
+func TestRepositoryChangePatchRejectsEscapingSymlinkResult(t *testing.T) {
+	base := newGitRepository(t, "")
+	baseArchive, baseDigest := canonicalRepositoryArchive(t, base)
+	baseMetadata := repositoryMetadataForDirectory(t, base)
+	if err := os.Symlink("../outside", filepath.Join(base, "escape")); err != nil {
+		t.Fatalf("create escaping symlink: %v", err)
+	}
+	runTestGit(t, base, "add", "escape")
+	patch := []byte(runTestGit(t, base, "diff", "--cached", "--binary", "--no-ext-diff", "HEAD") + "\n")
+	document := contracts.RepositoryChangeDocument{
+		SchemaVersion: "1.0.0", RepositoryID: baseMetadata.RepositoryID, BaseInput: "base",
+		BaseSHA: baseMetadata.HeadSHA, ResultTreeSHA: runTestGit(t, base, "write-tree"),
+		Representation: "patch", PayloadPath: "change.patch", PayloadDigest: digestBytes(patch),
+	}
+	if _, err := validateFiles(t, "repository-change/v1", map[string][]byte{
+		"change.json": marshalDocument(t, document), "change.patch": patch,
+	}, repositoryInputContext(t, "base", baseArchive, baseDigest)); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("escaping symlink patch error = %v, want symlink rejection", err)
+	}
+}
+
+func TestRepositoryChangePatchRejectsNoncanonicalSymlinkTarget(t *testing.T) {
+	base := newGitRepository(t, "")
+	baseArchive, baseDigest := canonicalRepositoryArchive(t, base)
+	baseMetadata := repositoryMetadataForDirectory(t, base)
+	if err := os.Symlink("sub/../README.md", filepath.Join(base, "link")); err != nil {
+		t.Fatalf("create noncanonical symlink: %v", err)
+	}
+	runTestGit(t, base, "add", "link")
+	patch := []byte(runTestGit(t, base, "diff", "--cached", "--binary", "--no-ext-diff", "HEAD") + "\n")
+	document := contracts.RepositoryChangeDocument{
+		SchemaVersion: "1.0.0", RepositoryID: baseMetadata.RepositoryID, BaseInput: "base",
+		BaseSHA: baseMetadata.HeadSHA, ResultTreeSHA: runTestGit(t, base, "write-tree"),
+		Representation: "patch", PayloadPath: "change.patch", PayloadDigest: digestBytes(patch),
+	}
+	if _, err := validateFiles(t, "repository-change/v1", map[string][]byte{
+		"change.json": marshalDocument(t, document), "change.patch": patch,
+	}, repositoryInputContext(t, "base", baseArchive, baseDigest)); err == nil || !strings.Contains(err.Error(), "canonical") {
+		t.Fatalf("noncanonical symlink patch error = %v, want canonical-target rejection", err)
+	}
+}
+
+func TestRepositoryChangeBundleRejectsGitlinksAndExtraHeads(t *testing.T) {
+	t.Run("gitlink in declared result tree", func(t *testing.T) {
+		base := newGitRepository(t, "")
+		baseArchive, baseDigest := canonicalRepositoryArchive(t, base)
+		baseMetadata := repositoryMetadataForDirectory(t, base)
+		runTestGit(t, base, "update-index", "--add", "--cacheinfo", "160000,"+baseMetadata.HeadSHA+",vendor/module")
+		runTestGit(t, base, "commit", "-q", "-m", "gitlink result")
+		resultMetadata := repositoryMetadataForDirectoryRevision(t, base, "HEAD", baseMetadata.RepositoryID)
+		bundlePath := filepath.Join(t.TempDir(), "gitlink.bundle")
+		runTestGit(t, base, "bundle", "create", bundlePath, "HEAD", "^"+baseMetadata.HeadSHA)
+		bundle, err := os.ReadFile(bundlePath)
+		if err != nil {
+			t.Fatalf("read gitlink bundle: %v", err)
+		}
+		document := validChangeDocument(baseMetadata, resultMetadata, "bundle", "result.bundle", digestBytes(bundle))
+		if _, err := validateFiles(t, "repository-change/v1", map[string][]byte{
+			"change.json": marshalDocument(t, document), "result.bundle": bundle,
+		}, repositoryInputContext(t, "base", baseArchive, baseDigest)); err == nil || !strings.Contains(err.Error(), "gitlink") {
+			t.Fatalf("gitlink bundle error = %v, want gitlink rejection", err)
+		}
+	})
+
+	t.Run("more than one exposed head", func(t *testing.T) {
+		base := newGitRepository(t, "")
+		baseArchive, baseDigest := canonicalRepositoryArchive(t, base)
+		baseMetadata := repositoryMetadataForDirectory(t, base)
+		originalBranch := runTestGit(t, base, "symbolic-ref", "--short", "HEAD")
+		writeTestFile(t, filepath.Join(base, "README.md"), "intended\n")
+		runTestGit(t, base, "add", "README.md")
+		runTestGit(t, base, "commit", "-q", "-m", "intended")
+		resultMetadata := repositoryMetadataForDirectory(t, base)
+		runTestGit(t, base, "switch", "-q", "-c", "extra", baseMetadata.HeadSHA)
+		writeTestFile(t, filepath.Join(base, "extra.txt"), "extra\n")
+		runTestGit(t, base, "add", "extra.txt")
+		runTestGit(t, base, "commit", "-q", "-m", "extra")
+		runTestGit(t, base, "switch", "-q", originalBranch)
+		bundlePath := filepath.Join(t.TempDir(), "extra.bundle")
+		runTestGit(t, base, "bundle", "create", bundlePath, "HEAD", "refs/heads/extra", "^"+baseMetadata.HeadSHA)
+		bundle, err := os.ReadFile(bundlePath)
+		if err != nil {
+			t.Fatalf("read extra-head bundle: %v", err)
+		}
+		document := validChangeDocument(baseMetadata, resultMetadata, "bundle", "result.bundle", digestBytes(bundle))
+		if _, err := validateFiles(t, "repository-change/v1", map[string][]byte{
+			"change.json": marshalDocument(t, document), "result.bundle": bundle,
+		}, repositoryInputContext(t, "base", baseArchive, baseDigest)); err == nil || !strings.Contains(err.Error(), "exactly one") {
+			t.Fatalf("extra-head bundle error = %v, want exactly-one-head rejection", err)
+		}
+	})
+}
+
+func validChangeDocument(base, result contracts.RepositoryMetadata, representation, payloadPath, payloadDigest string) contracts.RepositoryChangeDocument {
+	return contracts.RepositoryChangeDocument{
+		SchemaVersion: "1.0.0", RepositoryID: base.RepositoryID, BaseInput: "base",
+		BaseSHA: base.HeadSHA, ResultSHA: result.HeadSHA, ResultTreeSHA: result.TreeSHA,
+		Representation: representation, PayloadPath: payloadPath, PayloadDigest: payloadDigest,
+	}
+}
+
+func repositoryInputContext(t *testing.T, name string, archive []byte, digest snapshot.Digest) snapshot.ValidationContext {
+	t.Helper()
+	typeRef := mustTypeRef(t, "repository/v1")
+	id, err := snapshot.NewSnapshotID(1)
+	if err != nil {
+		t.Fatalf("NewSnapshotID(): %v", err)
+	}
+	ref := snapshot.SnapshotRef{ID: id, Type: typeRef, Digest: digest}
+	validationContext, err := snapshot.NewValidationContext(map[string]snapshot.SnapshotRef{name: ref}, func(_ context.Context, openedName string, openedRef snapshot.SnapshotRef) (io.ReadCloser, error) {
+		if openedName != name || openedRef != ref {
+			t.Fatalf("opener got (%q, %+v), want (%q, %+v)", openedName, openedRef, name, ref)
+		}
+		return io.NopCloser(bytes.NewReader(archive)), nil
+	})
+	if err != nil {
+		t.Fatalf("NewValidationContext(): %v", err)
+	}
+	return validationContext
+}
+
+func repositoryMetadataForDirectory(t *testing.T, dir string) contracts.RepositoryMetadata {
+	t.Helper()
+	result, err := validateDirectory(t, "repository/v1", dir, emptyValidationContext(t))
+	if err != nil {
+		t.Fatalf("repository validation error = %v", err)
+	}
+	return decodeRepositoryMetadata(t, result)
+}
+
+func repositoryMetadataForDirectoryRevision(t *testing.T, dir, revision, repositoryID string) contracts.RepositoryMetadata {
+	t.Helper()
+	objectFormat := runTestGit(t, dir, "rev-parse", "--show-object-format=storage")
+	head := runTestGit(t, dir, "rev-parse", "--verify", revision+"^{commit}")
+	tree := runTestGit(t, dir, "rev-parse", "--verify", head+"^{tree}")
+	roots := strings.Fields(runTestGit(t, dir, "rev-list", "--max-parents=0", head))
+	return contracts.RepositoryMetadata{
+		RepositoryID: repositoryID,
+		ObjectFormat: objectFormat,
+		HeadSHA:      head,
+		TreeSHA:      tree,
+		RootCommits:  roots,
+	}
+}
+
+func decodeRepositoryMetadata(t *testing.T, result snapshot.ValidationResult) contracts.RepositoryMetadata {
+	t.Helper()
+	var metadata contracts.RepositoryMetadata
+	if err := json.Unmarshal(result.IntrinsicMetadata, &metadata); err != nil {
+		t.Fatalf("decode repository metadata %s: %v", result.IntrinsicMetadata, err)
+	}
+	return metadata
+}
+
+func newGitRepository(t *testing.T, objectFormat string) string {
+	t.Helper()
+	dir := t.TempDir()
+	args := []string{"init", "-q"}
+	if objectFormat != "" {
+		args = append(args, "--object-format="+objectFormat)
+	}
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	cmd.Env = testGitEnvironment()
+	if output, err := cmd.CombinedOutput(); err != nil {
+		if objectFormat == "sha256" {
+			t.Skipf("local Git does not support sha256 repositories: %v: %s", err, output)
+		}
+		t.Fatalf("git %v: %v: %s", args, err, output)
+	}
+	runTestGit(t, dir, "config", "user.name", "Snapshot Test")
+	runTestGit(t, dir, "config", "user.email", "snapshot@example.invalid")
+	writeTestFile(t, filepath.Join(dir, "README.md"), "base\n")
+	runTestGit(t, dir, "add", "README.md")
+	runTestGit(t, dir, "commit", "-q", "-m", "base")
+	return dir
+}
+
+func runTestGit(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	cmd.Env = testGitEnvironment()
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v in %q: %v: %s", args, dir, err, output)
+	}
+	return strings.TrimSpace(string(output))
+}
+
+func testGitEnvironment() []string {
+	return append(os.Environ(),
+		"GIT_CONFIG_NOSYSTEM=1",
+		"GIT_CONFIG_GLOBAL="+os.DevNull,
+		"GIT_TERMINAL_PROMPT=0",
+		"GIT_OPTIONAL_LOCKS=0",
+		"GIT_NO_REPLACE_OBJECTS=1",
+	)
+}
+
+func replaceGitDirectoryWith(t *testing.T, kind string) func(*testing.T, string) {
+	t.Helper()
+	return func(t *testing.T, dir string) {
+		original := filepath.Join(dir, ".git")
+		moved := filepath.Join(dir, "git-data")
+		if err := os.Rename(original, moved); err != nil {
+			t.Fatalf("move .git: %v", err)
+		}
+		switch kind {
+		case "file":
+			writeTestFile(t, original, "gitdir: git-data\n")
+		case "symlink":
+			if err := os.Symlink("git-data", original); err != nil {
+				t.Fatalf("symlink .git: %v", err)
+			}
+		default:
+			t.Fatalf("unknown .git replacement %q", kind)
+		}
+	}
+}
+
+func writeTestFile(t *testing.T, name, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(name), 0755); err != nil {
+		t.Fatalf("mkdir %q: %v", name, err)
+	}
+	if err := os.WriteFile(name, []byte(content), 0644); err != nil {
+		t.Fatalf("write %q: %v", name, err)
+	}
+}
+
+func canonicalRepositoryArchive(t *testing.T, dir string) ([]byte, snapshot.Digest) {
+	t.Helper()
+	var raw bytes.Buffer
+	tw := tar.NewWriter(&raw)
+	err := filepath.WalkDir(dir, func(name string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		relative, err := filepath.Rel(dir, name)
+		if err != nil {
+			return err
+		}
+		if relative == "." {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		link := ""
+		if info.Mode()&os.ModeSymlink != 0 {
+			link, err = os.Readlink(name)
+			if err != nil {
+				return err
+			}
+		}
+		header, err := tar.FileInfoHeader(info, link)
+		if err != nil {
+			return err
+		}
+		header.Name = filepath.ToSlash(relative)
+		if err := tw.WriteHeader(header); err != nil {
+			return err
+		}
+		if info.Mode().IsRegular() {
+			file, err := os.Open(name)
+			if err != nil {
+				return err
+			}
+			_, copyErr := io.Copy(tw, file)
+			closeErr := file.Close()
+			if copyErr != nil {
+				return copyErr
+			}
+			if closeErr != nil {
+				return closeErr
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk repository: %v", err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("close raw tar: %v", err)
+	}
+	tree, err := (snapshot.Canonicalizer{}).Capture(context.Background(), bytes.NewReader(raw.Bytes()))
+	if err != nil {
+		t.Fatalf("canonicalize repository: %v", err)
+	}
+	defer tree.Close()
+	archive, err := os.ReadFile(tree.ArchivePath)
+	if err != nil {
+		t.Fatalf("read canonical archive: %v", err)
+	}
+	return archive, tree.Digest
+}
+
+func digestBytes(contents []byte) string {
+	digest := sha256.Sum256(contents)
+	return "sha256:" + hex.EncodeToString(digest[:])
+}
