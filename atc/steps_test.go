@@ -317,11 +317,19 @@ var factoryTests = []StepTest{
 		ConfigYAML: `
 			agent: implement
 			prompt_file: repo/prompts/implement.md
+			system_prompt_file: repo/prompts/system.md
+			context_files: [repo/context/conventions.md, repo/context/testing.md]
+			skills: [testing]
+			capabilities: [dev]
 		`,
 
 		StepConfig: &atc.AgentStep{
-			Name:       "implement",
-			PromptFile: "repo/prompts/implement.md",
+			Name:             "implement",
+			PromptFile:       "repo/prompts/implement.md",
+			SystemPromptFile: "repo/prompts/system.md",
+			ContextFiles:     []string{"repo/context/conventions.md", "repo/context/testing.md"},
+			Skills:           []string{"testing"},
+			Capabilities:     []string{"dev"},
 		},
 	},
 	{

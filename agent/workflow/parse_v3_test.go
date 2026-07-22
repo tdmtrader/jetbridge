@@ -674,6 +674,74 @@ func TestParseV3StrictErrors(t *testing.T) {
 	}
 }
 
+func TestParseV3ValidatesAgentAssetFieldPresenceBeforeTypedDecoding(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "empty inline prompt still conflicts with prompt file",
+			body: "    prompt: ''\n    prompt_file: prompts/work.md",
+			want: "prompt and prompt_file are mutually exclusive",
+		},
+		{
+			name: "null inline prompt still conflicts with prompt file",
+			body: "    prompt: null\n    prompt_file: prompts/work.md",
+			want: "prompt and prompt_file are mutually exclusive",
+		},
+		{
+			name: "empty prompt file",
+			body: "    prompt_file: ''",
+			want: "prompt_file must be a nonempty string",
+		},
+		{
+			name: "null prompt file",
+			body: "    prompt_file: null",
+			want: "prompt_file must be a nonempty string",
+		},
+		{
+			name: "empty inline system prompt still conflicts with system prompt file",
+			body: "    prompt: work\n    system_prompt: ''\n    system_prompt_file: prompts/system.md",
+			want: "system_prompt and system_prompt_file are mutually exclusive",
+		},
+		{
+			name: "null inline system prompt still conflicts with system prompt file",
+			body: "    prompt: work\n    system_prompt: null\n    system_prompt_file: prompts/system.md",
+			want: "system_prompt and system_prompt_file are mutually exclusive",
+		},
+		{
+			name: "empty system prompt file",
+			body: "    prompt: work\n    system_prompt_file: ''",
+			want: "system_prompt_file must be a nonempty string",
+		},
+		{
+			name: "null system prompt file",
+			body: "    prompt: work\n    system_prompt_file: null",
+			want: "system_prompt_file must be a nonempty string",
+		},
+	}
+
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			document := v3WithPlan(`
+  - do:
+      - agent: work
+        function_id: inspect
+` + strings.ReplaceAll(test.body, "    ", "        "))
+			definition, err := workflow.ParseCompiled([]byte(document))
+			if err == nil || definition != nil {
+				t.Fatalf("ParseCompiled = (%+v, %v), want nil and error", definition, err)
+			}
+			for _, want := range []string{test.want, `workflow.plan[0].do[0]`, `agent "work"`, `function_id "inspect"`} {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("error = %q, want %q", err, want)
+				}
+			}
+		})
+	}
+}
+
 func v3WithPlan(plan string) string {
 	return `schema_version: 3
 name: strict-plan

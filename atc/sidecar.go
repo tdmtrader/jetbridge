@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	containername "github.com/google/go-containerregistry/pkg/name"
 	"sigs.k8s.io/yaml"
 )
 
@@ -130,6 +131,36 @@ func (sc SidecarConfig) Validate() error {
 	}
 	if len(errors) > 0 {
 		return fmt.Errorf("invalid sidecar configuration: %s", strings.Join(errors, ", "))
+	}
+	return nil
+}
+
+// ValidateCapability applies the stronger, offline validation required for a
+// versioned workflow capability. Ordinary sidecars deliberately continue to
+// accept tags and build-artifact images through Validate.
+func (sc SidecarConfig) ValidateCapability() error {
+	if err := sc.Validate(); err != nil {
+		return err
+	}
+	if IsReservedContainerName(sc.Name) {
+		return fmt.Errorf("invalid capability sidecar: reserved container name %q", sc.Name)
+	}
+	if sc.ImageArtifact != "" {
+		return fmt.Errorf("invalid capability sidecar: image_artifact is not allowed")
+	}
+
+	const algorithm = "sha256:"
+	at := strings.LastIndexByte(sc.Image, '@')
+	if at <= 0 || len(sc.Image)-(at+1) != len(algorithm)+64 || !strings.HasPrefix(sc.Image[at+1:], algorithm) {
+		return fmt.Errorf("invalid capability sidecar: image must be an OCI reference pinned to an exact sha256 digest")
+	}
+	for _, character := range sc.Image[at+1+len(algorithm):] {
+		if !((character >= '0' && character <= '9') || (character >= 'a' && character <= 'f')) {
+			return fmt.Errorf("invalid capability sidecar: image digest must contain 64 lowercase hexadecimal characters")
+		}
+	}
+	if _, err := containername.NewDigest(sc.Image, containername.StrictValidation); err != nil {
+		return fmt.Errorf("invalid capability sidecar: image is not a valid OCI digest reference: %w", err)
 	}
 	return nil
 }

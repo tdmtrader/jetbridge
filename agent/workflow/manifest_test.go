@@ -2,6 +2,7 @@ package workflow_test
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -74,4 +75,64 @@ func TestManifestPathsSorted(t *testing.T) {
 	if len(got) != 3 || got[0] != "a" || got[1] != "b" || got[2] != "c" {
 		t.Fatalf("got %v", got)
 	}
+}
+
+func TestManifestV3EveryAssetIsHashed(t *testing.T) {
+	base := workflow.Manifest{
+		"workflow.yml":                 "schema_version: 3\nname: hash-test\nsignature_version: 1\ninputs: []\noutputs: []\nplan: [{agent: work, prompt_file: prompts/work.md}]\n",
+		"prompts/work.md":              "prompt",
+		"prompts/system.md":            "system",
+		"context/conventions.md":       "context",
+		"skills/testing/SKILL.md":      "skill",
+		"skills/testing/refs/rules.md": "rules",
+	}
+	for _, path := range []string{
+		"workflow.yml",
+		"prompts/work.md",
+		"prompts/system.md",
+		"context/conventions.md",
+		"skills/testing/SKILL.md",
+		"skills/testing/refs/rules.md",
+	} {
+		t.Run(path, func(t *testing.T) {
+			changed := cloneManifest(base)
+			changed[path] += " changed"
+			if changed.Hash() == base.Hash() {
+				t.Fatalf("changing %q did not change the source hash", path)
+			}
+		})
+	}
+}
+
+func TestManifestV3UnreferencedFilesRemainHashed(t *testing.T) {
+	base := workflow.Manifest{
+		"workflow.yml":    "schema_version: 3\nname: hash-test\nsignature_version: 1\ninputs: []\noutputs: []\nplan: [{agent: work, prompt: work}]\n",
+		"README.md":       "one",
+		"notes/design.md": "unchanged",
+	}
+	changed := cloneManifest(base)
+	changed["README.md"] = "two"
+	if changed.Hash() == base.Hash() {
+		t.Fatal("an unreferenced source edit did not mint a distinct content hash")
+	}
+
+	baseCompiled, err := workflow.CompileDefinition(base)
+	if err != nil {
+		t.Fatalf("compile base: %v", err)
+	}
+	changedCompiled, err := workflow.CompileDefinition(changed)
+	if err != nil {
+		t.Fatalf("compile changed: %v", err)
+	}
+	if !reflect.DeepEqual(baseCompiled, changedCompiled) {
+		t.Fatalf("unreferenced content changed executable compilation:\nbase=%+v\nchanged=%+v", baseCompiled, changedCompiled)
+	}
+}
+
+func cloneManifest(source workflow.Manifest) workflow.Manifest {
+	copy := make(workflow.Manifest, len(source))
+	for path, content := range source {
+		copy[path] = content
+	}
+	return copy
 }

@@ -75,6 +75,20 @@ func validateManifestPath(path string) error {
 	return nil
 }
 
+// resolveManifestFile validates a logical source reference and performs an
+// exact map lookup. It deliberately never cleans paths or consults the local
+// filesystem: a manifest is the complete source boundary at compile time.
+func resolveManifestFile(m Manifest, path string) (string, error) {
+	if err := validateManifestPath(path); err != nil {
+		return "", err
+	}
+	content, found := m[path]
+	if !found {
+		return "", fmt.Errorf("workflow: manifest file %q is not in the manifest", path)
+	}
+	return content, nil
+}
+
 // Canonical is the deterministic serialization hashed for provenance:
 // JSON with sorted keys (encoding/json sorts map keys; the pinned test
 // vector in manifest_test.go guards against codec drift).

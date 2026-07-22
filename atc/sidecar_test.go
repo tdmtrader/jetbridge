@@ -2,6 +2,7 @@ package atc_test
 
 import (
 	"encoding/json"
+	"strings"
 
 	. "github.com/concourse/concourse/atc"
 
@@ -364,6 +365,41 @@ var _ = Describe("SidecarConfig", func() {
 				Ports: []SidecarPort{{ContainerPort: 5432, Protocol: "HTTP"}},
 			}
 			Expect(sc.Validate()).To(MatchError(ContainSubstring("invalid port protocol")))
+		})
+
+		It("continues to accept mutable tags and image artifacts for ordinary sidecars", func() {
+			Expect((SidecarConfig{Name: "tagged", Image: "registry.example/tool:v1"}).Validate()).To(Succeed())
+			Expect((SidecarConfig{Name: "artifact", ImageArtifact: "built-image"}).Validate()).To(Succeed())
+		})
+	})
+
+	Describe("ValidateCapability", func() {
+		const digest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+		It("accepts an exact immutable OCI SHA-256 reference", func() {
+			config := SidecarConfig{Name: "tools", Image: "registry.example/acme/tools@sha256:" + digest}
+			Expect(config.ValidateCapability()).To(Succeed())
+		})
+
+		It("rejects mutable and malformed image references", func() {
+			cases := map[string]string{
+				"tag only":         "registry.example/acme/tools:v1",
+				"bare image":       "registry.example/acme/tools",
+				"short digest":     "registry.example/acme/tools@sha256:0123",
+				"long digest":      "registry.example/acme/tools@sha256:" + digest + "00",
+				"uppercase digest": "registry.example/acme/tools@sha256:" + strings.ToUpper(digest),
+				"sha512 digest":    "registry.example/acme/tools@sha512:" + digest,
+				"garbage":          "not an image@@sha256:" + digest,
+			}
+			for name, image := range cases {
+				config := SidecarConfig{Name: "tools", Image: image}
+				Expect(config.ValidateCapability()).To(HaveOccurred(), name)
+			}
+		})
+
+		It("rejects dynamic artifacts and reserved names", func() {
+			Expect((SidecarConfig{Name: "tools", ImageArtifact: "built-image"}).ValidateCapability()).To(HaveOccurred())
+			Expect((SidecarConfig{Name: "main", Image: "registry.example/acme/tools@sha256:" + digest}).ValidateCapability()).To(HaveOccurred())
 		})
 	})
 })

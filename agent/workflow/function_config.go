@@ -24,6 +24,9 @@ type FunctionConfig struct {
 	Prototypes       atc.Prototypes        `json:"prototypes,omitempty" yaml:"prototypes,omitempty"`
 	VarSources       atc.VarSourceConfigs  `json:"var_sources,omitempty" yaml:"var_sources,omitempty"`
 	Plan             []atc.Step            `json:"plan" yaml:"plan"`
+	// SkillFiles is compiled-only content. Version-3 source selects skill
+	// names on agent nodes; compilation copies the selected trees here.
+	SkillFiles map[string]string `json:"skill_files,omitempty" yaml:"skill_files,omitempty"`
 }
 
 // Capability is a source-local named capability contract. Digest pinning and

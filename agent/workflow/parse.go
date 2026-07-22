@@ -313,6 +313,11 @@ func validateFunctionStepSource(value any, path string) error {
 	if !ok {
 		return nil // the ordinary ATC pass reports the shape error
 	}
+	if _, isAgent := step["agent"]; isAgent {
+		if err := validateAgentAssetSourcePresence(step, path); err != nil {
+			return err
+		}
+	}
 
 	if nested, found := step["try"]; found {
 		if err := validateFunctionStepSource(nested, path+".try"); err != nil {
@@ -387,6 +392,49 @@ func validateFunctionStepSource(value any, path string) error {
 	}
 
 	return nil
+}
+
+func validateAgentAssetSourcePresence(step map[string]any, path string) error {
+	identity := rawAgentIdentity(step)
+	_, promptPresent := step["prompt"]
+	_, promptFilePresent := step["prompt_file"]
+	if promptPresent && promptFilePresent {
+		return fmt.Errorf("workflow: %s: %s: prompt and prompt_file are mutually exclusive", path, identity)
+	}
+	if promptFilePresent {
+		if err := validateNonemptyStringSourceField(step["prompt_file"], "prompt_file"); err != nil {
+			return fmt.Errorf("workflow: %s: %s: %w", path, identity, err)
+		}
+	}
+
+	_, systemPromptPresent := step["system_prompt"]
+	_, systemPromptFilePresent := step["system_prompt_file"]
+	if systemPromptPresent && systemPromptFilePresent {
+		return fmt.Errorf("workflow: %s: %s: system_prompt and system_prompt_file are mutually exclusive", path, identity)
+	}
+	if systemPromptFilePresent {
+		if err := validateNonemptyStringSourceField(step["system_prompt_file"], "system_prompt_file"); err != nil {
+			return fmt.Errorf("workflow: %s: %s: %w", path, identity, err)
+		}
+	}
+	return nil
+}
+
+func validateNonemptyStringSourceField(value any, field string) error {
+	text, ok := value.(string)
+	if !ok || text == "" {
+		return fmt.Errorf("%s must be a nonempty string", field)
+	}
+	return nil
+}
+
+func rawAgentIdentity(step map[string]any) string {
+	name, _ := step["agent"].(string)
+	identity := fmt.Sprintf("agent %q", name)
+	if functionID, ok := step["function_id"].(string); ok && functionID != "" {
+		identity += fmt.Sprintf(" (function_id %q)", functionID)
+	}
+	return identity
 }
 
 func validateFunctionStepListSource(value any, path string) error {

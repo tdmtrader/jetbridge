@@ -404,14 +404,16 @@ func (step *RunStep) Visit(v StepVisitor) error {
 // the workflow definition into literal values here; the step implementation
 // never reads workflow tables.
 type AgentStep struct {
-	Name           string  `json:"agent"`
-	FunctionID     string  `json:"function_id,omitempty"`
-	Prompt         string  `json:"prompt,omitempty"`
-	PromptFile     string  `json:"prompt_file,omitempty"`
-	Model          string  `json:"model,omitempty"`
-	MaxTurns       int     `json:"max_turns,omitempty"`
-	BudgetSliceUSD float64 `json:"budget_slice_usd,omitempty"`
-	OutputSchema   string  `json:"output_schema,omitempty"`
+	Name             string   `json:"agent"`
+	FunctionID       string   `json:"function_id,omitempty"`
+	Prompt           string   `json:"prompt,omitempty"`
+	PromptFile       string   `json:"prompt_file,omitempty"`
+	SystemPromptFile string   `json:"system_prompt_file,omitempty"`
+	ContextFiles     []string `json:"context_files,omitempty"`
+	Model            string   `json:"model,omitempty"`
+	MaxTurns         int      `json:"max_turns,omitempty"`
+	BudgetSliceUSD   float64  `json:"budget_slice_usd,omitempty"`
+	OutputSchema     string   `json:"output_schema,omitempty"`
 
 	// Source-format layers (design 2026-07-17 §4), renderer-resolved to
 	// literal values like Prompt: SystemPrompt is appended to the
