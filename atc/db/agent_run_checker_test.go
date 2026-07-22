@@ -88,7 +88,10 @@ var _ = Describe("AgentRunChecker", func() {
 		// Each spec gets a fresh DB from the template (suite-level
 		// BeforeEach: CreateTestDBFromTemplate), so dropping here cannot
 		// leak into other specs.
-		_, err := dbConn.Exec(`DROP TABLE IF EXISTS pipeline_runs`)
+		// Each spec receives a fresh database. CASCADE removes the workflow-run
+		// foreign-key constraint so this spec can still simulate a pre-migration
+		// database where pipeline_runs is absent.
+		_, err := dbConn.Exec(`DROP TABLE IF EXISTS pipeline_runs CASCADE`)
 		Expect(err).ToNot(HaveOccurred())
 
 		active, err := checker.RunActive(1)

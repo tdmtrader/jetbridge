@@ -1,0 +1,9 @@
+DROP TABLE agent_workflow_run_snapshots;
+DROP TABLE agent_snapshot_retention_claims;
+DROP TABLE agent_snapshot_grants;
+DROP TABLE agent_snapshot_lineage;
+DROP TABLE agent_snapshot_productions;
+DROP TABLE agent_workflow_runs;
+DROP TABLE agent_snapshot_staged_uploads;
+DROP TABLE agent_snapshot_locations;
+DROP TABLE agent_snapshots;
