@@ -5,11 +5,17 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
+	"github.com/concourse/concourse/agent/snapshot"
+	"github.com/concourse/concourse/agent/snapshot/snapshotfakes"
 	"github.com/concourse/concourse/atc/compression"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/worker"
@@ -114,6 +120,82 @@ func TestStreamer_StreamFile_EndToEnd(t *testing.T) {
 		t.Errorf("expected %q, got %q", fileContent, string(data))
 	}
 }
+
+func TestStreamer_StreamFile_ObservesSnapshotTerminalFailure(t *testing.T) {
+	fileContent := "verified only after the complete archive"
+	tarData := makeTar(t, "result.txt", fileContent)
+	manifest := snapshotManifestForStreamer(tarData)
+	store := new(snapshotfakes.FakeContentStore)
+	store.OpenReturns(&streamerCloseErrorReader{
+		Reader: bytes.NewReader(tarData),
+		err:    errors.New("secret replica close failure"),
+	}, nil)
+	artifact, err := runtime.NewSnapshotArtifact(manifest, store)
+	if err != nil {
+		t.Fatalf("NewSnapshotArtifact: %v", err)
+	}
+
+	reader, err := worker.NewStreamer(compression.NewGzipCompression()).StreamFile(
+		context.Background(), artifact, "result.txt",
+	)
+	if err != nil {
+		t.Fatalf("StreamFile: %v", err)
+	}
+	defer reader.Close()
+
+	data, err := io.ReadAll(reader)
+	if err == nil {
+		t.Fatal("expected the late snapshot terminal failure")
+	}
+	if string(data) != fileContent {
+		t.Fatalf("selected content = %q, want %q", data, fileContent)
+	}
+	if err.Error() != "snapshot artifact: content stream close failed" {
+		t.Fatalf("unexpected terminal error: %v", err)
+	}
+}
+
+func TestStreamer_StreamFile_PreservesSnapshotFileNotFound(t *testing.T) {
+	tarData := makeTar(t, "present.txt", "present")
+	store := new(snapshotfakes.FakeContentStore)
+	store.OpenReturns(io.NopCloser(bytes.NewReader(tarData)), nil)
+	artifact, err := runtime.NewSnapshotArtifact(snapshotManifestForStreamer(tarData), store)
+	if err != nil {
+		t.Fatalf("NewSnapshotArtifact: %v", err)
+	}
+
+	reader, err := worker.NewStreamer(compression.NewGzipCompression()).StreamFile(
+		context.Background(), artifact, "missing.txt",
+	)
+	if reader != nil {
+		reader.Close()
+		t.Fatal("missing file returned a reader")
+	}
+	if !errors.Is(err, runtime.ErrFileNotFound) {
+		t.Fatalf("StreamFile error = %v, want ErrFileNotFound", err)
+	}
+}
+
+func snapshotManifestForStreamer(archive []byte) snapshot.Snapshot {
+	digest := sha256.Sum256(archive)
+	return snapshot.Snapshot{
+		ID:             snapshot.SnapshotID(9007199254740993),
+		Type:           snapshot.TypeRef("review/v1"),
+		Digest:         snapshot.Digest(fmt.Sprintf("sha256:%x", digest)),
+		ByteSize:       int64(len(archive)),
+		FileCount:      1,
+		Representation: "application/x-tar",
+		ContentState:   snapshot.ContentStateAvailable,
+		CreatedAt:      time.Now().UTC(),
+	}
+}
+
+type streamerCloseErrorReader struct {
+	*bytes.Reader
+	err error
+}
+
+func (reader *streamerCloseErrorReader) Close() error { return reader.err }
 
 // httpArtifact simulates a DaemonSetVolume — fetches raw tar from an HTTP
 // server and gzip-compresses when enc is non-nil (matching the fixed behavior).

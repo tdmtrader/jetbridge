@@ -156,6 +156,7 @@ type RunCommand struct {
 	agentSnapshotDaemonClient      *jetbridge.DaemonClient
 	agentSnapshotContentStore      snapshot.ContentStore
 	agentSnapshotMetadataStore     db.AgentSnapshotsFactory
+	agentSnapshotWorkflowRuns      db.AgentWorkflowRunsFactory
 	agentSnapshotDigestLocker      snapshot.DigestLockManager
 	agentSnapshotValidatorRegistry snapshot.ValidatorRegistry
 	agentSnapshotOutputSealer      snapshot.OutputSealer
@@ -1615,6 +1616,7 @@ func (cmd *RunCommand) composeAgentSnapshots(connection db.DbConn) error {
 	initialized := cmd.agentSnapshotDaemonClient != nil ||
 		cmd.agentSnapshotContentStore != nil ||
 		cmd.agentSnapshotMetadataStore != nil ||
+		cmd.agentSnapshotWorkflowRuns != nil ||
 		cmd.agentSnapshotDigestLocker != nil ||
 		cmd.agentSnapshotValidatorRegistry != nil ||
 		cmd.agentSnapshotOutputSealer != nil ||
@@ -1623,6 +1625,7 @@ func (cmd *RunCommand) composeAgentSnapshots(connection db.DbConn) error {
 		if cmd.agentSnapshotDaemonClient == nil ||
 			cmd.agentSnapshotContentStore == nil ||
 			cmd.agentSnapshotMetadataStore == nil ||
+			cmd.agentSnapshotWorkflowRuns == nil ||
 			cmd.agentSnapshotDigestLocker == nil ||
 			cmd.agentSnapshotValidatorRegistry == nil ||
 			cmd.agentSnapshotOutputSealer == nil ||
@@ -1637,6 +1640,7 @@ func (cmd *RunCommand) composeAgentSnapshots(connection db.DbConn) error {
 
 	archiveLimits := cmd.configuredAgentSnapshotArchiveLimits()
 	metadataStore := db.NewAgentSnapshotsFactory(connection)
+	workflowRuns := db.NewAgentWorkflowRunsFactory(connection)
 	digestLocker := db.NewAgentSnapshotDigestLocker(connection)
 	registry, err := contracts.NewRegistry()
 	if err != nil {
@@ -1678,6 +1682,7 @@ func (cmd *RunCommand) composeAgentSnapshots(connection db.DbConn) error {
 	cmd.agentSnapshotDaemonClient = daemonClient
 	cmd.agentSnapshotContentStore = contentStore
 	cmd.agentSnapshotMetadataStore = metadataStore
+	cmd.agentSnapshotWorkflowRuns = workflowRuns
 	cmd.agentSnapshotDigestLocker = digestLocker
 	cmd.agentSnapshotValidatorRegistry = registry
 	cmd.agentSnapshotOutputSealer = outputSealer
@@ -1765,16 +1770,24 @@ func buildAgentSnapshotSealer(
 	)
 }
 
-func (cmd *RunCommand) agentSnapshotCoreStepFactoryOption() (engine.CoreStepFactoryOption, bool) {
+func (cmd *RunCommand) agentSnapshotCoreStepFactoryOptions() ([]engine.CoreStepFactoryOption, bool) {
 	if !cmd.AgentSnapshots.Enabled {
 		return nil, false
 	}
 	cmd.agentSnapshotMu.Lock()
 	defer cmd.agentSnapshotMu.Unlock()
-	if cmd.agentSnapshotOutputSealer == nil {
+	if cmd.agentSnapshotOutputSealer == nil || cmd.agentSnapshotMetadataStore == nil ||
+		cmd.agentSnapshotContentStore == nil || cmd.agentSnapshotWorkflowRuns == nil {
 		return nil, false
 	}
-	return engine.WithOutputSealer(cmd.agentSnapshotOutputSealer), true
+	return []engine.CoreStepFactoryOption{
+		engine.WithOutputSealer(cmd.agentSnapshotOutputSealer),
+		engine.WithSnapshotLoader(
+			cmd.agentSnapshotMetadataStore,
+			cmd.agentSnapshotContentStore,
+			cmd.agentSnapshotWorkflowRuns,
+		),
+	}, true
 }
 
 func (cmd *RunCommand) constructPool(dbConn db.DbConn, lockFactory lock.LockFactory, workerCache *db.WorkerCache) (worker.Pool, error) {
@@ -2521,8 +2534,8 @@ func (cmd *RunCommand) constructEngine(
 		engine.WithAgentOutcomesStore(db.NewAgentOutcomesFactory(dbConn)),
 		engine.WithAgentPlatformUserResolver(db.NewAgentUserCredentialsFactory(dbConn)),
 	}
-	if outputSealerOption, ok := cmd.agentSnapshotCoreStepFactoryOption(); ok {
-		coreStepFactoryOptions = append(coreStepFactoryOptions, outputSealerOption)
+	if snapshotOptions, ok := cmd.agentSnapshotCoreStepFactoryOptions(); ok {
+		coreStepFactoryOptions = append(coreStepFactoryOptions, snapshotOptions...)
 	}
 
 	return engine.NewEngine(

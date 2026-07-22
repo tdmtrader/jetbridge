@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/vars"
 )
 
@@ -577,6 +578,95 @@ func (validator *StepValidator) VisitLoadVar(step *LoadVarStep) error {
 	}
 
 	return nil
+}
+
+func (validator *StepValidator) VisitLoadSnapshot(step *LoadSnapshotStep) error {
+	validator.pushContextf(".load_snapshot(%s)", step.Name)
+	defer validator.popContext()
+
+	warning, err := ValidateIdentifier(step.Name, validator.context...)
+	if err != nil {
+		validator.recordError(err.Error())
+	}
+	// Unlike legacy producer names, load_snapshot names participate in a
+	// durable typed binding. Even compatibility warnings are therefore fatal.
+	if warning != nil {
+		validator.Errors = append(validator.Errors, warning.Message)
+	}
+
+	if validator.seenGetName[step.Name] {
+		validator.recordError("repeated producer name")
+	}
+	validator.seenGetName[step.Name] = true
+
+	if err := step.validateWire(); err != nil {
+		validator.recordError(err.Error())
+	}
+	validator.validateLoadSnapshotParameter(step, step.ID, false)
+	if step.WorkflowRunID != "" {
+		validator.validateLoadSnapshotParameter(step, step.WorkflowRunID, true)
+	}
+	return nil
+}
+
+func (validator *StepValidator) validateLoadSnapshotParameter(step *LoadSnapshotStep, value string, workflow bool) {
+	name, templated := loadSnapshotParameterName(value)
+	if !templated {
+		return
+	}
+	field := "id"
+	if workflow {
+		field = "workflow_run_id"
+	}
+	if !validator.config.Template {
+		validator.recordErrorf("%s parameter reference is only valid in a template pipeline", field)
+		return
+	}
+	var parameter *ParamSchema
+	for i := range validator.config.Params {
+		if validator.config.Params[i].Name == name {
+			parameter = &validator.config.Params[i]
+			break
+		}
+	}
+	if parameter == nil {
+		validator.recordErrorf("%s parameter %q is not declared", field, name)
+		return
+	}
+	if parameter.Type != "string" {
+		validator.recordErrorf("%s parameter %q must have type string", field, name)
+		return
+	}
+	if workflow && !parameter.Required {
+		validator.recordError("workflow_run_id parameter must be required")
+	}
+	if !workflow && !parameter.Required && parameter.Default == nil {
+		validator.recordErrorf("snapshot id parameter %q must be required or have a canonical string default", name)
+		return
+	}
+	if parameter.Default == nil {
+		return
+	}
+	defaultValue, ok := parameter.Default.(string)
+	if !ok {
+		validator.recordErrorf("%s parameter %q default must be a canonical string", field, name)
+		return
+	}
+	if workflow {
+		if _, err := snapshot.ParseWorkflowRunID(defaultValue); err != nil {
+			validator.recordErrorf("workflow_run_id parameter %q default is invalid: %v", name, err)
+		}
+		return
+	}
+	if defaultValue == "0" {
+		if !step.Optional {
+			validator.recordErrorf("snapshot id parameter %q default 0 requires optional: true", name)
+		}
+		return
+	}
+	if _, err := snapshot.ParseSnapshotID(defaultValue); err != nil {
+		validator.recordErrorf("snapshot id parameter %q default is invalid: %v", name, err)
+	}
 }
 
 func (validator *StepValidator) VisitTry(step *TryStep) error {

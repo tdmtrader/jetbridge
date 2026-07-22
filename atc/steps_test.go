@@ -28,6 +28,36 @@ type StepTest struct {
 
 var factoryTests = []StepTest{
 	{
+		Title: "load_snapshot step preserves quoted identifiers",
+		ConfigYAML: `
+			load_snapshot: subject
+			id: "9007199254740993"
+			type: review/v1
+			workflow_run_id: "9223372036854775807"
+		`,
+		StepConfig: &atc.LoadSnapshotStep{
+			Name:          "subject",
+			ID:            "9007199254740993",
+			Type:          snapshot.TypeRef("review/v1"),
+			WorkflowRunID: "9223372036854775807",
+		},
+	},
+	{
+		Title: "load_snapshot composes with ordinary modifiers",
+		ConfigYAML: `
+			load_snapshot: subject
+			id: "1"
+			type: review/v1
+			timeout: 1h
+		`,
+		StepConfig: &atc.TimeoutStep{
+			Duration: "1h",
+			Step: &atc.LoadSnapshotStep{
+				Name: "subject", ID: "1", Type: snapshot.TypeRef("review/v1"),
+			},
+		},
+	},
+	{
 		Title: "get step",
 		ConfigYAML: `
 			get: some-name
@@ -880,6 +910,38 @@ jobs:
 		outputTypes := agentWire["output_types"].(map[string]any)
 		s.Equal(map[string]any{"type": "review/v1"}, outputTypes["review"])
 	})
+}
+
+func (s *StepsSuite) TestLoadSnapshotIdentifiersAreQuotedCanonicalStrings() {
+	for _, test := range []struct {
+		name    string
+		payload string
+	}{
+		{"numeric id", `{"load_snapshot":"subject","id":9007199254740993,"type":"review/v1"}`},
+		{"empty id", `{"load_snapshot":"subject","id":"","type":"review/v1"}`},
+		{"whitespace id", `{"load_snapshot":"subject","id":" 1","type":"review/v1"}`},
+		{"leading zero", `{"load_snapshot":"subject","id":"01","type":"review/v1"}`},
+		{"signed", `{"load_snapshot":"subject","id":"+1","type":"review/v1"}`},
+		{"overflow", `{"load_snapshot":"subject","id":"9223372036854775808","type":"review/v1"}`},
+		{"required zero", `{"load_snapshot":"subject","id":"0","type":"review/v1"}`},
+		{"workflow zero", `{"load_snapshot":"subject","id":"1","type":"review/v1","workflow_run_id":"0"}`},
+		{"numeric workflow id", `{"load_snapshot":"subject","id":"1","type":"review/v1","workflow_run_id":1}`},
+		{"invalid type", `{"load_snapshot":"subject","id":"1","type":"review"}`},
+		{"unknown field", `{"load_snapshot":"subject","id":"1","type":"review/v1","typo":true}`},
+		{"embedded parameter", `{"load_snapshot":"subject","id":"prefix-((subject_id))","type":"review/v1"}`},
+	} {
+		s.Run(test.name, func() {
+			var step atc.Step
+			s.Error(json.Unmarshal([]byte(test.payload), &step))
+		})
+	}
+
+	var optional atc.Step
+	s.NoError(json.Unmarshal([]byte(`{"load_snapshot":"subject","id":"0","type":"review/v1","optional":true}`), &optional))
+	s.Equal("0", optional.Config.(*atc.LoadSnapshotStep).ID)
+
+	var direct atc.LoadSnapshotStep
+	s.Error(direct.UnmarshalJSON([]byte(`{"load_snapshot":"subject","id":"1","type":"review/v1"} {}`)))
 }
 
 func rawMessage(s string) *json.RawMessage {

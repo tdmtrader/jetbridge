@@ -91,6 +91,19 @@ type FakeCoreStepFactory struct {
 	harvestStepReturnsOnCall map[int]struct {
 		result1 exec.Step
 	}
+	LoadSnapshotStepStub        func(atc.Plan, exec.StepMetadata, engine.DelegateFactory) exec.Step
+	loadSnapshotStepMutex       sync.RWMutex
+	loadSnapshotStepArgsForCall []struct {
+		arg1 atc.Plan
+		arg2 exec.StepMetadata
+		arg3 engine.DelegateFactory
+	}
+	loadSnapshotStepReturns struct {
+		result1 exec.Step
+	}
+	loadSnapshotStepReturnsOnCall map[int]struct {
+		result1 exec.Step
+	}
 	LoadVarStepStub        func(atc.Plan, exec.StepMetadata, engine.DelegateFactory) exec.Step
 	loadVarStepMutex       sync.RWMutex
 	loadVarStepArgsForCall []struct {
@@ -539,6 +552,69 @@ func (fake *FakeCoreStepFactory) HarvestStepReturnsOnCall(i int, result1 exec.St
 		})
 	}
 	fake.harvestStepReturnsOnCall[i] = struct {
+		result1 exec.Step
+	}{result1}
+}
+
+func (fake *FakeCoreStepFactory) LoadSnapshotStep(arg1 atc.Plan, arg2 exec.StepMetadata, arg3 engine.DelegateFactory) exec.Step {
+	fake.loadSnapshotStepMutex.Lock()
+	ret, specificReturn := fake.loadSnapshotStepReturnsOnCall[len(fake.loadSnapshotStepArgsForCall)]
+	fake.loadSnapshotStepArgsForCall = append(fake.loadSnapshotStepArgsForCall, struct {
+		arg1 atc.Plan
+		arg2 exec.StepMetadata
+		arg3 engine.DelegateFactory
+	}{arg1, arg2, arg3})
+	stub := fake.LoadSnapshotStepStub
+	fakeReturns := fake.loadSnapshotStepReturns
+	fake.recordInvocation("LoadSnapshotStep", []interface{}{arg1, arg2, arg3})
+	fake.loadSnapshotStepMutex.Unlock()
+	if stub != nil {
+		return stub(arg1, arg2, arg3)
+	}
+	if specificReturn {
+		return ret.result1
+	}
+	return fakeReturns.result1
+}
+
+func (fake *FakeCoreStepFactory) LoadSnapshotStepCallCount() int {
+	fake.loadSnapshotStepMutex.RLock()
+	defer fake.loadSnapshotStepMutex.RUnlock()
+	return len(fake.loadSnapshotStepArgsForCall)
+}
+
+func (fake *FakeCoreStepFactory) LoadSnapshotStepCalls(stub func(atc.Plan, exec.StepMetadata, engine.DelegateFactory) exec.Step) {
+	fake.loadSnapshotStepMutex.Lock()
+	defer fake.loadSnapshotStepMutex.Unlock()
+	fake.LoadSnapshotStepStub = stub
+}
+
+func (fake *FakeCoreStepFactory) LoadSnapshotStepArgsForCall(i int) (atc.Plan, exec.StepMetadata, engine.DelegateFactory) {
+	fake.loadSnapshotStepMutex.RLock()
+	defer fake.loadSnapshotStepMutex.RUnlock()
+	argsForCall := fake.loadSnapshotStepArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2, argsForCall.arg3
+}
+
+func (fake *FakeCoreStepFactory) LoadSnapshotStepReturns(result1 exec.Step) {
+	fake.loadSnapshotStepMutex.Lock()
+	defer fake.loadSnapshotStepMutex.Unlock()
+	fake.LoadSnapshotStepStub = nil
+	fake.loadSnapshotStepReturns = struct {
+		result1 exec.Step
+	}{result1}
+}
+
+func (fake *FakeCoreStepFactory) LoadSnapshotStepReturnsOnCall(i int, result1 exec.Step) {
+	fake.loadSnapshotStepMutex.Lock()
+	defer fake.loadSnapshotStepMutex.Unlock()
+	fake.LoadSnapshotStepStub = nil
+	if fake.loadSnapshotStepReturnsOnCall == nil {
+		fake.loadSnapshotStepReturnsOnCall = make(map[int]struct {
+			result1 exec.Step
+		})
+	}
+	fake.loadSnapshotStepReturnsOnCall[i] = struct {
 		result1 exec.Step
 	}{result1}
 }

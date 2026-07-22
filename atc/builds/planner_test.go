@@ -1595,6 +1595,28 @@ var factoryTests = []PlannerTest{
 		}`,
 	},
 	{
+		Title: "load_snapshot step",
+
+		Config: &atc.LoadSnapshotStep{
+			Name:          "subject",
+			ID:            "9007199254740993",
+			Type:          snapshot.TypeRef("review/v1"),
+			Optional:      true,
+			WorkflowRunID: "9223372036854775807",
+		},
+
+		PlanJSON: `{
+			"id": "(unique)",
+			"load_snapshot": {
+				"name": "subject",
+				"id": "9007199254740993",
+				"type": "review/v1",
+				"optional": true,
+				"workflow_run_id": "9223372036854775807"
+			}
+		}`,
+	},
+	{
 		Title: "load_var step",
 
 		Config: &atc.LoadVarStep{

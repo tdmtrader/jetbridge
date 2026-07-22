@@ -668,6 +668,21 @@ var _ = Describe("Builder", func() {
 						})
 					})
 
+					Context("that contains a load_snapshot step", func() {
+						BeforeEach(func() {
+							expectedPlan = planFactory.NewPlan(atc.LoadSnapshotPlan{
+								Name: "subject", ID: "9007199254740993", Type: "review/v1",
+								WorkflowRunID: "9223372036854775807",
+							})
+						})
+
+						It("constructs load_snapshot with server-derived metadata", func() {
+							plan, stepMetadata, _ := fakeCoreStepFactory.LoadSnapshotStepArgsForCall(0)
+							Expect(plan).To(Equal(expectedPlan))
+							Expect(stepMetadata).To(Equal(expectedMetadataWithoutCreatedBy))
+						})
+					})
+
 					Context("that contains a check step", func() {
 						BeforeEach(func() {
 							expectedPlan = planFactory.NewPlan(atc.CheckPlan{

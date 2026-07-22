@@ -3006,6 +3006,69 @@ var _ = Describe("ValidateConfig", func() {
 	})
 })
 
+var _ = Describe("load_snapshot validation", func() {
+	validateLoad := func(config atc.Config, steps ...atc.Step) ([]atc.ConfigWarning, []string) {
+		config.Jobs = atc.JobConfigs{{Name: "load", PlanSequence: steps}}
+		return configvalidate.Validate(config)
+	}
+	load := func(name, id string) atc.Step {
+		return atc.Step{Config: &atc.LoadSnapshotStep{
+			Name: name, ID: id, Type: snapshot.TypeRef("review/v1"),
+		}}
+	}
+
+	It("makes identifier warnings fatal and shares get producer names", func() {
+		_, errors := validateLoad(atc.Config{},
+			atc.Step{Config: &atc.GetStep{Name: "subject", Resource: "repo"}},
+			load("subject", "1"),
+		)
+		Expect(errors).To(ContainElement(ContainSubstring("repeated producer name")))
+		_, errors = validateLoad(atc.Config{}, load("subject", "1"), load("subject", "2"))
+		Expect(errors).To(ContainElement(ContainSubstring("repeated producer name")))
+
+		warnings, errors := validateLoad(atc.Config{}, load("123", "1"))
+		Expect(warnings).To(BeEmpty())
+		Expect(errors).To(ContainElement(ContainSubstring("not a valid identifier")))
+	})
+
+	It("accepts only whole declared string parameter references", func() {
+		config := atc.Config{
+			Template: true,
+			Params: []atc.ParamSchema{
+				{Name: "subject_id", Type: "string", Required: true},
+				{Name: "workflow_run_id", Type: "string", Required: true},
+			},
+		}
+		step := load("subject", "((subject_id))")
+		step.Config.(*atc.LoadSnapshotStep).WorkflowRunID = "((workflow_run_id))"
+		_, errors := validateLoad(config, step)
+		Expect(errors).To(BeEmpty())
+
+		step = load("subject", "((missing_id))")
+		_, errors = validateLoad(config, step)
+		Expect(errors).To(ContainElement(ContainSubstring("is not declared")))
+
+		_, errors = validateLoad(atc.Config{}, load("subject", "((subject_id))"))
+		Expect(errors).To(ContainElement(ContainSubstring("only valid in a template pipeline")))
+	})
+
+	It("requires optional parameters to be required or default to a canonical string", func() {
+		step := load("subject", "((subject_id))")
+		step.Config.(*atc.LoadSnapshotStep).Optional = true
+		_, errors := validateLoad(atc.Config{
+			Template: true,
+			Params:   []atc.ParamSchema{{Name: "subject_id", Type: "string", Default: "0"}},
+		}, step)
+		Expect(errors).To(BeEmpty())
+
+		_, errors = validateLoad(atc.Config{
+			Template: true,
+			Params:   []atc.ParamSchema{{Name: "subject_id", Type: "string"}},
+		}, step)
+		Expect(errors).To(ContainElement(ContainSubstring("must be required or have")))
+	})
+})
+
 var _ = Describe("typed snapshot step declarations", func() {
 	validateStep := func(step atc.StepConfig) []string {
 		_, errors := configvalidate.Validate(atc.Config{

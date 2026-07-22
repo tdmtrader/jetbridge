@@ -46,6 +46,9 @@ type coreStepFactory struct {
 	agentOutcomesStore    outcomes.Store
 	platformUserResolver  exec.PlatformUserResolver
 	outputSealer          snapshot.OutputSealer
+	snapshotMetadataStore snapshot.MetadataStore
+	snapshotContentStore  snapshot.ContentStore
+	snapshotInputBindings exec.WorkflowInputBindingVerifier
 }
 
 // CoreStepFactoryOption configures optional fields on coreStepFactory.
@@ -62,6 +65,20 @@ func WithCoreImageResolver(r imageresolver.Resolver) CoreStepFactoryOption {
 // steps using one command-scoped sealer instance.
 func WithOutputSealer(sealer snapshot.OutputSealer) CoreStepFactoryOption {
 	return func(f *coreStepFactory) { f.outputSealer = sealer }
+}
+
+// WithSnapshotLoader enables load_snapshot using the same command-scoped
+// durable stores used by sealing and one authoritative workflow verifier.
+func WithSnapshotLoader(
+	metadata snapshot.MetadataStore,
+	content snapshot.ContentStore,
+	bindings exec.WorkflowInputBindingVerifier,
+) CoreStepFactoryOption {
+	return func(f *coreStepFactory) {
+		f.snapshotMetadataStore = metadata
+		f.snapshotContentStore = content
+		f.snapshotInputBindings = bindings
+	}
 }
 
 // WithAgentStepImage sets the main-container image for agent: steps
@@ -448,6 +465,28 @@ func (factory *coreStepFactory) LoadVarStep(
 		loadVarStep = exec.RetryError(loadVarStep, delegateFactory)
 	}
 	return loadVarStep
+}
+
+func (factory *coreStepFactory) LoadSnapshotStep(
+	plan atc.Plan,
+	stepMetadata exec.StepMetadata,
+	delegateFactory DelegateFactory,
+) exec.Step {
+	loadSnapshotStep := exec.NewLoadSnapshotStep(
+		plan.ID,
+		*plan.LoadSnapshot,
+		stepMetadata,
+		delegateFactory,
+		factory.snapshotMetadataStore,
+		factory.snapshotContentStore,
+		factory.snapshotInputBindings,
+	)
+
+	loadSnapshotStep = exec.LogError(loadSnapshotStep, delegateFactory)
+	if atc.EnableBuildRerunWhenWorkerDisappears {
+		loadSnapshotStep = exec.RetryError(loadSnapshotStep, delegateFactory)
+	}
+	return loadSnapshotStep
 }
 
 func (factory *coreStepFactory) ArtifactInputStep(

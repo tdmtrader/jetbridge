@@ -491,6 +491,33 @@ var _ = Describe("AgentWorkflowRunsFactory", func() {
 			ActualPlanHash:       strings.Repeat("e", 64),
 			ResolvedDependencies: json.RawMessage(`{"images":{"review":"sha256:abc"}}`),
 		})).To(Succeed())
+
+		matches, err := factory.InputBindingMatches(ctx, defaultTeam.ID(), buildID, run.ID, "source", &input)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(matches).To(BeTrue())
+
+		for _, mismatch := range []struct {
+			teamID  int
+			buildID int
+			runID   snapshot.WorkflowRunID
+			port    string
+			ref     *snapshot.SnapshotRef
+		}{
+			{defaultTeam.ID() + 1, buildID, run.ID, "source", &input},
+			{defaultTeam.ID(), buildID + 1, run.ID, "source", &input},
+			{defaultTeam.ID(), buildID, run.ID + 1, "source", &input},
+			{defaultTeam.ID(), buildID, run.ID, "other", &input},
+			{defaultTeam.ID(), buildID, run.ID, "source", &snapshot.SnapshotRef{ID: input.ID, Type: "other/v1", Digest: input.Digest}},
+			{defaultTeam.ID(), buildID, run.ID, "source", nil},
+		} {
+			matches, err = factory.InputBindingMatches(ctx, mismatch.teamID, mismatch.buildID, mismatch.runID, mismatch.port, mismatch.ref)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(matches).To(BeFalse())
+		}
+
+		matches, err = factory.InputBindingMatches(ctx, defaultTeam.ID(), buildID, run.ID, "optional-unbound", nil)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(matches).To(BeTrue())
 		_, err = dbConn.Exec(`
 			INSERT INTO agent_workflow_run_snapshots
 				(workflow_run_id, direction, port_name, snapshot_id)

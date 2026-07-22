@@ -12,6 +12,7 @@ import (
 	"code.cloudfoundry.org/lager/v3/lagerctx"
 	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/agent/snapshot"
+	"github.com/concourse/concourse/agent/snapshot/snapshotfakes"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbfakes"
@@ -74,6 +75,22 @@ func TestCoreStepFactoryLeavesOutputSealerDisabledByDefault(t *testing.T) {
 	factory := &coreStepFactory{}
 	if factory.outputSealer != nil {
 		t.Fatalf("factory output sealer = %#v, want nil", factory.outputSealer)
+	}
+}
+
+func TestWithSnapshotLoaderKeepsExactCommandScopedDependencies(t *testing.T) {
+	metadata := new(snapshotfakes.FakeMetadataStore)
+	content := new(snapshotfakes.FakeContentStore)
+	bindings := new(dbfakes.FakeAgentWorkflowRunsFactory)
+	factory := &coreStepFactory{}
+	WithSnapshotLoader(metadata, content, bindings)(factory)
+	if factory.snapshotMetadataStore != metadata || factory.snapshotContentStore != content || factory.snapshotInputBindings != bindings {
+		t.Fatal("snapshot loader did not retain the exact command-scoped dependencies")
+	}
+
+	disabled := &coreStepFactory{}
+	if disabled.snapshotMetadataStore != nil || disabled.snapshotContentStore != nil || disabled.snapshotInputBindings != nil {
+		t.Fatal("snapshot loader dependencies should be nil by default")
 	}
 }
 

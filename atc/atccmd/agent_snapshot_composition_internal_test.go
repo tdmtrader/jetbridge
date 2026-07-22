@@ -80,6 +80,7 @@ func TestAgentSnapshotComponentsAreComposedOnceWithExplicitConnection(t *testing
 	if err := command.composeAgentSnapshots(explicitConnection); err != nil {
 		t.Fatal(err)
 	}
+	firstWorkflowVerifier := command.agentSnapshotWorkflowRuns
 	if err := command.composeAgentSnapshots(nil); err != nil {
 		t.Fatal(err)
 	}
@@ -91,6 +92,12 @@ func TestAgentSnapshotComponentsAreComposedOnceWithExplicitConnection(t *testing
 	}
 	if command.agentSnapshotMetadataStore == nil || command.agentSnapshotDigestLocker == nil || command.agentSnapshotValidatorRegistry == nil || command.agentSnapshotOutputSealer != wantSealer {
 		t.Fatal("composition did not retain the complete command-scoped sealing graph")
+	}
+	if command.agentSnapshotWorkflowRuns == nil {
+		t.Fatal("composition did not retain one command-scoped workflow input verifier")
+	}
+	if command.agentSnapshotWorkflowRuns != firstWorkflowVerifier {
+		t.Fatal("composition rebuilt the workflow input verifier")
 	}
 	if storageMetadata != command.agentSnapshotMetadataStore || gotSealerMetadata != command.agentSnapshotMetadataStore {
 		t.Fatal("content store and sealer did not reuse the exact metadata factory")
@@ -110,8 +117,8 @@ func TestAgentSnapshotComponentsAreComposedOnceWithExplicitConnection(t *testing
 	if gotStageTTL != time.Hour {
 		t.Fatalf("stage TTL = %s, want 1h", gotStageTTL)
 	}
-	if option, ok := command.agentSnapshotCoreStepFactoryOption(); !ok || option == nil {
-		t.Fatal("enabled composition did not expose the output-sealer engine option")
+	if options, ok := command.agentSnapshotCoreStepFactoryOptions(); !ok || len(options) != 2 {
+		t.Fatalf("enabled composition exposed %d engine options, want sealer and loader", len(options))
 	}
 }
 
@@ -128,11 +135,11 @@ func TestAgentSnapshotCompositionDisabledRemainsNil(t *testing.T) {
 	if err := command.composeAgentSnapshots(nil); err != nil {
 		t.Fatal(err)
 	}
-	if command.agentSnapshotDaemonClient != nil || command.agentSnapshotContentStore != nil || command.agentSnapshotMetadataStore != nil || command.agentSnapshotDigestLocker != nil || command.agentSnapshotValidatorRegistry != nil || command.agentSnapshotOutputSealer != nil {
+	if command.agentSnapshotDaemonClient != nil || command.agentSnapshotContentStore != nil || command.agentSnapshotMetadataStore != nil || command.agentSnapshotWorkflowRuns != nil || command.agentSnapshotDigestLocker != nil || command.agentSnapshotValidatorRegistry != nil || command.agentSnapshotOutputSealer != nil {
 		t.Fatal("disabled snapshot composition must remain nil")
 	}
-	if option, ok := command.agentSnapshotCoreStepFactoryOption(); ok || option != nil {
-		t.Fatal("disabled composition exposed an output-sealer engine option")
+	if options, ok := command.agentSnapshotCoreStepFactoryOptions(); ok || options != nil {
+		t.Fatal("disabled composition exposed snapshot engine options")
 	}
 }
 
@@ -145,7 +152,7 @@ func TestAgentSnapshotCompositionFailureIsFailClosed(t *testing.T) {
 	if err := command.composeAgentSnapshots(nil); err == nil {
 		t.Fatal("expected composition failure")
 	}
-	if command.agentSnapshotDaemonClient != nil || command.agentSnapshotContentStore != nil || command.agentSnapshotMetadataStore != nil || command.agentSnapshotDigestLocker != nil || command.agentSnapshotValidatorRegistry != nil || command.agentSnapshotOutputSealer != nil {
+	if command.agentSnapshotDaemonClient != nil || command.agentSnapshotContentStore != nil || command.agentSnapshotMetadataStore != nil || command.agentSnapshotWorkflowRuns != nil || command.agentSnapshotDigestLocker != nil || command.agentSnapshotValidatorRegistry != nil || command.agentSnapshotOutputSealer != nil {
 		t.Fatal("failed composition published partial components")
 	}
 	if command.agentSnapshotArchiveLimits != (snapshot.ArchiveLimits{}) {
@@ -169,7 +176,7 @@ func TestAgentSnapshotSealerCompositionFailurePublishesNothing(t *testing.T) {
 	if err := command.composeAgentSnapshots(&dbfakes.FakeDbConn{}); !errors.Is(err, failure) {
 		t.Fatalf("composeAgentSnapshots() error = %v", err)
 	}
-	if command.agentSnapshotDaemonClient != nil || command.agentSnapshotContentStore != nil || command.agentSnapshotMetadataStore != nil || command.agentSnapshotDigestLocker != nil || command.agentSnapshotValidatorRegistry != nil || command.agentSnapshotOutputSealer != nil {
+	if command.agentSnapshotDaemonClient != nil || command.agentSnapshotContentStore != nil || command.agentSnapshotMetadataStore != nil || command.agentSnapshotWorkflowRuns != nil || command.agentSnapshotDigestLocker != nil || command.agentSnapshotValidatorRegistry != nil || command.agentSnapshotOutputSealer != nil {
 		t.Fatal("failed sealer composition published partial components")
 	}
 	if command.agentSnapshotArchiveLimits != (snapshot.ArchiveLimits{}) {

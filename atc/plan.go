@@ -1,20 +1,24 @@
 package atc
 
-import "github.com/concourse/concourse/agent/harvest"
+import (
+	"github.com/concourse/concourse/agent/harvest"
+	"github.com/concourse/concourse/agent/snapshot"
+)
 
 type Plan struct {
 	ID       PlanID `json:"id"`
 	Attempts []int  `json:"attempts,omitempty"`
 
-	Get         *GetPlan         `json:"get,omitempty"`
-	Put         *PutPlan         `json:"put,omitempty"`
-	Check       *CheckPlan       `json:"check,omitempty"`
-	Task        *TaskPlan        `json:"task,omitempty"`
-	Run         *RunPlan         `json:"run,omitempty"`
-	Agent       *AgentPlan       `json:"agent,omitempty"`
-	Harvest     *HarvestPlan     `json:"harvest,omitempty"`
-	SetPipeline *SetPipelinePlan `json:"set_pipeline,omitempty"`
-	LoadVar     *LoadVarPlan     `json:"load_var,omitempty"`
+	Get          *GetPlan          `json:"get,omitempty"`
+	Put          *PutPlan          `json:"put,omitempty"`
+	Check        *CheckPlan        `json:"check,omitempty"`
+	Task         *TaskPlan         `json:"task,omitempty"`
+	Run          *RunPlan          `json:"run,omitempty"`
+	Agent        *AgentPlan        `json:"agent,omitempty"`
+	Harvest      *HarvestPlan      `json:"harvest,omitempty"`
+	SetPipeline  *SetPipelinePlan  `json:"set_pipeline,omitempty"`
+	LoadVar      *LoadVarPlan      `json:"load_var,omitempty"`
+	LoadSnapshot *LoadSnapshotPlan `json:"load_snapshot,omitempty"`
 
 	Do         *DoPlan         `json:"do,omitempty"`
 	InParallel *InParallelPlan `json:"in_parallel,omitempty"`
@@ -470,6 +474,14 @@ type LoadVarPlan struct {
 	File   string `json:"file"`
 	Format string `json:"format,omitempty"`
 	Reveal bool   `json:"reveal,omitempty"`
+}
+
+type LoadSnapshotPlan struct {
+	Name          string           `json:"name"`
+	ID            string           `json:"id"`
+	Type          snapshot.TypeRef `json:"type"`
+	Optional      bool             `json:"optional,omitempty"`
+	WorkflowRunID string           `json:"workflow_run_id,omitempty"`
 }
 
 type RetryPlan []Plan

@@ -31,6 +31,9 @@ type StepRecursor struct {
 
 	// OnLoadVar will be invoked for any *LoadVarStep present in the StepConfig.
 	OnLoadVar func(*LoadVarStep) error
+
+	// OnLoadSnapshot will be invoked for any *LoadSnapshotStep present in the StepConfig.
+	OnLoadSnapshot func(*LoadSnapshotStep) error
 }
 
 // VisitTask calls the OnTask hook if configured.
@@ -102,6 +105,13 @@ func (recursor StepRecursor) VisitLoadVar(step *LoadVarStep) error {
 		return recursor.OnLoadVar(step)
 	}
 
+	return nil
+}
+
+func (recursor StepRecursor) VisitLoadSnapshot(step *LoadSnapshotStep) error {
+	if recursor.OnLoadSnapshot != nil {
+		return recursor.OnLoadSnapshot(step)
+	}
 	return nil
 }
 

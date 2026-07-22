@@ -60,6 +60,24 @@ type FakeAgentWorkflowRunsFactory struct {
 		result2 bool
 		result3 error
 	}
+	InputBindingMatchesStub        func(context.Context, int, int, snapshot.WorkflowRunID, string, *snapshot.SnapshotRef) (bool, error)
+	inputBindingMatchesMutex       sync.RWMutex
+	inputBindingMatchesArgsForCall []struct {
+		arg1 context.Context
+		arg2 int
+		arg3 int
+		arg4 snapshot.WorkflowRunID
+		arg5 string
+		arg6 *snapshot.SnapshotRef
+	}
+	inputBindingMatchesReturns struct {
+		result1 bool
+		result2 error
+	}
+	inputBindingMatchesReturnsOnCall map[int]struct {
+		result1 bool
+		result2 error
+	}
 	LinkExecutionStub        func(context.Context, snapshot.WorkflowRunID, db.AgentWorkflowRunExecutionLink) error
 	linkExecutionMutex       sync.RWMutex
 	linkExecutionArgsForCall []struct {
@@ -353,6 +371,75 @@ func (fake *FakeAgentWorkflowRunsFactory) GetReturnsOnCall(i int, result1 db.Age
 		result2 bool
 		result3 error
 	}{result1, result2, result3}
+}
+
+func (fake *FakeAgentWorkflowRunsFactory) InputBindingMatches(arg1 context.Context, arg2 int, arg3 int, arg4 snapshot.WorkflowRunID, arg5 string, arg6 *snapshot.SnapshotRef) (bool, error) {
+	fake.inputBindingMatchesMutex.Lock()
+	ret, specificReturn := fake.inputBindingMatchesReturnsOnCall[len(fake.inputBindingMatchesArgsForCall)]
+	fake.inputBindingMatchesArgsForCall = append(fake.inputBindingMatchesArgsForCall, struct {
+		arg1 context.Context
+		arg2 int
+		arg3 int
+		arg4 snapshot.WorkflowRunID
+		arg5 string
+		arg6 *snapshot.SnapshotRef
+	}{arg1, arg2, arg3, arg4, arg5, arg6})
+	stub := fake.InputBindingMatchesStub
+	fakeReturns := fake.inputBindingMatchesReturns
+	fake.recordInvocation("InputBindingMatches", []interface{}{arg1, arg2, arg3, arg4, arg5, arg6})
+	fake.inputBindingMatchesMutex.Unlock()
+	if stub != nil {
+		return stub(arg1, arg2, arg3, arg4, arg5, arg6)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2
+	}
+	return fakeReturns.result1, fakeReturns.result2
+}
+
+func (fake *FakeAgentWorkflowRunsFactory) InputBindingMatchesCallCount() int {
+	fake.inputBindingMatchesMutex.RLock()
+	defer fake.inputBindingMatchesMutex.RUnlock()
+	return len(fake.inputBindingMatchesArgsForCall)
+}
+
+func (fake *FakeAgentWorkflowRunsFactory) InputBindingMatchesCalls(stub func(context.Context, int, int, snapshot.WorkflowRunID, string, *snapshot.SnapshotRef) (bool, error)) {
+	fake.inputBindingMatchesMutex.Lock()
+	defer fake.inputBindingMatchesMutex.Unlock()
+	fake.InputBindingMatchesStub = stub
+}
+
+func (fake *FakeAgentWorkflowRunsFactory) InputBindingMatchesArgsForCall(i int) (context.Context, int, int, snapshot.WorkflowRunID, string, *snapshot.SnapshotRef) {
+	fake.inputBindingMatchesMutex.RLock()
+	defer fake.inputBindingMatchesMutex.RUnlock()
+	argsForCall := fake.inputBindingMatchesArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2, argsForCall.arg3, argsForCall.arg4, argsForCall.arg5, argsForCall.arg6
+}
+
+func (fake *FakeAgentWorkflowRunsFactory) InputBindingMatchesReturns(result1 bool, result2 error) {
+	fake.inputBindingMatchesMutex.Lock()
+	defer fake.inputBindingMatchesMutex.Unlock()
+	fake.InputBindingMatchesStub = nil
+	fake.inputBindingMatchesReturns = struct {
+		result1 bool
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeAgentWorkflowRunsFactory) InputBindingMatchesReturnsOnCall(i int, result1 bool, result2 error) {
+	fake.inputBindingMatchesMutex.Lock()
+	defer fake.inputBindingMatchesMutex.Unlock()
+	fake.InputBindingMatchesStub = nil
+	if fake.inputBindingMatchesReturnsOnCall == nil {
+		fake.inputBindingMatchesReturnsOnCall = make(map[int]struct {
+			result1 bool
+			result2 error
+		})
+	}
+	fake.inputBindingMatchesReturnsOnCall[i] = struct {
+		result1 bool
+		result2 error
+	}{result1, result2}
 }
 
 func (fake *FakeAgentWorkflowRunsFactory) LinkExecution(arg1 context.Context, arg2 snapshot.WorkflowRunID, arg3 db.AgentWorkflowRunExecutionLink) error {

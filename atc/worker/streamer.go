@@ -28,22 +28,82 @@ func (s Streamer) StreamFile(ctx context.Context, artifact runtime.Artifact, pat
 
 	compressionReader, err := s.compression.NewReader(out)
 	if err != nil {
+		_ = out.Close()
 		return nil, err
 	}
 	tarReader := tar.NewReader(compressionReader)
 
 	_, err = tarReader.Next()
 	if err != nil {
+		if err == io.EOF {
+			if terminalErr := drainTarTerminal(tarReader, compressionReader, out); terminalErr != nil {
+				err = terminalErr
+			}
+		}
+		_ = compressionReader.Close()
+		_ = out.Close()
 		return nil, err
 	}
 
 	return fileReadMultiCloser{
-		Reader: tarReader,
+		Reader: &terminalTarEntryReader{
+			tar:     tarReader,
+			decoded: compressionReader,
+			encoded: out,
+		},
 		closers: []io.Closer{
 			out,
 			compressionReader,
 		},
 	}, nil
+}
+
+type terminalErrorStream interface {
+	TerminalError() error
+}
+
+type terminalTarEntryReader struct {
+	tar      *tar.Reader
+	decoded  io.Reader
+	encoded  io.Reader
+	finished bool
+}
+
+func (reader *terminalTarEntryReader) Read(buffer []byte) (int, error) {
+	if reader.finished {
+		return 0, io.EOF
+	}
+	n, err := reader.tar.Read(buffer)
+	if err != io.EOF {
+		return n, err
+	}
+	reader.finished = true
+	if terminalErr := drainTarTerminal(reader.tar, reader.decoded, reader.encoded); terminalErr != nil {
+		return n, terminalErr
+	}
+	return n, io.EOF
+}
+
+func drainTarTerminal(tarReader *tar.Reader, decoded io.Reader, encoded io.Reader) error {
+	for {
+		_, err := tarReader.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return err
+		}
+		if _, err := io.Copy(io.Discard, tarReader); err != nil {
+			return err
+		}
+	}
+	if _, err := io.Copy(io.Discard, decoded); err != nil {
+		return err
+	}
+	if stream, ok := encoded.(terminalErrorStream); ok {
+		return stream.TerminalError()
+	}
+	return nil
 }
 
 type fileReadMultiCloser struct {

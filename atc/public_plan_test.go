@@ -1238,3 +1238,22 @@ var _ = Describe("Plan", func() {
 		})
 	})
 })
+
+var _ = Describe("LoadSnapshot public plan", func() {
+	It("exposes the typed producer and redacts both durable identifiers", func() {
+		plan := atc.Plan{
+			ID: "9",
+			LoadSnapshot: &atc.LoadSnapshotPlan{
+				Name:          "subject",
+				ID:            "9007199254740993",
+				Type:          snapshot.TypeRef("review/v1"),
+				Optional:      true,
+				WorkflowRunID: "9223372036854775807",
+			},
+		}
+		Expect([]byte(*plan.Public())).To(MatchJSON(`{
+			"id":"9",
+			"load_snapshot":{"name":"subject","type":"review/v1","optional":true}
+		}`))
+	})
+})

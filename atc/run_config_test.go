@@ -135,6 +135,40 @@ var _ = Describe("MaterializeRunConfig", func() {
 		agent := out.Jobs[0].PlanSequence[0].Config.(*atc.AgentStep)
 		Expect(agent.SnapshotOutputs["review"].WorkflowRunID).To(Equal("9007199254740993"))
 	})
+
+	It("materializes quoted load_snapshot identifiers without numeric coercion", func() {
+		withSnapshot := template
+		withSnapshot.Template = true
+		withSnapshot.Params = []atc.ParamSchema{
+			{Name: "subject_id", Type: "string", Default: "0"},
+			{Name: "workflow_run_id", Type: "string", Required: true},
+		}
+		withSnapshot.Jobs = atc.JobConfigs{{
+			Name: "entry",
+			PlanSequence: []atc.Step{{Config: &atc.LoadSnapshotStep{
+				Name: "subject", ID: "((subject_id))", Type: snapshot.TypeRef("review/v1"),
+				Optional: true, WorkflowRunID: "((workflow_run_id))",
+			}}},
+		}}
+
+		out, err := atc.MaterializeRunConfig(withSnapshot, 7, 9001, map[string]any{
+			"subject_id":      "9007199254740993",
+			"workflow_run_id": "9223372036854775807",
+		})
+		Expect(err).ToNot(HaveOccurred())
+		load := out.Jobs[0].PlanSequence[0].Config.(*atc.LoadSnapshotStep)
+		Expect(load.ID).To(Equal("9007199254740993"))
+		Expect(load.WorkflowRunID).To(Equal("9223372036854775807"))
+
+		validated, err := atc.ValidateRunParams(withSnapshot.Params, map[string]any{
+			"workflow_run_id": "9223372036854775807",
+		})
+		Expect(err).ToNot(HaveOccurred())
+		out, err = atc.MaterializeRunConfig(withSnapshot, 8, 9002, validated)
+		Expect(err).ToNot(HaveOccurred())
+		load = out.Jobs[0].PlanSequence[0].Config.(*atc.LoadSnapshotStep)
+		Expect(load.ID).To(Equal("0"))
+	})
 })
 
 var _ = Describe("Config.EntryJobs", func() {

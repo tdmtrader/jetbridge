@@ -345,6 +345,17 @@ func (visitor *planVisitor) VisitLoadVar(step *atc.LoadVarStep) error {
 	return nil
 }
 
+func (visitor *planVisitor) VisitLoadSnapshot(step *atc.LoadSnapshotStep) error {
+	visitor.plan = visitor.planFactory.NewPlan(atc.LoadSnapshotPlan{
+		Name:          step.Name,
+		ID:            step.ID,
+		Type:          step.Type,
+		Optional:      step.Optional,
+		WorkflowRunID: step.WorkflowRunID,
+	})
+	return nil
+}
+
 func (visitor *planVisitor) VisitTry(step *atc.TryStep) error {
 	err := step.Step.Config.Visit(visitor)
 	if err != nil {

@@ -5,10 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"reflect"
+	"regexp"
 	"strings"
 
 	"github.com/concourse/concourse/agent/harvest"
+	"github.com/concourse/concourse/agent/snapshot"
 )
 
 // Step is an "envelope" type, acting as a wrapper to handle the marshaling and
@@ -198,6 +201,7 @@ type StepVisitor interface {
 	VisitHarvest(*HarvestStep) error
 	VisitSetPipeline(*SetPipelineStep) error
 	VisitLoadVar(*LoadVarStep) error
+	VisitLoadSnapshot(*LoadSnapshotStep) error
 	VisitTry(*TryStep) error
 	VisitDo(*DoStep) error
 	VisitInParallel(*InParallelStep) error
@@ -281,6 +285,10 @@ var StepPrecedence = []StepDetector{
 	{
 		Key: "timeout",
 		New: func() StepConfig { return &TimeoutStep{} },
+	},
+	{
+		Key: "load_snapshot",
+		New: func() StepConfig { return &LoadSnapshotStep{} },
 	},
 	{
 		Key: "set_pipeline",
@@ -488,6 +496,87 @@ type LoadVarStep struct {
 	File   string `json:"file,omitempty"`
 	Format string `json:"format,omitempty"`
 	Reveal bool   `json:"reveal,omitempty"`
+}
+
+type LoadSnapshotStep struct {
+	Name          string           `json:"load_snapshot"`
+	ID            string           `json:"id"`
+	Type          snapshot.TypeRef `json:"type"`
+	Optional      bool             `json:"optional,omitempty"`
+	WorkflowRunID string           `json:"workflow_run_id,omitempty"`
+}
+
+var loadSnapshotParameterPattern = regexp.MustCompile(`^\(\(([a-z][a-z0-9_-]*)\)\)$`)
+
+func (step LoadSnapshotStep) validateWire() error {
+	if err := step.Type.Validate(); err != nil {
+		return err
+	}
+	if step.ID == "" {
+		return fmt.Errorf("load_snapshot: id is required")
+	}
+	if _, parameter := loadSnapshotParameterName(step.ID); !parameter {
+		if step.ID == "0" {
+			if !step.Optional {
+				return fmt.Errorf("load_snapshot: id 0 requires optional: true")
+			}
+		} else if _, err := snapshot.ParseSnapshotID(step.ID); err != nil {
+			return fmt.Errorf("load_snapshot: id: %w", err)
+		}
+	}
+	if step.WorkflowRunID != "" {
+		if parameter, templated := loadSnapshotParameterName(step.WorkflowRunID); templated {
+			if parameter != "workflow_run_id" {
+				return fmt.Errorf("load_snapshot: workflow_run_id must use ((workflow_run_id))")
+			}
+		} else if _, err := snapshot.ParseWorkflowRunID(step.WorkflowRunID); err != nil {
+			return fmt.Errorf("load_snapshot: workflow_run_id: %w", err)
+		}
+	}
+	return nil
+}
+
+func loadSnapshotParameterName(value string) (string, bool) {
+	matches := loadSnapshotParameterPattern.FindStringSubmatch(value)
+	if len(matches) != 2 {
+		return "", false
+	}
+	return matches[1], true
+}
+
+func (step LoadSnapshotStep) MarshalJSON() ([]byte, error) {
+	if err := step.validateWire(); err != nil {
+		return nil, err
+	}
+	type wire LoadSnapshotStep
+	return json.Marshal(wire(step))
+}
+
+func (step *LoadSnapshotStep) UnmarshalJSON(data []byte) error {
+	type wire LoadSnapshotStep
+	var decoded wire
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&decoded); err != nil {
+		return err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("load_snapshot: trailing JSON value")
+		}
+		return err
+	}
+	parsed := LoadSnapshotStep(decoded)
+	if err := parsed.validateWire(); err != nil {
+		return err
+	}
+	*step = parsed
+	return nil
+}
+
+func (step *LoadSnapshotStep) Visit(v StepVisitor) error {
+	return v.VisitLoadSnapshot(step)
 }
 
 func (step *LoadVarStep) Visit(v StepVisitor) error {

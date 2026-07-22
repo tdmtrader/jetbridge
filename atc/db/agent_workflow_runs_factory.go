@@ -23,6 +23,7 @@ type AgentWorkflowRunsFactory interface {
 	Transition(context.Context, snapshot.WorkflowRunID, AgentWorkflowRunStatus, AgentWorkflowRunStatus, string) (bool, error)
 	ListForReconciliation(context.Context, int) ([]AgentWorkflowRun, error)
 	Snapshots(context.Context, snapshot.WorkflowRunID) ([]AgentWorkflowRunSnapshotBinding, error)
+	InputBindingMatches(context.Context, int, int, snapshot.WorkflowRunID, string, *snapshot.SnapshotRef) (bool, error)
 }
 
 func NewAgentWorkflowRunsFactory(conn DbConn) AgentWorkflowRunsFactory {
@@ -700,4 +701,85 @@ func (factory *agentWorkflowRunsFactory) Snapshots(
 		bindings = append(bindings, binding)
 	}
 	return bindings, rows.Err()
+}
+
+// InputBindingMatches authoritatively verifies both the current workflow
+// execution/build linkage and one exact immutable input binding in a single
+// database read. A nil ref means the named input port must be unbound.
+func (factory *agentWorkflowRunsFactory) InputBindingMatches(
+	ctx context.Context,
+	teamID int,
+	buildID int,
+	runID snapshot.WorkflowRunID,
+	port string,
+	ref *snapshot.SnapshotRef,
+) (bool, error) {
+	if teamID <= 0 || buildID <= 0 || strings.TrimSpace(port) == "" {
+		return false, fmt.Errorf("db: workflow input binding requires positive team/build IDs and a port")
+	}
+	if err := runID.Validate(); err != nil {
+		return false, err
+	}
+
+	var snapshotID int64
+	var typeName, digest string
+	var typeVersion int
+	hasRef := ref != nil
+	if ref != nil {
+		if err := ref.Validate(); err != nil {
+			return false, err
+		}
+		var err error
+		typeName, typeVersion, err = splitSnapshotType(ref.Type)
+		if err != nil {
+			return false, err
+		}
+		snapshotID = int64(ref.ID)
+		digest = ref.Digest.String()
+	}
+
+	var matches bool
+	err := factory.conn.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM agent_workflow_runs r
+			JOIN pipeline_runs execution
+			  ON execution.id = r.pipeline_run_id
+			 AND execution.template_pipeline_id = r.template_pipeline_id
+			 AND execution.instance_pipeline_id = r.instance_pipeline_id
+			JOIN pipelines template ON template.id = r.template_pipeline_id
+			JOIN pipelines instance ON instance.id = r.instance_pipeline_id
+			JOIN builds build ON build.id = $2
+			WHERE r.id = $3
+			  AND r.team_id = $1
+			  AND r.planned_build_id = $2
+			  AND template.team_id = $1
+			  AND instance.team_id = $1
+			  AND build.team_id = $1
+			  AND build.pipeline_id = instance.id
+			  AND (
+				($6 AND EXISTS (
+					SELECT 1
+					FROM agent_workflow_run_snapshots binding
+					JOIN agent_snapshots value ON value.id = binding.snapshot_id
+					WHERE binding.workflow_run_id = r.id
+					  AND binding.direction = 'input'
+					  AND binding.port_name = $4
+					  AND binding.snapshot_id = $5
+					  AND value.type_name = $7
+					  AND value.type_version = $8
+					  AND value.digest = $9
+				))
+				OR
+				(NOT $6 AND NOT EXISTS (
+					SELECT 1
+					FROM agent_workflow_run_snapshots binding
+					WHERE binding.workflow_run_id = r.id
+					  AND binding.direction = 'input'
+					  AND binding.port_name = $4
+				))
+			  )
+		)
+	`, teamID, buildID, int64(runID), port, snapshotID, hasRef, typeName, typeVersion, digest).Scan(&matches)
+	return matches, err
 }

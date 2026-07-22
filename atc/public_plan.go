@@ -1,6 +1,10 @@
 package atc
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"github.com/concourse/concourse/agent/snapshot"
+)
 
 func (plan *Plan) Public() *json.RawMessage {
 	if plan == nil {
@@ -22,6 +26,7 @@ func (plan *Plan) Public() *json.RawMessage {
 		Harvest        *json.RawMessage `json:"harvest,omitempty"`
 		SetPipeline    *json.RawMessage `json:"set_pipeline,omitempty"`
 		LoadVar        *json.RawMessage `json:"load_var,omitempty"`
+		LoadSnapshot   *json.RawMessage `json:"load_snapshot,omitempty"`
 		OnAbort        *json.RawMessage `json:"on_abort,omitempty"`
 		OnError        *json.RawMessage `json:"on_error,omitempty"`
 		Ensure         *json.RawMessage `json:"ensure,omitempty"`
@@ -84,6 +89,10 @@ func (plan *Plan) Public() *json.RawMessage {
 
 	if plan.LoadVar != nil {
 		public.LoadVar = plan.LoadVar.Public()
+	}
+
+	if plan.LoadSnapshot != nil {
+		public.LoadSnapshot = plan.LoadSnapshot.Public()
 	}
 
 	if plan.OnAbort != nil {
@@ -368,6 +377,14 @@ func (plan LoadVarPlan) Public() *json.RawMessage {
 	}{
 		Name: plan.Name,
 	})
+}
+
+func (plan LoadSnapshotPlan) Public() *json.RawMessage {
+	return enc(struct {
+		Name     string           `json:"name"`
+		Type     snapshot.TypeRef `json:"type"`
+		Optional bool             `json:"optional,omitempty"`
+	}{Name: plan.Name, Type: plan.Type, Optional: plan.Optional})
 }
 
 func (plan TimeoutPlan) Public() *json.RawMessage {

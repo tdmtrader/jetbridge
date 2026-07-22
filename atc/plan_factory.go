@@ -47,6 +47,8 @@ func (factory PlanFactory) NewPlan(step PlanConfig) Plan {
 		plan.SetPipeline = &t
 	case LoadVarPlan:
 		plan.LoadVar = &t
+	case LoadSnapshotPlan:
+		plan.LoadSnapshot = &t
 	case CheckPlan:
 		plan.Check = &t
 	case OnAbortPlan:
