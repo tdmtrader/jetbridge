@@ -71,6 +71,13 @@ func CompileDefinition(m Manifest) (*CompiledDefinition, error) {
 	if err := compileFunctionAssets(m, definition); err != nil {
 		return nil, err
 	}
+	// Source compilation is intentionally independent of the durable workflow
+	// definition ID. Static flow and ordinary Concourse semantics are complete
+	// here; AnnotatePublicOutputs attaches workflow-retention metadata after the
+	// definition has been allocated by persistence.
+	if _, err := ValidateFunction(definition.Function); err != nil {
+		return nil, err
+	}
 	return definition, nil
 }
 
