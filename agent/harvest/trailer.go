@@ -2,6 +2,7 @@ package harvest
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"regexp"
 	"strconv"
@@ -15,6 +16,13 @@ import (
 // patch-id heuristic in agent/gitcheck misses. Gerrit's Change-Id exists for
 // exactly this reason.
 const TrailerKey = "Agent-Ticket"
+
+// Bot identity for the trailer amend. Matches outcomes.BotAuthor so a
+// platform-authored commit is never counted as human touch.
+const (
+	BotName  = "concourse-agent[bot]"
+	BotEmail = "agent@concourse.invalid"
+)
 
 // trailerLine matches a conventional git trailer ("Key: value"), used to
 // decide whether the new trailer joins an existing block or starts one.
@@ -74,6 +82,21 @@ func appendTrailer(msg, trailer string) string {
 func trailerGitRun(dir string, args ...string) (string, error) {
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
+	// A deterministic committer identity is REQUIRED, not cosmetic: the
+	// harvest pod never commits (it only pushes), so it has no git identity
+	// and `commit --amend` fails with "Committer identity unknown" — which
+	// silently degraded every trailer to the best-effort error path. Caught
+	// by CI, masked locally by an ambient ~/.gitconfig.
+	//
+	// --amend PRESERVES the original author (verified), so a human's commit
+	// keeps its attribution and the human-touch delta — which filters on
+	// author, not committer — is unaffected.
+	cmd.Env = append(os.Environ(),
+		"GIT_AUTHOR_NAME="+BotName,
+		"GIT_AUTHOR_EMAIL="+BotEmail,
+		"GIT_COMMITTER_NAME="+BotName,
+		"GIT_COMMITTER_EMAIL="+BotEmail,
+	)
 	out, err := cmd.CombinedOutput()
 	trimmed := strings.TrimSpace(string(out))
 	if err != nil {

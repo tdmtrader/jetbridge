@@ -119,3 +119,50 @@ func TestStampTrailerRejectsNonPositiveTicket(t *testing.T) {
 		t.Fatal("a non-positive ticket id must be rejected rather than stamped")
 	}
 }
+
+// REGRESSION (CI failure 587725): the harvest pod never commits, so it has
+// no ambient git identity and `commit --amend` died with "Committer
+// identity unknown" — silently degrading every trailer to the error path.
+// A local ~/.gitconfig masked it.
+//
+// Asserting the committer IS the bot is environment-independent: it can only
+// hold if StampTrailer sets the identity itself, and it fails on any machine
+// if the fix is reverted (the ambient identity would win instead).
+func TestStampTrailerSetsItsOwnCommitterIdentity(t *testing.T) {
+	dir := workspaceWith(t, "implement the thing")
+
+	if _, err := harvest.StampTrailer(dir, 12); err != nil {
+		t.Fatal(err)
+	}
+	if got := trailerGit(t, dir, "log", "-1", "--format=%cn"); got != "concourse-agent[bot]" {
+		t.Fatalf("committer = %q; StampTrailer must set its own identity, not inherit an ambient one", got)
+	}
+}
+
+// The amend must not rewrite authorship: the human-touch delta filters on
+// AUTHOR, so a human commit that gets stamped must stay attributed to them.
+func TestStampTrailerPreservesTheOriginalAuthor(t *testing.T) {
+	dir := t.TempDir()
+	trailerGit(t, dir, "init", "--initial-branch=main")
+	if err := os.WriteFile(filepath.Join(dir, "f.txt"), []byte("work\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	trailerGit(t, dir, "add", ".")
+	// commit authored by a human, not the bot
+	cmd := exec.Command("git", "commit", "-m", "human work")
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(),
+		"GIT_AUTHOR_NAME=Real Human", "GIT_AUTHOR_EMAIL=h@example.com",
+		"GIT_COMMITTER_NAME=Real Human", "GIT_COMMITTER_EMAIL=h@example.com",
+	)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("seed commit: %v\n%s", err, out)
+	}
+
+	if _, err := harvest.StampTrailer(dir, 5); err != nil {
+		t.Fatal(err)
+	}
+	if got := trailerGit(t, dir, "log", "-1", "--format=%an"); got != "Real Human" {
+		t.Fatalf("author = %q, want it preserved — the delta metric keys on author", got)
+	}
+}
