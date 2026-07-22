@@ -686,7 +686,7 @@ func TestCanonicalCaptureRejectsEntriesAddedBeforeOrAfterEmission(t *testing.T) 
 	}
 }
 
-func TestCanonicalCaptureReadsRegularBytesFromSealedSpool(t *testing.T) {
+func TestCanonicalCaptureRejectsSameLengthRegularContentMutation(t *testing.T) {
 	t.Parallel()
 
 	canonicalizer := Canonicalizer{
@@ -697,12 +697,205 @@ func TestCanonicalCaptureReadsRegularBytesFromSealedSpool(t *testing.T) {
 			return root.WriteFile(name, []byte("MUTATED!"), 0644)
 		},
 	}
+	_, err := canonicalizer.Capture(context.Background(), bytes.NewReader(makeTar(t, []tarEntry{
+		{name: "file", typeflag: tar.TypeReg, content: "ORIGINAL"},
+	})))
+	if err == nil || !strings.Contains(err.Error(), "regular content differs") {
+		t.Fatalf("Capture() error = %v, want regular content integrity failure", err)
+	}
+}
+
+func TestCanonicalCaptureRejectsTamperedContentSpool(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		tamper func(*os.Root, *os.File) error
+		want   string
+	}{
+		{
+			name: "same-length content",
+			tamper: func(_ *os.Root, spool *os.File) error {
+				_, err := spool.WriteAt([]byte("MUTATED!"), 0)
+				return err
+			},
+			want: "spool content differs",
+		},
+		{
+			name: "truncated",
+			tamper: func(_ *os.Root, spool *os.File) error {
+				return spool.Truncate(3)
+			},
+			want: "spool size",
+		},
+		{
+			name: "appended",
+			tamper: func(_ *os.Root, spool *os.File) error {
+				_, err := spool.WriteAt([]byte("extra"), int64(len("ORIGINAL")))
+				return err
+			},
+			want: "spool size",
+		},
+		{
+			name: "path replacement",
+			tamper: func(root *os.Root, _ *os.File) error {
+				if err := root.Rename("content.spool", "moved.spool"); err != nil {
+					return err
+				}
+				return root.WriteFile("content.spool", []byte("ORIGINAL"), 0600)
+			},
+			want: "spool path identity",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			canonicalizer := Canonicalizer{beforeSpoolSeal: tt.tamper}
+			_, err := canonicalizer.Capture(context.Background(), bytes.NewReader(makeTar(t, []tarEntry{
+				{name: "file", typeflag: tar.TypeReg, content: "ORIGINAL"},
+			})))
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Capture() error = %v, want %q integrity failure", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestCanonicalCaptureSealsSpoolReadOnlyAndUnlinksPath(t *testing.T) {
+	t.Parallel()
+
+	var writableInfo fs.FileInfo
+	canonicalizer := Canonicalizer{
+		beforeSpoolSeal: func(_ *os.Root, spool *os.File) error {
+			var err error
+			writableInfo, err = spool.Stat()
+			return err
+		},
+		afterSpoolSeal: func(root *os.Root, spool *os.File) error {
+			sealedInfo, err := spool.Stat()
+			if err != nil {
+				return err
+			}
+			if writableInfo == nil || !os.SameFile(writableInfo, sealedInfo) {
+				return fmt.Errorf("sealed descriptor identity differs")
+			}
+			if _, err := root.Lstat("content.spool"); !errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("sealed spool pathname still exists: %w", err)
+			}
+			if _, err := spool.WriteAt([]byte("x"), 0); err == nil {
+				return fmt.Errorf("sealed spool descriptor remains writable")
+			}
+			if err := spool.Truncate(0); err == nil {
+				return fmt.Errorf("sealed spool descriptor remains truncatable")
+			}
+			return nil
+		},
+	}
 	tree := capture(t, canonicalizer, bytes.NewReader(makeTar(t, []tarEntry{
 		{name: "file", typeflag: tar.TypeReg, content: "ORIGINAL"},
 	})))
 	defer tree.Close()
-	if got := tarContent(t, readFile(t, tree.ArchivePath), "file"); string(got) != "ORIGINAL" {
-		t.Fatalf("canonical file content = %q, want sealed input bytes", got)
+}
+
+func TestValidateSpoolLayoutRejectsInvalidSections(t *testing.T) {
+	t.Parallel()
+
+	valid := func() *captureIndex {
+		return &captureIndex{
+			entries: map[string]capturedEntry{
+				"first": {name: "first", kind: extractedRegular, spoolOffset: 0, size: 3},
+				"empty": {name: "empty", kind: extractedRegular, spoolOffset: 3, size: 0},
+				"last":  {name: "last", kind: extractedRegular, spoolOffset: 3, size: 2},
+				"dir":   {name: "dir", kind: extractedDirectory},
+			},
+			spoolSize: 5,
+		}
+	}
+	if err := validateSpoolLayout(valid(), 5); err != nil {
+		t.Fatalf("valid spool layout rejected: %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(*captureIndex)
+		actual int64
+		want   string
+	}{
+		{
+			name: "declared total differs",
+			mutate: func(index *captureIndex) {
+				index.spoolSize = 4
+			},
+			actual: 5,
+			want:   "spool size",
+		},
+		{
+			name: "gap",
+			mutate: func(index *captureIndex) {
+				entry := index.entries["last"]
+				entry.spoolOffset = 4
+				index.entries["last"] = entry
+			},
+			actual: 5,
+			want:   "gap or overlap",
+		},
+		{
+			name: "overlap",
+			mutate: func(index *captureIndex) {
+				entry := index.entries["last"]
+				entry.spoolOffset = 2
+				index.entries["last"] = entry
+			},
+			actual: 5,
+			want:   "gap or overlap",
+		},
+		{
+			name: "out of bounds",
+			mutate: func(index *captureIndex) {
+				entry := index.entries["last"]
+				entry.size = 3
+				index.entries["last"] = entry
+			},
+			actual: 5,
+			want:   "bounds",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			index := valid()
+			tt.mutate(index)
+			err := validateSpoolLayout(index, tt.actual)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("validateSpoolLayout() error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestCanonicalEmissionRejectsSpoolBytesThatDoNotMatchCapturedHash(t *testing.T) {
+	t.Parallel()
+
+	spool, err := os.CreateTemp(t.TempDir(), "snapshot-spool-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer spool.Close()
+	if _, err := spool.Write([]byte("MUTATED!")); err != nil {
+		t.Fatal(err)
+	}
+	entries := []capturedEntry{{
+		name:        "file",
+		kind:        extractedRegular,
+		mode:        0644,
+		size:        int64(len("ORIGINAL")),
+		spoolOffset: 0,
+		contentHash: sha256.Sum256([]byte("ORIGINAL")),
+	}}
+	var archive bytes.Buffer
+	tw := tar.NewWriter(&archive)
+	err = writeCanonicalEntries(context.Background(), tw, spool, nil, entries, nil)
+	closeErr := tw.Close()
+	if err == nil || !strings.Contains(err.Error(), "spool content differs") {
+		t.Fatalf("writeCanonicalEntries() error = %v, want spool content integrity failure (close: %v)", err, closeErr)
 	}
 }
 
@@ -1166,28 +1359,6 @@ func readTar(t *testing.T, data []byte) []*tar.Header {
 		if _, err := io.Copy(io.Discard, tr); err != nil {
 			t.Fatalf("read canonical content: %v", err)
 		}
-	}
-}
-
-func tarContent(t *testing.T, data []byte, name string) []byte {
-	t.Helper()
-	tr := tar.NewReader(bytes.NewReader(data))
-	for {
-		hdr, err := tr.Next()
-		if errors.Is(err, io.EOF) {
-			t.Fatalf("tar entry %q not found", name)
-		}
-		if err != nil {
-			t.Fatalf("read tar: %v", err)
-		}
-		if hdr.Name != name {
-			continue
-		}
-		content, err := io.ReadAll(tr)
-		if err != nil {
-			t.Fatalf("read tar content %q: %v", name, err)
-		}
-		return content
 	}
 }
 

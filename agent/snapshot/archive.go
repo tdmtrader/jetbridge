@@ -39,6 +39,8 @@ type Canonicalizer struct {
 
 	removeAll             func(string) error
 	beforeMaterialize     func(*os.Root, string) error
+	beforeSpoolSeal       func(*os.Root, *os.File) error
+	afterSpoolSeal        func(*os.Root, *os.File) error
 	beforeCanonicalOpen   func(*os.Root, string) error
 	beforePreEmitVerify   func(*os.Root) error
 	beforePostEmitVerify  func(*os.Root) error
@@ -186,6 +188,25 @@ func (c Canonicalizer) Capture(ctx context.Context, rawTar io.Reader) (tree *Cap
 	if err != nil {
 		return nil, err
 	}
+	if c.beforeSpoolSeal != nil {
+		if err := c.beforeSpoolSeal(captureRoot, spool); err != nil {
+			return nil, fmt.Errorf("snapshot: before sealing content spool: %w", err)
+		}
+	}
+	writableSpool := spool
+	spool = nil
+	spool, err = sealContentSpool(captureRoot, writableSpool, index)
+	if err != nil {
+		return nil, err
+	}
+	if c.afterSpoolSeal != nil {
+		if err := c.afterSpoolSeal(captureRoot, spool); err != nil {
+			return nil, fmt.Errorf("snapshot: after sealing content spool: %w", err)
+		}
+	}
+	if err := validateSpoolContents(ctx, spool, index); err != nil {
+		return nil, fmt.Errorf("snapshot: verify sealed content spool: %w", err)
+	}
 	if c.beforePreEmitVerify != nil {
 		if err := c.beforePreEmitVerify(extractionRoot); err != nil {
 			return nil, fmt.Errorf("snapshot: before pre-emission verification: %w", err)
@@ -226,9 +247,6 @@ func (c Canonicalizer) Capture(ctx context.Context, rawTar io.Reader) (tree *Cap
 		return nil, fmt.Errorf("snapshot: close content spool: %w", err)
 	}
 	spool = nil
-	if err := captureRoot.Remove("content.spool"); err != nil {
-		return nil, fmt.Errorf("snapshot: remove content spool: %w", err)
-	}
 	if c.beforeCaptureBoundary != nil {
 		if err := c.beforeCaptureBoundary(captureRoot, privateRoot); err != nil {
 			return nil, fmt.Errorf("snapshot: before capture boundary verification: %w", err)
@@ -397,6 +415,7 @@ type capturedEntry struct {
 	target      string
 	size        int64
 	spoolOffset int64
+	contentHash [sha256.Size]byte
 	info        fs.FileInfo
 }
 
@@ -791,7 +810,8 @@ func extractRegular(
 	if remaining != int64(^uint64(0)>>1) {
 		reader = io.LimitReader(reader, remaining+1)
 	}
-	written, copyErr := io.Copy(io.MultiWriter(file, spool), reader)
+	contentHasher := sha256.New()
+	written, copyErr := io.Copy(io.MultiWriter(file, spool, contentHasher), reader)
 	finalInfo, statErr := file.Stat()
 	closeErr := file.Close()
 	if copyErr != nil {
@@ -806,10 +826,176 @@ func extractRegular(
 	if written != hdr.Size {
 		return capturedEntry{}, fmt.Errorf("snapshot: regular file %q is truncated: copied %d of %d bytes", hdr.Name, written, hdr.Size)
 	}
-	return capturedEntry{
+	entry := capturedEntry{
 		name: hdr.Name, kind: extractedRegular, mode: int64(mode), size: written,
 		spoolOffset: spoolOffset, info: finalInfo,
-	}, nil
+	}
+	copy(entry.contentHash[:], contentHasher.Sum(nil))
+	return entry, nil
+}
+
+func sealContentSpool(root *os.Root, writable *os.File, index *captureIndex) (*os.File, error) {
+	closeWritable := func(cause error) (*os.File, error) {
+		return nil, errors.Join(cause, writable.Close())
+	}
+	writableInfo, err := writable.Stat()
+	if err != nil {
+		return closeWritable(fmt.Errorf("snapshot: stat writable content spool: %w", err))
+	}
+	if !writableInfo.Mode().IsRegular() || writableInfo.Mode().Perm() != 0600 {
+		return closeWritable(fmt.Errorf("snapshot: writable content spool has unexpected type or mode %v", writableInfo.Mode()))
+	}
+	pathInfo, err := root.Lstat("content.spool")
+	if err != nil {
+		return closeWritable(fmt.Errorf("snapshot: inspect content spool path identity: %w", err))
+	}
+	if !os.SameFile(writableInfo, pathInfo) {
+		return closeWritable(fmt.Errorf("snapshot: content spool path identity changed before sealing"))
+	}
+	if err := validateSpoolLayout(index, writableInfo.Size()); err != nil {
+		return closeWritable(err)
+	}
+	if err := writable.Close(); err != nil {
+		return nil, fmt.Errorf("snapshot: close writable content spool: %w", err)
+	}
+
+	sealed, err := root.Open("content.spool")
+	if err != nil {
+		return nil, fmt.Errorf("snapshot: reopen content spool read-only: %w", err)
+	}
+	closeSealed := func(cause error) (*os.File, error) {
+		return nil, errors.Join(cause, sealed.Close())
+	}
+	sealedInfo, err := sealed.Stat()
+	if err != nil {
+		return closeSealed(fmt.Errorf("snapshot: stat sealed content spool: %w", err))
+	}
+	sealedPathInfo, err := root.Lstat("content.spool")
+	if err != nil {
+		return closeSealed(fmt.Errorf("snapshot: recheck content spool path identity: %w", err))
+	}
+	if !os.SameFile(writableInfo, sealedInfo) || !os.SameFile(writableInfo, sealedPathInfo) {
+		return closeSealed(fmt.Errorf("snapshot: content spool path identity changed while sealing"))
+	}
+	if !sealedInfo.Mode().IsRegular() || sealedInfo.Mode().Perm() != 0600 {
+		return closeSealed(fmt.Errorf("snapshot: sealed content spool has unexpected type or mode %v", sealedInfo.Mode()))
+	}
+	if err := validateSpoolLayout(index, sealedInfo.Size()); err != nil {
+		return closeSealed(err)
+	}
+	if err := root.Remove("content.spool"); err != nil {
+		return closeSealed(fmt.Errorf("snapshot: unlink sealed content spool: %w", err))
+	}
+	if _, err := root.Lstat("content.spool"); !errors.Is(err, fs.ErrNotExist) {
+		if err == nil {
+			err = fmt.Errorf("path still exists")
+		}
+		return closeSealed(fmt.Errorf("snapshot: verify sealed content spool is unlinked: %w", err))
+	}
+	return sealed, nil
+}
+
+func validateSpoolLayout(index *captureIndex, actualSize int64) error {
+	if index == nil {
+		return fmt.Errorf("snapshot: content spool index is required")
+	}
+	if actualSize < 0 || index.spoolSize < 0 || index.spoolSize != actualSize {
+		return fmt.Errorf("snapshot: content spool size is %d, want %d", actualSize, index.spoolSize)
+	}
+	regulars := make([]capturedEntry, 0, len(index.entries))
+	for _, entry := range index.entries {
+		if entry.kind == extractedRegular {
+			regulars = append(regulars, entry)
+			continue
+		}
+		if entry.spoolOffset != 0 || entry.size != 0 {
+			return fmt.Errorf("snapshot: non-regular path %q claims content spool bytes", entry.name)
+		}
+	}
+	sortSpoolEntries(regulars)
+	expectedOffset := int64(0)
+	for _, entry := range regulars {
+		if entry.spoolOffset < 0 || entry.size < 0 {
+			return fmt.Errorf("snapshot: content spool section for %q is outside bounds", entry.name)
+		}
+		if entry.spoolOffset != expectedOffset {
+			return fmt.Errorf("snapshot: content spool section for %q has a gap or overlap at offset %d, want %d", entry.name, entry.spoolOffset, expectedOffset)
+		}
+		if entry.spoolOffset > actualSize || entry.size > actualSize-entry.spoolOffset {
+			return fmt.Errorf("snapshot: content spool section for %q exceeds bounds", entry.name)
+		}
+		expectedOffset += entry.size
+	}
+	if expectedOffset != actualSize {
+		return fmt.Errorf("snapshot: content spool sections cover %d bytes, want %d", expectedOffset, actualSize)
+	}
+	return nil
+}
+
+func validateSpoolContents(ctx context.Context, spool *os.File, index *captureIndex) error {
+	initialInfo, err := spool.Stat()
+	if err != nil {
+		return fmt.Errorf("snapshot: stat content spool: %w", err)
+	}
+	if !initialInfo.Mode().IsRegular() || initialInfo.Mode().Perm() != 0600 {
+		return fmt.Errorf("snapshot: content spool has unexpected type or mode %v", initialInfo.Mode())
+	}
+	if err := validateSpoolLayout(index, initialInfo.Size()); err != nil {
+		return err
+	}
+	for _, entry := range sortedSpoolEntries(index) {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		hasher := sha256.New()
+		section := io.NewSectionReader(spool, entry.spoolOffset, entry.size)
+		written, err := io.Copy(hasher, contextReader{ctx: ctx, reader: section})
+		if err != nil {
+			return fmt.Errorf("snapshot: read content spool section for %q: %w", entry.name, err)
+		}
+		if written != entry.size {
+			return fmt.Errorf("snapshot: content spool section for %q is truncated", entry.name)
+		}
+		var actualHash [sha256.Size]byte
+		copy(actualHash[:], hasher.Sum(nil))
+		if actualHash != entry.contentHash {
+			return fmt.Errorf("snapshot: spool content differs for %q", entry.name)
+		}
+	}
+	finalInfo, err := spool.Stat()
+	if err != nil {
+		return fmt.Errorf("snapshot: restat content spool: %w", err)
+	}
+	if !os.SameFile(initialInfo, finalInfo) {
+		return fmt.Errorf("snapshot: content spool descriptor identity changed during verification")
+	}
+	if err := validateSpoolLayout(index, finalInfo.Size()); err != nil {
+		return err
+	}
+	return nil
+}
+
+func sortedSpoolEntries(index *captureIndex) []capturedEntry {
+	regulars := make([]capturedEntry, 0, len(index.entries))
+	for _, entry := range index.entries {
+		if entry.kind == extractedRegular {
+			regulars = append(regulars, entry)
+		}
+	}
+	sortSpoolEntries(regulars)
+	return regulars
+}
+
+func sortSpoolEntries(regulars []capturedEntry) {
+	sort.Slice(regulars, func(i, j int) bool {
+		if regulars[i].spoolOffset != regulars[j].spoolOffset {
+			return regulars[i].spoolOffset < regulars[j].spoolOffset
+		}
+		if regulars[i].size != regulars[j].size {
+			return regulars[i].size < regulars[j].size
+		}
+		return regulars[i].name < regulars[j].name
+	})
 }
 
 func cleanSymlinkTarget(name, target string) (string, error) {
@@ -920,12 +1106,18 @@ func writeCanonicalEntries(
 			continue
 		}
 		section := io.NewSectionReader(spool, entry.spoolOffset, entry.size)
-		written, err := io.Copy(tw, contextReader{ctx: ctx, reader: section})
+		contentHasher := sha256.New()
+		written, err := io.Copy(tw, contextReader{ctx: ctx, reader: io.TeeReader(section, contentHasher)})
 		if err != nil {
 			return err
 		}
 		if written != entry.size {
 			return fmt.Errorf("snapshot: content spool is truncated for %q", entry.name)
+		}
+		var actualHash [sha256.Size]byte
+		copy(actualHash[:], contentHasher.Sum(nil))
+		if actualHash != entry.contentHash {
+			return fmt.Errorf("snapshot: spool content differs for %q during canonical emission", entry.name)
 		}
 	}
 	return nil
@@ -954,7 +1146,7 @@ func verifyCaptureIndex(ctx context.Context, root *os.Root, index *captureIndex,
 		if err != nil {
 			return err
 		}
-		if err := verifyCapturedEntry(root, expected, info); err != nil {
+		if err := verifyCapturedEntry(ctx, root, expected, info); err != nil {
 			return err
 		}
 		seen[name] = struct{}{}
@@ -976,7 +1168,7 @@ func verifyCaptureIndex(ctx context.Context, root *os.Root, index *captureIndex,
 	return nil
 }
 
-func verifyCapturedEntry(root *os.Root, expected capturedEntry, info fs.FileInfo) error {
+func verifyCapturedEntry(ctx context.Context, root *os.Root, expected capturedEntry, info fs.FileInfo) error {
 	changed := func(detail string) error {
 		return fmt.Errorf("path %q changed during capture: %s", expected.name, detail)
 	}
@@ -993,6 +1185,9 @@ func verifyCapturedEntry(root *os.Root, expected capturedEntry, info fs.FileInfo
 		}
 		if int64(info.Mode().Perm()) != expected.mode {
 			return changed("regular mode differs")
+		}
+		if err := verifyRegularContent(ctx, root, expected); err != nil {
+			return err
 		}
 	case extractedDirectory:
 		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
@@ -1021,6 +1216,58 @@ func verifyCapturedEntry(root *os.Root, expected capturedEntry, info fs.FileInfo
 		}
 	default:
 		return changed("unknown captured kind")
+	}
+	return nil
+}
+
+func verifyRegularContent(ctx context.Context, root *os.Root, expected capturedEntry) error {
+	changed := func(detail string) error {
+		return fmt.Errorf("path %q changed during capture: %s", expected.name, detail)
+	}
+	file, err := root.Open(expected.name)
+	if err != nil {
+		return changed(err.Error())
+	}
+	openedInfo, statErr := file.Stat()
+	if statErr == nil && !os.SameFile(expected.info, openedInfo) {
+		statErr = changed("regular descriptor identity differs")
+	}
+	if statErr == nil && !openedInfo.Mode().IsRegular() {
+		statErr = changed("opened descriptor is no longer regular")
+	}
+	if statErr == nil && openedInfo.Size() != expected.size {
+		statErr = changed("opened regular size differs")
+	}
+	if statErr == nil && int64(openedInfo.Mode().Perm()) != expected.mode {
+		statErr = changed("opened regular mode differs")
+	}
+	if statErr != nil {
+		return errors.Join(statErr, file.Close())
+	}
+
+	hasher := sha256.New()
+	written, readErr := io.Copy(hasher, contextReader{ctx: ctx, reader: file})
+	finalInfo, finalStatErr := file.Stat()
+	closeErr := file.Close()
+	if readErr != nil {
+		return fmt.Errorf("snapshot: verify regular content %q: %w", expected.name, errors.Join(readErr, finalStatErr, closeErr))
+	}
+	if err := errors.Join(finalStatErr, closeErr); err != nil {
+		return fmt.Errorf("snapshot: finish verifying regular content %q: %w", expected.name, err)
+	}
+	if !os.SameFile(expected.info, finalInfo) || !os.SameFile(openedInfo, finalInfo) {
+		return changed("regular descriptor identity changed while reading")
+	}
+	if !finalInfo.Mode().IsRegular() || finalInfo.Size() != expected.size || int64(finalInfo.Mode().Perm()) != expected.mode {
+		return changed("regular metadata changed while reading")
+	}
+	if written != expected.size {
+		return changed("regular content size differs")
+	}
+	var actualHash [sha256.Size]byte
+	copy(actualHash[:], hasher.Sum(nil))
+	if actualHash != expected.contentHash {
+		return changed("regular content differs")
 	}
 	return nil
 }
