@@ -1,8 +1,0 @@
-{
-  "trackId": "build_survival_across_web_restart_20260704",
-  "type": "bugfix",
-  "status": "completed",
-  "description": "In-flight builds survive web restarts/upgrades: stop erroring job builds on engine drain and in the tracker safety net (fork commit 8b5476828f side effect), and make exec-mode task steps resumable via an in-pod supervisor so the new web takes over without re-running the command",
-  "createdAt": "2026-07-04T00:00:00Z",
-  "updatedAt": "2026-07-05T08:20:00Z"
-}
