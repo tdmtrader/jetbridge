@@ -215,7 +215,7 @@
 
 - [ ] Confirm Snapshot Task 0 banners remain present and name the approved 2026-07-21 design/program as authoritative.
 - [ ] Run `rg -n 'assumed LANDED|17731061|step_kind|primaryMetric' docs/superpowers` and inspect every remaining historical match for an explicit superseded label.
-- [ ] Confirm `jetbridgeHeadMigration` is `1773106110` and the complete migration walk includes `1773106100` through `1773106108` plus `1773106110`; `1773106109` is intentionally unused.
+- [ ] Confirm `jetbridgeHeadMigration` is `1773106110` and the complete migration walk includes every migration from `1773106100` through `1773106110`.
 - [ ] Commit any drift correction as `docs(agentic): preserve superseded roadmap boundary`.
 
 ### Task 12: Full verification and product acceptance

@@ -68,7 +68,7 @@ Migration `1773106100` creates:
 
 Migration `1773106101` adds indexed `schema_version` and `signature_version` columns to `agent_workflow_definitions`. Existing rows backfill from stored definitions in the Go migration; versions 1 and 2 receive signature version `0`.
 
-Migrations `1773106102` through `1773106108` add ticket revisions, review/diff projections, generic outcomes, ticket workflow-run links, durable human waits, and explicit publication audit. Migration `1773106109` is intentionally unused. Migration `1773106110` creates experiments, variants, fixtures, cells, and evaluator-run links as specified in the experiments plan. Every migration task advances and executes `jetbridgeHeadMigration` coverage.
+Migration `1773106102` adds first-class snapshot upload occurrences and idempotency after the initial snapshot schema shipped. Migrations `1773106103` through `1773106109` add ticket revisions, review/diff projections, generic outcomes, ticket workflow-run links, durable human waits, and explicit publication audit. Migration `1773106110` creates experiments, variants, fixtures, cells, and evaluator-run links as specified in the experiments plan. Every migration task advances and executes `jetbridgeHeadMigration` coverage.
 
 ### Seal transaction
 

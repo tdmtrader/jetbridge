@@ -237,6 +237,13 @@
 - Create: `agent/api/snapshots/handler_test.go`
 - Create: `agent/api/snapshots/types.go`
 - Create: `agent/api/snapshots/route_registration_test.go`
+- Create: `atc/db/migration/migrations/1773106102_add_snapshot_upload_occurrences.up.sql`
+- Create: `atc/db/migration/migrations/1773106102_add_snapshot_upload_occurrences.down.sql`
+- Modify: `agent/snapshot/sealer.go`
+- Modify: `agent/snapshot/store.go`
+- Modify: `atc/db/agent_snapshots_factory.go`
+- Modify: `atc/db/agent_snapshots_factory_test.go`
+- Modify: `atc/db/migration/legacy_upgrade_test.go`
 - Modify: `atc/routes.go`
 - Modify: `atc/api/handler.go`
 - Modify: `atc/wrappa/api_auth_wrappa.go`
@@ -249,6 +256,7 @@
 - [ ] Write Fly integration tests for `agent snapshots create|list|show|download|pin|unpin`, including `--type`, `--from`, and JSON output.
 - [ ] Run focused tests and confirm missing routes/commands.
 - [ ] Implement POST/GET/list/content/pin endpoints with existing user/team auth conventions. Upload passes through the same canonicalizer, validator, content store, and commit path as step outputs, using an `upload` production occurrence with source metadata, creating the uploader's team grant and retention claim atomically.
+- [ ] Represent upload provenance as a first-class non-build production occurrence, enforce team-scoped idempotency in migration `1773106102`, and advance `jetbridgeHeadMigration` with down/up and legacy-to-head coverage.
 - [ ] Stream Fly uploads as deterministic tar without loading the directory into memory. Refuse symlink escapes client-side and rely on server validation authoritatively.
 - [ ] Re-run focused tests and commit `feat(agent): manage immutable snapshots through API and fly`.
 
