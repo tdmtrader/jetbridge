@@ -83,6 +83,16 @@ func (state *runState) NewLocalScope() RunState {
 	return &clone
 }
 
+// NewArtifactScope isolates only artifact and image-ref publication. Variables
+// and results deliberately remain shared so successful Get metadata and step
+// results retain their historical retry behavior.
+func (state *runState) NewArtifactScope() RunState {
+	clone := *state
+	clone.artifacts = state.artifacts.NewLocalScope()
+	clone.parent = state
+	return &clone
+}
+
 func (state *runState) Parent() RunState {
 	return state.parent
 }

@@ -66,6 +66,16 @@ type FakeRunState struct {
 		result1 []vars.Reference
 		result2 error
 	}
+	NewArtifactScopeStub        func() exec.RunState
+	newArtifactScopeMutex       sync.RWMutex
+	newArtifactScopeArgsForCall []struct {
+	}
+	newArtifactScopeReturns struct {
+		result1 exec.RunState
+	}
+	newArtifactScopeReturnsOnCall map[int]struct {
+		result1 exec.RunState
+	}
 	NewLocalScopeStub        func() exec.RunState
 	newLocalScopeMutex       sync.RWMutex
 	newLocalScopeArgsForCall []struct {
@@ -394,6 +404,59 @@ func (fake *FakeRunState) ListReturnsOnCall(i int, result1 []vars.Reference, res
 		result1 []vars.Reference
 		result2 error
 	}{result1, result2}
+}
+
+func (fake *FakeRunState) NewArtifactScope() exec.RunState {
+	fake.newArtifactScopeMutex.Lock()
+	ret, specificReturn := fake.newArtifactScopeReturnsOnCall[len(fake.newArtifactScopeArgsForCall)]
+	fake.newArtifactScopeArgsForCall = append(fake.newArtifactScopeArgsForCall, struct {
+	}{})
+	stub := fake.NewArtifactScopeStub
+	fakeReturns := fake.newArtifactScopeReturns
+	fake.recordInvocation("NewArtifactScope", []interface{}{})
+	fake.newArtifactScopeMutex.Unlock()
+	if stub != nil {
+		return stub()
+	}
+	if specificReturn {
+		return ret.result1
+	}
+	return fakeReturns.result1
+}
+
+func (fake *FakeRunState) NewArtifactScopeCallCount() int {
+	fake.newArtifactScopeMutex.RLock()
+	defer fake.newArtifactScopeMutex.RUnlock()
+	return len(fake.newArtifactScopeArgsForCall)
+}
+
+func (fake *FakeRunState) NewArtifactScopeCalls(stub func() exec.RunState) {
+	fake.newArtifactScopeMutex.Lock()
+	defer fake.newArtifactScopeMutex.Unlock()
+	fake.NewArtifactScopeStub = stub
+}
+
+func (fake *FakeRunState) NewArtifactScopeReturns(result1 exec.RunState) {
+	fake.newArtifactScopeMutex.Lock()
+	defer fake.newArtifactScopeMutex.Unlock()
+	fake.NewArtifactScopeStub = nil
+	fake.newArtifactScopeReturns = struct {
+		result1 exec.RunState
+	}{result1}
+}
+
+func (fake *FakeRunState) NewArtifactScopeReturnsOnCall(i int, result1 exec.RunState) {
+	fake.newArtifactScopeMutex.Lock()
+	defer fake.newArtifactScopeMutex.Unlock()
+	fake.NewArtifactScopeStub = nil
+	if fake.newArtifactScopeReturnsOnCall == nil {
+		fake.newArtifactScopeReturnsOnCall = make(map[int]struct {
+			result1 exec.RunState
+		})
+	}
+	fake.newArtifactScopeReturnsOnCall[i] = struct {
+		result1 exec.RunState
+	}{result1}
 }
 
 func (fake *FakeRunState) NewLocalScope() exec.RunState {

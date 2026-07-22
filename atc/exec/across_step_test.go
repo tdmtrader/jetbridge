@@ -7,7 +7,9 @@ import (
 	"code.cloudfoundry.org/lager/v3/lagerctx"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/exec"
+	"github.com/concourse/concourse/atc/exec/build"
 	"github.com/concourse/concourse/atc/exec/execfakes"
+	"github.com/concourse/concourse/atc/runtime/runtimetest"
 	"github.com/concourse/concourse/vars"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -256,6 +258,30 @@ var _ = Describe("AcrossStep", func() {
 			{"a2", "b2", "c3", "d1"},
 			{"a2", "b2", "c3", "d2"},
 		}))
+	})
+
+	It("does not merge artifacts produced by across child scopes", func() {
+		plan.Vars = []atc.AcrossVar{{Var: "var1", Values: []any{"only"}}}
+		fakeDelegate.ConstructAcrossSubstepsReturns([]atc.VarScopedPlan{{Values: []any{"only"}}}, nil)
+		step = exec.Across(plan, fakeDelegateFactory, stepMetadata)
+		state = exec.NewRunState(func(atc.Plan) exec.Step {
+			childStep := new(execfakes.FakeStep)
+			childStep.RunStub = func(_ context.Context, childState exec.RunState) (bool, error) {
+				childState.ArtifactRepository().RegisterArtifact(
+					build.ArtifactName("across-output"),
+					runtimetest.NewVolume("across-output"),
+					false,
+				)
+				return true, nil
+			}
+			return childStep
+		}, vars.StaticVariables{})
+
+		succeeded, err := step.Run(ctx, state)
+
+		Expect(err).NotTo(HaveOccurred())
+		Expect(succeeded).To(BeTrue())
+		Expect(state.ArtifactRepository().AsMap()).To(BeEmpty())
 	})
 
 	Describe("parallel execution", func() {

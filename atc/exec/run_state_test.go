@@ -336,4 +336,46 @@ var _ = Describe("RunState", func() {
 			})
 		})
 	})
+
+	Describe("NewArtifactScope", func() {
+		It("maintains a reference to the parent", func() {
+			Expect(state.NewArtifactScope().Parent()).To(Equal(state))
+		})
+
+		It("isolates only the artifact repository", func() {
+			scope := state.NewArtifactScope()
+
+			Expect(scope.ArtifactRepository()).NotTo(BeIdenticalTo(state.ArtifactRepository()))
+			Expect(scope.ArtifactRepository().Parent()).To(Equal(state.ArtifactRepository()))
+		})
+
+		It("shares local variables in both directions", func() {
+			scope := state.NewArtifactScope()
+			scope.AddLocalVar("from-attempt", "value", false)
+
+			value, found, err := state.Get(vars.Reference{Source: ".", Path: "from-attempt"})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(value).To(Equal("value"))
+
+			state.AddLocalVar("from-parent", "other", false)
+			value, found, err = scope.Get(vars.Reference{Source: ".", Path: "from-parent"})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(value).To(Equal("other"))
+		})
+
+		It("shares results in both directions", func() {
+			scope := state.NewArtifactScope()
+			scope.StoreResult("attempt-result", "attempt")
+
+			var result string
+			Expect(state.Result("attempt-result", &result)).To(BeTrue())
+			Expect(result).To(Equal("attempt"))
+
+			state.StoreResult("parent-result", "parent")
+			Expect(scope.Result("parent-result", &result)).To(BeTrue())
+			Expect(result).To(Equal("parent"))
+		})
+	})
 })

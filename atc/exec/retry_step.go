@@ -25,8 +25,9 @@ func (step *RetryStep) Run(ctx context.Context, state RunState) (bool, error) {
 
 	for _, attempt := range step.Attempts {
 		step.LastAttempt = attempt
+		attemptState := state.NewArtifactScope()
 
-		attemptOk, attemptErr = attempt.Run(ctx, state)
+		attemptOk, attemptErr = attempt.Run(ctx, attemptState)
 		if ctx.Err() != nil {
 			return false, ctx.Err()
 		}
@@ -36,7 +37,10 @@ func (step *RetryStep) Run(ctx context.Context, state RunState) (bool, error) {
 		}
 
 		if attemptOk {
-			break
+			if err := attemptState.ArtifactRepository().CommitToParent(); err != nil {
+				return false, err
+			}
+			return true, nil
 		}
 	}
 

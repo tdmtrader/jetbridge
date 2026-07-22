@@ -43,6 +43,7 @@ type RunState interface {
 	vars.Variables
 
 	NewLocalScope() RunState
+	NewArtifactScope() RunState
 	AddLocalVar(name string, val any, redact bool)
 
 	IterateInterpolatedCreds(vars.TrackedVarsIterator)
