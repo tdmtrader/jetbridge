@@ -23,7 +23,7 @@ type agentWorkflowsFactory struct {
 }
 
 const workflowMetaColumns = `id, name, version, content_hash, live, description, created_by,
-	EXTRACT(EPOCH FROM created_at)::bigint`
+	EXTRACT(EPOCH FROM created_at)::bigint, schema_version, signature_version`
 
 func (f *agentWorkflowsFactory) Import(name string, rawYAML []byte, createdBy string) (*workflow.Definition, error) {
 	return f.ImportManifest(name, workflow.Manifest{"workflow.yml": string(rawYAML)}, createdBy)
@@ -34,12 +34,16 @@ func (f *agentWorkflowsFactory) Import(name string, rawYAML []byte, createdBy st
 // manifest, so there is exactly one persisted source of truth per row.
 // Idempotent on the canonical-manifest hash.
 func (f *agentWorkflowsFactory) ImportManifest(name string, src workflow.Manifest, createdBy string) (*workflow.Definition, error) {
-	cfg, err := workflow.Compile(src)
+	compiled, err := workflow.CompileDefinition(src)
 	if err != nil {
 		return nil, workflow.InvalidDefinitionError{Err: err}
 	}
-	if cfg.Name != name {
-		return nil, workflow.InvalidDefinitionError{Err: fmt.Errorf("definition name %q does not match import name %q", cfg.Name, name)}
+	if compiled.Name != name {
+		return nil, workflow.InvalidDefinitionError{Err: fmt.Errorf("definition name %q does not match import name %q", compiled.Name, name)}
+	}
+	metadata, err := compiled.VersionMetadata()
+	if err != nil {
+		return nil, workflow.InvalidDefinitionError{Err: err}
 	}
 	hash := src.Hash()
 
@@ -63,38 +67,77 @@ func (f *agentWorkflowsFactory) ImportManifest(name string, src workflow.Manifes
 		WHERE name = $1 AND content_hash = $2`,
 		name, hash,
 	).Scan(&def.ID, &def.Name, &def.Version, &def.ContentHash, &def.Live,
-		&def.Description, &def.CreatedBy, &def.CreatedAt)
+		&def.Description, &def.CreatedBy, &def.CreatedAt, &def.SchemaVersion, &def.SignatureVersion)
 	if err == nil {
 		// Idempotent on hash: byte-identical source returns the existing
 		// version untouched (contracts §1.6).
-		def.Config = *cfg
-		def.RawYAML = src["workflow.yml"]
-		def.SourceManifest = src
+		if def.SchemaVersion != metadata.SchemaVersion || def.SignatureVersion != metadata.SignatureVersion {
+			return nil, fmt.Errorf("workflow: stored metadata for %q version %d does not match compiled source", name, def.Version)
+		}
+		populateCompiledWorkflowDefinition(&def, compiled, src)
 		return &def, tx.Commit()
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return nil, err
 	}
 
+	if metadata.SignatureVersion > 0 {
+		var prior workflow.Definition
+		var priorRaw string
+		var priorManifest sql.NullString
+		err = tx.QueryRow(`
+			SELECT version, schema_version, signature_version, definition, source_manifest
+			FROM agent_workflow_definitions
+			WHERE name = $1 AND signature_version = $2
+			ORDER BY version DESC
+			LIMIT 1`, name, metadata.SignatureVersion,
+		).Scan(&prior.Version, &prior.SchemaVersion, &prior.SignatureVersion, &priorRaw, &priorManifest)
+		if err == nil {
+			priorCompiled, _, compileErr := compileStoredWorkflowSource(name, prior.Version, priorRaw, priorManifest)
+			if compileErr != nil {
+				return nil, compileErr
+			}
+			priorMetadata, metadataErr := priorCompiled.VersionMetadata()
+			if metadataErr != nil || priorMetadata.SchemaVersion != prior.SchemaVersion || priorMetadata.SignatureVersion != prior.SignatureVersion {
+				return nil, fmt.Errorf("workflow: stored metadata for %q version %d does not match compiled source", name, prior.Version)
+			}
+			candidateSignature, signatureErr := compiled.PublicSignature()
+			if signatureErr != nil {
+				return nil, workflow.InvalidDefinitionError{Err: signatureErr}
+			}
+			priorSignature, signatureErr := priorCompiled.PublicSignature()
+			if signatureErr != nil {
+				return nil, fmt.Errorf("workflow: stored public signature for %q version %d is invalid", name, prior.Version)
+			}
+			if !candidateSignature.Equal(priorSignature) {
+				return nil, workflow.InvalidDefinitionError{Err: fmt.Errorf("workflow %q signature_version %d is incompatible with version %d", name, metadata.SignatureVersion, prior.Version)}
+			}
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return nil, err
+		}
+	}
+
 	err = tx.QueryRow(`
 		INSERT INTO agent_workflow_definitions
-			(name, version, content_hash, definition, source_manifest, description, created_by)
-		SELECT $1, COALESCE(MAX(version), 0) + 1, $2, $3, $4::jsonb, $5, $6
+			(name, version, content_hash, definition, source_manifest, description, created_by,
+			 schema_version, signature_version)
+		SELECT $1, COALESCE(MAX(version), 0) + 1, $2, $3, $4::jsonb, $5, $6, $7, $8
 		FROM agent_workflow_definitions WHERE name = $1
 		RETURNING id, version, EXTRACT(EPOCH FROM created_at)::bigint`,
-		name, hash, src["workflow.yml"], string(src.Canonical()), cfg.Description, createdBy,
+		name, hash, src["workflow.yml"], string(src.Canonical()), compiled.Description, createdBy,
+		metadata.SchemaVersion, metadata.SignatureVersion,
 	).Scan(&def.ID, &def.Version, &def.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
 
 	def.Name = name
+	def.SchemaVersion = metadata.SchemaVersion
+	def.SignatureVersion = metadata.SignatureVersion
 	def.ContentHash = hash
-	def.Description = cfg.Description
+	def.Description = compiled.Description
 	def.CreatedBy = createdBy
-	def.RawYAML = src["workflow.yml"]
-	def.SourceManifest = src
-	def.Config = *cfg
+	populateCompiledWorkflowDefinition(&def, compiled, src)
 	return &def, tx.Commit()
 }
 
@@ -140,36 +183,23 @@ func (f *agentWorkflowsFactory) getOne(where string, args ...any) (*workflow.Def
 		FROM agent_workflow_definitions
 		WHERE `+where, args...,
 	).Scan(&def.ID, &def.Name, &def.Version, &def.ContentHash, &def.Live,
-		&def.Description, &def.CreatedBy, &def.CreatedAt, &def.RawYAML, &manifestJSON)
+		&def.Description, &def.CreatedBy, &def.CreatedAt, &def.SchemaVersion, &def.SignatureVersion,
+		&def.RawYAML, &manifestJSON)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, false, nil
 	}
 	if err != nil {
 		return nil, false, err
 	}
-	if manifestJSON.Valid {
-		var src workflow.Manifest
-		if err := json.Unmarshal([]byte(manifestJSON.String), &src); err != nil {
-			return nil, false, fmt.Errorf("stored manifest %s/v%d no longer parses: %w", def.Name, def.Version, err)
-		}
-		cfg, err := workflow.Compile(src)
-		if err != nil {
-			// Rows are compiled at import; a failure here means the stored
-			// manifest was corrupted out-of-band.
-			return nil, false, fmt.Errorf("stored manifest %s/v%d no longer compiles: %w", def.Name, def.Version, err)
-		}
-		def.Config = *cfg
-		def.SourceManifest = src
-		return &def, true, nil
-	}
-	// Legacy pre-manifest row: the definition column is the whole source.
-	cfg, err := workflow.Parse([]byte(def.RawYAML))
+	compiled, src, err := compileStoredWorkflowSource(def.Name, def.Version, def.RawYAML, manifestJSON)
 	if err != nil {
-		// Rows are validated at import; a parse failure here means the
-		// stored bytes were corrupted out-of-band.
-		return nil, false, fmt.Errorf("stored definition %s/v%d no longer parses: %w", def.Name, def.Version, err)
+		return nil, false, err
 	}
-	def.Config = *cfg
+	metadata, err := compiled.VersionMetadata()
+	if err != nil || metadata.SchemaVersion != def.SchemaVersion || metadata.SignatureVersion != def.SignatureVersion {
+		return nil, false, fmt.Errorf("workflow: stored metadata for %q version %d does not match compiled source", def.Name, def.Version)
+	}
+	populateCompiledWorkflowDefinition(&def, compiled, src)
 	return &def, true, nil
 }
 
@@ -198,10 +228,10 @@ func (f *agentWorkflowsFactory) Versions(name string) ([]workflow.Definition, er
 	return scanWorkflowMetaRows(rows)
 }
 
-func (f *agentWorkflowsFactory) Promote(name string, version int, promotedBy string) error {
+func (f *agentWorkflowsFactory) Promote(name string, version int, promotedBy string) (workflow.PromotionResult, error) {
 	tx, err := f.conn.Begin()
 	if err != nil {
-		return err
+		return workflow.PromotionResult{}, err
 	}
 	defer Rollback(tx)
 
@@ -210,7 +240,36 @@ func (f *agentWorkflowsFactory) Promote(name string, version int, promotedBy str
 	// agent_workflow_definitions_live.
 	_, err = tx.Exec(`SELECT pg_advisory_xact_lock(hashtext('agent_workflow_definitions:' || $1))`, name)
 	if err != nil {
-		return err
+		return workflow.PromotionResult{}, err
+	}
+
+	var target workflow.VersionMetadata
+	err = tx.QueryRow(`
+		SELECT version, schema_version, signature_version
+		FROM agent_workflow_definitions
+		WHERE name = $1 AND version = $2
+		FOR UPDATE`, name, version,
+	).Scan(&target.Version, &target.SchemaVersion, &target.SignatureVersion)
+	if errors.Is(err, sql.ErrNoRows) {
+		return workflow.PromotionResult{}, workflow.ErrVersionNotFound
+	}
+	if err != nil {
+		return workflow.PromotionResult{}, err
+	}
+
+	result := workflow.PromotionResult{Target: target}
+	var previous workflow.VersionMetadata
+	err = tx.QueryRow(`
+		SELECT version, schema_version, signature_version
+		FROM agent_workflow_definitions
+		WHERE name = $1 AND live
+		FOR UPDATE`, name,
+	).Scan(&previous.Version, &previous.SchemaVersion, &previous.SignatureVersion)
+	if err == nil {
+		result.PreviousLive = &previous
+		result.SignatureChanged = previous.SignatureVersion != target.SignatureVersion
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return workflow.PromotionResult{}, err
 	}
 
 	// Clear-then-set inside one tx: the partial unique index
@@ -218,7 +277,7 @@ func (f *agentWorkflowsFactory) Promote(name string, version int, promotedBy str
 	// name at every intermediate statement.
 	_, err = tx.Exec(`UPDATE agent_workflow_definitions SET live = false WHERE name = $1 AND live`, name)
 	if err != nil {
-		return err
+		return workflow.PromotionResult{}, err
 	}
 
 	res, err := tx.Exec(`
@@ -227,16 +286,19 @@ func (f *agentWorkflowsFactory) Promote(name string, version int, promotedBy str
 		WHERE name = $1 AND version = $2`,
 		name, version, promotedBy)
 	if err != nil {
-		return err
+		return workflow.PromotionResult{}, err
 	}
 	n, err := res.RowsAffected()
 	if err != nil {
-		return err
+		return workflow.PromotionResult{}, err
 	}
 	if n == 0 {
-		return workflow.ErrVersionNotFound
+		return workflow.PromotionResult{}, workflow.ErrVersionNotFound
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return workflow.PromotionResult{}, err
+	}
+	return result, nil
 }
 
 func scanWorkflowMetaRows(rows *sql.Rows) ([]workflow.Definition, error) {
@@ -244,10 +306,50 @@ func scanWorkflowMetaRows(rows *sql.Rows) ([]workflow.Definition, error) {
 	for rows.Next() {
 		var def workflow.Definition
 		if err := rows.Scan(&def.ID, &def.Name, &def.Version, &def.ContentHash, &def.Live,
-			&def.Description, &def.CreatedBy, &def.CreatedAt); err != nil {
+			&def.Description, &def.CreatedBy, &def.CreatedAt, &def.SchemaVersion, &def.SignatureVersion); err != nil {
 			return nil, err
 		}
 		out = append(out, def)
 	}
 	return out, rows.Err()
+}
+
+func compileStoredWorkflowSource(
+	name string,
+	version int,
+	rawYAML string,
+	manifestJSON sql.NullString,
+) (*workflow.CompiledDefinition, workflow.Manifest, error) {
+	compileSource := workflow.Manifest{"workflow.yml": rawYAML}
+	var storedSource workflow.Manifest
+	if manifestJSON.Valid {
+		if err := json.Unmarshal([]byte(manifestJSON.String), &compileSource); err != nil {
+			return nil, nil, fmt.Errorf("stored manifest %s/v%d no longer parses: %w", name, version, err)
+		}
+		storedSource = compileSource
+	}
+	compiled, err := workflow.CompileDefinition(compileSource)
+	if err != nil {
+		return nil, nil, fmt.Errorf("stored definition %s/v%d no longer compiles: %w", name, version, err)
+	}
+	if compiled.Name != name {
+		return nil, nil, fmt.Errorf("stored definition %s/v%d compiles with a different name", name, version)
+	}
+	return compiled, storedSource, nil
+}
+
+func populateCompiledWorkflowDefinition(
+	definition *workflow.Definition,
+	compiled *workflow.CompiledDefinition,
+	source workflow.Manifest,
+) {
+	definition.Compiled = *compiled
+	definition.Config = workflow.Config{}
+	if compiled.Legacy != nil {
+		definition.Config = *compiled.Legacy
+	}
+	if source != nil {
+		definition.RawYAML = source["workflow.yml"]
+		definition.SourceManifest = source
+	}
 }

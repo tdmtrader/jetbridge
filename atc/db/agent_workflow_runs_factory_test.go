@@ -35,8 +35,8 @@ var _ = Describe("AgentWorkflowRunsFactory", func() {
 		definitionName = fmt.Sprintf("durable-run-%d", time.Now().UnixNano())
 		err := dbConn.QueryRow(`
 			INSERT INTO agent_workflow_definitions
-				(name, version, content_hash, definition, created_by)
-			VALUES ($1, 1, $2, 'schema_version: 3', 'alice')
+				(name, version, content_hash, definition, created_by, schema_version, signature_version)
+			VALUES ($1, 1, $2, 'schema_version: 3', 'alice', 3, 1)
 			RETURNING id
 		`, definitionName, strings.Repeat("a", 64)).Scan(&definitionID)
 		Expect(err).NotTo(HaveOccurred())
@@ -196,6 +196,26 @@ var _ = Describe("AgentWorkflowRunsFactory", func() {
 		var runs int
 		Expect(dbConn.QueryRow(`SELECT count(*) FROM agent_workflow_runs WHERE idempotency_key = 'conflict-key'`).Scan(&runs)).To(Succeed())
 		Expect(runs).To(Equal(1))
+	})
+
+	It("rejects forged copied schema and signature metadata before creating any durable state", func() {
+		for _, mutate := range []func(*db.AgentWorkflowRunCreateRequest){
+			func(request *db.AgentWorkflowRunCreateRequest) { request.SchemaVersion = 4 },
+			func(request *db.AgentWorkflowRunCreateRequest) { request.SignatureVersion = 2 },
+		} {
+			candidate := request(fmt.Sprintf("forged-metadata-%d", time.Now().UnixNano()))
+			mutate(&candidate)
+			_, _, err := factory.CreateWithInputs(ctx, candidate)
+			Expect(err).To(MatchError(ContainSubstring("copied definition identity")))
+		}
+
+		var runs, bindings, claims int
+		Expect(dbConn.QueryRow(`SELECT count(*) FROM agent_workflow_runs WHERE idempotency_key LIKE 'forged-metadata-%'`).Scan(&runs)).To(Succeed())
+		Expect(dbConn.QueryRow(`SELECT count(*) FROM agent_workflow_run_snapshots`).Scan(&bindings)).To(Succeed())
+		Expect(dbConn.QueryRow(`SELECT count(*) FROM agent_snapshot_retention_claims WHERE class = 'workflow'`).Scan(&claims)).To(Succeed())
+		Expect(runs).To(Equal(0))
+		Expect(bindings).To(Equal(0))
+		Expect(claims).To(Equal(0))
 	})
 
 	It("converges concurrent creation to one durable identity", func() {
@@ -423,7 +443,9 @@ var _ = Describe("AgentWorkflowRunsFactory", func() {
 				return rowScannerFunc(func(destinations ...any) error {
 					*destinations[0].(*string) = definitionName
 					*destinations[1].(*int) = 1
-					*destinations[2].(*string) = strings.Repeat("a", 64)
+					*destinations[2].(*int) = 3
+					*destinations[3].(*int) = 1
+					*destinations[4].(*string) = strings.Repeat("a", 64)
 					return nil
 				})
 			case strings.Contains(query, "SELECT team_id FROM agent_workflow_runs"):

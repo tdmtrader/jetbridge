@@ -109,7 +109,7 @@ type FakeAgentWorkflowsFactory struct {
 		result1 map[string]int
 		result2 error
 	}
-	PromoteStub        func(string, int, string) error
+	PromoteStub        func(string, int, string) (workflow.PromotionResult, error)
 	promoteMutex       sync.RWMutex
 	promoteArgsForCall []struct {
 		arg1 string
@@ -117,10 +117,12 @@ type FakeAgentWorkflowsFactory struct {
 		arg3 string
 	}
 	promoteReturns struct {
-		result1 error
+		result1 workflow.PromotionResult
+		result2 error
 	}
 	promoteReturnsOnCall map[int]struct {
-		result1 error
+		result1 workflow.PromotionResult
+		result2 error
 	}
 	VersionsStub        func(string) ([]workflow.Definition, error)
 	versionsMutex       sync.RWMutex
@@ -590,7 +592,7 @@ func (fake *FakeAgentWorkflowsFactory) LiveVersionsReturnsOnCall(i int, result1 
 	}{result1, result2}
 }
 
-func (fake *FakeAgentWorkflowsFactory) Promote(arg1 string, arg2 int, arg3 string) error {
+func (fake *FakeAgentWorkflowsFactory) Promote(arg1 string, arg2 int, arg3 string) (workflow.PromotionResult, error) {
 	fake.promoteMutex.Lock()
 	ret, specificReturn := fake.promoteReturnsOnCall[len(fake.promoteArgsForCall)]
 	fake.promoteArgsForCall = append(fake.promoteArgsForCall, struct {
@@ -606,9 +608,9 @@ func (fake *FakeAgentWorkflowsFactory) Promote(arg1 string, arg2 int, arg3 strin
 		return stub(arg1, arg2, arg3)
 	}
 	if specificReturn {
-		return ret.result1
+		return ret.result1, ret.result2
 	}
-	return fakeReturns.result1
+	return fakeReturns.result1, fakeReturns.result2
 }
 
 func (fake *FakeAgentWorkflowsFactory) PromoteCallCount() int {
@@ -617,7 +619,7 @@ func (fake *FakeAgentWorkflowsFactory) PromoteCallCount() int {
 	return len(fake.promoteArgsForCall)
 }
 
-func (fake *FakeAgentWorkflowsFactory) PromoteCalls(stub func(string, int, string) error) {
+func (fake *FakeAgentWorkflowsFactory) PromoteCalls(stub func(string, int, string) (workflow.PromotionResult, error)) {
 	fake.promoteMutex.Lock()
 	defer fake.promoteMutex.Unlock()
 	fake.PromoteStub = stub
@@ -630,27 +632,30 @@ func (fake *FakeAgentWorkflowsFactory) PromoteArgsForCall(i int) (string, int, s
 	return argsForCall.arg1, argsForCall.arg2, argsForCall.arg3
 }
 
-func (fake *FakeAgentWorkflowsFactory) PromoteReturns(result1 error) {
+func (fake *FakeAgentWorkflowsFactory) PromoteReturns(result1 workflow.PromotionResult, result2 error) {
 	fake.promoteMutex.Lock()
 	defer fake.promoteMutex.Unlock()
 	fake.PromoteStub = nil
 	fake.promoteReturns = struct {
-		result1 error
-	}{result1}
+		result1 workflow.PromotionResult
+		result2 error
+	}{result1, result2}
 }
 
-func (fake *FakeAgentWorkflowsFactory) PromoteReturnsOnCall(i int, result1 error) {
+func (fake *FakeAgentWorkflowsFactory) PromoteReturnsOnCall(i int, result1 workflow.PromotionResult, result2 error) {
 	fake.promoteMutex.Lock()
 	defer fake.promoteMutex.Unlock()
 	fake.PromoteStub = nil
 	if fake.promoteReturnsOnCall == nil {
 		fake.promoteReturnsOnCall = make(map[int]struct {
-			result1 error
+			result1 workflow.PromotionResult
+			result2 error
 		})
 	}
 	fake.promoteReturnsOnCall[i] = struct {
-		result1 error
-	}{result1}
+		result1 workflow.PromotionResult
+		result2 error
+	}{result1, result2}
 }
 
 func (fake *FakeAgentWorkflowsFactory) Versions(arg1 string) ([]workflow.Definition, error) {

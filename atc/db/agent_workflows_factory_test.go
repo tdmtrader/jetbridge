@@ -2,6 +2,7 @@ package db_test
 
 import (
 	"errors"
+	"fmt"
 	"sync"
 
 	"github.com/concourse/concourse/agent/workflow"
@@ -10,6 +11,38 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
+
+func dbFunctionManifest(name string, signatureVersion int, inputs []string, outputType, prompt string) workflow.Manifest {
+	inputYAML := ""
+	inputNames := ""
+	inputTypes := ""
+	for _, input := range inputs {
+		inputYAML += fmt.Sprintf("  - name: %s\n    type: repository/v1\n", input)
+		if inputNames != "" {
+			inputNames += ", "
+		}
+		inputNames += input
+		inputTypes += fmt.Sprintf("      %s:\n        type: repository/v1\n", input)
+	}
+	return workflow.Manifest{"workflow.yml": fmt.Sprintf(`schema_version: 3
+name: %s
+signature_version: %d
+inputs:
+%soutputs:
+  - name: result
+    type: %s
+    from: result
+plan:
+  - agent: work
+    function_id: work
+    prompt: %s
+    inputs: [%s]
+    outputs: [result]
+    input_types:
+%s    output_types:
+      result: %s
+`, name, signatureVersion, inputYAML, outputType, prompt, inputNames, inputTypes, outputType)}
+}
 
 var _ = Describe("AgentWorkflowsFactory", func() {
 	var factory db.AgentWorkflowsFactory
@@ -113,7 +146,8 @@ steps:
 	It("returns all live versions in one lookup, and the latest version per name", func() {
 		_, err := factory.Import("wf-lv-a", defYAML("wf-lv-a", "A one."), "alice")
 		Expect(err).ToNot(HaveOccurred())
-		Expect(factory.Promote("wf-lv-a", 1, "alice")).To(Succeed())
+		_, err = factory.Promote("wf-lv-a", 1, "alice")
+		Expect(err).NotTo(HaveOccurred())
 		_, err = factory.Import("wf-lv-a", defYAML("wf-lv-a", "A two."), "alice")
 		Expect(err).ToNot(HaveOccurred())
 		_, err = factory.Import("wf-lv-b", defYAML("wf-lv-b", "B one."), "alice")
@@ -155,13 +189,15 @@ steps:
 		_, err = factory.Import("wf-promote", defYAML("wf-promote", "Two."), "alice")
 		Expect(err).ToNot(HaveOccurred())
 
-		Expect(factory.Promote("wf-promote", 1, "alice")).To(Succeed())
+		_, err = factory.Promote("wf-promote", 1, "alice")
+		Expect(err).NotTo(HaveOccurred())
 		live, found, err := factory.Live("wf-promote")
 		Expect(err).ToNot(HaveOccurred())
 		Expect(found).To(BeTrue())
 		Expect(live.Version).To(Equal(1))
 
-		Expect(factory.Promote("wf-promote", 2, "bob")).To(Succeed())
+		_, err = factory.Promote("wf-promote", 2, "bob")
+		Expect(err).NotTo(HaveOccurred())
 		live, _, err = factory.Live("wf-promote")
 		Expect(err).ToNot(HaveOccurred())
 		Expect(live.Version).To(Equal(2))
@@ -170,8 +206,10 @@ steps:
 		Expect(err).ToNot(HaveOccurred())
 		Expect(v1.Live).To(BeFalse())
 
-		Expect(factory.Promote("wf-promote", 99, "alice")).To(MatchError(workflow.ErrVersionNotFound))
-		Expect(factory.Promote("wf-nonexistent", 1, "alice")).To(MatchError(workflow.ErrVersionNotFound))
+		_, err = factory.Promote("wf-promote", 99, "alice")
+		Expect(err).To(MatchError(workflow.ErrVersionNotFound))
+		_, err = factory.Promote("wf-nonexistent", 1, "alice")
+		Expect(err).To(MatchError(workflow.ErrVersionNotFound))
 	})
 
 	It("consistently promotes under concurrent promotion of the same name", func() {
@@ -198,7 +236,8 @@ steps:
 				case <-done:
 					return
 				default:
-					Expect(factory.Promote("wf-promote-race", 1, "alice")).To(Succeed())
+					_, err := factory.Promote("wf-promote-race", 1, "alice")
+					Expect(err).NotTo(HaveOccurred())
 				}
 			}
 		}()
@@ -210,7 +249,8 @@ steps:
 			defer wg.Done()
 
 			for i := 0; i < 100; i++ {
-				Expect(factory.Promote("wf-promote-race", 2, "bob")).To(Succeed())
+				_, err := factory.Promote("wf-promote-race", 2, "bob")
+				Expect(err).NotTo(HaveOccurred())
 			}
 		}()
 
@@ -251,6 +291,8 @@ steps:
 			v1, err := factory.ImportManifest("wf-manifest", src, "alice")
 			Expect(err).ToNot(HaveOccurred())
 			Expect(v1.Version).To(Equal(1))
+			Expect(v1.SchemaVersion).To(Equal(2))
+			Expect(v1.SignatureVersion).To(Equal(0))
 			Expect(v1.ContentHash).To(Equal(src.Hash()))
 
 			again, err := factory.ImportManifest("wf-manifest", src, "bob")
@@ -272,8 +314,9 @@ steps:
 			// Simulate a pre-slice row: definition only, NULL manifest.
 			_, err := dbConn.Exec(`
 				INSERT INTO agent_workflow_definitions
-					(name, version, content_hash, definition, description, created_by)
-				VALUES ('wf-legacy', 1, 'legacyhash', $1, 'legacy', 'alice')`, string(raw))
+					(name, version, content_hash, definition, description, created_by,
+					 schema_version, signature_version)
+				VALUES ('wf-legacy', 1, 'legacyhash', $1, 'legacy', 'alice', 1, 0)`, string(raw))
 			Expect(err).ToNot(HaveOccurred())
 
 			got, found, err := factory.Get("wf-legacy", 1)
@@ -281,6 +324,153 @@ steps:
 			Expect(found).To(BeTrue())
 			Expect(got.Config.Name).To(Equal("wf-legacy"))
 			Expect(got.SourceManifest).To(BeEmpty())
+		})
+	})
+
+	Describe("schema and signature metadata", func() {
+		It("derives and scans metadata for legacy and function definitions", func() {
+			legacy, err := factory.Import("wf-meta-legacy", defYAML("wf-meta-legacy", "legacy"), "alice")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(legacy.SchemaVersion).To(Equal(1))
+			Expect(legacy.SignatureVersion).To(Equal(0))
+			Expect(legacy.Compiled.Legacy).NotTo(BeNil())
+
+			function, err := factory.ImportManifest("wf-meta-function", dbFunctionManifest("wf-meta-function", 7, []string{"before"}, "review/v1", "review"), "bob")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(function.SchemaVersion).To(Equal(3))
+			Expect(function.SignatureVersion).To(Equal(7))
+			Expect(function.Compiled.Function).NotTo(BeNil())
+
+			var schema, signature int
+			Expect(dbConn.QueryRow(`
+				SELECT schema_version, signature_version
+				FROM agent_workflow_definitions WHERE id = $1`, function.ID).Scan(&schema, &signature)).To(Succeed())
+			Expect(schema).To(Equal(3))
+			Expect(signature).To(Equal(7))
+
+			listed, err := factory.List()
+			Expect(err).NotTo(HaveOccurred())
+			byName := map[string]workflow.Definition{}
+			for _, definition := range listed {
+				byName[definition.Name] = definition
+			}
+			Expect(byName["wf-meta-function"].SchemaVersion).To(Equal(3))
+			Expect(byName["wf-meta-function"].SignatureVersion).To(Equal(7))
+			Expect(byName["wf-meta-function"].Compiled.Function).To(BeNil())
+		})
+
+		It("enforces exact ordered compatibility for a reused positive signature", func() {
+			_, err := factory.ImportManifest("wf-contract", dbFunctionManifest("wf-contract", 1, []string{"before", "after"}, "review/v1", "one"), "alice")
+			Expect(err).NotTo(HaveOccurred())
+			compatible, err := factory.ImportManifest("wf-contract", dbFunctionManifest("wf-contract", 1, []string{"before", "after"}, "review/v1", "two"), "bob")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(compatible.Version).To(Equal(2))
+
+			_, err = factory.ImportManifest("wf-contract", dbFunctionManifest("wf-contract", 1, []string{"after", "before"}, "review/v1", "bad"), "mallory")
+			var invalid workflow.InvalidDefinitionError
+			Expect(errors.As(err, &invalid)).To(BeTrue())
+			Expect(factory.Versions("wf-contract")).To(HaveLen(2))
+
+			different, err := factory.ImportManifest("wf-contract", dbFunctionManifest("wf-contract", 2, []string{"after", "before"}, "review/v2", "new"), "carol")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(different.Version).To(Equal(3))
+		})
+
+		It("fails closed when durable metadata drifts from compiled source", func() {
+			source := dbFunctionManifest("wf-drift", 1, []string{"before"}, "review/v1", "one")
+			definition, err := factory.ImportManifest("wf-drift", source, "alice")
+			Expect(err).NotTo(HaveOccurred())
+			_, err = dbConn.Exec(`UPDATE agent_workflow_definitions SET signature_version = 2 WHERE id = $1`, definition.ID)
+			Expect(err).NotTo(HaveOccurred())
+
+			_, found, err := factory.Get("wf-drift", 1)
+			Expect(found).To(BeFalse())
+			Expect(err).To(MatchError(ContainSubstring("metadata")))
+
+			_, err = factory.ImportManifest("wf-drift", source, "bob")
+			Expect(err).To(MatchError(ContainSubstring("metadata")))
+		})
+
+		It("returns the atomic previous and target signature metadata on promotion", func() {
+			_, err := factory.ImportManifest("wf-promotion-meta", dbFunctionManifest("wf-promotion-meta", 1, []string{"before"}, "review/v1", "one"), "alice")
+			Expect(err).NotTo(HaveOccurred())
+			_, err = factory.ImportManifest("wf-promotion-meta", dbFunctionManifest("wf-promotion-meta", 2, []string{"after"}, "review/v2", "two"), "alice")
+			Expect(err).NotTo(HaveOccurred())
+
+			first, err := factory.Promote("wf-promotion-meta", 1, "alice")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(first.PreviousLive).To(BeNil())
+			Expect(first.SignatureChanged).To(BeFalse())
+			changed, err := factory.Promote("wf-promotion-meta", 2, "bob")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(changed.PreviousLive).NotTo(BeNil())
+			Expect(changed.PreviousLive.SignatureVersion).To(Equal(1))
+			Expect(changed.Target.SignatureVersion).To(Equal(2))
+			Expect(changed.SignatureChanged).To(BeTrue())
+		})
+
+		It("serializes incompatible first imports so only one public signature commits", func() {
+			dbConn.SetMaxOpenConns(2)
+			start := make(chan struct{})
+			errorsSeen := make(chan error, 2)
+			manifests := []workflow.Manifest{
+				dbFunctionManifest("wf-contract-race", 1, []string{"before", "after"}, "review/v1", "one"),
+				dbFunctionManifest("wf-contract-race", 1, []string{"after", "before"}, "review/v1", "two"),
+			}
+			var wait sync.WaitGroup
+			for index := range manifests {
+				wait.Add(1)
+				go func(source workflow.Manifest) {
+					defer GinkgoRecover()
+					defer wait.Done()
+					<-start
+					_, err := factory.ImportManifest("wf-contract-race", source, "alice")
+					errorsSeen <- err
+				}(manifests[index])
+			}
+			close(start)
+			wait.Wait()
+			close(errorsSeen)
+
+			succeeded, rejected := 0, 0
+			for err := range errorsSeen {
+				if err == nil {
+					succeeded++
+					continue
+				}
+				var invalid workflow.InvalidDefinitionError
+				Expect(errors.As(err, &invalid)).To(BeTrue())
+				rejected++
+			}
+			Expect(succeeded).To(Equal(1))
+			Expect(rejected).To(Equal(1))
+			versions, err := factory.Versions("wf-contract-race")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(versions).To(HaveLen(1))
+		})
+
+		It("keeps List and Versions metadata-only even when stored source is corrupt", func() {
+			definition, err := factory.ImportManifest("wf-metadata-only", dbFunctionManifest("wf-metadata-only", 1, []string{"before"}, "review/v1", "one"), "alice")
+			Expect(err).NotTo(HaveOccurred())
+			_, err = dbConn.Exec(`
+				UPDATE agent_workflow_definitions
+				SET source_manifest = jsonb_build_object('workflow.yml', 'not: [yaml')
+				WHERE id = $1`, definition.ID)
+			Expect(err).NotTo(HaveOccurred())
+
+			listed, err := factory.List()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(listed).To(ContainElement(And(
+				HaveField("Name", "wf-metadata-only"),
+				HaveField("SchemaVersion", 3),
+				HaveField("SignatureVersion", 1),
+			)))
+			versions, err := factory.Versions("wf-metadata-only")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(versions).To(HaveLen(1))
+			_, found, err := factory.Get("wf-metadata-only", 1)
+			Expect(found).To(BeFalse())
+			Expect(err).To(HaveOccurred())
 		})
 	})
 })

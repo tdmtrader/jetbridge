@@ -207,19 +207,21 @@ func validateWorkflowRunTarget(ctx context.Context, tx Tx, request AgentWorkflow
 	}
 
 	var name, hash string
-	var version int
+	var version, schemaVersion, signatureVersion int
 	err := tx.QueryRowContext(ctx, `
-		SELECT name, version, content_hash
+		SELECT name, version, schema_version, signature_version, content_hash
 		FROM agent_workflow_definitions
 		WHERE id = $1
-	`, request.WorkflowDefinitionID).Scan(&name, &version, &hash)
+	`, request.WorkflowDefinitionID).Scan(&name, &version, &schemaVersion, &signatureVersion, &hash)
 	if errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("db: workflow-run definition %d does not exist", request.WorkflowDefinitionID)
 	}
 	if err != nil {
 		return err
 	}
-	if name != request.WorkflowName || version != request.WorkflowVersion || hash != request.DefinitionContentHash {
+	if name != request.WorkflowName || version != request.WorkflowVersion ||
+		schemaVersion != request.SchemaVersion || signatureVersion != request.SignatureVersion ||
+		hash != request.DefinitionContentHash {
 		return fmt.Errorf("db: workflow-run copied definition identity does not match the durable definition")
 	}
 

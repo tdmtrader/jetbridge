@@ -251,8 +251,8 @@ var _ = Describe("AgentSnapshotsFactory", func() {
 		var definitionID int
 		Expect(dbConn.QueryRow(`
 			INSERT INTO agent_workflow_definitions
-				(name, version, content_hash, definition, created_by)
-			VALUES ($1, 1, $2, 'schema_version: 3', 'alice')
+				(name, version, content_hash, definition, created_by, schema_version, signature_version)
+			VALUES ($1, 1, $2, 'schema_version: 3', 'alice', 3, 1)
 			RETURNING id
 		`, definitionName, definitionHash).Scan(&definitionID)).To(Succeed())
 		runFactory := db.NewAgentWorkflowRunsFactory(dbConn)

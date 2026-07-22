@@ -24,12 +24,16 @@ func (m *MemoryStore) Import(name string, rawYAML []byte, createdBy string) (*De
 }
 
 func (m *MemoryStore) ImportManifest(name string, src Manifest, createdBy string) (*Definition, error) {
-	cfg, err := Compile(src)
+	compiled, err := CompileDefinition(src)
 	if err != nil {
 		return nil, InvalidDefinitionError{Err: err}
 	}
-	if cfg.Name != name {
-		return nil, InvalidDefinitionError{Err: fmt.Errorf("definition name %q does not match import name %q", cfg.Name, name)}
+	if compiled.Name != name {
+		return nil, InvalidDefinitionError{Err: fmt.Errorf("definition name %q does not match import name %q", compiled.Name, name)}
+	}
+	metadata, err := compiled.VersionMetadata()
+	if err != nil {
+		return nil, InvalidDefinitionError{Err: err}
 	}
 	hash := src.Hash()
 
@@ -42,11 +46,32 @@ func (m *MemoryStore) ImportManifest(name string, src Manifest, createdBy string
 			continue
 		}
 		if d.ContentHash == hash {
-			cp := *d
-			return &cp, nil // idempotent on hash
+			if d.SchemaVersion != metadata.SchemaVersion || d.SignatureVersion != metadata.SignatureVersion {
+				return nil, fmt.Errorf("workflow: stored metadata for %q version %d does not match compiled source", name, d.Version)
+			}
+			return cloneMemoryDefinition(d, true) // idempotent on hash
 		}
 		if d.Version > maxVersion {
 			maxVersion = d.Version
+		}
+	}
+	if metadata.SignatureVersion > 0 {
+		candidate, err := compiled.PublicSignature()
+		if err != nil {
+			return nil, InvalidDefinitionError{Err: err}
+		}
+		for _, existing := range m.defs {
+			if existing.Name != name || existing.SignatureVersion != metadata.SignatureVersion {
+				continue
+			}
+			prior, err := existing.Compiled.PublicSignature()
+			if err != nil {
+				return nil, fmt.Errorf("workflow: stored signature for %q version %d is invalid", name, existing.Version)
+			}
+			if !candidate.Equal(prior) {
+				return nil, InvalidDefinitionError{Err: fmt.Errorf("workflow %q signature_version %d is incompatible with version %d", name, metadata.SignatureVersion, existing.Version)}
+			}
+			break
 		}
 	}
 
@@ -56,20 +81,24 @@ func (m *MemoryStore) ImportManifest(name string, src Manifest, createdBy string
 	}
 	m.nextID++
 	def := &Definition{
-		ID:             m.nextID,
-		Name:           name,
-		Version:        maxVersion + 1,
-		ContentHash:    hash,
-		Description:    cfg.Description,
-		CreatedBy:      createdBy,
-		CreatedAt:      time.Now().Unix(),
-		Config:         *cfg,
-		RawYAML:        src["workflow.yml"],
-		SourceManifest: stored,
+		ID:               m.nextID,
+		Name:             name,
+		Version:          maxVersion + 1,
+		SchemaVersion:    metadata.SchemaVersion,
+		SignatureVersion: metadata.SignatureVersion,
+		ContentHash:      hash,
+		Description:      compiled.Description,
+		CreatedBy:        createdBy,
+		CreatedAt:        time.Now().Unix(),
+		Compiled:         *compiled,
+		RawYAML:          src["workflow.yml"],
+		SourceManifest:   stored,
+	}
+	if compiled.Legacy != nil {
+		def.Config = *compiled.Legacy
 	}
 	m.defs = append(m.defs, def)
-	cp := *def
-	return &cp, nil
+	return cloneMemoryDefinition(def, true)
 }
 
 func (m *MemoryStore) Get(name string, version int) (*Definition, bool, error) {
@@ -77,8 +106,8 @@ func (m *MemoryStore) Get(name string, version int) (*Definition, bool, error) {
 	defer m.mu.Unlock()
 	for _, d := range m.defs {
 		if d.Name == name && d.Version == version {
-			cp := *d
-			return &cp, true, nil
+			cp, err := cloneMemoryDefinition(d, true)
+			return cp, true, err
 		}
 	}
 	return nil, false, nil
@@ -89,8 +118,8 @@ func (m *MemoryStore) Live(name string) (*Definition, bool, error) {
 	defer m.mu.Unlock()
 	for _, d := range m.defs {
 		if d.Name == name && d.Live {
-			cp := *d
-			return &cp, true, nil
+			cp, err := cloneMemoryDefinition(d, true)
+			return cp, true, err
 		}
 	}
 	return nil, false, nil
@@ -108,8 +137,8 @@ func (m *MemoryStore) Latest(name string) (*Definition, bool, error) {
 	if latest == nil {
 		return nil, false, nil
 	}
-	cp := *latest
-	return &cp, true, nil
+	cp, err := cloneMemoryDefinition(latest, true)
+	return cp, true, err
 }
 
 func (m *MemoryStore) LiveVersions() (map[string]int, error) {
@@ -135,10 +164,11 @@ func (m *MemoryStore) List() ([]Definition, error) {
 	}
 	out := []Definition{}
 	for _, d := range latest {
-		cp := *d
-		cp.RawYAML = "" // metadata-only listing
-		cp.SourceManifest = nil
-		out = append(out, cp)
+		cp, err := cloneMemoryDefinition(d, false)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *cp)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil
@@ -150,28 +180,32 @@ func (m *MemoryStore) Versions(name string) ([]Definition, error) {
 	out := []Definition{}
 	for _, d := range m.defs {
 		if d.Name == name {
-			cp := *d
-			cp.RawYAML = ""
-			cp.SourceManifest = nil
-			out = append(out, cp)
+			cp, err := cloneMemoryDefinition(d, false)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, *cp)
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Version < out[j].Version })
 	return out, nil
 }
 
-func (m *MemoryStore) Promote(name string, version int, promotedBy string) error {
+func (m *MemoryStore) Promote(name string, version int, promotedBy string) (PromotionResult, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	var target *Definition
+	var previous *Definition
 	for _, d := range m.defs {
+		if d.Name == name && d.Live {
+			previous = d
+		}
 		if d.Name == name && d.Version == version {
 			target = d
-			break
 		}
 	}
 	if target == nil {
-		return ErrVersionNotFound
+		return PromotionResult{}, ErrVersionNotFound
 	}
 	for _, d := range m.defs {
 		if d.Name == name {
@@ -180,5 +214,39 @@ func (m *MemoryStore) Promote(name string, version int, promotedBy string) error
 	}
 	target.Live = true
 	_ = promotedBy // persisted by the DB store; the memory store only flips flags
-	return nil
+	result := PromotionResult{Target: target.VersionMetadata()}
+	if previous != nil {
+		metadata := previous.VersionMetadata()
+		result.PreviousLive = &metadata
+		result.SignatureChanged = metadata.SignatureVersion != result.Target.SignatureVersion
+	}
+	return result, nil
+}
+
+// cloneMemoryDefinition prevents maps, slices, and concrete step pointers in a
+// returned compiled definition from mutating the in-memory store's authority.
+func cloneMemoryDefinition(definition *Definition, includeContent bool) (*Definition, error) {
+	clone := *definition
+	clone.Config = Config{}
+	clone.Compiled = CompiledDefinition{}
+	clone.RawYAML = ""
+	clone.SourceManifest = nil
+	if !includeContent {
+		return &clone, nil
+	}
+	source := make(Manifest, len(definition.SourceManifest))
+	for path, content := range definition.SourceManifest {
+		source[path] = content
+	}
+	compiled, err := CompileDefinition(source)
+	if err != nil {
+		return nil, fmt.Errorf("workflow: stored definition %q version %d no longer compiles: %w", definition.Name, definition.Version, err)
+	}
+	clone.Compiled = *compiled
+	if compiled.Legacy != nil {
+		clone.Config = *compiled.Legacy
+	}
+	clone.RawYAML = source["workflow.yml"]
+	clone.SourceManifest = source
+	return &clone, nil
 }

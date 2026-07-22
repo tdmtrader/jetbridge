@@ -34,7 +34,7 @@ const v713LastMigration = 1666754000
 const v801LastMigration = 1765921815
 
 // JetBridge HEAD (last migration)
-const jetbridgeHeadMigration = 1773106100
+const jetbridgeHeadMigration = 1773106101
 
 var _ = Describe("Legacy Database Upgrade", func() {
 	var (
@@ -653,6 +653,25 @@ func verifyBuildStatuses(db *sql.DB, expected map[string]int) {
 }
 
 func verifyJetBridgeSchemaChanges(db *sql.DB) {
+	// Workflow schema/signature identity is durable metadata at HEAD.
+	for _, column := range []string{"schema_version", "signature_version"} {
+		var nullable string
+		err := db.QueryRow(`
+			SELECT is_nullable FROM information_schema.columns
+			WHERE table_name = 'agent_workflow_definitions' AND column_name = $1`, column).Scan(&nullable)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(nullable).To(Equal("NO"), "agent_workflow_definitions.%s must be non-null", column)
+	}
+	for _, index := range []string{
+		"agent_workflow_definitions_schema_version",
+		"agent_workflow_definitions_name_signature_version",
+	} {
+		var exists bool
+		err := db.QueryRow(`SELECT to_regclass($1) IS NOT NULL`, index).Scan(&exists)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(exists).To(BeTrue(), "index %s must exist", index)
+	}
+
 	// Verify component columns were dropped
 	for _, col := range []string{"interval", "last_ran", "paused"} {
 		var exists bool

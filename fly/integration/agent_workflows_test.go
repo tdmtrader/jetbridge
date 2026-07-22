@@ -34,19 +34,19 @@ var _ = Describe("fly agent workflows", func() {
 				ghttp.CombineHandlers(
 					ghttp.VerifyRequest("GET", "/api/v1/agent/workflows"),
 					ghttp.RespondWithJSONEncoded(http.StatusOK, []map[string]any{
-						{"name": "standard-dev", "description": "the seed", "latest_version": 3, "live_version": 2, "content_hash": "abc123", "created_at": 1751900000},
+						{"name": "standard-dev", "description": "the seed", "latest_version": 3, "schema_version": 3, "signature_version": 2, "live_version": 2, "content_hash": "abc123", "created_at": 1751900000},
 					}),
 				),
 			)
 		})
 
-		It("prints name, latest, live, description", func() {
+		It("prints name, latest, schema, signature, live, and description", func() {
 			flyCmd := exec.Command(flyPath, "-t", targetName, "agent", "workflows", "list")
 			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
 			Expect(err).NotTo(HaveOccurred())
 			<-sess.Exited
 			Expect(sess.ExitCode()).To(Equal(0))
-			Expect(sess.Out).To(gbytes.Say(`standard-dev\s+3\s+2\s+the seed`))
+			Expect(sess.Out).To(gbytes.Say(`standard-dev\s+3\s+3\s+2\s+2\s+the seed`))
 		})
 	})
 
@@ -120,7 +120,11 @@ var _ = Describe("fly agent workflows", func() {
 			atcServer.AppendHandlers(
 				ghttp.CombineHandlers(
 					ghttp.VerifyRequest("PUT", "/api/v1/agent/workflows/standard-dev/versions/2/live"),
-					ghttp.RespondWith(http.StatusNoContent, nil),
+					ghttp.RespondWithJSONEncoded(http.StatusOK, workflow.PromotionResult{
+						PreviousLive:     &workflow.VersionMetadata{Version: 1, SchemaVersion: 3, SignatureVersion: 1},
+						Target:           workflow.VersionMetadata{Version: 2, SchemaVersion: 3, SignatureVersion: 2},
+						SignatureChanged: true,
+					}),
 				),
 			)
 		})
@@ -131,6 +135,7 @@ var _ = Describe("fly agent workflows", func() {
 			Expect(err).NotTo(HaveOccurred())
 			<-sess.Exited
 			Expect(sess.ExitCode()).To(Equal(0))
+			Expect(sess.Out).To(gbytes.Say(`warning: public signature changed from 1 to 2`))
 			Expect(sess.Out).To(gbytes.Say(`workflow standard-dev version 2 is now live`))
 		})
 	})
@@ -198,7 +203,10 @@ var _ = Describe("fly agent workflows", func() {
 			atcServer.AppendHandlers(
 				ghttp.CombineHandlers(
 					ghttp.VerifyRequest("PUT", "/api/v1/agent/workflows/dev/versions/4/live"),
-					ghttp.RespondWith(http.StatusNoContent, nil),
+					ghttp.RespondWithJSONEncoded(http.StatusOK, workflow.PromotionResult{
+						PreviousLive: &workflow.VersionMetadata{Version: 3, SchemaVersion: 2, SignatureVersion: 0},
+						Target:       workflow.VersionMetadata{Version: 4, SchemaVersion: 2, SignatureVersion: 0},
+					}),
 				),
 			)
 			flyCmd := exec.Command(flyPath, "-t", targetName, "agent", "workflows", "import", srcDir, "--set-live")

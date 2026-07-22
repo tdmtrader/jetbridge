@@ -2,11 +2,44 @@ package workflow_test
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/concourse/concourse/agent/workflow"
 )
+
+func functionManifest(name string, signatureVersion int, inputs []string, outputType, prompt string) workflow.Manifest {
+	inputYAML := ""
+	inputNames := ""
+	inputTypes := ""
+	for _, input := range inputs {
+		inputYAML += fmt.Sprintf("  - name: %s\n    type: repository/v1\n", input)
+		if inputNames != "" {
+			inputNames += ", "
+		}
+		inputNames += input
+		inputTypes += fmt.Sprintf("      %s:\n        type: repository/v1\n", input)
+	}
+	return workflow.Manifest{"workflow.yml": fmt.Sprintf(`schema_version: 3
+name: %s
+signature_version: %d
+inputs:
+%soutputs:
+  - name: result
+    type: %s
+    from: result
+plan:
+  - agent: work
+    function_id: work
+    prompt: %s
+    inputs: [%s]
+    outputs: [result]
+    input_types:
+%s    output_types:
+      result: %s
+`, name, signatureVersion, inputYAML, outputType, prompt, inputNames, inputTypes, outputType)}
+}
 
 func defYAML(name, promptBody string) []byte {
 	return []byte(`schema_version: 1
@@ -86,7 +119,7 @@ func TestMemoryStoreGetLiveAndPromote(t *testing.T) {
 		t.Error("nothing should be live before Promote")
 	}
 
-	if err := s.Promote("wf", 1, "alice"); err != nil {
+	if _, err := s.Promote("wf", 1, "alice"); err != nil {
 		t.Fatalf("promote v1: %v", err)
 	}
 	live, found, _ := s.Live("wf")
@@ -98,7 +131,7 @@ func TestMemoryStoreGetLiveAndPromote(t *testing.T) {
 	}
 
 	// Promotion atomically swaps: v2 live, v1 not.
-	if err := s.Promote("wf", 2, "bob"); err != nil {
+	if _, err := s.Promote("wf", 2, "bob"); err != nil {
 		t.Fatalf("promote v2: %v", err)
 	}
 	live, _, _ = s.Live("wf")
@@ -110,7 +143,7 @@ func TestMemoryStoreGetLiveAndPromote(t *testing.T) {
 		t.Error("v1 must no longer be live")
 	}
 
-	if err := s.Promote("wf", 99, "alice"); !errors.Is(err, workflow.ErrVersionNotFound) {
+	if _, err := s.Promote("wf", 99, "alice"); !errors.Is(err, workflow.ErrVersionNotFound) {
 		t.Errorf("unknown version must be ErrVersionNotFound, got %v", err)
 	}
 
@@ -147,7 +180,7 @@ func TestMemoryStoreLiveVersions(t *testing.T) {
 	if _, err := s.Import("wf-a", defYAML("wf-a", "One."), "alice"); err != nil {
 		t.Fatalf("import: %v", err)
 	}
-	if err := s.Promote("wf-a", 1, "alice"); err != nil {
+	if _, err := s.Promote("wf-a", 1, "alice"); err != nil {
 		t.Fatalf("promote: %v", err)
 	}
 	if _, err := s.Import("wf-a", defYAML("wf-a", "Two."), "alice"); err != nil {
@@ -245,5 +278,160 @@ func TestMemoryStoreImportManifest(t *testing.T) {
 		if d.RawYAML != "" || len(d.SourceManifest) != 0 {
 			t.Fatal("List must not carry RawYAML/SourceManifest")
 		}
+	}
+}
+
+func TestMemoryStorePersistsDerivedSchemaAndSignatureMetadata(t *testing.T) {
+	store := workflow.NewMemoryStore()
+
+	v1, err := store.Import("v1-meta", defYAML("v1-meta", "legacy"), "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v1.SchemaVersion != 1 || v1.SignatureVersion != 0 || v1.Compiled.Legacy == nil {
+		t.Fatalf("v1 metadata = %+v", v1)
+	}
+	v2, err := store.ImportManifest("v2-meta", workflow.Manifest{
+		"workflow.yml": `schema_version: 2
+name: v2-meta
+prompt_files:
+  work: prompts/work.md
+steps:
+- agent: work
+  prompt: work
+  outputs: [workspace]
+`,
+		"prompts/work.md": "legacy manifest prompt",
+	}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v2.SchemaVersion != 2 || v2.SignatureVersion != 0 || v2.Compiled.Legacy == nil {
+		t.Fatalf("v2 metadata = %+v", v2)
+	}
+
+	v3, err := store.ImportManifest("function-meta", functionManifest("function-meta", 7, []string{"before"}, "review/v1", "review"), "bob")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v3.SchemaVersion != 3 || v3.SignatureVersion != 7 || v3.Compiled.Function == nil {
+		t.Fatalf("v3 metadata = %+v", v3)
+	}
+
+	got, found, err := store.Get("function-meta", 1)
+	if err != nil || !found || got.SchemaVersion != 3 || got.SignatureVersion != 7 {
+		t.Fatalf("Get metadata: found=%v err=%v def=%+v", found, err, got)
+	}
+	list, err := store.List()
+	if err != nil || len(list) != 3 {
+		t.Fatalf("List: %v %+v", err, list)
+	}
+	for _, def := range list {
+		if def.SchemaVersion == 0 {
+			t.Fatalf("List omitted schema metadata: %+v", def)
+		}
+		if def.RawYAML != "" || def.SourceManifest != nil || def.Compiled.Function != nil || def.Compiled.Legacy != nil {
+			t.Fatalf("List must remain metadata-only: %+v", def)
+		}
+	}
+}
+
+func TestMemoryStoreEnforcesOrderedPublicSignatureCompatibility(t *testing.T) {
+	store := workflow.NewMemoryStore()
+	first := functionManifest("compatible", 1, []string{"before", "after"}, "review/v1", "first prompt")
+	if _, err := store.ImportManifest("compatible", first, "alice"); err != nil {
+		t.Fatal(err)
+	}
+
+	implementationOnly := functionManifest("compatible", 1, []string{"before", "after"}, "review/v1", "changed prompt")
+	if def, err := store.ImportManifest("compatible", implementationOnly, "bob"); err != nil || def.Version != 2 {
+		t.Fatalf("compatible implementation change: def=%+v err=%v", def, err)
+	}
+
+	incompatible := functionManifest("compatible", 1, []string{"after", "before"}, "review/v1", "reordered")
+	if _, err := store.ImportManifest("compatible", incompatible, "mallory"); err == nil {
+		t.Fatal("reordered public inputs must be rejected")
+	} else {
+		var invalid workflow.InvalidDefinitionError
+		if !errors.As(err, &invalid) {
+			t.Fatalf("compatibility error must be invalid-definition, got %T: %v", err, err)
+		}
+	}
+
+	versions, err := store.Versions("compatible")
+	if err != nil || len(versions) != 2 {
+		t.Fatalf("rejection allocated a version: %v %+v", err, versions)
+	}
+
+	newSignature := functionManifest("compatible", 2, []string{"after", "before"}, "review/v2", "new contract")
+	if def, err := store.ImportManifest("compatible", newSignature, "carol"); err != nil || def.Version != 3 {
+		t.Fatalf("new signature version must accept contract change: def=%+v err=%v", def, err)
+	}
+}
+
+func TestMemoryStoreReturnedDefinitionsCannotMutateCompatibilityAuthority(t *testing.T) {
+	store := workflow.NewMemoryStore()
+	manifest := functionManifest("immutable", 1, []string{"before"}, "review/v1", "first")
+	returned, err := store.ImportManifest("immutable", manifest, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	returned.Compiled.Function.Inputs[0].Name = "mutated"
+	returned.SourceManifest["workflow.yml"] = "corrupt"
+
+	compatible := functionManifest("immutable", 1, []string{"before"}, "review/v1", "second")
+	if _, err := store.ImportManifest("immutable", compatible, "bob"); err != nil {
+		t.Fatalf("caller mutation changed compatibility authority: %v", err)
+	}
+}
+
+func TestMemoryStorePromotionReturnsAtomicSignatureComparison(t *testing.T) {
+	store := workflow.NewMemoryStore()
+	if _, err := store.ImportManifest("promote-meta", functionManifest("promote-meta", 1, []string{"before"}, "review/v1", "one"), "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ImportManifest("promote-meta", functionManifest("promote-meta", 1, []string{"before"}, "review/v1", "two"), "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ImportManifest("promote-meta", functionManifest("promote-meta", 2, []string{"after"}, "review/v2", "three"), "alice"); err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := store.Promote("promote-meta", 1, "alice")
+	if err != nil || first.PreviousLive != nil || first.SignatureChanged || first.Target.SignatureVersion != 1 {
+		t.Fatalf("first promotion = %+v err=%v", first, err)
+	}
+	same, err := store.Promote("promote-meta", 2, "bob")
+	if err != nil || same.PreviousLive == nil || same.SignatureChanged {
+		t.Fatalf("same-signature promotion = %+v err=%v", same, err)
+	}
+	changed, err := store.Promote("promote-meta", 3, "carol")
+	if err != nil || changed.PreviousLive == nil || !changed.SignatureChanged || changed.PreviousLive.SignatureVersion != 1 || changed.Target.SignatureVersion != 2 {
+		t.Fatalf("changed-signature promotion = %+v err=%v", changed, err)
+	}
+}
+
+func TestPublicSignatureIgnoresDescriptionsAndOutputMappingsButNotOrderedPortIdentity(t *testing.T) {
+	base, err := workflow.CompileDefinition(functionManifest("signature", 1, []string{"before", "after"}, "review/v1", "one"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := base.PublicSignature()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	base.Function.Inputs[0].Description = "new prose"
+	base.Function.Outputs[0].Description = "other prose"
+	base.Function.Outputs[0].From = "implementation-only-name"
+	got, err := base.PublicSignature()
+	if err != nil || !want.Equal(got) {
+		t.Fatalf("description/from changed signature: equal=%v err=%v", want.Equal(got), err)
+	}
+
+	base.Function.Inputs[0].Optional = true
+	changed, err := base.PublicSignature()
+	if err != nil || want.Equal(changed) {
+		t.Fatalf("optionality did not change signature: equal=%v err=%v", want.Equal(changed), err)
 	}
 }

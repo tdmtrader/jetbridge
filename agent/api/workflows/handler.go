@@ -31,12 +31,14 @@ func NewHandler(store workflow.Store) *Handler {
 
 // WorkflowSummary is the GET /api/v1/agent/workflows element.
 type WorkflowSummary struct {
-	Name          string `json:"name"`
-	Description   string `json:"description"`
-	LatestVersion int    `json:"latest_version"`
-	ContentHash   string `json:"content_hash"`
-	LiveVersion   int    `json:"live_version"` // 0 = no live version
-	CreatedAt     int64  `json:"created_at"`
+	Name             string `json:"name"`
+	Description      string `json:"description"`
+	LatestVersion    int    `json:"latest_version"`
+	SchemaVersion    int    `json:"schema_version"`
+	SignatureVersion int    `json:"signature_version"`
+	ContentHash      string `json:"content_hash"`
+	LiveVersion      int    `json:"live_version"` // 0 = no live version
+	CreatedAt        int64  `json:"created_at"`
 }
 
 // requestUser mirrors accessor's userName(): preferred_username, falling
@@ -74,12 +76,14 @@ func Summarize(store workflow.Store) ([]WorkflowSummary, error) {
 	summaries := []WorkflowSummary{}
 	for _, d := range defs {
 		summaries = append(summaries, WorkflowSummary{
-			Name:          d.Name,
-			Description:   d.Description,
-			LatestVersion: d.Version,
-			ContentHash:   d.ContentHash,
-			LiveVersion:   liveVersions[d.Name], // 0 = no live version
-			CreatedAt:     d.CreatedAt,
+			Name:             d.Name,
+			Description:      d.Description,
+			LatestVersion:    d.Version,
+			SchemaVersion:    d.SchemaVersion,
+			SignatureVersion: d.SignatureVersion,
+			ContentHash:      d.ContentHash,
+			LiveVersion:      liveVersions[d.Name], // 0 = no live version
+			CreatedAt:        d.CreatedAt,
 		})
 	}
 	return summaries, nil
@@ -209,7 +213,7 @@ func (h *Handler) Promote(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "version must be an integer", http.StatusBadRequest)
 		return
 	}
-	err = h.store.Promote(name, version, requestUser(r))
+	result, err := h.store.Promote(name, version, requestUser(r))
 	if errors.Is(err, workflow.ErrVersionNotFound) {
 		http.Error(w, "unknown workflow version", http.StatusNotFound)
 		return
@@ -218,5 +222,5 @@ func (h *Handler) Promote(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to promote workflow version", http.StatusInternalServerError)
 		return
 	}
-	w.WriteHeader(http.StatusNoContent)
+	writeJSON(w, http.StatusOK, result)
 }

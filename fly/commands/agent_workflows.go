@@ -28,12 +28,14 @@ type AgentWorkflowsCommand struct {
 
 // workflowSummary mirrors agent/api/workflows.WorkflowSummary.
 type workflowSummary struct {
-	Name          string `json:"name"`
-	Description   string `json:"description"`
-	LatestVersion int    `json:"latest_version"`
-	ContentHash   string `json:"content_hash"`
-	LiveVersion   int    `json:"live_version"`
-	CreatedAt     int64  `json:"created_at"`
+	Name             string `json:"name"`
+	Description      string `json:"description"`
+	LatestVersion    int    `json:"latest_version"`
+	SchemaVersion    int    `json:"schema_version"`
+	SignatureVersion int    `json:"signature_version"`
+	ContentHash      string `json:"content_hash"`
+	LiveVersion      int    `json:"live_version"`
+	CreatedAt        int64  `json:"created_at"`
 }
 
 func agentAPIRequest(target rc.Target, method, path string, body io.Reader) (*http.Response, error) {
@@ -101,6 +103,8 @@ func (command *WorkflowsListCommand) Execute([]string) error {
 	table := ui.Table{Headers: ui.TableRow{
 		{Contents: "name", Color: color.New(color.Bold)},
 		{Contents: "latest", Color: color.New(color.Bold)},
+		{Contents: "schema", Color: color.New(color.Bold)},
+		{Contents: "signature", Color: color.New(color.Bold)},
 		{Contents: "live", Color: color.New(color.Bold)},
 		{Contents: "description", Color: color.New(color.Bold)},
 	}}
@@ -112,6 +116,8 @@ func (command *WorkflowsListCommand) Execute([]string) error {
 		table.Data = append(table.Data, ui.TableRow{
 			{Contents: s.Name},
 			{Contents: strconv.Itoa(s.LatestVersion)},
+			{Contents: strconv.Itoa(s.SchemaVersion)},
+			{Contents: strconv.Itoa(s.SignatureVersion)},
 			{Contents: live},
 			{Contents: s.Description},
 		})
@@ -170,7 +176,8 @@ func (command *WorkflowsShowCommand) Execute([]string) error {
 	if command.Json {
 		return displayhelpers.JsonPrint(def)
 	}
-	fmt.Fprintf(os.Stderr, "# %s version %d  hash %s  live=%v\n", def.Name, def.Version, def.ContentHash, def.Live)
+	fmt.Fprintf(os.Stderr, "# %s version %d  schema=%d signature=%d  hash %s  live=%v\n",
+		def.Name, def.Version, def.SchemaVersion, def.SignatureVersion, def.ContentHash, def.Live)
 	fmt.Print(def.RawYAML)
 	// Manifest-backed definitions get a source summary (per-file sizes)
 	// instead of a tree dump; stderr keeps stdout pipeable YAML.
@@ -225,7 +232,7 @@ func importWorkflowDir(target rc.Target, dir string, setLive bool) error {
 	}
 	// Compile client-side first: same validation the server runs, but
 	// the error message points at local files.
-	cfg, err := workflow.Compile(m)
+	compiled, err := workflow.CompileDefinition(m)
 	if err != nil {
 		return err
 	}
@@ -235,7 +242,7 @@ func importWorkflowDir(target rc.Target, dir string, setLive bool) error {
 		return err
 	}
 	resp, err := agentAPIRequestWithType(target, "POST",
-		"/api/v1/agent/workflows/"+url.PathEscape(cfg.Name)+"/versions",
+		"/api/v1/agent/workflows/"+url.PathEscape(compiled.Name)+"/versions",
 		"application/json", bytes.NewReader(payload))
 	if err != nil {
 		return err
@@ -259,13 +266,13 @@ func importWorkflowFile(target rc.Target, path string, setLive bool) error {
 	}
 	// Parse client-side first: same validation the server runs, but the
 	// error message points at the local file.
-	cfg, err := workflow.Parse(raw)
+	compiled, err := workflow.ParseCompiled(raw)
 	if err != nil {
 		return fmt.Errorf("%s: %w", path, err)
 	}
 
 	resp, err := agentAPIRequest(target, "POST",
-		"/api/v1/agent/workflows/"+url.PathEscape(cfg.Name)+"/versions", bytes.NewReader(raw))
+		"/api/v1/agent/workflows/"+url.PathEscape(compiled.Name)+"/versions", bytes.NewReader(raw))
 	if err != nil {
 		return err
 	}
@@ -287,8 +294,13 @@ func setLiveVersion(target rc.Target, name string, version int) error {
 	if err != nil {
 		return err
 	}
-	if err := decodeOrError(resp, nil); err != nil {
+	var result workflow.PromotionResult
+	if err := decodeOrError(resp, &result); err != nil {
 		return err
+	}
+	if result.SignatureChanged && result.PreviousLive != nil {
+		fmt.Printf("warning: public signature changed from %d to %d\n",
+			result.PreviousLive.SignatureVersion, result.Target.SignatureVersion)
 	}
 	fmt.Printf("workflow %s version %d is now live\n", name, version)
 	return nil

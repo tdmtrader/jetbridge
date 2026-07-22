@@ -54,7 +54,7 @@ func TestImportCreatesAndIsIdempotent(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &def); err != nil {
 		t.Fatal(err)
 	}
-	if def.Version != 1 || def.Name != "wf" || def.ContentHash == "" {
+	if def.Version != 1 || def.Name != "wf" || def.ContentHash == "" || def.SchemaVersion != 1 || def.SignatureVersion != 0 {
 		t.Errorf("def = %+v", def)
 	}
 
@@ -113,6 +113,9 @@ func TestListShowsLiveVersion(t *testing.T) {
 	if len(got) != 1 || got[0].LatestVersion != 2 || got[0].LiveVersion != 1 {
 		t.Errorf("summaries = %+v", got)
 	}
+	if got[0].SchemaVersion != 1 || got[0].SignatureVersion != 0 {
+		t.Errorf("summary metadata = %+v", got[0])
+	}
 }
 
 func TestVersionsAndGet(t *testing.T) {
@@ -167,8 +170,15 @@ func TestPromote(t *testing.T) {
 	w := httptest.NewRecorder()
 	h.Promote(w, request("PUT", "/api/v1/agent/workflows/wf/versions/1/live",
 		url.Values{":workflow_name": {"wf"}, ":version": {"1"}}, ""))
-	if w.Code != http.StatusNoContent {
+	if w.Code != http.StatusOK {
 		t.Fatalf("promote status = %d body=%s", w.Code, w.Body.String())
+	}
+	var result workflow.PromotionResult
+	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.PreviousLive != nil || result.Target.Version != 1 || result.SignatureChanged {
+		t.Fatalf("promotion result = %+v", result)
 	}
 	live, found, _ := store.Live("wf")
 	if !found || live.Version != 1 {

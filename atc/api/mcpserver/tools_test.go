@@ -401,8 +401,8 @@ var _ = Describe("Tools", func() {
 	Describe("list_agent_workflows", func() {
 		It("returns workflow summaries with resolved live versions", func() {
 			workflowsFactory.ListReturns([]workflow.Definition{
-				{Name: "standard-dev", Description: "Standard dev flow", Version: 5, ContentHash: "abc123", Live: true, CreatedAt: 1700},
-				{Name: "test-first", Description: "TDD flow", Version: 3, ContentHash: "def456", Live: false, CreatedAt: 1800},
+				{Name: "standard-dev", Description: "Standard dev flow", Version: 5, SchemaVersion: 3, SignatureVersion: 2, ContentHash: "abc123", Live: true, CreatedAt: 1700},
+				{Name: "test-first", Description: "TDD flow", Version: 3, SchemaVersion: 2, SignatureVersion: 0, ContentHash: "def456", Live: false, CreatedAt: 1800},
 			}, nil)
 			workflowsFactory.LiveVersionsReturns(map[string]int{
 				"standard-dev": 5,
@@ -416,6 +416,8 @@ var _ = Describe("Tools", func() {
 
 			Expect(summaries[0]["name"]).To(Equal("standard-dev"))
 			Expect(summaries[0]["latest_version"]).To(BeEquivalentTo(5))
+			Expect(summaries[0]["schema_version"]).To(BeEquivalentTo(3))
+			Expect(summaries[0]["signature_version"]).To(BeEquivalentTo(2))
 			Expect(summaries[0]["live_version"]).To(BeEquivalentTo(5))
 			Expect(summaries[0]["content_hash"]).To(Equal("abc123"))
 
@@ -439,7 +441,8 @@ var _ = Describe("Tools", func() {
 	Describe("get_agent_workflow", func() {
 		It("returns a specific version when requested", func() {
 			workflowsFactory.GetReturns(&workflow.Definition{
-				Name: "standard-dev", Version: 4, ContentHash: "hash4", RawYAML: "name: standard-dev\n",
+				Name: "standard-dev", Version: 4, SchemaVersion: 3, SignatureVersion: 6,
+				ContentHash: "hash4", RawYAML: "name: standard-dev\n",
 			}, true, nil)
 
 			result := callTool(server, "get_agent_workflow", map[string]any{
@@ -450,6 +453,8 @@ var _ = Describe("Tools", func() {
 			Expect(json.Unmarshal([]byte(result), &def)).To(Succeed())
 			Expect(def["name"]).To(Equal("standard-dev"))
 			Expect(def["version"]).To(BeEquivalentTo(4))
+			Expect(def["schema_version"]).To(BeEquivalentTo(3))
+			Expect(def["signature_version"]).To(BeEquivalentTo(6))
 			Expect(def["raw_yaml"]).To(Equal("name: standard-dev\n"))
 
 			name, version := workflowsFactory.GetArgsForCall(0)
