@@ -163,14 +163,8 @@ func validateGitAdministrativeFiles(ctx context.Context, root *os.Root) error {
 	if err != nil {
 		return fmt.Errorf("snapshot contracts: repository config: %w", err)
 	}
-	lowerConfig := strings.ToLower(string(config))
-	for _, forbidden := range []string{"[include", "[includeif", "[filter"} {
-		if strings.Contains(lowerConfig, forbidden) {
-			return fmt.Errorf("snapshot contracts: repository config contains forbidden external include or filter configuration")
-		}
-	}
-	if gitConfigDefinesCoreWorktree(string(config)) {
-		return fmt.Errorf("snapshot contracts: repository config must not define core.worktree")
+	if err := validateRepositoryConfig(config); err != nil {
+		return fmt.Errorf("snapshot contracts: repository config: %w", err)
 	}
 	if info, err := root.Lstat(".git/shallow"); err == nil {
 		if !info.Mode().IsRegular() || info.Size() > 0 {
@@ -188,29 +182,269 @@ func validateGitAdministrativeFiles(ctx context.Context, root *os.Root) error {
 	return nil
 }
 
-func gitConfigDefinesCoreWorktree(config string) bool {
+type repositoryConfigEntry struct {
+	section    string
+	subsection string
+	name       string
+	value      string
+}
+
+func validateRepositoryConfig(config []byte) error {
+	entries, err := parseRepositoryConfig(config)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		switch entry.section {
+		case "core":
+			if entry.subsection != "" {
+				return unsupportedRepositoryConfig(entry)
+			}
+			switch entry.name {
+			case "repositoryformatversion":
+				if entry.value != "0" && entry.value != "1" {
+					return fmt.Errorf("unsupported core.repositoryformatversion %q", entry.value)
+				}
+			case "filemode", "bare", "logallrefupdates", "ignorecase", "precomposeunicode", "symlinks":
+				value := strings.ToLower(entry.value)
+				if value != "true" && value != "false" && value != "yes" && value != "no" && value != "on" && value != "off" && value != "1" && value != "0" {
+					return fmt.Errorf("core.%s must be a boolean", entry.name)
+				}
+				if entry.name == "bare" && value != "false" && value != "no" && value != "off" && value != "0" {
+					return fmt.Errorf("core.bare must be false")
+				}
+			default:
+				return unsupportedRepositoryConfig(entry)
+			}
+		case "extensions":
+			if entry.subsection != "" || entry.name != "objectformat" || (entry.value != "sha1" && entry.value != "sha256") {
+				return unsupportedRepositoryConfig(entry)
+			}
+		case "user":
+			if entry.subsection != "" || (entry.name != "name" && entry.name != "email") {
+				return unsupportedRepositoryConfig(entry)
+			}
+		case "remote":
+			if entry.subsection == "" {
+				return unsupportedRepositoryConfig(entry)
+			}
+			switch entry.name {
+			case "url":
+				if err := validateInertRemoteURL(entry.value); err != nil {
+					return fmt.Errorf("remote %q URL: %w", entry.subsection, err)
+				}
+			case "fetch":
+				if err := validateInertConfigValue(entry.value); err != nil {
+					return fmt.Errorf("remote %q fetch refspec: %w", entry.subsection, err)
+				}
+			default:
+				return unsupportedRepositoryConfig(entry)
+			}
+		case "branch":
+			if entry.subsection == "" || (entry.name != "remote" && entry.name != "merge") {
+				return unsupportedRepositoryConfig(entry)
+			}
+			if err := validateInertConfigValue(entry.value); err != nil {
+				return fmt.Errorf("branch %q %s: %w", entry.subsection, entry.name, err)
+			}
+		default:
+			return unsupportedRepositoryConfig(entry)
+		}
+	}
+	return nil
+}
+
+func unsupportedRepositoryConfig(entry repositoryConfigEntry) error {
+	key := entry.section
+	if entry.subsection != "" {
+		key += "." + entry.subsection
+	}
+	key += "." + entry.name
+	return fmt.Errorf("unsupported active setting %q", key)
+}
+
+func parseRepositoryConfig(config []byte) ([]repositoryConfigEntry, error) {
+	if !utf8.Valid(config) || bytes.IndexByte(config, 0) >= 0 {
+		return nil, fmt.Errorf("must be UTF-8 text without NUL bytes")
+	}
+	var entries []repositoryConfigEntry
 	section := ""
-	for _, rawLine := range strings.Split(config, "\n") {
+	subsection := ""
+	for lineNumber, rawLine := range strings.Split(string(config), "\n") {
+		rawLine = strings.TrimSuffix(rawLine, "\r")
 		line := strings.TrimSpace(rawLine)
 		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
 			continue
 		}
-		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
-			section = strings.ToLower(strings.TrimSpace(line[1 : len(line)-1]))
+		if strings.HasSuffix(line, `\`) {
+			return nil, fmt.Errorf("line %d uses unsupported continuation syntax", lineNumber+1)
+		}
+		if strings.HasPrefix(line, "[") {
+			parsedSection, parsedSubsection, err := parseRepositoryConfigSection(line)
+			if err != nil {
+				return nil, fmt.Errorf("line %d: %w", lineNumber+1, err)
+			}
+			section, subsection = parsedSection, parsedSubsection
 			continue
 		}
-		if section != "core" {
-			continue
+		if section == "" {
+			return nil, fmt.Errorf("line %d defines a value before a section", lineNumber+1)
 		}
-		key := line
-		if separator := strings.IndexAny(key, "= \t"); separator >= 0 {
-			key = key[:separator]
+		name, value, err := parseRepositoryConfigVariable(line)
+		if err != nil {
+			return nil, fmt.Errorf("line %d: %w", lineNumber+1, err)
 		}
-		if strings.EqualFold(strings.TrimSpace(key), "worktree") {
-			return true
+		entries = append(entries, repositoryConfigEntry{
+			section: section, subsection: subsection, name: name, value: value,
+		})
+	}
+	return entries, nil
+}
+
+func parseRepositoryConfigSection(line string) (string, string, error) {
+	if !strings.HasSuffix(line, "]") || strings.Count(line, "[") != 1 || strings.Count(line, "]") != 1 {
+		return "", "", fmt.Errorf("malformed section header")
+	}
+	body := strings.TrimSpace(line[1 : len(line)-1])
+	if body == "" {
+		return "", "", fmt.Errorf("empty section header")
+	}
+	separator := strings.IndexAny(body, " \t")
+	section := body
+	remainder := ""
+	if separator >= 0 {
+		section = body[:separator]
+		remainder = strings.TrimSpace(body[separator:])
+	}
+	if !validGitConfigName(section) {
+		return "", "", fmt.Errorf("invalid section name")
+	}
+	if remainder == "" {
+		return strings.ToLower(section), "", nil
+	}
+	subsection, err := decodeGitConfigQuotedValue(remainder)
+	if err != nil || subsection == "" {
+		return "", "", fmt.Errorf("invalid subsection")
+	}
+	if err := validateInertConfigValue(subsection); err != nil {
+		return "", "", fmt.Errorf("invalid subsection: %w", err)
+	}
+	return strings.ToLower(section), subsection, nil
+}
+
+func parseRepositoryConfigVariable(line string) (string, string, error) {
+	separator := strings.IndexAny(line, "= \t")
+	name := line
+	remainder := ""
+	if separator >= 0 {
+		name = line[:separator]
+		remainder = strings.TrimSpace(line[separator:])
+	}
+	if !validGitConfigName(name) {
+		return "", "", fmt.Errorf("invalid variable name")
+	}
+	if strings.HasPrefix(remainder, "=") {
+		remainder = strings.TrimSpace(remainder[1:])
+	}
+	value := "true"
+	if remainder != "" {
+		var err error
+		value, err = decodeGitConfigValue(remainder)
+		if err != nil {
+			return "", "", err
 		}
 	}
-	return false
+	return strings.ToLower(name), value, nil
+}
+
+func validGitConfigName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for _, character := range name {
+		if !((character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') || (character >= '0' && character <= '9') || character == '-') {
+			return false
+		}
+	}
+	return true
+}
+
+func decodeGitConfigValue(value string) (string, error) {
+	if strings.HasPrefix(value, `"`) {
+		return decodeGitConfigQuotedValue(value)
+	}
+	if strings.ContainsAny(value, `"#;`) {
+		return "", fmt.Errorf("uses unsupported quoting or inline-comment syntax")
+	}
+	if err := validateInertConfigValue(value); err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(value), nil
+}
+
+func decodeGitConfigQuotedValue(value string) (string, error) {
+	if len(value) < 2 || value[0] != '"' || value[len(value)-1] != '"' {
+		return "", fmt.Errorf("malformed quoted value")
+	}
+	var decoded strings.Builder
+	for index := 1; index < len(value)-1; index++ {
+		character := value[index]
+		if character != '\\' {
+			decoded.WriteByte(character)
+			continue
+		}
+		index++
+		if index >= len(value)-1 {
+			return "", fmt.Errorf("malformed quoted escape")
+		}
+		switch value[index] {
+		case '\\', '"':
+			decoded.WriteByte(value[index])
+		case 'n':
+			decoded.WriteByte('\n')
+		case 't':
+			decoded.WriteByte('\t')
+		case 'b':
+			decoded.WriteByte('\b')
+		default:
+			return "", fmt.Errorf("unsupported quoted escape")
+		}
+	}
+	result := decoded.String()
+	if err := validateInertConfigValue(result); err != nil {
+		return "", err
+	}
+	return result, nil
+}
+
+func validateInertConfigValue(value string) error {
+	if strings.TrimSpace(value) == "" {
+		return fmt.Errorf("must not be empty")
+	}
+	for _, character := range value {
+		if character < ' ' || character == 0x7f {
+			return fmt.Errorf("contains control characters")
+		}
+	}
+	return nil
+}
+
+func validateInertRemoteURL(value string) error {
+	if err := validateInertConfigValue(value); err != nil {
+		return err
+	}
+	if strings.Contains(value, "::") {
+		return fmt.Errorf("custom remote helpers are not allowed")
+	}
+	if schemeEnd := strings.Index(value, "://"); schemeEnd >= 0 {
+		scheme := strings.ToLower(value[:schemeEnd])
+		switch scheme {
+		case "file", "git", "http", "https", "ssh":
+		default:
+			return fmt.Errorf("custom transport scheme %q is not allowed", scheme)
+		}
+	}
+	return nil
 }
 
 func validateContainedGitReference(ctx context.Context, root *os.Root, fileName, relativeBase string) error {

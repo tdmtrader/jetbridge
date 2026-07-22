@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"io/fs"
 	"os"
@@ -105,6 +106,96 @@ func TestRepositoryContractRejectsUnsafeIncompleteOrDirtyRepositories(t *testing
 				t.Fatalf("validation error = %v, want %q", err, tc.want)
 			}
 		})
+	}
+}
+
+func TestRepositoryContractRejectsActiveTransportConfigurationBeforeInvokingGit(t *testing.T) {
+	tests := []struct {
+		name   string
+		config string
+	}{
+		{
+			name: "partial clone extension",
+			config: `[extensions]
+	partialClone = origin
+`,
+		},
+		{
+			name: "promisor remote",
+			config: `[remote "origin"]
+	url = hostile::repository
+	promisor = true
+	partialCloneFilter = blob:none
+`,
+		},
+		{
+			name: "protocol-specific override",
+			config: `[protocol "hostile"]
+	allow = always
+`,
+		},
+		{
+			name: "custom remote transport",
+			config: `[remote "origin"]
+	url = https://example.invalid/repository
+	vcs = hostile
+`,
+		},
+		{
+			name: "remote upload-pack command",
+			config: `[remote "origin"]
+	url = https://example.invalid/repository
+	uploadpack = hostile-helper
+`,
+		},
+		{
+			name: "URL rewrite",
+			config: `[url "hostile::repository"]
+	insteadOf = https://example.invalid/
+`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			repository := newGitRepository(t, "")
+			configPath := filepath.Join(repository, ".git", "config")
+			config, err := os.ReadFile(configPath)
+			if err != nil {
+				t.Fatalf("read repository config: %v", err)
+			}
+			writeTestFile(t, configPath, string(config)+"\n"+tc.config)
+
+			gitCalled := filepath.Join(t.TempDir(), "git-called")
+			helperDirectory := t.TempDir()
+			fakeGit := filepath.Join(helperDirectory, "git")
+			writeTestFile(t, fakeGit, "#!/bin/sh\n: > \"$SNAPSHOT_GIT_CALLED\"\nexit 97\n")
+			if err := os.Chmod(fakeGit, 0755); err != nil {
+				t.Fatalf("make fake git executable: %v", err)
+			}
+			t.Setenv("SNAPSHOT_GIT_CALLED", gitCalled)
+			t.Setenv("PATH", helperDirectory+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+			_, validationErr := validateDirectory(t, "repository/v1", repository, emptyValidationContext(t))
+			if validationErr == nil || !strings.Contains(validationErr.Error(), "repository config") {
+				t.Errorf("validation error = %v, want repository config rejection", validationErr)
+			}
+			if _, err := os.Stat(gitCalled); !errors.Is(err, fs.ErrNotExist) {
+				t.Errorf("git invocation marker error = %v, want Git not to be invoked", err)
+			}
+		})
+	}
+}
+
+func TestRepositoryContractAcceptsOrdinaryRemoteAndBranchMetadata(t *testing.T) {
+	repository := newGitRepository(t, "")
+	runTestGit(t, repository, "remote", "add", "origin", "https://example.invalid/acme/repository.git")
+	branch := runTestGit(t, repository, "symbolic-ref", "--short", "HEAD")
+	runTestGit(t, repository, "config", "branch."+branch+".remote", "origin")
+	runTestGit(t, repository, "config", "branch."+branch+".merge", "refs/heads/"+branch)
+
+	if _, err := validateDirectory(t, "repository/v1", repository, emptyValidationContext(t)); err != nil {
+		t.Fatalf("ordinary remote and branch metadata validation error = %v", err)
 	}
 }
 
