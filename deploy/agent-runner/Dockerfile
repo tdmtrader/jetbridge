@@ -3,6 +3,7 @@ WORKDIR /src
 COPY . .
 RUN CGO_ENABLED=0 go build -o /out/agent-runner ./cmd/agent-runner
 RUN CGO_ENABLED=0 go build -o /out/harvest-runner ./cmd/harvest-runner
+RUN CGO_ENABLED=0 go build -o /out/merge-runner ./cmd/merge-runner
 
 FROM node:20-bookworm-slim
 # Pin to the claude-code version the live theborg review job currently runs
@@ -24,6 +25,9 @@ COPY --from=build /out/agent-runner /usr/local/bin/agent-runner
 # harvest-runner shares the image (§2.8.1: the harvest step's main
 # container is the agent-step image; git already present above).
 COPY --from=build /out/harvest-runner /usr/local/bin/harvest-runner
+# merge-runner shares the image too (design 2026-07-20 §2: the merge step's
+# main container is the agent-step image; it needs only git + the binary).
+COPY --from=build /out/merge-runner /usr/local/bin/merge-runner
 COPY --from=build /usr/local/go /usr/local/go
 # Root, like every other step image: jetbridge hostPath step volumes are
 # kubelet-created root:root 0755 and fsGroup is ignored for hostPath, so a
